@@ -63,7 +63,7 @@ extern char *att_no;
 extern char *e_tmp_dir;
 
 #ifdef NOTPARM
-char *tparm();
+/* char *tparm(); */
 char *tgoto();
 #endif
 #ifdef DEFTPUTS
