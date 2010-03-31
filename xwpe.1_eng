@@ -14,7 +14,7 @@
 .if t .sp .5
 ..
 .ta .3i .6i .9i 1.2i 1.5i 1.8i
-.TH xwpe alpha "May 3, 1999"
+.TH xwpe 1 "May 3, 1999"
 .UC
 .SH NAME
 xwpe, xwe, wpe, we \- X-Window Programming Environment
@@ -82,7 +82,7 @@ The next file is a message-file.
 Start \fIxwpe\fP in the \fIrecover mode\fP. The internal buffers
 are saved in files with the postfix `.ESV' in the name
 if a signal is caught by \fIxwpe\fP (except for SIGKILL).
-If the editor is invoked with the `-r' option is
+If the editor is invoked with the `\-r' option is
 specified in the command line, the old session will be
 recovered.
 
@@ -181,8 +181,8 @@ definition.
 "string:  Characters used for comments depending on the
           column."
 "string:  Special single characters."
-"integer: Column for comments (-1 for none)."
-"integer: Column for continuing line (-1 for none)"
+"integer: Column for comments (\-1 for none)."
+"integer: Column for continuing line (\-1 for none)"
 "Integer: Column for comment till the end of line (1000
           for none)"
 .EE
@@ -217,7 +217,7 @@ An example:
  struct switch typedef union unsigned void volatile
  while
  0
- ~^()[]{}<>+-/*%=|&!.?:,; /* */ NULL NULL "'#\\  -1 -1 1000
+ ~^()[]{}<>+\-/*%=|&!.?:,; /* */ NULL NULL "'#\\  \-1 \-1 1000
 
  .f
  64
@@ -257,7 +257,7 @@ would be greatly appreciated.
 
 Documentation hasn't been updated.
 
-Compilers are assumed to have a -c and -o option.  This causes problems
+Compilers are assumed to have a \-c and \-o option.  This causes problems
 for those who wish to use java, perl, or other languages.
 
 \fBmake install\fP installs x versions even if not compiled in.
