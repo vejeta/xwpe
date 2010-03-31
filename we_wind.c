@@ -1372,7 +1372,7 @@ int e_schr_lst_wsv(char *str, int xa, int ya, int n, int len, int ft,
 				&& e_mouse.x <= xa+n-1) ret = CDO;
 #endif
       if (ret == CDO && e_sv_window(xa+n, ya, &num, *df, f) == WPE_CR)
-          strcpy(str, (*df)->name[num]);
+          (strcpy)(str, (*df)->name[num]);
    }  while(ret == CDO);
    return(ret);
 }
