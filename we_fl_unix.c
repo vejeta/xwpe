@@ -1044,7 +1044,7 @@ int WpeHandleFileManager(ECNT * cn)
           }
           else if(!WpeIsXwin())
           {
-            printf(e_msg[ERR_HITCR]);
+            printf("%s", e_msg[ERR_HITCR]);
             fflush(stderr);
             fflush(stdout);
             fk_getch();
