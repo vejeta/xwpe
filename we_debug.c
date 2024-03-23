@@ -31,6 +31,8 @@
 
 int e_d_delbreak(FENSTER *f);
 int e_d_error(char *s);
+int print_to_end_of_buffer(BUFFER * b,char * str,int wrap_limit);
+
 
 #define MAXOUT  2 * MAXSCOL * MAXSLNS
 

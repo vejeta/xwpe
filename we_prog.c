@@ -21,6 +21,7 @@ int e_run_sh(FENSTER *f);
 int e_make_library(char *library, char *ofile, FENSTER *f);
 int e_p_exec(int file, FENSTER *f, PIC *pic);
 struct dirfile **e_make_prj_opt(FENSTER *f);
+int print_to_end_of_buffer(BUFFER * b,char * str,int wrap_limit);
 
 int wfildes[2], efildes[2];
 char *wfile = NULL, *efile = NULL;
