@@ -305,7 +305,10 @@ int e_dif_colors(int sw, int xa, int ya, FENSTER *f, int md)
   c = e_getch();
 #endif
   if (c >= 375 && c <= 393)
+  {
    sw = c-375;
+   if (sw >= num) sw = num - 1;
+  }
   else if (c == 326)
    sw = 0;
   else if (c == 334)
