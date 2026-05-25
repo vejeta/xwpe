@@ -379,6 +379,8 @@ void e_exit(int n)
 #endif
  (*WpeDisplayEnd)();
  e_switch_screen(0);
+ tcsetattr(0, TCSADRAIN, &otermio);
+ fputs("\033c", stderr);
  if (n != 0)
  {
   printf("\nError-Exit!   Code: %d!\n", n);
