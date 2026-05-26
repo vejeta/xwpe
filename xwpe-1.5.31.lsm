@@ -1,17 +1,16 @@
 Begin4
 Title:          xwpe
-Version:        1.5.30a
-Entered-date:   2002-06-04
+Version:        1.5.31
+Entered-date:   2026-05-27
 Description:    A programming and debugging environment similar to
                 Borland's Turbo C environment.  Works in both X and
                 console modes.
 Keywords:       IDE programming editor debugger development
 Author:         kruse@rrzn.uni-hannover.de (Fred Kruse)
-Maintained-by:  dulsi@identicalsoftware.com (Dennis Payne)
-Primary-site:   metalab.unc.edu /pub/Linux/apps/editors/X
-                308k xwpe-1.5.30a.tar.gz
-Alternate-site: shannon.mee.tcd.ie /pub/Brian
+                dulsi@identicalsoftware.com (Dennis Payne, xwpe-alpha)
+Maintained-by:  juan.mendezr@proton.me (Juan Manuel Mendez Rey)
+Primary-site:   https://codeberg.org/mendezr/xwpe
+Alternate-site: https://salsa.debian.org/debian/xwpe
 Platforms:      Unix
-Copying-policy: GPL
+Copying-policy: GPL-2
 End
-

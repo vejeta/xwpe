@@ -1,0 +1,59 @@
+xwpe authors and contributors
+=============================
+
+Original author
+---------------
+Fred Kruse <fkr@cs.tu-berlin.de> (later kruse@rrzn.uni-hannover.de)
+  Designed and wrote xwpe (1.0 through 1.4.2, ca. 1991-1997).
+  Last contact unknown; presumed offline since the late 1990s.
+
+xwpe-alpha continuation project
+-------------------------------
+Dennis Payne <dulsi@identicalsoftware.com>
+  Maintained the xwpe-alpha continuation (1.5.0 through 1.5.30a,
+  ca. 2000-2006), hosted at https://www.identicalsoftware.com/xwpe/
+  Gave explicit blessing for the Mendez-era rescue in 2026.
+
+GitHub fork contributors (selected fixes integrated)
+----------------------------------------------------
+Guus Bonnema <gbonnema@xs4all.nl>
+  Fix for link error caused by typo in edit.h (WpeGpmInit -> WpeGpmMouseInit).
+  Fix for segfault on early MALLOC failure in we_main.c.
+  Extensive refactor work on the github.com/amagnasco/xwpe experimental
+  branch (2017-2018) -- intended for future integration in a later release.
+
+Alessandro G. Magnasco <alessandromagnasco@gmail.com>
+  Host of the GitHub fork github.com/amagnasco/xwpe.
+  Continuous-integration infrastructure (not integrated here).
+
+Debian package contributors (patches integrated)
+------------------------------------------------
+Jari Aalto <jari.aalto@cante.net>
+  Manpage hyphen escaping and .TH section fix.
+  Parenthesised strcpy() call in we_wind.c to defeat unsafe glibc macro.
+  Non-maintainer upload converting Debian source to 3.0 (quilt) format.
+
+Francesco Paolo Lovergine <frankie@debian.org>
+  Disabled conflicting K&R prototype for tparm() in we_debug.c.
+  format-security fixes in we_fl_unix.c and we_prog.c.
+  Missing prototype for print_to_end_of_buffer() in we_debug.c, we_prog.c.
+
+Andreas Tille <tille@debian.org>
+  Debian packaging maintenance (Salsa migration, watch v5, etc.).
+  Did not contribute to this upstream tree directly.
+
+Helmut Grohne <helmut@subdivi.de>
+  Debian fix for cross-build (FTCBFS), in Debian packaging only.
+
+Robert Millan <rmh@debian.org>
+  Debian fix to replace hardcoded list of non-Linux architectures, in
+  Debian packaging only.
+
+Current upstream maintainer
+---------------------------
+Juan Manuel Mendez Rey <juan.mendezr@proton.me>
+  Took over upstream maintenance in 2026 with Dennis Payne's blessing.
+  Has been carrying Debian xwpe patches for ~22 years.
+  Fix for terminal not being reset on clean exit (we_unix.c).
+  Fix for crash in colour dialog when dragging mouse off the table (we_opt.c,
+  Debian #228820 -- a 22-year-old upstream bug finally closed).

@@ -36,6 +36,39 @@ Known Bugs
 
 Changes
 
+1.5.31 (Mendez-era rescue release)
+* Project resumed under new upstream maintainer Juan Manuel Mendez Rey
+  <juan.mendezr@proton.me>, with the explicit blessing of Dennis Payne.
+  Project home moved from identicalsoftware.com to
+  https://codeberg.org/mendezr/xwpe
+* Fix link error: rename WpeGpmInit prototype in edit.h to the actual
+  function name WpeGpmMouseInit. (Guus Bonnema, via github.com/amagnasco)
+* Fix segfault on startup when MALLOC fails before the screen subsystem
+  is initialised. (Guus Bonnema, via github.com/amagnasco)
+* xwpe.1_eng: escape hyphens (-r, -1, ...) so groff renders them as
+  ASCII hyphens; correct .TH section field from "alpha" to "1".
+  (Jari Aalto, from Debian NMU)
+* we_debug: disable conflicting K&R prototype for tparm() that broke
+  compilation against modern <term.h>. (Francesco P. Lovergine, Debian)
+* we_wind: parenthesise strcpy() to defeat unsafe glibc macro expansion
+  in e_schr_lst_wsv(). (Jari Aalto, from Debian NMU)
+* we_fl_unix, we_prog: fix -Werror=format-security in printf calls that
+  passed e_msg[ERR_HITCR] directly as the format argument.
+  (Francesco P. Lovergine, Debian)
+* we_debug, we_prog: add missing prototype for print_to_end_of_buffer
+  so the package compiles under -Werror=implicit-function-declaration
+  (GCC 14+, hard error in GCC 15). (Francesco P. Lovergine, Debian,
+  Closes: Debian #1066254)
+* we_unix: restore termios and emit terminal reset on clean exit so the
+  user's terminal is left usable after wpe quits. (Juan Manuel Mendez Rey)
+* we_opt: clamp mouse-derived index in colour dialog to prevent OOB
+  read on the FARBE colour array. (Juan Manuel Mendez Rey,
+  Closes: Debian #228820, a 22-year-old upstream bug)
+* This release also resolves Debian #1098180 (FTBFS with GCC 15) since
+  the patch stack that triggered the FTBFS is now fully integrated.
+
+After this release, the Debian package can ship with zero local patches.
+
 1.5.30a
 * Some additional comments
 * Fedora core 4 compile fix
@@ -48,7 +81,7 @@ Changes
 * Corrected function help bug.
 * Changed X11 colors to correspond to curses order.
 * Disabled different pointers under X11 and add file manager menu item.
-* Added Paulo César Pereira de Andrade's partial i18n patch.
+* Added Paulo Cï¿½sar Pereira de Andrade's partial i18n patch.
 
 1.5.27a
 * More modifications from Roman Levenstein.  Not enabled by default; use

@@ -1,6 +1,6 @@
 Summary: X Windows Programming Environment
 Name: xwpe
-%define	version	1.5.30a
+%define	version	1.5.31
 Version: %{version}
 Release: 1
 License: GPL
