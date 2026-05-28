@@ -472,12 +472,6 @@ void e_pr_c_line(int y, FENSTER *f)
   if (*(b->bf[y].s + i) == WPE_TAB)
    j += (f->ed->tabn - j % f->ed->tabn - 1);
 #ifdef UNIX
-  else if (((unsigned char) *(b->bf[y].s + i)) > 126)
-  {
-   j++;
-   if (((unsigned char) *(b->bf[y].s + i)) < 128 + ' ')
-    j++;
-  }
   else if (*(b->bf[y].s + i) < ' ')
    j++;
 #endif
@@ -519,18 +513,6 @@ void e_pr_c_line(int y, FENSTER *f)
      k > 1 && j < NUM_COLS_ON_SCREEN + s->c.x - 2; k--, j++)
     e_pr_char(f->a.x - s->c.x + j + 1, y - s->c.y + f->a.y + 1, ' ', frb);
 #ifdef UNIX
-  else if (!WpeIsXwin() && ((unsigned char)*(b->bf[y].s + i)) > 126)
-  {
-   e_pr_char(f->a.x - s->c.x + j +1, y - s->c.y + f->a.y + 1, '@', frb);
-   if (++j >= NUM_COLS_ON_SCREEN + s->c.x - 1)
-    return;
-   if (((unsigned char)*(b->bf[y].s + i)) < 128 + ' ' && j < NUM_COLS_ON_SCREEN + s->c.x - 1)
-   {
-    e_pr_char(f->a.x - s->c.x + j +1, y - s->c.y + f->a.y + 1, '^', frb);
-    if (++j >= NUM_COLS_ON_SCREEN + s->c.x - 1)
-     return;
-   }
-  }
   else if (*(b->bf[y].s + i) < ' ')
   {
    e_pr_char(f->a.x - s->c.x + j +1, y - s->c.y + f->a.y + 1, '^', frb);
@@ -541,16 +523,6 @@ void e_pr_c_line(int y, FENSTER *f)
   if (*(b->bf[y].s + i) == WPE_TAB)
    e_pr_char(f->a.x - s->c.x + j + 1, y - s->c.y + f->a.y + 1,                  ' ', frb);
 #ifdef UNIX
-  else if(!WpeIsXwin() && ((unsigned char)*(b->bf[y].s + i)) > 126 &&
-    j < NUM_COLS_ON_SCREEN + s->c.x - 1)
-  {
-   if (((unsigned char)*(b->bf[y].s + i)) < 128 + ' ')
-    e_pr_char(f->a.x - s->c.x + j + 1, y - s->c.y + f->a.y + 1,
-      ((unsigned char) *(b->bf[y].s + i)) + 'A' - 129, frb);
-   else
-    e_pr_char(f->a.x - s->c.x + j + 1, y - s->c.y + f->a.y + 1,
-      ((unsigned char) *(b->bf[y].s + i)) - 128, frb);
-  }
   else if (*(b->bf[y].s + i) < ' ' && j < NUM_COLS_ON_SCREEN + s->c.x - 1)
    e_pr_char(f->a.x - s->c.x + j + 1, y - s->c.y + f->a.y + 1,
      *(b->bf[y].s + i) + 'A' - 1, frb);

@@ -62,7 +62,7 @@ extern char *e_tmp_dir;
 
 /*  for TextSchirm (text screen)   */
 
-extern char *altschirm;
+extern SCREENCELL *altschirm;
 #ifdef NEWSTYLE
 extern char *extbyte, *altextbyte;
 #endif
@@ -272,17 +272,19 @@ int fk_show_cursor()
 
  if (!cur_on)
   return(0);
- x = 2 * old_cursor_x + 2 * MAXSCOL * old_cursor_y;
- if (x > 0)
+ if (old_cursor_x > 0 || old_cursor_y > 0)
  {
+  int oc = e_gt_char(old_cursor_x, old_cursor_y);
+  int oa = e_gt_col(old_cursor_x, old_cursor_y);
+  char obuf[2] = { (char)(oc > 127 ? '?' : oc), 0 };
   XSetForeground(WpeXInfo.display, WpeXInfo.gc,
-    WpeXInfo.colors[schirm[x + 1] % 16]);
+    WpeXInfo.colors[oa % 16]);
   XSetBackground(WpeXInfo.display, WpeXInfo.gc,
-    WpeXInfo.colors[schirm[x + 1] / 16]);
+    WpeXInfo.colors[oa / 16]);
   XDrawImageString(WpeXInfo.display, WpeXInfo.window, WpeXInfo.gc,
     WpeXInfo.font_width*old_cursor_x,
     WpeXInfo.font_height*(old_cursor_y+1) - WpeXInfo.font->max_bounds.descent,
-    schirm + x, 1);
+    obuf, 1);
 #ifdef NEWSTYLE
   e_print_xrect(old_cursor_x, old_cursor_y, x/2);
 #ifndef NOXCACHE
@@ -290,16 +292,19 @@ int fk_show_cursor()
 #endif
 #endif
  }
- x = 2 * cur_x + 2 * MAXSCOL * cur_y;
-
- XSetForeground(WpeXInfo.display, WpeXInfo.gc,
-   WpeXInfo.colors[schirm[x + 1] / 16]);
- XSetBackground(WpeXInfo.display, WpeXInfo.gc,
-   WpeXInfo.colors[schirm[x + 1] % 16]);
- XDrawImageString(WpeXInfo.display, WpeXInfo.window, WpeXInfo.gc,
-   WpeXInfo.font_width * cur_x,
-   WpeXInfo.font_height * (cur_y + 1) - WpeXInfo.font->max_bounds.descent,
-   schirm + x, 1);
+ {
+  int cc = e_gt_char(cur_x, cur_y);
+  int ca = e_gt_col(cur_x, cur_y);
+  char cbuf[2] = { (char)(cc > 127 ? '?' : cc), 0 };
+  XSetForeground(WpeXInfo.display, WpeXInfo.gc,
+    WpeXInfo.colors[ca / 16]);
+  XSetBackground(WpeXInfo.display, WpeXInfo.gc,
+    WpeXInfo.colors[ca % 16]);
+  XDrawImageString(WpeXInfo.display, WpeXInfo.window, WpeXInfo.gc,
+    WpeXInfo.font_width * cur_x,
+    WpeXInfo.font_height * (cur_y + 1) - WpeXInfo.font->max_bounds.descent,
+    cbuf, 1);
+ }
  old_cursor_x = cur_x;
  old_cursor_y = cur_y;
  return(cur_on);
@@ -314,8 +319,8 @@ int e_ini_size()
   FREE(schirm);
  if(altschirm)
   FREE(altschirm);
- schirm = MALLOC(2 * MAXSCOL * MAXSLNS);
- altschirm = MALLOC(2 * MAXSCOL * MAXSLNS);
+ schirm = MALLOC(sizeof(SCREENCELL) * MAXSCOL * MAXSLNS);
+ altschirm = MALLOC(sizeof(SCREENCELL) * MAXSCOL * MAXSLNS);
 #ifdef NEWSTYLE
  if (extbyte)
   FREE(extbyte);
@@ -381,58 +386,38 @@ int e_x_refresh()
    fk_cursor(0);
    for(i = 0; i < MAXSLNS; i++)
    for(j = 0; j < MAXSCOL; j++)
-   {  y = j + MAXSCOL*i;
-      x = 2*y;
-#ifdef NEWSTYLE
-      if(schirm[x] != altschirm[x] || schirm[x+1] != altschirm[x+1]
-		|| extbyte[y] != altextbyte[y])
-#else
-      if(schirm[x] != altschirm[x] || schirm[x+1] != altschirm[x+1])
-#endif
+   {
+      int sc = e_gt_char(j, i);
+      int sa = e_gt_col(j, i);
+      if(sc != altschirm[i*MAXSCOL+j].ch || sa != altschirm[i*MAXSCOL+j].attr)
       {
+       char xc = (sc > 127 || sc < 32) ? ' ' : (char)sc;
 #ifdef NOXCACHE
-	 XSetForeground(WpeXInfo.display, WpeXInfo.gc, WpeXInfo.colors[schirm[x+1] % 16]);
-	 XSetBackground(WpeXInfo.display, WpeXInfo.gc, WpeXInfo.colors[schirm[x+1] / 16]);
+	 XSetForeground(WpeXInfo.display, WpeXInfo.gc, WpeXInfo.colors[sa % 16]);
+	 XSetBackground(WpeXInfo.display, WpeXInfo.gc, WpeXInfo.colors[sa / 16]);
 	 XDrawImageString(WpeXInfo.display, WpeXInfo.window, WpeXInfo.gc, WpeXInfo.font_width*j,
-    		WpeXInfo.font_height*(i+1) - WpeXInfo.font->max_bounds.descent,
-							schirm + x, 1);
+    		WpeXInfo.font_height*(i+1) - WpeXInfo.font->max_bounds.descent, &xc, 1);
 #else
-	 if (   oldback != WpeXInfo.colors[schirm[x+1] / 16]  	/* a.r. */
-	     || oldfore != WpeXInfo.colors[schirm[x+1] % 16]
-	     || i != oldI
-	     || j > oldJ+1	/* is there a more elegant solution? */
-	     || stringcount >= STRBUFSIZE
-            )
+	 if (   oldback != WpeXInfo.colors[sa / 16]
+	     || oldfore != WpeXInfo.colors[sa % 16]
+	     || i != oldI || j > oldJ+1 || stringcount >= STRBUFSIZE)
 	   {
 	        XDrawImageString(WpeXInfo.display, WpeXInfo.window, WpeXInfo.gc,
 		    		 oldX, oldY, stringbuf, stringcount);
-	        oldback = WpeXInfo.colors[schirm[x+1] / 16];
-	        oldfore = WpeXInfo.colors[schirm[x+1] % 16];
-	 	XSetForeground(WpeXInfo.display, WpeXInfo.gc, oldfore );
-	 	XSetBackground(WpeXInfo.display, WpeXInfo.gc, oldback );
+	        oldback = WpeXInfo.colors[sa / 16];
+	        oldfore = WpeXInfo.colors[sa % 16];
+	 	XSetForeground(WpeXInfo.display, WpeXInfo.gc, oldfore);
+	 	XSetBackground(WpeXInfo.display, WpeXInfo.gc, oldback);
 		oldX = WpeXInfo.font_width*j;
     		oldY = WpeXInfo.font_height*(i+1) - WpeXInfo.font->max_bounds.descent;
 		oldI = i;
 		stringcount = 0;
-		stringbuf[stringcount++] = schirm[x];
+		stringbuf[stringcount++] = xc;
 	   }
 	 else
-		stringbuf[stringcount++] = schirm[x];
+		stringbuf[stringcount++] = xc;
 #endif
-#ifndef NEWSTYLE
-	 if(schirm[x] == 16)
-	 {  XFillRectangle(WpeXInfo.display, WpeXInfo.window, WpeXInfo.gc, WpeXInfo.font_width*j,
-    		WpeXInfo.font_height*(i), WpeXInfo.font_width,
-			(WpeXInfo.font_height + WpeXInfo.font->max_bounds.descent)/2);
-	 }
-	 else if(schirm[x] == 20)
-	 {  XFillRectangle(WpeXInfo.display, WpeXInfo.window, WpeXInfo.gc, WpeXInfo.font_width*j,
-    		(int)(WpeXInfo.font_height*(i+1./2)), WpeXInfo.font_width,
-			(WpeXInfo.font_height + WpeXInfo.font->max_bounds.descent)/2);
-	 }
-#endif
-	 altschirm[x] = schirm[x];
-	 altschirm[x+1] = schirm[x+1];
+	 altschirm[i*MAXSCOL+j] = schirm[i*MAXSCOL+j];
 #ifdef NEWSTYLE
 	 e_print_xrect(j, i, y);
 	 altextbyte[y] = extbyte[y];

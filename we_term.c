@@ -55,7 +55,7 @@ char *cur_rc, *cur_vs, *cur_nvs, *cur_vvs, cur_attr;
 char *att_so, *att_ul, *att_rv, *att_bl, *att_dm, *att_bo;
 char *ratt_no, *ratt_so, *ratt_ul, *ratt_rv, *ratt_bl, *ratt_dm, *ratt_bo;
 char *beg_scr, *swt_scr, *sav_cur, *res_cur; 
-extern char *altschirm;
+extern SCREENCELL *altschirm;
 extern char *att_no;
 char *col_fg, *col_bg, *spc_st, *spc_in, *spc_bg, *spc_nd;
 
@@ -96,6 +96,8 @@ char *tgoto();
 #define term_refresh() fflush(stdout)
 #endif
 #endif
+
+int WpeGpmMouseInit(void);
 
 int WpeDllInit(int *argc, char **argv)
 {
@@ -144,8 +146,8 @@ int WpeDllInit(int *argc, char **argv)
   e_s_u_clr = e_s_t_clr;
   e_n_u_clr = e_n_t_clr;
  }
- MCI = '+';
- MCA = '0';
+ MCI = 7;
+ MCA = 11;
  RD1 = '\01';
  RD2 = '\02';
  RD3 = '\03';
@@ -490,8 +492,8 @@ int e_t_initscr()
  }
 #endif
  e_begscr();
- schirm = MALLOC(2 * MAXSCOL * MAXSLNS);
- altschirm = MALLOC(2 * MAXSCOL * MAXSLNS);
+ schirm = MALLOC(sizeof(SCREENCELL) * MAXSCOL * MAXSLNS);
+ altschirm = MALLOC(sizeof(SCREENCELL) * MAXSCOL * MAXSLNS);
 #if !defined(NO_XWINDOWS) && defined(NEWSTYLE)
  extbyte = MALLOC(MAXSCOL * MAXSLNS);
 #endif
@@ -657,8 +659,8 @@ int e_t_refresh()
   for(j = 0; j < MAXSCOL; j++)
   {
    if (i == MAXSLNS-1 && j == MAXSCOL-1) break;
-   if (*(schirm + 2*MAXSCOL * i + 2 * j) != *(altschirm + 2*MAXSCOL * i + 2 * j) ||
-     *(schirm + 2*MAXSCOL * i + 2 * j + 1) != *(altschirm + 2*MAXSCOL * i + 2 * j + 1) )
+   if (schirm[i * MAXSCOL + j].ch != altschirm[i * MAXSCOL + j].ch ||
+     schirm[i * MAXSCOL + j].attr != altschirm[i * MAXSCOL + j].attr)
    {
     if (cur_x != j || cur_y != i)
      term_move(j, i);
@@ -674,6 +676,24 @@ int e_t_refresh()
 #ifdef NCURSES
     if (c < NSPCHR)
      addch(sp_chr[c]);
+    else if (c > 127)
+    {
+     /* Wide character: output via add_wch for proper positioning */
+     cchar_t cc;
+     wchar_t wc[2] = { (wchar_t)c, 0 };
+     int cw = wcwidth((wchar_t)c);
+     setcchar(&cc, wc, A_NORMAL, 0, NULL);
+     add_wch(&cc);
+     /* Skip placeholder cells for wide chars (emoji, CJK = 2 columns) */
+     if (cw > 1)
+     {
+      int k;
+      for (k = 1; k < cw && j+k < MAXSCOL; k++)
+       altschirm[(i) * MAXSCOL + (j+k)] = schirm[(i) * MAXSCOL + (j+k)];
+      j += cw - 1;
+      cur_x = j + 1;
+     }
+    }
     else
      addch(c);
 #else
@@ -682,8 +702,7 @@ int e_t_refresh()
     else
      fputc(c, stdout);
 #endif
-    *(altschirm + 2*MAXSCOL * i + 2 * j) = *(schirm + 2*MAXSCOL * i + 2 * j);
-    *(altschirm + 2*MAXSCOL * i + 2 * j + 1) = *(schirm + 2*MAXSCOL * i + 2 * j + 1);
+    altschirm[i * MAXSCOL + j] = schirm[i * MAXSCOL + j];
    }
   }
  fk_cursor(1);
@@ -748,11 +767,43 @@ int e_t_getch()
    case KEY_DOWN:  c = CDO; break;
    case KEY_LEFT:  c = CLE; break;
    case KEY_RIGHT:  c = CRI; break;
-   case KEY_SFIND:  c = EINFG; break;
-   case KEY_IC:  c = POS1; break;
-   case KEY_DC:  c = BUP; break;
-   case KEY_PPAGE:  c = ENDE; break;
+   case KEY_IC:  c = EINFG; break;
+   case KEY_DC:  c = ENTF; break;
+   case KEY_PPAGE:  c = BUP; break;
    case KEY_NPAGE:  c = BDO; break;
+   case KEY_HOME:  c = POS1; break;
+   case KEY_END:  c = ENDE; break;
+   case KEY_RESIZE:
+   {
+    int i, old_scol = MAXSCOL, old_slns = MAXSLNS;
+    /* ncurses already called resizeterm() and updated LINES/COLS */
+    MAXSCOL = COLS;
+    MAXSLNS = LINES;
+    if (MAXSCOL != old_scol || MAXSLNS != old_slns)
+    {
+     schirm = REALLOC(schirm, sizeof(SCREENCELL) * MAXSCOL * MAXSLNS);
+     altschirm = REALLOC(altschirm, sizeof(SCREENCELL) * MAXSCOL * MAXSLNS);
+     memset(altschirm, 0, sizeof(SCREENCELL) * MAXSCOL * MAXSLNS);
+#if !defined(NO_XWINDOWS) && defined(NEWSTYLE)
+     extbyte = REALLOC(extbyte, MAXSCOL * MAXSLNS);
+#endif
+     for (i = 0; i <= WpeEditor->mxedt; i++)
+     {
+      FENSTER *fw = WpeEditor->f[i];
+      if (fw->e.x >= old_scol - 1)
+       fw->e.x = MAXSCOL - 1;
+      if (fw->e.y >= old_slns - 2)
+       fw->e.y = MAXSLNS - 2;
+      if (fw->e.x >= MAXSCOL)
+       fw->e.x = MAXSCOL - 1;
+      if (fw->e.y >= MAXSLNS - 1)
+       fw->e.y = MAXSLNS - 2;
+     }
+     e_repaint_desk(WpeEditor->f[WpeEditor->mxedt]);
+    }
+    c = 0;
+    break;
+   }
    case KEY_BACKSPACE:  c = WPE_DC; break;
    case KEY_HELP:  c = HELP; break;
    case KEY_LL:  c = ENDE; break;
@@ -768,8 +819,6 @@ int e_t_getch()
    case KEY_F(26):  c = SF10; break;
    case KEY_PREVIOUS:  c = CUP+512; break;
    case KEY_NEXT:  c = CDO+512; break;
-   case KEY_HOME:  c = POS1+512; break;
-   case KEY_END:  c = ENDE+512; break;
    default:  c = 0; break;
   }
   bk = bioskey();
@@ -807,18 +856,17 @@ int e_t_getch()
     case KEY_DOWN:  c = BDO; break;
     case KEY_LEFT:  c = CCLE; break;
     case KEY_RIGHT:  c = CCRI; break;
-    case KEY_SFIND:  c = EINFG; break;
-    case KEY_IC:  c = CPS1; break;
-    case KEY_DC:  c = CBUP; break;
-    case KEY_PPAGE:  c = CEND; break;
+    case KEY_IC:  c = EINFG+512; break;
+    case KEY_DC:  c = ENTF+512; break;
+    case KEY_PPAGE:  c = CBUP; break;
     case KEY_NPAGE:  c = CBDO; break;
+    case KEY_HOME:  c = CPS1; break;
+    case KEY_END:  c = CEND; break;
     case KEY_BACKSPACE:  c = AltBS; break;
     case KEY_HELP:  c = AF1; break;
     case KEY_LL:  c = CEND; break;
     case KEY_PREVIOUS:  c = BUP+512; break;
     case KEY_NEXT:  c = BDO+512; break;
-    case KEY_HOME:  c = CPS1+512; break;
-    case KEY_END:  c = CEND+512; break;
     default:  c = 0; break;
    }
    bk = bioskey();

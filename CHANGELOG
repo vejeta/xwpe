@@ -36,6 +36,47 @@ Known Bugs
 
 Changes
 
+1.6.0 (Gold Standard: UTF-8, terminal resize, modern keyboard)
+* SCREENCELL buffer model: replaced the 1993 byte-based screen buffer
+  (1 byte = 1 cell) with a structured SCREENCELL type (int ch + int attr
+  per cell). Each cell now holds one complete character, including wide
+  characters (accented Latin, Cyrillic, CJK, emoji). Multi-byte UTF-8 is
+  decoded via mbrtowc() in the display loop and stored as a single value.
+  This is the first change to the screen buffer model since Fred Kruse's
+  original 1993 design, building on Dennis Payne's 12 years of
+  continuation work (X11 support, GPM mouse, autoconf, and numerous
+  bug fixes through 2006).
+* Terminal refresh rewritten: e_t_refresh() uses add_wch() for wide
+  characters and wcwidth() for characters that occupy 2 visual columns
+  (emoji, CJK). Borders and scrollbar use fixed screen positions via
+  move(j, i), ensuring correct alignment regardless of UTF-8 content.
+* Terminal resize support: handle ncurses KEY_RESIZE to detect terminal
+  size changes. Reallocate screen buffers, expand windows to fill new
+  size, and repaint. Works in tiling window managers, tmux, and any
+  terminal that supports resize.
+* Keyboard mapping fixed for modern PC keyboards: PageUp, PageDown,
+  Home, End, Insert, Delete now map correctly. The original mapping was
+  designed for VT100/Sun terminals from the 1990s.
+* Link against libncursesw (wide character ncurses) instead of libncurses.
+  Build with -I/usr/include/ncursesw, -D_XOPEN_SOURCE_EXTENDED,
+  -DNCURSES_WIDECHAR=1.
+* Scrollbar aesthetic: track uses ACS_S9 (scan line) and thumb uses
+  ACS_DIAMOND instead of ASCII '+' and '0'.
+* GPM mouse: check for /dev/gpmctl before calling Gpm_Open() to avoid
+  "gpm: not found" error when gpm daemon is not installed.
+* Full screen refresh via e_abs_refr() in e_schirm() prevents stale
+  content when switching between windows.
+* Test suite: 20 automated tests using pyte (VT100 terminal emulator)
+  and pytest. Tests cover border alignment, UTF-8 display, emoji/wide
+  chars, scrollbar during scroll, resize, and keyboard mapping.
+  (Juan Manuel Mendez Rey)
+* Compatibility note: xwpe 1.6.0 requires libncursesw (wide character
+  ncurses) instead of libncurses. On Debian/Ubuntu: libncursesw5-dev.
+  All major Linux distributions have shipped libncursesw as standard
+  since at least 2010. Terminals without UTF-8 support still work for
+  ASCII content; characters above 127 display as '?' instead of the
+  previous '@' escaping.
+
 1.5.31 (Mendez-era rescue release)
 * Project resumed under new upstream maintainer Juan Manuel Mendez Rey
   <juan.mendezr@proton.me>, with the explicit blessing of Dennis Payne.

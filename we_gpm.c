@@ -13,6 +13,12 @@ int WpeGpmMouseInit(void)
  Gpm_Connect c;
  int ret;
 
+ /* Check if gpm daemon is accessible before trying to connect.
+    Without this check, libgpm tries to launch /usr/sbin/gpm
+    which prints "not found" if gpm is not installed. */
+ if (access("/dev/gpmctl", F_OK) != 0 && access("/var/run/gpm.pid", F_OK) != 0)
+  return(-1);
+
  Gpm_GetServerVersion(NULL);
  gpm_zerobased = 1;
  c.eventMask = ~0;

@@ -6,6 +6,7 @@
 
 #include "messages.h"
 #include "edit.h"
+#include <wchar.h>
 
 #define MAXSVSTR 20
 
@@ -210,15 +211,12 @@ PIC *e_open_view(int xa, int ya, int xe, int ye, int col, int sw)
 #endif
  if (sw!=0)
  {
-#if defined(NEWSTYLE) && !defined(NO_XWINDOWS)
-  pic->p = MALLOC((pic->e.x - pic->a.x + 1) * 3 * (pic->e.y - pic->a.y + 1));
-#else
-  pic->p = MALLOC((pic->e.x - pic->a.x + 1) * 2 * (pic->e.y - pic->a.y + 1));
-#endif
+  pic->p = MALLOC((pic->e.x - pic->a.x + 1) * sizeof(SCREENCELL) * (pic->e.y - pic->a.y + 1));
   if (pic->p == NULL) {  FREE(pic);  return(NULL);  }
   for (j = pic->a.y; j <= pic->e.y; ++j)
-   for (i = 2*pic->a.x; i <= 2*pic->e.x+1; ++i)
-    *( pic->p + (j-pic->a.y)*2*(pic->e.x-pic->a.x+1) + (i-2*pic->a.x) ) = e_gt_byte(i, j);
+   for (i = pic->a.x; i <= pic->e.x; ++i)
+    memcpy(pic->p + ((j-pic->a.y)*(pic->e.x-pic->a.x+1) + (i-pic->a.x)) * sizeof(SCREENCELL),
+      &schirm[j * MAXSCOL + i], sizeof(SCREENCELL));
 #if defined(NEWSTYLE) && !defined(NO_XWINDOWS)
   e_get_pic_xrect(xa, ya, xe, ye, pic);
 #endif
@@ -260,8 +258,10 @@ int e_close_view(PIC *pic, int sw)
  if (sw != 0 && pic->p != NULL)
  {
   for (j = pic->a.y; j <= pic->e.y; ++j)
-   for (i = 2*pic->a.x; i <= 2*pic->e.x+1; ++i)
-    e_pt_byte(i, j, *(pic->p + (j-pic->a.y)*2*(pic->e.x-pic->a.x+1) + (i-2*pic->a.x)));
+   for (i = pic->a.x; i <= pic->e.x; ++i)
+    memcpy(&schirm[j * MAXSCOL + i],
+      pic->p + ((j-pic->a.y)*(pic->e.x-pic->a.x+1) + (i-pic->a.x)) * sizeof(SCREENCELL),
+      sizeof(SCREENCELL));
 #if defined(NEWSTYLE) && !defined(NO_XWINDOWS)
   e_put_pic_xrect(pic);
 #endif
@@ -418,6 +418,7 @@ int e_schirm(FENSTER *f, int sw)
 {
  int j;
 
+ e_abs_refr();
  if (f->dtmd == DTMD_FILEMANAGER)
   return(WpeDrawFileManager(f));
  else if (f->dtmd == DTMD_DATA)
@@ -1031,17 +1032,23 @@ void e_pr_line(int y, FENSTER *f)
  int fsw = 0;
 #endif
 
- for (i = j = 0; j < NUM_COLS_OFF_SCREEN_LEFT; j++, i++)
+ for (i = j = 0; j < NUM_COLS_OFF_SCREEN_LEFT && i < b->bf[y].len; j++)
  {
-  if (*(b->bf[y].s + i) == WPE_TAB)
-   j += (f->ed->tabn - j % f->ed->tabn - 1);
-  else if(((unsigned char) *(b->bf[y].s + i)) > 126)
-  {
-   j++;
-   if (((unsigned char) *(b->bf[y].s + i)) < 128 + ' ')
-    j++;
+  unsigned char ch = (unsigned char) *(b->bf[y].s + i);
+  if (ch == WPE_TAB)
+  { j += (f->ed->tabn - j % f->ed->tabn - 1); i++; }
+  else if (ch < ' ')
+  { j++; i++; }
+  else if (ch >= 0xC0 && ch < 0xFE)
+  { /* UTF-8 lead byte: decode and account for wide chars */
+   wchar_t wc = 0;
+   mbstate_t mbs = {0};
+   int nb = mbrtowc(&wc, b->bf[y].s + i, b->bf[y].len - i, &mbs);
+   if (nb > 1) { int cw = wcwidth(wc); if (cw > 1) j += cw - 1; i += nb; }
+   else i++;
   }
-  else if (*(b->bf[y].s + i) < ' ') j++;
+  else
+   i++;
  }
  if (j > NUM_COLS_OFF_SCREEN_LEFT) i--;
 #ifdef DEBUGGER
@@ -1140,19 +1147,6 @@ void e_pr_line(int y, FENSTER *f)
      j < NUM_COLS_ON_SCREEN + NUM_COLS_OFF_SCREEN_LEFT - 2; k--, j++)
     e_pr_char(f->a.x - NUM_COLS_OFF_SCREEN_LEFT + j + 1, y - NUM_LINES_OFF_SCREEN_TOP + f->a.y + 1,
       ' ', frb);
-  else if (!WpeIsXwin() && ((unsigned char)*(b->bf[y].s + i)) > 126)
-  {
-   e_pr_char(f->a.x - NUM_COLS_OFF_SCREEN_LEFT + j +1, y - NUM_LINES_OFF_SCREEN_TOP + f->a.y + 1,
-     '@', frb);
-   if (++j >= COL_NUM_ON_SCREEN_RIGHT) return;
-   if (((unsigned char)*(b->bf[y].s + i)) < 128 + ' ' &&
-     j < COL_NUM_ON_SCREEN_RIGHT)
-   {
-    e_pr_char(f->a.x - NUM_COLS_OFF_SCREEN_LEFT + j +1, y - NUM_LINES_OFF_SCREEN_TOP + f->a.y + 1,
-      '^', frb);
-    if (++j >= COL_NUM_ON_SCREEN_RIGHT) return;
-   }
-  }
   else if (*(b->bf[y].s + i) < ' ')
   {
    e_pr_char(f->a.x - NUM_COLS_OFF_SCREEN_LEFT + j +1, y - NUM_LINES_OFF_SCREEN_TOP + f->a.y + 1,
@@ -1161,22 +1155,41 @@ void e_pr_line(int y, FENSTER *f)
   }
   if (*(b->bf[y].s + i) == WPE_TAB)
    e_pr_char(f->a.x - NUM_COLS_OFF_SCREEN_LEFT + j + 1, y - NUM_LINES_OFF_SCREEN_TOP + f->a.y + 1,                  ' ', frb);
-  else if (!WpeIsXwin() && ((unsigned char)*(b->bf[y].s + i)) > 126 &&
-    j < COL_NUM_ON_SCREEN_RIGHT)
-  {
-   if (((unsigned char)*(b->bf[y].s + i)) < 128 + ' ')
-    e_pr_char(f->a.x - NUM_COLS_OFF_SCREEN_LEFT + j + 1, y - NUM_LINES_OFF_SCREEN_TOP + f->a.y + 1,
-      ((unsigned char) *(b->bf[y].s + i)) + 'A' - 129, frb);
-   else
-    e_pr_char(f->a.x - NUM_COLS_OFF_SCREEN_LEFT + j + 1, y - NUM_LINES_OFF_SCREEN_TOP + f->a.y + 1,
-      ((unsigned char) *(b->bf[y].s + i)) - 128, frb);
-  }
   else if (*(b->bf[y].s + i) < ' ' && j < COL_NUM_ON_SCREEN_RIGHT)
    e_pr_char(f->a.x - NUM_COLS_OFF_SCREEN_LEFT + j + 1, y - NUM_LINES_OFF_SCREEN_TOP + f->a.y + 1,
      *(b->bf[y].s + i) + 'A' - 1, frb);
   else
-   e_pr_char(f->a.x - NUM_COLS_OFF_SCREEN_LEFT + j + 1, y - NUM_LINES_OFF_SCREEN_TOP + f->a.y + 1,
-     *(b->bf[y].s + i), frb);
+  {
+   unsigned char uc = (unsigned char) *(b->bf[y].s + i);
+   if (uc >= 0xC0 && uc < 0xFE)
+   {
+    /* UTF-8 lead byte: decode full character */
+    wchar_t wc = 0;
+    mbstate_t mbs = {0};
+    int nb = mbrtowc(&wc, b->bf[y].s + i, b->bf[y].len - i, &mbs);
+    if (nb > 1)
+    {
+     int cw = wcwidth(wc);
+     if (cw < 1) cw = 1;
+     e_pr_char(f->a.x - NUM_COLS_OFF_SCREEN_LEFT + j + 1,
+       y - NUM_LINES_OFF_SCREEN_TOP + f->a.y + 1, (int)wc, frb);
+     /* Wide chars (emoji, CJK) take 2 columns: fill second cell with space */
+     if (cw > 1 && j + 1 < COL_NUM_ON_SCREEN_RIGHT)
+     {
+      e_pr_char(f->a.x - NUM_COLS_OFF_SCREEN_LEFT + j + 2,
+        y - NUM_LINES_OFF_SCREEN_TOP + f->a.y + 1, ' ', frb);
+      j += cw - 1;  /* extra column advance for wide char */
+     }
+     i += nb - 1;  /* skip continuation bytes (loop does i++) */
+    }
+    else
+     e_pr_char(f->a.x - NUM_COLS_OFF_SCREEN_LEFT + j + 1,
+       y - NUM_LINES_OFF_SCREEN_TOP + f->a.y + 1, '?', frb);
+   }
+   else
+    e_pr_char(f->a.x - NUM_COLS_OFF_SCREEN_LEFT + j + 1,
+      y - NUM_LINES_OFF_SCREEN_TOP + f->a.y + 1, *(b->bf[y].s + i), frb);
+  }
  }
 
  if ((i == b->bf[y].len) && (f->ed->edopt & ED_SHOW_ENDMARKS) &&

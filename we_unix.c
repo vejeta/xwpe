@@ -36,7 +36,7 @@ int WpeTermInit(int *argc, char **argv);
 #endif
 
 
-char *schirm = NULL;
+SCREENCELL *schirm = NULL;
 char e_we_sw = 0;
 
 void WpeSignalUnknown(int sig);
@@ -95,7 +95,7 @@ void *libxwpe;
 #ifdef NEWSTYLE
 char *extbyte = NULL, *altextbyte = NULL;
 #endif
-char *altschirm = NULL;
+SCREENCELL *altschirm = NULL;
 PIC *e_X_l_pic = NULL;
 
 void WpeNullFunction(void)
@@ -115,6 +115,7 @@ int e_ini_unix(int *argc, char **argv)
  int (*initfunc)(int *argc, char **argv);
 
  setlocale(LC_ALL, "");
+ tcgetattr(0, &otermio);
  u_fb = NULL;
  x_fb = NULL;
  debug = 0;
@@ -230,37 +231,21 @@ int e_ini_unix(int *argc, char **argv)
 
 int e_abs_refr()
 {
- extern char *altschirm;
- int i;
-
- for(i = 0; i < 2 * MAXSCOL * MAXSLNS; i++)
-  altschirm[i] = 0;
+ memset(altschirm, 0, sizeof(SCREENCELL) * MAXSCOL * MAXSLNS);
  return(0);
 }
 
 void e_refresh_area(int x, int y, int width, int height)
 {
- extern char *altschirm;
- char *curloc;
  int i,j;
 
  if (width + x > MAXSCOL)
- {
   width = MAXSCOL - x;
- }
  if (height + y > MAXSLNS)
- {
   height = MAXSLNS - y;
- }
- curloc = altschirm + ((x + (y * MAXSCOL)) * 2);
- for (j = 0; j < height; j++, curloc += MAXSCOL * 2)
- {
-  for (i = 0; i < width; i ++)
-  {
-   curloc[i * 2] = 0;
-   curloc[i * 2 + 1] = 0;
-  }
- }
+ for (j = 0; j < height; j++)
+  for (i = 0; i < width; i++)
+   memset(&altschirm[(y+j) * MAXSCOL + (x+i)], 0, sizeof(SCREENCELL));
 }
 
 int e_tast_sim(int c)

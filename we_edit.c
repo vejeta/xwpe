@@ -1181,12 +1181,6 @@ int e_chr_sp(int x, BUFFER *b, FENSTER *f)
   if (*(b->bf[b->b.y].s + i) == WPE_TAB)
    j += (f->ed->tabn - ((j + i) % f->ed->tabn) - 1);
 #ifdef UNIX
-  else if (!WpeIsXwin() && ((unsigned char) *(b->bf[b->b.y].s + i)) > 126)
-  {
-   j++;
-   if (((unsigned char) *(b->bf[b->b.y].s + i)) < 128 + ' ')
-    j++;
-  }
   else if (*(b->bf[b->b.y].s + i) < ' ')
    j++;
   if (f->dtmd == DTMD_HELP)
@@ -1512,11 +1506,6 @@ void e_cursor(FENSTER *f, int sw)
  {
   if (*(b->bf[b->b.y].s + i) == WPE_TAB)
    j += (f->ed->tabn - ((j + i) % f->ed->tabn) - 1);
-  else if (!WpeIsXwin() && ((unsigned char) *(b->bf[b->b.y].s + i)) > 126)
-  {
-   j++;
-   if (((unsigned char) *(b->bf[b->b.y].s + i)) < 128 + ' ') j++;
-  }
   else if (*(b->bf[b->b.y].s + i) < ' ') j++;
   if (f->dtmd == DTMD_HELP)
   {

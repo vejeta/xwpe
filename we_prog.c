@@ -592,12 +592,6 @@ int e_show_error(int n, FENSTER *f)
    if (*(b->bf[b->b.y].s + i) == WPE_TAB)
     j += (f->ed->tabn - ((j + i) % f->ed->tabn) - 1);
 #ifdef UNIX
-   else if (((unsigned char) *(b->bf[b->b.y].s + i)) > 126)
-   {
-    j++;
-    if (((unsigned char) *(b->bf[b->b.y].s + i)) < 128 + ' ')
-     j++;
-   }
    else if (*(b->bf[b->b.y].s + i) < ' ')
     j++;
 #endif

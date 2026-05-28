@@ -24,3 +24,13 @@ xwpe
 
 # Debug symbols
 *.dSYM/
+
+# Test artifacts
+tests/.venv/
+tests/__pycache__/
+tests/.pytest_cache/
+tests/fixtures/
+.pytest_cache/
+
+# Backup files
+*.ESV

@@ -31,31 +31,40 @@ extern int cur_on;
 #endif
 #define WpeExit(n) e_exit((n))
 
-extern char *cur_rc, *cur_vs, *cur_nvs, *cur_vvs, *schirm;
+extern char *cur_rc, *cur_vs, *cur_nvs, *cur_vvs;
 extern char *att_no, *att_so, *att_ul, *att_rv, *att_bl, *att_dm, *att_bo;
 extern int cur_x, cur_y;
 extern char *user_shell;
 
 extern char *ctree[5];
 
-#ifdef NEWSTYLE
-#define e_pr_char(x, y, c, frb)   \
-(  *(schirm + 2*MAXSCOL*(y) + 2*(x)) = (c),  \
-   *(schirm + 2*MAXSCOL*(y) + 2*(x) + 1) = (frb), \
-   *(extbyte + MAXSCOL*(y) + (x)) = 0  )
-#else
-#define e_pr_char(x, y, c, frb)   \
-(  *(schirm + 2*MAXSCOL*(y) + 2*(x)) = (c),  \
-   *(schirm + 2*MAXSCOL*(y) + 2*(x) + 1) = (frb)  )
-#endif
-#define e_pt_col(x, y, c)  ( *(schirm + 2*MAXSCOL*(y) + 2*(x) + 1) = (c) )
-#define e_gt_char(x, y)  (*(schirm + 2*MAXSCOL*(y) + 2*(x)))
+/*
+ * Screen buffer: cchar_t based (Gold Standard UTF-8 support).
+ * Each cell stores one wide character + attributes.
+ * 1 cell = 1 visual column on screen.
+ */
+#include <wchar.h>
 
-#define e_gt_col(x, y)  (*(schirm + 2*MAXSCOL*(y) + 2*(x)+1))
+typedef struct {
+ int ch;    /* character (wchar_t or special char code) */
+ int attr;  /* color/attribute byte (xwpe format) */
+} SCREENCELL;
 
-#define e_gt_byte(x, y)  (*(schirm + 2*MAXSCOL*(y) + (x)))
+extern SCREENCELL *schirm;
+extern SCREENCELL *altschirm;
 
-#define e_pt_byte(x, y, c)  ( *(schirm + 2*MAXSCOL*(y) + (x)) = (c) )
+#define e_pr_char(x, y, c, frb)  \
+ ( schirm[(y) * MAXSCOL + (x)].ch = (c), \
+   schirm[(y) * MAXSCOL + (x)].attr = (frb) )
+
+#define e_gt_char(x, y)  (schirm[(y) * MAXSCOL + (x)].ch)
+#define e_gt_col(x, y)   (schirm[(y) * MAXSCOL + (x)].attr)
+#define e_pt_col(x, y, c) (schirm[(y) * MAXSCOL + (x)].attr = (c))
+
+/* Byte access for save/restore (e_open_view/e_close_view) */
+/* These now access the raw SCREENCELL array as bytes */
+#define e_gt_byte(x, y)  (((char*)&schirm[(y) * MAXSCOL])[x])
+#define e_pt_byte(x, y, c) (((char*)&schirm[(y) * MAXSCOL])[x] = (c))
 
 /*  Pointer to functions for function calls  */
 

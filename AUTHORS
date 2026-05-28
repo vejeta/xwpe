@@ -57,3 +57,9 @@ Juan Manuel Mendez Rey <juan.mendezr@proton.me>
   Fix for terminal not being reset on clean exit (we_unix.c).
   Fix for crash in colour dialog when dragging mouse off the table (we_opt.c,
   Debian #228820 -- a 22-year-old upstream bug finally closed).
+  SCREENCELL buffer model replacing the 1993 byte-based screen buffer,
+  enabling native UTF-8 display with correct border alignment (v1.6.0).
+  Terminal resize support via KEY_RESIZE handler.
+  Keyboard mapping fix for modern PC keyboards (PageUp/Home/End/Delete).
+  GPM check to avoid "not found" error when gpm is not installed.
+  Automated test suite (20 tests, pyte + pytest).

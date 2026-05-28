@@ -1,23 +1,22 @@
-# Generated automatically from Makefile.in by configure.
 #C-Compiler (gcc if exist):
 CC=		gcc
-CFLAGS=		-g -O2  -I/usr/X11R6/include
-#CFLAGS=		-g -O2 @EXTRA_CFLAGS@  -I/usr/X11R6/include
+CFLAGS=		-g -O2 -DNCURSES -std=gnu17 -D_XOPEN_SOURCE_EXTENDED -DNCURSES_WIDECHAR=1 -I/usr/include/ncursesw -Wno-incompatible-pointer-types -Wno-error=implicit-function-declaration -Wno-error=int-conversion -Wno-error=old-style-declaration  -I/usr/include
+#CFLAGS=		-g -O2 -DNCURSES -std=gnu17 -D_XOPEN_SOURCE_EXTENDED -DNCURSES_WIDECHAR=1 -I/usr/include/ncursesw -Wno-incompatible-pointer-types -Wno-error=implicit-function-declaration -Wno-error=int-conversion -Wno-error=old-style-declaration @EXTRA_CFLAGS@  -I/usr/include
 
 #Source Directory:
 srcdir=		.
 
 #Destination Directory
-prefix=/usr/local
+prefix=/usr
 exec_prefix=${prefix}
 DESTDIR=${exec_prefix}/bin
 LIBDIR=${exec_prefix}/lib
 XWPELIBDIR=	$(LIBDIR)/xwpe
-MANDIR=${prefix}/man
+MANDIR=/usr/share/man
 
-LIBS=-lz -lgpm  -lncurses
-XLIBS= -L/usr/X11R6/lib  -lSM -lICE  -lX11
-DEFS= -DCC_HAS_PROTOS=1 -DHAVE_LIBGPM=1 -DHAVE_LIBZ=1 -DHAVE_MKDTEMP=1 -DRANDLIB=1 -DPRNTCMD=\"lpr\" -DMAN_S_OPT=1  -DLIBRARY_DIR=\"$(XWPELIBDIR)\" -DSELECTION
+LIBS=-lz -lgpm -lncursesw -lncurses
+XLIBS= -L/usr/lib/x86_64-linux-gnu  -lSM -lICE  -lX11
+DEFS=-DPACKAGE_NAME=\"\" -DPACKAGE_TARNAME=\"\" -DPACKAGE_VERSION=\"\" -DPACKAGE_STRING=\"\" -DPACKAGE_BUGREPORT=\"\" -DCC_HAS_PROTOS=1 -DHAVE_LIBGPM=1 -DHAVE_LIBZ=1 -DHAVE_MKDTEMP=1 -DRANDLIB=1 -DPRNTCMD=\"lpr\" -DMAN_S_OPT=1  -DLIBRARY_DIR=\"$(XWPELIBDIR)\" -DSELECTION
 INSTALL=	cp
 LN_S=	ln -s
 

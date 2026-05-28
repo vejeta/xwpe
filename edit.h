@@ -9,7 +9,7 @@
                      Header file for FK-editor
 */
 
-#define VERSION "1.5.31"
+#define VERSION "1.6.0"
 
 #include "Xwpe.h"
 #include "WeString.h"
