@@ -53,7 +53,6 @@ Current upstream maintainer
 ---------------------------
 Juan Manuel Mendez Rey <juan.mendezr@proton.me>
   Took over upstream maintenance in 2026 with Dennis Payne's blessing.
-  Has been carrying Debian xwpe patches for ~22 years.
   Fix for terminal not being reset on clean exit (we_unix.c).
   Fix for crash in colour dialog when dragging mouse off the table (we_opt.c,
   Debian #228820 -- a 22-year-old upstream bug finally closed).
