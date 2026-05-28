@@ -2,5 +2,187 @@
 @chapter Tutorials
 
 @cindex tutorials
+@cindex walkthrough
+@cindex hello world
 
-This chapter is under construction.
+This chapter provides step-by-step walkthroughs of common tasks.
+
+@strong{Note}: some workflows are affected by known bugs in v1.6.1.
+The compile cycle (F9) may crash when parsing compiler error messages.
+These tutorials will be updated once the bugs are fixed.  The steps
+described are architecturally correct and represent how xwpe is
+designed to work.
+
+@section Tutorial 1: Hello World in C
+
+@subsection Goal
+Create, compile, and run a simple C program entirely within xwpe.
+
+@subsection Steps
+
+@enumerate
+@item
+Start xwpe in programming mode:
+@example
+wpe
+@end example
+
+@item
+Create a new file: @kbd{Alt-F N}.  A new buffer named ``Noname'' opens.
+
+@item
+Type the program:
+@example
+#include <stdio.h>
+
+int main() @{
+    printf("Hello, world!\n");
+    return 0;
+@}
+@end example
+
+@item
+Save the file: @kbd{Alt-F A} (Save As), type @code{hello.c}, press
+@key{Return}.
+
+@item
+Compile: press @key{F9} (Make).  xwpe invokes @code{gcc -c -o hello.o
+hello.c} and then links the executable.  If there are errors, they
+appear in the Message Window; press @kbd{Alt-R N} to jump to each
+error.
+
+@item
+Run: press @kbd{Ctrl-F9} (Run).  The program executes and
+``Hello, world!'' appears in the output.
+
+@item
+Quit: press @kbd{Ctrl-Q}.
+@end enumerate
+
+@section Tutorial 2: Multi-file project
+
+@subsection Goal
+Create a project with two source files and a shared header.
+
+@subsection Steps
+
+@enumerate
+@item
+Create three files:
+
+@file{main.c}:
+@example
+#include <stdio.h>
+#include "utils.h"
+
+int main() @{
+    printf("Sum: %d\n", add(3, 4));
+    return 0;
+@}
+@end example
+
+@file{utils.h}:
+@example
+int add(int a, int b);
+@end example
+
+@file{utils.c}:
+@example
+#include "utils.h"
+
+int add(int a, int b) @{
+    return a + b;
+@}
+@end example
+
+@item
+Open a project: @kbd{Alt-P P}, type @code{myproject}, press
+@key{Return}.
+
+@item
+Configure the project in the options dialog:
+@itemize @bullet
+@item Compiler: @code{/usr/bin/gcc}
+@item Compiler Options: @code{-Wall -g}
+@item Executable Name: @code{myprogram}
+@end itemize
+
+@item
+Add files to the project: @kbd{Alt-P A}, add @code{main.c} and
+@code{utils.c}.
+
+@item
+Build: press @key{F9}.  xwpe compiles both files and links them
+into @code{myprogram}.
+
+@item
+Run: press @kbd{Ctrl-F9}.  Output: @code{Sum: 7}.
+@end enumerate
+
+@section Tutorial 3: Debugging a segfault
+
+@subsection Goal
+Use the integrated debugger to find and fix a null pointer dereference.
+
+@subsection Steps
+
+@enumerate
+@item
+Create @file{buggy.c}:
+@example
+#include <stdio.h>
+
+int factorial(int n) @{
+    if (n <= 1) return 1;
+    return n * factorial(n - 1);
+@}
+
+int main() @{
+    int x = 5;
+    int result = factorial(x);
+    printf("factorial(%d) = %d\n", x, result);
+
+    int *ptr = NULL;
+    *ptr = 42;  /* deliberate crash */
+
+    return 0;
+@}
+@end example
+
+@item
+Compile with debug symbols: set Compiler Options to @code{-g -O0},
+then press @key{F9}.
+
+@item
+Start the debugger: press @kbd{Ctrl-F10}.
+
+@item
+Set a breakpoint at @code{int x = 5;}: move the cursor there and
+press @kbd{Ctrl-F8}.
+
+@item
+Continue: press @kbd{Ctrl-F10}.  The program stops at the breakpoint.
+
+@item
+Add a watch: press @kbd{Ctrl-F7}, type @code{x}, press @key{Return}.
+The Watch Window shows the value of @code{x}.
+
+@item
+Step through: press @key{F8} repeatedly.  Watch @code{x} and
+@code{result} change as the program executes.
+
+@item
+When the program reaches @code{*ptr = 42;}, it will crash with
+SIGSEGV.  gdb catches the signal and xwpe shows the offending line.
+
+@item
+View the stack: press @kbd{Ctrl-F6} to see that the crash occurred
+in @code{main()} at the null pointer dereference.
+
+@item
+Fix the bug: remove or comment out the @code{*ptr = 42;} line.
+Recompile with @key{F9} and run with @kbd{Ctrl-F9}.
+
+@item
+Quit the debugger: press @kbd{Ctrl-F2}.
+@end enumerate

@@ -3,6 +3,248 @@
 
 @cindex debugging
 @cindex gdb
+@cindex sdb
+@cindex dbx
 @cindex breakpoints
+@cindex watch variables
+@cindex call stack
 
-This chapter is under construction.
+xwpe integrates with external debuggers to provide a source-level
+debugging environment.  You can set breakpoints, inspect variables,
+step through code, and view the call stack --- all from within the
+editor.
+
+This chapter was verified against gdb 17.2 on 2026-05-28.
+
+@section Debugger backends
+
+@cindex debugger selection
+
+xwpe supports three debugger backends, selectable via
+@samp{Options @result{} Debugger} (@kbd{Alt-O D}):
+
+@table @strong
+@item gdb (GNU Debugger)
+The default and recommended backend.  Supports all debugging features.
+xwpe detects gdb by matching the @code{(gdb)} prompt in the debugger's
+output (see @code{we_debug.c}).
+
+@item sdb (Symbolic Debugger)
+Legacy UNIX debugger.  Not available on modern Linux systems.
+
+@item dbx
+Berkeley UNIX debugger.  Available on some BSD and commercial UNIX
+systems.
+@end table
+
+On modern Linux, only gdb is relevant.  The other backends exist for
+historical compatibility.
+
+@section Compiling for debugging
+
+Before debugging, compile with debug symbols:
+
+@example
+# In the project file or compiler options:
+CMPFLAGS = -g -O0
+@end example
+
+The @code{-g} flag includes debug information.  @code{-O0} disables
+optimisation, which ensures that variables and control flow match the
+source code.
+
+@section Starting the debugger
+
+@table @kbd
+@item Ctrl-F10 / Ctrl-G R
+Start the debugger (or continue if already running).  xwpe launches
+gdb as a child process, loads the executable, and waits for commands.
+
+@item Ctrl-F2 / Ctrl-G Q
+Quit the debugger.
+@end table
+
+When the debugger stops (at a breakpoint, after a step, or on a
+signal), xwpe marks the current line in the source code and opens
+the file if it is not already open.
+
+@section Breakpoints
+
+@cindex breakpoints
+@cindex Ctrl-F8
+@cindex toggle breakpoint
+
+@table @kbd
+@item Ctrl-F8 / Ctrl-G B
+Toggle a breakpoint at the current line.  The line is highlighted
+to indicate the breakpoint.
+
+@item Ctrl-G M
+Remove all breakpoints.
+@end table
+
+Breakpoints persist across debug sessions within the same xwpe
+session.  If a project file is open, breakpoints are saved and
+restored with the project.
+
+@section Stepping through code
+
+@cindex stepping
+@cindex trace
+@cindex step over
+@cindex F7
+@cindex F8
+
+@table @kbd
+@item F7 / Ctrl-G S (Trace)
+Execute the next source line.  If the line contains a function call,
+step @emph{into} the function.
+
+@item F8 / Ctrl-G N (Step)
+Execute the next source line.  If the line contains a function call,
+step @emph{over} it (execute the entire function and stop at the next
+line in the current function).
+
+@item Ctrl-G G (Goto cursor)
+Execute until the line at the cursor position is reached.
+
+@item Ctrl-G F (Finish function)
+Execute until the current function returns.
+@end table
+
+@section Watch variables
+
+@cindex watch window
+@cindex Ctrl-F7
+@cindex variable inspection
+
+The Watch Window displays the values of selected variables.  Values
+are updated each time the debugger stops.
+
+@table @kbd
+@item Ctrl-F7 / Ctrl-G W
+Add a variable to the watch list.  A dialog prompts for the variable
+name or expression.
+
+@item Ctrl-G E
+Edit a watched variable expression.
+
+@item Ctrl-G D
+Delete a watched variable.
+
+@item Alt-D A
+Remove all watched variables.
+@end table
+
+Inside the Watch Window:
+@itemize @bullet
+@item Use cursor keys to navigate between variables.
+@item Press @key{Return} to edit the selected variable.
+@item Press @key{Insert} to add a new variable at the current position.
+@item Press @key{Delete} to remove the selected variable.
+@end itemize
+
+If a variable is not in scope (e.g.@: a local variable in a function
+that has not been called), xwpe displays a warning.
+
+@section Call stack
+
+@cindex stack window
+@cindex Ctrl-F6
+@cindex backtrace
+
+@table @kbd
+@item Ctrl-F6 / Ctrl-G K
+Open the Stack Window, showing the call chain from @code{main()} to
+the current function.
+@end table
+
+The Stack Window is read-only.  Use cursor keys to navigate and
+@key{Return} to jump to a frame in the source code.
+
+If a signal is caught inside a system function (e.g.@: @code{read()}),
+the stack shows the first visible user function instead.
+
+@section Displaying output
+
+@table @kbd
+@item Ctrl-G O
+Display the program's output window.  This shows the text output of
+the debugged program.  (Not available in X11 mode --- use a separate
+terminal.)
+@end table
+
+@section Debugger mode
+
+@samp{Options @result{} Debugger} also offers a choice between:
+
+@table @strong
+@item Full-screen mode
+The debugger uses the full terminal; xwpe and the debugger share
+the screen.
+
+@item Normal mode
+The debugger runs in a separate terminal or window.
+@end table
+
+On modern systems, full-screen mode is the typical choice.
+
+@section Example debugging session
+
+This example assumes a C program compiled with @code{-g}:
+
+@enumerate
+@item
+Open the source file: @command{wpe debug_test.c}
+
+@item
+Set a breakpoint on @code{main()}: move the cursor to the
+@code{int x = 5;} line and press @kbd{Ctrl-F8}.
+
+@item
+Start the debugger: press @kbd{Ctrl-F10}.  gdb launches and stops
+at the breakpoint.
+
+@item
+Inspect a variable: press @kbd{Ctrl-F7}, type @code{x}, press
+@key{Return}.  The Watch Window shows @code{x = 5} (or an
+uninitialised value if the line has not executed yet).
+
+@item
+Step to the next line: press @key{F8}.  The cursor advances.
+
+@item
+Step into a function: press @key{F7} on a line with a function call.
+The cursor moves into the called function.
+
+@item
+View the call stack: press @kbd{Ctrl-F6}.  The Stack Window shows
+the chain of function calls.
+
+@item
+Continue execution: press @kbd{Ctrl-F10}.  The program runs until
+the next breakpoint or until it exits.
+
+@item
+Quit the debugger: press @kbd{Ctrl-F2}.
+@end enumerate
+
+@section Known issues
+
+@itemize @bullet
+@item
+Debugging leaks memory.  The exact source of the leak is unknown and
+has been present since the Payne era.
+
+@item
+The sdb and dbx backends are untested on modern systems and may not
+work.
+
+@item
+The debugging environment requires the programming-mode binary
+(@command{wpe} or @command{xwpe}), not the editor-only binary
+(@command{we} or @command{xwe}).
+@end itemize
+
+@noindent
+Tested on 2026-05-28 with xwpe @value{VERSION} and gdb 17.2.

@@ -4,5 +4,189 @@
 @cindex compiling
 @cindex F9
 @cindex compiler message format
+@cindex gcc
+@cindex make
 
-This chapter is under construction.
+xwpe integrates with external compilers through a compile-edit-debug
+cycle.  The compiler is configured per language (by file extension) and
+xwpe parses compiler output to jump to errors in the source code.
+
+This chapter was tested on 2026-05-28 with xwpe 1.6.1 against GCC 15.2,
+G++ 15.2, GFortran 15.2, Free Pascal 3.2.2, OpenJDK javac 25.0.3,
+Perl 5.40.1, and Python 3.13.12.
+
+@section The build cycle
+
+@cindex build cycle
+@cindex Alt-F9
+@cindex Ctrl-F9
+
+The build cycle uses three commands, each building on the previous:
+
+@table @kbd
+@item Alt-F9 (Compile)
+Compile the current file only.  xwpe invokes the configured compiler
+with @code{-c -o @var{file}.o @var{file}.c} (or equivalent for other
+languages).  Only files modified since the last compilation are
+recompiled.
+
+@item F9 (Make)
+Recompile all modified files and link the executable.  This is the
+most common command.
+
+@item Ctrl-F9 (Run)
+Build the executable and then run it.  Program arguments can be set
+via @samp{Run @result{} Arguments} (@kbd{Alt-R A}).
+@end table
+
+After compilation, errors appear in the Message Window.  Use
+@kbd{Alt-R N} (Next Error) and @kbd{Alt-R P} (Previous Error) to
+navigate between errors.  The cursor jumps to the error location in
+the source code.
+
+@section Configuring the compiler
+
+@cindex compiler configuration
+@cindex Options menu
+
+The compiler is configured via @samp{Options @result{} Compiler}
+(@kbd{Alt-O C}).  Each language is identified by its file extension
+(e.g.@: @file{.c} for C, @file{.cpp} for C++).
+
+Settings per language:
+@itemize @bullet
+@item @strong{Compiler}: path to the compiler (e.g.@: @code{/usr/bin/gcc}).
+@item @strong{Compiler Options}: flags passed to the compiler
+(e.g.@: @code{-Wall -g}).
+@item @strong{Loader Options}: flags passed to the linker
+(e.g.@: @code{-lm}).
+@item @strong{Executable Name}: name of the output binary
+(default: @code{a.out}).
+@item @strong{Compiler Style}: @code{GNU} (default) or @code{other}
+(custom message-string format).
+@end itemize
+
+@section Language support
+
+@cindex language support
+
+xwpe selects the compiler automatically based on the file extension.
+The following table summarises tested language support.
+
+@subsection First-class support (GNU error format)
+
+@multitable @columnfractions .12 .15 .15 .20 .38
+@headitem Language @tab Compiler @tab Extension @tab Error format @tab Notes
+@item C @tab gcc @tab .c @tab @code{file:line:col: error:} @tab
+  Default configuration.  Tested with GCC 15.2.0.
+@item C++ @tab g++ @tab .cpp @tab @code{file:line:col: error:} @tab
+  Same error format as gcc.
+@item Fortran @tab gfortran @tab .f90 @tab @code{file:line:col:} @tab
+  GNU-compatible format.  Tested with GFortran 15.2.0.
+@item Java @tab javac @tab .java @tab @code{file:line: error:} @tab
+  GNU-compatible.  Tested with OpenJDK 25.0.3.
+  @strong{Limitation}: javac does not accept @code{-c -o} flags.
+  xwpe assumes all compilers use @code{-c -o}; a wrapper script is
+  needed (@pxref{Compiling,,Java workaround}).
+@end multitable
+
+@subsection Partial support (non-GNU format)
+
+@multitable @columnfractions .12 .15 .15 .58
+@headitem Language @tab Compiler @tab Extension @tab Notes
+@item Pascal @tab fpc @tab .pas @tab
+  Error format: @code{file(line,col) Fatal: msg}.  Does not match
+  GNU format.  Requires @code{CMPSWTCH=other} with a custom
+  message-string in the project file.  Tested with FPC 3.2.2.
+@item Perl @tab perl -c @tab .pl @tab
+  Error format: @code{at file line N}.  Does not match GNU format.
+  xwpe cannot parse Perl errors natively.
+@item Python @tab python3 @tab .py @tab
+  Error format varies (SyntaxError, tracebacks).  Does not match
+  GNU format.  xwpe cannot parse Python errors natively.
+@end multitable
+
+@subsection Other GNU-compatible compilers
+
+Any compiler that produces errors in the @code{file:line: message}
+format will work with xwpe's default @code{GNU} compiler style.
+This includes: Rust (@command{rustc}), Go (@command{go build}),
+Scala, and many others.
+
+@section Java workaround
+@anchor{Java workaround}
+
+@cindex Java
+@cindex javac
+@cindex wrapper script
+
+@command{javac} does not accept @code{-c} and @code{-o} flags.
+To use Java with xwpe, create a wrapper script:
+
+@example
+#!/bin/sh
+# Save as ~/bin/javac-wrapper
+# Strips -c and -o flags that xwpe passes
+args=""
+skip_next=0
+for arg in "$@@"; do
+    if [ "$skip_next" = 1 ]; then
+        skip_next=0
+        continue
+    fi
+    case "$arg" in
+        -c) continue ;;
+        -o) skip_next=1; continue ;;
+        *) args="$args $arg" ;;
+    esac
+done
+exec javac $args
+@end example
+
+Then configure xwpe to use @code{~/bin/javac-wrapper} as the compiler
+for @file{.java} files.
+
+@section Custom message-string format
+
+@cindex message-string
+@cindex CMPSWTCH
+@cindex error parsing
+
+When @code{CMPSWTCH} is set to @code{other} in the project file,
+xwpe uses a custom message-string to parse compiler output.
+
+Available placeholders:
+
+@multitable @columnfractions .35 .65
+@headitem Placeholder @tab Meaning
+@item @code{$@{FILE@}} @tab Filename containing the error.
+@item @code{$@{LINE[+-N]@}} @tab Line number (optional offset N).
+@item @code{$@{COLUMN[+-N]@}} @tab Column number (optional offset N).
+@item @code{$@{COLUMN=BEFORE[+-N]@}} @tab Column is position before a string.
+@item @code{$@{COLUMN=AFTER[+-N]@}} @tab Column is position after a string.
+@item @code{$@{?N:STR@}} @tab Warning detection (N = column or @code{*},
+STR = string to match).
+@item @code{\n} @tab Line break for multi-line messages.
+@end multitable
+
+@subsection Example: Free Pascal
+
+@example
+CMPSWTCH = other
+# FPC format: file(line,col) Fatal: message
+MESSAGE = $@{FILE@}($@{LINE@},$@{COLUMN@})*
+@end example
+
+@section Known issues
+
+@cindex compiler bugs
+
+@strong{Error message parsing crash (v1.6.1)}: after compilation,
+xwpe may crash (SIGSEGV) when parsing GCC 15's multi-line error
+output.  The compiler runs correctly and produces valid output, but
+the message parser encounters an issue with the new error format
+that includes context lines with carets and pipe characters.  This
+is being investigated (upstream bug).
+
+@noindent
+Tested on 2026-05-28 with xwpe @value{VERSION}.
