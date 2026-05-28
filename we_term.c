@@ -415,7 +415,7 @@ int init_cursor()
    key_f[41] = init_kkey("@1");
 #endif
 #ifdef NCURSES
-   sp_chr[0] = 0;
+   sp_chr[0] = ' ';
    sp_chr[1] = ACS_ULCORNER;
    sp_chr[2] = ACS_URCORNER;
    sp_chr[3] = ACS_LLCORNER;
@@ -494,10 +494,11 @@ int e_t_initscr()
  e_begscr();
  schirm = MALLOC(sizeof(SCREENCELL) * MAXSCOL * MAXSLNS);
  altschirm = MALLOC(sizeof(SCREENCELL) * MAXSCOL * MAXSLNS);
+ memset(schirm, 0, sizeof(SCREENCELL) * MAXSCOL * MAXSLNS);
+ memset(altschirm, 0, sizeof(SCREENCELL) * MAXSCOL * MAXSLNS);
 #if !defined(NO_XWINDOWS) && defined(NEWSTYLE)
  extbyte = MALLOC(MAXSCOL * MAXSLNS);
 #endif
- e_abs_refr();
  if(init_cursor())
  {
   printf("Terminal Not in the right mode\n");
@@ -784,6 +785,7 @@ int e_t_getch()
     {
      schirm = REALLOC(schirm, sizeof(SCREENCELL) * MAXSCOL * MAXSLNS);
      altschirm = REALLOC(altschirm, sizeof(SCREENCELL) * MAXSCOL * MAXSLNS);
+     memset(schirm, 0, sizeof(SCREENCELL) * MAXSCOL * MAXSLNS);
      memset(altschirm, 0, sizeof(SCREENCELL) * MAXSCOL * MAXSLNS);
 #if !defined(NO_XWINDOWS) && defined(NEWSTYLE)
      extbyte = REALLOC(extbyte, MAXSCOL * MAXSLNS);

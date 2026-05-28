@@ -581,10 +581,6 @@ int e_show_error(int n, FENSTER *f)
  }
  else if (filename != f->datnam)
   FREE(filename);
- e_pr_str_wsd(1, MAXSLNS - 1, err_li[n].text, f->fb->mt.fb, -1, 0,
-   f->fb->mt.fb, 1, MAXSCOL-2);
-/*   e_pr_nstr(2, MAXSLNS - 1, MAXSCOL-2, err_li[n].text,
-                                                f->fb->mt.fb, f->fb->mt.fb); */
  b = cn->f[cn->mxedt]->b;
  b->b.y = err_li[n].line > b->mxlines ? b->mxlines - 1 : err_li[n].line - 1;
  if (!err_li[n].srch)
@@ -618,7 +614,8 @@ int e_show_error(int n, FENSTER *f)
 /*      else if(err_li[n].x < -1) i++;    */
   b->b.x = i +  err_li[n].x;
  }
- e_cursor(cn->f[cn->mxedt],1);
+ e_schirm(cn->f[cn->mxedt], 1);
+ e_cursor(cn->f[cn->mxedt], 1);
  return(0);
 }
 

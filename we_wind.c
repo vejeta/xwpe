@@ -553,65 +553,72 @@ PIC *e_change_pic(int xa, int ya, int xe, int ye, PIC *pic, int sw, int frb)
       newpic->e.x = xe;
       newpic->e.y = ye;
 #endif
-#if !defined(NO_XWINDOWS) && defined(NEWSTYLE)
-      newpic->p = MALLOC( (newpic->e.x - newpic->a.x + 1) * 3
-				* (newpic->e.y - newpic->a.y + 1) );
-#else
-      newpic->p = MALLOC( (newpic->e.x - newpic->a.x + 1) * 2
-				* (newpic->e.y - newpic->a.y + 1) );
-#endif
+      { int nw = newpic->e.x - newpic->a.x + 1;
+        int ow = pic->e.x - pic->a.x + 1;
+      newpic->p = MALLOC(nw * sizeof(SCREENCELL) * (newpic->e.y - newpic->a.y + 1));
       if (newpic->p == NULL) {  FREE(newpic);  return(NULL);  }
       ax = pic->a.x > newpic->a.x ? pic->a.x : newpic->a.x;
       ay = pic->a.y > newpic->a.y ? pic->a.y : newpic->a.y;
       ex = pic->e.x < newpic->e.x ? pic->e.x : newpic->e.x;
       ey = pic->e.y < newpic->e.y ? pic->e.y : newpic->e.y;
+
+      /* 1. Copy overlapping region: old pic -> new pic */
       for (j = ay; j <= ey; ++j)
-      for (i = 2*ax; i <= 2*ex+1; ++i)
-      {  *(newpic->p + 2*(newpic->e.x-newpic->a.x+1)*(j-newpic->a.y)
-				+ (i-2*newpic->a.x))
-                   = *(pic->p + 2*(pic->e.x-pic->a.x+1)*(j-pic->a.y)
-                                 + (i - 2*pic->a.x) );
-      }
-      
+       for (i = ax; i <= ex; ++i)
+        memcpy(newpic->p + ((j-newpic->a.y)*nw + (i-newpic->a.x)) * sizeof(SCREENCELL),
+               pic->p + ((j-pic->a.y)*ow + (i-pic->a.x)) * sizeof(SCREENCELL),
+               sizeof(SCREENCELL));
+
+      /* 2. Fill new pic rows above overlap from schirm */
       for (j = newpic->a.y; j < ay; ++j)
-      for (i = 2*newpic->a.x; i <= 2*newpic->e.x+1; ++i)
-      {  *(newpic->p + 2*(newpic->e.x-newpic->a.x+1)*(j-newpic->a.y)
-		+ (i-2*newpic->a.x)) = e_gt_byte(i, j);
-      }
-      
-      for (j = newpic->e.y; j > ey; --j)
-      for (i = 2*newpic->a.x; i <= 2*newpic->e.x+1; ++i)
-      {  *(newpic->p + 2*(newpic->e.x-newpic->a.x+1)*(j-newpic->a.y)
-		+ (i-2*newpic->a.x)) = e_gt_byte(i, j);
-      }
-      
-      for (j = newpic->a.y; j <= newpic->e.y; ++j)
-      for (i = 2*newpic->a.x; i < 2*ax; ++i)
-      {  *(newpic->p + 2*(newpic->e.x-newpic->a.x+1)*(j-newpic->a.y)
-		+ (i-2*newpic->a.x)) = e_gt_byte(i, j);
-      }
-      
-      for (j = newpic->a.y; j <= newpic->e.y; ++j)
-      for (i = 2*(ex+1); i <= 2*newpic->e.x + 1; ++i)
-      {  *(newpic->p + 2*(newpic->e.x-newpic->a.x+1)*(j-newpic->a.y)
-		+ (i-2*newpic->a.x)) = e_gt_byte(i, j);
-      }
+       for (i = newpic->a.x; i <= newpic->e.x; ++i)
+        memcpy(newpic->p + ((j-newpic->a.y)*nw + (i-newpic->a.x)) * sizeof(SCREENCELL),
+               &schirm[j * MAXSCOL + i], sizeof(SCREENCELL));
+
+      /* 3. Fill new pic rows below overlap from schirm */
+      for (j = ey + 1; j <= newpic->e.y; ++j)
+       for (i = newpic->a.x; i <= newpic->e.x; ++i)
+        memcpy(newpic->p + ((j-newpic->a.y)*nw + (i-newpic->a.x)) * sizeof(SCREENCELL),
+               &schirm[j * MAXSCOL + i], sizeof(SCREENCELL));
+
+      /* 4. Fill new pic left columns (overlap rows only) from schirm */
+      for (j = ay; j <= ey; ++j)
+       for (i = newpic->a.x; i < ax; ++i)
+        memcpy(newpic->p + ((j-newpic->a.y)*nw + (i-newpic->a.x)) * sizeof(SCREENCELL),
+               &schirm[j * MAXSCOL + i], sizeof(SCREENCELL));
+
+      /* 5. Fill new pic right columns (overlap rows only) from schirm */
+      for (j = ay; j <= ey; ++j)
+       for (i = ex + 1; i <= newpic->e.x; ++i)
+        memcpy(newpic->p + ((j-newpic->a.y)*nw + (i-newpic->a.x)) * sizeof(SCREENCELL),
+               &schirm[j * MAXSCOL + i], sizeof(SCREENCELL));
+
+      /* 6. Restore old pic regions that are outside new pic to schirm */
+      /* Rows above new pic */
       for (j = pic->a.y; j < ya; ++j)
-      for (i = 2*pic->a.x; i <= 2*pic->e.x+1; ++i)
-      e_pt_byte(i, j, *( pic->p + (j-pic->a.y)*2
-                         *(pic->e.x-pic->a.x+1) + (i-2*pic->a.x) ) );
+       for (i = pic->a.x; i <= pic->e.x; ++i)
+        memcpy(&schirm[j * MAXSCOL + i],
+               pic->p + ((j-pic->a.y)*ow + (i-pic->a.x)) * sizeof(SCREENCELL),
+               sizeof(SCREENCELL));
+      /* Left columns */
       for (j = pic->a.y; j <= pic->e.y; ++j)
-      for (i = 2*pic->a.x; i < 2*xa; i=i+1)
-      e_pt_byte(i, j, *( pic->p + (j-pic->a.y)*2
-                       *(pic->e.x-pic->a.x+1) + (i - 2*pic->a.x) ) );
-      for (j = pic->e.y; j > ye; --j)
-      for (i = 2*pic->a.x; i <= 2*pic->e.x+1; ++i)
-      e_pt_byte(i, j, *( pic->p + (j-pic->a.y)*2
-                       *(pic->e.x-pic->a.x+1) + (i-2*pic->a.x) ) );
-      for (j = pic->e.y; j >= pic->a.y; --j)
-      for (i = 2*pic->e.x + 1; i > 2*xe; --i)
-      e_pt_byte(i, j, *( pic->p + (j-pic->a.y)*2
-                       *(pic->e.x-pic->a.x+1) + (i-2*pic->a.x) ) );
+       for (i = pic->a.x; i < xa; ++i)
+        memcpy(&schirm[j * MAXSCOL + i],
+               pic->p + ((j-pic->a.y)*ow + (i-pic->a.x)) * sizeof(SCREENCELL),
+               sizeof(SCREENCELL));
+      /* Rows below new pic */
+      for (j = ye + 1; j <= pic->e.y; ++j)
+       for (i = pic->a.x; i <= pic->e.x; ++i)
+        memcpy(&schirm[j * MAXSCOL + i],
+               pic->p + ((j-pic->a.y)*ow + (i-pic->a.x)) * sizeof(SCREENCELL),
+               sizeof(SCREENCELL));
+      /* Right columns */
+      for (j = pic->a.y; j <= pic->e.y; ++j)
+       for (i = xe + 1; i <= pic->e.x; ++i)
+        memcpy(&schirm[j * MAXSCOL + i],
+               pic->p + ((j-pic->a.y)*ow + (i-pic->a.x)) * sizeof(SCREENCELL),
+               sizeof(SCREENCELL));
+      }
 #if !defined(NO_XWINDOWS) && defined(NEWSTYLE)
       e_put_pic_xrect(pic);
       e_get_pic_xrect(xa, ya, xe, ye, newpic);
