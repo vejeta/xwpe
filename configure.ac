@@ -10,6 +10,10 @@ AM_INIT_AUTOMAKE([foreign subdir-objects -Wall])
 AC_PROG_CC
 AC_PROG_LN_S
 
+# --- Optional: documentation tools ---
+AC_CHECK_PROG([TEXI2ANY], [texi2any], [texi2any], [:])
+AC_CHECK_PROG([PANDOC], [pandoc], [pandoc], [:])
+
 # --- Required: ncursesw (wide character curses) ---
 PKG_CHECK_MODULES([NCURSESW], [ncursesw], [],
   [AC_MSG_ERROR([ncursesw is required. Install libncurses-dev or ncurses-devel.])])
@@ -70,7 +74,7 @@ test -z "$PRNTCMD" && PRNTCMD="lpr"
 AC_DEFINE_UNQUOTED([PRNTCMD], ["$PRNTCMD"], [Command to print files])
 
 # --- Output ---
-AC_CONFIG_FILES([Makefile])
+AC_CONFIG_FILES([Makefile docs/Makefile])
 AC_OUTPUT
 
 AC_MSG_RESULT([
@@ -79,4 +83,5 @@ AC_MSG_RESULT([
     X11:       $have_x11
     GPM:       $have_gpm
     PRNTCMD:   $PRNTCMD
+    pandoc:    $PANDOC
 ])

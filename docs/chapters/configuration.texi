@@ -1,0 +1,8 @@
+@node Configuration
+@chapter Configuration
+
+@cindex configuration
+@cindex xwperc
+@cindex syntax_def
+
+This chapter is under construction.

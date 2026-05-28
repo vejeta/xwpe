@@ -1,0 +1,83 @@
+\input texinfo
+@setfilename xwpe.info
+@include version.texi
+@settitle xwpe @value{VERSION}
+
+@copying
+Copyright @copyright{} 1993--1997 Fred Kruse.
+Copyright @copyright{} 2000--2006 Dennis Payne.
+Copyright @copyright{} 2026 Juan Manuel M@'endez Rey.
+
+@quotation
+This manual is for xwpe (version @value{VERSION}, @value{UPDATED}),
+a Borland-style programming environment for UNIX.
+
+Released under the GNU General Public License, version 2.
+@end quotation
+@end copying
+
+@dircategory Editors
+@direntry
+* xwpe: (xwpe).  Borland-style programming environment for UNIX.
+@end direntry
+
+@titlepage
+@title xwpe
+@subtitle Borland-style Programming Environment for UNIX
+@subtitle Version @value{VERSION}
+@author Fred Kruse
+@author Dennis Payne
+@author Juan Manuel M@'endez Rey
+@page
+@vskip 0pt plus 1filll
+@insertcopying
+@end titlepage
+
+@contents
+
+@ifnottex
+@node Top
+@top xwpe
+
+This is the manual for xwpe (version @value{VERSION}), a programming
+environment and text editor for UNIX terminals and X11.
+
+xwpe was written by Fred Kruse in 1993, maintained by Dennis Payne from
+2000 to 2006, and revived in 2026 by Juan Manuel M@'endez Rey.
+@end ifnottex
+
+@menu
+* Introduction::          What xwpe is and who it's for.
+* Installation::          Building and installing xwpe.
+* Interface tour::        The menu system, windows, and mouse.
+* Editor::                Keys, search/replace, blocks, file manager.
+* Configuration::         xwperc, syntax_def, X resources.
+* Compiling::             The F9 cycle and compiler integration.
+* Debugging::             gdb/sdb/dbx backends, breakpoints, watches.
+* Projects::              Project files and multi-file builds.
+* Tutorials::             Step-by-step walkthroughs.
+* Bugs and limits::       Known issues and workarounds.
+* History::               From Fred Kruse (1993) to today.
+* Reference::             Command-line options, menu tree, key cheatsheet.
+* Index::
+@end menu
+
+@include chapters/intro.texi
+@include chapters/installation.texi
+@include chapters/interface.texi
+@include chapters/editor.texi
+@include chapters/configuration.texi
+@include chapters/compiling.texi
+@include chapters/debugging.texi
+@include chapters/projects.texi
+@include chapters/tutorials.texi
+@include chapters/bugs-and-limits.texi
+@include chapters/history.texi
+@include chapters/reference.texi
+
+@node Index
+@unnumbered Index
+
+@printindex cp
+
+@bye

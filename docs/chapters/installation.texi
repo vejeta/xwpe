@@ -1,0 +1,7 @@
+@node Installation
+@chapter Installation
+
+@cindex installation
+@cindex building from source
+
+This chapter is under construction.

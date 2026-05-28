@@ -1,0 +1,8 @@
+@node Interface tour
+@chapter Interface tour
+
+@cindex interface
+@cindex menus
+@cindex mouse
+
+This chapter is under construction.

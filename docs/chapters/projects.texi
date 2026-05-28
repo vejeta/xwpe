@@ -1,0 +1,7 @@
+@node Projects
+@chapter Projects
+
+@cindex projects
+@cindex project file
+
+This chapter is under construction.

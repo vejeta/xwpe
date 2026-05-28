@@ -1,3 +1,5 @@
+SUBDIRS = docs
+
 AUTOMAKE_OPTIONS = foreign
 
 # --- Compiler flags ---

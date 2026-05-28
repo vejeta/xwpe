@@ -1,0 +1,7 @@
+@node Bugs and limits
+@chapter Bugs and limits
+
+@cindex bugs
+@cindex limitations
+
+This chapter is under construction.

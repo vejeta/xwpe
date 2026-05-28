@@ -1,0 +1,11 @@
+@node Introduction
+@chapter Introduction
+
+@cindex introduction
+
+This chapter is under construction.
+
+xwpe is a programming environment and text editor for UNIX systems.
+It provides a Borland Turbo C-style interface with syntax highlighting,
+an integrated compiler and debugger, project management, and mouse support
+--- all in a terminal or X11 window.
