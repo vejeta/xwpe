@@ -320,19 +320,14 @@ int WpeMouseInFileDirList(int k, int sw, FENSTER * f)
 /*  File Window  */
 char *e_gt_btstr(int x, int y, int n, char *buffer)
 {
- int i;
-
- for (i = 0; i < n; i++) buffer[i] = e_gt_byte(2*x + i, y)
-  ;
+ /* n is in SCREENCELL units (cells, not bytes) */
+ memcpy(buffer, &schirm[y * MAXSCOL + x], n * sizeof(SCREENCELL));
  return(buffer);
 }
 
 char *e_pt_btstr(int x, int y, int n, char *buffer)
 {
- int i;
-
- for(i = 0; i < n; i++) e_pt_byte(2*x + i, y, buffer[i])
-  ;
+ memcpy(&schirm[y * MAXSCOL + x], buffer, n * sizeof(SCREENCELL));
  return(buffer);
 }
 
@@ -371,9 +366,9 @@ int fl_wnd_mouse(sw, k, fw)
 	    }
 	    for(MLEN = 1; *(fw->df->name[fw->nf]+c+MLEN)
 			&& *(fw->df->name[fw->nf]+c+MLEN) != ' '; MLEN++);
-	    MLEN *= 2;
-	    file = MALLOC(MLEN * sizeof(char));
-	    bgrd = MALLOC(MLEN * sizeof(char));
+	    /* MLEN is the number of cells (not bytes) */
+	    file = MALLOC(MLEN * sizeof(SCREENCELL));
+	    bgrd = MALLOC(MLEN * sizeof(SCREENCELL));
 	    while (e_mshit() != 0)
 	    if(sw && (e_mouse.x != xa || e_mouse.y != ya))
 	    {  xn = e_mouse.x;  yn = e_mouse.y;
@@ -389,9 +384,11 @@ int fl_wnd_mouse(sw, k, fw)
 		  if(!WpeIsXwin()) c += 3;
 		  xdif -= (c + 1);
 	       }
-	       for (i = 0; i < MLEN/2; i++)
-	       {  file[2*i] = *(fw->df->name[fw->nf]+c+i);
-		  file[2*i+1] = fw->f->fb->fz.fb;
+	       { SCREENCELL *fcells = (SCREENCELL *)file;
+	         for (i = 0; i < MLEN; i++)
+	         {  fcells[i].ch = *(fw->df->name[fw->nf]+c+i);
+		    fcells[i].attr = fw->f->fb->fz.fb;
+	         }
 	       }
 	       e_gt_btstr(e_mouse.x-xdif, e_mouse.y, MLEN, bgrd);
 	       while (e_mshit() != 0)

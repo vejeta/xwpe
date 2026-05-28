@@ -492,10 +492,8 @@ int e_t_initscr()
  }
 #endif
  e_begscr();
- schirm = MALLOC(sizeof(SCREENCELL) * MAXSCOL * MAXSLNS);
- altschirm = MALLOC(sizeof(SCREENCELL) * MAXSCOL * MAXSLNS);
- memset(schirm, 0, sizeof(SCREENCELL) * MAXSCOL * MAXSLNS);
- memset(altschirm, 0, sizeof(SCREENCELL) * MAXSCOL * MAXSLNS);
+ schirm = calloc(MAXSCOL * MAXSLNS, sizeof(SCREENCELL));
+ altschirm = calloc(MAXSCOL * MAXSLNS, sizeof(SCREENCELL));
 #if !defined(NO_XWINDOWS) && defined(NEWSTYLE)
  extbyte = MALLOC(MAXSCOL * MAXSLNS);
 #endif
@@ -674,8 +672,20 @@ int e_t_refresh()
     else
      fk_colset(e_gt_col(j, i));
     c = e_gt_char(j, i);
+    /* Sanitise: reject values that xwpe cannot have produced.
+       Valid: 0-12 (sp_chr border/scrollbar chars), 32-127 (ASCII),
+       128+ only if wcwidth >= 0 (printable Unicode from UTF-8 decode).
+       Everything else is uninitialised SCREENCELL data.
+       Fix schirm in place so the garbage is not saved by e_open_view
+       and propagated through pic->p save/restore cycles. */
+    if (c < 0 || (c >= NSPCHR && c < 32) || c > 0xFFFF ||
+        (c > 127 && wcwidth((wchar_t)c) < 0))
+    {
+     c = ' ';
+     e_pr_char(j, i, ' ', 0);
+    }
 #ifdef NCURSES
-    if (c >= 0 && c < NSPCHR)
+    if (c < NSPCHR)
      addch(sp_chr[c]);
     else if (c > 127)
     {

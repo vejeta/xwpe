@@ -369,7 +369,7 @@ int e_comp(FENSTER *f)
 #endif
  {
   remove(ostr);
-  if (!e_p_mess_win("Compiling", argc, arg, &pic, f) &&
+  if (!e_p_mess_win("Compiling (press any key)", argc, arg, &pic, f) &&
     (file = e_exec_inf(f, arg, argc)) == 0)
   {
    e_sys_end();
@@ -567,7 +567,15 @@ int e_show_error(int n, FENSTER *f)
    {
     if (filename != cn->f[i]->datnam)
      FREE(filename);
+    { extern SCREENCELL *altschirm;
+      FILE *_d = fopen("/tmp/xwpe-switch-trace.txt", "w");
+      if (_d) { fprintf(_d, "BEFORE: sch[5][50].ch=%d alt[5][50].ch=%d\n", schirm[5*MAXSCOL+50].ch, altschirm[5*MAXSCOL+50].ch); fclose(_d); }
+    }
     e_switch_window(cn->edt[i], cn->f[cn->mxedt]);
+    { extern SCREENCELL *altschirm;
+      FILE *_d = fopen("/tmp/xwpe-switch-trace.txt", "a");
+      if (_d) { fprintf(_d, "AFTER: sch[5][50].ch=%d alt[5][50].ch=%d\n", schirm[5*MAXSCOL+50].ch, altschirm[5*MAXSCOL+50].ch); fclose(_d); }
+    }
     break;  
    }
   }

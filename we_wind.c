@@ -213,10 +213,36 @@ PIC *e_open_view(int xa, int ya, int xe, int ye, int col, int sw)
  {
   pic->p = MALLOC((pic->e.x - pic->a.x + 1) * sizeof(SCREENCELL) * (pic->e.y - pic->a.y + 1));
   if (pic->p == NULL) {  FREE(pic);  return(NULL);  }
+  { int pw = pic->e.x - pic->a.x + 1;
+  { FILE *_d = fopen("/tmp/xwpe-save-schirm.txt", "a");
+    if (_d) {
+      int r, c2, bad = 0;
+      fprintf(_d, "SAVE a=(%d,%d) e=(%d,%d):", pic->a.x, pic->a.y, pic->e.x, pic->e.y);
+      for (r = pic->a.y; r <= pic->e.y; r++)
+       for (c2 = pic->a.x; c2 <= pic->e.x; c2++)
+        if (schirm[r*MAXSCOL+c2].ch > 127 || schirm[r*MAXSCOL+c2].ch < 0)
+        { if (bad < 10) fprintf(_d, " [%d,%d]=%d", r, c2, schirm[r*MAXSCOL+c2].ch);
+          bad++; }
+      fprintf(_d, " (bad=%d)\n", bad);
+      fclose(_d);
+    }
+  }
   for (j = pic->a.y; j <= pic->e.y; ++j)
    for (i = pic->a.x; i <= pic->e.x; ++i)
-    memcpy(pic->p + ((j-pic->a.y)*(pic->e.x-pic->a.x+1) + (i-pic->a.x)) * sizeof(SCREENCELL),
-      &schirm[j * MAXSCOL + i], sizeof(SCREENCELL));
+   {
+    SCREENCELL *cell = &schirm[j * MAXSCOL + i];
+    SCREENCELL clean;
+    /* Sanitise: if schirm has uninitialised data (ch outside valid
+       Unicode range), save a space instead.  This prevents garbage
+       from propagating through pic->p save/restore cycles. */
+    if (cell->ch >= 0 && cell->ch <= 0x10FFFF)
+     clean = *cell;
+    else
+    { clean.ch = ' '; clean.attr = 0; }
+    memcpy(pic->p + ((j-pic->a.y)*pw + (i-pic->a.x)) * sizeof(SCREENCELL),
+      &clean, sizeof(SCREENCELL));
+   }
+  }
 #if defined(NEWSTYLE) && !defined(NO_XWINDOWS)
   e_get_pic_xrect(xa, ya, xe, ye, pic);
 #endif
@@ -234,6 +260,9 @@ PIC *e_open_view(int xa, int ya, int xe, int ye, int col, int sw)
 #ifndef NEWSTYLE
  if (WpeIsXwin())
  {
+  { FILE *_d = fopen("/tmp/xwpe-XWIN-SHADOW.txt", "a");
+    if (_d) { fprintf(_d, "SHADOW WRITTEN in e_open_view! xe=%d ye=%d\n", xe, ye); fclose(_d); }
+  }
   if (sw != 0)
   {
    if (xe < MAXSCOL-1) for(i = ya+1; i <= ye+1 && i < MAXSLNS-1; i++)
@@ -257,11 +286,19 @@ int e_close_view(PIC *pic, int sw)
  if (pic == NULL) return(-1);
  if (sw != 0 && pic->p != NULL)
  {
+  int pw = pic->e.x - pic->a.x + 1;
   for (j = pic->a.y; j <= pic->e.y; ++j)
    for (i = pic->a.x; i <= pic->e.x; ++i)
-    memcpy(&schirm[j * MAXSCOL + i],
-      pic->p + ((j-pic->a.y)*(pic->e.x-pic->a.x+1) + (i-pic->a.x)) * sizeof(SCREENCELL),
-      sizeof(SCREENCELL));
+   {
+    SCREENCELL *cell = (SCREENCELL *)(pic->p + ((j-pic->a.y)*pw + (i-pic->a.x)) * sizeof(SCREENCELL));
+    /* Validate: reject cells with ch values that cannot be valid characters.
+       Valid range: 0 to 0x10FFFF (Unicode max) plus special chars 1-12.
+       Values outside this range are uninitialised data from malloc. */
+    if (cell->ch >= 0 && cell->ch <= 0x10FFFF)
+     schirm[j * MAXSCOL + i] = *cell;
+    else
+     e_pr_char(i, j, ' ', cell->attr >= 0 && cell->attr < 256 ? cell->attr : 0);
+   }
 #if defined(NEWSTYLE) && !defined(NO_XWINDOWS)
   e_put_pic_xrect(pic);
 #endif
@@ -271,6 +308,29 @@ int e_close_view(PIC *pic, int sw)
   for (j = pic->a.y; j <= pic->e.y; ++j)
    for (i = pic->a.x; i <= pic->e.x; ++i)
     e_pr_char(i, j, ' ', 0);
+ }
+ /* Invalidate altschirm in the restored area so e_t_refresh repaints
+    these cells.  Without this, altschirm may already match schirm
+    (synchronized by a previous e_refresh while the popup was visible),
+    causing e_t_refresh to skip the area and leave popup remnants on
+    the terminal. */
+ { extern SCREENCELL *altschirm;
+   for (j = pic->a.y; j <= pic->e.y; ++j)
+    for (i = pic->a.x; i <= pic->e.x; ++i)
+     altschirm[j * MAXSCOL + i].ch = -1;
+ }
+ { FILE *_d = fopen("/tmp/xwpe-cv-trace.txt", "a");
+   if (_d) {
+     int r, c2, bad = 0;
+     fprintf(_d, "PRE-REFRESH a=(%d,%d) e=(%d,%d):", pic->a.x, pic->a.y, pic->e.x, pic->e.y);
+     for (r = pic->a.y; r <= pic->e.y && r < MAXSLNS; r++)
+      for (c2 = pic->a.x; c2 <= pic->e.x && c2 < MAXSCOL; c2++)
+       if (schirm[r*MAXSCOL+c2].ch > 127 || schirm[r*MAXSCOL+c2].ch < 0)
+       { if (bad < 30) fprintf(_d, " [%d,%d]=%d", r, c2, schirm[r*MAXSCOL+c2].ch);
+         bad++; }
+     fprintf(_d, " (bad=%d)\n", bad);
+     fclose(_d);
+   }
  }
  if (sw < 2)
  {
@@ -536,6 +596,10 @@ PIC *e_change_pic(int xa, int ya, int xe, int ye, PIC *pic, int sw, int frb)
    }
    else
    {
+      { FILE *_d = fopen("/tmp/xwpe-changepic.txt", "a");
+        if (_d) { fprintf(_d, "OVERLAP path: new(%d,%d,%d,%d) old(%d,%d,%d,%d)\n",
+          xa, ya, xe, ye, pic->a.x, pic->a.y, pic->e.x, pic->e.y); fclose(_d); }
+      }
       newpic = MALLOC(sizeof(PIC));
       if(newpic == NULL)  return(NULL);
       newpic->a.x = xa;
@@ -1453,32 +1517,34 @@ int e_mess_win(char *header, char *str, PIC **pic, FENSTER *f)
 
  if (!(*pic) || (*pic)->e.x != xe || (*pic)->a.x != xa || (*pic)->e.x < xe)
  {
-  *pic = e_change_pic(xa, ya, xe, ye, *pic, 1, cn->fb->nt.fb);
+  *pic = e_change_pic(xa, ya, xe, ye, *pic, 1, cn->fb->er.fb);
   for (i = xa + 1; i < xe; i++)
   {
-   e_pr_char(i, ye-2, ' ', f->fb->nt.fb);
-   e_pr_char(i, ye-1, ' ', f->fb->nt.fb);
+   e_pr_char(i, ye-2, ' ', cn->fb->et.fb);
+   e_pr_char(i, ye-1, ' ', cn->fb->et.fb);
   }
   e_pr_str((xe + xa - 6)/2, ye-2, "Ctrl C", cn->fb->nz.fb, -1, -1,
     cn->fb->ns.fb, cn->fb->nt.fb);
  }
- e_std_rahmen(xa, ya, xe, ye, header, 1, cn->fb->nr.fb, cn->fb->ne.fb);
+ e_std_rahmen(xa, ya, xe, ye, header, 1, cn->fb->er.fb, cn->fb->es.fb);
  for (i = xa + 1; i < xe; i++)
-  e_pr_char(i, ya+1, ' ', cn->fb->nr.fb);
+  e_pr_char(i, ya+1, ' ', cn->fb->er.fb);
  for (j = 0; j < num; j++)
  {
-  e_pr_char(xa+1, ya+2+j, ' ', cn->fb->nt.fb);
-  e_pr_char(xa+2, ya+2+j, ' ', cn->fb->nt.fb);
-  e_pr_str(xa+3, ya+2+j, s[j], cn->fb->nt.fb, 0, 0, 0, 0);
+  e_pr_char(xa+1, ya+2+j, ' ', cn->fb->et.fb);
+  e_pr_char(xa+2, ya+2+j, ' ', cn->fb->et.fb);
+  e_pr_str(xa+3, ya+2+j, s[j], cn->fb->et.fb, 0, 0, 0, 0);
   for (i = xa+strlen(s[j])+3; i < xe; i++)
-   e_pr_char(i, ya+2+j, ' ', cn->fb->nt.fb);
+   e_pr_char(i, ya+2+j, ' ', cn->fb->et.fb);
  }
  for (j += ya+2; j < ye-2; j++)
   for (i = xa + 1; i < xe; i++)
-   e_pr_char(i, j, ' ', cn->fb->nt.fb);
+   e_pr_char(i, j, ' ', cn->fb->et.fb);
  for (i = 0; i < anz; i++)
   FREE(s[i]);
  FREE(s);
+ e_refresh();
+ fk_getch();
 #ifndef NO_XWINDOWS
  if (WpeIsXwin())
  {
