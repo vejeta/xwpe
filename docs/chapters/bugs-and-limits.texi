@@ -3,5 +3,99 @@
 
 @cindex bugs
 @cindex limitations
+@cindex known issues
 
-This chapter is under construction.
+This chapter documents known issues and limitations.  Some are inherited
+from the original 1993 codebase; others are architectural limitations
+that would require significant rewriting to fix.
+
+@section Fixed in 1.6.x
+
+These bugs existed for years and are now resolved:
+
+@table @strong
+@item UTF-8 display garbled (Debian #1137613)
+Fixed in v1.6.0.  The 1993 byte-based screen buffer stored each byte of
+a UTF-8 sequence as a separate cell, causing border misalignment and
+garbled display.  The @code{SCREENCELL} buffer model decodes UTF-8 via
+@code{mbrtowc()} and stores one character per cell.
+
+@item Terminal resize not detected (Debian #1137649)
+Fixed in v1.6.0.  xwpe now handles @code{KEY_RESIZE} from ncurses to
+detect terminal size changes, reallocate buffers, and repaint.
+
+@item Color dialog crash (Debian #228820)
+Fixed in v1.5.31.  Dragging the mouse outside the colour table in
+@samp{Options @result{} Adjust Colors} caused a segfault due to an
+unclamped array index.
+
+@item FTBFS with GCC 15 (Debian #1098180)
+Fixed in v1.5.31 (via @code{-std=gnu17}) and permanently in v1.6.1
+(automake sets @code{-std=gnu17} automatically).  GCC 15 defaults to
+C23 where @code{f()} means @code{f(void)}, breaking K&R-style
+declarations.
+
+@item Terminal not reset on exit
+Fixed in v1.5.31.  The terminal state is now properly saved and restored
+on clean exit.
+@end table
+
+@section Known open issues
+
+@table @strong
+@item X11 mode does not display UTF-8
+The X11 binaries (@command{xwpe}, @command{xwe}) use
+@code{XDrawImageString} which does not support multi-byte characters.
+UTF-8 text appears garbled or truncated in X11 mode.  Terminal mode
+(@command{wpe}, @command{we}) works correctly.
+
+@item Resize does not scale editor proportionally
+When the terminal is resized larger in programming mode, the editor
+window keeps its original size instead of expanding to fill the available
+space.  The @code{KEY_RESIZE} handler expands windows at terminal edges
+but does not recalculate the 2/3 ratio for the initial editor window.
+
+@item Debugging leaks memory
+The exact source of the leak is unknown.  It has been present since at
+least the Payne era (documented in the 1.5.x CHANGELOG).
+
+@item Compilers assumed to have @code{-c} and @code{-o} options
+This causes problems for languages whose compilers do not use these
+flags (e.g.@: @command{javac}, @command{perl}).  Workaround: use a
+wrapper script that translates @code{-c} and @code{-o} into the correct
+flags for the target compiler.
+
+@item @command{make install} installs X11 binaries unconditionally
+Even when compiled @option{--without-x}, the install target creates
+the @command{xwpe} and @command{xwe} symlinks.  These will work (they
+just run in terminal mode) but their presence is misleading.
+
+@item Esc key requires 3 presses on Linux console
+On the Linux console (and some other terminal types), the @key{ESC} key
+must be pressed three times to trigger the escape function.  This is
+because xwpe uses @key{ESC} as the prefix for Alt-key sequences, and
+the terminal sends the same byte for both.
+
+@item No error on disk full
+xwpe does not detect or report write failures due to a full disk.
+
+@item Maximum column and cut/paste interaction
+Changing the maximum column setting and then using cut and paste can
+crash xwpe.
+
+@item Check Headers does not handle all cases
+The ``Check Headers'' feature for C projects does not correctly handle
+comments or @code{#ifndef} include guards.
+
+@item Documentation not updated (historical)
+The in-app help file (@file{help.xwpe_eng}) has not been updated since
+the Payne era (2006).  This Texinfo manual is the current primary
+documentation.
+@end table
+
+@section Reporting bugs
+
+Report bugs at @uref{https://codeberg.org/mendezr/xwpe/issues}.
+
+For Debian-specific bugs, use @command{reportbug xwpe} or file at
+@uref{https://bugs.debian.org/xwpe}.

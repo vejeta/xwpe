@@ -4,5 +4,198 @@
 @cindex configuration
 @cindex xwperc
 @cindex syntax_def
+@cindex X resources
 
-This chapter is under construction.
+xwpe is configured through three mechanisms: the @file{xwperc} options
+file, the @file{syntax_def} syntax highlighting definitions, and X11
+resources (for the X11 binaries).
+
+@section The xwperc options file
+
+@cindex xwperc
+@cindex initialization file
+
+On startup, xwpe reads its options from a personal configuration file.
+The search order is:
+
+@enumerate
+@item
+Personal file: @file{$HOME/.xwpe/xwperc} (or @file{$HOME/.wpe/wperc}
+for @command{wpe}).
+@item
+System-wide file: @file{/usr/local/lib/xwpe/xwperc} (or the path set
+by @code{LIBRARY_DIR} at compile time; on Debian this is
+@file{/usr/lib/xwpe/xwperc}).
+@item
+Built-in defaults (if neither file exists).
+@end enumerate
+
+The options file is a text file with @code{name = value} entries.
+It is normally written by xwpe itself when you choose
+@samp{Options @result{} Save Options} (@kbd{Alt-O S}).
+
+@strong{Warning}: if you hand-edit @file{xwperc}, any comments you add
+will be erased the next time xwpe saves the options.
+
+@subsection Command-line overrides
+
+@table @option
+@item -sf @var{file}
+Use @var{file} instead of the default @file{xwperc}.
+@item -so
+Ignore the options file entirely; use built-in defaults.
+@end table
+
+@subsection Options available in the Options menu
+
+The @samp{Options} menu (@kbd{Alt-O}) provides dialogs for:
+
+@table @samp
+@item Editor
+Tab size, auto-indent, line wrapping, maximum column width.
+@item File-Manager
+Default file mask, sort order, wastebasket behaviour.
+@item Programming
+Compiler path, default flags, message-string format.
+@item Compiler
+Compiler command, flags, and switches for the current project.
+@item Debugger
+Select debugger backend: gdb, sdb, or dbx.  Choose between
+full-screen and normal terminal mode.
+@item Adjust Colors
+Modify the 16-colour scheme used by the interface.
+@end table
+
+@section Syntax highlighting (syntax_def)
+
+@cindex syntax highlighting
+@cindex syntax_def
+
+Syntax highlighting rules are defined in the @file{syntax_def} file.
+xwpe looks for this file in:
+
+@enumerate
+@item @file{$HOME/.xwpe/syntax_def} (personal).
+@item @file{/usr/local/lib/xwpe/syntax_def} (system; on Debian:
+@file{/usr/lib/xwpe/syntax_def}).
+@end enumerate
+
+@subsection File format
+
+Each language definition consists of the following fields, one per line:
+
+@enumerate
+@item
+@strong{File extension} (string): the suffix that triggers this language
+(e.g.@: @code{.c}).
+
+@item
+@strong{Number of keywords} (integer).
+
+@item
+@strong{Keywords} (strings): the reserved words, one per line or
+space-separated.
+
+@item
+@strong{Number of multi-character operators} (integer).
+
+@item
+@strong{Multi-character operators} (strings): operators longer than one
+character (e.g.@: @code{==}, @code{!=}, @code{<<}).
+
+@item
+@strong{Single-character operators} (string): all single-character
+operators concatenated (e.g.@: @samp{+-/*%=|&!.?:,}).
+
+@item
+@strong{Comment start} (string): the opening comment delimiter
+(e.g.@: @code{/*}).
+
+@item
+@strong{Comment end} (string): the closing comment delimiter
+(e.g.@: @code{*/}).
+
+@item
+@strong{Line comment} (string): the single-line comment marker
+(e.g.@: @code{//}).
+
+@item
+@strong{Column-dependent comment characters} (string): for languages
+where comment status depends on column position (e.g.@: Fortran).
+
+@item
+@strong{Special single characters} (string of 6 characters):
+@enumerate a
+@item Character for string constants (typically @code{"}).
+@item Character for character constants (typically @code{'}).
+@item Preprocessor command character (typically @code{#}).
+@item Quote/escape character (typically @code{\}).
+@item Line-continuation character (typically @code{\}).
+@item Case-insensitivity flag (non-empty = case insensitive).
+@end enumerate
+
+@item
+@strong{Comment column} (integer): column for comments (-1 for none).
+
+@item
+@strong{Continuation column} (integer): column for line continuation
+(-1 for none).
+
+@item
+@strong{End-of-line comment column} (integer): column for end-of-line
+comments (1000 for none).
+@end enumerate
+
+The default @file{syntax_def} shipped with xwpe includes definitions
+for C, C++, Fortran, Pascal, Java, Perl, Python, shell, Makefile, and
+several other languages.
+
+@section X11 resources
+
+@cindex X resources
+@cindex Xwpe class
+
+The X11 binaries (@command{xwpe}, @command{xwe}) accept standard X
+resources.  The application name is @code{xwpe} or @code{xwe}; both
+belong to the @code{Xwpe} class.
+
+@table @code
+@item font (class Font)
+The font to use for text display.  Must be a fixed-width font.
+Default: @code{8x13}.
+
+@item geometry (class Geometry)
+Preferred window size and position.  Sizes smaller than 80x25 are
+ignored.
+
+@item color1 through color16 (class Color1 through Color16)
+The 16 colours used by the interface.  The default set resembles the
+standard PC colour palette.
+@end table
+
+Example @file{~/.Xresources} entries:
+
+@example
+xwpe*font: 9x15
+xwpe*geometry: 120x40
+xwpe*color1: #000000
+@end example
+
+Apply with @command{xrdb -merge ~/.Xresources} before starting xwpe.
+
+@section Recovery mode
+
+@cindex recovery
+@cindex crash recovery
+@cindex .ESV files
+
+If xwpe receives a signal (except @code{SIGKILL}), it saves all internal
+buffers to files with the @file{.ESV} extension in the current directory.
+
+To recover a crashed session:
+
+@example
+wpe -r
+@end example
+
+This restores all files that were open when the crash occurred.

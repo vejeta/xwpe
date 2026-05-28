@@ -5,4 +5,123 @@
 @cindex key cheatsheet
 @cindex command-line options
 
-This chapter is under construction.
+@section Command-line options
+
+@cindex command-line
+
+@multitable @columnfractions .25 .75
+@headitem Option @tab Description
+@item @option{-pm} @tab Treat the next file as a compiler message file.
+@item @option{-r} @tab Recovery mode: restore files from @file{.ESV} backups
+created after a crash.
+@item @option{-sf @var{file}} @tab Use @var{file} as the options file instead
+of @file{xwperc}.
+@item @option{-so} @tab Use default options; do not read @file{xwperc}.
+@item @option{-display @var{dpy}} @tab Connect to X server @var{dpy} (X11 only).
+@item @option{-font @var{f}} @tab Use font @var{f} for text (X11 only;
+default: @code{8x13}).
+@item @option{-geometry @var{g}} @tab Set window size/position (X11 only;
+minimum 80x25).
+@item @option{-iconic} @tab Start minimised (X11 only).
+@item @option{-pcmap} @tab Use a private colourmap (X11 only).
+@end multitable
+
+@section Key cheatsheet
+
+@subsection Function keys
+
+@multitable @columnfractions .20 .40 .40
+@headitem Key @tab In editor @tab In debugger
+@item @key{F7} @tab @tab Trace (step into)
+@item @key{F8} @tab @tab Step (step over)
+@item @key{F9} @tab Make (build) @tab
+@item @key{F10} @tab Activate menu @tab
+@item @kbd{Alt-F9} @tab Compile current file @tab
+@item @kbd{Ctrl-F2} @tab @tab Quit debugger
+@item @kbd{Ctrl-F6} @tab @tab Show stack
+@item @kbd{Ctrl-F7} @tab @tab Make watch
+@item @kbd{Ctrl-F8} @tab @tab Toggle breakpoint
+@item @kbd{Ctrl-F9} @tab Run program @tab
+@item @kbd{Ctrl-F10} @tab @tab Start/continue debugger
+@end multitable
+
+@subsection Ctrl-K chords (block operations)
+
+@multitable @columnfractions .20 .80
+@headitem Chord @tab Action
+@item @kbd{Ctrl-K B} @tab Set block beginning.
+@item @kbd{Ctrl-K K} @tab Set block end.
+@item @kbd{Ctrl-K L} @tab Mark current line.
+@item @kbd{Ctrl-K X} @tab Mark entire document.
+@item @kbd{Ctrl-K A} @tab Jump to block beginning.
+@item @kbd{Ctrl-K Z} @tab Jump to block end.
+@item @kbd{Ctrl-K C} @tab Copy block.
+@item @kbd{Ctrl-K V} @tab Move block.
+@item @kbd{Ctrl-K Y} @tab Delete block.
+@item @kbd{Ctrl-K H} @tab Hide block marks.
+@item @kbd{Ctrl-K R} @tab Read file into block position.
+@item @kbd{Ctrl-K W} @tab Write block to file.
+@item @kbd{Ctrl-K I} @tab Indent block.
+@item @kbd{Ctrl-K U} @tab Unindent block.
+@end multitable
+
+@subsection Ctrl-O chords (miscellaneous)
+
+@multitable @columnfractions .20 .80
+@headitem Chord @tab Action
+@item @kbd{Ctrl-O T} @tab Delete word before cursor.
+@item @kbd{Ctrl-O Y} @tab Delete to end of line.
+@item @kbd{Ctrl-O F} @tab Find (search).
+@item @kbd{Ctrl-O A} @tab Replace (search and replace).
+@item @kbd{Ctrl-O S} @tab Show definition of expression (C only).
+@item @kbd{Ctrl-O N} @tab Show next definition (C only).
+@item @kbd{Ctrl-O K} @tab Find matching bracket (C only).
+@item @kbd{Ctrl-O B} @tab Beautify C source.
+@item @kbd{Ctrl-O 1}--@kbd{9} @tab Jump to marker 1--9.
+@end multitable
+
+@subsection Ctrl-G chords (debug commands)
+
+@multitable @columnfractions .20 .80
+@headitem Chord @tab Action
+@item @kbd{Ctrl-G R} @tab Start/continue debugger.
+@item @kbd{Ctrl-G Q} @tab Quit debugger.
+@item @kbd{Ctrl-G S} @tab Trace (step into).
+@item @kbd{Ctrl-G N} @tab Step (step over).
+@item @kbd{Ctrl-G B} @tab Toggle breakpoint.
+@item @kbd{Ctrl-G M} @tab Remove all breakpoints.
+@item @kbd{Ctrl-G W} @tab Make watch.
+@item @kbd{Ctrl-G E} @tab Edit watch.
+@item @kbd{Ctrl-G D} @tab Delete watch.
+@item @kbd{Ctrl-G K} @tab Show stack.
+@item @kbd{Ctrl-G O} @tab Display output window.
+@end multitable
+
+@subsection Alt-key menu shortcuts
+
+@multitable @columnfractions .15 .35 .15 .35
+@headitem Key @tab Menu @tab Key @tab Menu
+@item @kbd{Alt-#} @tab System @tab @kbd{Alt-R} @tab Run
+@item @kbd{Alt-F} @tab File @tab @kbd{Alt-D} @tab Debug
+@item @kbd{Alt-E} @tab Edit @tab @kbd{Alt-P} @tab Project
+@item @kbd{Alt-S} @tab Search @tab @kbd{Alt-O} @tab Options
+@item @kbd{Alt-B} @tab Block @tab @kbd{Alt-W} @tab Window
+@item @tab @tab @kbd{Alt-H} @tab Help
+@end multitable
+
+@subsection Cursor and editing keys
+
+@multitable @columnfractions .20 .40 .40
+@headitem Key @tab Action @tab Alternative
+@item @kbd{Ctrl-A} @tab Beginning of line @tab @key{Home}
+@item @kbd{Ctrl-E} @tab End of line @tab @key{End}
+@item @kbd{Ctrl-P} @tab Up one line @tab @key{Up}
+@item @kbd{Ctrl-N} @tab Down one line @tab @key{Down}
+@item @kbd{Ctrl-F} @tab Right one character @tab @key{Right}
+@item @kbd{Ctrl-B} @tab Left one character @tab @key{Left}
+@item @kbd{Ctrl-D} @tab Delete forward @tab @key{Delete}
+@item @kbd{Ctrl-H} @tab Delete backward @tab @key{Backspace}
+@item @kbd{Ctrl-T} @tab Delete next word @tab
+@item @kbd{Ctrl-Y} @tab Delete line @tab
+@item @kbd{Ctrl-Q} @tab Quit @tab
+@end multitable

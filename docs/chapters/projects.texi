@@ -3,5 +3,143 @@
 
 @cindex projects
 @cindex project file
+@cindex multi-file builds
 
-This chapter is under construction.
+xwpe's project system manages multi-file programs.  A project file
+defines which source files belong together, what compiler to use,
+and how to build the executable.
+
+@section Creating a project
+
+Open @samp{Project @result{} Open Project} (@kbd{Alt-P P}) and enter
+a filename (e.g.@: @file{myproject}).  xwpe creates the project file
+and opens the project options dialog.
+
+@section Project file syntax
+
+@cindex project file format
+@cindex FILES variable
+@cindex CMP variable
+
+Project files use a simple @code{name = value} syntax, similar to
+Makefile variables.  Variables are referenced with @code{$(name)}.
+
+@subsection Predefined variables
+
+@multitable @columnfractions .15 .85
+@headitem Variable @tab Description
+@item @code{FILES} @tab Source files to compile (space-separated).  xwpe recompiles
+only modified or uncompiled files, and tracks @code{#include} changes for C.
+@item @code{CMP} @tab Path to the compiler (e.g.@: @code{/usr/bin/gcc}).
+@item @code{CMPFLAGS} @tab Compiler options (e.g.@: @code{-Wall -g}).
+@item @code{CMPSWTCH} @tab Error message format: @code{GNU} (default) or
+@code{other}.  Set to @code{other} to use a custom message-string format.
+@item @code{LDFLAGS} @tab Linker options (e.g.@: @code{-lm}).
+@item @code{EXENAME} @tab Name of the output executable (default: @code{a.out}).
+@item @code{LIBNAME} @tab Library file for object archive (auto-linked if set).
+@end multitable
+
+@subsection Example project file
+
+@example
+FILES = main.c utils.c parser.c
+CMP = /usr/bin/gcc
+CMPFLAGS = -Wall -g -std=c17
+LDFLAGS = -lm
+EXENAME = myprogram
+
+install: myprogram
+	cp myprogram /usr/local/bin/
+@end example
+
+@subsection User-defined variables
+
+You can define custom variables and reference them:
+
+@example
+SRCDIR = src
+FILES = $(SRCDIR)/main.c $(SRCDIR)/utils.c
+@end example
+
+@section The install target
+
+@cindex install target
+
+A project file can include an @code{install:} target with Makefile-like
+syntax.  Each command must be on its own line, indented with a tab:
+
+@example
+install: $(EXENAME)
+	cp $(EXENAME) /usr/local/bin/
+	chmod 755 /usr/local/bin/$(EXENAME)
+@end example
+
+Run the install target with @samp{Run @result{} Install} (@kbd{Alt-R I}).
+
+@strong{Limitation}: the @command{cd} command is not supported in install
+targets.  Use full paths instead.
+
+@section Compiler message format
+
+@cindex compiler messages
+@cindex error parsing
+@cindex message-string format
+
+When @code{CMPSWTCH} is set to @code{GNU} (the default), xwpe
+recognises standard GCC-style error messages:
+
+@example
+filename:line:column: error: message
+@end example
+
+For non-GNU compilers, set @code{CMPSWTCH = other} and define a custom
+message-string format using these placeholders:
+
+@multitable @columnfractions .35 .65
+@headitem Placeholder @tab Meaning
+@item @code{$@{FILE@}} @tab Filename in the error message.
+@item @code{$@{LINE[+-N]@}} @tab Line number (with optional offset N).
+@item @code{$@{COLUMN[+-N]@}} @tab Column number (with optional offset N).
+@item @code{$@{COLUMN=BEFORE[+-N]@}} @tab Column is before a string.
+@item @code{$@{COLUMN=AFTER[+-N]@}} @tab Column is after a string.
+@item @code{$@{?N:STR@}} @tab Warning detection: N is a number or @code{*},
+STR is the comparison string.
+@item @code{\n} @tab Line break (for multi-line messages).
+@end multitable
+
+@section Project operations
+
+@table @kbd
+@item Alt-P P
+Open a project file.
+@item Alt-P C
+Close the current project.
+@item Alt-P A
+Add a file to the project.
+@item Alt-P D
+Remove a file from the project.
+@item Alt-P O
+Edit project options (compiler, flags, etc.).
+@end table
+
+@section The build cycle
+
+@cindex F9
+@cindex build cycle
+
+With a project open, the build cycle works as follows:
+
+@table @kbd
+@item Alt-F9 (Compile)
+Compile the current file only.
+@item F9 (Make)
+Recompile all modified files and link the executable.
+@item Ctrl-F9 (Run)
+Build and then execute the program.
+@item Alt-R E (Execute make)
+Run the system @command{make(1)} command instead of xwpe's built-in build.
+@end table
+
+After compilation, errors appear in the Message Window.  Press
+@kbd{Alt-R N} (Next Error) and @kbd{Alt-R P} (Previous Error) to
+jump between error locations in the source code.

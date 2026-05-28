@@ -3,6 +3,192 @@
 
 @cindex editor
 @cindex keys
+@cindex cursor movement
 @cindex search and replace
 
-This chapter is under construction.
+xwpe can edit up to 35 files simultaneously, each in its own window.
+This chapter covers cursor movement, editing operations, block commands,
+search and replace, and the file manager.
+
+@section Cursor movement
+
+@cindex cursor
+
+@multitable @columnfractions .35 .35 .30
+@headitem Action @tab Primary key @tab Alternative
+@item Up one line @tab @key{Up} @tab @kbd{Ctrl-P}
+@item Down one line @tab @key{Down} @tab @kbd{Ctrl-N}
+@item Right one character @tab @key{Right} @tab @kbd{Ctrl-F}
+@item Left one character @tab @key{Left} @tab @kbd{Ctrl-B}
+@item Right one word @tab @kbd{Ctrl-Right} @tab @kbd{Alt-Right}
+@item Left one word @tab @kbd{Ctrl-Left} @tab @kbd{Alt-Left}
+@item Beginning of line @tab @key{Home} @tab @kbd{Ctrl-A}
+@item End of line @tab @key{End} @tab @kbd{Ctrl-E}
+@item Page up @tab @key{Page Up} @tab @kbd{Ctrl-Up}
+@item Page down @tab @key{Page Down} @tab @kbd{Ctrl-Down}
+@item Beginning of file @tab @kbd{Ctrl-Page Up} @tab @kbd{Alt-Ctrl-A}
+@item End of file @tab @kbd{Ctrl-Page Down} @tab @kbd{Alt-Ctrl-E}
+@item Top of window @tab @kbd{Ctrl-Home} @tab @kbd{Alt-Ctrl-P}
+@item Bottom of window @tab @kbd{Ctrl-End} @tab @kbd{Alt-Ctrl-N}
+@end multitable
+
+@section Basic editing
+
+@cindex insert mode
+@cindex overwrite mode
+@cindex undo
+@cindex redo
+
+@multitable @columnfractions .40 .30 .30
+@headitem Action @tab Key @tab Alternative
+@item Insert line break @tab @key{Return} @tab
+@item Delete character left @tab @key{Backspace} @tab @kbd{Ctrl-H}
+@item Delete character right @tab @key{Delete} @tab @kbd{Ctrl-D}
+@item Delete next word @tab @kbd{Ctrl-T} @tab
+@item Delete previous word @tab @kbd{Ctrl-O T} @tab
+@item Delete to end of line @tab @kbd{Ctrl-O Y} @tab
+@item Delete entire line @tab @kbd{Ctrl-Y} @tab
+@item Toggle insert/overwrite @tab @key{Insert} @tab @kbd{Alt-I}
+@item Indent @tab @key{Tab} @tab
+@item Undo @tab @kbd{Alt-E U} @tab
+@item Redo @tab @kbd{Alt-E R} @tab
+@item Insert special character @tab @kbd{Alt-J} @tab
+@end multitable
+
+@section Block operations
+
+@cindex blocks
+@cindex selection
+@cindex clipboard
+
+Text can be selected (``marked'') for block operations.  There are two
+ways to mark text:
+
+@enumerate
+@item
+@strong{Keyboard}: @kbd{Shift} + any cursor key extends the selection.
+Or use @kbd{Ctrl-K B} to set the start and @kbd{Ctrl-K K} to set the end.
+
+@item
+@strong{Mouse}: click and drag to select.  In X11,
+@kbd{Shift}-click extends the selection.
+@end enumerate
+
+@multitable @columnfractions .35 .25 .25
+@headitem Action @tab Menu @tab Chord
+@item Begin mark @tab @kbd{Alt-B B} @tab @kbd{Ctrl-K B}
+@item End mark @tab @kbd{Alt-B E} @tab @kbd{Ctrl-K K}
+@item Mark line @tab @kbd{Alt-B L} @tab @kbd{Ctrl-K L}
+@item Mark all @tab @kbd{Alt-B W} @tab @kbd{Ctrl-K X}
+@item Go to block start @tab @kbd{Alt-B G} @tab @kbd{Ctrl-K A}
+@item Go to block end @tab @kbd{Alt-B N} @tab @kbd{Ctrl-K Z}
+@item Copy block @tab @kbd{Alt-B C} @tab @kbd{Ctrl-K C}
+@item Move block @tab @kbd{Alt-B M} @tab @kbd{Ctrl-K V}
+@item Delete block @tab @kbd{Alt-B D} @tab @kbd{Ctrl-K Y}
+@item Hide marks @tab @kbd{Alt-B H} @tab @kbd{Ctrl-K H}
+@item Read file into block @tab @kbd{Alt-B R} @tab @kbd{Ctrl-K R}
+@item Write block to file @tab @kbd{Alt-B W} @tab @kbd{Ctrl-K W}
+@item Indent block @tab @kbd{Alt-B I} @tab @kbd{Ctrl-K I}
+@item Unindent block @tab @kbd{Alt-B T} @tab @kbd{Ctrl-K U}
+@end multitable
+
+Cut, copy, and paste use the Edit menu:
+
+@table @kbd
+@item Alt-E T
+Cut (delete marked text and copy to clipboard).
+@item Alt-E C
+Copy (copy marked text to clipboard).
+@item Alt-E P
+Paste (insert clipboard at cursor).
+@item Alt-E S
+Show clipboard contents.
+@end table
+
+@section Search and replace
+
+@cindex search
+@cindex replace
+@cindex regular expressions
+@cindex regex
+
+Open the search dialog with @kbd{Alt-S F} (Find) or @kbd{Alt-S R}
+(Replace).  Both dialogs share the same options, accessible via
+@kbd{Alt-@var{letter}}:
+
+@multitable @columnfractions .15 .25 .60
+@headitem Key @tab Option @tab Description
+@item @kbd{Alt-T} @tab Text @tab The string to search for.
+@item @kbd{Alt-N} @tab New String @tab Replacement text (Replace only).
+@item @kbd{Alt-C} @tab Case Sensitive @tab Distinguish upper/lower case.
+@item @kbd{Alt-W} @tab Whole Words @tab Match complete words only.
+@item @kbd{Alt-R} @tab Regular Expressions @tab Enable regex mode.
+@item @kbd{Alt-P} @tab Prompt @tab Ask before each replacement.
+@item @kbd{Alt-D} @tab Forward @tab Search forward from cursor.
+@item @kbd{Alt-B} @tab Backward @tab Search backward from cursor.
+@item @kbd{Alt-G} @tab Global @tab Search the entire file.
+@item @kbd{Alt-S} @tab Block @tab Search only within the marked block.
+@item @kbd{Alt-F} @tab From Cursor @tab Start from current position.
+@item @kbd{Alt-E} @tab From Start @tab Start from beginning of file/block.
+@item @kbd{Alt-A} @tab Replace All @tab Replace all matches (Replace only).
+@end multitable
+
+Press @key{Return} to find/replace the next match, @key{ESC} to cancel.
+
+@subsection Regular expression syntax
+
+@cindex egrep
+
+xwpe uses @command{egrep}-compatible regular expressions:
+
+@multitable @columnfractions .15 .85
+@headitem Pattern @tab Meaning
+@item @code{^} @tab Beginning of line.
+@item @code{$} @tab End of line.
+@item @code{.} @tab Any single character.
+@item @code{[abc]} @tab Any character in the set.
+@item @code{[^abc]} @tab Any character NOT in the set.
+@item @code{[a-z]} @tab Any character in the range.
+@item @code{*} @tab Previous character repeated zero or more times.
+@item @code{+} @tab Previous character repeated one or more times.
+@item @code{?} @tab Previous character zero or one time.
+@item @code{\|} @tab Alternation (OR).
+@item @code{\} @tab Escape the next character.
+@end multitable
+
+@section Markers
+
+@cindex markers
+@cindex bookmarks
+
+xwpe supports 9 position markers (numbered 1--9).  Set a marker with
+@kbd{Ctrl-O @var{n}} where @var{n} is 1--9.  Jump to a marker with the
+same key combination.
+
+@section File manager
+
+@cindex file manager
+
+The file manager (@kbd{Alt-F M}) provides a full-screen file browser
+for opening, copying, moving, renaming, and deleting files.
+
+@multitable @columnfractions .15 .25 .60
+@headitem Key @tab Field @tab Action
+@item @kbd{Alt-N} @tab Name @tab Enter a file name or mask (e.g.@: @code{*.c}).
+@item @kbd{Alt-F} @tab Files @tab Select a file from the list.
+@item @kbd{Alt-D} @tab Directory @tab Enter a directory path.
+@item @kbd{Alt-T} @tab Tree @tab Display the directory tree.
+@item @kbd{Alt-C} @tab Change @tab Change to the entered directory.
+@item @kbd{Alt-E} @tab Edit @tab Open the selected file for editing.
+@item @kbd{Alt-M} @tab Move @tab Rename or move a file.
+@item @kbd{Alt-R} @tab Remove @tab Delete a file (to wastebasket or disk).
+@item @kbd{Alt-L} @tab Link @tab Create a hard or symbolic link.
+@item @kbd{Alt-O} @tab Copy @tab Copy a file.
+@item @kbd{Alt-K} @tab Make Dir @tab Create a new directory.
+@item @kbd{Alt-A} @tab Attributes @tab Change file permissions.
+@item @kbd{Alt-S} @tab Save @tab Save with the name in the Name field.
+@item @key{ESC} @tab @tab Close the file manager.
+@end multitable
+
+File masks use shell glob syntax: @code{*} matches any characters,
+@code{[a-z]} matches a single character in the range.

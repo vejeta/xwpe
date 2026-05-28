@@ -4,5 +4,321 @@
 @cindex interface
 @cindex menus
 @cindex mouse
+@cindex F10
 
-This chapter is under construction.
+The xwpe interface follows the Borland Turbo C model: a menu bar at the
+top, an editor area in the centre, and a status line at the bottom.
+
+@section Activating the menu
+
+Press @key{F10}, @kbd{Alt-@key{SPC}}, or @key{ESC} to activate the menu
+bar.  Once active, use the arrow keys to navigate, @key{Enter} to select,
+and @key{ESC} to cancel.
+
+Each menu item has a highlighted letter.  Press @kbd{Alt-@var{letter}}
+from anywhere to open that menu directly.
+
+@section The menu system
+
+@cindex System menu
+@cindex File menu
+@cindex Edit menu
+
+xwpe has 10 top-level menus (11 in programming mode).  The @samp{Run},
+@samp{Debug}, and @samp{Project} menus only appear in @command{wpe} and
+@command{xwpe}, not in @command{we} or @command{xwe}.
+
+@subsection System menu (@kbd{Alt-#})
+
+@table @kbd
+@item A -- About
+Display version and copyright information.
+@item C -- Clear Desktop
+Close all open windows.
+@item R -- Repaint Desktop
+Reinitialise the screen (useful after display corruption).
+@item S -- System Info
+Display system information.
+@item W -- Show Wastebasket
+Display deleted files in the wastebasket.
+@item D -- Delete Wastebasket
+Permanently remove all files in the wastebasket.
+@end table
+
+@subsection File menu (@kbd{Alt-F})
+
+@table @kbd
+@item M -- File-Manager
+Open the file manager (@pxref{Editor,,File manager}).
+@item N -- New
+Open a new file named ``Noname''.
+@item S -- Save
+Save the current file.
+@item A -- Save As
+Save the current file under a new name.
+@item L -- Save All
+Save all modified files.
+@item E -- Execute
+Open the execution manager.
+@item H -- SHell
+Start a UNIX shell.
+@item F -- Find
+Search for a file by name.
+@item G -- Grep
+Search for a regular expression across files.
+@item P -- Print
+Print the current file (uses the @env{PRNTCMD} setting).
+@item Q -- Quit
+Exit xwpe.  Prompts to save unsaved files.
+@end table
+
+@subsection Edit menu (@kbd{Alt-E})
+
+@table @kbd
+@item T -- Cut
+Delete marked text and copy it to the clipboard.
+@item C -- Copy
+Copy marked text to the clipboard.
+@item P -- Paste
+Insert clipboard contents at the cursor.
+@item S -- Show Clipboard
+Display the clipboard in a window.
+@item D -- Delete
+Delete marked text without copying.
+@item U -- Undo
+Undo the last change.
+@item R -- Redo
+Redo the last undone change.
+@item L -- Load XBuffer
+Copy the X selection buffer into xwpe's clipboard (X11 only).
+@item W -- Write to XBuffer
+Copy xwpe's clipboard to the X selection buffer (X11 only).
+@end table
+
+@subsection Search menu (@kbd{Alt-S})
+
+@table @kbd
+@item F -- Find
+Search for a string or regular expression (@pxref{Editor,,Search and replace}).
+@item R -- Replace
+Search and replace.
+@item S -- Search again
+Repeat the last search.
+@item G -- Go to Line
+Jump to a specific line number.
+@end table
+
+@subsection Block menu (@kbd{Alt-B})
+
+@table @kbd
+@item B -- Begin Mark
+Set the beginning of a block.
+@item E -- End Mark
+Set the end of a block.
+@item L -- Mark Line
+Mark the current line.
+@item W -- Mark Whole
+Mark the entire document.
+@item G -- Goto Begin
+Jump to the beginning of the block.
+@item N -- Goto End
+Jump to the end of the block.
+@item C -- Copy
+Copy the block to the cursor position.
+@item M -- Move
+Move the block to the cursor position.
+@item D -- Delete
+Delete the block.
+@item H -- Hide
+Remove block marks without deleting text.
+@item R -- Read
+Insert a file at the cursor position.
+@item W -- Write
+Write the block to a file.
+@item I -- Move to Right
+Shift the block right (indent).
+@item T -- Move to Left
+Shift the block left (unindent).
+@end table
+
+@subsection Run menu (@kbd{Alt-R}) -- programming mode only
+
+@cindex compiling
+@cindex F9
+
+@table @kbd
+@item C -- Compile (@kbd{Alt-F9})
+Compile the current file.
+@item M -- Make (@key{F9})
+Build the executable from all project modules.
+@item R -- Run (@kbd{Ctrl-F9})
+Build and run the executable.
+@item I -- Install
+Run the install target from the project file.
+@item E -- Execute make
+Run @command{make(1)} directly.
+@item N -- Next Error
+Jump to the next error in the message window.
+@item P -- Previous Error
+Jump to the previous error.
+@item S -- Show Definition
+Find the definition of the expression at the cursor (C only).
+@item X -- Show Next Def.
+Find the next definition.
+@item K -- Matching Bracket
+Find the matching bracket (C only).
+@item B -- Beautify
+Reformat C source code.
+@item A -- Arguments
+Enter command-line arguments for the program.
+@end table
+
+@subsection Debug menu (@kbd{Alt-D}) -- programming mode only
+
+@cindex debugging
+@cindex breakpoints
+
+@table @kbd
+@item B -- Toggle Breakpoint (@kbd{Ctrl-F8})
+Set or remove a breakpoint at the current line.
+@item M -- Remove all Breakpoints
+Remove all breakpoints.
+@item W -- Make Watch (@kbd{Ctrl-F7})
+Add a variable to the watch window.
+@item E -- Edit Watch
+Modify a watched variable expression.
+@item D -- Delete Watch
+Remove a watched variable.
+@item A -- Remove All Watches
+Remove all watched variables.
+@item K -- Show Stack (@kbd{Ctrl-F6})
+Display the call stack.
+@item G -- Goto cursor
+Execute until the cursor position is reached.
+@item F -- Finish Function
+Execute until the current function returns.
+@item T -- Trace (@key{F7})
+Execute the next line, stepping into functions.
+@item S -- Step (@key{F8})
+Execute the next line, stepping over functions.
+@item R -- Run/Continue (@kbd{Ctrl-F10})
+Start or continue the debugger.
+@item Q -- Quit (@kbd{Ctrl-F2})
+Exit the debugger.
+@end table
+
+@subsection Project menu (@kbd{Alt-P}) -- programming mode only
+
+@table @kbd
+@item P -- Open Project
+Load a project file.
+@item C -- Close Project
+Stop using the current project.
+@item A -- Add Item
+Add a file to the project.
+@item D -- Delete Item
+Remove a file from the project.
+@item O -- Options
+Edit project options (compiler, flags, etc.).
+@end table
+
+@subsection Options menu (@kbd{Alt-O})
+
+@table @kbd
+@item A -- Adjust Colors
+Change the colour scheme.
+@item S -- Save Options
+Save all options to @file{xwperc}.
+@item E -- Editor
+Editor options (tab size, auto-indent, etc.).
+@item F -- File-Manager
+File manager options.
+@item G -- Programming
+Programming environment options.
+@item C -- Compiler
+Compiler options (path, flags, message format).
+@item D -- Debugger
+Select the debugger (gdb, sdb, or dbx).
+@end table
+
+@subsection Window menu (@kbd{Alt-W})
+
+@table @kbd
+@item S -- Size/Move
+Resize or move the current window.
+@item Z -- Zoom
+Maximise the current window.
+@item T -- Tile
+Tile all open windows.
+@item A -- Cascade
+Cascade all open windows.
+@item X -- Next
+Switch to the next window.
+@item C -- Close
+Close the current window.
+@item L -- List All
+Display a list of all open windows.
+@item O -- Output Window
+Display the output window.
+@item M -- Messages
+Display the compiler message window.
+@item P -- Project
+Display the project window.
+@item W -- Watches
+Display the watch window.
+@end table
+
+@subsection Help menu (@kbd{Alt-H})
+
+@table @kbd
+@item E -- Editor
+Open the in-app editor help.
+@item T -- Topic Search
+Search UNIX man pages.
+@item U -- Function Index
+Display the function index.
+@item I -- Info
+Browse GNU info nodes.
+@item G -- Goto
+Jump to a specific help page.
+@item B -- Back
+Return to the previous help page.
+@item N -- Next
+Go to the next help page.
+@item P -- Previous
+Go to the previous help page.
+@end table
+
+@section Mouse support
+
+@cindex mouse
+@cindex GPM
+
+In terminal mode, xwpe supports mouse input via the GPM library (Linux
+console) or xterm mouse reporting.  In X11 mode, the mouse works
+natively.
+
+@itemize @bullet
+@item Click on a menu item to activate it.
+@item Click in the editor area to position the cursor.
+@item Drag to select text (mark a block).
+@item @kbd{Shift}-click to extend a selection (X11).
+@item Click on window borders to resize or move windows.
+@item Click on the scrollbar to scroll.
+@end itemize
+
+@section Windows
+
+@cindex windows
+@cindex tiling
+
+xwpe can display up to 35 files simultaneously, each in its own window.
+Windows can be tiled (@kbd{Alt-W T}), cascaded (@kbd{Alt-W A}), zoomed
+(@kbd{Alt-W Z}), or manually resized (@kbd{Alt-W S}).
+
+Each window has:
+@itemize @bullet
+@item A title bar showing the file name and a close button.
+@item Horizontal and vertical scrollbars.
+@item A status line showing the cursor position and edit mode.
+@end itemize
