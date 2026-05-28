@@ -107,12 +107,19 @@ desktop_DATA = xwpe.desktop
 EXTRA_DIST = \
   help.xwpe_eng \
   help.key_eng \
+  syntax_def \
   xwpe.1_eng \
   xwpe.desktop \
   xwpe.spec \
   xwpe-1.5.31.lsm \
   xwpe-conf.patch \
+  README.md \
   CHANGELOG \
-  old \
-  tests \
-  tools
+  old/README.payne-2006 \
+  old/we.help_gr \
+  old/we_djgpp.c \
+  old/xwpe.1_gr \
+  tests/README.md \
+  tests/test_scrollbar.py \
+  tests/test_utf8_border.py \
+  tools/compiletest.c
