@@ -1506,7 +1506,7 @@ int print_to_end_of_buffer(BUFFER * b,char * str,int wrap_limit)
    for (j = 0; (!((str[j + k] == '\n') || (str[j + k] == '\0'))); j++)
     ;
   /* Don't add blank lines */
-  if (j == k)
+  if (j == 0)
    break;
 
 /* b->mxlines - count of lines in b
