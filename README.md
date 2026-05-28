@@ -97,7 +97,7 @@ sudo make install
 Common configure-time dependencies on Debian/Ubuntu:
 
 ```sh
-sudo apt install build-essential libncursesw5-dev libx11-dev libgpm-dev
+sudo apt install build-essential libncurses-dev libx11-dev libgpm-dev
 ```
 
 Run the editor in terminal mode with `wpe`, in X11 mode with `xwpe`.
