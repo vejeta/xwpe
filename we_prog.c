@@ -472,7 +472,7 @@ int e_p_exec(int file, FENSTER *f, PIC *pic)
  f = cn->f[cn->mxedt];
  while ((ret = wait(&stat_loc)) >= 0 && ret != e_save_pid)
   ;
- ret = 0;
+ ret = WIFEXITED(stat_loc) ? WEXITSTATUS(stat_loc) : 1;
  for (is = b->mxlines-1, fd = efildes[0]; fd > 0; fd = wfildes[0])
  {
   buff=MALLOC(1);
