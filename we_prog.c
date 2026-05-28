@@ -515,9 +515,11 @@ int e_p_exec(int file, FENSTER *f, PIC *pic)
  wfildes[0] = wfildes[1] = -1;
  if (pic)
   e_close_view(pic, 1);
- if (ret || (b->mxlines - is > 2 && (i = e_make_error_list(f))))
+ if (b->mxlines - is > 2)
+  i = e_make_error_list(f);
+ if (ret || i)
  {
-  if (i != -2 && !ret)
+  if (i != -2)
    e_show_error(err_no = 0, f);
   return(-1);
  }
