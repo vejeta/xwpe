@@ -1,0 +1,118 @@
+AUTOMAKE_OPTIONS = foreign
+
+# --- Compiler flags ---
+# gnu17 is required: the code uses K&R-compatible GNU extensions
+AM_CFLAGS = -std=gnu17 \
+  $(NCURSESW_CFLAGS) \
+  $(X_CFLAGS) \
+  -DLIBRARY_DIR=\"$(pkglibdir)\" \
+  -Wno-incompatible-pointer-types \
+  -Wno-implicit-function-declaration \
+  -Wno-int-conversion \
+  -Wno-old-style-declaration
+
+# Force-include config.h without modifying every .c file
+AM_CPPFLAGS = -include config.h
+
+# --- The single binary ---
+bin_PROGRAMS = we
+
+we_SOURCES = \
+  we_main.c \
+  we_block.c \
+  we_unix.c \
+  we_e_aus.c \
+  we_edit.c \
+  we_fl_fkt.c \
+  we_fl_unix.c \
+  we_hfkt.c \
+  we_menue.c \
+  we_mouse.c \
+  we_opt.c \
+  we_wind.c \
+  we_prog.c \
+  we_progn.c \
+  we_debug.c \
+  WeString.c \
+  WeSyntax.c \
+  WeExpArr.c \
+  WeLinux.c \
+  we_gpm.c \
+  we_xterm.c \
+  WeXterm.c \
+  we_term.c
+
+we_LDADD = \
+  $(NCURSESW_LIBS) \
+  $(X_LIBS) \
+  $(GPM_LIBS) \
+  -lz
+
+# --- Header files (for dist) ---
+noinst_HEADERS = \
+  Xwpe.h \
+  WeString.h \
+  WeXterm.h \
+  WeProg.h \
+  WeExpArr.h \
+  attrb.h \
+  edit.h \
+  keys.h \
+  makro.h \
+  messages.h \
+  model.h \
+  options.h \
+  progr.h \
+  unixkeys.h \
+  unixmakr.h
+
+# --- Symlinks: wpe, xwpe, xwe -> we ---
+install-exec-hook:
+	cd $(DESTDIR)$(bindir) && \
+	  rm -f wpe xwpe xwe && \
+	  $(LN_S) we wpe && \
+	  $(LN_S) we xwpe && \
+	  $(LN_S) we xwe
+
+uninstall-hook:
+	rm -f $(DESTDIR)$(bindir)/wpe \
+	      $(DESTDIR)$(bindir)/xwpe \
+	      $(DESTDIR)$(bindir)/xwe
+
+# --- Library/data files ---
+xwpedatadir = $(pkglibdir)
+xwpedata_DATA = syntax_def
+
+# Help files need renaming on install
+install-data-local:
+	$(MKDIR_P) $(DESTDIR)$(xwpedatadir)
+	$(INSTALL_DATA) $(srcdir)/help.xwpe_eng $(DESTDIR)$(xwpedatadir)/help.xwpe
+	$(INSTALL_DATA) $(srcdir)/help.key_eng $(DESTDIR)$(xwpedatadir)/help.key
+	$(MKDIR_P) $(DESTDIR)$(man1dir)
+	$(INSTALL_DATA) $(srcdir)/xwpe.1_eng $(DESTDIR)$(man1dir)/xwpe.1
+
+uninstall-local:
+	rm -f $(DESTDIR)$(xwpedatadir)/help.xwpe \
+	      $(DESTDIR)$(xwpedatadir)/help.key \
+	      $(DESTDIR)$(man1dir)/xwpe.1
+
+# --- Man pages ---
+dist_man1_MANS = we.1 wpe.1 xwe.1
+
+# --- Desktop file ---
+desktopdir = $(datadir)/applications
+desktop_DATA = xwpe.desktop
+
+# --- Extra files for distribution ---
+EXTRA_DIST = \
+  help.xwpe_eng \
+  help.key_eng \
+  xwpe.1_eng \
+  xwpe.desktop \
+  xwpe.spec \
+  xwpe-1.5.31.lsm \
+  xwpe-conf.patch \
+  CHANGELOG \
+  old \
+  tests \
+  tools

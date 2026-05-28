@@ -11,7 +11,9 @@
 
 /*  System Definition   */
 
+#ifndef UNIX
 #define UNIX
+#endif
 #undef DJGPP
 
 /*  Effects of #Defines (do not change)  */

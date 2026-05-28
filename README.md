@@ -78,26 +78,45 @@ keyboard remapping for modern PC keyboards.
 | Keyboard | VT100/Sun mapping | PC keyboard mapping (PageUp, Home, End, Delete) | Original mapping was for hardware terminals no longer in use |
 | GPM mouse | `Gpm_Open()` unconditionally | Check `/dev/gpmctl` first | Avoids "gpm: not found" error when daemon not running |
 
+## What changed in 1.6.1
+
+* **Modernised build system**: replaced the 1998 hand-written `configure.in`
+  + `Makefile.in` + 1500-line custom `aclocal.m4` with standard
+  `configure.ac` + `Makefile.am` (automake). `./configure && make` now
+  works out of the box with any modern autoconf/automake. All ncursesw
+  flags, `-std=gnu17`, and K&R warning suppressions are handled
+  automatically -- no manual CFLAGS needed.
+* **pkg-config for ncursesw**: detection uses `PKG_CHECK_MODULES` instead
+  of a fragile cascade of `AC_CHECK_LIB` calls.
+* **Optional X11 and GPM**: `--without-x` and `--without-gpm` configure
+  flags for minimal builds.
+* **Debian `dh_autoreconf` compatible**: the new `configure.ac` works with
+  autoconf 2.69+, eliminating the need to skip `dh_autoreconf` in
+  `debian/rules`.
+
 ## Building
 
-This release ships with the original autoconf-based build (configure.in
-+ handwritten Makefile.in) for continuity with Payne's 1.5.30a. A
-modernisation to autoreconf-driven autotools is planned for the next
-release.
+Standard autotools build:
 
 ```sh
-LIBS="-lncursesw" \
-CFLAGS="-DNCURSES -std=gnu17 -I/usr/include/ncursesw \
-  -D_XOPEN_SOURCE_EXTENDED -DNCURSES_WIDECHAR=1" \
+autoreconf -fi   # only needed if building from git
 ./configure
 make
 sudo make install
 ```
 
-Common configure-time dependencies on Debian/Ubuntu:
+Common build dependencies on Debian/Ubuntu:
 
 ```sh
-sudo apt install build-essential libncurses-dev libx11-dev libgpm-dev
+sudo apt install build-essential autoconf automake pkg-config \
+  libncurses-dev libx11-dev libgpm-dev zlib1g-dev
+```
+
+Optional features:
+
+```sh
+./configure --without-x     # disable X11 support
+./configure --without-gpm   # disable GPM mouse support
 ```
 
 Run the editor in terminal mode with `wpe`, in X11 mode with `xwpe`.
