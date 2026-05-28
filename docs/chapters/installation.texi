@@ -3,5 +3,145 @@
 
 @cindex installation
 @cindex building from source
+@cindex Debian package
+@cindex dependencies
 
-This chapter is under construction.
+@section Build dependencies
+
+@cindex ncursesw
+@cindex libncurses-dev
+@cindex pkg-config
+
+xwpe requires:
+
+@table @code
+@item libncurses-dev
+Wide character ncurses library (required).  Provides the terminal display
+API including UTF-8 support.
+
+@item libx11-dev
+X11 client library (optional).  Needed for the X11 binaries
+(@command{xwpe}, @command{xwe}).  Pass @option{--without-x} to
+@command{configure} to disable.
+
+@item libgpm-dev
+General Purpose Mouse library (optional, Linux only).  Enables mouse
+support in the terminal binaries.  Pass @option{--without-gpm} to disable.
+
+@item zlib1g-dev
+Compression library (required).  Used by the built-in info viewer to
+read compressed info pages.
+
+@item autoconf, automake, pkgconf
+Autotools and pkg-config (required only when building from git).
+Release tarballs include pre-generated @command{configure} and
+@command{Makefile.in}.
+@end table
+
+On Debian and Ubuntu:
+
+@example
+sudo apt install build-essential autoconf automake pkgconf \
+  libncurses-dev libx11-dev libgpm-dev zlib1g-dev
+@end example
+
+@section Building from source
+
+@subsection From a release tarball
+
+@example
+tar xf xwpe-@value{VERSION}.tar.gz
+cd xwpe-@value{VERSION}
+./configure
+make
+sudo make install
+@end example
+
+@subsection From git
+
+@example
+git clone https://codeberg.org/mendezr/xwpe.git
+cd xwpe
+autoreconf -fi
+./configure
+make
+sudo make install
+@end example
+
+@section Configure options
+
+@cindex configure options
+
+@table @option
+@item --without-x
+Disable X11 support.  Only the terminal binaries (@command{we},
+@command{wpe}) will be built.
+
+@item --without-gpm
+Disable GPM mouse support.  Mouse will still work in X11 mode.
+
+@item --prefix=@var{dir}
+Install to @var{dir} instead of @file{/usr/local}.
+@end table
+
+@section What gets installed
+
+@cindex install locations
+
+@table @file
+@item @var{prefix}/bin/we
+The main binary (text editor, terminal mode).
+
+@item @var{prefix}/bin/wpe
+Symlink to @command{we} (programming environment, terminal mode).
+
+@item @var{prefix}/bin/xwpe
+Symlink to @command{we} (programming environment, X11 mode).
+
+@item @var{prefix}/bin/xwe
+Symlink to @command{we} (text editor, X11 mode).
+
+@item @var{prefix}/lib/xwpe/help.xwpe
+In-app help file (English).
+
+@item @var{prefix}/lib/xwpe/help.key
+Key binding reference for the help system.
+
+@item @var{prefix}/lib/xwpe/syntax_def
+Syntax highlighting definitions.
+
+@item @var{prefix}/share/man/man1/
+Man pages: @file{we.1}, @file{wpe.1}, @file{xwe.1}, @file{xwpe.1}.
+
+@item @var{prefix}/share/applications/xwpe.desktop
+Desktop entry file for X11 desktop environments.
+@end table
+
+@section Installing the Debian package
+
+@cindex Debian
+
+If xwpe is available in your Debian or Ubuntu release:
+
+@example
+sudo apt install xwpe
+@end example
+
+This installs the binaries to @file{/usr/bin/}, help files to
+@file{/usr/lib/xwpe/}, and man pages to @file{/usr/share/man/man1/}.
+
+@section Post-install check
+
+After installation, verify that xwpe works:
+
+@example
+wpe
+@end example
+
+You should see a menu bar at the top (@samp{#  File  Edit  Search ...}),
+an editor area in the center, and a status line at the bottom.  Press
+@key{F10} to activate the menu, or @kbd{Ctrl-Q} to quit.
+
+If the terminal shows garbled output, check that your terminal is set to
+UTF-8 encoding and that @code{libncursesw} (not @code{libncurses}) is
+linked.  Run @command{ldd $(which wpe) | grep ncurses} to verify.

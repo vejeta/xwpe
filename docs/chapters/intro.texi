@@ -2,10 +2,118 @@
 @chapter Introduction
 
 @cindex introduction
-
-This chapter is under construction.
+@cindex xwpe
+@cindex Borland
+@cindex Turbo C
 
 xwpe is a programming environment and text editor for UNIX systems.
 It provides a Borland Turbo C-style interface with syntax highlighting,
-an integrated compiler and debugger, project management, and mouse support
---- all in a terminal or X11 window.
+an integrated compiler and debugger, project management, and mouse
+support --- all in a terminal or X11 window.
+
+@section The four binaries
+
+@cindex we
+@cindex wpe
+@cindex xwe
+@cindex xwpe binary
+
+xwpe installs four binaries, all built from the same source code.
+The binary name determines the mode:
+
+@table @command
+@item we
+Text editor for terminals.  No compiler or debugger integration.
+
+@item wpe
+Programming environment for terminals.  Includes compiler, debugger,
+project management, and the full menu system.
+
+@item xwe
+Text editor for X11.  Same as @command{we} but with an X11 window
+instead of a terminal.
+
+@item xwpe
+Programming environment for X11.  Same as @command{wpe} but with
+an X11 window.
+@end table
+
+The terminal binaries (@command{we}, @command{wpe}) use ncursesw for
+display and work in any terminal emulator, tmux, screen, or the Linux
+console.  The X11 binaries (@command{xwe}, @command{xwpe}) create their
+own window with a fixed-width font.
+
+If you are unsure which to use, start with @command{wpe}.
+
+@section What xwpe can do
+
+@itemize @bullet
+@item
+Edit multiple files simultaneously in tiled or overlapping windows.
+
+@item
+Syntax highlighting for C, C++, Fortran, Pascal, Java, Perl, Python,
+shell scripts, and other languages (configurable via @file{syntax_def}).
+
+@item
+Compile from within the editor (@key{F9}).  Errors are parsed and the
+cursor jumps to the corresponding source line.
+
+@item
+Debug with gdb (or sdb/dbx) without leaving the editor.  Set breakpoints,
+inspect variables, step through code, and view the call stack.
+
+@item
+Manage multi-file projects with a project file that stores compiler
+flags, source file lists, and build targets.
+
+@item
+Browse man pages and GNU info nodes from the @samp{Help} menu.
+
+@item
+Mouse support in both terminal (via GPM) and X11 modes.
+@end itemize
+
+@section Who is xwpe for?
+
+xwpe occupies a niche between simple editors (@command{nano},
+@command{mcedit}) and complex ones (@command{vim}, @command{emacs}).
+If you want:
+
+@itemize @minus
+@item
+A menu-driven IDE that works over SSH,
+@item
+Borland-style keybindings from muscle memory,
+@item
+An integrated compile-edit-debug cycle without configuring LSP servers,
+@item
+Something that starts instantly and runs on any terminal,
+@end itemize
+
+@noindent
+then xwpe may be what you need.
+
+@section Project history (brief)
+
+@cindex Fred Kruse
+@cindex Dennis Payne
+@cindex Juan Manuel Mendez Rey
+
+Fred Kruse wrote xwpe in 1993 at the Technical University of Berlin.
+He released it as free software under the GNU GPL and maintained it
+through version 1.4.2 (circa 1997), then went silent.
+
+Dennis Payne picked up the project in 2000, renaming it ``xwpe-alpha''
+to distinguish it from Kruse's official releases.  He added X11 support,
+GPM mouse, autoconf, and many bug fixes through version 1.5.30a (2006),
+then the project went dormant.
+
+In 2026, Juan Manuel M@'endez Rey took over upstream maintenance with
+Dennis Payne's blessing.  Version 1.6.0 replaced the 1993 byte-based
+screen buffer with a structured @code{SCREENCELL} type for native UTF-8
+display, added terminal resize support, and fixed keyboard mapping for
+modern terminals.  Version 1.6.1 modernised the build system with
+automake.
+
+For the full history, see @ref{History}.

@@ -4,5 +4,162 @@
 @cindex history
 @cindex Fred Kruse
 @cindex Dennis Payne
+@cindex Guus Bonnema
+@cindex Juan Manuel Mendez Rey
 
-This chapter is under construction.
+xwpe has been continuously available since 1993 --- over 30 years.
+This chapter traces its journey from a student project in Berlin to
+a rescued open-source project maintained on Codeberg.
+
+@section Fred Kruse (1991--1997)
+
+@cindex Technical University of Berlin
+@cindex Borland Turbo C
+
+Fred Kruse wrote xwpe at the Technical University of Berlin
+(@code{fkr@@cs.tu-berlin.de}, later @code{kruse@@rrzn.uni-hannover.de}).
+The user interface was modelled after Borland's Turbo C and Turbo Pascal
+family, which were the dominant PC development environments of the era.
+
+Kruse released xwpe as free software under the GNU General Public License
+version 2.  His last official release was version 1.4.2 (circa 1997).
+After that, he went silent --- email to his known addresses bounced, and
+no further contact has been established.
+
+The original xwpe supported:
+@itemize @bullet
+@item Terminal display via curses or termcap.
+@item Syntax highlighting for C, C++, Fortran, and Pascal.
+@item Integration with gcc, gdb, sdb, and dbx.
+@item A project file format for multi-file builds.
+@item Mouse support on the Linux console.
+@item A DOS/DJGPP port (now removed).
+@item German and English documentation.
+@end itemize
+
+@section Dennis Payne and xwpe-alpha (2000--2006)
+
+@cindex xwpe-alpha
+@cindex identicalsoftware.com
+
+Dennis Payne (@code{dulsi@@identicalsoftware.com}) at Rensselaer
+Polytechnic Institute picked up xwpe around 2000.  He renamed the
+continuation ``xwpe-alpha'' and bumped the version to 1.5.x to
+distinguish it from Kruse's releases.
+
+Payne's contributions over six years included:
+@itemize @bullet
+@item X11 window support (@command{xwpe}, @command{xwe}).
+@item GPM mouse integration for terminal mode.
+@item autoconf-based build system.
+@item X Selection (clipboard) support.
+@item Removal of DOS/DJGPP code and other dead paths.
+@item Ncurses support (replacing raw termcap).
+@item Numerous bug fixes from mailing list reports.
+@end itemize
+
+The xwpe-alpha mailing list at @code{identicalsoftware.com} ran from
+1998 to 2003 and accumulated 487 messages from dozens of contributors.
+These emails remain the richest source of real-world xwpe usage
+documentation.  The archive is preserved in the companion repository
+@code{xwpe-archive}.
+
+@subsection Release history (Payne era)
+
+Data from the Freshmeat/Freecode project page (project ID 12213,
+added 1998-06-21, rating 8.48/10):
+
+@multitable @columnfractions .15 .15 .50
+@headitem Version @tab Date @tab Highlights
+@item 1.5.4a @tab 1998-11 @tab First xwpe-alpha release.  messages.h (Stefan Hille), Java syntax.
+@item 1.5.17a @tab 1999-05 @tab Pedro's memory fixes, Alexander's change-case dialog.
+@item 1.5.19a @tab 1999-08 @tab Mouse resize fix (Pedro), GPM fix (Sebastiano), titling (Mark Spieth).
+@item 1.5.22a @tab 2000-01 @tab Guido Draheim's backup-file option, Martin's max-column patch.
+@item 1.5.23a @tab 2000-03 @tab Mark Spieth zoom fix, Fritz Y2K patch, zlib info reader.
+@item 1.5.26a @tab 2001-01 @tab Path limits removed, Martin's translations.
+@item 1.5.27a @tab 2001-06 @tab Roman Levenstein's modifications, Arjan van Dijk XLookupString fix.
+@item 1.5.28a @tab 2003-03 @tab Paulo C@'esar Pereira de Andrade's partial i18n patch.
+@item 1.5.29a @tab 2005-01 @tab XLookupString regression fix.
+@item 1.5.30a @tab 2006-04 @tab Final Payne release.  Fedora Core 4 compile fix.
+@end multitable
+
+After 1.5.30a, the project went dormant.  Payne's website
+(@code{identicalsoftware.com/xwpe/}) remained online but no further
+releases were made.
+
+@section The Debian years (2002--2025)
+
+@cindex Debian
+@cindex Francesco Paolo Lovergine
+@cindex Andreas Tille
+@cindex Jari Aalto
+
+xwpe entered Debian in 2002, maintained by Francesco Paolo Lovergine.
+Over the following two decades, the Debian package accumulated patches
+to keep xwpe building with evolving toolchains:
+
+@itemize @bullet
+@item Jari Aalto: manpage hyphen fixes, @code{strcpy()} macro workaround.
+@item Francesco P.@: Lovergine: format-security fixes, tparm prototype
+      disable, missing prototype for @code{print_to_end_of_buffer()}.
+@item Andreas Tille: Salsa migration, modern packaging standards.
+@item Helmut Grohne: cross-build fix (@code{--host} to @command{configure}).
+@item Robert Millan: architecture list fix.
+@end itemize
+
+By 2025, xwpe had accumulated 9 patches and was failing to build with
+GCC 15 (Debian bug #1098180) due to the C23 default where @code{f()}
+means @code{f(void)}.
+
+@section GitHub forks (2017--2019)
+
+@cindex Guus Bonnema
+@cindex Alessandro Magnasco
+
+Alessandro G.@: Magnasco hosted a GitHub fork at
+@code{github.com/amagnasco/xwpe}.  Guus Bonnema contributed two
+important fixes:
+
+@enumerate
+@item Fix for a link error: renamed @code{WpeGpmInit} prototype to
+      the actual function name @code{WpeGpmMouseInit} in @file{edit.h}.
+@item Fix for a segfault on early @code{MALLOC} failure in
+      @file{we_main.c}.
+@end enumerate
+
+Jan D@"orntlein also forked the code on GitHub but made no significant
+changes.  Both forks went dormant.
+
+@section The rescue (2026)
+
+@cindex Codeberg
+@cindex v1.5.31
+@cindex v1.6.0
+@cindex v1.6.1
+@cindex SCREENCELL
+
+In May 2026, Juan Manuel M@'endez Rey contacted Dennis Payne, who
+gave his explicit blessing for a new maintainer.  The rescue proceeded
+in three releases:
+
+@table @strong
+@item v1.5.31 (rescue release)
+Baseline: Payne 1.5.30a + 2 cherry-picks from Bonnema + all 7 Debian
+patches as proper upstream commits with original authors preserved.
+Closed Debian #1098180 (GCC 15 FTBFS) and #228820 (22-year-old color
+dialog crash).
+
+@item v1.6.0 (UTF-8 and resize)
+Replaced the 1993 byte-based screen buffer with the @code{SCREENCELL}
+buffer model for native UTF-8 display.  Added terminal resize via
+@code{KEY_RESIZE}, keyboard remapping for modern terminals, GPM safety
+check, and 20 automated tests.
+
+@item v1.6.1 (modern autotools)
+Replaced the 1998 hand-written build system (1,500 lines of custom
+@file{aclocal.m4} macros for SCO/HP-UX/AIX portability) with standard
+@command{configure.ac} + @command{Makefile.am}.  @code{./configure &&
+make} works out of the box with any modern compiler.
+@end table
+
+The new upstream home is @uref{https://codeberg.org/mendezr/xwpe}.
