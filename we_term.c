@@ -674,7 +674,7 @@ int e_t_refresh()
      fk_colset(e_gt_col(j, i));
     c = e_gt_char(j, i);
 #ifdef NCURSES
-    if (c < NSPCHR)
+    if (c >= 0 && c < NSPCHR)
      addch(sp_chr[c]);
     else if (c > 127)
     {
@@ -694,8 +694,9 @@ int e_t_refresh()
       cur_x = j + 1;
      }
     }
-    else
+    else if (c >= NSPCHR)
      addch(c);
+    /* else: c < 0 -- skip uninitialised/invalid cell */
 #else
     if (c < NSPCHR)
      e_putp(sp_chr[c]);

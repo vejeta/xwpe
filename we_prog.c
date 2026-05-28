@@ -496,9 +496,9 @@ int e_p_exec(int file, FENSTER *f, PIC *pic)
  if (wfildes[0] >= 0)
   close(wfildes[0]);
  if (efildes[1] >= 0)
-  close(efildes[0]);
+  close(efildes[1]);
  if (wfildes[1] >= 0)
-  close(wfildes[0]);
+  close(wfildes[1]);
  if (wfile)
  {
   remove(wfile);
