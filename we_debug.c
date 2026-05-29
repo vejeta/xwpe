@@ -329,7 +329,8 @@ int e_e_line_read(int n, signed char *s, int max)
  else if (e_deb_type == 0 && i > 4 && s[i] == ' ' && !strncmp(s+i-5, "(gdb)", 5))
   return(1);
  else if (e_deb_type == 4 && i > 0 &&
-   ((s[i] == ' ' && i > 1 && s[i-1] == ']') || s[i] == '>'))
+   ((s[i] == ' ' && s[i-1] == ']') ||
+    (s[i] == ' ' && s[i-1] == '>')))
   return(1);
  return(2);
 }
@@ -368,8 +369,9 @@ int e_d_line_read(int n, signed char *s, int max, int sw, int esw)
   {  str[0] = 0;  wt = 0;   return(1);  }
   else if(e_deb_type == 3 && i > 0 && s[i-1] == '>')
   {  str[0] = 0;  wt = 0;   return(1);  }
-  else if(e_deb_type == 4 && i > 0 &&
-    ((s[i-1] == ' ' && i > 1 && s[i-2] == ']') || s[i-1] == '>'))
+  else if(e_deb_type == 4 && i > 1 &&
+    ((s[i-1] == ' ' && s[i-2] == ']') ||
+     (s[i-1] == ' ' && s[i-2] == '>')))
   {  str[0] = 0;  wt = 0;   return(1);  }
   else if(e_deb_type == 0)
   {
@@ -1867,6 +1869,16 @@ int e_start_debug(FENSTER *f)
  f = cn->f[cn->mxedt-1];
  for (i = 0; i < SVLINES; i++)
  {  e_d_sp[i] = e_d_out_str[i];  e_d_out_str[i][0] = '\0';  }
+ /* Auto-select jdb for .java files. gdb cannot debug Java bytecode,
+    so force jdb regardless of user's debugger Options selection. */
+ { int _l = strlen(e_d_file);
+   if (_l > 5 && !strcmp(e_d_file + _l - 5, ".java"))
+   {
+    if (e_deb_type != 4)
+     e_error("Java file: switching to jdb debugger.", -1, f->fb);
+    e_deb_type = 4;
+   }
+ }
  if (e_deb_type == 1) {  e_debugger = "sdb";  e_deb_swtch = NULL;  }
  else if (e_deb_type == 2) {  e_debugger = "dbx";  e_deb_swtch = "-i";  }
  else if (e_deb_type == 3) {  e_debugger = "xdb";  e_deb_swtch = "-L";  }
@@ -1959,13 +1971,17 @@ int e_deb_run(FENSTER *f)
   if (ret == -1) {  e_show_error(0, f);  return(ret);  }
   return(e_error(e_d_msg[ERR_CANTDEBUG], 0, f->fb));
  }
- for (ret = 0; isspace(e_d_tty[ret]); ret++)
-  ;
- if (e_d_tty[ret] != DIRC)
+ /* jdb doesn't need tty redirect -- skip the check */
+ if (e_deb_type != 4)
  {
-  e_d_quit(f);
-  sprintf(eing, "tty error: %s", e_d_tty);
-  return(e_d_error(eing));
+  for (ret = 0; isspace(e_d_tty[ret]); ret++)
+   ;
+  if (e_d_tty[ret] != DIRC)
+  {
+   e_d_quit(f);
+   sprintf(eing, "tty error: %s", e_d_tty);
+   return(e_d_error(eing));
+  }
  }
  if (e_deb_type == 2)
  {
@@ -2026,8 +2042,25 @@ int e_deb_run(FENSTER *f)
  write(rfildes[1], eing, strlen(eing));
  if (e_deb_type == 4 && !prsw)
  {
-  /* jdb: just wait for the prompt after run */
-  if (e_d_dum_read() == -1) return(e_d_quit(f));
+  /* jdb: "run" returns "> " immediately but the VM starts
+     asynchronously. We need to read past the "> " and wait for
+     the breakpoint prompt "main[1] " which indicates the VM has
+     started and hit a breakpoint.
+     Approach from JDEE (Emacs jdb integration): read lines until
+     we see "Breakpoint hit" in the output, then read the final
+     prompt. Use blocking reads (sw=2) to avoid busy-looping. */
+  char _jline[256];
+  int _jr, _found = 0;
+  /* Read all jdb output until breakpoint prompt */
+  while (!_found)
+  {
+   _jr = e_d_line_read(wfildes[0], _jline, 256, 2, 0);
+   if (_jr == -1) return(e_d_quit(f));
+   if (_jr == 1 && strchr(_jline, '['))
+    _found = 1;  /* got "main[1] " prompt */
+   if (strstr(_jline, "exited"))
+   {  e_d_quit(f); return(-1);  }  /* VM failed to start */
+  }
  }
  else if (e_deb_type == 0 || ((e_deb_type == 2  || e_deb_type == 3) && !prsw))
  {
@@ -2711,14 +2744,26 @@ int e_deb_options(FENSTER *f)
  o->crsw = AltO;
  e_add_txtstr(4, 2, "Debugger:", o);
  e_add_txtstr(20, 2, "Mode:", o);
+ { /* Auto-select jdb when current file is .java */
+   ECNT *cn2 = f->ed;
+   char *_fn = cn2->f[cn2->mxedt]->datnam;
+   int _fnl = strlen(_fn);
+   if (_fnl > 5 && !strcmp(_fn + _fnl - 5, ".java"))
+    e_deb_type = 4;
+   /* Map e_deb_type to radio button index:
+      0=Gdb, 1=Sdb, 2=Dbx, 3=Jdb (radio index)
+      e_deb_type: 0=gdb, 1=sdb, 2=dbx, 3=xdb, 4=jdb */
+   int _sel = (e_deb_type == 4) ? 3 :
+              (e_deb_type == 3) ? 2 : e_deb_type;
  e_add_pswstr(0, 5, 3, 0, AltG, 0, "Gdb    ", o);
  e_add_pswstr(0, 5, 4, 0, AltS, 0, "Sdb    ", o);
 #ifdef XDB
- e_add_pswstr(0, 5, 5, 0, AltX, e_deb_type == 3 ? 2 : e_deb_type, "Xdb    ", o);
+ e_add_pswstr(0, 5, 5, 0, AltX, 0, "Xdb    ", o);
 #else
- e_add_pswstr(0, 5, 5, 0, AltD, e_deb_type > 3 ? e_deb_type - 1 : e_deb_type, "Dbx    ", o);
+ e_add_pswstr(0, 5, 5, 0, AltD, 0, "Dbx    ", o);
 #endif
- e_add_pswstr(0, 5, 6, 0, AltJ, e_deb_type == 4 ? 3 : 0, "Jdb    ", o);
+ e_add_pswstr(0, 5, 6, 0, AltJ, _sel, "Jdb    ", o);
+ }
  e_add_pswstr(1, 21, 3, 0, AltN, 0, "Normal     ", o);
  e_add_pswstr(1, 21, 4, 0, AltF, e_deb_mode, "Full Screen", o);
  e_add_bttstr(10, 9, 1, AltO, " Ok ", NULL, o);
