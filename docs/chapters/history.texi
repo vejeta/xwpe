@@ -76,11 +76,11 @@ added 1998-06-21, rating 8.48/10):
 @item 1.5.19a @tab 1999-08 @tab Mouse resize fix (Pedro), GPM fix (Sebastiano), titling (Mark Spieth).
 @item 1.5.22a @tab 2000-01 @tab Guido Draheim's backup-file option, Martin's max-column patch.
 @item 1.5.23a @tab 2000-03 @tab Mark Spieth zoom fix, Fritz Y2K patch, zlib info reader.
-@item 1.5.26a @tab 2001-01 @tab Path limits removed, Martin's translations.
-@item 1.5.27a @tab 2001-06 @tab Roman Levenstein's modifications, Arjan van Dijk XLookupString fix.
-@item 1.5.28a @tab 2003-03 @tab Paulo C@'esar Pereira de Andrade's partial i18n patch.
-@item 1.5.29a @tab 2005-01 @tab XLookupString regression fix.
-@item 1.5.30a @tab 2006-04 @tab Final Payne release.  Fedora Core 4 compile fix.
+@item 1.5.26a @tab 2001-02 @tab Path limits removed, blank project bug, autosave fix, German comments converted to English (Ronald Holzloehner), Martin's translations.
+@item 1.5.27a @tab 2002-03 @tab Bzipped man pages fix, XLookupString fix, syntax coloring errors.  Roman Levenstein's higher-level ncurses work (not enabled by default).
+@item 1.5.28a @tab 2002-06 @tab Funky mouse pointers removed; Paulo C@'esar Pereira de Andrade's partial i18n patch; X11 colors matched to curses.
+@item 1.5.29a @tab 2002-06 @tab XLookupString regression from 1.5.28a fixed.
+@item 1.5.30a @tab 2006-04 @tab Final Payne release.  Fedora Core 4 compile fix; @file{.desktop} file added.
 @end multitable
 
 After 1.5.30a, the project went dormant.  Payne's website
@@ -160,6 +160,17 @@ Replaced the 1998 hand-written build system (1,500 lines of custom
 @file{aclocal.m4} macros for SCO/HP-UX/AIX portability) with standard
 @command{configure.ac} + @command{Makefile.am}.  @code{./configure &&
 make} works out of the box with any modern compiler.
+
+@item v1.6.2 (compiler and debugger resurrection)
+Complete SCREENCELL migration for popup save/restore.  Compiler
+integration for 5 languages: gcc, g++, gfortran, fpc, javac with
+error navigation.  Debugger resurrection: fixed 30-year-old pipe fd
+leak, SIGCHLD handler, SIGPIPE crash.  Added jdb as 5th debugger
+backend (Java).  Pty-based program output capture (zero flicker).
+Restored User Screen (Ctrl-G P) broken since Payne era.  12-chapter
+Texinfo manual with restored content from Kruse's 1.4 manpage.
+560+ historical files archived.  Emacs-compatible cursor keys.
 @end table
 
 The new upstream home is @uref{https://codeberg.org/mendezr/xwpe}.
+Historical archive: @uref{https://codeberg.org/mendezr/xwpe-archives}.
