@@ -1155,8 +1155,8 @@ int e_t_d_switch_out(int sw)
     Just repaint the editor when returning from a debug command. */
  if (!sw)
  {
-  clearok(stdscr, TRUE);
-  e_abs_refr();
+  /* No clearok needed: with pty output capture, the screen was never
+     switched away, so ncurses' state is still valid. Just refresh. */
   e_refresh();
  }
  return(sw);

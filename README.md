@@ -3,7 +3,8 @@
 Xwpe is a development environment designed for use on UNIX systems.
 Fred Kruse wrote xwpe and released it as free software under the GNU
 General Public License. The user interface was designed to mimic the
-Borland C and Pascal family. Extensive support is provided for
+Borland C and Pascal family, with Emacs-compatible cursor keys
+(Ctrl-P/N/F/B/A/E) built in. Extensive support is provided for
 programming: syntax highlighting, integrated compiler and debugger
 interface, project management, and a function-key driven menu system.
 

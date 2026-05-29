@@ -111,11 +111,15 @@ void e_d_pty_drain(void)
  fcntl(e_d_pty_master, F_SETFL, flags & ~O_NONBLOCK);
 }
 
-/* Close pty fds and free the output buffer. */
+/* Close pty fds but KEEP the output buffer.
+   The buffer is preserved so Ctrl-G P can show program output
+   even after the debugger session ends. It is freed when a
+   new debug session starts (in e_exec_deb). */
 void e_d_pty_close(void)
 {
  if (e_d_pty_master >= 0)
  {
+  e_d_pty_drain();  /* capture any remaining output before closing */
   close(e_d_pty_master);
   e_d_pty_master = -1;
  }
@@ -125,12 +129,7 @@ void e_d_pty_close(void)
   e_d_pty_slave = -1;
  }
  e_d_pty_slave_name[0] = '\0';
- if (e_d_prog_output)
- {
-  FREE(e_d_prog_output);
-  e_d_prog_output = NULL;
- }
- e_d_prog_output_len = 0;
+ /* Buffer is intentionally NOT freed here -- see comment above. */
  e_d_prog_output_cap = 0;
 }
 
@@ -576,14 +575,14 @@ int e_d_quit(FENSTER *f)
  e_d_p_message(e_d_msg[ERR_ENDDEBUG], f, 1);
  WpeMouseChangeShape(WpeEditingShape);
  e_d_delbreak(f);
+ /* Switch back to the source file, not Messages.
+    The user expects to continue editing after quitting the debugger. */
  for (i = cn->mxedt; i > 0; i--)
-  if (!strcmp(cn->f[i]->datnam, "Messages"))
+  if (e_check_c_file(cn->f[i]->datnam))
   {
    e_switch_window(cn->edt[i], cn->f[cn->mxedt]);
-   break;
+   return(0);
   }
- if (i <= 0)
-  e_edit(cn, "Messages");
  return(0);
 }
 
@@ -1671,9 +1670,13 @@ int e_exec_deb(FENSTER *f, char *prog)
    return(0);
   }
   /* Create pty BEFORE fork so the child inherits the slave fd.
-     gdb's "run > /dev/pts/N" needs the slave accessible. */
+     gdb's "run > /dev/pts/N" needs the slave accessible.
+     Clear any output from the previous debug session. */
   if (!WpeIsXwin())
   {
+   if (e_d_prog_output) { FREE(e_d_prog_output); e_d_prog_output = NULL; }
+   e_d_prog_output_len = 0;
+   e_d_prog_output_cap = 0;
    if (openpty(&e_d_pty_master, &e_d_pty_slave, e_d_pty_slave_name,
                NULL, NULL) < 0)
    {
@@ -1857,10 +1860,11 @@ int e_start_debug(FENSTER *f)
   e_error(estr, 0, f->fb);
   return(-1);
  }
- e_sys_ini();
+ /* Note: e_sys_ini()/e_sys_end() were here originally but they cause
+    screen flicker (rmcup/smcup) which is unnecessary for the gdb fork.
+    The pty handles program output; no screen switching needed. */
  if (e__project && (file = e_exec_deb(f, e_s_prog.exe_name )) == 0)
  {
-  e_sys_end();
   return(-2);
  }
  else if (!e__project)
@@ -1880,11 +1884,9 @@ int e_start_debug(FENSTER *f)
   }
   if ((file = e_exec_deb(f, estr)) == 0)
   {
-   e_sys_end();
    return(-2);
   }
  }
- e_sys_end();
  e_d_p_message(e_d_msg[ERR_STARTDEBUG], f, 1);
  WpeMouseChangeShape(WpeDebuggingShape);
  if (cn->mxedt > 1)
@@ -1906,6 +1908,14 @@ int e_run_debug(FENSTER *f)
   fcntl( wfildes[0], F_SETFL, kbdflgs | O_NONBLOCK);
 
   if (e_d_dum_read() == -1) return(-1);
+  /* Disable gdb's confirmation prompts ("Start it from the beginning?",
+     "Kill the program being debugged?", etc.) to prevent busy loops
+     when xwpe sends commands that gdb would otherwise block on. */
+  if (e_deb_type == 0)
+  {
+   write(rfildes[1], "set confirm off\n", 16);
+   if (e_d_dum_read() == -1) return(-1);
+  }
   if (e_deb_type == 3)
   {
    write(rfildes[1], "sm\n", 3);
@@ -2385,9 +2395,12 @@ int e_read_output(FENSTER *f)
  if (i < 0 && (i = e_d_trd_check(f)) == -1) return(-1);
  if (i < 0)
  {
+  /* Could not determine where the debugger stopped.  This typically
+     happens when the program exited or gdb entered system code.
+     Quit the debugger cleanly instead of showing multiple popups. */
   e_d_switch_out(0);
-  i = e_message(1, e_d_msg[ERR_UNKNOWNBRK], f);
-  if (i == 'Y') return(e_d_quit(f));
+  e_error("Program exited. Debugger stopped.", 0, f->fb);
+  return(e_d_quit(f));
  }
  return(0);
 }
@@ -2585,6 +2598,15 @@ int e_d_goto_break(char *file, int line, FENSTER *f)
  {
   if (access(file, 0))
   {
+   /* If gdb stepped into system/library code (libc, runtime startup),
+      show a friendlier message instead of "Can't find file /usr/..." */
+   if (strstr(file, "../sysdeps/") || strstr(file, "/usr/src/") ||
+       strstr(file, "/build/"))
+   {
+    e_error("End of user code. Debugger stopped.", 0, f->fb);
+    e_d_quit(f);
+    return(-2);
+   }
    sprintf(str, e_d_msg[ERR_CANTFILE], file);
    return(e_error(str, 0, f->fb));
   }

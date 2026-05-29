@@ -28,4 +28,14 @@ clean-local:
 
 EXTRA_DIST = \
   texinfo.tex \
-  sources/README.md
+  sources/README.md \
+  examples/README.md \
+  examples/compile_error_test.c \
+  examples/compile_error_test.cpp \
+  examples/compile_error_test.f90 \
+  examples/compile_error_test.pas \
+  examples/compile_error_test.java \
+  examples/debug_test.c \
+  examples/debug_test.cpp \
+  examples/debug_test.f90 \
+  examples/debug_test.pas
