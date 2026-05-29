@@ -110,6 +110,9 @@ Key binding reference for the help system.
 @item @var{prefix}/lib/xwpe/syntax_def
 Syntax highlighting definitions.
 
+@item @var{prefix}/share/info/xwpe.info
+The Texinfo manual (this document).  Read with @command{info xwpe}.
+
 @item @var{prefix}/share/man/man1/
 Man pages: @file{we.1}, @file{wpe.1}, @file{xwe.1}, @file{xwpe.1}.
 

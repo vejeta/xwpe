@@ -97,8 +97,10 @@
      Special thanks to all who contribute to this program  (see
      Credits)
 
-     Send   questions   or   problems   to   Dennis   Payne,
-     <dulsi@identicalsoftware.com>.
+     For the full manual run:  info xwpe
+     Online:  https://codeberg.org/mendezr/xwpe
+
+     Report bugs at:  https://codeberg.org/mendezr/xwpe/issues
 
      Copyright (C) 1993 Fred  Kruse  xwpe  is  free.  Anyone  may
      redistribute copies of xwpe to anyone under the terms stated
@@ -116,6 +118,9 @@
 
     The  xwpe  alpha   project   was  started   by  Dennis  Payne
     <dulsi@identicalsoftware.com>.
+
+    The  rescue  and  v1.6.x  series  by  Juan Manuel Mendez Rey
+    <juan.mendezr@proton.me>.
 
     Additional contributers include:
     Anthony Barbachan <barbacha@Trill.cis.fordham.edu>
@@ -415,6 +420,8 @@
           Step                S    Execute next programme line
                                    (step over any function).
           Run/Continue        R    Start/continue debugging.
+          Program output      P    Show program output.
+          debugger Options    O    Select debugger backend.
           Quit                Q    Exit the debugger.
 
 
@@ -444,8 +451,8 @@
                               (see also Syntax-Support)
           Compiler       C    Change the options for compilers
                               (see also Compiler-Options)
-          Debugger       D    Select the debugger (gdb, sdb, dbx)
-                              and full-screen/normal mode.
+          Debugger       D    Select the debugger (gdb, sdb, dbx,
+                              xdb, jdb) and mode.
 
 
 
@@ -785,7 +792,9 @@
           Ctrl F6
           Ctrl G K       Show the stack. (see also Stack-Window)
 
-          Ctrl G O       Display the output (not X11)
+          Ctrl G P       Display program output
+
+          Ctrl G O       Select debugger backend
 
 
 

@@ -168,10 +168,10 @@ When switching between languages (e.g.@: Pascal to C++), leftover
 Workaround: delete @file{.o} and @file{.e} files manually before
 switching languages.
 
-@item Documentation not updated (historical)
-The in-app help file (@file{help.xwpe_eng}) has not been updated since
-the Payne era (2006).  This Texinfo manual is the current primary
-documentation.
+@item In-app help coverage
+The in-app help file (@file{help.xwpe_eng}) covers the core interface
+but not the v1.6.x features in detail.  For comprehensive
+documentation, use this Texinfo manual (@command{info xwpe}).
 @end table
 
 @section Debian BTS history

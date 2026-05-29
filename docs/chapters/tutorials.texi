@@ -149,18 +149,16 @@ int main() @{
 @end example
 
 @item
-Compile with debug symbols: set Compiler Options to @code{-g -O0},
-then press @key{F9}.
-
-@item
-Start the debugger: press @kbd{Ctrl-F10}.
+Compile with debug symbols: the default options include @code{-g}.
+Press @key{F9} to compile and link.
 
 @item
 Set a breakpoint at @code{int x = 5;}: move the cursor there and
-press @kbd{Ctrl-F8}.
+press @kbd{Ctrl-G B} (or @kbd{Ctrl-F8}).
 
 @item
-Continue: press @kbd{Ctrl-F10}.  The program stops at the breakpoint.
+Start the debugger: press @kbd{Ctrl-G R} (or @kbd{Ctrl-F10}).
+The program compiles, links, launches gdb, and stops at the breakpoint.
 
 @item
 Add a watch: press @kbd{Ctrl-F7}, type @code{x}, press @key{Return}.
@@ -183,7 +181,7 @@ Fix the bug: remove or comment out the @code{*ptr = 42;} line.
 Recompile with @key{F9} and run with @kbd{Ctrl-F9}.
 
 @item
-Quit the debugger: press @kbd{Ctrl-F2}.
+Quit the debugger: press @kbd{Ctrl-G Q} (or @kbd{Ctrl-F2}).
 @end enumerate
 
 @section Tutorial 4: Java compile and debug

@@ -117,3 +117,22 @@ modern terminals.  Version 1.6.1 modernised the build system with
 automake.
 
 For the full history, see @ref{History}.
+
+@section Documentation
+
+xwpe provides three levels of documentation:
+
+@table @asis
+@item In-app help (@key{F1})
+A built-in help file covering menus, key bindings, and basic usage.
+Press @key{F1} from within xwpe to open it.
+
+@item This manual (@command{info xwpe})
+The comprehensive Texinfo manual you are reading now.  It covers
+installation, configuration, compiler integration, debugging, tutorials,
+and the full command reference.
+
+@item Man pages (@command{man xwpe})
+Standard UNIX man pages for @command{we}, @command{wpe}, @command{xwe},
+and @command{xwpe}.
+@end table

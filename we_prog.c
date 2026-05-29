@@ -179,9 +179,11 @@ int e_p_make(FENSTER *f)
     sprintf(estr, "%s%c%s.e", e_prog.exedir, DIRC, mstr);
   }
   if (e_prog.exedir[len] == DIRC)
-   sprintf(ostr, "%s%s.o", e_prog.exedir, mstr);
+   sprintf(ostr, (e_s_prog.comp_sw & 1) ? "%s%s.class" : "%s%s.o",
+           e_prog.exedir, mstr);
   else
-   sprintf(ostr, "%s%c%s.o", e_prog.exedir, DIRC, mstr);
+   sprintf(ostr, (e_s_prog.comp_sw & 1) ? "%s%c%s.class" : "%s%c%s.o",
+           e_prog.exedir, DIRC, mstr);
   e_argc = e_add_arg(&e_arg, estr, 2, e_argc);
   e_argc = e_add_arg(&e_arg, ostr, 3, e_argc);
   stat(ostr, cbuf);
@@ -375,7 +377,12 @@ int e_comp(FENSTER *f)
  else
   sprintf(ostr, "%s%c%s", e_prog.exedir, DIRC, f->datnam);
  WpeStringCutChar(ostr, '.');
- strcat(ostr, ".o");
+ /* javac produces .class files, not .o -- check the right extension
+    so the up-to-date test works and we don't recompile every time */
+ if (e_s_prog.comp_sw & 1)
+  strcat(ostr, ".class");
+ else
+  strcat(ostr, ".o");
 #ifndef NO_MINUS_C_MINUS_O
  if (!(e_s_prog.comp_sw & 1))
  {

@@ -175,13 +175,20 @@ in the special-character table) took the entire 1.6.2 cycle to resolve.
 
 ## Documentation
 
-xwpe includes a 12-chapter Texinfo manual covering installation, the
-interface, editor commands, configuration, compiling, debugging, projects,
-and tutorials with step-by-step walkthroughs.
+xwpe has three levels of documentation:
+
+| Level | Access | Content |
+|-------|--------|---------|
+| **In-app help** | Press F1 inside xwpe | Menus, key bindings, basic usage |
+| **Texinfo manual** | `info xwpe` after install | Full 12-chapter manual: installation, interface, editor, configuration, compiling, debugging, projects, tutorials, known issues, history, command reference |
+| **Man pages** | `man xwpe`, `man wpe`, `man we` | Command-line options, quick reference |
+
+The Texinfo manual is installed automatically by `make install` and
+registered with `install-info`. It is also available as HTML:
 
 ```sh
-make info    # build xwpe.info
-make html    # build HTML version
+make -C docs info    # build xwpe.info (built automatically by make)
+make -C docs html    # build HTML version in docs/xwpe.html/
 ```
 
 ## Known limitations
