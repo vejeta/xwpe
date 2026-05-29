@@ -2046,9 +2046,16 @@ int e_d_step_next(FENSTER *f, int sw)
  }
  if (e_d_swtch < 3)
  {
-  if ((main_brk = e_mk_brk_main(f, 0)) < -1) return(main_brk);
+  /* If the user has breakpoints set, use those instead of adding
+     a temporary breakpoint at main(). This way the first F8/F7
+     stops at the user's breakpoint, not at main's entry point. */
+  if (e_d_nbrpts <= 0)
+  {
+   if ((main_brk = e_mk_brk_main(f, 0)) < -1) return(main_brk);
+  }
   ret = e_deb_run(f);
-  e_mk_brk_main(f, main_brk);
+  if (e_d_nbrpts <= 0)
+   e_mk_brk_main(f, main_brk);
   return(ret);
  }
  e_d_delbreak(f);
@@ -2603,7 +2610,7 @@ int e_d_goto_break(char *file, int line, FENSTER *f)
    if (strstr(file, "../sysdeps/") || strstr(file, "/usr/src/") ||
        strstr(file, "/build/"))
    {
-    e_error("End of user code. Debugger stopped.", 0, f->fb);
+    e_error("End of code. Ctrl-G P for output.", 0, f->fb);
     e_d_quit(f);
     return(-2);
    }
