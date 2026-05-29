@@ -314,7 +314,11 @@ void WpeSignalChild(int sig)
 {
  int statloc;
 
- wait(&statloc);
+ /* Use WNOHANG to avoid blocking, and loop to reap all zombies.
+    The old wait() call would steal children from pclose/waitpid,
+    causing the debugger's popen("tty") to hang on pclose. */
+ while (waitpid(-1, &statloc, WNOHANG) > 0)
+  ;
 }
 
 static int e_bool_exit = 0;

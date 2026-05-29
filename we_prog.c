@@ -208,21 +208,24 @@ int e_p_make(FENSTER *f)
   }
   else
    file = 0;
+  if (!e__project)
+   e_free_arg(e_arg, e_argc);
+  if (file != 0)
+   i = e_p_exec(file, f, pic);
+  else
+  {
+   i = WPE_ESC;
+   if (pic)
+    e_close_view(pic, 1);
+  }
+  WpeMouseRestoreShape();
+  return(i);
  }
+ /* Executable is up to date -- no linking needed */
  if (!e__project)
- {
   e_free_arg(e_arg, e_argc);
- }
- if (file != 0)
-  i = e_p_exec(file, f, pic);
- else
- {
-  i = WPE_ESC;
-  if (pic)
-   e_close_view(pic, 1);
- }
  WpeMouseRestoreShape();
- return(i);
+ return(0);
 }
 
 int e_run(FENSTER *f)
@@ -394,11 +397,15 @@ int e_comp(FENSTER *f)
     e_close_view(pic, 1);
    return(WPE_ESC);
   }
+  e_sys_end();
+  e_free_arg(arg, argc);
+  i = e_p_exec(file, f, pic);
+  return(i);
  }
+ /* Object file is up to date -- no recompilation needed */
  e_sys_end();
  e_free_arg(arg, argc);
- i = e_p_exec(file, f, pic);
- return(i);
+ return(0);
 }
 
 int e_exec_inf(FENSTER *f, char **argv, int n)

@@ -77,6 +77,20 @@ Changes
     switched to GNU error format (file:line:column:).
   - Pascal: pc -> fpc, added .pas/.pp extensions, new error pattern
     for fpc's file(line,column) format.
+  - Java: added javac as 5th default compiler (.java), with
+    file:line: pattern (no column).
+* Fixed debugger (gdb) unable to start: three bugs prevented the
+  Debug -> Run (Ctrl-G R) command from working:
+  - WpeSignalChild used wait() which stole child processes from
+    pclose(), causing popen("tty") to hang forever. Fixed with
+    waitpid(-1, WNOHANG).
+  - e_comp called e_p_exec(-1) when no recompilation was needed
+    (object file up to date), causing a spurious wait() failure.
+  - e_p_make called e_p_exec(-1) when no linking was needed
+    (executable up to date), same issue.
+  Debugger now starts correctly: breakpoints, step over (F8),
+  step into (F7), watch variables, and call stack all work with
+  gdb 17.2.
   (Juan Manuel Mendez Rey)
 
 1.6.1 (Modern autotools build system)
