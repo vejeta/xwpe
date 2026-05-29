@@ -1092,9 +1092,13 @@ int e_t_deb_out(FENSTER *f)
 {
  if (!swt_scr || !beg_scr)
   return(e_error("Your terminal don\'t use begin/end cup", 0, f->fb));
- e_d_switch_out(1);
+ /* Use ncurses API to cleanly leave/re-enter curses mode.
+    endwin() sends rmcup + restores terminal attributes.
+    refresh() sends smcup + repaints everything. */
+ endwin();
  getchar();
- e_d_switch_out(0);
+ clearok(stdscr, TRUE);
+ refresh();
  return(0);
 }
 
