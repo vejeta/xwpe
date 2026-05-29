@@ -31,6 +31,10 @@ auto-save is performed (e.g.@: @option{-50m}).  (Documented since v1.4.)
 @item @option{-k @var{password}} @tab Decode the next file with @var{password}
 for reading and encode it for writing.  (Documented since v1.4.)
 @item @option{-pm} @tab Treat the next file as a compiler message file.
+@item @option{-pt} @tab Interpret message file for ``traditional'' compiler
+output (see Compiler Options).  (Documented since v1.4, German manpage.)
+@item @option{-pe} @tab Interpret message file for ``extended'' compiler
+output (see Compiler Options).  (Documented since v1.4, German manpage.)
 @item @option{-display @var{dpy}} @tab Connect to X server @var{dpy} (X11 only).
 @item @option{-fn @var{f}} @tab Synonym for @option{-font}.  (Documented since v1.4.)
 @item @option{-font @var{f}} @tab Use font @var{f} for text (X11 only;
@@ -110,7 +114,12 @@ minimum 80x25; e.g.@: @option{-g 80x20+4+4}).
 @item @kbd{Ctrl-G E} @tab Edit watch.
 @item @kbd{Ctrl-G D} @tab Delete watch.
 @item @kbd{Ctrl-G K} @tab Show stack.
-@item @kbd{Ctrl-G O} @tab Display output window.
+@item @kbd{Ctrl-G U} @tab Goto cursor (run until cursor line).
+@item @kbd{Ctrl-G F} @tab Finish function (run until return).
+@item @kbd{Ctrl-G A} @tab Remove all watches.
+@item @kbd{Ctrl-G P} @tab Program output (User Screen).
+Not available under X11.  (Documented since v1.4, German manpage.)
+@item @kbd{Ctrl-G O} @tab Debugger options (select gdb/jdb/sdb/dbx).
 @end multitable
 
 @subsection Alt-key menu shortcuts
@@ -215,7 +224,8 @@ These commands operate on the clipboard (kill-buffer).  (Documented since v1.4.)
 @item @key{F9} @tab Build executable (Make) @tab @kbd{Alt-M}
 @item @kbd{Ctrl-F9} @tab Build and run @tab @kbd{Alt-R}
 @item @kbd{Alt-L} @tab Install project @tab
-@item @kbd{Alt-A} @tab Execute @command{make(1)} @tab
+@item @kbd{Alt-A} @tab Execute @command{make(1)}.  Errors are displayed
+and interpreted in the Message window.  (Detail from German manpage.) @tab
 @item @kbd{Alt-V} @tab Jump to previous error @tab
 @item @kbd{Alt-T} @tab Jump to next error @tab
 @end multitable
@@ -333,15 +343,20 @@ to the first occurrence.  Press @key{ESC} to close the window.
 
 Compiler and linker errors are listed in the Message Window (read-only).
 Select an error by moving with cursor keys and pressing @key{Return},
-or click with the mouse.  The source file is opened and the cursor
-jumps to the error line.
+or click with the mouse.  The source file is switched to the current
+window (if not already loaded, it is opened in a new window) and the
+cursor jumps to the position indicated by the compiler.
+(Detail from German manpage.)
 
 @subsection The Project Window
 
 @cindex Project Window
 
-Displays all files in the project.  Press @kbd{Alt-A} or @key{Insert}
-to add a file, @kbd{Alt-E} or @key{Return} to edit an entry,
+Displays all files in the project.  @kbd{Alt-A} or @key{Insert} opens
+the window in add-status to add a file.  @kbd{Alt-E} or @key{Return}
+edits an entry.  @kbd{Alt-D} or @key{Delete} deletes an item (only
+available when the Project Window is open).
+(Detail from German manpage.)  Press @kbd{Alt-E} or @key{Return} to edit an entry,
 @kbd{Alt-D} or @key{Delete} to remove an entry, @kbd{Alt-O} to open
 project options, @key{ESC} to close.
 
