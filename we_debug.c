@@ -21,6 +21,27 @@
 #include <signal.h>
 #include <poll.h>
 #include <pty.h>
+#include <stdarg.h>
+#include <sys/wait.h>
+
+/* Trace logging for jdb debugging -- writes to /tmp/xwpe-jdb-trace.txt.
+   Compile with -DJDB_TRACE to enable, or leave undefined for no-op. */
+#ifdef JDB_TRACE
+static FILE *_jdb_trace_fp = NULL;
+static void jdb_trace(const char *fmt, ...)
+{
+ va_list ap;
+ if (!_jdb_trace_fp)
+  _jdb_trace_fp = fopen("/tmp/xwpe-jdb-trace.txt", "a");
+ if (!_jdb_trace_fp) return;
+ va_start(ap, fmt);
+ vfprintf(_jdb_trace_fp, fmt, ap);
+ va_end(ap);
+ fflush(_jdb_trace_fp);
+}
+#else
+#define jdb_trace(...) ((void)0)
+#endif
 
 #ifndef TERMCAP
 /* Because term.h defines "buttons" it messes up we_gpm.c if in edit.h */
@@ -321,6 +342,7 @@ int e_e_line_read(int n, signed char *s, int max)
  if (ret != 1 && i == 0)
   return(-1);
  s[i+1] = '\0';
+ jdb_trace("e_e_line_read: fd=%d i=%d ret=%d s='%s'\n", n, i, ret, (char*)s);
  if (e_deb_type == 1 && s[i] == '*')
   return(1);
  if (e_deb_type == 3 && s[i] == '>')
@@ -351,7 +373,15 @@ int e_d_line_read(int n, signed char *s, int max, int sw, int esw)
   kbdflgs = fcntl(n, F_GETFL, 0 );
   fcntl( n, F_SETFL, kbdflgs | O_NONBLOCK);
   while ((ret = read(n, s + i, 1)) <= 0 && i == 0 && wt >= sw)
+  {
+   if (ret == 0)
+   {  /* EOF on pipe: debugger process exited */
+      jdb_trace("e_d_line_read: EOF on pipe (debugger exited)\n");
+      fcntl(n, F_SETFL, kbdflgs & ~O_NONBLOCK);
+      return(-1);
+   }
    if(e_d_getchar() == D_CBREAK) return(-1);
+  }
 /*	Read until no chars are left anymore
    	Return if buffer not empty
         return(-1) if CBREAK
@@ -366,6 +396,11 @@ int e_d_line_read(int n, signed char *s, int max, int sw, int esw)
  if (ret != 1)
  {
   s[i] = '\0';
+  jdb_trace("e_d_line_read: ret!=1 path, i=%d s='%s' (hex:", i, (char*)s);
+  { int _k; for (_k = 0; _k < i; _k++)
+    jdb_trace(" %02x", (unsigned char)s[_k]);
+  }
+  jdb_trace(")\n");
   if(e_deb_type == 1 && i > 0 && s[i-1] == '*')
   {  str[0] = 0;  wt = 0;   return(1);  }
   else if(e_deb_type == 3 && i > 0 && s[i-1] == '>')
@@ -373,8 +408,13 @@ int e_d_line_read(int n, signed char *s, int max, int sw, int esw)
   else if(e_deb_type == 4 && i > 1 &&
     ((s[i-1] == ' ' && s[i-2] == ']') ||
      (s[i-1] == ' ' && s[i-2] == '>')))
-  {  str[0] = 0;  wt = 0;   return(1);  }
-  else if(e_deb_type == 0)
+  {  jdb_trace("e_d_line_read: jdb prompt DETECTED\n");
+     str[0] = 0;  wt = 0;   return(1);  }
+  else if(e_deb_type == 4)
+  {  jdb_trace("e_d_line_read: jdb prompt NOT detected (i=%d, s[i-1]=%02x s[i-2]=%02x)\n",
+               i, i>0?(unsigned char)s[i-1]:0, i>1?(unsigned char)s[i-2]:0);
+  }
+  if(e_deb_type == 0)
   {
    if(i > 5 && !strncmp(s+i-6, "(gdb) ", 6))
    {  str[0] = 0;  wt = 0;   return(1);  }
@@ -397,7 +437,11 @@ int e_d_line_read(int n, signed char *s, int max, int sw, int esw)
    }
   }
  }
- else {  s[i+1] = '\0';  }
+ else
+ {
+  s[i+1] = '\0';
+  jdb_trace("e_d_line_read: normal line, i=%d s='%s'\n", i, (char*)s);
+ }
  if (i != 0) wt = 0;
  else wt++;
  if(i > 4) for(j = 0; j < 6; j++) str[j] = s[j+i-5];
@@ -409,9 +453,14 @@ int e_d_dum_read()
  char str[256];
  int ret;
 
+ jdb_trace("e_d_dum_read: entry\n");
  while ((ret = e_d_line_read(wfildes[0], str, 128, 0, 0)) == 0 || ret == 2)
+ {
+  jdb_trace("e_d_dum_read: line_read ret=%d str='%s'\n", ret, str);
   if (ret == 2)
    e_d_error(str);
+ }
+ jdb_trace("e_d_dum_read: exit ret=%d str='%s'\n", ret, str);
  return(ret);
 }
 
@@ -514,6 +563,9 @@ int e_d_is_watch(int c, FENSTER *f)
 int e_d_quit_basic(FENSTER *f)
 {
  int i, kbdflgs;
+ /* Ignore SIGPIPE before writing to pipes -- the debugger may have
+    already exited and closed its end, causing write() to SIGPIPE. */
+ signal(SIGPIPE, SIG_IGN);
 
  if (!e_d_swtch)
   return 0;
@@ -525,13 +577,17 @@ int e_d_quit_basic(FENSTER *f)
    write(rfildes[1], "q\n", 2);
   else if (e_deb_type == 2)
    write(rfildes[1], "quit\n", 5);
+  else if (e_deb_type == 4)
+   write(rfildes[1], "quit\n", 5);
  }
+ jdb_trace("e_d_quit_basic: quitting debugger type=%d\n", e_deb_type);
  kbdflgs = fcntl(0, F_GETFL, 0 );
  fcntl(0, F_SETFL, kbdflgs & ~O_NONBLOCK);
  e_d_swtch = 0;
  if (e_d_pid)
  {
-  kill(e_d_pid, 9);
+  kill(e_d_pid, SIGKILL);
+  waitpid(e_d_pid, NULL, 0);  /* reap zombie */
   e_d_pid = 0;
  }
  if (!WpeIsXwin())
@@ -541,15 +597,15 @@ int e_d_quit_basic(FENSTER *f)
   e_d_out = NULL;
  }
  if (rfildes[1] >= 0)
-  close(rfildes[1]);
+ {  close(rfildes[1]);  rfildes[1] = -1;  }
  if (wfildes[0] >= 0)
-  close(wfildes[0]);
+ {  close(wfildes[0]);  wfildes[0] = -1;  }
  if (efildes[0] >= 0)
-  close(efildes[0]);
+ {  close(efildes[0]);  efildes[0] = -1;  }
  if (rfildes[0] >= 0)
-  close(rfildes[0]);
+ {  close(rfildes[0]);  rfildes[0] = -1;  }
  if (wfildes[1] >= 0)
-  close(wfildes[1]);
+ {  close(wfildes[1]);  wfildes[1] = -1;  }
  e_d_pty_close();
  if (WpeIsXwin())
  {
@@ -562,7 +618,7 @@ int e_d_quit_basic(FENSTER *f)
  else
  {
   if (efildes[1] >= 0)
-   close(efildes[1]);
+  {  close(efildes[1]);  efildes[1] = -1;  }
   if (!e_deb_mode)
    e_g_sys_end();
   else
@@ -580,6 +636,8 @@ int e_d_quit(FENSTER *f)
 {
  ECNT *cn = f->ed;
  int i;
+ jdb_trace("e_d_quit: CALLED, e_d_swtch=%d, e_deb_type=%d\n",
+           e_d_swtch, e_deb_type);
  e_d_quit_basic(f);
  e_d_p_message(e_d_msg[ERR_ENDDEBUG], f, 1);
  WpeMouseChangeShape(WpeEditingShape);
@@ -1332,6 +1390,14 @@ int e_mk_brk_main(FENSTER *f, int sw)
     sprintf(eing, "delete %d\n", e_d_nrbrpts[sw-1]);
    else if (e_deb_type == 3)
     sprintf(eing, "db %d\n", e_d_nrbrpts[sw-1]);
+   else if (e_deb_type == 4)
+   {
+    /* jdb: "clear Class.main" -- use e_d_file without .java extension */
+    char cls[128];
+    strcpy(cls, e_d_file);
+    WpeStringCutChar(cls, '.');
+    sprintf(eing, "clear %s.main\n", cls);
+   }
    else if (e_deb_type == 1)
    {
     sprintf(eing, "e main\n");
@@ -1339,6 +1405,7 @@ int e_mk_brk_main(FENSTER *f, int sw)
     if (e_d_dum_read() == -1) return(-1);
     sprintf(eing, "%d d\n", e_d_ybrpts[sw-1]);
    }
+   jdb_trace("e_mk_brk_main(del): sending '%s'\n", eing);
    write(rfildes[1], eing, strlen(eing));
    if (e_d_dum_read() == -1) return(-1);
   }
@@ -1415,6 +1482,19 @@ int e_mk_brk_main(FENSTER *f, int sw)
     e_d_nrbrpts[e_d_nbrpts - 1] = atoi(str+1);
     if (ret != 1 && e_d_dum_read() == -1) return(-1);
    }
+   else if (e_deb_type == 4)
+   {
+    /* jdb: "stop in Class.main" -- use e_d_file without .java extension */
+    { char cls[128];
+      strcpy(cls, e_d_file);
+      WpeStringCutChar(cls, '.');
+      sprintf(eing, "stop in %s.main\n", cls);
+    }
+    jdb_trace("e_mk_brk_main: sending '%s'\n", eing);
+    write(rfildes[1], eing, strlen(eing));
+    if (e_d_dum_read() == -1) return(-1);
+    e_d_nrbrpts[e_d_nbrpts - 1] = e_d_nbrpts;
+   }
    else if (e_deb_type == 1)
    {
     sprintf(eing, "e main\n");
@@ -1467,6 +1547,14 @@ int e_make_breakpoint(FENSTER *f, int sw)
      sprintf(eing, "delete %d\n", e_d_nrbrpts[i]);
     else if (e_deb_type == 3)
      sprintf(eing, "db %d\n", e_d_nrbrpts[i]);
+    else if (e_deb_type == 4)
+    {
+     /* jdb: "clear Class:line" */
+     char cls[128];
+     strcpy(cls, e_d_sbrpts[i]);
+     WpeStringCutChar(cls, '.');
+     sprintf(eing, "clear %s:%d\n", cls, e_d_ybrpts[i]);
+    }
     else if (e_deb_type == 1)
     {
      sprintf(eing, "e %s\n", e_d_sbrpts[i]);
@@ -1627,6 +1715,22 @@ int e_make_breakpoint(FENSTER *f, int sw)
     if (ret != 1 && e_d_dum_read() == -1) return(-1);
    }
   }
+  else if (e_deb_type == 4)
+  {
+   for (i = 0; i < e_d_nbrpts; i++)
+   {
+    /* jdb: "stop at Class:line" -- strip .java extension from filename */
+    { char cls[128];
+      strcpy(cls, e_d_sbrpts[i]);
+      WpeStringCutChar(cls, '.');
+      sprintf(eing, "stop at %s:%d\n", cls, e_d_ybrpts[i]);
+    }
+    jdb_trace("e_make_breakpoint(sw=1): sending '%s'\n", eing);
+    write(rfildes[1], eing, strlen(eing));
+    if (e_d_dum_read() == -1) return(-1);
+    e_d_nrbrpts[i] = i + 1;
+   }
+  }
   else
   {
    for (i = 0; i < e_d_nbrpts; i++)
@@ -1757,16 +1861,37 @@ int e_exec_deb(FENSTER *f, char *prog)
   {
    FILE *fpp;
 
-   if (!(fpp = popen("tty", "r")))
-   {
-    e_error(e_p_msg[ERR_PIPEOPEN], 0, f->fb);
-    return(0);
+   /* Close the pipe ends that belong to the child.
+      - rfildes[0] is the child's stdin read-end (parent uses rfildes[1])
+      - wfildes[1] is the child's stdout write-end (parent uses wfildes[0])
+      - efildes[1] is the child's stderr write-end (parent uses efildes[0])
+      Without closing these, read() on wfildes[0]/efildes[0] never returns
+      EOF when the child exits, because the parent's copy of the write-end
+      keeps the pipe open.  This caused infinite loops in e_d_line_read.
+      Note: only for non-X11.  In X11 mode, these fds are overwritten
+      with tty/named-pipe fds above and the originals are leaked. */
+   { int _ret_fd = wfildes[1];
+     close(rfildes[0]);  rfildes[0] = -1;
+     close(wfildes[1]);  wfildes[1] = -1;
+     close(efildes[1]);  efildes[1] = -1;
+     if (e_d_pty_slave >= 0)
+     {
+      close(e_d_pty_slave);
+      e_d_pty_slave = -1;
+     }
+
+     if (!(fpp = popen("tty", "r")))
+     {
+      e_error(e_p_msg[ERR_PIPEOPEN], 0, f->fb);
+      return(0);
+     }
+     fgets(e_d_tty, 80, fpp);
+     { int _len = strlen(e_d_tty);
+       if (_len > 0 && e_d_tty[_len-1] == '\n') e_d_tty[_len-1] = '\0';
+     }
+     pclose(fpp);
+     return(_ret_fd);
    }
-   fgets(e_d_tty, 80, fpp);
-   { int _len = strlen(e_d_tty);
-     if (_len > 0 && e_d_tty[_len-1] == '\n') e_d_tty[_len-1] = '\0';
-   }
-   pclose(fpp);
   }
   return(wfildes[1]);
  }
@@ -1805,12 +1930,18 @@ int e_exec_deb(FENSTER *f, char *prog)
  else
 #endif
  {
-  int kbdflgs;
-
   /* Close pty master in child -- only the parent reads from it.
      Keep the slave open: gdb needs it accessible for "run > /dev/pts/N". */
   if (e_d_pty_master >= 0)
    close(e_d_pty_master);
+
+  /* Close the pipe ends not used by the child.
+     The child uses: rfildes[0] (stdin), wfildes[1] (stdout), efildes[1] (stderr).
+     Close the others to prevent the debugged program from inheriting them,
+     and to ensure proper EOF detection in the parent. */
+  close(rfildes[1]);
+  close(wfildes[0]);
+  close(efildes[0]);
 
   close(0);
   if (fcntl(rfildes[0], F_DUPFD, 0) != 0)
@@ -1830,10 +1961,26 @@ int e_exec_deb(FENSTER *f, char *prog)
    fprintf(stderr, e_p_msg[ERR_PIPEEXEC], efildes[1]);
    exit(1);
   }
-  kbdflgs = fcntl(1, F_GETFL, 0 );
-  fcntl(1, F_SETFL, kbdflgs | O_NONBLOCK);
-  kbdflgs = fcntl(2, F_GETFL, 0 );
-  fcntl( 2, F_SETFL, kbdflgs | O_NONBLOCK);
+  /* jdb (and other Java-based debuggers) do not handle non-blocking
+     stdout/stderr.  Only set non-blocking for native debuggers. */
+  if (e_deb_type != 4)
+  {
+   int _fl;
+   _fl = fcntl(1, F_GETFL, 0 );
+   fcntl(1, F_SETFL, _fl | O_NONBLOCK);
+   _fl = fcntl(2, F_GETFL, 0 );
+   fcntl( 2, F_SETFL, _fl | O_NONBLOCK);
+  }
+  { /* Log the exec to a trace file from the child, since jdb_trace
+       may not work after fd rewiring */
+   FILE *_tf = fopen("/tmp/xwpe-jdb-child.txt", "w");
+   if (_tf)
+   { char _cwd[1024]; getcwd(_cwd, sizeof(_cwd));
+     fprintf(_tf, "child exec: debugger='%s' swtch='%s' prog='%s' cwd='%s'\n",
+             e_debugger, e_deb_swtch ? e_deb_swtch : "(null)", prog, _cwd);
+     fclose(_tf);
+   }
+  }
   if (!e_deb_swtch)
    execlp(e_debugger, e_debugger, prog, NULL);
   else
@@ -1880,6 +2027,8 @@ int e_start_debug(FENSTER *f)
     e_deb_type = 4;
    }
  }
+ jdb_trace("e_start_debug: e_d_file='%s', e_deb_type=%d, comp_sw=%d\n",
+           e_d_file, e_deb_type, e_s_prog.comp_sw);
  if (e_deb_type == 1) {  e_debugger = "sdb";  e_deb_swtch = NULL;  }
  else if (e_deb_type == 2) {  e_debugger = "dbx";  e_deb_swtch = "-i";  }
  else if (e_deb_type == 3) {  e_debugger = "xdb";  e_deb_swtch = "-L";  }
@@ -1914,11 +2063,14 @@ int e_start_debug(FENSTER *f)
    if (!(e_s_prog.comp_sw & 1))
     strcat(estr, ".e");
   }
+  jdb_trace("e_start_debug: launching '%s %s'\n", e_debugger, estr);
   if ((file = e_exec_deb(f, estr)) == 0)
   {
+   jdb_trace("e_start_debug: e_exec_deb failed\n");
    return(-2);
   }
  }
+ jdb_trace("e_start_debug: debugger launched OK, e_d_swtch=%d\n", e_d_swtch);
  e_d_p_message(e_d_msg[ERR_STARTDEBUG], f, 1);
  WpeMouseChangeShape(WpeDebuggingShape);
  if (cn->mxedt > 1)
@@ -1931,6 +2083,8 @@ int e_run_debug(FENSTER *f)
  ECNT *cn = f->ed;
  int kbdflgs, ret;
 
+ jdb_trace("e_run_debug: entry, e_d_swtch=%d, e_deb_type=%d\n",
+           e_d_swtch, e_deb_type);
  if (e_d_swtch < 1 && (ret = e_start_debug(f)) < 0) return(ret);
  if (e_d_swtch < 2)
  {
@@ -1939,7 +2093,9 @@ int e_run_debug(FENSTER *f)
   kbdflgs = fcntl(wfildes[0], F_GETFL, 0);
   fcntl( wfildes[0], F_SETFL, kbdflgs | O_NONBLOCK);
 
+  jdb_trace("e_run_debug: reading banner...\n");
   if (e_d_dum_read() == -1) return(-1);
+  jdb_trace("e_run_debug: banner read OK\n");
   /* Disable gdb's confirmation prompts ("Start it from the beginning?",
      "Kill the program being debugged?", etc.) to prevent busy loops
      when xwpe sends commands that gdb would otherwise block on. */
@@ -1953,7 +2109,9 @@ int e_run_debug(FENSTER *f)
    write(rfildes[1], "sm\n", 3);
    if (e_d_dum_read() == -1) return(-1);
   }
+  jdb_trace("e_run_debug: setting breakpoints (nbrpts=%d)...\n", e_d_nbrpts);
   if (e_make_breakpoint(cn->f[cn->mxedt], 1) == -1) return(-1);
+  jdb_trace("e_run_debug: breakpoints set OK, e_d_swtch -> 2\n");
   e_d_swtch = 2;
  }
  return(0);
@@ -1966,19 +2124,25 @@ int e_deb_run(FENSTER *f)
  char eing[256];
  int ret, len, prsw = 0;
 
+ jdb_trace("e_deb_run: entry, e_d_swtch=%d, e_deb_type=%d\n",
+           e_d_swtch, e_deb_type);
  if (e_d_swtch < 2 && (ret = e_run_debug(f)) < 0)
  {
+  jdb_trace("e_deb_run: e_run_debug failed ret=%d, quitting\n", ret);
   e_d_quit(f);
   if (ret == -1) {  e_show_error(0, f);  return(ret);  }
   return(e_error(e_d_msg[ERR_CANTDEBUG], 0, f->fb));
  }
  /* jdb doesn't need tty redirect -- skip the check */
+ jdb_trace("e_deb_run: tty check, e_deb_type=%d, e_d_tty='%s'\n",
+           e_deb_type, e_d_tty);
  if (e_deb_type != 4)
  {
   for (ret = 0; isspace(e_d_tty[ret]); ret++)
    ;
   if (e_d_tty[ret] != DIRC)
   {
+   jdb_trace("e_deb_run: tty check FAILED, quitting\n");
    e_d_quit(f);
    sprintf(eing, "tty error: %s", e_d_tty);
    return(e_d_error(eing));
@@ -2040,6 +2204,7 @@ int e_deb_run(FENSTER *f)
  e_d_nstack = 0;
  e_d_delbreak(f);
  e_d_switch_out(1);
+ jdb_trace("e_deb_run: sending '%s' (prsw=%d)\n", eing, prsw);
  write(rfildes[1], eing, strlen(eing));
  if (e_deb_type == 4 && !prsw)
  {
@@ -2053,20 +2218,31 @@ int e_deb_run(FENSTER *f)
   char _jbuf[4096];
   int _jlen = 0, _found = 0, _n;
 
+  jdb_trace("e_deb_run: entering Phase 2 poll loop for jdb\n");
   while (!_found)
   {
-   if (poll(&_pfd, 1, 10000) <= 0)
-   {  e_error("jdb: VM startup timeout.", 0, f->fb);
+   int _pret = poll(&_pfd, 1, 10000);
+   if (_pret <= 0)
+   {  jdb_trace("e_deb_run: poll timeout!\n");
+      e_error("jdb: VM startup timeout.", 0, f->fb);
       e_d_quit(f); return(-1);  }
    _n = read(wfildes[0], _jbuf + _jlen, sizeof(_jbuf) - _jlen - 1);
-   if (_n <= 0) continue;
+   if (_n == 0)
+   {  /* EOF: jdb process exited */
+      jdb_trace("e_deb_run: EOF on pipe (jdb exited)\n");
+      e_d_quit(f); return(-1);  }
+   if (_n < 0) continue;
    _jlen += _n;
    _jbuf[_jlen] = '\0';
+   jdb_trace("e_deb_run: poll read %d bytes total=%d: [%s]\n",
+             _n, _jlen, _jbuf);
    if (strstr(_jbuf, "] "))
     _found = 1;
-   if (strstr(_jbuf, "exited"))
-   {  e_d_quit(f); return(-1);  }
+   if (strstr(_jbuf, "exited") || strstr(_jbuf, "Unable to"))
+   {  jdb_trace("e_deb_run: error/exit detected in output, quitting\n");
+      e_d_quit(f); return(-1);  }
   }
+  jdb_trace("e_deb_run: Phase 2 done, _found=%d\n", _found);
   /* Parse jdb breakpoint output to position cursor.
      jdb format: "Breakpoint hit: ..., line=N bci=0\nN    code\nmain[1] "
      Extract line number and navigate to it. */
@@ -2074,8 +2250,11 @@ int e_deb_run(FENSTER *f)
     if (_lp)
     { int _line = atoi(_lp + 5);
       BUFFER *_b = cn->f[cn->mxedt]->b;
+      SCHIRM *_s = cn->f[cn->mxedt]->s;
       if (_line > 0 && _line <= _b->mxlines)
-      { _b->b.y = _line - 1;  _b->b.x = 0;
+      { _s->da.y = _b->b.y = _line - 1;
+        _s->da.x = _b->b.x = 0;
+        _s->de.x = MAXSCOL;
         e_schirm(cn->f[cn->mxedt], 1);
         e_cursor(cn->f[cn->mxedt], 1);
       }
@@ -2125,8 +2304,11 @@ int e_d_step_next(FENSTER *f, int sw)
 {
  int ret, main_brk = 0;
 
+ jdb_trace("e_d_step_next: entry, sw=%d, e_d_swtch=%d, e_deb_type=%d, "
+           "e_d_nbrpts=%d\n", sw, e_d_swtch, e_deb_type, e_d_nbrpts);
  if (e_d_swtch < 2 && (ret = e_run_debug(f)) < 0)
  {
+  jdb_trace("e_d_step_next: e_run_debug failed ret=%d\n", ret);
   e_d_quit(f);
   if (ret == -1)
   {  e_show_error(0, f);  return(ret);  }
@@ -2139,9 +2321,12 @@ int e_d_step_next(FENSTER *f, int sw)
      stops at the user's breakpoint, not at main's entry point. */
   if (e_d_nbrpts <= 0)
   {
+   jdb_trace("e_d_step_next: no breakpoints, calling e_mk_brk_main\n");
    if ((main_brk = e_mk_brk_main(f, 0)) < -1) return(main_brk);
+   jdb_trace("e_d_step_next: e_mk_brk_main returned main_brk=%d\n", main_brk);
   }
   ret = e_deb_run(f);
+  jdb_trace("e_d_step_next: e_deb_run returned ret=%d\n", ret);
   if (e_d_nbrpts <= 0)
    e_mk_brk_main(f, main_brk);
   return(ret);
@@ -2164,9 +2349,15 @@ int e_d_step_next(FENSTER *f, int sw)
   {
    if (poll(&_pfd, 1, 5000) <= 0) break;
    _n = read(wfildes[0], _jbuf + _jlen, sizeof(_jbuf) - _jlen - 1);
-   if (_n <= 0) continue;
+   if (_n == 0)
+   {  /* EOF: jdb exited */
+      /* Clean exit -- no popup, just quit like gdb does */
+      return(e_d_quit(f));  }
+   if (_n < 0) continue;
    _jlen += _n;
    _jbuf[_jlen] = '\0';
+   jdb_trace("e_d_step_next: poll read %d bytes total=%d: [%s]\n",
+             _n, _jlen, _jbuf);
    if (strstr(_jbuf, "] "))
     _found = 1;
    if (strstr(_jbuf, "exited"))
@@ -2179,21 +2370,27 @@ int e_d_step_next(FENSTER *f, int sw)
    if (_lp)
    { int _line = atoi(_lp + 5);
      BUFFER *_b = f->ed->f[f->ed->mxedt]->b;
+     SCHIRM *_s = f->ed->f[f->ed->mxedt]->s;
      if (_line > 0 && _line <= _b->mxlines)
-     { _b->b.y = _line - 1;  _b->b.x = 0;
+     { _s->da.y = _b->b.y = _line - 1;
+       _s->da.x = _b->b.x = 0;
+       _s->de.x = MAXSCOL;
        e_schirm(f->ed->f[f->ed->mxedt], 1);
        e_cursor(f->ed->f[f->ed->mxedt], 1);
      }
    }
    /* jdb step response: "Step completed: ..., line=N\nN    code\nmain[1] "
       Extract line from the last numbered line */
-   if (!strstr(_jbuf, "line="))
+   if (!_lp)
    { char *_nl = strrchr(_jbuf, '\n');
      if (_nl) { int _line = atoi(_nl + 1);
        if (_line > 0) {
         BUFFER *_b = f->ed->f[f->ed->mxedt]->b;
+        SCHIRM *_s = f->ed->f[f->ed->mxedt]->s;
         if (_line <= _b->mxlines)
-        { _b->b.y = _line - 1; _b->b.x = 0;
+        { _s->da.y = _b->b.y = _line - 1;
+          _s->da.x = _b->b.x = 0;
+          _s->de.x = MAXSCOL;
           e_schirm(f->ed->f[f->ed->mxedt], 1);
           e_cursor(f->ed->f[f->ed->mxedt], 1);
         }
@@ -2201,8 +2398,34 @@ int e_d_step_next(FENSTER *f, int sw)
      }
    }
   }
+  /* Extract program output from jdb response buffer.
+     Program output is text between "> " prompt and "Step completed:"
+     or "Breakpoint hit:" -- anything that's not a jdb protocol line. */
+  { char *_p = _jbuf, *_end;
+    /* Skip past initial "> " prompt */
+    if ((_p = strstr(_jbuf, "> ")) != NULL) _p += 2;
+    else _p = _jbuf;
+    /* Find where jdb protocol resumes */
+    _end = strstr(_p, "Step completed:");
+    if (!_end) _end = strstr(_p, "Breakpoint hit:");
+    if (!_end) _end = strstr(_p, "main[");
+    if (_end && _end > _p)
+    { int _olen = _end - _p;
+      /* Strip leading/trailing whitespace */
+      while (_olen > 0 && (_p[0] == '\n' || _p[0] == '\r')) { _p++; _olen--; }
+      while (_olen > 0 && (_p[_olen-1] == '\n' || _p[_olen-1] == '\r')) _olen--;
+      if (_olen > 0)
+      { if (e_d_prog_output_len + _olen + 1 > e_d_prog_output_cap)
+        { e_d_prog_output_cap = (e_d_prog_output_len + _olen + 1024) * 2;
+          e_d_prog_output = realloc(e_d_prog_output, e_d_prog_output_cap);
+        }
+        memcpy(e_d_prog_output + e_d_prog_output_len, _p, _olen);
+        e_d_prog_output_len += _olen;
+        e_d_prog_output[e_d_prog_output_len++] = '\n';
+      }
+    }
+  }
   e_d_switch_out(0);
-  e_d_pty_drain();
   return(0);
  }
  return(e_read_output(f));
@@ -2506,6 +2729,7 @@ int e_read_output(FENSTER *f)
  char *spt;
  int i, ret;
 
+ jdb_trace("e_read_output: CALLED, e_deb_type=%d\n", e_deb_type);
  for (i = 0; i < SVLINES; i++)
  {  e_d_sp[i] = e_d_out_str[i];  e_d_out_str[i][0] = '\0';  }
  while ((ret = e_d_line_read(wfildes[0], e_d_sp[SVLINES-1], 256, 0, 0)) == 2)
