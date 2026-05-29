@@ -37,6 +37,12 @@ The original xwpe supported:
 @item German and English documentation.
 @end itemize
 
+In 1998, Miroslav Jani@v{s} published the earliest known non-English
+review of xwpe in the Czech magazine @cite{Linuxov@'e noviny} (issue
+6/1998).  He described xwpe as ``an almost perfect copy of Borland's
+interface'' and noted that xwpe passed @code{-c} to all compilers
+including @LaTeX{} --- a bug we finally fixed in v1.6.2, 28 years later.
+
 @section Dennis Payne and xwpe-alpha (2000--2006)
 
 @cindex xwpe-alpha
