@@ -19,6 +19,7 @@
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <signal.h>
+#include <poll.h>
 #include <pty.h>
 
 #ifndef TERMCAP
@@ -2043,24 +2044,46 @@ int e_deb_run(FENSTER *f)
  if (e_deb_type == 4 && !prsw)
  {
   /* jdb: "run" returns "> " immediately but the VM starts
-     asynchronously. We need to read past the "> " and wait for
-     the breakpoint prompt "main[1] " which indicates the VM has
-     started and hit a breakpoint.
-     Approach from JDEE (Emacs jdb integration): read lines until
-     we see "Breakpoint hit" in the output, then read the final
-     prompt. Use blocking reads (sw=2) to avoid busy-looping. */
-  char _jline[256];
-  int _jr, _found = 0;
-  /* Read all jdb output until breakpoint prompt */
+     asynchronously. Use poll() with timeout to wait for the
+     breakpoint prompt "main[1] " without busy-looping.
+     Technique from JDEE (Emacs jdb integration): accumulate
+     output and scan for "Breakpoint hit" or the prompt pattern.
+     poll() avoids CPU waste during JVM startup (~2-3 seconds). */
+  struct pollfd _pfd = { .fd = wfildes[0], .events = POLLIN };
+  char _jbuf[4096];
+  int _jlen = 0, _found = 0, _n;
+
   while (!_found)
   {
-   _jr = e_d_line_read(wfildes[0], _jline, 256, 2, 0);
-   if (_jr == -1) return(e_d_quit(f));
-   if (_jr == 1 && strchr(_jline, '['))
-    _found = 1;  /* got "main[1] " prompt */
-   if (strstr(_jline, "exited"))
-   {  e_d_quit(f); return(-1);  }  /* VM failed to start */
+   if (poll(&_pfd, 1, 10000) <= 0)
+   {  e_error("jdb: VM startup timeout.", 0, f->fb);
+      e_d_quit(f); return(-1);  }
+   _n = read(wfildes[0], _jbuf + _jlen, sizeof(_jbuf) - _jlen - 1);
+   if (_n <= 0) continue;
+   _jlen += _n;
+   _jbuf[_jlen] = '\0';
+   if (strstr(_jbuf, "] "))
+    _found = 1;
+   if (strstr(_jbuf, "exited"))
+   {  e_d_quit(f); return(-1);  }
   }
+  /* Parse jdb breakpoint output to position cursor.
+     jdb format: "Breakpoint hit: ..., line=N bci=0\nN    code\nmain[1] "
+     Extract line number and navigate to it. */
+  { char *_lp = strstr(_jbuf, "line=");
+    if (_lp)
+    { int _line = atoi(_lp + 5);
+      BUFFER *_b = cn->f[cn->mxedt]->b;
+      if (_line > 0 && _line <= _b->mxlines)
+      { _b->b.y = _line - 1;  _b->b.x = 0;
+        e_schirm(cn->f[cn->mxedt], 1);
+        e_cursor(cn->f[cn->mxedt], 1);
+      }
+    }
+  }
+  e_d_swtch = 3;
+  e_d_switch_out(0);
+  return(0);  /* skip e_read_output -- jdb output already parsed */
  }
  else if (e_deb_type == 0 || ((e_deb_type == 2  || e_deb_type == 3) && !prsw))
  {
@@ -2131,6 +2154,57 @@ int e_d_step_next(FENSTER *f, int sw)
  else if (e_deb_type == 2 || e_deb_type == 4) write(rfildes[1], "step\n", 5);
  else write(rfildes[1], "s\n", 2);
  e_d_nstack = 0;
+ if (e_deb_type == 4)
+ {
+  /* jdb: use poll to read step response, parse line number */
+  struct pollfd _pfd = { .fd = wfildes[0], .events = POLLIN };
+  char _jbuf[4096];
+  int _jlen = 0, _n, _found = 0;
+  while (!_found)
+  {
+   if (poll(&_pfd, 1, 5000) <= 0) break;
+   _n = read(wfildes[0], _jbuf + _jlen, sizeof(_jbuf) - _jlen - 1);
+   if (_n <= 0) continue;
+   _jlen += _n;
+   _jbuf[_jlen] = '\0';
+   if (strstr(_jbuf, "] "))
+    _found = 1;
+   if (strstr(_jbuf, "exited"))
+   {  e_error("Program exited. Debugger stopped.", 0, f->fb);
+      return(e_d_quit(f));  }
+  }
+  if (_found)
+  {
+   char *_lp = strstr(_jbuf, "line=");
+   if (_lp)
+   { int _line = atoi(_lp + 5);
+     BUFFER *_b = f->ed->f[f->ed->mxedt]->b;
+     if (_line > 0 && _line <= _b->mxlines)
+     { _b->b.y = _line - 1;  _b->b.x = 0;
+       e_schirm(f->ed->f[f->ed->mxedt], 1);
+       e_cursor(f->ed->f[f->ed->mxedt], 1);
+     }
+   }
+   /* jdb step response: "Step completed: ..., line=N\nN    code\nmain[1] "
+      Extract line from the last numbered line */
+   if (!strstr(_jbuf, "line="))
+   { char *_nl = strrchr(_jbuf, '\n');
+     if (_nl) { int _line = atoi(_nl + 1);
+       if (_line > 0) {
+        BUFFER *_b = f->ed->f[f->ed->mxedt]->b;
+        if (_line <= _b->mxlines)
+        { _b->b.y = _line - 1; _b->b.x = 0;
+          e_schirm(f->ed->f[f->ed->mxedt], 1);
+          e_cursor(f->ed->f[f->ed->mxedt], 1);
+        }
+       }
+     }
+   }
+  }
+  e_d_switch_out(0);
+  e_d_pty_drain();
+  return(0);
+ }
  return(e_read_output(f));
 }
 
