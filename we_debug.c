@@ -328,6 +328,9 @@ int e_e_line_read(int n, signed char *s, int max)
   return(1);
  else if (e_deb_type == 0 && i > 4 && s[i] == ' ' && !strncmp(s+i-5, "(gdb)", 5))
   return(1);
+ else if (e_deb_type == 4 && i > 0 &&
+   ((s[i] == ' ' && i > 1 && s[i-1] == ']') || s[i] == '>'))
+  return(1);
  return(2);
 }
 
@@ -364,6 +367,9 @@ int e_d_line_read(int n, signed char *s, int max, int sw, int esw)
   if(e_deb_type == 1 && i > 0 && s[i-1] == '*')
   {  str[0] = 0;  wt = 0;   return(1);  }
   else if(e_deb_type == 3 && i > 0 && s[i-1] == '>')
+  {  str[0] = 0;  wt = 0;   return(1);  }
+  else if(e_deb_type == 4 && i > 0 &&
+    ((s[i-1] == ' ' && i > 1 && s[i-2] == ']') || s[i-1] == '>'))
   {  str[0] = 0;  wt = 0;   return(1);  }
   else if(e_deb_type == 0)
   {
@@ -1552,6 +1558,18 @@ int e_make_breakpoint(FENSTER *f, int sw)
      write(rfildes[1], eing, strlen(eing));
      if (e_d_dum_read() == -1) return(-1);
     }
+    else if (e_deb_type == 4)
+    {
+     /* jdb: "stop at Class:line" -- use filename without extension as class */
+     { char cls[128];
+       strcpy(cls, f->datnam);
+       WpeStringCutChar(cls, '.');
+       sprintf(eing, "stop at %s:%d\n", cls, b->b.y + 1);
+     }
+     write(rfildes[1], eing, strlen(eing));
+     if (e_d_dum_read() == -1) return(-1);
+     e_d_nrbrpts[e_d_nbrpts - 1] = e_d_nbrpts;
+    }
    }
    (s->brp[0])++;
    s->brp = REALLOC(s->brp, (s->brp[0]+1) * sizeof(int));
@@ -1852,6 +1870,7 @@ int e_start_debug(FENSTER *f)
  if (e_deb_type == 1) {  e_debugger = "sdb";  e_deb_swtch = NULL;  }
  else if (e_deb_type == 2) {  e_debugger = "dbx";  e_deb_swtch = "-i";  }
  else if (e_deb_type == 3) {  e_debugger = "xdb";  e_deb_swtch = "-L";  }
+ else if (e_deb_type == 4) {  e_debugger = "jdb";  e_deb_swtch = NULL;  }
  else {  e_debugger = "gdb";  e_deb_swtch = NULL;  }
  e_d_pid = 0;
  if (e_test_command(e_debugger))
@@ -1971,7 +1990,12 @@ int e_deb_run(FENSTER *f)
       gdb's "set inferior-tty" doesn't deliver output to the master
       when gdb itself communicates via pipes, so we use explicit
       shell-style redirect instead. */
-   if (e_d_pty_master >= 0 && e_deb_type == 0)
+   if (e_deb_type == 4)
+   {
+    /* jdb: plain "run" -- no redirect, no arguments through run */
+    strcpy(eing, "run\n");
+   }
+   else if (e_d_pty_master >= 0 && e_deb_type == 0)
    {
     if (e_prog.arguments)
      sprintf(eing, "r %s > %s\n", e_prog.arguments, e_d_pty_slave_name);
@@ -1988,7 +2012,10 @@ int e_deb_run(FENSTER *f)
   }
   else
   {
-   strcpy(eing, "c\n");
+   if (e_deb_type == 4)
+    strcpy(eing, "cont\n");
+   else
+    strcpy(eing, "c\n");
    prsw = 1;
   }
  }
@@ -1997,7 +2024,12 @@ int e_deb_run(FENSTER *f)
  e_d_delbreak(f);
  e_d_switch_out(1);
  write(rfildes[1], eing, strlen(eing));
- if (e_deb_type == 0 || ((e_deb_type == 2  || e_deb_type == 3) && !prsw))
+ if (e_deb_type == 4 && !prsw)
+ {
+  /* jdb: just wait for the prompt after run */
+  if (e_d_dum_read() == -1) return(e_d_quit(f));
+ }
+ else if (e_deb_type == 0 || ((e_deb_type == 2  || e_deb_type == 3) && !prsw))
  {
   while((ret = e_d_line_read(wfildes[0], eing, 256, 0, 0)) == 2 ||
     !eing[0] || (!e_deb_type && prsw && ((len = (strlen(eing)-12)) < 0 ||
@@ -2062,8 +2094,8 @@ int e_d_step_next(FENSTER *f, int sw)
  e_d_switch_out(1);
  if (sw && e_deb_type == 0) write(rfildes[1], "n\n", 2);
  else if (sw && (e_deb_type == 1 || e_deb_type == 3)) write(rfildes[1], "S\n", 2);
- else if (sw && e_deb_type == 2) write(rfildes[1], "next\n", 5);
- else if (e_deb_type == 2) write(rfildes[1], "step\n", 5);
+ else if (sw && (e_deb_type == 2 || e_deb_type == 4)) write(rfildes[1], "next\n", 5);
+ else if (e_deb_type == 2 || e_deb_type == 4) write(rfildes[1], "step\n", 5);
  else write(rfildes[1], "s\n", 2);
  e_d_nstack = 0;
  return(e_read_output(f));
@@ -2673,7 +2705,7 @@ int e_deb_options(FENSTER *f)
  W_OPTSTR *o = e_init_opt_kst(f);
 
  if (!o) return(-1);
- o->xa = 20;  o->ya = 4;  o->xe = 60;  o->ye = 13;
+ o->xa = 20;  o->ya = 4;  o->xe = 60;  o->ye = 15;
  o->bgsw = 0;
  o->name = "Debug-Options";
  o->crsw = AltO;
@@ -2684,20 +2716,26 @@ int e_deb_options(FENSTER *f)
 #ifdef XDB
  e_add_pswstr(0, 5, 5, 0, AltX, e_deb_type == 3 ? 2 : e_deb_type, "Xdb    ", o);
 #else
- e_add_pswstr(0, 5, 5, 0, AltD, e_deb_type, "Dbx    ", o);
+ e_add_pswstr(0, 5, 5, 0, AltD, e_deb_type > 3 ? e_deb_type - 1 : e_deb_type, "Dbx    ", o);
 #endif
+ e_add_pswstr(0, 5, 6, 0, AltJ, e_deb_type == 4 ? 3 : 0, "Jdb    ", o);
  e_add_pswstr(1, 21, 3, 0, AltN, 0, "Normal     ", o);
  e_add_pswstr(1, 21, 4, 0, AltF, e_deb_mode, "Full Screen", o);
- e_add_bttstr(10, 7, 1, AltO, " Ok ", NULL, o);
- e_add_bttstr(25, 7, -1, WPE_ESC, "Cancel", NULL, o);
+ e_add_bttstr(10, 9, 1, AltO, " Ok ", NULL, o);
+ e_add_bttstr(25, 9, -1, WPE_ESC, "Cancel", NULL, o);
  ret = e_opt_kst(o);
  if (ret != WPE_ESC)
  {
+  { int sel = o->pstr[0]->num;
 #ifdef XDB
-  e_deb_type = o->pstr[0]->num == 2 ? 3 : o->pstr[0]->num;
+    if (sel == 2) e_deb_type = 3;
+    else if (sel == 3) e_deb_type = 4;
+    else e_deb_type = sel;
 #else
-  e_deb_type = o->pstr[0]->num;
+    if (sel == 3) e_deb_type = 4;
+    else e_deb_type = sel;
 #endif
+  }
   e_deb_mode = o->pstr[1]->num;
  }
  freeostr(o);
