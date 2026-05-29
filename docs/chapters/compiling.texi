@@ -11,9 +11,8 @@ xwpe integrates with external compilers through a compile-edit-debug
 cycle.  The compiler is configured per language (by file extension) and
 xwpe parses compiler output to jump to errors in the source code.
 
-This chapter was tested on 2026-05-28 with xwpe 1.6.1 against GCC 15.2,
-G++ 15.2, GFortran 15.2, Free Pascal 3.2.2, OpenJDK javac 25.0.3,
-Perl 5.40.1, and Python 3.13.12.
+This chapter was verified on 2026-05-29 with xwpe 1.6.2 against GCC 15.2,
+G++ 15.2, GFortran 15.2, Free Pascal 3.2.2, and OpenJDK javac 25.
 
 @section The build cycle
 
@@ -25,9 +24,10 @@ The build cycle uses three commands, each building on the previous:
 
 @table @kbd
 @item Alt-F9 (Compile)
-Compile the current file only.  xwpe invokes the configured compiler
-with @code{-c -o @var{file}.o @var{file}.c} (or equivalent for other
-languages).  Only files modified since the last compilation are
+Compile the current file only.  For GNU compilers (gcc, g++, gfortran),
+xwpe invokes the compiler with @code{-c -o @var{file}.o @var{file}.c}.
+For non-GNU compilers (fpc, javac), the @code{-c} and @code{-o} flags
+are omitted.  Only files modified since the last compilation are
 recompiled.
 
 @item F9 (Make)
@@ -40,9 +40,11 @@ via @samp{Run @result{} Arguments} (@kbd{Alt-R A}).
 @end table
 
 After compilation, errors appear in the Message Window.  Use
-@kbd{Alt-R N} (Next Error) and @kbd{Alt-R P} (Previous Error) to
-navigate between errors.  The cursor jumps to the error location in
-the source code.
+@kbd{Alt-T} or @kbd{Alt-F8} (Next Error) and @kbd{Alt-V} or
+@kbd{Alt-F7} (Previous Error) to navigate between errors.  The cursor
+jumps to the error location in the source code.  These commands are
+also available from the @samp{Run} menu as @samp{Next Error} and
+@samp{Previous Error}.
 
 @section Configuring the compiler
 
@@ -55,15 +57,16 @@ The compiler is configured via @samp{Options @result{} Compiler}
 
 Settings per language:
 @itemize @bullet
-@item @strong{Compiler}: path to the compiler (e.g.@: @code{/usr/bin/gcc}).
+@item @strong{Compiler}: path or name of the compiler (e.g.@: @code{gcc}).
 @item @strong{Compiler Options}: flags passed to the compiler
 (e.g.@: @code{-Wall -g}).
 @item @strong{Loader Options}: flags passed to the linker
 (e.g.@: @code{-lm}).
 @item @strong{Executable Name}: name of the output binary
-(default: @code{a.out}).
-@item @strong{Compiler Style}: @code{GNU} (default) or @code{other}
-(custom message-string format).
+(default: derived from the source file name).
+@item @strong{Compiler Style}: @code{GNU} or @code{Other}.
+@code{GNU} uses the built-in @code{file:line:column:} pattern.
+@code{Other} uses a custom interpreter string that you define.
 @end itemize
 
 @section Language support
@@ -71,122 +74,245 @@ Settings per language:
 @cindex language support
 
 xwpe selects the compiler automatically based on the file extension.
-The following table summarises tested language support.
+Five languages are configured by default.
 
-@subsection First-class support (GNU error format)
+@subsection Default compilers (v1.6.2)
 
-@multitable @columnfractions .12 .15 .15 .20 .38
-@headitem Language @tab Compiler @tab Extension @tab Error format @tab Notes
-@item C @tab gcc @tab .c @tab @code{file:line:col: error:} @tab
-  Default configuration.  Tested with GCC 15.2.0.
-@item C++ @tab g++ @tab .cpp @tab @code{file:line:col: error:} @tab
+@multitable @columnfractions .12 .14 .22 .22 .30
+@headitem Language @tab Compiler @tab Extensions @tab Error format @tab Notes
+@item C @tab gcc @tab .c @tab @code{file:line:col:} @tab
+  GNU style.  Cursor jumps to exact column.
+@item C++ @tab g++ @tab .cpp .cc .C .cxx @tab @code{file:line:col:} @tab
   Same error format as gcc.
-@item Fortran @tab gfortran @tab .f90 @tab @code{file:line:col:} @tab
-  GNU-compatible format.  Tested with GFortran 15.2.0.
-@item Java @tab javac @tab .java @tab @code{file:line: error:} @tab
-  GNU-compatible.  Tested with OpenJDK 25.0.3.
-  @strong{Limitation}: javac does not accept @code{-c -o} flags.
-  xwpe assumes all compilers use @code{-c -o}; a wrapper script is
-  needed (@pxref{Compiling,,Java workaround}).
-@end multitable
-
-@subsection Partial support (non-GNU format)
-
-@multitable @columnfractions .12 .15 .15 .58
-@headitem Language @tab Compiler @tab Extension @tab Notes
-@item Pascal @tab fpc @tab .pas @tab
-  Error format: @code{file(line,col) Fatal: msg}.  Does not match
-  GNU format.  Requires @code{CMPSWTCH=other} with a custom
-  message-string in the project file.  Tested with FPC 3.2.2.
-@item Perl @tab perl -c @tab .pl @tab
-  Error format: @code{at file line N}.  Does not match GNU format.
-  xwpe cannot parse Perl errors natively.
-@item Python @tab python3 @tab .py @tab
-  Error format varies (SyntaxError, tracebacks).  Does not match
-  GNU format.  xwpe cannot parse Python errors natively.
+@item Fortran @tab gfortran @tab .f .f90 .f95 .f03 .f08 @tab @code{file:line:col:} @tab
+  GNU style.  Blank lines in output are handled.
+@item Pascal @tab fpc @tab .p .pas .pp @tab @code{file(line,col)} @tab
+  Dedicated pattern.  Cursor jumps to exact column.
+@item Java @tab javac @tab .java @tab @code{file:line:} @tab
+  No column in javac output.  Cursor goes to start of line.
 @end multitable
 
 @subsection Other GNU-compatible compilers
 
-Any compiler that produces errors in the @code{file:line: message}
-format will work with xwpe's default @code{GNU} compiler style.
-This includes: Rust (@command{rustc}), Go (@command{go build}),
-Scala, and many others.
+Any compiler that produces errors in the @code{file:line:column: message}
+format works with xwpe's default @code{GNU} compiler style without
+configuration.  Known compatible compilers include:
 
-@section Java workaround
-@anchor{Java workaround}
+@itemize @bullet
+@item clang, clang++ (LLVM C/C++)
+@item rustc (Rust)
+@item go build (Go)
+@item dmd, ldc2 (D)
+@item valac (Vala)
+@item ghc (Haskell)
+@item zig (Zig)
+@item nim (Nim)
+@item GNU Guile (Scheme)
+@end itemize
 
-@cindex Java
-@cindex javac
-@cindex wrapper script
+To use one of these, go to @samp{Options @result{} Compiler}, set the
+compiler name and file extension, and select @code{GNU} style.
 
-@command{javac} does not accept @code{-c} and @code{-o} flags.
-To use Java with xwpe, create a wrapper script:
+@section The interpreter string (pattern language)
+@anchor{Interpreter string}
 
-@example
-#!/bin/sh
-# Save as ~/bin/javac-wrapper
-# Strips -c and -o flags that xwpe passes
-args=""
-skip_next=0
-for arg in "$@@"; do
-    if [ "$skip_next" = 1 ]; then
-        skip_next=0
-        continue
-    fi
-    case "$arg" in
-        -c) continue ;;
-        -o) skip_next=1; continue ;;
-        *) args="$args $arg" ;;
-    esac
-done
-exec javac $args
-@end example
-
-Then configure xwpe to use @code{~/bin/javac-wrapper} as the compiler
-for @file{.java} files.
-
-@section Custom message-string format
-
-@cindex message-string
-@cindex CMPSWTCH
+@cindex interpreter string
+@cindex pattern language
 @cindex error parsing
+@cindex message-string
 
-When @code{CMPSWTCH} is set to @code{other} in the project file,
-xwpe uses a custom message-string to parse compiler output.
+When @code{Compiler Style} is set to @code{Other}, xwpe uses a custom
+@dfn{interpreter string} to parse compiler output.  This is a pattern
+that tells xwpe how to extract the filename, line number, and column
+from each error message.
 
-Available placeholders:
+@subsection Pattern syntax
 
-@multitable @columnfractions .35 .65
-@headitem Placeholder @tab Meaning
-@item @code{$@{FILE@}} @tab Filename containing the error.
-@item @code{$@{LINE[+-N]@}} @tab Line number (optional offset N).
-@item @code{$@{COLUMN[+-N]@}} @tab Column number (optional offset N).
-@item @code{$@{COLUMN=BEFORE[+-N]@}} @tab Column is position before a string.
-@item @code{$@{COLUMN=AFTER[+-N]@}} @tab Column is position after a string.
-@item @code{$@{?N:STR@}} @tab Warning detection (N = column or @code{*},
-STR = string to match).
-@item @code{\n} @tab Line break for multi-line messages.
+The interpreter string is a mix of literal text and special placeholders.
+xwpe matches each line of compiler output against this pattern.
+
+@subsubsection Wildcards
+
+@multitable @columnfractions .15 .85
+@headitem Pattern @tab Meaning
+@item @code{*} @tab Match any sequence of characters (including empty).
+@item @code{?} @tab Match any single character.
+@item @code{[abc]} @tab Match any one of the characters listed.
+@item @code{[!abc]} @tab Match any character NOT listed.
+@item @code{[a-z]} @tab Match any character in the range.
 @end multitable
 
-@subsection Example: Free Pascal
+@subsubsection Variable placeholders
+
+These capture parts of the error message:
+
+@multitable @columnfractions .40 .60
+@headitem Placeholder @tab Meaning
+@item @code{$@{FILE@}} @tab Filename containing the error.
+@item @code{$@{LINE@}} @tab Line number of the error (must be a digit).
+@item @code{$@{LINE+N@}} or @code{$@{LINE-N@}} @tab Line number with
+  offset adjustment.
+@item @code{$@{COLUMN@}} @tab Column number (numeric).
+@item @code{$@{COLUMN+N@}} or @code{$@{COLUMN-N@}} @tab Column with
+  offset.
+@item @code{$@{COLUMN=BEFORE@}} @tab Column is determined by searching
+  for a string that appears BEFORE the error position.  The captured
+  text is searched in the source line.
+@item @code{$@{COLUMN=AFTER@}} @tab Column is determined by searching
+  for a string that appears AFTER the error position.
+@item @code{$@{CMPTEXT@}} @tab Captures the compiler's error text
+  (used with multi-line formats).
+@end multitable
+
+@subsubsection Warning detection
+
+@multitable @columnfractions .40 .60
+@headitem Placeholder @tab Meaning
+@item @code{$@{?*:STRING@}} @tab If @code{STRING} appears anywhere in
+  the line, treat this as a warning rather than an error.  Warnings
+  are skipped when navigating with Alt-T/Alt-V unless
+  @code{ED_MESSAGES_STOP_AT} is set.
+@item @code{$@{?N:STRING@}} @tab Like the above, but @code{STRING}
+  must appear at column @var{N} (0-based).
+@end multitable
+
+@subsubsection Multi-line patterns
+
+Patterns can span multiple lines of compiler output by using @code{\n}
+as a line separator.  Up to 4 lines can be matched.  The first line
+must match the filename; subsequent lines can match additional details
+like line numbers, column indicators, or error text.
+
+@subsection Built-in patterns
+
+xwpe ships with three built-in pattern strings:
+
+@table @code
+@item GNU (default)
+@code{$@{?*:warning:@}$@{FILE@}:$@{LINE@}:$@{COLUMN@}:*}
+
+Matches: @code{hello.c:3:29: error: expected ';' before 'ret'}
+
+This pattern is used automatically when Compiler Style is @code{GNU}.
+It works with gcc, g++, gfortran, clang, rustc, Go, and any compiler
+that uses the @code{file:line:column:} format.
+
+@item cc (classic UNIX cc)
+@code{$@{?*:warning:@}"$@{FILE@}", line $@{LINE@}:* at or near * "$@{COLUMN=AFTER@}"}
+
+Matches: @code{"hello.c", line 3: error at or near "foo"}
+
+@item Pascal (Turbo Pascal / old FPC)
+Multi-line pattern for the classic Turbo Pascal error format.  Modern
+Free Pascal (fpc) uses a different format; see below.
+@end table
+
+@subsection Examples
+
+@subsubsection Free Pascal (fpc)
+
+FPC errors look like:
 
 @example
-CMPSWTCH = other
-# FPC format: file(line,col) Fatal: message
-MESSAGE = $@{FILE@}($@{LINE@},$@{COLUMN@})*
+hello.pas(6,10) Error: Incompatible types
+hello.pas(7,10) Error: Incompatible types
 @end example
 
-@section Known issues
+Pattern (configured by default in xwpe 1.6.2):
 
-@cindex compiler bugs
+@example
+$@{?*:Warning:@}$@{FILE@}($@{LINE@},$@{COLUMN@})*
+@end example
 
-@strong{Error message parsing crash (v1.6.1)}: after compilation,
-xwpe may crash (SIGSEGV) when parsing GCC 15's multi-line error
-output.  The compiler runs correctly and produces valid output, but
-the message parser encounters an issue with the new error format
-that includes context lines with carets and pipe characters.  This
-is being investigated (upstream bug).
+Breakdown:
+@itemize @bullet
+@item @code{$@{?*:Warning:@}} -- if ``Warning:'' appears, treat as
+  warning, not error.
+@item @code{$@{FILE@}(} -- capture everything before @code{(} as the
+  filename.
+@item @code{$@{LINE@},} -- capture digits before @code{,} as line
+  number.
+@item @code{$@{COLUMN@})} -- capture digits before @code{)} as column.
+@item @code{*} -- match the rest of the line (the error message).
+@end itemize
+
+@subsubsection javac (Java)
+
+javac errors look like:
+
+@example
+Hello.java:3: error: incompatible types
+        int x = "hello";
+                ^
+@end example
+
+Pattern (configured by default in xwpe 1.6.2):
+
+@example
+$@{?*:warning:@}$@{FILE@}:$@{LINE@}:*
+@end example
+
+Note: javac does not report a column number, so the cursor goes to
+the beginning of the error line.
+
+@subsubsection Adding a new compiler
+
+To add support for a compiler not in the default list:
+
+@enumerate
+@item
+Open @samp{Options @result{} Compiler} (@kbd{Alt-O C}).
+@item
+Add the language (e.g.@: ``Rust'') with its file extension
+(e.g.@: @file{.rs}).
+@item
+Set the compiler name (e.g.@: @code{rustc}).
+@item
+If the compiler uses @code{file:line:column:} format, select
+@code{GNU} style.  You are done.
+@item
+If the compiler uses a different format, select @code{Other} and
+enter an interpreter string matching the format.  Run the compiler
+manually first to see its error output, then construct the pattern.
+@end enumerate
+
+@subsubsection Debugging a pattern
+
+If error navigation does not work (Alt-T/Alt-V do nothing after F9):
+
+@enumerate
+@item
+Check the Messages window -- are compiler errors visible?
+@item
+Run the compiler manually in a terminal and compare its output
+format against your pattern.
+@item
+Verify the pattern captures @code{$@{FILE@}} and @code{$@{LINE@}}
+at minimum.
+@item
+If the compiler emits blank lines between errors, verify you are
+running xwpe 1.6.2 or later (earlier versions truncated output at
+blank lines).
+@end enumerate
+
+@section Known limitations
+
+@cindex compiler limitations
+
+@itemize @bullet
+@item @strong{GNU-style flags}: For @code{GNU} style compilers, xwpe
+  automatically adds @code{-c} and @code{-o @var{file}.o} to the
+  compile command.  For @code{Other} style compilers, these flags are
+  omitted.  If your compiler is GNU-compatible but needs @code{Other}
+  style for its error format, add @code{-c} to the Compiler Options
+  field manually.
+@item @strong{javac column}: javac does not report column numbers in
+  its primary error line.  The cursor goes to the start of the error
+  line, not the exact position.
+@item @strong{Multi-file errors}: error navigation assumes each error
+  references a single file.  If the error file is not currently open,
+  xwpe opens it automatically.
+@end itemize
 
 @noindent
-Tested on 2026-05-28 with xwpe @value{VERSION}.
+Verified on 2026-05-29 with xwpe @value{VERSION}.

@@ -965,7 +965,7 @@ int e_ini_prog(ECNT *cn)
 {
  int i;
 
- e_prog.num = 4;
+ e_prog.num = 5;
  if (e_prog.arguments) FREE(e_prog.arguments);
  e_prog.arguments = WpeStrdup("");
  if (e_prog.project) FREE(e_prog.project);
@@ -1018,6 +1018,13 @@ int e_ini_prog(ECNT *cn)
  e_prog.comp[3]->key = 'P';
  e_prog.comp[3]->x = 0;
  e_prog.comp[3]->intstr = WpeStrdup("${?*:Warning:}${FILE}(${LINE},${COLUMN})*");
+ e_prog.comp[4]->compiler = WpeStrdup("javac");
+ e_prog.comp[4]->language = WpeStrdup("Java");
+ e_prog.comp[4]->filepostfix = (char **)WpeExpArrayCreate(1, sizeof(char *), 1);
+ e_prog.comp[4]->filepostfix[0] = WpeStrdup(".java");
+ e_prog.comp[4]->key = 'J';
+ e_prog.comp[4]->x = 0;
+ e_prog.comp[4]->intstr = WpeStrdup("${?*:warning:}${FILE}:${LINE}:*");
  for (i = 0; i < e_prog.num; i++)
  {
   e_prog.comp[i]->comp_str = WpeStrdup("-g");
