@@ -53,17 +53,205 @@ The @samp{Options} menu (@kbd{Alt-O}) provides dialogs for:
 @table @samp
 @item Editor
 Tab size, auto-indent, line wrapping, maximum column width.
+See @ref{Editor options dialog} for the full list of fields.
 @item File-Manager
-Default file mask, sort order, wastebasket behaviour.
+Sort order, hidden files, wastebasket behaviour, link defaults.
+See @ref{File manager options dialog} for the full list of fields.
 @item Programming
 Compiler path, default flags, message-string format.
 @item Compiler
 Compiler command, flags, and switches for the current project.
+See @ref{Compiler options dialog} for the full list of fields.
 @item Debugger
 Select debugger backend: gdb, sdb, or dbx.  Choose between
 full-screen and normal terminal mode.
 @item Adjust Colors
 Modify the 16-colour scheme used by the interface.
+@end table
+
+@anchor{Editor options dialog}
+@subsection Editor options dialog
+
+@cindex editor options
+
+The editor options dialog (@samp{Options @result{} Editor}, @kbd{Alt-O E})
+contains the following fields.  (Documented since v1.4.)
+
+@subsubheading Data
+
+@table @kbd
+@item Alt-A
+The next file loaded will be treated as an ASCII (text) file.
+@item Alt-B
+The next file loaded will be a binary file.
+@end table
+
+@subsubheading Display
+
+@table @kbd
+@item Alt-S
+Toggle end-of-line display: @samp{$} for newlines, blank for NULL
+(continuation lines).
+@end table
+
+@subsubheading Auto-save
+
+@table @kbd
+@item Alt-P
+Save all options automatically when quitting.
+@item Alt-H
+Enable periodic auto-save.  After N changes (configurable in the
+Max.@: Changes field), the file is saved with an @file{.ASV} extension.
+The original file is not modified.  The @file{.ASV} file is deleted on
+normal exit.
+@end table
+
+@subsubheading Keys (function key bindings)
+
+@table @kbd
+@item Alt-L
+Use the default keybindings (Turbo C style, xwpe < 1.2.0 compatible).
+@item Alt-C
+Use Common User Access (CUA) keybindings (MS-Windows / OSF Motif style).
+@end table
+
+@subsubheading Auto-indent
+
+@table @kbd
+@item Alt-Y
+Auto-indent only for files that can be compiled (matching a defined
+file extension in @samp{Options @result{} Compiler}).
+@item Alt-W
+Auto-indent for all files.
+@item Alt-V
+Disable auto-indent.
+@end table
+
+@subsubheading Numeric fields
+
+@table @kbd
+@item Alt-M
+Maximum number of columns per row (word-wrap column).
+@item Alt-T
+Number of characters per tab stop.
+@item Alt-X
+Number of changes before an auto-save (if enabled).
+@item Alt-N
+Number of undo steps saved.
+@item Alt-I
+Number of columns for auto-indent step.
+@end table
+
+@anchor{File manager options dialog}
+@subsection File manager options dialog
+
+@cindex file manager options
+
+The file manager options dialog (@samp{Options @result{} File-Manager},
+@kbd{Alt-O F}) contains the following fields.
+(Documented since v1.4.)
+
+@subsubheading Directories
+
+@table @kbd
+@item Alt-F
+Show hidden files.
+@item Alt-D
+Show hidden directories.
+@item Alt-K
+Make all actions (Move, Link, Copy, Remove) recursive (include
+sub-directories).
+@end table
+
+@subsubheading Sort files by
+
+@table @kbd
+@item Alt-N
+Sort by name.
+@item Alt-I
+Sort by time (creation/modification time).
+@item Alt-B
+Sort by size (bytes).
+@item Alt-R
+Reverse order.
+@end table
+
+@subsubheading Move/Copy behaviour
+
+@table @kbd
+@item Alt-Q
+Ask for confirmation before overwriting an existing file.
+@item Alt-V
+Overwrite existing files without confirmation.
+@item Alt-T
+Never overwrite existing files.
+@end table
+
+@subsubheading Remove behaviour
+
+@table @kbd
+@item Alt-W
+Deleted files are moved to the wastebasket.
+@item Alt-A
+Files are permanently deleted (with confirmation).
+@item Alt-M
+Files are permanently deleted (no confirmation).
+@end table
+
+@subsubheading Link defaults
+
+@table @kbd
+@item Alt-H
+Try a hard link first; fall back to a symbolic link if the hard link
+fails (e.g.@: cross-filesystem or directory link).
+@item Alt-S
+Always use symbolic links.
+@end table
+
+@subsubheading Wastebasket on exit
+
+@table @kbd
+@item Alt-P
+Prompt to delete the wastebasket contents on exit.
+@item Alt-E
+Automatically empty the wastebasket on exit.
+@item Alt-L
+Keep the wastebasket contents on exit.
+@end table
+
+@anchor{Compiler options dialog}
+@subsection Compiler options dialog
+
+@cindex compiler options
+
+The compiler options dialog (@samp{Options @result{} Compiler},
+@kbd{Alt-O C}) allows adding, removing, and configuring compilers.
+When opened, it shows @samp{Add Compiler}, @samp{Remove Compiler},
+and a list of all defined compilers.  Selecting @samp{Add Compiler}
+or an existing compiler opens the following fields.
+(Documented since v1.4.)
+
+@table @strong
+@item Language
+The name of the programming language.
+@item Compiler
+The path to the compiler executable.
+@item Compiler-Options
+Flags passed to the compiler (e.g.@: @code{-Wall -g}).
+@item Loader-Options
+Flags passed to the linker (e.g.@: @code{-lm}).
+@item Executable-Name
+The name of the resulting executable (default: @file{@var{name}.e}).
+@item File-Postfix
+The file extension that triggers this compiler (e.g.@: @code{.c}).
+@item Compiler-Style
+Select whether error messages use the GNU format
+(@code{file:line:column:}) or a custom format defined in the
+Message-String field.
+@item OK
+Accept changes.
+@item CANCEL
+Reject changes.
 @end table
 
 @section Syntax highlighting (syntax_def)
@@ -168,9 +356,16 @@ Default: @code{8x13}.
 Preferred window size and position.  Sizes smaller than 80x25 are
 ignored.
 
+@item iconic (class Iconic)
+Start as an icon if set to @code{yes}.  Equivalent to the @option{-iconic}
+command-line option.  (Documented since v1.4.)
+
 @item color1 through color16 (class Color1 through Color16)
 The 16 colours used by the interface.  The default set resembles the
 standard PC colour palette.
+
+Suggested font sizes for X11: @code{8x13}, @code{9x15}, @code{10x20},
+@code{8x13bold}, @code{9x15bold}, @code{10x20bold}.  (Documented since v1.4.)
 @end table
 
 Example @file{~/.Xresources} entries:

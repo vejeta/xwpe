@@ -162,8 +162,8 @@ xwpe uses @command{egrep}-compatible regular expressions:
 @cindex bookmarks
 
 xwpe supports 9 position markers (numbered 1--9).  Set a marker with
-@kbd{Ctrl-O @var{n}} where @var{n} is 1--9.  Jump to a marker with the
-same key combination.
+@kbd{Ctrl-K @var{n}} where @var{n} is 1--9.  Jump to a marker with
+@kbd{Ctrl-O @var{n}}.  (Documented since v1.4.)
 
 @section File manager
 
@@ -190,5 +190,57 @@ for opening, copying, moving, renaming, and deleting files.
 @item @key{ESC} @tab @tab Close the file manager.
 @end multitable
 
+Additional file manager keys (documented since v1.4):
+
+@table @kbd
+@item Alt-P
+Replace the current editor window with the file in the Name field.
+@item Alt-U
+Duplicate the marked file.  The new name is @file{@var{name}.dup}.
+@end table
+
 File masks use shell glob syntax: @code{*} matches any characters,
 @code{[a-z]} matches a single character in the range.
+
+The Name field accepts three kinds of input:
+
+@enumerate
+@item
+An existing file name: pressing @key{Return} opens it for editing.
+@item
+A non-existing file name: pressing @key{Return} creates a new file.
+@item
+A file mask (e.g.@: @code{*.c}, @code{[a-z]*}): pressing @key{Return}
+filters the file list.
+@end enumerate
+
+(Documented since v1.4.)
+
+@section Automatic indentation
+
+@cindex auto-indent
+@cindex indentation
+
+The auto-indent mode can be selected in @samp{Options @result{} Editor}
+(@kbd{Alt-O E}).  Three modes are available: auto-indent for compiled
+files only, auto-indent for all files, or no auto-indent.
+(Documented since v1.4.)
+
+When auto-indent is enabled, the following keys have special behaviour:
+
+@table @key
+@item Return
+The new line is indented to the beginning column of the previous line.
+
+@item Tab
+If @key{Tab} is entered before the first visible character on the line,
+the entire line is indented to match the previous line.  If the cursor
+is past that column, the line is indented N characters beyond the
+previous line (where N is the Tab Stops setting).  If the cursor is
+between visible characters, a literal tab is inserted.
+
+@item Backspace
+If entered before the first visible character on a line, the line is
+re-indented to match the most recent previous line that started at a
+lesser column.
+@end table

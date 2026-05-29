@@ -11,17 +11,33 @@
 
 @multitable @columnfractions .25 .75
 @headitem Option @tab Description
-@item @option{-pm} @tab Treat the next file as a compiler message file.
-@item @option{-r} @tab Recovery mode: restore files from @file{.ESV} backups
-created after a crash.
+@item @option{-so} @tab Use default options; do not read @file{xwperc}.
+@item @option{-sc} @tab Use default colours; all other options are read
+from @file{xwperc}.  (Documented since v1.4.)
 @item @option{-sf @var{file}} @tab Use @var{file} as the options file instead
 of @file{xwperc}.
-@item @option{-so} @tab Use default options; do not read @file{xwperc}.
+@item @option{-r} @tab Recovery mode: restore files from @file{.ESV} backups
+created after a crash.
+@item @option{-mb} @tab Treat the next file as a binary file.
+(Documented since v1.4.)
+@item @option{-mn} @tab Treat the next file as an ASCII (text) file.
+This is the default.  (Documented since v1.4.)
+@item @option{-@var{n}c} @tab Set the maximum number of columns to @var{n}
+(e.g.@: @option{-80c}).  (Documented since v1.4.)
+@item @option{-@var{n}u} @tab Set the maximum number of undo steps to @var{n}
+(e.g.@: @option{-100u}).  (Documented since v1.4.)
+@item @option{-@var{n}m} @tab Set the number of editing steps before an
+auto-save is performed (e.g.@: @option{-50m}).  (Documented since v1.4.)
+@item @option{-k @var{password}} @tab Decode the next file with @var{password}
+for reading and encode it for writing.  (Documented since v1.4.)
+@item @option{-pm} @tab Treat the next file as a compiler message file.
 @item @option{-display @var{dpy}} @tab Connect to X server @var{dpy} (X11 only).
+@item @option{-fn @var{f}} @tab Synonym for @option{-font}.  (Documented since v1.4.)
 @item @option{-font @var{f}} @tab Use font @var{f} for text (X11 only;
 default: @code{8x13}).
+@item @option{-g @var{g}} @tab Synonym for @option{-geometry}.  (Documented since v1.4.)
 @item @option{-geometry @var{g}} @tab Set window size/position (X11 only;
-minimum 80x25).
+minimum 80x25; e.g.@: @option{-g 80x20+4+4}).
 @item @option{-iconic} @tab Start minimised (X11 only).
 @item @option{-pcmap} @tab Use a private colourmap (X11 only).
 @end multitable
@@ -109,19 +125,390 @@ minimum 80x25).
 @item @tab @tab @kbd{Alt-H} @tab Help
 @end multitable
 
-@subsection Cursor and editing keys
+@subsection Cursor movement
+
+@multitable @columnfractions .25 .40 .35
+@headitem Key @tab Action @tab Alternative
+@item @key{Up} @tab Move cursor one line up @tab @kbd{Ctrl-P}
+@item @key{Down} @tab Move cursor one line down @tab @kbd{Ctrl-N}
+@item @key{Right} @tab Move cursor one character right @tab @kbd{Ctrl-F}
+@item @key{Left} @tab Move cursor one character left @tab @kbd{Ctrl-B}
+@item @kbd{Ctrl-Right} @tab Move cursor one word right @tab @kbd{Alt-Right}
+@item @kbd{Ctrl-Left} @tab Move cursor one word left @tab @kbd{Alt-Left}
+@item @key{Home} @tab Move cursor to column 1 @tab @kbd{Ctrl-A}
+@item @key{End} @tab Move cursor to last column @tab @kbd{Ctrl-E}
+@item @key{Page Up} @tab Move cursor one window up @tab @kbd{Ctrl-Up}
+@item @key{Page Down} @tab Move cursor one window down @tab @kbd{Ctrl-Down}
+@item @kbd{Ctrl-Page Up} @tab Go to first row of file @tab @kbd{Alt-Ctrl-A}
+@item @kbd{Ctrl-Page Down} @tab Go to last row of file @tab @kbd{Alt-Ctrl-E}
+@item @kbd{Ctrl-Home} @tab Go to first row of window @tab @kbd{Alt-Ctrl-P}
+@item @kbd{Ctrl-End} @tab Go to last row of window @tab @kbd{Alt-Ctrl-N}
+@end multitable
+
+(Documented since v1.4.)
+
+@subsection Editing keys
+
+@multitable @columnfractions .25 .45 .30
+@headitem Key @tab Action @tab Alternative
+@item @key{Return} @tab Insert a line break @tab
+@item @key{Backspace} @tab Delete character backward @tab @kbd{Ctrl-H}
+@item @key{Delete} @tab Delete character at cursor @tab @kbd{Ctrl-D}
+@item @key{Tab} @tab Indent text @tab
+@item @key{Insert} @tab Toggle insert/overwrite mode @tab @kbd{Alt-I}
+@item @kbd{Alt-J} @tab Special character insert mode @tab
+@item @kbd{Ctrl-T} @tab Delete next word after cursor @tab
+@item @kbd{Ctrl-O T} @tab Delete word before cursor @tab
+@item @kbd{Ctrl-Y} @tab Delete entire line @tab
+@item @kbd{Ctrl-Z} @tab Delete to end of line @tab @kbd{Ctrl-O Y}
+@end multitable
+
+(Documented since v1.4.)
+
+@subsection Buffer commands (cut, copy, paste)
+
+These commands operate on the clipboard (kill-buffer).  (Documented since v1.4.)
+
+@multitable @columnfractions .25 .40 .35
+@headitem Key @tab Action @tab Alternative
+@item @kbd{Shift-Delete} @tab Cut: kill marked text to buffer @tab @kbd{Ctrl-X}
+@item @kbd{Shift-Insert} @tab Copy: copy marked text to buffer @tab @kbd{Ctrl-C}
+@item @kbd{Ctrl-Insert} @tab Paste: insert buffer at cursor @tab @kbd{Ctrl-V}
+@item @kbd{Ctrl-W} @tab Display the clipboard @tab
+@item @kbd{Ctrl-U} @tab Undo last change @tab
+@item @kbd{Ctrl-R} @tab Redo (undo the last undo) @tab
+@item @kbd{Alt-Delete} @tab Copy marked text to X selection buffer @tab
+@item @kbd{Alt-Insert} @tab Paste from X selection buffer @tab
+@end multitable
+
+@subsection Read and save
+
+(Documented since v1.4.)
+
+@multitable @columnfractions .20 .80
+@headitem Key @tab Action
+@item @key{F3} @tab Start the file manager (open a file).
+@item @key{F2} @tab Save the current file.
+@end multitable
+
+@subsection Window shortcuts
+
+(Documented since v1.4.)
 
 @multitable @columnfractions .20 .40 .40
 @headitem Key @tab Action @tab Alternative
-@item @kbd{Ctrl-A} @tab Beginning of line @tab @key{Home}
-@item @kbd{Ctrl-E} @tab End of line @tab @key{End}
-@item @kbd{Ctrl-P} @tab Up one line @tab @key{Up}
-@item @kbd{Ctrl-N} @tab Down one line @tab @key{Down}
-@item @kbd{Ctrl-F} @tab Right one character @tab @key{Right}
-@item @kbd{Ctrl-B} @tab Left one character @tab @key{Left}
-@item @kbd{Ctrl-D} @tab Delete forward @tab @key{Delete}
-@item @kbd{Ctrl-H} @tab Delete backward @tab @key{Backspace}
-@item @kbd{Ctrl-T} @tab Delete next word @tab
-@item @kbd{Ctrl-Y} @tab Delete line @tab
-@item @kbd{Ctrl-Q} @tab Quit @tab
+@item @key{F5} @tab Zoom the window (maximum size) @tab @kbd{Alt-Z}
+@item @kbd{Alt-F2} @tab Resize and move the window @tab @kbd{Ctrl-F5}
+@item @key{F6} @tab Switch to the next window @tab @kbd{Alt-N}
+@item @kbd{Alt-F3} @tab Close this window @tab
+@item @kbd{Shift-F4} @tab Tile all windows @tab
+@item @kbd{Shift-F5} @tab Cascade all windows @tab
 @end multitable
+
+@subsection Run shortcuts (programming mode)
+
+(Documented since v1.4.)
+
+@multitable @columnfractions .20 .40 .40
+@headitem Key @tab Action @tab Alternative
+@item @kbd{Alt-F9} @tab Compile @tab @kbd{Alt-C}
+@item @key{F9} @tab Build executable (Make) @tab @kbd{Alt-M}
+@item @kbd{Ctrl-F9} @tab Build and run @tab @kbd{Alt-R}
+@item @kbd{Alt-L} @tab Install project @tab
+@item @kbd{Alt-A} @tab Execute @command{make(1)} @tab
+@item @kbd{Alt-V} @tab Jump to previous error @tab
+@item @kbd{Alt-T} @tab Jump to next error @tab
+@end multitable
+
+@subsection Help shortcuts
+
+(Documented since v1.4.)
+
+@multitable @columnfractions .20 .80
+@headitem Key @tab Action
+@item @key{F1} @tab Help on the editor.
+@item @kbd{Alt-F1} @tab UNIX man pages.
+@item @kbd{Ctrl-F1} @tab Index to all UNIX functions (Function Index).
+@end multitable
+
+@subsection Quitting
+
+@table @kbd
+@item Alt-X
+Quit from xwpe.  If files have unsaved changes, xwpe prompts for each:
+@samp{Yes} to save, @samp{No} to discard, @key{ESC} to cancel the quit
+(no further files are closed).  (Documented since v1.4.)
+@end table
+
+@subsection Search and replace shortcuts
+
+(Documented since v1.4.)
+
+@multitable @columnfractions .20 .40 .40
+@headitem Key @tab Action @tab Alternative
+@item @key{F4} @tab Find (search) @tab @kbd{Ctrl-O F}
+@item @kbd{Alt-F4} @tab Replace @tab @kbd{Ctrl-O A}
+@item @kbd{Ctrl-F4} @tab Repeat last search/replace @tab @kbd{Ctrl-L}
+@item @kbd{Alt-G} @tab Go to line number @tab
+@end multitable
+
+@subsection Marker commands
+
+(Documented since v1.4.)
+
+@multitable @columnfractions .20 .80
+@headitem Key @tab Action
+@item @kbd{Ctrl-K @var{n}} @tab Set marker number @var{n} (1--9).
+@item @kbd{Ctrl-O @var{n}} @tab Jump to marker number @var{n} (1--9).
+@end multitable
+
+@section Common User Access (CUA) keybindings
+
+@cindex CUA
+@cindex Common User Access
+@cindex keybinding variant
+@cindex OSF Motif
+
+xwpe supports a second keybinding set compatible with OSF Motif and
+MS-Windows conventions (Common User Access).  Select it in
+@samp{Options @result{} Editor @result{} Keys @result{} CUA}.  The
+following keys change from the default (Turbo C) bindings.
+(Documented since v1.4.)
+
+@multitable @columnfractions .35 .30 .35
+@headitem Function @tab Default binding @tab CUA binding
+@item Select next window @tab @key{F6} @tab @kbd{Ctrl-F6}
+@item Close window @tab @kbd{Alt-F3} @tab @kbd{Ctrl-F4}
+@item Zoom @tab @key{F5} @tab @kbd{Shift-F6}
+@item Search again @tab @kbd{Ctrl-F4} @tab @key{F3}
+@item Search @tab @key{F4} @tab @kbd{Alt-F3}
+@item Replace @tab @kbd{Alt-F4} @tab @kbd{Ctrl-F3}
+@item File manager @tab @key{F3} @tab @key{F2}
+@item Save @tab @key{F2} @tab @kbd{Alt-F2}
+@item Toggle breakpoint @tab @kbd{Ctrl-F8} @tab @key{F5}
+@item Make watch @tab @kbd{Ctrl-F7} @tab @kbd{Ctrl-F5}
+@item Call stack @tab @kbd{Ctrl-F6} @tab @kbd{Ctrl-F3}
+@item Quit from xwpe @tab @kbd{Alt-X} @tab @kbd{Alt-F4}
+@end multitable
+
+@section Alt and ESC on non-X11 terminals
+
+@cindex Alt key
+@cindex ESC key
+@cindex terminal Alt
+
+On a character terminal (without X11), @kbd{Alt-X} is entered by pressing
+@key{ESC} then @kbd{X}.  A bare @key{ESC} is entered by pressing
+@key{ESC} followed by @key{Return}.  (Documented since v1.4.)
+
+@section Special windows
+
+@cindex windows
+@cindex special windows
+
+This section describes the special-purpose windows in xwpe.  All are
+read-only unless otherwise noted.  (Documented since v1.4.)
+
+@subsection The Find Window
+
+@cindex Find Window
+
+The Find Window lists all directories containing files that match the
+search criteria from @samp{File @result{} Find}.  Press @key{Return}
+or @kbd{Alt-S} to open a file manager for the selected directory
+showing the matching files.  Press @key{ESC} to close the window.
+
+@subsection The Grep Window
+
+@cindex Grep Window
+
+The Grep Window lists all files containing strings that match the
+search criteria from @samp{File @result{} Grep}.  Press @key{Return}
+or @kbd{Alt-S} to open the marked file for editing; the cursor jumps
+to the first occurrence.  Press @key{ESC} to close the window.
+
+@subsection The Message Window
+
+@cindex Message Window
+
+Compiler and linker errors are listed in the Message Window (read-only).
+Select an error by moving with cursor keys and pressing @key{Return},
+or click with the mouse.  The source file is opened and the cursor
+jumps to the error line.
+
+@subsection The Project Window
+
+@cindex Project Window
+
+Displays all files in the project.  Press @kbd{Alt-A} or @key{Insert}
+to add a file, @kbd{Alt-E} or @key{Return} to edit an entry,
+@kbd{Alt-D} or @key{Delete} to remove an entry, @kbd{Alt-O} to open
+project options, @key{ESC} to close.
+
+@subsection The Variable Window
+
+@cindex Variable Window
+
+The Variable Window (opened from Project Options) displays project
+variables.  Press @kbd{Alt-A} or @key{Insert} to add, @kbd{Alt-E}
+or @key{Return} to edit, @kbd{Alt-D} or @key{Delete} to remove,
+@key{ESC} to close.  (Documented since v1.4.)
+
+@subsection The Install Window
+
+@cindex Install Window
+
+The Install Window (opened from Project Options) displays and edits
+the commands executed by the @samp{install} target.  Press @kbd{Alt-A}
+or @key{Insert} to add, @kbd{Alt-E} or @key{Return} to edit,
+@kbd{Alt-D} or @key{Delete} to remove, @key{ESC} to close.
+(Documented since v1.4.)
+
+@subsection The Watch Window
+
+@cindex Watch Window
+
+The Watch Window shows the values of variables selected via the watch
+function (@pxref{Debugging}).  Use cursor keys and the search function
+to navigate.  Press @key{Return} to edit a selected variable, or to
+add a new one if the last line is selected.  Press @key{Insert} to
+insert a new entry; @key{Delete} to remove one.  If a variable is not
+found in the current scope, a warning is displayed.
+
+@subsection The Stack Window
+
+@cindex Stack Window
+
+The Stack Window shows the program call stack (read-only).  Navigate
+with cursor keys; press @key{Return} to jump to a stack frame in the
+source.  The stack can be examined when a signal is caught by the
+program.
+
+@section The Execution Manager
+
+@cindex Execution Manager
+
+The Execution Manager (@samp{File @result{} Execute}) selects and runs
+executable files and shell scripts.  Only files with the execute permission
+are shown in the Files list.  (Documented since v1.4.)
+
+@multitable @columnfractions .15 .85
+@headitem Key @tab Action
+@item @kbd{Alt-N} @tab Select the Name line.  Enter a file name or mask.
+@item @kbd{Alt-F} @tab Select the Files list.
+@item @kbd{Alt-D} @tab Select the Directory line.
+@item @kbd{Alt-T} @tab Select the directory tree.
+@item @kbd{Alt-C} @tab Change to the entered directory.
+@item @kbd{Alt-E} @tab Execute the selected file.
+@item @key{ESC} @tab Close the execution manager.
+@end multitable
+
+@section Function Index
+
+@cindex Function Index
+@cindex man pages
+@cindex MANPATH
+
+The Function Index (@samp{Help @result{} Function Index} or @kbd{Ctrl-F1})
+creates a list of all manual pages found via the @env{MANPATH} environment
+variable.  The index is divided into sections.
+(Documented since v1.4.)
+
+@table @strong
+@item User Commands
+Section 1 man pages.
+@item System Calls
+C system call functions (section 2).
+@item C Library Functions
+C library functions (section 3).
+@item Devices & Network Interfaces
+Section 4.
+@item File Formats
+Section 5.
+@item Games & Demos
+Section 6.
+@item Environments, Tables and TROFF Macros
+Section 7.
+@item Maintenance Commands
+System administration commands (section 8).
+@end table
+
+Select a section to see a list of available man pages.  Select a page
+by pressing @key{Return} or clicking on the name.  Man pages are
+read-only documents but can serve as sources for editing commands.
+
+A manual page can also be viewed by name via @samp{Help @result{}
+Function} (@kbd{Alt-H T}).
+
+@section C programming utilities
+
+@cindex C programming
+@cindex show definition
+@cindex matching bracket
+@cindex beautify
+
+For C and C++ source files, xwpe provides several programming aids
+accessed from the @samp{Run} menu or via @kbd{Ctrl-O} chords.
+(Documented since v1.4.)
+
+@subsection Show Definition (@kbd{Ctrl-O S})
+
+Jump to the definition of a C expression.  xwpe opens the file
+containing the definition and highlights it.  Searchable definitions
+include: @code{struct}, @code{union}, @code{class}, @code{typedef},
+preprocessor @code{#define}, @code{extern} variables, and functions.
+
+If a project is defined, all project files are scanned.  All
+@code{#include}d files are scanned recursively, following the
+System-Include-Path defined in @samp{Options @result{} Programming}.
+
+If the name has multiple definitions (e.g.@: both a @code{struct} and
+an @code{extern} variable), use @kbd{Ctrl-O N} (Show Next Definition)
+to cycle through them.
+
+@subsection Matching Bracket (@kbd{Ctrl-O K})
+
+If the cursor is on a bracket, xwpe finds the matching opening or
+closing bracket and moves the cursor to it.  If the cursor is not on a
+bracket, xwpe moves to the next opening bracket.  Recognised bracket
+pairs: @code{@{@}}, @code{[]}, and @code{()}.
+
+@subsection Beautify (@kbd{Ctrl-O B})
+
+Reformat C source code by re-indenting all blocks according to their
+nesting depth.  The indentation step size is taken from the auto-indent
+setting in @samp{Options @result{} Editor}.
+
+@section Project options dialog
+
+@cindex project options
+
+The project options dialog (@samp{Project @result{} Options},
+@kbd{Alt-P O}) provides the following fields.
+(Documented since v1.4.)
+
+@table @strong
+@item Compiler
+The path to the compiler.
+@item Compiler-Options
+Flags passed to the compiler.
+@item Loader-Options
+Flags passed to the linker.
+@item Executable-Name
+The name of the resulting executable (default: @code{a.out}).
+@item Store Objects in Library
+If a filename is entered, all object files are stored in this library,
+which is then used automatically for linking.
+@item Compiler-Style
+@code{GNU} (default) or @code{Other} (custom message-string).
+@item Variables ...
+Opens the Variable Window to define and manage project variables.
+@item Install ...
+Opens the Install Window to define and manage install commands.
+@item Save
+Save the project file.
+@item Save As
+Save the project file under a new name.
+@item CANCEL
+Close without saving.
+@end table

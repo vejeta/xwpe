@@ -50,6 +50,8 @@ Permanently remove all files in the wastebasket.
 @table @kbd
 @item M -- File-Manager
 Open the file manager (@pxref{Editor,,File manager}).
+@item D -- Add File-Manager
+Open an additional file manager window.  (Documented since v1.4.)
 @item N -- New
 Open a new file named ``Noname''.
 @item S -- Save
@@ -227,6 +229,9 @@ Edit project options (compiler, flags, etc.).
 @table @kbd
 @item A -- Adjust Colors
 Change the colour scheme.
+@item R -- Read Colors
+Reset to the default colours or re-read from the initialisation file.
+(Documented since v1.4.)
 @item S -- Save Options
 Save all options to @file{xwperc}.
 @item E -- Editor
@@ -305,6 +310,84 @@ natively.
 @item @kbd{Shift}-click to extend a selection (X11).
 @item Click on window borders to resize or move windows.
 @item Click on the scrollbar to scroll.
+@end itemize
+
+@subsection Mouse in the editor window
+
+The following describes the mouse buttons in the editor window.
+(Documented since v1.4.)
+
+@subsubheading Left mouse button
+
+@itemize @bullet
+@item One click moves the cursor to that position.
+@item Clicking on the text cursor (current position) marks the word
+under the cursor.  Clicking again on an already-marked word selects
+the entire line.
+@item Hold the button and drag to mark a block.  If @key{Shift} is
+also held, the new selection extends the previous one.
+@end itemize
+
+@subsubheading Right mouse button
+
+@itemize @bullet
+@item Click the right button to copy the marked text into the
+clipboard.  Hold @key{Alt} to use the X selection buffer instead.
+@item Hold @key{Shift} and click the right button to @emph{cut} the
+marked text into the buffer.
+@end itemize
+
+@subsubheading Middle mouse button
+
+@itemize @bullet
+@item Click the middle button to paste the clipboard contents at the
+mouse position.  Hold @key{Alt} to paste from the X selection buffer
+instead.
+@end itemize
+
+@subsubheading Window frame controls
+
+@itemize @bullet
+@item Click the @samp{[z]} button (upper right) to zoom the window.
+@item Click and drag the upper frame to move the window.
+@item Click and drag an edge to resize the window.
+@item Click the line number on the lower frame to go to a line number
+(a dialog opens to enter the number).
+@item Click the scrollbar arrows to scroll one line/column.  Click the
+scrollbar body to scroll one page.  Drag the scrollbar marker to scroll
+proportionally.
+@end itemize
+
+@subsection Mouse in the file manager
+
+(Documented since v1.4.)
+
+@subsubheading Left mouse button
+
+@itemize @bullet
+@item One click marks an unselected file or directory.
+@item Clicking an already-marked file opens it in the editor.
+@item Clicking an already-marked directory makes it the working directory.
+@item Hold the button and drag a marked file into another file manager
+window to @emph{move} it.
+@end itemize
+
+@subsubheading Right mouse button
+
+@itemize @bullet
+@item Click an already-marked file or directory to invoke the
+Move/Rename function.
+@item Drag a file or directory into another file manager window to
+create a @emph{link} in the target directory.
+@end itemize
+
+@subsubheading Middle mouse button
+
+@itemize @bullet
+@item Click on a marked file or directory to @emph{duplicate} it in the
+same directory.
+@item Hold the button and drag into another file manager window to
+@emph{copy} it to that directory.
 @end itemize
 
 @section Windows
