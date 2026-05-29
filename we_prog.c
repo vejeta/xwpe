@@ -194,6 +194,11 @@ int e_p_make(FENSTER *f)
     obuf->st_mtime >= last_time)
    linkRequest = 0;
  }
+ /* Non-GNU compilers (fpc, javac) handle linking internally during
+    compilation.  Skip the separate link step to avoid passing
+    gcc-style -o flags that they don't understand. */
+ if (linkRequest && (e_s_prog.comp_sw & 1))
+  linkRequest = 0;
  if (linkRequest)
  {
 #ifdef DEBUGGER

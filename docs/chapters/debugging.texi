@@ -3,248 +3,216 @@
 
 @cindex debugging
 @cindex gdb
-@cindex sdb
-@cindex dbx
 @cindex breakpoints
 @cindex watch variables
 @cindex call stack
+@cindex User Screen
 
-xwpe integrates with external debuggers to provide a source-level
-debugging environment.  You can set breakpoints, inspect variables,
-step through code, and view the call stack --- all from within the
-editor.
+xwpe integrates with gdb to provide a source-level debugging
+environment.  You can set breakpoints, inspect variables, step through
+code, view the call stack, and see program output --- all from within
+the editor, without screen flicker.
 
-This chapter was verified against gdb 17.2 on 2026-05-28.
+This chapter was verified on 2026-05-29 with xwpe 1.6.2, gdb 17.2,
+gcc 15.2, and g++ 15.2.
+
+@section Quick start
+
+@enumerate
+@item
+Open a source file: @command{wpe debug_test.c} (use @command{wpe},
+not @command{we} --- the debugger requires programming mode).
+
+@item
+Move to a line inside @code{main()} and press @kbd{Ctrl-G B} to set
+a breakpoint.  The line is highlighted.
+
+@item
+Press @kbd{Ctrl-G R} to compile, link, and start gdb.  Execution
+stops at the breakpoint.
+
+@item
+Press @key{F8} to step over lines.  Press @key{F7} to step into
+function calls.  The cursor follows execution in the source code.
+
+@item
+Press @kbd{Ctrl-G W}, type a variable name, press @key{Return}.
+The Watch Window shows its value, updated after each step.
+
+@item
+Press @kbd{Ctrl-G K} to see the call stack.
+
+@item
+Press @kbd{Ctrl-G P} to see program output (printf, etc.).
+Press any key to return to the editor.
+
+@item
+Press @kbd{Ctrl-G Q} to quit the debugger.
+@end enumerate
+
+@section Debug menu reference
+
+All commands are available from the @samp{Debug} menu (@kbd{Alt-D})
+and via @kbd{Ctrl-G} prefix shortcuts:
+
+@multitable @columnfractions .30 .18 .18 .34
+@headitem Command @tab Menu key @tab Shortcut @tab Description
+@item Toggle Breakpoint @tab B @tab Ctrl-G B @tab Set/remove breakpoint at cursor
+@item Remove all Breakp. @tab M @tab Ctrl-G M @tab Clear all breakpoints
+@item Make Watch @tab W @tab Ctrl-G W @tab Add variable to Watch Window
+@item Edit watch @tab E @tab Ctrl-G E @tab Edit a watched expression
+@item Delete watch @tab D @tab Ctrl-G D @tab Remove a watched variable
+@item Remove All watches @tab A @tab Ctrl-G A @tab Clear all watches
+@item Show stacK @tab K @tab Ctrl-G K @tab Show call stack
+@item Goto cursor @tab U @tab Ctrl-G U @tab Run until cursor line
+@item Finish function @tab F @tab Ctrl-G F @tab Run until function returns
+@item Trace (step into) @tab T @tab Ctrl-G T @tab Execute one line, enter functions
+@item Step (step over) @tab S @tab Ctrl-G S @tab Execute one line, skip functions
+@item Run/Continue @tab R @tab Ctrl-G R @tab Start or continue execution
+@item Program output @tab P @tab Ctrl-G P @tab Show program's stdout
+@item debugger Options @tab O @tab Ctrl-G O @tab Select debugger backend
+@item Quit @tab Q @tab Ctrl-G Q @tab Stop debugger
+@end multitable
+
+@noindent
+Alternative keys (when function keys are available):
+Ctrl-F8 = Toggle Breakpoint, Ctrl-F7 = Make Watch, Ctrl-F6 = Stack,
+F7 = Trace, F8 = Step, Ctrl-F10 = Run, Ctrl-F2 = Quit.
+
+@section Compiling for debugging
+
+Compile with debug symbols (@code{-g}) and no optimisation
+(@code{-O0}) for best results.  xwpe's default compiler options
+include @code{-g}.  To add @code{-O0}, go to
+@samp{Options @result{} Compiler} and append it to Compiler Options.
+
+@section Program output (User Screen)
+
+@cindex User Screen
+@cindex Ctrl-G P
+@cindex program output
+@cindex pty
+
+Program output (e.g.@: @code{printf}) is captured via a
+pseudoterminal (pty).  The debugged program's stdout is redirected to
+a pty slave; xwpe reads from the pty master into a memory buffer.
+This happens invisibly --- no screen switching, no flicker.
+
+Press @kbd{Ctrl-G P} (or @samp{Debug @result{} Program output}) to
+view the captured output.  The screen clears and shows the output.
+Press any key to return to the editor.
+
+@strong{Important}: the output appears only after the line that
+produces it has been @emph{executed}.  If the cursor is on the
+@code{printf} line, that line has not run yet.  Press @key{F8} once
+more to step past it, then @kbd{Ctrl-G P} to see the output.
+
+After each step, xwpe sends @code{call (void)fflush(0)} to gdb to
+flush the program's stdout buffer.  This ensures output is available
+immediately, even if the program uses buffered I/O.
 
 @section Debugger backends
 
 @cindex debugger selection
 
-xwpe supports three debugger backends, selectable via
-@samp{Options @result{} Debugger} (@kbd{Alt-O D}):
+xwpe supports three backends, selectable via @samp{Debug @result{}
+debugger Options} (@kbd{Ctrl-G O}):
 
 @table @strong
 @item gdb (GNU Debugger)
-The default and recommended backend.  Supports all debugging features.
-xwpe detects gdb by matching the @code{(gdb)} prompt in the debugger's
-output (see @code{we_debug.c}).
+The default and recommended backend.  Tested with gdb 17.2.
+Supports all features: breakpoints, stepping, watches, stack,
+program output capture.
 
 @item sdb (Symbolic Debugger)
-Legacy UNIX debugger.  Not available on modern Linux systems.
+Legacy UNIX debugger.  Not available on modern Linux.
 
 @item dbx
-Berkeley UNIX debugger.  Available on some BSD and commercial UNIX
-systems.
+Berkeley UNIX debugger.  Available on some BSD systems.
 @end table
 
-On modern Linux, only gdb is relevant.  The other backends exist for
-historical compatibility.
+@section Debugging C++ programs
 
-@section Compiling for debugging
+gdb handles C++ natively.  xwpe selects @command{g++} as the compiler
+for @file{.cpp} files and @command{gdb} as the debugger.  All debug
+features work: breakpoints in member functions, stepping through
+constructors, watching @code{this->member} expressions.
 
-Before debugging, compile with debug symbols:
+@section Debugging Fortran programs
+
+gdb supports Fortran.  xwpe selects @command{gfortran} for
+@file{.f90} files.  Set breakpoints on subroutine entries, step
+through loops, watch local variables.  Array inspection is limited
+by gdb's Fortran support.
+
+@section Debugging Pascal programs
+
+gdb has basic Free Pascal support.  Compile with @command{fpc -g}
+(xwpe's default).  Breakpoints and stepping work.  Variable
+inspection may be limited for Pascal-specific types (strings, sets).
+
+@section Example session: C with factorial
 
 @example
-# In the project file or compiler options:
-CMPFLAGS = -g -O0
+$ wpe debug_test.c
 @end example
-
-The @code{-g} flag includes debug information.  @code{-O0} disables
-optimisation, which ensures that variables and control flow match the
-source code.
-
-@section Starting the debugger
-
-@table @kbd
-@item Ctrl-F10 / Ctrl-G R
-Start the debugger (or continue if already running).  xwpe launches
-gdb as a child process, loads the executable, and waits for commands.
-
-@item Ctrl-F2 / Ctrl-G Q
-Quit the debugger.
-@end table
-
-When the debugger stops (at a breakpoint, after a step, or on a
-signal), xwpe marks the current line in the source code and opens
-the file if it is not already open.
-
-@section Breakpoints
-
-@cindex breakpoints
-@cindex Ctrl-F8
-@cindex toggle breakpoint
-
-@table @kbd
-@item Ctrl-F8 / Ctrl-G B
-Toggle a breakpoint at the current line.  The line is highlighted
-to indicate the breakpoint.
-
-@item Ctrl-G M
-Remove all breakpoints.
-@end table
-
-Breakpoints persist across debug sessions within the same xwpe
-session.  If a project file is open, breakpoints are saved and
-restored with the project.
-
-@section Stepping through code
-
-@cindex stepping
-@cindex trace
-@cindex step over
-@cindex F7
-@cindex F8
-
-@table @kbd
-@item F7 / Ctrl-G S (Trace)
-Execute the next source line.  If the line contains a function call,
-step @emph{into} the function.
-
-@item F8 / Ctrl-G N (Step)
-Execute the next source line.  If the line contains a function call,
-step @emph{over} it (execute the entire function and stop at the next
-line in the current function).
-
-@item Ctrl-G G (Goto cursor)
-Execute until the line at the cursor position is reached.
-
-@item Ctrl-G F (Finish function)
-Execute until the current function returns.
-@end table
-
-@section Watch variables
-
-@cindex watch window
-@cindex Ctrl-F7
-@cindex variable inspection
-
-The Watch Window displays the values of selected variables.  Values
-are updated each time the debugger stops.
-
-@table @kbd
-@item Ctrl-F7 / Ctrl-G W
-Add a variable to the watch list.  A dialog prompts for the variable
-name or expression.
-
-@item Ctrl-G E
-Edit a watched variable expression.
-
-@item Ctrl-G D
-Delete a watched variable.
-
-@item Alt-D A
-Remove all watched variables.
-@end table
-
-Inside the Watch Window:
-@itemize @bullet
-@item Use cursor keys to navigate between variables.
-@item Press @key{Return} to edit the selected variable.
-@item Press @key{Insert} to add a new variable at the current position.
-@item Press @key{Delete} to remove the selected variable.
-@end itemize
-
-If a variable is not in scope (e.g.@: a local variable in a function
-that has not been called), xwpe displays a warning.
-
-@section Call stack
-
-@cindex stack window
-@cindex Ctrl-F6
-@cindex backtrace
-
-@table @kbd
-@item Ctrl-F6 / Ctrl-G K
-Open the Stack Window, showing the call chain from @code{main()} to
-the current function.
-@end table
-
-The Stack Window is read-only.  Use cursor keys to navigate and
-@key{Return} to jump to a frame in the source code.
-
-If a signal is caught inside a system function (e.g.@: @code{read()}),
-the stack shows the first visible user function instead.
-
-@section Displaying output
-
-@table @kbd
-@item Ctrl-G O
-Display the program's output window.  This shows the text output of
-the debugged program.  (Not available in X11 mode --- use a separate
-terminal.)
-@end table
-
-@section Debugger mode
-
-@samp{Options @result{} Debugger} also offers a choice between:
-
-@table @strong
-@item Full-screen mode
-The debugger uses the full terminal; xwpe and the debugger share
-the screen.
-
-@item Normal mode
-The debugger runs in a separate terminal or window.
-@end table
-
-On modern systems, full-screen mode is the typical choice.
-
-@section Example debugging session
-
-This example assumes a C program compiled with @code{-g}:
 
 @enumerate
 @item
-Open the source file: @command{wpe debug_test.c}
+Move cursor to line 9 (@code{int x = 5;}).  Press @kbd{Ctrl-G B}.
+The line is highlighted as a breakpoint.
 
 @item
-Set a breakpoint on @code{main()}: move the cursor to the
-@code{int x = 5;} line and press @kbd{Ctrl-F8}.
+Press @kbd{Ctrl-G R}.  xwpe compiles with @code{gcc -c -g},
+links, starts gdb, and stops at the breakpoint.
 
 @item
-Start the debugger: press @kbd{Ctrl-F10}.  gdb launches and stops
-at the breakpoint.
+Press @kbd{Ctrl-G W}, type @code{x}, @key{Return}.  Watch Window
+shows @code{x = 5}.
 
 @item
-Inspect a variable: press @kbd{Ctrl-F7}, type @code{x}, press
-@key{Return}.  The Watch Window shows @code{x = 5} (or an
-uninitialised value if the line has not executed yet).
+Press @key{F8} three times.  The cursor advances through:
+@code{int result = factorial(x)} @result{} @code{printf(...)}
+@result{} next line.
 
 @item
-Step to the next line: press @key{F8}.  The cursor advances.
+Press @kbd{Ctrl-G P}.  The User Screen shows:
+@example
+--- Program output ---
+factorial(5) = 120
+--- Press any key to return to editor ---
+@end example
 
 @item
-Step into a function: press @key{F7} on a line with a function call.
-The cursor moves into the called function.
+Press any key to return.  Press @kbd{Ctrl-G K} to see the stack.
 
 @item
-View the call stack: press @kbd{Ctrl-F6}.  The Stack Window shows
-the chain of function calls.
-
-@item
-Continue execution: press @kbd{Ctrl-F10}.  The program runs until
-the next breakpoint or until it exits.
-
-@item
-Quit the debugger: press @kbd{Ctrl-F2}.
+Press @kbd{Ctrl-G Q} to quit the debugger.
 @end enumerate
 
 @section Known issues
 
 @itemize @bullet
 @item
-Debugging leaks memory.  The exact source of the leak is unknown and
-has been present since the Payne era.
+Debugging leaks memory.  The exact source is unknown (present since
+the Payne era).
 
 @item
-The sdb and dbx backends are untested on modern systems and may not
-work.
+The sdb and dbx backends are untested on modern systems.
 
 @item
-The debugging environment requires the programming-mode binary
-(@command{wpe} or @command{xwpe}), not the editor-only binary
-(@command{we} or @command{xwe}).
+Use @command{wpe} (not @command{we}) for debugging.  The editor-only
+binary does not include debugger support.
+
+@item
+On keyboards where Ctrl+Function keys are not transmitted (e.g.@:
+Keychron with multimedia F-keys), use the @kbd{Ctrl-G} prefix
+shortcuts instead.
+
+@item
+Program output capture requires @code{libutil} (for @code{openpty}).
+This is part of @code{libc6-dev} on Debian and is always available.
 @end itemize
 
 @noindent
-Tested on 2026-05-28 with xwpe @value{VERSION} and gdb 17.2.
+Verified on 2026-05-29 with xwpe @value{VERSION} and gdb 17.2.

@@ -14,6 +14,35 @@ Dennis Payne <dulsi@identicalsoftware.com>
   ca. 2000-2006), hosted at https://www.identicalsoftware.com/xwpe/
   Gave explicit blessing for the Mendez-era rescue in 2026.
 
+xwpe-alpha contributors (1.5.x era, 2000-2006)
+-----------------------------------------------
+The following people contributed patches during the Payne era,
+as documented in the CHANGELOG:
+
+Anthony Barbachan -- newer terminfo patch
+Arjan van Dijk -- XLookupString bug fix
+Alex Buell -- new glibc compatibility patch
+Brian O'Donnell -- save patch, search/replace, selected text insert
+Brian White -- SCO man page fix
+Duane Penzien -- wastebasket delete bug fix
+Fritz (surname unknown) -- Y2K patch
+German Garcia -- multiple file extensions patch
+Guido Draheim -- optional ~ backup files
+Harry Berman -- memory bug fixes
+Kenn Flynn -- file manager patch
+Mark Loftis -- Xterm define and uninitialised strings fix
+Mark Spieth -- zoom fixes, titling method patch
+Martin Zampach -- max column fixes, breakpoint adjustment
+Matej Vela -- Makefile fixes, e_mk_info_path fix
+Paulo Cesar Pereira de Andrade -- partial i18n patch
+Pedro (surname unknown) -- memory bug fixes, menu cleanup, resize fix
+Roman Levenstein -- experimental modifications
+Ronald Holzloehner -- German comments translated to English
+Sebastiano Suraci -- Linux and GPM patch
+Stefan Hille -- multiple contributions including messages.h
+Yarick Rastrigin -- tab navigation patch
+Oliver Wilson -- debugging problem report
+
 GitHub fork contributors (selected fixes integrated)
 ----------------------------------------------------
 Guus Bonnema <gbonnema@xs4all.nl>
@@ -61,4 +90,11 @@ Juan Manuel Mendez Rey <juan.mendezr@proton.me>
   Terminal resize support via KEY_RESIZE handler.
   Keyboard mapping fix for modern PC keyboards (PageUp/Home/End/Delete).
   GPM check to avoid "not found" error when gpm is not installed.
-  Automated test suite (20 tests, pyte + pytest).
+  Modern autotools build system: configure.ac + Makefile.am (v1.6.1).
+  Complete SCREENCELL migration for popup save/restore (v1.6.2).
+  Compiler integration: gnu_intstr for modern GCC, gfortran/fpc/javac
+  defaults, non-GNU flag handling, blank-line output fix.
+  Debugger resurrection: SIGCHLD fix, skip-recompile/relink, pty-based
+  program output capture with fflush(0), User Screen (Ctrl-G P).
+  12-chapter Texinfo manual.
+  560+ file historical archive at codeberg.org/mendezr/xwpe-archive.

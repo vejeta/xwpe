@@ -1873,7 +1873,10 @@ int e_start_debug(FENSTER *f)
   {
    strcpy(estr, f->datnam);
    WpeStringCutChar(estr, '.');
-   strcat(estr, ".e");
+   /* Non-GNU compilers (fpc) produce executables without .e extension.
+      GNU compilers use the .e convention from xwpe's link step. */
+   if (!(e_s_prog.comp_sw & 1))
+    strcat(estr, ".e");
   }
   if ((file = e_exec_deb(f, estr)) == 0)
   {
