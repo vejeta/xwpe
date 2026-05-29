@@ -1,4 +1,4 @@
-public class compile_test {
+public class compile_error_test {
     public static void foo() {
         int x = "hello";
     }
