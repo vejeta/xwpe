@@ -19,6 +19,7 @@
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <signal.h>
+#include <pty.h>
 
 #ifndef TERMCAP
 /* Because term.h defines "buttons" it messes up we_gpm.c if in edit.h */
@@ -57,6 +58,14 @@ char e_d_out_str[SVLINES][256];
 char *e_d_sp[SVLINES];
 char e_d_tty[80];
 
+/* Pty for capturing debugged program's output */
+int e_d_pty_master = -1;
+int e_d_pty_slave = -1;
+char e_d_pty_slave_name[128];
+char *e_d_prog_output = NULL;
+int e_d_prog_output_len = 0;
+int e_d_prog_output_cap = 0;
+
 extern int wfildes[2], efildes[2];
 extern struct termios otermio, ntermio, ttermio;
 extern struct e_s_prog e_sv_prog;
@@ -73,6 +82,57 @@ int tputs();
 #endif
 
 char *npipe[5] = {  NULL, NULL, NULL, NULL, NULL  };
+
+/* Drain any available data from the pty master into e_d_prog_output.
+   Uses non-blocking read so it never blocks the editor. */
+void e_d_pty_drain(void)
+{
+ char buf[4096];
+ int n, flags;
+
+ if (e_d_pty_master < 0)
+  return;
+ usleep(100000); /* 100ms: let kernel deliver pty data */
+ flags = fcntl(e_d_pty_master, F_GETFL, 0);
+ fcntl(e_d_pty_master, F_SETFL, flags | O_NONBLOCK);
+ while ((n = read(e_d_pty_master, buf, sizeof(buf))) > 0)
+ {
+  if (e_d_prog_output_len + n > e_d_prog_output_cap)
+  {
+   int newcap = e_d_prog_output_cap ? e_d_prog_output_cap * 2 : 8192;
+   while (newcap < e_d_prog_output_len + n)
+    newcap *= 2;
+   e_d_prog_output = REALLOC(e_d_prog_output, newcap);
+   e_d_prog_output_cap = newcap;
+  }
+  memcpy(e_d_prog_output + e_d_prog_output_len, buf, n);
+  e_d_prog_output_len += n;
+ }
+ fcntl(e_d_pty_master, F_SETFL, flags & ~O_NONBLOCK);
+}
+
+/* Close pty fds and free the output buffer. */
+void e_d_pty_close(void)
+{
+ if (e_d_pty_master >= 0)
+ {
+  close(e_d_pty_master);
+  e_d_pty_master = -1;
+ }
+ if (e_d_pty_slave >= 0)
+ {
+  close(e_d_pty_slave);
+  e_d_pty_slave = -1;
+ }
+ e_d_pty_slave_name[0] = '\0';
+ if (e_d_prog_output)
+ {
+  FREE(e_d_prog_output);
+  e_d_prog_output = NULL;
+ }
+ e_d_prog_output_len = 0;
+ e_d_prog_output_cap = 0;
+}
 
 char *e_d_msg[] = {  "Ctrl C pressed\nQuit Debugger ?",
 			"Quit Debugger ?",
@@ -482,6 +542,7 @@ int e_d_quit_basic(FENSTER *f)
   close(rfildes[0]);
  if (wfildes[1] >= 0)
   close(wfildes[1]);
+ e_d_pty_close();
  if (WpeIsXwin())
  {
   remove(npipe[0]);
@@ -1609,6 +1670,18 @@ int e_exec_deb(FENSTER *f, char *prog)
    e_error(e_p_msg[ERR_PIPEOPEN], 0, f->fb);
    return(0);
   }
+  /* Create pty BEFORE fork so the child inherits the slave fd.
+     gdb's "run > /dev/pts/N" needs the slave accessible. */
+  if (!WpeIsXwin())
+  {
+   if (openpty(&e_d_pty_master, &e_d_pty_slave, e_d_pty_slave_name,
+               NULL, NULL) < 0)
+   {
+    e_d_pty_master = -1;
+    e_d_pty_slave = -1;
+    e_d_pty_slave_name[0] = '\0';
+   }
+  }
  }
 
  if ((e_d_pid = fork()) > 0)
@@ -1709,6 +1782,11 @@ int e_exec_deb(FENSTER *f, char *prog)
 #endif
  {
   int kbdflgs;
+
+  /* Close pty master in child -- only the parent reads from it.
+     Keep the slave open: gdb needs it accessible for "run > /dev/pts/N". */
+  if (e_d_pty_master >= 0)
+   close(e_d_pty_master);
 
   close(0);
   if (fcntl(rfildes[0], F_DUPFD, 0) != 0)
@@ -1876,10 +1954,24 @@ int e_deb_run(FENSTER *f)
  {
   if (e_d_swtch < 3)
   {
-   if (e_prog.arguments)
-    sprintf(eing, "r %s > %s\n", e_prog.arguments, e_d_tty);
+   /* When pty is active, redirect stdout to the pty slave path.
+      gdb's "set inferior-tty" doesn't deliver output to the master
+      when gdb itself communicates via pipes, so we use explicit
+      shell-style redirect instead. */
+   if (e_d_pty_master >= 0 && e_deb_type == 0)
+   {
+    if (e_prog.arguments)
+     sprintf(eing, "r %s > %s\n", e_prog.arguments, e_d_pty_slave_name);
+    else
+     sprintf(eing, "r > %s\n", e_d_pty_slave_name);
+   }
    else
-    sprintf(eing, "r > %s\n", e_d_tty);
+   {
+    if (e_prog.arguments)
+     sprintf(eing, "r %s > %s\n", e_prog.arguments, e_d_tty);
+    else
+     sprintf(eing, "r > %s\n", e_d_tty);
+   }
   }
   else
   {
@@ -2273,6 +2365,17 @@ int e_read_output(FENSTER *f)
     e_d_error(e_d_sp[SVLINES-1]);
    if (ret < 0) return(-1);
   } while(!ret && !*e_d_sp[SVLINES-1]);
+ }
+ /* Flush the inferior's stdout (which is fully buffered because it
+    goes to a pty, not a real terminal) and drain any output.
+    This is the technique used by gdbgui and Eclipse CDT. */
+ if (e_deb_type == 0 && e_d_pty_master >= 0)
+ {
+  char _flush_resp[256];
+  write(rfildes[1], "call (void)fflush(0)\n", 21);
+  while (e_d_line_read(wfildes[0], _flush_resp, 256, 0, 0) == 0)
+   ;
+  e_d_pty_drain();
  }
  if ((i = e_d_fst_check(f)) == -1) return(-1);
  if (i < 0 && (i = e_d_snd_check(f)) == -1) return(-1);

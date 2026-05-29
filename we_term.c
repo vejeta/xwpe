@@ -1090,11 +1090,41 @@ int e_t_switch_screen(int sw)
 
 int e_t_deb_out(FENSTER *f)
 {
- if (!swt_scr || !beg_scr)
-  return(e_error("Your terminal don\'t use begin/end cup", 0, f->fb));
+ extern char *e_d_prog_output;
+ extern int e_d_prog_output_len;
+ extern void e_d_pty_drain(void);
+ int i;
+
+ e_d_pty_drain();
  endwin();
- fprintf(stderr, "\r\n--- Press any key to return to editor ---\r\n");
- getchar();
+ /* Clear screen and move to top so only program output is visible */
+ fprintf(stderr, "\033[2J\033[H");
+ fprintf(stderr, "--- Program output ---\r\n");
+ if (e_d_prog_output && e_d_prog_output_len > 0)
+ {
+  for (i = 0; i < e_d_prog_output_len; i++)
+  {
+   if (e_d_prog_output[i] == '\n')
+    fprintf(stderr, "\r\n");
+   else
+    fputc(e_d_prog_output[i], stderr);
+  }
+  if (e_d_prog_output[e_d_prog_output_len-1] != '\n')
+   fprintf(stderr, "\r\n");
+ }
+ else
+  fprintf(stderr, "(no output)\r\n");
+ fprintf(stderr, "--- Press any key to return to editor ---\r\n");
+ { struct termios _old, _raw; char _c;
+   tcgetattr(0, &_old);
+   _raw = _old;
+   _raw.c_lflag &= ~(ICANON | ECHO);
+   _raw.c_cc[VMIN] = 1;
+   _raw.c_cc[VTIME] = 0;
+   tcsetattr(0, TCSANOW, &_raw);
+   read(0, &_c, 1);
+   tcsetattr(0, TCSANOW, &_old);
+ }
  clearok(stdscr, TRUE);
  refresh();
  return(0);
@@ -1118,18 +1148,13 @@ int e_t_d_switch_out(int sw)
  if (save_sw == sw)
   return(0);
  save_sw = sw;
- if (sw)
+ /* In terminal mode, program output is redirected to a file (not the
+    tty), so no screen switching is needed during F7/F8 stepping.
+    This eliminates the flicker that the original design caused by
+    toggling between alternate and normal screen on every step.
+    Just repaint the editor when returning from a debug command. */
+ if (!sw)
  {
-  /* Switch to normal screen so program output (redirected to the tty
-     by gdb's "run > /dev/pts/N") lands there instead of on the editor.
-     Use endwin() for clean ncurses state management. */
-  endwin();
- }
- else
- {
-  /* Switch back to alternate screen (editor). clearok forces ncurses
-     to repaint everything since the alternate screen may have been
-     corrupted by program output that arrived before the switch. */
   clearok(stdscr, TRUE);
   e_abs_refr();
   e_refresh();

@@ -48,6 +48,7 @@ we_LDADD = \
   $(NCURSESW_LIBS) \
   $(X_LIBS) \
   $(GPM_LIBS) \
+  $(UTIL_LIBS) \
   -lz
 
 # --- Header files (for dist) ---

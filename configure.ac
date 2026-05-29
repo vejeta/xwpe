@@ -53,6 +53,11 @@ AS_IF([test "x$with_gpm" != xno], [
 ])
 AC_SUBST([GPM_LIBS])
 
+# --- Required: libutil (openpty for debugger pty capture) ---
+AC_CHECK_LIB([util], [openpty], [UTIL_LIBS="-lutil"],
+  [AC_MSG_ERROR([libutil with openpty() is required.])])
+AC_SUBST([UTIL_LIBS])
+
 # --- Required: zlib ---
 AC_CHECK_LIB([z], [inflate], [],
   [AC_MSG_ERROR([zlib is required. Install zlib1g-dev or zlib-devel.])])

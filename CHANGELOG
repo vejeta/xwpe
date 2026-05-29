@@ -91,6 +91,19 @@ Changes
   Debugger now starts correctly: breakpoints, step over (F8),
   step into (F7), watch variables, and call stack all work with
   gdb 17.2.
+* Program output capture via pseudoterminal (pty): the debugged
+  program's stdout is redirected to a pty slave instead of the
+  editor's terminal. xwpe reads from the pty master into a memory
+  buffer. Ctrl-G P (User Screen) displays the captured output.
+  This eliminates the screen flicker that the original smcup/rmcup
+  design caused on every F7/F8 step. After each step, xwpe sends
+  "call (void)fflush(0)" to gdb to flush the program's stdout
+  buffer -- the same technique used by gdbgui and Eclipse CDT.
+* Restored Ctrl-G P (User Screen) broken since Payne era: a
+  #ifndef NCURSES guard unconditionally disabled the function when
+  compiled with ncurses. Restored Kruse's original logic.
+* Added Program output and debugger Options to Debug menu for
+  discoverability (previously only accessible via Ctrl-G P/O).
   (Juan Manuel Mendez Rey)
 
 1.6.1 (Modern autotools build system)
