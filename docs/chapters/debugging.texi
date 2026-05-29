@@ -14,7 +14,7 @@ code, view the call stack, and see program output --- all from within
 the editor, without screen flicker.
 
 This chapter was verified on 2026-05-29 with xwpe 1.6.2, gdb 17.2,
-gcc 15.2, and g++ 15.2.
+gcc 15.2, g++ 15.2, gfortran 15.2, fpc 3.2.2, and OpenJDK jdb 25.
 
 @section Quick start
 
@@ -93,10 +93,11 @@ include @code{-g}.  To add @code{-O0}, go to
 @cindex program output
 @cindex pty
 
-Program output (e.g.@: @code{printf}) is captured via a
-pseudoterminal (pty).  The debugged program's stdout is redirected to
-a pty slave; xwpe reads from the pty master into a memory buffer.
-This happens invisibly --- no screen switching, no flicker.
+Program output (e.g.@: @code{printf}, @code{System.out.println}) is
+captured invisibly --- no screen switching, no flicker.  For gdb
+backends, output is captured via a pseudoterminal (pty): the program's
+stdout is redirected to a pty slave and xwpe reads the pty master.
+For jdb, output is extracted from jdb's command pipe.
 
 Press @kbd{Ctrl-G P} (or @samp{Debug @result{} Program output}) to
 view the captured output.  The screen clears and shows the output.
@@ -115,20 +116,29 @@ immediately, even if the program uses buffered I/O.
 
 @cindex debugger selection
 
-xwpe supports three backends, selectable via @samp{Debug @result{}
-debugger Options} (@kbd{Ctrl-G O}):
+xwpe supports five backends, selectable via @samp{Debug @result{}
+debugger Options} (@kbd{Ctrl-G O}).  For @file{.java} files, jdb is
+auto-selected.
 
 @table @strong
 @item gdb (GNU Debugger)
-The default and recommended backend.  Tested with gdb 17.2.
-Supports all features: breakpoints, stepping, watches, stack,
-program output capture.
+The default backend for C, C++, Fortran, and Pascal.  Tested with
+gdb 17.2.  Supports all features: breakpoints, stepping, watches,
+stack, program output capture via pty.
+
+@item jdb (Java Debugger)
+Backend for Java.  Auto-selected for @file{.java} files.  Uses
+@code{poll()} for async JVM startup.  Breakpoints, stepping,
+program output capture all work.  Tested with OpenJDK 25.
 
 @item sdb (Symbolic Debugger)
 Legacy UNIX debugger.  Not available on modern Linux.
 
 @item dbx
 Berkeley UNIX debugger.  Available on some BSD systems.
+
+@item xdb
+HP-UX debugger.  Historical compatibility only.
 @end table
 
 @section Debugging C++ programs
@@ -150,6 +160,40 @@ by gdb's Fortran support.
 gdb has basic Free Pascal support.  Compile with @command{fpc -g}
 (xwpe's default).  Breakpoints and stepping work.  Variable
 inspection may be limited for Pascal-specific types (strings, sets).
+
+@section Debugging Java programs
+
+@cindex Java debugging
+@cindex jdb
+
+xwpe auto-selects jdb when opening a @file{.java} file.  No manual
+configuration is needed.  If gdb was previously selected, xwpe
+switches to jdb automatically with an informational message.
+
+jdb differences from gdb:
+
+@itemize @bullet
+@item
+@strong{Slower startup}: the JVM takes 2--3 seconds to initialise.
+xwpe uses @code{poll()} with a 10-second timeout to wait without
+consuming CPU.
+
+@item
+@strong{Breakpoints are deferred}: jdb sets breakpoints after the
+class is loaded.  You see ``Deferring breakpoint'' in the Messages
+window -- this is normal.
+
+@item
+@strong{Program output}: captured from jdb's pipe (not via pty like
+gdb).  View with @kbd{Ctrl-G P}.
+
+@item
+@strong{No redirect}: jdb does not support @code{> /dev/pts/N}
+redirection.  xwpe handles this transparently.
+@end itemize
+
+Requires @command{default-jdk} (Debian/Ubuntu) or equivalent JDK
+package that provides @command{javac} and @command{jdb}.
 
 @section Example session: C with factorial
 
