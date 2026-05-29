@@ -38,6 +38,46 @@ declarations.
 @item Terminal not reset on exit
 Fixed in v1.5.31.  The terminal state is now properly saved and restored
 on clean exit.
+
+@item Display artefacts after closing menus and popups
+Fixed in v1.6.2.  The SCREENCELL migration (v1.6.0) changed screen
+cells from 2 to 8 bytes, but the popup save/restore system still used
+uninitialised @code{malloc}'d buffers.  Random heap data appeared as
+CJK characters or misplaced borders after closing menus, compile
+windows, or dialogs.  Fix: @code{calloc}'d buffers + @code{altschirm}
+invalidation on restore.
+
+@item SEGFAULT when pressing F9 or navigating menus
+Fixed in v1.6.2.  The @code{e_t_refresh} function accessed the
+special-character table @code{sp_chr[]} with negative indices.
+@code{SCREENCELL} uses @code{int} for characters (can be negative),
+while the old @code{char} buffer was always 0--255.
+
+@item Error navigation broken with modern GCC
+Fixed in v1.6.2.  The @code{gnu_intstr} pattern expected 1990s
+backtick quoting and only matched errors containing ``before''.
+Updated to the standard @code{file:line:column:} format used by
+GCC since 4.8 (2013).
+
+@item Compiler output truncated at blank lines
+Fixed in v1.6.2.  @code{print_to_end_of_buffer} stopped at the first
+blank line, discarding subsequent errors.  Compilers that emit blank
+lines between errors (gfortran, clang) only showed the first error.
+
+@item Compiler exit code ignored
+Fixed in v1.6.2.  The exit code was hardcoded to 0 since the Payne
+era, so xwpe never detected compilation failures.
+
+@item Non-GNU compilers received invalid flags
+Fixed in v1.6.2.  @code{e_comp} hardcoded @code{-c} and @code{-o}
+for all compilers.  Free Pascal and javac failed with ``Illegal
+parameter''.  Now skipped for non-GNU compiler styles.
+
+@item Default compilers outdated (f77, pc)
+Fixed in v1.6.2.  Fortran now defaults to @command{gfortran} with
+modern extensions (.f90/.f95/.f03/.f08).  Pascal defaults to
+@command{fpc} with .pas/.pp.  Java (@command{javac}) added as 5th
+default compiler.
 @end table
 
 @section Known open issues
@@ -58,12 +98,6 @@ but does not recalculate the 2/3 ratio for the initial editor window.
 @item Debugging leaks memory
 The exact source of the leak is unknown.  It has been present since at
 least the Payne era (documented in the 1.5.x CHANGELOG).
-
-@item Compilers assumed to have @code{-c} and @code{-o} options
-This causes problems for languages whose compilers do not use these
-flags (e.g.@: @command{javac}, @command{perl}).  Workaround: use a
-wrapper script that translates @code{-c} and @code{-o} into the correct
-flags for the target compiler.
 
 @item @command{make install} installs X11 binaries unconditionally
 Even when compiled @option{--without-x}, the install target creates
