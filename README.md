@@ -7,6 +7,13 @@ Borland C and Pascal family. Extensive support is provided for
 programming: syntax highlighting, integrated compiler and debugger
 interface, project management, and a function-key driven menu system.
 
+The **1.6.x series ("xwpe 2026")** is the release cycle that brought
+xwpe from 1993 to the present: UTF-8 terminal support, modern autotools,
+working compiler integration for gcc/g++/gfortran/fpc, a 12-chapter
+Texinfo manual, and an archived collection of 560+ historical documents
+that were scattered across the early web. See [Project history](#project-history)
+for the full lineage.
+
 ## Project history
 
 This release continues the work of:
@@ -93,6 +100,113 @@ keyboard remapping for modern PC keyboards.
 * **Debian `dh_autoreconf` compatible**: the new `configure.ac` works with
   autoconf 2.69+, eliminating the need to skip `dh_autoreconf` in
   `debian/rules`.
+
+## What changed in 1.6.2
+
+* **Completed SCREENCELL migration**: fixed display artefacts after
+  closing menus, dialogs, and compile popups. The popup save/restore
+  system now uses properly initialised buffers throughout.
+* **Compiler integration modernised**: error navigation (Alt-T/Alt-V)
+  works with modern GCC/g++/gfortran/fpc. Updated default compilers
+  (gfortran instead of f77, fpc instead of pc). Non-GNU compilers no
+  longer receive invalid gcc-specific flags.
+* **Output capture fixed**: compilers that emit blank lines between
+  errors (gfortran, clang) no longer have their output truncated.
+
+See CHANGELOG for full details.
+
+## Compiler support
+
+### Tested (v1.6.2)
+
+| Compiler | Language | F9 | Alt-T/V | Default extensions |
+|----------|----------|:--:|:-------:|-------------------|
+| gcc      | C        | ok | ok | `.c` |
+| g++      | C++      | ok | ok | `.cpp` `.cc` `.C` `.cxx` |
+| gfortran | Fortran  | ok | ok | `.f` `.f90` `.f95` `.f03` `.f08` |
+| fpc      | Pascal   | ok | ok | `.p` `.pas` `.pp` |
+
+### Should work (GNU `file:line:column:` format)
+
+Any compiler that emits `file:line:column: message` diagnostics works
+with the default GNU error pattern:
+
+clang, clang++, Rust (`rustc`), Go (`go build`), D (`dmd`, `ldc2`),
+Zig, Vala (`valac`), GNU Guile, Haskell (`ghc`), Nim, Crystal,
+Swift, Kotlin/Native.
+
+### Configurable via Options -> Programming
+
+Compilers with other diagnostic formats can be configured with a custom
+Interpreter String using xwpe's pattern language
+(`${FILE}`, `${LINE}`, `${COLUMN}`, wildcards):
+
+- **javac** -- `file:line:` (no column); pattern: `${FILE}:${LINE}:*`
+- **scalac** -- similar to javac
+- **Node.js** (`tsc`) -- `file(line,column):` format
+- **Free Pascal** is already configured with `${FILE}(${LINE},${COLUMN})*`
+- **SBCL** (Common Lisp), **Clojure**, **Unison** -- custom formats,
+  all expressible in xwpe's pattern language
+
+## Architecture notes
+
+Fred Kruse's 1993 design proved remarkably resilient. The core systems
+that made the v1.6.x restoration possible -- rather than a rewrite --
+include:
+
+- **Pattern-based error parser**: a mini-language (`${FILE}:${LINE}:${COLUMN}:*`)
+  that can match any compiler's diagnostic format. Designed in 1993, it
+  handles gcc, g++, gfortran, fpc, and any future compiler with minimal
+  configuration.
+- **schirm/altschirm double buffer**: xwpe maintains two screen buffers and
+  only repaints cells that differ. This is the same approach modern UI
+  frameworks use (virtual DOM diffing). Kruse did it in C in 1993.
+- **Popup save/restore**: manual save of screen regions under popups, with
+  restore on close. We evaluated migrating to ncurses panels but
+  concluded that the original architecture is cleaner for xwpe's use case.
+
+The hardest part of the restoration was not fixing bugs in Kruse's logic
+-- it was adapting the byte-level assumptions to modern character
+encodings. The SCREENCELL migration (1.6.0) touched every rendering path,
+and its ripple effects (uninitialised buffers, negative character values
+in the special-character table) took the entire 1.6.2 cycle to resolve.
+
+## Documentation
+
+xwpe includes a 12-chapter Texinfo manual covering installation, the
+interface, editor commands, configuration, compiling, debugging, projects,
+and tutorials with step-by-step walkthroughs.
+
+```sh
+make info    # build xwpe.info
+make html    # build HTML version
+```
+
+## Known limitations
+
+- **X11 mode**: UTF-8 display not yet implemented in xwpe (the X11
+  binary). Terminal mode (`wpe`) has full UTF-8 support.
+- **Window resize**: terminal resize is detected and handled, but editor
+  windows do not scale proportionally.
+- **javac**: Java uses `file:line:` format (no column number); error
+  parsing requires manual configuration of the interpreter string.
+- **Compiler flags**: the compile command (`e_comp`) uses GNU-style flags
+  for GNU compilers and omits them for others. Exotic compilers may need
+  manual Options -> Programming configuration.
+
+## Contributing
+
+Issues, bug reports, and patches welcome on Codeberg:
+https://codeberg.org/mendezr/xwpe
+
+**We especially need testers.** xwpe was untested for nearly 20 years.
+If you can try it on your system and report what works and what doesn't
+-- any terminal, any compiler, any workflow -- that is enormously
+valuable. Open an issue even if everything works: knowing what
+configurations are solid helps us prioritise.
+
+The historical archive of mailing lists, manpages, tutorials, and Debian
+BTS history is preserved at https://codeberg.org/mendezr/xwpe-archive.
 
 ## Building
 

@@ -62,6 +62,21 @@ Changes
 * Simplified e_change_pic: the complex overlapping-resize path with
   byte-level buffer manipulation is replaced by close+open, which is
   correct and fast on modern terminals.
+* Fixed error navigation (Alt-T/Alt-V, Next/Previous Error) not working
+  with modern GCC: the gnu_intstr pattern expected old-style backtick
+  quoting and only matched errors containing "before". Updated to parse
+  the standard file:line:column: format that GCC has used since 4.8
+  (2013). Also removed leftover debug traces from e_show_error.
+* Fixed print_to_end_of_buffer discarding compiler output after blank
+  lines. The function used break on empty lines, but gfortran (and
+  other compilers with caret diagnostics) emit blank lines between
+  errors. Only the first error was captured; the rest were silently
+  dropped. Changed to skip blank lines and continue processing.
+* Updated default compiler settings for 2026:
+  - Fortran: f77 -> gfortran, added .f90/.f95/.f03/.f08 extensions,
+    switched to GNU error format (file:line:column:).
+  - Pascal: pc -> fpc, added .pas/.pp extensions, new error pattern
+    for fpc's file(line,column) format.
   (Juan Manuel Mendez Rey)
 
 1.6.1 (Modern autotools build system)

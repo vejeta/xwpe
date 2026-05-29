@@ -61,7 +61,7 @@ extern int * e_d_nrwtchs;
 
 /********************************************************/   
 
-char *gnu_intstr = "${?*:warning:}${FILE}:${LINE}:* before `${COLUMN=BEFORE}\'*";
+char *gnu_intstr = "${?*:warning:}${FILE}:${LINE}:${COLUMN}:*";
 char *cc_intstr = "${?*:warning:}\"${FILE}\", line ${LINE}:* at or near * \"${COLUMN=AFTER}\"";
 char *pc_intstr = "${?0:e}${?0:w}${?0:s}*:*:* * ${FILE}:\n\n* ${LINE}  ${CMPTEXT}\n*-------\
 ${COLUMN=PREVIOUS?^+14}\n[EWew] * line*";
@@ -340,8 +340,20 @@ int e_comp(FENSTER *f)
  if (e_new_message(f))
   return(WPE_ESC);
  argc = e_make_arg(&arg, e_s_prog.comp_str);
- arg[1] = MALLOC(3);
- strcpy(arg[1], "-c");
+ if (!(e_s_prog.comp_sw & 1))
+ {
+  /* GNU compilers (gcc, g++, gfortran): add -c flag */
+  arg[1] = MALLOC(3);
+  strcpy(arg[1], "-c");
+ }
+ else
+ {
+  /* Non-GNU compilers (fpc, javac): no -c, shift args down */
+  int k;
+  for (k = 1; k < argc; k++)
+   arg[k] = arg[k + 1];
+  argc--;
+ }
  len = strlen(f->dirct) - 1;
  if (!strcmp(f->ed->dirct, f->dirct))
   strcpy(fstr, f->datnam);
@@ -357,8 +369,12 @@ int e_comp(FENSTER *f)
  WpeStringCutChar(ostr, '.');
  strcat(ostr, ".o");
 #ifndef NO_MINUS_C_MINUS_O
- argc = e_add_arg(&arg, "-o", argc, argc);
- argc = e_add_arg(&arg, ostr, argc, argc);
+ if (!(e_s_prog.comp_sw & 1))
+ {
+  /* GNU compilers: add -o output.o */
+  argc = e_add_arg(&arg, "-o", argc, argc);
+  argc = e_add_arg(&arg, ostr, argc, argc);
+ }
 #endif
  e_sys_ini();
 #ifdef CHECKHEADER
@@ -567,15 +583,7 @@ int e_show_error(int n, FENSTER *f)
    {
     if (filename != cn->f[i]->datnam)
      FREE(filename);
-    { extern SCREENCELL *altschirm;
-      FILE *_d = fopen("/tmp/xwpe-switch-trace.txt", "w");
-      if (_d) { fprintf(_d, "BEFORE: sch[5][50].ch=%d alt[5][50].ch=%d\n", schirm[5*MAXSCOL+50].ch, altschirm[5*MAXSCOL+50].ch); fclose(_d); }
-    }
     e_switch_window(cn->edt[i], cn->f[cn->mxedt]);
-    { extern SCREENCELL *altschirm;
-      FILE *_d = fopen("/tmp/xwpe-switch-trace.txt", "a");
-      if (_d) { fprintf(_d, "AFTER: sch[5][50].ch=%d alt[5][50].ch=%d\n", schirm[5*MAXSCOL+50].ch, altschirm[5*MAXSCOL+50].ch); fclose(_d); }
-    }
     break;  
    }
   }
@@ -980,7 +988,6 @@ int e_ini_prog(ECNT *cn)
  e_prog.comp[0]->key = 'C';
  e_prog.comp[0]->x = 0;
  e_prog.comp[0]->intstr = WpeStrdup(cc_intstr);
- e_prog.comp[2]->compiler = WpeStrdup("f77");
  e_prog.comp[1]->compiler = WpeStrdup("g++");
  e_prog.comp[1]->language = WpeStrdup("C++");
  e_prog.comp[1]->filepostfix = (char **)WpeExpArrayCreate(4, sizeof(char *), 1);
@@ -991,25 +998,32 @@ int e_ini_prog(ECNT *cn)
  e_prog.comp[1]->key = '+';
  e_prog.comp[1]->x = 1;
  e_prog.comp[1]->intstr = WpeStrdup(cc_intstr);
+ e_prog.comp[2]->compiler = WpeStrdup("gfortran");
  e_prog.comp[2]->language = WpeStrdup("Fortran");
- e_prog.comp[2]->filepostfix = (char **)WpeExpArrayCreate(1, sizeof(char *), 1);
+ e_prog.comp[2]->filepostfix = (char **)WpeExpArrayCreate(5, sizeof(char *), 1);
  e_prog.comp[2]->filepostfix[0] = WpeStrdup(".f");
+ e_prog.comp[2]->filepostfix[1] = WpeStrdup(".f90");
+ e_prog.comp[2]->filepostfix[2] = WpeStrdup(".f95");
+ e_prog.comp[2]->filepostfix[3] = WpeStrdup(".f03");
+ e_prog.comp[2]->filepostfix[4] = WpeStrdup(".f08");
  e_prog.comp[2]->key = 'F';
  e_prog.comp[2]->x = 0;
  e_prog.comp[2]->intstr = WpeStrdup(cc_intstr);
- e_prog.comp[3]->compiler = WpeStrdup("pc");
+ e_prog.comp[3]->compiler = WpeStrdup("fpc");
  e_prog.comp[3]->language = WpeStrdup("Pascal");
- e_prog.comp[3]->filepostfix = (char **)WpeExpArrayCreate(1, sizeof(char *), 1);
+ e_prog.comp[3]->filepostfix = (char **)WpeExpArrayCreate(3, sizeof(char *), 1);
  e_prog.comp[3]->filepostfix[0] = WpeStrdup(".p");
+ e_prog.comp[3]->filepostfix[1] = WpeStrdup(".pas");
+ e_prog.comp[3]->filepostfix[2] = WpeStrdup(".pp");
  e_prog.comp[3]->key = 'P';
  e_prog.comp[3]->x = 0;
- e_prog.comp[3]->intstr = WpeStrdup(pc_intstr);
+ e_prog.comp[3]->intstr = WpeStrdup("${?*:Warning:}${FILE}(${LINE},${COLUMN})*");
  for (i = 0; i < e_prog.num; i++)
  {
   e_prog.comp[i]->comp_str = WpeStrdup("-g");
   e_prog.comp[i]->libraries = WpeStrdup("");
   e_prog.comp[i]->exe_name = WpeStrdup("");
-  e_prog.comp[i]->comp_sw = i < 2 ? 0 : 1;
+  e_prog.comp[i]->comp_sw = i < 3 ? 0 : 1;
  }
  e_copy_prog(&e_s_prog, e_prog.comp[0]);
  return(0);
@@ -1510,9 +1524,15 @@ int print_to_end_of_buffer(BUFFER * b,char * str,int wrap_limit)
   else
    for (j = 0; (!((str[j + k] == '\n') || (str[j + k] == '\0'))); j++)
     ;
-  /* Don't add blank lines */
+  /* Skip blank lines but continue processing */
   if (j == 0)
-   break;
+  {
+   if (str[k] == '\n')
+    k++;
+   else
+    break;
+   continue;
+  }
 
 /* b->mxlines - count of lines in b
    so add one more line at the end of buffer */
