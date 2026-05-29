@@ -1,0 +1,83 @@
+@c This file is NOT included in xwpe.texi -- it is a standalone
+@c reference document recovered from the LUG-S (Linux User Group
+@c Stuttgart) debugger course, circa 2001.
+@c Source: xwpe-archive/lug-s-debugger-course/
+@c Language: German (original)
+
+@node LUG-S Debugger-Kurs
+@appendix LUG-S Debugger-Kurs (deutsch)
+
+@cindex LUG-S
+@cindex Debugger-Kurs
+@cindex Stuttgart
+
+Minikurs Debugger dbx/gdb/(xwpe) unter Unix.
+Quelle: Linux User Group Stuttgart (LUG-S),
+@uref{http://lug-s.org/dokumentation/kurse/debugger/extra/}
+(archiviert via Wayback Machine, 2001--2003).
+
+@section Debugger-Befehle in xwpe
+
+Die folgende Tabelle zeigt die Debugger-Befehle in xwpe
+(transkribiert aus dem Screenshot debugkurspage13.gif):
+
+@multitable @columnfractions .40 .30 .30
+@headitem Funktion @tab xwpe-Befehl @tab Tastenkuerzel
+@item Interaktive Hilfe @tab ueber Menue @tab
+@item Quellcode anschauen @tab automatisch @tab
+@item Variablen ausgeben @tab Make/Edit Watch @tab Ctrl-G W / Ctrl-G E
+@item Programm neu starten @tab Run/Continue @tab Ctrl-G R
+@item Aufrufbaum betrachten @tab Show stacK @tab Ctrl-G K
+@item Im Stack wandern @tab Klick in Stackwindow @tab
+@item Breakpoint setzen @tab Toggle Break @tab Ctrl-G B
+@item Programmlauf fortsetzen @tab Run/Continue @tab Ctrl-G R
+@item Naechste Programmzeile @tab Next (step over) @tab F8 / Ctrl-G S
+@item Naechster Programmbefehl @tab Step (step into) @tab F7 / Ctrl-G T
+@item Debugger verlassen @tab ueber Menue @tab Ctrl-G Q
+@item Programm-Ausgabe @tab Program output @tab Ctrl-G P
+@end multitable
+
+@section Das Debug-Menue
+
+@multitable @columnfractions .40 .30 .30
+@headitem Menuepunkt @tab Tastenkuerzel 1 @tab Tastenkuerzel 2
+@item Toggle Breakpoint @tab Ctrl-F8 @tab Ctrl-G B
+@item ReMove all Breakp. @tab @tab Ctrl-G M
+@item Make Watch @tab Ctrl-F7 @tab Ctrl-G W
+@item Edit watch @tab @tab Ctrl-G E
+@item Delete watch @tab @tab Ctrl-G D
+@item Remove All watches @tab @tab Ctrl-G A
+@item Show stacK @tab Ctrl-F6 @tab Ctrl-G K
+@item Step (step into) @tab F7 @tab Ctrl-G T
+@item Next (step over) @tab F8 @tab Ctrl-G S
+@item Run/Continue @tab Ctrl-F10 @tab Ctrl-G R
+@item Program output @tab @tab Ctrl-G P
+@item debugger Options @tab @tab Ctrl-G O
+@item Quit @tab Ctrl-F2 @tab Ctrl-G Q
+@end multitable
+
+@section Unix-Signale (Programmfehler)
+
+Typische Programmierfehler und ihre Signale (aus dem Kurs):
+
+@table @strong
+@item SIGFPE (Floating point exception)
+Tritt auf bei mathematischen Operationen, bei denen ein Ergebnis
+nicht errechnet werden kann: negative Wurzel, negativer Logarithmus.
+
+@item SIGSEGV (Segmentation violation / Memory fault)
+Das Programm versucht auf Speicherbereiche zuzugreifen, die nicht
+ihm gehoeren. Inkorrekte Zeiger, Array-Ueberschreitung, Versuch
+eine Konstante zu ueberschreiben.
+
+@item SIGBUS (Bus error)
+Eine unmoegliche Anforderung an den Speicherbus. Alignment-Fehler
+auf RISC-Prozessoren.
+
+@item SIGILL (Illegal instruction)
+Unbekannter Maschinenbefehl. Falscher Aufruf von longjmp() oder
+Funktion mit falscher Adresse.
+
+@item SIGINT (Interrupt)
+Wird durch Druecken der Interrupt-Taste (Ctrl-C) ausgeloest.
+@end table

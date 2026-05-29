@@ -1,0 +1,92 @@
+@c This file is NOT included in xwpe.texi -- it is a standalone
+@c reference document translated from the Czech review by
+@c Miroslav Janiš, published in Linuxové noviny 6/1998.
+@c Source: xwpe-archive/linux-cz-1998-06/clanek06.html
+@c Language: English (translated from Czech original)
+
+@node Czech Review 1998
+@appendix Czech Review of xwpe (1998, translated)
+
+@cindex Linuxové noviny
+@cindex Miroslav Janiš
+@cindex Czech review
+
+@section Source
+
+Miroslav Jani@v{s}, ``Programátorské editory (X)WPE a (X)FTE''
+(Programming editors (X)WPE and (X)FTE), @cite{Linuxov@'e noviny}
+issue 6/1998 (9 June 1998).  Originally at
+@uref{http://www.linux.cz/noviny/1998-06/clanek06.html}.
+
+This is the earliest known non-English review of xwpe.  The article
+reviews xwpe 1.4.2 (Fred Kruse's original) and compares it with
+fte (Mirko Macek).
+
+@section Key points (translated from Czech)
+
+@subsection Description
+
+``An almost perfect copy of Borland's interface; it allows everything
+(said with great exaggeration) that a spoiled programmer could wish
+for.  It was created by Fred Kruse and in version 1.4.2 has existed
+unchanged since 1993.  Only recently have the sources been dusted
+off and a project `for a better WPE' has begun.''
+
+@subsection Capabilities listed
+
+@itemize @bullet
+@item Creating projects with compiler and linker parameter definitions.
+@item Breakpoints and stepping directly in the source code; classic
+  variable display (Watch) and program stack (Stack).
+@item Jumping to errors and warnings discovered by the compiler,
+  accessible via the Messages window.
+@item Ability to configure and use various compilers -- besides C/C++,
+  also Fortran, Pascal, and @LaTeX{}.
+@item Displaying man pages and GNU info -- allows comfortable document
+  navigation, though it occasionally misinterprets links.
+@item Syntax highlighting and colour configuration.
+@item Editor behaviour configuration (tabs, auto-indent, auto-save),
+  but otherwise the editor configuration is quite limited.
+@item And finally, the ability to reliably crash at the most
+  inconvenient moment (especially when viewing man pages) ;-)
+  (but usually it manages to save your work...)
+@end itemize
+
+@subsection Bug report: -c flag with LaTeX
+
+The reviewer noted a significant problem:
+
+@quotation
+``xwpe quite wilfully passes the @code{-c} parameter to any compiler
+started from the Run/Compile menu, so a script is needed that
+ignores the first parameter (@code{-c}) and runs @LaTeX{} with the
+second one (filename).''
+@end quotation
+
+@noindent
+This bug, reported by Jani@v{s} in 1998, was finally fixed in
+xwpe v1.6.2 (2026) -- 28 years later -- by skipping @code{-c} and
+@code{-o} flags for non-GNU compilers (@code{comp_sw & 1}).
+
+@subsection Evaluation
+
+``Generally speaking, for programming (or rather for trying to
+program), this editor is quite usable -- you write code, compile it
+right away, fix syntactic and other errors revealed by the compiler,
+and you can merrily step through it and perform various tricks
+without having to create a Makefile and launch a debugger.  However,
+for a larger project, a Makefile is still necessary.''
+
+``The editor seems quite limited -- colour syntax only works for a
+few chosen ones (C/C++, Pascal, Fortran(?)), indent is quite stupid,
+and the editor cannot do word completion at all.''
+
+@subsection Historical note
+
+The article also mentions RHIDE (a djgpp Borland clone used by
+id Software to compile QUAKE instead of Watcom C) and provides the
+first known reference to Dennis Payne's new xwpe-alpha project at
+@code{http://www.rpi.edu/~payned/xwpe/}.
+
+The accompanying screenshot (Xwpe.gif, showing xwpe stepping through
+a program) was unfortunately never captured by the Wayback Machine.
