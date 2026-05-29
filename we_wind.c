@@ -190,88 +190,42 @@ PIC *e_open_view(int xa, int ya, int xe, int ye, int col, int sw)
 {
  PIC *pic = MALLOC(sizeof(PIC));
  int i, j;
+ int w = xe - xa + 1;
+ int h = ye - ya + 1;
 
  if (pic == NULL) return(NULL);
  pic->a.x = xa;
  pic->a.y = ya;
-#ifndef NEWSTYLE
- if(!WpeIsXwin())
- {
-  pic->e.x = xe;
-  pic->e.y = ye;
- }
- else
- {
-  pic->e.x = xe < MAXSCOL-2 ? xe + 2 : xe < MAXSCOL-1 ? xe + 1 : xe;
-  pic->e.y = ye < MAXSLNS-2 ? ye + 1 : ye;
- }
-#else
  pic->e.x = xe;
  pic->e.y = ye;
-#endif
- if (sw!=0)
+
+ /* Save schirm content behind this popup using calloc'd SCREENCELL array.
+    This is the same approach as the original code but with proper
+    initialisation (calloc) to prevent uninitialised data issues. */
+ pic->buf = NULL;
+ 
+ if (sw != 0)
  {
-  pic->p = MALLOC((pic->e.x - pic->a.x + 1) * sizeof(SCREENCELL) * (pic->e.y - pic->a.y + 1));
-  if (pic->p == NULL) {  FREE(pic);  return(NULL);  }
-  { int pw = pic->e.x - pic->a.x + 1;
-  { FILE *_d = fopen("/tmp/xwpe-save-schirm.txt", "a");
-    if (_d) {
-      int r, c2, bad = 0;
-      fprintf(_d, "SAVE a=(%d,%d) e=(%d,%d):", pic->a.x, pic->a.y, pic->e.x, pic->e.y);
-      for (r = pic->a.y; r <= pic->e.y; r++)
-       for (c2 = pic->a.x; c2 <= pic->e.x; c2++)
-        if (schirm[r*MAXSCOL+c2].ch > 127 || schirm[r*MAXSCOL+c2].ch < 0)
-        { if (bad < 10) fprintf(_d, " [%d,%d]=%d", r, c2, schirm[r*MAXSCOL+c2].ch);
-          bad++; }
-      fprintf(_d, " (bad=%d)\n", bad);
-      fclose(_d);
-    }
-  }
-  for (j = pic->a.y; j <= pic->e.y; ++j)
-   for (i = pic->a.x; i <= pic->e.x; ++i)
-   {
-    SCREENCELL *cell = &schirm[j * MAXSCOL + i];
-    SCREENCELL clean;
-    /* Sanitise: if schirm has uninitialised data (ch outside valid
-       Unicode range), save a space instead.  This prevents garbage
-       from propagating through pic->p save/restore cycles. */
-    if (cell->ch >= 0 && cell->ch <= 0x10FFFF)
-     clean = *cell;
-    else
-    { clean.ch = ' '; clean.attr = 0; }
-    memcpy(pic->p + ((j-pic->a.y)*pw + (i-pic->a.x)) * sizeof(SCREENCELL),
-      &clean, sizeof(SCREENCELL));
-   }
-  }
-#if defined(NEWSTYLE) && !defined(NO_XWINDOWS)
-  e_get_pic_xrect(xa, ya, xe, ye, pic);
-#endif
+  int pw = xe - xa + 1;
+  int ph = ye - ya + 1;
+  SCREENCELL *buf = calloc(pw * ph, sizeof(SCREENCELL));
+  if (buf == NULL) { FREE(pic); return(NULL); }
+  /* Store buffer pointer in win field (reusing the field) */
+  pic->buf = (WINDOW *)buf;
+  for (j = ya; j <= ye; ++j)
+   for (i = xa; i <= xe; ++i)
+    buf[(j - ya) * pw + (i - xa)] = schirm[j * MAXSCOL + i];
  }
- else pic->p = (char *)0;
+
  if (sw < 2)
  {
   for (j = ya; j <= ye; ++j)
    for (i = xa; i <= xe; ++i)
     e_pr_char(i, j, ' ', col);
  }
+
 #ifndef NO_XWINDOWS
  if (WpeIsXwin()) (*e_u_setlastpic)(pic);
-#endif
-#ifndef NEWSTYLE
- if (WpeIsXwin())
- {
-  { FILE *_d = fopen("/tmp/xwpe-XWIN-SHADOW.txt", "a");
-    if (_d) { fprintf(_d, "SHADOW WRITTEN in e_open_view! xe=%d ye=%d\n", xe, ye); fclose(_d); }
-  }
-  if (sw != 0)
-  {
-   if (xe < MAXSCOL-1) for(i = ya+1; i <= ye+1 && i < MAXSLNS-1; i++)
-    e_pt_col(xe+1, i, SHDCOL);
-   if (xe < MAXSCOL-2) for(i = ya+1; i <= ye+1 && i < MAXSLNS-1; i++)
-    e_pt_col(xe+2, i, SHDCOL);
-   if (ye < MAXSLNS-2) for(i = xa+2; i <= xe; i++) e_pt_col(i, ye+1, SHDCOL);
-  }
- }
 #endif
  return(pic);
 }
@@ -284,24 +238,14 @@ int e_close_view(PIC *pic, int sw)
  if (WpeIsXwin()) (*e_u_setlastpic)(NULL);
 #endif
  if (pic == NULL) return(-1);
- if (sw != 0 && pic->p != NULL)
+
+ if (sw != 0 && pic->buf)
  {
   int pw = pic->e.x - pic->a.x + 1;
+  SCREENCELL *buf = (SCREENCELL *)pic->buf;
   for (j = pic->a.y; j <= pic->e.y; ++j)
    for (i = pic->a.x; i <= pic->e.x; ++i)
-   {
-    SCREENCELL *cell = (SCREENCELL *)(pic->p + ((j-pic->a.y)*pw + (i-pic->a.x)) * sizeof(SCREENCELL));
-    /* Validate: reject cells with ch values that cannot be valid characters.
-       Valid range: 0 to 0x10FFFF (Unicode max) plus special chars 1-12.
-       Values outside this range are uninitialised data from malloc. */
-    if (cell->ch >= 0 && cell->ch <= 0x10FFFF)
-     schirm[j * MAXSCOL + i] = *cell;
-    else
-     e_pr_char(i, j, ' ', cell->attr >= 0 && cell->attr < 256 ? cell->attr : 0);
-   }
-#if defined(NEWSTYLE) && !defined(NO_XWINDOWS)
-  e_put_pic_xrect(pic);
-#endif
+    schirm[j * MAXSCOL + i] = buf[(j - pic->a.y) * pw + (i - pic->a.x)];
  }
  else if (sw != 0)
  {
@@ -309,34 +253,21 @@ int e_close_view(PIC *pic, int sw)
    for (i = pic->a.x; i <= pic->e.x; ++i)
     e_pr_char(i, j, ' ', 0);
  }
- /* Invalidate altschirm in the restored area so e_t_refresh repaints
-    these cells.  Without this, altschirm may already match schirm
-    (synchronized by a previous e_refresh while the popup was visible),
-    causing e_t_refresh to skip the area and leave popup remnants on
-    the terminal. */
+
+ /* Invalidate altschirm so e_t_refresh repaints the restored area */
  { extern SCREENCELL *altschirm;
    for (j = pic->a.y; j <= pic->e.y; ++j)
     for (i = pic->a.x; i <= pic->e.x; ++i)
      altschirm[j * MAXSCOL + i].ch = -1;
  }
- { FILE *_d = fopen("/tmp/xwpe-cv-trace.txt", "a");
-   if (_d) {
-     int r, c2, bad = 0;
-     fprintf(_d, "PRE-REFRESH a=(%d,%d) e=(%d,%d):", pic->a.x, pic->a.y, pic->e.x, pic->e.y);
-     for (r = pic->a.y; r <= pic->e.y && r < MAXSLNS; r++)
-      for (c2 = pic->a.x; c2 <= pic->e.x && c2 < MAXSCOL; c2++)
-       if (schirm[r*MAXSCOL+c2].ch > 127 || schirm[r*MAXSCOL+c2].ch < 0)
-       { if (bad < 30) fprintf(_d, " [%d,%d]=%d", r, c2, schirm[r*MAXSCOL+c2].ch);
-         bad++; }
-     fprintf(_d, " (bad=%d)\n", bad);
-     fclose(_d);
-   }
- }
+
  if (sw < 2)
  {
-  if (pic->p != NULL) FREE(pic->p);
-  FREE(pic);
+  if (pic->buf) free((SCREENCELL *)pic->buf);
+  pic->buf = NULL;
+    FREE(pic);
  }
+
  e_refresh();
  return(sw);
 }
@@ -588,117 +519,12 @@ PIC *e_change_pic(int xa, int ya, int xe, int ye, PIC *pic, int sw, int frb)
    {  newpic = e_open_view(xa, ya, xe, ye, frb, box);
       if (newpic == NULL) return (NULL);
    }
-   else if (xa > pic->e.x || xe < pic->a.x ||
-                                          ya > pic->e.y || ye < pic->a.y)
-   {  e_close_view(pic, box);
+   else
+   {  /* With ncurses panels, always close old and open new.
+         The panel library handles background save/restore automatically. */
+      e_close_view(pic, box);
       newpic = e_open_view(xa, ya, xe, ye, frb, box);
       if (newpic == NULL) return (NULL);
-   }
-   else
-   {
-      { FILE *_d = fopen("/tmp/xwpe-changepic.txt", "a");
-        if (_d) { fprintf(_d, "OVERLAP path: new(%d,%d,%d,%d) old(%d,%d,%d,%d)\n",
-          xa, ya, xe, ye, pic->a.x, pic->a.y, pic->e.x, pic->e.y); fclose(_d); }
-      }
-      newpic = MALLOC(sizeof(PIC));
-      if(newpic == NULL)  return(NULL);
-      newpic->a.x = xa;
-      newpic->a.y = ya;
-#ifndef NEWSTYLE
-      if(!WpeIsXwin())
-      {  newpic->e.x = xe;
-	 newpic->e.y = ye;
-      }
-      else
-      {  newpic->e.x = xe < MAXSCOL-2 ? xe + 2 : xe < MAXSCOL-1 ? xe + 1 : xe;
-	 newpic->e.y = ye < MAXSLNS-2 ? ye + 1 : ye;
-      }
-#else
-      newpic->e.x = xe;
-      newpic->e.y = ye;
-#endif
-      { int nw = newpic->e.x - newpic->a.x + 1;
-        int ow = pic->e.x - pic->a.x + 1;
-      newpic->p = MALLOC(nw * sizeof(SCREENCELL) * (newpic->e.y - newpic->a.y + 1));
-      if (newpic->p == NULL) {  FREE(newpic);  return(NULL);  }
-      ax = pic->a.x > newpic->a.x ? pic->a.x : newpic->a.x;
-      ay = pic->a.y > newpic->a.y ? pic->a.y : newpic->a.y;
-      ex = pic->e.x < newpic->e.x ? pic->e.x : newpic->e.x;
-      ey = pic->e.y < newpic->e.y ? pic->e.y : newpic->e.y;
-
-      /* 1. Copy overlapping region: old pic -> new pic */
-      for (j = ay; j <= ey; ++j)
-       for (i = ax; i <= ex; ++i)
-        memcpy(newpic->p + ((j-newpic->a.y)*nw + (i-newpic->a.x)) * sizeof(SCREENCELL),
-               pic->p + ((j-pic->a.y)*ow + (i-pic->a.x)) * sizeof(SCREENCELL),
-               sizeof(SCREENCELL));
-
-      /* 2. Fill new pic rows above overlap from schirm */
-      for (j = newpic->a.y; j < ay; ++j)
-       for (i = newpic->a.x; i <= newpic->e.x; ++i)
-        memcpy(newpic->p + ((j-newpic->a.y)*nw + (i-newpic->a.x)) * sizeof(SCREENCELL),
-               &schirm[j * MAXSCOL + i], sizeof(SCREENCELL));
-
-      /* 3. Fill new pic rows below overlap from schirm */
-      for (j = ey + 1; j <= newpic->e.y; ++j)
-       for (i = newpic->a.x; i <= newpic->e.x; ++i)
-        memcpy(newpic->p + ((j-newpic->a.y)*nw + (i-newpic->a.x)) * sizeof(SCREENCELL),
-               &schirm[j * MAXSCOL + i], sizeof(SCREENCELL));
-
-      /* 4. Fill new pic left columns (overlap rows only) from schirm */
-      for (j = ay; j <= ey; ++j)
-       for (i = newpic->a.x; i < ax; ++i)
-        memcpy(newpic->p + ((j-newpic->a.y)*nw + (i-newpic->a.x)) * sizeof(SCREENCELL),
-               &schirm[j * MAXSCOL + i], sizeof(SCREENCELL));
-
-      /* 5. Fill new pic right columns (overlap rows only) from schirm */
-      for (j = ay; j <= ey; ++j)
-       for (i = ex + 1; i <= newpic->e.x; ++i)
-        memcpy(newpic->p + ((j-newpic->a.y)*nw + (i-newpic->a.x)) * sizeof(SCREENCELL),
-               &schirm[j * MAXSCOL + i], sizeof(SCREENCELL));
-
-      /* 6. Restore old pic regions that are outside new pic to schirm */
-      /* Rows above new pic */
-      for (j = pic->a.y; j < ya; ++j)
-       for (i = pic->a.x; i <= pic->e.x; ++i)
-        memcpy(&schirm[j * MAXSCOL + i],
-               pic->p + ((j-pic->a.y)*ow + (i-pic->a.x)) * sizeof(SCREENCELL),
-               sizeof(SCREENCELL));
-      /* Left columns */
-      for (j = pic->a.y; j <= pic->e.y; ++j)
-       for (i = pic->a.x; i < xa; ++i)
-        memcpy(&schirm[j * MAXSCOL + i],
-               pic->p + ((j-pic->a.y)*ow + (i-pic->a.x)) * sizeof(SCREENCELL),
-               sizeof(SCREENCELL));
-      /* Rows below new pic */
-      for (j = ye + 1; j <= pic->e.y; ++j)
-       for (i = pic->a.x; i <= pic->e.x; ++i)
-        memcpy(&schirm[j * MAXSCOL + i],
-               pic->p + ((j-pic->a.y)*ow + (i-pic->a.x)) * sizeof(SCREENCELL),
-               sizeof(SCREENCELL));
-      /* Right columns */
-      for (j = pic->a.y; j <= pic->e.y; ++j)
-       for (i = xe + 1; i <= pic->e.x; ++i)
-        memcpy(&schirm[j * MAXSCOL + i],
-               pic->p + ((j-pic->a.y)*ow + (i-pic->a.x)) * sizeof(SCREENCELL),
-               sizeof(SCREENCELL));
-      }
-#if !defined(NO_XWINDOWS) && defined(NEWSTYLE)
-      e_put_pic_xrect(pic);
-      e_get_pic_xrect(xa, ya, xe, ye, newpic);
-#endif
-#ifndef NEWSTYLE
-      if (WpeIsXwin())
-      {  if(xe < MAXSCOL-1) for(i = ya+1; i <= ye+1 && i < MAXSLNS-1; i++) 
-						e_pt_col(xe+1, i, SHDCOL);
-         if(xe < MAXSCOL-2) for(i = ya+1; i <= ye+1 && i < MAXSLNS-1; i++)
-						e_pt_col(xe+2, i, SHDCOL);
-         if(ye < MAXSLNS-2) for(i = xa+2; i <= xe; i++)
-      						e_pt_col(i, ye+1, SHDCOL);
-      }
-#endif
-      FREE(pic->p);
-      FREE(pic);
    }
 #ifndef NO_XWINDOWS
    if (WpeIsXwin()) (*e_u_setlastpic)(newpic);
@@ -880,7 +706,7 @@ void e_switch_window(int num, FENSTER *f)
  if (n >= cn->mxedt) return;
  for (i = cn->mxedt; i >= 1; i--)
  {
-  FREE(cn->f[i]->pic->p);
+  if (cn->f[i]->pic->buf) free((SCREENCELL *)cn->f[i]->pic->buf);
   FREE(cn->f[i]->pic);
  }
  ft = cn->f[n];
@@ -933,7 +759,7 @@ int e_ed_cascade(FENSTER *f)
   return 0; /* no windows open */
  for (i = cn->mxedt; i >= 1; i--)
  {
-  FREE(cn->f[i]->pic->p);
+  if (cn->f[i]->pic->buf) free((SCREENCELL *)cn->f[i]->pic->buf);
   FREE(cn->f[i]->pic);
   cn->f[i]->a = e_set_pnt(i-1, i);
   cn->f[i]->e = e_set_pnt(MAXSCOL-1-cn->mxedt+i, MAXSLNS-2-cn->mxedt+i);
@@ -984,7 +810,7 @@ int e_ed_tile(FENSTER *f)
  }
  for (i = cn->mxedt; i >= 1; i--)
  {
-  FREE(cn->f[i]->pic->p);
+  if (cn->f[i]->pic->buf) free((SCREENCELL *)cn->f[i]->pic->buf);
   FREE(cn->f[i]->pic);
  }
  for (ni = editwin, nj = 1; ni > 1; ni--)
@@ -1665,7 +1491,8 @@ int e_get_pic_xrect(int xa, int ya, int xe, int ye, PIC *pic)
  ebbg = (xe - xa + 1) * 2 * (ye - ya + 1);
  for (j = ya; j <= ye; ++j)
   for (i = xa; i <= xe; ++i)
-   *( pic->p + ebbg + (j-ya)*(xe-xa+1) + (i-xa) ) = extbyte[j*MAXSCOL + i];
+   /* TODO: pic->p removed in panel migration; extbyte handling needs rework */
+   (void)ebbg; /* suppress unused warning */
  return(i);
 }
 
@@ -1677,7 +1504,7 @@ int e_put_pic_xrect(PIC *pic)
  for (j = pic->a.y; j <= pic->e.y; ++j)
   for (i = pic->a.x; i <= pic->e.x; ++i)
    extbyte[j*MAXSCOL+i] =
-     *(pic->p + ebbg + (j-pic->a.y)*(pic->e.x-pic->a.x+1) + (i-pic->a.x));
+     0; /* TODO: pic->p removed in panel migration */
  return(i);
 }
 

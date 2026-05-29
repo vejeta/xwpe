@@ -10,7 +10,7 @@
 */
 
 #ifndef VERSION
-#define VERSION "1.6.1"
+#define VERSION "1.6.2"
 #endif
 
 #include "Xwpe.h"
@@ -84,9 +84,9 @@ typedef struct CLR {
 } COLOR;
 
 typedef struct PICSTR {
- char *p;
- POINT a;
- POINT e;
+ void *buf;      /* saved SCREENCELL buffer (calloc'd) */
+ POINT a;        /* anchor point (top-left) */
+ POINT e;        /* end point (bottom-right) */
 } PIC;
 
 typedef struct FND {

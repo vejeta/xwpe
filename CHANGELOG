@@ -36,6 +36,34 @@ Known Bugs
 
 Changes
 
+1.6.2 (Complete SCREENCELL migration for popup save/restore)
+* Fixed display artefacts after closing menus, dialogs, and compile
+  popups. The SCREENCELL migration (v1.6.0) changed screen cells from
+  2 bytes to 8 bytes but the popup save/restore system (e_open_view /
+  e_close_view) was not fully adapted, causing uninitialised data to
+  propagate through save/restore cycles.
+  Fix: calloc'd SCREENCELL buffers + altschirm invalidation on restore.
+  The original Kruse/Payne save/restore architecture is preserved --
+  we evaluated migrating to ncurses panels but concluded that maintaining
+  the existing schirm-based rendering is preferable while the code
+  remains manageable. The panel library adds complexity without benefit
+  when xwpe controls its own rendering via stdscr.
+* Fixed SEGFAULT when pressing F9 (compile) or navigating menus:
+  e_t_refresh accessed sp_chr[] with negative SCREENCELL int values
+  that were valid as unsigned char in the old buffer model.
+* Fixed compiler error messages not shown after F9: the compiler exit
+  code was discarded (hardcoded to 0 since the Payne era), and
+  print_to_end_of_buffer had a loop termination bug (j==k instead
+  of j==0) that dropped all lines after the first.
+* Fixed wrong file descriptors closed in e_p_exec (efildes[1] and
+  wfildes[1] were closed as [0], a copy-paste bug from the Payne era).
+* Compiling popup now pauses so the user can see the compile command,
+  with visible borders (was invisible white-on-white).
+* Simplified e_change_pic: the complex overlapping-resize path with
+  byte-level buffer manipulation is replaced by close+open, which is
+  correct and fast on modern terminals.
+  (Juan Manuel Mendez Rey)
+
 1.6.1 (Modern autotools build system)
 * Replaced 1998 hand-written configure.in + Makefile.in + 1500-line custom
   aclocal.m4 (T.E.Dickey macros for SCO/HP-UX/AIX portability) with

@@ -486,23 +486,6 @@ int WpeHandleSubmenu(int xa, int ya, int xe, int ye, int nm, OPTK * fopt, FENSTE
 #endif
     pic = e_open_view(xa, ya, xe, ye, f->fb->mt.fb, 1);
 
-  { FILE *_d = fopen("/tmp/xwpe-menu-open.txt", "a");
-    if (_d && pic) {
-      int r, c2, bad = 0;
-      int pw = pic->e.x - pic->a.x + 1;
-      fprintf(_d, "MENU pic->p(%d,%d,%d,%d) pw=%d:", pic->a.x, pic->a.y, pic->e.x, pic->e.y, pw);
-      for (r = pic->a.y; r <= pic->e.y; r++)
-       for (c2 = pic->a.x; c2 <= pic->e.x; c2++)
-       { SCREENCELL *cell = (SCREENCELL *)(pic->p + ((r-pic->a.y)*pw + (c2-pic->a.x)) * sizeof(SCREENCELL));
-         if (cell->ch > 127 || cell->ch < 0)
-         { if (bad < 15) fprintf(_d, " [%d,%d]=%d", r, c2, cell->ch);
-           bad++; }
-       }
-      fprintf(_d, " (bad=%d)\n", bad);
-      fclose(_d);
-    }
-  }
-
   if(pic == NULL)
   {
     e_error(e_msg[ERR_LOWMEM], 0, f->fb);

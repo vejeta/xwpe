@@ -859,7 +859,7 @@ int e_x_repaint_desk(FENSTER *f)
  e_abs_refr();
  for (i = cn->mxedt; i >= 1; i--)
  {
-  FREE(cn->f[i]->pic->p);
+  if (cn->f[i]->pic->buf) free(cn->f[i]->pic->buf);
   FREE(cn->f[i]->pic);
  }
  for (i = 0; i <= cn->mxedt; i++)
