@@ -194,7 +194,7 @@ int WpeHandleMainmenu(int n, FENSTER *f)
   {
     mainmenu[MENOPT - 5].position = -3;
     mainmenu[MENOPT - 5].width = 33;
-    mainmenu[MENOPT - 5].no_of_items = 13;
+    mainmenu[MENOPT - 5].no_of_items = 15;
     if((mainmenu[MENOPT - 5].menuitems = MALLOC(mainmenu[MENOPT - 5].no_of_items * sizeof(OPTK))) == NULL)
       e_error(e_msg[ERR_LOWMEM], 1, f->fb);
 
@@ -219,7 +219,9 @@ int WpeHandleMainmenu(int n, FENSTER *f)
     mainmenu[MENOPT - 5].menuitems[9] = WpeFillSubmenuItem("Trace              F7 / ^G T", 0, 'T', e_deb_trace);
     mainmenu[MENOPT - 5].menuitems[10] = WpeFillSubmenuItem("Step               F8 / ^G S", 0, 'S', e_deb_next);
     mainmenu[MENOPT - 5].menuitems[11] = WpeFillSubmenuItem("Run/Continue     ^F10 / ^G R", 0, 'R', e_deb_run);
-    mainmenu[MENOPT - 5].menuitems[12] = WpeFillSubmenuItem("Quit              ^F2 / ^G Q", 0, 'Q', e_d_quit);
+    mainmenu[MENOPT - 5].menuitems[12] = WpeFillSubmenuItem("Program output          ^G P", 0, 'P', e_u_deb_out);
+    mainmenu[MENOPT - 5].menuitems[13] = WpeFillSubmenuItem("debugger Options        ^G O", 9, 'O', e_deb_options);
+    mainmenu[MENOPT - 5].menuitems[14] = WpeFillSubmenuItem("Quit              ^F2 / ^G Q", 0, 'Q', e_d_quit);
   }
 #endif
   mainmenu[MENOPT - 3].position = -4;
