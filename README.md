@@ -126,6 +126,7 @@ See CHANGELOG for full details.
 | g++      | C++      | ok | ok | `.cpp` `.cc` `.C` `.cxx` |
 | gfortran | Fortran  | ok | ok | `.f` `.f90` `.f95` `.f03` `.f08` |
 | fpc      | Pascal   | ok | ok | `.p` `.pas` `.pp` |
+| javac    | Java     | ok | ok | `.java` |
 
 ### Should work (GNU `file:line:column:` format)
 
@@ -235,6 +236,26 @@ Optional features:
 ```
 
 Run the editor in terminal mode with `wpe`, in X11 mode with `xwpe`.
+
+## External programs (optional)
+
+xwpe integrates with external compilers and debuggers. Install the
+ones you need:
+
+```sh
+# Compilers (install what you use)
+sudo apt install gcc g++              # C/C++
+sudo apt install gfortran             # Fortran
+sudo apt install fpc                  # Free Pascal
+sudo apt install default-jdk          # Java (javac + jdb)
+
+# Debuggers
+sudo apt install gdb                  # C/C++/Fortran/Pascal debugging
+# jdb is included with default-jdk    # Java debugging (built-in to xwpe)
+```
+
+xwpe auto-detects the compiler by file extension and auto-selects
+the debugger (gdb for C/C++/Fortran/Pascal, jdb for Java).
 
 ## Testing
 

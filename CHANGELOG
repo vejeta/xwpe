@@ -104,6 +104,20 @@ Changes
   compiled with ncurses. Restored Kruse's original logic.
 * Added Program output and debugger Options to Debug menu for
   discoverability (previously only accessible via Ctrl-G P/O).
+* Added jdb (Java Debugger) as 5th debugger backend. xwpe is the
+  only terminal editor with built-in Java debugging (no plugins,
+  no external DAP server). Auto-selects jdb for .java files.
+  Uses poll() for async JVM startup, dual prompt detection
+  ("> " pre-run, "main[1] " post-break), direct jdb output
+  parsing. Compile with -DJDB_TRACE for protocol diagnostics.
+* Fixed 30-year-old pipe fd leak in e_exec_deb: parent kept the
+  write-end of the stdout pipe open after fork(), preventing
+  read() from detecting EOF. This caused busy loops in all
+  debugger backends but was only exposed by jdb's JVM timing.
+  Fix: close child's pipe ends in parent, parent's in child.
+* Fixed SIGPIPE crash on debugger exit: when the debugger process
+  exited before xwpe sent "quit", write() to the closed pipe
+  triggered SIGPIPE. Now ignored in e_d_quit_basic.
   (Juan Manuel Mendez Rey)
 
 1.6.1 (Modern autotools build system)
