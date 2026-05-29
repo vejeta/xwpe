@@ -7,11 +7,10 @@
 
 This chapter provides step-by-step walkthroughs of common tasks.
 
-@strong{Note}: some workflows are affected by known bugs in v1.6.1.
-The compile cycle (F9) may crash when parsing compiler error messages.
-These tutorials will be updated once the bugs are fixed.  The steps
-described are architecturally correct and represent how xwpe is
-designed to work.
+All workflows in this chapter have been verified with xwpe 1.6.2
+on 2026-05-29 with gcc 15.2, g++ 15.2, gfortran 15.2, fpc 3.2.2,
+javac 25, gdb 17.2, and jdb 25.  Example files are in
+@file{docs/examples/}.
 
 @section Tutorial 1: Hello World in C
 
@@ -186,3 +185,92 @@ Recompile with @key{F9} and run with @kbd{Ctrl-F9}.
 @item
 Quit the debugger: press @kbd{Ctrl-F2}.
 @end enumerate
+
+@section Tutorial 4: Java compile and debug
+
+@subsection Goal
+Compile a Java program, navigate errors, and debug with jdb.
+
+@subsection Steps
+
+@enumerate
+@item
+Open the example file:
+@example
+wpe docs/examples/debug_test.java
+@end example
+
+@item
+Press @key{F9} to compile.  xwpe auto-detects @command{javac} for
+@file{.java} files.
+
+@item
+Set a breakpoint: move cursor to line 7 (@code{int x = 5;}) and
+press @kbd{Ctrl-G B}.
+
+@item
+Press @kbd{Ctrl-G R} to start the debugger.  xwpe auto-selects
+@command{jdb} for Java files.  The JVM takes 2--3 seconds to start.
+
+@item
+Press @key{F8} to step through the code.  The active line is
+highlighted.  Step past the @code{println} line.
+
+@item
+Press @kbd{Ctrl-G P} to see program output:
+@example
+--- Program output ---
+factorial(5) = 120
+--- Press any key to return to editor ---
+@end example
+
+@item
+When the program finishes, xwpe exits the debugger cleanly and
+returns to the editor.
+@end enumerate
+
+@subsection Notes
+
+jdb is the only debugger backend that doesn't use gdb.  The
+@code{-c} flag that caused problems with non-GNU compilers
+(@pxref{Compiling}) was fixed in v1.6.2 --- a bug first reported
+by Miroslav Jani@v{s} in 1998 for @LaTeX{}.
+
+@section Tutorial 5: Navigating multiple errors
+
+@subsection Goal
+Use @kbd{Alt-T} and @kbd{Alt-V} to jump between compiler errors.
+
+@subsection Steps
+
+@enumerate
+@item
+Open an example file with deliberate errors:
+@example
+wpe docs/examples/compile_error_test.c
+@end example
+
+@item
+Press @key{F9} to compile.  Two errors appear in the Messages window.
+
+@item
+Press @kbd{Alt-T} (Next Error).  The cursor jumps to the first error
+(line 4, column 13).
+
+@item
+Press @kbd{Alt-T} again.  The cursor jumps to the second error
+(line 8).
+
+@item
+Press @kbd{Alt-V} (Previous Error).  The cursor returns to the
+first error.
+@end enumerate
+
+@subsection Notes
+
+Error navigation works with all tested compilers: gcc, g++,
+gfortran (blank lines between errors are handled), fpc
+(@code{file(line,column)} format), and javac (@code{file:line:}
+format, cursor goes to start of line since javac doesn't report
+columns).  See @file{docs/examples/} for error test files in all
+five languages.
