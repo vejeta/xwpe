@@ -78,6 +78,37 @@ Fixed in v1.6.2.  Fortran now defaults to @command{gfortran} with
 modern extensions (.f90/.f95/.f03/.f08).  Pascal defaults to
 @command{fpc} with .pas/.pp.  Java (@command{javac}) added as 5th
 default compiler.
+
+@item Pipe file descriptor leak in debugger (30-year-old bug)
+Fixed in v1.6.2.  After @code{fork()} in @code{e_exec_deb}, the
+parent kept the write-end of the stdout pipe open.  This made
+@code{read()} unable to detect EOF when the debugger exited, causing
+busy loops in all debugger backends.  The bug survived 30 years
+because gdb rarely exits unexpectedly; it was exposed by jdb's
+fragile JVM startup timing.  Fix: close child's pipe ends in parent,
+parent's pipe ends in child.
+
+@item SIGPIPE crash on debugger exit
+Fixed in v1.6.2.  When the debugger exited before xwpe sent the
+@code{quit} command, @code{write()} to the closed pipe triggered
+SIGPIPE which killed xwpe.  Now ignored in @code{e_d_quit_basic}.
+
+@item User Screen (Ctrl-G P) broken since Payne era
+Fixed in v1.6.2.  A @code{#ifndef NCURSES} guard unconditionally
+disabled the User Screen when compiled with ncurses.  Restored
+Kruse's original logic.  Program output now captured via pty (gdb)
+or pipe (jdb) into a memory buffer and displayed on demand.
+
+@item Debugger screen flicker on every step
+Fixed in v1.6.2.  The original design toggled between alternate and
+normal screen (@code{smcup}/@code{rmcup}) on every F7/F8 step.
+Replaced with pty-based output capture: no screen switching, no
+flicker.
+
+@item Non-GNU compilers failed in link step
+Fixed in v1.6.2.  @code{e_p_make} passed gcc-style @code{-o} flags
+to all compilers during linking.  Free Pascal and javac link
+internally.  Now skips the link step for non-GNU compiler styles.
 @end table
 
 @section Known open issues
@@ -120,6 +151,22 @@ crash xwpe.
 @item Check Headers does not handle all cases
 The ``Check Headers'' feature for C projects does not correctly handle
 comments or @code{#ifndef} include guards.
+
+@item Mouse click does not switch active window
+Clicking with the mouse on a window (editor or Messages) does not
+switch focus to that window.  Workaround: use @key{F6} to cycle
+between windows.
+
+@item Cursor jumps to Messages after successful compilation
+After F9 with no errors, the cursor moves to the Messages window
+instead of staying in the editor.  Workaround: press @key{F6} to
+return to the editor.
+
+@item Cross-compiler .o files cause link errors
+When switching between languages (e.g.@: Pascal to C++), leftover
+@file{.o} files from the previous compiler cause link errors.
+Workaround: delete @file{.o} and @file{.e} files manually before
+switching languages.
 
 @item Documentation not updated (historical)
 The in-app help file (@file{help.xwpe_eng}) has not been updated since
