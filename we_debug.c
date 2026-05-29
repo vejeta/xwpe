@@ -1666,6 +1666,9 @@ int e_exec_deb(FENSTER *f, char *prog)
     return(0);
    }
    fgets(e_d_tty, 80, fpp);
+   { int _len = strlen(e_d_tty);
+     if (_len > 0 && e_d_tty[_len-1] == '\n') e_d_tty[_len-1] = '\0';
+   }
    pclose(fpp);
   }
   return(wfildes[1]);

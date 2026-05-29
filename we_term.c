@@ -1090,9 +1090,7 @@ int e_t_switch_screen(int sw)
 
 int e_t_deb_out(FENSTER *f)
 {
-#ifndef NCURSES
  if (!swt_scr || !beg_scr)
-#endif
   return(e_error("Your terminal don\'t use begin/end cup", 0, f->fb));
  e_d_switch_out(1);
  getchar();
@@ -1132,6 +1130,7 @@ int e_t_d_switch_out(int sw)
  else if (!sw)
  {
   e_d_switch_screen(1);
+  clearok(stdscr, TRUE);
   e_abs_refr();
   e_refresh();
  }
