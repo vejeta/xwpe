@@ -174,6 +174,26 @@ the Payne era (2006).  This Texinfo manual is the current primary
 documentation.
 @end table
 
+@section Debian BTS history
+
+@cindex Debian bugs
+
+xwpe has been in Debian since 2002.  The following Debian bugs are
+tracked or were resolved by the v1.6.x restoration:
+
+@multitable @columnfractions .12 .50 .38
+@headitem Bug @tab Title @tab Status
+@item #228820 @tab SEGV in colour dialog @tab Fixed v1.5.31
+@item #1098180 @tab FTBFS with GCC 15 @tab Fixed v1.5.31/v1.6.1
+@item #1137613 @tab UTF-8 garbled @tab Fixed v1.6.0
+@item #1137649 @tab Terminal resize not detected @tab Fixed v1.6.0
+@item #1137650 @tab Info viewer stale content @tab Fixed v1.6.0
+@item #214735 @tab Can't debug (archived) @tab Fixed v1.6.2
+@item #264169 @tab FTBFS gcc-3.4 (archived) @tab Fixed v1.6.1
+@item #155339 @tab gdb dependency missing (archived) @tab Documented (Suggests)
+@item #634813 @tab Hardcoded architectures @tab Fixed by R. Millan
+@end multitable
+
 @section Reporting bugs
 
 Report bugs at @uref{https://codeberg.org/mendezr/xwpe/issues}.
