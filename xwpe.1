@@ -127,7 +127,12 @@ reading and also be encoded for writing.
 
 .IP "\fB-pm\fP"
 The next file is a message-file.
-
+.IP "\fB-pt\fP"
+Interpret message file for 'traditional' compiler output
+(see Compiler-Options).
+.IP "\fB-pe\fP"
+Interpret message file for 'extended' compiler output
+(see Compiler-Options).
 
 Command-line options used together with XWindow:
 
@@ -442,6 +447,9 @@ also marks a block.
 
 \fIQuit\fP                Q    Exit the debugger.
 
+\fIOutPut Window\fP       P    Display the programme output
+                         (not available under XWindow).
+
 
 
 .SH The Project-Menu (Alt-P):
@@ -450,11 +458,17 @@ also marks a block.
 \fIOpen Project\fP   P    Input a \fIproject-file\fP.
                     The \fIProject-Window\fP is  opened.
 
-\fIClose Project\fP  C    Stop using a project.
+\fIClose Project\fP  C    Stop using a project. The project-
+                    window is closed and the project
+                    name is set to empty.
 
 \fIAdd Item\fP       A    Add a file to this project.
+                    The project-window is opened in
+                    add-status.
 
-\fIDelete Item\fP    D    Delete this file from the project.
+\fIDelete Item\fP    D    Delete the current file from the
+                    project. This action is only performed
+                    when the project-window is open.
 
 \fIOptions\fP        O    \fIProject-Options\fP
 
@@ -469,7 +483,9 @@ also marks a block.
 \fIRead Colors\fP    R    Use the default colors or those
                     from the initialization file.
 
-\fISave Options\fP   S    Save all changes to the options.
+\fISave Options\fP   S    Save all changes to the options
+                    for later sessions in a reusable
+                    options file.
 
 \fIEditor\fP         E    Options used by the editor.
                     (see also \fIEditor-Options\fP)
@@ -512,11 +528,17 @@ The \fIWindow-Menu\fP (Alt-W):
 
 \fIOutput Window\fP  O    Display the output (not X11).
 
-\fIMessages\fP       M    The \fIMessage-Window\fP will be opened.
+\fIMessages\fP       M    The \fIMessage-Window\fP will be brought
+                    to the foreground. If not open, it
+                    will be opened.
 
-\fIProject\fP        P    The \fIProject-Window\fP will be opened.
+\fIProject\fP        P    The \fIProject-Window\fP will be brought
+                    to the foreground. If not open, it
+                    will be opened.
 
-\fIWatches\fP        W    The \fIWatch-Window\fP will be opened.
+\fIWatches\fP        W    The \fIWatch-Window\fP will be brought
+                    to the foreground. If not open, it
+                    will be opened.
 
 
 
@@ -793,7 +815,9 @@ Alt R     Create an executable and start it
 
 Alt L     Install a project (see also \fIproject-file\fP)
 
-Alt A     Start make(1)
+Alt A     Start make(1). Errors that occur are
+          displayed in the Message-Window and
+          interpreted (see \fIMessage-Window\fP).
 
 Alt V     Jump to the previous error
           (see also \fIMessage-Window\fP)
@@ -1385,9 +1409,11 @@ selected by moving around using the cursor-keys and
 pressing <Return> or by using the mouse. 
 
 If an error is selected, the file causing this error will be
-opened and the cursor jumps to the found line. This file is
-(normally) read-write and can be edit immediately so that the
-next trial can be started.
+switched to the current file (if it is not loaded, it will be
+loaded into a new window) and the cursor jumps to the position
+indicated by the compiler. This file is (normally) read-write
+and can be edited immediately so that the next trial can be
+started.
 
 
 
@@ -1397,10 +1423,12 @@ All those files that are listed in the \fIproject-file\fP will be
 displayed in the project-window which is started from the
 \fIProject-Menu\fP or from the \fIWindow-Menu\fP.
 New files may be entered by pressing \fIAlt-A\fP (Add) or \fI<Ins>\fP
-directly form the file-manager.
+directly from the file-manager. The project-window is opened
+in add-status.
 An already existing entry may be changed after it is
 selected by \fIAlt-E\fP (Edit) or \fI<CR>\fP or be deleted by
-pressing \fIAlt-D\fP (Delete) or \fI<Del>\fP.
+pressing \fIAlt-D\fP (Delete) or \fI<Del>\fP. Deletion is only
+performed when the project-window is open.
 \fIAlt-O\fP enters the \fIProject-Options\fP and \fI<ESC>\fP closes the
 project-window.
 
@@ -1484,6 +1512,10 @@ upper left '\fIClose-Button\fP' will close a window.
 The mouse can be used within the editor-window (see the
 \fIMouse in the Editor-Window\fP) and within the file-manager
 (see \fIMouse in the File-Manager\fP).
+
+Clicking the middle mouse button in an editable line will
+paste the contents of the buffer at the mouse-cursor position
+(\fIPaste\fP).
 
 
 

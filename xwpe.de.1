@@ -1,5 +1,6 @@
 .\" t
-.\" @(#)xwpe.1	3/22/94
+.\" @(#)xwpe.1	05/29/26
+.\" Original manpage by Fred Kruse (1994), restored and updated 2026.
 .de EX		\"Begin example
 .ne 5
 .if n .sp 1
@@ -14,7 +15,7 @@
 .if t .sp .5
 ..
 .ta .3i .6i .9i 1.2i 1.5i 1.8i
-.TH xwpe 1.3 "Mar 22, 1994"
+.TH xwpe 1 "May 29, 2026" "xwpe 1.6.2" "User Commands"
 .UC
 .SH NAME
 xwpe, xwe, wpe, we \- XWindow Programming Environment
@@ -90,8 +91,8 @@ Parameter sind:
 .IP "\fB-so\fP"
 Fuer die Sitzung werden Standardoptionen gesetzt.
 Die Optionendatei wird nicht gelesen.
-.IP "\fB-sf\fP"
-Es werden die Standardfarben gesetzt. Alle anderen 
+.IP "\fB-sc\fP"
+Es werden die Standardfarben gesetzt. Alle anderen
 Einstellungen werden der Optionendatei entnommen.
 .IP "\fB-sf\fP \fIoptionfile\fP"
 Statt der Standardoptionendatei (\fI$HOME/.wpe/wperc\fP) wird die Datei 
@@ -435,6 +436,11 @@ Editor		E	Hilfestellung zum Editor (WE)
 Function Index	I	Index aller UNIX-Funktionen 
 				(siehe \fIFunction-Index\fP)
 Function		F	Hilfestellung zu einer beliebigen UNIX-Funktion
+Info			I	Das GNU-Infosystem.
+Goto			G	Zu einer Hilfeseite springen
+Back			B	Zur vorherigen Seite zurueckkehren
+Next			N	Zur naechsten Seite springen
+Previous		P	Zur vorherigen Seite springen
 .EE
 
 .SH Die Funktionstasten:
@@ -705,9 +711,6 @@ Ctrl G W		Eingabe einer zu beobachtenden Variablen
 
 Ctrl G E		Edieren einer zu beobachtenden Variablen
 			(Siehe \fIWatch-Fenster\fP)
-Ctrl G D		Loeschen einer zu beobachtenden Variablen
-			(Siehe \fIWatch-Fenster\fP)
-
 Ctrl G D		Loeschen einer zu beobachtenden Variablen
 			(Siehe \fIWatch-Fenster\fP)
 
@@ -1575,6 +1578,19 @@ Wenn angegeben: Es werden 'Common User Access' Tasten-
 interpretationen verwendet. (MS-Windows aehnlich, aber 
 manchmal nicht so handlich).
 
+.IP "\fBAuto-Indent (Automatisches Einruecken):\fP"
+.IP "\fBAlt-Y\fP"
+Auto-Indent wird nur fuer Dateien verwendet, die fuer die
+Uebersetzung benutzt werden koennen (die im Menue
+Options/Compiler definiert sind).
+.IP "\fBAlt-W\fP"
+Auto-Indent wird fuer alle Dateien verwendet.
+.IP "\fBAlt-V\fP"
+Auto-Indent nicht verwenden.
+
+.IP "\fBAlt-I\fP"
+Die Anzahl der Spalten fuer das automatische Einruecken.
+
 .IP "\fBAlt-M\fP"
 Maximale Anzahl der Spalten pro Zeile. Nach der entsprechen-
 den Anzahl Zeichen, wird automatisch ein Zeilenumbruch durch-
@@ -1897,7 +1913,7 @@ xwpe bietet eine Syntax-Unterstuetzung, die darin besteht, dass die
 Schluesselworte und Operatoren einer Sprache unterschieden werden von
 den Konstanten, den Preprozessor-Anweisungen und dem Rest des Textes.
 Voreingestellt ist die Unterstuetzung 
-der Programmiersprachen C, C++, FORTRAN. Durch die Initialisierungsdatei
+der Programmiersprachen C, C++, FORTRAN und Pascal. Durch die Initialisierungsdatei
 .EX
     we_synt_defs
 .EE
@@ -1931,7 +1947,9 @@ Die Zeichenketten aus Einzeichenoperatoren und Zeichen fuer Spaltenabhaengige
 Kommentare duerfen keine Leerzeichen enthalten. Alle Zeichenketten fuer
 Kommentare koennen durch NULL auf 'nicht vorhanden' gesetzt werden.
 Die Anzahl-Integer duerfen auf 0 gesetzt werden, wenn keine Schluesselworte
-bzw. Mehrzeichen Operatoren existieren.
+bzw. Mehrzeichen Operatoren existieren. Die Schluesselworte und
+Mehrzeichen-Operatoren muessen alphabetisch sortiert sein
+(Grossbuchstaben vor Kleinbuchstaben).
 Die Zeichenkette 'spezielle Zeichen' setzt sich wie folgt zusammen:
 .EX
 Zeichen fuer String-Konstante
@@ -1979,6 +1997,33 @@ Beispiele:
 
 
 
+.SH Automatisches Einruecken
+
+Das Verhalten des automatischen Einrueckens kann im Menue
+\fIEditor-Optionen\fP eingestellt werden.
+Es sind folgende Tasten definiert:
+
+.IP "\fB<Return>\fP"
+Die naechste (neue) Zeile wird auf den Anfang der
+vorhergehenden Zeile eingerueckt.
+
+.IP "\fB<Tab>\fP"
+Wird <Tab> vor dem ersten sichtbaren Zeichen eingegeben,
+wird die ganze Zeile wie die vorhergehende eingerueckt.
+Steht der Cursor hinter dieser Spalte, wird die Zeile
+um N Zeichen weiter als die vorhergehende eingerueckt.
+N ist die Anzahl der Tabstops, die im Menue
+Editor-Optionen eingestellt werden kann. Steht der Cursor
+hinter dieser Position oder zwischen sichtbaren Zeichen,
+wird ein <Tab> eingefuegt.
+
+.IP "\fB<Backspace>\fP"
+Wird <Backspace> vor dem ersten sichtbaren Zeichen einer
+Zeile eingegeben, wird die Zeile wie die letzte Zeile
+eingerueckt, die vor dieser Cursor-Position beginnt.
+
+.EE
+
 .SH Installations-Hinweise:
 
 Das XWindow Programming Environment ist als eine System V kompatible 
@@ -2004,11 +2049,52 @@ Um die Hilfestellung 'Function-Index' benutzen zu koennen muss eine
 Umgebungsvariable MANPATH gesetzt sein, die die Pfade zu allen 
 gewuenschten Dokumentationen enthaelt.
 
-Bei einigen Rechnern (z.B.: S400) muessen fuer den XWindow Teil auch 
+Bei einigen Rechnern (z.B.: S400) muessen fuer den XWindow Teil auch
 Netz-Bibliotheken beim Binden beruecksichtigt werden.
-
-
-
-
+.SH "NEU IN VERSION 1.6.x (xwpe 2026)"
+.PP
+UTF\-8 terminal support via SCREENCELL buffer model and ncursesw.
+Terminal resize handling (KEY_RESIZE). Modern autotools build system.
+Compiler integration for gcc, g++, gfortran, fpc, and javac with
+error navigation (Alt\-T/Alt\-V). Debugger backends: gdb (C/C++/Fortran/Pascal)
+and jdb (Java) with pty\-based program output capture (Ctrl\-G P).
+Emacs\-compatible cursor keys (Ctrl\-P/N/F/B/A/E).
+12\-chapter Texinfo manual.
+.SH AUTOREN
+Fred Kruse <fkr@cs.tu\-berlin.de> (original author, 1991\-1997).
+.br
+Dennis Payne <dulsi@identicalsoftware.com> (xwpe\-alpha 1.5.x, 2000\-2006).
+.br
+Juan Manuel Mendez Rey <juan.mendezr@proton.me> (current maintainer, 2026\-).
+.PP
+See the AUTHORS file for the full list of 30+ contributors.
+.SH FEHLER
+Report bugs at https://codeberg.org/mendezr/xwpe/issues
+.PP
+For Debian\-specific bugs, use
+.B reportbug xwpe
+or file at https://bugs.debian.org/xwpe
+.SH "SIEHE AUCH"
+.BR gcc (1),
+.BR g++ (1),
+.BR gfortran (1),
+.BR fpc (1),
+.BR javac (1),
+.BR gdb (1),
+.BR jdb (1),
+.BR ncurses (3NCURSES)
+.PP
+Full documentation: the xwpe Texinfo manual.
+Access via
+.B info xwpe
+or https://codeberg.org/mendezr/xwpe
+.SH GESCHICHTE
+Written by Fred Kruse in 1993 at TU Berlin.
+Maintained by Dennis Payne (2000\-2006).
+Rescued and modernised by Juan Manuel Mendez Rey (2026).
+This manpage was originally written by Fred Kruse in 1994 and
+restored from the 1.4.2 source in 2026.
+.SH LIZENZ
+GPL\-2+. See COPYING in the source distribution.
 
 
