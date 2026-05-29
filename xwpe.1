@@ -1,0 +1,2221 @@
+.\" t
+.\" @(#)xwpe.1	05/29/26
+.\" Original manpage by Fred Kruse (1994), restored and updated 2026.
+.de EX		\"Begin example
+.ne 5
+.if n .sp 1
+.if t .sp .5
+.nf
+.in +.5i
+..
+.de EE
+.fi
+.in -.5i
+.if n .sp 1
+.if t .sp .5
+..
+.ta .3i .6i .9i 1.2i 1.5i 1.8i
+.TH xwpe 1 "May 29, 2026" "xwpe 1.6.2" "User Commands"
+.UC
+.SH NAME
+xwpe, xwe, wpe, we \- XWindow Programming Environment
+.SH SYNOPSIS
+.EX
+\fBxwpe\fP [ \fIoptions\fP ] file ...
+ \fBxwe\fP [ \fIoptions\fP ] file ...
+ \fBwpe\fP [ \fIoptions\fP ] file ...
+  \fBwe\fP [ \fIoptions\fP ] file ...
+.EE
+.SH DESCRIPTION
+XWPE can be used with or without the programming interface.
+It has its own X interface but can be used also on a
+character terminal.
+\fIxwpe\fP fires up the X interface together with the programming
+interface. \fIxwe\fP is the X version but without the special
+features of the programming interface. In connection with a
+simple character terminal you can use \fIwpe\fP to programme and
+\fIwe\fP as editor.
+ 
+\fIxwpe\fP is a X-window programming environment designed to use
+on UNIX-systems. It is similar to 'Borland C++ or Turbo
+Pascal' environment. The difference between the programming
+environments from Borland an xwpe is that many compilers and
+linkers may be started. From a menu three different
+debuggers can be chosen. And of course not only key strokes
+can select these options you can also use a \fImouse\fP.
+
+Errors that occur while compiling and linking a programme
+can be examined in the sources: The cursor will jump to the
+corresponding line in the source-file. Programmes using
+more than one source-file can be managed with the so called
+project-option (see also \fIproject-file\fP).
+The programme can be started from within the 
+\fIProgramming-Environment\fP and errors may be found using a
+debugger. The \fIdebugging-environment\fP allows the user to set
+and unset breakpoints directly in the source code. The
+contents of variables may be displayed in a special window,
+the \fIWatch-Window\fP. This window is updated while reaching a
+breakpoint. The \fIStack-Window\fP displays the programme stack.
+
+Help is available for xwpe and the man-pages installed on
+the system may be displayed. All this can be reached via the
+\fIhelp-functions\fP.
+
+The \fIeditor\fP may be used to edit up to 35 files at the same time.
+They are all displayed in a window of their own. A \fImouse\fP is
+used to select special editor function from the top menu.
+These function can also be selected by hitting a \fIspecial key\fP
+or combinations of keys. Some of these features are a
+complete search and replace function (yes, it can search for
+regular expressions) and a \fIfile-manager\fP. The file-manager
+is used to open, copy, rename and move or delete files.
+
+The X-window programming environment can be used without the
+special programming features. If it is invoked as `\fIxwe\fP'
+(`\fIwe\fP' if used with a character terminal) it can be used as a
+editor e.g. for shell-programming. 
+
+.SH COPYRIGHTS
+Copyright (C) 1993 Fred Kruse
+\fIxwpe\fP is free; anyone may redistribute copies of \fIxwpe\fP to
+anyone under the terms stated in the
+\fIGNU General Public License\fP. The author assumes no
+responsibility for errors or omissions or damages resulting
+from the use of \fIxwpe\fP or this manual.
+
+.SH OPTIONS
+
+.IP "\fB-so\fP"
+The default options are used. The option file will not be read.
+
+.IP "\fB-sc\fP"
+The default colors will be used. All other options are
+read from the option file.
+
+.IP "\fB-sf\fP" \fIoption file\fP
+\fIoption file\fP will be used instead of the default file
+(\fI$HOME/.wpe/wperc\fP).
+
+.IP "\fB-r\fP"
+Start \fIxwpe\fP in the \fIrecover mode\fP. The internal buffers
+are saved in files with the postfix `.ESV' in the name
+if a signal is catched by \fIxwpe\fP (except for SIGKILL).
+If the editor is invoked with the `-r' option is
+specified in the command line, the old session will be
+recovered.
+
+.IP "\fB-mb\fP"
+The next file has to be treated as a binary file.
+
+.IP "\fB-mn\fP"
+The next file is an ASCII-file (default)
+
+.IP "\fB-nc\fP" \fIN\fP
+\fIN\fP is an integer specifying the maximum number of
+columns that will be used.
+
+.IP "\fB-nu\fP" \fIN\fP
+The integer \fIN\fP gives the maximum number of steps saved
+for undo.
+
+.IP "\fB-nm\fP" \fIN\fP
+The number of steps before an auto-save will be done.
+
+.IP "\fB-k\fP" \fIpassword\fP
+The next file should be decoded with `\fIpassword\fP' for
+reading and also be encoded for writing.
+
+.IP "\fB-pm\fP"
+The next file is a message-file.
+
+
+Command-line options used together with XWindow:
+
+.IP "\fB-display\fP" \fIDisp\fP
+Output to Display '\fIDisp\fP'
+
+.IP "\fB-fn\fP" \fIFontname\fP
+
+.IP "\fB-font\fP" \fIFontname\fP
+
+.IP "\fB-g\fP" \fIGeometry\fP
+
+.IP "\fB-geometry\fP" \fIGeometry\fP
+(e.g. -g 80x20+4+4)
+
+.IP "\fB-iconic\fP"
+Start \fIxwpe\fP as icon.
+ 
+
+.SH INITIALISATION FILES
+
+xwpe reads the initialization file
+
+.EX
+    wperc
+.EE
+.SH
+If this file is found in the directory \fI../lib/wpe\fP
+(relatively to the programming environment \fIxwpe\fP) it is used
+for all users. Each user can save it's personal options in
+the file \fI$HOME/.wpe/wperc\fP (this is the default path). When
+\fIxwpe\fP is started, it tries to read the personal \fIwperc\fP
+file. If this file can't be found the system wide
+initialization file will be read. Only if this file does not
+exist the default options will be used.
+
+\fIwperc\fP is a binary file written by the programming
+environment itself and saving all selected options (see also
+\fIOptions-Menu\fP).
+
+
+.SHX-Resources:
+
+The following resources are available. (They are normally
+stored in the file \fI.Xdefaults\fP.)
+
+.IP "\fBxwpe.font:\fP"
+The font that should be used (8x13, 9x15, 10x20,
+8x13bold, 9x15bold, 10x20bold)
+
+.IP "\fBxwpe.geometry:\fP"
+
+.IP "\fBxwpe.iconic:yes\fP"
+Start \fIxwpe\fP as icon.
+
+.IP "\fBxwpe.color1:\fP"
+.IP "\fB...\fP"
+.IP "\fBxwpe.color16:\fP"
+\fIxwpe\fP uses 16 colors. The default setting is alike the
+PC-colour set.
+
+.SH ATTENTION:
+
+The file \fI.wperc\fP created by \fIVersion 1.3.1\fP or less should
+be deleted.
+
+The file \fI.xwperc\fP created by \fIVersion 1.2.1\fP or less is not
+recognized anymore and can be deleted.
+
+\fIAll those initialization files and help files in the\fP
+\fIprimary directory of xwpe should be deleted if\fP
+\fIVersion 1.3.1 or newer is used.\fP
+
+
+
+.SH The Main-Menu
+
+The WE-menu system is entered by pressing F10, ALT-<SP> (or
+<ESC>) from within the editor window. It can be left by
+pressing <ESC>. A sub menu can be called directly by pressing
+ALT-<\fIh\fPighlighted letter>.
+
+Here is a list of those sub menus:
+.EX
+
+\fISystem-Menu\fP    Environment-management
+
+\fIFile-Menu\fP      file managing
+
+\fIEdit-Menu\fP      all functions used for editing
+
+\fISearch-Menu\fP    search and replace
+
+\fIBlock-Menu\fP     block-commands used in the editing
+                     windows.
+
+\fIRun-Menu\fP       \fIProgramming-Environment\fP (only available
+               for wpe and xwpe)
+
+\fIDebug-Menu\fP     \fIdebugging-environment\fP (not available for
+               we and xwe)
+
+\fIProject-Menu\fP   programming with more than one source
+               file (only wpe and xwpe)
+
+\fIOptions-Menu\fP   toggle options
+
+\fIWindow-Menu\fP    window management
+
+\fIHelp-Menu\fP      yes, this is the help system
+.EE
+
+
+.SH The System-Menu (Alt-#):
+.EX
+
+\fIAbout WE\fP            A    Display version number and
+                         copyright.
+
+\fIClear Desktop\fP       C    Close all windows.
+
+\fIRepaint Desktop\fP     R    Initialize the desktop and
+                         reopens all windows.
+
+\fISystem Info\fP         S    Displays the current filename,
+			 directory, ...
+
+\fIShow Wastebasket\fP    W    Display the files saved in the
+                         wastebasket (\fIfile-manager\fP).
+
+\fIDelete Wastebasket\fP  D    Empty wastebasket.
+
+.SH File-Menu (Alt-F):
+
+\fIFile-Manager\fP   M    Puts the \fIfile-manager\fP-window on top.
+                    If it is not found a new one is
+                    opened.
+
+\fIADd F.-Mng.\fP    D    Opens a new \fIfile-manager\fP-window.
+
+\fINew\fP            N    Open a new file 'Noname'.
+
+\fISave\fP           S    Save this file using the `old' name.
+
+\fISave As\fP        A    Use a new name to save this file
+                    (see also \fIfile-manager\fP)
+
+\fISave ALl\fP       L    Save all files that were changed.
+
+\fIExecute\fP        E    \fIExecution-Manager\fP
+
+\fISHell\fP          H    Start a UNIX-Shell.
+
+\fIFind\fP           F    Search for a file name (see \fIFind\fP).
+
+\fIGrep\fP           G    Search for a regular expression in
+                    files (see also \fIGrep\fP)
+
+\fIPrint\fP          P    Print this file.
+
+\fIQuit\fP           Q    \fIQuitting XWPE\fP
+
+.SH The Edit-Menu (Alt-E):
+
+\fICut\fP              T  Delete the marked text and copy it
+                    into the clipboard.
+
+
+\fICopy\fP             C  Copy the marked text into the
+                    clipboard.
+
+
+\fIPaste\fP            P  Insert the buffer behind the cursor.
+
+\fIShow Clipboard\fP   S
+
+\fIDelete\fP           D  Delete the marked text.
+
+\fIUndo\fP             U  Undo the last change in the text.
+
+\fIRedo\fP             R  Do the last change one time more.
+
+\fILoad XBuffer\fP     L  Copy the XWindow-buffer into xwpe's
+                    paste-buffer.
+
+\fIWrite to XBuffer\fP W  Just the other way round.
+
+
+.SH The Search-Menu (Alt-S):
+
+\fIFind\fP           F    Search for a regular expression.
+                    (see also 
+                    \fISearch and Replace Functions\fP)
+
+\fIReplace\fP        R    Search and replace a regular
+                    expression. (see also
+                    \fISearch and Replace Functions\fP)
+
+\fISearch again\fP   S    Repeat the last Find/Replace.
+
+\fIGo to Line\fP     G
+
+
+
+.SH The Block-Menu (Alt-B):
+
+\fIBegin Mark\fP     B    Mark the beginning of a block.
+
+\fIEnd Mark\fP       E    Set the end-mark.
+
+\fIMark Line\fP      L    Mark this line.
+
+\fIMark Whole\fP     W    Mark the entire scope.
+
+\fIGoto Begin\fP     G    Jump to the beginning of this block.
+
+\fIGoto End\fP       N    Jump to the end of this block.
+
+\fICopy\fP           C    Copy this block.
+
+\fIMove\fP           M    Move this block.
+
+\fIDelete\fP         D    Delete this block.
+
+\fIHide\fP           H    Delete the set block-marks.
+
+\fIRead\fP           R    Insert a file at the cursor position.
+
+\fIWrite\fP          W    Write a block to a file.
+
+\fIMove to Right\fP  I    Move a block to the right.
+
+\fIMove to Left\fP   T    Move a block to the left.
+
+A block can also be marked by pressing `^k b' at the
+entire beginning and `^k k' at the end of the desired block. 
+
+\fIxwpe\fP (and \fIxwe\fP) allows marking a block with the mouse:
+Holding down the left button and moving over the text marks
+it as block.
+Holding down Shift and moving with the text cursor around
+also marks a block.
+
+
+
+.SH The Run-Menu (Alt-R):
+
+
+\fICompile\fP             C    Compile a programme.
+                         (see \fIProgramming-Environment\fP)
+
+\fIMake\fP                M    Create an executable.
+
+\fIRun\fP                 R    Create an executable and start it.
+
+\fIInstall\fP             I    Install a project.
+                         (see also \fIproject-file\fP)
+
+\fIExecute make\fP        E    Start make(1).
+
+\fINext Error\fP          N    Jump to the next Error.
+
+\fIPrevious Error\fP      P    Jump to the previous Error.
+
+\fIShow Definition\fP     S    Find the definition of an
+                         expression. (see also
+                         \fICommands used for Programming C\fP
+
+\fIShow Next Def.\fP      X    Find next definition of an
+                         expression. (see also
+                         \fICommands used for Programming C\fP
+
+\fIMatching Bracket\fP    K    Find the matching bracket.
+                         (see also
+                         \fICommands used for Programming C\fP
+
+\fIBeautify\fP            B    Beautify a programme.
+                         (see also
+                         \fICommands used for Programming C\fP
+
+\fIArguments\fP           A    Enter the arguments used to
+                         start a programme.
+
+
+
+.SH The Debug-Menu (Alt-D):(see also \fIDebugging-Environment\fP)
+
+
+\fIToggle Breakpoint\fP   B    Set/remove a breakpoint.
+
+\fIReMove all Breakp.\fP  M    Remove all Breakpoints.
+
+\fIMake Watch\fP          W    Select a variable to watch.
+                         (see also \fIWatch-Window\fP)
+
+\fIEdit Watch\fP          E    Edit a watched variable.
+
+\fIDelete Watch\fP        D    Delete a watched variable.
+
+\fIRemove All Watches\fP  A    Delete all watched variables.
+
+\fIShow StacK\fP          K    Show the stack. (see also
+                         \fIStack-Window\fP)
+
+\fIStep\fP                S    Execute next programme line
+                         (step into any function).
+
+\fINext\fP                N    Execute next programme line
+                         (step over any function).
+
+\fIRun/Continue\fP        R    Start/continue debugging.
+
+\fIQuit\fP                Q    Exit the debugger.
+
+
+
+.SH The Project-Menu (Alt-P):
+
+
+\fIOpen Project\fP   P    Input a \fIproject-file\fP.
+                    The \fIProject-Window\fP is  opened.
+
+\fIClose Project\fP  C    Stop using a project.
+
+\fIAdd Item\fP       A    Add a file to this project.
+
+\fIDelete Item\fP    D    Delete this file from the project.
+
+\fIOptions\fP        O    \fIProject-Options\fP
+
+
+
+
+.SHThe Options-Menu (Alt-O):
+
+
+\fIAdjust Colors\fP  A    Change the colors.
+
+\fIRead Colors\fP    R    Use the default colors or those
+                    from the initialization file.
+
+\fISave Options\fP   S    Save all changes to the options.
+
+\fIEditor\fP         E    Options used by the editor.
+                    (see also \fIEditor-Options\fP)
+
+\fIFile-Manager\fP   F    Options used by the \fIfile-manager\fP
+                    (see also \fIFile-Manager-Options\fP)
+
+\fIProgramming\fP    G    Options used by the programming-
+                    environment (Stop at error/warning)
+                    (see also \fISyntax-Support\fP)
+
+\fICompiler\fP       C    Change the options for compilers
+                    (see also \fICompiler-Options\fP)
+
+\fIDebugger\fP       D    Select the debugger (gdb, sdb, dbx)
+                    and full-screen/normal mode.
+
+
+
+The \fIWindow-Menu\fP (Alt-W):
+
+
+\fISize/Move\fP      S    Resize and move this window.
+
+\fIZoom\fP           Z    Maximise this window.
+
+\fITile\fP           T    Put all windows one beside the
+                    other.
+
+\fICascade\fP        A    Put all windows like a cascade
+                    one over another.
+
+\fINext\fP           X    Choose the next window in the list.
+
+\fIClose\fP          C    Close this window.
+
+\fIList All\fP       L    Display a list of all windows. A
+                    window can be selected by pressing
+                    <CR> or Alt-<s>.
+
+\fIOutput Window\fP  O    Display the output (not X11).
+
+\fIMessages\fP       M    The \fIMessage-Window\fP will be opened.
+
+\fIProject\fP        P    The \fIProject-Window\fP will be opened.
+
+\fIWatches\fP        W    The \fIWatch-Window\fP will be opened.
+
+
+
+.SH The Help-Menu (Alt-H):
+
+
+\fIEditor\fP         E    Help to the editor (WE)
+
+\fIFUnction Index\fP U    Index to all UNIX-functions
+                    (see also \fIFunction-Index\fP)
+
+\fIFunction\fP       F    UNIX man-pages.
+
+\fIInfo\fP           I    The GNU-infosystem.
+
+\fIGoto\fP           G    Goto help page
+
+\fIBack\fP           B    Goto the page you see before
+
+\fINext\fP           N    Goto the next page
+
+\fIPrevious\fP       P    Goto the previous page
+
+
+
+
+.SH Control-character sequences (special keys)
+
+How to enter the special keys \fIAlt\fP and \fIESC\fP on a UNIX
+system (without XWindow):
+
+\fIAlt\fP-\fIX\fP - is realized by pressing <\fIESC\fP> \fIX\fP.
+(X is a printable character.)
+
+\fIESC\fP - is realized by the sequence <\fIESC\fP> <\fIReturn\fP>.
+
+The following functions can be reached by control-character
+sequences:
+
+.EX
+\fICursor-Movement\fP
+
+\fIEditing\fP
+
+\fIDeleting\fP
+
+\fIBlock-Commands\fP
+
+\fIMarker-Commands\fP
+
+\fISearch- and Replace-Commands\fP
+
+\fIBuffer-Commands\fP
+
+\fIRead and Save\fP
+
+\fIWindow-Commands\fP
+
+\fIRun-Commands\fP
+
+\fICommands used for Programming C\fP
+
+\fIDebug-Commands\fP
+
+\fIHelp-Commands\fP
+
+\fIQuit XWPE\fP
+.EE
+
+
+.SH Cursor-Movement:
+
+.EX
+up arrow
+Ctrl P              move the cursor one line up
+
+down arrow
+Ctrl N              move the cursor one line down
+
+right arrow
+Ctrl F              move the cursor one character right
+
+left arrow
+Ctrl B              move the cursor one character left
+
+Ctrl right arrow
+Alt right arrow     move the cursor one word right
+
+Ctrl left arrow
+Alt left arrow      move the cursor one word left
+
+Home
+Ctrl A              move the cursor to column 1
+
+End
+Ctrl E              move the cursor to the last column
+
+Ctrl up arrow
+Page Up             move the cursor one window up
+
+Ctrl down arrow
+Page Down           move the cursor one window down
+
+Ctrl Page Up
+Alt Ctrl A          goto first row
+
+Ctrl Page Down
+Alt Ctrl E          goto last row
+
+Ctrl Home
+Alt Ctrl P          goto first row of this window
+
+Ctrl End
+Alt Ctrl N          goto last row of this window
+
+.EE
+
+
+.SHEditing:
+
+.EX
+<Return>       Insert a line-break.
+               (see also \fIAutomatic Indentation\fP)
+
+Ctrl H
+<Backspace>    Delete a character backwards.
+               (see also \fIAutomatic Indentation\fP)
+
+Ctrl D
+Del            Delete the character the cursor is on.
+
+<Tab>          Indent the text.
+               (see also \fIAutomatic Indentation\fP)
+
+Alt-I          Switch insert to overwrite mode and
+Insert         vice versa.
+
+Alt-J          Switch to special-character-insert-mode.
+
+.EE
+
+.SH Deleting:
+
+.EX
+Ctrl T         Kill the next word after the cursor.
+Ctrl O T       Kill the word immediately before the
+               cursor.
+Ctrl Y         Delete a whole line
+Ctrl Z
+Ctrl O Y       Kill from the cursor position to the end
+               of line.
+
+.EE
+
+.SH Block-Commands:
+
+.EX
+Shift + Cursor-movement
+               mark a block
+
+Ctrl K  B      Set the beginning mark
+Ctrl K  K      Set the end mark
+Ctrl K  L      Mark this line
+Ctrl K  X      Mark the whole document
+Ctrl K  A      Jump to the beginning mark
+Ctrl K  Z      Jump to the end mark
+Ctrl K  C      Copy block
+Ctrl K  V      Move block
+Ctrl K  Y      Kill block
+Ctrl K  H      Hide block
+Ctrl K  R      Insert a file at the cursor position
+Ctrl K  W      Write a block to a file
+Ctrl K  I      Shift a block to the right
+Ctrl K  U      Shift a block to the left
+
+.EE
+
+.SHMarker-Commands:
+
+.EX
+Ctrl K n       Set the marker no. n ( n = 1 - 9 )
+Ctrl O n       Jump to the marker no. n
+
+.EE
+
+.SH Search- and Replace-Commands:
+
+.EX
+Find
+F4
+Ctrl O F       Search for a string
+
+Alt-F4
+Ctrl O A       Replace a string with another string
+
+Ctrl-F4
+Ctrl L         Repeat the last search or replace
+
+Alt G          Goto line
+
+.EE
+
+.SH Buffer-Commands:
+
+.EX
+Cut
+Shift Del
+Ctrl X         Kill the marked text to the kill-buffer
+
+Copy
+Shift Insert
+Ctrl C         Copy the marked text to the kill-buffer
+
+Paste
+Ctrl Insert
+Ctrl V         Copy the kill-buffer to the cursor
+
+Ctrl W         Display the kill-buffer
+
+UNDO
+Ctrl U         Undo an unwanted change
+
+REDO
+Ctrl R         Undo the last undo
+
+Alt Delete     Copy the marked text to the X-buffer
+
+Alt Insert     Copy the X-buffer to the cursor
+
+.EE
+
+.SH Read and Save:
+
+.EX
+Open
+F3        Start the \fIfile-manager\fP (Open a file etc.)
+
+F2        Save the file
+
+.EE
+
+.SH Window-Commands:
+
+.EX
+Alt-Z
+F5        Zoom the window (maximum size)
+
+Ctrl F5
+Alt-F2    Resize and move the window
+
+F6
+Alt-N     Switch to the next window
+
+Alt-F3    Close this window
+
+Shift F4  Put all windows one beside the other
+
+Shift F5  Put all windows like a cascade one
+          over another.
+
+.EE
+
+.SH Run-Commands:
+
+.EX
+Alt F9
+Alt C     Compile (see also \fIProgramming-Environment\fP)
+
+F9
+Alt M     Create an executable
+
+Ctrl F9
+Alt R     Create an executable and start it
+
+Alt L     Install a project (see also \fIproject-file\fP)
+
+Alt A     Start make(1)
+
+Alt V     Jump to the previous error
+          (see also \fIMessage-Window\fP)
+
+Alt T     Jump to the next error (see \fIMessage-Window\fP)
+
+.EE
+
+.SH Commands used for Programming C:
+
+.EX
+Ctrl O S Search the definition of an expression
+         (see \fIProgramming C\fP)
+
+Ctrl O N Search for the next definition of an
+         expression (see \fIProgramming C\fP)
+
+Ctrl O K Search for a corresponding bracket
+         (see \fIProgramming C\fP)
+
+Ctrl O B Beautify C-source code (see \fIProgramming C\fP)
+
+.EE
+
+
+
+.SH Debug-Commands:
+
+.EX
+Ctrl F10
+Ctrl G R       Start the debugger (see
+               \fIDebugging-Environment\fP)
+
+Ctrl F2
+Ctrl G Q       Quit the debugger
+
+F7
+Ctrl G S       Execute next programme line
+               (step into any function)
+
+F8
+Ctrl G N       Execute next programme line
+               (step over any function)
+
+Ctrl F8
+Ctrl G B       Set/remove a breakpoint
+
+Ctrl G M       Remove all Breakpoints
+
+Ctrl F7
+Ctrl G W       Select a variable to watch
+               (see also \fIWatch-Window\fP)
+
+Ctrl G E       Edit a watched variable
+               (see also \fIWatch-Window\fP)
+
+Ctrl G D       Delete a watched variable
+               (see also \fIWatch-Window\fP)
+
+Ctrl F6
+Ctrl G K       Show the stack. (see also \fIStack-Window\fP)
+
+Ctrl G O       Display the output (not X11)
+
+.EE
+
+.SH Help-Commands:
+
+.EX
+F1             Help to the editor (WE)
+
+Alt F1         UNIX man-pages
+
+Ctrl F1        Index to all UNIX-functions
+               (see also \fIFunction-Index\fP)
+
+.EE
+
+.SH Quit XWPE
+
+Alt-X          Quit from XWPE
+
+.EE
+
+.SH Changing the Control-character sequences
+.SH (\fICommon User Access\fP):
+
+Some function-keys may be used in a second form which is
+compatible to OSF-Motif and MS-Windows.
+
+These are the changes:
+
+.EX
+Window management:
+F6        ->  Ctrl F6    Select next window
+Alt F3    ->  Ctrl F4    Close window
+F5        ->  Shift F6   Zoom
+
+Search and Replace:
+Ctrl F4   ->  F3         Search again
+F4        ->  Alt F3     Search
+Alt F4    ->  Ctrl F3    Replace
+
+File operations:
+F3        ->  F2         Start the file-manager
+F2        ->  Alt F2     Save
+
+Debugger:
+Ctrl F8   ->  F5         Set a breakpoint
+Ctrl F7   ->  Ctrl F5    Watch
+Ctrl F6   ->  Ctrl F3    Call stack
+
+Quit from XWPE:
+Alt X     ->  Alt F4
+
+.EE
+
+.SH Quitting XWPE:
+
+Files that are NOT changed will be closed without any
+warning after the Quit-command is send.
+If any changes have not been saved, \fIxwpe\fP displays a warning
+message and allows the user to save these files:
+
+.EX
+Yes       Save the file
+No        Close without save
+ESC       Cancel from quit (no more files are closed)
+
+.EE
+
+.SH The Editor
+
+The \fIeditor\fP may be used to edit up to 35 files at the same 
+time. They are all displayed in a window of their own
+(\fIEditor-Window\fP).
+
+The functions of this editor may be selected by pressing a
+\fIspecial key\fP, using the \fImouse\fP or selecting it from the
+menu. These functions are, besides killing or inserting single
+characters from/into the text:
+
+Copy, move and delete a block in one file (see also
+\fIBlock-Menu\fP).
+
+Copy, move and delete a block between different files (see
+also \fIEdit-Menu\fP).
+
+Search and replace strings (see also \fISearch-Menu\fP).
+
+Resize and move the windows used to edit files (see also
+(\fIWindow-Menu\fP).
+
+Change the behavior of the editor (see also \fIOptions-Menu\fP).
+
+Edit, save and manipulate files (see also \fIFile-Menu\fP).
+
+
+
+.SH Using the Help-Functions
+
+If the help is selected, a separate window is opened which
+displays a case-sensitive help. If Help/Editor is selected
+the contents of the editor-functions-help will be displayed.
+
+Most documents include links to other help-pages. They are
+highlighted and may be selected by clicking on them with the
+mouse or pressing <CR> after the cursor is moved over them.
+
+By pressing <Backspace> the last visited help-page is
+re-displayed. This can be done also by clicking on the
+highlighted title.
+
+Programmer also want to take a look at \fIHelp-Menu\fP.
+
+
+
+.SH The File-Manager
+
+The purpose of the file-manager is to select files, create
+new directories, copy files and directories, move and rename
+files and directories, delete and change the access
+permissions of files and directories.
+
+.IP "\fBAlt-N\fP"
+Select the 'Name'-line where the default entry may be
+changed. If the entry is
+ 1. a existing file, pressing <Return> will open this
+file for editing
+ 2. a new (non-existing) file, pressing <Return> will be
+created
+ 3. a mask (regular expression) selecting the files
+for the 'Files'-menu. '*' matches all characters,
+'?' matches exactly one character, '[a-z]' matches
+one charter in the range of "a..z". Pressing
+<Return> will select all matching files and the
+'Files'-menu will be selected.
+
+.IP "\fBAlt-F\fP"
+Select the 'Files'-menu which shows all files in the
+selected directory. The marked file can be opened by
+pressing <Return> or Alt-E.
+
+.IP "\fBAlt-D\fP"
+Select the 'Directory'-line. The working directory may
+be entered here. <Return> selects the w.d.
+
+.IP "\fBAlt-T\fP"
+Select the tree of directories. Pressing the cursor
+keys walks through the tree, <Return> selects the
+working directory.
+
+.IP "\fBAlt-C\fP"
+Change the working directory to the one entered in the
+'Directory'-line or marked in the tree.
+
+.IP "\fBAlt-E\fP"
+The file selected in the 'Name'-line will be opened for
+editing.
+
+.IP "\fBAlt-P\fP"
+The last edited file will be replaced by a new window
+selected in the 'Name'-line.          
+
+.IP "\fBAlt-M\fP"
+Rename or move into another directory.
+
+.IP "\fBAlt-U\fP"
+Duplicate the marked file. The new name is
+[oldname].dup.
+
+.IP "\fBAlt-R\fP"
+Delete the marked file. The file will be moved into the
+wastebasket or removed from the disk, this can be
+selected from \fIFile-Manager-Options\fP.
+
+.IP "\fBAlt-L\fP"
+Create a link for the marked file. If possible, a hard
+link will be created. Only if a directory or files that
+are saved on different disk-partitions are selected a
+soft link will be used.
+
+.IP "\fBAlt-O\fP"
+The file will be copied. The new name must be entered.
+
+.IP "\fBAlt-K\fP"
+Make a new directory named "new.dir". This name may be
+changed.
+
+.IP "\fBAlt-A\fP"
+Change the file attributes.
+
+.IP "\fBAlt-S\fP"
+(only avail-able in function Save As) The file will be
+saved using the name displayed in the line 'Name'.
+
+.IP "\fB<ESC>\fP"
+Quit the file-manager.
+
+
+
+.SH The Execution-Manager:
+
+The purpose of the execution-manager is to start executable
+files and shell-scripts. Only files with execute-attribute
+will be selected in the 'Files'-menu.
+
+.IP "\fBAlt-N\fP"
+Select the 'Name'-line where the default entry may be
+changed. If the entry is
+ 1. a existing file, pressing <Return> will be executed.
+ 2. a mask (regular expression) selecting the files
+for the 'Files'-menu. '*' matches all characters,
+'?' matches exactly one character, '[a-z]' matches
+one character in the range of "a..z". Pressing
+<Return> will select all matching files and the
+'Files'-menu will be selected.
+
+.IP "\fBAlt-F\fP"
+Select the 'Files'-menu which shows all files in the
+selected directory. The marked file can be opened by
+pressing <Return> or Alt-E.
+
+.IP "\fBAlt-D\fP"
+Select the 'Directory'-line. The working directory may
+be entered here. <Return> selects the w.d.
+
+.IP "\fBAlt-T\fP"
+Select the tree of directories. Pressing the cursor
+keys walks through the tree, <Return> selects the
+working directory.
+
+.IP "\fBAlt-C\fP"
+Change the working directory to the one entered in the
+'Directory'-line or marked in the tree.
+
+.IP "\fBAlt-E\fP"
+The file selected in the 'Name'-line will be opened for
+execution by the OS.
+
+.IP "\fB<ESC>\fP"
+Quit the execution-manager.
+
+
+
+.SH Programming-Environment
+
+If a \fIProject-File\fP is selected this project will be
+\fIcompiled\fP, \fIlinked\fP and \fIexecuted\fP from the \fIRun-Menu\fP. If
+there is no project the file in the current window will be
+taken as target. The compiler / linker is selected automaticly
+by \fIxwpe\fP and is distinguished by the file-name postfix. The
+compiler and its options may be selected in the menu Run/Options
+(see also \fICompiler-Options\fP).
+
+Only those files which were never compiled or which have
+been changed since the last time they were compiled are
+compiled (and linked). Changes in 'include'd files are only
+considered for C-programmes.
+
+\fIError\fP in compilation and linking are listed in the
+\fIMessage-Window\fP. These errors stop the creating process and
+the file that contains the error will be opened and the
+cursor will be set in the corresponding line.
+
+
+
+.SH The Debugging-Environment
+
+The \fIDebug-Menu\fP is used to set breakpoints in the source
+code and to start debugging. If the debugger stops the
+corresponding line in the source is marked. Files will be
+opened if necessary.
+
+\fIStops\fP are caused by \fIbreakpoints\fP or \fIsignals\fP.
+
+In the \fIWatch-Window\fP the contents of selected variables and
+constants are displayed after each stop.
+
+The \fIstack\fP is displayed in the \fIStack-Window\fP after a stop.
+
+
+
+.SH Find:
+
+Find starts a search for files in a specified directory.
+This search may be recursive.
+
+.IP "\fBAlt-L\fP"
+Enter the filename or a file-mask as described in
+\fIFile-Manager\fP.
+
+.IP "\fBAlt-I\fP"
+Enter the starting directory for the search.
+
+.IP "\fBAlt-K\fP"
+Enable a recursive search.
+
+.IP "\fBAlt-O\fP"
+Start.
+
+.IP "\fB<ESC>\fP"
+Break find.
+
+All those directories containing matching files are
+listed in the \fIFind-Window\fP.
+
+
+
+.SHGrep:
+
+Search for files containing a substring. The files selected
+for the grep must match an expression also used for the
+\fIFile-Manager\fP.
+
+.IP "\fBAlt-T\fP"
+Enter the string to search.
+
+.IP "\fBAlt-C\fP"
+Distinguish between small and capital letters.
+
+.IP "\fBAlt-W\fP"
+Only search for whole words.
+
+.IP "\fBAlt-R\fP"
+Search for regular expressions. (See
+\fISearch and Replace Functions\fP)
+
+.IP "\fBAlt-L\fP"
+Enter a file-name or a file-mask, as described in
+\fIFile-Manager\fP, to search in.
+
+.IP "\fBAlt-I\fP"
+The directory to search in.
+
+.IP "\fBAlt-K\fP"
+Also search in sub-directories.
+
+.IP "\fBAlt-O\fP"
+Start the search.
+
+.IP "\fB<ESC>\fP"
+Don't search any further.
+
+
+All those files containing matching strings are listed
+in the \fIGrep-Window\fP.
+
+
+
+.SHSearch and replace functions
+
+.IP "\fBAlt-T\fP"
+Enter the string to searched.
+
+.IP "\fBAlt-N\fP"
+New string that replaces the old one. (Only used for
+Replace)
+
+.IP "\fBAlt-C\fP"
+Distinguish between small and capital letters.
+
+.IP "\fBAlt-W\fP"
+Only search for whole words.
+
+.IP "\fBAlt-R\fP"
+Search for regular expressions. The following regular
+expressions (like (e)grep(1)) may be used:
+
+.IP "\fB^\fP"
+Matches the empty string at the beginning of a line.
+
+.IP "\fB$\fP"
+Matches the empty string at the end of a line.
+
+.IP "\fB.\fP"
+The period matches any single character.
+
+.IP "\fB[]\fP"
+A list of characters enclosed by [ and ] matches any
+single character in that list.
+
+.IP "\fB[^ ]\fP"
+Matches any single character not in the list of
+characters enclosed by [ and ].
+
+.IP "\fB[ - ]\fP"
+A range of ASCII characters is represented by giving the
+first and the last character separated by a hyphen.
+
+.IP "\fB*\fP"
+The character in front of the asterix is repeated zero
+or more times.
+
+.IP "\fB+\fP"
+The character in front of the plus is repeated one or
+more times.
+
+.IP "\fB?\fP"
+The character in front of the question mark is repeated
+zero or once.
+
+.IP "\fB|\fP"
+OR: OR separates two strings of which one will
+match. 
+
+.IP "\fB\\\fP"
+The character after the \\ will not be
+interpreted as special character.
+
+.IP "\fBAlt-P\fP"
+(\fIReplace\fP only) Ask before each replacement. Possible
+answers are:
+.EX
+        Yes    Y  Replace text
+        No     N  Don't replace text
+        <ESC>     Stop search
+.EE
+.IP "\fBAlt-D\fP"
+Search forward.
+
+.IP "\fBAlt-B\fP"
+Search backward.
+
+.IP "\fBAlt-G\fP"
+Search in the whole text.
+
+.IP "\fBAlt-S\fP"
+Only search in the marked block.
+
+.IP "\fBAlt-F\fP"
+Start search from cursor-position.
+
+.IP "\fBAlt-E\fP"
+Search from the text or block beginning.
+
+.IP "\fB<RETURN>\fP"
+Search/Replace only one time than stop.
+
+.IP "\fBAlt-A\fP"
+Execute all replacements till the end of the entire
+scope. (\fIReplace\fP only)
+
+.IP "\fB<ESC>\fP"
+Don't search any further.
+
+
+
+.SH Function-Index:
+
+XWPE creates a list of all manual-pages that can be found in
+the search-path given by the environment variable \fIMANPATH\fP.
+
+The index is distinguished in the following sections:
+
+.EX
+User Commands
+System Calls        : C - functions
+C-Lib.-Functions    : C - functions from the C -library
+Devices & Network Interface
+File Formats
+Games & Demos
+Environments, Tables and TROFF Macros
+Maintenance Com.    : Administrations commands
+.EE
+
+After the section is selected a list of all manual pages
+belonging to that section will be displayed. One of these
+pages may be selected by pressing <Return> or clicking on
+the name. A new window appears containing the manual page.
+
+A manual page can also be selected by giving its name in the
+Menu Help/Functions.
+
+Manual pages are read-only documents (like all other help
+files too). But they can be used as source for editing
+commands.
+
+
+
+.SH The Editor-Window
+
+If a file has to be edited the Editor-Window is used. The
+\fImouse\fP (see also The \fIMouse in the Editor-Window\fP), function
+keys or the editor-menu can be used to edit a text.
+
+The most important menus are:
+
+Copy, move and delete a block in a file (see \fIBlock-Menu\fP).
+
+Copy, move and delete a block between different files (see
+also \fIEdit-Menu\fP).
+
+Search and/or replace strings (see also \fISearch-Menu\fP).
+
+Resize and move the windows (see also \fIWindow-Menu\fP).
+
+Change the options used by the editor in the \fIOptions-Menu\fP.
+
+Files may be selected, saved and changed in the \fIFile-Menu\fP.
+
+
+
+.SH The Find-Window
+
+The Find-Window is used to list all directories in which the
+searched file was found.
+\fIAlt-S\fP and \fI<Return>\fP open a \fIFile-Manager\fP for the
+selected directory which displays all found files.
+\fI<ESC>\fP closes this window.
+
+
+
+.SH The Grep-Window
+
+The Grep-Window is used to list all files in which the
+searched string was found.
+\fIAlt-S\fP and \fI<Return>\fP open the marked file for editing. The
+cursor jumps to the first occurrence of the searched string.
+\fI<ESC>\fP closes this window.
+
+
+
+.SH The Message-Window
+
+\fIErrors\fP in compilation and linking are listed in the
+Message-Window which is a read-only file. An error can be
+selected by moving around using the cursor-keys and
+pressing <Return> or by using the mouse. 
+
+If an error is selected, the file causing this error will be
+opened and the cursor jumps to the found line. This file is
+(normally) read-write and can be edit immediately so that the
+next trial can be started.
+
+
+
+.SH The Project-Window
+
+All those files that are listed in the \fIproject-file\fP will be
+displayed in the project-window which is started from the
+\fIProject-Menu\fP or from the \fIWindow-Menu\fP.
+New files may be entered by pressing \fIAlt-A\fP (Add) or \fI<Ins>\fP
+directly form the file-manager.
+An already existing entry may be changed after it is
+selected by \fIAlt-E\fP (Edit) or \fI<CR>\fP or be deleted by
+pressing \fIAlt-D\fP (Delete) or \fI<Del>\fP.
+\fIAlt-O\fP enters the \fIProject-Options\fP and \fI<ESC>\fP closes the
+project-window.
+
+
+
+.SH The Variable-Window
+
+In the \fIProject-File\fP variables may be selected, they are
+displayed in the variable-window which can be started from
+the \fIProject-Options\fP.
+\fIAlt-A\fP (Add) and \fI<Ins>\fP are used to enter a new variable,
+\fIAlt-E\fP (Edit) and \fI<CR>\fP change an existing entry and
+\fIAlt-D\fP (Delete) and \fI<Del>\fP are used to delete an entry.
+\fI<ESC>\fP will close this window.
+
+
+
+.SH The Install-Window
+
+This window is selected from the \fIProject-Options\fP and used
+to display and change those commands which will be executed
+to install a file/project.
+\fIAlt-A\fP (Add) and \fI<Ins>\fP are used to enter a new command,
+\fIAlt-E\fP (Edit) and \fI<CR>\fP change an existing entry and
+\fIAlt-D\fP (Delete) and \fI<Del>\fP are used to delete an entry.
+\fI<ESC>\fP will close this window.
+
+
+
+.SH The Watch-Window
+
+This window displays read-only values from variables
+selected in the watch-function (see also \fIDebug-Menu\fP). 
+
+To search for an entry the cursor keys may be used to walk
+around and the search-function finds a variable. Other
+possible functions are:
+
+.IP "\fB<Return>\fP"
+Edit a selected variable.
+
+.IP "\fB<Return>\fP"
+Enters a new variable if the last line of this file is
+selected.
+
+.IP "\fB<Insert>\fP"
+Insert a new variable at this position in the file.
+
+.IP "\fB<Del>\fP"
+Delete this entry.
+
+If a variable is not found in the current context a
+warning is displayed.
+
+
+
+.SH Stack-Window
+
+The stack history is displayed in this window, but it can't
+be edited.
+
+The cursor keys are used to walk around in this list and the
+search-function will find an entry. \fI<Return>\fP will jump
+within the stack (this is not possible together with the
+'\fIsdb\fP'-debugger).
+
+The stack may be examined if a \fIsignal\fP is catched by the
+programme. If this happens within a system-function than the
+calling visible function is shown.
+
+
+
+.SH Usage of the \fImouse\fP with \fIXWindow\fP:
+
+All those keystrokes used to select from within a menu or
+mark a block can be replaced by using the mouse. A command
+will be selected by one click on the word or the
+corresponding line. A click on the 'Cancel'-command or the
+upper left '\fIClose-Button\fP' will close a window.
+
+The mouse can be used within the editor-window (see the
+\fIMouse in the Editor-Window\fP) and within the file-manager
+(see \fIMouse in the File-Manager\fP).
+
+
+
+.SH The Mouse in the Editor-Window
+
+All those keystrokes used to select from within a menu or
+mark a block can be replaced by using the mouse. A command
+will be selected by one click on the word or the
+corresponding line. A click on the 'Cancel'-command or the
+upper left '\fIClose-Button\fP' will close a window.
+
+The upper right button labeled with \fI[z]\fP is the
+\fIZoom-Button\fP used to zoom a window.
+
+A click on the upper frame and moving the mouse while
+holding the left button down will \fImove\fP the window.
+
+\fIResizing\fP a window is done be clicking on an edge and moving
+the mouse around while holding the button down.
+
+A line is selected by clicking on the \fIline-number\fP on the
+lower frame. A new window is opened to enter a new number.
+
+The right and the lower \fIborder\fP move the cursor around in
+the window. The cursor moves one line/character if the
+arrows at both ends of the borders are selected. A whole
+page is the size of the movement if a click is set on the
+border itself. Moving the marker will move the displayed
+entry around.
+
+.SH Function within the window:
+
+.SH The left mouse-button:
+
+One click will move the cursor to the corresponding
+position.
+
+If the button is pressed while the mouse-cursor is over the
+text-cursor a word is marked. A marked word being marked
+again selects the whole line.
+
+Holding the button down and moving the mouse around is used
+to mark an array. If <Shift> is pressed, too, the new text
+will be added to the previous selected one.
+
+.SH The right mouse-button:
+
+Clicking the right button will \fIcopy\fP the marked text into
+the buffer. The Alt-key selects the X-buffer.
+
+Shift selects the \fIcut\fP-option: The text is copied into the
+selected buffer and is cut from the file.
+
+.SH The middle mouse-button:
+
+Clicking the middle button will copy the contents of the
+buffer at the mouse-position (\fIPaste\fP). The Alt-key selects
+the X-buffer.
+
+
+
+.SH The Mouse in the File-Manager:
+
+All those keystrokes used to select from within a menu or
+mark a block can be replaced by using the mouse. A command
+will be selected by one click on the word or the
+corresponding line.
+
+A click on the \fICancel\fP-command or the upper left
+\fIClose-Button\fP will close the file-manager.
+
+The upper right button labeled with \fI[z]\fP is the
+\fIZoom-Button\fP used to zoom a window.
+
+A click on the upper frame and moving the mouse while
+holding the left button down will \fImove\fP the window.
+
+\fIResizing\fP a window is done be clicking on an edge and moving
+the mouse around while holding the button down.
+
+The right and the lower \fIborder\fP move the mark around in the
+files-list and in the tree. The cursor moves one line if the
+arrows at both ends of the borders are selected. A whole
+page is the size of the movement if a click is set on the
+border itself. Moving the marker will move the displayed
+entry around.
+
+.SH Function within the window:
+
+.SH The left mouse-button:
+
+One click will mark a not selected file or directory. A
+marked file is selected for \fIloading\fP into the \fIeditor\fP on a
+second click. A marked directory becomes the current
+working directory after clicking again on it's name.
+
+A marked file may be \fImoved\fP into another directory if the
+left button is held down while moving the mouse-pointer
+into the directory displayed in another file-manager
+window.
+
+.SH The right mouse-button:
+
+Clicking the right button on an already marked file or
+directory will call the \fIMove/Rename\fP-function.
+
+A \fIlink\fP is created by "moving" a file or directory into
+another file-manager-window. The link will be created in the
+current selected working directory in the other window.
+
+.SH The middle mouse-button:
+
+To \fIduplicate\fP a file or directory in the current directory
+just click with the middle mouse-button on its marked name.
+
+A \fIcopy\fP into another directory is performed by holding down
+the middle button while moving the mouse-pointer into another
+file-manager window.
+
+
+
+.SH Editor-Options
+
+.IP "\fBData:\fP"
+.IP "\fBAlt-A\fP"
+If this option is selected the next file loaded will be
+treated as ASCII-file.
+
+.IP "\fBAlt-B\fP"
+The next file loaded will be a binary file.
+
+.IP "\fBDisplay:\fP"
+.IP "\fBAlt-S\fP"
+The end-of-line will be displayed as '$' if a <NL> was
+entered and as '' as NULL (the next line the connecting
+line).
+
+.IP "\fBAuto-save:\fP"
+.IP "\fBAlt-P\fP"
+All options will be saved after the quitting the
+editor.
+
+.IP "\fBAlt-H\fP"
+After N changes a file will be saved automaticly. The
+number N can be entered/changed in the Max. Changes
+-field (Alt-X). For the saved file 'file-name'.ASV will
+be used as new file-name, the original file is not
+changed. After a normal quit from xwpe the .ASV-files
+are deleted.
+
+.IP "\fBKeys (Setting up the function keys):\fP"
+.IP "\fBAlt-L\fP"
+The function keys are bind like introduced in xwpe
+version < 1.2.0 (Turbo C alike).
+
+.IP "\fBAlt-C\fP"
+The 'Common User Access' function key binding will be
+used (MS-Windows alike).
+
+
+.IP "\fBAuto-Indent (Automatic Indentation):\fP"
+.IP "\fBAlt-Y\fP"
+Auto-Indent is used only for files that can be used
+for compilation (that are defined in the
+Option/Compiler -menu).
+
+.IP "\fBAlt-W\fP"
+Auto-Indent is used for all files.
+
+.IP "\fBAlt-V\fP"
+Don't use Auto-Indent.
+
+
+.IP "\fBAlt-M\fP"
+The maximum number of columns per row. After this
+number or columns a word wrap is performed.
+
+.IP "\fBAlt-T\fP"
+The number of characters a TabStop counts.
+
+.IP "\fBAlt-X\fP"
+The number of changes that force an auto-save (if
+enabled).
+
+.IP "\fBAlt-N\fP"
+The number of steps that are saved for an undo
+(Edit/Undo).
+
+.IP "\fBAlt-I\fP"
+The number of columns used for auto-indent.
+
+
+
+.SH File-Manager-Options
+
+.IP "\fBDirectories:\fP"
+.IP "\fBAlt-F\fP"
+Hidden files are displayed.
+
+.IP "\fBAlt-D\fP"
+Hidden directories are displayed.
+
+.IP "\fBAlt-K\fP"
+All actions (Move, Link, Copy and Remove) are recursive
+(sub directories will be used as source too).
+
+.IP "\fBSort Files By:\fP"
+.IP "\fBAlt-N\fP"
+Name
+
+.IP "\fBAlt-I\fP"
+Time (time of creation time)
+
+.IP "\fBAlt-B\fP"
+Bytes (Size)
+
+.IP "\fBAlt-R\fP"
+Reverse order.
+
+.IP "\fBMove/Copy:\fP"
+.IP "\fBAlt-Q\fP"
+If the source of a Move/Copy-operation already exists
+it is only overwritten after a confirmation.
+
+.IP "\fBAlt-V\fP"
+An existing files is overwritten.
+
+.IP "\fBAlt-T\fP"
+Existing files are \fInot\fP overwritten.
+
+.IP "\fBRemove:\fP"
+.IP "\fBAlt-W\fP"
+Deleted files are moved into the wastebasket.
+
+.IP "\fBAlt-A\fP"
+Files are really deleted. A confirmation is necessary.
+
+.IP "\fBAlt-M\fP"
+Files are really deleted. No confirmation.
+
+.IP "\fBLinks on Files:\fP"
+.IP "\fBAlt-H\fP"
+First try a hard-link. If this does not succeed a
+soft-link is used.
+
+.IP "\fBAlt-S\fP"
+Use a soft-link.
+
+.IP "\fBWastebasket:\fP"
+.IP "\fBAlt-P\fP"
+After exit of xwpe a confirmation for deleting the
+files in the wastebasket is necessary.
+
+.IP "\fBAlt-E\fP"
+The contents of the wastebasket is \fIremoved\fP.
+
+.IP "\fBAlt-L\fP"
+The contents of the wastebasket is \fInot removed.
+
+
+
+.SH Compiler-Options
+
+If the Menu \fIRun/Options\fP is selected the entries
+\fIAdd Compiler\fP and \fIRemove Compiler\fP and all compilers that
+are defined are displayed.
+
+If \fIAdd Compiler\fP or a defined compiler is selected the
+following options menu is enabled:
+
+.IP "\fBLanguage\fP"
+The name of the programming language.
+
+.IP "\fBCompiler\fP"
+The path to the compiler.
+
+.IP "\fBCompiler-Options\fP"
+Options used by the compiler.
+
+.IP "\fBLoader-Options\fP"
+Options used to link the files.
+
+.IP "\fBExecutable-Name\fP"
+The name of the resulting executable (default:
+[programme-name].e).
+
+.IP "\fBFile-Postfix\fP"
+The postfix that forces this compiler to be used (e.g. .c 
+implies to use the C-compiler).
+
+.IP "\fBCompiler-Style\fP"
+Select whether error-messages are created like a GNU
+or similar compiler would create it or whether the
+definition for messages entered in the \fIMessage-String\fP
+should be used.
+
+.IP "\fBOK\fP"
+Accept the changes made.
+
+.IP "\fBCANCEL\fP"
+Reject the changes.
+.EE
+
+A new compiler/programming language can be entered in \fIAdd\fP
+\fICompiler\fP. If the new one is selected its options may be
+changed.
+ 
+A compiler selected from the list is removed by \fIRemove
+\fICompiler\fP.
+
+
+
+.SH Project-Options
+
+.IP "\fBCompiler\fP"
+The path to the compiler.
+
+.IP "\fBCompiler-Options\fP"
+Options used by the compiler.
+
+.IP "\fBLoader-Options\fP"
+Options used to link the files.
+
+.IP "\fBExecutable-Name\fP"
+The name of the resulting executable (default: \fIa.out\fP).
+
+.IP "\fBStore Objects in Library\fP"
+If a filename is entered this file is used as library
+to all object-files. This library is used automaticly
+for linking.
+
+.IP "\fBCompiler-Style\fP"
+Select whether error-messages are created like a GNU
+or similar compiler would create it or whether the
+definition for messages entered in the \fIMessage-String\fP
+should be used.
+
+.IP "\fBVariables ...\fP"
+Variables used by the project can be entered and
+removed from a separate \fIVariable-Window\fP.
+
+.IP "\fBInstall ...\fP"
+The commands used to install a programme are edited in
+the \fIInstall-Window\fP.
+
+.IP "\fBSave\fP"
+The new \fIproject-file\fP will be saved.
+
+.IP "\fBSave As\fP"
+The new project-file will be saved with a new file-
+name.
+
+.IP "\fBCANCEL\fP"
+Quit from the menu without any changes.
+
+
+
+.SH Programming C
+
+For all C- and C++-programmes there are some utilities
+installed to aid the programmer:
+
+.SH Show Definition (^O S):
+Jump to the definition of a C-expression:
+The file containing the definition of the entered expression
+will be put in the foreground and the cursor jumps to the
+definition which will be highlighted. Structs, unions,
+classes, typedefs, preprocessor definitions, extern variables
+and functions can be searched.
+If a project is defined all files belonging to it will be
+scanned for the definition. Also all #include'd files are
+scanned recursively as long as they can be found in the
+\fISystem-Include-Path\fP defined in \fIOptions/Programming\fP.
+
+If the name is used more than one time in definitions (e.g.
+as name of a struct and as name of an external variable) the
+next definition may be found with \fI^O N\fP (Show next
+Definition).
+
+.SH Matching Bracket (^O  K):
+If the cursor is above a bracket the corresponding closing /
+opening bracket is searched and the cursor is moved to it.
+Otherwise the cursor is moved to the next opening bracket.
+The following pairs of brackets are recognized: {}, [] and
+().
+
+.SH Beautify (^O B):
+As C is a block-oriented language all blocks are indented
+equal. The depth of the intention depends on the degree of
+the blocking-depth.
+
+
+.SH The project-file
+
+The project-file allows to compile and create programmes
+containing more than on module. It is created from the menu
+\fIProject/Options\fP (see also Project-Options) or directly
+with an editor. The syntax corresponds to that of a
+\fIMakefile\fP (for version 1.1.0 and above only).
+In a project-file only \fIdefinitions of variables\fP and
+\fIinstall-targets\fP are recognized. The definition of
+variables is used like this:
+.EX
+name = string
+.EE
+The number of variables is not limited. They are accessed by
+writing $(name). If a variable is named like an environment
+variable than this environment variable is used. If a
+variable is not defined an empty string is inserted.
+
+The following variables are predefined:
+
+.IP "\fBFILES\fP"
+The names of modules being compiled and linked together
+to create the executable file.
+
+.IP "\fBCMP\fP"
+Compiler-Path
+
+.IP "\fBCMPFLAGS\fP"
+Compiler-Options
+
+.IP "\fBCMPSWTCH\fP"
+How are mistakes interpreted? ('\fIGNU\fP'(Default)/'\fIother\fP')
+
+.IP "\fBLDFLAGS\fP"
+Loader-Options
+
+.IP "\fBEXENAME\fP"
+The name of the Executables (Default: a.out)
+
+.IP "\fBLIBNAME\fP"
+The filename used for a library. This library will hold
+all object-files belonging to the project. This library
+is used automaticly for linking.
+.EE
+
+A makefile can be transformed to a project-file very simple
+by adding the following lines to it (C-code):
+.EX
+FILES=$(CFILES)
+CMP=$(CC)
+LDFLAGS=$(LIBFLAGS)
+EXENAME='Targetname'
+.EE
+How \fICompile\fP and \fIMake\fP work:
+
+The files are translated in the order given in the FILES-
+variable. If a source has changed after the last translation
+then it is translated again else the next source is taken.
+An error occurring while making stops the work and is
+displayed in the \fIMessage-Window\fP.
+
+If no error occurs then all object-files are linked
+together to an executable named $(EXENAME).
+
+The project-file can contain an '\fIinstall\fP'-target. The
+first line of this target is
+.EX
+install: dependencies
+.EE
+The dependencies are ignored because they have to be entered
+into the FILES-variable. All following lines starting with
+<TAB> are interpreted as UNIX-commands and are executed.
+These line may contain variables defined above:
+.EX
+<TAB> Command1
+<TAB> Command2
+.EE
+Command can be every UNIX-command (only 'cd' is not
+executed). The 'install'-target is started from the menu
+\fIRun/Install\fP or \fIAlt-L\fP (see \fIRun-Menu\fP).
+
+
+.SH The Message-String:
+
+The \fIMessage-String\fP defines how warnings and error-messages
+produced by a compilation should be interpreted if the
+\fICompiler-Style\fP '\fIOther\fP' was selected. It has to be
+changed for each compiler and work like this.
+
+'\fI*\fP' matches all characters, '\fI?\fP' matches exactly one
+character, '\fI[a-z]\fP' matches one character in the range of
+"a..z". (This was described in the section \fIFile-Manager\fP.)
+
+.IP "\fB${FILE}\fP"
+is like '*' but the characters are stored as name
+of the file containing the error. 
+.IP "\fB${LINE[+-N]}\fP"
+is like '*' but the characters are stored as
+line-number containing the error. An integer N can be
+added/subtracted to the line-number.
+.EE
+The message-string has to contain both \fI${FILE}\fP and
+\fI${LINE}\fP. If a line of output can be interpreted so that it
+contains a valid filename and a valid line number it is used
+as error-output.
+
+Also the column number can be used to interpret an error-
+containing line.
+.IP "\fB${COLUMN[+-N]}\fP"
+With ${COLUMN} being used as number.
+.IP "\fB${COLUMN=BEFORE[+-N]}\fP"
+The string ${COLUMN} is the expression to search for and the column
+is Before the string found.
+.IP "\fB${COLUMN=AFTER[+-N]}\fP"
+The string ${COLUMN} is the expression to search for and the column
+is after the string found.
+.EE
+An integer N can be added/subtracted to the column-number.
+
+If a message is written in more than one row (e.g. Sun-
+Pascal: pc) the message-string must contain CRs (^M) to
+divide the string into different rows.
+\fI${COLUMN=PREVIOUS?STR[+-N]}\fP is compared against the
+\fI${CMPSTR}\fP-string containing a string to compare with.
+
+.IP "\fBWarnings:\fP"
+A warning is detected by comparison with a string STR like
+this: \fI${?N:STR}\fP - N can be a number or a '*'-character. If N
+is a number then N is then number of the column where the
+warning begins. Otherwise if N is '*' then STR can begin at
+every position in the text. More than one warning-message
+can be defined.
+.EE
+Some examples:
+.EX
+gcc: ${?*:warning:}${FILE}:${LINE}:* before \\
+       `${COLUMN=BEFORE}'
+
+cc(Sun): ${?*:warning:}"${FILE}", line ${LINE}:* \\
+          at or near * "${COLUMN=AFTER}"
+
+cc(HP): ${?*:warning:}cc: "${FILE}", line ${LINE}:* \\
+          at or near * "${COLUMN=AFTER}"
+
+pc(Sun): ${?0:e}${?0:w}${?0:s}*:*:* * ${FILE}:^M^M* \\
+         ${LINE}  ${CMPTXT}^M*-------${COLUMN=PREVIOUS?^}
+.EE
+
+.SH Syntax-Support:
+
+\fIxwpe\fP supports the syntax of a language by using different
+colors to display \fIkeywords\fP, \fIconstants\fP, \fIpreprocessor-\fP
+\fIcomments\fP, \fIoperators\fP and everything else.
+This support is defined already for the programming
+languages C, C++, FORTRAN and Pascal. More languages can be
+added to the file 
+.EX
+    \fIwe_synt_defs\fP
+.EE
+and the predefined languages can be changed. The languages
+are distinguished by the postfix of the filename.
+The file \fIwe_synt_defs\fP is stored in the directory
+\fI$prefix/lib/wpe\fP ($prefix/bin is the directory containing the 
+xwpe-binary) or in \fI$HOME/.wpe\fP.
+This file must contain the following line for each language:
+.EX
+"string:  The postfix for the filename."
+"integer: Then number of keyword."
+"strings: The keywords."
+"integer: Number of operators with more than one
+          character length."
+"strings: Operators with more than one character
+          length."
+"string:  Operators containing one character."
+"string:  Begin of comment"
+"string:  End of comment"
+"string:  Begin of comment reaching til the end
+          of line."
+"string:  Characters used for comments depending on the
+          column."
+"string:  Special single characters."
+"integer: Column for comments (-1 for none)."
+"integer: Column for continuing line (-1 for none)"
+"Integer: Column for comment till the end of line (-1
+          for none)"
+.EE
+Strings and integers are separated by blanks or CRs. The
+strings used for single character operators and for column
+depending comments must not contain blanks. All strings used
+for comments can contain NULL to indicate that there is no
+such comment. An integer can be zero if there is no keyword
+or multiple character operator. The keywords and operators
+with more than one character have to be alphabeticaly sorted
+(uppercase before lowercase characters). The string for special
+single characters contains the following fields:
+.EX
+Character for string-constants
+Character for character-constants
+Character for preprocessor-commands
+Character for quoting the next character
+Character for next line is continuing line
+          (if it is the last character in the line)
+Character (not defined)
+Character for next line is continuing line
+          (at each column of the line)
+Character (if not empty: the language is not
+           case sensitive)
+.EE
+If one character is not defined (e.g. missing) a blank is
+inserted at the corresponding position.
+
+An example:
+
+.EX
+ .c
+ 33
+ NULL auto break case char const continue default do
+ double else enum extern float for goto if int long
+ register return short signed sizeof static struct
+ switch typedef union unsigned void volatile while
+ 0
+ ()[]{}<>+-/*%=|&!.?:,; /* */ NULL NULL "'#\ -1 -1 1000
+
+ .f
+ 64
+ ACCESS ASSIGN BACKSPACE BLANK BLOCKDATA CALL CHARACTER
+ CLOSE COMMON COMPLEX CONTINUE DATA DIMENSION DIRECT DO
+ DOUBLE PRECISION ELSE END ENDFILE ENTRY EQUIVALENCE ERR
+ EXIST EXTERNAL FILE FMT FORM FORMAT FORMATTED FUNCTION
+ GOTO IF IMPLICIT INQUIRE INTEGER INTRINSIC IOSTAT
+ LOGICAL NAME NAMED NEXTREC NUMBER OPEN OPENED
+ PARAMETER PAUSE PRINT PROGRAM READ REAL REC RECL
+ RETURN REWIND SAVE SEQUENTIAL STATUS STOP SUBROUTINE
+ TO UNFORMATED UNIT WRITE
+ 13
+ .AND. .EQ. .EQV. .FALSE. .GE. .GT. .LE. .LT. .NE.
+ .NEQV. .NOT. .OR. .TRUE.
+ ()+-/*=$.:, NULL NULL ! C* '      1  0 5 72
+.EE
+
+
+
+.SH Automatic Indentation
+
+The behavior of the auto-intention can be selected in the
+\fIEditor-Options\fP-menu.
+The following keys are defined:
+
+.IP "\fB<Return>\fP"
+The next (new) line is indented to the beginning
+of the previous line.
+
+.IP "\fB<Tab>\fP"
+If <Tab> is entered in front of the first
+visible character the whole line is indented like
+the previous one. If the cursor is placed behind
+this column then the line is indented N
+characters more than the previous. N is the
+number entered for the Tabstops in the menu
+editor-options. If the cursor is placed behind
+this position or between visible characters a
+<Tab> is inserted.
+
+.IP "\fB<Backspace>\fP"
+If entered in front of the first visible
+character of a line the line is indented like the
+last line that started in front of this cursor-
+position.
+
+.EE
+
+.SH Hints for installation
+
+The \fIXWindow Programming Environment\fP is set of programmes
+compatible to System V. To use the plain UNIX-part of it the
+\fICurses-Library\fP and the \fITerminfo\fP-terminal capability
+information are required. To install xwpe on a system not 
+having this Terminfo the preprocessor-variable \fITERMCAP\fP can be
+used to access the termcap-information instead. On systems like
+Sun Os 4, that contain System V extensions in additional
+directories, these directories must be added to the Include-
+and Library-path.
+
+To use xwpe together with XWindow \fIX11R3\fP or above is needed.
+The Path has to be added/changed in the Makefile.
+The Alt-key is interpreted as mod4 (like Sun). To set this
+key \fIxmodmap -e "add mod4 = Alt_L"\fP may be necessary.
+To use the help for functions '\fIFunction-Index\fP' it is
+necessary to set the environment variable \fIMANPATH\fP correct.
+
+If more languages than C, C++, FORTRAN and Pascal should be
+used then the file .wpe_pr_opt has to be edited for
+\fISyntax-Support\fP. The \fImessage-string\fP has to be set for
+each compiler.
+
+Some systems (e.g. S400) require to link some parts of the
+\fInetwork-library\fP to use XWindows.
+.SH "NEW IN VERSION 1.6.x (xwpe 2026)"
+.PP
+UTF\-8 terminal support via SCREENCELL buffer model and ncursesw.
+Terminal resize handling (KEY_RESIZE). Modern autotools build system.
+Compiler integration for gcc, g++, gfortran, fpc, and javac with
+error navigation (Alt\-T/Alt\-V). Debugger backends: gdb (C/C++/Fortran/Pascal)
+and jdb (Java) with pty\-based program output capture (Ctrl\-G P).
+Emacs\-compatible cursor keys (Ctrl\-P/N/F/B/A/E).
+12\-chapter Texinfo manual.
+.SH AUTHORS
+Fred Kruse <fkr@cs.tu\-berlin.de> (original author, 1991\-1997).
+.br
+Dennis Payne <dulsi@identicalsoftware.com> (xwpe\-alpha 1.5.x, 2000\-2006).
+.br
+Juan Manuel Mendez Rey <juan.mendezr@proton.me> (current maintainer, 2026\-).
+.PP
+See the AUTHORS file for the full list of 30+ contributors.
+.SH BUGS
+Report bugs at https://codeberg.org/mendezr/xwpe/issues
+.PP
+For Debian\-specific bugs, use
+.B reportbug xwpe
+or file at https://bugs.debian.org/xwpe
+.SH "SEE ALSO"
+.BR gcc (1),
+.BR g++ (1),
+.BR gfortran (1),
+.BR fpc (1),
+.BR javac (1),
+.BR gdb (1),
+.BR jdb (1),
+.BR ncurses (3NCURSES)
+.PP
+Full documentation: the xwpe Texinfo manual.
+Access via
+.B info xwpe
+or https://codeberg.org/mendezr/xwpe
+.SH HISTORY
+Written by Fred Kruse in 1993 at TU Berlin.
+Maintained by Dennis Payne (2000\-2006).
+Rescued and modernised by Juan Manuel Mendez Rey (2026).
+This manpage was originally written by Fred Kruse in 1994 and
+restored from the 1.4.2 source in 2026.
+.SH LICENSE
+GPL\-2+. See COPYING in the source distribution.
+
