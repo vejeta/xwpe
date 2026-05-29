@@ -1092,10 +1092,8 @@ int e_t_deb_out(FENSTER *f)
 {
  if (!swt_scr || !beg_scr)
   return(e_error("Your terminal don\'t use begin/end cup", 0, f->fb));
- /* Use ncurses API to cleanly leave/re-enter curses mode.
-    endwin() sends rmcup + restores terminal attributes.
-    refresh() sends smcup + repaints everything. */
  endwin();
+ fprintf(stderr, "\r\n--- Press any key to return to editor ---\r\n");
  getchar();
  clearok(stdscr, TRUE);
  refresh();
@@ -1115,25 +1113,23 @@ int e_d_switch_screen(int sw)
 
 int e_t_d_switch_out(int sw)
 {
- int i, j;
  static int save_sw = 32000;
 
  if (save_sw == sw)
   return(0);
  save_sw = sw;
- if (sw && e_d_switch_screen(0))
+ if (sw)
  {
-  term_move(0, 0);
-  e_putp(att_no);
-  for(i = 0; i < MAXSLNS; i++)
-   for (j = 0; j < MAXSCOL; j++)
-    e_d_putchar(' ');
-  term_move(0, 0);
-  term_refresh();
+  /* Switch to normal screen so program output (redirected to the tty
+     by gdb's "run > /dev/pts/N") lands there instead of on the editor.
+     Use endwin() for clean ncurses state management. */
+  endwin();
  }
- else if (!sw)
+ else
  {
-  e_d_switch_screen(1);
+  /* Switch back to alternate screen (editor). clearok forces ncurses
+     to repaint everything since the alternate screen may have been
+     corrupted by program output that arrived before the switch. */
   clearok(stdscr, TRUE);
   e_abs_refr();
   e_refresh();
