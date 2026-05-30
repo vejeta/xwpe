@@ -193,42 +193,38 @@ int e_repaint_desk(FENSTER *f)
 
 /*    write system information   */
 /**
- * e_pr_str_fit - Print a string truncated to fit within a given width.
- * @x:      Screen column to start printing.
- * @y:      Screen row to print on.
+ * e_pr_str_wrap - Print a string with word-wrap across multiple lines.
+ * @x:      Screen column to start printing on each line.
+ * @y:      Screen row of the first line.
  * @str:    The string to display.
- * @maxlen: Maximum number of characters to print.  If the string is
- *          longer, the last 3 visible characters are replaced with
- *          "..." to indicate truncation.
+ * @width:  Maximum characters per line.
  * @col:    Color attribute (FARBE index) for the text.
  *
- * This function wraps e_pr_str() with length-aware truncation.
- * Use it anywhere a string might exceed the bounds of a dialog or
- * popup to prevent visual overflow.
+ * Prints @str starting at (@x, @y).  If the string is longer than
+ * @width, it continues on the next row at column @x.
+ *
+ * Return: Number of rows used (1 if no wrap needed).
  */
-static void e_pr_str_fit(int x, int y, char *str, int maxlen, int col)
+static int e_pr_str_wrap(int x, int y, char *str, int width, int col)
 {
  char buf[512];
  int len = strlen(str);
+ int rows = 0;
+ int pos = 0;
 
- if (maxlen <= 0) return;
- if (maxlen > 511) maxlen = 511;
- if (len <= maxlen)
+ if (width <= 0) return(0);
+ while (pos < len)
  {
-  e_pr_str(x, y, str, col, 0, 0, 0, 0);
+  int chunk = len - pos;
+  if (chunk > width) chunk = width;
+  if (chunk > 511) chunk = 511;
+  strncpy(buf, str + pos, chunk);
+  buf[chunk] = '\0';
+  e_pr_str(x, y + rows, buf, col, 0, 0, 0, 0);
+  pos += chunk;
+  rows++;
  }
- else
- {
-  strncpy(buf, str, maxlen);
-  buf[maxlen] = '\0';
-  if (maxlen >= 4)
-  {
-   buf[maxlen-1] = '.';
-   buf[maxlen-2] = '.';
-   buf[maxlen-3] = '.';
-  }
-  e_pr_str(x, y, buf, col, 0, 0, 0, 0);
- }
+ return(rows > 0 ? rows : 1);
 }
 
 /**
@@ -241,8 +237,8 @@ static void e_pr_str_fit(int x, int y, char *str, int maxlen, int col)
  *   - Current Directory: the editor's working directory
  *   - Number of Files:   count of open editor buffers
  *
- * The dialog width adapts to the terminal size (up to 70% of screen width).
- * Long paths are truncated with "..." via e_pr_str_fit().
+ * The dialog adapts to the terminal: width uses most of the screen,
+ * and height grows when long paths wrap to multiple lines.
  *
  * Return: 0 on success, WPE_ESC on memory error.
  */
@@ -250,38 +246,57 @@ int e_sys_info(FENSTER *f)
 {
  PIC *pic = NULL;
  char tmp[512];
- int xa = 10, ya = 5, xe, ye = ya + 8;
- int avail;
+ char *filepath;
+ int xa = 4, ya = 3, xe, ye;
+ int avail, file_rows, dir_rows, row;
 
- /* Dialog width adapts to screen, max 70% of screen width */
- xe = MAXSCOL - 10;
- if (xe > xa + 70) xe = xa + 70;
+ /* Use most of the screen width */
+ xe = MAXSCOL - 4;
  if (xe < xa + 40) xe = xa + 40;
- avail = xe - xa - 24;  /* space for content after label */
+ avail = xe - xa - 24;  /* chars available for content values */
+
+ /* Determine what to show for Current File */
+ if (strcmp(f->datnam, "Clipboard") != 0 &&
+     strcmp(f->dirct, f->ed->dirct) != 0)
+ {
+  snprintf(tmp, sizeof(tmp), "%s%s%s", f->dirct, DIRS, f->datnam);
+  filepath = tmp;
+ }
+ else
+  filepath = f->datnam;
+
+ /* Calculate rows needed for wrapping */
+ file_rows = ((int)strlen(filepath) + avail - 1) / avail;
+ if (file_rows < 1) file_rows = 1;
+ dir_rows = ((int)strlen(f->ed->dirct) + avail - 1) / avail;
+ if (dir_rows < 1) dir_rows = 1;
+
+ /* Dialog height: 2 margin + file label + file rows + gap + dir label +
+    dir rows + gap + numfiles row + 2 margin */
+ ye = ya + 4 + file_rows + dir_rows + 2;
+ if (ye > MAXSLNS - 2) ye = MAXSLNS - 2;
 
  fk_cursor(0);
  pic = e_std_kst(xa, ya, xe, ye, " Information ", 1, f->fb->nr.fb, f->fb->nt.fb, f->fb->ne.fb);
  if (pic == NULL) {  e_error(e_msg[ERR_LOWMEM], 1, f->fb); return(WPE_ESC);  }
 
- e_pr_str(xa+3, ya+2, " Current File: ", f->fb->nt.fb, 0, 0, 0, 0);
- e_pr_str(xa+3, ya+4, " Current Directory: ", f->fb->nt.fb, 0, 0, 0, 0);
- e_pr_str(xa+3, ya+6, " Number of Files: ", f->fb->nt.fb, 0, 0, 0, 0);
-
+ row = ya + 2;
+ e_pr_str(xa+3, row, " Current File: ", f->fb->nt.fb, 0, 0, 0, 0);
  if (strcmp(f->datnam, "Clipboard") != 0)
- {
-  if (strcmp(f->dirct, f->ed->dirct) == 0)
-   e_pr_str_fit(xa+23, ya+2, f->datnam, avail, f->fb->nt.fb);
-  else
-  {
-   snprintf(tmp, sizeof(tmp), "%s%s%s", f->dirct, DIRS, f->datnam);
-   e_pr_str_fit(xa+23, ya+2, tmp, avail, f->fb->nt.fb);
-  }
- }
- e_pr_str_fit(xa+23, ya+4, f->ed->dirct, avail, f->fb->nt.fb);
+  row += e_pr_str_wrap(xa+23, row, filepath, avail, f->fb->nt.fb);
+ else
+  row++;
+ row++;  /* gap */
 
- e_pr_str(xa+23, ya+6,
+ e_pr_str(xa+3, row, " Current Directory: ", f->fb->nt.fb, 0, 0, 0, 0);
+ row += e_pr_str_wrap(xa+23, row, f->ed->dirct, avail, f->fb->nt.fb);
+ row++;  /* gap */
+
+ e_pr_str(xa+3, row, " Number of Files: ", f->fb->nt.fb, 0, 0, 0, 0);
+ e_pr_str(xa+23, row,
    WpeNumberToString(f->ed->mxedt, WpeNumberOfPlaces(f->ed->mxedt), tmp),
    f->fb->nt.fb, 0, 0, 0, 0);
+
 #if  MOUSE
  while(e_mshit() != 0);
  e_getch();
