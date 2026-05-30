@@ -127,6 +127,7 @@ See CHANGELOG for full details.
 | gfortran | Fortran  | ok | ok | `.f` `.f90` `.f95` `.f03` `.f08` |
 | fpc      | Pascal   | ok | ok | `.p` `.pas` `.pp` |
 | javac    | Java     | ok | ok | `.java` |
+| python3  | Python   | ok | ok | `.py` |
 
 ### Should work (GNU `file:line:column:` format)
 
@@ -190,6 +191,34 @@ registered with `install-info`. It is also available as HTML:
 make -C docs info    # build xwpe.info (built automatically by make)
 make -C docs html    # build HTML version in docs/xwpe.html/
 ```
+
+## Syntax highlighting
+
+xwpe ships with syntax highlighting for C, C++, Fortran, Pascal, Java,
+and Python in the `syntax_def` file. After building, copy it to your
+personal config directory:
+
+```sh
+mkdir -p ~/.xwpe
+cp syntax_def ~/.xwpe/syntax_def
+```
+
+Or install system-wide with `sudo make install`.
+
+### Adding new languages
+
+The `syntax_def` file is a plain text file. Each language block contains:
+
+1. File extension (e.g. `.py`)
+2. Number of keywords
+3. Keywords (space-separated)
+4. Number of multi-character operators
+5. Multi-character operators
+6. Single-character operators, comment delimiters, and special chars
+
+See `docs/chapters/configuration.texi` for the full format documentation.
+Example: the Python block in `syntax_def` defines 35 keywords, `#` as
+line comment, and `"` / `'` as string delimiters.
 
 ## Known limitations
 
@@ -279,10 +308,12 @@ sudo apt install gcc g++              # C/C++
 sudo apt install gfortran             # Fortran
 sudo apt install fpc                  # Free Pascal
 sudo apt install default-jdk          # Java (javac + jdb)
+sudo apt install python3              # Python (py_compile + pdb)
 
 # Debuggers
 sudo apt install gdb                  # C/C++/Fortran/Pascal debugging
 # jdb is included with default-jdk    # Java debugging (built-in to xwpe)
+# pdb is included with python3        # Python debugging (built-in to xwpe)
 ```
 
 xwpe auto-detects the compiler by file extension and auto-selects

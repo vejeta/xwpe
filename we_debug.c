@@ -2864,6 +2864,41 @@ int e_read_output(FENSTER *f)
    ;
   e_d_pty_drain();
  }
+ /* pdb: parse "> file(line)func()" from the buffered output lines */
+ if (e_deb_type == 5)
+ {
+  int _found = 0;
+  for (i = 0; i < SVLINES && !_found; i++)
+  {
+   char *_gt = strstr(e_d_sp[i], "> ");
+   if (_gt)
+   {
+    char *_op = strchr(_gt + 2, '(');
+    if (_op)
+    {
+     int _line = atoi(_op + 1);
+     char _file[128];
+     int _flen = _op - (_gt + 2);
+     if (_flen > 0 && _flen < 127 && _line > 0)
+     {
+      strncpy(_file, _gt + 2, _flen);
+      _file[_flen] = '\0';
+      e_d_goto_break(_file, _line, f);
+      _found = 1;
+     }
+    }
+   }
+   /* Check for program exit */
+   if (strstr(e_d_sp[i], "The program finished") ||
+       strstr(e_d_sp[i], "--Return--"))
+   {
+    e_error("Program exited. Debugger stopped.", 0, f->fb);
+    return(e_d_quit(f));
+   }
+  }
+  if (_found) return(0);
+  /* Fall through to gdb checks as fallback */
+ }
  if ((i = e_d_fst_check(f)) == -1) return(-1);
  if (i < 0 && (i = e_d_snd_check(f)) == -1) return(-1);
  if (i < 0 && (i = e_d_trd_check(f)) == -1) return(-1);
