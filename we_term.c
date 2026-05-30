@@ -478,17 +478,18 @@ int e_t_initscr()
  intrflush(stdscr,FALSE);
  keypad(stdscr,TRUE);
 #if MOUSE
- /* Enable ncurses mouse for terminal emulators (xterm protocol).
-    Skip when GPM is active -- mousemask() interferes with GPM.
-    On plain Linux console without GPM, mousemask() returns 0
-    (no xterm protocol), so wpe_ncurses_mouse_active stays 0. */
- if (fk_mouse == fk_t_mouse)  /* GPM not active */
- {
-  mmask_t old;
-  wpe_ncurses_mouse_active =
-    (mousemask(ALL_MOUSE_EVENTS, &old) != 0);
-  mouseinterval(0);
+ /* Always enable ncurses mouse events.  On terminal emulators this
+    activates the xterm mouse protocol; on Linux console with GPM,
+    ncurses uses its built-in GPM integration to deliver KEY_MOUSE.
+    wpe_ncurses_mouse_active controls whether fk_t_mouse polls for
+    mouse events -- it must be OFF when GPM handles mouse (GPM uses
+    its own gpm_handler callback, not fk_t_mouse). */
+ { mmask_t old;
+   mousemask(ALL_MOUSE_EVENTS, &old);
+   if (fk_mouse == fk_t_mouse)  /* GPM not active */
+    wpe_ncurses_mouse_active = 1;
  }
+ mouseinterval(0);
 #endif
 #endif
  if (has_colors())
