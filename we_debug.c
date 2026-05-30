@@ -2278,10 +2278,6 @@ int e_deb_run(FENSTER *f)
  e_d_delbreak(f);
  e_d_switch_out(1);
  jdb_trace("e_deb_run: sending '%s' (prsw=%d)\n", eing, prsw);
- { FILE *dbg = fopen("/tmp/xwpe_pdb_debug.log", "a");
-   if (dbg) { fprintf(dbg, "e_deb_run: sending '%s' prsw=%d e_deb_type=%d e_d_swtch=%d\n",
-     eing, prsw, e_deb_type, e_d_swtch); fflush(dbg); fclose(dbg); }
- }
  write(rfildes[1], eing, strlen(eing));
  if ((e_deb_type == 4 || e_deb_type == 5) && !prsw)
  {
@@ -2535,7 +2531,7 @@ int e_d_step_next(FENSTER *f, int sw)
      if (_line > 0)
      {
       SCHIRM *_s = f->ed->f[f->ed->mxedt]->s;
-      _s->da.y = _line;
+      _s->da.y = _line - 1;  /* pdb lines are 1-based, da.y is 0-based */
       e_d_swtch = 3;
       e_cursor(f, 1);
       e_schirm(f, 1);
@@ -2888,13 +2884,39 @@ int e_read_output(FENSTER *f)
  if (e_deb_type == 5)
  {
   int _found = 0;
-  { FILE *dbg = fopen("/tmp/xwpe_pdb_debug.log", "a");
-    if (dbg) {
-     fprintf(dbg, "e_read_output pdb: SVLINES=%d\n", SVLINES);
-     for (i = 0; i < SVLINES; i++)
-      fprintf(dbg, "  sp[%d]='%s'\n", i, (char*)e_d_sp[i]);
-     fflush(dbg); fclose(dbg);
+  /* Check for program exit FIRST -- pdb restarts the program
+     automatically after it finishes, so "The program finished" appears
+     before the new "> file(line)" line. We must catch exit before
+     navigating to the restart position. */
+  for (i = 0; i < SVLINES; i++)
+  {
+   if (strstr(e_d_sp[i], "The program finished"))
+   {
+    /* Capture program output from the buffer before quitting */
+    int _j;
+    for (_j = 0; _j < SVLINES; _j++)
+    {
+     char *_s = e_d_sp[_j];
+     if (_s[0] && !strstr(_s, "> ") && !strstr(_s, "-> ") &&
+         !strstr(_s, "(Pdb)") && !strstr(_s, "The program"))
+     {
+      int _olen = strlen(_s);
+      while (_olen > 0 && (_s[_olen-1] == '\n' || _s[_olen-1] == '\r')) _olen--;
+      if (_olen > 0)
+      {
+       if (e_d_prog_output_len + _olen + 1 > e_d_prog_output_cap)
+       { e_d_prog_output_cap = (e_d_prog_output_len + _olen + 1024) * 2;
+         e_d_prog_output = realloc(e_d_prog_output, e_d_prog_output_cap);
+       }
+       memcpy(e_d_prog_output + e_d_prog_output_len, _s, _olen);
+       e_d_prog_output_len += _olen;
+       e_d_prog_output[e_d_prog_output_len++] = '\n';
+      }
+     }
     }
+    e_error("End of code. Ctrl-G P for output.", 0, f->fb);
+    return(e_d_quit(f));
+   }
   }
   for (i = 0; i < SVLINES && !_found; i++)
   {
@@ -2912,16 +2934,10 @@ int e_read_output(FENSTER *f)
       strncpy(_file, _gt + 2, _flen);
       _file[_flen] = '\0';
       e_d_goto_break(_file, _line, f);
+      e_d_swtch = 3;
       _found = 1;
      }
     }
-   }
-   /* Check for program exit */
-   if (strstr(e_d_sp[i], "The program finished") ||
-       strstr(e_d_sp[i], "--Return--"))
-   {
-    e_error("Program exited. Debugger stopped.", 0, f->fb);
-    return(e_d_quit(f));
    }
   }
   if (_found) return(0);
