@@ -244,6 +244,30 @@ Optional features:
 
 Run the editor in terminal mode with `wpe`, in X11 mode with `xwpe`.
 
+### Console tips (Linux tty without X11)
+
+If you run `wpe` on a Linux console (Ctrl+Alt+F2), modern HiDPI
+framebuffers make bitmap fonts look tiny. For the classic 90s look:
+
+```sh
+# Install Terminus console font
+sudo apt install console-terminus
+
+# Use the large variant (readable on HiDPI)
+setfont Lat15-Terminus32x16
+```
+
+For a permanent setup, edit `/etc/default/console-setup`:
+
+```
+FONTFACE="Terminus"
+FONTSIZE="32x16"
+```
+
+Mouse works on the console via GPM (`sudo apt install gpm`).
+In terminal emulators (xterm, kitty, gnome-terminal, tmux), mouse
+works natively without GPM.
+
 ## External programs (optional)
 
 xwpe integrates with external compilers and debuggers. Install the
