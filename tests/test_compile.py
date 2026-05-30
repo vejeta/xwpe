@@ -212,6 +212,36 @@ class TestF9CompileSuccess:
             f"Build artifacts not created in {compile_dir}: {os.listdir(compile_dir)}"
 
 
+    def test_cursor_returns_to_source(self, compile_dir, has_gcc):
+        """After successful F9, cursor should be in source file, not Messages."""
+        if not has_gcc:
+            pytest.skip("gcc not installed")
+        lines = run_wpe_in_dir(
+            compile_dir, 'hello.c',
+            cols=80, rows=30, wait=1.5,
+            keys=[
+                KEY_F9,
+                ('wait', 3.0),
+                ' ',                # Dismiss popup
+                ('wait', 0.5),
+            ]
+        )
+        # The active window title should show "hello.c", not "Messages"
+        # Title bar is typically on line 2 (row index 2) of the active window
+        content = '\n'.join(lines)
+        # The title bar of the active (topmost) window should contain hello.c
+        # Messages window title would show "Messages"
+        # Check that hello.c appears in the title area and source content is visible
+        has_source = 'hello.c' in content and ('printf' in content or '#include' in content)
+        # If Messages is active, its title would be prominent
+        messages_active = False
+        for line in lines[1:5]:
+            if 'Messages' in line and 'hello.c' not in line:
+                messages_active = True
+        assert has_source and not messages_active, \
+            f"Cursor stayed on Messages instead of returning to source: {content[:400]}"
+
+
 class TestF9CompileErrors:
     """Test F9 compile cycle with a program that has errors."""
 

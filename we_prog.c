@@ -561,8 +561,17 @@ int e_p_exec(int file, FENSTER *f, PIC *pic)
 
  print_to_end_of_buffer(b, "Success", b->mx.x);
 
- e_cursor(f, 1);
- e_schirm(f, 1);
+ /* Switch back to the source file instead of staying on Messages */
+ for (i = cn->mxedt; i > 0; i--)
+  if (strcmp(cn->f[i]->datnam, "Messages"))
+   break;
+ if (i > 0 && i != cn->mxedt)
+  e_switch_window(cn->edt[i], cn->f[cn->mxedt]);
+ else
+ {
+  e_cursor(f, 1);
+  e_schirm(f, 1);
+ }
  e_refresh();
  return(0);
 }
