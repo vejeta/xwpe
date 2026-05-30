@@ -1995,9 +1995,9 @@ int e_exec_deb(FENSTER *f, char *prog)
    fprintf(stderr, e_p_msg[ERR_PIPEEXEC], efildes[1]);
    exit(1);
   }
-  /* Interpreted debuggers (jdb, pdb) do not handle non-blocking
-     stdout/stderr.  Only set non-blocking for native debuggers. */
-  if (e_deb_type != 4 && e_deb_type != 5)
+  /* jdb does not handle non-blocking stdout/stderr.
+     pdb works fine with non-blocking (needed for prompt detection). */
+  if (e_deb_type != 4)
   {
    int _fl;
    _fl = fcntl(1, F_GETFL, 0 );
@@ -2102,7 +2102,16 @@ int e_start_debug(FENSTER *f)
    strcpy(estr, f->datnam);
    if (e_deb_type == 5)
    {
-    /* pdb: debug the .py source file directly */
+    /* pdb: debug the .py source file with full path.
+       e_d_file has the basename; we need dirct + datnam for the
+       full path so pdb can find it from any working directory. */
+    int _fi;
+    for (_fi = cn->mxedt; _fi > 0; _fi--)
+     if (e_check_c_file(cn->f[_fi]->datnam)) break;
+    if (_fi > 0)
+     sprintf(estr, "%s/%s", cn->f[_fi]->dirct, cn->f[_fi]->datnam);
+    else
+     strcpy(estr, e_d_file);
    }
    else
    {
@@ -2144,6 +2153,13 @@ int e_run_debug(FENSTER *f)
   fcntl( wfildes[0], F_SETFL, kbdflgs | O_NONBLOCK);
 
   jdb_trace("e_run_debug: reading banner...\n");
+  /* pdb (and other interpreted debuggers) need time to start before
+     their banner is available on stdout.  Wait for data with poll(). */
+  if (e_deb_type == 5)
+  {
+   struct pollfd _pfd = { .fd = wfildes[0], .events = POLLIN };
+   poll(&_pfd, 1, 3000);  /* wait up to 3s for pdb to write banner */
+  }
   if (e_d_dum_read() == -1) return(-1);
   jdb_trace("e_run_debug: banner read OK\n");
   /* Disable gdb's confirmation prompts ("Start it from the beginning?",
@@ -2262,6 +2278,10 @@ int e_deb_run(FENSTER *f)
  e_d_delbreak(f);
  e_d_switch_out(1);
  jdb_trace("e_deb_run: sending '%s' (prsw=%d)\n", eing, prsw);
+ { FILE *dbg = fopen("/tmp/xwpe_pdb_debug.log", "a");
+   if (dbg) { fprintf(dbg, "e_deb_run: sending '%s' prsw=%d e_deb_type=%d e_d_swtch=%d\n",
+     eing, prsw, e_deb_type, e_d_swtch); fflush(dbg); fclose(dbg); }
+ }
  write(rfildes[1], eing, strlen(eing));
  if ((e_deb_type == 4 || e_deb_type == 5) && !prsw)
  {
@@ -2868,6 +2888,14 @@ int e_read_output(FENSTER *f)
  if (e_deb_type == 5)
  {
   int _found = 0;
+  { FILE *dbg = fopen("/tmp/xwpe_pdb_debug.log", "a");
+    if (dbg) {
+     fprintf(dbg, "e_read_output pdb: SVLINES=%d\n", SVLINES);
+     for (i = 0; i < SVLINES; i++)
+      fprintf(dbg, "  sp[%d]='%s'\n", i, (char*)e_d_sp[i]);
+     fflush(dbg); fclose(dbg);
+    }
+  }
   for (i = 0; i < SVLINES && !_found; i++)
   {
    char *_gt = strstr(e_d_sp[i], "> ");
