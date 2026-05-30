@@ -2119,10 +2119,15 @@ int e_add_undo(int sw, BUFFER *b, int x, int y, int n)
   for (i = 0; i < n; i++)
    str[i] = b->bf[y].s[x+i];
   next->u.pt = str;
-
-/* !!! obsolete !!!
-  next->a.y = b->cn->fd.rn;
-*/
+  /* For type 's' (search/replace undo), a.y must store the length
+     of the OTHER string -- the one that will be re-inserted when this
+     undo entry is later undone/redone.  Kruse's original code read
+     this from b->f->fd.rn (the global replace-string length), but
+     that value can change between operations, causing Redo to use
+     a wrong length and crash with SIGSEGV.
+     Fix: during undo/redo (e_redo_sw != 0), the caller in e_make_rudo
+     passes the correct length.  We store it via a global since
+     e_add_undo's signature doesn't have a parameter for it. */
   next->a.y = b->f->fd.rn;
 
  }
@@ -2215,6 +2220,14 @@ int e_make_rudo(FENSTER *f, int sw)
  {
   if (ud->type == 's')
   {
+   /* Set b->f->fd.rn to the length of the string being re-inserted
+      (ud->a.x).  e_add_undo reads b->f->fd.rn to store as a.y in
+      the reverse entry, so the next undo/redo knows the correct
+      length of the OTHER string.  Kruse's original code assumed
+      b->f->fd.rn was always current, but it was never synced from
+      f->ed->fd.rn (the global search/replace state), causing a.y
+      to contain uninitialized garbage (e.g. 189 instead of 5). */
+   b->f->fd.rn = ud->a.x;
    e_add_undo('s', b, ud->b.x, ud->b.y, ud->a.y);
    e_undo_sw = 1;
    e_del_nchar(b, s, ud->b.x, ud->b.y, ud->a.y);

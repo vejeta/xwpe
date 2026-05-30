@@ -1184,6 +1184,7 @@ int e_replace(FENSTER *f)
    if (c == 'Y')
    {
     rep++;
+    b->f->fd.rn = fd->rn;  /* sync so e_add_undo reads correct replace length */
     e_add_undo('s', b, s->fa.x, b->b.y, fd->sn);
     e_undo_sw = 1;
     e_del_nchar(b, s, s->fa.x, b->b.y, fd->sn);
