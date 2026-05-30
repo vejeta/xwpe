@@ -195,8 +195,28 @@ int e_repaint_desk(FENSTER *f)
 int e_sys_info(FENSTER *f)
 {
  PIC *pic = NULL;
- char tmp[80];
- int xa = 10, ya = 5, xe = xa + 60, ye = ya + 8;
+ char tmp[256];
+ int maxw, xa = 10, ya = 5, xe = xa + 60, ye = ya + 8;
+
+ /* Compute the widest string to display and expand the dialog if needed */
+ maxw = 20;  /* minimum: label width */
+ if (strcmp(f->datnam, "Clipboard") != 0)
+ {
+  if (strcmp(f->dirct, f->ed->dirct) == 0)
+  {
+   if ((int)strlen(f->datnam) > maxw) maxw = strlen(f->datnam);
+  }
+  else
+  {
+   int pathlen = strlen(f->dirct) + 1 + strlen(f->datnam);
+   if (pathlen > maxw) maxw = pathlen;
+  }
+ }
+ if ((int)strlen(f->ed->dirct) > maxw) maxw = strlen(f->ed->dirct);
+ /* Dialog width: label (20) + content + margins (6) */
+ xe = xa + maxw + 26;
+ if (xe > MAXSCOL - 2) xe = MAXSCOL - 2;
+ if (xe < xa + 40) xe = xa + 40;
 
  fk_cursor(0);
  pic = e_std_kst(xa, ya, xe, ye, " Information ", 1, f->fb->nr.fb, f->fb->nt.fb, f->fb->ne.fb);
@@ -204,17 +224,23 @@ int e_sys_info(FENSTER *f)
  e_pr_str(xa+3, ya+2, " Current File: ", f->fb->nt.fb, 0, 0, 0, 0);
  e_pr_str(xa+3, ya+4, " Current Directory: ", f->fb->nt.fb, 0, 0, 0, 0);
  e_pr_str(xa+3, ya+6, " Number of Files: ", f->fb->nt.fb, 0, 0, 0, 0);
+ { int avail = xe - xa - 24;  /* available chars for content */
  if(strcmp(f->datnam, "Clipboard") != 0)
  if(strcmp(f->dirct, f->ed->dirct) == 0)
-  e_pr_str(xa+23, ya+2, f->datnam, f->fb->nt.fb, 0, 0, 0, 0);
- else
  {
-  strcpy(tmp, f->dirct);
-  strcat(tmp, DIRS);
-  strcat(tmp, f->datnam);
+  strncpy(tmp, f->datnam, avail);
+  tmp[avail] = '\0';
   e_pr_str(xa+23, ya+2, tmp, f->fb->nt.fb, 0, 0, 0, 0);
  }
- e_pr_str(xa+23, ya+4, f->ed->dirct, f->fb->nt.fb, 0, 0, 0, 0);
+ else
+ {
+  snprintf(tmp, avail + 1, "%s%s%s", f->dirct, DIRS, f->datnam);
+  e_pr_str(xa+23, ya+2, tmp, f->fb->nt.fb, 0, 0, 0, 0);
+ }
+ strncpy(tmp, f->ed->dirct, avail);
+ tmp[avail] = '\0';
+ e_pr_str(xa+23, ya+4, tmp, f->fb->nt.fb, 0, 0, 0, 0);
+ }
  e_pr_str(xa+23, ya+6,
    WpeNumberToString(f->ed->mxedt, WpeNumberOfPlaces(f->ed->mxedt), tmp),
    f->fb->nt.fb, 0, 0, 0, 0);
