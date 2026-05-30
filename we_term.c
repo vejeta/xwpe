@@ -475,6 +475,14 @@ int e_t_initscr()
  nonl();
  intrflush(stdscr,FALSE);
  keypad(stdscr,TRUE);
+#if MOUSE
+ /* Enable ncurses mouse support for terminal emulators (xterm protocol).
+    This works in any terminal that supports xterm mouse reporting
+    (xterm, gnome-terminal, kitty, tmux, etc.) -- no GPM needed. */
+ mousemask(ALL_MOUSE_EVENTS | REPORT_MOUSE_POSITION, NULL);
+ /* Disable click-interval delay so clicks are reported immediately */
+ mouseinterval(0);
+#endif
 #endif
  if (has_colors())
  {
@@ -818,6 +826,24 @@ int e_t_getch()
     break;
    }
    case KEY_BACKSPACE:  c = WPE_DC; break;
+#if MOUSE
+   case KEY_MOUSE:
+   {
+    MEVENT mev;
+    if (getmouse(&mev) == OK)
+    {
+     extern struct mouse e_mouse;
+     e_mouse.x = mev.x;
+     e_mouse.y = mev.y;
+     e_mouse.k = (mev.bstate & (BUTTON1_PRESSED|BUTTON1_CLICKED)) ? 1 :
+                 (mev.bstate & (BUTTON2_PRESSED|BUTTON2_CLICKED)) ? 2 :
+                 (mev.bstate & (BUTTON3_PRESSED|BUTTON3_CLICKED)) ? 4 : 0;
+     return(-1);
+    }
+    c = 0;
+    break;
+   }
+#endif
    case KEY_HELP:  c = HELP; break;
    case KEY_LL:  c = ENDE; break;
    case KEY_F(17):  c = SF1; break;
@@ -1059,6 +1085,49 @@ int fk_t_locate(int x, int y)
 
 int fk_t_mouse(int *g)
 {
+#if MOUSE
+ /* ncurses mouse backend -- used when GPM is not available.
+    The g[] array protocol (from Kruse 1993):
+      g[0]: 1=get state, 2=hide cursor, 3=get position+state
+      g[1]: button state (0=released, non-zero=pressed)
+      g[2]: x * 8
+      g[3]: y * 8 */
+ extern struct mouse e_mouse;
+ MEVENT mev;
+ int timeout_ms = 50;
+ int old_delay;
+
+ if (g[0] == 2)
+  return(0);  /* hide cursor: no-op for ncurses */
+
+ /* Brief non-blocking poll for mouse events */
+ old_delay = ESCDELAY;
+ timeout(timeout_ms);
+ int ch = getch();
+ timeout(-1);  /* restore blocking mode */
+
+ if (ch == KEY_MOUSE && getmouse(&mev) == OK)
+ {
+  g[1] = (mev.bstate & (BUTTON1_PRESSED|BUTTON1_CLICKED)) ? 1 :
+         (mev.bstate & (BUTTON2_PRESSED|BUTTON2_CLICKED)) ? 2 :
+         (mev.bstate & (BUTTON3_PRESSED|BUTTON3_CLICKED)) ? 4 : 0;
+  g[2] = mev.x * 8;
+  g[3] = mev.y * 8;
+  e_mouse.x = mev.x;
+  e_mouse.y = mev.y;
+  e_mouse.k = g[1];
+ }
+ else
+ {
+  if (ch != ERR)
+   ungetch(ch);  /* put non-mouse key back */
+  g[1] = 0;
+  g[2] = e_mouse.x * 8;
+  g[3] = e_mouse.y * 8;
+ }
+#else
+ g[1] = 0;
+#endif
  return(0);
 }
 
