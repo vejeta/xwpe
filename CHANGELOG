@@ -118,6 +118,19 @@ Changes
 * Fixed SIGPIPE crash on debugger exit: when the debugger process
   exited before xwpe sent "quit", write() to the closed pipe
   triggered SIGPIPE. Now ignored in e_d_quit_basic.
+* Fixed cursor staying on Messages window after successful F9 compile.
+  e_p_exec now switches back to the source file window.
+* Java .class extension fix: e_comp/e_p_make now check for .class
+  (not .o) for javac, so the up-to-date test works correctly.
+* Integrated Texinfo manual into help system: help.xwpe_eng updated
+  with info xwpe pointer, Codeberg URLs, missing Debug-Menu entries
+  (Ctrl-G P, Ctrl-G O), jdb in debugger list, rescue maintainer in
+  Credits.
+* 13 automated pyte tests for F9 compile cycle, error navigation,
+  menu open/close, popup cleanup.
+  (Juan Manuel Mendez Rey)
+
+1.6.3 (Mouse, Undo/Redo, UI fixes)
 * Added ncurses mouse support for terminal emulators: mouse clicks,
   menu navigation, text selection, window resize by dragging, and
   scrollbar interaction now work in any terminal that supports the
@@ -130,8 +143,12 @@ Changes
   Mouse now works consistently on Linux console with GPM via
   ncurses' internal integration (same KEY_MOUSE + getmouse() path
   used for terminal emulators).
-* Fixed cursor staying on Messages window after successful F9 compile.
-  e_p_exec now switches back to the source file window.
+* Fixed 33-year-old Redo crash (SIGSEGV) after Undo of search/replace:
+  e_add_undo read the replacement length from b->f->fd.rn (the
+  window's local FIND struct) which was never synced from f->ed->fd.rn
+  (the global search state). Contained heap garbage (e.g. 189 instead
+  of 5), causing buffer overrun and heap corruption on Redo.
+  Reported as amagnasco issues #77 and #83 (2017).
 * Fixed menu bar not redrawn after Ctrl-F9 Run: added clearok() +
   e_repaint_desk() after e_system() to force full terminal repaint.
 * Fixed File Manager panel scroll: Tab into DirTree no longer lands
@@ -139,14 +156,13 @@ Changes
 * Fixed keyboard input theft on Linux console: fk_t_mouse polling
   getch() with timeout stole Tab keystrokes and re-injected them
   via ungetch(), causing duplicate keys in the File Manager.
-* Integrated Texinfo manual into help system: help.xwpe_eng updated
-  with info xwpe pointer, Codeberg URLs, missing Debug-Menu entries
-  (Ctrl-G P, Ctrl-G O), jdb in debugger list, rescue maintainer in
-  Credits.
-* Java .class extension fix: e_comp/e_p_make now check for .class
-  (not .o) for javac, so the up-to-date test works correctly.
-* 33 automated pyte tests: UTF-8 borders, scrollbar, F9 compile
-  cycle, error navigation, menu open/close, popup cleanup.
+* Fixed System Info dialog overflow: long paths now wrap to multiple
+  lines and the dialog grows vertically to fit. Added e_pr_str_wrap
+  and e_pr_text helpers for safe string display in dialogs.
+* Font recommendations documented for terminal emulators, Linux
+  console (setfont), and X11 mode (-fn flag).
+* 33 automated pyte tests (20 existing + 13 new): UTF-8 borders,
+  scrollbar, F9 compile, error navigation, menu open/close.
   (Juan Manuel Mendez Rey)
 
 1.6.1 (Modern autotools build system)
