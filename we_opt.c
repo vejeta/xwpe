@@ -193,6 +193,22 @@ int e_repaint_desk(FENSTER *f)
 
 /*    write system information   */
 /**
+ * e_pr_text - Print a plain string at (x, y) in a single color.
+ * @x:   Screen column.
+ * @y:   Screen row.
+ * @str: The string to display.
+ * @col: Color attribute (FARBE index).
+ *
+ * Convenience wrapper around e_pr_str() for the common case where
+ * no highlighting, shadow, or button styling is needed (the last 4
+ * arguments are all 0).
+ */
+static void e_pr_text(int x, int y, char *str, int col)
+{
+ e_pr_str(x, y, str, col, 0, 0, 0, 0);
+}
+
+/**
  * e_pr_str_wrap - Print a string with word-wrap across multiple lines.
  * @x:      Screen column to start printing on each line.
  * @y:      Screen row of the first line.
@@ -220,7 +236,7 @@ static int e_pr_str_wrap(int x, int y, char *str, int width, int col)
   if (chunk > 511) chunk = 511;
   strncpy(buf, str + pos, chunk);
   buf[chunk] = '\0';
-  e_pr_str(x, y + rows, buf, col, 0, 0, 0, 0);
+  e_pr_text(x, y + rows, buf, col);
   pos += chunk;
   rows++;
  }
@@ -281,21 +297,23 @@ int e_sys_info(FENSTER *f)
  if (pic == NULL) {  e_error(e_msg[ERR_LOWMEM], 1, f->fb); return(WPE_ESC);  }
 
  row = ya + 2;
- e_pr_str(xa+3, row, " Current File: ", f->fb->nt.fb, 0, 0, 0, 0);
+ { int col = f->fb->nt.fb;
+
+ e_pr_text(xa+3, row, " Current File: ", col);
  if (strcmp(f->datnam, "Clipboard") != 0)
-  row += e_pr_str_wrap(xa+23, row, filepath, avail, f->fb->nt.fb);
+  row += e_pr_str_wrap(xa+23, row, filepath, avail, col);
  else
   row++;
- row++;  /* gap */
+ row++;
 
- e_pr_str(xa+3, row, " Current Directory: ", f->fb->nt.fb, 0, 0, 0, 0);
- row += e_pr_str_wrap(xa+23, row, f->ed->dirct, avail, f->fb->nt.fb);
- row++;  /* gap */
+ e_pr_text(xa+3, row, " Current Directory: ", col);
+ row += e_pr_str_wrap(xa+23, row, f->ed->dirct, avail, col);
+ row++;
 
- e_pr_str(xa+3, row, " Number of Files: ", f->fb->nt.fb, 0, 0, 0, 0);
- e_pr_str(xa+23, row,
-   WpeNumberToString(f->ed->mxedt, WpeNumberOfPlaces(f->ed->mxedt), tmp),
-   f->fb->nt.fb, 0, 0, 0, 0);
+ e_pr_text(xa+3, row, " Number of Files: ", col);
+ e_pr_text(xa+23, row,
+   WpeNumberToString(f->ed->mxedt, WpeNumberOfPlaces(f->ed->mxedt), tmp), col);
+ }
 
 #if  MOUSE
  while(e_mshit() != 0);
