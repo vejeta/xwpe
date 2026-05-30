@@ -351,6 +351,8 @@ int e_e_line_read(int n, signed char *s, int max)
   return(1);
  else if (e_deb_type == 0 && i > 4 && s[i] == ' ' && !strncmp(s+i-5, "(gdb)", 5))
   return(1);
+ else if (e_deb_type == 5 && i > 4 && s[i] == ' ' && !strncmp(s+i-5, "(Pdb)", 5))
+  return(1);
  else if (e_deb_type == 4 && i > 0 &&
    ((s[i] == ' ' && s[i-1] == ']') ||
     (s[i] == ' ' && s[i-1] == '>')))
@@ -433,6 +435,17 @@ int e_d_line_read(int n, signed char *s, int max, int sw, int esw)
    {
     for(j = 0; j <= i; j++) str[6+j] = s[j];
     if(!strncmp(str+i-6, "(dbx) ", 6))
+    {  str[0] = '\0';  wt = 0;  return(1);  }
+   }
+  }
+  else if (e_deb_type == 5)
+  {
+   if(i > 5 && !strncmp(s+i-6, "(Pdb) ", 6))
+   {  str[0] = 0;  wt = 0;   return(1);  }
+   else if(i < 6)
+   {
+    for(j = 0; j <= i; j++) str[6+j] = s[j];
+    if(!strncmp(str+i-6, "(Pdb) ", 6))
     {  str[0] = '\0';  wt = 0;  return(1);  }
    }
   }
@@ -579,6 +592,8 @@ int e_d_quit_basic(FENSTER *f)
    write(rfildes[1], "quit\n", 5);
   else if (e_deb_type == 4)
    write(rfildes[1], "quit\n", 5);
+  else if (e_deb_type == 5)
+   write(rfildes[1], "q\ny\n", 4);  /* pdb: quit + confirm */
  }
  jdb_trace("e_d_quit_basic: quitting debugger type=%d\n", e_deb_type);
  kbdflgs = fcntl(0, F_GETFL, 0 );
@@ -1661,6 +1676,14 @@ int e_make_breakpoint(FENSTER *f, int sw)
      if (e_d_dum_read() == -1) return(-1);
      e_d_nrbrpts[e_d_nbrpts - 1] = e_d_nbrpts;
     }
+    else if (e_deb_type == 5)
+    {
+     /* pdb: "b line" for current file, "b file:line" for others */
+     sprintf(eing, "b %d\n", b->b.y + 1);
+     write(rfildes[1], eing, strlen(eing));
+     if (e_d_dum_read() == -1) return(-1);
+     e_d_nrbrpts[e_d_nbrpts - 1] = e_d_nbrpts;
+    }
    }
    (s->brp[0])++;
    s->brp = REALLOC(s->brp, (s->brp[0]+1) * sizeof(int));
@@ -1726,6 +1749,17 @@ int e_make_breakpoint(FENSTER *f, int sw)
       sprintf(eing, "stop at %s:%d\n", cls, e_d_ybrpts[i]);
     }
     jdb_trace("e_make_breakpoint(sw=1): sending '%s'\n", eing);
+    write(rfildes[1], eing, strlen(eing));
+    if (e_d_dum_read() == -1) return(-1);
+    e_d_nrbrpts[i] = i + 1;
+   }
+  }
+  else if (e_deb_type == 5)
+  {
+   for (i = 0; i < e_d_nbrpts; i++)
+   {
+    /* pdb: "b file:line" */
+    sprintf(eing, "b %s:%d\n", e_d_sbrpts[i], e_d_ybrpts[i]);
     write(rfildes[1], eing, strlen(eing));
     if (e_d_dum_read() == -1) return(-1);
     e_d_nrbrpts[i] = i + 1;
@@ -1961,9 +1995,9 @@ int e_exec_deb(FENSTER *f, char *prog)
    fprintf(stderr, e_p_msg[ERR_PIPEEXEC], efildes[1]);
    exit(1);
   }
-  /* jdb (and other Java-based debuggers) do not handle non-blocking
+  /* Interpreted debuggers (jdb, pdb) do not handle non-blocking
      stdout/stderr.  Only set non-blocking for native debuggers. */
-  if (e_deb_type != 4)
+  if (e_deb_type != 4 && e_deb_type != 5)
   {
    int _fl;
    _fl = fcntl(1, F_GETFL, 0 );
@@ -1981,7 +2015,9 @@ int e_exec_deb(FENSTER *f, char *prog)
      fclose(_tf);
    }
   }
-  if (!e_deb_swtch)
+  if (e_deb_type == 5)
+   execlp(e_debugger, e_debugger, "-m", "pdb", prog, NULL);
+  else if (!e_deb_swtch)
    execlp(e_debugger, e_debugger, prog, NULL);
   else
    execlp(e_debugger, e_debugger, e_deb_swtch, prog, NULL);
@@ -2017,14 +2053,20 @@ int e_start_debug(FENSTER *f)
  f = cn->f[cn->mxedt-1];
  for (i = 0; i < SVLINES; i++)
  {  e_d_sp[i] = e_d_out_str[i];  e_d_out_str[i][0] = '\0';  }
- /* Auto-select jdb for .java files. gdb cannot debug Java bytecode,
-    so force jdb regardless of user's debugger Options selection. */
+ /* Auto-select debugger by file extension.
+    gdb cannot debug Java bytecode or Python scripts. */
  { int _l = strlen(e_d_file);
    if (_l > 5 && !strcmp(e_d_file + _l - 5, ".java"))
    {
     if (e_deb_type != 4)
      e_error("Java file: switching to jdb debugger.", -1, f->fb);
     e_deb_type = 4;
+   }
+   else if (_l > 3 && !strcmp(e_d_file + _l - 3, ".py"))
+   {
+    if (e_deb_type != 5)
+     e_error("Python file: switching to pdb debugger.", -1, f->fb);
+    e_deb_type = 5;
    }
  }
  jdb_trace("e_start_debug: e_d_file='%s', e_deb_type=%d, comp_sw=%d\n",
@@ -2033,6 +2075,7 @@ int e_start_debug(FENSTER *f)
  else if (e_deb_type == 2) {  e_debugger = "dbx";  e_deb_swtch = "-i";  }
  else if (e_deb_type == 3) {  e_debugger = "xdb";  e_deb_swtch = "-L";  }
  else if (e_deb_type == 4) {  e_debugger = "jdb";  e_deb_swtch = NULL;  }
+ else if (e_deb_type == 5) {  e_debugger = "python3";  e_deb_swtch = NULL;  }
  else {  e_debugger = "gdb";  e_deb_swtch = NULL;  }
  e_d_pid = 0;
  if (e_test_command(e_debugger))
@@ -2057,11 +2100,18 @@ int e_start_debug(FENSTER *f)
   else
   {
    strcpy(estr, f->datnam);
-   WpeStringCutChar(estr, '.');
-   /* Non-GNU compilers (fpc) produce executables without .e extension.
-      GNU compilers use the .e convention from xwpe's link step. */
-   if (!(e_s_prog.comp_sw & 1))
-    strcat(estr, ".e");
+   if (e_deb_type == 5)
+   {
+    /* pdb: debug the .py source file directly */
+   }
+   else
+   {
+    WpeStringCutChar(estr, '.');
+    /* Non-GNU compilers (fpc) produce executables without .e extension.
+       GNU compilers use the .e convention from xwpe's link step. */
+    if (!(e_s_prog.comp_sw & 1))
+     strcat(estr, ".e");
+   }
   }
   jdb_trace("e_start_debug: launching '%s %s'\n", e_debugger, estr);
   if ((file = e_exec_deb(f, estr)) == 0)
@@ -2133,10 +2183,10 @@ int e_deb_run(FENSTER *f)
   if (ret == -1) {  e_show_error(0, f);  return(ret);  }
   return(e_error(e_d_msg[ERR_CANTDEBUG], 0, f->fb));
  }
- /* jdb doesn't need tty redirect -- skip the check */
+ /* Interpreted debuggers (jdb, pdb) don't need tty redirect */
  jdb_trace("e_deb_run: tty check, e_deb_type=%d, e_d_tty='%s'\n",
            e_deb_type, e_d_tty);
- if (e_deb_type != 4)
+ if (e_deb_type != 4 && e_deb_type != 5)
  {
   for (ret = 0; isspace(e_d_tty[ret]); ret++)
    ;
@@ -2176,6 +2226,13 @@ int e_deb_run(FENSTER *f)
     /* jdb: plain "run" -- no redirect, no arguments through run */
     strcpy(eing, "run\n");
    }
+   else if (e_deb_type == 5)
+   {
+    /* pdb: program already loaded and paused at line 1.
+       "continue" runs to first breakpoint. */
+    strcpy(eing, "c\n");
+    prsw = 1;  /* treat as continue, not first run */
+   }
    else if (e_d_pty_master >= 0 && e_deb_type == 0)
    {
     if (e_prog.arguments)
@@ -2206,7 +2263,7 @@ int e_deb_run(FENSTER *f)
  e_d_switch_out(1);
  jdb_trace("e_deb_run: sending '%s' (prsw=%d)\n", eing, prsw);
  write(rfildes[1], eing, strlen(eing));
- if (e_deb_type == 4 && !prsw)
+ if ((e_deb_type == 4 || e_deb_type == 5) && !prsw)
  {
   /* jdb: "run" returns "> " immediately but the VM starts
      asynchronously. Use poll() with timeout to wait for the
@@ -2333,7 +2390,7 @@ int e_d_step_next(FENSTER *f, int sw)
  }
  e_d_delbreak(f);
  e_d_switch_out(1);
- if (sw && e_deb_type == 0) write(rfildes[1], "n\n", 2);
+ if (sw && (e_deb_type == 0 || e_deb_type == 5)) write(rfildes[1], "n\n", 2);
  else if (sw && (e_deb_type == 1 || e_deb_type == 3)) write(rfildes[1], "S\n", 2);
  else if (sw && (e_deb_type == 2 || e_deb_type == 4)) write(rfildes[1], "next\n", 5);
  else if (e_deb_type == 2 || e_deb_type == 4) write(rfildes[1], "step\n", 5);
@@ -2424,6 +2481,53 @@ int e_d_step_next(FENSTER *f, int sw)
         e_d_prog_output[e_d_prog_output_len++] = '\n';
       }
     }
+  }
+  e_d_switch_out(0);
+  return(0);
+ }
+ if (e_deb_type == 5)
+ {
+  /* pdb: use poll to read step response, parse active line.
+     pdb output format: "> file(line)func()\n-> code\n(Pdb) " */
+  struct pollfd _pfd = { .fd = wfildes[0], .events = POLLIN };
+  char _buf[4096];
+  int _len = 0, _n, _found = 0;
+  while (!_found)
+  {
+   if (poll(&_pfd, 1, 5000) <= 0) break;
+   _n = read(wfildes[0], _buf + _len, sizeof(_buf) - _len - 1);
+   if (_n == 0) return(e_d_quit(f));  /* EOF: pdb exited */
+   if (_n < 0) continue;
+   _len += _n;
+   _buf[_len] = '\0';
+   if (strstr(_buf, "(Pdb) ")) _found = 1;
+  }
+  if (_found)
+  {
+   /* Parse "> file(line)func()" to extract file and line number */
+   char *_gt = strstr(_buf, "> ");
+   if (_gt)
+   {
+    char *_op = strchr(_gt + 2, '(');
+    if (_op)
+    {
+     int _line = atoi(_op + 1);
+     if (_line > 0)
+     {
+      SCHIRM *_s = f->ed->f[f->ed->mxedt]->s;
+      _s->da.y = _line;
+      e_d_swtch = 3;
+      e_cursor(f, 1);
+      e_schirm(f, 1);
+     }
+    }
+   }
+   /* Check if program finished */
+   if (strstr(_buf, "The program finished"))
+   {
+    e_error("Program exited. Debugger stopped.", 0, f->fb);
+    return(e_d_quit(f));
+   }
   }
   e_d_switch_out(0);
   return(0);
@@ -3036,22 +3140,25 @@ int e_deb_options(FENSTER *f)
  W_OPTSTR *o = e_init_opt_kst(f);
 
  if (!o) return(-1);
- o->xa = 20;  o->ya = 4;  o->xe = 60;  o->ye = 15;
+ o->xa = 20;  o->ya = 4;  o->xe = 60;  o->ye = 16;
  o->bgsw = 0;
  o->name = "Debug-Options";
  o->crsw = AltO;
  e_add_txtstr(4, 2, "Debugger:", o);
  e_add_txtstr(20, 2, "Mode:", o);
- { /* Auto-select jdb when current file is .java */
+ { /* Auto-select debugger by file extension */
    ECNT *cn2 = f->ed;
    char *_fn = cn2->f[cn2->mxedt]->datnam;
    int _fnl = strlen(_fn);
    if (_fnl > 5 && !strcmp(_fn + _fnl - 5, ".java"))
     e_deb_type = 4;
+   else if (_fnl > 3 && !strcmp(_fn + _fnl - 3, ".py"))
+    e_deb_type = 5;
    /* Map e_deb_type to radio button index:
-      0=Gdb, 1=Sdb, 2=Dbx, 3=Jdb (radio index)
-      e_deb_type: 0=gdb, 1=sdb, 2=dbx, 3=xdb, 4=jdb */
-   int _sel = (e_deb_type == 4) ? 3 :
+      0=Gdb, 1=Sdb, 2=Dbx, 3=Jdb, 4=Pdb (radio index)
+      e_deb_type: 0=gdb, 1=sdb, 2=dbx, 3=xdb, 4=jdb, 5=pdb */
+   int _sel = (e_deb_type == 5) ? 4 :
+              (e_deb_type == 4) ? 3 :
               (e_deb_type == 3) ? 2 : e_deb_type;
  e_add_pswstr(0, 5, 3, 0, AltG, 0, "Gdb    ", o);
  e_add_pswstr(0, 5, 4, 0, AltS, 0, "Sdb    ", o);
@@ -3060,12 +3167,13 @@ int e_deb_options(FENSTER *f)
 #else
  e_add_pswstr(0, 5, 5, 0, AltD, 0, "Dbx    ", o);
 #endif
- e_add_pswstr(0, 5, 6, 0, AltJ, _sel, "Jdb    ", o);
+ e_add_pswstr(0, 5, 6, 0, AltJ, 0, "Jdb    ", o);
+ e_add_pswstr(0, 5, 7, 0, AltP, _sel, "Pdb    ", o);
  }
  e_add_pswstr(1, 21, 3, 0, AltN, 0, "Normal     ", o);
  e_add_pswstr(1, 21, 4, 0, AltF, e_deb_mode, "Full Screen", o);
- e_add_bttstr(10, 9, 1, AltO, " Ok ", NULL, o);
- e_add_bttstr(25, 9, -1, WPE_ESC, "Cancel", NULL, o);
+ e_add_bttstr(10, 10, 1, AltO, " Ok ", NULL, o);
+ e_add_bttstr(25, 10, -1, WPE_ESC, "Cancel", NULL, o);
  ret = e_opt_kst(o);
  if (ret != WPE_ESC)
  {
@@ -3073,9 +3181,11 @@ int e_deb_options(FENSTER *f)
 #ifdef XDB
     if (sel == 2) e_deb_type = 3;
     else if (sel == 3) e_deb_type = 4;
+    else if (sel == 4) e_deb_type = 5;
     else e_deb_type = sel;
 #else
     if (sel == 3) e_deb_type = 4;
+    else if (sel == 4) e_deb_type = 5;
     else e_deb_type = sel;
 #endif
   }
