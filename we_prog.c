@@ -999,7 +999,7 @@ int e_ini_prog(ECNT *cn)
 {
  int i;
 
- e_prog.num = 5;
+ e_prog.num = 6;
  if (e_prog.arguments) FREE(e_prog.arguments);
  e_prog.arguments = WpeStrdup("");
  if (e_prog.project) FREE(e_prog.project);
@@ -1059,12 +1059,19 @@ int e_ini_prog(ECNT *cn)
  e_prog.comp[4]->key = 'J';
  e_prog.comp[4]->x = 0;
  e_prog.comp[4]->intstr = WpeStrdup("${?*:warning:}${FILE}:${LINE}:*");
+ e_prog.comp[5]->compiler = WpeStrdup("python3");
+ e_prog.comp[5]->language = WpeStrdup("Python");
+ e_prog.comp[5]->filepostfix = (char **)WpeExpArrayCreate(1, sizeof(char *), 1);
+ e_prog.comp[5]->filepostfix[0] = WpeStrdup(".py");
+ e_prog.comp[5]->key = 'Y';
+ e_prog.comp[5]->x = 0;
+ e_prog.comp[5]->intstr = WpeStrdup("*File \"${FILE}\", line ${LINE}*");
  for (i = 0; i < e_prog.num; i++)
  {
-  e_prog.comp[i]->comp_str = WpeStrdup("-g");
+  e_prog.comp[i]->comp_str = WpeStrdup(i == 5 ? "-m py_compile" : "-g");
   e_prog.comp[i]->libraries = WpeStrdup("");
   e_prog.comp[i]->exe_name = WpeStrdup("");
-  e_prog.comp[i]->comp_sw = i < 3 ? 0 : 1;
+  e_prog.comp[i]->comp_sw = i < 3 ? 0 : 1;  /* GNU for gcc/g++/gfortran, other for fpc/javac/python */
  }
  e_copy_prog(&e_s_prog, e_prog.comp[0]);
  return(0);
