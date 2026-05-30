@@ -525,7 +525,10 @@ int e_p_exec(int file, FENSTER *f, PIC *pic)
 
    fflush(stdout);
   }
-  print_to_end_of_buffer(b, buff, b->mx.x);
+  /* Don't wrap compiler output lines -- long paths break error
+     patterns when the File/line info is split across two lines.
+     The Messages window scrolls horizontally instead. */
+  print_to_end_of_buffer(b, buff, 0);
   FREE(buff);
 
   if( fd == wfildes[0] )
@@ -2892,6 +2895,24 @@ int e_p_show_messages(FENSTER *f)
  return(0);
 }
 
+/**
+ * e_strip_quotes - Remove surrounding double quotes from a string in place.
+ * @s: The string to modify.
+ *
+ * If @s is surrounded by double quotes (e.g. "filename.py"), they are
+ * removed.  Used by the error pattern matcher to handle Python-style
+ * error output: File "name.py", line N.
+ */
+static void e_strip_quotes(char *s)
+{
+ int len = strlen(s);
+ if (len >= 2 && s[0] == '"' && s[len-1] == '"')
+ {
+  memmove(s, s+1, len-2);
+  s[len-2] = '\0';
+ }
+}
+
 int e_p_konv_mess(char *var, char *str, char *txt, char *file, char *cmp,
   int *y, int *x)
 {
@@ -2903,6 +2924,7 @@ int e_p_konv_mess(char *var, char *str, char *txt, char *file, char *cmp,
   for (i = strlen(str) - 1; i >= 0 && !isspace(str[i]); i--)
    ;
   strcpy(file, str+i+1);
+  e_strip_quotes(file);
  }
  else if (!strncmp(var, "CMPTEXT", 7) && !isalnum(var[7]))
   strcpy(cmp, str);
