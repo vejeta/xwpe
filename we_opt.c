@@ -192,55 +192,67 @@ int e_repaint_desk(FENSTER *f)
 }
 
 /*    write system information   */
+/* Print a string at (x,y) truncated to maxlen characters.
+   If the string is longer than maxlen, the last 3 visible chars
+   are replaced with "..." to indicate truncation. */
+static void e_pr_str_fit(int x, int y, char *str, int maxlen, int col)
+{
+ char buf[512];
+ int len = strlen(str);
+
+ if (maxlen <= 0) return;
+ if (maxlen > 511) maxlen = 511;
+ if (len <= maxlen)
+ {
+  e_pr_str(x, y, str, col, 0, 0, 0, 0);
+ }
+ else
+ {
+  strncpy(buf, str, maxlen);
+  buf[maxlen] = '\0';
+  if (maxlen >= 4)
+  {
+   buf[maxlen-1] = '.';
+   buf[maxlen-2] = '.';
+   buf[maxlen-3] = '.';
+  }
+  e_pr_str(x, y, buf, col, 0, 0, 0, 0);
+ }
+}
+
 int e_sys_info(FENSTER *f)
 {
  PIC *pic = NULL;
- char tmp[256];
- int maxw, xa = 10, ya = 5, xe = xa + 60, ye = ya + 8;
+ char tmp[512];
+ int xa = 10, ya = 5, xe, ye = ya + 8;
+ int avail;
 
- /* Compute the widest string to display and expand the dialog if needed */
- maxw = 20;  /* minimum: label width */
- if (strcmp(f->datnam, "Clipboard") != 0)
- {
-  if (strcmp(f->dirct, f->ed->dirct) == 0)
-  {
-   if ((int)strlen(f->datnam) > maxw) maxw = strlen(f->datnam);
-  }
-  else
-  {
-   int pathlen = strlen(f->dirct) + 1 + strlen(f->datnam);
-   if (pathlen > maxw) maxw = pathlen;
-  }
- }
- if ((int)strlen(f->ed->dirct) > maxw) maxw = strlen(f->ed->dirct);
- /* Dialog width: label (20) + content + margins (6) */
- xe = xa + maxw + 26;
- if (xe > MAXSCOL - 2) xe = MAXSCOL - 2;
+ /* Dialog width adapts to screen, max 70% of screen width */
+ xe = MAXSCOL - 10;
+ if (xe > xa + 70) xe = xa + 70;
  if (xe < xa + 40) xe = xa + 40;
+ avail = xe - xa - 24;  /* space for content after label */
 
  fk_cursor(0);
  pic = e_std_kst(xa, ya, xe, ye, " Information ", 1, f->fb->nr.fb, f->fb->nt.fb, f->fb->ne.fb);
  if (pic == NULL) {  e_error(e_msg[ERR_LOWMEM], 1, f->fb); return(WPE_ESC);  }
+
  e_pr_str(xa+3, ya+2, " Current File: ", f->fb->nt.fb, 0, 0, 0, 0);
  e_pr_str(xa+3, ya+4, " Current Directory: ", f->fb->nt.fb, 0, 0, 0, 0);
  e_pr_str(xa+3, ya+6, " Number of Files: ", f->fb->nt.fb, 0, 0, 0, 0);
- { int avail = xe - xa - 24;  /* available chars for content */
- if(strcmp(f->datnam, "Clipboard") != 0)
- if(strcmp(f->dirct, f->ed->dirct) == 0)
+
+ if (strcmp(f->datnam, "Clipboard") != 0)
  {
-  strncpy(tmp, f->datnam, avail);
-  tmp[avail] = '\0';
-  e_pr_str(xa+23, ya+2, tmp, f->fb->nt.fb, 0, 0, 0, 0);
+  if (strcmp(f->dirct, f->ed->dirct) == 0)
+   e_pr_str_fit(xa+23, ya+2, f->datnam, avail, f->fb->nt.fb);
+  else
+  {
+   snprintf(tmp, sizeof(tmp), "%s%s%s", f->dirct, DIRS, f->datnam);
+   e_pr_str_fit(xa+23, ya+2, tmp, avail, f->fb->nt.fb);
+  }
  }
- else
- {
-  snprintf(tmp, avail + 1, "%s%s%s", f->dirct, DIRS, f->datnam);
-  e_pr_str(xa+23, ya+2, tmp, f->fb->nt.fb, 0, 0, 0, 0);
- }
- strncpy(tmp, f->ed->dirct, avail);
- tmp[avail] = '\0';
- e_pr_str(xa+23, ya+4, tmp, f->fb->nt.fb, 0, 0, 0, 0);
- }
+ e_pr_str_fit(xa+23, ya+4, f->ed->dirct, avail, f->fb->nt.fb);
+
  e_pr_str(xa+23, ya+6,
    WpeNumberToString(f->ed->mxedt, WpeNumberOfPlaces(f->ed->mxedt), tmp),
    f->fb->nt.fb, 0, 0, 0, 0);
