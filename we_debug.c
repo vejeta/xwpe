@@ -2520,29 +2520,58 @@ int e_d_step_next(FENSTER *f, int sw)
   }
   if (_found)
   {
-   /* Parse "> file(line)func()" to extract file and line number */
-   char *_gt = strstr(_buf, "> ");
-   if (_gt)
-   {
-    char *_op = strchr(_gt + 2, '(');
-    if (_op)
-    {
-     int _line = atoi(_op + 1);
-     if (_line > 0)
-     {
-      SCHIRM *_s = f->ed->f[f->ed->mxedt]->s;
-      _s->da.y = _line - 1;  /* pdb lines are 1-based, da.y is 0-based */
-      e_d_swtch = 3;
-      e_cursor(f, 1);
-      e_schirm(f, 1);
-     }
-    }
-   }
-   /* Check if program finished */
+   /* Check for program exit FIRST -- pdb auto-restarts after finish,
+      so we must catch exit before navigating to restart position. */
    if (strstr(_buf, "The program finished"))
    {
-    e_error("Program exited. Debugger stopped.", 0, f->fb);
+    /* Capture program output: any line that isn't pdb metadata */
+    char _line[256];
+    int _bi = 0;
+    while (_buf[_bi])
+    {
+     int _li = 0;
+     while (_buf[_bi] && _buf[_bi] != '\n' && _li < 255)
+      _line[_li++] = _buf[_bi++];
+     _line[_li] = '\0';
+     if (_buf[_bi] == '\n') _bi++;
+     /* Skip pdb metadata lines */
+     if (_li == 0 || _line[0] == '>' || !strncmp(_line, "-> ", 3) ||
+         !strncmp(_line, "(Pdb)", 5) || strstr(_line, "The program"))
+      continue;
+     /* This is program output -- save it */
+     if (e_d_prog_output_len + _li + 2 > e_d_prog_output_cap)
+     { e_d_prog_output_cap = (e_d_prog_output_len + _li + 1024) * 2;
+       e_d_prog_output = realloc(e_d_prog_output, e_d_prog_output_cap);
+     }
+     if (e_d_prog_output)
+     {
+      memcpy(e_d_prog_output + e_d_prog_output_len, _line, _li);
+      e_d_prog_output_len += _li;
+      e_d_prog_output[e_d_prog_output_len++] = '\n';
+     }
+    }
+    e_d_switch_out(0);
+    e_error("End of code. Ctrl-G P for output.", 0, f->fb);
     return(e_d_quit(f));
+   }
+   /* Parse "> file(line)func()" to extract file and line number */
+   { char *_gt = strstr(_buf, "> ");
+     if (_gt)
+     {
+      char *_op = strchr(_gt + 2, '(');
+      if (_op)
+      {
+       int _line = atoi(_op + 1);
+       if (_line > 0)
+       {
+        SCHIRM *_s = f->ed->f[f->ed->mxedt]->s;
+        _s->da.y = _line - 1;
+        e_d_swtch = 3;
+        e_cursor(f, 1);
+        e_schirm(f, 1);
+       }
+      }
+     }
    }
   }
   e_d_switch_out(0);
