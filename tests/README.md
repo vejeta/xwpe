@@ -17,7 +17,7 @@ tests/.venv/bin/pip install pyte==0.8.1 pytest
 ./configure && make
 
 # Create wpe symlink (tests use terminal mode)
-ln -sf xwpe wpe
+ln -sf we wpe
 
 # Run all tests
 tests/.venv/bin/python -m pytest -v tests/
@@ -27,6 +27,7 @@ tests/.venv/bin/python -m pytest -v tests/
 
 - `test_utf8_border.py` -- UTF-8 display, border alignment, emoji/wide chars
 - `test_scrollbar.py` -- scrollbar during scroll, end-of-file, PageDown/PageUp
+- `test_compile.py` -- F9 compile cycle, error navigation, menu close, popup cleanup
 
 ## What the tests verify
 
@@ -39,3 +40,10 @@ tests/.venv/bin/python -m pytest -v tests/
 - No stale content after scrolling
 - Terminal resize produces visible content
 - File opens and content is displayed
+- F9 compiles a valid C program (creates .o and .e files)
+- F9 on invalid code shows errors in Messages window
+- Alt-T navigates to the error location
+- Compile popup dismissed cleanly (no artefacts)
+- Menus (Run, Debug, Options) open and close without display corruption
+- Multiple menu open/close cycles cause no progressive degradation
+- Compile then menu open/close leaves editor intact
