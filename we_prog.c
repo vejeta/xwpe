@@ -1065,7 +1065,7 @@ int e_ini_prog(ECNT *cn)
  e_prog.comp[5]->filepostfix[0] = WpeStrdup(".py");
  e_prog.comp[5]->key = 'Y';
  e_prog.comp[5]->x = 0;
- e_prog.comp[5]->intstr = WpeStrdup("*File \"${FILE}\", line ${LINE}*");
+ e_prog.comp[5]->intstr = WpeStrdup("*File *${FILE}*, line ${LINE}*");
  for (i = 0; i < e_prog.num; i++)
  {
   e_prog.comp[i]->comp_str = WpeStrdup(i == 5 ? "-m py_compile" : "-g");
