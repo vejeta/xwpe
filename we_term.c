@@ -97,9 +97,6 @@ char *tgoto();
 #endif
 #endif
 
-int WpeGpmMouseInit(void);
-int wpe_ncurses_mouse_active = 0;
-
 int WpeDllInit(int *argc, char **argv)
 {
  fk_u_cursor = fk_t_cursor;
@@ -116,15 +113,11 @@ int WpeDllInit(int *argc, char **argv)
  e_u_sys_end = e_t_sys_end;
  e_u_system = system;
  fk_u_putchar = fk_t_putchar;
-#ifdef HAVE_LIBGPM
- if (WpeGpmMouseInit() == 0)
- {
-  fk_mouse = WpeGpmMouse;
-  wpe_ncurses_mouse_active = 0;  /* GPM handles mouse, not ncurses */
- }
- else
-#endif
-  fk_mouse = fk_t_mouse;
+ /* Mouse: always use ncurses mouse backend (fk_t_mouse).
+    ncurses 6.x handles GPM internally via mousemask() -- no need for
+    the direct Gpm_Open() path from Suraci (1998) which conflicts with
+    ncurses' own GPM connection.  See FEATURE-mouse-ncurses-gpm.md. */
+ fk_mouse = fk_t_mouse;
  WpeMouseChangeShape = (void (*)(WpeMouseShape))WpeNullFunction;
  WpeMouseRestoreShape = WpeNullFunction;
  WpeDisplayEnd = e_endwin;
@@ -478,17 +471,13 @@ int e_t_initscr()
  intrflush(stdscr,FALSE);
  keypad(stdscr,TRUE);
 #if MOUSE
- /* Always enable ncurses mouse events.  On terminal emulators this
-    activates the xterm mouse protocol; on Linux console with GPM,
-    ncurses uses its built-in GPM integration to deliver KEY_MOUSE.
-    wpe_ncurses_mouse_active controls whether fk_t_mouse polls for
-    mouse events -- it must be OFF when GPM handles mouse (GPM uses
-    its own gpm_handler callback, not fk_t_mouse). */
- { mmask_t old;
-   mousemask(ALL_MOUSE_EVENTS, &old);
-   if (fk_mouse == fk_t_mouse)  /* GPM not active */
-    wpe_ncurses_mouse_active = 1;
- }
+ /* Enable ncurses mouse events.  Only request PRESSED and RELEASED --
+    CLICKED/DOUBLE_CLICKED cause duplicate events (one physical click
+    generates both PRESSED and CLICKED, making xwpe see two clicks).
+    On terminal emulators this activates the xterm mouse protocol;
+    on Linux console with GPM, ncurses uses its built-in GPM
+    integration to deliver events as KEY_MOUSE via getmouse(). */
+ mousemask(BUTTON1_PRESSED | BUTTON2_PRESSED | BUTTON3_PRESSED, NULL);
  mouseinterval(0);
 #endif
 #endif
@@ -843,10 +832,15 @@ int e_t_getch()
      extern struct mouse e_mouse;
      e_mouse.x = mev.x;
      e_mouse.y = mev.y;
-     e_mouse.k = (mev.bstate & (BUTTON1_PRESSED|BUTTON1_CLICKED)) ? 1 :
-                 (mev.bstate & (BUTTON2_PRESSED|BUTTON2_CLICKED)) ? 2 :
-                 (mev.bstate & (BUTTON3_PRESSED|BUTTON3_CLICKED)) ? 4 : 0;
-     return(-1);
+     /* Only signal a click (-1) on PRESSED.  RELEASED updates
+        coordinates but returns 0 so e_mshit() detects button-up. */
+     if (mev.bstate & (BUTTON1_PRESSED|BUTTON2_PRESSED|BUTTON3_PRESSED))
+     {
+      e_mouse.k = (mev.bstate & BUTTON1_PRESSED) ? 1 :
+                  (mev.bstate & BUTTON2_PRESSED) ? 2 : 4;
+      return(-1);
+     }
+     e_mouse.k = 0;
     }
     c = 0;
     break;
@@ -1094,23 +1088,23 @@ int fk_t_locate(int x, int y)
 int fk_t_mouse(int *g)
 {
 #if MOUSE
+ /* ncurses mouse backend for both terminal emulators (xterm protocol)
+    and Linux console (GPM via ncurses' internal integration).
+    Polls getch() briefly for KEY_MOUSE events.  Non-mouse keys are
+    pushed back with ungetch().
+
+    Button hold detection: we only request PRESSED events (not RELEASED)
+    because GPM via ncurses sends RELEASED immediately after PRESSED,
+    which looks like a click-and-release even when the user is holding.
+    Instead, we track a "hold counter": on PRESSED it's set high, and
+    each poll without a new PRESSED decrements it.  When it reaches 0,
+    we report button released.  This gives ~150ms of hold time. */
  extern struct mouse e_mouse;
+ static int hold_count = 0;
  MEVENT mev;
 
  if (g[0] == 2)
   return(0);  /* hide cursor: no-op for ncurses */
-
- /* Only poll getch() for mouse events if the terminal actually supports
-    mouse reporting (xterm protocol).  On a plain Linux console, mousemask()
-    returns 0 and polling getch() here steals keyboard input (e.g. Tab),
-    re-injects it via ungetch(), and causes duplicate keystrokes. */
- if (!wpe_ncurses_mouse_active)
- {
-  g[1] = 0;
-  g[2] = e_mouse.x * 8;
-  g[3] = e_mouse.y * 8;
-  return(0);
- }
 
  timeout(50);
  int ch = getch();
@@ -1118,20 +1112,28 @@ int fk_t_mouse(int *g)
 
  if (ch == KEY_MOUSE && getmouse(&mev) == OK)
  {
-  g[1] = (mev.bstate & (BUTTON1_PRESSED|BUTTON1_CLICKED)) ? 1 :
-         (mev.bstate & (BUTTON2_PRESSED|BUTTON2_CLICKED)) ? 2 :
-         (mev.bstate & (BUTTON3_PRESSED|BUTTON3_CLICKED)) ? 4 : 0;
   g[2] = mev.x * 8;
   g[3] = mev.y * 8;
   e_mouse.x = mev.x;
   e_mouse.y = mev.y;
-  e_mouse.k = g[1];
+  if (mev.bstate & (BUTTON1_PRESSED|BUTTON2_PRESSED|BUTTON3_PRESSED))
+  {
+   e_mouse.k = (mev.bstate & BUTTON1_PRESSED) ? 1 :
+               (mev.bstate & BUTTON2_PRESSED) ? 2 : 4;
+   hold_count = 3;  /* hold for ~150ms (3 * 50ms timeout) */
+  }
+  g[1] = e_mouse.k;
  }
  else
  {
   if (ch != ERR)
    ungetch(ch);
-  g[1] = 0;
+  /* No new event: decrement hold counter */
+  if (hold_count > 0)
+   hold_count--;
+  else
+   e_mouse.k = 0;
+  g[1] = e_mouse.k;
   g[2] = e_mouse.x * 8;
   g[3] = e_mouse.y * 8;
  }
