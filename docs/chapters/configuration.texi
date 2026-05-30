@@ -378,6 +378,80 @@ xwpe*color1: #000000
 
 Apply with @command{xrdb -merge ~/.Xresources} before starting xwpe.
 
+@section Font recommendations
+
+@cindex fonts
+@cindex Terminus
+@cindex JetBrains Mono
+
+xwpe requires a fixed-width (monospace) font.  The font is not chosen
+by xwpe itself in terminal mode --- it comes from your terminal emulator
+or console configuration.
+
+@subsection Terminal emulators (wpe in xterm, gnome-terminal, kitty, etc.)
+
+Set the font in your terminal emulator's preferences.  Recommended:
+
+@table @strong
+@item JetBrains Mono
+Modern monospace font with excellent hinting and readability at all
+sizes.  Good for daily use.
+@code{sudo apt install fonts-jetbrains-mono}
+
+@item Terminus
+Bitmap font that reproduces the crisp, pixel-perfect look of 1990s
+terminals.  Best for the classic xwpe experience.
+@code{sudo apt install xfonts-terminus}
+
+@item Your terminal's default
+Most terminal emulators ship with a good monospace font (e.g.@:
+Noto Mono, DejaVu Sans Mono).  These work fine with xwpe.
+@end table
+
+@subsection Linux console (wpe on a tty without X11)
+
+The console uses a framebuffer font, changed with @command{setfont}:
+
+@example
+# Install Terminus for the console
+sudo apt install console-terminus
+
+# Change font in the current tty (takes effect immediately)
+setfont Lat15-Terminus16
+
+# Now run xwpe
+wpe myfile.c
+@end example
+
+To make the font permanent, edit @file{/etc/default/console-setup}:
+
+@example
+CODESET="Lat15"
+FONTFACE="Terminus"
+FONTSIZE="16"
+@end example
+
+Then run @command{sudo setupcon} or reboot.
+
+@subsection X11 mode (xwpe/xwe)
+
+The X11 binaries use the @code{8x13} bitmap font by default.  Change it
+with the @option{-fn} flag or an X resource:
+
+@example
+xwpe -fn 9x15 myfile.c
+@end example
+
+Or in @file{~/.Xresources}:
+
+@example
+xwpe*font: 9x15
+@end example
+
+Available bitmap fonts: @code{8x13}, @code{9x15}, @code{10x20}, and
+their bold variants (@code{8x13bold}, @code{9x15bold}, @code{10x20bold}).
+These are crisp bitmap fonts that do not suffer from antialiasing blur.
+
 @section Recovery mode
 
 @cindex recovery
