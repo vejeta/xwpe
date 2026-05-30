@@ -192,9 +192,20 @@ int e_repaint_desk(FENSTER *f)
 }
 
 /*    write system information   */
-/* Print a string at (x,y) truncated to maxlen characters.
-   If the string is longer than maxlen, the last 3 visible chars
-   are replaced with "..." to indicate truncation. */
+/**
+ * e_pr_str_fit - Print a string truncated to fit within a given width.
+ * @x:      Screen column to start printing.
+ * @y:      Screen row to print on.
+ * @str:    The string to display.
+ * @maxlen: Maximum number of characters to print.  If the string is
+ *          longer, the last 3 visible characters are replaced with
+ *          "..." to indicate truncation.
+ * @col:    Color attribute (FARBE index) for the text.
+ *
+ * This function wraps e_pr_str() with length-aware truncation.
+ * Use it anywhere a string might exceed the bounds of a dialog or
+ * popup to prevent visual overflow.
+ */
 static void e_pr_str_fit(int x, int y, char *str, int maxlen, int col)
 {
  char buf[512];
@@ -220,6 +231,21 @@ static void e_pr_str_fit(int x, int y, char *str, int maxlen, int col)
  }
 }
 
+/**
+ * e_sys_info - Display the System Information dialog.
+ * @f: Current window (FENSTER).  Used to read the filename, directory,
+ *     and editor state for display.
+ *
+ * Shows a modal dialog with:
+ *   - Current File:      filename (or full path if in a different directory)
+ *   - Current Directory: the editor's working directory
+ *   - Number of Files:   count of open editor buffers
+ *
+ * The dialog width adapts to the terminal size (up to 70% of screen width).
+ * Long paths are truncated with "..." via e_pr_str_fit().
+ *
+ * Return: 0 on success, WPE_ESC on memory error.
+ */
 int e_sys_info(FENSTER *f)
 {
  PIC *pic = NULL;
