@@ -96,5 +96,13 @@ Juan Manuel Mendez Rey <juan.mendezr@proton.me>
   defaults, non-GNU flag handling, blank-line output fix.
   Debugger resurrection: SIGCHLD fix, skip-recompile/relink, pty-based
   program output capture with fflush(0), User Screen (Ctrl-G P).
-  12-chapter Texinfo manual.
+  jdb (Java Debugger) as 5th debugger backend with poll()-based async
+  JVM startup and dual prompt detection.
+  ncurses mouse support for terminal emulators (xterm mouse protocol).
+  Migrated GPM mouse from Suraci's direct Gpm_Open() to ncurses-managed
+  GPM, resolving 26-year conflict with ncurses 6.x built-in integration.
+  Fixed cursor-to-Messages after successful compile, menu bar redraw
+  after Ctrl-F9 Run, File Manager panel scroll on Tab.
+  12-chapter Texinfo manual integrated into help system.
+  33 automated pyte tests (UTF-8, scrollbar, compile, menu).
   560+ file historical archive at codeberg.org/mendezr/xwpe-archive.
