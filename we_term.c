@@ -98,6 +98,7 @@ char *tgoto();
 #endif
 
 int WpeGpmMouseInit(void);
+int wpe_ncurses_mouse_active = 0;
 
 int WpeDllInit(int *argc, char **argv)
 {
@@ -119,6 +120,7 @@ int WpeDllInit(int *argc, char **argv)
  if (WpeGpmMouseInit() == 0)
  {
   fk_mouse = WpeGpmMouse;
+  wpe_ncurses_mouse_active = 0;  /* GPM handles mouse, not ncurses */
  }
  else
 #endif
@@ -476,12 +478,17 @@ int e_t_initscr()
  intrflush(stdscr,FALSE);
  keypad(stdscr,TRUE);
 #if MOUSE
- /* Enable ncurses mouse support for terminal emulators (xterm protocol).
-    This works in any terminal that supports xterm mouse reporting
-    (xterm, gnome-terminal, kitty, tmux, etc.) -- no GPM needed. */
- mousemask(ALL_MOUSE_EVENTS | REPORT_MOUSE_POSITION, NULL);
- /* Disable click-interval delay so clicks are reported immediately */
- mouseinterval(0);
+ /* Enable ncurses mouse for terminal emulators (xterm protocol).
+    Skip when GPM is active -- mousemask() interferes with GPM.
+    On plain Linux console without GPM, mousemask() returns 0
+    (no xterm protocol), so wpe_ncurses_mouse_active stays 0. */
+ if (fk_mouse == fk_t_mouse)  /* GPM not active */
+ {
+  mmask_t old;
+  wpe_ncurses_mouse_active =
+    (mousemask(ALL_MOUSE_EVENTS, &old) != 0);
+  mouseinterval(0);
+ }
 #endif
 #endif
  if (has_colors())
@@ -1086,25 +1093,27 @@ int fk_t_locate(int x, int y)
 int fk_t_mouse(int *g)
 {
 #if MOUSE
- /* ncurses mouse backend -- used when GPM is not available.
-    The g[] array protocol (from Kruse 1993):
-      g[0]: 1=get state, 2=hide cursor, 3=get position+state
-      g[1]: button state (0=released, non-zero=pressed)
-      g[2]: x * 8
-      g[3]: y * 8 */
  extern struct mouse e_mouse;
  MEVENT mev;
- int timeout_ms = 50;
- int old_delay;
 
  if (g[0] == 2)
   return(0);  /* hide cursor: no-op for ncurses */
 
- /* Brief non-blocking poll for mouse events */
- old_delay = ESCDELAY;
- timeout(timeout_ms);
+ /* Only poll getch() for mouse events if the terminal actually supports
+    mouse reporting (xterm protocol).  On a plain Linux console, mousemask()
+    returns 0 and polling getch() here steals keyboard input (e.g. Tab),
+    re-injects it via ungetch(), and causes duplicate keystrokes. */
+ if (!wpe_ncurses_mouse_active)
+ {
+  g[1] = 0;
+  g[2] = e_mouse.x * 8;
+  g[3] = e_mouse.y * 8;
+  return(0);
+ }
+
+ timeout(50);
  int ch = getch();
- timeout(-1);  /* restore blocking mode */
+ timeout(-1);
 
  if (ch == KEY_MOUSE && getmouse(&mev) == OK)
  {
@@ -1120,7 +1129,7 @@ int fk_t_mouse(int *g)
  else
  {
   if (ch != ERR)
-   ungetch(ch);  /* put non-mouse key back */
+   ungetch(ch);
   g[1] = 0;
   g[2] = e_mouse.x * 8;
   g[3] = e_mouse.y * 8;

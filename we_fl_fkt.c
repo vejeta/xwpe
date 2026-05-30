@@ -392,6 +392,13 @@ int e_file_window(int sw, FLWND *fw, int ft, int fz)
    if(fw->df->anz > 0)
    {  if(fw->nf >= fw->df->anz) fw->nf = fw->df->anz-1;
       len = strlen(*(fw->df->name+fw->nf));
+      /* Ensure the selected item is visible when entering the panel.
+         Without this, Tab into a panel can land on an off-screen item,
+         making it look like the panel was skipped. */
+      if(fw->nf - fw->ia >= fw->ye - fw->ya)
+        fw->ia = fw->nf + fw->ya - fw->ye + 1;
+      else if(fw->nf - fw->ia < 0)
+        fw->ia = fw->nf;
    }
    e_mouse_bar(fw->xe, fw->ya, fw->ye-fw->ya, 0, fw->f->fb->em.fb);
    e_mouse_bar(fw->xa, fw->ye, fw->xe-fw->xa, 1, fw->f->fb->em.fb);
