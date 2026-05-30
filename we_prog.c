@@ -288,6 +288,12 @@ int e_run(FENSTER *f)
  else
 #endif
   ret = e_system(estr, cn);
+ /* After e_system() the terminal was in raw mode for the child process.
+    Force ncurses to redraw everything including the menu bar. */
+#ifdef NCURSES
+ clearok(stdscr, TRUE);
+#endif
+ e_repaint_desk(cn->f[cn->mxedt]);
  f = cn->f[cn->mxedt];
  b = cn->f[cn->mxedt]->b;
  s = cn->f[cn->mxedt]->s;
