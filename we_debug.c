@@ -1890,6 +1890,10 @@ int e_exec_deb(FENSTER *f, char *prog)
 /*   ioctl(rfildes[0], TCSETA, &ntermio);*/
     tcsetattr(rfildes[0], TCSADRAIN, &ntermio);
    }
+   usleep(200000);
+   XSetInputFocus(WpeXInfo.display, WpeXInfo.window,
+     RevertToParent, CurrentTime);
+   XFlush(WpeXInfo.display);
   }
   else
   {
@@ -1947,15 +1951,18 @@ int e_exec_deb(FENSTER *f, char *prog)
   fprintf(fp, "tty > %s\n", npipe[1]);
   if (e_deb_type == 5)
    fprintf(fp,
-     "%s -m pdb %s < %s > %s 2> %s\necho type \\<Return\\> to continue\nread i\n",
+     "%s -m pdb %s < %s > %s 2> %s\n"
+     "echo 'type <Return> to continue' > /dev/tty\nread i < /dev/tty\n",
      e_debugger, prog, npipe[0], npipe[1], npipe[2]);
   else if (!e_deb_swtch)
    fprintf(fp,
-     "%s %s < %s > %s 2> %s\necho type \\<Return\\> to continue\nread i\n",
+     "%s %s < %s > %s 2> %s\n"
+     "echo 'type <Return> to continue' > /dev/tty\nread i < /dev/tty\n",
      e_debugger, prog, npipe[0], npipe[1], npipe[2]);
   else
    fprintf(fp,
-     "%s %s %s < %s > %s 2> %s\necho type \\<Return\\> to continue\nread i\n",
+     "%s %s %s < %s > %s 2> %s\n"
+     "echo 'type <Return> to continue' > /dev/tty\nread i < /dev/tty\n",
      e_debugger, e_deb_swtch, prog, npipe[0], npipe[1], npipe[2]);
   fprintf(fp, "rm -f %s\n", file);
   fclose(fp);

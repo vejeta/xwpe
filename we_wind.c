@@ -1120,8 +1120,12 @@ void e_pr_line(int y, FENSTER *f)
      /* Wide chars (emoji, CJK) take 2 columns: fill second cell with space */
      if (cw > 1 && j + 1 < COL_NUM_ON_SCREEN_RIGHT)
      {
+      e_pt_flags(f->a.x - NUM_COLS_OFF_SCREEN_LEFT + j + 1,
+        y - NUM_LINES_OFF_SCREEN_TOP + f->a.y + 1, CELL_WIDE);
       e_pr_char(f->a.x - NUM_COLS_OFF_SCREEN_LEFT + j + 2,
         y - NUM_LINES_OFF_SCREEN_TOP + f->a.y + 1, ' ', frb);
+      e_pt_flags(f->a.x - NUM_COLS_OFF_SCREEN_LEFT + j + 2,
+        y - NUM_LINES_OFF_SCREEN_TOP + f->a.y + 1, CELL_WIDE_SPACER);
       j += cw - 1;  /* extra column advance for wide char */
      }
      i += nb - 1;  /* skip continuation bytes (loop does i++) */

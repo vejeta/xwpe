@@ -37,6 +37,15 @@ AS_IF([test "x$have_x11" != xyes], [
 ])
 AM_CONDITIONAL([HAVE_X11], [test "x$have_x11" = xyes])
 
+# --- Optional: Xft (antialiased font rendering, requires X11) ---
+have_xft=no
+AS_IF([test "x$have_x11" = xyes], [
+  PKG_CHECK_MODULES([XFT], [xft fontconfig], [
+    have_xft=yes
+    AC_DEFINE([HAVE_XFT], [1], [Define if Xft is available])
+  ], [have_xft=no])
+])
+
 # --- Optional: GPM mouse ---
 AC_ARG_WITH([gpm],
   [AS_HELP_STRING([--without-gpm], [Disable GPM mouse support])],
@@ -86,6 +95,7 @@ AC_MSG_RESULT([
   xwpe $PACKAGE_VERSION configuration:
     ncursesw:  yes (via pkg-config)
     X11:       $have_x11
+    Xft:       $have_xft
     GPM:       $have_gpm
     PRNTCMD:   $PRNTCMD
     pandoc:    $PANDOC

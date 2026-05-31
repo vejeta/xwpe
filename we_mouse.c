@@ -388,6 +388,7 @@ int fl_wnd_mouse(sw, k, fw)
 	         for (i = 0; i < MLEN; i++)
 	         {  fcells[i].ch = *(fw->df->name[fw->nf]+c+i);
 		    fcells[i].attr = fw->f->fb->fz.fb;
+		    fcells[i].flags = 0;
 	         }
 	       }
 	       e_gt_btstr(e_mouse.x-xdif, e_mouse.y, MLEN, bgrd);
@@ -789,8 +790,14 @@ int e_edt_mouse(int c, FENSTER *f)
 int e_mouse_cursor(BUFFER *b, SCHIRM *s, FENSTER *f)
 {
  extern struct mouse e_mouse;
+ int mx = e_mouse.x;
 
- b->b.x = e_mouse.x-f->a.x+s->c.x-1;
+ /* If click lands on a wide-char spacer cell, back up to the wide char */
+ if (mx >= 0 && mx < MAXSCOL && e_mouse.y >= 0 && e_mouse.y < MAXSLNS &&
+     (e_gt_flags(mx, e_mouse.y) & CELL_WIDE_SPACER) && mx > 0)
+  mx--;
+
+ b->b.x = mx-f->a.x+s->c.x-1;
  b->b.y = e_mouse.y-f->a.y+s->c.y-1;
  if (b->b.y < 0) b->b.y = 0;
  else if (b->b.y >= b->mxlines) b->b.y = b->mxlines - 1;

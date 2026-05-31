@@ -434,15 +434,25 @@ int e_eingabe(ECNT *e)
     }
     else
     {
-     if (b->b.x > 0) b->b.x--;
+     if (b->b.x > 0)
+     {
+      /* Move back over UTF-8 continuation bytes */
+      int old_x = b->b.x;
+      b->b.x--;
+      while (b->b.x > 0 &&
+             ((unsigned char)b->bf[b->b.y].s[b->b.x] & 0xC0) == 0x80)
+       b->b.x--;
+      if (f->flg & 1) e_del_a_ind(b, s);
+      else e_del_nchar(b, s, b->b.x, b->b.y, old_x - b->b.x);
+     }
      else
      {
       b->b.y--;
       b->b.x = b->bf[b->b.y].len;
       if (*(b->bf[b->b.y].s+b->b.x) == '\0') b->b.x--;
+      if (f->flg & 1) e_del_a_ind(b, s);
+      else e_del_nchar(b, s, b->b.x, b->b.y, 1);
      }
-     if (f->flg & 1) e_del_a_ind(b,  s);
-     else e_del_nchar(b, s, b->b.x, b->b.y, 1);
     }
     e_schirm(f, 1);
    }
@@ -459,7 +469,18 @@ int e_eingabe(ECNT *e)
    if (*(b->bf[b->b.y].s + b->b.x) != '\0' &&
      (b->b.y < b->mxlines-1 || *(b->bf[b->b.y].s + b->b.x) != WPE_WR))
    {
-    e_del_nchar(b, s, b->b.x, b->b.y, 1);
+    /* Determine number of bytes in the character at cursor */
+    unsigned char uc = (unsigned char)b->bf[b->b.y].s[b->b.x];
+    int del_n = 1;
+    if (uc >= 0xC0 && uc < 0xFE)
+    {
+     int pos = b->b.x + 1;
+     while (pos < b->bf[b->b.y].len &&
+            ((unsigned char)b->bf[b->b.y].s[pos] & 0xC0) == 0x80)
+      pos++;
+     del_n = pos - b->b.x;
+    }
+    e_del_nchar(b, s, b->b.x, b->b.y, del_n);
     e_schirm(f, 1);
    }
   }
@@ -540,6 +561,10 @@ int e_tst_cur(int c, ECNT *e)
       case CLE:
       case CLE+512:
 	 (b->b.x)--;
+	 /* Skip UTF-8 continuation bytes (10xxxxxx) when moving left */
+	 while (b->b.x > 0 &&
+	        ((unsigned char)b->bf[b->b.y].s[b->b.x] & 0xC0) == 0x80)
+	  (b->b.x)--;
 	 if(b->b.x < 0)
 	 {  if(b->b.y > 0)
 	    {  (b->b.y)--; b->b.x = b->bf[b->b.y].len;  }
@@ -549,7 +574,22 @@ int e_tst_cur(int c, ECNT *e)
       case CtrlF:
       case CRI:
       case CRI+512:
-	 (b->b.x)++;
+	 if (b->b.x < b->bf[b->b.y].len)
+	 {
+	  /* Skip entire UTF-8 sequence when moving right */
+	  unsigned char uc = (unsigned char)b->bf[b->b.y].s[b->b.x];
+	  (b->b.x)++;
+	  if (uc >= 0xC0 && uc < 0xFE)
+	  {
+	   while (b->b.x < b->bf[b->b.y].len &&
+	          ((unsigned char)b->bf[b->b.y].s[b->b.x] & 0xC0) == 0x80)
+	    (b->b.x)++;
+	  }
+	 }
+	 else
+	 {
+	  (b->b.x)++;
+	 }
 	 if(b->b.x > b->bf[b->b.y].len)
 	 {  if(b->b.y < b->mxlines - 1)  {  (b->b.y)++; b->b.x = 0;  }
 	    else {  b->b.x = b->bf[b->b.y].len;  }
@@ -1178,11 +1218,26 @@ int e_chr_sp(int x, BUFFER *b, FENSTER *f)
 
  for (i = j = 0; i + j < x && i < b->bf[b->b.y].len; i++)
  {
-  if (*(b->bf[b->b.y].s + i) == WPE_TAB)
+  unsigned char uc = (unsigned char) *(b->bf[b->b.y].s + i);
+  if (uc == WPE_TAB)
    j += (f->ed->tabn - ((j + i) % f->ed->tabn) - 1);
 #ifdef UNIX
-  else if (*(b->bf[b->b.y].s + i) < ' ')
+  else if (uc < ' ')
    j++;
+  else if (uc >= 0xC0 && uc < 0xFE)
+  {
+   /* UTF-8 lead byte: decode and adjust columns */
+   wchar_t wc = 0;
+   mbstate_t mbs = {0};
+   int nb = mbrtowc(&wc, b->bf[b->b.y].s + i, b->bf[b->b.y].len - i, &mbs);
+   if (nb > 1)
+   {
+    int cw = wcwidth(wc);
+    if (cw < 1) cw = 1;
+    j += cw - nb;
+    i += nb - 1;  /* skip continuation bytes (loop does i++) */
+   }
+  }
   if (f->dtmd == DTMD_HELP)
   {
    if (b->bf[b->b.y].s[i] == HBG || b->bf[b->b.y].s[i] == HFB ||
@@ -1504,9 +1559,27 @@ void e_cursor(FENSTER *f, int sw)
  else if (b->b.x > b->bf[b->b.y].len) b->b.x = b->bf[b->b.y].len;
  for (i = j = 0; i < b->b.x; i++)
  {
-  if (*(b->bf[b->b.y].s + i) == WPE_TAB)
+  unsigned char uc = (unsigned char) *(b->bf[b->b.y].s + i);
+  if (uc == WPE_TAB)
    j += (f->ed->tabn - ((j + i) % f->ed->tabn) - 1);
-  else if (*(b->bf[b->b.y].s + i) < ' ') j++;
+  else if (uc < ' ') j++;
+  else if (uc >= 0xC0 && uc < 0xFE)
+  {
+   /* UTF-8 lead byte: decode and adjust for multi-byte and wide chars.
+      Each byte counts as 1 in b->b.x, but visually multi-byte sequences
+      occupy fewer columns.  Adjust j so (b->b.x + j) = screen column. */
+   wchar_t wc = 0;
+   mbstate_t mbs = {0};
+   int nb = mbrtowc(&wc, b->bf[b->b.y].s + i, b->bf[b->b.y].len - i, &mbs);
+   if (nb > 1)
+   {
+    int cw = wcwidth(wc);
+    if (cw < 1) cw = 1;
+    /* nb bytes -> cw screen columns: adjust j by (cw - nb) */
+    j += cw - nb;
+    i += nb - 1;  /* skip continuation bytes (loop does i++) */
+   }
+  }
   if (f->dtmd == DTMD_HELP)
   {
    if (b->bf[b->b.y].s[i] == HBG || b->bf[b->b.y].s[i] == HED ||

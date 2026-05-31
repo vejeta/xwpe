@@ -239,14 +239,19 @@ int e_run(FENSTER *f)
 {
  ECNT *cn = f->ed;
  BUFFER *b;
- SCHIRM *s;
+ FENSTER *mf;
  char estr[256];
- int len, ret;
+ char src_dirct[256], src_datnam[256];
+ int len, ret, i;
 
  efildes[0] = efildes[1] = -1;
  wfildes[0] = wfildes[1] = -1;
  if (!e_run_sh(f))
   return(0);
+ strncpy(src_dirct, f->dirct, sizeof(src_dirct) - 1);
+ src_dirct[sizeof(src_dirct) - 1] = '\0';
+ strncpy(src_datnam, f->datnam, sizeof(src_datnam) - 1);
+ src_datnam[sizeof(src_datnam) - 1] = '\0';
  if (e_p_make(f))
   return(-1);
  WpeMouseChangeShape(WpeWorkingShape);
@@ -256,54 +261,99 @@ int e_run(FENSTER *f)
   e_d_quit(f);
 #endif
  estr[0] = '\0';
- if ((!e_s_prog.exe_name) || (e_s_prog.exe_name[0]!=DIRC))
+ if (e_s_prog.comp_sw & 1)
  {
-  strcat(estr, e_prog.exedir);
-  len = strlen(estr) - 1;
-  if (estr[len] != DIRC)
+  sprintf(estr, "%s %s%s", e_s_prog.compiler, src_dirct, src_datnam);
+ }
+ else
+ {
+  if ((!e_s_prog.exe_name) || (e_s_prog.exe_name[0]!=DIRC))
   {
-   estr[++len] = DIRC;
-   estr[++len] = '\0';
+   strcat(estr, e_prog.exedir);
+   len = strlen(estr) - 1;
+   if (estr[len] != DIRC)
+   {
+    estr[++len] = DIRC;
+    estr[++len] = '\0';
+   }
   }
+  if (e_s_prog.exe_name && e_s_prog.exe_name[0])
+  {
+   strcat(estr, e_s_prog.exe_name);
+  }
+  else if (!e__project)
+  {
+   strcat(estr, f->datnam);
+   WpeStringCutChar(estr, '.');
+   strcat(estr, ".e");
+  }
+  else
+   strcat(estr, "a.out");
  }
- if (e_s_prog.exe_name && e_s_prog.exe_name[0])
- {
-  strcat(estr, e_s_prog.exe_name);
- }
- else if (!e__project)
- {
-  /* Default executable name of the source file - extension + ".e" */
-  strcat(estr, f->datnam);
-  WpeStringCutChar(estr, '.');
-  strcat(estr, ".e");
- }
- else /* Default project executable name of "a.out" */
-  strcat(estr, "a.out");
  strcat(estr, " ");
  if (e_prog.arguments)
   strcat(estr, e_prog.arguments);
+
+ for (i = cn->mxedt; i > 0 && strcmp(cn->f[i]->datnam, "Messages"); i--)
+  ;
+ if (i <= 0)
+ {
+  e_edit(cn, "Messages");
+  i = cn->mxedt;
+ }
+ mf = cn->f[i];
+ b = mf->b;
+
 #ifndef NO_XWINDOWS
- if (WpeIsXwin())
+ if (WpeIsXwin() && (e_s_prog.comp_sw & 1))
+ {
+  FILE *pp;
+  char line[1024];
+  if (b->bf[b->mxlines-1].len != 0)
+   e_new_line(b->mxlines, b);
+  print_to_end_of_buffer(b, "--- Run output ---", 0);
+  strcat(estr, " 2>&1");
+  { struct sigaction _old, _ign;
+    _ign.sa_handler = SIG_DFL;
+    sigemptyset(&_ign.sa_mask);
+    _ign.sa_flags = 0;
+    sigaction(SIGCHLD, &_ign, &_old);
+    pp = popen(estr, "r");
+    if (pp)
+    {
+     while (fgets(line, sizeof(line), pp))
+     {
+      len = strlen(line);
+      if (len > 0 && line[len-1] == '\n') line[len-1] = '\0';
+      print_to_end_of_buffer(b, line, 0);
+     }
+     ret = WEXITSTATUS(pclose(pp));
+    }
+    else
+     ret = -1;
+    sigaction(SIGCHLD, &_old, NULL);
+  }
+ }
+ else if (WpeIsXwin())
+ {
   ret = (*e_u_system)(estr);
+ }
  else
 #endif
+ {
   ret = e_system(estr, cn);
- /* After e_system() the terminal was in raw mode for the child process.
-    Force ncurses to redraw everything including the menu bar. */
+ }
 #ifdef NCURSES
  clearok(stdscr, TRUE);
 #endif
  e_repaint_desk(cn->f[cn->mxedt]);
- f = cn->f[cn->mxedt];
- b = cn->f[cn->mxedt]->b;
- s = cn->f[cn->mxedt]->s;
 
  sprintf(estr, e_p_msg[ERR_RETCODE], ret);
  print_to_end_of_buffer(b, estr, b->mx.x);
 
  b->b.y = b->mxlines-1;
- e_cursor(f, 1);
- e_schirm(f, 1);
+ e_cursor(mf, 1);
+ e_schirm(mf, 1);
  e_refresh();
  WpeMouseRestoreShape();
  return(0);

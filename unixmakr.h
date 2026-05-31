@@ -48,14 +48,22 @@ extern char *ctree[5];
 typedef struct {
  int ch;    /* character (wchar_t or special char code) */
  int attr;  /* color/attribute byte (xwpe format) */
+ int flags; /* CELL_WIDE, CELL_WIDE_SPACER */
 } SCREENCELL;
+
+#define CELL_WIDE        0x01  /* first cell of a wide character (wcwidth=2) */
+#define CELL_WIDE_SPACER 0x02  /* second cell, continuation of wide char */
 
 extern SCREENCELL *schirm;
 extern SCREENCELL *altschirm;
 
 #define e_pr_char(x, y, c, frb)  \
  ( schirm[(y) * MAXSCOL + (x)].ch = (c), \
-   schirm[(y) * MAXSCOL + (x)].attr = (frb) )
+   schirm[(y) * MAXSCOL + (x)].attr = (frb), \
+   schirm[(y) * MAXSCOL + (x)].flags = 0 )
+
+#define e_gt_flags(x, y) (schirm[(y) * MAXSCOL + (x)].flags)
+#define e_pt_flags(x, y, f) (schirm[(y) * MAXSCOL + (x)].flags = (f))
 
 #define e_gt_char(x, y)  (schirm[(y) * MAXSCOL + (x)].ch)
 #define e_gt_col(x, y)   (schirm[(y) * MAXSCOL + (x)].attr)

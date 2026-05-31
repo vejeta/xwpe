@@ -467,13 +467,21 @@ void e_pr_c_line(int y, FENSTER *f)
  int fsw = 0;
 #endif
 
- for (i = j = 0; j < s->c.x; j++, i++)
+ for (i = j = 0; j < s->c.x && i < b->bf[y].len; j++, i++)
  {
-  if (*(b->bf[y].s + i) == WPE_TAB)
+  unsigned char uc = (unsigned char) *(b->bf[y].s + i);
+  if (uc == WPE_TAB)
    j += (f->ed->tabn - j % f->ed->tabn - 1);
 #ifdef UNIX
-  else if (*(b->bf[y].s + i) < ' ')
+  else if (uc < ' ')
    j++;
+  else if (uc >= 0xC0 && uc < 0xFE)
+  {
+   wchar_t wc = 0;
+   mbstate_t mbs = {0};
+   int nb = mbrtowc(&wc, b->bf[y].s + i, b->bf[y].len - i, &mbs);
+   if (nb > 1) { int cw = wcwidth(wc); if (cw > 1) j += cw - 1; i += nb - 1; }
+  }
 #endif
  }
  if (j > s->c.x)
@@ -528,8 +536,40 @@ void e_pr_c_line(int y, FENSTER *f)
      *(b->bf[y].s + i) + 'A' - 1, frb);
 #endif
   else
-   e_pr_char(f->a.x - s->c.x + j + 1, y - s->c.y + f->a.y + 1,
-     *(b->bf[y].s + i), frb);
+  {
+   unsigned char uc = (unsigned char) *(b->bf[y].s + i);
+   if (uc >= 0xC0 && uc < 0xFE)
+   {
+    /* UTF-8 lead byte: decode full character */
+    wchar_t wc = 0;
+    mbstate_t mbs = {0};
+    int nb = mbrtowc(&wc, b->bf[y].s + i, b->bf[y].len - i, &mbs);
+    if (nb > 1)
+    {
+     int cw = wcwidth(wc);
+     if (cw < 1) cw = 1;
+     e_pr_char(f->a.x - s->c.x + j + 1, y - s->c.y + f->a.y + 1,
+       (int)wc, frb);
+     if (cw > 1 && j + 1 < NUM_COLS_ON_SCREEN + s->c.x - 1)
+     {
+      e_pt_flags(f->a.x - s->c.x + j + 1, y - s->c.y + f->a.y + 1,
+        CELL_WIDE);
+      e_pr_char(f->a.x - s->c.x + j + 2, y - s->c.y + f->a.y + 1,
+        ' ', frb);
+      e_pt_flags(f->a.x - s->c.x + j + 2, y - s->c.y + f->a.y + 1,
+        CELL_WIDE_SPACER);
+      j += cw - 1;
+     }
+     i += nb - 1;
+    }
+    else
+     e_pr_char(f->a.x - s->c.x + j + 1, y - s->c.y + f->a.y + 1,
+       '?', frb);
+   }
+   else
+    e_pr_char(f->a.x - s->c.x + j + 1, y - s->c.y + f->a.y + 1,
+      *(b->bf[y].s + i), frb);
+  }
  }
 
  e_mk_col(b->bf[y].s, b->bf[y].len, i, frb, f->c_st, n_nd, n_bg);

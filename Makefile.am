@@ -7,6 +7,7 @@ AUTOMAKE_OPTIONS = foreign
 AM_CFLAGS = -std=gnu17 \
   $(NCURSESW_CFLAGS) \
   $(X_CFLAGS) \
+  $(XFT_CFLAGS) \
   -DLIBRARY_DIR=\"$(pkglibdir)\" \
   -Wno-incompatible-pointer-types \
   -Wno-implicit-function-declaration \
@@ -47,6 +48,7 @@ we_SOURCES = \
 we_LDADD = \
   $(NCURSESW_LIBS) \
   $(X_LIBS) \
+  $(XFT_LIBS) \
   $(GPM_LIBS) \
   $(UTIL_LIBS) \
   -lz

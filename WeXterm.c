@@ -119,6 +119,65 @@ void WpeXFontGet(XrmDatabase xresdb, XrmQuark *name_list,
  WpeXInfo.font_height = WpeXInfo.font->max_bounds.ascent +
                         WpeXInfo.font->max_bounds.descent;
  WpeXInfo.font_width = WpeXInfo.font->max_bounds.width;
+
+#ifdef HAVE_XFT
+ /* Initialize Xft font using fontconfig pattern matching (st pattern).
+  * Derive point size from the core X font metrics so the Xft font is
+  * the same visual size. */
+ {
+  char xft_spec[64];
+  FcPattern *configured, *match;
+  FcResult fcres;
+  int pt_size = WpeXInfo.font_height <= 13 ? 10 : WpeXInfo.font_height - 3;
+
+  sprintf(xft_spec, "monospace:size=%d", pt_size);
+  WpeXInfo.xftpattern = FcNameParse((const FcChar8 *)xft_spec);
+  if (!WpeXInfo.xftpattern)
+  {
+   fprintf(stderr, "Xwpe: FcNameParse failed for \"%s\"\n", xft_spec);
+   goto xft_skip;
+  }
+
+  configured = FcPatternDuplicate(WpeXInfo.xftpattern);
+  if (!configured)
+   goto xft_skip;
+
+  FcConfigSubstitute(NULL, configured, FcMatchPattern);
+  XftDefaultSubstitute(WpeXInfo.display, WpeXInfo.screen, configured);
+
+  match = FcFontMatch(NULL, configured, &fcres);
+  if (!match)
+  {
+   FcPatternDestroy(configured);
+   goto xft_skip;
+  }
+
+  WpeXInfo.xftfont = XftFontOpenPattern(WpeXInfo.display, match);
+  if (!WpeXInfo.xftfont)
+  {
+   FcPatternDestroy(configured);
+   FcPatternDestroy(match);
+   goto xft_skip;
+  }
+
+  /* Override font metrics from Xft */
+  WpeXInfo.font_height = WpeXInfo.xftfont->ascent + WpeXInfo.xftfont->descent;
+  WpeXInfo.font_width = WpeXInfo.xftfont->max_advance_width;
+
+  /* Save configured pattern for fallback lookups */
+  FcPatternDestroy(WpeXInfo.xftpattern);
+  WpeXInfo.xftpattern = configured;
+  WpeXInfo.xftfont_set = NULL;
+
+  goto xft_done;
+xft_skip:
+  fprintf(stderr, "Xwpe: Xft font init failed, falling back to core X font\n");
+  WpeXInfo.xftfont = NULL;
+xft_done:
+  ;
+ }
+#endif
+
  return ;
 }
 
@@ -465,7 +524,50 @@ void WpeXInit(int *argc, char **argv)
  WpeXInfo.selection = NULL;
  WpeXGCSetup();
 
+#ifdef HAVE_XFT
+ /* Initialize XftColor array from the allocated X11 colors */
+ if (WpeXInfo.xftfont)
+ {
+  Colormap cmap = DefaultColormap(WpeXInfo.display, WpeXInfo.screen);
+  int ci;
+  for (ci = 0; ci < 16; ci++)
+  {
+   XColor xc;
+   xc.pixel = WpeXInfo.colors[ci];
+   XQueryColor(WpeXInfo.display, cmap, &xc);
+   {
+    XRenderColor rc;
+    rc.red = xc.red;
+    rc.green = xc.green;
+    rc.blue = xc.blue;
+    rc.alpha = 0xffff;
+    XftColorAllocValue(WpeXInfo.display,
+      DefaultVisual(WpeXInfo.display, WpeXInfo.screen),
+      cmap, &rc, &WpeXInfo.xftcolors[ci]);
+   }
+  }
+ }
+#endif
+
  XMapWindow(WpeXInfo.display, WpeXInfo.window);
+
+#ifdef HAVE_XFT
+ /* Create back buffer Pixmap and XftDraw (after XMapWindow so window exists) */
+ if (WpeXInfo.xftfont)
+ {
+  WpeXInfo.backbuf = XCreatePixmap(WpeXInfo.display, WpeXInfo.window,
+    size_hints.width, size_hints.height,
+    DefaultDepth(WpeXInfo.display, WpeXInfo.screen));
+  WpeXInfo.xftdraw = XftDrawCreate(WpeXInfo.display, WpeXInfo.backbuf,
+    DefaultVisual(WpeXInfo.display, WpeXInfo.screen),
+    DefaultColormap(WpeXInfo.display, WpeXInfo.screen));
+  /* Clear the back buffer to black */
+  XSetForeground(WpeXInfo.display, WpeXInfo.gc,
+    BlackPixel(WpeXInfo.display, WpeXInfo.screen));
+  XFillRectangle(WpeXInfo.display, WpeXInfo.backbuf, WpeXInfo.gc,
+    0, 0, size_hints.width, size_hints.height);
+ }
+#endif
 
  for (cursor_num = WpeEditingShape; cursor_num < WpeLastShape; cursor_num++)
  {

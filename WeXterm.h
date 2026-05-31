@@ -15,6 +15,10 @@ extern "C" {
   Includes
 \* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
 #include <X11/Xlib.h>
+#ifdef HAVE_XFT
+#include <X11/Xft/Xft.h>
+#include <fontconfig/fontconfig.h>
+#endif
 #include "Xwpe.h"
 
 /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - *\
@@ -39,6 +43,14 @@ typedef struct wpeXStruct {
  int colors[16];
  WpeMouseShape shape_list[2];
  char *selection;
+#ifdef HAVE_XFT
+ XftFont *xftfont;
+ XftDraw *xftdraw;
+ XftColor xftcolors[16];
+ Pixmap backbuf;
+ FcPattern *xftpattern;
+ FcFontSet *xftfont_set;
+#endif
 } WpeXStruct;
 
 /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - *\
