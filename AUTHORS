@@ -82,30 +82,13 @@ Current upstream maintainer
 ---------------------------
 Juan Manuel Mendez Rey <juan.mendezr@proton.me>
   Took over upstream maintenance in 2026 with Dennis Payne's blessing.
-  Fix for terminal not being reset on clean exit (we_unix.c).
-  Fix for crash in colour dialog when dragging mouse off the table (we_opt.c,
-  Debian #228820 -- a 22-year-old upstream bug finally closed).
-  SCREENCELL buffer model replacing the 1993 byte-based screen buffer,
-  enabling native UTF-8 display with correct border alignment (v1.6.0).
-  Terminal resize support via KEY_RESIZE handler.
-  Keyboard mapping fix for modern PC keyboards (PageUp/Home/End/Delete).
-  GPM check to avoid "not found" error when gpm is not installed.
-  Modern autotools build system: configure.ac + Makefile.am (v1.6.1).
-  Complete SCREENCELL migration for popup save/restore (v1.6.2).
-  Compiler integration: gnu_intstr for modern GCC, gfortran/fpc/javac
-  defaults, non-GNU flag handling, blank-line output fix.
-  Debugger resurrection: SIGCHLD fix, skip-recompile/relink, pty-based
-  program output capture with fflush(0), User Screen (Ctrl-G P).
-  jdb (Java Debugger) as 5th debugger backend with poll()-based async
-  JVM startup and dual prompt detection.
-  ncurses mouse support for terminal emulators (xterm mouse protocol).
-  Migrated GPM mouse from Suraci's direct Gpm_Open() to ncurses-managed
-  GPM, resolving 26-year conflict with ncurses 6.x built-in integration.
-  Fixed cursor-to-Messages after successful compile, menu bar redraw
-  after Ctrl-F9 Run, File Manager panel scroll on Tab.
-  Python support: syntax highlighting, F9 (py_compile), pdb debugger.
-  LaTeX support: syntax highlighting, F9 (pdflatex), error navigation.
-  Fixed 33-year-old Redo crash (SIGSEGV after search/replace undo).
-  12-chapter Texinfo manual integrated into help system.
-  33 automated pyte tests (UTF-8, scrollbar, compile, menu).
-  560+ file historical archive at codeberg.org/mendezr/xwpe-archive.
+  v1.6.0: SCREENCELL buffer model, UTF-8 display, terminal resize,
+    modern keyboard mapping.
+  v1.6.1: Modern autotools build (configure.ac + Makefile.am).
+  v1.6.2: Xft rendering with color emoji and Pixmap double-buffering,
+    CELL_WIDE buffer model, compiler integration for 7 languages,
+    debugger resurrection (gdb/jdb/pdb), ncurses mouse, GPM migration,
+    Python and LaTeX support, integrated output to Messages buffer,
+    X11 shadow/echo fixes, 33-year-old Redo crash fix,
+    12-chapter Texinfo manual, 33 pyte tests.
+  Historical archive: codeberg.org/mendezr/xwpe-archives
