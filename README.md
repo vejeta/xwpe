@@ -128,6 +128,7 @@ See CHANGELOG for full details.
 | fpc      | Pascal   | ok | ok | `.p` `.pas` `.pp` |
 | javac    | Java     | ok | ok | `.java` |
 | python3  | Python   | ok | ok | `.py` |
+| pdflatex | LaTeX    | ok | ok | `.tex` |
 
 ### Should work (GNU `file:line:column:` format)
 
@@ -309,6 +310,7 @@ sudo apt install gfortran             # Fortran
 sudo apt install fpc                  # Free Pascal
 sudo apt install default-jdk          # Java (javac + jdb)
 sudo apt install python3              # Python (py_compile + pdb)
+sudo apt install texlive-latex-base   # LaTeX (pdflatex)
 
 # Debuggers
 sudo apt install gdb                  # C/C++/Fortran/Pascal debugging

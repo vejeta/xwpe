@@ -53,6 +53,16 @@ is lambda nonlocal not or pass raise return try while with yield
 0
 ~^()[]{}<>+-/*%=|&!.?:,;@ NULL NULL # NULL "' \  -1 -1 1000
 
+.tex
+30
+documentclass usepackage begin end section subsection subsubsection
+paragraph chapter part newcommand renewcommand newenvironment
+includegraphics input include label ref cite bibliography
+textbf textit emph underline footnote caption title author date
+maketitle tableofcontents
+0
+~^()[]{}<>+-/*%=|&!.?:,;@ NULL NULL % NULL "' \\  -1 -1 1000
+
 .java
 47
 abstract boolean break byte case catch char class const continue

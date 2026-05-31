@@ -1002,7 +1002,7 @@ int e_ini_prog(ECNT *cn)
 {
  int i;
 
- e_prog.num = 6;
+ e_prog.num = 7;
  if (e_prog.arguments) FREE(e_prog.arguments);
  e_prog.arguments = WpeStrdup("");
  if (e_prog.project) FREE(e_prog.project);
@@ -1069,12 +1069,21 @@ int e_ini_prog(ECNT *cn)
  e_prog.comp[5]->key = 'Y';
  e_prog.comp[5]->x = 0;
  e_prog.comp[5]->intstr = WpeStrdup("*${FILE}, line ${LINE}");
+ e_prog.comp[6]->compiler = WpeStrdup("pdflatex");
+ e_prog.comp[6]->language = WpeStrdup("LaTeX");
+ e_prog.comp[6]->filepostfix = (char **)WpeExpArrayCreate(1, sizeof(char *), 1);
+ e_prog.comp[6]->filepostfix[0] = WpeStrdup(".tex");
+ e_prog.comp[6]->key = 'L';
+ e_prog.comp[6]->x = 0;
+ e_prog.comp[6]->intstr = WpeStrdup("${FILE}:${LINE}:*");
  for (i = 0; i < e_prog.num; i++)
  {
-  e_prog.comp[i]->comp_str = WpeStrdup(i == 5 ? "-m py_compile" : "-g");
+  if (i == 5) e_prog.comp[i]->comp_str = WpeStrdup("-m py_compile");
+  else if (i == 6) e_prog.comp[i]->comp_str = WpeStrdup("-interaction=nonstopmode");
+  else e_prog.comp[i]->comp_str = WpeStrdup("-g");
   e_prog.comp[i]->libraries = WpeStrdup("");
   e_prog.comp[i]->exe_name = WpeStrdup("");
-  e_prog.comp[i]->comp_sw = i < 3 ? 0 : 1;  /* GNU for gcc/g++/gfortran, other for fpc/javac/python */
+  e_prog.comp[i]->comp_sw = i < 3 ? 0 : 1;  /* GNU for gcc/g++/gfortran, other for fpc/javac/python/latex */
  }
  e_copy_prog(&e_s_prog, e_prog.comp[0]);
  return(0);
