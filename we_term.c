@@ -97,6 +97,8 @@ char *tgoto();
 #endif
 #endif
 
+int WpeGpmMouseInit(void);
+
 int WpeDllInit(int *argc, char **argv)
 {
  fk_u_cursor = fk_t_cursor;
@@ -113,11 +115,14 @@ int WpeDllInit(int *argc, char **argv)
  e_u_sys_end = e_t_sys_end;
  e_u_system = system;
  fk_u_putchar = fk_t_putchar;
- /* Mouse: always use ncurses mouse backend (fk_t_mouse).
-    ncurses 6.x handles GPM internally via mousemask() -- no need for
-    the direct Gpm_Open() path from Suraci (1998) which conflicts with
-    ncurses' own GPM connection.  See FEATURE-mouse-ncurses-gpm.md. */
- fk_mouse = fk_t_mouse;
+#ifdef HAVE_LIBGPM
+ if (WpeGpmMouseInit() == 0)
+ {
+  fk_mouse = WpeGpmMouse;
+ }
+ else
+#endif
+  fk_mouse = fk_t_mouse;
  WpeMouseChangeShape = (void (*)(WpeMouseShape))WpeNullFunction;
  WpeMouseRestoreShape = WpeNullFunction;
  WpeDisplayEnd = e_endwin;
@@ -470,16 +475,6 @@ int e_t_initscr()
  nonl();
  intrflush(stdscr,FALSE);
  keypad(stdscr,TRUE);
-#if MOUSE
- /* Enable ncurses mouse events.  Only request PRESSED and RELEASED --
-    CLICKED/DOUBLE_CLICKED cause duplicate events (one physical click
-    generates both PRESSED and CLICKED, making xwpe see two clicks).
-    On terminal emulators this activates the xterm mouse protocol;
-    on Linux console with GPM, ncurses uses its built-in GPM
-    integration to deliver events as KEY_MOUSE via getmouse(). */
- mousemask(BUTTON1_PRESSED | BUTTON2_PRESSED | BUTTON3_PRESSED, NULL);
- mouseinterval(0);
-#endif
 #endif
  if (has_colors())
  {
@@ -823,29 +818,6 @@ int e_t_getch()
     break;
    }
    case KEY_BACKSPACE:  c = WPE_DC; break;
-#if MOUSE
-   case KEY_MOUSE:
-   {
-    MEVENT mev;
-    if (getmouse(&mev) == OK)
-    {
-     extern struct mouse e_mouse;
-     e_mouse.x = mev.x;
-     e_mouse.y = mev.y;
-     /* Only signal a click (-1) on PRESSED.  RELEASED updates
-        coordinates but returns 0 so e_mshit() detects button-up. */
-     if (mev.bstate & (BUTTON1_PRESSED|BUTTON2_PRESSED|BUTTON3_PRESSED))
-     {
-      e_mouse.k = (mev.bstate & BUTTON1_PRESSED) ? 1 :
-                  (mev.bstate & BUTTON2_PRESSED) ? 2 : 4;
-      return(-1);
-     }
-     e_mouse.k = 0;
-    }
-    c = 0;
-    break;
-   }
-#endif
    case KEY_HELP:  c = HELP; break;
    case KEY_LL:  c = ENDE; break;
    case KEY_F(17):  c = SF1; break;
@@ -1087,59 +1059,6 @@ int fk_t_locate(int x, int y)
 
 int fk_t_mouse(int *g)
 {
-#if MOUSE
- /* ncurses mouse backend for both terminal emulators (xterm protocol)
-    and Linux console (GPM via ncurses' internal integration).
-    Polls getch() briefly for KEY_MOUSE events.  Non-mouse keys are
-    pushed back with ungetch().
-
-    Button hold detection: we only request PRESSED events (not RELEASED)
-    because GPM via ncurses sends RELEASED immediately after PRESSED,
-    which looks like a click-and-release even when the user is holding.
-    Instead, we track a "hold counter": on PRESSED it's set high, and
-    each poll without a new PRESSED decrements it.  When it reaches 0,
-    we report button released.  This gives ~150ms of hold time. */
- extern struct mouse e_mouse;
- static int hold_count = 0;
- MEVENT mev;
-
- if (g[0] == 2)
-  return(0);  /* hide cursor: no-op for ncurses */
-
- timeout(50);
- int ch = getch();
- timeout(-1);
-
- if (ch == KEY_MOUSE && getmouse(&mev) == OK)
- {
-  g[2] = mev.x * 8;
-  g[3] = mev.y * 8;
-  e_mouse.x = mev.x;
-  e_mouse.y = mev.y;
-  if (mev.bstate & (BUTTON1_PRESSED|BUTTON2_PRESSED|BUTTON3_PRESSED))
-  {
-   e_mouse.k = (mev.bstate & BUTTON1_PRESSED) ? 1 :
-               (mev.bstate & BUTTON2_PRESSED) ? 2 : 4;
-   hold_count = 3;  /* hold for ~150ms (3 * 50ms timeout) */
-  }
-  g[1] = e_mouse.k;
- }
- else
- {
-  if (ch != ERR)
-   ungetch(ch);
-  /* No new event: decrement hold counter */
-  if (hold_count > 0)
-   hold_count--;
-  else
-   e_mouse.k = 0;
-  g[1] = e_mouse.k;
-  g[2] = e_mouse.x * 8;
-  g[3] = e_mouse.y * 8;
- }
-#else
- g[1] = 0;
-#endif
  return(0);
 }
 
@@ -1174,41 +1093,7 @@ int e_t_deb_out(FENSTER *f)
  extern char *e_d_prog_output;
  extern int e_d_prog_output_len;
  extern void e_d_pty_drain(void);
- extern int e_deb_type;
  int i;
-
- /* For interpreted debuggers (pdb), don't use endwin() -- it changes
-    the terminal mode and sends signals that kill the pdb child process
-    (SIGBUS).  Instead, render output full-screen within ncurses. */
- if (e_deb_type == 5)
- {
-  int row = 0;
-  clear();
-  mvaddstr(row++, 0, "--- Program output ---");
-  if (e_d_prog_output && e_d_prog_output_len > 0)
-  {
-   int pos = 0;
-   while (pos < e_d_prog_output_len && row < LINES - 2)
-   {
-    char line[256];
-    int li = 0;
-    while (pos < e_d_prog_output_len && e_d_prog_output[pos] != '\n' && li < 255)
-     line[li++] = e_d_prog_output[pos++];
-    line[li] = '\0';
-    if (pos < e_d_prog_output_len && e_d_prog_output[pos] == '\n') pos++;
-    mvaddstr(row++, 0, line);
-   }
-  }
-  else
-   mvaddstr(row++, 0, "(no output)");
-  mvaddstr(row + 1, 0, "--- Press any key to return to editor ---");
-  refresh();
-  getch();
-  clearok(stdscr, TRUE);
-  e_abs_refr();
-  e_repaint_desk(f);
-  return(0);
- }
 
  e_d_pty_drain();
  endwin();

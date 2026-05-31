@@ -266,6 +266,8 @@ void e_print_xrect(int x, int y, int n)
 
 #endif
 
+static char e_x_map_char(int sc);
+
 int fk_show_cursor()
 {
  int x;
@@ -276,7 +278,7 @@ int fk_show_cursor()
  {
   int oc = e_gt_char(old_cursor_x, old_cursor_y);
   int oa = e_gt_col(old_cursor_x, old_cursor_y);
-  char obuf[2] = { (char)(oc > 127 ? '?' : oc), 0 };
+  char obuf[2] = { e_x_map_char(oc), 0 };
   XSetForeground(WpeXInfo.display, WpeXInfo.gc,
     WpeXInfo.colors[oa % 16]);
   XSetBackground(WpeXInfo.display, WpeXInfo.gc,
@@ -295,7 +297,7 @@ int fk_show_cursor()
  {
   int cc = e_gt_char(cur_x, cur_y);
   int ca = e_gt_col(cur_x, cur_y);
-  char cbuf[2] = { (char)(cc > 127 ? '?' : cc), 0 };
+  char cbuf[2] = { e_x_map_char(cc), 0 };
   XSetForeground(WpeXInfo.display, WpeXInfo.gc,
     WpeXInfo.colors[ca / 16]);
   XSetBackground(WpeXInfo.display, WpeXInfo.gc,
@@ -326,8 +328,8 @@ int e_ini_size()
   FREE(extbyte);
  if (altextbyte)
   FREE(altextbyte);
- extbyte = MALLOC(MAXSCOL * MAXSLNS);
- altextbyte = MALLOC(MAXSCOL * MAXSLNS);
+ extbyte = calloc(MAXSCOL * MAXSLNS, 1);
+ altextbyte = calloc(MAXSCOL * MAXSLNS, 1);
  if (!schirm || !altschirm || !extbyte || !altextbyte)
   return(-1);
 #else
@@ -374,6 +376,41 @@ int e_X_sw_color()
  return(0);
 }
 
+/**
+ * e_x_map_char - Map a SCREENCELL character to a printable X11 glyph.
+ * @sc: The SCREENCELL.ch value (may be ASCII, ACS index 0-12, or wide).
+ *
+ * SCREENCELL stores border/scrollbar characters as small integers (0-12)
+ * that index into sp_chr[] for ncurses ACS rendering.  X11 mode can't
+ * use ACS, so we map them to ASCII box-drawing approximations.
+ *
+ * Return: A printable char suitable for XDrawImageString.
+ */
+static char e_x_map_char(int sc)
+{
+ /* ACS index to ASCII approximation (matches sp_chr[] indices) */
+ static const char acs_to_ascii[] = {
+  ' ',  /* 0: space */
+  '+',  /* 1: ACS_ULCORNER -> + */
+  '+',  /* 2: ACS_URCORNER -> + */
+  '+',  /* 3: ACS_LLCORNER -> + */
+  '+',  /* 4: ACS_LRCORNER -> + */
+  '-',  /* 5: ACS_HLINE -> - */
+  '|',  /* 6: ACS_VLINE -> | */
+  '~',  /* 7: ACS_S9 (scrollbar track) -> ~ */
+  '|',  /* 8: ACS_VLINE -> | */
+  '|',  /* 9: ACS_VLINE -> | */
+  '~',  /* 10: ACS_S9 -> ~ */
+  '#',  /* 11: ACS_DIAMOND (scrollbar thumb) -> # */
+  ' ',  /* 12: space */
+ };
+ if (sc >= 0 && sc <= 12)
+  return acs_to_ascii[sc];
+ if (sc < 32 || sc > 126)
+  return ' ';
+ return (char)sc;
+}
+
 int e_x_refresh()
 {
 #ifndef NOXCACHE				/* a.r. */
@@ -389,9 +426,14 @@ int e_x_refresh()
    {
       int sc = e_gt_char(j, i);
       int sa = e_gt_col(j, i);
-      if(sc != altschirm[i*MAXSCOL+j].ch || sa != altschirm[i*MAXSCOL+j].attr)
+      { int _n = i * MAXSCOL + j;
+      if(sc != altschirm[_n].ch || sa != altschirm[_n].attr
+#ifdef NEWSTYLE
+         || extbyte[_n] != altextbyte[_n]
+#endif
+        )
       {
-       char xc = (sc > 127 || sc < 32) ? ' ' : (char)sc;
+       char xc = e_x_map_char(sc);
 #ifdef NOXCACHE
 	 XSetForeground(WpeXInfo.display, WpeXInfo.gc, WpeXInfo.colors[sa % 16]);
 	 XSetBackground(WpeXInfo.display, WpeXInfo.gc, WpeXInfo.colors[sa / 16]);
@@ -417,16 +459,16 @@ int e_x_refresh()
 	 else
 		stringbuf[stringcount++] = xc;
 #endif
-	 altschirm[i*MAXSCOL+j] = schirm[i*MAXSCOL+j];
+	 altschirm[_n] = schirm[_n];
 #ifdef NEWSTYLE
-	 e_print_xrect(j, i, y);
-	 altextbyte[y] = extbyte[y];
+	 e_print_xrect(j, i, _n);
+	 altextbyte[_n] = extbyte[_n];
 #endif
 #ifndef NOXCACHE
 	 oldJ = j;
 #endif
       }
-   }
+   } } /* _n block */
 #ifndef NOXCACHE
    XDrawImageString(WpeXInfo.display, WpeXInfo.window, WpeXInfo.gc,
 		    oldX,
