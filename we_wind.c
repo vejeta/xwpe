@@ -12,6 +12,46 @@
 
 int e_make_xr_rahmen(int xa, int ya, int xe, int ye, int sw);
 
+/**
+ * e_invalidate_area - Mark a screen rectangle for full repaint.
+ * @xa: Left column.
+ * @ya: Top row.
+ * @xe: Right column.
+ * @ye: Bottom row.
+ *
+ * Invalidates altschirm cells so e_refresh repaints them, clears
+ * extbyte border flags so NEWSTYLE XDrawLine segments get removed,
+ * and in X11 mode clears the pixel area to remove stale graphics.
+ */
+void e_invalidate_area(int xa, int ya, int xe, int ye)
+{
+ extern SCREENCELL *altschirm;
+ int i, j;
+
+ for (j = ya; j <= ye; ++j)
+  for (i = xa; i <= xe; ++i)
+   altschirm[j * MAXSCOL + i].ch = -1;
+
+#if !defined(NO_XWINDOWS) && defined(NEWSTYLE)
+ { extern char *extbyte, *altextbyte;
+   extern void e_x_clear_area(int, int, int, int);
+   int had_borders = 0;
+   for (j = ya; j <= ye; ++j)
+    for (i = xa; i <= xe; ++i)
+    {
+     if (extbyte[j * MAXSCOL + i]) had_borders = 1;
+     extbyte[j * MAXSCOL + i] = 0;
+     altextbyte[j * MAXSCOL + i] = 0;
+    }
+   /* Clear the entire popup area in one X11 call to erase all
+      XDrawLine border segments.  Per-cell XFillRectangle doesn't
+      cover line pixels on shared cell edges. */
+   if (had_borders && WpeIsXwin())
+    e_x_clear_area(xa, ya, xe - xa + 1, ye - ya + 1);
+ }
+#endif
+}
+
 /* break string into multiple line to fit into windows 
 
    REM: Caller has to free returned vector!!! 
@@ -254,12 +294,7 @@ int e_close_view(PIC *pic, int sw)
     e_pr_char(i, j, ' ', 0);
  }
 
- /* Invalidate altschirm so e_t_refresh repaints the restored area */
- { extern SCREENCELL *altschirm;
-   for (j = pic->a.y; j <= pic->e.y; ++j)
-    for (i = pic->a.x; i <= pic->e.x; ++i)
-     altschirm[j * MAXSCOL + i].ch = -1;
- }
+ e_invalidate_area(pic->a.x, pic->a.y, pic->e.x, pic->e.y);
 
  if (sw < 2)
  {

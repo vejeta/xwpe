@@ -101,6 +101,9 @@ int WpeDllInit(int *argc, char **argv)
  WpeDisplayEnd = WpeNullFunction;
  e_u_switch_screen = WpeZeroFunction;
  e_u_d_switch_out = (int (*)(int sw))WpeZeroFunction;
+ { extern int e_t_deb_out(FENSTER *);
+   e_u_deb_out = e_t_deb_out;
+ }
  MCI = 2;
  MCA = 1;
 #ifdef NEWSTYLE
@@ -516,9 +519,20 @@ int e_x_change(PIC *pic)
     if (size_hints.width != MAXSCOL * WpeXInfo.font_width ||
       size_hints.height != MAXSLNS * WpeXInfo.font_height)
     {
-     MAXSCOL = size_hints.width / WpeXInfo.font_width;
-     MAXSLNS = size_hints.height / WpeXInfo.font_height;
-     e_x_repaint_desk(WpeEditor->f[WpeEditor->mxedt]);
+     { int _i, _old_scol = MAXSCOL, _old_slns = MAXSLNS;
+       MAXSCOL = size_hints.width / WpeXInfo.font_width;
+       MAXSLNS = size_hints.height / WpeXInfo.font_height;
+       /* Expand editor windows to fill new size */
+       for (_i = 0; _i <= WpeEditor->mxedt; _i++)
+       {
+        FENSTER *fw = WpeEditor->f[_i];
+        if (fw->e.x >= _old_scol - 1) fw->e.x = MAXSCOL - 1;
+        if (fw->e.y >= _old_slns - 2) fw->e.y = MAXSLNS - 2;
+        if (fw->e.x >= MAXSCOL) fw->e.x = MAXSCOL - 1;
+        if (fw->e.y >= MAXSLNS - 1) fw->e.y = MAXSLNS - 2;
+       }
+       e_x_repaint_desk(WpeEditor->f[WpeEditor->mxedt]);
+     }
     }
     break;
    case KeyPress:
@@ -596,9 +610,20 @@ int e_x_getch()
     if (size_hints.width != MAXSCOL * WpeXInfo.font_width ||
       size_hints.height != MAXSLNS * WpeXInfo.font_height)
     {
-     MAXSCOL = size_hints.width / WpeXInfo.font_width;
-     MAXSLNS = size_hints.height / WpeXInfo.font_height;
-     e_x_repaint_desk(WpeEditor->f[WpeEditor->mxedt]);
+     { int _i, _old_scol = MAXSCOL, _old_slns = MAXSLNS;
+       MAXSCOL = size_hints.width / WpeXInfo.font_width;
+       MAXSLNS = size_hints.height / WpeXInfo.font_height;
+       /* Expand editor windows to fill new size */
+       for (_i = 0; _i <= WpeEditor->mxedt; _i++)
+       {
+        FENSTER *fw = WpeEditor->f[_i];
+        if (fw->e.x >= _old_scol - 1) fw->e.x = MAXSCOL - 1;
+        if (fw->e.y >= _old_slns - 2) fw->e.y = MAXSLNS - 2;
+        if (fw->e.x >= MAXSCOL) fw->e.x = MAXSCOL - 1;
+        if (fw->e.y >= MAXSLNS - 1) fw->e.y = MAXSLNS - 2;
+       }
+       e_x_repaint_desk(WpeEditor->f[WpeEditor->mxedt]);
+     }
     }
     break;
    case ClientMessage:
@@ -832,6 +857,23 @@ int e_x_sys_end()
  return(0);
 }
 
+/**
+ * e_x_clear_area - Clear a rectangle of the X11 window (pixels).
+ * @xa: Left column (character units).
+ * @ya: Top row (character units).
+ * @w:  Width in columns.
+ * @h:  Height in rows.
+ *
+ * Clears the pixel area to remove stale XDrawLine segments from
+ * NEWSTYLE borders after popup/menu close.
+ */
+void e_x_clear_area(int xa, int ya, int w, int h)
+{
+ XClearArea(WpeXInfo.display, WpeXInfo.window,
+   WpeXInfo.font_width * xa, WpeXInfo.font_height * ya,
+   WpeXInfo.font_width * w, WpeXInfo.font_height * h, False);
+}
+
 int fk_x_putchar(int c)
 {
  return(fputc(c, stdout));
@@ -899,6 +941,7 @@ int e_x_repaint_desk(FENSTER *f)
  }
  ini_repaint(cn);
  e_abs_refr();
+ memset(altextbyte, 0, MAXSCOL * MAXSLNS);
  for (i = cn->mxedt; i >= 1; i--)
  {
   if (cn->f[i]->pic->buf) free(cn->f[i]->pic->buf);

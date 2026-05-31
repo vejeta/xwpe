@@ -1088,12 +1088,56 @@ int e_t_switch_screen(int sw)
  return(0);
 }
 
+/**
+ * e_t_deb_out_popup - Show program output in an in-editor popup.
+ * @f: Current window.
+ *
+ * Used when endwin()/raw terminal is not safe (X11 mode, pdb).
+ * Renders the output as a full-screen overlay within the editor
+ * using the normal display functions, then waits for a keypress.
+ */
+static int e_t_deb_out_popup(FENSTER *f)
+{
+ extern char *e_d_prog_output;
+ extern int e_d_prog_output_len;
+
+ if (e_d_prog_output && e_d_prog_output_len > 0)
+ {
+  char msg[256];
+  int pos = 0, len = 0;
+  while (pos < e_d_prog_output_len && len < 250)
+  {
+   char c = e_d_prog_output[pos++];
+   msg[len++] = (c == '\n') ? ' ' : c;
+  }
+  msg[len] = '\0';
+  e_error(msg, -1, f->fb);
+ }
+ else
+  e_error("(no output)", -1, f->fb);
+ return(0);
+}
+
 int e_t_deb_out(FENSTER *f)
 {
  extern char *e_d_prog_output;
  extern int e_d_prog_output_len;
  extern void e_d_pty_drain(void);
+ extern int e_deb_type;
  int i;
+
+ { FILE *dbg = fopen("/tmp/xwpe_x11_debug.log", "a");
+   if (dbg) { fprintf(dbg, "e_t_deb_out: WpeIsXwin=%d e_deb_type=%d\n",
+     WpeIsXwin(), e_deb_type); fflush(dbg); fclose(dbg); }
+ }
+
+ /* X11 mode and interpreted debuggers: can't use endwin/raw terminal */
+#ifndef NO_XWINDOWS
+ if (WpeIsXwin())
+  return e_t_deb_out_popup(f);
+#endif
+ if (e_deb_type == 5)
+  return e_t_deb_out_popup(f);
 
  e_d_pty_drain();
  endwin();
