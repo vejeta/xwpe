@@ -296,6 +296,11 @@ void e_print_xrect(int x, int y, int n)
 #endif
 
 static char e_x_map_char(int sc);
+#ifdef HAVE_XFT
+static int e_x_map_char_utf8(int sc, char *buf);
+static int e_x_wchar_to_utf8(int wc, char *buf);
+static XftFont *e_xft_fallback_font(int codepoint);
+#endif
 
 int fk_show_cursor()
 {
@@ -341,11 +346,12 @@ int fk_show_cursor()
    }
    else if (oc >= 0 && oc <= 12)
    {
-    char asc = e_x_map_char(oc);
-    if (asc != ' ')
+    char u8box[6];
+    int u8len = e_x_map_char_utf8(oc, u8box);
+    if (u8box[0] != ' ' || u8len > 1)
      XftDrawStringUtf8(WpeXInfo.xftdraw, &WpeXInfo.xftcolors[fg_idx],
        WpeXInfo.xftfont, px, py + WpeXInfo.xftfont->ascent,
-       (FcChar8 *)&asc, 1);
+       (FcChar8 *)u8box, u8len);
    }
    XCopyArea(WpeXInfo.display, WpeXInfo.backbuf, WpeXInfo.window,
      WpeXInfo.gc, px, py, WpeXInfo.font_width * ocw, WpeXInfo.font_height,
@@ -393,11 +399,12 @@ int fk_show_cursor()
    }
    else if (cc >= 0 && cc <= 12)
    {
-    char asc = e_x_map_char(cc);
-    if (asc != ' ')
+    char u8box[6];
+    int u8len = e_x_map_char_utf8(cc, u8box);
+    if (u8box[0] != ' ' || u8len > 1)
      XftDrawStringUtf8(WpeXInfo.xftdraw, &WpeXInfo.xftcolors[fg_idx],
        WpeXInfo.xftfont, px, py + WpeXInfo.xftfont->ascent,
-       (FcChar8 *)&asc, 1);
+       (FcChar8 *)u8box, u8len);
    }
    XCopyArea(WpeXInfo.display, WpeXInfo.backbuf, WpeXInfo.window,
      WpeXInfo.gc, px, py, WpeXInfo.font_width * ccw, WpeXInfo.font_height,
@@ -572,6 +579,34 @@ static char e_x_map_char(int sc)
   return ' ';
  return (char)sc;
 }
+
+#ifdef HAVE_XFT
+static int e_x_map_char_utf8(int sc, char *buf)
+{
+ /* ACS index to Unicode box-drawing / block element (UTF-8 encoded) */
+ static const int acs_to_unicode[] = {
+  ' ',     /* 0: space */
+  0x250C,  /* 1: ACS_ULCORNER -> U+250C BOX DRAWINGS LIGHT DOWN AND RIGHT */
+  0x2510,  /* 2: ACS_URCORNER -> U+2510 BOX DRAWINGS LIGHT DOWN AND LEFT */
+  0x2514,  /* 3: ACS_LLCORNER -> U+2514 BOX DRAWINGS LIGHT UP AND RIGHT */
+  0x2518,  /* 4: ACS_LRCORNER -> U+2518 BOX DRAWINGS LIGHT UP AND LEFT */
+  0x2500,  /* 5: ACS_HLINE -> U+2500 BOX DRAWINGS LIGHT HORIZONTAL */
+  0x2502,  /* 6: ACS_VLINE -> U+2502 BOX DRAWINGS LIGHT VERTICAL */
+  0x2591,  /* 7: scrollbar track -> U+2591 LIGHT SHADE */
+  0x2502,  /* 8: ACS_VLINE -> U+2502 BOX DRAWINGS LIGHT VERTICAL */
+  0x2502,  /* 9: ACS_VLINE -> U+2502 BOX DRAWINGS LIGHT VERTICAL */
+  0x2591,  /* 10: scrollbar track -> U+2591 LIGHT SHADE */
+  0x2588,  /* 11: scrollbar thumb -> U+2588 FULL BLOCK */
+  ' ',     /* 12: space */
+ };
+ if (sc >= 0 && sc <= 12)
+  return e_x_wchar_to_utf8(acs_to_unicode[sc], buf);
+ if (sc >= 128)
+  return e_x_wchar_to_utf8(sc, buf);
+ buf[0] = (sc >= 32 && sc <= 126) ? (char)sc : ' ';
+ return 1;
+}
+#endif
 
 #ifdef HAVE_XFT
 /**
@@ -776,13 +811,19 @@ int e_x_refresh()
       }
       else if (sc >= 0 && sc <= 12)
       {
-       /* ACS character: draw ASCII approximation */
-       char asc = e_x_map_char(sc);
-       if (asc != ' ')
+       char u8box[6];
+       int u8len = e_x_map_char_utf8(sc, u8box);
+       if (u8box[0] != ' ' || u8len > 1)
        {
+        XftFont *bfont = WpeXInfo.xftfont;
+        int cp = (sc >= 0 && sc <= 12) ?
+          (int[]){' ',0x250C,0x2510,0x2514,0x2518,0x2500,0x2502,
+                  0x2591,0x2502,0x2502,0x2591,0x2588,' '}[sc] : sc;
+        if (!XftCharExists(WpeXInfo.display, bfont, cp))
+         bfont = e_xft_fallback_font(cp);
         XftDrawStringUtf8(WpeXInfo.xftdraw, &WpeXInfo.xftcolors[fg_idx],
-          WpeXInfo.xftfont, px, py + WpeXInfo.xftfont->ascent,
-          (FcChar8 *)&asc, 1);
+          bfont, px, py + WpeXInfo.xftfont->ascent,
+          (FcChar8 *)u8box, u8len);
        }
       }
 
