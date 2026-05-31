@@ -33,21 +33,22 @@ void e_invalidate_area(int xa, int ya, int xe, int ye)
    altschirm[j * MAXSCOL + i].ch = -1;
 
 #if !defined(NO_XWINDOWS) && defined(NEWSTYLE)
- { extern char *extbyte, *altextbyte;
-   extern void e_x_clear_area(int, int, int, int);
-   int had_borders = 0;
-   for (j = ya; j <= ye; ++j)
-    for (i = xa; i <= xe; ++i)
-    {
-     if (extbyte[j * MAXSCOL + i]) had_borders = 1;
-     extbyte[j * MAXSCOL + i] = 0;
-     altextbyte[j * MAXSCOL + i] = 0;
-    }
-   /* Clear the entire popup area in one X11 call to erase all
-      XDrawLine border segments.  Per-cell XFillRectangle doesn't
-      cover line pixels on shared cell edges. */
-   if (had_borders && WpeIsXwin())
-    e_x_clear_area(xa, ya, xe - xa + 1, ye - ya + 1);
+ /* Only touch extbyte/altextbyte in X11 mode -- in terminal mode
+    altextbyte is NULL (only allocated by WpeXInit). */
+ if (WpeIsXwin())
+ {
+  extern char *extbyte, *altextbyte;
+  extern void e_x_clear_area(int, int, int, int);
+  int had_borders = 0;
+  for (j = ya; j <= ye; ++j)
+   for (i = xa; i <= xe; ++i)
+   {
+    if (extbyte[j * MAXSCOL + i]) had_borders = 1;
+    extbyte[j * MAXSCOL + i] = 0;
+    if (altextbyte) altextbyte[j * MAXSCOL + i] = 0;
+   }
+  if (had_borders)
+   e_x_clear_area(xa, ya, xe - xa + 1, ye - ya + 1);
  }
 #endif
 }
