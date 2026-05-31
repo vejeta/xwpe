@@ -7,7 +7,7 @@ management, and a function-key driven menu system. Emacs cursor keys
 (Ctrl-P/N/F/B/A/E) are built in.
 
 The **1.6.x series** brought xwpe from its 1993 origins to 2026:
-UTF-8 terminal support, working compilers and debuggers for 7 languages,
+UTF-8 terminal support, working compilers and debuggers for 9 languages,
 mouse support, X11 fixes, and a 12-chapter Texinfo manual.
 
 ## Quick start
@@ -34,7 +34,7 @@ xwpe file.c         # X11 mode
 * **Full UTF-8 in X11**: accents, Cyrillic, CJK, and emoji with
   CELL_WIDE support (cursor, delete, select all work correctly on
   wide characters).
-* 7 compilers: gcc, g++, gfortran, fpc, javac, python3, pdflatex
+* 9 compilers: gcc, g++, gfortran, fpc, javac, python3, pdflatex, perl, cobc
 * 3 debuggers: gdb, jdb (Java), pdb (Python) -- all with F8 stepping
 * Program output in Messages buffer (Ctrl-G P) -- no terminal switching
 * Ctrl-F9 Run for Python/LaTeX: output captured to Messages, no xterm
@@ -55,6 +55,8 @@ See `CHANGELOG` for full details.
 | javac    | Java     | ok | ok | `.java` |
 | python3  | Python   | ok | ok | `.py` |
 | pdflatex | LaTeX    | ok | ok | `.tex` |
+| perl     | Perl     | ok | ok | `.pl` `.pm` |
+| cobc     | COBOL    | ok | ok | `.cob` `.cbl` |
 
 Any compiler that emits `file:line:column: message` diagnostics (clang,
 rustc, go build, dmd, ghc, nim, ...) works with the default GNU pattern.
@@ -98,6 +100,8 @@ sudo apt install fpc                   # Free Pascal
 sudo apt install default-jdk           # Java (javac + jdb)
 sudo apt install python3               # Python (py_compile + pdb)
 sudo apt install texlive-latex-base    # LaTeX (pdflatex)
+sudo apt install perl                  # Perl (perl -c)
+sudo apt install gnucobol              # COBOL (cobc)
 sudo apt install gdb                   # C/C++/Fortran/Pascal debugger
 ```
 
@@ -115,7 +119,7 @@ emulators (xterm, kitty, gnome-terminal, tmux), mouse works natively.
 
 ## Syntax highlighting
 
-Ships with C, C++, Fortran, Pascal, Java, Python, LaTeX. Install with
+Ships with C, C++, Fortran, Pascal, Java, Python, LaTeX, Perl, COBOL. Install with
 `sudo make install` or copy `syntax_def` to `~/.xwpe/syntax_def`.
 
 The format is documented in `docs/chapters/configuration.texi`. Adding

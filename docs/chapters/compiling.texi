@@ -11,8 +11,9 @@ xwpe integrates with external compilers through a compile-edit-debug
 cycle.  The compiler is configured per language (by file extension) and
 xwpe parses compiler output to jump to errors in the source code.
 
-This chapter was verified on 2026-05-29 with xwpe 1.6.2 against GCC 15.2,
-G++ 15.2, GFortran 15.2, Free Pascal 3.2.2, and OpenJDK javac 25.
+This chapter was verified on 2026-06-01 with xwpe 1.6.3 against GCC 15.2,
+G++ 15.2, GFortran 15.2, Free Pascal 3.2.2, OpenJDK javac 25, Python 3.13,
+Perl 5.40, and pdflatex (TeX Live 2025).
 
 @section The build cycle
 
@@ -37,6 +38,11 @@ most common command.
 @item Ctrl-F9 (Run)
 Build the executable and then run it.  Program arguments can be set
 via @samp{Run @result{} Arguments} (@kbd{Alt-R A}).
+
+For interpreted languages (Python, Perl), @kbd{Ctrl-F9} runs the
+script directly via the interpreter (e.g.@: @code{python3 file.py}).
+In X11 mode, output is captured to the Messages buffer via
+@code{popen}; no xterm is spawned.
 @end table
 
 After compilation, errors appear in the Message Window.  Use
@@ -74,9 +80,9 @@ Settings per language:
 @cindex language support
 
 xwpe selects the compiler automatically based on the file extension.
-Five languages are configured by default.
+Nine languages are configured by default.
 
-@subsection Default compilers (v1.6.2)
+@subsection Default compilers (v1.6.3)
 
 @multitable @columnfractions .12 .14 .22 .22 .30
 @headitem Language @tab Compiler @tab Extensions @tab Error format @tab Notes
@@ -90,6 +96,14 @@ Five languages are configured by default.
   Dedicated pattern.  Cursor jumps to exact column.
 @item Java @tab javac @tab .java @tab @code{file:line:} @tab
   No column in javac output.  Cursor goes to start of line.
+@item Python @tab python3 @tab .py @tab @code{File file, line N} @tab
+  Uses @code{-m py_compile}.  Ctrl-F9 runs the script.
+@item LaTeX @tab pdflatex @tab .tex @tab @code{file:line:} @tab
+  Uses @code{-interaction=nonstopmode -file-line-error}.
+@item Perl @tab perl @tab .pl .pm @tab @code{at file line N} @tab
+  Uses @code{-c} for syntax check.  Ctrl-F9 runs the script.
+@item COBOL @tab cobc @tab .cob .cbl @tab @code{file:line:} @tab
+  GNU COBOL.  GNU style with @code{-g}.
 @end multitable
 
 @subsection Other GNU-compatible compilers
@@ -255,6 +269,45 @@ $@{?*:warning:@}$@{FILE@}:$@{LINE@}:*
 Note: javac does not report a column number, so the cursor goes to
 the beginning of the error line.
 
+@subsubsection Python (python3 -m py_compile)
+
+Python compile errors look like:
+
+@example
+  File "/path/to/hello.py", line 3
+    x = (1 +
+        ^
+SyntaxError: '(' was never closed
+@end example
+
+Pattern (configured by default):
+
+@example
+*$@{FILE@}, line $@{LINE@}
+@end example
+
+@noindent
+@kbd{Ctrl-F9} runs the Python script directly via @code{python3}
+and captures output in the Messages buffer.
+
+@subsubsection Perl (perl -c)
+
+Perl syntax check errors look like:
+
+@example
+syntax error at hello.pl line 6, near "print"
+@end example
+
+Pattern (configured by default):
+
+@example
+*at $@{FILE@} line $@{LINE@}
+@end example
+
+@noindent
+@kbd{Ctrl-F9} runs the Perl script directly via @code{perl}
+and captures output in the Messages buffer.
+
 @subsubsection Adding a new compiler
 
 To add support for a compiler not in the default list:
@@ -315,4 +368,4 @@ blank lines).
 @end itemize
 
 @noindent
-Verified on 2026-05-29 with xwpe @value{VERSION}.
+Verified on 2026-06-01 with xwpe @value{VERSION}.

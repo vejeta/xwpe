@@ -13,8 +13,9 @@ environment.  You can set breakpoints, inspect variables, step through
 code, view the call stack, and see program output --- all from within
 the editor, without screen flicker.
 
-This chapter was verified on 2026-05-29 with xwpe 1.6.2, gdb 17.2,
-gcc 15.2, g++ 15.2, gfortran 15.2, fpc 3.2.2, and OpenJDK jdb 25.
+This chapter was verified on 2026-06-01 with xwpe 1.6.3, gdb 17.2,
+gcc 15.2, g++ 15.2, gfortran 15.2, fpc 3.2.2, OpenJDK jdb 25,
+and Python pdb 3.13.
 
 @section Quick start
 
@@ -93,15 +94,16 @@ include @code{-g}.  To add @code{-O0}, go to
 @cindex program output
 @cindex pty
 
-Program output (e.g.@: @code{printf}, @code{System.out.println}) is
-captured invisibly --- no screen switching, no flicker.  For gdb
-backends, output is captured via a pseudoterminal (pty): the program's
-stdout is redirected to a pty slave and xwpe reads the pty master.
-For jdb, output is extracted from jdb's command pipe.
+Program output (e.g.@: @code{printf}, @code{System.out.println},
+@code{print()}) is appended to the Messages buffer --- no screen
+switching, no flicker.  For gdb, output is captured via a
+pseudoterminal (pty): the program's stdout is redirected to a pty
+slave and xwpe reads the pty master.  For jdb and pdb, output is
+extracted from the debugger's command pipe.
 
 Press @kbd{Ctrl-G P} (or @samp{Debug @result{} Program output}) to
-view the captured output.  The screen clears and shows the output.
-Press any key to return to the editor.
+view the Messages buffer with full scroll.  The output accumulates
+across steps, so you can see the complete program output at any time.
 
 @strong{Important}: the output appears only after the line that
 produces it has been @emph{executed}.  If the cursor is on the
@@ -116,9 +118,9 @@ immediately, even if the program uses buffered I/O.
 
 @cindex debugger selection
 
-xwpe supports five backends, selectable via @samp{Debug @result{}
+xwpe supports six backends, selectable via @samp{Debug @result{}
 debugger Options} (@kbd{Ctrl-G O}).  For @file{.java} files, jdb is
-auto-selected.
+auto-selected; for @file{.py} files, pdb is auto-selected.
 
 @table @strong
 @item gdb (GNU Debugger)
@@ -130,6 +132,12 @@ stack, program output capture via pty.
 Backend for Java.  Auto-selected for @file{.java} files.  Uses
 @code{poll()} for async JVM startup.  Breakpoints, stepping,
 program output capture all work.  Tested with OpenJDK 25.
+
+@item pdb (Python Debugger)
+Backend for Python.  Auto-selected for @file{.py} files.
+Breakpoints, F8 stepping, and program output capture work.
+Automatically skips internal @code{<string>} frames.
+Tested with Python 3.13.
 
 @item sdb (Symbolic Debugger)
 Legacy UNIX debugger.  Not available on modern Linux.
@@ -195,6 +203,37 @@ redirection.  xwpe handles this transparently.
 Requires @command{default-jdk} (Debian/Ubuntu) or equivalent JDK
 package that provides @command{javac} and @command{jdb}.
 
+@section Debugging Python programs
+
+@cindex Python debugging
+@cindex pdb
+
+xwpe auto-selects pdb when opening a @file{.py} file.  No manual
+configuration is needed.
+
+pdb differences from gdb:
+
+@itemize @bullet
+@item
+@strong{No compilation step}: @kbd{Ctrl-G R} invokes
+@code{python3 -m pdb} directly on the source file.
+
+@item
+@strong{Frame skipping}: pdb starts in the @code{<string>} wrapper
+frame.  xwpe automatically skips this frame so the cursor lands on
+your first line of code.
+
+@item
+@strong{Program output}: captured from pdb's pipe and shown via
+@kbd{Ctrl-G P} (same as gdb and jdb).
+
+@item
+@strong{Breakpoints}: set with @kbd{Ctrl-G B} before starting pdb.
+xwpe sends @code{break file:line} commands to pdb.
+@end itemize
+
+Requires @command{python3} (Debian/Ubuntu).
+
 @section Example session: C with factorial
 
 @example
@@ -259,4 +298,5 @@ This is part of @code{libc6-dev} on Debian and is always available.
 @end itemize
 
 @noindent
-Verified on 2026-05-29 with xwpe @value{VERSION} and gdb 17.2.
+Verified on 2026-06-01 with xwpe @value{VERSION}, gdb 17.2, jdb 25,
+and pdb 3.13.
