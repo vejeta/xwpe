@@ -2508,6 +2508,7 @@ int e_d_step_next(FENSTER *f, int sw)
   struct pollfd _pfd = { .fd = wfildes[0], .events = POLLIN };
   char _buf[4096];
   int _len = 0, _n, _found = 0;
+pdb_poll_again:
   while (!_found)
   {
    if (poll(&_pfd, 1, 5000) <= 0) break;
@@ -2554,18 +2555,24 @@ int e_d_step_next(FENSTER *f, int sw)
      }
    }
    /* Check for program exit -- pdb auto-restarts after finish */
-   if (strstr(_buf, "The program finished") ||
-       strstr(_buf, "--Return--"))
+   if (strstr(_buf, "The program finished"))
    {
-    if (strstr(_buf, "The program finished"))
-    {
-     e_d_switch_out(0);
-     e_error("End of code. Ctrl-G P for output.", 0, f->fb);
-     return(e_d_quit(f));
-    }
+    e_d_switch_out(0);
+    e_error("End of code. Ctrl-G P for output.", 0, f->fb);
+    return(e_d_quit(f));
    }
-   /* Parse "> file(line)func()" to extract file and line number */
+   /* Parse "> file(line)func()" to extract file and line number.
+      If stopped in an internal Python frame (<string>, <frozen ...>),
+      automatically step again until we reach user code or program exit. */
    { char *_gt = strstr(_buf, "> ");
+     if (_gt && _gt[2] == '<')
+     {
+      /* Internal frame -- step again automatically */
+      write(rfildes[1], "n\n", 2);
+      _len = 0;
+      _found = 0;
+      goto pdb_poll_again;
+     }
      if (_gt)
      {
       char *_op = strchr(_gt + 2, '(');

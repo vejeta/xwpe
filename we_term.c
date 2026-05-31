@@ -1174,7 +1174,41 @@ int e_t_deb_out(FENSTER *f)
  extern char *e_d_prog_output;
  extern int e_d_prog_output_len;
  extern void e_d_pty_drain(void);
+ extern int e_deb_type;
  int i;
+
+ /* For interpreted debuggers (pdb), don't use endwin() -- it changes
+    the terminal mode and sends signals that kill the pdb child process
+    (SIGBUS).  Instead, render output full-screen within ncurses. */
+ if (e_deb_type == 5)
+ {
+  int row = 0;
+  clear();
+  mvaddstr(row++, 0, "--- Program output ---");
+  if (e_d_prog_output && e_d_prog_output_len > 0)
+  {
+   int pos = 0;
+   while (pos < e_d_prog_output_len && row < LINES - 2)
+   {
+    char line[256];
+    int li = 0;
+    while (pos < e_d_prog_output_len && e_d_prog_output[pos] != '\n' && li < 255)
+     line[li++] = e_d_prog_output[pos++];
+    line[li] = '\0';
+    if (pos < e_d_prog_output_len && e_d_prog_output[pos] == '\n') pos++;
+    mvaddstr(row++, 0, line);
+   }
+  }
+  else
+   mvaddstr(row++, 0, "(no output)");
+  mvaddstr(row + 1, 0, "--- Press any key to return to editor ---");
+  refresh();
+  getch();
+  clearok(stdscr, TRUE);
+  e_abs_refr();
+  e_repaint_desk(f);
+  return(0);
+ }
 
  e_d_pty_drain();
  endwin();
