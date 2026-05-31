@@ -1126,18 +1126,11 @@ int e_t_deb_out(FENSTER *f)
  extern int e_deb_type;
  int i;
 
- { FILE *dbg = fopen("/tmp/xwpe_x11_debug.log", "a");
-   if (dbg) { fprintf(dbg, "e_t_deb_out: WpeIsXwin=%d e_deb_type=%d\n",
-     WpeIsXwin(), e_deb_type); fflush(dbg); fclose(dbg); }
- }
-
- /* X11 mode and interpreted debuggers: can't use endwin/raw terminal */
+ /* X11 mode: can't use endwin/raw terminal -- show popup instead */
 #ifndef NO_XWINDOWS
  if (WpeIsXwin())
   return e_t_deb_out_popup(f);
 #endif
- if (e_deb_type == 5)
-  return e_t_deb_out_popup(f);
 
  e_d_pty_drain();
  endwin();
