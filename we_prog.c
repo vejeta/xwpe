@@ -626,10 +626,27 @@ int e_show_error(int n, FENSTER *f)
   }
   if (i <= 0)
   {
-   if (filename != cn->f[i+1]->datnam)
-    FREE(filename); 
-   if (e_edit(cn, err_li[n].file))
-    return(WPE_ESC);
+   /* Fallback: try matching by basename only.  Compilers like pdflatex
+      and py_compile report relative paths (e.g. "docs/examples/file.tex")
+      that don't match the open file's datnam ("file.tex"). */
+   char *_bn = strrchr(err_li[n].file + bg, '/');
+   if (_bn)
+   {
+    _bn++;  /* skip the '/' */
+    for (i = cn->mxedt; i > 0; i--)
+     if (!strcmp(_bn, cn->f[i]->datnam))
+     {
+      e_switch_window(cn->edt[i], cn->f[cn->mxedt]);
+      break;
+     }
+   }
+   if (i <= 0)
+   {
+    if (filename != cn->f[1]->datnam)
+     FREE(filename);
+    if (e_edit(cn, err_li[n].file))
+     return(WPE_ESC);
+   }
   }
  }
  else if (filename != f->datnam)
@@ -1075,11 +1092,11 @@ int e_ini_prog(ECNT *cn)
  e_prog.comp[6]->filepostfix[0] = WpeStrdup(".tex");
  e_prog.comp[6]->key = 'L';
  e_prog.comp[6]->x = 0;
- e_prog.comp[6]->intstr = WpeStrdup("${FILE}:${LINE}:*");
+ e_prog.comp[6]->intstr = WpeStrdup("${FILE}:${LINE}:");
  for (i = 0; i < e_prog.num; i++)
  {
   if (i == 5) e_prog.comp[i]->comp_str = WpeStrdup("-m py_compile");
-  else if (i == 6) e_prog.comp[i]->comp_str = WpeStrdup("-interaction=nonstopmode");
+  else if (i == 6) e_prog.comp[i]->comp_str = WpeStrdup("-interaction=nonstopmode -file-line-error");
   else e_prog.comp[i]->comp_str = WpeStrdup("-g");
   e_prog.comp[i]->libraries = WpeStrdup("");
   e_prog.comp[i]->exe_name = WpeStrdup("");
