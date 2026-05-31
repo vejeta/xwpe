@@ -252,7 +252,7 @@ valuable. Open an issue even if everything works: knowing what
 configurations are solid helps us prioritise.
 
 The historical archive of mailing lists, manpages, tutorials, and Debian
-BTS history is preserved at https://codeberg.org/mendezr/xwpe-archive.
+BTS history is preserved at https://codeberg.org/mendezr/xwpe-archives.
 
 ## Building
 
