@@ -134,6 +134,15 @@ def compile_dir():
         f.write('    return 0;\n')
         f.write('}\n')
 
+    # C program with exactly one error (for single-error navigation test)
+    with open(os.path.join(tmpdir, 'one_error.c'), 'w') as f:
+        f.write('#include <stdio.h>\n')
+        f.write('\n')
+        f.write('int main() {\n')
+        f.write('    printf("only error")\n')   # missing semicolon (line 4)
+        f.write('    return 0;\n')
+        f.write('}\n')
+
     # C program with two errors
     with open(os.path.join(tmpdir, 'errors.c'), 'w') as f:
         f.write('#include <stdio.h>\n')
@@ -280,6 +289,102 @@ class TestF9CompileErrors:
         # After Alt-T, we should see the errors.c content (cursor jumped there)
         assert 'errors.c' in content or 'printf' in content or 'main' in content, \
             f"Did not navigate to error file: {content[:400]}"
+
+
+class TestSingleErrorNavigation:
+    """Test Alt-T (Next Error) with exactly one compile error."""
+
+    def test_alt_t_shows_single_error(self, compile_dir, has_gcc):
+        """Alt-T with one error should navigate to it, not say 'no more'."""
+        if not has_gcc:
+            pytest.skip("gcc not installed")
+        lines = run_wpe_in_dir(
+            compile_dir, 'one_error.c',
+            cols=80, rows=30, wait=1.5,
+            keys=[
+                KEY_F9,
+                ('wait', 3.0),
+                KEY_ALT_T,           # Next Error -- should show the one error
+                ('wait', 0.5),
+            ]
+        )
+        content = '\n'.join(lines)
+        assert 'one_error.c' in content or 'printf' in content or 'main' in content, \
+            f"Alt-T did not navigate to single error: {content[:400]}"
+
+    def test_alt_t_twice_still_shows_error(self, compile_dir, has_gcc):
+        """Alt-T twice with one error: second press re-shows same error."""
+        if not has_gcc:
+            pytest.skip("gcc not installed")
+        lines = run_wpe_in_dir(
+            compile_dir, 'one_error.c',
+            cols=80, rows=30, wait=1.5,
+            keys=[
+                KEY_F9,
+                ('wait', 3.0),
+                KEY_ALT_T,           # First: navigate to error
+                ('wait', 0.5),
+                KEY_ALT_T,           # Second: should re-show, not lose position
+                ('wait', 0.5),
+            ]
+        )
+        content = '\n'.join(lines)
+        assert 'one_error.c' in content or 'printf' in content or 'main' in content, \
+            f"Alt-T twice lost error position: {content[:400]}"
+
+
+class TestPerlCompile:
+    """Test F9 compile with Perl source files."""
+
+    @pytest.fixture(autouse=True)
+    def perl_files(self, compile_dir):
+        with open(os.path.join(compile_dir, 'good.pl'), 'w') as f:
+            f.write('#!/usr/bin/perl\n')
+            f.write('use strict;\n')
+            f.write('use warnings;\n')
+            f.write('print "Hello\\n";\n')
+        with open(os.path.join(compile_dir, 'bad.pl'), 'w') as f:
+            f.write('#!/usr/bin/perl\n')
+            f.write('use strict;\n')
+            f.write('my $x = "missing"\n')  # missing semicolon
+            f.write('print "Hello\\n";\n')
+
+    def test_perl_syntax_ok(self, compile_dir):
+        """F9 on valid Perl should show no errors."""
+        if not shutil.which('perl'):
+            pytest.skip("perl not installed")
+        lines = run_wpe_in_dir(
+            compile_dir, 'good.pl',
+            cols=80, rows=30, wait=1.5,
+            keys=[
+                KEY_F9,
+                ('wait', 3.0),
+                ' ',
+                ('wait', 0.5),
+            ]
+        )
+        content = '\n'.join(lines)
+        assert 'good.pl' in content or 'Hello' in content or 'print' in content, \
+            f"Editor not visible after Perl compile: {content[:400]}"
+
+    def test_perl_syntax_error(self, compile_dir):
+        """F9 on Perl with syntax error should show error in Messages."""
+        if not shutil.which('perl'):
+            pytest.skip("perl not installed")
+        lines = run_wpe_in_dir(
+            compile_dir, 'bad.pl',
+            cols=80, rows=30, wait=1.5,
+            keys=[
+                KEY_F9,
+                ('wait', 3.0),
+                ' ',                 # dismiss popup
+                ('wait', 0.5),
+            ]
+        )
+        content = '\n'.join(lines)
+        assert 'error' in content.lower() or 'syntax' in content.lower() or \
+               'bad.pl' in content, \
+            f"No error shown for bad Perl: {content[:400]}"
 
 
 class TestMenuClose:

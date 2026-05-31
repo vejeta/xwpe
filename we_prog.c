@@ -854,6 +854,8 @@ int e_next_error(FENSTER *f)
 {
  if (err_no < err_num - 1)
   return(e_show_error(++err_no, f));
+ if (err_num > 0)
+  return(e_show_error(err_no, f));
  e_pr_uul(f->fb);
  return(0);
 }
@@ -1069,7 +1071,7 @@ int e_ini_prog(ECNT *cn)
 {
  int i;
 
- e_prog.num = 7;
+ e_prog.num = 9;
  if (e_prog.arguments) FREE(e_prog.arguments);
  e_prog.arguments = WpeStrdup("");
  if (e_prog.project) FREE(e_prog.project);
@@ -1143,14 +1145,31 @@ int e_ini_prog(ECNT *cn)
  e_prog.comp[6]->key = 'L';
  e_prog.comp[6]->x = 0;
  e_prog.comp[6]->intstr = WpeStrdup("${FILE}:${LINE}:");
+ e_prog.comp[7]->compiler = WpeStrdup("perl");
+ e_prog.comp[7]->language = WpeStrdup("Perl");
+ e_prog.comp[7]->filepostfix = (char **)WpeExpArrayCreate(2, sizeof(char *), 1);
+ e_prog.comp[7]->filepostfix[0] = WpeStrdup(".pl");
+ e_prog.comp[7]->filepostfix[1] = WpeStrdup(".pm");
+ e_prog.comp[7]->key = 'E';
+ e_prog.comp[7]->x = 0;
+ e_prog.comp[7]->intstr = WpeStrdup("*at ${FILE} line ${LINE}");
+ e_prog.comp[8]->compiler = WpeStrdup("cobc");
+ e_prog.comp[8]->language = WpeStrdup("COBOL");
+ e_prog.comp[8]->filepostfix = (char **)WpeExpArrayCreate(2, sizeof(char *), 1);
+ e_prog.comp[8]->filepostfix[0] = WpeStrdup(".cob");
+ e_prog.comp[8]->filepostfix[1] = WpeStrdup(".cbl");
+ e_prog.comp[8]->key = 'O';
+ e_prog.comp[8]->x = 0;
+ e_prog.comp[8]->intstr = WpeStrdup("${FILE}:${LINE}:*");
  for (i = 0; i < e_prog.num; i++)
  {
   if (i == 5) e_prog.comp[i]->comp_str = WpeStrdup("-m py_compile");
   else if (i == 6) e_prog.comp[i]->comp_str = WpeStrdup("-interaction=nonstopmode -file-line-error");
+  else if (i == 7) e_prog.comp[i]->comp_str = WpeStrdup("-c");
   else e_prog.comp[i]->comp_str = WpeStrdup("-g");
   e_prog.comp[i]->libraries = WpeStrdup("");
   e_prog.comp[i]->exe_name = WpeStrdup("");
-  e_prog.comp[i]->comp_sw = i < 3 ? 0 : 1;  /* GNU for gcc/g++/gfortran, other for fpc/javac/python/latex */
+  e_prog.comp[i]->comp_sw = (i < 3 || i == 8) ? 0 : 1;  /* GNU for gcc/g++/gfortran/cobc, other for rest */
  }
  e_copy_prog(&e_s_prog, e_prog.comp[0]);
  return(0);
