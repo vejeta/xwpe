@@ -126,7 +126,7 @@ a language requires listing keywords, operators, and comment delimiters.
 | Level | Access | Content |
 |-------|--------|---------|
 | **In-app help** | F1 | Menus, key bindings, basic usage |
-| **Texinfo manual** | `info xwpe` | 12 chapters: editor, compiling, debugging, tutorials, reference |
+| **Texinfo manual** | `info xwpe` (requires `info` package) | 12 chapters: editor, compiling, debugging, tutorials, reference |
 | **Man pages** | `man xwpe` | Command-line options |
 
 ## Known limitations
