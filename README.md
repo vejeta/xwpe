@@ -113,20 +113,13 @@ keyboard remapping for modern PC keyboards.
   longer receive invalid gcc-specific flags.
 * **Output capture fixed**: compilers that emit blank lines between
   errors (gfortran, clang) no longer have their output truncated.
-* **Python support**: syntax highlighting (35 keywords), F9 syntax
-  check via `python3 -m py_compile`, error navigation (Alt-T), and
-  pdb as 6th debugger backend with breakpoints, stepping, and output
-  capture (Ctrl-G P). Auto-selects pdb for `.py` files.
-* **LaTeX support**: syntax highlighting (31 keywords), F9 compilation
-  via `pdflatex -interaction=nonstopmode -file-line-error`, error
-  navigation. Closes the `-c` flag bug reported by Janiš in 1998.
-* **ncurses mouse**: mouse clicks, menus, text selection, scrollbar,
-  and window drag now work in any terminal emulator (xterm, kitty,
-  gnome-terminal, tmux). GPM console mouse also fixed.
-* **Redo crash fixed**: 33-year-old SIGSEGV after Undo of search/replace.
-  Uninitialized field in Kruse's 1993 undo system caused heap corruption.
-* **X11 mode fixes**: fixed crash on startup (uninitialised buffer index
-  caused 81MB write to X server), border characters now display correctly.
+* **Python support**: syntax highlighting, F9 syntax check, error
+  navigation, and pdb debugging (breakpoints, stepping, output).
+* **LaTeX support**: syntax highlighting, F9 compilation with pdflatex,
+  error navigation.
+* **Mouse support**: works in terminal emulators and Linux console (GPM).
+* **Redo crash fixed**: 33-year-old bug in search/replace undo.
+* **X11 mode fixed**: crash on startup and border rendering.
 
 See CHANGELOG for full details.
 
