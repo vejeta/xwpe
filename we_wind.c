@@ -47,8 +47,19 @@ void e_invalidate_area(int xa, int ya, int xe, int ye)
     extbyte[j * MAXSCOL + i] = 0;
     if (altextbyte) altextbyte[j * MAXSCOL + i] = 0;
    }
-  if (had_borders)
-   e_x_clear_area(xa, ya, xe - xa + 1, ye - ya + 1);
+  /* Always clear the X11 pixel area to remove any XDrawLine segments.
+     Extend by 1 cell on each side to catch border lines drawn on
+     shared cell edges. */
+  { int cxa = xa > 0 ? xa - 1 : 0;
+    int cya = ya > 0 ? ya - 1 : 0;
+    int cxe = xe + 1 < MAXSCOL ? xe + 2 : MAXSCOL;
+    int cye = ye + 1 < MAXSLNS ? ye + 2 : MAXSLNS;
+    e_x_clear_area(cxa, cya, cxe - cxa, cye - cya);
+    /* Also invalidate the extra cells so they get redrawn */
+    for (j = cya; j < cye; ++j)
+     for (i = cxa; i < cxe; ++i)
+      altschirm[j * MAXSCOL + i].ch = -1;
+  }
  }
 #endif
 }
