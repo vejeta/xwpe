@@ -2520,39 +2520,49 @@ int e_d_step_next(FENSTER *f, int sw)
   }
   if (_found)
   {
-   /* Check for program exit FIRST -- pdb auto-restarts after finish,
-      so we must catch exit before navigating to restart position. */
-   if (strstr(_buf, "The program finished"))
-   {
-    /* Capture program output: any line that isn't pdb metadata */
-    char _line[256];
-    int _bi = 0;
-    while (_buf[_bi])
-    {
-     int _li = 0;
-     while (_buf[_bi] && _buf[_bi] != '\n' && _li < 255)
-      _line[_li++] = _buf[_bi++];
-     _line[_li] = '\0';
-     if (_buf[_bi] == '\n') _bi++;
-     /* Skip pdb metadata lines */
-     if (_li == 0 || _line[0] == '>' || !strncmp(_line, "-> ", 3) ||
-         !strncmp(_line, "(Pdb)", 5) || strstr(_line, "The program"))
-      continue;
-     /* This is program output -- save it */
-     if (e_d_prog_output_len + _li + 2 > e_d_prog_output_cap)
-     { e_d_prog_output_cap = (e_d_prog_output_len + _li + 1024) * 2;
-       e_d_prog_output = realloc(e_d_prog_output, e_d_prog_output_cap);
-     }
-     if (e_d_prog_output)
+   /* Capture program output from EVERY step response.
+      Any line that isn't pdb metadata (prompt, active line, debugger
+      messages) is program output (e.g. print() results). */
+   { char _line[256];
+     int _bi = 0;
+     while (_buf[_bi])
      {
-      memcpy(e_d_prog_output + e_d_prog_output_len, _line, _li);
-      e_d_prog_output_len += _li;
-      e_d_prog_output[e_d_prog_output_len++] = '\n';
+      int _li = 0;
+      while (_buf[_bi] && _buf[_bi] != '\n' && _li < 255)
+       _line[_li++] = _buf[_bi++];
+      _line[_li] = '\0';
+      if (_buf[_bi] == '\n') _bi++;
+      if (_li == 0) continue;
+      /* Skip pdb metadata */
+      if (_line[0] == '>' || !strncmp(_line, "-> ", 3) ||
+          !strncmp(_line, "(Pdb)", 5) ||
+          !strncmp(_line, "--Return--", 10) ||
+          !strncmp(_line, "--Call--", 8) ||
+          strstr(_line, "The program"))
+       continue;
+      /* Program output -- save for Ctrl-G P */
+      if (e_d_prog_output_len + _li + 2 > e_d_prog_output_cap)
+      { e_d_prog_output_cap = (e_d_prog_output_len + _li + 1024) * 2;
+        e_d_prog_output = realloc(e_d_prog_output, e_d_prog_output_cap);
+      }
+      if (e_d_prog_output)
+      {
+       memcpy(e_d_prog_output + e_d_prog_output_len, _line, _li);
+       e_d_prog_output_len += _li;
+       e_d_prog_output[e_d_prog_output_len++] = '\n';
+      }
      }
+   }
+   /* Check for program exit -- pdb auto-restarts after finish */
+   if (strstr(_buf, "The program finished") ||
+       strstr(_buf, "--Return--"))
+   {
+    if (strstr(_buf, "The program finished"))
+    {
+     e_d_switch_out(0);
+     e_error("End of code. Ctrl-G P for output.", 0, f->fb);
+     return(e_d_quit(f));
     }
-    e_d_switch_out(0);
-    e_error("End of code. Ctrl-G P for output.", 0, f->fb);
-    return(e_d_quit(f));
    }
    /* Parse "> file(line)func()" to extract file and line number */
    { char *_gt = strstr(_buf, "> ");
