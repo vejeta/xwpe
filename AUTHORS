@@ -103,6 +103,9 @@ Juan Manuel Mendez Rey <juan.mendezr@proton.me>
   GPM, resolving 26-year conflict with ncurses 6.x built-in integration.
   Fixed cursor-to-Messages after successful compile, menu bar redraw
   after Ctrl-F9 Run, File Manager panel scroll on Tab.
+  Python support: syntax highlighting, F9 (py_compile), pdb debugger.
+  LaTeX support: syntax highlighting, F9 (pdflatex), error navigation.
+  Fixed 33-year-old Redo crash (SIGSEGV after search/replace undo).
   12-chapter Texinfo manual integrated into help system.
   33 automated pyte tests (UTF-8, scrollbar, compile, menu).
   560+ file historical archive at codeberg.org/mendezr/xwpe-archive.

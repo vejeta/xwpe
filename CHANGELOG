@@ -161,6 +161,21 @@ Changes
   and e_pr_text helpers for safe string display in dialogs.
 * Font recommendations documented for terminal emulators, Linux
   console (setfont), and X11 mode (-fn flag).
+* Added Python support: syntax highlighting (35 keywords), F9 syntax
+  check via python3 -m py_compile, error navigation with Alt-T.
+  Pattern matcher fix: don't wrap compiler output (long paths broke
+  error patterns when split across lines). Quote stripping for Python's
+  File "name.py" format.
+* Added pdb (Python Debugger) as 6th debugger backend. Auto-selects
+  for .py files. Breakpoints, F8 stepping, program output capture via
+  Ctrl-G P, auto-skip of internal Python frames (<string>), clean exit
+  detection. Uses poll()-based async I/O like jdb.
+* Added LaTeX support: syntax highlighting (31 keywords), F9 compilation
+  via pdflatex -interaction=nonstopmode -file-line-error, error
+  navigation. Closes the -c flag bug reported by Miroslav Janiš in 1998.
+* Fixed e_show_error path matching: added basename fallback for compilers
+  that report relative paths (pdflatex, py_compile). Previously opened
+  an empty file when paths didn't match exactly.
 * 33 automated pyte tests (20 existing + 13 new): UTF-8 borders,
   scrollbar, F9 compile, error navigation, menu open/close.
   (Juan Manuel Mendez Rey)
