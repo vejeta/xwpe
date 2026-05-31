@@ -2037,7 +2037,16 @@ int e_start_debug(FENSTER *f)
  rfildes[0] = rfildes[1] = -1;
  if (e_d_swtch)
   return(0);
-/*    e_copy_prog(&e_sv_prog, &e_prog);  */
+ /* Find the source file window -- f may point to Messages if the
+    cursor is there from a previous compile.  Same fix as #45. */
+ for (i = cn->mxedt; i > 0; i--)
+  if (strcmp(cn->f[i]->datnam, "Messages") && DTMD_ISTEXT(cn->f[i]->dtmd))
+   break;
+ if (i > 0)
+ {
+  e_switch_window(cn->edt[i], cn->f[cn->mxedt]);
+  f = cn->f[cn->mxedt];
+ }
  if (e_p_make(f))
   return(-1);
  if (!e__project)
