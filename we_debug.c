@@ -1945,7 +1945,11 @@ int e_exec_deb(FENSTER *f, char *prog)
   fp = fopen(file, "w+");
   fprintf(fp, "#!/bin/sh\n");
   fprintf(fp, "tty > %s\n", npipe[1]);
-  if (!e_deb_swtch)
+  if (e_deb_type == 5)
+   fprintf(fp,
+     "%s -m pdb %s < %s > %s 2> %s\necho type \\<Return\\> to continue\nread i\n",
+     e_debugger, prog, npipe[0], npipe[1], npipe[2]);
+  else if (!e_deb_swtch)
    fprintf(fp,
      "%s %s < %s > %s 2> %s\necho type \\<Return\\> to continue\nread i\n",
      e_debugger, prog, npipe[0], npipe[1], npipe[2]);
