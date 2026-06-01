@@ -8,35 +8,34 @@ from the Kruse era is preserved in the archive repository at
 https://codeberg.org/mendezr/xwpe-archives
 
 
-Known Bugs (reported during the Payne era, under verification)
+Known Bugs (Payne era, verified 2026-06-01)
 
-The following bugs were documented by Dennis Payne between 2000 and
-2006.  Several have been fixed in the 1.6.x series; the rest are being
-verified before the next release.
+Confirmed present:
+* gdb backend assumes the program starts in "main" (hardcoded in
+     e_mk_brk_main).
+* Esc key may require multiple presses on Linux console (not yet
+     verified on a real console; works correctly in terminal emulators).
+* Check headers doesn't handle comments and "ifndef" protection
+     (CHECKHEADER compile-time option, not verified).
+* Debugging leaks memory (location unknown since 2000).
 
-Confirmed present (2026-06-01 verification):
-* gdb backend assumes the program starts in "main" (hardcoded in code).
-* gdb backend assumes the program starts in "main" (hardcoded in code).
-
-Not yet verified (need specific environment):
-* Esc key requires 3 presses on Linux console (needs real console).
-* Check headers doesn't handle comments and "ifndef" protection (needs
-     CHECKHEADER compile flag).
-* Debugging leaks memory (needs valgrind session, location unknown).
-
-Cannot reproduce (likely fixed by SCREENCELL migration):
-* Changing the maximum column and using cut & paste can crash xwpe.
+Cannot reproduce:
+* Changing the maximum column and using cut & paste can crash xwpe
+     (tested 2026-06-01 with Max Columns=20, no crash; likely fixed
+     by SCREENCELL migration in 1.6.0).
 
 Bugs fixed in 1.6.x:
 * Documentation hasn't been updated -- 12-chapter Texinfo manual (1.6.2).
 * Compilers are assumed to have a -c and -o -- GNU/Other distinction (1.6.2).
-* Certain file names like 'Messages' aren't handled -- fixed (1.6.3).
 * Cursor keys don't work in xterms or telnet sessions -- fixed (1.6.0).
+* Certain file names like 'Messages' aren't handled -- fixed (1.6.3).
 * 'make install' installs x versions even if not compiled in -- fixed (1.6.3).
 * --without-x build failed (unguarded X11 symbols) -- fixed (1.6.3).
 * No error for disk full (silent failure on save) -- fixed (1.6.3).
 * Open Project with nonexistent .prj opened blank editor -- fixed (1.6.3).
 * Add Item with no project open silently did nothing -- fixed (1.6.3).
+* Shift-Tab not detected in terminal emulators -- fixed (1.6.3).
+* Dialog colors illegible on modern terminals -- fixed (1.6.3).
 
 
 Changes
