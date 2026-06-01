@@ -65,7 +65,7 @@ maketitle tableofcontents
 
 2
 .pl .pm
-38
+46
 chomp chop chown close cmp die do else elsif eq eval exit for
 foreach goto if last local my ne next no not open our package
 print printf push qq qw qx redo require return say shift sort
@@ -75,7 +75,7 @@ split sub tr unless until use warn while
 
 2
 .cob .cbl
-52
+50
 ACCEPT ADD ALTER CALL CANCEL CLOSE COMPUTE CONTINUE COPY
 DELETE DISPLAY DIVIDE END ENTRY EVALUATE EXIT GO GOBACK
 IF INITIALIZE INSPECT MERGE MOVE MULTIPLY OPEN PERFORM
@@ -84,7 +84,7 @@ STRING SUBTRACT UNSTRING USE WRITE
 PROGRAM-ID SECTION DIVISION WORKING-STORAGE PROCEDURE
 DATA IDENTIFICATION ENVIRONMENT FILE LINKAGE
 0
-()+-/*=.:, NULL NULL *> NULL "' \  7  0 7 72
+()+-/*=.:, NULL NULL *> NULL "' \  7  0 72
 
 .java
 47
