@@ -41,6 +41,45 @@ Bugs fixed in 1.6.x:
 
 Changes
 
+1.6.3 (dialog usability, Perl/COBOL, bug verification)
+
+  Dialog usability:
+* Tab/Shift-Tab navigation through all dialog fields, including
+  Ok/Cancel buttons.  Wraps around at the end.  Works in xterm, SSH,
+  tmux, gnome-terminal -- everywhere, not just the Linux console.
+* Radio buttons now show ( ) instead of [ ] to distinguish from
+  checkboxes.  Selected radio shows (*).
+* Fixed illegible colors for focused elements and shortcut letters
+  on modern terminals.  Default palette updated from 1993 CGA/VGA
+  assumptions to readable contrast on 256-color terminals.
+
+  Compiler integration:
+* Perl: syntax highlighting (46 keywords), F9 (perl -c), Ctrl-F9 run.
+* COBOL: syntax highlighting (50 keywords), F9 (cobc), GNU style.
+* 9 compilers supported: gcc, g++, gfortran, fpc, javac, python3,
+  pdflatex, perl, cobc.
+* Error navigation (Alt-T/Alt-V) is now cursor-relative with
+  wrap-around: jumps to the next error below the cursor, wraps to
+  the first error when past the last.
+
+  Bug fixes:
+* Fix silent data loss on disk full: e_write now checks ferror/fclose.
+* Fix link/run using Messages window instead of source file.
+* Fix Open Project with nonexistent .prj opening a blank editor.
+* Fix Add Item with no project open silently doing nothing.
+* Fix --without-x build: guard X11 symbols, conditional symlinks.
+* Fix syntax_def keyword counts (Perl 46, COBOL 50).
+
+  X11 mode:
+* Unicode box-drawing glyphs for window borders (U+250x) and
+  scrollbar (U+2591 light shade, U+2588 full block) when Xft active.
+
+  Documentation:
+* Texinfo manual updated for 9 compilers, pdb debugger, Messages
+  buffer, cursor-relative error navigation.
+* CHANGELOG Known Bugs section reorganized: verified, fixed, or
+  confirmed present with reproduction steps.
+
 1.6.2 (Xft rendering, debugger resurrection, UTF-8 everywhere)
 
   SCREENCELL migration completion:
