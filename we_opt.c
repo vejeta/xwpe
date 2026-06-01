@@ -1565,11 +1565,11 @@ int e_get_sw_cmp(int xin, int yin, int x, int y, int xmin, int ymin, int c)
       ((c == CRI || c == CCRI) && yin == y && xin > x && xin < xmin) );
 }
 
-static int e_get_opt_sw_inner(int c, int x, int y, W_OPTSTR *o)
+static int e_get_opt_sw_spatial(int c, int x, int y, W_OPTSTR *o)
 {
    int i, j, xmin, ymin, ret = 0;
    xmin = (c == CRI || c == CCRI) ? o->xe : o->xa;
-   ymin = (c == CUP || c == BUP || c == WPE_BTAB) ? o->ya : o->ye;
+   ymin = (c == CUP || c == BUP) ? o->ya : o->ye;
    x -= o->xa;  xmin -= o->xa;
    y -= o->ya;  ymin -= o->ya;
    for(i = 0; i < o->wn; i++)
@@ -1611,17 +1611,98 @@ static int e_get_opt_sw_inner(int c, int x, int y, W_OPTSTR *o)
    return ret;
 }
 
+struct tab_entry { int y, x, sw, col; };
+
+static int tab_entry_cmp(const void *a, const void *b)
+{
+ const struct tab_entry *ta = a, *tb = b;
+ if (ta->col != tb->col) return ta->col - tb->col;
+ if (ta->y != tb->y) return ta->y - tb->y;
+ return ta->x - tb->x;
+}
+
+static int e_get_opt_sw_tab(int c, int x, int y, W_OPTSTR *o)
+{
+ struct tab_entry tabs[128];
+ int n = 0, i, cur = -1, best = -1;
+ int mid = (o->xe - o->xa) / 2;
+
+ x -= o->xa;
+ y -= o->ya;
+ for (i = 0; i < o->sn; i++)
+ {
+  tabs[n].x = o->sstr[i]->x;
+  tabs[n].y = o->sstr[i]->y;
+  tabs[n].sw = o->sstr[i]->sw;
+  tabs[n].col = tabs[n].x >= mid ? 1 : 0;
+  n++;
+ }
+ for (i = 0; i < o->nn; i++)
+ {
+  tabs[n].x = o->nstr[i]->xw;
+  tabs[n].y = o->nstr[i]->yw;
+  tabs[n].sw = o->nstr[i]->sw;
+  tabs[n].col = tabs[n].x >= mid ? 1 : 0;
+  n++;
+ }
+ for (i = 0; i < o->pn; i++)
+ {
+  if (o->pstr[i]->np > 0)
+  {
+   tabs[n].x = o->pstr[i]->ps[0]->x;
+   tabs[n].y = o->pstr[i]->ps[0]->y;
+   tabs[n].sw = o->pstr[i]->ps[0]->sw;
+   tabs[n].col = tabs[n].x >= mid ? 1 : 0;
+   n++;
+  }
+ }
+ for (i = 0; i < o->wn; i++)
+ {
+  tabs[n].x = o->wstr[i]->xw;
+  tabs[n].y = o->wstr[i]->yw;
+  tabs[n].sw = o->wstr[i]->sw;
+  tabs[n].col = 2;
+  n++;
+ }
+ for (i = 0; i < o->bn; i++)
+ {
+  tabs[n].x = o->bstr[i]->x;
+  tabs[n].y = o->bstr[i]->y;
+  tabs[n].sw = o->bstr[i]->sw;
+  tabs[n].col = 2;
+  n++;
+ }
+ if (n == 0) return c;
+ qsort(tabs, n, sizeof(struct tab_entry), tab_entry_cmp);
+ for (i = 0; i < n; i++)
+  if (tabs[i].y == y && tabs[i].x == x) { cur = i; break; }
+ if (cur < 0)
+ {
+  int dist, best_dist = 9999;
+  for (i = 0; i < n; i++)
+  {
+   dist = (tabs[i].y - y) * 100 + (tabs[i].x - x);
+   if (dist < 0) dist = -dist;
+   if (dist < best_dist) { best_dist = dist; cur = i; }
+  }
+ }
+ if (cur < 0) cur = 0;
+ if (c == WPE_TAB)
+  best = (cur + 1) % n;
+ else
+  best = (cur - 1 + n) % n;
+ return tabs[best].sw;
+}
+
 int e_get_opt_sw(int c, int x, int y, W_OPTSTR *o)
 {
    int ret;
    if( c != 0 && c != CUP && c != CDO && c != CLE && c != CRI && c != BUP &&
        c != BDO && c != CCLE && c != CCRI && c != WPE_TAB && c != WPE_BTAB )
 	return(c);
-   ret = e_get_opt_sw_inner(c, x, y, o);
-   if (!ret && (c == WPE_TAB || c == CDO || c == BDO))
-    ret = e_get_opt_sw_inner(c, o->xa, o->ya, o);
-   if (!ret && (c == WPE_BTAB || c == CUP || c == BUP))
-    ret = e_get_opt_sw_inner(c, o->xe, o->ye, o);
+   if (c == WPE_TAB || c == WPE_BTAB)
+    return e_get_opt_sw_tab(c, x, y, o);
+   ret = e_get_opt_sw_spatial(c, x, y, o);
    return(!ret ? c : ret);
 }
 
@@ -1665,7 +1746,7 @@ int e_opt_kst(W_OPTSTR *o)
    }
    for(i = 0; i < o->pn; i++)
    {  for(j = 0; j < o->pstr[i]->np; j++)
-      {  e_pr_str(o->xa+o->pstr[i]->ps[j]->x, o->ya+o->pstr[i]->ps[j]->y, "[ ] ",
+      {  e_pr_str(o->xa+o->pstr[i]->ps[j]->x, o->ya+o->pstr[i]->ps[j]->y, "( ) ",
             o->fst, -1, 1, 0, 0);
          e_pr_str(o->xa+o->pstr[i]->ps[j]->x+4, o->ya+o->pstr[i]->ps[j]->y,
             o->pstr[i]->ps[j]->header, o->fst, o->pstr[i]->ps[j]->nc,
@@ -1676,7 +1757,7 @@ int e_opt_kst(W_OPTSTR *o)
             o->ya+o->pstr[i]->ps[j]->y, "   ", o->fst, -1, 1, 0, 0);
          else
 #endif
-         e_pr_str(o->xa+o->pstr[i]->ps[j]->x, o->ya+o->pstr[i]->ps[j]->y, "[ ]", o->fst, -1, 1, 0, 0);
+         e_pr_str(o->xa+o->pstr[i]->ps[j]->x, o->ya+o->pstr[i]->ps[j]->y, "( )", o->fst, -1, 1, 0, 0);
       }
    }
    for(i = 0; i < o->bn; i++)
@@ -1717,7 +1798,7 @@ int e_opt_kst(W_OPTSTR *o)
          for(i = 0; i < o->pn; i++)
             for(j = 0; j < o->pstr[i]->np; j++)
             {  if(o->pstr[i]->num == j)
-                  e_pr_char(o->xa+o->pstr[i]->ps[j]->x+1, o->ya+o->pstr[i]->ps[j]->y, SWSYM, o->fst);
+                  e_pr_char(o->xa+o->pstr[i]->ps[j]->x+1, o->ya+o->pstr[i]->ps[j]->y, '*', o->fst);
                else
                   e_pr_char(o->xa+o->pstr[i]->ps[j]->x+1, o->ya+o->pstr[i]->ps[j]->y, ' ', o->fst);
             }

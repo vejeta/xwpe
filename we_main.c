@@ -522,11 +522,11 @@ void FARBE_Init(FARBE *fb)
  fb->fz = e_s_x_clr(15,2);  /*  Data active highlighted	  */
  fb->frft = e_s_x_clr(15,6);/*  Data passive highlighted	  */
  fb->fs = e_s_x_clr(0,6);   /*  Switch Text		  */
- fb->nsft = e_s_x_clr(14,6);/*  Switch Switch	  */
- fb->fsm = e_s_x_clr(14,6); /*  Switch active	  */
+ fb->nsft = e_s_x_clr(15,6);/*  Switch shortcut (white on cyan)  */
+ fb->fsm = e_s_x_clr(15,4); /*  Switch active (white on blue)  */
  fb->nz = e_s_x_clr(15,2);  /*  Button Text             */
- fb->ns = e_s_x_clr(11,2);  /*  Button Switch         */
- fb->nm = e_s_x_clr(11,2);  /*  Button Text highlighted    */
+ fb->ns = e_s_x_clr(14,2);  /*  Button shortcut (yellow on green)  */
+ fb->nm = e_s_x_clr(15,4);  /*  Button active (white on blue)  */
  fb->hh = e_s_x_clr(12,6);  /*  Help Header		  */
  fb->hb = e_s_x_clr(11,2);  /*  Help Button		  */
  fb->hm = e_s_x_clr(10,4);  /*  Help highlighted		  */
