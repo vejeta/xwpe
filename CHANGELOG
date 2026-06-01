@@ -15,7 +15,6 @@ The following bugs were documented by Dennis Payne between 2000 and
 verified before the next release.
 
 * Debugging leaks memory (location unknown).
-* 'make install' creates xwpe/xwe symlinks even with --without-x.
 * Adding items when no project is open has odd behavior.
 * Changing the maximum column and using cut & paste can crash xwpe.
 * Clicking "edit" in the project menu when not on a file loads a file
@@ -30,6 +29,8 @@ Bugs fixed in 1.6.x (removed from list above):
 * Compilers are assumed to have a -c and -o -- GNU/Other distinction (1.6.2).
 * Certain file names like 'Messages' aren't handled -- fixed (1.6.3).
 * Cursor keys don't work in xterms or telnet sessions -- fixed (1.6.0).
+* 'make install' installs x versions even if not compiled in -- fixed (1.6.3).
+* --without-x build failed (unguarded X11 symbols) -- fixed (1.6.3).
 
 
 Changes
