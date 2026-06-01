@@ -1504,6 +1504,12 @@ int e_project(FENSTER *f)
  int i;
  if (!e_project_name(f))
  {
+  if (!e_prog.project[0] || access(e_prog.project, F_OK) != 0)
+  {
+   e_error("Project file not found", 0, f->fb);
+   e_prog.project[0] = '\0';
+   return(WPE_ESC);
+  }
   for (i = cn->mxedt; i > 0 && (cn->f[i]->dtmd != DTMD_DATA || cn->f[i]->ins != 4);
     i--)
    ;
@@ -1565,6 +1571,11 @@ int e_p_add_item(FENSTER *f)
  ECNT *cn = f->ed;
  int i;
 
+ if (!e_prog.project || !e_prog.project[0] || access(e_prog.project, F_OK) != 0)
+ {
+  e_error("No project open", 0, f->fb);
+  return(0);
+ }
  for (i = cn->mxedt; i > 0 && (cn->f[i]->dtmd != DTMD_DATA || cn->f[i]->ins != 4);
    i--)
   ;
