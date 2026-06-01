@@ -310,8 +310,20 @@ int e_write(int xa, int ya, int xe, int ye, FENSTER *f, int backup)
    else
     putc(*(b->bf[j].s+i), fp);
   }
+ if (ferror(fp))
+ {
+  e_error("Error writing file (disk full?)", 0, f->fb);
+  fclose(fp);
+  FREE(ptmp);
+  return(WPE_ESC);
+ }
+ if (fclose(fp) != 0)
+ {
+  e_error("Error writing file (disk full?)", 0, f->fb);
+  FREE(ptmp);
+  return(WPE_ESC);
+ }
  FREE(ptmp);
- fclose(fp);
  return(0);
 }
 
