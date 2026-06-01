@@ -1,37 +1,35 @@
 Notes for Hackers
-     Conditional compilation can quickly destroy the readability of source
-code.  Non-ANSI C conditional compilation have been removed for the sake of
-clarity.  We are sorry if this causes problems for anyone.  In the future
-xwpe alpha may begin to use POSIX functions in preference to others as
-well.
-     All support for dos has been removed.  It has not worked in the
-last official release and there is not really a need for it.  No one is
-actively working on the djgpp port which also didn't work in the last Fred
-Kruse release.  The djgpp defines are slowly being removed since no support
-is likely in the near future.
-
-German Documentation
-     All German documentation has been moved to the old directory as no one
-has updated it since 1.4.2.
+     See HACKING.md for architecture details (SCREENCELL buffer model,
+double-buffer rendering, popup save/restore, X11 extbyte system).
+     The codebase uses C89/K&R style compiled with -std=gnu17.  POSIX
+functions (poll, openpty, sigaction) are used for all new code.  All DOS
+and djgpp support was removed in the Payne era.  German documentation
+from the Kruse era is preserved in the archive repository at
+https://codeberg.org/mendezr/xwpe-archives
 
 
-Known Bugs
+Known Bugs (reported during the Payne era, under verification)
 
-* Debugging leaks memory (actually location of the leak unknown).
-* Documentation hasn't been updated.
-* Compilers are assumed to have a -c and -o option.
-* 'make install' installs x versions even if not compiled in.
+The following bugs were documented by Dennis Payne between 2000 and
+2006.  Several have been fixed in the 1.6.x series; the rest are being
+verified before the next release.
+
+* Debugging leaks memory (location unknown).
+* 'make install' creates xwpe/xwe symlinks even with --without-x.
 * Adding items when no project is open has odd behavior.
 * Changing the maximum column and using cut & paste can crash xwpe.
-* Clicking "edit" in the project menu when not on a file it loads a file
+* Clicking "edit" in the project menu when not on a file loads a file
      with a name of " ".
-* Esc key requires 3 presses to do the regular escape function under Linux
-     console (and perhaps other terminal types).
+* Esc key requires 3 presses on Linux console.
 * No error for disk full.
 * Check headers doesn't correctly handle comments and "ifndef" protection.
-* Debugger assumes the program starts in "main".
-* Certain file names like 'Messages' aren't handled properly.
-* Cursor keys don't work in xterms or telnet sessions.
+* gdb backend assumes the program starts in "main".
+
+Bugs fixed in 1.6.x (removed from list above):
+* Documentation hasn't been updated -- 12-chapter Texinfo manual (1.6.2).
+* Compilers are assumed to have a -c and -o -- GNU/Other distinction (1.6.2).
+* Certain file names like 'Messages' aren't handled -- fixed (1.6.3).
+* Cursor keys don't work in xterms or telnet sessions -- fixed (1.6.0).
 
 
 Changes
