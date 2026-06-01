@@ -844,20 +844,34 @@ int e_make_error_list(FENSTER *f)
 
 int e_previous_error(FENSTER *f)
 {
- if (err_no > 0)
-  return(e_show_error(--err_no, f));
- e_pr_uul(f->fb);
- return(0);
+ int i, cur_line;
+
+ if (err_num <= 0)
+ {
+  e_pr_uul(f->fb);
+  return(0);
+ }
+ cur_line = f->b->b.y + 1;
+ for (i = err_num - 1; i >= 0; i--)
+  if (err_li[i].line < cur_line)
+   return(e_show_error(err_no = i, f));
+ return(e_show_error(err_no = err_num - 1, f));
 }
 
 int e_next_error(FENSTER *f)
 {
- if (err_no < err_num - 1)
-  return(e_show_error(++err_no, f));
- if (err_num > 0)
-  return(e_show_error(err_no, f));
- e_pr_uul(f->fb);
- return(0);
+ int i, cur_line;
+
+ if (err_num <= 0)
+ {
+  e_pr_uul(f->fb);
+  return(0);
+ }
+ cur_line = f->b->b.y + 1;
+ for (i = 0; i < err_num; i++)
+  if (err_li[i].line > cur_line)
+   return(e_show_error(err_no = i, f));
+ return(e_show_error(err_no = 0, f));
 }
 
 int e_cur_error(int y, FENSTER *f)
