@@ -785,6 +785,7 @@ int e_t_getch()
    case KEY_NPAGE:  c = BDO; break;
    case KEY_HOME:  c = POS1; break;
    case KEY_END:  c = ENDE; break;
+   case KEY_BTAB:  c = WPE_BTAB; break;
    case KEY_RESIZE:
    {
     int i, old_scol = MAXSCOL, old_slns = MAXSLNS;
