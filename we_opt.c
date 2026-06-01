@@ -1611,11 +1611,12 @@ static int e_get_opt_sw_spatial(int c, int x, int y, W_OPTSTR *o)
    return ret;
 }
 
-struct tab_entry { int y, x, sw; };
+struct tab_entry { int y, x, sw, col; };
 
 static int tab_entry_cmp(const void *a, const void *b)
 {
  const struct tab_entry *ta = a, *tb = b;
+ if (ta->col != tb->col) return ta->col - tb->col;
  if (ta->y != tb->y) return ta->y - tb->y;
  return ta->x - tb->x;
 }
@@ -1624,6 +1625,9 @@ static int e_get_opt_sw_tab(int c, int x, int y, W_OPTSTR *o)
 {
  struct tab_entry tabs[128];
  int n = 0, i, cur = -1, best = -1;
+ int mid = (o->xe - o->xa) / 2;
+ int two_col = 0, has_left = 0, has_right = 0;
+ int btn_y = 0;
 
  x -= o->xa;
  y -= o->ya;
@@ -1663,9 +1667,28 @@ static int e_get_opt_sw_tab(int c, int x, int y, W_OPTSTR *o)
   tabs[n].x = o->bstr[i]->x;
   tabs[n].y = o->bstr[i]->y;
   tabs[n].sw = o->bstr[i]->sw;
+  if (tabs[n].y > btn_y) btn_y = tabs[n].y;
   n++;
  }
  if (n == 0) return c;
+ for (i = 0; i < n; i++)
+ {
+  if (tabs[i].y < btn_y)
+  {
+   if (tabs[i].x < mid) has_left = 1;
+   else has_right = 1;
+  }
+ }
+ two_col = has_left && has_right;
+ for (i = 0; i < n; i++)
+ {
+  if (tabs[i].y >= btn_y)
+   tabs[i].col = 2;
+  else if (two_col && tabs[i].x >= mid)
+   tabs[i].col = 1;
+  else
+   tabs[i].col = 0;
+ }
  qsort(tabs, n, sizeof(struct tab_entry), tab_entry_cmp);
  for (i = 0; i < n; i++)
   if (tabs[i].y == y && tabs[i].x == x) { cur = i; break; }
