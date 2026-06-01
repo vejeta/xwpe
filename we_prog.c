@@ -154,7 +154,12 @@ int e_p_make(FENSTER *f)
   WpeMouseRestoreShape();
   return(-1);
  }
- f = cn->f[cn->mxedt-1];
+ /* Find the source file, skipping Messages which e_comp may have
+    placed at mxedt or mxedt-1 */
+ for (i = cn->mxedt; i > 0; i--)
+  if (strcmp(cn->f[i]->datnam, "Messages"))
+   break;
+ f = (i > 0) ? cn->f[i] : cn->f[cn->mxedt-1];
  if (!e__project)
  {
   e_arg = MALLOC(6 * sizeof(char *));
@@ -255,7 +260,11 @@ int e_run(FENSTER *f)
  if (e_p_make(f))
   return(-1);
  WpeMouseChangeShape(WpeWorkingShape);
- f = cn->f[cn->mxedt-1];
+ /* Find source file, skipping Messages */
+ for (i = cn->mxedt; i > 0; i--)
+  if (strcmp(cn->f[i]->datnam, "Messages"))
+   break;
+ f = (i > 0) ? cn->f[i] : cn->f[cn->mxedt-1];
 #ifdef DEBUGGER
  if (e_d_swtch > 0)
   e_d_quit(f);
