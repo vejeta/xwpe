@@ -1565,12 +1565,9 @@ int e_get_sw_cmp(int xin, int yin, int x, int y, int xmin, int ymin, int c)
       ((c == CRI || c == CCRI) && yin == y && xin > x && xin < xmin) );
 }
 
-int e_get_opt_sw(int c, int x, int y, W_OPTSTR *o)
+static int e_get_opt_sw_inner(int c, int x, int y, W_OPTSTR *o)
 {
    int i, j, xmin, ymin, ret = 0;
-   if( c != 0 && c != CUP && c != CDO && c != CLE && c != CRI && c != BUP && 
-       c != BDO && c != CCLE && c != CCRI && c != WPE_TAB && c != WPE_BTAB )
-	return(c);
    xmin = (c == CRI || c == CCRI) ? o->xe : o->xa;
    ymin = (c == CUP || c == BUP || c == WPE_BTAB) ? o->ya : o->ye;
    x -= o->xa;  xmin -= o->xa;
@@ -1611,6 +1608,20 @@ int e_get_opt_sw(int c, int x, int y, W_OPTSTR *o)
          ret = o->bstr[i]->sw;
       }
    }
+   return ret;
+}
+
+int e_get_opt_sw(int c, int x, int y, W_OPTSTR *o)
+{
+   int ret;
+   if( c != 0 && c != CUP && c != CDO && c != CLE && c != CRI && c != BUP &&
+       c != BDO && c != CCLE && c != CCRI && c != WPE_TAB && c != WPE_BTAB )
+	return(c);
+   ret = e_get_opt_sw_inner(c, x, y, o);
+   if (!ret && (c == WPE_TAB || c == CDO || c == BDO))
+    ret = e_get_opt_sw_inner(c, o->xa, o->ya, o);
+   if (!ret && (c == WPE_BTAB || c == CUP || c == BUP))
+    ret = e_get_opt_sw_inner(c, o->xe, o->ye, o);
    return(!ret ? c : ret);
 }
 
