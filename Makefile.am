@@ -74,15 +74,21 @@ noinst_HEADERS = \
 # --- Symlinks: wpe, xwpe, xwe -> we ---
 install-exec-hook:
 	cd $(DESTDIR)$(bindir) && \
-	  rm -f wpe xwpe xwe && \
-	  $(LN_S) we wpe && \
+	  rm -f wpe && \
+	  $(LN_S) we wpe
+if HAVE_X11
+	cd $(DESTDIR)$(bindir) && \
+	  rm -f xwpe xwe && \
 	  $(LN_S) we xwpe && \
 	  $(LN_S) we xwe
+endif
 
 uninstall-hook:
-	rm -f $(DESTDIR)$(bindir)/wpe \
-	      $(DESTDIR)$(bindir)/xwpe \
+	rm -f $(DESTDIR)$(bindir)/wpe
+if HAVE_X11
+	rm -f $(DESTDIR)$(bindir)/xwpe \
 	      $(DESTDIR)$(bindir)/xwe
+endif
 
 # --- Library/data files ---
 xwpedatadir = $(pkglibdir)

@@ -1891,9 +1891,11 @@ int e_exec_deb(FENSTER *f, char *prog)
     tcsetattr(rfildes[0], TCSADRAIN, &ntermio);
    }
    usleep(200000);
+#ifndef NO_XWINDOWS
    XSetInputFocus(WpeXInfo.display, WpeXInfo.window,
      RevertToParent, CurrentTime);
    XFlush(WpeXInfo.display);
+#endif
   }
   else
   {
