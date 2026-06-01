@@ -15,7 +15,6 @@ The following bugs were documented by Dennis Payne between 2000 and
 verified before the next release.
 
 Confirmed present (2026-06-01 verification):
-* No error for disk full (silent failure on save).
 * Open Project with nonexistent .prj opens blank editor with bogus name.
 * Adding items when no project is open silently does nothing.
 * gdb backend assumes the program starts in "main" (hardcoded in code).
@@ -36,6 +35,7 @@ Bugs fixed in 1.6.x:
 * Cursor keys don't work in xterms or telnet sessions -- fixed (1.6.0).
 * 'make install' installs x versions even if not compiled in -- fixed (1.6.3).
 * --without-x build failed (unguarded X11 symbols) -- fixed (1.6.3).
+* No error for disk full (silent failure on save) -- fixed (1.6.3).
 
 
 Changes
