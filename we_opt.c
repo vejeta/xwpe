@@ -1611,12 +1611,11 @@ static int e_get_opt_sw_spatial(int c, int x, int y, W_OPTSTR *o)
    return ret;
 }
 
-struct tab_entry { int y, x, sw, col; };
+struct tab_entry { int y, x, sw; };
 
 static int tab_entry_cmp(const void *a, const void *b)
 {
  const struct tab_entry *ta = a, *tb = b;
- if (ta->col != tb->col) return ta->col - tb->col;
  if (ta->y != tb->y) return ta->y - tb->y;
  return ta->x - tb->x;
 }
@@ -1625,16 +1624,14 @@ static int e_get_opt_sw_tab(int c, int x, int y, W_OPTSTR *o)
 {
  struct tab_entry tabs[128];
  int n = 0, i, cur = -1, best = -1;
- int mid = (o->xe - o->xa) / 2;
 
  x -= o->xa;
  y -= o->ya;
- for (i = 0; i < o->sn; i++)
+ for (i = 0; i < o->wn; i++)
  {
-  tabs[n].x = o->sstr[i]->x;
-  tabs[n].y = o->sstr[i]->y;
-  tabs[n].sw = o->sstr[i]->sw;
-  tabs[n].col = tabs[n].x >= mid ? 1 : 0;
+  tabs[n].x = o->wstr[i]->xw;
+  tabs[n].y = o->wstr[i]->yw;
+  tabs[n].sw = o->wstr[i]->sw;
   n++;
  }
  for (i = 0; i < o->nn; i++)
@@ -1642,7 +1639,13 @@ static int e_get_opt_sw_tab(int c, int x, int y, W_OPTSTR *o)
   tabs[n].x = o->nstr[i]->xw;
   tabs[n].y = o->nstr[i]->yw;
   tabs[n].sw = o->nstr[i]->sw;
-  tabs[n].col = tabs[n].x >= mid ? 1 : 0;
+  n++;
+ }
+ for (i = 0; i < o->sn; i++)
+ {
+  tabs[n].x = o->sstr[i]->x;
+  tabs[n].y = o->sstr[i]->y;
+  tabs[n].sw = o->sstr[i]->sw;
   n++;
  }
  for (i = 0; i < o->pn; i++)
@@ -1652,24 +1655,14 @@ static int e_get_opt_sw_tab(int c, int x, int y, W_OPTSTR *o)
    tabs[n].x = o->pstr[i]->ps[0]->x;
    tabs[n].y = o->pstr[i]->ps[0]->y;
    tabs[n].sw = o->pstr[i]->ps[0]->sw;
-   tabs[n].col = tabs[n].x >= mid ? 1 : 0;
    n++;
   }
- }
- for (i = 0; i < o->wn; i++)
- {
-  tabs[n].x = o->wstr[i]->xw;
-  tabs[n].y = o->wstr[i]->yw;
-  tabs[n].sw = o->wstr[i]->sw;
-  tabs[n].col = 2;
-  n++;
  }
  for (i = 0; i < o->bn; i++)
  {
   tabs[n].x = o->bstr[i]->x;
   tabs[n].y = o->bstr[i]->y;
   tabs[n].sw = o->bstr[i]->sw;
-  tabs[n].col = 2;
   n++;
  }
  if (n == 0) return c;
