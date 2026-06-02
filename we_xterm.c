@@ -123,35 +123,20 @@ int WpeDllInit(int *argc, char **argv)
  { extern int e_t_deb_out(FENSTER *);
    e_u_deb_out = e_t_deb_out;
  }
- MCI = 2;
- MCA = 1;
-#ifdef NEWSTYLE
- RD1 = ' ';
- RD2 = ' ';
- RD3 = ' ';
- RD4 = ' ';
- RD5 = ' ';
- RD6 = ' ';
- RE1 = ' ';
- RE2 = ' ';
- RE3 = ' ';
- RE4 = ' ';
- RE5 = ' ';
- RE6 = ' ';
-#else
- RD1 = 13;
- RD2 = 12;
- RD3 = 14;
- RD4 = 11;
- RD5 = 18;
- RD6 = 25;
- RE1 = '.';
- RE2 = '.';
- RE3 = '.';
- RE4 = '.';
- RE5 = '.';
- RE6 = ':';
-#endif
+ MCI = 7;   /* scrollbar track: ACS_S9 (same as terminal mode) */
+ MCA = 11;  /* scrollbar thumb: ACS_DIAMOND (same as terminal mode) */
+ RD1 = 1;  /* ACS_ULCORNER */
+ RD2 = 2;  /* ACS_URCORNER */
+ RD3 = 3;  /* ACS_LLCORNER */
+ RD4 = 4;  /* ACS_LRCORNER */
+ RD5 = 5;  /* ACS_HLINE */
+ RD6 = 6;  /* ACS_VLINE */
+ RE1 = 1;
+ RE2 = 2;
+ RE3 = 3;
+ RE4 = 4;
+ RE5 = 5;
+ RE6 = 6;
  WBT = 1;
  ctree[0] = "\016\022\030";
  ctree[1] = "\016\022\022";
@@ -829,14 +814,18 @@ int e_x_refresh()
 
       altschirm[_n] = schirm[_n];
 #ifdef NEWSTYLE
+#ifndef HAVE_XFT
       e_print_xrect(j, i, _n);
+#endif
       altextbyte[_n] = extbyte[_n];
 #endif
      }
     }
-    /* Flush border segments */
+    /* Flush border segments (legacy XDrawLine, not used with Xft) */
 #ifdef NEWSTYLE
+#ifndef HAVE_XFT
     e_flush_xrect();
+#endif
 #endif
     /* Copy Pixmap to window */
     XCopyArea(WpeXInfo.display, WpeXInfo.backbuf, WpeXInfo.window,

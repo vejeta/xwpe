@@ -38,17 +38,38 @@ border flags (`extbyte`). To compensate, `e_x_refresh()` clears
 extbyte for the interior of all windows before rendering, preventing
 hidden windows' borders from bleeding through.
 
-## X11 border system (extbyte)
+## X11 border system
 
-In X11 NEWSTYLE mode, window borders are drawn as `XDrawLine` segments
-instead of text characters. The `extbyte` array stores per-cell border
-flags (top, bottom, left, right lines). `e_x_refresh()` renders these
-as `XDrawSegments` calls after text rendering.
+Since v1.6.3 with Xft, window borders are rendered as Unicode
+box-drawing characters (U+2500 ─, U+2502 │, U+250C ┌, etc.) via
+`XftDrawStringUtf8`, matching the terminal mode's ncurses ACS
+rendering. The border characters are stored in SCREENCELL as ACS
+indices 1-6 (set via RE1-RE6/RD1-RD6 in `we_xterm.c`).
 
-Known issue: `extbyte` is a flat array with no awareness of window
-stacking. Hidden windows' border flags persist and must be cleared
-explicitly. The v1.7 plan is to replace this with ncurses panels or
-a higher-level X11 API (per Dennis Payne's recommendation).
+The old NEWSTYLE `XDrawLine` system (`extbyte` array with per-cell
+border flags) is disabled when Xft is active. Without Xft, the
+legacy XDrawLine path is still used as fallback.
+
+### X11 window state indicators (F R A S)
+
+In NEWSTYLE X11 mode, four single-letter indicators appear on the
+left border of each editor window (`we_wind.c:414-422`):
+
+- **F** (y+2): File marker
+- **R** (y+4): Read marker
+- **A** (y+6): (historical, meaning undocumented)
+- **S** (y+8): Save state (only shown when `f->ins != 8`)
+
+These are clickable in X11 mode. They are an original Kruse/Payne
+design element, not present in terminal mode (which has no room
+for them in a single-column border).
+
+### extbyte (legacy, non-Xft)
+
+The `extbyte` flat array stores per-cell border flags (top, bottom,
+left, right line segments). Known issue: no awareness of window
+stacking -- hidden windows' border flags persist and must be cleared
+explicitly.
 
 ## Source file overview
 

@@ -408,33 +408,10 @@ void e_ed_rahmen(FENSTER *f, int sw)
    e_make_xrect(f->e.x-4, f->a.y, f->e.x-2, f->a.y, 0);
 #endif
   e_pr_filetype(f);
-  if (WpeIsXwin() && NUM_LINES_ON_SCREEN > 8)
-  {
-#if !defined(NO_XWINDOWS) && defined(NEWSTYLE)
-   e_pr_char(f->a.x, f->a.y + 2, 'F', f->fb->em.fb);
-   e_make_xrect(f->a.x, f->a.y+2, f->a.x, f->a.y+2, 0);
-   e_pr_char(f->a.x, f->a.y + 4, 'R', f->fb->em.fb);
-   e_make_xrect(f->a.x, f->a.y+4, f->a.x, f->a.y+4, 0);
-   e_pr_char(f->a.x, f->a.y + 6, 'A', f->fb->em.fb);
-   e_make_xrect(f->a.x, f->a.y+6, f->a.x, f->a.y+6, 0);
-   if (f->ins != 8)
-   {
-    e_pr_char(f->a.x, f->a.y + 8, 'S', f->fb->em.fb);
-    e_make_xrect(f->a.x, f->a.y+8, f->a.x, f->a.y+8, 0);
-   }
-#else
-   e_pr_char(f->a.x, f->a.y + 2, 'F', f->fb->em.fb);
-   e_pr_char(f->a.x, f->a.y + 3, MCI, f->fb->em.fb);
-   e_pr_char(f->a.x, f->a.y + 4, 'R', f->fb->em.fb);
-   e_pr_char(f->a.x, f->a.y + 5, MCI, f->fb->em.fb);
-   e_pr_char(f->a.x, f->a.y + 6, 'A', f->fb->em.fb);
-   if (f->ins != 8)
-   {
-    e_pr_char(f->a.x, f->a.y + 7, MCI, f->fb->em.fb);
-    e_pr_char(f->a.x, f->a.y + 8, 'S', f->fb->em.fb);
-   }
-#endif
-  }
+  /* F R A S clickable buttons on the left border were a Kruse-era
+     X11 design (Find, Replace, and two unused).  Payne planned to
+     remove them.  Removed in 1.6.3 -- the left border now shows
+     a clean vertical line like terminal mode. */
   e_zlsplt(f);
   blst = f->blst;
   nblst = f->nblst;
@@ -1223,7 +1200,9 @@ void e_std_rahmen(int xa, int ya, int xe, int ye, char *name, int sw, int frb,
 #ifdef NEWSTYLE
   else e_make_xrect(xa+2, ya, xa+4, ya, 0);
  }
+#ifndef HAVE_XFT
  if (WpeIsXwin()) e_make_xr_rahmen(xa, ya, xe, ye, sw);
+#endif
 #else
  }
 /*
