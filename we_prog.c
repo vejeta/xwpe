@@ -963,12 +963,10 @@ int e_check_c_file(char *name)
 
 #ifdef CHECKHEADER
 
-int e_check_header(char *file, M_TIME otime, ECNT *cn, int sw)
+static void e_chk_save_if_open(char *file, ECNT *cn)
 {
- struct stat cbuf[1];
- FILE *fp;
- char *p, str[120], str2[120];
  int i;
+ char *p;
 
  for (i = cn->mxedt; i > 0; i--)
  {
@@ -977,10 +975,115 @@ int e_check_header(char *file, M_TIME otime, ECNT *cn, int sw)
   else
    p = cn->f[i]->datnam;
   if (!strcmp(p, file) && cn->f[i]->save)
-  {  e_save(cn->f[i]);  if(p != cn->f[i]->datnam) FREE(p);  break;  }
+  {
+   e_save(cn->f[i]);
+   if (p != cn->f[i]->datnam) FREE(p);
+   break;
+  }
   if (p != cn->f[i]->datnam)
    FREE(p);
  }
+}
+
+static char *e_chk_skip_block_comment(char *p, char *buf, FILE *fp)
+{
+ p++;
+ for (;;)
+ {
+  for (p++; *p && *p != '*'; p++)
+   ;
+  if (*p == '*' && *(p + 1) == '/')
+   return p + 2;
+  if (!*p && !fgets((p = buf), 120, fp))
+   return NULL;
+ }
+}
+
+static char *e_chk_skip_whitespace_and_comments(char *p, char *buf, FILE *fp)
+{
+ for (;;)
+ {
+  while (isspace((unsigned char)*p))
+   p++;
+  if (*p == '/' && *(p + 1) == '*')
+  {
+   p = e_chk_skip_block_comment(p, buf, fp);
+   if (!p) return NULL;
+   continue;
+  }
+  if (*p == '/' && *(p + 1) == '/')
+   return NULL;
+  return p;
+ }
+}
+
+static int e_chk_is_directive(char *p, const char *name)
+{
+ int len = strlen(name);
+ if (strncmp(p, name, len) != 0)
+  return 0;
+ return !isalnum((unsigned char)p[len]) && p[len] != '_';
+}
+
+static void e_chk_track_conditional(char *p, int *if_depth, int *skip_depth)
+{
+ if (e_chk_is_directive(p, "ifdef") || e_chk_is_directive(p, "ifndef")
+     || e_chk_is_directive(p, "if"))
+ {
+  (*if_depth)++;
+  if (*skip_depth == 0 && e_chk_is_directive(p, "if")
+      && *(p + 2) == ' ' && *(p + 3) == '0')
+   *skip_depth = *if_depth;
+ }
+ else if (e_chk_is_directive(p, "else"))
+ {
+  if (*skip_depth == *if_depth)
+   *skip_depth = 0;
+ }
+ else if (e_chk_is_directive(p, "endif"))
+ {
+  if (*skip_depth == *if_depth)
+   *skip_depth = 0;
+  if (*if_depth > 0)
+   (*if_depth)--;
+ }
+}
+
+static int e_chk_extract_include(char *p, char *out, int outsz)
+{
+ int i;
+
+ for (p += 7; isspace((unsigned char)*p); p++)
+  ;
+ if (*p != '\"')
+  return 0;
+ for (p++, i = 0; p[i] != '\"' && p[i] != '\0' && p[i] != '\n'
+      && i < outsz - 1; i++)
+  out[i] = p[i];
+ out[i] = '\0';
+ return 1;
+}
+
+static char *e_chk_next_directive(char *str, FILE *fp)
+{
+ char *p = e_chk_skip_whitespace_and_comments(str, str, fp);
+
+ if (!p || *p != '#')
+  return NULL;
+ for (p++; isspace((unsigned char)*p); p++)
+  ;
+ return p;
+}
+
+int e_check_header(char *file, M_TIME otime, ECNT *cn, int sw)
+{
+ struct stat cbuf[1];
+ FILE *fp;
+ char *p, str[120], str2[120];
+ int if_depth = 0, skip_depth = 0;
+
+ e_chk_save_if_open(file, cn);
+
  if ((fp = fopen(file, "r")) == NULL)
   return(sw);
  stat(file, cbuf);
@@ -988,38 +1091,13 @@ int e_check_header(char *file, M_TIME otime, ECNT *cn, int sw)
   sw++;
  while (fgets(str, 120, fp))
  {
-  for (p = str; isspace(*p); p++);
-  if (*p == '/' && *(p+1) == '*')
-  {
-   p++;
-   do
-   {
-    for (p++; *p && *p != '*'; p++)
-     ;
-    if (!*p && !fgets((p = str), 120, fp))
-     break;
-   } while (p != NULL && (*p != '*' || *(p+1) != '/'));
-   if (!p) break;
-   for (p += 2; isspace(*p); p++)
-    ;
-  }
-  if (*p == '#')
-  {
-   for (p++; isspace(*p); p++)
-    ;
-   if (!strncmp(p, "include", 7))
-   {
-    for (p += 8; isspace(*p); p++)
-     ;
-    if (*p == '\"')
-    {
-     for (p++, i = 0; p[i] != '\"' && p[i] != '\0' && p[i] != '\n'; i++)
-      str2[i] = p[i];
-     str2[i] = '\0';
-     sw = e_check_header(str2, otime, cn, sw);
-    }
-   }
-  }
+  p = e_chk_next_directive(str, fp);
+  if (!p)
+   continue;
+  e_chk_track_conditional(p, &if_depth, &skip_depth);
+  if (skip_depth == 0 && e_chk_is_directive(p, "include")
+      && e_chk_extract_include(p, str2, sizeof(str2)))
+   sw = e_check_header(str2, otime, cn, sw);
  }
  fclose(fp);
  return(sw);

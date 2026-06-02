@@ -121,6 +121,15 @@ dist_man1_MANS = we.1 wpe.1 xwe.1
 desktopdir = $(datadir)/applications
 desktop_DATA = xwpe.desktop
 
+# --- Unit tests ---
+check_PROGRAMS = test_checkheader
+
+test_checkheader_SOURCES = tests/test_checkheader.c
+test_checkheader_CFLAGS = -std=gnu17
+test_checkheader_LDFLAGS =
+
+TESTS = test_checkheader
+
 # --- Extra files for distribution ---
 EXTRA_DIST = \
   help.xwpe_eng \
@@ -138,6 +147,8 @@ EXTRA_DIST = \
   old/we_djgpp.c \
   old/xwpe.1_gr \
   tests/README.md \
+  tests/test_checkheader.c \
   tests/test_scrollbar.py \
   tests/test_utf8_border.py \
+  tests/test_compile.py \
   tools/compiletest.c
