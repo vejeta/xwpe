@@ -3219,14 +3219,12 @@ int e_d_goto_break(char *file, int line, FENSTER *f)
  {
   if (access(file, 0))
   {
-   /* If gdb stepped into system/library code (libc, runtime startup),
-      show a friendlier message instead of "Can't find file /usr/..." */
-   if (strstr(file, "../sysdeps/") || strstr(file, "/usr/src/") ||
-       strstr(file, "/build/"))
+   /* Source file not found -- stepped into system/library code.
+      Auto-step past it instead of showing a confusing error. */
+   if (e_deb_type == 0)
    {
-    e_error("End of code. Ctrl-G P for output.", 0, f->fb);
-    e_d_quit(f);
-    return(-2);
+    write(rfildes[1], "n\n", 2);
+    return(e_read_output(f));
    }
    sprintf(str, e_d_msg[ERR_CANTFILE], file);
    return(e_error(str, 0, f->fb));
