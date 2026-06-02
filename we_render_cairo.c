@@ -10,9 +10,13 @@
 #include <cairo.h>
 #include <cairo-xlib.h>
 #include <cairo-ft.h>
+#include <ft2build.h>
+#include FT_FREETYPE_H
 #include <pango/pangocairo.h>
 #include <X11/Xlib.h>
 #include <string.h>
+
+#include <fontconfig/fontconfig.h>
 
 #ifndef NO_XWINDOWS
 #include "WeXterm.h"
@@ -259,36 +263,91 @@ static void cr_init_surface(int pixel_w, int pixel_h)
  cairo_set_antialias(cr, CAIRO_ANTIALIAS_GRAY);
 }
 
+static const char *cr_get_system_monospace_font(void)
+{
+ static char fontname[128];
+ FILE *p = popen(
+   "gsettings get org.gnome.desktop.interface monospace-font-name "
+   "2>/dev/null", "r");
+ if (p)
+ {
+  if (fgets(fontname, sizeof(fontname), p))
+  {
+   char *s = fontname;
+   char *e;
+   while (*s == '\'' || *s == ' ') s++;
+   e = s + strlen(s) - 1;
+   while (e > s && (*e == '\'' || *e == '\n' || *e == ' ')) *e-- = 0;
+   /* Strip trailing size number */
+   while (e > s && (*e >= '0' && *e <= '9')) *e-- = 0;
+   while (e > s && *e == ' ') *e-- = 0;
+   pclose(p);
+   if (*s) return s;
+  }
+  else
+   pclose(p);
+ }
+ return "monospace";
+}
+
 static void cr_init_pango_font(void)
 {
- int abs_px = WpeXInfo.font_height;
  PangoRectangle logical;
+ PangoContext *pg_ctx;
+ PangoFontMetrics *metrics;
+ const char *sys_font = cr_get_system_monospace_font();
+ char font_with_size[140];
 
  pg_layout = pango_cairo_create_layout(cr);
- pg_font = pango_font_description_from_string("monospace");
 
- for (; abs_px > 4; abs_px--)
- {
-  pango_font_description_set_absolute_size(pg_font,
-    abs_px * PANGO_SCALE);
-  pango_layout_set_font_description(pg_layout, pg_font);
-  pango_layout_set_text(pg_layout, "M", 1);
-  pango_layout_get_pixel_extents(pg_layout, NULL, &logical);
-  if (logical.height <= WpeXInfo.font_height
-      && logical.width <= WpeXInfo.font_width)
-   break;
- }
+ sprintf(font_with_size, "%s 10", sys_font);
+ pg_font = pango_font_description_from_string(font_with_size);
+ pango_layout_set_font_description(pg_layout, pg_font);
+
+ pango_layout_set_text(pg_layout, "M", 1);
+ pango_layout_get_pixel_extents(pg_layout, NULL, &logical);
+
+ pg_ctx = pango_layout_get_context(pg_layout);
+ metrics = pango_context_get_metrics(pg_ctx, pg_font, NULL);
+
+ WpeRender.font_width  = logical.width;
+ WpeRender.font_height = logical.height;
+ WpeRender.font_ascent = pango_font_metrics_get_ascent(metrics)
+                         / PANGO_SCALE;
+ WpeXInfo.font_width   = logical.width;
+ WpeXInfo.font_height  = logical.height;
+
+ pango_font_metrics_unref(metrics);
 }
 
 static void cr_init_ft_font(void)
 {
- FT_Face ft = XftLockFace(WpeXInfo.xftfont);
+ FT_Face ft;
  cairo_matrix_t font_mat, ctm;
  cairo_font_options_t *opts;
  cairo_text_extents_t ext;
  double sz;
+ const char *sys_font = cr_get_system_monospace_font();
+ FcPattern *pat, *match;
+ FcResult res;
+ FcChar8 *path;
 
- if (!ft) return;
+ pat = FcNameParse((const FcChar8 *)sys_font);
+ FcPatternAddBool(pat, FC_SCALABLE, 1);
+ FcConfigSubstitute(NULL, pat, FcMatchPattern);
+ FcDefaultSubstitute(pat);
+ match = FcFontMatch(NULL, pat, &res);
+ FcPatternDestroy(pat);
+ if (!match) return;
+ if (FcPatternGetString(match, FC_FILE, 0, &path) != FcResultMatch)
+ { FcPatternDestroy(match); return; }
+
+ { static FT_Library ftlib;
+   if (!ftlib) FT_Init_FreeType(&ftlib);
+   if (FT_New_Face(ftlib, (const char *)path, 0, &ft))
+   { FcPatternDestroy(match); return; }
+ }
+ FcPatternDestroy(match);
 
  cr_ft_face = cairo_ft_font_face_create_for_ft_face(ft, 0);
  cairo_matrix_init_identity(&ctm);
@@ -309,7 +368,6 @@ static void cr_init_ft_font(void)
  }
 
  cairo_font_options_destroy(opts);
- XftUnlockFace(WpeXInfo.xftfont);
 }
 
 static void cr_dump_font_metrics(void)
@@ -368,16 +426,6 @@ int wpe_render_cairo_init(void)
  cr_init_pango_font();
  cr_init_ft_font();
  cr_dump_font_metrics();
-
- pg_ctx = pango_layout_get_context(pg_layout);
- metrics = pango_context_get_metrics(pg_ctx, pg_font, NULL);
-
- WpeRender.font_width  = WpeXInfo.font_width;
- WpeRender.font_height = WpeXInfo.font_height;
- WpeRender.font_ascent = pango_font_metrics_get_ascent(metrics)
-                         / PANGO_SCALE;
- pango_font_metrics_unref(metrics);
-
  cr_set_render_backend();
  return 0;
 #else
