@@ -11,6 +11,8 @@
 #define MAXSVSTR 20
 
 int e_make_xr_rahmen(int xa, int ya, int xe, int ye, int sw);
+static void e_draw_titlebar_buttons(int xa, int ya, int xe, int frb, int fes);
+static void e_draw_window_buttons(FENSTER *f);
 
 /**
  * e_invalidate_area - Mark a screen rectangle for full repaint.
@@ -342,30 +344,12 @@ void e_ed_rahmen(FENSTER *f, int sw)
    e_pr_char(f->e.x-6, f->a.y, 'A' - 10 + f->winnum, f->fb->nr.fb);
   if (sw > 0 && (f->dtmd == DTMD_FILEMANAGER || f->dtmd == DTMD_DATA))
   {
-   if (f->zoom == 0)
-    e_pr_char(f->e.x-3, f->a.y, WZN, f->fb->ne.fb);
-   else
-    e_pr_char(f->e.x-3, f->a.y, WZY, f->fb->ne.fb);
-#ifdef NEWSTYLE
-   if (!WpeIsXwin())
-   {
-#endif
-    e_pr_char(f->e.x-4, f->a.y, '[', f->fb->nr.fb);
-    e_pr_char(f->e.x-2, f->a.y, ']', f->fb->nr.fb);
-#ifdef NEWSTYLE
-   }
-   else
-    e_make_xrect(f->e.x-4, f->a.y, f->e.x-2, f->a.y, 0);
-#endif
+   e_draw_window_buttons(f);
    blst = f->blst;
    nblst = f->nblst;
    e_hlp = f->hlp_str;
    e_pr_uul(f->fb);
   }
-#ifdef NEWSTYLE
-  if (WpeIsXwin())
-   e_make_xr_rahmen(f->a.x, f->a.y, f->e.x, f->e.y, sw);
-#endif
   return;
  }
  if (f->datnam[0])
@@ -392,26 +376,8 @@ void e_ed_rahmen(FENSTER *f, int sw)
  {
   e_mouse_bar(f->e.x, f->a.y+1, NUM_LINES_ON_SCREEN - 1, 0, f->fb->em.fb);
   e_mouse_bar(f->a.x+19, f->e.y, NUM_COLS_ON_SCREEN - 20, 1, f->fb->em.fb);
-  if (f->zoom == 0)
-   e_pr_char(f->e.x-3, f->a.y, WZN, f->fb->es.fb);
-  else
-   e_pr_char(f->e.x-3, f->a.y, WZY, f->fb->es.fb);
-#ifdef NEWSTYLE
-  if (!WpeIsXwin())
-  {
-#endif
-   e_pr_char(f->e.x-4, f->a.y, '[', f->fb->er.fb);
-   e_pr_char(f->e.x-2, f->a.y, ']', f->fb->er.fb);
-#ifdef NEWSTYLE
-  }
-  else
-   e_make_xrect(f->e.x-4, f->a.y, f->e.x-2, f->a.y, 0);
-#endif
+  e_draw_window_buttons(f);
   e_pr_filetype(f);
-  /* F R A S clickable buttons on the left border were a Kruse-era
-     X11 design (Find, Replace, and two unused).  Payne planned to
-     remove them.  Removed in 1.6.3 -- the left border now shows
-     a clean vertical line like terminal mode. */
   e_zlsplt(f);
   blst = f->blst;
   nblst = f->nblst;
@@ -422,10 +388,6 @@ void e_ed_rahmen(FENSTER *f, int sw)
   e_pr_char(f->e.x-6, f->a.y, '0' + f->winnum, f->fb->er.fb);
  else if (f->winnum >= 0)
   e_pr_char(f->e.x-6, f->a.y, 'A' - 10 + f->winnum, f->fb->er.fb);
-#ifdef NEWSTYLE
- if (WpeIsXwin())
-  e_make_xr_rahmen(f->a.x, f->a.y, f->e.x, f->e.y, sw);
-#endif
 }
 
 /*   Output - screen content */
@@ -1150,6 +1112,40 @@ void e_pr_line(int y, FENSTER *f)
 }
 
 /*   draw standard-box frame  */
+static void e_draw_titlebar_buttons(int xa, int ya, int xe, int frb, int fes)
+{
+ if (WpeIsXwin())
+ {
+  e_pr_char(xe-3, ya, 0x25FB, frb);
+  e_pr_char(xe-2, ya, ' ', frb);
+  e_pr_char(xe-1, ya, 0x2715, frb);
+ }
+ else
+ {
+  e_pr_char(xa+3, ya, WBT, fes);
+  e_pr_char(xa+2, ya, '[', frb);
+  e_pr_char(xa+4, ya, ']', frb);
+ }
+}
+
+static void e_draw_window_buttons(FENSTER *f)
+{
+ if (WpeIsXwin())
+ {
+  int maximize_glyph = (f->zoom == 0) ? 0x25FB : 0x25A3;
+  e_pr_char(f->e.x-3, f->a.y, maximize_glyph, f->fb->er.fb);
+  e_pr_char(f->e.x-2, f->a.y, ' ', f->fb->er.fb);
+  e_pr_char(f->e.x-1, f->a.y, 0x2715, f->fb->er.fb);
+ }
+ else
+ {
+  int zoom_char = (f->zoom == 0) ? WZN : WZY;
+  e_pr_char(f->e.x-3, f->a.y, zoom_char, f->fb->es.fb);
+  e_pr_char(f->e.x-4, f->a.y, '[', f->fb->er.fb);
+  e_pr_char(f->e.x-2, f->a.y, ']', f->fb->er.fb);
+ }
+}
+
 void e_std_rahmen(int xa, int ya, int xe, int ye, char *name, int sw, int frb,
   int fes)
 {
@@ -1188,29 +1184,7 @@ void e_std_rahmen(int xa, int ya, int xe, int ye, char *name, int sw, int frb,
   }
  }
  if (sw != 0)
- {
-  e_pr_char(xa+3, ya, WBT, fes);
-#ifdef NEWSTYLE
-  if (!WpeIsXwin())
-#endif
-  {
-   e_pr_char(xa+2, ya, '[', frb);
-   e_pr_char(xa+4, ya, ']', frb);
-  }
-#ifdef NEWSTYLE
-  else e_make_xrect(xa+2, ya, xa+4, ya, 0);
- }
-#ifndef HAVE_XFT
- if (WpeIsXwin()) e_make_xr_rahmen(xa, ya, xe, ye, sw);
-#endif
-#else
- }
-/*
-   if(xe < MAXSCOL-1) for(i = ya+1; i <= ye; i++) e_pt_col(xe+1, i, SHDCOL);
-   if(ye < MAXSLNS-2) for(i = xa+1; i <= xe+1 && i < MAXSCOL; i++) 
-						e_pt_col(i, ye+1, SHDCOL);
-*/
-#endif
+  e_draw_titlebar_buttons(xa, ya, xe, frb, fes);
 }
 
 struct dirfile *e_add_df(char *str, struct dirfile *df)

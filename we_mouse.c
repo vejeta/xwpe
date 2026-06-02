@@ -116,13 +116,33 @@ int e_msg_mouse(int x, int y, int x1, int x2, int yy)
  return(0);
 }
 
+static int e_hit_close_button(FENSTER *f)
+{
+ extern struct mouse e_mouse;
+ if (e_mouse.y != f->a.y) return 0;
+ if (WpeIsXwin())
+  return e_mouse.x == f->e.x - 1;
+ return e_mouse.x == f->a.x + 3;
+}
+
+static int e_hit_maximize_button(FENSTER *f)
+{
+ extern struct mouse e_mouse;
+ if (e_mouse.y != f->a.y) return 0;
+ if (WpeIsXwin())
+  return e_mouse.x == f->e.x - 3;
+ return e_mouse.x == f->e.x - 3;
+}
+
 int e_rahmen_mouse(FENSTER *f)
 {
  extern struct mouse e_mouse;
  int c = 1;
 
- if (e_mouse.x == f->a.x+3 && e_mouse.y == f->a.y) c = WPE_ESC;
- else if (e_mouse.x == f->e.x-3 && e_mouse.y == f->a.y) e_ed_zoom(f);
+ if (e_hit_close_button(f))
+  c = WPE_ESC;
+ else if (e_hit_maximize_button(f))
+  e_ed_zoom(f);
  else if (e_mouse.x == f->a.x && e_mouse.y == f->a.y) e_eck_mouse(f, 1);
  else if (e_mouse.x == f->e.x && e_mouse.y == f->a.y) e_eck_mouse(f, 2);
  else if (e_mouse.x == f->e.x && e_mouse.y == f->e.y) e_eck_mouse(f, 3);
@@ -842,8 +862,10 @@ int e_edt_mouse(int c, FENSTER *f)
  else if (e_mouse.x >= f->a.x && e_mouse.x <= f->e.x &&
    e_mouse.y >= f->a.y && e_mouse.y <= f->e.y)
  {
-  if (e_mouse.x == f->a.x+3 && e_mouse.y == f->a.y) ret = f->ed->edopt & ED_CUA_STYLE ? CF4 : AF3;
-  else if (e_mouse.x == f->e.x-3 && e_mouse.y == f->a.y) e_ed_zoom(f);
+  if (e_hit_close_button(f))
+   ret = f->ed->edopt & ED_CUA_STYLE ? CF4 : AF3;
+  else if (e_hit_maximize_button(f))
+   e_ed_zoom(f);
   else if (e_mouse.x == f->a.x && e_mouse.y == f->a.y) e_eck_mouse(f, 1);
   else if (e_mouse.x == f->e.x && e_mouse.y == f->a.y) e_eck_mouse(f, 2);
   else if (e_mouse.x == f->e.x && e_mouse.y == f->e.y) e_eck_mouse(f, 3);
