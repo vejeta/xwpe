@@ -152,6 +152,57 @@ static FENSTER *e_d_find_messages_window(void)
  return NULL;
 }
 
+static void e_d_activate_messages(FENSTER *mf)
+{
+ ECNT *cn = mf->ed;
+ int i;
+
+ for (i = cn->mxedt; i > 0; i--)
+  if (!strcmp(cn->f[i]->datnam, "Messages"))
+   break;
+ if (i > 0 && i != cn->mxedt)
+  e_switch_window(cn->edt[i], cn->f[cn->mxedt]);
+ mf = cn->f[cn->mxedt];
+ mf->b->b.y = mf->b->mxlines - 1;
+ mf->b->b.x = mf->b->bf[mf->b->b.y].len;
+ e_cursor(mf, 1);
+ e_schirm(mf, 1);
+ e_refresh();
+}
+
+static void e_d_show_input_prompt(void)
+{
+ FENSTER *mf = e_d_find_messages_window();
+
+ if (!mf)
+  return;
+ e_d_p_message("(program waiting for input)", mf, 0);
+ e_d_switch_out(0);
+}
+
+static void e_d_pty_drain_nonblock(void)
+{
+ char buf[256];
+ int n, flags;
+
+ if (e_d_pty_master < 0)
+  return;
+ flags = fcntl(e_d_pty_master, F_GETFL, 0);
+ fcntl(e_d_pty_master, F_SETFL, flags | O_NONBLOCK);
+ while ((n = read(e_d_pty_master, buf, sizeof(buf))) > 0)
+ {
+  if (e_d_prog_output_len + n >= e_d_prog_output_cap)
+  {
+   e_d_prog_output_cap = e_d_prog_output_len + n + 1024;
+   e_d_prog_output = REALLOC(e_d_prog_output, e_d_prog_output_cap);
+  }
+  memcpy(e_d_prog_output + e_d_prog_output_len, buf, n);
+  e_d_prog_output_len += n;
+  e_d_prog_output[e_d_prog_output_len] = '\0';
+ }
+ fcntl(e_d_pty_master, F_SETFL, flags & ~O_NONBLOCK);
+}
+
 void e_d_pty_flush_to_messages(FENSTER *f)
 {
  int prev_len;
@@ -160,7 +211,7 @@ void e_d_pty_flush_to_messages(FENSTER *f)
  if (e_d_pty_master < 0)
   return;
  prev_len = e_d_prog_output_len;
- e_d_pty_drain();
+ e_d_pty_drain_nonblock();
  if (e_d_prog_output_len <= prev_len)
   return;
  output = e_d_prog_output + prev_len;
@@ -411,6 +462,7 @@ int e_d_line_read(int n, signed char *s, int max, int sw, int esw)
   if (esc_sv)  {  s[i] = WPE_ESC;  esc_sv = 0;  continue;  }
   kbdflgs = fcntl(n, F_GETFL, 0 );
   fcntl( n, F_SETFL, kbdflgs | O_NONBLOCK);
+  { int _wait_count = 0;
   while ((ret = read(n, s + i, 1)) <= 0 && i == 0 && wt >= sw)
   {
    if (ret == 0)
@@ -419,7 +471,9 @@ int e_d_line_read(int n, signed char *s, int max, int sw, int esw)
       fcntl(n, F_SETFL, kbdflgs & ~O_NONBLOCK);
       return(-1);
    }
-   { struct pollfd _pfd[2];
+   if (++_wait_count == 10 && e_d_pty_master >= 0)
+    e_d_show_input_prompt();
+   { struct pollfd _pfd[3];
      int _nfds = 1;
      _pfd[0].fd = n;
      _pfd[0].events = POLLIN;
@@ -431,10 +485,27 @@ int e_d_line_read(int n, signed char *s, int max, int sw, int esw)
       _nfds = 2;
      }
 #endif
+     if (e_d_pty_master >= 0)
+     {
+      _pfd[_nfds].fd = e_d_pty_master;
+      _pfd[_nfds].events = POLLIN;
+      _nfds++;
+     }
      poll(_pfd, _nfds, 50);
+     if (e_d_pty_master >= 0)
+     {
+      FENSTER *_mf = e_d_find_messages_window();
+      if (_mf)
+      {
+       int _prev = e_d_prog_output_len;
+       e_d_pty_flush_to_messages(_mf);
+       if (e_d_prog_output_len > _prev)
+        e_d_switch_out(0);
+      }
+     }
    }
    if(e_d_getchar() == D_CBREAK) return(-1);
-  }
+  } }
 /*	Read until no chars are left anymore
    	Return if buffer not empty
         return(-1) if CBREAK
@@ -575,6 +646,7 @@ int e_d_getchar()
 {
  int i = 1, fd;
  char c = 0, kbdflgs = 0;
+ static FILE *_gc_dbg = NULL;
 
  if (WpeIsXwin()) fd = rfildes[0];
  else fd = 0;
@@ -586,7 +658,10 @@ int e_d_getchar()
  }
 #ifndef NO_XWINDOWS
  if (WpeIsXwin())
+ {
+  XFlush(WpeXInfo.display);
   c = (*e_u_change)(NULL);
+ }
 #endif
  if (c || (i = read(fd, &c, 1)) == 1)
  {
@@ -604,21 +679,10 @@ int e_d_getchar()
    else
     return(c);
   }
-  else if (e_d_pty_master >= 0)
+  else if (e_d_pty_master >= 0 && ((c >= 32 && c < 127) || c == '\r' || c == '\n' || c == '\b'))
   {
-   write(e_d_pty_master, &c, 1);
-   { char _echo[2] = { c, '\0' };
-     FENSTER *_mf = e_d_find_messages_window();
-     if (_mf)
-     {
-      if (c == '\n' || c == '\r')
-       e_d_p_message("", _mf, 0);
-      else
-       e_d_p_message(_echo, _mf, 0);
-      e_schirm(_mf, 1);
-      e_refresh();
-     }
-   }
+   char _ch = (c == '\r') ? '\n' : c;
+   write(e_d_pty_master, &_ch, 1);
   }
   else
    write(rfildes[1], &c, 1);
