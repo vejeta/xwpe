@@ -507,7 +507,8 @@ void WpeXInit(int *argc, char **argv)
  XmbSetWMProperties(WpeXInfo.display, WpeXInfo.window, window_name,
    class_hint.res_name, argv, *argc, &size_hints, &wm_hints, &class_hint);
  XSelectInput(WpeXInfo.display, WpeXInfo.window, ExposureMask |
-   KeyPressMask | ButtonPressMask | StructureNotifyMask);
+   KeyPressMask | ButtonPressMask | ButtonReleaseMask |
+   Button1MotionMask | StructureNotifyMask);
 
  if(!XGetWMProtocols(WpeXInfo.display, WpeXInfo.window, &atom_list, &atom_num))
  {

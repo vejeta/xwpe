@@ -7,12 +7,16 @@
 #include "messages.h"
 #include "edit.h"
 #include "we_render.h"
+#ifndef NO_XWINDOWS
+#include "WeXterm.h"
+#endif
 
 #if  MOUSE
 
 #include "makro.h"
 
 int e_mouse_cursor();
+void e_scroll_drag_v(FENSTER *f);
 
 /*   mouse button pressed (?)     */
 int e_mshit()
@@ -416,6 +420,67 @@ int fl_wnd_mouse(sw, k, fw)
    else return(MBKEY);
 }
 
+void e_scroll_drag_v(FENSTER *f)
+{
+#ifndef NO_XWINDOWS
+ int ay = f->a.y, ey = f->e.y;
+ int fh = WpeRender.font_height;
+ int track_top_px = (ay + 2) * fh;
+ int track_bot_px = (ey - 1) * fh;
+ int track_h_px = track_bot_px - track_top_px;
+ int total = f->b->mxlines;
+ int visible = ey - ay - 1;
+ int old_first = f->b->b.y;
+ int saved_cur_on = cur_on;
+ XEvent ev;
+
+ if (track_h_px < 1 || total <= visible)
+  return;
+
+ cur_on = 0;
+
+ XGrabPointer(WpeXInfo.display, WpeXInfo.window, False,
+   Button1MotionMask | ButtonReleaseMask,
+   GrabModeAsync, GrabModeAsync, None, None, CurrentTime);
+
+ for (;;)
+ {
+  int new_first, py;
+
+  XNextEvent(WpeXInfo.display, &ev);
+  if (ev.type == ButtonRelease)
+   break;
+  if (ev.type != MotionNotify)
+   continue;
+
+  while (XCheckTypedWindowEvent(WpeXInfo.display, WpeXInfo.window,
+         MotionNotify, &ev))
+   ;
+
+  py = ev.xmotion.y;
+  if (py < track_top_px) py = track_top_px;
+  if (py > track_bot_px) py = track_bot_px;
+
+  new_first = (int)((double)(py - track_top_px) / track_h_px
+              * (total - visible));
+  if (new_first < 0) new_first = 0;
+  if (new_first > total - visible) new_first = total - visible;
+  if (new_first == old_first)
+   continue;
+
+  f->b->b.y = new_first;
+  e_schirm(f, 0);
+  old_first = new_first;
+ }
+
+ XUngrabPointer(WpeXInfo.display, CurrentTime);
+ cur_on = saved_cur_on;
+ e_schirm(f, 0);
+ e_cursor(f, 1);
+ e_refresh();
+#endif
+}
+
 /*   mouse slider bar control */
 int e_lst_mouse(x, y, n, sw, max, nf)
      int x;
@@ -735,10 +800,16 @@ int e_edt_mouse(int c, FENSTER *f)
   else if (e_mouse.x == f->e.x &&
     e_mouse.y > f->a.y+1 && e_mouse.y < f->e.y-1)
   {
-   f->b->b.y = e_lst_mouse(f->e.x, f->a.y+1, f->e.y-f->a.y-1, 0,
-     f->b->mxlines, f->b->b.y);
-   e_cursor(f, 1);
-   e_refresh();
+   if (wpe_chrome_hit_vthumb(e_mouse.x, e_mouse.y)
+       || e_gt_char(e_mouse.x, e_mouse.y) == MCA)
+    e_scroll_drag_v(f);
+   else
+   {
+    f->b->b.y = e_lst_mouse(f->e.x, f->a.y+1, f->e.y-f->a.y-1, 0,
+      f->b->mxlines, f->b->b.y);
+    e_cursor(f, 1);
+    e_refresh();
+   }
   }
   else if (e_mouse.y == f->e.y && e_mouse.x == f->a.x+19)
   {
