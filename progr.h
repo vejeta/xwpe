@@ -12,7 +12,8 @@
 struct e_s_prog {
  char *language, *compiler, *comp_str, *libraries,
    *exe_name, *intstr, key;
- char **filepostfix; /* Expandable array */ 
+ char *start_symbol;
+ char **filepostfix; /* Expandable array */
  int	comp_sw, x;
 };
 
@@ -60,6 +61,7 @@ char *e_cat_string(char *p, char *str);
 int e_make_arg(char ***arg, char *str);
 int e_ini_prog(ECNT *cn);
 int e_copy_prog(struct e_s_prog *out, struct e_s_prog *in);
+const char *e_get_start_symbol(void);
 int e_run_options(FENSTER *f);
 int e_run_c_options(FENSTER *f);
 int e_project_options(FENSTER *f);

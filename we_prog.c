@@ -26,9 +26,16 @@ int print_to_end_of_buffer(BUFFER * b,char * str,int wrap_limit);
 int wfildes[2], efildes[2];
 char *wfile = NULL, *efile = NULL;
 
-struct e_s_prog e_s_prog = {  NULL, NULL, NULL, NULL, NULL, NULL, 0, NULL, 0, 0};
+struct e_s_prog e_s_prog = {  NULL, NULL, NULL, NULL, NULL, NULL, 0, NULL, NULL, 0, 0};
 
 struct e_prog e_prog = {  0, NULL, NULL, NULL, NULL, NULL  };
+
+const char *e_get_start_symbol(void)
+{
+ if (e_s_prog.start_symbol && e_s_prog.start_symbol[0])
+  return e_s_prog.start_symbol;
+ return "main";
+}
 
 struct ERR_LI  {  char *file, *text, *srch;  int x, y, line;  } *err_li = NULL;
 int err_no, err_num;
@@ -1203,7 +1210,7 @@ int e_ini_prog(ECNT *cn)
  else
   e_prog.comp = REALLOC(e_prog.comp, e_prog.num * sizeof(struct e_s_prog *));
  for (i = 0; i < e_prog.num; i++)
-  e_prog.comp[i] = MALLOC(sizeof(struct e_s_prog));
+  e_prog.comp[i] = calloc(1, sizeof(struct e_s_prog));
  e_prog.comp[0]->compiler = WpeStrdup("gcc");
  e_prog.comp[0]->language = WpeStrdup("C");
  e_prog.comp[0]->filepostfix = (char **)WpeExpArrayCreate(1, sizeof(char *), 1);
@@ -1317,6 +1324,8 @@ int e_copy_prog(struct e_s_prog *out, struct e_s_prog *in)
  out->exe_name = WpeStrdup(in->exe_name);
  if (out->intstr) FREE(out->intstr);
  out->intstr = WpeStrdup(in->intstr);
+ if (out->start_symbol) FREE(out->start_symbol);
+ out->start_symbol = in->start_symbol ? WpeStrdup(in->start_symbol) : NULL;
  out->key = in->key;
  out->comp_sw = in->comp_sw;
  return(0);
@@ -1375,27 +1384,29 @@ int e_project_options(FENSTER *f)
   freeostr(o);
   return(-1);
  }
- o->xa = 8;  o->ya = 2;  o->xe = 68;  o->ye = 22;
+ o->xa = 8;  o->ya = 1;  o->xe = 68;  o->ye = 23;
  o->bgsw = 0;
  o->name = "Project-Options";
  o->crsw = AltS;
- e_add_txtstr(4, 12, "Compiler-Style:", o);
+ e_add_txtstr(4, 14, "Compiler-Style:", o);
  e_add_wrstr(4, 2, 22, 2, 36, 128, 0, AltC, "Compiler:", e_s_prog.compiler, NULL, o);
  e_add_wrstr(4, 4, 22, 4, 36, 256, 3, AltP, "ComPiler-Options:", e_s_prog.comp_str, NULL, o);
  e_add_wrstr(4, 6, 22, 6, 36, 256, 0, AltL, "Loader-Options:", e_s_prog.libraries, NULL, o);
  e_add_wrstr(4, 8, 22, 8, 36, 128, 0, AltE, "Executable:", e_s_prog.exe_name, NULL, o);
  e_add_wrstr(4, 10, 22, 10, 36, 128, 2, AltB, "LiBrary:", library, NULL, o);
+ { const char *sym = e_s_prog.start_symbol ? e_s_prog.start_symbol : "main";
+   e_add_wrstr(4, 12, 22, 12, 36, 128, 0, AltY, "Start sYmbol:", (char *)sym, NULL, o);
+ }
  messagestring = WpeStringToValue(e_s_prog.intstr);
- e_add_wrstr(22, 12, 22, 13, 36, 256, 0, AltM, "Message-String:", messagestring, NULL, o);
+ e_add_wrstr(22, 14, 22, 15, 36, 256, 0, AltM, "Message-String:", messagestring, NULL, o);
  WpeFree(messagestring);
- e_add_pswstr(0, 5, 13, 0, AltG, 0, "GNU       ", o);
- e_add_pswstr(0, 5, 14, 1, AltT, e_s_prog.comp_sw, "OTher     ", o);
- e_add_bttstr(9, 18, 0, AltS, "Save", NULL, o);
- e_add_bttstr(44, 18, -1, WPE_ESC, "Cancel", NULL, o);
- e_add_bttstr(26, 18, 5, AltA, "Save As", e_prj_ob_svas, o);
-/* e_add_bttstr(7, 16, 0, AltF, "Files ...", e_prj_ob_file, o);  */
- e_add_bttstr(12, 16, 0, AltV, "Variables ...", e_prj_ob_varb, o);
- e_add_bttstr(35, 16, 0, AltI, "Install ...", e_prj_ob_inst, o);
+ e_add_pswstr(0, 5, 15, 0, AltG, 0, "GNU       ", o);
+ e_add_pswstr(0, 5, 16, 1, AltT, e_s_prog.comp_sw, "OTher     ", o);
+ e_add_bttstr(9, 19, 0, AltS, "Save", NULL, o);
+ e_add_bttstr(44, 19, -1, WPE_ESC, "Cancel", NULL, o);
+ e_add_bttstr(26, 19, 5, AltA, "Save As", e_prj_ob_svas, o);
+ e_add_bttstr(12, 17, 0, AltV, "Variables ...", e_prj_ob_varb, o);
+ e_add_bttstr(35, 17, 0, AltI, "Install ...", e_prj_ob_inst, o);
  ret = e_opt_kst(o);
  if (ret != WPE_ESC)
  {
@@ -1407,8 +1418,10 @@ int e_project_options(FENSTER *f)
   e_s_prog.libraries = WpeStrdup(o->wstr[2]->txt);
   if (e_s_prog.exe_name) FREE(e_s_prog.exe_name);
   e_s_prog.exe_name = WpeStrdup(o->wstr[3]->txt);
+  if (e_s_prog.start_symbol) FREE(e_s_prog.start_symbol);
+  e_s_prog.start_symbol = WpeStrdup(o->wstr[5]->txt);
   if (e_s_prog.intstr) FREE(e_s_prog.intstr);
-  e_s_prog.intstr = WpeValueToString(o->wstr[5]->txt);
+  e_s_prog.intstr = WpeValueToString(o->wstr[6]->txt);
   strcpy(library, o->wstr[4]->txt);
   e_s_prog.comp_sw = o->pstr[0]->num;
   e_wrt_prj_fl(f);
@@ -1450,13 +1463,16 @@ int e_run_c_options(FENSTER *f)
   }
  }
  e_add_wrstr(4, 12, 22, 12, 36, 128, 0, AltF, "File-Postfix:", filepostfix, NULL, o);
+ { const char *sym = e_s_prog.start_symbol ? e_s_prog.start_symbol : "main";
+   e_add_wrstr(4, 14, 22, 14, 36, 128, 7, AltY, "Start sYmbol:", (char *)sym, NULL, o);
+ }
  messagestring = WpeStringToValue(e_s_prog.intstr);
- e_add_wrstr(22, 14, 22, 15, 36, 128, 0, AltM, "Message-String:", messagestring, NULL, o);
+ e_add_wrstr(22, 15, 22, 16, 36, 128, 0, AltM, "Message-String:", messagestring, NULL, o);
  WpeFree(messagestring);
- e_add_pswstr(0, 5, 15, 0, AltG, 0, "GNU      ", o);
- e_add_pswstr(0, 5, 16, 1, AltT, e_s_prog.comp_sw, "OTher    ", o);
- e_add_bttstr(16, 18, 1, AltO, " Ok ", NULL, o);
- e_add_bttstr(37, 18, -1, WPE_ESC, "Cancel", NULL, o);
+ e_add_pswstr(0, 5, 16, 0, AltG, 0, "GNU      ", o);
+ e_add_pswstr(0, 5, 17, 1, AltT, e_s_prog.comp_sw, "OTher    ", o);
+ e_add_bttstr(16, 19, 1, AltO, " Ok ", NULL, o);
+ e_add_bttstr(37, 19, -1, WPE_ESC, "Cancel", NULL, o);
  ret = e_opt_kst(o);
  if (ret != WPE_ESC)
  {
@@ -1486,8 +1502,10 @@ int e_run_c_options(FENSTER *f)
    WpeExpArrayAdd((void **)&e_s_prog.filepostfix, &newpostfix);
    i = j - 1;
   }
+  if (e_s_prog.start_symbol) FREE(e_s_prog.start_symbol);
+  e_s_prog.start_symbol = WpeStrdup(o->wstr[6]->txt);
   if (e_s_prog.intstr) FREE(e_s_prog.intstr);
-  e_s_prog.intstr = WpeValueToString(o->wstr[6]->txt);
+  e_s_prog.intstr = WpeValueToString(o->wstr[7]->txt);
   e_s_prog.comp_sw = o->pstr[0]->num;
  }
  freeostr(o);
@@ -1517,7 +1535,7 @@ int e_run_options(FENSTER *f)
   {
    e_prog.num++;
    e_prog.comp = REALLOC(e_prog.comp, e_prog.num * sizeof(struct e_s_prog *));
-   e_prog.comp[e_prog.num - 1] = MALLOC(sizeof(struct e_s_prog));
+   e_prog.comp[e_prog.num - 1] = calloc(1, sizeof(struct e_s_prog));
    e_prog.comp[e_prog.num - 1]->language = (char *)WpeMalloc(1);
    e_prog.comp[e_prog.num - 1]->language[0] = 0;
    e_prog.comp[e_prog.num - 1]->compiler = (char *)WpeMalloc(1);

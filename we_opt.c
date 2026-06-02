@@ -1004,7 +1004,7 @@ int WpeReadLanguage(ECNT *cn, char *section, char *option, char *value)
  {
   e_prog.num++;
   e_prog.comp = REALLOC(e_prog.comp, e_prog.num * sizeof(struct e_s_prog *));
-  e_prog.comp[i] = MALLOC(sizeof(struct e_s_prog));
+  e_prog.comp[i] = calloc(1, sizeof(struct e_s_prog));
   e_prog.comp[i]->language = WpeStrdup(section + strlen(OPT_SECTION_LANGUAGE) + 1);
   e_prog.comp[i]->compiler = WpeStrdup("");
   e_prog.comp[i]->comp_str = WpeStrdup("");
@@ -1012,6 +1012,7 @@ int WpeReadLanguage(ECNT *cn, char *section, char *option, char *value)
   e_prog.comp[i]->exe_name = WpeStrdup("");
   e_prog.comp[i]->filepostfix = (char **)WpeExpArrayCreate(0, sizeof(char *), 1);
   e_prog.comp[i]->intstr = WpeStrdup("");
+  e_prog.comp[i]->start_symbol = NULL;
   e_prog.comp[i]->key = '\0';
   e_prog.comp[i]->comp_sw = 0;
   e_prog.comp[i]->x = 0;
@@ -1059,6 +1060,12 @@ int WpeReadLanguage(ECNT *cn, char *section, char *option, char *value)
  }
  else if (WpeStrccmp("Key", option) == 0)
   e_prog.comp[i]->key = value[0];
+ else if (WpeStrccmp("StartSymbol", option) == 0)
+ {
+  if (e_prog.comp[i]->start_symbol)
+   FREE(e_prog.comp[i]->start_symbol);
+  e_prog.comp[i]->start_symbol = WpeStrdup(value);
+ }
  else if (WpeStrccmp("CompilerSwitch", option) == 0)
   e_prog.comp[i]->comp_sw = atoi(value);
  else if (WpeStrccmp("X", option) == 0)
@@ -1086,6 +1093,8 @@ int WpeWriteLanguage(ECNT *cn, char *section, FILE *opt_file)
   str_tmp = WpeStringToValue(e_prog.comp[i]->intstr);
   fprintf(opt_file, "MessageString : %s\n", str_tmp);
   WpeFree(str_tmp);
+  if (e_prog.comp[i]->start_symbol && e_prog.comp[i]->start_symbol[0])
+   fprintf(opt_file, "StartSymbol : %s\n", e_prog.comp[i]->start_symbol);
   fprintf(opt_file, "CompilerSwitch : %d\n", e_prog.comp[i]->comp_sw);
   fprintf(opt_file, "Key : %c\n", e_prog.comp[i]->key);
   fprintf(opt_file, "X : %d\n", e_prog.comp[i]->x);

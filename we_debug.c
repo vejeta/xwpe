@@ -1407,15 +1407,14 @@ int e_mk_brk_main(FENSTER *f, int sw)
     sprintf(eing, "db %d\n", e_d_nrbrpts[sw-1]);
    else if (e_deb_type == 4)
    {
-    /* jdb: "clear Class.main" -- use e_d_file without .java extension */
     char cls[128];
     strcpy(cls, e_d_file);
     WpeStringCutChar(cls, '.');
-    sprintf(eing, "clear %s.main\n", cls);
+    sprintf(eing, "clear %s.%s\n", cls, e_get_start_symbol());
    }
    else if (e_deb_type == 1)
    {
-    sprintf(eing, "e main\n");
+    sprintf(eing, "e %s\n", e_get_start_symbol());
     write(rfildes[1], eing, strlen(eing));
     if (e_d_dum_read() == -1) return(-1);
     sprintf(eing, "%d d\n", e_d_ybrpts[sw-1]);
@@ -1462,7 +1461,7 @@ int e_mk_brk_main(FENSTER *f, int sw)
   {
    if (e_deb_type == 0)
    {
-    sprintf(eing, "b main\n");
+    sprintf(eing, "b %s\n", e_get_start_symbol());
     write(rfildes[1], eing, strlen(eing));
     while ((ret = e_d_line_read(wfildes[0], str, 256, 0, 0)) == 0 &&
       strncmp(str, "Breakpoint", 10))
@@ -1474,7 +1473,7 @@ int e_mk_brk_main(FENSTER *f, int sw)
    }
    else if (e_deb_type == 2)
    {
-    sprintf(eing, "stop in main\n");
+    sprintf(eing, "stop in %s\n", e_get_start_symbol());
     write(rfildes[1], eing, strlen(eing));
     while ((ret = e_d_line_read(wfildes[0], str, 256, 0, 0)) == 0 &&
       str[0] != '(')
@@ -1486,7 +1485,7 @@ int e_mk_brk_main(FENSTER *f, int sw)
    }
    else if (e_deb_type == 3)
    {
-    sprintf(eing, "b main\n");
+    sprintf(eing, "b %s\n", e_get_start_symbol());
     write(rfildes[1], eing, strlen(eing));
     while ((ret = e_d_line_read(wfildes[0], str, 256, 0, 0)) == 0 &&
       strncmp(str, "Added:", 6))
@@ -1499,11 +1498,10 @@ int e_mk_brk_main(FENSTER *f, int sw)
    }
    else if (e_deb_type == 4)
    {
-    /* jdb: "stop in Class.main" -- use e_d_file without .java extension */
     { char cls[128];
       strcpy(cls, e_d_file);
       WpeStringCutChar(cls, '.');
-      sprintf(eing, "stop in %s.main\n", cls);
+      sprintf(eing, "stop in %s.%s\n", cls, e_get_start_symbol());
     }
     jdb_trace("e_mk_brk_main: sending '%s'\n", eing);
     write(rfildes[1], eing, strlen(eing));
@@ -1512,7 +1510,7 @@ int e_mk_brk_main(FENSTER *f, int sw)
    }
    else if (e_deb_type == 1)
    {
-    sprintf(eing, "e main\n");
+    sprintf(eing, "e %s\n", e_get_start_symbol());
     write(rfildes[1], eing, strlen(eing));
     if (e_d_dum_read() == -1) return(-1);
     sprintf(eing, "b\n");
@@ -2062,17 +2060,19 @@ int e_start_debug(FENSTER *f)
  }
  if (e_p_make(f))
   return(-1);
- if (!e__project)
+ for (i = cn->mxedt; i > 0; i--)
+  if (e_check_c_file(cn->f[i]->datnam))
+   break;
+ if (i > 0)
  {
-  for (i = cn->mxedt; i > 0; i--)
-   if (e_check_c_file(cn->f[i]->datnam))
-    break;
-  if (i > 0)
-   strcpy(e_d_file, cn->f[i]->datnam);
+  strcpy(e_d_file, cn->f[i]->datnam);
+  f = cn->f[i];
  }
- else
+ else if (e__project)
+ {
   strcpy(e_d_file, cn->f[cn->mxedt-1]->datnam);
- f = cn->f[cn->mxedt-1];
+  f = cn->f[cn->mxedt-1];
+ }
  for (i = 0; i < SVLINES; i++)
  {  e_d_sp[i] = e_d_out_str[i];  e_d_out_str[i][0] = '\0';  }
  /* Auto-select debugger by file extension.
