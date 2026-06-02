@@ -88,7 +88,8 @@ static void cr_draw_text(int x, int y, const char *utf8, int u8len,
  cr_draw_rect(x, y, WpeRender.font_width * cell_width,
    WpeRender.font_height, bg_idx);
 
- if (cr_scaled && u8len == 1 && (unsigned char)utf8[0] >= 32
+ if (wpe_scroll_dragging && cr_scaled
+     && u8len == 1 && (unsigned char)utf8[0] >= 32
      && (unsigned char)utf8[0] < 128)
   cr_draw_text_ft(x, y, utf8, u8len, fg_idx);
  else
@@ -292,7 +293,7 @@ static void cr_init_ft_font(void)
  cr_ft_face = cairo_ft_font_face_create_for_ft_face(ft, 0);
  cairo_matrix_init_identity(&ctm);
  opts = cairo_font_options_create();
- cairo_font_options_set_antialias(opts, CAIRO_ANTIALIAS_GRAY);
+ cairo_surface_get_font_options(cr_surface, opts);
 
  for (sz = WpeXInfo.font_height; sz > 4; sz -= 0.5)
  {

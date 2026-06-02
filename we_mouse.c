@@ -471,6 +471,7 @@ void e_scroll_drag_v(FENSTER *f)
   return;
 
  cur_on = 0;
+ wpe_scroll_dragging = 1;
 
  XGrabPointer(WpeXInfo.display, WpeXInfo.window, False,
    Button1MotionMask | ButtonReleaseMask,
@@ -508,6 +509,7 @@ void e_scroll_drag_v(FENSTER *f)
  }
 
  XUngrabPointer(WpeXInfo.display, CurrentTime);
+ wpe_scroll_dragging = 0;
  cur_on = saved_cur_on;
  e_cursor(f, 1);
  e_refresh();

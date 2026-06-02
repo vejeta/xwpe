@@ -11,3 +11,4 @@ WpeRenderBackend WpeRender = {
 };
 
 int wpe_chrome_suppress = 0;
+int wpe_scroll_dragging = 0;
