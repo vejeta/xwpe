@@ -22,8 +22,10 @@
 #include <X11/Xlib.h>
 #include <X11/Xutil.h>
 #include <X11/Xresource.h>
+#include <X11/Xatom.h>
 #include "Xwpe.h"
 #include "WeXterm.h"
+#include "we_render.h"
 
 /* needed for the time being to call old routines */
 #include "model.h"
@@ -487,7 +489,13 @@ void WpeXInit(int *argc, char **argv)
    RootWindow(WpeXInfo.display, WpeXInfo.screen), size_hints.x, size_hints.y,
    size_hints.width, size_hints.height, 4,
    BlackPixel(WpeXInfo.display, WpeXInfo.screen),
-   WhitePixel(WpeXInfo.display, WpeXInfo.screen));
+   BlackPixel(WpeXInfo.display, WpeXInfo.screen));
+ { XSetWindowAttributes wa;
+   wa.bit_gravity = StaticGravity;
+   wa.background_pixmap = None;
+   XChangeWindowAttributes(WpeXInfo.display, WpeXInfo.window,
+     CWBitGravity | CWBackPixmap, &wa);
+ }
 
  WpeXColorGet(xres, name_list, class_list);
  XrmDestroyDatabase(xres);
@@ -505,7 +513,7 @@ void WpeXInit(int *argc, char **argv)
  {
   atom_num = 0;
  }
- new_atom_list = WpeMalloc((atom_num + 1) * sizeof(Atom));
+ new_atom_list = WpeMalloc((atom_num + 2) * sizeof(Atom));
  if (atom_list != NULL)
  {
   memcpy(new_atom_list, atom_list, atom_num * sizeof(Atom));
@@ -513,10 +521,26 @@ void WpeXInit(int *argc, char **argv)
  if (atom_num) XFree(atom_list);
  new_atom_list[atom_num] = WpeXInfo.delete_atom =
    XInternAtom(WpeXInfo.display, "WM_DELETE_WINDOW", False);
+ new_atom_list[atom_num + 1] = WpeXInfo.sync_request_atom =
+   XInternAtom(WpeXInfo.display, "_NET_WM_SYNC_REQUEST", False);
  WpeXInfo.protocol_atom = XInternAtom(WpeXInfo.display, "WM_PROTOCOLS", False);
  XSetWMProtocols(WpeXInfo.display, WpeXInfo.window, new_atom_list,
-   atom_num + 1);
+   atom_num + 2);
  WpeFree(new_atom_list);
+
+ { XSyncValue initial;
+   Atom counter_atom;
+   long counter_xid;
+   XSyncIntToValue(&initial, 0);
+   WpeXInfo.sync_counter = XSyncCreateCounter(WpeXInfo.display, initial);
+   XSyncIntToValue(&WpeXInfo.sync_value, 0);
+   counter_atom = XInternAtom(WpeXInfo.display,
+     "_NET_WM_SYNC_REQUEST_COUNTER", False);
+   counter_xid = (long)WpeXInfo.sync_counter;
+   XChangeProperty(WpeXInfo.display, WpeXInfo.window,
+     counter_atom, XA_CARDINAL, 32, PropModeReplace,
+     (unsigned char *)&counter_xid, 1);
+ }
 
  WpeXInfo.selection_atom = XInternAtom(WpeXInfo.display, "PRIMARY", False);
  WpeXInfo.text_atom = XInternAtom(WpeXInfo.display, "STRING", False);
@@ -566,6 +590,9 @@ void WpeXInit(int *argc, char **argv)
     BlackPixel(WpeXInfo.display, WpeXInfo.screen));
   XFillRectangle(WpeXInfo.display, WpeXInfo.backbuf, WpeXInfo.gc,
     0, 0, size_hints.width, size_hints.height);
+#ifdef HAVE_CAIRO
+  wpe_render_cairo_init();
+#endif
  }
 #endif
 

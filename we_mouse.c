@@ -6,6 +6,7 @@
 
 #include "messages.h"
 #include "edit.h"
+#include "we_render.h"
 
 #if  MOUSE
 
@@ -425,6 +426,7 @@ int e_lst_mouse(x, y, n, sw, max, nf)
      int nf;
 {
    extern struct mouse e_mouse;
+   extern int wpe_chrome_suppress;
    int g[4];  /*  = { 1, 0, 0, 0 };  */
    int inew, iold, nret, frb = e_gt_col(x, y);
    double d;
@@ -438,7 +440,8 @@ int e_lst_mouse(x, y, n, sw, max, nf)
       else if(e_mouse.y == y+n-1) nret= (nf >= max-1) ? nf : nf+1;
       else
       {  nret = (int) ((e_mouse.y-y-1)*d);
-	 if(e_gt_char(e_mouse.x, e_mouse.y) == MCA )
+	 if(e_gt_char(e_mouse.x, e_mouse.y) == MCA
+	    || wpe_chrome_hit_vthumb(e_mouse.x, e_mouse.y))
 	 {  iold = e_mouse.y;
 #ifdef NEWSTYLE
 	    e_make_xrect_abs(x, iold, x, iold, 1);

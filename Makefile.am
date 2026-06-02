@@ -8,6 +8,8 @@ AM_CFLAGS = -std=gnu17 \
   $(NCURSESW_CFLAGS) \
   $(X_CFLAGS) \
   $(XFT_CFLAGS) \
+  $(CAIRO_CFLAGS) \
+  $(PANGO_CFLAGS) \
   -DLIBRARY_DIR=\"$(pkglibdir)\" \
   -Wno-incompatible-pointer-types \
   -Wno-implicit-function-declaration \
@@ -43,12 +45,16 @@ we_SOURCES = \
   we_gpm.c \
   we_xterm.c \
   WeXterm.c \
-  we_term.c
+  we_term.c \
+  we_render.c \
+  we_render_cairo.c
 
 we_LDADD = \
   $(NCURSESW_LIBS) \
   $(X_LIBS) \
   $(XFT_LIBS) \
+  $(CAIRO_LIBS) \
+  $(PANGO_LIBS) \
   $(GPM_LIBS) \
   $(UTIL_LIBS) \
   -lz
@@ -60,6 +66,7 @@ noinst_HEADERS = \
   WeXterm.h \
   WeProg.h \
   WeExpArr.h \
+  we_render.h \
   attrb.h \
   edit.h \
   keys.h \

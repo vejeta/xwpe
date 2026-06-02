@@ -7,6 +7,7 @@
 #ifndef NO_XWINDOWS
 
 #include "edit.h"
+#include "we_render.h"
 
 /* partial conversion in place */
 #include "WeXterm.h"
@@ -286,6 +287,58 @@ static int e_x_map_char_utf8(int sc, char *buf);
 static int e_x_wchar_to_utf8(int wc, char *buf);
 static XftFont *e_xft_fallback_font(int codepoint);
 static void e_xft_draw_acs(int sc, int px, int py, int fg_idx);
+
+static void e_x_render_cell(int sc, int px, int py, int cw,
+                            int fg_idx, int bg_idx)
+{
+ if (sc >= 1 && sc <= 12)
+ {
+  if (WpeRender.draw_acs)
+   WpeRender.draw_acs(sc, px, py, fg_idx, bg_idx);
+  else
+  {
+   XftDrawRect(WpeXInfo.xftdraw, &WpeXInfo.xftcolors[bg_idx],
+     px, py, WpeXInfo.font_width * cw, WpeXInfo.font_height);
+   e_xft_draw_acs(sc, px, py, fg_idx);
+  }
+ }
+ else if (sc > 12 && sc != ' ')
+ {
+  char u8[6];
+  int u8len;
+
+  if (sc < 32)
+  { u8[0] = ' '; u8len = 1; }
+  else if (sc < 128)
+  { u8[0] = (char)sc; u8len = 1; }
+  else
+   u8len = e_x_wchar_to_utf8(sc, u8);
+
+  if (WpeRender.draw_text)
+   WpeRender.draw_text(px, py, u8, u8len, cw, fg_idx, bg_idx);
+  else
+  {
+   XftFont *font = WpeXInfo.xftfont;
+   XftDrawRect(WpeXInfo.xftdraw, &WpeXInfo.xftcolors[bg_idx],
+     px, py, WpeXInfo.font_width * cw, WpeXInfo.font_height);
+   if (sc >= 128
+       && !XftCharExists(WpeXInfo.display, WpeXInfo.xftfont, sc))
+    font = e_xft_fallback_font(sc);
+   XftDrawStringUtf8(WpeXInfo.xftdraw, &WpeXInfo.xftcolors[fg_idx],
+     font, px, py + WpeXInfo.xftfont->ascent,
+     (FcChar8 *)u8, u8len);
+  }
+ }
+ else
+ {
+  if (WpeRender.draw_rect)
+   WpeRender.draw_rect(px, py, WpeXInfo.font_width * cw,
+     WpeXInfo.font_height, bg_idx);
+  else
+   XftDrawRect(WpeXInfo.xftdraw, &WpeXInfo.xftcolors[bg_idx],
+     px, py, WpeXInfo.font_width * cw, WpeXInfo.font_height);
+ }
+}
 #endif
 
 int fk_show_cursor()
@@ -296,7 +349,6 @@ int fk_show_cursor()
 #ifdef HAVE_XFT
  if (WpeXInfo.xftfont)
  {
-  /* Xft cursor rendering: draw to backbuf, then XCopyArea the cells */
   if (old_cursor_x > 0 || old_cursor_y > 0)
   {
    int oc = e_gt_char(old_cursor_x, old_cursor_y);
@@ -308,44 +360,16 @@ int fk_show_cursor()
    int _on = old_cursor_y * MAXSCOL + old_cursor_x;
    int ocw = (schirm[_on].flags & CELL_WIDE) ? 2 : 1;
 
-   /* Restore old cursor position: normal colors */
-   XftDrawRect(WpeXInfo.xftdraw, &WpeXInfo.xftcolors[bg_idx],
-     px, py, WpeXInfo.font_width * ocw, WpeXInfo.font_height);
-   if (oc > 12 && oc != ' ')
-   {
-    char u8[6];
-    int u8len;
-    XftFont *font = WpeXInfo.xftfont;
-    if (oc < 32)
-    { u8[0] = ' '; u8len = 1; }
-    else if (oc < 128)
-    { u8[0] = (char)oc; u8len = 1; }
-    else
-    {
-     u8len = e_x_wchar_to_utf8(oc, u8);
-     if (!XftCharExists(WpeXInfo.display, WpeXInfo.xftfont, oc))
-      font = e_xft_fallback_font(oc);
-    }
-    XftDrawStringUtf8(WpeXInfo.xftdraw, &WpeXInfo.xftcolors[fg_idx],
-      font, px, py + WpeXInfo.xftfont->ascent,
-      (FcChar8 *)u8, u8len);
-   }
-   else if (oc >= 1 && oc <= 12)
-    e_xft_draw_acs(oc, px, py, fg_idx);
-   XCopyArea(WpeXInfo.display, WpeXInfo.backbuf, WpeXInfo.window,
-     WpeXInfo.gc, px, py, WpeXInfo.font_width * ocw, WpeXInfo.font_height,
-     px, py);
-#if defined(NEWSTYLE) && !defined(HAVE_XFT)
-   { int _n = old_cursor_y * MAXSCOL + old_cursor_x;
-     e_print_xrect(old_cursor_x, old_cursor_y, _n);
-#ifndef NOXCACHE
-     e_flush_xrect();
-#endif
-   }
-#endif
+   e_x_render_cell(oc, px, py, ocw, fg_idx, bg_idx);
+   if (WpeRender.flush)
+    WpeRender.flush(px, py,
+      WpeXInfo.font_width * ocw, WpeXInfo.font_height);
+   else
+    XCopyArea(WpeXInfo.display, WpeXInfo.backbuf, WpeXInfo.window,
+      WpeXInfo.gc, px, py,
+      WpeXInfo.font_width * ocw, WpeXInfo.font_height, px, py);
   }
   {
-   /* Draw cursor: inverted colors */
    int cc = e_gt_char(cur_x, cur_y);
    int ca = e_gt_col(cur_x, cur_y);
    int fg_idx = ca / 16;  /* inverted */
@@ -355,32 +379,14 @@ int fk_show_cursor()
    int _cn = cur_y * MAXSCOL + cur_x;
    int ccw = (schirm[_cn].flags & CELL_WIDE) ? 2 : 1;
 
-   XftDrawRect(WpeXInfo.xftdraw, &WpeXInfo.xftcolors[bg_idx],
-     px, py, WpeXInfo.font_width * ccw, WpeXInfo.font_height);
-   if (cc > 12 && cc != ' ')
-   {
-    char u8[6];
-    int u8len;
-    XftFont *font = WpeXInfo.xftfont;
-    if (cc < 32)
-    { u8[0] = ' '; u8len = 1; }
-    else if (cc < 128)
-    { u8[0] = (char)cc; u8len = 1; }
-    else
-    {
-     u8len = e_x_wchar_to_utf8(cc, u8);
-     if (!XftCharExists(WpeXInfo.display, WpeXInfo.xftfont, cc))
-      font = e_xft_fallback_font(cc);
-    }
-    XftDrawStringUtf8(WpeXInfo.xftdraw, &WpeXInfo.xftcolors[fg_idx],
-      font, px, py + WpeXInfo.xftfont->ascent,
-      (FcChar8 *)u8, u8len);
-   }
-   else if (cc >= 1 && cc <= 12)
-    e_xft_draw_acs(cc, px, py, fg_idx);
-   XCopyArea(WpeXInfo.display, WpeXInfo.backbuf, WpeXInfo.window,
-     WpeXInfo.gc, px, py, WpeXInfo.font_width * ccw, WpeXInfo.font_height,
-     px, py);
+   e_x_render_cell(cc, px, py, ccw, fg_idx, bg_idx);
+   if (WpeRender.flush)
+    WpeRender.flush(px, py,
+      WpeXInfo.font_width * ccw, WpeXInfo.font_height);
+   else
+    XCopyArea(WpeXInfo.display, WpeXInfo.backbuf, WpeXInfo.window,
+      WpeXInfo.gc, px, py,
+      WpeXInfo.font_width * ccw, WpeXInfo.font_height, px, py);
   }
  }
  else
@@ -455,25 +461,37 @@ int e_ini_size()
 #endif
 
 #ifdef HAVE_XFT
- /* Recreate Pixmap and XftDraw to match new screen dimensions */
  if (WpeXInfo.xftfont)
  {
   int new_w = WpeXInfo.font_width * MAXSCOL;
   int new_h = WpeXInfo.font_height * MAXSLNS;
-  if (WpeXInfo.xftdraw)
-   XftDrawDestroy(WpeXInfo.xftdraw);
-  if (WpeXInfo.backbuf)
-   XFreePixmap(WpeXInfo.display, WpeXInfo.backbuf);
-  WpeXInfo.backbuf = XCreatePixmap(WpeXInfo.display, WpeXInfo.window,
-    new_w, new_h,
-    DefaultDepth(WpeXInfo.display, WpeXInfo.screen));
-  WpeXInfo.xftdraw = XftDrawCreate(WpeXInfo.display, WpeXInfo.backbuf,
-    DefaultVisual(WpeXInfo.display, WpeXInfo.screen),
-    DefaultColormap(WpeXInfo.display, WpeXInfo.screen));
-  XSetForeground(WpeXInfo.display, WpeXInfo.gc,
-    BlackPixel(WpeXInfo.display, WpeXInfo.screen));
-  XFillRectangle(WpeXInfo.display, WpeXInfo.backbuf, WpeXInfo.gc,
-    0, 0, new_w, new_h);
+
+  if (WpeRender.resize)
+  {
+   if (WpeXInfo.xftdraw)
+    XftDrawDestroy(WpeXInfo.xftdraw);
+   WpeRender.resize(new_w, new_h);
+   WpeXInfo.xftdraw = XftDrawCreate(WpeXInfo.display, WpeXInfo.backbuf,
+     DefaultVisual(WpeXInfo.display, WpeXInfo.screen),
+     DefaultColormap(WpeXInfo.display, WpeXInfo.screen));
+  }
+  else
+  {
+   if (WpeXInfo.xftdraw)
+    XftDrawDestroy(WpeXInfo.xftdraw);
+   if (WpeXInfo.backbuf)
+    XFreePixmap(WpeXInfo.display, WpeXInfo.backbuf);
+   WpeXInfo.backbuf = XCreatePixmap(WpeXInfo.display, WpeXInfo.window,
+     new_w, new_h,
+     DefaultDepth(WpeXInfo.display, WpeXInfo.screen));
+   WpeXInfo.xftdraw = XftDrawCreate(WpeXInfo.display, WpeXInfo.backbuf,
+     DefaultVisual(WpeXInfo.display, WpeXInfo.screen),
+     DefaultColormap(WpeXInfo.display, WpeXInfo.screen));
+   XSetForeground(WpeXInfo.display, WpeXInfo.gc,
+     BlackPixel(WpeXInfo.display, WpeXInfo.screen));
+   XFillRectangle(WpeXInfo.display, WpeXInfo.backbuf, WpeXInfo.gc,
+     0, 0, new_w, new_h);
+  }
  }
 #endif
 
@@ -789,7 +807,6 @@ int e_x_refresh()
 #ifdef HAVE_XFT
    if (WpeXInfo.xftfont)
    {
-    /* Xft rendering path: draw to Pixmap, XCopyArea to window */
     for (i = 0; i < MAXSLNS; i++)
     for (j = 0; j < MAXSCOL; j++)
     {
@@ -819,63 +836,25 @@ int e_x_refresh()
       int py = WpeXInfo.font_height * i;
       int cw = (schirm[_n].flags & CELL_WIDE) ? 2 : 1;
 
-      /* Fill background (wide chars get wider bg) */
-      XftDrawRect(WpeXInfo.xftdraw, &WpeXInfo.xftcolors[bg_idx],
-        px, py, WpeXInfo.font_width * cw, WpeXInfo.font_height);
-
-      /* Draw character */
-      if (sc > 12 && sc != ' ')
-      {
-       char u8[6];
-       int u8len;
-       XftFont *font = WpeXInfo.xftfont;
-
-       if (sc < 32)
-       {
-        u8[0] = ' ';
-        u8len = 1;
-       }
-       else if (sc < 128)
-       {
-        u8[0] = (char)sc;
-        u8len = 1;
-       }
-       else
-       {
-        u8len = e_x_wchar_to_utf8(sc, u8);
-        if (!XftCharExists(WpeXInfo.display, WpeXInfo.xftfont, sc))
-         font = e_xft_fallback_font(sc);
-       }
-
-       XftDrawStringUtf8(WpeXInfo.xftdraw, &WpeXInfo.xftcolors[fg_idx],
-         font, px, py + WpeXInfo.xftfont->ascent,
-         (FcChar8 *)u8, u8len);
-      }
-      else if (sc >= 1 && sc <= 12)
-      {
-       e_xft_draw_acs(sc, px, py, fg_idx);
-      }
+      e_x_render_cell(sc, px, py, cw, fg_idx, bg_idx);
 
       altschirm[_n] = schirm[_n];
 #ifdef NEWSTYLE
-#ifndef HAVE_XFT
-      e_print_xrect(j, i, _n);
-#endif
       altextbyte[_n] = extbyte[_n];
 #endif
      }
     }
-    /* Flush border segments (legacy XDrawLine, not used with Xft) */
-#ifdef NEWSTYLE
-#ifndef HAVE_XFT
-    e_flush_xrect();
+#ifdef HAVE_CAIRO
+    if (WpeRender.draw_rect)
+     wpe_render_chrome();
 #endif
-#endif
-    /* Copy Pixmap to window */
-    XCopyArea(WpeXInfo.display, WpeXInfo.backbuf, WpeXInfo.window,
-      WpeXInfo.gc, 0, 0,
-      WpeXInfo.font_width * MAXSCOL, WpeXInfo.font_height * MAXSLNS,
-      0, 0);
+    if (WpeRender.flush_all)
+     WpeRender.flush_all();
+    else
+     XCopyArea(WpeXInfo.display, WpeXInfo.backbuf, WpeXInfo.window,
+       WpeXInfo.gc, 0, 0,
+       WpeXInfo.font_width * MAXSCOL, WpeXInfo.font_height * MAXSLNS,
+       0, 0);
    }
    else
 #endif /* HAVE_XFT */
@@ -970,17 +949,24 @@ int e_x_change(PIC *pic)
 #ifdef HAVE_XFT
     if (WpeXInfo.xftfont)
     {
-     /* With double buffering, just copy the backbuf region */
-     XCopyArea(WpeXInfo.display, WpeXInfo.backbuf, WpeXInfo.window,
-       WpeXInfo.gc,
-       expose_report->x, expose_report->y,
-       expose_report->width, expose_report->height,
-       expose_report->x, expose_report->y);
+     if (XCheckTypedWindowEvent(WpeXInfo.display, WpeXInfo.window,
+         ConfigureNotify, &report))
+     {
+      XPutBackEvent(WpeXInfo.display, &report);
+      break;
+     }
+     do {
+      XCopyArea(WpeXInfo.display, WpeXInfo.backbuf, WpeXInfo.window,
+        WpeXInfo.gc,
+        expose_report->x, expose_report->y,
+        expose_report->width, expose_report->height,
+        expose_report->x, expose_report->y);
+     } while (XCheckTypedWindowEvent(WpeXInfo.display, WpeXInfo.window,
+              Expose, &report));
     }
     else
 #endif
     {
-     /* Reason for +2 : Assumes extra character on either side. */
      e_refresh_area(expose_report->x/WpeXInfo.font_width,
                             expose_report->y/WpeXInfo.font_height,
                             expose_report->width/WpeXInfo.font_width+2,
@@ -989,6 +975,9 @@ int e_x_change(PIC *pic)
     }
     break;
    case ConfigureNotify:
+    while (XCheckTypedWindowEvent(WpeXInfo.display, WpeXInfo.window,
+           ConfigureNotify, &report))
+     ;
     size_hints.width = (report.xconfigure.width / WpeXInfo.font_width) * WpeXInfo.font_width;
     size_hints.height = (report.xconfigure.height / WpeXInfo.font_height) * WpeXInfo.font_height;
     if (size_hints.width != MAXSCOL * WpeXInfo.font_width ||
@@ -998,24 +987,29 @@ int e_x_change(PIC *pic)
        MAXSCOL = size_hints.width / WpeXInfo.font_width;
        MAXSLNS = size_hints.height / WpeXInfo.font_height;
 #ifdef HAVE_XFT
-       /* Recreate Pixmap and XftDraw on resize */
        if (WpeXInfo.xftfont)
        {
         if (WpeXInfo.xftdraw)
          XftDrawDestroy(WpeXInfo.xftdraw);
-        if (WpeXInfo.backbuf)
-         XFreePixmap(WpeXInfo.display, WpeXInfo.backbuf);
-        WpeXInfo.backbuf = XCreatePixmap(WpeXInfo.display, WpeXInfo.window,
-          size_hints.width, size_hints.height,
-          DefaultDepth(WpeXInfo.display, WpeXInfo.screen));
+        if (WpeRender.resize)
+        {
+         WpeRender.resize(size_hints.width, size_hints.height);
+        }
+        else
+        {
+         if (WpeXInfo.backbuf)
+          XFreePixmap(WpeXInfo.display, WpeXInfo.backbuf);
+         WpeXInfo.backbuf = XCreatePixmap(WpeXInfo.display, WpeXInfo.window,
+           size_hints.width, size_hints.height,
+           DefaultDepth(WpeXInfo.display, WpeXInfo.screen));
+         XSetForeground(WpeXInfo.display, WpeXInfo.gc,
+           BlackPixel(WpeXInfo.display, WpeXInfo.screen));
+         XFillRectangle(WpeXInfo.display, WpeXInfo.backbuf, WpeXInfo.gc,
+           0, 0, size_hints.width, size_hints.height);
+        }
         WpeXInfo.xftdraw = XftDrawCreate(WpeXInfo.display, WpeXInfo.backbuf,
           DefaultVisual(WpeXInfo.display, WpeXInfo.screen),
           DefaultColormap(WpeXInfo.display, WpeXInfo.screen));
-        /* Clear the new back buffer */
-        XSetForeground(WpeXInfo.display, WpeXInfo.gc,
-          BlackPixel(WpeXInfo.display, WpeXInfo.screen));
-        XFillRectangle(WpeXInfo.display, WpeXInfo.backbuf, WpeXInfo.gc,
-          0, 0, size_hints.width, size_hints.height);
        }
 #endif
        /* Expand editor windows to fill new size */
@@ -1028,6 +1022,13 @@ int e_x_change(PIC *pic)
         if (fw->e.y >= MAXSLNS - 1) fw->e.y = MAXSLNS - 2;
        }
        e_x_repaint_desk(WpeEditor->f[WpeEditor->mxedt]);
+       if (XSyncValueGreaterThan(WpeXInfo.sync_value,
+           (XSyncValue){0}))
+       {
+        XSyncSetCounter(WpeXInfo.display, WpeXInfo.sync_counter,
+          WpeXInfo.sync_value);
+        XSyncIntToValue(&WpeXInfo.sync_value, 0);
+       }
      }
     }
     break;
@@ -1093,15 +1094,20 @@ int e_x_getch()
 #ifdef HAVE_XFT
     if (WpeXInfo.xftfont)
     {
-     /* With double buffering, just copy the affected region from backbuf */
-     do
+     if (XCheckTypedWindowEvent(WpeXInfo.display, WpeXInfo.window,
+         ConfigureNotify, &report))
      {
+      XPutBackEvent(WpeXInfo.display, &report);
+      break;
+     }
+     do {
       XCopyArea(WpeXInfo.display, WpeXInfo.backbuf, WpeXInfo.window,
         WpeXInfo.gc,
         report.xexpose.x, report.xexpose.y,
         report.xexpose.width, report.xexpose.height,
         report.xexpose.x, report.xexpose.y);
-     } while (XCheckMaskEvent(WpeXInfo.display, ExposureMask, &report) == True);
+     } while (XCheckTypedWindowEvent(WpeXInfo.display, WpeXInfo.window,
+              Expose, &report));
     }
     else
 #endif
@@ -1118,6 +1124,9 @@ int e_x_getch()
     }
     break;
    case ConfigureNotify:
+    while (XCheckTypedWindowEvent(WpeXInfo.display, WpeXInfo.window,
+           ConfigureNotify, &report))
+     ;
     size_hints.width = (report.xconfigure.width / WpeXInfo.font_width) * WpeXInfo.font_width;
     size_hints.height = (report.xconfigure.height / WpeXInfo.font_height) * WpeXInfo.font_height;
     if (size_hints.width != MAXSCOL * WpeXInfo.font_width ||
@@ -1127,23 +1136,29 @@ int e_x_getch()
        MAXSCOL = size_hints.width / WpeXInfo.font_width;
        MAXSLNS = size_hints.height / WpeXInfo.font_height;
 #ifdef HAVE_XFT
-       /* Recreate Pixmap and XftDraw on resize */
        if (WpeXInfo.xftfont)
        {
         if (WpeXInfo.xftdraw)
          XftDrawDestroy(WpeXInfo.xftdraw);
-        if (WpeXInfo.backbuf)
-         XFreePixmap(WpeXInfo.display, WpeXInfo.backbuf);
-        WpeXInfo.backbuf = XCreatePixmap(WpeXInfo.display, WpeXInfo.window,
-          size_hints.width, size_hints.height,
-          DefaultDepth(WpeXInfo.display, WpeXInfo.screen));
+        if (WpeRender.resize)
+        {
+         WpeRender.resize(size_hints.width, size_hints.height);
+        }
+        else
+        {
+         if (WpeXInfo.backbuf)
+          XFreePixmap(WpeXInfo.display, WpeXInfo.backbuf);
+         WpeXInfo.backbuf = XCreatePixmap(WpeXInfo.display, WpeXInfo.window,
+           size_hints.width, size_hints.height,
+           DefaultDepth(WpeXInfo.display, WpeXInfo.screen));
+         XSetForeground(WpeXInfo.display, WpeXInfo.gc,
+           BlackPixel(WpeXInfo.display, WpeXInfo.screen));
+         XFillRectangle(WpeXInfo.display, WpeXInfo.backbuf, WpeXInfo.gc,
+           0, 0, size_hints.width, size_hints.height);
+        }
         WpeXInfo.xftdraw = XftDrawCreate(WpeXInfo.display, WpeXInfo.backbuf,
           DefaultVisual(WpeXInfo.display, WpeXInfo.screen),
           DefaultColormap(WpeXInfo.display, WpeXInfo.screen));
-        XSetForeground(WpeXInfo.display, WpeXInfo.gc,
-          BlackPixel(WpeXInfo.display, WpeXInfo.screen));
-        XFillRectangle(WpeXInfo.display, WpeXInfo.backbuf, WpeXInfo.gc,
-          0, 0, size_hints.width, size_hints.height);
        }
 #endif
        /* Expand editor windows to fill new size */
@@ -1156,19 +1171,35 @@ int e_x_getch()
         if (fw->e.y >= MAXSLNS - 1) fw->e.y = MAXSLNS - 2;
        }
        e_x_repaint_desk(WpeEditor->f[WpeEditor->mxedt]);
+       if (XSyncValueGreaterThan(WpeXInfo.sync_value,
+           (XSyncValue){0}))
+       {
+        XSyncSetCounter(WpeXInfo.display, WpeXInfo.sync_counter,
+          WpeXInfo.sync_value);
+        XSyncIntToValue(&WpeXInfo.sync_value, 0);
+       }
      }
     }
     break;
    case ClientMessage:
-    if (report.xclient.message_type == WpeXInfo.protocol_atom &&
-      ((report.xclient.format == 8 &&
+    if (report.xclient.message_type == WpeXInfo.protocol_atom)
+    {
+     if (report.xclient.format == 32 &&
+         (Atom)report.xclient.data.l[0] == WpeXInfo.sync_request_atom)
+     {
+      XSyncIntsToValue(&WpeXInfo.sync_value,
+        (unsigned int)report.xclient.data.l[2],
+        (int)report.xclient.data.l[3]);
+     }
+     else if ((report.xclient.format == 8 &&
         report.xclient.data.b[0] == WpeXInfo.delete_atom) ||
       (report.xclient.format == 16 &&
         report.xclient.data.s[0] == WpeXInfo.delete_atom) ||
       (report.xclient.format == 32 &&
-        report.xclient.data.l[0] == WpeXInfo.delete_atom)))
-    {
-     e_quit(WpeEditor->f[WpeEditor->mxedt]);
+        report.xclient.data.l[0] == WpeXInfo.delete_atom))
+     {
+      e_quit(WpeEditor->f[WpeEditor->mxedt]);
+     }
     }
     break;
    case KeyPress:
@@ -1405,15 +1436,22 @@ void e_x_clear_area(int xa, int ya, int w, int h)
 #ifdef HAVE_XFT
  if (WpeXInfo.xftfont)
  {
-  /* Clear on backbuf using XftDrawRect (background color = black) */
-  XftDrawRect(WpeXInfo.xftdraw, &WpeXInfo.xftcolors[0],
-    WpeXInfo.font_width * xa, WpeXInfo.font_height * ya,
-    WpeXInfo.font_width * w, WpeXInfo.font_height * h);
-  XCopyArea(WpeXInfo.display, WpeXInfo.backbuf, WpeXInfo.window,
-    WpeXInfo.gc,
-    WpeXInfo.font_width * xa, WpeXInfo.font_height * ya,
-    WpeXInfo.font_width * w, WpeXInfo.font_height * h,
-    WpeXInfo.font_width * xa, WpeXInfo.font_height * ya);
+  int px = WpeXInfo.font_width * xa;
+  int py = WpeXInfo.font_height * ya;
+  int pw = WpeXInfo.font_width * w;
+  int ph = WpeXInfo.font_height * h;
+  if (WpeRender.clear_rect)
+  {
+   WpeRender.clear_rect(px, py, pw, ph, 0);
+   WpeRender.flush(px, py, pw, ph);
+  }
+  else
+  {
+   XftDrawRect(WpeXInfo.xftdraw, &WpeXInfo.xftcolors[0],
+     px, py, pw, ph);
+   XCopyArea(WpeXInfo.display, WpeXInfo.backbuf, WpeXInfo.window,
+     WpeXInfo.gc, px, py, pw, ph, px, py);
+  }
  }
  else
 #endif

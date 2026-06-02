@@ -15,6 +15,7 @@ extern "C" {
   Includes
 \* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
 #include <X11/Xlib.h>
+#include <X11/extensions/sync.h>
 #ifdef HAVE_XFT
 #include <X11/Xft/Xft.h>
 #include <fontconfig/fontconfig.h>
@@ -37,7 +38,10 @@ typedef struct wpeXStruct {
  Window window;
  GC gc;
  XFontStruct *font;
- Atom delete_atom, protocol_atom, selection_atom, text_atom, property_atom;
+ Atom delete_atom, protocol_atom, selection_atom, text_atom, property_atom,
+      sync_request_atom;
+ XSyncCounter sync_counter;
+ XSyncValue sync_value;
  int font_height, font_width;
  int altmask;
  int colors[16];

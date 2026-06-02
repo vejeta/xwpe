@@ -46,6 +46,23 @@ AS_IF([test "x$have_x11" = xyes], [
   ], [have_xft=no])
 ])
 
+# --- Optional: Cairo + Pango (vector rendering, requires X11) ---
+have_cairo=no
+AS_IF([test "x$have_x11" = xyes], [
+  PKG_CHECK_MODULES([CAIRO], [cairo cairo-xlib], [
+    have_cairo=yes
+    AC_DEFINE([HAVE_CAIRO], [1], [Define if Cairo is available])
+  ], [have_cairo=no])
+])
+have_pango=no
+AS_IF([test "x$have_cairo" = xyes], [
+  PKG_CHECK_MODULES([PANGO], [pangocairo], [
+    have_pango=yes
+    AC_DEFINE([HAVE_PANGO], [1], [Define if Pango is available])
+  ], [have_pango=no])
+])
+AM_CONDITIONAL([HAVE_CAIRO], [test "x$have_cairo" = xyes])
+
 # --- Optional: GPM mouse ---
 AC_ARG_WITH([gpm],
   [AS_HELP_STRING([--without-gpm], [Disable GPM mouse support])],
@@ -96,6 +113,8 @@ AC_MSG_RESULT([
     ncursesw:  yes (via pkg-config)
     X11:       $have_x11
     Xft:       $have_xft
+    Cairo:     $have_cairo
+    Pango:     $have_pango
     GPM:       $have_gpm
     PRNTCMD:   $PRNTCMD
     pandoc:    $PANDOC
