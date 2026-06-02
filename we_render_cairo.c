@@ -506,7 +506,7 @@ static void cr_chrome_vscrollbar(FENSTER *f, int ci_bg, int ci_fg)
  {
   int visible = ey - ay - 1;
   int total = f->b->mxlines;
-  int pos = f->b->b.y;
+  int pos = f->s->c.y;
   if (total > visible && visible > 0)
   {
    thumb_h = (visible * track_h) / total;
@@ -579,7 +579,7 @@ static void cr_chrome_hscrollbar(FENSTER *f, int ci_bg, int ci_fg)
  {
   int visible = ex - ax - 1;
   int total = f->b->mx.x;
-  int pos = f->b->b.x;
+  int pos = f->s->c.x;
   if (total > visible && visible > 0)
   {
    thumb_w = (visible * track_w) / total;
@@ -649,7 +649,7 @@ int wpe_chrome_hit_vthumb(int col, int row)
   {
    int visible = ey - ay - 1;
    int total = f->b->mxlines;
-   int pos = f->b->b.y;
+   int pos = f->s->c.y;
    if (total > visible && visible > 0)
    {
     thumb_h = (visible * track_h) / total;
@@ -696,7 +696,7 @@ int wpe_chrome_hit_hthumb(int col, int row)
   {
    int visible = ex - ax - 1;
    int total = f->b->mx.x;
-   int pos = f->b->b.x;
+   int pos = f->s->c.x;
    int track_w = (hsb_end - hsb_start) * fw;
    int thumb_w, thumb_x;
 

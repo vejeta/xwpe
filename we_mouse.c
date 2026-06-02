@@ -18,6 +18,8 @@
 int e_mouse_cursor();
 void e_scroll_drag_v(FENSTER *f);
 void e_scroll_drag_h(FENSTER *f);
+static void e_scroll_drag_end_h(FENSTER *f, int saved_cur_on);
+static void e_scroll_drag_end_cursor(FENSTER *f);
 
 /*   mouse button pressed (?)     */
 int e_mshit()
@@ -456,11 +458,10 @@ static void e_scroll_content(FENSTER *f)
 
 static void e_scroll_render_h(FENSTER *f, int new_bx)
 {
- int saved_cx = f->s->c.x;
- f->b->b.x = new_bx;
  f->s->c.x = new_bx;
  e_schirm(f, 0);
- f->s->c.x = saved_cx;
+ fk_locate(f->a.x + f->b->cl - f->s->c.x + 1,
+   f->a.y + f->b->b.y - f->s->c.y + 1);
  e_refresh();
 }
 
@@ -497,7 +498,6 @@ static int e_scroll_pixel_to_pos(int px, int track_start, int track_end,
 
 static void e_scroll_drag_begin(void)
 {
- cur_on = 0;
  wpe_scroll_dragging = 1;
  XGrabPointer(WpeXInfo.display, WpeXInfo.window, False,
    Button1MotionMask | ButtonReleaseMask,
@@ -509,8 +509,7 @@ static void e_scroll_drag_end(FENSTER *f, int saved_cur_on)
  XUngrabPointer(WpeXInfo.display, CurrentTime);
  wpe_scroll_dragging = 0;
  cur_on = saved_cur_on;
- e_cursor(f, 1);
- e_refresh();
+ e_scroll_drag_end_cursor(f);
 }
 
 void e_scroll_drag_h(FENSTER *f)
@@ -522,7 +521,6 @@ void e_scroll_drag_h(FENSTER *f)
  int max_x = f->b->mx.x;
  int visible = f->e.x - f->a.x - 1;
  int old_bx = f->b->b.x;
- int saved = cur_on;
 
  if (track_r - track_l < 1 || max_x <= visible)
   return;
@@ -541,11 +539,34 @@ void e_scroll_drag_h(FENSTER *f)
   e_scroll_render_h(f, new_bx);
   old_bx = new_bx;
  }
+ e_scroll_drag_end_h(f, cur_on);
+#endif
+}
+
+static void e_scroll_drag_end_cursor(FENSTER *f)
+{
+ int vp_left = f->s->c.x;
+ int vp_right = vp_left + (f->e.x - f->a.x - 2);
+ int vp_top = f->s->c.y;
+ int vp_bottom = vp_top + (f->e.y - f->a.y - 2);
+ int cursor_col = f->b->b.x;
+ int cursor_line = f->b->b.y;
+
+ if (cursor_col < vp_left || cursor_col > vp_right)
+  f->b->b.x = vp_left;
+ if (cursor_line < vp_top || cursor_line > vp_bottom)
+  f->b->b.y = (vp_top + vp_bottom) / 2;
+
+ e_cursor(f, 1);
+ e_refresh();
+}
+
+static void e_scroll_drag_end_h(FENSTER *f, int saved_cur_on)
+{
  XUngrabPointer(WpeXInfo.display, CurrentTime);
  wpe_scroll_dragging = 0;
- cur_on = saved;
- e_refresh();
-#endif
+ cur_on = saved_cur_on;
+ e_scroll_drag_end_cursor(f);
 }
 
 void e_scroll_drag_v(FENSTER *f)
@@ -557,7 +578,6 @@ void e_scroll_drag_v(FENSTER *f)
  int total = f->b->mxlines;
  int visible = f->e.y - f->a.y - 1;
  int old_by = f->b->b.y;
- int saved = cur_on;
 
  if (track_b - track_t < 1 || total <= visible)
   return;
@@ -573,12 +593,14 @@ void e_scroll_drag_v(FENSTER *f)
   new_by = e_scroll_pixel_to_pos(py, track_t, track_b, total, visible);
   if (new_by == old_by) continue;
 
-  f->b->b.y = new_by;
-  e_scroll_content(f);
+  f->s->c.y = new_by;
+  e_schirm(f, 0);
+  fk_locate(f->a.x + f->b->cl - f->s->c.x + 1,
+    f->a.y + f->b->b.y - f->s->c.y + 1);
   e_refresh();
   old_by = new_by;
  }
- e_scroll_drag_end(f, saved);
+ e_scroll_drag_end(f, cur_on);
 #endif
 }
 
