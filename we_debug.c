@@ -2201,6 +2201,14 @@ int e_run_debug(FENSTER *f)
   if (e_make_breakpoint(cn->f[cn->mxedt], 1) == -1) return(-1);
   jdb_trace("e_run_debug: breakpoints set OK, e_d_swtch -> 2\n");
   e_d_swtch = 2;
+#ifndef NO_XWINDOWS
+  if (WpeIsXwin())
+  {
+   XSetInputFocus(WpeXInfo.display, WpeXInfo.window,
+     RevertToParent, CurrentTime);
+   XFlush(WpeXInfo.display);
+  }
+#endif
  }
  return(0);
 }
@@ -2210,7 +2218,7 @@ int e_deb_run(FENSTER *f)
 {
  ECNT *cn = f->ed;
  char eing[256];
- int ret, len, prsw = 0;
+ int ret, len, prsw = 0, main_brk = 0;
 
  jdb_trace("e_deb_run: entry, e_d_swtch=%d, e_deb_type=%d\n",
            e_d_swtch, e_deb_type);
@@ -2235,6 +2243,10 @@ int e_deb_run(FENSTER *f)
    sprintf(eing, "tty error: %s", e_d_tty);
    return(e_d_error(eing));
   }
+ }
+ if (e_d_swtch < 3 && e_d_nbrpts <= 0)
+ {
+  if ((main_brk = e_mk_brk_main(f, 0)) < -1) return(main_brk);
  }
  if (e_deb_type == 2)
  {
@@ -2382,7 +2394,11 @@ int e_deb_run(FENSTER *f)
   return(e_error(e_d_msg[ERR_CANTPROG], 0, f->fb));
  }
  e_d_swtch = 3;
- return(e_read_output(f));
+ { int _ro = e_read_output(f);
+   if (main_brk)
+    e_mk_brk_main(f, main_brk);
+   return(_ro);
+ }
 }
 
 int e_deb_trace(FENSTER *f)
