@@ -37,5 +37,6 @@ extern int wpe_scroll_dragging;
 int wpe_render_cairo_init(void);
 void wpe_render_chrome(void);
 int wpe_chrome_hit_vthumb(int col, int row);
+int wpe_chrome_hit_hthumb(int col, int row);
 
 #endif

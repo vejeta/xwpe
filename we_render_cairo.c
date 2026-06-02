@@ -520,6 +520,79 @@ static void cr_chrome_vscrollbar(FENSTER *f, int ci_bg, int ci_fg)
  cr_chrome_thumb(bar_x, thumb_y, bar_w, thumb_h, ci_fg);
 }
 
+static void cr_chrome_arrow_left(int cx, int cy, int sz, int ci)
+{
+ cairo_set_source_rgb(cr, cairo_colors[ci][0],
+   cairo_colors[ci][1], cairo_colors[ci][2]);
+ cairo_move_to(cr, cx - sz, cy);
+ cairo_line_to(cr, cx + sz / 2, cy - sz);
+ cairo_line_to(cr, cx + sz / 2, cy + sz);
+ cairo_close_path(cr);
+ cairo_fill(cr);
+}
+
+static void cr_chrome_arrow_right(int cx, int cy, int sz, int ci)
+{
+ cairo_set_source_rgb(cr, cairo_colors[ci][0],
+   cairo_colors[ci][1], cairo_colors[ci][2]);
+ cairo_move_to(cr, cx + sz, cy);
+ cairo_line_to(cr, cx - sz / 2, cy - sz);
+ cairo_line_to(cr, cx - sz / 2, cy + sz);
+ cairo_close_path(cr);
+ cairo_fill(cr);
+}
+
+static void cr_chrome_hscrollbar(FENSTER *f, int ci_bg, int ci_fg)
+{
+ int fw = WpeRender.font_width;
+ int fh = WpeRender.font_height;
+ int ax = f->a.x, ex = f->e.x, ey = f->e.y;
+ int hsb_start = ax + 19;
+ int hsb_end = ex - 2;
+ int row_y = ey * fh;
+ int left = hsb_start * fw;
+ int right = (hsb_end + 1) * fw;
+ int w = right - left;
+ int bar_h = fh > 12 ? 5 : 4;
+ int bar_y = row_y + (fh - bar_h) / 2;
+ int arrow_sz = fh > 12 ? 5 : 3;
+ int track_left, track_w, thumb_w, thumb_x;
+
+ if (w < fw * 5)
+  return;
+
+ cr_draw_rect(left, row_y, w, fh, ci_bg);
+
+ cr_chrome_arrow_left(left + fw / 2, row_y + fh / 2, arrow_sz, ci_fg);
+ cr_chrome_arrow_right(right - fw / 2, row_y + fh / 2, arrow_sz, ci_fg);
+
+ track_left = left + fw;
+ track_w = w - fw * 2;
+ if (track_w <= 0)
+  return;
+
+ cr_chrome_track(track_left, bar_y, track_w, bar_h, ci_bg);
+
+ thumb_w = track_w;
+ thumb_x = track_left;
+ if (f->b && f->b->mx.x > 1)
+ {
+  int visible = ex - ax - 1;
+  int total = f->b->mx.x;
+  int pos = f->b->b.x;
+  if (total > visible && visible > 0)
+  {
+   thumb_w = (visible * track_w) / total;
+   if (thumb_w < 10) thumb_w = 10;
+   if (thumb_w > track_w) thumb_w = track_w;
+   if (pos > total - visible) pos = total - visible;
+   thumb_x = track_left + ((pos * (track_w - thumb_w))
+             / (total - visible));
+  }
+ }
+ cr_chrome_thumb(thumb_x, bar_y, thumb_w, bar_h, ci_fg);
+}
+
 void wpe_render_chrome(void)
 {
 #ifndef NO_XWINDOWS
@@ -539,6 +612,7 @@ void wpe_render_chrome(void)
    continue;
 
   cr_chrome_vscrollbar(f, is_active ? 4 : 0, is_active ? 7 : 8);
+  cr_chrome_hscrollbar(f, is_active ? 4 : 0, is_active ? 7 : 8);
  }
 #endif
 }
@@ -590,6 +664,54 @@ int wpe_chrome_hit_vthumb(int col, int row)
   { int row_px = row * fh;
     if (row_px >= thumb_y && row_px < thumb_y + thumb_h)
      return 1;
+  }
+ }
+#endif
+ return 0;
+}
+
+int wpe_chrome_hit_hthumb(int col, int row)
+{
+#ifndef NO_XWINDOWS
+ extern ECNT *WpeEditor;
+ int w;
+ int fw = WpeRender.font_width;
+
+ if (!WpeEditor)
+  return 0;
+
+ for (w = 1; w <= WpeEditor->mxedt; w++)
+ {
+  FENSTER *f = WpeEditor->f[WpeEditor->edt[w]];
+  int ax = f->a.x, ex = f->e.x, ey = f->e.y;
+  int hsb_start = ax + 20;
+  int hsb_end = ex - 3;
+
+  if (!DTMD_ISTEXT(f->dtmd) || row != ey)
+   continue;
+  if (col <= hsb_start || col >= hsb_end)
+   return 0;
+
+  if (f->b && f->b->mx.x > 1)
+  {
+   int visible = ex - ax - 1;
+   int total = f->b->mx.x;
+   int pos = f->b->b.x;
+   int track_w = (hsb_end - hsb_start) * fw;
+   int thumb_w, thumb_x;
+
+   if (total > visible && visible > 0)
+   {
+    thumb_w = (visible * track_w) / total;
+    if (thumb_w < 10) thumb_w = 10;
+    if (pos > total - visible) pos = total - visible;
+    thumb_x = hsb_start * fw + ((pos * (track_w - thumb_w))
+              / (total - visible));
+    { int col_px = col * fw;
+      if (col_px >= thumb_x && col_px < thumb_x + thumb_w)
+       return 1;
+    }
+   }
   }
  }
 #endif
