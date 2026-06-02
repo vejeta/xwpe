@@ -11,8 +11,6 @@ https://codeberg.org/mendezr/xwpe-archives
 Known Bugs (Payne era, verified 2026-06-01)
 
 Confirmed present:
-* gdb backend assumes the program starts in "main" (hardcoded in
-     e_mk_brk_main).
 * Esc key may require multiple presses on Linux console (not yet
      verified on a real console; works correctly in terminal emulators).
 * Debugging leaks memory (location unknown since 2000).
@@ -43,6 +41,22 @@ Bugs fixed in 1.6.x:
   e_find_or_create_messages.
 * Cursor jumped to Messages when nothing needed recompiling
   -- fixed (1.6.3).  e_new_message moved inside compilation-needed block.
+* gdb assumes program starts in "main" -- fixed (1.6.3).
+  Configurable start_symbol field (default "main") in Compiler-Options
+  dialog (Alt-Y).  All debugger backends (gdb, sdb, dbx, jdb) use
+  e_get_start_symbol().  Ctrl-G R now sets breakpoint before running.
+* X11 debugger xterm eliminated -- fixed (1.6.3).
+  openpty() replaces xterm for program I/O in X11 mode (same as
+  terminal mode).  No focus stealing, no external window.  Program
+  output appears in Messages via pty drain after each debug step.
+* Radio buttons and checkboxes invisible in X11 dialogs -- fixed (1.6.3).
+  NEWSTYLE code replaced ( ) and [ ] with spaces.  Initial selection
+  marker (*) was not drawn on dialog open.
+* gdb "Can't find file" error when stepping into libc -- fixed (1.6.3).
+  Auto-skip system frames via tbreak main + continue.
+* gdb error popups after program exit -- fixed (1.6.3).
+  e_read_output detects "exited" and quits debugger cleanly.
+* Leaked file descriptor on named pipe (30-year Kruse bug) -- fixed.
 
 
 Changes

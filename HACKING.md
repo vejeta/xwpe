@@ -249,8 +249,39 @@ Unit test: `tests/test_checkheader.c` (10 cases), runs via `make check`.
 Debugger type is `e_deb_type`: 0=gdb, 1=sdb, 2=dbx, 3=xdb, 4=jdb,
 5=pdb. Each backend uses the same pipe infrastructure but differs in
 prompt detection, command syntax, and output parsing. In X11 mode,
-the debugger runs in an xterm via named pipes (`npipe[0-4]`). In
-terminal mode, it uses regular pipes (`rfildes/wfildes/efildes`).
+the debugger runs via named pipes (`npipe[0-4]`). In terminal mode,
+it uses regular pipes (`rfildes/wfildes/efildes`).
 
-Program output is captured via pty (terminal mode) or named pipes
-(X11 mode) and appended to the Messages buffer by `e_t_deb_out()`.
+### Program output via pty (all modes)
+
+`openpty()` creates a master/slave pair. gdb redirects the inferior's
+stdout to the slave via `r > /dev/pts/N`. The parent reads from the
+master fd.  After each debug step, `e_d_pty_flush_to_messages()`
+drains the pty and writes new output to the Messages buffer.  The
+`call (void)fflush(0)` gdb command forces the inferior to flush its
+stdio buffers before draining.
+
+This replaces the old xterm-based approach (1993-2026) where an
+xterm window displayed program output.  The pty approach is used by
+Eclipse CDT, VS Code, and gdbgui.  Benefits: no focus stealing, no
+external window, Wayland-compatible.
+
+### Start symbol
+
+`e_get_start_symbol()` returns the configured entry point (default
+"main").  Used by `e_mk_brk_main()` across all backends.  Ctrl-G R
+and Ctrl-G T both set a breakpoint at the start symbol before
+running.  Configurable via "Start sYmbol:" in Compiler-Options.
+
+### System frame auto-skip
+
+When gdb steps into system/library code (libc, runtime startup),
+the source file is not found locally.  Instead of showing an error,
+`e_read_output` sends `tbreak main` + `continue` to skip past the
+system frames and stop at the next user function.
+
+### Clean program exit
+
+`e_read_output` detects `[Inferior ... exited` in gdb's response
+and calls `e_d_quit()` cleanly instead of letting subsequent
+commands produce "no process to debug" errors.

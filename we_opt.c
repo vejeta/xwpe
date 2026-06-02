@@ -1761,13 +1761,9 @@ int e_opt_kst(W_OPTSTR *o)
    for(i = 0; i < o->sn; i++)
    {  e_pr_str(o->xa+o->sstr[i]->x+4, o->ya+o->sstr[i]->y, o->sstr[i]->header,
          o->fst, o->sstr[i]->nc, 1, o->fss, 0);
-#ifdef NEWSTYLE
-      if (WpeIsXwin())
-         e_pr_str(o->xa+o->sstr[i]->x, o->ya+o->sstr[i]->y, "   ",
-         o->fst, -1, 1, 0, 0);
-      else
-#endif
       e_pr_str(o->xa+o->sstr[i]->x, o->ya+o->sstr[i]->y, "[ ]", o->fst, -1, 1, 0, 0);
+      if(o->sstr[i]->num)
+         e_pr_char(o->xa+o->sstr[i]->x+1, o->ya+o->sstr[i]->y, 'X', o->fst);
    }
    for(i = 0; i < o->pn; i++)
    {  for(j = 0; j < o->pstr[i]->np; j++)
@@ -1776,13 +1772,9 @@ int e_opt_kst(W_OPTSTR *o)
          e_pr_str(o->xa+o->pstr[i]->ps[j]->x+4, o->ya+o->pstr[i]->ps[j]->y,
             o->pstr[i]->ps[j]->header, o->fst, o->pstr[i]->ps[j]->nc,
             1, o->fss, 0);
-#ifdef NEWSTYLE
-         if (WpeIsXwin())
-            e_pr_str(o->xa+o->pstr[i]->ps[j]->x,
-            o->ya+o->pstr[i]->ps[j]->y, "   ", o->fst, -1, 1, 0, 0);
-         else
-#endif
          e_pr_str(o->xa+o->pstr[i]->ps[j]->x, o->ya+o->pstr[i]->ps[j]->y, "( )", o->fst, -1, 1, 0, 0);
+         if(o->pstr[i]->num == j)
+            e_pr_char(o->xa+o->pstr[i]->ps[j]->x+1, o->ya+o->pstr[i]->ps[j]->y, '*', o->fst);
       }
    }
    for(i = 0; i < o->bn; i++)

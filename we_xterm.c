@@ -8,6 +8,8 @@
 
 #include "edit.h"
 #include "we_render.h"
+#include <X11/Xatom.h>
+#include <poll.h>
 
 /* partial conversion in place */
 #include "WeXterm.h"
@@ -1453,13 +1455,48 @@ int e_x_sys_end()
  return(0);
 }
 
+static Time e_x_get_server_time(void)
+{
+ XEvent ev;
+ Time ts = CurrentTime;
+
+ XChangeProperty(WpeXInfo.display, WpeXInfo.window,
+   XA_WM_NAME, XA_STRING, 8, PropModeAppend, (unsigned char *)"", 0);
+ XFlush(WpeXInfo.display);
+ while (XCheckTypedWindowEvent(WpeXInfo.display, WpeXInfo.window,
+        PropertyNotify, &ev))
+  ts = ev.xproperty.time;
+ return ts;
+}
+
+static void e_x_send_active_window(Time ts)
+{
+ XEvent ev;
+
+ memset(&ev, 0, sizeof(ev));
+ ev.type = ClientMessage;
+ ev.xclient.window = WpeXInfo.window;
+ ev.xclient.message_type = XInternAtom(WpeXInfo.display,
+   "_NET_ACTIVE_WINDOW", False);
+ ev.xclient.format = 32;
+ ev.xclient.data.l[0] = 1;
+ ev.xclient.data.l[1] = ts;
+ XSendEvent(WpeXInfo.display, DefaultRootWindow(WpeXInfo.display),
+   False, SubstructureNotifyMask | SubstructureRedirectMask, &ev);
+}
+
+void e_x_reclaim_focus(void)
+{
+ Time ts = e_x_get_server_time();
+
+ XRaiseWindow(WpeXInfo.display, WpeXInfo.window);
+ e_x_send_active_window(ts);
+ XSetInputFocus(WpeXInfo.display, WpeXInfo.window,
+   RevertToParent, ts);
+ XFlush(WpeXInfo.display);
+}
+
 /**
- * e_x_clear_area - Clear a rectangle of the X11 window (pixels).
- * @xa: Left column (character units).
- * @ya: Top row (character units).
- * @w:  Width in columns.
- * @h:  Height in rows.
- *
  * Clears the pixel area to remove stale XDrawLine segments from
  * NEWSTYLE borders after popup/menu close.
  */

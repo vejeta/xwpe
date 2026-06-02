@@ -133,6 +133,33 @@ void e_d_pty_drain(void)
  fcntl(e_d_pty_master, F_SETFL, flags & ~O_NONBLOCK);
 }
 
+static void e_d_pty_strip_cr(char *s, int len)
+{
+ int r, w;
+ for (r = 0, w = 0; r < len; r++)
+  if (s[r] != '\r')
+   s[w++] = s[r];
+ s[w] = '\0';
+}
+
+void e_d_pty_flush_to_messages(FENSTER *f)
+{
+ int prev_len;
+ char *output;
+
+ if (e_d_pty_master < 0)
+  return;
+ prev_len = e_d_prog_output_len;
+ e_d_pty_drain();
+ if (e_d_prog_output_len <= prev_len)
+  return;
+ output = e_d_prog_output + prev_len;
+ e_d_pty_strip_cr(output, e_d_prog_output_len - prev_len);
+ e_d_prog_output_len = prev_len + strlen(output);
+ if (output[0])
+  e_d_p_message(output, f, 0);
+}
+
 /* Close pty fds but KEEP the output buffer.
    The buffer is preserved so Ctrl-G P can show program output
    even after the debugger session ends. It is freed when a
@@ -1826,22 +1853,17 @@ int e_exec_deb(FENSTER *f, char *prog)
    e_error(e_p_msg[ERR_PIPEOPEN], 0, f->fb);
    return(0);
   }
-  /* Create pty BEFORE fork so the child inherits the slave fd.
-     gdb's "run > /dev/pts/N" needs the slave accessible.
-     Clear any output from the previous debug session. */
-  if (!WpeIsXwin())
-  {
-   if (e_d_prog_output) { FREE(e_d_prog_output); e_d_prog_output = NULL; }
-   e_d_prog_output_len = 0;
-   e_d_prog_output_cap = 0;
-   if (openpty(&e_d_pty_master, &e_d_pty_slave, e_d_pty_slave_name,
-               NULL, NULL) < 0)
-   {
-    e_d_pty_master = -1;
-    e_d_pty_slave = -1;
-    e_d_pty_slave_name[0] = '\0';
-   }
-  }
+ }
+
+ if (e_d_prog_output) { FREE(e_d_prog_output); e_d_prog_output = NULL; }
+ e_d_prog_output_len = 0;
+ e_d_prog_output_cap = 0;
+ if (openpty(&e_d_pty_master, &e_d_pty_slave, e_d_pty_slave_name,
+             NULL, NULL) < 0)
+ {
+  e_d_pty_master = -1;
+  e_d_pty_slave = -1;
+  e_d_pty_slave_name[0] = '\0';
  }
 
  if ((e_d_pid = fork()) > 0)
@@ -1860,6 +1882,7 @@ int e_exec_deb(FENSTER *f, char *prog)
     ;
    if (e_d_tty[i] == '\n')
     e_d_tty[i] = '\0';
+   close(wfildes[0]);
    if ((rfildes[0] = open(e_d_tty, O_RDONLY)) < 0 ||
      (wfildes[1] = open(e_d_tty, O_WRONLY)) < 0)
    {
@@ -1948,7 +1971,10 @@ int e_exec_deb(FENSTER *f, char *prog)
   sprintf(file, "%s/we_sys", e_tmp_dir);
   fp = fopen(file, "w+");
   fprintf(fp, "#!/bin/sh\n");
-  fprintf(fp, "tty > %s\n", npipe[1]);
+  if (e_d_pty_master >= 0)
+   fprintf(fp, "echo '%s' > %s\n", e_d_pty_slave_name, npipe[1]);
+  else
+   fprintf(fp, "tty > %s\n", npipe[1]);
   if (e_deb_type == 5)
    fprintf(fp,
      "%s -m pdb %s < %s > %s 2> %s\n"
@@ -1968,8 +1994,16 @@ int e_exec_deb(FENSTER *f, char *prog)
   fclose(fp);
   chmod(file, 0755);
 
-  execlp(XTERM_CMD, XTERM_CMD, "+sb", "-geometry", "80x25-0-0", "-e",
-    user_shell, "-c", file, NULL);
+  if (e_d_pty_master >= 0)
+  {
+   close(e_d_pty_master);
+   execl(file, file, NULL);
+  }
+  else
+  {
+   execlp(XTERM_CMD, XTERM_CMD, "+sb", "-geometry", "80x25-0-0",
+     "-T", "xwpe-output", "-e", user_shell, "-c", file, NULL);
+  }
   remove(file);
  }
  else
@@ -2953,6 +2987,16 @@ int e_read_output(FENSTER *f)
    if (ret < 0) return(-1);
   } while(!ret && !*e_d_sp[SVLINES-1]);
  }
+ for (i = 0; i < SVLINES; i++)
+ {
+  if (strstr(e_d_sp[i], "exited"))
+  {
+   e_d_pty_flush_to_messages(f);
+   e_d_p_message("Program exited.", f, 0);
+   e_d_quit(f);
+   return(0);
+  }
+ }
  /* Flush the inferior's stdout (which is fully buffered because it
     goes to a pty, not a real terminal) and drain any output.
     This is the technique used by gdbgui and Eclipse CDT. */
@@ -2962,7 +3006,7 @@ int e_read_output(FENSTER *f)
   write(rfildes[1], "call (void)fflush(0)\n", 21);
   while (e_d_line_read(wfildes[0], _flush_resp, 256, 0, 0) == 0)
    ;
-  e_d_pty_drain();
+  e_d_pty_flush_to_messages(f);
  }
  /* pdb: parse "> file(line)func()" from the buffered output lines */
  if (e_deb_type == 5)
@@ -3236,10 +3280,13 @@ int e_d_goto_break(char *file, int line, FENSTER *f)
   if (access(file, 0))
   {
    /* Source file not found -- stepped into system/library code.
-      Auto-step past it instead of showing a confusing error. */
+      Set a temporary breakpoint at the next user function (main)
+      and continue, skipping all libc frames. */
    if (e_deb_type == 0)
    {
-    write(rfildes[1], "n\n", 2);
+    write(rfildes[1], "tbreak main\n", 12);
+    if (e_d_dum_read() == -1) { e_d_quit(f); return(-1); }
+    write(rfildes[1], "c\n", 2);
     return(e_read_output(f));
    }
    sprintf(str, e_d_msg[ERR_CANTFILE], file);
@@ -3258,6 +3305,11 @@ int e_d_goto_break(char *file, int line, FENSTER *f)
  s->de.x = MAXSCOL;
  e_schirm(f, 1);
  e_cursor(f, 1);
+ e_d_pty_flush_to_messages(f);
+#ifndef NO_XWINDOWS
+ if (WpeIsXwin())
+  e_x_reclaim_focus();
+#endif
  return(0);
 }
 
