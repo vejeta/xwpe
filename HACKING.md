@@ -71,6 +71,95 @@ left, right line segments). Known issue: no awareness of window
 stacking -- hidden windows' border flags persist and must be cleared
 explicitly.
 
+## Cairo+Pango rendering backend (1.6.3)
+
+Version 1.6.3 adds a Cairo+Pango rendering path alongside Xft.
+The architecture follows Kruse's function pointer pattern: the
+`WpeRenderBackend` struct (`we_render.h`) holds function pointers
+for draw_rect, draw_text, draw_acs, flush, resize.  The X11 init
+sets them to Cairo implementations; terminal mode ignores them.
+
+### Text rendering: dual engine
+
+ASCII (32-127) is rendered via **cairo_ft** -- FreeType directly
+through Cairo's `cairo_show_glyphs()`.  One glyph struct on the
+stack per call, no allocation, no heap pressure.
+
+Non-ASCII (UTF-8 multibyte, emoji) falls back to **Pango** via
+`pango_cairo_show_layout()`.  This is rare during normal editing
+and scrolling.
+
+Pango's `PangoLayout` corrupts the heap under heavy reuse (thousands
+of `set_text` + `show_layout` per second causes `pango_layout_line_unref`
+refcount underflow).  The cairo_ft path avoids this entirely for ASCII.
+
+### Font fitting
+
+Both Pango and cairo_ft need their font size adjusted to match
+Xft's cell grid exactly.  Xft gives cells of `font_width x font_height`
+pixels (typically 8x17).  Pango and FreeType at the same point size
+produce different pixel dimensions.  The solution: iterative reduction
+from `font_height` downward until the rendered glyph "M" fits within
+the cell.
+
+    Pango: pango_font_description_set_absolute_size(font, px * PANGO_SCALE)
+    cairo_ft: cairo_matrix_init_scale(&mat, sz, sz)
+
+### Scrollbar drag and the schirm model
+
+The scrollbar drag loop (`e_scroll_drag_v` in `we_mouse.c`) uses
+`XGrabPointer` + `MotionNotify` events with coalescing.  Each step:
+
+1. `e_scroll_invalidate_content(f)` -- memset only the editor
+   content cells in altschirm (not menu, borders, status bar)
+2. `e_scroll_render_lines(f)` -- calls `e_pr_line` for visible
+   lines (not `e_pr_c_line` which needs breakpoint array init)
+3. `e_refresh()` -- diff renders only changed cells + chrome
+
+Critical: `f->s->c.y` must be synced to `f->b->b.y` before calling
+`e_pr_line`.  The macro `NUM_LINES_OFF_SCREEN_TOP` expands to
+`f->s->c.y`, and `e_pr_line` uses it to calculate screen positions.
+Without this sync, line addresses go out of range and crash.
+
+Do NOT call `e_abs_refr()` during drag -- it memsets ALL 2400+
+altschirm cells, forcing a full-screen redraw that is too slow for
+60fps drag.  Do NOT call `e_pr_c_line` -- it accesses `s->brp[]`
+(breakpoint array) which needs initialization from `e_abs_refr`.
+
+### Resize flicker prevention
+
+Four techniques combined:
+
+- `XSetWindowBackgroundPixmap(display, window, None)` -- X server
+  does not paint exposed areas
+- `StaticGravity` -- X server does not move old pixels on resize
+- `XCheckTypedWindowEvent` loop to compress ConfigureNotify events
+- `_NET_WM_SYNC_REQUEST` protocol -- WM waits for app to finish
+  painting before showing the resized window
+
+### Chrome post-pass
+
+After the cell loop, `wpe_render_chrome()` draws modern scrollbar
+chrome (thin track, proportional thumb, triangular arrows) over the
+scrollbar column.  Only applies to text editor windows (DTMD_ISTEXT).
+Named functions: `cr_chrome_arrow_up`, `cr_chrome_arrow_down`,
+`cr_chrome_track`, `cr_chrome_thumb`, `cr_chrome_vscrollbar`.
+
+### New files
+
+| File | Purpose |
+|------|---------|
+| `we_render.h` | WpeRenderBackend struct, function pointer API |
+| `we_render.c` | Global WpeRender instance |
+| `we_render_cairo.c` | Cairo+Pango+FreeType backend, chrome post-pass |
+
+### Build dependencies
+
+Cairo requires: `libcairo2-dev`, `libpango1.0-dev` (pangocairo).
+Detection via `PKG_CHECK_MODULES` in `configure.ac`.  When Cairo
+is not available, the Xft path is used as fallback.  When X11 is
+not available, ncurses terminal mode is used (unchanged).
+
 ## Source file overview
 
 | File | Purpose |
