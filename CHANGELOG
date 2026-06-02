@@ -116,17 +116,35 @@ Changes
 * Ctrl-F9 Run for interpreted languages: runs interpreter directly
   via popen, output captured to Messages (no xterm in X11 mode).
 
-  X11 mode:
-* Xft font rendering: replaced 1993 XDrawImageString (bitmap, Latin-1
-  only) with XftDrawStringUtf8 (anti-aliased TrueType, full Unicode).
-  Following the st (suckless terminal) pattern: XftDrawGlyphFontSpec
-  for batched rendering, font cache for fallback, XftDrawRect for
-  background fill. Requires libxft-dev and libfontconfig-dev.
+  X11 mode -- Cairo+Pango rendering (Wayland-ready):
+* Cairo+Pango replaces Xft for all text rendering. The rendering
+  pipeline (schirm model -> diff -> draw -> Pixmap -> window) is
+  backend-agnostic: same Cairo calls work on X11 (cairo_xlib_surface)
+  and Wayland (cairo_image_surface). WpeRenderBackend abstraction
+  following Kruse's function pointer pattern.
+* cairo_ft for ASCII (FreeType via Cairo, zero-alloc per glyph) during
+  scrollbar drag. Pango for Unicode fallback (emoji, CJK). Prevents
+  Pango heap corruption under sustained heavy load.
+* System monospace font detection (gsettings org.gnome.desktop.interface
+  monospace-font-name). Uses the same font as the user's terminal.
+* Modern scrollbars: thin proportional track (4-5px), proportional
+  thumb, triangular Cairo arrows. Both vertical and horizontal.
+* Fluid scrollbar drag: MotionNotify events with XGrabPointer +
+  XCheckTypedWindowEvent coalescing. Text scrolls in real time.
+  Cursor visible at file position during drag, repositions to
+  viewport center when scrolled off-screen (Emacs-style).
+* Mouse wheel scroll (Button4/Button5): 3 lines per tick, same
+  viewport-independent cursor behavior as drag.
+* Title bar buttons: Unicode ◻ maximize and ✕ close, right-aligned,
+  replacing the Motif-era [◆] close from the left side.
+* Resize flicker prevention: _NET_WM_SYNC_REQUEST protocol,
+  StaticGravity, BackgroundPixmap None, ConfigureNotify compression,
+  Expose skip during pending resize.
+* Previous Xft rendering preserved as fallback (--without-cairo).
 * Color emoji via Noto Color Emoji (libXft 2.3.5+ BGRA support).
   Font fallback uses fontconfig with FC_COLOR for emoji codepoints.
-* Pixmap double-buffering: all rendering goes to an off-screen Pixmap
-  via XftDraw, copied to window with XCopyArea. Zero flicker on
-  resize and repaints. Replaces the direct-to-window rendering.
+* Pixmap double-buffering: all rendering goes to an off-screen Pixmap,
+  copied to window with XCopyArea.
 * CELL_WIDE buffer model: SCREENCELL gains a flags field with
   CELL_WIDE and CELL_WIDE_SPACER. Wide characters (emoji, CJK) are
   rendered across 2 cells, cursor skips spacer cells, delete removes
