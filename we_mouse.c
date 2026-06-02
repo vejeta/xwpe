@@ -420,6 +420,39 @@ int fl_wnd_mouse(sw, k, fw)
    else return(MBKEY);
 }
 
+static void e_scroll_invalidate_content(FENSTER *f)
+{
+ extern SCREENCELL *altschirm;
+ extern int MAXSCOL;
+ int row, col;
+
+ for (row = f->a.y + 1; row < f->e.y; row++)
+  for (col = f->a.x + 1; col <= f->e.x; col++)
+   memset(&altschirm[row * MAXSCOL + col], 0, sizeof(SCREENCELL));
+}
+
+static void e_scroll_render_lines(FENSTER *f)
+{
+ int j;
+ int first = f->b->b.y;
+ int visible = f->e.y - f->a.y - 1;
+ int last = first + visible;
+
+ f->s->c.y = first;
+
+ for (j = first; j < f->b->mxlines && j < last; j++)
+  e_pr_line(j, f);
+ for (; j < last; j++)
+  e_blk(f->e.x - f->a.x - 2, f->a.x + 1,
+    j - first + f->a.y + 1, f->fb->et.fb);
+}
+
+static void e_scroll_content(FENSTER *f)
+{
+ e_scroll_invalidate_content(f);
+ e_scroll_render_lines(f);
+}
+
 void e_scroll_drag_v(FENSTER *f)
 {
 #ifndef NO_XWINDOWS
@@ -469,7 +502,8 @@ void e_scroll_drag_v(FENSTER *f)
    continue;
 
   f->b->b.y = new_first;
-  e_schirm(f, 0);
+  e_scroll_content(f);
+  e_refresh();
   old_first = new_first;
  }
 

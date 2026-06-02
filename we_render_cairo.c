@@ -9,18 +9,22 @@
 #include "edit.h"
 #include <cairo.h>
 #include <cairo-xlib.h>
+#include <cairo-ft.h>
 #include <pango/pangocairo.h>
 #include <X11/Xlib.h>
 #include <string.h>
 
 #ifndef NO_XWINDOWS
 #include "WeXterm.h"
+#include <X11/Xft/Xft.h>
 #endif
 
 static cairo_surface_t *cr_surface;
 static cairo_t *cr;
 static PangoLayout *pg_layout;
 static PangoFontDescription *pg_font;
+static cairo_font_face_t *cr_ft_face;
+static cairo_scaled_font_t *cr_scaled;
 
 static double cairo_colors[16][3];
 
@@ -52,16 +56,43 @@ static void cr_draw_rect(int x, int y, int w, int h, int color_idx)
  cairo_fill(cr);
 }
 
-static void cr_draw_text(int x, int y, const char *utf8, int u8len,
-                         int cell_width, int fg_idx, int bg_idx)
+static void cr_draw_text_ft(int x, int y, const char *utf8, int u8len,
+                            int fg_idx)
 {
- cr_draw_rect(x, y, WpeRender.font_width * cell_width,
-   WpeRender.font_height, bg_idx);
+ cairo_glyph_t glyph;
+ glyph.index = FT_Get_Char_Index(
+   cairo_ft_scaled_font_lock_face(cr_scaled),
+   (unsigned char)utf8[0]);
+ cairo_ft_scaled_font_unlock_face(cr_scaled);
+ glyph.x = x;
+ glyph.y = y + WpeRender.font_ascent;
+ cairo_set_scaled_font(cr, cr_scaled);
+ cairo_set_source_rgb(cr, cairo_colors[fg_idx][0],
+   cairo_colors[fg_idx][1], cairo_colors[fg_idx][2]);
+ cairo_show_glyphs(cr, &glyph, 1);
+}
+
+static void cr_draw_text_pango(int x, int y, const char *utf8, int u8len,
+                               int fg_idx)
+{
  cairo_set_source_rgb(cr, cairo_colors[fg_idx][0],
    cairo_colors[fg_idx][1], cairo_colors[fg_idx][2]);
  cairo_move_to(cr, x, y);
  pango_layout_set_text(pg_layout, utf8, u8len);
  pango_cairo_show_layout(cr, pg_layout);
+}
+
+static void cr_draw_text(int x, int y, const char *utf8, int u8len,
+                         int cell_width, int fg_idx, int bg_idx)
+{
+ cr_draw_rect(x, y, WpeRender.font_width * cell_width,
+   WpeRender.font_height, bg_idx);
+
+ if (cr_scaled && u8len == 1 && (unsigned char)utf8[0] >= 32
+     && (unsigned char)utf8[0] < 128)
+  cr_draw_text_ft(x, y, utf8, u8len, fg_idx);
+ else
+  cr_draw_text_pango(x, y, utf8, u8len, fg_idx);
 }
 
 static void cr_draw_line(int x1, int y1, int x2, int y2,
@@ -217,82 +248,101 @@ static void cr_cleanup(void)
  }
 }
 
-int wpe_render_cairo_init(void)
+static void cr_init_surface(int pixel_w, int pixel_h)
 {
-#ifndef NO_XWINDOWS
- extern int MAXSLNS, MAXSCOL;
- PangoFontMetrics *metrics;
- PangoContext *pg_ctx;
- int pixel_w, pixel_h;
- int pt_size;
- char font_spec[64];
-
- cairo_init_colors();
-
- pixel_w = WpeXInfo.font_width * MAXSCOL;
- pixel_h = WpeXInfo.font_height * MAXSLNS;
-
  cr_surface = cairo_xlib_surface_create(WpeXInfo.display,
    WpeXInfo.backbuf,
    DefaultVisual(WpeXInfo.display, WpeXInfo.screen),
    pixel_w, pixel_h);
  cr = cairo_create(cr_surface);
  cairo_set_antialias(cr, CAIRO_ANTIALIAS_GRAY);
+}
+
+static void cr_init_pango_font(void)
+{
+ int abs_px = WpeXInfo.font_height;
+ PangoRectangle logical;
 
  pg_layout = pango_cairo_create_layout(cr);
  pg_font = pango_font_description_from_string("monospace");
 
- /* Shrink font until layout fits within Xft cell grid. */
- { int abs_px = WpeXInfo.font_height;
-   PangoRectangle logical;
-   for (;;)
-   {
-    pango_font_description_set_absolute_size(pg_font,
-      abs_px * PANGO_SCALE);
-    pango_layout_set_font_description(pg_layout, pg_font);
-    pango_layout_set_text(pg_layout, "M", 1);
-    pango_layout_get_pixel_extents(pg_layout, NULL, &logical);
-    if (logical.height <= WpeXInfo.font_height
-        && logical.width <= WpeXInfo.font_width)
-     break;
-    abs_px--;
-    if (abs_px < 4) break;
-   }
+ for (; abs_px > 4; abs_px--)
+ {
+  pango_font_description_set_absolute_size(pg_font,
+    abs_px * PANGO_SCALE);
+  pango_layout_set_font_description(pg_layout, pg_font);
+  pango_layout_set_text(pg_layout, "M", 1);
+  pango_layout_get_pixel_extents(pg_layout, NULL, &logical);
+  if (logical.height <= WpeXInfo.font_height
+      && logical.width <= WpeXInfo.font_width)
+   break;
+ }
+}
+
+static void cr_init_ft_font(void)
+{
+ FT_Face ft = XftLockFace(WpeXInfo.xftfont);
+ cairo_matrix_t font_mat, ctm;
+ cairo_font_options_t *opts;
+ cairo_text_extents_t ext;
+ double sz;
+
+ if (!ft) return;
+
+ cr_ft_face = cairo_ft_font_face_create_for_ft_face(ft, 0);
+ cairo_matrix_init_identity(&ctm);
+ opts = cairo_font_options_create();
+ cairo_font_options_set_antialias(opts, CAIRO_ANTIALIAS_GRAY);
+
+ for (sz = WpeXInfo.font_height; sz > 4; sz -= 0.5)
+ {
+  cairo_matrix_init_scale(&font_mat, sz, sz);
+  if (cr_scaled)
+   cairo_scaled_font_destroy(cr_scaled);
+  cr_scaled = cairo_scaled_font_create(cr_ft_face,
+    &font_mat, &ctm, opts);
+  cairo_scaled_font_text_extents(cr_scaled, "M", &ext);
+  if (ext.x_advance <= WpeXInfo.font_width
+      && ext.height <= WpeXInfo.font_height)
+   break;
  }
 
- pg_ctx = pango_layout_get_context(pg_layout);
- metrics = pango_context_get_metrics(pg_ctx, pg_font, NULL);
+ cairo_font_options_destroy(opts);
+ XftUnlockFace(WpeXInfo.xftfont);
+}
+
+static void cr_dump_font_metrics(void)
+{
+ FILE *dbg = fopen(
+   "/home/mendezr/development/debian/xwpe-dev/tmp/font-metrics-debug.txt",
+   "w");
+ if (!dbg) return;
 
  { PangoRectangle logical;
-   int pg_w, pg_h;
-   FILE *dbg;
-
    pango_layout_set_text(pg_layout, "M", 1);
    pango_layout_get_pixel_extents(pg_layout, NULL, &logical);
-   pg_w = logical.width;
-   pg_h = logical.height;
-
-   dbg = fopen("/home/mendezr/development/debian/xwpe-dev/tmp/font-metrics-debug.txt", "w");
-   if (dbg)
-   {
-    fprintf(dbg, "=== Font Metrics (fitted) ===\n");
-    fprintf(dbg, "Xft cell:  w=%d h=%d asc=%d desc=%d\n",
-      WpeXInfo.font_width, WpeXInfo.font_height,
-      WpeXInfo.xftfont->ascent, WpeXInfo.xftfont->descent);
-    fprintf(dbg, "Pango 'M': w=%d h=%d\n", pg_w, pg_h);
-    fprintf(dbg, "Delta:     w=%+d h=%+d\n",
-      pg_w - WpeXInfo.font_width, pg_h - WpeXInfo.font_height);
-    fclose(dbg);
-   }
+   fprintf(dbg, "=== Font Metrics (fitted) ===\n");
+   fprintf(dbg, "Xft cell:  w=%d h=%d asc=%d desc=%d\n",
+     WpeXInfo.font_width, WpeXInfo.font_height,
+     WpeXInfo.xftfont->ascent, WpeXInfo.xftfont->descent);
+   fprintf(dbg, "Pango 'M': w=%d h=%d\n",
+     logical.width, logical.height);
+   fprintf(dbg, "Delta:     w=%+d h=%+d\n",
+     logical.width - WpeXInfo.font_width,
+     logical.height - WpeXInfo.font_height);
  }
+ if (cr_scaled)
+ {
+  cairo_text_extents_t ext;
+  cairo_scaled_font_text_extents(cr_scaled, "M", &ext);
+  fprintf(dbg, "cairo_ft:  adv=%.1f h=%.1f\n",
+    ext.x_advance, ext.height);
+ }
+ fclose(dbg);
+}
 
- WpeRender.font_width  = WpeXInfo.font_width;
- WpeRender.font_height = WpeXInfo.font_height;
- WpeRender.font_ascent = pango_font_metrics_get_ascent(metrics)
-                         / PANGO_SCALE;
-
- pango_font_metrics_unref(metrics);
-
+static void cr_set_render_backend(void)
+{
  WpeRender.draw_rect   = cr_draw_rect;
  WpeRender.draw_text   = cr_draw_text;
  WpeRender.draw_line   = cr_draw_line;
@@ -302,7 +352,32 @@ int wpe_render_cairo_init(void)
  WpeRender.flush_all   = cr_flush_all;
  WpeRender.resize      = cr_resize;
  WpeRender.cleanup     = cr_cleanup;
+}
 
+int wpe_render_cairo_init(void)
+{
+#ifndef NO_XWINDOWS
+ extern int MAXSLNS, MAXSCOL;
+ PangoContext *pg_ctx;
+ PangoFontMetrics *metrics;
+
+ cairo_init_colors();
+ cr_init_surface(WpeXInfo.font_width * MAXSCOL,
+   WpeXInfo.font_height * MAXSLNS);
+ cr_init_pango_font();
+ cr_init_ft_font();
+ cr_dump_font_metrics();
+
+ pg_ctx = pango_layout_get_context(pg_layout);
+ metrics = pango_context_get_metrics(pg_ctx, pg_font, NULL);
+
+ WpeRender.font_width  = WpeXInfo.font_width;
+ WpeRender.font_height = WpeXInfo.font_height;
+ WpeRender.font_ascent = pango_font_metrics_get_ascent(metrics)
+                         / PANGO_SCALE;
+ pango_font_metrics_unref(metrics);
+
+ cr_set_render_backend();
  return 0;
 #else
  return -1;
