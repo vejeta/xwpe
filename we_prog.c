@@ -412,8 +412,6 @@ int e_comp(FENSTER *f)
   e_save(cn->f[i]);
  f = cn->f[i];
  e_switch_window(cn->edt[i], cn->f[cn->mxedt]);
- if (e_new_message(f))
-  return(WPE_ESC);
  argc = e_make_arg(&arg, e_s_prog.comp_str);
  if (!(e_s_prog.comp_sw & 1))
  {
@@ -464,6 +462,12 @@ int e_comp(FENSTER *f)
  if ((stat(ostr, obuf) || obuf->st_mtime < cbuf->st_mtime))
 #endif
  {
+  if (e_new_message(f))
+  {
+   e_sys_end();
+   e_free_arg(arg, argc);
+   return(WPE_ESC);
+  }
   remove(ostr);
   if (!e_p_mess_win("Compiling (press any key)", argc, arg, &pic, f) &&
     (file = e_exec_inf(f, arg, argc)) == 0)
