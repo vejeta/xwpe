@@ -661,11 +661,6 @@ int e_edt_mouse(int c, FENSTER *f)
   else if (e_mouse.x == f->e.x && e_mouse.y == f->e.y) e_eck_mouse(f, 3);
   else if (e_mouse.x == f->a.x && e_mouse.y == f->e.y) e_eck_mouse(f, 4);
   else if (e_mouse.y == f->a.y) e_eck_mouse(f, 0);
-  else if (e_mouse.x == f->a.x && e_mouse.y == f->a.y+2) ret = f->ed->edopt & ED_CUA_STYLE ? AF3 : F4;
-  else if (e_mouse.x == f->a.x && e_mouse.y == f->a.y+4) ret = f->ed->edopt & ED_CUA_STYLE ? CF3 : AF4;
-  else if (e_mouse.x == f->a.x && e_mouse.y == f->a.y+6) ret = f->ed->edopt & ED_CUA_STYLE ? F3 : CF4;
-  else if (f->ins != 8 && e_mouse.x == f->a.x &&
-    e_mouse.y == f->a.y+8) ret = f->ed->edopt & ED_CUA_STYLE ? AF2 : F2;
   else if (e_mouse.y == f->e.y && e_mouse.x > f->a.x + 4 &&
     e_mouse.x < f->a.x + 14) ret = AltG;
   else if (e_mouse.y == f->e.y && e_mouse.x == f->a.x + 15 && f->ins != 8)

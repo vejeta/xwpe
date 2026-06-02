@@ -285,6 +285,7 @@ static char e_x_map_char(int sc);
 static int e_x_map_char_utf8(int sc, char *buf);
 static int e_x_wchar_to_utf8(int wc, char *buf);
 static XftFont *e_xft_fallback_font(int codepoint);
+static void e_xft_draw_acs(int sc, int px, int py, int fg_idx);
 #endif
 
 int fk_show_cursor()
@@ -329,19 +330,12 @@ int fk_show_cursor()
       font, px, py + WpeXInfo.xftfont->ascent,
       (FcChar8 *)u8, u8len);
    }
-   else if (oc >= 0 && oc <= 12)
-   {
-    char u8box[6];
-    int u8len = e_x_map_char_utf8(oc, u8box);
-    if (u8box[0] != ' ' || u8len > 1)
-     XftDrawStringUtf8(WpeXInfo.xftdraw, &WpeXInfo.xftcolors[fg_idx],
-       WpeXInfo.xftfont, px, py + WpeXInfo.xftfont->ascent,
-       (FcChar8 *)u8box, u8len);
-   }
+   else if (oc >= 1 && oc <= 12)
+    e_xft_draw_acs(oc, px, py, fg_idx);
    XCopyArea(WpeXInfo.display, WpeXInfo.backbuf, WpeXInfo.window,
      WpeXInfo.gc, px, py, WpeXInfo.font_width * ocw, WpeXInfo.font_height,
      px, py);
-#ifdef NEWSTYLE
+#if defined(NEWSTYLE) && !defined(HAVE_XFT)
    { int _n = old_cursor_y * MAXSCOL + old_cursor_x;
      e_print_xrect(old_cursor_x, old_cursor_y, _n);
 #ifndef NOXCACHE
@@ -382,15 +376,8 @@ int fk_show_cursor()
       font, px, py + WpeXInfo.xftfont->ascent,
       (FcChar8 *)u8, u8len);
    }
-   else if (cc >= 0 && cc <= 12)
-   {
-    char u8box[6];
-    int u8len = e_x_map_char_utf8(cc, u8box);
-    if (u8box[0] != ' ' || u8len > 1)
-     XftDrawStringUtf8(WpeXInfo.xftdraw, &WpeXInfo.xftcolors[fg_idx],
-       WpeXInfo.xftfont, px, py + WpeXInfo.xftfont->ascent,
-       (FcChar8 *)u8box, u8len);
-   }
+   else if (cc >= 1 && cc <= 12)
+    e_xft_draw_acs(cc, px, py, fg_idx);
    XCopyArea(WpeXInfo.display, WpeXInfo.backbuf, WpeXInfo.window,
      WpeXInfo.gc, px, py, WpeXInfo.font_width * ccw, WpeXInfo.font_height,
      px, py);
@@ -633,6 +620,76 @@ static int e_x_wchar_to_utf8(int wc, char *buf)
  return 1;
 }
 
+static void e_xft_draw_hline(int px, int py, int fg_idx)
+{
+ int fw = WpeXInfo.font_width, fh = WpeXInfo.font_height;
+ int lw = fw > 8 ? 2 : 1;
+ XftDrawRect(WpeXInfo.xftdraw, &WpeXInfo.xftcolors[fg_idx],
+   px, py + fh/2, fw, lw);
+}
+
+static void e_xft_draw_vline(int px, int py, int fg_idx)
+{
+ int fw = WpeXInfo.font_width, fh = WpeXInfo.font_height;
+ int lw = fw > 8 ? 2 : 1;
+ XftDrawRect(WpeXInfo.xftdraw, &WpeXInfo.xftcolors[fg_idx],
+   px + fw/2, py, lw, fh);
+}
+
+static void e_xft_draw_corner(int px, int py, int fg_idx, int right, int bottom)
+{
+ int fw = WpeXInfo.font_width, fh = WpeXInfo.font_height;
+ int lw = fw > 8 ? 2 : 1;
+ int mx = px + fw/2, my = py + fh/2;
+ int hx = right ? px : mx, hw = right ? fw/2 + lw : fw - fw/2;
+ int vy = bottom ? py : my, vh = bottom ? fh/2 + lw : fh - fh/2;
+ XftDrawRect(WpeXInfo.xftdraw, &WpeXInfo.xftcolors[fg_idx],
+   hx, my, hw, lw);
+ XftDrawRect(WpeXInfo.xftdraw, &WpeXInfo.xftcolors[fg_idx],
+   mx, vy, lw, vh);
+}
+
+static void e_xft_draw_scrollbar_track(int px, int py, int fg_idx)
+{
+ int fw = WpeXInfo.font_width, fh = WpeXInfo.font_height;
+ int tx, ty;
+ for (ty = py; ty < py + fh; ty += 2)
+  for (tx = px; tx < px + fw; tx += 2)
+   XftDrawRect(WpeXInfo.xftdraw, &WpeXInfo.xftcolors[fg_idx],
+     tx, ty, 1, 1);
+}
+
+static void e_xft_draw_scrollbar_thumb(int px, int py, int fg_idx)
+{
+ int fw = WpeXInfo.font_width, fh = WpeXInfo.font_height;
+ int m = fw > 8 ? 2 : 1;
+ XftDrawRect(WpeXInfo.xftdraw, &WpeXInfo.xftcolors[fg_idx],
+   px + m, py + m, fw - 2*m, fh - 2*m);
+}
+
+/**
+ * e_xft_draw_acs - Draw an ACS (box-drawing/scrollbar) character as pixels.
+ * @sc:     ACS index (1-12).
+ * @px, py: Pixel position of the cell.
+ * @fg_idx: Foreground color index.
+ */
+static void e_xft_draw_acs(int sc, int px, int py, int fg_idx)
+{
+ switch (sc)
+ {
+  case 1:  e_xft_draw_corner(px, py, fg_idx, 0, 0); break;
+  case 2:  e_xft_draw_corner(px, py, fg_idx, 1, 0); break;
+  case 3:  e_xft_draw_corner(px, py, fg_idx, 0, 1); break;
+  case 4:  e_xft_draw_corner(px, py, fg_idx, 1, 1); break;
+  case 5:  e_xft_draw_hline(px, py, fg_idx); break;
+  case 6: case 8: case 9:
+           e_xft_draw_vline(px, py, fg_idx); break;
+  case 7: case 10:
+           e_xft_draw_scrollbar_track(px, py, fg_idx); break;
+  case 11: e_xft_draw_scrollbar_thumb(px, py, fg_idx); break;
+ }
+}
+
 /**
  * e_xft_fallback_font - Find a font for a character not in the main font.
  * @rune: The Unicode code point to find a font for.
@@ -794,22 +851,9 @@ int e_x_refresh()
          font, px, py + WpeXInfo.xftfont->ascent,
          (FcChar8 *)u8, u8len);
       }
-      else if (sc >= 0 && sc <= 12)
+      else if (sc >= 1 && sc <= 12)
       {
-       char u8box[6];
-       int u8len = e_x_map_char_utf8(sc, u8box);
-       if (u8box[0] != ' ' || u8len > 1)
-       {
-        XftFont *bfont = WpeXInfo.xftfont;
-        int cp = (sc >= 0 && sc <= 12) ?
-          (int[]){' ',0x250C,0x2510,0x2514,0x2518,0x2500,0x2502,
-                  0x2591,0x2502,0x2502,0x2591,0x2588,' '}[sc] : sc;
-        if (!XftCharExists(WpeXInfo.display, bfont, cp))
-         bfont = e_xft_fallback_font(cp);
-        XftDrawStringUtf8(WpeXInfo.xftdraw, &WpeXInfo.xftcolors[fg_idx],
-          bfont, px, py + WpeXInfo.xftfont->ascent,
-          (FcChar8 *)u8box, u8len);
-       }
+       e_xft_draw_acs(sc, px, py, fg_idx);
       }
 
       altschirm[_n] = schirm[_n];
