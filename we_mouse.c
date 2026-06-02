@@ -460,8 +460,7 @@ static void e_scroll_render_h(FENSTER *f, int new_bx)
 {
  f->s->c.x = new_bx;
  e_schirm(f, 0);
- fk_locate(f->a.x + f->b->cl - f->s->c.x + 1,
-   f->a.y + f->b->b.y - f->s->c.y + 1);
+ e_cursor_pos_only(f);
  e_refresh();
 }
 
@@ -549,15 +548,14 @@ static void e_scroll_drag_end_cursor(FENSTER *f)
  int vp_right = vp_left + (f->e.x - f->a.x - 2);
  int vp_top = f->s->c.y;
  int vp_bottom = vp_top + (f->e.y - f->a.y - 2);
- int cursor_col = f->b->b.x;
- int cursor_line = f->b->b.y;
 
- if (cursor_col < vp_left || cursor_col > vp_right)
+ if (f->b->b.x < vp_left || f->b->b.x > vp_right)
   f->b->b.x = vp_left;
- if (cursor_line < vp_top || cursor_line > vp_bottom)
+ if (f->b->b.y < vp_top || f->b->b.y > vp_bottom)
   f->b->b.y = (vp_top + vp_bottom) / 2;
 
- e_cursor(f, 1);
+ e_cursor_pos_only(f);
+ e_schirm(f, 1);
  e_refresh();
 }
 
@@ -595,8 +593,7 @@ void e_scroll_drag_v(FENSTER *f)
 
   f->s->c.y = new_by;
   e_schirm(f, 0);
-  fk_locate(f->a.x + f->b->cl - f->s->c.x + 1,
-    f->a.y + f->b->b.y - f->s->c.y + 1);
+  e_cursor_pos_only(f);
   e_refresh();
   old_by = new_by;
  }

@@ -419,6 +419,7 @@ int e_ctrl_o(FENSTER *f);
 int e_tst_dfkt(FENSTER *f, int c);
 int e_blk(int anz, int xa, int ya, int col);
 int e_car_ret(BUFFER *b, SCHIRM *s);
+void e_cursor_pos_only(FENSTER *f);
 void e_cursor(FENSTER *f, int sw);
 int e_del_line(int yd, BUFFER *b, SCHIRM *s);
 int e_del_nchar(BUFFER *b, SCHIRM *s, int x, int y, int n);

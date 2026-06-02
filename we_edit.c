@@ -1544,6 +1544,62 @@ int e_car_ret(BUFFER *b, SCHIRM *s)
 }
 
 /*   cursor placement */
+static int e_cursor_visual_adjust(FENSTER *f)
+{
+ BUFFER *b = f->b;
+ int i, j;
+
+ for (i = j = 0; i < b->b.x; i++)
+ {
+  unsigned char uc = (unsigned char) *(b->bf[b->b.y].s + i);
+  if (uc == WPE_TAB)
+   j += (f->ed->tabn - ((j + i) % f->ed->tabn) - 1);
+  else if (uc < ' ') j++;
+  else if (uc >= 0xC0 && uc < 0xFE)
+  {
+   wchar_t wc = 0;
+   mbstate_t mbs = {0};
+   int nb = mbrtowc(&wc, b->bf[b->b.y].s + i, b->bf[b->b.y].len - i, &mbs);
+   if (nb > 1)
+   {
+    int cw = wcwidth(wc);
+    if (cw < 1) cw = 1;
+    j += cw - nb;
+    i += nb - 1;
+   }
+  }
+ }
+ return j;
+}
+
+static int e_cursor_in_viewport(FENSTER *f, int sx, int sy)
+{
+ return sx > f->a.x && sx < f->e.x && sy > f->a.y && sy < f->e.y;
+}
+
+void e_cursor_pos_only(FENSTER *f)
+{
+ BUFFER *b = f->b;
+ SCHIRM *s = f->s;
+ int j, sx, sy;
+ extern int cur_on;
+
+ if (!DTMD_ISTEXT(f->dtmd)) return;
+ if (b->b.y < 0) b->b.y = 0;
+ if (b->b.y > b->mxlines - 1) b->b.y = b->mxlines - 1;
+ if (b->b.x < 0) b->b.x = 0;
+ if (b->mxlines == 0) b->b.x = 0;
+ else if (b->b.x > b->bf[b->b.y].len) b->b.x = b->bf[b->b.y].len;
+
+ j = e_cursor_visual_adjust(f);
+ b->cl = b->b.x + j;
+ sx = f->a.x + b->b.x - s->c.x + j + 1;
+ sy = f->a.y + b->b.y - s->c.y + 1;
+
+ if (e_cursor_in_viewport(f, sx, sy))
+  fk_locate(sx, sy);
+}
+
 void e_cursor(FENSTER *f, int sw)
 {
  BUFFER *b = f->b;
