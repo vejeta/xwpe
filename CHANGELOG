@@ -15,8 +15,6 @@ Confirmed present:
      e_mk_brk_main).
 * Esc key may require multiple presses on Linux console (not yet
      verified on a real console; works correctly in terminal emulators).
-* Check headers doesn't handle comments and "ifndef" protection
-     (CHECKHEADER compile-time option, not verified).
 * Debugging leaks memory (location unknown since 2000).
 
 Cannot reproduce:
@@ -36,6 +34,15 @@ Bugs fixed in 1.6.x:
 * Add Item with no project open silently did nothing -- fixed (1.6.3).
 * Shift-Tab not detected in terminal emulators -- fixed (1.6.3).
 * Dialog colors illegible on modern terminals -- fixed (1.6.3).
+* Check headers ignores // comments, #if 0 blocks -- fixed (1.6.3).
+  Parser rewritten with named functions: e_chk_skip_whitespace_and_comments,
+  e_chk_track_conditional, e_chk_extract_include, e_chk_next_directive.
+  Unit test: tests/test_checkheader.c (10 cases, make check).
+* Compiler/linker output went to editor buffer instead of Messages
+  -- fixed (1.6.3).  e_p_exec now routes output to Messages via
+  e_find_or_create_messages.
+* Cursor jumped to Messages when nothing needed recompiling
+  -- fixed (1.6.3).  e_new_message moved inside compilation-needed block.
 
 
 Changes

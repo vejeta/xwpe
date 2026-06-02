@@ -218,6 +218,32 @@ not available, ncurses terminal mode is used (unchanged).
 | `we_opt.c` | Options dialogs |
 | `WeSyntax.c` | Syntax highlighting engine |
 
+## CHECKHEADER: automatic header dependency tracking
+
+Enabled by `#define CHECKHEADER` in `model.h`.  When the user presses
+F9, `e_check_header()` (we_prog.c) recursively follows `#include "..."`
+directives and checks if any header's mtime is newer than the object
+file.  If so, recompilation is triggered.
+
+The parser handles:
+- `/* ... */` block comments (multi-line)
+- `//` line comments
+- `#if 0` ... `#endif` blocks (skipped, including nested conditionals)
+- `#ifdef`/`#ifndef` blocks (followed conservatively -- no symbol table)
+
+Named functions:
+- `e_chk_skip_whitespace_and_comments` -- skip whitespace + both comment styles
+- `e_chk_track_conditional` -- #if/#ifdef/#ifndef/#else/#endif depth tracking
+- `e_chk_extract_include` -- extract path from `#include "..."`
+- `e_chk_next_directive` -- advance to next preprocessor directive
+- `e_chk_save_if_open` -- auto-save if the header is open in the editor
+
+Only `#include "..."` (quoted) includes are followed.  System includes
+(`#include <...>`) are ignored -- they are system headers whose
+timestamps are irrelevant for project recompilation.
+
+Unit test: `tests/test_checkheader.c` (10 cases), runs via `make check`.
+
 ## Debugger backend architecture
 
 Debugger type is `e_deb_type`: 0=gdb, 1=sdb, 2=dbx, 3=xdb, 4=jdb,
