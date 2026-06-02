@@ -408,6 +408,17 @@ int e_eingabe(ECNT *e)
    cc = c = e_getch();
 #endif
   }
+  if (c == WPE_SCROLL_UP || c == WPE_SCROLL_DOWN)
+  {
+   int delta = (c == WPE_SCROLL_UP) ? -3 : 3;
+   s->c.y += delta;
+   if (s->c.y < 0) s->c.y = 0;
+   if (s->c.y > b->mxlines - 1) s->c.y = b->mxlines - 1;
+   e_schirm(f, 0);
+   e_cursor_pos_only(f);
+   e_refresh();
+   continue;
+  }
   if ((c > 31 || (c == WPE_TAB && !(f->flg & 1)) ||
     (f->ins > 1 && f->ins != 8)) && c < 255)
   {
@@ -1598,6 +1609,18 @@ void e_cursor_pos_only(FENSTER *f)
 
  if (e_cursor_in_viewport(f, sx, sy))
   fk_locate(sx, sy);
+ else
+ {
+  int visible = f->e.y - f->a.y - 1;
+  b->b.y = s->c.y + visible / 2;
+  if (b->b.y >= b->mxlines) b->b.y = b->mxlines - 1;
+  if (b->b.y < 0) b->b.y = 0;
+  b->b.x = 0;
+  j = e_cursor_visual_adjust(f);
+  b->cl = b->b.x + j;
+  fk_locate(f->a.x + b->b.x - s->c.x + j + 1,
+    f->a.y + b->b.y - s->c.y + 1);
+ }
 }
 
 void e_cursor(FENSTER *f, int sw)

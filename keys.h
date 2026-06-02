@@ -154,3 +154,5 @@
 #define HBB CtrlO	/*  start highlight  */
 
 #define MBKEY -100
+#define WPE_SCROLL_UP   2000
+#define WPE_SCROLL_DOWN 2001

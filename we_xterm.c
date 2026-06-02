@@ -1352,6 +1352,10 @@ int e_x_getch()
     }
     break;
    case ButtonPress:
+    if (report.xbutton.button == 4)
+     return(WPE_SCROLL_UP);
+    if (report.xbutton.button == 5)
+     return(WPE_SCROLL_DOWN);
     key_b = report.xbutton.state;
     e_mouse.k = (key_b & ShiftMask) ? 3 : 0 +
       (key_b & ControlMask) ? 4 : 0 +
