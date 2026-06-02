@@ -242,9 +242,7 @@ int wpe_render_cairo_init(void)
  pg_layout = pango_cairo_create_layout(cr);
  pg_font = pango_font_description_from_string("monospace");
 
- /* Shrink font until layout fits within Xft cell grid.
-    absolute_size sets the EM-square, but Pango's actual height
-    (ascent+descent) is larger.  Iterate down from cell height. */
+ /* Shrink font until layout fits within Xft cell grid. */
  { int abs_px = WpeXInfo.font_height;
    PangoRectangle logical;
    for (;;)
@@ -380,16 +378,17 @@ static void cr_chrome_vscrollbar(FENSTER *f, int ci_bg, int ci_fg)
 
  thumb_h = track_h;
  thumb_y = track_top;
- if (f->b && f->b->mxlines > 1 && f->s)
+ if (f->b && f->b->mxlines > 1)
  {
   int visible = ey - ay - 1;
   int total = f->b->mxlines;
-  int pos = f->s->c.y;
+  int pos = f->b->b.y;
   if (total > visible && visible > 0)
   {
    thumb_h = (visible * track_h) / total;
    if (thumb_h < 10) thumb_h = 10;
    if (thumb_h > track_h) thumb_h = track_h;
+   if (pos > total - visible) pos = total - visible;
    thumb_y = track_top + ((pos * (track_h - thumb_h))
              / (total - visible));
   }
@@ -448,16 +447,17 @@ int wpe_chrome_hit_vthumb(int col, int row)
 
   thumb_h = track_h;
   thumb_y = track_top;
-  if (f->b && f->b->mxlines > 1 && f->s)
+  if (f->b && f->b->mxlines > 1)
   {
    int visible = ey - ay - 1;
    int total = f->b->mxlines;
-   int pos = f->s->c.y;
+   int pos = f->b->b.y;
    if (total > visible && visible > 0)
    {
     thumb_h = (visible * track_h) / total;
     if (thumb_h < 10) thumb_h = 10;
     if (thumb_h > track_h) thumb_h = track_h;
+    if (pos > total - visible) pos = total - visible;
     thumb_y = track_top + ((pos * (track_h - thumb_h))
               / (total - visible));
    }

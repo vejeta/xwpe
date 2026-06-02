@@ -305,9 +305,9 @@ int e_tast_sim(int c)
 
 void WpeSignalUnknown(int sig)
 {
-/*    psignal(sig, "Xwpe");   */
- printf("Xwpe: unexpected signal %d, exiting ...\n", sig);
- e_exit(1);
+ fprintf(stderr, "Xwpe: unexpected signal %d\n", sig);
+ signal(sig, SIG_DFL);
+ raise(sig);
 }
 
 void WpeSignalChild(int sig)

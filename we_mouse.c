@@ -475,7 +475,6 @@ void e_scroll_drag_v(FENSTER *f)
 
  XUngrabPointer(WpeXInfo.display, CurrentTime);
  cur_on = saved_cur_on;
- e_schirm(f, 0);
  e_cursor(f, 1);
  e_refresh();
 #endif

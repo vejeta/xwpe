@@ -788,6 +788,92 @@ static XftFont *e_xft_fallback_font(int rune)
 }
 #endif
 
+#ifdef HAVE_XFT
+static void e_x_refresh_xft(void)
+{
+ int i, j;
+ for (i = 0; i < MAXSLNS; i++)
+ for (j = 0; j < MAXSCOL; j++)
+ {
+  int sc = e_gt_char(j, i);
+  int sa = e_gt_col(j, i);
+  int _n = i * MAXSCOL + j;
+
+  if (schirm[_n].flags & CELL_WIDE_SPACER)
+  {
+   altschirm[_n] = schirm[_n];
+   continue;
+  }
+  if (sc != altschirm[_n].ch || sa != altschirm[_n].attr
+      || schirm[_n].flags != altschirm[_n].flags)
+  {
+   e_x_render_cell(sc, WpeXInfo.font_width * j,
+     WpeXInfo.font_height * i,
+     (schirm[_n].flags & CELL_WIDE) ? 2 : 1,
+     sa % 16, sa / 16);
+   altschirm[_n] = schirm[_n];
+  }
+ }
+ XCopyArea(WpeXInfo.display, WpeXInfo.backbuf, WpeXInfo.window,
+   WpeXInfo.gc, 0, 0,
+   WpeXInfo.font_width * MAXSCOL, WpeXInfo.font_height * MAXSLNS, 0, 0);
+}
+
+static void e_x_refresh_cairo(void)
+{
+ int i, j;
+ for (i = 0; i < MAXSLNS; i++)
+ for (j = 0; j < MAXSCOL; j++)
+ {
+  int sc, sa, _n = i * MAXSCOL + j;
+
+  if (schirm[_n].flags & CELL_WIDE_SPACER)
+  {
+   altschirm[_n] = schirm[_n];
+   continue;
+  }
+
+  sc = e_gt_char(j, i);
+  sa = e_gt_col(j, i);
+
+  if (sc != altschirm[_n].ch || sa != altschirm[_n].attr
+      || schirm[_n].flags != altschirm[_n].flags)
+  {
+   e_x_render_cell(sc, WpeXInfo.font_width * j,
+     WpeXInfo.font_height * i,
+     (schirm[_n].flags & CELL_WIDE) ? 2 : 1,
+     sa % 16, sa / 16);
+   altschirm[_n] = schirm[_n];
+  }
+ }
+ wpe_render_chrome();
+ WpeRender.flush_all();
+}
+
+static void e_x_refresh_cairo_full(void)
+{
+ int i, j;
+ for (i = 0; i < MAXSLNS; i++)
+ for (j = 0; j < MAXSCOL; j++)
+ {
+  int sc, sa, _n = i * MAXSCOL + j;
+
+  if (schirm[_n].flags & CELL_WIDE_SPACER)
+   continue;
+
+  sc = e_gt_char(j, i);
+  sa = e_gt_col(j, i);
+  e_x_render_cell(sc, WpeXInfo.font_width * j,
+    WpeXInfo.font_height * i,
+    (schirm[_n].flags & CELL_WIDE) ? 2 : 1,
+    sa % 16, sa / 16);
+  altschirm[_n] = schirm[_n];
+ }
+ wpe_render_chrome();
+ WpeRender.flush_all();
+}
+#endif
+
 int e_x_refresh()
 {
    int i, j, cur_tmp = cur_on;
@@ -807,54 +893,10 @@ int e_x_refresh()
 #ifdef HAVE_XFT
    if (WpeXInfo.xftfont)
    {
-    for (i = 0; i < MAXSLNS; i++)
-    for (j = 0; j < MAXSCOL; j++)
-    {
-     int sc = e_gt_char(j, i);
-     int sa = e_gt_col(j, i);
-     int _n = i * MAXSCOL + j;
-
-     if (schirm[_n].flags & CELL_WIDE_SPACER)
-     {
-      altschirm[_n] = schirm[_n];
-#ifdef NEWSTYLE
-      altextbyte[_n] = extbyte[_n];
-#endif
-      continue;
-     }
-
-     if (sc != altschirm[_n].ch || sa != altschirm[_n].attr
-         || schirm[_n].flags != altschirm[_n].flags
-#ifdef NEWSTYLE
-         || extbyte[_n] != altextbyte[_n]
-#endif
-        )
-     {
-      int fg_idx = sa % 16;
-      int bg_idx = sa / 16;
-      int px = WpeXInfo.font_width * j;
-      int py = WpeXInfo.font_height * i;
-      int cw = (schirm[_n].flags & CELL_WIDE) ? 2 : 1;
-
-      e_x_render_cell(sc, px, py, cw, fg_idx, bg_idx);
-
-      altschirm[_n] = schirm[_n];
-#ifdef NEWSTYLE
-      altextbyte[_n] = extbyte[_n];
-#endif
-     }
-    }
-#ifdef HAVE_CAIRO
     if (WpeRender.draw_rect)
-     wpe_render_chrome();
-#endif
-    if (WpeRender.flush_all)
-     WpeRender.flush_all();
+     e_x_refresh_cairo();
     else
-     XCopyArea(WpeXInfo.display, WpeXInfo.backbuf, WpeXInfo.window,
-       WpeXInfo.gc, 0, 0,
-       WpeXInfo.font_width * MAXSCOL, WpeXInfo.font_height * MAXSLNS,
-       0, 0);
+     e_x_refresh_xft();
    }
    else
 #endif /* HAVE_XFT */
