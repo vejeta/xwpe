@@ -142,6 +142,16 @@ static void e_d_pty_strip_cr(char *s, int len)
  s[w] = '\0';
 }
 
+static FENSTER *e_d_find_messages_window(void)
+{
+ int i;
+ ECNT *cn = WpeEditor;
+ for (i = cn->mxedt; i > 0; i--)
+  if (!strcmp(cn->f[i]->datnam, "Messages"))
+   return cn->f[i];
+ return NULL;
+}
+
 void e_d_pty_flush_to_messages(FENSTER *f)
 {
  int prev_len;
@@ -409,6 +419,20 @@ int e_d_line_read(int n, signed char *s, int max, int sw, int esw)
       fcntl(n, F_SETFL, kbdflgs & ~O_NONBLOCK);
       return(-1);
    }
+   { struct pollfd _pfd[2];
+     int _nfds = 1;
+     _pfd[0].fd = n;
+     _pfd[0].events = POLLIN;
+#ifndef NO_XWINDOWS
+     if (WpeIsXwin())
+     {
+      _pfd[1].fd = ConnectionNumber(WpeXInfo.display);
+      _pfd[1].events = POLLIN;
+      _nfds = 2;
+     }
+#endif
+     poll(_pfd, _nfds, 50);
+   }
    if(e_d_getchar() == D_CBREAK) return(-1);
   }
 /*	Read until no chars are left anymore
@@ -579,6 +603,22 @@ int e_d_getchar()
    }
    else
     return(c);
+  }
+  else if (e_d_pty_master >= 0)
+  {
+   write(e_d_pty_master, &c, 1);
+   { char _echo[2] = { c, '\0' };
+     FENSTER *_mf = e_d_find_messages_window();
+     if (_mf)
+     {
+      if (c == '\n' || c == '\r')
+       e_d_p_message("", _mf, 0);
+      else
+       e_d_p_message(_echo, _mf, 0);
+      e_schirm(_mf, 1);
+      e_refresh();
+     }
+   }
   }
   else
    write(rfildes[1], &c, 1);
@@ -2225,6 +2265,13 @@ int e_run_debug(FENSTER *f)
   {
    write(rfildes[1], "set confirm off\n", 16);
    if (e_d_dum_read() == -1) return(-1);
+   if (e_d_pty_master >= 0)
+   {
+    char _tty_cmd[160];
+    sprintf(_tty_cmd, "set inferior-tty %s\n", e_d_pty_slave_name);
+    write(rfildes[1], _tty_cmd, strlen(_tty_cmd));
+    if (e_d_dum_read() == -1) return(-1);
+   }
   }
   if (e_deb_type == 3)
   {
@@ -2320,9 +2367,9 @@ int e_deb_run(FENSTER *f)
    else if (e_d_pty_master >= 0 && e_deb_type == 0)
    {
     if (e_prog.arguments)
-     sprintf(eing, "r %s > %s\n", e_prog.arguments, e_d_pty_slave_name);
+     sprintf(eing, "r %s\n", e_prog.arguments);
     else
-     sprintf(eing, "r > %s\n", e_d_pty_slave_name);
+     strcpy(eing, "r\n");
    }
    else
    {

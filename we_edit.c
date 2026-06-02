@@ -13,6 +13,40 @@
 
 int e_undo_sw = 0, e_redo_sw = 0;
 
+#ifdef DEBUGGER
+static int e_debug_console_input(int c, FENSTER *f)
+{
+ extern int e_d_swtch, e_d_pty_master;
+ extern void e_d_pty_flush_to_messages(FENSTER *f);
+ char ch;
+
+ if (e_d_swtch < 3 || e_d_pty_master < 0)
+  return 0;
+ if (strcmp(f->datnam, "Messages") != 0)
+  return 0;
+ if (c == WPE_CR)
+ {
+  ch = '\n';
+  write(e_d_pty_master, &ch, 1);
+  e_d_pty_flush_to_messages(f);
+  return 1;
+ }
+ if (c >= 32 && c < 255)
+ {
+  ch = c;
+  write(e_d_pty_master, &ch, 1);
+  return 1;
+ }
+ if (c == WPE_DC)
+ {
+  ch = '\b';
+  write(e_d_pty_master, &ch, 1);
+  return 1;
+ }
+ return 0;
+}
+#endif
+
 char *e_make_postf();
 int e_del_a_ind();
 int e_tab_a_ind();
@@ -419,6 +453,13 @@ int e_eingabe(ECNT *e)
    e_refresh();
    continue;
   }
+#ifdef DEBUGGER
+  if (e_debug_console_input(c, f))
+  {
+   e_schirm(f, 1);
+   continue;
+  }
+#endif
   if ((c > 31 || (c == WPE_TAB && !(f->flg & 1)) ||
     (f->ins > 1 && f->ins != 8)) && c < 255)
   {
