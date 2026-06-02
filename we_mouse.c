@@ -121,7 +121,7 @@ static int e_hit_close_button(FENSTER *f)
  extern struct mouse e_mouse;
  if (e_mouse.y != f->a.y) return 0;
  if (WpeIsXwin())
-  return e_mouse.x == f->e.x - 1;
+  return e_mouse.x == f->e.x - 2;
  return e_mouse.x == f->a.x + 3;
 }
 
@@ -130,7 +130,7 @@ static int e_hit_maximize_button(FENSTER *f)
  extern struct mouse e_mouse;
  if (e_mouse.y != f->a.y) return 0;
  if (WpeIsXwin())
-  return e_mouse.x == f->e.x - 3;
+  return e_mouse.x == f->e.x - 4;
  return e_mouse.x == f->e.x - 3;
 }
 
@@ -737,6 +737,7 @@ int e_lst_mouse(x, y, n, sw, max, nf)
 }
 
 /*   mouse window resizer control */
+
 void e_eck_mouse(FENSTER *f, int sw)
 {
  int g[4];  /*  = { 3, 1, 0, 0 };  */
@@ -824,9 +825,6 @@ void e_eck_mouse(FENSTER *f, int sw)
    }
    g[0] = 2;
    fk_mouse(g);
-   f->pic = e_ed_kst(f, f->pic, 0);
-   if (f->pic == NULL)
-    e_error(e_msg[ERR_LOWMEM], 1, f->fb);
    if (f->dtmd == DTMD_FILEDROPDOWN)
    {
     FLWND *fw = (FLWND*) f->b;
@@ -835,11 +833,9 @@ void e_eck_mouse(FENSTER *f, int sw)
     fw->ya = f->a.y+1;
     fw->ye = f->e.y;
    }
+   e_move_window_recompose(f);
    g[0] = 1;
    fk_mouse(g);
-   e_cursor(f, 0);
-   e_schirm(f, 0);
-   e_refresh();
   }
   g[0] = 3;
   fk_mouse(g);

@@ -361,13 +361,6 @@ int fk_show_cursor()
    int ocw = (schirm[_on].flags & CELL_WIDE) ? 2 : 1;
 
    e_x_render_cell(oc, px, py, ocw, fg_idx, bg_idx);
-   if (WpeRender.flush)
-    WpeRender.flush(px, py,
-      WpeXInfo.font_width * ocw, WpeXInfo.font_height);
-   else
-    XCopyArea(WpeXInfo.display, WpeXInfo.backbuf, WpeXInfo.window,
-      WpeXInfo.gc, px, py,
-      WpeXInfo.font_width * ocw, WpeXInfo.font_height, px, py);
   }
   {
    int cc = e_gt_char(cur_x, cur_y);
@@ -380,13 +373,6 @@ int fk_show_cursor()
    int ccw = (schirm[_cn].flags & CELL_WIDE) ? 2 : 1;
 
    e_x_render_cell(cc, px, py, ccw, fg_idx, bg_idx);
-   if (WpeRender.flush)
-    WpeRender.flush(px, py,
-      WpeXInfo.font_width * ccw, WpeXInfo.font_height);
-   else
-    XCopyArea(WpeXInfo.display, WpeXInfo.backbuf, WpeXInfo.window,
-      WpeXInfo.gc, px, py,
-      WpeXInfo.font_width * ccw, WpeXInfo.font_height, px, py);
   }
  }
  else
@@ -526,8 +512,8 @@ int e_X_sw_color()
  fb->fz = e_n_clr(A_Standout);
  fb->fs = e_n_clr(A_Standout);
  fb->of = e_n_clr(A_Standout);
- fb->df = e_n_clr(A_Normal);
- fb->dc = 0x02;
+ fb->df = e_s_x_clr(7, 4);
+ fb->dc = 0xB1;
 #ifdef DEBUGGER
  fb->db = e_n_clr(A_Standout);
  fb->dy = e_n_clr(A_Standout);
@@ -847,7 +833,6 @@ static void e_x_refresh_cairo(void)
   }
  }
  wpe_render_chrome();
- WpeRender.flush_all();
 }
 
 static void e_x_refresh_cairo_full(void)
@@ -870,7 +855,6 @@ static void e_x_refresh_cairo_full(void)
   altschirm[_n] = schirm[_n];
  }
  wpe_render_chrome();
- WpeRender.flush_all();
 }
 #endif
 
@@ -967,6 +951,8 @@ int e_x_refresh()
 
    fk_cursor(cur_tmp);
    fk_show_cursor();
+   if (WpeRender.flush_all)
+    WpeRender.flush_all();
    XFlush(WpeXInfo.display);
    return(0);
 }
@@ -1486,18 +1472,8 @@ void e_x_clear_area(int xa, int ya, int w, int h)
   int py = WpeXInfo.font_height * ya;
   int pw = WpeXInfo.font_width * w;
   int ph = WpeXInfo.font_height * h;
-  if (WpeRender.clear_rect)
-  {
-   WpeRender.clear_rect(px, py, pw, ph, 0);
-   WpeRender.flush(px, py, pw, ph);
-  }
-  else
-  {
-   XftDrawRect(WpeXInfo.xftdraw, &WpeXInfo.xftcolors[0],
-     px, py, pw, ph);
-   XCopyArea(WpeXInfo.display, WpeXInfo.backbuf, WpeXInfo.window,
-     WpeXInfo.gc, px, py, pw, ph, px, py);
-  }
+  /* Disabled: Pixmap clearing causes visible flash during window move.
+     The altschirm invalidation in e_invalidate_area is sufficient. */
  }
  else
 #endif

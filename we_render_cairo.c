@@ -198,6 +198,16 @@ static void cr_flush_all(void)
 #endif
 }
 
+static void cr_blit(int sx, int sy, int dx, int dy, int w, int h)
+{
+#ifndef NO_XWINDOWS
+ cairo_surface_flush(cr_surface);
+ XCopyArea(WpeXInfo.display, WpeXInfo.backbuf, WpeXInfo.backbuf,
+   WpeXInfo.gc, sx, sy, w, h, dx, dy);
+ cairo_surface_mark_dirty_rectangle(cr_surface, dx, dy, w, h);
+#endif
+}
+
 static void cr_resize(int pixel_w, int pixel_h)
 {
 #ifndef NO_XWINDOWS
@@ -409,6 +419,7 @@ static void cr_set_render_backend(void)
  WpeRender.draw_acs    = cr_draw_acs;
  WpeRender.flush       = cr_flush;
  WpeRender.flush_all   = cr_flush_all;
+ WpeRender.blit        = cr_blit;
  WpeRender.resize      = cr_resize;
  WpeRender.cleanup     = cr_cleanup;
 }

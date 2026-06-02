@@ -22,6 +22,7 @@ typedef struct WpeRenderBackend {
  void (*draw_acs)(int sc, int px, int py, int fg_idx, int bg_idx);
  void (*flush)(int x, int y, int w, int h);
  void (*flush_all)(void);
+ void (*blit)(int sx, int sy, int dx, int dy, int w, int h);
  void (*resize)(int pixel_w, int pixel_h);
  void (*cleanup)(void);
 

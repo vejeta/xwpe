@@ -137,6 +137,46 @@ Four techniques combined:
 - `_NET_WM_SYNC_REQUEST` protocol -- WM waits for app to finish
   painting before showing the resized window
 
+### Window move: compositor-style recomposition
+
+Kruse's window manager is a software compositor.  The correct screen
+is the result of layering: desktop -> windows bottom-to-top -> borders
+-> content.  The original `e_schirm` rebuilds this entire stack via
+`e_abs_refr` (memset altschirm) each frame -- correct but slow.
+
+The original `e_ed_kst` -> `e_change_pic` -> `e_close_view` cycle
+caused TWO flushes per drag step: one showing the desktop with the
+window removed, one showing the window at the new position.  The first
+flush was the visible black flash.
+
+`e_move_window_recompose` (we_wind.c) replaces this with a single-pass
+compositor:
+
+1. `e_restore_pic_to_schirm` -- restore saved background to schirm
+2. `e_refresh_area` -- invalidate old rectangle in altschirm
+3. `e_open_view` -- save new background from schirm
+4. `e_ed_rahmen` -- draw borders at new position
+5. `e_render_window_content` -- type-dispatched content (editor, file
+   manager, data dialog, file dropdown)
+6. `e_refresh_area` -- invalidate new rectangle
+7. `e_cursor_pos_only` -- position cursor
+8. `e_refresh` -- **single flush** (content + chrome + cursor)
+
+No intermediate refreshes.  The Pixmap is fully composed before one
+XCopyArea copies it to the window.  Same pattern for Wayland:
+`wl_surface.commit` replaces XCopyArea.
+
+### Single-flush architecture
+
+`fk_show_cursor` renders cursor cells to the Pixmap but does NOT flush
+them individually.  The single `WpeRender.flush_all()` in `e_x_refresh`
+after `fk_show_cursor` copies the complete frame.
+
+`WpeRender.blit` (cr_blit in we_render_cairo.c) provides Pixmap-to-Pixmap
+copy within the backbuffer via `XCopyArea(pixmap, pixmap)`.  Not yet
+used for window move but available as an optimization for large
+resolutions (4K, 12000+ cells).
+
 ### Chrome post-pass
 
 After the cell loop, `wpe_render_chrome()` draws modern scrollbar

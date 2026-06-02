@@ -49,15 +49,13 @@ void e_invalidate_area(int xa, int ya, int xe, int ye)
     extbyte[j * MAXSCOL + i] = 0;
     if (altextbyte) altextbyte[j * MAXSCOL + i] = 0;
    }
-  /* Always clear the X11 pixel area to remove any XDrawLine segments.
-     Extend by 1 cell on each side to catch border lines drawn on
-     shared cell edges. */
+  /* Extend invalidation by 1 cell to catch border edges.
+     No Pixmap clearing -- the Pixmap keeps old content until
+     e_x_refresh redraws, preventing visible black flash. */
   { int cxa = xa > 0 ? xa - 1 : 0;
     int cya = ya > 0 ? ya - 1 : 0;
     int cxe = xe + 1 < MAXSCOL ? xe + 2 : MAXSCOL;
     int cye = ye + 1 < MAXSLNS ? ye + 2 : MAXSLNS;
-    e_x_clear_area(cxa, cya, cxe - cxa, cye - cya);
-    /* Also invalidate the extra cells so they get redrawn */
     for (j = cya; j < cye; ++j)
      for (i = cxa; i < cxe; ++i)
       altschirm[j * MAXSCOL + i].ch = -1;
@@ -339,9 +337,9 @@ void e_ed_rahmen(FENSTER *f, int sw)
    e_std_rahmen(f->a.x, f->a.y, f->e.x, f->e.y, header, sw, f->fb->nr.fb,
      f->fb->ne.fb);
   if (f->winnum < 10 && f->winnum >= 0)
-   e_pr_char(f->e.x-6, f->a.y, '0' + f->winnum, f->fb->nr.fb);
+   e_pr_char(f->e.x-7, f->a.y, '0' + f->winnum, f->fb->nr.fb);
   else if (f->winnum >= 0)
-   e_pr_char(f->e.x-6, f->a.y, 'A' - 10 + f->winnum, f->fb->nr.fb);
+   e_pr_char(f->e.x-7, f->a.y, 'A' - 10 + f->winnum, f->fb->nr.fb);
   if (sw > 0 && (f->dtmd == DTMD_FILEMANAGER || f->dtmd == DTMD_DATA))
   {
    e_draw_window_buttons(f);
@@ -385,9 +383,92 @@ void e_ed_rahmen(FENSTER *f, int sw)
   e_pr_uul(f->fb);
  }
  if (f->winnum < 10 && f->winnum >= 0)
-  e_pr_char(f->e.x-6, f->a.y, '0' + f->winnum, f->fb->er.fb);
+  e_pr_char(f->e.x-7, f->a.y, '0' + f->winnum, f->fb->er.fb);
  else if (f->winnum >= 0)
-  e_pr_char(f->e.x-6, f->a.y, 'A' - 10 + f->winnum, f->fb->er.fb);
+  e_pr_char(f->e.x-7, f->a.y, 'A' - 10 + f->winnum, f->fb->er.fb);
+}
+
+static void e_restore_pic_to_schirm(PIC *pic)
+{
+ int i, j;
+ int pw;
+ SCREENCELL *buf;
+
+ if (pic == NULL || pic->buf == NULL)
+  return;
+ pw = pic->e.x - pic->a.x + 1;
+ buf = (SCREENCELL *)pic->buf;
+ for (j = pic->a.y; j <= pic->e.y; j++)
+  for (i = pic->a.x; i <= pic->e.x; i++)
+   schirm[j * MAXSCOL + i] = buf[(j - pic->a.y) * pw + (i - pic->a.x)];
+}
+
+static void e_render_window_content(FENSTER *f)
+{
+ int j;
+
+ if (f->dtmd == DTMD_FILEMANAGER)
+ {
+  WpeDrawFileManager(f);
+  return;
+ }
+ if (f->dtmd == DTMD_DATA)
+ {
+  e_data_schirm(f);
+  return;
+ }
+ if (f->dtmd == DTMD_FILEDROPDOWN)
+ {
+  e_pr_file_window((FLWND*)f->b, 1, 0, f->fb->er.fb, f->fb->ez.fb,
+    f->fb->frft.fb);
+  return;
+ }
+ if (NUM_LINES_OFF_SCREEN_TOP < 0)
+  NUM_LINES_OFF_SCREEN_TOP = 0;
+#ifdef PROG
+ if (f->c_sw)
+  for (j = NUM_LINES_OFF_SCREEN_TOP;
+       j < f->b->mxlines && j < LINE_NUM_ON_SCREEN_BOTTOM; j++)
+   e_pr_c_line(j, f);
+ else
+#endif
+  for (j = NUM_LINES_OFF_SCREEN_TOP;
+       j < f->b->mxlines && j < LINE_NUM_ON_SCREEN_BOTTOM; j++)
+   e_pr_line(j, f);
+ for (; j < LINE_NUM_ON_SCREEN_BOTTOM; j++)
+  e_blk(NUM_COLS_ON_SCREEN - 1, f->a.x + 1,
+    j - NUM_LINES_OFF_SCREEN_TOP + f->a.y + 1, f->fb->et.fb);
+}
+
+void e_move_window_recompose(FENSTER *f)
+{
+ PIC *old_pic = f->pic;
+ int oax, oay, oex, oey;
+
+ if (old_pic == NULL)
+  return;
+ oax = old_pic->a.x;
+ oay = old_pic->a.y;
+ oex = old_pic->e.x;
+ oey = old_pic->e.y;
+
+ e_restore_pic_to_schirm(old_pic);
+ e_refresh_area(oax, oay, oex - oax + 1, oey - oay + 1);
+
+ if (old_pic->buf)
+  free((SCREENCELL *)old_pic->buf);
+ old_pic->buf = NULL;
+ FREE(old_pic);
+
+ f->pic = e_open_view(f->a.x, f->a.y, f->e.x, f->e.y, f->fb->er.fb, 2);
+ if (f->pic == NULL)
+  e_error(e_msg[ERR_LOWMEM], 1, f->fb);
+
+ e_ed_rahmen(f, 0);
+ e_render_window_content(f);
+ e_refresh_area(f->a.x, f->a.y, f->e.x - f->a.x + 1, f->e.y - f->a.y + 1);
+ e_cursor_pos_only(f);
+ e_refresh();
 }
 
 /*   Output - screen content */
@@ -1116,9 +1197,9 @@ static void e_draw_titlebar_buttons(int xa, int ya, int xe, int frb, int fes)
 {
  if (WpeIsXwin())
  {
-  e_pr_char(xe-3, ya, 0x25FB, frb);
-  e_pr_char(xe-2, ya, ' ', frb);
-  e_pr_char(xe-1, ya, 0x2715, frb);
+  e_pr_char(xe-4, ya, 0x25FB, frb);
+  e_pr_char(xe-3, ya, ' ', frb);
+  e_pr_char(xe-2, ya, 0x2715, frb);
  }
  else
  {
@@ -1133,9 +1214,9 @@ static void e_draw_window_buttons(FENSTER *f)
  if (WpeIsXwin())
  {
   int maximize_glyph = (f->zoom == 0) ? 0x25FB : 0x25A3;
-  e_pr_char(f->e.x-3, f->a.y, maximize_glyph, f->fb->er.fb);
-  e_pr_char(f->e.x-2, f->a.y, ' ', f->fb->er.fb);
-  e_pr_char(f->e.x-1, f->a.y, 0x2715, f->fb->er.fb);
+  e_pr_char(f->e.x-4, f->a.y, maximize_glyph, f->fb->er.fb);
+  e_pr_char(f->e.x-3, f->a.y, ' ', f->fb->er.fb);
+  e_pr_char(f->e.x-2, f->a.y, 0x2715, f->fb->er.fb);
  }
  else
  {

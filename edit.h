@@ -652,6 +652,7 @@ int e_size_move(FENSTER *f);
 PIC *e_std_kst(int xa, int ya, int xe, int ye, char *name, int sw, int fr,
   int ft, int fes);
 PIC *e_ed_kst(FENSTER *f, PIC *pic, int sw);
+void e_move_window_recompose(FENSTER *f);
 int e_close_window(FENSTER *f);
 void e_switch_window(int num, FENSTER *f);
 int e_ed_zoom(FENSTER *f);

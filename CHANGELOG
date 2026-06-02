@@ -140,6 +140,16 @@ Changes
 * Resize flicker prevention: _NET_WM_SYNC_REQUEST protocol,
   StaticGravity, BackgroundPixmap None, ConfigureNotify compression,
   Expose skip during pending resize.
+* Window move flicker elimination: e_move_window_recompose() replaces
+  the old e_close_view/e_open_view cycle that caused two flushes per
+  drag step (one showing desktop without window, one showing window at
+  new position). Full compositor-style recomposition: restore old
+  background, save new background, draw borders + content, single
+  flush_all. WpeRender.blit added for future Pixmap-to-Pixmap copy
+  optimization at 4K resolutions.
+* Single-flush architecture: fk_show_cursor no longer flushes per cell.
+  All rendering (content + chrome + cursor) composes into the Pixmap,
+  one XCopyArea per frame. Same pattern for Wayland (wl_surface.commit).
 * Previous Xft rendering preserved as fallback (--without-cairo).
 * Color emoji via Noto Color Emoji (libXft 2.3.5+ BGRA support).
   Font fallback uses fontconfig with FC_COLOR for emoji codepoints.
