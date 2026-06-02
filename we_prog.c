@@ -561,15 +561,27 @@ int e_print_arg(FILE *fp, char *s, char **argv, int n)
  return(n);
 }
 
+static FENSTER *e_find_or_create_messages(ECNT *cn)
+{
+ int i;
+ for (i = cn->mxedt; i > 0; i--)
+  if (!strcmp(cn->f[i]->datnam, "Messages"))
+   return cn->f[i];
+ if (e_edit(cn, "Messages"))
+  return cn->f[cn->mxedt];
+ return cn->f[cn->mxedt];
+}
+
 int e_p_exec(int file, FENSTER *f, PIC *pic)
 {
  ECNT *cn = f->ed;
- BUFFER *b = cn->f[cn->mxedt]->b;
+ FENSTER *mf = e_find_or_create_messages(cn);
+ BUFFER *b = mf->b;
  int ret = 0, i = 0, is, fd, stat_loc;
  char str[128];
  char *buff;
 
- f = cn->f[cn->mxedt];
+ f = mf;
  while ((ret = wait(&stat_loc)) >= 0 && ret != e_save_pid)
   ;
  ret = WIFEXITED(stat_loc) ? WEXITSTATUS(stat_loc) : 1;
