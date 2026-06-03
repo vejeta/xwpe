@@ -460,6 +460,8 @@ int e_eingabe(ECNT *e)
    cc = c = e_getch();
 #endif
   }
+  if (c == WPE_RESIZE)
+   continue;
   if (c == WPE_SCROLL_UP || c == WPE_SCROLL_DOWN)
   {
    int delta = (c == WPE_SCROLL_UP) ? -3 : 3;

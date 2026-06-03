@@ -1281,6 +1281,7 @@ int e_x_getch()
         XSyncIntToValue(&WpeXInfo.sync_value, 0);
        }
      }
+     return WPE_RESIZE;
     }
     break;
    case ClientMessage:

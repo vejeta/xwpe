@@ -252,6 +252,12 @@ int e_schreib_zif(int *num, int x, int y, int max, int ft, int fs)
  fk_cursor(1);
  while ((c = e_getch()) != WPE_ESC)
  {
+  if (c == WPE_RESIZE)
+  {
+   *num = WpeStringToNumber(s);
+   FREE(s);
+   return WPE_RESIZE;
+  }
 #if  MOUSE
   if (c < 0)
   {
@@ -357,6 +363,13 @@ int e_schreib_leiste(char *s, int x, int y, int n, int max, int ft, int fs)
 #endif
  while ((c = e_getch()) != WPE_ESC)
  {
+  if (c == WPE_RESIZE)
+  {
+   strcpy(s, tmp);
+   FREE(tmp);
+   fk_cursor(0);
+   return WPE_RESIZE;
+  }
 #if  MOUSE
   if (c < 0)
   {

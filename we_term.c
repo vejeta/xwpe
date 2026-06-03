@@ -874,8 +874,7 @@ int e_t_getch()
      }
      e_repaint_desk(WpeEditor->f[WpeEditor->mxedt]);
     }
-    c = 0;
-    break;
+    return WPE_RESIZE;
    }
    case KEY_BACKSPACE:  c = WPE_DC; break;
 #if MOUSE

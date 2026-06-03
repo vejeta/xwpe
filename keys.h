@@ -156,3 +156,4 @@
 #define MBKEY -100
 #define WPE_SCROLL_UP   2000
 #define WPE_SCROLL_DOWN 2001
+#define WPE_RESIZE      2002

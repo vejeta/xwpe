@@ -123,12 +123,20 @@ int e_error(char *text, int sw, FARBE *f)
  fk_cursor(0);
  WpeMouseChangeShape(WpeErrorShape);
  if ((len = strlen((char *)text)) < 20 ) len = 20;
- xa = (80-len)/2 - 2;
- xe = 82 - (80-len)/2;
  if (sw == -1) header = "Message";
  else if (sw == 0) header = "Error";
  else if (sw == 1) header = "Serious Error";
  else if (sw == 2) header = "Fatal Error";
+
+e_error_restart:
+ xa = (MAXSCOL-len)/2 - 2;
+ xe = xa + len + 4;
+ ya = (MAXSLNS-6)/2;
+ ye = ya + 6;
+ if (xa < 0) xa = 0;
+ if (xe >= MAXSCOL) xe = MAXSCOL - 1;
+ if (ya < 1) ya = 1;
+ if (ye >= MAXSLNS - 1) ye = MAXSLNS - 2;
 
  if (sw < 2) pic = e_std_kst(xa, ya, xe, ye, header, 1, f->nr.fb, f->nt.fb, f->ne.fb);
  if (sw == 2 || pic == NULL)
@@ -157,6 +165,11 @@ int e_error(char *text, int sw, FARBE *f)
 #else
   i = e_toupper(e_getch());
 #endif
+  if (i == WPE_RESIZE)
+  {
+   e_close_view(pic, 1);
+   goto e_error_restart;
+  }
  } while (i != WPE_ESC && i != WPE_CR && i != 'O');
  WpeMouseRestoreShape();
  if (pic != NULL) e_close_view(pic, 1);
