@@ -477,6 +477,10 @@ int e_t_initscr()
  nonl();
  intrflush(stdscr,FALSE);
  keypad(stdscr,TRUE);
+#if MOUSE
+ mousemask(ALL_MOUSE_EVENTS | REPORT_MOUSE_POSITION, NULL);
+ mouseinterval(0);
+#endif
 #endif
  if (has_colors())
  {
@@ -795,8 +799,9 @@ static int e_t_getch_poll(void)
  }
  for (;;)
  {
-  timeout(0);
+  timeout(50);
   c = fk_getch();
+  timeout(-1);
   if (c != ERR)
   {
    if ((unsigned int)c >= 0xC0 && (unsigned int)c <= 0xF7)
@@ -805,7 +810,6 @@ static int e_t_getch_poll(void)
   }
   if (e_d_async_pending)
    e_d_place_cursor_in_messages();
-  timeout(-1);
   wpe_fd_poll(-1);
  }
 }
@@ -874,6 +878,24 @@ int e_t_getch()
     break;
    }
    case KEY_BACKSPACE:  c = WPE_DC; break;
+#if MOUSE
+   case KEY_MOUSE:
+   {
+    MEVENT mev;
+    if (getmouse(&mev) == OK)
+    {
+     extern struct mouse e_mouse;
+     e_mouse.x = mev.x;
+     e_mouse.y = mev.y;
+     e_mouse.k = (mev.bstate & (BUTTON1_PRESSED|BUTTON1_CLICKED)) ? 1 :
+                 (mev.bstate & (BUTTON2_PRESSED|BUTTON2_CLICKED)) ? 2 :
+                 (mev.bstate & (BUTTON3_PRESSED|BUTTON3_CLICKED)) ? 4 : 0;
+     return(-1);
+    }
+    c = 0;
+    break;
+   }
+#endif
    case KEY_HELP:  c = HELP; break;
    case KEY_LL:  c = ENDE; break;
    case KEY_F(17):  c = SF1; break;
@@ -1115,7 +1137,39 @@ int fk_t_locate(int x, int y)
 
 int fk_t_mouse(int *g)
 {
+#if MOUSE
+ extern struct mouse e_mouse;
+ MEVENT mev;
+
+ if (g[0] == 2)
+  return(0);
+ timeout(50);
+ { int ch = getch();
+   timeout(-1);
+   if (ch == KEY_MOUSE && getmouse(&mev) == OK)
+   {
+    g[1] = (mev.bstate & (BUTTON1_PRESSED|BUTTON1_CLICKED)) ? 1 :
+           (mev.bstate & (BUTTON2_PRESSED|BUTTON2_CLICKED)) ? 2 :
+           (mev.bstate & (BUTTON3_PRESSED|BUTTON3_CLICKED)) ? 4 : 0;
+    g[2] = mev.x * 8;
+    g[3] = mev.y * 8;
+    e_mouse.x = mev.x;
+    e_mouse.y = mev.y;
+    e_mouse.k = g[1];
+   }
+   else
+   {
+    g[1] = 0;
+    g[2] = e_mouse.x * 8;
+    g[3] = e_mouse.y * 8;
+    if (ch != ERR)
+     ungetch(ch);
+   }
+ }
  return(0);
+#else
+ return(0);
+#endif
 }
 
 int e_t_switch_screen(int sw)
