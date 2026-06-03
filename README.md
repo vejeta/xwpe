@@ -38,9 +38,6 @@ xwpe file.c         # X11 mode
   all other dialogs accept and render accented characters correctly.
   UTF-8-aware cursor movement, backspace, and delete.
 * printf without \n visible after each step (fflush via gdb)
-* Perl and COBOL compiler support (perl -c, cobc)
-* pdb (Python Debugger) as 6th debugger backend
-* Cursor-relative error navigation with wrap-around (Alt-T/Alt-V)
 
 ## What was new in 1.6.2
 
