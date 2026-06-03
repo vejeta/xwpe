@@ -30,13 +30,16 @@ void e_invalidate_area(int xa, int ya, int xe, int ye)
  extern SCREENCELL *altschirm;
  int i, j;
 
+ if (xa < 0) xa = 0;
+ if (ya < 0) ya = 0;
+ if (xe >= MAXSCOL) xe = MAXSCOL - 1;
+ if (ye >= MAXSLNS) ye = MAXSLNS - 1;
+
  for (j = ya; j <= ye; ++j)
   for (i = xa; i <= xe; ++i)
    altschirm[j * MAXSCOL + i].ch = -1;
 
 #if !defined(NO_XWINDOWS) && defined(NEWSTYLE)
- /* Only touch extbyte/altextbyte in X11 mode -- in terminal mode
-    altextbyte is NULL (only allocated by WpeXInit). */
  if (WpeIsXwin())
  {
   extern char *extbyte, *altextbyte;
@@ -49,9 +52,6 @@ void e_invalidate_area(int xa, int ya, int xe, int ye)
     extbyte[j * MAXSCOL + i] = 0;
     if (altextbyte) altextbyte[j * MAXSCOL + i] = 0;
    }
-  /* Extend invalidation by 1 cell to catch border edges.
-     No Pixmap clearing -- the Pixmap keeps old content until
-     e_x_refresh redraws, preventing visible black flash. */
   { int cxa = xa > 0 ? xa - 1 : 0;
     int cya = ya > 0 ? ya - 1 : 0;
     int cxe = xe + 1 < MAXSCOL ? xe + 2 : MAXSCOL;
@@ -273,12 +273,13 @@ PIC *e_open_view(int xa, int ya, int xe, int ye, int col, int sw)
  {
   int pw = xe - xa + 1;
   int ph = ye - ya + 1;
+  int sy = ye < MAXSLNS ? ye : MAXSLNS - 1;
+  int sx = xe < MAXSCOL ? xe : MAXSCOL - 1;
   SCREENCELL *buf = calloc(pw * ph, sizeof(SCREENCELL));
   if (buf == NULL) { FREE(pic); return(NULL); }
-  /* Store buffer pointer in win field (reusing the field) */
   pic->buf = (WINDOW *)buf;
-  for (j = ya; j <= ye; ++j)
-   for (i = xa; i <= xe; ++i)
+  for (j = ya; j <= sy; ++j)
+   for (i = xa; i <= sx; ++i)
     buf[(j - ya) * pw + (i - xa)] = schirm[j * MAXSCOL + i];
  }
 
@@ -307,19 +308,26 @@ int e_close_view(PIC *pic, int sw)
  if (sw != 0 && pic->buf)
  {
   int pw = pic->e.x - pic->a.x + 1;
+  int ey = pic->e.y < MAXSLNS ? pic->e.y : MAXSLNS - 1;
+  int ex = pic->e.x < MAXSCOL ? pic->e.x : MAXSCOL - 1;
   SCREENCELL *buf = (SCREENCELL *)pic->buf;
-  for (j = pic->a.y; j <= pic->e.y; ++j)
-   for (i = pic->a.x; i <= pic->e.x; ++i)
+  for (j = pic->a.y; j <= ey; ++j)
+   for (i = pic->a.x; i <= ex; ++i)
     schirm[j * MAXSCOL + i] = buf[(j - pic->a.y) * pw + (i - pic->a.x)];
  }
  else if (sw != 0)
  {
-  for (j = pic->a.y; j <= pic->e.y; ++j)
-   for (i = pic->a.x; i <= pic->e.x; ++i)
+  int ey = pic->e.y < MAXSLNS ? pic->e.y : MAXSLNS - 1;
+  int ex = pic->e.x < MAXSCOL ? pic->e.x : MAXSCOL - 1;
+  for (j = pic->a.y; j <= ey; ++j)
+   for (i = pic->a.x; i <= ex; ++i)
     e_pr_char(i, j, ' ', 0);
  }
 
- e_invalidate_area(pic->a.x, pic->a.y, pic->e.x, pic->e.y);
+ { int ixe = pic->e.x < MAXSCOL - 1 ? pic->e.x : MAXSCOL - 1;
+   int iye = pic->e.y < MAXSLNS - 1 ? pic->e.y : MAXSLNS - 1;
+   e_invalidate_area(pic->a.x, pic->a.y, ixe, iye);
+ }
 
  if (sw < 2)
  {
@@ -404,15 +412,17 @@ void e_ed_rahmen(FENSTER *f, int sw)
 static void e_restore_pic_to_schirm(PIC *pic)
 {
  int i, j;
- int pw;
+ int pw, ey, ex;
  SCREENCELL *buf;
 
  if (pic == NULL || pic->buf == NULL)
   return;
  pw = pic->e.x - pic->a.x + 1;
+ ey = pic->e.y < MAXSLNS ? pic->e.y : MAXSLNS - 1;
+ ex = pic->e.x < MAXSCOL ? pic->e.x : MAXSCOL - 1;
  buf = (SCREENCELL *)pic->buf;
- for (j = pic->a.y; j <= pic->e.y; j++)
-  for (i = pic->a.x; i <= pic->e.x; i++)
+ for (j = pic->a.y; j <= ey; j++)
+  for (i = pic->a.x; i <= ex; i++)
    schirm[j * MAXSCOL + i] = buf[(j - pic->a.y) * pw + (i - pic->a.x)];
 }
 
@@ -1265,16 +1275,22 @@ void e_std_rahmen(int xa, int ya, int xe, int ye, char *name, int sw, int frb,
  e_pr_char(xe, ya, rhm[sw][1], frb);
  e_pr_char(xe, ye, rhm[sw][3], frb);
 
- if (name)
+ if (name && xe - xa > 6)
  {
-  if (strlen(name) < xe - xa - 14)
-   e_pr_str((xa+xe-strlen(name))/2, ya, name, frb, 0, 0, 0, 0);
-  else
+  int width = xe - xa;
+  int nlen = strlen(name);
+  if (nlen <= width - 14)
+   e_pr_str((xa+xe-nlen)/2, ya, name, frb, 0, 0, 0, 0);
+  else if (width > 20)
   {
    short_name = strdup(name);
-   strcpy(short_name + xe - xa - 17, "...");
-   e_pr_str(xa + 7, ya, short_name, frb, 0, 0, 0, 0);
-   free(short_name);
+   if (short_name)
+   {
+    short_name[width - 17] = '\0';
+    strcat(short_name, "...");
+    e_pr_str(xa + 7, ya, short_name, frb, 0, 0, 0, 0);
+    free(short_name);
+   }
   }
  }
  if (sw != 0)

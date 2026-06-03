@@ -1735,7 +1735,16 @@ int e_opt_kst(W_OPTSTR *o)
 {
    int ret = 0, csv, sw = 1, i, j, num, cold, c = o->bgsw;
    char *tmp;
+   int orig_xa = o->xa, orig_ya = o->ya;
+   int orig_xe = o->xe, orig_ye = o->ye;
    fk_cursor(0);
+e_opt_kst_restart:
+   o->xa = orig_xa; o->ya = orig_ya;
+   o->xe = orig_xe; o->ye = orig_ye;
+   if (o->xe >= MAXSCOL) o->xe = MAXSCOL - 1;
+   if (o->ye >= MAXSLNS - 1) o->ye = MAXSLNS - 2;
+   if (o->xa >= o->xe - 4) o->xa = 0;
+   if (o->ya >= o->ye - 2) o->ya = 1;
    o->pic = e_std_kst(o->xa, o->ya, o->xe, o->ye, o->name, 1, o->frt, o->ftt, o->frs);
    if(o->pic == NULL) {  e_error(e_msg[ERR_LOWMEM], 0, o->f->fb); return(-1);  }
    if(!c) c = e_get_opt_sw(CDO, 0, 0, o);
@@ -1784,6 +1793,14 @@ int e_opt_kst(W_OPTSTR *o)
    cold = c;
    while (c != WPE_ESC || sw)
    {
+      if (c == WPE_RESIZE)
+      {
+         e_close_view(o->pic, 1);
+         o->pic = NULL;
+         e_repaint_desk(o->f->ed->f[o->f->ed->mxedt]);
+         c = 0;
+         goto e_opt_kst_restart;
+      }
 #ifdef NEWSTYLE
       if (WpeIsXwin())
       {  for(i = 0; i < o->sn; i++)

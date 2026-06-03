@@ -348,14 +348,19 @@ int WpeMouseInFileDirList(int k, int sw, FENSTER * f)
 /*  File Window  */
 char *e_gt_btstr(int x, int y, int n, char *buffer)
 {
- /* n is in SCREENCELL units (cells, not bytes) */
- memcpy(buffer, &schirm[y * MAXSCOL + x], n * sizeof(SCREENCELL));
+ if (y < 0 || y >= MAXSLNS || x < 0) return(buffer);
+ if (x + n > MAXSCOL) n = MAXSCOL - x;
+ if (n > 0)
+  memcpy(buffer, &schirm[y * MAXSCOL + x], n * sizeof(SCREENCELL));
  return(buffer);
 }
 
 char *e_pt_btstr(int x, int y, int n, char *buffer)
 {
- memcpy(&schirm[y * MAXSCOL + x], buffer, n * sizeof(SCREENCELL));
+ if (y < 0 || y >= MAXSLNS || x < 0) return(buffer);
+ if (x + n > MAXSCOL) n = MAXSCOL - x;
+ if (n > 0)
+  memcpy(&schirm[y * MAXSCOL + x], buffer, n * sizeof(SCREENCELL));
  return(buffer);
 }
 

@@ -57,22 +57,30 @@ typedef struct {
 extern SCREENCELL *schirm;
 extern SCREENCELL *altschirm;
 
-#define e_pr_char(x, y, c, frb)  \
- ( schirm[(y) * MAXSCOL + (x)].ch = (c), \
-   schirm[(y) * MAXSCOL + (x)].attr = (frb), \
-   schirm[(y) * MAXSCOL + (x)].flags = 0 )
+#define SCHIRM_INBOUNDS(x, y) \
+ ((unsigned)(x) < (unsigned)MAXSCOL && (unsigned)(y) < (unsigned)MAXSLNS)
 
-#define e_gt_flags(x, y) (schirm[(y) * MAXSCOL + (x)].flags)
-#define e_pt_flags(x, y, f) (schirm[(y) * MAXSCOL + (x)].flags = (f))
+#define e_pr_char(x, y, c, frb) do { \
+ if (SCHIRM_INBOUNDS(x, y)) { \
+  int _sc_i = (y) * MAXSCOL + (x); \
+  schirm[_sc_i].ch = (c); \
+  schirm[_sc_i].attr = (frb); \
+  schirm[_sc_i].flags = 0; \
+ } } while(0)
 
-#define e_gt_char(x, y)  (schirm[(y) * MAXSCOL + (x)].ch)
-#define e_gt_col(x, y)   (schirm[(y) * MAXSCOL + (x)].attr)
-#define e_pt_col(x, y, c) (schirm[(y) * MAXSCOL + (x)].attr = (c))
+#define e_gt_flags(x, y) \
+ (SCHIRM_INBOUNDS(x, y) ? schirm[(y) * MAXSCOL + (x)].flags : 0)
+#define e_pt_flags(x, y, f) do { \
+ if (SCHIRM_INBOUNDS(x, y)) schirm[(y) * MAXSCOL + (x)].flags = (f); \
+ } while(0)
 
-/* Byte access for save/restore (e_open_view/e_close_view) */
-/* These now access the raw SCREENCELL array as bytes */
-#define e_gt_byte(x, y)  (((char*)&schirm[(y) * MAXSCOL])[x])
-#define e_pt_byte(x, y, c) (((char*)&schirm[(y) * MAXSCOL])[x] = (c))
+#define e_gt_char(x, y) \
+ (SCHIRM_INBOUNDS(x, y) ? schirm[(y) * MAXSCOL + (x)].ch : ' ')
+#define e_gt_col(x, y) \
+ (SCHIRM_INBOUNDS(x, y) ? schirm[(y) * MAXSCOL + (x)].attr : 0)
+#define e_pt_col(x, y, c) do { \
+ if (SCHIRM_INBOUNDS(x, y)) schirm[(y) * MAXSCOL + (x)].attr = (c); \
+ } while(0)
 
 /*  Pointer to functions for function calls  */
 
