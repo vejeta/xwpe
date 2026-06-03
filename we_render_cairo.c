@@ -211,6 +211,7 @@ static void cr_blit(int sx, int sy, int dx, int dy, int w, int h)
 static void cr_resize(int pixel_w, int pixel_h)
 {
 #ifndef NO_XWINDOWS
+ static int prev_w = 0, prev_h = 0;
  Pixmap old_buf = WpeXInfo.backbuf;
 
  WpeXInfo.backbuf = XCreatePixmap(WpeXInfo.display, WpeXInfo.window,
@@ -221,6 +222,16 @@ static void cr_resize(int pixel_w, int pixel_h)
    BlackPixel(WpeXInfo.display, WpeXInfo.screen));
  XFillRectangle(WpeXInfo.display, WpeXInfo.backbuf, WpeXInfo.gc,
    0, 0, pixel_w, pixel_h);
+
+ if (old_buf && prev_w > 0 && prev_h > 0)
+ {
+  int cw = pixel_w < prev_w ? pixel_w : prev_w;
+  int ch = pixel_h < prev_h ? pixel_h : prev_h;
+  XCopyArea(WpeXInfo.display, old_buf, WpeXInfo.backbuf, WpeXInfo.gc,
+    0, 0, cw, ch, 0, 0);
+ }
+ prev_w = pixel_w;
+ prev_h = pixel_h;
 
  if (cr)
   cairo_destroy(cr);

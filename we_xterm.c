@@ -1059,13 +1059,6 @@ int e_x_change(PIC *pic)
         if (fw->e.y >= MAXSLNS - 1) fw->e.y = MAXSLNS - 2;
        }
        e_x_repaint_desk(WpeEditor->f[WpeEditor->mxedt]);
-       if (XSyncValueGreaterThan(WpeXInfo.sync_value,
-           (XSyncValue){0}))
-       {
-        XSyncSetCounter(WpeXInfo.display, WpeXInfo.sync_counter,
-          WpeXInfo.sync_value);
-        XSyncIntToValue(&WpeXInfo.sync_value, 0);
-       }
      }
     }
     break;
@@ -1263,6 +1256,10 @@ int e_x_getch()
           DefaultColormap(WpeXInfo.display, WpeXInfo.screen));
        }
 #endif
+       XCopyArea(WpeXInfo.display, WpeXInfo.backbuf, WpeXInfo.window,
+         WpeXInfo.gc, 0, 0, size_hints.width, size_hints.height, 0, 0);
+       XFlush(WpeXInfo.display);
+
        { extern PIC *e_X_l_pic;
          int _is_win_pic = 0;
          for (_i = 0; _i <= WpeEditor->mxedt; _i++)
@@ -1279,13 +1276,6 @@ int e_x_getch()
         if (fw->e.y >= MAXSLNS - 1) fw->e.y = MAXSLNS - 2;
        }
        e_x_repaint_desk(WpeEditor->f[WpeEditor->mxedt]);
-       if (XSyncValueGreaterThan(WpeXInfo.sync_value,
-           (XSyncValue){0}))
-       {
-        XSyncSetCounter(WpeXInfo.display, WpeXInfo.sync_counter,
-          WpeXInfo.sync_value);
-        XSyncIntToValue(&WpeXInfo.sync_value, 0);
-       }
      }
      return WPE_RESIZE;
     }
@@ -1293,14 +1283,7 @@ int e_x_getch()
    case ClientMessage:
     if (report.xclient.message_type == WpeXInfo.protocol_atom)
     {
-     if (report.xclient.format == 32 &&
-         (Atom)report.xclient.data.l[0] == WpeXInfo.sync_request_atom)
-     {
-      XSyncIntsToValue(&WpeXInfo.sync_value,
-        (unsigned int)report.xclient.data.l[2],
-        (int)report.xclient.data.l[3]);
-     }
-     else if ((report.xclient.format == 8 &&
+     if ((report.xclient.format == 8 &&
         report.xclient.data.b[0] == WpeXInfo.delete_atom) ||
       (report.xclient.format == 16 &&
         report.xclient.data.s[0] == WpeXInfo.delete_atom) ||

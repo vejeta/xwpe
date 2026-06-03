@@ -514,7 +514,7 @@ void WpeXInit(int *argc, char **argv)
  {
   atom_num = 0;
  }
- new_atom_list = WpeMalloc((atom_num + 2) * sizeof(Atom));
+ new_atom_list = WpeMalloc((atom_num + 1) * sizeof(Atom));
  if (atom_list != NULL)
  {
   memcpy(new_atom_list, atom_list, atom_num * sizeof(Atom));
@@ -522,26 +522,10 @@ void WpeXInit(int *argc, char **argv)
  if (atom_num) XFree(atom_list);
  new_atom_list[atom_num] = WpeXInfo.delete_atom =
    XInternAtom(WpeXInfo.display, "WM_DELETE_WINDOW", False);
- new_atom_list[atom_num + 1] = WpeXInfo.sync_request_atom =
-   XInternAtom(WpeXInfo.display, "_NET_WM_SYNC_REQUEST", False);
  WpeXInfo.protocol_atom = XInternAtom(WpeXInfo.display, "WM_PROTOCOLS", False);
  XSetWMProtocols(WpeXInfo.display, WpeXInfo.window, new_atom_list,
-   atom_num + 2);
+   atom_num + 1);
  WpeFree(new_atom_list);
-
- { XSyncValue initial;
-   Atom counter_atom;
-   long counter_xid;
-   XSyncIntToValue(&initial, 0);
-   WpeXInfo.sync_counter = XSyncCreateCounter(WpeXInfo.display, initial);
-   XSyncIntToValue(&WpeXInfo.sync_value, 0);
-   counter_atom = XInternAtom(WpeXInfo.display,
-     "_NET_WM_SYNC_REQUEST_COUNTER", False);
-   counter_xid = (long)WpeXInfo.sync_counter;
-   XChangeProperty(WpeXInfo.display, WpeXInfo.window,
-     counter_atom, XA_CARDINAL, 32, PropModeReplace,
-     (unsigned char *)&counter_xid, 1);
- }
 
  WpeXInfo.selection_atom = XInternAtom(WpeXInfo.display, "PRIMARY", False);
  WpeXInfo.text_atom = XInternAtom(WpeXInfo.display, "STRING", False);
