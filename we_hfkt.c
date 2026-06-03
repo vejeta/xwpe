@@ -153,20 +153,31 @@ int e_rstrstr(int x, int n, unsigned char *s, unsigned char *f, int *nn)
 int e_num_kst(char *s, int num, int max, FENSTER *f, int n, int sw)
 {
  int ret, nz = WpeNumberOfPlaces(max);
+ int field_w = nz < 10 ? 10 : nz;
+ int label_len = strlen(s) + 1;
+ int inner_w = label_len + 2 + field_w + 4;
+ int dlg_w = inner_w + 2;
+ int xa = f->a.x + (f->e.x - f->a.x - dlg_w) / 2;
+ int ya = f->a.y + (f->e.y - f->a.y - 8) / 2;
  char *tmp = MALLOC((strlen(s)+2) * sizeof(char));
  W_OPTSTR *o = e_init_opt_kst(f);
 
  if (!o || !tmp)
   return(-1);
- o->xa = 20;  o->ya = 4;  o->xe = 52;  o->ye = 10;
+ if (xa < 0) xa = 0;
+ if (ya < 1) ya = 1;
+ o->xa = xa;  o->ya = ya;
+ o->xe = xa + dlg_w;  o->ye = ya + 8;
  o->bgsw = 0;
  o->name = s;
  o->crsw = AltO;
  sprintf(tmp, "%s:", s);
- e_add_numstr(3, 2, 29-nz, 2, nz, max, n, sw, tmp, num, o);
+ e_add_numstr(3, 2, label_len + 3, 2, field_w, max, n, sw, tmp, num, o);
  FREE(tmp);
- e_add_bttstr(6, 4, 1, AltO, " Ok ", NULL, o);
- e_add_bttstr(21, 4, -1, WPE_ESC, "Cancel", NULL, o);
+ { int btn_w = inner_w - 4;
+   e_add_bttstr(btn_w / 3 - 1, 5, 1, AltO, " Ok ", NULL, o);
+   e_add_bttstr(2 * btn_w / 3 - 1, 5, -1, WPE_ESC, "Cancel", NULL, o);
+ }
  ret = e_opt_kst(o);
  if (ret != WPE_ESC)
   num = o->nstr[0]->num;

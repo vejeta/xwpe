@@ -247,7 +247,9 @@ int e_schreib_zif(int *num, int x, int y, int max, int ft, int fs)
  int first = 1;
  char *s = MALLOC((max+1)*sizeof(char));
 
+ e_pr_char(x - 1, y, ' ', fs);
  e_pr_zstring(WpeNumberToString(ntmp, max, s), x, y, max, fs);
+ e_pr_char(x + max, y, ' ', fs);
  fk_locate(x+jc, y);
  fk_cursor(1);
  while ((c = e_getch()) != WPE_ESC)
@@ -329,7 +331,9 @@ int e_schreib_zif(int *num, int x, int y, int max, int ft, int fs)
    jc = max-1;
   else if (jc < max - nnum) jc = max-nnum;
 
+  e_pr_char(x - 1, y, ' ', ft);
   e_pr_zstring(s, x, y, max, ft);
+  e_pr_char(x + max, y, ' ', ft);
   fk_locate(x+jc, y);
   first = 0;
  }
@@ -537,7 +541,9 @@ int e_schr_nzif(int num, int x, int y, int max, int col)
  for (i = 0, nt = 1; i < max; i++) nt *= 10;
  if (num >= nt)
   num = nt - 1;
+ e_pr_char(x - 1, y, ' ', col);
  e_pr_zstring(WpeNumberToString(num, max, str), x, y, max, col);
+ e_pr_char(x + max, y, ' ', col);
  FREE(str);
  return(0);
 }
