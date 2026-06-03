@@ -244,12 +244,6 @@ static char _pty_line_buf[1024];
 static int _pty_line_len = 0;
 int _messages_activated = 0;
 
-static FILE *_dbg_io = NULL;
-static void _dbg_open(void)
-{
- if (!_dbg_io) _dbg_io = fopen("/tmp/xwpe-debug-io.txt", "w");
-}
-
 static void e_d_messages_erase_char(BUFFER *b, int last)
 {
  int len = b->bf[last].len;
@@ -333,14 +327,9 @@ static int e_d_pty_read_to_messages(FENSTER *mf)
   return 0;
  flags = fcntl(e_d_pty_master, F_GETFL, 0);
  fcntl(e_d_pty_master, F_SETFL, flags | O_NONBLOCK);
- _dbg_open();
  while ((n = read(e_d_pty_master, buf, sizeof(buf))) > 0)
  {
   e_d_pty_ensure_own_line(mf);
-  fprintf(_dbg_io, "PTY_READ: %d bytes [", n);
-  for (i = 0; i < n; i++)
-   fprintf(_dbg_io, "%02x ", (unsigned char)buf[i]);
-  fprintf(_dbg_io, "]\n"); fflush(_dbg_io);
   e_d_prog_output_append(buf, n);
   for (i = 0; i < n; i++)
   {
@@ -412,9 +401,6 @@ static void e_d_accum_complete(void)
  FENSTER *f = e_d_accum.f;
  int i;
 
- _dbg_open();
- fprintf(_dbg_io, "ACCUM_COMPLETE: async going to 0\n");
- fflush(_dbg_io);
  e_d_flush_inferior_stdout();
  e_d_drain_pty_to_messages();
  wpe_fd_del(wfildes[0]);
@@ -437,24 +423,15 @@ static void e_d_accum_complete(void)
  }
  { int _i;
    _i = e_d_fst_check(f);
-   fprintf(_dbg_io, "ACCUM_COMPLETE: fst_check=%d\n", _i); fflush(_dbg_io);
-   if (_i < 0) { _i = e_d_snd_check(f);
-    fprintf(_dbg_io, "ACCUM_COMPLETE: snd_check=%d\n", _i); fflush(_dbg_io); }
-   if (_i < 0) { _i = e_d_trd_check(f);
-    fprintf(_dbg_io, "ACCUM_COMPLETE: trd_check=%d\n", _i); fflush(_dbg_io); }
+   if (_i < 0) _i = e_d_snd_check(f);
+   if (_i < 0) _i = e_d_trd_check(f);
    if (_i < 0)
    {
-    int _j;
-    fprintf(_dbg_io, "ACCUM_COMPLETE: ALL CHECKS FAILED -> e_d_quit! sp[] dump:\n");
-    for (_j = 0; _j < SVLINES; _j++)
-     fprintf(_dbg_io, "  sp[%d]='%s'\n", _j, e_d_sp[_j]);
-    fflush(_dbg_io);
     e_d_switch_out(0);
     e_error("Program exited. Debugger stopped.", 0, f->fb);
     e_d_quit(f);
     return;
    }
-   fprintf(_dbg_io, "ACCUM_COMPLETE: check OK _i=%d\n", _i); fflush(_dbg_io);
  }
  e_d_accum.f = NULL;
  _messages_activated = 0;
@@ -497,10 +474,6 @@ static void e_d_accum_init(FENSTER *f, int main_brk)
 {
  int i;
 
- _dbg_open();
- fprintf(_dbg_io, "ACCUM_INIT: f=%p main_brk=%d e_d_swtch=%d e_d_pty_master=%d\n",
-  (void*)f, main_brk, e_d_swtch, e_d_pty_master);
- fflush(_dbg_io);
  for (i = 0; i < SVLINES; i++)
  {
   e_d_accum.sp[i] = e_d_accum.buf[i];
@@ -3213,19 +3186,11 @@ pdb_poll_again:
   e_d_switch_out(0);
   return(0);
  }
- _dbg_open();
- fprintf(_dbg_io, "STEP_NEXT: at async check e_d_swtch=%d e_d_pty_master=%d e_deb_type=%d\n",
-  e_d_swtch, e_d_pty_master, e_deb_type);
- fflush(_dbg_io);
  if (e_d_pty_master >= 0 && e_deb_type == 0)
  {
-  fprintf(_dbg_io, "STEP_NEXT: -> ASYNC path (e_d_accum_init)\n");
-  fflush(_dbg_io);
   e_d_accum_init(f, 0);
   return(0);
  }
- fprintf(_dbg_io, "STEP_NEXT: -> SYNC path (e_read_output)\n");
- fflush(_dbg_io);
  return(e_read_output(f));
 }
 
