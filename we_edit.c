@@ -186,8 +186,7 @@ int e_edit(ECNT *cn, char *filename)
   if ((e_we_sw & 8) || !strcmp(filename, "Messages") ||
     !strcmp(filename, "Watches"))
   {
-   f->a = e_set_pnt(0, 2*MAXSLNS/3 + 1);
-   f->e = e_set_pnt(MAXSCOL-1, MAXSLNS-2);
+   e_position_messages_window(f, cn);
   }
   else if (!strcmp(filename, "Stack"))
   {

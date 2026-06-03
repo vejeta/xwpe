@@ -1049,15 +1049,7 @@ int e_x_change(PIC *pic)
           DefaultColormap(WpeXInfo.display, WpeXInfo.screen));
        }
 #endif
-       /* Expand editor windows to fill new size */
-       for (_i = 0; _i <= WpeEditor->mxedt; _i++)
-       {
-        FENSTER *fw = WpeEditor->f[_i];
-        if (fw->e.x >= _old_scol - 1) fw->e.x = MAXSCOL - 1;
-        if (fw->e.y >= _old_slns - 2) fw->e.y = MAXSLNS - 2;
-        if (fw->e.x >= MAXSCOL) fw->e.x = MAXSCOL - 1;
-        if (fw->e.y >= MAXSLNS - 1) fw->e.y = MAXSLNS - 2;
-       }
+       e_relayout_windows(WpeEditor, _old_scol, _old_slns);
        e_x_repaint_desk(WpeEditor->f[WpeEditor->mxedt]);
      }
     }
@@ -1267,14 +1259,7 @@ int e_x_getch()
          if (!_is_win_pic)
           (*e_u_setlastpic)(NULL);
        }
-       for (_i = 0; _i <= WpeEditor->mxedt; _i++)
-       {
-        FENSTER *fw = WpeEditor->f[_i];
-        if (fw->e.x >= _old_scol - 1) fw->e.x = MAXSCOL - 1;
-        if (fw->e.y >= _old_slns - 2) fw->e.y = MAXSLNS - 2;
-        if (fw->e.x >= MAXSCOL) fw->e.x = MAXSCOL - 1;
-        if (fw->e.y >= MAXSLNS - 1) fw->e.y = MAXSLNS - 2;
-       }
+       e_relayout_windows(WpeEditor, _old_scol, _old_slns);
        e_x_repaint_desk(WpeEditor->f[WpeEditor->mxedt]);
      }
      return WPE_RESIZE;
@@ -1692,16 +1677,15 @@ int e_x_repaint_desk(FENSTER *f)
   if (cn->f[i]->pic->buf) free(cn->f[i]->pic->buf);
   FREE(cn->f[i]->pic);
  }
+ /* relayout already done by ConfigureNotify handler -- just clamp */
  for (i = 0; i <= cn->mxedt; i++)
  {
-  if (cn->f[i]->e.x >= MAXSCOL) cn->f[i]->e.x = MAXSCOL-1;
-  if (cn->f[i]->e.y >= MAXSLNS-1) cn->f[i]->e.y = MAXSLNS-2;
-  if (cn->f[i]->e.x - cn->f[i]->a.x < 26)
-   cn->f[i]->a.x = cn->f[i]->e.x - 26;
-  if (!DTMD_ISTEXT(cn->f[i]->dtmd) && cn->f[i]->e.y - cn->f[i]->a.y < 9)
-   cn->f[i]->a.y = cn->f[i]->e.y - 9;
-  else if (DTMD_ISTEXT(cn->f[i]->dtmd) && cn->f[i]->e.y - cn->f[i]->a.y < 3)
-   cn->f[i]->a.y = cn->f[i]->e.y - 3;
+  if (cn->f[i]->e.x >= MAXSCOL) cn->f[i]->e.x = MAXSCOL - 1;
+  if (cn->f[i]->e.y >= MAXSLNS - 1) cn->f[i]->e.y = MAXSLNS - 2;
+  if (cn->f[i]->a.y >= cn->f[i]->e.y) cn->f[i]->a.y = cn->f[i]->e.y - 3;
+  if (cn->f[i]->a.x >= cn->f[i]->e.x) cn->f[i]->a.x = cn->f[i]->e.x - 26;
+  if (cn->f[i]->a.y < 1) cn->f[i]->a.y = 1;
+  if (cn->f[i]->a.x < 0) cn->f[i]->a.x = 0;
  }
  for (i = 1; i < cn->mxedt; i++)
  {

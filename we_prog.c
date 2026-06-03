@@ -1899,8 +1899,9 @@ int e_d_p_message(char *str, FENSTER *f, int sw)
   else
    i = cn->mxedt;
  }
+ else
+  e_position_messages_window(cn->f[i], cn);
 
-/* f - window */
  f = cn->f[i];
 
 /* b - buffer */

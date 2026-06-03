@@ -870,18 +870,7 @@ int e_t_getch()
 #if !defined(NO_XWINDOWS) && defined(NEWSTYLE)
      extbyte = REALLOC(extbyte, MAXSCOL * MAXSLNS);
 #endif
-     for (i = 0; i <= WpeEditor->mxedt; i++)
-     {
-      FENSTER *fw = WpeEditor->f[i];
-      if (fw->e.x >= old_scol - 1)
-       fw->e.x = MAXSCOL - 1;
-      if (fw->e.y >= old_slns - 2)
-       fw->e.y = MAXSLNS - 2;
-      if (fw->e.x >= MAXSCOL)
-       fw->e.x = MAXSCOL - 1;
-      if (fw->e.y >= MAXSLNS - 1)
-       fw->e.y = MAXSLNS - 2;
-     }
+     e_relayout_windows(WpeEditor, old_scol, old_slns);
      e_repaint_desk(WpeEditor->f[WpeEditor->mxedt]);
     }
     return WPE_RESIZE;

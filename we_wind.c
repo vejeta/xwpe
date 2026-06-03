@@ -14,6 +14,78 @@ int e_make_xr_rahmen(int xa, int ya, int xe, int ye, int sw);
 static void e_draw_titlebar_buttons(int xa, int ya, int xe, int frb, int fes);
 static void e_draw_window_buttons(FENSTER *f);
 
+static int e_scale_y(int val, int old_slns, int new_slns)
+{
+ if (old_slns <= 2) return val;
+ return 1 + (val - 1) * (new_slns - 2) / (old_slns - 2);
+}
+
+void e_relayout_windows(ECNT *cn, int old_scol, int old_slns)
+{
+ int i;
+ for (i = 0; i <= cn->mxedt; i++)
+ {
+  FENSTER *fw = cn->f[i];
+  int at_left   = (fw->a.x <= 0);
+  int at_top    = (fw->a.y <= 1);
+  int at_right  = (fw->e.x >= old_scol - 1);
+  int at_bottom = (fw->e.y >= old_slns - 2);
+
+  fw->a.x = at_left   ? 0          : fw->a.x * MAXSCOL / old_scol;
+  fw->e.x = at_right  ? MAXSCOL - 1 : fw->e.x * MAXSCOL / old_scol;
+  fw->a.y = at_top    ? 1           : e_scale_y(fw->a.y, old_slns, MAXSLNS);
+  fw->e.y = at_bottom ? MAXSLNS - 2 : e_scale_y(fw->e.y, old_slns, MAXSLNS);
+
+  if (fw->e.x >= MAXSCOL) fw->e.x = MAXSCOL - 1;
+  if (fw->e.y >= MAXSLNS - 1) fw->e.y = MAXSLNS - 2;
+  if (fw->e.y - fw->a.y < 3) fw->a.y = fw->e.y - 3;
+  if (fw->e.x - fw->a.x < 26) fw->a.x = fw->e.x - 26;
+  if (fw->a.y < 1) fw->a.y = 1;
+  if (fw->a.x < 0) fw->a.x = 0;
+
+  if (fw->zoom)
+  {
+   fw->sa = fw->a;
+   fw->se = fw->e;
+  }
+ }
+}
+
+void e_position_messages_window(FENSTER *msg, ECNT *cn)
+{
+ int j, lowest_editor = -1;
+ int split_y, default_split = 2 * MAXSLNS / 3;
+
+ for (j = 1; j <= cn->mxedt; j++)
+ {
+  if (cn->f[j] == msg) continue;
+  if (!strcmp(cn->f[j]->datnam, "Messages")) continue;
+  if (!strcmp(cn->f[j]->datnam, "Watches")) continue;
+  if (cn->f[j]->e.y > lowest_editor)
+   lowest_editor = cn->f[j]->e.y;
+ }
+
+ if (lowest_editor > 0 && lowest_editor <= default_split)
+  split_y = lowest_editor;
+ else
+  split_y = default_split;
+
+ if (split_y > MAXSLNS - 5)
+  split_y = MAXSLNS - 5;
+ if (split_y < 4)
+  split_y = 4;
+
+ msg->a = e_set_pnt(0, split_y + 1);
+ msg->e = e_set_pnt(MAXSCOL - 1, MAXSLNS - 2);
+
+ for (j = 1; j <= cn->mxedt; j++)
+ {
+  if (cn->f[j] == msg) continue;
+  if (cn->f[j]->e.y > split_y)
+   cn->f[j]->e.y = split_y;
+ }
+}
+
 /**
  * e_invalidate_area - Mark a screen rectangle for full repaint.
  * @xa: Left column.
