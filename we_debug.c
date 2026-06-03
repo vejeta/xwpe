@@ -156,6 +156,67 @@ static void e_d_pty_strip_cr(char *s, int len)
 static void e_d_pty_flush_line(FENSTER *, int);
 void e_d_pty_flush_to_messages(FENSTER *);
 
+static char _nb_buf[512];
+static int _nb_len = 0;
+
+static int e_d_check_prompt(signed char *s, int i)
+{
+ if (e_deb_type == 0 && i > 4 && s[i] == ' ' && !strncmp((char*)s+i-5, "(gdb)", 5))
+  return 1;
+ if (e_deb_type == 2 && i > 4 && s[i] == ' ' && !strncmp((char*)s+i-5, "(dbx)", 5))
+  return 1;
+ if (e_deb_type == 5 && i > 4 && s[i] == ' ' && !strncmp((char*)s+i-5, "(Pdb)", 5))
+  return 1;
+ if (e_deb_type == 1 && s[i] == '*')
+  return 1;
+ if (e_deb_type == 3 && s[i] == '>')
+  return 1;
+ if (e_deb_type == 4 && i > 0 &&
+     ((s[i] == ' ' && s[i-1] == ']') || (s[i] == ' ' && s[i-1] == '>')))
+  return 1;
+ return 0;
+}
+
+int e_d_line_read_nb(int n, signed char *s, int max)
+{
+ int flags, nread, i;
+
+ while (e_e_line_read(efildes[0], s, max) >= 0)
+  ;
+ flags = fcntl(n, F_GETFL, 0);
+ fcntl(n, F_SETFL, flags | O_NONBLOCK);
+ nread = read(n, _nb_buf + _nb_len, sizeof(_nb_buf) - _nb_len - 1);
+ fcntl(n, F_SETFL, flags & ~O_NONBLOCK);
+ if (nread <= 0 && _nb_len == 0)
+  return (nread == 0) ? -1 : -2;
+ if (nread > 0)
+  _nb_len += nread;
+ _nb_buf[_nb_len] = '\0';
+ for (i = 0; i < _nb_len; i++)
+ {
+  if (_nb_buf[i] == '\n' || _nb_buf[i] == '\0')
+  {
+   int len = (i < max - 1) ? i : max - 2;
+   memcpy(s, _nb_buf, len);
+   s[len] = _nb_buf[i];
+   s[len + 1] = '\0';
+   _nb_len -= (i + 1);
+   if (_nb_len > 0)
+    memmove(_nb_buf, _nb_buf + i + 1, _nb_len);
+   return e_d_check_prompt(s, len) ? 1 : 2;
+  }
+ }
+ if (e_d_check_prompt((signed char *)_nb_buf, _nb_len - 1))
+ {
+  int len = (_nb_len < max - 1) ? _nb_len : max - 2;
+  memcpy(s, _nb_buf, len);
+  s[len] = '\0';
+  _nb_len = 0;
+  return 1;
+ }
+ return -2;
+}
+
 static FENSTER *e_d_find_messages_window(void)
 {
  int i;
