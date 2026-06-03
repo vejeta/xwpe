@@ -98,6 +98,15 @@ char *e_d_prog_output = NULL;
 int e_d_prog_output_len = 0;
 int e_d_prog_output_cap = 0;
 
+int e_d_pty_verase(void)
+{
+ struct termios t;
+
+ if (e_d_pty_master >= 0 && tcgetattr(e_d_pty_master, &t) == 0)
+  return t.c_cc[VERASE];
+ return 0x7F;
+}
+
 extern int wfildes[2], efildes[2];
 extern struct termios otermio, ntermio, ttermio;
 extern struct e_s_prog e_sv_prog;
@@ -230,39 +239,124 @@ static FENSTER *e_d_find_messages_window(void)
 /* forward declarations */
 static void e_d_drain_pty_to_messages(void);
 
-static int _echo_col = 0;
-static int _echo_row = -1;
+static char _pty_line_buf[1024];
+static int _pty_line_len = 0;
+int _messages_activated = 0;
+
+static FILE *_dbg_io = NULL;
+static void _dbg_open(void)
+{
+ if (!_dbg_io) _dbg_io = fopen("/tmp/xwpe-debug-io.txt", "w");
+}
+
+static void e_d_messages_erase_char(BUFFER *b, int last)
+{
+ int len = b->bf[last].len;
+
+ if (len > 0)
+ {
+  b->bf[last].len = len - 1;
+  b->bf[last].s[len - 1] = '\0';
+  b->b.x = len - 1;
+ }
+}
+
+static void e_d_messages_insert_char(BUFFER *b, int last, int c)
+{
+ int len = b->bf[last].len;
+
+ if (len < b->mx.x - 1)
+ {
+  b->bf[last].s = REALLOC(b->bf[last].s, len + 2);
+  b->bf[last].s[len] = c;
+  b->bf[last].s[len + 1] = '\0';
+  b->bf[last].len = len + 1;
+  b->b.x = len + 1;
+ }
+}
+
+static void e_d_messages_append_char(FENSTER *mf, int c)
+{
+ BUFFER *b = mf->b;
+ int last = b->mxlines - 1;
+
+ if (c == '\r')
+  return;
+ if (c == '\n' || last < 0)
+ {
+  e_new_line(b->mxlines, b);
+  b->b.y = b->mxlines - 1;
+  b->b.x = 0;
+  return;
+ }
+ if (c == '\b' || c == 0x7F)
+ {
+  e_d_messages_erase_char(b, last);
+  return;
+ }
+ b->b.y = last;
+ e_d_messages_insert_char(b, last, c);
+}
+
+static int _pty_owns_last_line = 0;
+
+static void e_d_pty_ensure_own_line(FENSTER *mf)
+{
+ BUFFER *b = mf->b;
+ int last = b->mxlines - 1;
+
+ if (_pty_owns_last_line)
+  return;
+ if (last >= 0 && b->bf[last].len > 0)
+  e_d_messages_append_char(mf, '\n');
+ _pty_owns_last_line = 1;
+}
+
+static int e_d_pty_read_to_messages(FENSTER *mf)
+{
+ char buf[256];
+ int n, total = 0, i, flags;
+
+ if (e_d_pty_master < 0)
+  return 0;
+ flags = fcntl(e_d_pty_master, F_GETFL, 0);
+ fcntl(e_d_pty_master, F_SETFL, flags | O_NONBLOCK);
+ _dbg_open();
+ while ((n = read(e_d_pty_master, buf, sizeof(buf))) > 0)
+ {
+  e_d_pty_ensure_own_line(mf);
+  fprintf(_dbg_io, "PTY_READ: %d bytes [", n);
+  for (i = 0; i < n; i++)
+   fprintf(_dbg_io, "%02x ", (unsigned char)buf[i]);
+  fprintf(_dbg_io, "]\n"); fflush(_dbg_io);
+  for (i = 0; i < n; i++)
+  {
+   if (buf[i] == '\n')
+    _pty_owns_last_line = 0;
+   e_d_messages_append_char(mf, (unsigned char)buf[i]);
+  }
+  total += n;
+ }
+ fcntl(e_d_pty_master, F_SETFL, flags & ~O_NONBLOCK);
+ return total;
+}
+
+static void e_d_messages_redraw(FENSTER *mf)
+{
+ SCHIRM *s = mf->s;
+ BUFFER *b = mf->b;
+ int visible_h = mf->e.y - mf->a.y - 1;
+
+ if (b->b.y >= s->c.y + visible_h)
+  s->c.y = b->b.y - visible_h + 1;
+ if (s->c.y < 0) s->c.y = 0;
+ e_schirm(mf, 1);
+ e_cursor(mf, 1);
+ e_refresh();
+}
 
 void e_d_echo_input_char(int c)
 {
- FENSTER *mf = e_d_find_messages_window();
- int row, col;
-
- if (!mf)
-  return;
- row = (_echo_row >= 0) ? _echo_row : mf->e.y - 1;
- col = mf->a.x + 1 + _echo_col;
- if (c == '\r' || c == '\n')
- {
-  _echo_col = 0;
-  return;
- }
- if (c == '\b')
- {
-  if (_echo_col > 0)
-  {
-   _echo_col--;
-   e_pr_char(mf->a.x + 1 + _echo_col, row, ' ', mf->fb->et.fb);
-  }
-  e_refresh();
-  return;
- }
- if (col < mf->e.x - 1)
- {
-  e_pr_char(col, row, c, mf->fb->et.fb);
-  _echo_col++;
- }
- e_refresh();
 }
 
 static void e_d_wait_for_input(int gdb_fd)
@@ -294,6 +388,10 @@ static void e_d_accum_complete(void)
  FENSTER *f = e_d_accum.f;
  int i;
 
+ _dbg_open();
+ fprintf(_dbg_io, "ACCUM_COMPLETE: async going to 0\n");
+ fflush(_dbg_io);
+ e_d_drain_pty_to_messages();
  wpe_fd_del(wfildes[0]);
  if (e_d_pty_master >= 0)
   wpe_fd_del(e_d_pty_master);
@@ -307,38 +405,35 @@ static void e_d_accum_complete(void)
  {
   if (strstr(e_d_sp[i], "exited"))
   {
-   e_d_pty_flush_to_messages(f);
    e_d_p_message("Program exited.", f, 0);
    e_d_quit(f);
    return;
   }
  }
- if (e_deb_type == 0 && e_d_pty_master >= 0)
- {
-  char _flush_resp[256];
-  write(rfildes[1], "call (void)fflush(0)\n", 21);
-  while (e_d_line_read(wfildes[0], _flush_resp, 256, 0, 0) == 0)
-   ;
-  e_d_pty_flush_to_messages(f);
- }
  { int _i;
    _i = e_d_fst_check(f);
-   if (_i < 0) _i = e_d_snd_check(f);
-   if (_i < 0) _i = e_d_trd_check(f);
+   fprintf(_dbg_io, "ACCUM_COMPLETE: fst_check=%d\n", _i); fflush(_dbg_io);
+   if (_i < 0) { _i = e_d_snd_check(f);
+    fprintf(_dbg_io, "ACCUM_COMPLETE: snd_check=%d\n", _i); fflush(_dbg_io); }
+   if (_i < 0) { _i = e_d_trd_check(f);
+    fprintf(_dbg_io, "ACCUM_COMPLETE: trd_check=%d\n", _i); fflush(_dbg_io); }
    if (_i < 0)
    {
+    int _j;
+    fprintf(_dbg_io, "ACCUM_COMPLETE: ALL CHECKS FAILED -> e_d_quit! sp[] dump:\n");
+    for (_j = 0; _j < SVLINES; _j++)
+     fprintf(_dbg_io, "  sp[%d]='%s'\n", _j, e_d_sp[_j]);
+    fflush(_dbg_io);
     e_d_switch_out(0);
     e_error("Program exited. Debugger stopped.", 0, f->fb);
     e_d_quit(f);
     return;
    }
- }
- if (e_d_accum.main_brk)
- {
-  e_mk_brk_main(f, e_d_accum.main_brk);
-  e_d_accum.main_brk = 0;
+   fprintf(_dbg_io, "ACCUM_COMPLETE: check OK _i=%d\n", _i); fflush(_dbg_io);
  }
  e_d_accum.f = NULL;
+ _messages_activated = 0;
+ e_refresh();
 }
 
 static void e_d_accum_line(char *line, int ret)
@@ -348,11 +443,6 @@ static void e_d_accum_line(char *line, int ret)
 
  if (!e_d_accum.active)
   return;
- if (ret == 2)
- {
-  e_d_error(line);
-  return;
- }
  if (ret < 0)
  {
   e_d_accum.active = 0;
@@ -382,6 +472,10 @@ static void e_d_accum_init(FENSTER *f, int main_brk)
 {
  int i;
 
+ _dbg_open();
+ fprintf(_dbg_io, "ACCUM_INIT: f=%p main_brk=%d e_d_swtch=%d e_d_pty_master=%d\n",
+  (void*)f, main_brk, e_d_swtch, e_d_pty_master);
+ fflush(_dbg_io);
  for (i = 0; i < SVLINES; i++)
  {
   e_d_accum.sp[i] = e_d_accum.buf[i];
@@ -391,22 +485,33 @@ static void e_d_accum_init(FENSTER *f, int main_brk)
  e_d_accum.main_brk = main_brk;
  e_d_accum.f = f;
  e_d_async_pending = 1;
- _echo_col = 0;
  _nb_len = 0;
+ _pty_owns_last_line = 0;
  wpe_fd_add(wfildes[0], POLLIN, e_d_on_gdb_readable, f);
  if (e_d_pty_master >= 0)
   wpe_fd_add(e_d_pty_master, POLLIN, e_d_on_pty_readable, f);
 }
 
+static void e_d_activate_messages_window(void)
+{
+ _messages_activated = 1;
+}
+
 static void e_d_on_pty_readable(int fd, void *data)
 {
- FENSTER *f = (FENSTER *)data;
+ FENSTER *mf = e_d_find_messages_window();
+ int n;
 
- if (!f) f = e_d_find_messages_window();
- if (!f) return;
- e_d_pty_flush_to_messages(f);
- e_d_pty_flush_line(f, 1);
- e_d_switch_out(0);
+ if (!mf) return;
+ n = e_d_pty_read_to_messages(mf);
+ _dbg_open();
+ fprintf(_dbg_io, "PTY_CB: read %d bytes, mxlines=%d, last_len=%d, window a=(%d,%d) e=(%d,%d)\n",
+  n, mf->b->mxlines,
+  mf->b->mxlines > 0 ? mf->b->bf[mf->b->mxlines-1].len : -1,
+  mf->a.x, mf->a.y, mf->e.x, mf->e.y);
+ fflush(_dbg_io);
+ if (n > 0)
+  e_d_messages_redraw(mf);
 }
 
 static void e_d_on_gdb_readable(int fd, void *data)
@@ -416,27 +521,13 @@ static void e_d_on_gdb_readable(int fd, void *data)
 
  if (!e_d_accum.active)
   return;
- ret = e_d_line_read_nb(wfildes[0], buf, 256);
- if (ret == -2)
-  return;
- e_d_accum_line((char *)buf, ret);
-}
-
-static void e_d_show_input_prompt(void)
-{
- FENSTER *mf = e_d_find_messages_window();
- int content_lines, last_visible_row;
-
- if (!mf)
-  return;
- e_d_p_message("(waiting user input)", mf, 0);
- content_lines = mf->b->mxlines - mf->s->c.y;
- last_visible_row = mf->a.y + 1 + content_lines;
- if (last_visible_row > mf->e.y - 1)
-  last_visible_row = mf->e.y - 1;
- _echo_row = last_visible_row;
- _echo_col = 0;
- e_d_switch_out(0);
+ while (e_d_accum.active)
+ {
+  ret = e_d_line_read_nb(wfildes[0], buf, 256);
+  if (ret == -2)
+   return;
+  e_d_accum_line((char *)buf, ret);
+ }
 }
 
 static void e_d_pty_drain_nonblock(void)
@@ -461,9 +552,6 @@ static void e_d_pty_drain_nonblock(void)
  }
  fcntl(e_d_pty_master, F_SETFL, flags & ~O_NONBLOCK);
 }
-
-static char _pty_line_buf[1024];
-static int _pty_line_len = 0;
 
 static void e_d_pty_flush_line(FENSTER *f, int force)
 {
@@ -496,7 +584,6 @@ void e_d_pty_flush_to_messages(FENSTER *f)
   e_d_pty_flush_line(f, 0);
  }
  fcntl(e_d_pty_master, F_SETFL, flags & ~O_NONBLOCK);
- _echo_col = -1;
 }
 
 static void e_d_drain_pty_to_messages(void)
@@ -508,9 +595,8 @@ static void e_d_drain_pty_to_messages(void)
  mf = e_d_find_messages_window();
  if (!mf)
   return;
- e_d_pty_flush_to_messages(mf);
- e_d_pty_flush_line(mf, 1);
- e_d_switch_out(0);
+ if (e_d_pty_read_to_messages(mf) > 0)
+  e_d_messages_redraw(mf);
 }
 
 /* Close pty fds but KEEP the output buffer.
@@ -754,26 +840,16 @@ int e_d_line_read(int n, signed char *s, int max, int sw, int esw)
   if (esc_sv)  {  s[i] = WPE_ESC;  esc_sv = 0;  continue;  }
   kbdflgs = fcntl(n, F_GETFL, 0 );
   fcntl( n, F_SETFL, kbdflgs | O_NONBLOCK);
-  { static int _prompt_shown = 0;
-    int _waits = 0;
   while ((ret = read(n, s + i, 1)) <= 0 && i == 0 && wt >= sw)
   {
    if (ret == 0)
    {
     jdb_trace("e_d_line_read: EOF on pipe (debugger exited)\n");
     fcntl(n, F_SETFL, kbdflgs & ~O_NONBLOCK);
-    _prompt_shown = 0;
     return(-1);
    }
-   if (!_prompt_shown && ++_waits > 20 && e_d_swtch >= 3 && e_d_pty_master >= 0)
-   {
-    _prompt_shown = 1;
-    e_d_show_input_prompt();
-   }
    e_d_wait_for_input(n);
-   if (e_d_getchar() == D_CBREAK) { _prompt_shown = 0; return(-1); }
-  }
-  if (ret > 0 && _prompt_shown) _prompt_shown = 0;
+   if (e_d_getchar() == D_CBREAK) return(-1);
   }
   fcntl( n, F_SETFL, kbdflgs & ~O_NONBLOCK);
   if (ret == -1) break;
@@ -1042,9 +1118,8 @@ int e_d_quit_basic(FENSTER *f)
  {  close(wfildes[1]);  wfildes[1] = -1;  }
  e_d_pty_close();
  _pty_line_len = 0;
- _echo_col = 0;
- _echo_row = -1;
  _nb_len = 0;
+ _messages_activated = 0;
  e_d_async_pending = 0;
  e_d_accum.active = 0;
  e_d_accum.f = NULL;
@@ -3078,11 +3153,19 @@ pdb_poll_again:
   e_d_switch_out(0);
   return(0);
  }
+ _dbg_open();
+ fprintf(_dbg_io, "STEP_NEXT: at async check e_d_swtch=%d e_d_pty_master=%d e_deb_type=%d\n",
+  e_d_swtch, e_d_pty_master, e_deb_type);
+ fflush(_dbg_io);
  if (e_d_pty_master >= 0 && e_deb_type == 0)
  {
+  fprintf(_dbg_io, "STEP_NEXT: -> ASYNC path (e_d_accum_init)\n");
+  fflush(_dbg_io);
   e_d_accum_init(f, 0);
   return(0);
  }
+ fprintf(_dbg_io, "STEP_NEXT: -> SYNC path (e_read_output)\n");
+ fflush(_dbg_io);
  return(e_read_output(f));
 }
 

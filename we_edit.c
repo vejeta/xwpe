@@ -14,35 +14,46 @@
 int e_undo_sw = 0, e_redo_sw = 0;
 
 #ifdef DEBUGGER
+static void e_d_pty_write_latin1(int pty_fd, int c)
+{
+ char buf[4];
+
+ if (c < 0x80)
+ {
+  buf[0] = c;
+  write(pty_fd, buf, 1);
+ }
+ else if (c < 0x100)
+ {
+  buf[0] = 0xC0 | (c >> 6);
+  buf[1] = 0x80 | (c & 0x3F);
+  write(pty_fd, buf, 2);
+ }
+}
+
 static int e_debug_console_input(int c, FENSTER *f)
 {
- extern int e_d_swtch, e_d_pty_master, e_d_async_pending;
- extern void e_d_echo_input_char(int c);
+ extern int e_d_pty_master, e_d_async_pending;
  char ch;
 
  if (!e_d_async_pending || e_d_pty_master < 0)
-  return 0;
- if (strcmp(f->datnam, "Messages") != 0)
   return 0;
  if (c == WPE_CR)
  {
   ch = '\n';
   write(e_d_pty_master, &ch, 1);
-  e_d_echo_input_char(c);
   return 1;
  }
  if (c >= 32 && c < 255)
  {
-  ch = c;
-  write(e_d_pty_master, &ch, 1);
-  e_d_echo_input_char(c);
+  e_d_pty_write_latin1(e_d_pty_master, c);
   return 1;
  }
  if (c == WPE_DC)
  {
-  ch = '\b';
+  extern int e_d_pty_verase(void);
+  ch = e_d_pty_verase();
   write(e_d_pty_master, &ch, 1);
-  e_d_echo_input_char(c);
   return 1;
  }
  return 0;
@@ -457,10 +468,7 @@ int e_eingabe(ECNT *e)
   }
 #ifdef DEBUGGER
   if (e_debug_console_input(c, f))
-  {
-   e_schirm(f, 1);
    continue;
-  }
 #endif
   if ((c > 31 || (c == WPE_TAB && !(f->flg & 1)) ||
     (f->ins > 1 && f->ins != 8)) && c < 255)

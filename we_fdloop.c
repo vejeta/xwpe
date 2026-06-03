@@ -34,7 +34,7 @@ int wpe_fd_add(int fd, int events, wpe_fd_callback cb, void *data)
 {
  wpe_fd_entry *e;
 
- if (fd < 0 || !cb)
+ if (fd < 0)
   return -1;
  e = wpe_fd_find(fd);
  if (e)
