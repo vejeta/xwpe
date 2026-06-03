@@ -1519,8 +1519,25 @@ int e_x_kbhit()
  {
   charcount = e_XLookupString(&report.xkey, buffer, BUFSIZE,
 						&keysym, NULL);
+  if (charcount == 0 && keysym >= XK_dead_grave && keysym <= XK_dead_horn)
+  {
+   e_compose_pending = keysym;
+   return 0;
+  }
+  if (e_compose_pending && charcount == 1)
+  {
+   int composed = e_compose_dead(e_compose_pending, buffer[0]);
+   e_compose_pending = 0;
+   if (composed > 0) return composed;
+  }
+  e_compose_pending = 0;
+  if (charcount >= 2 && (buffer[0] & 0xC0) == 0xC0)
+  {
+   int cp = e_utf8_to_codepoint(buffer, charcount);
+   if (cp > 0) return cp;
+  }
   if(charcount == 1) return(*buffer);
-  else return(0);
+  return(0);
  }
 }
 

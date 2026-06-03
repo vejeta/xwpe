@@ -65,7 +65,7 @@ char *e_make_postf();
 int e_del_a_ind();
 int e_tab_a_ind();
 int e_help_next();
-static int e_codepoint_to_utf8(int cp, unsigned char *out);
+int e_codepoint_to_utf8(int cp, unsigned char *out);
 
 #ifdef PROG
 BUFFER *e_p_m_buffer = NULL;
@@ -2030,7 +2030,7 @@ int e_new_line(int yd, BUFFER *b)
  return(b->mxlines);
 }
 
-static int e_codepoint_to_utf8(int cp, unsigned char *out)
+int e_codepoint_to_utf8(int cp, unsigned char *out)
 {
  if (cp < 0x80)
   { out[0] = cp; return 1; }

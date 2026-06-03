@@ -6,6 +6,74 @@
 
 #include "edit.h"
 
+static int e_utf8_charlen(unsigned char c)
+{
+ if (c < 0x80) return 1;
+ if ((c & 0xE0) == 0xC0) return 2;
+ if ((c & 0xF0) == 0xE0) return 3;
+ if ((c & 0xF8) == 0xF0) return 4;
+ return 1;
+}
+
+static int e_utf8_decode_at(unsigned char *s, int pos, int *codepoint)
+{
+ int len = e_utf8_charlen(s[pos]);
+
+ if (len == 1)
+  *codepoint = s[pos];
+ else if (len == 2)
+  *codepoint = ((s[pos] & 0x1F) << 6) | (s[pos+1] & 0x3F);
+ else if (len == 3)
+  *codepoint = ((s[pos] & 0x0F) << 12) | ((s[pos+1] & 0x3F) << 6) |
+               (s[pos+2] & 0x3F);
+ else
+  *codepoint = ((s[pos] & 0x07) << 18) | ((s[pos+1] & 0x3F) << 12) |
+               ((s[pos+2] & 0x3F) << 6) | (s[pos+3] & 0x3F);
+ return len;
+}
+
+static int e_utf8_prev(unsigned char *s, int pos)
+{
+ if (pos <= 0) return 0;
+ pos--;
+ while (pos > 0 && (s[pos] & 0xC0) == 0x80)
+  pos--;
+ return pos;
+}
+
+static int e_utf8_next(unsigned char *s, int pos, int len)
+{
+ if (pos >= len) return len;
+ return pos + e_utf8_charlen(s[pos]);
+}
+
+static int e_utf8_visual_width(unsigned char *s, int from, int to)
+{
+ int w = 0, pos = from;
+
+ while (pos < to && s[pos])
+ {
+  if ((unsigned char)s[pos] < ' ')
+   w += 2;
+  else
+   w++;
+  pos += e_utf8_charlen(s[pos]);
+ }
+ return w;
+}
+
+static int e_dialog_encode_char(int c, unsigned char *out)
+{
+ extern int e_codepoint_to_utf8(int cp, unsigned char *out);
+
+ if (c < 0x80)
+ {
+  out[0] = c;
+  return 1;
+ }
+ return e_codepoint_to_utf8(c, out);
+}
+
 /*
    draw entire screen with uniform chars and color */
 void e_cls(int frb, int chr)
@@ -134,26 +202,35 @@ int e_pr_zstring(char *s, int x, int y, int n, int fb)
    Write N chars to screen */
 int e_schr_nchar(char *s, int x, int y, int n, int max, int frb)
 {
- int i, j;
+ int col, pos, cp, clen;
+ unsigned char *us = (unsigned char *)s;
 
  e_pr_char(x, y, ' ', frb);
- for (i = 1, j = 0; i < max-1 && s[n+j] !='\0'; i++, j++)
+ for (col = 1, pos = n; col < max-1 && us[pos] != '\0'; )
  {
-  if ((unsigned char) s[n+j] < ' ')
+  if (us[pos] < ' ')
   {
-   e_pr_char(x+i, y, '^', frb);
-   i++;
-   e_pr_char(x+i, y, s[n+j] + '@', frb);
+   e_pr_char(x+col, y, '^', frb);
+   col++;
+   if (col < max-1)
+    e_pr_char(x+col, y, us[pos] + '@', frb);
+   col++;
+   pos++;
   }
   else
-   e_pr_char(x+i, y, s[n+j], frb);
+  {
+   clen = e_utf8_decode_at(us, pos, &cp);
+   e_pr_char(x+col, y, cp, frb);
+   col++;
+   pos += clen;
+  }
  }
- for (; i < max; i++)
-  e_pr_char(x+i, y, ' ', frb);
+ for (; col < max; col++)
+  e_pr_char(x+col, y, ' ', frb);
 #ifdef NEWSTYLE
  e_make_xrect(x, y, x+max-1, y, 1);
 #endif
- return(i);
+ return(col);
 }
 
 /*
@@ -273,20 +350,20 @@ int e_schreib_leiste(char *s, int x, int y, int n, int max, int ft, int fs)
  extern struct mouse e_mouse;
 #endif
  int c, i, ja = 0, jc, l = strlen(s);
- int jd;
  int sond = 0, first = 1;
  unsigned char *tmp = MALLOC(max+1);
+ int vcur;
 
  fk_cursor(1);
  strcpy(tmp, s);
  jc = l;
- for (jd = 0, i = ja; tmp[i] && i <= n-3 + jd; i++)
-  if (tmp[i] < ' ') jd++;
- if (jc + jd > n-2) jc = n-3-jd;
+ vcur = e_utf8_visual_width(tmp, 0, jc);
+ if (vcur > n-3) jc = 0;
  e_schr_nchar(tmp, x, y, 0, n, fs);
  e_pr_char(x, y, ' ', ft);
  e_pr_char(x+n-1, y, ' ', ft);
- fk_locate(x+jc+jd+1, y);
+ vcur = e_utf8_visual_width(tmp, ja, jc);
+ fk_locate(x+vcur+1, y);
 #ifdef NEWSTYLE
  e_make_xrect(x, y, x+n-1, y, 1);
 #endif
@@ -331,8 +408,8 @@ int e_schreib_leiste(char *s, int x, int y, int n, int max, int ft, int fs)
    }
   }
 #endif
-  if (c == CRI || (!sond && c == CtrlF)) {  if(jc < l) jc++;  }
-  else if (c == CLE || (!sond && c == CtrlB)) {  if(jc > 0) jc--;  }
+  if (c == CRI || (!sond && c == CtrlF)) {  if(jc < l) jc = e_utf8_next(tmp, jc, l);  }
+  else if (c == CLE || (!sond && c == CtrlB)) {  if(jc > 0) jc = e_utf8_prev(tmp, jc);  }
   else if (c == CCLE && jc > 0) jc = e_su_rblk(jc, tmp);
   else if (c == CCRI && jc < l) jc = e_su_lblk(jc, tmp);
   else if (c == POS1 || (!sond && c == CtrlA)) jc = 0;
@@ -363,19 +440,22 @@ int e_schreib_leiste(char *s, int x, int y, int n, int max, int ft, int fs)
   {
    if (jc > 0)
    {
-    for (i = jc-1; i < l; i++)
-     tmp[i] = tmp[i+1];
-    jc--;
-    l--;
+    int prev = e_utf8_prev(tmp, jc);
+    int clen = jc - prev;
+    for (i = prev; i <= l - clen; i++)
+     tmp[i] = tmp[i+clen];
+    jc = prev;
+    l -= clen;
    }
   }
   else if (c == ENTF || (!sond && c == CtrlD))
   {
    if (jc < l)
    {
-    for (i = jc; i < l; i++)
-     tmp[i] = tmp[i+1];
-    l--;
+    int clen = e_utf8_charlen(tmp[jc]);
+    for (i = jc; i <= l - clen; i++)
+     tmp[i] = tmp[i+clen];
+    l -= clen;
    }
   }
   else if (!sond && c == CtrlT)
@@ -400,20 +480,23 @@ int e_schreib_leiste(char *s, int x, int y, int n, int max, int ft, int fs)
   }
   else if (first == 1 &&
     ((c != WPE_CR && c != CtrlP && c != CtrlN && c != WPE_TAB &&
-    c != WPE_BTAB) || sond) && c > 0 && c < 0x7f)
+    c != WPE_BTAB) || sond) && c > 0 && c < 0xff)
   {
-   tmp[0] = c;
-   tmp[1] = '\0';
-   l = 1;
-   jc = 1;
+   int u8len = e_dialog_encode_char(c, tmp);
+   tmp[u8len] = '\0';
+   l = u8len;
+   jc = u8len;
   }
   else if (((c != WPE_CR && c != WPE_TAB && c != WPE_BTAB && c != CtrlP &&
     c != CtrlN ) || sond) && c > 0 && c < 0xff)
   {
-   if (l < max)
+   unsigned char u8[4];
+   int u8len = e_dialog_encode_char(c, u8);
+   if (l + u8len <= max)
    {
-    for (i = l; i >= jc; i--) tmp[i+1] = tmp[i];tmp[jc] = c;
-    l++; jc++;
+    for (i = l; i >= jc; i--) tmp[i+u8len] = tmp[i];
+    for (i = 0; i < u8len; i++) tmp[jc+i] = u8[i];
+    l += u8len; jc += u8len;
    }
   }
   else if (c > 0)	
@@ -424,15 +507,18 @@ int e_schreib_leiste(char *s, int x, int y, int n, int max, int ft, int fs)
    else if (c == CtrlN) c = CDO;
    return(c);
   }
-  for (jd = 0, i = ja; i < jc; i++) if(tmp[i] < ' ') jd++;
-  if (jc+jd-ja > n-3) ja=jc+jd-n+3 ;
-  else if (jc-ja < 0) ja = jc;
+  { int vcur = e_utf8_visual_width(tmp, ja, jc);
+    int vtot = e_utf8_visual_width(tmp, ja, l);
+    if (vcur > n-3) ja = jc;
+    else if (jc < ja) ja = jc;
+    vcur = e_utf8_visual_width(tmp, ja, jc);
 
-  e_schr_nchar(tmp, x, y, ja, n, ft);
+    e_schr_nchar(tmp, x, y, ja, n, ft);
 
-  e_pr_char(x, y, ja > 0 ? MCL : ' ', ft);
-  e_pr_char(x+n-1, y, l-ja > n-2 ? MCR : ' ', ft);
-  fk_locate(x+jc+jd-ja+1, y);
+    e_pr_char(x, y, ja > 0 ? MCL : ' ', ft);
+    e_pr_char(x+n-1, y, vtot > n-2 ? MCR : ' ', ft);
+    fk_locate(x+vcur+1, y);
+  }
   first = 0;
 #ifdef NEWSTYLE
   e_make_xrect(x, y, x+n-1, y, 1);
