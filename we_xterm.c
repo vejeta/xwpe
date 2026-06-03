@@ -8,6 +8,7 @@
 
 #include "edit.h"
 #include "we_render.h"
+#include "we_fdloop.h"
 #include <X11/Xatom.h>
 #include <poll.h>
 
@@ -1114,8 +1115,17 @@ int e_x_getch()
   return(-c);
  }
 
+ wpe_fd_add(ConnectionNumber(WpeXInfo.display), POLLIN, NULL, NULL);
+
  while (1)
  {
+  if (!XPending(WpeXInfo.display))
+  {
+   XFlush(WpeXInfo.display);
+   wpe_fd_poll(-1);
+  }
+  if (!XPending(WpeXInfo.display))
+   continue;
   XNextEvent(WpeXInfo.display, &report);
 
   switch (report.type)
