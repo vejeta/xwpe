@@ -38,6 +38,8 @@ int e_find_key(int c, int j, int sw);
 void e_exitm(char *s, int n);
 int fk_t_locate(int x, int y);
 int fk_t_mouse(int *g);
+static int e_t_mouse_decode_button(mmask_t bstate);
+static int e_t_mouse_is_released(mmask_t bstate);
 int e_t_initscr(void);
 int e_t_kbhit(void);
 int e_t_d_switch_out(int sw);
@@ -480,6 +482,9 @@ int e_t_initscr()
 #if MOUSE
  mousemask(ALL_MOUSE_EVENTS | REPORT_MOUSE_POSITION, NULL);
  mouseinterval(0);
+ printf("\033[?1002h");
+ printf("\033[?1006h");
+ fflush(stdout);
 #endif
 #endif
  if (has_colors())
@@ -555,6 +560,11 @@ int e_begscr()
 void e_endwin()
 {
 #ifdef NCURSES
+#if MOUSE
+ printf("\033[?1006l");
+ printf("\033[?1002l");
+ fflush(stdout);
+#endif
  endwin();
 #else
  fk_putp(ratt_bo);
@@ -883,11 +893,13 @@ int e_t_getch()
     if (getmouse(&mev) == OK)
     {
      extern struct mouse e_mouse;
+     int btn = e_t_mouse_decode_button(mev.bstate);
      e_mouse.x = mev.x;
      e_mouse.y = mev.y;
-     e_mouse.k = (mev.bstate & (BUTTON1_PRESSED|BUTTON1_CLICKED)) ? 1 :
-                 (mev.bstate & (BUTTON2_PRESSED|BUTTON2_CLICKED)) ? 2 :
-                 (mev.bstate & (BUTTON3_PRESSED|BUTTON3_CLICKED)) ? 4 : 0;
+     if (btn >= 0)
+      e_mouse.k = btn;
+     else if (e_t_mouse_is_released(mev.bstate))
+      e_mouse.k = 0;
      return(-1);
     }
     c = 0;
@@ -1133,11 +1145,25 @@ int fk_t_locate(int x, int y)
  return(y);
 }
 
+static int e_t_mouse_decode_button(mmask_t bstate)
+{
+ if (bstate & (BUTTON1_PRESSED|BUTTON1_CLICKED)) return 1;
+ if (bstate & (BUTTON2_PRESSED|BUTTON2_CLICKED)) return 2;
+ if (bstate & (BUTTON3_PRESSED|BUTTON3_CLICKED)) return 4;
+ return -1;
+}
+
+static int e_t_mouse_is_released(mmask_t bstate)
+{
+ return (bstate & (BUTTON1_RELEASED|BUTTON2_RELEASED|BUTTON3_RELEASED)) != 0;
+}
+
 int fk_t_mouse(int *g)
 {
 #if MOUSE
  extern struct mouse e_mouse;
  MEVENT mev;
+ int btn;
 
  if (g[0] == 2)
   return(0);
@@ -1146,9 +1172,33 @@ int fk_t_mouse(int *g)
    timeout(-1);
    if (ch == KEY_MOUSE && getmouse(&mev) == OK)
    {
-    g[1] = (mev.bstate & (BUTTON1_PRESSED|BUTTON1_CLICKED)) ? 1 :
-           (mev.bstate & (BUTTON2_PRESSED|BUTTON2_CLICKED)) ? 2 :
-           (mev.bstate & (BUTTON3_PRESSED|BUTTON3_CLICKED)) ? 4 : 0;
+    { FILE *_df = fopen("/tmp/xwpe-mouse.txt", "a");
+      if (_df) { fprintf(_df, "MOUSE: bstate=0x%lx x=%d y=%d ek=%d\n",
+        (unsigned long)mev.bstate, mev.x, mev.y, e_mouse.k); fclose(_df); }
+    }
+    btn = e_t_mouse_decode_button(mev.bstate);
+    if (btn >= 0)
+    {
+     g[1] = btn;
+    }
+    else if (e_t_mouse_is_released(mev.bstate))
+    {
+     g[1] = e_mouse.k;
+     g[2] = mev.x * 8;
+     g[3] = mev.y * 8;
+     e_mouse.x = mev.x;
+     e_mouse.y = mev.y;
+     e_mouse.k = 0;
+     return(0);
+    }
+    else if (mev.bstate & REPORT_MOUSE_POSITION)
+    {
+     g[1] = e_mouse.k;
+    }
+    else
+    {
+     g[1] = 0;
+    }
     g[2] = mev.x * 8;
     g[3] = mev.y * 8;
     e_mouse.x = mev.x;
@@ -1157,7 +1207,7 @@ int fk_t_mouse(int *g)
    }
    else
    {
-    g[1] = 0;
+    g[1] = e_mouse.k;
     g[2] = e_mouse.x * 8;
     g[3] = e_mouse.y * 8;
     if (ch != ERR)
