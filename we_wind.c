@@ -16,8 +16,10 @@ static void e_draw_window_buttons(FENSTER *f);
 
 static int e_scale_y(int val, int old_slns, int new_slns)
 {
- if (old_slns <= 2) return val;
- return 1 + (val - 1) * (new_slns - 2) / (old_slns - 2);
+ int old_range = old_slns - 2;
+ int new_range = new_slns - 2;
+ if (old_range <= 0) return val;
+ return 1 + ((val - 1) * new_range + old_range / 2) / old_range;
 }
 
 void e_relayout_windows(ECNT *cn, int old_scol, int old_slns)
@@ -45,7 +47,10 @@ void e_relayout_windows(ECNT *cn, int old_scol, int old_slns)
    if (at_top)
     fw->e.y = fw->a.y + 3;
    else
+   {
     fw->a.y = fw->e.y - 3;
+    if (!at_top && fw->a.y < 2) fw->a.y = 2;
+   }
   }
   if (fw->e.x - fw->a.x < 26)
   {
@@ -74,7 +79,11 @@ void e_relayout_windows(ECNT *cn, int old_scol, int old_slns)
    FENSTER *other = cn->f[j];
    if (j == i) continue;
    if (fw->a.y <= 1 && other->a.y > 1 && fw->e.y >= other->a.y)
-    other->a.y = fw->e.y + 1;
+   {
+    int new_ay = fw->e.y + 1;
+    if (new_ay <= other->e.y - 3)
+     other->a.y = new_ay;
+   }
   }
  }
 }
