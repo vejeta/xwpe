@@ -767,6 +767,8 @@ int e_d_quit_basic(FENSTER *f)
  if (wfildes[1] >= 0)
  {  close(wfildes[1]);  wfildes[1] = -1;  }
  e_d_pty_close();
+ _pty_line_len = 0;
+ e_d_nbrpts = 0;
  if (WpeIsXwin())
  {
   remove(npipe[0]);
