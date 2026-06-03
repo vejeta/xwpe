@@ -156,6 +156,40 @@ static FENSTER *e_d_find_messages_window(void)
 /* forward declarations */
 static void e_d_drain_pty_to_messages(void);
 
+static int _echo_col = 0;
+
+static void e_d_echo_input_char(int c)
+{
+ FENSTER *mf = e_d_find_messages_window();
+ int row, col;
+
+ if (!mf)
+  return;
+ row = mf->e.y - 1;
+ col = mf->a.x + 1 + _echo_col;
+ if (c == '\r' || c == '\n')
+ {
+  _echo_col = 0;
+  return;
+ }
+ if (c == '\b')
+ {
+  if (_echo_col > 0)
+  {
+   _echo_col--;
+   e_pr_char(mf->a.x + 1 + _echo_col, row, ' ', mf->fb->et.fb);
+  }
+  e_refresh();
+  return;
+ }
+ if (col < mf->e.x - 1)
+ {
+  e_pr_char(col, row, c, mf->fb->et.fb);
+  _echo_col++;
+ }
+ e_refresh();
+}
+
 static void e_d_wait_for_input(int gdb_fd)
 {
  wpe_fd_add(gdb_fd, POLLIN, NULL, NULL);
@@ -234,6 +268,7 @@ void e_d_pty_flush_to_messages(FENSTER *f)
   e_d_pty_flush_line(f, 0);
  }
  fcntl(e_d_pty_master, F_SETFL, flags & ~O_NONBLOCK);
+ _echo_col = -1;
 }
 
 static void e_d_drain_pty_to_messages(void)
@@ -697,6 +732,7 @@ int e_d_getchar()
   {
    char _ch = (c == '\r') ? '\n' : c;
    write(e_d_pty_master, &_ch, 1);
+   e_d_echo_input_char(c);
   }
   else
    write(rfildes[1], &c, 1);
