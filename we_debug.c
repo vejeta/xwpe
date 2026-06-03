@@ -312,6 +312,17 @@ static void e_d_pty_ensure_own_line(FENSTER *mf)
  _pty_owns_last_line = 1;
 }
 
+static void e_d_prog_output_append(char *data, int len)
+{
+ if (e_d_prog_output_len + len >= e_d_prog_output_cap)
+ {
+  e_d_prog_output_cap = (e_d_prog_output_len + len + 1024) * 2;
+  e_d_prog_output = REALLOC(e_d_prog_output, e_d_prog_output_cap);
+ }
+ memcpy(e_d_prog_output + e_d_prog_output_len, data, len);
+ e_d_prog_output_len += len;
+}
+
 static int e_d_pty_read_to_messages(FENSTER *mf)
 {
  char buf[256];
@@ -329,6 +340,7 @@ static int e_d_pty_read_to_messages(FENSTER *mf)
   for (i = 0; i < n; i++)
    fprintf(_dbg_io, "%02x ", (unsigned char)buf[i]);
   fprintf(_dbg_io, "]\n"); fflush(_dbg_io);
+  e_d_prog_output_append(buf, n);
   for (i = 0; i < n; i++)
   {
    if (buf[i] == '\n')

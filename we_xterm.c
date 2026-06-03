@@ -194,22 +194,28 @@ int e_XLookupString(XKeyEvent *event, char *buffer_return, int buffer_size,
     static int first = 1;
     static XIC xic;
     static XIM xim;
+    Status xim_status;
 
     if (first) {
+	first = 0;
 	if (!XSetLocaleModifiers(""))
 	    XSetLocaleModifiers("@im=none");
 	xim = XOpenIM(event->display, NULL, NULL, NULL);
-	xic = XCreateIC(xim,
-			XNInputStyle, XIMPreeditNothing | XIMStatusNothing,
-			XNClientWindow, WpeXInfo.window, NULL);
-	first = 0;
+	if (xim)
+	    xic = XCreateIC(xim,
+			    XNInputStyle, XIMPreeditNothing | XIMStatusNothing,
+			    XNClientWindow, WpeXInfo.window,
+			    XNFocusWindow, WpeXInfo.window, NULL);
+	else
+	    xic = NULL;
     }
     if (xic) {
 	if (XFilterEvent((XEvent*)event, WpeXInfo.window))
 	    return (0);
 
+	*keysym_return = NoSymbol;
 	return (XmbLookupString(xic, event, buffer_return, buffer_size,
-				keysym_return, NULL));
+				keysym_return, &xim_status));
     }
 
     return (XLookupString(event, buffer_return, buffer_size,
@@ -1088,6 +1094,68 @@ int e_x_change(PIC *pic)
  return(0);
 }
 
+typedef struct {
+ KeySym dead;
+ int base;
+ int composed;
+} e_compose_entry;
+
+static const e_compose_entry compose_table[] = {
+ { XK_dead_acute, 'a', 0xE1 }, { XK_dead_acute, 'e', 0xE9 },
+ { XK_dead_acute, 'i', 0xED }, { XK_dead_acute, 'o', 0xF3 },
+ { XK_dead_acute, 'u', 0xFA }, { XK_dead_acute, 'y', 0xFD },
+ { XK_dead_acute, 'A', 0xC1 }, { XK_dead_acute, 'E', 0xC9 },
+ { XK_dead_acute, 'I', 0xCD }, { XK_dead_acute, 'O', 0xD3 },
+ { XK_dead_acute, 'U', 0xDA }, { XK_dead_acute, 'Y', 0xDD },
+ { XK_dead_grave, 'a', 0xE0 }, { XK_dead_grave, 'e', 0xE8 },
+ { XK_dead_grave, 'i', 0xEC }, { XK_dead_grave, 'o', 0xF2 },
+ { XK_dead_grave, 'u', 0xF9 },
+ { XK_dead_grave, 'A', 0xC0 }, { XK_dead_grave, 'E', 0xC8 },
+ { XK_dead_grave, 'I', 0xCC }, { XK_dead_grave, 'O', 0xD2 },
+ { XK_dead_grave, 'U', 0xD9 },
+ { XK_dead_diaeresis, 'a', 0xE4 }, { XK_dead_diaeresis, 'e', 0xEB },
+ { XK_dead_diaeresis, 'i', 0xEF }, { XK_dead_diaeresis, 'o', 0xF6 },
+ { XK_dead_diaeresis, 'u', 0xFC },
+ { XK_dead_diaeresis, 'A', 0xC4 }, { XK_dead_diaeresis, 'E', 0xCB },
+ { XK_dead_diaeresis, 'I', 0xCF }, { XK_dead_diaeresis, 'O', 0xD6 },
+ { XK_dead_diaeresis, 'U', 0xDC },
+ { XK_dead_tilde, 'n', 0xF1 }, { XK_dead_tilde, 'N', 0xD1 },
+ { XK_dead_tilde, 'a', 0xE3 }, { XK_dead_tilde, 'A', 0xC3 },
+ { XK_dead_tilde, 'o', 0xF5 }, { XK_dead_tilde, 'O', 0xD5 },
+ { XK_dead_circumflex, 'a', 0xE2 }, { XK_dead_circumflex, 'e', 0xEA },
+ { XK_dead_circumflex, 'i', 0xEE }, { XK_dead_circumflex, 'o', 0xF4 },
+ { XK_dead_circumflex, 'u', 0xFB },
+ { XK_dead_circumflex, 'A', 0xC2 }, { XK_dead_circumflex, 'E', 0xCA },
+ { XK_dead_circumflex, 'I', 0xCE }, { XK_dead_circumflex, 'O', 0xD4 },
+ { XK_dead_circumflex, 'U', 0xDB },
+ { XK_dead_cedilla, 'c', 0xE7 }, { XK_dead_cedilla, 'C', 0xC7 },
+ { 0, 0, 0 }
+};
+
+static KeySym e_compose_pending = 0;
+
+static int e_compose_dead(KeySym dead, int base)
+{
+ const e_compose_entry *e;
+
+ for (e = compose_table; e->dead; e++)
+  if (e->dead == dead && e->base == base)
+   return e->composed;
+ return -1;
+}
+
+static int e_utf8_to_codepoint(unsigned char *buf, int len)
+{
+ if (len >= 2 && (buf[0] & 0xE0) == 0xC0)
+  return ((buf[0] & 0x1F) << 6) | (buf[1] & 0x3F);
+ if (len >= 3 && (buf[0] & 0xF0) == 0xE0)
+  return ((buf[0] & 0x0F) << 12) | ((buf[1] & 0x3F) << 6) | (buf[2] & 0x3F);
+ if (len >= 4 && (buf[0] & 0xF8) == 0xF0)
+  return ((buf[0] & 0x07) << 18) | ((buf[1] & 0x3F) << 12) |
+         ((buf[2] & 0x3F) << 6) | (buf[3] & 0x3F);
+ return -1;
+}
+
 int e_x_getch()
 {
  Window tmp_win, tmp_root;
@@ -1246,6 +1314,19 @@ int e_x_getch()
     charcount = e_XLookupString(&report.xkey, buffer, BUFSIZE, &keysym,
       NULL);
     key_b = report.xkey.state;
+    if (charcount == 0 && keysym >= XK_dead_grave && keysym <= XK_dead_horn)
+    {
+     e_compose_pending = keysym;
+     break;
+    }
+    if (e_compose_pending && charcount == 1)
+    {
+     int composed = e_compose_dead(e_compose_pending, buffer[0]);
+     e_compose_pending = 0;
+     if (composed > 0)
+      return composed;
+    }
+    e_compose_pending = 0;
     if (charcount == 1)
     {
      if (*buffer == 127)
@@ -1347,6 +1428,12 @@ int e_x_getch()
      if (key_b & ShiftMask)
       c = c + 512;
      return(c);
+    }
+    if (charcount >= 2 && (buffer[0] & 0xC0) == 0xC0)
+    {
+     c = e_utf8_to_codepoint(buffer, charcount);
+     if (c > 0)
+      return(c);
     }
     break;
    case ButtonPress:

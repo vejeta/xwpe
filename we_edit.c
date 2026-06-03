@@ -14,21 +14,22 @@
 int e_undo_sw = 0, e_redo_sw = 0;
 
 #ifdef DEBUGGER
-static void e_d_pty_write_latin1(int pty_fd, int c)
+static void e_d_pty_write_utf8(int pty_fd, int cp)
 {
  char buf[4];
+ int len;
 
- if (c < 0x80)
- {
-  buf[0] = c;
-  write(pty_fd, buf, 1);
- }
- else if (c < 0x100)
- {
-  buf[0] = 0xC0 | (c >> 6);
-  buf[1] = 0x80 | (c & 0x3F);
-  write(pty_fd, buf, 2);
- }
+ if (cp < 0x80)
+  { buf[0] = cp; len = 1; }
+ else if (cp < 0x800)
+  { buf[0] = 0xC0 | (cp >> 6); buf[1] = 0x80 | (cp & 0x3F); len = 2; }
+ else if (cp < 0x10000)
+  { buf[0] = 0xE0 | (cp >> 12); buf[1] = 0x80 | ((cp >> 6) & 0x3F);
+    buf[2] = 0x80 | (cp & 0x3F); len = 3; }
+ else
+  { buf[0] = 0xF0 | (cp >> 18); buf[1] = 0x80 | ((cp >> 12) & 0x3F);
+    buf[2] = 0x80 | ((cp >> 6) & 0x3F); buf[3] = 0x80 | (cp & 0x3F); len = 4; }
+ write(pty_fd, buf, len);
 }
 
 static int e_debug_console_input(int c, FENSTER *f)
@@ -44,9 +45,9 @@ static int e_debug_console_input(int c, FENSTER *f)
   write(e_d_pty_master, &ch, 1);
   return 1;
  }
- if (c >= 32 && c < 255)
+ if (c >= 32)
  {
-  e_d_pty_write_latin1(e_d_pty_master, c);
+  e_d_pty_write_utf8(e_d_pty_master, c);
   return 1;
  }
  if (c == WPE_DC)
@@ -64,6 +65,7 @@ char *e_make_postf();
 int e_del_a_ind();
 int e_tab_a_ind();
 int e_help_next();
+static int e_codepoint_to_utf8(int cp, unsigned char *out);
 
 #ifdef PROG
 BUFFER *e_p_m_buffer = NULL;
@@ -474,7 +476,14 @@ int e_eingabe(ECNT *e)
     (f->ins > 1 && f->ins != 8)) && c < 255)
   {
    if (f->ins == 8) continue;
-   if (f->ins == 0 || f->ins == 2)  e_put_char(c, b, s);
+   if (c >= 0x80)
+   {
+    unsigned char u8[4];
+    int u8len = e_codepoint_to_utf8(c, u8);
+    e_ins_nchar(b, s, u8, b->b.x, b->b.y, u8len);
+   }
+   else if (f->ins == 0 || f->ins == 2)
+    e_put_char(c, b, s);
    else e_ins_nchar(b, s, &cc, b->b.x, b->b.y, 1);
    e_schirm(f, 1);
   }
@@ -2019,6 +2028,20 @@ int e_new_line(int yd, BUFFER *b)
  b->bf[yd].len = 0;
  b->bf[yd].nrc = 0;
  return(b->mxlines);
+}
+
+static int e_codepoint_to_utf8(int cp, unsigned char *out)
+{
+ if (cp < 0x80)
+  { out[0] = cp; return 1; }
+ if (cp < 0x800)
+  { out[0] = 0xC0 | (cp >> 6); out[1] = 0x80 | (cp & 0x3F); return 2; }
+ if (cp < 0x10000)
+  { out[0] = 0xE0 | (cp >> 12); out[1] = 0x80 | ((cp >> 6) & 0x3F);
+    out[2] = 0x80 | (cp & 0x3F); return 3; }
+ out[0] = 0xF0 | (cp >> 18); out[1] = 0x80 | ((cp >> 12) & 0x3F);
+ out[2] = 0x80 | ((cp >> 6) & 0x3F); out[3] = 0x80 | (cp & 0x3F);
+ return 4;
 }
 
 /*     Overwriting of a character       */
