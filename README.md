@@ -38,6 +38,9 @@ xwpe file.c         # X11 mode
   all other dialogs accept and render accented characters correctly.
   UTF-8-aware cursor movement, backspace, and delete.
 * printf without \n visible after each step (fflush via gdb)
+* Perl and COBOL compiler support (perl -c, cobc)
+* Cursor-relative error navigation with wrap-around (Alt-T/Alt-V)
+* Dialog usability: Tab/Shift-Tab navigation, radio buttons, colors
 
 ## What was new in 1.6.2
 
