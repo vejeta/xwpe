@@ -348,9 +348,10 @@ static void e_d_messages_redraw(FENSTER *mf)
  SCHIRM *s = mf->s;
  BUFFER *b = mf->b;
  int visible_h = mf->e.y - mf->a.y - 1;
+ int margin = visible_h > 4 ? 2 : 0;
 
- if (b->b.y >= s->c.y + visible_h)
-  s->c.y = b->b.y - visible_h + 1;
+ if (b->b.y >= s->c.y + visible_h - margin)
+  s->c.y = b->b.y - visible_h + margin + 1;
  if (s->c.y < 0) s->c.y = 0;
  e_ed_rahmen(mf, 1);
  e_schirm(mf, 1);

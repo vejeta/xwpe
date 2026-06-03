@@ -1900,8 +1900,13 @@ int e_d_p_message(char *str, FENSTER *f, int sw)
 
  print_to_end_of_buffer(b, str, b->mx.x);
 
-/* place cursor on the last line */
  b->b.y = b->mxlines-1;
+ { int visible_h = f->e.y - f->a.y - 1;
+   int margin = visible_h > 4 ? 2 : 0;
+   if (b->b.y >= s->c.y + visible_h - margin)
+    s->c.y = b->b.y - visible_h + margin + 1;
+   if (s->c.y < 0) s->c.y = 0;
+ }
 
  if (sw)
   e_rep_win_tree(cn);
