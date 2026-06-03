@@ -1263,7 +1263,13 @@ int e_x_getch()
           DefaultColormap(WpeXInfo.display, WpeXInfo.screen));
        }
 #endif
-       /* Expand editor windows to fill new size */
+       { extern PIC *e_X_l_pic;
+         int _is_win_pic = 0;
+         for (_i = 0; _i <= WpeEditor->mxedt; _i++)
+          if (e_X_l_pic == WpeEditor->f[_i]->pic) { _is_win_pic = 1; break; }
+         if (!_is_win_pic)
+          (*e_u_setlastpic)(NULL);
+       }
        for (_i = 0; _i <= WpeEditor->mxedt; _i++)
        {
         FENSTER *fw = WpeEditor->f[_i];

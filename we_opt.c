@@ -1795,9 +1795,8 @@ e_opt_kst_restart:
    {
       if (c == WPE_RESIZE)
       {
-         e_close_view(o->pic, 1);
+         e_close_view(o->pic, 0);
          o->pic = NULL;
-         e_repaint_desk(o->f->ed->f[o->f->ed->mxedt]);
          c = 0;
          goto e_opt_kst_restart;
       }

@@ -66,6 +66,7 @@ int e_run_options(FENSTER *f);
 int e_run_c_options(FENSTER *f);
 int e_project_options(FENSTER *f);
 int e_system(char *estr, ECNT *cn);
+void e_messages_scroll_to_bottom(FENSTER *f);
 int e_d_p_message(char *str, FENSTER *f, int sw);
 int e_install(FENSTER *f);
 int e_exec_make(FENSTER *f);
