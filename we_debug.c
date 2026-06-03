@@ -6,6 +6,7 @@
 
 #include "messages.h"
 #include "edit.h"
+#include "we_fdloop.h"
 
 #ifndef NO_XWINDOWS
 #include "WeXterm.h"
@@ -152,22 +153,18 @@ static FENSTER *e_d_find_messages_window(void)
  return NULL;
 }
 
-static void e_d_activate_messages(FENSTER *mf)
-{
- ECNT *cn = mf->ed;
- int i;
+/* forward declarations */
+static void e_d_drain_pty_to_messages(void);
 
- for (i = cn->mxedt; i > 0; i--)
-  if (!strcmp(cn->f[i]->datnam, "Messages"))
-   break;
- if (i > 0 && i != cn->mxedt)
-  e_switch_window(cn->edt[i], cn->f[cn->mxedt]);
- mf = cn->f[cn->mxedt];
- mf->b->b.y = mf->b->mxlines - 1;
- mf->b->b.x = mf->b->bf[mf->b->b.y].len;
- e_cursor(mf, 1);
- e_schirm(mf, 1);
- e_refresh();
+static void e_d_wait_for_input(int gdb_fd)
+{
+ wpe_fd_add(gdb_fd, POLLIN, NULL, NULL);
+ if (e_d_pty_master >= 0)
+  wpe_fd_add(e_d_pty_master, POLLIN, NULL, NULL);
+ wpe_fd_poll(50);
+ wpe_fd_del(gdb_fd);
+ if (e_d_pty_master >= 0)
+  wpe_fd_del(e_d_pty_master);
 }
 
 static void e_d_show_input_prompt(void)
@@ -203,22 +200,54 @@ static void e_d_pty_drain_nonblock(void)
  fcntl(e_d_pty_master, F_SETFL, flags & ~O_NONBLOCK);
 }
 
+static char _pty_line_buf[1024];
+static int _pty_line_len = 0;
+
+static void e_d_pty_flush_line(FENSTER *f, int force)
+{
+ if (_pty_line_len == 0)
+  return;
+ if (!force && !memchr(_pty_line_buf, '\n', _pty_line_len))
+  return;
+ _pty_line_buf[_pty_line_len] = '\0';
+ e_d_pty_strip_cr(_pty_line_buf, _pty_line_len);
+ if (_pty_line_buf[0])
+  e_d_p_message(_pty_line_buf, f, 0);
+ _pty_line_len = 0;
+}
+
 void e_d_pty_flush_to_messages(FENSTER *f)
 {
- int prev_len;
- char *output;
+ char buf[256];
+ int n, flags;
 
  if (e_d_pty_master < 0)
   return;
- prev_len = e_d_prog_output_len;
- e_d_pty_drain_nonblock();
- if (e_d_prog_output_len <= prev_len)
+ flags = fcntl(e_d_pty_master, F_GETFL, 0);
+ fcntl(e_d_pty_master, F_SETFL, flags | O_NONBLOCK);
+ while ((n = read(e_d_pty_master, buf, sizeof(buf))) > 0)
+ {
+  int space = sizeof(_pty_line_buf) - _pty_line_len - 1;
+  if (n > space) n = space;
+  memcpy(_pty_line_buf + _pty_line_len, buf, n);
+  _pty_line_len += n;
+  e_d_pty_flush_line(f, 0);
+ }
+ fcntl(e_d_pty_master, F_SETFL, flags & ~O_NONBLOCK);
+}
+
+static void e_d_drain_pty_to_messages(void)
+{
+ FENSTER *mf;
+
+ if (e_d_pty_master < 0)
   return;
- output = e_d_prog_output + prev_len;
- e_d_pty_strip_cr(output, e_d_prog_output_len - prev_len);
- e_d_prog_output_len = prev_len + strlen(output);
- if (output[0])
-  e_d_p_message(output, f, 0);
+ mf = e_d_find_messages_window();
+ if (!mf)
+  return;
+ e_d_pty_flush_to_messages(mf);
+ e_d_pty_flush_line(mf, 1);
+ e_d_switch_out(0);
 }
 
 /* Close pty fds but KEEP the output buffer.
@@ -462,54 +491,17 @@ int e_d_line_read(int n, signed char *s, int max, int sw, int esw)
   if (esc_sv)  {  s[i] = WPE_ESC;  esc_sv = 0;  continue;  }
   kbdflgs = fcntl(n, F_GETFL, 0 );
   fcntl( n, F_SETFL, kbdflgs | O_NONBLOCK);
-  { int _wait_count = 0;
   while ((ret = read(n, s + i, 1)) <= 0 && i == 0 && wt >= sw)
   {
    if (ret == 0)
-   {  /* EOF on pipe: debugger process exited */
-      jdb_trace("e_d_line_read: EOF on pipe (debugger exited)\n");
-      fcntl(n, F_SETFL, kbdflgs & ~O_NONBLOCK);
-      return(-1);
+   {
+    jdb_trace("e_d_line_read: EOF on pipe (debugger exited)\n");
+    fcntl(n, F_SETFL, kbdflgs & ~O_NONBLOCK);
+    return(-1);
    }
-   if (++_wait_count == 10 && e_d_pty_master >= 0)
-    e_d_show_input_prompt();
-   { struct pollfd _pfd[3];
-     int _nfds = 1;
-     _pfd[0].fd = n;
-     _pfd[0].events = POLLIN;
-#ifndef NO_XWINDOWS
-     if (WpeIsXwin())
-     {
-      _pfd[1].fd = ConnectionNumber(WpeXInfo.display);
-      _pfd[1].events = POLLIN;
-      _nfds = 2;
-     }
-#endif
-     if (e_d_pty_master >= 0)
-     {
-      _pfd[_nfds].fd = e_d_pty_master;
-      _pfd[_nfds].events = POLLIN;
-      _nfds++;
-     }
-     poll(_pfd, _nfds, 50);
-     if (e_d_pty_master >= 0)
-     {
-      FENSTER *_mf = e_d_find_messages_window();
-      if (_mf)
-      {
-       int _prev = e_d_prog_output_len;
-       e_d_pty_flush_to_messages(_mf);
-       if (e_d_prog_output_len > _prev)
-        e_d_switch_out(0);
-      }
-     }
-   }
-   if(e_d_getchar() == D_CBREAK) return(-1);
-  } }
-/*	Read until no chars are left anymore
-   	Return if buffer not empty
-        return(-1) if CBREAK
-*/
+   e_d_wait_for_input(n);
+   if (e_d_getchar() == D_CBREAK) return(-1);
+  }
   fcntl( n, F_SETFL, kbdflgs & ~O_NONBLOCK);
   if (ret == -1) break;
   else if (ret != 1 ||  s[i] == EOF || s[i] == '\0') break;
@@ -659,8 +651,30 @@ int e_d_getchar()
 #ifndef NO_XWINDOWS
  if (WpeIsXwin())
  {
+  XEvent _ev;
+  KeySym _ks;
+  char _buf[8];
+
   XFlush(WpeXInfo.display);
-  c = (*e_u_change)(NULL);
+  while (XPending(WpeXInfo.display))
+  {
+   XNextEvent(WpeXInfo.display, &_ev);
+   if (_ev.type == KeyPress)
+   {
+    if (XLookupString(&_ev.xkey, _buf, sizeof(_buf), &_ks, NULL) == 1)
+    {
+     c = _buf[0];
+     break;
+    }
+   }
+   else if (_ev.type == Expose)
+   {
+    XCopyArea(WpeXInfo.display, WpeXInfo.backbuf, WpeXInfo.window,
+      WpeXInfo.gc, _ev.xexpose.x, _ev.xexpose.y,
+      _ev.xexpose.width, _ev.xexpose.height,
+      _ev.xexpose.x, _ev.xexpose.y);
+   }
+  }
  }
 #endif
  if (c || (i = read(fd, &c, 1)) == 1)
