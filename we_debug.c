@@ -395,6 +395,17 @@ typedef struct {
 
 static e_d_accum_t e_d_accum;
 
+static void e_d_flush_inferior_stdout(void)
+{
+ char resp[256];
+
+ if (e_deb_type != 0 || e_d_pty_master < 0)
+  return;
+ write(rfildes[1], "call (void)fflush(0)\n", 21);
+ while (e_d_line_read(wfildes[0], resp, 256, 0, 0) == 0)
+  ;
+}
+
 static void e_d_accum_complete(void)
 {
  FENSTER *f = e_d_accum.f;
@@ -403,6 +414,7 @@ static void e_d_accum_complete(void)
  _dbg_open();
  fprintf(_dbg_io, "ACCUM_COMPLETE: async going to 0\n");
  fflush(_dbg_io);
+ e_d_flush_inferior_stdout();
  e_d_drain_pty_to_messages();
  wpe_fd_del(wfildes[0]);
  if (e_d_pty_master >= 0)
