@@ -757,6 +757,30 @@ int e_t_kbhit()
 }
 
 #ifdef NCURSES
+static int e_t_utf8_assemble(int first)
+{
+ int cp, i, expect;
+ int cont;
+
+ if ((first & 0xE0) == 0xC0)
+  { cp = first & 0x1F; expect = 1; }
+ else if ((first & 0xF0) == 0xE0)
+  { cp = first & 0x0F; expect = 2; }
+ else if ((first & 0xF8) == 0xF0)
+  { cp = first & 0x07; expect = 3; }
+ else
+  return first;
+ for (i = 0; i < expect; i++)
+ {
+  timeout(50);
+  cont = fk_getch();
+  if (cont == ERR || (cont & 0xC0) != 0x80)
+   return first;
+  cp = (cp << 6) | (cont & 0x3F);
+ }
+ return cp;
+}
+
 static int e_t_getch_poll(void)
 {
  static int stdin_registered = 0;
@@ -774,7 +798,11 @@ static int e_t_getch_poll(void)
   timeout(0);
   c = fk_getch();
   if (c != ERR)
+  {
+   if ((unsigned int)c >= 0xC0 && (unsigned int)c <= 0xF7)
+    c = e_t_utf8_assemble(c);
    return c;
+  }
   if (e_d_async_pending)
    e_d_place_cursor_in_messages();
   timeout(-1);
