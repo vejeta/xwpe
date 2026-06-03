@@ -61,7 +61,31 @@ Bugs fixed in 1.6.x:
 
 Changes
 
-1.6.3 (dialog usability, Perl/COBOL, bug verification)
+1.6.3 (event-driven debugger, dead key compose, Perl/COBOL)
+
+  Event-driven I/O (X11 debugger):
+* Interactive program input during debugging.  When the debugged
+  program blocks on fgets/scanf, the user types in the IDE and
+  characters appear in Messages.  Backspace works (pty VERASE).
+  Architecture: wpe_fd_poll multiplexes X11 fd + gdb pipe + pty
+  master (same pattern as st, cgdb, foot terminals).
+* Incremental gdb response parser (e_d_accum_t) processes one line
+  per callback instead of looping synchronously in e_read_output.
+  The UI never freezes during debug stepping.
+* Program output appears in Messages via e_d_pty_read_to_messages
+  (char-by-char buffer append, no line-flush artifacts).
+* Ctrl-G P (Program Output) accumulates during interactive sessions.
+
+  Dead key compose and UTF-8 input:
+* X11 dead key composition for accented characters: acute, grave,
+  diaeresis, tilde, circumflex, cedilla.  Works in both the editor
+  and the debug console.  Fallback compose table (same approach as
+  xterm/GTK) when XIM does not compose natively.
+* UTF-8 multi-byte insertion in editor (e_codepoint_to_utf8).
+* UTF-8 encoding for debug console pty input (e_d_pty_write_utf8).
+* XIM robustness: NULL XIM guard, Status parameter, XNFocusWindow.
+
+  Dialog usability:
 
   Dialog usability:
 * Tab/Shift-Tab navigation through all dialog fields, including
