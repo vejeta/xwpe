@@ -1189,6 +1189,10 @@ int e_x_getch()
  {
   if (!XPending(WpeXInfo.display))
   {
+   extern int e_d_async_pending;
+   extern void e_d_place_cursor_in_messages(void);
+   if (e_d_async_pending)
+    e_d_place_cursor_in_messages();
    XFlush(WpeXInfo.display);
    wpe_fd_poll(-1);
   }

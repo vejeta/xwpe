@@ -238,6 +238,7 @@ static FENSTER *e_d_find_messages_window(void)
 
 /* forward declarations */
 static void e_d_drain_pty_to_messages(void);
+static void e_d_messages_place_cursor(FENSTER *mf);
 
 static char _pty_line_buf[1024];
 static int _pty_line_len = 0;
@@ -516,9 +517,41 @@ static void e_d_accum_init(FENSTER *f, int main_brk)
   wpe_fd_add(e_d_pty_master, POLLIN, e_d_on_pty_readable, f);
 }
 
+void e_d_place_cursor_in_messages(void)
+{
+ FENSTER *mf = e_d_find_messages_window();
+
+ if (mf)
+  e_d_messages_place_cursor(mf);
+}
+
 static void e_d_activate_messages_window(void)
 {
  _messages_activated = 1;
+}
+
+static void e_d_messages_place_cursor(FENSTER *mf)
+{
+ BUFFER *b = mf->b;
+ SCHIRM *s = mf->s;
+ int last = b->mxlines - 1;
+ int row, col;
+
+ if (last < 0) return;
+ if (!_pty_owns_last_line && b->bf[last].len > 0)
+ {
+  row = mf->a.y + 1 + (last + 1 - s->c.y);
+  col = mf->a.x + 1;
+ }
+ else
+ {
+  row = mf->a.y + 1 + (last - s->c.y);
+  col = mf->a.x + 1 + b->bf[last].len;
+ }
+ if (row > mf->e.y - 1) row = mf->e.y - 1;
+ if (col > mf->e.x - 1) col = mf->e.x - 1;
+ fk_locate(col, row);
+ e_refresh();
 }
 
 static void e_d_on_pty_readable(int fd, void *data)
@@ -528,14 +561,11 @@ static void e_d_on_pty_readable(int fd, void *data)
 
  if (!mf) return;
  n = e_d_pty_read_to_messages(mf);
- _dbg_open();
- fprintf(_dbg_io, "PTY_CB: read %d bytes, mxlines=%d, last_len=%d, window a=(%d,%d) e=(%d,%d)\n",
-  n, mf->b->mxlines,
-  mf->b->mxlines > 0 ? mf->b->bf[mf->b->mxlines-1].len : -1,
-  mf->a.x, mf->a.y, mf->e.x, mf->e.y);
- fflush(_dbg_io);
  if (n > 0)
+ {
   e_d_messages_redraw(mf);
+  e_d_messages_place_cursor(mf);
+ }
 }
 
 static void e_d_on_gdb_readable(int fd, void *data)
@@ -620,7 +650,10 @@ static void e_d_drain_pty_to_messages(void)
  if (!mf)
   return;
  if (e_d_pty_read_to_messages(mf) > 0)
+ {
   e_d_messages_redraw(mf);
+  e_d_messages_place_cursor(mf);
+ }
 }
 
 /* Close pty fds but KEEP the output buffer.

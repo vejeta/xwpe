@@ -10,6 +10,8 @@
 #include <termios.h>
 #include <sys/ioctl.h>
 #include <fcntl.h>
+#include <poll.h>
+#include "we_fdloop.h"
 
 #include<signal.h>
 #define KEYFN 42
@@ -755,12 +757,37 @@ int e_t_kbhit()
 }
 
 #ifdef NCURSES
+static int e_t_getch_poll(void)
+{
+ static int stdin_registered = 0;
+ extern int e_d_async_pending;
+ extern void e_d_place_cursor_in_messages(void);
+ int c;
+
+ if (!stdin_registered)
+ {
+  wpe_fd_add(STDIN_FILENO, POLLIN, NULL, NULL);
+  stdin_registered = 1;
+ }
+ for (;;)
+ {
+  timeout(0);
+  c = fk_getch();
+  if (c != ERR)
+   return c;
+  if (e_d_async_pending)
+   e_d_place_cursor_in_messages();
+  timeout(-1);
+  wpe_fd_poll(-1);
+ }
+}
+
 int e_t_getch()
 {
  int c, bk;
 
  e_refresh();
- c = fk_getch();
+ c = e_t_getch_poll();
  if (c > KEY_CODE_YES)
  {
   switch (c)
