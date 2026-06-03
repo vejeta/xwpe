@@ -848,6 +848,16 @@ int e_t_getch()
    case KEY_RESIZE:
    {
     int i, old_scol = MAXSCOL, old_slns = MAXSLNS;
+    /* Drain any queued KEY_RESIZE events (resize often arrives in
+       bursts).  Same technique as dialog(1) dlg_will_resize(). */
+    { int _ch;
+      nodelay(stdscr, TRUE);
+      while ((_ch = getch()) == KEY_RESIZE)
+       ;
+      if (_ch != ERR)
+       ungetch(_ch);
+      nodelay(stdscr, FALSE);
+    }
     /* ncurses already called resizeterm() and updated LINES/COLS */
     MAXSCOL = COLS;
     MAXSLNS = LINES;
