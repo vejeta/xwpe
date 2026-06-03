@@ -16,11 +16,11 @@ int e_undo_sw = 0, e_redo_sw = 0;
 #ifdef DEBUGGER
 static int e_debug_console_input(int c, FENSTER *f)
 {
- extern int e_d_swtch, e_d_pty_master;
- extern void e_d_pty_flush_to_messages(FENSTER *f);
+ extern int e_d_swtch, e_d_pty_master, e_d_async_pending;
+ extern void e_d_echo_input_char(int c);
  char ch;
 
- if (e_d_swtch < 3 || e_d_pty_master < 0)
+ if (!e_d_async_pending || e_d_pty_master < 0)
   return 0;
  if (strcmp(f->datnam, "Messages") != 0)
   return 0;
@@ -28,19 +28,21 @@ static int e_debug_console_input(int c, FENSTER *f)
  {
   ch = '\n';
   write(e_d_pty_master, &ch, 1);
-  e_d_pty_flush_to_messages(f);
+  e_d_echo_input_char(c);
   return 1;
  }
  if (c >= 32 && c < 255)
  {
   ch = c;
   write(e_d_pty_master, &ch, 1);
+  e_d_echo_input_char(c);
   return 1;
  }
  if (c == WPE_DC)
  {
   ch = '\b';
   write(e_d_pty_master, &ch, 1);
+  e_d_echo_input_char(c);
   return 1;
  }
  return 0;

@@ -62,6 +62,15 @@ int print_to_end_of_buffer(BUFFER * b,char * str,int wrap_limit);
 
 char *e_debugger, *e_deb_swtch = NULL, *e_d_save_schirm;
 int e_d_swtch = 0, rfildes[2], ofildes, e_d_pid = 0;
+
+/* Async debugger state for event-driven step/run.
+   When e_d_async_pending is set, the debugger is waiting for gdb
+   to respond.  The main event loop processes keyboard and pty
+   events normally.  When gdb responds, the callback processes
+   the response and clears the flag. */
+int e_d_async_pending = 0;
+static int e_d_async_main_brk = 0;
+static FENSTER *e_d_async_f = NULL;
 int e_d_nbrpts = 0, e_d_zwtchs = 0, *e_d_ybrpts, *e_d_nrbrpts;
 
 /* number of watch expressions in Watches window */
@@ -143,6 +152,10 @@ static void e_d_pty_strip_cr(char *s, int len)
  s[w] = '\0';
 }
 
+/* forward declarations */
+static void e_d_pty_flush_line(FENSTER *, int);
+void e_d_pty_flush_to_messages(FENSTER *);
+
 static FENSTER *e_d_find_messages_window(void)
 {
  int i;
@@ -157,15 +170,16 @@ static FENSTER *e_d_find_messages_window(void)
 static void e_d_drain_pty_to_messages(void);
 
 static int _echo_col = 0;
+static int _echo_row = -1;
 
-static void e_d_echo_input_char(int c)
+void e_d_echo_input_char(int c)
 {
  FENSTER *mf = e_d_find_messages_window();
  int row, col;
 
  if (!mf)
   return;
- row = mf->e.y - 1;
+ row = (_echo_row >= 0) ? _echo_row : mf->e.y - 1;
  col = mf->a.x + 1 + _echo_col;
  if (c == '\r' || c == '\n')
  {
@@ -201,13 +215,56 @@ static void e_d_wait_for_input(int gdb_fd)
   wpe_fd_del(e_d_pty_master);
 }
 
+static void e_d_on_pty_readable(int fd, void *data)
+{
+ FENSTER *f = (FENSTER *)data;
+
+ if (!f) f = e_d_find_messages_window();
+ if (!f) return;
+ e_d_pty_flush_to_messages(f);
+ e_d_pty_flush_line(f, 1);
+ e_d_switch_out(0);
+}
+
+static void e_d_on_gdb_readable(int fd, void *data)
+{
+ FENSTER *f = e_d_async_f;
+ int ret;
+ signed char buf[256];
+
+ if (!f || !e_d_async_pending)
+  return;
+ ret = e_d_line_read(wfildes[0], buf, 256, 0, 0);
+ if (ret == 1)
+ {
+  e_d_async_pending = 0;
+  wpe_fd_del(wfildes[0]);
+  if (e_d_pty_master >= 0)
+   wpe_fd_del(e_d_pty_master);
+  e_read_output(f);
+  if (e_d_async_main_brk)
+  {
+   e_mk_brk_main(f, e_d_async_main_brk);
+   e_d_async_main_brk = 0;
+  }
+  e_d_async_f = NULL;
+ }
+}
+
 static void e_d_show_input_prompt(void)
 {
  FENSTER *mf = e_d_find_messages_window();
+ int content_lines, last_visible_row;
 
  if (!mf)
   return;
- e_d_p_message("(program waiting for input)", mf, 0);
+ e_d_p_message("(waiting user input)", mf, 0);
+ content_lines = mf->b->mxlines - mf->s->c.y;
+ last_visible_row = mf->a.y + 1 + content_lines;
+ if (last_visible_row > mf->e.y - 1)
+  last_visible_row = mf->e.y - 1;
+ _echo_row = last_visible_row;
+ _echo_col = 0;
  e_d_switch_out(0);
 }
 
@@ -526,16 +583,26 @@ int e_d_line_read(int n, signed char *s, int max, int sw, int esw)
   if (esc_sv)  {  s[i] = WPE_ESC;  esc_sv = 0;  continue;  }
   kbdflgs = fcntl(n, F_GETFL, 0 );
   fcntl( n, F_SETFL, kbdflgs | O_NONBLOCK);
+  { static int _prompt_shown = 0;
+    int _waits = 0;
   while ((ret = read(n, s + i, 1)) <= 0 && i == 0 && wt >= sw)
   {
    if (ret == 0)
    {
     jdb_trace("e_d_line_read: EOF on pipe (debugger exited)\n");
     fcntl(n, F_SETFL, kbdflgs & ~O_NONBLOCK);
+    _prompt_shown = 0;
     return(-1);
    }
+   if (!_prompt_shown && ++_waits > 20 && e_d_swtch >= 3 && e_d_pty_master >= 0)
+   {
+    _prompt_shown = 1;
+    e_d_show_input_prompt();
+   }
    e_d_wait_for_input(n);
-   if (e_d_getchar() == D_CBREAK) return(-1);
+   if (e_d_getchar() == D_CBREAK) { _prompt_shown = 0; return(-1); }
+  }
+  if (ret > 0 && _prompt_shown) _prompt_shown = 0;
   }
   fcntl( n, F_SETFL, kbdflgs & ~O_NONBLOCK);
   if (ret == -1) break;
@@ -804,6 +871,11 @@ int e_d_quit_basic(FENSTER *f)
  {  close(wfildes[1]);  wfildes[1] = -1;  }
  e_d_pty_close();
  _pty_line_len = 0;
+ _echo_col = 0;
+ _echo_row = -1;
+ e_d_async_pending = 0;
+ e_d_async_f = NULL;
+ e_d_async_main_brk = 0;
  e_d_nbrpts = 0;
  if (WpeIsXwin())
  {
@@ -2591,6 +2663,15 @@ int e_deb_run(FENSTER *f)
   return(e_error(e_d_msg[ERR_CANTPROG], 0, f->fb));
  }
  e_d_swtch = 3;
+ if (e_d_pty_master >= 0 && e_deb_type == 0)
+ {
+  e_d_async_pending = 1;
+  e_d_async_f = f;
+  e_d_async_main_brk = main_brk;
+  wpe_fd_add(wfildes[0], POLLIN, e_d_on_gdb_readable, f);
+  wpe_fd_add(e_d_pty_master, POLLIN, e_d_on_pty_readable, f);
+  return(0);
+ }
  { int _ro = e_read_output(f);
    if (main_brk)
     e_mk_brk_main(f, main_brk);
@@ -2827,6 +2908,15 @@ pdb_poll_again:
    }
   }
   e_d_switch_out(0);
+  return(0);
+ }
+ if (e_d_pty_master >= 0 && e_deb_type == 0)
+ {
+  e_d_async_pending = 1;
+  e_d_async_f = f;
+  e_d_async_main_brk = 0;
+  wpe_fd_add(wfildes[0], POLLIN, e_d_on_gdb_readable, f);
+  wpe_fd_add(e_d_pty_master, POLLIN, e_d_on_pty_readable, f);
   return(0);
  }
  return(e_read_output(f));
