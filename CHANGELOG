@@ -63,12 +63,16 @@ Changes
 
 1.6.3 (event-driven debugger, dead key compose, Perl/COBOL)
 
-  Event-driven I/O (X11 debugger):
+  Event-driven I/O (X11 and terminal debugger):
 * Interactive program input during debugging.  When the debugged
   program blocks on fgets/scanf, the user types in the IDE and
   characters appear in Messages.  Backspace works (pty VERASE).
-  Architecture: wpe_fd_poll multiplexes X11 fd + gdb pipe + pty
-  master (same pattern as st, cgdb, foot terminals).
+  Architecture: wpe_fd_poll multiplexes display fd + gdb pipe + pty
+  master (same pattern as st, cgdb, foot terminals).  Works in both
+  X11 (xwpe) and terminal (wpe) modes.  Terminal mode uses
+  e_t_getch_poll with timeout(50) for ncurses escape sequence
+  compatibility.  UTF-8 input via e_t_utf8_assemble (multi-byte
+  codepoint decoding from ncurses getch).
 * Incremental gdb response parser (e_d_accum_t) processes one line
   per callback instead of looping synchronously in e_read_output.
   The UI never freezes during debug stepping.

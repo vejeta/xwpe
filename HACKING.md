@@ -293,9 +293,17 @@ blocked waiting for gdb.  When the debugged program blocked on
 `fgets`/`scanf`, the IDE froze.
 
 `wpe_fd_poll` (we_fdloop.c) multiplexes all file descriptors with
-`poll()` and per-fd callbacks.  In X11, `e_x_getch` registers
-the X11 connection fd (NULL callback, poll-only) so keyboard events
-wake up poll alongside gdb and pty data.
+`poll()` and per-fd callbacks.  Both modes integrate with the poll
+loop:
+
+- **X11**: `e_x_getch` registers the X11 connection fd (NULL
+  callback, poll-only) so keyboard events wake up poll alongside
+  gdb and pty data.
+- **Terminal**: `e_t_getch_poll` registers STDIN_FILENO, uses
+  `timeout(50)` for non-blocking `getch()` (50ms allows ncurses
+  to assemble mouse escape sequences), then `wpe_fd_poll(-1)` to
+  wait for any fd.  `e_t_utf8_assemble` reads continuation bytes
+  to decode multi-byte UTF-8 into codepoints.
 
 The incremental gdb parser (`e_d_accum_t`) processes one line per
 callback instead of looping in `e_read_output`.  Three functions:
