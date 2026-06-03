@@ -6,14 +6,8 @@
 
 #include "edit.h"
 
-static int e_utf8_charlen(unsigned char c)
-{
- if (c < 0x80) return 1;
- if ((c & 0xE0) == 0xC0) return 2;
- if ((c & 0xF0) == 0xE0) return 3;
- if ((c & 0xF8) == 0xF0) return 4;
- return 1;
-}
+extern int e_utf8_charlen(unsigned char c);
+extern int e_utf8_to_codepoint(unsigned char *buf, int len);
 
 static int e_utf8_decode_at(unsigned char *s, int pos, int *codepoint)
 {
@@ -21,14 +15,8 @@ static int e_utf8_decode_at(unsigned char *s, int pos, int *codepoint)
 
  if (len == 1)
   *codepoint = s[pos];
- else if (len == 2)
-  *codepoint = ((s[pos] & 0x1F) << 6) | (s[pos+1] & 0x3F);
- else if (len == 3)
-  *codepoint = ((s[pos] & 0x0F) << 12) | ((s[pos+1] & 0x3F) << 6) |
-               (s[pos+2] & 0x3F);
  else
-  *codepoint = ((s[pos] & 0x07) << 18) | ((s[pos+1] & 0x3F) << 12) |
-               ((s[pos+2] & 0x3F) << 6) | (s[pos+3] & 0x3F);
+  *codepoint = e_utf8_to_codepoint(s + pos, len);
  return len;
 }
 

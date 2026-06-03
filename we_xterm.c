@@ -1144,17 +1144,7 @@ static int e_compose_dead(KeySym dead, int base)
  return -1;
 }
 
-static int e_utf8_to_codepoint(unsigned char *buf, int len)
-{
- if (len >= 2 && (buf[0] & 0xE0) == 0xC0)
-  return ((buf[0] & 0x1F) << 6) | (buf[1] & 0x3F);
- if (len >= 3 && (buf[0] & 0xF0) == 0xE0)
-  return ((buf[0] & 0x0F) << 12) | ((buf[1] & 0x3F) << 6) | (buf[2] & 0x3F);
- if (len >= 4 && (buf[0] & 0xF8) == 0xF0)
-  return ((buf[0] & 0x07) << 18) | ((buf[1] & 0x3F) << 12) |
-         ((buf[2] & 0x3F) << 6) | (buf[3] & 0x3F);
- return -1;
-}
+extern int e_utf8_to_codepoint(unsigned char *buf, int len);
 
 int e_x_getch()
 {

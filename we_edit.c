@@ -66,6 +66,9 @@ int e_del_a_ind();
 int e_tab_a_ind();
 int e_help_next();
 int e_codepoint_to_utf8(int cp, unsigned char *out);
+int e_utf8_charlen(unsigned char c);
+int e_utf8_to_codepoint(unsigned char *buf, int len);
+int e_utf8_visual_len(unsigned char *s, int bytes);
 
 #ifdef PROG
 BUFFER *e_p_m_buffer = NULL;
@@ -2042,6 +2045,39 @@ int e_codepoint_to_utf8(int cp, unsigned char *out)
  out[0] = 0xF0 | (cp >> 18); out[1] = 0x80 | ((cp >> 12) & 0x3F);
  out[2] = 0x80 | ((cp >> 6) & 0x3F); out[3] = 0x80 | (cp & 0x3F);
  return 4;
+}
+
+int e_utf8_charlen(unsigned char c)
+{
+ if (c < 0x80) return 1;
+ if ((c & 0xE0) == 0xC0) return 2;
+ if ((c & 0xF0) == 0xE0) return 3;
+ if ((c & 0xF8) == 0xF0) return 4;
+ return 1;
+}
+
+int e_utf8_to_codepoint(unsigned char *buf, int len)
+{
+ if (len >= 2 && (buf[0] & 0xE0) == 0xC0)
+  return ((buf[0] & 0x1F) << 6) | (buf[1] & 0x3F);
+ if (len >= 3 && (buf[0] & 0xF0) == 0xE0)
+  return ((buf[0] & 0x0F) << 12) | ((buf[1] & 0x3F) << 6) | (buf[2] & 0x3F);
+ if (len >= 4 && (buf[0] & 0xF8) == 0xF0)
+  return ((buf[0] & 0x07) << 18) | ((buf[1] & 0x3F) << 12) |
+         ((buf[2] & 0x3F) << 6) | (buf[3] & 0x3F);
+ return -1;
+}
+
+int e_utf8_visual_len(unsigned char *s, int bytes)
+{
+ int pos = 0, vcols = 0;
+
+ while (pos < bytes && s[pos])
+ {
+  vcols++;
+  pos += e_utf8_charlen(s[pos]);
+ }
+ return vcols;
 }
 
 /*     Overwriting of a character       */

@@ -546,7 +546,10 @@ static void e_d_messages_place_cursor(FENSTER *mf)
  else
  {
   row = mf->a.y + 1 + (last - s->c.y);
-  col = mf->a.x + 1 + b->bf[last].len;
+  { extern int e_utf8_visual_len(unsigned char *, int);
+    col = mf->a.x + 1 +
+     e_utf8_visual_len((unsigned char *)b->bf[last].s, b->bf[last].len);
+  }
  }
  if (row > mf->e.y - 1) row = mf->e.y - 1;
  if (col > mf->e.x - 1) col = mf->e.x - 1;
