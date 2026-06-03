@@ -1731,20 +1731,30 @@ int e_get_opt_sw(int c, int x, int y, W_OPTSTR *o)
    return(!ret ? c : ret);
 }
 
-int e_opt_kst(W_OPTSTR *o)
+static void e_opt_center_dialog(W_OPTSTR *o, int dlg_w, int dlg_h)
 {
-   int ret = 0, csv, sw = 1, i, j, num, cold, c = o->bgsw;
-   char *tmp;
-   int orig_xa = o->xa, orig_ya = o->ya;
-   int orig_xe = o->xe, orig_ye = o->ye;
-   fk_cursor(0);
-e_opt_kst_restart:
-   o->xa = orig_xa; o->ya = orig_ya;
-   o->xe = orig_xe; o->ye = orig_ye;
+   FENSTER *ef = o->f->ed->f[o->f->ed->mxedt];
+   o->xa = ef->a.x + (ef->e.x - ef->a.x - dlg_w) / 2;
+   o->ya = ef->a.y + (ef->e.y - ef->a.y - dlg_h) / 2;
+   if (o->xa < 0) o->xa = 0;
+   if (o->ya < 1) o->ya = 1;
+   o->xe = o->xa + dlg_w;
+   o->ye = o->ya + dlg_h;
    if (o->xe >= MAXSCOL) o->xe = MAXSCOL - 1;
    if (o->ye >= MAXSLNS - 1) o->ye = MAXSLNS - 2;
    if (o->xa >= o->xe - 4) o->xa = 0;
    if (o->ya >= o->ye - 2) o->ya = 1;
+}
+
+int e_opt_kst(W_OPTSTR *o)
+{
+   int ret = 0, csv, sw = 1, i, j, num, cold, c = o->bgsw;
+   char *tmp;
+   int dlg_w = o->xe - o->xa;
+   int dlg_h = o->ye - o->ya;
+   fk_cursor(0);
+e_opt_kst_restart:
+   e_opt_center_dialog(o, dlg_w, dlg_h);
    o->pic = e_std_kst(o->xa, o->ya, o->xe, o->ye, o->name, 1, o->frt, o->ftt, o->frs);
    if(o->pic == NULL) {  e_error(e_msg[ERR_LOWMEM], 0, o->f->fb); return(-1);  }
    if(!c) c = e_get_opt_sw(CDO, 0, 0, o);
