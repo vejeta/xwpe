@@ -871,6 +871,8 @@ int e_t_getch()
     /* ncurses already called resizeterm() and updated LINES/COLS */
     MAXSCOL = COLS;
     MAXSLNS = LINES;
+    if (MAXSLNS < 6) MAXSLNS = 6;
+    if (MAXSCOL < 30) MAXSCOL = 30;
     if (MAXSCOL != old_scol || MAXSLNS != old_slns)
     {
      schirm = REALLOC(schirm, sizeof(SCREENCELL) * MAXSCOL * MAXSLNS);
@@ -880,7 +882,27 @@ int e_t_getch()
 #if !defined(NO_XWINDOWS) && defined(NEWSTYLE)
      extbyte = REALLOC(extbyte, MAXSCOL * MAXSLNS);
 #endif
+     { FILE *_df = fopen("/tmp/xwpe-ncurses-resize.txt", "a");
+       int _k;
+       if (_df) { fprintf(_df, "RESIZE: old=%dx%d new=%dx%d mxedt=%d\n",
+         old_scol, old_slns, MAXSCOL, MAXSLNS, WpeEditor->mxedt);
+         for (_k = 0; _k <= WpeEditor->mxedt; _k++)
+          fprintf(_df, "  BEFORE[%d] '%s': (%d,%d)-(%d,%d)\n", _k,
+            WpeEditor->f[_k]->datnam ? WpeEditor->f[_k]->datnam : "?",
+            WpeEditor->f[_k]->a.x, WpeEditor->f[_k]->a.y,
+            WpeEditor->f[_k]->e.x, WpeEditor->f[_k]->e.y);
+         fclose(_df); }
+     }
      e_relayout_windows(WpeEditor, old_scol, old_slns);
+     { FILE *_df = fopen("/tmp/xwpe-ncurses-resize.txt", "a");
+       int _k;
+       if (_df) { for (_k = 0; _k <= WpeEditor->mxedt; _k++)
+          fprintf(_df, "  AFTER[%d] '%s': (%d,%d)-(%d,%d)\n", _k,
+            WpeEditor->f[_k]->datnam ? WpeEditor->f[_k]->datnam : "?",
+            WpeEditor->f[_k]->a.x, WpeEditor->f[_k]->a.y,
+            WpeEditor->f[_k]->e.x, WpeEditor->f[_k]->e.y);
+         fclose(_df); }
+     }
      e_repaint_desk(WpeEditor->f[WpeEditor->mxedt]);
     }
     return WPE_RESIZE;

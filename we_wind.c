@@ -38,8 +38,24 @@ void e_relayout_windows(ECNT *cn, int old_scol, int old_slns)
 
   if (fw->e.x >= MAXSCOL) fw->e.x = MAXSCOL - 1;
   if (fw->e.y >= MAXSLNS - 1) fw->e.y = MAXSLNS - 2;
-  if (fw->e.y - fw->a.y < 3) fw->a.y = fw->e.y - 3;
-  if (fw->e.x - fw->a.x < 26) fw->a.x = fw->e.x - 26;
+  if (fw->a.y < 1) fw->a.y = 1;
+  if (fw->a.x < 0) fw->a.x = 0;
+  if (fw->e.y - fw->a.y < 3)
+  {
+   if (at_top)
+    fw->e.y = fw->a.y + 3;
+   else
+    fw->a.y = fw->e.y - 3;
+  }
+  if (fw->e.x - fw->a.x < 26)
+  {
+   if (at_left)
+    fw->e.x = fw->a.x + 26;
+   else
+    fw->a.x = fw->e.x - 26;
+  }
+  if (fw->e.y >= MAXSLNS - 1) fw->e.y = MAXSLNS - 2;
+  if (fw->e.x >= MAXSCOL) fw->e.x = MAXSCOL - 1;
   if (fw->a.y < 1) fw->a.y = 1;
   if (fw->a.x < 0) fw->a.x = 0;
 
@@ -47,6 +63,18 @@ void e_relayout_windows(ECNT *cn, int old_scol, int old_slns)
   {
    fw->sa = fw->a;
    fw->se = fw->e;
+  }
+ }
+ for (i = 0; i <= cn->mxedt; i++)
+ {
+  FENSTER *fw = cn->f[i];
+  int j;
+  for (j = 0; j <= cn->mxedt; j++)
+  {
+   FENSTER *other = cn->f[j];
+   if (j == i) continue;
+   if (fw->a.y <= 1 && other->a.y > 1 && fw->e.y >= other->a.y)
+    other->a.y = fw->e.y + 1;
   }
  }
 }
