@@ -921,7 +921,12 @@ int e_t_getch()
      if (btn >= 0)
       e_mouse.k = btn;
      else if (e_t_mouse_is_released(mev.bstate))
-      e_mouse.k = 0;
+     {
+      if (e_mouse.k == 0)
+       e_mouse.k = 1;
+      else
+       e_mouse.k = 0;
+     }
      return(-1);
     }
     c = 0;
@@ -1184,11 +1189,17 @@ int fk_t_mouse(int *g)
 {
 #if MOUSE
  extern struct mouse e_mouse;
+ static int last_button = 0;
  MEVENT mev;
  int btn;
 
  if (g[0] == 2)
   return(0);
+ if (last_button == 0 && e_mouse.k > 0)
+ {
+  last_button = e_mouse.k;
+  e_mouse.k = 0;
+ }
  timeout(50);
  { int ch = getch();
    timeout(-1);
@@ -1201,21 +1212,23 @@ int fk_t_mouse(int *g)
     btn = e_t_mouse_decode_button(mev.bstate);
     if (btn >= 0)
     {
+     last_button = btn;
      g[1] = btn;
     }
     else if (e_t_mouse_is_released(mev.bstate))
     {
-     g[1] = e_mouse.k;
-     g[2] = mev.x * 8;
-     g[3] = mev.y * 8;
+     last_button = 0;
+     g[1] = 0;
      e_mouse.x = mev.x;
      e_mouse.y = mev.y;
      e_mouse.k = 0;
+     g[2] = mev.x * 8;
+     g[3] = mev.y * 8;
      return(0);
     }
     else if (mev.bstate & REPORT_MOUSE_POSITION)
     {
-     g[1] = e_mouse.k;
+     g[1] = last_button;
     }
     else
     {
@@ -1229,7 +1242,7 @@ int fk_t_mouse(int *g)
    }
    else
    {
-    g[1] = e_mouse.k;
+    g[1] = last_button;
     g[2] = e_mouse.x * 8;
     g[3] = e_mouse.y * 8;
     if (ch != ERR)
