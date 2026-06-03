@@ -276,6 +276,128 @@ static void e_d_wait_for_input(int gdb_fd)
   wpe_fd_del(e_d_pty_master);
 }
 
+static void e_d_on_gdb_readable(int fd, void *data);
+static void e_d_on_pty_readable(int fd, void *data);
+
+typedef struct {
+ char buf[SVLINES][256];
+ char *sp[SVLINES];
+ int active;
+ int main_brk;
+ struct FNST *f;
+} e_d_accum_t;
+
+static e_d_accum_t e_d_accum;
+
+static void e_d_accum_complete(void)
+{
+ FENSTER *f = e_d_accum.f;
+ int i;
+
+ wpe_fd_del(wfildes[0]);
+ if (e_d_pty_master >= 0)
+  wpe_fd_del(e_d_pty_master);
+ e_d_accum.active = 0;
+ e_d_async_pending = 0;
+
+ for (i = 0; i < SVLINES; i++)
+  e_d_sp[i] = e_d_accum.sp[i];
+
+ for (i = 0; i < SVLINES; i++)
+ {
+  if (strstr(e_d_sp[i], "exited"))
+  {
+   e_d_pty_flush_to_messages(f);
+   e_d_p_message("Program exited.", f, 0);
+   e_d_quit(f);
+   return;
+  }
+ }
+ if (e_deb_type == 0 && e_d_pty_master >= 0)
+ {
+  char _flush_resp[256];
+  write(rfildes[1], "call (void)fflush(0)\n", 21);
+  while (e_d_line_read(wfildes[0], _flush_resp, 256, 0, 0) == 0)
+   ;
+  e_d_pty_flush_to_messages(f);
+ }
+ { int _i;
+   _i = e_d_fst_check(f);
+   if (_i < 0) _i = e_d_snd_check(f);
+   if (_i < 0) _i = e_d_trd_check(f);
+   if (_i < 0)
+   {
+    e_d_switch_out(0);
+    e_error("Program exited. Debugger stopped.", 0, f->fb);
+    e_d_quit(f);
+    return;
+   }
+ }
+ if (e_d_accum.main_brk)
+ {
+  e_mk_brk_main(f, e_d_accum.main_brk);
+  e_d_accum.main_brk = 0;
+ }
+ e_d_accum.f = NULL;
+}
+
+static void e_d_accum_line(char *line, int ret)
+{
+ char *spt;
+ int i;
+
+ if (!e_d_accum.active)
+  return;
+ if (ret == 2)
+ {
+  e_d_error(line);
+  return;
+ }
+ if (ret < 0)
+ {
+  e_d_accum.active = 0;
+  e_d_async_pending = 0;
+  wpe_fd_del(wfildes[0]);
+  if (e_d_pty_master >= 0)
+   wpe_fd_del(e_d_pty_master);
+  e_d_quit(e_d_accum.f);
+  return;
+ }
+ if (ret == 1)
+ {
+  e_d_accum_complete();
+  return;
+ }
+ if (!line[0])
+  return;
+ spt = e_d_accum.sp[0];
+ for (i = 1; i < SVLINES; i++)
+  e_d_accum.sp[i-1] = e_d_accum.sp[i];
+ e_d_accum.sp[SVLINES-1] = spt;
+ strncpy(spt, line, 255);
+ spt[255] = '\0';
+}
+
+static void e_d_accum_init(FENSTER *f, int main_brk)
+{
+ int i;
+
+ for (i = 0; i < SVLINES; i++)
+ {
+  e_d_accum.sp[i] = e_d_accum.buf[i];
+  e_d_accum.buf[i][0] = '\0';
+ }
+ e_d_accum.active = 1;
+ e_d_accum.main_brk = main_brk;
+ e_d_accum.f = f;
+ e_d_async_pending = 1;
+ _echo_col = 0;
+ _nb_len = 0;
+ wpe_fd_add(wfildes[0], POLLIN, e_d_on_gdb_readable, f);
+ if (e_d_pty_master >= 0)
+  wpe_fd_add(e_d_pty_master, POLLIN, e_d_on_pty_readable, f);
+}
+
 static void e_d_on_pty_readable(int fd, void *data)
 {
  FENSTER *f = (FENSTER *)data;
@@ -289,27 +411,15 @@ static void e_d_on_pty_readable(int fd, void *data)
 
 static void e_d_on_gdb_readable(int fd, void *data)
 {
- FENSTER *f = e_d_async_f;
- int ret;
  signed char buf[256];
+ int ret;
 
- if (!f || !e_d_async_pending)
+ if (!e_d_accum.active)
   return;
- ret = e_d_line_read(wfildes[0], buf, 256, 0, 0);
- if (ret == 1)
- {
-  e_d_async_pending = 0;
-  wpe_fd_del(wfildes[0]);
-  if (e_d_pty_master >= 0)
-   wpe_fd_del(e_d_pty_master);
-  e_read_output(f);
-  if (e_d_async_main_brk)
-  {
-   e_mk_brk_main(f, e_d_async_main_brk);
-   e_d_async_main_brk = 0;
-  }
-  e_d_async_f = NULL;
- }
+ ret = e_d_line_read_nb(wfildes[0], buf, 256);
+ if (ret == -2)
+  return;
+ e_d_accum_line((char *)buf, ret);
 }
 
 static void e_d_show_input_prompt(void)
@@ -934,9 +1044,10 @@ int e_d_quit_basic(FENSTER *f)
  _pty_line_len = 0;
  _echo_col = 0;
  _echo_row = -1;
+ _nb_len = 0;
  e_d_async_pending = 0;
- e_d_async_f = NULL;
- e_d_async_main_brk = 0;
+ e_d_accum.active = 0;
+ e_d_accum.f = NULL;
  e_d_nbrpts = 0;
  if (WpeIsXwin())
  {
@@ -2726,11 +2837,7 @@ int e_deb_run(FENSTER *f)
  e_d_swtch = 3;
  if (e_d_pty_master >= 0 && e_deb_type == 0)
  {
-  e_d_async_pending = 1;
-  e_d_async_f = f;
-  e_d_async_main_brk = main_brk;
-  wpe_fd_add(wfildes[0], POLLIN, e_d_on_gdb_readable, f);
-  wpe_fd_add(e_d_pty_master, POLLIN, e_d_on_pty_readable, f);
+  e_d_accum_init(f, main_brk);
   return(0);
  }
  { int _ro = e_read_output(f);
@@ -2973,11 +3080,7 @@ pdb_poll_again:
  }
  if (e_d_pty_master >= 0 && e_deb_type == 0)
  {
-  e_d_async_pending = 1;
-  e_d_async_f = f;
-  e_d_async_main_brk = 0;
-  wpe_fd_add(wfildes[0], POLLIN, e_d_on_gdb_readable, f);
-  wpe_fd_add(e_d_pty_master, POLLIN, e_d_on_pty_readable, f);
+  e_d_accum_init(f, 0);
   return(0);
  }
  return(e_read_output(f));
