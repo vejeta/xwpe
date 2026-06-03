@@ -25,21 +25,28 @@ wpe file.c          # terminal mode
 xwpe file.c         # X11 mode
 ```
 
-## What's new in 1.6.2
+## What's new in 1.6.3
 
+* **Event-driven interactive debugging**: when the debugged program
+  blocks on fgets/scanf, type input directly in the Messages window.
+  Architecture: poll()-based fd multiplexing of X11 + gdb pipe + pty
+  (same pattern as st, cgdb, foot terminals).  Backspace works.
+* **Dead key compose**: accented characters (e, n, u, a, etc.) via
+  dead keys in the editor, debug console, and dialog text fields.
+  Fallback compose table when XIM does not compose natively.
+* **UTF-8 in dialog fields**: Search, Replace, Compiler Options and
+  all other dialogs accept and render accented characters correctly.
+  UTF-8-aware cursor movement, backspace, and delete.
 * **Xft font rendering in X11**: anti-aliased TrueType fonts with
-  fontconfig fallback. Color emoji via Noto Color Emoji (libXft 2.3.5+
-  BGRA). Replaces the 1993 XDrawImageString bitmap rendering.
+  fontconfig fallback. Color emoji via Noto Color Emoji.
 * **Pixmap double-buffering**: zero flicker on resize and repaints.
 * **Full UTF-8 in X11**: accents, Cyrillic, CJK, and emoji with
-  CELL_WIDE support (cursor, delete, select all work correctly on
-  wide characters).
+  CELL_WIDE support.
 * 9 compilers: gcc, g++, gfortran, fpc, javac, python3, pdflatex, perl, cobc
 * 3 debuggers: gdb, jdb (Java), pdb (Python) -- all with F8 stepping
 * Program output in Messages buffer (Ctrl-G P) -- no terminal switching
-* Ctrl-F9 Run for Python/LaTeX: output captured to Messages, no xterm
+* printf without \n visible after each step (fflush via gdb)
 * Mouse in terminal emulators (xterm protocol) and Linux console (GPM)
-* 33-year-old Redo crash fixed, 30-year-old pipe leak fixed
 * 33 automated pyte tests
 
 See `CHANGELOG` for full details.

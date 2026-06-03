@@ -75,17 +75,20 @@ Changes
 * Program output appears in Messages via e_d_pty_read_to_messages
   (char-by-char buffer append, no line-flush artifacts).
 * Ctrl-G P (Program Output) accumulates during interactive sessions.
+* printf without \n now visible after each step: e_d_flush_inferior_stdout
+  sends "call (void)fflush(0)" to gdb (same technique as Eclipse CDT).
 
   Dead key compose and UTF-8 input:
 * X11 dead key composition for accented characters: acute, grave,
-  diaeresis, tilde, circumflex, cedilla.  Works in both the editor
-  and the debug console.  Fallback compose table (same approach as
-  xterm/GTK) when XIM does not compose natively.
+  diaeresis, tilde, circumflex, cedilla.  Works in the editor, the
+  debug console, and all dialog text fields.  Fallback compose table
+  (same approach as xterm/GTK) when XIM does not compose natively.
+* UTF-8 in dialog text fields: e_schr_nchar decodes multi-byte
+  sequences for rendering.  Cursor movement, backspace, and delete
+  are codepoint-aware (e_utf8_prev, e_utf8_next, e_utf8_charlen).
 * UTF-8 multi-byte insertion in editor (e_codepoint_to_utf8).
 * UTF-8 encoding for debug console pty input (e_d_pty_write_utf8).
 * XIM robustness: NULL XIM guard, Status parameter, XNFocusWindow.
-
-  Dialog usability:
 
   Dialog usability:
 * Tab/Shift-Tab navigation through all dialog fields, including

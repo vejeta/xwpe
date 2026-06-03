@@ -285,3 +285,58 @@ system frames and stop at the next user function.
 `e_read_output` detects `[Inferior ... exited` in gdb's response
 and calls `e_d_quit()` cleanly instead of letting subsequent
 commands produce "no process to debug" errors.
+
+### Event-driven I/O (1.6.3)
+
+The 1993 debugger communication was synchronous: `e_d_line_read`
+blocked waiting for gdb.  When the debugged program blocked on
+`fgets`/`scanf`, the IDE froze.
+
+`wpe_fd_poll` (we_fdloop.c) multiplexes all file descriptors with
+`poll()` and per-fd callbacks.  In X11, `e_x_getch` registers
+the X11 connection fd (NULL callback, poll-only) so keyboard events
+wake up poll alongside gdb and pty data.
+
+The incremental gdb parser (`e_d_accum_t`) processes one line per
+callback instead of looping in `e_read_output`.  Three functions:
+`e_d_accum_init` (register fds), `e_d_accum_line` (process one line),
+`e_d_accum_complete` (parse response, flush pty, position cursor).
+
+Program output goes through the pty.  `e_d_pty_read_to_messages`
+drains the pty and appends char-by-char to the Messages buffer via
+`e_d_messages_append_char` (handles \r, \n, \b, printable).
+`e_d_messages_redraw` scrolls the viewport and refreshes.
+
+After each step, `e_d_flush_inferior_stdout` sends
+`call (void)fflush(0)` to gdb so that `printf` without `\n` is
+visible immediately (same technique as Eclipse CDT and gdbgui).
+
+User keyboard input during `fgets`: `e_debug_console_input`
+(we_edit.c) writes to the pty master via `e_d_pty_write_utf8`.
+The pty terminal discipline echoes characters back, which the pty
+callback displays in Messages.
+
+### Dead key compose and UTF-8 input (1.6.3)
+
+XIM/ibus does not always compose dead keys (the dead key event is
+consumed by `XFilterEvent` but `XmbLookupString` returns the base
+character uncomposed).  xterm, GTK, and Qt all implement their own
+compose fallback.
+
+`e_compose_dead` (we_xterm.c) is a static compose table covering
+acute, grave, diaeresis, tilde, circumflex, and cedilla for all
+Latin-1 accented characters.  `e_compose_pending` holds the dead
+key keysym between the dead key event and the base character event.
+Applied in `e_x_getch` (editor), `e_x_kbhit` (dialogs), and
+`e_debug_console_input` (debug console).
+
+`e_codepoint_to_utf8` (we_edit.c) converts a Unicode codepoint to
+1-4 UTF-8 bytes.  Used by the editor (e_ins_nchar with multi-byte
+buffer), the debug console (e_d_pty_write_utf8), and dialog fields
+(e_dialog_encode_char).
+
+Dialog text fields (e_schreib_leiste in we_e_aus.c) were refactored
+for UTF-8: `e_schr_nchar` decodes multi-byte sequences for rendering,
+cursor movement uses `e_utf8_prev`/`e_utf8_next`, and backspace/delete
+operate on whole codepoints.  Helper functions: `e_utf8_charlen`,
+`e_utf8_decode_at`, `e_utf8_visual_width`.
