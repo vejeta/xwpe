@@ -484,9 +484,7 @@ int e_t_initscr()
 #if MOUSE
  mousemask(ALL_MOUSE_EVENTS | REPORT_MOUSE_POSITION, NULL);
  mouseinterval(0);
- printf("\033[?1002h");
- printf("\033[?1006h");
- fflush(stdout);
+ e_mouse_tracking_enable();
 #endif
 #endif
  if (has_colors())
@@ -563,9 +561,7 @@ void e_endwin()
 {
 #ifdef NCURSES
 #if MOUSE
- printf("\033[?1006l");
- printf("\033[?1002l");
- fflush(stdout);
+ e_mouse_tracking_disable();
 #endif
  endwin();
 #else

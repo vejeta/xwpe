@@ -270,6 +270,19 @@ static void e_run_drain_pty(int pty_fd, BUFFER *b, FENSTER *mf)
     e_new_line(b->mxlines, b);
    else if (c == '\r')
     ;
+   else if (c == '\b' || c == 127)
+   {
+    int line = b->mxlines - 1;
+    int len = b->bf[line].len;
+    if (len > 0)
+    {
+     len--;
+     while (len > 0 && ((unsigned char)b->bf[line].s[len] & 0xC0) == 0x80)
+      len--;
+     b->bf[line].s[len] = '\0';
+     b->bf[line].len = len;
+    }
+   }
    else if (c >= 32)
    {
     int line = b->mxlines - 1;
@@ -325,6 +338,9 @@ static int e_run_with_pty(char *cmd, BUFFER *b, FENSTER *mf)
  print_to_end_of_buffer(b, "--- Run output (type in Messages, Ctrl-C to stop) ---", 0);
  e_new_line(b->mxlines, b);
  b->b.y = b->mxlines - 1;
+ if (!WpeIsXwin())
+  e_mouse_tracking_disable();
+ fk_cursor(1);
  e_cursor(mf, 1);
  e_schirm(mf, 1);
  e_refresh();
@@ -381,6 +397,14 @@ static int e_run_with_pty(char *cmd, BUFFER *b, FENSTER *mf)
 #endif
     if (c == CtrlC)
     { kill(child, SIGINT); continue; }
+#ifdef NCURSES
+    if (c == KEY_BACKSPACE || c == 127 || c == 8)
+     c = WPE_DC;
+    else if (c == KEY_ENTER || c == '\n' || c == '\r')
+     c = WPE_CR;
+    else if (c > KEY_CODE_YES)
+     c = 0;
+#endif
     if (c > 0)
      e_pty_send_key(pty_master, c);
   }
@@ -388,6 +412,8 @@ static int e_run_with_pty(char *cmd, BUFFER *b, FENSTER *mf)
 
  wpe_fd_del(pty_master);
  close(pty_master);
+ if (!WpeIsXwin())
+  e_mouse_tracking_enable();
  return ret;
 }
 

@@ -600,6 +600,8 @@ char *WpeStringToValue(const char *str);
 char *WpeValueToString(const char *value);
 int e_about_WE(FENSTER *f);
 int e_clear_desk(FENSTER *f);
+void e_mouse_tracking_enable(void);
+void e_mouse_tracking_disable(void);
 void e_mouse_flush(void);
 void e_pty_write_utf8(int fd, int cp);
 void e_pty_send_key(int fd, int key);

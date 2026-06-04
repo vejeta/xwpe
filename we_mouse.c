@@ -22,6 +22,28 @@ void e_scroll_drag_h(FENSTER *f);
 static void e_scroll_drag_end_h(FENSTER *f, int saved_cur_on);
 static void e_scroll_drag_end_cursor(FENSTER *f);
 
+void e_mouse_tracking_enable(void)
+{
+#if MOUSE
+#ifdef NCURSES
+ printf("\033[?1002h");
+ printf("\033[?1006h");
+ fflush(stdout);
+#endif
+#endif
+}
+
+void e_mouse_tracking_disable(void)
+{
+#if MOUSE
+#ifdef NCURSES
+ printf("\033[?1006l");
+ printf("\033[?1002l");
+ fflush(stdout);
+#endif
+#endif
+}
+
 void e_mouse_flush(void)
 {
 #if MOUSE
@@ -29,9 +51,7 @@ void e_mouse_flush(void)
  MEVENT mev;
  while (getmouse(&mev) == OK)
   ;
- printf("\033[?1002h");
- printf("\033[?1006h");
- fflush(stdout);
+ e_mouse_tracking_enable();
 #endif
  { extern int g_mouse_buttons;
    g_mouse_buttons = 0;
