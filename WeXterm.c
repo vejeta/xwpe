@@ -492,9 +492,8 @@ void WpeXInit(int *argc, char **argv)
    BlackPixel(WpeXInfo.display, WpeXInfo.screen));
  { XSetWindowAttributes wa;
    wa.bit_gravity = StaticGravity;
-   wa.background_pixmap = None;
    XChangeWindowAttributes(WpeXInfo.display, WpeXInfo.window,
-     CWBitGravity | CWBackPixmap, &wa);
+     CWBitGravity, &wa);
  }
 
  WpeXColorGet(xres, name_list, class_list);
