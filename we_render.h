@@ -10,9 +10,6 @@
   applied to the drawing layer.  Each backend (Cairo+Pango on X11, ncurses
   on terminal, Cairo+Pango on Wayland in the future) provides a set of
   drawing primitives through the WpeRenderBackend struct.
-
-  Copyright (C) 2026 Juan Manuel Mendez Rey
-  This is free software; see the file COPYING.
 \*-------------------------------------------------------------------------*/
 
 typedef struct WpeRenderBackend {

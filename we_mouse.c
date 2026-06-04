@@ -96,14 +96,17 @@ int e_m3_mouse()
  extern WOPT *blst;
  extern struct mouse e_mouse;
  extern int nblst;
- int i;
+ int i, last;
 
  if (e_mouse.y != MAXSLNS-1) return(WPE_ESC);
  while (e_mshit())
   ;
  for(i = 1; i < nblst; i++)
   if(e_mouse.x < blst[i].x) return(blst[i-1].as);
- return(blst[nblst-1].as);
+ last = nblst - 1;
+ if (e_mouse.x <= blst[last].x + (int)strlen(blst[last].t))
+  return(blst[last].as);
+ return(WPE_ESC);
 }
 
 /*   mouse errors box control */
