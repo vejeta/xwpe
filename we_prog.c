@@ -226,14 +226,9 @@ int e_p_make(FENSTER *f)
   if (e_d_swtch > 0)
    e_d_quit(f);
 #endif
-  if (!e_p_mess_win("Linking", e_argc, e_arg, &pic, f))
-  {
-   e_sys_ini();
-   file = e_exec_inf(f, e_arg, e_argc);
-   e_sys_end();
-  }
-  else
-   file = 0;
+  e_sys_ini();
+  file = e_exec_inf(f, e_arg, e_argc);
+  e_sys_end();
   if (!e__project)
    e_free_arg(e_arg, e_argc);
   if (file != 0)
@@ -647,13 +642,10 @@ int e_comp(FENSTER *f)
    return(WPE_ESC);
   }
   remove(ostr);
-  if (!e_p_mess_win("Compiling (press any key)", argc, arg, &pic, f) &&
-    (file = e_exec_inf(f, arg, argc)) == 0)
+  if ((file = e_exec_inf(f, arg, argc)) == 0)
   {
    e_sys_end();
    e_free_arg(arg, argc);
-   if (pic)
-    e_close_view(pic, 1);
    return(WPE_ESC);
   }
   e_sys_end();
