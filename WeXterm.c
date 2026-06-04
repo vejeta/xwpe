@@ -558,6 +558,15 @@ void WpeXInit(int *argc, char **argv)
  }
 #endif
 
+ {
+#include "icons/xwpe_icon_data.h"
+  Atom net_wm_icon = XInternAtom(WpeXInfo.display, "_NET_WM_ICON", False);
+  XChangeProperty(WpeXInfo.display, WpeXInfo.window, net_wm_icon,
+    XA_CARDINAL, 32, PropModeReplace,
+    (unsigned char *)xwpe_icon_data,
+    sizeof(xwpe_icon_data) / sizeof(xwpe_icon_data[0]));
+ }
+
  XMapWindow(WpeXInfo.display, WpeXInfo.window);
 
 #ifdef HAVE_XFT
