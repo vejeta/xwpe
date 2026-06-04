@@ -22,6 +22,41 @@ static int e_scale_y(int val, int old_slns, int new_slns)
  return 1 + ((val - 1) * new_range + old_range / 2) / old_range;
 }
 
+void e_free_all_pics(ECNT *cn)
+{
+ int i;
+ for (i = 0; i <= cn->mxedt; i++)
+ {
+  FENSTER *fw = cn->f[i];
+  if (fw->pic && fw->pic->buf)
+  { free((SCREENCELL *)fw->pic->buf); fw->pic->buf = NULL; }
+  if (fw->pic)
+  { FREE(fw->pic); fw->pic = NULL; }
+ }
+}
+
+void e_repaint_desk_nopic(FENSTER *f)
+{
+ ECNT *cn = f->ed;
+ int i, sw;
+ if (cn->mxedt < 1)
+ {
+  e_cls(f->fb->df.fb, f->fb->dc);
+  e_ini_desk(f->ed);
+  e_refresh();
+  return;
+ }
+ ini_repaint(cn);
+ e_abs_refr();
+ for (i = 1; i <= cn->mxedt; i++)
+ {
+  sw = (i == cn->mxedt) ? 1 : 0;
+  e_ed_rahmen(cn->f[i], sw);
+  e_schirm(cn->f[i], sw);
+ }
+ e_refresh();
+}
+
 void e_relayout_windows(ECNT *cn, int old_scol, int old_slns)
 {
  int i;

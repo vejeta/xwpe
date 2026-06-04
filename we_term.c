@@ -903,16 +903,7 @@ int e_t_getch()
          fclose(_df); }
      }
      e_relayout_windows(WpeEditor, old_scol, old_slns);
-     { int _k;
-       for (_k = 0; _k <= WpeEditor->mxedt; _k++)
-       {
-        FENSTER *_fw = WpeEditor->f[_k];
-        if (_fw->pic && _fw->pic->buf)
-        { free((SCREENCELL *)_fw->pic->buf); _fw->pic->buf = NULL; }
-        if (_fw->pic)
-        { FREE(_fw->pic); _fw->pic = NULL; }
-       }
-     }
+     e_free_all_pics(WpeEditor);
      e_repaint_desk(WpeEditor->f[WpeEditor->mxedt]);
     }
     return WPE_RESIZE;

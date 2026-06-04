@@ -129,28 +129,6 @@ int e_clear_desk(FENSTER *f)
 }
 
 /*    redraw everything */
-void e_repaint_desk_nopic(FENSTER *f)
-{
- ECNT *cn = f->ed;
- int i, sw;
- if (cn->mxedt < 1)
- {
-  e_cls(f->fb->df.fb, f->fb->dc);
-  e_ini_desk(f->ed);
-  e_refresh();
-  return;
- }
- ini_repaint(cn);
- e_abs_refr();
- for (i = 1; i <= cn->mxedt; i++)
- {
-  sw = (i == cn->mxedt) ? 1 : 0;
-  e_ed_rahmen(cn->f[i], sw);
-  e_schirm(cn->f[i], sw);
- }
- e_refresh();
-}
-
 int e_repaint_desk(FENSTER *f)
 {
  /* int j; */
@@ -1785,7 +1763,6 @@ e_opt_kst_restart:
    if(o->pic == NULL) {  e_error(e_msg[ERR_LOWMEM], 0, o->f->fb); return(-1);  }
    if(!c) c = e_get_opt_sw(CDO, 0, 0, o);
 #define DLG_CLIP_Y(ey) ((o->ya + (ey)) > o->ya && (o->ya + (ey)) < o->ye)
-#define DLG_CLIP_X(ex) ((o->xa + (ex)) > o->xa && (o->xa + (ex)) < o->xe)
    for(i = 0; i < o->tn; i++)
       if (DLG_CLIP_Y(o->tstr[i]->y))
       e_pr_str(o->xa+o->tstr[i]->x, o->ya+o->tstr[i]->y, o->tstr[i]->txt,
@@ -1835,7 +1812,6 @@ e_opt_kst_restart:
          o->fbt, o->bstr[i]->nc, -1, o->fbs, o->ftt);
    }
 #undef DLG_CLIP_Y
-#undef DLG_CLIP_X
    cold = c;
    while (c != WPE_ESC || sw)
    {

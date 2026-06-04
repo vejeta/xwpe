@@ -600,6 +600,8 @@ char *WpeValueToString(const char *value);
 int e_about_WE(FENSTER *f);
 int e_clear_desk(FENSTER *f);
 void e_mouse_flush(void);
+void e_free_all_pics(ECNT *cn);
+void e_repaint_desk_nopic(FENSTER *f);
 void e_relayout_windows(ECNT *cn, int old_scol, int old_slns);
 void e_position_messages_window(FENSTER *msg, ECNT *cn);
 int e_repaint_desk(FENSTER *f);
