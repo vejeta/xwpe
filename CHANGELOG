@@ -103,6 +103,14 @@ Changes
 * Fixed illegible colors for focused elements and shortcut letters
   on modern terminals.  Default palette updated from 1993 CGA/VGA
   assumptions to readable contrast on 256-color terminals.
+* Dialog focus indicator: magenta background for focused fields,
+  switches, and radio buttons.  Red background for focused Ok/Cancel
+  buttons.  Passive buttons use cyan.  No element shares a color
+  with the dialog background.
+* Syntax highlighting: string constants changed from bright yellow
+  to bright magenta (color 14 renders greenish on many terminals).
+* Status bar hitbox: clicking empty space to the right of "Alt-X
+  Quit" no longer triggers quit.
 
   Compiler integration:
 * Perl: syntax highlighting (46 keywords), F9 (perl -c), Ctrl-F9 run.
