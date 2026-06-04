@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="icons/xwpe.svg" width="128" alt="xwpe icon">
+</p>
+
 # xwpe
 
 Xwpe is a programming editor and IDE for UNIX terminals and X11,
@@ -9,6 +13,12 @@ management, and a function-key driven menu system. Emacs cursor keys
 The **1.6.x series** brought xwpe from its 1993 origins to 2026:
 UTF-8 terminal support, working compilers and debuggers for 9 languages,
 mouse support, X11 fixes, and a 12-chapter Texinfo manual.
+
+<!-- screenshot: xwpe editing C code with Messages window
+<p align="center">
+  <img src="screenshots/xwpe-screenshot.png" width="720" alt="xwpe screenshot">
+</p>
+-->
 
 ## Quick start
 
