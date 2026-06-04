@@ -1,3 +1,9 @@
+/* test_checkheader.c                                     */
+/* Copyright (C) 2026 Juan Manuel Mendez Rey              */
+/* This is free software; you can redistribute it and/or  */
+/* modify it under the terms of the                       */
+/* GNU General Public License, see the file COPYING.      */
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>

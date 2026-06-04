@@ -1,5 +1,6 @@
 /* unixmakr.h						  */
 /* Copyright (C) 1993 Fred Kruse                          */
+/* Copyright (C) 2026 Juan Manuel Mendez Rey              */
 /* This is free software; you can redistribute it and/or  */
 /* modify it under the terms of the                       */
 /* GNU General Public License, see the file COPYING.      */

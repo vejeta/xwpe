@@ -1,7 +1,8 @@
 #ifdef HAVE_LIBGPM
 /* we_gpm.c -- GPM routines for xwpe.
-
-Based on we_linux.c -- Created by Sebastiano Suraci */
+   Copyright (C) 1998 Sebastiano Suraci
+   Copyright (C) 2026 Juan Manuel Mendez Rey
+   Based on we_linux.c -- Created by Sebastiano Suraci */
 
 #include "edit.h"
 #include <gpm.h>

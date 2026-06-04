@@ -3,6 +3,9 @@
 /*-------------------------------------------------------------------------*\
   <WeXterm.h> -- Header file of Xwpe routines for X window support
 
+  Copyright (C) 1997 Dennis Payne
+  Copyright (C) 2026 Juan Manuel Mendez Rey
+
   Date      Programmer  Description
   05/04/97  Dennis      Created for xwpe reorganization.
 \*-------------------------------------------------------------------------*/

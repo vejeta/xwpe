@@ -3,6 +3,8 @@
 /*-------------------------------------------------------------------------*\
   <we_fdloop.h> -- File descriptor event loop for xwpe
 
+  Copyright (C) 2026 Juan Manuel Mendez Rey
+
   Multiplexes multiple fd sources (X11 display, gdb pipes, pty master)
   via poll().  Each fd has a callback that fires when data is available.
   Follows GDB's event-loop.c pattern adapted to Kruse's architecture.

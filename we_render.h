@@ -3,6 +3,8 @@
 /*-------------------------------------------------------------------------*\
   <we_render.h> -- Rendering backend abstraction for xwpe
 
+  Copyright (C) 2026 Juan Manuel Mendez Rey
+
   Follows Kruse's function pointer pattern (fk_u_locate, e_u_refresh, etc.)
   applied to the drawing layer.  Each backend (Cairo+Pango on X11, ncurses
   on terminal, Cairo+Pango on Wayland in the future) provides a set of
