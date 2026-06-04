@@ -599,6 +599,7 @@ char *WpeStringToValue(const char *str);
 char *WpeValueToString(const char *value);
 int e_about_WE(FENSTER *f);
 int e_clear_desk(FENSTER *f);
+void e_mouse_flush(void);
 void e_relayout_windows(ECNT *cn, int old_scol, int old_slns);
 void e_position_messages_window(FENSTER *msg, ECNT *cn);
 int e_repaint_desk(FENSTER *f);

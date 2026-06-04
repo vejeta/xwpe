@@ -21,7 +21,26 @@ void e_scroll_drag_h(FENSTER *f);
 static void e_scroll_drag_end_h(FENSTER *f, int saved_cur_on);
 static void e_scroll_drag_end_cursor(FENSTER *f);
 
-/*   mouse button pressed (?)     */
+void e_mouse_flush(void)
+{
+#if MOUSE
+#ifdef NCURSES
+ MEVENT mev;
+ while (getmouse(&mev) == OK)
+  ;
+ printf("\033[?1002h");
+ printf("\033[?1006h");
+ fflush(stdout);
+#endif
+ { extern int g_mouse_buttons;
+   g_mouse_buttons = 0;
+ }
+ { extern struct mouse e_mouse;
+   e_mouse.k = 0;
+ }
+#endif
+}
+
 int e_mshit()
 {
  extern struct mouse e_mouse;

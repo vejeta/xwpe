@@ -200,6 +200,114 @@ Detection via `PKG_CHECK_MODULES` in `configure.ac`.  When Cairo
 is not available, the Xft path is used as fallback.  When X11 is
 not available, ncurses terminal mode is used (unchanged).
 
+## ncurses mouse drag and window relayout (1.6.3)
+
+### xterm mouse mode 1002
+
+Terminal mouse drag requires mode 1002 (`\033[?1002h`), which reports
+`REPORT_MOUSE_POSITION` events while a button is held.  Mode 1000
+(the default ncurses click mode) only reports press and release, not
+motion.  Mode 1002 is the same protocol used by Midnight Commander,
+tmux, and vim for drag operations.
+
+Enabled at terminal init (`e_t_initscr`), disabled at exit
+(`e_endwin`).  SGR extended coordinates (`\033[?1006h`) are enabled
+alongside mode 1002 for terminals wider than 223 columns, where the
+X10 encoding cannot represent the coordinate.
+
+### g_mouse_buttons: global button state
+
+```c
+int g_mouse_buttons = 0;  /* bitmask: bit 0 = button 1, etc. */
+```
+
+Declared in `we_term.c`, declared `extern` in `edit.h`.  Updated
+in two places:
+
+1. `e_t_getch` KEY_MOUSE handler: decodes `BUTTON1_PRESSED` /
+   `BUTTON1_RELEASED` and sets/clears bit 0.
+2. `fk_t_mouse`: reads `g_mouse_buttons` to determine if a drag
+   is in progress and sets `e_mouse.k` accordingly.
+
+Why a global instead of using `e_mouse.k` directly: `e_mouse.k` is
+written by `fk_t_mouse` and read by `we_mouse.c` drag loops.  When
+a popup opens during a drag (e.g. F9 error popup), the popup's own
+event loop consumes PRESSED/RELEASED pairs, leaving `e_mouse.k` in
+an inconsistent state when the popup closes.  `g_mouse_buttons`
+tracks the physical button state independently of any popup's event
+consumption.
+
+### e_mouse_flush (we_mouse.c)
+
+Called at the exit of popup/menu event loops (`e_mess_win`,
+`e_opt_kst`) to resynchronise mouse state after a popup:
+
+1. Drain all pending `KEY_MOUSE` events from the ncurses queue
+   via `getmouse()`.
+2. Re-enable mode 1002 (`\033[?1002h\033[?1006h`) -- ncurses
+   internally disables mouse tracking when processing certain
+   escape sequences, and popup event loops can leave it off.
+3. Reset `g_mouse_buttons = 0`.
+
+Without this, the first drag after a popup hangs because stale
+RELEASED events are queued and mode 1002 is silently disabled.
+
+### Window relayout on resize (we_wind.c)
+
+`e_relayout_windows()` handles proportional window scaling when
+the terminal is resized (SIGWINCH in terminal mode, ConfigureNotify
+in X11 mode).
+
+The algorithm uses **edge-attachment detection**: for each window
+coordinate (top, bottom, left, right), it checks whether the
+coordinate was touching the screen edge before the resize.  Edge-
+attached coordinates follow the edge (stay at row 1, or track
+MAXSLNS-2).  Interior coordinates scale proportionally:
+
+```c
+int e_scale_y(int y, int old_h, int new_h)
+{
+    return (y * new_h + old_h / 2) / old_h;  /* round-to-nearest */
+}
+```
+
+Round-to-nearest prevents ratio drift: without it, repeated 1-row
+shrink/grow cycles accumulate truncation error and windows slowly
+collapse toward the top.
+
+Minimum window dimensions: 3 lines height, 10 columns width.
+Minimum terminal: MAXSLNS >= 6, MAXSCOL >= 30.
+
+### SCHIRM_INBOUNDS bounds checking (unixmakr.h)
+
+```c
+#define SCHIRM_INBOUNDS(y, x) \
+    ((y) >= 0 && (y) < MAXSLNS && (x) >= 0 && (x) < MAXSCOL)
+```
+
+All schirm access macros (`e_pr_char`, `e_gt_char`, `e_gt_col`,
+`e_pt_col`, `e_gt_flags`, `e_pt_flags`) check bounds before
+accessing `schirm[y * MAXSCOL + x]`.  Out-of-bounds writes are
+silently dropped; out-of-bounds reads return space/0.
+
+This prevents heap corruption when dialogs or windows extend beyond
+the terminal during resize.  Before SCHIRM_INBOUNDS, a dialog wider
+than the terminal would write past the schirm allocation and corrupt
+the heap, producing crashes that appeared random.
+
+### Messages window positioning (we_wind.c, we_edit.c, we_prog.c)
+
+`e_position_messages_window()` enforces a 2/3 + 1/3 vertical split
+when Messages is created or repositioned:
+
+- Editor windows occupy the top 2/3 of the screen
+- Messages occupies the bottom 1/3
+- If only one editor window exists, it is resized to make room
+- Messages fills the full width (columns 0 to MAXSCOL-1)
+
+Called from: `e_edit` (Messages creation), `e_run_make` (F9),
+and `e_relayout_windows` (resize with Messages open).
+
 ## Source file overview
 
 | File | Purpose |

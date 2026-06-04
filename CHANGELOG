@@ -113,6 +113,29 @@ Changes
   wrap-around: jumps to the next error below the cursor, wraps to
   the first error when past the last.
 
+  Mouse and window management:
+* ncurses mouse drag: window move and resize by dragging title bar
+  and borders.  xterm mouse mode 1002 (\033[?1002h) enables motion
+  tracking while button held -- same protocol as Midnight Commander
+  and tmux.
+* g_mouse_buttons: global bitmask tracks physical button state across
+  the entire event loop, replacing the shared e_mouse.k field that
+  desynchronised when popups consumed PRESSED/RELEASED pairs.
+* e_mouse_flush(): drains stale ncurses mouse events, re-enables
+  mode 1002, and resets g_mouse_buttons after popup or menu close.
+  Prevents drag hang after F9 compilation or any dialog.
+* Proportional window relayout on terminal resize (SIGWINCH):
+  e_relayout_windows() scales all editor windows using edge-attachment
+  detection -- windows touching screen edges stay attached, interior
+  coordinates scale proportionally with round-to-nearest to prevent
+  ratio drift across incremental resize steps.
+* Dialog resize safety: SCHIRM_INBOUNDS macro bounds-checks all
+  schirm[] access.  Dialogs that exceed terminal size are clipped
+  cleanly.  On terminal grow, dialogs restart centered.
+* Messages window auto-positioning: 2/3 + 1/3 vertical split when
+  Messages is created by F9.  e_position_messages_window() places
+  Messages to fill available space below editor windows.
+
   Bug fixes:
 * Fix silent data loss on disk full: e_write now checks ferror/fclose.
 * Fix link/run using Messages window instead of source file.

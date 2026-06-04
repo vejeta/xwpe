@@ -2024,6 +2024,7 @@ e_opt_kst_restart:
       sw = 1;
    }
    e_close_view(o->pic, 1);
+   e_mouse_flush();
    return(ret);
 }
 

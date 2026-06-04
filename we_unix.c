@@ -19,6 +19,7 @@ int WpeTermInit(int *argc, char **argv);
 #include <sys/wait.h>
 #include <dirent.h>
 #include <signal.h>
+#include <execinfo.h>
 #include <locale.h>
 #ifndef TERMCAP
 #ifndef DJGPP
@@ -305,6 +306,29 @@ int e_tast_sim(int c)
 
 void WpeSignalUnknown(int sig)
 {
+ FILE *df = fopen("/tmp/xwpe-crash.txt", "w");
+ if (df)
+ {
+  extern int MAXSLNS, MAXSCOL;
+  extern ECNT *WpeEditor;
+  int k;
+  fprintf(df, "CRASH: signal %d\n", sig);
+  fprintf(df, "MAXSLNS=%d MAXSCOL=%d\n", MAXSLNS, MAXSCOL);
+  if (WpeEditor)
+  {
+   fprintf(df, "mxedt=%d\n", WpeEditor->mxedt);
+   for (k = 0; k <= WpeEditor->mxedt; k++)
+    fprintf(df, "  f[%d] '%s': (%d,%d)-(%d,%d) dtmd=%d\n", k,
+      WpeEditor->f[k]->datnam ? WpeEditor->f[k]->datnam : "?",
+      WpeEditor->f[k]->a.x, WpeEditor->f[k]->a.y,
+      WpeEditor->f[k]->e.x, WpeEditor->f[k]->e.y,
+      WpeEditor->f[k]->dtmd);
+  }
+  void *bt[32];
+  int n = backtrace(bt, 32);
+  backtrace_symbols_fd(bt, n, fileno(df));
+  fclose(df);
+ }
  fprintf(stderr, "Xwpe: unexpected signal %d\n", sig);
  signal(sig, SIG_DFL);
  raise(sig);

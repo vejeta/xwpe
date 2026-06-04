@@ -1609,6 +1609,7 @@ int e_mess_win(char *header, char *str, PIC **pic, FENSTER *f)
 #endif
   while ((i = (*e_u_kbhit)()) && i != CtrlC)
    ;
+ e_mouse_flush();
  return(i == CtrlC ? 1 : 0);
 }
 

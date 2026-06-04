@@ -40,6 +40,7 @@ int fk_t_locate(int x, int y);
 int fk_t_mouse(int *g);
 static int e_t_mouse_decode_button(mmask_t bstate);
 static int e_t_mouse_is_released(mmask_t bstate);
+int g_mouse_buttons = 0;
 int e_t_initscr(void);
 int e_t_kbhit(void);
 int e_t_d_switch_out(int sw);
@@ -669,11 +670,13 @@ void fk_colset(int c)
 int e_t_refresh()
 {
  int x = cur_x, y = cur_y, i, j, c;
+ int ref_slns = MAXSLNS < LINES ? MAXSLNS : LINES;
+ int ref_scol = MAXSCOL < COLS  ? MAXSCOL : COLS;
  fk_cursor(0);
- for(i = 0; i < MAXSLNS; i++)
-  for(j = 0; j < MAXSCOL; j++)
+ for(i = 0; i < ref_slns; i++)
+  for(j = 0; j < ref_scol; j++)
   {
-   if (i == MAXSLNS-1 && j == MAXSCOL-1) break;
+   if (i == ref_slns-1 && j == ref_scol-1) break;
    if (schirm[i * MAXSCOL + j].ch != altschirm[i * MAXSCOL + j].ch ||
      schirm[i * MAXSCOL + j].attr != altschirm[i * MAXSCOL + j].attr)
    {
@@ -873,6 +876,8 @@ int e_t_getch()
     MAXSLNS = LINES;
     if (MAXSLNS < 6) MAXSLNS = 6;
     if (MAXSCOL < 30) MAXSCOL = 30;
+    if (MAXSLNS > LINES || MAXSCOL > COLS)
+     resize_term(MAXSLNS, MAXSCOL);
     if (MAXSCOL != old_scol || MAXSLNS != old_slns)
     {
      schirm = REALLOC(schirm, sizeof(SCREENCELL) * MAXSCOL * MAXSLNS);
@@ -919,14 +924,10 @@ int e_t_getch()
      e_mouse.x = mev.x;
      e_mouse.y = mev.y;
      if (btn >= 0)
-      e_mouse.k = btn;
+      g_mouse_buttons |= btn;
      else if (e_t_mouse_is_released(mev.bstate))
-     {
-      if (e_mouse.k == 0)
-       e_mouse.k = 1;
-      else
-       e_mouse.k = 0;
-     }
+      g_mouse_buttons = 0;
+     e_mouse.k = g_mouse_buttons;
      return(-1);
     }
     c = 0;
@@ -1189,65 +1190,40 @@ int fk_t_mouse(int *g)
 {
 #if MOUSE
  extern struct mouse e_mouse;
- static int last_button = 0;
  MEVENT mev;
- int btn;
+ int btn, ch;
 
  if (g[0] == 2)
   return(0);
- if (last_button == 0 && e_mouse.k > 0)
- {
-  last_button = e_mouse.k;
-  e_mouse.k = 0;
- }
  timeout(50);
- { int ch = getch();
-   timeout(-1);
-   if (ch == KEY_MOUSE && getmouse(&mev) == OK)
-   {
-    { FILE *_df = fopen("/tmp/xwpe-mouse.txt", "a");
-      if (_df) { fprintf(_df, "MOUSE: bstate=0x%lx x=%d y=%d ek=%d\n",
-        (unsigned long)mev.bstate, mev.x, mev.y, e_mouse.k); fclose(_df); }
-    }
-    btn = e_t_mouse_decode_button(mev.bstate);
-    if (btn >= 0)
-    {
-     last_button = btn;
-     g[1] = btn;
-    }
-    else if (e_t_mouse_is_released(mev.bstate))
-    {
-     last_button = 0;
-     g[1] = 0;
-     e_mouse.x = mev.x;
-     e_mouse.y = mev.y;
-     e_mouse.k = 0;
-     g[2] = mev.x * 8;
-     g[3] = mev.y * 8;
-     return(0);
-    }
-    else if (mev.bstate & REPORT_MOUSE_POSITION)
-    {
-     g[1] = last_button;
-    }
-    else
-    {
-     g[1] = 0;
-    }
-    g[2] = mev.x * 8;
-    g[3] = mev.y * 8;
-    e_mouse.x = mev.x;
-    e_mouse.y = mev.y;
-    e_mouse.k = g[1];
-   }
-   else
-   {
-    g[1] = last_button;
-    g[2] = e_mouse.x * 8;
-    g[3] = e_mouse.y * 8;
-    if (ch != ERR)
-     ungetch(ch);
-   }
+ ch = getch();
+ timeout(-1);
+ if (ch == KEY_MOUSE && getmouse(&mev) == OK)
+ {
+  { FILE *_df = fopen("/tmp/xwpe-mouse.txt", "a");
+    if (_df) { fprintf(_df, "FKT: bstate=0x%lx x=%d y=%d gb=%d\n",
+      (unsigned long)mev.bstate, mev.x, mev.y, g_mouse_buttons); fclose(_df); }
+  }
+  btn = e_t_mouse_decode_button(mev.bstate);
+  if (btn >= 0)
+   g_mouse_buttons |= btn;
+  else if (e_t_mouse_is_released(mev.bstate))
+   g_mouse_buttons = 0;
+
+  g[1] = g_mouse_buttons;
+  g[2] = mev.x * 8;
+  g[3] = mev.y * 8;
+  e_mouse.x = mev.x;
+  e_mouse.y = mev.y;
+  e_mouse.k = g_mouse_buttons;
+ }
+ else
+ {
+  g[1] = g_mouse_buttons;
+  g[2] = e_mouse.x * 8;
+  g[3] = e_mouse.y * 8;
+  if (ch != ERR)
+   ungetch(ch);
  }
  return(0);
 #else
