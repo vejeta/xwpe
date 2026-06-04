@@ -14,11 +14,9 @@ The **1.6.x series** brought xwpe from its 1993 origins to 2026:
 UTF-8 terminal support, working compilers and debuggers for 9 languages,
 mouse support, X11 fixes, and a 12-chapter Texinfo manual.
 
-<!-- screenshot: xwpe editing C code with Messages window
 <p align="center">
-  <img src="screenshots/xwpe-screenshot.png" width="720" alt="xwpe screenshot">
+  <img src="screenshots/xwpe-screenshot.png" width="720" alt="xwpe editing C with compiler errors in Messages">
 </p>
--->
 
 ## Quick start
 
