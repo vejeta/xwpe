@@ -104,17 +104,40 @@ xwpedatadir = $(pkglibdir)
 xwpedata_DATA = syntax_def
 
 # Help files need renaming on install
+hicoloricondir = $(datadir)/icons/hicolor
+
 install-data-local:
 	$(MKDIR_P) $(DESTDIR)$(xwpedatadir)
 	$(INSTALL_DATA) $(srcdir)/help.xwpe_eng $(DESTDIR)$(xwpedatadir)/help.xwpe
 	$(INSTALL_DATA) $(srcdir)/help.key_eng $(DESTDIR)$(xwpedatadir)/help.key
 	$(MKDIR_P) $(DESTDIR)$(man1dir)
 	$(INSTALL_DATA) $(srcdir)/xwpe.1_eng $(DESTDIR)$(man1dir)/xwpe.1
+	$(MKDIR_P) $(DESTDIR)$(hicoloricondir)/scalable/apps
+	$(INSTALL_DATA) $(srcdir)/icons/xwpe.svg \
+		$(DESTDIR)$(hicoloricondir)/scalable/apps/xwpe.svg
+	@if command -v rsvg-convert >/dev/null 2>&1; then \
+		for s in 256 128 64 48; do \
+			$(MKDIR_P) $(DESTDIR)$(hicoloricondir)/$${s}x$${s}/apps; \
+			rsvg-convert -w $$s -h $$s $(srcdir)/icons/xwpe.svg \
+				-o $(DESTDIR)$(hicoloricondir)/$${s}x$${s}/apps/xwpe.png; \
+		done; \
+		for s in 32 24 16; do \
+			$(MKDIR_P) $(DESTDIR)$(hicoloricondir)/$${s}x$${s}/apps; \
+			rsvg-convert -w $$s -h $$s $(srcdir)/icons/xwpe-small.svg \
+				-o $(DESTDIR)$(hicoloricondir)/$${s}x$${s}/apps/xwpe.png; \
+		done; \
+	else \
+		echo "rsvg-convert not found; only scalable SVG installed"; \
+	fi
 
 uninstall-local:
 	rm -f $(DESTDIR)$(xwpedatadir)/help.xwpe \
 	      $(DESTDIR)$(xwpedatadir)/help.key \
-	      $(DESTDIR)$(man1dir)/xwpe.1
+	      $(DESTDIR)$(man1dir)/xwpe.1 \
+	      $(DESTDIR)$(hicoloricondir)/scalable/apps/xwpe.svg
+	@for s in 256 128 64 48 32 24 16; do \
+		rm -f $(DESTDIR)$(hicoloricondir)/$${s}x$${s}/apps/xwpe.png; \
+	done
 
 # --- Man pages ---
 dist_man1_MANS = we.1 wpe.1 xwe.1

@@ -15,9 +15,9 @@ mouse support, X11 fixes, and a 12-chapter Texinfo manual.
 ```sh
 # Install dependencies (Debian/Ubuntu)
 sudo apt install build-essential autoconf automake pkg-config \
-  libncurses-dev libx11-dev libgpm-dev zlib1g-dev
+  libncurses-dev libx11-dev libgpm-dev zlib1g-dev librsvg2-bin
 
-# Build
+# Build and install
 autoreconf -fi && ./configure && make && sudo make install
 
 # Run
