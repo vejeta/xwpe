@@ -46,8 +46,8 @@ WpeOptionSection WpeSectionRead[] = {
 int e_about_WE(FENSTER *f)
 {
  PIC *pic = NULL;
- int xa = 10, ya = 4, xe = xa + 50, ye = ya + 13;
- char tmp[40];
+ int xa = 8, ya = 3, xe = xa + 54, ye = ya + 17;
+ char tmp[60];
 
  fk_cursor(0);
  pic = e_std_kst(xa, ya, xe, ye, NULL, 1, f->fb->nr.fb, f->fb->nt.fb, f->fb->ne.fb);
@@ -56,36 +56,28 @@ int e_about_WE(FENSTER *f)
   e_error(e_msg[ERR_LOWMEM], 1, f->fb);
   return(WPE_ESC);
  }
-   
- sprintf(tmp, "          Version %s          ", VERSION);
+
+ sprintf(tmp, "Version %s", VERSION);
 #ifdef UNIX
  if (WpeIsXwin() && WpeIsProg())
- {
-  e_pr_str(xa+7, ya+3, "  XWindow Programming Environment  ", f->fb->et.fb, 0, 0, 0, 0);
-  e_pr_str(xa+7, ya+4, "             ( XWPE )              ", f->fb->et.fb, 0, 0, 0, 0);
- }
+  e_pr_str(xa+9, ya+2, "XWindow Programming Environment", f->fb->et.fb, 0, 0, 0, 0);
  else if (WpeIsProg())
- {
-  e_pr_str(xa+7, ya+3, "   Window Programming Environment  ", f->fb->et.fb, 0, 0, 0, 0);
-  e_pr_str(xa+7, ya+4, "              ( WPE )              ", f->fb->et.fb, 0, 0, 0, 0);
- }
+  e_pr_str(xa+10, ya+2, "Window Programming Environment", f->fb->et.fb, 0, 0, 0, 0);
  else if (WpeIsXwin())
- {
-  e_pr_str(xa+7, ya+3, "          XWindow Editor           ", f->fb->et.fb, 0, 0, 0, 0);
-  e_pr_str(xa+7, ya+4, "              ( XWE )              ", f->fb->et.fb, 0, 0, 0, 0);
- }
+  e_pr_str(xa+15, ya+2, "XWindow Editor", f->fb->et.fb, 0, 0, 0, 0);
  else
 #endif
- {
-  e_pr_str(xa+7, ya+3, "           Window Editor           ", f->fb->et.fb, 0, 0, 0, 0);
-  e_pr_str(xa+7, ya+4, "               ( WE )              ", f->fb->et.fb, 0, 0, 0, 0);
- }
- e_pr_str(xa+7, ya+5, tmp, f->fb->et.fb, 0, 0, 0, 0);
- e_pr_str(xa+2, ya+8, "Copyright (C) 1993 Fred Kruse", f->fb->nt.fb, 0, 0, 0, 0);
- e_pr_str(xa+2, ya+9, "This Sofware comes with ABSOLUTELY NO WARRANTY;", f->fb->nt.fb, 0, 0, 0, 0);
- e_pr_str(xa+2, ya+10, "This is free software, and you are welcome to", f->fb->nt.fb, 0, 0, 0, 0);
- e_pr_str(xa+2, ya+11, "redistribute it under certain conditions;", f->fb->nt.fb, 0, 0, 0, 0);
- e_pr_str(xa+2, ya+12, "See \'Help\\Editor\\GNU Pub...\' for details.", f->fb->nt.fb, 0, 0, 0, 0);
+  e_pr_str(xa+17, ya+2, "Window Editor", f->fb->et.fb, 0, 0, 0, 0);
+ e_pr_str(xa + (54 - strlen(tmp)) / 2, ya+3, tmp, f->fb->et.fb, 0, 0, 0, 0);
+ e_pr_str(xa+2, ya+5, "Created by Fred Kruse, 1993", f->fb->nt.fb, 0, 0, 0, 0);
+ e_pr_str(xa+2, ya+6, "Continued by Dennis Payne, 2000-2006", f->fb->nt.fb, 0, 0, 0, 0);
+ e_pr_str(xa+2, ya+7, "Maintained by Juan Manuel Mendez Rey, 2026", f->fb->nt.fb, 0, 0, 0, 0);
+ e_pr_str(xa+2, ya+8, "https://codeberg.org/mendezr/xwpe", f->fb->nt.fb, 0, 0, 0, 0);
+ e_pr_str(xa+2, ya+10, "Copyright (C) 1993-2026", f->fb->nt.fb, 0, 0, 0, 0);
+ e_pr_str(xa+2, ya+11, "This software comes with ABSOLUTELY NO WARRANTY;", f->fb->nt.fb, 0, 0, 0, 0);
+ e_pr_str(xa+2, ya+12, "This is free software, and you are welcome to", f->fb->nt.fb, 0, 0, 0, 0);
+ e_pr_str(xa+2, ya+13, "redistribute it under certain conditions;", f->fb->nt.fb, 0, 0, 0, 0);
+ e_pr_str(xa+2, ya+14, "See 'Help\\Editor\\GNU Pub...' for details.", f->fb->nt.fb, 0, 0, 0, 0);
 #if  MOUSE
  while (e_mshit() != 0)
   ;
