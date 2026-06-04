@@ -1016,6 +1016,8 @@ int e_x_change(PIC *pic)
           DefaultColormap(WpeXInfo.display, WpeXInfo.screen));
        }
 #endif
+       XCopyArea(WpeXInfo.display, WpeXInfo.backbuf, WpeXInfo.window,
+         WpeXInfo.gc, 0, 0, size_hints.width, size_hints.height, 0, 0);
        e_relayout_windows(WpeEditor, _old_scol, _old_slns);
        e_x_repaint_desk(WpeEditor->f[WpeEditor->mxedt]);
      }
@@ -1226,6 +1228,9 @@ int e_x_getch()
          if (!_is_win_pic)
           (*e_u_setlastpic)(NULL);
        }
+       XCopyArea(WpeXInfo.display, WpeXInfo.backbuf, WpeXInfo.window,
+         WpeXInfo.gc, 0, 0,
+         MAXSCOL * WpeXInfo.font_width, MAXSLNS * WpeXInfo.font_height, 0, 0);
        e_relayout_windows(WpeEditor, _old_scol, _old_slns);
        e_x_repaint_desk(WpeEditor->f[WpeEditor->mxedt]);
      }
