@@ -1365,15 +1365,16 @@ static void e_draw_titlebar_buttons(int xa, int ya, int xe, int frb, int fes)
 {
  if (WpeIsXwin())
  {
-  e_pr_char(xe-4, ya, 0x25FB, frb);
+  e_pr_char(xe-4, ya, 0x25FB, fes);
   e_pr_char(xe-3, ya, ' ', frb);
-  e_pr_char(xe-2, ya, 0x2715, frb);
+  e_pr_char(xe-2, ya, 0x2715, fes);
  }
  else
  {
-  e_pr_char(xa+3, ya, WBT, fes);
-  e_pr_char(xa+2, ya, '[', frb);
-  e_pr_char(xa+4, ya, ']', frb);
+  e_pr_char(xe-5, ya, ' ', frb);
+  e_pr_char(xe-4, ya, 0x25A1, fes);
+  e_pr_char(xe-3, ya, ' ', frb);
+  e_pr_char(xe-2, ya, 0x2715, fes);
  }
 }
 
@@ -1382,16 +1383,17 @@ static void e_draw_window_buttons(FENSTER *f)
  if (WpeIsXwin())
  {
   int maximize_glyph = (f->zoom == 0) ? 0x25FB : 0x25A3;
-  e_pr_char(f->e.x-4, f->a.y, maximize_glyph, f->fb->er.fb);
+  e_pr_char(f->e.x-4, f->a.y, maximize_glyph, f->fb->es.fb);
   e_pr_char(f->e.x-3, f->a.y, ' ', f->fb->er.fb);
   e_pr_char(f->e.x-2, f->a.y, 0x2715, f->fb->er.fb);
  }
  else
  {
-  int zoom_char = (f->zoom == 0) ? WZN : WZY;
-  e_pr_char(f->e.x-3, f->a.y, zoom_char, f->fb->es.fb);
-  e_pr_char(f->e.x-4, f->a.y, '[', f->fb->er.fb);
-  e_pr_char(f->e.x-2, f->a.y, ']', f->fb->er.fb);
+  int maximize_glyph = (f->zoom == 0) ? 0x25A1 : 0x25A3;
+  e_pr_char(f->e.x-5, f->a.y, ' ', f->fb->er.fb);
+  e_pr_char(f->e.x-4, f->a.y, maximize_glyph, f->fb->es.fb);
+  e_pr_char(f->e.x-3, f->a.y, ' ', f->fb->er.fb);
+  e_pr_char(f->e.x-2, f->a.y, 0x2715, f->fb->es.fb);
  }
 }
 

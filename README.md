@@ -15,8 +15,14 @@ UTF-8 terminal support, working compilers and debuggers for 9 languages,
 mouse support, X11 fixes, and a 12-chapter Texinfo manual.
 
 <p align="center">
-  <img src="screenshots/xwpe-screenshot.png" width="720" alt="xwpe editing C with compiler errors in Messages">
+  <img src="screenshots/xwpe-screenshot.png" width="720" alt="xwpe 1.6.x: Cairo rendering, Unicode borders, color emoji">
 </p>
+
+<details><summary>Compare with xwpe 1.5 (2006)</summary>
+<p align="center">
+  <img src="screenshots/xwpe-screenshot-1.5.png" width="720" alt="xwpe 1.5: bitmap font, ASCII borders">
+</p>
+</details>
 
 ## Quick start
 

@@ -165,18 +165,14 @@ static int e_hit_close_button(FENSTER *f)
 {
  extern struct mouse e_mouse;
  if (e_mouse.y != f->a.y) return 0;
- if (WpeIsXwin())
-  return e_mouse.x == f->e.x - 2;
- return e_mouse.x == f->a.x + 3;
+ return e_mouse.x == f->e.x - 2;
 }
 
 static int e_hit_maximize_button(FENSTER *f)
 {
  extern struct mouse e_mouse;
  if (e_mouse.y != f->a.y) return 0;
- if (WpeIsXwin())
-  return e_mouse.x == f->e.x - 4;
- return e_mouse.x == f->e.x - 3;
+ return e_mouse.x == f->e.x - 4;
 }
 
 int e_rahmen_mouse(FENSTER *f)
