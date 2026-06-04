@@ -149,13 +149,17 @@ metainfodir = $(datadir)/metainfo
 metainfo_DATA = io.codeberg.mendezr.xwpe.metainfo.xml
 
 # --- Unit tests ---
-check_PROGRAMS = test_checkheader
+check_PROGRAMS = test_checkheader test_syntax_def
 
 test_checkheader_SOURCES = tests/test_checkheader.c
 test_checkheader_CFLAGS = -std=gnu17
 test_checkheader_LDFLAGS =
 
-TESTS = test_checkheader
+test_syntax_def_SOURCES = tests/test_syntax_def.c
+test_syntax_def_CFLAGS = -std=gnu17
+test_syntax_def_LDFLAGS =
+
+TESTS = test_checkheader test_syntax_def
 
 # --- Extra files for distribution ---
 EXTRA_DIST = \
@@ -181,4 +185,5 @@ EXTRA_DIST = \
   tests/test_scrollbar.py \
   tests/test_utf8_border.py \
   tests/test_compile.py \
+  tests/test_syntax_def.c \
   tools/compiletest.c

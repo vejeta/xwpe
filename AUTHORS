@@ -44,6 +44,27 @@ Alexei Pavlov -- autoindenting changes
 Yarick Rastrigin -- tab navigation patch
 Oliver Wilson -- debugging problem report
 
+Extra syntax definitions (from identicalsoftware.com/xwpe/extrasyntax.html)
+----------------------------------------------------------------------
+Brian White <linut@squonk.net>
+  Basic (.bas) and BBX (.bbx) syntax definitions.
+
+Felix Stohr <stohr@iap.fr>
+  Fortran 90 (.f90), Interactive Data Language (.pro), and
+  Super Mongo (.sm) syntax definitions.
+
+Edward Popkov <evpopkov@carry.neonet.lv>
+  Free Pascal (.pp) syntax definition.
+
+Rick <null@acm.org>
+  Original PHP3 syntax definition (modernized to PHP 8 by Mendez).
+
+Mathias Gumz <mathias.gumz@student.uni-magdeburg.de>
+  SmallEiffel (.e) syntax definition.
+
+Fernando Matos <fernandoamg@brfree.com.br>
+  Tcl/Tk (.tcl) syntax definition.
+
 GitHub fork contributors (selected fixes integrated)
 ----------------------------------------------------
 Guus Bonnema <gbonnema@xs4all.nl>
