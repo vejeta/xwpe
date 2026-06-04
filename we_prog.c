@@ -153,6 +153,9 @@ int e_p_make(FENSTER *f)
  PIC *pic = NULL;
  int linkRequest = 1; /* assume linking has to be done */
 
+ { FILE *_df = fopen("/tmp/xwpe-dlg.txt", "a");
+   if (_df) { fprintf(_df, "E_P_MAKE: entered\n"); fclose(_df); }
+ }
  WpeMouseChangeShape(WpeWorkingShape);
  efildes[0] = efildes[1] = -1;
  wfildes[0] = wfildes[1] = -1;
@@ -461,7 +464,16 @@ int e_comp(FENSTER *f)
   argc = e_add_arg(&arg, ostr, argc, argc);
  }
 #endif
+ { FILE *_df = fopen("/tmp/xwpe-dlg.txt", "a");
+   if (_df) { fprintf(_df, "E_COMP: before e_sys_ini MAXSLNS=%d LINES=%d\n", MAXSLNS, LINES); fclose(_df); }
+ }
  e_sys_ini();
+ { FILE *_df = fopen("/tmp/xwpe-dlg.txt", "a");
+   if (_df) { fprintf(_df, "E_COMP: after e_sys_ini\n"); fclose(_df); }
+ }
+ { FILE *_df = fopen("/tmp/xwpe-dlg.txt", "a");
+   if (_df) { fprintf(_df, "E_COMP: after e_sys_ini, before checkheader\n"); fclose(_df); }
+ }
 #ifdef CHECKHEADER
  if ((stat(ostr, obuf) || e_check_header(fstr, obuf->st_mtime, cn, 0)))
 #else

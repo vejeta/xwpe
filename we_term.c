@@ -670,8 +670,13 @@ void fk_colset(int c)
 int e_t_refresh()
 {
  int x = cur_x, y = cur_y, i, j, c;
- int ref_slns = MAXSLNS < LINES ? MAXSLNS : LINES;
- int ref_scol = MAXSCOL < COLS  ? MAXSCOL : COLS;
+ int ref_slns, ref_scol;
+ sigset_t block, prev;
+ sigemptyset(&block);
+ sigaddset(&block, SIGWINCH);
+ sigprocmask(SIG_BLOCK, &block, &prev);
+ ref_slns = MAXSLNS < LINES ? MAXSLNS : LINES;
+ ref_scol = MAXSCOL < COLS  ? MAXSCOL : COLS;
  fk_cursor(0);
  for(i = 0; i < ref_slns; i++)
   for(j = 0; j < ref_scol; j++)
@@ -739,6 +744,7 @@ int e_t_refresh()
  fk_cursor(1);
  fk_locate(x, y);
  term_refresh();
+ sigprocmask(SIG_SETMASK, &prev, NULL);
  return(0);
 }
 
@@ -876,8 +882,6 @@ int e_t_getch()
     MAXSLNS = LINES;
     if (MAXSLNS < 6) MAXSLNS = 6;
     if (MAXSCOL < 30) MAXSCOL = 30;
-    if (MAXSLNS > LINES || MAXSCOL > COLS)
-     resize_term(MAXSLNS, MAXSCOL);
     if (MAXSCOL != old_scol || MAXSLNS != old_slns)
     {
      schirm = REALLOC(schirm, sizeof(SCREENCELL) * MAXSCOL * MAXSLNS);
@@ -899,14 +903,15 @@ int e_t_getch()
          fclose(_df); }
      }
      e_relayout_windows(WpeEditor, old_scol, old_slns);
-     { FILE *_df = fopen("/tmp/xwpe-ncurses-resize.txt", "a");
-       int _k;
-       if (_df) { for (_k = 0; _k <= WpeEditor->mxedt; _k++)
-          fprintf(_df, "  AFTER[%d] '%s': (%d,%d)-(%d,%d)\n", _k,
-            WpeEditor->f[_k]->datnam ? WpeEditor->f[_k]->datnam : "?",
-            WpeEditor->f[_k]->a.x, WpeEditor->f[_k]->a.y,
-            WpeEditor->f[_k]->e.x, WpeEditor->f[_k]->e.y);
-         fclose(_df); }
+     { int _k;
+       for (_k = 0; _k <= WpeEditor->mxedt; _k++)
+       {
+        FENSTER *_fw = WpeEditor->f[_k];
+        if (_fw->pic && _fw->pic->buf)
+        { free((SCREENCELL *)_fw->pic->buf); _fw->pic->buf = NULL; }
+        if (_fw->pic)
+        { FREE(_fw->pic); _fw->pic = NULL; }
+       }
      }
      e_repaint_desk(WpeEditor->f[WpeEditor->mxedt]);
     }

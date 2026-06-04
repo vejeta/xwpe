@@ -1593,7 +1593,13 @@ int e_mess_win(char *header, char *str, PIC **pic, FENSTER *f)
   FREE(s[i]);
  FREE(s);
  e_refresh();
+ { FILE *_df = fopen("/tmp/xwpe-f9.txt", "a");
+   if (_df) { fprintf(_df, "MESS_WIN: before fk_getch header='%s'\n", header); fclose(_df); }
+ }
  fk_getch();
+ { FILE *_df = fopen("/tmp/xwpe-f9.txt", "a");
+   if (_df) { fprintf(_df, "MESS_WIN: after fk_getch\n"); fclose(_df); }
+ }
 #ifndef NO_XWINDOWS
  if (WpeIsXwin())
  {
@@ -1609,6 +1615,9 @@ int e_mess_win(char *header, char *str, PIC **pic, FENSTER *f)
 #endif
   while ((i = (*e_u_kbhit)()) && i != CtrlC)
    ;
+ { FILE *_df = fopen("/tmp/xwpe-f9.txt", "a");
+   if (_df) { fprintf(_df, "MESS_WIN: after kbhit loop i=%d\n", i); fclose(_df); }
+ }
  e_mouse_flush();
  return(i == CtrlC ? 1 : 0);
 }

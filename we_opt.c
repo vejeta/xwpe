@@ -129,6 +129,28 @@ int e_clear_desk(FENSTER *f)
 }
 
 /*    redraw everything */
+void e_repaint_desk_nopic(FENSTER *f)
+{
+ ECNT *cn = f->ed;
+ int i, sw;
+ if (cn->mxedt < 1)
+ {
+  e_cls(f->fb->df.fb, f->fb->dc);
+  e_ini_desk(f->ed);
+  e_refresh();
+  return;
+ }
+ ini_repaint(cn);
+ e_abs_refr();
+ for (i = 1; i <= cn->mxedt; i++)
+ {
+  sw = (i == cn->mxedt) ? 1 : 0;
+  e_ed_rahmen(cn->f[i], sw);
+  e_schirm(cn->f[i], sw);
+ }
+ e_refresh();
+}
+
 int e_repaint_desk(FENSTER *f)
 {
  /* int j; */
@@ -1755,14 +1777,22 @@ int e_opt_kst(W_OPTSTR *o)
    fk_cursor(0);
 e_opt_kst_restart:
    e_opt_center_dialog(o, dlg_w, dlg_h);
+   { FILE *_df = fopen("/tmp/xwpe-dlg.txt", "a");
+     if (_df) { fprintf(_df, "RESTART: dlg=(%d,%d)-(%d,%d) dlg_w=%d dlg_h=%d MAXSLNS=%d MAXSCOL=%d\n",
+       o->xa, o->ya, o->xe, o->ye, dlg_w, dlg_h, MAXSLNS, MAXSCOL); fclose(_df); }
+   }
    o->pic = e_std_kst(o->xa, o->ya, o->xe, o->ye, o->name, 1, o->frt, o->ftt, o->frs);
    if(o->pic == NULL) {  e_error(e_msg[ERR_LOWMEM], 0, o->f->fb); return(-1);  }
    if(!c) c = e_get_opt_sw(CDO, 0, 0, o);
+#define DLG_CLIP_Y(ey) ((o->ya + (ey)) > o->ya && (o->ya + (ey)) < o->ye)
+#define DLG_CLIP_X(ex) ((o->xa + (ex)) > o->xa && (o->xa + (ex)) < o->xe)
    for(i = 0; i < o->tn; i++)
+      if (DLG_CLIP_Y(o->tstr[i]->y))
       e_pr_str(o->xa+o->tstr[i]->x, o->ya+o->tstr[i]->y, o->tstr[i]->txt,
       o->ftt, -1, 0, 0, 0);
    for(i = 0; i < o->wn; i++)
-   {  e_pr_str(o->xa+o->wstr[i]->xt, o->ya+o->wstr[i]->yt, o->wstr[i]->header,
+   {  if (!DLG_CLIP_Y(o->wstr[i]->yw)) continue;
+      e_pr_str(o->xa+o->wstr[i]->xt, o->ya+o->wstr[i]->yt, o->wstr[i]->header,
          o->ftt, o->wstr[i]->nc, 1, o->fts, 0);
       if(!o->wstr[i]->df)
          e_schr_nchar(o->wstr[i]->txt, o->xa+o->wstr[i]->xw,
@@ -1772,13 +1802,15 @@ e_opt_kst_restart:
          o->ya+o->wstr[i]->yw, 0, o->wstr[i]->nw, o->fwt, o->fws);
    }
    for(i = 0; i < o->nn; i++)
-   {  e_pr_str(o->xa+o->nstr[i]->xt, o->ya+o->nstr[i]->yt, o->nstr[i]->header,
+   {  if (!DLG_CLIP_Y(o->nstr[i]->yw)) continue;
+      e_pr_str(o->xa+o->nstr[i]->xt, o->ya+o->nstr[i]->yt, o->nstr[i]->header,
          o->ftt, o->nstr[i]->nc, 1, o->fts, 0);
       e_schr_nzif(o->nstr[i]->num, o->xa+o->nstr[i]->xw, o->ya+o->nstr[i]->yw,
          o->nstr[i]->nw, o->fwt);
    }
    for(i = 0; i < o->sn; i++)
-   {  e_pr_str(o->xa+o->sstr[i]->x+4, o->ya+o->sstr[i]->y, o->sstr[i]->header,
+   {  if (!DLG_CLIP_Y(o->sstr[i]->y)) continue;
+      e_pr_str(o->xa+o->sstr[i]->x+4, o->ya+o->sstr[i]->y, o->sstr[i]->header,
          o->fst, o->sstr[i]->nc, 1, o->fss, 0);
       e_pr_str(o->xa+o->sstr[i]->x, o->ya+o->sstr[i]->y, "[ ]", o->fst, -1, 1, 0, 0);
       if(o->sstr[i]->num)
@@ -1786,7 +1818,8 @@ e_opt_kst_restart:
    }
    for(i = 0; i < o->pn; i++)
    {  for(j = 0; j < o->pstr[i]->np; j++)
-      {  e_pr_str(o->xa+o->pstr[i]->ps[j]->x, o->ya+o->pstr[i]->ps[j]->y, "( ) ",
+      {  if (!DLG_CLIP_Y(o->pstr[i]->ps[j]->y)) continue;
+         e_pr_str(o->xa+o->pstr[i]->ps[j]->x, o->ya+o->pstr[i]->ps[j]->y, "( ) ",
             o->fst, -1, 1, 0, 0);
          e_pr_str(o->xa+o->pstr[i]->ps[j]->x+4, o->ya+o->pstr[i]->ps[j]->y,
             o->pstr[i]->ps[j]->header, o->fst, o->pstr[i]->ps[j]->nc,
@@ -1797,14 +1830,21 @@ e_opt_kst_restart:
       }
    }
    for(i = 0; i < o->bn; i++)
-   {  e_pr_str(o->xa+o->bstr[i]->x, o->ya+o->bstr[i]->y, o->bstr[i]->header,
+   {  if (!DLG_CLIP_Y(o->bstr[i]->y)) continue;
+      e_pr_str(o->xa+o->bstr[i]->x, o->ya+o->bstr[i]->y, o->bstr[i]->header,
          o->fbt, o->bstr[i]->nc, -1, o->fbs, o->ftt);
    }
+#undef DLG_CLIP_Y
+#undef DLG_CLIP_X
    cold = c;
    while (c != WPE_ESC || sw)
    {
       if (c == WPE_RESIZE)
       {
+         { FILE *_df = fopen("/tmp/xwpe-dlg.txt", "a");
+           if (_df) { fprintf(_df, "OPT_KST: WPE_RESIZE pic=(%d,%d)-(%d,%d) MAXSLNS=%d MAXSCOL=%d LINES=%d COLS=%d\n",
+             o->xa, o->ya, o->xe, o->ye, MAXSLNS, MAXSCOL, LINES, COLS); fclose(_df); }
+         }
          e_close_view(o->pic, 0);
          o->pic = NULL;
          c = 0;
@@ -2023,8 +2063,13 @@ e_opt_kst_restart:
       c = cold;
       sw = 1;
    }
+   { FILE *_df = fopen("/tmp/xwpe-dlg.txt", "a");
+     if (_df) { fprintf(_df, "CLOSE: pic=(%d,%d)-(%d,%d) ret=%d\n",
+       o->pic->a.x, o->pic->a.y, o->pic->e.x, o->pic->e.y, ret); fclose(_df); }
+   }
    e_close_view(o->pic, 1);
    e_mouse_flush();
+   e_repaint_desk_nopic(o->f->ed->f[o->f->ed->mxedt]);
    return(ret);
 }
 
