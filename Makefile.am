@@ -140,6 +140,8 @@ EXTRA_DIST = \
   xwpe.1_eng \
   xwpe.desktop \
   xwpe.spec \
+  icons/xwpe.svg \
+  icons/xwpe-small.svg \
   xwpe-1.5.31.lsm \
   xwpe-conf.patch \
   README.md \
