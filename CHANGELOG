@@ -155,7 +155,21 @@ Changes
   Messages is created by F9.  e_position_messages_window() places
   Messages to fill available space below editor windows.
 
+  Ctrl-F9 Run:
+* Interactive program execution via pty in Messages window.  User
+  types input during fgets/scanf, output appears in real time.
+  Ctrl-C sends SIGINT.  UTF-8 input and output with proper
+  backspace handling.  No xterm dependency, no screen switching.
+  Falls back to popen for systems without openpty.
+
   Bug fixes:
+* Fix emoji rendering in ncurses: removed artificial U+FFFF limit
+  in e_t_refresh.  Emoji codepoints (U+1F389 etc.) now display
+  correctly in terminals that support them (kitty, gnome-terminal).
+* Fix mouse in kitty: SGR mode 1006 only enabled when terminal is
+  wider than 223 columns (X10 encoding overflow).  kitty's terminfo
+  lacks XM capability so ncurses cannot parse SGR mouse events;
+  X10 format works correctly for normal terminal widths.
 * Fix silent data loss on disk full: e_write now checks ferror/fclose.
 * Fix link/run using Messages window instead of source file.
 * Fix Open Project with nonexistent .prj opening a blank editor.

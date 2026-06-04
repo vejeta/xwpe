@@ -56,6 +56,11 @@ xwpe file.c         # X11 mode
 * **Icon set**: two-tier SVG icon, .desktop entry, _NET_WM_ICON for
   window manager title bar and taskbar
 * Modernized color palette for dialogs and syntax highlighting
+* **Emoji in terminal mode**: ncurses rendering of emoji codepoints
+  (U+1F389 etc.) in editor and Messages. Works in kitty, gnome-terminal.
+* **Ctrl-F9 Run via pty**: interactive program I/O in Messages window,
+  no xterm dependency, no screen switching
+* **kitty mouse fix**: compatible mouse tracking without SGR conflicts
 
 ## What was new in 1.6.2
 
