@@ -5,6 +5,7 @@
 
   Copyright (C) 1997 Dennis Payne
   Copyright (C) 2026 Juan Manuel Mendez Rey
+  This is free software; see the file COPYING (GPL-2).
 
   Date      Programmer  Description
   05/04/97  Dennis      Created for xwpe reorganization.

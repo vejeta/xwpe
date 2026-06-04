@@ -4,6 +4,7 @@
   <we_render.h> -- Rendering backend abstraction for xwpe
 
   Copyright (C) 2026 Juan Manuel Mendez Rey
+  This is free software; see the file COPYING (GPL-2).
 
   Follows Kruse's function pointer pattern (fk_u_locate, e_u_refresh, etc.)
   applied to the drawing layer.  Each backend (Cairo+Pango on X11, ncurses

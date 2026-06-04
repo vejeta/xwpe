@@ -2,6 +2,7 @@
 /* we_gpm.c -- GPM routines for xwpe.
    Copyright (C) 1998 Sebastiano Suraci
    Copyright (C) 2026 Juan Manuel Mendez Rey
+   This is free software; see the file COPYING (GPL-2).
    Based on we_linux.c -- Created by Sebastiano Suraci */
 
 #include "edit.h"
