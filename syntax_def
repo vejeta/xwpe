@@ -96,3 +96,38 @@ synchronized this throw throws transient try void volatile while
 0
 ~^()[]{}<>+-/*%=|&!.?:,; /* */ // NULL "'#\\  -1 -1 1000
 
+
+4
+.sh .bash .zsh .ksh
+28
+break case continue do done elif else esac exec exit export
+fi for function if in local read readonly return select set
+shift then trap until unset while
+0
+~^()[]{}<>+-/*%=|&!.?:,;@ NULL NULL # NULL "' \  -1 -1 1000
+
+3
+.html .htm .xml
+38
+html head body title meta link script style div span p a img
+form input button select option textarea table tr td th thead
+tbody ul ol li h1 h2 h3 h4 h5 h6 br hr pre code
+0
+~^()[]{}<>+-/*%=|&!.?:,;@ NULL NULL NULL NULL "' \  -1 -1 1000
+
+.mk
+14
+ifeq ifneq ifdef ifndef else endif define endef include
+override export unexport vpath PHONY
+0
+~^()[]{}<>+-/*%=|&!.?:,;@() NULL NULL # NULL "' \  -1 -1 1000
+
+.sql
+51
+SELECT FROM WHERE INSERT INTO VALUES UPDATE SET DELETE CREATE
+TABLE ALTER DROP INDEX JOIN LEFT RIGHT INNER OUTER FULL CROSS
+ON AND OR NOT NULL IS IN BETWEEN LIKE ORDER BY GROUP HAVING
+AS DISTINCT UNION ALL COUNT SUM AVG MIN MAX LIMIT OFFSET
+EXISTS CASE WHEN THEN ELSE END
+0
+~^()[]{}<>+-/*%=|&!.?:,;@ /* */ -- NULL "' \  -1 -1 1000
