@@ -185,10 +185,9 @@ See [tests/README.md](tests/README.md) for the automated test suite.
 ## Project history
 
 - **Fred Kruse** -- original author (1993, last release 1.4.2 ca. 1997)
-- **Dennis Payne** -- continuation (1.5.x, 1997-2006):
+- **Dennis Payne** -- continuation (1.5.x, 1997-2006), with
+  contributions from ~25 developers (see CHANGELOG):
   https://www.identicalsoftware.com/xwpe/
-- **Guus Bonnema** et al. via https://github.com/amagnasco/xwpe --
-  selected fixes integrated here
 - **Debian contributors** (Jari Aalto, Francesco P. Lovergine, Andreas
   Tille, et al.) -- patches now integrated upstream
 - **Juan Manuel Mendez Rey** -- current maintainer (2026-),
