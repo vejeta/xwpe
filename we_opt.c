@@ -1746,6 +1746,13 @@ static void e_opt_center_dialog(W_OPTSTR *o, int dlg_w, int dlg_h)
    if (o->ya >= o->ye - 2) o->ya = 1;
 }
 
+static int e_opt_element_visible(W_OPTSTR *o, int ex, int ey)
+{
+ int ax = o->xa + ex;
+ int ay = o->ya + ey;
+ return (ay > o->ya && ay < o->ye && ax > o->xa && ax < o->xe);
+}
+
 int e_opt_kst(W_OPTSTR *o)
 {
    int ret = 0, csv, sw = 1, i, j, num, cold, c = o->bgsw;
@@ -1762,13 +1769,12 @@ e_opt_kst_restart:
    o->pic = e_std_kst(o->xa, o->ya, o->xe, o->ye, o->name, 1, o->frt, o->ftt, o->frs);
    if(o->pic == NULL) {  e_error(e_msg[ERR_LOWMEM], 0, o->f->fb); return(-1);  }
    if(!c) c = e_get_opt_sw(CDO, 0, 0, o);
-#define DLG_CLIP_Y(ey) ((o->ya + (ey)) > o->ya && (o->ya + (ey)) < o->ye)
    for(i = 0; i < o->tn; i++)
-      if (DLG_CLIP_Y(o->tstr[i]->y))
+      if (e_opt_element_visible(o, o->tstr[i]->x, o->tstr[i]->y))
       e_pr_str(o->xa+o->tstr[i]->x, o->ya+o->tstr[i]->y, o->tstr[i]->txt,
       o->ftt, -1, 0, 0, 0);
    for(i = 0; i < o->wn; i++)
-   {  if (!DLG_CLIP_Y(o->wstr[i]->yw)) continue;
+   {  if (!e_opt_element_visible(o, o->wstr[i]->xw, o->wstr[i]->yw)) continue;
       e_pr_str(o->xa+o->wstr[i]->xt, o->ya+o->wstr[i]->yt, o->wstr[i]->header,
          o->ftt, o->wstr[i]->nc, 1, o->fts, 0);
       if(!o->wstr[i]->df)
@@ -1779,14 +1785,14 @@ e_opt_kst_restart:
          o->ya+o->wstr[i]->yw, 0, o->wstr[i]->nw, o->fwt, o->fws);
    }
    for(i = 0; i < o->nn; i++)
-   {  if (!DLG_CLIP_Y(o->nstr[i]->yw)) continue;
+   {  if (!e_opt_element_visible(o, o->nstr[i]->xw, o->nstr[i]->yw)) continue;
       e_pr_str(o->xa+o->nstr[i]->xt, o->ya+o->nstr[i]->yt, o->nstr[i]->header,
          o->ftt, o->nstr[i]->nc, 1, o->fts, 0);
       e_schr_nzif(o->nstr[i]->num, o->xa+o->nstr[i]->xw, o->ya+o->nstr[i]->yw,
          o->nstr[i]->nw, o->fwt);
    }
    for(i = 0; i < o->sn; i++)
-   {  if (!DLG_CLIP_Y(o->sstr[i]->y)) continue;
+   {  if (!e_opt_element_visible(o, o->sstr[i]->x, o->sstr[i]->y)) continue;
       e_pr_str(o->xa+o->sstr[i]->x+4, o->ya+o->sstr[i]->y, o->sstr[i]->header,
          o->fst, o->sstr[i]->nc, 1, o->fss, 0);
       e_pr_str(o->xa+o->sstr[i]->x, o->ya+o->sstr[i]->y, "[ ]", o->fst, -1, 1, 0, 0);
@@ -1795,7 +1801,7 @@ e_opt_kst_restart:
    }
    for(i = 0; i < o->pn; i++)
    {  for(j = 0; j < o->pstr[i]->np; j++)
-      {  if (!DLG_CLIP_Y(o->pstr[i]->ps[j]->y)) continue;
+      {  if (!e_opt_element_visible(o, o->pstr[i]->ps[j]->x, o->pstr[i]->ps[j]->y)) continue;
          e_pr_str(o->xa+o->pstr[i]->ps[j]->x, o->ya+o->pstr[i]->ps[j]->y, "( ) ",
             o->fst, -1, 1, 0, 0);
          e_pr_str(o->xa+o->pstr[i]->ps[j]->x+4, o->ya+o->pstr[i]->ps[j]->y,
@@ -1807,12 +1813,27 @@ e_opt_kst_restart:
       }
    }
    for(i = 0; i < o->bn; i++)
-   {  if (!DLG_CLIP_Y(o->bstr[i]->y)) continue;
+   {  if (!e_opt_element_visible(o, o->bstr[i]->x, o->bstr[i]->y)) continue;
       e_pr_str(o->xa+o->bstr[i]->x, o->ya+o->bstr[i]->y, o->bstr[i]->header,
          o->fbt, o->bstr[i]->nc, -1, o->fbs, o->ftt);
    }
-#undef DLG_CLIP_Y
    cold = c;
+   if (o->xe - o->xa < dlg_w || o->ye - o->ya < dlg_h)
+   {
+      while ((c = e_getch()) != WPE_ESC && c != WPE_RESIZE)
+         ;
+      if (c == WPE_RESIZE)
+      {
+         e_close_view(o->pic, 0);
+         o->pic = NULL;
+         c = 0;
+         goto e_opt_kst_restart;
+      }
+      e_close_view(o->pic, 1);
+      e_mouse_flush();
+      e_repaint_desk_nopic(o->f->ed->f[o->f->ed->mxedt]);
+      return(WPE_ESC);
+   }
    while (c != WPE_ESC || sw)
    {
       if (c == WPE_RESIZE)
