@@ -17,6 +17,9 @@
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <signal.h>
+#include <poll.h>
+#include <pty.h>
+#include "we_fdloop.h"
 
 int e_run_sh(FENSTER *f);
 int e_make_library(char *library, char *ofile, FENSTER *f);
@@ -251,6 +254,176 @@ int e_p_make(FENSTER *f)
  return(0);
 }
 
+static void e_run_drain_pty(int pty_fd, BUFFER *b, FENSTER *mf)
+{
+ char buf[512];
+ int n, flags;
+ flags = fcntl(pty_fd, F_GETFL, 0);
+ fcntl(pty_fd, F_SETFL, flags | O_NONBLOCK);
+ while ((n = read(pty_fd, buf, sizeof(buf))) > 0)
+ {
+  int k;
+  for (k = 0; k < n; k++)
+  {
+   unsigned char c = (unsigned char)buf[k];
+   if (c == '\n')
+    e_new_line(b->mxlines, b);
+   else if (c == '\r')
+    ;
+   else if (c >= 32)
+   {
+    int line = b->mxlines - 1;
+    int len = b->bf[line].len;
+    b->bf[line].s = REALLOC(b->bf[line].s, len + 2);
+    b->bf[line].s[len] = c;
+    b->bf[line].s[len + 1] = '\0';
+    b->bf[line].len = len + 1;
+   }
+  }
+ }
+ fcntl(pty_fd, F_SETFL, flags & ~O_NONBLOCK);
+ b->b.y = b->mxlines - 1;
+ b->b.x = b->bf[b->b.y].len;
+ e_cursor(mf, 1);
+ e_schirm(mf, 1);
+ e_refresh();
+}
+
+static void e_run_write_char(int pty_fd, int c)
+{
+ if (c == WPE_CR)
+ {
+  char ch = '\n';
+  write(pty_fd, &ch, 1);
+ }
+ else if (c == WPE_DC)
+ {
+  char ch = 127;
+  write(pty_fd, &ch, 1);
+ }
+ else if (c >= 32 && c < 128)
+ {
+  char ch = (char)c;
+  write(pty_fd, &ch, 1);
+ }
+ else if (c >= 0x80)
+ {
+  char utf[4];
+  int nb = 0;
+  if (c < 0x800)
+  { utf[0] = 0xC0 | (c >> 6); utf[1] = 0x80 | (c & 0x3F); nb = 2; }
+  else if (c < 0x10000)
+  { utf[0] = 0xE0 | (c >> 12); utf[1] = 0x80 | ((c >> 6) & 0x3F);
+    utf[2] = 0x80 | (c & 0x3F); nb = 3; }
+  else
+  { utf[0] = 0xF0 | (c >> 18); utf[1] = 0x80 | ((c >> 12) & 0x3F);
+    utf[2] = 0x80 | ((c >> 6) & 0x3F); utf[3] = 0x80 | (c & 0x3F); nb = 4; }
+  write(pty_fd, utf, nb);
+ }
+}
+
+static int e_run_with_pty(char *cmd, BUFFER *b, FENSTER *mf)
+{
+ int pty_master, pty_slave, status, ret = -1;
+ char slave_name[80];
+ pid_t child;
+
+ if (openpty(&pty_master, &pty_slave, slave_name, NULL, NULL) < 0)
+  return -1;
+
+ child = fork();
+ if (child < 0)
+ {
+  close(pty_master);
+  close(pty_slave);
+  return -1;
+ }
+ if (child == 0)
+ {
+  close(pty_master);
+  setsid();
+  ioctl(pty_slave, TIOCSCTTY, 0);
+  dup2(pty_slave, 0);
+  dup2(pty_slave, 1);
+  dup2(pty_slave, 2);
+  if (pty_slave > 2) close(pty_slave);
+  execl("/bin/sh", "sh", "-c", cmd, (char *)NULL);
+  _exit(127);
+ }
+ close(pty_slave);
+
+ { FILE *_df = fopen("/tmp/xwpe-run.txt", "a");
+   if (_df) { fprintf(_df, "RUN_PTY: cmd=[%s] child=%d master=%d\n", cmd, child, pty_master); fclose(_df); }
+ }
+ print_to_end_of_buffer(b, "--- Run output (type in Messages, Ctrl-C to stop) ---", 0);
+ e_new_line(b->mxlines, b);
+ b->b.y = b->mxlines - 1;
+ e_cursor(mf, 1);
+ e_schirm(mf, 1);
+ e_refresh();
+
+ wpe_fd_add(pty_master, POLLIN, NULL, NULL);
+
+ for (;;)
+ {
+  int ws;
+  int wp = waitpid(child, &ws, WNOHANG);
+  if (wp > 0)
+  {
+   { FILE *_df = fopen("/tmp/xwpe-run.txt", "a");
+     if (_df) { fprintf(_df, "RUN_PTY: child exited ws=%d ret=%d\n", ws, WIFEXITED(ws) ? WEXITSTATUS(ws) : -1); fclose(_df); }
+   }
+   e_run_drain_pty(pty_master, b, mf);
+   ret = WIFEXITED(ws) ? WEXITSTATUS(ws) : -1;
+   break;
+  }
+  e_run_drain_pty(pty_master, b, mf);
+  wpe_fd_poll(50);
+  { int c = 0;
+#ifdef NCURSES
+    if (!WpeIsXwin())
+    {
+     timeout(0);
+     c = getch();
+     timeout(-1);
+     if (c == ERR) c = 0;
+     else if ((unsigned int)c >= 0xC0 && (unsigned int)c <= 0xF7)
+     {
+      int cp, i, expect, cont;
+      if ((c & 0xE0) == 0xC0) { cp = c & 0x1F; expect = 1; }
+      else if ((c & 0xF0) == 0xE0) { cp = c & 0x0F; expect = 2; }
+      else { cp = c & 0x07; expect = 3; }
+      for (i = 0; i < expect; i++)
+      {
+       timeout(50);
+       cont = getch();
+       timeout(-1);
+       if (cont == ERR || (cont & 0xC0) != 0x80) { cp = c; break; }
+       cp = (cp << 6) | (cont & 0x3F);
+      }
+      c = cp;
+     }
+    }
+#endif
+#ifndef NO_XWINDOWS
+    if (WpeIsXwin())
+    { extern int e_x_kbhit(void);
+      c = e_x_kbhit();
+      if (c == 0) c = 0;
+    }
+#endif
+    if (c == CtrlC)
+    { kill(child, SIGINT); continue; }
+    if (c > 0)
+     e_run_write_char(pty_master, c);
+  }
+ }
+
+ wpe_fd_del(pty_master);
+ close(pty_master);
+ return ret;
+}
+
 int e_run(FENSTER *f)
 {
  ECNT *cn = f->ed;
@@ -324,20 +497,20 @@ int e_run(FENSTER *f)
  mf = cn->f[i];
  b = mf->b;
 
-#ifndef NO_XWINDOWS
- if (WpeIsXwin() && (e_s_prog.comp_sw & 1))
- {
-  FILE *pp;
-  char line[1024];
-  if (b->bf[b->mxlines-1].len != 0)
-   e_new_line(b->mxlines, b);
-  print_to_end_of_buffer(b, "--- Run output ---", 0);
-  strcat(estr, " 2>&1");
-  { struct sigaction _old, _ign;
-    _ign.sa_handler = SIG_DFL;
-    sigemptyset(&_ign.sa_mask);
-    _ign.sa_flags = 0;
-    sigaction(SIGCHLD, &_ign, &_old);
+ if (b->bf[b->mxlines-1].len != 0)
+  e_new_line(b->mxlines, b);
+ { struct sigaction _old, _ign;
+   _ign.sa_handler = SIG_DFL;
+   sigemptyset(&_ign.sa_mask);
+   _ign.sa_flags = 0;
+   sigaction(SIGCHLD, &_ign, &_old);
+   ret = e_run_with_pty(estr, b, mf);
+   if (ret < 0)
+   {
+    FILE *pp;
+    char line[1024];
+    print_to_end_of_buffer(b, "--- Run output ---", 0);
+    strcat(estr, " </dev/null 2>&1");
     pp = popen(estr, "r");
     if (pp)
     {
@@ -351,23 +524,15 @@ int e_run(FENSTER *f)
     }
     else
      ret = -1;
-    sigaction(SIGCHLD, &_old, NULL);
-  }
- }
- else if (WpeIsXwin())
- {
-  ret = (*e_u_system)(estr);
- }
- else
-#endif
- {
-  ret = e_system(estr, cn);
+   }
+   sigaction(SIGCHLD, &_old, NULL);
  }
 #ifdef NCURSES
  clearok(stdscr, TRUE);
 #endif
  e_repaint_desk(cn->f[cn->mxedt]);
 
+ print_to_end_of_buffer(b, "--- End output ---", 0);
  sprintf(estr, e_p_msg[ERR_RETCODE], ret);
  print_to_end_of_buffer(b, estr, b->mx.x);
 
