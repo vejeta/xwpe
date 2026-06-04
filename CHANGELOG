@@ -132,6 +132,17 @@ Changes
 * Dialog resize safety: SCHIRM_INBOUNDS macro bounds-checks all
   schirm[] access.  Dialogs that exceed terminal size are clipped
   cleanly.  On terminal grow, dialogs restart centered.
+* Fix SIGSEGV on terminal resize during dialog: block SIGWINCH with
+  sigprocmask during e_t_refresh, clamp iteration to ncurses stdscr
+  dimensions to prevent race with concurrent SIGWINCH.
+* Fix F9 hang after dialog resize: e_free_all_pics() invalidates
+  stale FENSTER PICs before e_repaint_desk creates fresh ones with
+  correct post-resize coordinates.
+* Dialog clipping: when the terminal is smaller than the dialog, the
+  interactive loop is bypassed (only Esc and resize accepted).
+  e_opt_element_visible() checks both axes before drawing each
+  element.  Prevents floating character artifacts from dialog content
+  drawn outside the PIC save area.
 * Messages window auto-positioning: 2/3 + 1/3 vertical split when
   Messages is created by F9.  e_position_messages_window() places
   Messages to fill available space below editor windows.

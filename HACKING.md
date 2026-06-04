@@ -308,6 +308,34 @@ when Messages is created or repositioned:
 Called from: `e_edit` (Messages creation), `e_run_make` (F9),
 and `e_relayout_windows` (resize with Messages open).
 
+### Dialog resize during SIGWINCH (we_opt.c, we_term.c)
+
+Dialogs (`e_opt_kst`) survive terminal resize via a restart pattern:
+WPE_RESIZE closes the dialog PIC, re-centers coordinates with
+`e_opt_center_dialog`, and jumps to `e_opt_kst_restart` which
+creates a fresh PIC and redraws.
+
+Three mechanisms prevent crashes and artifacts:
+
+1. **SIGWINCH blocking in e_t_refresh**: `sigprocmask(SIG_BLOCK)`
+   prevents a second SIGWINCH from resizing ncurses stdscr while
+   `move()`/`addch()` are iterating.  The pending signal is
+   delivered after `sigprocmask(SIG_SETMASK)` restores the mask.
+   The iteration is also clamped to `min(MAXSLNS, LINES)` x
+   `min(MAXSCOL, COLS)` as a second guard.
+
+2. **PIC invalidation before repaint**: `e_free_all_pics()` frees
+   all FENSTER PICs before `e_repaint_desk` creates fresh ones.
+   Without this, `e_firstl` creates PICs with stale pre-resize
+   coordinates that corrupt the PIC stack and hang F9.
+
+3. **Dialog clipping**: when the terminal is smaller than the
+   dialog's original dimensions, `e_opt_element_visible()` skips
+   elements outside the frame during initial draw, and the
+   interactive loop is bypassed entirely (only Esc and resize
+   accepted).  `e_repaint_desk_nopic()` redraws all windows with
+   frames on dialog close without creating PICs.
+
 ## Source file overview
 
 | File | Purpose |
