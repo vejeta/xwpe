@@ -444,7 +444,7 @@ int e_run(FENSTER *f)
  estr[0] = '\0';
  if (e_s_prog.comp_sw & 1)
  {
-  sprintf(estr, "%s %s%s", e_s_prog.compiler, src_dirct, src_datnam);
+  snprintf(estr, sizeof(estr), "%s %s%s", e_s_prog.compiler, src_dirct, src_datnam);
  }
  else
  {
@@ -568,7 +568,7 @@ int e_comp(FENSTER *f)
  }
  if (i == 0)
  {
-  sprintf(ostr, e_p_msg[ERR_S_NO_CFILE], f->datnam);
+  snprintf(ostr, sizeof(ostr), e_p_msg[ERR_S_NO_CFILE], f->datnam);
   e_error(ostr, 0, f->fb);
   return(WPE_ESC);
  }
@@ -595,14 +595,14 @@ int e_comp(FENSTER *f)
  if (!strcmp(f->ed->dirct, f->dirct))
   strcpy(fstr, f->datnam);
  if (f->dirct[len] == DIRC)
-  sprintf(fstr, "%s%s", f->dirct, f->datnam);
+  snprintf(fstr, sizeof(fstr), "%s%s", f->dirct, f->datnam);
  else
-  sprintf(fstr, "%s%c%s", f->dirct, DIRC, f->datnam);
+  snprintf(fstr, sizeof(fstr), "%s%c%s", f->dirct, DIRC, f->datnam);
  argc = e_add_arg(&arg, fstr, argc, argc);
  if (e_prog.exedir[strlen(e_prog.exedir)-1] == DIRC)
-  sprintf(ostr, "%s%s", e_prog.exedir, f->datnam);
+  snprintf(ostr, sizeof(ostr), "%s%s", e_prog.exedir, f->datnam);
  else
-  sprintf(ostr, "%s%c%s", e_prog.exedir, DIRC, f->datnam);
+  snprintf(ostr, sizeof(ostr), "%s%c%s", e_prog.exedir, DIRC, f->datnam);
  WpeStringCutChar(ostr, '.');
  /* javac produces .class files, not .o -- check the right extension
     so the up-to-date test works and we don't recompile every time */

@@ -3073,7 +3073,7 @@ int WpePrintFile(FENSTER *f)
  if ((str = MALLOC(strlen(f->datnam) + 32 )) == NULL)
   e_error(e_msg[ERR_LOWMEM], 1, f->ed->fb);
 
- sprintf(str, "File: %s\nDo you want to print it?", f->datnam);
+ snprintf(str, sizeof(str), "File: %s\nDo you want to print it?", f->datnam);
  c = e_message(1, str, f);
  FREE(str);
  if (c != 'Y')
@@ -3092,11 +3092,11 @@ int WpePrintFile(FENSTER *f)
                    strlen(f->ed->print_cmd) + strlen(f->datnam) )) == NULL)
   e_error(e_msg[ERR_LOWMEM], 1, f->ed->fb);
 
- sprintf(str, "cd %s; %s %s", e_tmp_dir, f->ed->print_cmd, f->datnam);
+ snprintf(str, sizeof(str), "cd %s; %s %s", e_tmp_dir, f->ed->print_cmd, f->datnam);
  if (system(str))
   e_error(e_msg[ERR_NOTINSTALL], 0, f->fb);
 
- sprintf(str, "%s/%s", e_tmp_dir, f->datnam);
+ snprintf(str, sizeof(str), "%s/%s", e_tmp_dir, f->datnam);
  if (remove(str))
   e_error(e_msg[ERR_DELFILE], 0, f->ed->fb);
 

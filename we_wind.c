@@ -869,7 +869,7 @@ int e_close_window(FENSTER *f)
  {
   if (f->save != 0 && f->ins != 8)
   {
-   sprintf(text, "File %s NOT saved!\nDo you want to save File ?", f->datnam);
+   snprintf(text, sizeof(text), "File %s NOT saved!\nDo you want to save File ?", f->datnam);
    c = e_message(1, text, f);
    if (c == WPE_ESC)
     return(c);

@@ -2149,7 +2149,7 @@ int e_make_breakpoint(FENSTER *f, int sw)
    {
     if (e_deb_type == 0)
     {
-     sprintf(eing, "b %s:%d\n", f->datnam, b->b.y + 1);
+     snprintf(eing, sizeof(eing), "b %s:%d\n", f->datnam, b->b.y + 1);
      write(rfildes[1], eing, strlen(eing));
      while ((ret = e_d_line_read(wfildes[0], str, 256, 0, 0)) == 0 &&
        strncmp(str, "Breakpoint", 10))
@@ -2161,7 +2161,7 @@ int e_make_breakpoint(FENSTER *f, int sw)
     }
     else if (e_deb_type == 2)
     {
-     sprintf(eing, "stop at \"%s\":%d\n", f->datnam, b->b.y + 1);
+     snprintf(eing, sizeof(eing), "stop at \"%s\":%d\n", f->datnam, b->b.y + 1);
      write(rfildes[1], eing, strlen(eing));
      while ((ret = e_d_line_read(wfildes[0], str, 256, 0, 0)) == 0 &&
        str[0] != '(')
@@ -2173,7 +2173,7 @@ int e_make_breakpoint(FENSTER *f, int sw)
     }
     else if (e_deb_type == 3)
     {
-     sprintf(eing, "b %s:%d\n", f->datnam, b->b.y + 1);
+     snprintf(eing, sizeof(eing), "b %s:%d\n", f->datnam, b->b.y + 1);
      write(rfildes[1], eing, strlen(eing));
      while ((ret = e_d_line_read(wfildes[0], str, 256, 0, 0)) == 0 &&
        strncmp(str, "Added:", 6))
@@ -2186,7 +2186,7 @@ int e_make_breakpoint(FENSTER *f, int sw)
     }
     else if (e_deb_type == 1)
     {
-     sprintf(eing, "e %s\n", f->datnam);
+     snprintf(eing, sizeof(eing), "e %s\n", f->datnam);
      write(rfildes[1], eing, strlen(eing));
      if (e_d_dum_read() == -1) return(-1);
      sprintf(eing, "%d b\n", b->b.y + 1);
@@ -2255,7 +2255,7 @@ int e_make_breakpoint(FENSTER *f, int sw)
   {
    for (i = 0; i < e_d_nbrpts; i++)
    {
-    sprintf(eing, "b %s:%d\n", f->datnam, b->b.y + 1);
+    snprintf(eing, sizeof(eing), "b %s:%d\n", f->datnam, b->b.y + 1);
     write(rfildes[1], eing, strlen(eing));
     while ((ret = e_d_line_read(wfildes[0], str, 256, 0, 0)) == 0 &&
       strncmp(str, "Added:", 6))
@@ -2669,7 +2669,7 @@ int e_start_debug(FENSTER *f)
     for (_fi = cn->mxedt; _fi > 0; _fi--)
      if (e_check_c_file(cn->f[_fi]->datnam)) break;
     if (_fi > 0)
-     sprintf(estr, "%s/%s", cn->f[_fi]->dirct, cn->f[_fi]->datnam);
+     snprintf(estr, sizeof(estr), "%s/%s", cn->f[_fi]->dirct, cn->f[_fi]->datnam);
     else
      strcpy(estr, e_d_file);
    }

@@ -170,6 +170,11 @@ Changes
   wider than 223 columns (X10 encoding overflow).  kitty's terminfo
   lacks XM capability so ncurses cannot parse SGR mouse events;
   X10 format works correctly for normal terminal widths.
+* CVE-2016-20037: the original CVE is bogus (confirmed by Debian
+  Security Tracker -- no vulnerable code path exists in argv handling).
+  As defense-in-depth, all sprintf calls that receive user-supplied
+  filenames (f->datnam) are converted to snprintf with sizeof bounds
+  in we_wind.c, we_debug.c, we_fl_unix.c, and we_prog.c.
 * Fix silent data loss on disk full: e_write now checks ferror/fclose.
 * Fix link/run using Messages window instead of source file.
 * Fix Open Project with nonexistent .prj opening a blank editor.
