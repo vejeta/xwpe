@@ -73,6 +73,8 @@ int e_install(FENSTER *f);
 int e_exec_make(FENSTER *f);
 int e_run_sh(FENSTER *f);
 int e_project(FENSTER *f);
+int e_open_project_file(ECNT *cn);
+int e_select_project(ECNT *cn, char *path);
 int e_p_mess_win(char *header, int argc, char **argv, PIC **pic, FENSTER *f);
 int e_p_add_df(FLWND *fw, int sw);
 int e_p_del_df(FLWND *fw, int sw);

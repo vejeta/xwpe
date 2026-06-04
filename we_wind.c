@@ -14,6 +14,7 @@
 int e_make_xr_rahmen(int xa, int ya, int xe, int ye, int sw);
 static void e_draw_titlebar_buttons(int xa, int ya, int xe, int frb, int fes);
 static void e_draw_window_buttons(FENSTER *f);
+static void e_clear_titlebar_buttons(FENSTER *f);
 
 static int e_scale_y(int val, int old_slns, int new_slns)
 {
@@ -508,7 +509,14 @@ void e_ed_rahmen(FENSTER *f, int sw)
    e_pr_char(f->e.x-7, f->a.y, 'A' - 10 + f->winnum, f->fb->nr.fb);
   if (sw > 0 && (f->dtmd == DTMD_FILEMANAGER || f->dtmd == DTMD_DATA))
   {
-   e_draw_window_buttons(f);
+   /* Modal pickers (project list, open-project, add-to-project) have no
+      maximize/close button. */
+   if (f->dtmd == DTMD_DATA ||
+       (f->dtmd == DTMD_FILEMANAGER &&
+        (((FLBFFR *)f->b)->prj_sel || ((FLBFFR *)f->b)->sw == 5)))
+    e_clear_titlebar_buttons(f);
+   else
+    e_draw_window_buttons(f);
    blst = f->blst;
    nblst = f->nblst;
    e_hlp = f->hlp_str;
@@ -1378,6 +1386,17 @@ static void e_draw_titlebar_buttons(int xa, int ya, int xe, int frb, int fes)
  }
 }
 
+static void e_clear_titlebar_buttons(FENSTER *f)
+{
+ /* Overwrite the maximize/close button cells with the horizontal frame
+    line (RD5), not the corner glyph (RD2), so the title bar reads as a
+    clean border on modal pickers. The corner at f->e.x is drawn by
+    e_std_rahmen and must be left untouched. */
+ int i, frb = f->fb->nr.fb;
+ for (i = f->e.x - 5; i <= f->e.x - 1; i++)
+  e_pr_char(i, f->a.y, RD5, frb);
+}
+
 static void e_draw_window_buttons(FENSTER *f)
 {
  if (WpeIsXwin())
@@ -1422,6 +1441,9 @@ void e_std_rahmen(int xa, int ya, int xe, int ye, char *name, int sw, int frb,
  e_pr_char(xe, ya, rhm[sw][1], frb);
  e_pr_char(xe, ye, rhm[sw][3], frb);
 
+ { FILE *_d = fopen("/tmp/xwpe-rahmen.txt", "a");
+   if (_d) { fprintf(_d, "RAHMEN: name=[%s] xa=%d xe=%d w=%d\n",
+     name ? name : "NULL", xa, xe, xe-xa); fclose(_d); } }
  if (name && xe - xa > 6)
  {
   int width = xe - xa;

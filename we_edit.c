@@ -834,7 +834,13 @@ int e_tst_fkt(int c, ECNT *e)
 
  for (i = 0; i < MENOPT; i++)
   if (c == opt[i].as)
+  {
    WpeHandleMainmenu(i, f);
+   /* Menu draws over a saved PIC; redraw active window chrome and
+      status bar so project state (blst, project name) survives. */
+   e_ed_rahmen(e->f[e->mxedt], 1);
+   e_refresh_area(0, MAXSLNS - 1, MAXSCOL, 1);
+  }
 
  switch (c)
  {

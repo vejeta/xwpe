@@ -422,7 +422,9 @@ int e_file_window(int sw, FLWND *fw, int ft, int fz)
 #else
       c = e_getch();
 #endif
-      if(fw->df->anz <= 0) return(WPE_ESC);
+      /* Empty list: there is nothing to navigate, but still hand the key
+         back so commands like Add (AltA) work on a new, empty project. */
+      if(fw->df->anz <= 0) return(c ? c : WPE_ESC);
       if (c == CUP || c == CtrlP)
       {  if(fw->nf <= 0)  return(c);
 	 else  fw->nf--;

@@ -21,6 +21,8 @@ int WpeTermInit(int *argc, char **argv);
 #include <dirent.h>
 #include <signal.h>
 #include <execinfo.h>
+#include <fcntl.h>
+#include <unistd.h>
 #include <locale.h>
 #ifndef TERMCAP
 #ifndef DJGPP
@@ -307,30 +309,24 @@ int e_tast_sim(int c)
 
 void WpeSignalUnknown(int sig)
 {
- FILE *df = fopen("/tmp/xwpe-crash.txt", "w");
- if (df)
+ int fd = open("/tmp/xwpe-crash.txt", O_WRONLY|O_CREAT|O_TRUNC, 0644);
+ if (fd >= 0)
  {
-  extern int MAXSLNS, MAXSCOL;
-  extern ECNT *WpeEditor;
-  int k;
-  fprintf(df, "CRASH: signal %d\n", sig);
-  fprintf(df, "MAXSLNS=%d MAXSCOL=%d\n", MAXSLNS, MAXSCOL);
-  if (WpeEditor)
-  {
-   fprintf(df, "mxedt=%d\n", WpeEditor->mxedt);
-   for (k = 0; k <= WpeEditor->mxedt; k++)
-    fprintf(df, "  f[%d] '%s': (%d,%d)-(%d,%d) dtmd=%d\n", k,
-      WpeEditor->f[k]->datnam ? WpeEditor->f[k]->datnam : "?",
-      WpeEditor->f[k]->a.x, WpeEditor->f[k]->a.y,
-      WpeEditor->f[k]->e.x, WpeEditor->f[k]->e.y,
-      WpeEditor->f[k]->dtmd);
-  }
+  char line[256];
+  int len;
   void *bt[32];
-  int n = backtrace(bt, 32);
-  backtrace_symbols_fd(bt, n, fileno(df));
-  fclose(df);
+  int n;
+
+  len = snprintf(line, sizeof(line), "CRASH: signal %d\n", sig);
+  write(fd, line, len);
+  n = backtrace(bt, 32);
+  backtrace_symbols_fd(bt, n, fd);
+  len = snprintf(line, sizeof(line), "MAXSLNS=%d MAXSCOL=%d\n", MAXSLNS, MAXSCOL);
+  write(fd, line, len);
+  close(fd);
  }
- fprintf(stderr, "Xwpe: unexpected signal %d\n", sig);
+ write(STDERR_FILENO, "\033[?1002l\033[?1006l\033[?1000l", 27);
+ tcsetattr(0, TCSANOW, &otermio);
  signal(sig, SIG_DFL);
  raise(sig);
 }

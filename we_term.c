@@ -481,6 +481,10 @@ int e_t_initscr()
  nonl();
  intrflush(stdscr,FALSE);
  keypad(stdscr,TRUE);
+ /* Deliver a bare Esc after 25ms instead of the ~1s default, so a single
+    Esc closes dialogs/menus (no 3-press workaround that can be misread as
+    an escape sequence and spin the File Manager). */
+ set_escdelay(25);
 #if MOUSE
  mousemask(ALL_MOUSE_EVENTS | REPORT_MOUSE_POSITION, NULL);
  mouseinterval(0);
@@ -833,6 +837,7 @@ static int e_t_getch_poll(void)
 int e_t_getch()
 {
  int c, bk;
+ extern int g_mouse_buttons;
 
  e_refresh();
  c = e_t_getch_poll();

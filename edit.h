@@ -281,6 +281,7 @@ typedef struct FLBFF {
  struct fl_wnd *dw;  /* window for dir tree */
  char *rdfile;       /* file pattern entered for searching */
  char sw;
+ char prj_sel;       /* 1 = open-project mode: selection opens the .prj */
  int xfa, xfd, xda, xdd;
 } FLBFFR;
 

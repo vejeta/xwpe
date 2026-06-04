@@ -513,7 +513,12 @@ void FARBE_Init(FARBE *fb)
  fb->mt = e_s_x_clr(0,7);   /*  Menu Text               */
  fb->mz = e_s_x_clr(0,2);   /*  Menu Text highlighted      */
  fb->ms = e_s_x_clr(1,7);   /*  Menu-Switch           */
- fb->nr = e_s_x_clr(15,7);  /*  Options Frame         */
+ fb->nr = e_s_x_clr(0,7);   /*  Options/Data/FileManager Frame + title: black
+                               on light-grey. Was (15,7) white-on-white, which
+                               made the frame border and the window TITLE
+                               (drawn in this colour by e_std_rahmen) invisible
+                               on Options, Message, File-Manager and Project
+                               (Data) windows. */
  fb->nt = e_s_x_clr(0,7);   /*  Options Text           */
  fb->nsnt = e_s_x_clr(11,7);/*  Options Text-Switch  */
  fb->ne = e_s_x_clr(1, 7);  /*  Options Window-Button */

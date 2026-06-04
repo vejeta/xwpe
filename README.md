@@ -28,8 +28,9 @@ mouse support, X11 fixes, and a 12-chapter Texinfo manual.
 
 ```sh
 # Install dependencies (Debian/Ubuntu)
-sudo apt install build-essential autoconf automake pkg-config \
-  libncurses-dev libx11-dev libgpm-dev zlib1g-dev librsvg2-bin
+sudo apt install build-essential autoconf automake pkg-config texinfo \
+  libncurses-dev libx11-dev libxft-dev libcairo2-dev libpango1.0-dev \
+  libgpm-dev zlib1g-dev librsvg2-bin
 
 # Build and install
 autoreconf -fi && ./configure && make && sudo make install
@@ -38,6 +39,12 @@ autoreconf -fi && ./configure && make && sudo make install
 wpe file.c          # terminal mode
 xwpe file.c         # X11 mode
 ```
+
+The X11 libraries (`libxft-dev`, `libcairo2-dev`, `libpango1.0-dev`)
+enable the anti-aliased Xft/Cairo rendering used by `xwpe`. They are
+optional: `configure` detects them and falls back automatically, so a
+console-only build needs only `libncurses-dev` (plus the build tools).
+`texinfo` is needed to build the `info xwpe` manual.
 
 ## What's new in 1.6.3 (in development)
 

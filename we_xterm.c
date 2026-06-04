@@ -781,6 +781,10 @@ static void e_x_refresh_xft(void)
    WpeXInfo.font_width * MAXSCOL, WpeXInfo.font_height * MAXSLNS, 0, 0);
 }
 
+/* The Cairo refresh path calls wpe_render_chrome(), which lives in
+   we_render_cairo.c and only exists when Cairo+Pango are present. Guard
+   it on HAVE_CAIRO (not just HAVE_XFT) so an Xft-only build still links. */
+#ifdef HAVE_CAIRO
 static void e_x_refresh_cairo(void)
 {
  int i, j;
@@ -832,6 +836,7 @@ static void e_x_refresh_cairo_full(void)
  }
  wpe_render_chrome();
 }
+#endif /* HAVE_CAIRO */
 #endif
 
 int e_x_refresh()
@@ -853,9 +858,11 @@ int e_x_refresh()
 #ifdef HAVE_XFT
    if (WpeXInfo.xftfont)
    {
+#ifdef HAVE_CAIRO
     if (WpeRender.draw_rect)
      e_x_refresh_cairo();
     else
+#endif /* HAVE_CAIRO */
      e_x_refresh_xft();
    }
    else

@@ -33,6 +33,9 @@ extern char    *e_tmp_dir;
 /* buffer size for copying */
 #define E_C_BUFFERSIZE 524288        /*   1/2  Mega Byte   */
 
+int e_select_project(ECNT *cn, char *path);   /* we_prog.c */
+int e_wrt_prj_fl(FENSTER *f);                  /* we_prog.c */
+
 #ifdef DEBUG
 int SpecialError(char *text, int sw, FARBE *f, char *file, int line)
 {
@@ -121,6 +124,8 @@ int WpeCreateFileManager(int sw, ECNT *cn, char *dirct)
     f->datnam = "Wastebasket";
     f->save = 1;
   }
+  else if(sw == 5)
+    f->datnam = "Add Files to Project";  /* add-to-project mode */
   else
     f->datnam = "File-Manager";  /* window header text */
 
@@ -192,6 +197,20 @@ int WpeCreateFileManager(int sw, ECNT *cn, char *dirct)
   strcpy(b->rdfile, f->fd.file);               /* find file pattern */
 
   b->sw = sw;
+
+  /* Open-Project mode: filter to *.prj and tag this manager so that
+     selecting a file opens it as the project (see WpeHandleFileManager). */
+  b->prj_sel = 0;
+  {
+    extern int e_prj_select_pending;
+    if (sw == 0 && e_prj_select_pending)
+    {
+      strcpy(b->rdfile, "*.prj");
+      b->prj_sel = 1;
+      e_prj_select_pending = 0;
+      f->datnam = "Select Project";
+    }
+  }
 
   /* window for files */
   if((b->fw = (FLWND *) MALLOC(sizeof(FLWND))) == NULL)
@@ -287,28 +306,36 @@ int WpeDrawFileManager(FENSTER * f)
 
   if(NUM_LINES_ON_SCREEN > 17)
   {
-    e_pr_str((f->a.x + 4), f->e.y - by, "Cancel", f->fb->nz.fb, -1, -1,
-             f->fb->ns.fb, f->fb->nt.fb);
-    e_pr_str((f->a.x + 14), f->e.y - by, "Change Dir", f->fb->nz.fb, 0, -1,
-             f->fb->ns.fb, f->fb->nt.fb);
+    /* For Add-to-project, Esc keeps the added files and returns to the
+       project window, so label it Done rather than Cancel. */
+    e_pr_str((f->a.x + 4), f->e.y - by, b->sw == 5 ? "Esc:Done" : "Esc:Cancel",
+             f->fb->nt.fb, -1, -1, f->fb->nt.fb, f->fb->nt.fb);
+    e_pr_str((f->a.x + 17), f->e.y - by, "Alt-C:ChDir", f->fb->nt.fb, -1, -1,
+             f->fb->nt.fb, f->fb->nt.fb);
     if(b->sw == 1 && NUM_COLS_ON_SCREEN >= 34)
-      e_pr_str((f->a.x + 28), f->e.y - by, "Read", f->fb->nz.fb, 0, -1,
-               f->fb->ns.fb, f->fb->nt.fb);
+      e_pr_str((f->a.x + 31), f->e.y - by, "Alt-R:Read", f->fb->nt.fb, -1, -1,
+               f->fb->nt.fb, f->fb->nt.fb);
     else if(b->sw == 2 && NUM_COLS_ON_SCREEN >= 35)
-      e_pr_str((f->a.x + 28), f->e.y - by, "Write", f->fb->nz.fb, 0, -1,
-               f->fb->ns.fb, f->fb->nt.fb);
+      e_pr_str((f->a.x + 31), f->e.y - by, "Alt-W:Write", f->fb->nt.fb, -1, -1,
+               f->fb->nt.fb, f->fb->nt.fb);
     else if(b->sw == 4)
     {
       if(NUM_COLS_ON_SCREEN >= 34)
-        e_pr_str((f->a.x + 28), f->e.y - by, "Save", f->fb->nz.fb, 0, -1,
-                 f->fb->ns.fb, f->fb->nt.fb);
+        e_pr_str((f->a.x + 31), f->e.y - by, "Alt-S:Save", f->fb->nt.fb, -1, -1,
+                 f->fb->nt.fb, f->fb->nt.fb);
     }
     else if(b->sw == 3 && NUM_COLS_ON_SCREEN >= 37)
-      e_pr_str((f->a.x + 28), f->e.y - by, "Execute", f->fb->nz.fb, 0, -1,
-               f->fb->ns.fb, f->fb->nt.fb);
+      e_pr_str((f->a.x + 31), f->e.y - by, "Alt-E:Exec", f->fb->nt.fb, -1, -1,
+               f->fb->nt.fb, f->fb->nt.fb);
     else if(b->sw == 5 && NUM_COLS_ON_SCREEN >= 33)
-      e_pr_str((f->a.x + 28), f->e.y - by, "Add", f->fb->nz.fb, 0, -1,
-               f->fb->ns.fb, f->fb->nt.fb);
+      e_pr_str((f->a.x + 31), f->e.y - by, "Enter:Add", f->fb->nt.fb, -1, -1,
+               f->fb->nt.fb, f->fb->nt.fb);
+    else if(b->sw == 0 && b->prj_sel)
+    {
+      if(NUM_COLS_ON_SCREEN >= 33)
+        e_pr_str((f->a.x + 31), f->e.y - by, "Enter:Select File", f->fb->nt.fb,
+                 -1, -1, f->fb->nt.fb, f->fb->nt.fb);
+    }
     else if(b->sw == 0)
     {
       if(NUM_COLS_ON_SCREEN >= 35)
@@ -319,7 +346,7 @@ int WpeDrawFileManager(FENSTER * f)
                  f->fb->ns.fb, f->fb->nt.fb);
     }
   }
-  if(b->sw == 0 && NUM_LINES_ON_SCREEN > 19)
+  if(b->sw == 0 && !b->prj_sel && NUM_LINES_ON_SCREEN > 19)
   {
     e_pr_str((f->a.x + 4), f->e.y - 2, "Move", f->fb->nz.fb, 0, -1,
              f->fb->ns.fb, f->fb->nt.fb);
@@ -472,6 +499,33 @@ int WpeSaveAsManager(FENSTER * f)
 }
 
 
+int e_prj_add_file_unique(FLWND *fw, char *ftmp, FENSTER *f)
+{
+  int i;
+  char msg[256];
+
+  for (i = 0; i < fw->df->anz; i++)
+  {
+    if (strcmp(fw->df->name[i], ftmp) == 0)
+    {
+      e_error("File already in project", 0, f->fb);
+      FREE(ftmp);
+      return -1;
+    }
+  }
+  fw->df->anz++;
+  fw->df->name = REALLOC(fw->df->name, fw->df->anz * sizeof(char *));
+  for (i = fw->df->anz - 1; i > fw->nf; i--)
+    fw->df->name[i] = fw->df->name[i - 1];
+  fw->df->name[i] = ftmp;
+  fw->nf++;
+  if (fw->nf - fw->ia >= fw->ye - fw->ya)
+    fw->ia = fw->nf + fw->ya - fw->ye + 1;
+  snprintf(msg, sizeof(msg), "Added to project: %s", ftmp);
+  e_message(0, msg, f);
+  return 0;
+}
+
 /* File Manager Handler */
 int WpeHandleFileManager(ECNT * cn)
 {
@@ -488,6 +542,8 @@ int WpeHandleFileManager(ECNT * cn)
   FILE           *fp;
   struct stat     buf;
   char            dtmd;
+  int             open_prj = 0;       /* 1 = open selected .prj after FM closes */
+  char            prj_path[WPE_PATHMAX];
 
   /* check whether we really get a file-manager window here */
   if(f->dtmd != DTMD_FILEMANAGER)
@@ -533,6 +589,11 @@ int WpeHandleFileManager(ECNT * cn)
   /* go until quit */
   while(c != WPE_ESC)
   {
+    { static int _it = 0;
+      FILE *_df = fopen("/tmp/xwpe-fm.txt", "a");
+      if (_df) { fprintf(_df, "FM %d: c=%d sw=%d cold=%d rdfile=[%s]\n",
+        _it++, c, b->sw, cold, b->rdfile); fclose(_df); }
+    }
     /* draw out dir tree and file list windows */
     e_pr_file_window(b->fw, 0, 1, f->fb->ft.fb, f->fb->fz.fb, f->fb->frft.fb);
     e_pr_file_window(b->dw, 0, 1, f->fb->ft.fb, f->fb->fz.fb, f->fb->frft.fb);
@@ -547,6 +608,10 @@ int WpeHandleFileManager(ECNT * cn)
            result file copied into b->rdfile, max 79 char + '\0' */
         c = e_schr_lst_wsv(b->rdfile, f->a.x + b->xfa, f->a.y + 3, b->xfd + 1, 79,
                            f->fb->fr.fb, f->fb->fz.fb, &f->ed->fdf, f);
+        { FILE *_df = fopen("/tmp/xwpe-altn.txt", "a");
+          if (_df) { fprintf(_df, "ALTN: schr_ret=%d sw=%d anz=%d\n",
+            c, b->sw, b->df ? b->df->anz : -1); fclose(_df); }
+        }
 
         /* determine the entered filename, going backward */
         for(i = strlen(b->rdfile); i >= 0 && b->rdfile[i] != DIRC; i--)
@@ -1071,6 +1136,18 @@ int WpeHandleFileManager(ECNT * cn)
             c = AltF;
             break;
           }
+          /* Open-Project mode: remember the chosen .prj and leave the
+             manager; the post-loop close opens it (avoids double close). */
+          if(b->prj_sel)
+          {
+            if(filen[0] == DIRC)
+              snprintf(prj_path, sizeof(prj_path), "%s", filen);
+            else
+              snprintf(prj_path, sizeof(prj_path), "%s%s", f->dirct, filen);
+            open_prj = 1;
+            c = WPE_ESC;
+            break;
+          }
           /* there is no open ??? file */
           if(b->sw == 0 || !fe)
           {
@@ -1359,27 +1436,10 @@ int WpeHandleFileManager(ECNT * cn)
           ftmp = MALLOC(strlen(f->dirct) + strlen(filen) + 2);
           len = strlen(dirtmp);
           if (strncmp(dirtmp, f->dirct, len) == 0)
-          {
-           /* Make path relative to project directory */
-           sprintf(ftmp, "%s%s", f->dirct + len, filen);
-          }
+            sprintf(ftmp, "%s%s", f->dirct + len, filen);
           else
-          {
-           /* Full path */
-           sprintf(ftmp, "%s%s", f->dirct, filen);
-          }
-          fw->df->anz++;
-          fw->df->name = REALLOC(fw->df->name, fw->df->anz * sizeof(char *));
-          for(i = fw->df->anz - 1; i > fw->nf; i--)
-            fw->df->name[i] = fw->df->name[i - 1];
-          fw->df->name[i] = ftmp;
-/* Don't bother notifying the user for each file added to project
-   sprintf(ftmp, "File added to Project:\n%s",
-   fw->df->name[i]);
-   e_message(0, ftmp, f); */
-          fw->nf++;
-          if(fw->nf - fw->ia >= fw->ye - fw->ya)
-            fw->ia = fw->nf + fw->ya - fw->ye + 1;
+            sprintf(ftmp, "%s%s", f->dirct, filen);
+          e_prj_add_file_unique(fw, ftmp, f);
           c = AltN;
         }
         break;
@@ -1481,6 +1541,27 @@ int WpeHandleFileManager(ECNT * cn)
 
           return(WPE_ESC);
         }
+        /* A window/menu switch key (Alt-W, Alt-0..9, function key) was
+           pressed: close the add manager and let the switch happen, just
+           like the non-project modes do above. Without this the add-to-
+           project manager ignores such keys and spins. */
+        else if(!e_tst_dfkt(f, c) || (WpeIsProg() && !e_prog_switch(f, c)))
+        {
+          if(svdir != NULL)
+          {
+            if(chdir(svdir) && (dirtmp = getenv("HOME")) != NULL)
+              if(chdir(dirtmp)) ;
+            dirtmp = WpeGetCurrentDir(cn);
+            FREE(cn->dirct);
+            cn->dirct = dirtmp;
+            FREE(svdir);
+            svdir = NULL;
+          }
+          e_close_window(f);
+          if(svmode >= 0)
+            cn->flopt = svmode;
+          return(0);
+        }
         c = cold;
         break;
     }
@@ -1524,6 +1605,8 @@ int WpeHandleFileManager(ECNT * cn)
   else
   {
     e_close_window(f);
+    if(open_prj)
+      e_select_project(cn, prj_path);
     return(0);
   }
 }
@@ -3699,7 +3782,7 @@ int e_data_first(int sw, ECNT *cn, char *nstr)
 #ifdef PROG
   else if(sw == 4)
   {
-    f->datnam = "Project";
+    f->datnam = WpeStrdup("Project");
     df = e_p_df[0];
   }
   else if(sw == 5)
@@ -3722,7 +3805,7 @@ int e_data_first(int sw, ECNT *cn, char *nstr)
   else
   {
     f->blst = oblst;
-    f->nblst = 4;
+    f->nblst = 5;
   }
   WpeMouseRestoreShape();
   f->b = (BUFFER *) fw;
@@ -3775,7 +3858,9 @@ int e_data_schirm(FENSTER * f)
                  0, -1, f->fb->ns.fb, f->fb->nt.fb);
       }
     }
-    e_pr_str((f->e.x - 9), f->e.y - 2, "Cancel", f->fb->nz.fb, -1, -1,
+    /* Project window auto-saves the .prj on close, so the exit button is
+       labelled Save (Esc does the same -- consistent, no surprise). */
+    e_pr_str((f->e.x - 9), f->e.y - 2, "Save", f->fb->nz.fb, -1, -1,
              f->fb->ns.fb, f->fb->nt.fb);
   }
 
@@ -3838,6 +3923,10 @@ int e_data_eingabe(ECNT * cn)
     if(c == MBKEY)
       c = e_data_ein_mouse(f);
 #endif
+    { FILE *_df = fopen("/tmp/xwpe-data.txt", "a");
+      if (_df) { fprintf(_df, "DATA: c=%d ins=%d df=%p anz=%d AltA=%d\n",
+        c, f->ins, (void*)fw->df, fw->df ? fw->df->anz : -1, AltA); fclose(_df); }
+    }
     if(((c == WPE_CR || c == AltS) && (f->ins < 4 || f->ins == 7)) ||
        ((c == AltA || c == EINFG) && (f->ins > 3 && f->ins < 7)))
     {
@@ -3859,8 +3948,12 @@ int e_data_eingabe(ECNT * cn)
 #ifdef PROG
       else if(f->ins == 4)
       {
+        /* WpeHandleFileManager runs its own internal loop until WPE_ESC,
+           so call it ONCE (as e_p_add_item does). Wrapping it in
+           while(... != WPE_ESC) spins at 100% CPU when it returns 0 after
+           losing focus (the FM window is no longer active). */
         WpeCreateFileManager(5, f->ed, NULL);
-        while(WpeHandleFileManager(f->ed) != WPE_ESC);
+        WpeHandleFileManager(f->ed);
         e_p_df[f->ins - 4] = fw->df;
         c = AltF;
         f->save = 1;
@@ -3911,9 +4004,14 @@ int e_data_eingabe(ECNT * cn)
       if(f->ins == 4 && ((!(f->ed->edopt & ED_CUA_STYLE) && c == AF3)
                          || ((f->ed->edopt & ED_CUA_STYLE) && c == CF4)))
       {
-        FLWND          *fw = (FLWND *) f->ed->f[f->ed->mxedt]->b;
+        FENSTER        *pf = f->ed->f[f->ed->mxedt];
+        FLWND          *fw = (FLWND *) pf->b;
+        /* Persist added/removed files to the .prj on close, otherwise the
+           in-memory list is lost when the project window is reopened. */
+        if(pf->save)
+          e_wrt_prj_fl(pf);
         fw->df = NULL;
-        e_close_window(f->ed->f[f->ed->mxedt]);
+        e_close_window(pf);
         return(0);
       }
       if(f->ins == 4 && (!e_tst_dfkt(f, c) || !e_prog_switch(f, c)))

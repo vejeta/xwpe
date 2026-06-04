@@ -45,6 +45,7 @@ struct ERR_LI  {  char *file, *text, *srch;  int x, y, line;  } *err_li = NULL;
 int err_no, err_num;
 
 int e__project = 0, e_argc, e_p_l_comp;
+int e_prj_select_pending = 0;
 char **e_arg = NULL;
 char *e__arguments = NULL;
 M_TIME last_time;
@@ -77,6 +78,34 @@ char *cc_intstr = "${?*:warning:}\"${FILE}\", line ${LINE}:* at or near * \"${CO
 char *pc_intstr = "${?0:e}${?0:w}${?0:s}*:*:* * ${FILE}:\n\n* ${LINE}  ${CMPTEXT}\n*-------\
 ${COLUMN=PREVIOUS?^+14}\n[EWew] * line*";
 
+
+char *e_prj_window_title(void)
+{
+ char buf[128];
+
+ if (e_prog.project && e_prog.project[0])
+ {
+  const char *base = strrchr(e_prog.project, '/');
+  base = base ? base + 1 : e_prog.project;
+  snprintf(buf, sizeof(buf), "Project: %s", base);
+  return WpeStrdup(buf);
+ }
+ return WpeStrdup("Project");
+}
+
+const char *e_prj_status_label(void)
+{
+ static char sbuf[128];
+
+ if (e__project && e_prog.project && e_prog.project[0])
+ {
+  const char *base = strrchr(e_prog.project, '/');
+  base = base ? base + 1 : e_prog.project;
+  snprintf(sbuf, sizeof(sbuf), "Project: %s", base);
+  return sbuf;
+ }
+ return NULL;
+}
 
 char *e_p_msg[] = {
  "Not a C - File",
@@ -1362,7 +1391,7 @@ int e_ini_prog(ECNT *cn)
  if (e_prog.arguments) FREE(e_prog.arguments);
  e_prog.arguments = WpeStrdup("");
  if (e_prog.project) FREE(e_prog.project);
- e_prog.project = WpeStrdup("project.prj");
+ e_prog.project = WpeStrdup("");
  if (e_prog.exedir) FREE(e_prog.exedir);
  e_prog.exedir = WpeStrdup(".");
  if (e_prog.sys_include) FREE(e_prog.sys_include);
@@ -1499,6 +1528,13 @@ int e_prj_ob_btt(FENSTER *f, int sw)
  FLWND *fw;
 
  e_data_first(sw+4, f->ed, f->ed->dirct);
+ if (sw == 0)
+ {
+  FENSTER *pf = f->ed->f[f->ed->mxedt];
+  FREE(pf->datnam);
+  pf->datnam = e_prj_window_title();
+  e_ed_rahmen(pf, 1);
+ }
  if (sw > 0)
  {
   if (!(f->ed->edopt & ED_CUA_STYLE))
@@ -1773,33 +1809,83 @@ int e_project_name(FENSTER *f)
  return(WPE_ESC);
 }
 
+/* Open the project named in e_prog.project: validate, replace any open
+   project window, parse the .prj, and show the file list. Shared by the
+   File-Manager selection path and any caller that has set e_prog.project. */
+int e_open_project_file(ECNT *cn)
+{
+ FENSTER *f;
+ int i;
+
+ if (!e_prog.project[0] || access(e_prog.project, F_OK) != 0)
+ {
+  e_error("Project file not found", 0, cn->fb);
+  e_prog.project[0] = '\0';
+  return(WPE_ESC);
+ }
+ e__project = 1;
+ for (i = cn->mxedt; i > 0 && (cn->f[i]->dtmd != DTMD_DATA || cn->f[i]->ins != 4);
+   i--)
+  ;
+ if (i > 0)
+ {
+  e_switch_window(cn->edt[i], cn->f[cn->mxedt]);
+  e_close_window(cn->f[cn->mxedt]);
+ }
+ f = cn->f[cn->mxedt];
+ e_make_prj_opt(f);
+ e_rel_brkwtch(f);
+ e_prj_ob_file(f);
+ return(0);
+}
+
+/* Write a minimal .prj so a freshly named project can be opened.
+   e_make_prj_opt() fills in the compiler defaults (gcc, -g). */
+static void e_write_default_prj(char *path)
+{
+ FILE *fp = fopen(path, "w");
+ char exe[128];
+ const char *base;
+ int i;
+
+ if (!fp)
+  return;
+ /* Executable name = project basename without directory or .prj suffix
+    (e.g. /tmp/nuevo.prj -> nuevo). */
+ base = strrchr(path, DIRC);
+ base = base ? base + 1 : path;
+ for (i = 0; base[i] && base[i] != '.' && i < (int)sizeof(exe) - 1; i++)
+  exe[i] = base[i];
+ exe[i] = '\0';
+
+ fprintf(fp, "#\n# xwpe - project-file: %s\n", path);
+ fprintf(fp, "# created by xwpe version %s\n#\n\n", VERSION);
+ fprintf(fp, "CMP=\tgcc\n");
+ fprintf(fp, "CMPFLAGS=\t-g\n");
+ fprintf(fp, "LDFLAGS=\t\n");
+ fprintf(fp, "EXENAME=\t%s\n", exe);
+ fprintf(fp, "CMPSWTCH=\tgnu\n\n");
+ fprintf(fp, "FILES=\t\n");
+ fclose(fp);
+}
+
+/* Set e_prog.project to the given path and open it, creating a new
+   skeleton .prj first if the file does not exist. Called by the
+   File-Manager once the user picks or types a project name. */
+int e_select_project(ECNT *cn, char *path)
+{
+ e_prog.project = REALLOC(e_prog.project, strlen(path) + 1);
+ strcpy(e_prog.project, path);
+ if (access(path, F_OK) != 0)
+  e_write_default_prj(path);
+ return(e_open_project_file(cn));
+}
+
 int e_project(FENSTER *f)
 {
- ECNT *cn = f->ed;
- int i;
- if (!e_project_name(f))
- {
-  if (!e_prog.project[0] || access(e_prog.project, F_OK) != 0)
-  {
-   e_error("Project file not found", 0, f->fb);
-   e_prog.project[0] = '\0';
-   return(WPE_ESC);
-  }
-  for (i = cn->mxedt; i > 0 && (cn->f[i]->dtmd != DTMD_DATA || cn->f[i]->ins != 4);
-    i--)
-   ;
-  if (i > 0)
-  {
-   e_switch_window(cn->edt[i], cn->f[cn->mxedt]);
-   e_close_window(cn->f[cn->mxedt]);
-  }
-  f = cn->f[cn->mxedt];
-  e_make_prj_opt(f);
-  e_rel_brkwtch(f);
-  e_prj_ob_file(f);
-  return(0);
- }
- return(WPE_ESC);
+ e_prj_select_pending = 1;
+ WpeCreateFileManager(0, f->ed, "");
+ return(0);
 }
 
 int e_show_project(FENSTER *f)
@@ -1807,6 +1893,14 @@ int e_show_project(FENSTER *f)
  ECNT *cn = f->ed;
  int i;
 
+ /* Window->Project only makes sense with a project open; without one,
+    do not synthesise an empty project window. */
+ if (!e_prog.project || !e_prog.project[0]
+     || access(e_prog.project, F_OK) != 0)
+ {
+  e_error("No project open", 0, f->fb);
+  return(0);
+ }
  for (i = cn->mxedt; i > 0 && (cn->f[i]->dtmd != DTMD_DATA || cn->f[i]->ins != 4);
    i--)
   ;
@@ -1825,11 +1919,7 @@ int e_cl_project(FENSTER *f)
  ECNT *cn = f->ed;
  int i;
 
- if (!e_prog.project)
-  e_prog.project = MALLOC(sizeof(char));
- else
-  e_prog.project = REALLOC(e_prog.project, sizeof(char));
- e_prog.project[0] = '\0';
+ e__project = 0;
  for (i = cn->mxedt; i > 0 && (cn->f[i]->dtmd != DTMD_DATA || cn->f[i]->ins != 4);
    i--)
   ;
@@ -1838,6 +1928,7 @@ int e_cl_project(FENSTER *f)
   e_switch_window(cn->edt[i], cn->f[cn->mxedt]);
   e_close_window(cn->f[cn->mxedt]);
  }
+ e_pr_uul(cn->fb);
  return(0);
 }
 
@@ -2322,6 +2413,8 @@ int e_read_var(FENSTER *f)
  {  fclose(fp);  e_error(e_msg[ERR_LOWMEM], 0, f->fb);  return(-1);  }
  while (fgets(str, 256, fp))
  {
+  { FILE *_d = fopen("/tmp/xwpe-rv.txt", "a");
+    if (_d) { fprintf(_d, "RV line: [%.40s] len=%d\n", str, (int)strlen(str)); fclose(_d); } }
   for (i = 0; isspace(str[i]); i++);
   if (!str[i]) continue;
   else if (str[i] == '#')
@@ -2841,6 +2934,9 @@ struct dirfile **e_make_prj_opt(FENSTER *f)
  char **tmp, *sp, *tp, text[256];
  FILE *fp;
  struct dirfile *save_df = NULL;
+ { FILE *_d = fopen("/tmp/xwpe-mpo.txt", "a");
+   if (_d) { fprintf(_d, "MPO enter: project=[%s] e_p_df=%p\n",
+     e_prog.project ? e_prog.project : "NULL", (void*)e_p_df); fclose(_d); } }
 
  for (i = f->ed->mxedt; i > 0
 	&& (f->ed->f[i]->dtmd != DTMD_DATA || f->ed->f[i]->ins != 4
@@ -3233,9 +3329,8 @@ int e_p_del_df(FLWND *fw, int sw)
 int e_p_mess_win(char *header, int argc, char **argv, PIC **pic, FENSTER *f)
 {
  char *tmp = MALLOC(sizeof(char));
- int i, ret;
+ int i;
 
- fk_cursor(0);
  tmp[0] = '\0';
  for (i = 0; i < argc && argv[i] != NULL; i++)
  {
@@ -3244,10 +3339,9 @@ int e_p_mess_win(char *header, int argc, char **argv, PIC **pic, FENSTER *f)
   strcat(tmp, argv[i]);
   strcat(tmp, " ");
  }
- ret = e_mess_win(header, tmp, pic, f);
+ e_d_p_message(tmp, f, 1);
  FREE(tmp);
- fk_cursor(1);
- return(ret);
+ return(0);
 }
 
 /* After this function b has exactly 1 line allocated (b->mxlines==1).
