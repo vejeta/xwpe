@@ -26,8 +26,10 @@ void e_mouse_tracking_enable(void)
 {
 #if MOUSE
 #ifdef NCURSES
+ mousemask(ALL_MOUSE_EVENTS | REPORT_MOUSE_POSITION, NULL);
  printf("\033[?1002h");
- printf("\033[?1006h");
+ if (COLS > 223)
+  printf("\033[?1006h");
  fflush(stdout);
 #endif
 #endif

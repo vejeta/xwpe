@@ -699,7 +699,7 @@ int e_t_refresh()
        Everything else is uninitialised SCREENCELL data.
        Fix schirm in place so the garbage is not saved by e_open_view
        and propagated through pic->p save/restore cycles. */
-    if (c < 0 || (c >= NSPCHR && c < 32) || c > 0xFFFF ||
+    if (c < 0 || (c >= NSPCHR && c < 32) ||
         (c > 127 && wcwidth((wchar_t)c) < 0))
     {
      c = ' ';
