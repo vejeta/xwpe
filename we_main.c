@@ -470,6 +470,21 @@ int e_switch_blst(ECNT *cn)
  return(0);
 }
 
+/* Lay out a status-bar button list left-to-right: each button starts at the
+   running column, advancing by its label width plus a uniform gap. The stored
+   x stays authoritative for both drawing (e_pr_uul) and mouse hit-testing
+   (we_mouse.c), so they can never disagree. Reusable for any WOPT[] bar. */
+void e_pack_button_bar(WOPT *bar, int n, int x0, int gap)
+{
+ int i, x = x0;
+
+ for (i = 0; i < n; i++)
+ {
+  bar[i].x = x;
+  x += (int)strlen(bar[i].t) + gap;
+ }
+}
+
 void e_ini_desk(ECNT *cn)
 {
  extern int e_mn_men;
@@ -487,6 +502,10 @@ void e_ini_desk(ECNT *cn)
   xblst = xblst_o; wblst = wblst_o; rblst = rblst_o; ablst = ablst_o;
   sblst = sblst_o; hblst = hblst_o; gblst = gblst_o; oblst = oblst_o;
  }
+ /* Pack the project (Data window) status bar compactly like the editor bar,
+    leaving the right edge free for the "Project: <name>" label drawn by
+    e_pr_uul. Two-column gap matches the editor's button spacing. */
+ e_pack_button_bar(oblst, 5, 0, 2);
  e_cls(cn->fb->df.fb, cn->fb->dc);
  e_blk(MAXSCOL, 0, 0, cn->fb->mt.fb);
 

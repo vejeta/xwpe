@@ -274,15 +274,18 @@ int e_pr_uul(FARBE *fb)
  extern WOPT *blst;
  extern int nblst;
  extern const char *e_prj_status_label(void);
- int i;
+ int i, rlim;
  const char *prj;
 
+ /* Reserve the right edge for the project label so the last button never
+    draws into it, regardless of bar contents or label length. */
  prj = e_prj_status_label();
+ rlim = prj ? MAXSCOL - 3 - (int)strlen(prj) : MAXSCOL - 1;
  e_blk(MAXSCOL, 0, MAXSLNS-1, fb->mt.fb);
  for (i = 0; i < nblst && blst[i].x < MAXSCOL; ++i)
   e_pr_str_scan(blst[i].x+1, MAXSLNS-1, blst[i].t, fb->mt.fb,
 			blst[i].s, blst[i].n, fb->ms.fb, blst[i].x,
-			i == nblst-1 ? MAXSCOL-1 : blst[i+1].x-1);
+			i == nblst-1 ? rlim : blst[i+1].x-1);
  if (prj)
   e_pr_str(MAXSCOL - 2 - strlen(prj), MAXSLNS - 1,
            prj, fb->ms.fb, -1, -1, fb->ms.fb, fb->mt.fb);

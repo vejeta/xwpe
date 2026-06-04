@@ -199,6 +199,9 @@ typedef struct WOPTION {
  int x, s, n, as;
 } WOPT;
 
+/* Lay out a status-bar button list left-to-right (see we_main.c). */
+void e_pack_button_bar(WOPT *bar, int n, int x0, int gap);
+
 typedef struct OPTKAST {
  char *t;
  int x;
