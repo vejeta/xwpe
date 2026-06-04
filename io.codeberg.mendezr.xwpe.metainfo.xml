@@ -1,0 +1,69 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.codeberg.mendezr.xwpe</id>
+  <metadata_license>FSFAP</metadata_license>
+  <project_license>GPL-2.0-only</project_license>
+
+  <name>xwpe</name>
+  <summary>Programming environment and text editor for UNIX terminals and X11</summary>
+  <description>
+    <p>
+      xwpe is an integrated programming and debugging environment inspired by
+      the Borland Turbo C and Pascal family. It provides syntax highlighting,
+      integrated compiler and debugger interface, project management, and a
+      function-key driven menu system. Emacs cursor keys are built in.
+    </p>
+    <p>
+      The 1.6.x series brought xwpe from its 1993 origins to 2026: UTF-8
+      support, Cairo+Pango rendering with color emoji, 9 compilers (gcc, g++,
+      gfortran, fpc, javac, python3, pdflatex, perl, cobc), 3 debuggers
+      (gdb, jdb, pdb), ncurses mouse with drag support, and interactive
+      program I/O via pty.
+    </p>
+  </description>
+
+  <launchable type="desktop-id">xwpe.desktop</launchable>
+
+  <url type="homepage">https://codeberg.org/mendezr/xwpe</url>
+  <url type="bugtracker">https://codeberg.org/mendezr/xwpe/issues</url>
+  <url type="vcs-browser">https://codeberg.org/mendezr/xwpe</url>
+
+  <developer id="io.codeberg.mendezr">
+    <name>Juan Manuel Mendez Rey</name>
+  </developer>
+
+  <provides>
+    <binary>xwpe</binary>
+    <binary>wpe</binary>
+    <binary>xwe</binary>
+    <binary>we</binary>
+  </provides>
+
+  <categories>
+    <category>Development</category>
+    <category>IDE</category>
+    <category>TextEditor</category>
+  </categories>
+
+  <content_rating type="oars-1.1" />
+
+  <screenshots>
+    <screenshot type="default">
+      <caption>xwpe editing C code with compiler errors in Messages</caption>
+      <image type="source">https://codeberg.org/mendezr/xwpe/raw/branch/main/screenshots/xwpe-screenshot.png</image>
+    </screenshot>
+  </screenshots>
+
+  <releases>
+    <release version="1.6.2" date="2026-06-01">
+      <description>
+        <p>Xft rendering, debugger resurrection, UTF-8 everywhere.</p>
+      </description>
+    </release>
+    <release version="1.5.31" date="2026-05-27">
+      <description>
+        <p>Rescue release: new upstream, Debian patches integrated.</p>
+      </description>
+    </release>
+  </releases>
+</component>

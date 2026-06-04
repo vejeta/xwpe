@@ -142,9 +142,11 @@ uninstall-local:
 # --- Man pages ---
 dist_man1_MANS = we.1 wpe.1 xwe.1
 
-# --- Desktop file ---
+# --- Desktop file + AppStream MetaInfo ---
 desktopdir = $(datadir)/applications
 desktop_DATA = xwpe.desktop
+metainfodir = $(datadir)/metainfo
+metainfo_DATA = io.codeberg.mendezr.xwpe.metainfo.xml
 
 # --- Unit tests ---
 check_PROGRAMS = test_checkheader
@@ -162,6 +164,7 @@ EXTRA_DIST = \
   syntax_def \
   xwpe.1_eng \
   xwpe.desktop \
+  io.codeberg.mendezr.xwpe.metainfo.xml \
   xwpe.spec \
   icons/xwpe.svg \
   icons/xwpe-small.svg \
