@@ -33,7 +33,7 @@ wpe file.c          # terminal mode
 xwpe file.c         # X11 mode
 ```
 
-## What's new in 1.6.3
+## What's new in 1.6.3 (in development)
 
 * **Event-driven interactive debugging**: when the debugged program
   blocks on fgets/scanf, type input directly in the Messages window.
@@ -49,6 +49,13 @@ xwpe file.c         # X11 mode
 * Perl and COBOL compiler support (perl -c, cobc)
 * Cursor-relative error navigation with wrap-around (Alt-T/Alt-V)
 * Dialog usability: Tab/Shift-Tab navigation, radio buttons, colors
+* **ncurses mouse drag**: window move/resize via title bar and borders
+  (xterm mode 1002, same protocol as Midnight Commander)
+* **Dialog resize safety**: survives extreme terminal shrink without
+  crash; dialog clipped and restored cleanly on grow
+* **Icon set**: two-tier SVG icon, .desktop entry, _NET_WM_ICON for
+  window manager title bar and taskbar
+* Modernized color palette for dialogs and syntax highlighting
 
 ## What was new in 1.6.2
 
