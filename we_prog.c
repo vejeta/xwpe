@@ -289,39 +289,6 @@ static void e_run_drain_pty(int pty_fd, BUFFER *b, FENSTER *mf)
  e_refresh();
 }
 
-static void e_run_write_char(int pty_fd, int c)
-{
- if (c == WPE_CR)
- {
-  char ch = '\n';
-  write(pty_fd, &ch, 1);
- }
- else if (c == WPE_DC)
- {
-  char ch = 127;
-  write(pty_fd, &ch, 1);
- }
- else if (c >= 32 && c < 128)
- {
-  char ch = (char)c;
-  write(pty_fd, &ch, 1);
- }
- else if (c >= 0x80)
- {
-  char utf[4];
-  int nb = 0;
-  if (c < 0x800)
-  { utf[0] = 0xC0 | (c >> 6); utf[1] = 0x80 | (c & 0x3F); nb = 2; }
-  else if (c < 0x10000)
-  { utf[0] = 0xE0 | (c >> 12); utf[1] = 0x80 | ((c >> 6) & 0x3F);
-    utf[2] = 0x80 | (c & 0x3F); nb = 3; }
-  else
-  { utf[0] = 0xF0 | (c >> 18); utf[1] = 0x80 | ((c >> 12) & 0x3F);
-    utf[2] = 0x80 | ((c >> 6) & 0x3F); utf[3] = 0x80 | (c & 0x3F); nb = 4; }
-  write(pty_fd, utf, nb);
- }
-}
-
 static int e_run_with_pty(char *cmd, BUFFER *b, FENSTER *mf)
 {
  int pty_master, pty_slave, status, ret = -1;
@@ -415,7 +382,7 @@ static int e_run_with_pty(char *cmd, BUFFER *b, FENSTER *mf)
     if (c == CtrlC)
     { kill(child, SIGINT); continue; }
     if (c > 0)
-     e_run_write_char(pty_master, c);
+     e_pty_send_key(pty_master, c);
   }
  }
 

@@ -595,43 +595,9 @@ static int e_x_map_char_utf8(int sc, char *buf)
 #endif
 
 #ifdef HAVE_XFT
-/**
- * e_x_wchar_to_utf8 - Convert a wide character to UTF-8 bytes.
- * @wc:  The wide character (Unicode code point).
- * @buf: Output buffer (must hold at least 6 bytes).
- *
- * Return: Number of bytes written.
- */
 static int e_x_wchar_to_utf8(int wc, char *buf)
 {
- if (wc < 0x80)
- {
-  buf[0] = (char)wc;
-  return 1;
- }
- else if (wc < 0x800)
- {
-  buf[0] = 0xC0 | (wc >> 6);
-  buf[1] = 0x80 | (wc & 0x3F);
-  return 2;
- }
- else if (wc < 0x10000)
- {
-  buf[0] = 0xE0 | (wc >> 12);
-  buf[1] = 0x80 | ((wc >> 6) & 0x3F);
-  buf[2] = 0x80 | (wc & 0x3F);
-  return 3;
- }
- else if (wc < 0x110000)
- {
-  buf[0] = 0xF0 | (wc >> 18);
-  buf[1] = 0x80 | ((wc >> 12) & 0x3F);
-  buf[2] = 0x80 | ((wc >> 6) & 0x3F);
-  buf[3] = 0x80 | (wc & 0x3F);
-  return 4;
- }
- buf[0] = '?';
- return 1;
+ return e_codepoint_to_utf8(wc, (unsigned char *)buf);
 }
 
 static void e_xft_draw_hline(int px, int py, int fg_idx)

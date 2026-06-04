@@ -14,48 +14,41 @@
 
 int e_undo_sw = 0, e_redo_sw = 0;
 
-#ifdef DEBUGGER
-static void e_d_pty_write_utf8(int pty_fd, int cp)
+void e_pty_write_utf8(int fd, int cp)
 {
- char buf[4];
- int len;
-
- if (cp < 0x80)
-  { buf[0] = cp; len = 1; }
- else if (cp < 0x800)
-  { buf[0] = 0xC0 | (cp >> 6); buf[1] = 0x80 | (cp & 0x3F); len = 2; }
- else if (cp < 0x10000)
-  { buf[0] = 0xE0 | (cp >> 12); buf[1] = 0x80 | ((cp >> 6) & 0x3F);
-    buf[2] = 0x80 | (cp & 0x3F); len = 3; }
- else
-  { buf[0] = 0xF0 | (cp >> 18); buf[1] = 0x80 | ((cp >> 12) & 0x3F);
-    buf[2] = 0x80 | ((cp >> 6) & 0x3F); buf[3] = 0x80 | (cp & 0x3F); len = 4; }
- write(pty_fd, buf, len);
+ unsigned char buf[4];
+ int len = e_codepoint_to_utf8(cp, buf);
+ write(fd, buf, len);
 }
 
+void e_pty_send_key(int fd, int key)
+{
+ char ch;
+ if (key == WPE_CR)
+ { ch = '\n'; write(fd, &ch, 1); }
+ else if (key == WPE_DC)
+ { ch = 127; write(fd, &ch, 1); }
+ else if (key >= 32)
+  e_pty_write_utf8(fd, key);
+}
+
+#ifdef DEBUGGER
 static int e_debug_console_input(int c, FENSTER *f)
 {
  extern int e_d_pty_master, e_d_async_pending;
- char ch;
 
  if (!e_d_async_pending || e_d_pty_master < 0)
   return 0;
- if (c == WPE_CR)
+ if (c == WPE_CR || c == WPE_DC || c >= 32)
  {
-  ch = '\n';
-  write(e_d_pty_master, &ch, 1);
-  return 1;
- }
- if (c >= 32)
- {
-  e_d_pty_write_utf8(e_d_pty_master, c);
-  return 1;
- }
- if (c == WPE_DC)
- {
-  extern int e_d_pty_verase(void);
-  ch = e_d_pty_verase();
-  write(e_d_pty_master, &ch, 1);
+  if (c == WPE_DC)
+  {
+   extern int e_d_pty_verase(void);
+   char ch = e_d_pty_verase();
+   write(e_d_pty_master, &ch, 1);
+  }
+  else
+   e_pty_send_key(e_d_pty_master, c);
   return 1;
  }
  return 0;

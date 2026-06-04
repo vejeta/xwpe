@@ -601,6 +601,8 @@ char *WpeValueToString(const char *value);
 int e_about_WE(FENSTER *f);
 int e_clear_desk(FENSTER *f);
 void e_mouse_flush(void);
+void e_pty_write_utf8(int fd, int cp);
+void e_pty_send_key(int fd, int key);
 void e_free_all_pics(ECNT *cn);
 void e_repaint_desk_nopic(FENSTER *f);
 void e_relayout_windows(ECNT *cn, int old_scol, int old_slns);
