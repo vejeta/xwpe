@@ -210,6 +210,10 @@ Changes
 * The project file list is written to disk on every Add and Delete,
   not only on window close, so an interrupted session no longer loses
   members.
+* Delete now removes the last (and the single remaining) project member.
+  The old guard in e_p_del_df (nf > anz-2) silently refused to delete the
+  highlighted entry whenever it was the last one, so a project could never
+  be emptied.
 * A new .prj is pre-filled (EXENAME from the project name, compiler
   defaults); the project window's exit button saves on close.
 * Project, Options, Message and File-Manager window titles and borders
