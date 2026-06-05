@@ -182,6 +182,14 @@ int e_show_clipboard(FENSTER *f)
   fo = cn->f[cn->mxedt-1];
   e_ed_rahmen(fo, 0);
  }
+ /* The clipboard window (cn->f[0]) persists across shows; its view (pic) was
+    freed when it was last closed.  We only reach here when it is NOT in the
+    active list (the loop at the top would have switched to it otherwise), so
+    f->pic is stale -- NULL it so e_firstl/e_ed_kst allocate a fresh view
+    instead of closing an already-freed pic (the "free(): invalid pointer"
+    double-free).  Matches e_firstl's contract that fresh windows have
+    pic == NULL. */
+ f->pic = NULL;
  e_firstl(f, 1);
  e_zlsplt(f);
  e_schirm(f, 1);
