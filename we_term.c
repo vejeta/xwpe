@@ -1004,6 +1004,16 @@ int e_t_getch()
    case KEY_F(24):  c = SF8; break;
    case KEY_F(25):  c = SF9; break;
    case KEY_F(26):  c = SF10; break;
+   /* Modern terminals (xterm modifyOtherKeys, gnome/vte, kitty) report
+      Ctrl-/Alt-modified function keys as distinct ncurses keycodes in the
+      standard ranges -- Ctrl-Fn = KEY_F(24+n), Alt-Fn = KEY_F(48+n) -- which
+      the offset-via-bioskey() path cannot recover because bioskey() reads the
+      Linux-console keyboard state and returns 0 in an emulator.  Map the ones
+      xwpe binds as shortcuts so they work in a terminal emulator too, not
+      only on a bare VT.  (A full Shift/Ctrl/Alt function-key table for all
+      terminals is a 1.6.4 cleanup -- see TODO.) */
+   case KEY_F(33):  c = CF9; break;   /* Ctrl-F9  -> Run program        */
+   case KEY_F(53):  c = AF5; break;   /* Alt-F5   -> Borland User Screen */
    case KEY_PREVIOUS:  c = CUP+512; break;
    case KEY_NEXT:  c = CDO+512; break;
    default:  c = 0; break;
