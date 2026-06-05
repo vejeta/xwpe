@@ -473,6 +473,12 @@ void WpeXInit(int *argc, char **argv)
  {
   display_name = NULL;
  }
+ /* Cairo+Pango (and fontconfig) spawn worker threads.  Xlib is not
+    thread-safe unless XInitThreads() is called BEFORE any other Xlib
+    function: without it the X request/event buffers corrupt intermittently,
+    which shows up as either a crash deep in libX11 (_XEventsQueued during a
+    cairo_fill) or a hung, all-black window.  Must precede XOpenDisplay. */
+ XInitThreads();
  if ((WpeXInfo.display = XOpenDisplay(display_name)) == NULL)
  {
   fprintf(stderr, "Xwpe: unable to open display \"%s\", exiting ...\n",
