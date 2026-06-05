@@ -1287,36 +1287,6 @@ int e_t_switch_screen(int sw)
  return(0);
 }
 
-/**
- * e_t_deb_out_popup - Show program output in an in-editor popup.
- * @f: Current window.
- *
- * Used when endwin()/raw terminal is not safe (X11 mode, pdb).
- * Renders the output as a full-screen overlay within the editor
- * using the normal display functions, then waits for a keypress.
- */
-static int e_t_deb_out_popup(FENSTER *f)
-{
- extern char *e_d_prog_output;
- extern int e_d_prog_output_len;
-
- if (e_d_prog_output && e_d_prog_output_len > 0)
- {
-  char msg[256];
-  int pos = 0, len = 0;
-  while (pos < e_d_prog_output_len && len < 250)
-  {
-   char c = e_d_prog_output[pos++];
-   msg[len++] = (c == '\n') ? ' ' : c;
-  }
-  msg[len] = '\0';
-  e_error(msg, -1, f->fb);
- }
- else
-  e_error("(no output)", -1, f->fb);
- return(0);
-}
-
 int e_t_deb_out(FENSTER *f)
 {
  extern char *e_d_prog_output;
@@ -1325,10 +1295,15 @@ int e_t_deb_out(FENSTER *f)
  extern int e_deb_type;
  int i;
 
- /* X11 mode: can't use endwin/raw terminal -- show popup instead */
+ /* X11 mode: there is no real terminal to drop to, and the program's
+    output is already captured in the Messages window. Focus that integrated
+    panel and scroll to the latest output instead of a modal popup. */
 #ifndef NO_XWINDOWS
  if (WpeIsXwin())
-  return e_t_deb_out_popup(f);
+ {
+  extern int e_p_show_program_output(FENSTER *);
+  return e_p_show_program_output(f);
+ }
 #endif
 
  e_d_pty_drain();

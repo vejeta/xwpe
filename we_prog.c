@@ -3507,6 +3507,37 @@ int e_p_show_messages(FENSTER *f)
 }
 
 /**
+ * e_p_show_program_output - Reveal the running program's output (Ctrl-G P).
+ *
+ * Bound to "Output" (Ctrl-G P / Alt-F5).  In 1993 this switched the whole
+ * screen to a separate "user screen" because the program shared the one
+ * terminal with the editor.  With the pty architecture every byte the
+ * program prints is already captured into the Messages window, so in X11
+ * mode there is no separate screen to switch to -- the output lives in the
+ * integrated panel.  This raises and focuses the Messages window and scrolls
+ * it to the latest output, the way a modern IDE focuses its output panel:
+ * the user presses Ctrl-G P and immediately sees what the program printed,
+ * scrollable and in colour, with no modal popup to dismiss.
+ *
+ * Return: 0 always (Window-menu callback convention).
+ */
+int e_p_show_program_output(FENSTER *f)
+{
+ FENSTER *mf;
+
+ e_p_show_messages(f);                       /* find/create + focus */
+ mf = f->ed->f[f->ed->mxedt];                /* now the active window */
+ if (strcmp(mf->datnam, "Messages"))
+  return(0);
+ if (mf->b->mxlines > 0)
+  mf->b->b.y = mf->b->mxlines - 1;           /* cursor at last output line */
+ mf->b->b.x = 0;
+ e_messages_scroll_to_bottom(mf);
+ e_schirm(mf, 1);
+ return(0);
+}
+
+/**
  * e_strip_quotes - Remove surrounding double quotes from a string in place.
  * @s: The string to modify.
  *
