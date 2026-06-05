@@ -325,7 +325,7 @@ void WpeSignalUnknown(int sig)
   write(fd, line, len);
   close(fd);
  }
- write(STDERR_FILENO, "\033[?1002l\033[?1006l\033[?1000l", 27);
+ write(STDERR_FILENO, "\033[?1002l\033[?1006l\033[?1000l", 24);
  tcsetattr(0, TCSANOW, &otermio);
  signal(sig, SIG_DFL);
  raise(sig);

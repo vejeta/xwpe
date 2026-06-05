@@ -335,6 +335,19 @@ Changes
   scrollbar (U+2591 light shade, U+2588 full block) when Xft active.
 
   Terminal / console mode:
+* Console mouse (GPM) restored in wpe.  On a bare Linux VT the mouse pointer
+  stopped moving and clicks stopped registering: wpe opens the GPM connection
+  itself (so ncurses does not), but the event-driven input rewrite left GPM's
+  fd out of the poll set, so nothing ever drained it -- WpeGpmHandler never
+  ran, so GPM_DRAWPOINTER never drew the pointer and e_mouse was never filled.
+  The fix registers gpm_fd in the wpe_fd_poll multiplexer (the same one the
+  debugger uses): WpeGpmReadable drains each event, draws the pointer and fills
+  e_mouse, and a button event makes the input loop return a mouse keycode.
+  Terminal emulators are unaffected (no GPM there, so the fd is not registered;
+  ncurses' xterm-sequence mouse path is unchanged).
+* A 3-byte buffer overread in the signal handler that disables xterm mouse
+  modes (WpeSignalUnknown) -- the write length counted 27 for a 24-byte
+  string -- fixed (flagged by -Wstringop-overread).
 * Scrollbar glyphs fixed on the Linux console.  The ncurses sp_chr[] table
   drew the track with ACS_S9 (a thin scan line) and the thumb with
   ACS_DIAMOND; the `linux` terminfo does not map those to good glyphs, so on

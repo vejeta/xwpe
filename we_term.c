@@ -837,12 +837,33 @@ static int e_t_getch_poll(void)
  extern int e_d_async_pending;
  extern void e_d_place_cursor_in_messages(void);
  int c;
+#ifdef HAVE_LIBGPM
+ /* GPM (bare Linux console) delivers mouse events on its own fd, not stdin.
+    ncurses does not pump it here (we opened the gpm connection ourselves), so
+    the input loop must poll gpm_fd and drain it via WpeGpmReadable -- otherwise
+    the pointer never moves and clicks never register on the console. */
+ static int gpm_registered = 0;
+ extern int g_gpm_click_pending;
+ void WpeGpmReadable(int fd, void *data);
+ int WpeGpmFd(void);
+#endif
 
  if (!stdin_registered)
  {
   wpe_fd_add(STDIN_FILENO, POLLIN, NULL, NULL);
   stdin_registered = 1;
  }
+#ifdef HAVE_LIBGPM
+ if (!gpm_registered)
+ {
+  int gfd = WpeGpmFd();
+  if (gfd >= 0)
+  {
+   wpe_fd_add(gfd, POLLIN, WpeGpmReadable, NULL);
+   gpm_registered = 1;
+  }
+ }
+#endif
  for (;;)
  {
   timeout(50);
@@ -857,6 +878,13 @@ static int e_t_getch_poll(void)
   if (e_d_async_pending)
    e_d_place_cursor_in_messages();
   wpe_fd_poll(-1);
+#ifdef HAVE_LIBGPM
+  if (g_gpm_click_pending)
+  {
+   g_gpm_click_pending = 0;   /* e_mouse already filled by WpeGpmHandler */
+   return (-1);
+  }
+#endif
  }
 }
 

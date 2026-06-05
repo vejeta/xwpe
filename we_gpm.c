@@ -59,6 +59,35 @@ int WpeGpmHandler(Gpm_Event *ep, void *data)
  return(0);
 }
 
+/* Set by WpeGpmReadable when a GPM button event arrives, so the terminal
+   input loop knows to return a mouse keycode (e_mouse is already filled). */
+int g_gpm_click_pending = 0;
+
+/* The gpm connection fd, for the terminal input loop to poll(). <0 when GPM
+   is not connected (e.g. inside a terminal emulator), so the caller skips it. */
+int WpeGpmFd(void)
+{
+ return gpm_fd;
+}
+
+/* wpe_fd_poll callback: drain one GPM event when gpm_fd is readable, run our
+   handler (draws the pointer via GPM_DRAWPOINTER and fills e_mouse), and flag
+   button events for the input loop.  This is the missing pump: without it the
+   GPM pointer never moves and clicks never register on the bare console. */
+void WpeGpmReadable(int fd, void *data)
+{
+ Gpm_Event ev;
+
+ (void) fd;
+ (void) data;
+ if (Gpm_GetEvent(&ev) > 0)
+ {
+  WpeGpmHandler(&ev, NULL);
+  if (ev.buttons & 7)
+   g_gpm_click_pending = 1;
+ }
+}
+
 int WpeGpmMouse(int *g)
 {
  Gpm_Event e;
