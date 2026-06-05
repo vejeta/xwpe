@@ -484,3 +484,102 @@ for UTF-8: `e_schr_nchar` decodes multi-byte sequences for rendering,
 cursor movement uses `e_utf8_prev`/`e_utf8_next`, and backspace/delete
 operate on whole codepoints.  Helper functions: `e_utf8_charlen`,
 `e_utf8_decode_at`, `e_utf8_visual_width`.
+
+## The PIC view lifecycle (and how to not double-free it)
+
+Every window keeps an off-screen backing view, `f->pic`, a `PIC` whose
+`buf` is a full-screen `SCREENCELL` array (~19 KB).  `e_open_view`
+allocates it; `e_close_view` restores the saved background and frees it.
+
+The repaint path re-creates these views: `e_rep_win_tree` /
+`e_x_repaint_desk` -> `e_firstl` -> `e_ed_kst` -> `e_change_pic`, and
+`e_change_pic` closes the *existing* `f->pic` (with `e_close_view`) before
+opening a fresh one.  That design has one hard invariant:
+
+> **Never free a window's view without immediately NULLing the pointer.**
+> If you `free(f->pic)` but leave `f->pic` dangling, the next repaint hands
+> the freed pointer to `e_change_pic` -> `e_close_view`, which either
+> double-frees it ("free(): invalid pointer", SIGABRT) or reads the
+> freed-and-reused struct (garbage coordinates -> out-of-bounds index ->
+> SIGSEGV).
+
+Always release a view through the one helper that cannot forget the NULL:
+
+```c
+void e_free_view(PIC **pp);   /* frees pp->buf and *pp, then sets *pp = NULL */
+```
+
+Used by every bulk view-release: `e_switch_window`, `e_ed_cascade`,
+`e_ed_tile` (we_wind.c) and `e_x_repaint_desk` (we_xterm.c).  Four separate
+sites grew the same `free(...->pic); /* forgot NULL */` bug over the years;
+routing them all through `e_free_view` makes the whole class impossible by
+construction.  Do not hand-write `free(cn->f[i]->pic)` -- call the helper.
+
+## Debugging crashes and memory bugs
+
+xwpe is interactive, so crashes usually surface during a soak test rather
+than in the pyte suite.  Tools, cheapest first:
+
+### coredumpctl (already enabled on most systemd distros)
+
+`/proc/sys/kernel/core_pattern` pipes cores to `systemd-coredump`.  After
+*any* crash:
+
+```sh
+coredumpctl info <PID>      # quick: prints the stack trace summary
+coredumpctl gdb  <PID>      # full gdb on the core; then: bt full, frame N, p *pic
+```
+
+Rule: **do not rebuild between the crash and the analysis.**  The core's
+addresses only resolve against the exact binary that crashed (build-id
+match); a rebuilt `we` gives a garbage backtrace.  To keep a core for later:
+
+```sh
+coredumpctl dump <PID> --output /tmp/xwpe.core
+gdb -q -batch -ex 'bt full' -ex 'frame 0' -ex 'info locals' we /tmp/xwpe.core
+```
+
+A real example: a `./xwpe` SIGSEGV resolved in seconds to
+`e_close_view (we_wind.c:468)` with `pic->a = {1762978608, 32531}` --
+obviously a freed-and-reused `PIC`, i.e. a use-after-free in the repaint
+path (fixed via `e_free_view`, see above).
+
+### gdb wrapper (native speed, auto-backtrace)
+
+```sh
+gdb -q -batch -ex run -ex 'bt full' -ex 'info registers' \
+    --args ./xwpe docs/examples/debug_test.c
+```
+
+Use during the soak test when you can reproduce on demand; it prints the
+backtrace the instant it crashes, no core needed.
+
+### AddressSanitizer build (best for use-after-free / heap bugs)
+
+ASan reports *both* the alloc/free site and the bad-access site at the
+moment of the bug, before it degrades into a confusing garbage-coordinate
+crash.  ~2x slowdown -- fine interactively.
+
+```sh
+make clean
+make CFLAGS="-fsanitize=address -g -O1 -fno-omit-frame-pointer" \
+     LDFLAGS="-fsanitize=address"
+cp we we-asan
+make clean && make          # restore the normal binary
+# run ./we-asan (symlink/rename to wpe or xwpe to pick the mode)
+```
+
+The PIC use-after-free above would have printed
+"freed by e_x_repaint_desk / used by e_close_view" directly.
+
+### valgrind (deepest, slowest ~20-50x)
+
+```sh
+valgrind --leak-check=full --track-origins=yes ./xwpe file 2>vg.log
+```
+
+Catches invalid reads/writes even when they do not segfault, and finds
+leaks.  The 24-year debugger memory leak was found this way, driven through
+gdb sessions by a headless pyte harness (a clean Alt-X exit so valgrind
+prints its report).  See the pyte tests in `tests/` and the leak-hunt
+write-up for the driving technique.
