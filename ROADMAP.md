@@ -51,6 +51,10 @@ v1.5.31 takeover:
 - **Popups behave like Borland's**: no inert maximize box, a single working
   close box (click [X] = Esc); document windows keep their zoom box.
 - WordStar vs modern block marking actually differ now.
+- **Full mouse on the bare Linux console (GPM)** -- pointer, click, window
+  drag and resize, with no X. wpe's GPM connection is pumped through the
+  event loop, matching the terminal-emulator mouse (xterm 1002). On a real
+  VT it behaves like Midnight Commander's mouse, plus drag/resize.
 
 ### Old bugs, finally closed
 - **A 30-year memory leak.** `e_close_view()` freed the window backing buffer
@@ -93,14 +97,6 @@ without writing a backend per language. JSON-RPC over the stdio pipe
 infrastructure xwpe already has; reuse the Messages buffer and existing
 breakpoint/step/watch UI. First target: debugpy (Python), with pdb as the
 baseline to compare against.
-
-### Console mouse without X11 (GPM)
-On a real Linux console, GPM clicks work but dragging to move/resize windows
-and mouse tracking over menus do not -- the handler forwards events only while
-a button is held and can block. The fix feeds GPM motion (GPM_MOVE/GPM_DRAG)
-into the same backend-agnostic drag loop the terminal-emulator path already
-uses, via a non-blocking poll (the multiplexer the debugger already uses). The
-window-move and menu code is unchanged; only the GPM event feed is missing.
 
 ### X11 clipboard
 xwpe has PRIMARY selection support. Still needed: CLIPBOARD selection (the

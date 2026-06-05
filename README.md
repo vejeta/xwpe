@@ -69,6 +69,9 @@ console-only build needs only `libncurses-dev` (plus the build tools).
   (pyte for `wpe`, headless Xft for `xwpe`), plus the contextual status bar
 * **ncurses mouse drag**: window move/resize via title bar and borders
   (xterm mode 1002, same protocol as Midnight Commander)
+* **Full mouse on the bare Linux console (GPM)**: pointer, click, window
+  drag and resize with no X -- the GPM connection is pumped through the
+  event loop (regression fixed)
 * **Dialog resize safety**: survives extreme terminal shrink without
   crash; dialog clipped and restored cleanly on grow
 * **Icon set**: two-tier SVG icon, .desktop entry, _NET_WM_ICON for
@@ -168,8 +171,10 @@ sudo apt install console-terminus
 setfont Lat15-Terminus32x16            # readable on HiDPI
 ```
 
-Mouse on console requires GPM (`sudo apt install gpm`). In terminal
-emulators (xterm, kitty, gnome-terminal, tmux), mouse works natively.
+Mouse on console requires GPM (`sudo apt install gpm`): with the daemon
+running you get the pointer, clicks, and window drag/resize on a bare VT,
+no X needed. In terminal emulators (xterm, kitty, gnome-terminal, tmux),
+mouse works natively.
 
 ## Syntax highlighting
 
