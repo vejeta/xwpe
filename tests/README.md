@@ -139,6 +139,11 @@ Menu sections (`test_menu_<x>.py`, Alt-`<x>`) -- one per environment:
   Save and Save aLl persist an edit; Save As drives the File-Manager dialog
   (type a Name, Alt-S) and writes a new file; New opens a fresh buffer
   (verified by typing into it and Saving As).  Both front-ends pass
+- `test_menu_system.py` (wpe) -- System (Alt-#): About WE shows the program
+  name + authors, System Info reports the current file, Clear Desktop closes
+  the window.  Checked on the rendered screen
+- `test_menu_help.py` (wpe) -- Help (Alt-H): Editor opens the manual viewer,
+  Topic Search opens a prompt.  Checked on the rendered screen
 
 Rendering / input:
 - `test_utf8_border.py` -- UTF-8 display, border alignment, emoji/wide chars
