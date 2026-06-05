@@ -3411,11 +3411,19 @@ int e_p_del_df(FLWND *fw, int sw)
 {
  int i;
 
- if (fw->nf > fw->df->anz-2)
+ { FILE *_d = fopen("/tmp/xwpe-del.txt", "a");
+   if (_d) { fprintf(_d, "DEL: nf=%d anz=%d\n", fw->nf, fw->df->anz); fclose(_d); } }
+ /* Nothing to delete only when the list is empty or the selection is out of
+    range. The old guard (nf > anz-2) wrongly refused to delete the LAST entry
+    (including the single remaining file). */
+ if (fw->df->anz <= 0 || fw->nf < 0 || fw->nf >= fw->df->anz)
   return(0);
  fw->df->anz--;
  for (i = fw->nf; i < fw->df->anz; i++)
   fw->df->name[i] = fw->df->name[i+1];
+ /* Keep the highlight on a valid row after removing the last one. */
+ if (fw->nf >= fw->df->anz && fw->nf > 0)
+  fw->nf--;
  return(0);
 }
 

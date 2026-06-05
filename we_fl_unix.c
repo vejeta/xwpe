@@ -4001,6 +4001,7 @@ int e_data_eingabe(ECNT * cn)
     else if(f->ins > 3 && f->ins < 7 && (c == AltD || c == ENTF))
     {
       e_p_del_df(fw, f->ins);
+      e_wrt_prj_fl(f);   /* persist on each Delete, same as the menu path (#137) */
       c = AltF;
       f->save = 1;
     }

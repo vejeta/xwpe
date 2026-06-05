@@ -173,6 +173,28 @@ def test_open_project_is_strict(tmp_path):
         'Open Project on a missing file must report "Project file not found"'
 
 
+def test_delete_removes_last_file(tmp_path):
+    # Regression: e_p_del_df refused to delete the last entry (guard
+    # nf > anz-2), so the last/only project member could never be removed.
+    for fn in ('extra.c', 'main.c', 'util.c'):
+        (tmp_path / fn).write_text('int x;\n')
+    (tmp_path / 'd.prj').write_text(
+        'CMP=\tgcc\nEXENAME=\td\nFILES=\textra.c main.c util.c\n')
+    (tmp_path / 'main.c').write_text('int main(void){return 0;}\n')
+    # Open project, then Delete three times (Alt-D).
+    run_wpe(str(tmp_path), ['\033p', 'p', '\r', '\r', '\033d', '\033d', '\033d'])
+    files = _prj_files(tmp_path / 'd.prj')
+    assert files == [], \
+        'all project members (incl. the last) must be deletable; FILES=%r' % files
+
+
+def _prj_files(prj_path):
+    for line in prj_path.read_text().splitlines():
+        if line.startswith('FILES'):
+            return line.split('\t', 1)[1].split() if '\t' in line else []
+    return []
+
+
 def test_long_libname_does_not_overflow(tmp_path):
     # T4 regression: LIBNAME= is copied into the fixed library[80] buffer.
     # A long value must be truncated, not overflow the global (which corrupted
