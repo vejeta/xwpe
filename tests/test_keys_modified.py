@@ -37,6 +37,26 @@ def test_ctrl_f9_runs_the_program(tmp_path):
             % "\n".join(w.display())
 
 
+def test_alt_hotkey_works_with_menu_open(tmp_path):
+    """Alt+<item hotkey> invokes the item even when its menu is already open.
+
+    Regression: with the Search menu open, Alt-G ("Go to Line  Alt G") was a
+    no-op -- the submenu loop matched only the bare letter 'g', not the AltG
+    keycode that Alt-G actually produces, and the e_tst_dfkt fallback does not
+    know the Alt-letter editor shortcuts.  In the editor Alt-G worked, so the
+    behaviour was inconsistent.  Shared by wpe and xwpe (same keycode)."""
+    with WpeSession(str(tmp_path), "l1\nl2\nl3\n") as w:
+        time.sleep(0.5)
+        w.key("\033s")                  # Alt-S: open the Search menu
+        time.sleep(0.5)
+        w.key("\033g")                  # Alt-G with the menu open
+        time.sleep(0.5)
+        disp = "\n".join(w.display())
+        assert "oto Line" in disp, \
+            "Alt-G with the Search menu open did not open Go to Line:\n%s" % disp
+        w.key("\x1b")                   # dismiss
+
+
 def test_alt_f5_shows_user_screen(tmp_path):
     """Alt-F5 (KEY_F(53)) drops to the Borland User Screen (with its prompt)."""
     with WpeSession(str(tmp_path), PRINTS, filename="h.c") as w:

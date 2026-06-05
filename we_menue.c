@@ -587,14 +587,24 @@ int WpeHandleSubmenu(int xa, int ya, int xe, int ye, int nm, OPTK * fopt, FENSTE
         return(i);
       }
 
-    /* check submenu items' shortcut keys */
+    /* check submenu items' shortcut keys.  Match the plain hotkey letter
+       (e.g. 'g' for "Go to Line") AND its Alt-<letter> form, so the shortcut
+       the item advertises (e.g. "Go to Line  Alt G") works with the menu open,
+       not only the bare letter -- Alt+letter is decoded to AltG etc., which
+       e_tast_sim() reproduces from the hotkey character. */
     for(i = 0; i < ye - ya - 1; i++)
-      if(c == fopt[i].o)
+    {
+      int hk = fopt[i].o;
+      int alt = (hk >= 'A' && hk <= 'Z') ? e_tast_sim(hk - 'A' + 'a')
+              : (hk >= 'a' && hk <= 'z') ? e_tast_sim(hk)
+              : 0;
+      if(c == hk || (alt && c == alt))
       {
         e_close_view(pic, 1);
         fopt[i].fkt(f);
         return(WPE_ESC);
       }
+    }
 
     if(c == Alt0)
       c = WPE_ESC;
