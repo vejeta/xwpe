@@ -307,7 +307,12 @@ e_error_restart:
  {
 #if  MOUSE
   if ((i = e_toupper(e_getch())) == -1)
+  {
+   extern struct mouse e_mouse;
    i = e_er_mouse(xa+3, ya,(xe+xa-4)/2, ya+4);
+   if (i == 0 && e_mouse.y == ya && e_mouse.x == xe-2)
+    i = WPE_ESC;   /* clicked the title-bar [X] close box -> dismiss */
+  }
 #else
   i = e_toupper(e_getch());
 #endif
@@ -1399,19 +1404,17 @@ void e_pr_line(int y, FENSTER *f)
 /*   draw standard-box frame  */
 static void e_draw_titlebar_buttons(int xa, int ya, int xe, int frb, int fes)
 {
- if (WpeIsXwin())
- {
-  e_pr_char(xe-4, ya, 0x25FB, fes);
-  e_pr_char(xe-3, ya, ' ', frb);
-  e_pr_char(xe-2, ya, 0x2715, fes);
- }
- else
- {
-  e_pr_char(xe-5, ya, ' ', frb);
-  e_pr_char(xe-4, ya, 0x25A1, fes);
-  e_pr_char(xe-3, ya, ' ', frb);
-  e_pr_char(xe-2, ya, 0x2715, fes);
- }
+ /* Borland message/dialog boxes (TDialog) carried ONLY a close box, never a
+    zoom/maximize box: a popup is fixed-size, so maximizing it is meaningless.
+    Draw just the close glyph at xe-2 (modernized to the top-right corner);
+    the cells that used to hold the maximize glyph are left as the title-bar
+    frame line already painted by e_std_rahmen.  Clicking this [X] dismisses
+    the popup (handled in e_opt_mouse / e_error), the same as pressing Esc.
+    Document windows keep their zoom box -- that is drawn by
+    e_draw_window_buttons, not here. */
+ (void) xa;
+ (void) frb;
+ e_pr_char(xe-2, ya, 0x2715, fes);
 }
 
 static void e_clear_titlebar_buttons(FENSTER *f)

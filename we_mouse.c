@@ -1380,7 +1380,10 @@ int e_opt_mouse(W_OPTSTR *o)
   return(-1);
  else if (e_mouse.y == o->ya)
  {
-  if (e_mouse.x == o->xa+3)
+  /* Close the dialog on a click of either close box: the classic Borland one
+     at the top-left (xa+3) or the modernized [X] at the top-right (xe-2).
+     Anywhere else on the title bar starts a move (e_opt_eck_mouse). */
+  if (e_mouse.x == o->xa+3 || e_mouse.x == o->xe-2)
   {  while(e_mshit());  return(WPE_ESC);  }
   else
   {  e_opt_eck_mouse(o);  return(-1);  }
