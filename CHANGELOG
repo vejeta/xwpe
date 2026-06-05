@@ -61,6 +61,13 @@ Bugs fixed in 1.6.x:
   limit and recomputes the length on entry, so no caller can drive a line
   buffer overflow.  Found with the AddressSanitizer build during the soak
   test (heap-buffer-overflow READ in e_ins_nchar at we_edit.c).
+  Provenance (git archaeology): the e_move_block aliasing and the
+  unnormalised e_ins_nchar entry are byte-for-byte identical back to Fred
+  Kruse's 1.4.2 and unchanged through Payne 1.5.30a -- a ~30-year latent
+  memory-corruption bug in the original text-buffer code, not a regression
+  from our refactors (the SCREENCELL migration touched the screen buffer,
+  not these char line buffers).  It was silent undefined behaviour until
+  AddressSanitizer made it deterministic.
 * Documentation hasn't been updated -- 12-chapter Texinfo manual (1.6.2).
 * Compilers are assumed to have a -c and -o -- GNU/Other distinction (1.6.2).
 * Cursor keys don't work in xterms or telnet sessions -- fixed (1.6.0).
