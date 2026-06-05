@@ -25,9 +25,28 @@ tests/.venv/bin/python -m pytest -v tests/
 
 ## Test files
 
+Rendering / input:
 - `test_utf8_border.py` -- UTF-8 display, border alignment, emoji/wide chars
+  (also provides the shared SafeScreen helper)
 - `test_scrollbar.py` -- scrollbar during scroll, end-of-file, PageDown/PageUp
+- `test_dialog_resize.py` -- dialog redraw across terminal resize
 - `test_compile.py` -- F9 compile cycle, error navigation, menu close, popup cleanup
+- `test_esc_key.py` -- a lone Esc registers on the first press; Alt-<key> still
+  opens menus (#141)
+- `test_mouse_tracking.py` -- xterm motion tracking re-armed (in order) after an
+  F9 compile, so window drag/resize keeps working
+- `test_maxcol_paste.py` -- small Max Columns + cut/paste/typing does not crash
+  (Payne-era #87, fixed by the SCREENCELL migration)
+
+Borland-style project management:
+- `test_project_windows.py` -- picker/project window titles, white-on-white
+  guard (fg!=bg), compact status bar, "No project open" guard, New vs Open
+  Project, Delete of the last member, long-LIBNAME overflow guard
+- `test_project_persist.py` -- a file added to a project is written to the .prj
+  immediately (not only on window close)
+
+C-source tests built by `make check`:
+- `test_checkheader.c`, `test_syntax_def.c`
 
 ## What the tests verify
 

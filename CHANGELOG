@@ -15,8 +15,9 @@ Confirmed present:
 
 Cannot reproduce:
 * Changing the maximum column and using cut & paste can crash xwpe
-     (tested 2026-06-01 with Max Columns=20, no crash; likely fixed
-     by SCREENCELL migration in 1.6.0).
+     (no crash; fixed by the SCREENCELL migration in 1.6.0, now guarded
+     by tests/test_maxcol_paste.py: Max Columns=8 + block-copy/paste/typing
+     past the limit stays alive).
 
 Bugs fixed in 1.6.x:
 * Documentation hasn't been updated -- 12-chapter Texinfo manual (1.6.2).
