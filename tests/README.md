@@ -106,6 +106,21 @@ were found.  `tests/run-tests.sh --asan` does it for you; see HACKING.md
 
 ## Test files
 
+Coverage is being organised **one module per menu section** (`test_menu_<x>.py`
+for wpe, `tests/x11/test_menu_<x>.py` where X11 rendering/input differs), built
+on the shared `tests/wpe_driver.py` (a pyte `WpeSession` that seeds a file,
+drives menus, saves, and reads back the file as ground truth).
+
+**Incoherence flagging.**  Each test encodes the behaviour we believe *should*
+hold.  When coverage turns up a behaviour that is wrong but not yet fixed, the
+test is marked `@incoherence("...")` (from `wpe_driver`), which records it as an
+xfail.  `pytest -rxX` then prints every `INCOHERENCE:` as a manual-review queue;
+once the behaviour is fixed the test flips to XPASS and the marker is removed.
+
+Menu sections (`test_menu_<x>.py`, Alt-`<x>`):
+- `test_menu_edit.py` -- Edit (Alt-E): Cut, Copy/Paste, Cut+Paste round trip,
+  Undo, Redo -- asserted on the saved file
+
 Rendering / input:
 - `test_utf8_border.py` -- UTF-8 display, border alignment, emoji/wide chars
   (also provides the shared SafeScreen helper)

@@ -197,6 +197,8 @@ EXTRA_DIST = \
   tests/test_window_menu.py \
   tests/test_block.py \
   tests/test_block_asan.py \
+  tests/wpe_driver.py \
+  tests/test_menu_edit.py \
   tests/x11/conftest.py \
   tests/x11/test_editor_options.py \
   tests/x11/test_block_marking.py \
