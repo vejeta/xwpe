@@ -175,9 +175,10 @@ Window backing-store (PIC view) double-free guards:
   helper introduced with the 1.6.3 leak fix
 
 Window menu (Alt-W) operations:
-- `test_window_menu.py` -- Zoom maximises the active window, Next cycles
-  the active window, Close closes the active window, List All opens the
-  "Windows" chooser
+- `test_window_menu.py` (wpe) + `x11/test_menu_window.py` (xwpe) -- Zoom
+  maximises the active window, Next cycles the active window, Close closes the
+  active window, List All opens the "Windows" chooser; the X11 twin also covers
+  Tile and Cascade via screenshot diffs (a second window is opened first)
 
 Block menu (Alt-B) operations:
 - `test_block.py` -- Mark Whole + Delete empties the buffer, Move to

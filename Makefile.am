@@ -212,6 +212,7 @@ EXTRA_DIST = \
   tests/x11/test_menu_file.py \
   tests/x11/test_menu_system.py \
   tests/x11/test_menu_help.py \
+  tests/x11/test_menu_window.py \
   tests/samples/hello.c \
   tests/samples/big.c \
   tests/samples/two_errors.c \
