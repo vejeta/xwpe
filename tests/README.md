@@ -51,6 +51,16 @@ Window backing-store (PIC view) double-free guards:
   stay alive; a double-free aborts with SIGABRT.  Guards the e_free_view()
   helper introduced with the 1.6.3 leak fix
 
+Window menu (Alt-W) operations:
+- `test_window_menu.py` -- Zoom maximises the active window, Next cycles
+  the active window, Close closes the active window, List All opens the
+  "Windows" chooser
+
+Block menu (Alt-B) operations:
+- `test_block.py` -- Mark Whole + Delete empties the buffer, Move to
+  Right/Left indents/unindents the block, indent+unindent round-trips.
+  Asserts on the saved file (ground truth), not the live screen
+
 C-source tests built by `make check`:
 - `test_checkheader.c`, `test_syntax_def.c`
 
