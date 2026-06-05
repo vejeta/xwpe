@@ -122,6 +122,11 @@ Menu sections (`test_menu_<x>.py`, Alt-`<x>`) -- one per environment:
   Cut, Copy/Paste, Cut+Paste round trip, Undo, Redo -- asserted on the saved
   file.  Run in BOTH front-ends because the X11 key/menu path decodes input
   separately, so behaviour can diverge (as the keyboard ^K B bug showed)
+- `test_menu_search.py` (wpe) + `x11/test_menu_search.py` (xwpe) -- Search
+  (Alt-S): Go to Line, Find (cursor move verified by typing a marker), Replace.
+  FOUND A DIVERGENCE: in xwpe the Alt-`<letter>` hotkey does not switch dialog
+  text fields (Tab does); it works in wpe.  Flagged as an xfail incoherence
+  (`x11/test_menu_search.py::test_replace_via_alt_hotkey_switches_fields`)
 
 Rendering / input:
 - `test_utf8_border.py` -- UTF-8 display, border alignment, emoji/wide chars

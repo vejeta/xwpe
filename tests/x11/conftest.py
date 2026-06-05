@@ -51,6 +51,13 @@ def _xdo(*args):
                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
+def incoherence(reason):
+    """Mark an X11 test that asserts behaviour we expect but which xwpe does
+    not currently honour (a wpe-vs-xwpe divergence found during coverage).
+    Recorded as xfail; `pytest -rxX` lists every INCOHERENCE for review."""
+    return pytest.mark.xfail(reason="INCOHERENCE: " + reason, strict=False)
+
+
 class XwpeSession:
     """A running xwpe instance under the headless display, with helpers
     to send input and screenshot the result."""
@@ -73,6 +80,12 @@ class XwpeSession:
         time.sleep(0.2)
         _xdo("click", "1")
         time.sleep(delay)
+
+    def type(self, text, delay=0.4):
+        """Type a literal string (into a focused text field) via XTEST."""
+        _xdo("type", "--window", self.win, "--clearmodifiers", text)
+        time.sleep(delay)
+        return self
 
     def menu(self, alt_letter, item, delay=0.5):
         """Open a top-level menu (Alt-<letter>) and pick an item by its key."""
