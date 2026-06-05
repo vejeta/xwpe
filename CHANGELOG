@@ -50,6 +50,17 @@ Bugs fixed in 1.6.x:
   X11 use (e.g. on a window-configure repaint).  Found from a user core
   dump (coredumpctl -> gdb: e_close_view at we_wind.c:468 with a garbage
   PIC).  Now routed through e_free_view() like the other three sites.
+* Heap-buffer-overflow in block Move (Ctrl-K V) -- fixed (1.6.3).  The
+  multi-line block-move path (e_move_block, we_block.c) reshuffles line
+  buffers by raw struct aliasing and could leave the destination line's
+  length field smaller than its real content and the buffer without a NUL
+  within bounds.  e_ins_nchar then trusted the stale length, its capacity
+  check was fooled, and e_str_len() ran strlen one byte past the
+  e_new_line()-allocated line buffer.  Fixed defensively at the insertion
+  primitive: e_ins_nchar now pins a terminator at the b->mx.x capacity
+  limit and recomputes the length on entry, so no caller can drive a line
+  buffer overflow.  Found with the AddressSanitizer build during the soak
+  test (heap-buffer-overflow READ in e_ins_nchar at we_edit.c).
 * Documentation hasn't been updated -- 12-chapter Texinfo manual (1.6.2).
 * Compilers are assumed to have a -c and -o -- GNU/Other distinction (1.6.2).
 * Cursor keys don't work in xterms or telnet sessions -- fixed (1.6.0).

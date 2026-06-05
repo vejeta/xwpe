@@ -1881,6 +1881,18 @@ int e_ins_nchar(BUFFER *b, SCHIRM *sch, unsigned char *s, int xa, int ya,
  (f->save) += n;
  e_add_undo('a', b, xa, ya, n);
  e_undo_sw++;
+ /* Defensive normalisation: each line buffer is e_new_line()-allocated at
+    b->mx.x+1 bytes, so b->mx.x is the last valid index.  Some callers (the
+    block move/copy paths in we_block.c, which reshuffle line buffers by
+    raw struct aliasing) can leave bf[ya].len smaller than the real
+    content and the buffer without a NUL within bounds.  e_ins_nchar then
+    trusts the stale len, the capacity check below is fooled, and the
+    e_str_len() calls run strlen past the buffer (ASan heap-buffer-overflow,
+    Ctrl-K V).  Pin a terminator at the capacity limit and recompute the
+    length so everything downstream operates on a valid, bounded line. */
+ b->bf[ya].s[b->mx.x] = '\0';
+ b->bf[ya].len = e_str_len(b->bf[ya].s);
+ b->bf[ya].nrc = e_str_nrc(b->bf[ya].s);
  if (b->bf[ya].len+n >= b->mx.x-1)
  {
   if (xa < b->bf[ya].len)
