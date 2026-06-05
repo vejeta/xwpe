@@ -12,11 +12,44 @@ the Debian autopkgtest (the autopkgtest calls this same script):
 ./configure && make            # build xwpe first
 tests/run-tests.sh             # C unit tests (make check) + pyte suite (./wpe)
 tests/run-tests.sh --asan      # build we-asan and run the pyte suite under it
+tests/run-tests.sh --x11       # headless X11 GUI suite (./xwpe under Xvfb)
 tests/run-tests.sh --help
 ```
 
 It uses a system pyte/pytest if installed (e.g. `python3-pyte`,
 `python3-pytest`), otherwise it bootstraps a venv under `tests/.venv`.
+
+## X11 GUI tests (xwpe)
+
+`pyte` emulates a VT100 text terminal, so it covers `wpe` (ncurses) but
+**cannot** exercise `xwpe`'s real Xft rendering or its X11 keyboard/mouse
+path.  The `tests/x11/` suite fills that gap by driving a real `xwpe` under a
+headless X server and asserting on screenshots.
+
+```bash
+tests/run-tests.sh --x11                 # via the single entry point
+# or directly:
+XWPE_BIN=$PWD/xwpe tests/.venv/bin/python -m pytest -q tests/x11/
+```
+
+Requirements (Debian package names) -- the suite **skips cleanly** if any are
+absent, so the default `run-tests.sh` is unaffected on a headless buildd:
+
+| Tool | Debian package | Why |
+|------|----------------|-----|
+| `Xvfb` | `xvfb` | headless X server |
+| `matchbox-window-manager` | `matchbox-window-manager` | **required** WM -- see below |
+| `xdotool` | `xdotool` | synthetic key/mouse via XTEST |
+| `xwd` | `x11-utils` | capture the root window |
+| `convert` | `imagemagick` | xwd -> PNG |
+| Pillow | `python3-pil` | load PNG, assert on pixels |
+
+A window manager is **not optional**: without one, `xwpe`'s X11 size handling
+oscillates into an unrecoverable resize feedback loop under bare Xvfb (`xwpe`
+never calls `XResizeWindow` itself -- a WM owns the geometry).  `matchbox`
+maximises the single window and the loop never starts.
+
+The X11 tests honour **`$XWPE_BIN`** (default `../xwpe`), mirroring `$WPE_BIN`.
 
 ### Running pytest directly
 
@@ -84,6 +117,15 @@ Block menu (Alt-B) operations:
   the `we-asan` build produces no ASan report (a heap-buffer-overflow is
   silent on the normal build, so it needs a sanitizer).  Skips if `we-asan`
   is not built.  Guards the Ctrl-K V line-buffer overflow fix
+
+X11 GUI tests (xwpe under Xvfb, `tests/x11/`):
+- `conftest.py` -- Xvfb + matchbox + xwpe session fixtures, xdotool input
+  helpers, and a Pillow screenshot helper
+- `test_editor_options.py` -- the Options > Editor dialog opens, and toggling
+  a checkbox (Alt-K) renders a visible `[X]` mark that clears on a second
+  toggle.  Guards the X11-only regression where NEWSTYLE drew check/radio
+  marks as a near-invisible 3D bevel, so Space/mouse/Alt-K appeared to do
+  nothing in xwpe (the value flipped but nothing was drawn)
 
 C-source tests built by `make check`:
 - `test_checkheader.c`, `test_syntax_def.c`

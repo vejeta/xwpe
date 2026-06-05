@@ -89,7 +89,7 @@ console-only build needs only `libncurses-dev` (plus the build tools).
 * Program output in Messages buffer (Ctrl-G P) -- no terminal switching
 * Mouse in terminal emulators (xterm protocol) and Linux console (GPM)
 * 33-year-old Redo crash fixed, 30-year-old pipe leak fixed
-* 33 automated pyte tests
+* Automated tests: pyte (wpe/ncurses) + headless X11 GUI suite (xwpe/Xft)
 
 See `CHANGELOG` for full details.
 
@@ -198,7 +198,11 @@ https://codeberg.org/mendezr/xwpe
 If you can try it -- any terminal, any compiler, any workflow -- open
 an issue even if everything works.
 
-See [tests/README.md](tests/README.md) for the automated test suite.
+See [tests/README.md](tests/README.md) for the automated test suite:
+`tests/run-tests.sh` runs the C unit tests and the pyte (ncurses) suite;
+`tests/run-tests.sh --x11` runs the headless X11 GUI suite for `xwpe`
+(needs `xvfb matchbox-window-manager xdotool x11-utils imagemagick
+python3-pil`; it skips cleanly when those are absent).
 
 ## Project history
 

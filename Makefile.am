@@ -197,6 +197,8 @@ EXTRA_DIST = \
   tests/test_window_menu.py \
   tests/test_block.py \
   tests/test_block_asan.py \
+  tests/x11/conftest.py \
+  tests/x11/test_editor_options.py \
   tests/samples/hello.c \
   tests/samples/big.c \
   tests/samples/two_errors.c \

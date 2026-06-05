@@ -7,14 +7,22 @@
 # Usage:
 #   tests/run-tests.sh            # C unit tests + pyte functional suite (./wpe)
 #   tests/run-tests.sh --asan     # build we-asan and run the pyte suite under it
+#   tests/run-tests.sh --x11      # headless X11 GUI suite (./xwpe under Xvfb)
 #   tests/run-tests.sh --help
 #
 # The pyte tests honour $WPE_BIN (default ../wpe), so the same scenarios run
 # against the in-tree binary, a sanitizer build, or an installed /usr/bin/wpe.
+# The X11 GUI tests honour $XWPE_BIN (default ../xwpe).
 #
 # pyte/pytest: a system install (python3-pyte, python3-pytest) is used if
 # present (e.g. in a Debian autopkgtest with no network); otherwise a local
 # venv is bootstrapped under tests/.venv.
+#
+# The --x11 suite additionally needs a headless X stack -- on Debian:
+#   xvfb matchbox-window-manager xdotool x11-utils imagemagick python3-pil
+# A window manager (matchbox) is REQUIRED: without one, xwpe's X11 size
+# handling oscillates into a resize feedback loop under bare Xvfb.  The suite
+# skips cleanly (not fails) if any of these are absent.
 set -e
 
 here=$(cd "$(dirname "$0")" && pwd)
@@ -25,11 +33,13 @@ mode=functional
 case "${1:-}" in
   ""|--functional) mode=functional ;;
   --asan)          mode=asan ;;
+  --x11)           mode=x11 ;;
   -h|--help)
-    echo "Usage: tests/run-tests.sh [--asan]"
+    echo "Usage: tests/run-tests.sh [--asan|--x11]"
     echo "  (no arg)  C unit tests (make check) + pyte functional suite (./wpe)"
     echo "  --asan    build we-asan and run the pyte suite under AddressSanitizer"
-    echo "The pyte tests honour \$WPE_BIN (default ../wpe)."
+    echo "  --x11     headless X11 GUI suite (./xwpe under Xvfb + matchbox)"
+    echo "The pyte tests honour \$WPE_BIN (default ../wpe); X11 honours \$XWPE_BIN."
     exit 0 ;;
   *) echo "run-tests.sh: unknown option '$1' (try --help)" >&2; exit 2 ;;
 esac
@@ -74,5 +84,21 @@ asan)
   echo "== pyte suite under AddressSanitizer (WPE_BIN=./we-asan) =="
   ASAN_OPTIONS="detect_leaks=0:abort_on_error=1:log_path=$top/asan-run" \
     WPE_BIN="$top/we-asan" "$PY" -m pytest -q "$here"
+  ;;
+
+x11)
+  # Headless X11 GUI suite: drives a real ./xwpe under Xvfb + matchbox and
+  # asserts on screenshots (see tests/x11/conftest.py).  The suite itself
+  # skips cleanly if Xvfb/matchbox/xdotool/xwd/convert are missing, but we
+  # still need Pillow in the interpreter to import the test module.
+  if ! "$PY" -c "import PIL" 2>/dev/null; then
+    case "$PY" in
+      */.venv/bin/python) "$here/.venv/bin/pip" install --quiet Pillow ;;
+      *) echo "run-tests.sh --x11 needs Pillow (Debian: python3-pil)" >&2; exit 2 ;;
+    esac
+  fi
+  [ -x "$top/xwpe" ] || make
+  echo "== X11 GUI suite (XWPE_BIN=./xwpe) =="
+  XWPE_BIN="$top/xwpe" "$PY" -m pytest -q "$here/x11"
   ;;
 esac
