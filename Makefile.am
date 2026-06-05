@@ -204,6 +204,7 @@ EXTRA_DIST = \
   tests/test_menu_system.py \
   tests/test_menu_help.py \
   tests/test_menu_project.py \
+  tests/test_menu_debug.py \
   tests/x11/conftest.py \
   tests/x11/matchbox-kbdconfig \
   tests/x11/test_editor_options.py \
@@ -216,6 +217,7 @@ EXTRA_DIST = \
   tests/x11/test_menu_window.py \
   tests/x11/test_menu_project.py \
   tests/x11/test_menu_run.py \
+  tests/x11/test_menu_debug.py \
   tests/samples/hello.c \
   tests/samples/big.c \
   tests/samples/two_errors.c \
