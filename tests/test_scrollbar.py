@@ -53,13 +53,13 @@ def scroll_fixtures():
 def find_border_char_positions(lines, col_range=2):
     """Find the rightmost border-like char on each line.
     Returns dict {row: (col, char)}.
-    Note: the scrollbar thumb (ACS_DIAMOND) may render as space or
-    backtick in pyte, so we detect it by position: if all other content
+    Note: the scrollbar thumb (ACS_BLOCK) may render as space or a block
+    variant in pyte, so we detect it by position: if all other content
     lines have borders at column X, the thumb line also has its border
     at column X even if the char is different."""
     border_chars = set('x│┐┘kj')  # x = ACS_VLINE in pyte
-    track_chars = set('s⎽')  # s = ACS_S9 in pyte (scrollbar track)
-    thumb_chars = set('`◆')  # ` = ACS_DIAMOND in pyte (scrollbar thumb)
+    track_chars = set('a░▒▓')  # a = ACS_CKBOARD in pyte (scrollbar track)
+    thumb_chars = set('0▮█▭▀▄')  # ACS_BLOCK in pyte (scrollbar thumb)
     all_scrollbar = border_chars | track_chars | thumb_chars
 
     # First pass: find border column by looking at lines with clear borders

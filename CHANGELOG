@@ -334,6 +334,18 @@ Changes
 * Unicode box-drawing glyphs for window borders (U+250x) and
   scrollbar (U+2591 light shade, U+2588 full block) when Xft active.
 
+  Terminal / console mode:
+* Scrollbar glyphs fixed on the Linux console.  The ncurses sp_chr[] table
+  drew the track with ACS_S9 (a thin scan line) and the thumb with
+  ACS_DIAMOND; the `linux` terminfo does not map those to good glyphs, so on
+  a real VT the track fell back to a column of 's'/'_' and the thumb to a
+  poor diamond -- the worst-looking part of the console UI.  Now the track
+  uses ACS_CKBOARD (the CP437 shaded board, 0xB1) and the thumb ACS_BLOCK
+  (solid block, 0xDB); both are in the linux acsc and in every VGA/console
+  font, so the scrollbar reads as a shaded gutter with a solid slider,
+  matching the X11/Xft look -- with no special console font.  (Terminal
+  emulators, which have a full acsc, also get the nicer shaded/solid look.)
+
   User interface (Borland fidelity):
 * Message and dialog popups (e.g. "String not found", the Options dialogs)
   no longer carry a maximize/zoom box.  Borland's TDialog message boxes

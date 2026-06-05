@@ -428,11 +428,19 @@ int init_cursor()
    sp_chr[4] = ACS_LRCORNER;
    sp_chr[5] = ACS_HLINE;
    sp_chr[6] = ACS_VLINE;
-   sp_chr[7] = ACS_S9;
+   /* Scrollbar track/thumb: use the shaded board (ACS_CKBOARD, the CP437
+      stipple) for the track and the solid block (ACS_BLOCK) for the thumb,
+      mirroring the X11/Xft look (U+2591 light shade + U+2588 full block).
+      The old ACS_S9 (a thin scan line, rendered as a column of 's' on
+      terminals that lack the alt charset) and ACS_DIAMOND thumb looked
+      broken on the Linux console.  CKBOARD/BLOCK exist in every VGA/console
+      font, so the scrollbar reads as a real shaded gutter with a solid
+      slider with no special font. */
+   sp_chr[7] = ACS_CKBOARD;
    sp_chr[8] = ACS_VLINE;
    sp_chr[9] = ACS_VLINE;
-   sp_chr[10] = ACS_S9;
-   sp_chr[11] = ACS_DIAMOND;
+   sp_chr[10] = ACS_CKBOARD;
+   sp_chr[11] = ACS_BLOCK;
    sp_chr[12] = ' ';
 #else
    sp_chr[0] = "";
