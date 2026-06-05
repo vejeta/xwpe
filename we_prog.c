@@ -584,10 +584,7 @@ int e_comp(FENSTER *f)
   WpeMouseChangeShape(WpeWorkingShape);
  }
 #endif
- if (e_prog.project[0] && !access(e_prog.project, 0))
-  e__project = 1;
- else
-  e__project = 0;
+ e__project = e_project_is_open();
  if (e__project)
   return(e_c_project(f));
  for (i = cn->mxedt; i > 0; i--)
@@ -1809,6 +1806,24 @@ int e_project_name(FENSTER *f)
  return(WPE_ESC);
 }
 
+/* Index of the open project window in cn->f[], or 0 if none. The project
+   (Borland-style file list) is the unique DTMD_DATA window with ins == 4. */
+int e_find_project_window(ECNT *cn)
+{
+ int i;
+
+ for (i = cn->mxedt;
+   i > 0 && (cn->f[i]->dtmd != DTMD_DATA || cn->f[i]->ins != 4); i--)
+  ;
+ return(i);
+}
+
+/* True when a project is open: a non-empty .prj path that exists on disk. */
+int e_project_is_open(void)
+{
+ return(e_prog.project[0] && access(e_prog.project, F_OK) == 0);
+}
+
 /* Open the project named in e_prog.project: validate, replace any open
    project window, parse the .prj, and show the file list. Shared by the
    File-Manager selection path and any caller that has set e_prog.project. */
@@ -1817,16 +1832,14 @@ int e_open_project_file(ECNT *cn)
  FENSTER *f;
  int i;
 
- if (!e_prog.project[0] || access(e_prog.project, F_OK) != 0)
+ if (!e_project_is_open())
  {
   e_error("Project file not found", 0, cn->fb);
   e_prog.project[0] = '\0';
   return(WPE_ESC);
  }
  e__project = 1;
- for (i = cn->mxedt; i > 0 && (cn->f[i]->dtmd != DTMD_DATA || cn->f[i]->ins != 4);
-   i--)
-  ;
+ i = e_find_project_window(cn);
  if (i > 0)
  {
   e_switch_window(cn->edt[i], cn->f[cn->mxedt]);
@@ -1895,15 +1908,12 @@ int e_show_project(FENSTER *f)
 
  /* Window->Project only makes sense with a project open; without one,
     do not synthesise an empty project window. */
- if (!e_prog.project || !e_prog.project[0]
-     || access(e_prog.project, F_OK) != 0)
+ if (!e_project_is_open())
  {
   e_error("No project open", 0, f->fb);
   return(0);
  }
- for (i = cn->mxedt; i > 0 && (cn->f[i]->dtmd != DTMD_DATA || cn->f[i]->ins != 4);
-   i--)
-  ;
+ i = e_find_project_window(cn);
  if (i > 0)
   e_switch_window(cn->edt[i], cn->f[cn->mxedt]);
  else
@@ -1920,9 +1930,7 @@ int e_cl_project(FENSTER *f)
  int i;
 
  e__project = 0;
- for (i = cn->mxedt; i > 0 && (cn->f[i]->dtmd != DTMD_DATA || cn->f[i]->ins != 4);
-   i--)
-  ;
+ i = e_find_project_window(cn);
  if (i > 0)
  {
   e_switch_window(cn->edt[i], cn->f[cn->mxedt]);
@@ -1937,14 +1945,12 @@ int e_p_add_item(FENSTER *f)
  ECNT *cn = f->ed;
  int i;
 
- if (!e_prog.project || !e_prog.project[0] || access(e_prog.project, F_OK) != 0)
+ if (!e_project_is_open())
  {
   e_error("No project open", 0, f->fb);
   return(0);
  }
- for (i = cn->mxedt; i > 0 && (cn->f[i]->dtmd != DTMD_DATA || cn->f[i]->ins != 4);
-   i--)
-  ;
+ i = e_find_project_window(cn);
  if (i > 0)
   e_switch_window(cn->edt[i], cn->f[cn->mxedt]);
  else
@@ -1967,9 +1973,7 @@ int e_p_del_item(FENSTER *f)
  ECNT *cn = f->ed;
  int i;
 
- for (i = cn->mxedt;
-   i > 0 && (cn->f[i]->dtmd != DTMD_DATA || cn->f[i]->ins != 4); i--)
-  ;
+ i = e_find_project_window(cn);
  if (i > 0)
   e_switch_window(cn->edt[i], cn->f[cn->mxedt]);
  else
@@ -3163,9 +3167,7 @@ int e_wrt_prj_fl(FENSTER *f)
  FILE *fp;
  char text[256];
 
- for (i = f->ed->mxedt;
-   i > 0 &&  (f->ed->f[i]->dtmd != DTMD_DATA || f->ed->f[i]->ins != 4); i--)
-  ;
+ i = e_find_project_window(f->ed);
  if (i == 0 || e_prog.project[0] == DIRC)
   strcpy(text, e_prog.project);
  else

@@ -117,6 +117,15 @@ def test_project_window_title_visible(project_dir):
         'project title is invisible (fg == bg == %r)' % cell.fg
 
 
+def test_window_project_with_no_project_open(tmp_path):
+    # Guard (e_project_is_open): Window->Project with no project open must NOT
+    # synthesise an empty project window; it reports "No project open".
+    (tmp_path / 'main.c').write_text('int main(void){return 0;}\n')
+    screen = run_wpe(str(tmp_path), ['\033w', 'p'])   # Alt-W P, no project
+    assert row_with(screen, 'No project open') is not None, \
+        'Window->Project with no project open must report "No project open"'
+
+
 def test_status_bar_compact_with_project_label(project_dir):
     screen = open_project(project_dir)
     bar = screen.display[ROWS - 1]
