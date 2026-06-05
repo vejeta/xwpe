@@ -706,7 +706,16 @@ int e_blck_begin(FENSTER *f)
  if (i <= 0) return(0);
  e_switch_window(f->ed->edt[i], f);
  f = f->ed->f[f->ed->mxedt];
- f->s->mark_begin = f->b->b;
+ /* Modern (default): Begin Mark starts a FRESH, empty block at the cursor,
+    so re-marking clears any stale end left over from a previous block (e.g.
+    the destination marks of a just-completed Copy/Move) -- End Mark (^K K)
+    then extends it.  WordStar mode (ED_BLOCK_WORDSTAR): begin and end are
+    independent markers, so Begin Mark sets only the begin and leaves the end
+    untouched (classic Borland behaviour).  Toggle in Options -> Editor. */
+ if (f->ed->edopt & ED_BLOCK_WORDSTAR)
+  f->s->mark_begin = f->b->b;
+ else
+  f->s->mark_begin = f->s->mark_end = f->b->b;
  e_schirm(f, 1);
  return(0);
 }

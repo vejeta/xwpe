@@ -20,6 +20,28 @@ Cannot reproduce:
      past the limit stays alive).
 
 Bugs fixed in 1.6.x:
+* Options > Editor: checkboxes and radio buttons could not be ticked in xwpe
+  (X11) -- fixed (1.6.3).  Space, mouse-click and the Alt-<letter> hotkey all
+  flipped the option's value, but in X11 nothing was drawn, so the box looked
+  unchanged ("I can't mark it").  Root cause: with NEWSTYLE the dialog redrew
+  the marks via e_make_xrect_abs -- a 3D bevel in the extbyte overlay whose
+  checked vs unchecked states differ only by one highlight bit, visually
+  imperceptible.  wpe (ncurses) was never affected because it took the text
+  path.  Fix: draw the Borland-style 'X' / '*' glyph in every mode, matching
+  the dialog's initial draw and the ncurses path; it renders clearly under
+  Xft.  Diagnosed with a real xwpe under Xvfb+matchbox driven by xdotool
+  (instrumentation showed the value flipped but the redraw branch drew the
+  bevel, not the glyph).  Regression test: tests/x11/test_editor_options.py.
+* Options > Editor: the "WordStar block" checkbox was one column wider than
+  its siblings, so the Display-column boxes did not line up -- fixed (1.6.3)
+  by padding the "Show Endmark" and "Old Style" labels to equal width.
+* New headless X11 GUI test suite (tests/x11/): drives a real xwpe under
+  Xvfb + matchbox-window-manager via xdotool and asserts on screenshots
+  (Pillow).  Covers the Xft rendering and X11 key/mouse path that the pyte
+  (VT100) suite cannot reach.  Run with `tests/run-tests.sh --x11`; it skips
+  cleanly when the X tools are absent.  A window manager is required because
+  xwpe relies on one to own its window geometry (it never calls
+  XResizeWindow); under bare Xvfb the X11 size handling otherwise oscillates.
 * Debugging leaks memory (documented "location unknown" since 2000) -- fixed
   (1.6.3).  e_close_view() freed the window backing buffer only for sw < 2,
   so the default repaint path (sw == 2) leaked a full-screen SCREENCELL

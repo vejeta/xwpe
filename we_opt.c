@@ -1840,28 +1840,13 @@ e_opt_kst_restart:
          c = 0;
          goto e_opt_kst_restart;
       }
-#ifdef NEWSTYLE
-      if (WpeIsXwin())
-      {  for(i = 0; i < o->sn; i++)
-         {  if(o->sstr[i]->num)
-               e_make_xrect_abs(o->xa+o->sstr[i]->x, o->ya+o->sstr[i]->y,
-               o->xa+o->sstr[i]->x + 2, o->ya+o->sstr[i]->y, 1);
-            else
-               e_make_xrect_abs(o->xa+o->sstr[i]->x, o->ya+o->sstr[i]->y,
-               o->xa+o->sstr[i]->x + 2, o->ya+o->sstr[i]->y, 0);
-         }
-         for(i = 0; i < o->pn; i++)
-            for(j = 0; j < o->pstr[i]->np; j++)
-            {  if(o->pstr[i]->num == j)
-                  e_make_xrect_abs(o->xa+o->pstr[i]->ps[j]->x, o->ya+o->pstr[i]->ps[j]->y,
-                  o->xa+o->pstr[i]->ps[j]->x + 2, o->ya+o->pstr[i]->ps[j]->y, 1);
-               else
-                  e_make_xrect_abs(o->xa+o->pstr[i]->ps[j]->x, o->ya+o->pstr[i]->ps[j]->y,
-                  o->xa+o->pstr[i]->ps[j]->x+2, o->ya+o->pstr[i]->ps[j]->y, 0);
-            }
-      }
-      else
-#endif
+      /* Draw the check/radio marks as Borland-style text glyphs ([X] / (*) )
+         in EVERY mode.  The former NEWSTYLE+X11 branch drew a 3D bevel via
+         e_make_xrect_abs whose checked vs unchecked states differ only by a
+         subtle highlight bit -- invisible to the user, so toggling a box in
+         xwpe looked like nothing happened (the value DID flip).  The 'X'/'*'
+         glyphs match the initial draw above and the ncurses path, and render
+         clearly under Xft. */
       {  for(i = 0; i < o->sn; i++)
          {  if(o->sstr[i]->num)
                e_pr_char(o->xa+o->sstr[i]->x+1, o->ya+o->sstr[i]->y, 'X', o->fst);
@@ -1967,6 +1952,9 @@ e_opt_kst_restart:
 #else
          c = e_getch();
 #endif
+         /* Space toggles the focused checkbox (modern expectation); the
+            top-of-loop redraw shows the new [X], and c==cold keeps focus. */
+         if(c == ' ') {  o->sstr[i]->num = !o->sstr[i]->num;  c = cold;  break;  }
          if(c == WPE_CR) {  sw = 0;  c = cold;  break;  }
          else if(c == WPE_ESC)  sw = 1;
          else
@@ -1999,6 +1987,8 @@ e_opt_kst_restart:
 #else
             c = e_getch();
 #endif
+            /* Space selects the focused radio option (modern expectation). */
+            if(c == ' ') {  o->pstr[i]->num = j;  c = cold;  break;  }
             if(c == WPE_CR)  {  sw = 0;  c = cold;  break;  }
             else if(c == WPE_ESC)  sw = 1;
             {  csv = c;
@@ -2083,10 +2073,11 @@ int e_edt_options(FENSTER *f)
  e_add_numstr(3, 10, 19, 10, 3, 1000, 2, AltX, "MaX. Changes:", f->ed->maxchg, o);
  e_add_numstr(3, 11, 20, 11, 2, 100, 0, AltN, "Num. Undo:", f->ed->numundo, o);
  e_add_numstr(3, 12, 20, 12, 2, 100, 5, AltI, "Auto Ind. Col.:", f->ed->autoindent, o);
- e_add_sswstr(4, 3, 0, AltS, f->ed->edopt & ED_SHOW_ENDMARKS ? 1 : 0, "Show Endmark ", o);
+ e_add_sswstr(4, 3, 0, AltS, f->ed->edopt & ED_SHOW_ENDMARKS ? 1 : 0, "Show Endmark  ", o);
  e_add_sswstr(26, 3, 1, AltP, f->ed->autosv & 1, "OPtions         ", o);
  e_add_sswstr(26, 4, 1, AltH, f->ed->autosv & 2 ? 1 : 0, "CHanges         ", o);
- e_add_sswstr(4, 6, 2, AltD, f->ed->edopt & ED_OLD_TILE_METHOD ? 1 : 0, "OlD Style    ", o);
+ e_add_sswstr(4, 6, 2, AltD, f->ed->edopt & ED_OLD_TILE_METHOD ? 1 : 0, "OlD Style     ", o);
+ e_add_sswstr(4, 4, 13, AltK, f->ed->edopt & ED_BLOCK_WORDSTAR ? 1 : 0, "WordStar blocK", o);
  e_add_pswstr(0, 26, 7, 1, AltL, 0, "OLd-Style       ", o);
  e_add_pswstr(0, 26, 8, 0, AltC, f->ed->edopt & ED_CUA_STYLE, "CUA-Style       ", o);
  e_add_pswstr(1, 26, 11, 3, AltY, 0, "OnlY Source-Text", o);
@@ -2111,7 +2102,8 @@ int e_edt_options(FENSTER *f)
     (o->pstr[1]->num == 0 ? ED_SOURCE_AUTO_INDENT : 0) +
     (o->pstr[1]->num == 1 ? ED_ALWAYS_AUTO_INDENT : 0) +
     (o->sstr[3]->num ? ED_OLD_TILE_METHOD : 0) +
-    (o->sstr[0]->num ? ED_SHOW_ENDMARKS : 0);
+    (o->sstr[0]->num ? ED_SHOW_ENDMARKS : 0) +
+    (o->sstr[4]->num ? ED_BLOCK_WORDSTAR : 0);
   if (f->ed->print_cmd)
    WpeFree(f->ed->print_cmd);
   f->ed->print_cmd = WpeStrdup(o->wstr[0]->txt);

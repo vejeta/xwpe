@@ -1275,6 +1275,12 @@ int e_x_getch()
       return composed;
     }
     e_compose_pending = 0;
+    /* Shift+Tab is delivered as the ISO_Left_Tab keysym (usually with
+       charcount 0), not as Shift+Tab, so the old `ShiftMask && '\t'` test
+       below never matched and dialogs got no back-tab.  Map it to WPE_BTAB
+       for backward field navigation in option dialogs. */
+    if (keysym == XK_ISO_Left_Tab)
+     return(WPE_BTAB);
     if (charcount == 1)
     {
      if (*buffer == 127)

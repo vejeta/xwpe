@@ -50,9 +50,16 @@
 
 #define ED_SHOW_ENDMARKS      0x0002
 
+/* Block-marking model.  Clear (default) = MODERN: Begin Mark (^K B) starts a
+ * fresh, empty selection at the cursor (anchor-style, like VS Code/Sublime),
+ * so re-marking never leaves the previous block highlighted.  Set = WordStar:
+ * ^K B and ^K K are two independent persistent markers, so you can adjust one
+ * end without touching the other (classic Borland/WordStar behaviour). */
+#define ED_BLOCK_WORDSTAR     0x0004
+
 #define ED_EDITOR_OPTIONS \
   (ED_CUA_STYLE | ED_OLD_TILE_METHOD | ED_SOURCE_AUTO_INDENT | \
-  ED_ALWAYS_AUTO_INDENT | ED_SHOW_ENDMARKS)
+  ED_ALWAYS_AUTO_INDENT | ED_SHOW_ENDMARKS | ED_BLOCK_WORDSTAR)
 
 #define ED_PROGRAMMING_OPTIONS \
   (ED_ERRORS_STOP_AT | ED_MESSAGES_STOP_AT | ED_SYNTAX_HIGHLIGHT)
