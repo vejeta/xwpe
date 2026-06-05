@@ -64,3 +64,7 @@ build-aux/texinfo.tex
 .deps/
 TODO.md
 project.prj
+we-asan
+wpe-asan
+xwpe-asan
+we_asan

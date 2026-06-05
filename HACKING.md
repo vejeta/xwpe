@@ -566,7 +566,19 @@ make CFLAGS="-fsanitize=address -g -O1 -fno-omit-frame-pointer" \
      LDFLAGS="-fsanitize=address"
 cp we we-asan
 make clean && make          # restore the normal binary
-# run ./we-asan (symlink/rename to wpe or xwpe to pick the mode)
+ln -sf we-asan wpe-asan     # terminal mode  (basename not starting with 'x')
+ln -sf we-asan xwpe-asan    # X11 mode       (basename starting with 'x')
+```
+
+The mode is chosen from argv[0] (we_unix.c): a basename starting with `x`
+selects X11.  Run with leak detection off (X11/pango/glib leak at exit,
+noise here) and the report sent to a file (the TUI clobbers stderr):
+
+```sh
+ASAN_OPTIONS="detect_leaks=0:log_path=/tmp/xwpe-asan:abort_on_error=1" \
+    ./xwpe-asan docs/examples/debug_test.c
+# on a heap bug, read /tmp/xwpe-asan.<pid>  (abort_on_error also leaves a
+# core for coredumpctl)
 ```
 
 The PIC use-after-free above would have printed
