@@ -360,7 +360,11 @@ int WpeHandleMainmenu(int n, FENSTER *f)
   {
 
     f = cn->f[cn->mxedt];
-    if(e_tst_dfkt(f, c) == 0)
+    if(e_tst_dfkt(f, c) == 0
+#ifdef PROG
+       || ((WpeIsProg()) && e_prog_switch(f, c) == 0)
+#endif
+      )
     {
       c = 0;
       break;
@@ -640,7 +644,15 @@ int WpeHandleSubmenu(int xa, int ya, int xe, int ye, int nm, OPTK * fopt, FENSTE
       /* this is the anything else case, ESC, keys which are not listed in
          the submenu */
       e_close_view(pic, 1);
-      if(c != WPE_ESC && e_tst_dfkt(f, c) == 0)
+      /* Fall back to the SAME global-shortcut dispatch the editor uses, so a
+         Run/Compile/Debug shortcut (Alt-U Run, Alt-M Make, Ctrl-F9, ...) works
+         with the menu open too -- e_tst_dfkt alone does not know the prog
+         shortcuts (those live in e_prog_switch).  Mirrors we_edit.c. */
+      if(c != WPE_ESC && (e_tst_dfkt(f, c) == 0
+#ifdef PROG
+                          || ((WpeIsProg()) && e_prog_switch(f, c) == 0)
+#endif
+                         ))
         return(WPE_ESC);
 #ifdef NEWSTYLE
       pic = e_open_view(xa + 1, ya, xe - 1, ye, f->fb->mt.fb, 1);
