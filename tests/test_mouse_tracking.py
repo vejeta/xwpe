@@ -17,7 +17,7 @@ import select
 import subprocess
 import time
 
-WPE_BIN = os.path.join(os.path.dirname(__file__), '..', 'wpe')
+WPE_BIN = os.environ.get('WPE_BIN') or os.path.join(os.path.dirname(__file__), '..', 'wpe')
 ENABLE_MOTION = b'\x1b[?1002h'
 ALT_SCREEN_ENTER = b'\x1b[?1049h'
 KEY_F9 = b'\033[20~'

@@ -24,7 +24,7 @@ class SafeScreen(pyte.Screen):
         kwargs.pop('private', None)
         super().set_margins(*args, **kwargs)
 
-WPE_BIN = os.path.join(os.path.dirname(__file__), '..', 'wpe')
+WPE_BIN = os.environ.get('WPE_BIN') or os.path.join(os.path.dirname(__file__), '..', 'wpe')
 TEST_DIR = os.path.join(os.path.dirname(__file__), 'fixtures')
 
 

@@ -3,25 +3,45 @@
 Automated terminal UI tests using [pyte](https://github.com/selectel/pyte)
 (VT100 terminal emulator) and [pytest](https://pytest.org/).
 
-## Setup
+## Running everything (recommended)
+
+`tests/run-tests.sh` is the single entry point -- the local equivalent of
+the Debian autopkgtest (the autopkgtest calls this same script):
+
+```bash
+./configure && make            # build xwpe first
+tests/run-tests.sh             # C unit tests (make check) + pyte suite (./wpe)
+tests/run-tests.sh --asan      # build we-asan and run the pyte suite under it
+tests/run-tests.sh --help
+```
+
+It uses a system pyte/pytest if installed (e.g. `python3-pyte`,
+`python3-pytest`), otherwise it bootstraps a venv under `tests/.venv`.
+
+### Running pytest directly
 
 ```bash
 python3 -m venv tests/.venv
 tests/.venv/bin/pip install pyte==0.8.1 pytest
-```
-
-## Running
-
-```bash
-# Build xwpe first
-./configure && make
-
-# Create wpe symlink (tests use terminal mode)
-ln -sf we wpe
-
-# Run all tests
 tests/.venv/bin/python -m pytest -v tests/
 ```
+
+The tests run the binary named by **`$WPE_BIN`** (default `../wpe`).  Point
+it elsewhere to run the same scenarios against another build -- the
+AddressSanitizer build, a valgrind wrapper, or an installed `/usr/bin/wpe`:
+
+```bash
+WPE_BIN=$PWD/we-asan tests/.venv/bin/python -m pytest -q tests/
+```
+
+### Memory-safety runs
+
+A heap-buffer-overflow or use-after-free is silent on a normal build (the
+process survives with corrupted memory), so the functional pyte assertions
+cannot see it.  Run the suite under a sanitizer to catch that class -- this
+is how the X11-repaint use-after-free and the Ctrl-K V block-move overflow
+were found.  `tests/run-tests.sh --asan` does it for you; see HACKING.md
+("Debugging crashes and memory bugs") for valgrind and the `we-asan` recipe.
 
 ## Test files
 

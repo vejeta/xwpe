@@ -181,9 +181,41 @@ EXTRA_DIST = \
   old/we_djgpp.c \
   old/xwpe.1_gr \
   tests/README.md \
+  tests/run-tests.sh \
   tests/test_checkheader.c \
-  tests/test_scrollbar.py \
-  tests/test_utf8_border.py \
-  tests/test_compile.py \
   tests/test_syntax_def.c \
+  tests/test_utf8_border.py \
+  tests/test_scrollbar.py \
+  tests/test_compile.py \
+  tests/test_dialog_resize.py \
+  tests/test_esc_key.py \
+  tests/test_maxcol_paste.py \
+  tests/test_mouse_tracking.py \
+  tests/test_project_windows.py \
+  tests/test_project_persist.py \
+  tests/test_window_views.py \
+  tests/test_window_menu.py \
+  tests/test_block.py \
+  tests/test_block_asan.py \
+  tests/samples/hello.c \
+  tests/samples/big.c \
+  tests/samples/two_errors.c \
+  tests/samples/hello.cpp \
+  tests/samples/hello.f90 \
+  tests/samples/hello.p \
+  tests/samples/hello.pl \
+  tests/samples/hello.py \
+  tests/samples/hello.cob \
+  tests/samples/hello.tex \
+  tests/samples/Hello.java \
+  tests/fixtures/ascii.txt \
+  tests/fixtures/accents.txt \
+  tests/fixtures/long_accents.txt \
+  tests/fixtures/cjk.txt \
+  tests/fixtures/cyrillic.txt \
+  tests/fixtures/emoji.txt \
+  tests/fixtures/emoji_scroll.txt \
+  tests/fixtures/short.txt \
+  tests/fixtures/one_page.txt \
+  tests/fixtures/two_pages.txt \
   tools/compiletest.c

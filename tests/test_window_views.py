@@ -33,7 +33,7 @@ import pytest
 
 from test_utf8_border import SafeScreen
 
-WPE_BIN = os.path.join(os.path.dirname(__file__), '..', 'wpe')
+WPE_BIN = os.environ.get('WPE_BIN') or os.path.join(os.path.dirname(__file__), '..', 'wpe')
 
 KEY_ALT_P = '\033p'
 KEY_ALT_W = '\033w'

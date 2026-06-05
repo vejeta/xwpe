@@ -22,7 +22,7 @@ import pyte
 
 from test_utf8_border import SafeScreen
 
-WPE_BIN = os.path.join(os.path.dirname(__file__), '..', 'wpe')
+WPE_BIN = os.environ.get('WPE_BIN') or os.path.join(os.path.dirname(__file__), '..', 'wpe')
 
 ALT_B = '\033b'          # open the Block menu
 ALT_F = '\033f'          # open the File menu
