@@ -106,13 +106,18 @@ Changes
 * Program output appears in Messages via e_d_pty_read_to_messages
   (char-by-char buffer append, no line-flush artifacts).
 * Ctrl-G P (Program Output) accumulates during interactive sessions.
-* Ctrl-G P in X11 no longer pops up a modal dialog -- since the program's
-  output is already captured in the Messages window, it now raises and
-  focuses that integrated panel and scrolls to the latest output, the way
-  a modern IDE focuses its output panel (e_p_show_program_output).  The
-  terminal build keeps the full-screen "user screen" switch, which is the
-  only surface that can faithfully show a program that paints with cursor
-  positioning or ANSI colour.
+* Ctrl-G P (Program output) is now uniform across backends: the program's
+  output is captured into the Messages window in both the terminal and X11
+  builds, so Ctrl-G P raises and focuses that integrated panel and scrolls
+  to the latest output (e_p_show_program_output) -- the way a modern IDE
+  focuses its output panel.  No modal popup (X11) and no full-screen switch
+  (terminal); the same key does the same thing everywhere.  The classic
+  full-screen "user screen" (for programs that paint with cursor
+  positioning / ANSI colour) is preserved as e_t_user_screen(), not yet
+  bound to a key -- a faithful version (an integrated VT terminal shared by
+  both backends, the Borland Alt-F5 "User Screen") is planned for 1.6.4.
+  The Messages cursor is placed at the end of the last output line (the
+  stream write position), like a tailing terminal, not at column 0.
 * printf without \n now visible after each step: e_d_flush_inferior_stdout
   sends "call (void)fflush(0)" to gdb (same technique as Eclipse CDT).
 

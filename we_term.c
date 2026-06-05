@@ -1287,24 +1287,47 @@ int e_t_switch_screen(int sw)
  return(0);
 }
 
+/**
+ * e_t_deb_out - Show the program's output (Ctrl-G P / Alt-F5 "Output").
+ *
+ * The program's stdout/stderr is captured into the Messages window (via the
+ * pty drain) in BOTH the terminal and X11 builds, so this is uniform across
+ * backends now: raise and focus the Messages panel and scroll to the latest
+ * output, the way a modern IDE focuses its integrated output panel.  No
+ * backend-specific behaviour, no modal popup, no screen switch.
+ *
+ * The classic full-screen "user screen" (for programs that paint with cursor
+ * positioning or ANSI colour) lives in e_t_user_screen() below; it is not
+ * yet bound to a key -- a faithful version (integrated terminal) is planned
+ * for a later release.
+ */
 int e_t_deb_out(FENSTER *f)
+{
+ extern int e_p_show_program_output(FENSTER *);
+ return e_p_show_program_output(f);
+}
+
+/**
+ * e_t_user_screen - Switch the console to the program's raw full-screen output.
+ *
+ * Terminal-only.  Drops out of ncurses (endwin), clears the screen and
+ * replays the captured program output verbatim, then waits for a keypress
+ * before returning to the editor -- the Borland "User Screen" (Alt-F5).
+ * Unlike the Messages panel this can show a program that paints (cursor
+ * positioning, ANSI colour), because it hands the real terminal back to it.
+ *
+ * NOT bound to a key yet: the captured buffer is empty after a plain Run and
+ * cannot faithfully reproduce a painting program.  The proper version (an
+ * integrated VT terminal shared by both backends) is planned for 1.6.4; this
+ * function is kept ready to wire to Alt-F5 then.
+ */
+int e_t_user_screen(FENSTER *f)
 {
  extern char *e_d_prog_output;
  extern int e_d_prog_output_len;
  extern void e_d_pty_drain(void);
- extern int e_deb_type;
  int i;
-
- /* X11 mode: there is no real terminal to drop to, and the program's
-    output is already captured in the Messages window. Focus that integrated
-    panel and scroll to the latest output instead of a modal popup. */
-#ifndef NO_XWINDOWS
- if (WpeIsXwin())
- {
-  extern int e_p_show_program_output(FENSTER *);
-  return e_p_show_program_output(f);
- }
-#endif
+ (void)f;
 
  e_d_pty_drain();
  endwin();
