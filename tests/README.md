@@ -45,6 +45,12 @@ Borland-style project management:
 - `test_project_persist.py` -- a file added to a project is written to the .prj
   immediately (not only on window close)
 
+Window backing-store (PIC view) double-free guards:
+- `test_window_views.py` -- the three bulk view-release paths
+  (open project + F9, Window > Tile, Window > Cascade, and them repeated)
+  stay alive; a double-free aborts with SIGABRT.  Guards the e_free_view()
+  helper introduced with the 1.6.3 leak fix
+
 C-source tests built by `make check`:
 - `test_checkheader.c`, `test_syntax_def.c`
 
