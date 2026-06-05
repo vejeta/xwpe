@@ -371,7 +371,13 @@ int e_message(int sw, char *str, FENSTER *f)
 /*         First opening of a window                 */
 void e_firstl(FENSTER *f, int sw)
 {
- f->pic = NULL;
+ /* Pass the window's existing view (f->pic) into e_ed_kst: when it is
+    non-NULL (a repaint -- e.g. e_rep_win_tree during a debug step)
+    e_change_pic closes it before opening the new one. Discarding it here
+    (f->pic = NULL) leaked a full-screen backing buffer (~19 KB) on every
+    repaint -- the 24-year "debugging leaks memory" bug, since a debug step
+    repaints the whole window tree repeatedly. New windows initialise
+    f->pic = NULL at creation, so the close is skipped for them. */
  f->pic = e_ed_kst(f, f->pic, sw);
  if (f->pic == NULL)
   e_error(e_msg[ERR_LOWMEM], 1, f->fb);
@@ -475,12 +481,16 @@ int e_close_view(PIC *pic, int sw)
    e_invalidate_area(pic->a.x, pic->a.y, ixe, iye);
  }
 
- if (sw < 2)
- {
-  if (pic->buf) free((SCREENCELL *)pic->buf);
-  pic->buf = NULL;
-    FREE(pic);
- }
+ /* Always free the view: e_open_view() always allocates the PIC struct (and
+    its saved-background buffer when sw != 0). The old `sw < 2` guard left the
+    PIC + buffer allocated for sw == 2 callers (e_change_pic's repaint path,
+    option-dialog probes), leaking a backing buffer on every window-tree
+    repaint -- the bulk of the "debugging leaks memory" bug, since a debug
+    step repaints repeatedly. No caller reads the PIC after closing it (they
+    set it to NULL or let a local go out of scope). */
+ if (pic->buf) free((SCREENCELL *)pic->buf);
+ pic->buf = NULL;
+ FREE(pic);
 
  e_refresh();
  return(sw);

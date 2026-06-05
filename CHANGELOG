@@ -11,7 +11,7 @@ https://codeberg.org/mendezr/xwpe-archives
 Known Bugs (Payne era, verified 2026-06-01)
 
 Confirmed present:
-* Debugging leaks memory (location unknown since 2000).
+* (none currently tracked)
 
 Cannot reproduce:
 * Changing the maximum column and using cut & paste can crash xwpe
@@ -20,6 +20,14 @@ Cannot reproduce:
      past the limit stays alive).
 
 Bugs fixed in 1.6.x:
+* Debugging leaks memory (open since 2000, "location unknown") -- fixed
+  (1.6.3).  e_close_view() freed the window backing buffer only for sw < 2,
+  so the default repaint path (sw == 2) leaked a full-screen SCREENCELL
+  buffer (~19 KB) on every window-tree repaint; a debugger step repaints
+  repeatedly, hence the symptom.  Now the PIC is always freed (it is always
+  allocated by e_open_view); e_firstl passes the existing view so it is
+  closed before the new one opens.  Found with valgrind driven through gdb
+  sessions by a headless pyte VT100 harness; ~940 KB/2-sessions -> 3 bytes.
 * Documentation hasn't been updated -- 12-chapter Texinfo manual (1.6.2).
 * Compilers are assumed to have a -c and -o -- GNU/Other distinction (1.6.2).
 * Cursor keys don't work in xterms or telnet sessions -- fixed (1.6.0).
