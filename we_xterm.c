@@ -1652,10 +1652,7 @@ int e_x_repaint_desk(FENSTER *f)
  e_abs_refr();
  memset(altextbyte, 0, MAXSCOL * MAXSLNS);
  for (i = cn->mxedt; i >= 1; i--)
- {
-  if (cn->f[i]->pic->buf) free(cn->f[i]->pic->buf);
-  FREE(cn->f[i]->pic);
- }
+  e_free_view(&cn->f[i]->pic);
  /* relayout already done by ConfigureNotify handler -- just clamp */
  for (i = 0; i <= cn->mxedt; i++)
  {

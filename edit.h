@@ -662,6 +662,7 @@ void e_firstl(FENSTER *f, int sw);
 int e_pr_filetype(FENSTER *f);
 PIC *e_open_view(int xa, int ya, int xe, int ye, int col, int sw);
 int e_close_view(PIC *pic, int sw);
+void e_free_view(PIC **pp);
 void e_pr_line(int y, FENSTER *f);
 void e_std_rahmen(int xa, int ya, int xe, int ye, char *name, int sw,
   int frb, int fes);

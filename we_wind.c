@@ -508,7 +508,7 @@ int e_close_view(PIC *pic, int sw)
  *  "free(): invalid pointer". Routing every such release through this one
  *  function makes that entire class of double-free impossible by
  *  construction -- callers can no longer forget the "= NULL". */
-static void e_free_view(PIC **pp)
+void e_free_view(PIC **pp)
 {
  PIC *pic = *pp;
  if (pic == NULL) return;

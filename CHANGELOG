@@ -42,6 +42,14 @@ Bugs fixed in 1.6.x:
   single e_free_view() helper that always NULLs the pointer, making that
   class of double-free impossible by construction.
   Test: tests/test_window_views.py.
+* SIGSEGV in the X11 desktop repaint -- fixed (1.6.3).  A fourth instance
+  of the same free-without-NULL bug lived in e_x_repaint_desk (we_xterm.c):
+  it freed every window's view in a loop without clearing cn->f[i]->pic,
+  then repainted (e_ed_kst -> e_change_pic -> e_close_view), which read the
+  freed-and-reused PIC -- a use-after-free that crashed xwpe during normal
+  X11 use (e.g. on a window-configure repaint).  Found from a user core
+  dump (coredumpctl -> gdb: e_close_view at we_wind.c:468 with a garbage
+  PIC).  Now routed through e_free_view() like the other three sites.
 * Documentation hasn't been updated -- 12-chapter Texinfo manual (1.6.2).
 * Compilers are assumed to have a -c and -o -- GNU/Other distinction (1.6.2).
 * Cursor keys don't work in xterms or telnet sessions -- fixed (1.6.0).
