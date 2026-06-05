@@ -46,6 +46,7 @@ int err_no, err_num;
 
 int e__project = 0, e_argc, e_p_l_comp;
 int e_prj_select_pending = 0;
+int e_prj_new_pending = 0;
 char **e_arg = NULL;
 char *e__arguments = NULL;
 M_TIME last_time;
@@ -1928,10 +1929,36 @@ static void e_write_default_prj(char *path)
  fclose(fp);
 }
 
-/* Set e_prog.project to the given path and open it, creating a new
-   skeleton .prj first if the file does not exist. Called by the
-   File-Manager once the user picks or types a project name. */
+/**
+ * e_select_project - Open an EXISTING project the user picked.
+ *
+ * Used by the "Open Project" picker. Strictly opens what the user chose: if the
+ * file does not exist (e.g. a typo), e_open_project_file reports "Project file
+ * not found" rather than silently creating an empty project. Use
+ * e_create_project for the "New Project" path.
+ *
+ * @cn:   editor context.
+ * @path: chosen .prj path.
+ */
 int e_select_project(ECNT *cn, char *path)
+{
+ e_prog.project = REALLOC(e_prog.project, strlen(path) + 1);
+ strcpy(e_prog.project, path);
+ return(e_open_project_file(cn));
+}
+
+/**
+ * e_create_project - Create a NEW project at the name the user typed and open it.
+ *
+ * Used by the "New Project" picker. Writes a fresh skeleton .prj (compiler
+ * defaults + EXENAME from the name) when the file does not yet exist, then opens
+ * it. If the user types the name of an existing project it is opened as-is, so
+ * "New Project" never destroys an existing one.
+ *
+ * @cn:   editor context.
+ * @path: project path to create/open.
+ */
+int e_create_project(ECNT *cn, char *path)
 {
  e_prog.project = REALLOC(e_prog.project, strlen(path) + 1);
  strcpy(e_prog.project, path);
@@ -1940,9 +1967,27 @@ int e_select_project(ECNT *cn, char *path)
  return(e_open_project_file(cn));
 }
 
+/**
+ * e_project - Menu "Open Project": pick an existing .prj to open.
+ *
+ * Opens the project picker in open mode (see e_select_project).
+ */
 int e_project(FENSTER *f)
 {
  e_prj_select_pending = 1;
+ WpeCreateFileManager(0, f->ed, "");
+ return(0);
+}
+
+/**
+ * e_new_project - Menu "New Project": type a name to create a new project.
+ *
+ * Opens the project picker in new mode; the typed name is created as a fresh
+ * project (see e_create_project) and opened.
+ */
+int e_new_project(FENSTER *f)
+{
+ e_prj_new_pending = 1;
  WpeCreateFileManager(0, f->ed, "");
  return(0);
 }

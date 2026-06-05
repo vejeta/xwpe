@@ -139,3 +139,35 @@ def test_status_bar_compact_with_project_label(project_dir):
     quit_col = bar.index('Quit')
     assert quit_col + len('Quit') < label_col, \
         'Quit button and project label must not overlap'
+
+
+# -- #142: New Project vs Open Project ---------------------------------------
+
+CLEAR_NAME = '\x7f' * 5   # erase the "*.prj" filter in the Name field
+
+
+def test_project_menu_has_new_and_open(tmp_path):
+    (tmp_path / 'main.c').write_text('int main(void){return 0;}\n')
+    screen = run_wpe(str(tmp_path), ['\033p'])    # open the Project menu
+    assert row_with(screen, 'New Project') is not None, \
+        'Project menu must offer "New Project"'
+    assert row_with(screen, 'Open Project') is not None, \
+        'Project menu must offer "Open Project"'
+
+
+def test_new_project_creates_prj(tmp_path):
+    (tmp_path / 'main.c').write_text('int main(void){return 0;}\n')
+    # Project -> New Project, type a fresh name, Enter.
+    run_wpe(str(tmp_path), ['\033p', 'n', CLEAR_NAME, 'fresh.prj', '\r'])
+    assert (tmp_path / 'fresh.prj').exists(), \
+        'New Project must create the .prj the user typed'
+
+
+def test_open_project_is_strict(tmp_path):
+    (tmp_path / 'main.c').write_text('int main(void){return 0;}\n')
+    # Project -> Open Project, type a name that does not exist.
+    screen = run_wpe(str(tmp_path), ['\033p', 'p', CLEAR_NAME, 'ghost.prj', '\r'])
+    assert not (tmp_path / 'ghost.prj').exists(), \
+        'Open Project must NOT create a missing project (that is New Project)'
+    assert row_with(screen, 'not found') is not None, \
+        'Open Project on a missing file must report "Project file not found"'

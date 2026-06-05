@@ -75,6 +75,8 @@ int e_run_sh(FENSTER *f);
 int e_project(FENSTER *f);
 int e_open_project_file(ECNT *cn);
 int e_select_project(ECNT *cn, char *path);
+int e_create_project(ECNT *cn, char *path);
+int e_new_project(FENSTER *f);
 int e_find_project_window(ECNT *cn);
 int e_find_dirty_project_window(ECNT *cn);
 int e_project_is_open(void);

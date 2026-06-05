@@ -180,14 +180,15 @@ int WpeHandleMainmenu(int n, FENSTER *f)
 
     mainmenu[MENOPT - 4].position = -3;
     mainmenu[MENOPT - 4].width = 23;
-    mainmenu[MENOPT - 4].no_of_items = 5;
+    mainmenu[MENOPT - 4].no_of_items = 6;
     if((mainmenu[MENOPT - 4].menuitems = MALLOC(mainmenu[MENOPT - 4].no_of_items * sizeof(OPTK))) == NULL)
       e_error(e_msg[ERR_LOWMEM], 1, f->fb);
-    mainmenu[MENOPT - 4].menuitems[0] = WpeFillSubmenuItem("Open Project", 5, 'P', e_project);
-    mainmenu[MENOPT - 4].menuitems[1] = WpeFillSubmenuItem("Close Project", 0, 'C', e_cl_project);
-    mainmenu[MENOPT - 4].menuitems[2] = WpeFillSubmenuItem("Add Item", 0, 'A', e_p_add_item);
-    mainmenu[MENOPT - 4].menuitems[3] = WpeFillSubmenuItem("Delete Item", 0, 'D', e_p_del_item);
-    mainmenu[MENOPT - 4].menuitems[4] = WpeFillSubmenuItem("Options", 0, 'O', e_project_options);
+    mainmenu[MENOPT - 4].menuitems[0] = WpeFillSubmenuItem("New Project", 0, 'N', e_new_project);
+    mainmenu[MENOPT - 4].menuitems[1] = WpeFillSubmenuItem("Open Project", 5, 'P', e_project);
+    mainmenu[MENOPT - 4].menuitems[2] = WpeFillSubmenuItem("Close Project", 0, 'C', e_cl_project);
+    mainmenu[MENOPT - 4].menuitems[3] = WpeFillSubmenuItem("Add Item", 0, 'A', e_p_add_item);
+    mainmenu[MENOPT - 4].menuitems[4] = WpeFillSubmenuItem("Delete Item", 0, 'D', e_p_del_item);
+    mainmenu[MENOPT - 4].menuitems[5] = WpeFillSubmenuItem("Options", 0, 'O', e_project_options);
   }
 #endif
 #ifdef DEBUGGER

@@ -34,6 +34,7 @@ extern char    *e_tmp_dir;
 #define E_C_BUFFERSIZE 524288        /*   1/2  Mega Byte   */
 
 int e_select_project(ECNT *cn, char *path);   /* we_prog.c */
+int e_create_project(ECNT *cn, char *path);   /* we_prog.c */
 int e_wrt_prj_fl(FENSTER *f);                  /* we_prog.c */
 
 #ifdef DEBUG
@@ -200,13 +201,20 @@ int WpeCreateFileManager(int sw, ECNT *cn, char *dirct)
 
   /* Open-Project mode: filter to *.prj and tag this manager so that
      selecting a file opens it as the project (see WpeHandleFileManager). */
-  b->prj_sel = 0;
+  b->prj_sel = FM_PRJ_NONE;
   {
-    extern int e_prj_select_pending;
-    if (sw == 0 && e_prj_select_pending)
+    extern int e_prj_select_pending, e_prj_new_pending;
+    if (sw == 0 && e_prj_new_pending)
     {
       strcpy(b->rdfile, "*.prj");
-      b->prj_sel = 1;
+      b->prj_sel = FM_PRJ_NEW;
+      e_prj_new_pending = 0;
+      f->datnam = "New Project";
+    }
+    else if (sw == 0 && e_prj_select_pending)
+    {
+      strcpy(b->rdfile, "*.prj");
+      b->prj_sel = FM_PRJ_OPEN;
       e_prj_select_pending = 0;
       f->datnam = "Select Project";
     }
@@ -287,7 +295,17 @@ int WpeCreateFileManager(int sw, ECNT *cn, char *dirct)
   return(0);
 }
 
-/* drawing out the file-manager, 
+/* Draw one bottom-row key hint (e.g. "Esc:Cancel") in the File Manager's
+   plain hint colour. Hides the e_pr_str colour boilerplate so the call sites
+   read as "put this hint here". */
+static void e_fm_key_hint(FENSTER *f, int x, int y, char *text)
+{
+  int col = f->fb->nt.fb;
+
+  e_pr_str(x, y, text, col, -1, -1, col, col);
+}
+
+/* drawing out the file-manager,
    first buttons, than the dir tree and file list */
 int WpeDrawFileManager(FENSTER * f)
 {
@@ -308,33 +326,33 @@ int WpeDrawFileManager(FENSTER * f)
   {
     /* For Add-to-project, Esc keeps the added files and returns to the
        project window, so label it Done rather than Cancel. */
-    e_pr_str((f->a.x + 4), f->e.y - by, b->sw == 5 ? "Esc:Done" : "Esc:Cancel",
-             f->fb->nt.fb, -1, -1, f->fb->nt.fb, f->fb->nt.fb);
-    e_pr_str((f->a.x + 17), f->e.y - by, "Alt-C:ChDir", f->fb->nt.fb, -1, -1,
-             f->fb->nt.fb, f->fb->nt.fb);
+    if(b->sw == 5)
+      e_fm_key_hint(f, f->a.x + 4, f->e.y - by, "Esc:Done");
+    else
+      e_fm_key_hint(f, f->a.x + 4, f->e.y - by, "Esc:Cancel");
+    e_fm_key_hint(f, f->a.x + 17, f->e.y - by, "Alt-C:ChDir");
+
     if(b->sw == 1 && NUM_COLS_ON_SCREEN >= 34)
-      e_pr_str((f->a.x + 31), f->e.y - by, "Alt-R:Read", f->fb->nt.fb, -1, -1,
-               f->fb->nt.fb, f->fb->nt.fb);
+      e_fm_key_hint(f, f->a.x + 31, f->e.y - by, "Alt-R:Read");
     else if(b->sw == 2 && NUM_COLS_ON_SCREEN >= 35)
-      e_pr_str((f->a.x + 31), f->e.y - by, "Alt-W:Write", f->fb->nt.fb, -1, -1,
-               f->fb->nt.fb, f->fb->nt.fb);
-    else if(b->sw == 4)
-    {
-      if(NUM_COLS_ON_SCREEN >= 34)
-        e_pr_str((f->a.x + 31), f->e.y - by, "Alt-S:Save", f->fb->nt.fb, -1, -1,
-                 f->fb->nt.fb, f->fb->nt.fb);
-    }
+      e_fm_key_hint(f, f->a.x + 31, f->e.y - by, "Alt-W:Write");
+    else if(b->sw == 4 && NUM_COLS_ON_SCREEN >= 34)
+      e_fm_key_hint(f, f->a.x + 31, f->e.y - by, "Alt-S:Save");
     else if(b->sw == 3 && NUM_COLS_ON_SCREEN >= 37)
-      e_pr_str((f->a.x + 31), f->e.y - by, "Alt-E:Exec", f->fb->nt.fb, -1, -1,
-               f->fb->nt.fb, f->fb->nt.fb);
+      e_fm_key_hint(f, f->a.x + 31, f->e.y - by, "Alt-E:Exec");
     else if(b->sw == 5 && NUM_COLS_ON_SCREEN >= 33)
-      e_pr_str((f->a.x + 31), f->e.y - by, "Enter:Add", f->fb->nt.fb, -1, -1,
-               f->fb->nt.fb, f->fb->nt.fb);
+      e_fm_key_hint(f, f->a.x + 31, f->e.y - by, "Enter:Add");
     else if(b->sw == 0 && b->prj_sel)
     {
       if(NUM_COLS_ON_SCREEN >= 33)
-        e_pr_str((f->a.x + 31), f->e.y - by, "Enter:Select File", f->fb->nt.fb,
-                 -1, -1, f->fb->nt.fb, f->fb->nt.fb);
+      {
+        if(b->prj_sel == FM_PRJ_NEW)
+          /* New Project: Enter on the typed name creates the project. */
+          e_fm_key_hint(f, f->a.x + 31, f->e.y - by, "Enter:Create");
+        else
+          /* Open Project: Enter moves into the file list to pick a .prj. */
+          e_fm_key_hint(f, f->a.x + 31, f->e.y - by, "Enter:Select File");
+      }
     }
     else if(b->sw == 0)
     {
@@ -547,6 +565,7 @@ int WpeHandleFileManager(ECNT * cn)
   struct stat     buf;
   char            dtmd;
   int             open_prj = 0;       /* 1 = open selected .prj after FM closes */
+  int             new_prj = 0;        /* 1 = create (New Project) vs open existing */
   char            prj_path[WPE_PATHMAX];
 
   /* check whether we really get a file-manager window here */
@@ -1149,6 +1168,7 @@ int WpeHandleFileManager(ECNT * cn)
             else
               snprintf(prj_path, sizeof(prj_path), "%s%s", f->dirct, filen);
             open_prj = 1;
+            new_prj = (b->prj_sel == FM_PRJ_NEW);  /* New vs Open Project */
             c = WPE_ESC;
             break;
           }
@@ -1610,7 +1630,12 @@ int WpeHandleFileManager(ECNT * cn)
   {
     e_close_window(f);
     if(open_prj)
-      e_select_project(cn, prj_path);
+    {
+      if(new_prj)
+        e_create_project(cn, prj_path);
+      else
+        e_select_project(cn, prj_path);
+    }
     return(0);
   }
 }

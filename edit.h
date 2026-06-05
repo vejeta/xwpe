@@ -284,9 +284,14 @@ typedef struct FLBFF {
  struct fl_wnd *dw;  /* window for dir tree */
  char *rdfile;       /* file pattern entered for searching */
  char sw;
- char prj_sel;       /* 1 = open-project mode: selection opens the .prj */
+ char prj_sel;       /* project-picker mode: FM_PRJ_* (0 when not a picker) */
  int xfa, xfd, xda, xdd;
 } FLBFFR;
+
+/* FLBFFR.prj_sel values: how the File Manager treats the chosen name. */
+#define FM_PRJ_NONE 0   /* ordinary File Manager (not a project picker) */
+#define FM_PRJ_OPEN 1   /* Open Project: selection opens an existing .prj */
+#define FM_PRJ_NEW  2   /* New Project: the typed name is created, then opened */
 
 typedef struct {
  int x, y;
