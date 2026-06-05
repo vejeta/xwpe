@@ -60,6 +60,10 @@ Block menu (Alt-B) operations:
 - `test_block.py` -- Mark Whole + Delete empties the buffer, Move to
   Right/Left indents/unindents the block, indent+unindent round-trips.
   Asserts on the saved file (ground truth), not the live screen
+- `test_block_asan.py` -- block Copy/Move under AddressSanitizer: asserts
+  the `we-asan` build produces no ASan report (a heap-buffer-overflow is
+  silent on the normal build, so it needs a sanitizer).  Skips if `we-asan`
+  is not built.  Guards the Ctrl-K V line-buffer overflow fix
 
 C-source tests built by `make check`:
 - `test_checkheader.c`, `test_syntax_def.c`
