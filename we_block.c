@@ -380,6 +380,30 @@ static void e_blk_split_line(BUFFER *b, int y, int x)
  b->bf[y+1].nrc = e_str_nrc(b->bf[y+1].s);
 }
 
+/**
+ * e_blk_dup_chars - Copy a run of characters out of a line into a new buffer.
+ * @b: The text buffer to read from.
+ * @y: The line to read.
+ * @x: The first column to copy.
+ * @n: How many characters to copy.
+ *
+ * The single-line block Move cases lift the marked characters out of one
+ * line so they can be re-inserted elsewhere on the same or another line.
+ * Returns a freshly allocated maxcol-sized buffer holding the @n characters
+ * (the caller frees it), or NULL on out-of-memory.
+ */
+static unsigned char *e_blk_dup_chars(BUFFER *b, int y, int x, int n)
+{
+ unsigned char *out;
+ int i;
+
+ if ((out = MALLOC(b->cn->maxcol * sizeof(char))) == NULL)
+  return NULL;
+ for (i = 0; i < n; i++)
+  out[i] = b->bf[y].s[x + i];
+ return out;
+}
+
 void e_move_block(int x, int y, BUFFER *bv, BUFFER *bz, FENSTER *f)
 {
  SCHIRM *s = f->ed->f[f->ed->mxedt]->s;
@@ -403,13 +427,11 @@ void e_move_block(int x, int y, BUFFER *bv, BUFFER *bz, FENSTER *f)
  {
   n = kex - kax;
   bz->b.x = x; bz->b.y = y;
-  if ((cstr = MALLOC(f->ed->maxcol * sizeof(char))) == NULL)
+  if ((cstr = e_blk_dup_chars(bv, key, kax, n)) == NULL)
   {
    e_error(e_msg[ERR_LOWMEM], 0, bz->fb);
    return;
   }
-  for (i = 0; i < n; i++)
-   cstr[i] = bv->bf[key].s[kax+i];
   e_ins_nchar(bz, sz, cstr, x, y, n);
   bv->b.x = kax;  bv->b.y = kay+bz->b.y-y;
   e_del_nchar(bv, sv, sv->mark_begin.x, sv->mark_begin.y, n);
@@ -427,13 +449,11 @@ void e_move_block(int x, int y, BUFFER *bv, BUFFER *bz, FENSTER *f)
  {
   n = kax - x;
   bv->b.x = x; bv->b.y = y;
-  if ((cstr = MALLOC(f->ed->maxcol * sizeof(char))) == NULL)
+  if ((cstr = e_blk_dup_chars(bv, y, x, n)) == NULL)
   {
    e_error(e_msg[ERR_LOWMEM], 0, bz->fb);
    return;
   }
-  for (i = 0; i < n; i++)
-   cstr[i] = bv->bf[y].s[x+i];
   e_del_nchar(bv, sv, x, y, n);
   bz->b.x = kex; bz->b.y = key;
   e_ins_nchar(bz, sz, cstr, kex, key, n);
@@ -449,13 +469,11 @@ void e_move_block(int x, int y, BUFFER *bv, BUFFER *bz, FENSTER *f)
  {
   n = x - kex;
   bv->b.x = kex; bv->b.y = y;
-  if ((cstr = MALLOC(f->ed->maxcol * sizeof(char))) == NULL)
+  if ((cstr = e_blk_dup_chars(bv, y, kex, n)) == NULL)
   {
    e_error(e_msg[ERR_LOWMEM], 0, bz->fb);
    return;
   }
-  for (i = 0; i < n; i++)
-   cstr[i] = bv->bf[y].s[kex+i];
   e_del_nchar(bv, sv, kex, y, n);
   bz->b.x = kex; bz->b.y = key;
   e_ins_nchar(bz, sz, cstr, kax, kay, n);
