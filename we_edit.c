@@ -1208,7 +1208,7 @@ int e_tst_dfkt(FENSTER *f, int c)
    e_list_all_win(f);
    break;
   case AF5:
-   e_deb_out(f);
+   e_user_screen(f);
    break;
   default:
    if (f->ed->edopt & ED_CUA_STYLE)

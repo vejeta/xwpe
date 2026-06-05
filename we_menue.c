@@ -306,7 +306,7 @@ int WpeHandleMainmenu(int n, FENSTER *f)
 #ifndef DJGPP
   if(!WpeIsXwin())
 #endif
-    mainmenu[MENOPT - 2].menuitems[7] = WpeFillSubmenuItem("Output    Alt F5 / ^G P", 0, 'O', e_u_deb_out);
+    mainmenu[MENOPT - 2].menuitems[7] = WpeFillSubmenuItem("User Screen       Alt F5", 0, 'U', e_user_screen);
 #ifdef PROG
   if(WpeIsProg())
   {

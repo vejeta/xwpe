@@ -319,6 +319,20 @@ static void e_d_prog_output_append(char *data, int len)
  e_d_prog_output_len += len;
 }
 
+/* Public hooks so the Ctrl-F9 run path (we_prog.c) can feed the same captured
+   buffer the debugger uses, letting the Alt-F5 "User Screen" replay the last
+   program's raw output verbatim regardless of how it was launched.
+   e_d_prog_output_reset() starts a fresh capture at the top of each run. */
+void e_d_prog_output_reset(void)
+{
+ e_d_prog_output_len = 0;
+}
+
+void e_d_prog_output_add(char *data, int len)
+{
+ e_d_prog_output_append(data, len);
+}
+
 static int e_d_pty_read_to_messages(FENSTER *mf)
 {
  char buf[256];

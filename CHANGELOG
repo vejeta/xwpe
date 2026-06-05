@@ -335,6 +335,18 @@ Changes
   scrollbar (U+2591 light shade, U+2588 full block) when Xft active.
 
   Terminal / console mode:
+* Borland "User Screen" (Alt-F5) restored on the console.  After Ctrl-F9 Run
+  (or a debug session) a program that PAINTS -- cursor positioning, ANSI
+  colour, a TUI, a progress bar -- cannot be shown in the line-oriented
+  Messages window.  Alt-F5 (and Window -> User Screen) now leaves the editor
+  and shows the program's own full screen: e_t_user_screen replays the
+  captured output VERBATIM (no headers, no \n rewriting), so it renders
+  exactly as the program left it.  The Ctrl-F9 run path now accumulates the
+  raw byte stream into the same buffer the debugger uses (e_d_prog_output),
+  so the User Screen is populated however the program was launched.  Press
+  any key to return to the editor.  Console (wpe) only for now; the xwpe
+  (X11) integrated terminal panel is the 1.6.4 path.  Demo: tests/samples/
+  paint.c (F9, Ctrl-F9, Alt-F5).
 * Console mouse (GPM) restored in wpe.  On a bare Linux VT the mouse pointer
   stopped moving and clicks stopped registering: wpe opens the GPM connection
   itself (so ncurses does not), but the event-driven input rewrite left GPM's

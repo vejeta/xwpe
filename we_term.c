@@ -1367,24 +1367,24 @@ int e_t_user_screen(FENSTER *f)
 
  e_d_pty_drain();
  endwin();
- /* Clear screen and move to top so only program output is visible */
- fprintf(stderr, "\033[2J\033[H");
- fprintf(stderr, "--- Program output ---\r\n");
+ /* Borland's "User Screen": leave the editor and show the program's own
+    full screen.  Replay the captured output VERBATIM -- the bytes the program
+    wrote to its terminal, including cursor positioning, ANSI colour and box
+    drawing -- so a program that PAINTS shows exactly as it left the screen.
+    No headers and no \n->\r\n rewriting (the pty already emits \r\n), which
+    would otherwise corrupt cursor-addressed output. */
+ (void) i;
+ fputs("\033[2J\033[H", stderr);
  if (e_d_prog_output && e_d_prog_output_len > 0)
- {
-  for (i = 0; i < e_d_prog_output_len; i++)
-  {
-   if (e_d_prog_output[i] == '\n')
-    fprintf(stderr, "\r\n");
-   else
-    fputc(e_d_prog_output[i], stderr);
-  }
-  if (e_d_prog_output[e_d_prog_output_len-1] != '\n')
-   fprintf(stderr, "\r\n");
- }
+  fwrite(e_d_prog_output, 1, e_d_prog_output_len, stderr);
  else
-  fprintf(stderr, "(no output)\r\n");
- fprintf(stderr, "--- Press any key to return to editor ---\r\n");
+  fputs("(no program output yet -- run with Ctrl-F9 or start a debug session)",
+    stderr);
+ /* A discreet, reverse-video prompt on its own line so it does not paint over
+    the program's last line. */
+ fputs("\033[0m\r\n\033[7m xwpe: press any key to return to the editor \033[0m",
+   stderr);
+ fflush(stderr);
  { struct termios _old, _raw; char _c;
    tcgetattr(0, &_old);
    _raw = _old;

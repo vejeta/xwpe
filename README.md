@@ -72,6 +72,10 @@ console-only build needs only `libncurses-dev` (plus the build tools).
 * **Full mouse on the bare Linux console (GPM)**: pointer, click, window
   drag and resize with no X -- the GPM connection is pumped through the
   event loop (regression fixed)
+* **Borland "User Screen" (Alt-F5)** restored on the console: leave the
+  editor and see a program's own full screen (ANSI colour, cursor
+  positioning, a TUI) verbatim -- what the Messages window cannot show.
+  Try it with `tests/samples/paint.c` (F9, Ctrl-F9, then Alt-F5).
 * **Dialog resize safety**: survives extreme terminal shrink without
   crash; dialog clipped and restored cleanly on grow
 * **Icon set**: two-tier SVG icon, .desktop entry, _NET_WM_ICON for

@@ -690,6 +690,7 @@ int e_rep_win_tree(ECNT *cn);
 int e_opt_sec_box(int xa, int ya, int num, OPTK *opt, FENSTER *f, int sw);
 int e_close_buffer(BUFFER *b);
 int e_list_all_win(FENSTER *f);
+int e_user_screen(FENSTER *f);   /* Alt-F5 Borland User Screen (console) */
 
 
 #ifdef UNIX

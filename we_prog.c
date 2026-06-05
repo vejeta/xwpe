@@ -288,6 +288,9 @@ static void e_run_drain_pty(int pty_fd, BUFFER *b, FENSTER *mf)
  while ((n = read(pty_fd, buf, sizeof(buf))) > 0)
  {
   int k;
+  /* Capture the raw byte stream verbatim for the Alt-F5 User Screen, in
+     addition to the line-parsed copy that goes to the Messages window. */
+  { extern void e_d_prog_output_add(char *, int); e_d_prog_output_add(buf, n); }
   for (k = 0; k < n; k++)
   {
    unsigned char c = (unsigned char)buf[k];
@@ -327,6 +330,29 @@ static void e_run_drain_pty(int pty_fd, BUFFER *b, FENSTER *mf)
  e_refresh();
 }
 
+/**
+ * e_user_screen - Borland "User Screen" (Alt-F5): leave the editor and show
+ * the running program's own full screen.
+ *
+ * Used after Ctrl-F9 Run (or a debug session) when the program PAINTS its
+ * output -- cursor positioning, ANSI colour, a TUI, a progress bar -- which
+ * the line-oriented Messages window cannot represent.  On the console (wpe)
+ * it drops out of ncurses and replays the program's raw output verbatim
+ * (e_t_user_screen).  In X11 (xwpe) there is no real terminal to drop to yet;
+ * the integrated VT terminal panel is the 1.6.4 path, so for now Alt-F5 shows
+ * the captured output in the Messages window.
+ *
+ * Return: 0.
+ */
+int e_user_screen(FENSTER *f)
+{
+ extern int e_t_user_screen(FENSTER *);
+
+ if (!WpeIsXwin())
+  return e_t_user_screen(f);
+ return e_deb_out(f);
+}
+
 static int e_run_with_pty(char *cmd, BUFFER *b, FENSTER *mf)
 {
  int pty_master, pty_slave, status, ret = -1;
@@ -335,6 +361,9 @@ static int e_run_with_pty(char *cmd, BUFFER *b, FENSTER *mf)
 
  if (openpty(&pty_master, &pty_slave, slave_name, NULL, NULL) < 0)
   return -1;
+
+ /* Start a fresh capture so the Alt-F5 User Screen shows only this run. */
+ { extern void e_d_prog_output_reset(void); e_d_prog_output_reset(); }
 
  child = fork();
  if (child < 0)

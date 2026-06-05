@@ -224,6 +224,7 @@ EXTRA_DIST = \
   tests/x11/test_menu_status_bar.py \
   tests/x11/test_popup_close_button.py \
   tests/samples/hello.c \
+  tests/samples/paint.c \
   tests/samples/big.c \
   tests/samples/two_errors.c \
   tests/samples/hello.cpp \
