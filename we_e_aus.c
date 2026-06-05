@@ -156,18 +156,16 @@ int e_pr_str_wsd(int x, int y, char *str, int col, int b2, int n2, int col2,
 int e_pr_str_scan(int x, int y, char *str, int col, int b2, int n2, int col2,
   int bg, int nd)
 {
- char txt[30], *pt;
-
- if (WpeIsXwin())
-  return(e_pr_str_wsd(x, y, str, col, b2, n2, col2, bg, nd));
- strcpy(txt, str);
- if ((pt = strstr(txt, "Alt")) != NULL)
- {
-  pt[0] = 'E'; pt[1] = 'S'; pt[2] = 'C';
- }
- else if (!strncmp(txt, "^F4 Close", 9))
-  strcpy(txt, "ESC X Cl.");
- return(e_pr_str_wsd(x, y, txt, col, b2, n2, col2, bg, nd));
+ /* Render key-hint labels (the bottom status bar) verbatim in every
+    environment.  Historically the terminal path rewrote "Alt-X" -> "ESC-X"
+    on the assumption that Alt was typed as an Esc prefix.  Modern terminals
+    send real Alt (Esc+key together, decoded by ncurses), and a manually typed
+    Esc prefix no longer works (a bare Esc opens the menu / closes a window),
+    so the "ESC-" hint was misleading.  Show the real shortcut -- "Alt-X" --
+    the same as the X11 build.  (On a bare Linux VT the kernel still grabs
+    Alt-F1..F6 for VT switching; that is a console limitation, documented, not
+    a label error -- use the menus there.) */
+ return(e_pr_str_wsd(x, y, str, col, b2, n2, col2, bg, nd));
 }
 
 /*
