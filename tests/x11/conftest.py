@@ -58,6 +58,14 @@ def incoherence(reason):
     return pytest.mark.xfail(reason="INCOHERENCE: " + reason, strict=False)
 
 
+def changed_pixels(img_a, img_b, thresh=40):
+    """Number of pixels that differ by more than `thresh` (0..255 grey).
+    Used to assert that an action opened/changed a window on screen."""
+    from PIL import ImageChops
+    diff = ImageChops.difference(img_a, img_b).convert("L")
+    return diff.point(lambda p: 255 if p > thresh else 0).histogram()[255]
+
+
 class XwpeSession:
     """A running xwpe instance under the headless display, with helpers
     to send input and screenshot the result."""
@@ -90,6 +98,15 @@ class XwpeSession:
     def menu(self, alt_letter, item, delay=0.5):
         """Open a top-level menu (Alt-<letter>) and pick an item by its key."""
         self.key("alt+" + alt_letter, delay=delay)
+        self.key(item, delay=delay)
+        return self
+
+    def esc_menu(self, menu_key, item, delay=0.5):
+        """Open a menu via xwpe's ESC meta-prefix (the X11 equivalent of the
+        terminal's Alt encoding).  Needed for the '#' system menu, which has no
+        Alt-<letter> hotkey, but works for any menu."""
+        self.key("Escape", delay=delay)
+        self.key(menu_key, delay=delay)
         self.key(item, delay=delay)
         return self
 

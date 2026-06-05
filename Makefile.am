@@ -210,6 +210,8 @@ EXTRA_DIST = \
   tests/x11/test_menu_edit.py \
   tests/x11/test_menu_search.py \
   tests/x11/test_menu_file.py \
+  tests/x11/test_menu_system.py \
+  tests/x11/test_menu_help.py \
   tests/samples/hello.c \
   tests/samples/big.c \
   tests/samples/two_errors.c \
