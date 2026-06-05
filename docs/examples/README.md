@@ -80,6 +80,54 @@ types (strings, sets, records).
 **Java (javac)**: compilation and error navigation only. gdb does not
 debug Java bytecode. Use a Java-specific debugger (jdb) for debugging.
 
+## Feature examples
+
+These illustrate specific xwpe features used in the manual.
+
+| Files | Feature | Chapter |
+|-------|---------|---------|
+| headers_test.c + headers_test.h + fake.h + disabled.h | Automatic header-dependency recompilation | compiling |
+| debug_constructor.c | Configurable debugger start symbol | debugging |
+| interactive_test.c | Interactive program I/O in Messages | debugging |
+
+### headers_test.c -- header dependencies (F9 / Make)
+
+`headers_test.c` includes the real header `headers_test.h`, names `fake.h`
+inside a `//` comment, and includes `disabled.h` inside an `#if 0` block.
+
+    wpe headers_test.c
+
+1. Press **F9**. The file compiles.
+2. Press **F9** again -- nothing happens (the `.o` is up to date).
+3. Edit and save `headers_test.h`, press **F9** -- it **recompiles**
+   (a real dependency changed).
+4. Edit and save `fake.h` or `disabled.h`, press **F9** -- it does
+   **NOT** recompile: those `#include`s are commented out or disabled,
+   so they are not dependencies.
+
+### debug_constructor.c -- debugger start symbol
+
+`setup()` runs before `main()` via the constructor attribute.
+
+    wpe debug_constructor.c
+
+1. By default the debugger breaks at `main()`.
+2. Set the start symbol to `setup` (Options -> Compiler -> start symbol).
+3. **Ctrl-G R** -- execution stops in `setup()`, before `main()`.
+
+### interactive_test.c -- interactive input
+
+The program prompts for a name and blocks on `fgets()`.
+
+    wpe interactive_test.c
+
+1. **Ctrl-F9** (Run). The prompt "What is your name?" appears in Messages.
+2. Type a name in the Messages window and press **Enter**.
+3. The program prints "Hello, <name>! Welcome to xwpe" (UTF-8 output).
+
+The same works under the debugger: step (F8) onto the `fgets()` line,
+run it, type the answer in Messages, and continue.
+
 ## Keyboard quick reference
 
 | Key | Action |

@@ -264,6 +264,13 @@ Changes
   Documentation:
 * Texinfo manual updated for 9 compilers, pdb debugger, Messages
   buffer, cursor-relative error navigation.
+* New tutorial examples in docs/examples (shipped via EXTRA_DIST) and
+  documented in the manual: headers_test.c (automatic header-dependency
+  recompilation, ignoring // and #if 0 includes), debug_constructor.c
+  (debugger start symbol, breaking before main), interactive_test.c
+  (interactive stdin in the Messages window).  Also added the previously
+  undistributed debug_test.{java,py}, debug_test_long_output.py and
+  compile_error_test.{py,tex} to EXTRA_DIST.
 * CHANGELOG Known Bugs section reorganized: verified, fixed, or
   confirmed present with reproduction steps.
 

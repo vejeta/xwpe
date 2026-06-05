@@ -52,6 +52,29 @@ jumps to the error location in the source code.  These commands are
 also available from the @samp{Run} menu as @samp{Next Error} and
 @samp{Previous Error}.
 
+@subsection Header dependencies
+
+@cindex header dependencies
+@cindex recompilation
+@cindex check headers
+
+xwpe recompiles a source file not only when the file itself changes, but
+also when any header it @code{#include}s has changed since the last
+build.  It finds those headers by scanning the source for @code{#include
+"@var{file}"} directives (recursively, through the headers too).
+
+Crucially, it ignores @code{#include}s that are not actually in effect:
+those inside a @code{//} or @code{/* @dots{} */} comment, and those
+inside a @code{#if 0 @dots{} #endif} block.  A commented-out or disabled
+include is not a real dependency, so editing such a header does not force
+a needless recompile.
+
+The example @file{docs/examples/headers_test.c} demonstrates this: it
+includes the real header @file{headers_test.h}, mentions @file{fake.h}
+inside a @code{//} comment, and includes @file{disabled.h} inside an
+@code{#if 0} block.  Editing @file{headers_test.h} and pressing @key{F9}
+recompiles; editing @file{fake.h} or @file{disabled.h} does not.
+
 @section Configuring the compiler
 
 @cindex compiler configuration

@@ -35,7 +35,18 @@ EXTRA_DIST = \
   examples/compile_error_test.f90 \
   examples/compile_error_test.pas \
   examples/compile_error_test.java \
+  examples/compile_error_test.py \
+  examples/compile_error_test.tex \
   examples/debug_test.c \
   examples/debug_test.cpp \
   examples/debug_test.f90 \
-  examples/debug_test.pas
+  examples/debug_test.pas \
+  examples/debug_test.java \
+  examples/debug_test.py \
+  examples/debug_test_long_output.py \
+  examples/headers_test.c \
+  examples/headers_test.h \
+  examples/fake.h \
+  examples/disabled.h \
+  examples/debug_constructor.c \
+  examples/interactive_test.c

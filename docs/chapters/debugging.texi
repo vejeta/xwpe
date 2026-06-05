@@ -87,6 +87,24 @@ Compile with debug symbols (@code{-g}) and no optimisation
 include @code{-g}.  To add @code{-O0}, go to
 @samp{Options @result{} Compiler} and append it to Compiler Options.
 
+@section Choosing the start symbol
+
+@cindex start symbol
+@cindex constructor
+@cindex breakpoint before main
+
+By default the debugger sets its initial breakpoint at @code{main} and
+runs the program up to it.  Some code runs @emph{before} @code{main} ---
+for example a function marked @code{__attribute__((constructor))}, or a
+C++ global object's constructor.  To stop there instead, set the start
+symbol via @samp{Options @result{} Compiler @result{} start symbol} to
+the name of the function you want to break at.
+
+The example @file{docs/examples/debug_constructor.c} has a @code{setup()}
+function that runs before @code{main()}.  Set the start symbol to
+@code{setup}, press @kbd{Ctrl-G R}, and execution stops in @code{setup()}
+before @code{main()} is reached.
+
 @section Program output (User Screen)
 
 @cindex User Screen
@@ -113,6 +131,26 @@ more to step past it, then @kbd{Ctrl-G P} to see the output.
 After each step, xwpe sends @code{call (void)fflush(0)} to gdb to
 flush the program's stdout buffer.  This ensures output is available
 immediately, even if the program uses buffered I/O.
+
+@section Interactive programs
+
+@cindex interactive input
+@cindex stdin
+@cindex Messages window input
+
+A program that reads from standard input (@code{fgets}, @code{scanf},
+@code{read}) works without any special setup: when it blocks for input,
+type the answer directly in the Messages window and press @key{Enter}.
+xwpe forwards your keystrokes to the program through the same
+pseudoterminal it uses to capture output, so the program sees a real
+terminal on stdin.
+
+The example @file{docs/examples/interactive_test.c} prompts for a name
+and blocks on @code{fgets()}.  Press @kbd{Ctrl-F9} (Run): the prompt
+appears in Messages, you type a name and press @key{Enter}, and the
+program greets you with UTF-8 output.  The same works under the debugger
+--- step (@key{F8}) onto the @code{fgets()} line, run it, type the
+answer in Messages, and continue.
 
 @section Debugger backends
 
