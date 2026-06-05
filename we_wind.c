@@ -959,8 +959,15 @@ void e_switch_window(int num, FENSTER *f)
  if (n >= cn->mxedt) return;
  for (i = cn->mxedt; i >= 1; i--)
  {
-  if (cn->f[i]->pic->buf) free((SCREENCELL *)cn->f[i]->pic->buf);
-  FREE(cn->f[i]->pic);
+  /* Free each window's view and NULL the pointer: the windows are repainted
+     right after (e_rep_win_tree -> e_firstl), and e_firstl now passes the
+     existing pic to e_change_pic, which would double-free a dangling one. */
+  if (cn->f[i]->pic)
+  {
+   if (cn->f[i]->pic->buf) free((SCREENCELL *)cn->f[i]->pic->buf);
+   FREE(cn->f[i]->pic);
+   cn->f[i]->pic = NULL;
+  }
  }
  ft = cn->f[n];
  te = cn->edt[n];
