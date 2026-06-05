@@ -175,12 +175,49 @@ Changes
   As defense-in-depth, all sprintf calls that receive user-supplied
   filenames (f->datnam) are converted to snprintf with sizeof bounds
   in we_wind.c, we_debug.c, we_fl_unix.c, and we_prog.c.
+* Fix global buffer overflow on a long library name: LIBNAME= from the
+  .prj, the LiBrary dialog field, and project member names were copied
+  into the fixed library[80] with strcpy; now snprintf-bounded
+  (we_prog.c).  Defense-in-depth beyond CVE-2016-20037.
 * Fix silent data loss on disk full: e_write now checks ferror/fclose.
 * Fix link/run using Messages window instead of source file.
 * Fix Open Project with nonexistent .prj opening a blank editor.
 * Fix Add Item with no project open silently doing nothing.
 * Fix --without-x build: guard X11 symbols, conditional symlinks.
 * Fix syntax_def keyword counts (Perl 46, COBOL 50).
+* Add 9 syntax-highlighting definitions from Payne's extrasyntax
+  collection (shell, HTML, Makefile, SQL and more).  Verifier test:
+  tests/test_syntax_def.c.
+
+  Project management (Borland audit):
+* New Project and Open Project are now separate menu entries.  New
+  Project (Alt-P N) creates a skeleton .prj; Open Project (Alt-P P)
+  strictly opens an existing one -- a missing name reports "Project
+  file not found" instead of silently creating a blank project.
+* The project file list is written to disk on every Add and Delete,
+  not only on window close, so an interrupted session no longer loses
+  members.
+* A new .prj is pre-filled (EXENAME from the project name, compiler
+  defaults); the project window's exit button saves on close.
+* Project, Options, Message and File-Manager window titles and borders
+  were invisible (white-on-white frame colour) and are now legible.
+* Window->Project with no project open reports "No project open"
+  instead of opening an empty window.
+* The project window's status bar packs its buttons compactly and keeps
+  the "Project: <name>" indicator without overwriting the Quit button.
+* Window drag and resize stopped working after an F9 compile (mouse
+  motion tracking was left disabled when returning from the
+  sub-process) -- fixed: e_t_rearm_mouse re-arms it after the screen is
+  restored.  Regression tests in tests/test_mouse_tracking.py and
+  tests/test_project_windows.py.
+
+  Maintainability (1993 codebase cleanup):
+* Duplicated project-window lookups and the project-open guard replaced
+  by named helpers (e_find_project_window, e_find_dirty_project_window,
+  e_project_is_open), status-bar layout by e_pack_button_bar, and the
+  File-Manager hint colour boilerplate by e_fm_key_hint.  Window-picker
+  modes use named constants (FM_PRJ_*).  Public helpers documented in
+  Doxygen/kernel-doc style.
 
   X11 mode:
 * Unicode box-drawing glyphs for window borders (U+250x) and
