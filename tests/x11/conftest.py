@@ -111,7 +111,17 @@ def xwpe(xserver, tmp_path):
     """Launch a fresh xwpe editing a small C file; tear it down after."""
     assert os.path.exists(XWPE_BIN), "xwpe binary not found at %s (set XWPE_BIN)" % XWPE_BIN
     src = tmp_path / "t.c"
-    src.write_text("int main(){\n  int x;\n  return 0;\n}\n")
+    # Several lines so the block-marking tests have room to mark and re-mark.
+    src.write_text(
+        "int main(){\n"
+        "  int a = 1;\n"
+        "  int b = 2;\n"
+        "  int c = 3;\n"
+        "  int d = 4;\n"
+        "  int e = 5;\n"
+        "  int f = 6;\n"
+        "  return 0;\n"
+        "}\n")
     proc = _spawn([XWPE_BIN, str(src)],
                   env={**os.environ, "DISPLAY": DISPLAY, "HOME": str(tmp_path)},
                   cwd=str(tmp_path))

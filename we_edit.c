@@ -961,8 +961,12 @@ int e_ctrl_k(FENSTER *f)
    e_schirm(f, 1);
    break;
   case 'B':
-   s->mark_begin = e_set_pnt(b->b.x, b->b.y);
-   e_schirm(f, 1);
+   /* Route the keyboard Begin-Mark through e_blck_begin so it honours the
+      block-marking mode (ED_BLOCK_WORDSTAR): modern resets begin AND end so
+      re-marking leaves no stale block; WordStar moves only begin.  Setting
+      mark_begin inline here bypassed that, so the mode flag had no effect
+      from the keyboard (only from the Block menu). */
+   e_blck_begin(f);
    break;
   case 'C':
    e_blck_copy(f);

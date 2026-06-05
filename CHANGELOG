@@ -35,6 +35,13 @@ Bugs fixed in 1.6.x:
 * Options > Editor: the "WordStar block" checkbox was one column wider than
   its siblings, so the Display-column boxes did not line up -- fixed (1.6.3)
   by padding the "Show Endmark" and "Old Style" labels to equal width.
+* Block marking: the "WordStar block" option had no effect from the keyboard
+  -- fixed (1.6.3).  The keyboard Begin-Mark (^K B) set mark_begin inline in
+  e_ctrl_k, bypassing e_blck_begin where the ED_BLOCK_WORDSTAR mode logic
+  lives, so both modes behaved identically (only the Block menu honoured the
+  flag).  ^K B now routes through e_blck_begin: modern (default) resets begin
+  AND end so re-marking leaves no stale block; WordStar keeps the end marker
+  (independent begin/end).  Test: tests/x11/test_block_marking.py.
 * New headless X11 GUI test suite (tests/x11/): drives a real xwpe under
   Xvfb + matchbox-window-manager via xdotool and asserts on screenshots
   (Pillow).  Covers the Xft rendering and X11 key/mouse path that the pyte

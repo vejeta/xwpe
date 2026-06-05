@@ -126,6 +126,11 @@ X11 GUI tests (xwpe under Xvfb, `tests/x11/`):
   toggle.  Guards the X11-only regression where NEWSTYLE drew check/radio
   marks as a near-invisible 3D bevel, so Space/mouse/Alt-K appeared to do
   nothing in xwpe (the value flipped but nothing was drawn)
+- `test_block_marking.py` -- Begin Mark (^K B) honours the "WordStar block"
+  mode: modern (default) clears the previous block on re-mark, WordStar keeps
+  the end marker so a block stays highlighted.  Guards the regression where
+  the keyboard ^K B bypassed e_blck_begin, so the mode flag had no effect and
+  both modes behaved identically
 
 C-source tests built by `make check`:
 - `test_checkheader.c`, `test_syntax_def.c`
