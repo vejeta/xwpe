@@ -20,7 +20,7 @@ Cannot reproduce:
      past the limit stays alive).
 
 Bugs fixed in 1.6.x:
-* Debugging leaks memory (open since 2000, "location unknown") -- fixed
+* Debugging leaks memory (documented "location unknown" since 2000) -- fixed
   (1.6.3).  e_close_view() freed the window backing buffer only for sw < 2,
   so the default repaint path (sw == 2) leaked a full-screen SCREENCELL
   buffer (~19 KB) on every window-tree repaint; a debugger step repaints
@@ -28,6 +28,10 @@ Bugs fixed in 1.6.x:
   allocated by e_open_view); e_firstl passes the existing view so it is
   closed before the new one opens.  Found with valgrind driven through gdb
   sessions by a headless pyte VT100 harness; ~940 KB/2-sessions -> 3 bytes.
+  Provenance (git archaeology in the ancestry repo): the "if (sw < 2)" guard
+  is byte-for-byte identical back to Fred Kruse's 1.4.2 -- the leak is
+  original to the 1990s code.  Payne only documented it ("location unknown",
+  2000); the SCREENCELL migration (1.6.0) carried the same guard forward.
 * Double-free regression from the leak fix -- fixed (1.6.3).  Because the
   leak fix made the repaint close each window's view, three places that
   bulk-released the views and then repainted the tree -- e_switch_window
