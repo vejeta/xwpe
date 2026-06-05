@@ -1619,7 +1619,8 @@ int e_project_options(FENSTER *f)
   e_s_prog.start_symbol = WpeStrdup(o->wstr[5]->txt);
   if (e_s_prog.intstr) FREE(e_s_prog.intstr);
   e_s_prog.intstr = WpeValueToString(o->wstr[6]->txt);
-  strcpy(library, o->wstr[4]->txt);
+  /* Bounded: the LiBrary dialog field accepts more than sizeof(library). */
+  snprintf(library, sizeof(library), "%s", o->wstr[4]->txt);
   e_s_prog.comp_sw = o->pstr[0]->num;
   e_wrt_prj_fl(f);
  }
@@ -2784,7 +2785,7 @@ int e_c_project(FENSTER *f)
  df = e_p_get_var("LIBNAME");
  if (df)
  {
-  strcpy(library, df->name[0]);
+  snprintf(library, sizeof(library), "%s", df->name[0]);
   if (access(library, 0)) exlib = 1;
   else stat(library, lbuf);
   freedf(df);
@@ -3118,7 +3119,8 @@ struct dirfile **e_make_prj_opt(FENSTER *f)
 /**************************/
 
   else if (!strcmp(p_v[i]->var, "LIBNAME"))
-   strcpy(library, p_v[i]->string);
+   /* Bounded: LIBNAME= from the .prj can be arbitrarily long. */
+   snprintf(library, sizeof(library), "%s", p_v[i]->string);
   else if (!strcmp(p_v[i]->var, "CMPSWTCH"))
   {
    if (!strcmp(p_v[i]->string, "other")) e_s_prog.comp_sw = 1;

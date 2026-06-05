@@ -171,3 +171,16 @@ def test_open_project_is_strict(tmp_path):
         'Open Project must NOT create a missing project (that is New Project)'
     assert row_with(screen, 'not found') is not None, \
         'Open Project on a missing file must report "Project file not found"'
+
+
+def test_long_libname_does_not_overflow(tmp_path):
+    # T4 regression: LIBNAME= is copied into the fixed library[80] buffer.
+    # A long value must be truncated, not overflow the global (which corrupted
+    # adjacent state / crashed). Opening such a project must stay alive.
+    (tmp_path / 'main.c').write_text('int main(void){return 0;}\n')
+    long_lib = 'libwaytoolongname' * 12          # ~200 chars, well over 80
+    (tmp_path / 'big.prj').write_text(
+        'CMP=\tgcc\nEXENAME=\tp\nLIBNAME=\t%s\nFILES=\tmain.c\n' % long_lib)
+    screen = run_wpe(str(tmp_path), ['\033p', 'p', '\r', '\r'])
+    assert row_with(screen, 'Project: big.prj') is not None, \
+        'project with an over-long LIBNAME must open without crashing'
