@@ -1806,8 +1806,20 @@ int e_project_name(FENSTER *f)
  return(WPE_ESC);
 }
 
-/* Index of the open project window in cn->f[], or 0 if none. The project
-   (Borland-style file list) is the unique DTMD_DATA window with ins == 4. */
+/**
+ * e_find_project_window - Locate the user's open project window.
+ *
+ * Used whenever an action targets "the project" rather than a single file:
+ * switching back to the project's file list, adding or deleting a member,
+ * saving the .prj, or building the whole project. The project window is the
+ * panel that lists the project's source files -- the one titled
+ * "Project: <name>.prj".
+ *
+ * @cn: editor context.
+ *
+ * Return: index into @cn->f[] of the project window, or 0 when the user has no
+ *         project window open.
+ */
 int e_find_project_window(ECNT *cn)
 {
  int i;
@@ -1818,7 +1830,41 @@ int e_find_project_window(ECNT *cn)
  return(i);
 }
 
-/* True when a project is open: a non-empty .prj path that exists on disk. */
+/**
+ * e_find_dirty_project_window - Locate the project window with unsaved edits.
+ *
+ * Used when xwpe is about to re-read or rewrite the .prj from disk. If the user
+ * has changed the project since it was last saved (added or removed files), the
+ * in-memory file list must be preserved across the re-parse instead of being
+ * overwritten by the older on-disk copy. A "dirty" project window is one the
+ * user has edited but not yet saved.
+ *
+ * @cn: editor context.
+ *
+ * Return: index into @cn->f[] of the unsaved project window, or 0 when no open
+ *         project has pending changes.
+ */
+int e_find_dirty_project_window(ECNT *cn)
+{
+ int i;
+
+ for (i = cn->mxedt; i > 0 && (cn->f[i]->dtmd != DTMD_DATA
+   || cn->f[i]->ins != 4 || !cn->f[i]->save); i--)
+  ;
+ return(i);
+}
+
+/**
+ * e_project_is_open - Tell whether the user currently has a project loaded.
+ *
+ * Used to gate project-only actions (Window->Project, Add/Delete member,
+ * building against the project's compiler settings). When it returns false the
+ * editor is acting on plain files, so callers report "No project open" rather
+ * than inventing an empty project.
+ *
+ * Return: non-zero when a project is loaded -- its .prj path is set and the
+ *         file still exists on disk -- and 0 otherwise.
+ */
 int e_project_is_open(void)
 {
  return(e_prog.project[0] && access(e_prog.project, F_OK) == 0);
@@ -2627,9 +2673,7 @@ int e_c_project(FENSTER *f)
  e_s_prog.comp_sw &= ~1;
  e_argc = 1;
  argc = 1;
- for(i = f->ed->mxedt; i > 0 && (f->ed->f[i]->dtmd != DTMD_DATA ||
-   f->ed->f[i]->ins != 4 || !f->ed->f[i]->save); i--)
-  ;
+ i = e_find_dirty_project_window(f->ed);
  if (i > 0) e_p_update_prj_fl(f);
  if (e_read_var(f))
  {
@@ -2944,9 +2988,7 @@ struct dirfile **e_make_prj_opt(FENSTER *f)
    if (_d) { fprintf(_d, "MPO enter: project=[%s] e_p_df=%p\n",
      e_prog.project ? e_prog.project : "NULL", (void*)e_p_df); fclose(_d); } }
 
- for (i = f->ed->mxedt; i > 0
-	&& (f->ed->f[i]->dtmd != DTMD_DATA || f->ed->f[i]->ins != 4
-				     || !f->ed->f[i]->save); i--);
+ i = e_find_dirty_project_window(f->ed);
  if (i > 0) {  save_df = e_p_df[0];  e_p_df[0] = NULL;  }
  if (e_p_df) freedfN(e_p_df, 3);
  e_p_df = MALLOC(3 * sizeof(struct dirfile *));

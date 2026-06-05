@@ -758,17 +758,16 @@ int e_t_sys_ini()
  return(0);   
 }
 
-/*
- * e_t_rearm_mouse - Restore xterm motion tracking after a sub-process.
+/**
+ * e_t_rearm_mouse - Make window drag/resize work again after running a tool.
  *
- * e_endwin() (called from e_t_sys_ini before running a sub-process) disables
- * motion tracking and leaves the alternate screen. ncurses re-enters the
- * alternate screen (smcup / CSI ?1049h) on its next refresh, and some
- * terminals reset the mouse mode together with the screen buffer. The
- * tracking escape must therefore be the LAST mouse-mode change emitted, so we
- * flush ncurses' ca-mode re-entry first, then re-enable tracking. Without this
- * order, window drag/resize silently stops working after F9 (clicks still
- * arrive on the basic 1000 mode, but no motion events).
+ * Used when returning to the editor from a sub-process (e.g. an F9 compile),
+ * which had to hand the real terminal to the tool and so turned off mouse
+ * motion reporting. Without re-arming it the user can still click, but
+ * dragging a title bar to move a window or a corner to resize it silently does
+ * nothing. The motion escape must be emitted AFTER the screen is restored,
+ * because some terminals reset the mouse mode when the screen is switched back;
+ * we flush that screen switch first, then re-enable tracking last.
  */
 static void e_t_rearm_mouse(void)
 {

@@ -470,10 +470,21 @@ int e_switch_blst(ECNT *cn)
  return(0);
 }
 
-/* Lay out a status-bar button list left-to-right: each button starts at the
-   running column, advancing by its label width plus a uniform gap. The stored
-   x stays authoritative for both drawing (e_pr_uul) and mouse hit-testing
-   (we_mouse.c), so they can never disagree. Reusable for any WOPT[] bar. */
+/**
+ * e_pack_button_bar - Arrange a status-bar's clickable shortcuts compactly.
+ *
+ * Used to give a window's bottom shortcut bar (F1 Help, Add, Delete, ...) the
+ * same tight, left-aligned look as the editor's, instead of leaving wide gaps
+ * the user reads as "broken". Each label is placed right after the previous
+ * one with a uniform gap, and the stored position drives BOTH where the label
+ * is drawn and where a mouse click on it lands -- so what the user sees and
+ * what they can click always agree. Works for any shortcut bar.
+ *
+ * @bar: the button list to lay out (modified in place).
+ * @n:   number of buttons in @bar.
+ * @x0:  first column.
+ * @gap: blank columns left between adjacent buttons.
+ */
 void e_pack_button_bar(WOPT *bar, int n, int x0, int gap)
 {
  int i, x = x0;
