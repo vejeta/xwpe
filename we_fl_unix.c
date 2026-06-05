@@ -521,6 +521,10 @@ int e_prj_add_file_unique(FLWND *fw, char *ftmp, FENSTER *f)
   fw->nf++;
   if (fw->nf - fw->ia >= fw->ye - fw->ya)
     fw->ia = fw->nf + fw->ya - fw->ye + 1;
+  /* Persist immediately (before the notification, which is modal) so the
+     on-disk .prj never drifts from the project window (#137: save on each
+     Add, not only on window close). */
+  e_wrt_prj_fl(f);
   snprintf(msg, sizeof(msg), "Added to project: %s", ftmp);
   e_message(0, msg, f);
   return 0;

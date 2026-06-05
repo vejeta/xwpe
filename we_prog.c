@@ -1977,6 +1977,8 @@ int e_p_del_item(FENSTER *f)
  f = cn->f[cn->mxedt];
  f->save = 1;
  e_p_del_df((FLWND *) f->b, f->ins);
+ /* Persist immediately, symmetrically with Add (#137: keep disk in sync). */
+ e_wrt_prj_fl(f);
  return 0;
 }
 
