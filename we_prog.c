@@ -3530,8 +3530,15 @@ int e_p_show_program_output(FENSTER *f)
  if (strcmp(mf->datnam, "Messages"))
   return(0);
  if (mf->b->mxlines > 0)
-  mf->b->b.y = mf->b->mxlines - 1;           /* cursor at last output line */
- mf->b->b.x = 0;
+ {
+  int last = mf->b->mxlines - 1;
+  mf->b->b.y = last;
+  /* Sit at the stream write position -- the end of the last line, like a
+     tailing terminal -- so output continues (and interactive input goes)
+     right after the last character, not on top of it.  For a line ending
+     in a newline the last line is empty, so this is column 0. */
+  mf->b->b.x = mf->b->bf[last].len;
+ }
  e_messages_scroll_to_bottom(mf);
  e_schirm(mf, 1);
  return(0);
