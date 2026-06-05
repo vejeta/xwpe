@@ -404,6 +404,35 @@ static unsigned char *e_blk_dup_chars(BUFFER *b, int y, int x, int n)
  return out;
 }
 
+/**
+ * e_blk_dup_line - Deep-copy a whole line into a fresh slot of a buffer.
+ * @b:   The destination buffer (b->bf[y].s is allocated here).
+ * @y:   The destination line index.
+ * @src: The source line, copied by value.
+ *
+ * Block Copy must duplicate the block's lines (unlike Move, which re-homes
+ * the originals) so the copy is independent of later edits to the source.
+ * Allocates a fresh mx.x+1 line buffer and copies @src into it -- including
+ * a trailing WPE_WR soft-wrap marker if present -- clamped so the buffer is
+ * never overrun (a full, soft-wrapped source line made the old inline loop
+ * write past it).  Reports the error and leaves bf[y].s = NULL on OOM.
+ */
+static void e_blk_dup_line(BUFFER *b, int y, STRING *src)
+{
+ int j;
+
+ if ((b->bf[y].s = MALLOC(b->mx.x + 1)) == NULL)
+ {
+  e_error(e_msg[ERR_LOWMEM], 1, b->fb);
+  return;
+ }
+ for (j = 0; j <= src->len && j < b->mx.x; j++)
+  *(b->bf[y].s + j) = *(src->s + j);
+ *(b->bf[y].s + j) = '\0';
+ b->bf[y].len = src->len;
+ b->bf[y].nrc = src->nrc;
+}
+
 void e_move_block(int x, int y, BUFFER *bv, BUFFER *bz, FENSTER *f)
 {
  SCHIRM *s = f->ed->f[f->ed->mxedt]->s;
@@ -564,10 +593,9 @@ int e_blck_copy(FENSTER *f)
 void e_copy_block(int x, int y, BUFFER *buffer_src, BUFFER *buffer_dst,
   FENSTER *f)
 {
- BUFFER *b = f->ed->f[f->ed->mxedt]->b;
  SCHIRM *s_src = buffer_src->f->s;
  SCHIRM *s_dst = buffer_dst->f->s;
- int i, j, n = s_src->mark_end.y - s_src->mark_begin.y - 1;
+ int i, n = s_src->mark_end.y - s_src->mark_begin.y - 1;
  int kax = s_src->mark_begin.x, kay = s_src->mark_begin.y, kex = s_src->mark_end.x, key = s_src->mark_end.y;
  int kse = key, ksa = kay;
  STRING **str;
@@ -625,16 +653,7 @@ void e_copy_block(int x, int y, BUFFER *buffer_src, BUFFER *buffer_dst,
  for (i = 1; i <= n; i++)
   buffer_dst->bf[i+y].s = NULL;
  for (i = 1; i <= n; i++)
- {
-  if ((buffer_dst->bf[i+y].s = MALLOC(buffer_dst->mx.x+1)) == NULL)
-   e_error(e_msg[ERR_LOWMEM], 1, b->fb);
-  for (j = 0; j <= str[i]->len; j++)
-   *(buffer_dst->bf[i+y].s+j) = *(str[i]->s+j);
-  if (*(str[i]->s+str[i]->len) != '\0')
-   *(buffer_dst->bf[i+y].s+j) = '\0';
-  buffer_dst->bf[i+y].len = str[i]->len;
-  buffer_dst->bf[i+y].nrc = str[i]->nrc;
- }
+  e_blk_dup_line(buffer_dst, y + i, str[i]);
 
  for (i = 0; i < kex; i++)
   cstr[i] = str[key-kay]->s[i];
