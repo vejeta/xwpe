@@ -11,8 +11,6 @@ https://codeberg.org/mendezr/xwpe-archives
 Known Bugs (Payne era, verified 2026-06-01)
 
 Confirmed present:
-* Esc key may require multiple presses on Linux console (not yet
-     verified on a real console; works correctly in terminal emulators).
 * Debugging leaks memory (location unknown since 2000).
 
 Cannot reproduce:
@@ -31,6 +29,10 @@ Bugs fixed in 1.6.x:
 * Open Project with nonexistent .prj opened blank editor -- fixed (1.6.3).
 * Add Item with no project open silently did nothing -- fixed (1.6.3).
 * Shift-Tab not detected in terminal emulators -- fixed (1.6.3).
+* Esc key required several presses -- fixed (1.6.3).  e_t_getch issued a
+  blocking second read after Esc to detect Alt-<key> combos; it is now
+  time-limited (ESC_ALT_DELAY_MS, 25 ms) so a lone Esc registers on the
+  first press while Alt-<key> still works.  Test: tests/test_esc_key.py.
 * Dialog colors illegible on modern terminals -- fixed (1.6.3).
 * Check headers ignores // comments, #if 0 blocks -- fixed (1.6.3).
   Parser rewritten with named functions: e_chk_skip_whitespace_and_comments,

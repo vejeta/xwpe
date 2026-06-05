@@ -852,6 +852,12 @@ static int e_t_getch_poll(void)
  }
 }
 
+/* After a bare ESC, wait at most this long (ms) for a following byte before
+   deciding it was Esc alone. An Alt-<key> combo sends ESC and the key together,
+   so they arrive within this window; a lone Esc does not. Matches the ncurses
+   set_escdelay(25) above. */
+#define ESC_ALT_DELAY_MS 25
+
 int e_t_getch()
 {
  int c, bk;
@@ -982,7 +988,15 @@ int e_t_getch()
  }
  else if (c == WPE_ESC)
  {
+  /* A lone Esc must register on the first press. Wait only briefly for a
+     following byte: an Alt-<key> combo sends ESC+key together (arrives within
+     the window), a lone Esc does not -- so do not block for a second press.
+     Fixes "Esc needs several presses" on the Linux console. */
+  timeout(ESC_ALT_DELAY_MS);
   c = fk_getch();
+  timeout(-1);
+  if (c == ERR)
+   return(WPE_ESC);
   if (c > KEY_CODE_YES)
   {
    switch (c)
