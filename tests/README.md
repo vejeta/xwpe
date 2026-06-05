@@ -117,9 +117,11 @@ test is marked `@incoherence("...")` (from `wpe_driver`), which records it as an
 xfail.  `pytest -rxX` then prints every `INCOHERENCE:` as a manual-review queue;
 once the behaviour is fixed the test flips to XPASS and the marker is removed.
 
-Menu sections (`test_menu_<x>.py`, Alt-`<x>`):
-- `test_menu_edit.py` -- Edit (Alt-E): Cut, Copy/Paste, Cut+Paste round trip,
-  Undo, Redo -- asserted on the saved file
+Menu sections (`test_menu_<x>.py`, Alt-`<x>`) -- one per environment:
+- `test_menu_edit.py` (wpe) + `x11/test_menu_edit.py` (xwpe) -- Edit (Alt-E):
+  Cut, Copy/Paste, Cut+Paste round trip, Undo, Redo -- asserted on the saved
+  file.  Run in BOTH front-ends because the X11 key/menu path decodes input
+  separately, so behaviour can diverge (as the keyboard ^K B bug showed)
 
 Rendering / input:
 - `test_utf8_border.py` -- UTF-8 display, border alignment, emoji/wide chars

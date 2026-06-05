@@ -74,6 +74,23 @@ class XwpeSession:
         _xdo("click", "1")
         time.sleep(delay)
 
+    def menu(self, alt_letter, item, delay=0.5):
+        """Open a top-level menu (Alt-<letter>) and pick an item by its key."""
+        self.key("alt+" + alt_letter, delay=delay)
+        self.key(item, delay=delay)
+        return self
+
+    def save(self, delay=0.6):
+        """File -> Save (Alt-F, s)."""
+        self.key("alt+f", delay=delay)
+        self.key("s", delay=delay)
+        return self
+
+    def saved_text(self):
+        """The edited file as written to disk (call save() first)."""
+        with open(self.srcfile) as fh:
+            return fh.read()
+
     def screenshot(self):
         """Return the root window as a Pillow Image (RGB)."""
         from PIL import Image
@@ -139,6 +156,7 @@ def xwpe(xserver, tmp_path):
     assert win, "xwpe window did not appear"
     time.sleep(1.0)
     session = XwpeSession(proc, win)
+    session.srcfile = str(src)
     session.focus()
     yield session
     try:
