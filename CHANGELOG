@@ -67,7 +67,16 @@ Bugs fixed in 1.6.x:
   memory-corruption bug in the original text-buffer code, not a regression
   from our refactors (the SCREENCELL migration touched the screen buffer,
   not these char line buffers).  It was silent undefined behaviour until
-  AddressSanitizer made it deterministic.
+  AddressSanitizer made it deterministic.  Two further sites of the same
+  class were then fixed: e_move_block's own e_str_len() on the split tail
+  (triggered by block Move after an Undo), and the identical -- and still
+  unbounded -- line split in e_copy_block (block Copy).  The block engine
+  was refactored to remove the duplication: the line-table grow, the
+  gap-opening shift, and the line split are now three named, documented
+  helpers (e_blk_grow_lines, e_blk_open_gap, e_blk_split_line) shared by
+  both e_move_block and e_copy_block, so the memory-safe split exists in
+  exactly one place and cannot drift between the two paths again.
+  Guarded by tests/test_block.py and tests/test_block_asan.py.
 * Documentation hasn't been updated -- 12-chapter Texinfo manual (1.6.2).
 * Compilers are assumed to have a -c and -o -- GNU/Other distinction (1.6.2).
 * Cursor keys don't work in xterms or telnet sessions -- fixed (1.6.0).

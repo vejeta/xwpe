@@ -299,6 +299,87 @@ int e_blck_move(FENSTER *f)
 }
 
 /*    move Block    */
+/**
+ * e_blk_grow_lines - Make room in a buffer's line table for more lines.
+ * @b:     The text buffer whose line table (b->bf) may need to grow.
+ * @extra: How many additional lines are about to be inserted.
+ *
+ * Block Copy/Move splice whole lines into the destination buffer.  Before
+ * doing so the fixed-size line table has to be able to hold them, or the
+ * splice would write past it.  This grows the table (and the parallel
+ * change-flag array) in MAXLINES steps until @extra more lines fit, so the
+ * caller can insert without bounds-checking.  No-op when there is room.
+ */
+static void e_blk_grow_lines(BUFFER *b, int extra)
+{
+ STRING *tmp;
+
+ while (b->mxlines + extra > b->mx.y - 2)
+ {
+  b->mx.y += MAXLINES;
+  if ((tmp = REALLOC(b->bf, b->mx.y * sizeof(STRING))) == NULL)
+   e_error(e_msg[ERR_LOWMEM], 1, b->fb);
+  else
+   b->bf = tmp;
+  if (b->f->c_sw)
+   b->f->c_sw = REALLOC(b->f->c_sw, b->mx.y * sizeof(int));
+ }
+}
+
+/**
+ * e_blk_open_gap - Open n blank line slots immediately after line y.
+ * @b: The text buffer.
+ * @y: The line after which the gap opens.
+ * @n: How many empty slots to open (the caller fills them).
+ *
+ * Used when a multi-line block is pasted in: the lines below the insertion
+ * point slide down by @n so the moved/copied lines have somewhere to land.
+ * Bumps b->mxlines; assumes e_blk_grow_lines() has already reserved space.
+ */
+static void e_blk_open_gap(BUFFER *b, int y, int n)
+{
+ int i;
+
+ for (i = b->mxlines; i > y; i--)
+  b->bf[i + n] = b->bf[i];
+ b->mxlines += n;
+}
+
+/**
+ * e_blk_split_line - Split line y at column x, moving the tail to a new line.
+ * @b: The text buffer.
+ * @y: The line to split.
+ * @x: The column to split at: line y keeps columns 0..x-1, and columns
+ *     x..end move into a freshly created line y+1.
+ *
+ * This is what makes "paste a block in the middle of a line" work: the
+ * line is cut at the cursor column so the block can be dropped between the
+ * two halves.  Memory-safe by construction -- each line buffer is
+ * e_new_line()-allocated at b->mx.x+1 bytes, so the moved tail is clamped to
+ * b->mx.x and always NUL-terminated, even if the source line's length field
+ * is stale or the line is WPE_WR-terminated (this is the class of bug that
+ * crashed block Move/Copy under AddressSanitizer).
+ */
+static void e_blk_split_line(BUFFER *b, int y, int x)
+{
+ int len, rl, i;
+
+ e_new_line(y + 1, b);
+ len = b->bf[y].len;
+ if (*(b->bf[y].s + len) != '\0')        /* WPE_WR-terminated: count that byte */
+  len++;
+ rl = len - x;                            /* characters that move to line y+1 */
+ if (rl < 0) rl = 0;
+ if (rl > b->mx.x) rl = b->mx.x;          /* never exceed the mx.x+1 buffer */
+ for (i = 0; i < rl; i++)
+  *(b->bf[y+1].s + i) = *(b->bf[y].s + x + i);
+ *(b->bf[y+1].s + rl) = '\0';
+ *(b->bf[y].s + x) = '\0';
+ b->bf[y].len = b->bf[y].nrc = x;
+ b->bf[y+1].len = e_str_len(b->bf[y+1].s);
+ b->bf[y+1].nrc = e_str_nrc(b->bf[y+1].s);
+}
+
 void e_move_block(int x, int y, BUFFER *bv, BUFFER *bz, FENSTER *f)
 {
  SCHIRM *s = f->ed->f[f->ed->mxedt]->s;
@@ -306,7 +387,7 @@ void e_move_block(int x, int y, BUFFER *bv, BUFFER *bz, FENSTER *f)
  SCHIRM *sz = bz->f->s;
  int sw = (y < s->mark_begin.y) ? 0 : 1, i, n = s->mark_end.y - s->mark_begin.y - 1;
  int kax = s->mark_begin.x, kay = s->mark_begin.y, kex = s->mark_end.x, key = s->mark_end.y;
- STRING *str, *tmp;
+ STRING *str;
  unsigned char *cstr;
 
  if (key < kay || (kay == key && kex <= kax)) return;
@@ -386,16 +467,7 @@ void e_move_block(int x, int y, BUFFER *bv, BUFFER *bz, FENSTER *f)
   return;
  }
 
- while (bz->mxlines+n > bz->mx.y-2)
- {
-  bz->mx.y += MAXLINES;
-  if ((tmp = REALLOC(bz->bf, bz->mx.y * sizeof(STRING))) == NULL)
-   e_error(e_msg[ERR_LOWMEM], 1, bz->fb);
-  else
-   bz->bf = tmp;
-  if (bz->f->c_sw)
-   bz->f->c_sw = REALLOC(bz->f->c_sw, bz->mx.y * sizeof(int));
- }
+ e_blk_grow_lines(bz, n);
  if ((str = MALLOC((n+2) * sizeof(STRING))) == NULL)
  {
   e_error(e_msg[ERR_LOWMEM], 0, bz->fb);
@@ -403,30 +475,8 @@ void e_move_block(int x, int y, BUFFER *bv, BUFFER *bz, FENSTER *f)
  }
  for (i = kay; i <= key; i++)
   str[i-kay] = bv->bf[i];
- e_new_line(y+1, bz);
- if (*(bz->bf[y].s+bz->bf[y].len) != '\0')
-  (bz->bf[y].len)++;
- /* Move the tail of line y (columns x..len) into the freshly-created line
-    y+1.  Clamp the run to the line-buffer capacity (bz->mx.x; each buffer is
-    e_new_line()-allocated at mx.x+1) and always NUL-terminate it, so the
-    e_str_len()/e_str_nrc() below cannot strlen past the buffer when the
-    source line's length is stale or unterminated (ASan heap-buffer-overflow
-    on block Move). */
- {
-  int rl = bz->bf[y].len - x;
-  if (rl < 0) rl = 0;
-  if (rl > bz->mx.x) rl = bz->mx.x;
-  for (i = 0; i < rl; i++)
-   *(bz->bf[y+1].s + i) = *(bz->bf[y].s + x + i);
-  *(bz->bf[y+1].s + rl) = '\0';
- }
- *(bz->bf[y].s+x) = '\0';
- bz->bf[y].len = bz->bf[y].nrc = x;
- bz->bf[y+1].len = e_str_len(bz->bf[y+1].s);
- bz->bf[y+1].nrc = e_str_nrc(bz->bf[y+1].s);
- for (i = bz->mxlines; i > y; i--)
-  bz->bf[i+n] = bz->bf[i];
- (bz->mxlines) += n;
+ e_blk_split_line(bz, y, x);
+ e_blk_open_gap(bz, y, n);
  for (i = 1; i <= n; i++)
   bz->bf[y+i] = str[i];
 
@@ -502,7 +552,7 @@ void e_copy_block(int x, int y, BUFFER *buffer_src, BUFFER *buffer_dst,
  int i, j, n = s_src->mark_end.y - s_src->mark_begin.y - 1;
  int kax = s_src->mark_begin.x, kay = s_src->mark_begin.y, kex = s_src->mark_end.x, key = s_src->mark_end.y;
  int kse = key, ksa = kay;
- STRING **str, *tmp;
+ STRING **str;
  unsigned char *cstr;
 
  if (key < kay || (kay == key && kex <= kax)) return;
@@ -538,39 +588,20 @@ void e_copy_block(int x, int y, BUFFER *buffer_src, BUFFER *buffer_dst,
   FREE(cstr);
   return;
  }
- while (buffer_dst->mxlines+n > buffer_dst->mx.y-2)
- {
-  buffer_dst->mx.y += MAXLINES;
-  if ((tmp = REALLOC(buffer_dst->bf, buffer_dst->mx.y * sizeof(STRING))) == NULL)
-   e_error(e_msg[ERR_LOWMEM], 1, buffer_dst->fb);
-  else
-   buffer_dst->bf = tmp;
-  if (buffer_dst->f->c_sw)
-   buffer_dst->f->c_sw = REALLOC(buffer_dst->f->c_sw , buffer_dst->mx.y * sizeof(int));
- }
+ e_blk_grow_lines(buffer_dst, n);
  if ((str = MALLOC((n+2) * sizeof(STRING *))) == NULL)
  {
   e_error(e_msg[ERR_LOWMEM], 0, buffer_dst->fb);
   FREE(cstr);
   return;
  }
- e_new_line(y+1, buffer_dst);
+ e_blk_split_line(buffer_dst, y, x);
  if (buffer_dst == buffer_src && y < ksa)
  {
   kse += (n+1);
   ksa += (n+1);
  }
- if (*(buffer_dst->bf[y].s+buffer_dst->bf[y].len) != '\0')
-  (buffer_dst->bf[y].len)++;
- for (i = x;  i <= buffer_dst->bf[y].len; i++)
-  *(buffer_dst->bf[y+1].s+i-x) = *(buffer_dst->bf[y].s+i);
- *(buffer_dst->bf[y].s+x) = '\0';
- buffer_dst->bf[y].len = buffer_dst->bf[y].nrc = x;
- buffer_dst->bf[y+1].len = e_str_len(buffer_dst->bf[y+1].s);
- buffer_dst->bf[y+1].nrc = e_str_nrc(buffer_dst->bf[y+1].s);
- for (i = buffer_dst->mxlines; i > y; i--)
-  buffer_dst->bf[i+n] = buffer_dst->bf[i];
- (buffer_dst->mxlines) += n;
+ e_blk_open_gap(buffer_dst, y, n);
  for (i = ksa; i <= kse; i++)
   str[i-ksa] = &(buffer_src->bf[i]);
  for (i = 1; i <= n; i++)
