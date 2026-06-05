@@ -496,6 +496,27 @@ int e_close_view(PIC *pic, int sw)
  return(sw);
 }
 
+/** Free a window's off-screen backing view and clear the caller's pointer.
+ *
+ *  Usability note: the window-arrangement commands (Window > Cascade,
+ *  Window > Tile) and Alt-<n> window switching drop every window's
+ *  saved-background view and then repaint the whole tree from scratch. The
+ *  repaint (e_firstl -> e_change_pic) re-opens a fresh view for each window,
+ *  so the old one has to be released first. Always NULLing the pointer here
+ *  is what keeps that safe: e_change_pic only closes a non-NULL pic, so a
+ *  dangling pointer would be freed a second time and abort the program with
+ *  "free(): invalid pointer". Routing every such release through this one
+ *  function makes that entire class of double-free impossible by
+ *  construction -- callers can no longer forget the "= NULL". */
+static void e_free_view(PIC **pp)
+{
+ PIC *pic = *pp;
+ if (pic == NULL) return;
+ if (pic->buf) free((SCREENCELL *)pic->buf);
+ FREE(pic);
+ *pp = NULL;
+}
+
 /*    Frame for edit window   */
 void e_ed_rahmen(FENSTER *f, int sw)
 {
@@ -959,15 +980,7 @@ void e_switch_window(int num, FENSTER *f)
  if (n >= cn->mxedt) return;
  for (i = cn->mxedt; i >= 1; i--)
  {
-  /* Free each window's view and NULL the pointer: the windows are repainted
-     right after (e_rep_win_tree -> e_firstl), and e_firstl now passes the
-     existing pic to e_change_pic, which would double-free a dangling one. */
-  if (cn->f[i]->pic)
-  {
-   if (cn->f[i]->pic->buf) free((SCREENCELL *)cn->f[i]->pic->buf);
-   FREE(cn->f[i]->pic);
-   cn->f[i]->pic = NULL;
-  }
+  e_free_view(&cn->f[i]->pic);
  }
  ft = cn->f[n];
  te = cn->edt[n];
@@ -1019,8 +1032,7 @@ int e_ed_cascade(FENSTER *f)
   return 0; /* no windows open */
  for (i = cn->mxedt; i >= 1; i--)
  {
-  if (cn->f[i]->pic->buf) free((SCREENCELL *)cn->f[i]->pic->buf);
-  FREE(cn->f[i]->pic);
+  e_free_view(&cn->f[i]->pic);
   cn->f[i]->a = e_set_pnt(i-1, i);
   cn->f[i]->e = e_set_pnt(MAXSCOL-1-cn->mxedt+i, MAXSLNS-2-cn->mxedt+i);
  }
@@ -1070,8 +1082,7 @@ int e_ed_tile(FENSTER *f)
  }
  for (i = cn->mxedt; i >= 1; i--)
  {
-  if (cn->f[i]->pic->buf) free((SCREENCELL *)cn->f[i]->pic->buf);
-  FREE(cn->f[i]->pic);
+  e_free_view(&cn->f[i]->pic);
  }
  for (ni = editwin, nj = 1; ni > 1; ni--)
  {
