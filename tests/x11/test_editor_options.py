@@ -12,6 +12,9 @@ These tests open the dialog under a real headless X server and assert that
 toggling a checkbox produces a VISIBLE pixel change (the glyph appears) and
 that toggling back removes it.  Before the fix the visible change was ~0.
 """
+import pytest
+
+pytest.importorskip("PIL")  # python3-pil; skip cleanly if absent
 from PIL import ImageChops
 
 

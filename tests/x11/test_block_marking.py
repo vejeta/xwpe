@@ -18,6 +18,9 @@ to the unmarked baseline.  Modern clears the block (screen ~= baseline);
 WordStar keeps the end, so a block from the new begin to the old end stays
 highlighted (screen clearly differs).
 """
+import pytest
+
+pytest.importorskip("PIL")  # python3-pil; skip cleanly if absent
 from PIL import ImageChops
 
 

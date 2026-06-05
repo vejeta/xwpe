@@ -10,14 +10,42 @@ the Debian autopkgtest (the autopkgtest calls this same script):
 
 ```bash
 ./configure && make            # build xwpe first
-tests/run-tests.sh             # C unit tests (make check) + pyte suite (./wpe)
+tests/run-tests.sh             # EVERYTHING: C unit + pyte (./wpe) + X11 (./xwpe)
 tests/run-tests.sh --asan      # build we-asan and run the pyte suite under it
-tests/run-tests.sh --x11       # headless X11 GUI suite (./xwpe under Xvfb)
+tests/run-tests.sh --x11       # ONLY the headless X11 GUI suite (./xwpe)
 tests/run-tests.sh --help
 ```
 
+The default run executes all three layers.  Its X11 step self-skips when the
+headless X stack (see below) or Pillow is missing, so the default stays green
+on a text-only buildd; `--x11` runs just that layer.
+
 It uses a system pyte/pytest if installed (e.g. `python3-pyte`,
 `python3-pytest`), otherwise it bootstraps a venv under `tests/.venv`.
+
+## Dependencies (Debian/Ubuntu package names)
+
+Building xwpe and the C unit tests (`make check`) needs the normal build
+toolchain -- see the top-level README and `debian/control` Build-Depends.
+The two functional layers add the following; a test for a tool that is
+absent **skips** rather than fails, so you only need what you want to cover.
+
+**pyte layer** (`./wpe`, ncurses):
+- `python3-pyte`, `python3-pytest` -- else `run-tests.sh` bootstraps a venv
+- compilers/debuggers the F9 / Ctrl-F10 tests drive: `gcc`, `g++`,
+  `gfortran`, `fp-compiler` (Pascal), `gdb`
+
+**X11 GUI layer** (`./xwpe`, Xft -- see the table below):
+- `xvfb`, `matchbox-window-manager`, `xdotool`, `x11-utils`, `imagemagick`,
+  `python3-pil`
+
+Install every test extra in one go:
+
+```bash
+sudo apt-get install -y \
+  python3-pyte python3-pytest gcc g++ gfortran fp-compiler gdb \
+  xvfb matchbox-window-manager xdotool x11-utils imagemagick python3-pil
+```
 
 ## X11 GUI tests (xwpe)
 

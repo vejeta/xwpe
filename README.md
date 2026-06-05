@@ -198,11 +198,11 @@ https://codeberg.org/mendezr/xwpe
 If you can try it -- any terminal, any compiler, any workflow -- open
 an issue even if everything works.
 
-See [tests/README.md](tests/README.md) for the automated test suite:
-`tests/run-tests.sh` runs the C unit tests and the pyte (ncurses) suite;
-`tests/run-tests.sh --x11` runs the headless X11 GUI suite for `xwpe`
-(needs `xvfb matchbox-window-manager xdotool x11-utils imagemagick
-python3-pil`; it skips cleanly when those are absent).
+See [tests/README.md](tests/README.md) for the automated test suite and the
+full dependency list.  `tests/run-tests.sh` runs everything: the C unit tests,
+the pyte (ncurses, `wpe`) suite, and the headless X11 GUI (`xwpe`) suite.  The
+X11 step self-skips when its stack is absent (`xvfb matchbox-window-manager
+xdotool x11-utils imagemagick python3-pil`); `--x11` runs just that layer.
 
 ## Project history
 
