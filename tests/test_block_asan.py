@@ -38,6 +38,7 @@ from test_utf8_border import SafeScreen
 ASAN_BIN = os.path.join(os.path.dirname(__file__), '..', 'we-asan')
 
 CK = '\x0b'          # Ctrl-K prefix
+CU = '\x15'          # Ctrl-U (Undo)
 DOWN = '\033[B'
 HOME = '\033[H'
 ALT_B = '\033b'
@@ -143,3 +144,15 @@ def test_block_copy_markwhole_no_overflow(tmp_path):
         str(tmp_path), 'AAA\nBBB\nCCC\n',
         [ALT_B, B_MARK_WHOLE, DOWN, DOWN, ALT_B, B_COPY])
     assert_no_asan(report, 'Mark Whole + Copy')
+
+
+def test_block_move_after_undo_no_overflow(tmp_path):
+    # A second, distinct overflow site: an Undo (Ctrl-U) of a block copy leaves
+    # a line with an inconsistent length, and a following block Move then
+    # strlen'd past the line buffer inside e_move_block itself (not e_ins_nchar).
+    report, _ = run_asan(
+        str(tmp_path), 'AAA\nBBB\nCCC\nDDD\nEEE\n',
+        [HOME, CK, 'b', DOWN, CK, 'k', DOWN, DOWN, CK, 'c',   # copy line AAA
+         CU,                                                  # undo the copy
+         HOME, CK, 'b', DOWN, DOWN, CK, 'k', DOWN, DOWN, CK, 'v'])  # move block
+    assert_no_asan(report, 'block copy, Undo, then block Move')

@@ -406,8 +406,20 @@ void e_move_block(int x, int y, BUFFER *bv, BUFFER *bz, FENSTER *f)
  e_new_line(y+1, bz);
  if (*(bz->bf[y].s+bz->bf[y].len) != '\0')
   (bz->bf[y].len)++;
- for (i = x;  i <= bz->bf[y].len; i++)
-  *(bz->bf[y+1].s+i-x) = *(bz->bf[y].s+i);
+ /* Move the tail of line y (columns x..len) into the freshly-created line
+    y+1.  Clamp the run to the line-buffer capacity (bz->mx.x; each buffer is
+    e_new_line()-allocated at mx.x+1) and always NUL-terminate it, so the
+    e_str_len()/e_str_nrc() below cannot strlen past the buffer when the
+    source line's length is stale or unterminated (ASan heap-buffer-overflow
+    on block Move). */
+ {
+  int rl = bz->bf[y].len - x;
+  if (rl < 0) rl = 0;
+  if (rl > bz->mx.x) rl = bz->mx.x;
+  for (i = 0; i < rl; i++)
+   *(bz->bf[y+1].s + i) = *(bz->bf[y].s + x + i);
+  *(bz->bf[y+1].s + rl) = '\0';
+ }
  *(bz->bf[y].s+x) = '\0';
  bz->bf[y].len = bz->bf[y].nrc = x;
  bz->bf[y+1].len = e_str_len(bz->bf[y+1].s);
