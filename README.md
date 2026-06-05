@@ -62,6 +62,11 @@ console-only build needs only `libncurses-dev` (plus the build tools).
 * Perl and COBOL compiler support (perl -c, cobc)
 * Cursor-relative error navigation with wrap-around (Alt-T/Alt-V)
 * Dialog usability: Tab/Shift-Tab navigation, radio buttons, colors
+* **Borland-faithful popups**: message and dialog boxes drop the (inert)
+  maximize box -- Borland popups never had one -- and keep a single working
+  close box; click [X] to dismiss, exactly like Esc
+* **Per-menu test coverage** for every menu section in both front-ends
+  (pyte for `wpe`, headless Xft for `xwpe`), plus the contextual status bar
 * **ncurses mouse drag**: window move/resize via title bar and borders
   (xterm mode 1002, same protocol as Midnight Commander)
 * **Dialog resize safety**: survives extreme terminal shrink without
@@ -186,8 +191,9 @@ a language requires listing keywords, operators, and comment delimiters.
 
 - **X11 clipboard**: internal buffers only. System clipboard
   (PRIMARY/CLIPBOARD) planned for v1.7.
-- **X11 scrollbars**: rendered as ASCII characters. Visual upgrade
-  planned for v1.6.3.
+- **Dialog scrollbars**: window scrollbars use Unicode glyphs (1.6.3), but
+  the scrollbars drawn inside dialogs are still ASCII. Cosmetic; planned for
+  v1.6.4/v1.7.
 
 ## Contributing
 

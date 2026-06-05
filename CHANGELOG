@@ -334,6 +334,25 @@ Changes
 * Unicode box-drawing glyphs for window borders (U+250x) and
   scrollbar (U+2591 light shade, U+2588 full block) when Xft active.
 
+  User interface (Borland fidelity):
+* Message and dialog popups (e.g. "String not found", the Options dialogs)
+  no longer carry a maximize/zoom box.  Borland's TDialog message boxes
+  never had one -- a popup is fixed-size, so the control was inert and
+  non-authentic.  Popups keep a single close box, modernized to the
+  top-right corner, and clicking it now dismisses the popup, the same as
+  pressing Esc (e_opt_mouse / e_error).  Document (editor) windows are
+  unaffected and keep their zoom box.
+
+  Testing:
+* Per-menu regression suites for every menu-bar section (System, File,
+  Edit, Search, Block, Options, Window, Project, Run, Debug) in BOTH
+  front-ends -- pyte/VT100 for wpe and the headless Xft suite for xwpe --
+  because shared code can behave differently in each (the WordStar block
+  fix above was found exactly this way).  Added coverage for the contextual
+  bottom hint bar (it swaps its function-key set with the focused window),
+  Toggle Breakpoint, and the popup close box.  The X11 suite runs by
+  default in tests/run-tests.sh and skips cleanly without an X stack.
+
   Documentation:
 * Texinfo manual updated for 9 compilers, pdb debugger, Messages
   buffer, cursor-relative error navigation.
