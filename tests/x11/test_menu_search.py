@@ -4,11 +4,16 @@ tests/test_menu_search.py for wpe.
 Find / Goto move the cursor (verified by typing a marker and asserting on the
 saved file); Replace + Change All edits the file directly.  Run under xwpe as
 well as wpe because the X11 dialog field-editor and key decode are a separate
-path, where search/replace behaviour could diverge.
+path.
+
+Note: the suite runs matchbox with an EMPTY kbdconfig (see
+tests/x11/matchbox-kbdconfig); the default config grabs <Alt>n/p/c/d at the
+root, which are xwpe's own dialog hotkeys, and would otherwise make Alt-N etc.
+look broken.  With that fixed, the natural Alt-hotkey flow works in xwpe just
+as in wpe.
 
 The shared `xwpe` fixture seeds a multi-line C file.
 """
-from conftest import incoherence
 
 
 def test_goto_line_moves_cursor(xwpe):
@@ -36,43 +41,18 @@ def test_find_moves_cursor_to_match(xwpe):
         "Find should move the cursor to the match, got %r" % t
 
 
-def test_replace_one_occurrence(xwpe):
-    """Replace a single (unique) match and confirm it at the Yes/No prompt.
-
-    Fields are switched with Tab: in xwpe the Alt-<letter> field hotkey does
-    NOT move between dialog text fields (see the incoherence test below).
-    The "replace ALL" path needs Alt-P / Change-All, which the same Alt bug
-    breaks, so the all-occurrences case is the xfail below; here we verify the
-    core replace works on one match via the per-occurrence prompt."""
-    xwpe.menu("s", "r")                  # Replace dialog (Find field active)
-    xwpe.type("main")                    # a token that occurs exactly once
-    xwpe.key("Tab"); xwpe.type("ZZZ")    # Tab -> New Text
-    xwpe.key("Return")                   # OK -> finds the match, prompts
-    xwpe.key("y")                        # "Replace this occurrence?" -> Yes
-    xwpe.key("Return")                   # dismiss any trailing note
-    xwpe.save()
-    assert xwpe.proc.poll() is None, "xwpe died during Search -> Replace"
-    t = xwpe.saved_text()
-    assert "main" not in t and "ZZZ" in t, \
-        "Replace should change the 'main' match to 'ZZZ', got %r" % t
-
-
-@incoherence("Alt-<letter> does not switch dialog text fields in xwpe (X11); "
-             "Tab does.  Works in wpe (ncurses).  The Replace 'New Text' field "
-             "is unreachable via its Alt-N hotkey, so this Replace yields no "
-             "change (search text gets both words).")
-def test_replace_via_alt_hotkey_switches_fields(xwpe):
-    """EXPECTED: Alt-N jumps from 'Text to Find' to 'New Text', exactly as it
-    does in wpe, so the replace succeeds.  Currently xwpe ignores the Alt
-    hotkey inside the field editor -> xfail until fixed."""
+def test_replace_all_changes_every_occurrence(xwpe):
+    """Replace + Change All replaces every occurrence, driven by the same
+    Alt-hotkey choreography as the wpe twin (Alt-N to New Text, Alt-P prompt
+    off, Alt-A Change All)."""
     xwpe.menu("s", "r")                  # Replace dialog (Find field active)
     xwpe.type("int")                     # Text to Find
-    xwpe.key("alt+n"); xwpe.type("ZZZ")  # Alt-N should move to New Text
-    xwpe.key("alt+p")                    # Prompt off
+    xwpe.key("alt+n"); xwpe.type("ZZZ")  # Alt-N -> New Text
+    xwpe.key("alt+p")                    # turn OFF Prompt on Replace
     xwpe.key("alt+a")                    # Change All
-    xwpe.key("Return")                   # dismiss "Replaced N"
+    xwpe.key("Return")                   # dismiss the "Replaced N" note
     xwpe.save()
     assert xwpe.proc.poll() is None, "xwpe died during Search -> Replace"
     t = xwpe.saved_text()
     assert "int" not in t and t.count("ZZZ") >= 7, \
-        "Alt-N should reach New Text so Change All replaces every 'int', got %r" % t
+        "Change All should replace every 'int' with 'ZZZ', got %r" % t

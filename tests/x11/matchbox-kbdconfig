@@ -1,0 +1,9 @@
+# Empty matchbox-window-manager keyboard config for the xwpe X11 test suite.
+#
+# matchbox's DEFAULT /etc/matchbox/kbdconfig grabs <Alt>n=next, <Alt>p=prev,
+# <Alt>c=close, <Alt>d=desktop, <Alt>m, <Alt>Tab, <Alt>space, <Alt>F4 ... at
+# the X root.  Those Alt-<letter> combos are exactly the dialog/menu hotkeys
+# xwpe uses (e.g. Replace's Alt-N "New Text", Alt-P "Prompt"), so with the
+# default config the WM swallows them and they never reach xwpe -- a false
+# "Alt-hotkey broken" divergence.  Starting matchbox with this empty config
+# (-kbdconfig) binds nothing, so every key reaches the application.

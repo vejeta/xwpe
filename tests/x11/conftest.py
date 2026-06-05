@@ -128,7 +128,12 @@ def xserver():
             pass
     xvfb = _spawn(["Xvfb", DISPLAY, "-screen", "0", SCREEN])
     time.sleep(2.0)
-    wm = _spawn(["matchbox-window-manager", "-use_titlebar", "no"],
+    # Use an empty kbdconfig: matchbox's default grabs <Alt>n/p/c/d/m, <Alt>Tab
+    # etc. at the root, which are xwpe's own dialog/menu hotkeys -- the WM would
+    # swallow them and fake an "Alt-hotkey broken" divergence.  See the file.
+    kbd = os.path.join(HERE, "matchbox-kbdconfig")
+    wm = _spawn(["matchbox-window-manager", "-use_titlebar", "no",
+                 "-kbdconfig", kbd],
                 env={**os.environ, "DISPLAY": DISPLAY})
     time.sleep(1.5)
     yield DISPLAY

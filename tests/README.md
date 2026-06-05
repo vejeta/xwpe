@@ -77,6 +77,13 @@ oscillates into an unrecoverable resize feedback loop under bare Xvfb (`xwpe`
 never calls `XResizeWindow` itself -- a WM owns the geometry).  `matchbox`
 maximises the single window and the loop never starts.
 
+matchbox is started with an **empty `-kbdconfig`** (`tests/x11/matchbox-kbdconfig`):
+its default config grabs `<Alt>n` (next), `<Alt>p` (prev), `<Alt>c` (close),
+`<Alt>d`, `<Alt>Tab` ... at the X root.  Those Alt-`<letter>` combos are
+exactly the dialog/menu hotkeys `xwpe` uses, so the default config makes the WM
+swallow them before they reach `xwpe` -- which looks like an "Alt-hotkey
+broken" bug but is not.  The empty config binds nothing.
+
 The X11 tests honour **`$XWPE_BIN`** (default `../xwpe`), mirroring `$WPE_BIN`.
 
 ### Running pytest directly
@@ -123,10 +130,11 @@ Menu sections (`test_menu_<x>.py`, Alt-`<x>`) -- one per environment:
   file.  Run in BOTH front-ends because the X11 key/menu path decodes input
   separately, so behaviour can diverge (as the keyboard ^K B bug showed)
 - `test_menu_search.py` (wpe) + `x11/test_menu_search.py` (xwpe) -- Search
-  (Alt-S): Go to Line, Find (cursor move verified by typing a marker), Replace.
-  FOUND A DIVERGENCE: in xwpe the Alt-`<letter>` hotkey does not switch dialog
-  text fields (Tab does); it works in wpe.  Flagged as an xfail incoherence
-  (`x11/test_menu_search.py::test_replace_via_alt_hotkey_switches_fields`)
+  (Alt-S): Go to Line, Find (cursor move verified by typing a marker), and
+  Replace + Change All (Alt-N / Alt-P / Alt-A choreography).  Both front-ends
+  pass identically.  (While writing this the X11 run first looked like an
+  Alt-hotkey divergence; it was matchbox grabbing `<Alt>n/p` -- see the
+  matchbox-kbdconfig note below.  xwpe was correct.)
 
 Rendering / input:
 - `test_utf8_border.py` -- UTF-8 display, border alignment, emoji/wide chars
