@@ -68,3 +68,29 @@ def test_wordstar_rebegin_keeps_end(xwpe):
     assert changed > 1500, (
         "WordStar ^K B should keep the end marker and leave a block "
         "highlighted, but only %d px differ from the unmarked screen" % changed)
+
+
+# --- shortcut path (#159): the WordStar ^K block-operation chords ---------
+# Twin of tests/test_block.py's ^K chord tests in the X11 (we_xterm.c) input
+# path.  Mark Whole (^K X) then operate, and assert on the SAVED file (ground
+# truth) -- the chord decode is separate from the Alt-B menu route.
+
+def test_chord_mark_whole_delete_empties_buffer(xwpe):
+    """^K X (Mark Whole) then ^K Y (Delete) empties the buffer."""
+    xwpe.key("ctrl+k"); xwpe.key("x")      # Mark Whole
+    xwpe.key("ctrl+k"); xwpe.key("y")      # Delete
+    xwpe.save()
+    assert xwpe.proc.poll() is None, "xwpe died during ^K Y Delete"
+    assert xwpe.saved_text().strip() == "", \
+        "^K X + ^K Y should empty the buffer, got %r" % xwpe.saved_text()
+
+
+def test_chord_indent_adds_leading_space(xwpe):
+    """^K X (Mark Whole) then ^K I indents every block line."""
+    xwpe.key("ctrl+k"); xwpe.key("x")      # Mark Whole
+    xwpe.key("ctrl+k"); xwpe.key("i")      # Move to RIght (indent)
+    xwpe.save()
+    assert xwpe.proc.poll() is None, "xwpe died during ^K I indent"
+    lines = [ln for ln in xwpe.saved_text().splitlines() if ln.strip()]
+    assert lines and all(ln.startswith(" ") for ln in lines), \
+        "^K I should indent every block line, got %r" % xwpe.saved_text()

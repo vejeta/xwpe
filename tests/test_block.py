@@ -133,3 +133,48 @@ def test_indent_then_unindent_round_trip(tmp_path):
     assert code is None, 'wpe died during indent round trip (exit=%r)' % code
     assert text.strip() == 'AAA\nBBB'.strip() and 'AAA' in text and 'BBB' in text, \
         'indent then unindent should restore the original text, got %r' % text
+
+
+# --- shortcut path (#159): the WordStar ^K block chords ------------------
+# The same Block operations as above, driven by their advertised ^K two-key
+# chords instead of the Alt-B menu.  The chord is a SEPARATE decode (the ^K
+# prefix state machine), so an op can work from the menu while its chord is
+# dead -- exactly the class of bug #159 hunts.  Same saved-file assertions.
+
+CK = '\x0b'                       # Ctrl-K, the WordStar block prefix
+CHORD_MARK_WHOLE = (CK, 'x')      # ^K X  -> Mark WhOle
+CHORD_DELETE = (CK, 'y')          # ^K Y  -> Delete
+CHORD_INDENT = (CK, 'i')          # ^K I  -> Move to RIght (indent)
+CHORD_UNINDENT = (CK, 'u')        # ^K U  -> Move to LefT (unindent)
+
+
+def test_chord_mark_whole_delete_empties_buffer(tmp_path):
+    """^K X (Mark Whole) then ^K Y (Delete) empties the buffer."""
+    text, code = run_block(
+        str(tmp_path), 'AAA\nBBB\nCCC\n',
+        [*CHORD_MARK_WHOLE, *CHORD_DELETE])
+    assert code is None, 'wpe died during ^K Y Delete (exit=%r)' % code
+    assert text.strip() == '', \
+        '^K X + ^K Y should empty the buffer, got %r' % text
+
+
+def test_chord_indent_adds_leading_space(tmp_path):
+    """^K X (Mark Whole) then ^K I indents every block line."""
+    text, code = run_block(
+        str(tmp_path), 'AAA\nBBB\n',
+        [*CHORD_MARK_WHOLE, *CHORD_INDENT])
+    assert code is None, 'wpe died during ^K I indent (exit=%r)' % code
+    lines = text.splitlines()
+    assert lines and all(ln.startswith(' ') and ln.strip() for ln in lines), \
+        '^K I should indent every block line, got %r' % text
+
+
+def test_chord_unindent_removes_leading_space(tmp_path):
+    """^K X (Mark Whole) then ^K U unindents every block line."""
+    text, code = run_block(
+        str(tmp_path), '    AAA\n    BBB\n',
+        [*CHORD_MARK_WHOLE, *CHORD_UNINDENT])
+    assert code is None, 'wpe died during ^K U unindent (exit=%r)' % code
+    lines = text.splitlines()
+    assert lines and all(not ln.startswith(' ') for ln in lines), \
+        '^K U should unindent every block line, got %r' % text

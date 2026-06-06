@@ -150,10 +150,11 @@ once the behaviour is fixed the test flips to XPASS and the marker is removed.
 the menu and through its advertised keyboard accelerator -- a separate decode
 path (`e_prog_switch` / `e_tst_dfkt` for the terminal, `we_xterm.c` for X11)
 where mapping bugs hide (an item can work from the menu while its accelerator is
-dead).  `test_*_via_<key>` functions cover Save F2, Open F3, Find F4, Make F9,
-Run ^F9/Alt-U, Help F1, Cut/Copy/Paste/Undo/Redo, Show Buffer Alt-Y, Go to Line
-Alt-G, Toggle Breakpoint ^G B, Zoom/Next/List/Close.  Function-key accelerators
-work in the X11 suite only because of the keycode injection above (xdotool #491).
+dead).  `test_*_via_<key>` / `test_chord_*` functions cover Save F2, Open F3, Find F4,
+Make F9, Run ^F9/Alt-U, Help F1, Cut/Copy/Paste/Undo/Redo, Show Buffer Alt-Y,
+Go to Line Alt-G, Toggle Breakpoint ^G B, Zoom/Next/List/Close, and the WordStar
+Block chords ^K X/^K Y/^K I/^K U.  Function-key accelerators work in the X11
+suite only because of the keycode injection above (xdotool #491).
 
 Menu sections (`test_menu_<x>.py`, Alt-`<x>`) -- one per environment:
 - `test_menu_edit.py` (wpe) + `x11/test_menu_edit.py` (xwpe) -- Edit (Alt-E):
@@ -214,7 +215,10 @@ Window menu (Alt-W) operations:
 Block menu (Alt-B) operations:
 - `test_block.py` -- Mark Whole + Delete empties the buffer, Move to
   Right/Left indents/unindents the block, indent+unindent round-trips.
-  Asserts on the saved file (ground truth), not the live screen
+  Asserts on the saved file (ground truth), not the live screen.  Each is
+  driven BOTH through the Alt-B menu and through the WordStar `^K` chord
+  (`^K X` Mark Whole, `^K Y` Delete, `^K I`/`^K U` indent/unindent) -- the #159
+  double-coverage, since the chord is a separate decode from the menu
 - `test_block_asan.py` -- block Copy/Move under AddressSanitizer: asserts
   the `we-asan` build produces no ASan report (a heap-buffer-overflow is
   silent on the normal build, so it needs a sanitizer).  Skips if `we-asan`
@@ -232,7 +236,8 @@ X11 GUI tests (xwpe under Xvfb, `tests/x11/`):
   mode: modern (default) clears the previous block on re-mark, WordStar keeps
   the end marker so a block stays highlighted.  Guards the regression where
   the keyboard ^K B bypassed e_blck_begin, so the mode flag had no effect and
-  both modes behaved identically
+  both modes behaved identically.  Also the #159 chord twins (`^K X` + `^K Y`
+  Delete, `^K X` + `^K I` indent) asserted on the saved file in the X11 path
 
 C-source tests built by `make check`:
 - `test_checkheader.c`, `test_syntax_def.c`
