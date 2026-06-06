@@ -654,3 +654,35 @@ leaks.  The 24-year debugger memory leak was found this way, driven through
 gdb sessions by a headless pyte harness (a clean Alt-X exit so valgrind
 prints its report).  See the pyte tests in `tests/` and the leak-hunt
 write-up for the driving technique.
+
+#### Reading the report: what is actionable, what is noise
+
+A leak sweep (1.6.3) ran a full debug session under valgrind for every
+backend and both front-ends, driven headless through a pty (wpe) or xdotool
+(xwpe) with a clean Alt-X exit:
+
+| run | definitely + indirectly lost |
+|-----|------------------------------|
+| wpe + gdb / pdb / jdb | 0 bytes, 0 errors (after the brp/c_sw fixes) |
+| xwpe (X11) + gdb      | per-operation clean; init-only remainder (below) |
+
+Triage rules learned:
+- **Per-operation / per-frame leaks are the real bugs.** A block lost once per
+  window close, per debug step, or per repaint is what to chase.  The two
+  found this way -- `s->brp` and `c_sw`, leaked at every window close -- are
+  fixed in e_close_window.  The fluid-scrollbar chrome allocates a
+  `cairo_region_t` every frame (e_chrome_visible_region) and the sweep
+  confirmed it is balanced -- 0 region leaks.
+- **One-time init leaks at exit are benign and usually NOT worth a freeze.**
+  In X11, `cr_init_pango_font` (the Pango layout/font) and `WpeXtermInit` (X
+  colour/key tables) are allocated once and never freed -- the OS reclaims
+  them instantly.  The render backend even has `cr_cleanup` written but
+  nothing calls it (X11's WpeDisplayEnd is WpeNullFunction).  Wiring a real
+  X11 teardown belongs on 1.6.4, not a one-liner in the shared e_exit.
+- **Most X11 "definitely lost" is library, not xwpe.** fontconfig, pangoft2,
+  pango and Xlib keep global caches they never free at exit (~1.6 MB here).
+  Universal to any Pango/X program; unfixable in xwpe.  Filter the stacks for
+  `we_*` / `e_*` frames before believing a number.
+
+Drivers used for the sweep live outside the repo (xwpe-dev/), not in tests/:
+valgrind is too slow (~30x) for the default `run-tests.sh` net.
