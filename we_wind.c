@@ -14,6 +14,7 @@
 int e_make_xr_rahmen(int xa, int ya, int xe, int ye, int sw);
 static void e_draw_titlebar_buttons(int xa, int ya, int xe, int frb, int fes);
 static void e_draw_window_buttons(FENSTER *f);
+static void e_draw_dialog_close_button(FENSTER *f);
 static void e_clear_titlebar_buttons(FENSTER *f);
 
 static int e_scale_y(int val, int old_slns, int new_slns)
@@ -552,7 +553,9 @@ void e_ed_rahmen(FENSTER *f, int sw)
         (((FLBFFR *)f->b)->prj_sel || ((FLBFFR *)f->b)->sw == 5)))
     e_clear_titlebar_buttons(f);
    else
-    e_draw_window_buttons(f);
+    /* File-manager dialogs (Open / Save As / search) are fixed-size: a close
+       box only, no maximize, like a Borland TDialog. */
+    e_draw_dialog_close_button(f);
    blst = f->blst;
    nblst = f->nblst;
    e_hlp = f->hlp_str;
@@ -1415,6 +1418,20 @@ static void e_draw_titlebar_buttons(int xa, int ya, int xe, int frb, int fes)
  (void) xa;
  (void) frb;
  e_pr_char(xe-2, ya, 0x2715, fes);
+}
+
+/* e_draw_dialog_close_button - paint ONLY the close [X] on a dialog title bar.
+   File-manager pickers (Open, Save As, search dialogs) are fixed-size like a
+   Borland TDialog: a maximize/zoom box is meaningless there, so we draw the
+   close glyph at the top-right (xe-2) and leave the maximize cell (xe-4) as the
+   plain frame line already painted by e_std_rahmen.  The click is hit-tested in
+   WpeMngMouseInFileManager (e_hit_close_button) and dismisses the dialog. */
+static void e_draw_dialog_close_button(FENSTER *f)
+{
+ if (WpeIsXwin())
+  e_pr_char(f->e.x-2, f->a.y, 0x2715, f->fb->er.fb);
+ else
+  e_pr_char(f->e.x-2, f->a.y, 0x2715, f->fb->es.fb);
 }
 
 static void e_clear_titlebar_buttons(FENSTER *f)

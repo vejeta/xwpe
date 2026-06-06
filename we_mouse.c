@@ -220,10 +220,8 @@ int WpeMngMouseInFileManager(FENSTER * f)
       }
     }
   }
-  else if(e_mouse.x == f->a.x + 3 && e_mouse.y == f->a.y)
-    c = WPE_ESC;
-  else if(e_mouse.x == f->e.x - 3 && e_mouse.y == f->a.y)
-    e_ed_zoom(f);
+  else if(e_hit_close_button(f))
+    c = WPE_ESC;            /* close [X] at xe-2: dismiss the dialog */
   else if(e_mouse.x == f->a.x && e_mouse.y == f->a.y)
     e_eck_mouse(f, 1);
   else if(e_mouse.x == f->e.x && e_mouse.y == f->a.y)
