@@ -113,4 +113,11 @@ Juan Manuel Mendez Rey <juan.mendezr@proton.me>
     Python and LaTeX support, integrated output to Messages buffer,
     X11 shadow/echo fixes, 33-year-old Redo crash fix,
     12-chapter Texinfo manual, 33 pyte tests.
+  v1.6.3: Event-driven interactive debugging (type into a blocked program
+    from Messages), Perl/COBOL support, dead-key compose and UTF-8 in
+    dialogs, Borland "User Screen" (Alt-F5) and full GPM mouse on the bare
+    console, X11 scrollbar-bleed fix for overlapping windows, the 24-year
+    debugger memory leak found and fixed (valgrind-verified across
+    gdb/pdb/jdb), per-menu test coverage in both front-ends, headless Xft
+    GUI test harness.
   Historical archive: codeberg.org/mendezr/xwpe-archives

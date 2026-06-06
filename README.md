@@ -51,8 +51,17 @@ optional: `configure` detects them and falls back automatically, so a
 console-only build needs only `libncurses-dev` (plus the build tools).
 `texinfo` is needed to build the `info xwpe` manual.
 
-## What's new in 1.6.3 (in development)
+## What's new in 1.6.3
 
+* **No more scrollbar bleed with overlapping windows** (X11): with three
+  windows stacked so one is covered by two others at once, a covered
+  window's scrollbar no longer shows through.  The fluid-scrollbar chrome
+  now clips each window to its true visible region with cairo_region_t set
+  algebra and indexes windows by z-level, matching the cell compositor.
+* **Debugger memory leak fixed** (the 24-year "location unknown" leak):
+  each window's breakpoint-line and syntax-state arrays were freed with
+  neither at window close; both are now released.  Verified with a full
+  valgrind sweep over gdb, pdb and jdb -- 0 bytes definitely lost.
 * **Event-driven interactive debugging**: when the debugged program
   blocks on fgets/scanf, type input directly in the Messages window.
   Architecture: poll()-based fd multiplexing of X11 + gdb pipe + pty
