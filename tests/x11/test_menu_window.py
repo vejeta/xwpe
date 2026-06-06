@@ -59,3 +59,38 @@ def test_zoom_maximises_active_window(xwpe):
     assert xwpe.proc.poll() is None, "xwpe died during Window -> Zoom"
     assert changed_pixels(base, after) > 1500, \
         "Zoom should maximise the active window (screen barely changed)"
+
+
+# --- shortcut path (#159): Window accelerators in the X11 input path ---
+
+def test_zoom_via_alt_z(xwpe):
+    """Alt-Z (advertised) zooms the active window."""
+    _second_window(xwpe)
+    xwpe.menu("w", "t")                  # Tile so both are visible
+    base = xwpe.screenshot()
+    xwpe.key("alt+z")                    # Zoom
+    after = xwpe.screenshot()
+    assert xwpe.proc.poll() is None, "xwpe died on Alt-Z"
+    assert changed_pixels(base, after) > 1500, \
+        "Alt-Z should zoom the active window (screen barely changed)"
+
+
+def test_list_all_via_alt_0(xwpe):
+    """Alt-0 (advertised) opens the 'Windows' chooser."""
+    before = xwpe.screenshot()
+    xwpe.key("alt+0")                    # List All
+    after = xwpe.screenshot()
+    assert xwpe.proc.poll() is None, "xwpe died on Alt-0"
+    assert changed_pixels(before, after) > 1500, \
+        "Alt-0 should open the window chooser (screen barely changed)"
+
+
+def test_close_via_ctrl_w(xwpe):
+    """Ctrl-W (modern close) closes the active window, revealing the other."""
+    _second_window(xwpe)                 # two windows; the new one is active
+    before = xwpe.screenshot()
+    xwpe.key("ctrl+w")                   # close the active window
+    after = xwpe.screenshot()
+    assert xwpe.proc.poll() is None, "xwpe died on Ctrl-W (close)"
+    assert changed_pixels(before, after) > 1500, \
+        "Ctrl-W should close the active window (screen barely changed)"

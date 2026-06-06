@@ -56,3 +56,22 @@ def test_replace_all_changes_every_occurrence(xwpe):
     t = xwpe.saved_text()
     assert "int" not in t and t.count("ZZZ") >= 7, \
         "Change All should replace every 'int' with 'ZZZ', got %r" % t
+
+
+# --- shortcut path (#159): Search accelerators in the X11 input path ---
+# Alt-G (Go to Line) is asserted here.  The plain function-key accelerators
+# (Find F4, Make F9, Run Ctrl-F9) are decoded in we_xterm.c (lines ~1320-1366)
+# and asserted by the terminal suite; they are not driven here because the
+# headless Xvfb+matchbox harness does not deliver bare/Ctrl function keys to the
+# app reliably (the menu routes for the same items pass).
+
+def test_goto_line_via_alt_g(xwpe):
+    """Alt-G (advertised) opens Go to Line; line 3 then typing edits line 3."""
+    xwpe.key("alt+g")                    # Go to Line
+    xwpe.type("3"); xwpe.key("Return")
+    xwpe.type("X")
+    xwpe.save()
+    assert xwpe.proc.poll() is None, "xwpe died on Alt-G"
+    lines = xwpe.saved_text().splitlines()
+    assert len(lines) >= 3 and lines[2].startswith("X"), \
+        "Alt-G then 3 should put the cursor on line 3, got %r" % xwpe.saved_text()

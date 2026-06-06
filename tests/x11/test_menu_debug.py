@@ -20,3 +20,19 @@ def test_toggle_breakpoint_marks_the_line(xwpe):
     assert xwpe.proc.poll() is None, "xwpe died toggling a breakpoint"
     assert changed_pixels(before, after) > 200, \
         "Toggle Breakpoint should mark the line (screen did not change)"
+
+
+def test_toggle_breakpoint_via_ctrl_g_b(xwpe):
+    """^G B (the build-independent debugger prefix) toggles the breakpoint.
+
+    The advertised "F5" accelerator is the Window Zoom key in the default key
+    style, so ^G B is the reliable accelerator to assert here -- and it goes
+    through the X11 keyboard decode (we_xterm.c) independently of ncurses."""
+    xwpe.key("Down"); xwpe.key("Down")   # move onto an interior code line
+    before = xwpe.screenshot()
+    xwpe.key("ctrl+g", "b")              # debugger prefix + Toggle Breakpoint
+    time.sleep(0.3)
+    after = xwpe.screenshot()
+    assert xwpe.proc.poll() is None, "xwpe died on ^G B"
+    assert changed_pixels(before, after) > 200, \
+        "^G B should mark the breakpoint line (screen did not change)"
