@@ -261,6 +261,27 @@ Changes
 * Messages window auto-positioning: 2/3 + 1/3 vertical split when
   Messages is created by F9.  e_position_messages_window() places
   Messages to fill available space below editor windows.
+* Modernised window-control keys.  Close window is now Ctrl-W -- the
+  universal browser/VSCode/IntelliJ "close tab" -- decodable in both the
+  terminal and X11.  The historic Alt-F3 was dropped: the window manager
+  (X11) and the kernel VT layer (console) intercept it, so it never reached
+  xwpe and users had no working close-window shortcut.  Show Buffer moved to
+  Alt-Y (emacs M-y, "browse the paste buffer").  Status bar, the Window >
+  Close item and the Edit menu were relabelled to match.  Tests:
+  tests/test_close_buffer_keys.py.
+* Title-bar close box [X] works again in wpe and xwpe.  It handed back Alt-F3
+  in the default key style, which became a no-op once Alt-F3 was dropped; it
+  now returns Ctrl-W and is hit-tested at the glyph it actually paints (e.x-2,
+  top-right).  Document/editor windows keep their zoom box.  Tests:
+  tests/test_window_close_button.py.
+* File-Manager dialogs (Open / Save As / search) are close-only, like a
+  Borland TDialog: the maximize box is gone (meaningless for a fixed-size
+  picker) and the close [X] now dismisses the dialog.  The picker had drawn a
+  zoom box and hit-tested the close at the historic top-left cell while the
+  glyph is painted top-right, so clicking the visible X only started a window
+  move.  New e_draw_dialog_close_button paints just the close glyph; the click
+  routes through e_hit_close_button.  Tests: tests/test_file_manager_close.py
+  and tests/x11/test_file_manager_close.py.
 
   Ctrl-F9 Run:
 * Interactive program execution via pty in Messages window.  User
@@ -295,6 +316,17 @@ Changes
 * Add 9 syntax-highlighting definitions from Payne's extrasyntax
   collection (shell, HTML, Makefile, SQL and more).  Verifier test:
   tests/test_syntax_def.c.
+* Fix intermittent X11 crash/black-hang: call XInitThreads() before the
+  first Xlib call.  Cairo/Pango/fontconfig spawn helper threads, so Xlib
+  must be told it is in a threaded program or _XEventsQueued races during a
+  refresh (segfault inside XRenderFillRectangle).
+* Fix double-free (SIGABRT "free(): invalid pointer") when reopening Show
+  Buffer after the clipboard window had been closed.  The persistent
+  clipboard window's view (pic) was freed on close but left dangling;
+  e_show_clipboard now NULLs it before e_firstl re-opens the window, matching
+  e_firstl's contract that a fresh window has pic == NULL.  Latent since the
+  Kruse 1.4.2 era (1993); only surfaced once the 1.6.2 SCREENCELL migration
+  made the repaint path always free the pic.
 
   Project management (Borland audit):
 * New Project and Open Project are now separate menu entries.  New
