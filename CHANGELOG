@@ -444,9 +444,38 @@ Changes
   (Alt-Z), Next (Alt-N), List All (Alt-0) and the close box.
 * Window chrome regression test: tests/x11/test_window_zoom_redraw.py asserts a
   covered window's scrollbar does not bleed through when a window is zoomed
-  over it (the X11 z-order chrome-clip fix above).
+  over it (the X11 z-order chrome-clip fix above), and a cascade variant guards
+  the partial-overlap (even-odd) clip.
+* Block menu WordStar chords double-covered (tests/test_block.py +
+  tests/x11/test_block_marking.py): every Block op is driven through both the
+  Alt-B menu and its ^K chord (^K X/^K Y/^K I/^K U), the separate decode where
+  the ^K B mode bug hid.
+* Mouse interaction tests (tests/x11/test_mouse_scroll.py,
+  test_mouse_menu.py): the mouse wheel (WPE_SCROLL_UP/DOWN), the fluid
+  scrollbar-thumb drag (vertical and horizontal, e_scroll_drag_v/h driven via
+  real X11 button/motion events), and menu-bar access by click (open a menu,
+  invoke an item).  New conftest drag()/wheel() helpers.
+* Console input regression-tested: Ctrl-F9 Run, the Esc meta-prefix
+  (Esc-<letter> = Alt-<letter>) and the Alt-F5 User Screen
+  (tests/test_user_screen.py, test_menu_run.py).
+* Headless X11 harness: function keys are now injected by keycode, working
+  around an xdotool keysym-resolver bug (issue #491) that delivered Alt-Fn
+  instead of bare Fn; this unblocked the F2/F3/F4/F9 shortcut tests.
+
+  Build and portability:
+* The --without-x build compiles and links again.  The fluid-scrollbar-drag
+  feature had placed Xlib-using helpers (e_scroll_drag_v/h) and Cairo chrome
+  hit-tests (wpe_chrome_hit_vthumb/hthumb) in the shared mouse code without
+  NO_XWINDOWS guards.  Now the X11-only helpers are guarded and the header
+  provides no-op stubs for the hit-tests under NO_XWINDOWS.
+* Removed the ad-hoc /tmp debug probes left across the source during
+  bug-fixing (the gated jdb_trace facility and the crash handler are kept).
 
   Documentation:
+* Help -> Info now opens xwpe's OWN manual (the installed xwpe.info), not the
+  system-wide Info directory listing every package: e_read_xwpe_info loads its
+  Top node and keeps in-manual navigation inside it, falling back to the system
+  directory only when xwpe.info is not installed.
 * Texinfo manual updated for 9 compilers, pdb debugger, Messages
   buffer, cursor-relative error navigation.
 * New tutorial examples in docs/examples (shipped via EXTRA_DIST) and
