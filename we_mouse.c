@@ -905,7 +905,7 @@ int e_edt_mouse(int c, FENSTER *f)
    e_mouse.y >= f->a.y && e_mouse.y <= f->e.y)
  {
   if (e_hit_close_button(f))
-   ret = f->ed->edopt & ED_CUA_STYLE ? CF4 : AF3;
+   ret = CtrlW;     /* close window: CtrlW closes in both CUA and default mode */
   else if (e_hit_maximize_button(f))
    e_ed_zoom(f);
   else if (e_mouse.x == f->a.x && e_mouse.y == f->a.y) e_eck_mouse(f, 1);
