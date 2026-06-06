@@ -615,6 +615,129 @@ static void cr_chrome_hscrollbar(FENSTER *f, int ci_bg, int ci_fg)
  cr_chrome_thumb(thumb_x, bar_y, thumb_w, bar_h, ci_fg);
 }
 
+#ifndef NO_XWINDOWS
+/* A window covered down to just its border column/row would show a lone
+   "floating" scrollbar -- its interior hidden by the windows on top, the bar
+   peeking out only because it is one column/row wider or offset.  These return
+   true only if some interior cell BESIDE the bar is still visible (not covered
+   by a window stacked above f).  When false, skip the fluid scrollbar overlay;
+   the plain border line drawn by the cell renderer still shows the exposed
+   edge -- the authentic Borland look, no stray scrollbar. */
+static int e_chrome_col_content_visible(ECNT *ed, FENSTER *f, int col, int w)
+{
+ int row, w2;
+ for (row = f->a.y + 1; row <= f->e.y - 1; row++)
+ {
+  int covered = 0;
+  for (w2 = w + 1; w2 <= ed->mxedt; w2++)
+  {
+   FENSTER *g = ed->f[w2];
+   if (col >= g->a.x && col <= g->e.x && row >= g->a.y && row <= g->e.y)
+   {  covered = 1;  break;  }
+  }
+  if (!covered)
+   return 1;
+ }
+ return 0;
+}
+
+static int e_chrome_row_content_visible(ECNT *ed, FENSTER *f, int row, int w)
+{
+ int col, w2;
+ for (col = f->a.x + 1; col <= f->e.x - 1; col++)
+ {
+  int covered = 0;
+  for (w2 = w + 1; w2 <= ed->mxedt; w2++)
+  {
+   FENSTER *g = ed->f[w2];
+   if (col >= g->a.x && col <= g->e.x && row >= g->a.y && row <= g->e.y)
+   {  covered = 1;  break;  }
+  }
+  if (!covered)
+   return 1;
+ }
+ return 0;
+}
+
+/* cr_window_pixel_rect - A window's full extent in device pixels.  Windows are
+   stored in character cells (a.x..e.x, a.y..e.y); the Cairo chrome works in
+   pixels.  Used wherever a window must be clipped or subtracted as a region. */
+static void cr_window_pixel_rect(FENSTER *f, cairo_rectangle_int_t *r)
+{
+ int fw = WpeRender.font_width, fh = WpeRender.font_height;
+ r->x = fw * f->a.x;
+ r->y = fh * f->a.y;
+ r->width = fw * (f->e.x - f->a.x + 1);
+ r->height = fh * (f->e.y - f->a.y + 1);
+}
+
+/* e_chrome_visible_region - The on-screen region of the window at z-level w that
+   is NOT hidden by any window stacked above it: its own rectangle MINUS the
+   union of every higher window (f[w+1..mxedt]).  cairo_region_t does exact
+   integer-rectangle set algebra, so this stays correct even when the covering
+   windows overlap EACH OTHER (a cascade) -- where an even-odd path clip would
+   miscount the triple-overlap band and let a covered scrollbar bleed through.
+   Caller owns the returned region (cairo_region_destroy). */
+static cairo_region_t *e_chrome_visible_region(ECNT *ed, int w)
+{
+ cairo_rectangle_int_t r;
+ cairo_region_t *vis;
+ int w2;
+
+ cr_window_pixel_rect(ed->f[w], &r);
+ vis = cairo_region_create_rectangle(&r);
+ for (w2 = w + 1; w2 <= ed->mxedt; w2++)
+ {
+  cairo_rectangle_int_t gr;
+  cr_window_pixel_rect(ed->f[w2], &gr);
+  cairo_region_subtract_rectangle(vis, &gr);
+ }
+ return vis;
+}
+
+/* cr_clip_to_region - Restrict subsequent Cairo drawing to a region.  A region
+   is a set of DISJOINT rectangles, so adding them all to the path and filling
+   with the default winding rule is an exact clip; an empty region (window fully
+   covered) clips to nothing, which is exactly what such a window wants. */
+static void cr_clip_to_region(cairo_region_t *reg)
+{
+ int n = cairo_region_num_rectangles(reg), i;
+
+ for (i = 0; i < n; i++)
+ {
+  cairo_rectangle_int_t r;
+  cairo_region_get_rectangle(reg, i, &r);
+  cairo_rectangle(cr, r.x, r.y, r.width, r.height);
+ }
+ cairo_clip(cr);
+}
+
+/* Scrollbar colour indices into the editor palette: a focused window draws its
+   bars in the bright "active" pair, a background window in the dimmed pair, so
+   the user can tell at a glance which window has focus (Borland convention). */
+#define CHROME_BAR_TRACK_ACTIVE    4   /* track groove, focused window  */
+#define CHROME_BAR_TRACK_INACTIVE  0   /* track groove, background window */
+#define CHROME_BAR_THUMB_ACTIVE    7   /* thumb + arrow markers, focused */
+#define CHROME_BAR_THUMB_INACTIVE  8   /* thumb + arrow markers, background */
+
+/* e_chrome_paint_window_scrollbars - Paint window w's fluid vertical and
+   horizontal scrollbars, in focused or background colours.  Each bar is drawn
+   only when some interior cell BESIDE it is still exposed, so a window covered
+   down to just its border shows the plain border line, not a lone floating bar.
+   The caller has already clipped the context to the window's visible region. */
+static void e_chrome_paint_window_scrollbars(ECNT *ed, FENSTER *f, int w,
+                                             int is_active)
+{
+ int track = is_active ? CHROME_BAR_TRACK_ACTIVE : CHROME_BAR_TRACK_INACTIVE;
+ int thumb = is_active ? CHROME_BAR_THUMB_ACTIVE : CHROME_BAR_THUMB_INACTIVE;
+
+ if (e_chrome_col_content_visible(ed, f, f->e.x - 1, w))
+  cr_chrome_vscrollbar(f, track, thumb);
+ if (e_chrome_row_content_visible(ed, f, f->e.y - 1, w))
+  cr_chrome_hscrollbar(f, track, thumb);
+}
+#endif
+
 void wpe_render_chrome(void)
 {
 #ifndef NO_XWINDOWS
@@ -626,36 +749,30 @@ void wpe_render_chrome(void)
 
  for (w = 1; w <= WpeEditor->mxedt; w++)
  {
-  FENSTER *f = WpeEditor->f[WpeEditor->edt[w]];
-  int is_active = (WpeEditor->edt[w] ==
-                   WpeEditor->edt[WpeEditor->curedt]);
-  int fw = WpeRender.font_width, fh = WpeRender.font_height;
-  int w2;
+  /* f[] is indexed by Z-LEVEL (f[1]=bottom .. f[mxedt]=top), the same
+     convention the cell compositor uses (e_repaint_desk_nopic).  The active
+     window is the topmost, f[mxedt].  (An earlier version indexed f[edt[w]]
+     -- by window NUMBER -- which only matches when edt is the identity, i.e.
+     windows never reordered; after a click/raise it read the WRONG window's
+     geometry and the scrollbars bled.) */
+  FENSTER *f = WpeEditor->f[w];
+  int is_active = (w == WpeEditor->mxedt);
 
   if (!DTMD_ISTEXT(f->dtmd))
    continue;
 
-  /* Clip this window's scrollbars to its VISIBLE region: its own rectangle
-     MINUS every window stacked above it (edt[w2], w2 > w).  The scrollbars are
-     drawn directly here, after the cell render and in z-order-blind fashion, so
-     without this a COVERED window's scrollbar paints on top of the window
-     covering it (the zoom/drag "bleed-through"; X11 only).  Even-odd fill rule
-     turns the f-rect + higher-window-rects path into "f minus those rects" --
-     the idiomatic Cairo region clip. */
+  /* Clip this window's fluid scrollbars to the part of it still visible -- its
+     rectangle minus the union of the windows stacked above it.  Drawn here
+     after the cells and z-order-blind, an unclipped covered scrollbar paints
+     over the window covering it (the zoom/drag/3-window bleed; X11 only). */
   cairo_save(cr);
-  cairo_set_fill_rule(cr, CAIRO_FILL_RULE_EVEN_ODD);
-  cairo_rectangle(cr, (double)fw * f->a.x, (double)fh * f->a.y,
-    (double)fw * (f->e.x - f->a.x + 1), (double)fh * (f->e.y - f->a.y + 1));
-  for (w2 = w + 1; w2 <= WpeEditor->mxedt; w2++)
   {
-   FENSTER *g = WpeEditor->f[WpeEditor->edt[w2]];
-   cairo_rectangle(cr, (double)fw * g->a.x, (double)fh * g->a.y,
-     (double)fw * (g->e.x - g->a.x + 1), (double)fh * (g->e.y - g->a.y + 1));
+   cairo_region_t *vis = e_chrome_visible_region(WpeEditor, w);
+   cr_clip_to_region(vis);
+   cairo_region_destroy(vis);
   }
-  cairo_clip(cr);
 
-  cr_chrome_vscrollbar(f, is_active ? 4 : 0, is_active ? 7 : 8);
-  cr_chrome_hscrollbar(f, is_active ? 4 : 0, is_active ? 7 : 8);
+  e_chrome_paint_window_scrollbars(WpeEditor, f, w, is_active);
 
   cairo_restore(cr);
  }

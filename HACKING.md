@@ -185,6 +185,65 @@ scrollbar column.  Only applies to text editor windows (DTMD_ISTEXT).
 Named functions: `cr_chrome_arrow_up`, `cr_chrome_arrow_down`,
 `cr_chrome_track`, `cr_chrome_thumb`, `cr_chrome_vscrollbar`.
 
+#### Chrome must follow the compositor: index by Z-LEVEL, not window number
+
+The chrome is a SEPARATE pass from the cell compositor, so it must use
+the SAME window ordering or the two disagree and scrollbars paint over
+the wrong windows.  Two parallel arrays, both indexed by **z-level**
+(`f[1]` = bottom of the stack ... `f[mxedt]` = top = active):
+
+| Array | Meaning |
+|-------|---------|
+| `cn->f[z]`   | the `FENSTER *` at z-level `z` |
+| `cn->edt[z]` | that window's NUMBER |
+
+The cell compositor `e_repaint_desk_nopic` walks `f[1..mxedt]` and treats
+`f[mxedt]` as active.  `wpe_render_chrome` MUST do the same: iterate
+`WpeEditor->f[w]`, active = `(w == mxedt)`.
+
+Bug we hit (#165): the chrome instead indexed `f[edt[w]]` (by window
+NUMBER) and tested `edt[w] == edt[curedt]` for active.  That matches the
+z-level walk ONLY while `edt` is the identity permutation -- i.e. while
+no window has ever been raised.  After a mouse click raises a covered
+window, `e_switch_window` permutes `edt`, the two passes disagree, and
+the chrome reads the wrong window's geometry -> scrollbars bleed.
+**Rule: any pass that draws per-window must index `f[]` by z-level and
+take `f[mxedt]` as active, exactly like `e_repaint_desk_nopic`.**
+
+#### Clipping a covered window's scrollbar: SET algebra, not even-odd
+
+The fluid scrollbars are drawn directly to the Cairo surface, after the
+cells, z-order-blind.  So each window's bars must be clipped to the part
+of it still visible: its own rectangle MINUS the union of every window
+stacked above it.  Helpers (we_render_cairo.c):
+
+- `cr_window_pixel_rect(f, *r)` -- window cells -> device-pixel rect.
+- `e_chrome_visible_region(ed, w)` -- `f[w]`'s rect minus the higher
+  windows, as a `cairo_region_t`.
+- `cr_clip_to_region(reg)` -- clip the context to that region.
+
+**Do NOT clip with an even-odd fill-rule path** (rect_self + rect_cover1
++ rect_cover2, `CAIRO_FILL_RULE_EVEN_ODD`).  Even-odd computes the XOR of
+the rectangles, which equals "self minus the covers" only while the
+covering windows do not overlap EACH OTHER.  In a cascade they do: a
+point under TWO higher windows lies in 3 rectangles (self + 2 covers) ->
+odd -> even-odd wrongly keeps it INSIDE the clip, so window 1's scrollbar
+reappears exactly in the triple-overlap band (the original #165 report:
+"the scrollbar of the first window reappears where it intersects the
+third").  `cairo_region_subtract_rectangle` does true integer-rectangle
+set difference and a region is a list of DISJOINT rectangles, so filling
+them with the default winding rule is an exact clip.  **Rule: subtract
+overlapping regions with `cairo_region_t`, never with an even-odd path.**
+
+A second, orthogonal check (`e_chrome_col/row_content_visible`) skips the
+bar entirely when a window is covered down to just its border, so it
+shows the plain border line instead of a lone floating scrollbar.
+
+Regression net: `tests/x11/test_window_zoom_redraw.py` --
+`test_triple_overlap_no_scrollbar_bleed` builds the exact 3-window
+double-cover via Size/Move and asserts no bleed; `test_zoom_*`,
+`test_cascade_*`, `test_click_reorder_*` cover the z-order paths.
+
 ### New files
 
 | File | Purpose |

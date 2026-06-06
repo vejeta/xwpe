@@ -79,6 +79,19 @@ Bugs fixed in 1.6.x:
   X11 use (e.g. on a window-configure repaint).  Found from a user core
   dump (coredumpctl -> gdb: e_close_view at we_wind.c:468 with a garbage
   PIC).  Now routed through e_free_view() like the other three sites.
+* X11 scrollbar bled through overlapping windows -- fixed (1.6.3).  With
+  three windows stacked so one is covered by two others at once, the
+  covered window's vertical/horizontal scrollbar reappeared in the
+  triple-overlap band.  The fluid scrollbar chrome (we_render_cairo.c)
+  clipped each window to "its rect minus the covers" with a Cairo
+  even-odd path, which is XOR, not set-difference: a point under two
+  higher windows lies in three rectangles -> odd -> kept.  Now subtracts
+  the covers with cairo_region_t (true set algebra) via
+  e_chrome_visible_region().  Also re-indexed the chrome by window
+  z-level (f[w], active = f[mxedt]) to match the cell compositor, so a
+  mouse click that raises a covered window no longer leaves the chrome
+  drawing the wrong window's scrollbars.  Regression test:
+  tests/x11/test_window_zoom_redraw.py.
 * Heap-buffer-overflow in block Move (Ctrl-K V) -- fixed (1.6.3).  The
   multi-line block-move path (e_move_block, we_block.c) reshuffles line
   buffers by raw struct aliasing and could leave the destination line's
@@ -442,10 +455,14 @@ Changes
   Show Buffer (Alt-Y), Save (F2), Find (F4), Search again (^L), Go to Line
   (Alt-G), Run (Ctrl-F9 and Alt-U), Make (F9), Toggle Breakpoint (^G B), Zoom
   (Alt-Z), Next (Alt-N), List All (Alt-0) and the close box.
-* Window chrome regression test: tests/x11/test_window_zoom_redraw.py asserts a
-  covered window's scrollbar does not bleed through when a window is zoomed
-  over it (the X11 z-order chrome-clip fix above), and a cascade variant guards
-  the partial-overlap (even-odd) clip.
+* Window chrome regression tests: tests/x11/test_window_zoom_redraw.py asserts a
+  covered window's scrollbar does not bleed through the window stacked over it
+  (the X11 z-order chrome-clip fix above).  Four scenarios: a full zoom-cover, a
+  diagonal cascade, a click-to-raise that re-orders the stack (guards indexing
+  the chrome by z-level, not window number), and a 3-window double-cover built
+  via Size/Move that guards the cairo_region_t set-difference clip -- the case
+  an even-odd path got wrong, where window 1's scrollbar reappeared in the band
+  it shares with two windows above it.
 * Block menu WordStar chords double-covered (tests/test_block.py +
   tests/x11/test_block_marking.py): every Block op is driven through both the
   Alt-B menu and its ^K chord (^K X/^K Y/^K I/^K U), the separate decode where
