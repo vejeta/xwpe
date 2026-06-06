@@ -243,6 +243,9 @@ X11 GUI tests (xwpe under Xvfb, `tests/x11/`):
   the cursor into the new viewport, so a typed marker lands far down / far right
   -- ground truth stronger than a screenshot diff.  Exercises the code guarded
   for --without-x
+- `test_mouse_menu.py` -- mouse menu access: clicking a menu-bar label drops
+  its menu (Escape closes it), and clicking a dropdown item invokes it
+  (File > New opens a buffer) -- the e_mouse menu-bar hit path, not Alt-key
 - `test_editor_options.py` -- the Options > Editor dialog opens, and toggling
   a checkbox (Alt-K) renders a visible `[X]` mark that clears on a second
   toggle.  Guards the X11-only regression where NEWSTYLE drew check/radio
