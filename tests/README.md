@@ -156,6 +156,11 @@ Go to Line Alt-G, Toggle Breakpoint ^G B, Zoom/Next/List/Close, and the WordStar
 Block chords ^K X/^K Y/^K I/^K U.  Function-key accelerators work in the X11
 suite only because of the keycode injection above (xdotool #491).
 
+The System (#), Options and Project menus carry NO advertised accelerators in
+`we_menue.c` (every item is reachable by the menu only -- there is no key hint
+in any label and no global key binding for their handlers), so there is no
+shortcut path to double-cover there; they are exercised through the menu alone.
+
 Menu sections (`test_menu_<x>.py`, Alt-`<x>`) -- one per environment:
 - `test_menu_edit.py` (wpe) + `x11/test_menu_edit.py` (xwpe) -- Edit (Alt-E):
   Cut, Copy/Paste, Cut+Paste round trip, Undo, Redo -- asserted on the saved
