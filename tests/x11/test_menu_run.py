@@ -23,3 +23,25 @@ def test_make_compiles_the_file(xwpe):
         "Make should produce compiled output (.o/.e/exe), dir=%r" % os.listdir(d)
     assert changed_pixels(before, after) > 2000, \
         "Make should open the Messages window (screen barely changed)"
+
+
+# --- shortcut path (#159): Run accelerators in the X11 input path ---
+# The Run item's hotkey is 'R', but the advertised accelerators are ^F9 and
+# Alt-U, dispatched via e_prog_switch.  Alt-U was a no-op until that fallback
+# was wired; this guards it in the separate X11 (we_xterm.c) keyboard path.
+# Run compiles+links+runs, so the executable t.e appears on disk.
+
+def test_run_via_alt_u(xwpe):
+    """Alt-U (advertised Run accelerator, hotkey != 'U') compiles+links+runs.
+
+    This is the accelerator that was a no-op until the e_prog_switch fallback
+    was wired -- guarded here in the separate X11 (we_xterm.c) keyboard path.
+    (The other Run accelerator, Ctrl-F9, is decoded in we_xterm.c:1326 -> CF9
+    and covered by the terminal suite; it is not asserted here because the
+    headless window manager grabs Ctrl-Fn.)"""
+    d = os.path.dirname(xwpe.srcfile)
+    xwpe.key("alt+u")                    # Run
+    time.sleep(3.0)
+    assert xwpe.proc.poll() is None, "xwpe died on Alt-U (Run)"
+    assert os.path.exists(os.path.join(d, "t.e")), \
+        "Alt-U should build+run (t.e on disk), dir=%r" % os.listdir(d)
