@@ -19,8 +19,10 @@
 int e_mouse_cursor();
 void e_scroll_drag_v(FENSTER *f);
 void e_scroll_drag_h(FENSTER *f);
+#ifndef NO_XWINDOWS
 static void e_scroll_drag_end_h(FENSTER *f, int saved_cur_on);
 static void e_scroll_drag_end_cursor(FENSTER *f);
+#endif
 
 void e_mouse_tracking_enable(void)
 {
@@ -520,6 +522,7 @@ static void e_scroll_content(FENSTER *f)
  e_scroll_render_lines(f);
 }
 
+#ifndef NO_XWINDOWS  /* scrollbar fluid-drag helpers: X11-only (Xlib events) */
 static void e_scroll_render_h(FENSTER *f, int new_bx)
 {
  f->s->c.x = new_bx;
@@ -574,6 +577,7 @@ static void e_scroll_drag_end(FENSTER *f, int saved_cur_on)
  cur_on = saved_cur_on;
  e_scroll_drag_end_cursor(f);
 }
+#endif  /* NO_XWINDOWS */
 
 void e_scroll_drag_h(FENSTER *f)
 {
@@ -606,6 +610,7 @@ void e_scroll_drag_h(FENSTER *f)
 #endif
 }
 
+#ifndef NO_XWINDOWS
 static void e_scroll_drag_end_cursor(FENSTER *f)
 {
  int vp_left = f->s->c.x;
@@ -630,6 +635,7 @@ static void e_scroll_drag_end_h(FENSTER *f, int saved_cur_on)
  cur_on = saved_cur_on;
  e_scroll_drag_end_cursor(f);
 }
+#endif  /* NO_XWINDOWS */
 
 void e_scroll_drag_v(FENSTER *f)
 {

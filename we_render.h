@@ -37,7 +37,16 @@ extern int wpe_scroll_dragging;
 
 int wpe_render_cairo_init(void);
 void wpe_render_chrome(void);
+#ifdef NO_XWINDOWS
+/* The Cairo chrome (the fluid scrollbar thumb) is X11-only; with no X11 there
+   is no chrome, so these hit-tests can never match.  Inline no-op stubs let the
+   shared mouse code (we_mouse.c) link in a --without-x build, where
+   we_render_cairo.c is not compiled. */
+static inline int wpe_chrome_hit_vthumb(int col, int row) { (void)col; (void)row; return 0; }
+static inline int wpe_chrome_hit_hthumb(int col, int row) { (void)col; (void)row; return 0; }
+#else
 int wpe_chrome_hit_vthumb(int col, int row);
 int wpe_chrome_hit_hthumb(int col, int row);
+#endif
 
 #endif
