@@ -24,6 +24,11 @@ mouse support, X11 fixes, and a 12-chapter Texinfo manual.
 </p>
 </details>
 
+<p align="center">
+  <img src="screenshots/xwpe-xwayland.png" width="640" alt="xwpe on a Wayland desktop via XWayland, showing Xft color emoji and UTF-8 (Cyrillic, CJK, Greek)">
+  <br><em>The same X11 build on a Wayland desktop, via XWayland &mdash; Xft color emoji and full UTF-8 (Cyrillic, CJK, Greek).</em>
+</p>
+
 ## Quick start
 
 ```sh
@@ -58,6 +63,10 @@ console-only build needs only `libncurses-dev` (plus the build tools).
 * **UTF-8 in dialog fields**: Search, Replace, Compiler Options and
   all other dialogs accept and render accented characters correctly.
   UTF-8-aware cursor movement, backspace, and delete.
+* **Runs on Wayland** via XWayland (verified under a headless KWin
+  session, see the screenshot above).  xwpe is a plain Xlib app, so
+  Debian's GNOME/KDE Wayland sessions run it through XWayland with no
+  changes.  A native `wl_surface` backend is on the roadmap for 1.7.
 * printf without \n visible after each step (fflush via gdb)
 * Perl and COBOL compiler support (perl -c, cobc)
 * Cursor-relative error navigation with wrap-around (Alt-T/Alt-V)
