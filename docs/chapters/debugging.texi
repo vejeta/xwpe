@@ -123,6 +123,15 @@ Press @kbd{Ctrl-G P} (or @samp{Debug @result{} Program output}) to
 view the Messages buffer with full scroll.  The output accumulates
 across steps, so you can see the complete program output at any time.
 
+@cindex Alt-F5
+A line-oriented panel cannot show a program that @emph{paints} (ANSI
+colour, cursor positioning, a TUI, a progress bar).  For that, the
+Borland @dfn{User Screen} on @kbd{Alt-F5} replays the program's own
+full screen verbatim, then returns to the editor on any key.  This works
+in the console (@command{wpe}) today; in @command{xwpe} (X11) it arrives
+with the integrated terminal in a later release (until then @kbd{Alt-F5}
+focuses the Messages panel).
+
 @strong{Important}: the output appears only after the line that
 produces it has been @emph{executed}.  If the cursor is on the
 @code{printf} line, that line has not run yet.  Press @key{F8} once

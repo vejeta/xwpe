@@ -117,15 +117,17 @@ Use Common User Access (CUA) keybindings (MS-Windows / OSF Motif style).
 
 @subsubheading Auto-indent
 
-@table @kbd
-@item Alt-Y
-Auto-indent only for files that can be compiled (matching a defined
-file extension in @samp{Options @result{} Compiler}).
-@item Alt-W
-Auto-indent for all files.
-@item Alt-V
-Disable auto-indent.
-@end table
+Auto-indent is configured in @samp{Options @result{} Editor}: choose
+@samp{Source files} (only files with a known compiler extension),
+@samp{All files}, or @samp{Disabled}, and set the indent column.  The setting
+is saved with @samp{Options @result{} Save Options}.
+
+@quotation Note
+In older xwpe this was bound to @kbd{Alt-Y} / @kbd{Alt-W} / @kbd{Alt-V}.
+Those keys are now @samp{Show Buffer} (Edit menu), the @samp{Window} menu, and
+@samp{Previous Error} (Run) respectively; auto-indent moved into the dialog
+above.
+@end quotation
 
 @subsubheading Numeric fields
 

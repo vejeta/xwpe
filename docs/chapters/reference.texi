@@ -117,8 +117,11 @@ minimum 80x25; e.g.@: @option{-g 80x20+4+4}).
 @item @kbd{Ctrl-G U} @tab Goto cursor (run until cursor line).
 @item @kbd{Ctrl-G F} @tab Finish function (run until return).
 @item @kbd{Ctrl-G A} @tab Remove all watches.
-@item @kbd{Ctrl-G P} @tab Program output (User Screen).
-Not available under X11.  (Documented since v1.4, German manpage.)
+@item @kbd{Ctrl-G P} @tab Program output: focus the Messages panel with the
+program's captured output (both backends).
+@item @kbd{Alt-F5} @tab User Screen: replay the program's own full screen --
+for programs that paint (ANSI colour, cursor positioning).  Console (wpe) now;
+xwpe (X11) via the integrated terminal in a later release.
 @item @kbd{Ctrl-G O} @tab Debugger options (select gdb/jdb/sdb/dbx).
 @end multitable
 
@@ -183,7 +186,7 @@ These commands operate on the clipboard (kill-buffer).  (Documented since v1.4.)
 @item @kbd{Shift-Delete} @tab Cut: kill marked text to buffer @tab @kbd{Ctrl-X}
 @item @kbd{Shift-Insert} @tab Copy: copy marked text to buffer @tab @kbd{Ctrl-C}
 @item @kbd{Ctrl-Insert} @tab Paste: insert buffer at cursor @tab @kbd{Ctrl-V}
-@item @kbd{Ctrl-W} @tab Display the clipboard @tab
+@item @kbd{Alt-Y} @tab Show Buffer: browse the paste/kill buffer (Edit @result{} Show Buffer) @tab
 @item @kbd{Ctrl-U} @tab Undo last change @tab
 @item @kbd{Ctrl-R} @tab Redo (undo the last undo) @tab
 @item @kbd{Alt-Delete} @tab Copy marked text to X selection buffer @tab
@@ -209,7 +212,8 @@ These commands operate on the clipboard (kill-buffer).  (Documented since v1.4.)
 @item @key{F5} @tab Zoom the window (maximum size) @tab @kbd{Alt-Z}
 @item @kbd{Alt-F2} @tab Resize and move the window @tab @kbd{Ctrl-F5}
 @item @key{F6} @tab Switch to the next window @tab @kbd{Alt-N}
-@item @kbd{Alt-F3} @tab Close this window @tab
+@item @kbd{Ctrl-W} @tab Close this window (Borland @kbd{Alt-F3} dropped: the window manager / kernel grabs it) @tab @kbd{Ctrl-F4}
+@item @kbd{Alt-F5} @tab User Screen: the running program's full-screen output @tab
 @item @kbd{Shift-F4} @tab Tile all windows @tab
 @item @kbd{Shift-F5} @tab Cascade all windows @tab
 @end multitable
@@ -288,7 +292,7 @@ following keys change from the default (Turbo C) bindings.
 @multitable @columnfractions .35 .30 .35
 @headitem Function @tab Default binding @tab CUA binding
 @item Select next window @tab @key{F6} @tab @kbd{Ctrl-F6}
-@item Close window @tab @kbd{Alt-F3} @tab @kbd{Ctrl-F4}
+@item Close window @tab @kbd{Ctrl-W} @tab @kbd{Ctrl-W} / @kbd{Ctrl-F4}
 @item Zoom @tab @key{F5} @tab @kbd{Shift-F6}
 @item Search again @tab @kbd{Ctrl-F4} @tab @key{F3}
 @item Search @tab @key{F4} @tab @kbd{Alt-F3}

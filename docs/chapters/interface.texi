@@ -83,8 +83,8 @@ Delete marked text and copy it to the clipboard.
 Copy marked text to the clipboard.
 @item P -- Paste
 Insert clipboard contents at the cursor.
-@item S -- Show Clipboard
-Display the clipboard in a window.
+@item S -- Show Buffer
+Display the clipboard / paste buffer in a window (@kbd{Alt-Y}).
 @item D -- Delete
 Delete marked text without copying.
 @item U -- Undo
@@ -260,7 +260,8 @@ Cascade all open windows.
 @item X -- Next
 Switch to the next window.
 @item C -- Close
-Close the current window.
+Close the current window (@kbd{Ctrl-W}; the close box in the upper-right
+corner does the same).
 @item L -- List All
 Display a list of all open windows.
 @item O -- Output Window
