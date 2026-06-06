@@ -1,27 +1,23 @@
-"""Window Zoom redraw under xwpe (X11/Xft).
+"""Window Zoom/cover redraw under xwpe (X11/Xft) -- no covered-window scrollbar bleed.
 
 Bug (reported by the maintainer): with two windows open -- an editor and the
-Messages window from F9 -- zooming Messages to full size leaves the EDITOR's
-horizontal scrollbar bleeding through, as a dark bar across the middle of the
-now-full Messages window.
+Messages window from F9 -- zooming Messages to full size (or dragging a window
+over another) left the COVERED window's scrollbar bleeding through, as a dark
+bar across the middle of the top window.  X11 only; the ncurses build composites
+one cell grid (last-writer-wins) so it never had the bug.
 
-Root cause (investigation): the scrollbar's thick bar is painted by
-e_make_xrect (X11 filled rectangles), a separate overlay from the SCREENCELL
-grid.  When a window is covered (here by the zoomed Messages), those rectangles
-are not cleared -- and the extbyte clear in e_invalidate_area is compiled out
-because this Xft build defines NONEWSTYLE (NEWSTYLE off).  A full Repaint
-Desktop reproduces the same bar, confirming it is the covered window's chrome
-being recomposited, not stale state a single redraw missed.
+Root cause: the modern fluid scrollbars are drawn directly to the Cairo surface
+by wpe_render_chrome() (we_render_cairo.c), per window, every frame, AFTER the
+cell render and with NO z-order clipping -- so a covered window's scrollbar
+painted on top of the window covering it.  (This is why it was invisible to the
+schirm/extbyte diff renderer.)  Fix: clip each window's scrollbars to its
+visible region -- its rectangle MINUS every window stacked above it -- using a
+Cairo even-odd fill-rule clip (the idiomatic Cairo region clip; cf. ncurses
+panel update_panels and Turbo Vision's clip-to-exposed-region contract).
 
-This is a cosmetic artifact in a niche multi-window zoom scenario (no crash, no
-data loss); the proper fix is to clear the e_make_xrect overlay for covered
-regions and is tracked for 1.6.4.  The test is marked @incoherence (xfail) so it
-documents the bug, lists under `pytest -rxX`, and flips to XPASS the moment the
-overlay clearing is fixed.
+This guards the fix and catches any regression of the chrome z-order clip.
 """
 import time
-
-from conftest import incoherence
 
 
 def _horizontal_bar_rows(img):
@@ -38,8 +34,6 @@ def _horizontal_bar_rows(img):
     return rows
 
 
-@incoherence("zoom over a window leaves the covered window's scrollbar "
-             "(e_make_xrect overlay) bleeding through -- fix tracked for 1.6.4")
 def test_zoom_over_messages_no_scrollbar_bleed(xwpe):
     """Zooming Messages over the editor must not leave the editor's scrollbar
     bar across the middle of the screen."""

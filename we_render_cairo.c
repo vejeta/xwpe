@@ -629,12 +629,35 @@ void wpe_render_chrome(void)
   FENSTER *f = WpeEditor->f[WpeEditor->edt[w]];
   int is_active = (WpeEditor->edt[w] ==
                    WpeEditor->edt[WpeEditor->curedt]);
+  int fw = WpeRender.font_width, fh = WpeRender.font_height;
+  int w2;
 
   if (!DTMD_ISTEXT(f->dtmd))
    continue;
 
+  /* Clip this window's scrollbars to its VISIBLE region: its own rectangle
+     MINUS every window stacked above it (edt[w2], w2 > w).  The scrollbars are
+     drawn directly here, after the cell render and in z-order-blind fashion, so
+     without this a COVERED window's scrollbar paints on top of the window
+     covering it (the zoom/drag "bleed-through"; X11 only).  Even-odd fill rule
+     turns the f-rect + higher-window-rects path into "f minus those rects" --
+     the idiomatic Cairo region clip. */
+  cairo_save(cr);
+  cairo_set_fill_rule(cr, CAIRO_FILL_RULE_EVEN_ODD);
+  cairo_rectangle(cr, (double)fw * f->a.x, (double)fh * f->a.y,
+    (double)fw * (f->e.x - f->a.x + 1), (double)fh * (f->e.y - f->a.y + 1));
+  for (w2 = w + 1; w2 <= WpeEditor->mxedt; w2++)
+  {
+   FENSTER *g = WpeEditor->f[WpeEditor->edt[w2]];
+   cairo_rectangle(cr, (double)fw * g->a.x, (double)fh * g->a.y,
+     (double)fw * (g->e.x - g->a.x + 1), (double)fh * (g->e.y - g->a.y + 1));
+  }
+  cairo_clip(cr);
+
   cr_chrome_vscrollbar(f, is_active ? 4 : 0, is_active ? 7 : 8);
   cr_chrome_hscrollbar(f, is_active ? 4 : 0, is_active ? 7 : 8);
+
+  cairo_restore(cr);
  }
 #endif
 }
