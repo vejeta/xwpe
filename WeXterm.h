@@ -47,6 +47,8 @@ typedef struct wpeXStruct {
  XSyncCounter sync_counter;
  XSyncValue sync_value;
  int font_height, font_width;
+ int font_descent;     /* baseline offset; from the core font, or Xft when the
+                          legacy "8x13" core font is unavailable (no xfonts-base) */
  int altmask;
  int colors[16];
  WpeMouseShape shape_list[2];

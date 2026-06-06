@@ -100,27 +100,52 @@ void WpeXFontGet(XrmDatabase xresdb, XrmQuark *name_list,
  {
   font_name = (char *)xval.addr;
  }
- if((WpeXInfo.font = XLoadQueryFont(WpeXInfo.display, font_name)) == NULL)
+ WpeXInfo.font = XLoadQueryFont(WpeXInfo.display, font_name);
+#ifdef HAVE_XFT
+ /* With Xft built in, the legacy "8x13" core bitmap font (Debian: xfonts-base)
+    is OPTIONAL: it only seeds the initial point size; Xft overrides the metrics
+    below and does all the drawing.  Do NOT exit when it -- or any core font --
+    is missing, so xwpe runs on a minimal X server (no core fonts installed). */
+ if (WpeXInfo.font &&
+     WpeXInfo.font->max_bounds.width == WpeXInfo.font->min_bounds.width)
  {
-  fprintf(stderr, "Xwpe: unable to open font \"%s\", exiting ...\n",
-    font_name);
+  WpeXInfo.font_height  = WpeXInfo.font->max_bounds.ascent +
+                          WpeXInfo.font->max_bounds.descent;
+  WpeXInfo.font_width   = WpeXInfo.font->max_bounds.width;
+  WpeXInfo.font_descent = WpeXInfo.font->max_bounds.descent;
+ }
+ else
+ {
+  if (WpeXInfo.font)
+   { XFreeFont(WpeXInfo.display, WpeXInfo.font); WpeXInfo.font = NULL; }
+  WpeXInfo.font_height  = 13;   /* 8x13 seed values; Xft overrides them next */
+  WpeXInfo.font_width   = 8;
+  WpeXInfo.font_descent = 2;
+ }
+#else
+ /* No Xft: the core font IS the renderer, so a fixed-width one is required. */
+ if (WpeXInfo.font == NULL)
+ {
+  fprintf(stderr, "Xwpe: unable to open font \"%s\", exiting ...\n", font_name);
   exit(-1);
  }
  if (WpeXInfo.font->max_bounds.width != WpeXInfo.font->min_bounds.width)
  {
-  fprintf(stderr, "Xwpe: Font \"%s\" not fixed width using default\n",
+  fprintf(stderr, "Xwpe: Font \"%s\" not fixed width, using \"8x13\"\n",
     font_name);
-  font_name = "8x13";
-  if((WpeXInfo.font = XLoadQueryFont(WpeXInfo.display, font_name)) == NULL)
+  XFreeFont(WpeXInfo.display, WpeXInfo.font);
+  WpeXInfo.font = XLoadQueryFont(WpeXInfo.display, "8x13");
+  if (WpeXInfo.font == NULL)
   {
-   fprintf(stderr, "Xwpe: unable to open font \"%s\", exiting ...\n",
-     font_name);
+   fprintf(stderr, "Xwpe: unable to open font \"8x13\", exiting ...\n");
    exit(-1);
   }
  }
- WpeXInfo.font_height = WpeXInfo.font->max_bounds.ascent +
-                        WpeXInfo.font->max_bounds.descent;
- WpeXInfo.font_width = WpeXInfo.font->max_bounds.width;
+ WpeXInfo.font_height  = WpeXInfo.font->max_bounds.ascent +
+                         WpeXInfo.font->max_bounds.descent;
+ WpeXInfo.font_width   = WpeXInfo.font->max_bounds.width;
+ WpeXInfo.font_descent = WpeXInfo.font->max_bounds.descent;
+#endif
 
 #ifdef HAVE_XFT
  /* Initialize Xft font using fontconfig pattern matching (st pattern).
@@ -165,6 +190,7 @@ void WpeXFontGet(XrmDatabase xresdb, XrmQuark *name_list,
   /* Override font metrics from Xft */
   WpeXInfo.font_height = WpeXInfo.xftfont->ascent + WpeXInfo.xftfont->descent;
   WpeXInfo.font_width = WpeXInfo.xftfont->max_advance_width;
+  WpeXInfo.font_descent = WpeXInfo.xftfont->descent;
 
   /* Save configured pattern for fallback lookups */
   FcPatternDestroy(WpeXInfo.xftpattern);
@@ -413,7 +439,8 @@ void WpeXGCSetup()
  static char dash_list[2] = {  12,  24  };
    
  WpeXInfo.gc = XCreateGC(WpeXInfo.display, WpeXInfo.window, 0, &values);
- XSetFont(WpeXInfo.display, WpeXInfo.gc, WpeXInfo.font->fid);
+ if (WpeXInfo.font)
+  XSetFont(WpeXInfo.display, WpeXInfo.gc, WpeXInfo.font->fid);
  XSetForeground(WpeXInfo.display, WpeXInfo.gc,
    BlackPixel(WpeXInfo.display, WpeXInfo.screen));
  XSetLineAttributes(WpeXInfo.display, WpeXInfo.gc, /*line width*/ 1,

@@ -100,6 +100,16 @@ Bugs fixed in 1.6.x:
   mouse click that raises a covered window no longer leaves the chrome
   drawing the wrong window's scrollbars.  Regression test:
   tests/x11/test_window_zoom_redraw.py.
+* X11 no longer exits when the legacy "8x13" core font is missing -- fixed
+  (1.6.3).  With Xft built in, the "8x13" bitmap font (Debian: xfonts-base)
+  is only used to seed the initial point size; Xft then overrides the metrics
+  and does all the drawing.  But xwpe still called exit(-1) if 8x13 (or any
+  core font) could not be opened, so it would not start on a minimal X server
+  with no core fonts installed.  The core font is now optional under Xft: the
+  baseline offset comes from WpeXInfo.font_descent (the Xft descent when there
+  is no core font), and the renderer guards the now-optional core XFontStruct.
+  exit(-1) remains only in the no-Xft build, where the core font is the
+  renderer.
 * Heap-buffer-overflow in block Move (Ctrl-K V) -- fixed (1.6.3).  The
   multi-line block-move path (e_move_block, we_block.c) reshuffles line
   buffers by raw struct aliasing and could leave the destination line's

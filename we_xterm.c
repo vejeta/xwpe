@@ -400,7 +400,7 @@ int fk_show_cursor()
      WpeXInfo.colors[oa / 16]);
    XDrawImageString(WpeXInfo.display, WpeXInfo.window, WpeXInfo.gc,
      WpeXInfo.font_width*old_cursor_x,
-     WpeXInfo.font_height*(old_cursor_y+1) - WpeXInfo.font->max_bounds.descent,
+     WpeXInfo.font_height*(old_cursor_y+1) - WpeXInfo.font_descent,
      obuf, 1);
 #ifdef NEWSTYLE
    { int _n = old_cursor_y * MAXSCOL + old_cursor_x;
@@ -421,7 +421,7 @@ int fk_show_cursor()
      WpeXInfo.colors[ca % 16]);
    XDrawImageString(WpeXInfo.display, WpeXInfo.window, WpeXInfo.gc,
      WpeXInfo.font_width * cur_x,
-     WpeXInfo.font_height * (cur_y + 1) - WpeXInfo.font->max_bounds.descent,
+     WpeXInfo.font_height * (cur_y + 1) - WpeXInfo.font_descent,
      cbuf, 1);
   }
  }
@@ -892,7 +892,7 @@ int e_x_refresh()
       XSetForeground(WpeXInfo.display, WpeXInfo.gc, WpeXInfo.colors[sa % 16]);
       XSetBackground(WpeXInfo.display, WpeXInfo.gc, WpeXInfo.colors[sa / 16]);
       XDrawImageString(WpeXInfo.display, WpeXInfo.window, WpeXInfo.gc, WpeXInfo.font_width*j,
-          WpeXInfo.font_height*(i+1) - WpeXInfo.font->max_bounds.descent, &xc, 1);
+          WpeXInfo.font_height*(i+1) - WpeXInfo.font_descent, &xc, 1);
 #else
       if (   oldback != WpeXInfo.colors[sa / 16]
           || oldfore != WpeXInfo.colors[sa % 16]
@@ -905,7 +905,7 @@ int e_x_refresh()
        XSetForeground(WpeXInfo.display, WpeXInfo.gc, oldfore);
        XSetBackground(WpeXInfo.display, WpeXInfo.gc, oldback);
        oldX = WpeXInfo.font_width*j;
-       oldY = WpeXInfo.font_height*(i+1) - WpeXInfo.font->max_bounds.descent;
+       oldY = WpeXInfo.font_height*(i+1) - WpeXInfo.font_descent;
        oldI = i;
        stringcount = 0;
        stringbuf[stringcount++] = xc;
