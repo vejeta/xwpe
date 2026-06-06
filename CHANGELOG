@@ -365,6 +365,19 @@ Changes
   X11 mode:
 * Unicode box-drawing glyphs for window borders (U+250x) and
   scrollbar (U+2591 light shade, U+2588 full block) when Xft active.
+* Fix covered-window scrollbar bleed-through.  Zooming a window over another
+  (Window -> Zoom / Alt-Z), or dragging one over another, left the COVERED
+  window's scrollbar bleeding through as a dark bar across the middle of the
+  window on top.  X11 only -- the ncurses build composites a single cell grid
+  (last-writer-wins) and never had it.  Cause: the modern fluid scrollbars are
+  painted directly to the Cairo surface by wpe_render_chrome(), once per window
+  every frame, after the cell render and with no z-order clipping, so a covered
+  window's scrollbar drew on top of the window covering it (invisible to the
+  SCREENCELL/extbyte diff renderer).  Fix: clip each window's scrollbars to its
+  visible region -- its rectangle minus the windows stacked above it -- with a
+  Cairo even-odd fill-rule clip, the same z-order contract ncurses panels
+  (update_panels, bottom-to-top, topmost-wins) and Turbo Vision (clip every
+  write to the exposed region) use.  Test: tests/x11/test_window_zoom_redraw.py.
 
   Terminal / console mode:
 * Borland "User Screen" (Alt-F5) restored on the console.  After Ctrl-F9 Run
@@ -421,6 +434,17 @@ Changes
   bottom hint bar (it swaps its function-key set with the focused window),
   Toggle Breakpoint, and the popup close box.  The X11 suite runs by
   default in tests/run-tests.sh and skips cleanly without an X stack.
+* Double coverage: every menu item is now exercised BOTH through the menu and
+  through its advertised KEYBOARD SHORTCUT, in both front-ends.  The shortcut
+  path is a separate decode (e_prog_switch / e_tst_dfkt for the terminal,
+  we_xterm.c for X11) and is where mapping bugs hide -- an item can work from
+  the menu while its accelerator is dead.  Covers Cut/Copy/Paste/Undo/Redo,
+  Show Buffer (Alt-Y), Save (F2), Find (F4), Search again (^L), Go to Line
+  (Alt-G), Run (Ctrl-F9 and Alt-U), Make (F9), Toggle Breakpoint (^G B), Zoom
+  (Alt-Z), Next (Alt-N), List All (Alt-0) and the close box.
+* Window chrome regression test: tests/x11/test_window_zoom_redraw.py asserts a
+  covered window's scrollbar does not bleed through when a window is zoomed
+  over it (the X11 z-order chrome-clip fix above).
 
   Documentation:
 * Texinfo manual updated for 9 compilers, pdb debugger, Messages
