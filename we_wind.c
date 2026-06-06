@@ -939,8 +939,26 @@ int e_close_window(FENSTER *f)
    FREE(f->datnam);
   if (f->dirct != NULL)
    FREE(f->dirct);
+  /* c_sw -- the per-line syntax-continuation state array (e_sc_txt), grown by
+     e_new_line as the file is read.  It is freed and rebuilt on re-highlight
+     (we_progn.c, we_fl_unix.c) but was never freed at window close, so each
+     editor window leaked it (valgrind: definitely lost at e_new_line
+     we_edit.c:2038). */
+  if (f->c_sw != NULL)
+  {
+   FREE(f->c_sw);
+   f->c_sw = NULL;
+  }
   if (f && f->s != NULL)
+  {
+   /* s->brp -- the per-screen breakpoint-line array, MALLOCed in e_edit and
+      grown by e_brk_schirm/e_breakpoint -- is owned by the SCHIRM and must be
+      freed with it, else every window close (editor and Messages alike) leaks
+      it (valgrind: definitely lost at e_brk_schirm we_debug.c:1748). */
+   if (f->s->brp != NULL)
+    FREE(f->s->brp);
    FREE(f->s);
+  }
  }
  (cn->mxedt)--;
  cn->curedt = cn->edt[cn->mxedt];

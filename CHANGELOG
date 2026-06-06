@@ -79,6 +79,14 @@ Bugs fixed in 1.6.x:
   X11 use (e.g. on a window-configure repaint).  Found from a user core
   dump (coredumpctl -> gdb: e_close_view at we_wind.c:468 with a garbage
   PIC).  Now routed through e_free_view() like the other three sites.
+* Memory leaks at window close -- fixed (1.6.3).  e_close_window freed the
+  window's SCHIRM but not two arrays hanging off it: s->brp (the per-screen
+  breakpoint-line list, grown by the debugger) and c_sw (the per-line syntax-
+  continuation state).  Both were "definitely lost" at exit, one per window.
+  Found by running a full gdb trace session under valgrind, driven headless
+  through a pty with a clean Alt-X exit; both are now freed in the window
+  teardown, and the session reports 0 bytes definitely/indirectly lost,
+  0 errors.
 * X11 scrollbar bled through overlapping windows -- fixed (1.6.3).  With
   three windows stacked so one is covered by two others at once, the
   covered window's vertical/horizontal scrollbar reappeared in the
