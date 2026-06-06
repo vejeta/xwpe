@@ -62,3 +62,51 @@ def test_replace_all_changes_every_occurrence(tmp_path):
         t = w.text()
         assert "foo" not in t and t.count("ZZZ") == 3, \
             "Change All should replace every 'foo' with 'ZZZ', got %r" % t
+
+
+# --- shortcut path (#159): Search accelerators, advertised in we_menue.c ---
+
+F4 = "\033OS"            # kf4  -> Find
+GOTO = "\033g"           # Alt-G -> Go to Line
+SEARCH_AGAIN = "\x0c"    # ^L   -> Search again
+
+
+def test_goto_line_via_alt_g(tmp_path):
+    """Alt-G (advertised) opens Go to Line; line N then typing edits line N."""
+    with WpeSession(str(tmp_path), "L1\nL2\nL3\nL4\nL5\n") as w:
+        w.key(GOTO)                          # Alt-G
+        w.key("3", "\r")                     # line 3
+        w.key("X")                           # marker at the cursor
+        w.save()
+        assert w.alive(), "wpe died on Alt-G"
+        lines = w.text().splitlines()
+        assert len(lines) >= 3 and lines[2].startswith("X"), \
+            "Alt-G then 3 should put the cursor on line 3, got %r" % w.text()
+
+
+def test_find_via_f4(tmp_path):
+    """F4 (advertised) opens Find; the cursor lands on the match."""
+    with WpeSession(str(tmp_path), "apple\nbanana\nCHERRY\ndate\n") as w:
+        w.key(F4)                            # F4 -> Find dialog (field active)
+        w.key("CHERRY")
+        w.key("\r")                          # OK -> search
+        w.key("X")                           # marker at the match
+        w.save()
+        assert w.alive(), "wpe died on F4 (Find)"
+        t = w.text()
+        assert "XCHERRY" in t or "CHERRYX" in t, \
+            "F4 Find should move the cursor to the match, got %r" % t
+
+
+def test_search_again_via_ctrl_l(tmp_path):
+    """^L (advertised Search again) repeats the last Find to the next match."""
+    with WpeSession(str(tmp_path), "tag\nmid\ntag\nend\n") as w:
+        w.key(F4)                            # Find
+        w.key("tag"); w.key("\r")            # first match: line 1
+        w.key(SEARCH_AGAIN)                  # ^L -> next match: line 3
+        w.key("Z")                           # marker at the second match
+        w.save()
+        assert w.alive(), "wpe died on ^L (Search again)"
+        lines = w.text().splitlines()
+        assert len(lines) >= 3 and "Z" in lines[2], \
+            "^L should advance to the 2nd 'tag' (line 3), got %r" % w.text()

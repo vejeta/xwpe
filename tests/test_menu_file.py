@@ -59,3 +59,18 @@ def test_new_opens_untitled_buffer(tmp_path):
         assert w.alive(), "wpe died during File -> New"
         assert "Noname" in screen, \
             "File -> New should open an untitled (Noname) buffer"
+
+
+# --- shortcut path (#159): Save via its advertised accelerator F2 ---
+
+F2 = "\033OQ"            # kf2 -> Save (default key style)
+
+
+def test_save_via_f2(tmp_path):
+    """F2 (advertised Save accelerator) persists the edit to disk."""
+    with WpeSession(str(tmp_path), "AAA\nBBB\n") as w:
+        w.key("X")                       # insert at the top of the buffer
+        w.key(F2)                        # F2 : Save
+        assert w.alive(), "wpe died on F2 (Save)"
+        assert w.text().startswith("X"), \
+            "F2 should persist the typed char, got %r" % w.text()

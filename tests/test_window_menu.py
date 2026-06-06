@@ -134,3 +134,35 @@ def test_list_all_opens_window_chooser(tmp_path):
     assert code is None, 'wpe died during List All (exit=%r)' % code
     blob = '\n'.join(screen.display)
     assert 'Windows' in blob, 'List All should open the "Windows" chooser'
+
+
+# --- shortcut path (#159): Window accelerators, no menu opened ---
+
+ALT_Z = '\033z'          # Zoom
+ALT_N = '\033n'          # Next
+ALT_0 = '\0330'          # List All
+
+
+def test_zoom_via_alt_z(tmp_path):
+    """Alt-Z (advertised) maximises the active window over the others."""
+    screen, code = run_windows(str(tmp_path), [ALT_Z])
+    assert code is None, 'wpe died on Alt-Z (exit=%r)' % code
+    titles = visible_titles(screen)
+    assert titles == {'c.c'}, \
+        'Alt-Z should leave only the active window visible, saw %s' % titles
+
+
+def test_next_via_alt_n(tmp_path):
+    """Alt-N (advertised) cycles the active window (wraps to a.c)."""
+    screen, code = run_windows(str(tmp_path), [ALT_N])
+    assert code is None, 'wpe died on Alt-N (exit=%r)' % code
+    blob = '\n'.join(screen.display)
+    assert 'int a;' in blob, 'Alt-N should make a.c active ("int a;" shows)'
+
+
+def test_list_all_via_alt_0(tmp_path):
+    """Alt-0 (advertised) opens the "Windows" chooser."""
+    screen, code = run_windows(str(tmp_path), [ALT_0])
+    assert code is None, 'wpe died on Alt-0 (exit=%r)' % code
+    blob = '\n'.join(screen.display)
+    assert 'Windows' in blob, 'Alt-0 should open the "Windows" chooser'
