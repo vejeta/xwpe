@@ -235,7 +235,14 @@ Block menu (Alt-B) operations:
 
 X11 GUI tests (xwpe under Xvfb, `tests/x11/`):
 - `conftest.py` -- Xvfb + matchbox + xwpe session fixtures, xdotool input
-  helpers, and a Pillow screenshot helper
+  helpers (`key`/`type`/`click`/`drag`/`wheel` -- function keys injected by
+  keycode, see above), and a Pillow screenshot helper
+- `test_mouse_scroll.py` -- real mouse scrolling: the wheel (button 4/5 ->
+  WPE_SCROLL_UP/DOWN) and the fluid scrollbar-thumb DRAG, vertical and
+  horizontal (e_scroll_drag_v/h -- the X11 button/motion path).  The drag pulls
+  the cursor into the new viewport, so a typed marker lands far down / far right
+  -- ground truth stronger than a screenshot diff.  Exercises the code guarded
+  for --without-x
 - `test_editor_options.py` -- the Options > Editor dialog opens, and toggling
   a checkbox (Alt-K) renders a visible `[X]` mark that clears on a second
   toggle.  Guards the X11-only regression where NEWSTYLE drew check/radio

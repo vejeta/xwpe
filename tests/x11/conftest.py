@@ -129,6 +129,35 @@ class XwpeSession:
         _xdo("click", "1")
         time.sleep(delay)
 
+    def drag(self, x1, y1, x2, y2, steps=12, delay=0.6):
+        """Press button 1 at (x1,y1), move to (x2,y2) in steps, release.
+        Drives the real X11 drag path (ButtonPress -> MotionNotify* ->
+        ButtonRelease) -- e.g. a scrollbar-thumb drag."""
+        _xdo("mousemove", "--window", self.win, str(x1), str(y1))
+        time.sleep(0.15)
+        _xdo("mousedown", "1")
+        time.sleep(0.1)
+        for i in range(1, steps + 1):
+            ix = x1 + (x2 - x1) * i // steps
+            iy = y1 + (y2 - y1) * i // steps
+            _xdo("mousemove", "--window", self.win, str(ix), str(iy))
+            time.sleep(0.03)
+        time.sleep(0.1)
+        _xdo("mouseup", "1")
+        time.sleep(delay)
+
+    def wheel(self, direction, count=3, px=None, py=None, delay=0.4):
+        """Spin the mouse wheel (button 4 = up, 5 = down) `count` times, over
+        (px,py) if given.  Drives WPE_SCROLL_UP/DOWN."""
+        button = "4" if direction == "up" else "5"
+        if px is not None:
+            _xdo("mousemove", "--window", self.win, str(px), str(py))
+            time.sleep(0.1)
+        for _ in range(count):
+            _xdo("click", button)
+            time.sleep(0.1)
+        time.sleep(delay)
+
     def type(self, text, delay=0.4):
         """Type a literal string (into a focused text field) via XTEST."""
         _xdo("type", "--window", self.win, "--clearmodifiers", text)
