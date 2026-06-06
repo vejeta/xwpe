@@ -197,6 +197,10 @@ Rendering / input:
   F9 compile, so window drag/resize keeps working
 - `test_maxcol_paste.py` -- small Max Columns + cut/paste/typing does not crash
   (Payne-era #87, fixed by the SCREENCELL migration)
+- `test_user_screen.py` -- the Borland "User Screen" (Alt-F5): after a Ctrl-F9
+  Run it replays the program's COMPUTED output full-screen with a return prompt,
+  and a key returns to the editor.  Locks in the console input path (Ctrl-F9 Run
+  and the Alt-F5 shortcut via the Esc meta prefix)
 
 Borland-style project management:
 - `test_project_windows.py` -- picker/project window titles, white-on-white
