@@ -1325,6 +1325,36 @@ int e_read_info(char *str, FENSTER *f, char *file)
    return(2);
 }
 
+/**
+ * e_read_xwpe_info - Open xwpe's own manual in the Info viewer (Help > Info).
+ *
+ * Help > Info should land in OUR documentation -- the xwpe Texinfo manual,
+ * installed as @file{xwpe.info} -- not the system-wide Info directory that
+ * lists every package on the machine.  Loads the @code{Top} node of
+ * @file{xwpe.info} and records the file on the help stack so in-manual
+ * navigation (Goto/Next/Prev/Back) stays within it.  If @file{xwpe.info} is
+ * not installed on the Info path (e.g. running uninstalled from the build
+ * tree, or a stripped-down system), it falls back to the system directory so
+ * the menu still does something useful.
+ *
+ * Return: 0.
+ */
+static int e_read_xwpe_info(FENSTER *hw)
+{
+ if (e_read_info("Top", hw, "xwpe") != 1)
+ {
+  if (ud_help)
+  {
+   ud_help->file = MALLOC(5 * sizeof(char));
+   if (ud_help->file)
+    strcpy(ud_help->file, "xwpe");
+  }
+ }
+ else
+  e_read_info(NULL, hw, NULL);
+ return(0);
+}
+
 int e_help_loc(FENSTER *f, int sw)
 {
  extern char *e_hlp;
@@ -1367,7 +1397,7 @@ int e_help_loc(FENSTER *f, int sw)
   ud_help = next;
  }
  if (sw)
-  e_read_info(NULL, f->ed->f[f->ed->mxedt], NULL);
+  e_read_xwpe_info(f->ed->f[f->ed->mxedt]);
  else
   e_read_help(tmp, f->ed->f[f->ed->mxedt], 0);
  e_schirm(f->ed->f[f->ed->mxedt], 1);
