@@ -612,11 +612,6 @@ int WpeHandleFileManager(ECNT * cn)
   /* go until quit */
   while(c != WPE_ESC)
   {
-    { static int _it = 0;
-      FILE *_df = fopen("/tmp/xwpe-fm.txt", "a");
-      if (_df) { fprintf(_df, "FM %d: c=%d sw=%d cold=%d rdfile=[%s]\n",
-        _it++, c, b->sw, cold, b->rdfile); fclose(_df); }
-    }
     /* draw out dir tree and file list windows */
     e_pr_file_window(b->fw, 0, 1, f->fb->ft.fb, f->fb->fz.fb, f->fb->frft.fb);
     e_pr_file_window(b->dw, 0, 1, f->fb->ft.fb, f->fb->fz.fb, f->fb->frft.fb);
@@ -631,10 +626,6 @@ int WpeHandleFileManager(ECNT * cn)
            result file copied into b->rdfile, max 79 char + '\0' */
         c = e_schr_lst_wsv(b->rdfile, f->a.x + b->xfa, f->a.y + 3, b->xfd + 1, 79,
                            f->fb->fr.fb, f->fb->fz.fb, &f->ed->fdf, f);
-        { FILE *_df = fopen("/tmp/xwpe-altn.txt", "a");
-          if (_df) { fprintf(_df, "ALTN: schr_ret=%d sw=%d anz=%d\n",
-            c, b->sw, b->df ? b->df->anz : -1); fclose(_df); }
-        }
 
         /* determine the entered filename, going backward */
         for(i = strlen(b->rdfile); i >= 0 && b->rdfile[i] != DIRC; i--)
@@ -3952,10 +3943,6 @@ int e_data_eingabe(ECNT * cn)
     if(c == MBKEY)
       c = e_data_ein_mouse(f);
 #endif
-    { FILE *_df = fopen("/tmp/xwpe-data.txt", "a");
-      if (_df) { fprintf(_df, "DATA: c=%d ins=%d df=%p anz=%d AltA=%d\n",
-        c, f->ins, (void*)fw->df, fw->df ? fw->df->anz : -1, AltA); fclose(_df); }
-    }
     if(((c == WPE_CR || c == AltS) && (f->ins < 4 || f->ins == 7)) ||
        ((c == AltA || c == EINFG) && (f->ins > 3 && f->ins < 7)))
     {

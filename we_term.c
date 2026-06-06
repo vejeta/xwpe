@@ -953,17 +953,6 @@ int e_t_getch()
 #if !defined(NO_XWINDOWS) && defined(NEWSTYLE)
      extbyte = REALLOC(extbyte, MAXSCOL * MAXSLNS);
 #endif
-     { FILE *_df = fopen("/tmp/xwpe-ncurses-resize.txt", "a");
-       int _k;
-       if (_df) { fprintf(_df, "RESIZE: old=%dx%d new=%dx%d mxedt=%d\n",
-         old_scol, old_slns, MAXSCOL, MAXSLNS, WpeEditor->mxedt);
-         for (_k = 0; _k <= WpeEditor->mxedt; _k++)
-          fprintf(_df, "  BEFORE[%d] '%s': (%d,%d)-(%d,%d)\n", _k,
-            WpeEditor->f[_k]->datnam ? WpeEditor->f[_k]->datnam : "?",
-            WpeEditor->f[_k]->a.x, WpeEditor->f[_k]->a.y,
-            WpeEditor->f[_k]->e.x, WpeEditor->f[_k]->e.y);
-         fclose(_df); }
-     }
      e_relayout_windows(WpeEditor, old_scol, old_slns);
      e_free_all_pics(WpeEditor);
      e_repaint_desk(WpeEditor->f[WpeEditor->mxedt]);
@@ -1276,10 +1265,6 @@ int fk_t_mouse(int *g)
  timeout(-1);
  if (ch == KEY_MOUSE && getmouse(&mev) == OK)
  {
-  { FILE *_df = fopen("/tmp/xwpe-mouse.txt", "a");
-    if (_df) { fprintf(_df, "FKT: bstate=0x%lx x=%d y=%d gb=%d\n",
-      (unsigned long)mev.bstate, mev.x, mev.y, g_mouse_buttons); fclose(_df); }
-  }
   btn = e_t_mouse_decode_button(mev.bstate);
   if (btn >= 0)
    g_mouse_buttons |= btn;

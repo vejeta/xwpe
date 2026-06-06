@@ -187,9 +187,6 @@ int e_p_make(FENSTER *f)
  PIC *pic = NULL;
  int linkRequest = 1; /* assume linking has to be done */
 
- { FILE *_df = fopen("/tmp/xwpe-dlg.txt", "a");
-   if (_df) { fprintf(_df, "E_P_MAKE: entered\n"); fclose(_df); }
- }
  WpeMouseChangeShape(WpeWorkingShape);
  efildes[0] = efildes[1] = -1;
  wfildes[0] = wfildes[1] = -1;
@@ -386,9 +383,6 @@ static int e_run_with_pty(char *cmd, BUFFER *b, FENSTER *mf)
  }
  close(pty_slave);
 
- { FILE *_df = fopen("/tmp/xwpe-run.txt", "a");
-   if (_df) { fprintf(_df, "RUN_PTY: cmd=[%s] child=%d master=%d\n", cmd, child, pty_master); fclose(_df); }
- }
  print_to_end_of_buffer(b, "--- Run output (type in Messages, Ctrl-C to stop) ---", 0);
  e_new_line(b->mxlines, b);
  b->b.y = b->mxlines - 1;
@@ -407,9 +401,6 @@ static int e_run_with_pty(char *cmd, BUFFER *b, FENSTER *mf)
   int wp = waitpid(child, &ws, WNOHANG);
   if (wp > 0)
   {
-   { FILE *_df = fopen("/tmp/xwpe-run.txt", "a");
-     if (_df) { fprintf(_df, "RUN_PTY: child exited ws=%d ret=%d\n", ws, WIFEXITED(ws) ? WEXITSTATUS(ws) : -1); fclose(_df); }
-   }
    e_run_drain_pty(pty_master, b, mf);
    ret = WIFEXITED(ws) ? WEXITSTATUS(ws) : -1;
    break;
@@ -674,16 +665,7 @@ int e_comp(FENSTER *f)
   argc = e_add_arg(&arg, ostr, argc, argc);
  }
 #endif
- { FILE *_df = fopen("/tmp/xwpe-dlg.txt", "a");
-   if (_df) { fprintf(_df, "E_COMP: before e_sys_ini MAXSLNS=%d LINES=%d\n", MAXSLNS, LINES); fclose(_df); }
- }
  e_sys_ini();
- { FILE *_df = fopen("/tmp/xwpe-dlg.txt", "a");
-   if (_df) { fprintf(_df, "E_COMP: after e_sys_ini\n"); fclose(_df); }
- }
- { FILE *_df = fopen("/tmp/xwpe-dlg.txt", "a");
-   if (_df) { fprintf(_df, "E_COMP: after e_sys_ini, before checkheader\n"); fclose(_df); }
- }
 #ifdef CHECKHEADER
  if ((stat(ostr, obuf) || e_check_header(fstr, obuf->st_mtime, cn, 0)))
 #else
@@ -2540,8 +2522,6 @@ int e_read_var(FENSTER *f)
  {  fclose(fp);  e_error(e_msg[ERR_LOWMEM], 0, f->fb);  return(-1);  }
  while (fgets(str, 256, fp))
  {
-  { FILE *_d = fopen("/tmp/xwpe-rv.txt", "a");
-    if (_d) { fprintf(_d, "RV line: [%.40s] len=%d\n", str, (int)strlen(str)); fclose(_d); } }
   for (i = 0; isspace(str[i]); i++);
   if (!str[i]) continue;
   else if (str[i] == '#')
@@ -3059,9 +3039,6 @@ struct dirfile **e_make_prj_opt(FENSTER *f)
  char **tmp, *sp, *tp, text[256];
  FILE *fp;
  struct dirfile *save_df = NULL;
- { FILE *_d = fopen("/tmp/xwpe-mpo.txt", "a");
-   if (_d) { fprintf(_d, "MPO enter: project=[%s] e_p_df=%p\n",
-     e_prog.project ? e_prog.project : "NULL", (void*)e_p_df); fclose(_d); } }
 
  i = e_find_dirty_project_window(f->ed);
  if (i > 0) {  save_df = e_p_df[0];  e_p_df[0] = NULL;  }
@@ -3440,8 +3417,6 @@ int e_p_del_df(FLWND *fw, int sw)
 {
  int i;
 
- { FILE *_d = fopen("/tmp/xwpe-del.txt", "a");
-   if (_d) { fprintf(_d, "DEL: nf=%d anz=%d\n", fw->nf, fw->df->anz); fclose(_d); } }
  /* Nothing to delete only when the list is empty or the selection is out of
     range. The old guard (nf > anz-2) wrongly refused to delete the LAST entry
     (including the single remaining file). */

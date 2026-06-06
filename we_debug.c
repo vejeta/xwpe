@@ -2568,16 +2568,6 @@ int e_exec_deb(FENSTER *f, char *prog)
    _fl = fcntl(2, F_GETFL, 0 );
    fcntl( 2, F_SETFL, _fl | O_NONBLOCK);
   }
-  { /* Log the exec to a trace file from the child, since jdb_trace
-       may not work after fd rewiring */
-   FILE *_tf = fopen("/tmp/xwpe-jdb-child.txt", "w");
-   if (_tf)
-   { char _cwd[1024]; getcwd(_cwd, sizeof(_cwd));
-     fprintf(_tf, "child exec: debugger='%s' swtch='%s' prog='%s' cwd='%s'\n",
-             e_debugger, e_deb_swtch ? e_deb_swtch : "(null)", prog, _cwd);
-     fclose(_tf);
-   }
-  }
   if (e_deb_type == 5)
    execlp(e_debugger, e_debugger, "-m", "pdb", prog, NULL);
   else if (!e_deb_swtch)

@@ -1755,10 +1755,6 @@ int e_opt_kst(W_OPTSTR *o)
    fk_cursor(0);
 e_opt_kst_restart:
    e_opt_center_dialog(o, dlg_w, dlg_h);
-   { FILE *_df = fopen("/tmp/xwpe-dlg.txt", "a");
-     if (_df) { fprintf(_df, "RESTART: dlg=(%d,%d)-(%d,%d) dlg_w=%d dlg_h=%d MAXSLNS=%d MAXSCOL=%d\n",
-       o->xa, o->ya, o->xe, o->ye, dlg_w, dlg_h, MAXSLNS, MAXSCOL); fclose(_df); }
-   }
    o->pic = e_std_kst(o->xa, o->ya, o->xe, o->ye, o->name, 1, o->frt, o->ftt, o->frs);
    if(o->pic == NULL) {  e_error(e_msg[ERR_LOWMEM], 0, o->f->fb); return(-1);  }
    if(!c) c = e_get_opt_sw(CDO, 0, 0, o);
@@ -1831,10 +1827,6 @@ e_opt_kst_restart:
    {
       if (c == WPE_RESIZE)
       {
-         { FILE *_df = fopen("/tmp/xwpe-dlg.txt", "a");
-           if (_df) { fprintf(_df, "OPT_KST: WPE_RESIZE pic=(%d,%d)-(%d,%d) MAXSLNS=%d MAXSCOL=%d LINES=%d COLS=%d\n",
-             o->xa, o->ya, o->xe, o->ye, MAXSLNS, MAXSCOL, LINES, COLS); fclose(_df); }
-         }
          e_close_view(o->pic, 0);
          o->pic = NULL;
          c = 0;
@@ -2042,10 +2034,6 @@ e_opt_kst_restart:
 
       c = cold;
       sw = 1;
-   }
-   { FILE *_df = fopen("/tmp/xwpe-dlg.txt", "a");
-     if (_df) { fprintf(_df, "CLOSE: pic=(%d,%d)-(%d,%d) ret=%d\n",
-       o->pic->a.x, o->pic->a.y, o->pic->e.x, o->pic->e.y, ret); fclose(_df); }
    }
    e_close_view(o->pic, 1);
    e_mouse_flush();
