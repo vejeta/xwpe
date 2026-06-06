@@ -148,3 +148,41 @@ an editor area in the center, and a status line at the bottom.  Press
 If the terminal shows garbled output, check that your terminal is set to
 UTF-8 encoding and that @code{libncursesw} (not @code{libncurses}) is
 linked.  Run @command{ldd $(which wpe) | grep ncurses} to verify.
+
+@section On the bare Linux console (Terminus font)
+@cindex console font
+@cindex Terminus
+@cindex setfont
+@cindex setupcon
+
+@command{wpe} draws its window borders and scrollbars with Unicode
+box-drawing and block characters.  Inside a graphical terminal emulator
+(@command{xterm}, GNOME Terminal, Konsole, kitty, @dots{}) these come from
+the emulator's own font, so nothing extra is needed.  On a @emph{bare Linux
+text console} (@kbd{Ctrl-Alt-F2}), however, the kernel can only display the
+glyphs present in the loaded console font, and the default is often too small
+a set -- the borders then fall back to plain @samp{|} and @samp{-}.
+
+Load a console font with good Unicode coverage; @code{Terminus}
+(@code{fonts-terminus} on Debian) is the broadest the distributions ship:
+
+@example
+# temporary, for the current console:
+sudo setfont Uni3-Terminus32x16     # or Uni3-Terminus16 for a smaller font
+@end example
+
+To make it permanent, set it in @file{/etc/default/console-setup} and run
+@command{setupcon}:
+
+@example
+CHARMAP="UTF-8"
+FONTFACE="Terminus"
+FONTSIZE="16x32"                    # 8x16 for the smaller font
+@end example
+
+@quotation Note
+Even Terminus, a 512-glyph console font, lacks the small geometric symbols
+xwpe uses for the window maximize/close boxes, so those may stay blank on the
+bare console.  Making the console chrome degrade to plain ASCII when the VT
+cannot show a glyph is planned; a terminal emulator is unaffected.
+@end quotation
