@@ -59,11 +59,10 @@ def test_replace_all_changes_every_occurrence(xwpe):
 
 
 # --- shortcut path (#159): Search accelerators in the X11 input path ---
-# Alt-G (Go to Line) is asserted here.  The plain function-key accelerators
-# (Find F4, Make F9, Run Ctrl-F9) are decoded in we_xterm.c (lines ~1320-1366)
-# and asserted by the terminal suite; they are not driven here because the
-# headless Xvfb+matchbox harness does not deliver bare/Ctrl function keys to the
-# app reliably (the menu routes for the same items pass).
+# Alt-G (Go to Line) and F4 (Find) are both asserted here.  F4 is a bare
+# function key: it reaches xwpe only because conftest injects function keys BY
+# KEYCODE (xdotool bug #491 would otherwise deliver Alt-F4) -- see the README
+# "Function keys are injected by keycode" note.
 
 def test_goto_line_via_alt_g(xwpe):
     """Alt-G (advertised) opens Go to Line; line 3 then typing edits line 3."""
@@ -75,3 +74,17 @@ def test_goto_line_via_alt_g(xwpe):
     lines = xwpe.saved_text().splitlines()
     assert len(lines) >= 3 and lines[2].startswith("X"), \
         "Alt-G then 3 should put the cursor on line 3, got %r" % xwpe.saved_text()
+
+
+def test_find_via_f4(xwpe):
+    """F4 (advertised Find accelerator) opens Find; the match moves the cursor,
+    verified by typing a marker next to it."""
+    xwpe.key("F4")                       # Find dialog (field active on open)
+    xwpe.type("return")                  # Text to Find
+    xwpe.key("Return")                   # OK -> search
+    xwpe.type("X")                       # marker at the match
+    xwpe.save()
+    assert xwpe.proc.poll() is None, "xwpe died on F4 (Find)"
+    t = xwpe.saved_text()
+    assert "Xreturn" in t or "returnX" in t, \
+        "F4 Find should move the cursor to the match, got %r" % t

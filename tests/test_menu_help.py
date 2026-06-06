@@ -33,3 +33,18 @@ def test_help_topic_search_opens_a_prompt(tmp_path):
         assert w.alive(), "wpe died opening Help -> Topic Search"
         assert after != before, \
             "Help -> Topic Search should change the screen (open a prompt)"
+
+
+# --- shortcut path (#159): the advertised Help accelerator F1 ---
+
+F1 = "\033OP"            # kf1 -> Help / Editor (the manual viewer)
+
+
+def test_help_editor_via_f1(tmp_path):
+    """F1 (advertised Help accelerator) opens the manual viewer directly."""
+    with WpeSession(str(tmp_path), "AAA\n") as w:
+        w.key(F1)                        # F1 : Help -> Editor
+        scr = _screen(w)
+        assert w.alive(), "wpe died on F1 (Help)"
+        assert "Help" in scr and "Programming Environment" in scr, \
+            "F1 should open the manual, got:\n%s" % scr

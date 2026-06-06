@@ -60,3 +60,29 @@ def test_new_opens_editable_buffer(xwpe):
         os.listdir(os.path.dirname(xwpe.srcfile))
     assert "NEWDATA" in open(out).read(), \
         "the New buffer's typed text should be saved, got %r" % open(out).read()
+
+
+# --- shortcut path (#159): File accelerators in the X11 input path ---
+# These are bare function keys; they reach xwpe only because conftest injects
+# them BY KEYCODE (xdotool bug #491 otherwise turns F2 into Alt-F2) -- see the
+# README "Function keys are injected by keycode" note.
+
+def test_save_via_f2(xwpe):
+    """F2 (advertised Save accelerator) persists the edit to disk."""
+    xwpe.type("X")                       # insert at the top
+    xwpe.key("F2")                       # File -> Save
+    assert xwpe.proc.poll() is None, "xwpe died on F2 (Save)"
+    assert xwpe.saved_text().startswith("X"), \
+        "F2 should persist the typed char, got %r" % xwpe.saved_text()
+
+
+def test_open_via_f3(xwpe):
+    """F3 (advertised File-Manager/Open accelerator) opens the File-Manager
+    dialog -- a large screen change with no menu navigation."""
+    from conftest import changed_pixels
+    before = xwpe.screenshot()
+    xwpe.key("F3")                       # File-Manager (Open)
+    time.sleep(0.5)
+    assert xwpe.proc.poll() is None, "xwpe died on F3 (File-Manager)"
+    assert changed_pixels(before, xwpe.screenshot()) > 20000, \
+        "F3 should open the File-Manager dialog (screen barely changed)"

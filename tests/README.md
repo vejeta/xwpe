@@ -67,7 +67,7 @@ absent, so the default `run-tests.sh` is unaffected on a headless buildd:
 |------|----------------|-----|
 | `Xvfb` | `xvfb` | headless X server |
 | `matchbox-window-manager` | `matchbox-window-manager` | **required** WM -- see below |
-| `xdotool` | `xdotool` | synthetic key/mouse via XTEST |
+| `xdotool` | `xdotool` | synthetic key/mouse (function keys by keycode -- see below) |
 | `xwd` | `x11-utils` | capture the root window |
 | `convert` | `imagemagick` | xwd -> PNG |
 | Pillow | `python3-pil` | load PNG, assert on pixels |
@@ -83,6 +83,28 @@ its default config grabs `<Alt>n` (next), `<Alt>p` (prev), `<Alt>c` (close),
 exactly the dialog/menu hotkeys `xwpe` uses, so the default config makes the WM
 swallow them before they reach `xwpe` -- which looks like an "Alt-hotkey
 broken" bug but is not.  The empty config binds nothing.
+
+#### Function keys are injected by keycode (xdotool bug #491)
+
+`xdotool key F3` does **not** reliably send a bare F3.  xdotool resolves a
+keysym to a keycode *plus* the modifiers needed to reach the level that keysym
+sits on, and on `xkeyboard-config` >= 2.46 that resolver is wrong for the
+function-key rows (it picks a modifier-bearing mapping): the event arrives as
+**Alt+F3** instead of F3.  See xdotool issue
+[#491](https://github.com/jordansissel/xdotool/issues/491) and fix
+[#493](https://github.com/jordansissel/xdotool/pull/493).
+
+This bit xwpe specifically: `we_xterm.c` decodes Alt+F3 as `AF3` -- a *different*
+key from `F3` -- so every bare/Ctrl function-key accelerator (Save F2, Open F3,
+Find F4, Make F9, Run ^F9 ...) silently did nothing in the harness while
+working fine for a human at a real keyboard.  Letter and Alt/Ctrl-`<letter>`
+combos are unaffected (their level-1 mapping is explicit).
+
+The fix lives in `conftest.py`: `session.key()` routes every token through
+`_to_keycodes()`, which rewrites any `F<n>` token (bare or inside a combo like
+`ctrl+F9`) to its raw X keycode -- read live from `xmodmap -pke` -- so xdotool
+skips the broken resolver and the true function key reaches xwpe.  Tests just
+write `xwpe.key("F2")` or `xwpe.key("ctrl+F9")` as usual.
 
 The X11 tests honour **`$XWPE_BIN`** (default `../xwpe`), mirroring `$WPE_BIN`.
 
@@ -123,6 +145,15 @@ hold.  When coverage turns up a behaviour that is wrong but not yet fixed, the
 test is marked `@incoherence("...")` (from `wpe_driver`), which records it as an
 xfail.  `pytest -rxX` then prints every `INCOHERENCE:` as a manual-review queue;
 once the behaviour is fixed the test flips to XPASS and the marker is removed.
+
+**Shortcut double-coverage (#159).**  Each menu item is exercised BOTH through
+the menu and through its advertised keyboard accelerator -- a separate decode
+path (`e_prog_switch` / `e_tst_dfkt` for the terminal, `we_xterm.c` for X11)
+where mapping bugs hide (an item can work from the menu while its accelerator is
+dead).  `test_*_via_<key>` functions cover Save F2, Open F3, Find F4, Make F9,
+Run ^F9/Alt-U, Help F1, Cut/Copy/Paste/Undo/Redo, Show Buffer Alt-Y, Go to Line
+Alt-G, Toggle Breakpoint ^G B, Zoom/Next/List/Close.  Function-key accelerators
+work in the X11 suite only because of the keycode injection above (xdotool #491).
 
 Menu sections (`test_menu_<x>.py`, Alt-`<x>`) -- one per environment:
 - `test_menu_edit.py` (wpe) + `x11/test_menu_edit.py` (xwpe) -- Edit (Alt-E):

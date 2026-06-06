@@ -51,6 +51,46 @@ def _xdo(*args):
                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
+_FKEY_KEYCODE = {}
+
+
+def _fkey_keycodes():
+    """Map F1..F12 -> the live X keycode by parsing `xmodmap -pke`.
+
+    WHY by keycode and not by name: xdotool resolves a keysym (e.g. "F3") to a
+    keycode PLUS the modifiers needed to reach the level that keysym sits on.
+    On xkeyboard-config >= 2.46 that resolver is buggy (xdotool issue #491) and
+    emits the F-key with a phantom Alt modifier -- so `xdotool key F3` actually
+    delivers Alt+F3.  xwpe decodes Alt+F3 as AF3, a DIFFERENT key from F3, so
+    the bare accelerator looks dead.  Letters are unaffected (explicit level-1
+    mapping).  Injecting the raw keycode skips the resolver entirely and lands
+    the true function key.  Cached after the first lookup."""
+    if _FKEY_KEYCODE:
+        return _FKEY_KEYCODE
+    out = subprocess.run(["xmodmap", "-pke"],
+                         env={**os.environ, "DISPLAY": DISPLAY},
+                         stdout=subprocess.PIPE, stderr=subprocess.DEVNULL).stdout.decode()
+    for line in out.splitlines():
+        parts = line.split()
+        # "keycode  69 = F3 F3 F3 F3 F3 F3 XF86Switch_VT_3"
+        if len(parts) >= 4 and parts[0] == "keycode" and parts[2] == "=":
+            sym = parts[3]
+            if len(sym) >= 2 and sym[0] in "Ff" and sym[1:].isdigit():
+                _FKEY_KEYCODE.setdefault(sym.upper(), parts[1])
+    return _FKEY_KEYCODE
+
+
+def _to_keycodes(keystroke):
+    """Rewrite an xdotool keystroke so any function-key token is the keycode.
+
+    Handles bare ("F3") and modifier combos ("ctrl+F9", "shift+F3"): each "+"-
+    separated token that names a function key is swapped for its keycode, other
+    tokens (ctrl/alt/shift/letters) pass through untouched.  See
+    _fkey_keycodes() for why."""
+    fk = _fkey_keycodes()
+    return "+".join(fk.get(tok.upper(), tok) for tok in keystroke.split("+"))
+
+
 def incoherence(reason):
     """Mark an X11 test that asserts behaviour we expect but which xwpe does
     not currently honour (a wpe-vs-xwpe divergence found during coverage).
@@ -80,7 +120,7 @@ class XwpeSession:
 
     def key(self, *keys, delay=0.5):
         for k in keys:
-            _xdo("key", "--window", self.win, "--clearmodifiers", k)
+            _xdo("key", "--window", self.win, "--clearmodifiers", _to_keycodes(k))
             time.sleep(delay)
 
     def click(self, px, py, delay=0.5):

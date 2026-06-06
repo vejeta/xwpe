@@ -25,3 +25,17 @@ def test_help_topic_search_opens_a_prompt(xwpe):
     assert xwpe.proc.poll() is None, "xwpe died opening Help -> Topic Search"
     assert changed_pixels(before, after) > 1000, \
         "Help -> Topic Search should open a prompt (screen barely changed)"
+
+
+# --- shortcut path (#159): the advertised Help accelerator F1 ---
+# A bare function key: delivered only because conftest injects function keys by
+# keycode (xdotool bug #491) -- see the README note.
+
+def test_help_editor_via_f1(xwpe):
+    """F1 (advertised Help accelerator) opens the manual viewer directly."""
+    before = xwpe.screenshot()
+    xwpe.key("F1")                       # Help -> Editor
+    after = xwpe.screenshot()
+    assert xwpe.proc.poll() is None, "xwpe died on F1 (Help)"
+    assert changed_pixels(before, after) > 3000, \
+        "F1 should open the manual viewer (screen barely changed)"

@@ -35,13 +35,24 @@ def test_run_via_alt_u(xwpe):
     """Alt-U (advertised Run accelerator, hotkey != 'U') compiles+links+runs.
 
     This is the accelerator that was a no-op until the e_prog_switch fallback
-    was wired -- guarded here in the separate X11 (we_xterm.c) keyboard path.
-    (The other Run accelerator, Ctrl-F9, is decoded in we_xterm.c:1326 -> CF9
-    and covered by the terminal suite; it is not asserted here because the
-    headless window manager grabs Ctrl-Fn.)"""
+    was wired -- guarded here in the separate X11 (we_xterm.c) keyboard path."""
     d = os.path.dirname(xwpe.srcfile)
     xwpe.key("alt+u")                    # Run
     time.sleep(3.0)
     assert xwpe.proc.poll() is None, "xwpe died on Alt-U (Run)"
     assert os.path.exists(os.path.join(d, "t.e")), \
         "Alt-U should build+run (t.e on disk), dir=%r" % os.listdir(d)
+
+
+def test_run_via_ctrl_f9(xwpe):
+    """Ctrl-F9 (the primary advertised Run accelerator) compiles+links+runs.
+
+    Decoded in we_xterm.c (Control+XK_F9 -> CF9).  The combo is injected by
+    keycode (ctrl+<F9 keycode>) so it survives the xdotool resolver bug -- see
+    the README "Function keys are injected by keycode" note."""
+    d = os.path.dirname(xwpe.srcfile)
+    xwpe.key("ctrl+F9")                  # Run
+    time.sleep(3.0)
+    assert xwpe.proc.poll() is None, "xwpe died on Ctrl-F9 (Run)"
+    assert os.path.exists(os.path.join(d, "t.e")), \
+        "Ctrl-F9 should build+run (t.e on disk), dir=%r" % os.listdir(d)
