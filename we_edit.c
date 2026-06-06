@@ -854,7 +854,7 @@ int e_tst_fkt(int c, ECNT *e)
    e_goto_line(f);
    break;
   case CF10:
-  case CtrlW:
+  case AltY:        /* emacs M-y: browse the paste buffer (kill ring) */
    e_show_clipboard(f);
    break;
   case CtrlDel:
@@ -1227,6 +1227,7 @@ int e_tst_dfkt(FENSTER *f, int c)
       break;
      case CF4:
      case AltX:
+     case CtrlW:        /* modern close-window (browser/VSCode/IntelliJ tab) */
       e_close_window(f);
       break;
      case FRONT:
@@ -1267,7 +1268,7 @@ int e_tst_dfkt(FENSTER *f, int c)
      case CF3:
       WpeManagerFirst(f);
       break;
-     case AF3:
+     case CtrlW:        /* modern close-window; Alt-F3 dropped (WM/kernel grabs it) */
       e_close_window(f);
       break;
      case FRONT:

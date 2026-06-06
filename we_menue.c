@@ -108,7 +108,7 @@ int WpeHandleMainmenu(int n, FENSTER *f)
   mainmenu[2].menuitems[0] = WpeFillSubmenuItem("Cut     Shift Del / ^X", 2, 'T', e_edt_del);
   mainmenu[2].menuitems[1] = WpeFillSubmenuItem("Copy         ^Ins / ^C", 0, 'C', e_edt_copy);
   mainmenu[2].menuitems[2] = WpeFillSubmenuItem("Paste   Shift Ins / ^V", 0, 'P', e_edt_einf);
-  mainmenu[2].menuitems[3] = WpeFillSubmenuItem("Show Buffer         ^W", 0, 'S', e_show_clipboard);
+  mainmenu[2].menuitems[3] = WpeFillSubmenuItem("Show Buffer      Alt Y", 0, 'S', e_show_clipboard);
   mainmenu[2].menuitems[4] = WpeFillSubmenuItem("Delete            ^Del", 0, 'D', e_blck_del);
   mainmenu[2].menuitems[5] = WpeFillSubmenuItem("Undo                ^U", 0, 'U', e_make_undo);
   mainmenu[2].menuitems[6] = WpeFillSubmenuItem("Redo                ^R", 0, 'R', e_make_redo);
@@ -291,14 +291,14 @@ int WpeHandleMainmenu(int n, FENSTER *f)
     mainmenu[MENOPT - 2].menuitems[0] = WpeFillSubmenuItem("Size/Move            ^L", 0, 'S', e_size_move);
     mainmenu[MENOPT - 2].menuitems[1] = WpeFillSubmenuItem("Zoom   Shift F6 / Alt Z", 0, 'Z', e_ed_zoom);
     mainmenu[MENOPT - 2].menuitems[4] = WpeFillSubmenuItem("Next        ^F6 / Alt N", 2, 'X', e_ed_next);
-    mainmenu[MENOPT - 2].menuitems[5] = WpeFillSubmenuItem("Close       ^F4 / Alt X", 0, 'C', e_close_window);
+    mainmenu[MENOPT - 2].menuitems[5] = WpeFillSubmenuItem("Close       ^W / ^F4", 0, 'C', e_close_window);
   }
   else
   {
     mainmenu[MENOPT - 2].menuitems[0] = WpeFillSubmenuItem("Size/Move        Alt F2", 0, 'S', e_size_move);
     mainmenu[MENOPT - 2].menuitems[1] = WpeFillSubmenuItem("Zoom         F5 / Alt Z", 0, 'Z', e_ed_zoom);
     mainmenu[MENOPT - 2].menuitems[4] = WpeFillSubmenuItem("Next         F6 / Alt N", 2, 'X', e_ed_next);
-    mainmenu[MENOPT - 2].menuitems[5] = WpeFillSubmenuItem("Close            Alt F3", 0, 'C', e_close_window);
+    mainmenu[MENOPT - 2].menuitems[5] = WpeFillSubmenuItem("Close                ^W", 0, 'C', e_close_window);
   }
   mainmenu[MENOPT - 2].menuitems[2] = WpeFillSubmenuItem("Tile           Shift F4", 0, 'T', e_ed_tile);
   mainmenu[MENOPT - 2].menuitems[3] = WpeFillSubmenuItem("Cascade        Shift F5", 1, 'A', e_ed_cascade);

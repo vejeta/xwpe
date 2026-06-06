@@ -109,7 +109,7 @@ OPT opt[] = {  {"#",        3, '#', AltSYS},
 WOPT eblst_o[] = {  {"F1 Help",  0, 0, 2, F1},
 		    {"F2 Save",  9, 0, 2, F2},
 		    {"F3 Files", 18, 0, 2,  F3},
-		    {"Alt-F3 Close W.", 28, 0, 6, AF3},
+		    {"^W Close W.", 28, 0, 2, CtrlW},
 		    {"F4 Search", 45, 0, 2, F4},
 		    {"^L S.Again", 56, 0, 2, CF4},
 		    {"Alt-X Quit",  68, 0, 5, AltX}  };
@@ -128,7 +128,7 @@ WOPT fblst_o[] = {  {"F1 Help",  0, 0, 2, F1},
 		    {"Move", 29, 0, 1, AltM},
 		    {"COpy", 35, 1, 1, AltO},
 		    {"Remove", 41, 0, 1, AltR},
-		    {"Alt-F3 Close W.", 49, 0, 6, AF3},
+		    {"^W Close W.", 49, 0, 2, CtrlW},
 		    {"Alt-X Quit",  66, 0, 5, AltX}  };
 
 WOPT fblst_u[] = {  {"F1 Help",  0, 0, 2, F1},
@@ -146,7 +146,7 @@ WOPT mblst_o[] = {  {"F1 Help",  0, 0, 2, F1},
 		    {"Compile", 32, 0, 1, AltC},
 		    {"Make", 41, 0, 1, AltM},
 		    {"RUn", 47, 1, 1, AltU},
-		    {"Alt-F3 Close", 52, 0, 6, AF3},
+		    {"^W Close", 52, 0, 2, CtrlW},
 		    {"Alt-X Quit",  66, 0, 5, AltX}  };
 
 WOPT mblst_u[] = {  {"F1 Help",  0, 0, 2, F1},
@@ -163,7 +163,7 @@ WOPT dblst_o[] = {  {"F1 Help",  0, 0, 2, F1},
 		    {"F7 Trace", 25, 0, 2,  F7},
                     {"F8 Step", 34, 0, 2, F8},
 		    {"^F10 Run", 43, 0, 4, F10},
-		    {"Alt-F3 Close", 53, 0, 6, AF3},
+		    {"^W Close", 53, 0, 2, CtrlW},
 		    {"Alt-X Quit",  67, 0, 5, AltX}  };
 
 WOPT dblst_u[] = {  {"F1 Help",  0, 0, 2, F1},
@@ -176,7 +176,7 @@ WOPT dblst_u[] = {  {"F1 Help",  0, 0, 2, F1},
 
 WOPT xblst_o[] = {  {"F1 Help",  0, 0, 2, F1},
 		    {"Execute",  19, 0, 1, AltE},
-		    {"Alt-F3 Close W.", 38, 0, 6, AF3},
+		    {"^W Close W.", 38, 0, 2, CtrlW},
 		    {"Alt-X Quit",  66, 0, 5, AltX}  };
 
 WOPT xblst_u[] = {  {"F1 Help",  0, 0, 2, F1},
@@ -186,7 +186,7 @@ WOPT xblst_u[] = {  {"F1 Help",  0, 0, 2, F1},
 
 WOPT wblst_o[] = {  {"F1 Help",  0, 0, 2, F1},
 		    {"Write",  19, 0, 1, AltW},
-		    {"Alt-F3 Close W.", 38, 0, 6, AF3},
+		    {"^W Close W.", 38, 0, 2, CtrlW},
 		    {"Alt-X Quit",  66, 0, 5, AltX}  };
 
 WOPT wblst_u[] = {  {"F1 Help",  0, 0, 2, F1},
@@ -196,7 +196,7 @@ WOPT wblst_u[] = {  {"F1 Help",  0, 0, 2, F1},
 
 WOPT rblst_o[] = {  {"F1 Help",  0, 0, 2, F1},
 		    {"Read",  19, 0, 1, AltR},
-		    {"Alt-F3 Close W.", 38, 0, 6, AF3},
+		    {"^W Close W.", 38, 0, 2, CtrlW},
 		    {"Alt-X Quit",  66, 0, 5, AltX}  };
 
 WOPT rblst_u[] = {  {"F1 Help",  0, 0, 2, F1},
@@ -206,7 +206,7 @@ WOPT rblst_u[] = {  {"F1 Help",  0, 0, 2, F1},
 
 WOPT ablst_o[] = {  {"F1 Help",  0, 0, 2, F1},
 		    {"Add",  19, 0, 1, AltA},
-		    {"Alt-F3 Close W.", 38, 0, 6, AF3},
+		    {"^W Close W.", 38, 0, 2, CtrlW},
 		    {"Alt-X Quit",  66, 0, 5, AltX}  };
 
 WOPT ablst_u[] = {  {"F1 Help",  0, 0, 2, F1},
@@ -217,7 +217,7 @@ WOPT ablst_u[] = {  {"F1 Help",  0, 0, 2, F1},
 WOPT sblst_o[] = {  {"F1 Help",  0, 0, 2, F1},
 		    {"Save",  14, 0, 1, AltS},
 		    {"Change Dir",  25, 0, 1, AltC},
-		    {"Alt-F3 Close W.", 42, 0, 6, AF3},
+		    {"^W Close W.", 42, 0, 2, CtrlW},
 		    {"Alt-X Quit",  66, 0, 5, AltX}  };
 
 WOPT sblst_u[] = {  {"F1 Help",  0, 0, 2, F1},
@@ -231,7 +231,7 @@ WOPT hblst_o[] = {  {"F1 Help",  0, 0, 2, F1},
 		    {"<CR> Goto",  21, 0, 4, WPE_CR},
 		    {" PreVious",  32, 4, 1, AltV},
 		    {" NexT",  45, 4, 1, AltT},
-		    {"Alt-F3 Close", 54, 0, 6, AF3},
+		    {"^W Close", 54, 0, 2, CtrlW},
 		    {"Alt-X Quit",  68, 0, 5, AltX}  };
 
 WOPT hblst_u[] = {  {"F1 Help",  0, 0, 2, F1},
@@ -244,7 +244,7 @@ WOPT hblst_u[] = {  {"F1 Help",  0, 0, 2, F1},
 
 WOPT gblst_o[] = {  {"F1 Help",  0, 0, 2, F1},
 		    {"Show",  19, 0, 1, AltS},
-		    {"Alt-F3 Close W.", 38, 0, 6, AF3},
+		    {"^W Close W.", 38, 0, 2, CtrlW},
 		    {"Alt-X Quit",  66, 0, 5, AltX}  };
 
 WOPT gblst_u[] = {  {"F1 Help",  0, 0, 2, F1},
@@ -255,7 +255,7 @@ WOPT gblst_u[] = {  {"F1 Help",  0, 0, 2, F1},
 WOPT oblst_o[] = {  {"F1 Help",  0, 0, 2, F1},
 		    {"Add",  14, 0, 1, AltA},
 		    {"Delete",  25, 0, 1, AltD},
-		    {"Alt-F3 Close W.", 42, 0, 6, AF3},
+		    {"^W Close W.", 42, 0, 2, CtrlW},
 		    {"Alt-X Quit",  66, 0, 5, AltX} };
 
 WOPT oblst_u[] = {  {"F1 Help",  0, 0, 2, F1},
