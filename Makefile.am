@@ -172,6 +172,7 @@ EXTRA_DIST = \
   xwpe.spec \
   icons/xwpe.svg \
   icons/xwpe-small.svg \
+  icons/xwpe_icon_data.h \
   xwpe-1.5.31.lsm \
   xwpe-conf.patch \
   README.md \

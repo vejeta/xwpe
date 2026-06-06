@@ -47,9 +47,13 @@ AS_IF([test "x$have_x11" = xyes], [
 ])
 
 # --- Optional: Cairo + Pango (vector rendering, requires X11) ---
+# freetype2 is listed explicitly: we_render_cairo.c calls the FreeType API
+# directly (FT_Get_Char_Index, cairo_ft_scaled_font_lock_face), so libfreetype
+# must be on the link line.  Xft/Cairo pull it transitively, but a strict
+# linker (Fedora's -Wl,--no-undefined-ish ld) requires the DSO named directly.
 have_cairo=no
 AS_IF([test "x$have_x11" = xyes], [
-  PKG_CHECK_MODULES([CAIRO], [cairo cairo-xlib], [
+  PKG_CHECK_MODULES([CAIRO], [cairo cairo-xlib freetype2], [
     have_cairo=yes
     AC_DEFINE([HAVE_CAIRO], [1], [Define if Cairo is available])
   ], [have_cairo=no])
