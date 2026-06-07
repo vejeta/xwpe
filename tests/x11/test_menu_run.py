@@ -10,6 +10,24 @@ import time
 from conftest import changed_pixels
 
 
+def wait_for_file(path, proc, timeout=25.0, interval=0.25):
+    """Poll until `path` appears, the process dies, or `timeout` elapses.
+
+    Run compiles, links and executes, so the executable lands on disk only
+    after a multi-stage build driven by the GUI event loop.  On a loaded CI
+    runner under Xvfb that takes noticeably longer than on a developer box, so
+    we poll for the artifact instead of sleeping a fixed amount and checking
+    once (which raced on Salsa CI).  Returns True as soon as the file exists.
+    """
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        assert proc.poll() is None, "xwpe died before producing %s" % path
+        if os.path.exists(path):
+            return True
+        time.sleep(interval)
+    return False
+
+
 def test_make_compiles_the_file(xwpe):
     """Make (F9) compiles t.c -- compiled output appears and Messages opens."""
     d = os.path.dirname(xwpe.srcfile)
@@ -38,10 +56,9 @@ def test_run_via_alt_u(xwpe):
     was wired -- guarded here in the separate X11 (we_xterm.c) keyboard path."""
     d = os.path.dirname(xwpe.srcfile)
     xwpe.key("alt+u")                    # Run
-    time.sleep(3.0)
-    assert xwpe.proc.poll() is None, "xwpe died on Alt-U (Run)"
-    assert os.path.exists(os.path.join(d, "t.e")), \
-        "Alt-U should build+run (t.e on disk), dir=%r" % os.listdir(d)
+    assert wait_for_file(os.path.join(d, "t.e"), xwpe.proc), \
+        "Alt-U should build+run (t.e on disk within timeout), dir=%r" \
+        % os.listdir(d)
 
 
 def test_run_via_ctrl_f9(xwpe):
@@ -52,7 +69,6 @@ def test_run_via_ctrl_f9(xwpe):
     the README "Function keys are injected by keycode" note."""
     d = os.path.dirname(xwpe.srcfile)
     xwpe.key("ctrl+F9")                  # Run
-    time.sleep(3.0)
-    assert xwpe.proc.poll() is None, "xwpe died on Ctrl-F9 (Run)"
-    assert os.path.exists(os.path.join(d, "t.e")), \
-        "Ctrl-F9 should build+run (t.e on disk), dir=%r" % os.listdir(d)
+    assert wait_for_file(os.path.join(d, "t.e"), xwpe.proc), \
+        "Ctrl-F9 should build+run (t.e on disk within timeout), dir=%r" \
+        % os.listdir(d)
