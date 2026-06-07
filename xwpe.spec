@@ -22,6 +22,9 @@ BuildRequires:  texinfo
 BuildRequires:  desktop-file-utils
 BuildRequires:  libappstream-glib
 
+# Owns the /usr/share/icons/hicolor directory tree we drop icons into.
+Requires:       hicolor-icon-theme
+
 # Tools the IDE shells out to at runtime (F9 compile, Ctrl-G debug).  Pulled
 # in by default but not hard requirements -- the editor runs without them.
 Recommends:     gcc
