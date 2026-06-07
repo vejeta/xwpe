@@ -3,7 +3,7 @@ Version:        1.6.3
 Release:        1%{?dist}
 Summary:        Borland-style programming environment and editor for console and X11
 
-License:        GPL-2.0-or-later
+License:        GPL-2.0-only
 URL:            https://codeberg.org/mendezr/xwpe
 # Produced by "make dist" from the autotools tree (or the Codeberg release
 # tarball for tag v%{version}, which unpacks to %{name}-%{version}/).
