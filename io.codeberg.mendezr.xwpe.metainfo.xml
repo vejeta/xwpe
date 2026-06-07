@@ -29,7 +29,7 @@
   <url type="vcs-browser">https://codeberg.org/mendezr/xwpe</url>
 
   <developer id="io.codeberg.mendezr">
-    <name>Juan Manuel Mendez Rey</name>
+    <name>Juan Manuel Méndez Rey</name>
   </developer>
 
   <provides>
@@ -49,12 +49,26 @@
 
   <screenshots>
     <screenshot type="default">
-      <caption>xwpe editing C code with compiler errors in Messages</caption>
+      <caption>Editing C code with compiler errors listed in the Messages window</caption>
       <image type="source">https://codeberg.org/mendezr/xwpe/raw/branch/main/screenshots/xwpe-screenshot.png</image>
+    </screenshot>
+    <screenshot>
+      <caption>Running on a Wayland desktop through XWayland, with Xft/Cairo rendering</caption>
+      <image type="source">https://codeberg.org/mendezr/xwpe/raw/branch/main/screenshots/xwpe-xwayland.png</image>
     </screenshot>
   </screenshots>
 
   <releases>
+    <release version="1.6.3" date="2026-06-06">
+      <description>
+        <p>
+          Smoother window move and resize in both front-ends (X11 and the
+          console via GPM) and a new Cairo+Pango rendering style. Fixes a
+          fatal X11 start crash when the legacy core font is absent and a
+          long-standing debugger memory leak.
+        </p>
+      </description>
+    </release>
     <release version="1.6.2" date="2026-06-01">
       <description>
         <p>Xft rendering, debugger resurrection, UTF-8 everywhere.</p>
