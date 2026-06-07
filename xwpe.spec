@@ -5,9 +5,9 @@ Summary:        Borland-style programming environment and editor for console and
 
 License:        GPL-2.0-only
 URL:            https://codeberg.org/mendezr/xwpe
-# Produced by "make dist" from the autotools tree (or the Codeberg release
-# tarball for tag v%{version}, which unpacks to %{name}-%{version}/).
-Source0:        %{name}-%{version}.tar.gz
+# Upstream "make dist" tarball, attached to the Codeberg release for this
+# version's tag; it unpacks to the standard name-version directory.
+Source0:        %{url}/releases/download/v%{version}/%{name}-%{version}.tar.gz
 
 BuildRequires:  gcc
 BuildRequires:  make
@@ -83,7 +83,7 @@ make check
 %{_infodir}/xwpe.info*
 
 %changelog
-* Sat Jun 06 2026 Juan Manuel Mendez Rey <juan.mendezr@proton.me> - 1.6.3-1
+* Sat Jun 06 2026 Juan Manuel Méndez Rey <juan.mendezr@proton.me> - 1.6.3-1
 - New upstream release 1.6.3.
 - Modernized the spec for the 1.6.1+ autotools build: single "we" binary
   (wpe/xwe/xwpe symlinks), no more split term/X11 shared libraries.
