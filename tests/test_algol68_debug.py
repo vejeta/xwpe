@@ -211,6 +211,7 @@ def test_resizing_debug_windows_leaves_no_stale_borders(tmp_path):
         size_move_shrink()                    # shrink Messages
 
         assert w.alive(), "wpe died resizing overlapping debug windows"
+        w._drain(1.0)                         # let the final repaint settle
         tops, bottoms = _box_balance(w)
         assert tops == bottoms, \
             "stale window border after resize (tops=%d, bottoms=%d):\n%s" \

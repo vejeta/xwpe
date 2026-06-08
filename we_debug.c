@@ -2119,6 +2119,27 @@ int e_remove_breakpoints(FENSTER *f)
  return(0);
 }
 
+/* Grow the three parallel breakpoint arrays (source file name, source line,
+   debugger-assigned id) by one entry.  The caller then fills in element
+   e_d_nbrpts - 1 of each.  Used wherever a breakpoint is recorded
+   (e_mk_brk_main, e_make_breakpoint, e_d_a68g_rearm_breakpoints). */
+static void e_d_brk_grow(void)
+{
+ e_d_nbrpts++;
+ if (e_d_nbrpts == 1)
+ {
+  e_d_sbrpts = MALLOC(sizeof(char *));
+  e_d_ybrpts = MALLOC(sizeof(int));
+  e_d_nrbrpts = MALLOC(sizeof(int));
+ }
+ else
+ {
+  e_d_sbrpts = REALLOC(e_d_sbrpts, e_d_nbrpts * sizeof(char *));
+  e_d_ybrpts = REALLOC(e_d_ybrpts, e_d_nbrpts * sizeof(int));
+  e_d_nrbrpts = REALLOC(e_d_nrbrpts, e_d_nbrpts * sizeof(int));
+ }
+}
+
 int e_mk_brk_main(FENSTER *f, int sw)
 {
  int i, ret;
@@ -2171,19 +2192,7 @@ int e_mk_brk_main(FENSTER *f, int sw)
  }
  else
  {
-  e_d_nbrpts++;
-  if (e_d_nbrpts == 1)
-  {
-   e_d_sbrpts = MALLOC(sizeof(char *));
-   e_d_ybrpts = MALLOC(sizeof(int));
-   e_d_nrbrpts = MALLOC(sizeof(int));
-  }
-  else
-  {
-   e_d_sbrpts = REALLOC(e_d_sbrpts, e_d_nbrpts * sizeof(char *));
-   e_d_ybrpts = REALLOC(e_d_ybrpts, e_d_nbrpts * sizeof(int));
-   e_d_nrbrpts = REALLOC(e_d_nrbrpts, e_d_nbrpts * sizeof(int));
-  }
+  e_d_brk_grow();
   e_d_sbrpts[e_d_nbrpts - 1] = MALLOC(1);
   if (e_d_swtch)
   {
@@ -2328,19 +2337,7 @@ int e_make_breakpoint(FENSTER *f, int sw)
   }
   else
   {
-   e_d_nbrpts++;
-   if (e_d_nbrpts == 1)
-   {
-    e_d_sbrpts = MALLOC(sizeof(char *));
-    e_d_ybrpts = MALLOC(sizeof(int));
-    e_d_nrbrpts = MALLOC(sizeof(int));
-   }
-   else
-   {
-    e_d_sbrpts = REALLOC(e_d_sbrpts, e_d_nbrpts * sizeof(char *));
-    e_d_ybrpts = REALLOC(e_d_ybrpts, e_d_nbrpts * sizeof(int));
-    e_d_nrbrpts = REALLOC(e_d_nrbrpts, e_d_nbrpts * sizeof(int));
-   }
+   e_d_brk_grow();
    e_d_sbrpts[e_d_nbrpts - 1] = MALLOC(strlen(f->datnam) + 1);
    strcpy(e_d_sbrpts[e_d_nbrpts - 1], f->datnam);
    e_d_ybrpts[e_d_nbrpts - 1] = b->b.y + 1;
@@ -2986,19 +2983,7 @@ static void e_d_a68g_rearm_breakpoints(FENSTER *f)
    continue;
   for (k = 1; k <= s->brp[0]; k++)
   {
-   e_d_nbrpts++;
-   if (e_d_nbrpts == 1)
-   {
-    e_d_sbrpts = MALLOC(sizeof(char *));
-    e_d_ybrpts = MALLOC(sizeof(int));
-    e_d_nrbrpts = MALLOC(sizeof(int));
-   }
-   else
-   {
-    e_d_sbrpts = REALLOC(e_d_sbrpts, e_d_nbrpts * sizeof(char *));
-    e_d_ybrpts = REALLOC(e_d_ybrpts, e_d_nbrpts * sizeof(int));
-    e_d_nrbrpts = REALLOC(e_d_nrbrpts, e_d_nbrpts * sizeof(int));
-   }
+   e_d_brk_grow();
    e_d_sbrpts[e_d_nbrpts - 1] = MALLOC(strlen(cn->f[i]->datnam) + 1);
    strcpy(e_d_sbrpts[e_d_nbrpts - 1], cn->f[i]->datnam);
    e_d_ybrpts[e_d_nbrpts - 1] = s->brp[k] + 1;   /* s->brp is 0-based */
