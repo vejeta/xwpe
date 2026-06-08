@@ -41,6 +41,7 @@ int fk_t_locate(int x, int y);
 int fk_t_mouse(int *g);
 static int e_t_mouse_decode_button(mmask_t bstate);
 static int e_t_mouse_is_released(mmask_t bstate);
+static int e_t_mouse_apply_event(MEVENT *mev);
 int g_mouse_buttons = 0;
 int e_t_initscr(void);
 int e_t_kbhit(void);
@@ -966,15 +967,7 @@ int e_t_getch()
     MEVENT mev;
     if (getmouse(&mev) == OK)
     {
-     extern struct mouse e_mouse;
-     int btn = e_t_mouse_decode_button(mev.bstate);
-     e_mouse.x = mev.x;
-     e_mouse.y = mev.y;
-     if (btn >= 0)
-      g_mouse_buttons |= btn;
-     else if (e_t_mouse_is_released(mev.bstate))
-      g_mouse_buttons = 0;
-     e_mouse.k = g_mouse_buttons;
+     e_t_mouse_apply_event(&mev);
      return(-1);
     }
     c = 0;
@@ -1251,12 +1244,33 @@ static int e_t_mouse_is_released(mmask_t bstate)
  return (bstate & (BUTTON1_RELEASED|BUTTON2_RELEASED|BUTTON3_RELEASED)) != 0;
 }
 
+/* Fold one ncurses mouse event into the persistent button state.
+   e_t_getch (KEY_MOUSE) and fk_t_mouse both receive press/release events one
+   at a time; g_mouse_buttons accumulates the pressed-button bitmask across
+   events so a drag (press, then motion reports) keeps reporting the held
+   button until the matching release arrives.  Updates e_mouse.{x,y,k} from the
+   event and returns the new button bitmask. */
+static int e_t_mouse_apply_event(MEVENT *mev)
+{
+ extern struct mouse e_mouse;
+ int btn = e_t_mouse_decode_button(mev->bstate);
+
+ if (btn >= 0)
+  g_mouse_buttons |= btn;
+ else if (e_t_mouse_is_released(mev->bstate))
+  g_mouse_buttons = 0;
+ e_mouse.x = mev->x;
+ e_mouse.y = mev->y;
+ e_mouse.k = g_mouse_buttons;
+ return g_mouse_buttons;
+}
+
 int fk_t_mouse(int *g)
 {
 #if MOUSE
  extern struct mouse e_mouse;
  MEVENT mev;
- int btn, ch;
+ int ch;
 
  if (g[0] == 2)
   return(0);
@@ -1265,18 +1279,9 @@ int fk_t_mouse(int *g)
  timeout(-1);
  if (ch == KEY_MOUSE && getmouse(&mev) == OK)
  {
-  btn = e_t_mouse_decode_button(mev.bstate);
-  if (btn >= 0)
-   g_mouse_buttons |= btn;
-  else if (e_t_mouse_is_released(mev.bstate))
-   g_mouse_buttons = 0;
-
-  g[1] = g_mouse_buttons;
+  g[1] = e_t_mouse_apply_event(&mev);
   g[2] = mev.x * 8;
   g[3] = mev.y * 8;
-  e_mouse.x = mev.x;
-  e_mouse.y = mev.y;
-  e_mouse.k = g_mouse_buttons;
  }
  else
  {
