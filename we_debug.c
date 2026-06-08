@@ -121,20 +121,42 @@ int tputs();
 
 char *npipe[5] = {  NULL, NULL, NULL, NULL, NULL  };
 
+/* Grace window (ms) e_d_pty_drain waits for more program output after the last
+   byte before concluding the program has stopped writing.  This replaces a
+   blind 100ms usleep: output already in the pty is drained immediately, and we
+   only ever wait this long when the pty has briefly gone quiet. */
+#define DEB_PTY_DRAIN_MS 100
+
 /* Drain any available data from the pty master into e_d_prog_output.
-   Uses non-blocking read so it never blocks the editor. */
+   Polls so it never blocks the editor, and keeps draining until the program
+   stops writing for DEB_PTY_DRAIN_MS or closes its end of the pty (POLLHUP). */
 void e_d_pty_drain(void)
 {
  char buf[4096];
  int n, flags;
+ struct pollfd pfd;
 
  if (e_d_pty_master < 0)
   return;
- usleep(100000); /* 100ms: let kernel deliver pty data */
  flags = fcntl(e_d_pty_master, F_GETFL, 0);
  fcntl(e_d_pty_master, F_SETFL, flags | O_NONBLOCK);
- while ((n = read(e_d_pty_master, buf, sizeof(buf))) > 0)
-  e_d_prog_output_append(buf, n);
+ for (;;)
+ {
+  pfd.fd = e_d_pty_master;
+  pfd.events = POLLIN;
+  if (poll(&pfd, 1, DEB_PTY_DRAIN_MS) <= 0)
+   break;                        /* idle for the grace window, or poll error */
+  if (pfd.revents & POLLIN)
+  {
+   n = read(e_d_pty_master, buf, sizeof(buf));
+   if (n > 0)
+   {
+    e_d_prog_output_append(buf, n);
+    continue;
+   }
+  }
+  break;                         /* POLLHUP/POLLERR, or EOF with no data left */
+ }
  fcntl(e_d_pty_master, F_SETFL, flags & ~O_NONBLOCK);
 }
 
