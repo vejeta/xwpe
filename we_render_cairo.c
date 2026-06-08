@@ -487,6 +487,41 @@ static void cr_chrome_thumb(int x, int y, int w, int h, int ci)
  cairo_fill(cr);
 }
 
+/* Thumb offset+length within a track, from the scroll position.  Shared by the
+   vertical and horizontal paint and hit-test so a click always lands on the
+   painted thumb.  When the content fits the view the thumb fills the track. */
+static void cr_thumb_geometry(int track_start, int track_len,
+                              int total, int visible, int pos,
+                              int *thumb_start, int *thumb_len)
+{
+ int tlen = track_len, tstart = track_start;
+
+ if (total > visible && visible > 0 && track_len > 0)
+ {
+  tlen = (visible * track_len) / total;
+  if (tlen < 10) tlen = 10;
+  if (tlen > track_len) tlen = track_len;
+  if (pos > total - visible) pos = total - visible;
+  if (pos < 0) pos = 0;
+  tstart = track_start + ((pos * (track_len - tlen)) / (total - visible));
+ }
+ *thumb_start = tstart;
+ *thumb_len = tlen;
+}
+
+/* The horizontal scrollbar thumb track, in pixels.  This MUST equal the track
+   e_scroll_drag_h() maps in we_mouse.c (columns ax+20 .. ex-3), because the
+   drag handler is the source of truth: in X11 a drag only starts once the
+   hit-test confirms the press is on the thumb, and the drag then maps the
+   pointer through this same span.  Paint and hit-test both call this so the
+   painted thumb, the clickable area and the drag mapping cannot drift apart. */
+static void cr_hscroll_track(FENSTER *f, int *track_left_px, int *track_w_px)
+{
+ int fw = WpeRender.font_width;
+ *track_left_px = (f->a.x + 20) * fw;
+ *track_w_px = (f->e.x - 3) * fw - *track_left_px;
+}
+
 static void cr_chrome_vscrollbar(FENSTER *f, int ci_bg, int ci_fg)
 {
  int fw = WpeRender.font_width;
@@ -519,20 +554,8 @@ static void cr_chrome_vscrollbar(FENSTER *f, int ci_bg, int ci_fg)
  thumb_h = track_h;
  thumb_y = track_top;
  if (f->b && f->b->mxlines > 1)
- {
-  int visible = ey - ay - 1;
-  int total = f->b->mxlines;
-  int pos = f->s->c.y;
-  if (total > visible && visible > 0)
-  {
-   thumb_h = (visible * track_h) / total;
-   if (thumb_h < 10) thumb_h = 10;
-   if (thumb_h > track_h) thumb_h = track_h;
-   if (pos > total - visible) pos = total - visible;
-   thumb_y = track_top + ((pos * (track_h - thumb_h))
-             / (total - visible));
-  }
- }
+  cr_thumb_geometry(track_top, track_h, f->b->mxlines, ey - ay - 1,
+                    f->s->c.y, &thumb_y, &thumb_h);
  cr_chrome_thumb(bar_x, thumb_y, bar_w, thumb_h, ci_fg);
 }
 
@@ -579,11 +602,13 @@ static void cr_chrome_hscrollbar(FENSTER *f, int ci_bg, int ci_fg)
 
  cr_draw_rect(left, row_y, w, fh, ci_bg);
 
+ /* Arrows sit at the two ends of the bar (left..right); the draggable thumb
+    lives in the narrower track between them, whose span is owned by
+    cr_hscroll_track so paint/hit/drag agree. */
  cr_chrome_arrow_left(left + fw / 2, row_y + fh / 2, arrow_sz, ci_fg);
  cr_chrome_arrow_right(right - fw / 2, row_y + fh / 2, arrow_sz, ci_fg);
 
- track_left = left + fw;
- track_w = w - fw * 2;
+ cr_hscroll_track(f, &track_left, &track_w);
  if (track_w <= 0)
   return;
 
@@ -592,20 +617,8 @@ static void cr_chrome_hscrollbar(FENSTER *f, int ci_bg, int ci_fg)
  thumb_w = track_w;
  thumb_x = track_left;
  if (f->b && f->b->mx.x > 1)
- {
-  int visible = ex - ax - 1;
-  int total = f->b->mx.x;
-  int pos = f->s->c.x;
-  if (total > visible && visible > 0)
-  {
-   thumb_w = (visible * track_w) / total;
-   if (thumb_w < 10) thumb_w = 10;
-   if (thumb_w > track_w) thumb_w = track_w;
-   if (pos > total - visible) pos = total - visible;
-   thumb_x = track_left + ((pos * (track_w - thumb_w))
-             / (total - visible));
-  }
- }
+  cr_thumb_geometry(track_left, track_w, f->b->mx.x, ex - ax - 1,
+                    f->s->c.x, &thumb_x, &thumb_w);
  cr_chrome_thumb(thumb_x, bar_y, thumb_w, bar_h, ci_fg);
 }
 
@@ -794,32 +807,26 @@ int wpe_chrome_hit_vthumb(int col, int row)
   if (row <= ay + 1 || row >= ey - 1)
    return 0;
 
+  /* Same track as cr_chrome_vscrollbar's paint: top (ay+1)*fh + one arrow
+     row, height minus the two arrow rows. */
   track_top = (ay + 2) * fh;
   track_h = (ey - ay - 3) * fh;
   if (track_h <= 0)
    return 0;
 
+  /* Only a draggable thumb counts as a hit.  When the content fits the view
+     (mxlines <= visible) cr_thumb_geometry reports a full-track thumb, but
+     there is nothing to drag -- report no hit so the caller treats the press
+     as click-to-position instead. */
   thumb_h = track_h;
   thumb_y = track_top;
-  if (f->b && f->b->mxlines > 1)
+  if (f->b && f->b->mxlines > ey - ay - 1)
   {
-   int visible = ey - ay - 1;
-   int total = f->b->mxlines;
-   int pos = f->s->c.y;
-   if (total > visible && visible > 0)
-   {
-    thumb_h = (visible * track_h) / total;
-    if (thumb_h < 10) thumb_h = 10;
-    if (thumb_h > track_h) thumb_h = track_h;
-    if (pos > total - visible) pos = total - visible;
-    thumb_y = track_top + ((pos * (track_h - thumb_h))
-              / (total - visible));
-   }
-  }
-
-  { int row_px = row * fh;
-    if (row_px >= thumb_y && row_px < thumb_y + thumb_h)
-     return 1;
+   int row_px = row * fh;
+   cr_thumb_geometry(track_top, track_h, f->b->mxlines, ey - ay - 1,
+                     f->s->c.y, &thumb_y, &thumb_h);
+   if (row_px >= thumb_y && row_px < thumb_y + thumb_h)
+    return 1;
   }
  }
 #endif
@@ -839,35 +846,25 @@ int wpe_chrome_hit_hthumb(int col, int row)
  for (w = 1; w <= WpeEditor->mxedt; w++)
  {
   FENSTER *f = WpeEditor->f[WpeEditor->edt[w]];
-  int ax = f->a.x, ex = f->e.x, ey = f->e.y;
-  int hsb_start = ax + 20;
-  int hsb_end = ex - 3;
+  int ex = f->e.x, ey = f->e.y, ax = f->a.x;
+  int track_left, track_w;
 
   if (!DTMD_ISTEXT(f->dtmd) || row != ey)
    continue;
-  if (col <= hsb_start || col >= hsb_end)
-   return 0;
 
-  if (f->b && f->b->mx.x > 1)
+  /* Same track and thumb math as the paint (cr_hscroll_track +
+     cr_thumb_geometry), so a press only registers on the visible thumb.
+     Require the content to overflow the view (mx.x > visible): when it fits,
+     there is no draggable thumb and the press must fall through to
+     click-to-position, exactly as the drag handler (e_scroll_drag_h) expects. */
+  cr_hscroll_track(f, &track_left, &track_w);
+  if (f->b && f->b->mx.x > ex - ax - 1 && track_w > 0)
   {
-   int visible = ex - ax - 1;
-   int total = f->b->mx.x;
-   int pos = f->s->c.x;
-   int track_w = (hsb_end - hsb_start) * fw;
-   int thumb_w, thumb_x;
-
-   if (total > visible && visible > 0)
-   {
-    thumb_w = (visible * track_w) / total;
-    if (thumb_w < 10) thumb_w = 10;
-    if (pos > total - visible) pos = total - visible;
-    thumb_x = hsb_start * fw + ((pos * (track_w - thumb_w))
-              / (total - visible));
-    { int col_px = col * fw;
-      if (col_px >= thumb_x && col_px < thumb_x + thumb_w)
-       return 1;
-    }
-   }
+   int thumb_w, thumb_x, col_px = col * fw;
+   cr_thumb_geometry(track_left, track_w, f->b->mx.x, ex - ax - 1,
+                     f->s->c.x, &thumb_x, &thumb_w);
+   if (col_px >= thumb_x && col_px < thumb_x + thumb_w)
+    return 1;
   }
  }
 #endif
