@@ -157,7 +157,7 @@ void WpeXFontGet(XrmDatabase xresdb, XrmQuark *name_list,
   FcResult fcres;
   int pt_size = WpeXInfo.font_height <= 13 ? 10 : WpeXInfo.font_height - 3;
 
-  sprintf(xft_spec, "monospace:size=%d", pt_size);
+  snprintf(xft_spec, sizeof(xft_spec), "monospace:size=%d", pt_size);
   WpeXInfo.xftpattern = FcNameParse((const FcChar8 *)xft_spec);
   if (!WpeXInfo.xftpattern)
   {
@@ -327,7 +327,7 @@ void WpeXGeometryGet(XrmDatabase xresdb, XrmQuark *name_list,
  }
  size_hints->x = size_hints->y = 0;
  /* Default to 80 columns and a number of lines to fill 3/4th of the screen */
- sprintf(geom_str, "80x%d", (3 *
+ snprintf(geom_str, sizeof(geom_str), "80x%d", (3 *
          DisplayHeight(WpeXInfo.display, WpeXInfo.screen) / 4) /
          WpeXInfo.font_height);
  /* This doesn't correctly account for the title bar.  If someone could
@@ -422,7 +422,7 @@ XrmDatabase WpeXDefaults()
   XrmDatabase tmpdb;
 
   s = malloc(strlen(home_env) + 12);
-  sprintf(s, "%s/.Xdefaults", home_env);
+  snprintf(s, strlen(home_env) + 12, "%s/.Xdefaults", home_env);
   tmpdb = XrmGetFileDatabase(s);
   free(s);
   return (tmpdb);

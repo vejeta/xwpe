@@ -321,7 +321,7 @@ static void cr_init_pango_font(void)
 
  pg_layout = pango_cairo_create_layout(cr);
 
- sprintf(font_with_size, "%s 10", sys_font);
+ snprintf(font_with_size, sizeof(font_with_size), "%s 10", sys_font);
  pg_font = pango_font_description_from_string(font_with_size);
  pango_layout_set_font_description(pg_layout, pg_font);
 
