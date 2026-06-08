@@ -2334,6 +2334,34 @@ int e_make_breakpoint(FENSTER *f, int sw)
 }
 
 /*   start Debugger   */
+/* Close an fd if it is open and mark it closed, so a rollback can run twice
+   without double-closing (and never touches a stale descriptor). */
+static void e_d_close_fd(int *fd)
+{
+ if (*fd >= 0)
+ {
+  close(*fd);
+  *fd = -1;
+ }
+}
+
+/* Roll back a debugger launch that failed partway through e_exec_deb():
+   close every pipe/pty fd opened so far and clear e_d_swtch so the user can
+   try again.  Before this, an error mid-setup leaked those fds AND left
+   e_d_swtch=1, which wedged the debugger for the rest of the session (every
+   later attempt returned "already running" immediately). */
+static void e_d_exec_fail(void)
+{
+ e_d_close_fd(&rfildes[0]);
+ e_d_close_fd(&rfildes[1]);
+ e_d_close_fd(&wfildes[0]);
+ e_d_close_fd(&wfildes[1]);
+ e_d_close_fd(&efildes[0]);
+ e_d_close_fd(&efildes[1]);
+ e_d_pty_close();
+ e_d_swtch = 0;
+}
+
 int e_exec_deb(FENSTER *f, char *prog)
 {
  int i;
@@ -2341,6 +2369,11 @@ int e_exec_deb(FENSTER *f, char *prog)
  if (e_d_swtch)
   return(1);
  e_d_swtch = 1;
+ /* Mark the pipe fds closed up front so e_d_exec_fail() can tell which ones
+    a failed launch actually opened (the opens below set the real values). */
+ rfildes[0] = rfildes[1] = -1;
+ wfildes[0] = wfildes[1] = -1;
+ efildes[0] = efildes[1] = -1;
  fflush(stdout);
  if (WpeIsXwin())
  {
@@ -2359,6 +2392,7 @@ int e_exec_deb(FENSTER *f, char *prog)
     mkfifo(npipe[4], S_IRUSR | S_IWUSR) < 0)
   {
    e_error(e_d_msg[ERR_CANTPIPE], 0, f->fb);
+   e_d_exec_fail();
    return(0);
   }
  }
@@ -2367,16 +2401,19 @@ int e_exec_deb(FENSTER *f, char *prog)
   if (pipe(rfildes))
   {
    e_error(e_p_msg[ERR_PIPEOPEN], 0, f->fb);
+   e_d_exec_fail();
    return(0);
   }
   if (pipe(wfildes))
   {
    e_error(e_p_msg[ERR_PIPEOPEN], 0, f->fb);
+   e_d_exec_fail();
    return(0);
   }
   if (pipe(efildes))
   {
    e_error(e_p_msg[ERR_PIPEOPEN], 0, f->fb);
+   e_d_exec_fail();
    return(0);
   }
  }
@@ -2399,6 +2436,7 @@ int e_exec_deb(FENSTER *f, char *prog)
    if ((wfildes[0] = open(npipe[1], O_RDONLY)) < 0)
    {
     e_error(e_p_msg[ERR_PIPEOPEN], 0, f->fb);
+    e_d_exec_fail();
     return(0);
    }
    for (i = 0;
@@ -2413,6 +2451,7 @@ int e_exec_deb(FENSTER *f, char *prog)
      (wfildes[1] = open(e_d_tty, O_WRONLY)) < 0)
    {
     e_error(e_p_msg[ERR_PIPEOPEN], 0, f->fb);
+    e_d_exec_fail();
     return(0);
    }
    if ((rfildes[1] = open(npipe[0], O_WRONLY)) < 0 ||
@@ -2420,6 +2459,7 @@ int e_exec_deb(FENSTER *f, char *prog)
      (efildes[0] = open(npipe[2], O_RDONLY)) < 0)
    {
     e_error(e_p_msg[ERR_PIPEOPEN], 0, f->fb);
+    e_d_exec_fail();
     return(0);
    }
    if (e_deb_mode)
@@ -2470,6 +2510,7 @@ int e_exec_deb(FENSTER *f, char *prog)
      if (!(fpp = popen("tty", "r")))
      {
       e_error(e_p_msg[ERR_PIPEOPEN], 0, f->fb);
+      e_d_exec_fail();
       return(0);
      }
      fgets(e_d_tty, 80, fpp);
@@ -2485,6 +2526,7 @@ int e_exec_deb(FENSTER *f, char *prog)
  else if (e_d_pid < 0)
  {
   e_error(e_p_msg[ERR_PROCESS], 0, f->fb);
+  e_d_exec_fail();
   return(0);
  }
 
