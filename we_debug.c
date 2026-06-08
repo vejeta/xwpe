@@ -74,6 +74,17 @@ char **e_d_swtchs; /* e_d_swtchs[i] is the i-th watch expression (a char*) */
 int e_d_nstack;
 char e_d_file[128], **e_d_sbrpts;
 char *e_d_out = NULL;
+/* Which debugger backend e_deb_type selects (see e_run_debug's dispatch).
+   The numeric values are persisted in the options file, so keep them stable. */
+enum {
+ DEB_GDB = 0,   /* GNU gdb (default)        prompt "(gdb)" */
+ DEB_SDB = 1,   /* classic sdb              prompt "*"     */
+ DEB_DBX = 2,   /* dbx -i                   prompt "(dbx)" */
+ DEB_XDB = 3,   /* HP xdb -L                prompt ">"     */
+ DEB_JDB = 4,   /* Java jdb                                */
+ DEB_PDB = 5    /* Python python3 -m pdb    prompt "(Pdb)" */
+};
+
 int e_deb_type = 0, e_deb_mode = 0;
 char e_d_out_str[SVLINES][256];
 char *e_d_sp[SVLINES];
@@ -208,17 +219,17 @@ static int _nb_len = 0;
 
 static int e_d_check_prompt(signed char *s, int i)
 {
- if (e_deb_type == 0 && i > 4 && s[i] == ' ' && !strncmp((char*)s+i-5, "(gdb)", 5))
+ if (e_deb_type == DEB_GDB && i > 4 && s[i] == ' ' && !strncmp((char*)s+i-5, "(gdb)", 5))
   return 1;
- if (e_deb_type == 2 && i > 4 && s[i] == ' ' && !strncmp((char*)s+i-5, "(dbx)", 5))
+ if (e_deb_type == DEB_DBX && i > 4 && s[i] == ' ' && !strncmp((char*)s+i-5, "(dbx)", 5))
   return 1;
- if (e_deb_type == 5 && i > 4 && s[i] == ' ' && !strncmp((char*)s+i-5, "(Pdb)", 5))
+ if (e_deb_type == DEB_PDB && i > 4 && s[i] == ' ' && !strncmp((char*)s+i-5, "(Pdb)", 5))
   return 1;
- if (e_deb_type == 1 && s[i] == '*')
+ if (e_deb_type == DEB_SDB && s[i] == '*')
   return 1;
- if (e_deb_type == 3 && s[i] == '>')
+ if (e_deb_type == DEB_XDB && s[i] == '>')
   return 1;
- if (e_deb_type == 4 && i > 0 &&
+ if (e_deb_type == DEB_JDB && i > 0 &&
      ((s[i] == ' ' && s[i-1] == ']') || (s[i] == ' ' && s[i-1] == '>')))
   return 1;
  return 0;
@@ -462,7 +473,7 @@ static void e_d_flush_inferior_stdout(void)
 {
  char resp[256];
 
- if (e_deb_type != 0 || e_d_pty_master < 0)
+ if (e_deb_type != DEB_GDB || e_d_pty_master < 0)
   return;
  e_d_send_cmd("call (void)fflush(0)\n");
  while (e_d_line_read(wfildes[0], resp, 256, 0, 0) == 0)
@@ -908,17 +919,17 @@ int e_e_line_read(int n, signed char *s, int max)
   return(-1);
  s[i+1] = '\0';
  jdb_trace("e_e_line_read: fd=%d i=%d ret=%d s='%s'\n", n, i, ret, (char*)s);
- if (e_deb_type == 1 && s[i] == '*')
+ if (e_deb_type == DEB_SDB && s[i] == '*')
   return(1);
- if (e_deb_type == 3 && s[i] == '>')
+ if (e_deb_type == DEB_XDB && s[i] == '>')
   return(1);
- else if (e_deb_type == 2 && i > 4 && s[i] == ' ' && !strncmp(s+i-5, "(dbx)", 5))
+ else if (e_deb_type == DEB_DBX && i > 4 && s[i] == ' ' && !strncmp(s+i-5, "(dbx)", 5))
   return(1);
- else if (e_deb_type == 0 && i > 4 && s[i] == ' ' && !strncmp(s+i-5, "(gdb)", 5))
+ else if (e_deb_type == DEB_GDB && i > 4 && s[i] == ' ' && !strncmp(s+i-5, "(gdb)", 5))
   return(1);
- else if (e_deb_type == 5 && i > 4 && s[i] == ' ' && !strncmp(s+i-5, "(Pdb)", 5))
+ else if (e_deb_type == DEB_PDB && i > 4 && s[i] == ' ' && !strncmp(s+i-5, "(Pdb)", 5))
   return(1);
- else if (e_deb_type == 4 && i > 0 &&
+ else if (e_deb_type == DEB_JDB && i > 0 &&
    ((s[i] == ' ' && s[i-1] == ']') ||
     (s[i] == ' ' && s[i-1] == '>')))
   return(1);
@@ -965,20 +976,20 @@ int e_d_line_read(int n, signed char *s, int max, int sw, int esw)
     jdb_trace(" %02x", (unsigned char)s[_k]);
   }
   jdb_trace(")\n");
-  if(e_deb_type == 1 && i > 0 && s[i-1] == '*')
+  if(e_deb_type == DEB_SDB && i > 0 && s[i-1] == '*')
   {  str[0] = 0;  wt = 0;   return(1);  }
-  else if(e_deb_type == 3 && i > 0 && s[i-1] == '>')
+  else if(e_deb_type == DEB_XDB && i > 0 && s[i-1] == '>')
   {  str[0] = 0;  wt = 0;   return(1);  }
-  else if(e_deb_type == 4 && i > 1 &&
+  else if(e_deb_type == DEB_JDB && i > 1 &&
     ((s[i-1] == ' ' && s[i-2] == ']') ||
      (s[i-1] == ' ' && s[i-2] == '>')))
   {  jdb_trace("e_d_line_read: jdb prompt DETECTED\n");
      str[0] = 0;  wt = 0;   return(1);  }
-  else if(e_deb_type == 4)
+  else if(e_deb_type == DEB_JDB)
   {  jdb_trace("e_d_line_read: jdb prompt NOT detected (i=%d, s[i-1]=%02x s[i-2]=%02x)\n",
                i, i>0?(unsigned char)s[i-1]:0, i>1?(unsigned char)s[i-2]:0);
   }
-  if(e_deb_type == 0)
+  if(e_deb_type == DEB_GDB)
   {
    if(i > 5 && !strncmp(s+i-6, "(gdb) ", 6))
    {  str[0] = 0;  wt = 0;   return(1);  }
@@ -989,7 +1000,7 @@ int e_d_line_read(int n, signed char *s, int max, int sw, int esw)
     {  str[0] = '\0';  wt = 0;  return(1);  }
    }
   }
-  else if (e_deb_type == 2)
+  else if (e_deb_type == DEB_DBX)
   {
    if(i > 5 && !strncmp(s+i-6, "(dbx) ", 6))
    {  str[0] = 0;  wt = 0;   return(1);  }
@@ -1000,7 +1011,7 @@ int e_d_line_read(int n, signed char *s, int max, int sw, int esw)
     {  str[0] = '\0';  wt = 0;  return(1);  }
    }
   }
-  else if (e_deb_type == 5)
+  else if (e_deb_type == DEB_PDB)
   {
    if(i > 5 && !strncmp(s+i-6, "(Pdb) ", 6))
    {  str[0] = 0;  wt = 0;   return(1);  }
@@ -1179,15 +1190,15 @@ int e_d_quit_basic(FENSTER *f)
   return 0;
  if (rfildes[1] >= 0)
  {
-  if (e_deb_type == 0 || e_deb_type == 3)
+  if (e_deb_type == DEB_GDB || e_deb_type == DEB_XDB)
    e_d_send_cmd("q\ny\n");
-  else if (e_deb_type == 1)
+  else if (e_deb_type == DEB_SDB)
    e_d_send_cmd("q\n");
-  else if (e_deb_type == 2)
+  else if (e_deb_type == DEB_DBX)
    e_d_send_cmd("quit\n");
-  else if (e_deb_type == 4)
+  else if (e_deb_type == DEB_JDB)
    e_d_send_cmd("quit\n");
-  else if (e_deb_type == 5)
+  else if (e_deb_type == DEB_PDB)
    e_d_send_cmd("q\ny\n");  /* pdb: quit + confirm */
  }
  jdb_trace("e_d_quit_basic: quitting debugger type=%d\n", e_deb_type);
@@ -1451,15 +1462,15 @@ int e_d_p_watches(FENSTER *f, int sw)
   str = str1;
   
   /* Create appropriate command for the debugger */
-  if (e_deb_type == 0 || e_deb_type == 3)
+  if (e_deb_type == DEB_GDB || e_deb_type == DEB_XDB)
   {
    sprintf(str1, "p %s\n", e_d_swtchs[l]);
   }
-  else if (e_deb_type == 1)
+  else if (e_deb_type == DEB_SDB)
   {
    sprintf(str1, "%s/\n", e_d_swtchs[l]);
   }
-  else if (e_deb_type == 2)
+  else if (e_deb_type == DEB_DBX)
   {
    sprintf(str1, "print %s\n", e_d_swtchs[l]);
   }
@@ -1495,9 +1506,9 @@ int e_d_p_watches(FENSTER *f, int sw)
 
    /* Find the beginning of the information (depends on debugger output
      format) */
-   if (e_deb_type == 0 || e_deb_type == 2 || e_deb_type == 3)
+   if (e_deb_type == DEB_GDB || e_deb_type == DEB_DBX || e_deb_type == DEB_XDB)
    {
-    if (e_deb_type == 3 && str[0] == '0')
+    if (e_deb_type == DEB_XDB && str[0] == '0')
     {
      for(k = 1; str[k] != '\0' && !isspace(str[k]); k++);
     }
@@ -1512,7 +1523,7 @@ int e_d_p_watches(FENSTER *f, int sw)
     }
     for(k++; str[k] != '\0' && isspace(str[k]); k++);
    }
-   else if(e_deb_type == 1)
+   else if(e_deb_type == DEB_SDB)
    {
     for (k = 0; str[k] != '\0' && str[k] != ':'; k++);
     if (str[k] == '\0') k = 0;
@@ -1642,11 +1653,11 @@ int e_d_p_stack(FENSTER *f, int sw)
  s = cn->f[is]->s;
  if (!e_d_swtch)
   return(0);
- if (e_deb_type == 0)
+ if (e_deb_type == DEB_GDB)
   e_d_send_cmd("bt\n");
- else if (e_deb_type == 1 || e_deb_type == 3)
+ else if (e_deb_type == DEB_SDB || e_deb_type == DEB_XDB)
   e_d_send_cmd("t\n");
- else if (e_deb_type == 2)
+ else if (e_deb_type == DEB_DBX)
   e_d_send_cmd("where\n");
  while ((ret = e_d_line_read(wfildes[0], str, 256, 0, 0)) == 2)
   e_d_error(str);
@@ -1666,7 +1677,7 @@ int e_d_p_stack(FENSTER *f, int sw)
    if (i >= b->mxlines)
     e_new_line(i, b);
    if ((i > 0 && j == 0 && *(b->bf[i-1].s+b->bf[i-1].len-1) == '\\') ||
-     (!e_deb_type && j == 0 && (k > 0 || str[k] != '#')))
+     (e_deb_type == DEB_GDB && j == 0 && (k > 0 || str[k] != '#')))
    {
     for(j = 0; j < 3; j++)
      b->bf[i].s[j] = ' ';
@@ -1730,9 +1741,9 @@ int e_make_stack(FENSTER *f)
    int i, ret, line = 0, dif;
    BUFFER *b = f->ed->f[f->ed->mxedt]->b;
    e_d_switch_out(0);
-   if(e_deb_type != 1)
+   if(e_deb_type != DEB_SDB)
    {  tmpstr[0] = '\0';
-      if(e_deb_type == 0)
+      if(e_deb_type == DEB_GDB)
       {  for(i = dif = 0; i <= b->b.y; i++)
 	    if(b->bf[i].s[0] == '#') dif = atoi((char *) (b->bf[i].s + 1));
 	 for(i = b->b.y; i >= 0 && b->bf[i].s[0] != '#'; i--);
@@ -1767,16 +1778,16 @@ int e_make_stack(FENSTER *f)
 	 }
       }
 
-      if(e_deb_type == 3 && (line = e_make_line_num2(tmpstr, file)) < 0)
+      if(e_deb_type == DEB_XDB && (line = e_make_line_num2(tmpstr, file)) < 0)
 	 return(e_error(e_d_msg[ERR_NOSOURCE], 0, f->fb));
-      else if(e_deb_type != 3 && (line = e_make_line_num(tmpstr, file)) < 0)
+      else if(e_deb_type != DEB_XDB && (line = e_make_line_num(tmpstr, file)) < 0)
 	 return(e_error(e_d_msg[ERR_NOSOURCE], 0, f->fb));
       if(dif > e_d_nstack)
 	 sprintf(str, "%s %d\n",
-	 e_deb_type != 3 ? "up" : "down", dif - e_d_nstack);
+	 e_deb_type != DEB_XDB ? "up" : "down", dif - e_d_nstack);
       else if(dif < e_d_nstack)
 	 sprintf(str, "%s %d\n",
-	 e_deb_type != 3 ? "down" : "up", e_d_nstack - dif);
+	 e_deb_type != DEB_XDB ? "down" : "up", e_d_nstack - dif);
       if(dif != e_d_nstack)
       {  e_d_send_cmd(str);
 	 while((ret = e_d_line_read(wfildes[0], str, 128, 0, 0)) == 0 || ret == 2)
@@ -1785,7 +1796,7 @@ int e_make_stack(FENSTER *f)
 	 e_d_nstack = dif;
       }
    }
-   else if(e_deb_type == 1)
+   else if(e_deb_type == DEB_SDB)
    {  for(i = b->b.y; i >= 0 && (line =
 	 e_make_line_num2((char *)b->bf[i].s, file)) < 0; i--);
    }
@@ -1959,13 +1970,13 @@ int e_remove_breakpoints(FENSTER *f)
 
  if (e_d_swtch)
  {
-  if (!e_deb_type)
+  if (e_deb_type == DEB_GDB)
    e_d_send_cmd("d\ny\n");
-  else if (e_deb_type == 1)
+  else if (e_deb_type == DEB_SDB)
    e_d_send_cmd("D\n");
-  else if (e_deb_type == 2)
+  else if (e_deb_type == DEB_DBX)
    e_d_send_cmd("delete all\n");
-  else if (e_deb_type == 3)
+  else if (e_deb_type == DEB_XDB)
    e_d_send_cmd("db *\n");
  }
  for (i = 0; i < e_d_nbrpts; i++)
@@ -2002,19 +2013,19 @@ int e_mk_brk_main(FENSTER *f, int sw)
  {
   if (e_d_swtch)
   {
-   if (e_deb_type == 0) sprintf(eing, "d %d\n", e_d_nrbrpts[sw-1]);
-   else if (e_deb_type == 2)
+   if (e_deb_type == DEB_GDB) sprintf(eing, "d %d\n", e_d_nrbrpts[sw-1]);
+   else if (e_deb_type == DEB_DBX)
     sprintf(eing, "delete %d\n", e_d_nrbrpts[sw-1]);
-   else if (e_deb_type == 3)
+   else if (e_deb_type == DEB_XDB)
     sprintf(eing, "db %d\n", e_d_nrbrpts[sw-1]);
-   else if (e_deb_type == 4)
+   else if (e_deb_type == DEB_JDB)
    {
     char cls[128];
     strcpy(cls, e_d_file);
     WpeStringCutChar(cls, '.');
     sprintf(eing, "clear %s.%s\n", cls, e_get_start_symbol());
    }
-   else if (e_deb_type == 1)
+   else if (e_deb_type == DEB_SDB)
    {
     sprintf(eing, "e %s\n", e_get_start_symbol());
     e_d_send_cmd(eing);
@@ -2061,7 +2072,7 @@ int e_mk_brk_main(FENSTER *f, int sw)
   e_d_sbrpts[e_d_nbrpts - 1] = MALLOC(1);
   if (e_d_swtch)
   {
-   if (e_deb_type == 0)
+   if (e_deb_type == DEB_GDB)
    {
     sprintf(eing, "b %s\n", e_get_start_symbol());
     e_d_send_cmd(eing);
@@ -2073,7 +2084,7 @@ int e_mk_brk_main(FENSTER *f, int sw)
     e_d_nrbrpts[e_d_nbrpts - 1] = atoi(str+11);
     if (ret != 1 && e_d_dum_read() == -1) return(-1);
    }
-   else if (e_deb_type == 2)
+   else if (e_deb_type == DEB_DBX)
    {
     sprintf(eing, "stop in %s\n", e_get_start_symbol());
     e_d_send_cmd(eing);
@@ -2085,7 +2096,7 @@ int e_mk_brk_main(FENSTER *f, int sw)
     e_d_nrbrpts[e_d_nbrpts - 1] = atoi(str+1);
     if (ret != 1 && e_d_dum_read() == -1) return(-1);
    }
-   else if (e_deb_type == 3)
+   else if (e_deb_type == DEB_XDB)
    {
     sprintf(eing, "b %s\n", e_get_start_symbol());
     e_d_send_cmd(eing);
@@ -2098,7 +2109,7 @@ int e_mk_brk_main(FENSTER *f, int sw)
     e_d_nrbrpts[e_d_nbrpts - 1] = atoi(str+1);
     if (ret != 1 && e_d_dum_read() == -1) return(-1);
    }
-   else if (e_deb_type == 4)
+   else if (e_deb_type == DEB_JDB)
    {
     { char cls[128];
       strcpy(cls, e_d_file);
@@ -2110,7 +2121,7 @@ int e_mk_brk_main(FENSTER *f, int sw)
     if (e_d_dum_read() == -1) return(-1);
     e_d_nrbrpts[e_d_nbrpts - 1] = e_d_nbrpts;
    }
-   else if (e_deb_type == 1)
+   else if (e_deb_type == DEB_SDB)
    {
     sprintf(eing, "e %s\n", e_get_start_symbol());
     e_d_send_cmd(eing);
@@ -2157,12 +2168,12 @@ int e_make_breakpoint(FENSTER *f, int sw)
     ;
    if (e_d_swtch)
    {
-    if (e_deb_type == 0) sprintf(eing, "d %d\n", e_d_nrbrpts[i]);
-    else if (e_deb_type == 2)
+    if (e_deb_type == DEB_GDB) sprintf(eing, "d %d\n", e_d_nrbrpts[i]);
+    else if (e_deb_type == DEB_DBX)
      sprintf(eing, "delete %d\n", e_d_nrbrpts[i]);
-    else if (e_deb_type == 3)
+    else if (e_deb_type == DEB_XDB)
      sprintf(eing, "db %d\n", e_d_nrbrpts[i]);
-    else if (e_deb_type == 4)
+    else if (e_deb_type == DEB_JDB)
     {
      /* jdb: "clear Class:line" */
      char cls[128];
@@ -2170,7 +2181,7 @@ int e_make_breakpoint(FENSTER *f, int sw)
      WpeStringCutChar(cls, '.');
      sprintf(eing, "clear %s:%d\n", cls, e_d_ybrpts[i]);
     }
-    else if (e_deb_type == 1)
+    else if (e_deb_type == DEB_SDB)
     {
      sprintf(eing, "e %s\n", e_d_sbrpts[i]);
      e_d_send_cmd(eing);
@@ -2218,7 +2229,7 @@ int e_make_breakpoint(FENSTER *f, int sw)
    e_d_ybrpts[e_d_nbrpts - 1] = b->b.y + 1;
    if (e_d_swtch)
    {
-    if (e_deb_type == 0)
+    if (e_deb_type == DEB_GDB)
     {
      snprintf(eing, sizeof(eing), "b %s:%d\n", f->datnam, b->b.y + 1);
      e_d_send_cmd(eing);
@@ -2230,7 +2241,7 @@ int e_make_breakpoint(FENSTER *f, int sw)
      e_d_nrbrpts[e_d_nbrpts - 1] = atoi(str+11);
      if (ret != 1 && e_d_dum_read() == -1) return(-1);
     }
-    else if (e_deb_type == 2)
+    else if (e_deb_type == DEB_DBX)
     {
      snprintf(eing, sizeof(eing), "stop at \"%s\":%d\n", f->datnam, b->b.y + 1);
      e_d_send_cmd(eing);
@@ -2242,7 +2253,7 @@ int e_make_breakpoint(FENSTER *f, int sw)
      e_d_nrbrpts[e_d_nbrpts - 1] = atoi(str+1);
      if (ret != 1 && e_d_dum_read() == -1) return(-1);
     }
-    else if (e_deb_type == 3)
+    else if (e_deb_type == DEB_XDB)
     {
      snprintf(eing, sizeof(eing), "b %s:%d\n", f->datnam, b->b.y + 1);
      e_d_send_cmd(eing);
@@ -2255,7 +2266,7 @@ int e_make_breakpoint(FENSTER *f, int sw)
      e_d_nrbrpts[e_d_nbrpts - 1] = atoi(str+1);
      if (ret != 1 && e_d_dum_read() == -1) return(-1);
     }
-    else if (e_deb_type == 1)
+    else if (e_deb_type == DEB_SDB)
     {
      snprintf(eing, sizeof(eing), "e %s\n", f->datnam);
      e_d_send_cmd(eing);
@@ -2264,7 +2275,7 @@ int e_make_breakpoint(FENSTER *f, int sw)
      e_d_send_cmd(eing);
      if (e_d_dum_read() == -1) return(-1);
     }
-    else if (e_deb_type == 4)
+    else if (e_deb_type == DEB_JDB)
     {
      /* jdb: "stop at Class:line" -- use filename without extension as class */
      { char cls[128];
@@ -2276,7 +2287,7 @@ int e_make_breakpoint(FENSTER *f, int sw)
      if (e_d_dum_read() == -1) return(-1);
      e_d_nrbrpts[e_d_nbrpts - 1] = e_d_nbrpts;
     }
-    else if (e_deb_type == 5)
+    else if (e_deb_type == DEB_PDB)
     {
      /* pdb: "b line" for current file, "b file:line" for others */
      sprintf(eing, "b %d\n", b->b.y + 1);
@@ -2292,7 +2303,7 @@ int e_make_breakpoint(FENSTER *f, int sw)
  }
  else
  {
-  if(e_deb_type == 0)
+  if(e_deb_type == DEB_GDB)
   {
    for (i = 0; i < e_d_nbrpts; i++)
    {
@@ -2307,7 +2318,7 @@ int e_make_breakpoint(FENSTER *f, int sw)
     if (ret != 1 && e_d_dum_read() == -1) return(-1);
    }
   }
-  else if (e_deb_type == 2)
+  else if (e_deb_type == DEB_DBX)
   {
    for (i = 0; i < e_d_nbrpts; i++)
    {
@@ -2322,7 +2333,7 @@ int e_make_breakpoint(FENSTER *f, int sw)
     if (ret != 1 && e_d_dum_read() == -1) return(-1);
    }
   }
-  else if (e_deb_type == 3)
+  else if (e_deb_type == DEB_XDB)
   {
    for (i = 0; i < e_d_nbrpts; i++)
    {
@@ -2338,7 +2349,7 @@ int e_make_breakpoint(FENSTER *f, int sw)
     if (ret != 1 && e_d_dum_read() == -1) return(-1);
    }
   }
-  else if (e_deb_type == 4)
+  else if (e_deb_type == DEB_JDB)
   {
    for (i = 0; i < e_d_nbrpts; i++)
    {
@@ -2354,7 +2365,7 @@ int e_make_breakpoint(FENSTER *f, int sw)
     e_d_nrbrpts[i] = i + 1;
    }
   }
-  else if (e_deb_type == 5)
+  else if (e_deb_type == DEB_PDB)
   {
    for (i = 0; i < e_d_nbrpts; i++)
    {
@@ -2592,7 +2603,7 @@ int e_exec_deb(FENSTER *f, char *prog)
    fprintf(fp, "echo '%s' > %s\n", e_d_pty_slave_name, npipe[1]);
   else
    fprintf(fp, "tty > %s\n", npipe[1]);
-  if (e_deb_type == 5)
+  if (e_deb_type == DEB_PDB)
    fprintf(fp,
      "%s -m pdb %s < %s > %s 2> %s\n"
      "echo 'type <Return> to continue' > /dev/tty\nread i < /dev/tty\n",
@@ -2659,7 +2670,7 @@ int e_exec_deb(FENSTER *f, char *prog)
   }
   /* jdb does not handle non-blocking stdout/stderr.
      pdb works fine with non-blocking (needed for prompt detection). */
-  if (e_deb_type != 4)
+  if (e_deb_type != DEB_JDB)
   {
    int _fl;
    _fl = fcntl(1, F_GETFL, 0 );
@@ -2667,7 +2678,7 @@ int e_exec_deb(FENSTER *f, char *prog)
    _fl = fcntl(2, F_GETFL, 0 );
    fcntl( 2, F_SETFL, _fl | O_NONBLOCK);
   }
-  if (e_deb_type == 5)
+  if (e_deb_type == DEB_PDB)
    execlp(e_debugger, e_debugger, "-m", "pdb", prog, NULL);
   else if (!e_deb_swtch)
    execlp(e_debugger, e_debugger, prog, NULL);
@@ -2721,24 +2732,24 @@ int e_start_debug(FENSTER *f)
  { int _l = strlen(e_d_file);
    if (_l > 5 && !strcmp(e_d_file + _l - 5, ".java"))
    {
-    if (e_deb_type != 4)
+    if (e_deb_type != DEB_JDB)
      e_error("Java file: switching to jdb debugger.", -1, f->fb);
-    e_deb_type = 4;
+    e_deb_type = DEB_JDB;
    }
    else if (_l > 3 && !strcmp(e_d_file + _l - 3, ".py"))
    {
-    if (e_deb_type != 5)
+    if (e_deb_type != DEB_PDB)
      e_error("Python file: switching to pdb debugger.", -1, f->fb);
-    e_deb_type = 5;
+    e_deb_type = DEB_PDB;
    }
  }
  jdb_trace("e_start_debug: e_d_file='%s', e_deb_type=%d, comp_sw=%d\n",
            e_d_file, e_deb_type, e_s_prog.comp_sw);
- if (e_deb_type == 1) {  e_debugger = "sdb";  e_deb_swtch = NULL;  }
- else if (e_deb_type == 2) {  e_debugger = "dbx";  e_deb_swtch = "-i";  }
- else if (e_deb_type == 3) {  e_debugger = "xdb";  e_deb_swtch = "-L";  }
- else if (e_deb_type == 4) {  e_debugger = "jdb";  e_deb_swtch = NULL;  }
- else if (e_deb_type == 5) {  e_debugger = "python3";  e_deb_swtch = NULL;  }
+ if (e_deb_type == DEB_SDB) {  e_debugger = "sdb";  e_deb_swtch = NULL;  }
+ else if (e_deb_type == DEB_DBX) {  e_debugger = "dbx";  e_deb_swtch = "-i";  }
+ else if (e_deb_type == DEB_XDB) {  e_debugger = "xdb";  e_deb_swtch = "-L";  }
+ else if (e_deb_type == DEB_JDB) {  e_debugger = "jdb";  e_deb_swtch = NULL;  }
+ else if (e_deb_type == DEB_PDB) {  e_debugger = "python3";  e_deb_swtch = NULL;  }
  else {  e_debugger = "gdb";  e_deb_swtch = NULL;  }
  e_d_pid = 0;
  if (e_test_command(e_debugger))
@@ -2763,7 +2774,7 @@ int e_start_debug(FENSTER *f)
   else
   {
    strcpy(estr, f->datnam);
-   if (e_deb_type == 5)
+   if (e_deb_type == DEB_PDB)
    {
     /* pdb: debug the .py source file with full path.
        e_d_file has the basename; we need dirct + datnam for the
@@ -2818,7 +2829,7 @@ int e_run_debug(FENSTER *f)
   jdb_trace("e_run_debug: reading banner...\n");
   /* pdb (and other interpreted debuggers) need time to start before
      their banner is available on stdout.  Wait for data with poll(). */
-  if (e_deb_type == 5)
+  if (e_deb_type == DEB_PDB)
   {
    struct pollfd _pfd = { .fd = wfildes[0], .events = POLLIN };
    poll(&_pfd, 1, 3000);  /* wait up to 3s for pdb to write banner */
@@ -2828,7 +2839,7 @@ int e_run_debug(FENSTER *f)
   /* Disable gdb's confirmation prompts ("Start it from the beginning?",
      "Kill the program being debugged?", etc.) to prevent busy loops
      when xwpe sends commands that gdb would otherwise block on. */
-  if (e_deb_type == 0)
+  if (e_deb_type == DEB_GDB)
   {
    e_d_send_cmd("set confirm off\n");
    if (e_d_dum_read() == -1) return(-1);
@@ -2840,7 +2851,7 @@ int e_run_debug(FENSTER *f)
     if (e_d_dum_read() == -1) return(-1);
    }
   }
-  if (e_deb_type == 3)
+  if (e_deb_type == DEB_XDB)
   {
    e_d_send_cmd("sm\n");
    if (e_d_dum_read() == -1) return(-1);
@@ -2880,7 +2891,7 @@ int e_deb_run(FENSTER *f)
  /* Interpreted debuggers (jdb, pdb) don't need tty redirect */
  jdb_trace("e_deb_run: tty check, e_deb_type=%d, e_d_tty='%s'\n",
            e_deb_type, e_d_tty);
- if (e_deb_type != 4 && e_deb_type != 5)
+ if (e_deb_type != DEB_JDB && e_deb_type != DEB_PDB)
  {
   for (ret = 0; isspace(e_d_tty[ret]); ret++)
    ;
@@ -2896,7 +2907,7 @@ int e_deb_run(FENSTER *f)
  {
   if ((main_brk = e_mk_brk_main(f, 0)) < -1) return(main_brk);
  }
- if (e_deb_type == 2)
+ if (e_deb_type == DEB_DBX)
  {
   if (e_d_swtch < 3)
   {
@@ -2919,19 +2930,19 @@ int e_deb_run(FENSTER *f)
       gdb's "set inferior-tty" doesn't deliver output to the master
       when gdb itself communicates via pipes, so we use explicit
       shell-style redirect instead. */
-   if (e_deb_type == 4)
+   if (e_deb_type == DEB_JDB)
    {
     /* jdb: plain "run" -- no redirect, no arguments through run */
     strcpy(eing, "run\n");
    }
-   else if (e_deb_type == 5)
+   else if (e_deb_type == DEB_PDB)
    {
     /* pdb: program already loaded and paused at line 1.
        "continue" runs to first breakpoint. */
     strcpy(eing, "c\n");
     prsw = 1;  /* treat as continue, not first run */
    }
-   else if (e_d_pty_master >= 0 && e_deb_type == 0)
+   else if (e_d_pty_master >= 0 && e_deb_type == DEB_GDB)
    {
     if (e_prog.arguments)
      sprintf(eing, "r %s\n", e_prog.arguments);
@@ -2948,7 +2959,7 @@ int e_deb_run(FENSTER *f)
   }
   else
   {
-   if (e_deb_type == 4)
+   if (e_deb_type == DEB_JDB)
     strcpy(eing, "cont\n");
    else
     strcpy(eing, "c\n");
@@ -2961,7 +2972,7 @@ int e_deb_run(FENSTER *f)
  e_d_switch_out(1);
  jdb_trace("e_deb_run: sending '%s' (prsw=%d)\n", eing, prsw);
  e_d_send_cmd(eing);
- if ((e_deb_type == 4 || e_deb_type == 5) && !prsw)
+ if ((e_deb_type == DEB_JDB || e_deb_type == DEB_PDB) && !prsw)
  {
   /* jdb: "run" returns "> " immediately but the VM starts
      asynchronously. Use poll() with timeout to wait for the
@@ -3019,13 +3030,13 @@ int e_deb_run(FENSTER *f)
   e_d_switch_out(0);
   return(0);  /* skip e_read_output -- jdb output already parsed */
  }
- else if (e_deb_type == 0 || ((e_deb_type == 2  || e_deb_type == 3) && !prsw))
+ else if (e_deb_type == DEB_GDB || ((e_deb_type == DEB_DBX  || e_deb_type == DEB_XDB) && !prsw))
  {
   while((ret = e_d_line_read(wfildes[0], eing, 256, 0, 0)) == 2 ||
-    !eing[0] || (!e_deb_type && prsw && ((len = (strlen(eing)-12)) < 0 ||
+    !eing[0] || (e_deb_type == DEB_GDB && prsw && ((len = (strlen(eing)-12)) < 0 ||
     strcmp(eing + len, e_d_msg[ERR_CONTINUE]))) ||
-    (e_d_swtch < 3 && ((!e_deb_type && strncmp(e_d_msg[ERR_STARTPROG],eing, 17)) ||
-    (e_deb_type == 2 && strncmp("Running:",eing, 8)))))
+    (e_d_swtch < 3 && ((e_deb_type == DEB_GDB && strncmp(e_d_msg[ERR_STARTPROG],eing, 17)) ||
+    (e_deb_type == DEB_DBX && strncmp("Running:",eing, 8)))))
   {
    if (ret == 2)
     e_d_error(eing);
@@ -3035,14 +3046,14 @@ int e_deb_run(FENSTER *f)
  }
  if (!prsw)
   e_d_p_message(eing, f, 0);
- if (e_d_swtch < 3 && ((!e_deb_type && strncmp(e_d_msg[ERR_STARTPROG],eing, 17)) ||
-   (e_deb_type == 2 && strncmp("Running:",eing, 8))))
+ if (e_d_swtch < 3 && ((e_deb_type == DEB_GDB && strncmp(e_d_msg[ERR_STARTPROG],eing, 17)) ||
+   (e_deb_type == DEB_DBX && strncmp("Running:",eing, 8))))
  {
   e_d_quit(f);
   return(e_error(e_d_msg[ERR_CANTPROG], 0, f->fb));
  }
  e_d_swtch = 3;
- if (e_d_pty_master >= 0 && e_deb_type == 0)
+ if (e_d_pty_master >= 0 && e_deb_type == DEB_GDB)
  {
   e_d_accum_init(f, main_brk);
   return(0);
@@ -3097,13 +3108,13 @@ int e_d_step_next(FENSTER *f, int sw)
  }
  e_d_delbreak(f);
  e_d_switch_out(1);
- if (sw && (e_deb_type == 0 || e_deb_type == 5)) e_d_send_cmd("n\n");
- else if (sw && (e_deb_type == 1 || e_deb_type == 3)) e_d_send_cmd("S\n");
- else if (sw && (e_deb_type == 2 || e_deb_type == 4)) e_d_send_cmd("next\n");
- else if (e_deb_type == 2 || e_deb_type == 4) e_d_send_cmd("step\n");
+ if (sw && (e_deb_type == DEB_GDB || e_deb_type == DEB_PDB)) e_d_send_cmd("n\n");
+ else if (sw && (e_deb_type == DEB_SDB || e_deb_type == DEB_XDB)) e_d_send_cmd("S\n");
+ else if (sw && (e_deb_type == DEB_DBX || e_deb_type == DEB_JDB)) e_d_send_cmd("next\n");
+ else if (e_deb_type == DEB_DBX || e_deb_type == DEB_JDB) e_d_send_cmd("step\n");
  else e_d_send_cmd("s\n");
  e_d_nstack = 0;
- if (e_deb_type == 4)
+ if (e_deb_type == DEB_JDB)
  {
   /* jdb: use poll to read step response, parse line number */
   struct pollfd _pfd = { .fd = wfildes[0], .events = POLLIN };
@@ -3185,7 +3196,7 @@ int e_d_step_next(FENSTER *f, int sw)
   e_d_switch_out(0);
   return(0);
  }
- if (e_deb_type == 5)
+ if (e_deb_type == DEB_PDB)
  {
   /* pdb: use poll to read step response, parse active line.
      pdb output format: "> file(line)func()\n-> code\n(Pdb) " */
@@ -3269,7 +3280,7 @@ pdb_poll_again:
   e_d_switch_out(0);
   return(0);
  }
- if (e_d_pty_master >= 0 && e_deb_type == 0)
+ if (e_d_pty_master >= 0 && e_deb_type == DEB_GDB)
  {
   e_d_accum_init(f, 0);
   return(0);
@@ -3284,7 +3295,7 @@ int e_d_goto_func(FENSTER *f, int flag)
  int ret = 0, main_brk = 0;
  char str[128];
 
- if (e_deb_type!=0)/* if gdb */
+ if (e_deb_type != DEB_GDB)/* if gdb */
   return 0;
  if (e_d_swtch < 2 && (ret = e_run_debug(f)) < 0)
  {
@@ -3342,50 +3353,50 @@ int e_d_fst_check(FENSTER *f)
  e_d_switch_out(0);
  for (i = 0; i < SVLINES - 1; i++)
  {
-  if ((e_deb_type != 2 && !strncmp(e_d_sp[i], e_d_msg[ERR_PROGEXIT], 14)) ||
-    ((e_deb_type == 2 && !strncmp(e_d_sp[i], e_d_msg[ERR_PROGEXIT2], 14)) ||
-    (e_deb_type == 3 && !strncmp(e_d_sp[i], e_d_msg[ERR_NORMALTERM], strlen(e_d_msg[ERR_NORMALTERM])))))
+  if ((e_deb_type != DEB_DBX && !strncmp(e_d_sp[i], e_d_msg[ERR_PROGEXIT], 14)) ||
+    ((e_deb_type == DEB_DBX && !strncmp(e_d_sp[i], e_d_msg[ERR_PROGEXIT2], 14)) ||
+    (e_deb_type == DEB_XDB && !strncmp(e_d_sp[i], e_d_msg[ERR_NORMALTERM], strlen(e_d_msg[ERR_NORMALTERM])))))
   {
    e_d_error(e_d_sp[i]);		/*  Program exited   */
    e_d_quit(f);
    return(i);
   }
-  else if ((e_deb_type == 0 || e_deb_type == 1) && !strncmp(e_d_sp[i], e_d_msg[ERR_PROGTERM], 18))
+  else if ((e_deb_type == DEB_GDB || e_deb_type == DEB_SDB) && !strncmp(e_d_sp[i], e_d_msg[ERR_PROGTERM], 18))
   {
    e_error(e_d_msg[ERR_PROGTERM], 0, f->fb);
    e_d_quit(f);
    return(i);
   }
-  else if (e_deb_type == 0 && !strncmp(e_d_sp[i], e_d_msg[ERR_PROGSIGNAL], 23))
+  else if (e_deb_type == DEB_GDB && !strncmp(e_d_sp[i], e_d_msg[ERR_PROGSIGNAL], 23))
   {
    e_d_pr_sig(e_d_sp[i], f);
    return(i);
   }
-  else if (e_deb_type == 3 && !strncmp(e_d_sp[i], e_d_msg[ERR_SOFTTERM], strlen(e_d_msg[ERR_SOFTTERM])))
+  else if (e_deb_type == DEB_XDB && !strncmp(e_d_sp[i], e_d_msg[ERR_SOFTTERM], strlen(e_d_msg[ERR_SOFTTERM])))
   {
    e_d_pr_sig(e_d_sp[i], f);
    return(i);
   }
-  else if (e_deb_type == 2 && (!strncmp(e_d_sp[i], e_d_msg[ERR_SIGNAL], 6) ||
+  else if (e_deb_type == DEB_DBX && (!strncmp(e_d_sp[i], e_d_msg[ERR_SIGNAL], 6) ||
     !strncmp(e_d_sp[i], e_d_msg[ERR_INTERRUPT], 9)))
   {
    e_d_pr_sig(e_d_sp[i], f);
    return(i);
   }
-  else if (e_deb_type == 1 && strstr(e_d_sp[i], e_d_msg[ERR_SIGNAL]))
+  else if (e_deb_type == DEB_SDB && strstr(e_d_sp[i], e_d_msg[ERR_SIGNAL]))
   {
    e_d_pr_sig(e_d_sp[i], f);
    return(i);
   }
-  else if (e_deb_type == 3 && i == SVLINES-2 && strstr(e_d_sp[i], ": "))
+  else if (e_deb_type == DEB_XDB && i == SVLINES-2 && strstr(e_d_sp[i], ": "))
   {
    e_d_pr_sig(e_d_sp[i-1], f);
    return(i-1);
   }
   else if (!strncmp(e_d_sp[i], e_d_msg[ERR_BREAKPOINT], 10) ||
-    (e_deb_type == 1 && !strncmp(e_d_sp[i], e_d_msg[ERR_BREAKPOINT2], 10)))
+    (e_deb_type == DEB_SDB && !strncmp(e_d_sp[i], e_d_msg[ERR_BREAKPOINT2], 10)))
   {
-   if (!e_deb_type)
+   if (e_deb_type == DEB_GDB)
    {
     for (j = SVLINES - 2; j > i; j--)      /*  Breakpoint   */
     {
@@ -3410,7 +3421,7 @@ int e_d_fst_check(FENSTER *f)
      return(i > 0 ? i-1 : 0);
     }
    }
-   else if (e_deb_type == 1)	      /*  Breakpoint   */
+   else if (e_deb_type == DEB_SDB)	      /*  Breakpoint   */
    {
     if(!strncmp(e_d_sp[i]+10, " at", 3) &&
       (ret = e_make_line_num(e_d_sp[i+1], e_d_sp[SVLINES-1])) >= 0)
@@ -3423,7 +3434,7 @@ int e_d_fst_check(FENSTER *f)
     }
    }
   }
-  else if (e_deb_type == 2 && !strncmp(e_d_sp[i], e_d_msg[ERR_STOPPEDIN], 10))
+  else if (e_deb_type == DEB_DBX && !strncmp(e_d_sp[i], e_d_msg[ERR_STOPPEDIN], 10))
   {
    for (j = i + 1; j < SVLINES - 1; j++)		      /*  Breakpoint   */
    {
@@ -3462,7 +3473,7 @@ int e_d_snd_check(FENSTER *f)
  e_d_switch_out(0);
  for (i = SVLINES - 2; i >= 0; i--)
  {
-  if (!e_deb_type && (ret = atoi(e_d_sp[i])) > 0)
+  if (e_deb_type == DEB_GDB && (ret = atoi(e_d_sp[i])) > 0)
   {
    for (k = 0; e_d_sp[i][k] && isdigit(e_d_sp[i][k]); k++)
     ;
@@ -3511,7 +3522,7 @@ int e_d_snd_check(FENSTER *f)
    e_d_goto_break(e_d_file, ret, f);
    return(i);
   }
-  else if (e_deb_type == 1 && (ret = atoi(e_d_sp[i])) > 0)
+  else if (e_deb_type == DEB_SDB && (ret = atoi(e_d_sp[i])) > 0)
   {
    for (; i > 0; i--)
    {
@@ -3545,7 +3556,7 @@ int e_d_snd_check(FENSTER *f)
    }
    return(-2);
   }
-  else if (e_deb_type == 3 && i == SVLINES-2 &&
+  else if (e_deb_type == DEB_XDB && i == SVLINES-2 &&
     (ret = e_make_line_num(e_d_sp[i], e_d_sp[SVLINES-1])) >= 0)
   {
    strcpy(e_d_file, e_d_sp[SVLINES-1]);
@@ -3608,7 +3619,7 @@ int e_read_output(FENSTER *f)
  /* Flush the inferior's stdout (which is fully buffered because it
     goes to a pty, not a real terminal) and drain any output.
     This is the technique used by gdbgui and Eclipse CDT. */
- if (e_deb_type == 0 && e_d_pty_master >= 0)
+ if (e_deb_type == DEB_GDB && e_d_pty_master >= 0)
  {
   char _flush_resp[256];
   e_d_send_cmd("call (void)fflush(0)\n");
@@ -3617,7 +3628,7 @@ int e_read_output(FENSTER *f)
   e_d_pty_flush_to_messages(f);
  }
  /* pdb: parse "> file(line)func()" from the buffered output lines */
- if (e_deb_type == 5)
+ if (e_deb_type == DEB_PDB)
  {
   int _found = 0;
   /* Check for program exit FIRST -- pdb restarts the program
@@ -3695,7 +3706,7 @@ int e_d_pr_sig(char *str, FENSTER *f)
   e_d_error(str);
  for (i = 0; i < SVLINES; i++)
   e_d_out_str[i][0] = '\0';
- if (e_deb_type != 1 && e_deb_type != 3)
+ if (e_deb_type != DEB_SDB && e_deb_type != DEB_XDB)
  {
   e_d_send_cmd("where\n");
   for (i = 0; ((ret = e_d_line_read(wfildes[0], str, 256, 0, 1)) == 0 &&
@@ -3758,7 +3769,7 @@ int e_make_line_num(char *str, char *file)
  char *sp;
  int i, n, num;
 
- if (e_deb_type == 0)
+ if (e_deb_type == DEB_GDB)
  {
   for (n = strlen(str); n >= 0 && str[n] != ':'; n--)
    ;
@@ -3771,7 +3782,7 @@ int e_make_line_num(char *str, char *file)
   file[n-i-1] = '\0';
   return(atoi(str+n+1));
  }
- else if (e_deb_type == 2)
+ else if (e_deb_type == DEB_DBX)
  {
   if (!(sp = strstr(str, " line ")))
    return(-1);
@@ -3787,7 +3798,7 @@ int e_make_line_num(char *str, char *file)
   file[i] = '\0';
   return(num);
  }
- else if (e_deb_type == 3)
+ else if (e_deb_type == DEB_XDB)
  {
   for (sp = str, i = 0; (file[i] = sp[i]) && sp[i] != ':'; i++)
    ;
@@ -3882,7 +3893,7 @@ int e_d_goto_break(char *file, int line, FENSTER *f)
    /* Source file not found -- stepped into system/library code.
       Set a temporary breakpoint at the next user function (main)
       and continue, skipping all libc frames. */
-   if (e_deb_type == 0)
+   if (e_deb_type == DEB_GDB)
    {
     e_d_send_cmd("tbreak main\n");
     if (e_d_dum_read() == -1) { e_d_quit(f); return(-1); }
@@ -3964,15 +3975,15 @@ int e_deb_options(FENSTER *f)
    char *_fn = cn2->f[cn2->mxedt]->datnam;
    int _fnl = strlen(_fn);
    if (_fnl > 5 && !strcmp(_fn + _fnl - 5, ".java"))
-    e_deb_type = 4;
+    e_deb_type = DEB_JDB;
    else if (_fnl > 3 && !strcmp(_fn + _fnl - 3, ".py"))
-    e_deb_type = 5;
+    e_deb_type = DEB_PDB;
    /* Map e_deb_type to radio button index:
       0=Gdb, 1=Sdb, 2=Dbx, 3=Jdb, 4=Pdb (radio index)
       e_deb_type: 0=gdb, 1=sdb, 2=dbx, 3=xdb, 4=jdb, 5=pdb */
-   int _sel = (e_deb_type == 5) ? 4 :
-              (e_deb_type == 4) ? 3 :
-              (e_deb_type == 3) ? 2 : e_deb_type;
+   int _sel = (e_deb_type == DEB_PDB) ? 4 :
+              (e_deb_type == DEB_JDB) ? 3 :
+              (e_deb_type == DEB_XDB) ? 2 : e_deb_type;
  e_add_pswstr(0, 5, 3, 0, AltG, 0, "Gdb    ", o);
  e_add_pswstr(0, 5, 4, 0, AltS, 0, "Sdb    ", o);
 #ifdef XDB
@@ -3992,13 +4003,13 @@ int e_deb_options(FENSTER *f)
  {
   { int sel = o->pstr[0]->num;
 #ifdef XDB
-    if (sel == 2) e_deb_type = 3;
-    else if (sel == 3) e_deb_type = 4;
-    else if (sel == 4) e_deb_type = 5;
+    if (sel == 2) e_deb_type = DEB_XDB;
+    else if (sel == 3) e_deb_type = DEB_JDB;
+    else if (sel == 4) e_deb_type = DEB_PDB;
     else e_deb_type = sel;
 #else
-    if (sel == 3) e_deb_type = 4;
-    else if (sel == 4) e_deb_type = 5;
+    if (sel == 3) e_deb_type = DEB_JDB;
+    else if (sel == 4) e_deb_type = DEB_PDB;
     else e_deb_type = sel;
 #endif
   }
