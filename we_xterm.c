@@ -95,6 +95,39 @@ extern PIC *e_X_l_pic;
 
 extern struct mouse e_mouse;
 
+/* Real X11 teardown at exit, installed as WpeDisplayEnd (X11 used to leave it
+   as WpeNullFunction, so nothing was released).  XCloseDisplay reclaims the
+   server-side resources (window, GC, Pixmap, core font) and Xlib's own
+   client-side memory, but it does NOT know about the foreign client-side
+   allocations layered on top: the render backend's cairo/Pango/FreeType stack
+   (via WpeRender.cleanup) and libXft's font glyph cache and colour cells.
+   Free those explicitly -- the one-time init leaks the valgrind sweep (#166)
+   flagged -- then close the display.  cr_cleanup runs first because its cairo
+   surface wraps WpeXInfo.backbuf. */
+static void e_x_display_end(void)
+{
+ if (!WpeXInfo.display)
+  return;
+
+ if (WpeRender.cleanup)
+  WpeRender.cleanup();
+#ifdef HAVE_XFT
+ if (WpeXInfo.xftfont)
+ {
+  Visual *vis = DefaultVisual(WpeXInfo.display, WpeXInfo.screen);
+  Colormap cmap = DefaultColormap(WpeXInfo.display, WpeXInfo.screen);
+  int i;
+  for (i = 0; i < 16; i++)
+   XftColorFree(WpeXInfo.display, vis, cmap, &WpeXInfo.xftcolors[i]);
+  if (WpeXInfo.xftdraw)
+   XftDrawDestroy(WpeXInfo.xftdraw);
+  XftFontClose(WpeXInfo.display, WpeXInfo.xftfont);
+ }
+#endif
+ XCloseDisplay(WpeXInfo.display);
+ WpeXInfo.display = NULL;
+}
+
 int WpeDllInit(int *argc, char **argv)
 {
  e_s_u_clr = e_s_x_clr;
@@ -122,7 +155,7 @@ int WpeDllInit(int *argc, char **argv)
  WpeMouseRestoreShape = (void (*)(WpeMouseShape))WpeNullFunction;
 /* WpeMouseChangeShape = WpeXMouseChangeShape;
  WpeMouseRestoreShape = WpeXMouseRestoreShape;*/
- WpeDisplayEnd = WpeNullFunction;
+ WpeDisplayEnd = e_x_display_end;
  e_u_switch_screen = WpeZeroFunction;
  e_u_d_switch_out = (int (*)(int sw))WpeZeroFunction;
  { extern int e_t_deb_out(FENSTER *);
