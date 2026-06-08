@@ -417,7 +417,7 @@ static int e_run_with_pty(char *cmd, BUFFER *b, FENSTER *mf)
    break;
   }
   e_run_drain_pty(pty_master, b, mf);
-  wpe_fd_poll(50);
+  wpe_fd_poll(WPE_FD_POLL_MS);
   { int c = 0;
 #ifdef NCURSES
     if (!WpeIsXwin())

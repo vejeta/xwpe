@@ -16,6 +16,10 @@
 
 typedef void (*wpe_fd_callback)(int fd, void *data);
 
+/* Poll cadence (ms) for the debugger/run event loops: short enough to stay
+   responsive to the keyboard, long enough not to spin.  (-1 = block.) */
+#define WPE_FD_POLL_MS 50
+
 int  wpe_fd_add(int fd, int events, wpe_fd_callback cb, void *data);
 void wpe_fd_del(int fd);
 int  wpe_fd_poll(int timeout_ms);

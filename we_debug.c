@@ -144,6 +144,10 @@ char *npipe[5] = {  NULL, NULL, NULL, NULL, NULL  };
 #define DEB_STEP_BUF     4096
 #define DEB_STEP_POLL_MS 5000
 
+/* Settle time (ms) for the legacy external-xterm debugger before xwpe reclaims
+   the input focus -- see the comment at its use in e_exec_deb. */
+#define DEB_XTERM_SETTLE_MS 200
+
 /* Drain any available data from the pty master into e_d_prog_output.
    Polls so it never blocks the editor, and keeps draining until the program
    stops writing for DEB_PTY_DRAIN_MS or closes its end of the pty (POLLHUP). */
@@ -461,7 +465,7 @@ static void e_d_wait_for_input(int gdb_fd)
  wpe_fd_add(gdb_fd, POLLIN, NULL, NULL);
  if (e_d_pty_master >= 0)
   wpe_fd_add(e_d_pty_master, POLLIN, NULL, NULL);
- wpe_fd_poll(50);
+ wpe_fd_poll(WPE_FD_POLL_MS);
  wpe_fd_del(gdb_fd);
  if (e_d_pty_master >= 0)
   wpe_fd_del(e_d_pty_master);
@@ -2546,7 +2550,15 @@ int e_exec_deb(FENSTER *f, char *prog)
 /*   ioctl(rfildes[0], TCSETA, &ntermio);*/
     tcsetattr(rfildes[0], TCSADRAIN, &ntermio);
    }
-   usleep(200000);
+   /* Legacy external-xterm debugger path (e_deb_mode): the child just
+      exec'd an xterm to host the debugger.  Let that xterm map its window
+      and settle before we pull the input focus back to xwpe, or the
+      focus-set races the xterm and may not stick.  The fully event-driven
+      cure is to wait for the xterm's MapNotify via SubstructureNotify on the
+      root window; that is deferred to the X11-xterm verification pass since it
+      cannot be exercised in the headless test harness.  Until then this is a
+      single named, bounded settle, not an open-coded magic number. */
+   usleep(DEB_XTERM_SETTLE_MS * 1000);
 #ifndef NO_XWINDOWS
    XSetInputFocus(WpeXInfo.display, WpeXInfo.window,
      RevertToParent, CurrentTime);
