@@ -23,6 +23,7 @@
 #include <signal.h>
 #include <poll.h>
 #include <pty.h>
+#include <errno.h>
 #include <stdarg.h>
 #include <sys/wait.h>
 
@@ -158,6 +159,30 @@ void e_d_pty_drain(void)
   break;                         /* POLLHUP/POLLERR, or EOF with no data left */
  }
  fcntl(e_d_pty_master, F_SETFL, flags & ~O_NONBLOCK);
+}
+
+/* Send a NUL-terminated command to the debugger's stdin pipe (rfildes[1]).
+   Centralises what used to be open-coded write(rfildes[1], s, strlen(s)) calls
+   -- and, worse, hand-counted lengths that could be wrong (the old jdb
+   delete-all sent write(..., "db *\n", 2), i.e. just "db").  Using strlen here
+   removes that whole class of miscount, and the loop tolerates short writes
+   and EINTR. */
+static void e_d_send_cmd(const char *cmd)
+{
+ size_t len = strlen(cmd);
+ size_t off = 0;
+
+ while (off < len)
+ {
+  ssize_t w = write(rfildes[1], cmd + off, len - off);
+  if (w < 0)
+  {
+   if (errno == EINTR)
+    continue;
+   break;   /* pipe broken: the debugger is gone, nothing to do here */
+  }
+  off += (size_t)w;
+ }
 }
 
 static void e_d_pty_strip_cr(char *s, int len)
@@ -438,7 +463,7 @@ static void e_d_flush_inferior_stdout(void)
 
  if (e_deb_type != 0 || e_d_pty_master < 0)
   return;
- write(rfildes[1], "call (void)fflush(0)\n", 21);
+ e_d_send_cmd("call (void)fflush(0)\n");
  while (e_d_line_read(wfildes[0], resp, 256, 0, 0) == 0)
   ;
 }
@@ -1153,15 +1178,15 @@ int e_d_quit_basic(FENSTER *f)
  if (rfildes[1] >= 0)
  {
   if (e_deb_type == 0 || e_deb_type == 3)
-   write(rfildes[1], "q\ny\n", 4);
+   e_d_send_cmd("q\ny\n");
   else if (e_deb_type == 1)
-   write(rfildes[1], "q\n", 2);
+   e_d_send_cmd("q\n");
   else if (e_deb_type == 2)
-   write(rfildes[1], "quit\n", 5);
+   e_d_send_cmd("quit\n");
   else if (e_deb_type == 4)
-   write(rfildes[1], "quit\n", 5);
+   e_d_send_cmd("quit\n");
   else if (e_deb_type == 5)
-   write(rfildes[1], "q\ny\n", 4);  /* pdb: quit + confirm */
+   e_d_send_cmd("q\ny\n");  /* pdb: quit + confirm */
  }
  jdb_trace("e_d_quit_basic: quitting debugger type=%d\n", e_deb_type);
  kbdflgs = fcntl(0, F_GETFL, 0 );
@@ -1440,7 +1465,7 @@ int e_d_p_watches(FENSTER *f, int sw)
   /* Send command to debugger */
   if(e_d_swtch)
   {
-   write(rfildes[1], str1, strlen(str1));
+   e_d_send_cmd(str1);
   }
 
   /* If no debugger or no response, give message of no symbol in context */
@@ -1616,11 +1641,11 @@ int e_d_p_stack(FENSTER *f, int sw)
  if (!e_d_swtch)
   return(0);
  if (e_deb_type == 0)
-  write(rfildes[1], "bt\n", 3);
+  e_d_send_cmd("bt\n");
  else if (e_deb_type == 1 || e_deb_type == 3)
-  write(rfildes[1], "t\n", 2);
+  e_d_send_cmd("t\n");
  else if (e_deb_type == 2)
-  write(rfildes[1], "where\n", 6);
+  e_d_send_cmd("where\n");
  while ((ret = e_d_line_read(wfildes[0], str, 256, 0, 0)) == 2)
   e_d_error(str);
  if (ret == -1)
@@ -1751,7 +1776,7 @@ int e_make_stack(FENSTER *f)
 	 sprintf(str, "%s %d\n",
 	 e_deb_type != 3 ? "down" : "up", e_d_nstack - dif);
       if(dif != e_d_nstack)
-      {  write(rfildes[1], str, strlen(str));
+      {  e_d_send_cmd(str);
 	 while((ret = e_d_line_read(wfildes[0], str, 128, 0, 0)) == 0 || ret == 2)
 	    if( ret == 2) e_d_error(str);
 	 if(ret == -1) return(ret);
@@ -1933,13 +1958,13 @@ int e_remove_breakpoints(FENSTER *f)
  if (e_d_swtch)
  {
   if (!e_deb_type)
-   write(rfildes[1], "d\ny\n", 4);
+   e_d_send_cmd("d\ny\n");
   else if (e_deb_type == 1)
-   write(rfildes[1], "D\n", 2);
+   e_d_send_cmd("D\n");
   else if (e_deb_type == 2)
-   write(rfildes[1], "delete all\n", 11);
+   e_d_send_cmd("delete all\n");
   else if (e_deb_type == 3)
-   write(rfildes[1], "db *\n", 2);
+   e_d_send_cmd("db *\n");
  }
  for (i = 0; i < e_d_nbrpts; i++)
   FREE(e_d_sbrpts[i]);
@@ -1990,12 +2015,12 @@ int e_mk_brk_main(FENSTER *f, int sw)
    else if (e_deb_type == 1)
    {
     sprintf(eing, "e %s\n", e_get_start_symbol());
-    write(rfildes[1], eing, strlen(eing));
+    e_d_send_cmd(eing);
     if (e_d_dum_read() == -1) return(-1);
     sprintf(eing, "%d d\n", e_d_ybrpts[sw-1]);
    }
    jdb_trace("e_mk_brk_main(del): sending '%s'\n", eing);
-   write(rfildes[1], eing, strlen(eing));
+   e_d_send_cmd(eing);
    if (e_d_dum_read() == -1) return(-1);
   }
   FREE(e_d_sbrpts[sw-1]);
@@ -2037,7 +2062,7 @@ int e_mk_brk_main(FENSTER *f, int sw)
    if (e_deb_type == 0)
    {
     sprintf(eing, "b %s\n", e_get_start_symbol());
-    write(rfildes[1], eing, strlen(eing));
+    e_d_send_cmd(eing);
     while ((ret = e_d_line_read(wfildes[0], str, 256, 0, 0)) == 0 &&
       strncmp(str, "Breakpoint", 10))
      ;
@@ -2049,7 +2074,7 @@ int e_mk_brk_main(FENSTER *f, int sw)
    else if (e_deb_type == 2)
    {
     sprintf(eing, "stop in %s\n", e_get_start_symbol());
-    write(rfildes[1], eing, strlen(eing));
+    e_d_send_cmd(eing);
     while ((ret = e_d_line_read(wfildes[0], str, 256, 0, 0)) == 0 &&
       str[0] != '(')
      ;
@@ -2061,7 +2086,7 @@ int e_mk_brk_main(FENSTER *f, int sw)
    else if (e_deb_type == 3)
    {
     sprintf(eing, "b %s\n", e_get_start_symbol());
-    write(rfildes[1], eing, strlen(eing));
+    e_d_send_cmd(eing);
     while ((ret = e_d_line_read(wfildes[0], str, 256, 0, 0)) == 0 &&
       strncmp(str, "Added:", 6))
      ;
@@ -2079,17 +2104,17 @@ int e_mk_brk_main(FENSTER *f, int sw)
       sprintf(eing, "stop in %s.%s\n", cls, e_get_start_symbol());
     }
     jdb_trace("e_mk_brk_main: sending '%s'\n", eing);
-    write(rfildes[1], eing, strlen(eing));
+    e_d_send_cmd(eing);
     if (e_d_dum_read() == -1) return(-1);
     e_d_nrbrpts[e_d_nbrpts - 1] = e_d_nbrpts;
    }
    else if (e_deb_type == 1)
    {
     sprintf(eing, "e %s\n", e_get_start_symbol());
-    write(rfildes[1], eing, strlen(eing));
+    e_d_send_cmd(eing);
     if (e_d_dum_read() == -1) return(-1);
     sprintf(eing, "b\n");
-    write(rfildes[1], eing, strlen(eing));
+    e_d_send_cmd(eing);
     if ((ret = e_d_line_read(wfildes[0], str, 256, 0, 0)) == -1)
      return(ret);
     if (ret == 2) e_d_error(str);
@@ -2146,11 +2171,11 @@ int e_make_breakpoint(FENSTER *f, int sw)
     else if (e_deb_type == 1)
     {
      sprintf(eing, "e %s\n", e_d_sbrpts[i]);
-     write(rfildes[1], eing, strlen(eing));
+     e_d_send_cmd(eing);
      if (e_d_dum_read() == -1) return(-1);
      sprintf(eing, "%d d\n", e_d_ybrpts[i]);
     }
-    write(rfildes[1], eing, strlen(eing));
+    e_d_send_cmd(eing);
     if (e_d_dum_read() == -1) return(-1);
    }
    FREE(e_d_sbrpts[i]);
@@ -2194,7 +2219,7 @@ int e_make_breakpoint(FENSTER *f, int sw)
     if (e_deb_type == 0)
     {
      snprintf(eing, sizeof(eing), "b %s:%d\n", f->datnam, b->b.y + 1);
-     write(rfildes[1], eing, strlen(eing));
+     e_d_send_cmd(eing);
      while ((ret = e_d_line_read(wfildes[0], str, 256, 0, 0)) == 0 &&
        strncmp(str, "Breakpoint", 10))
       ;
@@ -2206,7 +2231,7 @@ int e_make_breakpoint(FENSTER *f, int sw)
     else if (e_deb_type == 2)
     {
      snprintf(eing, sizeof(eing), "stop at \"%s\":%d\n", f->datnam, b->b.y + 1);
-     write(rfildes[1], eing, strlen(eing));
+     e_d_send_cmd(eing);
      while ((ret = e_d_line_read(wfildes[0], str, 256, 0, 0)) == 0 &&
        str[0] != '(')
       ;
@@ -2218,7 +2243,7 @@ int e_make_breakpoint(FENSTER *f, int sw)
     else if (e_deb_type == 3)
     {
      snprintf(eing, sizeof(eing), "b %s:%d\n", f->datnam, b->b.y + 1);
-     write(rfildes[1], eing, strlen(eing));
+     e_d_send_cmd(eing);
      while ((ret = e_d_line_read(wfildes[0], str, 256, 0, 0)) == 0 &&
        strncmp(str, "Added:", 6))
       ;
@@ -2231,10 +2256,10 @@ int e_make_breakpoint(FENSTER *f, int sw)
     else if (e_deb_type == 1)
     {
      snprintf(eing, sizeof(eing), "e %s\n", f->datnam);
-     write(rfildes[1], eing, strlen(eing));
+     e_d_send_cmd(eing);
      if (e_d_dum_read() == -1) return(-1);
      sprintf(eing, "%d b\n", b->b.y + 1);
-     write(rfildes[1], eing, strlen(eing));
+     e_d_send_cmd(eing);
      if (e_d_dum_read() == -1) return(-1);
     }
     else if (e_deb_type == 4)
@@ -2245,7 +2270,7 @@ int e_make_breakpoint(FENSTER *f, int sw)
        WpeStringCutChar(cls, '.');
        sprintf(eing, "stop at %s:%d\n", cls, b->b.y + 1);
      }
-     write(rfildes[1], eing, strlen(eing));
+     e_d_send_cmd(eing);
      if (e_d_dum_read() == -1) return(-1);
      e_d_nrbrpts[e_d_nbrpts - 1] = e_d_nbrpts;
     }
@@ -2253,7 +2278,7 @@ int e_make_breakpoint(FENSTER *f, int sw)
     {
      /* pdb: "b line" for current file, "b file:line" for others */
      sprintf(eing, "b %d\n", b->b.y + 1);
-     write(rfildes[1], eing, strlen(eing));
+     e_d_send_cmd(eing);
      if (e_d_dum_read() == -1) return(-1);
      e_d_nrbrpts[e_d_nbrpts - 1] = e_d_nbrpts;
     }
@@ -2270,7 +2295,7 @@ int e_make_breakpoint(FENSTER *f, int sw)
    for (i = 0; i < e_d_nbrpts; i++)
    {
     sprintf(eing, "b %s:%d\n", e_d_sbrpts[i], e_d_ybrpts[i]);
-    write(rfildes[1], eing, strlen(eing));
+    e_d_send_cmd(eing);
     while ((ret = e_d_line_read(wfildes[0], str, 256, 0, 0)) == 0 &&
       strncmp(str, "Breakpoint", 10))
      ;
@@ -2285,7 +2310,7 @@ int e_make_breakpoint(FENSTER *f, int sw)
    for (i = 0; i < e_d_nbrpts; i++)
    {
     sprintf(eing, "stop at \"%s\":%d\n", e_d_sbrpts[i], e_d_ybrpts[i]);
-    write(rfildes[1], eing, strlen(eing));
+    e_d_send_cmd(eing);
     while ((ret = e_d_line_read(wfildes[0], str, 256, 0, 0)) == 0 &&
       str[0] != '(')
      ;
@@ -2300,7 +2325,7 @@ int e_make_breakpoint(FENSTER *f, int sw)
    for (i = 0; i < e_d_nbrpts; i++)
    {
     snprintf(eing, sizeof(eing), "b %s:%d\n", f->datnam, b->b.y + 1);
-    write(rfildes[1], eing, strlen(eing));
+    e_d_send_cmd(eing);
     while ((ret = e_d_line_read(wfildes[0], str, 256, 0, 0)) == 0 &&
       strncmp(str, "Added:", 6))
      ;
@@ -2322,7 +2347,7 @@ int e_make_breakpoint(FENSTER *f, int sw)
       sprintf(eing, "stop at %s:%d\n", cls, e_d_ybrpts[i]);
     }
     jdb_trace("e_make_breakpoint(sw=1): sending '%s'\n", eing);
-    write(rfildes[1], eing, strlen(eing));
+    e_d_send_cmd(eing);
     if (e_d_dum_read() == -1) return(-1);
     e_d_nrbrpts[i] = i + 1;
    }
@@ -2333,7 +2358,7 @@ int e_make_breakpoint(FENSTER *f, int sw)
    {
     /* pdb: "b file:line" */
     sprintf(eing, "b %s:%d\n", e_d_sbrpts[i], e_d_ybrpts[i]);
-    write(rfildes[1], eing, strlen(eing));
+    e_d_send_cmd(eing);
     if (e_d_dum_read() == -1) return(-1);
     e_d_nrbrpts[i] = i + 1;
    }
@@ -2343,10 +2368,10 @@ int e_make_breakpoint(FENSTER *f, int sw)
    for (i = 0; i < e_d_nbrpts; i++)
    {
     sprintf(eing, "e %s\n", e_d_sbrpts[i]);
-    write(rfildes[1], eing, strlen(eing));
+    e_d_send_cmd(eing);
     if (e_d_dum_read() == -1) return(-1);
     sprintf(eing, "%d b\n", e_d_ybrpts[i]);
-    write(rfildes[1], eing, strlen(eing));
+    e_d_send_cmd(eing);
     if (e_d_dum_read() == -1) return(-1);
    }
   }
@@ -2803,19 +2828,19 @@ int e_run_debug(FENSTER *f)
      when xwpe sends commands that gdb would otherwise block on. */
   if (e_deb_type == 0)
   {
-   write(rfildes[1], "set confirm off\n", 16);
+   e_d_send_cmd("set confirm off\n");
    if (e_d_dum_read() == -1) return(-1);
    if (e_d_pty_master >= 0)
    {
     char _tty_cmd[160];
     sprintf(_tty_cmd, "set inferior-tty %s\n", e_d_pty_slave_name);
-    write(rfildes[1], _tty_cmd, strlen(_tty_cmd));
+    e_d_send_cmd(_tty_cmd);
     if (e_d_dum_read() == -1) return(-1);
    }
   }
   if (e_deb_type == 3)
   {
-   write(rfildes[1], "sm\n", 3);
+   e_d_send_cmd("sm\n");
    if (e_d_dum_read() == -1) return(-1);
   }
   jdb_trace("e_run_debug: setting breakpoints (nbrpts=%d)...\n", e_d_nbrpts);
@@ -2933,7 +2958,7 @@ int e_deb_run(FENSTER *f)
  e_d_delbreak(f);
  e_d_switch_out(1);
  jdb_trace("e_deb_run: sending '%s' (prsw=%d)\n", eing, prsw);
- write(rfildes[1], eing, strlen(eing));
+ e_d_send_cmd(eing);
  if ((e_deb_type == 4 || e_deb_type == 5) && !prsw)
  {
   /* jdb: "run" returns "> " immediately but the VM starts
@@ -3070,11 +3095,11 @@ int e_d_step_next(FENSTER *f, int sw)
  }
  e_d_delbreak(f);
  e_d_switch_out(1);
- if (sw && (e_deb_type == 0 || e_deb_type == 5)) write(rfildes[1], "n\n", 2);
- else if (sw && (e_deb_type == 1 || e_deb_type == 3)) write(rfildes[1], "S\n", 2);
- else if (sw && (e_deb_type == 2 || e_deb_type == 4)) write(rfildes[1], "next\n", 5);
- else if (e_deb_type == 2 || e_deb_type == 4) write(rfildes[1], "step\n", 5);
- else write(rfildes[1], "s\n", 2);
+ if (sw && (e_deb_type == 0 || e_deb_type == 5)) e_d_send_cmd("n\n");
+ else if (sw && (e_deb_type == 1 || e_deb_type == 3)) e_d_send_cmd("S\n");
+ else if (sw && (e_deb_type == 2 || e_deb_type == 4)) e_d_send_cmd("next\n");
+ else if (e_deb_type == 2 || e_deb_type == 4) e_d_send_cmd("step\n");
+ else e_d_send_cmd("s\n");
  e_d_nstack = 0;
  if (e_deb_type == 4)
  {
@@ -3216,7 +3241,7 @@ pdb_poll_again:
      if (_gt && _gt[2] == '<')
      {
       /* Internal frame -- step again automatically */
-      write(rfildes[1], "n\n", 2);
+      e_d_send_cmd("n\n");
       _len = 0;
       _found = 0;
       goto pdb_poll_again;
@@ -3291,7 +3316,7 @@ int e_d_goto_func(FENSTER *f, int flag)
  e_d_nstack = 0;
  if (*str)
  {
-  write(rfildes[1], str, strlen(str));
+  e_d_send_cmd(str);
   ret=e_read_output(f);
   /* Executing Finish twice may not work properly. */
  }
@@ -3584,7 +3609,7 @@ int e_read_output(FENSTER *f)
  if (e_deb_type == 0 && e_d_pty_master >= 0)
  {
   char _flush_resp[256];
-  write(rfildes[1], "call (void)fflush(0)\n", 21);
+  e_d_send_cmd("call (void)fflush(0)\n");
   while (e_d_line_read(wfildes[0], _flush_resp, 256, 0, 0) == 0)
    ;
   e_d_pty_flush_to_messages(f);
@@ -3670,7 +3695,7 @@ int e_d_pr_sig(char *str, FENSTER *f)
   e_d_out_str[i][0] = '\0';
  if (e_deb_type != 1 && e_deb_type != 3)
  {
-  write(rfildes[1], "where\n", 6);
+  e_d_send_cmd("where\n");
   for (i = 0; ((ret = e_d_line_read(wfildes[0], str, 256, 0, 1)) == 0 &&
     (line = e_make_line_num(str, file)) < 0) || ret == 2; i++)
   {
@@ -3689,7 +3714,7 @@ int e_d_pr_sig(char *str, FENSTER *f)
  }
  else
  {
-  write(rfildes[1], "t\n", 2);
+  e_d_send_cmd("t\n");
   for (i = 0; ((ret = e_d_line_read(wfildes[0], str, 256, 0, 1)) == 0 &&
     (line = e_make_line_num2(str, file)) < 0) || ret == 2; i++)
   {
@@ -3784,7 +3809,7 @@ int e_make_line_num(char *str, char *file)
    ;
   if ((!str[i]) || (num = atoi(str+i+1)) < 0)
    return(-1);
-  write(rfildes[1], "e\n", 2);
+  e_d_send_cmd("e\n");
   while ((i = e_d_line_read(wfildes[0], str, 256, 0, 0)) ==  2)
    e_d_error(str);
   if (i < 0)
@@ -3857,9 +3882,9 @@ int e_d_goto_break(char *file, int line, FENSTER *f)
       and continue, skipping all libc frames. */
    if (e_deb_type == 0)
    {
-    write(rfildes[1], "tbreak main\n", 12);
+    e_d_send_cmd("tbreak main\n");
     if (e_d_dum_read() == -1) { e_d_quit(f); return(-1); }
-    write(rfildes[1], "c\n", 2);
+    e_d_send_cmd("c\n");
     return(e_read_output(f));
    }
    sprintf(str, e_d_msg[ERR_CANTFILE], file);
