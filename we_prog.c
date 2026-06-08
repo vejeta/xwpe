@@ -207,29 +207,29 @@ int e_p_make(FENSTER *f)
   e_argc = e_make_arg(&e_arg, e_s_prog.libraries);
   e_arg[1] = MALLOC(3);
   strcpy(e_arg[1], "-o");
-  strcpy(mstr, f->datnam);
+  snprintf(mstr, sizeof(mstr), "%s", f->datnam);
   WpeStringCutChar(mstr, '.');
   len = strlen(e_prog.exedir) - 1;
   if (e_s_prog.exe_name && e_s_prog.exe_name[0])
   {
    if (e_prog.exedir[len] == DIRC)
-    sprintf(estr, "%s%s", e_prog.exedir, e_s_prog.exe_name);
+    snprintf(estr, sizeof(estr), "%s%s", e_prog.exedir, e_s_prog.exe_name);
    else
-    sprintf(estr, "%s%c%s", e_prog.exedir, DIRC, e_s_prog.exe_name);
+    snprintf(estr, sizeof(estr), "%s%c%s", e_prog.exedir, DIRC, e_s_prog.exe_name);
   }
   else
   {
    if (e_prog.exedir[len] == DIRC)
-    sprintf(estr, "%s%s.e", e_prog.exedir, mstr);
+    snprintf(estr, sizeof(estr), "%s%s.e", e_prog.exedir, mstr);
    else
-    sprintf(estr, "%s%c%s.e", e_prog.exedir, DIRC, mstr);
+    snprintf(estr, sizeof(estr), "%s%c%s.e", e_prog.exedir, DIRC, mstr);
   }
   if (e_prog.exedir[len] == DIRC)
-   sprintf(ostr, (e_s_prog.comp_sw & 1) ? "%s%s.class" : "%s%s.o",
-           e_prog.exedir, mstr);
+   snprintf(ostr, sizeof(ostr), (e_s_prog.comp_sw & 1) ? "%s%s.class" : "%s%s.o",
+            e_prog.exedir, mstr);
   else
-   sprintf(ostr, (e_s_prog.comp_sw & 1) ? "%s%c%s.class" : "%s%c%s.o",
-           e_prog.exedir, DIRC, mstr);
+   snprintf(ostr, sizeof(ostr), (e_s_prog.comp_sw & 1) ? "%s%c%s.class" : "%s%c%s.o",
+            e_prog.exedir, DIRC, mstr);
   e_argc = e_add_arg(&e_arg, estr, 2, e_argc);
   e_argc = e_add_arg(&e_arg, ostr, 3, e_argc);
   stat(ostr, cbuf);
@@ -462,6 +462,18 @@ static int e_run_with_pty(char *cmd, BUFFER *b, FENSTER *mf)
  return ret;
 }
 
+/* e_strlcat - append src to dst within a cap-byte buffer, never overrunning
+   and always NUL-terminating (BSD strlcat semantics).  Used to assemble the
+   run/make command line safely from project paths, exe names and arguments,
+   any of which can be long. */
+static void e_strlcat(char *dst, const char *src, size_t cap)
+{
+ size_t dl = strlen(dst);
+ if (dl + 1 >= cap)
+  return;
+ snprintf(dst + dl, cap - dl, "%s", src);
+}
+
 int e_run(FENSTER *f)
 {
  ECNT *cn = f->ed;
@@ -500,30 +512,30 @@ int e_run(FENSTER *f)
  {
   if ((!e_s_prog.exe_name) || (e_s_prog.exe_name[0]!=DIRC))
   {
-   strcat(estr, e_prog.exedir);
+   e_strlcat(estr, e_prog.exedir, sizeof(estr));
    len = strlen(estr) - 1;
-   if (estr[len] != DIRC)
+   if (len >= 0 && estr[len] != DIRC)
    {
-    estr[++len] = DIRC;
-    estr[++len] = '\0';
+    char dc[2] = { DIRC, '\0' };
+    e_strlcat(estr, dc, sizeof(estr));
    }
   }
   if (e_s_prog.exe_name && e_s_prog.exe_name[0])
   {
-   strcat(estr, e_s_prog.exe_name);
+   e_strlcat(estr, e_s_prog.exe_name, sizeof(estr));
   }
   else if (!e__project)
   {
-   strcat(estr, f->datnam);
+   e_strlcat(estr, f->datnam, sizeof(estr));
    WpeStringCutChar(estr, '.');
-   strcat(estr, ".e");
+   e_strlcat(estr, ".e", sizeof(estr));
   }
   else
-   strcat(estr, "a.out");
+   e_strlcat(estr, "a.out", sizeof(estr));
  }
- strcat(estr, " ");
+ e_strlcat(estr, " ", sizeof(estr));
  if (e_prog.arguments)
-  strcat(estr, e_prog.arguments);
+  e_strlcat(estr, e_prog.arguments, sizeof(estr));
 
  for (i = cn->mxedt; i > 0 && strcmp(cn->f[i]->datnam, "Messages"); i--)
   ;
@@ -548,7 +560,7 @@ int e_run(FENSTER *f)
     FILE *pp;
     char line[1024];
     print_to_end_of_buffer(b, "--- Run output ---", 0);
-    strcat(estr, " </dev/null 2>&1");
+    e_strlcat(estr, " </dev/null 2>&1", sizeof(estr));
     pp = popen(estr, "r");
     if (pp)
     {
@@ -789,14 +801,17 @@ int e_p_exec(int file, FENSTER *f, PIC *pic)
  ECNT *cn = f->ed;
  FENSTER *mf = e_find_or_create_messages(cn);
  BUFFER *b = mf->b;
- int ret = 0, i = 0, is, fd, stat_loc;
+ int ret = 0, i = 0, is, fd, stat_loc = 0;
  char str[128];
  char *buff;
 
  f = mf;
  while ((ret = wait(&stat_loc)) >= 0 && ret != e_save_pid)
   ;
- ret = WIFEXITED(stat_loc) ? WEXITSTATUS(stat_loc) : 1;
+ /* Only trust stat_loc when we actually reaped our own child: wait() can
+    return -1 (e.g. ECHILD if the child was already reaped) and then leave
+    stat_loc untouched, so WIFEXITED() would read an undefined value. */
+ ret = (ret == e_save_pid && WIFEXITED(stat_loc)) ? WEXITSTATUS(stat_loc) : 1;
  for (is = b->mxlines-1, fd = efildes[0]; fd > 0; fd = wfildes[0])
  {
   buff=MALLOC(1);
