@@ -47,7 +47,11 @@ def test_wheel_scrolls_the_view(xwpe):
     down_change = changed_pixels(top, scrolled)
     assert down_change > 2000, \
         "mouse wheel down should scroll the view (changed only %d px)" % down_change
-    xwpe.wheel("up", count=8, px=400, py=250)
+    # Over-scroll up (more events than we scrolled down) so the view
+    # deterministically clamps at the very top -- `back` then matches `top`
+    # regardless of any wheel events dropped on slow/emulated CI arches.
+    # (riscv64 dropped clicks, leaving the view mid-file: 3745 px > 3067 px.)
+    xwpe.wheel("up", count=16, px=400, py=250)
     back = xwpe.screenshot()
     assert changed_pixels(top, back) < down_change, \
         "mouse wheel up should scroll back toward the top"

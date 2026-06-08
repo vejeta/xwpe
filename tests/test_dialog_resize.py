@@ -20,6 +20,7 @@ import signal
 import struct
 import subprocess
 import tempfile
+import termios
 import time
 
 import pyte
@@ -39,10 +40,15 @@ KEY_RETURN = '\r'
 
 
 def set_pty_size(fd, cols, rows):
-    """Change pty dimensions via TIOCSWINSZ (sends SIGWINCH to slave)."""
-    TIOCSWINSZ = 0x5414
+    """Change pty dimensions via TIOCSWINSZ (sends SIGWINCH to slave).
+
+    Use termios.TIOCSWINSZ rather than a hardcoded 0x5414: the terminal
+    ioctl numbers differ by architecture (PowerPC/MIPS/Alpha/SPARC use the
+    BSD-style encoding, not the x86/generic value), and a wrong constant makes
+    the ioctl fail with ENOTTY on those ports (seen on ppc64el in Debian CI).
+    """
     winsize = struct.pack('HHHH', rows, cols, 0, 0)
-    fcntl.ioctl(fd, TIOCSWINSZ, winsize)
+    fcntl.ioctl(fd, termios.TIOCSWINSZ, winsize)
 
 
 def drain(master_fd, stream, timeout):
