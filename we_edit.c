@@ -64,6 +64,31 @@ int e_utf8_charlen(unsigned char c);
 int e_utf8_to_codepoint(unsigned char *buf, int len);
 int e_utf8_visual_len(unsigned char *s, int bytes);
 
+/* True for a UTF-8 lead byte (start of a 2..4 byte sequence). */
+#define UTF8_IS_LEAD(c) ((c) >= 0xC0 && (c) < 0xFE)
+
+/* Walk one UTF-8 character starting at s[i] (line length `len`) while computing
+   the screen column.  Decodes the character, adds its (display width - byte
+   count) to *j -- a multi-byte sequence is one b->b.x step per byte but only
+   wcwidth() columns wide -- and returns the number of EXTRA (continuation)
+   bytes so the caller's loop can skip them.  0 for a 1-byte/invalid sequence.
+   Folds three identical inline copies that computed cursor screen columns. */
+static int e_utf8_visual_step(unsigned char *s, int i, int len, int *j)
+{
+ wchar_t wc = 0;
+ mbstate_t mbs = {0};
+ int nb = mbrtowc(&wc, (char *)(s + i), len - i, &mbs);
+
+ if (nb > 1)
+ {
+  int cw = wcwidth(wc);
+  if (cw < 1) cw = 1;
+  *j += cw - nb;
+  return nb - 1;
+ }
+ return 0;
+}
+
 #ifdef PROG
 BUFFER *e_p_m_buffer = NULL;
 #ifdef DEBUGGER
@@ -1304,20 +1329,9 @@ int e_chr_sp(int x, BUFFER *b, FENSTER *f)
 #ifdef UNIX
   else if (uc < ' ')
    j++;
-  else if (uc >= 0xC0 && uc < 0xFE)
-  {
-   /* UTF-8 lead byte: decode and adjust columns */
-   wchar_t wc = 0;
-   mbstate_t mbs = {0};
-   int nb = mbrtowc(&wc, b->bf[b->b.y].s + i, b->bf[b->b.y].len - i, &mbs);
-   if (nb > 1)
-   {
-    int cw = wcwidth(wc);
-    if (cw < 1) cw = 1;
-    j += cw - nb;
-    i += nb - 1;  /* skip continuation bytes (loop does i++) */
-   }
-  }
+  else if (UTF8_IS_LEAD(uc))
+   i += e_utf8_visual_step((unsigned char *)b->bf[b->b.y].s, i,
+                           b->bf[b->b.y].len, &j);
   if (f->dtmd == DTMD_HELP)
   {
    if (b->bf[b->b.y].s[i] == HBG || b->bf[b->b.y].s[i] == HFB ||
@@ -1635,19 +1649,9 @@ static int e_cursor_visual_adjust(FENSTER *f)
   if (uc == WPE_TAB)
    j += (f->ed->tabn - ((j + i) % f->ed->tabn) - 1);
   else if (uc < ' ') j++;
-  else if (uc >= 0xC0 && uc < 0xFE)
-  {
-   wchar_t wc = 0;
-   mbstate_t mbs = {0};
-   int nb = mbrtowc(&wc, b->bf[b->b.y].s + i, b->bf[b->b.y].len - i, &mbs);
-   if (nb > 1)
-   {
-    int cw = wcwidth(wc);
-    if (cw < 1) cw = 1;
-    j += cw - nb;
-    i += nb - 1;
-   }
-  }
+  else if (UTF8_IS_LEAD(uc))
+   i += e_utf8_visual_step((unsigned char *)b->bf[b->b.y].s, i,
+                           b->bf[b->b.y].len, &j);
  }
  return j;
 }
@@ -1711,23 +1715,9 @@ void e_cursor(FENSTER *f, int sw)
   if (uc == WPE_TAB)
    j += (f->ed->tabn - ((j + i) % f->ed->tabn) - 1);
   else if (uc < ' ') j++;
-  else if (uc >= 0xC0 && uc < 0xFE)
-  {
-   /* UTF-8 lead byte: decode and adjust for multi-byte and wide chars.
-      Each byte counts as 1 in b->b.x, but visually multi-byte sequences
-      occupy fewer columns.  Adjust j so (b->b.x + j) = screen column. */
-   wchar_t wc = 0;
-   mbstate_t mbs = {0};
-   int nb = mbrtowc(&wc, b->bf[b->b.y].s + i, b->bf[b->b.y].len - i, &mbs);
-   if (nb > 1)
-   {
-    int cw = wcwidth(wc);
-    if (cw < 1) cw = 1;
-    /* nb bytes -> cw screen columns: adjust j by (cw - nb) */
-    j += cw - nb;
-    i += nb - 1;  /* skip continuation bytes (loop does i++) */
-   }
-  }
+  else if (UTF8_IS_LEAD(uc))
+   i += e_utf8_visual_step((unsigned char *)b->bf[b->b.y].s, i,
+                           b->bf[b->b.y].len, &j);
   if (f->dtmd == DTMD_HELP)
   {
    if (b->bf[b->b.y].s[i] == HBG || b->bf[b->b.y].s[i] == HED ||
