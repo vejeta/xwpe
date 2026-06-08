@@ -72,6 +72,10 @@ extern int e_d_nwtchs;
 extern char ** e_d_swtchs;
 extern int * e_d_nrwtchs;
 
+/* Shared program-output capture (we_debug.c) -- feeds the Alt-F5 User Screen. */
+extern void e_d_prog_output_add(char *, int);
+extern void e_d_prog_output_reset(void);
+
 /********************************************************/   
 
 char *gnu_intstr = "${?*:warning:}${FILE}:${LINE}:${COLUMN}:*";
@@ -276,6 +280,41 @@ int e_p_make(FENSTER *f)
  return(0);
 }
 
+/* Fold one raw output byte from the running program into the Messages buffer:
+   newline opens a new line, CR is ignored, backspace/DEL deletes one (possibly
+   multi-byte UTF-8) character off the current line, and any other printable
+   byte is appended. */
+static void e_run_pty_apply_byte(BUFFER *b, unsigned char c)
+{
+ int line = b->mxlines - 1;
+ int len;
+
+ if (c == '\n')
+  e_new_line(b->mxlines, b);
+ else if (c == '\r')
+  ;
+ else if (c == '\b' || c == 127)
+ {
+  len = b->bf[line].len;
+  if (len > 0)
+  {
+   len--;
+   while (len > 0 && ((unsigned char)b->bf[line].s[len] & 0xC0) == 0x80)
+    len--;
+   b->bf[line].s[len] = '\0';
+   b->bf[line].len = len;
+  }
+ }
+ else if (c >= 32)
+ {
+  len = b->bf[line].len;
+  b->bf[line].s = REALLOC(b->bf[line].s, len + 2);
+  b->bf[line].s[len] = c;
+  b->bf[line].s[len + 1] = '\0';
+  b->bf[line].len = len + 1;
+ }
+}
+
 static void e_run_drain_pty(int pty_fd, BUFFER *b, FENSTER *mf)
 {
  char buf[512];
@@ -287,37 +326,9 @@ static void e_run_drain_pty(int pty_fd, BUFFER *b, FENSTER *mf)
   int k;
   /* Capture the raw byte stream verbatim for the Alt-F5 User Screen, in
      addition to the line-parsed copy that goes to the Messages window. */
-  { extern void e_d_prog_output_add(char *, int); e_d_prog_output_add(buf, n); }
+  e_d_prog_output_add(buf, n);
   for (k = 0; k < n; k++)
-  {
-   unsigned char c = (unsigned char)buf[k];
-   if (c == '\n')
-    e_new_line(b->mxlines, b);
-   else if (c == '\r')
-    ;
-   else if (c == '\b' || c == 127)
-   {
-    int line = b->mxlines - 1;
-    int len = b->bf[line].len;
-    if (len > 0)
-    {
-     len--;
-     while (len > 0 && ((unsigned char)b->bf[line].s[len] & 0xC0) == 0x80)
-      len--;
-     b->bf[line].s[len] = '\0';
-     b->bf[line].len = len;
-    }
-   }
-   else if (c >= 32)
-   {
-    int line = b->mxlines - 1;
-    int len = b->bf[line].len;
-    b->bf[line].s = REALLOC(b->bf[line].s, len + 2);
-    b->bf[line].s[len] = c;
-    b->bf[line].s[len + 1] = '\0';
-    b->bf[line].len = len + 1;
-   }
-  }
+   e_run_pty_apply_byte(b, (unsigned char)buf[k]);
  }
  fcntl(pty_fd, F_SETFL, flags & ~O_NONBLOCK);
  b->b.y = b->mxlines - 1;
@@ -360,7 +371,7 @@ static int e_run_with_pty(char *cmd, BUFFER *b, FENSTER *mf)
   return -1;
 
  /* Start a fresh capture so the Alt-F5 User Screen shows only this run. */
- { extern void e_d_prog_output_reset(void); e_d_prog_output_reset(); }
+ e_d_prog_output_reset();
 
  child = fork();
  if (child < 0)
@@ -437,7 +448,6 @@ static int e_run_with_pty(char *cmd, BUFFER *b, FENSTER *mf)
     if (WpeIsXwin())
     { extern int e_x_kbhit(void);
       c = e_x_kbhit();
-      if (c == 0) c = 0;
     }
 #endif
     if (c == CtrlC)
@@ -549,11 +559,14 @@ int e_run(FENSTER *f)
 
  if (b->bf[b->mxlines-1].len != 0)
   e_new_line(b->mxlines, b);
- { struct sigaction _old, _ign;
-   _ign.sa_handler = SIG_DFL;
-   sigemptyset(&_ign.sa_mask);
-   _ign.sa_flags = 0;
-   sigaction(SIGCHLD, &_ign, &_old);
+ /* Restore the DEFAULT SIGCHLD disposition for the duration of the run so
+    e_run_with_pty's own waitpid()/pclose() reaps the child; xwpe's normal
+    SIGCHLD handler is put back afterwards.  (_dfl = SIG_DFL, not "ignore".) */
+ { struct sigaction _old, _dfl;
+   _dfl.sa_handler = SIG_DFL;
+   sigemptyset(&_dfl.sa_mask);
+   _dfl.sa_flags = 0;
+   sigaction(SIGCHLD, &_dfl, &_old);
    ret = e_run_with_pty(estr, b, mf);
    if (ret < 0)
    {
