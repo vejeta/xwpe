@@ -825,8 +825,14 @@ static int e_t_utf8_assemble(int first)
  {
   timeout(50);
   cont = fk_getch();
-  if (cont == ERR || (cont & 0xC0) != 0x80)
+  if (cont == ERR)
+   return first;            /* sequence stalled: emit the lead byte as-is */
+  if ((cont & 0xC0) != 0x80)
+  {
+   ungetch(cont);           /* not a continuation byte: requeue it so the
+                               next read sees it instead of dropping it */
    return first;
+  }
   cp = (cp << 6) | (cont & 0x3F);
  }
  return cp;
