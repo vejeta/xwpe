@@ -680,6 +680,24 @@ static void e_xft_draw_acs(int sc, int px, int py, int fg_idx)
  * Return: An XftFont that can render the character (may be the main font
  *         if no better match is found).
  */
+/* Ensure the fallback-font cache (frc) has room for one more entry.  Returns 0
+   on success, -1 if it could not grow (out of memory) -- in which case the
+   existing cache is left intact so the caller can degrade to the main font
+   instead of dereferencing a freed/NULL pointer. */
+static int e_xft_frc_reserve(void)
+{
+ Fontcache *grown;
+
+ if (frclen < frccap)
+  return 0;
+ grown = realloc(frc, (frccap + 16) * sizeof(Fontcache));
+ if (!grown)
+  return -1;
+ frc = grown;
+ frccap += 16;
+ return 0;
+}
+
 static XftFont *e_xft_fallback_font(int rune)
 {
  int f;
@@ -723,11 +741,13 @@ static XftFont *e_xft_fallback_font(int rune)
 
   fontpattern = FcFontMatch(0, fcpattern, &fcres);
 
-  /* Grow cache */
-  if (frclen >= frccap)
+  /* Grow cache; on OOM degrade to the main font rather than crash */
+  if (e_xft_frc_reserve() < 0)
   {
-   frccap += 16;
-   frc = realloc(frc, frccap * sizeof(Fontcache));
+   FcPatternDestroy(fontpattern);
+   FcPatternDestroy(fcpattern);
+   FcCharSetDestroy(fccharset);
+   return WpeXInfo.xftfont;
   }
 
   frc[frclen].font = XftFontOpenPattern(WpeXInfo.display, fontpattern);
