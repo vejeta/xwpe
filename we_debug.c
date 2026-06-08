@@ -146,6 +146,14 @@ char *npipe[5] = {  NULL, NULL, NULL, NULL, NULL  };
 #define DEB_STEP_BUF     4096
 #define DEB_STEP_POLL_MS 5000
 
+/* Safety bound on the stderr-drain loop at the top of e_d_line_read: a debugger
+   that floods its error stream (e.g. a68g's abend->io_write_string recursion
+   when its output pipe breaks) must never hold xwpe in an unbounded read.  A
+   normal debug step emits at most a handful of stderr lines; anything past this
+   is a runaway, so we stop draining and let the loop re-enter on the next call
+   (the project convention: never leave xwpe in a busy loop). */
+#define E_D_DRAIN_MAX    4096
+
 /* Settle time (ms) for the legacy external-xterm debugger before xwpe reclaims
    the input focus -- see the comment at its use in e_exec_deb. */
 #define DEB_XTERM_SETTLE_MS 200
@@ -189,11 +197,21 @@ void e_d_pty_drain(void)
    delete-all sent write(..., "db *\n", 2), i.e. just "db").  Using strlen here
    removes that whole class of miscount, and the loop tolerates short writes
    and EINTR. */
+/* Runaway guard: how many debugger-output lines e_d_line_read has returned
+   since the last command we sent.  A single command's reply is bounded (a
+   stack, a value, a stopped-at line); a debugger that streams far more than any
+   real reply -- e.g. a68g stuck in its abend->io_write_string recursion -- is a
+   runaway, and the read loops would otherwise spin on it forever.  Reset on
+   every e_d_send_cmd (a fresh reply is expected) and checked in e_d_line_read. */
+static long e_d_read_runaway = 0;
+#define E_D_RUNAWAY_MAX  100000L
+
 static void e_d_send_cmd(const char *cmd)
 {
  size_t len = strlen(cmd);
  size_t off = 0;
 
+ e_d_read_runaway = 0;
  while (off < len)
  {
   ssize_t w = write(rfildes[1], cmd + off, len - off);
@@ -922,6 +940,25 @@ int e_debug_switch(FENSTER *f, int c)
  return(0);
 }
 
+/* Has the debugger child terminated?  Non-blocking, reaps it if so (and clears
+   e_d_pid so e_d_quit_basic does not double-reap).  The debugger read loops use
+   this so a debugger that died -- but whose pipe never reaches EOF because the
+   X11 launch path leaks xwpe's own write ends -- cannot hold xwpe forever
+   waiting for output that will never come (the project convention). */
+static int e_d_debugger_gone(void)
+{
+ int st;
+
+ if (e_d_pid <= 0)
+  return 1;
+ if (waitpid(e_d_pid, &st, WNOHANG) == e_d_pid)
+ {
+  e_d_pid = 0;
+  return 1;
+ }
+ return 0;
+}
+
 /*  Input Routines   */
 int e_e_line_read(int n, signed char *s, int max)
 {
@@ -961,10 +998,23 @@ int e_d_line_read(int n, signed char *s, int max, int sw, int esw)
  static char wt = 0, esc_sv = 0, str[12];
  int i, j, ret = 0, kbdflgs;
 
+ /* Runaway debugger: far more output than any real command reply means the
+    debugger is streaming uncontrollably (e.g. a68g's abend recursion).  Give
+    up instead of spinning; the caller treats -1 as end-of-output and quits. */
+ if (++e_d_read_runaway > E_D_RUNAWAY_MAX)
+ {
+  e_d_read_runaway = 0;
+  s[0] = '\0';
+  return(-1);
+ }
  if (esw)
  {  if((ret = e_e_line_read(efildes[0], s, max)) >= 0) return(ret);  }
  else
- {  while(e_e_line_read(efildes[0], s, max) >= 0);  }
+ {  int _drain = 0;
+    /* Drain buffered stderr, but never spin on a debugger that floods it. */
+    while(e_e_line_read(efildes[0], s, max) >= 0)
+     if (++_drain >= E_D_DRAIN_MAX) break;
+ }
  for(i = 0; i < max - 1; i++)
  {
   if (esc_sv)  {  s[i] = WPE_ESC;  esc_sv = 0;  continue;  }
@@ -975,6 +1025,14 @@ int e_d_line_read(int n, signed char *s, int max, int sw, int esw)
    if (ret == 0)
    {
     jdb_trace("e_d_line_read: EOF on pipe (debugger exited)\n");
+    fcntl(n, F_SETFL, kbdflgs & ~O_NONBLOCK);
+    return(-1);
+   }
+   /* read() returned EAGAIN: if the debugger process has died but its pipe
+      never reached EOF (the X11 launch path leaks xwpe's own write ends),
+      stop waiting for output that will never arrive instead of looping. */
+   if (e_d_debugger_gone())
+   {
     fcntl(n, F_SETFL, kbdflgs & ~O_NONBLOCK);
     return(-1);
    }
