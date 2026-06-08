@@ -3084,6 +3084,181 @@ int e_deb_next(FENSTER *f)
  return(e_d_step_next(f, 1));
 }
 
+/* Read and apply a jdb step/next response: poll for the "] " prompt, jump the
+   editor cursor to the reported source line, and capture any program output
+   (between the "> " prompt and the next jdb protocol line) for Ctrl-G P.
+   Returns 0, or e_d_quit(f) if the program or jdb exited. */
+static int e_d_jdb_step_complete(FENSTER *f)
+{
+ struct pollfd _pfd = { .fd = wfildes[0], .events = POLLIN };
+ char _jbuf[DEB_STEP_BUF];
+ int _jlen = 0, _n, _found = 0;
+
+ while (!_found)
+ {
+  if (poll(&_pfd, 1, DEB_STEP_POLL_MS) <= 0) break;
+  _n = read(wfildes[0], _jbuf + _jlen, sizeof(_jbuf) - _jlen - 1);
+  if (_n == 0)
+   return(e_d_quit(f));   /* EOF: jdb exited cleanly -- quit like gdb does */
+  if (_n < 0) continue;
+  _jlen += _n;
+  _jbuf[_jlen] = '\0';
+  jdb_trace("e_d_step_next: poll read %d bytes total=%d: [%s]\n",
+            _n, _jlen, _jbuf);
+  if (strstr(_jbuf, "] "))
+   _found = 1;
+  if (strstr(_jbuf, "exited"))
+  {  e_error("Program exited. Debugger stopped.", 0, f->fb);
+     return(e_d_quit(f));  }
+ }
+ if (_found)
+ {
+  char *_lp = strstr(_jbuf, "line=");
+  if (_lp)
+  { int _line = atoi(_lp + 5);
+    BUFFER *_b = f->ed->f[f->ed->mxedt]->b;
+    SCHIRM *_s = f->ed->f[f->ed->mxedt]->s;
+    if (_line > 0 && _line <= _b->mxlines)
+    { _s->da.y = _b->b.y = _line - 1;
+      _s->da.x = _b->b.x = 0;
+      _s->de.x = MAXSCOL;
+      e_schirm(f->ed->f[f->ed->mxedt], 1);
+      e_cursor(f->ed->f[f->ed->mxedt], 1);
+    }
+  }
+  /* jdb step response: "Step completed: ..., line=N\nN    code\nmain[1] "
+     Extract line from the last numbered line */
+  if (!_lp)
+  { char *_nl = strrchr(_jbuf, '\n');
+    if (_nl) { int _line = atoi(_nl + 1);
+      if (_line > 0) {
+       BUFFER *_b = f->ed->f[f->ed->mxedt]->b;
+       SCHIRM *_s = f->ed->f[f->ed->mxedt]->s;
+       if (_line <= _b->mxlines)
+       { _s->da.y = _b->b.y = _line - 1;
+         _s->da.x = _b->b.x = 0;
+         _s->de.x = MAXSCOL;
+         e_schirm(f->ed->f[f->ed->mxedt], 1);
+         e_cursor(f->ed->f[f->ed->mxedt], 1);
+       }
+      }
+    }
+  }
+ }
+ /* Extract program output from jdb response buffer.
+    Program output is text between "> " prompt and "Step completed:"
+    or "Breakpoint hit:" -- anything that's not a jdb protocol line. */
+ { char *_p = _jbuf, *_end;
+   /* Skip past initial "> " prompt */
+   if ((_p = strstr(_jbuf, "> ")) != NULL) _p += 2;
+   else _p = _jbuf;
+   /* Find where jdb protocol resumes */
+   _end = strstr(_p, "Step completed:");
+   if (!_end) _end = strstr(_p, "Breakpoint hit:");
+   if (!_end) _end = strstr(_p, "main[");
+   if (_end && _end > _p)
+   { int _olen = _end - _p;
+     /* Strip leading/trailing whitespace */
+     while (_olen > 0 && (_p[0] == '\n' || _p[0] == '\r')) { _p++; _olen--; }
+     while (_olen > 0 && (_p[_olen-1] == '\n' || _p[_olen-1] == '\r')) _olen--;
+     if (_olen > 0)
+       e_d_prog_output_append_line(_p, _olen);
+   }
+ }
+ e_d_switch_out(0);
+ return(0);
+}
+
+/* Read and apply a pdb step/next response: poll for the "(Pdb) " prompt,
+   capture program output for Ctrl-G P, and jump the cursor to the reported
+   source line.  When pdb stops in an internal Python frame (<string>,
+   <frozen ...>) it steps again automatically until it reaches user code or the
+   program exits.  Returns 0, or e_d_quit(f) on program exit. */
+static int e_d_pdb_step_complete(FENSTER *f)
+{
+ struct pollfd _pfd = { .fd = wfildes[0], .events = POLLIN };
+ char _buf[DEB_STEP_BUF];
+ int internal_frame = 1;
+
+ while (internal_frame)
+ {
+  int _len = 0, _n, _found = 0;
+  internal_frame = 0;
+  while (!_found)
+  {
+   if (poll(&_pfd, 1, DEB_STEP_POLL_MS) <= 0) break;
+   _n = read(wfildes[0], _buf + _len, sizeof(_buf) - _len - 1);
+   if (_n == 0) return(e_d_quit(f));  /* EOF: pdb exited */
+   if (_n < 0) continue;
+   _len += _n;
+   _buf[_len] = '\0';
+   if (strstr(_buf, "(Pdb) ")) _found = 1;
+  }
+  if (!_found)
+   break;
+  /* Capture program output from EVERY step response.
+     Any line that isn't pdb metadata (prompt, active line, debugger
+     messages) is program output (e.g. print() results). */
+  { char _line[256];
+    int _bi = 0;
+    while (_buf[_bi])
+    {
+     int _li = 0;
+     while (_buf[_bi] && _buf[_bi] != '\n' && _li < 255)
+      _line[_li++] = _buf[_bi++];
+     _line[_li] = '\0';
+     if (_buf[_bi] == '\n') _bi++;
+     if (_li == 0) continue;
+     /* Skip pdb metadata */
+     if (_line[0] == '>' || !strncmp(_line, "-> ", 3) ||
+         !strncmp(_line, "(Pdb)", 5) ||
+         !strncmp(_line, "--Return--", 10) ||
+         !strncmp(_line, "--Call--", 8) ||
+         strstr(_line, "The program"))
+      continue;
+     /* Program output -- save for Ctrl-G P */
+     e_d_prog_output_append_line(_line, _li);
+    }
+  }
+  /* Check for program exit -- pdb auto-restarts after finish */
+  if (strstr(_buf, "The program finished"))
+  {
+   e_d_switch_out(0);
+   e_error("End of code. Ctrl-G P for output.", 0, f->fb);
+   return(e_d_quit(f));
+  }
+  /* Parse "> file(line)func()" to extract file and line number.
+     If stopped in an internal Python frame (<string>, <frozen ...>),
+     step again automatically until we reach user code or program exit. */
+  { char *_gt = strstr(_buf, "> ");
+    if (_gt && _gt[2] == '<')
+    {
+     e_d_send_cmd("n\n");
+     internal_frame = 1;   /* re-poll instead of the old goto */
+     continue;
+    }
+    if (_gt)
+    {
+     char *_op = strchr(_gt + 2, '(');
+     if (_op)
+     {
+      int _line = atoi(_op + 1);
+      if (_line > 0)
+      {
+       SCHIRM *_s = f->ed->f[f->ed->mxedt]->s;
+       _s->da.y = _line - 1;
+       e_d_swtch = 3;
+       e_cursor(f, 1);
+       e_schirm(f, 1);
+      }
+     }
+    }
+  }
+ }
+ e_d_switch_out(0);
+ return(0);
+}
+
 int e_d_step_next(FENSTER *f, int sw)
 {
  int ret, main_brk = 0;
@@ -3124,171 +3299,9 @@ int e_d_step_next(FENSTER *f, int sw)
  else e_d_send_cmd("s\n");
  e_d_nstack = 0;
  if (e_deb_type == DEB_JDB)
- {
-  /* jdb: use poll to read step response, parse line number */
-  struct pollfd _pfd = { .fd = wfildes[0], .events = POLLIN };
-  char _jbuf[DEB_STEP_BUF];
-  int _jlen = 0, _n, _found = 0;
-  while (!_found)
-  {
-   if (poll(&_pfd, 1, DEB_STEP_POLL_MS) <= 0) break;
-   _n = read(wfildes[0], _jbuf + _jlen, sizeof(_jbuf) - _jlen - 1);
-   if (_n == 0)
-   {  /* EOF: jdb exited */
-      /* Clean exit -- no popup, just quit like gdb does */
-      return(e_d_quit(f));  }
-   if (_n < 0) continue;
-   _jlen += _n;
-   _jbuf[_jlen] = '\0';
-   jdb_trace("e_d_step_next: poll read %d bytes total=%d: [%s]\n",
-             _n, _jlen, _jbuf);
-   if (strstr(_jbuf, "] "))
-    _found = 1;
-   if (strstr(_jbuf, "exited"))
-   {  e_error("Program exited. Debugger stopped.", 0, f->fb);
-      return(e_d_quit(f));  }
-  }
-  if (_found)
-  {
-   char *_lp = strstr(_jbuf, "line=");
-   if (_lp)
-   { int _line = atoi(_lp + 5);
-     BUFFER *_b = f->ed->f[f->ed->mxedt]->b;
-     SCHIRM *_s = f->ed->f[f->ed->mxedt]->s;
-     if (_line > 0 && _line <= _b->mxlines)
-     { _s->da.y = _b->b.y = _line - 1;
-       _s->da.x = _b->b.x = 0;
-       _s->de.x = MAXSCOL;
-       e_schirm(f->ed->f[f->ed->mxedt], 1);
-       e_cursor(f->ed->f[f->ed->mxedt], 1);
-     }
-   }
-   /* jdb step response: "Step completed: ..., line=N\nN    code\nmain[1] "
-      Extract line from the last numbered line */
-   if (!_lp)
-   { char *_nl = strrchr(_jbuf, '\n');
-     if (_nl) { int _line = atoi(_nl + 1);
-       if (_line > 0) {
-        BUFFER *_b = f->ed->f[f->ed->mxedt]->b;
-        SCHIRM *_s = f->ed->f[f->ed->mxedt]->s;
-        if (_line <= _b->mxlines)
-        { _s->da.y = _b->b.y = _line - 1;
-          _s->da.x = _b->b.x = 0;
-          _s->de.x = MAXSCOL;
-          e_schirm(f->ed->f[f->ed->mxedt], 1);
-          e_cursor(f->ed->f[f->ed->mxedt], 1);
-        }
-       }
-     }
-   }
-  }
-  /* Extract program output from jdb response buffer.
-     Program output is text between "> " prompt and "Step completed:"
-     or "Breakpoint hit:" -- anything that's not a jdb protocol line. */
-  { char *_p = _jbuf, *_end;
-    /* Skip past initial "> " prompt */
-    if ((_p = strstr(_jbuf, "> ")) != NULL) _p += 2;
-    else _p = _jbuf;
-    /* Find where jdb protocol resumes */
-    _end = strstr(_p, "Step completed:");
-    if (!_end) _end = strstr(_p, "Breakpoint hit:");
-    if (!_end) _end = strstr(_p, "main[");
-    if (_end && _end > _p)
-    { int _olen = _end - _p;
-      /* Strip leading/trailing whitespace */
-      while (_olen > 0 && (_p[0] == '\n' || _p[0] == '\r')) { _p++; _olen--; }
-      while (_olen > 0 && (_p[_olen-1] == '\n' || _p[_olen-1] == '\r')) _olen--;
-      if (_olen > 0)
-        e_d_prog_output_append_line(_p, _olen);
-    }
-  }
-  e_d_switch_out(0);
-  return(0);
- }
+  return e_d_jdb_step_complete(f);
  if (e_deb_type == DEB_PDB)
- {
-  /* pdb: use poll to read step response, parse active line.
-     pdb output format: "> file(line)func()\n-> code\n(Pdb) " */
-  struct pollfd _pfd = { .fd = wfildes[0], .events = POLLIN };
-  char _buf[DEB_STEP_BUF];
-  int _len = 0, _n, _found = 0;
-pdb_poll_again:
-  while (!_found)
-  {
-   if (poll(&_pfd, 1, DEB_STEP_POLL_MS) <= 0) break;
-   _n = read(wfildes[0], _buf + _len, sizeof(_buf) - _len - 1);
-   if (_n == 0) return(e_d_quit(f));  /* EOF: pdb exited */
-   if (_n < 0) continue;
-   _len += _n;
-   _buf[_len] = '\0';
-   if (strstr(_buf, "(Pdb) ")) _found = 1;
-  }
-  if (_found)
-  {
-   /* Capture program output from EVERY step response.
-      Any line that isn't pdb metadata (prompt, active line, debugger
-      messages) is program output (e.g. print() results). */
-   { char _line[256];
-     int _bi = 0;
-     while (_buf[_bi])
-     {
-      int _li = 0;
-      while (_buf[_bi] && _buf[_bi] != '\n' && _li < 255)
-       _line[_li++] = _buf[_bi++];
-      _line[_li] = '\0';
-      if (_buf[_bi] == '\n') _bi++;
-      if (_li == 0) continue;
-      /* Skip pdb metadata */
-      if (_line[0] == '>' || !strncmp(_line, "-> ", 3) ||
-          !strncmp(_line, "(Pdb)", 5) ||
-          !strncmp(_line, "--Return--", 10) ||
-          !strncmp(_line, "--Call--", 8) ||
-          strstr(_line, "The program"))
-       continue;
-      /* Program output -- save for Ctrl-G P */
-      e_d_prog_output_append_line(_line, _li);
-     }
-   }
-   /* Check for program exit -- pdb auto-restarts after finish */
-   if (strstr(_buf, "The program finished"))
-   {
-    e_d_switch_out(0);
-    e_error("End of code. Ctrl-G P for output.", 0, f->fb);
-    return(e_d_quit(f));
-   }
-   /* Parse "> file(line)func()" to extract file and line number.
-      If stopped in an internal Python frame (<string>, <frozen ...>),
-      automatically step again until we reach user code or program exit. */
-   { char *_gt = strstr(_buf, "> ");
-     if (_gt && _gt[2] == '<')
-     {
-      /* Internal frame -- step again automatically */
-      e_d_send_cmd("n\n");
-      _len = 0;
-      _found = 0;
-      goto pdb_poll_again;
-     }
-     if (_gt)
-     {
-      char *_op = strchr(_gt + 2, '(');
-      if (_op)
-      {
-       int _line = atoi(_op + 1);
-       if (_line > 0)
-       {
-        SCHIRM *_s = f->ed->f[f->ed->mxedt]->s;
-        _s->da.y = _line - 1;
-        e_d_swtch = 3;
-        e_cursor(f, 1);
-        e_schirm(f, 1);
-       }
-      }
-     }
-   }
-  }
-  e_d_switch_out(0);
-  return(0);
- }
+  return e_d_pdb_step_complete(f);
  if (e_d_pty_master >= 0 && e_deb_type == DEB_GDB)
  {
   e_d_accum_init(f, 0);
