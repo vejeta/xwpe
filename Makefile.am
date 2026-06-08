@@ -10,6 +10,7 @@ AM_CFLAGS = -std=gnu17 \
   $(XFT_CFLAGS) \
   $(CAIRO_CFLAGS) \
   $(PANGO_CFLAGS) \
+  $(VTERM_CFLAGS) \
   -DLIBRARY_DIR=\"$(pkglibdir)\" \
   -Wno-incompatible-pointer-types \
   -Wno-implicit-function-declaration \
@@ -49,7 +50,8 @@ we_SOURCES = \
   we_render.c \
   we_render_cairo.c \
   we_fdloop.c \
-  we_trace.c
+  we_trace.c \
+  we_vterm.c
 
 we_LDADD = \
   $(NCURSESW_LIBS) \
@@ -57,6 +59,7 @@ we_LDADD = \
   $(XFT_LIBS) \
   $(CAIRO_LIBS) \
   $(PANGO_LIBS) \
+  $(VTERM_LIBS) \
   $(GPM_LIBS) \
   $(UTIL_LIBS) \
   -lz
@@ -71,6 +74,7 @@ noinst_HEADERS = \
   we_render.h \
   we_fdloop.h \
   we_trace.h \
+  we_vterm.h \
   attrb.h \
   edit.h \
   keys.h \
@@ -227,6 +231,7 @@ EXTRA_DIST = \
   tests/x11/test_menu_debug.py \
   tests/x11/test_menu_status_bar.py \
   tests/x11/test_popup_close_button.py \
+  tests/x11/test_user_screen.py \
   tests/samples/hello.c \
   tests/samples/paint.c \
   tests/samples/big.c \

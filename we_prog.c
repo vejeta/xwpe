@@ -346,9 +346,10 @@ static void e_run_drain_pty(int pty_fd, BUFFER *b, FENSTER *mf)
  * output -- cursor positioning, ANSI colour, a TUI, a progress bar -- which
  * the line-oriented Messages window cannot represent.  On the console (wpe)
  * it drops out of ncurses and replays the program's raw output verbatim
- * (e_t_user_screen).  In X11 (xwpe) there is no real terminal to drop to yet;
- * the integrated VT terminal panel is the 1.6.4 path, so for now Alt-F5 shows
- * the captured output in the Messages window.
+ * (e_t_user_screen).  In X11 (xwpe) there is no real terminal to drop to, so
+ * when libvterm is available (HAVE_VTERM) the captured output is interpreted by
+ * an embedded VT terminal and painted full-window (e_x_vterm_user_screen);
+ * without it Alt-F5 falls back to showing the output in the Messages window.
  *
  * Return: 0.
  */
@@ -358,7 +359,14 @@ int e_user_screen(FENSTER *f)
 
  if (!WpeIsXwin())
   return e_t_user_screen(f);
+#ifdef HAVE_VTERM
+ {
+  extern int e_x_vterm_user_screen(FENSTER *);
+  return e_x_vterm_user_screen(f);
+ }
+#else
  return e_deb_out(f);
+#endif
 }
 
 /* Read one key the user typed while their program runs under the pty.  On the

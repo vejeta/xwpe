@@ -187,6 +187,27 @@ Bugs fixed in 1.6.x:
 
 Changes
 
+1.6.4 (embedded VT terminal for the xwpe User Screen)
+
+  Borland "User Screen" (Alt-F5) on X11:
+* xwpe now reproduces a program's painted screen (cursor addressing,
+  ANSI colour, box drawing) inside its own window.  After Ctrl-F9 Run
+  (or a debug session) the program's output is captured; Alt-F5 feeds it
+  to an embedded VT terminal (libvterm) and paints the resulting cell
+  grid full-window, then waits for a key and restores the editor.  The
+  console (wpe) already did this by handing the real terminal back to the
+  program (e_t_user_screen); xwpe has no terminal to drop to, so it
+  interprets the captured bytes instead (e_x_vterm_user_screen,
+  we_vterm.c).  The same key now does the same thing on both backends.
+* libvterm is an optional dependency (configure: "libvterm: yes").  When
+  it is absent, Alt-F5 in xwpe falls back to focusing the Messages panel
+  (the 1.6.3 behaviour); the console User Screen is unaffected.
+* VT colours are mapped to xwpe's 16-colour palette by nearest RGB match,
+  so SGR colours render with the editor's own scheme.  Reverse video and
+  bold are honoured; wide (CJK) glyphs keep their two-column width.
+* Covered by tests/x11/test_user_screen.py: paint.c is built+run, Alt-F5
+  shows its ANSI red+green, and a keypress restores the editor.
+
 1.6.3 (event-driven debugger, dead key compose, Perl/COBOL)
 
   Event-driven I/O (X11 and terminal debugger):

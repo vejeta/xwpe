@@ -67,6 +67,18 @@ AS_IF([test "x$have_cairo" = xyes], [
 ])
 AM_CONDITIONAL([HAVE_CAIRO], [test "x$have_cairo" = xyes])
 
+# --- Optional: libvterm (embedded VT terminal for the xwpe Alt-F5 User Screen) ---
+# Pure C ANSI/CSI parser + cell grid; the panel is rendered with the existing
+# Cairo/Xft backend, so it is only useful when X11 is present.  Without it the
+# Alt-F5 User Screen falls back to focusing the Messages panel (1.6.3 behaviour).
+have_vterm=no
+AS_IF([test "x$have_x11" = xyes], [
+  PKG_CHECK_MODULES([VTERM], [vterm], [
+    have_vterm=yes
+    AC_DEFINE([HAVE_VTERM], [1], [Define if libvterm is available])
+  ], [have_vterm=no])
+])
+
 # --- Optional: GPM mouse ---
 AC_ARG_WITH([gpm],
   [AS_HELP_STRING([--without-gpm], [Disable GPM mouse support])],
@@ -127,6 +139,7 @@ AC_MSG_RESULT([
     Xft:       $have_xft
     Cairo:     $have_cairo
     Pango:     $have_pango
+    libvterm:  $have_vterm
     GPM:       $have_gpm
     PRNTCMD:   $PRNTCMD
     pandoc:    $PANDOC
