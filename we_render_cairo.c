@@ -29,6 +29,7 @@ static PangoLayout *pg_layout;
 static PangoFontDescription *pg_font;
 static cairo_font_face_t *cr_ft_face;
 static cairo_scaled_font_t *cr_scaled;
+static FT_Face cr_ft_ftface;   /* owned by us: cairo references but never frees it */
 
 static double cairo_colors[16][3];
 
@@ -60,10 +61,15 @@ static void cr_draw_rect(int x, int y, int w, int h, int color_idx)
  cairo_fill(cr);
 }
 
+/* Fast single-glyph path used only while a scrollbar drag is in flight, where
+   cr_draw_text restricts callers to one printable ASCII byte.  By that
+   contract only utf8[0] is meaningful; u8len is accepted to match the
+   cr_draw_text_* signature but is deliberately unused. */
 static void cr_draw_text_ft(int x, int y, const char *utf8, int u8len,
                             int fg_idx)
 {
  cairo_glyph_t glyph;
+ (void)u8len;
  glyph.index = FT_Get_Char_Index(
    cairo_ft_scaled_font_lock_face(cr_scaled),
    (unsigned char)utf8[0]);
@@ -272,6 +278,24 @@ static void cr_cleanup(void)
   cairo_surface_destroy(cr_surface);
   cr_surface = NULL;
  }
+ /* Tear the font stack down in dependency order: the scaled font references
+    the cairo FT font face, which references the FreeType FT_Face that cairo
+    does not own -- so we FT_Done it ourselves, last. */
+ if (cr_scaled)
+ {
+  cairo_scaled_font_destroy(cr_scaled);
+  cr_scaled = NULL;
+ }
+ if (cr_ft_face)
+ {
+  cairo_font_face_destroy(cr_ft_face);
+  cr_ft_face = NULL;
+ }
+ if (cr_ft_ftface)
+ {
+  FT_Done_Face(cr_ft_ftface);
+  cr_ft_ftface = NULL;
+ }
 }
 
 static void cr_init_surface(int pixel_w, int pixel_h)
@@ -371,6 +395,7 @@ static void cr_init_ft_font(void)
  FcPatternDestroy(match);
 
  cr_ft_face = cairo_ft_font_face_create_for_ft_face(ft, 0);
+ cr_ft_ftface = ft;   /* keep the FT_Face so cr_cleanup can FT_Done it */
  cairo_matrix_init_identity(&ctm);
  opts = cairo_font_options_create();
  cairo_surface_get_font_options(cr_surface, opts);
