@@ -47,6 +47,24 @@ def _text(w):
     return "\n".join(w.display())
 
 
+def _box_balance(w):
+    """(#top-borders, #bottom-borders) of the window frames on screen.
+
+    ncurses ACS draws a box top as l...k and a bottom as m...j (pyte shows the
+    VT100 ACS letters).  Every window contributes exactly one of each, so a
+    coherent screen is balanced.  A stale border left behind by a botched
+    resize repaint shows up as an extra bottom with no matching top.
+    """
+    tops = bottoms = 0
+    for row in w.display():
+        r = row.strip()
+        if len(r) >= 3 and r[0] == "l" and r[-1] == "k":
+            tops += 1
+        elif len(r) >= 3 and r[0] == "m" and r[-1] == "j":
+            bottoms += 1
+    return tops, bottoms
+
+
 def _status(w):
     return w.display()[20]
 
@@ -159,3 +177,44 @@ def test_a68g_restart_after_finish_no_crash(tmp_path):
         # scan all rows rather than pinning the status row.
         assert any(" 3:" in row for row in w.display()), \
             "re-run should re-stop at the breakpoint (line 3):\n%s" % _text(w)
+
+
+def test_resizing_debug_windows_leaves_no_stale_borders(tmp_path):
+    """Size/Move on overlapping debug windows must repaint the whole desktop.
+
+    With Messages + Watches stacked at the bottom during a debug session,
+    shrinking one used to redraw only that frame -- leaving a stale border and a
+    half-erased neighbour (the Watches window cut to a single line).  e_size_move
+    now repaints the desktop, so the window-box borders stay balanced (no
+    orphan bottom border) and the source window stays intact.
+    """
+    with WpeSession(str(tmp_path), FACTORIAL, filename="factorial.a68",
+                    wait=2.0) as w:
+        w.key(DOWN, delay=0.4)
+        w.key(DOWN, delay=0.4)
+        w.key(CTRL_G, "b", delay=0.4)         # breakpoint
+        w.key(CTRL_G, "r", delay=2.0)         # run -> Messages + stop
+        w._drain(4.0)
+        w.key(CTRL_G, "w", delay=0.8)         # watch n -> Watches window
+        w.key("n", delay=0.4)
+        w.key("\r", delay=1.2)
+
+        def size_move_shrink():
+            w.key("\033w", "s", delay=0.7)    # Window -> Size/Move
+            w.key("\033[5~", delay=0.3)       # Page Up x3 : shrink height
+            w.key("\033[5~", delay=0.3)
+            w.key("\033[5~", delay=0.3)
+            w.key("\r", delay=0.7)            # confirm
+
+        size_move_shrink()                    # shrink the active (Watches)
+        w.key("\033n", delay=0.7)             # Window -> Next (to Messages)
+        size_move_shrink()                    # shrink Messages
+
+        assert w.alive(), "wpe died resizing overlapping debug windows"
+        tops, bottoms = _box_balance(w)
+        assert tops == bottoms, \
+            "stale window border after resize (tops=%d, bottoms=%d):\n%s" \
+            % (tops, bottoms, _text(w))
+        # The source window must survive intact (the bug sometimes ate into it).
+        assert "PROC factorial" in _text(w), \
+            "source window corrupted by the resize repaint:\n%s" % _text(w)

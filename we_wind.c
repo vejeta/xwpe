@@ -796,7 +796,11 @@ int e_size_move(FENSTER *f)
    e_schirm(f, 0);
   }
  }
- e_ed_rahmen(f, 1);
+ /* Repaint the whole desktop, not just this window: moving/shrinking a window
+    uncovers the area it vacated and any windows beneath it (e.g. the Messages
+    and Watches windows during a debug session overlap).  Redrawing only this
+    frame left stale borders and a half-erased neighbour. */
+ e_repaint_desk_nopic(f);
  return(c);
 }
 
