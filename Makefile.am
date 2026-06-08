@@ -48,7 +48,8 @@ we_SOURCES = \
   we_term.c \
   we_render.c \
   we_render_cairo.c \
-  we_fdloop.c
+  we_fdloop.c \
+  we_trace.c
 
 we_LDADD = \
   $(NCURSESW_LIBS) \
@@ -69,6 +70,7 @@ noinst_HEADERS = \
   WeExpArr.h \
   we_render.h \
   we_fdloop.h \
+  we_trace.h \
   attrb.h \
   edit.h \
   keys.h \

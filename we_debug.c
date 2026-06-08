@@ -26,24 +26,11 @@
 #include <stdarg.h>
 #include <sys/wait.h>
 
-/* Trace logging for jdb debugging -- writes to /tmp/xwpe-jdb-trace.txt.
-   Compile with -DJDB_TRACE to enable, or leave undefined for no-op. */
-#ifdef JDB_TRACE
-static FILE *_jdb_trace_fp = NULL;
-static void jdb_trace(const char *fmt, ...)
-{
- va_list ap;
- if (!_jdb_trace_fp)
-  _jdb_trace_fp = fopen("/tmp/xwpe-jdb-trace.txt", "a");
- if (!_jdb_trace_fp) return;
- va_start(ap, fmt);
- vfprintf(_jdb_trace_fp, fmt, ap);
- va_end(ap);
- fflush(_jdb_trace_fp);
-}
-#else
-#define jdb_trace(...) ((void)0)
-#endif
+/* jdb protocol tracing now routes through the unified WPE_TRACE facility
+   (build with ./configure --enable-trace); records are line-tagged "[jdb]".
+   The jdb_trace() spelling is kept so existing call sites are unchanged. */
+#include "we_trace.h"
+#define jdb_trace(...) WPE_TRACE("jdb", __VA_ARGS__)
 
 #ifndef TERMCAP
 /* Because term.h defines "buttons" it messes up we_gpm.c if in edit.h */

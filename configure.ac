@@ -95,6 +95,14 @@ AC_CHECK_LIB([z], [inflate], [],
 # --- Feature checks ---
 AC_CHECK_FUNCS([mkdtemp])
 
+# --- Optional: WPE_TRACE debug logging (off by default, zero-cost) ---
+AC_ARG_ENABLE([trace],
+  [AS_HELP_STRING([--enable-trace],
+     [enable the WPE_TRACE debug logging facility (default: no)])],
+  [], [enable_trace=no])
+AS_IF([test "x$enable_trace" = "xyes"],
+  [AC_DEFINE([WPE_TRACE], [1], [Enable the WPE_TRACE debug logging facility])])
+
 # --- Unconditional defines ---
 AC_DEFINE([UNIX], [1], [Building on a Unix system])
 AC_DEFINE([NCURSES], [1], [Using ncurses library])
