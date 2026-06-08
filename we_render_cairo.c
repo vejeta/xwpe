@@ -391,36 +391,6 @@ static void cr_init_ft_font(void)
  cairo_font_options_destroy(opts);
 }
 
-static void cr_dump_font_metrics(void)
-{
- FILE *dbg = fopen(
-   "/home/mendezr/development/debian/xwpe-dev/tmp/font-metrics-debug.txt",
-   "w");
- if (!dbg) return;
-
- { PangoRectangle logical;
-   pango_layout_set_text(pg_layout, "M", 1);
-   pango_layout_get_pixel_extents(pg_layout, NULL, &logical);
-   fprintf(dbg, "=== Font Metrics (fitted) ===\n");
-   fprintf(dbg, "Xft cell:  w=%d h=%d asc=%d desc=%d\n",
-     WpeXInfo.font_width, WpeXInfo.font_height,
-     WpeXInfo.xftfont->ascent, WpeXInfo.xftfont->descent);
-   fprintf(dbg, "Pango 'M': w=%d h=%d\n",
-     logical.width, logical.height);
-   fprintf(dbg, "Delta:     w=%+d h=%+d\n",
-     logical.width - WpeXInfo.font_width,
-     logical.height - WpeXInfo.font_height);
- }
- if (cr_scaled)
- {
-  cairo_text_extents_t ext;
-  cairo_scaled_font_text_extents(cr_scaled, "M", &ext);
-  fprintf(dbg, "cairo_ft:  adv=%.1f h=%.1f\n",
-    ext.x_advance, ext.height);
- }
- fclose(dbg);
-}
-
 static void cr_set_render_backend(void)
 {
  WpeRender.draw_rect   = cr_draw_rect;
@@ -447,7 +417,6 @@ int wpe_render_cairo_init(void)
    WpeXInfo.font_height * MAXSLNS);
  cr_init_pango_font();
  cr_init_ft_font();
- cr_dump_font_metrics();
  cr_set_render_backend();
  return 0;
 #else
