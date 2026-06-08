@@ -281,6 +281,60 @@ xwpe sends @code{break file:line} commands to pdb.
 
 Requires @command{python3} (Debian/Ubuntu).
 
+@section Debugging Algol 68 programs
+
+@cindex Algol 68 debugging
+@cindex a68g
+@cindex Algol 68 Genie monitor
+
+xwpe auto-selects the Algol 68 Genie monitor when opening a @file{.a68}
+or @file{.alg} file.  No manual configuration is needed; the first time
+you start the debugger on such a file, xwpe shows a short
+@samp{switching to a68g monitor} notice (press @key{Return}).
+
+a68g is an interpreter with a built-in, gdb-class source-level monitor
+(@code{a68g --monitor}), so xwpe drives it directly -- there is no
+separate compile-and-link step.
+
+a68g differences from gdb:
+
+@itemize @bullet
+@item
+@strong{No compilation step}: @kbd{Ctrl-G R} runs
+@code{a68g --monitor} on the source file.  (Make / @key{F9} still runs
+@code{a68g --norun} as a standalone syntax check.)
+
+@item
+@strong{Break at start}: a68g automatically breaks at the first line,
+like gdb stopping at @code{main}.  @kbd{Ctrl-G R} then continues to your
+first breakpoint (or to the end of the program).
+
+@item
+@strong{Breakpoints}: set with @kbd{Ctrl-G B}.  xwpe sends
+@code{breakpoint @var{line}} (and @code{breakpoint @var{line} clear} to
+remove one).  Because Algol 68 is recursive, a breakpoint inside a
+procedure is re-hit on every recursive call.
+
+@item
+@strong{Watches}: @kbd{Ctrl-G W} sends @code{evaluate @var{expr}} and
+shows a68g's typed value, e.g.@: @code{(INT) +5}.  The expression is
+@emph{not} quoted -- type @code{n}, not @code{"n"}.
+
+@item
+@strong{Call stack}: @kbd{Ctrl-G K} sends @code{calls}.
+
+@item
+@strong{Program output}: captured from a68g's single stream and shown
+via @kbd{Ctrl-G P} (Messages) and the @kbd{Alt-F5} User Screen, the same
+as gdb.
+
+@item
+@strong{Program end}: a68g prints @samp{Genie finished} and exits when
+the program completes; xwpe detects this and ends the session cleanly.
+@end itemize
+
+Requires @command{algol68g} (Debian/Ubuntu).
+
 @section Languages without an integrated debugger
 
 Not every language xwpe compiles has a debugger backend.  These compile
@@ -293,9 +347,6 @@ in a terminal for interactive debugging.
 debug from the command line, but xwpe does not auto-select gdb for COBOL.
 @item @strong{LaTeX} -- a document processor, not a program to step
 through.
-@item @strong{Algol 68} -- Algol 68 Genie ships its own source-level
-monitor (@code{a68g --monitor}: breakpoints, step, watch, call stack);
-xwpe integration as a debugger backend is planned.
 @end itemize
 
 @section Example session: C with factorial

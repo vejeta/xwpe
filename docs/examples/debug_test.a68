@@ -1,0 +1,13 @@
+CO  debug_test.a68 -- Algol 68 debug test for xwpe.
+    Set a breakpoint on line 8 (n * factorial(n - 1)) and press Ctrl-G R
+    to start the a68g monitor.  The breakpoint is re-hit on every
+    recursive call; Ctrl-G W on "n" shows (INT) +5, +4, +3, ...   CO
+
+PROC factorial = (INT n) INT:
+  IF n <= 1 THEN 1
+  ELSE n * factorial(n - 1)
+  FI;
+
+INT x := 5;
+INT result := factorial(x);
+print(("factorial(", x, ") = ", result, newline))

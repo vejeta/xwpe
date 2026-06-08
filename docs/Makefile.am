@@ -44,6 +44,7 @@ EXTRA_DIST = \
   examples/debug_test.pas \
   examples/debug_test.java \
   examples/debug_test.py \
+  examples/debug_test.a68 \
   examples/debug_test_long_output.py \
   examples/headers_test.c \
   examples/headers_test.h \

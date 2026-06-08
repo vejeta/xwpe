@@ -82,7 +82,8 @@ enum {
  DEB_DBX = 2,   /* dbx -i                   prompt "(dbx)" */
  DEB_XDB = 3,   /* HP xdb -L                prompt ">"     */
  DEB_JDB = 4,   /* Java jdb                                */
- DEB_PDB = 5    /* Python python3 -m pdb    prompt "(Pdb)" */
+ DEB_PDB = 5,   /* Python python3 -m pdb    prompt "(Pdb)" */
+ DEB_A68G = 6   /* Algol 68 Genie a68g --monitor  prompt "(a68g)" */
 };
 
 int e_deb_type = 0, e_deb_mode = 0;
@@ -106,6 +107,7 @@ int e_d_prog_output_cap = 0;
 static int  e_d_prog_output_reserve(int extra);
 static void e_d_prog_output_append(char *data, int len);
 static void e_d_prog_output_append_line(char *data, int len);
+static int  e_d_a68g_step_complete(FENSTER *f);   /* a68g: read step/continue response */
 
 int e_d_pty_verase(void)
 {
@@ -243,6 +245,8 @@ static int e_d_check_prompt(signed char *s, int i)
  if (e_deb_type == DEB_DBX && i > 4 && s[i] == ' ' && !strncmp((char*)s+i-5, "(dbx)", 5))
   return 1;
  if (e_deb_type == DEB_PDB && i > 4 && s[i] == ' ' && !strncmp((char*)s+i-5, "(Pdb)", 5))
+  return 1;
+ if (e_deb_type == DEB_A68G && i > 5 && s[i] == ' ' && !strncmp((char*)s+i-6, "(a68g)", 6))
   return 1;
  if (e_deb_type == DEB_SDB && s[i] == '*')
   return 1;
@@ -943,6 +947,8 @@ int e_e_line_read(int n, signed char *s, int max)
   return(1);
  else if (e_deb_type == DEB_PDB && i > 4 && s[i] == ' ' && !strncmp(s+i-5, "(Pdb)", 5))
   return(1);
+ else if (e_deb_type == DEB_A68G && i > 5 && s[i] == ' ' && !strncmp(s+i-6, "(a68g)", 6))
+  return(1);
  else if (e_deb_type == DEB_JDB && i > 0 &&
    ((s[i] == ' ' && s[i-1] == ']') ||
     (s[i] == ' ' && s[i-1] == '>')))
@@ -1033,6 +1039,17 @@ int e_d_line_read(int n, signed char *s, int max, int sw, int esw)
    {
     for(j = 0; j <= i; j++) str[6+j] = s[j];
     if(!strncmp(str+i-6, "(Pdb) ", 6))
+    {  str[0] = '\0';  wt = 0;  return(1);  }
+   }
+  }
+  else if (e_deb_type == DEB_A68G)
+  {
+   if(i > 6 && !strncmp(s+i-7, "(a68g) ", 7))
+   {  str[0] = 0;  wt = 0;   return(1);  }
+   else if(i < 7)
+   {
+    for(j = 0; j <= i; j++) str[7+j] = s[j];
+    if(!strncmp(str+i-7, "(a68g) ", 7))
     {  str[0] = '\0';  wt = 0;  return(1);  }
    }
   }
@@ -1214,6 +1231,8 @@ int e_d_quit_basic(FENSTER *f)
    e_d_send_cmd("quit\n");
   else if (e_deb_type == DEB_PDB)
    e_d_send_cmd("q\ny\n");  /* pdb: quit + confirm */
+  else if (e_deb_type == DEB_A68G)
+   e_d_send_cmd("quit\nyes\n");  /* a68g: quit + "Terminate a68g (yes|no):" */
  }
  jdb_trace("e_d_quit_basic: quitting debugger type=%d\n", e_deb_type);
  kbdflgs = fcntl(0, F_GETFL, 0 );
@@ -1487,6 +1506,12 @@ int e_d_p_watches(FENSTER *f, int sw)
   {
    sprintf(str1, "print %s\n", e_d_swtchs[l]);
   }
+  else if (e_deb_type == DEB_A68G)
+  {
+   /* a68g: "evaluate EXPR" -- the expression is taken literally, so it
+      must NOT be quoted ("n" would be the CHAR denotation, not variable n). */
+   sprintf(str1, "evaluate %s\n", e_d_swtchs[l]);
+  }
 
   /* Send command to debugger */
   if(e_d_swtch)
@@ -1672,6 +1697,8 @@ int e_d_p_stack(FENSTER *f, int sw)
   e_d_send_cmd("t\n");
  else if (e_deb_type == DEB_DBX)
   e_d_send_cmd("where\n");
+ else if (e_deb_type == DEB_A68G)
+  e_d_send_cmd("calls\n");
  while ((ret = e_d_line_read(wfildes[0], str, 256, 0, 0)) == 2)
   e_d_error(str);
  if (ret == -1)
@@ -1991,6 +2018,8 @@ int e_remove_breakpoints(FENSTER *f)
    e_d_send_cmd("delete all\n");
   else if (e_deb_type == DEB_XDB)
    e_d_send_cmd("db *\n");
+  else if (e_deb_type == DEB_A68G)
+   e_d_send_cmd("breakpoint clear breakpoints\n");
  }
  for (i = 0; i < e_d_nbrpts; i++)
   FREE(e_d_sbrpts[i]);
@@ -2201,6 +2230,8 @@ int e_make_breakpoint(FENSTER *f, int sw)
      if (e_d_dum_read() == -1) return(-1);
      sprintf(eing, "%d d\n", e_d_ybrpts[i]);
     }
+    else if (e_deb_type == DEB_A68G)
+     sprintf(eing, "breakpoint %d clear\n", e_d_ybrpts[i]);
     e_d_send_cmd(eing);
     if (e_d_dum_read() == -1) return(-1);
    }
@@ -2308,6 +2339,14 @@ int e_make_breakpoint(FENSTER *f, int sw)
      if (e_d_dum_read() == -1) return(-1);
      e_d_nrbrpts[e_d_nbrpts - 1] = e_d_nbrpts;
     }
+    else if (e_deb_type == DEB_A68G)
+    {
+     /* a68g: "breakpoint line" (single source file) */
+     sprintf(eing, "breakpoint %d\n", b->b.y + 1);
+     e_d_send_cmd(eing);
+     if (e_d_dum_read() == -1) return(-1);
+     e_d_nrbrpts[e_d_nbrpts - 1] = e_d_nbrpts;
+    }
    }
    (s->brp[0])++;
    s->brp = REALLOC(s->brp, (s->brp[0]+1) * sizeof(int));
@@ -2384,6 +2423,17 @@ int e_make_breakpoint(FENSTER *f, int sw)
    {
     /* pdb: "b file:line" */
     sprintf(eing, "b %s:%d\n", e_d_sbrpts[i], e_d_ybrpts[i]);
+    e_d_send_cmd(eing);
+    if (e_d_dum_read() == -1) return(-1);
+    e_d_nrbrpts[i] = i + 1;
+   }
+  }
+  else if (e_deb_type == DEB_A68G)
+  {
+   for (i = 0; i < e_d_nbrpts; i++)
+   {
+    /* a68g: "breakpoint line" (single source file) */
+    sprintf(eing, "breakpoint %d\n", e_d_ybrpts[i]);
     e_d_send_cmd(eing);
     if (e_d_dum_read() == -1) return(-1);
     e_d_nrbrpts[i] = i + 1;
@@ -2763,6 +2813,15 @@ int e_start_debug(FENSTER *f)
      e_error("Python file: switching to pdb debugger.", -1, f->fb);
     e_deb_type = DEB_PDB;
    }
+   else if ((_l > 4 && !strcmp(e_d_file + _l - 4, ".a68")) ||
+            (_l > 4 && !strcmp(e_d_file + _l - 4, ".alg")))
+   {
+    /* Auto-select a68g silently -- no modal notice.  The .a68/.alg
+       extension makes the backend obvious, and a modal popup here would
+       block the very Ctrl-G R the user just pressed (it looks like the
+       debugger "does nothing" until the dialog is dismissed). */
+    e_deb_type = DEB_A68G;
+   }
  }
  jdb_trace("e_start_debug: e_d_file='%s', e_deb_type=%d, comp_sw=%d\n",
            e_d_file, e_deb_type, e_s_prog.comp_sw);
@@ -2771,6 +2830,7 @@ int e_start_debug(FENSTER *f)
  else if (e_deb_type == DEB_XDB) {  e_debugger = "xdb";  e_deb_swtch = "-L";  }
  else if (e_deb_type == DEB_JDB) {  e_debugger = "jdb";  e_deb_swtch = NULL;  }
  else if (e_deb_type == DEB_PDB) {  e_debugger = "python3";  e_deb_swtch = NULL;  }
+ else if (e_deb_type == DEB_A68G) {  e_debugger = "a68g";  e_deb_swtch = "--monitor";  }
  else {  e_debugger = "gdb";  e_deb_swtch = NULL;  }
  e_d_pid = 0;
  if (e_test_command(e_debugger))
@@ -2795,9 +2855,9 @@ int e_start_debug(FENSTER *f)
   else
   {
    strcpy(estr, f->datnam);
-   if (e_deb_type == DEB_PDB)
+   if (e_deb_type == DEB_PDB || e_deb_type == DEB_A68G)
    {
-    /* pdb: debug the .py source file with full path.
+    /* pdb/a68g: debug the source file (.py/.a68) with full path.
        e_d_file has the basename; we need dirct + datnam for the
        full path so pdb can find it from any working directory. */
     int _fi;
@@ -2832,6 +2892,47 @@ int e_start_debug(FENSTER *f)
  return(0);
 }
 
+/* Rebuild the runtime breakpoint list from the surviving editor markers.
+   When an a68g program finishes it EOFs and the whole session is torn down,
+   which clears e_d_nbrpts -- but the breakpoint markers (s->brp) stay on the
+   source windows.  Without this, a re-run (Ctrl-G R) would re-arm nothing and
+   sail past the breakpoints.  gdb never needs this because program exit does
+   not quit gdb.  No-op when the runtime list is already populated (the normal
+   first run, where Ctrl-G B filled both). */
+static void e_d_a68g_rearm_breakpoints(FENSTER *f)
+{
+ ECNT *cn = f->ed;
+ int i, k;
+
+ if (e_d_nbrpts > 0)
+  return;
+ for (i = cn->mxedt; i > 0; i--)
+ {
+  SCHIRM *s = cn->f[i]->s;
+  if (!DTMD_ISTEXT(cn->f[i]->dtmd) || !s->brp || s->brp[0] <= 0)
+   continue;
+  for (k = 1; k <= s->brp[0]; k++)
+  {
+   e_d_nbrpts++;
+   if (e_d_nbrpts == 1)
+   {
+    e_d_sbrpts = MALLOC(sizeof(char *));
+    e_d_ybrpts = MALLOC(sizeof(int));
+    e_d_nrbrpts = MALLOC(sizeof(int));
+   }
+   else
+   {
+    e_d_sbrpts = REALLOC(e_d_sbrpts, e_d_nbrpts * sizeof(char *));
+    e_d_ybrpts = REALLOC(e_d_ybrpts, e_d_nbrpts * sizeof(int));
+    e_d_nrbrpts = REALLOC(e_d_nrbrpts, e_d_nbrpts * sizeof(int));
+   }
+   e_d_sbrpts[e_d_nbrpts - 1] = MALLOC(strlen(cn->f[i]->datnam) + 1);
+   strcpy(e_d_sbrpts[e_d_nbrpts - 1], cn->f[i]->datnam);
+   e_d_ybrpts[e_d_nbrpts - 1] = s->brp[k] + 1;   /* s->brp is 0-based */
+  }
+ }
+}
+
 int e_run_debug(FENSTER *f)
 {
  ECNT *cn = f->ed;
@@ -2849,11 +2950,12 @@ int e_run_debug(FENSTER *f)
 
   jdb_trace("e_run_debug: reading banner...\n");
   /* pdb (and other interpreted debuggers) need time to start before
-     their banner is available on stdout.  Wait for data with poll(). */
-  if (e_deb_type == DEB_PDB)
+     their banner is available on stdout.  Wait for data with poll().
+     a68g --monitor compiles the source first, so it needs the same grace. */
+  if (e_deb_type == DEB_PDB || e_deb_type == DEB_A68G)
   {
    struct pollfd _pfd = { .fd = wfildes[0], .events = POLLIN };
-   poll(&_pfd, 1, 3000);  /* wait up to 3s for pdb to write banner */
+   poll(&_pfd, 1, 3000);  /* wait up to 3s for the debugger to write its banner */
   }
   if (e_d_dum_read() == -1) return(-1);
   jdb_trace("e_run_debug: banner read OK\n");
@@ -2877,6 +2979,10 @@ int e_run_debug(FENSTER *f)
    e_d_send_cmd("sm\n");
    if (e_d_dum_read() == -1) return(-1);
   }
+  /* a68g: a finished program tore down the session and cleared e_d_nbrpts;
+     rebuild it from the surviving markers so a re-run re-arms the breakpoints. */
+  if (e_deb_type == DEB_A68G)
+   e_d_a68g_rearm_breakpoints(cn->f[cn->mxedt]);
   jdb_trace("e_run_debug: setting breakpoints (nbrpts=%d)...\n", e_d_nbrpts);
   if (e_make_breakpoint(cn->f[cn->mxedt], 1) == -1) return(-1);
   jdb_trace("e_run_debug: breakpoints set OK, e_d_swtch -> 2\n");
@@ -2924,7 +3030,10 @@ int e_deb_run(FENSTER *f)
    return(e_d_error(eing));
   }
  }
- if (e_d_swtch < 3 && e_d_nbrpts <= 0)
+ /* a68g auto-breaks at line 1, so it never needs a temporary breakpoint at
+    main; calling e_mk_brk_main for it would allocate a phantom breakpoint slot
+    and corrupt e_d_nbrpts across restarts (it has no a68g command branch). */
+ if (e_d_swtch < 3 && e_d_nbrpts <= 0 && e_deb_type != DEB_A68G)
  {
   if ((main_brk = e_mk_brk_main(f, 0)) < -1) return(main_brk);
  }
@@ -2963,6 +3072,13 @@ int e_deb_run(FENSTER *f)
     strcpy(eing, "c\n");
     prsw = 1;  /* treat as continue, not first run */
    }
+   else if (e_deb_type == DEB_A68G)
+   {
+    /* a68g --monitor auto-breaks at line 1; "continue" runs to the
+       first user breakpoint (or to program end). */
+    strcpy(eing, "continue\n");
+    prsw = 1;  /* treat as continue, not first run */
+   }
    else if (e_d_pty_master >= 0 && e_deb_type == DEB_GDB)
    {
     if (e_prog.arguments)
@@ -2982,6 +3098,8 @@ int e_deb_run(FENSTER *f)
   {
    if (e_deb_type == DEB_JDB)
     strcpy(eing, "cont\n");
+   else if (e_deb_type == DEB_A68G)
+    strcpy(eing, "continue\n");
    else
     strcpy(eing, "c\n");
    prsw = 1;
@@ -3078,6 +3196,14 @@ int e_deb_run(FENSTER *f)
  {
   e_d_accum_init(f, main_brk);
   return(0);
+ }
+ if (e_deb_type == DEB_A68G)
+ {
+  /* a68g shares one stream and exits on completion (EOF); the poll-based
+     reader captures program output and quits cleanly -- e_read_output's
+     prompt loop would return -1 on that EOF before parsing the output.
+     (No e_mk_brk_main for a68g, so main_brk is always 0 here.) */
+  return(e_d_a68g_step_complete(f));
  }
  { int _ro = e_read_output(f);
    if (main_brk)
@@ -3271,6 +3397,159 @@ static int e_d_pdb_step_complete(FENSTER *f)
  return(0);
 }
 
+/* Return the source line a68g reports for the current stop, or -1.
+   a68g prints the active line as "<lineno><whitespace><source text>"
+   (e.g. "5           f := f * i").  A bare number with no following source
+   text (or a ':'-terminated number) is not a position. */
+static int e_d_a68g_parse_line(const char *s)
+{
+ int n = 0, k;
+
+ if (!isdigit((unsigned char)s[0]))
+  return(-1);
+ for (k = 0; isdigit((unsigned char)s[k]); k++)
+  n = n * 10 + (s[k] - '0');
+ if (s[k] != ' ' && s[k] != '\t')
+  return(-1);
+ return(n > 0 ? n : -1);
+}
+
+/* Return 1 if an a68g monitor line is protocol chatter that must not be shown
+   as program output: the prompt, the "Breakpoint"/"Continuing" banners, the
+   "main thread" note, the temporary-breakpoint note, the termination messages,
+   and the column-marker line (only spaces and '-'/'^').  Empty lines too. */
+static int e_d_a68g_is_metadata(const char *s)
+{
+ int k;
+
+ if (!s[0])
+  return(1);
+ if (!strncmp(s, "(a68g)", 6) ||
+     !strncmp(s, "Breakpoint", 10) ||
+     !strncmp(s, "Continuing", 10) ||
+     !strncmp(s, "Execution", 9) ||
+     strstr(s, "main thread") ||
+     strstr(s, "now removed") ||
+     strstr(s, "Genie finished") ||
+     strstr(s, "Terminate a68g"))
+  return(1);
+ for (k = 0; s[k]; k++)
+  if (s[k] != ' ' && s[k] != '\t' && s[k] != '-' && s[k] != '^')
+   return(0);
+ return(1);   /* only spaces/dashes/carets: the column marker */
+}
+
+/* Scan a chunk of a68g monitor output line by line: show every non-chatter,
+   non-numbered line as program output -- in the Messages window (Ctrl-G P, the
+   path gdb reaches via its pty) and in the User-Screen buffer (Alt-F5) -- and
+   return the last reported source line number (or -1).  Shared by the step and
+   continue paths so program output is never lost, including the final exit
+   chunk that a68g emits just before EOF. */
+static int e_d_a68g_scan(FENSTER *f, const char *buf)
+{
+ char _ln[256];
+ int _bi = 0, _line = -1;
+
+ while (buf[_bi])
+ {
+  int _li = 0, _pl;
+  while (buf[_bi] && buf[_bi] != '\n' && _li < 255)
+   _ln[_li++] = buf[_bi++];
+  _ln[_li] = '\0';
+  if (buf[_bi] == '\n') _bi++;
+  _pl = e_d_a68g_parse_line(_ln);
+  if (_pl > 0)
+   _line = _pl;                          /* last numbered line wins */
+  else if (!e_d_a68g_is_metadata(_ln))
+  {
+   e_d_p_message(_ln, f, 0);             /* Messages window (Ctrl-G P) */
+   e_d_prog_output_append_line(_ln, _li); /* User Screen buffer (Alt-F5) */
+  }
+ }
+ return(_line);
+}
+
+/* Move the editor cursor to LINE in the Algol 68 source window.  a68g debugs a
+   single source file but does NOT name it in its stop output, so -- unlike gdb
+   -- there is no filename to match an open window against.  Locate the .a68 /
+   .alg window directly (by extension, so the working directory and how the file
+   was opened, e.g. "docs/examples/x.a68", do not matter), switch to it, and set
+   the cursor.  This is the single-file analogue of e_d_goto_break. */
+static void e_d_a68g_goto(FENSTER *f, int line)
+{
+ ECNT *cn = f->ed;
+ BUFFER *b;
+ SCHIRM *s;
+ int i, l;
+
+ for (i = cn->mxedt; i > 0; i--)
+ {
+  char *nm = cn->f[i]->datnam;
+  l = (int)strlen(nm);
+  if (l > 4 && (!strcmp(nm + l - 4, ".a68") || !strcmp(nm + l - 4, ".alg")))
+   break;
+ }
+ if (i <= 0)
+ {  e_d_switch_out(0);  return;  }
+ if (i != cn->mxedt)
+  e_switch_window(cn->edt[i], cn->f[cn->mxedt]);
+ f = cn->f[cn->mxedt];
+ b = f->b;
+ s = f->s;
+ if (line >= 1 && line <= b->mxlines)
+ {
+  s->da.y = b->b.y = line - 1;
+  s->da.x = b->b.x = 0;
+  s->de.x = MAXSCOL;
+ }
+ e_d_swtch = 3;
+ e_schirm(f, 1);
+ e_cursor(f, 1);
+}
+
+/* Read and apply an a68g step/next/continue response: poll for the "(a68g) "
+   prompt, jump the editor cursor to the reported source line, and capture any
+   program output for Ctrl-G P.  a68g prints "Genie finished" and then exits
+   (EOF) when the program ends; capture the final output and quit cleanly.
+   Returns 0, or e_d_quit(f) if the program or a68g exited. */
+static int e_d_a68g_step_complete(FENSTER *f)
+{
+ struct pollfd _pfd = { .fd = wfildes[0], .events = POLLIN };
+ char _buf[DEB_STEP_BUF];
+ int _len = 0, _n, _found = 0, _eof = 0, _line;
+
+ while (!_found)
+ {
+  if (poll(&_pfd, 1, DEB_STEP_POLL_MS) <= 0) break;
+  _n = read(wfildes[0], _buf + _len, sizeof(_buf) - _len - 1);
+  if (_n == 0) {  _eof = 1;  break;  }   /* EOF: a68g exited */
+  if (_n < 0) continue;
+  _len += _n;
+  _buf[_len] = '\0';
+  if (strstr(_buf, "(a68g) ")) _found = 1;
+ }
+ _buf[_len] = '\0';
+ _line = e_d_a68g_scan(f, _buf);
+ if (_eof || strstr(_buf, "Genie finished"))
+ {
+  e_d_switch_out(0);
+  e_error("End of code. Ctrl-G P for output.", 0, f->fb);
+  return(e_d_quit(f));
+ }
+ if (!_found)
+ {  e_d_switch_out(0);  return(0);  }
+ if (_line > 0)
+  e_d_a68g_goto(f, _line);
+ else
+  e_d_switch_out(0);
+ /* Re-evaluate the Watches window at the new stop, so a stepped variable shows
+    its current value (a68g is idle at the prompt now, ready for `evaluate`).
+    gdb does this from its stop handlers; the a68g step path must do it too. */
+ if (e_d_nwtchs > 0)
+  e_d_p_watches(f, 0);
+ return(0);
+}
+
 int e_d_step_next(FENSTER *f, int sw)
 {
  int ret, main_brk = 0;
@@ -3289,8 +3568,9 @@ int e_d_step_next(FENSTER *f, int sw)
  {
   /* If the user has breakpoints set, use those instead of adding
      a temporary breakpoint at main(). This way the first F8/F7
-     stops at the user's breakpoint, not at main's entry point. */
-  if (e_d_nbrpts <= 0)
+     stops at the user's breakpoint, not at main's entry point.
+     a68g auto-breaks at line 1, so it skips e_mk_brk_main entirely. */
+  if (e_d_nbrpts <= 0 && e_deb_type != DEB_A68G)
   {
    jdb_trace("e_d_step_next: no breakpoints, calling e_mk_brk_main\n");
    if ((main_brk = e_mk_brk_main(f, 0)) < -1) return(main_brk);
@@ -3298,7 +3578,7 @@ int e_d_step_next(FENSTER *f, int sw)
   }
   ret = e_deb_run(f);
   jdb_trace("e_d_step_next: e_deb_run returned ret=%d\n", ret);
-  if (e_d_nbrpts <= 0)
+  if (e_d_nbrpts <= 0 && e_deb_type != DEB_A68G)
    e_mk_brk_main(f, main_brk);
   return(ret);
  }
@@ -3307,13 +3587,17 @@ int e_d_step_next(FENSTER *f, int sw)
  if (sw && (e_deb_type == DEB_GDB || e_deb_type == DEB_PDB)) e_d_send_cmd("n\n");
  else if (sw && (e_deb_type == DEB_SDB || e_deb_type == DEB_XDB)) e_d_send_cmd("S\n");
  else if (sw && (e_deb_type == DEB_DBX || e_deb_type == DEB_JDB)) e_d_send_cmd("next\n");
+ else if (sw && e_deb_type == DEB_A68G) e_d_send_cmd("next\n");
  else if (e_deb_type == DEB_DBX || e_deb_type == DEB_JDB) e_d_send_cmd("step\n");
+ else if (e_deb_type == DEB_A68G) e_d_send_cmd("step\n");
  else e_d_send_cmd("s\n");
  e_d_nstack = 0;
  if (e_deb_type == DEB_JDB)
   return e_d_jdb_step_complete(f);
  if (e_deb_type == DEB_PDB)
   return e_d_pdb_step_complete(f);
+ if (e_deb_type == DEB_A68G)
+  return e_d_a68g_step_complete(f);
  if (e_d_pty_master >= 0 && e_deb_type == DEB_GDB)
  {
   e_d_accum_init(f, 0);
@@ -4012,10 +4296,14 @@ int e_deb_options(FENSTER *f)
     e_deb_type = DEB_JDB;
    else if (_fnl > 3 && !strcmp(_fn + _fnl - 3, ".py"))
     e_deb_type = DEB_PDB;
+   else if (_fnl > 4 && (!strcmp(_fn + _fnl - 4, ".a68") ||
+                         !strcmp(_fn + _fnl - 4, ".alg")))
+    e_deb_type = DEB_A68G;
    /* Map e_deb_type to radio button index:
-      0=Gdb, 1=Sdb, 2=Dbx, 3=Jdb, 4=Pdb (radio index)
-      e_deb_type: 0=gdb, 1=sdb, 2=dbx, 3=xdb, 4=jdb, 5=pdb */
-   int _sel = (e_deb_type == DEB_PDB) ? 4 :
+      0=Gdb, 1=Sdb, 2=Dbx, 3=Jdb, 4=Pdb, 5=A68g (radio index)
+      e_deb_type: 0=gdb, 1=sdb, 2=dbx, 3=xdb, 4=jdb, 5=pdb, 6=a68g */
+   int _sel = (e_deb_type == DEB_A68G) ? 5 :
+              (e_deb_type == DEB_PDB) ? 4 :
               (e_deb_type == DEB_JDB) ? 3 :
               (e_deb_type == DEB_XDB) ? 2 : e_deb_type;
  e_add_pswstr(0, 5, 3, 0, AltG, 0, "Gdb    ", o);
@@ -4026,7 +4314,8 @@ int e_deb_options(FENSTER *f)
  e_add_pswstr(0, 5, 5, 0, AltD, 0, "Dbx    ", o);
 #endif
  e_add_pswstr(0, 5, 6, 0, AltJ, 0, "Jdb    ", o);
- e_add_pswstr(0, 5, 7, 0, AltP, _sel, "Pdb    ", o);
+ e_add_pswstr(0, 5, 7, 0, AltP, 0, "Pdb    ", o);
+ e_add_pswstr(0, 5, 8, 0, AltA, _sel, "A68g   ", o);
  }
  e_add_pswstr(1, 21, 3, 0, AltN, 0, "Normal     ", o);
  e_add_pswstr(1, 21, 4, 0, AltF, e_deb_mode, "Full Screen", o);
@@ -4040,10 +4329,12 @@ int e_deb_options(FENSTER *f)
     if (sel == 2) e_deb_type = DEB_XDB;
     else if (sel == 3) e_deb_type = DEB_JDB;
     else if (sel == 4) e_deb_type = DEB_PDB;
+    else if (sel == 5) e_deb_type = DEB_A68G;
     else e_deb_type = sel;
 #else
     if (sel == 3) e_deb_type = DEB_JDB;
     else if (sel == 4) e_deb_type = DEB_PDB;
+    else if (sel == 5) e_deb_type = DEB_A68G;
     else e_deb_type = sel;
 #endif
   }

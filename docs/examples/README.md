@@ -47,6 +47,8 @@ All use the same debugging workflow.
 | debug_test.cpp | g++ | gdb | C++ strings, member functions |
 | debug_test.f90 | gfortran | gdb | Fortran recursive function |
 | debug_test.pas | fpc | gdb | Pascal, no `.e` extension |
+| debug_test.py | python3 | pdb | Interpreted, no compile step |
+| debug_test.a68 | a68g | a68g --monitor | Interpreted, built-in monitor |
 
 ### How to test
 
@@ -86,6 +88,14 @@ types (strings, sets, records).
 
 **Java (javac)**: compilation and error navigation only. gdb does not
 debug Java bytecode. Use a Java-specific debugger (jdb) for debugging.
+
+**Algol 68 (a68g)**: interpreted. xwpe auto-selects the Algol 68 Genie
+monitor (`a68g --monitor`) -- no compile step. `Ctrl-G R` runs to the
+breakpoint; a68g auto-breaks at the first line, like gdb at `main`.
+Breakpoints (`Ctrl-G B`) are re-hit on each recursive call. `Ctrl-G W`
+on `n` shows the typed value, e.g. `(INT) +5`. The program's output and
+end-of-run are captured in Messages (`Ctrl-G P`). Watch expressions are
+unquoted (type `n`, not `"n"`).
 
 ## Feature examples
 
