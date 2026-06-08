@@ -1,0 +1,6 @@
+BEGIN
+   # hello.a68 -- minimal Algol 68 program for the a68g backend.            #
+   # Open in wpe/xwpe, Make (F9) to syntax-check, Run (Ctrl-F9 / Alt-U)     #
+   # to execute with Algol 68 Genie.                                        #
+   print(("Hello, Algol 68!", new line))
+END

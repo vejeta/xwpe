@@ -103,7 +103,7 @@ Settings per language:
 @cindex language support
 
 xwpe selects the compiler automatically based on the file extension.
-Nine languages are configured by default.
+Ten languages are configured by default.
 
 @subsection Default compilers (v1.6.3)
 
@@ -127,6 +127,10 @@ Nine languages are configured by default.
   Uses @code{-c} for syntax check.  Ctrl-F9 runs the script.
 @item COBOL @tab cobc @tab .cob .cbl @tab @code{file:line:} @tab
   GNU COBOL.  GNU style with @code{-g}.
+@item Algol 68 @tab a68g @tab .a68 .alg @tab @code{... in line N} @tab
+  Algol 68 Genie.  Make (F9) uses @code{--norun} to syntax-check; Ctrl-F9
+  runs the program.  a68g omits the file name, so the cursor jump is
+  best-effort on the line number; the full diagnostic shows in Messages.
 @end multitable
 
 @subsection Other GNU-compatible compilers

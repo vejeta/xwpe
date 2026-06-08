@@ -208,6 +208,14 @@ Changes
 * Covered by tests/x11/test_user_screen.py: paint.c is built+run, Alt-F5
   shows its ANSI red+green, and a keypress restores the editor.
 
+  New language backend:
+* Algol 68 support via Algol 68 Genie (a68g): .a68 / .alg files are
+  auto-detected, Make (F9) runs "a68g --norun" to check the syntax, and
+  Run (Ctrl-F9 / Alt-U) executes the program with its output captured in
+  Messages.  a68g's diagnostics carry no file name, so the error jump is
+  best-effort on the line number; the full diagnostic always shows in
+  Messages.  Covered by tests/test_algol68.py (run + syntax-error).
+
   Console chrome on non-UTF-8 terminals:
 * The window title-bar close and zoom/restore boxes are drawn as Unicode
   symbols (close U+2715, zoom U+25A1, restore U+25A3).  On a terminal whose

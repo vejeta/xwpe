@@ -217,6 +217,7 @@ EXTRA_DIST = \
   tests/test_scrollbar_glyphs.py \
   tests/test_keys_modified.py \
   tests/test_chrome_ascii.py \
+  tests/test_algol68.py \
   tests/x11/conftest.py \
   tests/x11/matchbox-kbdconfig \
   tests/x11/test_editor_options.py \
@@ -244,6 +245,7 @@ EXTRA_DIST = \
   tests/samples/hello.py \
   tests/samples/hello.cob \
   tests/samples/hello.tex \
+  tests/samples/hello.a68 \
   tests/samples/Hello.java \
   tests/fixtures/ascii.txt \
   tests/fixtures/accents.txt \

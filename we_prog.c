@@ -1444,7 +1444,7 @@ int e_ini_prog(ECNT *cn)
 {
  int i;
 
- e_prog.num = 9;
+ e_prog.num = 10;
  if (e_prog.arguments) FREE(e_prog.arguments);
  e_prog.arguments = WpeStrdup("");
  if (e_prog.project) FREE(e_prog.project);
@@ -1534,11 +1534,24 @@ int e_ini_prog(ECNT *cn)
  e_prog.comp[8]->key = 'O';
  e_prog.comp[8]->x = 0;
  e_prog.comp[8]->intstr = WpeStrdup("${FILE}:${LINE}:*");
+ e_prog.comp[9]->compiler = WpeStrdup("a68g");
+ e_prog.comp[9]->language = WpeStrdup("Algol68");
+ e_prog.comp[9]->filepostfix = (char **)WpeExpArrayCreate(2, sizeof(char *), 1);
+ e_prog.comp[9]->filepostfix[0] = WpeStrdup(".a68");
+ e_prog.comp[9]->filepostfix[1] = WpeStrdup(".alg");
+ e_prog.comp[9]->key = 'A';
+ e_prog.comp[9]->x = 0;
+ /* Algol 68 Genie reports "a68g: error: N: ... in line L." with no file name,
+    so we can only recover the line number; the file falls back to the one
+    being compiled.  Best-effort jump -- the full diagnostic is shown in
+    Messages regardless. */
+ e_prog.comp[9]->intstr = WpeStrdup("*in line ${LINE}*");
  for (i = 0; i < e_prog.num; i++)
  {
   if (i == 5) e_prog.comp[i]->comp_str = WpeStrdup("-m py_compile");
   else if (i == 6) e_prog.comp[i]->comp_str = WpeStrdup("-interaction=nonstopmode -file-line-error");
   else if (i == 7) e_prog.comp[i]->comp_str = WpeStrdup("-c");
+  else if (i == 9) e_prog.comp[i]->comp_str = WpeStrdup("--norun");  /* a68g: syntax check only (F9); plain run for Ctrl-F9 */
   else e_prog.comp[i]->comp_str = WpeStrdup("-g");
   e_prog.comp[i]->libraries = WpeStrdup("");
   e_prog.comp[i]->exe_name = WpeStrdup("");
