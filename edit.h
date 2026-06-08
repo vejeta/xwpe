@@ -367,6 +367,10 @@ void e_free_find(FIND *fd);
 int e_blck_del(FENSTER *f);
 int e_blck_dup(char *dup, FENSTER *f);
 int e_show_clipboard(FENSTER *f);
+/* Place a decoded character into the screen-cell grid; handles the wide-char
+   (CELL_WIDE + spacer) invariant.  Returns the extra column advance.  Shared
+   by the editor (we_wind.c) and project (we_progn.c) render loops. */
+int e_put_wide_cell(int sx, int sy, int wc, int cw, int frb, int has_room);
 int e_edt_del(FENSTER *f);
 int e_edt_copy(FENSTER *f);
 int e_edt_einf(FENSTER *f);

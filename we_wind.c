@@ -11,6 +11,25 @@
 
 #define MAXSVSTR 20
 
+/* Place one decoded character into the screen-cell grid at (sx,sy) with
+   attribute frb.  A wide (2-column) glyph also marks its own cell CELL_WIDE,
+   and -- when has_room is true -- writes a space in the next cell tagged
+   CELL_WIDE_SPACER, returning the extra column (cw-1) the caller's column
+   counter must advance.  Returns 0 for a normal-width glyph.  This owns the
+   wide-cell lead/spacer invariant for both editor and project render loops. */
+int e_put_wide_cell(int sx, int sy, int wc, int cw, int frb, int has_room)
+{
+ e_pr_char(sx, sy, wc, frb);
+ if (cw > 1 && has_room)
+ {
+  e_pt_flags(sx, sy, CELL_WIDE);
+  e_pr_char(sx + 1, sy, ' ', frb);
+  e_pt_flags(sx + 1, sy, CELL_WIDE_SPACER);
+  return cw - 1;
+ }
+ return 0;
+}
+
 int e_make_xr_rahmen(int xa, int ya, int xe, int ye, int sw);
 static void e_draw_titlebar_buttons(int xa, int ya, int xe, int frb, int fes);
 static void e_draw_window_buttons(FENSTER *f);
@@ -1364,20 +1383,11 @@ void e_pr_line(int y, FENSTER *f)
     if (nb > 1)
     {
      int cw = wcwidth(wc);
+     int sx = f->a.x - NUM_COLS_OFF_SCREEN_LEFT + j + 1;
+     int sy = y - NUM_LINES_OFF_SCREEN_TOP + f->a.y + 1;
      if (cw < 1) cw = 1;
-     e_pr_char(f->a.x - NUM_COLS_OFF_SCREEN_LEFT + j + 1,
-       y - NUM_LINES_OFF_SCREEN_TOP + f->a.y + 1, (int)wc, frb);
-     /* Wide chars (emoji, CJK) take 2 columns: fill second cell with space */
-     if (cw > 1 && j + 1 < COL_NUM_ON_SCREEN_RIGHT)
-     {
-      e_pt_flags(f->a.x - NUM_COLS_OFF_SCREEN_LEFT + j + 1,
-        y - NUM_LINES_OFF_SCREEN_TOP + f->a.y + 1, CELL_WIDE);
-      e_pr_char(f->a.x - NUM_COLS_OFF_SCREEN_LEFT + j + 2,
-        y - NUM_LINES_OFF_SCREEN_TOP + f->a.y + 1, ' ', frb);
-      e_pt_flags(f->a.x - NUM_COLS_OFF_SCREEN_LEFT + j + 2,
-        y - NUM_LINES_OFF_SCREEN_TOP + f->a.y + 1, CELL_WIDE_SPACER);
-      j += cw - 1;  /* extra column advance for wide char */
-     }
+     j += e_put_wide_cell(sx, sy, (int)wc, cw, frb,
+                          j + 1 < COL_NUM_ON_SCREEN_RIGHT);
      i += nb - 1;  /* skip continuation bytes (loop does i++) */
     }
     else

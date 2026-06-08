@@ -548,19 +548,11 @@ void e_pr_c_line(int y, FENSTER *f)
     if (nb > 1)
     {
      int cw = wcwidth(wc);
+     int sx = f->a.x - s->c.x + j + 1;
+     int sy = y - s->c.y + f->a.y + 1;
      if (cw < 1) cw = 1;
-     e_pr_char(f->a.x - s->c.x + j + 1, y - s->c.y + f->a.y + 1,
-       (int)wc, frb);
-     if (cw > 1 && j + 1 < NUM_COLS_ON_SCREEN + s->c.x - 1)
-     {
-      e_pt_flags(f->a.x - s->c.x + j + 1, y - s->c.y + f->a.y + 1,
-        CELL_WIDE);
-      e_pr_char(f->a.x - s->c.x + j + 2, y - s->c.y + f->a.y + 1,
-        ' ', frb);
-      e_pt_flags(f->a.x - s->c.x + j + 2, y - s->c.y + f->a.y + 1,
-        CELL_WIDE_SPACER);
-      j += cw - 1;
-     }
+     j += e_put_wide_cell(sx, sy, (int)wc, cw, frb,
+                          j + 1 < NUM_COLS_ON_SCREEN + s->c.x - 1);
      i += nb - 1;
     }
     else
