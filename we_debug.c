@@ -108,6 +108,7 @@ static int  e_d_prog_output_reserve(int extra);
 static void e_d_prog_output_append(char *data, int len);
 static void e_d_prog_output_append_line(char *data, int len);
 static int  e_d_a68g_step_complete(FENSTER *f);   /* a68g: read step/continue response */
+static int  e_d_a68g_cur_line = 0;   /* source line a68g is currently stopped on */
 
 int e_d_pty_verase(void)
 {
@@ -1629,8 +1630,22 @@ int e_d_p_watches(FENSTER *f, int sw)
 
   /* Print variable name */
   for ( ; str[k] != '\0' && isspace(str[k]); k++);
-  str2 = WpeMalloc(strlen(e_d_swtchs[l]) + strlen(str + k) + 4);
-  sprintf(str2, "%s: %s", e_d_swtchs[l], str + k);
+  /* a68g reports an out-of-scope variable with a verbose monitor error
+     ("a68g: monitor error: cannot find identifier (n)").  This is normal once
+     execution leaves the procedure where the variable lives (e.g. after the
+     recursion unwinds); show a short, friendly note instead. */
+  if (e_deb_type == DEB_A68G &&
+      (strstr(str + k, "cannot find identifier") ||
+       strstr(str + k, "monitor error")))
+  {
+   str2 = WpeMalloc(strlen(e_d_swtchs[l]) + 20);
+   sprintf(str2, "%s: <not in scope>", e_d_swtchs[l]);
+  }
+  else
+  {
+   str2 = WpeMalloc(strlen(e_d_swtchs[l]) + strlen(str + k) + 4);
+   sprintf(str2, "%s: %s", e_d_swtchs[l], str + k);
+  }
 
   e_d_nrwtchs[l] = b->mxlines;
   print_to_end_of_buffer(b, str2, b->mx.x);
@@ -3588,6 +3603,7 @@ static int e_d_a68g_step_complete(FENSTER *f)
  }
  _buf[_len] = '\0';
  _line = e_d_a68g_scan(f, _buf);
+ e_d_a68g_cur_line = _line;   /* drives line-granular stepping in e_d_step_next */
  if (_eof || strstr(_buf, "Genie finished"))
  {
   e_d_switch_out(0);
@@ -3606,6 +3622,28 @@ static int e_d_a68g_step_complete(FENSTER *f)
  if (e_d_nwtchs > 0)
   e_d_p_watches(f, 0);
  return(0);
+}
+
+/* a68g steps by "interruptable unit", so one source line (e.g. a print with
+   several arguments) reports the same line number several times in a row.  That
+   forces the user to press F8 many times on the last line before the program
+   ends.  Make Step Over (F8) line-granular like gdb/pdb: keep issuing "next"
+   while a68g reports the same source line, so one keypress advances to the next
+   line -- and one press on the final line runs the program to completion.  Step
+   Into (F7, sw == 0) stays unit-granular so you can still inspect sub-steps. */
+static int e_d_a68g_do_step(FENSTER *f, int sw)
+{
+ int from = e_d_a68g_cur_line, guard = 0, ret;
+
+ do
+ {
+  e_d_send_cmd(sw ? "next\n" : "step\n");
+  e_d_nstack = 0;
+  ret = e_d_a68g_step_complete(f);
+ }
+ while (sw && e_d_swtch >= 3 && e_d_a68g_cur_line > 0 &&
+        e_d_a68g_cur_line == from && ++guard < 256);
+ return(ret);
 }
 
 int e_d_step_next(FENSTER *f, int sw)
@@ -3642,20 +3680,18 @@ int e_d_step_next(FENSTER *f, int sw)
  }
  e_d_delbreak(f);
  e_d_switch_out(1);
+ if (e_deb_type == DEB_A68G)
+  return e_d_a68g_do_step(f, sw);   /* line-granular Step Over */
  if (sw && (e_deb_type == DEB_GDB || e_deb_type == DEB_PDB)) e_d_send_cmd("n\n");
  else if (sw && (e_deb_type == DEB_SDB || e_deb_type == DEB_XDB)) e_d_send_cmd("S\n");
  else if (sw && (e_deb_type == DEB_DBX || e_deb_type == DEB_JDB)) e_d_send_cmd("next\n");
- else if (sw && e_deb_type == DEB_A68G) e_d_send_cmd("next\n");
  else if (e_deb_type == DEB_DBX || e_deb_type == DEB_JDB) e_d_send_cmd("step\n");
- else if (e_deb_type == DEB_A68G) e_d_send_cmd("step\n");
  else e_d_send_cmd("s\n");
  e_d_nstack = 0;
  if (e_deb_type == DEB_JDB)
   return e_d_jdb_step_complete(f);
  if (e_deb_type == DEB_PDB)
   return e_d_pdb_step_complete(f);
- if (e_deb_type == DEB_A68G)
-  return e_d_a68g_step_complete(f);
  if (e_d_pty_master >= 0 && e_deb_type == DEB_GDB)
  {
   e_d_accum_init(f, 0);
