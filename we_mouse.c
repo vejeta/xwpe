@@ -16,6 +16,11 @@
 
 #include "makro.h"
 
+/* Highest column the legacy X10 mouse encoding can report (a coordinate is
+   sent as one byte with a +32 bias, so 255-32 = 223).  Past that we must turn
+   on SGR 1006 extended reporting, which is not byte-limited. */
+#define MOUSE_X10_MAX_COL 223
+
 int e_mouse_cursor();
 void e_scroll_drag_v(FENSTER *f);
 void e_scroll_drag_h(FENSTER *f);
@@ -30,7 +35,7 @@ void e_mouse_tracking_enable(void)
 #ifdef NCURSES
  mousemask(ALL_MOUSE_EVENTS | REPORT_MOUSE_POSITION, NULL);
  printf("\033[?1002h");
- if (COLS > 223)
+ if (COLS > MOUSE_X10_MAX_COL)
   printf("\033[?1006h");
  fflush(stdout);
 #endif

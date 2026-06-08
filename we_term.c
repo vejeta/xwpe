@@ -42,6 +42,11 @@ int fk_t_mouse(int *g);
 static int e_t_mouse_decode_button(mmask_t bstate);
 static int e_t_mouse_is_released(mmask_t bstate);
 static int e_t_mouse_apply_event(MEVENT *mev);
+
+/* Input/mouse timing and scaling constants. */
+#define INPUT_POLL_MS     50   /* ncurses getch() wait between input polls */
+#define MOUSE_CELL_SUBDIV 8    /* g[] reports mouse pos in 1/8-cell units */
+
 int g_mouse_buttons = 0;
 int e_t_initscr(void);
 int e_t_kbhit(void);
@@ -823,7 +828,7 @@ static int e_t_utf8_assemble(int first)
   return first;
  for (i = 0; i < expect; i++)
  {
-  timeout(50);
+  timeout(INPUT_POLL_MS);
   cont = fk_getch();
   if (cont == ERR)
    return first;            /* sequence stalled: emit the lead byte as-is */
@@ -873,7 +878,7 @@ static int e_t_getch_poll(void)
 #endif
  for (;;)
  {
-  timeout(50);
+  timeout(INPUT_POLL_MS);
   c = fk_getch();
   timeout(-1);
   if (c != ERR)
@@ -1280,20 +1285,20 @@ int fk_t_mouse(int *g)
 
  if (g[0] == 2)
   return(0);
- timeout(50);
+ timeout(INPUT_POLL_MS);
  ch = getch();
  timeout(-1);
  if (ch == KEY_MOUSE && getmouse(&mev) == OK)
  {
   g[1] = e_t_mouse_apply_event(&mev);
-  g[2] = mev.x * 8;
-  g[3] = mev.y * 8;
+  g[2] = mev.x * MOUSE_CELL_SUBDIV;
+  g[3] = mev.y * MOUSE_CELL_SUBDIV;
  }
  else
  {
   g[1] = g_mouse_buttons;
-  g[2] = e_mouse.x * 8;
-  g[3] = e_mouse.y * 8;
+  g[2] = e_mouse.x * MOUSE_CELL_SUBDIV;
+  g[3] = e_mouse.y * MOUSE_CELL_SUBDIV;
   if (ch != ERR)
    ungetch(ch);
  }
