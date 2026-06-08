@@ -71,6 +71,14 @@ class WpeSession:
             fh.write(seed)
         self.screen = SafeScreen(cols, rows)
         self.stream = pyte.Stream(self.screen)
+        # Teach the stream the REP control (CSI Pn b): ncurses emits it to
+        # compress long identical runs (window borders) on a non-UTF-8 terminal.
+        # Without it pyte drops the repeats and a full-width border looks short.
+        # pyte binds its CSI dispatcher once at parser init, so override the
+        # (class-level) csi map on this instance and rebuild the parser.
+        self.stream.csi = dict(self.stream.csi)
+        self.stream.csi["b"] = "repeat_last"
+        self.stream._initialize_parser()
         self.master_fd, slave_fd = pty.openpty()
         env = os.environ.copy()
         env.update(TERM="xterm-256color", COLUMNS=str(cols), LINES=str(rows),

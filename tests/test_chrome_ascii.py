@@ -44,6 +44,12 @@ def test_non_utf8_console_shows_ascii_buttons():
             "zoom box should fall back to ASCII '^' in C locale, row=%r" % row
         assert not (UNICODE_BUTTONS & set(row)), \
             "no Unicode chrome should survive on a non-UTF-8 terminal, row=%r" % row
+        # The title-bar border must reach the right edge: under a non-UTF-8
+        # locale ncurses compresses the horizontal line with the REP control
+        # (CSI Pn b), which the driver's pyte screen honours.  A short row here
+        # would mean REP was dropped and the border only looked truncated.
+        assert len(row.rstrip()) >= len(row) - 1, \
+            "title-bar border should span the full width (REP), row=%r" % row
 
 
 def test_utf8_console_keeps_unicode_buttons():

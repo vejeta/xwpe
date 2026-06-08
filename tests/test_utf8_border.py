@@ -24,6 +24,25 @@ class SafeScreen(pyte.Screen):
         kwargs.pop('private', None)
         super().set_margins(*args, **kwargs)
 
+    def repeat_last(self, count=1):
+        """ECMA-48 REP (CSI Pn b): repeat the last printed character Pn times.
+
+        ncurses uses REP to compress a long run of identical cells -- e.g. a
+        window border drawn with ACS_HLINE -- on a NON-UTF-8 terminal (under a
+        UTF-8 locale it emits the characters literally instead).  pyte does not
+        implement REP, so without this the run collapses to its single leading
+        character and a full-width border looks truncated, even though a real
+        terminal (verified with xterm under LANG=C) renders it in full.
+        Register it on the stream with: stream.csi['b'] = 'repeat_last'.
+        """
+        count = max(1, int(count or 1))
+        x = self.cursor.x
+        if x <= 0:
+            return
+        ch = self.buffer[self.cursor.y][x - 1].data
+        if ch:
+            self.draw(ch * count)
+
 WPE_BIN = os.environ.get('WPE_BIN') or os.path.join(os.path.dirname(__file__), '..', 'wpe')
 TEST_DIR = os.path.join(os.path.dirname(__file__), 'fixtures')
 
