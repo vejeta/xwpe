@@ -8,6 +8,10 @@
 #include "edit.h"
 #include <gpm.h>
 
+/* GPM packs the three mouse buttons into the low bits of ep->buttons
+   (4=left, 2=middle, 1=right); this masks "any button down". */
+#define GPM_BUTTON_MASK 7
+
 int WpeGpmHandler(Gpm_Event *ep, void *data);
 
 int WpeGpmMouseInit(void)
@@ -48,11 +52,15 @@ int WpeGpmHandler(Gpm_Event *ep, void *data)
  extern struct mouse e_mouse;
 
  GPM_DRAWPOINTER(ep);
- if (ep->buttons & 7)
+ if (ep->buttons & GPM_BUTTON_MASK)
  {
   e_mouse.x = ep->x;
   e_mouse.y = ep->y;
   e_mouse.k = ep->buttons;
+  /* Inherited Suraci (1998) gpm_handler return convention: a negative value
+     tells libgpm's Gpm_Getc() that this event was consumed, and its magnitude
+     carries the button bitmask back to xwpe's input layer (XOR 5 swaps the
+     left/right bits to the order that layer expects).  Left verbatim. */
   return(-(ep->buttons ^ 5));
  }
  e_mouse.k = 0;
@@ -83,7 +91,7 @@ void WpeGpmReadable(int fd, void *data)
  if (Gpm_GetEvent(&ev) > 0)
  {
   WpeGpmHandler(&ev, NULL);
-  if (ev.buttons & 7)
+  if (ev.buttons & GPM_BUTTON_MASK)
    g_gpm_click_pending = 1;
  }
 }
