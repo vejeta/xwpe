@@ -154,3 +154,40 @@ def test_user_screen_key_returns_to_editor(paint_xwpe):
         "A keypress should leave the User Screen"
     assert changed_pixels(editor, restored) < changed_pixels(editor, user_screen), \
         "The restored screen should resemble the editor again"
+
+
+def _nonblack_in_band(img, y0, y1, floor=90, step=2):
+    """Count pixels brighter than `floor` (R+G+B) in the horizontal band
+    [y0,y1) across the full width.  Used to detect chrome that bled into a
+    region the User Screen leaves blank."""
+    px = img.load()
+    w, h = img.size
+    n = 0
+    for y in range(max(0, y0), min(h, y1), step):
+        for x in range(0, w, step):
+            r, g, b = px[x, y][:3]
+            if r + g + b > floor:
+                n += 1
+    return n
+
+
+def test_user_screen_has_no_scrollbar_bleed(paint_xwpe):
+    """The User Screen owns the whole window: the editor's and Messages' fluid
+    scrollbars (drawn by wpe_render_chrome on every refresh) must NOT bleed on
+    top of the program's painted screen.  paint.c only draws its demo in the
+    top rows, so the band below it -- and above the bottom 'press any key'
+    prompt -- is blank black.  A bled scrollbar (mid-screen horizontal thumb,
+    right-edge vertical tracks, bottom Messages bar) lights up that band with
+    hundreds-to-thousands of non-black pixels; suppressed, it is ~zero."""
+    sess = paint_xwpe
+    _run_program(sess)
+    sess.key("alt+F5")
+    time.sleep(1.0)
+    us = sess.screenshot()
+    assert sess.proc.poll() is None, "xwpe died during Alt-F5 User Screen"
+
+    w, h = us.size
+    bleed = _nonblack_in_band(us, 220, h - 30)
+    assert bleed < 200, \
+        "scrollbar/chrome bled into the User Screen (%d non-black px in the " \
+        "blank band; expected ~0)" % bleed
