@@ -351,6 +351,24 @@ static void e_x_render_cell(int sc, int px, int py, int cw,
 }
 #endif
 
+#ifdef HAVE_XFT
+/* Repaint one cell at the cursor position with the Xft renderer.  inverted
+   swaps fg/bg: the cell the cursor now occupies is drawn reverse-video, the
+   cell it just left is restored to normal video.  Honours the CELL_WIDE flag. */
+static void e_xft_paint_cursor_cell(int cx, int cy, int inverted)
+{
+ int ch = e_gt_char(cx, cy);
+ int attr = e_gt_col(cx, cy);
+ int fg_idx = inverted ? attr / 16 : attr % 16;
+ int bg_idx = inverted ? attr % 16 : attr / 16;
+ int n = cy * MAXSCOL + cx;
+ int cw = (schirm[n].flags & CELL_WIDE) ? 2 : 1;
+
+ e_x_render_cell(ch, WpeXInfo.font_width * cx, WpeXInfo.font_height * cy,
+                 cw, fg_idx, bg_idx);
+}
+#endif /* HAVE_XFT */
+
 int fk_show_cursor()
 {
  if (!cur_on)
@@ -360,30 +378,8 @@ int fk_show_cursor()
  if (WpeXInfo.xftfont)
  {
   if (old_cursor_x > 0 || old_cursor_y > 0)
-  {
-   int oc = e_gt_char(old_cursor_x, old_cursor_y);
-   int oa = e_gt_col(old_cursor_x, old_cursor_y);
-   int fg_idx = oa % 16;
-   int bg_idx = oa / 16;
-   int px = WpeXInfo.font_width * old_cursor_x;
-   int py = WpeXInfo.font_height * old_cursor_y;
-   int _on = old_cursor_y * MAXSCOL + old_cursor_x;
-   int ocw = (schirm[_on].flags & CELL_WIDE) ? 2 : 1;
-
-   e_x_render_cell(oc, px, py, ocw, fg_idx, bg_idx);
-  }
-  {
-   int cc = e_gt_char(cur_x, cur_y);
-   int ca = e_gt_col(cur_x, cur_y);
-   int fg_idx = ca / 16;  /* inverted */
-   int bg_idx = ca % 16;  /* inverted */
-   int px = WpeXInfo.font_width * cur_x;
-   int py = WpeXInfo.font_height * cur_y;
-   int _cn = cur_y * MAXSCOL + cur_x;
-   int ccw = (schirm[_cn].flags & CELL_WIDE) ? 2 : 1;
-
-   e_x_render_cell(cc, px, py, ccw, fg_idx, bg_idx);
-  }
+   e_xft_paint_cursor_cell(old_cursor_x, old_cursor_y, 0);  /* restore */
+  e_xft_paint_cursor_cell(cur_x, cur_y, 1);                 /* draw inverted */
  }
  else
 #endif /* HAVE_XFT */
@@ -771,31 +767,40 @@ static XftFont *e_xft_fallback_font(int rune)
 #endif
 
 #ifdef HAVE_XFT
-static void e_x_refresh_xft(void)
+/* Walk the screen-cell grid and (re)paint cells via e_x_render_cell.  force=0
+   redraws only cells that differ from altschirm[] (the incremental refresh);
+   force=1 redraws every cell (a full repaint).  CELL_WIDE_SPACER cells are
+   never drawn -- the wide glyph to their left already covered them. */
+static void e_x_render_dirty_cells(int force)
 {
  int i, j;
  for (i = 0; i < MAXSLNS; i++)
  for (j = 0; j < MAXSCOL; j++)
  {
-  int sc = e_gt_char(j, i);
-  int sa = e_gt_col(j, i);
   int _n = i * MAXSCOL + j;
+  int sc, sa;
 
   if (schirm[_n].flags & CELL_WIDE_SPACER)
   {
-   altschirm[_n] = schirm[_n];
+   if (!force)
+    altschirm[_n] = schirm[_n];
    continue;
   }
-  if (sc != altschirm[_n].ch || sa != altschirm[_n].attr
+  sc = e_gt_char(j, i);
+  sa = e_gt_col(j, i);
+  if (force || sc != altschirm[_n].ch || sa != altschirm[_n].attr
       || schirm[_n].flags != altschirm[_n].flags)
   {
-   e_x_render_cell(sc, WpeXInfo.font_width * j,
-     WpeXInfo.font_height * i,
-     (schirm[_n].flags & CELL_WIDE) ? 2 : 1,
-     sa % 16, sa / 16);
+   e_x_render_cell(sc, WpeXInfo.font_width * j, WpeXInfo.font_height * i,
+     (schirm[_n].flags & CELL_WIDE) ? 2 : 1, sa % 16, sa / 16);
    altschirm[_n] = schirm[_n];
   }
  }
+}
+
+static void e_x_refresh_xft(void)
+{
+ e_x_render_dirty_cells(0);
  XCopyArea(WpeXInfo.display, WpeXInfo.backbuf, WpeXInfo.window,
    WpeXInfo.gc, 0, 0,
    WpeXInfo.font_width * MAXSCOL, WpeXInfo.font_height * MAXSLNS, 0, 0);
@@ -807,53 +812,13 @@ static void e_x_refresh_xft(void)
 #ifdef HAVE_CAIRO
 static void e_x_refresh_cairo(void)
 {
- int i, j;
- for (i = 0; i < MAXSLNS; i++)
- for (j = 0; j < MAXSCOL; j++)
- {
-  int sc, sa, _n = i * MAXSCOL + j;
-
-  if (schirm[_n].flags & CELL_WIDE_SPACER)
-  {
-   altschirm[_n] = schirm[_n];
-   continue;
-  }
-
-  sc = e_gt_char(j, i);
-  sa = e_gt_col(j, i);
-
-  if (sc != altschirm[_n].ch || sa != altschirm[_n].attr
-      || schirm[_n].flags != altschirm[_n].flags)
-  {
-   e_x_render_cell(sc, WpeXInfo.font_width * j,
-     WpeXInfo.font_height * i,
-     (schirm[_n].flags & CELL_WIDE) ? 2 : 1,
-     sa % 16, sa / 16);
-   altschirm[_n] = schirm[_n];
-  }
- }
+ e_x_render_dirty_cells(0);
  wpe_render_chrome();
 }
 
 static void e_x_refresh_cairo_full(void)
 {
- int i, j;
- for (i = 0; i < MAXSLNS; i++)
- for (j = 0; j < MAXSCOL; j++)
- {
-  int sc, sa, _n = i * MAXSCOL + j;
-
-  if (schirm[_n].flags & CELL_WIDE_SPACER)
-   continue;
-
-  sc = e_gt_char(j, i);
-  sa = e_gt_col(j, i);
-  e_x_render_cell(sc, WpeXInfo.font_width * j,
-    WpeXInfo.font_height * i,
-    (schirm[_n].flags & CELL_WIDE) ? 2 : 1,
-    sa % 16, sa / 16);
-  altschirm[_n] = schirm[_n];
- }
+ e_x_render_dirty_cells(1);
  wpe_render_chrome();
 }
 #endif /* HAVE_CAIRO */
