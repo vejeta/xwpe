@@ -335,6 +335,80 @@ Pattern (configured by default):
 @kbd{Ctrl-F9} runs the Perl script directly via @code{perl}
 and captures output in the Messages buffer.
 
+@subsubsection gfortran (Fortran)
+
+gfortran errors look like:
+
+@example
+hello.f90:3:6:
+
+    3 |   a = "x"
+      |      1
+Error: Cannot convert CHARACTER(1) to INTEGER(4) at (1)
+@end example
+
+@noindent
+gfortran uses the GNU @code{file:line:column:} format, so the built-in
+GNU pattern applies and the cursor jumps to the exact column.
+
+@subsubsection cobc (COBOL)
+
+GnuCOBOL errors look like:
+
+@example
+hello.cob:6: error: 'X' is not defined
+@end example
+
+Pattern (configured by default):
+
+@example
+$@{FILE@}:$@{LINE@}:*
+@end example
+
+@noindent
+GNU COBOL is GNU-style; xwpe compiles with @code{cobc -x -g}.
+
+@subsubsection pdflatex (LaTeX)
+
+With @code{-file-line-error}, pdflatex errors look like:
+
+@example
+./hello.tex:3: Undefined control sequence.
+@end example
+
+Pattern (configured by default):
+
+@example
+$@{FILE@}:$@{LINE@}:*
+@end example
+
+@noindent
+xwpe runs @code{pdflatex -interaction=nonstopmode -file-line-error} so
+the @code{file:line:} prefix the pattern needs is always present.
+
+@subsubsection a68g (Algol 68)
+
+Algol 68 Genie reports type and syntax errors like:
+
+@example
+3        INT a := "not an integer";
+             1
+a68g: error: 1: [] CHAR cannot be coerced to INT in a strong-unit,
+in closed-clause starting at "BEGIN" in line 1.
+@end example
+
+Pattern (configured by default):
+
+@example
+*in line $@{LINE@}*
+@end example
+
+@noindent
+a68g names no file and reports the enclosing clause's line, so the
+cursor jump is best-effort -- read the full diagnostic in Messages.
+Make (F9) runs @code{a68g --norun} to check the syntax; @kbd{Ctrl-F9}
+runs the program.
+
 @subsubsection Adding a new compiler
 
 To add support for a compiler not in the default list:

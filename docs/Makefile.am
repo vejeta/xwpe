@@ -37,6 +37,7 @@ EXTRA_DIST = \
   examples/compile_error_test.java \
   examples/compile_error_test.py \
   examples/compile_error_test.tex \
+  examples/compile_error_test.a68 \
   examples/debug_test.c \
   examples/debug_test.cpp \
   examples/debug_test.f90 \

@@ -1,0 +1,10 @@
+BEGIN
+   # compile_error_test.a68 -- Algol 68 type errors for xwpe.              #
+   # Press F9 (Make) to syntax-check with "a68g --norun".  Two deliberate  #
+   # type errors are reported in the Messages window; Alt-T / Alt-V step    #
+   # between them.  (a68g names no file and reports the enclosing clause's  #
+   # line, so the cursor jump is approximate -- read the Messages text.)    #
+   INT count := "three";
+   REAL ratio := TRUE;
+   print(("count = ", count, ", ratio = ", ratio, new line))
+END

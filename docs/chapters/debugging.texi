@@ -281,6 +281,23 @@ xwpe sends @code{break file:line} commands to pdb.
 
 Requires @command{python3} (Debian/Ubuntu).
 
+@section Languages without an integrated debugger
+
+Not every language xwpe compiles has a debugger backend.  These compile
+and run (F9 / @kbd{Ctrl-F9}) but @kbd{Ctrl-G R} has no debugger to drive:
+
+@itemize @bullet
+@item @strong{Perl} -- run and syntax-check only.  Use @code{perl -d}
+in a terminal for interactive debugging.
+@item @strong{COBOL} -- GnuCOBOL builds a native executable that gdb can
+debug from the command line, but xwpe does not auto-select gdb for COBOL.
+@item @strong{LaTeX} -- a document processor, not a program to step
+through.
+@item @strong{Algol 68} -- Algol 68 Genie ships its own source-level
+monitor (@code{a68g --monitor}: breakpoints, step, watch, call stack);
+xwpe integration as a debugger backend is planned.
+@end itemize
+
 @section Example session: C with factorial
 
 @example

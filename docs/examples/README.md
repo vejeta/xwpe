@@ -16,6 +16,7 @@ Alt-T (Next Error) and Alt-V (Previous Error) can navigate between them.
 | compile_error_test.f90 | gfortran | 2 type errors (lines 5, 6) |
 | compile_error_test.pas | fpc | 2 type errors (lines 6, 7) |
 | compile_error_test.java | javac | 2 type errors (lines 3, 6) |
+| compile_error_test.a68 | a68g | 2 type errors (lines 7, 8) |
 
 ### How to test
 
@@ -28,6 +29,12 @@ Alt-T (Next Error) and Alt-V (Previous Error) can navigate between them.
 
 Same workflow for `.java` with javac (cursor goes to start of line
 since javac doesn't report column numbers).
+
+**Algol 68 (a68g)**: Make (F9) runs `a68g --norun` to check the syntax.
+Both type errors are listed in Messages and Alt-T/Alt-V step between them.
+a68g names no file and reports the enclosing clause's line, so the cursor
+jump is approximate -- read the diagnostic text in Messages. `Ctrl-F9`
+runs the program. A minimal runnable program is `tests/samples/hello.a68`.
 
 ## Debugging examples (Ctrl-G B/R, F7/F8, Ctrl-G P)
 
