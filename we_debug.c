@@ -214,8 +214,23 @@ static void e_d_pty_strip_cr(char *s, int len)
 static void e_d_pty_flush_line(FENSTER *, int);
 void e_d_pty_flush_to_messages(FENSTER *);
 
-static char _nb_buf[512];
-static int _nb_len = 0;
+/* Partial-read state shared by the incremental (async) debugger readers: each
+   field holds a fragment carried between non-blocking reads.  Grouped so a
+   session boundary can clear them all in one call (e_d_async_reset). */
+static struct {
+ char nb_buf[512];          /* e_d_line_read_nb: partial gdb line */
+ int  nb_len;
+ char pty_line_buf[1024];   /* pty -> Messages: line being assembled */
+ int  pty_line_len;
+ int  pty_owns_last_line;   /* pty output left the current line unterminated */
+} e_d_async;
+
+static void e_d_async_reset(void)
+{
+ e_d_async.nb_len = 0;
+ e_d_async.pty_line_len = 0;
+ e_d_async.pty_owns_last_line = 0;
+}
 
 static int e_d_check_prompt(signed char *s, int i)
 {
@@ -243,33 +258,33 @@ int e_d_line_read_nb(int n, signed char *s, int max)
   ;
  flags = fcntl(n, F_GETFL, 0);
  fcntl(n, F_SETFL, flags | O_NONBLOCK);
- nread = read(n, _nb_buf + _nb_len, sizeof(_nb_buf) - _nb_len - 1);
+ nread = read(n, e_d_async.nb_buf + e_d_async.nb_len, sizeof(e_d_async.nb_buf) - e_d_async.nb_len - 1);
  fcntl(n, F_SETFL, flags & ~O_NONBLOCK);
- if (nread <= 0 && _nb_len == 0)
+ if (nread <= 0 && e_d_async.nb_len == 0)
   return (nread == 0) ? -1 : -2;
  if (nread > 0)
-  _nb_len += nread;
- _nb_buf[_nb_len] = '\0';
- for (i = 0; i < _nb_len; i++)
+  e_d_async.nb_len += nread;
+ e_d_async.nb_buf[e_d_async.nb_len] = '\0';
+ for (i = 0; i < e_d_async.nb_len; i++)
  {
-  if (_nb_buf[i] == '\n' || _nb_buf[i] == '\0')
+  if (e_d_async.nb_buf[i] == '\n' || e_d_async.nb_buf[i] == '\0')
   {
    int len = (i < max - 1) ? i : max - 2;
-   memcpy(s, _nb_buf, len);
-   s[len] = _nb_buf[i];
+   memcpy(s, e_d_async.nb_buf, len);
+   s[len] = e_d_async.nb_buf[i];
    s[len + 1] = '\0';
-   _nb_len -= (i + 1);
-   if (_nb_len > 0)
-    memmove(_nb_buf, _nb_buf + i + 1, _nb_len);
+   e_d_async.nb_len -= (i + 1);
+   if (e_d_async.nb_len > 0)
+    memmove(e_d_async.nb_buf, e_d_async.nb_buf + i + 1, e_d_async.nb_len);
    return e_d_check_prompt(s, len) ? 1 : 2;
   }
  }
- if (e_d_check_prompt((signed char *)_nb_buf, _nb_len - 1))
+ if (e_d_check_prompt((signed char *)e_d_async.nb_buf, e_d_async.nb_len - 1))
  {
-  int len = (_nb_len < max - 1) ? _nb_len : max - 2;
-  memcpy(s, _nb_buf, len);
+  int len = (e_d_async.nb_len < max - 1) ? e_d_async.nb_len : max - 2;
+  memcpy(s, e_d_async.nb_buf, len);
   s[len] = '\0';
-  _nb_len = 0;
+  e_d_async.nb_len = 0;
   return 1;
  }
  return -2;
@@ -289,8 +304,6 @@ static FENSTER *e_d_find_messages_window(void)
 static void e_d_drain_pty_to_messages(void);
 static void e_d_messages_place_cursor(FENSTER *mf);
 
-static char _pty_line_buf[1024];
-static int _pty_line_len = 0;
 int _messages_activated = 0;
 
 static void e_d_messages_erase_char(BUFFER *b, int last)
@@ -342,18 +355,16 @@ static void e_d_messages_append_char(FENSTER *mf, int c)
  e_d_messages_insert_char(b, last, c);
 }
 
-static int _pty_owns_last_line = 0;
-
 static void e_d_pty_ensure_own_line(FENSTER *mf)
 {
  BUFFER *b = mf->b;
  int last = b->mxlines - 1;
 
- if (_pty_owns_last_line)
+ if (e_d_async.pty_owns_last_line)
   return;
  if (last >= 0 && b->bf[last].len > 0)
   e_d_messages_append_char(mf, '\n');
- _pty_owns_last_line = 1;
+ e_d_async.pty_owns_last_line = 1;
 }
 
 /* Ensure the capture buffer has room for `extra` more bytes beyond the current
@@ -427,7 +438,7 @@ static int e_d_pty_read_to_messages(FENSTER *mf)
   for (i = 0; i < n; i++)
   {
    if (buf[i] == '\n')
-    _pty_owns_last_line = 0;
+    e_d_async.pty_owns_last_line = 0;
    e_d_messages_append_char(mf, (unsigned char)buf[i]);
   }
   total += n;
@@ -567,8 +578,7 @@ static void e_d_accum_init(FENSTER *f, int main_brk)
  e_d_accum.main_brk = main_brk;
  e_d_accum.f = f;
  e_d_async_pending = 1;
- _nb_len = 0;
- _pty_owns_last_line = 0;
+ e_d_async_reset();
  wpe_fd_add(wfildes[0], POLLIN, e_d_on_gdb_readable, f);
  if (e_d_pty_master >= 0)
   wpe_fd_add(e_d_pty_master, POLLIN, e_d_on_pty_readable, f);
@@ -595,7 +605,7 @@ static void e_d_messages_place_cursor(FENSTER *mf)
  int row, col;
 
  if (last < 0) return;
- if (!_pty_owns_last_line && b->bf[last].len > 0)
+ if (!e_d_async.pty_owns_last_line && b->bf[last].len > 0)
  {
   row = mf->a.y + 1 + (last + 1 - s->c.y);
   col = mf->a.x + 1;
@@ -660,15 +670,15 @@ static void e_d_pty_drain_nonblock(void)
 
 static void e_d_pty_flush_line(FENSTER *f, int force)
 {
- if (_pty_line_len == 0)
+ if (e_d_async.pty_line_len == 0)
   return;
- if (!force && !memchr(_pty_line_buf, '\n', _pty_line_len))
+ if (!force && !memchr(e_d_async.pty_line_buf, '\n', e_d_async.pty_line_len))
   return;
- _pty_line_buf[_pty_line_len] = '\0';
- e_d_pty_strip_cr(_pty_line_buf, _pty_line_len);
- if (_pty_line_buf[0])
-  e_d_p_message(_pty_line_buf, f, 0);
- _pty_line_len = 0;
+ e_d_async.pty_line_buf[e_d_async.pty_line_len] = '\0';
+ e_d_pty_strip_cr(e_d_async.pty_line_buf, e_d_async.pty_line_len);
+ if (e_d_async.pty_line_buf[0])
+  e_d_p_message(e_d_async.pty_line_buf, f, 0);
+ e_d_async.pty_line_len = 0;
 }
 
 void e_d_pty_flush_to_messages(FENSTER *f)
@@ -682,10 +692,10 @@ void e_d_pty_flush_to_messages(FENSTER *f)
  fcntl(e_d_pty_master, F_SETFL, flags | O_NONBLOCK);
  while ((n = read(e_d_pty_master, buf, sizeof(buf))) > 0)
  {
-  int space = sizeof(_pty_line_buf) - _pty_line_len - 1;
+  int space = sizeof(e_d_async.pty_line_buf) - e_d_async.pty_line_len - 1;
   if (n > space) n = space;
-  memcpy(_pty_line_buf + _pty_line_len, buf, n);
-  _pty_line_len += n;
+  memcpy(e_d_async.pty_line_buf + e_d_async.pty_line_len, buf, n);
+  e_d_async.pty_line_len += n;
   e_d_pty_flush_line(f, 0);
  }
  fcntl(e_d_pty_master, F_SETFL, flags & ~O_NONBLOCK);
@@ -1228,8 +1238,7 @@ int e_d_quit_basic(FENSTER *f)
  if (wfildes[1] >= 0)
  {  close(wfildes[1]);  wfildes[1] = -1;  }
  e_d_pty_close();
- _pty_line_len = 0;
- _nb_len = 0;
+ e_d_async_reset();
  _messages_activated = 0;
  e_d_async_pending = 0;
  e_d_accum.active = 0;
