@@ -218,3 +218,45 @@ def test_resizing_debug_windows_leaves_no_stale_borders(tmp_path):
         # The source window must survive intact (the bug sometimes ate into it).
         assert "PROC factorial" in _text(w), \
             "source window corrupted by the resize repaint:\n%s" % _text(w)
+
+
+def test_messages_window_not_collapsed_by_opening_watches(tmp_path):
+    """Opening Watches must not collapse the already-open Messages window.
+
+    e_position_messages_window positions BOTH the Messages and Watches windows at
+    the bottom.  Its editor-clamp loop skipped only the window being positioned,
+    so positioning Watches clamped the Messages window's e.y to split_y while its
+    a.y stayed split_y+1 -- an inverted, one-row-tall Messages window.  Order
+    matters: Ctrl-G R (Messages) THEN the watch (Watches) is what triggered it.
+
+    After the fix, shrinking the (overlapping, on-top) Watches window reveals the
+    full-height Messages window: its bottom border reaches the desktop bottom, so
+    a box bottom border (m...j in ACS) appears in the last rows before the F-key
+    bar.  With the bug it was collapsed and that area stayed blank.
+    """
+    with WpeSession(str(tmp_path), FACTORIAL, filename="factorial.a68",
+                    wait=2.0) as w:
+        w.key(DOWN, delay=0.4)
+        w.key(DOWN, delay=0.4)
+        w.key(CTRL_G, "b", delay=0.4)
+        w.key(CTRL_G, "r", delay=2.0)        # run -> Messages window (full bottom)
+        w._drain(4.0)
+        w.key(CTRL_G, "w", delay=0.8)        # watch -> Watches (used to clamp Messages)
+        w.key("n", delay=0.4)
+        w.key("\r", delay=1.2)
+        # Shrink the on-top Watches window so the Messages window shows through.
+        w.key("\033w", "s", delay=0.7)       # Window -> Size/Move
+        for _ in range(3):
+            w.key("\033[5~", delay=0.3)      # Page Up: shrink height
+        w.key("\r", delay=0.8)
+
+        assert w.alive(), "wpe died opening Watches over Messages"
+        rows = w.display()
+        # The function-key bar is the last non-blank row; the full-height Messages
+        # window's bottom border must sit just above the desktop bottom.
+        bottom_borders = [i for i, r in enumerate(rows)
+                          if r.strip().startswith("m") and r.strip().endswith("j")]
+        assert bottom_borders, "no window borders on screen:\n%s" % _text(w)
+        assert max(bottom_borders) >= len(rows) - 3, (
+            "Messages window collapsed (no full-height bottom border reaching the "
+            "desktop bottom -- inverted geometry regression):\n%s" % _text(w))

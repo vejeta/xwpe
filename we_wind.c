@@ -175,6 +175,13 @@ void e_position_messages_window(FENSTER *msg, ECNT *cn)
  for (j = 1; j <= cn->mxedt; j++)
  {
   if (cn->f[j] == msg) continue;
+  /* Only clamp EDITOR windows to make room at the bottom.  The Messages and
+     Watches windows are themselves bottom-docked (this function positions both
+     of them), so they must be excluded exactly as in the split_y computation
+     above -- otherwise positioning Watches collapses Messages to e.y = split_y
+     while its a.y stays split_y+1, leaving an inverted, one-row-tall window. */
+  if (!strcmp(cn->f[j]->datnam, "Messages")) continue;
+  if (!strcmp(cn->f[j]->datnam, "Watches")) continue;
   if (cn->f[j]->e.y > split_y)
    cn->f[j]->e.y = split_y;
  }
