@@ -64,7 +64,7 @@ class WpeSession:
     keys, drive menus, save, and read back the file or the screen."""
 
     def __init__(self, workdir, seed, filename="t.c", cols=COLS, rows=ROWS,
-                 wait=1.3):
+                 wait=1.3, env_extra=None):
         self.workdir = workdir
         self.path = os.path.join(workdir, filename)
         with open(self.path, "w") as fh:
@@ -75,6 +75,11 @@ class WpeSession:
         env = os.environ.copy()
         env.update(TERM="xterm-256color", COLUMNS=str(cols), LINES=str(rows),
                    LC_ALL="en_US.UTF-8", HOME=workdir)
+        # Tests that exercise locale-dependent behaviour (e.g. the non-UTF-8
+        # chrome fallback) pass env_extra to override LC_ALL/LANG; applied last
+        # so the override wins over the UTF-8 default above.
+        if env_extra:
+            env.update(env_extra)
         self.proc = subprocess.Popen(
             [WPE_BIN, filename], stdin=slave_fd, stdout=slave_fd,
             stderr=slave_fd, cwd=workdir, env=env, preexec_fn=os.setsid)

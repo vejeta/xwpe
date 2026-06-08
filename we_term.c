@@ -12,6 +12,8 @@
 #include <sys/ioctl.h>
 #include <fcntl.h>
 #include <poll.h>
+#include <langinfo.h>
+#include <string.h>
 #include "we_fdloop.h"
 
 #include<signal.h>
@@ -77,6 +79,44 @@ chtype sp_chr[NSPCHR];
 #else
 char *sp_chr[NSPCHR];
 #endif
+
+/* Whether the console can display the Unicode "symbol" chrome glyphs (the
+   close/zoom title-bar boxes).  Box-drawing and the scrollbar already go
+   through ncurses ACS, which ncurses downgrades to the VT100/ASCII line set on
+   its own; but the title-bar buttons are written into schirm as raw codepoints
+   (U+2715 close, U+25A1/U+25FB zoom, U+25A3 restore) by the shared chrome code,
+   and on a non-UTF-8 terminal wcwidth() reports them unprintable so the emit
+   loop would blank them -- the buttons would silently vanish.  Detected once
+   from the locale; see e_t_detect_unicode().  Defaults to 1 so a build without
+   the detection still behaves as before on the common UTF-8 console. */
+static int e_t_unicode_term = 1;
+
+/* e_t_detect_unicode - Decide once whether the terminal's encoding is UTF-8,
+   from the C locale's CODESET (setlocale(LC_ALL,"") already ran in we_unix.c).
+   Anything that is not UTF-8 (the C locale's ANSI_X3.4-1968, ISO-8859-*, a raw
+   serial console) takes the ASCII chrome fallback. */
+static void e_t_detect_unicode(void)
+{
+ const char *cs = nl_langinfo(CODESET);
+ e_t_unicode_term = (cs != NULL &&
+   (strstr(cs, "UTF-8") || strstr(cs, "UTF8") || strstr(cs, "utf8")));
+}
+
+/* e_t_chrome_ascii - ASCII stand-in for a Unicode chrome symbol glyph, for a
+   terminal that cannot show it.  Returns 0 when cp is not a known chrome glyph,
+   so ordinary text keeps its normal (wcwidth-guarded) path.  The stand-ins read
+   as their action: 'x' close, '^' zoom/maximize, 'v' restore. */
+static int e_t_chrome_ascii(int cp)
+{
+ switch (cp)
+ {
+  case 0x2715:           return 'x';   /* close box (multiplication X) */
+  case 0x25A1:                         /* white square (console zoom) */
+  case 0x25FB:           return '^';   /* white medium square (X11 zoom) */
+  case 0x25A3:           return 'v';   /* square with inner square (restore) */
+  default:               return 0;
+ }
+}
 
 extern int cur_x, cur_y;
 extern struct termios otermio, ntermio, ttermio;
@@ -473,6 +513,7 @@ int e_t_initscr()
  WINDOW * stdscr;
 #endif
 
+ e_t_detect_unicode();
  ret = tcgetattr(1, &otermio); /* save old settings */
 /*
  if(ret)
@@ -711,6 +752,16 @@ int e_t_refresh()
     else
      fk_colset(e_gt_col(j, i));
     c = e_gt_char(j, i);
+    /* On a non-UTF-8 terminal, swap the few Unicode chrome symbol glyphs
+       (close/zoom title-bar boxes) for an ASCII stand-in BEFORE the wcwidth()
+       guard below, which would otherwise see them as unprintable and blank the
+       buttons.  Borders/scrollbar are unaffected (they use ncurses ACS). */
+    if (!e_t_unicode_term && c > 127)
+    {
+     int fb = e_t_chrome_ascii(c);
+     if (fb)
+      c = fb;
+    }
     /* Sanitise: reject values that xwpe cannot have produced.
        Valid: 0-12 (sp_chr border/scrollbar chars), 32-127 (ASCII),
        128+ only if wcwidth >= 0 (printable Unicode from UTF-8 decode).

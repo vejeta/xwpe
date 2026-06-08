@@ -216,6 +216,7 @@ EXTRA_DIST = \
   tests/test_popup_close_button.py \
   tests/test_scrollbar_glyphs.py \
   tests/test_keys_modified.py \
+  tests/test_chrome_ascii.py \
   tests/x11/conftest.py \
   tests/x11/matchbox-kbdconfig \
   tests/x11/test_editor_options.py \

@@ -208,6 +208,18 @@ Changes
 * Covered by tests/x11/test_user_screen.py: paint.c is built+run, Alt-F5
   shows its ANSI red+green, and a keypress restores the editor.
 
+  Console chrome on non-UTF-8 terminals:
+* The window title-bar close and zoom/restore boxes are drawn as Unicode
+  symbols (close U+2715, zoom U+25A1, restore U+25A3).  On a terminal whose
+  locale is not UTF-8 (the C locale, a serial console, ISO-8859-*) wcwidth()
+  reports them unprintable, so the emit loop blanked them and the buttons
+  silently vanished.  wpe now detects the locale's CODESET once and, on a
+  non-UTF-8 terminal, substitutes an ASCII stand-in ('x' close, '^' zoom,
+  'v' restore) so the affordances stay visible.  Box-drawing and the
+  scrollbar are unaffected -- they already use ncurses ACS, which ncurses
+  downgrades to the VT100/ASCII line set on its own.  Covered by
+  tests/test_chrome_ascii.py (C locale shows ASCII, UTF-8 keeps the glyphs).
+
 1.6.3 (event-driven debugger, dead key compose, Perl/COBOL)
 
   Event-driven I/O (X11 and terminal debugger):
