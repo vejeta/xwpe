@@ -187,7 +187,7 @@ Bugs fixed in 1.6.x:
 
 Changes
 
-1.6.4 (embedded VT terminal for the xwpe User Screen)
+1.6.4 (embedded VT terminal, Algol 68 source-level debugger, window-layout fixes)
 
   Borland "User Screen" (Alt-F5) on X11:
 * xwpe now reproduces a program's painted screen (cursor addressing,
@@ -215,6 +215,57 @@ Changes
   Messages.  a68g's diagnostics carry no file name, so the error jump is
   best-effort on the line number; the full diagnostic always shows in
   Messages.  Covered by tests/test_algol68.py (run + syntax-error).
+
+  Algol 68 source-level debugger (DEB_A68G):
+* a68g ships a full gdb-class monitor ("a68g --monitor"), so a .a68 / .alg
+  file is now a first-class debug target, not compile/run-only.  A seventh
+  debugger backend drives it like gdb/jdb/pdb: auto-select on the extension,
+  breakpoints ("breakpoint N"), run/continue from a68g's automatic break at
+  line 1, step/next with the editor cursor following the source line, watches
+  ("evaluate EXPR", re-evaluated on every step), call stack ("calls"), and
+  program output captured to both the Messages window (Ctrl-G P) and the
+  Alt-F5 User Screen.  Re-running after the program finished re-arms the
+  breakpoints.  The change is additive (every branch guarded by
+  e_deb_type == DEB_A68G), so the other six backends are untouched.  Covered
+  by tests/test_algol68_debug.py (breakpoint, watch n = (INT) +5 that updates
+  on step, run-to-completion output capture, re-run-after-finish, green
+  current line).  A new "Debugging Algol 68 programs" chapter documents it,
+  with docs/examples/debug_test.a68.
+* Step Over (F8) is line-granular.  a68g steps by interruptable unit, so one
+  source line (e.g. a print with several arguments) reports the same line
+  repeatedly; F8 now keeps stepping while a68g stays on the same line, so one
+  keypress advances to the next line -- matching gdb/pdb.  Step Into (F7)
+  stays unit-granular.
+* A watch on an out-of-scope variable (e.g. a procedure parameter after the
+  recursion unwinds) shows "<not in scope>" instead of a68g's raw monitor
+  error.
+
+  Debugger robustness and UX (all backends):
+* Watchdog so a dead or runaway debugger can never busy-loop xwpe.  A backend
+  that dies without its pipe reaching EOF, or floods its output (a68g can fall
+  into an abend->io_write_string recursion), used to spin xwpe's synchronous
+  read loops at ~100% CPU.  Three guards in the shared read path stop that: a
+  runaway-output counter (reset per command), a bounded stderr drain, and a
+  non-blocking liveness check (waitpid) on EAGAIN.  Covered by
+  tests/test_debugger_watchdog.py (a fake flooding debugger; no real one
+  needed).
+* The current-execution (stopped-at) line is now a readable black-on-green
+  bar.  It was blue-on-turquoise -- nearly invisible on the Dark Slate Blue
+  editor and easily confused with ordinary text; green reads as "executing
+  here" and stays distinct from the red breakpoint bar.
+
+  Window-layout fixes (debug windows, and any overlapping windows):
+* Size/Move (Window menu) now repaints the whole desktop, not just the moved
+  window.  Shrinking a window left stale border fragments and a half-erased
+  neighbour underneath; this was very visible with the Messages and Watches
+  windows overlapping at the bottom during a debug session.
+* Opening the Watches window no longer collapses the already-open Messages
+  window.  e_position_messages_window docks both at the bottom and clamped
+  every other window to make room, but skipped only the one being positioned
+  -- so positioning Watches pulled the Messages window's bottom edge above its
+  top edge, leaving an inverted, one-row-tall window.  It now excludes the
+  sibling Messages/Watches window from the clamp, as the split computation
+  already did.  Covered by tests/test_algol68_debug.py.
 
   Console chrome on non-UTF-8 terminals:
 * The window title-bar close and zoom/restore boxes are drawn as Unicode
