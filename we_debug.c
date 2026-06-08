@@ -128,6 +128,11 @@ char *npipe[5] = {  NULL, NULL, NULL, NULL, NULL  };
    only ever wait this long when the pty has briefly gone quiet. */
 #define DEB_PTY_DRAIN_MS 100
 
+/* Per-step async read of jdb/pdb output: scratch buffer size, and how long to
+   wait for the next chunk before deciding the step has finished printing. */
+#define DEB_STEP_BUF     4096
+#define DEB_STEP_POLL_MS 5000
+
 /* Drain any available data from the pty master into e_d_prog_output.
    Polls so it never blocks the editor, and keeps draining until the program
    stops writing for DEB_PTY_DRAIN_MS or closes its end of the pty (POLLHUP). */
@@ -427,10 +432,6 @@ static void e_d_messages_redraw(FENSTER *mf)
  e_schirm(mf, 1);
  e_cursor(mf, 1);
  e_refresh();
-}
-
-void e_d_echo_input_char(int c)
-{
 }
 
 static void e_d_wait_for_input(int gdb_fd)
@@ -1144,7 +1145,8 @@ int e_d_getchar()
   {
    char _ch = (c == '\r') ? '\n' : c;
    write(e_d_pty_master, &_ch, 1);
-   e_d_echo_input_char(c);
+   /* No explicit echo: the pty's line discipline echoes the byte back, and
+      e_d_pty_read_to_messages picks it up.  Echoing here would double it. */
   }
   else
    write(rfildes[1], &c, 1);
@@ -2968,7 +2970,7 @@ int e_deb_run(FENSTER *f)
      output and scan for "Breakpoint hit" or the prompt pattern.
      poll() avoids CPU waste during JVM startup (~2-3 seconds). */
   struct pollfd _pfd = { .fd = wfildes[0], .events = POLLIN };
-  char _jbuf[4096];
+  char _jbuf[DEB_STEP_BUF];
   int _jlen = 0, _found = 0, _n;
 
   jdb_trace("e_deb_run: entering Phase 2 poll loop for jdb\n");
@@ -3105,11 +3107,11 @@ int e_d_step_next(FENSTER *f, int sw)
  {
   /* jdb: use poll to read step response, parse line number */
   struct pollfd _pfd = { .fd = wfildes[0], .events = POLLIN };
-  char _jbuf[4096];
+  char _jbuf[DEB_STEP_BUF];
   int _jlen = 0, _n, _found = 0;
   while (!_found)
   {
-   if (poll(&_pfd, 1, 5000) <= 0) break;
+   if (poll(&_pfd, 1, DEB_STEP_POLL_MS) <= 0) break;
    _n = read(wfildes[0], _jbuf + _jlen, sizeof(_jbuf) - _jlen - 1);
    if (_n == 0)
    {  /* EOF: jdb exited */
@@ -3188,12 +3190,12 @@ int e_d_step_next(FENSTER *f, int sw)
   /* pdb: use poll to read step response, parse active line.
      pdb output format: "> file(line)func()\n-> code\n(Pdb) " */
   struct pollfd _pfd = { .fd = wfildes[0], .events = POLLIN };
-  char _buf[4096];
+  char _buf[DEB_STEP_BUF];
   int _len = 0, _n, _found = 0;
 pdb_poll_again:
   while (!_found)
   {
-   if (poll(&_pfd, 1, 5000) <= 0) break;
+   if (poll(&_pfd, 1, DEB_STEP_POLL_MS) <= 0) break;
    _n = read(wfildes[0], _buf + _len, sizeof(_buf) - _len - 1);
    if (_n == 0) return(e_d_quit(f));  /* EOF: pdb exited */
    if (_n < 0) continue;
