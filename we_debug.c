@@ -86,6 +86,15 @@ char *e_d_prog_output = NULL;
 int e_d_prog_output_len = 0;
 int e_d_prog_output_cap = 0;
 
+/* Single growth point for the e_d_prog_output capture buffer.  Every site that
+   used to open-code "if needed, realloc; memcpy; len += n" now routes through
+   these so an out-of-memory realloc can never leak the old pointer or write
+   past the buffer.  Forward-declared here because e_d_pty_drain() (above the
+   definitions) is one of the callers. */
+static int  e_d_prog_output_reserve(int extra);
+static void e_d_prog_output_append(char *data, int len);
+static void e_d_prog_output_append_line(char *data, int len);
+
 int e_d_pty_verase(void)
 {
  struct termios t;
@@ -125,18 +134,7 @@ void e_d_pty_drain(void)
  flags = fcntl(e_d_pty_master, F_GETFL, 0);
  fcntl(e_d_pty_master, F_SETFL, flags | O_NONBLOCK);
  while ((n = read(e_d_pty_master, buf, sizeof(buf))) > 0)
- {
-  if (e_d_prog_output_len + n > e_d_prog_output_cap)
-  {
-   int newcap = e_d_prog_output_cap ? e_d_prog_output_cap * 2 : 8192;
-   while (newcap < e_d_prog_output_len + n)
-    newcap *= 2;
-   e_d_prog_output = REALLOC(e_d_prog_output, newcap);
-   e_d_prog_output_cap = newcap;
-  }
-  memcpy(e_d_prog_output + e_d_prog_output_len, buf, n);
-  e_d_prog_output_len += n;
- }
+  e_d_prog_output_append(buf, n);
  fcntl(e_d_pty_master, F_SETFL, flags & ~O_NONBLOCK);
 }
 
@@ -295,15 +293,45 @@ static void e_d_pty_ensure_own_line(FENSTER *mf)
  _pty_owns_last_line = 1;
 }
 
+/* Ensure the capture buffer has room for `extra` more bytes beyond the current
+   length.  Returns 0 on success, -1 if the buffer could not be grown -- in
+   which case the existing allocation is preserved intact and the caller must
+   skip its copy rather than dereference a freed pointer. */
+static int e_d_prog_output_reserve(int extra)
+{
+ char *grown;
+ int newcap;
+
+ if (e_d_prog_output_len + extra <= e_d_prog_output_cap)
+  return 0;
+ newcap = (e_d_prog_output_len + extra + 1024) * 2;
+ grown = REALLOC(e_d_prog_output, newcap);
+ if (!grown)
+  return -1;
+ e_d_prog_output = grown;
+ e_d_prog_output_cap = newcap;
+ return 0;
+}
+
+/* Append `len` raw bytes to the capture buffer, keeping it NUL-terminated.
+   The NUL sits at index e_d_prog_output_len and is not counted in the length,
+   so length-bounded readers (Ctrl-G P) and string readers both stay safe. */
 static void e_d_prog_output_append(char *data, int len)
 {
- if (e_d_prog_output_len + len >= e_d_prog_output_cap)
- {
-  e_d_prog_output_cap = (e_d_prog_output_len + len + 1024) * 2;
-  e_d_prog_output = REALLOC(e_d_prog_output, e_d_prog_output_cap);
- }
+ if (e_d_prog_output_reserve(len + 1) < 0)
+  return;
  memcpy(e_d_prog_output + e_d_prog_output_len, data, len);
  e_d_prog_output_len += len;
+ e_d_prog_output[e_d_prog_output_len] = '\0';
+}
+
+/* Append one line of captured program output followed by a newline.  Used by
+   the jdb/pdb step parsers, which record each emitted line for Ctrl-G P
+   replay. */
+static void e_d_prog_output_append_line(char *data, int len)
+{
+ e_d_prog_output_append(data, len);
+ e_d_prog_output_append("\n", 1);
 }
 
 /* Public hooks so the Ctrl-F9 run path (we_prog.c) can feed the same captured
@@ -567,16 +595,7 @@ static void e_d_pty_drain_nonblock(void)
  flags = fcntl(e_d_pty_master, F_GETFL, 0);
  fcntl(e_d_pty_master, F_SETFL, flags | O_NONBLOCK);
  while ((n = read(e_d_pty_master, buf, sizeof(buf))) > 0)
- {
-  if (e_d_prog_output_len + n >= e_d_prog_output_cap)
-  {
-   e_d_prog_output_cap = e_d_prog_output_len + n + 1024;
-   e_d_prog_output = REALLOC(e_d_prog_output, e_d_prog_output_cap);
-  }
-  memcpy(e_d_prog_output + e_d_prog_output_len, buf, n);
-  e_d_prog_output_len += n;
-  e_d_prog_output[e_d_prog_output_len] = '\0';
- }
+  e_d_prog_output_append(buf, n);
  fcntl(e_d_pty_master, F_SETFL, flags & ~O_NONBLOCK);
 }
 
@@ -647,8 +666,10 @@ void e_d_pty_close(void)
   e_d_pty_slave = -1;
  }
  e_d_pty_slave_name[0] = '\0';
- /* Buffer is intentionally NOT freed here -- see comment above. */
- e_d_prog_output_cap = 0;
+ /* Buffer and its length are intentionally kept so Ctrl-G P can still show the
+    captured output; e_exec_deb frees it when the next session starts.  We do
+    NOT zero the capacity here: the allocation is still live, so cap must keep
+    reflecting it (cap >= len) -- otherwise the invariant breaks. */
 }
 
 char *e_d_msg[] = {  "Ctrl C pressed\nQuit Debugger ?",
@@ -3067,14 +3088,7 @@ int e_d_step_next(FENSTER *f, int sw)
       while (_olen > 0 && (_p[0] == '\n' || _p[0] == '\r')) { _p++; _olen--; }
       while (_olen > 0 && (_p[_olen-1] == '\n' || _p[_olen-1] == '\r')) _olen--;
       if (_olen > 0)
-      { if (e_d_prog_output_len + _olen + 1 > e_d_prog_output_cap)
-        { e_d_prog_output_cap = (e_d_prog_output_len + _olen + 1024) * 2;
-          e_d_prog_output = realloc(e_d_prog_output, e_d_prog_output_cap);
-        }
-        memcpy(e_d_prog_output + e_d_prog_output_len, _p, _olen);
-        e_d_prog_output_len += _olen;
-        e_d_prog_output[e_d_prog_output_len++] = '\n';
-      }
+        e_d_prog_output_append_line(_p, _olen);
     }
   }
   e_d_switch_out(0);
@@ -3121,16 +3135,7 @@ pdb_poll_again:
           strstr(_line, "The program"))
        continue;
       /* Program output -- save for Ctrl-G P */
-      if (e_d_prog_output_len + _li + 2 > e_d_prog_output_cap)
-      { e_d_prog_output_cap = (e_d_prog_output_len + _li + 1024) * 2;
-        e_d_prog_output = realloc(e_d_prog_output, e_d_prog_output_cap);
-      }
-      if (e_d_prog_output)
-      {
-       memcpy(e_d_prog_output + e_d_prog_output_len, _line, _li);
-       e_d_prog_output_len += _li;
-       e_d_prog_output[e_d_prog_output_len++] = '\n';
-      }
+      e_d_prog_output_append_line(_line, _li);
      }
    }
    /* Check for program exit -- pdb auto-restarts after finish */
@@ -3543,15 +3548,7 @@ int e_read_output(FENSTER *f)
       int _olen = strlen(_s);
       while (_olen > 0 && (_s[_olen-1] == '\n' || _s[_olen-1] == '\r')) _olen--;
       if (_olen > 0)
-      {
-       if (e_d_prog_output_len + _olen + 1 > e_d_prog_output_cap)
-       { e_d_prog_output_cap = (e_d_prog_output_len + _olen + 1024) * 2;
-         e_d_prog_output = realloc(e_d_prog_output, e_d_prog_output_cap);
-       }
-       memcpy(e_d_prog_output + e_d_prog_output_len, _s, _olen);
-       e_d_prog_output_len += _olen;
-       e_d_prog_output[e_d_prog_output_len++] = '\n';
-      }
+       e_d_prog_output_append_line(_s, _olen);
      }
     }
     e_error("End of code. Ctrl-G P for output.", 0, f->fb);
