@@ -260,3 +260,29 @@ def test_messages_window_not_collapsed_by_opening_watches(tmp_path):
         assert max(bottom_borders) >= len(rows) - 3, (
             "Messages window collapsed (no full-height bottom border reaching the "
             "desktop bottom -- inverted geometry regression):\n%s" % _text(w))
+
+
+def test_current_line_is_a_readable_green_bar(tmp_path):
+    """The stopped-at (current execution) line is a green bar, not low-contrast.
+
+    It used to be Blue(12)-on-Turquoise(6), nearly unreadable on the Dark Slate
+    Blue editor background; it is now black on green -- a clear "executing here"
+    bar, distinct from the red breakpoint bar.
+    """
+    with WpeSession(str(tmp_path), FACTORIAL, filename="factorial.a68",
+                    wait=2.0) as w:
+        w.key(DOWN, delay=0.4)
+        w.key(DOWN, delay=0.4)             # cursor on line 3
+        w.key(CTRL_G, "b", delay=0.4)
+        w.key(CTRL_G, "r", delay=2.0)      # run -> stop at line 3
+        w._drain(4.0)
+        assert w.alive(), "wpe died starting the debugger"
+        # Find a green-background editor row (the current execution line).
+        green = False
+        for y in range(2, 12):
+            row = w.screen.buffer[y]
+            if any("green" in str(row[x].bg) for x in range(1, 40)):
+                green = True
+                break
+        assert green, "current execution line is not highlighted green:\n%s" \
+            % _text(w)

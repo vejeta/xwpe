@@ -568,8 +568,13 @@ void FARBE_Init(FARBE *fb)
  fb->hm = e_s_x_clr(10,4);  /*  Help highlighted		  */
  fb->df = e_s_x_clr(7,0);   /*  Background		  */
  fb->of = e_s_x_clr(8,0);   /*  void	(unused)	  */
- fb->db = e_s_x_clr(0,1);   /*  Breakpoint		  	  */
- fb->dy = e_s_x_clr(12,6);  /*  Debugger Stop		  */
+ fb->db = e_s_x_clr(0,1);   /*  Breakpoint: black on Red3             */
+ fb->dy = e_s_x_clr(0,10);  /*  Debugger Stop (current line): black on
+                                Green.  Was Blue(12)-on-Turquoise(6), which is
+                                low-contrast against the Dark Slate Blue editor
+                                background; a green bar reads clearly as
+                                "executing here" and stays distinct from the
+                                red breakpoint bar. */
  fb->ct = e_s_x_clr(11, 4); /*  C-Prog. Text                 */
  fb->cr = e_s_x_clr(15, 4); /*  C-Prog. res. Words           */
  fb->ck = e_s_x_clr(13, 4); /*  C-Prog. Constants (bright magenta on blue) */
