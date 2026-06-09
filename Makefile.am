@@ -55,7 +55,8 @@ we_SOURCES = \
   we_vterm.c \
   we_dap_proto.c \
   we_dap.c \
-  we_bsp.c
+  we_bsp.c \
+  we_lsp.c
 
 we_LDADD = \
   $(NCURSESW_LIBS) \
@@ -83,6 +84,7 @@ noinst_HEADERS = \
   we_dap_proto.h \
   we_dap.h \
   we_bsp.h \
+  we_lsp.h \
   attrb.h \
   edit.h \
   keys.h \
@@ -163,7 +165,7 @@ metainfodir = $(datadir)/metainfo
 metainfo_DATA = io.codeberg.mendezr.xwpe.metainfo.xml
 
 # --- Unit tests ---
-check_PROGRAMS = test_checkheader test_syntax_def test_dap test_dap_dlv test_dap_gdb test_dap_lldb test_dap_scala
+check_PROGRAMS = test_checkheader test_syntax_def test_dap test_dap_dlv test_dap_gdb test_dap_lldb test_dap_scala test_lsp_scala
 
 test_checkheader_SOURCES = tests/test_checkheader.c
 test_checkheader_CFLAGS = -std=gnu17
@@ -201,8 +203,14 @@ test_dap_scala_SOURCES = tests/test_dap_scala.c we_bsp.c we_dap.c we_dap_proto.c
 test_dap_scala_CFLAGS = -std=gnu17 $(JSONC_CFLAGS)
 test_dap_scala_LDADD = $(JSONC_LIBS) $(UTIL_LIBS)
 
+# LSP engine: drives a real Metals language server on a single Scala file
+# (hover/definition/completion/diagnostics).  SKIPs without metals + scala-cli.
+test_lsp_scala_SOURCES = tests/test_lsp_scala.c we_lsp.c we_dap_proto.c
+test_lsp_scala_CFLAGS = -std=gnu17 $(JSONC_CFLAGS)
+test_lsp_scala_LDADD = $(JSONC_LIBS)
+
 TESTS = test_checkheader test_syntax_def test_dap test_dap_dlv test_dap_gdb \
-  test_dap_lldb test_dap_scala
+  test_dap_lldb test_dap_scala test_lsp_scala
 
 # --- Extra files for distribution ---
 EXTRA_DIST = \

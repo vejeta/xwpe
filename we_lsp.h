@@ -1,0 +1,73 @@
+/* we_lsp.h -- Language Server Protocol client engine.
+ *
+ * Companion to the DAP client (we_dap.c): where DAP makes xwpe a *debugger*,
+ * LSP makes it an *IDE* -- diagnostics as you type, go-to-definition, hover
+ * (type/docs) and completion, from the same language servers that power VS
+ * Code / Neovim / Emacs (Metals for Scala, clangd for C/C++, ...).
+ *
+ * LSP is JSON-RPC 2.0 over the SAME Content-Length framing as DAP/BSP, so this
+ * layer reuses we_dap_proto.c's streaming reader for the wire.  Like the DAP
+ * engine it is free of editor globals (the host supplies a callback for the one
+ * asynchronous side-effect, diagnostics) so it can be integration-tested
+ * against a real server without running xwpe.  The editor bridge (completion
+ * popup, hover box, diagnostic marks, definition jump) lives elsewhere.
+ *
+ * Coordinates are LSP's: 0-based line AND character.  The editor bridge
+ * converts to/from xwpe's 1-based lines.
+ */
+#ifndef WE_LSP_H
+#define WE_LSP_H
+
+#include <stddef.h>
+
+/* Severity as in LSP: 1 error, 2 warning, 3 information, 4 hint. */
+typedef struct {
+ void (*on_diagnostic)(const char *path, int line, int character,
+                       int severity, const char *message, void *ud);
+ void *ud;
+} e_lsp_host;
+
+typedef struct e_lsp_session e_lsp_session;
+
+/* One completion candidate (engine-owned strings, valid until the next
+ * e_lsp_completion call or e_lsp_close). */
+typedef struct {
+ char *label;     /* what to show / insert (e.g. "println(x: Any): Unit") */
+ char *insert;    /* text to insert if different from label, else NULL    */
+ int   kind;      /* LSP CompletionItemKind (3 = function, 6 = variable…) */
+} e_lsp_completion_item;
+
+/* Spawn the language server (argv NULL-terminated, e.g. {"metals",0}), run the
+ * initialize/initialized handshake with headless InitializationOptions, cwd =
+ * root_dir.  `lang` is the LSP languageId ("scala", "c", …) used on didOpen.
+ * Returns a session or NULL. */
+e_lsp_session *e_lsp_open(char *const argv[], const char *root_dir,
+                          const char *lang, const e_lsp_host *host);
+
+/* textDocument/didOpen: hand the server the buffer text so it compiles/indexes.
+ * `path` is a filesystem path (turned into a file:// URI internally). */
+int e_lsp_did_open(e_lsp_session *s, const char *path, const char *text);
+
+/* Pump until the server publishes diagnostics for `path` (== it has compiled),
+ * delivering every diagnostic through host->on_diagnostic.  Returns 1 if the
+ * file's diagnostics arrived, 0 on timeout/EOF. */
+int e_lsp_wait_diagnostics(e_lsp_session *s, const char *path, int timeout_ms);
+
+/* textDocument/hover at (line,character): returns a malloc'd plain-text string
+ * (markdown fences stripped) the caller frees, or NULL. */
+char *e_lsp_hover(e_lsp_session *s, const char *path, int line, int character);
+
+/* textDocument/definition: on success fills out_path/out_line/out_char with the
+ * first location and returns 0; returns -1 if there is no definition. */
+int e_lsp_definition(e_lsp_session *s, const char *path, int line, int character,
+                     char *out_path, size_t out_sz, int *out_line, int *out_char);
+
+/* textDocument/completion: fills up to `max` items and returns the count (>=0),
+ * or -1 on error.  Items point at engine-owned memory (see e_lsp_completion_item). */
+int e_lsp_completion(e_lsp_session *s, const char *path, int line, int character,
+                     e_lsp_completion_item *items, int max);
+
+/* shutdown/exit the server and reap it; frees the session. */
+void e_lsp_close(e_lsp_session *s);
+
+#endif /* WE_LSP_H */

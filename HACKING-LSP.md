@@ -1,9 +1,56 @@
 # HACKING-LSP — the planned Language Server Protocol client
 
-> **Status: PLANNED, not yet implemented.** This document captures the design
-> and the rationale so the work can start from a shared picture.  It is the
-> companion to `HACKING-DAP.md` (which describes the *implemented* DAP client).
-> Track: it is the next major feature after the DAP client.
+> **Status: SPIKE VALIDATED, engine not yet implemented.** The Metals LSP chain
+> has been proven end-to-end by hand (see "Validated flow" below); the C engine
+> (`we_lsp.c`) and the editor UI surfaces are the remaining work.  Companion to
+> `HACKING-DAP.md` (the *implemented* DAP client).  Next major feature after DAP.
+
+## Validated flow (2026-06-09, real Metals 1.6.7)
+
+Proven by `xwpe-dev/tmp/scala-lsp-spike/lsp_probe.py` (the blueprint for
+`we_lsp.c`), against a single `Factorial.scala` with a `.bsp/scala-cli.json`
+created by `scala-cli setup-ide` (the same scaffolding the Scala DAP backend
+already makes).  Results: hover `f` -> `var f: Long`; definition of a `f` use ->
+its declaration line; completion at `println` -> `println(): Unit`,
+`println(x: Any): Unit`; plus `publishDiagnostics` after compile.
+
+Launch: `cs install metals` -> `~/.local/bin/metals` (stdio JSON-RPC, JVM).
+Exact sequence:
+
+```
+initialize { rootUri, capabilities, initializationOptions } -> capabilities
+initialized
+textDocument/didOpen { uri, languageId:"scala", version, text }
+  <- metals/status "importing..."  (answer nothing; it's a notification)
+  <- textDocument/publishDiagnostics for the uri  == compiled
+textDocument/hover       { uri, position } -> contents.value (markdown)
+textDocument/definition  { uri, position } -> [ { uri, range } ]
+textDocument/completion  { uri, position } -> { items: [ { label, ... } ] }
+```
+
+`initializationOptions` that keep Metals headless (no UI providers to implement
+up front):
+
+```json
+{ "compilerOptions": { "isCompletionItemDetailEnabled": true,
+                       "isHoverDocumentationEnabled": true },
+  "statusBarProvider": "log-message", "inputBoxProvider": false,
+  "quickPickProvider": false, "executeClientCommandProvider": false,
+  "didFocusProvider": false, "isHttpEnabled": false,
+  "fallbackScalaVersion": "3.3.7" }
+```
+
+GOTCHAS the engine MUST handle (or Metals blocks / desyncs):
+* Answer EVERY server->client request: `window/showMessageRequest` (reply the
+  first action or null), `client/registerCapability`,
+  `window/workDoneProgress/create`, `workspace/configuration` (reply an array of
+  nulls).  An unanswered request stalls Metals.
+* The first request after `didOpen` may return empty while the presentation
+  compiler warms -- retry hover/completion a few times with a short backoff.
+* Reader must stay byte-aligned on `Content-Length` framing and resync if it
+  ever sees a header block without a length (LSP4J occasionally interleaves).
+* Requires `scala-cli` in PATH + a `.bsp` connection (reuse the Scala DAP
+  bootstrap); modern Scala only (Metals dropped 2.11).
 
 ## Why LSP, after DAP
 
