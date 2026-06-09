@@ -321,8 +321,12 @@ Changes
   coursier tool: cs install metals).  Verified by tests/test_lsp_scala.c (engine
   vs real Metals) and tests/test_scala_lsp.py + tests/test_scala_lsp_complete.py
   (the editor bridge through wpe).
-* didChange-driven live diagnostics (errors as you type) is the next LSP
-  increment; clangd (C/C++) and other servers are descriptor rows.
+* Edits are seen live: before each request the current editor buffer is pushed
+  to the server (textDocument/didChange), so hover/definition/completion/
+  diagnostics reflect unsaved changes, not just the on-disk file.
+* Next LSP increments: auto-refresh diagnostics on keystroke (debounced),
+  find-references/rename/formatting, and more servers -- clangd (C/C++, in
+  Debian), pyright, rust-analyzer, gopls -- each a descriptor row.
 
 1.6.4 (embedded VT terminal, Algol 68 source-level debugger, window-layout fixes)
 
