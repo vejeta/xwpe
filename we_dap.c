@@ -4,6 +4,7 @@
 #include <string.h>
 #include <stdio.h>
 #include <unistd.h>
+#include <time.h>
 #include <errno.h>
 #include <signal.h>
 #include <fcntl.h>
@@ -23,10 +24,22 @@
 #define DAP_MAX_BP   64
 #define DAP_ACCEPT_MS 10000
 
+/* Two transports.  Reverse-TCP (Delve): DAP on a socket, the debuggee's output
+   on a separate pty we read.  Stdio (gdb/lldb -dap): DAP flows over the adapter's
+   own stdin/stdout, so there is no pty and program output arrives as DAP "output"
+   events instead. */
 struct e_dap_session {
- int           sock;          /* connected adapter socket           */
- int           pty_master;    /* master of the adapter's controlling pty;
-                                 the debuggee's stdout/stderr arrive here */
+ int           sock;          /* TCP transport: connected adapter socket, else -1 */
+ int           in_fd;         /* stdio transport: write to adapter stdin, else -1  */
+ int           out_fd;        /* stdio transport: read from adapter stdout, else -1 */
+ int           pty_master;    /* TCP only: master of the adapter's controlling pty;
+                                 the debuggee's stdout/stderr arrive here.  -1 in
+                                 stdio mode (output comes via DAP events). */
+ int           forward_output;/* stdio: forward stdout/stderr "output" events to
+                                 the host (set once the program is running, so the
+                                 adapter's own startup banner is not echoed). */
+ int           launch_mode_debug;/* launch arg "mode":"debug" (dlv builds the pkg);
+                                 0 for adapters launched on a prebuilt binary (gdb). */
  pid_t         pid;           /* adapter process                    */
  int           seq;           /* request sequence counter           */
  e_dap_reader  rd;            /* incoming frame reassembly          */
@@ -40,6 +53,10 @@ struct e_dap_session {
  int           bp_lines[DAP_MAX_BP];
  int           bp_n;
 };
+
+/* The fd to write requests to / read messages from, abstracting the transport. */
+static int dap_wfd(e_dap_session *s) { return s->sock >= 0 ? s->sock : s->in_fd; }
+static int dap_rfd(e_dap_session *s) { return s->sock >= 0 ? s->sock : s->out_fd; }
 
 /* ---- low-level I/O ----------------------------------------------------- */
 
@@ -70,7 +87,7 @@ static int dap_send(e_dap_session *s, const char *command, struct json_object *a
   json_object_put(args);
  if (frame)
  {
-  write_all(s->sock, frame, len);
+  write_all(dap_wfd(s), frame, len);
   free(frame);
  }
  return seq;
@@ -90,10 +107,11 @@ static struct json_object *dap_read_message(e_dap_session *s)
 
   if (m)
    return m;
-  /* Watch the DAP socket AND the debuggee's pty: program output arrives on the
-     pty while the program runs (between continue and the next stop), so we must
-     drain it here or it stalls when the pty buffer fills. */
-  sock_i = np; p[np].fd = s->sock; p[np].events = POLLIN; np++;
+  /* Watch the DAP transport fd AND, on the TCP transport, the debuggee's pty:
+     program output arrives on the pty while the program runs (between continue
+     and the next stop), so we must drain it here or it stalls when the pty
+     buffer fills.  In stdio mode there is no pty (output comes via events). */
+  sock_i = np; p[np].fd = dap_rfd(s); p[np].events = POLLIN; np++;
   if (s->pty_master >= 0)
   {  pty_i = np; p[np].fd = s->pty_master; p[np].events = POLLIN; np++;  }
   pret = poll(p, np, -1);
@@ -118,7 +136,7 @@ static struct json_object *dap_read_message(e_dap_session *s)
   }
   if (!(p[sock_i].revents & (POLLIN | POLLHUP | POLLERR)))
    continue;
-  n = read(s->sock, buf, sizeof(buf));
+  n = read(dap_rfd(s), buf, sizeof(buf));
   if (n < 0)
   {
    if (errno == EINTR)
@@ -170,10 +188,17 @@ static void dap_handle_event(e_dap_session *s, struct json_object *m)
   return;
  if (!strcmp(ev, "output"))
  {
-  /* The debuggee's stdout/stderr reach us through the pty (see dap_read_message),
-     so DAP "output" events here are only the adapter talking about itself
-     (e.g. dlv's "Type 'dlv help' ..." banner, category "console").  Drop them:
-     forwarding would clutter the Messages window and look like an error. */
+  /* TCP transport (dlv): the debuggee's output reaches us through the pty (see
+     dap_read_message), so the only "output" events are the adapter talking about
+     itself -- drop them.  Stdio transport (gdb/lldb -dap): there is no pty, so
+     the program's stdout/stderr DO arrive here -- forward them, but only once the
+     program is running (forward_output), or the adapter's startup banner (also
+     category "stdout" for gdb) would be echoed into Messages. */
+  const char *cat = obj_str(body, "category");
+  const char *txt = obj_str(body, "output");
+  int is_program = cat && (!strcmp(cat, "stdout") || !strcmp(cat, "stderr"));
+  if (s->forward_output && is_program && txt && s->host.on_output)
+   s->host.on_output(txt, s->host.ud);
  }
  else if (!strcmp(ev, "stopped"))
  {
@@ -361,17 +386,68 @@ static int dap_accept(int listen_fd)
  return accept(listen_fd, NULL, NULL);
 }
 
-/* ---- public API -------------------------------------------------------- */
-
-e_dap_session *e_dap_open(char *const argv[], const char *program,
-                          const char *entry_func, const char *cwd,
-                          const e_dap_host *host)
+/* Fork+exec a stdio adapter (gdb/lldb --interpreter=dap): DAP flows over the
+   adapter's own stdin/stdout, which we wire to two pipes.  *in_fd receives the
+   write end of the child's stdin; *out_fd the read end of the child's stdout.
+   stderr is left inheriting xwpe's (adapter diagnostics, rarely used). */
+static pid_t dap_spawn_stdio(char *const argv[], const char *cwd,
+                             int *in_fd, int *out_fd)
 {
- e_dap_session *s;
- int listen_fd, port, iseq;
- struct json_object *args, *resp;
+ int to_child[2], from_child[2];
+ pid_t pid;
 
- s = calloc(1, sizeof(*s));
+ if (pipe(to_child) != 0)
+  return -1;
+ if (pipe(from_child) != 0)
+ {  close(to_child[0]); close(to_child[1]); return -1;  }
+
+ pid = fork();
+ if (pid == 0)
+ {
+  if (cwd)
+   if (chdir(cwd) != 0)
+    _exit(127);
+  dup2(to_child[0], 0);            /* child stdin  <- to_child read end  */
+  dup2(from_child[1], 1);          /* child stdout -> from_child write end */
+  close(to_child[0]); close(to_child[1]);
+  close(from_child[0]); close(from_child[1]);
+  execvp(argv[0], argv);
+  _exit(127);
+ }
+ close(to_child[0]);              /* parent writes to to_child[1]   */
+ close(from_child[1]);            /* parent reads from from_child[0] */
+ if (pid < 0)
+ {  close(to_child[1]); close(from_child[0]); return -1;  }
+ *in_fd = to_child[1];
+ *out_fd = from_child[0];
+ return pid;
+}
+
+/* The DAP `initialize` handshake (shared by both transports). */
+static int dap_initialize(e_dap_session *s, const char *adapter_id)
+{
+ struct json_object *args, *resp;
+ int iseq;
+
+ args = json_object_new_object();
+ json_object_object_add(args, "clientID", json_object_new_string("xwpe"));
+ json_object_object_add(args, "adapterID", json_object_new_string(adapter_id));
+ json_object_object_add(args, "linesStartAt1", json_object_new_boolean(1));
+ json_object_object_add(args, "columnsStartAt1", json_object_new_boolean(1));
+ json_object_object_add(args, "pathFormat", json_object_new_string("path"));
+ iseq = dap_send(s, "initialize", args);
+ resp = dap_wait_response(s, iseq);
+ if (!resp)
+  return -1;
+ json_object_put(resp);
+ return 0;
+}
+
+/* Allocate a session and set the transport-neutral defaults. */
+static e_dap_session *dap_session_new(const char *program, const char *entry_func,
+                                      const e_dap_host *host)
+{
+ e_dap_session *s = calloc(1, sizeof(*s));
  if (!s)
   return NULL;
  e_dap_reader_init(&s->rd);
@@ -380,7 +456,26 @@ e_dap_session *e_dap_open(char *const argv[], const char *program,
  s->program = program ? strdup(program) : NULL;
  s->entry_func = entry_func ? strdup(entry_func) : NULL;
  s->thread_id = 1;
+ s->sock = -1;
+ s->in_fd = -1;
+ s->out_fd = -1;
  s->pty_master = -1;
+ return s;
+}
+
+/* ---- public API -------------------------------------------------------- */
+
+e_dap_session *e_dap_open(char *const argv[], const char *program,
+                          const char *entry_func, const char *cwd,
+                          const e_dap_host *host)
+{
+ e_dap_session *s;
+ int listen_fd, port;
+
+ s = dap_session_new(program, entry_func, host);
+ if (!s)
+  return NULL;
+ s->launch_mode_debug = 1;        /* dlv launch arg "mode":"debug" (builds pkg) */
 
  listen_fd = dap_listen_ephemeral(&port);
  if (listen_fd < 0)
@@ -419,27 +514,31 @@ e_dap_session *e_dap_open(char *const argv[], const char *program,
  }
  s->sock = dap_accept(listen_fd);
  close(listen_fd);
- if (s->sock < 0)
+ if (s->sock < 0 || dap_initialize(s, "dap") != 0)
  {
   e_dap_close(s);
   return NULL;
  }
+ return s;
+}
 
- /* initialize handshake */
- args = json_object_new_object();
- json_object_object_add(args, "clientID", json_object_new_string("xwpe"));
- json_object_object_add(args, "adapterID", json_object_new_string("dap"));
- json_object_object_add(args, "linesStartAt1", json_object_new_boolean(1));
- json_object_object_add(args, "columnsStartAt1", json_object_new_boolean(1));
- json_object_object_add(args, "pathFormat", json_object_new_string("path"));
- iseq = dap_send(s, "initialize", args);
- resp = dap_wait_response(s, iseq);
- if (!resp)
+/* Stdio transport: spawn `argv` (e.g. {"gdb","--interpreter=dap"}), talk DAP
+   over its pipes, run the initialize handshake.  `program` is a PREBUILT binary
+   (the adapter launches it; it does not build), `entry_func` may be NULL. */
+e_dap_session *e_dap_open_stdio(char *const argv[], const char *program,
+                                const char *entry_func, const char *cwd,
+                                const e_dap_host *host)
+{
+ e_dap_session *s = dap_session_new(program, entry_func, host);
+ if (!s)
+  return NULL;
+ s->launch_mode_debug = 0;        /* program is a prebuilt binary, not a package */
+ s->pid = dap_spawn_stdio(argv, cwd, &s->in_fd, &s->out_fd);
+ if (s->pid <= 0 || dap_initialize(s, "gdb") != 0)
  {
   e_dap_close(s);
   return NULL;
  }
- json_object_put(resp);
  return s;
 }
 
@@ -462,22 +561,30 @@ int e_dap_run(e_dap_session *s)
  if (!s)
   return -1;
 
- /* launch (build + run; stop is driven by breakpoints, not stopOnEntry) */
+ /* launch (run; stop is driven by breakpoints, not stopOnEntry).  TCP/dlv adds
+    "mode":"debug" so the adapter builds the package; stdio/gdb launches the
+    prebuilt binary directly.  For the TCP transport the debuggee stays on the
+    adapter's controlling pty (read in dap_read_message); for stdio the program's
+    output arrives as "output" events, enabled below. */
  args = json_object_new_object();
  json_object_object_add(args, "request", json_object_new_string("launch"));
- json_object_object_add(args, "mode", json_object_new_string("debug"));
+ if (s->launch_mode_debug)
+  json_object_object_add(args, "mode", json_object_new_string("debug"));
  json_object_object_add(args, "program", json_object_new_string(s->program));
  json_object_object_add(args, "stopOnEntry", json_object_new_boolean(0));
- /* Leave the debuggee on the adapter's controlling terminal (the pty we created
-    in e_dap_open).  dlv runs the program in foreground and its stdout/stderr go
-    to that pty, which we read in dap_read_message -- the same inferior-pty model
-    the gdb backend uses.  (We deliberately do NOT request console=internalConsole:
-    that would route output through DAP events, which dlv suppresses anyway once
-    the program has a real tty.) */
  seq = dap_send(s, "launch", args);
- resp = dap_wait_response(s, seq);          /* dlv replies before config */
- if (resp)
-  json_object_put(resp);
+ if (s->launch_mode_debug)
+ {
+  /* dlv builds the package at launch and replies BEFORE configurationDone, so
+     wait here -- breakpoints set afterwards bind to the freshly built binary. */
+  resp = dap_wait_response(s, seq);
+  if (resp)
+   json_object_put(resp);
+ }
+ /* gdb/lldb -dap follow the DAP spec and defer the launch response until AFTER
+    configurationDone, so we must NOT block on it here (that would deadlock); the
+    binary's symbols are already loaded, so breakpoints set now still bind, and
+    the late launch response is consumed by dap_wait_stop below. */
 
  /* source breakpoints */
  if (s->bp_n > 0)
@@ -517,6 +624,10 @@ int e_dap_run(e_dap_session *s)
    json_object_put(resp);
  }
 
+ /* From here the program runs, so start forwarding its stdout/stderr output
+    events (stdio transport).  The adapter's startup banner -- which gdb also
+    tags category "stdout" -- has already been consumed during initialize. */
+ s->forward_output = 1;
  seq = dap_send(s, "configurationDone", NULL);
  resp = dap_wait_response(s, seq);
  if (resp)
@@ -596,13 +707,39 @@ void e_dap_close(e_dap_session *s)
   dap_send(s, "disconnect", args);
   close(s->sock);
  }
+ if (s->in_fd >= 0 || s->out_fd >= 0)
+ {
+  /* stdio transport: ask the adapter to quit, then close the pipes */
+  struct json_object *args = json_object_new_object();
+  json_object_object_add(args, "terminateDebuggee", json_object_new_boolean(1));
+  dap_send(s, "disconnect", args);
+  if (s->in_fd >= 0)
+   close(s->in_fd);
+  if (s->out_fd >= 0)
+   close(s->out_fd);
+ }
  if (s->pty_master >= 0)
   close(s->pty_master);
  if (s->pid > 0)
  {
   int st;
+  /* We already sent a DAP "disconnect" (terminateDebuggee) and closed the
+     transport, asking the adapter to stop the program and exit.  SIGTERM first
+     for a graceful exit, but reap deterministically: gdb, while ptracing a
+     stopped inferior, can ignore SIGTERM and waitpid() would then block forever
+     -- so if it has not exited promptly, SIGKILL guarantees the reap (Linux
+     PTRACE_O_EXITKILL takes the inferior down with it). */
   kill(s->pid, SIGTERM);
-  waitpid(s->pid, &st, 0);
+  if (waitpid(s->pid, &st, WNOHANG) == 0)
+  {
+   struct timespec ts = { 0, 200 * 1000 * 1000 };  /* 200ms grace */
+   nanosleep(&ts, NULL);
+   if (waitpid(s->pid, &st, WNOHANG) == 0)
+   {
+    kill(s->pid, SIGKILL);
+    waitpid(s->pid, &st, 0);
+   }
+  }
  }
  e_dap_reader_free(&s->rd);
  free(s->program);

@@ -35,6 +35,14 @@ e_dap_session *e_dap_open(char *const argv[], const char *program,
                           const char *entry_func, const char *cwd,
                           const e_dap_host *host);
 
+/* Same, but over the STDIO transport: the adapter (e.g. {"gdb","--interpreter=dap"}
+ * or {"lldb-dap"}) speaks DAP on its own stdin/stdout.  `program` is a PREBUILT
+ * binary the adapter launches (it does not build it), so the caller compiles
+ * first.  The debuggee's output arrives as DAP "output" events (no pty). */
+e_dap_session *e_dap_open_stdio(char *const argv[], const char *program,
+                                const char *entry_func, const char *cwd,
+                                const e_dap_host *host);
+
 /* Record a source breakpoint to install on Run (DAP sets breakpoints per file
  * just before the program starts). */
 int e_dap_add_breakpoint(e_dap_session *s, const char *file, int line);
