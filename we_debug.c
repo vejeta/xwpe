@@ -5265,6 +5265,29 @@ static void e_lsp_sync(FENSTER *f)
  e_lsp_synced_set(text);               /* keep ownership as the new baseline */
 }
 
+/* Make the source window the active one again.  Writing diagnostics to the
+   Messages window creates/raises it, which would otherwise leave Messages
+   focused -- but LSP is an IDE output pane, it must NOT move the user out of
+   their code (focus-stealing belongs only to interactive Run, where the program
+   reads stdin in the console).  Keeping the source active also means the Alt-Q
+   navigation actions read the cursor from the code, not from Messages. */
+static void e_lsp_raise_source(FENSTER *src)
+{
+ ECNT *cn;
+ int i;
+
+ if (!src)
+  return;
+ cn = src->ed;
+ for (i = cn->mxedt; i > 0; i--)
+  if (cn->f[i] == src)
+  {
+   if (i != cn->mxedt)
+    e_switch_window(cn->edt[i], cn->f[cn->mxedt]);
+   break;
+  }
+}
+
 /* Lazily start the language server for f's file and surface its diagnostics.
    For Scala, `scala-cli setup-ide` is run first so Metals auto-connects to the
    build server.  The buffer is read from disk (save before invoking for the
@@ -5315,6 +5338,7 @@ static int e_lsp_ensure(FENSTER *f)
  e_lsp_did_open(g_lsp, path, text ? text : "");
  e_lsp_synced_set(text ? text : strdup(""));   /* baseline = what we opened with */
  e_lsp_wait_diagnostics(g_lsp, path, 240000);  /* compile -> diags to Messages */
+ e_lsp_raise_source(f);   /* keep the code focused -- do not strand the user in Messages */
  return(0);
 }
 

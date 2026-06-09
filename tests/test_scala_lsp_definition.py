@@ -54,7 +54,9 @@ def test_scala_lsp_go_to_definition(tmp_path):
         w.key("e", delay=150.0)        # start Metals (cold) + first compile
         w._drain(3.0)
         assert w.alive(), "wpe died starting Metals"
-        w.key(F6, delay=1.0)           # focus moved to Messages; back to source
+        # NO window switch: Alt-Q E must leave the SOURCE focused (diagnostics go
+        # to Messages as an output pane, never stealing focus), so navigation
+        # reads the cursor from the code.  This also guards that regression.
 
         # search a prefix so the cursor ends INSIDE the identifier (Find leaves
         # the cursor just past the match); first match is the use on line 1
