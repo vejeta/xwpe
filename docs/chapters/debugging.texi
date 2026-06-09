@@ -284,17 +284,31 @@ Requires @command{python3} (Debian/Ubuntu).
 @section Debugging Algol 68 programs
 
 @cindex Algol 68 debugging
+@cindex ga68
 @cindex a68g
 @cindex Algol 68 Genie monitor
 
-xwpe auto-selects the Algol 68 Genie monitor when opening a @file{.a68}
-or @file{.alg} file.  No manual configuration is needed; the first time
-you start the debugger on such a file, xwpe shows a short
-@samp{switching to a68g monitor} notice (press @key{Return}).
+Algol 68 has two toolchains, and xwpe debugs a @file{.a68}/@file{.alg}
+file with whichever matches the file's dialect (the same content
+detection used for compiling, @pxref{Compiling}).  No manual
+configuration is needed; the first time you start the debugger xwpe
+shows a short notice of the backend it chose (press @key{Return}).
 
-a68g is an interpreter with a built-in, gdb-class source-level monitor
-(@code{a68g --monitor}), so xwpe drives it directly -- there is no
-separate compile-and-link step.
+@table @strong
+@item ga68 (modern stropping)
+A native compiler, so xwpe debugs the compiled binary with @strong{gdb}
+-- the ordinary source-level debugger described above.  The one
+wrinkle: ga68's user entry point is @code{__algol68_main}, not
+@code{main}, so xwpe breaks there to stop at the start of your program
+(a plain @code{break main} would land in the C runtime).  Breakpoints,
+single-stepping, watches and the call stack all work as for C.
+
+@item a68g (classic stropping)
+An interpreter with a built-in, gdb-class source-level monitor
+(@code{a68g --monitor}), which xwpe drives directly -- there is no
+separate compile-and-link step.  Its commands differ from gdb's, as
+described next.
+@end table
 
 a68g differences from gdb:
 

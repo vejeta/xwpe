@@ -127,10 +127,10 @@ Ten languages are configured by default.
   Uses @code{-c} for syntax check.  Ctrl-F9 runs the script.
 @item COBOL @tab cobc @tab .cob .cbl @tab @code{file:line:} @tab
   GNU COBOL.  GNU style with @code{-g}.
-@item Algol 68 @tab a68g @tab .a68 .alg @tab @code{... in line N} @tab
-  Algol 68 Genie.  Make (F9) uses @code{--norun} to syntax-check; Ctrl-F9
-  runs the program.  a68g omits the file name, so the cursor jump is
-  best-effort on the line number; the full diagnostic shows in Messages.
+@item Algol 68 @tab ga68 / a68g @tab .a68 .alg @tab (by toolchain) @tab
+  Two source-incompatible toolchains; xwpe picks one per file from its
+  dialect (see below).  ga68 (GCC front-end) compiles a native binary;
+  a68g (Algol 68 Genie) interprets, with @code{--norun} for the F9 check.
 @end multitable
 
 @subsection Other GNU-compatible compilers
@@ -386,7 +386,77 @@ $@{FILE@}:$@{LINE@}:*
 xwpe runs @code{pdflatex -interaction=nonstopmode -file-line-error} so
 the @code{file:line:} prefix the pattern needs is always present.
 
-@subsubsection a68g (Algol 68)
+@subsubsection Algol 68: two dialects (ga68 and a68g)
+
+@cindex Algol 68
+@cindex ga68
+@cindex a68g
+@cindex stropping
+
+Algol 68 has two free toolchains, and they are @emph{source
+incompatible} -- a program written for one will not even parse with the
+other, because they use opposite @dfn{stropping} regimes (how reserved
+"bold" words and comments are written):
+
+@itemize @bullet
+@item
+@strong{ga68} -- the GNU Algol 68 front-end (part of GCC).  A native
+compiler: @key{F9} Make builds and links a real executable, which
+@kbd{Ctrl-F9} runs and gdb debugs.  Uses the @emph{modern} regime.
+@item
+@strong{a68g} -- Algol 68 Genie, an interpreter with a built-in monitor.
+@key{F9} Make runs @code{a68g --norun} as a syntax check; @kbd{Ctrl-F9}
+interprets the program.  Uses the @emph{classic} regime.
+@end itemize
+
+You do not choose between them: xwpe reads each @file{.a68}/@file{.alg}
+file's first lines, detects its dialect, and drives the matching
+toolchain for both compiling and debugging.  If only one of the two is
+installed, that one is always used.
+
+@noindent
+The same ``Hello'' program in each dialect (both ship as samples under
+@file{tests/inputs/}):
+
+@need 800
+@noindent
+@strong{Modern (ga68)} -- lowercase bold words, @code{@{ @}} comments:
+
+@verbatim
+{ hello_ga68.a68 -- GNU Algol 68 (ga68), modern stropping. }
+begin
+   puts ("Hello, GNU Algol 68!'n")
+end
+@end verbatim
+
+@need 800
+@noindent
+@strong{Classic (a68g)} -- UPPER bold words, @code{#@dots{}#} comments:
+
+@verbatim
+BEGIN
+   # hello.a68 -- Algol 68 Genie (a68g), classic stropping. #
+   print(("Hello, Algol 68!", new line))
+END
+@end verbatim
+
+@noindent
+At a glance:
+
+@multitable @columnfractions .24 .38 .38
+@headitem @tab ga68 (modern) @tab a68g (classic)
+@item Bold words @tab lowercase @code{begin}/@code{end}/@code{int}
+  @tab UPPER @code{BEGIN}/@code{END}/@code{INT}
+@item Comments @tab @code{@{ @dots{} @}} @tab @code{# @dots{} #} or @code{CO @dots{} CO}
+@item Print a line @tab @code{puts ("@dots{}'n")} @tab @code{print ((@dots{}, new line))}
+@item Toolchain @tab GCC Algol 68 front-end @tab Algol 68 Genie interpreter
+@item Make (@key{F9}) @tab compiles + links a binary @tab @code{a68g --norun} (check only)
+@item Debug @tab gdb on the binary; breaks at @code{__algol68_main}
+  @tab @code{a68g --monitor} on the source
+@item Diagnostics @tab GCC @code{file:line:column:} @tab @code{@dots{} in line N} (no file name)
+@end multitable
+
+@subsubsection a68g error format
 
 Algol 68 Genie reports type and syntax errors like:
 
@@ -406,8 +476,14 @@ Pattern (configured by default):
 @noindent
 a68g names no file and reports the enclosing clause's line, so the
 cursor jump is best-effort -- read the full diagnostic in Messages.
-Make (F9) runs @code{a68g --norun} to check the syntax; @kbd{Ctrl-F9}
-runs the program.
+
+@subsubsection ga68 error format
+
+ga68 is a GCC front-end, so it emits the standard driver diagnostics
+with a @code{file:line:column:} prefix -- the same format as gcc/g++ --
+and the error jump lands exactly on the offending token.  Note that
+ga68's user entry point is @code{__algol68_main}, not @code{main}; this
+matters when debugging (@pxref{Debugging}).
 
 @subsubsection Adding a new compiler
 
