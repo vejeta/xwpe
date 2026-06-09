@@ -11,6 +11,7 @@ AM_CFLAGS = -std=gnu17 \
   $(CAIRO_CFLAGS) \
   $(PANGO_CFLAGS) \
   $(VTERM_CFLAGS) \
+  $(JSONC_CFLAGS) \
   -DLIBRARY_DIR=\"$(pkglibdir)\" \
   -Wno-incompatible-pointer-types \
   -Wno-implicit-function-declaration \
@@ -51,7 +52,8 @@ we_SOURCES = \
   we_render_cairo.c \
   we_fdloop.c \
   we_trace.c \
-  we_vterm.c
+  we_vterm.c \
+  we_dap_proto.c
 
 we_LDADD = \
   $(NCURSESW_LIBS) \
@@ -60,6 +62,7 @@ we_LDADD = \
   $(CAIRO_LIBS) \
   $(PANGO_LIBS) \
   $(VTERM_LIBS) \
+  $(JSONC_LIBS) \
   $(GPM_LIBS) \
   $(UTIL_LIBS) \
   -lz
@@ -75,6 +78,7 @@ noinst_HEADERS = \
   we_fdloop.h \
   we_trace.h \
   we_vterm.h \
+  we_dap_proto.h \
   attrb.h \
   edit.h \
   keys.h \
@@ -155,7 +159,7 @@ metainfodir = $(datadir)/metainfo
 metainfo_DATA = io.codeberg.mendezr.xwpe.metainfo.xml
 
 # --- Unit tests ---
-check_PROGRAMS = test_checkheader test_syntax_def
+check_PROGRAMS = test_checkheader test_syntax_def test_dap
 
 test_checkheader_SOURCES = tests/test_checkheader.c
 test_checkheader_CFLAGS = -std=gnu17
@@ -165,7 +169,12 @@ test_syntax_def_SOURCES = tests/test_syntax_def.c
 test_syntax_def_CFLAGS = -std=gnu17
 test_syntax_def_LDFLAGS =
 
-TESTS = test_checkheader test_syntax_def
+# DAP transport unit test: links the pure transport core + json-c, no xwpe.
+test_dap_SOURCES = tests/test_dap.c we_dap_proto.c
+test_dap_CFLAGS = -std=gnu17 $(JSONC_CFLAGS)
+test_dap_LDADD = $(JSONC_LIBS)
+
+TESTS = test_checkheader test_syntax_def test_dap
 
 # --- Extra files for distribution ---
 EXTRA_DIST = \
@@ -191,6 +200,7 @@ EXTRA_DIST = \
   tests/run-tests.sh \
   tests/test_checkheader.c \
   tests/test_syntax_def.c \
+  tests/test_dap.c \
   tests/test_utf8_border.py \
   tests/test_scrollbar.py \
   tests/test_compile.py \

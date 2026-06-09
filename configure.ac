@@ -18,6 +18,10 @@ AC_CHECK_PROG([PANDOC], [pandoc], [pandoc], [:])
 PKG_CHECK_MODULES([NCURSESW], [ncursesw], [],
   [AC_MSG_ERROR([ncursesw is required. Install libncurses-dev or ncurses-devel.])])
 
+# --- json-c: wire format for the DAP debug client (Go/Rust/Scala) ---
+PKG_CHECK_MODULES([JSONC], [json-c], [],
+  [AC_MSG_ERROR([json-c is required for the DAP debug client. Install libjson-c-dev.])])
+
 # --- Optional: X11 ---
 AC_ARG_WITH([x],
   [AS_HELP_STRING([--without-x], [Disable X11 support])],
