@@ -217,9 +217,22 @@ all; the pyte tests are run from `tests/`.
 Wired: Go (Delve, reverse-TCP), Rust (gdb, stdio).  Natural follow-ups, all on
 the existing two transports:
 
-* **lldb-dap** for Rust/C/C++ — a descriptor row on the stdio path.
-* **C/C++** via gdb/lldb-dap — would need a `DEB_DAP` opt-in versus the legacy
-  gdb text backend for `.c`/`.cpp`.
+* **C/C++** via gdb/lldb-dap — a real new *language*.  Would need a `DEB_DAP`
+  opt-in versus the legacy gdb text backend for `.c`/`.cpp` (those extensions
+  already route to the text backend today).
+* **lldb-dap** — *optional, deferred until there's demand.*  On Linux it adds
+  nothing over gdb for Rust: gdb already debugs Rust well, is installed
+  everywhere, and rustc embeds the pretty-printer script gdb auto-loads.  It is
+  a *substitute* for what we have, not an addition.  Keep it on the radar for:
+  - **lldb-only environments** — a user who has LLVM/lldb but not gdb, or
+    prefers it;
+  - **macOS / non-Linux** — lldb is the native debugger there and gdb may be
+    absent or worse (relevant if xwpe is ever used on macOS, e.g. by the
+    maintainer);
+  - it is the same adapter for Swift/Zig too.
+  Cost when wanted: one `DAP_LANGS` row — `{ ".rs", {"lldb-dap"}, NULL, 1, 1 }`
+  (or a config toggle to pick the adapter) on the stdio transport that already
+  exists.  No new plumbing.
 * **Scala** via Metals — heavier: Metals is an LSP server that exposes DAP
   through a build server (Bloop/sbt), so it needs a discovery/handshake layer
   on top of the TCP transport, not just a descriptor row.
