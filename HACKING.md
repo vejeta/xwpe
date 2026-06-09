@@ -442,10 +442,17 @@ Unit test: `tests/test_checkheader.c` (10 cases), runs via `make check`.
 ## Debugger backend architecture
 
 Debugger type is `e_deb_type`: 0=gdb, 1=sdb, 2=dbx, 3=xdb, 4=jdb,
-5=pdb. Each backend uses the same pipe infrastructure but differs in
-prompt detection, command syntax, and output parsing. In X11 mode,
-the debugger runs via named pipes (`npipe[0-4]`). In terminal mode,
-it uses regular pipes (`rfildes/wfildes/efildes`).
+5=pdb, 6=a68g, 7=DAP. The first seven are text backends: each uses the
+same pipe infrastructure but differs in prompt detection, command
+syntax, and output parsing. In X11 mode, the debugger runs via named
+pipes (`npipe[0-4]`); in terminal mode, regular pipes
+(`rfildes/wfildes/efildes`).
+
+`DEB_DAP` (7) is different in kind: a Debug Adapter Protocol client that
+gives source-level debugging for any language with a DAP adapter (Go via
+Delve, Rust via gdb, ...). It is its own subsystem -- engine + transports
++ a per-language descriptor -- documented separately in **HACKING-DAP.md**.
+This section covers only the text backends.
 
 ### Program output via pty (all modes)
 
