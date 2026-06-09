@@ -5426,6 +5426,28 @@ static int e_lsp_is_ident(int c)
 static void e_lsp_replace_buffer(FENSTER *f, const char *newtext);
 static void e_lsp_word_at_cursor(FENSTER *f, char *out, size_t osz);
 
+/* Copy `src` into `dst` (capacity `sz`), clipping past `maxw` columns with an
+   ellipsis so an over-long row never spills past the pick dialog's border
+   (workspace-symbol results carry file paths and can be very long). */
+static void e_lsp_fit_row(char *dst, size_t sz, const char *src, int maxw)
+{
+ if ((int)strlen(src) <= maxw)
+  snprintf(dst, sz, "%s", src);
+ else
+  snprintf(dst, sz, "%.*s...", maxw - 3, src);
+}
+
+/* Compose the pick dialog's window title into `dst`: the action title, plus a
+   "(first N of M)" note when the list was capped, so nothing is hidden silently. */
+static void e_lsp_pick_title(char *dst, size_t sz, const char *title,
+                             int vis, int n)
+{
+ if (n > vis)
+  snprintf(dst, sz, "%s (first %d of %d)", title, vis, n);
+ else
+  snprintf(dst, sz, "%s", title);
+}
+
 /* Show a single-column pick list (the dialog radio widget: arrows navigate,
    Enter selects, Esc cancels) of `n` labels under `title`, and return the chosen
    index or -1 if cancelled.  At most 16 rows are shown; when the list is longer
@@ -5436,18 +5458,18 @@ static int e_lsp_pick(FENSTER *f, const char *title, const char *const *labels,
 {
  W_OPTSTR *o;
  char name[80];
+ static char rows[16][64];     /* truncated rows, persist through e_opt_kst */
+ const int maxw = 56;          /* longest row we render; longer is ...-clipped */
  int i, sel = -1, vis, mxlen = 0, titlen, w;
 
  vis = n < 16 ? n : 16;
- if (n > vis)
-  snprintf(name, sizeof(name), "%s (first %d of %d)", title, vis, n);
- else
-  snprintf(name, sizeof(name), "%s", title);
+ e_lsp_pick_title(name, sizeof(name), title, vis, n);
  for (i = 0; i < vis; i++)
-  if ((int)strlen(labels[i]) > mxlen)
-   mxlen = strlen(labels[i]);
- if (mxlen > 52)
-  mxlen = 52;
+ {
+  e_lsp_fit_row(rows[i], sizeof(rows[i]), labels[i], maxw);
+  if ((int)strlen(rows[i]) > mxlen)
+   mxlen = strlen(rows[i]);
+ }
  /* Width must hold BOTH the widest row (label + the "( ) " radio prefix) AND
     the title drawn in the top border -- otherwise a longer title is clipped
     ("Code lenses" -> "Code ...").  Take the larger. */
@@ -5471,7 +5493,7 @@ static int e_lsp_pick(FENSTER *f, const char *title, const char *const *labels,
     range (Alt-keys/cursor keys are < 340) so they never collide with a real
     keypress (navigation is by arrows; these ids are focus handles only). */
  for (i = 0; i < vis; i++)
-  e_add_pswstr(0, 3, 1 + i, -1, 10001 + i, 0, (char *)labels[i], o);
+  e_add_pswstr(0, 3, 1 + i, -1, 10001 + i, 0, rows[i], o);
  e_add_bttstr((o->xe - o->xa - 4) / 2, o->ye - o->ya - 1, 0, AltO, "Ok", NULL, o);
  if (e_opt_kst(o) != WPE_ESC)
   sel = o->pstr[0]->num;
