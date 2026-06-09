@@ -17,6 +17,7 @@
 > | `Alt-Q H` | hover (type/docs) | `e_lsp_hover` |
 > | `Alt-Q C` | completion (popup, insert) | `e_lsp_completion` |
 > | `Alt-Q R` | references (list in Messages) | `e_lsp_references` |
+> | `Alt-Q L` | document highlight (mark uses in this file) | `e_lsp_document_highlight` |
 > | `Alt-Q S` | signature help | `e_lsp_signature_help` |
 > | `Alt-Q O` | outline (popup -> jump) | `e_lsp_document_symbols` |
 > | `Alt-Q W` | workspace symbol search (prompt, popup -> jump) | `e_lsp_workspace_symbols` |

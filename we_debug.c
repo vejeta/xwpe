@@ -5051,6 +5051,12 @@ static int             g_diag_nactive = 0;
 static e_lsp_diag_mark g_diag_pending[LSP_MAX_DIAG];  /* filling this batch      */
 static int             g_diag_npending = 0;
 
+/* document-highlight spans: occurrences of the symbol under the cursor, marked
+   on demand (Alt-Q L) in the found-word colour -- separate from diagnostics so
+   the two can coexist (a highlighted name that also has a warning). */
+static e_lsp_diag_mark g_hl_active[LSP_MAX_DIAG];
+static int             g_hl_nactive = 0;
+
 extern int col_num;                        /* 0 = monochrome ncurses (we_unix.c) */
 
 /* The cell attribute for a diagnostic of `severity`, correct for the active
@@ -5075,42 +5081,49 @@ static const char *e_lsp_path_of(FENSTER *f, char *buf, size_t sz)
  return(buf);
 }
 
-/* Called once per line by the renderer: are there diagnostic marks to draw for
-   the file in `f`?  Keeps the per-character query (below) free of path work. */
-int e_lsp_diag_active_for(FENSTER *f)
+/* Called once per line by the renderer: are there any LSP decorations (problem
+   marks or highlight spans) to draw for the file in `f`?  Keeps the
+   per-character query (below) free of path work. */
+int e_lsp_decor_active_for(FENSTER *f)
 {
  char path[1200];
- if (!g_lsp || g_diag_nactive == 0)
+ if (!g_lsp || (g_diag_nactive == 0 && g_hl_nactive == 0))
   return(0);
  if (!e_lsp_path_of(f, path, sizeof(path)))
   return(0);
  return(strcmp(path, g_lsp_file) == 0);
 }
 
-/* Per-character: if (y,x) falls in a diagnostic range, return its colour, else
-   the caller's base colour.  Errors win over warnings on overlap. */
-int e_lsp_diag_attr_at(SCHIRM *s, int y, int x, int base)
+/* Per-character: the colour for cell (y,x).  A diagnostic range wins (error over
+   warning); else a document-highlight span paints the found-word colour; else
+   the caller's base colour. */
+int e_lsp_decor_attr_at(SCHIRM *s, int y, int x, int base)
 {
- int i, hit = -1;
+ int i, warn = -1;
  for (i = 0; i < g_diag_nactive; i++)
   if (g_diag_active[i].line == y &&
       x >= g_diag_active[i].c0 && x < g_diag_active[i].c1)
   {
    if (g_diag_active[i].sev == 1)        /* error: take it immediately */
     return(e_lsp_diag_color(s, 1));
-   if (hit < 0)
-    hit = i;                             /* remember a warning, keep scanning */
+   if (warn < 0)
+    warn = i;                            /* remember a warning, keep scanning */
   }
- if (hit >= 0)
-  return(e_lsp_diag_color(s, g_diag_active[hit].sev));
+ if (warn >= 0)
+  return(e_lsp_diag_color(s, g_diag_active[warn].sev));
+ for (i = 0; i < g_hl_nactive; i++)
+  if (g_hl_active[i].line == y &&
+      x >= g_hl_active[i].c0 && x < g_hl_active[i].c1)
+   return(s->fb->ek.fb);                 /* found-word colour */
  return(base);
 }
 
-/* Drop all marks (server closing, or switching the open file). */
+/* Drop all decorations (server closing, or switching the open file). */
 static void e_lsp_diag_clear(void)
 {
  g_diag_nactive = 0;
  g_diag_npending = 0;
+ g_hl_nactive = 0;
 }
 
 /* The LSP languageId for this window's file, or NULL if none is wired. */
@@ -5515,6 +5528,46 @@ static int e_lsp_ui_references(FENSTER *f)
  return(0);
 }
 
+/* AltQ L -- highlight every occurrence of the symbol under the cursor in this
+   file (the found-word colour, like a search highlight that follows meaning,
+   not text).  Pressing it off any identifier clears the highlight. */
+static int e_lsp_ui_highlight(FENSTER *f)
+{
+ BUFFER *b = f->b;
+ e_lsp_location locs[256];
+ char word[256];
+ int n, i, wlen;
+
+ e_lsp_word_at_cursor(f, word, sizeof(word));
+ if (!word[0])                         /* not on an identifier: clear marks */
+ {
+  g_hl_nactive = 0;
+  e_schirm(f, 1);
+  e_cursor(f, 0);
+  return(0);
+ }
+ if (e_lsp_ensure(f) < 0)
+  return(-1);
+ e_lsp_sync(f);
+ n = e_lsp_document_highlight(g_lsp, g_lsp_file, b->b.y, b->b.x, locs, 256);
+ if (n <= 0)
+ {  e_error("No occurrences.", 0, f->fb);  return(0);  }
+ /* every hit is the same symbol, so they share the identifier's length */
+ wlen = strlen(word);
+ g_hl_nactive = 0;
+ for (i = 0; i < n && g_hl_nactive < LSP_MAX_DIAG; i++)
+ {
+  g_hl_active[g_hl_nactive].line = locs[i].line;
+  g_hl_active[g_hl_nactive].c0 = locs[i].character;
+  g_hl_active[g_hl_nactive].c1 = locs[i].character + wlen;
+  g_hl_active[g_hl_nactive].sev = 0;
+  g_hl_nactive++;
+ }
+ e_schirm(f, 1);
+ e_cursor(f, 0);
+ return(0);
+}
+
 /* AltQ O -- the file outline: pick a symbol from a popup and jump to it. */
 static int e_lsp_ui_outline(FENSTER *f)
 {
@@ -5788,6 +5841,8 @@ int e_lsp_ui_inp(FENSTER *f)
    return(e_lsp_ui_complete(f));
   case 'r': case ('r' - 'a' + 1):
    return(e_lsp_ui_references(f));
+  case 'l': case ('l' - 'a' + 1):
+   return(e_lsp_ui_highlight(f));
   case 's': case ('s' - 'a' + 1):
    return(e_lsp_ui_signature(f));
   case 'w': case ('w' - 'a' + 1):

@@ -144,6 +144,13 @@ int e_lsp_completion(e_lsp_session *s, const char *path, int line, int character
 int e_lsp_references(e_lsp_session *s, const char *path, int line, int character,
                      e_lsp_location *locs, int max);
 
+/* textDocument/documentHighlight: every occurrence of the symbol under the
+ * cursor IN THIS FILE (read/write/text).  Fills up to `max` start locations
+ * (engine-owned, all the current file); returns the count (>=0) or -1.  Lighter
+ * than references -- single file, for "highlight all uses" as you rest on a name. */
+int e_lsp_document_highlight(e_lsp_session *s, const char *path, int line,
+                             int character, e_lsp_location *locs, int max);
+
 /* textDocument/documentSymbol: the file's outline (objects, defs, vals, ...),
  * flattened depth-first.  Fills up to `max` symbols (engine-owned names);
  * returns the count (>=0) or -1. */

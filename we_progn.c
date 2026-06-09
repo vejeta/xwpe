@@ -466,12 +466,13 @@ void e_pr_c_line(int y, FENSTER *f)
  int n_bg = -1, n_nd = strlen(f->c_st->end_comment)-1;
 #ifdef DEBUGGER
  int fsw = 0;
- /* Inline LSP diagnostic marks: recolor cells inside a problem's range.  The
-    per-line gate keeps the per-character query (e_lsp_diag_attr_at) free of any
+ /* Inline LSP decorations: recolor cells inside a problem's range (errors red,
+    warnings amber) or a document-highlight span (found-word colour).  The
+    per-line gate keeps the per-character query (e_lsp_decor_attr_at) free of any
     path work; both are no-ops unless a language server is attached to f. */
- extern int e_lsp_diag_active_for(FENSTER *f);
- extern int e_lsp_diag_attr_at(SCHIRM *s, int y, int x, int base);
- int diag_on = e_lsp_diag_active_for(f);
+ extern int e_lsp_decor_active_for(FENSTER *f);
+ extern int e_lsp_decor_attr_at(SCHIRM *s, int y, int x, int base);
+ int diag_on = e_lsp_decor_active_for(f);
 #endif
 
  for (i = j = 0; j < s->c.x && i < b->bf[y].len; j++, i++)
@@ -525,7 +526,7 @@ void e_pr_c_line(int y, FENSTER *f)
    frb = s->fb->ez.fb;
 #ifdef DEBUGGER
   if (diag_on)
-   frb = e_lsp_diag_attr_at(s, y, i, frb);  /* recolor LSP problem cells */
+   frb = e_lsp_decor_attr_at(s, y, i, frb);  /* recolor LSP problem/highlight cells */
 #endif
   if (*(b->bf[y].s + i) == WPE_TAB)
    for (k = f->ed->tabn - j % f->ed->tabn;

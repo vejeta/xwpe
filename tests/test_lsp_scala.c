@@ -214,6 +214,15 @@ int main(void)
    }
  }
 
+ /* document highlight on the `f` use (line 5, char 6) -> its occurrences in
+    THIS file (declaration + uses); same symbol, so >= 2. */
+ {
+  e_lsp_location hl[64];
+  int nh = e_lsp_document_highlight(s, scala, 5, 6, hl, 64);
+  printf("  DOCUMENT-HIGHLIGHT f: %d\n", nh);
+  if (nh < 2) { rc = fail("document highlight on f should find the decl + uses"); goto close; }
+ }
+
  /* diagnostics carry a RANGE: push a buffer with a type error and confirm the
     server reports it with a non-empty, single-line span (what the inline marks
     recolor).  Reuses this session -- no second server start. */
@@ -239,8 +248,8 @@ int main(void)
  }
 
  printf("PASS: LSP engine vs real Metals (hover/definition/implementation/"
-        "type-definition/completion/references/outline/signature/rename/format/"
-        "workspace-symbols/code-actions)\n");
+        "type-definition/completion/references/document-highlight/outline/"
+        "signature/rename/format/workspace-symbols/code-actions/diagnostics)\n");
 
 close:
  e_lsp_close(s);

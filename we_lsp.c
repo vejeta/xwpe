@@ -852,6 +852,48 @@ int e_lsp_references(e_lsp_session *s, const char *path, int line, int character
  return out;
 }
 
+int e_lsp_document_highlight(e_lsp_session *s, const char *path, int line,
+                             int character, e_lsp_location *locs, int max)
+{
+ char abspath[PATH_MAX];
+ struct json_object *resp, *result;
+ int id, i, n, out = 0;
+
+ if (!s)
+  return -1;
+ lsp_free_locs(s);
+ if (!realpath(path, abspath))
+  snprintf(abspath, sizeof(abspath), "%s", path);
+ id = ++s->id;
+ lsp_send(s, id, "textDocument/documentHighlight",
+          lsp_text_pos(s, abspath, line, character));
+ resp = lsp_pump(s, id, NULL, LSP_TMO_REQ);
+ if (!resp)
+  return -1;
+ /* DocumentHighlight[]: each is { range, kind } in THIS document -- no uri, so
+    every hit shares abspath. */
+ result = obj_obj(resp, "result");
+ n = (result && json_object_is_type(result, json_type_array))
+     ? json_object_array_length(result) : 0;
+ for (i = 0; i < n && out < max &&
+             out < (int)(sizeof(s->locs)/sizeof(s->locs[0])); i++)
+ {
+  struct json_object *h = json_object_array_get_idx(result, i);
+  struct json_object *rng = obj_obj(h, "range");
+  struct json_object *st = rng ? obj_obj(rng, "start") : NULL;
+  if (!st)
+   continue;
+  s->locs[s->nlocs].path = strdup(abspath);
+  s->locs[s->nlocs].line = obj_int(st, "line", 0);
+  s->locs[s->nlocs].character = obj_int(st, "character", 0);
+  locs[out] = s->locs[s->nlocs];
+  s->nlocs++;
+  out++;
+ }
+ json_object_put(resp);
+ return out;
+}
+
 /* Flatten a DocumentSymbol[]/SymbolInformation[] array depth-first into syms. */
 static void lsp_collect_symbols(e_lsp_session *s, struct json_object *arr,
                                 e_lsp_symbol *syms, int max, int *out)

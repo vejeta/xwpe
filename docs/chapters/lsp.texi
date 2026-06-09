@@ -53,6 +53,10 @@ replaces the partial word), or @key{ESC} to cancel.
 @item Alt-Q R
 References: list every use of the symbol under the cursor (including its
 declaration) in the Messages window.
+@item Alt-Q L
+Highlight: mark every occurrence of the symbol under the cursor @emph{in the
+current file} (in the found-word colour) -- a search highlight that follows
+meaning, not text.  Press it off any identifier to clear the highlight.
 @item Alt-Q O
 Outline: list the file's symbols (objects, defs, vals, ...) in a popup; pick
 one with the arrows and @key{RET} to jump to it.
