@@ -494,6 +494,10 @@ int e_eingabe(ECNT *e)
 #ifdef DEBUGGER
   if (e_debug_console_input(c, f))
    continue;
+  {
+   extern void e_lsp_on_edit(FENSTER *f, int c);  /* in we_debug.c */
+   e_lsp_on_edit(f, c);          /* live LSP diagnostics + didChange */
+  }
 #endif
   if ((c > 31 || (c == WPE_TAB && !(f->flg & 1)) ||
     (f->ins > 1 && f->ins != 8)) && c < 255)

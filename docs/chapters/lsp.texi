@@ -62,6 +62,12 @@ Scala).  A @file{.scalafmt.conf} in the project enables it.
 After a rename or format, the buffer is rebuilt with the result and marked
 modified; save (@key{F2}) to keep the changes.
 
+@cindex live diagnostics
+Once the server is running, every edit is sent to it as you type (no save
+needed), and a @samp{LSP: N error(s), M warning(s)} status is updated live in
+the Messages window whenever the totals change.  @kbd{Alt-Q E} still lists the
+full set on demand.
+
 The server starts lazily on the first @kbd{Alt-Q} action and is reused for the
 rest of the session.  The first start is slow: it boots a JVM language server
 and imports the build (faster afterwards, once caches are warm).  Diagnostics

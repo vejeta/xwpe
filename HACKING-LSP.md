@@ -1,18 +1,32 @@
 # HACKING-LSP — the planned Language Server Protocol client
 
-> **Status: SHIPPED for Scala/Metals -- all four headline surfaces.** The
-> `we_lsp.c` engine (validated vs real Metals) plus the editor bridge for
-> **diagnostics, go-to-definition, hover and completion** (Alt-Q prefix).
-> Companion to `HACKING-DAP.md`.  Remaining polish (separate increments):
-> didChange-driven *live* diagnostics as you type, and more servers (clangd,
-> pyright, rust-analyzer, gopls) as descriptor rows.
+> **Status: SHIPPED for Scala/Metals -- nine actions + live diagnostics.** The
+> `we_lsp.c` engine (validated vs real Metals) plus the editor bridge on the
+> `Alt-Q` prefix.  Companion to `HACKING-DAP.md`.  Remaining: more servers
+> (clangd, pyright, rust-analyzer, gopls) as descriptor rows.
 >
 > Keys (editor bridge, `e_lsp_ui_inp` in we_debug.c, dispatched from
-> `e_prog_switch` on Alt-Q): `Alt-Q E` start server + diagnostics, `Alt-Q D`
-> go-to-definition, `Alt-Q H` hover, `Alt-Q C` completion (popup = the dialog
-> radio list; replaces the typed prefix with the chosen candidate).  Tests:
-> `tests/test_lsp_scala.c` (engine vs real Metals), `tests/test_scala_lsp.py`
-> and `tests/test_scala_lsp_complete.py` (the bridge through wpe).
+> `e_prog_switch` on Alt-Q):
+>
+> | key | action | engine call |
+> |-----|--------|-------------|
+> | `Alt-Q E` | diagnostics (start server, list in Messages) | `e_lsp_wait_diagnostics` |
+> | `Alt-Q D` | go-to-definition | `e_lsp_definition` |
+> | `Alt-Q H` | hover (type/docs) | `e_lsp_hover` |
+> | `Alt-Q C` | completion (popup, insert) | `e_lsp_completion` |
+> | `Alt-Q R` | references (list in Messages) | `e_lsp_references` |
+> | `Alt-Q S` | signature help | `e_lsp_signature_help` |
+> | `Alt-Q O` | outline (popup -> jump) | `e_lsp_document_symbols` |
+> | `Alt-Q N` | rename | `e_lsp_rename` (+ `e_lsp_replace_buffer`) |
+> | `Alt-Q F` | format | `e_lsp_format` (+ `e_lsp_replace_buffer`) |
+>
+> Every editor change is pushed to the server (`e_lsp_did_change`, debounced on
+> newline) and `e_lsp_poll` drains diagnostics non-blocking on each keystroke,
+> so errors update live in Messages (the `on_diagnostics_summary` count) without
+> an explicit save.  Rename/format apply server `TextEdit`s via `lsp_apply_edits`
+> (pure, offset-based) then rebuild the buffer with `e_lsp_replace_buffer`.
+> Tests: `tests/test_lsp_scala.c` (engine vs real Metals: every action incl.
+> rename/format), `tests/test_scala_lsp*.py` (the bridge through wpe).
 
 ## Validated flow (2026-06-09, real Metals 1.6.7)
 

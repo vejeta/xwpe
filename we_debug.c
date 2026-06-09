@@ -5032,6 +5032,10 @@ int e_test_command(char *str)
 static e_lsp_session *g_lsp = NULL;        /* the live server session, or NULL */
 static char           g_lsp_file[1024] = "";  /* full path g_lsp is opened for */
 static FENSTER       *g_lsp_fenster = NULL;
+static int            g_lsp_quiet = 0;     /* suppress per-diagnostic Messages
+                                              output (live polls show a summary) */
+static int            g_lsp_last_err = -1; /* last reported diagnostic totals,  */
+static int            g_lsp_last_warn = -1;/* so the live status is not spammed  */
 
 /* The LSP languageId for this window's file, or NULL if none is wired. */
 static const char *e_lsp_lang_for(FENSTER *f)
@@ -5054,10 +5058,32 @@ static void e_lsp_on_diag(const char *path, int line, int ch, int sev,
  const char *kind = sev == 1 ? "error" : sev == 2 ? "warning"
                   : sev == 3 ? "info"  : "hint";
  (void)path; (void)ud;
+ if (g_lsp_quiet)                   /* live poll: only the summary line shows */
+  return;
  snprintf(buf, sizeof(buf), "%s:%d:%d: %s: %s",
           e_d_dap_basename(g_lsp_file), line + 1, ch + 1, kind, msg ? msg : "");
  if (g_lsp_fenster)
   e_d_p_message(buf, g_lsp_fenster, 1);
+}
+
+/* Live status: one non-spammy line per change in the error/warning totals. */
+static void e_lsp_on_diag_summary(const char *path, int errors, int warnings,
+                                  void *ud)
+{
+ char buf[120];
+ (void)path; (void)ud;
+ if (errors == g_lsp_last_err && warnings == g_lsp_last_warn)
+  return;                           /* unchanged -- do not repaint */
+ g_lsp_last_err = errors;
+ g_lsp_last_warn = warnings;
+ if (!g_lsp_fenster)
+  return;
+ if (errors == 0 && warnings == 0)
+  snprintf(buf, sizeof(buf), "LSP: no problems.");
+ else
+  snprintf(buf, sizeof(buf), "LSP: %d error(s), %d warning(s).", errors, warnings);
+ e_d_p_message(buf, g_lsp_fenster, 0);   /* sw=0: do NOT steal focus from the
+                                            editor -- the user keeps typing */
 }
 
 /* Serialize the editor buffer to a malloc'd NUL-terminated string (one '\n'
@@ -5139,7 +5165,9 @@ static int e_lsp_ensure(FENSTER *f)
   { /* non-fatal: Metals can still import the build */ }
 
  host.on_diagnostic = e_lsp_on_diag;
+ host.on_diagnostics_summary = e_lsp_on_diag_summary;
  host.ud = NULL;
+ g_lsp_last_err = g_lsp_last_warn = -1;   /* fresh session: force first report */
  g_lsp = e_lsp_open(argv, dir, lang, &host);
  if (!g_lsp)
  {
@@ -5477,6 +5505,26 @@ static int e_lsp_ui_rename(FENSTER *f)
  free(text);
  free(renamed);
  return(0);
+}
+
+/* Called from the editor loop after a keystroke.  Cheap: drains any diagnostics
+   the server already sent (non-blocking) and, when a line is finished, pushes
+   the buffer so the server recompiles -- live "as you type" diagnostics without
+   blocking, and no save needed.  Only acts on the file the server is open for. */
+void e_lsp_on_edit(FENSTER *f, int c)
+{
+ char path[1200];
+
+ if (!g_lsp || !f || !f->datnam)
+  return;
+ snprintf(path, sizeof(path), "%s%s", f->dirct ? f->dirct : "./", f->datnam);
+ if (strcmp(path, g_lsp_file) != 0)
+  return;
+ g_lsp_quiet = 1;                   /* show only the summary, not each line */
+ e_lsp_poll(g_lsp);
+ if (c == WPE_CR)                   /* a line was completed -> recompile */
+  e_lsp_sync(f);
+ g_lsp_quiet = 0;
 }
 
 /* Disconnect the language server (called on editor exit). */

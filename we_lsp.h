@@ -24,6 +24,10 @@
 typedef struct {
  void (*on_diagnostic)(const char *path, int line, int character,
                        int severity, const char *message, void *ud);
+ /* Called once per publishDiagnostics batch with the error/warning totals --
+    for a non-spammy live "N errors, M warnings" status as you type. */
+ void (*on_diagnostics_summary)(const char *path, int errors, int warnings,
+                                void *ud);
  void *ud;
 } e_lsp_host;
 
@@ -73,6 +77,12 @@ int e_lsp_did_change(e_lsp_session *s, const char *path, const char *text);
  * delivering every diagnostic through host->on_diagnostic.  Returns 1 if the
  * file's diagnostics arrived, 0 on timeout/EOF. */
 int e_lsp_wait_diagnostics(e_lsp_session *s, const char *path, int timeout_ms);
+
+/* Non-blocking: dispatch any messages already waiting from the server
+ * (diagnostics -> host, server requests answered) and return immediately.
+ * Call it on each keystroke so live diagnostics surface without blocking
+ * typing.  Returns the number of messages handled. */
+int e_lsp_poll(e_lsp_session *s);
 
 /* textDocument/hover at (line,character): returns a malloc'd plain-text string
  * (markdown fences stripped) the caller frees, or NULL. */

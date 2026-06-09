@@ -194,11 +194,9 @@ static void lsp_dispatch_diagnostics(e_lsp_session *s, struct json_object *param
 {
  const char *uri = obj_str(params, "uri");
  struct json_object *diags = obj_obj(params, "diagnostics");
- int i, n;
+ int i, n, errors = 0, warnings = 0;
 
  if (!uri || !diags || !json_object_is_type(diags, json_type_array))
-  return;
- if (!s->host.on_diagnostic)
   return;
  n = json_object_array_length(diags);
  for (i = 0; i < n; i++)
@@ -206,11 +204,16 @@ static void lsp_dispatch_diagnostics(e_lsp_session *s, struct json_object *param
   struct json_object *d = json_object_array_get_idx(diags, i);
   struct json_object *rng = obj_obj(d, "range");
   struct json_object *st = rng ? obj_obj(rng, "start") : NULL;
-  s->host.on_diagnostic(uri_to_path(uri), obj_int(st, "line", 0),
-                        obj_int(st, "character", 0),
-                        obj_int(d, "severity", 1), obj_str(d, "message"),
-                        s->host.ud);
+  int sev = obj_int(d, "severity", 1);
+  if (sev == 1) errors++;
+  else if (sev == 2) warnings++;
+  if (s->host.on_diagnostic)
+   s->host.on_diagnostic(uri_to_path(uri), obj_int(st, "line", 0),
+                         obj_int(st, "character", 0), sev,
+                         obj_str(d, "message"), s->host.ud);
  }
+ if (s->host.on_diagnostics_summary)
+  s->host.on_diagnostics_summary(uri_to_path(uri), errors, warnings, s->host.ud);
 }
 
 /* Answer a server->client request so the server never blocks.  We advertise no
@@ -486,6 +489,51 @@ int e_lsp_wait_diagnostics(e_lsp_session *s, const char *path, int timeout_ms)
  if (r)
  {  json_object_put(r);  return 1;  }
  return 0;
+}
+
+int e_lsp_poll(e_lsp_session *s)
+{
+ struct pollfd p;
+ int handled = 0, guard = 0;
+
+ if (!s || s->out_fd < 0)
+  return 0;
+ /* read whatever is immediately available, without blocking */
+ while (guard++ < 64)
+ {
+  char buf[8192];
+  ssize_t n;
+  p.fd = s->out_fd;
+  p.events = POLLIN;
+  if (poll(&p, 1, 0) <= 0)
+   break;
+  n = read(s->out_fd, buf, sizeof(buf));
+  if (n <= 0)
+   break;
+  e_dap_reader_push(&s->rd, buf, (size_t)n);
+ }
+ /* dispatch every complete message now buffered (diagnostics, server requests) */
+ for (;;)
+ {
+  int err = 0;
+  struct json_object *m = e_dap_reader_pop(&s->rd, &err);
+  struct json_object *id, *method;
+  if (!m)
+   break;
+  handled++;
+  id = obj_obj(m, "id");
+  method = obj_obj(m, "method");
+  if (id && method)
+   lsp_answer_request(s, m);
+  else if (method)
+  {
+   const char *meth = json_object_get_string(method);
+   if (meth && !strcmp(meth, "textDocument/publishDiagnostics"))
+    lsp_dispatch_diagnostics(s, obj_obj(m, "params"));
+  }
+  json_object_put(m);
+ }
+ return handled;
 }
 
 /* Strip a leading/trailing ```lang fenced block and collapse to one line. */

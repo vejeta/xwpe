@@ -325,6 +325,10 @@ Changes
 * Rename/format apply the server's edits back into the buffer (the edit
   application is unit-tested vs real Metals; the buffer rebuild has its own
   editor test).
+* Live diagnostics: every edit is pushed to the server (didChange, debounced on
+  newline) and diagnostics are drained non-blocking on each keystroke, so a
+  "LSP: N error(s), M warning(s)" status updates as you type -- no save, no
+  focus stolen from the editor.
 * The engine (we_lsp.c) reuses the DAP/BSP JSON-RPC + Content-Length framing,
   so no new dependency; nothing Scala ships in xwpe (Metals is an external
   coursier tool: cs install metals).  Verified by tests/test_lsp_scala.c (engine
