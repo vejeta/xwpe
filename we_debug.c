@@ -2886,16 +2886,43 @@ static const char *e_d_dap_basename(const char *path)
  return(slash ? slash + 1 : path);
 }
 
-/* Does this editor window hold a Go source file (the one DAP language wired so
-   far)?  Used to route Ctrl-G R away from the gdb/compiler pipeline. */
-static int e_d_dap_window_is_go(FENSTER *f)
+/* One DAP-debuggable language: which file extension, which adapter to spawn,
+   how it connects, and whether xwpe must compile the source first.  Adding a
+   language is a row here, never new plumbing. */
+typedef struct {
+ const char  *ext;          /* source extension, e.g. ".go" / ".rs" */
+ char *const *argv;         /* adapter command line                 */
+ const char  *entry_func;   /* stop-at-entry function, or NULL      */
+ int          stdio;        /* 0 = reverse-TCP (dlv), 1 = stdio (gdb/lldb) */
+ int          compile;      /* 0 = adapter builds (Go), 1 = compile first (Rust) */
+} e_d_dap_lang;
+
+static char *const DAP_ARGV_GO[]   = { "dlv", "dap", NULL };
+static char *const DAP_ARGV_RUST[] = { "gdb", "--interpreter=dap", NULL };
+
+static const e_d_dap_lang DAP_LANGS[] = {
+ { ".go", DAP_ARGV_GO,   "main.main", 0, 0 },
+ { ".rs", DAP_ARGV_RUST, NULL,        1, 1 },
+};
+#define DAP_NLANGS ((int)(sizeof(DAP_LANGS) / sizeof(DAP_LANGS[0])))
+
+/* The DAP language descriptor for this editor window, or NULL if its file is
+   not a DAP-debugged language.  Used to route Ctrl-G R away from the gdb/text
+   pipeline and to pick the adapter/transport/compile policy. */
+static const e_d_dap_lang *e_d_dap_lang_for(FENSTER *f)
 {
- int n;
+ int i, n;
 
  if (!f || !f->datnam || !DTMD_ISTEXT(f->dtmd))
-  return(0);
+  return(NULL);
  n = strlen(f->datnam);
- return(n > 3 && !strcmp(f->datnam + n - 3, ".go"));
+ for (i = 0; i < DAP_NLANGS; i++)
+ {
+  int el = strlen(DAP_LANGS[i].ext);
+  if (n > el && !strcmp(f->datnam + n - el, DAP_LANGS[i].ext))
+   return(&DAP_LANGS[i]);
+ }
+ return(NULL);
 }
 
 /* on_stopped: just RECORD where the program halted.  The actual cursor jump +
@@ -2960,21 +2987,74 @@ static void e_d_dap_quit(FENSTER *f)
  g_dap_stop_line = -1;
 }
 
-/* Open the adapter, install the user's pre-set breakpoints, and run to the
-   entry stop (main.main for Go).  Leaves e_d_swtch=3 (running, stopped at a
-   line) and e_deb_type=DEB_DAP so the other hooks route here.  Returns 0 on
-   success, -1 on failure (with an error popup already shown). */
+/* Compile-first DAP language (Rust): build the source to a debuggable binary
+   with the configured compiler.  dlv builds Go itself; here xwpe drives the
+   one-shot compile (compiler + flags from the file's Options entry) so the
+   adapter (gdb) gets a ready binary.  On success *binary is the executable; on
+   failure the compiler diagnostics are shown in Messages and -1 returned. */
+static int e_d_dap_compile(FENSTER *f, char *binary, size_t binsz)
+{
+ char src[700], stem[400], errf[600], cmd[2200], line[512];
+ const char *cc, *flags;
+ FILE *fp;
+
+ e_check_c_file_w(f);                 /* set e_s_prog to this file's compiler */
+ cc = (e_s_prog.compiler && e_s_prog.compiler[0]) ? e_s_prog.compiler : "rustc";
+ flags = (e_s_prog.comp_str && e_s_prog.comp_str[0]) ? e_s_prog.comp_str : "-g";
+ if (e_test_command(cc))
+ {
+  char m[160];
+  sprintf(m, "Compiler '%s' not in PATH.", cc);
+  e_error(m, 0, f->fb);
+  return(-1);
+ }
+ snprintf(stem, sizeof(stem), "%s", f->datnam);
+ WpeStringCutChar(stem, '.');
+ snprintf(binary, binsz, "%s%s.dbg", f->dirct, stem);
+ snprintf(src, sizeof(src), "%s%s", f->dirct, f->datnam);
+ snprintf(errf, sizeof(errf), "%s%s.dbgerr", f->dirct, stem);
+ snprintf(cmd, sizeof(cmd), "%s %s -o '%s' '%s' 2>'%s'",
+          cc, flags, binary, src, errf);
+ e_d_p_message("Compiling for debug...", f, 1);
+ if (system(cmd) != 0)
+ {
+  fp = fopen(errf, "r");
+  while (fp && fgets(line, sizeof(line), fp))
+  {
+   size_t l = strlen(line);
+   if (l && line[l - 1] == '\n')
+    line[l - 1] = '\0';
+   e_d_p_message(line, f, 1);
+  }
+  if (fp)
+   fclose(fp);
+  unlink(errf);
+  e_error("Compilation failed -- see Messages.", 0, f->fb);
+  return(-1);
+ }
+ unlink(errf);
+ return(0);
+}
+
+/* Open the adapter for f's language, install the user's pre-set breakpoints, and
+   run to the first stop.  Leaves e_d_swtch=3 and e_deb_type=DEB_DAP so the other
+   hooks route here.  Returns 0 on success, -1 on failure (popup already shown). */
 static int e_d_dap_start(FENSTER *f)
 {
- char *argv[] = { "dlv", "dap", NULL };
- char dir[1024];
+ const e_d_dap_lang *lang = e_d_dap_lang_for(f);
+ char dir[1024], binary[1024];
+ const char *program;
  int i, dlen;
 
  if (g_dap)
   return(0);
- if (e_test_command("dlv"))
+ if (!lang)
+  return(-1);
+ if (e_test_command(lang->argv[0]))
  {
-  e_error("Go debugger 'dlv' (delve) not in PATH.", 0, f->fb);
+  char m[160];
+  sprintf(m, "Debug adapter '%s' not in PATH.", lang->argv[0]);
+  e_error(m, 0, f->fb);
   return(-1);
  }
  g_dap_host.on_stopped = e_d_dap_on_stopped;
@@ -2982,10 +3062,9 @@ static int e_d_dap_start(FENSTER *f)
  g_dap_host.on_terminated = e_d_dap_on_terminated;
  g_dap_host.ud = NULL;
  g_dap_fenster = f;
- /* `dlv dap` builds and debugs the package itself; Go needs the module
-    directory (the one with go.mod) as both program and working directory.
-    xwpe stores dirct with a trailing '/', but dlv's package resolution fails
-    on "DIR/" ("Failed to launch") -- strip it to a bare directory path. */
+ /* Program directory without the trailing slash: the adapter's working dir, and
+    the root that tells the user's own code from library/runtime stops.  (dlv's
+    package resolution also rejects a trailing "DIR/".) */
  dlen = snprintf(dir, sizeof(dir), "%s", f->dirct ? f->dirct : ".");
  while (dlen > 1 && dir[dlen - 1] == DIRC)
   dir[--dlen] = '\0';
@@ -2993,10 +3072,23 @@ static int e_d_dap_start(FENSTER *f)
  g_dap_progdir[sizeof(g_dap_progdir) - 1] = '\0';
  g_dap_stop_file[0] = '\0';
  g_dap_stop_line = -1;
- g_dap = e_dap_open(argv, dir, "main.main", dir, &g_dap_host);
+ /* Compile-first (Rust): build the binary now and debug it.  Adapter-builds
+    (Go): the directory itself is the "program" dlv compiles. */
+ if (lang->compile)
+ {
+  if (e_d_dap_compile(f, binary, sizeof(binary)) != 0)
+  {  g_dap_fenster = NULL;  return(-1);  }
+  program = binary;
+ }
+ else
+  program = dir;
+ if (lang->stdio)
+  g_dap = e_dap_open_stdio(lang->argv, program, lang->entry_func, dir, &g_dap_host);
+ else
+  g_dap = e_dap_open(lang->argv, program, lang->entry_func, dir, &g_dap_host);
  if (!g_dap)
  {
-  e_error("Could not start the Go debug adapter (dlv dap).", 0, f->fb);
+  e_error("Could not start the debug adapter.", 0, f->fb);
   g_dap_fenster = NULL;
   return(-1);
  }
@@ -3013,14 +3105,14 @@ static int e_d_dap_start(FENSTER *f)
    FREE(full);
  }
  e_deb_type = DEB_DAP;
- if (e_dap_run(g_dap) != 0)           /* launch + configure + run to entry */
+ if (e_dap_run(g_dap) != 0)           /* launch + configure + run to first stop */
  {
-  e_error("Go program failed to start under dlv.", 0, f->fb);
+  e_error("Program failed to start under the debugger.", 0, f->fb);
   e_d_dap_quit(f);
   return(-1);
  }
  e_d_swtch = 3;
- g_dap_just_started = 1;              /* the entry stop counts as the 1st Run */
+ g_dap_just_started = 1;              /* the first stop counts as the 1st Run */
  return(0);
 }
 
@@ -3184,7 +3276,7 @@ int e_start_debug(FENSTER *f)
     watch before pressing Run), so trusting the focused window would mis-route a
     .go session into the gdb path.  Find a .go window explicitly and debug it. */
  for (i = cn->mxedt; i > 0; i--)
-  if (e_d_dap_window_is_go(cn->f[i]))
+  if (e_d_dap_lang_for(cn->f[i]))
    return(e_d_dap_start(cn->f[i]));
  if (e_p_make(f))
   return(-1);

@@ -11,7 +11,7 @@ management, and a function-key driven menu system. Emacs cursor keys
 (Ctrl-P/N/F/B/A/E) are built in.
 
 The **1.6.x series** brought xwpe from its 1993 origins to 2026:
-UTF-8 terminal support, working compilers and debuggers for 11 languages,
+UTF-8 terminal support, working compilers and debuggers for 12 languages,
 a **Debug Adapter Protocol client** (the same protocol VS Code and Neovim
 use) so modern debuggers plug straight in, mouse support, X11 fixes, and a
 12-chapter Texinfo manual.
@@ -57,14 +57,20 @@ console-only build needs only `libncurses-dev` (plus the build tools).
 
 * **Debug Adapter Protocol (DAP) client &mdash; modern debuggers, no bespoke
   backend.** xwpe now speaks DAP, the wire protocol behind VS Code, Neovim
-  and Emacs debugging.  The first language wired is **Go via Delve**
-  (`dlv dap`): open a `.go` file, set a breakpoint, and Ctrl-G R drives a real
-  source-level debug session &mdash; Run/Continue (Ctrl-G R), Step Over (F8),
-  Step Into (F7), live watches (Ctrl-G W), and program output in Messages, the
-  same keys you already use for gdb.  This is xwpe's seventh debugger backend
-  (`DEB_DAP`), selected automatically by the `.go` extension; the six text
-  backends (gdb, jdb, pdb, a68g, sdb, dbx) are untouched.  Rust (`lldb-dap`)
-  and Scala (Metals) reuse the same engine and are next.
+  and Emacs debugging.  Two languages are wired: **Go via Delve** (`dlv dap`)
+  and **Rust via gdb** (`gdb --interpreter=dap` &mdash; gdb is a first-class
+  Rust debugger).  Open a `.go` or `.rs` file, set a breakpoint, and Ctrl-G R
+  drives a real source-level debug session &mdash; Run/Continue (Ctrl-G R),
+  Step Over (F8), Step Into (F7), live watches (Ctrl-G W), and program output
+  in Messages, the same keys you already use for gdb.  This is xwpe's seventh
+  debugger backend (`DEB_DAP`), selected automatically by extension; the six
+  text backends (gdb, jdb, pdb, a68g, sdb, dbx) are untouched.
+
+  The engine carries **two transports** behind one API, because each adapter
+  dictates its own &mdash; reverse-TCP (Delve is a server; program output read
+  from a pty) and stdio (gdb/lldb speak DAP on their own pipes; output via DAP
+  events).  Adding a language is a one-row descriptor; `lldb-dap` (Rust/C/C++)
+  and Scala (Metals) are drop-ins next.
 
   <p align="center">
     <img src="screenshots/xwpe-go-dap-debug.png" width="720" alt="Debugging a Go program in xwpe via Delve over DAP: the editor stopped at a breakpoint on line 9 (highlighted), and a Watches window below showing the live value fact: 6 as the factorial loop runs.">
@@ -145,9 +151,9 @@ console-only build needs only `libncurses-dev` (plus the build tools).
 * **Full UTF-8 in X11**: accents, Cyrillic, CJK, and emoji with
   CELL_WIDE support (cursor, delete, select all work correctly on
   wide characters).
-* 11 compilers: gcc, g++, gfortran, fpc, javac, python3, pdflatex, perl, cobc, a68g, go
+* 12 compilers: gcc, g++, gfortran, fpc, javac, python3, pdflatex, perl, cobc, a68g, go, rustc
 * 5 debuggers: gdb, jdb (Java), pdb (Python), a68g (Algol 68), and a DAP
-  client (Go via Delve) -- all with F8 stepping and live watches
+  client (Go via Delve, Rust via gdb) -- all with F8 stepping and live watches
 * Program output in Messages buffer (Ctrl-G P) -- no terminal switching
 * Mouse in terminal emulators (xterm protocol) and Linux console (GPM)
 * 33-year-old Redo crash fixed, 30-year-old pipe leak fixed
@@ -170,6 +176,7 @@ See `CHANGELOG` for full details.
 | cobc     | COBOL    | ok | ok | `.cob` `.cbl` |
 | a68g     | Algol 68 | ok | line | `.a68` `.alg` |
 | go       | Go       | ok | ok | `.go` |
+| rustc    | Rust     | ok | ok | `.rs` |
 
 Any compiler that emits `file:line:column: message` diagnostics (clang,
 rustc, go build, dmd, ghc, nim, ...) works with the default GNU pattern.
@@ -184,13 +191,14 @@ pattern language (`${FILE}`, `${LINE}`, `${COLUMN}`, wildcards).
 | jdb      | Java     | Ctrl-G R | F8 | Ctrl-G P | `.java` |
 | pdb      | Python   | Ctrl-G R | F8 | Ctrl-G P | `.py` |
 | a68g     | Algol 68 | Ctrl-G R | F8 | Ctrl-G P | `.a68` `.alg` |
-| DAP (Delve) | Go    | Ctrl-G R | F8/F7 | Messages | `.go` |
+| DAP (Delve) | Go   | Ctrl-G R | F8/F7 | Messages | `.go` |
+| DAP (gdb)   | Rust | Ctrl-G R | F8/F7 | Messages | `.rs` |
 
-The Go row uses the Debug Adapter Protocol -- the same wire protocol VS
-Code, Neovim and Emacs DAP use -- so the debugger is a standard `dlv dap`
-adapter rather than a bespoke backend.  Rust (lldb-dap) and Scala (Metals)
-are planned on the same engine.  Requires `dlv` and `go`, and a `go.mod`
-in the source directory.
+The Go and Rust rows use the Debug Adapter Protocol -- the same wire protocol
+VS Code, Neovim and Emacs DAP use -- so the debugger is a standard adapter
+(`dlv dap` for Go, `gdb --interpreter=dap` for Rust) rather than a bespoke
+backend.  Go needs `dlv` + `go` and a `go.mod`; Rust needs `rustc` + `gdb`.
+Scala (Metals) and C/C++ (lldb-dap) are planned on the same engine.
 
 <p align="center">
   <img src="screenshots/xwpe-ga68-watch.gif" width="720" alt="Debugging a GNU Algol 68 (ga68) program in xwpe: Ctrl-G R compiles with ga68 and starts gdb, Ctrl-G W adds a watch on a variable, Window/Size-Move tiles the editor, Watches and Messages windows, and F8 single-steps while the watch value grows. The pressed keys are overlaid in the corner.">

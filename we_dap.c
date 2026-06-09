@@ -624,10 +624,6 @@ int e_dap_run(e_dap_session *s)
    json_object_put(resp);
  }
 
- /* From here the program runs, so start forwarding its stdout/stderr output
-    events (stdio transport).  The adapter's startup banner -- which gdb also
-    tags category "stdout" -- has already been consumed during initialize. */
- s->forward_output = 1;
  seq = dap_send(s, "configurationDone", NULL);
  resp = dap_wait_response(s, seq);
  if (resp)
@@ -636,8 +632,15 @@ int e_dap_run(e_dap_session *s)
  if (dap_wait_stop(s, reason, sizeof(reason)))
  {
   dap_report_stop(s, reason);
+  /* Start forwarding the program's stdout/stderr only now, after the first
+     stop: gdb emits its banner and its pending-breakpoint chatter ("No source
+     file ... pending") as category "stdout" during launch/configuration, which
+     would otherwise clutter Messages.  Real program output begins once the user
+     continues from here. */
+  s->forward_output = 1;
   return 0;
  }
+ s->forward_output = 1;
  return s->ended ? 0 : -1;
 }
 

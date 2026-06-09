@@ -241,15 +241,24 @@ Changes
   "cp /usr/lib/xwpe/syntax_def ~/.xwpe/syntax_def" or remove it to fall
   back to the system file.  See the Configuration chapter of the manual.
 
-  Go debugging via the Debug Adapter Protocol (DAP):
+  Debugging via the Debug Adapter Protocol (DAP) -- Go and Rust:
 * xwpe now speaks the Debug Adapter Protocol -- the same wire protocol VS
   Code, Neovim and Emacs DAP use -- so modern language debuggers plug in
-  without a bespoke text-scraping backend.  The first language wired is Go:
-  open a .go file and Ctrl-G R drives Delve (`dlv dap`).  Run/Continue
-  (Ctrl-G R), Step Over (F8), Step Into (F7), watches (Ctrl-G W, evaluated
-  with DAP evaluate context=watch) and Quit (Ctrl-G Q) all work, just like
-  the gdb backend.  Stops jump the editor to the source line; program output
-  appears in Messages.
+  without a bespoke text-scraping backend.  Two languages are wired:
+  - Go: open a .go file and Ctrl-G R drives Delve (`dlv dap`).
+  - Rust: open a .rs file; xwpe compiles it (rustc -g) and debugs it with
+    `gdb --interpreter=dap` (gdb is a first-class Rust debugger -- rust-gdb IS
+    gdb).
+  Run/Continue (Ctrl-G R), Step Over (F8), Step Into (F7), watches (Ctrl-G W,
+  evaluated with DAP evaluate context=watch) and Quit (Ctrl-G Q) all work, just
+  like the gdb backend.  Stops jump the editor to the source line; program
+  output appears in Messages.
+* The engine supports two transports behind one API, because each adapter
+  dictates its own: reverse-TCP (Delve is a `dlv dap` server; the debuggee's
+  output is read from a pty) and stdio (gdb/lldb speak DAP on their own
+  stdin/stdout; program output arrives as DAP "output" events).  Adding a
+  language is a one-row descriptor (adapter, transport, compile-or-not).
+  lldb-dap for Rust/C/C++ is a drop-in on the stdio path.
 * This is the seventh debugger backend (DEB_DAP), selected automatically by
   the .go extension.  The six text backends (gdb, sdb, dbx, xdb, jdb, pdb,
   a68g) are untouched.  Delve is reverse-connected over a local TCP socket
@@ -268,14 +277,14 @@ Changes
   windows (not just the focused one), so adding a watch -- which opens the
   Watches pane -- before pressing Run no longer mis-routes the session into the
   gdb path (gdb is unreliable for Go's goroutine runtime anyway).
-* Requires `dlv` (delve) and `go`; a Go module (go.mod) in the source
-  directory, since `dlv dap` builds the package.  Verified by
-  tests/test_go_dap.py (5 cases: run+step, watch updates 1 -> 2 -> 6 -> 24 ->
-  120 while stepping, program output reaches Messages, step-past-main exits
-  cleanly, watch-before-run still uses DAP) and the tests/test_dap*.c
-  unit/integration suite against real Delve.
+* Go requires `dlv` (delve) and `go`, plus a Go module (go.mod) in the source
+  directory (`dlv dap` builds the package).  Rust requires `rustc` and `gdb`.
+  Verified by tests/test_go_dap.py (5 cases) and tests/test_rust_dap.py
+  (compile + breakpoint + watch grows), plus the tests/test_dap*.c
+  unit/integration suite against real Delve and real gdb.
 * New build dependency: json-c (libjson-c-dev) for DAP message coding.
-  Rust (lldb-dap) and Scala (Metals) reuse the same engine and are next.
+  Scala (Metals) reuses the same engine and is next; C/C++ come nearly free
+  on the same gdb/lldb stdio path.
 
 1.6.4 (embedded VT terminal, Algol 68 source-level debugger, window-layout fixes)
 

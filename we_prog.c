@@ -1610,7 +1610,7 @@ int e_ini_prog(ECNT *cn)
 {
  int i;
 
- e_prog.num = 11;
+ e_prog.num = 12;
  if (e_prog.arguments) FREE(e_prog.arguments);
  e_prog.arguments = WpeStrdup("");
  if (e_prog.project) FREE(e_prog.project);
@@ -1721,6 +1721,19 @@ int e_ini_prog(ECNT *cn)
  e_prog.comp[10]->key = 'G';
  e_prog.comp[10]->x = 0;
  e_prog.comp[10]->intstr = WpeStrdup("${FILE}:${LINE}:*");
+ /* Rust: compiled with rustc to a native binary and debugged through the DAP
+    bridge (gdb --interpreter=dap), like Go via dlv.  The compiler entry exists
+    so e_check_c_file recognises ".rs" (e_breakpoint, e_d_quit) and supplies the
+    compiler/flags the DAP bridge builds with; the debugger path is routed to the
+    bridge by extension.  rustc diagnostics put the location on a "--> file:line:col"
+    line. */
+ e_prog.comp[11]->compiler = WpeStrdup("rustc");
+ e_prog.comp[11]->language = WpeStrdup("Rust");
+ e_prog.comp[11]->filepostfix = (char **)WpeExpArrayCreate(1, sizeof(char *), 1);
+ e_prog.comp[11]->filepostfix[0] = WpeStrdup(".rs");
+ e_prog.comp[11]->key = 'R';
+ e_prog.comp[11]->x = 0;
+ e_prog.comp[11]->intstr = WpeStrdup("*--> ${FILE}:${LINE}:${COLUMN}*");
  for (i = 0; i < e_prog.num; i++)
  {
   if (i == 5) e_prog.comp[i]->comp_str = WpeStrdup("-m py_compile");

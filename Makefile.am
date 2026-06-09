@@ -247,6 +247,7 @@ EXTRA_DIST = \
   tests/test_ga68.py \
   tests/test_ga68_debug.py \
   tests/test_go_dap.py \
+  tests/test_rust_dap.py \
   tests/test_syntax_algol68.py \
   tests/test_debugger_watchdog.py \
   tests/x11/conftest.py \
