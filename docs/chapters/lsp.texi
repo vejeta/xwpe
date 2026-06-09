@@ -1,0 +1,98 @@
+@node Language servers
+@chapter Language servers (LSP)
+
+@cindex LSP
+@cindex Language Server Protocol
+@cindex Metals
+@cindex Scala
+@cindex completion
+@cindex go to definition
+@cindex hover
+
+Where the debugger (@pxref{Debugging}) lets you @emph{run} a program step by
+step, a @dfn{language server} lets the editor @emph{understand} your code:
+errors as the compiler sees them, completion with type signatures, the type of
+a symbol under the cursor, and jump-to-definition.  xwpe speaks the
+@dfn{Language Server Protocol} (LSP) -- the same protocol VS Code, Neovim and
+Emacs use -- so it drives the very same servers those editors do.  The server
+is an external tool; nothing of it ships inside xwpe, and the editor stays a
+few megabytes.
+
+The first wired language is @strong{Scala}, through @uref{https://scalameta.org/metals/,
+Metals} -- so a Scala developer can use @command{wpe} in a terminal as a tiny,
+zero-config IDE front-end, no XQuartz and no Electron.
+
+@section Keys
+
+All language-server actions share the @kbd{Alt-Q} prefix (@dfn{Query the
+language server}), followed by a letter:
+
+@table @kbd
+@item Alt-Q E
+Start the server for the current file, import the build, and show compiler
+diagnostics (errors and warnings) in the Messages window, in the same
+@code{file:line:col:} form as F9 build errors.
+@item Alt-Q D
+Go to the definition of the symbol under the cursor.
+@item Alt-Q H
+Hover: show the type and documentation of the symbol under the cursor in a
+popup (e.g.@: @code{var f: Long}).
+@item Alt-Q C
+Completion: offer candidates for the word under the cursor in a popup.  Move
+with the arrow keys, press @key{RET} to insert the selected candidate (it
+replaces the partial word), or @key{ESC} to cancel.
+@end table
+
+The server starts lazily on the first @kbd{Alt-Q} action and is reused for the
+rest of the session.  The first start is slow: it boots a JVM language server
+and imports the build (faster afterwards, once caches are warm).  Diagnostics
+reflect the file as saved on disk, so save (@key{F2}) before @kbd{Alt-Q E} for
+the freshest view.
+
+@section Scala (Metals)
+
+@cindex scala-cli
+@cindex coursier
+
+Requirements:
+
+@itemize @bullet
+@item @command{metals} on your @env{PATH}.  Install it with coursier:
+@example
+cs install metals
+@end example
+@item @command{scala-cli} on your @env{PATH} (@code{cs install scala-cli}).
+xwpe runs @code{scala-cli setup-ide} so Metals connects to the build server
+automatically; this is the same tooling the Scala debugger uses
+(@pxref{Debugging}).
+@item A modern JDK.  The Debian @code{scala} package (2.11) is too old --
+Metals supports Scala 2.12.12+, 2.13 and 3.x.
+@end itemize
+
+Open a @file{.scala} file and use the @kbd{Alt-Q} keys above.  Symbols come
+back Scala-aware: completion shows full signatures
+(@code{println(x: Any): Unit}), hover shows the inferred type, and
+go-to-definition follows into library sources.
+
+@section Other languages
+
+LSP is one protocol for every language: adding a server is a descriptor entry,
+not new plumbing, because the transport (JSON-RPC over the same framing as the
+DAP debugger) is shared.  Planned servers, each a drop-in:
+
+@itemize @bullet
+@item @command{clangd} for C and C++ (packaged in Debian as @code{clangd}).
+@item @command{pyright} or @command{pylsp} for Python.
+@item @command{rust-analyzer} for Rust.
+@item @command{gopls} for Go.
+@end itemize
+
+@section How it works
+
+xwpe spawns the server as a child process and talks LSP over its
+stdin/stdout.  The engine (@file{we_lsp.c}) is independent of the editor and is
+integration-tested against a real Metals server; the editor side maps the
+@kbd{Alt-Q} keys onto it.  Because the server is an external program, the
+heavy machinery (for Scala: a JVM, the build server) lives outside xwpe -- the
+editor binary itself gains only a few kilobytes of protocol code.  See
+@file{HACKING-LSP.md} in the source tree for the architecture.

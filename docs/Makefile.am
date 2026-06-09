@@ -8,6 +8,7 @@ xwpe_TEXINFOS = \
   chapters/editor.texi \
   chapters/compiling.texi \
   chapters/debugging.texi \
+  chapters/lsp.texi \
   chapters/projects.texi \
   chapters/configuration.texi \
   chapters/reference.texi \

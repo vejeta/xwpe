@@ -171,6 +171,12 @@ type: jdb for @file{.java}, pdb for @file{.py}, a68g for interpreted
 Algol 68, and the DAP client for @file{.go} (Delve), @file{.rs} (gdb) and
 @file{.scala} (Bloop via @command{scala-cli}).
 
+@quotation Note
+Debugging @emph{runs} your program; for IDE features that @emph{understand}
+it -- completion, hover, go-to-definition and compiler diagnostics over the
+Language Server Protocol (Metals for Scala) -- see @ref{Language servers}.
+@end quotation
+
 @table @strong
 @item gdb (GNU Debugger)
 The default backend for C, C++, Fortran, Pascal, and native (ga68)

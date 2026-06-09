@@ -79,6 +79,19 @@ console-only build needs only `libncurses-dev` (plus the build tools).
   one &mdash; no Scala artifact ships in xwpe, the toolchain stays external.
   Adding a language is a one-row descriptor; `lldb-dap` for C/C++ is next.
 
+* **Language Server Protocol (LSP) client &mdash; an IDE, not just a debugger.**
+  Where DAP lets xwpe *run* your code, LSP lets it *understand* it: xwpe speaks
+  LSP to the same servers VS Code / Neovim / Emacs use. **Scala via Metals** is
+  wired &mdash; open a `.scala` file and the **Alt-Q** prefix gives **E**
+  diagnostics (compiler errors in Messages), **D** go-to-definition, **H** hover
+  (type + docs), **C** completion (candidate popup, insert on Enter). This makes
+  `wpe` in a terminal a genuine lightweight Metals front-end for the "IntelliJ
+  is too heavy" crowd &mdash; the discoverable Borland UX, no Electron, no Lua
+  config, a few-MB binary. The engine (`we_lsp.c`) reuses the DAP JSON-RPC
+  framing (no new dependency) and is integration-tested against a real Metals;
+  the server stays an external tool (`cs install metals`). clangd (C/C++, in
+  Debian), pyright, rust-analyzer and gopls are descriptor-row drop-ins next.
+
   <p align="center">
     <img src="screenshots/xwpe-go-dap-debug.png" width="720" alt="Debugging a Go program in xwpe via Delve over DAP: the editor stopped at a breakpoint on line 9 (highlighted), and a Watches window below showing the live value fact: 6 as the factorial loop runs.">
     <br><em>Debugging Go through Delve/DAP: stopped at a breakpoint, with a live watch (<code>fact</code>) updating as the loop runs.</em>
