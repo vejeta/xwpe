@@ -1610,7 +1610,7 @@ int e_ini_prog(ECNT *cn)
 {
  int i;
 
- e_prog.num = 10;
+ e_prog.num = 11;
  if (e_prog.arguments) FREE(e_prog.arguments);
  e_prog.arguments = WpeStrdup("");
  if (e_prog.project) FREE(e_prog.project);
@@ -1710,11 +1710,23 @@ int e_ini_prog(ECNT *cn)
  e_prog.comp[9]->filepostfix[1] = WpeStrdup(".alg");
  e_prog.comp[9]->key = 'A';
  e_prog.comp[9]->x = 0;
+ /* Go: compiled and debugged through the Debug Adapter Protocol (dlv dap), not
+    a gdb pipe.  The compiler entry exists so e_check_c_file recognises ".go"
+    (e_breakpoint, e_d_quit) and F9 can `go build`; the debugger path is routed
+    to the DAP bridge in we_debug.c by file extension. */
+ e_prog.comp[10]->compiler = WpeStrdup("go");
+ e_prog.comp[10]->language = WpeStrdup("Go");
+ e_prog.comp[10]->filepostfix = (char **)WpeExpArrayCreate(1, sizeof(char *), 1);
+ e_prog.comp[10]->filepostfix[0] = WpeStrdup(".go");
+ e_prog.comp[10]->key = 'G';
+ e_prog.comp[10]->x = 0;
+ e_prog.comp[10]->intstr = WpeStrdup("${FILE}:${LINE}:*");
  for (i = 0; i < e_prog.num; i++)
  {
   if (i == 5) e_prog.comp[i]->comp_str = WpeStrdup("-m py_compile");
   else if (i == 6) e_prog.comp[i]->comp_str = WpeStrdup("-interaction=nonstopmode -file-line-error");
   else if (i == 7) e_prog.comp[i]->comp_str = WpeStrdup("-c");
+  else if (i == 10) e_prog.comp[i]->comp_str = WpeStrdup("build");
   else e_prog.comp[i]->comp_str = WpeStrdup("-g");   /* comp[9] (Algol 68) overwritten by e_algol68_apply */
   e_prog.comp[i]->libraries = WpeStrdup("");
   e_prog.comp[i]->exe_name = WpeStrdup("");

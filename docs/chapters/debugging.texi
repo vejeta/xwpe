@@ -165,15 +165,28 @@ answer in Messages, and continue.
 
 @cindex debugger selection
 
-xwpe supports six backends, selectable via @samp{Debug @result{}
-debugger Options} (@kbd{Ctrl-G O}).  For @file{.java} files, jdb is
-auto-selected; for @file{.py} files, pdb is auto-selected.
+xwpe supports eight backends, selectable via @samp{Debug @result{}
+debugger Options} (@kbd{Ctrl-G O}).  Several are auto-selected by file
+type: jdb for @file{.java}, pdb for @file{.py}, a68g for interpreted
+Algol 68, and the DAP client (Delve) for @file{.go}.
 
 @table @strong
 @item gdb (GNU Debugger)
-The default backend for C, C++, Fortran, and Pascal.  Tested with
-gdb 17.2.  Supports all features: breakpoints, stepping, watches,
-stack, program output capture via pty.
+The default backend for C, C++, Fortran, Pascal, and native (ga68)
+Algol 68.  Tested with gdb 17.2.  Supports all features: breakpoints,
+stepping, watches, stack, program output capture via pty.
+
+@item DAP client (Debug Adapter Protocol)
+Backend for languages whose debuggers speak DAP -- the protocol used by
+VS Code, Neovim and Emacs.  Auto-selected for @file{.go} files, where it
+drives Delve (@command{dlv dap}).  Run/Continue (@kbd{Ctrl-G R}), Step
+Over (@kbd{F8}), Step Into (@kbd{F7}), watches (@kbd{Ctrl-G W}, evaluated
+with the DAP @code{evaluate} request) and Quit (@kbd{Ctrl-G Q}) all work
+as with gdb.  The adapter is reverse-connected over a local TCP socket
+and launched on its own controlling pty.  Requires @command{dlv} and
+@command{go}, and a Go module (@file{go.mod}) in the source directory,
+since @command{dlv dap} builds the package.  Rust (lldb-dap) and Scala
+(Metals) are planned on the same engine.
 
 @item jdb (Java Debugger)
 Backend for Java.  Auto-selected for @file{.java} files.  Uses

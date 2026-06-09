@@ -13,6 +13,9 @@
 #include <sys/wait.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
+#include <pty.h>
+#include <termios.h>
+#include <sys/ioctl.h>
 
 #include "we_dap.h"
 #include "we_dap_proto.h"
@@ -285,15 +288,36 @@ static pid_t dap_spawn(char *const argv[], int port, const char *cwd, int listen
  pid = fork();
  if (pid == 0)
  {
+  int master = -1, slave = -1;
+
   if (cwd)
    if (chdir(cwd) != 0)
     _exit(127);
   close(listen_fd);
-  /* keep the adapter quiet on our terminal */
+  /* Give the adapter its OWN controlling terminal.  DAP traffic flows over the
+     reverse-TCP socket, so the adapter's stdio is free to be a pty -- and it
+     must be: dlv runs the debuggee in foreground mode and calls tcsetpgrp() on
+     its own stdin, which fails ("inappropriate ioctl for device") when that is
+     the pipe/pty xwpe happened to hold.  setsid() drops xwpe's terminal; the
+     fresh pty becomes this session's controlling tty (TIOCSCTTY).  Keeping the
+     master fd open across exec keeps the pty alive without anyone reading it
+     (program output is redirected to DAP "output" events by internalConsole). */
+  setsid();
+  if (openpty(&master, &slave, NULL, NULL, NULL) == 0)
+  {
+   ioctl(slave, TIOCSCTTY, 0);
+   dup2(slave, 0);
+   dup2(slave, 1);
+   dup2(slave, 2);
+   if (slave > 2)
+    close(slave);
+  }
+  else
   {
    int devnull = open("/dev/null", O_RDWR);
    if (devnull >= 0)
    {
+    dup2(devnull, 0);
     dup2(devnull, 1);
     dup2(devnull, 2);
     if (devnull > 2)
@@ -402,6 +426,13 @@ int e_dap_run(e_dap_session *s)
  json_object_object_add(args, "mode", json_object_new_string("debug"));
  json_object_object_add(args, "program", json_object_new_string(s->program));
  json_object_object_add(args, "stopOnEntry", json_object_new_boolean(0));
+ /* Redirect the debuggee's stdio through DAP "output" events instead of letting
+    the adapter grab the controlling terminal.  Without this dlv runs the program
+    in foreground mode and does tcsetpgrp() on its stdin, which fails ("inappro-
+    priate ioctl for device") whenever xwpe launched the adapter on a pipe rather
+    than a tty -- i.e. always.  The output events arrive via host->on_output. */
+ json_object_object_add(args, "console",
+                        json_object_new_string("internalConsole"));
  seq = dap_send(s, "launch", args);
  resp = dap_wait_response(s, seq);          /* dlv replies before config */
  if (resp)

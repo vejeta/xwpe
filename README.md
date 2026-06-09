@@ -114,8 +114,9 @@ console-only build needs only `libncurses-dev` (plus the build tools).
 * **Full UTF-8 in X11**: accents, Cyrillic, CJK, and emoji with
   CELL_WIDE support (cursor, delete, select all work correctly on
   wide characters).
-* 10 compilers: gcc, g++, gfortran, fpc, javac, python3, pdflatex, perl, cobc, a68g
-* 4 debuggers: gdb, jdb (Java), pdb (Python), a68g (Algol 68) -- all with F8 stepping
+* 11 compilers: gcc, g++, gfortran, fpc, javac, python3, pdflatex, perl, cobc, a68g, go
+* 5 debuggers: gdb, jdb (Java), pdb (Python), a68g (Algol 68), and a DAP
+  client (Go via Delve) -- all with F8 stepping and live watches
 * Program output in Messages buffer (Ctrl-G P) -- no terminal switching
 * Mouse in terminal emulators (xterm protocol) and Linux console (GPM)
 * 33-year-old Redo crash fixed, 30-year-old pipe leak fixed
@@ -137,6 +138,7 @@ See `CHANGELOG` for full details.
 | perl     | Perl     | ok | ok | `.pl` `.pm` |
 | cobc     | COBOL    | ok | ok | `.cob` `.cbl` |
 | a68g     | Algol 68 | ok | line | `.a68` `.alg` |
+| go       | Go       | ok | ok | `.go` |
 
 Any compiler that emits `file:line:column: message` diagnostics (clang,
 rustc, go build, dmd, ghc, nim, ...) works with the default GNU pattern.
@@ -151,6 +153,13 @@ pattern language (`${FILE}`, `${LINE}`, `${COLUMN}`, wildcards).
 | jdb      | Java     | Ctrl-G R | F8 | Ctrl-G P | `.java` |
 | pdb      | Python   | Ctrl-G R | F8 | Ctrl-G P | `.py` |
 | a68g     | Algol 68 | Ctrl-G R | F8 | Ctrl-G P | `.a68` `.alg` |
+| DAP (Delve) | Go    | Ctrl-G R | F8/F7 | Messages | `.go` |
+
+The Go row uses the Debug Adapter Protocol -- the same wire protocol VS
+Code, Neovim and Emacs DAP use -- so the debugger is a standard `dlv dap`
+adapter rather than a bespoke backend.  Rust (lldb-dap) and Scala (Metals)
+are planned on the same engine.  Requires `dlv` and `go`, and a `go.mod`
+in the source directory.
 
 <p align="center">
   <img src="screenshots/xwpe-ga68-watch.gif" width="720" alt="Debugging a GNU Algol 68 (ga68) program in xwpe: Ctrl-G R compiles with ga68 and starts gdb, Ctrl-G W adds a watch on a variable, Window/Size-Move tiles the editor, Watches and Messages windows, and F8 single-steps while the watch value grows. The pressed keys are overlaid in the corner.">

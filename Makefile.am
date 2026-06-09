@@ -179,7 +179,7 @@ test_dap_LDADD = $(JSONC_LIBS)
 # DAP engine integration test: drives a real `dlv dap` (SKIPs without dlv+go).
 test_dap_dlv_SOURCES = tests/test_dap_dlv.c we_dap.c we_dap_proto.c
 test_dap_dlv_CFLAGS = -std=gnu17 $(JSONC_CFLAGS)
-test_dap_dlv_LDADD = $(JSONC_LIBS)
+test_dap_dlv_LDADD = $(JSONC_LIBS) $(UTIL_LIBS)
 
 TESTS = test_checkheader test_syntax_def test_dap test_dap_dlv
 
@@ -239,6 +239,7 @@ EXTRA_DIST = \
   tests/test_algol68_debug.py \
   tests/test_ga68.py \
   tests/test_ga68_debug.py \
+  tests/test_go_dap.py \
   tests/test_syntax_algol68.py \
   tests/test_debugger_watchdog.py \
   tests/x11/conftest.py \

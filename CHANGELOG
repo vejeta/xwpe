@@ -241,6 +241,28 @@ Changes
   "cp /usr/lib/xwpe/syntax_def ~/.xwpe/syntax_def" or remove it to fall
   back to the system file.  See the Configuration chapter of the manual.
 
+  Go debugging via the Debug Adapter Protocol (DAP):
+* xwpe now speaks the Debug Adapter Protocol -- the same wire protocol VS
+  Code, Neovim and Emacs DAP use -- so modern language debuggers plug in
+  without a bespoke text-scraping backend.  The first language wired is Go:
+  open a .go file and Ctrl-G R drives Delve (`dlv dap`).  Run/Continue
+  (Ctrl-G R), Step Over (F8), Step Into (F7), watches (Ctrl-G W, evaluated
+  with DAP evaluate context=watch) and Quit (Ctrl-G Q) all work, just like
+  the gdb backend.  Stops jump the editor to the source line; program output
+  appears in Messages.
+* This is the seventh debugger backend (DEB_DAP), selected automatically by
+  the .go extension.  The six text backends (gdb, sdb, dbx, xdb, jdb, pdb,
+  a68g) are untouched.  Delve is reverse-connected over a local TCP socket
+  (xwpe listens, dlv dials in); the adapter is launched on its own
+  controlling pty so the debuggee's foreground terminal control succeeds.
+* Requires `dlv` (delve) and `go`; a Go module (go.mod) in the source
+  directory, since `dlv dap` builds the package.  Verified by
+  tests/test_go_dap.py (run+step advances the line; a watch on a factorial
+  accumulator updates 1 -> 2 -> 6 -> 24 -> 120 while stepping) and the
+  tests/test_dap*.c unit/integration suite against real Delve.
+* New build dependency: json-c (libjson-c-dev) for DAP message coding.
+  Rust (lldb-dap) and Scala (Metals) reuse the same engine and are next.
+
 1.6.4 (embedded VT terminal, Algol 68 source-level debugger, window-layout fixes)
 
   Borland "User Screen" (Alt-F5) on X11:

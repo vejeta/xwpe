@@ -8,6 +8,7 @@
 #include "messages.h"
 #include "edit.h"
 #include "we_fdloop.h"
+#include "we_dap.h"
 
 #ifndef NO_XWINDOWS
 #include "WeXterm.h"
@@ -83,7 +84,8 @@ enum {
  DEB_XDB = 3,   /* HP xdb -L                prompt ">"     */
  DEB_JDB = 4,   /* Java jdb                                */
  DEB_PDB = 5,   /* Python python3 -m pdb    prompt "(Pdb)" */
- DEB_A68G = 6   /* Algol 68 Genie a68g --monitor  prompt "(a68g)" */
+ DEB_A68G = 6,  /* Algol 68 Genie a68g --monitor  prompt "(a68g)" */
+ DEB_DAP = 7    /* Debug Adapter Protocol client (Go/dlv, Rust/lldb-dap, ...) */
 };
 
 int e_deb_type = 0, e_deb_mode = 0;
@@ -498,6 +500,21 @@ static void e_d_wait_for_input(int gdb_fd)
 
 static void e_d_on_gdb_readable(int fd, void *data);
 static void e_d_on_pty_readable(int fd, void *data);
+
+/* DAP debug bridge (Go/dlv and other Debug Adapter Protocol backends).  The
+   editor-facing glue lives here, next to the other backend helpers, because it
+   needs the file-scope debugger globals (e_d_swtch, e_d_file, the breakpoint and
+   watch arrays).  The protocol engine itself is in we_dap.c / we_dap_proto.c,
+   free of editor state, so it can be unit-tested against a real adapter.
+   Forward-declared here because e_d_quit and e_d_p_watches (defined above) hook
+   into them. */
+static int  e_d_dap_active(void);
+static int  e_d_dap_window_is_go(FENSTER *f);
+static int  e_d_dap_start(FENSTER *f);
+static int  e_d_dap_run(FENSTER *f);
+static int  e_d_dap_step(FENSTER *f, int sw);
+static int  e_d_dap_watches(FENSTER *f, int sw);
+static void e_d_dap_quit(FENSTER *f);
 
 typedef struct {
  char buf[SVLINES][256];
@@ -1359,6 +1376,8 @@ int e_d_quit(FENSTER *f)
  int i;
  jdb_trace("e_d_quit: CALLED, e_d_swtch=%d, e_deb_type=%d\n",
            e_d_swtch, e_deb_type);
+ if (e_d_dap_active())
+  e_d_dap_quit(f);   /* disconnect the adapter; common cleanup runs below */
  e_d_quit_basic(f);
  e_d_p_message(e_d_msg[ERR_ENDDEBUG], f, 1);
  WpeMouseChangeShape(WpeEditingShape);
@@ -1520,6 +1539,8 @@ int e_d_p_watches(FENSTER *f, int sw)
  char str1[256], *str; /* is 256 always large enough? */
  char *str2;
 
+ if (e_d_dap_active())
+  return(e_d_dap_watches(f, sw));   /* DAP: values via evaluate(context=watch) */
  e_d_switch_out(0);
  if ((e_d_swtch > 2) && (e_d_p_stack(f, 0) == -1))
   return(-1);
@@ -2832,6 +2853,244 @@ int e_exec_deb(FENSTER *f, char *prog)
  exit(1);
 }
 
+/* ===================================================================== *
+ *  DAP debug bridge -- editor glue for Debug Adapter Protocol backends.  *
+ *                                                                       *
+ *  Maps xwpe's debugger menu/keys onto the protocol engine (we_dap.c):  *
+ *    Ctrl-G R (Run/Continue)  -> e_d_dap_run                            *
+ *    F7 / F8  (Step in/over)  -> e_d_dap_step                           *
+ *    Watches window refresh   -> e_d_dap_watches (evaluate)             *
+ *    Ctrl-G Q (Quit)          -> e_d_dap_quit                           *
+ *  Only the Go/dlv vertical slice is wired today; Rust (lldb-dap) and   *
+ *  Scala (Metals) reuse the same bridge with a different adapter argv.  *
+ * ===================================================================== */
+
+static e_dap_session *g_dap = NULL;       /* the live adapter session, or NULL */
+static FENSTER       *g_dap_fenster = NULL;/* window used for UI side-effects   */
+static int            g_dap_just_started = 0;/* first Run/Step is the entry stop */
+static e_dap_host     g_dap_host;
+
+/* True while a DAP session is open. */
+static int e_d_dap_active(void)
+{
+ return(g_dap != NULL);
+}
+
+/* Tail of a path: "/tmp/p/main.go" -> "main.go". */
+static const char *e_d_dap_basename(const char *path)
+{
+ const char *slash = path ? strrchr(path, '/') : NULL;
+ return(slash ? slash + 1 : path);
+}
+
+/* Does this editor window hold a Go source file (the one DAP language wired so
+   far)?  Used to route Ctrl-G R away from the gdb/compiler pipeline. */
+static int e_d_dap_window_is_go(FENSTER *f)
+{
+ int n;
+
+ if (!f || !f->datnam || !DTMD_ISTEXT(f->dtmd))
+  return(0);
+ n = strlen(f->datnam);
+ return(n > 3 && !strcmp(f->datnam + n - 3, ".go"));
+}
+
+/* on_stopped: the program halted at file:line -- move the cursor there and
+   refresh the Watches window, exactly as the text backends do on a stop.
+   Order matches e_d_pr_sig: evaluate watches first, then jump to the line. */
+static void e_d_dap_on_stopped(const char *file, int line, const char *reason,
+                               void *ud)
+{
+ FENSTER *f = g_dap_fenster;
+
+ (void)reason; (void)ud;
+ if (!f || line < 0)
+  return;
+ strncpy(e_d_file, e_d_dap_basename(file), sizeof(e_d_file) - 1);
+ e_d_file[sizeof(e_d_file) - 1] = '\0';
+ e_d_p_watches(f, 0);                 /* -> e_d_dap_watches (evaluate) */
+ e_d_goto_break((char *)file, line, f);
+}
+
+/* on_output: adapter/program output -> Messages window. */
+static void e_d_dap_on_output(const char *text, void *ud)
+{
+ (void)ud;
+ if (g_dap_fenster && text)
+  e_d_p_message((char *)text, g_dap_fenster, 1);
+}
+
+/* on_terminated: the debuggee exited. */
+static void e_d_dap_on_terminated(void *ud)
+{
+ (void)ud;
+ if (g_dap_fenster)
+  e_d_p_message("Program exited.", g_dap_fenster, 1);
+}
+
+/* Disconnect the adapter and reset bridge state.  Called from e_d_quit before
+   the common e_d_quit_basic cleanup, and on any start/run failure. */
+static void e_d_dap_quit(FENSTER *f)
+{
+ (void)f;
+ if (g_dap)
+ {
+  e_dap_close(g_dap);
+  g_dap = NULL;
+ }
+ g_dap_fenster = NULL;
+ g_dap_just_started = 0;
+}
+
+/* Open the adapter, install the user's pre-set breakpoints, and run to the
+   entry stop (main.main for Go).  Leaves e_d_swtch=3 (running, stopped at a
+   line) and e_deb_type=DEB_DAP so the other hooks route here.  Returns 0 on
+   success, -1 on failure (with an error popup already shown). */
+static int e_d_dap_start(FENSTER *f)
+{
+ char *argv[] = { "dlv", "dap", NULL };
+ char dir[1024];
+ int i, dlen;
+
+ if (g_dap)
+  return(0);
+ if (e_test_command("dlv"))
+ {
+  e_error("Go debugger 'dlv' (delve) not in PATH.", 0, f->fb);
+  return(-1);
+ }
+ g_dap_host.on_stopped = e_d_dap_on_stopped;
+ g_dap_host.on_output = e_d_dap_on_output;
+ g_dap_host.on_terminated = e_d_dap_on_terminated;
+ g_dap_host.ud = NULL;
+ g_dap_fenster = f;
+ /* `dlv dap` builds and debugs the package itself; Go needs the module
+    directory (the one with go.mod) as both program and working directory.
+    xwpe stores dirct with a trailing '/', but dlv's package resolution fails
+    on "DIR/" ("Failed to launch") -- strip it to a bare directory path. */
+ dlen = snprintf(dir, sizeof(dir), "%s", f->dirct ? f->dirct : ".");
+ while (dlen > 1 && dir[dlen - 1] == DIRC)
+  dir[--dlen] = '\0';
+ g_dap = e_dap_open(argv, dir, "main.main", dir, &g_dap_host);
+ if (!g_dap)
+ {
+  e_error("Could not start the Go debug adapter (dlv dap).", 0, f->fb);
+  g_dap_fenster = NULL;
+  return(-1);
+ }
+ strncpy(e_d_file, f->datnam, sizeof(e_d_file) - 1);
+ e_d_file[sizeof(e_d_file) - 1] = '\0';
+ /* Install breakpoints the user toggled before Run.  e_make_breakpoint already
+    recorded them as (file, line) in the e_d_*brpts arrays; translate each to a
+    full path the adapter can resolve. */
+ for (i = 0; i < e_d_nbrpts; i++)
+ {
+  char *full = e_mkfilename(f->dirct, e_d_sbrpts[i]);
+  e_dap_add_breakpoint(g_dap, full ? full : e_d_sbrpts[i], e_d_ybrpts[i]);
+  if (full)
+   FREE(full);
+ }
+ e_deb_type = DEB_DAP;
+ if (e_dap_run(g_dap) != 0)           /* launch + configure + run to entry */
+ {
+  e_error("Go program failed to start under dlv.", 0, f->fb);
+  e_d_dap_quit(f);
+  return(-1);
+ }
+ e_d_swtch = 3;
+ g_dap_just_started = 1;              /* the entry stop counts as the 1st Run */
+ return(0);
+}
+
+/* Ctrl-G R: run, or continue from the current stop.  The very first Run is
+   the entry stop already reported by e_d_dap_start -- stay there when the user
+   has no breakpoints (matching gdb's temp-break-at-main), continue otherwise. */
+static int e_d_dap_run(FENSTER *f)
+{
+ if (!g_dap && e_d_dap_start(f) < 0)
+  return(-1);
+ if (g_dap_just_started)
+ {
+  g_dap_just_started = 0;
+  if (e_d_nbrpts <= 0)
+   return(0);                         /* no breakpoints: rest at the entry */
+ }
+ e_dap_step(g_dap, "continue");
+ if (e_dap_ended(g_dap))
+  e_d_dap_quit(f);
+ return(0);
+}
+
+/* F8 (sw!=0 -> step over) / F7 (sw==0 -> step into).  The first step after a
+   fresh start lands on the entry stop without advancing, like the text
+   backends; subsequent steps issue the DAP verb. */
+static int e_d_dap_step(FENSTER *f, int sw)
+{
+ if (!g_dap)
+  return(-1);
+ if (g_dap_just_started)
+ {
+  g_dap_just_started = 0;
+  return(0);
+ }
+ e_dap_step(g_dap, sw ? "next" : "stepIn");
+ if (e_dap_ended(g_dap))
+  e_d_dap_quit(f);
+ return(0);
+}
+
+/* Rebuild the Watches window with current values via evaluate(context=watch).
+   Mirrors e_d_p_watches's window handling but sources each value from the
+   adapter instead of a debugger pipe. */
+static int e_d_dap_watches(FENSTER *f, int sw)
+{
+ ECNT *cn = f->ed;
+ BUFFER *b;
+ int iw, l;
+ char *val, *line;
+
+ e_d_switch_out(0);
+ for (iw = cn->mxedt; iw > 0 && strcmp(cn->f[iw]->datnam, "Watches"); iw--)
+  ;
+ if (iw == 0 && !e_d_nwtchs)
+ {
+  e_rep_win_tree(cn);
+  return(0);
+ }
+ else if (iw == 0)
+ {
+  if (e_edit(cn, "Watches"))
+   return(-1);
+  iw = cn->mxedt;
+ }
+ f = cn->f[iw];
+ b = cn->f[iw]->b;
+ e_p_red_buffer(b);
+ FREE(b->bf[0].s);
+ b->mxlines = 0;
+ for (l = 0; l < e_d_nwtchs; l++)
+ {
+  val = g_dap ? e_dap_evaluate(g_dap, e_d_swtchs[l]) : NULL;
+  line = WpeMalloc(strlen(e_d_swtchs[l]) + (val ? strlen(val) : 13) + 4);
+  if (val)
+   sprintf(line, "%s: %s", e_d_swtchs[l], val);
+  else
+   sprintf(line, "%s: <no value>", e_d_swtchs[l]);
+  e_d_nrwtchs[l] = b->mxlines;
+  print_to_end_of_buffer(b, line, b->mx.x);
+  WpeFree(line);
+  if (val)
+   free(val);
+ }
+ e_new_line(b->mxlines, b);
+ fk_cursor(1);
+ if (sw && iw != cn->mxedt)
+  e_switch_window(cn->edt[iw], cn->f[cn->mxedt]);
+ else
+  e_rep_win_tree(cn);
+ return(0);
+}
+
 int e_start_debug(FENSTER *f)
 {
  ECNT *cn = f->ed;
@@ -2853,6 +3112,12 @@ int e_start_debug(FENSTER *f)
   e_switch_window(cn->edt[i], cn->f[cn->mxedt]);
   f = cn->f[cn->mxedt];
  }
+ /* DAP-debugged languages (Go, ...) are built and launched by the adapter
+    (e.g. `dlv dap` compiles the package itself), so we bypass xwpe's compiler
+    pipeline entirely -- no e_p_make, no e_exec_deb.  Route to the DAP bridge,
+    which opens a reverse-TCP session and runs to the first stop. */
+ if (e_d_dap_window_is_go(f))
+  return(e_d_dap_start(f));
  if (e_p_make(f))
   return(-1);
  /* Full path (e_check_c_file_w), not bare datnam: the dialect sniff must open
@@ -3084,6 +3349,11 @@ int e_deb_run(FENSTER *f)
   if (ret == -1) {  e_show_error(0, f);  return(ret);  }
   return(e_error(e_d_msg[ERR_CANTDEBUG], 0, f->fb));
  }
+ /* DAP backend: e_run_debug -> e_start_debug already opened the adapter and
+    stopped at the entry function.  Continue to the first user breakpoint (or
+    program end) through the bridge; the pipe/pty machinery below is gdb-only. */
+ if (e_deb_type == DEB_DAP)
+  return(e_d_dap_run(f));
  /* Interpreted debuggers (jdb, pdb) don't need tty redirect */
  jdb_trace("e_deb_run: tty check, e_deb_type=%d, e_d_tty='%s'\n",
            e_deb_type, e_d_tty);
@@ -3676,6 +3946,8 @@ int e_d_step_next(FENSTER *f, int sw)
  }
  e_d_delbreak(f);
  e_d_switch_out(1);
+ if (e_deb_type == DEB_DAP)
+  return e_d_dap_step(f, sw);        /* sw -> "next" (over), else "stepIn" */
  if (e_deb_type == DEB_A68G)
   return e_d_a68g_do_step(f, sw);   /* line-granular Step Over */
  if (sw && (e_deb_type == DEB_GDB || e_deb_type == DEB_PDB)) e_d_send_cmd("n\n");
