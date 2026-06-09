@@ -126,6 +126,7 @@ extern BUFFER *e_p_w_buffer;
 extern char *att_no;
 extern char *e_tmp_dir;
 extern int e_algol68_use_ga68_in(const char *dir, const char *name);
+extern int e_check_c_file_w(FENSTER *fw);
 
 #ifdef NOTPARM
 /* char *tparm(); */
@@ -2854,8 +2855,13 @@ int e_start_debug(FENSTER *f)
  }
  if (e_p_make(f))
   return(-1);
+ /* Full path (e_check_c_file_w), not bare datnam: the dialect sniff must open
+    the source so e_s_prog matches what e_p_make just built.  With a bare name
+    for a file outside the cwd the sniff fails, e_s_prog falls back to a68g
+    (comp_sw 1), and the gdb branch below then omits the ".e" suffix -- gdb is
+    launched on a non-existent binary ("No symbol table is loaded"). */
  for (i = cn->mxedt; i > 0; i--)
-  if (e_check_c_file(cn->f[i]->datnam))
+  if (e_check_c_file_w(cn->f[i]))
    break;
  if (i > 0)
  {
@@ -2937,7 +2943,7 @@ int e_start_debug(FENSTER *f)
        full path so pdb can find it from any working directory. */
     int _fi;
     for (_fi = cn->mxedt; _fi > 0; _fi--)
-     if (e_check_c_file(cn->f[_fi]->datnam)) break;
+     if (e_check_c_file_w(cn->f[_fi])) break;
     if (_fi > 0)
      snprintf(estr, sizeof(estr), "%s/%s", cn->f[_fi]->dirct, cn->f[_fi]->datnam);
     else

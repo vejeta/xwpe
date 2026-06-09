@@ -632,8 +632,9 @@ int e_run(FENSTER *f)
    the source to read its stropping, which fails on a bare window name when the
    file lives outside the current directory (e.g. "wpe sub/dir/foo.a68") -- so
    it would misdetect the dialect and pick the wrong compiler.  Returns the
-   matching compiler index (1-based) or 0. */
-static int e_check_c_file_w(FENSTER *fw)
+   matching compiler index (1-based) or 0.  Shared with the debugger start
+   (we_debug.c), which must set e_s_prog from the same correct dialect. */
+int e_check_c_file_w(FENSTER *fw)
 {
  char *full = e_mkfilename(fw->dirct, fw->datnam);
  int matched = e_check_c_file(full ? full : fw->datnam);

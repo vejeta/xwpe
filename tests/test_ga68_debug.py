@@ -65,3 +65,34 @@ def test_ga68_gdb_run_and_step(tmp_path):
         assert stepped > start, \
             "F8 should advance to a later source line (%d -> %d):\n%s" \
             % (start, stepped, _text(w))
+
+
+def test_ga68_gdb_debug_from_subdirectory(tmp_path):
+    """Debug a modern .a68 that lives in a SUBDIRECTORY (cwd != file's dir).
+
+    Regression for the "No symbol table is loaded" bug: e_start_debug re-detected
+    the dialect from the bare window name, so for a file outside the cwd the sniff
+    failed, e_s_prog fell back to a68g (comp_sw 1) while the debugger was gdb, and
+    the gdb branch then dropped the ".e" suffix -- gdb was launched on a missing
+    binary.  Here the ga68 binary must load (no such error) and the debugger must
+    stop on a source line that F8 then advances."""
+    (tmp_path / "src").mkdir()
+    with WpeSession(str(tmp_path), PROG, filename="src/step.a68", wait=2.0) as w:
+        w.key(CTRL_G, "r", delay=3.0)
+        time.sleep(2.0)
+        w._drain(1.0)
+        assert w.alive(), "wpe died starting gdb on the subdir ga68 binary"
+        text = _text(w)
+        assert "No symbol table" not in text, \
+            "gdb was launched on a missing binary:\n%s" % text
+        start = _status_line_no(w)
+        assert start > 0, \
+            "debugger should stop on a source line (status:\n%s)" % _text(w)
+
+        w.key(F8, delay=2.5)
+        w._drain(1.0)
+        assert w.alive(), "wpe died stepping the subdir ga68 program"
+        stepped = _status_line_no(w)
+        assert stepped > start, \
+            "F8 should advance to a later source line (%d -> %d):\n%s" \
+            % (start, stepped, _text(w))

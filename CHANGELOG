@@ -213,6 +213,13 @@ Changes
   modern file fell through to a68g, which rejected it ("error in quoted
   bold tag").  Compile (e_comp) and both debug entry points now pass the
   full path.  Guarded by tests/test_ga68.py.
+* Fixed: debugging a ga68 file outside the current directory raised gdb's
+  "No symbol table is loaded".  e_start_debug re-detected the dialect from
+  the bare window name, so the sniff failed, e_s_prog fell back to a68g
+  (comp_sw 1) while the debugger was gdb, and the gdb branch then dropped
+  the ".e" suffix -- gdb was launched on a non-existent binary.  It now
+  resolves the dialect from the full path (shared e_check_c_file_w), so the
+  compiled binary loads and F8 steps.  Guarded by tests/test_ga68_debug.py.
 
   Algol 68 syntax highlighting:
 * .a68 / .alg files now highlight in both wpe (ncurses) and xwpe (Xft).
