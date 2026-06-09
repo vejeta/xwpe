@@ -5412,7 +5412,7 @@ static int e_lsp_pick(FENSTER *f, const char *title, const char *const *labels,
 {
  W_OPTSTR *o;
  char name[80];
- int i, sel = -1, vis, mxlen = 0;
+ int i, sel = -1, vis, mxlen = 0, titlen, w;
 
  vis = n < 16 ? n : 16;
  if (n > vis)
@@ -5424,17 +5424,30 @@ static int e_lsp_pick(FENSTER *f, const char *title, const char *const *labels,
    mxlen = strlen(labels[i]);
  if (mxlen > 52)
   mxlen = 52;
+ /* Width must hold BOTH the widest row (label + the "( ) " radio prefix) AND
+    the title drawn in the top border -- otherwise a longer title is clipped
+    ("Code lenses" -> "Code ...").  Take the larger. */
+ titlen = strlen(name);
+ w = mxlen + 4;
+ if (titlen + 2 > w)
+  w = titlen + 2;
  o = e_init_opt_kst(f);
  if (!o)
   return(-1);
  o->xa = 8;
  o->ya = 3;
- o->xe = o->xa + mxlen + 8;
+ o->xe = o->xa + w + 4;
  o->ye = o->ya + vis + 3;
  o->bgsw = 0;
  o->name = name;
+ /* Each radio option needs a UNIQUE NON-ZERO switch id: e_get_opt_sw_spatial
+    returns the focused widget's sw and treats 0 as "not found", so all-zero
+    options leave the dialog unable to take initial focus -- its modal loop then
+    never reads input and spins at 100% CPU.  Use ids well above the key-code
+    range (Alt-keys/cursor keys are < 340) so they never collide with a real
+    keypress (navigation is by arrows; these ids are focus handles only). */
  for (i = 0; i < vis; i++)
-  e_add_pswstr(0, 3, 1 + i, 0, 0, 0, (char *)labels[i], o);
+  e_add_pswstr(0, 3, 1 + i, -1, 10001 + i, 0, (char *)labels[i], o);
  e_add_bttstr((o->xe - o->xa - 4) / 2, o->ye - o->ya - 1, 0, AltO, "Ok", NULL, o);
  if (e_opt_kst(o) != WPE_ESC)
   sel = o->pstr[0]->num;
@@ -5472,7 +5485,7 @@ static int e_lsp_ui_complete(FENSTER *f)
 
  for (i = 0; i < n; i++)
   labels[i] = items[i].label;
- sel = e_lsp_pick(f, "Completion", labels, n);
+ sel = e_lsp_pick(f, "Completion - Enter to insert", labels, n);
  if (sel < 0)
   return(0);
 
@@ -5605,7 +5618,7 @@ static int e_lsp_ui_codelens(FENSTER *f)
            lenses[i].title, lenses[i].line + 1);
   labels[i] = rows[i];
  }
- sel = e_lsp_pick(f, "Code lenses", labels, n);
+ sel = e_lsp_pick(f, "Code lenses - Enter to go", labels, n);
  if (sel < 0)
   return(0);
  e_d_goto_break(g_lsp_file, lenses[sel].line + 1, f);
@@ -5627,7 +5640,7 @@ static int e_lsp_ui_outline(FENSTER *f)
  {  e_error("No symbols.", 0, f->fb);  return(0);  }
  for (i = 0; i < n; i++)
   labels[i] = syms[i].name;
- sel = e_lsp_pick(f, "Outline", labels, n);
+ sel = e_lsp_pick(f, "File symbols - Enter to go", labels, n);
  if (sel < 0)
   return(0);
  e_d_goto_break(g_lsp_file, syms[sel].line + 1, f);
@@ -5663,7 +5676,7 @@ static int e_lsp_ui_workspace_symbols(FENSTER *f)
            syms[i].name, base, syms[i].line + 1);
   labels[i] = rows[i];
  }
- sel = e_lsp_pick(f, "Workspace symbols", labels, n);
+ sel = e_lsp_pick(f, "Workspace symbols - Enter to go", labels, n);
  if (sel < 0)
   return(0);
  jumpfile = syms[sel].path ? syms[sel].path : g_lsp_file;
@@ -5690,7 +5703,7 @@ static int e_lsp_ui_code_actions(FENSTER *f)
  {  e_error("No code actions here.", 0, f->fb);  return(0);  }
  for (i = 0; i < n; i++)
   labels[i] = acts[i].title;
- sel = e_lsp_pick(f, "Code actions", labels, n);
+ sel = e_lsp_pick(f, "Code actions - Enter to apply", labels, n);
  if (sel < 0)
   return(0);
  if (!acts[sel].has_edit)
