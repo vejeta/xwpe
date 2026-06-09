@@ -218,13 +218,19 @@ all; the pyte tests are run from `tests/`.
 A `DAP_LANGS` row can name a preferred adapter **and** an alternative
 (`argv` + `argv_alt`).  Rust lists `gdb --interpreter=dap` first and `lldb-dap`
 as the alternative; both ride the same stdio transport with no engine change.
-`e_d_dap_choose_argv()` picks at session start:
+`e_d_dap_choose_argv()` picks at session start, in order:
 
 1. `XWPE_DAP_ADAPTER=<substring>` — if set and it names an *installed*
-   candidate, force it (e.g. `XWPE_DAP_ADAPTER=lldb` to prefer lldb-dap even
-   where gdb exists — the "moving to lldb" path).
-2. otherwise the first candidate in `PATH` — so a **gdb-less macOS box
+   candidate, force it (e.g. `XWPE_DAP_ADAPTER=lldb` — scripts/CI).
+2. the saved dialog choice `e_dap_adapter` — set in **Debug → debugger Options**
+   (Ctrl-G O: Auto / gdb / lldb radios), persisted in `~/.xwpe/xwperc` as
+   `DAPAdapter : N` via the `[Programming]` section (`WpeWriteProgramming` /
+   the option reader in we_opt.c).  `1`=gdb, `2`=lldb, matched by name.
+3. otherwise the first candidate in `PATH` — so a **gdb-less macOS box
    auto-selects lldb-dap**, while Linux defaults to gdb.
+
+The env value and the saved choice feed the *same* name-matching path, so the
+selection is robust to the descriptor's primary/alt order.
 
 lldb-dap is the native Rust/C/C++ debugger on macOS and works identically here
 (it even reports the mangled Rust symbol, e.g. `main::main::h…`).

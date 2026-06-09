@@ -89,6 +89,12 @@ enum {
 };
 
 int e_deb_type = 0, e_deb_mode = 0;
+/* Which DAP adapter to prefer for languages that offer a choice (Rust: gdb vs
+   lldb-dap).  Persisted in xwperc ("DAPAdapter : N"), set via the Debug ->
+   debugger Options dialog, and overridable at run time by $XWPE_DAP_ADAPTER.
+   0 = auto-detect (first in PATH), 1 = prefer gdb, 2 = prefer lldb-dap. */
+enum { DAP_ADAPTER_AUTO = 0, DAP_ADAPTER_GDB = 1, DAP_ADAPTER_LLDB = 2 };
+int e_dap_adapter = DAP_ADAPTER_AUTO;
 char e_d_out_str[SVLINES][256];
 char *e_d_sp[SVLINES];
 char e_d_tty[80];
@@ -2921,6 +2927,13 @@ static char *const *e_d_dap_choose_argv(const e_d_dap_lang *lang)
  int primary_ok = (e_test_command(lang->argv[0]) == 0);
  int alt_ok = (lang->argv_alt && e_test_command(lang->argv_alt[0]) == 0);
 
+ /* Preference order: $XWPE_DAP_ADAPTER (env, for CI/scripts) wins, else the
+    saved dialog choice e_dap_adapter, else auto-detect (first in PATH).  Both
+    the env value and the saved choice are matched by name against the candidate
+    adapters, so the order is robust to the descriptor's primary/alt layout. */
+ if (!pref || !*pref)
+  pref = (e_dap_adapter == DAP_ADAPTER_GDB)  ? "gdb"  :
+         (e_dap_adapter == DAP_ADAPTER_LLDB) ? "lldb" : NULL;
  if (pref && *pref)
  {
   if (alt_ok && strstr(lang->argv_alt[0], pref))
@@ -4839,7 +4852,7 @@ int e_deb_options(FENSTER *f)
  W_OPTSTR *o = e_init_opt_kst(f);
 
  if (!o) return(-1);
- o->xa = 20;  o->ya = 4;  o->xe = 60;  o->ye = 16;
+ o->xa = 20;  o->ya = 4;  o->xe = 60;  o->ye = 18;
  o->bgsw = 0;
  o->name = "Debug-Options";
  o->crsw = AltO;
@@ -4878,8 +4891,15 @@ int e_deb_options(FENSTER *f)
  }
  e_add_pswstr(1, 21, 3, 0, AltN, 0, "Normal     ", o);
  e_add_pswstr(1, 21, 4, 0, AltF, e_deb_mode, "Full Screen", o);
- e_add_bttstr(10, 10, 1, AltO, " Ok ", NULL, o);
- e_add_bttstr(25, 10, -1, WPE_ESC, "Cancel", NULL, o);
+ /* DAP adapter preference (Rust: gdb vs lldb-dap).  "Auto" picks the first one
+    found in PATH -- lldb-dap on a gdb-less macOS box, gdb on Linux.  Persisted
+    in xwperc; $XWPE_DAP_ADAPTER still overrides at run time. */
+ e_add_txtstr(20, 6, "DAP adapter:", o);
+ e_add_pswstr(2, 21, 7, 0, AltU, 0, "Auto", o);
+ e_add_pswstr(2, 21, 8, 0, AltB, 0, "gdb ", o);
+ e_add_pswstr(2, 21, 9, 0, AltL, e_dap_adapter, "lldb", o);
+ e_add_bttstr(10, 11, 1, AltO, " Ok ", NULL, o);
+ e_add_bttstr(25, 11, -1, WPE_ESC, "Cancel", NULL, o);
  ret = e_opt_kst(o);
  if (ret != WPE_ESC)
  {
@@ -4898,6 +4918,7 @@ int e_deb_options(FENSTER *f)
 #endif
   }
   e_deb_mode = o->pstr[1]->num;
+  e_dap_adapter = o->pstr[2]->num;    /* 0=Auto, 1=gdb, 2=lldb-dap */
  }
  freeostr(o);
  return(0);

@@ -27,6 +27,7 @@ char *e_hlp_str[E_HLP_NUM];
 extern char *info_file;
 #ifdef DEBUGGER
 extern int e_deb_type;
+extern int e_dap_adapter;
 #endif
 extern FARBE *u_fb, *x_fb;
 
@@ -971,6 +972,8 @@ int WpeReadProgramming(ECNT *cn, char *section, char *option, char *value)
   e_prog.sys_include = WpeStrdup(value);
  else if (WpeStrccmp("Debugger", option) == 0)
   e_deb_type = atoi(value);
+ else if (WpeStrccmp("DAPAdapter", option) == 0)
+  e_dap_adapter = atoi(value);
  return 0;
 }
 
@@ -981,6 +984,7 @@ int WpeWriteProgramming(ECNT *cn, char *section, FILE *opt_file)
  fprintf(opt_file, "Exedir : %s\n", e_prog.exedir);
  fprintf(opt_file, "IncludePath : %s\n", e_prog.sys_include);
  fprintf(opt_file, "Debugger : %d\n", e_deb_type);
+ fprintf(opt_file, "DAPAdapter : %d\n", e_dap_adapter);
  return 0;
 }
 
