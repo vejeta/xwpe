@@ -66,6 +66,13 @@ typedef struct {
  int   has_edit;  /* 1 if a direct WorkspaceEdit is attached         */
 } e_lsp_code_action;
 
+/* One code lens (engine-owned): a "run | debug" / "test" / "N references"
+ * annotation the server attaches above a definition. */
+typedef struct {
+ char *title;     /* the lens label ("run | debug", "test", ...)     */
+ int   line;      /* 0-based line the lens annotates                 */
+} e_lsp_code_lens;
+
 /* Spawn the language server (argv NULL-terminated, e.g. {"metals",0}), run the
  * initialize/initialized handshake with headless InitializationOptions, cwd =
  * root_dir.  `lang` is the LSP languageId ("scala", "c", …) used on didOpen.
@@ -150,6 +157,14 @@ int e_lsp_references(e_lsp_session *s, const char *path, int line, int character
  * than references -- single file, for "highlight all uses" as you rest on a name. */
 int e_lsp_document_highlight(e_lsp_session *s, const char *path, int line,
                              int character, e_lsp_location *locs, int max);
+
+/* textDocument/codeLens (resolving each lens that needs it): the run/test/
+ * reference annotations the server attaches to definitions in `path`.  Fills up
+ * to `max` lenses (engine-owned titles + the line each annotates); returns the
+ * count (>=0) or -1.  Discovery only -- running a lens reuses xwpe's existing
+ * Scala BSP/DAP path (see Debugging). */
+int e_lsp_code_lenses(e_lsp_session *s, const char *path,
+                      e_lsp_code_lens *lenses, int max);
 
 /* textDocument/documentSymbol: the file's outline (objects, defs, vals, ...),
  * flattened depth-first.  Fills up to `max` symbols (engine-owned names);

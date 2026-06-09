@@ -60,6 +60,13 @@ meaning, not text.  Press it off any identifier to clear the highlight.
 @item Alt-Q O
 Outline: list the file's symbols (objects, defs, vals, ...) in a popup; pick
 one with the arrows and @key{RET} to jump to it.
+@item Alt-Q K
+Code lenses: the @samp{run}/@samp{debug}/@samp{test} and reference-count
+annotations the server attaches to definitions (main methods, test suites), in
+a popup as @samp{@var{label}  (line @var{N})}; selecting one jumps to that
+definition.  To actually run or test a Scala main, start the debugger
+(@kbd{Ctrl-G T}), which drives the same build-server path the @samp{run} lens
+would use (@pxref{Debugging}).
 @item Alt-Q W
 Workspace symbol search: you are prompted for a query, then a popup lists
 matching symbols from across the @emph{whole project} (each shown with its

@@ -223,6 +223,20 @@ int main(void)
   if (nh < 2) { rc = fail("document highlight on f should find the decl + uses"); goto close; }
  }
 
+ /* code lenses: Metals attaches a run/debug lens to the `main` method.  Resolve
+    is exercised inside the engine; we just confirm at least one lens with a
+    label comes back. */
+ {
+  e_lsp_code_lens cl[32];
+  int nl = e_lsp_code_lenses(s, scala, cl, 32), k;
+  printf("  CODE-LENSES: %d%s%s\n", nl, nl > 0 ? ", e.g. " : "",
+         nl > 0 ? cl[0].title : "");
+  if (nl < 1) { rc = fail("expected at least one code lens (run main)"); goto close; }
+  for (k = 0; k < nl; k++)
+   if (!cl[k].title || !cl[k].title[0])
+   { rc = fail("a code lens came back with no label"); goto close; }
+ }
+
  /* diagnostics carry a RANGE: push a buffer with a type error and confirm the
     server reports it with a non-empty, single-line span (what the inline marks
     recolor).  Reuses this session -- no second server start. */
@@ -249,7 +263,8 @@ int main(void)
 
  printf("PASS: LSP engine vs real Metals (hover/definition/implementation/"
         "type-definition/completion/references/document-highlight/outline/"
-        "signature/rename/format/workspace-symbols/code-actions/diagnostics)\n");
+        "code-lenses/signature/rename/format/workspace-symbols/code-actions/"
+        "diagnostics)\n");
 
 close:
  e_lsp_close(s);

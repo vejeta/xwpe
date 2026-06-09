@@ -5568,6 +5568,36 @@ static int e_lsp_ui_highlight(FENSTER *f)
  return(0);
 }
 
+/* AltQ K -- code lenses: the run/test/reference annotations Metals attaches to
+   definitions, listed in a popup as "<label>  (line N)"; selecting one jumps to
+   that definition.  To actually run/test a Scala main, use the debugger
+   (Ctrl-G T) which drives the same BSP/DAP path Metals' "run" lens would. */
+static int e_lsp_ui_codelens(FENSTER *f)
+{
+ static e_lsp_code_lens lenses[64];
+ static char rows[64][160];
+ const char *labels[64];
+ int n, i, sel;
+
+ if (e_lsp_ensure(f) < 0)
+  return(-1);
+ e_lsp_sync(f);
+ n = e_lsp_code_lenses(g_lsp, g_lsp_file, lenses, 64);
+ if (n <= 0)
+ {  e_error("No code lenses here.", 0, f->fb);  return(0);  }
+ for (i = 0; i < n; i++)
+ {
+  snprintf(rows[i], sizeof(rows[i]), "%s  (line %d)",
+           lenses[i].title, lenses[i].line + 1);
+  labels[i] = rows[i];
+ }
+ sel = e_lsp_pick(f, "Code lenses", labels, n);
+ if (sel < 0)
+  return(0);
+ e_d_goto_break(g_lsp_file, lenses[sel].line + 1, f);
+ return(0);
+}
+
 /* AltQ O -- the file outline: pick a symbol from a popup and jump to it. */
 static int e_lsp_ui_outline(FENSTER *f)
 {
@@ -5843,6 +5873,8 @@ int e_lsp_ui_inp(FENSTER *f)
    return(e_lsp_ui_references(f));
   case 'l': case ('l' - 'a' + 1):
    return(e_lsp_ui_highlight(f));
+  case 'k': case ('k' - 'a' + 1):
+   return(e_lsp_ui_codelens(f));
   case 's': case ('s' - 'a' + 1):
    return(e_lsp_ui_signature(f));
   case 'w': case ('w' - 'a' + 1):

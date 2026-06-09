@@ -325,6 +325,11 @@ Changes
     found-word colour); press off an identifier to clear (IntelliJ's auto
     identifier highlight).
   - Alt-Q O: outline -- the file's symbols in a popup; pick one to jump to it.
+  - Alt-Q K: code lenses -- the run/debug/test and reference-count annotations
+    Metals attaches to definitions, in a popup; selecting one jumps to it.  (To
+    actually run a Scala main, use the debugger, Ctrl-G T, which drives the same
+    build-server path.)  Enabled by advertising debuggingProvider in the Metals
+    initialize handshake.
   - Alt-Q W: workspace symbol search -- prompt for a query, then jump to any
     matching symbol from across the whole project (IntelliJ's Go to Symbol).
   - Alt-Q A: code actions -- the quick-fixes/refactors the server offers at the

@@ -38,6 +38,8 @@ struct e_lsp_session {
  e_lsp_code_action acts[64];        /* engine-owned code-action result      */
  int          nacts;
  struct json_object *acts_raw;      /* last codeAction array, kept for apply */
+ e_lsp_code_lens lenses[64];        /* engine-owned code-lens result        */
+ int          nlenses;
 };
 
 /* ---- transport --------------------------------------------------------- */
@@ -354,6 +356,11 @@ static struct json_object *lsp_init_options(void)
  json_object_object_add(o, "executeClientCommandProvider", json_object_new_boolean(0));
  json_object_object_add(o, "didFocusProvider", json_object_new_boolean(0));
  json_object_object_add(o, "isHttpEnabled", json_object_new_boolean(0));
+ /* Advertise that the client can start debug sessions: this is what makes
+    Metals emit the run/test code lenses (Alt-Q K), and it is accurate -- xwpe
+    runs Scala mains over the same BSP/DAP path (we_bsp.c).  It only affects lens
+    EMISSION; the run command is executed solely when the client invokes it. */
+ json_object_object_add(o, "debuggingProvider", json_object_new_boolean(1));
  json_object_object_add(o, "fallbackScalaVersion", json_object_new_string("3.3.7"));
  return o;
 }
@@ -894,6 +901,74 @@ int e_lsp_document_highlight(e_lsp_session *s, const char *path, int line,
  return out;
 }
 
+static void lsp_free_lenses(e_lsp_session *s)
+{
+ int i;
+ for (i = 0; i < s->nlenses; i++)
+  free(s->lenses[i].title);
+ s->nlenses = 0;
+}
+
+int e_lsp_code_lenses(e_lsp_session *s, const char *path,
+                      e_lsp_code_lens *lenses, int max)
+{
+ char abspath[PATH_MAX], uri[PATH_MAX + 8];
+ struct json_object *args, *doc, *resp, *result;
+ int id, i, n, out = 0;
+
+ if (!s)
+  return -1;
+ lsp_free_lenses(s);
+ if (!realpath(path, abspath))
+  snprintf(abspath, sizeof(abspath), "%s", path);
+ snprintf(uri, sizeof(uri), "file://%s", abspath);
+ args = json_object_new_object();
+ doc = json_object_new_object();
+ json_object_object_add(doc, "uri", json_object_new_string(uri));
+ json_object_object_add(args, "textDocument", doc);
+ id = ++s->id;
+ lsp_send(s, id, "textDocument/codeLens", args);
+ resp = lsp_pump(s, id, NULL, LSP_TMO_REQ);
+ if (!resp)
+  return -1;
+ result = obj_obj(resp, "result");
+ n = (result && json_object_is_type(result, json_type_array))
+     ? json_object_array_length(result) : 0;
+ for (i = 0; i < n && out < max &&
+             out < (int)(sizeof(s->lenses)/sizeof(s->lenses[0])); i++)
+ {
+  struct json_object *lens = json_object_array_get_idx(result, i);
+  struct json_object *rng = obj_obj(lens, "range");
+  struct json_object *st = rng ? obj_obj(rng, "start") : NULL;
+  struct json_object *cmd = obj_obj(lens, "command");
+  struct json_object *rresp = NULL;
+  const char *title;
+  if (!st)
+   continue;
+  if (!cmd)                            /* unresolved: ask the server to fill it */
+  {
+   int rid = ++s->id;
+   lsp_send(s, rid, "codeLens/resolve", json_object_get(lens));
+   rresp = lsp_pump(s, rid, NULL, LSP_TMO_REQ);
+   if (rresp)
+    cmd = obj_obj(obj_obj(rresp, "result"), "command");
+  }
+  title = cmd ? obj_str(cmd, "title") : NULL;
+  if (title && *title)
+  {
+   s->lenses[s->nlenses].title = strdup(title);
+   s->lenses[s->nlenses].line = obj_int(st, "line", 0);
+   lenses[out] = s->lenses[s->nlenses];
+   s->nlenses++;
+   out++;
+  }
+  if (rresp)
+   json_object_put(rresp);
+ }
+ json_object_put(resp);
+ return out;
+}
+
 /* Flatten a DocumentSymbol[]/SymbolInformation[] array depth-first into syms. */
 static void lsp_collect_symbols(e_lsp_session *s, struct json_object *arr,
                                 e_lsp_symbol *syms, int max, int *out)
@@ -1313,6 +1388,7 @@ void e_lsp_close(e_lsp_session *s)
  lsp_free_locs(s);
  lsp_free_syms(s);
  lsp_free_acts(s);
+ lsp_free_lenses(s);
  e_dap_reader_free(&s->rd);
  free(s);
 }
