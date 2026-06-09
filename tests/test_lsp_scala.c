@@ -104,7 +104,24 @@ int main(void)
         n > 0 ? items[0].label : "");
  if (n <= 0) { rc = fail("completion returned no items"); goto close; }
 
- printf("PASS: LSP engine vs real Metals (compile -> hover -> definition -> completion)\n");
+ /* references on the `f` use (line 5, char 6) -> declaration + several uses */
+ {
+  e_lsp_location locs[64];
+  int nr = e_lsp_references(s, scala, 5, 6, locs, 64);
+  printf("  REFERENCES f: %d\n", nr);
+  if (nr < 2) { rc = fail("references on f should find the decl + uses"); goto close; }
+ }
+
+ /* document outline -> at least the Factorial object / main */
+ {
+  e_lsp_symbol syms[64];
+  int ns = e_lsp_document_symbols(s, scala, syms, 64);
+  printf("  OUTLINE: %d symbols%s%s\n", ns, ns > 0 ? ", e.g. " : "",
+         ns > 0 ? syms[0].name : "");
+  if (ns < 1) { rc = fail("document outline returned no symbols"); goto close; }
+ }
+
+ printf("PASS: LSP engine vs real Metals (hover/definition/completion/references/outline)\n");
 
 close:
  e_lsp_close(s);

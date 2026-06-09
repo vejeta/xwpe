@@ -37,6 +37,21 @@ typedef struct {
  int   kind;      /* LSP CompletionItemKind (3 = function, 6 = variable…) */
 } e_lsp_completion_item;
 
+/* A source location (engine-owned path, valid until the next call/close). */
+typedef struct {
+ char *path;      /* filesystem path of the location's file */
+ int   line;      /* 0-based                                */
+ int   character; /* 0-based                                */
+} e_lsp_location;
+
+/* A document symbol for the outline (engine-owned name). */
+typedef struct {
+ char *name;      /* symbol name (object/def/val/...)        */
+ int   line;      /* 0-based line of the symbol              */
+ int   character; /* 0-based                                 */
+ int   kind;      /* LSP SymbolKind                          */
+} e_lsp_symbol;
+
 /* Spawn the language server (argv NULL-terminated, e.g. {"metals",0}), run the
  * initialize/initialized handshake with headless InitializationOptions, cwd =
  * root_dir.  `lang` is the LSP languageId ("scala", "c", …) used on didOpen.
@@ -72,6 +87,18 @@ int e_lsp_definition(e_lsp_session *s, const char *path, int line, int character
  * or -1 on error.  Items point at engine-owned memory (see e_lsp_completion_item). */
 int e_lsp_completion(e_lsp_session *s, const char *path, int line, int character,
                      e_lsp_completion_item *items, int max);
+
+/* textDocument/references: every use of the symbol at (line,character),
+ * including its declaration.  Fills up to `max` locations (engine-owned paths);
+ * returns the count (>=0) or -1. */
+int e_lsp_references(e_lsp_session *s, const char *path, int line, int character,
+                     e_lsp_location *locs, int max);
+
+/* textDocument/documentSymbol: the file's outline (objects, defs, vals, ...),
+ * flattened depth-first.  Fills up to `max` symbols (engine-owned names);
+ * returns the count (>=0) or -1. */
+int e_lsp_document_symbols(e_lsp_session *s, const char *path,
+                           e_lsp_symbol *syms, int max);
 
 /* shutdown/exit the server and reap it; frees the session. */
 void e_lsp_close(e_lsp_session *s);

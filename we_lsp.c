@@ -31,6 +31,10 @@ struct e_lsp_session {
  char         root_uri[PATH_MAX + 8];
  e_lsp_completion_item items[256];  /* engine-owned completion result      */
  int          nitems;
+ e_lsp_location locs[256];          /* engine-owned references result      */
+ int          nlocs;
+ e_lsp_symbol  syms[256];           /* engine-owned outline result         */
+ int          nsyms;
 };
 
 /* ---- transport --------------------------------------------------------- */
@@ -671,6 +675,133 @@ int e_lsp_completion(e_lsp_session *s, const char *path, int line, int character
  return out;
 }
 
+static void lsp_free_locs(e_lsp_session *s)
+{
+ int i;
+ for (i = 0; i < s->nlocs; i++)
+  free(s->locs[i].path);
+ s->nlocs = 0;
+}
+
+static void lsp_free_syms(e_lsp_session *s)
+{
+ int i;
+ for (i = 0; i < s->nsyms; i++)
+  free(s->syms[i].name);
+ s->nsyms = 0;
+}
+
+int e_lsp_references(e_lsp_session *s, const char *path, int line, int character,
+                     e_lsp_location *locs, int max)
+{
+ char abspath[PATH_MAX];
+ struct json_object *args, *ctx, *resp, *result;
+ int id, i, n, out = 0;
+
+ if (!s)
+  return -1;
+ lsp_free_locs(s);
+ if (!realpath(path, abspath))
+  snprintf(abspath, sizeof(abspath), "%s", path);
+ args = lsp_text_pos(s, abspath, line, character);
+ ctx = json_object_new_object();
+ json_object_object_add(ctx, "includeDeclaration", json_object_new_boolean(1));
+ json_object_object_add(args, "context", ctx);
+ id = ++s->id;
+ lsp_send(s, id, "textDocument/references", args);
+ resp = lsp_pump(s, id, NULL, LSP_TMO_REQ);
+ if (!resp)
+  return -1;
+ result = obj_obj(resp, "result");
+ n = (result && json_object_is_type(result, json_type_array))
+     ? json_object_array_length(result) : 0;
+ for (i = 0; i < n && out < max &&
+             out < (int)(sizeof(s->locs)/sizeof(s->locs[0])); i++)
+ {
+  struct json_object *loc = json_object_array_get_idx(result, i);
+  const char *uri = obj_str(loc, "uri");
+  struct json_object *rng = obj_obj(loc, "range");
+  struct json_object *st = rng ? obj_obj(rng, "start") : NULL;
+  if (!uri || !st)
+   continue;
+  s->locs[s->nlocs].path = strdup(uri_to_path(uri));
+  s->locs[s->nlocs].line = obj_int(st, "line", 0);
+  s->locs[s->nlocs].character = obj_int(st, "character", 0);
+  locs[out] = s->locs[s->nlocs];
+  s->nlocs++;
+  out++;
+ }
+ json_object_put(resp);
+ return out;
+}
+
+/* Flatten a DocumentSymbol[]/SymbolInformation[] array depth-first into syms. */
+static void lsp_collect_symbols(e_lsp_session *s, struct json_object *arr,
+                                e_lsp_symbol *syms, int max, int *out)
+{
+ int i, n = json_object_array_length(arr);
+
+ for (i = 0; i < n && *out < max &&
+             *out < (int)(sizeof(s->syms)/sizeof(s->syms[0])); i++)
+ {
+  struct json_object *sym = json_object_array_get_idx(arr, i);
+  const char *name = obj_str(sym, "name");
+  struct json_object *loc = obj_obj(sym, "location");   /* SymbolInformation */
+  struct json_object *rng, *st, *children;
+  if (loc)
+   rng = obj_obj(loc, "range");
+  else                                                  /* DocumentSymbol */
+  {
+   rng = obj_obj(sym, "selectionRange");
+   if (!rng)
+    rng = obj_obj(sym, "range");
+  }
+  st = rng ? obj_obj(rng, "start") : NULL;
+  if (name && st)
+  {
+   s->syms[s->nsyms].name = strdup(name);
+   s->syms[s->nsyms].line = obj_int(st, "line", 0);
+   s->syms[s->nsyms].character = obj_int(st, "character", 0);
+   s->syms[s->nsyms].kind = obj_int(sym, "kind", 0);
+   syms[*out] = s->syms[s->nsyms];
+   s->nsyms++;
+   (*out)++;
+  }
+  children = obj_obj(sym, "children");
+  if (children && json_object_is_type(children, json_type_array))
+   lsp_collect_symbols(s, children, syms, max, out);
+ }
+}
+
+int e_lsp_document_symbols(e_lsp_session *s, const char *path,
+                           e_lsp_symbol *syms, int max)
+{
+ char abspath[PATH_MAX], uri[PATH_MAX + 8];
+ struct json_object *args, *doc, *resp, *result;
+ int id, out = 0;
+
+ if (!s)
+  return -1;
+ lsp_free_syms(s);
+ if (!realpath(path, abspath))
+  snprintf(abspath, sizeof(abspath), "%s", path);
+ snprintf(uri, sizeof(uri), "file://%s", abspath);
+ args = json_object_new_object();
+ doc = json_object_new_object();
+ json_object_object_add(doc, "uri", json_object_new_string(uri));
+ json_object_object_add(args, "textDocument", doc);
+ id = ++s->id;
+ lsp_send(s, id, "textDocument/documentSymbol", args);
+ resp = lsp_pump(s, id, NULL, LSP_TMO_REQ);
+ if (!resp)
+  return -1;
+ result = obj_obj(resp, "result");
+ if (result && json_object_is_type(result, json_type_array))
+  lsp_collect_symbols(s, result, syms, max, &out);
+ json_object_put(resp);
+ return out;
+}
+
 void e_lsp_close(e_lsp_session *s)
 {
  if (!s)
@@ -705,6 +836,8 @@ void e_lsp_close(e_lsp_session *s)
   }
  }
  lsp_free_items(s);
+ lsp_free_locs(s);
+ lsp_free_syms(s);
  e_dap_reader_free(&s->rd);
  free(s);
 }

@@ -41,6 +41,12 @@ popup (e.g.@: @code{var f: Long}).
 Completion: offer candidates for the word under the cursor in a popup.  Move
 with the arrow keys, press @key{RET} to insert the selected candidate (it
 replaces the partial word), or @key{ESC} to cancel.
+@item Alt-Q R
+References: list every use of the symbol under the cursor (including its
+declaration) in the Messages window.
+@item Alt-Q O
+Outline: list the file's symbols (objects, defs, vals, ...) in a popup; pick
+one with the arrows and @key{RET} to jump to it.
 @end table
 
 The server starts lazily on the first @kbd{Alt-Q} action and is reused for the

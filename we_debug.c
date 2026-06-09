@@ -5280,6 +5280,71 @@ static int e_lsp_ui_complete(FENSTER *f)
  return(0);
 }
 
+/* AltQ R -- list every reference to the symbol under the cursor in Messages. */
+static int e_lsp_ui_references(FENSTER *f)
+{
+ BUFFER *b = f->b;
+ e_lsp_location locs[128];
+ char line[700];
+ int n, i;
+
+ if (e_lsp_ensure(f) < 0)
+  return(-1);
+ e_lsp_sync(f);
+ n = e_lsp_references(g_lsp, g_lsp_file, b->b.y, b->b.x, locs, 128);
+ if (n <= 0)
+ {  e_error("No references found.", 0, f->fb);  return(0);  }
+ snprintf(line, sizeof(line), "%d reference(s):", n);
+ e_d_p_message(line, f, 1);
+ for (i = 0; i < n; i++)
+ {
+  snprintf(line, sizeof(line), "%s:%d:%d", e_d_dap_basename(locs[i].path),
+           locs[i].line + 1, locs[i].character + 1);
+  e_d_p_message(line, f, 1);
+ }
+ return(0);
+}
+
+/* AltQ O -- the file outline: pick a symbol from a popup and jump to it. */
+static int e_lsp_ui_outline(FENSTER *f)
+{
+ e_lsp_symbol syms[128];
+ W_OPTSTR *o;
+ int n, i, sel = -1, vis, mxlen = 0;
+
+ if (e_lsp_ensure(f) < 0)
+  return(-1);
+ e_lsp_sync(f);
+ n = e_lsp_document_symbols(g_lsp, g_lsp_file, syms, 128);
+ if (n <= 0)
+ {  e_error("No symbols.", 0, f->fb);  return(0);  }
+ vis = n < 16 ? n : 16;
+ for (i = 0; i < vis; i++)
+  if ((int)strlen(syms[i].name) > mxlen)
+   mxlen = strlen(syms[i].name);
+ if (mxlen > 52)
+  mxlen = 52;
+ o = e_init_opt_kst(f);
+ if (!o)
+  return(-1);
+ o->xa = 8;
+ o->ya = 3;
+ o->xe = o->xa + mxlen + 8;
+ o->ye = o->ya + vis + 3;
+ o->bgsw = 0;
+ o->name = "Outline";
+ for (i = 0; i < vis; i++)
+  e_add_pswstr(0, 3, 1 + i, 0, 0, 0, syms[i].name, o);
+ e_add_bttstr((o->xe - o->xa - 4) / 2, o->ye - o->ya - 1, 0, AltO, "Ok", NULL, o);
+ if (e_opt_kst(o) != WPE_ESC)
+  sel = o->pstr[0]->num;
+ freeostr(o);
+ if (sel < 0 || sel >= vis)
+  return(0);
+ e_d_goto_break(g_lsp_file, syms[sel].line + 1, f);
+ return(0);
+}
+
 /* Disconnect the language server (called on editor exit). */
 void e_lsp_ui_shutdown(void)
 {
@@ -5302,6 +5367,10 @@ int e_lsp_ui_inp(FENSTER *f)
    return(e_lsp_ui_hover(f));
   case 'c': case ('c' - 'a' + 1):
    return(e_lsp_ui_complete(f));
+  case 'r': case ('r' - 'a' + 1):
+   return(e_lsp_ui_references(f));
+  case 'o': case ('o' - 'a' + 1):
+   return(e_lsp_ui_outline(f));
   case 'e': case ('e' - 'a' + 1):
    return(e_lsp_ui_diagnostics(f));
   default:

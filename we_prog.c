@@ -136,7 +136,8 @@ int e_prog_switch(FENSTER *f, int c)
   case CF9:
    e_run(f);
    break;
-  case AltQ:   /*  Alt Q  Query the language server (LSP: D def, H hover) */
+  case AltQ:   /*  Alt Q  Query the language server (LSP: D def, H hover,
+                  C complete, R references, O outline, E diagnostics) */
    e_lsp_ui_inp(f);
    break;
   case AltM:   /*  Alt M  Make */
