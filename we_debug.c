@@ -5060,28 +5060,47 @@ static void e_lsp_on_diag(const char *path, int line, int ch, int sev,
   e_d_p_message(buf, g_lsp_fenster, 1);
 }
 
-/* Read a whole file into a malloc'd NUL-terminated buffer (caller frees). */
-static char *e_lsp_slurp(const char *path)
+/* Serialize the editor buffer to a malloc'd NUL-terminated string (one '\n'
+   per line), so the language server sees the CURRENT text -- including unsaved
+   edits -- not the on-disk file.  Caller frees. */
+static char *e_lsp_buffer_text(FENSTER *f)
 {
- FILE *fp = fopen(path, "rb");
+ BUFFER *b = f->b;
+ size_t total = 1, off = 0;
  char *buf;
- long n;
+ int y;
 
- if (!fp)
+ for (y = 0; y < b->mxlines; y++)
+  total += (b->bf[y].s ? strlen(b->bf[y].s) : 0) + 1;
+ buf = malloc(total);
+ if (!buf)
   return(NULL);
- fseek(fp, 0, SEEK_END);
- n = ftell(fp);
- fseek(fp, 0, SEEK_SET);
- if (n < 0)
- {  fclose(fp);  return(NULL);  }
- buf = malloc((size_t)n + 1);
- if (buf)
+ for (y = 0; y < b->mxlines; y++)
  {
-  size_t r = fread(buf, 1, (size_t)n, fp);
-  buf[r] = '\0';
+  const char *line = b->bf[y].s ? b->bf[y].s : "";
+  size_t len = strlen(line);
+  memcpy(buf + off, line, len);
+  off += len;
+  buf[off++] = '\n';
  }
- fclose(fp);
+ buf[off] = '\0';
  return(buf);
+}
+
+/* Push the current buffer to the server (textDocument/didChange) so the next
+   request reflects unsaved edits. */
+static void e_lsp_sync(FENSTER *f)
+{
+ char *text;
+
+ if (!g_lsp)
+  return;
+ text = e_lsp_buffer_text(f);
+ if (text)
+ {
+  e_lsp_did_change(g_lsp, g_lsp_file, text);
+  free(text);
+ }
 }
 
 /* Lazily start the language server for f's file and surface its diagnostics.
@@ -5128,7 +5147,7 @@ static int e_lsp_ensure(FENSTER *f)
   g_lsp_file[0] = '\0';
   return(-1);
  }
- text = e_lsp_slurp(path);
+ text = e_lsp_buffer_text(f);
  e_lsp_did_open(g_lsp, path, text ? text : "");
  if (text)
   free(text);
@@ -5154,6 +5173,7 @@ static int e_lsp_ui_definition(FENSTER *f)
 
  if (e_lsp_ensure(f) < 0)
   return(-1);
+ e_lsp_sync(f);
  if (e_lsp_definition(g_lsp, g_lsp_file, b->b.y, b->b.x,
                       outpath, sizeof(outpath), &oline, &ochar) != 0)
  {  e_error("No definition found.", 0, f->fb);  return(0);  }
@@ -5169,6 +5189,7 @@ static int e_lsp_ui_hover(FENSTER *f)
 
  if (e_lsp_ensure(f) < 0)
   return(-1);
+ e_lsp_sync(f);
  hov = e_lsp_hover(g_lsp, g_lsp_file, b->b.y, b->b.x);
  if (!hov || !*hov)
  {  if (hov) free(hov);  e_error("No hover information.", 0, f->fb);  return(0);  }
@@ -5200,6 +5221,7 @@ static int e_lsp_ui_complete(FENSTER *f)
 
  if (e_lsp_ensure(f) < 0)
   return(-1);
+ e_lsp_sync(f);
  n = e_lsp_completion(g_lsp, g_lsp_file, b->b.y, b->b.x, items, 64);
  if (n <= 0)
  {  e_error("No completions.", 0, f->fb);  return(0);  }

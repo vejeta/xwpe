@@ -27,6 +27,7 @@ struct e_lsp_session {
  e_dap_reader rd;
  int          id;                /* JSON-RPC id counter                   */
  e_lsp_host   host;
+ int          doc_version;       /* textDocument version (didOpen = 1)    */
  char         root_uri[PATH_MAX + 8];
  e_lsp_completion_item items[256];  /* engine-owned completion result      */
  int          nitems;
@@ -442,6 +443,29 @@ int e_lsp_did_open(e_lsp_session *s, const char *path, const char *text)
  json_object_object_add(doc, "text", json_object_new_string(text ? text : ""));
  json_object_object_add(args, "textDocument", doc);
  lsp_notify(s, "textDocument/didOpen", args);
+ s->doc_version = 1;
+ return 0;
+}
+
+int e_lsp_did_change(e_lsp_session *s, const char *path, const char *text)
+{
+ struct json_object *args, *doc, *changes, *change;
+ char uri[PATH_MAX + 8];
+
+ if (!s)
+  return -1;
+ snprintf(uri, sizeof(uri), "file://%s", path);
+ args = json_object_new_object();
+ doc = json_object_new_object();
+ json_object_object_add(doc, "uri", json_object_new_string(uri));
+ json_object_object_add(doc, "version", json_object_new_int(++s->doc_version));
+ json_object_object_add(args, "textDocument", doc);
+ changes = json_object_new_array();        /* full-document sync: one change */
+ change = json_object_new_object();
+ json_object_object_add(change, "text", json_object_new_string(text ? text : ""));
+ json_object_array_add(changes, change);
+ json_object_object_add(args, "contentChanges", changes);
+ lsp_notify(s, "textDocument/didChange", args);
  return 0;
 }
 

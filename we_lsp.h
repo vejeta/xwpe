@@ -48,6 +48,12 @@ e_lsp_session *e_lsp_open(char *const argv[], const char *root_dir,
  * `path` is a filesystem path (turned into a file:// URI internally). */
 int e_lsp_did_open(e_lsp_session *s, const char *path, const char *text);
 
+/* textDocument/didChange: replace the server's copy of the document with the
+ * current buffer text (full-document sync), bumping the version.  Call this
+ * before a request so hover/definition/completion/diagnostics reflect unsaved
+ * edits rather than the on-disk file. */
+int e_lsp_did_change(e_lsp_session *s, const char *path, const char *text);
+
 /* Pump until the server publishes diagnostics for `path` (== it has compiled),
  * delivering every diagnostic through host->on_diagnostic.  Returns 1 if the
  * file's diagnostics arrived, 0 on timeout/EOF. */
