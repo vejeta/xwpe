@@ -32,7 +32,7 @@ PROG = (
     "\tfor i := 1; i <= n; i++ {\n"
     "\t\tfact = fact * i\n"
     "\t}\n"
-    "\tfmt.Println(fact)\n"
+    "\tfmt.Println(\"result:\", fact)\n"
     "}\n"
 )
 
@@ -88,6 +88,35 @@ def test_go_dap_run_and_step(tmp_path):
         assert stepped > start, \
             "F8 should advance to a later source line (%d -> %d):\n%s" \
             % (start, stepped, _text(w))
+        # Adapter chatter (dlv's "Type 'dlv help' ..." banner, DAP "console"
+        # category) must NOT leak into Messages -- only the debuggee's own
+        # stdout/stderr should.  Regression for the "looks like it failed" report.
+        assert "dlv help" not in _text(w), \
+            "dlv adapter banner leaked into Messages:\n%s" % _text(w)
+
+
+def test_go_dap_program_output_in_messages(tmp_path):
+    """The debuggee's stdout reaches Messages (DAP output events, category
+    stdout), while the adapter's own console chatter is filtered out.  Run with
+    no breakpoint and continue to the end."""
+    _write_go_module(tmp_path)
+    with WpeSession(str(tmp_path), PROG, filename="main.go", wait=2.0) as w:
+        w.key(CTRL_G, "r", delay=6.0)        # stops at the entry (dlv builds first)
+        time.sleep(2.0)
+        w._drain(2.0)
+        # Continue until the program prints; tolerate a cold `go build` by
+        # retrying with a generous per-iteration wait.
+        for _ in range(8):
+            w.key(CTRL_G, "r", delay=2.5)
+            w._drain(1.5)
+            if "factorial:" in _text(w):
+                break
+        assert w.alive(), "wpe died running the Go program to completion"
+        text = _text(w)
+        assert "result: 120" in text, \
+            "program stdout (result: 120) did not reach Messages:\n%s" % text
+        assert "dlv help" not in text, \
+            "dlv adapter banner leaked into Messages:\n%s" % text
 
 
 def test_go_dap_watch_updates_on_step(tmp_path):

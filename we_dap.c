@@ -25,6 +25,8 @@
 
 struct e_dap_session {
  int           sock;          /* connected adapter socket           */
+ int           pty_master;    /* master of the adapter's controlling pty;
+                                 the debuggee's stdout/stderr arrive here */
  pid_t         pid;           /* adapter process                    */
  int           seq;           /* request sequence counter           */
  e_dap_reader  rd;            /* incoming frame reassembly          */
@@ -81,11 +83,41 @@ static struct json_object *dap_read_message(e_dap_session *s)
  {
   int err = 0;
   struct json_object *m = e_dap_reader_pop(&s->rd, &err);
+  struct pollfd p[2];
   char buf[4096];
   ssize_t n;
+  int np = 0, sock_i, pty_i = -1, pret;
 
   if (m)
    return m;
+  /* Watch the DAP socket AND the debuggee's pty: program output arrives on the
+     pty while the program runs (between continue and the next stop), so we must
+     drain it here or it stalls when the pty buffer fills. */
+  sock_i = np; p[np].fd = s->sock; p[np].events = POLLIN; np++;
+  if (s->pty_master >= 0)
+  {  pty_i = np; p[np].fd = s->pty_master; p[np].events = POLLIN; np++;  }
+  pret = poll(p, np, -1);
+  if (pret < 0)
+  {
+   if (errno == EINTR)
+    continue;
+   return NULL;
+  }
+  if (pty_i >= 0 && (p[pty_i].revents & (POLLIN | POLLHUP | POLLERR)))
+  {
+   n = read(s->pty_master, buf, sizeof(buf) - 1);
+   if (n > 0)
+   {
+    buf[n] = '\0';
+    if (s->host.on_output)
+     s->host.on_output(buf, s->host.ud);
+   }
+   else
+   {  close(s->pty_master);  s->pty_master = -1;  }  /* slave gone (EIO/EOF) */
+   continue;
+  }
+  if (!(p[sock_i].revents & (POLLIN | POLLHUP | POLLERR)))
+   continue;
   n = read(s->sock, buf, sizeof(buf));
   if (n < 0)
   {
@@ -138,9 +170,10 @@ static void dap_handle_event(e_dap_session *s, struct json_object *m)
   return;
  if (!strcmp(ev, "output"))
  {
-  const char *txt = obj_str(body, "output");
-  if (txt && s->host.on_output)
-   s->host.on_output(txt, s->host.ud);
+  /* The debuggee's stdout/stderr reach us through the pty (see dap_read_message),
+     so DAP "output" events here are only the adapter talking about itself
+     (e.g. dlv's "Type 'dlv help' ..." banner, category "console").  Drop them:
+     forwarding would clutter the Messages window and look like an error. */
  }
  else if (!strcmp(ev, "stopped"))
  {
@@ -266,8 +299,16 @@ static int dap_listen_ephemeral(int *port)
  return fd;
 }
 
-/* Fork+exec the adapter with --client-addr=127.0.0.1:port appended. */
-static pid_t dap_spawn(char *const argv[], int port, const char *cwd, int listen_fd)
+/* Fork+exec the adapter with --client-addr=127.0.0.1:port appended.  `slave_fd`
+   is the slave side of a pty created by the caller; the child makes it its
+   controlling terminal and stdio.  DAP traffic flows over the reverse-TCP
+   socket, so the adapter's stdio is free to be a pty -- and it MUST be: dlv runs
+   the debuggee in foreground mode and calls tcsetpgrp() on its own stdin, which
+   fails ("inappropriate ioctl for device") on a plain pipe.  The debuggee then
+   inherits that pty, so its stdout/stderr land on the master the caller reads
+   (xwpe's Messages window), exactly like the gdb backend's inferior pty. */
+static pid_t dap_spawn(char *const argv[], int port, const char *cwd,
+                       int listen_fd, int slave_fd)
 {
  int argc = 0;
  char addr[64];
@@ -288,41 +329,19 @@ static pid_t dap_spawn(char *const argv[], int port, const char *cwd, int listen
  pid = fork();
  if (pid == 0)
  {
-  int master = -1, slave = -1;
-
   if (cwd)
    if (chdir(cwd) != 0)
     _exit(127);
   close(listen_fd);
-  /* Give the adapter its OWN controlling terminal.  DAP traffic flows over the
-     reverse-TCP socket, so the adapter's stdio is free to be a pty -- and it
-     must be: dlv runs the debuggee in foreground mode and calls tcsetpgrp() on
-     its own stdin, which fails ("inappropriate ioctl for device") when that is
-     the pipe/pty xwpe happened to hold.  setsid() drops xwpe's terminal; the
-     fresh pty becomes this session's controlling tty (TIOCSCTTY).  Keeping the
-     master fd open across exec keeps the pty alive without anyone reading it
-     (program output is redirected to DAP "output" events by internalConsole). */
-  setsid();
-  if (openpty(&master, &slave, NULL, NULL, NULL) == 0)
+  setsid();                       /* drop xwpe's controlling terminal */
+  if (slave_fd >= 0)
   {
-   ioctl(slave, TIOCSCTTY, 0);
-   dup2(slave, 0);
-   dup2(slave, 1);
-   dup2(slave, 2);
-   if (slave > 2)
-    close(slave);
-  }
-  else
-  {
-   int devnull = open("/dev/null", O_RDWR);
-   if (devnull >= 0)
-   {
-    dup2(devnull, 0);
-    dup2(devnull, 1);
-    dup2(devnull, 2);
-    if (devnull > 2)
-     close(devnull);
-   }
+   ioctl(slave_fd, TIOCSCTTY, 0); /* the pty becomes our controlling tty */
+   dup2(slave_fd, 0);
+   dup2(slave_fd, 1);
+   dup2(slave_fd, 2);
+   if (slave_fd > 2)
+    close(slave_fd);
   }
   execvp(av[0], av);
   _exit(127);
@@ -361,6 +380,7 @@ e_dap_session *e_dap_open(char *const argv[], const char *program,
  s->program = program ? strdup(program) : NULL;
  s->entry_func = entry_func ? strdup(entry_func) : NULL;
  s->thread_id = 1;
+ s->pty_master = -1;
 
  listen_fd = dap_listen_ephemeral(&port);
  if (listen_fd < 0)
@@ -368,7 +388,29 @@ e_dap_session *e_dap_open(char *const argv[], const char *program,
   e_dap_close(s);
   return NULL;
  }
- s->pid = dap_spawn(argv, port, cwd, listen_fd);
+ /* Create the adapter's controlling pty here in the parent: the child takes the
+    slave as its stdio/ctty, and we keep the master to read the debuggee's
+    output from (forwarded to the host's Messages window). */
+ {
+  int slave = -1;
+  if (openpty(&s->pty_master, &slave, NULL, NULL, NULL) != 0)
+   s->pty_master = slave = -1;
+  else
+  {
+   /* Raw mode: no OPOST/ONLCR, so the debuggee's "\n" is not cooked into
+      "\r\n" -- otherwise every program line would show a trailing ^M in the
+      Messages window. */
+   struct termios tio;
+   if (tcgetattr(s->pty_master, &tio) == 0)
+   {
+    cfmakeraw(&tio);
+    tcsetattr(s->pty_master, TCSANOW, &tio);
+   }
+  }
+  s->pid = dap_spawn(argv, port, cwd, listen_fd, slave);
+  if (slave >= 0)
+   close(slave);                /* the child holds its own copy */
+ }
  if (s->pid <= 0)
  {
   close(listen_fd);
@@ -426,13 +468,12 @@ int e_dap_run(e_dap_session *s)
  json_object_object_add(args, "mode", json_object_new_string("debug"));
  json_object_object_add(args, "program", json_object_new_string(s->program));
  json_object_object_add(args, "stopOnEntry", json_object_new_boolean(0));
- /* Redirect the debuggee's stdio through DAP "output" events instead of letting
-    the adapter grab the controlling terminal.  Without this dlv runs the program
-    in foreground mode and does tcsetpgrp() on its stdin, which fails ("inappro-
-    priate ioctl for device") whenever xwpe launched the adapter on a pipe rather
-    than a tty -- i.e. always.  The output events arrive via host->on_output. */
- json_object_object_add(args, "console",
-                        json_object_new_string("internalConsole"));
+ /* Leave the debuggee on the adapter's controlling terminal (the pty we created
+    in e_dap_open).  dlv runs the program in foreground and its stdout/stderr go
+    to that pty, which we read in dap_read_message -- the same inferior-pty model
+    the gdb backend uses.  (We deliberately do NOT request console=internalConsole:
+    that would route output through DAP events, which dlv suppresses anyway once
+    the program has a real tty.) */
  seq = dap_send(s, "launch", args);
  resp = dap_wait_response(s, seq);          /* dlv replies before config */
  if (resp)
@@ -555,6 +596,8 @@ void e_dap_close(e_dap_session *s)
   dap_send(s, "disconnect", args);
   close(s->sock);
  }
+ if (s->pty_master >= 0)
+  close(s->pty_master);
  if (s->pid > 0)
  {
   int st;
