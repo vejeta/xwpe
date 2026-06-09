@@ -837,6 +837,173 @@ int e_lsp_document_symbols(e_lsp_session *s, const char *path,
  return out;
 }
 
+/* Byte offset of LSP (line,character) within `text` (lines separated by '\n'). */
+static size_t lsp_offset(const char *text, int line, int character)
+{
+ size_t off = 0;
+ int ln = 0, c = 0;
+
+ while (ln < line && text[off])
+ {
+  if (text[off] == '\n')
+   ln++;
+  off++;
+ }
+ while (c < character && text[off] && text[off] != '\n')
+ {  off++;  c++;  }
+ return off;
+}
+
+/* Apply a non-overlapping LSP TextEdit[] to `text`; return a new malloc'd
+   string.  Edits are sorted by start offset and spliced left-to-right, so the
+   result is independent of the order the server sent them. */
+static char *lsp_apply_edits(const char *text, struct json_object *edits)
+{
+ int n = json_object_array_length(edits), i, j;
+ struct { size_t start, end; const char *nt; } *ed, tmp;
+ char *out;
+ size_t tlen = strlen(text), cap, w = 0, pos = 0;
+
+ if (n <= 0)
+  return strdup(text);
+ ed = calloc((size_t)n, sizeof(*ed));
+ if (!ed)
+  return NULL;
+ cap = tlen + 1;
+ for (i = 0; i < n; i++)
+ {
+  struct json_object *e = json_object_array_get_idx(edits, i);
+  struct json_object *rng = obj_obj(e, "range");
+  struct json_object *st = rng ? obj_obj(rng, "start") : NULL;
+  struct json_object *en = rng ? obj_obj(rng, "end") : NULL;
+  ed[i].start = st ? lsp_offset(text, obj_int(st, "line", 0),
+                               obj_int(st, "character", 0)) : 0;
+  ed[i].end = en ? lsp_offset(text, obj_int(en, "line", 0),
+                             obj_int(en, "character", 0)) : ed[i].start;
+  ed[i].nt = obj_str(e, "newText");
+  if (!ed[i].nt)
+   ed[i].nt = "";
+  cap += strlen(ed[i].nt);
+ }
+ for (i = 1; i < n; i++)            /* insertion sort by start offset */
+  for (j = i; j > 0 && ed[j].start < ed[j - 1].start; j--)
+  {  tmp = ed[j];  ed[j] = ed[j - 1];  ed[j - 1] = tmp;  }
+
+ out = malloc(cap);
+ if (!out)
+ {  free(ed);  return NULL;  }
+ for (i = 0; i < n; i++)
+ {
+  size_t ntl;
+  if (ed[i].start < pos || ed[i].end > tlen)
+   continue;                       /* overlap/out-of-range: skip safely */
+  memcpy(out + w, text + pos, ed[i].start - pos);
+  w += ed[i].start - pos;
+  ntl = strlen(ed[i].nt);
+  memcpy(out + w, ed[i].nt, ntl);
+  w += ntl;
+  pos = ed[i].end;
+ }
+ memcpy(out + w, text + pos, tlen - pos);
+ w += tlen - pos;
+ out[w] = '\0';
+ free(ed);
+ return out;
+}
+
+char *e_lsp_format(e_lsp_session *s, const char *path, const char *current_text)
+{
+ char abspath[PATH_MAX];
+ struct json_object *args, *doc, *opts, *resp, *result;
+ char *out = NULL;
+ int id;
+
+ if (!s)
+  return NULL;
+ if (!realpath(path, abspath))
+  snprintf(abspath, sizeof(abspath), "%s", path);
+ args = json_object_new_object();
+ doc = json_object_new_object();
+ { char uri[PATH_MAX + 8];
+   snprintf(uri, sizeof(uri), "file://%s", abspath);
+   json_object_object_add(doc, "uri", json_object_new_string(uri)); }
+ json_object_object_add(args, "textDocument", doc);
+ opts = json_object_new_object();
+ json_object_object_add(opts, "tabSize", json_object_new_int(2));
+ json_object_object_add(opts, "insertSpaces", json_object_new_boolean(1));
+ json_object_object_add(args, "options", opts);
+ id = ++s->id;
+ lsp_send(s, id, "textDocument/formatting", args);
+ resp = lsp_pump(s, id, NULL, LSP_TMO_REQ);
+ if (!resp)
+  return NULL;
+ result = obj_obj(resp, "result");
+ if (result && json_object_is_type(result, json_type_array) &&
+     json_object_array_length(result) > 0)
+  out = lsp_apply_edits(current_text, result);
+ json_object_put(resp);
+ return out;
+}
+
+char *e_lsp_rename(e_lsp_session *s, const char *path, int line, int character,
+                   const char *new_name, const char *current_text,
+                   int *other_files)
+{
+ char abspath[PATH_MAX], myuri[PATH_MAX + 8];
+ struct json_object *args, *resp, *result, *changes, *myedits = NULL;
+ char *out = NULL;
+ int id, others = 0;
+
+ if (other_files)
+  *other_files = 0;
+ if (!s)
+  return NULL;
+ if (!realpath(path, abspath))
+  snprintf(abspath, sizeof(abspath), "%s", path);
+ snprintf(myuri, sizeof(myuri), "file://%s", abspath);
+ args = lsp_text_pos(s, abspath, line, character);
+ json_object_object_add(args, "newName", json_object_new_string(new_name));
+ id = ++s->id;
+ lsp_send(s, id, "textDocument/rename", args);
+ resp = lsp_pump(s, id, NULL, LSP_TMO_REQ);
+ if (!resp)
+  return NULL;
+ result = obj_obj(resp, "result");
+ if (result && (changes = obj_obj(result, "changes")))
+ {
+  json_object_object_foreach(changes, key, val)
+  {
+   if (!strcmp(key, myuri))
+    myedits = val;
+   else
+    others++;
+  }
+ }
+ else if (result)
+ {
+  struct json_object *dc = obj_obj(result, "documentChanges");
+  int i, dn = (dc && json_object_is_type(dc, json_type_array))
+              ? json_object_array_length(dc) : 0;
+  for (i = 0; i < dn; i++)
+  {
+   struct json_object *el = json_object_array_get_idx(dc, i);
+   const char *uri = obj_str(obj_obj(el, "textDocument"), "uri");
+   if (uri && !strcmp(uri, myuri))
+    myedits = obj_obj(el, "edits");
+   else
+    others++;
+  }
+ }
+ if (other_files)
+  *other_files = others;
+ if (myedits && json_object_is_type(myedits, json_type_array))
+  out = lsp_apply_edits(current_text, myedits);
+ else
+  out = strdup(current_text);     /* nothing in this file */
+ json_object_put(resp);
+ return out;
+}
+
 void e_lsp_close(e_lsp_session *s)
 {
  if (!s)

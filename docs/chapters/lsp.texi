@@ -50,7 +50,17 @@ one with the arrows and @key{RET} to jump to it.
 @item Alt-Q S
 Signature: show the signature of the call the cursor is inside (e.g.
 @code{println(x: Any): Unit}) in a popup.
+@item Alt-Q N
+Rename: rename the symbol under the cursor everywhere (you are prompted for the
+new name).  Edits in the current file are applied to the buffer; if the rename
+also touches other files, xwpe tells you (open them and rename there).
+@item Alt-Q F
+Format: reformat the whole file with the server's formatter (scalafmt for
+Scala).  A @file{.scalafmt.conf} in the project enables it.
 @end table
+
+After a rename or format, the buffer is rebuilt with the result and marked
+modified; save (@key{F2}) to keep the changes.
 
 The server starts lazily on the first @kbd{Alt-Q} action and is reused for the
 rest of the session.  The first start is slow: it boots a JVM language server

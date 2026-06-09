@@ -5362,6 +5362,123 @@ static int e_lsp_ui_outline(FENSTER *f)
  return(0);
 }
 
+/* Replace the whole editor buffer with `newtext` (lines split on '\n'),
+   reusing the proven buffer-rebuild path (e_p_red_buffer + print_to_end_of_
+   buffer, as the Watches/Messages windows do).  Empty lines are preserved.
+   Used to apply server-side reformat/rename results. */
+static void e_lsp_replace_buffer(FENSTER *f, const char *newtext)
+{
+ BUFFER *b = f->b;
+ char *copy = strdup(newtext ? newtext : ""), *p, *nl;
+
+ if (!copy)
+  return;
+ e_p_red_buffer(b);
+ FREE(b->bf[0].s);
+ b->mxlines = 0;
+ p = copy;
+ for (;;)
+ {
+  nl = strchr(p, '\n');
+  if (nl)
+   *nl = '\0';
+  print_to_end_of_buffer(b, p, b->mx.x);
+  if (!nl)
+   break;
+  p = nl + 1;
+  if (!*p)
+   break;                          /* trailing '\n' terminates the last line */
+ }
+ e_new_line(b->mxlines, b);
+ free(copy);
+ b->b.x = 0;
+ b->b.y = 0;
+ f->save++;                         /* mark the window modified */
+ e_firstl(f, 1);                    /* re-open the view over the new buffer */
+ e_schirm(f, 1);
+ e_rep_win_tree(f->ed);             /* full repaint (as the Watches rebuild) */
+}
+
+/* The identifier under the cursor (for the rename default), or "" . */
+static void e_lsp_word_at_cursor(FENSTER *f, char *out, size_t osz)
+{
+ BUFFER *b = f->b;
+ char *line = b->bf[b->b.y].s;
+ int len = line ? strlen(line) : 0;
+ int a = b->b.x, e = b->b.x, n;
+
+ out[0] = '\0';
+ if (!line)
+  return;
+ while (a > 0 && e_lsp_is_ident((unsigned char)line[a - 1]))
+  a--;
+ while (e < len && e_lsp_is_ident((unsigned char)line[e]))
+  e++;
+ n = e - a;
+ if (n <= 0)
+  return;
+ if (n >= (int)osz)
+  n = osz - 1;
+ memcpy(out, line + a, n);
+ out[n] = '\0';
+}
+
+/* AltQ F -- reformat the file (scalafmt via the server) in place. */
+static int e_lsp_ui_format(FENSTER *f)
+{
+ char *text, *formatted;
+
+ if (e_lsp_ensure(f) < 0)
+  return(-1);
+ e_lsp_sync(f);
+ text = e_lsp_buffer_text(f);
+ if (!text)
+  return(-1);
+ formatted = e_lsp_format(g_lsp, g_lsp_file, text);
+ if (!formatted)
+ {  free(text);  e_error("Nothing to format (or no formatter).", 0, f->fb);  return(0);  }
+ if (strcmp(formatted, text) == 0)
+  e_d_p_message("Already formatted.", f, 1);
+ else
+  e_lsp_replace_buffer(f, formatted);
+ free(text);
+ free(formatted);
+ return(0);
+}
+
+/* AltQ N -- rename the symbol under the cursor across the workspace. */
+static int e_lsp_ui_rename(FENSTER *f)
+{
+ BUFFER *b = f->b;
+ char newname[256], *text, *renamed;
+ int others = 0;
+
+ e_lsp_word_at_cursor(f, newname, sizeof(newname));
+ if (!e_add_arguments(newname, "Rename to", f, 0, AltR, NULL) || !newname[0])
+  return(0);                        /* cancelled or empty */
+ if (e_lsp_ensure(f) < 0)
+  return(-1);
+ e_lsp_sync(f);
+ text = e_lsp_buffer_text(f);
+ if (!text)
+  return(-1);
+ renamed = e_lsp_rename(g_lsp, g_lsp_file, b->b.y, b->b.x, newname, text, &others);
+ if (!renamed)
+ {  free(text);  e_error("Rename failed (cannot rename here).", 0, f->fb);  return(0);  }
+ if (strcmp(renamed, text) != 0)
+  e_lsp_replace_buffer(f, renamed);
+ if (others > 0)
+ {
+  char m[120];
+  snprintf(m, sizeof(m), "Note: rename also affects %d other file(s) -- not "
+           "applied (open them and rename there).", others);
+  e_error(m, -1, f->fb);
+ }
+ free(text);
+ free(renamed);
+ return(0);
+}
+
 /* Disconnect the language server (called on editor exit). */
 void e_lsp_ui_shutdown(void)
 {
@@ -5388,6 +5505,10 @@ int e_lsp_ui_inp(FENSTER *f)
    return(e_lsp_ui_references(f));
   case 's': case ('s' - 'a' + 1):
    return(e_lsp_ui_signature(f));
+  case 'f': case ('f' - 'a' + 1):
+   return(e_lsp_ui_format(f));
+  case 'n': case ('n' - 'a' + 1):
+   return(e_lsp_ui_rename(f));
   case 'o': case ('o' - 'a' + 1):
    return(e_lsp_ui_outline(f));
   case 'e': case ('e' - 'a' + 1):

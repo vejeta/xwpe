@@ -130,7 +130,28 @@ int main(void)
   else printf("  SIGNATURE: (none -- not fatal)\n");
  }
 
- printf("PASS: LSP engine vs real Metals (hover/definition/completion/references/outline/signature)\n");
+ /* rename `f` (declaration line 2, char 8) -> "fff": the edit-application path */
+ {
+  int others = 0;
+  char *rn = e_lsp_rename(s, scala, 2, 8, "fff", SCALA_SRC, &others);
+  if (!rn) { rc = fail("rename returned nothing"); goto close; }
+  printf("  RENAME f->fff (other files: %d)\n", others);
+  if (!strstr(rn, "var fff") || !strstr(rn, "fff = fff * i"))
+  { printf("  ->\n%s\n", rn); free(rn);
+    rc = fail("rename did not replace every f"); goto close; }
+  if (strstr(rn, "var f =")) { free(rn); rc = fail("rename left an old f"); goto close; }
+  free(rn);
+ }
+
+ /* format: no-op (already tidy) or a reformat -- must round-trip, not corrupt */
+ {
+  char *fmt = e_lsp_format(s, scala, SCALA_SRC);
+  if (fmt) { printf("  FORMAT: %zu bytes\n", strlen(fmt)); free(fmt); }
+  else printf("  FORMAT: no edits (already formatted)\n");
+ }
+
+ printf("PASS: LSP engine vs real Metals "
+        "(hover/definition/completion/references/outline/signature/rename/format)\n");
 
 close:
  e_lsp_close(s);

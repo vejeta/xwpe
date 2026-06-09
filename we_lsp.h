@@ -106,6 +106,20 @@ int e_lsp_references(e_lsp_session *s, const char *path, int line, int character
 int e_lsp_document_symbols(e_lsp_session *s, const char *path,
                            e_lsp_symbol *syms, int max);
 
+/* textDocument/formatting: ask the server (scalafmt for Scala) to reformat the
+ * document.  `current_text` is the buffer's current full text; the server's edits
+ * are applied to it and the new full text is returned (malloc'd, caller frees),
+ * or NULL if there is nothing to do / on error. */
+char *e_lsp_format(e_lsp_session *s, const char *path, const char *current_text);
+
+/* textDocument/rename: rename the symbol at (line,character) to `new_name`.
+ * Applies the resulting edits for THIS file to `current_text` and returns the new
+ * full text (malloc'd), or NULL.  *other_files, if non-NULL, is set to the number
+ * of OTHER files the rename also touches (not applied here -- the caller warns). */
+char *e_lsp_rename(e_lsp_session *s, const char *path, int line, int character,
+                   const char *new_name, const char *current_text,
+                   int *other_files);
+
 /* shutdown/exit the server and reap it; frees the session. */
 void e_lsp_close(e_lsp_session *s);
 
