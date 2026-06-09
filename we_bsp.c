@@ -247,7 +247,15 @@ static pid_t bsp_spawn(char **argv, const char *workdir, int *in_fd, int *out_fd
    _exit(127);
   dup2(to_child[0], 0);
   dup2(from_child[1], 1);
-  /* leave stderr to xwpe's (BSP diagnostics, rarely needed) */
+  /* Redirect stderr to /dev/null: unlike gdb/dlv, scala-cli/Bloop is chatty on
+     stderr ("Starting compilation server", compile progress) -- inheriting
+     xwpe's terminal would bleed that raw onto the ncurses screen, corrupting
+     the Messages window until the next repaint. */
+  {
+   int devnull = open("/dev/null", O_WRONLY);
+   if (devnull >= 0)
+   {  dup2(devnull, 2);  if (devnull > 2) close(devnull);  }
+  }
   close(to_child[0]); close(to_child[1]);
   close(from_child[0]); close(from_child[1]);
   execvp(argv[0], argv);
