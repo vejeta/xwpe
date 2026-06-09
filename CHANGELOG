@@ -220,6 +220,14 @@ Changes
   the ".e" suffix -- gdb was launched on a non-existent binary.  It now
   resolves the dialect from the full path (shared e_check_c_file_w), so the
   compiled binary loads and F8 steps.  Guarded by tests/test_ga68_debug.py.
+* Fixed: a Watch (Ctrl-G W) under gdb stayed frozen at its add-time value
+  while single-stepping (e.g. an Algol 68 watch read 0 forever).  A plain
+  Step is resolved by e_d_pr_sig (via e_d_trd_check), which positioned the
+  source line but never re-read the watches; only the breakpoint branches
+  refreshed them.  e_d_pr_sig now refreshes the Watches window too, so watch
+  values track every step.  This is the shared gdb step path, so the fix
+  benefits all gdb-debugged languages, not just ga68.  Guarded by
+  tests/test_ga68_debug.py (watch on a factorial accumulator).
 
   Algol 68 syntax highlighting:
 * .a68 / .alg files now highlight in both wpe (ncurses) and xwpe (Xft).

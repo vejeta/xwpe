@@ -96,3 +96,55 @@ def test_ga68_gdb_debug_from_subdirectory(tmp_path):
         assert stepped > start, \
             "F8 should advance to a later source line (%d -> %d):\n%s" \
             % (start, stepped, _text(w))
+
+
+# Iterative factorial: `fact` grows 1 -> 1 -> 2 -> 6 -> 24 -> 120 as the loop
+# runs, so a watch on it must show several distinct values while stepping.
+FACT = (
+    "begin\n"
+    "   int n := 5;\n"
+    "   int fact := 1;\n"
+    "   for i from 1 to n do\n"
+    "      fact := fact * i\n"
+    "   od;\n"
+    "   puts (\"done'n\")\n"
+    "end\n"
+)
+
+
+def _watch_val(w, name):
+    """Current value shown for the named watch in the Watches window, or None."""
+    pat = re.compile(re.escape(name) + r":\s*(-?\d+)")
+    for line in w.display():
+        m = pat.search(line)
+        if m:
+            return int(m.group(1))
+    return None
+
+
+def test_ga68_gdb_watch_updates_on_step(tmp_path):
+    """A watch must RE-EVALUATE on every Step, not stay frozen at its add-time
+    value.  Regression: a plain gdb Step is resolved by e_d_pr_sig (via
+    e_d_trd_check), which positioned the source line but never refreshed the
+    Watches window -- so a ga68 watch on `fact` read 0 forever no matter how
+    far you stepped."""
+    with WpeSession(str(tmp_path), FACT, filename="fact.a68", wait=2.0) as w:
+        w.key(CTRL_G, "r", delay=3.0)
+        time.sleep(1.5)
+        w._drain(1.0)
+        w.key(CTRL_G, "w", delay=1.0)         # Make Watch dialog
+        for ch in "fact":
+            w.key(ch, delay=0.05)
+        w.key("\r", delay=1.0)                # confirm
+        w._drain(1.0)
+        seen = set()
+        for _ in range(14):                   # step through the whole loop
+            w.key(F8, delay=1.2)
+            w._drain(0.6)
+            v = _watch_val(w, "fact")
+            if v is not None:
+                seen.add(v)
+        assert w.alive(), "wpe died stepping with a watch set"
+        assert any(v > 1 for v in seen), \
+            "watch on `fact` never updated past its initial value (saw %s) -- " \
+            "the Watches window is not refreshing on Step" % sorted(seen)

@@ -4165,6 +4165,12 @@ int e_d_pr_sig(char *str, FENSTER *f)
  if (line >= 0)
  {
   strcpy(e_d_file, file);
+  /* Refresh the Watches window here too: a plain Step lands in this "find
+     where we stopped via 'where'" path (e_d_trd_check -> e_d_pr_sig), not in
+     the breakpoint branches, so without this the watch values would stay
+     frozen at the value they had when the watch was first added. */
+  if (e_d_p_watches(f, 0) == -1)
+   return(-1);
   e_d_goto_break(file, line, f);
   return(0);
  }
