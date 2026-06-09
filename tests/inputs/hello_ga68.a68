@@ -1,0 +1,7 @@
+{ hello_ga68.a68 -- minimal GNU Algol 68 (ga68) program.            }
+{ ga68 uses the MODERN stropping regime: lowercase bold words and   }
+{ { } comments, unlike a68g's UPPER BEGIN/END and # ... # comments. }
+{ Build: ga68 -g hello_ga68.a68 -o hello_ga68   (native, gdb-able)  }
+begin
+   puts ("Hello, GNU Algol 68!'n")
+end

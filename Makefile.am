@@ -249,6 +249,7 @@ EXTRA_DIST = \
   tests/inputs/hello.cob \
   tests/inputs/hello.tex \
   tests/inputs/hello.a68 \
+  tests/inputs/hello_ga68.a68 \
   tests/inputs/Hello.java \
   tests/fixtures/ascii.txt \
   tests/fixtures/accents.txt \
