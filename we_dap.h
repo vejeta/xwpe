@@ -43,6 +43,17 @@ e_dap_session *e_dap_open_stdio(char *const argv[], const char *program,
                                 const char *entry_func, const char *cwd,
                                 const e_dap_host *host);
 
+/* Connect to an ALREADY-RUNNING DAP server at host:port (a forward TCP client,
+ * no adapter spawned, no pty).  Used for the JVM/Scala path: a build server
+ * (Bloop, driven over BSP -- see we_bsp.c) starts the debug session and hands
+ * back a "tcp://HOST:PORT" endpoint; we connect to it here.  The launch
+ * handshake follows the strict DAP order (launch -> wait the `initialized`
+ * event -> setBreakpoints -> configurationDone), and the launch carries no
+ * program/mode (the build server already bound the main class).  The debuggee's
+ * output arrives as DAP "output" events.  Returns a session or NULL. */
+e_dap_session *e_dap_open_tcp(const char *host, int port, const char *program,
+                              const char *entry_func, const e_dap_host *host_cb);
+
 /* Record a source breakpoint to install on Run (DAP sets breakpoints per file
  * just before the program starts). */
 int e_dap_add_breakpoint(e_dap_session *s, const char *file, int line);

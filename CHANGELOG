@@ -241,7 +241,7 @@ Changes
   "cp /usr/lib/xwpe/syntax_def ~/.xwpe/syntax_def" or remove it to fall
   back to the system file.  See the Configuration chapter of the manual.
 
-  Debugging via the Debug Adapter Protocol (DAP) -- Go and Rust:
+  Debugging via the Debug Adapter Protocol (DAP) -- Go, Rust and Scala:
 * xwpe now speaks the Debug Adapter Protocol -- the same wire protocol VS
   Code, Neovim and Emacs DAP use -- so modern language debuggers plug in
   without a bespoke text-scraping backend.  Two languages are wired:
@@ -251,16 +251,27 @@ Changes
     gdb), or with `lldb-dap` (native on macOS).  The adapter is chosen in
     Debug -> debugger Options (Auto/gdb/lldb), saved in ~/.xwpe/xwperc; "Auto"
     picks the first found in PATH, and XWPE_DAP_ADAPTER overrides for CI.
+  - Scala: open a .scala file and Ctrl-G R debugs modern Scala (3.x/2.13)
+    through Bloop, which hosts the Scala Center scala-debug-adapter.  The JVM
+    has no standalone DAP server, so xwpe runs a short Build Server Protocol
+    (BSP) handshake against scala-cli (which bundles Bloop) to obtain a DAP
+    endpoint, then connects.  Frames arrive Scala-demangled.  Requires
+    scala-cli (cs install scala-cli); the Debian scala package (2.11) is too
+    old.  A modern Scala/macOS user can run wpe in a terminal as a tiny
+    zero-config debug front-end -- no XQuartz, no Electron.
   Run/Continue (Ctrl-G R), Step Over (F8), Step Into (F7), watches (Ctrl-G W,
   evaluated with DAP evaluate context=watch) and Quit (Ctrl-G Q) all work, just
   like the gdb backend.  Stops jump the editor to the source line; program
   output appears in Messages.
-* The engine supports two transports behind one API, because each adapter
+* The engine supports three transports behind one API, because each adapter
   dictates its own: reverse-TCP (Delve is a `dlv dap` server; the debuggee's
-  output is read from a pty) and stdio (gdb/lldb speak DAP on their own
-  stdin/stdout; program output arrives as DAP "output" events).  Adding a
-  language is a one-row descriptor (adapter, transport, compile-or-not).
-  lldb-dap for Rust/C/C++ is a drop-in on the stdio path.
+  output is read from a pty), stdio (gdb/lldb speak DAP on their own
+  stdin/stdout; program output arrives as DAP "output" events), and TCP-client
+  (connect to an endpoint a build server already started, as for Scala/Bloop).
+  Adding a language is a one-row descriptor (adapter, transport, compile-or-not,
+  bsp-or-not).  BSP reuses the DAP Content-Length framing, so no Scala artifact
+  ships in xwpe -- scala-cli stays an external coursier tool.  lldb-dap for
+  C/C++ is a drop-in on the stdio path.
 * This is the seventh debugger backend (DEB_DAP), selected automatically by
   the .go extension.  The six text backends (gdb, sdb, dbx, xdb, jdb, pdb,
   a68g) are untouched.  Delve is reverse-connected over a local TCP socket

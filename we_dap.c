@@ -40,6 +40,10 @@ struct e_dap_session {
                                  adapter's own startup banner is not echoed). */
  int           launch_mode_debug;/* launch arg "mode":"debug" (dlv builds the pkg);
                                  0 for adapters launched on a prebuilt binary (gdb). */
+ int           minimal_launch; /* BSP/Bloop: launch carries no program/mode (the
+                                 build server already bound the main class).      */
+ int           wait_init;      /* BSP/Bloop: wait the `initialized` event after
+                                 launch, before setBreakpoints (strict DAP order).*/
  pid_t         pid;           /* adapter process                    */
  int           seq;           /* request sequence counter           */
  e_dap_reader  rd;            /* incoming frame reassembly          */
@@ -227,6 +231,38 @@ static struct json_object *dap_wait_response(e_dap_session *s, int seq)
    return m;
   if (type && !strcmp(type, "event"))
    dap_handle_event(s, m);
+  json_object_put(m);
+ }
+}
+
+/* Pump messages until the named event arrives, dispatching the others (and
+ * dropping any responses, e.g. a launch reply the adapter defers).  Used to
+ * wait for the spec's `initialized` event before sending breakpoints on the
+ * BSP/Bloop transport.  Returns 1 on the event, 0 on EOF. */
+static int dap_wait_event(e_dap_session *s, const char *name)
+{
+ for (;;)
+ {
+  struct json_object *m = dap_read_message(s);
+  const char *type;
+  if (!m)
+   return 0;
+  type = obj_str(m, "type");
+  if (type && !strcmp(type, "event"))
+  {
+   const char *ev = obj_str(m, "event");
+   if (ev && !strcmp(ev, name))
+   {
+    json_object_put(m);
+    return 1;
+   }
+   dap_handle_event(s, m);
+   if (s->ended)
+   {
+    json_object_put(m);
+    return 0;
+   }
+  }
   json_object_put(m);
  }
 }
@@ -542,6 +578,38 @@ e_dap_session *e_dap_open_stdio(char *const argv[], const char *program,
  return s;
 }
 
+/* Forward TCP client to an already-running DAP server (Bloop's scala-debug-
+   adapter, address from BSP debugSession/start).  No spawn, no pty: the build
+   server owns the debuggee, and its output reaches us as DAP "output" events. */
+e_dap_session *e_dap_open_tcp(const char *host, int port, const char *program,
+                              const char *entry_func, const e_dap_host *host_cb)
+{
+ e_dap_session *s = dap_session_new(program, entry_func, host_cb);
+ struct sockaddr_in a;
+ int fd;
+
+ if (!s)
+  return NULL;
+ s->launch_mode_debug = 0;        /* build server already bound the main class */
+ s->minimal_launch = 1;           /* launch carries no program/mode            */
+ s->wait_init = 1;                /* strict order: wait `initialized` event     */
+
+ fd = socket(AF_INET, SOCK_STREAM, 0);
+ if (fd < 0)
+ {  e_dap_close(s);  return NULL;  }
+ memset(&a, 0, sizeof(a));
+ a.sin_family = AF_INET;
+ a.sin_port = htons((unsigned short)port);
+ if (inet_pton(AF_INET, host, &a.sin_addr) != 1)
+  a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+ if (connect(fd, (struct sockaddr *)&a, sizeof(a)) < 0)
+ {  close(fd);  e_dap_close(s);  return NULL;  }
+ s->sock = fd;
+ if (dap_initialize(s, "scala") != 0)
+ {  e_dap_close(s);  return NULL;  }
+ return s;
+}
+
 int e_dap_add_breakpoint(e_dap_session *s, const char *file, int line)
 {
  if (!s || s->bp_n >= DAP_MAX_BP)
@@ -568,10 +636,16 @@ int e_dap_run(e_dap_session *s)
     output arrives as "output" events, enabled below. */
  args = json_object_new_object();
  json_object_object_add(args, "request", json_object_new_string("launch"));
- if (s->launch_mode_debug)
-  json_object_object_add(args, "mode", json_object_new_string("debug"));
- json_object_object_add(args, "program", json_object_new_string(s->program));
- json_object_object_add(args, "stopOnEntry", json_object_new_boolean(0));
+ if (!s->minimal_launch)
+ {
+  /* dlv/gdb launch: name the program (and, for dlv, the build mode).  The
+     BSP/Bloop path omits these -- the build server already bound the main
+     class via debugSession/start, and naming a program confuses it. */
+  if (s->launch_mode_debug)
+   json_object_object_add(args, "mode", json_object_new_string("debug"));
+  json_object_object_add(args, "program", json_object_new_string(s->program));
+  json_object_object_add(args, "stopOnEntry", json_object_new_boolean(0));
+ }
  seq = dap_send(s, "launch", args);
  if (s->launch_mode_debug)
  {
@@ -585,6 +659,11 @@ int e_dap_run(e_dap_session *s)
     configurationDone, so we must NOT block on it here (that would deadlock); the
     binary's symbols are already loaded, so breakpoints set now still bind, and
     the late launch response is consumed by dap_wait_stop below. */
+ if (s->wait_init)
+  /* scala-debug-adapter (via Bloop) is strict: it rejects setBreakpoints until
+     it has emitted the `initialized` event after launch ("Empty debug session"
+     otherwise).  Wait for it before configuring breakpoints. */
+  dap_wait_event(s, "initialized");
 
  /* source breakpoints */
  if (s->bp_n > 0)

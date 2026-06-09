@@ -51,6 +51,7 @@ Public API (`we_dap.h`):
 |------|------|
 | `e_dap_open(argv, program, entry_func, cwd, host)` | reverse-TCP transport (Delve): listen, spawn `dlv dap --client-addr=…`, accept, `initialize` |
 | `e_dap_open_stdio(argv, program, entry_func, cwd, host)` | stdio transport (gdb/lldb): spawn with pipes, `initialize` |
+| `e_dap_open_tcp(host, port, program, entry_func, host_cb)` | TCP-client transport (Scala/Bloop): connect to an endpoint a build server already started, `initialize` (no spawn, no pty) |
 | `e_dap_add_breakpoint(s, file, line)` | record a source breakpoint to install on Run |
 | `e_dap_run(s)` | launch + setBreakpoints + configurationDone → first stop |
 | `e_dap_step(s, verb)` | `"continue"`/`"next"`/`"stepIn"`/`"stepOut"` → next stop |
@@ -88,7 +89,7 @@ is (or should be) active:
 The six text backends are untouched: every hook is `if (DAP) return …;` at the
 top of the function.
 
-## Two transports — and when each
+## Three transports — and when each
 
 DAP standardises the *messages*, **not** how you connect.  Each adapter dictates
 its transport; it is not our choice:
@@ -97,6 +98,7 @@ its transport; it is not our choice:
 |-----------|---------|-----|----------------|
 | **reverse-TCP** | Delve (`dlv dap` is a TCP server), remote/attach | the adapter is a server you connect to | a **pty**: dlv's stdio is free, so the debuggee gets a real terminal we read |
 | **stdio** | gdb, lldb-dap (Rust/C/C++…) | spawn-a-local-binary; DAP flows on the adapter's own stdin/stdout | DAP **`output` events**: the adapter's stdio is consumed by the protocol, so the program can't use it |
+| **TCP-client** | Scala/Bloop (`e_dap_open_tcp`) | a build server already started the adapter and handed back a `tcp://` endpoint — we just connect | DAP **`output` events** (no pty) |
 
 The transport therefore decides **where the debuggee's output goes**, which is
 the part that actually matters to us:
@@ -118,37 +120,71 @@ transport-neutral; `dap_spawn` (TCP, appends `--client-addr`) and
 Rule of thumb: **spawn-a-local-binary adapter → stdio; connect-to-a-server, or
 remote/attach → TCP.**
 
+### The JVM/Scala case — BSP bootstrap (`we_bsp.c`)
+
+The JVM has **no standalone DAP server**: `com.microsoft.java-debug` and the
+Scala Center `scala-debug-adapter` are *libraries* that a host (jdt.ls, Bloop,
+sbt) must wire up.  So Scala can't be "spawn a binary".  Instead `we_bsp.c`
+drives a short **Build Server Protocol** handshake against `scala-cli` (which
+bundles Bloop, which hosts `scala-debug-adapter`) and gets back a DAP endpoint:
+
+```
+.bsp/<name>.json (scala-cli setup-ide writes it) → launch the BSP server (stdio)
+build/initialize → build/initialized → workspace/buildTargets (NON-test target!)
+→ buildTarget/compile → buildTarget/scalaMainClasses
+→ debugSession/start {dataKind:"scala-main-class"} → "tcp://HOST:PORT"
+```
+
+BSP is JSON-RPC with the **same Content-Length framing as DAP**, so `we_bsp.c`
+reuses `e_dap_reader` for the wire — no second parser, no new dependency.  The
+bridge then calls `e_dap_open_tcp(host, port, …)` and the *existing* engine takes
+over; the only DAP-order wrinkle is that scala-debug-adapter is strict —
+`setBreakpoints` must come **after** `launch` *and* the `initialized` event
+("Empty debug session" otherwise), handled by the session's `wait_init` flag.
+The `e_bsp_session` (the build server) is kept alive in `g_bsp` for the whole
+debug session and closed *after* the DAP socket on quit, because it hosts the
+adapter.  Nothing Scala ships in xwpe; `scala-cli` is an external coursier tool
+(`cs install scala-cli`), the same way `dlv`/`gdb` are external.  Editor gate:
+`.scala` is unknown to `e_check_c_file` (no compiler-table entry — Bloop builds
+it), so `e_d_dap_source_ext()` lets DAP languages carry breakpoints anyway.
+
 ## Adding a language
 
 Append one row to `DAP_LANGS[]` in `we_debug.c`:
 
 ```c
 typedef struct {
-  const char  *ext;         /* ".go" / ".rs"                              */
-  char *const *argv;        /* adapter command line                       */
+  const char  *ext;         /* ".go" / ".rs" / ".scala"                   */
+  char *const *argv;        /* adapter command line (argv[0] must be in PATH) */
+  char *const *argv_alt;    /* alternative adapter, or NULL (e.g. lldb-dap)*/
   const char  *entry_func;  /* stop-at-entry function, or NULL            */
   int          stdio;       /* 0 = reverse-TCP, 1 = stdio                 */
   int          compile;     /* 0 = adapter builds, 1 = xwpe compiles first*/
+  int          bsp;         /* 1 = JVM/Scala: BSP-bootstrap a DAP endpoint */
 } e_d_dap_lang;
 
 static const e_d_dap_lang DAP_LANGS[] = {
-  { ".go", DAP_ARGV_GO,   "main.main", 0, 0 },  /* dlv builds the package      */
-  { ".rs", DAP_ARGV_RUST, NULL,        1, 1 },  /* rustc -g, then gdb debugs it*/
+  { ".go",    DAP_ARGV_GO,    NULL,             "main.main", 0, 0, 0 },
+  { ".rs",    DAP_ARGV_RUST_GDB, DAP_ARGV_RUST_LLDB, NULL,   1, 1, 0 },
+  { ".scala", DAP_ARGV_SCALA, NULL,             NULL,        0, 0, 1 },
 };
 ```
 
 * `compile = 1` languages are built by `e_d_dap_compile` (compiler + flags from
   the file's Options entry → `<stem>.dbg`, diagnostics shown in Messages on
   failure) before the adapter launches; `compile = 0` languages let the adapter
-  build (dlv compiles the Go package).
-* You almost always also want a matching compiler entry in `we_prog.c`
-  (`e_ini_prog`) so `e_check_c_file` recognises the extension (needed by
-  `e_breakpoint` and `e_d_quit`) and supplies the compiler/flags.
+  build (dlv compiles the Go package; Bloop compiles the Scala target).
+* `bsp = 1` routes the open through `we_bsp.c` (see above) + `e_dap_open_tcp`
+  instead of spawning the adapter directly; `argv[0]` is the build tool that must
+  be in PATH (`scala-cli`), not a DAP server.
+* For non-BSP languages you usually also want a matching compiler entry in
+  `we_prog.c` (`e_ini_prog`) so `e_check_c_file` recognises the extension; BSP
+  languages skip that and rely on `e_d_dap_source_ext()` for the breakpoint gate.
 * `entry_func` gives a "stop at main" like gdb's temp breakpoint.  Leave it NULL
-  when the language's entry maps to a runtime stub with no source (Rust's `main`
-  binds to the C runtime stub under gdb; rely on the user's line breakpoint).
+  when the entry maps to a runtime stub with no source (Rust under gdb) or when
+  the user is expected to set a line breakpoint (Scala).
 
-`lldb-dap` for Rust/C/C++ is a drop-in: `{ ".rs", {"lldb-dap"}, NULL, 1, 1 }`.
+`lldb-dap` for C/C++ is a drop-in on the stdio path.
 
 ## Session lifecycle and its per-adapter quirks
 

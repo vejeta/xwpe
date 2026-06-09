@@ -57,20 +57,27 @@ console-only build needs only `libncurses-dev` (plus the build tools).
 
 * **Debug Adapter Protocol (DAP) client &mdash; modern debuggers, no bespoke
   backend.** xwpe now speaks DAP, the wire protocol behind VS Code, Neovim
-  and Emacs debugging.  Two languages are wired: **Go via Delve** (`dlv dap`)
-  and **Rust via gdb** (`gdb --interpreter=dap` &mdash; gdb is a first-class
-  Rust debugger).  Open a `.go` or `.rs` file, set a breakpoint, and Ctrl-G R
-  drives a real source-level debug session &mdash; Run/Continue (Ctrl-G R),
-  Step Over (F8), Step Into (F7), live watches (Ctrl-G W), and program output
-  in Messages, the same keys you already use for gdb.  This is xwpe's seventh
-  debugger backend (`DEB_DAP`), selected automatically by extension; the six
-  text backends (gdb, jdb, pdb, a68g, sdb, dbx) are untouched.
+  and Emacs debugging.  Three languages are wired: **Go via Delve** (`dlv dap`),
+  **Rust via gdb** (`gdb --interpreter=dap` &mdash; gdb is a first-class Rust
+  debugger), and **Scala via Bloop** (the Scala Center `scala-debug-adapter`,
+  reached through `scala-cli`).  Open a `.go`, `.rs` or `.scala` file, set a
+  breakpoint, and Ctrl-G R drives a real source-level debug session &mdash;
+  Run/Continue (Ctrl-G R), Step Over (F8), Step Into (F7), live watches
+  (Ctrl-G W), and program output in Messages, the same keys you already use for
+  gdb.  This is xwpe's seventh debugger backend (`DEB_DAP`), selected
+  automatically by extension; the six text backends (gdb, jdb, pdb, a68g, sdb,
+  dbx) are untouched.  A modern Scala/macOS user can run **wpe in a terminal**
+  (iTerm2/Terminal, mouse and all) as a tiny zero-config debug front-end &mdash;
+  no XQuartz needed.
 
-  The engine carries **two transports** behind one API, because each adapter
+  The engine carries **three transports** behind one API, because each adapter
   dictates its own &mdash; reverse-TCP (Delve is a server; program output read
-  from a pty) and stdio (gdb/lldb speak DAP on their own pipes; output via DAP
-  events).  Adding a language is a one-row descriptor; `lldb-dap` (Rust/C/C++)
-  and Scala (Metals) are drop-ins next.
+  from a pty), stdio (gdb/lldb speak DAP on their own pipes; output via DAP
+  events), and TCP-client (connect to an endpoint a build server already
+  started, as for Scala/Bloop).  The JVM has no standalone DAP server, so xwpe
+  runs a short Build Server Protocol handshake against `scala-cli`/Bloop to get
+  one &mdash; no Scala artifact ships in xwpe, the toolchain stays external.
+  Adding a language is a one-row descriptor; `lldb-dap` for C/C++ is next.
 
   <p align="center">
     <img src="screenshots/xwpe-go-dap-debug.png" width="720" alt="Debugging a Go program in xwpe via Delve over DAP: the editor stopped at a breakpoint on line 9 (highlighted), and a Watches window below showing the live value fact: 6 as the factorial loop runs.">

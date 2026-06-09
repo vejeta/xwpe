@@ -99,6 +99,35 @@ on `n` shows the typed value, e.g. `(INT) +5`. The program's output and
 end-of-run are captured in Messages (`Ctrl-G P`). Watch expressions are
 unquoted (type `n`, not `"n"`).
 
+## DAP examples (modern debuggers over the Debug Adapter Protocol)
+
+`debug_test.go`, `debug_test.rs` and `debug_test.scala` are factorial
+demos for the DAP backend (xwpe's seventh debugger, `DEB_DAP`, auto-selected
+by extension). Each prints `factorial(10) = 3628800`; set a breakpoint on the
+`f = f * i` line and watch `f` grow `1, 1, 2, 6, 24, 120, ...`.
+
+| File | Needs | Adapter | Notes |
+|------|-------|---------|-------|
+| debug_test.go | `dlv`, `go` | Delve (`dlv dap`) | run `go mod init demo` in the dir first (dlv builds the package) |
+| debug_test.rs | `rustc`, `gdb` (or `lldb-dap`) | `gdb --interpreter=dap` | xwpe compiles `rustc -g`; adapter picked in Ctrl-G O |
+| debug_test.scala | `scala-cli` (`cs install scala-cli`) | Bloop / scala-debug-adapter via BSP | first Run boots a JVM build server (~30-60s); modern Scala only (not Debian's 2.11) |
+
+### How to test (same keys for all three)
+
+    wpe debug_test.scala            # or debug_test.go / debug_test.rs
+
+1. Move the cursor to the `f = f * i` line.
+2. **Ctrl-G B** -- set a breakpoint.
+3. **Ctrl-G R** -- Run. (Scala's first Run is slow: it starts Bloop.)
+   Execution stops at the breakpoint.
+4. **Ctrl-G W**, type `f`, Enter -- a live watch on `f`.
+5. **Ctrl-G R** repeatedly -- continue around the loop; `f` grows.
+6. **Ctrl-G Q** -- quit the debugger.
+
+Scala frames arrive demangled to the Scala signature
+(`Factorial.main(args: Array[String]): Unit`). The Scala toolchain is an
+external coursier tool -- nothing Scala ships inside xwpe.
+
 ## Feature examples
 
 These illustrate specific xwpe features used in the manual.

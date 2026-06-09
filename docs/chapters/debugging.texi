@@ -168,7 +168,8 @@ answer in Messages, and continue.
 xwpe supports eight backends, selectable via @samp{Debug @result{}
 debugger Options} (@kbd{Ctrl-G O}).  Several are auto-selected by file
 type: jdb for @file{.java}, pdb for @file{.py}, a68g for interpreted
-Algol 68, and the DAP client for @file{.go} (Delve) and @file{.rs} (gdb).
+Algol 68, and the DAP client for @file{.go} (Delve), @file{.rs} (gdb) and
+@file{.scala} (Bloop via @command{scala-cli}).
 
 @table @strong
 @item gdb (GNU Debugger)
@@ -192,17 +193,28 @@ debugger (@command{rust-gdb} is gdb).  Requires @command{rustc} and
 @samp{gdb} / @samp{lldb} explicitly.  The choice is saved in @file{~/.xwpe/xwperc}.
 @env{XWPE_DAP_ADAPTER} (e.g. @code{=lldb}) overrides it at run time for scripts
 and CI.
+@item @file{.scala}: debugs modern Scala (3.x/2.13) through Bloop, which hosts
+the Scala Center @code{scala-debug-adapter}.  The JVM has no standalone DAP
+server, so xwpe drives a short Build Server Protocol (BSP) handshake against
+@command{scala-cli} (which bundles Bloop) to obtain a DAP endpoint, then
+connects its DAP engine to it.  Frames arrive Scala-demangled (e.g.
+@code{Factorial.main(args: Array[String]): Unit}).  Requires @command{scala-cli}
+(install it with coursier: @code{cs install scala-cli}); the Debian @code{scala}
+package (2.11) is too old.  It is the heaviest backend at run time (a JVM build
+server plus a @file{.bsp}/@file{.scala-build} project beside the source), but the
+xwpe binary gains nothing heavy -- the toolchain stays an external tool.
 @end itemize
 Run/Continue (@kbd{Ctrl-G R}), Step Over (@kbd{F8}), Step Into (@kbd{F7}),
 watches (@kbd{Ctrl-G W}, evaluated with the DAP @code{evaluate} request) and
 Quit (@kbd{Ctrl-G Q}) all work as with gdb.
 
-The engine carries two transports behind one API, because each adapter
+The engine carries three transports behind one API, because each adapter
 dictates its own: @emph{reverse-TCP} (Delve is a server; the debuggee runs on
-a pty whose output xwpe reads) and @emph{stdio} (gdb and lldb speak DAP on
+a pty whose output xwpe reads), @emph{stdio} (gdb and lldb speak DAP on
 their own stdin/stdout, so program output arrives as DAP @code{output}
-events).  Adding a language is a one-row descriptor; @command{lldb-dap}
-(Rust/C/C++) and Scala (Metals) are planned drop-ins.
+events) and @emph{TCP-client} (connect to a DAP endpoint a build server already
+started, as for Scala/Bloop).  Adding a language is a one-row descriptor;
+@command{lldb-dap} for C/C++ is a planned drop-in.
 
 @item jdb (Java Debugger)
 Backend for Java.  Auto-selected for @file{.java} files.  Uses

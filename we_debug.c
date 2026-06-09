@@ -9,6 +9,7 @@
 #include "edit.h"
 #include "we_fdloop.h"
 #include "we_dap.h"
+#include "we_bsp.h"
 
 #ifndef NO_XWINDOWS
 #include "WeXterm.h"
@@ -515,7 +516,7 @@ static void e_d_on_pty_readable(int fd, void *data);
    Forward-declared here because e_d_quit and e_d_p_watches (defined above) hook
    into them. */
 static int  e_d_dap_active(void);
-static int  e_d_dap_window_is_go(FENSTER *f);
+static int  e_d_dap_source_ext(const char *datnam);
 static int  e_d_dap_start(FENSTER *f);
 static int  e_d_dap_run(FENSTER *f);
 static int  e_d_dap_step(FENSTER *f, int sw);
@@ -1391,7 +1392,7 @@ int e_d_quit(FENSTER *f)
  /* Switch back to the source file, not Messages.
     The user expects to continue editing after quitting the debugger. */
  for (i = cn->mxedt; i > 0; i--)
-  if (e_check_c_file(cn->f[i]->datnam))
+  if (e_check_c_file(cn->f[i]->datnam) || e_d_dap_source_ext(cn->f[i]->datnam))
   {
    e_switch_window(cn->edt[i], cn->f[cn->mxedt]);
    return(0);
@@ -2308,7 +2309,7 @@ int e_make_breakpoint(FENSTER *f, int sw)
 
  if (!sw)
  {
-  if (!e_check_c_file(f->datnam))
+  if (!e_check_c_file(f->datnam) && !e_d_dap_source_ext(f->datnam))
    return(e_error(e_p_msg[ERR_NO_CFILE], 0, f->fb));
   for(i = 0; i < s->brp[0] && s->brp[i+1] != b->b.y; i++)
    ;
@@ -2872,6 +2873,9 @@ int e_exec_deb(FENSTER *f, char *prog)
  * ===================================================================== */
 
 static e_dap_session *g_dap = NULL;       /* the live adapter session, or NULL */
+static e_bsp_session *g_bsp = NULL;       /* JVM/Scala: the build server hosting
+                                             the DAP adapter, kept alive for the
+                                             whole session (NULL otherwise)     */
 static FENSTER       *g_dap_fenster = NULL;/* window used for UI side-effects   */
 static int            g_dap_just_started = 0;/* first Run/Step is the entry stop */
 static e_dap_host     g_dap_host;
@@ -2902,20 +2906,50 @@ typedef struct {
  const char  *entry_func;   /* stop-at-entry function, or NULL      */
  int          stdio;        /* 0 = reverse-TCP (dlv), 1 = stdio (gdb/lldb) */
  int          compile;      /* 0 = adapter builds (Go), 1 = compile first (Rust) */
+ int          bsp;          /* 1 = JVM/Scala: bootstrap via BSP (Bloop/scala-cli)
+                               for the DAP endpoint, then connect TCP.  argv[0] is
+                               the build tool that must be in PATH (scala-cli). */
 } e_d_dap_lang;
 
 static char *const DAP_ARGV_GO[]        = { "dlv", "dap", NULL };
 static char *const DAP_ARGV_RUST_GDB[]  = { "gdb", "--interpreter=dap", NULL };
 static char *const DAP_ARGV_RUST_LLDB[] = { "lldb-dap", NULL };
+static char *const DAP_ARGV_SCALA[]     = { "scala-cli", NULL };
 
 static const e_d_dap_lang DAP_LANGS[] = {
- { ".go", DAP_ARGV_GO,       NULL,             "main.main", 0, 0 },
+ { ".go", DAP_ARGV_GO,       NULL,             "main.main", 0, 0, 0 },
  /* Rust: gdb and lldb-dap both work over stdio.  Default to gdb (everywhere on
     Linux); fall back to lldb-dap when gdb is absent -- the macOS case, where
     lldb is native.  e_d_dap_choose_argv also honours XWPE_DAP_ADAPTER. */
- { ".rs", DAP_ARGV_RUST_GDB, DAP_ARGV_RUST_LLDB, NULL,      1, 1 },
+ { ".rs", DAP_ARGV_RUST_GDB, DAP_ARGV_RUST_LLDB, NULL,      1, 1, 0 },
+ /* Scala/JVM: no standalone DAP server exists; scala-cli (bundling Bloop) hosts
+    scala-debug-adapter and hands back a tcp:// DAP endpoint over BSP.  xwpe runs
+    the BSP bootstrap (we_bsp.c), then connects the DAP engine to the endpoint.
+    The build server compiles, so xwpe does not (compile=0). */
+ { ".scala", DAP_ARGV_SCALA, NULL,             NULL,        0, 0, 1 },
 };
 #define DAP_NLANGS ((int)(sizeof(DAP_LANGS) / sizeof(DAP_LANGS[0])))
+
+/* True if `datnam` ends in a DAP-debugged language's extension.  The debugger
+   gates (e_make_breakpoint, e_d_quit) otherwise admit only files e_check_c_file
+   recognises -- the C/compiler-table check -- which does not know a build-server
+   language like Scala (.scala is built by Bloop, not an xwpe compiler entry).
+   This lets such files carry breakpoints and restore focus on quit. */
+static int e_d_dap_source_ext(const char *datnam)
+{
+ int i, n;
+
+ if (!datnam)
+  return(0);
+ n = strlen(datnam);
+ for (i = 0; i < DAP_NLANGS; i++)
+ {
+  int el = strlen(DAP_LANGS[i].ext);
+  if (n > el && !strcmp(datnam + n - el, DAP_LANGS[i].ext))
+   return(1);
+ }
+ return(0);
+}
 
 /* Pick the adapter for a language.  Order of preference: an explicit
    XWPE_DAP_ADAPTER=<name substring> that names an installed candidate (lets a
@@ -3021,6 +3055,13 @@ static void e_d_dap_quit(FENSTER *f)
   e_dap_close(g_dap);
   g_dap = NULL;
  }
+ if (g_bsp)
+ {
+  /* close the DAP socket first (done above), THEN the build server that hosts
+     the adapter -- killing it earlier would drop the DAP connection mid-quit. */
+  e_bsp_close(g_bsp);
+  g_bsp = NULL;
+ }
  g_dap_fenster = NULL;
  g_dap_just_started = 0;
  g_dap_stop_file[0] = '\0';
@@ -3124,13 +3165,32 @@ static int e_d_dap_start(FENSTER *f)
  }
  else
   program = dir;
- if (lang->stdio)
+ if (lang->bsp)
+ {
+  /* JVM/Scala: drive the BSP bootstrap (Bloop via scala-cli) to get a DAP
+     endpoint, keep the build server alive in g_bsp, then connect the engine. */
+  char bhost[64], mainclass[256], berr[256];
+  int bport = 0;
+  e_d_p_message("Starting Scala build server (BSP)...", f, 1);
+  g_bsp = e_bsp_start(dir, f->datnam, bhost, sizeof(bhost), &bport,
+                      mainclass, sizeof(mainclass), berr, sizeof(berr));
+  if (!g_bsp)
+  {
+   e_error(berr[0] ? berr : "Could not start the Scala debug server.", 0, f->fb);
+   g_dap_fenster = NULL;
+   return(-1);
+  }
+  g_dap = e_dap_open_tcp(bhost, bport, program, lang->entry_func, &g_dap_host);
+ }
+ else if (lang->stdio)
   g_dap = e_dap_open_stdio(adapter, program, lang->entry_func, dir, &g_dap_host);
  else
   g_dap = e_dap_open(adapter, program, lang->entry_func, dir, &g_dap_host);
  if (!g_dap)
  {
   e_error("Could not start the debug adapter.", 0, f->fb);
+  if (g_bsp)
+  {  e_bsp_close(g_bsp);  g_bsp = NULL;  }
   g_dap_fenster = NULL;
   return(-1);
  }
