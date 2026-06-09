@@ -219,6 +219,7 @@ EXTRA_DIST = \
   tests/test_chrome_ascii.py \
   tests/test_algol68.py \
   tests/test_algol68_debug.py \
+  tests/test_ga68.py \
   tests/test_debugger_watchdog.py \
   tests/x11/conftest.py \
   tests/x11/matchbox-kbdconfig \

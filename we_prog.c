@@ -1214,6 +1214,10 @@ int e_arguments(FENSTER *f)
  return(0);
 }
 
+/* Algol 68 dialect-aware toolchain selection (defined further below). */
+static void e_algol68_apply(struct e_s_prog *cp, int use_ga68);
+int e_algol68_use_ga68(const char *filename);
+
 int e_check_c_file(char *name)
 {
  int i, j;
@@ -1227,6 +1231,11 @@ int e_check_c_file(char *name)
     if(!strcmp(e_prog.comp[i]->filepostfix[j - 1], postfix))
     {
      e_copy_prog(&e_s_prog, e_prog.comp[i]);
+     /* Algol 68: drive the compiler that matches THIS file's dialect (a68g
+        vs ga68), detected from its content -- the two are incompatible. */
+     if (e_prog.comp[i]->language &&
+         !strcmp(e_prog.comp[i]->language, "Algol68"))
+      e_algol68_apply(&e_s_prog, e_algol68_use_ga68(name));
      return(i+1);
     }
  }
@@ -1440,6 +1449,134 @@ int e_add_arg(char ***arg, char *str, int n, int argc)
  return(argc);
 }
 
+/* e_cmd_in_path - True if executable CMD is found on $PATH (access X_OK).
+   Used to enable a tool-specific default only when the user has it installed,
+   e.g. prefer the ga68 compiler when present. */
+static int e_cmd_in_path(const char *cmd)
+{
+ char *path = getenv("PATH"), *copy, *dir, buf[1056];
+
+ if (!path || !*path)
+  return 0;
+ copy = WpeStrdup(path);
+ for (dir = strtok(copy, ":"); dir; dir = strtok(NULL, ":"))
+ {
+  snprintf(buf, sizeof(buf), "%s/%s", dir, cmd);
+  if (access(buf, X_OK) == 0)
+  {
+   FREE(copy);
+   return 1;
+  }
+ }
+ FREE(copy);
+ return 0;
+}
+
+/* ------------------------------------------------------------ Algol 68 ----
+   Algol 68 has two live, source-INCOMPATIBLE compilers: ga68 (the GNU GCC
+   front-end -> native binary, gdb) and a68g (Algol 68 Genie -> interpreter,
+   own monitor).  They use opposite stropping regimes -- ga68 the modern one
+   (lowercase bold words, { } comments), a68g the classic one (UPPER BEGIN/END,
+   # ... # or CO comments) -- so a given .a68 file only builds with the right
+   one.  xwpe therefore detects each file's dialect from its content and drives
+   the matching compiler AND debugger, with no manual switch. */
+
+static int e_a68_isword(int c)
+{
+ return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+        (c >= '0' && c <= '9') || c == '_';
+}
+
+/* e_a68_word_in_line - whole-word, case-sensitive search of WORD in LINE. */
+static int e_a68_word_in_line(const char *line, const char *word)
+{
+ const char *p = line;
+ size_t wl = strlen(word);
+
+ while ((p = strstr(p, word)))
+ {
+  if ((p == line || !e_a68_isword((unsigned char)p[-1])) &&
+      !e_a68_isword((unsigned char)p[wl]))
+   return 1;
+  p += wl;
+ }
+ return 0;
+}
+
+/* e_algol68_apply - Configure compiler entry CP for one toolchain.  ga68: GCC
+   front-end -- native compile+link to a .e (comp_sw 0), GNU diagnostics, and
+   the binary is gdb-debugged breaking at __algol68_main.  a68g: the Genie
+   interpreter -- --norun syntax check (F9), interpret to run, its own --monitor
+   to debug; its diagnostics carry only a line number. */
+static void e_algol68_apply(struct e_s_prog *cp, int use_ga68)
+{
+ if (cp->compiler)     FREE(cp->compiler);
+ if (cp->comp_str)     FREE(cp->comp_str);
+ if (cp->intstr)       FREE(cp->intstr);
+ if (cp->start_symbol) FREE(cp->start_symbol);
+ if (use_ga68)
+ {
+  cp->compiler     = WpeStrdup("ga68");
+  cp->comp_str     = WpeStrdup("-g");
+  cp->intstr       = WpeStrdup(cc_intstr);
+  cp->start_symbol = WpeStrdup("__algol68_main");
+  cp->comp_sw      = 0;
+ }
+ else
+ {
+  cp->compiler     = WpeStrdup("a68g");
+  cp->comp_str     = WpeStrdup("--norun");
+  cp->intstr       = WpeStrdup("*in line ${LINE}*");
+  cp->start_symbol = NULL;
+  cp->comp_sw      = 1;
+ }
+}
+
+/* e_algol68_sniff - Guess FILE's dialect from its first lines.  The regimes are
+   mutually exclusive, so one strong marker decides: a { } comment or a lowercase
+   bold word means ga68; a # comment or an UPPER bold word means a68g.  Returns 1
+   for ga68, 0 for a68g, -1 if undecided. */
+static int e_algol68_sniff(const char *filename)
+{
+ FILE *fp = fopen(filename, "r");
+ char line[512];
+ int n = 0, verdict = -1;
+
+ if (!fp)
+  return -1;
+ while (verdict < 0 && n++ < 200 && fgets(line, sizeof(line), fp))
+ {
+  if (strchr(line, '{')) { verdict = 1; break; }   /* brace comment -> ga68 */
+  if (strchr(line, '#')) { verdict = 0; break; }   /* hash comment  -> a68g */
+  if (e_a68_word_in_line(line, "begin") || e_a68_word_in_line(line, "end") ||
+      e_a68_word_in_line(line, "mode")  || e_a68_word_in_line(line, "proc"))
+   { verdict = 1; break; }
+  if (e_a68_word_in_line(line, "BEGIN") || e_a68_word_in_line(line, "END") ||
+      e_a68_word_in_line(line, "MODE")  || e_a68_word_in_line(line, "PROC") ||
+      e_a68_word_in_line(line, "CO")    || e_a68_word_in_line(line, "COMMENT"))
+   { verdict = 0; break; }
+ }
+ fclose(fp);
+ return verdict;
+}
+
+/* e_algol68_use_ga68 - Decide which Algol 68 toolchain to drive for FILE: the
+   one matching its detected dialect, constrained to what is installed.  Shared
+   by compile (e_check_c_file) and debug (e_start_debug) so a file is built and
+   debugged by the same correct compiler. */
+int e_algol68_use_ga68(const char *filename)
+{
+ int have_ga68 = e_cmd_in_path("ga68");
+ int have_a68g = e_cmd_in_path("a68g");
+ int d;
+
+ if (have_ga68 && !have_a68g) return 1;
+ if (have_a68g && !have_ga68) return 0;
+ if (!have_ga68 && !have_a68g) return 0;   /* neither: default a68g */
+ d = e_algol68_sniff(filename);            /* both present: pick by dialect */
+ return (d == 1) ? 1 : 0;                  /* undecided -> classic a68g */
+}
+
 int e_ini_prog(ECNT *cn)
 {
  int i;
@@ -1534,29 +1671,31 @@ int e_ini_prog(ECNT *cn)
  e_prog.comp[8]->key = 'O';
  e_prog.comp[8]->x = 0;
  e_prog.comp[8]->intstr = WpeStrdup("${FILE}:${LINE}:*");
- e_prog.comp[9]->compiler = WpeStrdup("a68g");
+ /* Algol 68 entry: only the extension and menu key are fixed here.  Its
+    compiler / comp_str / intstr / comp_sw / start_symbol are toolchain-specific
+    (a68g vs ga68) and owned entirely by e_algol68_apply -- the single source of
+    truth -- applied below for the default and per file in e_check_c_file. */
  e_prog.comp[9]->language = WpeStrdup("Algol68");
  e_prog.comp[9]->filepostfix = (char **)WpeExpArrayCreate(2, sizeof(char *), 1);
  e_prog.comp[9]->filepostfix[0] = WpeStrdup(".a68");
  e_prog.comp[9]->filepostfix[1] = WpeStrdup(".alg");
  e_prog.comp[9]->key = 'A';
  e_prog.comp[9]->x = 0;
- /* Algol 68 Genie reports "a68g: error: N: ... in line L." with no file name,
-    so we can only recover the line number; the file falls back to the one
-    being compiled.  Best-effort jump -- the full diagnostic is shown in
-    Messages regardless. */
- e_prog.comp[9]->intstr = WpeStrdup("*in line ${LINE}*");
  for (i = 0; i < e_prog.num; i++)
  {
   if (i == 5) e_prog.comp[i]->comp_str = WpeStrdup("-m py_compile");
   else if (i == 6) e_prog.comp[i]->comp_str = WpeStrdup("-interaction=nonstopmode -file-line-error");
   else if (i == 7) e_prog.comp[i]->comp_str = WpeStrdup("-c");
-  else if (i == 9) e_prog.comp[i]->comp_str = WpeStrdup("--norun");  /* a68g: syntax check only (F9); plain run for Ctrl-F9 */
-  else e_prog.comp[i]->comp_str = WpeStrdup("-g");
+  else e_prog.comp[i]->comp_str = WpeStrdup("-g");   /* comp[9] (Algol 68) overwritten by e_algol68_apply */
   e_prog.comp[i]->libraries = WpeStrdup("");
   e_prog.comp[i]->exe_name = WpeStrdup("");
   e_prog.comp[i]->comp_sw = (i < 3 || i == 8) ? 0 : 1;  /* GNU for gcc/g++/gfortran/cobc, other for rest */
  }
+ /* Default the Algol 68 entry to whichever compiler is installed (ga68 when it
+    is the only one).  Each .a68 file's actual compiler is then chosen by its
+    detected dialect at compile/debug time (e_check_c_file and e_start_debug via
+    e_algol68_use_ga68), so both dialects build with no manual switch. */
+ e_algol68_apply(e_prog.comp[9], e_cmd_in_path("ga68") && !e_cmd_in_path("a68g"));
  e_copy_prog(&e_s_prog, e_prog.comp[0]);
  return(0);
 }

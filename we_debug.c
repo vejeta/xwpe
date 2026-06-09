@@ -125,6 +125,7 @@ extern struct e_s_prog e_sv_prog;
 extern BUFFER *e_p_w_buffer;
 extern char *att_no;
 extern char *e_tmp_dir;
+extern int e_algol68_use_ga68(const char *filename);
 
 #ifdef NOTPARM
 /* char *tparm(); */
@@ -2886,11 +2887,16 @@ int e_start_debug(FENSTER *f)
    else if ((_l > 4 && !strcmp(e_d_file + _l - 4, ".a68")) ||
             (_l > 4 && !strcmp(e_d_file + _l - 4, ".alg")))
    {
-    /* Auto-select a68g silently -- no modal notice.  The .a68/.alg
-       extension makes the backend obvious, and a modal popup here would
-       block the very Ctrl-G R the user just pressed (it looks like the
-       debugger "does nothing" until the dialog is dismissed). */
-    e_deb_type = DEB_A68G;
+    /* Two Algol 68 toolchains: ga68 (a GCC front-end -> native binary, so
+       gdb debugs the compiled .e, breaking at __algol68_main) and a68g (the
+       Genie interpreter -> its own --monitor on the source).  Follow the
+       configured compiler so the debugger matches what built the program.
+       Auto-selected silently -- no modal notice, which would block the very
+       Ctrl-G R the user just pressed. */
+    if (e_algol68_use_ga68(e_d_file))
+     e_deb_type = DEB_GDB;
+    else
+     e_deb_type = DEB_A68G;
    }
  }
  jdb_trace("e_start_debug: e_d_file='%s', e_deb_type=%d, comp_sw=%d\n",
@@ -4377,7 +4383,7 @@ int e_deb_options(FENSTER *f)
     e_deb_type = DEB_PDB;
    else if (_fnl > 4 && (!strcmp(_fn + _fnl - 4, ".a68") ||
                          !strcmp(_fn + _fnl - 4, ".alg")))
-    e_deb_type = DEB_A68G;
+    e_deb_type = e_algol68_use_ga68(_fn) ? DEB_GDB : DEB_A68G;
    /* Map e_deb_type to radio button index:
       0=Gdb, 1=Sdb, 2=Dbx, 3=Jdb, 4=Pdb, 5=A68g (radio index)
       e_deb_type: 0=gdb, 1=sdb, 2=dbx, 3=xdb, 4=jdb, 5=pdb, 6=a68g */
