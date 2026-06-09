@@ -5280,6 +5280,23 @@ static int e_lsp_ui_complete(FENSTER *f)
  return(0);
 }
 
+/* AltQ S -- show the signature of the call the cursor is inside. */
+static int e_lsp_ui_signature(FENSTER *f)
+{
+ BUFFER *b = f->b;
+ char *sig;
+
+ if (e_lsp_ensure(f) < 0)
+  return(-1);
+ e_lsp_sync(f);
+ sig = e_lsp_signature_help(g_lsp, g_lsp_file, b->b.y, b->b.x);
+ if (!sig || !*sig)
+ {  if (sig) free(sig);  e_error("No signature here.", 0, f->fb);  return(0);  }
+ e_message(0, sig, f);
+ free(sig);
+ return(0);
+}
+
 /* AltQ R -- list every reference to the symbol under the cursor in Messages. */
 static int e_lsp_ui_references(FENSTER *f)
 {
@@ -5369,6 +5386,8 @@ int e_lsp_ui_inp(FENSTER *f)
    return(e_lsp_ui_complete(f));
   case 'r': case ('r' - 'a' + 1):
    return(e_lsp_ui_references(f));
+  case 's': case ('s' - 'a' + 1):
+   return(e_lsp_ui_signature(f));
   case 'o': case ('o' - 'a' + 1):
    return(e_lsp_ui_outline(f));
   case 'e': case ('e' - 'a' + 1):

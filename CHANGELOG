@@ -318,6 +318,7 @@ Changes
     pick with the arrows + Enter and it replaces the partial word.
   - Alt-Q R: references -- list every use of the symbol (decl + uses) in Messages.
   - Alt-Q O: outline -- the file's symbols in a popup; pick one to jump to it.
+  - Alt-Q S: signature -- the signature of the call the cursor is inside.
 * The engine (we_lsp.c) reuses the DAP/BSP JSON-RPC + Content-Length framing,
   so no new dependency; nothing Scala ships in xwpe (Metals is an external
   coursier tool: cs install metals).  Verified by tests/test_lsp_scala.c (engine

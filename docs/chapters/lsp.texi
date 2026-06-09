@@ -47,6 +47,9 @@ declaration) in the Messages window.
 @item Alt-Q O
 Outline: list the file's symbols (objects, defs, vals, ...) in a popup; pick
 one with the arrows and @key{RET} to jump to it.
+@item Alt-Q S
+Signature: show the signature of the call the cursor is inside (e.g.
+@code{println(x: Any): Unit}) in a popup.
 @end table
 
 The server starts lazily on the first @kbd{Alt-Q} action and is reused for the

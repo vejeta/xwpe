@@ -78,6 +78,12 @@ int e_lsp_wait_diagnostics(e_lsp_session *s, const char *path, int timeout_ms);
  * (markdown fences stripped) the caller frees, or NULL. */
 char *e_lsp_hover(e_lsp_session *s, const char *path, int line, int character);
 
+/* textDocument/signatureHelp at (line,character): the active overload's
+ * signature label (e.g. "def println(x: Any): Unit").  malloc'd, caller frees,
+ * or NULL.  Most useful with the cursor inside a call's parentheses. */
+char *e_lsp_signature_help(e_lsp_session *s, const char *path,
+                           int line, int character);
+
 /* textDocument/definition: on success fills out_path/out_line/out_char with the
  * first location and returns 0; returns -1 if there is no definition. */
 int e_lsp_definition(e_lsp_session *s, const char *path, int line, int character,

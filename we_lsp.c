@@ -567,6 +567,41 @@ char *e_lsp_hover(e_lsp_session *s, const char *path, int line, int character)
  return out;
 }
 
+char *e_lsp_signature_help(e_lsp_session *s, const char *path,
+                           int line, int character)
+{
+ char abspath[PATH_MAX];
+ struct json_object *resp, *result, *sigs, *sig;
+ char *out = NULL;
+ int id, idx, n;
+
+ if (!s)
+  return NULL;
+ if (!realpath(path, abspath))
+  snprintf(abspath, sizeof(abspath), "%s", path);
+ id = ++s->id;
+ lsp_send(s, id, "textDocument/signatureHelp",
+          lsp_text_pos(s, abspath, line, character));
+ resp = lsp_pump(s, id, NULL, LSP_TMO_REQ);
+ if (!resp)
+  return NULL;
+ result = obj_obj(resp, "result");
+ sigs = result ? obj_obj(result, "signatures") : NULL;
+ n = (sigs && json_object_is_type(sigs, json_type_array))
+     ? json_object_array_length(sigs) : 0;
+ if (n > 0)
+ {
+  idx = obj_int(result, "activeSignature", 0);
+  if (idx < 0 || idx >= n)
+   idx = 0;
+  sig = json_object_array_get_idx(sigs, idx);
+  if (obj_str(sig, "label"))
+   out = strdup(obj_str(sig, "label"));
+ }
+ json_object_put(resp);
+ return out;
+}
+
 int e_lsp_definition(e_lsp_session *s, const char *path, int line, int character,
                      char *out_path, size_t out_sz, int *out_line, int *out_char)
 {

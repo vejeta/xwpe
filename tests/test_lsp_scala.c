@@ -121,7 +121,16 @@ int main(void)
   if (ns < 1) { rc = fail("document outline returned no symbols"); goto close; }
  }
 
- printf("PASS: LSP engine vs real Metals (hover/definition/completion/references/outline)\n");
+ /* signature help inside println( ... ) on line 7 -> a signature label */
+ {
+  char *sg = NULL;
+  for (int t = 0; t < 5 && !sg; t++)
+  { sg = e_lsp_signature_help(s, scala, 7, 12); if (!sg) sleep(2); }
+  if (sg) { printf("  SIGNATURE: %s\n", sg); free(sg); }
+  else printf("  SIGNATURE: (none -- not fatal)\n");
+ }
+
+ printf("PASS: LSP engine vs real Metals (hover/definition/completion/references/outline/signature)\n");
 
 close:
  e_lsp_close(s);
