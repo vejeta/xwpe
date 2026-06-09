@@ -161,7 +161,7 @@ metainfodir = $(datadir)/metainfo
 metainfo_DATA = io.codeberg.mendezr.xwpe.metainfo.xml
 
 # --- Unit tests ---
-check_PROGRAMS = test_checkheader test_syntax_def test_dap test_dap_dlv test_dap_gdb
+check_PROGRAMS = test_checkheader test_syntax_def test_dap test_dap_dlv test_dap_gdb test_dap_lldb
 
 test_checkheader_SOURCES = tests/test_checkheader.c
 test_checkheader_CFLAGS = -std=gnu17
@@ -187,7 +187,14 @@ test_dap_gdb_SOURCES = tests/test_dap_gdb.c we_dap.c we_dap_proto.c
 test_dap_gdb_CFLAGS = -std=gnu17 $(JSONC_CFLAGS)
 test_dap_gdb_LDADD = $(JSONC_LIBS) $(UTIL_LIBS)
 
-TESTS = test_checkheader test_syntax_def test_dap test_dap_dlv test_dap_gdb
+# Same stdio transport against `lldb-dap` (the LLVM adapter; native on macOS).
+# SKIPs without lldb-dap+rustc.
+test_dap_lldb_SOURCES = tests/test_dap_lldb.c we_dap.c we_dap_proto.c
+test_dap_lldb_CFLAGS = -std=gnu17 $(JSONC_CFLAGS)
+test_dap_lldb_LDADD = $(JSONC_LIBS) $(UTIL_LIBS)
+
+TESTS = test_checkheader test_syntax_def test_dap test_dap_dlv test_dap_gdb \
+  test_dap_lldb
 
 # --- Extra files for distribution ---
 EXTRA_DIST = \
@@ -216,6 +223,7 @@ EXTRA_DIST = \
   tests/test_dap.c \
   tests/test_dap_dlv.c \
   tests/test_dap_gdb.c \
+  tests/test_dap_lldb.c \
   tests/test_utf8_border.py \
   tests/test_scrollbar.py \
   tests/test_compile.py \

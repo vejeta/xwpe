@@ -186,7 +186,9 @@ since @command{dlv dap} builds the package.
 @item @file{.rs}: xwpe compiles the file (@command{rustc -g}) and debugs the
 binary with @command{gdb --interpreter=dap} -- gdb is a first-class Rust
 debugger (@command{rust-gdb} is gdb).  Requires @command{rustc} and
-@command{gdb}.
+@command{gdb}.  Where gdb is absent (notably macOS) xwpe uses @command{lldb-dap}
+instead, automatically; set @env{XWPE_DAP_ADAPTER=lldb} to prefer lldb-dap even
+when gdb is present.
 @end itemize
 Run/Continue (@kbd{Ctrl-G R}), Step Over (@kbd{F8}), Step Into (@kbd{F7}),
 watches (@kbd{Ctrl-G W}, evaluated with the DAP @code{evaluate} request) and

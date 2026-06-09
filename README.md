@@ -196,9 +196,11 @@ pattern language (`${FILE}`, `${LINE}`, `${COLUMN}`, wildcards).
 
 The Go and Rust rows use the Debug Adapter Protocol -- the same wire protocol
 VS Code, Neovim and Emacs DAP use -- so the debugger is a standard adapter
-(`dlv dap` for Go, `gdb --interpreter=dap` for Rust) rather than a bespoke
-backend.  Go needs `dlv` + `go` and a `go.mod`; Rust needs `rustc` + `gdb`.
-Scala (Metals) and C/C++ (lldb-dap) are planned on the same engine.
+(`dlv dap` for Go; `gdb --interpreter=dap` or `lldb-dap` for Rust) rather than a
+bespoke backend.  Go needs `dlv` + `go` and a `go.mod`; Rust needs `rustc` and
+either `gdb` (default) or `lldb-dap` (used automatically where gdb is absent,
+e.g. macOS; force it with `XWPE_DAP_ADAPTER=lldb`).  Scala (Metals) and C/C++
+are planned on the same engine.
 
 <p align="center">
   <img src="screenshots/xwpe-ga68-watch.gif" width="720" alt="Debugging a GNU Algol 68 (ga68) program in xwpe: Ctrl-G R compiles with ga68 and starts gdb, Ctrl-G W adds a watch on a variable, Window/Size-Move tiles the editor, Watches and Messages windows, and F8 single-steps while the watch value grows. The pressed keys are overlaid in the corner.">

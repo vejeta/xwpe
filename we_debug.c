@@ -2891,20 +2891,47 @@ static const char *e_d_dap_basename(const char *path)
    language is a row here, never new plumbing. */
 typedef struct {
  const char  *ext;          /* source extension, e.g. ".go" / ".rs" */
- char *const *argv;         /* adapter command line                 */
+ char *const *argv;         /* preferred adapter command line       */
+ char *const *argv_alt;     /* alternative adapter, or NULL         */
  const char  *entry_func;   /* stop-at-entry function, or NULL      */
  int          stdio;        /* 0 = reverse-TCP (dlv), 1 = stdio (gdb/lldb) */
  int          compile;      /* 0 = adapter builds (Go), 1 = compile first (Rust) */
 } e_d_dap_lang;
 
-static char *const DAP_ARGV_GO[]   = { "dlv", "dap", NULL };
-static char *const DAP_ARGV_RUST[] = { "gdb", "--interpreter=dap", NULL };
+static char *const DAP_ARGV_GO[]        = { "dlv", "dap", NULL };
+static char *const DAP_ARGV_RUST_GDB[]  = { "gdb", "--interpreter=dap", NULL };
+static char *const DAP_ARGV_RUST_LLDB[] = { "lldb-dap", NULL };
 
 static const e_d_dap_lang DAP_LANGS[] = {
- { ".go", DAP_ARGV_GO,   "main.main", 0, 0 },
- { ".rs", DAP_ARGV_RUST, NULL,        1, 1 },
+ { ".go", DAP_ARGV_GO,       NULL,             "main.main", 0, 0 },
+ /* Rust: gdb and lldb-dap both work over stdio.  Default to gdb (everywhere on
+    Linux); fall back to lldb-dap when gdb is absent -- the macOS case, where
+    lldb is native.  e_d_dap_choose_argv also honours XWPE_DAP_ADAPTER. */
+ { ".rs", DAP_ARGV_RUST_GDB, DAP_ARGV_RUST_LLDB, NULL,      1, 1 },
 };
 #define DAP_NLANGS ((int)(sizeof(DAP_LANGS) / sizeof(DAP_LANGS[0])))
+
+/* Pick the adapter for a language.  Order of preference: an explicit
+   XWPE_DAP_ADAPTER=<name substring> that names an installed candidate (lets a
+   user force, e.g., "lldb" even where gdb exists); otherwise the first
+   candidate that is in PATH (so a gdb-less macOS box auto-selects lldb-dap). */
+static char *const *e_d_dap_choose_argv(const e_d_dap_lang *lang)
+{
+ const char *pref = getenv("XWPE_DAP_ADAPTER");
+ int primary_ok = (e_test_command(lang->argv[0]) == 0);
+ int alt_ok = (lang->argv_alt && e_test_command(lang->argv_alt[0]) == 0);
+
+ if (pref && *pref)
+ {
+  if (alt_ok && strstr(lang->argv_alt[0], pref))
+   return(lang->argv_alt);
+  if (primary_ok && strstr(lang->argv[0], pref))
+   return(lang->argv);
+ }
+ if (!primary_ok && alt_ok)
+  return(lang->argv_alt);
+ return(lang->argv);
+}
 
 /* The DAP language descriptor for this editor window, or NULL if its file is
    not a DAP-debugged language.  Used to route Ctrl-G R away from the gdb/text
@@ -3043,6 +3070,7 @@ static int e_d_dap_start(FENSTER *f)
 {
  const e_d_dap_lang *lang = e_d_dap_lang_for(f);
  char dir[1024], binary[1024];
+ char *const *adapter;
  const char *program;
  int i, dlen;
 
@@ -3050,10 +3078,11 @@ static int e_d_dap_start(FENSTER *f)
   return(0);
  if (!lang)
   return(-1);
- if (e_test_command(lang->argv[0]))
+ adapter = e_d_dap_choose_argv(lang);   /* gdb vs lldb-dap etc. */
+ if (e_test_command(adapter[0]))
  {
   char m[160];
-  sprintf(m, "Debug adapter '%s' not in PATH.", lang->argv[0]);
+  sprintf(m, "Debug adapter '%s' not in PATH.", adapter[0]);
   e_error(m, 0, f->fb);
   return(-1);
  }
@@ -3083,9 +3112,9 @@ static int e_d_dap_start(FENSTER *f)
  else
   program = dir;
  if (lang->stdio)
-  g_dap = e_dap_open_stdio(lang->argv, program, lang->entry_func, dir, &g_dap_host);
+  g_dap = e_dap_open_stdio(adapter, program, lang->entry_func, dir, &g_dap_host);
  else
-  g_dap = e_dap_open(lang->argv, program, lang->entry_func, dir, &g_dap_host);
+  g_dap = e_dap_open(adapter, program, lang->entry_func, dir, &g_dap_host);
  if (!g_dap)
  {
   e_error("Could not start the debug adapter.", 0, f->fb);

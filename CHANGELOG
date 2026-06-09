@@ -248,7 +248,8 @@ Changes
   - Go: open a .go file and Ctrl-G R drives Delve (`dlv dap`).
   - Rust: open a .rs file; xwpe compiles it (rustc -g) and debugs it with
     `gdb --interpreter=dap` (gdb is a first-class Rust debugger -- rust-gdb IS
-    gdb).
+    gdb), or with `lldb-dap` where gdb is absent (notably macOS) -- chosen
+    automatically, or forced with XWPE_DAP_ADAPTER=lldb.
   Run/Continue (Ctrl-G R), Step Over (F8), Step Into (F7), watches (Ctrl-G W,
   evaluated with DAP evaluate context=watch) and Quit (Ctrl-G Q) all work, just
   like the gdb backend.  Stops jump the editor to the source line; program

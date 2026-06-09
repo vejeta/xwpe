@@ -205,35 +205,41 @@ The cheap way to re-derive any of these is `DAP_TRACE`-style logging in
 | `tests/test_dap.c` | the wire format (`we_dap_proto`) alone | always |
 | `tests/test_dap_dlv.c` | real `dlv dap` (Go, reverse-TCP) | SKIP without `dlv`+`go` |
 | `tests/test_dap_gdb.c` | real `gdb --interpreter=dap` (Rust, stdio) | SKIP without `gdb`+`rustc` |
+| `tests/test_dap_lldb.c` | real `lldb-dap` (Rust, stdio) | SKIP without `lldb-dap`+`rustc` |
 | `tests/test_go_dap.py` | the Go editor path (pyte) | SKIP without `dlv`+`go` |
-| `tests/test_rust_dap.py` | the Rust editor path (pyte) | SKIP without `rustc`+`gdb` |
+| `tests/test_rust_dap.py` | the Rust editor path (pyte; force lldb with `XWPE_DAP_ADAPTER=lldb`) | SKIP without `rustc`+`gdb` |
 
 The C integration tests link only `we_dap.c` + `we_dap_proto.c` (+ `libjson-c`,
 `libutil`), proving the engine works with no editor.  `make check` runs them
 all; the pyte tests are run from `tests/`.
 
+## Choosing the adapter (gdb vs lldb-dap)
+
+A `DAP_LANGS` row can name a preferred adapter **and** an alternative
+(`argv` + `argv_alt`).  Rust lists `gdb --interpreter=dap` first and `lldb-dap`
+as the alternative; both ride the same stdio transport with no engine change.
+`e_d_dap_choose_argv()` picks at session start:
+
+1. `XWPE_DAP_ADAPTER=<substring>` — if set and it names an *installed*
+   candidate, force it (e.g. `XWPE_DAP_ADAPTER=lldb` to prefer lldb-dap even
+   where gdb exists — the "moving to lldb" path).
+2. otherwise the first candidate in `PATH` — so a **gdb-less macOS box
+   auto-selects lldb-dap**, while Linux defaults to gdb.
+
+lldb-dap is the native Rust/C/C++ debugger on macOS and works identically here
+(it even reports the mangled Rust symbol, e.g. `main::main::h…`).
+
 ## Status and next
 
-Wired: Go (Delve, reverse-TCP), Rust (gdb, stdio).  Natural follow-ups, all on
-the existing two transports:
+Wired: Go (Delve, reverse-TCP), Rust (gdb **or** lldb-dap, stdio).  Natural
+follow-ups, all on the existing two transports:
 
 * **C/C++** via gdb/lldb-dap — a real new *language*.  Would need a `DEB_DAP`
   opt-in versus the legacy gdb text backend for `.c`/`.cpp` (those extensions
-  already route to the text backend today).
-* **lldb-dap** — *optional, deferred until there's demand.*  On Linux it adds
-  nothing over gdb for Rust: gdb already debugs Rust well, is installed
-  everywhere, and rustc embeds the pretty-printer script gdb auto-loads.  It is
-  a *substitute* for what we have, not an addition.  Keep it on the radar for:
-  - **lldb-only environments** — a user who has LLVM/lldb but not gdb, or
-    prefers it;
-  - **macOS / non-Linux** — lldb is the native debugger there and gdb may be
-    absent or worse (relevant if xwpe is ever used on macOS, e.g. by the
-    maintainer);
-  - it is the same adapter for Swift/Zig too.
-  Cost when wanted: one `DAP_LANGS` row — `{ ".rs", {"lldb-dap"}, NULL, 1, 1 }`
-  (or a config toggle to pick the adapter) on the stdio transport that already
-  exists.  No new plumbing.
+  already route to the text backend today).  Once opted in it is two
+  `DAP_LANGS` rows (gdb + lldb-dap alternative), like Rust.
 * **Scala** via Metals — heavier: Metals is an LSP server that exposes DAP
   through a build server (Bloop/sbt), so it needs a discovery/handshake layer
-  on top of the TCP transport, not just a descriptor row.
+  on top of the TCP transport, not just a descriptor row.  Blocked here until
+  `scalac`/`metals` are installed to probe against.
 * **DAP *server* mode** (task #50) — expose xwpe itself as a debuggee target.
