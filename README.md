@@ -82,9 +82,12 @@ console-only build needs only `libncurses-dev` (plus the build tools).
 * **Language Server Protocol (LSP) client &mdash; an IDE, not just a debugger.**
   Where DAP lets xwpe *run* your code, LSP lets it *understand* it: xwpe speaks
   LSP to the same servers VS Code / Neovim / Emacs use. **Scala via Metals** is
-  wired &mdash; open a `.scala` file and the **Alt-Q** prefix gives **E**
-  diagnostics (compiler errors in Messages), **D** go-to-definition, **H** hover
-  (type + docs), **C** completion (candidate popup, insert on Enter). This makes
+  wired &mdash; open a `.scala` file and the **Alt-Q** prefix gives the IDE
+  staples: **E** diagnostics (compiler errors in Messages, live as you type),
+  **D** definition, **I** implementation, **T** type-definition, **H** hover
+  (type + docs), **C** completion, **R** references, **O** file outline, **W**
+  project-wide symbol search, **A** code actions / quick-fixes, **S** signature
+  help, **N** rename, **F** format (scalafmt). This makes
   `wpe` in a terminal a genuine lightweight Metals front-end for the "IntelliJ
   is too heavy" crowd &mdash; the discoverable Borland UX, no Electron, no Lua
   config, a few-MB binary. The engine (`we_lsp.c`) reuses the DAP JSON-RPC
