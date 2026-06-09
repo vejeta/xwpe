@@ -303,8 +303,23 @@ Changes
   syntax_def.  Note: a personal ~/.xwpe/syntax_def shadows the system file, so
   refresh it (cp .../syntax_def ~/.xwpe/syntax_def) to pick up the new languages.
 * New build dependency: json-c (libjson-c-dev) for DAP message coding.
-  C/C++ over gdb/lldb-dap come nearly free on the same stdio path next; an LSP
-  client (completion, hover, diagnostics) is the planned follow-up to DAP.
+  C/C++ over gdb/lldb-dap come nearly free on the same stdio path next.
+
+  IDE features via the Language Server Protocol (LSP) -- Scala/Metals:
+* Where DAP made xwpe a debugger, an LSP client makes it an IDE.  xwpe now
+  speaks LSP -- the same protocol VS Code, Neovim and Emacs use -- to the same
+  language servers (Metals for Scala).  Open a .scala file and use the Alt-Q
+  prefix ("Query the language server"):
+  - Alt-Q E: start Metals, import the build (via scala-cli) and show compiler
+    diagnostics in Messages.
+  - Alt-Q D: go to the definition of the symbol under the cursor.
+  - Alt-Q H: hover -- show its type and documentation (e.g. "var f: Long").
+* The engine (we_lsp.c) reuses the DAP/BSP JSON-RPC + Content-Length framing,
+  so no new dependency; nothing Scala ships in xwpe (Metals is an external
+  coursier tool: cs install metals).  Verified by tests/test_lsp_scala.c (engine
+  vs real Metals) and tests/test_scala_lsp.py (the editor bridge through wpe).
+* Completion (the candidate popup) and didChange-driven live diagnostics are the
+  next LSP increments; clangd (C/C++) and other servers are descriptor rows.
 
 1.6.4 (embedded VT terminal, Algol 68 source-level debugger, window-layout fixes)
 

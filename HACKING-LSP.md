@@ -1,9 +1,16 @@
 # HACKING-LSP — the planned Language Server Protocol client
 
-> **Status: SPIKE VALIDATED, engine not yet implemented.** The Metals LSP chain
-> has been proven end-to-end by hand (see "Validated flow" below); the C engine
-> (`we_lsp.c`) and the editor UI surfaces are the remaining work.  Companion to
-> `HACKING-DAP.md` (the *implemented* DAP client).  Next major feature after DAP.
+> **Status: ENGINE + 3 of 4 surfaces SHIPPED (Scala/Metals).** Done: the
+> `we_lsp.c` engine (validated against real Metals) and the editor bridge for
+> **diagnostics, go-to-definition and hover** (Alt-Q prefix).  Remaining:
+> **completion** (the navigable popup widget + insert-on-Enter), and
+> didChange-driven live diagnostics.  Companion to `HACKING-DAP.md`.
+>
+> Keys (editor bridge, `e_lsp_ui_inp` in we_debug.c, dispatched from
+> `e_prog_switch` on Alt-Q): `Alt-Q E` start server + diagnostics, `Alt-Q D`
+> go-to-definition, `Alt-Q H` hover.  Tests: `tests/test_lsp_scala.c` (engine vs
+> real Metals: hover/definition/completion/diagnostics) and
+> `tests/test_scala_lsp.py` (the bridge through wpe).
 
 ## Validated flow (2026-06-09, real Metals 1.6.7)
 
