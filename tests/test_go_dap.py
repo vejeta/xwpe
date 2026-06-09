@@ -95,6 +95,33 @@ def test_go_dap_run_and_step(tmp_path):
             "dlv adapter banner leaked into Messages:\n%s" % _text(w)
 
 
+def test_go_dap_step_past_end_exits_cleanly(tmp_path):
+    """Stepping (F8) off the end of main() must finish the program, not wander
+    into the language runtime.  Regression: "step over" at main's return lands in
+    runtime/proc.go under GOROOT, so the editor jumped around in unfamiliar Go
+    runtime source.  The bridge now runs on to program exit instead, and never
+    paints a non-user file."""
+    _write_go_module(tmp_path)
+    with WpeSession(str(tmp_path), PROG, filename="main.go", wait=2.0) as w:
+        w.key(CTRL_G, "r", delay=6.0)        # entry stop (no breakpoint)
+        time.sleep(1.5)
+        w._drain(1.5)
+        exited = False
+        for _ in range(20):
+            w.key(F8, delay=1.0)
+            w._drain(0.6)
+            scr = _text(w)
+            # We must never be shown the Go runtime source.
+            assert "proc.go" not in scr and "/runtime/" not in scr, \
+                "stepping wandered into the Go runtime:\n%s" % scr
+            if "Program exited" in scr or "result: 120" in scr:
+                exited = True
+                break
+        assert w.alive(), "wpe died stepping past the end of main"
+        assert exited, \
+            "stepping past main() never reached program exit:\n%s" % _text(w)
+
+
 def test_go_dap_program_output_in_messages(tmp_path):
     """The debuggee's stdout reaches Messages (DAP output events, category
     stdout), while the adapter's own console chatter is filtered out.  Run with

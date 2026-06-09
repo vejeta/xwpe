@@ -2869,6 +2869,9 @@ static e_dap_session *g_dap = NULL;       /* the live adapter session, or NULL *
 static FENSTER       *g_dap_fenster = NULL;/* window used for UI side-effects   */
 static int            g_dap_just_started = 0;/* first Run/Step is the entry stop */
 static e_dap_host     g_dap_host;
+static char           g_dap_progdir[1024] = "";  /* the user's program directory */
+static char           g_dap_stop_file[1024] = "";/* full path of the current stop */
+static int            g_dap_stop_line = -1;      /* line of the current stop      */
 
 /* True while a DAP session is open. */
 static int e_d_dap_active(void)
@@ -2895,21 +2898,34 @@ static int e_d_dap_window_is_go(FENSTER *f)
  return(n > 3 && !strcmp(f->datnam + n - 3, ".go"));
 }
 
-/* on_stopped: the program halted at file:line -- move the cursor there and
-   refresh the Watches window, exactly as the text backends do on a stop.
-   Order matches e_d_pr_sig: evaluate watches first, then jump to the line. */
+/* on_stopped: just RECORD where the program halted.  The actual cursor jump +
+   Watches refresh is deferred to e_d_dap_paint_stop, called once by the step/run
+   functions after they settle -- so intermediate stops (e.g. a "step over" that
+   momentarily lands in the language runtime before we run on) never flash on
+   screen. */
 static void e_d_dap_on_stopped(const char *file, int line, const char *reason,
                                void *ud)
 {
- FENSTER *f = g_dap_fenster;
-
  (void)reason; (void)ud;
- if (!f || line < 0)
+ g_dap_stop_line = line;
+ g_dap_stop_file[0] = '\0';
+ if (file)
+ {
+  strncpy(g_dap_stop_file, file, sizeof(g_dap_stop_file) - 1);
+  g_dap_stop_file[sizeof(g_dap_stop_file) - 1] = '\0';
+ }
+}
+
+/* Move the editor to the recorded stop and refresh the Watches window.  Order
+   matches e_d_pr_sig: evaluate watches first, then jump to the source line. */
+static void e_d_dap_paint_stop(FENSTER *f)
+{
+ if (!f || g_dap_stop_line < 0 || !g_dap_stop_file[0])
   return;
- strncpy(e_d_file, e_d_dap_basename(file), sizeof(e_d_file) - 1);
+ strncpy(e_d_file, e_d_dap_basename(g_dap_stop_file), sizeof(e_d_file) - 1);
  e_d_file[sizeof(e_d_file) - 1] = '\0';
  e_d_p_watches(f, 0);                 /* -> e_d_dap_watches (evaluate) */
- e_d_goto_break((char *)file, line, f);
+ e_d_goto_break(g_dap_stop_file, g_dap_stop_line, f);
 }
 
 /* on_output: adapter/program output -> Messages window. */
@@ -2940,6 +2956,8 @@ static void e_d_dap_quit(FENSTER *f)
  }
  g_dap_fenster = NULL;
  g_dap_just_started = 0;
+ g_dap_stop_file[0] = '\0';
+ g_dap_stop_line = -1;
 }
 
 /* Open the adapter, install the user's pre-set breakpoints, and run to the
@@ -2971,6 +2989,10 @@ static int e_d_dap_start(FENSTER *f)
  dlen = snprintf(dir, sizeof(dir), "%s", f->dirct ? f->dirct : ".");
  while (dlen > 1 && dir[dlen - 1] == DIRC)
   dir[--dlen] = '\0';
+ strncpy(g_dap_progdir, dir, sizeof(g_dap_progdir) - 1);
+ g_dap_progdir[sizeof(g_dap_progdir) - 1] = '\0';
+ g_dap_stop_file[0] = '\0';
+ g_dap_stop_line = -1;
  g_dap = e_dap_open(argv, dir, "main.main", dir, &g_dap_host);
  if (!g_dap)
  {
@@ -3002,6 +3024,23 @@ static int e_d_dap_start(FENSTER *f)
  return(0);
 }
 
+/* True when the current stop is inside the user's program source tree.  After
+   main() returns, a "step over" steps UP into the Go runtime (runtime/proc.go
+   under GOROOT) -- legitimately, but it drops the user into unfamiliar code that
+   looks like the debugger is jumping around at random.  This lets the step verbs
+   decide to run on rather than show runtime internals.  Unknown paths default to
+   "user code" so we never skip when we cannot tell. */
+static int e_d_dap_in_user_code(void)
+{
+ size_t n;
+
+ if (!g_dap_progdir[0] || !g_dap_stop_file[0])
+  return(1);
+ n = strlen(g_dap_progdir);
+ return(!strncmp(g_dap_stop_file, g_dap_progdir, n) &&
+        (g_dap_stop_file[n] == DIRC || g_dap_stop_file[n] == '\0'));
+}
+
 /* Ctrl-G R: run, or continue from the current stop.  The very first Run is
    the entry stop already reported by e_d_dap_start -- stay there when the user
    has no breakpoints (matching gdb's temp-break-at-main), continue otherwise. */
@@ -3013,11 +3052,18 @@ static int e_d_dap_run(FENSTER *f)
  {
   g_dap_just_started = 0;
   if (e_d_nbrpts <= 0)
-   return(0);                         /* no breakpoints: rest at the entry */
+  {
+   e_d_dap_paint_stop(f);             /* no breakpoints: rest at the entry */
+   return(0);
+  }
  }
  e_dap_step(g_dap, "continue");
  if (e_dap_ended(g_dap))
+ {
   e_d_dap_quit(f);
+  return(0);
+ }
+ e_d_dap_paint_stop(f);
  return(0);
 }
 
@@ -3026,16 +3072,34 @@ static int e_d_dap_run(FENSTER *f)
    backends; subsequent steps issue the DAP verb. */
 static int e_d_dap_step(FENSTER *f, int sw)
 {
+ int guard = 0;
+
  if (!g_dap)
   return(-1);
  if (g_dap_just_started)
  {
   g_dap_just_started = 0;
+  e_d_dap_paint_stop(f);              /* the entry stop, painted once */
   return(0);
  }
  e_dap_step(g_dap, sw ? "next" : "stepIn");
+ /* Step-over (F8) must never wander into the language runtime: once main()
+    returns there is no user line left to step to, so "next" lands in
+    runtime/proc.go under GOROOT.  When that happens, run on to the next user
+    line or to program exit instead of showing runtime internals.  Step-into
+    (F7) is left alone -- the user explicitly asked to descend.  The guard
+    bounds it so a pathological adapter cannot spin forever.  Because the paint
+    is deferred (see e_d_dap_on_stopped), the intermediate runtime stop never
+    reaches the screen. */
+ if (sw)
+  while (!e_dap_ended(g_dap) && !e_d_dap_in_user_code() && guard++ < 100)
+   e_dap_step(g_dap, "continue");
  if (e_dap_ended(g_dap))
+ {
   e_d_dap_quit(f);
+  return(0);
+ }
+ e_d_dap_paint_stop(f);
  return(0);
 }
 
