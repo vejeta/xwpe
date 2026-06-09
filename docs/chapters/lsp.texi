@@ -91,6 +91,28 @@ needed), and a @samp{LSP: N error(s), M warning(s)} status is updated live in
 the Messages window whenever the totals change.  @kbd{Alt-Q E} still lists the
 full set on demand.
 
+@cindex cross-file navigation
+@subsection Working across files
+The server indexes the whole project (not just the open file), so the
+navigation actions reach across files: @kbd{Alt-Q D} (definition), @kbd{Alt-Q
+I} (implementation), @kbd{Alt-Q T} (type definition) and @kbd{Alt-Q W}
+(workspace symbol search) all jump to the right file, @emph{opening it} in a new
+editor window if it was not already open.  @kbd{Alt-Q R} (references) lists uses
+from every file in the Messages window.
+
+Two limitations to know about in this first release:
+
+@itemize @bullet
+@item @strong{One document at a time.}  The server is attached to a single open
+file.  When you use an @kbd{Alt-Q} action in a @emph{different} file, xwpe
+transparently re-points the server at it (a brief pause).  Diagnostics and the
+inline marks track whichever file the server is currently attached to.
+@item @strong{Rename is applied in the current file only.}  @kbd{Alt-Q N}
+renames every occurrence in the file you are in; if the rename also touches
+@emph{other} files, xwpe reports how many but does not edit them -- open each one
+and rename there.  @kbd{Alt-Q L} (highlight) is single-file by design.
+@end itemize
+
 The server starts lazily on the first @kbd{Alt-Q} action and is reused for the
 rest of the session.  The first start is slow: it boots a JVM language server
 and imports the build (faster afterwards, once caches are warm).  Diagnostics
@@ -113,8 +135,19 @@ cs install metals
 xwpe runs @code{scala-cli setup-ide} so Metals connects to the build server
 automatically; this is the same tooling the Scala debugger uses
 (@pxref{Debugging}).
-@item A modern JDK.  The Debian @code{scala} package (2.11) is too old --
-Metals supports Scala 2.12.12+, 2.13 and 3.x.
+@item A JDK the Scala compiler supports.  The Debian @code{scala} package
+(2.11) is too old (Metals wants Scala 2.12.12+, 2.13 or 3.x); but a JDK that is
+too @emph{new} also fails -- on a bleeding-edge default JDK (e.g.@: OpenJDK 24+)
+the Scala 3 compiler crashes at start-up with an internal assertion
+(@code{asTerm called on not-a-Term}), which surfaces as Metals never producing
+diagnostics.  Pin a supported LTS JDK for the project with a one-line
+@file{project.scala}:
+@example
+//> using jvm temurin:21
+@end example
+@noindent
+scala-cli downloads and caches that JDK and Metals uses it too.  (Setting
+@env{JAVA_HOME} to a JDK 17/21 works as well.)
 @end itemize
 
 Open a @file{.scala} file and use the @kbd{Alt-Q} keys above.  Symbols come

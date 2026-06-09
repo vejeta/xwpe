@@ -186,3 +186,19 @@ typedef struct {
   land on the fd-loop and repaint without blocking typing.
 * For Scala, the server (Metals) is itself reached through a build server, the
   same shape as the BSP bootstrap in `we_bsp.c` — that code is a head start.
+* **Too-new JDK gotcha (cost a debug cycle 2026-06-10).** On Debian sid the
+  default JDK was OpenJDK 26; the Scala 3 compiler (3.3.7 *and* 3.8.3) crashes at
+  start-up with `assertion failed: asTerm called on not-a-Term val <none>` in
+  `Definitions.init`/`ObjectClass` — i.e. it cannot bootstrap on a JDK it does
+  not know. Symptom inside xwpe: Metals starts but never reports diagnostics.
+  Fix is environment, not code: pin a supported LTS JDK per project with a
+  one-line `project.scala` containing `//> using jvm temurin:21` (scala-cli
+  downloads + uses it, and Metals picks it up via BSP), or set `JAVA_HOME`. The
+  Scala version itself is fine — `xwpe-dev/scala-demo/` compiles on Scala 3.8.3
+  once the JVM is pinned. Worth surfacing to users (done in lsp.texi
+  prerequisites); a future xwpe could detect the crash signature and hint this.
+* Cross-file navigation works (definition/implementation/type-definition/
+  workspace-symbol jump open the target file via `e_d_goto_break`→`e_edit`), but
+  the server holds ONE open document at a time: switching the Alt-Q focus to a
+  different file makes `e_lsp_ensure` close+reopen Metals for it. Rename applies
+  only the current file's WorkspaceEdit; other files are counted and reported.
