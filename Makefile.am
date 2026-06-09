@@ -236,19 +236,20 @@ EXTRA_DIST = \
   tests/x11/test_menu_status_bar.py \
   tests/x11/test_popup_close_button.py \
   tests/x11/test_user_screen.py \
-  tests/samples/hello.c \
-  tests/samples/paint.c \
-  tests/samples/big.c \
-  tests/samples/two_errors.c \
-  tests/samples/hello.cpp \
-  tests/samples/hello.f90 \
-  tests/samples/hello.p \
-  tests/samples/hello.pl \
-  tests/samples/hello.py \
-  tests/samples/hello.cob \
-  tests/samples/hello.tex \
-  tests/samples/hello.a68 \
-  tests/samples/Hello.java \
+  tests/inputs/README \
+  tests/inputs/hello.c \
+  tests/inputs/paint.c \
+  tests/inputs/big.c \
+  tests/inputs/two_errors.c \
+  tests/inputs/hello.cpp \
+  tests/inputs/hello.f90 \
+  tests/inputs/hello.p \
+  tests/inputs/hello.pl \
+  tests/inputs/hello.py \
+  tests/inputs/hello.cob \
+  tests/inputs/hello.tex \
+  tests/inputs/hello.a68 \
+  tests/inputs/Hello.java \
   tests/fixtures/ascii.txt \
   tests/fixtures/accents.txt \
   tests/fixtures/long_accents.txt \

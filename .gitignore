@@ -41,7 +41,8 @@ xwpe
 
 # Test artifacts
 tests/.venv/
-tests/__pycache__/
+__pycache__/
+*.pyc
 tests/.pytest_cache/
 tests/fixtures/
 .pytest_cache/

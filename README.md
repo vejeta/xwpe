@@ -11,7 +11,7 @@ management, and a function-key driven menu system. Emacs cursor keys
 (Ctrl-P/N/F/B/A/E) are built in.
 
 The **1.6.x series** brought xwpe from its 1993 origins to 2026:
-UTF-8 terminal support, working compilers and debuggers for 9 languages,
+UTF-8 terminal support, working compilers and debuggers for 10 languages,
 mouse support, X11 fixes, and a 12-chapter Texinfo manual.
 
 <p align="center">
@@ -93,7 +93,7 @@ console-only build needs only `libncurses-dev` (plus the build tools).
 * **Borland "User Screen" (Alt-F5)** restored on the console: leave the
   editor and see a program's own full screen (ANSI colour, cursor
   positioning, a TUI) verbatim -- what the Messages window cannot show.
-  Try it with `tests/samples/paint.c` (F9, Ctrl-F9, then Alt-F5).
+  Try it with `tests/inputs/paint.c` (F9, Ctrl-F9, then Alt-F5).
 * **Dialog resize safety**: survives extreme terminal shrink without
   crash; dialog clipped and restored cleanly on grow
 * **Icon set**: two-tier SVG icon, .desktop entry, _NET_WM_ICON for
@@ -114,8 +114,8 @@ console-only build needs only `libncurses-dev` (plus the build tools).
 * **Full UTF-8 in X11**: accents, Cyrillic, CJK, and emoji with
   CELL_WIDE support (cursor, delete, select all work correctly on
   wide characters).
-* 9 compilers: gcc, g++, gfortran, fpc, javac, python3, pdflatex, perl, cobc
-* 3 debuggers: gdb, jdb (Java), pdb (Python) -- all with F8 stepping
+* 10 compilers: gcc, g++, gfortran, fpc, javac, python3, pdflatex, perl, cobc, a68g
+* 4 debuggers: gdb, jdb (Java), pdb (Python), a68g (Algol 68) -- all with F8 stepping
 * Program output in Messages buffer (Ctrl-G P) -- no terminal switching
 * Mouse in terminal emulators (xterm protocol) and Linux console (GPM)
 * 33-year-old Redo crash fixed, 30-year-old pipe leak fixed
@@ -136,6 +136,7 @@ See `CHANGELOG` for full details.
 | pdflatex | LaTeX    | ok | ok | `.tex` |
 | perl     | Perl     | ok | ok | `.pl` `.pm` |
 | cobc     | COBOL    | ok | ok | `.cob` `.cbl` |
+| a68g     | Algol 68 | ok | line | `.a68` `.alg` |
 
 Any compiler that emits `file:line:column: message` diagnostics (clang,
 rustc, go build, dmd, ghc, nim, ...) works with the default GNU pattern.
@@ -149,6 +150,12 @@ pattern language (`${FILE}`, `${LINE}`, `${COLUMN}`, wildcards).
 | gdb      | C/C++/Fortran/Pascal | Ctrl-G R | F8 | Ctrl-G P | `.c` `.cpp` `.f90` `.p` |
 | jdb      | Java     | Ctrl-G R | F8 | Ctrl-G P | `.java` |
 | pdb      | Python   | Ctrl-G R | F8 | Ctrl-G P | `.py` |
+| a68g     | Algol 68 | Ctrl-G R | F8 | Ctrl-G P | `.a68` `.alg` |
+
+a68g uses its built-in `--monitor` (a full gdb-class source-level debugger):
+breakpoints, run/continue from a68g's automatic break at line 1, F8 step
+(line-granular over interruptable units), watches (`evaluate EXPR`), and a
+call stack -- the same Borland keys as the other backends.
 
 Program output is captured in the Messages buffer (same window as
 compiler errors). Ctrl-G P shows output with full scroll at any time.

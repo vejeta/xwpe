@@ -205,6 +205,12 @@ Changes
 * VT colours are mapped to xwpe's 16-colour palette by nearest RGB match,
   so SGR colours render with the editor's own scheme.  Reverse video and
   bold are honoured; wide (CJK) glyphs keep their two-column width.
+* The User Screen owns the whole window, so the per-window fluid scrollbar
+  overlay (wpe_render_chrome, re-applied on every refresh) is suppressed
+  while it is up -- otherwise the editor's and Messages' scrollbars bled on
+  top of the program's painted screen (the mid-screen horizontal thumb, the
+  right-edge vertical tracks, the bottom Messages bar).  Restored on return.
+  Covered by test_user_screen.py::test_user_screen_has_no_scrollbar_bleed.
 * Covered by tests/x11/test_user_screen.py: paint.c is built+run, Alt-F5
   shows its ANSI red+green, and a keypress restores the editor.
 
@@ -513,7 +519,7 @@ Changes
   raw byte stream into the same buffer the debugger uses (e_d_prog_output),
   so the User Screen is populated however the program was launched.  Press
   any key to return to the editor.  Console (wpe) only for now; the xwpe
-  (X11) integrated terminal panel is the 1.6.4 path.  Demo: tests/samples/
+  (X11) integrated terminal panel is the 1.6.4 path.  Demo: tests/inputs/
   paint.c (F9, Ctrl-F9, Alt-F5).
 * Console mouse (GPM) restored in wpe.  On a bare Linux VT the mouse pointer
   stopped moving and clicks stopped registering: wpe opens the GPM connection

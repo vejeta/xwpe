@@ -2,7 +2,9 @@
 
 These files are used in the xwpe Texinfo manual (chapters: compiling,
 debugging, tutorials) and can be used to verify xwpe's compiler and
-debugger integration.
+debugger integration.  This is the PEDAGOGICAL set (what the manual walks
+through).  The fixtures the automated test suite feeds to the binary live
+separately in `tests/inputs/`.
 
 ## Compilation examples (F9 + Alt-T/Alt-V error navigation)
 
@@ -34,7 +36,7 @@ since javac doesn't report column numbers).
 Both type errors are listed in Messages and Alt-T/Alt-V step between them.
 a68g names no file and reports the enclosing clause's line, so the cursor
 jump is approximate -- read the diagnostic text in Messages. `Ctrl-F9`
-runs the program. A minimal runnable program is `tests/samples/hello.a68`.
+runs the program. A minimal runnable program is `tests/inputs/hello.a68`.
 
 ## Debugging examples (Ctrl-G B/R, F7/F8, Ctrl-G P)
 

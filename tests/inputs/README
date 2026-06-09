@@ -1,0 +1,17 @@
+tests/inputs/ -- input programs for the automated test suite
+=============================================================
+
+These are FIXTURES: small source files that the pyte/X11 test robots
+(tests/test_*.py, tests/x11/test_*.py) feed to the xwpe/wpe binary to drive
+and verify it -- compile a hello world, trigger two compiler errors, paint an
+ANSI screen for the Alt-F5 User Screen, etc.  They are instrumentation, not
+documentation; some are deliberately ugly edge cases (big.c, two_errors.c).
+
+They are NOT the user-facing example programs.  For the worked examples that
+the Texinfo manual walks through (debugging and compiling tutorials), see
+  docs/examples/
+which is the pedagogical set (debug_test.*, compile_error_test.*, ...).
+
+Rule of thumb: docs/examples/ teaches the user; tests/inputs/ exercises the
+editor.  (This directory used to be called tests/samples/, which read like a
+showcase -- it never was.)

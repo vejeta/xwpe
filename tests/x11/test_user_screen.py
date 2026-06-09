@@ -27,7 +27,7 @@ from conftest import (
     _spawn, XwpeSession, changed_pixels,
 )
 
-SAMPLE = os.path.normpath(os.path.join(HERE, "..", "samples", "paint.c"))
+SAMPLE = os.path.normpath(os.path.join(HERE, "..", "inputs", "paint.c"))
 
 
 def _has_vterm():
