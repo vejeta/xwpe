@@ -95,6 +95,41 @@ def test_go_dap_run_and_step(tmp_path):
             "dlv adapter banner leaked into Messages:\n%s" % _text(w)
 
 
+def test_go_dap_watch_before_run_uses_dap(tmp_path):
+    """Adding a watch BEFORE pressing Run must still route .go to the DAP path.
+
+    Regression: the watch opens a "Watches" window, which is also a text window,
+    so e_start_debug's focus-based source scan settled on it instead of main.go;
+    the .go detection then failed and the session fell through to the gdb path
+    (Messages showed "go build" + "Starting program: .../main" and a gdb
+    "syntax error near )fflush(0)").  The detection now scans all windows for the
+    .go source regardless of focus."""
+    _write_go_module(tmp_path)
+    with WpeSession(str(tmp_path), PROG, filename="main.go", wait=2.0) as w:
+        # Add the watch FIRST (this opens the Watches window), THEN run -- the
+        # order that exposed the mis-routing.  No line breakpoint needed: merely
+        # having the Watches window topmost was enough to fool the source scan.
+        w.key(CTRL_G, "w", delay=1.0)         # Make Watch dialog
+        for ch in "fact":
+            w.key(ch, delay=0.05)
+        w.key("\r", delay=1.0)
+        w.key(CTRL_G, "r", delay=6.0)         # run -> entry stop (DAP)
+        time.sleep(1.5)
+        w._drain(1.5)
+        for _ in range(4):                    # step into main so fact is in scope
+            w.key(F8, delay=1.0)
+            w._drain(0.5)
+        text = _text(w)
+        assert w.alive(), "wpe died starting the Go DAP session"
+        # The gdb fallback would show these; the DAP path must not.
+        assert "fflush" not in text and "go build" not in text, \
+            "watch-before-run fell through to the gdb path:\n%s" % text
+        assert "proc.go" not in text and "/runtime/" not in text, \
+            "did not stay in user code:\n%s" % text
+        assert _watch_val(w, "fact") is not None, \
+            "the watch on fact shows no value -- DAP path not taken:\n%s" % text
+
+
 def test_go_dap_step_past_end_exits_cleanly(tmp_path):
     """Stepping (F8) off the end of main() must finish the program, not wander
     into the language runtime.  Regression: "step over" at main's return lands in

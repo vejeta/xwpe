@@ -255,11 +255,25 @@ Changes
   a68g) are untouched.  Delve is reverse-connected over a local TCP socket
   (xwpe listens, dlv dials in); the adapter is launched on its own
   controlling pty so the debuggee's foreground terminal control succeeds.
+* Program output capture uses the same inferior-pty model as the gdb backend:
+  xwpe owns the adapter's pty and reads the debuggee's stdout/stderr from it,
+  so program output lands in Messages and the adapter's own console chatter
+  (dlv's "Type 'dlv help' ..." banner) is filtered out.
+* Step-over (F8) stays in your code: once main() returns there is no user line
+  left to step to, so a naive "next" would wander into the Go runtime
+  (runtime/proc.go under GOROOT).  Instead xwpe runs on to the next user line
+  or to program exit -- F8 past the last line simply reports "Program exited."
+  Step-into (F7) is left alone, so you can still descend deliberately.
+* Go always uses Delve, never gdb: the .go source is detected across all
+  windows (not just the focused one), so adding a watch -- which opens the
+  Watches pane -- before pressing Run no longer mis-routes the session into the
+  gdb path (gdb is unreliable for Go's goroutine runtime anyway).
 * Requires `dlv` (delve) and `go`; a Go module (go.mod) in the source
   directory, since `dlv dap` builds the package.  Verified by
-  tests/test_go_dap.py (run+step advances the line; a watch on a factorial
-  accumulator updates 1 -> 2 -> 6 -> 24 -> 120 while stepping) and the
-  tests/test_dap*.c unit/integration suite against real Delve.
+  tests/test_go_dap.py (5 cases: run+step, watch updates 1 -> 2 -> 6 -> 24 ->
+  120 while stepping, program output reaches Messages, step-past-main exits
+  cleanly, watch-before-run still uses DAP) and the tests/test_dap*.c
+  unit/integration suite against real Delve.
 * New build dependency: json-c (libjson-c-dev) for DAP message coding.
   Rust (lldb-dap) and Scala (Metals) reuse the same engine and are next.
 

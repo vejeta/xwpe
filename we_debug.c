@@ -3178,10 +3178,14 @@ int e_start_debug(FENSTER *f)
  }
  /* DAP-debugged languages (Go, ...) are built and launched by the adapter
     (e.g. `dlv dap` compiles the package itself), so we bypass xwpe's compiler
-    pipeline entirely -- no e_p_make, no e_exec_deb.  Route to the DAP bridge,
-    which opens a reverse-TCP session and runs to the first stop. */
- if (e_d_dap_window_is_go(f))
-  return(e_d_dap_start(f));
+    pipeline entirely -- no e_p_make, no e_exec_deb.  Scan ALL windows for the
+    source file: the loop above can settle on a debug pane (the Watches and Stack
+    windows are DTMD_ISTEXT too, and one of them is topmost when the user adds a
+    watch before pressing Run), so trusting the focused window would mis-route a
+    .go session into the gdb path.  Find a .go window explicitly and debug it. */
+ for (i = cn->mxedt; i > 0; i--)
+  if (e_d_dap_window_is_go(cn->f[i]))
+   return(e_d_dap_start(cn->f[i]));
  if (e_p_make(f))
   return(-1);
  /* Full path (e_check_c_file_w), not bare datnam: the dialect sniff must open

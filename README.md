@@ -11,8 +11,10 @@ management, and a function-key driven menu system. Emacs cursor keys
 (Ctrl-P/N/F/B/A/E) are built in.
 
 The **1.6.x series** brought xwpe from its 1993 origins to 2026:
-UTF-8 terminal support, working compilers and debuggers for 10 languages,
-mouse support, X11 fixes, and a 12-chapter Texinfo manual.
+UTF-8 terminal support, working compilers and debuggers for 11 languages,
+a **Debug Adapter Protocol client** (the same protocol VS Code and Neovim
+use) so modern debuggers plug straight in, mouse support, X11 fixes, and a
+12-chapter Texinfo manual.
 
 <p align="center">
   <img src="screenshots/xwpe-screenshot.png" width="720" alt="xwpe 1.6.x: Cairo rendering, Unicode borders, color emoji">
@@ -35,7 +37,7 @@ mouse support, X11 fixes, and a 12-chapter Texinfo manual.
 # Install dependencies (Debian/Ubuntu)
 sudo apt install build-essential autoconf automake pkg-config texinfo \
   libncurses-dev libx11-dev libxft-dev libcairo2-dev libpango1.0-dev \
-  libgpm-dev zlib1g-dev librsvg2-bin
+  libvterm-dev libjson-c-dev libgpm-dev zlib1g-dev librsvg2-bin
 
 # Build and install
 autoreconf -fi && ./configure && make && sudo make install
@@ -50,6 +52,35 @@ enable the anti-aliased Xft/Cairo rendering used by `xwpe`. They are
 optional: `configure` detects them and falls back automatically, so a
 console-only build needs only `libncurses-dev` (plus the build tools).
 `texinfo` is needed to build the `info xwpe` manual.
+
+## What's new in 1.6.5
+
+* **Debug Adapter Protocol (DAP) client &mdash; modern debuggers, no bespoke
+  backend.** xwpe now speaks DAP, the wire protocol behind VS Code, Neovim
+  and Emacs debugging.  The first language wired is **Go via Delve**
+  (`dlv dap`): open a `.go` file, set a breakpoint, and Ctrl-G R drives a real
+  source-level debug session &mdash; Run/Continue (Ctrl-G R), Step Over (F8),
+  Step Into (F7), live watches (Ctrl-G W), and program output in Messages, the
+  same keys you already use for gdb.  This is xwpe's seventh debugger backend
+  (`DEB_DAP`), selected automatically by the `.go` extension; the six text
+  backends (gdb, jdb, pdb, a68g, sdb, dbx) are untouched.  Rust (`lldb-dap`)
+  and Scala (Metals) reuse the same engine and are next.
+
+  <p align="center">
+    <img src="screenshots/xwpe-go-dap-debug.png" width="720" alt="Debugging a Go program in xwpe via Delve over DAP: the editor stopped at a breakpoint on line 9 (highlighted), and a Watches window below showing the live value fact: 6 as the factorial loop runs.">
+    <br><em>Debugging Go through Delve/DAP: stopped at a breakpoint, with a live watch (<code>fact</code>) updating as the loop runs.</em>
+  </p>
+
+  It "just works" the way a Borland IDE should: program output (not the
+  adapter's own chatter) appears in Messages; stepping off the end of `main`
+  cleanly reports <em>Program exited</em> instead of wandering into the Go
+  runtime; and Go always uses Delve, never gdb (which is unreliable for Go's
+  goroutine runtime).  Requires `dlv` and `go`, plus a `go.mod` in the source
+  directory (Delve builds the package).  Needs the new `libjson-c-dev` build
+  dependency.
+
+* **GNU Algol 68 (ga68)** joins the classic `a68g` interpreter: native compile
+  + gdb source-level debugging, with both stropping dialects highlighted.
 
 ## What's new in 1.6.3
 
