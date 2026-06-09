@@ -20,9 +20,12 @@
 
 #include <stddef.h>
 
-/* Severity as in LSP: 1 error, 2 warning, 3 information, 4 hint. */
+/* Severity as in LSP: 1 error, 2 warning, 3 information, 4 hint.
+ * (line,character) is the diagnostic's range START and (end_line,end_character)
+ * its END (both 0-based) so the editor can underline/recolor the exact span. */
 typedef struct {
  void (*on_diagnostic)(const char *path, int line, int character,
+                       int end_line, int end_character,
                        int severity, const char *message, void *ud);
  /* Called once per publishDiagnostics batch with the error/warning totals --
     for a non-spammy live "N errors, M warnings" status as you type. */

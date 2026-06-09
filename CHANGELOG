@@ -350,10 +350,17 @@ Changes
   code actions all verified against real Metals in tests/test_lsp_scala.c
   (implementation -> the override, type-definition -> the class, workspace
   search finds the Factorial object, a code action is offered and applied).
-* Next LSP increments: inline diagnostic marks, document highlight, inlay hints,
-  code lens (run/test), call hierarchy, folding, semantic tokens; and more
-  servers -- clangd (C/C++, in Debian), pyright, rust-analyzer, gopls -- each a
-  descriptor row.
+* Inline diagnostic marks: a problem's range is recolored in the source
+  (errors red, warnings amber) -- the cell-grid analogue of a red squiggle --
+  updated live as you type and cleared when fixed, alongside the Messages list
+  and the "N errors" status.  publishDiagnostics now carries the range END to
+  the editor; the marks ride the same per-character paint as breakpoints, so
+  they work in both wpe (ncurses) and xwpe (X11).  tests/test_lsp_scala.c
+  asserts the range is delivered; tests/test_scala_lsp_diag_marks.py asserts
+  the red cells actually render through wpe.
+* Next LSP increments: document highlight, inlay hints, code lens (run/test),
+  call hierarchy, folding, semantic tokens; and more servers -- clangd (C/C++,
+  in Debian), pyright, rust-analyzer, gopls -- each a descriptor row.
 
 1.6.4 (embedded VT terminal, Algol 68 source-level debugger, window-layout fixes)
 

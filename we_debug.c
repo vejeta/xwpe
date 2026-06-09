@@ -5037,6 +5037,82 @@ static int            g_lsp_quiet = 0;     /* suppress per-diagnostic Messages
 static int            g_lsp_last_err = -1; /* last reported diagnostic totals,  */
 static int            g_lsp_last_warn = -1;/* so the live status is not spammed  */
 
+/* ---- inline diagnostic marks -------------------------------------------- *
+ * publishDiagnostics carries a RANGE per problem; we keep the ranges for the
+ * file the server is open for and let the editor's per-character paint
+ * (e_pr_c_line) recolor those cells -- error spans red, warnings amber -- the
+ * cell-grid analogue of an editor's red squiggle.  Each batch replaces the set
+ * atomically: on_diagnostic fills `pending`, on_diagnostics_summary (the single
+ * end-of-batch callback) swaps it into `active`, which the renderer reads. */
+#define LSP_MAX_DIAG 256
+typedef struct { int line, c0, c1, sev; } e_lsp_diag_mark;
+static e_lsp_diag_mark g_diag_active[LSP_MAX_DIAG];   /* what the renderer shows */
+static int             g_diag_nactive = 0;
+static e_lsp_diag_mark g_diag_pending[LSP_MAX_DIAG];  /* filling this batch      */
+static int             g_diag_npending = 0;
+
+extern int col_num;                        /* 0 = monochrome ncurses (we_unix.c) */
+
+/* The cell attribute for a diagnostic of `severity`, correct for the active
+   backend: a VGA fg/bg byte (16*bg+fg) when colour is available (X11 or colour
+   ncurses, decoded by fk_colset as bg=c/16, fg=c%16), or an existing marked
+   attribute under monochrome ncurses (which has no colour to give). */
+static int e_lsp_diag_color(SCHIRM *s, int severity)
+{
+ int is_err = (severity == 1);
+ if (WpeIsXwin() || col_num > 0)
+  return is_err ? (16 * 1 + 15)    /* bright white on red   -> error   */
+                : (16 * 3 + 15);   /* bright white on brown -> warning */
+ return is_err ? s->fb->db.fb : s->fb->ek.fb;  /* mono: standout / underline */
+}
+
+/* The file currently shown in `f`, or NULL.  (dirct already ends in '/'.) */
+static const char *e_lsp_path_of(FENSTER *f, char *buf, size_t sz)
+{
+ if (!f || !f->datnam)
+  return(NULL);
+ snprintf(buf, sz, "%s%s", f->dirct ? f->dirct : "./", f->datnam);
+ return(buf);
+}
+
+/* Called once per line by the renderer: are there diagnostic marks to draw for
+   the file in `f`?  Keeps the per-character query (below) free of path work. */
+int e_lsp_diag_active_for(FENSTER *f)
+{
+ char path[1200];
+ if (!g_lsp || g_diag_nactive == 0)
+  return(0);
+ if (!e_lsp_path_of(f, path, sizeof(path)))
+  return(0);
+ return(strcmp(path, g_lsp_file) == 0);
+}
+
+/* Per-character: if (y,x) falls in a diagnostic range, return its colour, else
+   the caller's base colour.  Errors win over warnings on overlap. */
+int e_lsp_diag_attr_at(SCHIRM *s, int y, int x, int base)
+{
+ int i, hit = -1;
+ for (i = 0; i < g_diag_nactive; i++)
+  if (g_diag_active[i].line == y &&
+      x >= g_diag_active[i].c0 && x < g_diag_active[i].c1)
+  {
+   if (g_diag_active[i].sev == 1)        /* error: take it immediately */
+    return(e_lsp_diag_color(s, 1));
+   if (hit < 0)
+    hit = i;                             /* remember a warning, keep scanning */
+  }
+ if (hit >= 0)
+  return(e_lsp_diag_color(s, g_diag_active[hit].sev));
+ return(base);
+}
+
+/* Drop all marks (server closing, or switching the open file). */
+static void e_lsp_diag_clear(void)
+{
+ g_diag_nactive = 0;
+ g_diag_npending = 0;
+}
+
 /* The LSP languageId for this window's file, or NULL if none is wired. */
 static const char *e_lsp_lang_for(FENSTER *f)
 {
@@ -5049,15 +5125,33 @@ static const char *e_lsp_lang_for(FENSTER *f)
  return(NULL);
 }
 
-/* on_diagnostic: surface each compiler diagnostic in the Messages window,
-   in the same file:line:col: form as F9 build errors. */
-static void e_lsp_on_diag(const char *path, int line, int ch, int sev,
+/* on_diagnostic: record the problem's range for inline marking, and (unless a
+   live poll asked to stay quiet) surface it in the Messages window in the same
+   file:line:col: form as F9 build errors. */
+static void e_lsp_on_diag(const char *path, int line, int ch,
+                          int end_line, int end_ch, int sev,
                           const char *msg, void *ud)
 {
  char buf[700];
  const char *kind = sev == 1 ? "error" : sev == 2 ? "warning"
                   : sev == 3 ? "info"  : "hint";
  (void)path; (void)ud;
+
+ /* Accumulate the mark for this batch.  Only single-line ranges are recolored
+    (the common case for a token); for a multi-line range, mark its first line
+    from the start column to end-of-line so the problem is still visible. */
+ if (g_diag_npending < LSP_MAX_DIAG)
+ {
+  int c1 = (end_line == line) ? end_ch : 100000;  /* same line: exact end */
+  if (c1 <= ch)
+   c1 = ch + 1;                                   /* zero-width: mark one cell */
+  g_diag_pending[g_diag_npending].line = line;
+  g_diag_pending[g_diag_npending].c0 = ch;
+  g_diag_pending[g_diag_npending].c1 = c1;
+  g_diag_pending[g_diag_npending].sev = sev;
+  g_diag_npending++;
+ }
+
  if (g_lsp_quiet)                   /* live poll: only the summary line shows */
   return;
  snprintf(buf, sizeof(buf), "%s:%d:%d: %s: %s",
@@ -5066,14 +5160,28 @@ static void e_lsp_on_diag(const char *path, int line, int ch, int sev,
   e_d_p_message(buf, g_lsp_fenster, 1);
 }
 
-/* Live status: one non-spammy line per change in the error/warning totals. */
+/* End of a publishDiagnostics batch: swap the freshly-collected marks in
+   (atomic replace -- even when the totals are unchanged the positions may have
+   moved), repaint the source window so the marks update live, and update the
+   non-spammy "N errors, M warnings" status line. */
 static void e_lsp_on_diag_summary(const char *path, int errors, int warnings,
                                   void *ud)
 {
  char buf[120];
  (void)path; (void)ud;
+
+ memcpy(g_diag_active, g_diag_pending,
+        (size_t)g_diag_npending * sizeof(g_diag_active[0]));
+ g_diag_nactive = g_diag_npending;
+ g_diag_npending = 0;
+ if (g_lsp_fenster && DTMD_ISTEXT(g_lsp_fenster->dtmd))
+ {
+  e_schirm(g_lsp_fenster, 1);       /* redraw text so marks appear/clear */
+  e_cursor(g_lsp_fenster, 0);       /* keep the caret where it was */
+ }
+
  if (errors == g_lsp_last_err && warnings == g_lsp_last_warn)
-  return;                           /* unchanged -- do not repaint */
+  return;                           /* totals unchanged -- skip the status line */
  g_lsp_last_err = errors;
  g_lsp_last_warn = warnings;
  if (!g_lsp_fenster)
@@ -5147,7 +5255,7 @@ static int e_lsp_ensure(FENSTER *f)
  if (g_lsp && !strcmp(g_lsp_file, path))
   return(0);                                   /* already open for this file */
  if (g_lsp)
- {  e_lsp_close(g_lsp);  g_lsp = NULL;  }       /* switched files */
+ {  e_lsp_close(g_lsp);  g_lsp = NULL;  e_lsp_diag_clear();  }  /* switched files */
  if (e_test_command(argv[0]))
  {  e_error("Metals not in PATH (cs install metals).", 0, f->fb);  return(-1);  }
 
@@ -5656,6 +5764,7 @@ void e_lsp_ui_shutdown(void)
 {
  if (g_lsp)
  {  e_lsp_close(g_lsp);  g_lsp = NULL;  }
+ e_lsp_diag_clear();
  g_lsp_file[0] = '\0';
  g_lsp_fenster = NULL;
 }

@@ -31,7 +31,10 @@ language server}), followed by a letter:
 @item Alt-Q E
 Start the server for the current file, import the build, and show compiler
 diagnostics (errors and warnings) in the Messages window, in the same
-@code{file:line:col:} form as F9 build errors.
+@code{file:line:col:} form as F9 build errors.  The problem ranges are also
+marked @emph{inline} in the source: error cells turn red, warning cells amber,
+updated live as you type (no save needed).  The marks clear when the problem
+is fixed or the server is closed.
 @item Alt-Q D
 Go to the definition of the symbol under the cursor.
 @item Alt-Q I

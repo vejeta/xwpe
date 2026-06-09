@@ -34,10 +34,13 @@ static const char *SCALA_SRC =
  "val theGreeter: Hello = Hello()\n";      /* line 15: typed val       */
 
 static int g_diags = 0;
-static void on_diag(const char *path, int line, int ch, int sev,
-                    const char *msg, void *ud)
+static int g_last_diag_span = -1;   /* end_char - char of the last diagnostic */
+static void on_diag(const char *path, int line, int ch, int end_line, int end_ch,
+                    int sev, const char *msg, void *ud)
 {
- (void)path; (void)line; (void)ch; (void)sev; (void)msg; (void)ud;
+ (void)path; (void)line; (void)sev; (void)msg; (void)ud;
+ if (end_line == line)
+  g_last_diag_span = end_ch - ch;
  g_diags++;
 }
 
@@ -209,6 +212,30 @@ int main(void)
     free(applied);
     break;
    }
+ }
+
+ /* diagnostics carry a RANGE: push a buffer with a type error and confirm the
+    server reports it with a non-empty, single-line span (what the inline marks
+    recolor).  Reuses this session -- no second server start. */
+ {
+  static const char *BROKEN =
+   "@@@\n"                          /* line 0: garbage tokens before the object */
+   "object Factorial:\n"
+   "  def main(args: Array[String]): Unit =\n"
+   "    println(1)\n";              /* a hard parse error the presentation
+                                       compiler flags fast (no full build), so
+                                       the diagnostic arrives within the loop. */
+  int t;
+  g_diags = 0; g_last_diag_span = -1;
+  if (e_lsp_did_change(s, scala, BROKEN) != 0) { rc = fail("did_change(broken)"); goto close; }
+  /* Metals often publishes an empty set first, then recompiles; keep waiting
+     for successive publishes until the type error actually surfaces. */
+  for (t = 0; t < 24 && g_diags == 0; t++)
+   e_lsp_wait_diagnostics(s, scala, 5000);
+  printf("  DIAGNOSTICS(broken): %d, last single-line span=%d\n",
+         g_diags, g_last_diag_span);
+  if (g_diags < 1) { rc = fail("expected at least one diagnostic"); goto close; }
+  if (g_last_diag_span < 0) { rc = fail("diagnostic range was not single-line/usable"); goto close; }
  }
 
  printf("PASS: LSP engine vs real Metals (hover/definition/implementation/"

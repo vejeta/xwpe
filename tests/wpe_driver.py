@@ -150,6 +150,17 @@ class WpeSession:
         """The current pyte screen as a list of row strings."""
         return self.screen.display
 
+    def cell_bg(self, y, x):
+        """Background colour name of the cell at row y, col x (pyte parses the
+        SGR colour the terminal emitted, e.g. 'red').  'default' if unstyled."""
+        return self.screen.buffer[y][x].bg
+
+    def row_has_bg(self, y, bg):
+        """True if any cell on row y has background colour `bg` -- used to find
+        an inline mark without pinning the exact column."""
+        row = self.screen.buffer[y]
+        return any(row[x].bg == bg for x in range(self.screen.columns))
+
     def alive(self):
         """True while wpe is still running healthily."""
         return self.proc.poll() is None

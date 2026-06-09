@@ -36,8 +36,19 @@
 > so errors update live in Messages (the `on_diagnostics_summary` count) without
 > an explicit save.  Rename/format apply server `TextEdit`s via `lsp_apply_edits`
 > (pure, offset-based) then rebuild the buffer with `e_lsp_replace_buffer`.
+>
+> Inline diagnostic marks: `on_diagnostic` now also gets the range END, so the
+> bridge keeps the problem ranges (`g_diag_active`, swapped in atomically per
+> batch by `on_diagnostics_summary`, which also repaints the source window).
+> `e_pr_c_line` (we_progn.c) calls `e_lsp_diag_active_for` once per line and
+> `e_lsp_diag_attr_at` per character to recolor problem cells -- the same
+> per-char colour override breakpoints/selection use, so it works in wpe and
+> xwpe.  Colours are synthesized for the active backend (`e_lsp_diag_color`: a
+> `16*bg+fg` VGA byte under colour, an existing marked attr under mono ncurses),
+> so no FARBE field or colour-scheme persistence is touched.
 > Tests: `tests/test_lsp_scala.c` (engine vs real Metals: every action incl.
-> rename/format), `tests/test_scala_lsp*.py` (the bridge through wpe).
+> rename/format/diagnostic-range), `tests/test_scala_lsp*.py` (the bridge through
+> wpe, incl. `_diag_marks.py` asserting the red cells render).
 
 ## Validated flow (2026-06-09, real Metals 1.6.7)
 

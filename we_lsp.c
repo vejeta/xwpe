@@ -207,13 +207,16 @@ static void lsp_dispatch_diagnostics(e_lsp_session *s, struct json_object *param
   struct json_object *d = json_object_array_get_idx(diags, i);
   struct json_object *rng = obj_obj(d, "range");
   struct json_object *st = rng ? obj_obj(rng, "start") : NULL;
+  struct json_object *en = rng ? obj_obj(rng, "end") : NULL;
   int sev = obj_int(d, "severity", 1);
   if (sev == 1) errors++;
   else if (sev == 2) warnings++;
   if (s->host.on_diagnostic)
-   s->host.on_diagnostic(uri_to_path(uri), obj_int(st, "line", 0),
-                         obj_int(st, "character", 0), sev,
-                         obj_str(d, "message"), s->host.ud);
+   s->host.on_diagnostic(uri_to_path(uri),
+                         obj_int(st, "line", 0), obj_int(st, "character", 0),
+                         obj_int(en, "line", obj_int(st, "line", 0)),
+                         obj_int(en, "character", obj_int(st, "character", 0)),
+                         sev, obj_str(d, "message"), s->host.ud);
  }
  if (s->host.on_diagnostics_summary)
   s->host.on_diagnostics_summary(uri_to_path(uri), errors, warnings, s->host.ud);
