@@ -5177,6 +5177,87 @@ static int e_lsp_ui_hover(FENSTER *f)
  return(0);
 }
 
+/* True for an identifier character (the word the completion replaces). */
+static int e_lsp_is_ident(int c)
+{
+ return((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+        (c >= '0' && c <= '9') || c == '_');
+}
+
+/* AltQ C -- offer completion candidates for the word under the cursor in a
+   navigable popup (the dialog radio list); insert the chosen one, replacing the
+   partial word.  Reuses the dialog widget system (arrows navigate, Enter
+   selects, Esc cancels) -- no bespoke popup. */
+static int e_lsp_ui_complete(FENSTER *f)
+{
+ BUFFER *b = f->b;
+ SCHIRM *s = f->s;
+ e_lsp_completion_item items[64];
+ W_OPTSTR *o;
+ char *line, insbuf[256];
+ const char *ins;
+ int n, i, sel = -1, prefix = 0, mxlen = 0, vis, inslen;
+
+ if (e_lsp_ensure(f) < 0)
+  return(-1);
+ n = e_lsp_completion(g_lsp, g_lsp_file, b->b.y, b->b.x, items, 64);
+ if (n <= 0)
+ {  e_error("No completions.", 0, f->fb);  return(0);  }
+
+ /* the identifier already typed before the cursor (to be replaced) */
+ line = b->bf[b->b.y].s;
+ while (prefix < b->b.x && e_lsp_is_ident((unsigned char)line[b->b.x - 1 - prefix]))
+  prefix++;
+
+ vis = n < 16 ? n : 16;
+ for (i = 0; i < vis; i++)
+  if ((int)strlen(items[i].label) > mxlen)
+   mxlen = strlen(items[i].label);
+ if (mxlen > 52)
+  mxlen = 52;
+
+ o = e_init_opt_kst(f);
+ if (!o)
+  return(-1);
+ o->xa = 8;
+ o->ya = 3;
+ o->xe = o->xa + mxlen + 8;
+ o->ye = o->ya + vis + 3;
+ o->bgsw = 0;
+ o->name = "Completion";
+ for (i = 0; i < vis; i++)
+  e_add_pswstr(0, 3, 1 + i, 0, 0, 0, items[i].label, o);
+ e_add_bttstr((o->xe - o->xa - 4) / 2, o->ye - o->ya - 1, 0, AltO, "Ok", NULL, o);
+ if (e_opt_kst(o) != WPE_ESC)
+  sel = o->pstr[0]->num;
+ freeostr(o);
+ if (sel < 0 || sel >= vis)
+  return(0);
+
+ /* what to insert: the LSP insertText, else the label up to '(' / ':' / ' ' */
+ ins = items[sel].insert;
+ if (!ins || !*ins)
+ {
+  const char *p = items[sel].label;
+  int k = 0;
+  while (p[k] && p[k] != '(' && p[k] != ':' && p[k] != ' ' && k < (int)sizeof(insbuf) - 1)
+   k++;
+  memcpy(insbuf, p, k);
+  insbuf[k] = '\0';
+  ins = insbuf;
+ }
+ inslen = strlen(ins);
+ if (prefix > 0)
+ {
+  b->b.x -= prefix;
+  e_del_nchar(b, s, b->b.x, b->b.y, prefix);
+ }
+ e_ins_nchar(b, s, (char *)ins, b->b.x, b->b.y, inslen);
+ b->b.x += inslen;
+ e_schirm(f, 1);
+ return(0);
+}
+
 /* Disconnect the language server (called on editor exit). */
 void e_lsp_ui_shutdown(void)
 {
@@ -5197,6 +5278,8 @@ int e_lsp_ui_inp(FENSTER *f)
    return(e_lsp_ui_definition(f));
   case 'h': case ('h' - 'a' + 1):
    return(e_lsp_ui_hover(f));
+  case 'c': case ('c' - 'a' + 1):
+   return(e_lsp_ui_complete(f));
   case 'e': case ('e' - 'a' + 1):
    return(e_lsp_ui_diagnostics(f));
   default:
