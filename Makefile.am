@@ -221,6 +221,7 @@ EXTRA_DIST = \
   tests/test_algol68_debug.py \
   tests/test_ga68.py \
   tests/test_ga68_debug.py \
+  tests/test_syntax_algol68.py \
   tests/test_debugger_watchdog.py \
   tests/x11/conftest.py \
   tests/x11/matchbox-kbdconfig \
@@ -238,6 +239,7 @@ EXTRA_DIST = \
   tests/x11/test_menu_status_bar.py \
   tests/x11/test_popup_close_button.py \
   tests/x11/test_user_screen.py \
+  tests/x11/test_syntax_algol68.py \
   tests/inputs/README \
   tests/inputs/hello.c \
   tests/inputs/paint.c \

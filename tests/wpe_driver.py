@@ -25,6 +25,7 @@ Incoherence flagging:
 import os
 import pty
 import select
+import shutil
 import subprocess
 import time
 
@@ -88,6 +89,14 @@ class WpeSession:
         # so the override wins over the UTF-8 default above.
         if env_extra:
             env.update(env_extra)
+        # Make the editor under test use THIS repo's syntax_def, not whatever
+        # stale copy is installed on the machine: it reads $HOME/.xwpe/syntax_def
+        # first and we set HOME=workdir, so drop the build-tree copy there.
+        _synt = os.path.join(os.path.dirname(os.path.abspath(WPE_BIN)), "syntax_def")
+        if os.path.exists(_synt):
+            _xd = os.path.join(workdir, ".xwpe")
+            os.makedirs(_xd, exist_ok=True)
+            shutil.copyfile(_synt, os.path.join(_xd, "syntax_def"))
         self.proc = subprocess.Popen(
             [WPE_BIN, filename], stdin=slave_fd, stdout=slave_fd,
             stderr=slave_fd, cwd=workdir, env=env, preexec_fn=os.setsid)
