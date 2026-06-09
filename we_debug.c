@@ -5192,21 +5192,51 @@ static int e_lsp_ui_diagnostics(FENSTER *f)
  return(0);
 }
 
-/* AltQ D -- jump to the definition of the symbol under the cursor. */
-static int e_lsp_ui_definition(FENSTER *f)
+/* The three "jump to a location" actions (definition / implementation / type
+   definition) differ only in the engine call and the not-found wording, so they
+   share this driver.  `locate` is one of the e_lsp_* locators; `what` names the
+   target for the error message. */
+typedef int (*e_lsp_locate_fn)(e_lsp_session *, const char *, int, int,
+                               char *, size_t, int *, int *);
+
+static int e_lsp_ui_jump(FENSTER *f, e_lsp_locate_fn locate, const char *what)
 {
  BUFFER *b = f->b;
- char outpath[1024];
+ char outpath[1024], msg[64];
  int oline = -1, ochar = -1;
 
  if (e_lsp_ensure(f) < 0)
   return(-1);
  e_lsp_sync(f);
- if (e_lsp_definition(g_lsp, g_lsp_file, b->b.y, b->b.x,
-                      outpath, sizeof(outpath), &oline, &ochar) != 0)
- {  e_error("No definition found.", 0, f->fb);  return(0);  }
+ if (locate(g_lsp, g_lsp_file, b->b.y, b->b.x,
+            outpath, sizeof(outpath), &oline, &ochar) != 0)
+ {
+  snprintf(msg, sizeof(msg), "No %s found.", what);
+  e_error(msg, 0, f->fb);
+  return(0);
+ }
  e_d_goto_break(outpath, oline + 1, f);        /* engine 0-based -> 1-based */
  return(0);
+}
+
+/* AltQ D -- jump to the definition of the symbol under the cursor. */
+static int e_lsp_ui_definition(FENSTER *f)
+{
+ return(e_lsp_ui_jump(f, e_lsp_definition, "definition"));
+}
+
+/* AltQ I -- jump to the implementation of the symbol (concrete override of an
+   abstract def / trait member). */
+static int e_lsp_ui_implementation(FENSTER *f)
+{
+ return(e_lsp_ui_jump(f, e_lsp_implementation, "implementation"));
+}
+
+/* AltQ T -- jump to the TYPE of the symbol (the class/trait of a val's type,
+   not the val's own definition). */
+static int e_lsp_ui_type_definition(FENSTER *f)
+{
+ return(e_lsp_ui_jump(f, e_lsp_type_definition, "type definition"));
 }
 
 /* AltQ H -- show the type/documentation of the symbol under the cursor. */
@@ -5233,6 +5263,52 @@ static int e_lsp_is_ident(int c)
         (c >= '0' && c <= '9') || c == '_');
 }
 
+/* Defined further down; used by the workspace-symbol and code-action actions. */
+static void e_lsp_replace_buffer(FENSTER *f, const char *newtext);
+static void e_lsp_word_at_cursor(FENSTER *f, char *out, size_t osz);
+
+/* Show a single-column pick list (the dialog radio widget: arrows navigate,
+   Enter selects, Esc cancels) of `n` labels under `title`, and return the chosen
+   index or -1 if cancelled.  At most 16 rows are shown; when the list is longer
+   the title states how many were hidden (no silent truncation).  Shared by the
+   completion / outline / workspace-symbol / code-action pickers. */
+static int e_lsp_pick(FENSTER *f, const char *title, const char *const *labels,
+                      int n)
+{
+ W_OPTSTR *o;
+ char name[80];
+ int i, sel = -1, vis, mxlen = 0;
+
+ vis = n < 16 ? n : 16;
+ if (n > vis)
+  snprintf(name, sizeof(name), "%s (first %d of %d)", title, vis, n);
+ else
+  snprintf(name, sizeof(name), "%s", title);
+ for (i = 0; i < vis; i++)
+  if ((int)strlen(labels[i]) > mxlen)
+   mxlen = strlen(labels[i]);
+ if (mxlen > 52)
+  mxlen = 52;
+ o = e_init_opt_kst(f);
+ if (!o)
+  return(-1);
+ o->xa = 8;
+ o->ya = 3;
+ o->xe = o->xa + mxlen + 8;
+ o->ye = o->ya + vis + 3;
+ o->bgsw = 0;
+ o->name = name;
+ for (i = 0; i < vis; i++)
+  e_add_pswstr(0, 3, 1 + i, 0, 0, 0, (char *)labels[i], o);
+ e_add_bttstr((o->xe - o->xa - 4) / 2, o->ye - o->ya - 1, 0, AltO, "Ok", NULL, o);
+ if (e_opt_kst(o) != WPE_ESC)
+  sel = o->pstr[0]->num;
+ freeostr(o);
+ if (sel < 0 || sel >= vis)
+  return(-1);
+ return(sel);
+}
+
 /* AltQ C -- offer completion candidates for the word under the cursor in a
    navigable popup (the dialog radio list); insert the chosen one, replacing the
    partial word.  Reuses the dialog widget system (arrows navigate, Enter
@@ -5242,10 +5318,10 @@ static int e_lsp_ui_complete(FENSTER *f)
  BUFFER *b = f->b;
  SCHIRM *s = f->s;
  e_lsp_completion_item items[64];
- W_OPTSTR *o;
+ const char *labels[64];
  char *line, insbuf[256];
  const char *ins;
- int n, i, sel = -1, prefix = 0, mxlen = 0, vis, inslen;
+ int n, i, sel, prefix = 0, inslen;
 
  if (e_lsp_ensure(f) < 0)
   return(-1);
@@ -5259,29 +5335,10 @@ static int e_lsp_ui_complete(FENSTER *f)
  while (prefix < b->b.x && e_lsp_is_ident((unsigned char)line[b->b.x - 1 - prefix]))
   prefix++;
 
- vis = n < 16 ? n : 16;
- for (i = 0; i < vis; i++)
-  if ((int)strlen(items[i].label) > mxlen)
-   mxlen = strlen(items[i].label);
- if (mxlen > 52)
-  mxlen = 52;
-
- o = e_init_opt_kst(f);
- if (!o)
-  return(-1);
- o->xa = 8;
- o->ya = 3;
- o->xe = o->xa + mxlen + 8;
- o->ye = o->ya + vis + 3;
- o->bgsw = 0;
- o->name = "Completion";
- for (i = 0; i < vis; i++)
-  e_add_pswstr(0, 3, 1 + i, 0, 0, 0, items[i].label, o);
- e_add_bttstr((o->xe - o->xa - 4) / 2, o->ye - o->ya - 1, 0, AltO, "Ok", NULL, o);
- if (e_opt_kst(o) != WPE_ESC)
-  sel = o->pstr[0]->num;
- freeostr(o);
- if (sel < 0 || sel >= vis)
+ for (i = 0; i < n; i++)
+  labels[i] = items[i].label;
+ sel = e_lsp_pick(f, "Completion", labels, n);
+ if (sel < 0)
   return(0);
 
  /* what to insert: the LSP insertText, else the label up to '(' / ':' / ' ' */
@@ -5354,8 +5411,8 @@ static int e_lsp_ui_references(FENSTER *f)
 static int e_lsp_ui_outline(FENSTER *f)
 {
  e_lsp_symbol syms[128];
- W_OPTSTR *o;
- int n, i, sel = -1, vis, mxlen = 0;
+ const char *labels[128];
+ int n, i, sel;
 
  if (e_lsp_ensure(f) < 0)
   return(-1);
@@ -5363,30 +5420,97 @@ static int e_lsp_ui_outline(FENSTER *f)
  n = e_lsp_document_symbols(g_lsp, g_lsp_file, syms, 128);
  if (n <= 0)
  {  e_error("No symbols.", 0, f->fb);  return(0);  }
- vis = n < 16 ? n : 16;
- for (i = 0; i < vis; i++)
-  if ((int)strlen(syms[i].name) > mxlen)
-   mxlen = strlen(syms[i].name);
- if (mxlen > 52)
-  mxlen = 52;
- o = e_init_opt_kst(f);
- if (!o)
-  return(-1);
- o->xa = 8;
- o->ya = 3;
- o->xe = o->xa + mxlen + 8;
- o->ye = o->ya + vis + 3;
- o->bgsw = 0;
- o->name = "Outline";
- for (i = 0; i < vis; i++)
-  e_add_pswstr(0, 3, 1 + i, 0, 0, 0, syms[i].name, o);
- e_add_bttstr((o->xe - o->xa - 4) / 2, o->ye - o->ya - 1, 0, AltO, "Ok", NULL, o);
- if (e_opt_kst(o) != WPE_ESC)
-  sel = o->pstr[0]->num;
- freeostr(o);
- if (sel < 0 || sel >= vis)
+ for (i = 0; i < n; i++)
+  labels[i] = syms[i].name;
+ sel = e_lsp_pick(f, "Outline", labels, n);
+ if (sel < 0)
   return(0);
  e_d_goto_break(g_lsp_file, syms[sel].line + 1, f);
+ return(0);
+}
+
+/* AltQ W -- workspace symbol search: prompt for a query, list matching symbols
+   from across the whole project (each shown with its file), and jump to the one
+   chosen (opening its file if it is not the current one).  IntelliJ's "Go to
+   Symbol" / Search Everywhere. */
+static int e_lsp_ui_workspace_symbols(FENSTER *f)
+{
+ static e_lsp_symbol syms[128];
+ static char rows[128][160];
+ const char *labels[128];
+ char query[160];
+ const char *jumpfile;
+ int n, i, sel;
+
+ if (e_lsp_ensure(f) < 0)
+  return(-1);
+ e_lsp_word_at_cursor(f, query, sizeof(query));
+ if (!e_add_arguments(query, "Search symbol", f, 0, AltS, NULL) || !query[0])
+  return(0);                        /* cancelled or empty */
+ e_lsp_sync(f);
+ n = e_lsp_workspace_symbols(g_lsp, query, syms, 128);
+ if (n <= 0)
+ {  e_error("No matching symbols.", 0, f->fb);  return(0);  }
+ for (i = 0; i < n; i++)
+ {
+  const char *base = syms[i].path ? e_d_dap_basename(syms[i].path) : "(this file)";
+  snprintf(rows[i], sizeof(rows[i]), "%s  -  %s:%d",
+           syms[i].name, base, syms[i].line + 1);
+  labels[i] = rows[i];
+ }
+ sel = e_lsp_pick(f, "Workspace symbols", labels, n);
+ if (sel < 0)
+  return(0);
+ jumpfile = syms[sel].path ? syms[sel].path : g_lsp_file;
+ e_d_goto_break((char *)jumpfile, syms[sel].line + 1, f);
+ return(0);
+}
+
+/* AltQ A -- code actions / quick-fixes at the cursor (organize imports, import
+   missing symbol, ...).  Lists what the server offers; applying a direct-edit
+   action rewrites the buffer.  Command-based actions (which need executeCommand)
+   are listed but reported as not-yet-runnable.  IntelliJ's Alt-Enter. */
+static int e_lsp_ui_code_actions(FENSTER *f)
+{
+ static e_lsp_code_action acts[64];
+ const char *labels[64];
+ char *text, *newtext;
+ int n, i, sel, others = 0;
+
+ if (e_lsp_ensure(f) < 0)
+  return(-1);
+ e_lsp_sync(f);
+ n = e_lsp_code_actions(g_lsp, g_lsp_file, f->b->b.y, f->b->b.x, acts, 64);
+ if (n <= 0)
+ {  e_error("No code actions here.", 0, f->fb);  return(0);  }
+ for (i = 0; i < n; i++)
+  labels[i] = acts[i].title;
+ sel = e_lsp_pick(f, "Code actions", labels, n);
+ if (sel < 0)
+  return(0);
+ if (!acts[sel].has_edit)
+ {
+  e_error("That action runs a server command xwpe does not execute yet.",
+          -1, f->fb);
+  return(0);
+ }
+ text = e_lsp_buffer_text(f);
+ if (!text)
+  return(-1);
+ newtext = e_lsp_apply_code_action(g_lsp, sel, g_lsp_file, text, &others);
+ if (!newtext)
+ {  free(text);  e_error("Could not apply that action.", 0, f->fb);  return(0);  }
+ if (strcmp(newtext, text) != 0)
+  e_lsp_replace_buffer(f, newtext);
+ if (others > 0)
+ {
+  char m[120];
+  snprintf(m, sizeof(m), "Note: this action also changes %d other file(s) -- "
+           "not applied here.", others);
+  e_error(m, -1, f->fb);
+ }
+ free(text);
+ free(newtext);
  return(0);
 }
 
@@ -5545,6 +5669,10 @@ int e_lsp_ui_inp(FENSTER *f)
  {
   case 'd': case ('d' - 'a' + 1):
    return(e_lsp_ui_definition(f));
+  case 'i': case ('i' - 'a' + 1):
+   return(e_lsp_ui_implementation(f));
+  case 't': case ('t' - 'a' + 1):
+   return(e_lsp_ui_type_definition(f));
   case 'h': case ('h' - 'a' + 1):
    return(e_lsp_ui_hover(f));
   case 'c': case ('c' - 'a' + 1):
@@ -5553,6 +5681,10 @@ int e_lsp_ui_inp(FENSTER *f)
    return(e_lsp_ui_references(f));
   case 's': case ('s' - 'a' + 1):
    return(e_lsp_ui_signature(f));
+  case 'w': case ('w' - 'a' + 1):
+   return(e_lsp_ui_workspace_symbols(f));
+  case 'a': case ('a' - 'a' + 1):
+   return(e_lsp_ui_code_actions(f));
   case 'f': case ('f' - 'a' + 1):
    return(e_lsp_ui_format(f));
   case 'n': case ('n' - 'a' + 1):

@@ -23,7 +23,15 @@ static const char *SCALA_SRC =
  "    while i <= 10 do\n"
  "      f = f * i\n"                       /* line 5: a use of f       */
  "      i = i + 1\n"
- "    println(s\"factorial(10) = $f\")\n";  /* line 7: println          */
+ "    println(s\"factorial(10) = $f\")\n"   /* line 7: println          */
+ "\n"
+ "trait Greeter:\n"                        /* line 9                   */
+ "  def greet(): String\n"                 /* line 10: abstract method */
+ "\n"
+ "class Hello extends Greeter:\n"          /* line 12                  */
+ "  def greet(): String = \"hi\"\n"        /* line 13: implementation  */
+ "\n"
+ "val theGreeter: Hello = Hello()\n";      /* line 15: typed val       */
 
 static int g_diags = 0;
 static void on_diag(const char *path, int line, int ch, int sev,
@@ -150,8 +158,62 @@ int main(void)
   else printf("  FORMAT: no edits (already formatted)\n");
  }
 
- printf("PASS: LSP engine vs real Metals "
-        "(hover/definition/completion/references/outline/signature/rename/format)\n");
+ /* implementation of the abstract Greeter.greet (line 10, char 6) -> the
+    override in Hello.  Retry while the index warms. */
+ {
+  char ip[1024]; int il = -1, ic = -1, ok = 0, t;
+  for (t = 0; t < 6 && !ok; t++)
+  { ok = (e_lsp_implementation(s, scala, 10, 6, ip, sizeof(ip), &il, &ic) == 0);
+    if (!ok) sleep(2); }
+  if (!ok) { rc = fail("implementation of Greeter.greet returned nothing"); goto close; }
+  printf("  IMPLEMENTATION greet -> %s:%d\n", ip, il);
+ }
+
+ /* type definition of `theGreeter` (line 15, char 4): its type is Hello, so
+    this jumps to the Hello class (line 12), not the val itself. */
+ {
+  char tp[1024]; int tl = -1, tc = -1, ok = 0, t;
+  for (t = 0; t < 6 && !ok; t++)
+  { ok = (e_lsp_type_definition(s, scala, 15, 4, tp, sizeof(tp), &tl, &tc) == 0);
+    if (!ok) sleep(2); }
+  if (!ok) { rc = fail("type definition of theGreeter returned nothing"); goto close; }
+  printf("  TYPE-DEFINITION theGreeter -> %s:%d\n", tp, tl);
+ }
+
+ /* workspace symbol search for "Factorial" -> at least the Factorial object */
+ {
+  e_lsp_symbol syms[64];
+  int nw = e_lsp_workspace_symbols(s, "Factorial", syms, 64), i, found = 0;
+  printf("  WORKSPACE-SYMBOLS \"Factorial\": %d\n", nw);
+  if (nw < 1) { rc = fail("workspace symbol search found nothing"); goto close; }
+  for (i = 0; i < nw; i++)
+   if (strstr(syms[i].name, "Factorial")) found = 1;
+  if (!found) { rc = fail("workspace search missed the Factorial symbol"); goto close; }
+ }
+
+ /* code actions at the abstract method (line 10) -> the call must round-trip
+    (>= 0, never -1); exercise the apply path if a direct-edit action exists. */
+ {
+  e_lsp_code_action acts[32];
+  int na = e_lsp_code_actions(s, scala, 10, 6, acts, 32), i;
+  if (na < 0) { rc = fail("code actions returned an error"); goto close; }
+  printf("  CODE-ACTIONS: %d%s%s\n", na, na > 0 ? ", e.g. " : "",
+         na > 0 ? acts[0].title : "");
+  for (i = 0; i < na; i++)
+   if (acts[i].has_edit)
+   {
+    int others = 0;
+    char *applied = e_lsp_apply_code_action(s, i, scala, SCALA_SRC, &others);
+    if (!applied) { rc = fail("apply_code_action on a has_edit action failed"); goto close; }
+    printf("  APPLIED \"%s\" (other files: %d)\n", acts[i].title, others);
+    free(applied);
+    break;
+   }
+ }
+
+ printf("PASS: LSP engine vs real Metals (hover/definition/implementation/"
+        "type-definition/completion/references/outline/signature/rename/format/"
+        "workspace-symbols/code-actions)\n");
 
 close:
  e_lsp_close(s);

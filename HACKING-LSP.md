@@ -12,13 +12,24 @@
 > |-----|--------|-------------|
 > | `Alt-Q E` | diagnostics (start server, list in Messages) | `e_lsp_wait_diagnostics` |
 > | `Alt-Q D` | go-to-definition | `e_lsp_definition` |
+> | `Alt-Q I` | go-to-implementation | `e_lsp_implementation` |
+> | `Alt-Q T` | go-to-type-definition | `e_lsp_type_definition` |
 > | `Alt-Q H` | hover (type/docs) | `e_lsp_hover` |
 > | `Alt-Q C` | completion (popup, insert) | `e_lsp_completion` |
 > | `Alt-Q R` | references (list in Messages) | `e_lsp_references` |
 > | `Alt-Q S` | signature help | `e_lsp_signature_help` |
 > | `Alt-Q O` | outline (popup -> jump) | `e_lsp_document_symbols` |
+> | `Alt-Q W` | workspace symbol search (prompt, popup -> jump) | `e_lsp_workspace_symbols` |
+> | `Alt-Q A` | code actions / quick-fixes (popup -> apply) | `e_lsp_code_actions` (+ `e_lsp_apply_code_action`) |
 > | `Alt-Q N` | rename | `e_lsp_rename` (+ `e_lsp_replace_buffer`) |
 > | `Alt-Q F` | format | `e_lsp_format` (+ `e_lsp_replace_buffer`) |
+>
+> `e_lsp_definition`/`_implementation`/`_type_definition` share the engine driver
+> `lsp_locate`; their three bridge actions share `e_lsp_ui_jump`.  The completion
+> / outline / workspace-symbol / code-action popups share `e_lsp_pick`.
+> `lsp_apply_workspace_edit` is the shared WorkspaceEdit applier behind both
+> rename and code-action apply (handles `changes` and `documentChanges`, counts
+> other-file edits which the bridge warns about).
 >
 > Every editor change is pushed to the server (`e_lsp_did_change`, debounced on
 > newline) and `e_lsp_poll` drains diagnostics non-blocking on each keystroke,

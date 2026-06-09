@@ -34,6 +34,12 @@ diagnostics (errors and warnings) in the Messages window, in the same
 @code{file:line:col:} form as F9 build errors.
 @item Alt-Q D
 Go to the definition of the symbol under the cursor.
+@item Alt-Q I
+Go to the @emph{implementation} of the symbol: the concrete override of an
+abstract @code{def} or trait member (jumps past the declaration to the body).
+@item Alt-Q T
+Go to the @emph{type definition} of the symbol: the class or trait of a
+value's type, rather than the value's own declaration.
 @item Alt-Q H
 Hover: show the type and documentation of the symbol under the cursor in a
 popup (e.g.@: @code{var f: Long}).
@@ -47,6 +53,16 @@ declaration) in the Messages window.
 @item Alt-Q O
 Outline: list the file's symbols (objects, defs, vals, ...) in a popup; pick
 one with the arrows and @key{RET} to jump to it.
+@item Alt-Q W
+Workspace symbol search: you are prompted for a query, then a popup lists
+matching symbols from across the @emph{whole project} (each shown with its
+file); @key{RET} jumps to the chosen one, opening its file if needed.  This is
+the editor-wide ``Go to Symbol''.
+@item Alt-Q A
+Code actions: list the quick-fixes and refactors the server offers at the
+cursor (organize imports, create a companion object, ...) in a popup.
+Applying an action that carries a direct edit rewrites the buffer; actions
+that instead run a server command are listed but reported as not yet runnable.
 @item Alt-Q S
 Signature: show the signature of the call the cursor is inside (e.g.
 @code{println(x: Any): Unit}) in a popup.

@@ -48,13 +48,20 @@ typedef struct {
  int   character; /* 0-based                                */
 } e_lsp_location;
 
-/* A document symbol for the outline (engine-owned name). */
+/* A symbol for the outline / workspace search (engine-owned strings). */
 typedef struct {
  char *name;      /* symbol name (object/def/val/...)        */
+ char *path;      /* file path (NULL = the current document) */
  int   line;      /* 0-based line of the symbol              */
  int   character; /* 0-based                                 */
  int   kind;      /* LSP SymbolKind                          */
 } e_lsp_symbol;
+
+/* One code action / quick-fix candidate (engine-owned). */
+typedef struct {
+ char *title;     /* what to show ("Organize imports", ...)         */
+ int   has_edit;  /* 1 if a direct WorkspaceEdit is attached         */
+} e_lsp_code_action;
 
 /* Spawn the language server (argv NULL-terminated, e.g. {"metals",0}), run the
  * initialize/initialized handshake with headless InitializationOptions, cwd =
@@ -94,10 +101,34 @@ char *e_lsp_hover(e_lsp_session *s, const char *path, int line, int character);
 char *e_lsp_signature_help(e_lsp_session *s, const char *path,
                            int line, int character);
 
-/* textDocument/definition: on success fills out_path/out_line/out_char with the
- * first location and returns 0; returns -1 if there is no definition. */
+/* textDocument/definition (and the implementation / type-definition variants):
+ * on success fill out_path/out_line/out_char with the first location and return
+ * 0; return -1 if there is none. */
 int e_lsp_definition(e_lsp_session *s, const char *path, int line, int character,
                      char *out_path, size_t out_sz, int *out_line, int *out_char);
+int e_lsp_implementation(e_lsp_session *s, const char *path, int line, int character,
+                         char *out_path, size_t out_sz, int *out_line, int *out_char);
+int e_lsp_type_definition(e_lsp_session *s, const char *path, int line, int character,
+                          char *out_path, size_t out_sz, int *out_line, int *out_char);
+
+/* workspace/symbol: search every symbol in the project matching `query`.  Fills
+ * up to `max` symbols (engine-owned name+path); returns the count (>=0) or -1. */
+int e_lsp_workspace_symbols(e_lsp_session *s, const char *query,
+                            e_lsp_symbol *syms, int max);
+
+/* textDocument/codeAction at (line,character): quick-fixes / refactors offered
+ * there (organize imports, import missing, ...).  Fills up to `max` actions
+ * (engine-owned titles); returns the count (>=0) or -1. */
+int e_lsp_code_actions(e_lsp_session *s, const char *path, int line, int character,
+                       e_lsp_code_action *acts, int max);
+
+/* Apply the code action chosen by index from the LAST e_lsp_code_actions call:
+ * if it carries a direct edit for THIS file, applies it to `current_text` and
+ * returns the new full text (malloc'd); else returns NULL (e.g. a command-based
+ * action, which xwpe does not run yet).  *other_files counts other files it
+ * would touch. */
+char *e_lsp_apply_code_action(e_lsp_session *s, int index, const char *path,
+                              const char *current_text, int *other_files);
 
 /* textDocument/completion: fills up to `max` items and returns the count (>=0),
  * or -1 on error.  Items point at engine-owned memory (see e_lsp_completion_item). */

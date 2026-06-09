@@ -313,11 +313,20 @@ Changes
   - Alt-Q E: start Metals, import the build (via scala-cli) and show compiler
     diagnostics in Messages.
   - Alt-Q D: go to the definition of the symbol under the cursor.
+  - Alt-Q I: go to the implementation -- the concrete override of an abstract
+    def / trait member (IntelliJ's Ctrl-Alt-B).
+  - Alt-Q T: go to the type definition -- the class/trait of a value's type
+    (IntelliJ's Ctrl-Shift-B).
   - Alt-Q H: hover -- show its type and documentation (e.g. "var f: Long").
   - Alt-Q C: completion -- candidates for the word under the cursor in a popup;
     pick with the arrows + Enter and it replaces the partial word.
   - Alt-Q R: references -- list every use of the symbol (decl + uses) in Messages.
   - Alt-Q O: outline -- the file's symbols in a popup; pick one to jump to it.
+  - Alt-Q W: workspace symbol search -- prompt for a query, then jump to any
+    matching symbol from across the whole project (IntelliJ's Go to Symbol).
+  - Alt-Q A: code actions -- the quick-fixes/refactors the server offers at the
+    cursor (organize imports, create companion object, ...) in a popup; a
+    direct-edit action rewrites the buffer (IntelliJ's Alt-Enter).
   - Alt-Q S: signature -- the signature of the call the cursor is inside.
   - Alt-Q N: rename -- rename the symbol everywhere (prompts for the new name;
     edits in this file applied to the buffer, other files reported).
@@ -337,9 +346,14 @@ Changes
 * Edits are seen live: before each request the current editor buffer is pushed
   to the server (textDocument/didChange), so hover/definition/completion/
   diagnostics reflect unsaved changes, not just the on-disk file.
-* Next LSP increments: auto-refresh diagnostics on keystroke (debounced),
-  find-references/rename/formatting, and more servers -- clangd (C/C++, in
-  Debian), pyright, rust-analyzer, gopls -- each a descriptor row.
+* Go-to-implementation, go-to-type-definition, workspace symbol search and
+  code actions all verified against real Metals in tests/test_lsp_scala.c
+  (implementation -> the override, type-definition -> the class, workspace
+  search finds the Factorial object, a code action is offered and applied).
+* Next LSP increments: inline diagnostic marks, document highlight, inlay hints,
+  code lens (run/test), call hierarchy, folding, semantic tokens; and more
+  servers -- clangd (C/C++, in Debian), pyright, rust-analyzer, gopls -- each a
+  descriptor row.
 
 1.6.4 (embedded VT terminal, Algol 68 source-level debugger, window-layout fixes)
 

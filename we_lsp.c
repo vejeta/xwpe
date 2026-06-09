@@ -33,8 +33,11 @@ struct e_lsp_session {
  int          nitems;
  e_lsp_location locs[256];          /* engine-owned references result      */
  int          nlocs;
- e_lsp_symbol  syms[256];           /* engine-owned outline result         */
+ e_lsp_symbol  syms[256];           /* engine-owned outline/workspace result */
  int          nsyms;
+ e_lsp_code_action acts[64];        /* engine-owned code-action result      */
+ int          nacts;
+ struct json_object *acts_raw;      /* last codeAction array, kept for apply */
 };
 
 /* ---- transport --------------------------------------------------------- */
@@ -650,8 +653,12 @@ char *e_lsp_signature_help(e_lsp_session *s, const char *path,
  return out;
 }
 
-int e_lsp_definition(e_lsp_session *s, const char *path, int line, int character,
-                     char *out_path, size_t out_sz, int *out_line, int *out_char)
+/* Shared driver for the three "jump to a location" requests, which differ only
+ * in the method name and all answer with Location | Location[] | LocationLink[].
+ * Fills out_* with the first location; returns 0 on success, -1 otherwise. */
+static int lsp_locate(e_lsp_session *s, const char *method, const char *path,
+                      int line, int character, char *out_path, size_t out_sz,
+                      int *out_line, int *out_char)
 {
  char abspath[PATH_MAX];
  struct json_object *resp, *result, *loc = NULL, *rng, *st;
@@ -662,7 +669,7 @@ int e_lsp_definition(e_lsp_session *s, const char *path, int line, int character
  if (!realpath(path, abspath))
   snprintf(abspath, sizeof(abspath), "%s", path);
  id = ++s->id;
- lsp_send(s, id, "textDocument/definition", lsp_text_pos(s, abspath, line, character));
+ lsp_send(s, id, method, lsp_text_pos(s, abspath, line, character));
  resp = lsp_pump(s, id, NULL, LSP_TMO_REQ);
  if (!resp)
   return -1;
@@ -692,6 +699,27 @@ int e_lsp_definition(e_lsp_session *s, const char *path, int line, int character
  }
  json_object_put(resp);
  return rc;
+}
+
+int e_lsp_definition(e_lsp_session *s, const char *path, int line, int character,
+                     char *out_path, size_t out_sz, int *out_line, int *out_char)
+{
+ return lsp_locate(s, "textDocument/definition", path, line, character,
+                   out_path, out_sz, out_line, out_char);
+}
+
+int e_lsp_implementation(e_lsp_session *s, const char *path, int line, int character,
+                         char *out_path, size_t out_sz, int *out_line, int *out_char)
+{
+ return lsp_locate(s, "textDocument/implementation", path, line, character,
+                   out_path, out_sz, out_line, out_char);
+}
+
+int e_lsp_type_definition(e_lsp_session *s, const char *path, int line, int character,
+                          char *out_path, size_t out_sz, int *out_line, int *out_char)
+{
+ return lsp_locate(s, "textDocument/typeDefinition", path, line, character,
+                   out_path, out_sz, out_line, out_char);
 }
 
 static void lsp_free_items(e_lsp_session *s)
@@ -770,7 +798,10 @@ static void lsp_free_syms(e_lsp_session *s)
 {
  int i;
  for (i = 0; i < s->nsyms; i++)
+ {
   free(s->syms[i].name);
+  free(s->syms[i].path);
+ }
  s->nsyms = 0;
 }
 
@@ -831,8 +862,12 @@ static void lsp_collect_symbols(e_lsp_session *s, struct json_object *arr,
   const char *name = obj_str(sym, "name");
   struct json_object *loc = obj_obj(sym, "location");   /* SymbolInformation */
   struct json_object *rng, *st, *children;
+  const char *uri = NULL;
   if (loc)
+  {
    rng = obj_obj(loc, "range");
+   uri = obj_str(loc, "uri");                          /* cross-file symbol */
+  }
   else                                                  /* DocumentSymbol */
   {
    rng = obj_obj(sym, "selectionRange");
@@ -843,6 +878,7 @@ static void lsp_collect_symbols(e_lsp_session *s, struct json_object *arr,
   if (name && st)
   {
    s->syms[s->nsyms].name = strdup(name);
+   s->syms[s->nsyms].path = uri ? strdup(uri_to_path(uri)) : NULL;
    s->syms[s->nsyms].line = obj_int(st, "line", 0);
    s->syms[s->nsyms].character = obj_int(st, "character", 0);
    s->syms[s->nsyms].kind = obj_int(sym, "kind", 0);
@@ -878,6 +914,32 @@ int e_lsp_document_symbols(e_lsp_session *s, const char *path,
  resp = lsp_pump(s, id, NULL, LSP_TMO_REQ);
  if (!resp)
   return -1;
+ result = obj_obj(resp, "result");
+ if (result && json_object_is_type(result, json_type_array))
+  lsp_collect_symbols(s, result, syms, max, &out);
+ json_object_put(resp);
+ return out;
+}
+
+int e_lsp_workspace_symbols(e_lsp_session *s, const char *query,
+                            e_lsp_symbol *syms, int max)
+{
+ struct json_object *args, *resp, *result;
+ int id, out = 0;
+
+ if (!s)
+  return -1;
+ lsp_free_syms(s);
+ args = json_object_new_object();
+ json_object_object_add(args, "query",
+                        json_object_new_string(query ? query : ""));
+ id = ++s->id;
+ lsp_send(s, id, "workspace/symbol", args);
+ resp = lsp_pump(s, id, NULL, LSP_TMO_REQ);
+ if (!resp)
+  return -1;
+ /* SymbolInformation[]: each carries a name + location {uri,range}, which
+    lsp_collect_symbols already understands (it fills path from the uri). */
  result = obj_obj(resp, "result");
  if (result && json_object_is_type(result, json_type_array))
   lsp_collect_symbols(s, result, syms, max, &out);
@@ -959,6 +1021,51 @@ static char *lsp_apply_edits(const char *text, struct json_object *edits)
  return out;
 }
 
+/* Apply a WorkspaceEdit's edits for `myuri` only to `current_text`, counting the
+   OTHER files it would touch into *other_files.  Handles both encodings the spec
+   allows: the flat "changes" map and the ordered "documentChanges" array.
+   Returns new text (malloc'd), or a copy of current_text if this file is
+   untouched, or NULL on allocation failure. */
+static char *lsp_apply_workspace_edit(struct json_object *wedit, const char *myuri,
+                                      const char *current_text, int *other_files)
+{
+ struct json_object *changes, *myedits = NULL;
+ int others = 0;
+
+ if (other_files)
+  *other_files = 0;
+ if (wedit && (changes = obj_obj(wedit, "changes")))
+ {
+  json_object_object_foreach(changes, key, val)
+  {
+   if (!strcmp(key, myuri))
+    myedits = val;
+   else
+    others++;
+  }
+ }
+ else if (wedit)
+ {
+  struct json_object *dc = obj_obj(wedit, "documentChanges");
+  int i, dn = (dc && json_object_is_type(dc, json_type_array))
+              ? json_object_array_length(dc) : 0;
+  for (i = 0; i < dn; i++)
+  {
+   struct json_object *el = json_object_array_get_idx(dc, i);
+   const char *uri = obj_str(obj_obj(el, "textDocument"), "uri");
+   if (uri && !strcmp(uri, myuri))
+    myedits = obj_obj(el, "edits");
+   else
+    others++;
+  }
+ }
+ if (other_files)
+  *other_files = others;
+ if (myedits && json_object_is_type(myedits, json_type_array))
+  return lsp_apply_edits(current_text, myedits);
+ return strdup(current_text);          /* nothing in this file */
+}
+
 char *e_lsp_format(e_lsp_session *s, const char *path, const char *current_text)
 {
  char abspath[PATH_MAX];
@@ -998,7 +1105,7 @@ char *e_lsp_rename(e_lsp_session *s, const char *path, int line, int character,
                    int *other_files)
 {
  char abspath[PATH_MAX], myuri[PATH_MAX + 8];
- struct json_object *args, *resp, *result, *changes, *myedits = NULL;
+ struct json_object *args, *resp, *result;
  char *out = NULL;
  int id, others = 0;
 
@@ -1017,39 +1124,111 @@ char *e_lsp_rename(e_lsp_session *s, const char *path, int line, int character,
  if (!resp)
   return NULL;
  result = obj_obj(resp, "result");
- if (result && (changes = obj_obj(result, "changes")))
- {
-  json_object_object_foreach(changes, key, val)
-  {
-   if (!strcmp(key, myuri))
-    myedits = val;
-   else
-    others++;
-  }
- }
- else if (result)
- {
-  struct json_object *dc = obj_obj(result, "documentChanges");
-  int i, dn = (dc && json_object_is_type(dc, json_type_array))
-              ? json_object_array_length(dc) : 0;
-  for (i = 0; i < dn; i++)
-  {
-   struct json_object *el = json_object_array_get_idx(dc, i);
-   const char *uri = obj_str(obj_obj(el, "textDocument"), "uri");
-   if (uri && !strcmp(uri, myuri))
-    myedits = obj_obj(el, "edits");
-   else
-    others++;
-  }
- }
+ out = lsp_apply_workspace_edit(result, myuri, current_text, &others);
  if (other_files)
   *other_files = others;
- if (myedits && json_object_is_type(myedits, json_type_array))
-  out = lsp_apply_edits(current_text, myedits);
- else
-  out = strdup(current_text);     /* nothing in this file */
  json_object_put(resp);
  return out;
+}
+
+static void lsp_free_acts(e_lsp_session *s)
+{
+ int i;
+ for (i = 0; i < s->nacts; i++)
+  free(s->acts[i].title);
+ s->nacts = 0;
+ if (s->acts_raw)
+ {
+  json_object_put(s->acts_raw);
+  s->acts_raw = NULL;
+ }
+}
+
+/* Build {start,end} both at (line,character) -- a zero-width range at the cursor,
+   which is what "what can I do here?" code-action queries use. */
+static struct json_object *lsp_point_range(int line, int character)
+{
+ struct json_object *rng = json_object_new_object();
+ struct json_object *st = json_object_new_object();
+ struct json_object *en = json_object_new_object();
+ json_object_object_add(st, "line", json_object_new_int(line));
+ json_object_object_add(st, "character", json_object_new_int(character));
+ json_object_object_add(en, "line", json_object_new_int(line));
+ json_object_object_add(en, "character", json_object_new_int(character));
+ json_object_object_add(rng, "start", st);
+ json_object_object_add(rng, "end", en);
+ return rng;
+}
+
+int e_lsp_code_actions(e_lsp_session *s, const char *path, int line, int character,
+                       e_lsp_code_action *acts, int max)
+{
+ char abspath[PATH_MAX], uri[PATH_MAX + 8];
+ struct json_object *args, *doc, *ctx, *resp, *result;
+ int id, i, n, out = 0;
+
+ if (!s)
+  return -1;
+ lsp_free_acts(s);
+ if (!realpath(path, abspath))
+  snprintf(abspath, sizeof(abspath), "%s", path);
+ snprintf(uri, sizeof(uri), "file://%s", abspath);
+ args = json_object_new_object();
+ doc = json_object_new_object();
+ json_object_object_add(doc, "uri", json_object_new_string(uri));
+ json_object_object_add(args, "textDocument", doc);
+ json_object_object_add(args, "range", lsp_point_range(line, character));
+ ctx = json_object_new_object();
+ json_object_object_add(ctx, "diagnostics", json_object_new_array());
+ json_object_object_add(args, "context", ctx);
+ id = ++s->id;
+ lsp_send(s, id, "textDocument/codeAction", args);
+ resp = lsp_pump(s, id, NULL, LSP_TMO_REQ);
+ if (!resp)
+  return -1;
+ result = obj_obj(resp, "result");
+ n = (result && json_object_is_type(result, json_type_array))
+     ? json_object_array_length(result) : 0;
+ /* Keep the whole array alive so e_lsp_apply_code_action can re-read the
+    chosen action's WorkspaceEdit without a second round-trip. */
+ if (result && n > 0)
+  s->acts_raw = json_object_get(result);
+ for (i = 0; i < n && out < max &&
+             out < (int)(sizeof(s->acts)/sizeof(s->acts[0])); i++)
+ {
+  struct json_object *a = json_object_array_get_idx(result, i);
+  const char *title = obj_str(a, "title");        /* CodeAction or Command */
+  if (!title)
+   continue;
+  s->acts[s->nacts].title = strdup(title);
+  s->acts[s->nacts].has_edit = obj_obj(a, "edit") ? 1 : 0;
+  acts[out] = s->acts[s->nacts];
+  s->nacts++;
+  out++;
+ }
+ json_object_put(resp);
+ return out;
+}
+
+char *e_lsp_apply_code_action(e_lsp_session *s, int index, const char *path,
+                              const char *current_text, int *other_files)
+{
+ char abspath[PATH_MAX], myuri[PATH_MAX + 8];
+ struct json_object *a, *edit;
+
+ if (other_files)
+  *other_files = 0;
+ if (!s || !s->acts_raw || index < 0 ||
+     index >= json_object_array_length(s->acts_raw))
+  return NULL;
+ a = json_object_array_get_idx(s->acts_raw, index);
+ edit = obj_obj(a, "edit");
+ if (!edit)
+  return NULL;                  /* command-based action: not run yet */
+ if (!realpath(path, abspath))
+  snprintf(abspath, sizeof(abspath), "%s", path);
+ snprintf(myuri, sizeof(myuri), "file://%s", abspath);
+ return lsp_apply_workspace_edit(edit, myuri, current_text, other_files);
 }
 
 void e_lsp_close(e_lsp_session *s)
@@ -1088,6 +1267,7 @@ void e_lsp_close(e_lsp_session *s)
  lsp_free_items(s);
  lsp_free_locs(s);
  lsp_free_syms(s);
+ lsp_free_acts(s);
  e_dap_reader_free(&s->rd);
  free(s);
 }
