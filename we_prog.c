@@ -627,6 +627,21 @@ int e_run(FENSTER *f)
  return(0);
 }
 
+/* e_check_c_file_w - e_check_c_file for an open editor window, passing the
+   file's FULL path (dir + name).  e_check_c_file's Algol 68 dialect sniff opens
+   the source to read its stropping, which fails on a bare window name when the
+   file lives outside the current directory (e.g. "wpe sub/dir/foo.a68") -- so
+   it would misdetect the dialect and pick the wrong compiler.  Returns the
+   matching compiler index (1-based) or 0. */
+static int e_check_c_file_w(FENSTER *fw)
+{
+ char *full = e_mkfilename(fw->dirct, fw->datnam);
+ int matched = e_check_c_file(full ? full : fw->datnam);
+ if (full)
+  FREE(full);
+ return matched;
+}
+
 int e_comp(FENSTER *f)
 {
  ECNT *cn = f->ed;
@@ -655,7 +670,7 @@ int e_comp(FENSTER *f)
   return(e_c_project(f));
  for (i = cn->mxedt; i > 0; i--)
  {
-  if (e_check_c_file(cn->f[i]->datnam))
+  if (e_check_c_file_w(cn->f[i]))
    break;
  }
  if (i == 0)
@@ -1575,6 +1590,19 @@ int e_algol68_use_ga68(const char *filename)
  if (!have_ga68 && !have_a68g) return 0;   /* neither: default a68g */
  d = e_algol68_sniff(filename);            /* both present: pick by dialect */
  return (d == 1) ? 1 : 0;                  /* undecided -> classic a68g */
+}
+
+/* e_algol68_use_ga68_in - dialect decision for a file named NAME in directory
+   DIR.  Assembles the full path the content sniff must open, so callers that
+   only hold the split window form -- the debugger (e_d_file / datnam) -- get
+   the same answer as the compiler.  Returns 1 for ga68, 0 for a68g. */
+int e_algol68_use_ga68_in(const char *dir, const char *name)
+{
+ char *full = e_mkfilename((char *)dir, (char *)name);
+ int use = e_algol68_use_ga68(full ? full : name);
+ if (full)
+  FREE(full);
+ return use;
 }
 
 int e_ini_prog(ECNT *cn)

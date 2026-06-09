@@ -125,7 +125,7 @@ extern struct e_s_prog e_sv_prog;
 extern BUFFER *e_p_w_buffer;
 extern char *att_no;
 extern char *e_tmp_dir;
-extern int e_algol68_use_ga68(const char *filename);
+extern int e_algol68_use_ga68_in(const char *dir, const char *name);
 
 #ifdef NOTPARM
 /* char *tparm(); */
@@ -2892,11 +2892,10 @@ int e_start_debug(FENSTER *f)
        Genie interpreter -> its own --monitor on the source).  Follow the
        configured compiler so the debugger matches what built the program.
        Auto-selected silently -- no modal notice, which would block the very
-       Ctrl-G R the user just pressed. */
-    if (e_algol68_use_ga68(e_d_file))
-     e_deb_type = DEB_GDB;
-    else
-     e_deb_type = DEB_A68G;
+       Ctrl-G R the user just pressed.  e_algol68_use_ga68_in sniffs the file's
+       full path (dir + name), so a source outside the current directory is
+       still detected correctly. */
+    e_deb_type = e_algol68_use_ga68_in(f->dirct, e_d_file) ? DEB_GDB : DEB_A68G;
    }
  }
  jdb_trace("e_start_debug: e_d_file='%s', e_deb_type=%d, comp_sw=%d\n",
@@ -4383,7 +4382,9 @@ int e_deb_options(FENSTER *f)
     e_deb_type = DEB_PDB;
    else if (_fnl > 4 && (!strcmp(_fn + _fnl - 4, ".a68") ||
                          !strcmp(_fn + _fnl - 4, ".alg")))
-    e_deb_type = e_algol68_use_ga68(_fn) ? DEB_GDB : DEB_A68G;
+    /* full path (dir + name) so a source outside the current dir is detected */
+    e_deb_type = e_algol68_use_ga68_in(cn2->f[cn2->mxedt]->dirct, _fn)
+                 ? DEB_GDB : DEB_A68G;
    /* Map e_deb_type to radio button index:
       0=Gdb, 1=Sdb, 2=Dbx, 3=Jdb, 4=Pdb, 5=A68g (radio index)
       e_deb_type: 0=gdb, 1=sdb, 2=dbx, 3=xdb, 4=jdb, 5=pdb, 6=a68g */

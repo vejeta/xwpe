@@ -43,3 +43,29 @@ def test_ga68_run_compiles_native_and_runs(tmp_path):
             "ga68-compiled program output should appear in Messages:\n%s" % text
         assert "Return-Code: 0" in text, \
             "a successful ga68 run should report Return-Code 0:\n%s" % text
+
+
+def test_ga68_run_from_subdirectory(tmp_path):
+    """Run (Alt-U) a modern .a68 that lives in a SUBDIRECTORY (cwd != file's
+    dir).  The dialect sniff opens the file to read its stropping, so it must
+    use the file's FULL path: a bare window name fails to open from a different
+    cwd, detection comes back undecided, and the source falls through to a68g
+    -- whose UPPER-stropping parser rejects the modern program.  This pins that
+    a subdir modern file still builds and runs with ga68.
+
+    (The compile path that originally misdetected this -- Make/Compile via
+    e_comp -- was verified with an instrumented red/green run; here we assert
+    the user-visible outcome through Run, which must not regress.)"""
+    if shutil.which("a68g") is None:
+        pytest.skip("needs BOTH ga68 and a68g installed to exercise the choice")
+    (tmp_path / "src").mkdir()
+    with WpeSession(str(tmp_path), HELLO, filename="src/hello.a68", wait=2.0) as w:
+        w.key("\033u", delay=1.0)        # Alt-U = Run (compile + run)
+        time.sleep(2.5)
+        w._drain(1.0)
+        text = _screen_text(w)
+        assert w.alive(), "wpe died running the subdir ga68 program"
+        assert "Hello, ga68!" in text, \
+            "ga68 output missing -- dialect sniff failed on the subdir path:\n%s" % text
+        assert "Return-Code: 0" in text, \
+            "a successful ga68 run should report Return-Code 0:\n%s" % text

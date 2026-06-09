@@ -187,6 +187,45 @@ Bugs fixed in 1.6.x:
 
 Changes
 
+1.6.5 (GNU Algol 68 / ga68 toolchain, per-file dialect detection, Algol 68 highlighting)
+
+  GNU Algol 68 (ga68) compiler:
+* ga68, the GCC Algol 68 front-end, is now supported alongside a68g.  It
+  is a NATIVE compiler: Make/Run builds and links a real binary (comp_sw
+  0, like gcc), and its file:line:col diagnostics drive the error jump.
+* Source-level debugging of ga68 programs uses the existing gdb backend
+  (not the a68g monitor): the binary carries DWARF, so F8 single-steps
+  the Algol 68 source.  gdb breaks at __algol68_main (ga68's user entry;
+  "break main" lands in the C runtime, not the user's program).
+
+  Per-file dialect detection (ga68 vs a68g):
+* ga68 and a68g use opposite, source-INCOMPATIBLE stropping: ga68 is
+  modern (lowercase begin/end, { } comments) and a68g is classic (UPPER
+  BEGIN/END, # ... # comments).  When both are installed, xwpe sniffs
+  each .a68 / .alg file's content (e_algol68_use_ga68, we_prog.c) and
+  drives the matching toolchain for BOTH compile and debug, so the two
+  dialects build with no manual switch.  With only one installed, that
+  one is used.
+* Fixed: the dialect sniff is given the file's FULL path (dir + name).
+  It opens the source to read its stropping, which failed on a bare
+  window name when the file lived outside the current directory
+  (e.g. "wpe sub/dir/foo.a68") -- detection came back undecided and the
+  modern file fell through to a68g, which rejected it ("error in quoted
+  bold tag").  Compile (e_comp) and both debug entry points now pass the
+  full path.  Guarded by tests/test_ga68.py.
+
+  Algol 68 syntax highlighting:
+* .a68 / .alg files now highlight in both wpe (ncurses) and xwpe (Xft).
+  The keyword set is case-INSENSITIVE, so both the modern lowercase and
+  the classic UPPER stropping colour correctly.  Verified by
+  tests/test_syntax_algol68.py (pyte) and tests/x11/test_syntax_algol68.py.
+* Note: syntax_def is read from $HOME/.xwpe/syntax_def first, and a
+  personal copy COMPLETELY shadows the system one.  A stale personal copy
+  from an older install hides newly-added languages (the file shows a
+  single base colour with no per-token highlighting); refresh it with
+  "cp /usr/lib/xwpe/syntax_def ~/.xwpe/syntax_def" or remove it to fall
+  back to the system file.  See the Configuration chapter of the manual.
+
 1.6.4 (embedded VT terminal, Algol 68 source-level debugger, window-layout fixes)
 
   Borland "User Screen" (Alt-F5) on X11:

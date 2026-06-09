@@ -270,6 +270,24 @@ xwpe looks for this file in:
 @file{/usr/lib/xwpe/syntax_def}).
 @end enumerate
 
+The first file found wins, and xwpe stops looking.  This means a
+@strong{personal copy completely shadows the system one}: if
+@file{$HOME/.xwpe/syntax_def} exists, the system file is never read.
+
+@quotation Note
+A personal @file{$HOME/.xwpe/syntax_def} left over from an older install
+will @emph{hide languages added in newer versions} -- those new rules
+live only in the updated system file, which the stale personal copy
+shadows.  The symptom is that a file of the new language shows no
+per-token colouring (it is drawn in a single base colour).  To pick up
+new languages, refresh or remove your personal copy, e.g.@:
+
+@example
+cp /usr/lib/xwpe/syntax_def ~/.xwpe/syntax_def   # refresh, or
+rm ~/.xwpe/syntax_def                             # fall back to system
+@end example
+@end quotation
+
 @subsection File format
 
 Each language definition consists of the following fields, one per line:
@@ -337,8 +355,8 @@ comments (1000 for none).
 @end enumerate
 
 The default @file{syntax_def} shipped with xwpe includes definitions
-for C, C++, Fortran, Pascal, Java, Perl, Python, shell, Makefile, and
-several other languages.
+for C, C++, Fortran, Pascal, Java, Perl, Python, shell, Makefile,
+Algol 68 (@code{.a68}/@code{.alg}), and several other languages.
 
 @section X11 resources
 
