@@ -53,7 +53,8 @@ we_SOURCES = \
   we_fdloop.c \
   we_trace.c \
   we_vterm.c \
-  we_dap_proto.c
+  we_dap_proto.c \
+  we_dap.c
 
 we_LDADD = \
   $(NCURSESW_LIBS) \
@@ -79,6 +80,7 @@ noinst_HEADERS = \
   we_trace.h \
   we_vterm.h \
   we_dap_proto.h \
+  we_dap.h \
   attrb.h \
   edit.h \
   keys.h \
@@ -159,7 +161,7 @@ metainfodir = $(datadir)/metainfo
 metainfo_DATA = io.codeberg.mendezr.xwpe.metainfo.xml
 
 # --- Unit tests ---
-check_PROGRAMS = test_checkheader test_syntax_def test_dap
+check_PROGRAMS = test_checkheader test_syntax_def test_dap test_dap_dlv
 
 test_checkheader_SOURCES = tests/test_checkheader.c
 test_checkheader_CFLAGS = -std=gnu17
@@ -174,7 +176,12 @@ test_dap_SOURCES = tests/test_dap.c we_dap_proto.c
 test_dap_CFLAGS = -std=gnu17 $(JSONC_CFLAGS)
 test_dap_LDADD = $(JSONC_LIBS)
 
-TESTS = test_checkheader test_syntax_def test_dap
+# DAP engine integration test: drives a real `dlv dap` (SKIPs without dlv+go).
+test_dap_dlv_SOURCES = tests/test_dap_dlv.c we_dap.c we_dap_proto.c
+test_dap_dlv_CFLAGS = -std=gnu17 $(JSONC_CFLAGS)
+test_dap_dlv_LDADD = $(JSONC_LIBS)
+
+TESTS = test_checkheader test_syntax_def test_dap test_dap_dlv
 
 # --- Extra files for distribution ---
 EXTRA_DIST = \
@@ -201,6 +208,7 @@ EXTRA_DIST = \
   tests/test_checkheader.c \
   tests/test_syntax_def.c \
   tests/test_dap.c \
+  tests/test_dap_dlv.c \
   tests/test_utf8_border.py \
   tests/test_scrollbar.py \
   tests/test_compile.py \
