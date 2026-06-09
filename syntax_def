@@ -350,3 +350,38 @@ ABS BIN REPR LENG SHORTEN ODD SIGN ROUND ENTIER
 IS ISNT OF AT LWB UPB NEW
 0
 +-*/=<>()[]:;,.|~& { } NULL NULL "    1 -1 -1 1000
+
+.go
+64
+break case chan const continue default defer else fallthrough for
+func go goto if import interface map package range return
+select struct switch type var
+append cap close complex copy delete imag len make new
+panic print println real recover
+bool byte complex64 complex128 error float32 float64 int int8 int16
+int32 int64 rune string uint uint8 uint16 uint32 uint64 uintptr
+true false iota nil
+0
+~^()[]{}<>+-/*%=|&!.?:,; /* */ // NULL "'#\\  -1 -1 1000
+
+.rs
+66
+as async await break const continue crate dyn else enum
+extern false fn for if impl in let loop match
+mod move mut pub ref return self Self static struct
+super trait true type unsafe use where while
+bool char str String Vec Option Result Box Rc Arc
+i8 i16 i32 i64 i128 isize u8 u16 u32 u64
+u128 usize f32 f64 Some None Ok Err
+0
+~^()[]{}<>+-/*%=|&!.?:,; /* */ // NULL "'#\\  -1 -1 1000
+
+.scala
+48
+abstract case catch class def do else extends false final
+finally for forSome if implicit import lazy match new null
+object override package private protected return sealed super this throw
+trait true try type val var while with yield given
+using then end extension inline opaque enum derives
+0
+~^()[]{}<>+-/*%=|&!.?:,; /* */ // NULL "'#\\  -1 -1 1000
