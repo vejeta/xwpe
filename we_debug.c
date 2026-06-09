@@ -5234,8 +5234,22 @@ static char *e_lsp_buffer_text(FENSTER *f)
  return(buf);
 }
 
-/* Push the current buffer to the server (textDocument/didChange) so the next
-   request reflects unsaved edits. */
+/* The text last handed to the server (via didOpen or didChange).  Used so a sync
+   with no edits is a no-op: a needless didChange bumps the document version, and
+   index-based requests (definition / implementation / typeDefinition / outline)
+   then return nothing until the server recompiles the new version -- that was
+   the "No definition found" bug on a freshly opened, unmodified file. */
+static char *g_lsp_synced_text = NULL;
+
+static void e_lsp_synced_set(char *owned)   /* takes ownership of `owned` */
+{
+ free(g_lsp_synced_text);
+ g_lsp_synced_text = owned;
+}
+
+/* Push the current buffer to the server (textDocument/didChange) ONLY if it
+   differs from what the server already has, so unmodified navigation keeps the
+   compiled index valid. */
 static void e_lsp_sync(FENSTER *f)
 {
  char *text;
@@ -5243,11 +5257,12 @@ static void e_lsp_sync(FENSTER *f)
  if (!g_lsp)
   return;
  text = e_lsp_buffer_text(f);
- if (text)
- {
-  e_lsp_did_change(g_lsp, g_lsp_file, text);
-  free(text);
- }
+ if (!text)
+  return;
+ if (g_lsp_synced_text && !strcmp(text, g_lsp_synced_text))
+ {  free(text);  return;  }            /* unchanged: do not bump the version */
+ e_lsp_did_change(g_lsp, g_lsp_file, text);
+ e_lsp_synced_set(text);               /* keep ownership as the new baseline */
 }
 
 /* Lazily start the language server for f's file and surface its diagnostics.
@@ -5298,8 +5313,7 @@ static int e_lsp_ensure(FENSTER *f)
  }
  text = e_lsp_buffer_text(f);
  e_lsp_did_open(g_lsp, path, text ? text : "");
- if (text)
-  free(text);
+ e_lsp_synced_set(text ? text : strdup(""));   /* baseline = what we opened with */
  e_lsp_wait_diagnostics(g_lsp, path, 240000);  /* compile -> diags to Messages */
  return(0);
 }
@@ -5848,6 +5862,7 @@ void e_lsp_ui_shutdown(void)
  if (g_lsp)
  {  e_lsp_close(g_lsp);  g_lsp = NULL;  }
  e_lsp_diag_clear();
+ e_lsp_synced_set(NULL);
  g_lsp_file[0] = '\0';
  g_lsp_fenster = NULL;
 }

@@ -279,6 +279,7 @@ EXTRA_DIST = \
   tests/test_scala_lsp_format.py \
   tests/test_scala_lsp_live.py \
   tests/test_scala_lsp_diag_marks.py \
+  tests/test_scala_lsp_definition.py \
   tests/test_lsp_scala.c \
   tests/test_syntax_algol68.py \
   tests/test_debugger_watchdog.py \
