@@ -154,6 +154,15 @@ configuration.  Known compatible compilers include:
 To use one of these, go to @samp{Options @result{} Compiler}, set the
 compiler name and file extension, and select @code{GNU} style.
 
+@quotation Note
+Go (@code{.go}), Rust (@code{.rs}) and Scala (@code{.scala}) also have
+@emph{source-level debugging} over the Debug Adapter Protocol, where the
+build is driven by the debug toolchain itself (Delve builds the Go package,
+xwpe compiles Rust with @code{rustc -g}, and Bloop builds the Scala target).
+See @ref{Debugging}.  All three are syntax-highlighted -- see
+@ref{Configuration} (@file{syntax_def}).
+@end quotation
+
 @section The interpreter string (pattern language)
 @anchor{Interpreter string}
 

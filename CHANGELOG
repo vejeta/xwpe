@@ -292,12 +292,19 @@ Changes
   gdb path (gdb is unreliable for Go's goroutine runtime anyway).
 * Go requires `dlv` (delve) and `go`, plus a Go module (go.mod) in the source
   directory (`dlv dap` builds the package).  Rust requires `rustc` and `gdb`.
-  Verified by tests/test_go_dap.py (5 cases) and tests/test_rust_dap.py
-  (compile + breakpoint + watch grows), plus the tests/test_dap*.c
-  unit/integration suite against real Delve and real gdb.
+  Scala requires `scala-cli` (cs install scala-cli).  Verified by
+  tests/test_go_dap.py, tests/test_rust_dap.py and tests/test_scala_dap.py
+  (compile/build + breakpoint + watch grows), plus the tests/test_dap*.c
+  unit/integration suite against real Delve, gdb, lldb-dap and scala-cli/Bloop.
+* The Scala build server's stderr is sent to /dev/null: unlike gdb/dlv, Bloop
+  is chatty there ("Starting compilation server", compile progress), which would
+  otherwise bleed raw onto the ncurses screen.
+* Syntax highlighting added for Go (.go), Rust (.rs) and Scala (.scala) in
+  syntax_def.  Note: a personal ~/.xwpe/syntax_def shadows the system file, so
+  refresh it (cp .../syntax_def ~/.xwpe/syntax_def) to pick up the new languages.
 * New build dependency: json-c (libjson-c-dev) for DAP message coding.
-  Scala (Metals) reuses the same engine and is next; C/C++ come nearly free
-  on the same gdb/lldb stdio path.
+  C/C++ over gdb/lldb-dap come nearly free on the same stdio path next; an LSP
+  client (completion, hover, diagnostics) is the planned follow-up to DAP.
 
 1.6.4 (embedded VT terminal, Algol 68 source-level debugger, window-layout fixes)
 

@@ -356,7 +356,9 @@ comments (1000 for none).
 
 The default @file{syntax_def} shipped with xwpe includes definitions
 for C, C++, Fortran, Pascal, Java, Perl, Python, shell, Makefile,
-Algol 68 (@code{.a68}/@code{.alg}), and several other languages.
+Algol 68 (@code{.a68}/@code{.alg}), and, for the languages debugged over
+DAP, Go (@code{.go}), Rust (@code{.rs}) and Scala (@code{.scala}), among
+several others.
 
 @section X11 resources
 
