@@ -314,12 +314,15 @@ Changes
     diagnostics in Messages.
   - Alt-Q D: go to the definition of the symbol under the cursor.
   - Alt-Q H: hover -- show its type and documentation (e.g. "var f: Long").
+  - Alt-Q C: completion -- candidates for the word under the cursor in a popup;
+    pick with the arrows + Enter and it replaces the partial word.
 * The engine (we_lsp.c) reuses the DAP/BSP JSON-RPC + Content-Length framing,
   so no new dependency; nothing Scala ships in xwpe (Metals is an external
   coursier tool: cs install metals).  Verified by tests/test_lsp_scala.c (engine
-  vs real Metals) and tests/test_scala_lsp.py (the editor bridge through wpe).
-* Completion (the candidate popup) and didChange-driven live diagnostics are the
-  next LSP increments; clangd (C/C++) and other servers are descriptor rows.
+  vs real Metals) and tests/test_scala_lsp.py + tests/test_scala_lsp_complete.py
+  (the editor bridge through wpe).
+* didChange-driven live diagnostics (errors as you type) is the next LSP
+  increment; clangd (C/C++) and other servers are descriptor rows.
 
 1.6.4 (embedded VT terminal, Algol 68 source-level debugger, window-layout fixes)
 
