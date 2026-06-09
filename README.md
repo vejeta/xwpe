@@ -152,6 +152,17 @@ pattern language (`${FILE}`, `${LINE}`, `${COLUMN}`, wildcards).
 | pdb      | Python   | Ctrl-G R | F8 | Ctrl-G P | `.py` |
 | a68g     | Algol 68 | Ctrl-G R | F8 | Ctrl-G P | `.a68` `.alg` |
 
+<p align="center">
+  <img src="screenshots/xwpe-ga68-watch.gif" width="720" alt="Debugging a GNU Algol 68 (ga68) program in xwpe: Ctrl-G R compiles with ga68 and starts gdb, Ctrl-G W adds a watch on a variable, Window/Size-Move tiles the editor, Watches and Messages windows, and F8 single-steps while the watch value grows. The pressed keys are overlaid in the corner.">
+  <br><em>ga68 + gdb: stepping a factorial with a live watch (<code>fact</code>: 1 &rarr; 2 &rarr; 6 &rarr; 24 &rarr; 120).</em>
+</p>
+
+Algol 68 has two toolchains, and xwpe debugs each `.a68`/`.alg` file with the
+one that matches its dialect (detected from the file's content): **a68g** (the
+Algol 68 Genie interpreter) with its `--monitor`, or **ga68** (the GCC Algol 68
+front-end) with **gdb** on the compiled native binary, breaking at
+`__algol68_main` instead of `main`.
+
 a68g uses its built-in `--monitor` (a full gdb-class source-level debugger):
 breakpoints, run/continue from a68g's automatic break at line 1, F8 step
 (line-granular over interruptable units), watches (`evaluate EXPR`), and a
