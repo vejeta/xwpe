@@ -126,6 +126,8 @@ char *e_p_msg[] = {
 };
 
 
+extern int e_lsp_ui_inp(FENSTER *f);   /* LSP prefix, defined in we_debug.c */
+
 int e_prog_switch(FENSTER *f, int c)
 {
  switch(c)
@@ -133,6 +135,9 @@ int e_prog_switch(FENSTER *f, int c)
   case AltU:
   case CF9:
    e_run(f);
+   break;
+  case AltQ:   /*  Alt Q  Query the language server (LSP: D def, H hover) */
+   e_lsp_ui_inp(f);
    break;
   case AltM:   /*  Alt M  Make */
   case F9:

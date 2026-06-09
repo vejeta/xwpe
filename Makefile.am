@@ -274,6 +274,8 @@ EXTRA_DIST = \
   tests/test_rust_dap.py \
   tests/test_scala_dap.py \
   tests/test_dap_scala.c \
+  tests/test_scala_lsp.py \
+  tests/test_lsp_scala.c \
   tests/test_syntax_algol68.py \
   tests/test_debugger_watchdog.py \
   tests/x11/conftest.py \

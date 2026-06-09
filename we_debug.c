@@ -10,6 +10,7 @@
 #include "we_fdloop.h"
 #include "we_dap.h"
 #include "we_bsp.h"
+#include "we_lsp.h"
 
 #ifndef NO_XWINDOWS
 #include "WeXterm.h"
@@ -5017,6 +5018,190 @@ int e_test_command(char *str)
   if (!access(tmp, X_OK)) return(0);
  } while(path[i]);
  return(-1);
+}
+
+/***********************************************************************
+ *  LSP editor bridge -- Language Server Protocol (IDE features).      *
+ *  Where the DAP bridge above makes xwpe a debugger, this makes it    *
+ *  an IDE: diagnostics, go-to-definition, hover and completion from   *
+ *  the same servers VS Code / Neovim / Emacs use (Metals for Scala).  *
+ *  Engine: we_lsp.c (free of editor state).  Keys: AltQ then a letter *
+ *  (D definition, H hover, C complete) -- "Query the language server".*
+ ***********************************************************************/
+
+static e_lsp_session *g_lsp = NULL;        /* the live server session, or NULL */
+static char           g_lsp_file[1024] = "";  /* full path g_lsp is opened for */
+static FENSTER       *g_lsp_fenster = NULL;
+
+/* The LSP languageId for this window's file, or NULL if none is wired. */
+static const char *e_lsp_lang_for(FENSTER *f)
+{
+ int n;
+ if (!f || !f->datnam)
+  return(NULL);
+ n = strlen(f->datnam);
+ if (n > 6 && !strcmp(f->datnam + n - 6, ".scala"))
+  return("scala");
+ return(NULL);
+}
+
+/* on_diagnostic: surface each compiler diagnostic in the Messages window,
+   in the same file:line:col: form as F9 build errors. */
+static void e_lsp_on_diag(const char *path, int line, int ch, int sev,
+                          const char *msg, void *ud)
+{
+ char buf[700];
+ const char *kind = sev == 1 ? "error" : sev == 2 ? "warning"
+                  : sev == 3 ? "info"  : "hint";
+ (void)path; (void)ud;
+ snprintf(buf, sizeof(buf), "%s:%d:%d: %s: %s",
+          e_d_dap_basename(g_lsp_file), line + 1, ch + 1, kind, msg ? msg : "");
+ if (g_lsp_fenster)
+  e_d_p_message(buf, g_lsp_fenster, 1);
+}
+
+/* Read a whole file into a malloc'd NUL-terminated buffer (caller frees). */
+static char *e_lsp_slurp(const char *path)
+{
+ FILE *fp = fopen(path, "rb");
+ char *buf;
+ long n;
+
+ if (!fp)
+  return(NULL);
+ fseek(fp, 0, SEEK_END);
+ n = ftell(fp);
+ fseek(fp, 0, SEEK_SET);
+ if (n < 0)
+ {  fclose(fp);  return(NULL);  }
+ buf = malloc((size_t)n + 1);
+ if (buf)
+ {
+  size_t r = fread(buf, 1, (size_t)n, fp);
+  buf[r] = '\0';
+ }
+ fclose(fp);
+ return(buf);
+}
+
+/* Lazily start the language server for f's file and surface its diagnostics.
+   For Scala, `scala-cli setup-ide` is run first so Metals auto-connects to the
+   build server.  The buffer is read from disk (save before invoking for the
+   freshest view).  Returns 0 when a session is ready, -1 otherwise. */
+static int e_lsp_ensure(FENSTER *f)
+{
+ const char *lang = e_lsp_lang_for(f);
+ static e_lsp_host host;
+ char dir[1024], path[1200], cmd[1400], *text;
+ char *const argv[] = { "metals", NULL };
+ int dl;
+
+ if (!lang)
+ {  e_error("Language server: unsupported file type.", 0, f->fb);  return(-1);  }
+ snprintf(path, sizeof(path), "%s%s", f->dirct ? f->dirct : "./", f->datnam);
+ if (g_lsp && !strcmp(g_lsp_file, path))
+  return(0);                                   /* already open for this file */
+ if (g_lsp)
+ {  e_lsp_close(g_lsp);  g_lsp = NULL;  }       /* switched files */
+ if (e_test_command(argv[0]))
+ {  e_error("Metals not in PATH (cs install metals).", 0, f->fb);  return(-1);  }
+
+ snprintf(dir, sizeof(dir), "%s", f->dirct ? f->dirct : ".");
+ dl = strlen(dir);
+ while (dl > 1 && dir[dl - 1] == DIRC)
+  dir[--dl] = '\0';
+ g_lsp_fenster = f;
+ strncpy(g_lsp_file, path, sizeof(g_lsp_file) - 1);
+ g_lsp_file[sizeof(g_lsp_file) - 1] = '\0';
+
+ e_d_p_message("Starting language server (Metals)...", f, 1);
+ snprintf(cmd, sizeof(cmd), "scala-cli setup-ide '%s' >/dev/null 2>&1", dir);
+ if (system(cmd) != 0)
+  { /* non-fatal: Metals can still import the build */ }
+
+ host.on_diagnostic = e_lsp_on_diag;
+ host.ud = NULL;
+ g_lsp = e_lsp_open(argv, dir, lang, &host);
+ if (!g_lsp)
+ {
+  e_error("Could not start the language server.", 0, f->fb);
+  g_lsp_file[0] = '\0';
+  return(-1);
+ }
+ text = e_lsp_slurp(path);
+ e_lsp_did_open(g_lsp, path, text ? text : "");
+ if (text)
+  free(text);
+ e_lsp_wait_diagnostics(g_lsp, path, 240000);  /* compile -> diags to Messages */
+ return(0);
+}
+
+/* AltQ E -- (re)start the server for this file and show its diagnostics. */
+static int e_lsp_ui_diagnostics(FENSTER *f)
+{
+ if (e_lsp_ensure(f) < 0)
+  return(-1);
+ e_d_p_message("Language server ready.", f, 1);
+ return(0);
+}
+
+/* AltQ D -- jump to the definition of the symbol under the cursor. */
+static int e_lsp_ui_definition(FENSTER *f)
+{
+ BUFFER *b = f->b;
+ char outpath[1024];
+ int oline = -1, ochar = -1;
+
+ if (e_lsp_ensure(f) < 0)
+  return(-1);
+ if (e_lsp_definition(g_lsp, g_lsp_file, b->b.y, b->b.x,
+                      outpath, sizeof(outpath), &oline, &ochar) != 0)
+ {  e_error("No definition found.", 0, f->fb);  return(0);  }
+ e_d_goto_break(outpath, oline + 1, f);        /* engine 0-based -> 1-based */
+ return(0);
+}
+
+/* AltQ H -- show the type/documentation of the symbol under the cursor. */
+static int e_lsp_ui_hover(FENSTER *f)
+{
+ BUFFER *b = f->b;
+ char *hov;
+
+ if (e_lsp_ensure(f) < 0)
+  return(-1);
+ hov = e_lsp_hover(g_lsp, g_lsp_file, b->b.y, b->b.x);
+ if (!hov || !*hov)
+ {  if (hov) free(hov);  e_error("No hover information.", 0, f->fb);  return(0);  }
+ e_message(0, hov, f);                         /* one-button info popup */
+ free(hov);
+ return(0);
+}
+
+/* Disconnect the language server (called on editor exit). */
+void e_lsp_ui_shutdown(void)
+{
+ if (g_lsp)
+ {  e_lsp_close(g_lsp);  g_lsp = NULL;  }
+ g_lsp_file[0] = '\0';
+ g_lsp_fenster = NULL;
+}
+
+/* AltQ prefix: read the next key and run the matching language-server action. */
+int e_lsp_ui_inp(FENSTER *f)
+{
+ int c = e_getch();
+
+ switch (c)
+ {
+  case 'd': case ('d' - 'a' + 1):
+   return(e_lsp_ui_definition(f));
+  case 'h': case ('h' - 'a' + 1):
+   return(e_lsp_ui_hover(f));
+  case 'e': case ('e' - 'a' + 1):
+   return(e_lsp_ui_diagnostics(f));
+  default:
+   return(c);
+ }
 }
 #endif
 
