@@ -195,4 +195,11 @@ char *e_lsp_rename(e_lsp_session *s, const char *path, int line, int character,
 /* shutdown/exit the server and reap it; frees the session. */
 void e_lsp_close(e_lsp_session *s);
 
+/* Join editor lines into the document body for the server, emitting exactly one
+ * '\n' per line.  Each lines[i] ends at its first newline (the editor's WPE_WR
+ * terminator) or NUL; a NULL element is an empty line.  Pure -- no session, no
+ * I/O -- so the serialization invariant is unit-testable.  Returns a malloc'd
+ * string (caller frees) or NULL on OOM. */
+char *e_lsp_join_lines(char *const *lines, int n);
+
 #endif /* WE_LSP_H */

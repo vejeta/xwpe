@@ -5208,54 +5208,32 @@ static void e_lsp_on_diag_summary(const char *path, int errors, int warnings,
                                             editor -- the user keeps typing */
 }
 
-/* Serialize the editor buffer to a malloc'd NUL-terminated string (one '\n'
-   per line), so the language server sees the CURRENT text -- including unsaved
-   edits -- not the on-disk file.  Caller frees. */
-/* Length of line y's TEXT, stopping at the in-buffer newline marker.  xwpe stores
-   each line in @code{b->bf[y].s} terminated by a @code{WPE_WR} (0x0A) byte (this is
-   how e_write / File>Save delimits lines on disk); the bytes after it are stale.
-   The serializer must copy only up to that marker and add its own single newline.
-   Using strlen() here instead copied the embedded 0x0A AND appended a newline,
-   doubling every line break -- the language server then saw a file twice as long,
-   so positions were off by whole lines and cross-file go-to-definition/hover
-   silently returned nothing. */
-static size_t e_lsp_line_len(const BUFFER *b, int y)
-{
- const char *s = b->bf[y].s;
- size_t len;
-
- if (!s)
-  return(0);
- for (len = 0; s[len] != '\0' && s[len] != WPE_WR; len++)
-  ;
- return(len);
-}
-
-/* Serialize the whole buffer to a single newline-joined string for the language
-   server (didOpen / didChange).  One '\n' per line, no doubling -- see
-   e_lsp_line_len for why that delimiter matters. */
+/* Serialize the editor buffer to a malloc'd NUL-terminated string (one '\n' per
+   line), so the language server sees the CURRENT text -- including unsaved edits
+   -- not the on-disk file.  Each line in b->bf[y].s ends at its in-buffer WPE_WR
+   (0x0A) terminator; gather the line pointers and delegate to the pure,
+   unit-tested e_lsp_join_lines (we_lsp.c), which copies up to that marker and
+   adds exactly one '\n'.  Doubling the delimiter would shift every position and
+   silently break cross-file hover / go-to-definition (the 1.6.x regression).
+   Caller frees.  (NB: the local is "lns", not "lines" -- <term.h> #defines the
+   latter as a terminfo capability.) */
 static char *e_lsp_buffer_text(FENSTER *f)
 {
  BUFFER *b = f->b;
- size_t total = 1, off = 0;
- char *buf;
- int y;
+ char **lns;
+ char *body;
+ int y, n = b->mxlines;
 
- for (y = 0; y < b->mxlines; y++)
-  total += e_lsp_line_len(b, y) + 1;
- buf = malloc(total);
- if (!buf)
+ if (n < 0)
+  n = 0;
+ lns = malloc((n ? n : 1) * sizeof(char *));
+ if (!lns)
   return(NULL);
- for (y = 0; y < b->mxlines; y++)
- {
-  size_t len = e_lsp_line_len(b, y);
-  if (len)
-   memcpy(buf + off, b->bf[y].s, len);
-  off += len;
-  buf[off++] = '\n';
- }
- buf[off] = '\0';
- return(buf);
+ for (y = 0; y < n; y++)
+  lns[y] = b->bf[y].s;            /* NULL is fine -- join treats it as empty */
+ body = e_lsp_join_lines(lns, n);
+ free(lns);
+ return(body);
 }
 
 /* The text last handed to the server (via didOpen or didChange).  Used so a sync

@@ -1466,3 +1466,45 @@ void e_lsp_close(e_lsp_session *s)
  e_dap_reader_free(&s->rd);
  free(s);
 }
+
+/* e_lsp_join_lines - serialize editor lines into the document body sent to the
+ * language server (didOpen / didChange).  Each lines[i] is a NUL-terminated
+ * string whose logical content ends at the first newline -- the editor stores
+ * WPE_WR (== '\n', 0x0A) as the in-buffer line terminator, so a line may still
+ * carry it -- or at NUL; a NULL element counts as an empty line.  EXACTLY ONE
+ * '\n' is emitted per line.  This single-delimiter invariant is what the server
+ * relies on to map a (line, character) position to a token: doubling the
+ * delimiter shifts every subsequent line and makes hover/definition land on the
+ * wrong place (the 1.6.x buffer-newline regression this guards against).
+ *
+ * Returns a malloc'd, NUL-terminated buffer of @n lines, each '\n'-terminated
+ * (so the empty buffer yields ""), or NULL on allocation failure.  Caller frees.
+ */
+char *e_lsp_join_lines(char *const *lines, int n)
+{
+ size_t total = 1, off = 0;
+ char *buf;
+ int i;
+
+ if (n < 0)
+  n = 0;
+ for (i = 0; i < n; i++)
+ {
+  const char *s = (lines && lines[i]) ? lines[i] : "";
+  total += strcspn(s, "\n") + 1;          /* content up to first '\n', plus one */
+ }
+ buf = malloc(total);
+ if (!buf)
+  return(NULL);
+ for (i = 0; i < n; i++)
+ {
+  const char *s = (lines && lines[i]) ? lines[i] : "";
+  size_t len = strcspn(s, "\n");
+  if (len)
+   memcpy(buf + off, s, len);
+  off += len;
+  buf[off++] = '\n';                       /* exactly one delimiter per line */
+ }
+ buf[off] = '\0';
+ return(buf);
+}
