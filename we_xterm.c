@@ -1125,6 +1125,18 @@ static int e_compose_dead(KeySym dead, int base)
 
 extern int e_utf8_to_codepoint(unsigned char *buf, int len);
 
+/* Discard any typed-ahead keys / clicks (X11): the analogue of e_t_flush_input,
+   used after a long synchronous operation so events queued during the freeze are
+   not replayed afterwards as unintended actions. */
+void e_x_flush_input(void)
+{
+ XEvent report;
+ while (XCheckMaskEvent(WpeXInfo.display,
+                        KeyPressMask | ButtonPressMask | ButtonReleaseMask,
+                        &report))
+  ;
+}
+
 int e_x_getch()
 {
  Window tmp_win, tmp_root;

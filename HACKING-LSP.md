@@ -17,10 +17,10 @@
 > | `Alt-Q H` | hover (type/docs) | `e_lsp_hover` |
 > | `Alt-Q C` | completion (popup, insert) | `e_lsp_completion` |
 > | `Alt-Q R` | references (list in Messages) | `e_lsp_references` |
-> | `Alt-Q L` | document highlight (mark uses in this file) | `e_lsp_document_highlight` |
+> | `Alt-Q U` | document highlight -- mark Uses in this file | `e_lsp_document_highlight` |
 > | `Alt-Q S` | signature help | `e_lsp_signature_help` |
 > | `Alt-Q O` | outline (popup -> jump) | `e_lsp_document_symbols` |
-> | `Alt-Q K` | code lenses (run/test/refs, popup -> jump) | `e_lsp_code_lenses` |
+> | `Alt-Q L` | code Lenses (run/test/refs, popup -> jump) | `e_lsp_code_lenses` |
 > | `Alt-Q W` | workspace symbol search (prompt, popup -> jump) | `e_lsp_workspace_symbols` |
 > | `Alt-Q A` | code actions / quick-fixes (popup -> apply) | `e_lsp_code_actions` (+ `e_lsp_apply_code_action`) |
 > | `Alt-Q N` | rename | `e_lsp_rename` (+ `e_lsp_replace_buffer`) |

@@ -26,16 +26,31 @@ zero-config IDE front-end, no XQuartz and no Electron.
 
 @cindex Metals menu
 @cindex status bar
-While a language-server file is the active window, the bottom status bar shows a
-@samp{Metals} entry (named after the server).  Click it -- or for the keyboard,
-use the @kbd{Alt-Q} prefix -- to reach the actions.  Clicking opens a drop-up
-menu (the same widget as the @samp{File}/@samp{Edit} menus, unfolding upward from
-the bar) listing every action with its letter; arrow keys move, the letter or a
-click picks, @key{ESC} closes.  The entry appears only for files a server backs,
-and disappears when you switch to an ordinary file.
+While a language-server file is the active window, the bottom status bar shows an
+@samp{Alt-Q ? Metals} entry.  The highlighted @kbd{Alt-Q ?} tells you how to open
+the action @strong{menu}; @samp{Metals} names the server.  This follows the
+Borland convention of the @samp{Block} menu and its @kbd{Ctrl-K} commands: the
+menu is the discoverable path, the prefix is the fast one.
 
-All language-server actions share the @kbd{Alt-Q} prefix (@dfn{Query the
-language server}), followed by a letter:
+@itemize @bullet
+@item
+@kbd{Alt-Q}@tie{}+@tie{}@var{letter} runs an action @strong{directly} -- no menu
+is drawn, so there is no flicker (e.g.@: @kbd{Alt-Q@tie{}D} jumps to the
+definition at once).
+@item
+@kbd{Alt-Q@tie{}?} (or @key{F1}, or a click on the bar entry) opens the drop-up
+@strong{menu} -- the same widget as the @samp{File}/@samp{Edit} menus, unfolding
+upward from the bar, listing every action with its letter.  Arrow keys move, the
+letter or a click picks, @key{ESC} closes.  @kbd{Alt-Q} then @key{ESC} cancels.
+@end itemize
+
+@noindent
+The entry appears only for files a server backs, and disappears when you switch
+to an ordinary file.  (Note: @kbd{Alt-Q}, not @kbd{Alt-M}, drives the server --
+@kbd{Alt-M} is @samp{Make}.)
+
+All language-server actions live under the @kbd{Alt-Q} prefix (@dfn{Query the
+language server}), each by its letter:
 
 @table @kbd
 @item Alt-Q E
@@ -63,15 +78,15 @@ replaces the partial word), or @key{ESC} to cancel.
 @item Alt-Q R
 References: list every use of the symbol under the cursor (including its
 declaration) in the Messages window.
-@item Alt-Q L
-Highlight: mark every occurrence of the symbol under the cursor @emph{in the
-current file} (in the found-word colour) -- a search highlight that follows
-meaning, not text.  Press it off any identifier to clear the highlight.
+@item Alt-Q U
+Highlight @dfn{uses}: mark every occurrence of the symbol under the cursor
+@emph{in the current file} (in the found-word colour) -- a search highlight that
+follows meaning, not text.  Press it off any identifier to clear the highlight.
 @item Alt-Q O
 Outline: list the file's symbols (objects, defs, vals, ...) in a popup; pick
 one with the arrows and @key{RET} to jump to it.
-@item Alt-Q K
-Code lenses: the @samp{run}/@samp{debug}/@samp{test} and reference-count
+@item Alt-Q L
+Code @dfn{lenses}: the @samp{run}/@samp{debug}/@samp{test} and reference-count
 annotations the server attaches to definitions (main methods, test suites), in
 a popup as @samp{@var{label}  (line @var{N})}; selecting one jumps to that
 definition.  To actually run or test a Scala main, start the debugger
@@ -127,7 +142,7 @@ inline marks track whichever file the server is currently attached to.
 @item @strong{Rename is applied in the current file only.}  @kbd{Alt-Q N}
 renames every occurrence in the file you are in; if the rename also touches
 @emph{other} files, xwpe reports how many but does not edit them -- open each one
-and rename there.  @kbd{Alt-Q L} (highlight) is single-file by design.
+and rename there.  @kbd{Alt-Q U} (highlight uses) is single-file by design.
 @end itemize
 
 The server starts lazily on the first @kbd{Alt-Q} action and is reused for the

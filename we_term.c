@@ -894,6 +894,23 @@ static int e_t_utf8_assemble(int first)
  return cp;
 }
 
+/* Discard any typed-ahead keys (ncurses).  Called after a long synchronous
+   operation (e.g. the first language-server start, which can freeze the UI for
+   seconds while a JVM boots): keys mashed during the freeze would otherwise be
+   replayed afterwards and fire unintended actions. */
+void e_t_flush_input(void)
+{
+ /* The type-ahead sits in the KERNEL tty queue: ncurses never getch()'d during
+    the freeze, so flushinp() (which only clears ncurses' own FIFO) does not see
+    it and the bytes get read later as stray commands (an F9 there fired a
+    spurious Make).  Discard the kernel queue first, then ncurses' buffer. */
+ tcflush(0, TCIFLUSH);
+ flushinp();
+ { const char *tp = getenv("XWPE_UI_TRACE");   /* XWPE_UI_TRACE: diag only */
+   if (tp) { FILE *tf = fopen(tp, "a");
+     if (tf) { fprintf(tf, "e_t_flush_input RAN\n"); fclose(tf); } } }
+}
+
 static int e_t_getch_poll(void)
 {
  static int stdin_registered = 0;

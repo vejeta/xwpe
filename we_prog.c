@@ -126,8 +126,8 @@ char *e_p_msg[] = {
 };
 
 
-extern int e_lsp_ui_inp(FENSTER *f);   /* LSP prefix, defined in we_debug.c */
-extern int e_lsp_ui_menu(FENSTER *f);  /* LSP action menu (bottom-bar "LSP Menu") */
+extern int e_lsp_ui_key(FENSTER *f);   /* Alt-Q prefix (direct/menu), in we_debug.c */
+extern int e_lsp_ui_menu(FENSTER *f);  /* LSP action menu, defined in we_debug.c */
 
 int e_prog_switch(FENSTER *f, int c)
 {
@@ -137,11 +137,12 @@ int e_prog_switch(FENSTER *f, int c)
   case CF9:
    e_run(f);
    break;
-  case AltQ:   /*  Alt Q  Query the language server (LSP: D def, H hover,
-                  C complete, R references, O outline, E diagnostics) */
-   e_lsp_ui_inp(f);
+  case AltQ:           /*  Alt-Q  language-server prefix: Alt-Q+letter runs the
+                           action directly (silent, no flicker); Alt-Q ? (or any
+                           unknown key) opens the menu; ESC cancels. */
+   e_lsp_ui_key(f);
    break;
-  case WPE_LSP_MENU:   /*  bottom-bar "LSP Menu": discoverable action picker */
+  case WPE_LSP_MENU:   /*  click on the bottom-bar entry -> open the menu */
    e_lsp_ui_menu(f);
    break;
   case AltM:   /*  Alt M  Make */
@@ -198,6 +199,9 @@ int e_p_make(FENSTER *f)
  char ostr[128], estr[128], mstr[80];
  int len, i, file = -1;
  struct stat cbuf[1], obuf[1];
+ { const char *tp = getenv("XWPE_UI_TRACE");
+   if (tp) { FILE *tf = fopen(tp, "a");
+     if (tf) { fprintf(tf, "e_p_make ENTER\n"); fclose(tf); } } }
  PIC *pic = NULL;
  int linkRequest = 1; /* assume linking has to be done */
 
@@ -523,6 +527,10 @@ int e_run(FENSTER *f)
  char src_dirct[256], src_datnam[256];
  int len, ret, i;
 
+ { const char *tp = getenv("XWPE_UI_TRACE");
+   if (tp) { FILE *tf = fopen(tp, "a");
+     if (tf) { fprintf(tf, "e_run ENTER datnam=%s\n",
+              f && f->datnam ? f->datnam : "?"); fclose(tf); } } }
  efildes[0] = efildes[1] = -1;
  wfildes[0] = wfildes[1] = -1;
  if (!e_run_sh(f))
@@ -659,6 +667,10 @@ int e_comp(FENSTER *f)
  PIC *pic = NULL;
  char **arg = NULL, fstr[128], ostr[128];
  int i, file = -1, len, argc;
+ { const char *tp = getenv("XWPE_UI_TRACE");
+   if (tp) { FILE *tf = fopen(tp, "a");
+     if (tf) { fprintf(tf, "e_comp ENTER datnam=%s\n",
+              f && f->datnam ? f->datnam : "?"); fclose(tf); } } }
 #ifdef CHECKHEADER
  struct stat obuf[1];
 #else

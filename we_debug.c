@@ -5451,7 +5451,10 @@ static int e_lsp_ensure(FENSTER *f)
  e_d_p_message("Starting language server (Metals)...", f, 1);
  if (!strcmp(lang, "scala"))
   e_lsp_pin_jdk(f);              /* keep Metals' Scala PC off a too-new JDK */
- snprintf(cmd, sizeof(cmd), "scala-cli setup-ide '%s' >/dev/null 2>&1", dir);
+ /* </dev/null: never let the child share xwpe's interactive terminal stdin --
+    it would consume/scramble the user's keystrokes typed during this blocking
+    setup, leaving stray bytes that the editor later reads as commands. */
+ snprintf(cmd, sizeof(cmd), "scala-cli setup-ide '%s' </dev/null >/dev/null 2>&1", dir);
  if (system(cmd) != 0)
   { /* non-fatal: Metals can still import the build */ }
 
@@ -5471,6 +5474,19 @@ static int e_lsp_ensure(FENSTER *f)
  e_lsp_did_focus(g_lsp, path);                 /* warm the PC so hover/completion work */
  e_lsp_synced_set(text ? text : strdup(""));   /* baseline = what we opened with */
  e_lsp_wait_diagnostics(g_lsp, path, 240000);  /* compile -> diags to Messages */
+ /* The first start froze the UI for seconds while the JVM booted; discard any
+    keys the user mashed during the freeze so they are not replayed afterwards as
+    stray actions (e.g. a queued key landing on Run -> "not a C file"). */
+ {
+  extern void e_t_flush_input(void);
+#ifndef NO_XWINDOWS
+  extern void e_x_flush_input(void);
+  if (WpeIsXwin())
+   e_x_flush_input();
+  else
+#endif
+   e_t_flush_input();
+ }
  e_lsp_raise_source(f);   /* keep the code focused -- do not strand the user in Messages */
  return(0);
 }
@@ -5542,6 +5558,9 @@ static int e_lsp_ui_hover(FENSTER *f)
  BUFFER *b = f->b;
  char *hov;
 
+ { const char *tp = getenv("XWPE_UI_TRACE");
+   if (tp) { FILE *tf = fopen(tp, "a");
+     if (tf) { fprintf(tf, "e_lsp_ui_hover ENTER\n"); fclose(tf); } } }
  if (e_lsp_ensure(f) < 0)
   return(-1);
  e_lsp_sync(f);
@@ -6161,9 +6180,9 @@ static int e_lsp_menu_items(OPTK *it)
   { "Hover (type/docs)",    'H', e_lsp_ui_hover             },
   { "Complete",             'C', e_lsp_ui_complete          },
   { "References",           'R', e_lsp_ui_references        },
-  { "Highlight uses",       'L', e_lsp_ui_highlight         },
+  { "Highlight uses",       'U', e_lsp_ui_highlight         },
   { "Outline",              'O', e_lsp_ui_outline           },
-  { "Code lenses",          'K', e_lsp_ui_codelens          },
+  { "Code lenses",          'L', e_lsp_ui_codelens          },
   { "Workspace symbols",    'W', e_lsp_ui_workspace_symbols },
   { "Code actions",         'A', e_lsp_ui_code_actions      },
   { "Signature help",       'S', e_lsp_ui_signature         },
@@ -6233,8 +6252,12 @@ int e_lsp_ui_menu(FENSTER *f)
  return(0);
 }
 
-/* AltQ prefix: read the next key and run the matching language-server action. */
-int e_lsp_ui_inp(FENSTER *f)
+/* Alt-Q: the language-server command prefix, in the Borland spirit of Ctrl-K for
+   blocks -- the menu (Alt-B / a click) is the discoverable path, the prefix is
+   the silent fast one.  Read the next key and run the matching action DIRECTLY,
+   drawing no menu (so a fluent user gets no flicker).  '?' or F1 or any key we
+   do not recognise opens the action menu for discovery; ESC cancels. */
+int e_lsp_ui_key(FENSTER *f)
 {
  int c = e_getch();
 
@@ -6252,10 +6275,10 @@ int e_lsp_ui_inp(FENSTER *f)
    return(e_lsp_ui_complete(f));
   case 'r': case ('r' - 'a' + 1):
    return(e_lsp_ui_references(f));
+  case 'u': case ('u' - 'a' + 1):
+   return(e_lsp_ui_highlight(f));      /* U = Uses */
   case 'l': case ('l' - 'a' + 1):
-   return(e_lsp_ui_highlight(f));
-  case 'k': case ('k' - 'a' + 1):
-   return(e_lsp_ui_codelens(f));
+   return(e_lsp_ui_codelens(f));       /* L = Lens */
   case 's': case ('s' - 'a' + 1):
    return(e_lsp_ui_signature(f));
   case 'w': case ('w' - 'a' + 1):
@@ -6270,9 +6293,12 @@ int e_lsp_ui_inp(FENSTER *f)
    return(e_lsp_ui_outline(f));
   case 'e': case ('e' - 'a' + 1):
    return(e_lsp_ui_diagnostics(f));
+  case WPE_ESC:
+   return(0);                        /* cancel -- no action, no menu        */
   default:
-   return(c);
+   return(e_lsp_ui_menu(f));         /* '?', F1, anything else -> the menu  */
  }
 }
+
 #endif
 

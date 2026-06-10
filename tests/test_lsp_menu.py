@@ -1,9 +1,11 @@
 """The contextual Metals / language-server menu, grouped by surface.
 
 xwpe surfaces the LSP actions the Borland way: a per-window bottom-bar entry
-("Metals") -- shown only while a language-server file is the active window --
-that opens a popup of every Alt-Q action.  This mirrors how the Messages bar
-shows Compile/Run and the Debug bar shows Trace/Step.
+("Metals", named after the server) -- shown only while a language-server file is
+the active window -- that opens a drop-up menu of every action.  Reach it by
+clicking the entry OR with Alt-Q (which opens the same menu, like Alt-F opens
+File).  This mirrors how the Messages bar shows Compile/Run and the Debug bar
+shows Trace/Step.
 
 Groups (like the other menu tests, by shortcut AND by mouse, plus variations):
 
@@ -12,7 +14,8 @@ Groups (like the other menu tests, by shortcut AND by mouse, plus variations):
                         to the Scala window and it returns (the user's ask).
   3. Mouse           -- click the "Metals" bar entry -> the action popup opens
                         (titled after the server) listing every action.
-  4. Keyboard        -- Alt-Q + letter runs an action (Metals-gated, slow).
+  4. Keyboard        -- Alt-Q opens the menu; its letter then runs an action
+                        (e.g. Alt-Q D = Definition; Metals-gated, slow).
 
 Groups 1-3 need NO running server: the bar keys off the filename extension and
 the popup is built locally; only SELECTING an action talks to Metals.  Must run

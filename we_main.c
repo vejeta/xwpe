@@ -124,26 +124,31 @@ WOPT eblst_u[] = {  {"F1 Help",  0, 0, 2, F1},
 		    {"Alt-F4 Quit",  67, 0, 6, AF4}  };
 
 /* Editor bottom bar shown ONLY while an LSP-supported file is the active window
-   (chosen per-window in e_edit) -- it swaps the "Search Again" hint for a
-   "Metals" entry that opens the language-server action menu (e_lsp_ui_menu) on
-   click.  The contextual bar is xwpe's Borland-style way to surface per-window
-   actions (cf. the Messages bar's Compile/Run, the Debug bar's Trace/Step).
-   The label names the server (Scala's is Metals); when a second server (clangd,
-   ...) is wired, give it its own variant so the label stays accurate. */
+   (chosen per-window in e_edit) -- it swaps the "Search Again" hint for an
+   "Alt-Q ? Metals" entry.  The highlighted "Alt-Q ?" (n=7) tells the user how to
+   OPEN the action menu from the keyboard, the way every other entry on this bar
+   shows its key in red (cf. "Alt-X Quit", "^W Close W.").  "Metals" names the
+   server (when clangd/pyright is wired, give it its own variant).  The actions
+   themselves run with Alt-Q+letter directly (no menu, no flicker -- the Borland
+   Ctrl-K-for-blocks idea); Alt-Q ?, F1, an unknown key, or a click on this entry
+   open the menu for discovery.  Alt-Q ("Query the language server") is the only
+   collision-free mnemonic: M=Make, L=Install, A=exec-Make are taken and the sole
+   free Alt-letter (K) has no tie to a language server.  Positions are packed a
+   little tighter than the plain editor bar to fit the longer entry. */
 WOPT eblst_lsp_o[] = {  {"F1 Help",  0, 0, 2, F1},
 			{"F2 Save",  9, 0, 2, F2},
 			{"F3 Files", 18, 0, 2,  F3},
 			{"^W Close W.", 28, 0, 2, CtrlW},
-			{"F4 Search", 45, 0, 2, F4},
-			{"Metals", 56, 0, 1, WPE_LSP_MENU},
+			{"F4 Search", 41, 0, 2, F4},
+			{"Alt-Q ? Metals", 52, 0, 7, WPE_LSP_MENU},
 			{"Alt-X Quit",  68, 0, 5, AltX}  };
 
 WOPT eblst_lsp_u[] = {  {"F1 Help",  0, 0, 2, F1},
-			{"Alt-F2 Save",  9, 0, 6, AF2},
-			{"F2 Files", 22, 0, 2,  F2},
-			{"^F4 Close ", 32, 0, 3, CF4},
-			{"Alt-F3 Srch", 44, 0, 6, AF3},
-			{"Metals", 57, 0, 1, WPE_LSP_MENU},
+			{"Alt-F2 Save",  8, 0, 6, AF2},
+			{"F2 Files", 20, 0, 2,  F2},
+			{"^F4 Close ", 29, 0, 3, CF4},
+			{"Alt-F3 Srch", 40, 0, 6, AF3},
+			{"Alt-Q ? Metals", 52, 0, 7, WPE_LSP_MENU},
 			{"Alt-F4 Quit",  67, 0, 6, AF4}  };
 
 WOPT fblst_o[] = {  {"F1 Help",  0, 0, 2, F1},
