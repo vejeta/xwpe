@@ -383,9 +383,14 @@ void e_exit(int n)
 {
 #ifdef DEBUGGER
  extern int e_d_pid;
+ extern void e_lsp_ui_shutdown(void);
 
  if (e_d_pid)
   kill(e_d_pid, 7);
+ /* Tear down the language server (Metals etc.) so its JVM does not linger
+    after xwpe quits: shutdown request -> exit notification -> SIGTERM, then
+    SIGKILL if it ignores us.  Without this the server is orphaned on exit. */
+ e_lsp_ui_shutdown();
 #endif
  (*WpeDisplayEnd)();
  e_switch_screen(0);
