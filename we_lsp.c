@@ -1764,3 +1764,28 @@ char *e_lsp_join_lines(char *const *lines, int n)
  buf[off] = '\0';
  return(buf);
 }
+
+/* e_lsp_doc_is_new - dedup gate for a pushed display document (the Metals
+ * Doctor).  Metals re-PUSHES the same Doctor on every build/index event, so
+ * without this the editor would re-render an identical report and re-emit the
+ * "Doctor updated" note in Messages on each push -- noise the user sees as the
+ * report flickering and the note repeating.  @last points at the caller's
+ * stored copy of the last body shown (a malloc'd string the caller owns via
+ * this function; pass the address of a static char* initialized to NULL).
+ *
+ * Returns 1 when @body differs from the last one shown -- and ADOPTS it, so the
+ * caller should render -- or 0 when it is identical (or @body is NULL), meaning
+ * the caller should ignore this push.  On adoption the previous *last is freed
+ * and replaced with strdup(@body); if that strdup fails *last is left NULL and
+ * 1 is still returned (render once more rather than silently drop a new
+ * report).  Pure string logic, no editor state -- unit-tested. */
+int e_lsp_doc_is_new(char **last, const char *body)
+{
+ if (!body)
+  return(0);
+ if (*last && !strcmp(*last, body))
+  return(0);                                /* identical to the last one shown */
+ free(*last);
+ *last = strdup(body);
+ return(1);
+}

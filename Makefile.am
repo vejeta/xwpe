@@ -165,7 +165,7 @@ metainfodir = $(datadir)/metainfo
 metainfo_DATA = io.codeberg.mendezr.xwpe.metainfo.xml
 
 # --- Unit tests ---
-check_PROGRAMS = test_checkheader test_syntax_def test_lsp_buffer test_dap test_dap_dlv test_dap_gdb test_dap_lldb test_dap_scala test_lsp_scala
+check_PROGRAMS = test_checkheader test_syntax_def test_lsp_buffer test_lsp_doctor test_dap test_dap_dlv test_dap_gdb test_dap_lldb test_dap_scala test_lsp_scala
 
 test_checkheader_SOURCES = tests/test_checkheader.c
 test_checkheader_CFLAGS = -std=gnu17
@@ -181,6 +181,12 @@ test_syntax_def_LDFLAGS =
 test_lsp_buffer_SOURCES = tests/test_lsp_buffer.c we_lsp.c we_dap_proto.c
 test_lsp_buffer_CFLAGS = -std=gnu17 $(JSONC_CFLAGS)
 test_lsp_buffer_LDADD = $(JSONC_LIBS)
+
+# LSP Doctor dedup unit test: the pure e_lsp_doc_is_new gate (re-pushed Doctor
+# rendered only when changed; reset per session shows it again).  we_lsp.c only.
+test_lsp_doctor_SOURCES = tests/test_lsp_doctor.c we_lsp.c we_dap_proto.c
+test_lsp_doctor_CFLAGS = -std=gnu17 $(JSONC_CFLAGS)
+test_lsp_doctor_LDADD = $(JSONC_LIBS)
 
 # DAP transport unit test: links the pure transport core + json-c, no xwpe.
 test_dap_SOURCES = tests/test_dap.c we_dap_proto.c
@@ -216,7 +222,7 @@ test_lsp_scala_SOURCES = tests/test_lsp_scala.c we_lsp.c we_dap_proto.c
 test_lsp_scala_CFLAGS = -std=gnu17 $(JSONC_CFLAGS)
 test_lsp_scala_LDADD = $(JSONC_LIBS)
 
-TESTS = test_checkheader test_syntax_def test_lsp_buffer test_dap test_dap_dlv \
+TESTS = test_checkheader test_syntax_def test_lsp_buffer test_lsp_doctor test_dap test_dap_dlv \
   test_dap_gdb test_dap_lldb test_dap_scala test_lsp_scala
 
 # --- Extra files for distribution ---
@@ -244,6 +250,7 @@ EXTRA_DIST = \
   tests/test_checkheader.c \
   tests/test_syntax_def.c \
   tests/test_lsp_buffer.c \
+  tests/test_lsp_doctor.c \
   tests/test_dap.c \
   tests/test_dap_dlv.c \
   tests/test_dap_gdb.c \

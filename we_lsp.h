@@ -223,4 +223,11 @@ void e_lsp_close(e_lsp_session *s);
  * string (caller frees) or NULL on OOM. */
 char *e_lsp_join_lines(char *const *lines, int n);
 
+/* Dedup gate for a pushed display document (the Metals Doctor, which the server
+ * re-pushes on every build event): return 1 and adopt @body when it differs
+ * from the last one shown, 0 when identical or NULL.  *last is the caller's
+ * stored copy (pass &static_ptr, NULL-initialized; this owns it).  Pure --
+ * unit-testable. */
+int e_lsp_doc_is_new(char **last, const char *body);
+
 #endif /* WE_LSP_H */

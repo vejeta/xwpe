@@ -5037,6 +5037,9 @@ static int            g_lsp_quiet = 0;     /* suppress per-diagnostic Messages
                                               output (live polls show a summary) */
 static int            g_lsp_last_err = -1; /* last reported diagnostic totals,  */
 static int            g_lsp_last_warn = -1;/* so the live status is not spammed  */
+static char          *g_lsp_doctor_last = NULL; /* last Doctor body shown, for   */
+                                           /* dedup; reset per session so a       */
+                                           /* re-started Metals shows it again    */
 
 /* ---- inline diagnostic marks -------------------------------------------- *
  * publishDiagnostics carries a RANGE per problem; we keep the ranges for the
@@ -5314,7 +5317,6 @@ static void e_lsp_on_show_text(const char *title, const char *body, void *ud)
 {
  extern int e_d_p_named(char *winname, char *str, FENSTER *f, int sw);
  extern void e_switch_window(int num, FENSTER *f);
- static char *last_body = NULL;          /* dedup: Metals re-pushes the same doctor */
  char line[512];
  const char *p = body;
  FENSTER *home = g_lsp_fenster;
@@ -5324,10 +5326,11 @@ static void e_lsp_on_show_text(const char *title, const char *body, void *ud)
 
  if (!home || !body)
   return;
- if (last_body && !strcmp(last_body, body))
-  return;                                /* identical to the last one: ignore */
- free(last_body);
- last_body = strdup(body);
+ /* Metals re-pushes the same Doctor on every build event: render only when it
+    actually changed.  g_lsp_doctor_last is reset per session (e_lsp_ensure), so
+    a re-started server shows its Doctor again rather than being deduped away. */
+ if (!e_lsp_doc_is_new(&g_lsp_doctor_last, body))
+  return;
  cn = home->ed;
  for (i = 1; i <= cn->mxedt; i++)        /* remember the file's window, to refocus */
   if (cn->f[i] == home) { home_id = cn->edt[i]; break; }
@@ -5587,6 +5590,8 @@ static int e_lsp_ensure(FENSTER *f)
  host.on_show_text = e_lsp_on_show_text;
  host.ud = NULL;
  g_lsp_last_err = g_lsp_last_warn = -1;   /* fresh session: force first report */
+ free(g_lsp_doctor_last);                 /* fresh session: show its Doctor even */
+ g_lsp_doctor_last = NULL;                 /* if identical to a previous session's */
  g_lsp = e_lsp_open(argv, dir, lang, &host);
  if (!g_lsp)
  {
@@ -6303,6 +6308,8 @@ void e_lsp_ui_shutdown(void)
  e_lsp_inlay_clear();
  g_inlay_on = 0;
  e_lsp_synced_set(NULL);
+ free(g_lsp_doctor_last);
+ g_lsp_doctor_last = NULL;
  g_lsp_file[0] = '\0';
  g_lsp_fenster = NULL;
 }
