@@ -147,6 +147,17 @@ needed), and a @samp{LSP: N error(s), M warning(s)} status is updated live in
 the Messages window whenever the totals change.  @kbd{Alt-Q E} still lists the
 full set on demand.
 
+@cindex server status
+@cindex indexing
+The server's own progress is surfaced too: while Metals imports the build and
+indexes the project -- the slow part of the cold start -- it reports what it is
+doing (@samp{LSP: Indexing}, @samp{LSP: Compiling}, @dots{}) in the Messages
+window, so the wait is not silent.  Until that finishes the presentation
+compiler has no type information yet, so a hover on a symbol can legitimately
+come back empty; in that case @kbd{Alt-Q H} says @samp{Language server still
+working -- try again in a moment} rather than the bare @samp{No hover
+information}, so you know to retry once indexing settles.
+
 @cindex cross-file navigation
 @subsection Working across files
 The server indexes the whole project (not just the open file), so the

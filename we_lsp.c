@@ -469,6 +469,16 @@ static struct json_object *lsp_pump(e_lsp_session *s, int want_id,
      }
     }
    }
+   else if (meth && !strcmp(meth, "metals/status") && s->host.on_status)
+   {
+    /* Metals' transient status bar: surface "Indexing"/"Importing build"/... as
+       progress, and a hide flag when it finishes, so the client can tell "still
+       working" apart from "no result". */
+    struct json_object *params = obj_obj(m, "params");
+    const char *txt = obj_str(params, "text");
+    int hide = obj_int(params, "hide", 0);
+    s->host.on_status(txt, hide, s->host.ud);
+   }
    json_object_put(m);
    continue;
   }
@@ -526,7 +536,10 @@ static struct json_object *lsp_init_options(void)
  json_object_object_add(co, "isCompletionItemDetailEnabled", json_object_new_boolean(1));
  json_object_object_add(co, "isHoverDocumentationEnabled", json_object_new_boolean(1));
  json_object_object_add(o, "compilerOptions", co);
- json_object_object_add(o, "statusBarProvider", json_object_new_string("log-message"));
+ /* "on" => Metals pushes its transient status (Indexing/Importing/...) as
+    metals/status notifications, which we surface as progress and a busy flag
+    (so "still indexing" is distinguishable from "no result"). */
+ json_object_object_add(o, "statusBarProvider", json_object_new_string("on"));
  json_object_object_add(o, "inputBoxProvider", json_object_new_boolean(0));
  json_object_object_add(o, "quickPickProvider", json_object_new_boolean(0));
  /* Accept client commands AND ask for the Doctor as HTML: Metals then PUSHES the

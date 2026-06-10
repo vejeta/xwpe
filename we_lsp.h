@@ -35,6 +35,11 @@ typedef struct {
     plain-text body.  Lets the client show it in a window instead of letting the
     server open an external browser.  May be NULL. */
  void (*on_show_text)(const char *title, const char *body, void *ud);
+ /* The server's transient status (metals/status): @text is what it is doing
+    right now ("Indexing", "Importing build", ...) when @hide is 0, or @hide is
+    1 when it has finished and the status should clear.  Lets the client show
+    progress and tell "still indexing" apart from "no result".  May be NULL. */
+ void (*on_status)(const char *text, int hide, void *ud);
  void *ud;
 } e_lsp_host;
 

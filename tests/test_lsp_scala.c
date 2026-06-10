@@ -60,7 +60,9 @@ int main(void)
  char dir[] = "/tmp/xwpe-lspscala-XXXXXX";
  char scala[300], cmd[512];
  char *argv[] = { "metals", NULL };
- e_lsp_host host;
+ e_lsp_host host = {0};        /* zero ALL callbacks: the engine NULL-checks each,
+                                 so unused ones (summary/show_text/status) must
+                                 not be left as garbage stack pointers */
  e_lsp_session *s;
  char *hov;
  char defpath[1024];

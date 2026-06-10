@@ -5040,6 +5040,8 @@ static int            g_lsp_last_warn = -1;/* so the live status is not spammed 
 static char          *g_lsp_doctor_last = NULL; /* last Doctor body shown, for   */
                                            /* dedup; reset per session so a       */
                                            /* re-started Metals shows it again    */
+static int            g_lsp_busy = 0;      /* server is mid-task (indexing, ...)  */
+static char          *g_lsp_status_last = NULL; /* last status text shown (dedup) */
 
 /* ---- inline diagnostic marks -------------------------------------------- *
  * publishDiagnostics carries a RANGE per problem; we keep the ranges for the
@@ -5306,6 +5308,42 @@ static void e_lsp_on_diag_summary(const char *path, int errors, int warnings,
   snprintf(buf, sizeof(buf), "LSP: %d error(s), %d warning(s).", errors, warnings);
  e_d_p_message(buf, g_lsp_fenster, 0);   /* sw=0: do NOT steal focus from the
                                             editor -- the user keeps typing */
+}
+
+/* Strip Metals' leading status icon/spinner (a UTF-8 glyph and spaces) so the
+   text is stable across spinner frames -- "Indexing", not "(spinner) Indexing"
+   with a different frame each tick. */
+static const char *e_lsp_status_clean(const char *t)
+{
+ if (!t)
+  return("");
+ while (*t && ((unsigned char)*t >= 0x80 || *t == ' '))
+  t++;
+ return(t);
+}
+
+/* The server's transient status (metals/status): track a busy flag and echo the
+   text as a one-line progress note in Messages whenever it CHANGES (deduped, so
+   a spinner does not spam).  Answers the user's "tell me what it is doing" --
+   the cold ~1-min index now shows "LSP: Indexing", not silence -- and lets a
+   later empty hover say "still indexing" instead of "no information".  sw=0:
+   never steal focus from the file the user is editing. */
+static void e_lsp_on_status(const char *text, int hide, void *ud)
+{
+ const char *clean;
+ char line[200];
+ (void)ud;
+
+ if (hide)                                /* finished: clear the busy state */
+ {  g_lsp_busy = 0;  return;  }
+ clean = e_lsp_status_clean(text);
+ g_lsp_busy = (clean && clean[0]) ? 1 : 0;
+ if (!g_lsp_busy || !g_lsp_fenster)
+  return;
+ if (!e_lsp_doc_is_new(&g_lsp_status_last, clean))
+  return;                                 /* same as the last note: do not repeat */
+ snprintf(line, sizeof(line), "LSP: %s", clean);
+ e_d_p_message(line, g_lsp_fenster, 0);
 }
 
 /* A document the server pushed for display (the Metals Doctor, already stripped
@@ -5588,10 +5626,14 @@ static int e_lsp_ensure(FENSTER *f)
  host.on_diagnostic = e_lsp_on_diag;
  host.on_diagnostics_summary = e_lsp_on_diag_summary;
  host.on_show_text = e_lsp_on_show_text;
+ host.on_status = e_lsp_on_status;
  host.ud = NULL;
  g_lsp_last_err = g_lsp_last_warn = -1;   /* fresh session: force first report */
  free(g_lsp_doctor_last);                 /* fresh session: show its Doctor even */
  g_lsp_doctor_last = NULL;                 /* if identical to a previous session's */
+ free(g_lsp_status_last);                 /* fresh session: status starts clean   */
+ g_lsp_status_last = NULL;
+ g_lsp_busy = 0;
  g_lsp = e_lsp_open(argv, dir, lang, &host);
  if (!g_lsp)
  {
@@ -5696,7 +5738,18 @@ static int e_lsp_ui_hover(FENSTER *f)
  e_lsp_sync(f);
  hov = e_lsp_hover(g_lsp, g_lsp_file, b->b.y, e_lsp_symbol_col(f));
  if (!hov || !*hov)
- {  if (hov) free(hov);  e_error("No hover information.", 0, f->fb);  return(0);  }
+ {
+  if (hov)
+   free(hov);
+  /* While Metals is still indexing, the presentation compiler has no type info
+     yet, so hover legitimately comes back empty.  Say so instead of the bare
+     "No hover information", which reads as a permanent answer. */
+  if (g_lsp_busy)
+   e_error("Language server still working -- try again in a moment.", 0, f->fb);
+  else
+   e_error("No hover information.", 0, f->fb);
+  return(0);
+ }
  e_message(0, hov, f);                         /* one-button info popup */
  free(hov);
  return(0);
@@ -6353,6 +6406,9 @@ void e_lsp_ui_shutdown(void)
  e_lsp_synced_set(NULL);
  free(g_lsp_doctor_last);
  g_lsp_doctor_last = NULL;
+ free(g_lsp_status_last);
+ g_lsp_status_last = NULL;
+ g_lsp_busy = 0;
  g_lsp_file[0] = '\0';
  g_lsp_fenster = NULL;
 }
