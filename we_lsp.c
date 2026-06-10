@@ -61,6 +61,11 @@ static int lsp_write_all(int fd, const char *buf, size_t n)
  return 0;
 }
 
+/* Wire trace (defined below): logged only when XWPE_LSP_TRACE names a file. */
+static void lsp_trace_request(int id, const char *method,
+                              struct json_object *params);
+static void lsp_trace_response(int want_id, struct json_object *m);
+
 /* Send a JSON-RPC message; id < 0 = notification.  Takes ownership of params. */
 static int lsp_send(e_lsp_session *s, int id, const char *method,
                     struct json_object *params)
@@ -78,6 +83,7 @@ static int lsp_send(e_lsp_session *s, int id, const char *method,
   json_object_object_add(msg, "method", json_object_new_string(method));
  if (params)
   json_object_object_add(msg, "params", params);
+ lsp_trace_request(id, method, params);
 
  body = json_object_to_json_string_ext(msg, JSON_C_TO_STRING_PLAIN);
  blen = strlen(body);
@@ -287,6 +293,32 @@ static void lsp_trace_message(int want_id, struct json_object *id,
  fflush(fp);
 }
 
+/* Log a request we send (method + params) so the trace shows exactly what was
+   asked -- e.g. the line/character of a go-to-definition. */
+static void lsp_trace_request(int id, const char *method, struct json_object *params)
+{
+ FILE *fp = lsp_trace_file();
+ if (!fp || id < 0 || !method)
+  return;
+ fprintf(fp, "[%ld SEND id=%d] %s params=%s\n", lsp_now_ms(), id, method,
+         params ? json_object_to_json_string(params) : "{}");
+ fflush(fp);
+}
+
+/* Log the result of the response we were waiting for, so an empty answer
+   (the cause of a spurious "No definition found") is visible. */
+static void lsp_trace_response(int want_id, struct json_object *m)
+{
+ FILE *fp = lsp_trace_file();
+ struct json_object *result;
+ if (!fp)
+  return;
+ result = m ? obj_obj(m, "result") : NULL;
+ fprintf(fp, "[%ld RESP id=%d] result=%s\n", lsp_now_ms(), want_id,
+         result ? json_object_to_json_string(result) : "(null)");
+ fflush(fp);
+}
+
 static struct json_object *lsp_pump(e_lsp_session *s, int want_id,
                                     const char *want_diag_path, int timeout_ms)
 {
@@ -329,7 +361,7 @@ static struct json_object *lsp_pump(e_lsp_session *s, int want_id,
   if (id)                                 /* response to our request */
   {
    if (want_id >= 0 && json_object_get_int(id) == want_id)
-    return m;
+   {  lsp_trace_response(want_id, m);  return m;  }
   }
   json_object_put(m);
  }
@@ -648,9 +680,6 @@ char *e_lsp_hover(e_lsp_session *s, const char *path, int line, int character)
  if (!resp)
   return NULL;
  result = obj_obj(resp, "result");
- { FILE *tf = lsp_trace_file();
-   if (tf) { fprintf(tf, "HOVER raw result: %s\n",
-            result ? json_object_to_json_string(result) : "(null)"); fflush(tf); } }
  contents = result ? obj_obj(result, "contents") : NULL;
  if (contents)
  {

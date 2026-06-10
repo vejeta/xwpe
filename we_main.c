@@ -40,6 +40,7 @@ int fk__cursor = 0;
 
 WOPT *eblst, *fblst, *mblst, *dblst, *xblst, *wblst, *rblst;
 WOPT *ablst, *sblst, *hblst, *gblst, *oblst;
+WOPT *eblst_lsp;   /* editor bottom bar shown while an LSP-supported file is active */
 
 char *e_hlp, *user_shell;
 WOPT *blst;
@@ -121,6 +122,29 @@ WOPT eblst_u[] = {  {"F1 Help",  0, 0, 2, F1},
 		    {"Alt-F3 Srch", 44, 0, 6, AF3},
 		    {"F3 S.Ag.", 57, 0, 2, F3},
 		    {"Alt-F4 Quit",  67, 0, 6, AF4}  };
+
+/* Editor bottom bar shown ONLY while an LSP-supported file is the active window
+   (chosen per-window in e_edit) -- it swaps the "Search Again" hint for a
+   "Metals" entry that opens the language-server action menu (e_lsp_ui_menu) on
+   click.  The contextual bar is xwpe's Borland-style way to surface per-window
+   actions (cf. the Messages bar's Compile/Run, the Debug bar's Trace/Step).
+   The label names the server (Scala's is Metals); when a second server (clangd,
+   ...) is wired, give it its own variant so the label stays accurate. */
+WOPT eblst_lsp_o[] = {  {"F1 Help",  0, 0, 2, F1},
+			{"F2 Save",  9, 0, 2, F2},
+			{"F3 Files", 18, 0, 2,  F3},
+			{"^W Close W.", 28, 0, 2, CtrlW},
+			{"F4 Search", 45, 0, 2, F4},
+			{"Metals", 56, 0, 1, WPE_LSP_MENU},
+			{"Alt-X Quit",  68, 0, 5, AltX}  };
+
+WOPT eblst_lsp_u[] = {  {"F1 Help",  0, 0, 2, F1},
+			{"Alt-F2 Save",  9, 0, 6, AF2},
+			{"F2 Files", 22, 0, 2,  F2},
+			{"^F4 Close ", 32, 0, 3, CF4},
+			{"Alt-F3 Srch", 44, 0, 6, AF3},
+			{"Metals", 57, 0, 1, WPE_LSP_MENU},
+			{"Alt-F4 Quit",  67, 0, 6, AF4}  };
 
 WOPT fblst_o[] = {  {"F1 Help",  0, 0, 2, F1},
 		    {"Edit",  10, 0, 1, AltE},
@@ -435,6 +459,7 @@ int e_switch_blst(ECNT *cn)
   {
    f = cn->f[i];
    if (f->blst == eblst_o) f->blst = eblst_u;
+   else if (f->blst == eblst_lsp_o) f->blst = eblst_lsp_u;
    else if (f->blst == fblst_o) f->blst= fblst_u;
    else if (f->blst == mblst_o) f->blst= mblst_u;
    else if (f->blst == dblst_o) f->blst= dblst_u;
@@ -454,6 +479,7 @@ int e_switch_blst(ECNT *cn)
   {
    f = cn->f[i];
    if (f->blst == eblst_u) f->blst= eblst_o;
+   else if (f->blst == eblst_lsp_u) f->blst= eblst_lsp_o;
    else if (f->blst == fblst_u) f->blst= fblst_o;
    else if (f->blst == mblst_u) f->blst= mblst_o;
    else if (f->blst == dblst_u) f->blst= dblst_o;
@@ -506,12 +532,14 @@ void e_ini_desk(ECNT *cn)
   eblst = eblst_u; fblst = fblst_u; mblst = mblst_u; dblst = dblst_u;
   xblst = xblst_u; wblst = wblst_u; rblst = rblst_u; ablst = ablst_u;
   sblst = sblst_u; hblst = hblst_u; gblst = gblst_u; oblst = oblst_u;
+  eblst_lsp = eblst_lsp_u;
  }
  else
  {
   eblst = eblst_o; fblst = fblst_o; mblst = mblst_o; dblst = dblst_o;
   xblst = xblst_o; wblst = wblst_o; rblst = rblst_o; ablst = ablst_o;
   sblst = sblst_o; hblst = hblst_o; gblst = gblst_o; oblst = oblst_o;
+  eblst_lsp = eblst_lsp_o;
  }
  /* Pack the project (Data window) status bar compactly like the editor bar,
     leaving the right edge free for the "Project: <name>" label drawn by

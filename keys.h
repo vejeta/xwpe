@@ -158,3 +158,7 @@
 #define WPE_SCROLL_UP   2000
 #define WPE_SCROLL_DOWN 2001
 #define WPE_RESIZE      2002
+/* Synthetic action code: open the language-server (LSP) action menu.  Carried by
+   the "LSP" entry on the editor's bottom shortcut bar (mouse-clickable), handled
+   in e_prog_switch.  Not a keyboard key -- the Alt-Q prefix is the keyboard path. */
+#define WPE_LSP_MENU    2003

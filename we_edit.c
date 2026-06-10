@@ -101,6 +101,8 @@ int e_edit(ECNT *cn, char *filename)
 {
  extern char *e_hlp_str[];
  extern WOPT *eblst, *hblst, *mblst, *dblst;
+ extern WOPT *eblst_lsp;                 /* editor bar variant for LSP-backed files */
+ extern const char *e_lsp_server_label(FENSTER *);  /* non-NULL => file has a server */
  FILE *fp = NULL;
  FENSTER *f, *fo;
  char *complete_fname, *path, *file;
@@ -358,6 +360,14 @@ int e_edit(ECNT *cn, char *filename)
    ftype = 4;
   }
  }
+#endif
+#ifdef DEBUGGER
+ /* A plain editor window (not Help/Messages/Watches/Stack) holding a file a
+    language server understands gets the LSP bottom bar -- the contextual "LSP
+    Menu" entry -- so the IDE actions are discoverable.  Per-window: switching to
+    a non-LSP file shows its normal bar, exactly the desired contextual behaviour. */
+ if (ftype == 0 && e_lsp_server_label(f))
+  f->blst = eblst_lsp;
 #endif
  if (ftype != 1)
   fp = fopen(complete_fname, "rb");
@@ -1316,7 +1326,7 @@ int e_tst_dfkt(FENSTER *f, int c)
      default:
       return(c);
     }
-   } 
+   }
  }
  return(0);
 }

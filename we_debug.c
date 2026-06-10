@@ -29,6 +29,7 @@
 #include <errno.h>
 #include <stdarg.h>
 #include <sys/wait.h>
+#include <glob.h>
 
 /* jdb protocol tracing now routes through the unified WPE_TRACE facility
    (build with ./configure --enable-trace); records are line-tagged "[jdb]".
@@ -5210,6 +5211,29 @@ static void e_lsp_on_diag_summary(const char *path, int errors, int warnings,
 /* Serialize the editor buffer to a malloc'd NUL-terminated string (one '\n'
    per line), so the language server sees the CURRENT text -- including unsaved
    edits -- not the on-disk file.  Caller frees. */
+/* Length of line y's TEXT, stopping at the in-buffer newline marker.  xwpe stores
+   each line in @code{b->bf[y].s} terminated by a @code{WPE_WR} (0x0A) byte (this is
+   how e_write / File>Save delimits lines on disk); the bytes after it are stale.
+   The serializer must copy only up to that marker and add its own single newline.
+   Using strlen() here instead copied the embedded 0x0A AND appended a newline,
+   doubling every line break -- the language server then saw a file twice as long,
+   so positions were off by whole lines and cross-file go-to-definition/hover
+   silently returned nothing. */
+static size_t e_lsp_line_len(const BUFFER *b, int y)
+{
+ const char *s = b->bf[y].s;
+ size_t len;
+
+ if (!s)
+  return(0);
+ for (len = 0; s[len] != '\0' && s[len] != WPE_WR; len++)
+  ;
+ return(len);
+}
+
+/* Serialize the whole buffer to a single newline-joined string for the language
+   server (didOpen / didChange).  One '\n' per line, no doubling -- see
+   e_lsp_line_len for why that delimiter matters. */
 static char *e_lsp_buffer_text(FENSTER *f)
 {
  BUFFER *b = f->b;
@@ -5218,15 +5242,15 @@ static char *e_lsp_buffer_text(FENSTER *f)
  int y;
 
  for (y = 0; y < b->mxlines; y++)
-  total += (b->bf[y].s ? strlen(b->bf[y].s) : 0) + 1;
+  total += e_lsp_line_len(b, y) + 1;
  buf = malloc(total);
  if (!buf)
   return(NULL);
  for (y = 0; y < b->mxlines; y++)
  {
-  const char *line = b->bf[y].s ? b->bf[y].s : "";
-  size_t len = strlen(line);
-  memcpy(buf + off, line, len);
+  size_t len = e_lsp_line_len(b, y);
+  if (len)
+   memcpy(buf + off, b->bf[y].s, len);
   off += len;
   buf[off++] = '\n';
  }
@@ -5288,6 +5312,112 @@ static void e_lsp_raise_source(FENSTER *src)
   }
 }
 
+/* Major feature version of the JDK at `java_bin` (e.g. 21, 26, or 8 for a "1.8.0"
+   string), or -1 if it cannot be determined.  Runs `java -version` and parses the
+   first version token. */
+static int e_jdk_major(const char *java_bin)
+{
+ char cmd[1200], line[256];
+ FILE *fp;
+ int major = -1;
+
+ snprintf(cmd, sizeof(cmd), "'%s' -version 2>&1", java_bin);
+ fp = popen(cmd, "r");
+ if (!fp)
+  return(-1);
+ while (fgets(line, sizeof(line), fp))
+ {
+  char *v = strstr(line, "version \"");
+  if (v)
+  {
+   v += 9;                                   /* past: version "            */
+   if (strncmp(v, "1.", 2) == 0)
+    major = atoi(v + 2);                      /* 1.8.0 -> 8                 */
+   else
+    major = atoi(v);                          /* 21.0.1 -> 21, 26.0.1 -> 26 */
+   break;
+  }
+ }
+ pclose(fp);
+ return(major);
+}
+
+/* Find an LTS JDK the Scala 3 compiler is happy on (17..23, newest preferred) in
+   the usual Linux and macOS locations.  Writes its home to `out`; returns 1 if
+   found.  Used to pin Metals' JVM away from a too-new default. */
+static int e_find_supported_jdk(char *out, size_t sz)
+{
+ static const char *pat[] = {
+  "/usr/lib/jvm/*21*", "/usr/lib/jvm/*17*",
+  "/Library/Java/JavaVirtualMachines/*21*/Contents/Home",
+  "/Library/Java/JavaVirtualMachines/*17*/Contents/Home",
+  NULL
+ };
+ int p, i;
+ char jbin[1100];
+
+ for (p = 0; pat[p]; p++)
+ {
+  glob_t g;
+  if (glob(pat[p], 0, NULL, &g) != 0)
+   continue;
+  for (i = 0; i < (int)g.gl_pathc; i++)
+  {
+   int m;
+   snprintf(jbin, sizeof(jbin), "%s/bin/java", g.gl_pathv[i]);
+   if (access(jbin, X_OK) != 0)
+    continue;
+   m = e_jdk_major(jbin);
+   if (m >= 17 && m <= 23)
+   {  snprintf(out, sz, "%s", g.gl_pathv[i]);  globfree(&g);  return(1);  }
+  }
+  globfree(&g);
+ }
+ return(0);
+}
+
+/* Metals' presentation compiler (hover / completion / go-to-definition) runs on
+   the JVM Metals itself uses -- NOT the project's pinned build JVM.  The Scala 3
+   compiler crashes at start-up on a too-new JDK (>= 24: "asTerm called on
+   not-a-Term"), which makes every PC-driven action silently return empty (hover
+   always "No hover information") while definition/diagnostics still work -- a
+   confusing split.  So, unless the user already pinned a supported JAVA_HOME,
+   detect a too-new default and repoint JAVA_HOME (and PATH) at an LTS JDK for the
+   Metals child, and say what was done.  No-op when the default JDK is already
+   fine or no LTS JDK is installed. */
+static void e_lsp_pin_jdk(FENSTER *f)
+{
+ const char *jh = getenv("JAVA_HOME");
+ char jbin[1100], jdk[1024], msg[1200], newpath[4096];
+ const char *oldpath;
+ int major;
+
+ if (jh && *jh)
+ {
+  snprintf(jbin, sizeof(jbin), "%s/bin/java", jh);
+  if (e_jdk_major(jbin) <= 23)
+   return;                       /* user pinned a usable JAVA_HOME: respect it */
+ }
+ major = e_jdk_major("java");    /* the default on PATH */
+ if (major < 24)
+  return;                        /* default is fine, or unknown -- do not meddle */
+ if (!e_find_supported_jdk(jdk, sizeof(jdk)))
+ {
+  snprintf(msg, sizeof(msg), "Metals: default JDK %d is too new for the Scala "
+           "compiler and no LTS JDK (17/21) was found -- set JAVA_HOME to one.",
+           major);
+  e_d_p_message(msg, f, 1);
+  return;
+ }
+ setenv("JAVA_HOME", jdk, 1);
+ oldpath = getenv("PATH");
+ snprintf(newpath, sizeof(newpath), "%s/bin:%s", jdk, oldpath ? oldpath : "");
+ setenv("PATH", newpath, 1);
+ snprintf(msg, sizeof(msg), "Metals: pinned JAVA_HOME=%s (default JDK %d is too "
+          "new for the Scala compiler).", jdk, major);
+ e_d_p_message(msg, f, 1);
+}
+
 /* Lazily start the language server for f's file and surface its diagnostics.
    For Scala, `scala-cli setup-ide` is run first so Metals auto-connects to the
    build server.  The buffer is read from disk (save before invoking for the
@@ -5319,6 +5449,8 @@ static int e_lsp_ensure(FENSTER *f)
  g_lsp_file[sizeof(g_lsp_file) - 1] = '\0';
 
  e_d_p_message("Starting language server (Metals)...", f, 1);
+ if (!strcmp(lang, "scala"))
+  e_lsp_pin_jdk(f);              /* keep Metals' Scala PC off a too-new JDK */
  snprintf(cmd, sizeof(cmd), "scala-cli setup-ide '%s' >/dev/null 2>&1", dir);
  if (system(cmd) != 0)
   { /* non-fatal: Metals can still import the build */ }
@@ -5371,12 +5503,14 @@ static int e_lsp_ui_jump(FENSTER *f, e_lsp_locate_fn locate, const char *what)
  if (e_lsp_ensure(f) < 0)
   return(-1);
  e_lsp_sync(f);
- if (locate(g_lsp, g_lsp_file, b->b.y, e_lsp_symbol_col(f),
-            outpath, sizeof(outpath), &oline, &ochar) != 0)
- {
-  snprintf(msg, sizeof(msg), "No %s found.", what);
-  e_error(msg, 0, f->fb);
-  return(0);
+ { int rc0 = locate(g_lsp, g_lsp_file, b->b.y, e_lsp_symbol_col(f),
+                    outpath, sizeof(outpath), &oline, &ochar);
+   if (rc0 != 0)
+   {
+    snprintf(msg, sizeof(msg), "No %s found.", what);
+    e_error(msg, 0, f->fb);
+    return(0);
+   }
  }
  e_d_goto_break(outpath, oline + 1, f);        /* engine 0-based -> 1-based */
  return(0);
@@ -5720,6 +5854,23 @@ static int e_lsp_ui_outline(FENSTER *f)
  return(0);
 }
 
+/* A workspace/symbol "result" Metals returns that is not a real code symbol but
+   a help/command hint (e.g. "Add ';' to search library dependencies"), which it
+   points at a documentation page like workspace-symbol.md.  Those must not show
+   up as jump targets -- jumping would open a Markdown help file, not code. */
+static int e_lsp_symbol_is_help(const e_lsp_symbol *sym)
+{
+ const char *path = sym->path;
+ size_t len;
+
+ if (!path)
+  return(0);
+ len = strlen(path);
+ if (len >= 3 && strcmp(path + len - 3, ".md") == 0)
+  return(1);
+ return(0);
+}
+
 /* AltQ W -- workspace symbol search: prompt for a query, list matching symbols
    from across the whole project (each shown with its file), and jump to the one
    chosen (opening its file if it is not the current one).  IntelliJ's "Go to
@@ -5729,9 +5880,10 @@ static int e_lsp_ui_workspace_symbols(FENSTER *f)
  static e_lsp_symbol syms[128];
  static char rows[128][160];
  const char *labels[128];
+ int keep[128];
  char query[160];
  const char *jumpfile;
- int n, i, sel;
+ int n, i, m, sel;
 
  if (e_lsp_ensure(f) < 0)
   return(-1);
@@ -5742,16 +5894,24 @@ static int e_lsp_ui_workspace_symbols(FENSTER *f)
  n = e_lsp_workspace_symbols(g_lsp, query, syms, 128);
  if (n <= 0)
  {  e_error("No matching symbols.", 0, f->fb);  return(0);  }
- for (i = 0; i < n; i++)
+ for (i = 0, m = 0; i < n; i++)
  {
-  const char *base = syms[i].path ? e_d_dap_basename(syms[i].path) : "(this file)";
-  snprintf(rows[i], sizeof(rows[i]), "%s  -  %s:%d",
+  const char *base;
+  if (e_lsp_symbol_is_help(&syms[i]))
+   continue;                        /* skip Metals help/command hints */
+  base = syms[i].path ? e_d_dap_basename(syms[i].path) : "(this file)";
+  snprintf(rows[m], sizeof(rows[m]), "%s  -  %s:%d",
            syms[i].name, base, syms[i].line + 1);
-  labels[i] = rows[i];
+  labels[m] = rows[m];
+  keep[m] = i;
+  m++;
  }
- sel = e_lsp_pick(f, "Workspace symbols - Enter to go", labels, n);
+ if (m <= 0)
+ {  e_error("No matching symbols.", 0, f->fb);  return(0);  }
+ sel = e_lsp_pick(f, "Workspace symbols - Enter to go", labels, m);
  if (sel < 0)
   return(0);
+ sel = keep[sel];
  jumpfile = syms[sel].path ? syms[sel].path : g_lsp_file;
  e_d_goto_break((char *)jumpfile, syms[sel].line + 1, f);
  return(0);
@@ -5951,6 +6111,126 @@ void e_lsp_ui_shutdown(void)
  e_lsp_synced_set(NULL);
  g_lsp_file[0] = '\0';
  g_lsp_fenster = NULL;
+}
+
+/* Human-readable name of the language server wired for f's file, for menu and
+   dialog titles -- "Metals" for Scala today; as clangd / pyright / ... are added
+   this adapts so the menu is always named after the server it actually drives.
+   Returns NULL when the file's language has no server (so callers can hide the
+   menu). */
+const char *e_lsp_server_label(FENSTER *f)
+{
+ const char *lang = e_lsp_lang_for(f);
+
+ if (!lang)
+  return(NULL);
+ if (!strcmp(lang, "scala"))
+  return("Metals");
+ return("Language server");
+}
+
+/* One row of the discoverable LSP action menu: the label shown in the popup
+   (with its Alt-Q letter as a cue) and the handler it runs. */
+/* The top-menu dropdown engine (we_menue.c): draws a bordered, arrow-navigable
+   list and runs the chosen item's function -- the same widget the File/Edit menus
+   use, so the language-server menu looks and behaves identically. */
+extern int WpeHandleSubmenu(int xa, int ya, int xe, int ye, int nm,
+                            OPTK *fopt, FENSTER *f);
+extern OPTK WpeFillSubmenuItem(char *t, int x, char o, int (*fkt)());
+
+/* Inner text width of the dropdown rows: the action name is left-justified and
+   its "Alt-Q X" accelerator right-justified within this, exactly like the top
+   menus right-align "F2" / "Shift Del / ^X". */
+#define LSP_MENU_TEXTW 27
+
+/* Persistent storage for the formatted "name        Alt-Q X" labels (OPTK keeps
+   a pointer, so the strings must outlive the call). */
+static char g_lsp_menu_label[16][48];
+
+/* Build the language-server actions as top-menu-style dropdown rows: the action
+   name on the left, its "Alt-Q X" shortcut right-aligned, and X (the key you
+   press to run it -- in the menu or via the Alt-Q prefix) highlighted.  Reads
+   and behaves exactly like a File/Edit submenu.  Returns the item count. */
+static int e_lsp_menu_items(OPTK *it)
+{
+ static const struct { const char *name; char key; int (*fkt)(FENSTER *); } a[] = {
+  { "Diagnostics",          'E', e_lsp_ui_diagnostics       },
+  { "Go to Definition",     'D', e_lsp_ui_definition        },
+  { "Go to Implementation", 'I', e_lsp_ui_implementation    },
+  { "Go to Type",           'T', e_lsp_ui_type_definition   },
+  { "Hover (type/docs)",    'H', e_lsp_ui_hover             },
+  { "Complete",             'C', e_lsp_ui_complete          },
+  { "References",           'R', e_lsp_ui_references        },
+  { "Highlight uses",       'L', e_lsp_ui_highlight         },
+  { "Outline",              'O', e_lsp_ui_outline           },
+  { "Code lenses",          'K', e_lsp_ui_codelens          },
+  { "Workspace symbols",    'W', e_lsp_ui_workspace_symbols },
+  { "Code actions",         'A', e_lsp_ui_code_actions      },
+  { "Signature help",       'S', e_lsp_ui_signature         },
+  { "Rename",               'N', e_lsp_ui_rename            },
+  { "Format",               'F', e_lsp_ui_format            }
+ };
+ int i, n = (int)(sizeof(a) / sizeof(a[0]));
+
+ for (i = 0; i < n; i++)
+ {
+  char code[12];
+  int pad, hl;
+  snprintf(code, sizeof(code), "Alt-Q %c", a[i].key);          /* 7 chars */
+  pad = LSP_MENU_TEXTW - (int)strlen(a[i].name) - (int)strlen(code);
+  if (pad < 1)
+   pad = 1;
+  snprintf(g_lsp_menu_label[i], sizeof(g_lsp_menu_label[i]),
+           "%s%*s%s", a[i].name, pad, "", code);
+  hl = (int)strlen(g_lsp_menu_label[i]) - 1;     /* the X in the right "Alt-Q X" */
+  it[i] = WpeFillSubmenuItem(g_lsp_menu_label[i], hl, a[i].key, a[i].fkt);
+ }
+ return(n);
+}
+
+/* Column of the active window's bottom-bar "Metals" entry, so the dropdown opens
+   under it; -1 if not found. */
+static int e_lsp_bar_entry_x(FENSTER *f)
+{
+ int i;
+
+ if (!f->blst)
+  return(-1);
+ for (i = 0; i < f->nblst; i++)
+  if (f->blst[i].as == WPE_LSP_MENU)
+   return(f->blst[i].x);
+ return(-1);
+}
+
+/* Open the language-server menu as a Borland-style dropdown that unfolds UPWARD
+   from the bottom-bar "Metals" entry (the bar sits at the screen's foot, so the
+   list grows up like a pull-up), anchored UNDER that entry's column (not the
+   screen edge -- which mis-placed it on wide terminals).  Same frame, colours and
+   keys as the top File/Edit menus -- WpeHandleSubmenu runs the modal
+   arrow/letter/click loop and calls the chosen action.  Surfaced for mouse-first
+   users; Alt-Q+letter stays the keyboard fast path. */
+int e_lsp_ui_menu(FENSTER *f)
+{
+ OPTK items[16];
+ int n, xa, xe, ya, ye, w, mx;
+
+ if (!e_lsp_server_label(f))
+ {  e_error("Language server: unsupported file type.", 0, f->fb);  return(0);  }
+ n = e_lsp_menu_items(items);
+ w = LSP_MENU_TEXTW + 5;                  /* box width incl. frame + margins   */
+ mx = e_lsp_bar_entry_x(f);               /* anchor under the "Metals" entry    */
+ xa = (mx >= 0) ? mx - 1 : MAXSCOL - 1 - w;
+ if (xa + w > MAXSCOL - 1)                /* keep it on screen                  */
+  xa = MAXSCOL - 1 - w;
+ if (xa < 1)
+  xa = 1;
+ xe = xa + w;
+ ye = MAXSLNS - 2;                        /* bottom edge just above the bar...   */
+ ya = ye - (n + 1);                       /* ...so the list opens upward         */
+ if (ya < 1)
+  ya = 1;
+ WpeHandleSubmenu(xa, ya, xe, ye, 0, items, f);
+ return(0);
 }
 
 /* AltQ prefix: read the next key and run the matching language-server action. */

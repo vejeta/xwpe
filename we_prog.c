@@ -127,6 +127,7 @@ char *e_p_msg[] = {
 
 
 extern int e_lsp_ui_inp(FENSTER *f);   /* LSP prefix, defined in we_debug.c */
+extern int e_lsp_ui_menu(FENSTER *f);  /* LSP action menu (bottom-bar "LSP Menu") */
 
 int e_prog_switch(FENSTER *f, int c)
 {
@@ -139,6 +140,9 @@ int e_prog_switch(FENSTER *f, int c)
   case AltQ:   /*  Alt Q  Query the language server (LSP: D def, H hover,
                   C complete, R references, O outline, E diagnostics) */
    e_lsp_ui_inp(f);
+   break;
+  case WPE_LSP_MENU:   /*  bottom-bar "LSP Menu": discoverable action picker */
+   e_lsp_ui_menu(f);
    break;
   case AltM:   /*  Alt M  Make */
   case F9:
