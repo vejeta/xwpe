@@ -72,6 +72,18 @@ typedef struct {
  int end_line, end_char;
 } e_lsp_range;
 
+/* One semantic token: the half-open span [start, start+length) on `line` (all
+ * 0-based), whose meaning is the legend index `type` (resolve to a name like
+ * "keyword"/"class"/"method" with e_lsp_semantic_legend).  `modifiers` is the
+ * raw modifier bitset (unused for colouring so far). */
+typedef struct {
+ int line;
+ int start;
+ int length;
+ int type;
+ int modifiers;
+} e_lsp_sem_token;
+
 /* A symbol for the outline / workspace search (engine-owned strings). */
 typedef struct {
  char *name;      /* symbol name (object/def/val/...)        */
@@ -295,5 +307,21 @@ char *e_lsp_join_lines(char *const *lines, int n);
  * stored copy (pass &static_ptr, NULL-initialized; this owns it).  Pure --
  * unit-testable. */
 int e_lsp_doc_is_new(char **last, const char *body);
+
+/* Decode an LSP semantic-tokens `data` array (@n ints, groups of 5:
+ * deltaLine, deltaStartChar, length, tokenType, tokenModifiers) into absolute
+ * tokens.  Fills up to @max into @out and returns the count.  PURE -- no
+ * session, no I/O -- so the (fiddly) delta decoding is unit-testable. */
+int e_lsp_semantic_decode(const int *data, int n, e_lsp_sem_token *out, int max);
+
+/* textDocument/semanticTokens/full: the server's token classification for the
+ * whole file.  Fills up to @max tokens in @out (each `type` is a legend index;
+ * resolve with e_lsp_semantic_legend).  Returns the count (>=0) or -1. */
+int e_lsp_semantic_tokens(e_lsp_session *s, const char *path,
+                          e_lsp_sem_token *out, int max);
+
+/* The token-type NAME for legend index @type ("keyword", "class", ...), as the
+ * server declared in its initialize-response legend, or NULL if out of range. */
+const char *e_lsp_semantic_legend(e_lsp_session *s, int type);
 
 #endif /* WE_LSP_H */

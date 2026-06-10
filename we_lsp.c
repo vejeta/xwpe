@@ -45,6 +45,8 @@ struct e_lsp_session {
  int          nlenses;
  e_lsp_inlay_hint inlays[512];      /* engine-owned inlay-hint result        */
  int          ninlays;
+ char        *sem_legend[128];      /* semantic-token type names (from init)  */
+ int          sem_nlegend;
 };
 
 /* ---- transport --------------------------------------------------------- */
@@ -613,6 +615,30 @@ static struct json_object *lsp_client_caps(void)
  json_object_object_add(td, "callHierarchy", json_object_new_object());
  json_object_object_add(td, "typeHierarchy", json_object_new_object());
  json_object_object_add(td, "selectionRange", json_object_new_object());
+ {
+  /* semantic tokens: advertise the standard LSP token types + the "full"
+     request + the relative-delta format, so the server (Metals) sends them. */
+  static const char *SEM_TYPES[] = {
+   "namespace", "type", "class", "enum", "interface", "struct", "typeParameter",
+   "parameter", "variable", "property", "enumMember", "event", "function",
+   "method", "macro", "keyword", "modifier", "comment", "string", "number",
+   "regexp", "operator", "decorator"
+  };
+  struct json_object *st = json_object_new_object();
+  struct json_object *req = json_object_new_object();
+  struct json_object *types = json_object_new_array();
+  struct json_object *fmts = json_object_new_array();
+  size_t i;
+  json_object_object_add(req, "full", json_object_new_boolean(1));
+  json_object_object_add(st, "requests", req);
+  for (i = 0; i < sizeof(SEM_TYPES) / sizeof(SEM_TYPES[0]); i++)
+   json_object_array_add(types, json_object_new_string(SEM_TYPES[i]));
+  json_object_object_add(st, "tokenTypes", types);
+  json_object_object_add(st, "tokenModifiers", json_object_new_array());
+  json_object_array_add(fmts, json_object_new_string("relative"));
+  json_object_object_add(st, "formats", fmts);
+  json_object_object_add(td, "semanticTokens", st);
+ }
  json_object_object_add(caps, "textDocument", td);
  {
   struct json_object *ws = json_object_new_object();
@@ -794,6 +820,8 @@ int e_lsp_wait_diagnostics(e_lsp_session *s, const char *path, int timeout_ms)
  return 0;
 }
 
+static void lsp_capture_semantic_legend(e_lsp_session *s, struct json_object *m);
+
 int e_lsp_poll(e_lsp_session *s)
 {
  struct pollfd p;
@@ -832,8 +860,9 @@ int e_lsp_poll(e_lsp_session *s)
    lsp_dispatch_notification(s, m, NULL); /* diagnostics / status / doctor / ... */
   else if (id && !s->started && json_object_get_int(id) == s->init_id)
   {
-   /* the initialize response (the slow cold-start reply): finish the handshake
-      here, off the editor's input loop, and mark the session ready. */
+   /* the initialize response (the slow cold-start reply): grab the semantic
+      legend, finish the handshake here, off the input loop, and mark ready. */
+   lsp_capture_semantic_legend(s, m);
    lsp_notify(s, "initialized", json_object_new_object());
    s->started = 1;
   }
@@ -1733,6 +1762,104 @@ int e_lsp_selection_range(e_lsp_session *s, const char *path, int line,
  return n;
 }
 
+/* ---- semantic tokens --------------------------------------------------- */
+
+int e_lsp_semantic_decode(const int *data, int n, e_lsp_sem_token *out, int max)
+{
+ int i, count = 0, line = 0, start = 0;
+
+ if (!data || n < 0)
+  return 0;
+ for (i = 0; i + 4 < n; i += 5)         /* groups of 5; ignore a short tail */
+ {
+  int dline = data[i], dchar = data[i + 1];
+  if (dline == 0)                       /* same line: char delta is relative */
+   start += dchar;
+  else
+  {  line += dline;  start = dchar;  }  /* new line: char delta is absolute  */
+  if (count >= max)
+   continue;                            /* keep advancing line/start, just skip */
+  out[count].line = line;
+  out[count].start = start;
+  out[count].length = data[i + 2];
+  out[count].type = data[i + 3];
+  out[count].modifiers = data[i + 4];
+  count++;
+ }
+ return count;
+}
+
+const char *e_lsp_semantic_legend(e_lsp_session *s, int type)
+{
+ if (!s || type < 0 || type >= s->sem_nlegend)
+  return NULL;
+ return s->sem_legend[type];
+}
+
+/* Capture the server's semantic-token legend from the initialize response
+   (capabilities.semanticTokensProvider.legend.tokenTypes) so token indices can
+   be resolved to names.  Called once, during the handshake. */
+static void lsp_capture_semantic_legend(e_lsp_session *s, struct json_object *m)
+{
+ struct json_object *caps, *prov, *legend, *types;
+ int i, n;
+
+ caps = obj_obj(obj_obj(m, "result"), "capabilities");
+ prov = caps ? obj_obj(caps, "semanticTokensProvider") : NULL;
+ legend = prov ? obj_obj(prov, "legend") : NULL;
+ types = legend ? obj_obj(legend, "tokenTypes") : NULL;
+ if (!types || !json_object_is_type(types, json_type_array))
+  return;
+ n = json_object_array_length(types);
+ for (i = 0; i < n && s->sem_nlegend < (int)(sizeof(s->sem_legend) /
+                                             sizeof(s->sem_legend[0])); i++)
+ {
+  const char *name = json_object_get_string(json_object_array_get_idx(types, i));
+  s->sem_legend[s->sem_nlegend++] = strdup(name ? name : "");
+ }
+}
+
+int e_lsp_semantic_tokens(e_lsp_session *s, const char *path,
+                          e_lsp_sem_token *out, int max)
+{
+ char abspath[PATH_MAX], uri[PATH_MAX + 8];
+ struct json_object *args, *doc, *resp, *result, *data;
+ int *ints = NULL;
+ int id, n = 0, i, len, got = 0;
+
+ if (!s)
+  return -1;
+ if (!realpath(path, abspath))
+  snprintf(abspath, sizeof(abspath), "%s", path);
+ snprintf(uri, sizeof(uri), "file://%s", abspath);
+ args = json_object_new_object();
+ doc = json_object_new_object();
+ json_object_object_add(doc, "uri", json_object_new_string(uri));
+ json_object_object_add(args, "textDocument", doc);
+ id = ++s->id;
+ lsp_send(s, id, "textDocument/semanticTokens/full", args);
+ resp = lsp_pump(s, id, NULL, LSP_TMO_REQ);
+ if (!resp)
+  return -1;
+ result = obj_obj(resp, "result");
+ data = result ? obj_obj(result, "data") : NULL;
+ if (data && json_object_is_type(data, json_type_array))
+ {
+  len = json_object_array_length(data);
+  ints = malloc((size_t)(len > 0 ? len : 1) * sizeof(int));
+  if (ints)
+  {
+   for (i = 0; i < len; i++)
+    ints[i] = json_object_get_int(json_object_array_get_idx(data, i));
+   got = e_lsp_semantic_decode(ints, len, out, max);
+   free(ints);
+  }
+ }
+ (void)n;
+ json_object_put(resp);
+ return got;
+}
+
 /* Byte offset of LSP (line,character) within `text` (lines separated by '\n'). */
 static size_t lsp_offset(const char *text, int line, int character)
 {
@@ -2103,6 +2230,7 @@ void e_lsp_close(e_lsp_session *s)
  lsp_free_acts(s);
  lsp_free_lenses(s);
  lsp_free_inlays(s);
+ {  int i;  for (i = 0; i < s->sem_nlegend; i++)  free(s->sem_legend[i]);  }
  e_dap_reader_free(&s->rd);
  free(s);
 }
