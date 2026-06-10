@@ -258,6 +258,35 @@ static void lsp_answer_request(e_lsp_session *s, struct json_object *m)
    response whose id == want_id (caller owns it).  If want_diag_path != NULL,
    return a sentinel (non-NULL, caller must json_object_put) as soon as that
    file's diagnostics arrive.  NULL on timeout/EOF. */
+/* The wire-trace file (XWPE_LSP_TRACE=path), opened once, or NULL when unset. */
+static FILE *lsp_trace_file(void)
+{
+ static FILE *fp = NULL;
+ static int opened = 0;
+ if (!opened)
+ {
+  const char *tp = getenv("XWPE_LSP_TRACE");
+  if (tp)
+   fp = fopen(tp, "a");
+  opened = 1;
+ }
+ return fp;
+}
+
+/* Log one pumped message (its id/method and the id we are waiting for) so a
+   stuck request can be diagnosed without attaching a debugger. */
+static void lsp_trace_message(int want_id, struct json_object *id,
+                              struct json_object *method)
+{
+ FILE *fp = lsp_trace_file();
+ if (!fp)
+  return;
+ fprintf(fp, "[%ld want=%d] id=%s method=%s\n", lsp_now_ms(), want_id,
+         id ? json_object_get_string(id) : "-",
+         method ? json_object_get_string(method) : "-");
+ fflush(fp);
+}
+
 static struct json_object *lsp_pump(e_lsp_session *s, int want_id,
                                     const char *want_diag_path, int timeout_ms)
 {
@@ -273,6 +302,7 @@ static struct json_object *lsp_pump(e_lsp_session *s, int want_id,
    return NULL;
   id = obj_obj(m, "id");
   method = obj_obj(m, "method");
+  lsp_trace_message(want_id, id, method);
   if (id && method)                       /* server -> client REQUEST */
   {
    lsp_answer_request(s, m);
@@ -354,7 +384,7 @@ static struct json_object *lsp_init_options(void)
  json_object_object_add(o, "inputBoxProvider", json_object_new_boolean(0));
  json_object_object_add(o, "quickPickProvider", json_object_new_boolean(0));
  json_object_object_add(o, "executeClientCommandProvider", json_object_new_boolean(0));
- json_object_object_add(o, "didFocusProvider", json_object_new_boolean(0));
+ json_object_object_add(o, "didFocusProvider", json_object_new_boolean(1));
  json_object_object_add(o, "isHttpEnabled", json_object_new_boolean(0));
  /* Advertise that the client can start debug sessions: this is what makes
     Metals emit the run/test code lenses (Alt-Q K), and it is accurate -- xwpe
@@ -464,6 +494,18 @@ int e_lsp_did_open(e_lsp_session *s, const char *path, const char *text)
  json_object_object_add(args, "textDocument", doc);
  lsp_notify(s, "textDocument/didOpen", args);
  s->doc_version = 1;
+ return 0;
+}
+
+int e_lsp_did_focus(e_lsp_session *s, const char *path)
+{
+ char uri[PATH_MAX + 8];
+
+ if (!s)
+  return -1;
+ /* same URI form as didOpen so Metals ties the focus to the open document */
+ snprintf(uri, sizeof(uri), "file://%s", path);
+ lsp_notify(s, "metals/didFocusTextDocument", json_object_new_string(uri));
  return 0;
 }
 
@@ -606,6 +648,9 @@ char *e_lsp_hover(e_lsp_session *s, const char *path, int line, int character)
  if (!resp)
   return NULL;
  result = obj_obj(resp, "result");
+ { FILE *tf = lsp_trace_file();
+   if (tf) { fprintf(tf, "HOVER raw result: %s\n",
+            result ? json_object_to_json_string(result) : "(null)"); fflush(tf); } }
  contents = result ? obj_obj(result, "contents") : NULL;
  if (contents)
  {

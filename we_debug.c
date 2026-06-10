@@ -5336,6 +5336,7 @@ static int e_lsp_ensure(FENSTER *f)
  }
  text = e_lsp_buffer_text(f);
  e_lsp_did_open(g_lsp, path, text ? text : "");
+ e_lsp_did_focus(g_lsp, path);                 /* warm the PC so hover/completion work */
  e_lsp_synced_set(text ? text : strdup(""));   /* baseline = what we opened with */
  e_lsp_wait_diagnostics(g_lsp, path, 240000);  /* compile -> diags to Messages */
  e_lsp_raise_source(f);   /* keep the code focused -- do not strand the user in Messages */
@@ -5350,6 +5351,9 @@ static int e_lsp_ui_diagnostics(FENSTER *f)
  e_d_p_message("Language server ready.", f, 1);
  return(0);
 }
+
+/* Defined below; the symbol actions snap the request to the identifier start. */
+static int e_lsp_symbol_col(FENSTER *f);
 
 /* The three "jump to a location" actions (definition / implementation / type
    definition) differ only in the engine call and the not-found wording, so they
@@ -5367,7 +5371,7 @@ static int e_lsp_ui_jump(FENSTER *f, e_lsp_locate_fn locate, const char *what)
  if (e_lsp_ensure(f) < 0)
   return(-1);
  e_lsp_sync(f);
- if (locate(g_lsp, g_lsp_file, b->b.y, b->b.x,
+ if (locate(g_lsp, g_lsp_file, b->b.y, e_lsp_symbol_col(f),
             outpath, sizeof(outpath), &oline, &ochar) != 0)
  {
   snprintf(msg, sizeof(msg), "No %s found.", what);
@@ -5407,7 +5411,7 @@ static int e_lsp_ui_hover(FENSTER *f)
  if (e_lsp_ensure(f) < 0)
   return(-1);
  e_lsp_sync(f);
- hov = e_lsp_hover(g_lsp, g_lsp_file, b->b.y, b->b.x);
+ hov = e_lsp_hover(g_lsp, g_lsp_file, b->b.y, e_lsp_symbol_col(f));
  if (!hov || !*hov)
  {  if (hov) free(hov);  e_error("No hover information.", 0, f->fb);  return(0);  }
  e_message(0, hov, f);                         /* one-button info popup */
@@ -5420,6 +5424,29 @@ static int e_lsp_is_ident(int c)
 {
  return((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
         (c >= '0' && c <= '9') || c == '_');
+}
+
+/* Column to send for a SYMBOL action (definition / hover / references / ...):
+   snap to the START of the identifier under (or just after) the cursor, so the
+   action resolves wherever on the word the cursor sits -- a server can return
+   nothing at the token's trailing edge, which read as "No definition found"
+   even though the cursor looked like it was on the name.  If the cursor is not
+   on an identifier at all, the column is returned unchanged. */
+static int e_lsp_symbol_col(FENSTER *f)
+{
+ BUFFER *b = f->b;
+ char *line = b->bf[b->b.y].s;
+ int x = b->b.x;
+
+ if (!line)
+  return(x);
+ /* cursor one past the word (e.g. on the ')' after "Shape") -> step onto it */
+ if (x > 0 && !e_lsp_is_ident((unsigned char)line[x]) &&
+     e_lsp_is_ident((unsigned char)line[x - 1]))
+  x--;
+ while (x > 0 && e_lsp_is_ident((unsigned char)line[x - 1]))
+  x--;
+ return(x);
 }
 
 /* Defined further down; used by the workspace-symbol and code-action actions. */
@@ -5587,7 +5614,7 @@ static int e_lsp_ui_references(FENSTER *f)
  if (e_lsp_ensure(f) < 0)
   return(-1);
  e_lsp_sync(f);
- n = e_lsp_references(g_lsp, g_lsp_file, b->b.y, b->b.x, locs, 128);
+ n = e_lsp_references(g_lsp, g_lsp_file, b->b.y, e_lsp_symbol_col(f), locs, 128);
  if (n <= 0)
  {  e_error("No references found.", 0, f->fb);  return(0);  }
  snprintf(line, sizeof(line), "%d reference(s):", n);
@@ -5622,7 +5649,7 @@ static int e_lsp_ui_highlight(FENSTER *f)
  if (e_lsp_ensure(f) < 0)
   return(-1);
  e_lsp_sync(f);
- n = e_lsp_document_highlight(g_lsp, g_lsp_file, b->b.y, b->b.x, locs, 256);
+ n = e_lsp_document_highlight(g_lsp, g_lsp_file, b->b.y, e_lsp_symbol_col(f), locs, 256);
  if (n <= 0)
  {  e_error("No occurrences.", 0, f->fb);  return(0);  }
  /* every hit is the same symbol, so they share the identifier's length */
@@ -5878,7 +5905,7 @@ static int e_lsp_ui_rename(FENSTER *f)
  text = e_lsp_buffer_text(f);
  if (!text)
   return(-1);
- renamed = e_lsp_rename(g_lsp, g_lsp_file, b->b.y, b->b.x, newname, text, &others);
+ renamed = e_lsp_rename(g_lsp, g_lsp_file, b->b.y, e_lsp_symbol_col(f), newname, text, &others);
  if (!renamed)
  {  free(text);  e_error("Rename failed (cannot rename here).", 0, f->fb);  return(0);  }
  if (strcmp(renamed, text) != 0)

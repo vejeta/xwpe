@@ -84,6 +84,12 @@ e_lsp_session *e_lsp_open(char *const argv[], const char *root_dir,
  * `path` is a filesystem path (turned into a file:// URI internally). */
 int e_lsp_did_open(e_lsp_session *s, const char *path, const char *text);
 
+/* metals/didFocusTextDocument: tell Metals which file is in focus so it warms
+ * the presentation compiler for it.  Hover and completion are PC-driven and
+ * come back empty until the PC is active for the file -- which (for Metals)
+ * only happens for the focused document.  Harmless no-op for non-Metals servers. */
+int e_lsp_did_focus(e_lsp_session *s, const char *path);
+
 /* textDocument/didChange: replace the server's copy of the document with the
  * current buffer text (full-document sync), bumping the version.  Call this
  * before a request so hover/definition/completion/diagnostics reflect unsaved
