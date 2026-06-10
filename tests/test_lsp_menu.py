@@ -274,3 +274,34 @@ def test_keyboard_altq_inlay_hints(tmp_path):
             % w.text()
     finally:
         w.close()
+
+
+@pytest.mark.skipif(shutil.which("metals") is None or shutil.which("scala-cli") is None,
+                    reason="metals and scala-cli required")
+def test_async_start_keeps_editor_responsive(tmp_path):
+    """#196 (the headline): the first LSP action starts Metals in the BACKGROUND
+    and returns at once -- the editor must keep accepting keystrokes while the
+    JVM boots, not freeze for the ~1-3 min cold start.  Kick the start off, then
+    type into the buffer DURING the boot and confirm the text lands well before
+    the server could possibly be ready.  Under the old synchronous start the
+    keys would queue behind the frozen call and not appear until ~150s later, so
+    seeing them within seconds proves the freeze is gone."""
+    (tmp_path / "project.scala").write_text(
+        "//> using scala 3.3.7\n//> using jvm temurin:21\n")
+    w = _Wpe(str(tmp_path), [("Demo.scala", "object Demo\n")])
+    try:
+        w.key("\033q", delay=0.4)
+        w.key("e", delay=2.0)                   # Alt-Q E: kick off the async start
+        w.drain(1.0)
+        assert w.alive(), "wpe died kicking off the async start"
+        # Metals is booting now (not ready for ~30-60s).  Type during the boot:
+        for ch in "ZZZTOP":
+            w.key(ch, delay=0.2)
+        w.drain(12.0)                           # generous: allow brief JVM-boot silence
+        body = "\n".join(w.display())
+        assert "ZZZTOP" in body, \
+            "editor did not accept keystrokes during the Metals cold start " \
+            "(the async start is not keeping the input loop alive)\n%s" % w.text()
+        assert w.alive(), "wpe died while Metals was starting"
+    finally:
+        w.close()
