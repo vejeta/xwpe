@@ -1254,6 +1254,14 @@ void e_pr_line(int y, FENSTER *f)
  int i, j, k, frb;
 #ifdef DEBUGGER
  int fsw = 0;
+ /* Inline LSP decorations in the plain (syntax-off) painter, mirroring
+    e_pr_c_line: recolor cells inside a problem's range (errors red, warnings
+    amber) or a document-highlight span.  e_lsp_decor_active_for gates per line;
+    both are no-ops unless a language server is attached to f, so help/non-source
+    windows are unaffected. */
+ extern int e_lsp_decor_active_for(FENSTER *f);
+ extern int e_lsp_decor_attr_at(SCHIRM *s, int y, int x, int base);
+ int diag_on = e_lsp_decor_active_for(f);
 #endif
 
  for (i = j = 0; j < NUM_COLS_OFF_SCREEN_LEFT && i < b->bf[y].len; j++)
@@ -1306,6 +1314,10 @@ void e_pr_line(int y, FENSTER *f)
    frb = s->fb->ez.fb;
   else
    frb = s->fb->et.fb;
+#ifdef DEBUGGER
+  if (diag_on)
+   frb = e_lsp_decor_attr_at(s, y, i, frb);  /* recolor LSP problem/highlight cells */
+#endif
 
   if (f->dtmd == DTMD_HELP)
   {
