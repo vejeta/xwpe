@@ -193,7 +193,7 @@ def test_mouse_click_opens_action_dropdown(tmp_path):
         rows = w.display()
         body = "\n".join(rows)
         for action in ("Diagnostics", "Go to Definition", "Hover", "References",
-                       "Rename", "Format"):
+                       "Inlay hints", "Rename", "Format"):
             assert action in body, \
                 "action %r missing from the menu dropdown\n%s" % (action, body)
         # it is a pull-UP anchored at the bar: the LAST item ("Format") sits just
@@ -239,5 +239,36 @@ def test_keyboard_altq_definition_jumps(tmp_path):
         row = rows[cur.y] if 0 <= cur.y < len(rows) else ""
         assert "def greeting" in row, \
             "Alt-Q D did not jump to the definition (row=%r)\n%s" % (row, w.text())
+    finally:
+        w.close()
+
+
+@pytest.mark.skipif(shutil.which("metals") is None or shutil.which("scala-cli") is None,
+                    reason="metals and scala-cli required")
+def test_keyboard_altq_inlay_hints(tmp_path):
+    """Alt-Q Y toggles end-of-line inlay hints: the inferred type of an
+    un-annotated `val` shows up at the end of its line.  Self-contained file
+    (no cross-file indexing) pinned to the 3.3 LTS PC so the type resolves
+    cleanly.  `: Int` appears ONLY as the hint -- the source never writes it --
+    so its presence proves the overlay rendered.  Needs a real Metals (slow)."""
+    (tmp_path / "project.scala").write_text(
+        "//> using scala 3.3.7\n//> using jvm temurin:21\n")
+    w = _Wpe(str(tmp_path), [("Demo.scala",
+        "object Demo:\n"
+        "  def main(a: Array[String]): Unit =\n"
+        "    val n = 1 + 1\n"
+        "    println(n)\n")])
+    try:
+        w.key("\033q", delay=0.4)
+        w.key("e", delay=150.0)                 # Alt-Q E: start Metals + compile
+        w.drain(3.0)
+        assert w.alive(), "wpe died starting Metals"
+        w.key("\033q", delay=0.4)
+        w.key("y", delay=10.0)                  # Alt-Q Y: toggle inlay hints on
+        w.drain(3.0)
+        body = "\n".join(w.display())
+        assert ": Int" in body, \
+            "inlay hint ': Int' for `val n` did not render at end-of-line\n%s" \
+            % w.text()
     finally:
         w.close()
