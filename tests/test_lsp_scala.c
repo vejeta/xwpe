@@ -55,6 +55,10 @@ static int have_tools(void)
 
 static int fail(const char *m) { printf("FAIL: %s\n", m); return 1; }
 
+/* (al,ac) at or before (bl,bc) in document order -- for nesting checks. */
+static int pos_le(int al, int ac, int bl, int bc)
+{ return al < bl || (al == bl && ac <= bc); }
+
 int main(void)
 {
  char dir[] = "/tmp/xwpe-lspscala-XXXXXX";
@@ -322,6 +326,26 @@ int main(void)
   for (k = 0; k < nt; k++)
    if (th[k].name && strstr(th[k].name, "Hello")) found = 1;
   if (!found) { rc = fail("subtypes of Greeter missed Hello"); goto close; }
+ }
+
+ /* SELECTION RANGE (expand selection): at the use of `f` (line 5, char 6) the
+    server returns nested ranges innermost-first; each must enclose the previous
+    -- that monotonic nesting is exactly what "expand selection" walks.  Index
+    dependent (retry while warm); -1 errors, <1 is no range. */
+ {
+  e_lsp_range sr[64];
+  int ns = 0, t, k, nested = 1;
+  for (t = 0; t < 6 && ns < 1; t++)
+  { ns = e_lsp_selection_range(s, scala, 5, 6, sr, 64); if (ns < 1) sleep(2); }
+  printf("  SELECTION-RANGE at f: %d range(s)\n", ns);
+  if (ns < 1) { rc = fail("selection range returned nothing at f"); goto close; }
+  for (k = 1; k < ns; k++)
+   if (!(pos_le(sr[k].start_line, sr[k].start_char,
+                sr[k-1].start_line, sr[k-1].start_char) &&
+         pos_le(sr[k-1].end_line, sr[k-1].end_char,
+                sr[k].end_line, sr[k].end_char)))
+    nested = 0;
+  if (!nested) { rc = fail("selection ranges are not monotonically nested"); goto close; }
  }
 
  /* diagnostics carry a RANGE: push a buffer with a type error and confirm the

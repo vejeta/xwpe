@@ -6050,6 +6050,62 @@ static int e_lsp_ui_supertypes(FENSTER *f) {  return(e_lsp_ui_type_hierarchy(f, 
 /* AltQ J -- subtypes (vim J = down = children): what extends this type. */
 static int e_lsp_ui_subtypes(FENSTER *f)   {  return(e_lsp_ui_type_hierarchy(f, 1));  }
 
+/* Is position (al,ac) at or before (bl,bc) in document order? */
+static int e_lsp_pos_le(int al, int ac, int bl, int bc)
+{
+ return(al < bl || (al == bl && ac <= bc));
+}
+
+/* Does range R fully enclose the selection [sl,sc .. el,ec]? */
+static int e_lsp_range_covers(const e_lsp_range *r, int sl, int sc, int el, int ec)
+{
+ return(e_lsp_pos_le(r->start_line, r->start_char, sl, sc) &&
+        e_lsp_pos_le(el, ec, r->end_line, r->end_char));
+}
+
+/* AltQ V -- expand selection: grow the block mark to the smallest syntactic
+   range (from the server) that strictly encloses the current selection; with no
+   selection, select the tightest range around the cursor.  Press again to keep
+   widening (token -> expression -> argument list -> call -> statement -> block),
+   a structural select rather than line-by-line.  The mark is set exactly as a
+   mouse drag sets it (s->mark_begin/mark_end), so Copy/Cut act on it normally. */
+static int e_lsp_ui_expand_selection(FENSTER *f)
+{
+ BUFFER *b = f->b;
+ SCHIRM *s = f->s;
+ e_lsp_range chain[64];
+ int n, i, sl, sc, el, ec, has_sel, chosen = -1;
+
+ if (e_lsp_ensure(f) < 0)
+  return(-1);
+ e_lsp_sync(f);
+ n = e_lsp_selection_range(g_lsp, g_lsp_file, b->b.y, b->b.x, chain, 64);
+ if (n <= 0)
+ {  e_error("No selection range at the cursor.", 0, f->fb);  return(0);  }
+
+ sl = s->mark_begin.y;  sc = s->mark_begin.x;
+ el = s->mark_end.y;    ec = s->mark_end.x;
+ has_sel = (sl != el || sc != ec);
+ if (!has_sel)
+  chosen = 0;                           /* nothing selected: tightest range */
+ else
+  for (i = 0; i < n; i++)               /* first range strictly larger than sel */
+   if (e_lsp_range_covers(&chain[i], sl, sc, el, ec) &&
+       (chain[i].start_line != sl || chain[i].start_char != sc ||
+        chain[i].end_line != el || chain[i].end_char != ec))
+   {  chosen = i;  break;  }
+ if (chosen < 0)
+ {  e_error("Selection already at the outermost range.", 0, f->fb);  return(0);  }
+
+ s->mark_begin.y = chain[chosen].start_line;
+ s->mark_begin.x = chain[chosen].start_char;
+ s->mark_end.y = chain[chosen].end_line;
+ s->mark_end.x = chain[chosen].end_char;
+ e_schirm(f, 1);
+ e_cursor(f, 0);
+ return(0);
+}
+
 /* AltQ L -- highlight every occurrence of the symbol under the cursor in this
    file (the found-word colour, like a search highlight that follows meaning,
    not text).  Pressing it off any identifier clears the highlight. */
@@ -6508,6 +6564,7 @@ static int e_lsp_menu_items(OPTK *it)
   { "Outgoing calls",       'G', e_lsp_ui_callees           },
   { "Supertypes",           'K', e_lsp_ui_supertypes        },
   { "Subtypes",             'J', e_lsp_ui_subtypes          },
+  { "Expand selection",     'V', e_lsp_ui_expand_selection  },
   { "Highlight uses",       'U', e_lsp_ui_highlight         },
   { "Inlay hints (toggle)", 'Y', e_lsp_ui_inlay             },
   { "Outline",              'O', e_lsp_ui_outline           },
@@ -6612,6 +6669,8 @@ int e_lsp_ui_key(FENSTER *f)
    return(e_lsp_ui_supertypes(f));     /* K = up (vim) = supertypes */
   case 'j': case ('j' - 'a' + 1):
    return(e_lsp_ui_subtypes(f));       /* J = down (vim) = subtypes */
+  case 'v': case ('v' - 'a' + 1):
+   return(e_lsp_ui_expand_selection(f)); /* V = expand (Visual) selection */
   case 'u': case ('u' - 'a' + 1):
    return(e_lsp_ui_highlight(f));      /* U = Uses */
   case 'y': case ('y' - 'a' + 1):

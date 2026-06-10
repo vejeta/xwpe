@@ -21,6 +21,7 @@
 > | `Alt-Q G` | outgoing calls -- Goes to (list in Messages) | `e_lsp_call_hierarchy` |
 > | `Alt-Q K` | supertypes -- vi K=up=parents (list in Messages) | `e_lsp_type_hierarchy` |
 > | `Alt-Q J` | subtypes -- vi J=down=children (list in Messages) | `e_lsp_type_hierarchy` |
+> | `Alt-Q V` | expand selection -- grow block mark by syntax (Visual) | `e_lsp_selection_range` |
 > | `Alt-Q U` | document highlight -- mark Uses in this file | `e_lsp_document_highlight` |
 > | `Alt-Q Y` | inlaY hints toggle -- inferred types dim at end-of-line (opt-in) | `e_lsp_inlay_hints` |
 > | `Alt-Q S` | signature help | `e_lsp_signature_help` |

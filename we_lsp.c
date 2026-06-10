@@ -601,6 +601,7 @@ static struct json_object *lsp_client_caps(void)
  json_object_object_add(td, "inlayHint", json_object_new_object());
  json_object_object_add(td, "callHierarchy", json_object_new_object());
  json_object_object_add(td, "typeHierarchy", json_object_new_object());
+ json_object_object_add(td, "selectionRange", json_object_new_object());
  json_object_object_add(caps, "textDocument", td);
  {
   struct json_object *ws = json_object_new_object();
@@ -1625,6 +1626,62 @@ int e_lsp_type_hierarchy(e_lsp_session *s, const char *path, int line,
  if (!item)
   return 0;                              /* not on a type */
  return lsp_type_hierarchy_collect(s, item, subtypes, out, max);
+}
+
+/* Read a {start:{line,character}, end:{...}} range object into `r`. */
+static void lsp_read_range(struct json_object *range, e_lsp_range *r)
+{
+ struct json_object *st = range ? obj_obj(range, "start") : NULL;
+ struct json_object *en = range ? obj_obj(range, "end") : NULL;
+
+ r->start_line = st ? obj_int(st, "line", 0) : 0;
+ r->start_char = st ? obj_int(st, "character", 0) : 0;
+ r->end_line = en ? obj_int(en, "line", 0) : 0;
+ r->end_char = en ? obj_int(en, "character", 0) : 0;
+}
+
+int e_lsp_selection_range(e_lsp_session *s, const char *path, int line,
+                          int character, e_lsp_range *out, int max)
+{
+ char abspath[PATH_MAX], uri[PATH_MAX + 8];
+ struct json_object *args, *doc, *positions, *pos, *resp, *result, *node;
+ int id, n = 0;
+
+ if (!s)
+  return -1;
+ if (!realpath(path, abspath))
+  snprintf(abspath, sizeof(abspath), "%s", path);
+ snprintf(uri, sizeof(uri), "file://%s", abspath);
+
+ args = json_object_new_object();
+ doc = json_object_new_object();
+ json_object_object_add(doc, "uri", json_object_new_string(uri));
+ json_object_object_add(args, "textDocument", doc);
+ pos = json_object_new_object();
+ json_object_object_add(pos, "line", json_object_new_int(line));
+ json_object_object_add(pos, "character", json_object_new_int(character));
+ positions = json_object_new_array();
+ json_object_array_add(positions, pos);
+ json_object_object_add(args, "positions", positions);
+ id = ++s->id;
+ lsp_send(s, id, "textDocument/selectionRange", args);
+ resp = lsp_pump(s, id, NULL, LSP_TMO_REQ);
+ if (!resp)
+  return -1;
+ /* result is SelectionRange[] (one per requested position); follow the .parent
+    chain of the first, flattening innermost -> outermost into out[]. */
+ result = obj_obj(resp, "result");
+ node = (result && json_object_is_type(result, json_type_array) &&
+         json_object_array_length(result) > 0)
+        ? json_object_array_get_idx(result, 0) : NULL;
+ while (node && n < max)
+ {
+  lsp_read_range(obj_obj(node, "range"), &out[n]);
+  n++;
+  node = obj_obj(node, "parent");
+ }
+ json_object_put(resp);
+ return n;
 }
 
 /* Byte offset of LSP (line,character) within `text` (lines separated by '\n'). */

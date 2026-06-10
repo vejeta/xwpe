@@ -99,6 +99,12 @@ vi @dfn{up} key, a reminder that supertypes are the parents.
 @item Alt-Q J
 Subtypes: list what extends or implements the type under the cursor -- the
 inheritance graph @emph{downward} (@kbd{J} = vi @dfn{down} = the children).
+@item Alt-Q V
+Expand selection (@kbd{V} = @dfn{Visual}): grow the block mark to the smallest
+syntactic range that encloses it -- with nothing selected it picks the token
+under the cursor, then each press widens by structure (token -> expression ->
+argument list -> call -> statement -> block), not by lines.  The result is an
+ordinary block, so @kbd{Ctrl-K C} / @kbd{Ctrl-K Y} copy or delete it as usual.
 @item Alt-Q U
 Highlight @dfn{uses}: mark every occurrence of the symbol under the cursor
 @emph{in the current file} (in the found-word colour) -- a search highlight that

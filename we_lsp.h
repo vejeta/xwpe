@@ -60,6 +60,12 @@ typedef struct {
  int   character; /* 0-based                                */
 } e_lsp_location;
 
+/* A text range [start, end), both ends 0-based (line, character) as in LSP. */
+typedef struct {
+ int start_line, start_char;
+ int end_line, end_char;
+} e_lsp_range;
+
 /* A symbol for the outline / workspace search (engine-owned strings). */
 typedef struct {
  char *name;      /* symbol name (object/def/val/...)        */
@@ -193,6 +199,14 @@ int e_lsp_call_hierarchy(e_lsp_session *s, const char *path, int line,
 int e_lsp_type_hierarchy(e_lsp_session *s, const char *path, int line,
                          int character, int subtypes,
                          e_lsp_symbol *out, int max);
+
+/* textDocument/selectionRange at (line,character): the server's nested
+ * "smart selection" ranges, flattened innermost-first into `out` (out[0] is the
+ * tightest range around the cursor, each following one strictly encloses the
+ * previous).  Fills up to `max`; returns the count (>=0) or -1.  Drives an
+ * editor "expand selection" that grows by syntactic structure, not by lines. */
+int e_lsp_selection_range(e_lsp_session *s, const char *path, int line,
+                          int character, e_lsp_range *out, int max);
 
 /* textDocument/documentHighlight: every occurrence of the symbol under the
  * cursor IN THIS FILE (read/write/text).  Fills up to `max` start locations
