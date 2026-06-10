@@ -24,6 +24,16 @@ zero-config IDE front-end, no XQuartz and no Electron.
 
 @section Keys
 
+@cindex Metals menu
+@cindex status bar
+While a language-server file is the active window, the bottom status bar shows a
+@samp{Metals} entry (named after the server).  Click it -- or for the keyboard,
+use the @kbd{Alt-Q} prefix -- to reach the actions.  Clicking opens a drop-up
+menu (the same widget as the @samp{File}/@samp{Edit} menus, unfolding upward from
+the bar) listing every action with its letter; arrow keys move, the letter or a
+click picks, @key{ESC} closes.  The entry appears only for files a server backs,
+and disappears when you switch to an ordinary file.
+
 All language-server actions share the @kbd{Alt-Q} prefix (@dfn{Query the
 language server}), followed by a letter:
 
@@ -130,32 +140,97 @@ the freshest view.
 
 @cindex scala-cli
 @cindex coursier
+@cindex JAVA_HOME
+@cindex JDK
 
-Requirements:
+Three things must be reachable (on your @env{PATH}, or pointed to by an
+environment variable) before the @kbd{Alt-Q} keys do anything useful:
 
-@itemize @bullet
-@item @command{metals} on your @env{PATH}.  Install it with coursier:
+@enumerate
+@item @strong{@command{metals}} -- the Scala language server.  Install it with
+@uref{https://get-coursier.io/,coursier}:
 @example
 cs install metals
 @end example
-@item @command{scala-cli} on your @env{PATH} (@code{cs install scala-cli}).
-xwpe runs @code{scala-cli setup-ide} so Metals connects to the build server
-automatically; this is the same tooling the Scala debugger uses
-(@pxref{Debugging}).
-@item A JDK the Scala compiler supports.  The Debian @code{scala} package
-(2.11) is too old (Metals wants Scala 2.12.12+, 2.13 or 3.x); but a JDK that is
-too @emph{new} also fails -- on a bleeding-edge default JDK (e.g.@: OpenJDK 24+)
-the Scala 3 compiler crashes at start-up with an internal assertion
-(@code{asTerm called on not-a-Term}), which surfaces as Metals never producing
-diagnostics.  Pin a supported LTS JDK for the project with a one-line
-@file{project.scala}:
+
+@item @strong{@command{scala-cli}} -- the build tool Metals drives
+(@code{cs install scala-cli}).  xwpe runs @code{scala-cli setup-ide} for you, so
+Metals connects to the build server automatically; it is the same tooling the
+Scala debugger uses (@pxref{Debugging}).
+
+@item @strong{A JDK the Scala@tie{}3 compiler supports -- and Metals must run on
+it.}  This is the subtle one; see the next subsection.
+@end enumerate
+
+@subsection The JDK: two JVMs, and the one that matters
+
+@cindex presentation compiler
+@cindex asTerm called on not-a-Term
+There are really @emph{two} JVMs in play, and they are easy to confuse:
+
+@itemize @bullet
+@item The @dfn{build} JVM compiles the project (scala-cli / Bloop).  You pin it
+@emph{per project} with a one-line @file{project.scala}:
 @example
 //> using jvm temurin:21
 @end example
 @noindent
-scala-cli downloads and caches that JDK and Metals uses it too.  (Setting
-@env{JAVA_HOME} to a JDK 17/21 works as well.)
+scala-cli downloads and caches that JDK.  This is enough for @kbd{F9} builds and
+the debugger.
+
+@item The JVM @strong{Metals itself} runs on.  Metals' @dfn{presentation
+compiler} -- which powers hover, completion and go-to-definition -- runs in
+@emph{Metals' own} process, @strong{not} the build JVM.  So @file{project.scala}
+alone does @emph{not} cover it: if Metals is launched on a too-new JDK, the
+Scala@tie{}3 presentation compiler crashes at start-up with @code{asTerm called
+on not-a-Term}, and every navigation action silently comes back empty -- even
+though diagnostics (which come from the build server) look fine.
 @end itemize
+
+@noindent
+@strong{So the real requirement is that Metals run on a supported LTS JDK
+(17 or 21).}  @strong{xwpe handles this for you}: when it starts Metals it checks
+the default JDK, and if that is too new (@geq{}@tie{}24) it looks for an
+installed LTS JDK and points @env{JAVA_HOME} at it for the Metals process,
+reporting what it picked in the Messages window
+(@samp{Metals: pinned JAVA_HOME=@dots{}}).  You only need to set @env{JAVA_HOME}
+yourself if no LTS JDK is installed (xwpe then tells you), or to override the
+choice:
+
+@example
+export JAVA_HOME=/path/to/jdk-21
+export PATH="$JAVA_HOME/bin:$PATH"
+wpe Main.scala
+@end example
+@noindent
+An explicit @env{JAVA_HOME} that already points at a supported JDK is respected
+and never overridden.
+
+@noindent
+A JDK that is too @emph{old} fails the other way: the ancient distribution
+@code{scala} (2.11) is below Metals' floor (it wants Scala 2.12.12+, 2.13 or
+3.x).  An LTS@tie{}17 or@tie{}21 is the safe middle.
+
+@subsubsection Debian / Ubuntu
+@example
+# metals and scala-cli are not in the archive -- install via coursier:
+cs install metals scala-cli
+# an LTS JDK (the default-jdk may be too new):
+sudo apt install openjdk-21-jdk
+export JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64
+export PATH="$JAVA_HOME/bin:$PATH"
+@end example
+
+@subsubsection macOS
+@example
+brew install coursier/formulas/coursier && cs setup
+cs install metals scala-cli
+brew install openjdk@@21          # or a Temurin 21 from Adoptium
+export JAVA_HOME="$(brew --prefix openjdk@@21)/libexec/openjdk.jdk/Contents/Home"
+export PATH="$JAVA_HOME/bin:$PATH"
+@end example
+
+@subsection Using it
 
 Open a @file{.scala} file and use the @kbd{Alt-Q} keys above.  Symbols come
 back Scala-aware: completion shows full signatures

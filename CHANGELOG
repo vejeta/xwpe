@@ -366,9 +366,36 @@ Changes
   they work in both wpe (ncurses) and xwpe (X11).  tests/test_lsp_scala.c
   asserts the range is delivered; tests/test_scala_lsp_diag_marks.py asserts
   the red cells actually render through wpe.
-* Next LSP increments: document highlight, inlay hints, code lens (run/test),
-  call hierarchy, folding, semantic tokens; and more servers -- clangd (C/C++,
-  in Debian), pyright, rust-analyzer, gopls -- each a descriptor row.
+* Discoverable "Metals" menu: while a language-server file is the active window,
+  the bottom status bar shows a "Metals" entry (named after the server) -- the
+  Borland-style contextual bar, like Messages' Compile/Run.  Clicking it opens a
+  drop-up menu (the same widget as the File/Edit menus, unfolding upward from the
+  bar, anchored under the entry) listing every Alt-Q action with its accelerator
+  right-aligned; arrows move, the letter or a click runs it.  The entry appears
+  only for files a server backs and disappears for ordinary files.  Covered by
+  tests/test_lsp_menu.py (visibility, focus-switching, the mouse drop-up, and the
+  keyboard Alt-Q path).
+* Fixed: go-to-definition and hover came back empty for every symbol.  The
+  buffer-to-server serializer copied each line's in-buffer WPE_WR newline marker
+  AND appended its own '\n', doubling every line break -- so the server saw a file
+  twice as long and every position was off by whole lines.  e_lsp_buffer_text now
+  emits one newline per line (matching File>Save); the didOpen text is byte-
+  identical to disk.  This was the real cause of "No hover information" too.
+* Fixed: Alt-Q W no longer lists Metals' "Add ';' to search library dependencies"
+  help entry (it pointed at a Markdown doc, not code); results whose path ends in
+  .md are filtered out.
+* Scala "just works" on a too-new default JDK: Metals' presentation compiler
+  (hover, completion, go-to-definition) runs on the JVM Metals itself uses, not
+  the project's //> using jvm build JVM.  On JDK >= 24 (e.g. OpenJDK 26) the
+  Scala 3 compiler crashes at start-up (asTerm called on not-a-Term), making
+  those actions silently return empty while diagnostics/definition keep working.
+  xwpe now detects this and pins JAVA_HOME to an installed LTS JDK (17/21) for
+  Metals, reporting it in Messages ("Metals: pinned JAVA_HOME=..."); an explicit
+  supported JAVA_HOME is respected.  If no LTS JDK is installed it says so.  See
+  the manual's "Language servers" chapter and "Known open issues".
+* Next LSP increments: inlay hints, call hierarchy, folding, semantic tokens,
+  worksheets; and more servers -- clangd (C/C++, in Debian), pyright,
+  rust-analyzer, gopls -- each a descriptor row.
 
 1.6.4 (embedded VT terminal, Algol 68 source-level debugger, window-layout fixes)
 

@@ -95,6 +95,18 @@ console-only build needs only `libncurses-dev` (plus the build tools).
   the server stays an external tool (`cs install metals`). clangd (C/C++, in
   Debian), pyright, rust-analyzer and gopls are descriptor-row drop-ins next.
 
+  **Prerequisites (Linux/macOS):** `cs install metals scala-cli`, **plus an LTS
+  JDK (17 or 21) that *Metals* runs on**. The subtle part: `//> using jvm
+  temurin:21` in `project.scala` pins only the *build* JVM &mdash; Metals' own
+  presentation compiler (hover, completion, go-to-definition) runs on Metals'
+  JVM, so set `JAVA_HOME` to a JDK 17/21. On a too-new default JDK (e.g. OpenJDK
+  26) the Scala 3 presentation compiler crashes (`asTerm called on not-a-Term`)
+  and navigation/hover silently return empty. On **Debian/Ubuntu**:
+  `sudo apt install openjdk-21-jdk` then
+  `export JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64`. See the **Language
+  servers** chapter of the manual (`info xwpe`, or Help&nbsp;&rarr;&nbsp;Info)
+  for the full setup.
+
   <p align="center">
     <img src="screenshots/xwpe-go-dap-debug.png" width="720" alt="Debugging a Go program in xwpe via Delve over DAP: the editor stopped at a breakpoint on line 9 (highlighted), and a Watches window below showing the live value fact: 6 as the factorial loop runs.">
     <br><em>Debugging Go through Delve/DAP: stopped at a breakpoint, with a live watch (<code>fact</code>) updating as the loop runs.</em>

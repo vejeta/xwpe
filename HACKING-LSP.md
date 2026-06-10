@@ -190,14 +190,29 @@ typedef struct {
 * **Too-new JDK gotcha (cost a debug cycle 2026-06-10).** On Debian sid the
   default JDK was OpenJDK 26; the Scala 3 compiler (3.3.7 *and* 3.8.3) crashes at
   start-up with `assertion failed: asTerm called on not-a-Term val <none>` in
-  `Definitions.init`/`ObjectClass` — i.e. it cannot bootstrap on a JDK it does
-  not know. Symptom inside xwpe: Metals starts but never reports diagnostics.
-  Fix is environment, not code: pin a supported LTS JDK per project with a
-  one-line `project.scala` containing `//> using jvm temurin:21` (scala-cli
-  downloads + uses it, and Metals picks it up via BSP), or set `JAVA_HOME`. The
-  Scala version itself is fine — `xwpe-dev/scala-demo/` compiles on Scala 3.8.3
-  once the JVM is pinned. Worth surfacing to users (done in lsp.texi
-  prerequisites); a future xwpe could detect the crash signature and hint this.
+  `Definitions.init`/`ObjectClass`. **There are TWO JVMs and only one of them is
+  fixed by `project.scala`:** `//> using jvm temurin:21` pins the *build* JVM
+  (scala-cli/Bloop) — so the build compiles, SemanticDB is written, and
+  diagnostics work — but Metals' **presentation compiler** (hover, completion,
+  go-to-definition) runs in *Metals' own* JVM, which is whatever `JAVA_HOME` /
+  the `metals` launcher selects. On a too-new default JDK the PC crashes and
+  every navigation/hover action silently returns `[]`/null while diagnostics look
+  fine — a confusing split. **The real fix is to run Metals on an LTS JDK: set
+  `JAVA_HOME` (and prepend its `bin` to `PATH`) before launching `wpe`.**
+  Verified: `JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64` stops the crash
+  (metals.log then warns about java-21 not java-26, no `asTerm`). Surfaced to
+  users in lsp.texi (the "two JVMs" subsection); a future xwpe could detect the
+  crash signature in metals.log and hint this.
+* **`e_lsp_buffer_text` newline-doubling bug (fixed 2026-06-10).** xwpe stores
+  each line in `b->bf[y].s` terminated by an embedded `WPE_WR` (0x0A) marker
+  (that is how `e_write`/Save delimits lines on disk). The buffer→string
+  serializer used `strlen()` (copying that 0x0A) **and** appended its own `\n`,
+  doubling every newline: a 17-line file reached the server as 34 lines, so every
+  LSP position was off by whole lines and definition/hover returned nothing —
+  and this, not Metals, was the real cause of the "hover always null" report.
+  Fix: helper `e_lsp_line_len()` copies each line up to `WPE_WR`, then one `\n`
+  (mirrors `e_write`). Lesson: the didOpen/didChange text MUST be byte-identical
+  to what `File>Save` writes — diff it against disk when positions look wrong.
 * Cross-file navigation works (definition/implementation/type-definition/
   workspace-symbol jump open the target file via `e_d_goto_break`→`e_edit`), but
   the server holds ONE open document at a time: switching the Alt-Q focus to a
