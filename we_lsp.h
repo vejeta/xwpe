@@ -105,6 +105,20 @@ typedef struct {
 e_lsp_session *e_lsp_open(char *const argv[], const char *root_dir,
                           const char *lang, const e_lsp_host *host);
 
+/* Like e_lsp_open but ASYNCHRONOUS: spawns the server and sends `initialize`,
+ * then returns immediately with the session "starting" (the slow JVM boot does
+ * NOT block the caller).  Drive e_lsp_poll() from an fd-loop on e_lsp_fd(s)
+ * until e_lsp_started(s) is true; e_lsp_poll finishes the handshake.  Then the
+ * caller sends didOpen.  Returns NULL only on spawn failure. */
+e_lsp_session *e_lsp_open_async(char *const argv[], const char *root_dir,
+                                const char *lang, const e_lsp_host *host);
+
+/* The server's stdout fd (register it with the editor's fd-loop), or -1. */
+int e_lsp_fd(e_lsp_session *s);
+
+/* 1 once the initialize handshake has completed (server ready), else 0. */
+int e_lsp_started(e_lsp_session *s);
+
 /* textDocument/didOpen: hand the server the buffer text so it compiles/indexes.
  * `path` is a filesystem path (turned into a file:// URI internally). */
 int e_lsp_did_open(e_lsp_session *s, const char *path, const char *text);

@@ -26,6 +26,9 @@ struct e_lsp_session {
  int          out_fd;            /* read messages from the server's stdout */
  e_dap_reader rd;
  int          id;                /* JSON-RPC id counter                   */
+ int          init_id;           /* id of the initialize request           */
+ int          started;           /* 0 = awaiting initialize response,      */
+                                  /* 1 = handshake done (server is ready)   */
  e_lsp_host   host;
  int          doc_version;       /* textDocument version (didOpen = 1)    */
  char         root_uri[PATH_MAX + 8];
@@ -620,13 +623,18 @@ static struct json_object *lsp_client_caps(void)
  return caps;
 }
 
-e_lsp_session *e_lsp_open(char *const argv[], const char *root_dir,
-                          const char *lang, const e_lsp_host *host)
+/* Spawn the server and SEND `initialize`, but do NOT wait for the response:
+   return immediately with the session in the "starting" state (s->started == 0).
+   The caller pumps e_lsp_poll() (e.g. from an fd-loop callback) until the
+   response arrives, at which point e_lsp_poll sends `initialized` and flips
+   s->started to 1.  This keeps the slow JVM cold-start OFF the editor's input
+   loop.  Returns NULL only on spawn failure (the handshake itself is async). */
+e_lsp_session *e_lsp_open_async(char *const argv[], const char *root_dir,
+                                const char *lang, const e_lsp_host *host)
 {
  e_lsp_session *s;
  char rootdir[PATH_MAX];
- struct json_object *args, *resp;
- int id;
+ struct json_object *args;
 
  (void)lang;
  if (!realpath(root_dir, rootdir))
@@ -639,6 +647,7 @@ e_lsp_session *e_lsp_open(char *const argv[], const char *root_dir,
  if (host)
   s->host = *host;
  s->in_fd = s->out_fd = -1;
+ s->started = 0;
  snprintf(s->root_uri, sizeof(s->root_uri), "file://%s", rootdir);
 
  s->pid = lsp_spawn(argv, rootdir, &s->in_fd, &s->out_fd);
@@ -650,13 +659,37 @@ e_lsp_session *e_lsp_open(char *const argv[], const char *root_dir,
  json_object_object_add(args, "rootUri", json_object_new_string(s->root_uri));
  json_object_object_add(args, "capabilities", lsp_client_caps());
  json_object_object_add(args, "initializationOptions", lsp_init_options());
- id = ++s->id;
- lsp_send(s, id, "initialize", args);
- resp = lsp_pump(s, id, NULL, LSP_TMO_INIT);
- if (!resp)
+ s->init_id = ++s->id;
+ lsp_send(s, s->init_id, "initialize", args);
+ return s;
+}
+
+int e_lsp_fd(e_lsp_session *s)      {  return s ? s->out_fd : -1;  }
+int e_lsp_started(e_lsp_session *s) {  return s ? s->started : 0;  }
+
+/* Synchronous open: start async, then BLOCK draining until the handshake
+   completes (or LSP_TMO_INIT elapses).  Kept for the engine tests and any
+   caller that wants a ready session in hand; the editor uses the async path. */
+e_lsp_session *e_lsp_open(char *const argv[], const char *root_dir,
+                          const char *lang, const e_lsp_host *host)
+{
+ e_lsp_session *s = e_lsp_open_async(argv, root_dir, lang, host);
+ long deadline;
+
+ if (!s)
+  return NULL;
+ deadline = lsp_now_ms() + LSP_TMO_INIT;
+ while (!s->started && lsp_now_ms() < deadline)
+ {
+  struct pollfd p;
+  p.fd = s->out_fd;
+  p.events = POLLIN;
+  if (poll(&p, 1, 200) < 0)
+   break;
+  e_lsp_poll(s);                         /* drains + advances the handshake */
+ }
+ if (!s->started)
  {  e_lsp_close(s);  return NULL;  }
- json_object_put(resp);
- lsp_notify(s, "initialized", json_object_new_object());
  return s;
 }
 
@@ -781,12 +814,15 @@ int e_lsp_poll(e_lsp_session *s)
   id = obj_obj(m, "id");
   method = obj_obj(m, "method");
   if (id && method)
-   lsp_answer_request(s, m);
+   lsp_answer_request(s, m);             /* server -> client request */
   else if (method)
+   lsp_dispatch_notification(s, m, NULL); /* diagnostics / status / doctor / ... */
+  else if (id && !s->started && json_object_get_int(id) == s->init_id)
   {
-   const char *meth = json_object_get_string(method);
-   if (meth && !strcmp(meth, "textDocument/publishDiagnostics"))
-    lsp_dispatch_diagnostics(s, obj_obj(m, "params"));
+   /* the initialize response (the slow cold-start reply): finish the handshake
+      here, off the editor's input loop, and mark the session ready. */
+   lsp_notify(s, "initialized", json_object_new_object());
+   s->started = 1;
   }
   json_object_put(m);
  }

@@ -5582,15 +5582,93 @@ static void e_lsp_pin_jdk(FENSTER *f)
  e_d_p_message(msg, f, 1);
 }
 
-/* Lazily start the language server for f's file and surface its diagnostics.
-   For Scala, `scala-cli setup-ide` is run first so Metals auto-connects to the
-   build server.  The buffer is read from disk (save before invoking for the
-   freshest view).  Returns 0 when a session is ready, -1 otherwise. */
+/* --- Asynchronous server start ----------------------------------------------
+   The Metals cold start is slow (JVM boot + build import + first compile, ~1-3
+   min) and used to be done synchronously, freezing the editor.  Now the
+   session's stdout fd is registered with the editor's fd-loop (wpe_fd_poll,
+   pumped from the input wait), so the initialize handshake and the first
+   compile run in the BACKGROUND while the user keeps editing.  The fd is in the
+   poll set ONLY during that active startup window -- Metals streams output the
+   whole time, so the input loop's blocking poll keeps returning and stays
+   responsive -- and is removed once the first diagnostics arrive (steady state:
+   an idle server must never sit in the poll set and delay a keystroke).  After
+   that, diagnostics flow via e_lsp_on_edit's poll and each request's own pump,
+   exactly as before. */
+static int g_lsp_fd_num = -1;                 /* fd in the poll set, or -1     */
+static int e_lsp_ensure(FENSTER *f);          /* fwd */
+static void e_lsp_fd_unregister(void);        /* fwd */
+
+/* fd-loop callback: drain the server, finish the handshake, hand it the
+   document once ready, and leave the poll set once the first diagnostics land. */
+static void e_lsp_on_fd_readable(int fd, void *data)
+{
+ int was_started, qsave;
+ (void)fd; (void)data;
+
+ if (!g_lsp)
+ {  e_lsp_fd_unregister();  return;  }
+ was_started = e_lsp_started(g_lsp);
+ qsave = g_lsp_quiet;
+ g_lsp_quiet = 1;                          /* startup: show the summary, not each line */
+ e_lsp_poll(g_lsp);                        /* handshake + diagnostics/status/doctor */
+ g_lsp_quiet = qsave;
+
+ if (!was_started && e_lsp_started(g_lsp))
+ {
+  /* handshake just completed: open the CURRENT buffer (captures any edits the
+     user made while the server was booting) so the server compiles it. */
+  FENSTER *home = g_lsp_fenster;
+  if (home)
+  {
+   char *text = e_lsp_buffer_text(home);
+   e_lsp_did_open(g_lsp, g_lsp_file, text ? text : "");
+   e_lsp_did_focus(g_lsp, g_lsp_file);
+   e_lsp_synced_set(text ? text : strdup(""));
+  }
+ }
+ if (e_lsp_started(g_lsp) && g_lsp_last_err >= 0)
+ {
+  /* first diagnostics summary arrived -> steady state: stop polling from the
+     input loop so an idle server never delays a keystroke. */
+  e_lsp_fd_unregister();
+  if (g_lsp_fenster)
+   e_d_p_message("Language server ready.", g_lsp_fenster, 0);
+ }
+}
+
+static void e_lsp_fd_register(void)
+{
+ if (g_lsp && g_lsp_fd_num < 0 && e_lsp_fd(g_lsp) >= 0)
+ {
+  g_lsp_fd_num = e_lsp_fd(g_lsp);
+  wpe_fd_add(g_lsp_fd_num, POLLIN, e_lsp_on_fd_readable, NULL);
+ }
+}
+
+static void e_lsp_fd_unregister(void)
+{
+ if (g_lsp_fd_num >= 0)
+ {  wpe_fd_del(g_lsp_fd_num);  g_lsp_fd_num = -1;  }
+}
+
+/* (An eager "start on first interaction" autostart was prototyped here but is
+   deferred: the keystroke hook also fires on bottom-bar/menu mouse clicks, so it
+   would boot the server just from opening the Metals menu.  Eager start belongs
+   on a real file-open hook -- a follow-up.  For now the start is lazy: the first
+   Alt-Q action kicks off the async start below, and the editor stays responsive
+   while it runs.) */
+
+/* Ensure the language server is started for f's file.  ASYNCHRONOUS: the first
+   call spawns the server, sends initialize and RETURNS -- the slow cold start
+   runs in the background (see above), so the editor never freezes.  Returns 0
+   only when the session is READY (the action may proceed); -1 while it is still
+   starting (the action politely waits) or on error.  For Scala, `scala-cli
+   setup-ide` is run first so Metals auto-connects to the build server. */
 static int e_lsp_ensure(FENSTER *f)
 {
  const char *lang = e_lsp_lang_for(f);
  static e_lsp_host host;
- char dir[1024], path[1200], cmd[1400], *text;
+ char dir[1024], path[1200], cmd[1400];
  char *const argv[] = { "metals", NULL };
  int dl;
 
@@ -5598,9 +5676,15 @@ static int e_lsp_ensure(FENSTER *f)
  {  e_error("Language server: unsupported file type.", 0, f->fb);  return(-1);  }
  snprintf(path, sizeof(path), "%s%s", f->dirct ? f->dirct : "./", f->datnam);
  if (g_lsp && !strcmp(g_lsp_file, path))
-  return(0);                                   /* already open for this file */
+ {
+  if (e_lsp_started(g_lsp))
+   return(0);                                  /* ready -> the action proceeds */
+  e_d_p_message("Language server still starting -- try the action again shortly.",
+                f, 0);
+  return(-1);                                   /* still starting -> action waits */
+ }
  if (g_lsp)
- {  e_lsp_close(g_lsp);  g_lsp = NULL;  e_lsp_diag_clear();
+ {  e_lsp_fd_unregister();  e_lsp_close(g_lsp);  g_lsp = NULL;  e_lsp_diag_clear();
     e_lsp_inlay_clear();  g_inlay_on = 0;  }  /* switched files: drop overlays */
  if (e_test_command(argv[0]))
  {  e_error("Metals not in PATH (cs install metals).", 0, f->fb);  return(-1);  }
@@ -5613,12 +5697,9 @@ static int e_lsp_ensure(FENSTER *f)
  strncpy(g_lsp_file, path, sizeof(g_lsp_file) - 1);
  g_lsp_file[sizeof(g_lsp_file) - 1] = '\0';
 
- e_d_p_message("Starting language server (Metals)...", f, 1);
  if (!strcmp(lang, "scala"))
   e_lsp_pin_jdk(f);              /* keep Metals' Scala PC off a too-new JDK */
- /* </dev/null: never let the child share xwpe's interactive terminal stdin --
-    it would consume/scramble the user's keystrokes typed during this blocking
-    setup, leaving stray bytes that the editor later reads as commands. */
+ /* </dev/null: never let the child share xwpe's interactive terminal stdin. */
  snprintf(cmd, sizeof(cmd), "scala-cli setup-ide '%s' </dev/null >/dev/null 2>&1", dir);
  if (system(cmd) != 0)
   { /* non-fatal: Metals can still import the build */ }
@@ -5629,38 +5710,24 @@ static int e_lsp_ensure(FENSTER *f)
  host.on_status = e_lsp_on_status;
  host.ud = NULL;
  g_lsp_last_err = g_lsp_last_warn = -1;   /* fresh session: force first report */
- free(g_lsp_doctor_last);                 /* fresh session: show its Doctor even */
- g_lsp_doctor_last = NULL;                 /* if identical to a previous session's */
- free(g_lsp_status_last);                 /* fresh session: status starts clean   */
- g_lsp_status_last = NULL;
+ free(g_lsp_doctor_last);  g_lsp_doctor_last = NULL;   /* fresh session: re-show Doctor */
+ free(g_lsp_status_last);  g_lsp_status_last = NULL;   /* fresh session: clean status   */
  g_lsp_busy = 0;
- g_lsp = e_lsp_open(argv, dir, lang, &host);
+ /* ASYNC: spawn + send initialize, then return.  The JVM boot, import and first
+    compile complete in the background via e_lsp_on_fd_readable. */
+ g_lsp = e_lsp_open_async(argv, dir, lang, &host);
  if (!g_lsp)
  {
   e_error("Could not start the language server.", 0, f->fb);
   g_lsp_file[0] = '\0';
   return(-1);
  }
- text = e_lsp_buffer_text(f);
- e_lsp_did_open(g_lsp, path, text ? text : "");
- e_lsp_did_focus(g_lsp, path);                 /* warm the PC so hover/completion work */
- e_lsp_synced_set(text ? text : strdup(""));   /* baseline = what we opened with */
- e_lsp_wait_diagnostics(g_lsp, path, 240000);  /* compile -> diags to Messages */
- /* The first start froze the UI for seconds while the JVM booted; discard any
-    keys the user mashed during the freeze so they are not replayed afterwards as
-    stray actions (e.g. a queued key landing on Run -> "not a C file"). */
- {
-  extern void e_t_flush_input(void);
-#ifndef NO_XWINDOWS
-  extern void e_x_flush_input(void);
-  if (WpeIsXwin())
-   e_x_flush_input();
-  else
-#endif
-   e_t_flush_input();
- }
- e_lsp_raise_source(f);   /* keep the code focused -- do not strand the user in Messages */
- return(0);
+ e_lsp_synced_set(NULL);                   /* not opened yet; on-ready will didOpen */
+ e_lsp_fd_register();
+ e_d_p_message("Starting language server (the editor stays responsive)...", f, 1);
+ e_lsp_raise_source(f);   /* the sw=1 message surfaced Messages -- put the code
+                             back on top so the user keeps editing, not stranded */
+ return(-1);                                /* starting -- ready on a later call */
 }
 
 /* AltQ E -- (re)start the server for this file and show its diagnostics. */
@@ -6494,7 +6561,9 @@ void e_lsp_on_edit(FENSTER *f, int c)
 {
  char path[1200];
 
- if (!g_lsp || !f || !f->datnam)
+ if (!g_lsp || !e_lsp_started(g_lsp))
+  return;                            /* no session, or still starting (fd-loop runs it) */
+ if (!f || !f->datnam)
   return;
  snprintf(path, sizeof(path), "%s%s", f->dirct ? f->dirct : "./", f->datnam);
  if (strcmp(path, g_lsp_file) != 0)
@@ -6509,6 +6578,7 @@ void e_lsp_on_edit(FENSTER *f, int c)
 /* Disconnect the language server (called on editor exit). */
 void e_lsp_ui_shutdown(void)
 {
+ e_lsp_fd_unregister();              /* remove the fd before freeing the session */
  if (g_lsp)
  {  e_lsp_close(g_lsp);  g_lsp = NULL;  }
  e_lsp_diag_clear();

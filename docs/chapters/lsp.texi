@@ -164,6 +164,17 @@ needed), and a @samp{LSP: N error(s), M warning(s)} status is updated live in
 the Messages window whenever the totals change.  @kbd{Alt-Q E} still lists the
 full set on demand.
 
+@cindex asynchronous start
+@cindex cold start
+The first language-server action @emph{starts} Metals and returns at once:
+@samp{Starting language server (the editor stays responsive)@dots{}} appears in
+Messages and the cold start -- JVM boot, build import and the first compile,
+a minute or more -- runs in the @emph{background}.  xwpe no longer freezes
+during it: you can keep typing, scrolling and using other menus.  Because the
+server is not ready yet, that first action does nothing but kick off the start;
+once Messages shows @samp{Language server ready} (or the live status below
+settles), repeat the action and it works.  Subsequent actions are instant.
+
 @cindex server status
 @cindex indexing
 The server's own progress is surfaced too: while Metals imports the build and
