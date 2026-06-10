@@ -5143,6 +5143,7 @@ static void e_lsp_diag_clear(void)
 static e_lsp_inlay_hint g_inlay_active[LSP_MAX_INLAY];
 static int             g_inlay_nactive = 0;
 static int             g_inlay_on = 0;    /* the toggle (per open file)         */
+static int             g_inlay_stale = 0; /* server asked us to re-query hints   */
 
 static void e_lsp_inlay_clear(void)
 {
@@ -5177,6 +5178,31 @@ static void e_lsp_inlay_fetch(FENSTER *f)
   g_inlay_active[g_inlay_nactive].kind = tmp[i].kind;
   g_inlay_nactive++;
  }
+}
+
+/* host callback (workspace/inlayHint/refresh): the server re-queried -- the
+   current hints may be a stale subset (cold toggles miss cross-file inferred
+   types until indexing settles).  Fired from inside the pump, so only mark the
+   overlay stale; e_lsp_inlay_refresh_pending re-fetches at a safe point. */
+static void e_lsp_on_inlay_refresh(void *ud)
+{
+ (void)ud;
+ if (g_inlay_on)
+  g_inlay_stale = 1;
+}
+
+/* If the overlay is on and the server flagged it stale, re-fetch the hints and
+   repaint.  Called at safe points (after a poll, never inside one).  Returns 1
+   if it refreshed (caller may want to redraw the cursor), else 0. */
+static int e_lsp_inlay_refresh_pending(FENSTER *f)
+{
+ if (!g_inlay_on || !g_inlay_stale || !g_lsp)
+  return(0);
+ g_inlay_stale = 0;
+ e_lsp_inlay_fetch(f);
+ if (f && DTMD_ISTEXT(f->dtmd))
+ {  e_schirm(f, 1);  e_cursor(f, 0);  }
+ return(1);
 }
 
 /* Per-line gate for the renderer: is the inlay overlay on for the file in f? */
@@ -5708,7 +5734,9 @@ static int e_lsp_ensure(FENSTER *f)
  host.on_diagnostics_summary = e_lsp_on_diag_summary;
  host.on_show_text = e_lsp_on_show_text;
  host.on_status = e_lsp_on_status;
+ host.on_inlay_refresh = e_lsp_on_inlay_refresh;
  host.ud = NULL;
+ g_inlay_stale = 0;
  g_lsp_last_err = g_lsp_last_warn = -1;   /* fresh session: force first report */
  free(g_lsp_doctor_last);  g_lsp_doctor_last = NULL;   /* fresh session: re-show Doctor */
  free(g_lsp_status_last);  g_lsp_status_last = NULL;   /* fresh session: clean status   */
@@ -6573,6 +6601,7 @@ void e_lsp_on_edit(FENSTER *f, int c)
  if (c == WPE_CR)                   /* a line was completed -> recompile */
   e_lsp_sync(f);
  g_lsp_quiet = 0;
+ e_lsp_inlay_refresh_pending(f);    /* re-query inlays if the server flagged them */
 }
 
 /* Disconnect the language server (called on editor exit). */

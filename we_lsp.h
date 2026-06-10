@@ -40,6 +40,12 @@ typedef struct {
     1 when it has finished and the status should clear.  Lets the client show
     progress and tell "still indexing" apart from "no result".  May be NULL. */
  void (*on_status)(const char *text, int hide, void *ud);
+ /* The server asks the client to re-query inlay hints (workspace/inlayHint/
+    refresh) -- Metals sends this when re-indexing changes the inferred types,
+    so the overlay can update from a stale snapshot to the full set.  May be
+    NULL.  Fired from inside the message pump, so the handler must only set a
+    flag and refetch at a safe point, never issue a request synchronously. */
+ void (*on_inlay_refresh)(void *ud);
  void *ud;
 } e_lsp_host;
 

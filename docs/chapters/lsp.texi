@@ -120,8 +120,11 @@ line} (e.g.@: @code{val xs = List(1,2)} grows a faint @code{: List[Int]}).
 Press @kbd{Alt-Q Y} again to turn it off.  Off by default.  Unlike a modern
 GUI IDE the hint is shown at line-end, not woven mid-line: xwpe's cell grid
 keeps screen column == buffer column (so the cursor, editing and scrolling stay
-exact), and the hint conveys the same type without disturbing that.  The set is
-a snapshot taken when you toggle on; re-toggle to refresh after large edits.
+exact), and the hint conveys the same type without disturbing that.  The set
+refreshes itself: when the server finishes indexing and the inferred types
+change -- e.g.@: a cross-file type that was unknown the instant you toggled on
+-- it asks xwpe to re-query, and the overlay updates on your next keystroke, so
+a cold toggle fills in as the project settles (no need to re-toggle).
 @item Alt-Q L
 Code @dfn{lenses}: the @samp{run}/@samp{debug}/@samp{test} and reference-count
 annotations the server attaches to definitions (main methods, test suites), in

@@ -350,8 +350,16 @@ static void lsp_answer_request(e_lsp_session *s, struct json_object *m)
   json_object_object_add(res, "success", json_object_new_boolean(1));
   lsp_reply(s, id, res);
  }
+ else if (meth && !strcmp(meth, "workspace/inlayHint/refresh"))
+ {
+  /* "re-query your inlay hints": ack, then let the editor refetch (the server
+     sends this once indexing fills in cross-file inferred types). */
+  lsp_reply(s, id, NULL);
+  if (s->host.on_inlay_refresh)
+   s->host.on_inlay_refresh(s->host.ud);
+ }
  else
-  /* registerCapability, workDoneProgress/create, *_refresh, unknown -> null */
+  /* registerCapability, workDoneProgress/create, other *_refresh, unknown -> null */
   lsp_reply(s, id, NULL);
 }
 
@@ -608,7 +616,12 @@ static struct json_object *lsp_client_caps(void)
  json_object_object_add(caps, "textDocument", td);
  {
   struct json_object *ws = json_object_new_object();
+  struct json_object *ih = json_object_new_object();
   json_object_object_add(ws, "configuration", json_object_new_boolean(1));
+  /* ask the server to tell us when inlay hints need re-querying (it does so
+     once indexing fills in cross-file inferred types). */
+  json_object_object_add(ih, "refreshSupport", json_object_new_boolean(1));
+  json_object_object_add(ws, "inlayHint", ih);
   json_object_object_add(caps, "workspace", ws);
  }
  {  /* Tell the server WE display documents -- so Metals routes its Doctor URL
