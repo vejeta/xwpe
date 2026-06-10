@@ -31,7 +31,10 @@ static const char *SCALA_SRC =
  "class Hello extends Greeter:\n"          /* line 12                  */
  "  def greet(): String = \"hi\"\n"        /* line 13: implementation  */
  "\n"
- "val theGreeter: Hello = Hello()\n";      /* line 15: typed val       */
+ "val theGreeter: Hello = Hello()\n"       /* line 15: typed val       */
+ "def caller(): Unit = helper()\n"         /* line 16: calls helper -- a
+                                              user-to-user call edge    */
+ "def helper(): Unit = ()\n";              /* line 17: the callee       */
 
 static int g_diags = 0;
 static int g_last_diag_span = -1;   /* end_char - char of the last diagnostic */
@@ -228,7 +231,11 @@ int main(void)
     label comes back. */
  {
   e_lsp_code_lens cl[32];
-  int nl = e_lsp_code_lenses(s, scala, cl, 32), k;
+  int nl = 0, k, t;
+  /* the run/debug lens only appears once the build server (Bloop) has imported
+     the build and resolved the main class -- retry while that warms up. */
+  for (t = 0; t < 8 && nl < 1; t++)
+  { nl = e_lsp_code_lenses(s, scala, cl, 32); if (nl < 1) sleep(2); }
   printf("  CODE-LENSES: %d%s%s\n", nl, nl > 0 ? ", e.g. " : "",
          nl > 0 ? cl[0].title : "");
   if (nl < 1) { rc = fail("expected at least one code lens (run main)"); goto close; }
@@ -250,6 +257,38 @@ int main(void)
   for (k = 0; k < ni; k++)
    if (!ih[k].label || !ih[k].label[0])
    { rc = fail("an inlay hint came back with no label"); goto close; }
+ }
+
+ /* CALL HIERARCHY on `caller` (line 16, char 4): prepareCallHierarchy then its
+    OUTGOING calls.  caller() calls helper(), a user-to-user edge Metals reports
+    once the index is warm -- so we expect >= 1 callee named "helper" (retry
+    while it warms).  Then the INCOMING side from helper (line 17, char 4) must
+    list caller -- the inverse edge.  Each entry must carry a name. */
+ {
+  e_lsp_symbol ch[64];
+  int nc = 0, t, k, found = 0;
+  for (t = 0; t < 8 && nc < 1; t++)
+  { nc = e_lsp_call_hierarchy(s, scala, 16, 4, 1 /*outgoing*/, ch, 64);
+    if (nc < 1) sleep(2); }
+  printf("  CALL-HIERARCHY caller outgoing: %d%s%s\n", nc, nc > 0 ? ", e.g. " : "",
+         nc > 0 ? ch[0].name : "");
+  if (nc < 1) { rc = fail("caller() should have an outgoing call to helper()"); goto close; }
+  for (k = 0; k < nc; k++)
+  {
+   if (!ch[k].name || !ch[k].name[0])
+   { rc = fail("a call-hierarchy entry came back with no name"); goto close; }
+   if (strstr(ch[k].name, "helper")) found = 1;
+  }
+  if (!found) { rc = fail("outgoing calls of caller() missed helper()"); goto close; }
+
+  found = 0;
+  nc = e_lsp_call_hierarchy(s, scala, 17, 4, 0 /*incoming*/, ch, 64);
+  printf("  CALL-HIERARCHY helper incoming: %d%s%s\n", nc, nc > 0 ? ", e.g. " : "",
+         nc > 0 ? ch[0].name : "");
+  if (nc < 0) { rc = fail("incoming call hierarchy returned an error"); goto close; }
+  for (k = 0; k < nc; k++)
+   if (ch[k].name && strstr(ch[k].name, "caller")) found = 1;
+  if (!found) { rc = fail("incoming calls of helper() missed caller()"); goto close; }
  }
 
  /* diagnostics carry a RANGE: push a buffer with a type error and confirm the

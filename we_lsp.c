@@ -561,6 +561,7 @@ static struct json_object *lsp_client_caps(void)
  json_object_object_add(td, "definition", json_object_new_object());
  json_object_object_add(td, "publishDiagnostics", json_object_new_object());
  json_object_object_add(td, "inlayHint", json_object_new_object());
+ json_object_object_add(td, "callHierarchy", json_object_new_object());
  json_object_object_add(caps, "textDocument", td);
  {
   struct json_object *ws = json_object_new_object();
@@ -1394,6 +1395,96 @@ int e_lsp_workspace_symbols(e_lsp_session *s, const char *query,
   lsp_collect_symbols(s, result, syms, max, &out);
  json_object_put(resp);
  return out;
+}
+
+/* Store one CallHierarchyItem's name + location into the session cache and the
+   caller's array.  Uses selectionRange.start (the identifier position, not the
+   whole-definition range) so a future jump lands on the name.  Returns 1 if
+   stored, 0 if the array or cache is full. */
+static int lsp_store_ch_item(e_lsp_session *s, struct json_object *item,
+                             e_lsp_symbol *out, int max, int *n)
+{
+ struct json_object *sr, *st;
+ const char *name, *uri;
+
+ if (!item || *n >= max ||
+     s->nsyms >= (int)(sizeof(s->syms) / sizeof(s->syms[0])))
+  return 0;
+ name = obj_str(item, "name");
+ uri = obj_str(item, "uri");
+ sr = obj_obj(item, "selectionRange");
+ if (!sr)
+  sr = obj_obj(item, "range");
+ st = sr ? obj_obj(sr, "start") : NULL;
+ s->syms[s->nsyms].name = strdup(name ? name : "?");
+ s->syms[s->nsyms].path = uri ? strdup(uri_to_path(uri)) : NULL;
+ s->syms[s->nsyms].line = st ? obj_int(st, "line", 0) : 0;
+ s->syms[s->nsyms].character = st ? obj_int(st, "character", 0) : 0;
+ s->syms[s->nsyms].kind = obj_int(item, "kind", 0);
+ out[*n] = s->syms[s->nsyms];
+ s->nsyms++;
+ (*n)++;
+ return 1;
+}
+
+int e_lsp_call_hierarchy(e_lsp_session *s, const char *path, int line,
+                         int character, int outgoing,
+                         e_lsp_symbol *out, int max)
+{
+ char abspath[PATH_MAX], uri[PATH_MAX + 8];
+ struct json_object *args, *doc, *pos, *resp, *result, *item;
+ int id, n = 0, i, len;
+
+ if (!s)
+  return -1;
+ lsp_free_syms(s);
+ if (!realpath(path, abspath))
+  snprintf(abspath, sizeof(abspath), "%s", path);
+ snprintf(uri, sizeof(uri), "file://%s", abspath);
+
+ /* 1. prepareCallHierarchy: pin the symbol at the cursor to a CallHierarchyItem. */
+ args = json_object_new_object();
+ doc = json_object_new_object();
+ json_object_object_add(doc, "uri", json_object_new_string(uri));
+ json_object_object_add(args, "textDocument", doc);
+ pos = json_object_new_object();
+ json_object_object_add(pos, "line", json_object_new_int(line));
+ json_object_object_add(pos, "character", json_object_new_int(character));
+ json_object_object_add(args, "position", pos);
+ id = ++s->id;
+ lsp_send(s, id, "textDocument/prepareCallHierarchy", args);
+ resp = lsp_pump(s, id, NULL, LSP_TMO_REQ);
+ if (!resp)
+  return -1;
+ result = obj_obj(resp, "result");
+ if (!result || !json_object_is_type(result, json_type_array) ||
+     json_object_array_length(result) == 0)
+ {  json_object_put(resp);  return 0;  }       /* not on a callable */
+ item = json_object_get(json_object_array_get_idx(result, 0));  /* keep past put */
+ json_object_put(resp);
+
+ /* 2. incoming (who calls it) or outgoing (what it calls) for that item. */
+ args = json_object_new_object();
+ json_object_object_add(args, "item", item);   /* takes ownership of our ref */
+ id = ++s->id;
+ lsp_send(s, id, outgoing ? "callHierarchy/outgoingCalls"
+                          : "callHierarchy/incomingCalls", args);
+ resp = lsp_pump(s, id, NULL, LSP_TMO_REQ);
+ if (!resp)
+  return -1;
+ result = obj_obj(resp, "result");
+ if (result && json_object_is_type(result, json_type_array))
+ {
+  len = json_object_array_length(result);
+  for (i = 0; i < len && n < max; i++)
+  {
+   struct json_object *call = json_object_array_get_idx(result, i);
+   /* incoming -> "from" (the caller), outgoing -> "to" (the callee) */
+   lsp_store_ch_item(s, obj_obj(call, outgoing ? "to" : "from"), out, max, &n);
+  }
+ }
+ json_object_put(resp);
+ return n;
 }
 
 /* Byte offset of LSP (line,character) within `text` (lines separated by '\n'). */

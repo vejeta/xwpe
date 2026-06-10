@@ -5911,6 +5911,49 @@ static int e_lsp_ui_references(FENSTER *f)
  return(0);
 }
 
+/* Call hierarchy for the symbol under the cursor, listed in Messages as
+   "name  file:line:col": who calls it (outgoing == 0) or what it calls
+   (outgoing != 0).  Lets the user trace a call graph without leaving xwpe --
+   put the cursor on a def/method and ask "who reaches this?" or "what does this
+   reach?".  Shared body for the two menu actions below. */
+static int e_lsp_ui_call_hierarchy(FENSTER *f, int outgoing)
+{
+ BUFFER *b = f->b;
+ e_lsp_symbol items[128];
+ char line[700];
+ int n, i;
+
+ if (e_lsp_ensure(f) < 0)
+  return(-1);
+ e_lsp_sync(f);
+ n = e_lsp_call_hierarchy(g_lsp, g_lsp_file, b->b.y, e_lsp_symbol_col(f),
+                          outgoing, items, 128);
+ if (n <= 0)
+ {
+  e_error(outgoing ? "No outgoing calls found." : "No callers found.", 0, f->fb);
+  return(0);
+ }
+ if (outgoing)
+  snprintf(line, sizeof(line), "%d outgoing call(s):", n);
+ else
+  snprintf(line, sizeof(line), "%d caller(s):", n);
+ e_d_p_message(line, f, 1);
+ for (i = 0; i < n; i++)
+ {
+  snprintf(line, sizeof(line), "%s  %s:%d:%d",
+           items[i].name ? items[i].name : "?",
+           items[i].path ? e_d_dap_basename(items[i].path) : "?",
+           items[i].line + 1, items[i].character + 1);
+  e_d_p_message(line, f, 1);
+ }
+ return(0);
+}
+
+/* AltQ B -- callers (incoming calls): who calls the symbol under the cursor. */
+static int e_lsp_ui_callers(FENSTER *f)  {  return(e_lsp_ui_call_hierarchy(f, 0));  }
+/* AltQ G -- callees (outgoing calls): what the symbol under the cursor calls. */
+static int e_lsp_ui_callees(FENSTER *f)  {  return(e_lsp_ui_call_hierarchy(f, 1));  }
+
 /* AltQ L -- highlight every occurrence of the symbol under the cursor in this
    file (the found-word colour, like a search highlight that follows meaning,
    not text).  Pressing it off any identifier clears the highlight. */
@@ -6346,7 +6389,7 @@ extern OPTK WpeFillSubmenuItem(char *t, int x, char o, int (*fkt)());
 
 /* Persistent storage for the formatted "name        Alt-Q X" labels (OPTK keeps
    a pointer, so the strings must outlive the call). */
-static char g_lsp_menu_label[16][48];
+static char g_lsp_menu_label[20][48];
 
 /* Build the language-server actions as top-menu-style dropdown rows: the action
    name on the left, its "Alt-Q X" shortcut right-aligned, and X (the key you
@@ -6362,6 +6405,8 @@ static int e_lsp_menu_items(OPTK *it)
   { "Hover (type/docs)",    'H', e_lsp_ui_hover             },
   { "Complete",             'C', e_lsp_ui_complete          },
   { "References",           'R', e_lsp_ui_references        },
+  { "Incoming calls",       'B', e_lsp_ui_callers           },
+  { "Outgoing calls",       'G', e_lsp_ui_callees           },
   { "Highlight uses",       'U', e_lsp_ui_highlight         },
   { "Inlay hints (toggle)", 'Y', e_lsp_ui_inlay             },
   { "Outline",              'O', e_lsp_ui_outline           },
@@ -6413,7 +6458,7 @@ static int e_lsp_bar_entry_x(FENSTER *f)
    users; Alt-Q+letter stays the keyboard fast path. */
 int e_lsp_ui_menu(FENSTER *f)
 {
- OPTK items[16];
+ OPTK items[20];
  int n, xa, xe, ya, ye, w, mx;
 
  if (!e_lsp_server_label(f))
@@ -6458,6 +6503,10 @@ int e_lsp_ui_key(FENSTER *f)
    return(e_lsp_ui_complete(f));
   case 'r': case ('r' - 'a' + 1):
    return(e_lsp_ui_references(f));
+  case 'b': case ('b' - 'a' + 1):
+   return(e_lsp_ui_callers(f));        /* B = called By (incoming) */
+  case 'g': case ('g' - 'a' + 1):
+   return(e_lsp_ui_callees(f));        /* G = Goes to (outgoing)   */
   case 'u': case ('u' - 'a' + 1):
    return(e_lsp_ui_highlight(f));      /* U = Uses */
   case 'y': case ('y' - 'a' + 1):

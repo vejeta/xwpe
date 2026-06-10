@@ -83,6 +83,15 @@ replaces the partial word), or @key{ESC} to cancel.
 @item Alt-Q R
 References: list every use of the symbol under the cursor (including its
 declaration) in the Messages window.
+@item Alt-Q B
+Incoming calls (@dfn{called By}): list every caller of the method under the
+cursor in the Messages window, each as @code{name  file:line:col}.  Put the
+cursor on a @code{def} and ask ``who reaches this?'' to trace a call graph
+upward without leaving xwpe.
+@item Alt-Q G
+Outgoing calls (@dfn{Goes to}): list every method the one under the cursor
+calls, in the same @code{name  file:line:col} form -- the downward direction of
+the call hierarchy.
 @item Alt-Q U
 Highlight @dfn{uses}: mark every occurrence of the symbol under the cursor
 @emph{in the current file} (in the found-word colour) -- a search highlight that

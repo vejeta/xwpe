@@ -171,6 +171,15 @@ int e_lsp_completion(e_lsp_session *s, const char *path, int line, int character
 int e_lsp_references(e_lsp_session *s, const char *path, int line, int character,
                      e_lsp_location *locs, int max);
 
+/* Call hierarchy for the symbol at (line,character): prepareCallHierarchy to
+ * pin the symbol, then its incoming calls (outgoing == 0: who calls it) or its
+ * outgoing calls (outgoing != 0: what it calls).  Fills up to `max` symbols
+ * (engine-owned name + the caller/callee's own location) in `out`; returns the
+ * count (>=0) or -1.  0 means the cursor was not on a callable, or none. */
+int e_lsp_call_hierarchy(e_lsp_session *s, const char *path, int line,
+                         int character, int outgoing,
+                         e_lsp_symbol *out, int max);
+
 /* textDocument/documentHighlight: every occurrence of the symbol under the
  * cursor IN THIS FILE (read/write/text).  Fills up to `max` start locations
  * (engine-owned, all the current file); returns the count (>=0) or -1.  Lighter

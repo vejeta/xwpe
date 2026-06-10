@@ -193,7 +193,8 @@ def test_mouse_click_opens_action_dropdown(tmp_path):
         rows = w.display()
         body = "\n".join(rows)
         for action in ("Diagnostics", "Go to Definition", "Hover", "References",
-                       "Inlay hints", "Rename", "Format"):
+                       "Incoming calls", "Outgoing calls", "Inlay hints",
+                       "Rename", "Format"):
             assert action in body, \
                 "action %r missing from the menu dropdown\n%s" % (action, body)
         # it is a pull-UP anchored at the bar: the LAST item ("Format") sits just
