@@ -55,4 +55,8 @@ EXTRA_DIST = \
   examples/fake.h \
   examples/disabled.h \
   examples/debug_constructor.c \
-  examples/interactive_test.c
+  examples/interactive_test.c \
+  examples/scala-lsp/README.md \
+  examples/scala-lsp/project.scala \
+  examples/scala-lsp/shapes.scala \
+  examples/scala-lsp/main.scala
