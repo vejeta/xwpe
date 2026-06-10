@@ -26,6 +26,8 @@ object Main:
     val names   = shapes.map(_.name)                      // inlay -> : List[String]
     val area    = total(shapes)                           // Alt-Q T on `area` -> Double
 
+    // Call graph:  Alt-Q B on `total` (above) -> its callers (main);
+    //              Alt-Q G on `describe` below -> what it calls (name, area).
     println(describe(biggest))                            // Alt-Q S inside (...) -> param list
     shapes.foreach(s => println(describe(s)))             // Alt-Q C after `shapes.` -> members
     println(s"$count shapes, total area $area")
