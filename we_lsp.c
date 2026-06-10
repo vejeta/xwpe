@@ -411,6 +411,72 @@ static void lsp_trace_response(int want_id, struct json_object *m)
  fflush(fp);
 }
 
+/* Render a server-pushed client command.  The only one we act on is the Metals
+   Doctor (delivered as HTML because we asked for doctorProvider:html): strip it
+   to plain text and hand it to the host to show in a window instead of a
+   browser.  Any other client command is ignored. */
+static void lsp_dispatch_client_command(e_lsp_session *s, struct json_object *m)
+{
+ struct json_object *params = obj_obj(m, "params");
+ const char *cmd = obj_str(params, "command");
+ struct json_object *args, *a0;
+ const char *html;
+ char *text;
+
+ if (!cmd || strncmp(cmd, "metals-doctor", 13) || !s->host.on_show_text)
+  return;
+ args = obj_obj(params, "arguments");
+ a0 = (args && json_object_is_type(args, json_type_array)
+       && json_object_array_length(args) > 0)
+      ? json_object_array_get_idx(args, 0) : NULL;
+ html = a0 ? json_object_get_string(a0) : NULL;
+ if (!html || !*html)
+  return;
+ text = lsp_html_to_text(html);
+ s->host.on_show_text("Metals Doctor", text ? text : html, s->host.ud);
+ free(text);
+}
+
+/* Forward the server's transient status (metals/status) to the host: its @text
+   ("Indexing", ...) and the @hide flag when it finishes. */
+static void lsp_dispatch_status(e_lsp_session *s, struct json_object *m)
+{
+ struct json_object *params = obj_obj(m, "params");
+
+ if (!s->host.on_status)
+  return;
+ s->host.on_status(obj_str(params, "text"), obj_int(params, "hide", 0),
+                   s->host.ud);
+}
+
+/* Handle one server notification message.  Returns 1 when the diagnostics for
+   @want_diag_path have just arrived (the pump caller is blocking on them), so
+   the caller can stop waiting; 0 in every other case. */
+static int lsp_dispatch_notification(e_lsp_session *s, struct json_object *m,
+                                     const char *want_diag_path)
+{
+ const char *meth = json_object_get_string(obj_obj(m, "method"));
+
+ if (!meth)
+  return 0;
+ if (!strcmp(meth, "textDocument/publishDiagnostics"))
+ {
+  struct json_object *params = obj_obj(m, "params");
+  lsp_dispatch_diagnostics(s, params);
+  if (want_diag_path)
+  {
+   const char *u = obj_str(params, "uri");
+   if (u && !strcmp(uri_to_path(u), want_diag_path))
+    return 1;
+  }
+ }
+ else if (!strcmp(meth, "metals/executeClientCommand"))
+  lsp_dispatch_client_command(s, m);
+ else if (!strcmp(meth, "metals/status"))
+  lsp_dispatch_status(s, m);
+ return 0;
+}
+
 static struct json_object *lsp_pump(e_lsp_session *s, int want_id,
                                     const char *want_diag_path, int timeout_ms)
 {
@@ -435,51 +501,10 @@ static struct json_object *lsp_pump(e_lsp_session *s, int want_id,
   }
   if (method)                             /* notification */
   {
-   const char *meth = json_object_get_string(method);
-   if (meth && !strcmp(meth, "textDocument/publishDiagnostics"))
-   {
-    struct json_object *params = obj_obj(m, "params");
-    lsp_dispatch_diagnostics(s, params);
-    if (want_diag_path)
-    {
-     const char *u = obj_str(params, "uri");
-     if (u && !strcmp(uri_to_path(u), want_diag_path))
-     {  json_object_put(m);  return json_object_new_boolean(1);  }
-    }
-   }
-   else if (meth && !strcmp(meth, "metals/executeClientCommand"))
-   {
-    /* Metals pushes the Doctor here (because we asked for doctorProvider:html);
-       render it in a window instead of a browser.  Other client commands are
-       ignored. */
-    struct json_object *params = obj_obj(m, "params");
-    const char *cmd = obj_str(params, "command");
-    if (cmd && !strncmp(cmd, "metals-doctor", 13) && s->host.on_show_text)
-    {
-     struct json_object *args = obj_obj(params, "arguments");
-     struct json_object *a0 = (args && json_object_is_type(args, json_type_array)
-                               && json_object_array_length(args) > 0)
-                              ? json_object_array_get_idx(args, 0) : NULL;
-     const char *html = a0 ? json_object_get_string(a0) : NULL;
-     if (html && *html)
-     {
-      char *text = lsp_html_to_text(html);
-      s->host.on_show_text("Metals Doctor", text ? text : html, s->host.ud);
-      free(text);
-     }
-    }
-   }
-   else if (meth && !strcmp(meth, "metals/status") && s->host.on_status)
-   {
-    /* Metals' transient status bar: surface "Indexing"/"Importing build"/... as
-       progress, and a hide flag when it finishes, so the client can tell "still
-       working" apart from "no result". */
-    struct json_object *params = obj_obj(m, "params");
-    const char *txt = obj_str(params, "text");
-    int hide = obj_int(params, "hide", 0);
-    s->host.on_status(txt, hide, s->host.ud);
-   }
+   int diag_arrived = lsp_dispatch_notification(s, m, want_diag_path);
    json_object_put(m);
+   if (diag_arrived)
+    return json_object_new_boolean(1);
    continue;
   }
   if (id)                                 /* response to our request */
@@ -1440,22 +1465,16 @@ static int lsp_store_ch_item(e_lsp_session *s, struct json_object *item,
  return 1;
 }
 
-int e_lsp_call_hierarchy(e_lsp_session *s, const char *path, int line,
-                         int character, int outgoing,
-                         e_lsp_symbol *out, int max)
+/* prepareCallHierarchy: pin the symbol at (line,character) in @uri to a
+   CallHierarchyItem.  Returns the item -- incref'd, so the caller owns it and
+   must either json_object_put it or hand it to a request that takes ownership
+   -- or NULL when the cursor is not on a callable, or the request failed. */
+static struct json_object *lsp_call_hierarchy_prepare(e_lsp_session *s,
+                                  const char *uri, int line, int character)
 {
- char abspath[PATH_MAX], uri[PATH_MAX + 8];
  struct json_object *args, *doc, *pos, *resp, *result, *item;
- int id, n = 0, i, len;
+ int id;
 
- if (!s)
-  return -1;
- lsp_free_syms(s);
- if (!realpath(path, abspath))
-  snprintf(abspath, sizeof(abspath), "%s", path);
- snprintf(uri, sizeof(uri), "file://%s", abspath);
-
- /* 1. prepareCallHierarchy: pin the symbol at the cursor to a CallHierarchyItem. */
  args = json_object_new_object();
  doc = json_object_new_object();
  json_object_object_add(doc, "uri", json_object_new_string(uri));
@@ -1468,15 +1487,25 @@ int e_lsp_call_hierarchy(e_lsp_session *s, const char *path, int line,
  lsp_send(s, id, "textDocument/prepareCallHierarchy", args);
  resp = lsp_pump(s, id, NULL, LSP_TMO_REQ);
  if (!resp)
-  return -1;
+  return NULL;
  result = obj_obj(resp, "result");
- if (!result || !json_object_is_type(result, json_type_array) ||
-     json_object_array_length(result) == 0)
- {  json_object_put(resp);  return 0;  }       /* not on a callable */
- item = json_object_get(json_object_array_get_idx(result, 0));  /* keep past put */
+ item = (result && json_object_is_type(result, json_type_array) &&
+         json_object_array_length(result) > 0)
+        ? json_object_get(json_object_array_get_idx(result, 0)) : NULL;
  json_object_put(resp);
+ return item;
+}
 
- /* 2. incoming (who calls it) or outgoing (what it calls) for that item. */
+/* callHierarchy/incomingCalls (outgoing == 0: who calls @item) or outgoingCalls
+   (outgoing != 0: what @item calls).  Ownership of @item is taken.  Fills out[]
+   from each call's caller ("from") or callee ("to").  Returns the count (>=0),
+   or -1 on a transport error. */
+static int lsp_call_hierarchy_collect(e_lsp_session *s, struct json_object *item,
+                                      int outgoing, e_lsp_symbol *out, int max)
+{
+ struct json_object *args, *resp, *result;
+ int id, n = 0, i, len;
+
  args = json_object_new_object();
  json_object_object_add(args, "item", item);   /* takes ownership of our ref */
  id = ++s->id;
@@ -1492,12 +1521,30 @@ int e_lsp_call_hierarchy(e_lsp_session *s, const char *path, int line,
   for (i = 0; i < len && n < max; i++)
   {
    struct json_object *call = json_object_array_get_idx(result, i);
-   /* incoming -> "from" (the caller), outgoing -> "to" (the callee) */
    lsp_store_ch_item(s, obj_obj(call, outgoing ? "to" : "from"), out, max, &n);
   }
  }
  json_object_put(resp);
  return n;
+}
+
+int e_lsp_call_hierarchy(e_lsp_session *s, const char *path, int line,
+                         int character, int outgoing,
+                         e_lsp_symbol *out, int max)
+{
+ char abspath[PATH_MAX], uri[PATH_MAX + 8];
+ struct json_object *item;
+
+ if (!s)
+  return -1;
+ lsp_free_syms(s);
+ if (!realpath(path, abspath))
+  snprintf(abspath, sizeof(abspath), "%s", path);
+ snprintf(uri, sizeof(uri), "file://%s", abspath);
+ item = lsp_call_hierarchy_prepare(s, uri, line, character);
+ if (!item)
+  return 0;                              /* not on a callable */
+ return lsp_call_hierarchy_collect(s, item, outgoing, out, max);
 }
 
 /* Byte offset of LSP (line,character) within `text` (lines separated by '\n'). */
