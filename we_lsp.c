@@ -600,6 +600,7 @@ static struct json_object *lsp_client_caps(void)
  json_object_object_add(td, "publishDiagnostics", json_object_new_object());
  json_object_object_add(td, "inlayHint", json_object_new_object());
  json_object_object_add(td, "callHierarchy", json_object_new_object());
+ json_object_object_add(td, "typeHierarchy", json_object_new_object());
  json_object_object_add(caps, "textDocument", td);
  {
   struct json_object *ws = json_object_new_object();
@@ -1435,11 +1436,12 @@ int e_lsp_workspace_symbols(e_lsp_session *s, const char *query,
  return out;
 }
 
-/* Store one CallHierarchyItem's name + location into the session cache and the
-   caller's array.  Uses selectionRange.start (the identifier position, not the
-   whole-definition range) so a future jump lands on the name.  Returns 1 if
-   stored, 0 if the array or cache is full. */
-static int lsp_store_ch_item(e_lsp_session *s, struct json_object *item,
+/* Store one Call/TypeHierarchyItem's name + location into the session cache and
+   the caller's array (both items share the same shape).  Uses
+   selectionRange.start (the identifier position, not the whole-definition
+   range) so a future jump lands on the name.  Returns 1 if stored, 0 if the
+   array or cache is full. */
+static int lsp_store_hier_item(e_lsp_session *s, struct json_object *item,
                              e_lsp_symbol *out, int max, int *n)
 {
  struct json_object *sr, *st;
@@ -1521,7 +1523,7 @@ static int lsp_call_hierarchy_collect(e_lsp_session *s, struct json_object *item
   for (i = 0; i < len && n < max; i++)
   {
    struct json_object *call = json_object_array_get_idx(result, i);
-   lsp_store_ch_item(s, obj_obj(call, outgoing ? "to" : "from"), out, max, &n);
+   lsp_store_hier_item(s, obj_obj(call, outgoing ? "to" : "from"), out, max, &n);
   }
  }
  json_object_put(resp);
@@ -1545,6 +1547,84 @@ int e_lsp_call_hierarchy(e_lsp_session *s, const char *path, int line,
  if (!item)
   return 0;                              /* not on a callable */
  return lsp_call_hierarchy_collect(s, item, outgoing, out, max);
+}
+
+/* prepareTypeHierarchy: pin the type at (line,character) in @uri to a
+   TypeHierarchyItem.  Returns the item (incref'd; caller owns) or NULL when the
+   cursor is not on a type, or the request failed. */
+static struct json_object *lsp_type_hierarchy_prepare(e_lsp_session *s,
+                                  const char *uri, int line, int character)
+{
+ struct json_object *args, *doc, *pos, *resp, *result, *item;
+ int id;
+
+ args = json_object_new_object();
+ doc = json_object_new_object();
+ json_object_object_add(doc, "uri", json_object_new_string(uri));
+ json_object_object_add(args, "textDocument", doc);
+ pos = json_object_new_object();
+ json_object_object_add(pos, "line", json_object_new_int(line));
+ json_object_object_add(pos, "character", json_object_new_int(character));
+ json_object_object_add(args, "position", pos);
+ id = ++s->id;
+ lsp_send(s, id, "textDocument/prepareTypeHierarchy", args);
+ resp = lsp_pump(s, id, NULL, LSP_TMO_REQ);
+ if (!resp)
+  return NULL;
+ result = obj_obj(resp, "result");
+ item = (result && json_object_is_type(result, json_type_array) &&
+         json_object_array_length(result) > 0)
+        ? json_object_get(json_object_array_get_idx(result, 0)) : NULL;
+ json_object_put(resp);
+ return item;
+}
+
+/* typeHierarchy/supertypes (subtypes == 0: what @item extends) or subtypes
+   (subtypes != 0: what extends @item).  Ownership of @item is taken.  The
+   result is a flat TypeHierarchyItem[] (no from/to wrapper), each stored
+   directly.  Returns the count (>=0), or -1 on a transport error. */
+static int lsp_type_hierarchy_collect(e_lsp_session *s, struct json_object *item,
+                                      int subtypes, e_lsp_symbol *out, int max)
+{
+ struct json_object *args, *resp, *result;
+ int id, n = 0, i, len;
+
+ args = json_object_new_object();
+ json_object_object_add(args, "item", item);   /* takes ownership of our ref */
+ id = ++s->id;
+ lsp_send(s, id, subtypes ? "typeHierarchy/subtypes"
+                          : "typeHierarchy/supertypes", args);
+ resp = lsp_pump(s, id, NULL, LSP_TMO_REQ);
+ if (!resp)
+  return -1;
+ result = obj_obj(resp, "result");
+ if (result && json_object_is_type(result, json_type_array))
+ {
+  len = json_object_array_length(result);
+  for (i = 0; i < len && n < max; i++)
+   lsp_store_hier_item(s, json_object_array_get_idx(result, i), out, max, &n);
+ }
+ json_object_put(resp);
+ return n;
+}
+
+int e_lsp_type_hierarchy(e_lsp_session *s, const char *path, int line,
+                         int character, int subtypes,
+                         e_lsp_symbol *out, int max)
+{
+ char abspath[PATH_MAX], uri[PATH_MAX + 8];
+ struct json_object *item;
+
+ if (!s)
+  return -1;
+ lsp_free_syms(s);
+ if (!realpath(path, abspath))
+  snprintf(abspath, sizeof(abspath), "%s", path);
+ snprintf(uri, sizeof(uri), "file://%s", abspath);
+ item = lsp_type_hierarchy_prepare(s, uri, line, character);
+ if (!item)
+  return 0;                              /* not on a type */
+ return lsp_type_hierarchy_collect(s, item, subtypes, out, max);
 }
 
 /* Byte offset of LSP (line,character) within `text` (lines separated by '\n'). */

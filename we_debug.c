@@ -6007,6 +6007,49 @@ static int e_lsp_ui_callers(FENSTER *f)  {  return(e_lsp_ui_call_hierarchy(f, 0)
 /* AltQ G -- callees (outgoing calls): what the symbol under the cursor calls. */
 static int e_lsp_ui_callees(FENSTER *f)  {  return(e_lsp_ui_call_hierarchy(f, 1));  }
 
+/* Type hierarchy for the type under the cursor, listed in Messages as
+   "name  file:line:col": its supertypes (subtypes == 0: what it
+   extends/implements) or its subtypes (subtypes != 0: what extends it).  Put
+   the cursor on a class/trait name and walk the inheritance graph up or down
+   without leaving xwpe.  Shared body for the two menu actions below. */
+static int e_lsp_ui_type_hierarchy(FENSTER *f, int subtypes)
+{
+ BUFFER *b = f->b;
+ e_lsp_symbol items[128];
+ char line[700];
+ int n, i;
+
+ if (e_lsp_ensure(f) < 0)
+  return(-1);
+ e_lsp_sync(f);
+ n = e_lsp_type_hierarchy(g_lsp, g_lsp_file, b->b.y, e_lsp_symbol_col(f),
+                          subtypes, items, 128);
+ if (n <= 0)
+ {
+  e_error(subtypes ? "No subtypes found." : "No supertypes found.", 0, f->fb);
+  return(0);
+ }
+ if (subtypes)
+  snprintf(line, sizeof(line), "%d subtype(s):", n);
+ else
+  snprintf(line, sizeof(line), "%d supertype(s):", n);
+ e_d_p_message(line, f, 1);
+ for (i = 0; i < n; i++)
+ {
+  snprintf(line, sizeof(line), "%s  %s:%d:%d",
+           items[i].name ? items[i].name : "?",
+           items[i].path ? e_d_dap_basename(items[i].path) : "?",
+           items[i].line + 1, items[i].character + 1);
+  e_d_p_message(line, f, 1);
+ }
+ return(0);
+}
+
+/* AltQ K -- supertypes (vim K = up = parents): what this type extends. */
+static int e_lsp_ui_supertypes(FENSTER *f) {  return(e_lsp_ui_type_hierarchy(f, 0));  }
+/* AltQ J -- subtypes (vim J = down = children): what extends this type. */
+static int e_lsp_ui_subtypes(FENSTER *f)   {  return(e_lsp_ui_type_hierarchy(f, 1));  }
+
 /* AltQ L -- highlight every occurrence of the symbol under the cursor in this
    file (the found-word colour, like a search highlight that follows meaning,
    not text).  Pressing it off any identifier clears the highlight. */
@@ -6445,7 +6488,7 @@ extern OPTK WpeFillSubmenuItem(char *t, int x, char o, int (*fkt)());
 
 /* Persistent storage for the formatted "name        Alt-Q X" labels (OPTK keeps
    a pointer, so the strings must outlive the call). */
-static char g_lsp_menu_label[20][48];
+static char g_lsp_menu_label[24][48];
 
 /* Build the language-server actions as top-menu-style dropdown rows: the action
    name on the left, its "Alt-Q X" shortcut right-aligned, and X (the key you
@@ -6463,6 +6506,8 @@ static int e_lsp_menu_items(OPTK *it)
   { "References",           'R', e_lsp_ui_references        },
   { "Incoming calls",       'B', e_lsp_ui_callers           },
   { "Outgoing calls",       'G', e_lsp_ui_callees           },
+  { "Supertypes",           'K', e_lsp_ui_supertypes        },
+  { "Subtypes",             'J', e_lsp_ui_subtypes          },
   { "Highlight uses",       'U', e_lsp_ui_highlight         },
   { "Inlay hints (toggle)", 'Y', e_lsp_ui_inlay             },
   { "Outline",              'O', e_lsp_ui_outline           },
@@ -6514,7 +6559,7 @@ static int e_lsp_bar_entry_x(FENSTER *f)
    users; Alt-Q+letter stays the keyboard fast path. */
 int e_lsp_ui_menu(FENSTER *f)
 {
- OPTK items[20];
+ OPTK items[24];
  int n, xa, xe, ya, ye, w, mx;
 
  if (!e_lsp_server_label(f))
@@ -6563,6 +6608,10 @@ int e_lsp_ui_key(FENSTER *f)
    return(e_lsp_ui_callers(f));        /* B = called By (incoming) */
   case 'g': case ('g' - 'a' + 1):
    return(e_lsp_ui_callees(f));        /* G = Goes to (outgoing)   */
+  case 'k': case ('k' - 'a' + 1):
+   return(e_lsp_ui_supertypes(f));     /* K = up (vim) = supertypes */
+  case 'j': case ('j' - 'a' + 1):
+   return(e_lsp_ui_subtypes(f));       /* J = down (vim) = subtypes */
   case 'u': case ('u' - 'a' + 1):
    return(e_lsp_ui_highlight(f));      /* U = Uses */
   case 'y': case ('y' - 'a' + 1):

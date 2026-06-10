@@ -185,6 +185,15 @@ int e_lsp_call_hierarchy(e_lsp_session *s, const char *path, int line,
                          int character, int outgoing,
                          e_lsp_symbol *out, int max);
 
+/* Type hierarchy for the type at (line,character): prepareTypeHierarchy to pin
+ * the type, then its supertypes (subtypes == 0: what it extends/implements) or
+ * its subtypes (subtypes != 0: what extends/implements it).  Fills up to `max`
+ * symbols (engine-owned name + each type's own location) in `out`; returns the
+ * count (>=0) or -1.  0 means the cursor was not on a type, or none. */
+int e_lsp_type_hierarchy(e_lsp_session *s, const char *path, int line,
+                         int character, int subtypes,
+                         e_lsp_symbol *out, int max);
+
 /* textDocument/documentHighlight: every occurrence of the symbol under the
  * cursor IN THIS FILE (read/write/text).  Fills up to `max` start locations
  * (engine-owned, all the current file); returns the count (>=0) or -1.  Lighter

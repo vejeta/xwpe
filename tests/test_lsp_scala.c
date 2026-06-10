@@ -293,6 +293,37 @@ int main(void)
   if (!found) { rc = fail("incoming calls of helper() missed caller()"); goto close; }
  }
 
+ /* TYPE HIERARCHY: `class Hello extends Greeter` (line 12) and `trait Greeter`
+    (line 9).  Supertypes of Hello (line 12, char 6) must list Greeter; subtypes
+    of Greeter (line 9, char 6) must list Hello -- the inverse edge.  Index
+    dependent, so retry while it warms; -1 is an error, any entry needs a name. */
+ {
+  e_lsp_symbol th[64];
+  int nt = 0, t, k, found = 0;
+  for (t = 0; t < 8 && nt < 1; t++)
+  { nt = e_lsp_type_hierarchy(s, scala, 12, 6, 0 /*supertypes*/, th, 64);
+    if (nt < 1) sleep(2); }
+  printf("  TYPE-HIERARCHY Hello supertypes: %d%s%s\n", nt, nt > 0 ? ", e.g. " : "",
+         nt > 0 ? th[0].name : "");
+  if (nt < 1) { rc = fail("Hello should have a supertype Greeter"); goto close; }
+  for (k = 0; k < nt; k++)
+  {
+   if (!th[k].name || !th[k].name[0])
+   { rc = fail("a type-hierarchy entry came back with no name"); goto close; }
+   if (strstr(th[k].name, "Greeter")) found = 1;
+  }
+  if (!found) { rc = fail("supertypes of Hello missed Greeter"); goto close; }
+
+  found = 0;
+  nt = e_lsp_type_hierarchy(s, scala, 9, 6, 1 /*subtypes*/, th, 64);
+  printf("  TYPE-HIERARCHY Greeter subtypes: %d%s%s\n", nt, nt > 0 ? ", e.g. " : "",
+         nt > 0 ? th[0].name : "");
+  if (nt < 0) { rc = fail("subtype hierarchy returned an error"); goto close; }
+  for (k = 0; k < nt; k++)
+   if (th[k].name && strstr(th[k].name, "Hello")) found = 1;
+  if (!found) { rc = fail("subtypes of Greeter missed Hello"); goto close; }
+ }
+
  /* diagnostics carry a RANGE: push a buffer with a type error and confirm the
     server reports it with a non-empty, single-line span (what the inline marks
     recolor).  Reuses this session -- no second server start. */

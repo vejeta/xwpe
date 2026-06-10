@@ -92,6 +92,13 @@ upward without leaving xwpe.
 Outgoing calls (@dfn{Goes to}): list every method the one under the cursor
 calls, in the same @code{name  file:line:col} form -- the downward direction of
 the call hierarchy.
+@item Alt-Q K
+Supertypes: list what the type (class/trait) under the cursor extends or
+implements -- the inheritance graph @emph{upward}.  The @kbd{K} is the
+vi @dfn{up} key, a reminder that supertypes are the parents.
+@item Alt-Q J
+Subtypes: list what extends or implements the type under the cursor -- the
+inheritance graph @emph{downward} (@kbd{J} = vi @dfn{down} = the children).
 @item Alt-Q U
 Highlight @dfn{uses}: mark every occurrence of the symbol under the cursor
 @emph{in the current file} (in the found-word colour) -- a search highlight that
