@@ -277,7 +277,8 @@ Optional:
 
 ### External programs
 
-xwpe auto-detects compiler and debugger by file extension:
+xwpe auto-detects the compiler, debugger and language server by file extension.
+From the Debian/Ubuntu archive:
 
 ```sh
 sudo apt install gcc g++ gfortran      # C/C++/Fortran
@@ -287,7 +288,20 @@ sudo apt install python3               # Python (py_compile + pdb)
 sudo apt install texlive-latex-base    # LaTeX (pdflatex)
 sudo apt install perl                  # Perl (perl -c)
 sudo apt install gnucobol              # COBOL (cobc)
-sudo apt install gdb                   # C/C++/Fortran/Pascal debugger
+sudo apt install algol68g              # Algol 68 (a68g + its monitor debugger)
+sudo apt install golang-go             # Go (compile)
+sudo apt install rustc                 # Rust (rustc -g)
+sudo apt install gdb                   # C/C++/Fortran/Pascal/Rust debugger
+```
+
+Modern IDE/debug toolchains that are not in the archive:
+
+```sh
+# Scala -- IDE features (LSP via Metals) and debugging (DAP via Bloop):
+cs install scala-cli metals            # coursier; https://get-coursier.io
+sudo apt install openjdk-21-jdk        # an LTS JDK Metals runs on (see the manual)
+# Go -- source-level debugging (DAP via Delve):
+go install github.com/go-delve/delve/cmd/dlv@latest
 ```
 
 ### Console tips
@@ -324,9 +338,13 @@ a language requires listing keywords, operators, and comment delimiters.
 
 - **X11 clipboard**: internal buffers only. System clipboard
   (PRIMARY/CLIPBOARD) planned for v1.7.
+- **Language server, one document at a time**: the LSP server attaches to a
+  single open file; using an Alt-Q action in a different file transparently
+  re-points it (a brief pause). Rename (Alt-Q N) applies to the current file
+  only; edits it would make in other files are reported, not applied.
 - **Dialog scrollbars**: window scrollbars use Unicode glyphs (1.6.3), but
   the scrollbars drawn inside dialogs are still ASCII. Cosmetic; planned for
-  v1.6.4/v1.7.
+  v1.7.
 
 ## Contributing
 
