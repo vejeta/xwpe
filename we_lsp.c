@@ -1837,6 +1837,53 @@ char *e_lsp_format(e_lsp_session *s, const char *path, const char *current_text)
  return out;
 }
 
+char *e_lsp_format_range(e_lsp_session *s, const char *path,
+                         const char *current_text,
+                         int start_line, int start_char,
+                         int end_line, int end_char)
+{
+ char abspath[PATH_MAX];
+ struct json_object *args, *doc, *opts, *range, *st, *en, *resp, *result;
+ char *out = NULL;
+ int id;
+
+ if (!s)
+  return NULL;
+ if (!realpath(path, abspath))
+  snprintf(abspath, sizeof(abspath), "%s", path);
+ args = json_object_new_object();
+ doc = json_object_new_object();
+ { char uri[PATH_MAX + 8];
+   snprintf(uri, sizeof(uri), "file://%s", abspath);
+   json_object_object_add(doc, "uri", json_object_new_string(uri)); }
+ json_object_object_add(args, "textDocument", doc);
+ st = json_object_new_object();
+ json_object_object_add(st, "line", json_object_new_int(start_line));
+ json_object_object_add(st, "character", json_object_new_int(start_char));
+ en = json_object_new_object();
+ json_object_object_add(en, "line", json_object_new_int(end_line));
+ json_object_object_add(en, "character", json_object_new_int(end_char));
+ range = json_object_new_object();
+ json_object_object_add(range, "start", st);
+ json_object_object_add(range, "end", en);
+ json_object_object_add(args, "range", range);
+ opts = json_object_new_object();
+ json_object_object_add(opts, "tabSize", json_object_new_int(2));
+ json_object_object_add(opts, "insertSpaces", json_object_new_boolean(1));
+ json_object_object_add(args, "options", opts);
+ id = ++s->id;
+ lsp_send(s, id, "textDocument/rangeFormatting", args);
+ resp = lsp_pump(s, id, NULL, LSP_TMO_REQ);
+ if (!resp)
+  return NULL;
+ result = obj_obj(resp, "result");
+ if (result && json_object_is_type(result, json_type_array) &&
+     json_object_array_length(result) > 0)
+  out = lsp_apply_edits(current_text, result);
+ json_object_put(resp);
+ return out;
+}
+
 char *e_lsp_rename(e_lsp_session *s, const char *path, int line, int character,
                    const char *new_name, const char *current_text,
                    int *other_files)

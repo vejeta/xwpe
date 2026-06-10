@@ -30,7 +30,7 @@
 > | `Alt-Q W` | workspace symbol search (prompt, popup -> jump) | `e_lsp_workspace_symbols` |
 > | `Alt-Q A` | code actions / quick-fixes (popup -> apply) | `e_lsp_code_actions` (+ `e_lsp_apply_code_action`) |
 > | `Alt-Q N` | rename | `e_lsp_rename` (+ `e_lsp_replace_buffer`) |
-> | `Alt-Q F` | format | `e_lsp_format` (+ `e_lsp_replace_buffer`) |
+> | `Alt-Q F` | format -- selection if marked, else whole file | `e_lsp_format` / `e_lsp_format_range` (+ `e_lsp_replace_buffer`) |
 >
 > `e_lsp_definition`/`_implementation`/`_type_definition` share the engine driver
 > `lsp_locate`; their three bridge actions share `e_lsp_ui_jump`.  The completion

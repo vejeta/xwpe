@@ -6419,9 +6419,15 @@ static void e_lsp_word_at_cursor(FENSTER *f, char *out, size_t osz)
 }
 
 /* AltQ F -- reformat the file (scalafmt via the server) in place. */
+/* AltQ F -- format.  Context-sensitive, like IntelliJ/VS Code: if a block is
+   marked, reformat JUST that range (textDocument/rangeFormatting); otherwise
+   reformat the whole file.  Pairs with Alt-Q V (expand selection): widen to the
+   method, then format only it. */
 static int e_lsp_ui_format(FENSTER *f)
 {
+ SCHIRM *s = f->s;
  char *text, *formatted;
+ int has_sel, sl, sc, el, ec;
 
  if (e_lsp_ensure(f) < 0)
   return(-1);
@@ -6429,11 +6435,17 @@ static int e_lsp_ui_format(FENSTER *f)
  text = e_lsp_buffer_text(f);
  if (!text)
   return(-1);
- formatted = e_lsp_format(g_lsp, g_lsp_file, text);
+ sl = s->mark_begin.y;  sc = s->mark_begin.x;
+ el = s->mark_end.y;    ec = s->mark_end.x;
+ has_sel = (sl != el || sc != ec);
+ if (has_sel)
+  formatted = e_lsp_format_range(g_lsp, g_lsp_file, text, sl, sc, el, ec);
+ else
+  formatted = e_lsp_format(g_lsp, g_lsp_file, text);
  if (!formatted)
  {  free(text);  e_error("Nothing to format (or no formatter).", 0, f->fb);  return(0);  }
  if (strcmp(formatted, text) == 0)
-  e_d_p_message("Already formatted.", f, 1);
+  e_d_p_message(has_sel ? "Block already formatted." : "Already formatted.", f, 1);
  else
   e_lsp_replace_buffer(f, formatted);
  free(text);

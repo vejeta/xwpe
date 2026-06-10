@@ -170,6 +170,24 @@ int main(void)
   else printf("  FORMAT: no edits (already formatted)\n");
  }
 
+ /* range formatting: reformat just the main method's lines [2..7].  On tidy
+    source the server may return no edits (NULL) -- fine; when it does return
+    text it must round-trip without corruption (the object + println survive and
+    out-of-range lines like `trait Greeter` are still present). */
+ {
+  char *rf = e_lsp_format_range(s, scala, SCALA_SRC, 2, 0, 7, 40);
+  if (rf)
+  {
+   printf("  RANGE-FORMAT [2..7]: %zu bytes\n", strlen(rf));
+   if (!strstr(rf, "object Factorial") || !strstr(rf, "println") ||
+       !strstr(rf, "trait Greeter"))
+   { free(rf); rc = fail("range format corrupted the buffer"); goto close; }
+   free(rf);
+  }
+  else
+   printf("  RANGE-FORMAT [2..7]: no edits (already tidy)\n");
+ }
+
  /* implementation of the abstract Greeter.greet (line 10, char 6) -> the
     override in Hello.  Retry while the index warms. */
  {

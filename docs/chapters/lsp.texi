@@ -147,8 +147,12 @@ Rename: rename the symbol under the cursor everywhere (you are prompted for the
 new name).  Edits in the current file are applied to the buffer; if the rename
 also touches other files, xwpe tells you (open them and rename there).
 @item Alt-Q F
-Format: reformat the whole file with the server's formatter (scalafmt for
-Scala).  A @file{.scalafmt.conf} in the project enables it.
+Format with the server's formatter (scalafmt for Scala; a
+@file{.scalafmt.conf} in the project enables it).  Context-sensitive, like the
+big IDEs: if a block is marked it reformats @emph{only that range}
+(@code{textDocument/rangeFormatting}) and leaves the rest untouched; with no
+selection it reformats the whole file.  Pairs with @kbd{Alt-Q V} -- widen the
+selection to a method, then @kbd{Alt-Q F} to tidy just that method.
 @end table
 
 After a rename or format, the buffer is rebuilt with the result and marked

@@ -32,4 +32,6 @@ object Main:
     shapes.foreach(s => println(describe(s)))             // Alt-Q C after `shapes.` -> members
     println(s"$count shapes, total area $area")
     names.foreach(println)                                // Alt-Q N on `names` -> rename it
-                                                          // Alt-Q F -> reformat the whole file
+    // Alt-Q V on a token grows the selection by structure (token -> expr ->
+    // call -> statement); press again to widen.  Alt-Q F with a block marked
+    // formats JUST it; with nothing marked it reformats the whole file.

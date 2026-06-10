@@ -242,6 +242,15 @@ int e_lsp_document_symbols(e_lsp_session *s, const char *path,
  * or NULL if there is nothing to do / on error. */
 char *e_lsp_format(e_lsp_session *s, const char *path, const char *current_text);
 
+/* textDocument/rangeFormatting: like e_lsp_format but only the inclusive range
+ * [start_line,start_char .. end_line,end_char] (0-based) is reformatted -- the
+ * rest of `current_text` is left byte-for-byte.  Returns the new full text
+ * (malloc'd, caller frees), or NULL if there is nothing to do / on error. */
+char *e_lsp_format_range(e_lsp_session *s, const char *path,
+                         const char *current_text,
+                         int start_line, int start_char,
+                         int end_line, int end_char);
+
 /* textDocument/rename: rename the symbol at (line,character) to `new_name`.
  * Applies the resulting edits for THIS file to `current_text` and returns the new
  * full text (malloc'd), or NULL.  *other_files, if non-NULL, is set to the number
