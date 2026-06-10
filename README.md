@@ -55,6 +55,13 @@ console-only build needs only `libncurses-dev` (plus the build tools).
 
 ## What's new in 1.6.5
 
+xwpe plugs into the modern toolchain through the same standard protocols other
+editors use &mdash; a real source-level debugger (DAP) and IDE navigation (LSP)
+&mdash; while staying a few-megabyte terminal program: the discoverable Borland
+UX, mouse and all, zero per-project config, and no X server or heavy GUI runtime
+to install.  It runs the same over SSH, on a plain console, or in any terminal
+emulator.
+
 * **Debug Adapter Protocol (DAP) client &mdash; modern debuggers, no bespoke
   backend.** xwpe now speaks DAP, the wire protocol behind VS Code, Neovim
   and Emacs debugging.  Three languages are wired: **Go via Delve** (`dlv dap`),
@@ -66,9 +73,7 @@ console-only build needs only `libncurses-dev` (plus the build tools).
   (Ctrl-G W), and program output in Messages, the same keys you already use for
   gdb.  This is xwpe's seventh debugger backend (`DEB_DAP`), selected
   automatically by extension; the six text backends (gdb, jdb, pdb, a68g, sdb,
-  dbx) are untouched.  A modern Scala/macOS user can run **wpe in a terminal**
-  (iTerm2/Terminal, mouse and all) as a tiny zero-config debug front-end &mdash;
-  no XQuartz needed.
+  dbx) are untouched.
 
   The engine carries **three transports** behind one API, because each adapter
   dictates its own &mdash; reverse-TCP (Delve is a server; program output read
@@ -87,11 +92,9 @@ console-only build needs only `libncurses-dev` (plus the build tools).
   **D** definition, **I** implementation, **T** type-definition, **H** hover
   (type + docs), **C** completion, **R** references, **O** file outline, **W**
   project-wide symbol search, **A** code actions / quick-fixes, **S** signature
-  help, **N** rename, **F** format (scalafmt). This makes
-  `wpe` in a terminal a genuine lightweight Metals front-end for the "IntelliJ
-  is too heavy" crowd &mdash; the discoverable Borland UX, no Electron, no Lua
-  config, a few-MB binary. The engine (`we_lsp.c`) reuses the DAP JSON-RPC
-  framing (no new dependency) and is integration-tested against a real Metals;
+  help, **N** rename, **F** format (scalafmt). The engine (`we_lsp.c`) reuses the
+  DAP JSON-RPC framing (no new dependency) and is integration-tested against a
+  real Metals;
   the server stays an external tool (`cs install metals`). clangd (C/C++, in
   Debian), pyright, rust-analyzer and gopls are descriptor-row drop-ins next.
 
