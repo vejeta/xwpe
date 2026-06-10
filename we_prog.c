@@ -2565,6 +2565,44 @@ int e_d_p_message(char *str, FENSTER *f, int sw)
  return(0);
 }
 
+/* Append a line to a window identified by NAME (creating it the first time),
+   like e_d_p_message but for any window -- e.g. a dedicated "Metals Doctor"
+   window, so the server's Doctor report does not pollute "Messages".  Unlike
+   the Messages window this is a plain editor window (no bottom-dock).  sw=1
+   surfaces it; sw=0 writes in the background. */
+int e_d_p_named(char *winname, char *str, FENSTER *f, int sw)
+{
+ ECNT *cn = f->ed;
+ FENSTER *wf;
+ BUFFER *b;
+ int i;
+
+ if (str[0] == '\0')
+  return(0);
+ for (i = cn->mxedt; i > 0 && strcmp(cn->f[i]->datnam, winname); i--)
+  ;
+ if (i == 0)
+ {
+  if (e_edit(cn, winname))
+   return(-1);
+  i = cn->mxedt;
+ }
+ wf = cn->f[i];
+ b = wf->b;
+ print_to_end_of_buffer(b, str, b->mx.x);
+ b->b.y = b->mxlines - 1;
+ e_messages_scroll_to_bottom(wf);
+ if (sw)
+  e_rep_win_tree(cn);
+ else if (WpeIsXwin())
+ {
+  e_schirm(wf, 0);
+  e_cursor(wf, 0);
+  e_refresh();
+ }
+ return(0);
+}
+
 #if MOUSE
 int e_d_car_mouse(FENSTER *f)
 {

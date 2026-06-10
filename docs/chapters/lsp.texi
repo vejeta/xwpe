@@ -22,6 +22,11 @@ The first wired language is @strong{Scala}, through @uref{https://scalameta.org/
 Metals} -- so a Scala developer can use @command{wpe} in a terminal as a tiny,
 zero-config IDE front-end, no XQuartz and no Electron.
 
+@cindex example, language server
+A small, fully-commented demo project lives in
+@file{docs/examples/scala-lsp/} -- open it with @kbd{wpe main.scala}; each line
+carries an inline comment telling you which action to try right there.
+
 @section Keys
 
 @cindex Metals menu
@@ -85,6 +90,16 @@ follows meaning, not text.  Press it off any identifier to clear the highlight.
 @item Alt-Q O
 Outline: list the file's symbols (objects, defs, vals, ...) in a popup; pick
 one with the arrows and @key{RET} to jump to it.
+@item Alt-Q Y
+@dfn{Inlay hints} (toggle): turn on an opt-in overlay that shows each line's
+@emph{inferred types} -- the @samp{: @var{T}} the compiler deduced for a
+@code{val}/@code{def} you did not annotate -- dimly at the @strong{end of the
+line} (e.g.@: @code{val xs = List(1,2)} grows a faint @code{: List[Int]}).
+Press @kbd{Alt-Q Y} again to turn it off.  Off by default.  Unlike a modern
+GUI IDE the hint is shown at line-end, not woven mid-line: xwpe's cell grid
+keeps screen column == buffer column (so the cursor, editing and scrolling stay
+exact), and the hint conveys the same type without disturbing that.  The set is
+a snapshot taken when you toggle on; re-toggle to refresh after large edits.
 @item Alt-Q L
 Code @dfn{lenses}: the @samp{run}/@samp{debug}/@samp{test} and reference-count
 annotations the server attaches to definitions (main methods, test suites), in
@@ -251,6 +266,16 @@ Open a @file{.scala} file and use the @kbd{Alt-Q} keys above.  Symbols come
 back Scala-aware: completion shows full signatures
 (@code{println(x: Any): Unit}), hover shows the inferred type, and
 go-to-definition follows into library sources.
+
+@cindex Metals Doctor
+When Metals has something to report about the build (its @dfn{Doctor}), xwpe
+shows it as text in a dedicated @samp{Metals Doctor} window (a one-line note in
+@samp{Messages} says it updated; the editor file keeps focus).  It is @emph{not}
+opened in an external web browser, so a headless or remote session stays
+self-contained.  The Doctor is also the place to look when hover/completion act
+up: if it reports a presentation-compiler crash
+(@code{java.lang.AssertionError: asTerm called on not-a-Term}), pin a stable LTS
+Scala -- @code{//> using scala 3.3.7} -- rather than a bleeding-edge default.
 
 @section Other languages
 

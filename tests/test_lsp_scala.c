@@ -237,6 +237,21 @@ int main(void)
    { rc = fail("a code lens came back with no label"); goto close; }
  }
 
+ /* INLAY HINTS over the whole file: with inferred types enabled (we report that
+    config to Metals), "var i = 1" etc. should get a ": Int"-style hint.  Hint
+    emission is config/version dependent, so only a hard error (-1) or an empty
+    label fails; a count of 0 is reported, not fatal. */
+ {
+  e_lsp_inlay_hint ih[256];
+  int ni = e_lsp_inlay_hints(s, scala, 0, 16, ih, 256), k;
+  if (ni < 0) { rc = fail("inlay hints returned an error"); goto close; }
+  printf("  INLAY-HINTS: %d%s%s\n", ni, ni > 0 ? ", e.g. " : "",
+         ni > 0 ? ih[0].label : "");
+  for (k = 0; k < ni; k++)
+   if (!ih[k].label || !ih[k].label[0])
+   { rc = fail("an inlay hint came back with no label"); goto close; }
+ }
+
  /* diagnostics carry a RANGE: push a buffer with a type error and confirm the
     server reports it with a non-empty, single-line span (what the inline marks
     recolor).  Reuses this session -- no second server start. */

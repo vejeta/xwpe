@@ -31,6 +31,10 @@ typedef struct {
     for a non-spammy live "N errors, M warnings" status as you type. */
  void (*on_diagnostics_summary)(const char *path, int errors, int warnings,
                                 void *ud);
+ /* A document the server wants displayed (the Metals Doctor): a title and a
+    plain-text body.  Lets the client show it in a window instead of letting the
+    server open an external browser.  May be NULL. */
+ void (*on_show_text)(const char *title, const char *body, void *ud);
  void *ud;
 } e_lsp_host;
 
@@ -72,6 +76,16 @@ typedef struct {
  char *title;     /* the lens label ("run | debug", "test", ...)     */
  int   line;      /* 0-based line the lens annotates                 */
 } e_lsp_code_lens;
+
+/* One inlay hint (engine-owned): virtual text the server suggests showing
+ * inline -- an inferred TYPE (kind 1, e.g. ": Int") or a PARAMETER name
+ * (kind 2, e.g. "name = ") -- anchored between two real characters. */
+typedef struct {
+ char *label;     /* the hint text, padding (paddingLeft/Right) folded in */
+ int   line;      /* 0-based line of the anchor position             */
+ int   character; /* 0-based column of the anchor position           */
+ int   kind;      /* 1 = Type, 2 = Parameter, 0 = unspecified        */
+} e_lsp_inlay_hint;
 
 /* Spawn the language server (argv NULL-terminated, e.g. {"metals",0}), run the
  * initialize/initialized handshake with headless InitializationOptions, cwd =
@@ -171,6 +185,13 @@ int e_lsp_document_highlight(e_lsp_session *s, const char *path, int line,
  * Scala BSP/DAP path (see Debugging). */
 int e_lsp_code_lenses(e_lsp_session *s, const char *path,
                       e_lsp_code_lens *lenses, int max);
+
+/* textDocument/inlayHint: the inferred-type / parameter-name hints the server
+ * would show inline, for the inclusive line range [start_line, end_line].  Fills
+ * up to `max` hints (engine-owned labels) in `out`; returns the count, or -1. */
+int e_lsp_inlay_hints(e_lsp_session *s, const char *path,
+                      int start_line, int end_line,
+                      e_lsp_inlay_hint *out, int max);
 
 /* textDocument/documentSymbol: the file's outline (objects, defs, vals, ...),
  * flattened depth-first.  Fills up to `max` symbols (engine-owned names);

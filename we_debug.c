@@ -5127,6 +5127,103 @@ static void e_lsp_diag_clear(void)
  g_hl_nactive = 0;
 }
 
+/* ---- inlay hints (Alt-Q Y) ---------------------------------------------- *
+ * An OPT-IN, end-of-line overlay: when on, each line's inferred-type hints are
+ * drawn dimly after the line's text (the renderer calls e_lsp_inlay_eol_text per
+ * line).  Unlike true IDE inlay hints we do NOT insert mid-line virtual text --
+ * that would need a buffer<->screen column remap the 1993 cell grid has no layer
+ * for -- so the hint sits at the line end, conveying the same information (": T")
+ * without disturbing the cursor/editing/scroll invariants.  Off by default. */
+#define LSP_MAX_INLAY 1024
+static e_lsp_inlay_hint g_inlay_active[LSP_MAX_INLAY];
+static int             g_inlay_nactive = 0;
+static int             g_inlay_on = 0;    /* the toggle (per open file)         */
+
+static void e_lsp_inlay_clear(void)
+{
+ int i;
+ for (i = 0; i < g_inlay_nactive; i++)
+  free(g_inlay_active[i].label);
+ g_inlay_nactive = 0;
+}
+
+/* Snapshot the file's inferred-type hints into the renderer-owned overlay.  The
+   engine's labels live in its session cache (clobbered by the next request), so
+   copy them. */
+static void e_lsp_inlay_fetch(FENSTER *f)
+{
+ static e_lsp_inlay_hint tmp[LSP_MAX_INLAY];
+ int n, i, last;
+
+ e_lsp_inlay_clear();
+ if (!g_lsp || !f || !f->b)
+  return;
+ last = f->b->mxlines - 1;
+ if (last < 0)
+  last = 0;
+ n = e_lsp_inlay_hints(g_lsp, g_lsp_file, 0, last, tmp, LSP_MAX_INLAY);
+ for (i = 0; i < n && g_inlay_nactive < LSP_MAX_INLAY; i++)
+ {
+  if (!tmp[i].label || !tmp[i].label[0])
+   continue;
+  g_inlay_active[g_inlay_nactive].label = strdup(tmp[i].label);
+  g_inlay_active[g_inlay_nactive].line = tmp[i].line;
+  g_inlay_active[g_inlay_nactive].character = tmp[i].character;
+  g_inlay_active[g_inlay_nactive].kind = tmp[i].kind;
+  g_inlay_nactive++;
+ }
+}
+
+/* Per-line gate for the renderer: is the inlay overlay on for the file in f? */
+int e_lsp_inlay_active_for(FENSTER *f)
+{
+ char path[1200];
+ if (!g_lsp || !g_inlay_on || g_inlay_nactive == 0)
+  return(0);
+ if (!e_lsp_path_of(f, path, sizeof(path)))
+  return(0);
+ return(strcmp(path, g_lsp_file) == 0);
+}
+
+/* The concatenated end-of-line hint text for buffer line y, or NULL if none.
+   Returns a pointer to a reused static buffer (renderer calls this synchronously
+   per visible line). */
+const char *e_lsp_inlay_eol_text(int y)
+{
+ static char buf[256];
+ size_t len = 0;
+ int i;
+
+ if (!g_inlay_on)
+  return(NULL);
+ buf[0] = '\0';
+ for (i = 0; i < g_inlay_nactive; i++)
+ {
+  size_t l;
+  if (g_inlay_active[i].line != y || !g_inlay_active[i].label)
+   continue;
+  l = strlen(g_inlay_active[i].label);
+  if (len + l + 1 >= sizeof(buf))
+   break;
+  memcpy(buf + len, g_inlay_active[i].label, l);
+  len += l;
+  buf[len] = '\0';
+ }
+ return(len ? buf : NULL);
+}
+
+/* The dim cell attribute for inlay text: grey foreground on the line's own
+   background where colour is available; the base attribute under mono ncurses. */
+int e_lsp_inlay_color(SCHIRM *s, int base)
+{
+ (void)s;
+ if (WpeIsXwin() || col_num > 0)
+  return(16 * (base / 16) + 3);   /* cyan fg on the line's bg: a readable,
+                                     secondary "annotation" colour (dark grey
+                                     was too faint on the Borland blue) */
+ return(base);
+}
+
 /* The LSP languageId for this window's file, or NULL if none is wired. */
 static const char *e_lsp_lang_for(FENSTER *f)
 {
@@ -5206,6 +5303,54 @@ static void e_lsp_on_diag_summary(const char *path, int errors, int warnings,
   snprintf(buf, sizeof(buf), "LSP: %d error(s), %d warning(s).", errors, warnings);
  e_d_p_message(buf, g_lsp_fenster, 0);   /* sw=0: do NOT steal focus from the
                                             editor -- the user keeps typing */
+}
+
+/* A document the server pushed for display (the Metals Doctor, already stripped
+   to plain text): show it in its OWN "Metals Doctor" window -- NOT in Messages,
+   which it would swamp -- and leave the editor file focused (the report opens in
+   the background; switch to it with the Window menu / Alt-N).  A one-line note in
+   Messages says it updated. */
+static void e_lsp_on_show_text(const char *title, const char *body, void *ud)
+{
+ extern int e_d_p_named(char *winname, char *str, FENSTER *f, int sw);
+ extern void e_switch_window(int num, FENSTER *f);
+ static char *last_body = NULL;          /* dedup: Metals re-pushes the same doctor */
+ char line[512];
+ const char *p = body;
+ FENSTER *home = g_lsp_fenster;
+ ECNT *cn;
+ int home_id = -1, i;
+ (void)ud;
+
+ if (!home || !body)
+  return;
+ if (last_body && !strcmp(last_body, body))
+  return;                                /* identical to the last one: ignore */
+ free(last_body);
+ last_body = strdup(body);
+ cn = home->ed;
+ for (i = 1; i <= cn->mxedt; i++)        /* remember the file's window, to refocus */
+  if (cn->f[i] == home) { home_id = cn->edt[i]; break; }
+
+ snprintf(line, sizeof(line), "=== %s ===", title ? title : "Document");
+ e_d_p_named("Metals Doctor", line, home, 0);
+ while (p && *p)
+ {
+  const char *nl = strchr(p, '\n');
+  size_t len = nl ? (size_t)(nl - p) : strlen(p);
+  if (len >= sizeof(line))
+   len = sizeof(line) - 1;
+  memcpy(line, p, len);
+  line[len] = '\0';
+  if (line[0])
+   e_d_p_named("Metals Doctor", line, home, 0);
+  if (!nl)
+   break;
+  p = nl + 1;
+ }
+ e_d_p_message("Metals Doctor updated (open its window to read it).", home, 0);
+ if (home_id >= 0)                        /* keep the editor file focused */
+  e_switch_window(home_id, home);
 }
 
 /* Serialize the editor buffer to a malloc'd NUL-terminated string (one '\n' per
@@ -5414,7 +5559,8 @@ static int e_lsp_ensure(FENSTER *f)
  if (g_lsp && !strcmp(g_lsp_file, path))
   return(0);                                   /* already open for this file */
  if (g_lsp)
- {  e_lsp_close(g_lsp);  g_lsp = NULL;  e_lsp_diag_clear();  }  /* switched files */
+ {  e_lsp_close(g_lsp);  g_lsp = NULL;  e_lsp_diag_clear();
+    e_lsp_inlay_clear();  g_inlay_on = 0;  }  /* switched files: drop overlays */
  if (e_test_command(argv[0]))
  {  e_error("Metals not in PATH (cs install metals).", 0, f->fb);  return(-1);  }
 
@@ -5438,6 +5584,7 @@ static int e_lsp_ensure(FENSTER *f)
 
  host.on_diagnostic = e_lsp_on_diag;
  host.on_diagnostics_summary = e_lsp_on_diag_summary;
+ host.on_show_text = e_lsp_on_show_text;
  host.ud = NULL;
  g_lsp_last_err = g_lsp_last_warn = -1;   /* fresh session: force first report */
  g_lsp = e_lsp_open(argv, dir, lang, &host);
@@ -5799,6 +5946,54 @@ static int e_lsp_ui_highlight(FENSTER *f)
  return(0);
 }
 
+/* AltQ Y -- toggle the end-of-line inlay-hint overlay (inferred types).  Turning
+   it on starts/syncs the server and snapshots the file's hints; off clears them.
+   If the server has nothing yet, it stays off and says so.  Off by default. */
+static int e_lsp_ui_inlay(FENSTER *f)
+{
+ char msg[128];
+
+ if (g_inlay_on)                        /* currently on -> turn off */
+ {
+  g_inlay_on = 0;
+  e_lsp_inlay_clear();
+  e_d_p_message("Inlay hints: OFF.", f, 1);   /* sw=1: repaints Messages + editor */
+  e_cursor(f, 0);
+  return(0);
+ }
+ if (e_lsp_ensure(f) < 0)               /* turning on: start + sync + snapshot */
+  return(-1);
+ e_lsp_sync(f);
+ e_lsp_inlay_fetch(f);
+ if (g_inlay_nactive == 0)
+ {
+  /* On a cold start the first compile can finish before the workspace is fully
+     indexed, so the snapshot is empty.  Wait for the next diagnostics publish
+     (an event, bounded -- not a fixed sleep) and try once more, so a cold
+     Alt-Q Y usually works on the FIRST press instead of needing a second. */
+  e_lsp_wait_diagnostics(g_lsp, g_lsp_file, 8000);
+  e_lsp_inlay_fetch(f);
+ }
+ { const char *tp = getenv("XWPE_UI_TRACE");   /* XWPE_UI_TRACE: diag only */
+   if (tp) { FILE *tf = fopen(tp, "a");
+     if (tf) { fprintf(tf, "inlay toggle: fetched nactive=%d (e.g. line=%d [%s])\n",
+       g_inlay_nactive, g_inlay_nactive ? g_inlay_active[0].line : -1,
+       g_inlay_nactive ? g_inlay_active[0].label : "-"); fclose(tf); } } }
+ if (g_inlay_nactive == 0)
+ {
+  e_d_p_message("Inlay hints: none for this file yet "
+                "(the server may still be indexing -- try Alt-Q Y again).", f, 1);
+  return(0);                            /* leave the overlay off */
+ }
+ g_inlay_on = 1;
+ snprintf(msg, sizeof(msg),
+          "Inlay hints: ON -- %d inferred type(s) shown dim at end of line. "
+          "Alt-Q Y to hide.", g_inlay_nactive);
+ e_d_p_message(msg, f, 1);              /* sw=1: repaints Messages + editor (hints) */
+ e_cursor(f, 0);
+ return(0);
+}
+
 /* AltQ K -- code lenses: the run/test/reference annotations Metals attaches to
    definitions, listed in a popup as "<label>  (line N)"; selecting one jumps to
    that definition.  To actually run/test a Scala main, use the debugger
@@ -6105,6 +6300,8 @@ void e_lsp_ui_shutdown(void)
  if (g_lsp)
  {  e_lsp_close(g_lsp);  g_lsp = NULL;  }
  e_lsp_diag_clear();
+ e_lsp_inlay_clear();
+ g_inlay_on = 0;
  e_lsp_synced_set(NULL);
  g_lsp_file[0] = '\0';
  g_lsp_fenster = NULL;
@@ -6159,6 +6356,7 @@ static int e_lsp_menu_items(OPTK *it)
   { "Complete",             'C', e_lsp_ui_complete          },
   { "References",           'R', e_lsp_ui_references        },
   { "Highlight uses",       'U', e_lsp_ui_highlight         },
+  { "Inlay hints (toggle)", 'Y', e_lsp_ui_inlay             },
   { "Outline",              'O', e_lsp_ui_outline           },
   { "Code lenses",          'L', e_lsp_ui_codelens          },
   { "Workspace symbols",    'W', e_lsp_ui_workspace_symbols },
@@ -6255,6 +6453,8 @@ int e_lsp_ui_key(FENSTER *f)
    return(e_lsp_ui_references(f));
   case 'u': case ('u' - 'a' + 1):
    return(e_lsp_ui_highlight(f));      /* U = Uses */
+  case 'y': case ('y' - 'a' + 1):
+   return(e_lsp_ui_inlay(f));          /* Y = inlaY hints */
   case 'l': case ('l' - 'a' + 1):
    return(e_lsp_ui_codelens(f));       /* L = Lens */
   case 's': case ('s' - 'a' + 1):

@@ -18,6 +18,7 @@
 > | `Alt-Q C` | completion (popup, insert) | `e_lsp_completion` |
 > | `Alt-Q R` | references (list in Messages) | `e_lsp_references` |
 > | `Alt-Q U` | document highlight -- mark Uses in this file | `e_lsp_document_highlight` |
+> | `Alt-Q Y` | inlaY hints toggle -- inferred types dim at end-of-line (opt-in) | `e_lsp_inlay_hints` |
 > | `Alt-Q S` | signature help | `e_lsp_signature_help` |
 > | `Alt-Q O` | outline (popup -> jump) | `e_lsp_document_symbols` |
 > | `Alt-Q L` | code Lenses (run/test/refs, popup -> jump) | `e_lsp_code_lenses` |

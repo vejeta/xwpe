@@ -40,6 +40,8 @@ struct e_lsp_session {
  struct json_object *acts_raw;      /* last codeAction array, kept for apply */
  e_lsp_code_lens lenses[64];        /* engine-owned code-lens result        */
  int          nlenses;
+ e_lsp_inlay_hint inlays[512];      /* engine-owned inlay-hint result        */
+ int          ninlays;
 };
 
 /* ---- transport --------------------------------------------------------- */
@@ -189,6 +191,65 @@ static struct json_object *obj_obj(struct json_object *o, const char *k)
  return NULL;
 }
 
+/* Strip HTML to readable plain text: tags are removed, a handful of block tags
+   become line breaks, and the common entities are decoded.  Used to turn the
+   Metals Doctor (HTML) into text we can show in a window.  Output is never
+   longer than the input.  Returns a malloc'd string (caller frees), or NULL. */
+static char *lsp_html_to_text(const char *html)
+{
+ size_t n = strlen(html), o = 0, i;
+ char *out = malloc(n + 1);
+
+ if (!out)
+  return(NULL);
+ for (i = 0; i < n; )
+ {
+  if (html[i] == '<')                     /* a tag */
+  {
+   const char *t = html + i + 1;
+   int nl = (!strncmp(t, "br", 2)   || !strncmp(t, "/p", 2)  ||
+             !strncmp(t, "/tr", 3)  || !strncmp(t, "/li", 3) ||
+             !strncmp(t, "/h", 2)   || !strncmp(t, "/div", 4)||
+             !strncmp(t, "/table", 6) || !strncmp(t, "li", 2));
+   while (i < n && html[i] != '>')
+    i++;
+   if (i < n)
+    i++;                                  /* skip '>' */
+   if (nl && o > 0 && out[o - 1] != '\n')
+    out[o++] = '\n';
+   continue;
+  }
+  if (html[i] == '&')                      /* entity */
+  {
+   if (!strncmp(html + i, "&amp;", 5))  { out[o++] = '&';  i += 5; continue; }
+   if (!strncmp(html + i, "&lt;", 4))   { out[o++] = '<';  i += 4; continue; }
+   if (!strncmp(html + i, "&gt;", 4))   { out[o++] = '>';  i += 4; continue; }
+   if (!strncmp(html + i, "&quot;", 6)) { out[o++] = '"';  i += 6; continue; }
+   if (!strncmp(html + i, "&nbsp;", 6)) { out[o++] = ' ';  i += 6; continue; }
+   if (html[i + 1] == '#')               /* numeric: &#NN; or &#xHH; */
+   {
+    int code = 0, hex = (html[i + 2] == 'x' || html[i + 2] == 'X');
+    size_t j = i + 2 + (hex ? 1 : 0);
+    while (j < n && html[j] != ';')
+    {
+     char c = html[j];
+     if (hex)
+      code = code * 16 + (c <= '9' ? c - '0' :
+                          (c | 0x20) - 'a' + 10);
+     else if (c >= '0' && c <= '9')
+      code = code * 10 + (c - '0');
+     j++;
+    }
+    if (j < n && code > 0 && code < 128)
+    {  out[o++] = (char)code;  i = j + 1;  continue;  }
+   }
+  }
+  out[o++] = html[i++];
+ }
+ out[o] = '\0';
+ return(out);
+}
+
 /* file:///path -> /path (best-effort; ignores host, no %xx unescaping). */
 static const char *uri_to_path(const char *uri)
 {
@@ -232,6 +293,25 @@ static void lsp_dispatch_diagnostics(e_lsp_session *s, struct json_object *param
 
 /* Answer a server->client request so the server never blocks.  We advertise no
    UI providers, so the safe reply is null / an array of nulls. */
+/* The configuration we report for a pulled section (workspace/configuration).
+   Metals' inlay hints are OFF by default; turn on inferred-type hints for the
+   "metals" section (val/def result types).  Other sections -> NULL (= default).
+   Returns a new json object (handed to the reply array) or NULL. */
+static struct json_object *lsp_config_for_section(const char *section)
+{
+ struct json_object *cfg, *ih, *it;
+
+ if (!section || strcmp(section, "metals") != 0)
+  return(NULL);
+ it = json_object_new_object();
+ json_object_object_add(it, "enable", json_object_new_boolean(1));
+ ih = json_object_new_object();
+ json_object_object_add(ih, "inferredTypes", it);
+ cfg = json_object_new_object();
+ json_object_object_add(cfg, "inlayHints", ih);
+ return(cfg);
+}
+
 static void lsp_answer_request(e_lsp_session *s, struct json_object *m)
 {
  const char *meth = obj_str(m, "method");
@@ -252,8 +332,20 @@ static void lsp_answer_request(e_lsp_session *s, struct json_object *m)
   int i, n = (items && json_object_is_type(items, json_type_array))
              ? json_object_array_length(items) : 0;
   for (i = 0; i < n; i++)
-   json_object_array_add(arr, NULL);
+  {
+   struct json_object *it = json_object_array_get_idx(items, i);
+   json_object_array_add(arr, lsp_config_for_section(obj_str(it, "section")));
+  }
   lsp_reply(s, id, arr);
+ }
+ else if (meth && !strcmp(meth, "window/showDocument"))
+ {
+  /* Reply "handled" but do NOT open anything -- this swallows Metals' Doctor
+     URL so it does not spawn an external browser/KIO.  (Rendering the Doctor
+     inside xwpe is a separate task.) */
+  struct json_object *res = json_object_new_object();
+  json_object_object_add(res, "success", json_object_new_boolean(1));
+  lsp_reply(s, id, res);
  }
  else
   /* registerCapability, workDoneProgress/create, *_refresh, unknown -> null */
@@ -355,6 +447,28 @@ static struct json_object *lsp_pump(e_lsp_session *s, int want_id,
      {  json_object_put(m);  return json_object_new_boolean(1);  }
     }
    }
+   else if (meth && !strcmp(meth, "metals/executeClientCommand"))
+   {
+    /* Metals pushes the Doctor here (because we asked for doctorProvider:html);
+       render it in a window instead of a browser.  Other client commands are
+       ignored. */
+    struct json_object *params = obj_obj(m, "params");
+    const char *cmd = obj_str(params, "command");
+    if (cmd && !strncmp(cmd, "metals-doctor", 13) && s->host.on_show_text)
+    {
+     struct json_object *args = obj_obj(params, "arguments");
+     struct json_object *a0 = (args && json_object_is_type(args, json_type_array)
+                               && json_object_array_length(args) > 0)
+                              ? json_object_array_get_idx(args, 0) : NULL;
+     const char *html = a0 ? json_object_get_string(a0) : NULL;
+     if (html && *html)
+     {
+      char *text = lsp_html_to_text(html);
+      s->host.on_show_text("Metals Doctor", text ? text : html, s->host.ud);
+      free(text);
+     }
+    }
+   }
    json_object_put(m);
    continue;
   }
@@ -415,7 +529,12 @@ static struct json_object *lsp_init_options(void)
  json_object_object_add(o, "statusBarProvider", json_object_new_string("log-message"));
  json_object_object_add(o, "inputBoxProvider", json_object_new_boolean(0));
  json_object_object_add(o, "quickPickProvider", json_object_new_boolean(0));
- json_object_object_add(o, "executeClientCommandProvider", json_object_new_boolean(0));
+ /* Accept client commands AND ask for the Doctor as HTML: Metals then PUSHES the
+    Doctor to us via metals/executeClientCommand (we render it in a window)
+    instead of opening an external browser -- with isHttpEnabled false there is
+    no browser fallback either. */
+ json_object_object_add(o, "executeClientCommandProvider", json_object_new_boolean(1));
+ json_object_object_add(o, "doctorProvider", json_object_new_string("html"));
  json_object_object_add(o, "didFocusProvider", json_object_new_boolean(1));
  json_object_object_add(o, "isHttpEnabled", json_object_new_boolean(0));
  /* Advertise that the client can start debug sessions: this is what makes
@@ -441,11 +560,21 @@ static struct json_object *lsp_client_caps(void)
  json_object_object_add(td, "completion", json_object_new_object());
  json_object_object_add(td, "definition", json_object_new_object());
  json_object_object_add(td, "publishDiagnostics", json_object_new_object());
+ json_object_object_add(td, "inlayHint", json_object_new_object());
  json_object_object_add(caps, "textDocument", td);
  {
   struct json_object *ws = json_object_new_object();
   json_object_object_add(ws, "configuration", json_object_new_boolean(1));
   json_object_object_add(caps, "workspace", ws);
+ }
+ {  /* Tell the server WE display documents -- so Metals routes its Doctor URL
+       through window/showDocument (which we intercept) instead of spawning an
+       external browser/KIO for it. */
+  struct json_object *win = json_object_new_object();
+  struct json_object *sd = json_object_new_object();
+  json_object_object_add(sd, "support", json_object_new_boolean(1));
+  json_object_object_add(win, "showDocument", sd);
+  json_object_object_add(caps, "window", win);
  }
  return caps;
 }
@@ -983,6 +1112,14 @@ static void lsp_free_lenses(e_lsp_session *s)
  s->nlenses = 0;
 }
 
+static void lsp_free_inlays(e_lsp_session *s)
+{
+ int i;
+ for (i = 0; i < s->ninlays; i++)
+  free(s->inlays[i].label);
+ s->ninlays = 0;
+}
+
 int e_lsp_code_lenses(e_lsp_session *s, const char *path,
                       e_lsp_code_lens *lenses, int max)
 {
@@ -1041,6 +1178,124 @@ int e_lsp_code_lenses(e_lsp_session *s, const char *path,
  }
  json_object_put(resp);
  return out;
+}
+
+/* InlayHint.label is `string | InlayHintLabelPart[]`; build one display string,
+   folding paddingLeft/paddingRight into single leading/trailing spaces.  Returns
+   a malloc'd string (caller frees), or NULL. */
+static char *lsp_inlay_label(struct json_object *hint)
+{
+ struct json_object *lab = obj_obj(hint, "label");
+ int pad_l = json_object_get_boolean(obj_obj(hint, "paddingLeft"));
+ int pad_r = json_object_get_boolean(obj_obj(hint, "paddingRight"));
+ size_t cap = 3, len = 0;       /* 2 padding spaces + NUL */
+ char *out;
+ int is_str = lab && json_object_is_type(lab, json_type_string);
+ int is_arr = lab && json_object_is_type(lab, json_type_array);
+ int i, n = is_arr ? json_object_array_length(lab) : 0;
+
+ if (is_str)
+  cap += strlen(json_object_get_string(lab));
+ else if (is_arr)
+  for (i = 0; i < n; i++)
+  {
+   const char *v = obj_str(json_object_array_get_idx(lab, i), "value");
+   if (v)
+    cap += strlen(v);
+  }
+ out = malloc(cap);
+ if (!out)
+  return(NULL);
+ if (pad_l)
+  out[len++] = ' ';
+ if (is_str)
+ {
+  const char *v = json_object_get_string(lab);
+  size_t l = strlen(v);
+  memcpy(out + len, v, l);
+  len += l;
+ }
+ else if (is_arr)
+  for (i = 0; i < n; i++)
+  {
+   const char *v = obj_str(json_object_array_get_idx(lab, i), "value");
+   size_t l;
+   if (!v)
+    continue;
+   l = strlen(v);
+   memcpy(out + len, v, l);
+   len += l;
+  }
+ if (pad_r)
+  out[len++] = ' ';
+ out[len] = '\0';
+ return(out);
+}
+
+int e_lsp_inlay_hints(e_lsp_session *s, const char *path,
+                      int start_line, int end_line,
+                      e_lsp_inlay_hint *out, int max)
+{
+ char abspath[PATH_MAX], uri[PATH_MAX + 8];
+ struct json_object *args, *doc, *rng, *st, *en, *resp, *result;
+ int id, i, n, count = 0;
+
+ if (!s)
+  return -1;
+ lsp_free_inlays(s);
+ if (!realpath(path, abspath))
+  snprintf(abspath, sizeof(abspath), "%s", path);
+ snprintf(uri, sizeof(uri), "file://%s", abspath);
+ if (start_line < 0)
+  start_line = 0;
+ if (end_line < start_line)
+  end_line = start_line;
+ args = json_object_new_object();
+ doc = json_object_new_object();
+ json_object_object_add(doc, "uri", json_object_new_string(uri));
+ json_object_object_add(args, "textDocument", doc);
+ rng = json_object_new_object();
+ st = json_object_new_object();
+ json_object_object_add(st, "line", json_object_new_int(start_line));
+ json_object_object_add(st, "character", json_object_new_int(0));
+ en = json_object_new_object();
+ json_object_object_add(en, "line", json_object_new_int(end_line));
+ json_object_object_add(en, "character", json_object_new_int(1000000));
+ json_object_object_add(rng, "start", st);
+ json_object_object_add(rng, "end", en);
+ json_object_object_add(args, "range", rng);
+ id = ++s->id;
+ lsp_send(s, id, "textDocument/inlayHint", args);
+ resp = lsp_pump(s, id, NULL, LSP_TMO_REQ);
+ if (!resp)
+  return -1;
+ result = obj_obj(resp, "result");
+ n = (result && json_object_is_type(result, json_type_array))
+     ? json_object_array_length(result) : 0;
+ for (i = 0; i < n && count < max &&
+             s->ninlays < (int)(sizeof(s->inlays)/sizeof(s->inlays[0])); i++)
+ {
+  struct json_object *hint = json_object_array_get_idx(result, i);
+  struct json_object *pos = obj_obj(hint, "position");
+  char *label;
+  if (!pos)
+   continue;
+  label = lsp_inlay_label(hint);
+  if (!label || !*label)              /* skip empty / whitespace-only hints */
+  {
+   free(label);
+   continue;
+  }
+  s->inlays[s->ninlays].label = label;
+  s->inlays[s->ninlays].line = obj_int(pos, "line", 0);
+  s->inlays[s->ninlays].character = obj_int(pos, "character", 0);
+  s->inlays[s->ninlays].kind = obj_int(hint, "kind", 0);
+  out[count] = s->inlays[s->ninlays];
+  s->ninlays++;
+  count++;
+ }
+ json_object_put(resp);
+ return count;
 }
 
 /* Flatten a DocumentSymbol[]/SymbolInformation[] array depth-first into syms. */
@@ -1463,6 +1718,7 @@ void e_lsp_close(e_lsp_session *s)
  lsp_free_syms(s);
  lsp_free_acts(s);
  lsp_free_lenses(s);
+ lsp_free_inlays(s);
  e_dap_reader_free(&s->rd);
  free(s);
 }

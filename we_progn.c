@@ -457,6 +457,38 @@ int *e_sc_txt(int *c_sw, BUFFER *b)
 }
 
 /*       Writing of a line (content of a screen)      */
+#ifdef DEBUGGER
+/* Draw line y's end-of-line LSP inlay hints (inferred types), if the overlay is
+   on, starting at display column *jp -- a small gap, then the hint text in a dim
+   attribute -- clamped to the window's right edge; advances *jp.  No-op unless a
+   language server is attached and the user toggled inlay hints on (Alt-Q Y).
+   ASCII hint labels (Scala inferred types are ASCII); see e_lsp_inlay_eol_text.
+   Non-static: both editor line painters call it -- e_pr_c_line (syntax-on) here
+   and e_pr_line (syntax-off) in we_wind.c -- so hints show either way. */
+void e_pr_inlay_eol(FENSTER *f, int y, int *jp, int frb)
+{
+ extern int e_lsp_inlay_active_for(FENSTER *f);
+ extern const char *e_lsp_inlay_eol_text(int y);
+ extern int e_lsp_inlay_color(SCHIRM *s, int base);
+ SCHIRM *s = f->s;
+ const char *hint;
+ int j = *jp, limit = NUM_COLS_ON_SCREEN + s->c.x - 1, attr, k;
+
+ if (!e_lsp_inlay_active_for(f))
+  return;
+ hint = e_lsp_inlay_eol_text(y);
+ if (!hint || !*hint)
+  return;
+ attr = e_lsp_inlay_color(s, frb);
+ for (k = 0; k < 2 && j < limit; k++, j++)          /* gap after the code */
+  e_pr_char(f->a.x - s->c.x + j + 1, y - s->c.y + f->a.y + 1, ' ', frb);
+ for (; *hint && j < limit; hint++, j++)
+  e_pr_char(f->a.x - s->c.x + j + 1, y - s->c.y + f->a.y + 1,
+            (unsigned char) *hint, attr);
+ *jp = j;
+}
+#endif
+
 void e_pr_c_line(int y, FENSTER *f)
 {
  BUFFER *b = f->b;
@@ -604,6 +636,10 @@ void e_pr_c_line(int y, FENSTER *f)
   }
   j++;
  }
+#ifdef DEBUGGER
+ if (i == b->bf[y].len)            /* whole line fit -> room for EOL inlay hints */
+  e_pr_inlay_eol(f, y, &j, frb);
+#endif
  for (; j < NUM_COLS_ON_SCREEN + s->c.x - 1; j++)
   e_pr_char(f->a.x - s->c.x + j + 1, y - s->c.y + f->a.y + 1, ' ', frb);
 }

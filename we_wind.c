@@ -1438,6 +1438,15 @@ void e_pr_line(int y, FENSTER *f)
   j++;
  }
 
+#ifdef DEBUGGER
+ /* End-of-line LSP inlay hints, when the file has no syntax highlighting (this
+    plain painter); the syntax painter e_pr_c_line hooks the same helper. */
+ if (i == b->bf[y].len)
+ {
+  extern void e_pr_inlay_eol(FENSTER *f, int y, int *jp, int frb);
+  e_pr_inlay_eol(f, y, &j, s->fb->et.fb);
+ }
+#endif
  for (; j < COL_NUM_ON_SCREEN_RIGHT; j++)
   e_pr_char(f->a.x - NUM_COLS_OFF_SCREEN_LEFT + j + 1, y - NUM_LINES_OFF_SCREEN_TOP + f->a.y + 1,
     ' ', s->fb->et.fb);
