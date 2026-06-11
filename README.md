@@ -92,7 +92,12 @@ emulator.
   **D** definition, **I** implementation, **T** type-definition, **H** hover
   (type + docs), **C** completion, **R** references, **O** file outline, **W**
   project-wide symbol search, **A** code actions / quick-fixes, **S** signature
-  help, **N** rename, **F** format (scalafmt). The engine (`we_lsp.c`) reuses the
+  help, **N** rename, **F** format (scalafmt, whole-file or just the marked
+  range), **B**/**G** call hierarchy (incoming / outgoing), **K**/**J** type
+  hierarchy (super / sub), **V** expand selection by syntax, **U** highlight
+  every use, **L** code lenses, **Y** inlay hints (inferred types) and **M**
+  semantic colours (compiler-driven highlighting). `Alt-Q ?` opens a menu of
+  them all. The engine (`we_lsp.c`) reuses the
   DAP JSON-RPC framing (no new dependency) and is integration-tested against a
   real Metals;
   the server stays an external tool (`cs install metals`). clangd (C/C++, in
@@ -109,6 +114,11 @@ emulator.
   `export JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64`. See the **Language
   servers** chapter of the manual (`info xwpe`, or Help&nbsp;&rarr;&nbsp;Info)
   for the full setup.
+
+  <p align="center">
+    <img src="docs/demos/gifs/menu.gif" width="640" alt="Pressing Alt-Q ? in xwpe opens the Metals action menu, an upward-unfolding Borland-style dropdown listing every LSP command with its Alt-Q accelerator.">
+    <br><em>The Metals action menu (<code>Alt-Q ?</code>): every LSP command, discoverable, with its accelerator. More clips in <a href="docs/demos/">docs/demos/</a>.</em>
+  </p>
 
   <p align="center">
     <img src="screenshots/xwpe-go-dap-debug.png" width="720" alt="Debugging a Go program in xwpe via Delve over DAP: the editor stopped at a breakpoint on line 9 (highlighted), and a Watches window below showing the live value fact: 6 as the factorial loop runs.">
