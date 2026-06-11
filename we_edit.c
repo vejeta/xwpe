@@ -2514,10 +2514,35 @@ char *e_buffer_to_text(BUFFER *b)
  return(out);
 }
 
+/* e_buffer_append_line - append ONE line, verbatim, to the end of the buffer,
+   INCLUDING an empty line.  This is the difference from print_to_end_of_buffer,
+   which deliberately DROPS blank lines (right for compiler-output appends, wrong
+   for a whole-buffer rebuild): dropping them is what collapsed the user's empty
+   lines when an LSP code action / format / rename rewrote the file, and -- since
+   whole-buffer Undo rebuilds through this same path -- is why the blank lines
+   did not come back on Ctrl-U.  `str` is a single line with no embedded newline.
+   An empty `str` yields xwpe's canonical empty line (len 0, nrc 0), exactly what
+   e_new_line produces. */
+static void e_buffer_append_line(BUFFER *b, const char *str)
+{
+ int i, len = (int)strlen(str);
+
+ e_new_line(b->mxlines, b);          /* canonical empty line: len 0, nrc 0 */
+ if (len == 0)
+  return;                            /* the blank line we used to drop -- keep it */
+ i = b->mxlines - 1;
+ b->bf[i].s = REALLOC(b->bf[i].s, len + 1);
+ memcpy(b->bf[i].s, str, len);
+ b->bf[i].s[len] = '\0';
+ b->bf[i].len = e_str_len((unsigned char *)b->bf[i].s);
+ b->bf[i].nrc = e_str_nrc((unsigned char *)b->bf[i].s);
+}
+
 /* e_buffer_set_text - replace the WHOLE buffer content with `text` (lines split
    on '\n').  Does NOT touch the cursor, the view, or the undo stack -- the caller
    owns those.  The inverse of e_buffer_to_text; used by whole-buffer Undo and by
-   the LSP edit-apply path (e_lsp_replace_buffer). */
+   the LSP edit-apply path (e_lsp_replace_buffer).  Each split line is appended
+   verbatim via e_buffer_append_line, so empty lines survive the round trip. */
 void e_buffer_set_text(BUFFER *b, const char *text)
 {
  char *copy = strdup(text ? text : ""), *p, *nl;
@@ -2533,7 +2558,7 @@ void e_buffer_set_text(BUFFER *b, const char *text)
   nl = strchr(p, '\n');
   if (nl)
    *nl = '\0';
-  print_to_end_of_buffer(b, p, b->mx.x);
+  e_buffer_append_line(b, p);
   if (!nl)
    break;
   p = nl + 1;

@@ -329,6 +329,7 @@ EXTRA_DIST = \
   tests/test_lsp_scala.c \
   tests/test_lsp_clangd.c \
   tests/test_clangd_lsp.py \
+  tests/test_clangd_blanklines.py \
   tests/test_lsp_python.c \
   tests/test_python_lsp.py \
   tests/test_lsp_gopls.c \
