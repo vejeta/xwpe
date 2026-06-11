@@ -33,10 +33,6 @@ Escape
 Sleep 600ms
 Alt+q
 Sleep 300ms
-Type "d"
-Sleep 3500ms
-Alt+q
-Sleep 300ms
 Type "r"
 Sleep 3s
 Alt+q
@@ -44,6 +40,12 @@ Sleep 300ms
 Type "o"
 Sleep 2800ms
 Escape
-Sleep 800ms
+Sleep 700ms
+# go-to-definition LAST: it is the only action that moves the cursor off the
+# symbol, so any cursor-sensitive action after it would pop "No ... found".
+Alt+q
+Sleep 300ms
+Type "d"
+Sleep 3500ms
 Ctrl+q
 Sleep 1500ms

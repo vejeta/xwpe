@@ -39,22 +39,25 @@ Type "h"
 Sleep 3s
 Escape
 Sleep 600ms
-# Go to definition: the cursor leaps up to `double total(...)`
-Alt+q
-Sleep 300ms
-Type "d"
-Sleep 3500ms
-# References: every use of `total`, listed in Messages
+# References: every use of `total`, listed in Messages (cursor still on the call)
 Alt+q
 Sleep 300ms
 Type "r"
 Sleep 3s
-# Outline: the file's symbols in a popup (the finale)
+# Outline: the file's symbols in a popup
 Alt+q
 Sleep 300ms
 Type "o"
 Sleep 2800ms
 Escape
-Sleep 800ms
+Sleep 700ms
+# Go to definition: the finale -- the cursor leaps up to `double total(...)`.
+# Definition MUST be last: it is the only action that moves the cursor off the
+# symbol, so a cursor-sensitive action (hover/references) after it would land on
+# the wrong spot and pop a "No ... found" error.
+Alt+q
+Sleep 300ms
+Type "d"
+Sleep 3500ms
 Ctrl+q
 Sleep 1500ms
