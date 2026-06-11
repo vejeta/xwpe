@@ -6145,6 +6145,7 @@ static int e_lsp_pick(FENSTER *f, const char *title, const char *const *labels,
  o->xe = o->xa + w + 4;
  o->ye = o->ya + vis + 3;
  o->bgsw = 0;
+ o->crsw = AltO;     /* Enter on a radio confirms via the Ok button (Borland) */
  o->name = name;
  /* Each radio option needs a UNIQUE NON-ZERO switch id: e_get_opt_sw_spatial
     returns the focused widget's sw and treats 0 as "not found", so all-zero

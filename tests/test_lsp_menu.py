@@ -438,40 +438,50 @@ def test_eager_start_on_open_boots_metals(tmp_path):
 
 @pytest.mark.skipif(shutil.which("metals") is None or shutil.which("scala-cli") is None,
                     reason="metals and scala-cli required")
-def test_code_action_offers_unresolved_refactor(tmp_path):
-    """#214: Metals delivers 'Convert to named arguments' UNRESOLVED -- the action
-    carries only a `data` field, no edit -- expecting a codeAction/resolve
-    round-trip.  This asserts it IS offered in the picker for the call run("world"),
-    which proves the codeAction request (with its diagnostics context) and the
-    resolveSupport/dataSupport capability are wired so xwpe will resolve it on
-    apply.  Applying a specific (non-default) picker entry is not driveable from a
-    headless pty -- see the reference_pyte_harness note -- so the resolve+apply
-    round-trip itself is covered by the engine + a manual wire/disk probe.  Needs a
-    real Metals."""
+def test_code_action_resolve_named_arguments(tmp_path):
+    """#214 + #215 end to end, BY KEYBOARD: Metals delivers 'Convert to named
+    arguments' UNRESOLVED (only a `data` field), so xwpe must run a
+    codeAction/resolve round-trip to fetch the edit.  We land on the call, open the
+    picker (Alt-Q A), arrow-navigate to that action, and press Enter -- which (with
+    the #215 fixes: CSI arrow decode + radio Enter=select+OK) selects it and applies
+    it.  F2 saves; the positional call on disk must become a named-argument call.
+    Verified on DISK -- the picker-close relayout makes the headless screen
+    unreliable; see tests/docs/picker-keyboard-investigation.md.  Needs a real
+    Metals."""
     (tmp_path / "project.scala").write_text("//> using jvm temurin:21\n")
     w = _Wpe(str(tmp_path), [("Demo.scala",
         "object Demo:\n"
-        "  def run(name: String): String = name\n"
         "  def main(args: Array[String]): Unit =\n"
-        "    println(run(\"world\"))\n")])
+        "    println(increment(41))\n"
+        "  def increment(value: Int): Int = value + 1\n")])
     try:
         w.key("\033q", delay=0.4)
         w.key("e", delay=150.0)                 # start Metals + index (cold)
         w.drain(5.0)
         assert w.alive(), "wpe died starting Metals"
-        # land on the CALL run("world"): the string literal only appears there
-        # (the def is run(name: ...)), so the cursor sits in the call arguments.
-        w.key("\033s", delay=0.6)
+        w.key("\033s", delay=0.6)               # Find -> land on the call
         w.key("f", delay=0.6)
-        for ch in "world":
+        for ch in "increment":
             w.key(ch, delay=0.05)
         w.key("\r", delay=1.2)
         w.key("\033q", delay=0.4)
         w.key("a", delay=7.0)                   # Alt-Q A: code actions -> picker
         rows = w.display()
-        assert any("named arguments" in l for l in rows), \
+        first = next((i for i, l in enumerate(rows)
+                      if any(k in l for k in ("Convert", "Extract", "Rewrite"))), None)
+        named = next((i for i, l in enumerate(rows) if "named arguments" in l), None)
+        assert first is not None and named is not None, \
             "Metals did not offer the unresolved 'named arguments' refactor\n%s" \
             % w.text()
-        assert w.alive(), "wpe died opening the code-action picker"
+        for _ in range(named - first):
+            w.key("\033[B", delay=0.3)          # arrow-navigate to the action
+        w.key("\r", delay=5.0)                  # Enter: select + apply (resolve)
+        w.drain(1.0)
+        w.key("\033OQ", delay=1.5)              # F2: save the result
+        w.drain(1.0)
+        saved = (tmp_path / "Demo.scala").read_text()
+        assert "= increment(41)" in saved, \
+            "named-arguments refactor (keyboard, resolve path) not applied:\n%s" \
+            % saved
     finally:
         w.close()

@@ -1951,7 +1951,9 @@ e_opt_kst_restart:
          /* Space toggles the focused checkbox (modern expectation); the
             top-of-loop redraw shows the new [X], and c==cold keeps focus. */
          if(c == ' ') {  o->sstr[i]->num = !o->sstr[i]->num;  c = cold;  break;  }
-         if(c == WPE_CR) {  sw = 0;  c = cold;  break;  }
+         /* Enter confirms the dialog (Borland Enter=OK): route it to the default
+            button (crsw), like the text/numeric fields do, instead of a no-op. */
+         if(c == WPE_CR) {  c = o->crsw;  sw = 0;  break;  }
          else if(c == WPE_ESC)  sw = 1;
          else
          {  csv = c;
@@ -1985,7 +1987,11 @@ e_opt_kst_restart:
 #endif
             /* Space selects the focused radio option (modern expectation). */
             if(c == ' ') {  o->pstr[i]->num = j;  c = cold;  break;  }
-            if(c == WPE_CR)  {  sw = 0;  c = cold;  break;  }
+            /* Enter SELECTS the focused option and confirms the dialog (Borland
+               Enter=OK): pick the option under the cursor, then route to the
+               default button (crsw).  So Down-to-it + Enter is one move -- Space
+               first is optional. */
+            if(c == WPE_CR)  {  o->pstr[i]->num = j;  c = o->crsw;  sw = 0;  break;  }
             else if(c == WPE_ESC)  sw = 1;
             {  csv = c;
                if((c = e_get_opt_sw(c, o->xa+o->pstr[i]->ps[j]->x,

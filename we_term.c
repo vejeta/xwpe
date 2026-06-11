@@ -974,6 +974,42 @@ static int e_t_getch_poll(void)
    set_escdelay(25) above. */
 #define ESC_ALT_DELAY_MS 25
 
+/* Decode the tail of a VT100 cursor/navigation escape after we have already read
+   ESC and the introducer byte (@intro is '[' for CSI or 'O' for SS3).  ncurses
+   keypad() normally folds a whole arrow sequence into one KEY_DOWN/etc. code, but
+   the raw escape can slip through un-assembled -- e.g. inside a modal dialog's
+   poll loop, where the bytes arrive split across poll cycles -- and then the
+   generic ESC handler would mistake ESC '[' for Alt-'[' (e_tast_sim -> 0) and
+   leak the final letter ('A'/'B'/...) as a literal, so arrow keys did nothing in
+   the Options dialogs and the LSP action picker.  Read the remaining byte(s) and
+   return the proper xwpe key, or 0 if it is not a sequence we recognise. */
+static int e_t_csi_key(int intro)
+{
+ int c;
+
+ (void)intro;
+ timeout(ESC_ALT_DELAY_MS);
+ c = fk_getch();
+ timeout(-1);
+ switch (c)
+ {
+  case 'A':  return(CUP);
+  case 'B':  return(CDO);
+  case 'C':  return(CRI);
+  case 'D':  return(CLE);
+  case 'H':  return(POS1);
+  case 'F':  return(ENDE);
+  /* "ESC [ <n> ~" forms: consume the trailing '~' (or modifier digits). */
+  case '1': case '7':  { int t; timeout(ESC_ALT_DELAY_MS); do t = fk_getch(); while (t >= '0' && t <= '9'); timeout(-1); return(POS1); }
+  case '4': case '8':  { int t; timeout(ESC_ALT_DELAY_MS); do t = fk_getch(); while (t >= '0' && t <= '9'); timeout(-1); return(ENDE); }
+  case '2':  { int t; timeout(ESC_ALT_DELAY_MS); do t = fk_getch(); while (t >= '0' && t <= '9'); timeout(-1); return(EINFG); }
+  case '3':  { int t; timeout(ESC_ALT_DELAY_MS); do t = fk_getch(); while (t >= '0' && t <= '9'); timeout(-1); return(ENTF); }
+  case '5':  { int t; timeout(ESC_ALT_DELAY_MS); do t = fk_getch(); while (t >= '0' && t <= '9'); timeout(-1); return(BUP); }
+  case '6':  { int t; timeout(ESC_ALT_DELAY_MS); do t = fk_getch(); while (t >= '0' && t <= '9'); timeout(-1); return(BDO); }
+  default:   return(0);
+ }
+}
+
 int e_t_getch()
 {
  int c, bk;
@@ -1140,6 +1176,16 @@ int e_t_getch()
     c += 512;
    else if (bk & 4)
     c += 514;
+  }
+  else if (c == '[' || c == 'O')
+  {
+   /* ESC '[' / ESC 'O' that ncurses did not fold into a KEY_ code: decode the
+      cursor/nav sequence so arrow keys still work (dialogs, the LSP picker). */
+   int k = e_t_csi_key(c);
+   if (k)
+    c = k;
+   else
+    c = e_tast_sim(c);
   }
   else if (c != WPE_ESC)
    c = e_tast_sim(c);

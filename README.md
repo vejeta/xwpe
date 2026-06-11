@@ -5,11 +5,11 @@
 # xwpe
 
 > [!WARNING]
-> **1.6.4 is unreleased and experimental** &mdash; under heavy testing. The
-> LSP client (language-server features) in particular is new and changing
-> fast. Expect rough edges; please try it and report what breaks &mdash;
-> **testers welcome.** For a stable build, use the latest tagged release
-> (1.6.3) or the Debian package.
+> **1.6.5 is in development &mdash; not yet tagged, experimental.** It is under
+> heavy testing (no release candidate yet). The LSP client (language-server
+> features) in particular is new and changing fast. Expect rough edges; please
+> try it and report what breaks &mdash; **testers welcome.** For a stable build,
+> use the latest tagged release (**1.6.4**) or the Debian package.
 
 Xwpe is a programming editor and IDE for UNIX terminals and X11,
 inspired by the Borland C and Pascal family. It provides syntax
@@ -60,7 +60,7 @@ optional: `configure` detects them and falls back automatically, so a
 console-only build needs only `libncurses-dev` (plus the build tools).
 `texinfo` is needed to build the `info xwpe` manual.
 
-## What's new in 1.6.5
+## What's new in 1.6.5 (in development, not yet tagged)
 
 xwpe plugs into the modern toolchain through the same standard protocols other
 editors use &mdash; a real source-level debugger (DAP) and IDE navigation (LSP)
