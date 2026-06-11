@@ -5297,7 +5297,8 @@ static int e_lsp_inlay_refresh_pending(FENSTER *f)
  g_inlay_stale = 0;
  e_lsp_inlay_fetch(f);
  if (f && DTMD_ISTEXT(f->dtmd))
- {  e_schirm(f, 1);  e_cursor(f, 0);  }
+ {  e_schirm(f, 1);  e_cursor(f, 0);  e_refresh();  }  /* flush: this may run from
+        the fd-loop (no keystroke after to flush), e.g. worksheet results */
  return(1);
 }
 

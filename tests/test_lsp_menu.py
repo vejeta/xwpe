@@ -298,18 +298,11 @@ def test_worksheet_shows_evaluation_results(tmp_path):
     try:
         w.key("\033q", delay=0.4)
         w.key("e", delay=160.0)                 # Alt-Q E: start Metals + evaluate
-        w.drain(10.0)                           # worksheet eval + pushed decorations
+        w.drain(15.0)                           # eval + the fd-loop fetch/repaint
         assert w.alive(), "wpe died starting Metals"
-        # nudge real edits (space + backspace) to drive didChange+poll cycles, so
-        # decorations Metals pushes after steady state get read and repainted.
-        body = ""
-        for _ in range(6):
-            w.key(" ", delay=0.4)
-            w.key("\x08", delay=0.4)            # backspace -- restore the line
-            w.drain(3.0)
-            body = "\n".join(w.display())
-            if "12" in body:
-                break
+        # NO edits: the results must appear on their own (the fd-loop fetches the
+        # inlay hints when Metals evaluates and repaints+flushes the screen).
+        body = "\n".join(w.display())
         assert "12" in body, \
             "worksheet result '12' (5 + 7) did not render at end-of-line\n%s" \
             % w.text()
