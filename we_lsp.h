@@ -142,6 +142,10 @@ int e_lsp_fd(e_lsp_session *s);
 /* 1 once the initialize handshake has completed (server ready), else 0. */
 int e_lsp_started(e_lsp_session *s);
 
+/* 1 if the server has closed its stdout (it exited/crashed) -- the caller must
+ * stop polling its fd and tear the session down.  Also 1 for a NULL session. */
+int e_lsp_dead(e_lsp_session *s);
+
 /* textDocument/didOpen: hand the server the buffer text so it compiles/indexes.
  * `path` is a filesystem path (turned into a file:// URI internally). */
 int e_lsp_did_open(e_lsp_session *s, const char *path, const char *text);

@@ -348,6 +348,34 @@ def test_async_start_keeps_editor_responsive(tmp_path):
         w.close()
 
 
+def test_dead_server_does_not_spin(tmp_path, monkeypatch):
+    """Robustness: if the language server exits immediately (crash, bad setup,
+    an unsaved worksheet with no build), xwpe must NOT spin the input loop at
+    100% CPU on the dead fd -- it detects the EOF, tears the session down and
+    stays responsive.  PATH points at a fake 'metals' that exits at once;
+    opening a .scala (eager on) spawns it, it dies, and the editor must still
+    accept keystrokes (under the old bug the spin starved stdin and 'HELLO'
+    would never appear).  Needs no real Metals."""
+    fake = tmp_path / "bin"
+    fake.mkdir()
+    (fake / "metals").write_text("#!/bin/sh\nexit 0\n")
+    (fake / "metals").chmod(0o755)
+    monkeypatch.setenv("PATH", str(fake) + os.pathsep + os.environ["PATH"])
+    w = _Wpe(str(tmp_path), [("Demo.scala", "object Demo\n")], eager=True)
+    try:
+        w.drain(5.0)                            # the fake server spawned + died by now
+        for ch in "HELLO":
+            w.key(ch, delay=0.15)
+        w.drain(1.5)
+        body = "\n".join(w.display())
+        assert "HELLO" in body, \
+            "editor did not accept keys after the server died -- it is spinning\n%s" \
+            % w.text()
+        assert w.alive(), "wpe died after the language server exited"
+    finally:
+        w.close()
+
+
 def test_eager_start_skips_non_lsp_file(tmp_path):
     """#210 gating: with eager-start ENABLED, opening a file whose language has
     no server (a .c) must spawn nothing and stay instant -- the bar shows no

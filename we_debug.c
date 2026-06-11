@@ -5735,6 +5735,21 @@ static int g_lsp_fd_num = -1;                 /* fd in the poll set, or -1     *
 static int g_lsp_ready_done = 0;              /* announced "ready" this session? */
 static int e_lsp_ensure(FENSTER *f);          /* fwd */
 static void e_lsp_fd_unregister(void);        /* fwd */
+void e_lsp_ui_shutdown(void);                 /* fwd: full session teardown */
+
+/* If the server has died (closed its stdout), tear the session down: stop
+   polling its fd (otherwise the dead fd reports "readable" forever and spins the
+   input loop at 100% CPU), close it, drop the overlays, and tell the user.  A
+   later Alt-Q (or opening the file again) starts a fresh one. */
+static void e_lsp_reap_if_dead(FENSTER *f)
+{
+ if (!g_lsp || !e_lsp_dead(g_lsp))
+  return;
+ e_lsp_ui_shutdown();                     /* unregister fd + close + clear state */
+ g_lsp_file[0] = '\0';                    /* so the next Alt-Q starts a new session */
+ if (f)
+  e_d_p_message("Language server stopped (it exited). Alt-Q restarts it.", f, 0);
+}
 
 /* fd-loop callback: drain the server, finish the handshake, hand it the
    document once ready, and leave the poll set once the first diagnostics land. */
@@ -5750,6 +5765,8 @@ static void e_lsp_on_fd_readable(int fd, void *data)
  g_lsp_quiet = 1;                          /* startup: show the summary, not each line */
  e_lsp_poll(g_lsp);                        /* handshake + diagnostics/status/doctor */
  g_lsp_quiet = qsave;
+ if (e_lsp_dead(g_lsp))                    /* server exited (EOF): tear down, do not spin */
+ {  e_lsp_reap_if_dead(g_lsp_fenster);  return;  }
 
  if (!was_started && e_lsp_started(g_lsp))
  {
@@ -6766,9 +6783,11 @@ void e_lsp_on_edit(FENSTER *f, int c)
   return;
  g_lsp_quiet = 1;                   /* show only the summary, not each line */
  e_lsp_poll(g_lsp);
+ g_lsp_quiet = 0;
+ if (e_lsp_dead(g_lsp))             /* server exited while we were away: tear down */
+ {  e_lsp_reap_if_dead(f);  return;  }
  if (c == WPE_CR)                   /* a line was completed -> recompile */
   e_lsp_sync(f);
- g_lsp_quiet = 0;
  e_lsp_inlay_refresh_pending(f);    /* re-query inlays if the server flagged them */
  e_lsp_sem_refresh_pending(f);      /* re-query semantic tokens if flagged */
 }

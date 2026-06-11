@@ -29,6 +29,7 @@ struct e_lsp_session {
  int          init_id;           /* id of the initialize request           */
  int          started;           /* 0 = awaiting initialize response,      */
                                   /* 1 = handshake done (server is ready)   */
+ int          dead;              /* 1 = the server closed its stdout (EOF)  */
  e_lsp_host   host;
  int          doc_version;       /* textDocument version (didOpen = 1)    */
  char         root_uri[PATH_MAX + 8];
@@ -717,6 +718,7 @@ e_lsp_session *e_lsp_open_async(char *const argv[], const char *root_dir,
 
 int e_lsp_fd(e_lsp_session *s)      {  return s ? s->out_fd : -1;  }
 int e_lsp_started(e_lsp_session *s) {  return s ? s->started : 0;  }
+int e_lsp_dead(e_lsp_session *s) {  return s ? s->dead : 1;  }
 
 /* Synchronous open: start async, then BLOCK draining until the handshake
    completes (or LSP_TMO_INIT elapses).  Kept for the engine tests and any
@@ -839,8 +841,8 @@ int e_lsp_poll(e_lsp_session *s)
  struct pollfd p;
  int handled = 0, guard = 0;
 
- if (!s || s->out_fd < 0)
-  return 0;
+ if (!s || s->out_fd < 0 || s->dead)
+  return -1;
  /* read whatever is immediately available, without blocking */
  while (guard++ < 64)
  {
@@ -851,7 +853,9 @@ int e_lsp_poll(e_lsp_session *s)
   if (poll(&p, 1, 0) <= 0)
    break;
   n = read(s->out_fd, buf, sizeof(buf));
-  if (n <= 0)
+  if (n == 0)                  /* EOF: the server closed its stdout -- it died */
+  {  s->dead = 1;  break;  }
+  if (n < 0)                   /* EAGAIN/EINTR: nothing more right now */
    break;
   e_dap_reader_push(&s->rd, buf, (size_t)n);
  }
