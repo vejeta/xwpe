@@ -5385,35 +5385,61 @@ static const char *e_lsp_lang_for(FENSTER *f)
   return("cpp");                           /* clangd */
  if (e_lsp_ends_with(nm, ".c") || e_lsp_ends_with(nm, ".h"))
   return("c");                             /* clangd (a .h is treated as C) */
+ if (e_lsp_ends_with(nm, ".py") || e_lsp_ends_with(nm, ".pyi"))
+  return("python");                        /* pyright / pylsp */
  return(NULL);
 }
 
-/* Language-server descriptor: which server backs a language, and the one-line
-   install hint shown when it is not on PATH.  One row per server -- this is the
-   "descriptor entry, not new plumbing" the manual promises. */
+/* Language-server descriptor: the command to spawn for a language, a short label
+   for the status bar, and the install hint shown when the binary is not on PATH.
+   A language may have MORE THAN ONE row, in preference order: e_lsp_server_for()
+   returns the first whose binary is actually installed (so Python prefers pyright
+   but falls back to pylsp).  This is the "descriptor entry, not new plumbing" the
+   manual promises -- a new server is a row, not new code. */
 typedef struct {
  const char *lang;       /* matches e_lsp_lang_for() */
- const char *cmd;        /* server executable (also argv[0]) */
- const char *missing;    /* shown when cmd is not installed */
+ char *const *argv;      /* NULL-terminated spawn command; argv[0] is the PATH check */
+ const char *label;      /* short name for the status bar ("Metals", "clangd", ...) */
+ const char *missing;    /* shown when the binary is not installed */
 } e_lsp_server;
 
+static char *const E_LSP_ARGV_METALS[]  = { "metals", NULL };
+static char *const E_LSP_ARGV_CLANGD[]  = { "clangd", NULL };
+static char *const E_LSP_ARGV_PYRIGHT[] = { "pyright-langserver", "--stdio", NULL };
+static char *const E_LSP_ARGV_PYLSP[]   = { "pylsp", NULL };
+
+#define E_LSP_PY_MISSING \
+ "No Python language server in PATH (pip install pyright, or apt install python3-pylsp)."
+
 static const e_lsp_server e_lsp_servers[] = {
- { "scala", "metals", "Metals not in PATH (cs install metals)." },
- { "c",     "clangd", "clangd not in PATH (apt install clangd)." },
- { "cpp",   "clangd", "clangd not in PATH (apt install clangd)." },
+ { "scala",  E_LSP_ARGV_METALS,  "Metals", "Metals not in PATH (cs install metals)." },
+ { "c",      E_LSP_ARGV_CLANGD,  "clangd", "clangd not in PATH (apt install clangd)." },
+ { "cpp",    E_LSP_ARGV_CLANGD,  "clangd", "clangd not in PATH (apt install clangd)." },
+ { "python", E_LSP_ARGV_PYRIGHT, "pyright", E_LSP_PY_MISSING },   /* preferred */
+ { "python", E_LSP_ARGV_PYLSP,   "pylsp",   E_LSP_PY_MISSING },   /* fallback  */
 };
 
-/* e_lsp_server_for - the server descriptor for a language, or NULL if none.
-   Used by e_lsp_ensure to pick the command to spawn from the file's language. */
+/* e_lsp_server_for - the server descriptor for a language.  When a language lists
+   several candidates (preference order), returns the first whose binary is on
+   PATH; if none is installed, returns the first candidate, so the status bar and
+   the "not in PATH" hint still name the preferred one.  NULL if the language has
+   no server at all. */
 static const e_lsp_server *e_lsp_server_for(const char *lang)
 {
+ const e_lsp_server *first = NULL;
  unsigned i;
  if (!lang)
   return(NULL);
  for (i = 0; i < sizeof(e_lsp_servers) / sizeof(e_lsp_servers[0]); i++)
-  if (!strcmp(e_lsp_servers[i].lang, lang))
-   return(&e_lsp_servers[i]);
- return(NULL);
+ {
+  if (strcmp(e_lsp_servers[i].lang, lang))
+   continue;
+  if (!first)
+   first = &e_lsp_servers[i];
+  if (e_test_command((char *)e_lsp_servers[i].argv[0]) == 0)
+   return(&e_lsp_servers[i]);          /* installed -> use this one */
+ }
+ return(first);                         /* none installed -> the preferred candidate */
 }
 
 /* A Metals worksheet (*.sc / *.worksheet.sc): Metals evaluates each top-level
@@ -5964,7 +5990,6 @@ static int e_lsp_ensure(FENSTER *f)
  static e_lsp_host host;
  const e_lsp_server *srv = e_lsp_server_for(lang);
  char dir[1024], path[1200];
- char *argv[2];
  int dl;
 
  if (!lang || !srv)
@@ -5985,9 +6010,7 @@ static int e_lsp_ensure(FENSTER *f)
  {  e_lsp_fd_unregister();  e_lsp_close(g_lsp);  g_lsp = NULL;  e_lsp_diag_clear();
     e_lsp_inlay_clear();  g_inlay_on = 0;
     g_sem_on = 0;  g_sem_nactive = 0;  }  /* switched files: drop overlays */
- argv[0] = (char *)srv->cmd;
- argv[1] = NULL;
- if (e_test_command(argv[0]))
+ if (e_test_command((char *)srv->argv[0]))
  {  e_error((char *)srv->missing, 0, f->fb);  return(-1);  }
 
  snprintf(dir, sizeof(dir), "%s", f->dirct ? f->dirct : ".");
@@ -6021,7 +6044,7 @@ static int e_lsp_ensure(FENSTER *f)
  g_lsp_busy = 0;
  /* ASYNC: spawn + send initialize, then return.  The JVM boot, import and first
     compile complete in the background via e_lsp_on_fd_readable. */
- g_lsp = e_lsp_open_async(argv, dir, lang, &host);
+ g_lsp = e_lsp_open_async(srv->argv, dir, lang, &host);
  if (!g_lsp)
  {
   e_error("Could not start the language server.", 0, f->fb);
@@ -6948,9 +6971,7 @@ const char *e_lsp_server_label(FENSTER *f)
 
  if (!srv)
   return(NULL);
- if (!strcmp(lang, "scala"))
-  return("Metals");
- return(srv->cmd);        /* "clangd", ... -- the server's own name on the bar */
+ return(srv->label);      /* "Metals", "clangd", "pyright", ... -- the bar name */
 }
 
 extern WOPT eblst_lsp_o[], eblst_lsp_u[];   /* the LSP bottom bars (we_main.c) */
@@ -7036,7 +7057,7 @@ void e_lsp_open_eager(FENSTER *f)
   }
   return;
  }
- if (e_test_command((char *)srv->cmd))    /* server not installed -> stay light */
+ if (e_test_command((char *)srv->argv[0]))  /* server not installed -> stay light */
   return;
  e_lsp_ensure(f);                         /* async: spawns + returns, ready later */
 }

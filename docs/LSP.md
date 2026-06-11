@@ -10,9 +10,10 @@ ships inside xwpe, so the editor binary stays a few megabytes.
 
 The first wired language is **Scala, via [Metals](https://scalameta.org/metals/)**.
 A Scala developer can use `wpe` in a plain terminal as a tiny, zero-config IDE
-front-end -- no XQuartz, no Electron. **C and C++ are wired too, via
-[clangd](https://clangd.llvm.org/)** ([see below](#c-and-c-clangd)) -- the same
-keys, the same engine.
+front-end -- no XQuartz, no Electron. **C and C++** (via
+[clangd](https://clangd.llvm.org/), [see below](#c-and-c-clangd)) and **Python**
+(via pyright or pylsp, [see below](#python-pyright-or-pylsp)) are wired too -- the
+same keys, the same engine.
 
 <p align="center">
   <img src="demos/gifs/menu.gif" width="640"
@@ -196,6 +197,33 @@ your build -- either a `compile_commands.json` (from `bear -- make`, or CMake
 with `-DCMAKE_EXPORT_COMPILE_COMMANDS=ON`) or a one-line `compile_flags.txt`
 (e.g. `-I./include`) in the project root. clangd finds it by walking up from the
 file.
+
+## Python (pyright or pylsp)
+
+Python is wired through **two** servers, and xwpe uses whichever is installed --
+it **prefers [pyright](https://github.com/microsoft/pyright)** (Microsoft's type
+checker, the engine VS Code uses) and **falls back to
+[pylsp](https://github.com/python-lsp/python-lsp-server)** (the Debian-native
+`python3-pylsp`). Open a `.py` and the `Alt-Q` keys work; the status bar names
+the active one (`Alt-Q ? pyright` or `Alt-Q ? pylsp`).
+
+```sh
+pipx install pyright              # preferred: full type inference (not in Debian)
+# --- or the Debian-native fallback ---
+sudo apt install python3-pylsp python3-pyflakes
+```
+
+- **pyright** gives type-aware hover/completion and flags undefined names and
+  type errors out of the box. It is a Node program, so it is not in the Debian
+  archive -- install it with `pipx`/`pip`/`npm`; xwpe looks for
+  `pyright-langserver` on `PATH`.
+- **pylsp** (in Debian) does navigation, hover, completion, references and rename
+  via the bundled *jedi*. Its **diagnostics need `python3-pyflakes`** installed
+  alongside (and `python3-pycodestyle` for style) -- without them it still
+  navigates, it just doesn't lint.
+
+With both installed xwpe uses pyright; install only pylsp and it uses pylsp -- no
+config, just what's on `PATH`.
 
 ## The bundled demo project
 

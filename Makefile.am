@@ -165,7 +165,7 @@ metainfodir = $(datadir)/metainfo
 metainfo_DATA = io.codeberg.mendezr.xwpe.metainfo.xml
 
 # --- Unit tests ---
-check_PROGRAMS = test_checkheader test_syntax_def test_lsp_buffer test_lsp_doctor test_lsp_semantic test_dap test_dap_dlv test_dap_gdb test_dap_lldb test_dap_scala test_lsp_scala test_lsp_clangd
+check_PROGRAMS = test_checkheader test_syntax_def test_lsp_buffer test_lsp_doctor test_lsp_semantic test_dap test_dap_dlv test_dap_gdb test_dap_lldb test_dap_scala test_lsp_scala test_lsp_clangd test_lsp_python
 
 test_checkheader_SOURCES = tests/test_checkheader.c
 test_checkheader_CFLAGS = -std=gnu17
@@ -234,8 +234,14 @@ test_lsp_clangd_SOURCES = tests/test_lsp_clangd.c we_lsp.c we_dap_proto.c
 test_lsp_clangd_CFLAGS = -std=gnu17 $(JSONC_CFLAGS)
 test_lsp_clangd_LDADD = $(JSONC_LIBS)
 
+# LSP engine, breadth: drives a real Python server (pyright or pylsp) on a single
+# .py file -- whichever is installed -- with the SAME engine.  SKIPs without one.
+test_lsp_python_SOURCES = tests/test_lsp_python.c we_lsp.c we_dap_proto.c
+test_lsp_python_CFLAGS = -std=gnu17 $(JSONC_CFLAGS)
+test_lsp_python_LDADD = $(JSONC_LIBS)
+
 TESTS = test_checkheader test_syntax_def test_lsp_buffer test_lsp_doctor test_lsp_semantic test_dap test_dap_dlv \
-  test_dap_gdb test_dap_lldb test_dap_scala test_lsp_scala test_lsp_clangd
+  test_dap_gdb test_dap_lldb test_dap_scala test_lsp_scala test_lsp_clangd test_lsp_python
 
 # --- Extra files for distribution ---
 EXTRA_DIST = \
@@ -311,6 +317,8 @@ EXTRA_DIST = \
   tests/test_lsp_scala.c \
   tests/test_lsp_clangd.c \
   tests/test_clangd_lsp.py \
+  tests/test_lsp_python.c \
+  tests/test_python_lsp.py \
   tests/test_syntax_algol68.py \
   tests/test_debugger_watchdog.py \
   tests/x11/conftest.py \
