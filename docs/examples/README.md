@@ -6,6 +6,25 @@ debugger integration.  This is the PEDAGOGICAL set (what the manual walks
 through).  The fixtures the automated test suite feeds to the binary live
 separately in `tests/inputs/`.
 
+## Language-server (LSP / IDE) demos -- one per language
+
+Each subfolder is a small, fully-commented project that exercises **every**
+`Alt-Q` language-server action its server supports.  Open the entry file with
+`wpe` and read down the code -- each line says which `Alt-Q` action to try right
+there.  Pick the one for *your* language:
+
+| Folder | Language | Server | Open with |
+|--------|----------|--------|-----------|
+| [`scala-lsp/`](scala-lsp/)   | Scala  | Metals               | `wpe main.scala`   |
+| [`c-lsp/`](c-lsp/)           | C/C++  | clangd               | `wpe main.cpp`     |
+| [`python-lsp/`](python-lsp/) | Python | pyright / pylsp      | `wpe main.py`      |
+| [`go-lsp/`](go-lsp/)         | Go     | gopls                | `wpe main.go`      |
+| [`rust-lsp/`](rust-lsp/)     | Rust   | rust-analyzer        | `wpe src/main.rs`  |
+
+The IDE features themselves are documented in [`docs/LSP.md`](../LSP.md) and the
+**Language servers** chapter of the manual; each folder's own `README.md` lists
+its full `Alt-Q` key table and setup notes.
+
 ## Compilation examples (F9 + Alt-T/Alt-V error navigation)
 
 Each file has deliberate errors in two separate functions so that
