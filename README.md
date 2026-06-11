@@ -111,10 +111,12 @@ emulator.
   [pyright](https://github.com/microsoft/pyright) or
   [pylsp](https://github.com/python-lsp/python-lsp-server)** &mdash; xwpe uses
   whichever is on `PATH` (prefers pyright, the VS Code engine; falls back to the
-  Debian-native `python3-pylsp`). The engine (`we_lsp.c`) reuses the DAP JSON-RPC
-  framing (no new dependency) and is integration-tested against a real Metals,
-  clangd *and* Python server; adding a server is a one-row descriptor, not new
-  plumbing. rust-analyzer and gopls are drop-ins next.
+  Debian-native `python3-pylsp`). **Go is wired via
+  [gopls](https://pkg.go.dev/golang.org/x/tools/gopls)** (`apt install gopls`).
+  The engine (`we_lsp.c`) reuses the DAP JSON-RPC framing (no new dependency) and
+  is integration-tested against a real Metals, clangd, Python server *and* gopls;
+  adding a server is a one-row descriptor, not new plumbing. rust-analyzer (Rust)
+  is the drop-in next.
 
   **Prerequisites (Linux/macOS):** `cs install metals scala-cli`, **plus an LTS
   JDK (17 or 21) that *Metals* runs on**. The subtle part: `//> using jvm

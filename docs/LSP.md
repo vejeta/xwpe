@@ -11,9 +11,9 @@ ships inside xwpe, so the editor binary stays a few megabytes.
 The first wired language is **Scala, via [Metals](https://scalameta.org/metals/)**.
 A Scala developer can use `wpe` in a plain terminal as a tiny, zero-config IDE
 front-end -- no XQuartz, no Electron. **C and C++** (via
-[clangd](https://clangd.llvm.org/), [see below](#c-and-c-clangd)) and **Python**
-(via pyright or pylsp, [see below](#python-pyright-or-pylsp)) are wired too -- the
-same keys, the same engine.
+[clangd](https://clangd.llvm.org/), [see below](#c-and-c-clangd)), **Python**
+(via pyright or pylsp, [see below](#python-pyright-or-pylsp)) and **Go** (via
+gopls, [see below](#go-gopls)) are wired too -- the same keys, the same engine.
 
 <p align="center">
   <img src="demos/gifs/menu.gif" width="640"
@@ -224,6 +224,22 @@ sudo apt install python3-pylsp python3-pyflakes
 
 With both installed xwpe uses pyright; install only pylsp and it uses pylsp -- no
 config, just what's on `PATH`.
+
+## Go (gopls)
+
+Go is wired through [gopls](https://pkg.go.dev/golang.org/x/tools/gopls), the
+official server. Install it and open a `.go` file:
+
+```sh
+sudo apt install gopls         # or: go install golang.org/x/tools/gopls@latest
+```
+
+The `Alt-Q` keys work as everywhere else (the bar shows `Alt-Q ? gopls`). One
+Go-specific note: **gopls wants a module** -- work in a directory with a `go.mod`
+(`go mod init name` creates one). A lone `.go` file with no module loads in a
+degraded ad-hoc mode, so navigation may be limited until the module exists. gopls
+is a type checker, so `Alt-Q E` flags undefined names and type errors like the
+compiler.
 
 ## The bundled demo project
 

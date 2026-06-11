@@ -21,9 +21,10 @@ few megabytes.
 The first wired language is @strong{Scala}, through @uref{https://scalameta.org/metals/,
 Metals} -- so a Scala developer can use @command{wpe} in a terminal as a tiny,
 zero-config IDE front-end, no XQuartz and no Electron.  @strong{C and C++} (through
-@uref{https://clangd.llvm.org/, clangd}) and @strong{Python} (through pyright or
-pylsp) are wired too -- the same keys, the same engine
-(@pxref{Language servers, , C and C++}, @pxref{Language servers, , Python}).
+@uref{https://clangd.llvm.org/, clangd}), @strong{Python} (through pyright or
+pylsp) and @strong{Go} (through gopls) are wired too -- the same keys, the same
+engine (@pxref{Language servers, , C and C++}, @pxref{Language servers, , Python},
+@pxref{Language servers, , Go}).
 
 @cindex example, language server
 A small, fully-commented demo project lives in
@@ -456,27 +457,44 @@ alongside -- without them pylsp still navigates, just does not lint.
 With both installed, xwpe uses pyright; remove it (or install only pylsp) and it
 uses pylsp -- no configuration, just what is on @env{PATH}.
 
+@section Go (gopls)
+
+@cindex gopls
+@cindex Go, language server
+@cindex go.mod
+@strong{Go} is wired through @uref{https://pkg.go.dev/golang.org/x/tools/gopls,
+gopls}, the official Go language server.  Install it and open a @file{.go} file:
+
+@example
+sudo apt install gopls          # Debian/Ubuntu (or: go install
+                                #   golang.org/x/tools/gopls@@latest)
+@end example
+
+@noindent
+The @kbd{Alt-Q} keys work as everywhere else (the bar shows @samp{Alt-Q ?
+gopls}).  One Go-specific note: gopls wants a @strong{module} to give full
+results, so work inside a directory with a @file{go.mod} (@code{go mod init
+@var{name}} creates one).  A lone @file{.go} file with no module loads in a
+degraded ad-hoc mode -- navigation may be limited until the module exists.
+gopls is a type checker, so @kbd{Alt-Q E} flags undefined names and type errors
+the way the compiler would.
+
 @section Other languages
 
 LSP is one protocol for every language: adding a server is a descriptor entry,
 not new plumbing, because the transport (JSON-RPC over the same framing as the
-DAP debugger) is shared.  Scala (Metals), C/C++ (clangd) and Python
-(pyright/pylsp) are wired; the same one-row recipe brings the rest, each a
-drop-in:
-
-@itemize @bullet
-@item @command{rust-analyzer} for Rust.
-@item @command{gopls} for Go.
-@end itemize
+DAP debugger) is shared.  Scala (Metals), C/C++ (clangd), Python (pyright/pylsp)
+and Go (gopls) are wired; the same one-row recipe brings the rest -- next up,
+@command{rust-analyzer} for Rust.
 
 @section How it works
 
 xwpe spawns the server as a child process and talks LSP over its
 stdin/stdout.  The engine (@file{we_lsp.c}) is independent of the editor and is
 integration-tested against real servers for @emph{each} wired language -- Metals
-(Scala), clangd (C/C++) and a Python server (pyright or pylsp) -- the same code
-drives every one, only the spawned command and the @code{languageId} differ; the
-editor side maps the @kbd{Alt-Q} keys onto it.
+(Scala), clangd (C/C++), a Python server (pyright or pylsp) and gopls (Go) -- the
+same code drives every one, only the spawned command and the @code{languageId}
+differ; the editor side maps the @kbd{Alt-Q} keys onto it.
 Because the server is an external program, the heavy machinery (for Scala: a JVM,
 the build server) lives outside xwpe -- the editor binary itself gains only a few
 kilobytes of protocol code.  See @file{HACKING-LSP.md} in the source tree for the

@@ -5387,6 +5387,8 @@ static const char *e_lsp_lang_for(FENSTER *f)
   return("c");                             /* clangd (a .h is treated as C) */
  if (e_lsp_ends_with(nm, ".py") || e_lsp_ends_with(nm, ".pyi"))
   return("python");                        /* pyright / pylsp */
+ if (e_lsp_ends_with(nm, ".go"))
+  return("go");                            /* gopls */
  return(NULL);
 }
 
@@ -5407,6 +5409,7 @@ static char *const E_LSP_ARGV_METALS[]  = { "metals", NULL };
 static char *const E_LSP_ARGV_CLANGD[]  = { "clangd", NULL };
 static char *const E_LSP_ARGV_PYRIGHT[] = { "pyright-langserver", "--stdio", NULL };
 static char *const E_LSP_ARGV_PYLSP[]   = { "pylsp", NULL };
+static char *const E_LSP_ARGV_GOPLS[]   = { "gopls", NULL };
 
 #define E_LSP_PY_MISSING \
  "No Python language server in PATH (pip install pyright, or apt install python3-pylsp)."
@@ -5417,6 +5420,8 @@ static const e_lsp_server e_lsp_servers[] = {
  { "cpp",    E_LSP_ARGV_CLANGD,  "clangd", "clangd not in PATH (apt install clangd)." },
  { "python", E_LSP_ARGV_PYRIGHT, "pyright", E_LSP_PY_MISSING },   /* preferred */
  { "python", E_LSP_ARGV_PYLSP,   "pylsp",   E_LSP_PY_MISSING },   /* fallback  */
+ { "go",     E_LSP_ARGV_GOPLS,   "gopls",
+   "gopls not in PATH (apt install gopls, or go install golang.org/x/tools/gopls@latest)." },
 };
 
 /* e_lsp_server_for - the server descriptor for a language.  When a language lists
