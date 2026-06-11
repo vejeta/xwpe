@@ -11,3 +11,8 @@
 // and Metals on a supported JVM; scala-cli downloads and caches it.  (xwpe also
 // auto-pins JAVA_HOME for Metals when the default JDK is too new.)
 //> using jvm temurin:21
+//
+// Warn on unused imports/locals so the unused imports in actions.scala produce
+// diagnostics (Alt-Q E marks them) and Alt-Q A on an import line offers
+// "Organize imports" / "Remove unused" -- the server-command code action.
+//> using option -Wunused:all

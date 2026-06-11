@@ -279,3 +279,49 @@ C-source tests built by `make check`:
 - Menus (Run, Debug, Options) open and close without display corruption
 - Multiple menu open/close cycles cause no progressive degradation
 - Compile then menu open/close leaves editor intact
+
+## Writing tests: pyte harness gotchas
+
+Hard-won facts about driving `wpe`/`xwpe` headlessly. Read these before adding
+or debugging a pyte test -- they are easy to relearn the slow way.
+
+- **Use `SafeScreen` (from `test_utf8_border.py`), never a bare `pyte.Screen`.**
+  xwpe emits margin / private-mode escapes that crash stock pyte
+  (`Screen.set_margins() got an unexpected keyword argument 'private'`). The
+  `_Wpe` helper in `test_lsp_menu.py` already wraps `SafeScreen`.
+
+- **The binary is `../wpe`** (a symlink to `we`, the X11 build); run with no
+  `DISPLAY` in a pty and it falls back to ncurses. `make` rebuilds it. Rebuild
+  before re-running or you are testing a stale binary -- a very common time sink.
+
+- **Key encodings.** Alt-`x` = `"\033x"`. Editor cursor keys accept the normal
+  `"\033[B"` / `"\033[C"`. Function keys use the application form: **F2 (Save) =
+  `"\033OQ"`** (see `test_menu_file.py`). Esc may need repeating on the console.
+
+- **After an action that rewrites the buffer, verify on DISK, not the screen.**
+  When an action closes a modal/picker and rebuilds the buffer, the headless
+  screen capture is unreliable (the picker-close + window relayout can leave a
+  transitional frame; the editor window may even look collapsed to one row).
+  Press F2 (`"\033OQ"`) to save and read the file back from the workdir -- the
+  saved buffer is solid even when the screen looks wrong.
+
+- **`e_opt_kst` radio dialogs (the LSP picker, Options groups) are NOT reliably
+  driven to a NON-default entry from a headless pty.** In that dialog arrow keys
+  move the *focus* (reverse-video, invisible to pyte's plain `.display`) and
+  Space selects the focused radio; Enter then confirms the *selected* one.
+  Arrows+Space+Enter, Tab, and even a synthesized mouse click all proved
+  inconsistent -- they tended to confirm the default first option. For a test
+  that needs a specific picker entry, assert it is **offered** (scan
+  `w.display()` for its label) rather than trying to apply it; apply only the
+  default entry, or verify the apply path with a standalone wire/disk probe.
+  (Whether real interactive keyboard selection has the same trouble is an open
+  question -- see the picker-reliability task.)
+
+- **Live-Metals tests cost ~3 min each** (cold JVM index ~150 s) and must pin
+  the toolchain: a `project.scala` with `//> using jvm temurin:21` (newer JDKs
+  crash the Scala 3 presentation compiler). Gate them with
+  `@pytest.mark.skipif(shutil.which("metals") is None ...)`.
+
+- **Trace the LSP wire** with `env XWPE_LSP_TRACE=/path/to/log` -- every
+  JSON-RPC SEND/RESP is appended, which is the fastest way to answer "did the
+  request fire and what did the server return?".

@@ -25,7 +25,11 @@ zero-config IDE front-end, no XQuartz and no Electron.
 @cindex example, language server
 A small, fully-commented demo project lives in
 @file{docs/examples/scala-lsp/} -- open it with @kbd{wpe main.scala}; each line
-carries an inline comment telling you which action to try right there.
+carries an inline comment telling you which action to try right there.  Its
+@file{actions.scala} is a dedicated playground for the code actions
+(@kbd{Alt-Q A}): a direct-edit refactor, a server-command one (organize
+imports), and an unresolved one (convert to named arguments) -- see ``Code
+actions'' below.
 
 @section Keys
 

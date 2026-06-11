@@ -22,13 +22,16 @@ wpe main.scala            # programming mode (xwpe in X11; wpe in a terminal)
 ```
 
 The **first** language-server action starts Metals: a JVM boots and imports the
-build, which takes roughly a minute on a cold cache.  When the Messages window
-shows `LSP: no problems.` it is ready.
+build, which takes roughly a minute on a cold cache.  It is ready once the
+inline marks settle.  A couple of *unused import* warnings are expected -- they
+are deliberate (see `actions.scala`) so Alt-Q E has something to mark and
+Alt-Q A has an "Organize imports" action to offer.
 
 ## What to try
 
-Each line in the two files carries an inline comment telling you which action to
-try right there -- just read down the code.  For reference:
+Each line in the three files (`main.scala`, `shapes.scala`, `actions.scala`)
+carries an inline comment telling you which action to try right there -- just
+read down the code.  For reference:
 
 | Key       | Action            | Where to try it (see the inline comment) |
 |-----------|-------------------|------------------------------------------|
@@ -44,10 +47,27 @@ try right there -- just read down the code.  For reference:
 | `Alt-Q O` | Outline           | either file                              |
 | `Alt-Q L` | code Lenses       | above `main`                             |
 | `Alt-Q W` | Workspace symbol  | type `Shape` or `Color`                  |
-| `Alt-Q A` | code Actions      | on `names`                               |
+| `Alt-Q A` | code Actions      | `actions.scala` -- see "Code actions" below |
 | `Alt-Q S` | Signature help    | inside `describe(...)`                    |
 | `Alt-Q N` | reName            | on a local `val` (e.g. `names`)          |
 | `Alt-Q F` | Format            | the whole file                           |
 
 `Alt-Q` opens the action menu; `Alt-Q <letter>` runs one directly.  To actually
 *run* the program, start the debugger with `Ctrl-G T`.
+
+## Code actions (Alt-Q A)
+
+`actions.scala` is a dedicated playground for refactors and quick-fixes.  Put the
+cursor on a marked spot, run `Alt-Q A`, pick an entry from the popup; the buffer
+is rewritten in place (`F2` saves).  It exercises the three ways a server
+delivers an action -- xwpe applies all of them:
+
+- a **direct edit** -- e.g. `Alt-Q A` on the `"hi " + name` string offers
+  "Convert to interpolation string" -> `s"hi $name"`.
+- a **server command** -- `Alt-Q A` on an unused `import` offers "Organize
+  imports" / "Remove unused" (run via `workspace/executeCommand`, the result
+  applied via `workspace/applyEdit`).
+- an **unresolved action** -- `Alt-Q A` on the call `greet("Ada", 42)` offers
+  "Convert to named arguments" -> `greet(name = "Ada", age = 42)`.  Metals
+  ships its refactors with only a `data` field, so xwpe runs a
+  `codeAction/resolve` round-trip to fetch the edit before applying it.
