@@ -66,8 +66,17 @@ updates live in Messages and the offending span is recolored inline.
 Click the `Metals` entry on the bottom bar (or `Alt-Q ?`) -> the action dropdown
 unfolds upward listing every command with its `Alt-Q X` accelerator.
 
+## 13. Semantic colours (compiler-driven highlighting)
+Open a Scala file with the classic regex colours showing -> `Alt-Q M` -> the
+file repaints from Metals' tokens: types turn light cyan, functions yellow,
+parameters light magenta, variables light green -- categories the regex lexer
+painted the same now read apart at a glance.  `Alt-Q M` again returns to the
+regex colours.  Best shot side-by-side (before/after) on a file with a type
+alias, a method call and a parameter on the same line.
+
 ---
 
 ## Reel order suggestion (README GIF)
-1 (async start) -> 12 (menu) -> 2/3 (hover+definition) -> 6/7 (hierarchies) ->
-8 (expand) -> 10 (inlay) -> 11 (live diagnostics).  ~60-90s total.
+1 (async start) -> 12 (menu) -> 2/3 (hover+definition) -> 13 (semantic colours) ->
+6/7 (hierarchies) -> 8 (expand) -> 10 (inlay) -> 11 (live diagnostics).
+~60-90s total.

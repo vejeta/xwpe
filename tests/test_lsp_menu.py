@@ -195,7 +195,7 @@ def test_mouse_click_opens_action_dropdown(tmp_path):
         for action in ("Diagnostics", "Go to Definition", "Hover", "References",
                        "Incoming calls", "Outgoing calls", "Supertypes",
                        "Subtypes", "Expand selection", "Inlay hints",
-                       "Rename", "Format"):
+                       "Semantic colours", "Rename", "Format"):
             assert action in body, \
                 "action %r missing from the menu dropdown\n%s" % (action, body)
         # it is a pull-UP anchored at the bar: the LAST item ("Format") sits just
