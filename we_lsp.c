@@ -25,6 +25,7 @@ struct e_lsp_session {
  int          in_fd;             /* write requests to the server's stdin  */
  int          out_fd;            /* read messages from the server's stdout */
  e_dap_reader rd;
+ char         lang_id[16];       /* LSP languageId for didOpen ("scala", "c", "cpp") */
  int          id;                /* JSON-RPC id counter                   */
  int          init_id;           /* id of the initialize request           */
  int          started;           /* 0 = awaiting initialize response,      */
@@ -764,7 +765,6 @@ e_lsp_session *e_lsp_open_async(char *const argv[], const char *root_dir,
  char rootdir[PATH_MAX];
  struct json_object *args;
 
- (void)lang;
  if (!realpath(root_dir, rootdir))
   snprintf(rootdir, sizeof(rootdir), "%s", root_dir);
 
@@ -772,6 +772,7 @@ e_lsp_session *e_lsp_open_async(char *const argv[], const char *root_dir,
  if (!s)
   return NULL;
  e_dap_reader_init(&s->rd);
+ snprintf(s->lang_id, sizeof(s->lang_id), "%s", lang ? lang : "scala");
  if (host)
   s->host = *host;
  s->in_fd = s->out_fd = -1;
@@ -852,7 +853,8 @@ int e_lsp_did_open(e_lsp_session *s, const char *path, const char *text)
   return -1;
  snprintf(uri, sizeof(uri), "file://%s", path);
  json_object_object_add(doc, "uri", json_object_new_string(uri));
- json_object_object_add(doc, "languageId", json_object_new_string("scala"));
+ json_object_object_add(doc, "languageId",
+                        json_object_new_string(s->lang_id[0] ? s->lang_id : "scala"));
  json_object_object_add(doc, "version", json_object_new_int(1));
  json_object_object_add(doc, "text", json_object_new_string(text ? text : ""));
  json_object_object_add(args, "textDocument", doc);
@@ -867,6 +869,10 @@ int e_lsp_did_focus(e_lsp_session *s, const char *path)
 
  if (!s)
   return -1;
+ /* metals/didFocusTextDocument is a Metals extension; only Metals understands
+    it (clangd and other servers would log it as unknown).  Skip for non-Scala. */
+ if (strcmp(s->lang_id, "scala") != 0)
+  return 0;
  /* same URI form as didOpen so Metals ties the focus to the open document */
  snprintf(uri, sizeof(uri), "file://%s", path);
  lsp_notify(s, "metals/didFocusTextDocument", json_object_new_string(uri));

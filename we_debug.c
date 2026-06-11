@@ -5356,16 +5356,63 @@ int e_lsp_inlay_color(SCHIRM *s, int base)
 }
 
 /* The LSP languageId for this window's file, or NULL if none is wired. */
+/* Case-sensitive "does NAME end in SUF?" helper, so the extension table below
+   reads as a list of suffixes rather than repeated strcmp/length arithmetic. */
+static int e_lsp_ends_with(const char *name, const char *suf)
+{
+ int n = strlen(name), s = strlen(suf);
+ return (n > s && !strcmp(name + n - s, suf));
+}
+
+/* The LSP languageId for a file, by extension -- also the key into the server
+   table (e_lsp_server_for).  Adding a language here + a row there is the whole
+   job; the protocol engine (we_lsp.c) is shared.  Returns NULL for files no
+   server backs. */
 static const char *e_lsp_lang_for(FENSTER *f)
 {
- int n;
+ const char *nm;
  if (!f || !f->datnam)
   return(NULL);
- n = strlen(f->datnam);
- if (n > 6 && !strcmp(f->datnam + n - 6, ".scala"))
+ nm = f->datnam;
+ if (e_lsp_ends_with(nm, ".scala"))
   return("scala");
- if (n > 3 && !strcmp(f->datnam + n - 3, ".sc"))   /* scala-cli scripts + worksheets */
+ if (e_lsp_ends_with(nm, ".sc"))           /* scala-cli scripts + worksheets */
   return("scala");
+ if (e_lsp_ends_with(nm, ".cpp") || e_lsp_ends_with(nm, ".cxx") ||
+     e_lsp_ends_with(nm, ".cc")  || e_lsp_ends_with(nm, ".hpp") ||
+     e_lsp_ends_with(nm, ".hxx") || e_lsp_ends_with(nm, ".hh")  ||
+     e_lsp_ends_with(nm, ".C")   || e_lsp_ends_with(nm, ".ii"))
+  return("cpp");                           /* clangd */
+ if (e_lsp_ends_with(nm, ".c") || e_lsp_ends_with(nm, ".h"))
+  return("c");                             /* clangd (a .h is treated as C) */
+ return(NULL);
+}
+
+/* Language-server descriptor: which server backs a language, and the one-line
+   install hint shown when it is not on PATH.  One row per server -- this is the
+   "descriptor entry, not new plumbing" the manual promises. */
+typedef struct {
+ const char *lang;       /* matches e_lsp_lang_for() */
+ const char *cmd;        /* server executable (also argv[0]) */
+ const char *missing;    /* shown when cmd is not installed */
+} e_lsp_server;
+
+static const e_lsp_server e_lsp_servers[] = {
+ { "scala", "metals", "Metals not in PATH (cs install metals)." },
+ { "c",     "clangd", "clangd not in PATH (apt install clangd)." },
+ { "cpp",   "clangd", "clangd not in PATH (apt install clangd)." },
+};
+
+/* e_lsp_server_for - the server descriptor for a language, or NULL if none.
+   Used by e_lsp_ensure to pick the command to spawn from the file's language. */
+static const e_lsp_server *e_lsp_server_for(const char *lang)
+{
+ unsigned i;
+ if (!lang)
+  return(NULL);
+ for (i = 0; i < sizeof(e_lsp_servers) / sizeof(e_lsp_servers[0]); i++)
+  if (!strcmp(e_lsp_servers[i].lang, lang))
+   return(&e_lsp_servers[i]);
  return(NULL);
 }
 
@@ -5895,15 +5942,32 @@ static int e_lsp_is_dep_source(FENSTER *f)
  return (f && f->dirct && strstr(f->dirct, "/.metals/readonly/") != NULL);
 }
 
+/* e_lsp_setup_scala_build - Metals-only pre-launch setup for a Scala file.
+   Pins JAVA_HOME so Metals' presentation compiler does not run on a too-new JDK,
+   and runs `scala-cli setup-ide` in the project dir so Metals auto-connects to
+   the build server.  Called only for lang=="scala"; other servers (clangd, ...)
+   need none of this.  Both steps are best-effort -- the editor proceeds either
+   way (the user sees diagnostics if the build is misconfigured). */
+static void e_lsp_setup_scala_build(FENSTER *f, const char *dir)
+{
+ char cmd[1400];
+ e_lsp_pin_jdk(f);              /* keep Metals' Scala PC off a too-new JDK */
+ /* </dev/null: never let the child share xwpe's interactive terminal stdin. */
+ snprintf(cmd, sizeof(cmd), "scala-cli setup-ide '%s' </dev/null >/dev/null 2>&1", dir);
+ if (system(cmd) != 0)
+  { /* non-fatal: Metals can still import the build */ }
+}
+
 static int e_lsp_ensure(FENSTER *f)
 {
  const char *lang = e_lsp_lang_for(f);
  static e_lsp_host host;
- char dir[1024], path[1200], cmd[1400];
- char *const argv[] = { "metals", NULL };
+ const e_lsp_server *srv = e_lsp_server_for(lang);
+ char dir[1024], path[1200];
+ char *argv[2];
  int dl;
 
- if (!lang)
+ if (!lang || !srv)
  {  e_error("Language server: unsupported file type.", 0, f->fb);  return(-1);  }
  if (e_lsp_is_dep_source(f))
  {  e_error("Read-only library source -- language-server actions run from the "
@@ -5921,8 +5985,10 @@ static int e_lsp_ensure(FENSTER *f)
  {  e_lsp_fd_unregister();  e_lsp_close(g_lsp);  g_lsp = NULL;  e_lsp_diag_clear();
     e_lsp_inlay_clear();  g_inlay_on = 0;
     g_sem_on = 0;  g_sem_nactive = 0;  }  /* switched files: drop overlays */
+ argv[0] = (char *)srv->cmd;
+ argv[1] = NULL;
  if (e_test_command(argv[0]))
- {  e_error("Metals not in PATH (cs install metals).", 0, f->fb);  return(-1);  }
+ {  e_error((char *)srv->missing, 0, f->fb);  return(-1);  }
 
  snprintf(dir, sizeof(dir), "%s", f->dirct ? f->dirct : ".");
  dl = strlen(dir);
@@ -5933,11 +5999,7 @@ static int e_lsp_ensure(FENSTER *f)
  g_lsp_file[sizeof(g_lsp_file) - 1] = '\0';
 
  if (!strcmp(lang, "scala"))
-  e_lsp_pin_jdk(f);              /* keep Metals' Scala PC off a too-new JDK */
- /* </dev/null: never let the child share xwpe's interactive terminal stdin. */
- snprintf(cmd, sizeof(cmd), "scala-cli setup-ide '%s' </dev/null >/dev/null 2>&1", dir);
- if (system(cmd) != 0)
-  { /* non-fatal: Metals can still import the build */ }
+  e_lsp_setup_scala_build(f, dir);   /* JDK pin + scala-cli setup-ide (Metals only) */
 
  host.on_diagnostic = e_lsp_on_diag;
  host.on_diagnostics_summary = e_lsp_on_diag_summary;
@@ -6882,12 +6944,13 @@ void e_lsp_ui_shutdown(void)
 const char *e_lsp_server_label(FENSTER *f)
 {
  const char *lang = e_lsp_lang_for(f);
+ const e_lsp_server *srv = e_lsp_server_for(lang);
 
- if (!lang)
+ if (!srv)
   return(NULL);
  if (!strcmp(lang, "scala"))
   return("Metals");
- return("Language server");
+ return(srv->cmd);        /* "clangd", ... -- the server's own name on the bar */
 }
 
 /* The "3" of the 3+1 start UX: when a language-server file is OPENED, boot the
@@ -6929,11 +6992,11 @@ static void e_lsp_focus_worksheet(FENSTER *f)
 void e_lsp_open_eager(FENSTER *f)
 {
  const char *lang = e_lsp_lang_for(f);
- char metals[] = "metals";
+ const e_lsp_server *srv = e_lsp_server_for(lang);
 
  if (getenv("XWPE_LSP_NO_EAGER"))         /* opt out (slow box, or a test harness) */
   return;
- if (!lang || strcmp(lang, "scala") != 0) /* not LSP-eligible / only Metals wired */
+ if (!srv)                                /* not an LSP-backed file type */
   return;
  if (e_lsp_is_dep_source(f))              /* a read-only .metals/readonly source */
   return;                                 /* never boot a server rooted in the cache */
@@ -6952,7 +7015,7 @@ void e_lsp_open_eager(FENSTER *f)
   }
   return;
  }
- if (e_test_command(metals))              /* server not installed -> stay light */
+ if (e_test_command((char *)srv->cmd))    /* server not installed -> stay light */
   return;
  e_lsp_ensure(f);                         /* async: spawns + returns, ready later */
 }

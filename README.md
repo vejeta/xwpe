@@ -104,11 +104,13 @@ emulator.
   hierarchy (super / sub), **V** expand selection by syntax, **U** highlight
   every use, **L** code lenses, **Y** inlay hints (inferred types) and **M**
   semantic colours (compiler-driven highlighting). `Alt-Q ?` opens a menu of
-  them all. The engine (`we_lsp.c`) reuses the
+  them all. **C and C++ are wired too, via [clangd](https://clangd.llvm.org/)**
+  (`apt install clangd`) &mdash; the same keys, the same engine, no JVM and no
+  build-server wait, so it is ready in seconds and `Alt-Q D` follows straight
+  into the system headers (opened read-only). The engine (`we_lsp.c`) reuses the
   DAP JSON-RPC framing (no new dependency) and is integration-tested against a
-  real Metals;
-  the server stays an external tool (`cs install metals`). clangd (C/C++, in
-  Debian), pyright, rust-analyzer and gopls are descriptor-row drop-ins next.
+  real Metals *and* a real clangd; adding a server is a one-row descriptor, not
+  new plumbing. pyright (Python), rust-analyzer and gopls are drop-ins next.
 
   **Prerequisites (Linux/macOS):** `cs install metals scala-cli`, **plus an LTS
   JDK (17 or 21) that *Metals* runs on**. The subtle part: `//> using jvm

@@ -165,7 +165,7 @@ metainfodir = $(datadir)/metainfo
 metainfo_DATA = io.codeberg.mendezr.xwpe.metainfo.xml
 
 # --- Unit tests ---
-check_PROGRAMS = test_checkheader test_syntax_def test_lsp_buffer test_lsp_doctor test_lsp_semantic test_dap test_dap_dlv test_dap_gdb test_dap_lldb test_dap_scala test_lsp_scala
+check_PROGRAMS = test_checkheader test_syntax_def test_lsp_buffer test_lsp_doctor test_lsp_semantic test_dap test_dap_dlv test_dap_gdb test_dap_lldb test_dap_scala test_lsp_scala test_lsp_clangd
 
 test_checkheader_SOURCES = tests/test_checkheader.c
 test_checkheader_CFLAGS = -std=gnu17
@@ -227,8 +227,15 @@ test_lsp_scala_SOURCES = tests/test_lsp_scala.c we_lsp.c we_dap_proto.c
 test_lsp_scala_CFLAGS = -std=gnu17 $(JSONC_CFLAGS)
 test_lsp_scala_LDADD = $(JSONC_LIBS)
 
+# LSP engine, breadth: drives a real clangd on a single C file with the SAME
+# engine (only language id + spawned command differ).  Fast (no JVM/build
+# server).  SKIPs without clangd.
+test_lsp_clangd_SOURCES = tests/test_lsp_clangd.c we_lsp.c we_dap_proto.c
+test_lsp_clangd_CFLAGS = -std=gnu17 $(JSONC_CFLAGS)
+test_lsp_clangd_LDADD = $(JSONC_LIBS)
+
 TESTS = test_checkheader test_syntax_def test_lsp_buffer test_lsp_doctor test_lsp_semantic test_dap test_dap_dlv \
-  test_dap_gdb test_dap_lldb test_dap_scala test_lsp_scala
+  test_dap_gdb test_dap_lldb test_dap_scala test_lsp_scala test_lsp_clangd
 
 # --- Extra files for distribution ---
 EXTRA_DIST = \
@@ -302,6 +309,7 @@ EXTRA_DIST = \
   tests/test_scala_lsp_diag_marks.py \
   tests/test_scala_lsp_definition.py \
   tests/test_lsp_scala.c \
+  tests/test_lsp_clangd.c \
   tests/test_syntax_algol68.py \
   tests/test_debugger_watchdog.py \
   tests/x11/conftest.py \

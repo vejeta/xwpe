@@ -10,7 +10,9 @@ ships inside xwpe, so the editor binary stays a few megabytes.
 
 The first wired language is **Scala, via [Metals](https://scalameta.org/metals/)**.
 A Scala developer can use `wpe` in a plain terminal as a tiny, zero-config IDE
-front-end -- no XQuartz, no Electron.
+front-end -- no XQuartz, no Electron. **C and C++ are wired too, via
+[clangd](https://clangd.llvm.org/)** ([see below](#c-and-c-clangd)) -- the same
+keys, the same engine.
 
 <p align="center">
   <img src="demos/gifs/menu.gif" width="640"
@@ -168,6 +170,31 @@ compile -- runs without blocking: you can keep typing and using other menus. Set
 `XWPE_LSP_NO_EAGER=1` to start it on demand instead (the first `Alt-Q` action).
 
 ---
+
+## C and C++ (clangd)
+
+The same `Alt-Q` keys back C and C++, through
+[clangd](https://clangd.llvm.org/) -- xwpe's home turf. Install it and open a
+source file:
+
+```sh
+sudo apt install clangd        # Debian/Ubuntu
+wpe main.c                     # or .h .cpp .cc .cxx .hpp ...
+```
+
+Unlike Metals there is **no JVM and no build-server import**, so clangd is ready
+in *seconds*, and `Alt-Q D` (definition) follows straight into the system
+headers under `/usr/include` -- which open **read-only** (the padlock), since
+they are not yours to edit. Diagnostics, hover, completion, references, outline,
+rename, format and code actions all work exactly as they do for Scala -- it is
+the same engine; only the server and the language id differ.
+
+For a **single file** clangd uses sensible default flags. For a **real
+project**, give it the compile flags so its diagnostics and navigation match
+your build -- either a `compile_commands.json` (from `bear -- make`, or CMake
+with `-DCMAKE_EXPORT_COMPILE_COMMANDS=ON`) or a one-line `compile_flags.txt`
+(e.g. `-I./include`) in the project root. clangd finds it by walking up from the
+file.
 
 ## The bundled demo project
 
