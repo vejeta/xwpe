@@ -43,8 +43,8 @@ Type `shapes.` then `Alt-Q C` -> member list -> arrows + Enter inserts.
 - `Alt-Q G` on `main` -> outgoing calls (what it calls).
 
 ## 7. Type hierarchy (vi K=up / J=down)
-- `Alt-Q K` on `Hello` -> supertypes (Greeter).
-- `Alt-Q J` on `Greeter` -> subtypes (Hello).
+- `Alt-Q K` on `Circle` (shapes.scala) -> supertypes (Shape).
+- `Alt-Q J` on `Shape` (shapes.scala) -> subtypes (Circle / Rectangle / Triangle).
 
 ## 8. Expand selection (structural smart-select)
 Cursor on a token -> `Alt-Q V` selects it; press `Alt-Q V` again and again to

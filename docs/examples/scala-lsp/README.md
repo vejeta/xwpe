@@ -12,7 +12,8 @@ end to end.
   default may be too new; `project.scala` pins a Temurin 21 for the build, and
   xwpe auto-pins `JAVA_HOME` for Metals when the default JDK is too new.
 
-See @ref{Language Server} in the manual for the full setup notes.
+See the user-facing guide [`docs/LSP.md`](../../LSP.md), or the **Language
+servers** chapter of the manual (`info xwpe`), for the full setup notes.
 
 ## Run it
 

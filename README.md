@@ -118,9 +118,10 @@ emulator.
   26) the Scala 3 presentation compiler crashes (`asTerm called on not-a-Term`)
   and navigation/hover silently return empty. On **Debian/Ubuntu**:
   `sudo apt install openjdk-21-jdk` then
-  `export JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64`. See the **Language
-  servers** chapter of the manual (`info xwpe`, or Help&nbsp;&rarr;&nbsp;Info)
-  for the full setup.
+  `export JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64`. See
+  **[`docs/LSP.md`](docs/LSP.md)** for the feature guide (every `Alt-Q` action,
+  with clips), or the **Language servers** chapter of the manual (`info xwpe`,
+  or Help&nbsp;&rarr;&nbsp;Info) for the full reference.
 
   <p align="center">
     <img src="docs/demos/gifs/menu.gif" width="640" alt="Pressing Alt-Q ? in xwpe opens the Metals action menu, an upward-unfolding Borland-style dropdown listing every LSP command with its Alt-Q accelerator.">
