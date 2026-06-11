@@ -125,6 +125,23 @@ refreshes itself: when the server finishes indexing and the inferred types
 change -- e.g.@: a cross-file type that was unknown the instant you toggled on
 -- it asks xwpe to re-query, and the overlay updates on your next keystroke, so
 a cold toggle fills in as the project settles (no need to re-toggle).
+@item Alt-Q M
+@dfn{Semantic colours} (toggle): server-driven syntax highlighting.  The plain
+syntax colouring is a regular-expression lexer -- it cannot tell a type from a
+variable, or a method call from a keyword, because it never sees the program's
+meaning.  Metals does: it returns @dfn{semantic tokens} that classify every
+identifier from the @emph{compiler's} point of view.  Toggling this on repaints
+the file from those tokens, with a dedicated palette so the categories that the
+regex lexer conflates become distinct: @strong{types/classes} in light cyan,
+@strong{functions/methods} in yellow, @strong{parameters} in light magenta,
+@strong{variables} in light green, @strong{keywords} in bright white, numbers
+and strings in their own shades.  The win is the one the big IDEs sell: at a
+glance a @code{type} reads differently from a @code{keyword}, a @code{function}
+call, and a @code{parameter}, even where the regex colouring would paint them
+all the same.
+The set re-queries itself when the server reclassifies (e.g.@: a cross-file type
+resolves after indexing), updating on your next keystroke.  Press @kbd{Alt-Q M}
+again to turn it off and return to the regex colouring.  Off by default.
 @item Alt-Q L
 Code @dfn{lenses}: the @samp{run}/@samp{debug}/@samp{test} and reference-count
 annotations the server attaches to definitions (main methods, test suites), in

@@ -46,6 +46,11 @@ typedef struct {
     NULL.  Fired from inside the message pump, so the handler must only set a
     flag and refetch at a safe point, never issue a request synchronously. */
  void (*on_inlay_refresh)(void *ud);
+ /* The server asks the client to re-query semantic tokens
+    (workspace/semanticTokens/refresh) -- e.g. indexing resolved a cross-file
+    type, so the highlighting can update.  Same contract as on_inlay_refresh
+    (set a flag, refetch at a safe point).  May be NULL. */
+ void (*on_semantic_refresh)(void *ud);
  void *ud;
 } e_lsp_host;
 

@@ -5087,13 +5087,109 @@ static const char *e_lsp_path_of(FENSTER *f, char *buf, size_t sz)
  return(buf);
 }
 
+/* Semantic-tokens overlay state (server-driven syntax highlighting, Alt-Q M).
+   g_sem_active holds the whole file's decoded tokens; g_sem_on is the per-file
+   toggle; g_sem_stale is set when the server asks us to re-query. */
+#define LSP_MAX_SEM 8192
+static e_lsp_sem_token g_sem_active[LSP_MAX_SEM];
+static int             g_sem_nactive = 0;
+static int             g_sem_on = 0;
+static int             g_sem_stale = 0;
+
+/* The foreground colour (0-15) for a semantic token type, or -1 for "leave it"
+   (identifiers the regex already handles fine: variables, operators...).  This
+   is the dedicated semantic palette -- distinct colours for the categories that
+   matter, so type != keyword != function != parameter.  Comments reuse the
+   theme's comment foreground; the rest are fixed 16-colour choices that read
+   well on the Borland-blue editor background. */
+static int e_lsp_sem_fg(SCHIRM *s, const char *t)
+{
+ if (!t)
+  return(-1);
+ if (!strcmp(t, "keyword") || !strcmp(t, "modifier"))
+  return(15);                            /* bright white */
+ if (!strcmp(t, "type") || !strcmp(t, "class") || !strcmp(t, "interface") ||
+     !strcmp(t, "enum") || !strcmp(t, "struct") || !strcmp(t, "typeParameter") ||
+     !strcmp(t, "namespace"))
+  return(11);                            /* light cyan -- the key win: types */
+ if (!strcmp(t, "function") || !strcmp(t, "method") || !strcmp(t, "macro"))
+  return(14);                            /* yellow -- callables */
+ if (!strcmp(t, "parameter"))
+  return(13);                            /* light magenta */
+ if (!strcmp(t, "variable") || !strcmp(t, "property") || !strcmp(t, "enumMember"))
+  return(10);                            /* light green */
+ if (!strcmp(t, "string") || !strcmp(t, "regexp"))
+  return(3);                             /* cyan */
+ if (!strcmp(t, "number"))
+  return(12);                            /* light red */
+ if (!strcmp(t, "comment"))
+  return(s->fb->cc.fb & 0x0F);           /* the theme's comment foreground */
+ return(-1);                             /* operator / event / decorator / ... */
+}
+
+/* The attribute to paint at cell (y,x) when the semantic overlay is on: if a
+   token covers it, keep the cell's background (16*(base/16)) and swap in the
+   token category's foreground; otherwise return `base` unchanged.  Called per
+   cell from e_lsp_decor_attr_at, AFTER diagnostics/highlight (which win). */
+static int e_lsp_sem_color_at(SCHIRM *s, int y, int x, int base)
+{
+ int i, fg;
+
+ if (!g_sem_on)
+  return(base);
+ for (i = 0; i < g_sem_nactive; i++)
+  if (g_sem_active[i].line == y && x >= g_sem_active[i].start &&
+      x < g_sem_active[i].start + g_sem_active[i].length)
+  {
+   fg = e_lsp_sem_fg(s, e_lsp_semantic_legend(g_lsp, g_sem_active[i].type));
+   if (fg < 0)
+    return(base);
+   return(16 * (base / 16) + fg);        /* keep the cell bg, set the token fg */
+  }
+ return(base);
+}
+
+/* (Re)fetch the whole file's semantic tokens into the overlay. */
+static void e_lsp_sem_fetch(FENSTER *f)
+{
+ g_sem_nactive = 0;
+ if (!g_lsp || !f)
+  return;
+ g_sem_nactive = e_lsp_semantic_tokens(g_lsp, g_lsp_file, g_sem_active, LSP_MAX_SEM);
+ if (g_sem_nactive < 0)
+  g_sem_nactive = 0;
+}
+
+/* host callback (workspace/semanticTokens/refresh): the classification changed
+   (e.g. indexing resolved a cross-file type).  Fired inside the pump -- only
+   flag stale; e_lsp_sem_refresh_pending re-fetches at a safe point. */
+static void e_lsp_on_semantic_refresh(void *ud)
+{
+ (void)ud;
+ if (g_sem_on)
+  g_sem_stale = 1;
+}
+
+/* If the overlay is on and the server flagged it stale, re-fetch + repaint.
+   Called at safe points (after a poll, never inside one). */
+static void e_lsp_sem_refresh_pending(FENSTER *f)
+{
+ if (!g_sem_on || !g_sem_stale || !g_lsp)
+  return;
+ g_sem_stale = 0;
+ e_lsp_sem_fetch(f);
+ if (f && DTMD_ISTEXT(f->dtmd))
+ {  e_schirm(f, 1);  e_cursor(f, 0);  }
+}
+
 /* Called once per line by the renderer: are there any LSP decorations (problem
    marks or highlight spans) to draw for the file in `f`?  Keeps the
    per-character query (below) free of path work. */
 int e_lsp_decor_active_for(FENSTER *f)
 {
  char path[1200];
- if (!g_lsp || (g_diag_nactive == 0 && g_hl_nactive == 0))
+ if (!g_lsp || (g_diag_nactive == 0 && g_hl_nactive == 0 &&
+                !(g_sem_on && g_sem_nactive > 0)))
   return(0);
  if (!e_lsp_path_of(f, path, sizeof(path)))
   return(0);
@@ -5121,7 +5217,7 @@ int e_lsp_decor_attr_at(SCHIRM *s, int y, int x, int base)
   if (g_hl_active[i].line == y &&
       x >= g_hl_active[i].c0 && x < g_hl_active[i].c1)
    return(s->fb->ek.fb);                 /* found-word colour */
- return(base);
+ return(e_lsp_sem_color_at(s, y, x, base)); /* else the semantic overlay, or base */
 }
 
 /* Drop all decorations (server closing, or switching the open file). */
@@ -5711,7 +5807,8 @@ static int e_lsp_ensure(FENSTER *f)
  }
  if (g_lsp)
  {  e_lsp_fd_unregister();  e_lsp_close(g_lsp);  g_lsp = NULL;  e_lsp_diag_clear();
-    e_lsp_inlay_clear();  g_inlay_on = 0;  }  /* switched files: drop overlays */
+    e_lsp_inlay_clear();  g_inlay_on = 0;
+    g_sem_on = 0;  g_sem_nactive = 0;  }  /* switched files: drop overlays */
  if (e_test_command(argv[0]))
  {  e_error("Metals not in PATH (cs install metals).", 0, f->fb);  return(-1);  }
 
@@ -5735,8 +5832,10 @@ static int e_lsp_ensure(FENSTER *f)
  host.on_show_text = e_lsp_on_show_text;
  host.on_status = e_lsp_on_status;
  host.on_inlay_refresh = e_lsp_on_inlay_refresh;
+ host.on_semantic_refresh = e_lsp_on_semantic_refresh;
  host.ud = NULL;
  g_inlay_stale = 0;
+ g_sem_on = 0;  g_sem_nactive = 0;  g_sem_stale = 0;
  g_lsp_last_err = g_lsp_last_warn = -1;   /* fresh session: force first report */
  free(g_lsp_doctor_last);  g_lsp_doctor_last = NULL;   /* fresh session: re-show Doctor */
  free(g_lsp_status_last);  g_lsp_status_last = NULL;   /* fresh session: clean status   */
@@ -6289,6 +6388,48 @@ static int e_lsp_ui_inlay(FENSTER *f)
  return(0);
 }
 
+/* AltQ M -- toggle se(M)antic highlighting: re-colour the file by the server's
+   token classification (its own palette, so type/function/parameter/... are
+   distinct -- the thing regex highlighting cannot do).  Opt-in; off by default
+   so the classic regex colours stay for anyone who prefers them. */
+static int e_lsp_ui_semantic(FENSTER *f)
+{
+ char msg[128];
+
+ if (g_sem_on)                          /* currently on -> turn off */
+ {
+  g_sem_on = 0;
+  g_sem_nactive = 0;
+  e_d_p_message("Semantic highlighting: OFF.", f, 1);
+  e_cursor(f, 0);
+  return(0);
+ }
+ if (e_lsp_ensure(f) < 0)               /* turning on: start + sync + fetch */
+  return(-1);
+ e_lsp_sync(f);
+ e_lsp_sem_fetch(f);
+ if (g_sem_nactive == 0)
+ {
+  /* cold: the classification is empty until the workspace is indexed -- wait
+     for the next diagnostics publish (event, bounded) and try once more. */
+  e_lsp_wait_diagnostics(g_lsp, g_lsp_file, 8000);
+  e_lsp_sem_fetch(f);
+ }
+ if (g_sem_nactive == 0)
+ {
+  e_d_p_message("Semantic tokens: none for this file yet "
+                "(the server may still be indexing -- try Alt-Q M again).", f, 1);
+  return(0);                            /* leave the overlay off */
+ }
+ g_sem_on = 1;
+ snprintf(msg, sizeof(msg),
+          "Semantic highlighting: ON -- %d token(s) coloured by meaning. "
+          "Alt-Q M to turn off.", g_sem_nactive);
+ e_d_p_message(msg, f, 1);
+ e_cursor(f, 0);
+ return(0);
+}
+
 /* AltQ K -- code lenses: the run/test/reference annotations Metals attaches to
    definitions, listed in a popup as "<label>  (line N)"; selecting one jumps to
    that definition.  To actually run/test a Scala main, use the debugger
@@ -6602,6 +6743,7 @@ void e_lsp_on_edit(FENSTER *f, int c)
   e_lsp_sync(f);
  g_lsp_quiet = 0;
  e_lsp_inlay_refresh_pending(f);    /* re-query inlays if the server flagged them */
+ e_lsp_sem_refresh_pending(f);      /* re-query semantic tokens if flagged */
 }
 
 /* Disconnect the language server (called on editor exit). */
@@ -6613,6 +6755,7 @@ void e_lsp_ui_shutdown(void)
  e_lsp_diag_clear();
  e_lsp_inlay_clear();
  g_inlay_on = 0;
+ g_sem_on = 0;  g_sem_nactive = 0;  g_sem_stale = 0;
  e_lsp_synced_set(NULL);
  free(g_lsp_doctor_last);
  g_lsp_doctor_last = NULL;
@@ -6678,6 +6821,7 @@ static int e_lsp_menu_items(OPTK *it)
   { "Expand selection",     'V', e_lsp_ui_expand_selection  },
   { "Highlight uses",       'U', e_lsp_ui_highlight         },
   { "Inlay hints (toggle)", 'Y', e_lsp_ui_inlay             },
+  { "Semantic colours",     'M', e_lsp_ui_semantic          },
   { "Outline",              'O', e_lsp_ui_outline           },
   { "Code lenses",          'L', e_lsp_ui_codelens          },
   { "Workspace symbols",    'W', e_lsp_ui_workspace_symbols },
@@ -6786,6 +6930,8 @@ int e_lsp_ui_key(FENSTER *f)
    return(e_lsp_ui_highlight(f));      /* U = Uses */
   case 'y': case ('y' - 'a' + 1):
    return(e_lsp_ui_inlay(f));          /* Y = inlaY hints */
+  case 'm': case ('m' - 'a' + 1):
+   return(e_lsp_ui_semantic(f));       /* M = se(M)antic colours */
   case 'l': case ('l' - 'a' + 1):
    return(e_lsp_ui_codelens(f));       /* L = Lens */
   case 's': case ('s' - 'a' + 1):

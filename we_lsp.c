@@ -360,6 +360,13 @@ static void lsp_answer_request(e_lsp_session *s, struct json_object *m)
   if (s->host.on_inlay_refresh)
    s->host.on_inlay_refresh(s->host.ud);
  }
+ else if (meth && !strcmp(meth, "workspace/semanticTokens/refresh"))
+ {
+  /* "re-query your semantic tokens": ack, then let the editor refetch. */
+  lsp_reply(s, id, NULL);
+  if (s->host.on_semantic_refresh)
+   s->host.on_semantic_refresh(s->host.ud);
+ }
  else
   /* registerCapability, workDoneProgress/create, other *_refresh, unknown -> null */
   lsp_reply(s, id, NULL);
@@ -648,6 +655,11 @@ static struct json_object *lsp_client_caps(void)
      once indexing fills in cross-file inferred types). */
   json_object_object_add(ih, "refreshSupport", json_object_new_boolean(1));
   json_object_object_add(ws, "inlayHint", ih);
+  {
+   struct json_object *sh = json_object_new_object();
+   json_object_object_add(sh, "refreshSupport", json_object_new_boolean(1));
+   json_object_object_add(ws, "semanticTokens", sh);
+  }
   json_object_object_add(caps, "workspace", ws);
  }
  {  /* Tell the server WE display documents -- so Metals routes its Doctor URL
