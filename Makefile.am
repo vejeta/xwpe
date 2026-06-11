@@ -165,7 +165,7 @@ metainfodir = $(datadir)/metainfo
 metainfo_DATA = io.codeberg.mendezr.xwpe.metainfo.xml
 
 # --- Unit tests ---
-check_PROGRAMS = test_checkheader test_syntax_def test_lsp_buffer test_lsp_doctor test_lsp_semantic test_dap test_dap_dlv test_dap_gdb test_dap_lldb test_dap_scala test_lsp_scala test_lsp_clangd test_lsp_python test_lsp_gopls
+check_PROGRAMS = test_checkheader test_syntax_def test_lsp_buffer test_lsp_doctor test_lsp_semantic test_dap test_dap_dlv test_dap_gdb test_dap_lldb test_dap_scala test_lsp_scala test_lsp_clangd test_lsp_python test_lsp_gopls test_lsp_rust
 
 test_checkheader_SOURCES = tests/test_checkheader.c
 test_checkheader_CFLAGS = -std=gnu17
@@ -246,8 +246,14 @@ test_lsp_gopls_SOURCES = tests/test_lsp_gopls.c we_lsp.c we_dap_proto.c
 test_lsp_gopls_CFLAGS = -std=gnu17 $(JSONC_CFLAGS)
 test_lsp_gopls_LDADD = $(JSONC_LIBS)
 
+# LSP engine, breadth: drives a real rust-analyzer on a single .rs file in a tiny
+# crate.  Slowest (indexes std on cold start).  SKIPs without rust-analyzer + cargo.
+test_lsp_rust_SOURCES = tests/test_lsp_rust.c we_lsp.c we_dap_proto.c
+test_lsp_rust_CFLAGS = -std=gnu17 $(JSONC_CFLAGS)
+test_lsp_rust_LDADD = $(JSONC_LIBS)
+
 TESTS = test_checkheader test_syntax_def test_lsp_buffer test_lsp_doctor test_lsp_semantic test_dap test_dap_dlv \
-  test_dap_gdb test_dap_lldb test_dap_scala test_lsp_scala test_lsp_clangd test_lsp_python test_lsp_gopls
+  test_dap_gdb test_dap_lldb test_dap_scala test_lsp_scala test_lsp_clangd test_lsp_python test_lsp_gopls test_lsp_rust
 
 # --- Extra files for distribution ---
 EXTRA_DIST = \
@@ -327,6 +333,8 @@ EXTRA_DIST = \
   tests/test_python_lsp.py \
   tests/test_lsp_gopls.c \
   tests/test_gopls_lsp.py \
+  tests/test_lsp_rust.c \
+  tests/test_rust_lsp.py \
   tests/test_syntax_algol68.py \
   tests/test_debugger_watchdog.py \
   tests/x11/conftest.py \

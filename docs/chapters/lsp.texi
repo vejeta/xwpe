@@ -22,9 +22,10 @@ The first wired language is @strong{Scala}, through @uref{https://scalameta.org/
 Metals} -- so a Scala developer can use @command{wpe} in a terminal as a tiny,
 zero-config IDE front-end, no XQuartz and no Electron.  @strong{C and C++} (through
 @uref{https://clangd.llvm.org/, clangd}), @strong{Python} (through pyright or
-pylsp) and @strong{Go} (through gopls) are wired too -- the same keys, the same
-engine (@pxref{Language servers, , C and C++}, @pxref{Language servers, , Python},
-@pxref{Language servers, , Go}).
+pylsp), @strong{Go} (through gopls) and @strong{Rust} (through rust-analyzer) are
+wired too -- the same keys, the same engine (@pxref{Language servers, , C and
+C++}, @pxref{Language servers, , Python}, @pxref{Language servers, , Go},
+@pxref{Language servers, , Rust}).
 
 @cindex example, language server
 A small, fully-commented demo project lives in
@@ -479,22 +480,60 @@ degraded ad-hoc mode -- navigation may be limited until the module exists.
 gopls is a type checker, so @kbd{Alt-Q E} flags undefined names and type errors
 the way the compiler would.
 
+@section Rust (rust-analyzer)
+
+@cindex rust-analyzer
+@cindex Rust, language server
+@cindex Cargo
+@strong{Rust} is wired through @uref{https://rust-analyzer.github.io/,
+rust-analyzer}, the official server.  Install it and open a @file{.rs} file:
+
+@example
+sudo apt install rust-analyzer          # Debian/Ubuntu
+                                        # (or: rustup component add rust-analyzer)
+@end example
+
+@noindent
+The @kbd{Alt-Q} keys work as everywhere else.  On the bottom bar the entry is
+shown concisely as @samp{Alt-Q ? rust} -- the full @samp{rust-analyzer} is too
+wide to fit the 80-column button row without crowding out @samp{Alt-X Quit}, so
+the short form is used (the menu and this manual keep the full name).  Two notes:
+
+@itemize @bullet
+@item Like gopls, rust-analyzer wants a @strong{Cargo workspace}: open files
+inside a crate (a directory with a @file{Cargo.toml}; @code{cargo new}/@code{cargo
+init} make one).  It also reads the standard library, so install @code{rust-src}
+(@code{rustup component add rust-src}, or the @code{rust-src} package) for
+go-to-definition into @code{std}.
+@item rust-analyzer @strong{indexes the standard library on first start}, so the
+cold start is the slowest of the wired servers -- the editor stays responsive
+(the async start), and the actions sharpen as the index settles.
+@end itemize
+
+@cindex status bar, long label
+@noindent
+More generally, the bottom button row repacks itself to the width of its labels,
+so a longer server name (e.g.@: @samp{pyright}) still leaves every button -- up
+to and including @samp{Alt-X Quit} -- whole on screen.
+
 @section Other languages
 
 LSP is one protocol for every language: adding a server is a descriptor entry,
 not new plumbing, because the transport (JSON-RPC over the same framing as the
-DAP debugger) is shared.  Scala (Metals), C/C++ (clangd), Python (pyright/pylsp)
-and Go (gopls) are wired; the same one-row recipe brings the rest -- next up,
-@command{rust-analyzer} for Rust.
+DAP debugger) is shared.  Five languages are wired today -- Scala (Metals), C/C++
+(clangd), Python (pyright/pylsp), Go (gopls) and Rust (rust-analyzer) -- and the
+same one-row recipe adds any other LSP server (a descriptor row, the file
+extension, the command); nothing else changes.
 
 @section How it works
 
 xwpe spawns the server as a child process and talks LSP over its
 stdin/stdout.  The engine (@file{we_lsp.c}) is independent of the editor and is
 integration-tested against real servers for @emph{each} wired language -- Metals
-(Scala), clangd (C/C++), a Python server (pyright or pylsp) and gopls (Go) -- the
-same code drives every one, only the spawned command and the @code{languageId}
-differ; the editor side maps the @kbd{Alt-Q} keys onto it.
+(Scala), clangd (C/C++), a Python server (pyright or pylsp), gopls (Go) and
+rust-analyzer (Rust) -- the same code drives every one, only the spawned command
+and the @code{languageId} differ; the editor side maps the @kbd{Alt-Q} keys onto
+it.
 Because the server is an external program, the heavy machinery (for Scala: a JVM,
 the build server) lives outside xwpe -- the editor binary itself gains only a few
 kilobytes of protocol code.  See @file{HACKING-LSP.md} in the source tree for the

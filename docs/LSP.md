@@ -12,8 +12,9 @@ The first wired language is **Scala, via [Metals](https://scalameta.org/metals/)
 A Scala developer can use `wpe` in a plain terminal as a tiny, zero-config IDE
 front-end -- no XQuartz, no Electron. **C and C++** (via
 [clangd](https://clangd.llvm.org/), [see below](#c-and-c-clangd)), **Python**
-(via pyright or pylsp, [see below](#python-pyright-or-pylsp)) and **Go** (via
-gopls, [see below](#go-gopls)) are wired too -- the same keys, the same engine.
+(via pyright or pylsp, [see below](#python-pyright-or-pylsp)), **Go** (via gopls,
+[see below](#go-gopls)) and **Rust** (via rust-analyzer,
+[see below](#rust-rust-analyzer)) are wired too -- the same keys, the same engine.
 
 <p align="center">
   <img src="demos/gifs/menu.gif" width="640"
@@ -240,6 +241,32 @@ Go-specific note: **gopls wants a module** -- work in a directory with a `go.mod
 degraded ad-hoc mode, so navigation may be limited until the module exists. gopls
 is a type checker, so `Alt-Q E` flags undefined names and type errors like the
 compiler.
+
+## Rust (rust-analyzer)
+
+Rust is wired through [rust-analyzer](https://rust-analyzer.github.io/), the
+official server. Install it and open a `.rs` file:
+
+```sh
+sudo apt install rust-analyzer rust-src   # or: rustup component add rust-analyzer rust-src
+```
+
+The `Alt-Q` keys work as everywhere else. On the bottom bar the entry is shown
+concisely as `Alt-Q ? rust` -- the full `rust-analyzer` is too wide to fit the
+80-column button row without crowding out `Alt-X Quit`, so the short form is used
+(the menu and this guide keep the full name). Two notes:
+
+- Like gopls, rust-analyzer wants a **Cargo workspace** -- open files inside a
+  crate (a directory with a `Cargo.toml`; `cargo new`/`cargo init` make one). It
+  reads the standard library too, so install `rust-src` for go-to-definition into
+  `std`.
+- rust-analyzer **indexes std on first start**, so its cold start is the slowest
+  of the wired servers -- the editor stays responsive (the async start), and the
+  actions sharpen as the index settles.
+
+`rust-analyzer` is a longer name than the other servers, so the status-bar hint
+`Alt-Q ? rust-analyzer` is wider; the button row repacks itself to keep every
+entry on screen.
 
 ## The bundled demo project
 

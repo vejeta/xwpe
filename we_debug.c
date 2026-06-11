@@ -5389,6 +5389,8 @@ static const char *e_lsp_lang_for(FENSTER *f)
   return("python");                        /* pyright / pylsp */
  if (e_lsp_ends_with(nm, ".go"))
   return("go");                            /* gopls */
+ if (e_lsp_ends_with(nm, ".rs"))
+  return("rust");                          /* rust-analyzer */
  return(NULL);
 }
 
@@ -5410,6 +5412,7 @@ static char *const E_LSP_ARGV_CLANGD[]  = { "clangd", NULL };
 static char *const E_LSP_ARGV_PYRIGHT[] = { "pyright-langserver", "--stdio", NULL };
 static char *const E_LSP_ARGV_PYLSP[]   = { "pylsp", NULL };
 static char *const E_LSP_ARGV_GOPLS[]   = { "gopls", NULL };
+static char *const E_LSP_ARGV_RUSTA[]   = { "rust-analyzer", NULL };
 
 #define E_LSP_PY_MISSING \
  "No Python language server in PATH (pip install pyright, or apt install python3-pylsp)."
@@ -5422,6 +5425,9 @@ static const e_lsp_server e_lsp_servers[] = {
  { "python", E_LSP_ARGV_PYLSP,   "pylsp",   E_LSP_PY_MISSING },   /* fallback  */
  { "go",     E_LSP_ARGV_GOPLS,   "gopls",
    "gopls not in PATH (apt install gopls, or go install golang.org/x/tools/gopls@latest)." },
+ { "rust",   E_LSP_ARGV_RUSTA,   "rust",   /* bar label kept short: "rust-analyzer"
+                                              would not fit the 80-col button row */
+   "rust-analyzer not in PATH (apt install rust-analyzer, or rustup component add rust-analyzer)." },
 };
 
 /* e_lsp_server_for - the server descriptor for a language.  When a language lists
@@ -6981,6 +6987,25 @@ const char *e_lsp_server_label(FENSTER *f)
 
 extern WOPT eblst_lsp_o[], eblst_lsp_u[];   /* the LSP bottom bars (we_main.c) */
 
+/* e_lsp_pack_bar - Re-lay-out a 7-button LSP bar after its label changed, so the
+   buttons stay tight and the last one never runs off the screen edge.  A uniform
+   2-column gap reproduces the original hand-tuned spacing for short server names
+   ("Metals", "clangd", "gopls"); it drops to 1 column only when a long name
+   ("rust-analyzer") would otherwise push the row past MAXSCOL.  The gap is chosen
+   per bar variant, since the CUA ("_u") bar has wider base buttons than the
+   default ("_o") one.  e_pack_button_bar updates both draw and click positions. */
+static void e_lsp_pack_bar(WOPT *bar)
+{
+ int i, sum = 0;
+ for (i = 0; i < 7; i++)
+  sum += (int)strlen(bar[i].t);
+ /* The buttons are drawn one column in, and the last one must END at or before
+    MAXSCOL-2 to render whole (e_pr_uul stops at MAXSCOL-1, exclusive).  The last
+    button's end column at gap g (x0=0) is sum + 6*g, so use the wider 2-column
+    gap only when it still clears that limit; otherwise tighten to 1. */
+ e_pack_button_bar(bar, 7, 0, (sum + 6 * 2 <= MAXSCOL - 2) ? 2 : 1);
+}
+
 /* e_lsp_bar_label - Keep the LSP bottom-bar hint naming the *active* server.
    The bar entry is a static "Alt-Q ? Metals"; this rewrites its text to
    "Alt-Q ? <server>" for the file being drawn ("Metals" for Scala, "clangd"
@@ -6998,6 +7023,8 @@ void e_lsp_bar_label(FENSTER *f)
  snprintf(lbl, sizeof(lbl), "Alt-Q ? %s", srv);
  eblst_lsp_o[5].t = lbl;          /* index 5 is the LSP menu hint in both bars */
  eblst_lsp_u[5].t = lbl;
+ e_lsp_pack_bar(eblst_lsp_o);     /* re-fit the row to the (maybe longer) label */
+ e_lsp_pack_bar(eblst_lsp_u);
 }
 
 /* The "3" of the 3+1 start UX: when a language-server file is OPENED, boot the
