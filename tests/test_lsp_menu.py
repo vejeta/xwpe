@@ -499,3 +499,50 @@ def test_code_action_resolve_named_arguments(tmp_path):
             "Ctrl-R did not redo the code action:\n%s" % redone
     finally:
         w.close()
+
+
+@pytest.mark.skipif(shutil.which("metals") is None or shutil.which("scala-cli") is None,
+                    reason="metals and scala-cli required")
+def test_definition_into_library_source(tmp_path):
+    """#213: go-to-definition (Alt-Q D) on a stdlib symbol jumps INTO the library
+    source.  Metals extracts those under .metals/readonly (0444), so the window
+    opens READ-ONLY (typing is rejected) and xwpe must NOT boot a second server
+    for that cache dir -- an Alt-Q action inside the source is refused, pointing
+    back to the project window.  Needs a real Metals."""
+    (tmp_path / "project.scala").write_text("//> using jvm temurin:21\n")
+    w = _Wpe(str(tmp_path), [("Demo.scala",
+        "object Demo:\n"
+        "  def main(args: Array[String]): Unit =\n"
+        "    println(\"hi\")\n")])
+    try:
+        w.key("\033q", delay=0.4)
+        w.key("e", delay=150.0)                 # start Metals + index
+        w.drain(5.0)
+        assert w.alive(), "wpe died starting Metals"
+        w.key("\033s", delay=0.6)               # Find println
+        w.key("f", delay=0.6)
+        for ch in "println":
+            w.key(ch, delay=0.05)
+        w.key("\r", delay=1.2)
+        w.key("\033q", delay=0.4)
+        w.key("d", delay=6.0)                    # Alt-Q D: go to definition
+        body = w.text()
+        assert ("def " in body or "package scala" in body), \
+            "go-to-def did not land in a stdlib source:\n%s" % body
+        # the extracted source is 0444 -> the window is read-only: typing rejected
+        before = "\n".join(w.display()[2:18])
+        w.key("ZZZMUTATE", delay=0.6)
+        after = "\n".join(w.display()[2:18])
+        assert before == after, \
+            "the library-source window is editable (should be read-only):\n%s" \
+            % after
+        # an Alt-Q action inside the readonly source must be refused, NOT spawn a
+        # second Metals rooted in the cache dir.
+        w.key("\033q", delay=0.4)
+        w.key("d", delay=3.0)
+        w.drain(1.0)
+        assert "library source" in w.text() or "project window" in w.text(), \
+            "Alt-Q inside a readonly library source was not refused:\n%s" % w.text()
+        assert w.alive(), "wpe died navigating into a library source"
+    finally:
+        w.close()

@@ -5884,6 +5884,17 @@ static void e_lsp_fd_unregister(void)
    only when the session is READY (the action may proceed); -1 while it is still
    starting (the action politely waits) or on error.  For Scala, `scala-cli
    setup-ide` is run first so Metals auto-connects to the build server. */
+/* A read-only dependency / stdlib source Metals extracted under
+   .metals/readonly/ -- where go-to-definition into a library lands.  We open it
+   (read-only, via its own 0444 permissions) but must NOT start or switch the
+   language server for it: its directory is the build cache, not a project root,
+   so a server rooted there is useless AND would evict the project's session.
+   Language-server actions belong in the project window. */
+static int e_lsp_is_dep_source(FENSTER *f)
+{
+ return (f && f->dirct && strstr(f->dirct, "/.metals/readonly/") != NULL);
+}
+
 static int e_lsp_ensure(FENSTER *f)
 {
  const char *lang = e_lsp_lang_for(f);
@@ -5894,6 +5905,9 @@ static int e_lsp_ensure(FENSTER *f)
 
  if (!lang)
  {  e_error("Language server: unsupported file type.", 0, f->fb);  return(-1);  }
+ if (e_lsp_is_dep_source(f))
+ {  e_error("Read-only library source -- language-server actions run from the "
+            "project window, not here.", 0, f->fb);  return(-1);  }
  snprintf(path, sizeof(path), "%s%s", f->dirct ? f->dirct : "./", f->datnam);
  if (g_lsp && !strcmp(g_lsp_file, path))
  {
@@ -6921,6 +6935,8 @@ void e_lsp_open_eager(FENSTER *f)
   return;
  if (!lang || strcmp(lang, "scala") != 0) /* not LSP-eligible / only Metals wired */
   return;
+ if (e_lsp_is_dep_source(f))              /* a read-only .metals/readonly source */
+  return;                                 /* never boot a server rooted in the cache */
  if (g_lsp)
  {
   /* a session already runs: focus a worksheet opened in the same workspace so
