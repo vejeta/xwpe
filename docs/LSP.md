@@ -63,11 +63,12 @@ with `Alt-M` = Make). Two ways to drive it, Borland-style:
 
 - **`Alt-Q` + letter** runs an action *directly* -- no menu drawn, no flicker
   (e.g. `Alt-Q D` jumps to the definition at once).
-- **`Alt-Q ?`** (or `F1`, or a click on the `Metals` status-bar entry) opens the
-  drop-up **menu** -- arrows move, the letter or a click picks, `ESC` closes.
+- **`Alt-Q ?`** (or `F1`, or a click on the status-bar entry) opens the drop-up
+  **menu** -- arrows move, the letter or a click picks, `ESC` closes.
 
-The `Metals` entry appears on the status bar only while a server-backed file is
-the active window.
+The status-bar entry names the server backing the active file -- `Alt-Q ? Metals`
+for Scala, `Alt-Q ? clangd` for C/C++ -- and appears only while a server-backed
+file is the active window.
 
 | Key | Action | What it does |
 |-----|--------|--------------|

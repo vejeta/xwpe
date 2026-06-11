@@ -38,10 +38,12 @@ actions'' below.
 @cindex Metals menu
 @cindex status bar
 While a language-server file is the active window, the bottom status bar shows an
-@samp{Alt-Q ? Metals} entry.  The highlighted @kbd{Alt-Q ?} tells you how to open
-the action @strong{menu}; @samp{Metals} names the server.  This follows the
-Borland convention of the @samp{Block} menu and its @kbd{Ctrl-K} commands: the
-menu is the discoverable path, the prefix is the fast one.
+@samp{Alt-Q ? @var{server}} entry, where @var{server} names the language server
+backing the active file -- @samp{Alt-Q ? Metals} for a Scala file,
+@samp{Alt-Q ? clangd} for a C/C++ one.  The highlighted @kbd{Alt-Q ?} tells you
+how to open the action @strong{menu}.  This follows the Borland convention of the
+@samp{Block} menu and its @kbd{Ctrl-K} commands: the menu is the discoverable
+path, the prefix is the fast one.
 
 @itemize @bullet
 @item
