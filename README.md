@@ -4,6 +4,13 @@
 
 # xwpe
 
+> [!WARNING]
+> **1.6.4 is unreleased and experimental** &mdash; under heavy testing. The
+> LSP client (language-server features) in particular is new and changing
+> fast. Expect rough edges; please try it and report what breaks &mdash;
+> **testers welcome.** For a stable build, use the latest tagged release
+> (1.6.3) or the Debian package.
+
 Xwpe is a programming editor and IDE for UNIX terminals and X11,
 inspired by the Borland C and Pascal family. It provides syntax
 highlighting, integrated compiler and debugger interface, project
