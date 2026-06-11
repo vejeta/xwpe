@@ -434,3 +434,44 @@ def test_eager_start_on_open_boots_metals(tmp_path):
         assert w.alive(), "wpe died during the eager Metals start"
     finally:
         w.close()
+
+
+@pytest.mark.skipif(shutil.which("metals") is None or shutil.which("scala-cli") is None,
+                    reason="metals and scala-cli required")
+def test_code_action_offers_unresolved_refactor(tmp_path):
+    """#214: Metals delivers 'Convert to named arguments' UNRESOLVED -- the action
+    carries only a `data` field, no edit -- expecting a codeAction/resolve
+    round-trip.  This asserts it IS offered in the picker for the call run("world"),
+    which proves the codeAction request (with its diagnostics context) and the
+    resolveSupport/dataSupport capability are wired so xwpe will resolve it on
+    apply.  Applying a specific (non-default) picker entry is not driveable from a
+    headless pty -- see the reference_pyte_harness note -- so the resolve+apply
+    round-trip itself is covered by the engine + a manual wire/disk probe.  Needs a
+    real Metals."""
+    (tmp_path / "project.scala").write_text("//> using jvm temurin:21\n")
+    w = _Wpe(str(tmp_path), [("Demo.scala",
+        "object Demo:\n"
+        "  def run(name: String): String = name\n"
+        "  def main(args: Array[String]): Unit =\n"
+        "    println(run(\"world\"))\n")])
+    try:
+        w.key("\033q", delay=0.4)
+        w.key("e", delay=150.0)                 # start Metals + index (cold)
+        w.drain(5.0)
+        assert w.alive(), "wpe died starting Metals"
+        # land on the CALL run("world"): the string literal only appears there
+        # (the def is run(name: ...)), so the cursor sits in the call arguments.
+        w.key("\033s", delay=0.6)
+        w.key("f", delay=0.6)
+        for ch in "world":
+            w.key(ch, delay=0.05)
+        w.key("\r", delay=1.2)
+        w.key("\033q", delay=0.4)
+        w.key("a", delay=7.0)                   # Alt-Q A: code actions -> picker
+        rows = w.display()
+        assert any("named arguments" in l for l in rows), \
+            "Metals did not offer the unresolved 'named arguments' refactor\n%s" \
+            % w.text()
+        assert w.alive(), "wpe died opening the code-action picker"
+    finally:
+        w.close()

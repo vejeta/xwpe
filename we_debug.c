@@ -6670,19 +6670,18 @@ static int e_lsp_ui_code_actions(FENSTER *f)
  sel = e_lsp_pick(f, "Code actions - Enter to apply", labels, n);
  if (sel < 0)
   return(0);
- if (!acts[sel].has_edit)
- {
-  e_error("That action runs a server command xwpe does not execute yet.",
-          -1, f->fb);
-  return(0);
- }
  text = e_lsp_buffer_text(f);
  if (!text)
   return(-1);
+ /* Both encodings: an action with a precomputed edit is applied directly; a
+    command-based action is run via workspace/executeCommand and the server's
+    workspace/applyEdit result comes back as newtext.  A command that only has a
+    side effect (no buffer edit) returns NULL with has_edit==0 -- that is success,
+    not an error. */
  newtext = e_lsp_apply_code_action(g_lsp, sel, g_lsp_file, text, &others);
- if (!newtext)
+ if (!newtext && acts[sel].has_edit)
  {  free(text);  e_error("Could not apply that action.", 0, f->fb);  return(0);  }
- if (strcmp(newtext, text) != 0)
+ if (newtext && strcmp(newtext, text) != 0)
   e_lsp_replace_buffer(f, newtext);
  if (others > 0)
  {
@@ -6731,6 +6730,11 @@ static void e_lsp_replace_buffer(FENSTER *f, const char *newtext)
  e_firstl(f, 1);                    /* re-open the view over the new buffer */
  e_schirm(f, 1);
  e_rep_win_tree(f->ed);             /* full repaint (as the Watches rebuild) */
+ e_refresh();                       /* flush to the terminal NOW: a code action
+                                       applied from the closing picker must show
+                                       its rewrite immediately, not on the next
+                                       keystroke (same flush the worksheet results
+                                       need from the fd-loop). */
 }
 
 /* The identifier under the cursor (for the rename default), or "" . */

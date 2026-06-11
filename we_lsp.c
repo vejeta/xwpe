@@ -42,6 +42,22 @@ struct e_lsp_session {
  e_lsp_code_action acts[64];        /* engine-owned code-action result      */
  int          nacts;
  struct json_object *acts_raw;      /* last codeAction array, kept for apply */
+ /* A command-based code action is run with workspace/executeCommand; the server
+    then applies the change by sending workspace/applyEdit BACK to us.  While that
+    one synchronous command is in flight these hold a working copy of the current
+    file's text that the applyEdit handler edits, so the result can be returned to
+    the host afterwards.  pend_text is NULL outside that window (an unsolicited
+    applyEdit is then declined with applied=false). */
+ char        *pend_text;            /* working buffer the applyEdit handler edits */
+ char         pend_uri[PATH_MAX + 8]; /* file:// uri of the buffer being edited   */
+ int          pend_others;          /* edits applyEdit aimed at OTHER files       */
+ int          pend_applied;         /* server sent at least one applyEdit          */
+ /* The most recent publishDiagnostics array (and the file it belongs to), kept
+    so a codeAction request can pass the diagnostics covering the cursor in
+    context.diagnostics -- a server only offers the matching quick-fixes when it
+    sees them there.  Replaced on every publish; NULL until the first one. */
+ struct json_object *diag_raw;
+ char         diag_uri[PATH_MAX + 8];
  e_lsp_code_lens lenses[64];        /* engine-owned code-lens result        */
  int          nlenses;
  e_lsp_inlay_hint inlays[512];      /* engine-owned inlay-hint result        */
@@ -68,6 +84,12 @@ static int lsp_write_all(int fd, const char *buf, size_t n)
  }
  return 0;
 }
+
+/* Apply a WorkspaceEdit to one file's text (defined far below, with the rest of
+   the edit math); forward-declared so the workspace/applyEdit request handler can
+   reach it. */
+static char *lsp_apply_workspace_edit(struct json_object *wedit, const char *myuri,
+                                      const char *current_text, int *other_files);
 
 /* Wire trace (defined below): logged only when XWPE_LSP_TRACE names a file. */
 static void lsp_trace_request(int id, const char *method,
@@ -276,6 +298,10 @@ static void lsp_dispatch_diagnostics(e_lsp_session *s, struct json_object *param
 
  if (!uri || !diags || !json_object_is_type(diags, json_type_array))
   return;
+ if (s->diag_raw)
+  json_object_put(s->diag_raw);             /* keep only the latest set */
+ s->diag_raw = json_object_get(diags);
+ snprintf(s->diag_uri, sizeof(s->diag_uri), "%s", uri);
  n = json_object_array_length(diags);
  for (i = 0; i < n; i++)
  {
@@ -367,6 +393,33 @@ static void lsp_answer_request(e_lsp_session *s, struct json_object *m)
   lsp_reply(s, id, NULL);
   if (s->host.on_semantic_refresh)
    s->host.on_semantic_refresh(s->host.ud);
+ }
+ else if (meth && !strcmp(meth, "workspace/applyEdit"))
+ {
+  /* The server (mid workspace/executeCommand for a command-based code action)
+     asks us to apply a WorkspaceEdit.  Apply it to the working buffer set up by
+     lsp_execute_command_collect and answer {applied:true}; if no command is in
+     flight (unsolicited edit) decline with {applied:false} -- we never rewrite a
+     file the user is not actively acting on. */
+  struct json_object *edit = obj_obj(obj_obj(m, "params"), "edit");
+  struct json_object *res = json_object_new_object();
+  int applied = 0;
+
+  if (s->pend_text && edit)
+  {
+   int others = 0;
+   char *nt = lsp_apply_workspace_edit(edit, s->pend_uri, s->pend_text, &others);
+   if (nt)
+   {
+    free(s->pend_text);
+    s->pend_text = nt;
+    s->pend_others += others;
+    s->pend_applied = 1;
+    applied = 1;
+   }
+  }
+  json_object_object_add(res, "applied", json_object_new_boolean(applied));
+  lsp_reply(s, id, res);
  }
  else
   /* registerCapability, workDoneProgress/create, other *_refresh, unknown -> null */
@@ -619,6 +672,19 @@ static struct json_object *lsp_client_caps(void)
  json_object_object_add(td, "completion", json_object_new_object());
  json_object_object_add(td, "definition", json_object_new_object());
  json_object_object_add(td, "publishDiagnostics", json_object_new_object());
+ {
+  /* Code actions: tell the server we can RESOLVE an action that arrives with
+     only a `data` field (no edit yet) -- modern Metals returns its refactors
+     that way, expecting a codeAction/resolve round-trip to fetch the edit. */
+  struct json_object *ca = json_object_new_object();
+  struct json_object *rs = json_object_new_object();
+  struct json_object *props = json_object_new_array();
+  json_object_array_add(props, json_object_new_string("edit"));
+  json_object_object_add(rs, "properties", props);
+  json_object_object_add(ca, "resolveSupport", rs);
+  json_object_object_add(ca, "dataSupport", json_object_new_boolean(1));
+  json_object_object_add(td, "codeAction", ca);
+ }
  json_object_object_add(td, "inlayHint", json_object_new_object());
  json_object_object_add(td, "callHierarchy", json_object_new_object());
  json_object_object_add(td, "typeHierarchy", json_object_new_object());
@@ -652,6 +718,16 @@ static struct json_object *lsp_client_caps(void)
   struct json_object *ws = json_object_new_object();
   struct json_object *ih = json_object_new_object();
   json_object_object_add(ws, "configuration", json_object_new_boolean(1));
+  /* We honour workspace/applyEdit (the server's way of writing back a
+     command-based code action's result) and can invoke workspace/executeCommand,
+     so a Metals action delivered as a Command -- not a precomputed edit -- can
+     actually run. */
+  json_object_object_add(ws, "applyEdit", json_object_new_boolean(1));
+  {
+   struct json_object *ec = json_object_new_object();
+   json_object_object_add(ec, "dynamicRegistration", json_object_new_boolean(0));
+   json_object_object_add(ws, "executeCommand", ec);
+  }
   /* ask the server to tell us when inlay hints need re-querying (it does so
      once indexing fills in cross-file inferred types). */
   json_object_object_add(ih, "refreshSupport", json_object_new_boolean(1));
@@ -2136,6 +2212,33 @@ static struct json_object *lsp_point_range(int line, int character)
  return rng;
 }
 
+/* The subset of the last-published diagnostics for @uri that cover line @line,
+   as a NEW json array for codeAction's context.diagnostics.  A server (Metals,
+   clangd, ...) only emits the matching quick-fix actions when it sees the
+   diagnostic here -- without it a "fix this error" action never appears.  Empty
+   array when nothing overlaps or the stored set is for another file. */
+static struct json_object *lsp_diags_covering(e_lsp_session *s, const char *uri,
+                                              int line)
+{
+ struct json_object *out = json_object_new_array();
+ int i, n;
+
+ if (!s->diag_raw || strcmp(s->diag_uri, uri) != 0)
+  return out;
+ n = json_object_array_length(s->diag_raw);
+ for (i = 0; i < n; i++)
+ {
+  struct json_object *d = json_object_array_get_idx(s->diag_raw, i);
+  struct json_object *rng = obj_obj(d, "range");
+  int ds = rng ? obj_int(obj_obj(rng, "start"), "line", -1) : -1;
+  int de = rng ? obj_int(obj_obj(rng, "end"), "line", ds) : ds;
+  if (ds < 0 || line < ds || line > de)
+   continue;
+  json_object_array_add(out, json_object_get(d));
+ }
+ return out;
+}
+
 int e_lsp_code_actions(e_lsp_session *s, const char *path, int line, int character,
                        e_lsp_code_action *acts, int max)
 {
@@ -2155,7 +2258,7 @@ int e_lsp_code_actions(e_lsp_session *s, const char *path, int line, int charact
  json_object_object_add(args, "textDocument", doc);
  json_object_object_add(args, "range", lsp_point_range(line, character));
  ctx = json_object_new_object();
- json_object_object_add(ctx, "diagnostics", json_object_new_array());
+ json_object_object_add(ctx, "diagnostics", lsp_diags_covering(s, uri, line));
  json_object_object_add(args, "context", ctx);
  id = ++s->id;
  lsp_send(s, id, "textDocument/codeAction", args);
@@ -2186,11 +2289,74 @@ int e_lsp_code_actions(e_lsp_session *s, const char *path, int line, int charact
  return out;
 }
 
+/* Resolve a CodeAction the server returned unresolved (only a `data` field, no
+   edit yet -- how Metals delivers its refactors): send codeAction/resolve with
+   the action and return the resolved copy (now carrying an `edit` and/or a
+   `command`).  Caller owns the result; NULL on timeout. */
+static struct json_object *lsp_resolve_code_action(e_lsp_session *s,
+                                                   struct json_object *action)
+{
+ struct json_object *resp, *result;
+ int id = ++s->id;
+
+ lsp_send(s, id, "codeAction/resolve", json_object_get(action));
+ resp = lsp_pump(s, id, NULL, LSP_TMO_REQ);
+ if (!resp)
+  return NULL;
+ result = obj_obj(resp, "result");
+ result = result ? json_object_get(result) : NULL;   /* outlive the resp put */
+ json_object_put(resp);
+ return result;
+}
+
+/* Run a command-based code action: send workspace/executeCommand and let the
+   server write the result back through workspace/applyEdit (handled inline by
+   lsp_answer_request, which edits s->pend_text).  Returns the new text for @myuri
+   -- the caller owns it -- with *other_files set to the count of OTHER files the
+   command touched; NULL when the command applied no edit to a tracked file (a
+   pure side-effect command, e.g. "run main": nothing to write into the buffer). */
+static char *lsp_execute_command_collect(e_lsp_session *s, const char *command,
+                                         struct json_object *arguments,
+                                         const char *myuri, const char *current_text,
+                                         int *other_files)
+{
+ struct json_object *args, *resp;
+ char *newtext;
+ int id;
+
+ free(s->pend_text);                 /* arm the applyEdit working buffer */
+ s->pend_text = strdup(current_text);
+ snprintf(s->pend_uri, sizeof(s->pend_uri), "%s", myuri);
+ s->pend_others = 0;
+ s->pend_applied = 0;
+
+ args = json_object_new_object();
+ json_object_object_add(args, "command", json_object_new_string(command));
+ if (arguments && json_object_is_type(arguments, json_type_array))
+  json_object_object_add(args, "arguments", json_object_get(arguments));
+ id = ++s->id;
+ lsp_send(s, id, "workspace/executeCommand", args);
+ resp = lsp_pump(s, id, NULL, LSP_TMO_REQ);   /* applyEdit handled while pumping */
+ if (resp)
+  json_object_put(resp);
+
+ newtext = s->pend_text;             /* disarm, hand ownership to the caller */
+ s->pend_text = NULL;
+ s->pend_uri[0] = '\0';
+ if (other_files)
+  *other_files = s->pend_others;
+ if (!s->pend_applied)
+ {  free(newtext);  return NULL;  }  /* command ran, no buffer edit to apply */
+ return newtext;
+}
+
 char *e_lsp_apply_code_action(e_lsp_session *s, int index, const char *path,
                               const char *current_text, int *other_files)
 {
  char abspath[PATH_MAX], myuri[PATH_MAX + 8];
- struct json_object *a, *edit;
+ struct json_object *a, *act, *resolved = NULL, *edit, *cmdobj;
+ const char *command;
+ char *out = NULL;
 
  if (other_files)
   *other_files = 0;
@@ -2198,13 +2364,37 @@ char *e_lsp_apply_code_action(e_lsp_session *s, int index, const char *path,
      index >= json_object_array_length(s->acts_raw))
   return NULL;
  a = json_object_array_get_idx(s->acts_raw, index);
- edit = obj_obj(a, "edit");
- if (!edit)
-  return NULL;                  /* command-based action: not run yet */
  if (!realpath(path, abspath))
   snprintf(abspath, sizeof(abspath), "%s", path);
  snprintf(myuri, sizeof(myuri), "file://%s", abspath);
- return lsp_apply_workspace_edit(edit, myuri, current_text, other_files);
+ act = a;
+ /* An unresolved action carries only a `data` field; resolve it first so its
+    edit/command is filled in (Metals' refactors arrive this way). */
+ if (!obj_obj(a, "edit") && !obj_obj(a, "command") && obj_obj(a, "data"))
+ {
+  resolved = lsp_resolve_code_action(s, a);
+  if (resolved)
+   act = resolved;
+ }
+ edit = obj_obj(act, "edit");
+ if (edit)                           /* a precomputed (or just-resolved) WorkspaceEdit */
+  out = lsp_apply_workspace_edit(edit, myuri, current_text, other_files);
+ else
+ {
+  /* Command-based: either a CodeAction whose "command" field is a Command
+     object, or the entry IS a Command (its "command" is the string id). */
+  cmdobj = obj_obj(act, "command");
+  if (cmdobj && json_object_is_type(cmdobj, json_type_object))
+   command = obj_str(cmdobj, "command");
+  else
+  {  cmdobj = act;  command = obj_str(act, "command");  }
+  if (command)
+   out = lsp_execute_command_collect(s, command, obj_obj(cmdobj, "arguments"),
+                                     myuri, current_text, other_files);
+ }
+ if (resolved)
+  json_object_put(resolved);
+ return out;
 }
 
 void e_lsp_close(e_lsp_session *s)
@@ -2246,6 +2436,9 @@ void e_lsp_close(e_lsp_session *s)
  lsp_free_acts(s);
  lsp_free_lenses(s);
  lsp_free_inlays(s);
+ free(s->pend_text);
+ if (s->diag_raw)
+  json_object_put(s->diag_raw);
  {  int i;  for (i = 0; i < s->sem_nlegend; i++)  free(s->sem_legend[i]);  }
  e_dap_reader_free(&s->rd);
  free(s);

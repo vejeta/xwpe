@@ -157,8 +157,11 @@ the editor-wide ``Go to Symbol''.
 @item Alt-Q A
 Code actions: list the quick-fixes and refactors the server offers at the
 cursor (organize imports, create a companion object, ...) in a popup.
-Applying an action that carries a direct edit rewrites the buffer; actions
-that instead run a server command are listed but reported as not yet runnable.
+Applying an action rewrites the buffer.  An action carrying a direct edit is
+applied straight away; one that runs a server command is executed over
+@code{workspace/executeCommand}, and the server's resulting edit
+(@code{workspace/applyEdit}) is applied for you.  When an action also changes
+@emph{other} files a note reports how many -- those are left untouched.
 @item Alt-Q S
 Signature: show the signature of the call the cursor is inside (e.g.
 @code{println(x: Any): Unit}) in a popup.
