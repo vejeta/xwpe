@@ -64,6 +64,13 @@ Debug with gdb (or sdb/dbx) without leaving the editor.  Set breakpoints,
 inspect variables, step through code, and view the call stack.
 
 @item
+IDE features from a real @dfn{language server} (LSP): completion, hover with
+types, go-to-definition, references, rename and more, under the @kbd{Alt-Q}
+prefix.  Five languages are wired -- Scala (Metals), C/C++ (clangd), Python
+(pyright/pylsp), Go (gopls) and Rust (rust-analyzer); the server is an external
+tool, so the editor stays small (@pxref{Language servers}).
+
+@item
 Manage multi-file projects with a project file that stores compiler
 flags, source file lists, and build targets.
 
@@ -86,7 +93,8 @@ A menu-driven IDE that works over SSH,
 @item
 Borland-style keybindings from muscle memory,
 @item
-An integrated compile-edit-debug cycle without configuring LSP servers,
+An integrated compile-edit-debug cycle out of the box -- and optional
+zero-config IDE features (LSP) when a language server is on your @env{PATH},
 @item
 Something that starts instantly and runs on any terminal,
 @end itemize

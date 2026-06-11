@@ -119,6 +119,18 @@ emulator.
   server, gopls *and* rust-analyzer &mdash; **five languages, one engine**; adding
   a server is a one-row descriptor, not new plumbing.
 
+  **Try it in your language.** Each has a small, fully-commented demo project
+  that exercises every `Alt-Q` action in that language's own idioms &mdash; open
+  it and read down the code &mdash; plus a short tour GIF in its README:
+
+  | Demo (open with `wpe`) | Language | Server | Tour |
+  |---|---|---|---|
+  | [`docs/examples/scala-lsp/`](docs/examples/scala-lsp/)   | Scala  | Metals          | (see [`docs/LSP.md`](docs/LSP.md)) |
+  | [`docs/examples/c-lsp/`](docs/examples/c-lsp/)           | C/C++  | clangd          | [tour](docs/demos/gifs/c/tour.gif) |
+  | [`docs/examples/python-lsp/`](docs/examples/python-lsp/) | Python | pyright / pylsp | [tour](docs/demos/gifs/python/tour.gif) |
+  | [`docs/examples/go-lsp/`](docs/examples/go-lsp/)         | Go     | gopls           | [tour](docs/demos/gifs/go/tour.gif) |
+  | [`docs/examples/rust-lsp/`](docs/examples/rust-lsp/)     | Rust   | rust-analyzer   | [tour](docs/demos/gifs/rust/tour.gif) |
+
   **Prerequisites (Linux/macOS):** `cs install metals scala-cli`, **plus an LTS
   JDK (17 or 21) that *Metals* runs on**. The subtle part: `//> using jvm
   temurin:21` in `project.scala` pins only the *build* JVM &mdash; Metals' own
@@ -134,7 +146,7 @@ emulator.
 
   <p align="center">
     <img src="docs/demos/gifs/menu.gif" width="640" alt="Pressing Alt-Q ? in xwpe opens the Metals action menu, an upward-unfolding Borland-style dropdown listing every LSP command with its Alt-Q accelerator.">
-    <br><em>The Metals action menu (<code>Alt-Q ?</code>): every LSP command, discoverable, with its accelerator. More clips in <a href="https://codeberg.org/mendezr/xwpe/src/branch/main/docs/demos">docs/demos/</a>.</em>
+    <br><em>The Metals action menu (<code>Alt-Q ?</code>): every LSP command, discoverable, with its accelerator. More clips in <a href="docs/demos/">docs/demos/</a> and the per-language tours above.</em>
   </p>
 
   <p align="center">
@@ -153,7 +165,10 @@ emulator.
 * **GNU Algol 68 (ga68)** joins the classic `a68g` interpreter: native compile
   + gdb source-level debugging, with both stropping dialects highlighted.
 
-## What's new in 1.6.3
+<details>
+<summary><strong>Earlier releases &mdash; what was new in 1.6.3 and 1.6.2</strong> (click to expand; see <code>CHANGELOG</code> for the full history)</summary>
+
+### What's new in 1.6.3
 
 * **No more scrollbar bleed with overlapping windows** (X11): with three
   windows stacked so one is covered by two others at once, a covered
@@ -207,7 +222,7 @@ emulator.
   no xterm dependency, no screen switching
 * **kitty mouse fix**: compatible mouse tracking without SGR conflicts
 
-## What was new in 1.6.2
+### What was new in 1.6.2
 
 * **Xft font rendering in X11**: anti-aliased TrueType fonts with
   fontconfig fallback. Color emoji via Noto Color Emoji (libXft 2.3.5+
@@ -225,6 +240,8 @@ emulator.
 * Automated tests: pyte (wpe/ncurses) + headless X11 GUI suite (xwpe/Xft)
 
 See `CHANGELOG` for full details.
+
+</details>
 
 ## Compiler support
 
@@ -358,8 +375,12 @@ a language requires listing keywords, operators, and comment delimiters.
 | Level | Access | Content |
 |-------|--------|---------|
 | **In-app help** | F1 | Menus, key bindings, basic usage |
-| **Texinfo manual** | `info xwpe` (requires `info` package) | 12 chapters: editor, compiling, debugging, tutorials, reference |
+| **Texinfo manual** | `info xwpe` (requires `info` package) | 13 chapters: editor, compiling, debugging, language servers, tutorials, reference |
 | **Man pages** | `man xwpe` | Command-line options |
+| **LSP / IDE guide** | [`docs/LSP.md`](docs/LSP.md) | The `Alt-Q` actions, per-language setup, read-only stdlib |
+| **Try-it demos** | [`docs/examples/`](docs/examples/) | Runnable, commented testbeds (one per language) + compiler/debugger examples |
+| **Demo GIFs** | [`docs/demos/`](docs/demos/) | Recorded feature clips and per-language tours |
+| **For contributors** | [`HACKING.md`](HACKING.md), [`HACKING-LSP.md`](HACKING-LSP.md), [`HACKING-DAP.md`](HACKING-DAP.md) | Architecture of the editor, the LSP client, the DAP debugger |
 
 ## Known limitations
 

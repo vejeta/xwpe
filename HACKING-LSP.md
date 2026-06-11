@@ -1,9 +1,13 @@
-# HACKING-LSP — the planned Language Server Protocol client
+# HACKING-LSP — the Language Server Protocol client
 
-> **Status: SHIPPED for Scala/Metals -- nine actions + live diagnostics.** The
-> `we_lsp.c` engine (validated vs real Metals) plus the editor bridge on the
-> `Alt-Q` prefix.  Companion to `HACKING-DAP.md`.  Remaining: more servers
-> (clangd, pyright, rust-analyzer, gopls) as descriptor rows.
+> **Status: SHIPPED for five languages -- 20+ actions + live diagnostics.** The
+> `we_lsp.c` engine (validated vs real servers) plus the editor bridge on the
+> `Alt-Q` prefix.  Companion to `HACKING-DAP.md`.  Wired servers:
+> **Scala** (Metals), **C/C++** (clangd), **Python** (pyright, pylsp fallback),
+> **Go** (gopls) and **Rust** (rust-analyzer) -- each one row in
+> `e_lsp_servers[]`, no new code (see [the descriptor](#the-server-descriptor-table)).
+> The bridge is the same for all of them; only Scala has extra per-server prep
+> (the BSP/`scala-cli` bootstrap and the JDK pin).
 >
 > Keys (editor bridge, `e_lsp_ui_inp` in we_debug.c, dispatched from
 > `e_prog_switch` on Alt-Q):
@@ -148,40 +152,111 @@ low-level half is done.
   bridge in we_edit   marks, go-to-definition jump, bound to editor keys.
 ```
 
-A per-server descriptor table, exactly like `DAP_LANGS[]`:
+### The server descriptor table
+
+A new language server is a **row in `e_lsp_servers[]`** (we_debug.c), not new
+code.  The real descriptor:
 
 ```c
 typedef struct {
-  const char  *ext;       /* ".c"/".scala"/".rs"/…           */
-  char *const *argv;      /* the language server command line */
-  int          bsp;       /* 1 = obtain the server via a build server (Scala)   */
-} e_lsp_lang;
+  const char  *lang;    /* matches e_lsp_lang_for(): "c"/"scala"/"rust"/… (the LSP languageId) */
+  char *const *argv;    /* NULL-terminated spawn command; argv[0] is the PATH check */
+  const char  *label;   /* short name for the status bar ("Metals", "clangd", "rust") */
+  const char  *missing; /* hint shown when the binary is not installed */
+} e_lsp_server;
 ```
 
-## Phased plan
+`e_lsp_lang_for(f)` maps a file extension to the `lang` key (also the wire
+`languageId`); `e_lsp_server_for(lang)` returns the matching row.  A language may
+have **several rows in preference order**: `e_lsp_server_for` returns the first
+whose `argv[0]` is on `PATH`, else the first row (so the bar and `missing` hint
+still name the preferred server).  Python uses this — a `pyright` row then a
+`pylsp` row — so it picks pyright when present, pylsp otherwise, zero config.
+`argv` carries extra arguments where needed (pyright is
+`{"pyright-langserver","--stdio",NULL}`).  The shipped table:
+
+| lang | argv[0] | label | notes |
+|------|---------|-------|-------|
+| `scala`  | `metals`             | Metals  | BSP/`scala-cli` bootstrap + JDK pin (only server with prep) |
+| `c`,`cpp`| `clangd`             | clangd  | in Debian; no JVM; xwpe's home turf |
+| `python` | `pyright-langserver` | pyright | preferred; not in Debian (pip/npm) |
+| `python` | `pylsp`              | pylsp   | fallback; in Debian (`python3-pylsp` + `python3-pyflakes` for diagnostics) |
+| `go`     | `gopls`              | gopls   | needs a `go.mod` module |
+| `rust`   | `rust-analyzer`      | rust    | label kept short to fit the 80-col bar; needs a Cargo crate + `rust-src` |
+
+**Two non-obvious paths must both be touched per server** (see also the
+`project_lsp_add_server` memory):
+
+1. **The `languageId` thread** (we_lsp.c): the session stores `lang_id`;
+   `e_lsp_did_open` sends it (it used to be hardcoded `"scala"`, which would make
+   clangd mis-parse).  Server-specific notifications are gated by lang —
+   `metals/didFocusTextDocument` is skipped unless `lang_id == "scala"`.
+2. **The status-bar label is a SEPARATE hardcoded path the engine test does not
+   exercise.**  The bottom-bar entry "Alt-Q ? Metals" is a static `WOPT` literal
+   (`eblst_lsp_o[5]/eblst_lsp_u[5].t` in we_main.c).  `e_lsp_bar_label(f)`
+   (we_debug.c, called from we_wind.c before `e_pr_uul`) rewrites it to
+   "Alt-Q ? <label>" and re-packs the button row with `e_lsp_pack_bar` (adaptive
+   gap so the 7 standard buttons + the LSP entry still fit 80 cols — this is why
+   `rust-analyzer` is abbreviated to `rust`).  Add a server and forget this, and
+   the bar keeps saying "Metals".
+
+## How the engine was built (history)
+
+The engine was delivered in the order below; it is recorded here because the same
+sequence is the cheapest path for anyone porting the client elsewhere:
 
 1. **Transport/engine** (`we_lsp.c`): `initialize`/`initialized`, `shutdown`,
-   `textDocument/didOpen` + `didChange` (sync the buffer to the server),
-   request/response correlation + notification dispatch on the fd-loop.
-2. **Diagnostics**: handle `textDocument/publishDiagnostics` → inline
-   error/warning marks in the editor + a navigable list (reuse the F9 error
-   list UI).  This is the highest value-for-effort surface and validates the
+   `textDocument/didOpen` + `didChange` (full-document sync), request/response
+   correlation + notification dispatch on the fd-loop.
+2. **Diagnostics** (`textDocument/publishDiagnostics`): inline marks + a
+   navigable list — the highest value-for-effort surface, and it validates the
    engine end-to-end.
-3. **Completion**: `textDocument/completion` → a Borland-style popup at the
+3. **Completion** (`textDocument/completion`): a Borland-style popup at the
    cursor; insert on Enter.
-4. **Hover + go-to-definition**: type/doc on a key; jump to the definition with
-   a "jump back" stack.
-5. (later) rename, find-references, signature help, formatting.
+4. **Hover + go-to-definition**, then references, rename, signature help,
+   formatting, the call/type hierarchies, code actions and the rest of the
+   `Alt-Q` table above.
 
-## Target servers, in order
+## Servers wired (all shipped)
 
-| Order | Server | Language | Why first |
-|-------|--------|----------|-----------|
-| 1 | **clangd** | C/C++ | in Debian (`clangd` package) → trivial dependency; xwpe's home turf |
-| 2 | **Metals/Bloop** | Scala | reuses the `scala-cli`/BSP tooling already wired for Scala DAP |
-| 3 | pyright / pylsp | Python | common, easy to install |
-| 4 | rust-analyzer | Rust | the standard Rust server |
-| 5 | gopls | Go | completes the DAP language set |
+| Server | Language | In Debian? | Per-server notes |
+|--------|----------|------------|------------------|
+| **clangd** | C/C++ | yes (`clangd`) | trivial dependency; no JVM; the first server CI runs for real |
+| **Metals** | Scala | no (`cs install metals`) | reuses the `scala-cli`/BSP tooling from the Scala DAP backend |
+| **pyright** | Python | no (pip/npm) | preferred; lints out of the box |
+| **pylsp** | Python | yes (`python3-pylsp`) | fallback; diagnostics need `python3-pyflakes` |
+| **rust-analyzer** | Rust | yes (`rust-analyzer`) | needs a Cargo crate + `rust-src` for std go-to-def |
+| **gopls** | Go | yes (`gopls`) | needs a `go.mod`; a real compiler, so diagnostics are reliable |
+
+## Testing & demos
+
+Each server is covered by **two layers** (both needed — they exercise different
+code):
+
+1. **Engine C test** `tests/test_lsp_<server>.c` (model: `test_lsp_clangd.c`):
+   drives `we_lsp.h` directly against a *real* server —
+   diagnostics/hover/definition/completion/references/outline/rename. Fast,
+   self-skips (exit 77) when the server is absent (so Metals costs 0 in Debian
+   CI, which has no JDK; clangd-class servers run for real in seconds). This
+   layer **bypasses `we_debug.c`**.
+2. **One pyte bridge test** `tests/test_<server>_lsp.py` (model:
+   `test_clangd_lsp.py`): drives the *editor* — extension→server detection, the
+   eager start, the "Alt-Q ? <label>" bar text, Alt-Q E diagnostics. This is the
+   only layer that catches the bar-label path; `skipif(which(server) is None)`.
+
+Wire a new engine test into `Makefile.am` (`check_PROGRAMS` + `TESTS` +
+`EXTRA_DIST`); add the pyte test to `EXTRA_DIST`; add the server to the Debian
+`debian/tests/control` Test-Depends so CI runs it for real where the binary is
+packaged.
+
+**Per-language demo testbeds + tour GIFs** live under `docs/`: each language has
+`docs/examples/<lang>-lsp/` — a small, fully-commented project where every
+`Alt-Q` action is annotated in that language's idioms (verified to compile *and*
+to parse clean under its server) — and a tour GIF
+`docs/demos/gifs/<lang>/tour.gif` recorded from `docs/demos/tapes/<lang>/tour.tape`
+by `docs/demos/record-tours.sh` (records against a throwaway copy so server
+caches stay out of the repo). The user-facing walkthrough is `docs/LSP.md` /
+`docs/chapters/lsp.texi`.
 
 ## Notes / constraints
 
@@ -206,9 +281,10 @@ typedef struct {
   fine — a confusing split. **The real fix is to run Metals on an LTS JDK: set
   `JAVA_HOME` (and prepend its `bin` to `PATH`) before launching `wpe`.**
   Verified: `JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64` stops the crash
-  (metals.log then warns about java-21 not java-26, no `asTerm`). Surfaced to
-  users in lsp.texi (the "two JVMs" subsection); a future xwpe could detect the
-  crash signature in metals.log and hint this.
+  (metals.log then warns about java-21 not java-26, no `asTerm`). xwpe now
+  auto-pins Metals' JVM to a supported JDK when the default is too new; surfaced
+  to users in `docs/chapters/lsp.texi` / `docs/LSP.md` (the "two JVMs"
+  subsection).
 * **`e_lsp_buffer_text` newline-doubling bug (fixed 2026-06-10).** xwpe stores
   each line in `b->bf[y].s` terminated by an embedded `WPE_WR` (0x0A) marker
   (that is how `e_write`/Save delimits lines on disk). The buffer→string
@@ -216,9 +292,10 @@ typedef struct {
   doubling every newline: a 17-line file reached the server as 34 lines, so every
   LSP position was off by whole lines and definition/hover returned nothing —
   and this, not Metals, was the real cause of the "hover always null" report.
-  Fix: helper `e_lsp_line_len()` copies each line up to `WPE_WR`, then one `\n`
-  (mirrors `e_write`). Lesson: the didOpen/didChange text MUST be byte-identical
-  to what `File>Save` writes — diff it against disk when positions look wrong.
+  Fix: the serializer `e_lsp_join_lines()` (we_lsp.c, unit-tested) copies each
+  line up to `WPE_WR` then appends one `\n` (mirrors `e_write`). Lesson: the
+  didOpen/didChange text MUST be byte-identical to what `File>Save` writes —
+  diff it against disk when positions look wrong.
 * Cross-file navigation works (definition/implementation/type-definition/
   workspace-symbol jump open the target file via `e_d_goto_break`→`e_edit`), but
   the server holds ONE open document at a time: switching the Alt-Q focus to a

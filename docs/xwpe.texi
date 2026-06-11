@@ -54,7 +54,7 @@ xwpe was written by Fred Kruse in 1993, maintained by Dennis Payne from
 * Configuration::         xwperc, syntax_def, X resources.
 * Compiling::             The F9 cycle and compiler integration.
 * Debugging::             gdb/sdb/dbx backends, breakpoints, watches.
-* Language servers::      LSP/Metals: diagnostics, completion, hover, definition.
+* Language servers::      LSP for Scala, C/C++, Python, Go, Rust: completion, hover, definition.
 * Projects::              Project files and multi-file builds.
 * Tutorials::             Step-by-step walkthroughs.
 * Bugs and limits::       Known issues and workarounds.

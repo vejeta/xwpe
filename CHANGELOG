@@ -187,7 +187,7 @@ Bugs fixed in 1.6.x:
 
 Changes
 
-1.6.5 (GNU Algol 68 / ga68 toolchain, per-file dialect detection, Algol 68 highlighting)
+1.6.5 (LSP for five languages, GNU Algol 68 / ga68 toolchain, Algol 68 highlighting)
 
   GNU Algol 68 (ga68) compiler:
 * ga68, the GCC Algol 68 front-end, is now supported alongside a68g.  It
@@ -393,9 +393,83 @@ Changes
   Metals, reporting it in Messages ("Metals: pinned JAVA_HOME=..."); an explicit
   supported JAVA_HOME is respected.  If no LTS JDK is installed it says so.  See
   the manual's "Language servers" chapter and "Known open issues".
-* Next LSP increments: inlay hints, call hierarchy, folding, semantic tokens,
-  worksheets; and more servers -- clangd (C/C++, in Debian), pyright,
-  rust-analyzer, gopls -- each a descriptor row.
+  More language servers via LSP -- C/C++, Python, Go, Rust:
+* The LSP engine was built editor-free and server-agnostic, and now drives
+  five languages from a one-row-per-server descriptor table; the Alt-Q action
+  set is identical across all of them:
+  - C and C++ (clangd): open a .c/.h/.cpp/.cc/.cxx/.hpp/... file.  clangd needs
+    no JVM, so it starts fast and go-to-definition follows straight into the
+    system headers under /usr/include.
+  - Python (pyright or pylsp): xwpe uses whichever is on PATH, preferring
+    pyright (the type checker VS Code uses) and falling back to the Debian-
+    native python3-pylsp.  pylsp wants python3-pyflakes alongside it for
+    diagnostics; jedi alone navigates but does not lint.
+  - Go (gopls): open a .go file.  gopls wants a module (a go.mod in the
+    directory) for full results; a lone .go loads in a degraded ad-hoc mode.
+  - Rust (rust-analyzer): open a .rs file (from inside a Cargo crate).
+  Each server is resolved from the file's extension, eager-started in the
+  background when the file opens, and named on the status bar.  Verified
+  against real servers -- clangd 21, gopls 0.21 / go 1.26, pyright 1.1.4 and
+  pylsp, rust-analyzer 1.95 -- by tests/test_lsp_clangd.c, test_lsp_python.c,
+  test_lsp_gopls.c and test_lsp_rust.c (and their pyte editor-bridge twins),
+  each self-skipping when its server is absent.
+* The status bar names the server backing the active window -- "clangd" for a
+  C file, "pyright" for Python, "Metals" for Scala -- instead of a hardcoded
+  "Metals", and the LSP button row now packs adaptively: it relays from the
+  live label widths so a long name (rust-analyzer, pyright) no longer runs off
+  the 80-column edge and clips "Alt-X Quit".
+* Go-to-definition into library and standard-library sources: jumping to a
+  symbol defined in a dependency or the stdlib opens that source read-only --
+  marked with a padlock in the title and a dimmed title bar, so it is visibly
+  distinct from an editable file.  Running an Alt-Q action from inside such a
+  read-only source no longer spins up a second, useless language server rooted
+  at the cache dir; it tells you to run actions from the project window (#213).
+* LSP edits are now Undo-able and Redo-able: applying a code action (Alt-Q A),
+  a rename (Alt-Q N) or a format (Alt-Q F) records a single whole-buffer undo
+  entry, so Ctrl-U restores the file and Ctrl-R re-applies the refactor in one
+  step.  Previously an LSP edit could not be undone at all (#216).
+
+  LSP -- Scala/Metals, additional IDE actions:
+* Asynchronous cold start: starting Metals (JVM boot, build import and first
+  compile) no longer freezes the editor -- it boots in the background and xwpe
+  stays responsive; opening a server-backed file eager-starts it so the first
+  Alt-Q does not wait through the cold start (XWPE_LSP_NO_EAGER=1 opts out).
+  Indexing/compiling status streams live to Messages, and a hover that comes
+  back empty while the server is still working now says so (#210).
+* Scala worksheets: open a .worksheet.sc and Metals evaluates each top-level
+  expression, showing the result dimly at end of line (val a = 5 + 7 grows
+  ": Int = 12") -- a REPL that updates in place as you edit.  A plain .sc is a
+  scala-cli script (type hints yes, "= 12" evaluation no).  .sc files now
+  highlight as Scala (#187).
+* Call hierarchy (Alt-Q B / Alt-Q G), type hierarchy (Alt-Q K / Alt-Q J),
+  expand-selection by syntax (Alt-Q V), context-sensitive range formatting
+  (Alt-Q F formats only the marked block), and server-driven semantic
+  highlighting (Alt-Q M) were added; inlay hints (Alt-Q Y) now refresh
+  themselves as the project finishes indexing.
+* Code actions now apply in all three shapes the server delivers them -- an
+  inline edit, a command run via workspace/executeCommand, and an unresolved
+  action fetched via codeAction/resolve (how Metals ships refactors such as
+  "Convert to named arguments") -- with diagnostic-keyed quick-fixes (#214).
+* Fixed: arrow keys, Home/End/PageUp and Enter now work in dialogs and the LSP
+  code-action picker under ncurses (#215).
+* Fixed: a language server that crashes or closes its output no longer spins
+  the editor at 100% CPU -- xwpe tears down the dead session and reports it.
+* Fixed: a background LSP paint (Doctor, diagnostics status, inlay overlay) no
+  longer corrupts a modal window (file manager, project dialog) on top of the
+  editor while the server is still loading.
+
+  LSP -- documentation and demos:
+* New user-facing guide docs/LSP.md: what LSP gives you, the per-language setup
+  (which server, how to install it), the full Alt-Q key table, the
+  read-only-stdlib behaviour, and a demo reel, linked from the top-level README.
+* A runnable, fully-commented demo testbed per language under docs/examples/
+  (c-lsp, go-lsp, python-lsp, rust-lsp, scala-lsp), each a small class/trait
+  hierarchy in that language's own idioms with a README key table, a
+  code-actions playground, and a note of which actions need which server.
+* A reproducible "tour" GIF per wired language (clangd, gopls, pyright,
+  rust-analyzer), each walking that language's own testbed through hover,
+  go-to-definition, references and the file outline (docs/demos/), so a
+  developer sees the IDE features in their own ecosystem, not in Scala.
 
 1.6.4 (embedded VT terminal, Algol 68 source-level debugger, window-layout fixes)
 

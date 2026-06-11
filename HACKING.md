@@ -454,6 +454,14 @@ Delve, Rust via gdb, ...). It is its own subsystem -- engine + transports
 + a per-language descriptor -- documented separately in **HACKING-DAP.md**.
 This section covers only the text backends.
 
+The **LSP client** is a sibling subsystem on the same JSON-RPC plumbing:
+`we_lsp.c` is the editor-free engine (spawn a language server, initialize,
+manage the open document, issue requests) and a bridge in `we_debug.c`
+binds the `Alt-Q` prefix to IDE features -- completion, hover, go-to-def,
+references, rename, diagnostics -- for Scala, C/C++, Python, Go and Rust.
+A new server is a row in the `e_lsp_servers[]` descriptor table, not new
+code. Documented separately in **HACKING-LSP.md**.
+
 ### Program output via pty (all modes)
 
 `openpty()` creates a master/slave pair. gdb redirects the inferior's
