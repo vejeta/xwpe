@@ -5034,6 +5034,7 @@ static e_lsp_session *g_lsp = NULL;        /* the live server session, or NULL *
 static char           g_lsp_file[1024] = "";  /* full path g_lsp is opened for */
 static FENSTER       *g_lsp_fenster = NULL;
 static FENSTER       *g_lsp_pending_ws = NULL; /* worksheet to focus once ready */
+static int            g_lsp_ui_suspended = 0;  /* defer fd-loop painting (modal up) */
 static int            g_lsp_quiet = 0;     /* suppress per-diagnostic Messages
                                               output (live polls show a summary) */
 static int            g_lsp_last_err = -1; /* last reported diagnostic totals,  */
@@ -5416,6 +5417,27 @@ static void e_lsp_on_diag(const char *path, int line, int ch,
   e_d_p_message(buf, g_lsp_fenster, 1);
 }
 
+/* e_lsp_ui_safe - Is it safe for the async LSP fd-loop to PAINT right now?
+   Returns true only when a normal text window sits on top.  The same keyboard
+   poll (e_t_getch_poll -> wpe_fd_poll) pumps the fd-loop while a MODAL window
+   runs its own input loop -- the file manager (F3/F6), a project dialog, etc.
+   Those windows are not DTMD_ISTEXT.  A pushed Metals message, a diagnostics
+   line, a Doctor redraw or the inlay overlay drawn underneath such a window
+   corrupts it (the user saw an F3 file-manager body half-erased while Metals
+   was still loading).  When unsafe, the fd-loop still DRAINS the socket -- it
+   just defers every visible paint until the editor is back on top, so it
+   neither corrupts the dialog nor spins at 100% CPU on an unread fd. */
+static int e_lsp_ui_safe(void)
+{
+ ECNT *cn;
+ if (!g_lsp_fenster || !g_lsp_fenster->ed)
+  return(1);
+ cn = g_lsp_fenster->ed;
+ if (cn->mxedt < 1 || !cn->f[cn->mxedt])
+  return(1);
+ return(DTMD_ISTEXT(cn->f[cn->mxedt]->dtmd));
+}
+
 /* End of a publishDiagnostics batch: swap the freshly-collected marks in
    (atomic replace -- even when the totals are unchanged the positions may have
    moved), repaint the source window so the marks update live, and update the
@@ -5430,7 +5452,7 @@ static void e_lsp_on_diag_summary(const char *path, int errors, int warnings,
         (size_t)g_diag_npending * sizeof(g_diag_active[0]));
  g_diag_nactive = g_diag_npending;
  g_diag_npending = 0;
- if (g_lsp_fenster && DTMD_ISTEXT(g_lsp_fenster->dtmd))
+ if (!g_lsp_ui_suspended && g_lsp_fenster && DTMD_ISTEXT(g_lsp_fenster->dtmd))
  {
   e_schirm(g_lsp_fenster, 1);       /* redraw text so marks appear/clear */
   e_cursor(g_lsp_fenster, 0);       /* keep the caret where it was */
@@ -5440,8 +5462,8 @@ static void e_lsp_on_diag_summary(const char *path, int errors, int warnings,
   return;                           /* totals unchanged -- skip the status line */
  g_lsp_last_err = errors;
  g_lsp_last_warn = warnings;
- if (!g_lsp_fenster)
-  return;
+ if (!g_lsp_fenster || g_lsp_ui_suspended)
+  return;                           /* modal up: keep the totals, defer the line */
  if (errors == 0 && warnings == 0)
   snprintf(buf, sizeof(buf), "LSP: no problems.");
  else
@@ -5478,8 +5500,8 @@ static void e_lsp_on_status(const char *text, int hide, void *ud)
  {  g_lsp_busy = 0;  return;  }
  clean = e_lsp_status_clean(text);
  g_lsp_busy = (clean && clean[0]) ? 1 : 0;
- if (!g_lsp_busy || !g_lsp_fenster)
-  return;
+ if (!g_lsp_busy || !g_lsp_fenster || g_lsp_ui_suspended)
+  return;                                 /* modal up: track busy, defer the note */
  if (!e_lsp_doc_is_new(&g_lsp_status_last, clean))
   return;                                 /* same as the last note: do not repeat */
  snprintf(line, sizeof(line), "LSP: %s", clean);
@@ -5504,6 +5526,10 @@ static void e_lsp_on_show_text(const char *title, const char *body, void *ud)
 
  if (!home || !body)
   return;
+ if (g_lsp_ui_suspended)
+  return;                                /* modal up: do NOT consume the dedup --
+                                            Metals re-pushes, so the next push
+                                            renders it once the editor is back */
  /* Metals re-pushes the same Doctor on every build event: render only when it
     actually changed.  g_lsp_doctor_last is reset per session (e_lsp_ensure), so
     a re-started server shows its Doctor again rather than being deduped away. */
@@ -5771,6 +5797,12 @@ static void e_lsp_on_fd_readable(int fd, void *data)
 
  if (!g_lsp)
  {  e_lsp_fd_unregister();  return;  }
+ /* A modal window (file manager, project dialog) pumps this same fd poll through
+    its own input loop.  Drain the socket as usual, but defer every visible paint
+    until the editor is back on top, so a background Metals message / Doctor /
+    inlay redraw never corrupts the dialog.  Deferred work re-fires on a later
+    poll because g_lsp_ready_done stays unset and the inlay snapshot stays stale. */
+ g_lsp_ui_suspended = !e_lsp_ui_safe();
  was_started = e_lsp_started(g_lsp);
  qsave = g_lsp_quiet;
  g_lsp_quiet = 1;                          /* startup: show the summary, not each line */
@@ -5792,7 +5824,8 @@ static void e_lsp_on_fd_readable(int fd, void *data)
    e_lsp_synced_set(text ? text : strdup(""));
   }
  }
- if (e_lsp_started(g_lsp) && g_lsp_last_err >= 0 && !g_lsp_ready_done)
+ if (e_lsp_started(g_lsp) && g_lsp_last_err >= 0 && !g_lsp_ready_done &&
+     !g_lsp_ui_suspended)
  {
   /* first diagnostics summary arrived -> steady state. */
   g_lsp_ready_done = 1;
@@ -5819,7 +5852,7 @@ static void e_lsp_on_fd_readable(int fd, void *data)
  if (g_inlay_on && handled > 0 && g_lsp_ready_done &&
      e_lsp_is_worksheet(g_lsp_fenster))
   g_inlay_stale = 1;
- if (g_inlay_on)
+ if (g_inlay_on && !g_lsp_ui_suspended)   /* modal up: keep the stale flag, defer paint */
   e_lsp_inlay_refresh_pending(g_lsp_fenster);
 }
 
