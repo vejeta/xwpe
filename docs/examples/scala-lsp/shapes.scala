@@ -2,11 +2,14 @@ package demo
 
 // Domain types used by main.scala.  The cross-file LSP actions live here.
 
-trait Shape:                                   // Alt-Q R on `Shape` -> all references
+trait Shape:                                   // Alt-Q R -> all references;
+                                               // Alt-Q J on `Shape` -> SUBTYPES
+                                               //   (Circle / Rectangle / Triangle)
   def area: Double                             // Alt-Q I on `area`  -> implementations
   def name: String                             // Alt-Q U on `name`  -> uses in this file
 
-case class Circle(radius: Double) extends Shape:   // Alt-Q D from main.scala lands here
+case class Circle(radius: Double) extends Shape:   // Alt-Q D from main.scala lands here;
+                                                   // Alt-Q K on `Circle` -> SUPERTYPES (Shape)
   def area: Double = math.Pi * radius * radius     // Alt-Q H on `Pi` -> math.Pi: Double
   def name: String = "circle"
 

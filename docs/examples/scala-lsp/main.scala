@@ -3,10 +3,11 @@ package demo
 // xwpe + Metals demo.  Open in programming mode:  wpe main.scala
 // The FIRST language-server action starts Metals (a JVM boots, ~1 min cold);
 // it is ready when Messages shows "LSP: no problems.".  Alt-Q ? opens the menu,
-// Alt-Q <letter> runs one action.  Two actions have no single spot, so try them
-// anywhere:  Alt-Q E  (diagnostics, also marks problems inline) and
-// Alt-Q W  (workspace symbol -- type e.g. "Shape" and jump to it project-wide).
-// Every other action is anchored to a line below.
+// Alt-Q <letter> runs one action.  A few actions have no single spot, so try
+// them anywhere:  Alt-Q E (diagnostics, also marks problems inline),
+// Alt-Q W (workspace symbol -- type e.g. "Shape" and jump to it project-wide),
+// and Alt-Q M (semantic colours -- toggle server-driven syntax highlighting on
+// the whole file).  Every other action is anchored to a line below.
 
 object Main:
 

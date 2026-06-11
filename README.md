@@ -124,7 +124,7 @@ emulator.
 
   <p align="center">
     <img src="docs/demos/gifs/menu.gif" width="640" alt="Pressing Alt-Q ? in xwpe opens the Metals action menu, an upward-unfolding Borland-style dropdown listing every LSP command with its Alt-Q accelerator.">
-    <br><em>The Metals action menu (<code>Alt-Q ?</code>): every LSP command, discoverable, with its accelerator. More clips in <a href="docs/demos/">docs/demos/</a>.</em>
+    <br><em>The Metals action menu (<code>Alt-Q ?</code>): every LSP command, discoverable, with its accelerator. More clips in <a href="https://codeberg.org/mendezr/xwpe/src/branch/main/docs/demos">docs/demos/</a>.</em>
   </p>
 
   <p align="center">

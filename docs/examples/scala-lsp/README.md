@@ -42,8 +42,14 @@ read down the code.  For reference:
 | `Alt-Q H` | Hover             | on `Pi` (`shapes.scala`), any identifier |
 | `Alt-Q C` | Complete          | after `shapes.`                          |
 | `Alt-Q R` | References        | on `Shape` / on `total`                  |
+| `Alt-Q B` | Incoming calls    | on `total` in `main.scala`               |
+| `Alt-Q G` | Outgoing calls    | on `describe` in `main.scala`            |
+| `Alt-Q K` | Supertypes        | on `Circle` in `shapes.scala`            |
+| `Alt-Q J` | Subtypes          | on `Shape` in `shapes.scala`             |
 | `Alt-Q U` | Uses (highlight)  | on `name` in `shapes.scala`              |
-| `Alt-Q Y` | inlaY hints       | toggle: the un-annotated `val`s get `: T`|
+| `Alt-Q V` | Expand selection  | on a token in `main` (press again widens)|
+| `Alt-Q Y` | Inlay hints       | toggle: the un-annotated `val`s get `: T`|
+| `Alt-Q M` | Semantic colours  | toggle, anywhere (server-driven highlight)|
 | `Alt-Q O` | Outline           | either file                              |
 | `Alt-Q L` | code Lenses       | above `main`                             |
 | `Alt-Q W` | Workspace symbol  | type `Shape` or `Color`                  |
