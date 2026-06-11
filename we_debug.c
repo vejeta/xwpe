@@ -6953,6 +6953,27 @@ const char *e_lsp_server_label(FENSTER *f)
  return(srv->cmd);        /* "clangd", ... -- the server's own name on the bar */
 }
 
+extern WOPT eblst_lsp_o[], eblst_lsp_u[];   /* the LSP bottom bars (we_main.c) */
+
+/* e_lsp_bar_label - Keep the LSP bottom-bar hint naming the *active* server.
+   The bar entry is a static "Alt-Q ? Metals"; this rewrites its text to
+   "Alt-Q ? <server>" for the file being drawn ("Metals" for Scala, "clangd"
+   for C/C++), so a user editing a .c sees the right server, not a hardcoded
+   "Metals".  Called from the window-frame draw (we_wind.c) whenever the LSP bar
+   is shown; the "Alt-Q ?" prefix (the highlighted part) is unchanged, so the
+   entry's hot-key width stays correct. */
+void e_lsp_bar_label(FENSTER *f)
+{
+ static char lbl[40];
+ const char *srv = e_lsp_server_label(f);
+
+ if (!srv)
+  return;
+ snprintf(lbl, sizeof(lbl), "Alt-Q ? %s", srv);
+ eblst_lsp_o[5].t = lbl;          /* index 5 is the LSP menu hint in both bars */
+ eblst_lsp_u[5].t = lbl;
+}
+
 /* The "3" of the 3+1 start UX: when a language-server file is OPENED, boot the
    server in the background (async) so diagnostics/hover/navigation are ready by
    the time the user asks -- without the first Alt-Q having to wait through the

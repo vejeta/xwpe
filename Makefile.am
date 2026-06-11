@@ -310,6 +310,7 @@ EXTRA_DIST = \
   tests/test_scala_lsp_definition.py \
   tests/test_lsp_scala.c \
   tests/test_lsp_clangd.c \
+  tests/test_clangd_lsp.py \
   tests/test_syntax_algol68.py \
   tests/test_debugger_watchdog.py \
   tests/x11/conftest.py \

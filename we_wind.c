@@ -35,6 +35,7 @@ static void e_draw_titlebar_buttons(int xa, int ya, int xe, int frb, int fes);
 static void e_draw_window_buttons(FENSTER *f);
 static void e_draw_dialog_close_button(FENSTER *f);
 static void e_clear_titlebar_buttons(FENSTER *f);
+extern void e_lsp_bar_label(FENSTER *f);   /* name the LSP bar after the server (we_debug.c) */
 
 /* >=0: override colour for the title TEXT only (not the border) on the next
    e_std_rahmen call -- used to draw a read-only window's name dimmed.  Reset to
@@ -633,6 +634,7 @@ void e_ed_rahmen(FENSTER *f, int sw)
   e_draw_window_buttons(f);
   e_pr_filetype(f);
   e_zlsplt(f);
+  e_lsp_bar_label(f);          /* name the LSP bar after the active server */
   blst = f->blst;
   nblst = f->nblst;
   e_hlp = f->hlp_str;
