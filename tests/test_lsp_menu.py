@@ -51,8 +51,11 @@ def _sgr_release(col, row):
 class _Wpe:
     """A wpe session that can open SEVERAL files, screenshot, click and type."""
 
-    def __init__(self, workdir, files):
-        """files: list of (name, body); all are created and opened together."""
+    def __init__(self, workdir, files, eager=False):
+        """files: list of (name, body); all are created and opened together.
+        eager=False disables the LSP eager-start-on-open so the no-server tests
+        (and the Alt-Q-driven ones) keep their old behaviour; the dedicated
+        eager test passes eager=True."""
         for name, body in files:
             with open(os.path.join(workdir, name), "w") as fh:
                 fh.write(body)
@@ -62,6 +65,8 @@ class _Wpe:
         env = os.environ.copy()
         env.update(TERM="xterm-256color", COLUMNS=str(COLS), LINES=str(ROWS),
                    LC_ALL="en_US.UTF-8", HOME=workdir)
+        if not eager:
+            env["XWPE_LSP_NO_EAGER"] = "1"
         self.proc = subprocess.Popen(
             [WPE_BIN] + [n for n, _ in files], stdin=slave, stdout=slave,
             stderr=slave, cwd=workdir, env=env, preexec_fn=os.setsid)
@@ -339,5 +344,46 @@ def test_async_start_keeps_editor_responsive(tmp_path):
             "editor did not accept keystrokes during the Metals cold start " \
             "(the async start is not keeping the input loop alive)\n%s" % w.text()
         assert w.alive(), "wpe died while Metals was starting"
+    finally:
+        w.close()
+
+
+def test_eager_start_skips_non_lsp_file(tmp_path):
+    """#210 gating: with eager-start ENABLED, opening a file whose language has
+    no server (a .c) must spawn nothing and stay instant -- the bar shows no
+    Metals entry and no 'Starting language server' appears.  Needs no Metals:
+    .c never maps to a server, so this proves the language gate."""
+    w = _Wpe(str(tmp_path), [("main.c", "int main(void){ return 0; }\n")], eager=True)
+    try:
+        w.drain(2.5)
+        body = "\n".join(w.display())
+        assert "Starting language server" not in body, \
+            "eager start fired for a non-LSP .c file\n%s" % w.text()
+        assert "Metals" not in body, \
+            "a .c window must not show the Metals bar\n%s" % w.text()
+        assert w.alive(), "wpe died opening a .c file"
+    finally:
+        w.close()
+
+
+@pytest.mark.skipif(shutil.which("metals") is None or shutil.which("scala-cli") is None,
+                    reason="metals and scala-cli required")
+def test_eager_start_on_open_boots_metals(tmp_path):
+    """#210 (the '3' of 3+1): just OPENING a .scala boots Metals in the
+    background -- NO Alt-Q.  We press no LSP key at all; the 'Starting language
+    server ...' notice appearing on its own proves the open alone kicked off the
+    server (full readiness, the slow part, is covered by the other Metals
+    tests).  Needs a real Metals."""
+    (tmp_path / "project.scala").write_text(
+        "//> using scala 3.3.7\n//> using jvm temurin:21\n")
+    w = _Wpe(str(tmp_path), [("Demo.scala", "object Demo:\n  val x = 1\n")],
+             eager=True)
+    try:
+        w.drain(20.0)                           # no keypress -- the open kicked it off
+        body = "\n".join(w.display())
+        assert ("Starting language server" in body) or ("LSP:" in body) \
+            or ("Metals:" in body), \
+            "opening a .scala did not start Metals on its own\n%s" % w.text()
+        assert w.alive(), "wpe died during the eager Metals start"
     finally:
         w.close()

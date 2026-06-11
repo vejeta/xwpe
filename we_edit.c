@@ -461,6 +461,15 @@ int e_edit(ECNT *cn, char *filename)
  e_brk_schirm(f);
  e_schirm(f, 1);
  e_cursor(f, 1);
+#ifdef DEBUGGER
+ /* The "3" of the 3+1 LSP start: opening a language-server file boots the server
+    in the background (only if its binary is installed and none runs yet), so the
+    first Alt-Q does not wait through the cold start. */
+ {
+  extern void e_lsp_open_eager(FENSTER *f);
+  e_lsp_open_eager(f);
+ }
+#endif
  return(0);
 }
 

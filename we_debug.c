@@ -6810,6 +6810,30 @@ const char *e_lsp_server_label(FENSTER *f)
  return("Language server");
 }
 
+/* The "3" of the 3+1 start UX: when a language-server file is OPENED, boot the
+   server in the background (async) so diagnostics/hover/navigation are ready by
+   the time the user asks -- without the first Alt-Q having to wait through the
+   cold start.  Strictly gated so it never costs anything on a box that is not
+   set up for it: only fires when the file's language has a server, that server's
+   binary is actually installed, and no session is running yet.  So opening a
+   plain file, or a .scala on a box without Metals, spawns nothing and stays
+   instant.  Called from e_edit once the window is built. */
+void e_lsp_open_eager(FENSTER *f)
+{
+ const char *lang = e_lsp_lang_for(f);
+ char metals[] = "metals";
+
+ if (getenv("XWPE_LSP_NO_EAGER"))         /* opt out (slow box, or a test harness) */
+  return;
+ if (!lang || g_lsp)                      /* not LSP-eligible, or a session already runs */
+  return;
+ if (strcmp(lang, "scala") != 0)          /* only Metals is wired today */
+  return;
+ if (e_test_command(metals))              /* server not installed -> stay light */
+  return;
+ e_lsp_ensure(f);                         /* async: spawns + returns, ready later */
+}
+
 /* One row of the discoverable LSP action menu: the label shown in the popup
    (with its Alt-Q letter as a cue) and the handler it runs. */
 /* The top-menu dropdown engine (we_menue.c): draws a bordered, arrow-navigable

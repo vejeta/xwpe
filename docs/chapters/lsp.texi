@@ -186,14 +186,22 @@ full set on demand.
 
 @cindex asynchronous start
 @cindex cold start
-The first language-server action @emph{starts} Metals and returns at once:
-@samp{Starting language server (the editor stays responsive)@dots{}} appears in
-Messages and the cold start -- JVM boot, build import and the first compile,
-a minute or more -- runs in the @emph{background}.  xwpe no longer freezes
-during it: you can keep typing, scrolling and using other menus.  Because the
-server is not ready yet, that first action does nothing but kick off the start;
-once Messages shows @samp{Language server ready} (or the live status below
-settles), repeat the action and it works.  Subsequent actions are instant.
+@cindex eager start
+@vindex XWPE_LSP_NO_EAGER
+@emph{Opening} a file the server understands already starts it: when you open a
+@file{.scala}/@file{.sc} (and Metals is installed) xwpe boots it in the
+@emph{background} right away, so it is warming up while you read the code and is
+usually ready by the time you ask for anything.  @samp{Starting language server
+(the editor stays responsive)@dots{}} appears in Messages and the cold start --
+JVM boot, build import and the first compile, a minute or more -- runs without
+freezing the editor: you can keep typing, scrolling and using other menus.
+Once Messages shows @samp{Language server ready} (or the live status below
+settles) the actions work; they are instant thereafter.  If the server is not
+up yet when you invoke an action, that action just kicks off the start (or
+reports it is still starting) -- try again once it is ready.  To keep xwpe from
+auto-starting a server on open (a slow machine, say), set the environment
+variable @env{XWPE_LSP_NO_EAGER=1}; the first @kbd{Alt-Q} action then starts it
+on demand instead.
 
 @cindex server status
 @cindex indexing
