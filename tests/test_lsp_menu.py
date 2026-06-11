@@ -312,6 +312,32 @@ def test_worksheet_shows_evaluation_results(tmp_path):
 
 @pytest.mark.skipif(shutil.which("metals") is None or shutil.which("scala-cli") is None,
                     reason="metals and scala-cli required")
+def test_worksheet_opened_with_project_file_evaluates(tmp_path):
+    """#187 multi-file: opening a worksheet ALONGSIDE the project file (the
+    natural flow -- the project file is opened first and eager-starts Metals for
+    it, then the worksheet is opened) must still evaluate the worksheet.  It used
+    to leave the session pointed at the first file, so the worksheet showed
+    nothing; now a worksheet in the same workspace is re-focused without
+    restarting Metals.  Both files are opened (worksheet last = active), eager
+    on, no Alt-Q -- the '12' must appear on its own.  Needs a real Metals."""
+    (tmp_path / "project.scala").write_text(
+        "//> using scala 3.3.7\n//> using jvm temurin:21\n")
+    w = _Wpe(str(tmp_path),
+             [("Demo.scala", "object Demo:\n  val z = 1\n"),
+              ("ex.worksheet.sc", "val a = 5 + 7\n")],
+             eager=True)
+    try:
+        w.drain(170.0)                          # cold start + focus + evaluate
+        body = "\n".join(w.display())
+        assert "12" in body, \
+            "worksheet opened with the project file did not evaluate\n%s" % w.text()
+        assert w.alive()
+    finally:
+        w.close()
+
+
+@pytest.mark.skipif(shutil.which("metals") is None or shutil.which("scala-cli") is None,
+                    reason="metals and scala-cli required")
 def test_async_start_keeps_editor_responsive(tmp_path):
     """#196 (the headline): the first LSP action starts Metals in the BACKGROUND
     and returns at once -- the editor must keep accepting keystrokes while the

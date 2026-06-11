@@ -5033,6 +5033,7 @@ int e_test_command(char *str)
 static e_lsp_session *g_lsp = NULL;        /* the live server session, or NULL */
 static char           g_lsp_file[1024] = "";  /* full path g_lsp is opened for */
 static FENSTER       *g_lsp_fenster = NULL;
+static FENSTER       *g_lsp_pending_ws = NULL; /* worksheet to focus once ready */
 static int            g_lsp_quiet = 0;     /* suppress per-diagnostic Messages
                                               output (live polls show a summary) */
 static int            g_lsp_last_err = -1; /* last reported diagnostic totals,  */
@@ -5744,6 +5745,7 @@ static int g_lsp_fd_num = -1;                 /* fd in the poll set, or -1     *
 static int g_lsp_ready_done = 0;              /* announced "ready" this session? */
 static int e_lsp_ensure(FENSTER *f);          /* fwd */
 static void e_lsp_fd_unregister(void);        /* fwd */
+static void e_lsp_focus_worksheet(FENSTER *f);/* fwd */
 void e_lsp_ui_shutdown(void);                 /* fwd: full session teardown */
 
 /* If the server has died (closed its stdout), tear the session down: stop
@@ -5796,7 +5798,14 @@ static void e_lsp_on_fd_readable(int fd, void *data)
   g_lsp_ready_done = 1;
   if (g_lsp_fenster)
    e_d_p_message("Language server ready.", g_lsp_fenster, 0);
-  if (e_lsp_is_worksheet(g_lsp_fenster))
+  if (g_lsp_pending_ws)
+  {
+   /* a worksheet was opened while the server booted for the project file:
+      focus it now so it evaluates (keeps the fd registered for its results). */
+   e_lsp_focus_worksheet(g_lsp_pending_ws);
+   g_lsp_pending_ws = NULL;
+  }
+  else if (e_lsp_is_worksheet(g_lsp_fenster))
    g_inlay_stale = 1;            /* worksheet: pull the first evaluation results */
   else
    e_lsp_fd_unregister();        /* stop polling so an idle server never delays a key */
@@ -5895,6 +5904,7 @@ static int e_lsp_ensure(FENSTER *f)
   g_inlay_on = 1;
  g_sem_on = 0;  g_sem_nactive = 0;  g_sem_stale = 0;
  g_lsp_ready_done = 0;                     /* fresh session: re-announce "ready" once */
+ g_lsp_pending_ws = NULL;
  g_lsp_last_err = g_lsp_last_warn = -1;   /* fresh session: force first report */
  free(g_lsp_doctor_last);  g_lsp_doctor_last = NULL;   /* fresh session: re-show Doctor */
  g_lsp_doctor_announced = 0;
@@ -6819,6 +6829,7 @@ void e_lsp_ui_shutdown(void)
  g_inlay_on = 0;
  g_sem_on = 0;  g_sem_nactive = 0;  g_sem_stale = 0;
  g_lsp_ready_done = 0;
+ g_lsp_pending_ws = NULL;
  g_lsp_doctor_announced = 0;
  e_lsp_synced_set(NULL);
  free(g_lsp_doctor_last);
@@ -6854,6 +6865,34 @@ const char *e_lsp_server_label(FENSTER *f)
    binary is actually installed, and no session is running yet.  So opening a
    plain file, or a .scala on a box without Metals, spawns nothing and stays
    instant.  Called from e_edit once the window is built. */
+/* A worksheet was opened while a session is already running for another file in
+   the SAME workspace.  Metals is per-workspace, so it already serves the
+   worksheet -- just re-point our single-document overlays at it and tell Metals
+   to open + focus it, WITHOUT restarting the server, so its evaluation results
+   appear.  (Opening a worksheet alongside the project file -- the natural flow --
+   used to leave the session pointed at the first file, so the worksheet showed
+   nothing.) */
+static void e_lsp_focus_worksheet(FENSTER *f)
+{
+ char path[1200];
+ char *text;
+
+ if (!e_lsp_path_of(f, path, sizeof(path)) || !strcmp(path, g_lsp_file))
+  return;                                 /* already the focused file */
+ e_lsp_inlay_clear();
+ e_lsp_diag_clear();
+ g_lsp_fenster = f;
+ strncpy(g_lsp_file, path, sizeof(g_lsp_file) - 1);
+ g_lsp_file[sizeof(g_lsp_file) - 1] = '\0';
+ text = e_lsp_buffer_text(f);
+ e_lsp_did_open(g_lsp, g_lsp_file, text ? text : "");
+ e_lsp_did_focus(g_lsp, g_lsp_file);
+ e_lsp_synced_set(text ? text : strdup(""));
+ g_inlay_on = 1;                          /* worksheet: auto-show the results */
+ g_inlay_stale = 1;
+ e_lsp_fd_register();                     /* stream the evaluation results in */
+}
+
 void e_lsp_open_eager(FENSTER *f)
 {
  const char *lang = e_lsp_lang_for(f);
@@ -6861,10 +6900,23 @@ void e_lsp_open_eager(FENSTER *f)
 
  if (getenv("XWPE_LSP_NO_EAGER"))         /* opt out (slow box, or a test harness) */
   return;
- if (!lang || g_lsp)                      /* not LSP-eligible, or a session already runs */
+ if (!lang || strcmp(lang, "scala") != 0) /* not LSP-eligible / only Metals wired */
   return;
- if (strcmp(lang, "scala") != 0)          /* only Metals is wired today */
+ if (g_lsp)
+ {
+  /* a session already runs: focus a worksheet opened in the same workspace so
+     it evaluates, but otherwise leave the running session alone (a different
+     file is re-pointed on demand by the first Alt-Q action). */
+  if (e_lsp_is_worksheet(f) && g_lsp_fenster && f->dirct &&
+      g_lsp_fenster->dirct && !strcmp(f->dirct, g_lsp_fenster->dirct))
+  {
+   if (e_lsp_started(g_lsp))
+    e_lsp_focus_worksheet(f);             /* ready now -> focus it immediately */
+   else
+    g_lsp_pending_ws = f;                 /* still booting -> focus it once ready */
+  }
   return;
+ }
  if (e_test_command(metals))              /* server not installed -> stay light */
   return;
  e_lsp_ensure(f);                         /* async: spawns + returns, ready later */
