@@ -5037,6 +5037,7 @@ static int            g_lsp_quiet = 0;     /* suppress per-diagnostic Messages
                                               output (live polls show a summary) */
 static int            g_lsp_last_err = -1; /* last reported diagnostic totals,  */
 static int            g_lsp_last_warn = -1;/* so the live status is not spammed  */
+static int            g_lsp_doctor_announced = 0; /* "Doctor updated" shown once?  */
 static char          *g_lsp_doctor_last = NULL; /* last Doctor body shown, for   */
                                            /* dedup; reset per session so a       */
                                            /* re-started Metals shows it again    */
@@ -5527,7 +5528,14 @@ static void e_lsp_on_show_text(const char *title, const char *body, void *ud)
    break;
   p = nl + 1;
  }
- e_d_p_message("Metals Doctor updated (open its window to read it).", home, 0);
+ /* Metals re-pushes a slightly different Doctor on many events (it passes the
+    content dedup above), which spams Messages.  Announce it ONCE per session;
+    the Doctor window itself keeps updating silently.  Reset in e_lsp_ensure. */
+ if (!g_lsp_doctor_announced)
+ {
+  g_lsp_doctor_announced = 1;
+  e_d_p_message("Metals Doctor updated (open its window to read it).", home, 0);
+ }
  if (home_id >= 0)                        /* keep the editor file focused */
   e_switch_window(home_id, home);
 }
@@ -5756,7 +5764,7 @@ static void e_lsp_reap_if_dead(FENSTER *f)
    document once ready, and leave the poll set once the first diagnostics land. */
 static void e_lsp_on_fd_readable(int fd, void *data)
 {
- int was_started, qsave;
+ int was_started, qsave, handled;
  (void)fd; (void)data;
 
  if (!g_lsp)
@@ -5764,7 +5772,7 @@ static void e_lsp_on_fd_readable(int fd, void *data)
  was_started = e_lsp_started(g_lsp);
  qsave = g_lsp_quiet;
  g_lsp_quiet = 1;                          /* startup: show the summary, not each line */
- e_lsp_poll(g_lsp);                        /* handshake + diagnostics/status/doctor */
+ handled = e_lsp_poll(g_lsp);             /* handshake + diagnostics/status/doctor */
  g_lsp_quiet = qsave;
  if (e_lsp_dead(g_lsp))                    /* server exited (EOF): tear down, do not spin */
  {  e_lsp_reap_if_dead(g_lsp_fenster);  return;  }
@@ -5793,9 +5801,15 @@ static void e_lsp_on_fd_readable(int fd, void *data)
   else
    e_lsp_fd_unregister();        /* stop polling so an idle server never delays a key */
  }
- /* worksheet REPL: the fd stays registered, so as Metals re-evaluates and asks
-    us to re-query (workspace/inlayHint/refresh), pull + repaint the results
-    here -- they appear (and update) without a keystroke. */
+ /* worksheet REPL: the fd stays registered, so as Metals compiles and EVALUATES
+    (the results trickle in after the types -- a second, slower pass -- and Metals
+    does not always send inlayHint/refresh), any server activity for it means the
+    inlay set may have grown.  Re-pull on each batch of messages once ready; the
+    fetch is a cheap single request and the server falls silent when idle, so this
+    is event-driven, not polling. */
+ if (g_inlay_on && handled > 0 && g_lsp_ready_done &&
+     e_lsp_is_worksheet(g_lsp_fenster))
+  g_inlay_stale = 1;
  if (g_inlay_on)
   e_lsp_inlay_refresh_pending(g_lsp_fenster);
 }
@@ -5883,6 +5897,7 @@ static int e_lsp_ensure(FENSTER *f)
  g_lsp_ready_done = 0;                     /* fresh session: re-announce "ready" once */
  g_lsp_last_err = g_lsp_last_warn = -1;   /* fresh session: force first report */
  free(g_lsp_doctor_last);  g_lsp_doctor_last = NULL;   /* fresh session: re-show Doctor */
+ g_lsp_doctor_announced = 0;
  free(g_lsp_status_last);  g_lsp_status_last = NULL;   /* fresh session: clean status   */
  g_lsp_busy = 0;
  /* ASYNC: spawn + send initialize, then return.  The JVM boot, import and first
@@ -6804,6 +6819,7 @@ void e_lsp_ui_shutdown(void)
  g_inlay_on = 0;
  g_sem_on = 0;  g_sem_nactive = 0;  g_sem_stale = 0;
  g_lsp_ready_done = 0;
+ g_lsp_doctor_announced = 0;
  e_lsp_synced_set(NULL);
  free(g_lsp_doctor_last);
  g_lsp_doctor_last = NULL;

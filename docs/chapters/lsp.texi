@@ -216,18 +216,25 @@ information}, so you know to retry once indexing settles.
 
 @cindex worksheets
 @cindex .worksheet.sc
-Open a Scala @dfn{worksheet} -- a file whose name ends in @file{.sc} (a
-@file{.worksheet.sc} is the conventional name) -- and the server @emph{evaluates}
-it: the result of each top-level expression appears dimly at the @strong{end of
-its line} (e.g.@: @code{val a = 5 + 7} grows a faint @code{: Int = 12}), a REPL
-that updates in place.  Metals delivers those results as @dfn{inlay hints} -- the
-same mechanism as the @kbd{Alt-Q Y} type hints -- so xwpe turns the overlay on
-@emph{automatically} for a worksheet (no @kbd{Alt-Q Y} needed) and refreshes it
-as the server re-evaluates: the results appear once the project finishes its
-first compile and update a moment after each edit.  This is the lightweight way
-to try an API or check a calculation without writing a @code{main}; it needs the
-same running Metals as everything else (the first @kbd{Alt-Q} action, or just
-wait for the background start to settle).
+Open a Scala @dfn{worksheet} -- a file whose name ends in @strong{@file{.worksheet.sc}}
+(e.g.@: @file{demo.worksheet.sc}) -- and the server @emph{evaluates} it: the
+result of each top-level expression appears dimly at the @strong{end of its line}
+(e.g.@: @code{val a = 5 + 7} grows a faint @code{: Int = 12}), a REPL that updates
+in place.  Unlike IntelliJ there is no @samp{Eval} button: Metals re-evaluates
+automatically (on the first compile, and a moment after each edit) and delivers
+the results as @dfn{inlay hints} -- the same mechanism as the @kbd{Alt-Q Y} type
+hints -- so xwpe turns the overlay on @emph{automatically} (no @kbd{Alt-Q Y}
+needed).  This is the lightweight way to try an API or check a calculation
+without writing a @code{main}; it needs the same running Metals as everything
+else (the first @kbd{Alt-Q} action, or just wait for the background start to
+settle).
+
+@cindex .sc scripts
+@strong{The @file{.worksheet.sc} ending matters}: a plain @file{.sc} file (e.g.@:
+@file{script.sc}) is treated by Metals as a @emph{scala-cli script}, not a
+worksheet -- you still get the inferred-@emph{type} hints (@code{: Int}) and all
+the other actions, but @emph{not} the @code{= 12} evaluation results.  Rename it
+to @file{name.worksheet.sc} to have it evaluated.
 
 @cindex cross-file navigation
 @subsection Working across files
