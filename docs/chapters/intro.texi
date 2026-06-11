@@ -64,11 +64,14 @@ Debug with gdb (or sdb/dbx) without leaving the editor.  Set breakpoints,
 inspect variables, step through code, and view the call stack.
 
 @item
-IDE features from a real @dfn{language server} (LSP): completion, hover with
-types, go-to-definition, references, rename and more, under the @kbd{Alt-Q}
-prefix.  Five languages are wired -- Scala (Metals), C/C++ (clangd), Python
-(pyright/pylsp), Go (gopls) and Rust (rust-analyzer); the server is an external
-tool, so the editor stays small (@pxref{Language servers}).
+IDE features from a real @dfn{language server} (LSP), under the @kbd{Alt-Q}
+prefix: completion, hover with inferred types, go-to-definition,
+find-references, rename, and live diagnostics that underline errors as you
+type --- no save, no compile.  Five languages work out of the box ---
+Scala (Metals), C/C++ (clangd), Python (pyright/pylsp), Go (gopls) and
+Rust (rust-analyzer) --- driving the very same servers that power VS Code,
+Neovim and Emacs.  The server is a separate program xwpe talks to, so the
+editor itself stays a few-megabyte binary (@pxref{Language servers}).
 
 @item
 Manage multi-file projects with a project file that stores compiler
