@@ -1,6 +1,11 @@
-# xwpe LSP tour -- Python (pyright / pylsp).  Cursor on the total(shapes) call
-# (line 31): hover -> references -> outline -> go-to-definition.  The Python
-# server starts while Hidden.  Record from the repo root (see record-tours.sh).
+# xwpe LSP tour -- PYTHON (pyright / pylsp).  A RICH single-window walk on the
+# python-lsp testbed showing the breadth of LSP in python: diagnostics, hover,
+# inlay hints, document highlight, references, outline, and a RENAME refactor
+# with Undo.  The cursor starts on the total(...) call.  Before the rename it is
+# re-established on `total` with an Up/Down/Right reset, because some actions
+# (inlay) move it -- so the refactor always targets the right symbol.
+# Record from the repo root AS wpe (programming mode -- Alt-Q is off in `we`);
+# see docs/demos/record-tours.sh.
 
 Output "docs/demos/gifs/python/tour.gif"
 Set Shell bash
@@ -17,34 +22,60 @@ Sleep 3s
 Alt+q
 Sleep 400ms
 Type "e"
-Sleep 10s
+Sleep 12s
 Show
 
-Sleep 1500ms
+Sleep 1000ms
 Down@40ms 30
 Right@40ms 11
-Sleep 1800ms
+Sleep 1200ms
+# Hover -- the signature / type of the symbol under the cursor
 Alt+q
 Sleep 300ms
 Type "h"
-Sleep 3s
+Sleep 2600ms
 Escape
-Sleep 600ms
+Sleep 400ms
+# Inlay hints -- inferred types appear inline (Alt-Q Y toggles them)
+Alt+q
+Sleep 300ms
+Type "y"
+Sleep 2600ms
+# Document highlight -- every use of the symbol lights up at once
+Alt+q
+Sleep 300ms
+Type "u"
+Sleep 2400ms
+# References -- every use listed in the Messages window
 Alt+q
 Sleep 300ms
 Type "r"
-Sleep 3s
+Sleep 2600ms
+# Outline -- the file's symbols in a popup
 Alt+q
 Sleep 300ms
 Type "o"
-Sleep 2800ms
+Sleep 2400ms
 Escape
-Sleep 700ms
-# go-to-definition LAST: it is the only action that moves the cursor off the
-# symbol, so any cursor-sensitive action after it would pop "No ... found".
+Sleep 400ms
+# Re-establish the cursor on `total` (the actions above may have moved it),
+# then RENAME it across the file -- the refactor finale.
+Up@20ms 60
+Down@30ms 30
+Right@30ms 11
+Sleep 1000ms
 Alt+q
 Sleep 300ms
-Type "d"
-Sleep 3500ms
+Type "n"
+Sleep 1200ms
+Right 8
+Backspace 8
+Type "tally"
+Sleep 1000ms
+Enter
+Sleep 3000ms
+# Undo -- the server's rewrite is a single, reversible edit (Ctrl-U)
+Ctrl+u
+Sleep 2800ms
 Ctrl+q
 Sleep 1500ms

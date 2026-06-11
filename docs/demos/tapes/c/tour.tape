@@ -1,13 +1,11 @@
-# xwpe LSP tour -- C/C++ (clangd).
-# A single-window walk on the c-lsp testbed, cursor on the total(shapes) call:
-# hover (signature) -> go-to-definition (jumps up to `double total(...)`) ->
-# references -> outline.  Definition runs right after hover, while the cursor is
-# still on the call, so it never depends on the later actions.  clangd starts
-# quickly; it is Hidden so the GIF opens on the action.  Cursor is positioned
-# with arrows (Find/Alt-S is not scriptable in VHS).
-#
-# Record from the repo root with WPE -> built ./wpe and DEMO -> a copy of
-# docs/examples/c-lsp (see docs/demos/record-tours.sh).
+# xwpe LSP tour -- C (clangd).  A RICH single-window walk on the
+# c-lsp testbed showing the breadth of LSP in c: diagnostics, hover,
+# inlay hints, document highlight, references, outline, and a RENAME refactor
+# with Undo.  The cursor starts on the total(...) call.  Before the rename it is
+# re-established on `total` with an Up/Down/Right reset, because some actions
+# (inlay) move it -- so the refactor always targets the right symbol.
+# Record from the repo root AS wpe (programming mode -- Alt-Q is off in `we`);
+# see docs/demos/record-tours.sh.
 
 Output "docs/demos/gifs/c/tour.gif"
 Set Shell bash
@@ -24,40 +22,60 @@ Sleep 3s
 Alt+q
 Sleep 400ms
 Type "e"
-Sleep 8s
+Sleep 10s
 Show
 
-Sleep 1500ms
-# move onto the `total` call on line 43 (col 18): down to the line, right to it
+Sleep 1000ms
 Down@40ms 42
 Right@40ms 17
-Sleep 1800ms
-# Hover: the signature/type of the symbol under the cursor
+Sleep 1200ms
+# Hover -- the signature / type of the symbol under the cursor
 Alt+q
 Sleep 300ms
 Type "h"
-Sleep 3s
+Sleep 2600ms
 Escape
-Sleep 600ms
-# References: every use of `total`, listed in Messages (cursor still on the call)
+Sleep 400ms
+# Inlay hints -- inferred types appear inline (Alt-Q Y toggles them)
+Alt+q
+Sleep 300ms
+Type "y"
+Sleep 2600ms
+# Document highlight -- every use of the symbol lights up at once
+Alt+q
+Sleep 300ms
+Type "u"
+Sleep 2400ms
+# References -- every use listed in the Messages window
 Alt+q
 Sleep 300ms
 Type "r"
-Sleep 3s
-# Outline: the file's symbols in a popup
+Sleep 2600ms
+# Outline -- the file's symbols in a popup
 Alt+q
 Sleep 300ms
 Type "o"
-Sleep 2800ms
+Sleep 2400ms
 Escape
-Sleep 700ms
-# Go to definition: the finale -- the cursor leaps up to `double total(...)`.
-# Definition MUST be last: it is the only action that moves the cursor off the
-# symbol, so a cursor-sensitive action (hover/references) after it would land on
-# the wrong spot and pop a "No ... found" error.
+Sleep 400ms
+# Re-establish the cursor on `total` (the actions above may have moved it),
+# then RENAME it across the file -- the refactor finale.
+Up@20ms 60
+Down@30ms 42
+Right@30ms 17
+Sleep 1000ms
 Alt+q
 Sleep 300ms
-Type "d"
-Sleep 3500ms
+Type "n"
+Sleep 1200ms
+Right 8
+Backspace 8
+Type "tally"
+Sleep 1000ms
+Enter
+Sleep 3000ms
+# Undo -- the server's rewrite is a single, reversible edit (Ctrl-U)
+Ctrl+u
+Sleep 2800ms
 Ctrl+q
 Sleep 1500ms
