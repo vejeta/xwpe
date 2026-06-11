@@ -4,6 +4,11 @@ A tiny, deliberately-commented Go module that exercises **every** xwpe
 language-server action that gopls supports.  It is the fastest way to see (and
 try) the IDE features in Go -- gopls needs no JVM, so it is ready quickly.
 
+![Go LSP tour](../../demos/gifs/go/tour.gif)
+
+*A tour on this testbed: hover, references, the file outline, and go-to-definition
+-- all over gopls.*
+
 ## Requirements
 
 - `gopls` and `go` -- on Debian/Ubuntu: `sudo apt install gopls golang-go`

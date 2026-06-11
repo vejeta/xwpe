@@ -4,6 +4,11 @@ A tiny, deliberately-commented Python project that exercises the xwpe
 language-server actions for Python.  xwpe uses whichever server is installed --
 it **prefers pyright** (type inference) and **falls back to pylsp** (jedi).
 
+![Python LSP tour](../../demos/gifs/python/tour.gif)
+
+*A tour on this testbed: hover, references, the file outline, and go-to-definition
+-- over the Python server (pyright/pylsp).*
+
 ## Requirements
 
 One of:

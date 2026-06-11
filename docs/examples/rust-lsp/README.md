@@ -3,6 +3,11 @@
 A tiny, deliberately-commented Cargo crate that exercises the xwpe
 language-server actions for Rust, through rust-analyzer.
 
+![Rust LSP tour](../../demos/gifs/rust/tour.gif)
+
+*A tour on this testbed: hover, references, the file outline, and go-to-definition
+-- all over rust-analyzer.*
+
 ## Requirements
 
 - `rust-analyzer`, plus `cargo`/`rustc` and `rust-src` (for go-to-definition into

@@ -36,6 +36,29 @@ rewrite is an ordinary edit -- `Ctrl-U` undoes it, `Ctrl-R` redoes it.
 
 ![Code action with Undo/Redo](gifs/codeaction.gif)
 
+## Per-language tours
+
+One "tour" GIF per wired language, each walking its own testbed in
+[`docs/examples/`](../examples/) through the headline actions -- hover,
+references, outline, go-to-definition -- so a developer of that language sees the
+IDE features in their *own* code.  They live next to their testbeds and are
+embedded in each folder's `README.md`:
+
+| Tour | Language | Server | Testbed |
+|------|----------|--------|---------|
+| `gifs/c/tour.gif`      | C/C++  | clangd        | [`examples/c-lsp/`](../examples/c-lsp/)           |
+| `gifs/python/tour.gif` | Python | pyright/pylsp | [`examples/python-lsp/`](../examples/python-lsp/) |
+| `gifs/go/tour.gif`     | Go     | gopls         | [`examples/go-lsp/`](../examples/go-lsp/)         |
+| `gifs/rust/tour.gif`   | Rust   | rust-analyzer | [`examples/rust-lsp/`](../examples/rust-lsp/)     |
+
+Regenerate them with `docs/demos/record-tours.sh` (it records each against a
+throwaway copy of the testbed, so the servers' caches never land in the repo):
+
+```sh
+docs/demos/record-tours.sh            # all four
+docs/demos/record-tours.sh c          # just one
+```
+
 ## How these are made
 
 The GIFs are **reproducible**, not hand-captured.  Each one is a short

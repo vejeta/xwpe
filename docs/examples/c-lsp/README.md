@@ -10,6 +10,11 @@ is ready a second or two after you open a file.
 > (`Alt-Q I`) and the type hierarchy (`Alt-Q K`/`Alt-Q J`) -- which plain C has
 > nothing for.
 
+![C/C++ LSP tour](../../demos/gifs/c/tour.gif)
+
+*A tour on this testbed: hover, references, the file outline, and go-to-definition
+-- all over clangd.*
+
 ## Requirements
 
 - `clangd` -- the language server.  On Debian/Ubuntu: `sudo apt install clangd`.

@@ -268,14 +268,25 @@ concisely as `Alt-Q ? rust` -- the full `rust-analyzer` is too wide to fit the
 `Alt-Q ? rust-analyzer` is wider; the button row repacks itself to keep every
 entry on screen.
 
-## The bundled demo project
+## Bundled demo projects -- one per language
 
-[`docs/examples/scala-lsp/`](examples/scala-lsp/) is a tiny, deliberately
-over-commented Scala 3 project that exercises **every** one of the 22 actions.
-Each line carries an inline comment telling you which action to try right there,
-and `actions.scala` is a dedicated playground for the three code-action shapes.
-Open it with `wpe main.scala` and read down the code. See its
-[`README.md`](examples/scala-lsp/README.md) for the full key table.
+Each wired language has its own tiny, deliberately over-commented testbed under
+[`docs/examples/`](examples/), exercising **every** `Alt-Q` action its server
+supports.  Each line carries an inline comment telling you which action to try
+right there, and an `actions.*` file is a dedicated code-action playground.  Open
+the one for *your* language and read down the code -- and watch its tour GIF:
+
+| Demo | Language | Server | Open with |
+|------|----------|--------|-----------|
+| [`scala-lsp/`](examples/scala-lsp/)   | Scala  | Metals          | `wpe main.scala`  |
+| [`c-lsp/`](examples/c-lsp/)           | C/C++  | clangd          | `wpe main.cpp`    |
+| [`python-lsp/`](examples/python-lsp/) | Python | pyright / pylsp | `wpe main.py`     |
+| [`go-lsp/`](examples/go-lsp/)         | Go     | gopls           | `wpe main.go`     |
+| [`rust-lsp/`](examples/rust-lsp/)     | Rust   | rust-analyzer   | `wpe src/main.rs` |
+
+Each folder's `README.md` has the full `Alt-Q` key table, the server's setup, and
+a short **tour GIF** (hover, references, outline, go-to-definition) recorded on
+that testbed -- see [`docs/demos/`](demos/) for how the GIFs are made.
 
 ---
 

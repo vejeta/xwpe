@@ -1,0 +1,48 @@
+#!/bin/sh
+# Regenerate the per-language LSP "tour" GIFs (docs/demos/gifs/<lang>/tour.gif).
+#
+# Each tour walks one language's testbed (docs/examples/<lang>-lsp/) through the
+# headline Alt-Q actions -- hover, references, outline, go-to-definition -- in
+# that language's own code.  Unlike the Scala reel, these use the fast servers
+# (clangd / gopls / pyright / rust-analyzer), so the cold start is short (the
+# tapes Hide it); rust-analyzer indexes std, so its warm-up is the longest.
+#
+# Requirements on PATH:
+#   vhs, ttyd, ffmpeg            (the recorder)
+#   the language server per tour: clangd | gopls+go | pyright/pylsp | rust-analyzer+cargo
+#
+# Usage (from the repo root, with the editor built):
+#   docs/demos/record-tours.sh [lang ...]      # default: c go python rust
+#
+# WPE defaults to the ./wpe built in the repo root.  Each tour records against a
+# fresh COPY of the testbed in a scratch dir, so the servers' caches
+# (.cache/target/...) never land in the repo.
+
+set -e
+here=$(cd "$(dirname "$0")" && pwd)
+root=$(cd "$here/../.." && pwd)
+: "${WPE:=$root/wpe}"
+scratch="${TMPDIR:-/tmp}/xwpe-lsp-tours"
+
+if [ ! -x "$WPE" ]; then
+  echo "record-tours.sh: no wpe at $WPE -- build it first (make), or set WPE=" >&2
+  exit 1
+fi
+for tool in vhs ttyd ffmpeg; do
+  command -v "$tool" >/dev/null 2>&1 || { echo "record-tours.sh: $tool not on PATH" >&2; exit 1; }
+done
+
+cd "$root"
+[ $# -gt 0 ] || set -- c go python rust
+
+for lang in "$@"; do
+  src="docs/examples/${lang}-lsp"
+  tape="docs/demos/tapes/${lang}/tour.tape"
+  [ -d "$src" ]  || { echo "record-tours.sh: no testbed $src" >&2; exit 1; }
+  [ -f "$tape" ] || { echo "record-tours.sh: no tape $tape" >&2; exit 1; }
+  ws="$scratch/$lang"
+  rm -rf "$ws"; mkdir -p "$scratch"; cp -r "$src" "$ws"
+  echo "== recording $tape (WPE=$WPE DEMO=$ws) =="
+  WPE="$WPE" DEMO="$ws" vhs "$tape"
+done
+echo "done -> docs/demos/gifs/<lang>/tour.gif"
