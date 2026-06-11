@@ -5360,7 +5360,22 @@ static const char *e_lsp_lang_for(FENSTER *f)
  n = strlen(f->datnam);
  if (n > 6 && !strcmp(f->datnam + n - 6, ".scala"))
   return("scala");
+ if (n > 3 && !strcmp(f->datnam + n - 3, ".sc"))   /* scala-cli scripts + worksheets */
+  return("scala");
  return(NULL);
+}
+
+/* A Metals worksheet (*.sc / *.worksheet.sc): Metals evaluates each top-level
+   expression and returns the result as an inlay hint at the end of the line.  We
+   detect these to turn the inlay overlay on automatically (no Alt-Q Y), so the
+   results just appear -- a lightweight REPL. */
+static int e_lsp_is_worksheet(FENSTER *f)
+{
+ int n;
+ if (!f || !f->datnam)
+  return(0);
+ n = strlen(f->datnam);
+ return(n > 3 && !strcmp(f->datnam + n - 3, ".sc"));
 }
 
 /* on_diagnostic: record the problem's range for inline marking, and (unless a
@@ -5717,6 +5732,7 @@ static void e_lsp_pin_jdk(FENSTER *f)
    that, diagnostics flow via e_lsp_on_edit's poll and each request's own pump,
    exactly as before. */
 static int g_lsp_fd_num = -1;                 /* fd in the poll set, or -1     */
+static int g_lsp_ready_done = 0;              /* announced "ready" this session? */
 static int e_lsp_ensure(FENSTER *f);          /* fwd */
 static void e_lsp_fd_unregister(void);        /* fwd */
 
@@ -5748,14 +5764,22 @@ static void e_lsp_on_fd_readable(int fd, void *data)
    e_lsp_synced_set(text ? text : strdup(""));
   }
  }
- if (e_lsp_started(g_lsp) && g_lsp_last_err >= 0)
+ if (e_lsp_started(g_lsp) && g_lsp_last_err >= 0 && !g_lsp_ready_done)
  {
-  /* first diagnostics summary arrived -> steady state: stop polling from the
-     input loop so an idle server never delays a keystroke. */
-  e_lsp_fd_unregister();
+  /* first diagnostics summary arrived -> steady state. */
+  g_lsp_ready_done = 1;
   if (g_lsp_fenster)
    e_d_p_message("Language server ready.", g_lsp_fenster, 0);
+  if (e_lsp_is_worksheet(g_lsp_fenster))
+   g_inlay_stale = 1;            /* worksheet: pull the first evaluation results */
+  else
+   e_lsp_fd_unregister();        /* stop polling so an idle server never delays a key */
  }
+ /* worksheet REPL: the fd stays registered, so as Metals re-evaluates and asks
+    us to re-query (workspace/inlayHint/refresh), pull + repaint the results
+    here -- they appear (and update) without a keystroke. */
+ if (g_inlay_on)
+  e_lsp_inlay_refresh_pending(g_lsp_fenster);
 }
 
 static void e_lsp_fd_register(void)
@@ -5835,7 +5859,10 @@ static int e_lsp_ensure(FENSTER *f)
  host.on_semantic_refresh = e_lsp_on_semantic_refresh;
  host.ud = NULL;
  g_inlay_stale = 0;
+ if (e_lsp_is_worksheet(f))               /* worksheet: show eval results without Alt-Q Y */
+  g_inlay_on = 1;
  g_sem_on = 0;  g_sem_nactive = 0;  g_sem_stale = 0;
+ g_lsp_ready_done = 0;                     /* fresh session: re-announce "ready" once */
  g_lsp_last_err = g_lsp_last_warn = -1;   /* fresh session: force first report */
  free(g_lsp_doctor_last);  g_lsp_doctor_last = NULL;   /* fresh session: re-show Doctor */
  free(g_lsp_status_last);  g_lsp_status_last = NULL;   /* fresh session: clean status   */
@@ -6756,6 +6783,7 @@ void e_lsp_ui_shutdown(void)
  e_lsp_inlay_clear();
  g_inlay_on = 0;
  g_sem_on = 0;  g_sem_nactive = 0;  g_sem_stale = 0;
+ g_lsp_ready_done = 0;
  e_lsp_synced_set(NULL);
  free(g_lsp_doctor_last);
  g_lsp_doctor_last = NULL;

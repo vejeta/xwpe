@@ -278,6 +278,42 @@ def test_keyboard_altq_inlay_hints(tmp_path):
 
 @pytest.mark.skipif(shutil.which("metals") is None or shutil.which("scala-cli") is None,
                     reason="metals and scala-cli required")
+def test_worksheet_shows_evaluation_results(tmp_path):
+    """#187: open a .worksheet.sc, start Metals, and the per-line EVALUATION
+    results appear at end-of-line -- automatic, no Alt-Q Y.  Metals delivers
+    them as inlay hints (the decoration protocol is gone since Metals 1.3), so
+    xwpe auto-enables the inlay overlay for a worksheet.  `val a = 5 + 7` has no
+    `12` in the source, so seeing `12` at a line end proves the evaluation hint
+    rendered through the end-of-line overlay.  Needs a real Metals (slow)."""
+    (tmp_path / "project.scala").write_text(
+        "//> using scala 3.3.7\n//> using jvm temurin:21\n")
+    w = _Wpe(str(tmp_path), [("ex.worksheet.sc",
+        "val a = 5 + 7\n"
+        "val b = a * 2\n")])
+    try:
+        w.key("\033q", delay=0.4)
+        w.key("e", delay=160.0)                 # Alt-Q E: start Metals + evaluate
+        w.drain(10.0)                           # worksheet eval + pushed decorations
+        assert w.alive(), "wpe died starting Metals"
+        # nudge real edits (space + backspace) to drive didChange+poll cycles, so
+        # decorations Metals pushes after steady state get read and repainted.
+        body = ""
+        for _ in range(6):
+            w.key(" ", delay=0.4)
+            w.key("\x08", delay=0.4)            # backspace -- restore the line
+            w.drain(3.0)
+            body = "\n".join(w.display())
+            if "12" in body:
+                break
+        assert "12" in body, \
+            "worksheet result '12' (5 + 7) did not render at end-of-line\n%s" \
+            % w.text()
+    finally:
+        w.close()
+
+
+@pytest.mark.skipif(shutil.which("metals") is None or shutil.which("scala-cli") is None,
+                    reason="metals and scala-cli required")
 def test_async_start_keeps_editor_responsive(tmp_path):
     """#196 (the headline): the first LSP action starts Metals in the BACKGROUND
     and returns at once -- the editor must keep accepting keystrokes while the

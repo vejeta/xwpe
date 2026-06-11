@@ -206,6 +206,21 @@ come back empty; in that case @kbd{Alt-Q H} says @samp{Language server still
 working -- try again in a moment} rather than the bare @samp{No hover
 information}, so you know to retry once indexing settles.
 
+@cindex worksheets
+@cindex .worksheet.sc
+Open a Scala @dfn{worksheet} -- a file whose name ends in @file{.sc} (a
+@file{.worksheet.sc} is the conventional name) -- and the server @emph{evaluates}
+it: the result of each top-level expression appears dimly at the @strong{end of
+its line} (e.g.@: @code{val a = 5 + 7} grows a faint @code{: Int = 12}), a REPL
+that updates in place.  Metals delivers those results as @dfn{inlay hints} -- the
+same mechanism as the @kbd{Alt-Q Y} type hints -- so xwpe turns the overlay on
+@emph{automatically} for a worksheet (no @kbd{Alt-Q Y} needed) and refreshes it
+as the server re-evaluates: the results appear once the project finishes its
+first compile and update a moment after each edit.  This is the lightweight way
+to try an API or check a calculation without writing a @code{main}; it needs the
+same running Metals as everything else (the first @kbd{Alt-Q} action, or just
+wait for the background start to settle).
+
 @cindex cross-file navigation
 @subsection Working across files
 The server indexes the whole project (not just the open file), so the

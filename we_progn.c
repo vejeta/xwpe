@@ -458,13 +458,15 @@ int *e_sc_txt(int *c_sw, BUFFER *b)
 
 /*       Writing of a line (content of a screen)      */
 #ifdef DEBUGGER
-/* Draw line y's end-of-line LSP inlay hints (inferred types), if the overlay is
-   on, starting at display column *jp -- a small gap, then the hint text in a dim
+/* Draw line y's end-of-line LSP inlay hints (inferred types, and -- for a
+   worksheet -- the evaluation result of each line), if the overlay is on,
+   starting at display column *jp -- a small gap, then the hint text in a dim
    attribute -- clamped to the window's right edge; advances *jp.  No-op unless a
-   language server is attached and the user toggled inlay hints on (Alt-Q Y).
-   ASCII hint labels (Scala inferred types are ASCII); see e_lsp_inlay_eol_text.
-   Non-static: both editor line painters call it -- e_pr_c_line (syntax-on) here
-   and e_pr_line (syntax-off) in we_wind.c -- so hints show either way. */
+   language server is attached and the overlay is on (Alt-Q Y, or automatic for a
+   worksheet).  ASCII hint labels (Scala types/results are ASCII); see
+   e_lsp_inlay_eol_text.  Non-static: both editor line painters call it --
+   e_pr_c_line (syntax-on) here and e_pr_line (syntax-off) in we_wind.c -- so
+   hints show either way. */
 void e_pr_inlay_eol(FENSTER *f, int y, int *jp, int frb)
 {
  extern int e_lsp_inlay_active_for(FENSTER *f);
