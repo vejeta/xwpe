@@ -376,7 +376,8 @@ u128 usize f32 f64 Some None Ok Err
 0
 ~^()[]{}<>+-/*%=|&!.?:,; /* */ // NULL "'#\\  -1 -1 1000
 
-.scala
+2
+.scala .sc
 48
 abstract case catch class def do else extends false final
 finally for forSome if implicit import lazy match new null
