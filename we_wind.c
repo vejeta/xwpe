@@ -36,6 +36,11 @@ static void e_draw_window_buttons(FENSTER *f);
 static void e_draw_dialog_close_button(FENSTER *f);
 static void e_clear_titlebar_buttons(FENSTER *f);
 
+/* >=0: override colour for the title TEXT only (not the border) on the next
+   e_std_rahmen call -- used to draw a read-only window's name dimmed.  Reset to
+   -1 by the caller right after. */
+static int g_rahmen_hdr_frb = -1;
+
 static int e_scale_y(int val, int old_slns, int new_slns)
 {
  int old_range = old_slns - 2;
@@ -605,8 +610,20 @@ void e_ed_rahmen(FENSTER *f, int sw)
    strcat(header, f->datnam);
   }
  }
- e_std_rahmen(f->a.x, f->a.y, f->e.x, f->e.y, header, sw, f->fb->er.fb,
-   f->fb->es.fb);
+ {
+  /* A read-only window (f->ins == 8: a 0444 file, an extracted library source):
+     draw its name DIMMED and a padlock at the left of the title bar so it is
+     unmistakably non-editable.  0x1F512 is LOCK; on a non-UTF console the chrome
+     fallback (e_t_chrome_ascii) substitutes a stand-in. */
+  int ro = (f->ins == 8 && f->dtmd != DTMD_HELP);  /* a locked FILE, not a viewer */
+  if (ro)
+   g_rahmen_hdr_frb = f->fb->es.fb;       /* title text in the dimmer frame colour */
+  e_std_rahmen(f->a.x, f->a.y, f->e.x, f->e.y, header, sw, f->fb->er.fb,
+    f->fb->es.fb);
+  g_rahmen_hdr_frb = -1;
+  if (ro && f->e.x - f->a.x > 8)
+   e_pr_char(f->a.x + 2, f->a.y, 0x1F512, f->fb->er.fb);
+ }
  if (header)
   WpeFree(header);
  if (sw > 0)
@@ -1527,9 +1544,11 @@ static void e_draw_window_buttons(FENSTER *f)
 void e_std_rahmen(int xa, int ya, int xe, int ye, char *name, int sw, int frb,
   int fes)
 {
- int i;
+ int i, hfrb;
  char rhm[2][6];
  char *short_name;
+
+ hfrb = (g_rahmen_hdr_frb >= 0) ? g_rahmen_hdr_frb : frb;
    
  rhm[0][0] = RE1; rhm[0][1] = RE2; rhm[0][2] = RE3; rhm[0][3] = RE4;
  rhm[0][4] = RE5; rhm[0][5] = RE6; rhm[1][0] = RD1; rhm[1][1] = RD2;
@@ -1554,7 +1573,7 @@ void e_std_rahmen(int xa, int ya, int xe, int ye, char *name, int sw, int frb,
   int width = xe - xa;
   int nlen = strlen(name);
   if (nlen <= width - 14)
-   e_pr_str((xa+xe-nlen)/2, ya, name, frb, 0, 0, 0, 0);
+   e_pr_str((xa+xe-nlen)/2, ya, name, hfrb, 0, 0, 0, 0);
   else if (width > 20)
   {
    short_name = strdup(name);
@@ -1562,7 +1581,7 @@ void e_std_rahmen(int xa, int ya, int xe, int ye, char *name, int sw, int frb,
    {
     short_name[width - 17] = '\0';
     strcat(short_name, "...");
-    e_pr_str(xa + 7, ya, short_name, frb, 0, 0, 0, 0);
+    e_pr_str(xa + 7, ya, short_name, hfrb, 0, 0, 0, 0);
     free(short_name);
    }
   }

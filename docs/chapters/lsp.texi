@@ -72,9 +72,10 @@ is fixed or the server is closed.
 @item Alt-Q D
 Go to the definition of the symbol under the cursor -- including @emph{into
 library and standard-library sources}.  The server extracts those under
-@file{.metals/readonly/} and they open @strong{read-only} (you can read and copy,
-not edit).  Language-server actions are not offered inside such a source -- run
-them from your project window.
+@file{.metals/readonly/} and they open @strong{read-only} -- marked by a padlock
+at the left of the title bar and a dimmed name (you can read and copy, not edit).
+Language-server actions are not offered inside such a source -- run them from your
+project window.
 @item Alt-Q I
 Go to the @emph{implementation} of the symbol: the concrete override of an
 abstract @code{def} or trait member (jumps past the declaration to the body).
