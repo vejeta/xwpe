@@ -453,6 +453,8 @@ Undo *e_remove_undo(Undo *ud, int sw);
 int e_add_undo(int sw, BUFFER *b, int x, int y, int n);
 int e_make_undo(FENSTER *f);
 int e_make_redo(FENSTER *f);
+char *e_buffer_to_text(BUFFER *b);
+void e_buffer_set_text(BUFFER *b, const char *text);
 int e_make_rudo(FENSTER *f, int sw);
 int e_autosave(FENSTER *f);
 char *e_make_postf(char *out, char *name, char *pf);

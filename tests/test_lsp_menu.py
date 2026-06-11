@@ -483,5 +483,19 @@ def test_code_action_resolve_named_arguments(tmp_path):
         assert "= increment(41)" in saved, \
             "named-arguments refactor (keyboard, resolve path) not applied:\n%s" \
             % saved
+        # #216: the refactor must be a SINGLE Undo (Ctrl-U) and Redo-able (Ctrl-R).
+        w.key("\x15", delay=1.0)                # Ctrl-U: undo the code action
+        w.key("\033OQ", delay=1.5)              # F2: save
+        w.drain(1.0)
+        undone = (tmp_path / "Demo.scala").read_text()
+        assert "= increment(41)" not in undone and "increment(41)" in undone, \
+            "Ctrl-U did not undo the code action back to the positional call:\n%s" \
+            % undone
+        w.key("\x12", delay=1.0)                # Ctrl-R: redo
+        w.key("\033OQ", delay=1.5)              # F2: save
+        w.drain(1.0)
+        redone = (tmp_path / "Demo.scala").read_text()
+        assert "= increment(41)" in redone, \
+            "Ctrl-R did not redo the code action:\n%s" % redone
     finally:
         w.close()

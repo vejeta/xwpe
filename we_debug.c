@@ -6696,35 +6696,16 @@ static int e_lsp_ui_code_actions(FENSTER *f)
  return(0);
 }
 
-/* Replace the whole editor buffer with `newtext` (lines split on '\n'),
-   reusing the proven buffer-rebuild path (e_p_red_buffer + print_to_end_of_
-   buffer, as the Watches/Messages windows do).  Empty lines are preserved.
-   Used to apply server-side reformat/rename results. */
+/* Replace the whole editor buffer with `newtext` (a server-side reformat / rename
+   / code-action result).  Records a single whole-buffer Undo entry first, so the
+   refactor is reversible with Ctrl-U (and Redo-able) like any other edit, then
+   swaps the content via the shared e_buffer_set_text. */
 static void e_lsp_replace_buffer(FENSTER *f, const char *newtext)
 {
  BUFFER *b = f->b;
- char *copy = strdup(newtext ? newtext : ""), *p, *nl;
 
- if (!copy)
-  return;
- e_p_red_buffer(b);
- FREE(b->bf[0].s);
- b->mxlines = 0;
- p = copy;
- for (;;)
- {
-  nl = strchr(p, '\n');
-  if (nl)
-   *nl = '\0';
-  print_to_end_of_buffer(b, p, b->mx.x);
-  if (!nl)
-   break;
-  p = nl + 1;
-  if (!*p)
-   break;                          /* trailing '\n' terminates the last line */
- }
- e_new_line(b->mxlines, b);
- free(copy);
+ e_add_undo('B', b, b->b.x, b->b.y, 0);   /* snapshot OLD buffer for Ctrl-U */
+ e_buffer_set_text(b, newtext);
  b->b.x = 0;
  b->b.y = 0;
  f->save++;                         /* mark the window modified */

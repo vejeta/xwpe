@@ -2353,6 +2353,8 @@ Undo *e_remove_undo(Undo *ud, int sw)
  {
   if(ud->type == 'l')
    FREE(ud->u.pt);
+  else if (ud->type == 'B')
+   FREE(ud->u.pt);             /* the malloc'd whole-buffer text snapshot */
   else if (ud->type == 'd')
   {
    BUFFER *b = (BUFFER*) ud->u.pt;
@@ -2425,6 +2427,16 @@ int e_add_undo(int sw, BUFFER *b, int x, int y, int n)
 
  }
  else if (sw == 'l') next->u.pt = b->bf[y].s;
+ else if (sw == 'B')
+ {
+  /* Whole-buffer replace (e.g. an LSP code action / rename / format): snapshot
+     the ENTIRE current buffer as text so Undo can restore it in one step.  The
+     replay in e_make_rudo is symmetric -- it snapshots the then-current content
+     as the inverse, so Redo works too. */
+  next->u.pt = e_buffer_to_text(b);
+  if (next->u.pt == NULL)
+  {  FREE(next);  return(-1);  }
+ }
  else if (sw == 'c' || sw == 'v')
  {
   SCHIRM *s = b->cn->f[b->cn->mxedt]->s;
@@ -2474,6 +2486,62 @@ int e_add_undo(int sw, BUFFER *b, int x, int y, int n)
   b->ud = next;
  }
  return(0);
+}
+
+/* e_buffer_to_text - serialize the whole buffer to a malloc'd, '\n'-joined
+   string: EXACTLY one '\n' per line, matching the on-disk save format (b->bf[y]
+   stores `len` content bytes then the WPE_WR terminator).  Caller frees.  Used to
+   snapshot a buffer for whole-buffer Undo (type 'B').  Doubling the delimiter
+   would corrupt the round-trip, so keep it to one. */
+char *e_buffer_to_text(BUFFER *b)
+{
+ size_t cap = 1, used = 0;
+ char *out;
+ int y;
+
+ for (y = 0; y < b->mxlines; y++)
+  cap += (b->bf[y].s ? (size_t)b->bf[y].len : 0) + 1;
+ if ((out = malloc(cap)) == NULL)
+  return(NULL);
+ for (y = 0; y < b->mxlines; y++)
+ {
+  int len = b->bf[y].s ? b->bf[y].len : 0;
+  if (len > 0)
+  {  memcpy(out + used, b->bf[y].s, (size_t)len);  used += (size_t)len;  }
+  out[used++] = '\n';
+ }
+ out[used] = '\0';
+ return(out);
+}
+
+/* e_buffer_set_text - replace the WHOLE buffer content with `text` (lines split
+   on '\n').  Does NOT touch the cursor, the view, or the undo stack -- the caller
+   owns those.  The inverse of e_buffer_to_text; used by whole-buffer Undo and by
+   the LSP edit-apply path (e_lsp_replace_buffer). */
+void e_buffer_set_text(BUFFER *b, const char *text)
+{
+ char *copy = strdup(text ? text : ""), *p, *nl;
+
+ if (!copy)
+  return;
+ e_p_red_buffer(b);
+ FREE(b->bf[0].s);
+ b->mxlines = 0;
+ p = copy;
+ for (;;)
+ {
+  nl = strchr(p, '\n');
+  if (nl)
+   *nl = '\0';
+  print_to_end_of_buffer(b, p, b->mx.x);
+  if (!nl)
+   break;
+  p = nl + 1;
+  if (!*p)
+   break;                 /* a trailing '\n' just terminates the last line */
+ }
+ e_new_line(b->mxlines, b);
+ free(copy);
 }
 
 int e_make_undo(FENSTER *f)
@@ -2584,6 +2652,21 @@ int e_make_rudo(FENSTER *f, int sw)
   FREE(bn->bf);
   FREE(ud->u.pt);
   e_add_undo('c', b, ud->b.x, ud->b.y, 0);
+ }
+ else if (ud->type == 'B')
+ {
+  /* Whole-buffer restore.  Record the inverse FIRST -- snapshot the now-current
+     text onto the opposite (redo/undo) list (e_redo_sw routes it) -- then swap
+     the buffer to the saved snapshot.  Symmetric, so Undo and Redo both work. */
+  e_add_undo('B', b, ud->b.x, ud->b.y, 0);
+  e_buffer_set_text(b, (char *)ud->u.pt);
+  FREE(ud->u.pt);
+  if (b->b.y >= b->mxlines) b->b.y = (b->mxlines > 0) ? b->mxlines - 1 : 0;
+  if (b->b.y < 0) b->b.y = 0;
+  if (b->b.x > b->bf[b->b.y].len) b->b.x = b->bf[b->b.y].len;
+  if (b->b.x < 0) b->b.x = 0;
+  s->mark_begin = s->mark_end = b->b;
+  e_firstl(f, 1);
  }
  if (!sw) b->ud = ud->next;
  else b->rd = ud->next;

@@ -165,7 +165,10 @@ Applying an action rewrites the buffer.  An action carrying a direct edit is
 applied straight away; one that runs a server command is executed over
 @code{workspace/executeCommand}, and the server's resulting edit
 (@code{workspace/applyEdit}) is applied for you.  When an action also changes
-@emph{other} files a note reports how many -- those are left untouched.
+@emph{other} files a note reports how many -- those are left untouched.  The
+rewrite is a single @kbd{Ctrl-U} (Undo) away, and @kbd{Ctrl-R} redoes it, like
+any other edit; the same applies to Rename (@kbd{Alt-Q N}) and Format
+(@kbd{Alt-Q F}).
 @item Alt-Q S
 Signature: show the signature of the call the cursor is inside (e.g.
 @code{println(x: Any): Unit}) in a popup.
