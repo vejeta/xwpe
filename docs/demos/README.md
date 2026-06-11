@@ -13,6 +13,12 @@ upward from the bar -- every command with its `Alt-Q` accelerator.
 
 ![Metals menu](gifs/menu.gif)
 
+### Go to definition
+With the cursor on a `describe(...)` call, `Alt-Q D` leaps it up to the
+`def describe` that defines it -- the iconic IDE jump, over LSP.
+
+![Go to definition](gifs/definition.gif)
+
 ### Semantic colours (server-driven highlighting)
 `Alt-Q M` repaints the file from Metals' semantic tokens: types, function
 calls, parameters and variables get their own colours -- distinctions the
@@ -36,8 +42,9 @@ an indexed Scala workspace for the server-backed tapes).  The Metals tapes
 
 | Tape | Shows | Needs Metals |
 |------|-------|--------------|
-| `tapes/menu.tape`     | the action menu / discoverability | no  |
-| `tapes/semantic.tape` | semantic colours before/after      | yes |
+| `tapes/menu.tape`       | the action menu / discoverability  | no  |
+| `tapes/definition.tape` | go to definition (cursor jump)     | yes |
+| `tapes/semantic.tape`   | semantic colours before/after      | yes |
 
 See `SCENARIOS.md` for the full key-sequence scripts of every headline
 feature (the source material for additional tapes and the reel).
