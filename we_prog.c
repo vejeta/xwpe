@@ -627,7 +627,9 @@ int e_run(FENSTER *f)
       if (len > 0 && line[len-1] == '\n') line[len-1] = '\0';
       print_to_end_of_buffer(b, line, 0);
      }
-     ret = WEXITSTATUS(pclose(pp));
+     /* WEXITSTATUS must take an lvalue: macOS expands it to *(int*)&(x), so a
+        bare pclose(pp) rvalue does not compile.  Store the status first. */
+     { int status = pclose(pp);  ret = WEXITSTATUS(status);  }
     }
     else
      ret = -1;
