@@ -381,20 +381,30 @@ Three things to know on macOS:
   Help; without it only built-in C/C++ highlight.
 - GPM is Linux-only (`--without-gpm`); the mouse still works through the terminal.
 
-**Language servers** (optional; xwpe finds each by name on `PATH`, which Homebrew
-hides for some):
+**Language servers** (optional; xwpe runs whichever is on `PATH`):
 
 ```sh
-brew install llvm gopls rust-analyzer pyright     # clangd lives inside llvm (keg-only)
-brew install coursier openjdk@21                  # Scala/Metals + an LTS JDK (17 or 21)
-coursier install metals scala-cli
-export PATH="$(brew --prefix llvm)/bin:$PATH:$HOME/Library/Application Support/Coursier/bin"
-export JAVA_HOME="$(brew --prefix openjdk@21)/libexec/openjdk.jdk/Contents/Home"
-which clangd rust-analyzer metals                 # confirm before launching
+brew install llvm gopls rust-analyzer pyright   # clangd lives inside llvm (keg-only)
+brew install coursier openjdk@21 && coursier install metals scala-cli   # Scala/Metals + a JDK
 ```
 
-> Metals needs a JDK 17/21 in `JAVA_HOME` (a too-new JDK makes hover/navigation
-> silently empty), and its first start indexes for minutes.
+Rather than exporting `PATH` / `JAVA_HOME` / `XWPE_LIB` by hand, source the
+bundled **`contrib/xwpe-env`** helper -- the `brew shellenv` idiom: it finds
+clangd, the JDK, the Coursier dir and this checkout, and skips whatever is
+absent. Add the line to your shell profile to make it permanent:
+
+```sh
+eval "$(contrib/xwpe-env)"               # bash / zsh   (-> ~/.zshrc to persist)
+contrib/xwpe-env --shell fish | source   # fish         (-> ~/.config/fish/config.fish)
+which clangd rust-analyzer metals        # confirm before launching
+```
+
+> The helper is plain POSIX `sh`, so it also works on Linux/BSD (there it mostly
+> just sets `XWPE_LIB`, since the package manager already puts the servers on
+> `PATH`). Metals needs a JDK 17/21 in `JAVA_HOME` -- a too-new one makes
+> hover/navigation silently empty -- and its first start indexes for minutes;
+> `coursier setup` is Coursier's own bootstrap that also configures Scala's
+> `JAVA_HOME`/`PATH`.
 
 Open a bundled demo **as `wpe`**, then `Alt-Q E` to start the server (`Alt-Q ?`
 lists actions); each `docs/examples/*-lsp/` has its own walkthrough:

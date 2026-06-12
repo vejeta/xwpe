@@ -272,6 +272,7 @@ TESTS = test_checkheader test_syntax_def test_lsp_buffer test_lsp_doctor test_ls
 
 # --- Extra files for distribution ---
 EXTRA_DIST = \
+  contrib/xwpe-env \
   help.xwpe_eng \
   help.key_eng \
   syntax_def \

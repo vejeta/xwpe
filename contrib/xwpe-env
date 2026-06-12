@@ -1,0 +1,62 @@
+#!/bin/sh
+# xwpe-env -- print the environment xwpe wants, in your shell's syntax.
+#
+# It locates (when present) Homebrew's keg-only clangd, an LTS JDK for Metals,
+# and the Coursier app dir, and exposes XWPE_LIB so syntax highlighting + Help
+# load when you run from the build tree without `sudo make install`.  Anything
+# not installed is silently skipped, so the output is always safe to apply.
+#
+# Usage -- evaluate it, do not run it:
+#
+#   bash / zsh :  eval "$(contrib/xwpe-env)"
+#   fish       :  contrib/xwpe-env --shell fish | source
+#
+# Add that one line to your ~/.bashrc / ~/.zshrc / ~/.config/fish/config.fish
+# to make it permanent.  Re-runs are idempotent.
+#
+# This is the brew-shellenv / direnv idiom: a tool that emits shell code rather
+# than a list of exports you copy by hand.  Works on macOS and Linux.
+
+set -eu
+
+# --- which shell flavour to emit (POSIX `export` vs fish `set -gx`) ----------
+shell=
+case "${1:-}" in
+  --shell)   shell=${2:-} ;;
+  --shell=*) shell=${1#--shell=} ;;
+esac
+[ -n "$shell" ] || shell=$(basename "${SHELL:-sh}")
+
+emit_var() {        # emit_var NAME VALUE
+  case "$shell" in
+    fish) printf 'set -gx %s "%s"\n' "$1" "$2" ;;
+    *)    printf 'export %s="%s"\n'  "$1" "$2" ;;
+  esac
+}
+emit_path() {       # emit_path DIR   -- prepend DIR to PATH
+  case "$shell" in
+    fish) printf 'set -gx PATH "%s" $PATH\n'  "$1" ;;
+    *)    printf 'export PATH="%s:$PATH"\n'    "$1" ;;
+  esac
+}
+
+# --- XWPE_LIB: this checkout, so it runs uninstalled (the repo root) ----------
+root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+[ -f "$root/syntax_def" ] && emit_var XWPE_LIB "$root"
+
+# --- Homebrew-provided language servers / JDK (no-op without brew) ------------
+if command -v brew >/dev/null 2>&1; then
+  llvm=$(brew --prefix llvm 2>/dev/null || true)        # clangd is keg-only
+  [ -n "$llvm" ] && [ -x "$llvm/bin/clangd" ] && emit_path "$llvm/bin"
+
+  jdk=$(brew --prefix openjdk@21 2>/dev/null || true)   # Metals needs JDK 17/21
+  [ -z "$jdk" ] && jdk=$(brew --prefix openjdk@17 2>/dev/null || true)
+  [ -n "$jdk" ] && [ -d "$jdk/libexec/openjdk.jdk/Contents/Home" ] && \
+    emit_var JAVA_HOME "$jdk/libexec/openjdk.jdk/Contents/Home"
+fi
+
+# --- Coursier app dir (metals, scala-cli) -- macOS and Linux locations -------
+for d in "$HOME/Library/Application Support/Coursier/bin" \
+         "$HOME/.local/share/coursier/bin"; do
+  [ -d "$d" ] && emit_path "$d"
+done
