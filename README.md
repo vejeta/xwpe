@@ -127,7 +127,7 @@ emulator.
 
   | Demo (open with `wpe`) | Language | Server | Tour |
   |---|---|---|---|
-  | [`docs/examples/scala-lsp/`](docs/examples/scala-lsp/)   | Scala  | Metals          | (see [`docs/LSP.md`](docs/LSP.md)) |
+  | [`docs/examples/scala-lsp/`](docs/examples/scala-lsp/)   | Scala  | Metals          | [tour](docs/demos/gifs/scala/tour.gif) |
   | [`docs/examples/c-lsp/`](docs/examples/c-lsp/)           | C/C++  | clangd          | [tour](docs/demos/gifs/c/tour.gif) |
   | [`docs/examples/python-lsp/`](docs/examples/python-lsp/) | Python | pyright / pylsp | [tour](docs/demos/gifs/python/tour.gif) |
   | [`docs/examples/go-lsp/`](docs/examples/go-lsp/)         | Go     | gopls           | [tour](docs/demos/gifs/go/tour.gif) |
@@ -148,7 +148,7 @@ emulator.
 
   <p align="center">
     <img src="docs/demos/gifs/c/tour.gif" width="760" alt="A tour of xwpe's LSP features on a C/C++ file via clangd: hover shows the signature, Alt-Q Y reveals inferred inlay-hint types end-of-line, Alt-Q U highlights every use of the symbol, references list in the Messages window, the file outline pops up, and finally Alt-Q N renames total to tally across the whole file -- then Ctrl-U undoes the entire refactor. The pressed keys are captioned along the bottom.">
-    <br><em>One tour, the breadth of LSP &mdash; hover, inlay hints, highlight-all-uses, references, outline, and a <strong>rename refactor with Undo</strong> &mdash; here in C via clangd. Every wired language has its own captioned tour: <a href="docs/demos/gifs/python/tour.gif">Python</a> &middot; <a href="docs/demos/gifs/go/tour.gif">Go</a> &middot; <a href="docs/demos/gifs/rust/tour.gif">Rust</a> &middot; <a href="docs/demos/gifs/c/tour.gif">C/C++</a>.</em>
+    <br><em>One tour, the breadth of LSP &mdash; hover, inlay hints, highlight-all-uses, references, outline, and a <strong>rename refactor with Undo</strong> &mdash; here in C via clangd. Every wired language has its own captioned tour: <a href="docs/demos/gifs/scala/tour.gif">Scala</a> &middot; <a href="docs/demos/gifs/python/tour.gif">Python</a> &middot; <a href="docs/demos/gifs/go/tour.gif">Go</a> &middot; <a href="docs/demos/gifs/rust/tour.gif">Rust</a> &middot; <a href="docs/demos/gifs/c/tour.gif">C/C++</a>.</em>
   </p>
 
   <p align="center">

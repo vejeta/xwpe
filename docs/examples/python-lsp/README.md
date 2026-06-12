@@ -6,8 +6,9 @@ it **prefers pyright** (type inference) and **falls back to pylsp** (jedi).
 
 ![Python LSP tour](../../demos/gifs/python/tour.gif)
 
-*A tour on this testbed: hover, references, the file outline, and go-to-definition
--- over the Python server (pyright/pylsp).*
+*A tour on this testbed: hover, inlay hints, highlight-all-uses, references, the
+file outline, and a rename refactor (`total` &rarr; `tally`) with Undo -- over the
+Python server (pyright/pylsp).  The pressed keys are captioned along the bottom.*
 
 ## Requirements
 

@@ -6,8 +6,9 @@ try) the IDE features in Go -- gopls needs no JVM, so it is ready quickly.
 
 ![Go LSP tour](../../demos/gifs/go/tour.gif)
 
-*A tour on this testbed: hover, references, the file outline, and go-to-definition
--- all over gopls.*
+*A tour on this testbed: hover, inlay hints, highlight-all-uses, references, the
+file outline, and a rename refactor (`total` &rarr; `tally`) with Undo -- all over
+gopls.  The pressed keys are captioned along the bottom.*
 
 ## Requirements
 

@@ -2,14 +2,21 @@
 # Regenerate the per-language LSP "tour" GIFs (docs/demos/gifs/<lang>/tour.gif).
 #
 # Each tour walks one language's testbed (docs/examples/<lang>-lsp/) through the
-# headline Alt-Q actions -- hover, references, outline, go-to-definition -- in
-# that language's own code.  Unlike the Scala reel, these use the fast servers
-# (clangd / gopls / pyright / rust-analyzer), so the cold start is short (the
-# tapes Hide it); rust-analyzer indexes std, so its warm-up is the longest.
+# headline Alt-Q actions -- hover, inlay hints, document highlight, references,
+# outline, and a rename refactor + Undo -- in that language's own code.
+# c/go/python/rust use the fast servers (clangd / gopls / pyright /
+# rust-analyzer), so the cold start is short (the tapes Hide it); rust-analyzer
+# indexes std, so its warm-up is the longest.  `scala` (Metals) is the slow one:
+# a JVM boots and the build is imported (~2 min, Hidden).  For scala, set
+# JAVA_HOME to an LTS JDK 17/21 so Metals' presentation compiler does not crash
+# on a too-new default JDK:
+#   JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64 \
+#     WPE=./wpe docs/demos/record-tours.sh scala
 #
 # Requirements on PATH:
 #   vhs, ttyd, ffmpeg            (the recorder)
-#   the language server per tour: clangd | gopls+go | pyright/pylsp | rust-analyzer+cargo
+#   the language server per tour: clangd | gopls+go | pyright/pylsp |
+#                                 rust-analyzer+cargo | metals+scala-cli (scala)
 #
 # Usage (from the repo root, with the editor built):
 #   docs/demos/record-tours.sh [lang ...]      # default: c go python rust

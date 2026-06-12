@@ -5,8 +5,9 @@ language-server actions for Rust, through rust-analyzer.
 
 ![Rust LSP tour](../../demos/gifs/rust/tour.gif)
 
-*A tour on this testbed: hover, references, the file outline, and go-to-definition
--- all over rust-analyzer.*
+*A tour on this testbed: hover, inlay hints, highlight-all-uses, references, the
+file outline, and a rename refactor (`total` &rarr; `tally`) with Undo -- all over
+rust-analyzer.  The pressed keys are captioned along the bottom.*
 
 ## Requirements
 

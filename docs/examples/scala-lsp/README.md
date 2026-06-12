@@ -4,6 +4,12 @@ A tiny, deliberately-commented Scala 3 project that exercises **every** xwpe
 language-server action.  It is the fastest way to see (and test) the LSP support
 end to end.
 
+![Scala LSP tour](../../demos/gifs/scala/tour.gif)
+
+*A tour on this testbed: hover, inlay hints, highlight-all-uses, references, the
+file outline, and a rename refactor (`total` &rarr; `tally`) with Undo &mdash;
+all over Metals.  The pressed keys are captioned along the bottom.*
+
 ## Requirements
 
 - `scala-cli`  -- the build tool (`cs install scala-cli`)

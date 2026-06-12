@@ -12,8 +12,9 @@ is ready a second or two after you open a file.
 
 ![C/C++ LSP tour](../../demos/gifs/c/tour.gif)
 
-*A tour on this testbed: hover, references, the file outline, and go-to-definition
--- all over clangd.*
+*A tour on this testbed: hover, inlay hints, highlight-all-uses, references, the
+file outline, and a rename refactor (`total` &rarr; `tally`) with Undo -- all over
+clangd.  The pressed keys are captioned along the bottom.*
 
 ## Requirements
 

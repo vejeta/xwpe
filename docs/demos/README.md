@@ -46,6 +46,7 @@ embedded in each folder's `README.md`:
 
 | Tour | Language | Server | Testbed |
 |------|----------|--------|---------|
+| `gifs/scala/tour.gif`  | Scala  | Metals        | [`examples/scala-lsp/`](../examples/scala-lsp/)   |
 | `gifs/c/tour.gif`      | C/C++  | clangd        | [`examples/c-lsp/`](../examples/c-lsp/)           |
 | `gifs/python/tour.gif` | Python | pyright/pylsp | [`examples/python-lsp/`](../examples/python-lsp/) |
 | `gifs/go/tour.gif`     | Go     | gopls         | [`examples/go-lsp/`](../examples/go-lsp/)         |
@@ -60,8 +61,10 @@ Regenerate them with `docs/demos/record-tours.sh` (it records each against a
 throwaway copy of the testbed, so the servers' caches never land in the repo):
 
 ```sh
-docs/demos/record-tours.sh            # all four
+docs/demos/record-tours.sh            # the four fast servers (c go python rust)
 docs/demos/record-tours.sh c          # just one
+# Scala (Metals) is slow and needs a JDK, so it is not in the default batch:
+JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64 docs/demos/record-tours.sh scala
 ```
 
 > **CRITICAL:** the recordings MUST run the binary as **`wpe`** (programming
