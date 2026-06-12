@@ -530,6 +530,9 @@ struct dirfile *WpeGraphicalDirTree(struct dirfile *cd, struct dirfile *dd,
 
 
 
+/*   we_unix.c   */
+const char *e_lib_dir(void);   /* data-file dir: $XWPE_LIB or LIBRARY_DIR */
+
 /*   we_fl_fkt.c   */
 char *e_mkfilename(char *dr, char *fn);
 POINT e_readin(int i, int j, FILE *fp, BUFFER *b, char *sw);

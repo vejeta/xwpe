@@ -726,7 +726,7 @@ int e_read_help(char *str, FENSTER *f, int sw)
  char *ptmp, tstr[256];
  int i;
 
- ptmp = e_mkfilename(LIBRARY_DIR, HELP_FILE);
+ ptmp = e_mkfilename((char *)e_lib_dir(), HELP_FILE);
  fp = e_i_fopen(ptmp, "rb");
  FREE(ptmp);
  if (!fp)

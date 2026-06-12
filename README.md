@@ -317,8 +317,15 @@ compiler errors). Ctrl-G P shows output with full scroll at any time.
 installs `syntax_def` (the syntax-highlighting rules), the in-app help, the
 option file and the man page. **Skip it and you get only the built-in C/C++
 highlighting and no Help.** To run straight from the build directory without
-installing, copy the rules file into your home config:
-`mkdir -p ~/.xwpe && cp syntax_def ~/.xwpe/`.
+installing, point `XWPE_LIB` at it -- xwpe then loads its data files from there:
+
+```sh
+XWPE_LIB="$(pwd)" ./wpe foo.c       # syntax_def + help + options from the build dir
+```
+
+(`XWPE_LIB` overrides the compiled-in install path; export it in your shell
+profile to make it permanent. A `~/.xwpe/syntax_def` copy also works, but only
+for highlighting.)
 
 ### Linux (any distribution, from source)
 
@@ -381,8 +388,8 @@ make
 `./we` is the plain editor.
 
 **Syntax highlighting and Help need the data files.** Run `sudo make install`,
-or (to stay in the build dir) `mkdir -p ~/.xwpe && cp syntax_def ~/.xwpe/` --
-without it only C/C++ highlight and `Alt-Q`/Help have no content.
+or stay in the build dir and set `XWPE_LIB="$(pwd)"` (see *Building &
+installing* above) -- without either, only C/C++ highlight and Help is empty.
 
 **Make the terminal send `Alt`.** xwpe's menus and the whole `Alt-Q` LSP layer
 need the `Option`/`Alt` key to send a Meta/`Esc` prefix, which **Terminal.app

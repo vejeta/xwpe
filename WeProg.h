@@ -71,8 +71,10 @@ void WpeSyntaxReadFile(ECNT *cn);
 
 #endif
 
+const char *e_lib_dir(void);   /* we_unix.c: $XWPE_LIB or LIBRARY_DIR */
+
 #define WpeSyntaxGetSystem(filename)                                        \
- sprintf(filename, "%s/%s", LIBRARY_DIR, SYNTAX_FILE)
+ sprintf(filename, "%s/%s", e_lib_dir(), SYNTAX_FILE)
 
 
 #ifdef __cplusplus

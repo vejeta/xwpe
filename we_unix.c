@@ -40,6 +40,17 @@ int WpeTermInit(int *argc, char **argv);
 #endif
 
 
+/* e_lib_dir - the directory xwpe loads its data files from (syntax_def, the
+   in-app help, the option file).  Normally the compiled-in LIBRARY_DIR (set by
+   configure to the install prefix), but $XWPE_LIB overrides it so you can run
+   straight from a build / source checkout without `make install` -- e.g.
+   `XWPE_LIB=$(pwd) ./wpe foo.c` picks up the in-tree syntax_def. */
+const char *e_lib_dir(void)
+{
+ const char *d = getenv("XWPE_LIB");
+ return (d && *d) ? d : LIBRARY_DIR;
+}
+
 SCREENCELL *schirm = NULL;
 char e_we_sw = 0;
 

@@ -1169,7 +1169,7 @@ int e_opt_read(ECNT *cn)
  fp = fopen(cn->optfile, "r");
  if (fp == NULL)
  {
-  char *file = e_mkfilename(LIBRARY_DIR, OPTION_FILE);
+  char *file = e_mkfilename((char *)e_lib_dir(), OPTION_FILE);
   fp = fopen(file, "r");
   FREE(file);
  }
@@ -2146,7 +2146,7 @@ int e_read_help_str()
  char str[128];
  int i, len;
 
- sprintf(str, "%s/help.key", LIBRARY_DIR);
+ sprintf(str, "%s/help.key", e_lib_dir());
  for (i = 0; i < E_HLP_NUM; i++)
  {
   e_hlp_str[i] = MALLOC(sizeof(char));
