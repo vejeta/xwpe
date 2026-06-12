@@ -353,8 +353,11 @@ the build tools are then required). `texinfo` builds the `info xwpe` manual.
 
 > **Untested on macOS** -- written to be portable, but no clean build is
 > confirmed yet; please [open an issue](https://codeberg.org/mendezr/xwpe/issues)
-> with results. `wpe` runs natively in Terminal.app/iTerm2 (no XQuartz); the
-> graphical `xwpe` needs XQuartz and looks much the same this release.
+> with results. `wpe` runs natively in a terminal (no XQuartz); the graphical
+> `xwpe` needs XQuartz and looks much the same this release.
+
+Build with Homebrew's keg-only `ncurses` (the `PKG_CONFIG_PATH` line points
+`configure` at it):
 
 ```sh
 brew install autoconf automake pkg-config ncurses libvterm json-c texinfo
@@ -365,10 +368,15 @@ XWPE_LIB="$(pwd)" ./wpe foo.c      # make creates ./wpe; XWPE_LIB loads syntax+h
 
 Three things to know on macOS:
 
-- **Make `Option` send `Alt`** -- the whole `Alt-Q` LSP layer needs it, and
-  Terminal.app does not by default (so `Alt-Q` seems dead). Terminal.app:
-  Settings -> Profiles -> Keyboard -> *"Use Option as Meta key"*; iTerm2: *Left
-  Option key* -> *Esc+*. (kitty/WezTerm do it out of the box.)
+- **Use iTerm2 or kitty.** xwpe's whole `Alt-Q` LSP layer (and the Alt-menu
+  keys) needs `Option`/`Alt` to send a Meta/`Esc` prefix. **Terminal.app does not
+  do that by default** -- it types accented characters instead, so `Alt-Q` seems
+  dead -- and its dated terminfo also causes ncurses key/colour quirks.
+  **[iTerm2](https://iterm2.com/) and [kitty](https://sw.kovidgoyal.net/kitty/)
+  avoid both** and are the recommended way to run xwpe on a Mac. If you must use
+  Terminal.app: Settings -> Profiles -> Keyboard -> tick *"Use Option as Meta
+  key"* (in iTerm2 it is Profiles -> Keys -> *Left Option key* -> *Esc+*). Keep
+  `TERM=xterm-256color`.
 - **`XWPE_LIB="$(pwd)"`** (or `sudo make install`) gives syntax highlighting and
   Help; without it only built-in C/C++ highlight.
 - GPM is Linux-only (`--without-gpm`); the mouse still works through the terminal.
