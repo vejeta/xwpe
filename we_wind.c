@@ -576,6 +576,19 @@ void e_free_view(PIC **pp)
  *pp = NULL;
 }
 
+/* e_win_is_tool_pane - True for the synthetic output panes (Messages, Watches,
+   Stack).  They reuse the read-only flag (ins == 8) to mean "not editable", but
+   they are tool output, NOT files on disk -- so they must not wear the read-only
+   padlock, which says "this is a locked file".  (Help is excluded separately by
+   its DTMD_HELP.)  Used by the title-bar draw to keep the padlock honest. */
+static int e_win_is_tool_pane(FENSTER *f)
+{
+ return (f->datnam &&
+         (!strcmp(f->datnam, "Messages") ||
+          !strcmp(f->datnam, "Watches")  ||
+          !strcmp(f->datnam, "Stack")));
+}
+
 /*    Frame for edit window   */
 void e_ed_rahmen(FENSTER *f, int sw)
 {
@@ -637,7 +650,8 @@ void e_ed_rahmen(FENSTER *f, int sw)
      draw its name DIMMED and a padlock at the left of the title bar so it is
      unmistakably non-editable.  0x1F512 is LOCK; on a non-UTF console the chrome
      fallback (e_t_chrome_ascii) substitutes a stand-in. */
-  int ro = (f->ins == 8 && f->dtmd != DTMD_HELP);  /* a locked FILE, not a viewer */
+  int ro = (f->ins == 8 && f->dtmd != DTMD_HELP    /* a locked FILE...              */
+            && !e_win_is_tool_pane(f));            /* ...not a Messages/Watches pane */
   if (ro)
    g_rahmen_hdr_frb = f->fb->es.fb;       /* title text in the dimmer frame colour */
   e_std_rahmen(f->a.x, f->a.y, f->e.x, f->e.y, header, sw, f->fb->er.fb,

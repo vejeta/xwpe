@@ -251,6 +251,26 @@ class TestF9CompileSuccess:
             f"Cursor stayed on Messages instead of returning to source: {content[:400]}"
 
 
+    def test_messages_pane_has_no_readonly_padlock(self, compile_dir, has_gcc):
+        """The Messages output pane is non-editable but is NOT a file on disk, so
+        it must not wear the read-only padlock -- that glyph means 'locked file'
+        and belongs only to real read-only files (0444 / library sources)."""
+        if not has_gcc:
+            pytest.skip("gcc not installed")
+        LOCK = "\U0001f512"        # the read-only padlock glyph
+        lines = run_wpe_in_dir(
+            compile_dir, 'hello.c',
+            cols=80, rows=30, wait=1.5,
+            keys=[KEY_F9, ('wait', 3.0), ' ', ('wait', 0.5)],
+        )
+        msg_lines = [r for r in lines if 'Messages' in r]
+        assert msg_lines, \
+            "the Messages window never appeared after F9:\n%s" % '\n'.join(lines)
+        assert not any(LOCK in r for r in msg_lines), \
+            "the Messages pane wrongly shows the read-only padlock:\n%s" \
+            % '\n'.join(msg_lines)
+
+
 class TestF9CompileErrors:
     """Test F9 compile cycle with a program that has errors."""
 

@@ -55,8 +55,8 @@ Mark a block (`Alt-Q V` a few times, or `^K B` / `^K K`) -> `Alt-Q F` formats
 JUST that range.  With nothing marked, `Alt-Q F` formats the whole file.
 
 ## 10. Inlay hints toggle
-`Alt-Q Y` -> inferred types appear dim at end-of-line on un-annotated vals;
-`Alt-Q Y` again hides them.
+`Alt-Q Y` -> inferred types appear as a distinct grey pill at end-of-line on
+un-annotated vals; `Alt-Q Y` again hides them.
 
 ## 11. Live diagnostics as you type
 Introduce a type error (e.g. `val x: Int = "no"`); the `LSP: N error(s)` count
