@@ -397,18 +397,20 @@ def test_dead_server_does_not_spin(tmp_path, monkeypatch):
 
 def test_eager_start_skips_non_lsp_file(tmp_path):
     """#210 gating: with eager-start ENABLED, opening a file whose language has
-    no server (a .c) must spawn nothing and stay instant -- the bar shows no
-    Metals entry and no 'Starting language server' appears.  Needs no Metals:
-    .c never maps to a server, so this proves the language gate."""
-    w = _Wpe(str(tmp_path), [("main.c", "int main(void){ return 0; }\n")], eager=True)
+    no server (a .pl) must spawn nothing and stay instant -- the bar shows no
+    Metals entry and no 'Starting language server' appears.  Perl has compile
+    support but NO LSP descriptor, so it tests the language gate regardless of
+    which servers are installed (a .c eager-starts clangd where it is present,
+    so it can no longer prove the gate)."""
+    w = _Wpe(str(tmp_path), [("hello.pl", "print \"hello\\n\";\n")], eager=True)
     try:
         w.drain(2.5)
         body = "\n".join(w.display())
         assert "Starting language server" not in body, \
-            "eager start fired for a non-LSP .c file\n%s" % w.text()
+            "eager start fired for a non-LSP .pl file\n%s" % w.text()
         assert "Metals" not in body, \
-            "a .c window must not show the Metals bar\n%s" % w.text()
-        assert w.alive(), "wpe died opening a .c file"
+            "a .pl window must not show the Metals bar\n%s" % w.text()
+        assert w.alive(), "wpe died opening a .pl file"
     finally:
         w.close()
 
