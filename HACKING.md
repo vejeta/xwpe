@@ -701,3 +701,66 @@ Triage rules learned:
 
 Drivers used for the sweep live outside the repo (xwpe-dev/), not in tests/:
 valgrind is too slow (~30x) for the default `run-tests.sh` net.
+
+## Data files and `XWPE_LIB` (1.6.5)
+
+xwpe loads several data files at runtime: `syntax_def` (highlighting rules),
+the in-app help (`help.xwpe`, `help.key`) and the option file (`xwperc`).  The
+search is in `e_lib_dir()` (we_unix.c):
+
+    XWPE_LIB (if set and non-empty)   ->   else LIBRARY_DIR (configure prefix)
+
+`LIBRARY_DIR` is baked in by `configure` to the install prefix.  `XWPE_LIB`
+overrides it so an *uninstalled* build finds its data files:
+`XWPE_LIB="$(pwd)" ./wpe foo.c`.  All the data-file call sites route through
+`e_lib_dir()` -- the `WpeSyntaxGetSystem` macro (WeProg.h) and the
+`e_mkfilename(e_lib_dir(), ...)` opens in we_edit.c / we_fl_fkt.c / we_opt.c.
+
+Caveat: `syntax_def` keeps its name in the build tree, but the help files are
+`help.xwpe_eng` / `help.key_eng` there and only get their final names on
+`make install`; so `XWPE_LIB`=build-tree gives full highlighting but Help needs
+an install (or renamed copies).  Personal override still wins for syntax:
+`~/.xwpe/syntax_def` is tried before the system path (`WpeSyntaxGetPersonal`),
+which is the classic "stale personal copy shadows the new rules" trap.
+
+`contrib/xwpe-env` is a shell-aware helper (the `brew shellenv` idiom): it emits
+`export` / `set -gx` for bash/zsh/fish and sets `XWPE_LIB`, plus `JAVA_HOME`
+(Homebrew, macOS `java_home`, or `/usr/lib/jvm`), clangd's keg-only `PATH`, and
+the Coursier app dir.  `eval "$(contrib/xwpe-env)"` / `... --shell fish | source`.
+
+## Portability: macOS and the BSDs (1.6.5)
+
+The tree builds the terminal `wpe` on macOS/BSD, not just Linux.  The gotchas
+that bit, all now handled:
+
+- **openpty()'s header differs.**  `<pty.h>` is glibc-only; macOS/BSD use
+  `<util.h>`, some BSDs `<libutil.h>`.  `configure` probes all three
+  (`AC_CHECK_HEADERS`) and we_dap.c / we_prog.c / we_debug.c pick via
+  `HAVE_*_H`.  The link is found by `AC_SEARCH_LIBS([openpty],[util])` -- libc
+  on macOS, `-lutil` on Linux/BSD.
+- **`WEXITSTATUS` needs an lvalue.**  macOS expands it to `*(int*)&(x)`, so
+  `WEXITSTATUS(pclose(pp))` does not compile -- store the status first
+  (we_prog.c).
+- **Terminal mouse without X11/GPM.**  The `MOUSE` macro (model.h) gated
+  `struct mouse` on X11 or GPM only; a `--without-x --without-gpm` build left it
+  undefined while we_term.c's ncurses KEY_MOUSE path uses it.  `MOUSE` now also
+  keys off `NCURSES` (ncurses has its own xterm mouse, independent of X11/GPM).
+- **Run from the build dir.**  `make` creates the `wpe`/`xwpe`/`xwe` symlinks
+  next to `we` (`all-local` in Makefile.am), since the mode is chosen by
+  `argv[0]` basename; no `make install` needed to get `./wpe`.
+
+macOS terminal note (not a build issue): Terminal.app sends Option as accented
+characters, not a Meta/Esc prefix, so the whole `Alt-Q` layer looks dead --
+enable "Use Option as Meta key", or use iTerm2/kitty (which also ship modern
+terminfo).  Documented in README.
+
+## File Manager geometry (1.6.5)
+
+The File Manager box used to be hardcoded (`f->a=(11,2)`, `f->e=+55,+20`) --
+fixed and pinned near the top-left.  `e_fm_centered_geometry()` (we_fl_unix.c)
+now sizes it to ~3/4 of the screen, clamps to a sane min (~56x21) / max (78x30),
+and centres it.  Nothing else changed: every inner widget already derives from
+the window box, because `NUM_COLS_ON_SCREEN` / `NUM_LINES_ON_SCREEN` (edit.h)
+are defined window-relative (`f->e.x - f->a.x`, `f->e.y - f->a.y`), so the
+dir-tree and file-list boxes, the field widths and the button hints all scale
+off `f->a`/`f->e` for free.

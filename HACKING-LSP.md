@@ -258,6 +258,29 @@ by `docs/demos/record-tours.sh` (records against a throwaway copy so server
 caches stay out of the repo). The user-facing walkthrough is `docs/LSP.md` /
 `docs/chapters/lsp.texi`.
 
+## The Alt-Q keyboard / UI layer (1.6.5)
+
+The editor-facing dispatch lives in `we_debug.c` (DEBUGGER-gated), kept apart
+from the server-agnostic engine (`we_lsp.c`):
+
+* `e_lsp_ui_key` reads the key after Alt-Q and calls `e_lsp_ui_dispatch(f, c)`,
+  which is the action switch.  Splitting the switch out lets the dismissable
+  peeks **re-dispatch**: while a tooltip is up, `Alt-Q <letter>` closes it and
+  runs that action in one motion (chaining).
+* Peeks (hover, signature, problem messages) render through
+  `e_lsp_cursor_popup(f, title, text, hint)` — an `e_std_kst` box anchored at
+  the cursor, dismissed by any key (the key is *returned* so the diagnostic
+  walker can keep stepping on `.` / `,`).  The contextual pickers (completion,
+  code actions) use `e_lsp_pick_at(...)` anchored via `e_lsp_cursor_screen_x/y`;
+  the browse-everything lists (outline, workspace symbols) stay at the corner.
+* `e_lsp_after_bulk_edit(f)` re-syncs the document after any whole-buffer change
+  — an applied quick-fix/format/rename (`e_lsp_replace_buffer`) **and** its
+  Ctrl-U/Ctrl-R (`e_make_rudo`, we_edit.c).  Without it, undo bypassed the
+  per-keystroke Enter debounce and the inline marks lagged the buffer.
+* The three modal popup engines (`e_opt_kst`, `WpeHandleSubmenu`, `e_error`)
+  bracket `e_lsp_modal_enter/leave` so an async diagnostic/inlay paint cannot
+  corrupt a dialog drawn over the editor (`g_lsp_modal_depth` gate).
+
 ## Notes / constraints
 
 * Keep the engine free of editor globals (like `we_dap.c`) so it can be
