@@ -133,15 +133,16 @@ emulator.
   | [`docs/examples/go-lsp/`](docs/examples/go-lsp/)         | Go     | gopls           | [tour](docs/demos/gifs/go/tour.gif) |
   | [`docs/examples/rust-lsp/`](docs/examples/rust-lsp/)     | Rust   | rust-analyzer   | [tour](docs/demos/gifs/rust/tour.gif) |
 
-  **Prerequisites (Linux/macOS):** `cs install metals scala-cli`, **plus an LTS
-  JDK (17 or 21) that *Metals* runs on**. The subtle part: `//> using jvm
-  temurin:21` in `project.scala` pins only the *build* JVM &mdash; Metals' own
-  presentation compiler (hover, completion, go-to-definition) runs on Metals'
-  JVM, so set `JAVA_HOME` to a JDK 17/21. On a too-new default JDK (e.g. OpenJDK
-  26) the Scala 3 presentation compiler crashes (`asTerm called on not-a-Term`)
-  and navigation/hover silently return empty. On **Debian/Ubuntu**:
-  `sudo apt install openjdk-21-jdk` then
-  `export JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64`. See
+  **Prerequisites (Debian/Ubuntu):** `cs install metals scala-cli`, **plus an LTS
+  JDK (17 or 21) that *Metals* runs on**: `sudo apt install openjdk-21-jdk` then
+  `export JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64`. The subtle part: `//>
+  using jvm temurin:21` in `project.scala` pins only the *build* JVM &mdash;
+  Metals' own presentation compiler (hover, completion, go-to-definition) runs on
+  the JVM `JAVA_HOME` points at, so it must be a JDK 17/21. On a too-new default
+  JDK (e.g. OpenJDK 26) the Scala 3 presentation compiler crashes (`asTerm called
+  on not-a-Term`) and navigation/hover silently return empty. *(macOS: the same
+  rule applies &mdash; see the [macOS](#macos-terminal-wpe-via-homebrew) build
+  section for the Homebrew equivalents.)* See
   **[`docs/LSP.md`](docs/LSP.md)** for the feature guide (every `Alt-Q` action,
   with clips), or the **Language servers** chapter of the manual (`info xwpe`,
   or Help&nbsp;&rarr;&nbsp;Info) for the full reference.
@@ -378,12 +379,21 @@ brew install gdb             # debugger (Ctrl-G); on Apple Silicon lldb via DAP 
                              # better fit -- xwpe auto-falls-back to lldb there
 ```
 
-For Scala (Metals), Homebrew installs Coursier as `coursier` (not `cs`):
+For Scala (Metals), Homebrew installs Coursier as `coursier` (not `cs`), and
+Metals needs an LTS JDK (17 or 21):
 
 ```sh
-brew install coursier openjdk@21       # LTS JDK -- Metals needs one (see the manual)
+brew install coursier openjdk@21
 coursier install metals scala-cli      # the `cs` name only exists with the standalone installer
+export JAVA_HOME="$(brew --prefix openjdk@21)/libexec/openjdk.jdk/Contents/Home"
 ```
+
+The JDK matters: Metals' presentation compiler (hover, completion,
+go-to-definition) runs on the JVM `JAVA_HOME` points at -- on a too-new default
+JDK the Scala 3 presentation compiler crashes (`asTerm called on not-a-Term`)
+and navigation/hover silently return empty, so keep `JAVA_HOME` on the 17/21 JDK
+above. (`//> using jvm temurin:21` in `project.scala` pins only the *build* JVM,
+not Metals' own.)
 
 ### External programs
 
