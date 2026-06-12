@@ -76,6 +76,13 @@ diagnostics (errors and warnings) in the Messages window, in the same
 marked @emph{inline} in the source: error cells turn red, warning cells amber,
 updated live as you type (no save needed).  The marks clear when the problem
 is fixed or the server is closed.
+@item Alt-Q .
+Next problem: jump the cursor to the next diagnostic in the file (wrapping
+around), like an IDE's @key{F8}; its message shows in a tooltip at the cursor.
+While the tooltip is up a bare @kbd{.} steps to the next problem and @kbd{,} to
+the previous, so you walk the whole list without re-typing the prefix.
+@item Alt-Q ,
+Previous problem: the same, in reverse.
 @item Alt-Q D
 Go to the definition of the symbol under the cursor -- including @emph{into
 library and standard-library sources}.  The server extracts those under
@@ -90,12 +97,14 @@ abstract @code{def} or trait member (jumps past the declaration to the body).
 Go to the @emph{type definition} of the symbol: the class or trait of a
 value's type, rather than the value's own declaration.
 @item Alt-Q H
-Hover: show the type and documentation of the symbol under the cursor in a
-popup (e.g.@: @code{var f: Long}).
+Hover: show the type and documentation of the symbol under the cursor
+(e.g.@: @code{var f: Long}) in a tooltip @emph{at the cursor}.  Any key closes
+it (its bottom border says so).
 @item Alt-Q C
-Completion: offer candidates for the word under the cursor in a popup.  Move
-with the arrow keys, press @key{RET} to insert the selected candidate (it
-replaces the partial word), or @key{ESC} to cancel.
+Completion: offer candidates for the word under the cursor in a dropdown
+@emph{at the cursor} (capped to fit the editor window), like a modern editor's
+autocomplete.  Move with the arrow keys, press @key{RET} to insert the selected
+candidate (it replaces the partial word), or @key{ESC} to cancel.
 @item Alt-Q R
 References: list every use of the symbol under the cursor (including its
 declaration) in the Messages window.
@@ -172,8 +181,10 @@ file); @key{RET} jumps to the chosen one, opening its file if needed.  This is
 the editor-wide ``Go to Symbol''.
 @item Alt-Q A
 Code actions: list the quick-fixes and refactors the server offers at the
-cursor (organize imports, create a companion object, ...) in a popup.
-Applying an action rewrites the buffer.  An action carrying a direct edit is
+cursor (organize imports, create a companion object, ...) in a picker
+@emph{at the cursor} -- the fix targets the symbol there, so the list drops
+there, like completion.  Applying an action rewrites the buffer.  An action
+carrying a direct edit is
 applied straight away; one that runs a server command is executed over
 @code{workspace/executeCommand}, and the server's resulting edit
 (@code{workspace/applyEdit}) is applied for you.  When an action also changes
@@ -183,7 +194,8 @@ any other edit; the same applies to Rename (@kbd{Alt-Q N}) and Format
 (@kbd{Alt-Q F}).
 @item Alt-Q S
 Signature: show the signature of the call the cursor is inside (e.g.
-@code{println(x: Any): Unit}) in a popup.
+@code{println(x: Any): Unit}) in a tooltip @emph{at the cursor}; any key closes
+it.
 @item Alt-Q N
 Rename: rename the symbol under the cursor everywhere (you are prompted for the
 new name).  Edits in the current file are applied to the buffer; if the rename
@@ -198,7 +210,23 @@ selection to a method, then @kbd{Alt-Q F} to tidy just that method.
 @end table
 
 After a rename or format, the buffer is rebuilt with the result and marked
-modified; save (@key{F2}) to keep the changes.
+modified; save (@key{F2}) to keep the changes.  The new text is sent to the
+server straight away, so the inline diagnostics re-publish for it -- and that
+holds for @kbd{Ctrl-U} (Undo) and @kbd{Ctrl-R} (Redo) too: undo a quick-fix and
+the error it removed reappears, marks and all.
+
+@cindex cursor tooltips
+@cindex chaining actions
+The @emph{peeks} -- hover (@kbd{Alt-Q H}), signature (@kbd{Alt-Q S}) and the
+problem messages (@kbd{Alt-Q .} / @kbd{Alt-Q ,}) -- and the contextual
+@emph{lists} -- completion (@kbd{Alt-Q C}) and code actions (@kbd{Alt-Q A}) --
+all appear @emph{at the cursor}, where you are working.  Only the project-wide
+browse lists, Outline (@kbd{Alt-Q O}) and Workspace symbols (@kbd{Alt-Q W}),
+stay an ordinary dialog, since the cursor does not pick those.  A tooltip
+closes on @emph{any} key, and the peeks @emph{chain}: with one up, press
+@kbd{Alt-Q} and another action letter to run it in one motion -- e.g.
+@kbd{Alt-Q .} to land on a problem, then @kbd{Alt-Q A} to pull up its quick-fix
+without dismissing first.
 
 @cindex live diagnostics
 Once the server is running, every edit is sent to it as you type (no save

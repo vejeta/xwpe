@@ -189,6 +189,27 @@ Changes
 
 1.6.5 (LSP for five languages, GNU Algol 68 / ga68 toolchain, Algol 68 highlighting)
 
+  LSP keyboard UX -- peeks at the cursor, that chain:
+* Completion (Alt-Q C) and code actions (Alt-Q A) now drop their list
+  AT THE CURSOR, like a real editor's autocomplete, instead of a box at
+  the screen corner; the list is capped to fit the editor window.  The
+  project-wide browse lists (Outline, Workspace symbols) stay a normal
+  dialog -- the cursor is irrelevant to those.
+* Hover, signature help and the problem messages (Alt-Q . / Alt-Q ,)
+  are small tooltips at the cursor, not centred dialogs.  Each carries a
+  key legend in its bottom border ("Press any key to close", or
+  ". next  , prev  any other key closes") so the controls are
+  discoverable; any key dismisses (the footer now says so truthfully).
+* These peeks CHAIN: while a tooltip is up, Alt-Q <letter> closes it and
+  runs that action in one motion (e.g. Alt-Q . to land on a problem,
+  then Alt-Q A to pull up its quick-fix).  Walking problems is quicker
+  too: after the first Alt-Q ., a bare . / , steps to the next/previous.
+* Fixed: a whole-buffer LSP edit -- a quick-fix/format/rename and its
+  Ctrl-U undo or Ctrl-R redo -- now re-syncs the document to the server,
+  so the inline diagnostics re-publish for the new text.  Before, undo
+  bypassed the per-keystroke Enter debounce: after undoing a quick-fix
+  the re-introduced error stayed unmarked until the next Enter.
+
   GNU Algol 68 (ga68) compiler:
 * ga68, the GCC Algol 68 front-end, is now supported alongside a68g.  It
   is a NATIVE compiler: Make/Run builds and links a real binary (comp_sw

@@ -80,8 +80,8 @@ file is the active window.
 | `Alt-Q D` | **D**efinition | Jump to where the symbol is defined -- including into library/stdlib sources (opened **read-only**, see below). |
 | `Alt-Q I` | **I**mplementation | Jump to the concrete override of an abstract `def`/trait member. |
 | `Alt-Q T` | **T**ype definition | Jump to the class/trait of a value's *type*. |
-| `Alt-Q H` | **H**over | Type + documentation of the symbol, in a popup. |
-| `Alt-Q C` | **C**ompletion | Candidates for the word under the cursor; `RET` inserts. |
+| `Alt-Q H` | **H**over | Type + documentation of the symbol, in a tooltip at the cursor (any key closes it). |
+| `Alt-Q C` | **C**ompletion | Candidates for the word under the cursor, in a dropdown *at the cursor*; `RET` inserts. |
 | `Alt-Q R` | **R**eferences | Every use of the symbol, listed in Messages. |
 | `Alt-Q B` | called **B**y (incoming) | Callers of the method under the cursor (call hierarchy, upward). |
 | `Alt-Q G` | **G**oes to (outgoing) | Methods the one under the cursor calls (call hierarchy, downward). |
@@ -94,13 +94,31 @@ file is the active window.
 | `Alt-Q M` | se**M**antic colours (toggle) | Server-driven highlighting: types, calls, params and vars get distinct colours the regex lexer cannot tell apart. |
 | `Alt-Q L` | code **L**enses | The `run`/`debug`/`test` and reference annotations the server attaches to definitions. |
 | `Alt-Q W` | **W**orkspace symbol | Project-wide "Go to Symbol": type a query, jump to the match (opening its file). |
-| `Alt-Q A` | code **A**ctions | Quick-fixes and refactors at the cursor; applying one rewrites the buffer (and is Undo-able -- see below). |
-| `Alt-Q S` | **S**ignature help | The signature of the call the cursor is inside. |
+| `Alt-Q A` | code **A**ctions | Quick-fixes and refactors at the cursor, in a picker *at the cursor*; applying one rewrites the buffer (and is Undo-able -- see below). |
+| `Alt-Q S` | **S**ignature help | The signature of the call the cursor is inside, in a tooltip at the cursor (any key closes it). |
 | `Alt-Q N` | re**N**ame | Rename the symbol (current file; reports other files it touches). |
 | `Alt-Q F` | **F**ormat | scalafmt -- whole file, or just the marked range (context-sensitive). |
 
 After a code action, rename or format, the buffer is rebuilt and marked
-modified; **`F2`** saves.
+modified; **`F2`** saves. The server is told about the new text immediately, so
+the inline diagnostics re-publish for it -- and that holds for **Undo/Redo**
+too: undo a quick-fix and the error it removed comes straight back, marks and
+all (`Ctrl-U` undo, `Ctrl-R` redo).
+
+### Peeks land at the cursor, and chain
+
+Hover, signature help and the problem messages (`Alt-Q .` / `Alt-Q ,`) appear as
+small tooltips **at the cursor**, not a centred dialog -- so do the completion
+(`Alt-Q C`) and code-action (`Alt-Q A`) lists. A tooltip closes on **any key**
+(its bottom border says so); the project-wide browse lists -- Outline (`Alt-Q O`)
+and Workspace symbols (`Alt-Q W`) -- stay a normal dialog, since the cursor is
+irrelevant to those.
+
+These peeks **chain**: while a tooltip is up you can press `Alt-Q` and another
+action letter to run it in one motion -- e.g. `Alt-Q .` to land on a problem,
+then `Alt-Q A` to pull up its quick-fix without dismissing first. Walking
+problems is even quicker: after the first `Alt-Q .`, a bare `.` / `,` steps to
+the next / previous one while the tooltip stays up.
 
 ---
 
