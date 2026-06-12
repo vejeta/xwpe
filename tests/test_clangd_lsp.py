@@ -306,6 +306,9 @@ def test_diagnostic_navigation_jumps_between_problems(tmp_path):
         w._drain(0.8)
         assert any("first_undeclared" in r for r in w.display()), \
             "the tooltip did not show the first problem's message:\n%s" % _text(w)
+        # the footer legend advertises the navigation keys
+        assert any(("next" in r and "prev" in r) for r in w.display()), \
+            "the tooltip is missing the '. next  , prev' footer hint:\n%s" % _text(w)
 
         # While the tooltip is up, BOTH ways of stepping must work and must NOT
         # leak a keystroke into the buffer:

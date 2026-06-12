@@ -6270,7 +6270,8 @@ static int e_lsp_tip_split(const char *text, char **tln, int max, int wrap, int 
    for one key to dismiss it, restore the screen, and RETURN the dismiss key (so a
    caller like diagnostic navigation can keep walking on '.'/',' without making the
    user re-open it).  Used by hover, signature help and the problem jumps. */
-static int e_lsp_cursor_popup(FENSTER *f, const char *title, const char *text)
+static int e_lsp_cursor_popup(FENSTER *f, const char *title, const char *text,
+                              const char *hint)
 {
  BUFFER *b = f->b;
  SCHIRM *s = f->s;
@@ -6285,6 +6286,8 @@ static int e_lsp_cursor_popup(FENSTER *f, const char *title, const char *text)
   return(0);
  if (w < (int)strlen(title))
   w = (int)strlen(title);                      /* keep the title readable         */
+ if (hint && (int)strlen(hint) > w)
+  w = (int)strlen(hint);                       /* ...and the footer legend too    */
 
  cx = f->a.x + b->b.x - s->c.x + 1;            /* cursor's screen column (approx) */
  cy = f->a.y + b->b.y - s->c.y + 1;            /* cursor's screen row             */
@@ -6308,6 +6311,14 @@ static int e_lsp_cursor_popup(FENSTER *f, const char *title, const char *text)
  {  fk_cursor(1);  return(0);  }
  for (i = 0; i < n; i++)
   e_pr_str(xa + 2, ya + 1 + i, tln[i], f->fb->nt.fb, 0, 0, 0, 0);
+ if (hint && *hint)                            /* a key legend in the bottom border, */
+ {                                             /* Borland-style (like the title above) */
+  int hl = (int)strlen(hint);
+  int hx = xa + (xe - xa - hl) / 2;
+  if (hx < xa + 1)
+   hx = xa + 1;
+  e_pr_str(hx, ye, (char *)hint, f->fb->nr.fb, 0, 0, 0, 0);
+ }
  e_refresh();
 
  e_lsp_modal_enter();                          /* defer async LSP paints behind it */
@@ -6346,7 +6357,7 @@ static int e_lsp_ui_hover(FENSTER *f)
    e_error("No hover information.", 0, f->fb);
   return(0);
  }
- e_lsp_cursor_popup(f, "Hover", hov);          /* tooltip at the cursor */
+ e_lsp_cursor_popup(f, "Hover", hov, "Esc to close");   /* tooltip at the cursor */
  free(hov);
  return(0);
 }
@@ -6577,7 +6588,7 @@ static int e_lsp_ui_signature(FENSTER *f)
  sig = e_lsp_signature_help(g_lsp, g_lsp_file, b->b.y, b->b.x);
  if (!sig || !*sig)
  {  if (sig) free(sig);  e_error("No signature here.", 0, f->fb);  return(0);  }
- e_lsp_cursor_popup(f, "Signature", sig);
+ e_lsp_cursor_popup(f, "Signature", sig, "Esc to close");
  free(sig);
  return(0);
 }
@@ -6651,7 +6662,8 @@ static int e_lsp_ui_jump_diag(FENSTER *f, int dir)
   kind = (g_diag_active[idx].sev == 1) ? "Error"
        : (g_diag_active[idx].sev == 2) ? "Warning"
        : (g_diag_active[idx].sev == 3) ? "Info" : "Hint";
-  c = e_lsp_cursor_popup(f, kind, g_diag_active[idx].msg);
+  c = e_lsp_cursor_popup(f, kind, g_diag_active[idx].msg,
+                         ". next   , prev   Esc close");
   if (c == AltQ)                                  /* pressed the Alt-Q prefix again: */
    c = e_getch();                                 /* take its letter so '.'/',' still */
                                                   /* navigate (and don't leak a '.')  */
