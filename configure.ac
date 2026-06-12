@@ -99,10 +99,23 @@ AS_IF([test "x$with_gpm" != xno], [
 ])
 AC_SUBST([GPM_LIBS])
 
-# --- Required: libutil (openpty for debugger pty capture) ---
-AC_CHECK_LIB([util], [openpty], [UTIL_LIBS="-lutil"],
-  [AC_MSG_ERROR([libutil with openpty() is required.])])
+# --- Required: openpty (debugger / program pty capture) ---
+# openpty() lives in libutil on Linux and the BSDs, but is part of libc on
+# macOS (no separate -lutil).  AC_SEARCH_LIBS tries libc first, then -lutil, so
+# both platforms configure cleanly.  Save/restore LIBS so the link flag goes
+# through UTIL_LIBS (the existing we_LDADD slot), not the global LIBS.
+ace_save_LIBS="$LIBS"
+AC_SEARCH_LIBS([openpty], [util],
+  [AS_IF([test "x$ac_cv_search_openpty" = "xnone required"],
+     [UTIL_LIBS=""], [UTIL_LIBS="$ac_cv_search_openpty"])],
+  [AC_MSG_ERROR([openpty() is required (libutil on Linux/BSD, libc on macOS).])])
+LIBS="$ace_save_LIBS"
 AC_SUBST([UTIL_LIBS])
+
+# openpty()'s declaration lives in a different header per platform:
+#   <pty.h> on glibc, <util.h> on macOS/BSD, <libutil.h> on some BSDs.
+# The sources pick the right one from these HAVE_*_H defines.
+AC_CHECK_HEADERS([pty.h util.h libutil.h])
 
 # --- Required: zlib ---
 AC_CHECK_LIB([z], [inflate], [],

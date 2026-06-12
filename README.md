@@ -326,6 +326,39 @@ Optional:
 ./configure --without-gpm   # no GPM mouse
 ```
 
+### macOS (terminal `wpe`, via Homebrew)
+
+> **Untested on macOS so far.** The build is written to be portable (openpty's
+> header is selected per platform; GPM is Linux-only and skipped), but no one
+> has yet confirmed a clean macOS build -- treat the steps below as a starting
+> point and please [open an issue](https://codeberg.org/mendezr/xwpe/issues)
+> with what you hit, good or bad.
+>
+> On macOS the console editor `wpe` runs natively in Terminal.app or iTerm2 --
+> no X server needed. (The graphical `xwpe` would require XQuartz, and in this
+> release it looks and feels much like the terminal build, so `wpe` is the
+> recommended way to try xwpe on a Mac.)
+
+```sh
+# 1. Build tools + libraries (Apple's clang from `xcode-select --install` works)
+brew install autoconf automake pkg-config ncurses libvterm json-c texinfo
+
+# 2. Help the configure script find Homebrew's keg-only ncurses
+export PKG_CONFIG_PATH="$(brew --prefix ncurses)/lib/pkgconfig:$PKG_CONFIG_PATH"
+
+# 3. Build the terminal editor (no X11)
+autoreconf -fi
+./configure --without-x --without-gpm
+make
+
+# 4. Run it
+./wpe            # or: sudo make install   then   wpe
+```
+
+GPM is Linux-only, so `--without-gpm` is required (mouse still works through the
+terminal). `openpty()` (used by the debugger and Run panes) comes from the macOS
+system library; `configure` finds it automatically.
+
 ### External programs
 
 xwpe auto-detects the compiler, debugger and language server by file extension.
