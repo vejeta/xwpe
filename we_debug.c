@@ -6508,13 +6508,23 @@ static int e_lsp_pick_at(FENSTER *f, const char *title, const char *const *label
  return(sel);
 }
 
-/* e_lsp_pick - the picker at its default top-left position (outline, lenses,
-   workspace/file symbols, code actions). */
+/* e_lsp_pick - the picker at its default top-left position, for the "browse the
+   whole file/project" lists (outline, lenses, workspace/file symbols) where the
+   cursor position is irrelevant to the choice. */
 static int e_lsp_pick(FENSTER *f, const char *title, const char *const *labels,
                       int n)
 {
  return(e_lsp_pick_at(f, title, labels, n, -1, -1));
 }
+
+/* Screen cell currently under the text cursor.  A *contextual* popup (completion,
+   code actions) drops here so it appears AT the edit point -- like a real editor's
+   autocomplete -- instead of parked in the corner.  Mirrors fk_locate's mapping
+   of buffer coords to screen coords. */
+static int e_lsp_cursor_screen_x(FENSTER *f)
+{  return(f->a.x + f->b->b.x - f->s->c.x + 1);  }
+static int e_lsp_cursor_screen_y(FENSTER *f)
+{  return(f->a.y + f->b->b.y - f->s->c.y + 1);  }
 
 /* AltQ C -- offer completion candidates for the word under the cursor in a
    navigable popup (the dialog radio list); insert the chosen one, replacing the
@@ -6547,8 +6557,7 @@ static int e_lsp_ui_complete(FENSTER *f)
  /* Drop the list down AT THE CURSOR (over the partial word being completed), like
     a real editor's autocomplete, rather than a box at the screen corner. */
  sel = e_lsp_pick_at(f, "Complete", labels, n,
-                     f->a.x + b->b.x - s->c.x + 1,
-                     f->a.y + b->b.y - s->c.y + 1);
+                     e_lsp_cursor_screen_x(f), e_lsp_cursor_screen_y(f));
  if (sel < 0)
   return(0);
 
@@ -7111,7 +7120,10 @@ static int e_lsp_ui_code_actions(FENSTER *f)
  {  e_error("No code actions here.", 0, f->fb);  return(0);  }
  for (i = 0; i < n; i++)
   labels[i] = acts[i].title;
- sel = e_lsp_pick(f, "Code actions - Enter to apply", labels, n);
+ /* Quick-fixes apply to the symbol / diagnostic UNDER the cursor, so drop the
+    menu right there (like completion), not in the corner. */
+ sel = e_lsp_pick_at(f, "Code actions - Enter to apply", labels, n,
+                     e_lsp_cursor_screen_x(f), e_lsp_cursor_screen_y(f));
  if (sel < 0)
   return(0);
  text = e_lsp_buffer_text(f);

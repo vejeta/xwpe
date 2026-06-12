@@ -388,3 +388,59 @@ def test_completion_drops_down_at_the_cursor(tmp_path):
         line4 = w.text().split("\n")[3]
         assert line4.strip().startswith("v.") and len(line4.strip()) > 2, \
             "selecting a completion did not insert it (line 4 = %r)" % line4
+
+
+# A spelling typo on a LOW line: clangd flags it with a "did you mean" fix-it,
+# exposed as a quick-fix code action.  The padding lines push the error far down
+# the screen so an anchored picker lands well below the top-left corner.
+CODEACTION_PROG = (
+    "int compute(int value) {\n"
+    "    int result = value * 2;\n"
+    "    int pad_a = 0;\n"
+    "    int pad_b = 0;\n"
+    "    int pad_c = 0;\n"
+    "    int pad_d = 0;\n"
+    "    int pad_e = 0;\n"
+    "    return reslt + pad_a + pad_b + pad_c + pad_d + pad_e;\n"
+    "}\n"
+)
+
+
+def _row_of(w, term):
+    """Screen-row index of the first display row containing `term`, or -1."""
+    for i, r in enumerate(w.display()):
+        if term in r:
+            return i
+    return -1
+
+
+def test_code_actions_drop_down_at_the_cursor(tmp_path):
+    """Alt-Q A opens the quick-fix list ANCHORED at the cursor (the fix applies to
+    the symbol under the cursor), not parked in the top-left corner like the
+    browse-everything lists (outline / workspace symbols)."""
+    (tmp_path / "compile_flags.txt").write_text("-std=c++17\n")
+    with WpeSession(str(tmp_path), CODEACTION_PROG, filename="demo.cpp",
+                    wait=2.0) as w:
+        time.sleep(1.0)
+        w._drain(1.0)
+        w.key(ALT_Q, delay=0.4)
+        w.key("e", delay=9.0)             # start clangd; wait for the diagnostic
+        w._drain(2.0)
+        _find(w, "reslt")                 # cursor onto the typo, on a low line
+        cur = _cursor_line(w)
+        w.key(ALT_Q, delay=0.4)
+        w.key("a", delay=4.0)             # code actions
+        w._drain(1.0)
+        row = _row_of(w, "Code actions")
+        if row < 0:
+            pytest.skip("clangd offered no code action here (version/cold start)")
+        # the picker dropped at the cursor, NOT at the corner: the default
+        # e_lsp_pick parks its title around screen row 3; anchored at a cursor on
+        # line ~8 it appears well below that.
+        assert row >= 6, \
+            "code-action picker was not anchored at the cursor (title at row %d, "\
+            "cursor line %s):\n%s" % (row, cur, _text(w))
+        # and it is the real quick-fix: the 'did you mean result' spelling action
+        assert any("result" in r for r in w.display()), \
+            "code-action list is missing the spelling fix:\n%s" % _text(w)
+        w.key("\033", delay=0.6)          # Esc: don't apply, just checked position
