@@ -88,7 +88,7 @@ file is the active window.
 | `Alt-Q V` | expand selection (**V**isual) | Grow the block mark by *syntax* (token -> expr -> call -> statement -> block); pairs with `Alt-Q F`. |
 | `Alt-Q U` | highlight **U**ses | Mark every occurrence of the symbol in the current file (search by meaning, not text). |
 | `Alt-Q O` | **O**utline | The file's symbols in a popup; `RET` jumps. |
-| `Alt-Q Y` | inla**Y** hints (toggle) | Inferred `: T` types shown dim at end-of-line on un-annotated vals. |
+| `Alt-Q Y` | inla**Y** hints (toggle) | Inferred `: T` types shown as a distinct grey pill at end-of-line on un-annotated vals. |
 | `Alt-Q M` | se**M**antic colours (toggle) | Server-driven highlighting: types, calls, params and vars get distinct colours the regex lexer cannot tell apart. |
 | `Alt-Q L` | code **L**enses | The `run`/`debug`/`test` and reference annotations the server attaches to definitions. |
 | `Alt-Q W` | **W**orkspace symbol | Project-wide "Go to Symbol": type a query, jump to the match (opening its file). |

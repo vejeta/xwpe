@@ -460,13 +460,27 @@ int *e_sc_txt(int *c_sw, BUFFER *b)
 #ifdef DEBUGGER
 /* Draw line y's end-of-line LSP inlay hints (inferred types, and -- for a
    worksheet -- the evaluation result of each line), if the overlay is on,
-   starting at display column *jp -- a small gap, then the hint text in a dim
-   attribute -- clamped to the window's right edge; advances *jp.  No-op unless a
+   starting at display column *jp -- a small gap, then the hint text as a padded
+   "pill" in a distinct chip attribute -- clamped to the window's right edge;
+   advances *jp.  No-op unless a
    language server is attached and the overlay is on (Alt-Q Y, or automatic for a
    worksheet).  ASCII hint labels (Scala types/results are ASCII); see
    e_lsp_inlay_eol_text.  Non-static: both editor line painters call it --
    e_pr_c_line (syntax-on) here and e_pr_line (syntax-off) in we_wind.c -- so
    hints show either way. */
+/* Put one inlay cell at window column *jp (advancing it) if it still fits before
+   the window's right edge `limit`; a no-op past the edge.  Keeps e_pr_inlay_eol
+   reading as prose -- separator, padding, text, padding -- instead of repeating
+   the clamp + coordinate arithmetic at every step. */
+static void e_inlay_put_cell(int sx, int sy, int *jp, int limit,
+                             unsigned char ch, int attr)
+{
+ if (*jp >= limit)
+  return;
+ e_pr_char(sx + *jp, sy, ch, attr);
+ (*jp)++;
+}
+
 void e_pr_inlay_eol(FENSTER *f, int y, int *jp, int frb)
 {
  extern int e_lsp_inlay_active_for(FENSTER *f);
@@ -474,7 +488,8 @@ void e_pr_inlay_eol(FENSTER *f, int y, int *jp, int frb)
  extern int e_lsp_inlay_color(SCHIRM *s, int base);
  SCHIRM *s = f->s;
  const char *hint;
- int j = *jp, limit = NUM_COLS_ON_SCREEN + s->c.x - 1, attr, k;
+ int j = *jp, limit = NUM_COLS_ON_SCREEN + s->c.x - 1, attr;
+ int sx = f->a.x - s->c.x + 1, sy = y - s->c.y + f->a.y + 1;
 
  if (!e_lsp_inlay_active_for(f))
   return;
@@ -482,11 +497,14 @@ void e_pr_inlay_eol(FENSTER *f, int y, int *jp, int frb)
  if (!hint || !*hint)
   return;
  attr = e_lsp_inlay_color(s, frb);
- for (k = 0; k < 2 && j < limit; k++, j++)          /* gap after the code */
-  e_pr_char(f->a.x - s->c.x + j + 1, y - s->c.y + f->a.y + 1, ' ', frb);
- for (; *hint && j < limit; hint++, j++)
-  e_pr_char(f->a.x - s->c.x + j + 1, y - s->c.y + f->a.y + 1,
-            (unsigned char) *hint, attr);
+ /* One plain gap (the line's own colour) separates the code from the hint; then
+    the hint is a padded "pill" -- a leading space, the text, a trailing space --
+    all in the chip attribute, so it reads as a distinct badge. */
+ e_inlay_put_cell(sx, sy, &j, limit, ' ', frb);           /* separator */
+ e_inlay_put_cell(sx, sy, &j, limit, ' ', attr);          /* pill: left pad */
+ for (; *hint; hint++)
+  e_inlay_put_cell(sx, sy, &j, limit, (unsigned char) *hint, attr);
+ e_inlay_put_cell(sx, sy, &j, limit, ' ', attr);          /* pill: right pad */
  *jp = j;
 }
 #endif

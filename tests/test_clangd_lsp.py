@@ -112,3 +112,68 @@ def test_clangd_definition_into_readonly_header(tmp_path):
         assert any(LOCK in r for r in header_rows), \
             "the system header was not opened read-only (no padlock):\n%s" \
             % "\n".join(rows)
+
+
+# A vector + `auto` deduced variable guarantees clangd offers at least one
+# inlay hint (the deduced type), so the toggle has something to show.
+INLAY_PROG = (
+    "#include <vector>\n"
+    "\n"
+    "int main() {\n"
+    "    std::vector<int> v{1, 2, 3};\n"
+    "    auto count = v.size();\n"        # inlay -> the deduced type, e.g. : size_type
+    "    return (int) count;\n"
+    "}\n"
+)
+
+
+def _chip_cells(w):
+    """Editor cells drawn in the inlay 'chip' attribute (black on light grey).
+
+    The chip is palette 7-on-0 (Light Gray bg, Black fg); pyte names index 7
+    'white'.  Restrict to the editor body (rows 2..18) so the status bar -- which
+    also uses light-on-dark chrome -- cannot be mistaken for a hint."""
+    out = []
+    for y in range(2, 19):
+        for x in range(len(w.screen.buffer[y])):
+            c = w.screen.buffer[y][x]
+            if c.fg == "black" and c.bg == "white" and c.data not in (" ", ""):
+                out.append((y, x, c.data))
+    return out
+
+
+def test_clangd_inlay_hint_is_a_distinct_chip(tmp_path):
+    """Alt-Q Y renders inlay hints as a distinct black-on-light-grey 'pill'.
+
+    The hint used to be dim cyan on the line's own background, which blended into
+    green comments and the Borland-blue editor -- so users could not tell the
+    server annotation from the code (it read as invisible).  This asserts the
+    chip attribute is actually painted, not just that the toggle fired.
+
+    Green-or-skip: if clangd has not produced a hint yet (cold start), the toggle
+    reports 'none' and we skip rather than fail -- the rendering, not the server's
+    timing, is under test here."""
+    (tmp_path / "compile_flags.txt").write_text("-std=c++17 -Wall\n")
+    with WpeSession(str(tmp_path), INLAY_PROG, filename="demo.cpp", wait=2.0) as w:
+        time.sleep(1.0)
+        w._drain(1.0)
+        w.key(ALT_Q, delay=0.4)
+        w.key("e", delay=8.0)              # start clangd + first diagnostics
+        w._drain(2.0)
+        assert w.alive(), "wpe died starting clangd"
+
+        w.key(ALT_Q, delay=0.4)
+        w.key("y", delay=3.0)              # toggle inlay hints ON
+        w._drain(1.5)
+        assert w.alive(), "wpe died toggling inlay hints"
+
+        text = _text(w)
+        if "Inlay hints: none" in text:
+            pytest.skip("clangd returned no inlay hints yet (cold start)")
+        assert "Inlay hints: ON" in text, \
+            "inlay toggle did not turn on:\n%s" % text
+
+        chip = _chip_cells(w)
+        assert chip, \
+            "inlay hint was not painted as the black-on-light-grey chip:\n%s" \
+            % text

@@ -5233,7 +5233,8 @@ static void e_lsp_diag_clear(void)
 
 /* ---- inlay hints (Alt-Q Y) ---------------------------------------------- *
  * An OPT-IN, end-of-line overlay: when on, each line's inferred-type hints are
- * drawn dimly after the line's text (the renderer calls e_lsp_inlay_eol_text per
+ * drawn as a distinct grey pill after the line's text (the renderer calls
+ * e_lsp_inlay_eol_text per
  * line).  Unlike true IDE inlay hints we do NOT insert mid-line virtual text --
  * that would need a buffer<->screen column remap the 1993 cell grid has no layer
  * for -- so the hint sits at the line end, conveying the same information (": T")
@@ -5343,15 +5344,17 @@ const char *e_lsp_inlay_eol_text(int y)
  return(len ? buf : NULL);
 }
 
-/* The dim cell attribute for inlay text: grey foreground on the line's own
-   background where colour is available; the base attribute under mono ncurses. */
+/* The cell attribute for an inlay hint: a distinct "chip" -- black on light grey
+   -- so the server annotation reads as a badge and never blends into the code or
+   a trailing comment (the old dim-cyan-fg-on-line-bg was invisible against green
+   comments and the Borland blue).  Palette: 7 = Light Gray, 0 = Black; this also
+   stays clear of the red/brown the diagnostics chips use.  Under mono ncurses
+   there is no colour to spare, so fall back to the line's own attribute. */
 int e_lsp_inlay_color(SCHIRM *s, int base)
 {
  (void)s;
  if (WpeIsXwin() || col_num > 0)
-  return(16 * (base / 16) + 3);   /* cyan fg on the line's bg: a readable,
-                                     secondary "annotation" colour (dark grey
-                                     was too faint on the Borland blue) */
+  return(16 * 7 + 0);             /* black text on a light-grey pill */
  return(base);
 }
 
@@ -6615,7 +6618,7 @@ static int e_lsp_ui_inlay(FENSTER *f)
  }
  g_inlay_on = 1;
  snprintf(msg, sizeof(msg),
-          "Inlay hints: ON -- %d inferred type(s) shown dim at end of line. "
+          "Inlay hints: ON -- %d inferred type(s) shown as a grey pill at end of line. "
           "Alt-Q Y to hide.", g_inlay_nactive);
  e_d_p_message(msg, f, 1);              /* sw=1: repaints Messages + editor (hints) */
  e_cursor(f, 0);
@@ -6833,11 +6836,25 @@ static int e_lsp_ui_code_actions(FENSTER *f)
 static void e_lsp_replace_buffer(FENSTER *f, const char *newtext)
 {
  BUFFER *b = f->b;
+ int cx = b->b.x, cy = b->b.y, llen;
 
  e_add_undo('B', b, b->b.x, b->b.y, 0);   /* snapshot OLD buffer for Ctrl-U */
  e_buffer_set_text(b, newtext);
- b->b.x = 0;
- b->b.y = 0;
+ /* Keep the cursor where the user was working (clamped to the rebuilt buffer),
+    so a rename/format/code-action shows the edited spot in place -- a rename
+    leaves the symbol on its own line, so this keeps it on screen instead of
+    snapping the view to the top of the file. */
+ if (cy >= b->mxlines)
+  cy = b->mxlines > 0 ? b->mxlines - 1 : 0;
+ if (cy < 0)
+  cy = 0;
+ llen = b->bf[cy].s ? b->bf[cy].len : 0;
+ if (cx > llen)
+  cx = llen;
+ if (cx < 0)
+  cx = 0;
+ b->b.x = cx;
+ b->b.y = cy;
  f->save++;                         /* mark the window modified */
  e_firstl(f, 1);                    /* re-open the view over the new buffer */
  e_schirm(f, 1);
