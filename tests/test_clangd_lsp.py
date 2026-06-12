@@ -444,3 +444,79 @@ def test_code_actions_drop_down_at_the_cursor(tmp_path):
         assert any("result" in r for r in w.display()), \
             "code-action list is missing the spelling fix:\n%s" % _text(w)
         w.key("\033", delay=0.6)          # Esc: don't apply, just checked position
+
+
+def _problem_tooltip_open(w):
+    """True when a diagnostic tooltip (with the nav footer) is on screen."""
+    return any(("next" in r and "prev" in r) for r in w.display())
+
+
+def test_alt_q_chains_through_the_diagnostic_tooltip(tmp_path):
+    """While a problem tooltip is up, Alt-Q A closes it and opens the code-action
+    picker in ONE motion -- the dispatch is shared, so the prefix is not wasted on
+    just dismissing the tooltip (the friction the user reported)."""
+    (tmp_path / "compile_flags.txt").write_text("-std=c++17\n")
+    with WpeSession(str(tmp_path), CODEACTION_PROG, filename="demo.cpp",
+                    wait=2.0) as w:
+        time.sleep(1.0)
+        w._drain(1.0)
+        w.key(ALT_Q, delay=0.4)
+        w.key("e", delay=10.0)            # start clangd; wait for the diagnostic
+        w._drain(2.0)
+        w.key(ALT_Q, delay=0.4)
+        w.key(".", delay=2.5)             # jump to the problem -> tooltip, cursor on it
+        if not _problem_tooltip_open(w):
+            pytest.skip("clangd has not published the diagnostic yet")
+        # chain: Alt-Q A WHILE the tooltip is up -> should open code actions
+        w.key(ALT_Q, delay=0.4)
+        w.key("a", delay=4.0)
+        if not any("Code actions" in r for r in w.display()):
+            pytest.skip("clangd offered no quick-fix at the cursor")
+        assert any("Code actions" in r for r in w.display()), \
+            "Alt-Q A did not chain through the tooltip into the code-action "\
+            "picker:\n%s" % _text(w)
+        w.key("\033", delay=0.6)          # don't apply
+
+
+def test_undo_of_a_quick_fix_remarks_diagnostics(tmp_path):
+    """Applying a quick-fix clears the error; undoing it brings the error back AND
+    re-publishes the diagnostic marks.  Undo bypasses the per-keystroke Enter
+    debounce, so without an explicit re-sync the marks would lag the buffer (the
+    symptom the user hit: after Ctrl-U the re-introduced error stayed unmarked).
+
+    Alt-Q . is used to probe the diagnostic state because it does NOT itself sync
+    -- it only reads the marks clangd last published -- so it isolates whether the
+    undo re-sync actually happened."""
+    (tmp_path / "compile_flags.txt").write_text("-std=c++17\n")
+    with WpeSession(str(tmp_path), CODEACTION_PROG, filename="demo.cpp",
+                    wait=2.0) as w:
+        time.sleep(1.0)
+        w._drain(1.0)
+        w.key(ALT_Q, delay=0.4)
+        w.key("e", delay=10.0)            # start clangd; wait for the diagnostic
+        w._drain(3.0)
+        _find(w, "reslt")                 # cursor onto the typo
+        w.key(ALT_Q, delay=0.4)
+        w.key("a", delay=4.0)             # code actions
+        if not any("Code actions" in r for r in w.display()):
+            pytest.skip("clangd offered no quick-fix")
+        w.key("\r", delay=3.0)            # apply 'did you mean result'
+        w._drain(3.0)
+        # the fix cleared the error: Alt-Q . now reports nothing (non-syncing probe)
+        w.key(ALT_Q, delay=0.4)
+        w.key(".", delay=2.0)
+        if not any("No problems" in r for r in w.display()):
+            pytest.skip("the quick-fix did not clear the diagnostic (clangd variance)")
+        w.key("\033", delay=0.5)          # dismiss the "No problems" box
+
+        # UNDO the fix; the buffer is dirty again -> the re-sync must re-mark it
+        w.key("\x15", delay=1.5)          # Ctrl-U
+        w._drain(4.0)                     # let the auto-resync + republish land
+        w.key(ALT_Q, delay=0.4)
+        w.key(".", delay=2.5)             # jump to a problem -- needs fresh marks
+        assert not any("No problems" in r for r in w.display()), \
+            "after undo the diagnostics were NOT re-published (undo re-sync "\
+            "missing):\n%s" % _text(w)
+        assert _problem_tooltip_open(w), \
+            "Alt-Q . did not reopen a problem tooltip after undo:\n%s" % _text(w)
+        w.key("\033", delay=0.5)

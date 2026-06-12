@@ -6115,6 +6115,8 @@ static int e_lsp_ui_diagnostics(FENSTER *f)
 
 /* Defined below; the symbol actions snap the request to the identifier start. */
 static int e_lsp_symbol_col(FENSTER *f);
+static int e_lsp_ui_dispatch(FENSTER *f, int c);   /* run the Alt-Q action `c` */
+void e_lsp_after_bulk_edit(FENSTER *f);            /* re-sync after a whole-buffer edit */
 
 /* The three "jump to a location" actions (definition / implementation / type
    definition) differ only in the engine call and the not-found wording, so they
@@ -6357,8 +6359,13 @@ static int e_lsp_ui_hover(FENSTER *f)
    e_error("No hover information.", 0, f->fb);
   return(0);
  }
- e_lsp_cursor_popup(f, "Hover", hov, "Press any key to close"); /* tooltip at cursor */
- free(hov);
+ { int k = e_lsp_cursor_popup(f, "Hover", hov, "Press any key to close");
+   free(hov);
+   /* Alt-Q while the peek is up: chain straight into the next action (e.g. hover
+      then Alt-Q d to jump to the definition) instead of just dismissing. */
+   if (k == AltQ)
+    return(e_lsp_ui_dispatch(f, e_getch()));
+ }
  return(0);
 }
 
@@ -6597,8 +6604,11 @@ static int e_lsp_ui_signature(FENSTER *f)
  sig = e_lsp_signature_help(g_lsp, g_lsp_file, b->b.y, b->b.x);
  if (!sig || !*sig)
  {  if (sig) free(sig);  e_error("No signature here.", 0, f->fb);  return(0);  }
- e_lsp_cursor_popup(f, "Signature", sig, "Press any key to close");
- free(sig);
+ { int k = e_lsp_cursor_popup(f, "Signature", sig, "Press any key to close");
+   free(sig);
+   if (k == AltQ)                       /* chain into the next Alt-Q action */
+    return(e_lsp_ui_dispatch(f, e_getch()));
+ }
  return(0);
 }
 
@@ -6673,14 +6683,19 @@ static int e_lsp_ui_jump_diag(FENSTER *f, int dir)
        : (g_diag_active[idx].sev == 3) ? "Info" : "Hint";
   c = e_lsp_cursor_popup(f, kind, g_diag_active[idx].msg,
                          ". next   , prev   any other key closes");
-  if (c == AltQ)                                  /* pressed the Alt-Q prefix again: */
-   c = e_getch();                                 /* take its letter so '.'/',' still */
-                                                  /* navigate (and don't leak a '.')  */
+  if (c == AltQ)                                  /* re-pressed the Alt-Q prefix:    */
+  {
+   int k = e_getch();                             /* take its letter                 */
+   if (k == '.')  {  dir = +1;  continue;  }      /* '.'/',' keep walking the list   */
+   if (k == ',')  {  dir = -1;  continue;  }
+   return(e_lsp_ui_dispatch(f, k));               /* Alt-Q <action>: close + run it
+                                                     (e.g. Alt-Q A to fix it here)   */
+  }
   if (c == '.')
-  {  dir = +1;  continue;  }                      /* keep stepping forward...       */
+  {  dir = +1;  continue;  }                      /* bare '.' keeps stepping forward */
   if (c == ',')
   {  dir = -1;  continue;  }                      /* ...or backward                  */
-  break;                                          /* any other key dismisses        */
+  break;                                          /* any other key dismisses         */
  }
  return(0);
 }
@@ -7186,6 +7201,9 @@ static void e_lsp_replace_buffer(FENSTER *f, const char *newtext)
                                        its rewrite immediately, not on the next
                                        keystroke (same flush the worksheet results
                                        need from the fd-loop). */
+ e_lsp_after_bulk_edit(f);          /* tell the server the buffer changed, so its
+                                       diagnostics re-publish for the fixed text
+                                       (e.g. the error a quick-fix removed clears) */
 }
 
 /* The identifier under the cursor (for the rename default), or "" . */
@@ -7307,6 +7325,18 @@ void e_lsp_on_edit(FENSTER *f, int c)
   e_lsp_sync(f);
  e_lsp_inlay_refresh_pending(f);    /* re-query inlays if the server flagged them */
  e_lsp_sem_refresh_pending(f);      /* re-query semantic tokens if flagged */
+}
+
+/* A whole-buffer edit (undo / redo) landed from outside the per-keystroke path.
+   Push it to the server unconditionally so diagnostics, inlays and semantic
+   tokens re-publish for the restored text -- undo doesn't go through the Enter
+   debounce, so without this the marks would lag the buffer (the symptom: undoing
+   a code-action fix leaves the re-introduced error unmarked). */
+void e_lsp_after_bulk_edit(FENSTER *f)
+{
+ if (!g_lsp || !e_lsp_started(g_lsp))
+  return;
+ e_lsp_on_edit(f, WPE_CR);          /* WPE_CR path = poll + sync + refresh inlays */
 }
 
 /* Disconnect the language server (called on editor exit). */
@@ -7569,16 +7599,13 @@ int e_lsp_ui_menu(FENSTER *f)
  return(0);
 }
 
-/* Alt-Q: the language-server command prefix, in the Borland spirit of Ctrl-K for
-   blocks -- the menu (Alt-B / a click) is the discoverable path, the prefix is
-   the silent fast one.  Read the next key and run the matching action DIRECTLY,
-   drawing no menu (so a fluent user gets no flicker).  '?' or F1 or any key we
-   do not recognise opens the action menu for discovery; ESC cancels. */
-int e_lsp_ui_key(FENSTER *f)
+/* Run the Alt-Q action selected by `c` (the key pressed after the prefix).  Split
+   out of e_lsp_ui_key so a dismissable tooltip can re-dispatch: while a hover /
+   signature / problem tooltip is up, pressing Alt-Q <letter> closes it and runs
+   that action in one motion, instead of just eating the keystroke.  '?' / F1 /
+   anything unknown opens the action menu; ESC cancels. */
+static int e_lsp_ui_dispatch(FENSTER *f, int c)
 {
- int c = e_getch();
-
- e_lsp_ui_trace("e_lsp_ui_key c=%d '%c'", c, (c >= 32 && c < 127) ? c : '?');
  switch (c)
  {
   case 'd': case ('d' - 'a' + 1):
@@ -7634,6 +7661,17 @@ int e_lsp_ui_key(FENSTER *f)
   default:
    return(e_lsp_ui_menu(f));         /* '?', F1, anything else -> the menu  */
  }
+}
+
+/* Alt-Q: the language-server command prefix, in the Borland spirit of Ctrl-K for
+   blocks -- the menu (Alt-B / a click) is the discoverable path, the prefix is
+   the silent fast one.  Read the action key and dispatch it. */
+int e_lsp_ui_key(FENSTER *f)
+{
+ int c = e_getch();
+
+ e_lsp_ui_trace("e_lsp_ui_key c=%d '%c'", c, (c >= 32 && c < 127) ? c : '?');
+ return(e_lsp_ui_dispatch(f, c));
 }
 
 #endif

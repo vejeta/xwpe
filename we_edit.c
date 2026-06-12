@@ -2699,6 +2699,16 @@ int e_make_rudo(FENSTER *f, int sw)
  FREE(ud);
  e_schirm(f, 1);
  e_cursor(f, 1);
+#ifdef DEBUGGER
+ {
+  /* The buffer just changed wholesale (undo or redo).  The per-keystroke LSP
+     hook debounces on Enter, which an undo never sends -- so push the restored
+     text to the server now, or its diagnostics/inlays would describe the
+     pre-undo text (e.g. the errors vanish after undoing a quick-fix). */
+  extern void e_lsp_after_bulk_edit(FENSTER *f);
+  e_lsp_after_bulk_edit(f);
+ }
+#endif
  return(0);
 }
 
