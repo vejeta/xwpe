@@ -395,6 +395,27 @@ and navigation/hover silently return empty, so keep `JAVA_HOME` on the 17/21 JDK
 above. (`//> using jvm temurin:21` in `project.scala` pins only the *build* JVM,
 not Metals' own.)
 
+**Put the servers on `PATH` -- Homebrew does not always.** xwpe finds each server
+by name on `PATH`; the keg-only and Coursier ones are not there by default:
+
+```sh
+export PATH="$(brew --prefix llvm)/bin:$PATH"                  # clangd (llvm is keg-only)
+export PATH="$PATH:$HOME/Library/Application Support/Coursier/bin"  # metals, scala-cli
+which clangd rust-analyzer metals scala-cli                    # confirm before launching
+```
+
+Then open one of the bundled demo projects **as `wpe`** (programming mode) and
+press `Alt-Q E` to start the server (`Alt-Q ?` lists every action):
+
+```sh
+./wpe docs/examples/c-lsp/main.cpp       # clangd -- ready in ~2s (compile_flags.txt is included)
+./wpe docs/examples/rust-lsp/src/main.rs # rust-analyzer (the dir has Cargo.toml)
+./wpe docs/examples/scala-lsp/main.scala # Metals -- FIRST start downloads + indexes (minutes)
+```
+
+Each `docs/examples/*-lsp/` directory has a `README.md` walking through every
+`Alt-Q` action on that file.
+
 ### External programs
 
 xwpe auto-detects the compiler, debugger and language server by file extension.
