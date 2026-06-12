@@ -54,11 +54,11 @@ wpe file.c          # terminal mode
 xwpe file.c         # X11 mode
 ```
 
-The X11 libraries (`libxft-dev`, `libcairo2-dev`, `libpango1.0-dev`)
-enable the anti-aliased Xft/Cairo rendering used by `xwpe`. They are
-optional: `configure` detects them and falls back automatically, so a
-console-only build needs only `libncurses-dev` (plus the build tools).
-`texinfo` is needed to build the `info xwpe` manual.
+That is the Debian/Ubuntu fast path. For a generic-Linux dependency list, the
+**macOS** (Homebrew) build, the optional `configure` flags, and what
+`make install` provides, see [**Building & installing**](#building--installing)
+below. (`make install` is what enables full syntax highlighting and the in-app
+Help -- skip it and only C/C++ highlight.)
 
 ## What's new in 1.6.5 (in development, not yet tagged)
 
@@ -311,21 +311,40 @@ call stack -- the same Borland keys as the other backends.
 Program output is captured in the Messages buffer (same window as
 compiler errors). Ctrl-G P shows output with full scroll at any time.
 
-## Building
+## Building & installing
+
+`sudo make install` is part of the normal build, not an afterthought: it
+installs `syntax_def` (the syntax-highlighting rules), the in-app help, the
+option file and the man page. **Skip it and you get only the built-in C/C++
+highlighting and no Help.** To run straight from the build directory without
+installing, copy the rules file into your home config:
+`mkdir -p ~/.xwpe && cp syntax_def ~/.xwpe/`.
+
+### Linux (any distribution, from source)
+
+Needs a C compiler, autotools and pkg-config, plus **ncursesw** (required),
+**libvterm** and **json-c**. **X11 + Xft + Cairo + Pango** are optional (only
+the graphical `xwpe` uses them); **GPM** is optional (Linux-console mouse).
 
 ```sh
-autoreconf -fi   # only needed from git
-./configure
+autoreconf -fi   # only from a git checkout
+./configure      # --without-x = terminal-only;  --without-gpm = no GPM mouse
 make
 sudo make install
 ```
 
-Optional:
+### Debian / Ubuntu
 
 ```sh
-./configure --without-x     # terminal-only (no X11)
-./configure --without-gpm   # no GPM mouse
+sudo apt install build-essential autoconf automake pkg-config texinfo \
+  libncurses-dev libx11-dev libxft-dev libcairo2-dev libpango1.0-dev \
+  libvterm-dev libjson-c-dev libgpm-dev zlib1g-dev librsvg2-bin
+autoreconf -fi && ./configure && make && sudo make install
 ```
+
+The X11 libraries enable `xwpe`'s anti-aliased Xft/Cairo rendering; for a
+console-only build drop them and pass `--without-x` (only `libncurses-dev` plus
+the build tools are then required). `texinfo` builds the `info xwpe` manual.
 
 ### macOS (terminal `wpe`, via Homebrew)
 
@@ -360,6 +379,20 @@ make
 `./xwe` on X11 builds) -- the **mode is chosen by the name**, so launch it as
 `./wpe` to get the programming layer (Alt-Q LSP, F9 compile, Ctrl-G debug);
 `./we` is the plain editor.
+
+**Syntax highlighting and Help need the data files.** Run `sudo make install`,
+or (to stay in the build dir) `mkdir -p ~/.xwpe && cp syntax_def ~/.xwpe/` --
+without it only C/C++ highlight and `Alt-Q`/Help have no content.
+
+**Make the terminal send `Alt`.** xwpe's menus and the whole `Alt-Q` LSP layer
+need the `Option`/`Alt` key to send a Meta/`Esc` prefix, which **Terminal.app
+does not do by default** -- so `Alt-Q` etc. appear to do nothing. Fix it once:
+
+- **Terminal.app:** Settings -> Profiles -> Keyboard -> tick *"Use Option as
+  Meta key"*.
+- **iTerm2:** Settings -> Profiles -> Keys -> set *Left Option key* to *Esc+*.
+- Or use a terminal that does this out of the box (**kitty**, **WezTerm**,
+  **Alacritty**). iTerm2/kitty are the smoothest for xwpe on macOS.
 
 GPM is Linux-only, so `--without-gpm` is required (mouse still works through the
 terminal via ncurses). `openpty()` (used by the debugger and Run panes) comes
