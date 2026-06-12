@@ -4,8 +4,10 @@ xwpe's seventh debugger backend, `DEB_DAP`, speaks the **Debug Adapter
 Protocol** — the wire protocol behind VS Code, Neovim and Emacs DAP.  Instead
 of a hand-written, per-language text-scraping backend (as for gdb, jdb, pdb,
 a68g), one DAP client gives source-level debugging for *any* language with a
-DAP adapter.  Today: **Go** (Delve) and **Rust** (gdb).  Adding a language is a
-one-row descriptor, never new plumbing.
+DAP adapter.  Today: **Go** (Delve), **Rust** (gdb/lldb-dap) and **Scala/JVM**
+(Bloop's `scala-debug-adapter`, reached over a BSP handshake).  Adding a language
+on one of the three existing transports is a one-row descriptor; only a genuinely
+new transport (as Scala's BSP-hosted endpoint was) needs new plumbing.
 
 This file is the contributor reference for that subsystem.  For *using* the
 debugger (keys, requirements) see the "Debugging" chapter of the manual
@@ -273,15 +275,22 @@ lldb-dap is the native Rust/C/C++ debugger on macOS and works identically here
 
 ## Status and next
 
-Wired: Go (Delve, reverse-TCP), Rust (gdb **or** lldb-dap, stdio).  Natural
-follow-ups, all on the existing two transports:
+The DAP **client** (task #49) is done.  Wired, and integration-tested against
+real adapters (`tests/test_dap_*`, each self-skips when its tooling is absent):
 
-* **C/C++** via gdb/lldb-dap — a real new *language*.  Would need a `DEB_DAP`
-  opt-in versus the legacy gdb text backend for `.c`/`.cpp` (those extensions
-  already route to the text backend today).  Once opted in it is two
-  `DAP_LANGS` rows (gdb + lldb-dap alternative), like Rust.
-* **Scala** via Metals — heavier: Metals is an LSP server that exposes DAP
-  through a build server (Bloop/sbt), so it needs a discovery/handshake layer
-  on top of the TCP transport, not just a descriptor row.  Blocked here until
-  `scalac`/`metals` are installed to probe against.
-* **DAP *server* mode** (task #50) — expose xwpe itself as a debuggee target.
+* **Go** — Delve (`dlv dap`), reverse-TCP transport.
+* **Rust** — gdb (`--interpreter=dap`) **or** lldb-dap, stdio transport.
+* **Scala/JVM** — Bloop's `scala-debug-adapter`, reached over the BSP bootstrap
+  (`we_bsp.c`: `scala-cli setup-ide` → BSP `debugSession/start` → a `tcp://`
+  endpoint) and driven over the TCP transport.  This is the third transport, no
+  longer a blocked follow-up.
+
+Remaining:
+
+* **C/C++** via gdb/lldb-dap — a real new *language*, not a new transport.  Would
+  need a `DEB_DAP` opt-in versus the legacy gdb text backend for `.c`/`.cpp`
+  (those extensions already route to the text backend today).  Once opted in it
+  is two `DAP_LANGS` rows (gdb + lldb-dap alternative), like Rust.
+* **DAP *server* mode** (task #50, deferred to v2.0) — expose xwpe itself as a
+  debuggee target, so other DAP clients (VS Code, nvim-dap) can drive an xwpe
+  debug session.
