@@ -105,16 +105,15 @@ emulator.
   every use, **L** code lenses, **Y** inlay hints (inferred types) and **M**
   semantic colours (compiler-driven highlighting). `Alt-Q ?` opens a menu of
   them all. **C and C++ are wired too, via [clangd](https://clangd.llvm.org/)**
-  (`apt install clangd`) &mdash; the same keys, the same engine, no JVM and no
+  &mdash; the same keys, the same engine, no JVM and no
   build-server wait, so it is ready in seconds and `Alt-Q D` follows straight
   into the system headers (opened read-only). **Python is wired via
   [pyright](https://github.com/microsoft/pyright) or
   [pylsp](https://github.com/python-lsp/python-lsp-server)** &mdash; xwpe uses
   whichever is on `PATH` (prefers pyright, the VS Code engine; falls back to the
-  Debian-native `python3-pylsp`). **Go** ([gopls](https://pkg.go.dev/golang.org/x/tools/gopls),
-  `apt install gopls`) and **Rust**
-  ([rust-analyzer](https://rust-analyzer.github.io/), `apt install rust-analyzer`)
-  are wired too. The engine (`we_lsp.c`) reuses the DAP JSON-RPC framing (no new
+  Debian-native `python3-pylsp`). **Go**
+  ([gopls](https://pkg.go.dev/golang.org/x/tools/gopls)) and **Rust**
+  ([rust-analyzer](https://rust-analyzer.github.io/)) are wired too. The engine (`we_lsp.c`) reuses the DAP JSON-RPC framing (no new
   dependency) and is integration-tested against a real Metals, clangd, Python
   server, gopls *and* rust-analyzer &mdash; **five languages, one engine**; adding
   a server is a one-row descriptor, not new plumbing.
@@ -133,16 +132,13 @@ emulator.
   | [`docs/examples/go-lsp/`](docs/examples/go-lsp/)         | Go     | gopls           | [tour](docs/demos/gifs/go/tour.gif) |
   | [`docs/examples/rust-lsp/`](docs/examples/rust-lsp/)     | Rust   | rust-analyzer   | [tour](docs/demos/gifs/rust/tour.gif) |
 
-  **Prerequisites (Debian/Ubuntu):** `cs install metals scala-cli`, **plus an LTS
-  JDK (17 or 21) that *Metals* runs on**: `sudo apt install openjdk-21-jdk` then
-  `export JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64`. The subtle part: `//>
-  using jvm temurin:21` in `project.scala` pins only the *build* JVM &mdash;
-  Metals' own presentation compiler (hover, completion, go-to-definition) runs on
-  the JVM `JAVA_HOME` points at, so it must be a JDK 17/21. On a too-new default
-  JDK (e.g. OpenJDK 26) the Scala 3 presentation compiler crashes (`asTerm called
-  on not-a-Term`) and navigation/hover silently return empty. *(macOS: the same
-  rule applies &mdash; see the [macOS](#macos-terminal-wpe-via-homebrew) build
-  section for the Homebrew equivalents.)* See
+  Install each server from [**Building & installing**](#building--installing)
+  (Debian and macOS). One Metals caveat worth knowing: it needs an **LTS JDK (17
+  or 21)** in `JAVA_HOME` &mdash; its presentation compiler (hover, completion,
+  go-to-definition) runs there, and a too-new JDK (e.g. OpenJDK 26) crashes it
+  (`asTerm called on not-a-Term`) so hover/navigation silently return empty.
+  (`//> using jvm temurin:21` in `project.scala` pins only the *build* JVM, not
+  Metals' own.) See
   **[`docs/LSP.md`](docs/LSP.md)** for the feature guide (every `Alt-Q` action,
   with clips), or the **Language servers** chapter of the manual (`info xwpe`,
   or Help&nbsp;&rarr;&nbsp;Info) for the full reference.
@@ -420,14 +416,19 @@ sudo apt install rustc                 # Rust (rustc -g)
 sudo apt install gdb                   # C/C++/Fortran/Pascal/Rust debugger
 ```
 
-Modern IDE/debug toolchains that are not in the archive:
+Language servers for the `Alt-Q` LSP layer (xwpe uses whichever is on `PATH`):
 
 ```sh
-# Scala -- IDE features (LSP via Metals) and debugging (DAP via Bloop):
-cs install scala-cli metals            # coursier; https://get-coursier.io
-sudo apt install openjdk-21-jdk        # an LTS JDK Metals runs on (see the manual)
-# Go -- source-level debugging (DAP via Delve):
-go install github.com/go-delve/delve/cmd/dlv@latest
+sudo apt install clangd gopls rust-analyzer python3-pylsp   # C/C++, Go, Rust, Python
+cs install metals scala-cli                                 # Scala (coursier; get-coursier.io)
+sudo apt install openjdk-21-jdk                             # Metals' JVM: an LTS JDK 17/21...
+export JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64         # ...keep JAVA_HOME on it (see above)
+```
+
+DAP debug servers that are not in the archive:
+
+```sh
+go install github.com/go-delve/delve/cmd/dlv@latest         # Go (Delve)
 ```
 
 ### Console tips
@@ -446,8 +447,9 @@ mouse works natively.
 
 ## Syntax highlighting
 
-Ships with C, C++, Fortran, Pascal, Java, Python, LaTeX, Perl, COBOL. Install with
-`sudo make install` or copy `syntax_def` to `~/.xwpe/syntax_def`.
+Ships with C, C++, Fortran, Pascal, Java, Python, LaTeX, Perl, COBOL. The rules
+live in `syntax_def`, found via `sudo make install` or `XWPE_LIB` (see
+[Building & installing](#building--installing)).
 
 The format is documented in `docs/chapters/configuration.texi`. Adding
 a language requires listing keywords, operators, and comment delimiters.
