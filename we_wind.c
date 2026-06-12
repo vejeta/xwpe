@@ -293,7 +293,7 @@ char **StringToStringArray(char *str, int *maxLen, int minWidth, int *anzahl)
 
 /*
       Print error message        */
-int e_error(char *text, int sw, FARBE *f)
+static int e_error_run(char *text, int sw, FARBE *f)
 {
  PIC *pic = NULL;
  int len, i, xa, xe, ya = 8, ye = 14;
@@ -362,6 +362,27 @@ e_error_restart:
  if (sw == 1) e_quit(WpeEditor->f[WpeEditor->mxedt]);
  if (sw > 0) WpeExit(sw);
  return(sw);
+}
+
+/* e_error - public entry to the message box (errors and plain "Message" notes,
+   e.g. an LSP action's "No references found", shown right after the action while
+   the server may still be streaming).  It runs its own getch loop over a box that
+   pushes no window, so -- like e_opt_kst and WpeHandleSubmenu -- it brackets the
+   async LSP fd-loop's painting with the modal-depth guard, so a server update
+   arriving behind the box cannot draw under it and corrupt it.  A fatal error
+   (sw >= 1) exits from e_error_run and never returns -- fine, the process is going
+   away, so the unbalanced guard never matters. */
+int e_error(char *text, int sw, FARBE *f)
+{
+ int ret;
+#ifdef DEBUGGER
+ e_lsp_modal_enter();
+#endif
+ ret = e_error_run(text, sw, f);
+#ifdef DEBUGGER
+ e_lsp_modal_leave();
+#endif
+ return(ret);
 }
 
 /*   message with selection        */

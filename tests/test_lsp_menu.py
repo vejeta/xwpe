@@ -415,6 +415,40 @@ def test_eager_start_skips_non_lsp_file(tmp_path):
         w.close()
 
 
+def test_error_box_brackets_the_lsp_modal_guard(tmp_path, monkeypatch):
+    """A message box (e_error) suspends the async LSP fd-loop's painting too.
+
+    Most LSP actions report an empty result through an e_error box ("No references
+    found", "No hover information", ...), shown right after the action while the
+    server may still be streaming -- so a Metals update must not draw under the
+    box.  e_error runs its own getch loop over a box that pushes no window, so it
+    brackets the modal-depth guard like e_opt_kst / WpeHandleSubmenu.
+
+    Deterministic trigger needing no server: Alt-Q on a .pl (no LSP descriptor)
+    pops the "unsupported file type" e_error box.  Assert via XWPE_UI_TRACE that
+    opening it enters the guard and dismissing it leaves, balanced."""
+    trace = tmp_path / "ui.trace"
+    monkeypatch.setenv("XWPE_UI_TRACE", str(trace))
+    w = _Wpe(str(tmp_path), [("hello.pl", "print \"hi\\n\";\n")])
+    try:
+        w.key("\033q", delay=0.3)          # Alt-Q prefix
+        w.key("?", delay=0.6)              # -> e_lsp_ui_menu -> e_error (no server)
+        body = w.text()
+        assert "unsupported file type" in body, \
+            "Alt-Q on a server-less file did not pop the e_error box\n%s" % body
+        w.key("\033", delay=0.4)           # dismiss the box
+        log = trace.read_text() if trace.exists() else ""
+        enters = log.count("lsp modal enter")
+        leaves = log.count("lsp modal leave")
+        assert enters >= 1, \
+            "the e_error box did not enter the LSP modal guard:\n%s" % log
+        assert enters == leaves, \
+            "LSP modal guard not balanced (enter=%d leave=%d):\n%s" \
+            % (enters, leaves, log)
+    finally:
+        w.close()
+
+
 @pytest.mark.skipif(shutil.which("metals") is None or shutil.which("scala-cli") is None,
                     reason="metals and scala-cli required")
 def test_eager_start_on_open_boots_metals(tmp_path):

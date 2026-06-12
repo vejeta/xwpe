@@ -199,7 +199,7 @@ def test_altq_menu_brackets_the_lsp_modal_guard(tmp_path):
         time.sleep(0.8)
         w._drain(1.0)
         w.key(ALT_Q, delay=0.4)
-        w.key("?", delay=0.8)              # Alt-Q ? -> the action menu (e_opt_kst)
+        w.key("?", delay=0.8)              # Alt-Q ? -> the action menu (WpeHandleSubmenu)
         w._drain(0.6)
         assert w.alive(), "wpe died opening the Alt-Q menu"
         rows = w.display()
