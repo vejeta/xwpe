@@ -48,15 +48,36 @@ root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 if command -v brew >/dev/null 2>&1; then
   llvm=$(brew --prefix llvm 2>/dev/null || true)        # clangd is keg-only
   [ -n "$llvm" ] && [ -x "$llvm/bin/clangd" ] && emit_path "$llvm/bin"
-
-  jdk=$(brew --prefix openjdk@21 2>/dev/null || true)   # Metals needs JDK 17/21
-  [ -z "$jdk" ] && jdk=$(brew --prefix openjdk@17 2>/dev/null || true)
-  [ -n "$jdk" ] && [ -d "$jdk/libexec/openjdk.jdk/Contents/Home" ] && \
-    emit_var JAVA_HOME "$jdk/libexec/openjdk.jdk/Contents/Home"
 fi
+
+# --- JAVA_HOME: an LTS JDK (21 preferred, then 17) for Metals ----------------
+# Try, in order: Homebrew, the macOS java_home registry, the Linux /usr/lib/jvm
+# layout (Debian/Ubuntu/Fedora/Arch).  First match wins; absent -> nothing.
+jhome=
+if command -v brew >/dev/null 2>&1; then
+  for f in openjdk@21 openjdk@17; do
+    p=$(brew --prefix "$f" 2>/dev/null || true)
+    [ -n "$p" ] && [ -d "$p/libexec/openjdk.jdk/Contents/Home" ] && {
+      jhome="$p/libexec/openjdk.jdk/Contents/Home"; break; }
+  done
+fi
+if [ -z "$jhome" ] && [ -x /usr/libexec/java_home ]; then   # macOS registry
+  for v in 21 17; do
+    p=$(/usr/libexec/java_home -v "$v" 2>/dev/null || true)
+    [ -n "$p" ] && { jhome="$p"; break; }
+  done
+fi
+if [ -z "$jhome" ]; then                                    # Linux /usr/lib/jvm
+  for d in /usr/lib/jvm/*21* /usr/lib/jvm/*17*; do
+    [ -d "$d" ] && [ -x "$d/bin/javac" ] && { jhome="$d"; break; }
+  done
+fi
+[ -n "$jhome" ] && emit_var JAVA_HOME "$jhome"
 
 # --- Coursier app dir (metals, scala-cli) -- macOS and Linux locations -------
 for d in "$HOME/Library/Application Support/Coursier/bin" \
          "$HOME/.local/share/coursier/bin"; do
   [ -d "$d" ] && emit_path "$d"
 done
+
+exit 0   # success even when the last probe (a missing dir) returned non-zero

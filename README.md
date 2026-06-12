@@ -399,9 +399,10 @@ contrib/xwpe-env --shell fish | source   # fish         (-> ~/.config/fish/confi
 which clangd rust-analyzer metals        # confirm before launching
 ```
 
-> The helper is plain POSIX `sh`, so it also works on Linux/BSD (there it mostly
-> just sets `XWPE_LIB`, since the package manager already puts the servers on
-> `PATH`). Metals needs a JDK 17/21 in `JAVA_HOME` -- a too-new one makes
+> The helper is plain POSIX `sh`, so it also works on Linux/BSD (there it sets
+> `XWPE_LIB` and finds a 17/21 JDK under `/usr/lib/jvm` for `JAVA_HOME`; the
+> package manager already puts the servers on `PATH`). Metals needs that JDK
+> 17/21 in `JAVA_HOME` -- a too-new one makes
 > hover/navigation silently empty -- and its first start indexes for minutes;
 > `coursier setup` is Coursier's own bootstrap that also configures Scala's
 > `JAVA_HOME`/`PATH`.
