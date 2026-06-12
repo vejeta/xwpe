@@ -121,7 +121,9 @@ emulator.
 
   **Try it in your language.** Each has a small, fully-commented demo project
   that exercises every `Alt-Q` action in that language's own idioms &mdash; open
-  it and read down the code &mdash; plus a short tour GIF in its README:
+  it and read down the code &mdash; plus a **captioned tour GIF** that walks the
+  breadth of LSP (hover, inlay hints, highlight-all-uses, references, outline)
+  and ends on a **rename refactor with Undo**:
 
   | Demo (open with `wpe`) | Language | Server | Tour |
   |---|---|---|---|
@@ -145,8 +147,13 @@ emulator.
   or Help&nbsp;&rarr;&nbsp;Info) for the full reference.
 
   <p align="center">
-    <img src="docs/demos/gifs/menu.gif" width="640" alt="Pressing Alt-Q ? in xwpe opens the Metals action menu, an upward-unfolding Borland-style dropdown listing every LSP command with its Alt-Q accelerator.">
-    <br><em>The Metals action menu (<code>Alt-Q ?</code>): every LSP command, discoverable, with its accelerator. More clips in <a href="docs/demos/">docs/demos/</a> and the per-language tours above.</em>
+    <img src="docs/demos/gifs/c/tour.gif" width="760" alt="A tour of xwpe's LSP features on a C/C++ file via clangd: hover shows the signature, Alt-Q Y reveals inferred inlay-hint types end-of-line, Alt-Q U highlights every use of the symbol, references list in the Messages window, the file outline pops up, and finally Alt-Q N renames total to tally across the whole file -- then Ctrl-U undoes the entire refactor. The pressed keys are captioned along the bottom.">
+    <br><em>One tour, the breadth of LSP &mdash; hover, inlay hints, highlight-all-uses, references, outline, and a <strong>rename refactor with Undo</strong> &mdash; here in C via clangd. Every wired language has its own captioned tour: <a href="docs/demos/gifs/python/tour.gif">Python</a> &middot; <a href="docs/demos/gifs/go/tour.gif">Go</a> &middot; <a href="docs/demos/gifs/rust/tour.gif">Rust</a> &middot; <a href="docs/demos/gifs/c/tour.gif">C/C++</a>.</em>
+  </p>
+
+  <p align="center">
+    <img src="docs/demos/gifs/menu.gif" width="540" alt="Pressing Alt-Q ? in xwpe opens the Metals action menu, an upward-unfolding Borland-style dropdown listing every LSP command with its Alt-Q accelerator.">
+    <br><em>And it stays discoverable: <code>Alt-Q ?</code> unfolds the full action menu, every command with its accelerator. More clips in <a href="docs/demos/">docs/demos/</a>.</em>
   </p>
 
   <p align="center">
