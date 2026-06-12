@@ -476,7 +476,7 @@ int WpeHandleMainmenu(int n, FENSTER *f)
 }
 
 /* sub menu box */
-int WpeHandleSubmenu(int xa, int ya, int xe, int ye, int nm, OPTK * fopt, FENSTER * f)
+static int WpeHandleSubmenu_run(int xa, int ya, int xe, int ye, int nm, OPTK * fopt, FENSTER * f)
 {
 #if MOUSE
   extern struct mouse e_mouse;
@@ -672,6 +672,24 @@ int WpeHandleSubmenu(int xa, int ya, int xe, int ye, int nm, OPTK * fopt, FENSTE
   }
   e_close_view(pic, 1);
   return(c == WPE_ESC ? 255 : c);
+}
+
+/* WpeHandleSubmenu - public entry to the dropdown engine (top File/Edit menus and
+   the Alt-Q language-server menu).  Runs the real loop with the async LSP fd-loop's
+   painting suspended for the dropdown's lifetime, so a server update arriving while
+   a menu is open never draws under the box and corrupts it.  The box pushes no
+   window, so the suspend is by depth counter (e_lsp_modal_enter/leave). */
+int WpeHandleSubmenu(int xa, int ya, int xe, int ye, int nm, OPTK * fopt, FENSTER * f)
+{
+  int ret;
+#ifdef DEBUGGER
+  e_lsp_modal_enter();
+#endif
+  ret = WpeHandleSubmenu_run(xa, ya, xe, ye, nm, fopt, f);
+#ifdef DEBUGGER
+  e_lsp_modal_leave();
+#endif
+  return(ret);
 }
 
 /*      fill "options" struct */

@@ -177,3 +177,42 @@ def test_clangd_inlay_hint_is_a_distinct_chip(tmp_path):
         assert chip, \
             "inlay hint was not painted as the black-on-light-grey chip:\n%s" \
             % text
+
+
+def test_altq_menu_brackets_the_lsp_modal_guard(tmp_path):
+    """Opening the Alt-Q action menu suspends the async LSP fd-loop's painting.
+
+    The menu (and every dialog/picker/rename) is an e_opt_kst popup that draws a
+    box over the editor but pushes NO window, so e_lsp_ui_safe's window check
+    cannot see it.  e_opt_kst therefore brackets its input loop with
+    e_lsp_modal_enter/leave, and e_lsp_ui_safe returns false while the depth is
+    non-zero -- that is what stops a streamed Metals diagnostic / status repaint
+    from drawing under the open box and corrupting it.
+
+    The race itself (a server message landing in the exact window the box is up)
+    is timing-sensitive and not reliably reproducible headless, so this asserts
+    the *mechanism* deterministically: opening the menu enters the guard and
+    closing it leaves, balanced -- via the XWPE_UI_TRACE hook."""
+    trace = tmp_path / "ui.trace"
+    with WpeSession(str(tmp_path), PROG, filename="demo.c", wait=2.0,
+                    env_extra={"XWPE_UI_TRACE": str(trace)}) as w:
+        time.sleep(0.8)
+        w._drain(1.0)
+        w.key(ALT_Q, delay=0.4)
+        w.key("?", delay=0.8)              # Alt-Q ? -> the action menu (e_opt_kst)
+        w._drain(0.6)
+        assert w.alive(), "wpe died opening the Alt-Q menu"
+        rows = w.display()
+        assert any("Diagnostics" in r for r in rows) and any("Rename" in r for r in rows), \
+            "the Alt-Q action menu did not render:\n%s" % "\n".join(rows)
+        w.key("\033", delay=0.5)           # Esc closes the menu
+        w._drain(0.5)
+
+        log = trace.read_text() if trace.exists() else ""
+        enters = log.count("lsp modal enter")
+        leaves = log.count("lsp modal leave")
+        assert enters >= 1, \
+            "opening the Alt-Q menu did not enter the LSP modal guard:\n%s" % log
+        assert enters == leaves, \
+            "LSP modal guard not balanced (enter=%d leave=%d):\n%s" \
+            % (enters, leaves, log)

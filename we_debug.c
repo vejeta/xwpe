@@ -5035,6 +5035,10 @@ static char           g_lsp_file[1024] = "";  /* full path g_lsp is opened for *
 static FENSTER       *g_lsp_fenster = NULL;
 static FENSTER       *g_lsp_pending_ws = NULL; /* worksheet to focus once ready */
 static int            g_lsp_ui_suspended = 0;  /* defer fd-loop painting (modal up) */
+static int            g_lsp_modal_depth = 0;   /* >0 while a transient popup (dialog,
+                                                  picker, Alt-Q menu) owns the screen
+                                                  without pushing a window -- see
+                                                  e_lsp_modal_enter / e_lsp_ui_safe */
 static int            g_lsp_quiet = 0;     /* suppress per-diagnostic Messages
                                               output (live polls show a summary) */
 static int            g_lsp_last_err = -1; /* last reported diagnostic totals,  */
@@ -5504,19 +5508,43 @@ static void e_lsp_on_diag(const char *path, int line, int ch,
   e_d_p_message(buf, g_lsp_fenster, 1);
 }
 
+/* e_lsp_modal_enter / e_lsp_modal_leave - bracket a transient modal popup's input
+   loop (called by e_opt_kst, which backs every dialog, picker and the Alt-Q menu).
+   Such a popup draws a box over the editor and runs its own e_getch loop but does
+   NOT push a window onto the editor stack, so e_lsp_ui_safe's window check cannot
+   see it; the depth counter is how it tells the fd-loop "a box is up, do not paint
+   under me".  A counter, not a flag, so nested dialogs balance correctly. */
+static void e_lsp_ui_trace(const char *fmt, ...);   /* XWPE_UI_TRACE diag (below) */
+void e_lsp_modal_enter(void)
+{
+ g_lsp_modal_depth++;
+ e_lsp_ui_trace("lsp modal enter depth=%d", g_lsp_modal_depth);
+}
+void e_lsp_modal_leave(void)
+{
+ if (g_lsp_modal_depth > 0)
+  g_lsp_modal_depth--;
+ e_lsp_ui_trace("lsp modal leave depth=%d", g_lsp_modal_depth);
+}
+
 /* e_lsp_ui_safe - Is it safe for the async LSP fd-loop to PAINT right now?
-   Returns true only when a normal text window sits on top.  The same keyboard
-   poll (e_t_getch_poll -> wpe_fd_poll) pumps the fd-loop while a MODAL window
-   runs its own input loop -- the file manager (F3/F6), a project dialog, etc.
-   Those windows are not DTMD_ISTEXT.  A pushed Metals message, a diagnostics
-   line, a Doctor redraw or the inlay overlay drawn underneath such a window
-   corrupts it (the user saw an F3 file-manager body half-erased while Metals
-   was still loading).  When unsafe, the fd-loop still DRAINS the socket -- it
-   just defers every visible paint until the editor is back on top, so it
-   neither corrupts the dialog nor spins at 100% CPU on an unread fd. */
+   Returns true only when a normal text window sits on top AND no transient popup
+   owns the screen.  The same keyboard poll (e_t_getch_poll -> wpe_fd_poll) pumps
+   the fd-loop while a MODAL runs its own input loop -- a file manager (F3/F6) or
+   project dialog (a non-text WINDOW, caught by the DTMD check below), or a
+   dialog/picker/Alt-Q menu (a box that pushes NO window, caught by the modal
+   depth).  A pushed Metals message, a diagnostics line, a Doctor redraw or the
+   inlay overlay drawn underneath either corrupts it (the user saw an F3
+   file-manager body half-erased, and a streamed update bleeding into an open
+   Alt-Q picker, while Metals was still loading).  When unsafe, the fd-loop still
+   DRAINS the socket -- it just defers every visible paint until the editor is
+   back on top, so it neither corrupts the box nor spins at 100% CPU on an unread
+   fd. */
 static int e_lsp_ui_safe(void)
 {
  ECNT *cn;
+ if (g_lsp_modal_depth > 0)
+  return(0);                            /* a dialog/picker/menu box is up */
  if (!g_lsp_fenster || !g_lsp_fenster->ed)
   return(1);
  cn = g_lsp_fenster->ed;

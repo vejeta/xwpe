@@ -655,6 +655,10 @@ int e_opt_move(W_OPTSTR *o);
 int e_get_sw_cmp(int xin, int yin, int x, int y, int xmin, int ymin, int c);
 int e_get_opt_sw(int c, int x, int y, W_OPTSTR *o);
 int e_opt_kst(W_OPTSTR *o);
+#ifdef DEBUGGER
+void e_lsp_modal_enter(void);   /* suspend the async LSP fd-loop's painting while */
+void e_lsp_modal_leave(void);   /* a dialog/picker/menu box owns the screen       */
+#endif
 int e_edt_options(FENSTER *f);
 int e_read_colors(FENSTER *f);
 int e_ad_colors_md(FENSTER *f, int md);
