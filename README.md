@@ -359,6 +359,23 @@ GPM is Linux-only, so `--without-gpm` is required (mouse still works through the
 terminal). `openpty()` (used by the debugger and Run panes) comes from the macOS
 system library; `configure` finds it automatically.
 
+The compilers, debugger and language servers are optional and detected on
+`PATH` at runtime (see "External programs" below for what each enables). The
+Homebrew equivalents of the Debian packages:
+
+```sh
+# clang/clang++ ship with the Xcode Command Line Tools (xcode-select --install)
+brew install llvm            # clangd  -> C/C++ LSP (Alt-Q): the headline feature
+brew install gopls           # Go LSP        (also: brew install go)
+brew install rust-analyzer   # Rust LSP      (also: rustup for rustc/cargo)
+brew install pyright         # Python LSP    (Python 3 ships with macOS; pdb is built in)
+brew install gdb             # debugger (Ctrl-G); on Apple Silicon lldb via DAP is the
+                             # better fit -- xwpe auto-falls-back to lldb there
+```
+
+Metals (Scala) follows the same `cs install metals scala-cli` route as Linux,
+with an LTS JDK (`brew install openjdk@21`); see the manual for the JDK note.
+
 ### External programs
 
 xwpe auto-detects the compiler, debugger and language server by file extension.
