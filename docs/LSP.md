@@ -75,6 +75,8 @@ file is the active window.
 | Key | Action | What it does |
 |-----|--------|--------------|
 | `Alt-Q E` | **E**rrors / diagnostics | Compiler errors + warnings in Messages, *and* inline (error cells red, warnings amber), live as you type. |
+| `Alt-Q .` | next problem | Jump the cursor to the next diagnostic (wraps around); its message shows in a tooltip at the cursor. Like an IDE's F8. |
+| `Alt-Q ,` | previous problem | Same, in reverse. |
 | `Alt-Q D` | **D**efinition | Jump to where the symbol is defined -- including into library/stdlib sources (opened **read-only**, see below). |
 | `Alt-Q I` | **I**mplementation | Jump to the concrete override of an abstract `def`/trait member. |
 | `Alt-Q T` | **T**ype definition | Jump to the class/trait of a value's *type*. |

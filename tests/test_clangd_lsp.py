@@ -266,3 +266,65 @@ def test_hover_is_a_cursor_tooltip_not_a_modal_box(tmp_path):
         assert w.text() == HOVER_PROG, \
             "the dismiss key edited the buffer (tooltip must consume it):\n%r" \
             % w.text()
+
+
+# Two undeclared identifiers => two clangd errors, on known lines, to navigate.
+DIAG_PROG = (
+    "int main() {\n"
+    "    int a = first_undeclared;\n"
+    "    return second_undeclared;\n"
+    "}\n"
+)
+
+
+def _cursor_line(w):
+    """The 1-based line number from the editor status bar ('A q  L:C ...')."""
+    import re
+    for r in w.display():
+        m = re.search(r"A q\s+(\d+):(\d+)", r)
+        if m:
+            return int(m.group(1))
+    return None
+
+
+def test_diagnostic_navigation_jumps_between_problems(tmp_path):
+    """Alt-Q . / Alt-Q , move the cursor to the next / previous diagnostic and
+    show its message in the cursor tooltip, wrapping around the file."""
+    (tmp_path / "compile_flags.txt").write_text("-std=c++17\n")
+    with WpeSession(str(tmp_path), DIAG_PROG, filename="demo.cpp", wait=2.0) as w:
+        time.sleep(1.0)
+        w._drain(1.0)
+        w.key(ALT_Q, delay=0.4)
+        w.key("e", delay=10.0)            # start clangd; wait for diagnostics
+        w._drain(3.0)
+        if "2 error" not in _text(w):
+            pytest.skip("clangd has not published both diagnostics yet")
+
+        # next problem -> first error (line 2), message in the tooltip
+        w.key(ALT_Q, delay=0.4)
+        w.key(".", delay=2.5)
+        w._drain(0.8)
+        assert any("first_undeclared" in r for r in w.display()), \
+            "the tooltip did not show the first problem's message:\n%s" % _text(w)
+        w.key("\033", delay=0.5)          # dismiss tooltip
+        w._drain(0.4)
+        assert _cursor_line(w) == 2, \
+            "Alt-Q . did not jump to the first problem (line 2), at %s" % _cursor_line(w)
+
+        # next again -> second error (line 3)
+        w.key(ALT_Q, delay=0.4)
+        w.key(".", delay=2.0)
+        w._drain(0.4)
+        w.key("\033", delay=0.5)
+        w._drain(0.4)
+        assert _cursor_line(w) == 3, \
+            "second Alt-Q . did not advance to line 3, at %s" % _cursor_line(w)
+
+        # previous -> back to the first error (line 2)
+        w.key(ALT_Q, delay=0.4)
+        w.key(",", delay=2.0)
+        w._drain(0.4)
+        w.key("\033", delay=0.5)
+        w._drain(0.4)
+        assert _cursor_line(w) == 2, \
+            "Alt-Q , did not go back to line 2, at %s" % _cursor_line(w)

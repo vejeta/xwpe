@@ -5058,7 +5058,7 @@ static char          *g_lsp_status_last = NULL; /* last status text shown (dedup
  * atomically: on_diagnostic fills `pending`, on_diagnostics_summary (the single
  * end-of-batch callback) swaps it into `active`, which the renderer reads. */
 #define LSP_MAX_DIAG 256
-typedef struct { int line, c0, c1, sev; } e_lsp_diag_mark;
+typedef struct { int line, c0, c1, sev; char msg[160]; } e_lsp_diag_mark;
 static e_lsp_diag_mark g_diag_active[LSP_MAX_DIAG];   /* what the renderer shows */
 static int             g_diag_nactive = 0;
 static e_lsp_diag_mark g_diag_pending[LSP_MAX_DIAG];  /* filling this batch      */
@@ -5497,6 +5497,9 @@ static void e_lsp_on_diag(const char *path, int line, int ch,
   g_diag_pending[g_diag_npending].c0 = ch;
   g_diag_pending[g_diag_npending].c1 = c1;
   g_diag_pending[g_diag_npending].sev = sev;
+  snprintf(g_diag_pending[g_diag_npending].msg,
+           sizeof(g_diag_pending[g_diag_npending].msg),
+           "%s", msg ? msg : "");                  /* kept for Alt-Q . / , jumps */
   g_diag_npending++;
  }
 
@@ -6499,6 +6502,77 @@ static int e_lsp_ui_signature(FENSTER *f)
  return(0);
 }
 
+/* ---- diagnostic navigation (Alt-Q . / Alt-Q ,) -------------------------- *
+ * Jump the cursor between the problems the server reported (g_diag_active),
+ * ordered by position, wrapping around the file -- the editor equivalent of an
+ * IDE's F8 / Shift-F8.  On arrival the problem's message is shown in the cursor
+ * tooltip, so you read it where it happens without hunting the Messages list.  */
+
+/* True if diagnostic i lies before diagnostic j in the file (line, then column). */
+static int e_lsp_diag_before(int i, int j)
+{
+ if (g_diag_active[i].line != g_diag_active[j].line)
+  return(g_diag_active[i].line < g_diag_active[j].line);
+ return(g_diag_active[i].c0 < g_diag_active[j].c0);
+}
+
+/* Index of the diagnostic nearest the cursor in direction `dir` (+1 = next,
+   -1 = previous), wrapping to the far end when none lie ahead; -1 if there are
+   no diagnostics at all. */
+static int e_lsp_diag_pick(int cy, int cx, int dir)
+{
+ int i, best = -1;
+
+ for (i = 0; i < g_diag_nactive; i++)            /* nearest strictly ahead         */
+ {
+  int dl = g_diag_active[i].line, dc = g_diag_active[i].c0;
+  int ahead = (dir > 0) ? (dl > cy || (dl == cy && dc > cx))
+                        : (dl < cy || (dl == cy && dc < cx));
+  if (!ahead)
+   continue;
+  if (best < 0 ||
+      ((dir > 0) ? e_lsp_diag_before(i, best) : e_lsp_diag_before(best, i)))
+   best = i;
+ }
+ if (best >= 0)
+  return(best);
+ for (i = 0; i < g_diag_nactive; i++)            /* none ahead -> wrap to extreme  */
+  if (best < 0 ||
+      ((dir > 0) ? e_lsp_diag_before(i, best) : e_lsp_diag_before(best, i)))
+   best = i;
+ return(best);
+}
+
+/* Move the cursor to the next/previous problem and show its message in the
+   cursor tooltip; wraps around the file. */
+static int e_lsp_ui_jump_diag(FENSTER *f, int dir)
+{
+ BUFFER *b = f->b;
+ const char *kind;
+ int idx;
+
+ if (g_diag_nactive == 0)
+ {  e_error("No problems reported in this file.", 0, f->fb);  return(0);  }
+ idx = e_lsp_diag_pick(b->b.y, b->b.x, dir);
+ if (idx < 0)
+  return(0);
+ b->b.y = g_diag_active[idx].line;
+ b->b.x = g_diag_active[idx].c0;
+ e_cursor(f, 0);                                 /* clamp + scroll the view to it  */
+ e_schirm(f, 1);
+ e_refresh();
+ kind = (g_diag_active[idx].sev == 1) ? "Error"
+      : (g_diag_active[idx].sev == 2) ? "Warning"
+      : (g_diag_active[idx].sev == 3) ? "Info" : "Hint";
+ if (g_diag_active[idx].msg[0])
+  e_lsp_cursor_popup(f, kind, g_diag_active[idx].msg);
+ return(0);
+}
+
+/* Alt-Q . / Alt-Q , -- jump to the next / previous problem in the file. */
+static int e_lsp_ui_next_problem(FENSTER *f) { return(e_lsp_ui_jump_diag(f, +1)); }
+static int e_lsp_ui_prev_problem(FENSTER *f) { return(e_lsp_ui_jump_diag(f, -1)); }
+
 /* AltQ R -- list every reference to the symbol under the cursor in Messages. */
 static int e_lsp_ui_references(FENSTER *f)
 {
@@ -7279,7 +7353,7 @@ extern OPTK WpeFillSubmenuItem(char *t, int x, char o, int (*fkt)());
 
 /* Persistent storage for the formatted "name        Alt-Q X" labels (OPTK keeps
    a pointer, so the strings must outlive the call). */
-static char g_lsp_menu_label[24][48];
+static char g_lsp_menu_label[26][48];
 
 /* Build the language-server actions as top-menu-style dropdown rows: the action
    name on the left, its "Alt-Q X" shortcut right-aligned, and X (the key you
@@ -7309,7 +7383,9 @@ static int e_lsp_menu_items(OPTK *it)
   { "Code actions",         'A', e_lsp_ui_code_actions      },
   { "Signature help",       'S', e_lsp_ui_signature         },
   { "Rename",               'N', e_lsp_ui_rename            },
-  { "Format",               'F', e_lsp_ui_format            }
+  { "Format",               'F', e_lsp_ui_format            },
+  { "Next problem",         '.', e_lsp_ui_next_problem      },
+  { "Prev problem",         ',', e_lsp_ui_prev_problem      }
  };
  int i, n = (int)(sizeof(a) / sizeof(a[0]));
 
@@ -7352,7 +7428,7 @@ static int e_lsp_bar_entry_x(FENSTER *f)
    users; Alt-Q+letter stays the keyboard fast path. */
 int e_lsp_ui_menu(FENSTER *f)
 {
- OPTK items[24];
+ OPTK items[26];
  int n, xa, xe, ya, ye, w, mx;
 
  if (!e_lsp_server_label(f))
@@ -7430,6 +7506,10 @@ int e_lsp_ui_key(FENSTER *f)
    return(e_lsp_ui_outline(f));
   case 'e': case ('e' - 'a' + 1):
    return(e_lsp_ui_diagnostics(f));
+  case '.':
+   return(e_lsp_ui_next_problem(f)); /* . = next problem (like F8)          */
+  case ',':
+   return(e_lsp_ui_prev_problem(f)); /* , = previous problem                */
   case WPE_ESC:
    return(0);                        /* cancel -- no action, no menu        */
   default:
