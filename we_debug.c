@@ -6357,7 +6357,7 @@ static int e_lsp_ui_hover(FENSTER *f)
    e_error("No hover information.", 0, f->fb);
   return(0);
  }
- e_lsp_cursor_popup(f, "Hover", hov, "Esc to close");   /* tooltip at the cursor */
+ e_lsp_cursor_popup(f, "Hover", hov, "Press any key to close"); /* tooltip at cursor */
  free(hov);
  return(0);
 }
@@ -6588,7 +6588,7 @@ static int e_lsp_ui_signature(FENSTER *f)
  sig = e_lsp_signature_help(g_lsp, g_lsp_file, b->b.y, b->b.x);
  if (!sig || !*sig)
  {  if (sig) free(sig);  e_error("No signature here.", 0, f->fb);  return(0);  }
- e_lsp_cursor_popup(f, "Signature", sig, "Esc to close");
+ e_lsp_cursor_popup(f, "Signature", sig, "Press any key to close");
  free(sig);
  return(0);
 }
@@ -6663,7 +6663,7 @@ static int e_lsp_ui_jump_diag(FENSTER *f, int dir)
        : (g_diag_active[idx].sev == 2) ? "Warning"
        : (g_diag_active[idx].sev == 3) ? "Info" : "Hint";
   c = e_lsp_cursor_popup(f, kind, g_diag_active[idx].msg,
-                         ". next   , prev   Esc close");
+                         ". next   , prev   any other key closes");
   if (c == AltQ)                                  /* pressed the Alt-Q prefix again: */
    c = e_getch();                                 /* take its letter so '.'/',' still */
                                                   /* navigate (and don't leak a '.')  */

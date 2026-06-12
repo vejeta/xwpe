@@ -256,8 +256,15 @@ def test_hover_is_a_cursor_tooltip_not_a_modal_box(tmp_path):
         assert not any(" OK " in r for r in rows), \
             "hover still renders the old modal message box (has an OK button):\n%s" \
             % "\n".join(rows)
+        # the footer legend tells the truth: ANY key closes (not just Esc), so it
+        # must say so -- this guards against re-introducing a misleading "Esc"-only
+        # hint while the handler in fact dismisses on any key.
+        assert any("any key" in r for r in rows), \
+            "hover footer must advertise 'Press any key to close':\n%s" \
+            % "\n".join(rows)
 
-        # dismiss with a printable key; it must be CONSUMED, not inserted
+        # dismiss with a printable, non-Esc key; it must be CONSUMED, not inserted,
+        # and it must close the tooltip -- proving "any key closes" is literally true
         w.key("z", delay=0.5)
         w._drain(0.5)
         assert not any("Hover" in r for r in w.display()), \
@@ -306,9 +313,13 @@ def test_diagnostic_navigation_jumps_between_problems(tmp_path):
         w._drain(0.8)
         assert any("first_undeclared" in r for r in w.display()), \
             "the tooltip did not show the first problem's message:\n%s" % _text(w)
-        # the footer legend advertises the navigation keys
+        # the footer legend advertises the navigation keys AND tells the truth that
+        # any other key closes -- not a misleading 'Esc'-only hint.
         assert any(("next" in r and "prev" in r) for r in w.display()), \
             "the tooltip is missing the '. next  , prev' footer hint:\n%s" % _text(w)
+        assert any("any other key" in r for r in w.display()), \
+            "footer must say 'any other key closes', since the handler dismisses on "\
+            "any non-nav key:\n%s" % _text(w)
 
         # While the tooltip is up, BOTH ways of stepping must work and must NOT
         # leak a keystroke into the buffer:
@@ -319,14 +330,18 @@ def test_diagnostic_navigation_jumps_between_problems(tmp_path):
         w._drain(0.4)
         w.key(",", delay=2.0)             # bare ',' -> back to the first (line 2)
         w._drain(0.4)
-        w.key("\033", delay=0.6)          # dismiss
+        # dismiss with a printable, NON-Esc key: the footer promises "any other key
+        # closes", so 'z' must both close the tooltip and be swallowed (not typed).
+        w.key("z", delay=0.6)
         w._drain(0.5)
+        assert not any(("next" in r and "prev" in r) for r in w.display()), \
+            "a non-nav key did not dismiss the diagnostic tooltip:\n%s" % _text(w)
         assert _cursor_line(w) == 2, \
             "stepping with Alt-Q . / bare ',' did not land on line 2, at %s" \
             % _cursor_line(w)
         w.save()
         assert w.text() == DIAG_PROG, \
-            "a navigation key leaked into the buffer:\n%r" % w.text()
+            "a navigation/dismiss key leaked into the buffer:\n%r" % w.text()
 
 
 COMPLETE_PROG = (
