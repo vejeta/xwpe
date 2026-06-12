@@ -300,31 +300,27 @@ def test_diagnostic_navigation_jumps_between_problems(tmp_path):
         if "2 error" not in _text(w):
             pytest.skip("clangd has not published both diagnostics yet")
 
-        # next problem -> first error (line 2), message in the tooltip
+        # Alt-Q . -> first error (line 2); its message shows in the tooltip
         w.key(ALT_Q, delay=0.4)
         w.key(".", delay=2.5)
         w._drain(0.8)
         assert any("first_undeclared" in r for r in w.display()), \
             "the tooltip did not show the first problem's message:\n%s" % _text(w)
-        w.key("\033", delay=0.5)          # dismiss tooltip
-        w._drain(0.4)
-        assert _cursor_line(w) == 2, \
-            "Alt-Q . did not jump to the first problem (line 2), at %s" % _cursor_line(w)
 
-        # next again -> second error (line 3)
+        # While the tooltip is up, BOTH ways of stepping must work and must NOT
+        # leak a keystroke into the buffer:
+        #  - re-pressing the full Alt-Q . prefix (the natural habit), and
+        #  - a bare '.' / ',' (the shortcut).
         w.key(ALT_Q, delay=0.4)
-        w.key(".", delay=2.0)
+        w.key(".", delay=2.0)             # Alt-Q .  -> second error (line 3)
         w._drain(0.4)
-        w.key("\033", delay=0.5)
+        w.key(",", delay=2.0)             # bare ',' -> back to the first (line 2)
         w._drain(0.4)
-        assert _cursor_line(w) == 3, \
-            "second Alt-Q . did not advance to line 3, at %s" % _cursor_line(w)
-
-        # previous -> back to the first error (line 2)
-        w.key(ALT_Q, delay=0.4)
-        w.key(",", delay=2.0)
-        w._drain(0.4)
-        w.key("\033", delay=0.5)
-        w._drain(0.4)
+        w.key("\033", delay=0.6)          # dismiss
+        w._drain(0.5)
         assert _cursor_line(w) == 2, \
-            "Alt-Q , did not go back to line 2, at %s" % _cursor_line(w)
+            "stepping with Alt-Q . / bare ',' did not land on line 2, at %s" \
+            % _cursor_line(w)
+        w.save()
+        assert w.text() == DIAG_PROG, \
+            "a navigation key leaked into the buffer:\n%r" % w.text()

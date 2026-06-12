@@ -6195,48 +6195,82 @@ static void e_lsp_ui_trace(const char *fmt, ...)
  * modal-depth guard) so a streamed server update cannot draw under and corrupt
  * it.                                                                          */
 
-#define LSP_TIP_MAXLINES 10                  /* cap a long hover blurb          */
-#define LSP_TIP_MAXWIDE  (MAXSCOL - 6)       /* cap width, leave a screen margin */
+#define LSP_TIP_MAXLINES 12                  /* cap a long hover blurb          */
 
-/* e_lsp_tip_split - break TEXT into up to `max` display lines on '\n', each
-   clamped to LSP_TIP_MAXWIDE columns, into the reused static buffer (so the
-   returned pointers stay valid until the next call).  Trailing blank lines are
-   dropped.  The widest line width is returned via *widest; returns the count. */
-static int e_lsp_tip_split(const char *text, char **tln, int max, int *widest)
+/* A comfortable tooltip text width: about 55% of the screen, clamped to a
+   readable range, so a long hover WRAPS onto several lines instead of running off
+   in one.  Falls back to (almost) the whole screen on a very narrow terminal. */
+static int e_lsp_tip_width(void)
 {
- static char buf[4096];
- int n = 0, w = 0, end;
- char *p, *nl;
+ int w = MAXSCOL * 11 / 20;
+ if (w > 70)
+  w = 70;
+ if (w < 24)
+  w = (MAXSCOL > 14) ? MAXSCOL - 6 : 8;
+ return(w);
+}
 
- strncpy(buf, text, sizeof(buf) - 1);
- buf[sizeof(buf) - 1] = '\0';
- for (end = (int)strlen(buf); end > 0 && (buf[end-1] == '\n' || buf[end-1] == ' ');)
-  buf[--end] = '\0';                          /* trim trailing blank lines       */
- p = buf;
- while (n < max && *p)
+/* e_lsp_tip_split - lay TEXT out as display lines: split on '\n', then WORD-WRAP
+   each source line to `wrap` columns (breaking at spaces; one over-long word is
+   hard-split).  Up to `max` lines, copied into the reused static buffer (so the
+   returned pointers stay valid until the next call).  Trailing blank lines are
+   dropped; the widest line width is returned via *widest; returns the count. */
+static int e_lsp_tip_split(const char *text, char **tln, int max, int wrap, int *widest)
+{
+ static char wbuf[4096];
+ int n = 0, w = 0, wp = 0;
+ const char *p = text;
+
+ if (wrap < 8)
+  wrap = 8;
+ while (n < max && *p && wp < (int)sizeof(wbuf) - 2)
  {
-  int len;
-  nl = strchr(p, '\n');
-  if (nl)
-   *nl = '\0';
-  len = (int)strlen(p);
-  if (len > LSP_TIP_MAXWIDE)
-  {  p[LSP_TIP_MAXWIDE] = '\0';  len = LSP_TIP_MAXWIDE;  }
-  tln[n++] = p;
-  if (len > w)
-   w = len;
-  if (!nl)
-   break;
-  p = nl + 1;
+  char *line = wbuf + wp;
+  int col = 0;
+  while (*p && *p != '\n')
+  {
+   const char *ws = p, *we;
+   int wlen, sep;
+   while (*ws == ' ' || *ws == '\t')           /* collapse runs of whitespace    */
+    ws++;
+   if (*ws == '\0' || *ws == '\n')
+   {  p = ws;  break;  }
+   we = ws;
+   while (*we && *we != ' ' && *we != '\t' && *we != '\n')
+    we++;
+   wlen = (int)(we - ws);
+   sep = (col > 0) ? 1 : 0;
+   if (col > 0 && col + sep + wlen > wrap)      /* word won't fit -> next line    */
+    break;
+   if (col == 0 && wlen > wrap)                 /* a lone word wider than the box */
+   {  wlen = wrap;  we = ws + wrap;  }
+   if (wp + sep + wlen >= (int)sizeof(wbuf) - 2)
+    break;
+   if (sep)
+    wbuf[wp++] = ' ';
+   memcpy(wbuf + wp, ws, (size_t)wlen);
+   wp += wlen;
+   col += sep + wlen;
+   p = we;
+  }
+  wbuf[wp++] = '\0';
+  tln[n++] = line;
+  if (col > w)
+   w = col;
+  if (*p == '\n')
+   p++;
  }
+ while (n > 0 && tln[n-1][0] == '\0')           /* drop trailing blank lines      */
+  n--;
  *widest = w;
  return(n);
 }
 
 /* e_lsp_cursor_popup - draw `text` (titled `title`) in a box at the cursor, wait
-   for one key to dismiss it, then restore the screen.  Used by hover and
-   signature help. */
-static void e_lsp_cursor_popup(FENSTER *f, const char *title, const char *text)
+   for one key to dismiss it, restore the screen, and RETURN the dismiss key (so a
+   caller like diagnostic navigation can keep walking on '.'/',' without making the
+   user re-open it).  Used by hover, signature help and the problem jumps. */
+static int e_lsp_cursor_popup(FENSTER *f, const char *title, const char *text)
 {
  BUFFER *b = f->b;
  SCHIRM *s = f->s;
@@ -6245,10 +6279,10 @@ static void e_lsp_cursor_popup(FENSTER *f, const char *title, const char *text)
  PIC *pic;
 
  if (!text || !*text)
-  return;
- n = e_lsp_tip_split(text, tln, LSP_TIP_MAXLINES, &w);
+  return(0);
+ n = e_lsp_tip_split(text, tln, LSP_TIP_MAXLINES, e_lsp_tip_width(), &w);
  if (n <= 0)
-  return;
+  return(0);
  if (w < (int)strlen(title))
   w = (int)strlen(title);                      /* keep the title readable         */
 
@@ -6271,19 +6305,19 @@ static void e_lsp_cursor_popup(FENSTER *f, const char *title, const char *text)
  pic = e_std_kst(xa, ya, xe, ye, (char *)title, 1,
                  f->fb->nr.fb, f->fb->nt.fb, f->fb->ne.fb);
  if (!pic)
- {  fk_cursor(1);  return;  }
+ {  fk_cursor(1);  return(0);  }
  for (i = 0; i < n; i++)
   e_pr_str(xa + 2, ya + 1 + i, tln[i], f->fb->nt.fb, 0, 0, 0, 0);
  e_refresh();
 
  e_lsp_modal_enter();                          /* defer async LSP paints behind it */
  c = e_getch();                                /* any key dismisses (consumed)     */
- (void)c;
  e_lsp_modal_leave();
 
  e_close_view(pic, 1);                         /* restore what the box covered     */
  fk_cursor(1);
  e_cursor(f, 0);
+ return(c);
 }
 
 /* AltQ H -- show the type/documentation of the symbol under the cursor. */
@@ -6543,29 +6577,44 @@ static int e_lsp_diag_pick(int cy, int cx, int dir)
  return(best);
 }
 
-/* Move the cursor to the next/previous problem and show its message in the
-   cursor tooltip; wraps around the file. */
+/* Move the cursor to the next/previous problem and show its message in the cursor
+   tooltip; wraps around the file.  Keeps walking while the tooltip is up and you
+   press '.' (next) or ',' (previous) -- so after the first Alt-Q . you step
+   through every problem with a bare '.', without re-typing the Alt-Q prefix; any
+   other key dismisses. */
 static int e_lsp_ui_jump_diag(FENSTER *f, int dir)
 {
  BUFFER *b = f->b;
- const char *kind;
- int idx;
 
  if (g_diag_nactive == 0)
  {  e_error("No problems reported in this file.", 0, f->fb);  return(0);  }
- idx = e_lsp_diag_pick(b->b.y, b->b.x, dir);
- if (idx < 0)
-  return(0);
- b->b.y = g_diag_active[idx].line;
- b->b.x = g_diag_active[idx].c0;
- e_cursor(f, 0);                                 /* clamp + scroll the view to it  */
- e_schirm(f, 1);
- e_refresh();
- kind = (g_diag_active[idx].sev == 1) ? "Error"
-      : (g_diag_active[idx].sev == 2) ? "Warning"
-      : (g_diag_active[idx].sev == 3) ? "Info" : "Hint";
- if (g_diag_active[idx].msg[0])
-  e_lsp_cursor_popup(f, kind, g_diag_active[idx].msg);
+ for (;;)
+ {
+  const char *kind;
+  int idx = e_lsp_diag_pick(b->b.y, b->b.x, dir);
+  int c;
+  if (idx < 0)
+   break;
+  b->b.y = g_diag_active[idx].line;
+  b->b.x = g_diag_active[idx].c0;
+  e_cursor(f, 0);                                /* clamp + scroll the view to it  */
+  e_schirm(f, 1);
+  e_refresh();
+  if (!g_diag_active[idx].msg[0])
+   break;                                        /* nothing to show -> stop here   */
+  kind = (g_diag_active[idx].sev == 1) ? "Error"
+       : (g_diag_active[idx].sev == 2) ? "Warning"
+       : (g_diag_active[idx].sev == 3) ? "Info" : "Hint";
+  c = e_lsp_cursor_popup(f, kind, g_diag_active[idx].msg);
+  if (c == AltQ)                                  /* pressed the Alt-Q prefix again: */
+   c = e_getch();                                 /* take its letter so '.'/',' still */
+                                                  /* navigate (and don't leak a '.')  */
+  if (c == '.')
+  {  dir = +1;  continue;  }                      /* keep stepping forward...       */
+  if (c == ',')
+  {  dir = -1;  continue;  }                      /* ...or backward                  */
+  break;                                          /* any other key dismisses        */
+ }
  return(0);
 }
 
