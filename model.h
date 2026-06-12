@@ -35,7 +35,11 @@
 
 /*  XWindow Definitions  */
 
-#if defined(DJGPP) || !defined(NO_XWINDOWS)  || defined (HAVE_LIBGPM)
+/* Mouse is available through any of: X11 (Xlib events), GPM (Linux console),
+   or ncurses' own xterm mouse reporting.  The last is what gives a terminal-only
+   build (--without-x --without-gpm, e.g. macOS in iTerm2/Terminal.app) a working
+   mouse -- without it MOUSE was 0 there and `struct mouse` went undefined. */
+#if defined(DJGPP) || !defined(NO_XWINDOWS) || defined(HAVE_LIBGPM) || defined(NCURSES)
 #define MOUSE   1        /*  activate mouse  */
 #else
 #define MOUSE   0        /*  deactivate mouse  */
