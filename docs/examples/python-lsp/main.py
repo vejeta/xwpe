@@ -26,8 +26,8 @@ def describe(s: Shape) -> None:
 def main() -> None:                             # Alt-Q O: file outline
     shapes = [Circle(2.0), Rectangle(3.0, 4.0), Triangle(6.0, 1.5)]  # Alt-Q T on `shapes`
     # Alt-Q Y (toggle): the vars below have no annotation, so the inferred type
-    # appears dim after each name.  Alt-Q H does one on demand.
-    count = len(shapes)         # inlay -> : int
+    # pops in as a grey pill after each name.  Alt-Q H does one on demand.
+    count = len(shapes)         # Alt-Q Y: the inferred type pops in ->>
     area = total(shapes)        # Alt-Q D on `total` -> its def above
     for s in shapes:
         describe(s)             # Alt-Q N on `describe` -> rename it

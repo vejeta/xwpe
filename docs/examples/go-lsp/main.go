@@ -13,7 +13,7 @@ import "fmt"
 // Alt-Q R on `total` -> references.  Alt-Q B on `total` -> its callers (main).
 func total(shapes []Shape) float64 {
 	sum := 0.0
-	for _, s := range shapes { // Alt-Q Y (toggle): `s` gets a dim : Shape hint
+	for _, s := range shapes { // Alt-Q Y (toggle): `s` gets an inferred-type hint
 		sum += s.Area() // Alt-Q I on `Area` -> the concrete implementations
 	}
 	return sum
@@ -31,8 +31,8 @@ func main() {
 		Triangle{6.0, 1.5},
 	}
 	// Alt-Q Y (toggle): the := vars below have no written type, so the inferred
-	// type appears dim after each name.  Alt-Q H does one on demand.
-	count := len(shapes)  // inlay -> : int
+	// type pops in as a grey pill after each name.  Alt-Q H does one on demand.
+	count := len(shapes)  // Alt-Q Y: the inferred type pops in ->>
 	area := total(shapes) // Alt-Q S inside total(...) -> the signature
 	for _, s := range shapes {
 		describe(s) // Alt-Q N on `describe` -> rename it everywhere

@@ -20,11 +20,12 @@ object Main:
 
   def main(args: Array[String]): Unit =                   // Alt-Q L: a run|debug lens sits here
     // Alt-Q Y (toggle): the vals below have NO written type, so the inferred
-    // type appears dim at the end of each line.  Alt-Q H does one on demand.
+    // type pops in as a grey pill at the end of each line.  Alt-Q H does one
+    // on demand.
     val shapes  = List(Circle(2.0), Rectangle(3.0, 4.0), Triangle(6.0, 1.5))
-    val count   = shapes.size                             // inlay -> : Int
-    val biggest = shapes.maxBy(_.area)                    // inlay -> : Shape
-    val names   = shapes.map(_.name)                      // inlay -> : List[String]
+    val count   = shapes.size                             // Alt-Q Y: inferred type ->>
+    val biggest = shapes.maxBy(_.area)                    // Alt-Q Y: inferred type ->>
+    val names   = shapes.map(_.name)                      // Alt-Q Y: inferred type ->>
     val area    = total(shapes)                           // Alt-Q T on `area` -> Double
 
     // Call graph:  Alt-Q B on `total` (above) -> its callers (main);

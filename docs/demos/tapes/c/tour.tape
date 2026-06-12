@@ -5,7 +5,9 @@
 # re-established on `total` with an Up/Down/Right reset, because some actions
 # (inlay) move it -- so the refactor always targets the right symbol.
 # Record from the repo root AS wpe (programming mode -- Alt-Q is off in `we`);
-# see docs/demos/record-tours.sh.
+# see docs/demos/record-tours.sh.  Timings are deliberately unhurried so each
+# action's effect (especially the inlay-hint pills) is clearly readable; the
+# shared caption cue is docs/demos/tours.cue.
 
 Output "docs/demos/gifs/c/tour.gif"
 Set Shell bash
@@ -25,57 +27,58 @@ Type "e"
 Sleep 10s
 Show
 
-Sleep 1000ms
-Down@40ms 42
+Sleep 1500ms
+Down@40ms 43
 Right@40ms 17
-Sleep 1200ms
+Sleep 1500ms
 # Hover -- the signature / type of the symbol under the cursor
 Alt+q
-Sleep 300ms
-Type "h"
-Sleep 2600ms
-Escape
 Sleep 400ms
-# Inlay hints -- inferred types appear inline (Alt-Q Y toggles them)
+Type "h"
+Sleep 3200ms
+Escape
+Sleep 700ms
+# Inlay hints -- the inferred type pops in as a grey pill at each line's end
+# (Alt-Q Y toggles them).  Held long so the reveal is unmistakable.
 Alt+q
-Sleep 300ms
+Sleep 400ms
 Type "y"
-Sleep 2600ms
+Sleep 5000ms
 # Document highlight -- every use of the symbol lights up at once
 Alt+q
-Sleep 300ms
+Sleep 400ms
 Type "u"
-Sleep 2400ms
+Sleep 3400ms
 # References -- every use listed in the Messages window
 Alt+q
-Sleep 300ms
+Sleep 400ms
 Type "r"
-Sleep 2600ms
+Sleep 3400ms
 # Outline -- the file's symbols in a popup
 Alt+q
-Sleep 300ms
-Type "o"
-Sleep 2400ms
-Escape
 Sleep 400ms
+Type "o"
+Sleep 3400ms
+Escape
+Sleep 700ms
 # Re-establish the cursor on `total` (the actions above may have moved it),
 # then RENAME it across the file -- the refactor finale.
 Up@20ms 60
-Down@30ms 42
+Down@30ms 43
 Right@30ms 17
-Sleep 1000ms
+Sleep 1400ms
 Alt+q
-Sleep 300ms
+Sleep 400ms
 Type "n"
-Sleep 1200ms
+Sleep 1500ms
 Right 8
 Backspace 8
 Type "tally"
-Sleep 1000ms
+Sleep 1200ms
 Enter
-Sleep 3000ms
+Sleep 3500ms
 # Undo -- the server's rewrite is a single, reversible edit (Ctrl-U)
 Ctrl+u
-Sleep 2800ms
+Sleep 3200ms
 Ctrl+q
 Sleep 1500ms

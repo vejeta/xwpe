@@ -10,7 +10,9 @@
 # see docs/demos/record-tours.sh.  Metals is the slow one: a JVM boots and the
 # build is imported (scala-cli setup-ide runs automatically) during the long
 # Hidden warm-up.  Set JAVA_HOME to an LTS JDK (17/21) so Metals' presentation
-# compiler does not crash on a too-new default JDK.
+# compiler does not crash on a too-new default JDK.  Timings are deliberately
+# unhurried so each action's effect (especially the inlay-hint pills) is clearly
+# readable; the shared caption cue is docs/demos/tours.cue.
 
 Output "docs/demos/gifs/scala/tour.gif"
 Set Shell bash
@@ -30,57 +32,58 @@ Type "e"
 Sleep 105s
 Show
 
-Sleep 1000ms
-Down@40ms 27
+Sleep 1500ms
+Down@40ms 28
 Right@40ms 18
-Sleep 1200ms
+Sleep 1500ms
 # Hover -- the signature / type of the symbol under the cursor
 Alt+q
-Sleep 300ms
-Type "h"
-Sleep 2600ms
-Escape
 Sleep 400ms
-# Inlay hints -- inferred types appear inline (Alt-Q Y toggles them)
+Type "h"
+Sleep 3200ms
+Escape
+Sleep 700ms
+# Inlay hints -- the inferred type pops in as a grey pill at each line's end
+# (Alt-Q Y toggles them).  Held long so the reveal is unmistakable.
 Alt+q
-Sleep 300ms
+Sleep 400ms
 Type "y"
-Sleep 2600ms
+Sleep 5000ms
 # Document highlight -- every use of the symbol lights up at once
 Alt+q
-Sleep 300ms
+Sleep 400ms
 Type "u"
-Sleep 2400ms
+Sleep 3400ms
 # References -- every use listed in the Messages window
 Alt+q
-Sleep 300ms
+Sleep 400ms
 Type "r"
-Sleep 2600ms
+Sleep 3400ms
 # Outline -- the file's symbols in a popup
 Alt+q
-Sleep 300ms
-Type "o"
-Sleep 2400ms
-Escape
 Sleep 400ms
+Type "o"
+Sleep 3400ms
+Escape
+Sleep 700ms
 # Re-establish the cursor on `total` (the actions above may have moved it),
 # then RENAME it across the file -- the refactor finale.
 Up@20ms 60
-Down@30ms 27
+Down@30ms 28
 Right@30ms 18
-Sleep 1000ms
+Sleep 1400ms
 Alt+q
-Sleep 300ms
+Sleep 400ms
 Type "n"
-Sleep 1200ms
+Sleep 1500ms
 Right 8
 Backspace 8
 Type "tally"
-Sleep 1000ms
+Sleep 1200ms
 Enter
-Sleep 3000ms
+Sleep 3500ms
 # Undo -- the server's rewrite is a single, reversible edit (Ctrl-U)
 Ctrl+u
-Sleep 2800ms
+Sleep 3200ms
 Ctrl+q
 Sleep 1500ms

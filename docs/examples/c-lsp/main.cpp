@@ -21,7 +21,7 @@ using ShapeList = std::vector<std::unique_ptr<Shape>>;   // Alt-Q O: file outlin
 // Alt-Q R on `total` -> references.  Alt-Q B on `total` -> its callers (main).
 double total(const ShapeList& shapes) {
     double sum = 0.0;
-    for (const auto& s : shapes)          // Alt-Q Y (toggle): `s` gets a dim : Shape& hint
+    for (const auto& s : shapes)          // Alt-Q Y (toggle): `s` gets an inferred-type hint
         sum += s->area();                 // Alt-Q I on `area` -> the concrete overrides
     return sum;
 }
@@ -38,8 +38,9 @@ int main() {
     shapes.push_back(std::make_unique<Triangle>(6.0, 1.5));
 
     // Alt-Q Y (toggle): the `auto` vars below have no written type, so the
-    // deduced type appears dim after each name.  Alt-Q H does one on demand.
-    auto count = shapes.size();           // inlay -> : size_t
+    // deduced type pops in as a grey pill after each name.  Alt-Q H does one
+    // on demand.
+    auto count = shapes.size();           // Alt-Q Y: the inferred type pops in ->>
     auto area  = total(shapes);           // Alt-Q S inside total(...) -> the signature
 
     for (const auto& s : shapes)

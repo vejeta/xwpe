@@ -35,8 +35,8 @@ fn main() {
         }),
     ];
     // Alt-Q Y (toggle): the `let` bindings have no written type, so the inferred
-    // type appears dim after each name.  Alt-Q H does one on demand.
-    let count = shapes.len(); // inlay -> : usize
+    // type pops in as a grey pill after each name.  Alt-Q H does one on demand.
+    let count = shapes.len(); // Alt-Q Y: the inferred type pops in ->>
     let area = total(&shapes); // Alt-Q S inside total(...) -> the signature
     for s in &shapes {
         describe(s.as_ref()); // Alt-Q N on `describe` -> rename it everywhere
