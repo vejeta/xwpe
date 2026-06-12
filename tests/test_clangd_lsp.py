@@ -216,3 +216,53 @@ def test_altq_menu_brackets_the_lsp_modal_guard(tmp_path):
         assert enters == leaves, \
             "LSP modal guard not balanced (enter=%d leave=%d):\n%s" \
             % (enters, leaves, log)
+
+
+HOVER_PROG = (
+    "#include <vector>\n"
+    "int compute(const std::vector<int>& v) { return (int) v.size(); }\n"
+    "int main() { std::vector<int> v; return compute(v); }\n"
+)
+
+
+def test_hover_is_a_cursor_tooltip_not_a_modal_box(tmp_path):
+    """Alt-Q H shows hover as a small box anchored at the cursor, dismissed by any
+    key (consumed -- it must NOT edit the buffer), replacing the old centered
+    one-button e_message dialog.
+
+    Asserts: a 'Hover' box appears with the symbol's type; it carries NO ' OK '
+    button (the modal box did); and the dismiss key is swallowed, not typed."""
+    (tmp_path / "compile_flags.txt").write_text("-std=c++17\n")
+    with WpeSession(str(tmp_path), HOVER_PROG, filename="demo.cpp", wait=2.0) as w:
+        time.sleep(1.0)
+        w._drain(1.0)
+        w.key(ALT_Q, delay=0.4)
+        w.key("e", delay=8.0)              # start clangd
+        w._drain(2.0)
+        assert w.alive(), "wpe died starting clangd"
+
+        _find(w, "compute")               # cursor onto the function name
+        w.key(ALT_Q, delay=0.4)
+        w.key("h", delay=3.0)             # hover -> tooltip
+        w._drain(1.0)
+        assert w.alive(), "wpe died on hover"
+
+        rows = w.display()
+        if not any("Hover" in r for r in rows):
+            pytest.skip("clangd returned no hover yet (cold start)")
+        assert any("compute" in r or "int" in r for r in rows), \
+            "hover tooltip did not show the symbol type:\n%s" % "\n".join(rows)
+        # a tooltip, not the old modal box: no centered " OK " button
+        assert not any(" OK " in r for r in rows), \
+            "hover still renders the old modal message box (has an OK button):\n%s" \
+            % "\n".join(rows)
+
+        # dismiss with a printable key; it must be CONSUMED, not inserted
+        w.key("z", delay=0.5)
+        w._drain(0.5)
+        assert not any("Hover" in r for r in w.display()), \
+            "hover tooltip did not dismiss on a keypress"
+        w.save()
+        assert w.text() == HOVER_PROG, \
+            "the dismiss key edited the buffer (tooltip must consume it):\n%r" \
+            % w.text()

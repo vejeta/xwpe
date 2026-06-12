@@ -6182,6 +6182,107 @@ static void e_lsp_ui_trace(const char *fmt, ...)
  fclose(tf);
 }
 
+/* ---- hover / signature cursor tooltip ----------------------------------- *
+ * A small, non-modal box anchored AT THE CURSOR that shows one piece of LSP
+ * info (a hover blurb, or a call signature).  Unlike the centered e_message box
+ * it used to use, it does not take over the screen: it opens just below the
+ * cursor line (or above when there is no room) and ANY key dismisses it (the key
+ * is consumed -- it does NOT edit the buffer, so a glance never risks a stray
+ * keystroke).  The async LSP fd-loop's painting is suspended while it is up (the
+ * modal-depth guard) so a streamed server update cannot draw under and corrupt
+ * it.                                                                          */
+
+#define LSP_TIP_MAXLINES 10                  /* cap a long hover blurb          */
+#define LSP_TIP_MAXWIDE  (MAXSCOL - 6)       /* cap width, leave a screen margin */
+
+/* e_lsp_tip_split - break TEXT into up to `max` display lines on '\n', each
+   clamped to LSP_TIP_MAXWIDE columns, into the reused static buffer (so the
+   returned pointers stay valid until the next call).  Trailing blank lines are
+   dropped.  The widest line width is returned via *widest; returns the count. */
+static int e_lsp_tip_split(const char *text, char **tln, int max, int *widest)
+{
+ static char buf[4096];
+ int n = 0, w = 0, end;
+ char *p, *nl;
+
+ strncpy(buf, text, sizeof(buf) - 1);
+ buf[sizeof(buf) - 1] = '\0';
+ for (end = (int)strlen(buf); end > 0 && (buf[end-1] == '\n' || buf[end-1] == ' ');)
+  buf[--end] = '\0';                          /* trim trailing blank lines       */
+ p = buf;
+ while (n < max && *p)
+ {
+  int len;
+  nl = strchr(p, '\n');
+  if (nl)
+   *nl = '\0';
+  len = (int)strlen(p);
+  if (len > LSP_TIP_MAXWIDE)
+  {  p[LSP_TIP_MAXWIDE] = '\0';  len = LSP_TIP_MAXWIDE;  }
+  tln[n++] = p;
+  if (len > w)
+   w = len;
+  if (!nl)
+   break;
+  p = nl + 1;
+ }
+ *widest = w;
+ return(n);
+}
+
+/* e_lsp_cursor_popup - draw `text` (titled `title`) in a box at the cursor, wait
+   for one key to dismiss it, then restore the screen.  Used by hover and
+   signature help. */
+static void e_lsp_cursor_popup(FENSTER *f, const char *title, const char *text)
+{
+ BUFFER *b = f->b;
+ SCHIRM *s = f->s;
+ char *tln[LSP_TIP_MAXLINES];
+ int n, w, i, c, cx, cy, xa, ya, xe, ye;
+ PIC *pic;
+
+ if (!text || !*text)
+  return;
+ n = e_lsp_tip_split(text, tln, LSP_TIP_MAXLINES, &w);
+ if (n <= 0)
+  return;
+ if (w < (int)strlen(title))
+  w = (int)strlen(title);                      /* keep the title readable         */
+
+ cx = f->a.x + b->b.x - s->c.x + 1;            /* cursor's screen column (approx) */
+ cy = f->a.y + b->b.y - s->c.y + 1;            /* cursor's screen row             */
+ xa = cx - 1;
+ xe = xa + w + 3;                              /* frame + one space padding       */
+ if (xe > MAXSCOL - 1)
+ {  xe = MAXSCOL - 1;  xa = xe - (w + 3);  }
+ if (xa < 0)
+ {  xa = 0;  xe = w + 3;  if (xe > MAXSCOL - 1) xe = MAXSCOL - 1;  }
+ ya = cy + 1;                                  /* prefer just below the cursor    */
+ ye = ya + n + 1;
+ if (ye > MAXSLNS - 2 || ya >= f->e.y)         /* no room below (screen or the    */
+ {  ye = cy - 1;  ya = ye - (n + 1);  }        /* editor window) -> flip above    */
+ if (ya < 1)
+ {  ya = 1;  ye = ya + n + 1;  }
+
+ fk_cursor(0);
+ pic = e_std_kst(xa, ya, xe, ye, (char *)title, 1,
+                 f->fb->nr.fb, f->fb->nt.fb, f->fb->ne.fb);
+ if (!pic)
+ {  fk_cursor(1);  return;  }
+ for (i = 0; i < n; i++)
+  e_pr_str(xa + 2, ya + 1 + i, tln[i], f->fb->nt.fb, 0, 0, 0, 0);
+ e_refresh();
+
+ e_lsp_modal_enter();                          /* defer async LSP paints behind it */
+ c = e_getch();                                /* any key dismisses (consumed)     */
+ (void)c;
+ e_lsp_modal_leave();
+
+ e_close_view(pic, 1);                         /* restore what the box covered     */
+ fk_cursor(1);
+ e_cursor(f, 0);
+}
+
 /* AltQ H -- show the type/documentation of the symbol under the cursor. */
 static int e_lsp_ui_hover(FENSTER *f)
 {
@@ -6208,7 +6309,7 @@ static int e_lsp_ui_hover(FENSTER *f)
    e_error("No hover information.", 0, f->fb);
   return(0);
  }
- e_message(0, hov, f);                         /* one-button info popup */
+ e_lsp_cursor_popup(f, "Hover", hov);          /* tooltip at the cursor */
  free(hov);
  return(0);
 }
@@ -6393,7 +6494,7 @@ static int e_lsp_ui_signature(FENSTER *f)
  sig = e_lsp_signature_help(g_lsp, g_lsp_file, b->b.y, b->b.x);
  if (!sig || !*sig)
  {  if (sig) free(sig);  e_error("No signature here.", 0, f->fb);  return(0);  }
- e_message(0, sig, f);
+ e_lsp_cursor_popup(f, "Signature", sig);
  free(sig);
  return(0);
 }
