@@ -96,6 +96,21 @@ noinst_HEADERS = \
   unixkeys.h \
   unixmakr.h
 
+# --- Build-tree symlinks so ./wpe (and ./xwpe, ./xwe) work WITHOUT installing.
+#     The mode is chosen by argv[0] basename: run as ./wpe and the programming
+#     layer (Alt-Q LSP, F9 compile, debugger) is on; ./we is the plain editor.
+#     Mirrors the install-exec-hook below, but in the build dir. ---
+all-local: we$(EXEEXT)
+	rm -f wpe$(EXEEXT) && $(LN_S) we$(EXEEXT) wpe$(EXEEXT)
+if HAVE_X11
+	rm -f xwpe$(EXEEXT) xwe$(EXEEXT) && \
+	  $(LN_S) we$(EXEEXT) xwpe$(EXEEXT) && \
+	  $(LN_S) we$(EXEEXT) xwe$(EXEEXT)
+endif
+
+clean-local:
+	rm -f wpe$(EXEEXT) xwpe$(EXEEXT) xwe$(EXEEXT)
+
 # --- Symlinks: wpe, xwpe, xwe -> we ---
 install-exec-hook:
 	cd $(DESTDIR)$(bindir) && \

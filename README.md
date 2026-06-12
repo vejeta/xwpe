@@ -351,13 +351,18 @@ autoreconf -fi
 ./configure --without-x --without-gpm
 make
 
-# 4. Run it
+# 4. Run it -- `make` creates the ./wpe symlink for you (programming mode)
 ./wpe            # or: sudo make install   then   wpe
 ```
 
+`make` builds the binary as `we` and symlinks `./wpe` to it (and `./xwpe`,
+`./xwe` on X11 builds) -- the **mode is chosen by the name**, so launch it as
+`./wpe` to get the programming layer (Alt-Q LSP, F9 compile, Ctrl-G debug);
+`./we` is the plain editor.
+
 GPM is Linux-only, so `--without-gpm` is required (mouse still works through the
-terminal). `openpty()` (used by the debugger and Run panes) comes from the macOS
-system library; `configure` finds it automatically.
+terminal via ncurses). `openpty()` (used by the debugger and Run panes) comes
+from the macOS system library; `configure` finds it automatically.
 
 The compilers, debugger and language servers are optional and detected on
 `PATH` at runtime (see "External programs" below for what each enables). The
@@ -373,8 +378,12 @@ brew install gdb             # debugger (Ctrl-G); on Apple Silicon lldb via DAP 
                              # better fit -- xwpe auto-falls-back to lldb there
 ```
 
-Metals (Scala) follows the same `cs install metals scala-cli` route as Linux,
-with an LTS JDK (`brew install openjdk@21`); see the manual for the JDK note.
+For Scala (Metals), Homebrew installs Coursier as `coursier` (not `cs`):
+
+```sh
+brew install coursier openjdk@21       # LTS JDK -- Metals needs one (see the manual)
+coursier install metals scala-cli      # the `cs` name only exists with the standalone installer
+```
 
 ### External programs
 
