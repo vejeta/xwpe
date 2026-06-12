@@ -62,6 +62,32 @@ int SpecialError(char *text, int sw, FARBE *f, char *file, int line)
    6  | wastebasket
 
 */
+
+/* e_fm_centered_geometry - choose the File Manager box size + position for the
+   current terminal.  It grows to about three-quarters of the screen, clamped to
+   a sane minimum (the classic ~56x21) and maximum, then centres it.  So on a big
+   terminal the dir-tree and file-list boxes get many more rows and a bit more
+   width, instead of a fixed small box pinned near the top-left; on an 80x24
+   terminal it stays about its historical size.  Every inner widget already
+   derives from f->a/f->e (NUM_COLS/LINES_ON_SCREEN are window-relative), so this
+   is the one place the size needs choosing -- the rest scales for free. */
+static void e_fm_centered_geometry(FENSTER *f)
+{
+  int w = MAXSCOL * 3 / 4;          /* width  as an (e.x - a.x) offset */
+  int h = MAXSLNS * 3 / 4;          /* height as an (e.y - a.y) offset */
+  int ax, ay;
+
+  if(w < 55)       w = 55;          /* never smaller than the old box   */
+  else if(w > 77)  w = 77;          /* ...nor stretched edge to edge     */
+  if(h < 20)       h = 20;
+  else if(h > 29)  h = 29;          /* cap height -> ~20 rows of listing */
+
+  ax = (MAXSCOL - w) / 2;  if(ax < 1) ax = 1;
+  ay = (MAXSLNS - h) / 2;  if(ay < 1) ay = 1;
+  f->a = e_set_pnt(ax, ay);
+  f->e = e_set_pnt(ax + w, ay + h);
+}
+
 int WpeCreateFileManager(int sw, ECNT *cn, char *dirct)
 {
   extern char    *e_hlp_str[];
@@ -108,8 +134,7 @@ int WpeCreateFileManager(int sw, ECNT *cn, char *dirct)
 
   f->fb = cn->fb;
   cn->f[cn->mxedt] = f;        /* store the window structure at appropriate place */
-  f->a = e_set_pnt(11, 2);     /* beginning of the box */
-  f->e = e_set_pnt(f->a.x + 55, f->a.y + 20); /* other coord. of the box */
+  e_fm_centered_geometry(f);   /* centred, grows with the terminal (capped) */
   f->winnum = cn->curedt;
   f->dtmd = DTMD_FILEMANAGER;
   f->ins = 1;
