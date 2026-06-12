@@ -355,106 +355,51 @@ the build tools are then required). `texinfo` builds the `info xwpe` manual.
 
 ### macOS (terminal `wpe`, via Homebrew)
 
-> **Untested on macOS so far.** The build is written to be portable (openpty's
-> header is selected per platform; GPM is Linux-only and skipped), but no one
-> has yet confirmed a clean macOS build -- treat the steps below as a starting
-> point and please [open an issue](https://codeberg.org/mendezr/xwpe/issues)
-> with what you hit, good or bad.
->
-> On macOS the console editor `wpe` runs natively in Terminal.app or iTerm2 --
-> no X server needed. (The graphical `xwpe` would require XQuartz, and in this
-> release it looks and feels much like the terminal build, so `wpe` is the
-> recommended way to try xwpe on a Mac.)
+> **Untested on macOS** -- written to be portable, but no clean build is
+> confirmed yet; please [open an issue](https://codeberg.org/mendezr/xwpe/issues)
+> with results. `wpe` runs natively in Terminal.app/iTerm2 (no XQuartz); the
+> graphical `xwpe` needs XQuartz and looks much the same this release.
 
 ```sh
-# 1. Build tools + libraries (Apple's clang from `xcode-select --install` works)
 brew install autoconf automake pkg-config ncurses libvterm json-c texinfo
-
-# 2. Help the configure script find Homebrew's keg-only ncurses
 export PKG_CONFIG_PATH="$(brew --prefix ncurses)/lib/pkgconfig:$PKG_CONFIG_PATH"
-
-# 3. Build the terminal editor (no X11)
-autoreconf -fi
-./configure --without-x --without-gpm
-make
-
-# 4. Run it -- `make` creates the ./wpe symlink for you (programming mode)
-./wpe            # or: sudo make install   then   wpe
+autoreconf -fi && ./configure --without-x --without-gpm && make
+XWPE_LIB="$(pwd)" ./wpe foo.c      # make creates ./wpe; XWPE_LIB loads syntax+help
 ```
 
-`make` builds the binary as `we` and symlinks `./wpe` to it (and `./xwpe`,
-`./xwe` on X11 builds) -- the **mode is chosen by the name**, so launch it as
-`./wpe` to get the programming layer (Alt-Q LSP, F9 compile, Ctrl-G debug);
-`./we` is the plain editor.
+Three things to know on macOS:
 
-**Syntax highlighting and Help need the data files.** Run `sudo make install`,
-or stay in the build dir and set `XWPE_LIB="$(pwd)"` (see *Building &
-installing* above) -- without either, only C/C++ highlight and Help is empty.
+- **Make `Option` send `Alt`** -- the whole `Alt-Q` LSP layer needs it, and
+  Terminal.app does not by default (so `Alt-Q` seems dead). Terminal.app:
+  Settings -> Profiles -> Keyboard -> *"Use Option as Meta key"*; iTerm2: *Left
+  Option key* -> *Esc+*. (kitty/WezTerm do it out of the box.)
+- **`XWPE_LIB="$(pwd)"`** (or `sudo make install`) gives syntax highlighting and
+  Help; without it only built-in C/C++ highlight.
+- GPM is Linux-only (`--without-gpm`); the mouse still works through the terminal.
 
-**Make the terminal send `Alt`.** xwpe's menus and the whole `Alt-Q` LSP layer
-need the `Option`/`Alt` key to send a Meta/`Esc` prefix, which **Terminal.app
-does not do by default** -- so `Alt-Q` etc. appear to do nothing. Fix it once:
-
-- **Terminal.app:** Settings -> Profiles -> Keyboard -> tick *"Use Option as
-  Meta key"*.
-- **iTerm2:** Settings -> Profiles -> Keys -> set *Left Option key* to *Esc+*.
-- Or use a terminal that does this out of the box (**kitty**, **WezTerm**,
-  **Alacritty**). iTerm2/kitty are the smoothest for xwpe on macOS.
-
-GPM is Linux-only, so `--without-gpm` is required (mouse still works through the
-terminal via ncurses). `openpty()` (used by the debugger and Run panes) comes
-from the macOS system library; `configure` finds it automatically.
-
-The compilers, debugger and language servers are optional and detected on
-`PATH` at runtime (see "External programs" below for what each enables). The
-Homebrew equivalents of the Debian packages:
+**Language servers** (optional; xwpe finds each by name on `PATH`, which Homebrew
+hides for some):
 
 ```sh
-# clang/clang++ ship with the Xcode Command Line Tools (xcode-select --install)
-brew install llvm            # clangd  -> C/C++ LSP (Alt-Q): the headline feature
-brew install gopls           # Go LSP        (also: brew install go)
-brew install rust-analyzer   # Rust LSP      (also: rustup for rustc/cargo)
-brew install pyright         # Python LSP    (Python 3 ships with macOS; pdb is built in)
-brew install gdb             # debugger (Ctrl-G); on Apple Silicon lldb via DAP is the
-                             # better fit -- xwpe auto-falls-back to lldb there
-```
-
-For Scala (Metals), Homebrew installs Coursier as `coursier` (not `cs`), and
-Metals needs an LTS JDK (17 or 21):
-
-```sh
-brew install coursier openjdk@21
-coursier install metals scala-cli      # the `cs` name only exists with the standalone installer
+brew install llvm gopls rust-analyzer pyright     # clangd lives inside llvm (keg-only)
+brew install coursier openjdk@21                  # Scala/Metals + an LTS JDK (17 or 21)
+coursier install metals scala-cli
+export PATH="$(brew --prefix llvm)/bin:$PATH:$HOME/Library/Application Support/Coursier/bin"
 export JAVA_HOME="$(brew --prefix openjdk@21)/libexec/openjdk.jdk/Contents/Home"
+which clangd rust-analyzer metals                 # confirm before launching
 ```
 
-The JDK matters: Metals' presentation compiler (hover, completion,
-go-to-definition) runs on the JVM `JAVA_HOME` points at -- on a too-new default
-JDK the Scala 3 presentation compiler crashes (`asTerm called on not-a-Term`)
-and navigation/hover silently return empty, so keep `JAVA_HOME` on the 17/21 JDK
-above. (`//> using jvm temurin:21` in `project.scala` pins only the *build* JVM,
-not Metals' own.)
+> Metals needs a JDK 17/21 in `JAVA_HOME` (a too-new JDK makes hover/navigation
+> silently empty), and its first start indexes for minutes.
 
-**Put the servers on `PATH` -- Homebrew does not always.** xwpe finds each server
-by name on `PATH`; the keg-only and Coursier ones are not there by default:
+Open a bundled demo **as `wpe`**, then `Alt-Q E` to start the server (`Alt-Q ?`
+lists actions); each `docs/examples/*-lsp/` has its own walkthrough:
 
 ```sh
-export PATH="$(brew --prefix llvm)/bin:$PATH"                  # clangd (llvm is keg-only)
-export PATH="$PATH:$HOME/Library/Application Support/Coursier/bin"  # metals, scala-cli
-which clangd rust-analyzer metals scala-cli                    # confirm before launching
+./wpe docs/examples/c-lsp/main.cpp        # clangd, ready in ~2s
+./wpe docs/examples/rust-lsp/src/main.rs  # rust-analyzer
+./wpe docs/examples/scala-lsp/main.scala  # Metals (slow first start)
 ```
-
-Then open one of the bundled demo projects **as `wpe`** (programming mode) and
-press `Alt-Q E` to start the server (`Alt-Q ?` lists every action):
-
-```sh
-./wpe docs/examples/c-lsp/main.cpp       # clangd -- ready in ~2s (compile_flags.txt is included)
-./wpe docs/examples/rust-lsp/src/main.rs # rust-analyzer (the dir has Cargo.toml)
-./wpe docs/examples/scala-lsp/main.scala # Metals -- FIRST start downloads + indexes (minutes)
-```
-
-Each `docs/examples/*-lsp/` directory has a `README.md` walking through every
-`Alt-Q` action on that file.
 
 ### External programs
 
