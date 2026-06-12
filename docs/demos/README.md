@@ -51,6 +51,11 @@ embedded in each folder's `README.md`:
 | `gifs/go/tour.gif`     | Go     | gopls         | [`examples/go-lsp/`](../examples/go-lsp/)         |
 | `gifs/rust/tour.gif`   | Rust   | rust-analyzer | [`examples/rust-lsp/`](../examples/rust-lsp/)     |
 
+Each tour walks the **breadth** of LSP in that language -- diagnostics, hover,
+inlay hints, document highlight (every use lights up), references, outline, and
+a **rename refactor with Undo** as the finale (`total` -> `tally` across the
+file, reversible with `Ctrl-U`) -- so it is much more than a lone go-to-definition.
+
 Regenerate them with `docs/demos/record-tours.sh` (it records each against a
 throwaway copy of the testbed, so the servers' caches never land in the repo):
 
@@ -58,6 +63,13 @@ throwaway copy of the testbed, so the servers' caches never land in the repo):
 docs/demos/record-tours.sh            # all four
 docs/demos/record-tours.sh c          # just one
 ```
+
+> **CRITICAL:** the recordings MUST run the binary as **`wpe`** (programming
+> mode), never `we`.  `record-tours.sh` already defaults `WPE` to `./wpe`, so do
+> NOT override it with `./we`.  The Alt-Q LSP prefix (and F9/Ctrl-G) lives in
+> `e_prog_switch`, which is gated by `WpeIsProg()` -- under `we` the whole layer
+> is silently off and the tours film a cursor moving over a dead editor.  See
+> *Recording gotchas* below.
 
 ## How these are made
 
@@ -93,10 +105,57 @@ Ctrl+u                                # undo the server's rewrite
 Ctrl+r                                # redo it
 ```
 
+## Recording gotchas (read before re-recording)
+
+- **Run as `wpe`, never `we`.** The binary is one executable; `argv[0]` picks
+  the mode via `WpeIsProg()`.  `e_prog_switch` -- Alt-Q (LSP), F9 (compile),
+  Ctrl-G (debug) -- only runs when invoked as `wpe`/`xwpe`.  As `we`, Alt-Q does
+  nothing and the action letter is typed into the buffer.  The `record*.sh`
+  scripts default `WPE=./wpe`; don't override it with `./we`.
+- **VHS has no `End`/`Home` key.** To clear a prefilled dialog field (e.g. the
+  rename "Rename to" box), use `Right 8` then `Backspace 8`, then type the new
+  text.
+- **Some actions move the cursor** (the inlay toggle is one).  A tour that ends
+  on a cursor-sensitive action (rename, go-to-definition) re-establishes the
+  cursor first with `Up 60` / `Down N` / `Right M` (top-of-file then the known
+  offset) so the action targets the intended symbol.
+- **Go-to-definition must be the last cursor action** if used: it is the only
+  read action that moves the cursor off the symbol, so a cursor-sensitive action
+  after it pops "No ... found".
+
+## Debugging a recording (data, not frame-guessing)
+
+If a recorded action "doesn't show", set `XWPE_UI_TRACE` to a file and read it
+instead of eyeballing frames: each Alt-Q action appends what key it received and
+whether its handler ran.
+
+```sh
+XWPE_UI_TRACE=/tmp/ui.txt WPE=./wpe DEMO=$ws vhs docs/demos/tapes/c/tour.tape
+cat /tmp/ui.txt        # e.g. "e_lsp_ui_key c=104 'h'"  -> Alt-Q H dispatched
+```
+
+No trace lines at all == the action never reached the handler (almost always the
+`we`-vs-`wpe` mistake above).
+
+## Key captions (the keystroke overlay)
+
+VHS cannot draw the pressed keys, so the captions are a reproducible
+post-process: [`captions.sh`](captions.sh) burns a lower-third caption (the key
+chord + what it does) onto a GIF, driven by a `.cue` file of `START DURATION
+LABEL` lines.  All four tours share one cue ([`tours.cue`](tours.cue)) because
+they share the tape body.
+
+```sh
+docs/demos/captions.sh docs/demos/gifs/c/tour.gif docs/demos/tours.cue
+```
+
+Retiming is editing numbers in the `.cue`, not re-recording.
+
 ## Regenerate
 
 ```sh
-# from the repo root, with the editor built (make) and the demo tools on PATH
+# from the repo root, with the editor built (make -> ./wpe) and tools on PATH.
+# WPE MUST be ./wpe (programming mode); see "Recording gotchas".
 WPE=./wpe DEMO=../scala-demo docs/demos/record.sh          # all tapes
 WPE=./wpe DEMO=../scala-demo docs/demos/record.sh menu     # just one
 ```

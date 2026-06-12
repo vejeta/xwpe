@@ -14,6 +14,11 @@
 # Usage (from the repo root, with the editor built):
 #   docs/demos/record-tours.sh [lang ...]      # default: c go python rust
 #
+# WPE MUST be the `wpe` name (programming mode): the Alt-Q LSP actions live in
+# e_prog_switch, gated by WpeIsProg() on argv[0].  Launched as `we` the whole
+# Alt-Q layer is silently off and the tour films a dead editor -- do NOT set
+# WPE=./we.  The default (./wpe) is correct.
+#
 # WPE defaults to the ./wpe built in the repo root.  Each tour records against a
 # fresh COPY of the testbed in a scratch dir, so the servers' caches
 # (.cache/target/...) never land in the repo.

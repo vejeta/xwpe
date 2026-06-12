@@ -13,7 +13,9 @@
 #   docs/demos/record.sh [tape ...]      # default: every tapes/*.tape
 #   WPE=/path/to/wpe DEMO=/path/to/scala-workspace docs/demos/record.sh menu
 #
-# WPE  defaults to the ./wpe built in the repo root.
+# WPE  defaults to the ./wpe built in the repo root.  It MUST be the `wpe` name
+#      (programming mode): Alt-Q lives in e_prog_switch, gated by WpeIsProg() on
+#      argv[0].  As `we` the Alt-Q layer is silently off -- do NOT set WPE=./we.
 # DEMO defaults to ../scala-demo relative to the repo (override to your own).
 
 set -e
