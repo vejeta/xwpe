@@ -6131,6 +6131,26 @@ static int e_lsp_ui_type_definition(FENSTER *f)
  return(e_lsp_ui_jump(f, e_lsp_type_definition, "type definition"));
 }
 
+/* e_lsp_ui_trace - append a printf-style diagnostic line to the file named by
+   $XWPE_UI_TRACE.  A no-op (and zero cost) unless that env var is set.  Used to
+   confirm, from a headless VHS/pyte recording, WHICH Alt-Q action ran and what
+   key/word it saw -- the data-not-guesswork tool for demo debugging (the project notes
+   rule 19; the wpe-vs-we binary mix-up was found exactly this way). */
+static void e_lsp_ui_trace(const char *fmt, ...)
+{
+ const char *tp = getenv("XWPE_UI_TRACE");
+ FILE *tf;
+ va_list ap;
+
+ if (!tp || !(tf = fopen(tp, "a")))
+  return;
+ va_start(ap, fmt);
+ vfprintf(tf, fmt, ap);
+ va_end(ap);
+ fputc('\n', tf);
+ fclose(tf);
+}
+
 /* AltQ H -- show the type/documentation of the symbol under the cursor. */
 static int e_lsp_ui_hover(FENSTER *f)
 {
@@ -6893,11 +6913,14 @@ static int e_lsp_ui_rename(FENSTER *f)
 {
  BUFFER *b = f->b;
  char newname[256], *text, *renamed;
- int others = 0;
+ int others = 0, dret;
 
  e_lsp_word_at_cursor(f, newname, sizeof(newname));
- if (!e_add_arguments(newname, "Rename to", f, 0, AltR, NULL) || !newname[0])
-  return(0);                        /* cancelled or empty */
+ e_lsp_ui_trace("e_lsp_ui_rename ENTER word='%s'", newname);
+ dret = e_add_arguments(newname, "Rename to", f, 0, AltR, NULL);
+ e_lsp_ui_trace("e_lsp_ui_rename dialog ret=%d newname='%s'", dret, newname);
+ if (!dret || !newname[0])
+  return(0);                         /* cancelled or empty */
  if (e_lsp_ensure(f) < 0)
   return(-1);
  e_lsp_sync(f);
@@ -7214,6 +7237,7 @@ int e_lsp_ui_key(FENSTER *f)
 {
  int c = e_getch();
 
+ e_lsp_ui_trace("e_lsp_ui_key c=%d '%c'", c, (c >= 32 && c < 127) ? c : '?');
  switch (c)
  {
   case 'd': case ('d' - 'a' + 1):
