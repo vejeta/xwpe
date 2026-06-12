@@ -6412,16 +6412,32 @@ static void e_lsp_pick_title(char *dst, size_t sz, const char *title,
    index or -1 if cancelled.  At most 16 rows are shown; when the list is longer
    the title states how many were hidden (no silent truncation).  Shared by the
    completion / outline / workspace-symbol / code-action pickers. */
-static int e_lsp_pick(FENSTER *f, const char *title, const char *const *labels,
-                      int n)
+/* e_lsp_pick_at - the shared radio-list picker.  When ax >= 0 the box is anchored
+   at screen (ax, ay) -- just below that cell, flipped above when there is no room
+   -- so completion can drop down AT THE CURSOR like a real editor; ax < 0 keeps
+   the default top-left position used by the outline / symbol / lens pickers. */
+static int e_lsp_pick_at(FENSTER *f, const char *title, const char *const *labels,
+                         int n, int ax, int ay)
 {
  W_OPTSTR *o;
  char name[80];
  static char rows[16][64];     /* truncated rows, persist through e_opt_kst */
  const int maxw = 56;          /* longest row we render; longer is ...-clipped */
- int i, sel = -1, vis, mxlen = 0, titlen, w;
+ int i, sel = -1, vis, mxlen = 0, titlen, w, bw, bh;
 
  vis = n < 16 ? n : 16;
+ if (ax >= 0)                           /* anchored: a compact dropdown that fits the  */
+ {                                      /* editor window at the cursor, not a wall     */
+  int below = (f->e.y - 2) - (ay + 1);      /* item rows below the cursor, in-window  */
+  int above = (ay - 1) - (f->a.y + 1);      /* ...or above it                          */
+  int room  = (below > above) ? below : above;
+  if (room > 10)
+   room = 10;                           /* a dropdown shows ~10; the title says of N  */
+  if (room < 4)
+   room = 4;                            /* always offer at least a few choices        */
+  if (vis > room)
+   vis = room;
+ }
  e_lsp_pick_title(name, sizeof(name), title, vis, n);
  for (i = 0; i < vis; i++)
  {
@@ -6439,10 +6455,28 @@ static int e_lsp_pick(FENSTER *f, const char *title, const char *const *labels,
  o = e_init_opt_kst(f);
  if (!o)
   return(-1);
- o->xa = 8;
- o->ya = 3;
- o->xe = o->xa + w + 4;
- o->ye = o->ya + vis + 3;
+ bw = w + 4;                            /* box outer width  */
+ bh = vis + 3;                          /* box outer height (rows + frame + Ok)   */
+ if (ax >= 0)                           /* drop down at the cursor                 */
+ {
+  o->xa = ax - 1;
+  o->ya = ay + 1;                       /* just below the cursor line             */
+  if (o->xa + bw > MAXSCOL - 1)
+   o->xa = MAXSCOL - 1 - bw;
+  if (o->xa < 0)
+   o->xa = 0;
+  if (o->ya + bh > MAXSLNS - 2 || o->ya >= f->e.y)   /* no room below -> above     */
+   o->ya = ay - 1 - bh;
+  if (o->ya < 1)
+   o->ya = 1;
+ }
+ else                                   /* default: the top-left list position     */
+ {
+  o->xa = 8;
+  o->ya = 3;
+ }
+ o->xe = o->xa + bw;
+ o->ye = o->ya + bh;
  o->bgsw = 0;
  o->crsw = AltO;     /* Enter on a radio confirms via the Ok button (Borland) */
  o->name = name;
@@ -6461,6 +6495,14 @@ static int e_lsp_pick(FENSTER *f, const char *title, const char *const *labels,
  if (sel < 0 || sel >= vis)
   return(-1);
  return(sel);
+}
+
+/* e_lsp_pick - the picker at its default top-left position (outline, lenses,
+   workspace/file symbols, code actions). */
+static int e_lsp_pick(FENSTER *f, const char *title, const char *const *labels,
+                      int n)
+{
+ return(e_lsp_pick_at(f, title, labels, n, -1, -1));
 }
 
 /* AltQ C -- offer completion candidates for the word under the cursor in a
@@ -6491,7 +6533,11 @@ static int e_lsp_ui_complete(FENSTER *f)
 
  for (i = 0; i < n; i++)
   labels[i] = items[i].label;
- sel = e_lsp_pick(f, "Completion - Enter to insert", labels, n);
+ /* Drop the list down AT THE CURSOR (over the partial word being completed), like
+    a real editor's autocomplete, rather than a box at the screen corner. */
+ sel = e_lsp_pick_at(f, "Complete", labels, n,
+                     f->a.x + b->b.x - s->c.x + 1,
+                     f->a.y + b->b.y - s->c.y + 1);
  if (sel < 0)
   return(0);
 

@@ -324,3 +324,49 @@ def test_diagnostic_navigation_jumps_between_problems(tmp_path):
         w.save()
         assert w.text() == DIAG_PROG, \
             "a navigation key leaked into the buffer:\n%r" % w.text()
+
+
+COMPLETE_PROG = (
+    "#include <vector>\n"
+    "int main() {\n"
+    "    std::vector<int> v;\n"
+    "    v.\n"
+    "    return 0;\n"
+    "}\n"
+)
+
+
+def test_completion_drops_down_at_the_cursor(tmp_path):
+    """Alt-Q C opens the completion list as a compact dropdown ANCHORED at the
+    cursor (capped to ~10 visible so it fits the editor, not a full-height wall at
+    the corner), and selecting an entry inserts it."""
+    (tmp_path / "compile_flags.txt").write_text("-std=c++17\n")
+    with WpeSession(str(tmp_path), COMPLETE_PROG, filename="demo.cpp", wait=2.0) as w:
+        time.sleep(1.0)
+        w._drain(1.0)
+        w.key(ALT_Q, delay=0.4)
+        w.key("e", delay=9.0)             # start clangd
+        w._drain(2.0)
+        # cursor onto the end of 'v.' (line 4, after the dot)
+        _find(w, "v.")
+        w.key(ALT_Q, delay=0.4)
+        w.key("c", delay=3.0)             # complete
+        w._drain(1.0)
+        rows = w.display()
+        if not any("Complete" in r for r in rows):
+            pytest.skip("clangd returned no completions yet (cold start)")
+        # member names of std::vector show up in the list...
+        assert any(("begin" in r or "assign" in r or "push_back" in r) for r in rows), \
+            "completion dropdown is missing the member list:\n%s" % "\n".join(rows)
+        # ...and it is the COMPACT anchored dropdown (caps visible rows), not the
+        # full 16-row default list -- "first 10 of N" proves the cursor anchor path
+        assert any("first 10 of" in r for r in rows), \
+            "completion list was not capped to a compact dropdown:\n%s" \
+            % "\n".join(rows)
+
+        w.key("\r", delay=1.0)            # Enter inserts the focused completion
+        w._drain(0.6)
+        w.save()
+        line4 = w.text().split("\n")[3]
+        assert line4.strip().startswith("v.") and len(line4.strip()) > 2, \
+            "selecting a completion did not insert it (line 4 = %r)" % line4
