@@ -377,8 +377,14 @@ Three things to know on macOS:
   Terminal.app: Settings -> Profiles -> Keyboard -> tick *"Use Option as Meta
   key"* (in iTerm2 it is Profiles -> Keys -> *Left Option key* -> *Esc+*). Keep
   `TERM=xterm-256color`.
-- **`XWPE_LIB="$(pwd)"`** (or `sudo make install`) gives syntax highlighting and
-  Help; without it only built-in C/C++ highlight.
+- **No install needed to try it.** Run `./wpe` straight from the build tree with
+  `XWPE_LIB="$(pwd)"` (or `source contrib/xwpe-env`), which loads the syntax and
+  Help files; without it you get only the built-in C/C++ highlight. If you *do*
+  want to install: plain `make install` targets `/usr/local`, which is not
+  user-writable on macOS -- you will see
+  `gmkdir: cannot create directory '/usr/local/share': Permission denied`. Either
+  `sudo make install`, or reconfigure to a writable prefix:
+  `./configure --prefix="$HOME/.local"` (then put `~/.local/bin` on your `PATH`).
 - GPM is Linux-only (`--without-gpm`); the mouse still works through the terminal.
 
 **Language servers** (optional; xwpe runs whichever is on `PATH`):
