@@ -391,13 +391,26 @@ brew install coursier openjdk@21 && coursier install metals scala-cli   # Scala/
 Rather than exporting `PATH` / `JAVA_HOME` / `XWPE_LIB` by hand, source the
 bundled **`contrib/xwpe-env`** helper -- the `brew shellenv` idiom: it finds
 clangd, the JDK, the Coursier dir and this checkout, and skips whatever is
-absent. Add the line to your shell profile to make it permanent:
+absent. Run **only the line for the shell you use** (the bash/zsh form cannot
+work in fish -- fish does not understand POSIX `export`), then add that same
+line to your shell profile to make it permanent:
 
 ```sh
-eval "$(sh contrib/xwpe-env)"                  # bash / zsh  (-> ~/.zshrc to persist)
-sh contrib/xwpe-env --shell fish | source      # fish        (-> ~/.config/fish/config.fish)
+# bash / zsh  (-> add to ~/.bashrc or ~/.zshrc):
+eval "$(sh contrib/xwpe-env)"
+```
+```fish
+# fish  (-> add to ~/.config/fish/config.fish):
+sh contrib/xwpe-env --shell fish | source
+```
+
+```sh
 which clangd rust-analyzer metals        # confirm before launching
 ```
+
+> **Seeing `fish: Unknown command: contrib/xwpe-env`?** You ran the bash/zsh line
+> in fish -- use the fish line above
+> (`sh contrib/xwpe-env --shell fish | source`) instead.
 
 > The helper is plain POSIX `sh`, so it also works on Linux/BSD (there it sets
 > `XWPE_LIB` and finds a 17/21 JDK under `/usr/lib/jvm` for `JAVA_HOME`; the

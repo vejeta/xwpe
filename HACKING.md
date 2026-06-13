@@ -726,7 +726,9 @@ which is the classic "stale personal copy shadows the new rules" trap.
 `contrib/xwpe-env` is a shell-aware helper (the `brew shellenv` idiom): it emits
 `export` / `set -gx` for bash/zsh/fish and sets `XWPE_LIB`, plus `JAVA_HOME`
 (Homebrew, macOS `java_home`, or `/usr/lib/jvm`), clangd's keg-only `PATH`, and
-the Coursier app dir.  `eval "$(contrib/xwpe-env)"` / `... --shell fish | source`.
+the Coursier app dir.  Invoke via `sh` so a lost +x bit never matters:
+`eval "$(sh contrib/xwpe-env)"` (bash/zsh) or
+`sh contrib/xwpe-env --shell fish | source` (fish).
 
 ## Portability: macOS and the BSDs (1.6.5)
 
