@@ -31,8 +31,14 @@ ALT_H = '\033h'          # open the Help menu
 INFO_ITEM = 'i'          # Help -> Info
 
 
-def _open_info(workdir):
-    """Launch wpe with INFOPATH=docs, open Help -> Info, return the screen."""
+def _open_info(workdir, with_infopath=True):
+    """Launch wpe, open Help -> Info, return the (screen text, alive).
+
+    with_infopath=True points INFOPATH at the built docs/ so an UNINSTALLED
+    build tree finds the manual; with_infopath=False unsets INFOPATH (and
+    XWPE_LIB) so the binary must locate xwpe.info via the infodir compiled in
+    at build time -- the install path that was broken for any --prefix != /usr.
+    """
     with open(os.path.join(workdir, 't.c'), 'w') as fh:
         fh.write('int main(void){ return 0; }\n')
     screen = SafeScreen(80, 30)
@@ -40,8 +46,12 @@ def _open_info(workdir):
     master_fd, slave_fd = pty.openpty()
     env = os.environ.copy()
     env.update(TERM='xterm-256color', COLUMNS='80', LINES='30',
-               LC_ALL='en_US.UTF-8', HOME=workdir,
-               INFOPATH=os.path.abspath(DOCS))
+               LC_ALL='en_US.UTF-8', HOME=workdir)
+    if with_infopath:
+        env['INFOPATH'] = os.path.abspath(DOCS)
+    else:
+        env.pop('INFOPATH', None)
+        env.pop('XWPE_LIB', None)
     proc = subprocess.Popen([WPE_BIN, 't.c'], stdin=slave_fd, stdout=slave_fd,
                             stderr=slave_fd, cwd=workdir, env=env,
                             preexec_fn=os.setsid)
@@ -86,3 +96,31 @@ def test_help_info_opens_xwpe_manual(tmp_path):
     # Content that exists only in xwpe's manual Top node, never in the system dir.
     assert "manual for xwpe" in text or "Introduction" in text, \
         "Help -> Info should show xwpe's own manual, got:\n%s" % text
+
+
+def _installed_manual(wpe_bin):
+    """xwpe.info beside an INSTALLED binary: <prefix>/bin/we -> <prefix>/share/info."""
+    prefix = os.path.dirname(os.path.dirname(os.path.realpath(wpe_bin)))
+    return os.path.join(prefix, 'share', 'info', 'xwpe.info')
+
+
+@pytest.mark.skipif(not os.path.exists(_installed_manual(WPE_BIN)),
+                    reason="wpe not installed beside its manual; the compiled-in "
+                           "infodir path is only testable against an installed build "
+                           "(set WPE_BIN=<prefix>/bin/wpe after 'make install')")
+def test_help_info_finds_installed_manual_without_infopath(tmp_path):
+    """An INSTALLED wpe opens its manual with NO $INFOPATH -- it locates xwpe.info
+    via the infodir compiled in at build time ($(infodir)).
+
+    Regression: the Info search path was a fixed
+    "/usr/share/info:/usr/local/info:/usr/info", so Help -> Info found the manual
+    ONLY when --prefix happened to be /usr.  Every other install -- ~/.local or a
+    Homebrew prefix on macOS, even the default /usr/local (whose share/info was
+    not on that list) -- silently showed the system dir node instead.  The fix
+    bakes $(infodir) into the path; this proves it WITHOUT the INFOPATH crutch the
+    test above leans on."""
+    text, alive = _open_info(str(tmp_path), with_infopath=False)
+    assert alive, "wpe died opening Help -> Info (installed, no INFOPATH):\n%s" % text
+    assert "manual for xwpe" in text or "Introduction" in text, \
+        "installed Help -> Info did not find xwpe.info via the compiled-in " \
+        "infodir:\n%s" % text

@@ -13,6 +13,7 @@ AM_CFLAGS = -std=gnu17 \
   $(VTERM_CFLAGS) \
   $(JSONC_CFLAGS) \
   -DLIBRARY_DIR=\"$(pkglibdir)\" \
+  -DXWPE_INFODIR=\"$(infodir)\" \
   -Wno-incompatible-pointer-types \
   -Wno-implicit-function-declaration \
   -Wno-int-conversion \

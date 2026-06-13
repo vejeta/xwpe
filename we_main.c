@@ -329,6 +329,40 @@ void ECNT_Init(ECNT *cn)
  cn->edopt = ED_SOURCE_AUTO_INDENT | ED_ERRORS_STOP_AT | ED_SYNTAX_HIGHLIGHT;
 }
 
+/**
+ * e_info_search_path - Build the Help > Info file-search path, xwpe's own
+ * infodir first.
+ *
+ * `make install` drops xwpe.info in the configured infodir -- /usr/share/info on
+ * a Debian (--prefix=/usr) build, but ~/.local/share/info, a Homebrew prefix, or
+ * /usr/local/share/info for the from-source installs people do on macOS and the
+ * BSDs.  The old path was a fixed "/usr/share/info:...", so Help > Info found the
+ * manual ONLY when the prefix happened to be /usr -- elsewhere it silently fell
+ * back to the system dir node.  Putting the compiled-in infodir (XWPE_INFODIR,
+ * set from $(infodir) at build time) ahead of `fallback` makes Help > Info open
+ * OUR manual wherever it was installed, for any --prefix.
+ *
+ * Return: a malloc'd "infodir:fallback" string (caller frees), or a copy of
+ * fallback when XWPE_INFODIR is unset.
+ */
+static char *e_info_search_path(const char *fallback)
+{
+ char *path;
+#ifdef XWPE_INFODIR
+ if (XWPE_INFODIR[0])
+ {
+  path = MALLOC(strlen(XWPE_INFODIR) + strlen(fallback) + 2);
+  if (path)
+   sprintf(path, "%s%c%s", XWPE_INFODIR, PTHD, fallback);
+  return(path);
+ }
+#endif
+ path = MALLOC(strlen(fallback) + 1);
+ if (path)
+  strcpy(path, fallback);
+ return(path);
+}
+
 int main(int argc, char **argv)
 {
  FARBE *fb;
@@ -348,8 +382,7 @@ int main(int argc, char **argv)
  WpeEditor = cn;
  cn->fb = fb;
 
- info_file = MALLOC((strlen(INFO_DIR)+1)*sizeof(char));
- strcpy(info_file, INFO_DIR);
+ info_file = e_info_search_path(INFO_DIR);   /* our infodir first, then the system dirs */
  e_read_help_str();
  e_hlp = e_hlp_str[0];
  if (!(user_shell = getenv("SHELL"))) user_shell = DEF_SHELL;
@@ -409,7 +442,7 @@ int main(int argc, char **argv)
  if ((tp = getenv("INFOPATH")) != NULL)
  {
   if (info_file) FREE(info_file);
-  info_file = WpeStrdup(tp);
+  info_file = e_info_search_path(tp);    /* keep our infodir ahead of $INFOPATH too */
  }
  if (cn->edopt & ED_CUA_STYLE) blst = eblst_u;
  else blst = eblst_o;
