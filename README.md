@@ -394,8 +394,8 @@ clangd, the JDK, the Coursier dir and this checkout, and skips whatever is
 absent. Add the line to your shell profile to make it permanent:
 
 ```sh
-eval "$(contrib/xwpe-env)"               # bash / zsh   (-> ~/.zshrc to persist)
-contrib/xwpe-env --shell fish | source   # fish         (-> ~/.config/fish/config.fish)
+eval "$(sh contrib/xwpe-env)"                  # bash / zsh  (-> ~/.zshrc to persist)
+sh contrib/xwpe-env --shell fish | source      # fish        (-> ~/.config/fish/config.fish)
 which clangd rust-analyzer metals        # confirm before launching
 ```
 
