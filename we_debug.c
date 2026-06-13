@@ -6964,8 +6964,8 @@ static int e_lsp_ui_inlay(FENSTER *f)
      the moment the server delivers them (workspace/inlayHint/refresh or the next
      diagnostics publish) -- the same event-driven path worksheet results use. */
   g_inlay_stale = 1;
-  e_d_p_message("Inlay hints: ON -- they appear once the server finishes indexing "
-                "(no need to press Alt-Q Y again).", f, 1);
+  e_d_p_message("Inlay hints: ON -- each shows as a grey pill when the server has "
+                "one for this line (none right now).", f, 1);
   e_cursor(f, 0);
   return(0);
  }
@@ -7007,8 +7007,8 @@ static int e_lsp_ui_semantic(FENSTER *f)
      fd-loop refetches and recolours the moment the server delivers (semanticTokens/
      refresh or the next diagnostics publish). */
   g_sem_stale = 1;
-  e_d_p_message("Semantic highlighting: ON -- it appears once the server finishes "
-                "indexing (no need to press Alt-Q M again).", f, 1);
+  e_d_p_message("Semantic highlighting: ON -- recolours when the server has tokens "
+                "for this file (none right now).", f, 1);
   e_cursor(f, 0);
   return(0);
  }
