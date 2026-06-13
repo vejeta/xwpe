@@ -140,6 +140,23 @@ int main(void)
   free(rn);
  }
 
+ /* inlay hints over the whole file -> clangd annotates the add(2, 3) call on
+    line 7 with parameter names ("a:", "b:").  This is the request/parse path the
+    Alt-Q Y overlay drives; a non-empty result here is what makes the overlay
+    fill (instantly when warm, or via the async re-pull once a cold server has
+    indexed).  Retry briefly while the AST settles, exactly like hover. */
+ {
+  e_lsp_inlay_hint hints[64];
+  int ni = 0, t, on7 = 0, i;
+  for (t = 0; t < 8 && ni <= 0; t++)
+  { ni = e_lsp_inlay_hints(s, cpath, 0, 10, hints, 64); if (ni <= 0) sleep(1); }
+  printf("  INLAY: %d hint(s)%s%s\n", ni, ni > 0 ? ", e.g. " : "",
+         ni > 0 ? hints[0].label : "");
+  if (ni <= 0) { rc = fail("inlay hints returned nothing for add(2, 3)"); goto close; }
+  for (i = 0; i < ni; i++) if (hints[i].line == 7) on7 = 1;
+  if (!on7) { rc = fail("expected a parameter-name hint on the add() call (line 7)"); goto close; }
+ }
+
  printf("PASS: clangd drives the same LSP engine as Metals\n");
 
 close:

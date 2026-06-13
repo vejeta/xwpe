@@ -179,6 +179,61 @@ def test_clangd_inlay_hint_is_a_distinct_chip(tmp_path):
             % text
 
 
+# All-explicit types, no call sites -> clangd has NO inlay hint to offer, which
+# forces the "empty" path of the Alt-Q Y toggle (the one that used to freeze).
+NOINLAY_PROG = (
+    "int compute(int value) {\n"
+    "    int result = value * 2;\n"       # explicit int, not auto -> no type hint
+    "    return result;\n"                # no call site -> no parameter hint
+    "}\n"
+)
+
+
+def test_inlay_toggle_defers_instead_of_freezing_when_empty(tmp_path):
+    """Alt-Q Y on a file the server has no hints for must turn the overlay ON and
+    say it will fill once indexing finishes -- it must NOT block the editor on a
+    fixed wait and then give up with 'none for this file yet'.
+
+    Regression: the toggle used to call e_lsp_wait_diagnostics(...,8000) -- an 8s
+    SYNCHRONOUS wait -- on an empty first fetch, then leave the overlay OFF if it
+    was still empty.  For a cold Metals (minutes to index) that was an 8s freeze
+    AND a dead end.  The fix is event-driven: turn ON immediately, mark the
+    snapshot stale, and let the async fd-loop re-pull when the server publishes.
+
+    The message text is the deterministic proxy: the old path printed
+    'Inlay hints: none for this file yet' and left it OFF; the new path prints
+    'Inlay hints: ON ...'.  We also confirm the editor still accepts input."""
+    (tmp_path / "compile_flags.txt").write_text("-std=c++17\n")
+    with WpeSession(str(tmp_path), NOINLAY_PROG, filename="demo.cpp", wait=2.0) as w:
+        time.sleep(1.0)
+        w._drain(1.0)
+        w.key(ALT_Q, delay=0.4)
+        w.key("e", delay=8.0)              # start clangd + first diagnostics
+        w._drain(2.0)
+        assert w.alive(), "wpe died starting clangd"
+
+        w.key(ALT_Q, delay=0.4)
+        w.key("y", delay=2.0)              # toggle inlay hints on an empty-hint file
+        w._drain(1.0)
+        assert w.alive(), "wpe died toggling inlay hints"
+
+        text = _text(w)
+        # turned ON and DEFERRED, never the old synchronous give-up message
+        assert "Inlay hints: ON" in text, \
+            "empty-file inlay toggle did not turn ON / defer:\n%s" % text
+        assert "Inlay hints: none" not in text, \
+            "the toggle gave up with the old 'none for this file yet' message "\
+            "(the synchronous wait is back):\n%s" % text
+
+        # the editor is not frozen: a printable key still lands in the buffer
+        w.key("X", delay=0.5)
+        w._drain(0.5)
+        w.save()
+        assert w.text() != NOINLAY_PROG, \
+            "editor did not accept input after the inlay toggle (frozen?):\n%r" \
+            % w.text()
+
+
 def test_altq_menu_brackets_the_lsp_modal_guard(tmp_path):
     """Opening the Alt-Q action menu suspends the async LSP fd-loop's painting.
 
