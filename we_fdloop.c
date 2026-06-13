@@ -94,11 +94,31 @@ int wpe_fd_poll(int timeout_ms)
   return ready;
  for (i = 0; i < n; i++)
  {
-  if (pfd[i].revents & (POLLIN | POLLPRI))
+  short re = pfd[i].revents;
+  wpe_fd_entry *e = &fd_table[map[i]];
+
+  if (!re || !e->active)               /* (a prior callback may have removed it) */
+   continue;
+  if (re & POLLNVAL)                    /* fd already closed: cannot be polled    */
   {
-   wpe_fd_entry *e = &fd_table[map[i]];
-   if (e->active && e->callback)
+   wpe_fd_del(e->fd);
+   continue;
+  }
+  /* POLLHUP / POLLERR (EOF or error) MUST dispatch too: the read callback drains
+     the last bytes, sees EOF and unregisters the fd.  Without it a dead server
+     fd -- an LSP or debug child that exited -- keeps poll() returning instantly
+     with revents set but NO POLLIN (the case when no buffered data is left, e.g.
+     a server that crashed at start-up), nothing reaps it, and the input loop
+     spins at 100% CPU.  The per-callback "detect dead server" guard only fires
+     when it is actually called, i.e. on POLLIN; this makes it fire on hang-up
+     too, on every platform regardless of how the EOF is delivered. */
+  if (re & (POLLIN | POLLPRI | POLLHUP | POLLERR))
+  {
+   if (e->callback)
     e->callback(e->fd, e->data);
+   else if (re & (POLLHUP | POLLERR))  /* wake-only fd (stdin, X11) hung up:      */
+    wpe_fd_del(e->fd);                 /* drop it -- nobody can reap it, would spin */
+   /* else a wake-only POLLIN just unblocks the poll; the loop reads it itself.  */
   }
  }
  return ready;
