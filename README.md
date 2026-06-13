@@ -376,6 +376,12 @@ export PATH="$HOME/.local/bin:$PATH"      # add to ~/.zshrc to keep it
 wpe foo.c                                 # syntax_def + Help come from the install
 ```
 
+Using **fish**? The two `export` lines above are bash/zsh; the fish equivalents
+are `set -x PKG_CONFIG_PATH (brew --prefix ncurses)/lib/pkgconfig $PKG_CONFIG_PATH`
+and `fish_add_path ~/.local/bin`. (The runtime variables -- `XWPE_LIB`,
+`JAVA_HOME`, server `PATH` -- are handled per-shell by `contrib/xwpe-env`, see
+[Environment setup](#environment-setup).)
+
 - **Use iTerm2 or kitty.** xwpe's whole `Alt-Q` LSP layer (and the Alt-menu
   keys) needs `Option`/`Alt` to send a Meta/`Esc` prefix. **Terminal.app does not
   do that by default** -- it types accented characters instead, so `Alt-Q` seems
