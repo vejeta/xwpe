@@ -5964,6 +5964,10 @@ static void e_lsp_on_fd_readable(int fd, void *data)
   }
   else if (e_lsp_is_worksheet(g_lsp_fenster))
    g_inlay_stale = 1;            /* worksheet: pull the first evaluation results */
+  else if (g_inlay_on || g_sem_on)
+   ;                             /* an overlay is live: keep polling so a later server
+                                    push (inlayHint/semanticTokens refresh, once indexed)
+                                    reaches us and repaints -- it stays quiet when idle */
   else
    e_lsp_fd_unregister();        /* stop polling so an idle server never delays a key */
  }
@@ -5973,11 +5977,19 @@ static void e_lsp_on_fd_readable(int fd, void *data)
     inlay set may have grown.  Re-pull on each batch of messages once ready; the
     fetch is a cheap single request and the server falls silent when idle, so this
     is event-driven, not polling. */
- if (g_inlay_on && handled > 0 && g_lsp_ready_done &&
-     e_lsp_is_worksheet(g_lsp_fenster))
+ /* While an overlay is explicitly ON, treat ANY batch of server messages as "the
+    set may have grown" and re-pull: the diagnostics Metals publishes once it
+    finishes indexing are the reliable signal, since not every server bothers to
+    send inlayHint/semanticTokens refresh for a plain file.  The server is silent
+    when idle, so this is event-driven, not polling. */
+ if (g_inlay_on && handled > 0 && g_lsp_ready_done)
   g_inlay_stale = 1;
+ if (g_sem_on && handled > 0 && g_lsp_ready_done)
+  g_sem_stale = 1;
  if (g_inlay_on && !g_lsp_ui_suspended)   /* modal up: keep the stale flag, defer paint */
   e_lsp_inlay_refresh_pending(g_lsp_fenster);
+ if (g_sem_on && !g_lsp_ui_suspended)     /* same deal for semantic colours */
+  e_lsp_sem_refresh_pending(g_lsp_fenster);
 }
 
 static void e_lsp_fd_register(void)
@@ -6935,28 +6947,28 @@ static int e_lsp_ui_inlay(FENSTER *f)
  if (e_lsp_ensure(f) < 0)               /* turning on: start + sync + snapshot */
   return(-1);
  e_lsp_sync(f);
- e_lsp_inlay_fetch(f);
- if (g_inlay_nactive == 0)
- {
-  /* On a cold start the first compile can finish before the workspace is fully
-     indexed, so the snapshot is empty.  Wait for the next diagnostics publish
-     (an event, bounded -- not a fixed sleep) and try once more, so a cold
-     Alt-Q Y usually works on the FIRST press instead of needing a second. */
-  e_lsp_wait_diagnostics(g_lsp, g_lsp_file, 8000);
-  e_lsp_inlay_fetch(f);
- }
+ e_lsp_inlay_fetch(f);                  /* one quick request; fills if server is ready */
  { const char *tp = getenv("XWPE_UI_TRACE");   /* XWPE_UI_TRACE: diag only */
    if (tp) { FILE *tf = fopen(tp, "a");
      if (tf) { fprintf(tf, "inlay toggle: fetched nactive=%d (e.g. line=%d [%s])\n",
        g_inlay_nactive, g_inlay_nactive ? g_inlay_active[0].line : -1,
        g_inlay_nactive ? g_inlay_active[0].label : "-"); fclose(tf); } } }
+ g_inlay_on = 1;                        /* turn the overlay ON either way            */
+ e_lsp_fd_register();                   /* keep polling: a server push (inlayHint/refresh
+                                           after indexing) repaints the overlay live    */
  if (g_inlay_nactive == 0)
  {
-  e_d_p_message("Inlay hints: none for this file yet "
-                "(the server may still be indexing -- try Alt-Q Y again).", f, 1);
-  return(0);                            /* leave the overlay off */
+  /* Nothing yet -- a cold start finishes the first compile before the workspace
+     is fully indexed.  Do NOT freeze the editor waiting (the old 8s synchronous
+     wait): mark the snapshot stale so the fd-loop refetches and paints the hints
+     the moment the server delivers them (workspace/inlayHint/refresh or the next
+     diagnostics publish) -- the same event-driven path worksheet results use. */
+  g_inlay_stale = 1;
+  e_d_p_message("Inlay hints: ON -- they appear once the server finishes indexing "
+                "(no need to press Alt-Q Y again).", f, 1);
+  e_cursor(f, 0);
+  return(0);
  }
- g_inlay_on = 1;
  snprintf(msg, sizeof(msg),
           "Inlay hints: ON -- %d inferred type(s) shown as a grey pill at end of line. "
           "Alt-Q Y to hide.", g_inlay_nactive);
@@ -6984,21 +6996,22 @@ static int e_lsp_ui_semantic(FENSTER *f)
  if (e_lsp_ensure(f) < 0)               /* turning on: start + sync + fetch */
   return(-1);
  e_lsp_sync(f);
- e_lsp_sem_fetch(f);
+ e_lsp_sem_fetch(f);                    /* one quick request; fills if server is ready */
+ g_sem_on = 1;                          /* turn the overlay ON either way            */
+ e_lsp_fd_register();                   /* keep polling: a server push (semanticTokens/refresh
+                                           after indexing) repaints the overlay live    */
  if (g_sem_nactive == 0)
  {
-  /* cold: the classification is empty until the workspace is indexed -- wait
-     for the next diagnostics publish (event, bounded) and try once more. */
-  e_lsp_wait_diagnostics(g_lsp, g_lsp_file, 8000);
-  e_lsp_sem_fetch(f);
+  /* Nothing yet -- the classification is empty until the workspace is indexed.  Do
+     NOT freeze the editor waiting (the old 8s synchronous wait): mark it stale so the
+     fd-loop refetches and recolours the moment the server delivers (semanticTokens/
+     refresh or the next diagnostics publish). */
+  g_sem_stale = 1;
+  e_d_p_message("Semantic highlighting: ON -- it appears once the server finishes "
+                "indexing (no need to press Alt-Q M again).", f, 1);
+  e_cursor(f, 0);
+  return(0);
  }
- if (g_sem_nactive == 0)
- {
-  e_d_p_message("Semantic tokens: none for this file yet "
-                "(the server may still be indexing -- try Alt-Q M again).", f, 1);
-  return(0);                            /* leave the overlay off */
- }
- g_sem_on = 1;
  snprintf(msg, sizeof(msg),
           "Semantic highlighting: ON -- %d token(s) coloured by meaning. "
           "Alt-Q M to turn off.", g_sem_nactive);
