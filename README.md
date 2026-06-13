@@ -309,34 +309,29 @@ compiler errors). Ctrl-G P shows output with full scroll at any time.
 
 ## Building & installing
 
-`sudo make install` is part of the normal build, not an afterthought: it
-installs `syntax_def` (the syntax-highlighting rules), the in-app help, the
-option file and the man page. **Skip it and you get only the built-in C/C++
-highlighting and no Help.** To run straight from the build directory without
-installing, point `XWPE_LIB` at it -- xwpe then loads its data files from there:
+`make install` is part of the normal build, not an afterthought: it installs
+`syntax_def` (the syntax-highlighting rules), the in-app help, the option file
+and the man page. **Skip it and you get only the built-in C/C++ highlighting and
+no Help.** To run straight from the build directory without installing, point
+`XWPE_LIB` at it -- xwpe then loads its data files from there:
 
 ```sh
 XWPE_LIB="$(pwd)" ./wpe foo.c       # syntax_def + help + options from the build dir
 ```
 
-(`XWPE_LIB` overrides the compiled-in install path; export it in your shell
-profile to make it permanent. A `~/.xwpe/syntax_def` copy also works, but only
-for highlighting.)
+(`XWPE_LIB` overrides the compiled-in install path; export it to make it
+permanent -- or let `contrib/xwpe-env` set it, see
+[Environment setup](#environment-setup). A `~/.xwpe/syntax_def` copy also works,
+but only for highlighting.)
 
-### Linux (any distribution, from source)
+### Build xwpe
 
-Needs a C compiler, autotools and pkg-config, plus **ncursesw** (required),
-**libvterm** and **json-c**. **X11 + Xft + Cairo + Pango** are optional (only
-the graphical `xwpe` uses them); **GPM** is optional (Linux-console mouse).
+xwpe needs a C compiler, autotools and pkg-config, plus **ncursesw** (required),
+**libvterm** and **json-c**. **X11 + Xft + Cairo + Pango** are optional -- only
+the graphical `xwpe` uses them; the terminal `wpe` builds without them
+(`--without-x`). **GPM** is optional (Linux-console mouse; not on macOS).
 
-```sh
-autoreconf -fi   # only from a git checkout
-./configure      # --without-x = terminal-only;  --without-gpm = no GPM mouse
-make
-sudo make install
-```
-
-### Debian / Ubuntu
+#### Debian / Ubuntu
 
 ```sh
 sudo apt install build-essential autoconf automake pkg-config texinfo \
@@ -349,7 +344,18 @@ The X11 libraries enable `xwpe`'s anti-aliased Xft/Cairo rendering; for a
 console-only build drop them and pass `--without-x` (only `libncurses-dev` plus
 the build tools are then required). `texinfo` builds the `info xwpe` manual.
 
-### macOS (terminal `wpe`, via Homebrew)
+#### Other Linux (any distribution)
+
+Install the equivalent packages from the list above, then:
+
+```sh
+autoreconf -fi   # only from a git checkout
+./configure      # --without-x = terminal-only;  --without-gpm = no GPM mouse
+make
+sudo make install
+```
+
+#### macOS (Homebrew)
 
 > **Untested on macOS** -- written to be portable, but no clean build is
 > confirmed yet; please [open an issue](https://codeberg.org/mendezr/xwpe/issues)
@@ -365,8 +371,6 @@ export PKG_CONFIG_PATH="$(brew --prefix ncurses)/lib/pkgconfig:$PKG_CONFIG_PATH"
 autoreconf -fi && ./configure --without-x --without-gpm && make
 XWPE_LIB="$(pwd)" ./wpe foo.c      # make creates ./wpe; XWPE_LIB loads syntax+help
 ```
-
-Three things to know on macOS:
 
 - **Use iTerm2 or kitty.** xwpe's whole `Alt-Q` LSP layer (and the Alt-menu
   keys) needs `Option`/`Alt` to send a Meta/`Esc` prefix. **Terminal.app does not
@@ -385,21 +389,69 @@ Three things to know on macOS:
   `gmkdir: cannot create directory '/usr/local/share': Permission denied`. Either
   `sudo make install`, or reconfigure to a writable prefix:
   `./configure --prefix="$HOME/.local"` (then put `~/.local/bin` on your `PATH`).
-- GPM is Linux-only (`--without-gpm`); the mouse still works through the terminal.
+- **GPM is Linux-only** (`--without-gpm`); the mouse still works through the
+  terminal emulator.
 
-**Language servers** (optional; xwpe runs whichever is on `PATH`):
+### External tools it drives
+
+xwpe auto-detects the compiler, debugger and language server by file extension
+and runs whatever is on `PATH` -- install only the ones for the languages you
+use. (`JAVA_HOME` for Metals is covered in [Environment setup](#environment-setup).)
+
+#### Debian / Ubuntu
 
 ```sh
+# compilers (F9 build + error navigation)
+sudo apt install gcc g++ gfortran      # C/C++/Fortran
+sudo apt install fpc                   # Free Pascal
+sudo apt install default-jdk           # Java (javac + jdb)
+sudo apt install python3               # Python (py_compile + pdb)
+sudo apt install texlive-latex-base    # LaTeX (pdflatex)
+sudo apt install perl                  # Perl (perl -c)
+sudo apt install gnucobol              # COBOL (cobc)
+sudo apt install algol68g              # Algol 68 (a68g + its monitor debugger)
+sudo apt install golang-go             # Go (compile)
+sudo apt install rustc                 # Rust (rustc -g)
+sudo apt install gdb                   # C/C++/Fortran/Pascal/Rust debugger
+
+# language servers (the Alt-Q LSP layer)
+sudo apt install clangd gopls rust-analyzer python3-pylsp   # C/C++, Go, Rust, Python
+cs install metals scala-cli                                 # Scala (coursier; get-coursier.io)
+sudo apt install openjdk-21-jdk                             # Metals' JVM: an LTS JDK 17/21
+
+# DAP debug servers not in the archive
+go install github.com/go-delve/delve/cmd/dlv@latest         # Go (Delve)
+```
+
+#### macOS (Homebrew)
+
+```sh
+# compilers: clang ships with the Xcode Command Line Tools
+# (xcode-select --install); add the others you need
+brew install go rust gcc               # Go, Rust, gfortran (in gcc)
+
+# language servers
 brew install llvm gopls rust-analyzer pyright   # clangd lives inside llvm (keg-only)
 brew install coursier openjdk@21 && coursier install metals scala-cli   # Scala/Metals + a JDK
+
+# DAP debug servers
+go install github.com/go-delve/delve/cmd/dlv@latest         # Go (Delve)
 ```
+
+> **Metals needs an LTS JDK (17 or 21)** in `JAVA_HOME` -- its presentation
+> compiler (hover, completion, go-to-definition) runs there, and a too-new JDK
+> (e.g. OpenJDK 26) crashes it (`asTerm called on not-a-Term`) so
+> hover/navigation silently return empty. Wiring `JAVA_HOME` is covered next.
+
+### Environment setup
 
 Rather than exporting `PATH` / `JAVA_HOME` / `XWPE_LIB` by hand, source the
 bundled **`contrib/xwpe-env`** helper -- the `brew shellenv` idiom: it finds
 clangd, the JDK, the Coursier dir and this checkout, and skips whatever is
-absent. Run **only the line for the shell you use** (the bash/zsh form cannot
-work in fish -- fish does not understand POSIX `export`), then add that same
-line to your shell profile to make it permanent:
+absent. It is plain POSIX `sh`, so it works the same on macOS, Linux and the
+BSDs. Run **only the line for the shell you use** (the bash/zsh form cannot work
+in fish -- fish does not understand POSIX `export`), then add that same line to
+your shell profile to make it permanent:
 
 ```sh
 # bash / zsh  (-> add to ~/.bashrc or ~/.zshrc):
@@ -418,16 +470,16 @@ which clangd rust-analyzer metals        # confirm before launching
 > in fish -- use the fish line above
 > (`sh contrib/xwpe-env --shell fish | source`) instead.
 
-> The helper is plain POSIX `sh`, so it also works on Linux/BSD (there it sets
-> `XWPE_LIB` and finds a 17/21 JDK under `/usr/lib/jvm` for `JAVA_HOME`; the
-> package manager already puts the servers on `PATH`). Metals needs that JDK
-> 17/21 in `JAVA_HOME` -- a too-new one makes
-> hover/navigation silently empty -- and its first start indexes for minutes;
-> `coursier setup` is Coursier's own bootstrap that also configures Scala's
-> `JAVA_HOME`/`PATH`.
+The helper sets `XWPE_LIB` (so a non-installed build finds its data files) and,
+for Metals, points `JAVA_HOME` at a 17/21 JDK -- on Linux it looks under
+`/usr/lib/jvm`, on macOS it asks Homebrew / `java_home`. Metals' first start then
+indexes for minutes before hover and navigation answer.
 
-Open a bundled demo **as `wpe`**, then `Alt-Q E` to start the server (`Alt-Q ?`
-lists actions); each `docs/examples/*-lsp/` has its own walkthrough:
+### Run a bundled demo
+
+Each wired language has a small, fully-commented LSP demo. Open one **as `wpe`**,
+then `Alt-Q E` starts the server and `Alt-Q ?` lists the actions; each
+`docs/examples/*-lsp/` has its own walkthrough:
 
 ```sh
 ./wpe docs/examples/c-lsp/main.cpp        # clangd, ready in ~2s
@@ -435,53 +487,23 @@ lists actions); each `docs/examples/*-lsp/` has its own walkthrough:
 ./wpe docs/examples/scala-lsp/main.scala  # Metals (slow first start)
 ```
 
-### External programs
+### Terminal & console notes
 
-xwpe auto-detects the compiler, debugger and language server by file extension.
-From the Debian/Ubuntu archive:
+**Any terminal emulator** (xterm, kitty, gnome-terminal, iTerm2, tmux): the
+mouse -- pointer, click, window drag/resize -- works natively over the xterm
+protocol, no extra setup. (On macOS, enable Option-as-Meta so the `Alt-` keys
+reach xwpe; see the macOS build notes above.)
 
-```sh
-sudo apt install gcc g++ gfortran      # C/C++/Fortran
-sudo apt install fpc                   # Free Pascal
-sudo apt install default-jdk           # Java (javac + jdb)
-sudo apt install python3               # Python (py_compile + pdb)
-sudo apt install texlive-latex-base    # LaTeX (pdflatex)
-sudo apt install perl                  # Perl (perl -c)
-sudo apt install gnucobol              # COBOL (cobc)
-sudo apt install algol68g              # Algol 68 (a68g + its monitor debugger)
-sudo apt install golang-go             # Go (compile)
-sudo apt install rustc                 # Rust (rustc -g)
-sudo apt install gdb                   # C/C++/Fortran/Pascal/Rust debugger
-```
-
-Language servers for the `Alt-Q` LSP layer (xwpe uses whichever is on `PATH`):
-
-```sh
-sudo apt install clangd gopls rust-analyzer python3-pylsp   # C/C++, Go, Rust, Python
-cs install metals scala-cli                                 # Scala (coursier; get-coursier.io)
-sudo apt install openjdk-21-jdk                             # Metals' JVM: an LTS JDK 17/21...
-export JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64         # ...keep JAVA_HOME on it (see above)
-```
-
-DAP debug servers that are not in the archive:
-
-```sh
-go install github.com/go-delve/delve/cmd/dlv@latest         # Go (Delve)
-```
-
-### Console tips
-
-On a Linux console (Ctrl+Alt+F2), bitmap fonts look tiny on HiDPI:
+**Linux console (no X, Ctrl+Alt+F2):** bitmap fonts look tiny on HiDPI, and the
+mouse needs the GPM daemon:
 
 ```sh
 sudo apt install console-terminus
 setfont Lat15-Terminus32x16            # readable on HiDPI
+sudo apt install gpm                   # then: pointer, click, window drag/resize on a bare VT
 ```
 
-Mouse on console requires GPM (`sudo apt install gpm`): with the daemon
-running you get the pointer, clicks, and window drag/resize on a bare VT,
-no X needed. In terminal emulators (xterm, kitty, gnome-terminal, tmux),
-mouse works natively.
+With `gpm` running you get the full mouse on a bare VT, no X needed.
 
 ## Syntax highlighting
 
