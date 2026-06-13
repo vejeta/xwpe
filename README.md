@@ -363,13 +363,17 @@ sudo make install
 > `xwpe` needs XQuartz and looks much the same this release.
 
 Build with Homebrew's keg-only `ncurses` (the `PKG_CONFIG_PATH` line points
-`configure` at it):
+`configure` at it), and install to a user-writable prefix so `make install`
+needs no sudo:
 
 ```sh
 brew install autoconf automake pkg-config ncurses libvterm json-c texinfo
 export PKG_CONFIG_PATH="$(brew --prefix ncurses)/lib/pkgconfig:$PKG_CONFIG_PATH"
-autoreconf -fi && ./configure --without-x --without-gpm && make
-XWPE_LIB="$(pwd)" ./wpe foo.c      # make creates ./wpe; XWPE_LIB loads syntax+help
+autoreconf -fi
+./configure --without-x --without-gpm --prefix="$HOME/.local"
+make && make install
+export PATH="$HOME/.local/bin:$PATH"      # add to ~/.zshrc to keep it
+wpe foo.c                                 # syntax_def + Help come from the install
 ```
 
 - **Use iTerm2 or kitty.** xwpe's whole `Alt-Q` LSP layer (and the Alt-menu
@@ -381,14 +385,15 @@ XWPE_LIB="$(pwd)" ./wpe foo.c      # make creates ./wpe; XWPE_LIB loads syntax+h
   Terminal.app: Settings -> Profiles -> Keyboard -> tick *"Use Option as Meta
   key"* (in iTerm2 it is Profiles -> Keys -> *Left Option key* -> *Esc+*). Keep
   `TERM=xterm-256color`.
-- **No install needed to try it.** Run `./wpe` straight from the build tree with
-  `XWPE_LIB="$(pwd)"` (or `source contrib/xwpe-env`), which loads the syntax and
-  Help files; without it you get only the built-in C/C++ highlight. If you *do*
-  want to install: plain `make install` targets `/usr/local`, which is not
-  user-writable on macOS -- you will see
-  `gmkdir: cannot create directory '/usr/local/share': Permission denied`. Either
-  `sudo make install`, or reconfigure to a writable prefix:
-  `./configure --prefix="$HOME/.local"` (then put `~/.local/bin` on your `PATH`).
+- **The prefix matters.** `--prefix="$HOME/.local"` keeps the whole install
+  (`wpe`, `syntax_def`, the Help files, the man page) under your home directory,
+  no sudo. For a system-wide install use `sudo make install` (default prefix
+  `/usr/local`; on Apple Silicon that directory must already exist and be
+  writable). A bare `make install` with neither a prefix nor sudo fails with
+  `gmkdir: cannot create directory '/usr/local/share': Permission denied` -- so
+  pick one of the two.
+- **Or skip installing entirely:** `XWPE_LIB="$(pwd)" ./wpe foo.c` (or `source
+  contrib/xwpe-env`) runs straight from the build tree with full syntax + Help.
 - **GPM is Linux-only** (`--without-gpm`); the mouse still works through the
   terminal emulator.
 
