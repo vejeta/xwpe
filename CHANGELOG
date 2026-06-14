@@ -242,6 +242,14 @@ Changes
   had shared F10's handler and jumped into the "#" system menu, which
   surprised users.  Closing an open dialog or menu with Esc is unchanged
   (those have their own input loops).  Tests in tests/test_esc_key.py.
+* Alt-C (Compile) no longer looks like a no-op when the object is already
+  built.  It compiles the active file to a .o without linking; when that .o was
+  newer than the source -- e.g. just after a Make or a debug build -- it
+  returned silently with no Messages output and seemed to do nothing.  It now
+  pops a short "Already compiled (object file is up to date)" confirmation.
+  Only single-file Compile reports this (via e_compile's announce flag); Make
+  (Alt-M) stays silent and goes on to link, which is where a multi-file link
+  error would surface.
 
   Portability and developer ergonomics:
 * Builds on macOS (terminal wpe, Homebrew) and the BSDs, not just Linux:
@@ -265,6 +273,20 @@ Changes
   system directory node instead of the xwpe manual.  The configured $(infodir)
   is now compiled in (XWPE_INFODIR) and searched first, so Help > Info opens the
   installed manual for any prefix.  Regression test in tests/test_help_info.py.
+* New contrib/setup.sh: a one-command bootstrap (deps -> build -> install ->
+  xwpe-env --persist) for Debian/Ubuntu (apt) and macOS (Homebrew).  Re-running
+  it with a different --prefix now `make clean`s before reconfiguring, so the
+  relink actually re-bakes LIBRARY_DIR / XWPE_INFODIR -- those come from -D
+  CFLAGS, not config.h, so otherwise stale .o files keep the old install paths
+  and the binary loads data from the previous prefix.
+* The C/C++ language-server demo (docs/examples/c-lsp) now ships a Makefile and
+  a note: it is a three-file program, so F9 / Ctrl-G on main.cpp alone does not
+  link (expected -- use `make` or an xwpe project; debug_test.cpp is the
+  single-file demo).  Two environment limits are documented in the manual
+  (Bugs and limits) and the README: GNU screen drops the SGR mouse, so clicks
+  leak as typed bytes -- use tmux or no multiplexer; and macOS grabs the
+  function keys, so use Alt-M / Alt-C / the Ctrl-G debug prefix, or enable
+  "standard function keys".
 
   GNU Algol 68 (ga68) compiler:
 * ga68, the GCC Algol 68 front-end, is now supported alongside a68g.  It
