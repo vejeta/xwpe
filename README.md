@@ -382,15 +382,24 @@ and `fish_add_path ~/.local/bin`. (The runtime variables -- `XWPE_LIB`,
 `JAVA_HOME`, server `PATH` -- are handled per-shell by `contrib/xwpe-env`, see
 [Environment setup](#environment-setup).)
 
-- **Use iTerm2 or kitty.** xwpe's whole `Alt-Q` LSP layer (and the Alt-menu
-  keys) needs `Option`/`Alt` to send a Meta/`Esc` prefix. **Terminal.app does not
-  do that by default** -- it types accented characters instead, so `Alt-Q` seems
-  dead -- and its dated terminfo also causes ncurses key/colour quirks.
-  **[iTerm2](https://iterm2.com/) and [kitty](https://sw.kovidgoyal.net/kitty/)
-  avoid both** and are the recommended way to run xwpe on a Mac. If you must use
-  Terminal.app: Settings -> Profiles -> Keyboard -> tick *"Use Option as Meta
-  key"* (in iTerm2 it is Profiles -> Keys -> *Left Option key* -> *Esc+*). Keep
-  `TERM=xterm-256color`.
+- **The Meta key on a Mac is Option, not Command -- and you must enable it.**
+  xwpe's Alt-menus and the whole `Alt-Q` LSP layer need a key that sends a
+  Meta/`Esc` prefix. macOS reserves **Command (Cmd)** for the terminal and the
+  system, so Cmd-X / Cmd-R / Cmd-E act on
+  [kitty](https://sw.kovidgoyal.net/kitty/) / [iTerm2](https://iterm2.com/) and
+  never reach xwpe -- **Command is never Alt.** The Alt key is **Option (Opt)**,
+  but every Mac terminal defaults to using Option to type accented characters, so
+  you must switch it to Meta first:
+    - **kitty:** add `macos_option_as_alt yes` to `~/.config/kitty/kitty.conf`,
+      then reload (Ctrl+Cmd+,). (kitty does NOT do this by default.)
+    - **iTerm2:** Profiles -> Keys -> *Left Option key* -> *Esc+*.
+    - **Terminal.app:** Settings -> Profiles -> Keyboard -> *"Use Option as Meta
+      key"*. Its dated terminfo also causes ncurses key/colour quirks, so prefer
+      kitty or iTerm2. Keep `TERM=xterm-256color` everywhere.
+
+  Then drive xwpe with **Option** (Opt-Q, Opt-X, ...). With no configuration at
+  all you can instead press **Esc then the letter** (Esc, then `x` = Alt-X) -- a
+  Meta key is just an Esc prefix, so this works in any terminal on any OS.
 - **The prefix matters.** `--prefix="$HOME/.local"` keeps the whole install
   (`wpe`, `syntax_def`, the Help files, the man page) under your home directory,
   no sudo. For a system-wide install use `sudo make install` (default prefix
