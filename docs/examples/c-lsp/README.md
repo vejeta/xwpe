@@ -70,8 +70,38 @@ reference, every action and where it lands:
 | `Alt-Q N` | reName            | on `describe` (or any local)             |
 | `Alt-Q F` | Format            | the whole file (clang-format)            |
 
-`Alt-Q` opens the action menu; `Alt-Q <letter>` runs one directly.  To compile
-and run the program, use `F9` (build) and the debugger (`Ctrl-G T`, gdb).
+`Alt-Q` opens the action menu; `Alt-Q <letter>` runs one directly.
+
+## Compiling and debugging this demo
+
+This testbed is a **three-file program** (`main.cpp` + `shapes.cpp` +
+`actions.cpp`), built so the language-server actions have cross-file symbols to
+work on.  That has one consequence for building:
+
+> Pressing **`F9`** (or `Alt-C` / `Ctrl-G` step) on `main.cpp` **alone** will
+> **not link**.  The compile succeeds (it writes `main.o`), but the linker
+> reports `undefined reference to 'vtable for Circle'...` and
+> `collect2: error: ld returned 1 exit status`, because `shapes.cpp` and
+> `actions.cpp` are not in the build.  This is expected for a multi-file
+> project, not an xwpe bug.
+
+To build and run the whole thing, link all three sources together:
+
+```sh
+make            # builds ./clsp-demo from the three .cpp files
+./clsp-demo
+```
+
+Inside xwpe, the Borland-style way is a **Project**: open the *Project* menu,
+create a `.prj`, add `main.cpp`, `shapes.cpp` and `actions.cpp`, then `F9`
+builds and links the project as a unit.  (To try `F9`/`Ctrl-G` on a *single*
+self-contained file instead, use `docs/examples/debug_test.cpp` or
+`debug_constructor.c`.)
+
+> **`Alt-C` (Compile) vs `Alt-M` (Make):** `Alt-C` only compiles the current
+> file to a `.o` (no link); if the `.o` is already up to date it now says so
+> instead of appearing to do nothing.  `Alt-M` compiles **and** links -- that
+> is where the single-file link error above shows up.
 
 > **`Alt-Q L` (code lenses):** clangd does not publish code lenses by default
 > (it surfaces that information as inlay hints instead), so this one is usually

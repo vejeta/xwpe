@@ -59,4 +59,26 @@ EXTRA_DIST = \
   examples/scala-lsp/README.md \
   examples/scala-lsp/project.scala \
   examples/scala-lsp/shapes.scala \
-  examples/scala-lsp/main.scala
+  examples/scala-lsp/main.scala \
+  examples/c-lsp/README.md \
+  examples/c-lsp/Makefile \
+  examples/c-lsp/compile_flags.txt \
+  examples/c-lsp/main.cpp \
+  examples/c-lsp/shapes.cpp \
+  examples/c-lsp/shapes.hpp \
+  examples/c-lsp/actions.cpp \
+  examples/go-lsp/README.md \
+  examples/go-lsp/go.mod \
+  examples/go-lsp/main.go \
+  examples/go-lsp/shapes.go \
+  examples/go-lsp/actions.go \
+  examples/python-lsp/README.md \
+  examples/python-lsp/main.py \
+  examples/python-lsp/shapes.py \
+  examples/python-lsp/actions.py \
+  examples/rust-lsp/README.md \
+  examples/rust-lsp/Cargo.toml \
+  examples/rust-lsp/Cargo.lock \
+  examples/rust-lsp/src/main.rs \
+  examples/rust-lsp/src/shapes.rs \
+  examples/rust-lsp/src/actions.rs

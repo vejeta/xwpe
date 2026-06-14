@@ -442,6 +442,15 @@ and `fish_add_path ~/.local/bin`. (The runtime variables -- `XWPE_LIB`,
   `Esc` alone prints `^[`; `Cmd-X` prints `^[[...u` (kitty's own protocol, which
   xwpe cannot use -- that is why Command is never Alt). Once `cat -v` shows `^[x`,
   drive xwpe with **Option** (Opt-Q, Opt-X, ...), exactly like Linux Alt.
+- **Function keys (F8/F9...) are grabbed by macOS.** By default the top-row keys
+  are Mission Control / brightness / volume, so xwpe never sees `F9` (build) or
+  `F8` (step). Either tick *System Settings -> Keyboard -> "Use F1, F2, etc. keys
+  as standard function keys"* (then press the **fn** key for the media actions),
+  or just use the equivalents that do not rely on the top row: `Alt-M` (Make),
+  `Alt-C` (Compile), and the `Ctrl-G` debug prefix -- `Ctrl-G S` steps (= F8),
+  `Ctrl-G R` runs/continues, `Ctrl-G P` shows program output. Verify a key
+  reaches the terminal the same way as above: `cat -v`, press `F9`, it should
+  print `^[[20~` (not switch a Space or dim the screen).
 - **The prefix matters.** `--prefix="$HOME/.local"` keeps the whole install
   (`wpe`, `syntax_def`, the Help files, the man page) under your home directory,
   no sudo. For a system-wide install use `sudo make install` (default prefix
@@ -559,6 +568,15 @@ then `Alt-Q E` starts the server and `Alt-Q ?` lists the actions; each
 mouse -- pointer, click, window drag/resize -- works natively over the xterm
 protocol, no extra setup. (On macOS, enable Option-as-Meta so the `Alt-` keys
 reach xwpe; see the macOS build notes above.)
+
+> **Multiplexers -- prefer `tmux` over GNU `screen`.** xwpe uses the modern SGR
+> mouse protocol (`ESC[<...M`). `tmux` forwards it, so the mouse works inside a
+> tmux session. GNU `screen` (depending on version/`TERM`) does **not** pass SGR
+> mouse through, so clicks and drags arrive as raw bytes that get **typed into
+> the editor** instead of moving the cursor. This is a `screen` limitation, not
+> an xwpe bug -- the same xwpe works fine in the same terminal *outside* screen.
+> Use `tmux`, or run xwpe directly without a multiplexer, if you need the mouse.
+> (Keyboard-only use is unaffected in either.)
 
 **Linux console (no X, Ctrl+Alt+F2):** bitmap fonts look tiny on HiDPI, and the
 mouse needs the GPM daemon:

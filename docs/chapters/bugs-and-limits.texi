@@ -183,6 +183,29 @@ switching languages.
 The in-app help file (@file{help.xwpe_eng}) covers the core interface
 but not the v1.6.x features in detail.  For comprehensive
 documentation, use this Texinfo manual (@command{info xwpe}).
+
+@item GNU @command{screen} drops the mouse -- use @command{tmux}
+xwpe uses the modern SGR mouse protocol (@code{ESC[<...M}).
+@command{tmux} forwards it, so the mouse (pointer, click, window
+drag/resize) works inside a tmux session.  GNU @command{screen}
+(depending on its version and @env{TERM}) does @emph{not} pass SGR
+mouse through, so clicks and drags arrive as raw bytes that get typed
+into the editor instead of moving the cursor.  This is a
+@command{screen} limitation, not an xwpe bug: the same xwpe works with
+the mouse in the same terminal @emph{outside} @command{screen}.  Use
+@command{tmux}, or run xwpe directly with no multiplexer.  Keyboard-only
+use is unaffected in either.
+
+@item macOS captures the function keys (@key{F8}/@key{F9}@dots{})
+On macOS the top-row keys default to Mission Control, brightness and
+volume, so @key{F9} (Make) and @key{F8} (step) never reach xwpe.  Either
+enable @samp{Use F1, F2, etc.@: keys as standard function keys} in
+@samp{System Settings @result{} Keyboard}, or use the equivalents that
+do not rely on the top row: @kbd{Alt-M} (Make), @kbd{Alt-C} (Compile),
+and the @kbd{Ctrl-G} debug prefix (@kbd{Ctrl-G S} steps like @key{F8},
+@kbd{Ctrl-G R} runs/continues, @kbd{Ctrl-G P} shows program output).
+The @kbd{Alt-} keys themselves need Option-as-Meta enabled in the
+terminal (@pxref{Installation}).
 @end table
 
 @section Debian BTS history
