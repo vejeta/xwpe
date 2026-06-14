@@ -88,6 +88,11 @@ fi
 # 2. build
 say "Building"
 [ -x ./configure ] || run autoreconf -fi
+# Wipe any prior build before reconfiguring: LIBRARY_DIR / XWPE_INFODIR are
+# baked into the binary via -D flags in CFLAGS rather than config.h, so a tree
+# previously built with a different --prefix has stale .o files that `make`
+# considers up to date and the relink picks up the OLD install paths.
+[ -f Makefile ] && run make clean
 # shellcheck disable=SC2086
 run ./configure $cfg_flags
 run make
