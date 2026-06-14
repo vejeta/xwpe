@@ -209,6 +209,20 @@ Changes
   so the inline diagnostics re-publish for the new text.  Before, undo
   bypassed the per-keystroke Enter debounce: after undoing a quick-fix
   the re-introduced error stayed unmarked until the next Enter.
+* Inlay hints (Alt-Q Y) and semantic colours (Alt-Q M) no longer freeze the
+  editor.  On a cold server the first request is empty (the workspace is not
+  indexed yet); the toggle used to block on a fixed 8-second wait and then
+  give up.  It now turns the overlay on at once and the fd-loop fills it the
+  moment the server delivers -- event-driven, no freeze (clangd is instant;
+  Metals fills a moment after indexing).  A file with nothing to annotate
+  (all-explicit types, no call sites) correctly shows none, without the wait.
+  Covered by the clangd inlay assertion in tests/test_lsp_clangd.c and a
+  non-blocking-toggle test in tests/test_clangd_lsp.py.
+* Fixed: a language- or debug-server that exited could spin the editor at
+  100% CPU.  The fd-loop kept polling the dead socket, which returned
+  POLLHUP-without-POLLIN forever and nothing reaped it.  wpe_fd_poll now
+  dispatches on POLLHUP/POLLERR too (and drops a wake-only fd that hangs up),
+  so the fd is reaped on the first poll.  Regression test tests/test_fdloop.c.
 
   UI polish:
 * The File Manager (F3, or opening with no file) is centred and grows
@@ -222,6 +236,12 @@ Changes
   (a 0444 file, an extracted library source); the tool panes reuse the
   same not-editable flag but are not files, so the title-bar draw now
   skips them (e_win_is_tool_pane, we_wind.c).
+* Esc no longer opens the menu bar -- use F10, the Borland-standard key.  A
+  bare Esc in the editor is now a no-op, faithful to Turbo Vision (F10 and
+  Alt-Space enter the menu; Esc is only Cancel, for an open dialog/menu).  It
+  had shared F10's handler and jumped into the "#" system menu, which
+  surprised users.  Closing an open dialog or menu with Esc is unchanged
+  (those have their own input loops).  Tests in tests/test_esc_key.py.
 
   Portability and developer ergonomics:
 * Builds on macOS (terminal wpe, Homebrew) and the BSDs, not just Linux:
@@ -238,6 +258,13 @@ Changes
 * New contrib/xwpe-env: a shell-aware env helper (the brew-shellenv
   idiom) that emits export/`set -gx` for bash/zsh/fish, finding clangd,
   an LTS JDK (JAVA_HOME, macOS + Linux), the Coursier dir and XWPE_LIB.
+* Fixed: Help > Info opened xwpe's own manual only when --prefix was /usr.  The
+  Info search path was a hardcoded "/usr/share/info:/usr/local/info:/usr/info",
+  so an install to ~/.local or a Homebrew prefix on macOS -- and even the
+  default /usr/local, whose share/info was not on that list -- showed the
+  system directory node instead of the xwpe manual.  The configured $(infodir)
+  is now compiled in (XWPE_INFODIR) and searched first, so Help > Info opens the
+  installed manual for any prefix.  Regression test in tests/test_help_info.py.
 
   GNU Algol 68 (ga68) compiler:
 * ga68, the GCC Algol 68 front-end, is now supported alongside a68g.  It
