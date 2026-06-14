@@ -277,6 +277,7 @@ TESTS = test_checkheader test_syntax_def test_fdloop test_lsp_buffer test_lsp_do
 # --- Extra files for distribution ---
 EXTRA_DIST = \
   contrib/xwpe-env \
+  contrib/setup.sh \
   help.xwpe_eng \
   help.key_eng \
   syntax_def \

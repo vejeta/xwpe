@@ -309,20 +309,33 @@ compiler errors). Ctrl-G P shows output with full scroll at any time.
 
 ## Building & installing
 
-**The short path to a working editor (and IDE):**
+**One command (Debian/Ubuntu or macOS):**
+
+```sh
+sh contrib/setup.sh             # deps -> build -> install -> wire your shell
+sh contrib/setup.sh --dry-run   # ...or print exactly what it will run, first
+```
+
+It installs the build dependencies (apt or brew), builds and installs xwpe, and
+adds the environment helper to your shell profile. It does **not** install the
+optional language servers -- pick those in step 2. Re-open your terminal when it
+finishes. (It is a short, readable POSIX script:
+[`contrib/setup.sh`](contrib/setup.sh).)
+
+**Or do it by hand** -- the same four steps, each detailed below:
 
 1. **Build** xwpe for your OS -- [Build xwpe](#build-xwpe).
 2. **Install** the compilers / language servers you want -- [External tools it
    drives](#external-tools-it-drives).
-3. **Wire your shell** so xwpe finds them -- `source contrib/xwpe-env` (fish:
-   `sh contrib/xwpe-env --shell fish | source`); see
-   [Environment setup](#environment-setup). **Skip this and the `Alt-Q` LSP
-   features report "server not found"** even though you installed them.
+3. **Wire your shell** so xwpe finds them -- `sh contrib/xwpe-env --persist`
+   (one command, any shell); see [Environment setup](#environment-setup).
+   **Skip this and the `Alt-Q` LSP features report "server not found"** even
+   though you installed them.
 4. **Run** a demo -- `wpe docs/examples/c-lsp/main.cpp`; see
    [Run a bundled demo](#run-a-bundled-demo).
 
-Steps 2-4 are only for the compiler/debugger/LSP features; for a plain editor,
-step 1 is enough. The rest of this section is the detail behind each step.
+For a plain editor, step 1 alone is enough; steps 2-4 add the
+compiler/debugger/LSP layer.
 
 `make install` is part of the normal build, not an afterthought: it installs
 `syntax_def` (the syntax-highlighting rules), the in-app help, the option file
@@ -494,30 +507,34 @@ go install github.com/go-delve/delve/cmd/dlv@latest         # Go (Delve)
 
 ### Environment setup
 
-Rather than exporting `PATH` / `JAVA_HOME` / `XWPE_LIB` by hand, source the
-bundled **`contrib/xwpe-env`** helper -- the `brew shellenv` idiom: it finds
-clangd, the JDK, the Coursier dir and this checkout, and skips whatever is
-absent. It is plain POSIX `sh`, so it works the same on macOS, Linux and the
-BSDs. Run **only the line for the shell you use** (the bash/zsh form cannot work
-in fish -- fish does not understand POSIX `export`), then add that same line to
-your shell profile to make it permanent:
+xwpe finds the language servers, the JDK and (for an uninstalled build) its data
+files through a few variables. Rather than exporting them by hand, let the
+bundled **`contrib/xwpe-env`** helper set them -- the `brew shellenv` idiom: it
+emits shell code rather than a list you copy, finds clangd / the JDK / the
+Coursier dir / this checkout, and skips whatever is absent. Plain POSIX `sh`, so
+it works the same on macOS, Linux and the BSDs.
+
+**Permanent (every new terminal) -- add it to your profile, once:**
 
 ```sh
-# bash / zsh  (-> add to ~/.bashrc or ~/.zshrc):
-eval "$(sh contrib/xwpe-env)"
+sh contrib/xwpe-env --persist     # detects bash/zsh/fish, writes the line with
+                                  # this script's ABSOLUTE path, idempotent
 ```
-```fish
-# fish  (-> add to ~/.config/fish/config.fish):
-sh contrib/xwpe-env --shell fish | source
-```
+
+**Just this shell (no profile change):**
 
 ```sh
-which clangd rust-analyzer metals        # confirm before launching
+eval "$(sh contrib/xwpe-env)"                  # bash / zsh
+sh contrib/xwpe-env --shell fish | source      # fish (it cannot eval POSIX export)
 ```
 
-> **Seeing `fish: Unknown command: contrib/xwpe-env`?** You ran the bash/zsh line
-> in fish -- use the fish line above
-> (`sh contrib/xwpe-env --shell fish | source`) instead.
+Then confirm: `echo $XWPE_LIB` is set and `command -v metals` finds the server.
+
+> **Gotchas this avoids.** `eval`/`| source` change only the CURRENT shell --
+> `--persist` is what makes it stick. And a hand-written profile line must use an
+> ABSOLUTE path (`contrib/xwpe-env` is relative to the checkout); `--persist`
+> writes the absolute path for you. Seeing
+> `fish: Unknown command: contrib/xwpe-env`? You ran the bash/zsh line in fish.
 
 The helper sets `XWPE_LIB` (so a non-installed build finds its data files) and,
 for Metals, points `JAVA_HOME` at a 17/21 JDK -- on Linux it looks under

@@ -1,5 +1,5 @@
 #!/bin/sh
-# xwpe-env -- print the environment xwpe wants, in your shell's syntax.
+# xwpe-env -- print (or persist) the environment xwpe wants, in your shell's syntax.
 #
 # It locates (when present) Homebrew's keg-only clangd, an LTS JDK for Metals,
 # and the Coursier app dir, and exposes XWPE_LIB so syntax highlighting + Help
@@ -8,25 +8,40 @@
 #
 # Usage -- evaluate it, do not run it:
 #
-#   bash / zsh :  eval "$(contrib/xwpe-env)"
-#   fish       :  contrib/xwpe-env --shell fish | source
+#   bash / zsh :  eval "$(sh contrib/xwpe-env)"
+#   fish       :  sh contrib/xwpe-env --shell fish | source
 #
-# Add that one line to your ~/.bashrc / ~/.zshrc / ~/.config/fish/config.fish
-# to make it permanent.  Re-runs are idempotent.
+# That applies it to the CURRENT shell only.  To make it PERMANENT (every new
+# terminal), let the script add itself to your shell profile -- it writes the
+# correct line with this script's ABSOLUTE path, and is idempotent:
+#
+#   sh contrib/xwpe-env --persist          # detects your shell from $SHELL
+#   sh contrib/xwpe-env --persist --shell fish
 #
 # This is the brew-shellenv / direnv idiom: a tool that emits shell code rather
 # than a list of exports you copy by hand.  Works on macOS and Linux.
 
 set -eu
 
-# --- which shell flavour to emit (POSIX `export` vs fish `set -gx`) ----------
+# --- parse args: --shell <flavour>, --persist -------------------------------
 shell=
-case "${1:-}" in
-  --shell)   shell=${2:-} ;;
-  --shell=*) shell=${1#--shell=} ;;
-esac
+persist=0
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --persist)  persist=1 ;;
+    --shell)    shell=${2:-}; shift ;;
+    --shell=*)  shell=${1#--shell=} ;;
+    *)          ;;
+  esac
+  shift
+done
 [ -n "$shell" ] || shell=$(basename "${SHELL:-sh}")
 
+# Absolute path to THIS script (for the --persist line) and the checkout root.
+self=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)/$(basename -- "$0")
+root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+
+# --- emitters (POSIX `export` vs fish `set -gx`) ----------------------------
 emit_var() {        # emit_var NAME VALUE
   case "$shell" in
     fish) printf 'set -gx %s "%s"\n' "$1" "$2" ;;
@@ -40,8 +55,35 @@ emit_path() {       # emit_path DIR   -- prepend DIR to PATH
   esac
 }
 
+# --- --persist: add the right line to the shell profile, once ---------------
+persist_to_profile() {
+  case "$shell" in
+    fish) prof="${XDG_CONFIG_HOME:-$HOME/.config}/fish/config.fish"
+          line="sh \"$self\" --shell fish | source" ;;
+    zsh)  prof="$HOME/.zshrc"   ; line="eval \"\$(sh \"$self\")\"" ;;
+    bash) prof="$HOME/.bashrc"  ; line="eval \"\$(sh \"$self\")\"" ;;
+    *)    prof="$HOME/.profile" ; line="eval \"\$(sh \"$self\")\"" ;;
+  esac
+  mkdir -p "$(dirname -- "$prof")"
+  [ -f "$prof" ] || : > "$prof"
+  if grep -Fq "$self" "$prof" 2>/dev/null; then
+    echo "xwpe-env: already set up in $prof (nothing to do)." >&2
+    return 0
+  fi
+  {
+    printf '\n# xwpe environment (added by: xwpe-env --persist)\n'
+    printf '%s\n' "$line"
+  } >> "$prof"
+  echo "xwpe-env: added to $prof" >&2
+  echo "  open a new terminal, or run: source '$prof'" >&2
+}
+
+if [ "$persist" = 1 ]; then
+  persist_to_profile
+  exit 0
+fi
+
 # --- XWPE_LIB: this checkout, so it runs uninstalled (the repo root) ----------
-root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 [ -f "$root/syntax_def" ] && emit_var XWPE_LIB "$root"
 
 # --- Homebrew-provided language servers / JDK (no-op without brew) ------------
