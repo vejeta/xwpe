@@ -102,16 +102,29 @@ def test_clangd_definition_into_readonly_header(tmp_path):
         assert w.alive(), "wpe died on go-to-definition into a system header"
 
         rows = w.display()
-        # the header opened: a title row names the libc header it jumped into...
-        header_rows = [r for r in rows if "stdio.h" in r]
+        # The header opened: a title row names the libc header it jumped into.
+        # On Linux/glibc that title shows "/usr/include/stdio.h" verbatim; on
+        # macOS the path lives deep under the Xcode SDK
+        # ("/Applications/Xcode.app/.../MacOSX.sdk/usr/include/_stdio.h" --
+        # clangd also splits printf out into _printf.h), so the basename is
+        # ellipsized out of the 80-column title row.  Either way the title row
+        # is the one that carries the padlock and a path fragment that isn't
+        # the user's demo.c -- match on those, not on a literal filename.
+        header_rows = [
+            r for r in rows
+            if LOCK in r and (
+                "stdio.h" in r or "_printf.h" in r
+                or "/usr/include" in r or "MacOSX" in r or "/Xcode" in r)
+        ]
         assert header_rows, \
             "Alt-Q D did not open the system header:\n%s" % "\n".join(rows)
-        # ...and it is READ-ONLY: the padlock is on that same title row (the
-        # Messages pane may carry its own padlock -- match the header's row, not
-        # just "a padlock somewhere").
-        assert any(LOCK in r for r in header_rows), \
-            "the system header was not opened read-only (no padlock):\n%s" \
-            % "\n".join(rows)
+        # And the body really is the system header, not an empty/error window:
+        # printf's declaration (or its enclosing __BEGIN_DECLS block) is
+        # present in every libc/SDK variant we expect to see.
+        body = "\n".join(rows)
+        assert ("printf(" in body or "__BEGIN_DECLS" in body), \
+            "the read-only window does not look like a libc header:\n%s" \
+            % body
 
 
 # A vector + `auto` deduced variable guarantees clangd offers at least one
