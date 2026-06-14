@@ -1248,6 +1248,12 @@ int e_tst_dfkt(FENSTER *f, int c)
    break;
 #endif
   case WPE_ESC:
+   /* Borland/Turbo Vision faithful: a bare Esc opens nothing.  F10 (and
+      Alt-Space) enter the menu; Esc only CANCELS an already-open dialog or
+      menu, and those have their own input loops that consume it -- so here,
+      with the editor on top and nothing open, Esc is a no-op.  (It must not
+      fall through to the default branch, which would insert it as text.) */
+   break;
   case F10:
   case AltBl:
    WpeHandleMainmenu(-1, f);

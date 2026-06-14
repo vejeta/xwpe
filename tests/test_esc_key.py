@@ -84,3 +84,27 @@ def test_lone_esc_closes_menu_in_one_press(workdir):
     screen = _run(workdir, ['\033f', '\033'])    # open menu, then a single ESC
     assert not _menu_open(screen), \
         'a single Esc must close the menu (no second press / no blocking)'
+
+
+def test_lone_esc_in_editor_is_a_noop(workdir):
+    """Borland/Turbo Vision faithful: a bare Esc in the editor (nothing open)
+    does nothing -- F10 opens the menu, not Esc.  So the editor stays active and
+    text typed right after still lands in the buffer (and the Esc itself is not
+    inserted).  Before this, Esc shared F10's case and jumped into the menu bar,
+    so the following keystrokes were swallowed."""
+    screen = _run(workdir, ['\033', 'Z', 'Z', 'Z'])   # bare Esc, then type
+    body = "\n".join(screen.display)
+    assert not _menu_open(screen), 'a bare Esc must NOT enter the menu'
+    assert 'ZZZ' in body, \
+        'after a bare Esc the editor must still accept input (Esc was not a ' \
+        'no-op, or it entered menu mode and ate the keys):\n' + body
+
+
+def test_f10_still_enters_the_menu(workdir):
+    """The other half of the Borland model: F10 DOES enter the menu bar.  Proven
+    by contrast with the Esc no-op -- keys typed after F10 are consumed by menu
+    mode (not inserted), whereas after Esc they land in the buffer."""
+    screen = _run(workdir, ['\033[21~', 'Z', 'Z', 'Z'])   # F10 (xterm), then type
+    assert 'ZZZ' not in "\n".join(screen.display), \
+        'F10 must enter menu mode (it should swallow the following keys, but they ' \
+        'were typed into the buffer -- F10 no longer opens the menu)'
