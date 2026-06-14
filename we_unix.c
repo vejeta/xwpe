@@ -132,6 +132,23 @@ int e_ini_unix(int *argc, char **argv)
 
  setlocale(LC_ALL, "");
  tcgetattr(0, &otermio);
+ /* Arm the SIGTERM/SIGHUP clean-shutdown handler HERE -- before WpeTermInit()
+    below, whose e_t_initscr() ends in tcsetattr(0, TCSADRAIN, ...) and can
+    BLOCK until the pty's output buffer drains.  If the handler were installed
+    only after that (as it used to be), a `kill PID` arriving while init blocks
+    would take the default disposition and leave the controlling terminal in raw
+    mode with mouse tracking still on.  WpeSignalTerm only needs `otermio`,
+    populated just above, so arming it this early is safe.  Standard editor
+    behaviour -- also what supervisors (systemd, launchctl) and test harnesses
+    sending `kill PID` expect.  (Crash signals and SIGCHLD are installed lower
+    down; they have no such ordering dependency.) */
+ act.sa_handler = WpeSignalTerm;
+ sigfillset(&act.sa_mask);
+ act.sa_flags = 0;
+ sigaction(SIGTERM, &act, NULL);
+#ifdef SIGHUP
+ sigaction(SIGHUP, &act, NULL);
+#endif
  u_fb = NULL;
  x_fb = NULL;
  debug = 0;
@@ -238,18 +255,6 @@ int e_ini_unix(int *argc, char **argv)
  /* Ignore SIGINT */
  act.sa_handler = SIG_IGN;
  sigaction(SIGINT, &act, NULL);
- /* Clean shutdown on SIGTERM / SIGHUP: restore the terminal modes the user
-    started with and exit, instead of leaving the editor running with the
-    process invisible to its controlling shell.  Standard editor behaviour --
-    also what process supervisors (systemd, launchctl) and test harnesses
-    sending `kill PID` expect. */
- act.sa_handler = WpeSignalTerm;
- sigfillset(&act.sa_mask);
- act.sa_flags = 0;
- sigaction(SIGTERM, &act, NULL);
-#ifdef SIGHUP
- sigaction(SIGHUP, &act, NULL);
-#endif
  /* Catch SIGCHLD */
  act.sa_handler = WpeSignalChild;
  act.sa_flags = SA_NOCLDSTOP;
