@@ -390,16 +390,20 @@ and `fish_add_path ~/.local/bin`. (The runtime variables -- `XWPE_LIB`,
   never reach xwpe -- **Command is never Alt.** The Alt key is **Option (Opt)**,
   but every Mac terminal defaults to using Option to type accented characters, so
   you must switch it to Meta first:
-    - **kitty:** add `macos_option_as_alt yes` to `~/.config/kitty/kitty.conf`,
-      then reload (Ctrl+Cmd+,). (kitty does NOT do this by default.)
+    - **kitty:** add `macos_option_as_alt yes` to `~/.config/kitty/kitty.conf`
+      (kitty does NOT do this by default), then **fully quit and reopen kitty**
+      (Cmd-Q) -- a config *reload* does not always apply this macOS setting.
     - **iTerm2:** Profiles -> Keys -> *Left Option key* -> *Esc+*.
     - **Terminal.app:** Settings -> Profiles -> Keyboard -> *"Use Option as Meta
       key"*. Its dated terminfo also causes ncurses key/colour quirks, so prefer
       kitty or iTerm2. Keep `TERM=xterm-256color` everywhere.
 
-  Then drive xwpe with **Option** (Opt-Q, Opt-X, ...). With no configuration at
-  all you can instead press **Esc then the letter** (Esc, then `x` = Alt-X) -- a
-  Meta key is just an Esc prefix, so this works in any terminal on any OS.
+  **Verify it before launching xwpe:** run `cat -v`, press **Option-X** -- it must
+  print `^[x`. If it prints an accented glyph instead, Option is still a compose
+  key (the setting did not take -- check the file and that you fully restarted).
+  `Esc` alone prints `^[`; `Cmd-X` prints `^[[...u` (kitty's own protocol, which
+  xwpe cannot use -- that is why Command is never Alt). Once `cat -v` shows `^[x`,
+  drive xwpe with **Option** (Opt-Q, Opt-X, ...), exactly like Linux Alt.
 - **The prefix matters.** `--prefix="$HOME/.local"` keeps the whole install
   (`wpe`, `syntax_def`, the Help files, the man page) under your home directory,
   no sudo. For a system-wide install use `sudo make install` (default prefix
