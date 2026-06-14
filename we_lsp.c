@@ -847,11 +847,14 @@ int e_lsp_did_open(e_lsp_session *s, const char *path, const char *text)
 {
  struct json_object *args = json_object_new_object();
  struct json_object *doc = json_object_new_object();
+ char abspath[PATH_MAX];
  char uri[PATH_MAX + 8];
 
  if (!s)
   return -1;
- snprintf(uri, sizeof(uri), "file://%s", path);
+ if (!realpath(path, abspath))
+  snprintf(abspath, sizeof(abspath), "%s", path);
+ snprintf(uri, sizeof(uri), "file://%s", abspath);
  json_object_object_add(doc, "uri", json_object_new_string(uri));
  json_object_object_add(doc, "languageId",
                         json_object_new_string(s->lang_id[0] ? s->lang_id : "scala"));
@@ -865,6 +868,7 @@ int e_lsp_did_open(e_lsp_session *s, const char *path, const char *text)
 
 int e_lsp_did_focus(e_lsp_session *s, const char *path)
 {
+ char abspath[PATH_MAX];
  char uri[PATH_MAX + 8];
 
  if (!s)
@@ -874,7 +878,9 @@ int e_lsp_did_focus(e_lsp_session *s, const char *path)
  if (strcmp(s->lang_id, "scala") != 0)
   return 0;
  /* same URI form as didOpen so Metals ties the focus to the open document */
- snprintf(uri, sizeof(uri), "file://%s", path);
+ if (!realpath(path, abspath))
+  snprintf(abspath, sizeof(abspath), "%s", path);
+ snprintf(uri, sizeof(uri), "file://%s", abspath);
  lsp_notify(s, "metals/didFocusTextDocument", json_object_new_string(uri));
  return 0;
 }
@@ -882,11 +888,14 @@ int e_lsp_did_focus(e_lsp_session *s, const char *path)
 int e_lsp_did_change(e_lsp_session *s, const char *path, const char *text)
 {
  struct json_object *args, *doc, *changes, *change;
+ char abspath[PATH_MAX];
  char uri[PATH_MAX + 8];
 
  if (!s)
   return -1;
- snprintf(uri, sizeof(uri), "file://%s", path);
+ if (!realpath(path, abspath))
+  snprintf(abspath, sizeof(abspath), "%s", path);
+ snprintf(uri, sizeof(uri), "file://%s", abspath);
  args = json_object_new_object();
  doc = json_object_new_object();
  json_object_object_add(doc, "uri", json_object_new_string(uri));
