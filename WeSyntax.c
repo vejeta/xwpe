@@ -83,7 +83,7 @@ void WpeSyntaxReadFile(ECNT *cn)
 {
  FILE *syntax_file;
  WpeSyntaxExt *new_syntax;
- char tmp[128];
+ char tmp[WPE_SYNTAX_PATH_MAX];
  int reserved_num, long_op_num;
  int i, k;
 

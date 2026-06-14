@@ -59,22 +59,28 @@ void WpeSyntaxReadFile(ECNT *cn);
 /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - *\
   Macros and Machine specific information
 \* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
+/* The buffer passed to the WpeSyntaxGet* macros must be at least this big.
+   Long tmpdirs (e.g. pytest tmp_path under /private/var/folders/...) used to
+   overflow a 128-byte buffer here and trip macOS' __chk_fail_overflow. */
+#define WPE_SYNTAX_PATH_MAX 1024
+
 #ifdef DJGPP
 
 #define WpeSyntaxGetPersonal(filename)                                      \
- sprintf(filename, "./%s", SYNTAX_FILE)
+ snprintf(filename, WPE_SYNTAX_PATH_MAX, "./%s", SYNTAX_FILE)
 
 #else
 
 #define WpeSyntaxGetPersonal(filename)                                      \
- sprintf(filename, "%s/%s/%s", getenv("HOME"), XWPE_HOME, SYNTAX_FILE)
+ snprintf(filename, WPE_SYNTAX_PATH_MAX, "%s/%s/%s",                        \
+          getenv("HOME") ? getenv("HOME") : "", XWPE_HOME, SYNTAX_FILE)
 
 #endif
 
 const char *e_lib_dir(void);   /* we_unix.c: $XWPE_LIB or LIBRARY_DIR */
 
 #define WpeSyntaxGetSystem(filename)                                        \
- sprintf(filename, "%s/%s", e_lib_dir(), SYNTAX_FILE)
+ snprintf(filename, WPE_SYNTAX_PATH_MAX, "%s/%s", e_lib_dir(), SYNTAX_FILE)
 
 
 #ifdef __cplusplus
