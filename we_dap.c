@@ -8,6 +8,7 @@
 #include <errno.h>
 #include <signal.h>
 #include <fcntl.h>
+#include <limits.h>
 #include <poll.h>
 #include <sys/types.h>
 #include <sys/socket.h>
@@ -618,10 +619,18 @@ e_dap_session *e_dap_open_tcp(const char *host, int port, const char *program,
 
 int e_dap_add_breakpoint(e_dap_session *s, const char *file, int line)
 {
+ char abspath[PATH_MAX];
  if (!s || s->bp_n >= DAP_MAX_BP)
   return -1;
  if (!s->bp_file[0])
-  snprintf(s->bp_file, sizeof(s->bp_file), "%s", file);
+ {
+  /* Canonicalize the source path: on macOS the build server compiles from the
+     realpath()'d directory (e.g. /private/tmp/...), so a setBreakpoints with
+     the original /tmp/... path is silently dropped as "unknown source". */
+  if (!realpath(file, abspath))
+   snprintf(abspath, sizeof(abspath), "%s", file);
+  snprintf(s->bp_file, sizeof(s->bp_file), "%s", abspath);
+ }
  s->bp_lines[s->bp_n++] = line;
  return 0;
 }

@@ -56,6 +56,7 @@ char e_we_sw = 0;
 
 void WpeSignalUnknown(int sig);
 void WpeSignalChild(int sig);
+void WpeSignalTerm(int sig);
 
 void (*WpeMouseChangeShape)(WpeMouseShape new_shape);
 void (*WpeMouseRestoreShape)(void);
@@ -237,6 +238,18 @@ int e_ini_unix(int *argc, char **argv)
  /* Ignore SIGINT */
  act.sa_handler = SIG_IGN;
  sigaction(SIGINT, &act, NULL);
+ /* Clean shutdown on SIGTERM / SIGHUP: restore the terminal modes the user
+    started with and exit, instead of leaving the editor running with the
+    process invisible to its controlling shell.  Standard editor behaviour --
+    also what process supervisors (systemd, launchctl) and test harnesses
+    sending `kill PID` expect. */
+ act.sa_handler = WpeSignalTerm;
+ sigfillset(&act.sa_mask);
+ act.sa_flags = 0;
+ sigaction(SIGTERM, &act, NULL);
+#ifdef SIGHUP
+ sigaction(SIGHUP, &act, NULL);
+#endif
  /* Catch SIGCHLD */
  act.sa_handler = WpeSignalChild;
  act.sa_flags = SA_NOCLDSTOP;
@@ -351,6 +364,22 @@ void WpeSignalChild(int sig)
     causing the debugger's popen("tty") to hang on pclose. */
  while (waitpid(-1, &statloc, WNOHANG) > 0)
   ;
+}
+
+void WpeSignalTerm(int sig)
+{
+ /* Async-signal-safe shutdown: restore the modes saved by e_ini_unix() and
+    turn off the mouse-tracking sequences we left enabled so the controlling
+    terminal is not left in raw mode with a mouse hook.  Then re-raise with
+    the default handler so the parent sees the conventional "killed by
+    SIGTERM" exit status.  We do NOT attempt to save buffers from here --
+    none of the file I/O on that path is async-signal-safe. */
+ const char *mouse_off = "\033[?1002l\033[?1006l\033[?1000l";
+ ssize_t n = write(STDERR_FILENO, mouse_off, 24);
+ (void)n;
+ tcsetattr(0, TCSANOW, &otermio);
+ signal(sig, SIG_DFL);
+ raise(sig);
 }
 
 static int e_bool_exit = 0;
