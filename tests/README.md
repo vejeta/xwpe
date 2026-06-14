@@ -47,6 +47,22 @@ sudo apt-get install -y \
   xvfb matchbox-window-manager xdotool x11-utils imagemagick python3-pil
 ```
 
+On **macOS** (no apt) install the same coverage via Homebrew / coursier; a test
+still **skips** when its tool is absent:
+
+| Tool | Install (macOS) | Enables |
+|------|-----------------|---------|
+| clangd | `brew install llvm` (keg-only) | `test_lsp_clangd` + pyte clangd tests |
+| gopls + go | `brew install gopls go` | `test_lsp_gopls` |
+| rust-analyzer + rust | `brew install rust-analyzer rust` | `test_lsp_rust`, `test_dap_lldb` |
+| pyright | `brew install pyright` | `test_lsp_python` |
+| metals + scala-cli + JDK | `brew install coursier openjdk@21 && cs install metals scala-cli` | `test_lsp_scala`, `test_dap_scala` |
+| dlv | `go install github.com/go-delve/delve/cmd/dlv@latest` | `test_dap_dlv` |
+
+`gdb` is not practical on macOS, so `test_dap_gdb` **skips there by design** --
+xwpe uses `lldb-dap` for Rust on macOS instead.  Scala tests pin the build JVM
+(`//> using jvm temurin:21`) so a too-new system JDK does not break them.
+
 ## X11 GUI tests (xwpe)
 
 `pyte` emulates a VT100 text terminal, so it covers `wpe` (ncurses) but

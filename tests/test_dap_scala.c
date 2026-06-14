@@ -73,6 +73,17 @@ int main(void)
  if (!(f = fopen(scala, "w"))) { rc = fail("write factorial.scala"); goto out; }
  fputs(SCALA_SRC, f); fclose(f);
 
+ /* Pin the build JVM to an LTS (temurin:21).  The system default can be a
+    too-new JDK (e.g. OpenJDK 26) that crashes the Scala 3 compiler, which would
+    surface as a spurious "no main class found" bootstrap failure -- an
+    environment problem, not an xwpe one.  A separate project.scala applies the
+    directive to the whole build WITHOUT shifting factorial.scala's line numbers
+    (the breakpoint is line 6).  Mirrors a real project (docs/examples/scala-lsp
+    pins the same way). */
+ snprintf(scala, sizeof(scala), "%s/project.scala", dir);
+ if (!(f = fopen(scala, "w"))) { rc = fail("write project.scala"); goto out; }
+ fputs("//> using jvm temurin:21\n", f); fclose(f);
+
  memset(&rec, 0, sizeof(rec));
  hostcb.on_stopped = on_stopped;
  hostcb.on_output = on_output;
