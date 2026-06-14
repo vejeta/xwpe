@@ -38,6 +38,20 @@ WPE_BIN = os.environ.get("WPE_BIN") or os.path.join(os.path.dirname(__file__), "
 COLS, ROWS = 80, 30
 
 
+class _RepStream(pyte.Stream):
+    """A pyte Stream that also handles REP (CSI Pn b).
+
+    ncurses emits REP to compress long identical runs (window borders) on a
+    non-UTF-8 terminal; without it pyte drops the repeats and a full-width
+    border looks short.  Extending the class-level ``csi`` map is the
+    version-stable way to add a control: the parser binds its CSI dispatcher
+    from ``csi`` when the Stream is constructed, so no private re-init is
+    needed.  (Older pyte exposed ``_initialize_parser`` for this; newer pyte --
+    the one in Debian -- removed it, which broke the previous approach.)
+    """
+    csi = {**pyte.Stream.csi, "b": "repeat_last"}
+
+
 class ALT:
     """Alt-<key> sequences that open each top-level menu."""
     SYSTEM = "\033#"
@@ -71,15 +85,7 @@ class WpeSession:
         with open(self.path, "w") as fh:
             fh.write(seed)
         self.screen = SafeScreen(cols, rows)
-        self.stream = pyte.Stream(self.screen)
-        # Teach the stream the REP control (CSI Pn b): ncurses emits it to
-        # compress long identical runs (window borders) on a non-UTF-8 terminal.
-        # Without it pyte drops the repeats and a full-width border looks short.
-        # pyte binds its CSI dispatcher once at parser init, so override the
-        # (class-level) csi map on this instance and rebuild the parser.
-        self.stream.csi = dict(self.stream.csi)
-        self.stream.csi["b"] = "repeat_last"
-        self.stream._initialize_parser()
+        self.stream = _RepStream(self.screen)   # Stream + REP (CSI Pn b) handler
         self.master_fd, slave_fd = pty.openpty()
         env = os.environ.copy()
         env.update(TERM="xterm-256color", COLUMNS=str(cols), LINES=str(rows),

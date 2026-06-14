@@ -24,7 +24,10 @@ import pytest
 
 from test_utf8_border import SafeScreen
 
-WE = os.path.join(os.path.dirname(__file__), "..", "we")
+# Honour $WPE_BIN like the rest of the suite, so this runs against the installed
+# /usr/bin/wpe under autopkgtest (where there is no in-tree ../we), not only the
+# build tree.  The File Manager is the same in either mode.
+WE = os.environ.get("WPE_BIN") or os.path.join(os.path.dirname(__file__), "..", "we")
 FM_TITLE = "File-Manager"
 
 
