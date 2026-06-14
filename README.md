@@ -309,6 +309,21 @@ compiler errors). Ctrl-G P shows output with full scroll at any time.
 
 ## Building & installing
 
+**The short path to a working editor (and IDE):**
+
+1. **Build** xwpe for your OS -- [Build xwpe](#build-xwpe).
+2. **Install** the compilers / language servers you want -- [External tools it
+   drives](#external-tools-it-drives).
+3. **Wire your shell** so xwpe finds them -- `source contrib/xwpe-env` (fish:
+   `sh contrib/xwpe-env --shell fish | source`); see
+   [Environment setup](#environment-setup). **Skip this and the `Alt-Q` LSP
+   features report "server not found"** even though you installed them.
+4. **Run** a demo -- `wpe docs/examples/c-lsp/main.cpp`; see
+   [Run a bundled demo](#run-a-bundled-demo).
+
+Steps 2-4 are only for the compiler/debugger/LSP features; for a plain editor,
+step 1 is enough. The rest of this section is the detail behind each step.
+
 `make install` is part of the normal build, not an afterthought: it installs
 `syntax_def` (the syntax-highlighting rules), the in-app help, the option file
 and the man page. **Skip it and you get only the built-in C/C++ highlighting and
@@ -343,6 +358,8 @@ autoreconf -fi && ./configure && make && sudo make install
 The X11 libraries enable `xwpe`'s anti-aliased Xft/Cairo rendering; for a
 console-only build drop them and pass `--without-x` (only `libncurses-dev` plus
 the build tools are then required). `texinfo` builds the `info xwpe` manual.
+That is a complete editor; for the `Alt-Q` IDE layer continue with steps 2-3 of
+the Quick path (install the servers, then `source contrib/xwpe-env`).
 
 #### Other Linux (any distribution)
 
@@ -354,6 +371,9 @@ autoreconf -fi   # only from a git checkout
 make
 sudo make install
 ```
+
+For the IDE features, continue with Quick-path steps 2-3 (servers, then
+`source contrib/xwpe-env`).
 
 #### macOS (Homebrew)
 
@@ -375,6 +395,11 @@ make && make install
 export PATH="$HOME/.local/bin:$PATH"      # add to ~/.zshrc to keep it
 wpe foo.c                                 # syntax_def + Help come from the install
 ```
+
+That is a complete editor. For the `Alt-Q` IDE features, continue with Quick-path
+steps 2-3: install the servers ([External tools](#external-tools-it-drives)) and
+`source contrib/xwpe-env` (fish: `sh contrib/xwpe-env --shell fish | source`),
+which is what puts Metals/clangd on `PATH` and sets `JAVA_HOME`.
 
 Using **fish**? The two `export` lines above are bash/zsh; the fish equivalents
 are `set -x PKG_CONFIG_PATH (brew --prefix ncurses)/lib/pkgconfig $PKG_CONFIG_PATH`
