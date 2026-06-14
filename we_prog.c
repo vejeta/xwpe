@@ -194,7 +194,7 @@ int e_compile(FENSTER *f)
  WpeMouseChangeShape(WpeWorkingShape);
  efildes[0] = efildes[1] = -1;
  wfildes[0] = wfildes[1] = -1;
- ret = e_comp(f);
+ ret = e_comp(f, 1);
  WpeMouseRestoreShape();
  return(ret);
 }
@@ -214,7 +214,7 @@ int e_p_make(FENSTER *f)
  WpeMouseChangeShape(WpeWorkingShape);
  efildes[0] = efildes[1] = -1;
  wfildes[0] = wfildes[1] = -1;
- if (e_comp(f))
+ if (e_comp(f, 0))
  {
   WpeMouseRestoreShape();
   return(-1);
@@ -669,7 +669,26 @@ int e_check_c_file_w(FENSTER *fw)
  return matched;
 }
 
-int e_comp(FENSTER *f)
+/**
+ * e_compile_announce_uptodate - Tell the user that a lone Compile (Alt-C) had
+ * nothing to do because the object file is already current.
+ *
+ * Alt-C compiles the active source to a .o without linking.  When that .o is
+ * newer than the source, xwpe skips the compiler and produces no Messages
+ * output -- which is indistinguishable from "Alt-C did nothing" and reads as a
+ * bug (e.g. right after a debug/Make has already built the .o).  This pops a
+ * short confirmation so the user knows the build is up to date, not broken.
+ * Only the single-file Compile path calls it; Make (Alt-M) stays silent and
+ * goes on to link.
+ *
+ * @param f  the active editor window (used to place the message box).
+ */
+static void e_compile_announce_uptodate(FENSTER *f)
+{
+ e_message(0, "Already compiled (object file is up to date).", f);
+}
+
+int e_comp(FENSTER *f, int announce)
 {
  ECNT *cn = f->ed;
  PIC *pic = NULL;
@@ -785,6 +804,8 @@ int e_comp(FENSTER *f)
  /* Object file is up to date -- no recompilation needed */
  e_sys_end();
  e_free_arg(arg, argc);
+ if (announce)
+  e_compile_announce_uptodate(f);
  return(0);
 }
 

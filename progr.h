@@ -46,7 +46,7 @@ int e_c_project(FENSTER *f);
 int e_free_arg(char **arg, int argc);
 int e_rel_brkwtch(FENSTER *f);
 struct dirfile **e_make_prj_opt(FENSTER *f);
-int e_comp(FENSTER *f);
+int e_comp(FENSTER *f, int announce);
 int e_exec_inf(FENSTER *f, char **argv, int n);
 int e_print_arg(FILE *fp, char *s, char **argv, int n);
 int e_show_error(int n, FENSTER *f);
