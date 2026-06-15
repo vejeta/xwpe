@@ -2679,15 +2679,49 @@ int e_d_car_mouse(FENSTER *f)
 }
 #endif
 
+/* e_make_pushd - run `make` where the user's file lives, not where the shell
+   that launched wpe happened to sit.  xwpe never chdir()s, so a forked `make`
+   inherits the launch directory and builds the wrong Makefile (e.g. xwpe's own
+   tree instead of the example the user just opened).  Switch the process CWD to
+   the active file's (absolute) directory and stash the old one in `saved`
+   (size n).  The CWD is left changed across e_p_exec on purpose: `make` reports
+   error paths relative to where it ran, and e_show_error resolves unopened
+   files against the CWD -- so error navigation needs the same directory.
+   Returns 1 if it changed the CWD (caller must pair it with e_make_popd), 0 if
+   it left the CWD untouched -- no directory, or getcwd/chdir failed, in which
+   case `make` simply runs in the inherited CWD, the historical behaviour. */
+static int e_make_pushd(FENSTER *f, char *saved, size_t n)
+{
+ if (!f || !f->dirct || !f->dirct[0])
+  return(0);
+ if (!getcwd(saved, n))
+  return(0);
+ if (chdir(f->dirct) != 0)
+  return(0);
+ return(1);
+}
+
+/* e_make_popd - restore the CWD saved by e_make_pushd, once `make` has finished
+   and its errors have been resolved. */
+static void e_make_popd(char *saved)
+{
+ if (chdir(saved) != 0)
+  return; /* the saved directory vanished mid-build; nothing safe to do */
+}
+
 int e_exec_make(FENSTER *f)
 {
  ECNT *cn = f->ed;
  char **arg = NULL;
- int i, file, argc;
+ char saved_cwd[1024];
+ int i, file, argc, cwd_changed;
 
  WpeMouseChangeShape(WpeWorkingShape);
  efildes[0] = efildes[1] = -1;
  wfildes[0] = wfildes[1] = -1;
+ /* Capture the active file's directory BEFORE e_new_message makes Messages the
+    top window -- after that cn->f[cn->mxedt]->dirct is the Messages dir. */
+ cwd_changed = e_make_pushd(f, saved_cwd, sizeof(saved_cwd));
  for (i = cn->mxedt; i > 0; i--)
   if (cn->f[i] && cn->f[i]->datnam &&
       (!strcmp(cn->f[i]->datnam, "Makefile") ||
@@ -2698,7 +2732,11 @@ int e_exec_make(FENSTER *f)
    break;
   }
  if (e_new_message(f))
+ {
+  if (cwd_changed)
+   e_make_popd(saved_cwd);
   return(WPE_ESC);
+ }
  f = cn->f[cn->mxedt];
  e_sys_ini();
  if (e_s_prog.compiler)
@@ -2719,12 +2757,16 @@ int e_exec_make(FENSTER *f)
  if ((file = e_exec_inf(f, arg, argc)) == 0)
  {
   e_sys_end();
+  if (cwd_changed)
+   e_make_popd(saved_cwd);
   WpeMouseRestoreShape();
   return(WPE_ESC);
  }
  e_sys_end();
  e_free_arg(arg, argc - 1);
  i = e_p_exec(file, f, NULL);
+ if (cwd_changed)
+  e_make_popd(saved_cwd);
  WpeMouseRestoreShape();
  return(i);
 }
