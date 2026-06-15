@@ -252,6 +252,34 @@ Changes
   selections, TARGETS lists UTF8_STRING, and ^V pulling an externally-seeded
   clipboard).
 
+  Build / Run reliability:
+* Fixed: Run -> Execute Make (Alt-A) showed only the echoed "make" and lost the
+  build output.  Compilers write diagnostics to stderr (captured fine), but make
+  writes its progress to stdout, which the old temp-file + wait-then-read path
+  block-buffered and dropped.  Command output is now drained with poll() while
+  the child runs -- each line lands in Messages live and the scrollbar tracks
+  the growth.  Found on macOS, latent on Linux.  Test tests/test_make_output.py.
+* Fixed: Make (F9) link step and Run (Ctrl-F9) reported a bogus failure (so the
+  link/run silently did nothing) whenever xwpe's SIGCHLD handler reaped the
+  compiler/make child before the build code could read its exit status.  The
+  build now blocks SIGCHLD across the drain+reap to get the real exit code, and
+  falls back to the parsed error list if the handler still wins -- never a
+  spurious failure.  Caught by tests/test_menu_run.py.
+* Build, run and debug now happen in the DIRECTORY OF THE FILE you are editing
+  (or the project's directory), not wherever wpe was launched from -- xwpe never
+  chdir()'d, so opening a file elsewhere (cd /x; wpe sub/main.c) compiled the
+  object, linked the binary, ran the program and started the debugger in the
+  wrong place.  e_build_dir/e_build_pushd wrap compile / make / run / run-.sh
+  (e_run_sh also runs the script as ./name.sh and makes it executable), and the
+  debugger chdir()s in the child like the LSP/DAP launchers.  Tests in
+  tests/test_build_cwd.py assert the artifacts land in the file's directory.
+* The c-lsp language-server demo ships a project file (docs/examples/c-lsp/
+  c-lsp.prj): open it and F9 compiles AND links all three sources into
+  clsp-demo (F9 on a single .cpp of a multi-file program correctly does not
+  link).  And when a single-file Make/Run link fails next to a Makefile, xwpe
+  now suggests opening a Project or using Execute Make instead of leaving a
+  bare linker error.
+
   UI polish:
 * The File Manager (F3, or opening with no file) is centred and grows
   with the terminal instead of a fixed ~56x21 box pinned near the
