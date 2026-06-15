@@ -2660,11 +2660,13 @@ int e_exec_make(FENSTER *f)
  efildes[0] = efildes[1] = -1;
  wfildes[0] = wfildes[1] = -1;
  for (i = cn->mxedt; i > 0; i--)
-  if (!strcmp(cn->f[i]->datnam, "Makefile") ||
-    !strcmp(cn->f[i]->datnam, "makefile"))
+  if (cn->f[i] && cn->f[i]->datnam &&
+      (!strcmp(cn->f[i]->datnam, "Makefile") ||
+       !strcmp(cn->f[i]->datnam, "makefile")))
   {
    e_switch_window(cn->edt[i], cn->f[cn->mxedt]);
    e_save(cn->f[cn->mxedt]);
+   break;
   }
  if (e_new_message(f))
   return(WPE_ESC);
@@ -3817,10 +3819,12 @@ int e_new_message(FENSTER *f)
  if (e_p_m_buffer)
   e_p_red_buffer(e_p_m_buffer);
  for (i = f->ed->mxedt; i > 0; i--)
-  if (!strcmp(f->ed->f[i]->datnam, "Messages"))
+  if (f->ed->f[i] && f->ed->f[i]->datnam &&
+      !strcmp(f->ed->f[i]->datnam, "Messages"))
   {
    e_switch_window(f->ed->edt[i], f->ed->f[f->ed->mxedt]);
    e_close_window(f->ed->f[f->ed->mxedt]);
+   break;
   }
  if (access("Messages", 0) == 0)
   remove("Messages");
@@ -3834,7 +3838,8 @@ int e_p_show_messages(FENSTER *f)
  int i;
 
  for (i = f->ed->mxedt; i > 0; i--)
-  if (!strcmp(f->ed->f[i]->datnam, "Messages"))
+  if (f->ed->f[i] && f->ed->f[i]->datnam &&
+      !strcmp(f->ed->f[i]->datnam, "Messages"))
   {
    e_switch_window(f->ed->edt[i], f->ed->f[f->ed->mxedt]);
    break;
