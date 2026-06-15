@@ -7,6 +7,7 @@
 
 #include "messages.h"
 #include "edit.h"
+#include "we_clip.h"
 #include <ctype.h>
 
 extern int e_undo_sw;
@@ -198,6 +199,30 @@ int e_show_clipboard(FENSTER *f)
 }
 
 /*   move block to buffer */
+/* e_clip_export_buffer - mirror the internal clipboard (window 0) onto the OS
+   clipboard, so a plain Copy or Cut (^C / ^Ins, Shift-Del) can be pasted into
+   any other application.  Window 0 holds the just-copied block; we serialize it
+   exactly as a save would (e_buffer_to_text, one '\n' per line) and drop the
+   single trailing newline that serializer always appends, so a one-line copy
+   does not gain a spurious blank line in the OS clipboard.  The bytes go to the
+   front-end's OS writer (OSC 52 in a terminal, the X selections under X11); a
+   no-op when no front-end registered one (headless build). */
+static void e_clip_export_buffer(BUFFER *b0)
+{
+ char *text;
+ int len;
+
+ if (!b0)
+  return;
+ if (!(text = e_buffer_to_text(b0)))
+  return;
+ len = (int)strlen(text);
+ if (len > 0 && text[len - 1] == '\n')
+  len--;
+ e_clip_os_set(text, len);
+ free(text);
+}
+
 int e_edt_del(FENSTER *f)
 {
  e_edt_copy(f);
@@ -233,6 +258,7 @@ int e_edt_copy(FENSTER *f)
  b0->bf[0].len = 0;
  e_copy_block(0, 0, b, b0, f);
  f->save = save;
+ e_clip_export_buffer(b0);     /* plain Copy/Cut also lands on the OS clipboard */
  return(0);
 }
 

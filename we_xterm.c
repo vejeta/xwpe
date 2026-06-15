@@ -10,6 +10,7 @@
 #include "edit.h"
 #include "we_render.h"
 #include "we_fdloop.h"
+#include "we_clip.h"
 #include <X11/Xatom.h>
 #include <poll.h>
 
@@ -36,6 +37,7 @@ int e_x_system(const char *exe);
 int e_x_cp_X_to_buffer(FENSTER *f);
 int e_x_copy_X_buffer(FENSTER *f);
 int e_x_paste_X_buffer(FENSTER *f);
+static void e_clip_x_set(const char *utf8, int len);
 int e_x_change(PIC *pic);
 int e_x_repaint_desk(FENSTER *f);
 void e_setlastpic(PIC *pic);
@@ -147,6 +149,7 @@ int WpeDllInit(int *argc, char **argv)
  e_u_cp_X_to_buffer = e_x_cp_X_to_buffer;
  e_u_copy_X_buffer = e_x_copy_X_buffer;
  e_u_paste_X_buffer = e_x_paste_X_buffer;
+ e_clip_os_set = e_clip_x_set;   /* ^C / ^Ins -> PRIMARY + CLIPBOARD (UTF-8) */
  e_u_kbhit = e_x_kbhit;
  e_u_change = e_x_change;
  e_u_ini_size = e_ini_size;
@@ -1437,30 +1440,48 @@ int e_x_getch()
     if (report.xbutton.button == 3) c |= 4;
     return(-c);
    case SelectionRequest:
+    /* Another app asks for the text we copied.  We own both PRIMARY and
+       CLIPBOARD; the requestor's `selection` field says which, and we serve
+       the same cached bytes for either.  Answer TARGETS (the list a GTK/Qt app
+       probes first), and serve UTF8_STRING or STRING with the UTF-8 bytes. */
     if (WpeXInfo.selection)
     {
+     XSelectionRequestEvent *req = &report.xselectionrequest;
+
      se.type = SelectionNotify;
-     se.display = report.xselectionrequest.display;
-     se.requestor = report.xselectionrequest.requestor;
-     se.selection = report.xselectionrequest.selection;
-     se.time = report.xselectionrequest.time;
-     se.target = report.xselectionrequest.target;
-     if (report.xselectionrequest.property == None)
-      report.xselectionrequest.property = report.xselectionrequest.target;
-     /* Xt asks for TARGETS.  Should probably support that. */
-     if (report.xselectionrequest.target == WpeXInfo.text_atom)
+     se.display = req->display;
+     se.requestor = req->requestor;
+     se.selection = req->selection;
+     se.time = req->time;
+     se.target = req->target;
+     se.property = (req->property == None) ? req->target : req->property;
+     if (req->target == WpeXInfo.targets_atom)
      {
-      se.property = report.xselectionrequest.property;
-      XChangeProperty(se.display, se.requestor, se.property, se.target, 8,
-        PropModeReplace, WpeXInfo.selection, strlen(WpeXInfo.selection));
+      Atom targets[3];
+      targets[0] = WpeXInfo.targets_atom;
+      targets[1] = WpeXInfo.utf8_atom;
+      targets[2] = WpeXInfo.text_atom;
+      XChangeProperty(se.display, se.requestor, se.property, XA_ATOM, 32,
+        PropModeReplace, (unsigned char *)targets, 3);
      }
+     else if (req->target == WpeXInfo.utf8_atom ||
+              req->target == WpeXInfo.text_atom)
+      XChangeProperty(se.display, se.requestor, se.property, req->target, 8,
+        PropModeReplace, WpeXInfo.selection, strlen(WpeXInfo.selection));
      else
       se.property = None;
      XSendEvent(WpeXInfo.display, se.requestor, False, 0, (XEvent *)&se);
     }
     break;
    case SelectionClear:
-    if (WpeXInfo.selection)
+    /* We lost ONE selection (PRIMARY or CLIPBOARD) to another app.  Only drop
+       the cached bytes once we own NEITHER, so losing CLIPBOARD does not stop
+       us serving a still-owned PRIMARY (and vice versa). */
+    if (WpeXInfo.selection &&
+        XGetSelectionOwner(WpeXInfo.display, WpeXInfo.selection_atom)
+          != WpeXInfo.window &&
+        XGetSelectionOwner(WpeXInfo.display, WpeXInfo.clipboard_atom)
+          != WpeXInfo.window)
     {
      WpeFree(WpeXInfo.selection);
      WpeXInfo.selection = NULL;
@@ -1747,6 +1768,28 @@ int fk_x_mouse(int *g)
  return(g[1]);
 }
 
+/* e_clip_x_wait_notify - wait, event-driven, up to ~1s for the SelectionNotify
+   that answers an XConvertSelection.  Returns 1 with the event in *ev, or 0 on
+   timeout.  poll()s the X connection rather than busy-looping on sleep(0)
+   (the project convention); non-matching events stay queued (XCheckTypedEvent). */
+static int e_clip_x_wait_notify(XEvent *ev)
+{
+ int fd = ConnectionNumber(WpeXInfo.display);
+ int waited;
+ struct pollfd pfd;
+
+ for (waited = 0; waited < 1000; waited += 100)
+ {
+  if (XCheckTypedEvent(WpeXInfo.display, SelectionNotify, ev))
+   return 1;
+  pfd.fd = fd;
+  pfd.events = POLLIN;
+  if (poll(&pfd, 1, 100) > 0)
+   XEventsQueued(WpeXInfo.display, QueuedAfterReading);
+ }
+ return XCheckTypedEvent(WpeXInfo.display, SelectionNotify, ev);
+}
+
 int e_x_cp_X_to_buffer(FENSTER *f)
 {
  BUFFER *b0 = f->ed->f[0]->b;
@@ -1772,29 +1815,38 @@ int e_x_cp_X_to_buffer(FENSTER *f)
  }
  else
  {
-  /* Should check for errors especially failure to send SelectionNotify */
-  XConvertSelection(WpeXInfo.display, WpeXInfo.selection_atom,
-    WpeXInfo.text_atom, WpeXInfo.property_atom, WpeXInfo.window, CurrentTime);
-  n = 0;
-  while (!XCheckTypedEvent(WpeXInfo.display, SelectionNotify, &report))
+  /* Pull the OS clipboard: try CLIPBOARD first (the ^C/^V selection of GTK/Qt
+     apps), then PRIMARY (middle-click), each as UTF8_STRING.  Event-driven --
+     no busy-loop -- and AnyPropertyType so we accept whatever the owner sends. */
+  Atom sels[2];
+  int si, done = 0;
+
+  sels[0] = WpeXInfo.clipboard_atom;
+  sels[1] = WpeXInfo.selection_atom;
+  str = NULL;
+  for (si = 0; si < 2 && !done; si++)
   {
-   /* Should probably have a better timeout period than this. */
-   sleep(0);
-   n++;
-   if (n > 1000)
-    return 0;
+   if (XGetSelectionOwner(WpeXInfo.display, sels[si]) == None)
+    continue;
+   XConvertSelection(WpeXInfo.display, sels[si], WpeXInfo.utf8_atom,
+     WpeXInfo.property_atom, WpeXInfo.window, CurrentTime);
+   XFlush(WpeXInfo.display);
+   if (!e_clip_x_wait_notify(&report) || report.xselection.property == None)
+    continue;
+   if (XGetWindowProperty(WpeXInfo.display, WpeXInfo.window,
+       WpeXInfo.property_atom, 0, 1000000, True, AnyPropertyType,
+       &type, &format, &nitems, &bytes_left, &str) == Success
+       && type != None && nitems > 0 && str)
+    done = 1;
+   else if (str)
+   {
+    XFree(str);
+    str = NULL;
+   }
   }
-  if (WpeXInfo.property_atom == None)
+  if (!done || !str)
    return 0;
-  XGetWindowProperty(WpeXInfo.display, WpeXInfo.window, WpeXInfo.property_atom,
-    0, 1000000, FALSE, WpeXInfo.text_atom, &type, &format, &nitems, &bytes_left,
-    &str);
-  if (type == None)
-  {
-   /* Specified property does not exit*/
-   return 0;
-  }
-  n = strlen(str);
+  n = (int)nitems;
  }
 #else
  str = XFetchBytes(WpeXInfo.display, &n);
@@ -1832,6 +1884,31 @@ int e_x_cp_X_to_buffer(FENSTER *f)
 #endif
   XFree(str);
  return 0;
+}
+
+/* e_clip_x_set - X11 OS-clipboard writer (the e_clip_os_set backend).
+   Caches the UTF-8 bytes and takes ownership of BOTH the PRIMARY (middle-click
+   paste) and CLIPBOARD (^C/^V in GTK/Qt apps) selections, so a plain Copy in
+   xwpe is pasteable everywhere.  The SelectionRequest handler then serves these
+   bytes as UTF8_STRING/STRING and answers TARGETS.  Installed at X11 start-up,
+   so e_edt_copy's transparent export reaches the X selections. */
+static void e_clip_x_set(const char *utf8, int len)
+{
+ if (len < 0)
+  return;
+ if (WpeXInfo.selection)
+ {
+  WpeFree(WpeXInfo.selection);
+  WpeXInfo.selection = NULL;
+ }
+ WpeXInfo.selection = WpeMalloc(len + 1);
+ memcpy(WpeXInfo.selection, utf8, (size_t)len);
+ WpeXInfo.selection[len] = '\0';
+ XSetSelectionOwner(WpeXInfo.display, WpeXInfo.selection_atom,
+                    WpeXInfo.window, CurrentTime);
+ XSetSelectionOwner(WpeXInfo.display, WpeXInfo.clipboard_atom,
+                    WpeXInfo.window, CurrentTime);
+ XFlush(WpeXInfo.display);
 }
 
 int e_x_copy_X_buffer(FENSTER *f)

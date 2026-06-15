@@ -560,8 +560,11 @@ void WpeXInit(int *argc, char **argv)
  WpeFree(new_atom_list);
 
  WpeXInfo.selection_atom = XInternAtom(WpeXInfo.display, "PRIMARY", False);
+ WpeXInfo.clipboard_atom = XInternAtom(WpeXInfo.display, "CLIPBOARD", False);
  WpeXInfo.text_atom = XInternAtom(WpeXInfo.display, "STRING", False);
- WpeXInfo.property_atom = XInternAtom(WpeXInfo.display, "GTK_SELECTION", False);
+ WpeXInfo.utf8_atom = XInternAtom(WpeXInfo.display, "UTF8_STRING", False);
+ WpeXInfo.targets_atom = XInternAtom(WpeXInfo.display, "TARGETS", False);
+ WpeXInfo.property_atom = XInternAtom(WpeXInfo.display, "XWPE_SELECTION", False);
  WpeXInfo.selection = NULL;
  WpeXGCSetup();
 

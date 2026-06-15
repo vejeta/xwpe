@@ -43,7 +43,7 @@ typedef struct wpeXStruct {
  GC gc;
  XFontStruct *font;
  Atom delete_atom, protocol_atom, selection_atom, text_atom, property_atom,
-      sync_request_atom;
+      sync_request_atom, clipboard_atom, utf8_atom, targets_atom;
  XSyncCounter sync_counter;
  XSyncValue sync_value;
  int font_height, font_width;

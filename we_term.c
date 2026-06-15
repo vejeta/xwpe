@@ -14,7 +14,9 @@
 #include <poll.h>
 #include <langinfo.h>
 #include <string.h>
+#include <unistd.h>
 #include "we_fdloop.h"
+#include "we_clip.h"
 
 #include<signal.h>
 #define KEYFN 42
@@ -23,6 +25,16 @@
 #ifndef XWPE_DLL
 #define WpeDllInit WpeTermInit
 #endif
+
+/* e_clip_t_os_set - terminal OS-clipboard writer.  Frames the text as OSC 52
+   and writes it to the controlling terminal (STDOUT_FILENO); the emulator
+   performs the real OS-clipboard write, so a plain ^C / ^Ins copies to the
+   system clipboard locally AND over SSH.  Installed as e_clip_os_set at
+   terminal start-up (below). */
+static void e_clip_t_os_set(const char *utf8, int len)
+{
+ e_clip_osc52_write(STDOUT_FILENO, utf8, len);
+}
 
 /*    we_term.c    */
 char *init_key(char *key);
@@ -168,6 +180,7 @@ int WpeDllInit(int *argc, char **argv)
  e_u_sys_end = e_t_sys_end;
  e_u_system = system;
  fk_u_putchar = fk_t_putchar;
+ e_clip_os_set = e_clip_t_os_set;   /* ^C / ^Ins -> OS clipboard via OSC 52 */
 #ifdef HAVE_LIBGPM
  if (WpeGpmMouseInit() == 0)
  {

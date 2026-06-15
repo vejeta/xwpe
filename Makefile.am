@@ -28,6 +28,7 @@ bin_PROGRAMS = we
 we_SOURCES = \
   we_main.c \
   we_block.c \
+  we_clip.c \
   we_unix.c \
   we_e_aus.c \
   we_edit.c \
@@ -181,10 +182,15 @@ metainfodir = $(datadir)/metainfo
 metainfo_DATA = io.codeberg.mendezr.xwpe.metainfo.xml
 
 # --- Unit tests ---
-check_PROGRAMS = test_checkheader test_syntax_def test_fdloop test_lsp_buffer test_lsp_doctor test_lsp_semantic test_dap test_dap_dlv test_dap_gdb test_dap_lldb test_dap_scala test_lsp_scala test_lsp_clangd test_lsp_python test_lsp_gopls test_lsp_rust
+check_PROGRAMS = test_checkheader test_syntax_def test_fdloop test_clipboard test_lsp_buffer test_lsp_doctor test_lsp_semantic test_dap test_dap_dlv test_dap_gdb test_dap_lldb test_dap_scala test_lsp_scala test_lsp_clangd test_lsp_python test_lsp_gopls test_lsp_rust
 
 test_fdloop_SOURCES = tests/test_fdloop.c we_fdloop.c
 test_fdloop_CFLAGS = -std=gnu17
+
+# Clipboard helpers unit test: RFC 4648 base64 + OSC 52 framing (we_clip.c
+# only, no editor/X11). Always runs (no skip).
+test_clipboard_SOURCES = tests/test_clipboard.c we_clip.c
+test_clipboard_CFLAGS = -std=gnu17
 
 test_checkheader_SOURCES = tests/test_checkheader.c
 test_checkheader_CFLAGS = -std=gnu17
@@ -271,7 +277,7 @@ test_lsp_rust_SOURCES = tests/test_lsp_rust.c we_lsp.c we_dap_proto.c
 test_lsp_rust_CFLAGS = -std=gnu17 $(JSONC_CFLAGS)
 test_lsp_rust_LDADD = $(JSONC_LIBS)
 
-TESTS = test_checkheader test_syntax_def test_fdloop test_lsp_buffer test_lsp_doctor test_lsp_semantic test_dap test_dap_dlv \
+TESTS = test_checkheader test_syntax_def test_fdloop test_clipboard test_lsp_buffer test_lsp_doctor test_lsp_semantic test_dap test_dap_dlv \
   test_dap_gdb test_dap_lldb test_dap_scala test_lsp_scala test_lsp_clangd test_lsp_python test_lsp_gopls test_lsp_rust
 
 # --- Extra files for distribution ---
@@ -300,6 +306,7 @@ EXTRA_DIST = \
   tests/run-tests.sh \
   tests/test_checkheader.c \
   tests/test_syntax_def.c \
+  tests/test_clipboard.c \
   tests/test_lsp_buffer.c \
   tests/test_lsp_doctor.c \
   tests/test_lsp_semantic.c \
@@ -320,6 +327,7 @@ EXTRA_DIST = \
   tests/test_window_menu.py \
   tests/test_block.py \
   tests/test_block_asan.py \
+  tests/test_clipboard_osc52.py \
   tests/wpe_driver.py \
   tests/test_menu_edit.py \
   tests/test_menu_search.py \
@@ -364,6 +372,7 @@ EXTRA_DIST = \
   tests/x11/matchbox-kbdconfig \
   tests/x11/test_editor_options.py \
   tests/x11/test_block_marking.py \
+  tests/x11/test_clipboard.py \
   tests/x11/test_menu_edit.py \
   tests/x11/test_menu_search.py \
   tests/x11/test_menu_file.py \

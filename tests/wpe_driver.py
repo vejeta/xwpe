@@ -22,6 +22,7 @@ Incoherence flagging:
     -> recorded as xfail; `pytest -rxX` lists every INCOHERENCE for a later
        manual review (turns green/XPASS when the behaviour is fixed).
 """
+import base64
 import os
 import pty
 import select
@@ -93,6 +94,9 @@ class WpeSession:
             fh.write(seed)
         self.screen = SafeScreen(cols, rows)
         self.stream = _RepStream(self.screen)   # Stream + REP (CSI Pn b) handler
+        self.raw = bytearray()                  # every byte wpe emits, pre-parse
+                                                # (pyte swallows OSC 52, so the
+                                                # clipboard test scans this)
         self.master_fd, slave_fd = pty.openpty()
         env = os.environ.copy()
         env.update(TERM="xterm-256color", COLUMNS=str(cols), LINES=str(rows),
@@ -135,7 +139,25 @@ class WpeSession:
                     break
                 if not data:
                     break
+                self.raw.extend(data)
                 self.stream.feed(data.decode("utf-8", "replace"))
+
+    def osc52_payload(self):
+        """Decode the most recent OSC 52 "set clipboard" sequence wpe emitted
+        (ESC ] 52 ; c ; <base64> BEL), or None. Used to assert that a plain
+        Copy pushed the selection to the OS clipboard."""
+        raw = bytes(self.raw)
+        marker = b"\033]52;c;"
+        i = raw.rfind(marker)
+        if i < 0:
+            return None
+        j = raw.find(b"\a", i)
+        if j < 0:
+            return None
+        try:
+            return base64.b64decode(raw[i + len(marker):j]).decode("utf-8", "replace")
+        except Exception:
+            return None
 
     # -- input ---------------------------------------------------------------
     def key(self, *keys, delay=0.45):
