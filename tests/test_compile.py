@@ -40,6 +40,13 @@ KEY_RETURN = '\r'          # Enter
 KEY_ESC_RAW = '\033'       # Raw ESC
 
 
+# See tests/wpe_driver.py: a loaded CI runner is slow, so XWPE_TEST_WAIT_SCALE
+# stretches every wait/timeout (default 1.0; the Debian autopkgtest sets 3).
+# All waits here funnel through the inner drain(), so scaling its deadline
+# covers the startup wait, the ('wait', N) steps and the per-key delay.
+WAIT_SCALE = float(os.environ.get("XWPE_TEST_WAIT_SCALE", "1") or 1)
+
+
 def run_wpe_in_dir(workdir, filename, cols=80, rows=30, wait=1.5, keys=None,
                    key_delay=0.3, read_timeout=0.5):
     """Run wpe in a specific working directory, send keys, capture screen."""
@@ -68,7 +75,7 @@ def run_wpe_in_dir(workdir, filename, cols=80, rows=30, wait=1.5, keys=None,
     os.close(slave_fd)
 
     def drain(timeout):
-        deadline = time.time() + timeout
+        deadline = time.time() + timeout * WAIT_SCALE
         while time.time() < deadline:
             r, _, _ = select.select([master_fd], [], [], 0.1)
             if r:

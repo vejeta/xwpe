@@ -43,8 +43,14 @@ def open_wpe(files, workdir, term='xterm-256color', extra_env=None):
     return proc, master, screen, stream
 
 
+# A loaded CI runner is slow; XWPE_TEST_WAIT_SCALE stretches every wait so the
+# scenarios don't flake (default 1.0; the Debian autopkgtest sets 3). All
+# scenario waits funnel through drain(), so scaling its deadline covers them.
+WAIT_SCALE = float(os.environ.get("XWPE_TEST_WAIT_SCALE", "1") or 1)
+
+
 def drain(master, stream, timeout):
-    end = time.time() + timeout
+    end = time.time() + timeout * WAIT_SCALE
     while time.time() < end:
         r, _, _ = select.select([master], [], [], 0.1)
         if r:

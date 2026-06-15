@@ -35,6 +35,13 @@ import pyte
 from test_utf8_border import SafeScreen
 
 WPE_BIN = os.environ.get("WPE_BIN") or os.path.join(os.path.dirname(__file__), "..", "wpe")
+
+# A loaded CI runner is 3-5x slower than a dev box, so the fixed wait/timeout
+# budgets that pass in-tree flake under autopkgtest. XWPE_TEST_WAIT_SCALE
+# stretches every wait without slowing the local run (default 1.0; the Debian
+# autopkgtest sets it to 3). All waits funnel through _drain(), so scaling there
+# scales the startup wait AND every per-key delay.
+WAIT_SCALE = float(os.environ.get("XWPE_TEST_WAIT_SCALE", "1") or 1)
 COLS, ROWS = 80, 30
 
 
@@ -118,7 +125,7 @@ class WpeSession:
 
     # -- internals -----------------------------------------------------------
     def _drain(self, timeout):
-        deadline = time.time() + timeout
+        deadline = time.time() + timeout * WAIT_SCALE
         while time.time() < deadline:
             r, _, _ = select.select([self.master_fd], [], [], 0.1)
             if r:

@@ -46,6 +46,19 @@ def _spawn(cmd, **kw):
     return subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **kw)
 
 
+# A loaded CI runner is 3-5x slower than a dev box, so the fixed settle times
+# between a synthetic keystroke and the screenshot flake ("screen barely
+# changed" -- the dialog had not rendered yet). XWPE_TEST_WAIT_SCALE stretches
+# every settle without slowing the local run (default 1.0; the Debian
+# autopkgtest sets 3). _sleep() replaces _sleep() throughout this module.
+_WAIT_SCALE = float(os.environ.get("XWPE_TEST_WAIT_SCALE", "1") or 1)
+_real_sleep = time.sleep
+
+
+def _sleep(seconds):
+    _real_sleep(seconds * _WAIT_SCALE)
+
+
 def _xdo(*args):
     subprocess.run(["xdotool", *args], env={**os.environ, "DISPLAY": DISPLAY},
                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -116,35 +129,35 @@ class XwpeSession:
 
     def focus(self):
         _xdo("windowfocus", self.win)
-        time.sleep(0.3)
+        _sleep(0.3)
 
     def key(self, *keys, delay=0.5):
         for k in keys:
             _xdo("key", "--window", self.win, "--clearmodifiers", _to_keycodes(k))
-            time.sleep(delay)
+            _sleep(delay)
 
     def click(self, px, py, delay=0.5):
         _xdo("mousemove", "--window", self.win, str(px), str(py))
-        time.sleep(0.2)
+        _sleep(0.2)
         _xdo("click", "1")
-        time.sleep(delay)
+        _sleep(delay)
 
     def drag(self, x1, y1, x2, y2, steps=12, delay=0.6):
         """Press button 1 at (x1,y1), move to (x2,y2) in steps, release.
         Drives the real X11 drag path (ButtonPress -> MotionNotify* ->
         ButtonRelease) -- e.g. a scrollbar-thumb drag."""
         _xdo("mousemove", "--window", self.win, str(x1), str(y1))
-        time.sleep(0.15)
+        _sleep(0.15)
         _xdo("mousedown", "1")
-        time.sleep(0.1)
+        _sleep(0.1)
         for i in range(1, steps + 1):
             ix = x1 + (x2 - x1) * i // steps
             iy = y1 + (y2 - y1) * i // steps
             _xdo("mousemove", "--window", self.win, str(ix), str(iy))
-            time.sleep(0.03)
-        time.sleep(0.1)
+            _sleep(0.03)
+        _sleep(0.1)
         _xdo("mouseup", "1")
-        time.sleep(delay)
+        _sleep(delay)
 
     def wheel(self, direction, count=3, px=None, py=None, delay=0.4):
         """Spin the mouse wheel (button 4 = up, 5 = down) `count` times, over
@@ -152,16 +165,16 @@ class XwpeSession:
         button = "4" if direction == "up" else "5"
         if px is not None:
             _xdo("mousemove", "--window", self.win, str(px), str(py))
-            time.sleep(0.1)
+            _sleep(0.1)
         for _ in range(count):
             _xdo("click", button)
-            time.sleep(0.1)
-        time.sleep(delay)
+            _sleep(0.1)
+        _sleep(delay)
 
     def type(self, text, delay=0.4):
         """Type a literal string (into a focused text field) via XTEST."""
         _xdo("type", "--window", self.win, "--clearmodifiers", text)
-        time.sleep(delay)
+        _sleep(delay)
         return self
 
     def menu(self, alt_letter, item, delay=0.5):
@@ -213,7 +226,7 @@ def xserver():
         except OSError:
             pass
     xvfb = _spawn(["Xvfb", DISPLAY, "-screen", "0", SCREEN])
-    time.sleep(2.0)
+    _sleep(2.0)
     # Use an empty kbdconfig: matchbox's default grabs <Alt>n/p/c/d/m, <Alt>Tab
     # etc. at the root, which are xwpe's own dialog/menu hotkeys -- the WM would
     # swallow them and fake an "Alt-hotkey broken" divergence.  See the file.
@@ -221,7 +234,7 @@ def xserver():
     wm = _spawn(["matchbox-window-manager", "-use_titlebar", "no",
                  "-kbdconfig", kbd],
                 env={**os.environ, "DISPLAY": DISPLAY})
-    time.sleep(1.5)
+    _sleep(1.5)
     yield DISPLAY
     wm.terminate()
     xvfb.terminate()
@@ -256,9 +269,9 @@ def xwpe(xserver, tmp_path):
         if ids:
             win = ids[0]
             break
-        time.sleep(0.25)
+        _sleep(0.25)
     assert win, "xwpe window did not appear"
-    time.sleep(1.0)
+    _sleep(1.0)
     session = XwpeSession(proc, win)
     session.srcfile = str(src)
     session.focus()
