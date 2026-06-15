@@ -188,6 +188,71 @@ int e_prog_switch(FENSTER *f, int c)
  return(0);
 }
 
+/* e_build_dir - the directory a build/run/debug action must execute in, as a
+   malloc'd ABSOLUTE path the caller FREEs (or NULL = keep the current CWD).
+   xwpe historically never chdir()'d, so a forked compiler/make/program/debugger
+   inherited the directory the shell launched wpe from; opening a file elsewhere
+   (`cd /x; wpe sub/main.c`) then built/ran/debugged the wrong thing.  The action
+   must happen where the code lives:
+     - project mode (.prj open): the directory holding the .prj, so the project's
+       Makefile and project-relative flags resolve;
+     - otherwise:                the active file's own directory (f->dirct).
+   Returns NULL when no absolute target can be derived (no file dir, or a .prj
+   path that is not absolute) -- the caller then leaves the CWD untouched,
+   exactly the pre-1.6.5 behaviour, so there is never a regression.
+   Exposed (non-static) so the debugger launcher in we_debug.c shares the same
+   directory policy. */
+char *e_build_dir(FENSTER *f)
+{
+ if (e_project_is_open() && e_prog.project[0] == DIRC)
+ {
+  char *slash = strrchr(e_prog.project, DIRC);
+  if (slash && slash != e_prog.project)
+  {
+   int n = (int)(slash - e_prog.project);
+   char *d = MALLOC(n + 1);
+   memcpy(d, e_prog.project, n);
+   d[n] = '\0';
+   return(d);
+  }
+ }
+ if (f && f->dirct && f->dirct[0])
+  return(WpeStrdup(f->dirct));
+ return(NULL);
+}
+
+/* e_build_pushd - switch the process CWD to e_build_dir(f) before forking a
+   build/run tool, stashing the old CWD in `saved` (size n).  The CWD is kept
+   changed across the whole action (compile/make/run) on purpose: relative
+   output paths (e.g. exedir="."), the up-to-date stat() checks, and the error
+   paths the tool reports all resolve against it.  Returns 1 if it changed the
+   CWD (pair with e_build_popd), 0 if it left it untouched (no target dir, or
+   getcwd/chdir failed -> the tool runs in the inherited CWD, as before). */
+static int e_build_pushd(FENSTER *f, char *saved, size_t n)
+{
+ char *dir = e_build_dir(f);
+ int ok;
+
+ if (!dir)
+  return(0);
+ if (!getcwd(saved, n))
+ {
+  FREE(dir);
+  return(0);
+ }
+ ok = (chdir(dir) == 0);
+ FREE(dir);
+ return(ok ? 1 : 0);
+}
+
+/* e_build_popd - restore the CWD saved by e_build_pushd once the action and its
+   error handling are done. */
+static void e_build_popd(char *saved)
+{
+ if (chdir(saved) != 0)
+  return; /* the saved directory vanished mid-action; nothing safe to do */
+}
+
 int e_compile(FENSTER *f)
 {
  int ret;
@@ -204,7 +269,8 @@ int e_p_make(FENSTER *f)
 {
  ECNT *cn = f->ed;
  char ostr[128], estr[128], mstr[80];
- int len, i, file = -1;
+ char cwd_saved[1024];
+ int len, i, file = -1, cwd_chg = 0;
  struct stat cbuf[1], obuf[1];
  { const char *tp = getenv("XWPE_UI_TRACE");
    if (tp) { FILE *tf = fopen(tp, "a");
@@ -226,6 +292,10 @@ int e_p_make(FENSTER *f)
   if (strcmp(cn->f[i]->datnam, "Messages"))
    break;
  f = (i > 0) ? cn->f[i] : cn->f[cn->mxedt-1];
+ /* Link/up-to-date checks below use exedir="." and bare exe/object names; run
+    them and the linker in the build directory so they resolve next to the
+    code, not in wpe's launch directory. */
+ cwd_chg = e_build_pushd(f, cwd_saved, sizeof(cwd_saved));
  if (!e__project)
  {
   e_arg = MALLOC(6 * sizeof(char *));
@@ -291,12 +361,16 @@ int e_p_make(FENSTER *f)
    if (pic)
     e_close_view(pic, 1);
   }
+  if (cwd_chg)
+   e_build_popd(cwd_saved);
   WpeMouseRestoreShape();
   return(i);
  }
  /* Executable is up to date -- no linking needed */
  if (!e__project)
   e_free_arg(e_arg, e_argc);
+ if (cwd_chg)
+  e_build_popd(cwd_saved);
  WpeMouseRestoreShape();
  return(0);
 }
@@ -532,7 +606,8 @@ int e_run(FENSTER *f)
  FENSTER *mf;
  char estr[256];
  char src_dirct[256], src_datnam[256];
- int len, ret, i;
+ char cwd_saved[1024];
+ int len, ret, i, cwd_chg = 0;
 
  { const char *tp = getenv("XWPE_UI_TRACE");
    if (tp) { FILE *tf = fopen(tp, "a");
@@ -604,6 +679,11 @@ int e_run(FENSTER *f)
 
  if (b->bf[b->mxlines-1].len != 0)
   e_new_line(b->mxlines, b);
+ /* Run the program IN ITS OWN directory: the exe is named relative ("./prog",
+    "a.out") and, more importantly, the program itself should see its own
+    directory as CWD so it finds/writes its data files there, not wherever wpe
+    was launched from. */
+ cwd_chg = e_build_pushd(f, cwd_saved, sizeof(cwd_saved));
  /* Restore the DEFAULT SIGCHLD disposition for the duration of the run so
     e_run_with_pty's own waitpid()/pclose() reaps the child; xwpe's normal
     SIGCHLD handler is put back afterwards.  (_dfl = SIG_DFL, not "ignore".) */
@@ -637,6 +717,8 @@ int e_run(FENSTER *f)
    }
    sigaction(SIGCHLD, &_old, NULL);
  }
+ if (cwd_chg)
+  e_build_popd(cwd_saved);
 #ifdef NCURSES
  clearok(stdscr, TRUE);
 #endif
@@ -694,7 +776,8 @@ int e_comp(FENSTER *f, int announce)
  ECNT *cn = f->ed;
  PIC *pic = NULL;
  char **arg = NULL, fstr[128], ostr[128];
- int i, file = -1, len, argc;
+ char cwd_saved[1024];
+ int i, file = -1, len, argc, cwd_chg = 0;
  { const char *tp = getenv("XWPE_UI_TRACE");
    if (tp) { FILE *tf = fopen(tp, "a");
      if (tf) { fprintf(tf, "e_comp ENTER datnam=%s\n",
@@ -777,6 +860,11 @@ int e_comp(FENSTER *f, int announce)
  }
 #endif
  e_sys_ini();
+ /* Compile in the file's directory: the source is passed absolute, but the
+    object path (exedir=".") and the stat() up-to-date checks below are
+    relative, so without this they would land in / be looked for in wpe's
+    launch directory when it differs from the file's. */
+ cwd_chg = e_build_pushd(f, cwd_saved, sizeof(cwd_saved));
 #ifdef CHECKHEADER
  if ((stat(ostr, obuf) || e_check_header(fstr, obuf->st_mtime, cn, 0)))
 #else
@@ -788,6 +876,8 @@ int e_comp(FENSTER *f, int announce)
   {
    e_sys_end();
    e_free_arg(arg, argc);
+   if (cwd_chg)
+    e_build_popd(cwd_saved);
    return(WPE_ESC);
   }
   remove(ostr);
@@ -795,16 +885,22 @@ int e_comp(FENSTER *f, int announce)
   {
    e_sys_end();
    e_free_arg(arg, argc);
+   if (cwd_chg)
+    e_build_popd(cwd_saved);
    return(WPE_ESC);
   }
   e_sys_end();
   e_free_arg(arg, argc);
   i = e_p_exec(file, f, pic);
+  if (cwd_chg)
+   e_build_popd(cwd_saved);
   return(i);
  }
  /* Object file is up to date -- no recompilation needed */
  e_sys_end();
  e_free_arg(arg, argc);
+ if (cwd_chg)
+  e_build_popd(cwd_saved);
  if (announce)
   e_compile_announce_uptodate(f);
  return(0);
@@ -929,8 +1025,19 @@ int e_p_exec(int file, FENSTER *f, PIC *pic)
  FENSTER *mf = e_find_or_create_messages(cn);
  BUFFER *b = mf->b;
  int ret = 0, i = 0, is, stat_loc = 0;
+ sigset_t chld_mask, old_mask;
 
  f = mf;
+ /* Block SIGCHLD across the drain + reap.  xwpe's WpeSignalChild handler reaps
+    EVERY child with waitpid(-1, WNOHANG) and discards the status; if it reaps
+    our compiler/make child first, the waitpid() below fails and we would read
+    a bogus "exit 1" -- breaking every Make link step and Run.  Blocking keeps
+    the child reapable here so we get its real exit code; the previous mask is
+    restored after reaping. */
+ sigemptyset(&chld_mask);
+ sigaddset(&chld_mask, SIGCHLD);
+ sigprocmask(SIG_BLOCK, &chld_mask, &old_mask);
+
  /* Drain stderr (efildes) AND stdout (wfildes) with poll() WHILE the child
     runs -- no more wait-then-read, so block-buffered stdout (make's real
     output) is never lost.  Each complete line lands in Messages and the window
@@ -979,7 +1086,13 @@ int e_p_exec(int file, FENSTER *f, PIC *pic)
  /* Reap the child we just drained (both pipes are at EOF). */
  while ((ret = waitpid(e_save_pid, &stat_loc, 0)) < 0 && errno == EINTR)
   ;
- ret = (ret == e_save_pid && WIFEXITED(stat_loc)) ? WEXITSTATUS(stat_loc) : 1;
+ if (ret == e_save_pid && WIFEXITED(stat_loc))
+  ret = WEXITSTATUS(stat_loc);     /* we reaped it: the real exit code */
+ else
+  ret = 0;  /* the SIGCHLD handler reaped it first (rare race); fall back to the
+               parsed error list (i) for success/failure, as the code did before
+               the poll() rewrite -- never report a bogus failure. */
+ sigprocmask(SIG_SETMASK, &old_mask, NULL);
  if (efildes[1] >= 0) close(efildes[1]);
  if (wfildes[1] >= 0) close(wfildes[1]);
  efildes[0] = efildes[1] = -1;
@@ -2679,36 +2792,6 @@ int e_d_car_mouse(FENSTER *f)
 }
 #endif
 
-/* e_make_pushd - run `make` where the user's file lives, not where the shell
-   that launched wpe happened to sit.  xwpe never chdir()s, so a forked `make`
-   inherits the launch directory and builds the wrong Makefile (e.g. xwpe's own
-   tree instead of the example the user just opened).  Switch the process CWD to
-   the active file's (absolute) directory and stash the old one in `saved`
-   (size n).  The CWD is left changed across e_p_exec on purpose: `make` reports
-   error paths relative to where it ran, and e_show_error resolves unopened
-   files against the CWD -- so error navigation needs the same directory.
-   Returns 1 if it changed the CWD (caller must pair it with e_make_popd), 0 if
-   it left the CWD untouched -- no directory, or getcwd/chdir failed, in which
-   case `make` simply runs in the inherited CWD, the historical behaviour. */
-static int e_make_pushd(FENSTER *f, char *saved, size_t n)
-{
- if (!f || !f->dirct || !f->dirct[0])
-  return(0);
- if (!getcwd(saved, n))
-  return(0);
- if (chdir(f->dirct) != 0)
-  return(0);
- return(1);
-}
-
-/* e_make_popd - restore the CWD saved by e_make_pushd, once `make` has finished
-   and its errors have been resolved. */
-static void e_make_popd(char *saved)
-{
- if (chdir(saved) != 0)
-  return; /* the saved directory vanished mid-build; nothing safe to do */
-}
-
 int e_exec_make(FENSTER *f)
 {
  ECNT *cn = f->ed;
@@ -2721,7 +2804,7 @@ int e_exec_make(FENSTER *f)
  wfildes[0] = wfildes[1] = -1;
  /* Capture the active file's directory BEFORE e_new_message makes Messages the
     top window -- after that cn->f[cn->mxedt]->dirct is the Messages dir. */
- cwd_changed = e_make_pushd(f, saved_cwd, sizeof(saved_cwd));
+ cwd_changed = e_build_pushd(f, saved_cwd, sizeof(saved_cwd));
  for (i = cn->mxedt; i > 0; i--)
   if (cn->f[i] && cn->f[i]->datnam &&
       (!strcmp(cn->f[i]->datnam, "Makefile") ||
@@ -2734,7 +2817,7 @@ int e_exec_make(FENSTER *f)
  if (e_new_message(f))
  {
   if (cwd_changed)
-   e_make_popd(saved_cwd);
+   e_build_popd(saved_cwd);
   return(WPE_ESC);
  }
  f = cn->f[cn->mxedt];
@@ -2758,7 +2841,7 @@ int e_exec_make(FENSTER *f)
  {
   e_sys_end();
   if (cwd_changed)
-   e_make_popd(saved_cwd);
+   e_build_popd(saved_cwd);
   WpeMouseRestoreShape();
   return(WPE_ESC);
  }
@@ -2766,25 +2849,35 @@ int e_exec_make(FENSTER *f)
  e_free_arg(arg, argc - 1);
  i = e_p_exec(file, f, NULL);
  if (cwd_changed)
-  e_make_popd(saved_cwd);
+  e_build_popd(saved_cwd);
  WpeMouseRestoreShape();
  return(i);
 }
 
 int e_run_sh(FENSTER *f)
 {
- int ret, len = strlen(f->datnam);
+ int ret, len = strlen(f->datnam), cwd_chg = 0;
  char estr[128];
+ char cwd_saved[1024];
 
  if (strcmp(f->datnam+len-3, ".sh"))
   return(1);
 
- WpeMouseChangeShape(WpeWorkingShape);   
+ WpeMouseChangeShape(WpeWorkingShape);
  f->filemode |= 0100;
  if (f->save)
   e_save(f);
- strcpy(estr, f->datnam);
- strcat(estr, " ");
+ /* Run the script in its own directory, not wherever wpe was launched from,
+    and invoke it as "./name.sh" so the shell finds it there ("." is not
+    normally on PATH, so a bare "name.sh" would fail even in the right dir). */
+ cwd_chg = e_build_pushd(f, cwd_saved, sizeof(cwd_saved));
+ /* Make the script executable on disk: the in-memory filemode |= 0100 above
+    only reaches disk on save, so a freshly-opened unmodified .sh would be
+    non-executable and "./name.sh" would fail with EACCES. */
+ { struct stat _sb;
+   if (!stat(f->datnam, &_sb))
+    chmod(f->datnam, _sb.st_mode | S_IXUSR); }
+ snprintf(estr, sizeof(estr), "./%s ", f->datnam);
  if (e_prog.arguments)
   strcat(estr, e_prog.arguments);
 #ifndef NO_XWINDOWS
@@ -2795,6 +2888,8 @@ int e_run_sh(FENSTER *f)
  else
 #endif
  ret = e_system(estr, f->ed);
+ if (cwd_chg)
+  e_build_popd(cwd_saved);
  WpeMouseRestoreShape();
  return(0);
 }

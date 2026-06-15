@@ -7,6 +7,7 @@
 
 #include "messages.h"
 #include "edit.h"
+#include "progr.h"
 #include "we_fdloop.h"
 #include "we_dap.h"
 #include "we_bsp.h"
@@ -2768,6 +2769,17 @@ int e_exec_deb(FENSTER *f, char *prog)
   e_d_exec_fail();
   return(0);
  }
+
+ /* CHILD (pid == 0): run the debugger in the program's directory, the same
+    chdir-in-child the LSP/DAP launchers use.  Without it gdb inherits wpe's
+    launch directory and, when that differs from the file's, fails to find a
+    relatively-named binary ("prog.e") and resolves source/breakpoint paths
+    wrong.  Covers both the X11 helper-script path and the console execlp path
+    below (the script and the FIFOs use absolute /tmp paths, so the chdir does
+    not disturb them).  pdb/a68g already pass an absolute program path, so this
+    is harmless there. */
+ { char *_dd = e_build_dir(f);
+   if (_dd) { if (chdir(_dd) != 0) _exit(127); FREE(_dd); } }
 
 #ifndef NO_XWINDOWS
  if (WpeIsXwin())
