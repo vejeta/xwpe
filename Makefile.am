@@ -317,6 +317,7 @@ EXTRA_DIST = \
   tests/test_utf8_border.py \
   tests/test_scrollbar.py \
   tests/test_compile.py \
+  tests/test_make_output.py \
   tests/test_dialog_resize.py \
   tests/test_esc_key.py \
   tests/test_maxcol_paste.py \

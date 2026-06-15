@@ -18,6 +18,7 @@
 #include <sys/wait.h>
 #include <signal.h>
 #include <poll.h>
+#include <errno.h>
 #if defined(HAVE_PTY_H)
 # include <pty.h>          /* glibc: openpty/forkpty */
 #elif defined(HAVE_UTIL_H)
@@ -811,64 +812,61 @@ int e_comp(FENSTER *f, int announce)
 
 int e_exec_inf(FENSTER *f, char **argv, int n)
 {
- int pid;
- char tstr[128];
+ int pid, nul;
 #ifdef DEBUGGER
  if (e_d_swtch > 0)
   e_d_quit(f);
 #endif
  fflush(stdout);
- sprintf(tstr, "%s/we_111", e_tmp_dir);
- if((efildes[1] = creat(tstr, 0777)) < 0)
+ /* Real pipes instead of $TMPDIR/we_111+we_112 temp files: efildes captures the
+    child's stderr, wfildes its stdout.  The old temp-file + wait-then-read lost
+    block-buffered stdout (the Make-only bug, where compilers write only to
+    stderr so it stayed hidden).  We now drain both fds with poll() while the
+    child runs (see e_p_exec). */
+ if (pipe(efildes) < 0 || pipe(wfildes) < 0)
  {
   e_error(e_p_msg[ERR_PIPEOPEN], 0, f->fb);
   return(0);
  }
- if((efildes[0] = open(tstr, O_RDONLY)) < 0 )
- {
-  e_error(e_p_msg[ERR_PIPEOPEN], 0, f->fb);
-  return(0);
- }
- efile = MALLOC((strlen(tstr)+1)*sizeof(char));
- strcpy(efile, tstr);
- sprintf(tstr, "%s/we_112", e_tmp_dir);
- if((wfildes[1] = creat(tstr, 0777)) < 0)
- {
-  e_error(e_p_msg[ERR_PIPEOPEN], 0, f->fb);
-  return(0);
- }
- if((wfildes[0] = open(tstr, O_RDONLY)) < 0 )
- {
-  e_error(e_p_msg[ERR_PIPEOPEN], 0, f->fb);
-  return(0);
- }
- wfile = MALLOC((strlen(tstr)+1)*sizeof(char));
- strcpy(wfile, tstr);
 
- if((e_save_pid = pid = fork()) > 0)
-  return(efildes[1]);
- else if(pid < 0)
+ if ((e_save_pid = pid = fork()) > 0)
+ {
+  /* Parent: keep the read ends; close the write ends so read() sees EOF when
+     the child exits, and CLOEXEC so a later child does not inherit them. */
+  close(efildes[1]);
+  close(wfildes[1]);
+  efildes[1] = wfildes[1] = -1;
+  fcntl(efildes[0], F_SETFD, FD_CLOEXEC);
+  fcntl(wfildes[0], F_SETFD, FD_CLOEXEC);
+  return(1);
+ }
+ if (pid < 0)
  {
   e_error(e_p_msg[ERR_PROCESS], 0, f->fb);
+  close(efildes[0]); close(efildes[1]);
+  close(wfildes[0]); close(wfildes[1]);
+  efildes[0] = efildes[1] = wfildes[0] = wfildes[1] = -1;
   return(0);
  }
 
- close(2);   /*  new process   */
- if(fcntl(efildes[1], F_DUPFD, 2) != 2)
+ /* Child: stderr -> efildes write end, stdout -> wfildes write end, and stdin
+    -> /dev/null so the command can never grab the controlling tty and corrupt
+    the parent's curses screen.  Then close every pipe fd (the dup2'd copies on
+    0/1/2 survive). */
+ dup2(efildes[1], 2);
+ dup2(wfildes[1], 1);
+ if ((nul = open("/dev/null", O_RDONLY)) >= 0)
  {
-  fprintf(stderr, e_p_msg[ERR_PIPEEXEC], efildes[1]);
-  exit(1);
+  dup2(nul, 0);
+  if (nul > 2)
+   close(nul);
  }
- close(1);
- if(fcntl(wfildes[1], F_DUPFD, 1) != 1)
- {
-  fprintf(stderr, e_p_msg[ERR_PIPEEXEC], wfildes[1]);
-  exit(1);
- }
+ close(efildes[0]); close(efildes[1]);
+ close(wfildes[0]); close(wfildes[1]);
  e_print_arg(stderr, "", argv, n);
  execvp(argv[0], argv);
  e_print_arg(stderr, e_p_msg[ERR_IN_COMMAND], argv, n);
- exit(1);
+ _exit(1);
  /* Can never get here */
  return 0;
 }
@@ -896,63 +894,94 @@ static FENSTER *e_find_or_create_messages(ECNT *cn)
  return cn->f[cn->mxedt];
 }
 
+/* e_p_pump_fd - read whatever is available on fd into the per-fd line
+   accumulator (*acc / *acclen), append every COMPLETE line (through its '\n')
+   to the Messages buffer b, and keep the trailing partial for next time.
+   Returns 1 while the fd is open, 0 on EOF/error (the caller then closes it).
+   Replaces the byte-at-a-time e_line_read, which also dropped the final
+   fragment that had no trailing '\n'. */
+static int e_p_pump_fd(int fd, char **acc, int *acclen, BUFFER *b)
+{
+ char rbuf[4096];
+ int r, last;
+
+ if ((r = read(fd, rbuf, sizeof(rbuf))) <= 0)
+  return(0);                            /* 0 = EOF, <0 = error */
+ *acc = REALLOC(*acc, *acclen + r + 1);
+ memcpy(*acc + *acclen, rbuf, r);
+ *acclen += r;
+ (*acc)[*acclen] = '\0';
+ for (last = *acclen - 1; last >= 0 && (*acc)[last] != '\n'; last--)
+  ;
+ if (last >= 0)                         /* at least one complete line */
+ {
+  (*acc)[last + 1] = '\0';
+  print_to_end_of_buffer(b, *acc, 0);
+  *acclen -= (last + 1);
+  memmove(*acc, *acc + last + 1, *acclen + 1);
+ }
+ return(1);
+}
+
 int e_p_exec(int file, FENSTER *f, PIC *pic)
 {
  ECNT *cn = f->ed;
  FENSTER *mf = e_find_or_create_messages(cn);
  BUFFER *b = mf->b;
- int ret = 0, i = 0, is, fd, stat_loc = 0;
- char str[128];
- char *buff;
+ int ret = 0, i = 0, is, stat_loc = 0;
 
  f = mf;
- while ((ret = wait(&stat_loc)) >= 0 && ret != e_save_pid)
-  ;
- /* Only trust stat_loc when we actually reaped our own child: wait() can
-    return -1 (e.g. ECHILD if the child was already reaped) and then leave
-    stat_loc untouched, so WIFEXITED() would read an undefined value. */
- ret = (ret == e_save_pid && WIFEXITED(stat_loc)) ? WEXITSTATUS(stat_loc) : 1;
- for (is = b->mxlines-1, fd = efildes[0]; fd > 0; fd = wfildes[0])
+ /* Drain stderr (efildes) AND stdout (wfildes) with poll() WHILE the child
+    runs -- no more wait-then-read, so block-buffered stdout (make's real
+    output) is never lost.  Each complete line lands in Messages and the window
+    repaints live; e_schirm recomputes the scrollbar as the buffer grows.
+    Lines from the two streams interleave in arrival order (chronological). */
  {
-  buff=MALLOC(1);
-  buff[0]='\0';
-  while( e_line_read(fd, str, 128) == 0 )
+  char *eacc = MALLOC(1), *wacc = MALLOC(1);
+  int eacclen = 0, wacclen = 0;
+
+  eacc[0] = wacc[0] = '\0';
+  is = b->mxlines - 1;
+  while (efildes[0] >= 0 || wfildes[0] >= 0)
   {
-   buff=REALLOC(buff, strlen(buff) + strlen(str) + 1);
-   strcat(buff, str);
+   struct pollfd pfd[2];
+   int nfd = 0, ei = -1, wi = -1, before;
 
-   fflush(stdout);
-  }
-  /* Don't wrap compiler output lines -- long paths break error
-     patterns when the File/line info is split across two lines.
-     The Messages window scrolls horizontally instead. */
-  print_to_end_of_buffer(b, buff, 0);
-  FREE(buff);
-
-  if( fd == wfildes[0] )
+   if (efildes[0] >= 0) { pfd[nfd].fd = efildes[0]; pfd[nfd].events = POLLIN; ei = nfd++; }
+   if (wfildes[0] >= 0) { pfd[nfd].fd = wfildes[0]; pfd[nfd].events = POLLIN; wi = nfd++; }
+   if (poll(pfd, nfd, -1) < 0)
+   {
+    if (errno == EINTR)
+     continue;
     break;
+   }
+   before = b->mxlines;
+   if (ei >= 0 && (pfd[ei].revents & (POLLIN | POLLHUP | POLLERR)) &&
+       !e_p_pump_fd(efildes[0], &eacc, &eacclen, b))
+   {  close(efildes[0]);  efildes[0] = -1;  }
+   if (wi >= 0 && (pfd[wi].revents & (POLLIN | POLLHUP | POLLERR)) &&
+       !e_p_pump_fd(wfildes[0], &wacc, &wacclen, b))
+   {  close(wfildes[0]);  wfildes[0] = -1;  }
+   if (b->mxlines != before)            /* new lines -> repaint Messages live */
+   {
+    b->b.y = b->mxlines - 1;
+    e_schirm(mf, 1);
+    e_refresh();
+   }
+  }
+  /* The trailing fragment with no final '\n' -- the old reader dropped it. */
+  if (eacclen > 0) print_to_end_of_buffer(b, eacc, 0);
+  if (wacclen > 0) print_to_end_of_buffer(b, wacc, 0);
+  FREE(eacc);
+  FREE(wacc);
  }
- b->b.y = b->mxlines-1;
- if (efildes[0] >= 0)
-  close(efildes[0]);
- if (wfildes[0] >= 0)
-  close(wfildes[0]);
- if (efildes[1] >= 0)
-  close(efildes[1]);
- if (wfildes[1] >= 0)
-  close(wfildes[1]);
- if (wfile)
- {
-  remove(wfile);
-  FREE(wfile);
-  wfile = NULL;
- }
- if (efile)
- {
-  remove(efile);
-  FREE(efile);
-  efile = NULL;
- }
+ b->b.y = b->mxlines - 1;
+ /* Reap the child we just drained (both pipes are at EOF). */
+ while ((ret = waitpid(e_save_pid, &stat_loc, 0)) < 0 && errno == EINTR)
+  ;
+ ret = (ret == e_save_pid && WIFEXITED(stat_loc)) ? WEXITSTATUS(stat_loc) : 1;
+ if (efildes[1] >= 0) close(efildes[1]);
+ if (wfildes[1] >= 0) close(wfildes[1]);
  efildes[0] = efildes[1] = -1;
  wfildes[0] = wfildes[1] = -1;
  if (pic)
