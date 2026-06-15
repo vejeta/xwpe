@@ -62,6 +62,7 @@ EXTRA_DIST = \
   examples/scala-lsp/main.scala \
   examples/c-lsp/README.md \
   examples/c-lsp/Makefile \
+  examples/c-lsp/c-lsp.prj \
   examples/c-lsp/compile_flags.txt \
   examples/c-lsp/main.cpp \
   examples/c-lsp/shapes.cpp \

@@ -57,6 +57,41 @@ def test_run_executes_in_file_dir(tmp_path):
         "the program ran in the launch dir, not the file's dir"
 
 
+@requires_gcc
+def test_project_make_links_all_sources(tmp_path):
+    """A .prj Make (F9) compiles AND links EVERY listed source -- the multi-file
+    build that single-file F9 cannot do (this is what the c-lsp example .prj is
+    for).  Opened from the project's own directory, the normal workflow."""
+    (tmp_path / "util.c").write_text("int helper(void){return 7;}\n")
+    (tmp_path / "main.c").write_text(
+        "int helper(void);\nint main(void){return helper() - 7;}\n")
+    prj = ("#\n# xwpe - project-file: demo.prj\n#\n\n"
+           "CMP=\tgcc\nCMPFLAGS=\t-g\nLDFLAGS=\nEXENAME=\tdemo\n"
+           "CMPSWTCH=\tgnu\n\nFILES=\tmain.c util.c\n\n")
+    with WpeSession(str(tmp_path), prj, filename="demo.prj", wait=2.0) as w:
+        w.key("\033[20~", delay=10.0)   # F9 -> project Make (compile + link all)
+        w.display()
+    assert (tmp_path / "demo").exists(), \
+        "project Make should link the executable from ALL sources"
+    assert (tmp_path / "main.o").exists() and (tmp_path / "util.o").exists(), \
+        "project Make should compile every source in the project"
+
+
+@requires_gcc
+def test_link_failure_hints_about_makefile(tmp_path):
+    """When single-file Make fails to LINK a multi-file program and a Makefile is
+    present, Messages guides the user to a Project / Execute Make instead of just
+    showing a bare 'undefined reference' linker error."""
+    (tmp_path / "Makefile").write_text("all:\n\t@echo built\n")
+    # references a symbol defined in another translation unit -> link fails.
+    main = "int helper(void);\nint main(void){return helper();}\n"
+    with WpeSession(str(tmp_path), main, filename="main.c", wait=1.5) as w:
+        w.key("\033[20~", delay=4.0)   # F9 -> compile OK, link the single file fails
+        screen = "\n".join(w.display())
+    assert "multi-file" in screen, \
+        "link failure with a Makefile present should hint about it, got:\n" + screen
+
+
 def test_run_sh_executes_in_file_dir(tmp_path):
     """Ctrl-F9 on a .sh runs it (as ./name.sh) in the file's directory."""
     sub = tmp_path / "sub"

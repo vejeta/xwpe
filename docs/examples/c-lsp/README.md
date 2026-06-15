@@ -92,11 +92,16 @@ make            # builds ./clsp-demo from the three .cpp files
 ./clsp-demo
 ```
 
-Inside xwpe, the Borland-style way is a **Project**: open the *Project* menu,
-create a `.prj`, add `main.cpp`, `shapes.cpp` and `actions.cpp`, then `F9`
-builds and links the project as a unit.  (To try `F9`/`Ctrl-G` on a *single*
-self-contained file instead, use `docs/examples/debug_test.cpp` or
-`debug_constructor.c`.)
+Inside xwpe, the Borland-style way is a **Project**, and this demo ships one:
+open `c-lsp.prj` (`wpe c-lsp.prj`, or the *Project* menu -> Open Project) and
+press `F9` -- it compiles and links all three sources into `clsp-demo`, and
+`Ctrl-F9` runs it.  (Open the project from its own directory.)  To try
+`F9`/`Ctrl-G` on a *single* self-contained file instead, use
+`docs/examples/debug_test.cpp` or `debug_constructor.c`.
+
+> If you press `F9` on `main.cpp` alone (no project) and a `Makefile` is present,
+> xwpe now points this out -- it suggests opening a project or using
+> `Run -> Execute Make (Alt-A)` instead of leaving you with a bare linker error.
 
 > **`Alt-C` (Compile) vs `Alt-M` (Make):** `Alt-C` only compiles the current
 > file to a `.o` (no link); if the `.o` is already up to date it now says so

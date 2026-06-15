@@ -1,0 +1,20 @@
+#
+# xwpe - project-file: c-lsp.prj
+# created by xwpe version 1.6.5
+#
+# Open this project (System -> Project -> Open Project, or `wpe c-lsp.prj`),
+# then press F9 (Make) to compile AND LINK all three translation units into the
+# clsp-demo executable, and Ctrl-F9 (Run) to run it.  Pressing F9 on main.cpp
+# alone does NOT link -- it is a three-file program; that is expected, not a
+# bug.  See README.md.
+#
+
+CMP=	g++
+CMPFLAGS=	-std=c++17 -Wall -Wextra -g
+LDFLAGS=
+EXENAME=	clsp-demo
+CMPSWTCH=	gnu
+CMPMESSAGE=	'${FILE}:${LINE}:${COLUMN}: ${MESSAGE}\n'
+
+FILES=	main.cpp shapes.cpp actions.cpp
+

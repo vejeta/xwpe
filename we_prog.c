@@ -253,6 +253,8 @@ static void e_build_popd(char *saved)
   return; /* the saved directory vanished mid-action; nothing safe to do */
 }
 
+static void e_make_multifile_hint(FENSTER *f);
+
 int e_compile(FENSTER *f)
 {
  int ret;
@@ -361,6 +363,8 @@ int e_p_make(FENSTER *f)
    if (pic)
     e_close_view(pic, 1);
   }
+  if (i)
+   e_make_multifile_hint(f);
   if (cwd_chg)
    e_build_popd(cwd_saved);
   WpeMouseRestoreShape();
@@ -988,6 +992,34 @@ static FENSTER *e_find_or_create_messages(ECNT *cn)
  if (e_edit(cn, "Messages"))
   return cn->f[cn->mxedt];
  return cn->f[cn->mxedt];
+}
+
+/* e_make_multifile_hint - turn a confusing single-file link failure into
+   guidance.  When F9 (Make) or Ctrl-F9 (Run) links the active file ALONE and it
+   fails (typically "undefined symbols" because the program spans several .c/.cpp
+   files), and the file's directory has a Makefile but no project is open, tell
+   the user the two ways to build it for real: open a Project (.prj) listing all
+   sources, or use Run -> Execute Make (Alt-A) to run the Makefile. */
+static void e_make_multifile_hint(FENSTER *f)
+{
+ char path[1024];
+ struct stat sb;
+
+ if (e__project || !f || !f->dirct || !f->dirct[0])
+  return;
+ snprintf(path, sizeof(path), "%sMakefile", f->dirct);
+ if (stat(path, &sb) != 0)
+ {
+  snprintf(path, sizeof(path), "%smakefile", f->dirct);
+  if (stat(path, &sb) != 0)
+   return;                       /* no Makefile -> nothing useful to suggest */
+ }
+ /* A modal info box (like the "Already compiled" hint) so it is seen even after
+    e_show_error has jumped the view to the linker-error line. */
+ e_message(0,
+   "Linking this file alone failed -- it looks like a multi-file program.\n\n"
+   "Open a Project (.prj) that lists every source, or use\n"
+   "Run -> Execute Make (Alt-A) to build with the Makefile.", f);
 }
 
 /* e_p_pump_fd - read whatever is available on fd into the per-fd line
