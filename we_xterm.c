@@ -38,6 +38,7 @@ int e_x_cp_X_to_buffer(FENSTER *f);
 int e_x_copy_X_buffer(FENSTER *f);
 int e_x_paste_X_buffer(FENSTER *f);
 static void e_clip_x_set(const char *utf8, int len);
+static char *e_clip_x_get(int *len);
 int e_x_change(PIC *pic);
 int e_x_repaint_desk(FENSTER *f);
 void e_setlastpic(PIC *pic);
@@ -150,6 +151,7 @@ int WpeDllInit(int *argc, char **argv)
  e_u_copy_X_buffer = e_x_copy_X_buffer;
  e_u_paste_X_buffer = e_x_paste_X_buffer;
  e_clip_os_set = e_clip_x_set;   /* ^C / ^Ins -> PRIMARY + CLIPBOARD (UTF-8) */
+ e_clip_os_get = e_clip_x_get;   /* ^V <- the OS selection when another app owns it */
  e_u_kbhit = e_x_kbhit;
  e_u_change = e_x_change;
  e_u_ini_size = e_ini_size;
@@ -1909,6 +1911,60 @@ static void e_clip_x_set(const char *utf8, int len)
  XSetSelectionOwner(WpeXInfo.display, WpeXInfo.clipboard_atom,
                     WpeXInfo.window, CurrentTime);
  XFlush(WpeXInfo.display);
+}
+
+/* e_clip_x_get - X11 OS-clipboard reader (the e_clip_os_get backend).
+   Returns NULL when we ourselves own the selection (so Paste uses xwpe's own
+   internal clipboard, no round-trip) or when nobody owns it.  Otherwise fetches
+   the external owner's text -- CLIPBOARD first, then PRIMARY -- as UTF8_STRING,
+   event-driven, and returns it malloc'd + NUL-terminated (caller frees). */
+static char *e_clip_x_get(int *len)
+{
+ Atom sels[2];
+ int si;
+
+ if (XGetSelectionOwner(WpeXInfo.display, WpeXInfo.clipboard_atom)
+       == WpeXInfo.window ||
+     XGetSelectionOwner(WpeXInfo.display, WpeXInfo.selection_atom)
+       == WpeXInfo.window)
+  return NULL;
+
+ sels[0] = WpeXInfo.clipboard_atom;
+ sels[1] = WpeXInfo.selection_atom;
+ for (si = 0; si < 2; si++)
+ {
+  XEvent ev;
+  Atom type;
+  int format;
+  unsigned long nitems, bytes_left;
+  unsigned char *prop = NULL;
+
+  if (XGetSelectionOwner(WpeXInfo.display, sels[si]) == None)
+   continue;
+  XConvertSelection(WpeXInfo.display, sels[si], WpeXInfo.utf8_atom,
+                    WpeXInfo.property_atom, WpeXInfo.window, CurrentTime);
+  XFlush(WpeXInfo.display);
+  if (!e_clip_x_wait_notify(&ev) || ev.xselection.property == None)
+   continue;
+  if (XGetWindowProperty(WpeXInfo.display, WpeXInfo.window,
+        WpeXInfo.property_atom, 0, 1000000, True, AnyPropertyType,
+        &type, &format, &nitems, &bytes_left, &prop) == Success
+      && type != None && nitems > 0 && prop)
+  {
+   char *out = malloc((size_t)nitems + 1);
+   if (out)
+   {
+    memcpy(out, prop, (size_t)nitems);
+    out[nitems] = '\0';
+    *len = (int)nitems;
+   }
+   XFree(prop);
+   return out;
+  }
+  if (prop)
+   XFree(prop);
+ }
+ return NULL;
 }
 
 int e_x_copy_X_buffer(FENSTER *f)

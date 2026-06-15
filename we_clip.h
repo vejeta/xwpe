@@ -56,4 +56,13 @@ int e_clip_osc52_write(int fd, const char *utf8, int len);
  * is what makes a plain ^C / ^Ins also land on the OS clipboard. */
 extern void (*e_clip_os_set)(const char *utf8, int len);
 
+/* e_clip_os_get - fetch the OS clipboard for Paste.  Returns a malloc'd,
+ * NUL-terminated UTF-8 string (caller frees) and sets *len to its byte length,
+ * or NULL to mean "use xwpe's own internal clipboard" -- which is what the
+ * caller does when no external app owns the selection, when WE are the owner
+ * (so the internal copy is authoritative), or in a terminal (OSC 52 read is
+ * unreliable, so console Paste stays internal + the emulator's own paste).
+ * The X11 front-end installs the real reader; the default returns NULL. */
+extern char *(*e_clip_os_get)(int *len);
+
 #endif /* WE_CLIP_H */

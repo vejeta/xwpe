@@ -569,14 +569,16 @@ mouse -- pointer, click, window drag/resize -- works natively over the xterm
 protocol, no extra setup. (On macOS, enable Option-as-Meta so the `Alt-` keys
 reach xwpe; see the macOS build notes above.)
 
-**OS clipboard.** `^C` / `^Ins` (Copy) and `Shift-Del` (Cut) put the selection
-on the **real system clipboard**, so you can paste it into any other app. In a
-terminal (`wpe`) this uses the OSC 52 escape, so it works **even over SSH** --
-provided the emulator allows it (kitty, foot, wezterm, iTerm2 do by default;
-`xterm` needs `allowWindowOps`; in tmux set `set -g set-clipboard on`). Pasting
-*into* `wpe` is the emulator's own paste (`Shift-Insert`). In X11 (`xwpe`) a copy
-owns both the PRIMARY (middle-click) and CLIPBOARD (`Ctrl-V`) selections as
-UTF-8.
+**OS clipboard.** Cut / Copy / Paste are one clipboard, shared with the system:
+`^C` / `^Ins` (Copy) and `Shift-Del` (Cut) put the selection on the **real OS
+clipboard**, and `^V` / `Shift-Ins` (Paste) takes whatever was last copied in
+**any** app. In a terminal (`wpe`) Copy uses the OSC 52 escape, so it works
+**even over SSH** -- provided the emulator allows it (kitty, foot, wezterm,
+iTerm2 do; `xterm` needs `allowWindowOps`; in tmux `set -g set-clipboard on`);
+pasting from another app there is the emulator's own paste (`Shift-Insert`). In
+X11 (`xwpe`) Copy owns both the PRIMARY (middle-click) and CLIPBOARD (`Ctrl-V`)
+selections as UTF-8, and `^V` pulls from them. Works on macOS too (OSC 52 in
+iTerm2/kitty; XQuartz pasteboard sync for the X11 build).
 
 > **Multiplexers -- prefer `tmux` over GNU `screen`.** xwpe uses the modern SGR
 > mouse protocol (`ESC[<...M`). `tmux` forwards it, so the mouse works inside a

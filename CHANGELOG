@@ -225,25 +225,32 @@ Changes
   so the fd is reaped on the first poll.  Regression test tests/test_fdloop.c.
 
   OS clipboard integration (the last "caduco" 1993-ism):
-* Copy and Cut (^C / ^Ins, Shift-Del) now also push the selection to the real
-  OS clipboard, so a console or X11 copy is pasteable in any other app -- no
-  more separate, X11-only "(XBuffer)" command.  Two backends behind one seam
-  (we_clip.c, e_clip_os_set):
-  - Terminal (wpe): the selection is emitted as OSC 52
-    (ESC ] 52 ; c ; base64 BEL); the emulator does the real OS-clipboard write,
-    so it works locally AND over SSH, with no X and no helper process (kitty,
-    foot, wezterm, iTerm2, xterm, tmux).  Paste stays the emulator's job
-    (Shift-Insert), which already delivers the bytes.
-  - X11 (xwpe): a copy now owns BOTH the PRIMARY (middle-click) and CLIPBOARD
+* Cut / Copy / Paste are now ONE clipboard, shared with the OS -- the modern
+  behaviour expected in 2026.  ^C / ^Ins (Copy) and Shift-Del (Cut) put the
+  selection on the system clipboard; ^V / Shift-Ins (Paste) takes whatever was
+  last copied in ANY app.  The old, separate, X11-only "(XBuffer)" Edit-menu
+  items are gone (redundant); the internal clipboard stays inspectable with
+  Show Buffer (Alt-Y).  Two backends behind one seam (we_clip.c,
+  e_clip_os_set / e_clip_os_get):
+  - Terminal (wpe): Copy is emitted as OSC 52 (ESC ] 52 ; c ; base64 BEL); the
+    emulator performs the real OS-clipboard write, so it works locally AND over
+    SSH, with no X and no helper process (kitty, foot, wezterm, iTerm2 with
+    clipboard access, xterm with allowWindowOps, tmux with set-clipboard).
+    Paste from another app is the emulator's own paste (Shift-Insert), which
+    already delivers the bytes; ^V pastes the internal clipboard.
+  - X11 (xwpe): Copy owns BOTH the PRIMARY (middle-click) and CLIPBOARD
     (Ctrl-V in GTK/Qt) selections, served as UTF8_STRING/STRING, and answers
     TARGETS -- the three gaps that made the old PRIMARY/STRING-only path fail
-    with modern apps (Unicode now round-trips).  Paste pulls CLIPBOARD then
-    PRIMARY event-driven (poll() on the X fd), replacing the old sleep(0)x1000
-    busy-loop.  Wayland is covered for free via XWayland.
+    with modern apps (Unicode now round-trips).  ^V pulls CLIPBOARD then PRIMARY
+    when another app owns it (event-driven, poll() on the X fd; no more the old
+    sleep(0)x1000 busy-loop).  Works on macOS too: in a terminal via OSC 52
+    (iTerm2/kitty), and under XQuartz when its pasteboard sync is on.  Wayland
+    is covered for free via XWayland.
   Tests: tests/test_clipboard.c (base64/OSC 52 framing), tests/
   test_clipboard_osc52.py (^C -> OSC 52, UTF-8 round-trip, Cut), and
   tests/x11/test_clipboard.py (xwpe copy read back with xclip from both
-  selections, TARGETS lists UTF8_STRING).
+  selections, TARGETS lists UTF8_STRING, and ^V pulling an externally-seeded
+  clipboard).
 
   UI polish:
 * The File Manager (F3, or opening with no file) is centred and grows

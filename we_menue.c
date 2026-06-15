@@ -97,12 +97,9 @@ int WpeHandleMainmenu(int n, FENSTER *f)
 #endif
   mainmenu[2].position = -3;
   mainmenu[2].width = 27;
-#if !defined(NO_XWINDOWS) && !defined(DJGPP)
-  if(WpeIsXwin())
-    mainmenu[2].no_of_items = 9;
-  else
-#endif
-    mainmenu[2].no_of_items = 7;
+  /* Cut/Copy/Paste now talk to the OS clipboard directly (we_clip.c), the same
+     in terminal and X11, so the old X11-only "(XBuffer)" bridge items are gone. */
+  mainmenu[2].no_of_items = 7;
   if((mainmenu[2].menuitems = MALLOC(mainmenu[2].no_of_items * sizeof(OPTK))) == NULL)
     e_error(e_msg[ERR_LOWMEM], 1, f->fb);
   mainmenu[2].menuitems[0] = WpeFillSubmenuItem("Cut     Shift Del / ^X", 2, 'T', e_edt_del);
@@ -112,13 +109,6 @@ int WpeHandleMainmenu(int n, FENSTER *f)
   mainmenu[2].menuitems[4] = WpeFillSubmenuItem("Delete            ^Del", 0, 'D', e_blck_del);
   mainmenu[2].menuitems[5] = WpeFillSubmenuItem("Undo                ^U", 0, 'U', e_make_undo);
   mainmenu[2].menuitems[6] = WpeFillSubmenuItem("Redo                ^R", 0, 'R', e_make_redo);
-#ifndef NO_XWINDOWS
-  if(WpeIsXwin())
-  {
-    mainmenu[2].menuitems[7] = WpeFillSubmenuItem("PAste(XBuffer) Alt Ins", 0, 'A', e_u_copy_X_buffer);
-    mainmenu[2].menuitems[8] = WpeFillSubmenuItem("COpy(XBuffer)  Alt Del", 0, 'O', e_u_paste_X_buffer);
-  }
-#endif
   mainmenu[3].position = -3;
   mainmenu[3].width = 28;
   mainmenu[3].no_of_items = 4;

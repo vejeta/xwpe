@@ -262,12 +262,34 @@ int e_edt_copy(FENSTER *f)
  return(0);
 }
 
+/* e_clip_pull_os_into_buffer - before a Paste, replace the internal clipboard
+   (window 0) with the OS clipboard when an external app owns it, so ^V / Shift-
+   Ins pastes what was last copied in ANY app (the merged-clipboard model).  A
+   no-op when xwpe owns the selection -- the internal copy is then authoritative
+   -- or in a terminal, where e_clip_os_get returns NULL (console paste from
+   another app is the emulator's own paste). */
+static void e_clip_pull_os_into_buffer(FENSTER *w0)
+{
+ char *text;
+ int len = 0;
+
+ if ((text = e_clip_os_get(&len)) == NULL)
+  return;
+ e_buffer_set_text(w0->b, text);
+ free(text);
+ w0->s->mark_begin.x = w0->s->mark_begin.y = 0;
+ w0->s->mark_end.y = w0->b->mxlines - 1;
+ w0->s->mark_end.x = w0->b->bf[w0->b->mxlines - 1].len;
+}
+
 /*            Copy block buffer into window  */
 int e_edt_einf(FENSTER *f)
 {
  BUFFER *b;
  BUFFER *b0 = f->ed->f[0]->b;
  int i,y,len;
+
+ e_clip_pull_os_into_buffer(f->ed->f[0]);   /* merge: ^V from the OS clipboard */
 
  for (i = f->ed->mxedt; i > 0 && !DTMD_ISTEXT(f->ed->f[i]->dtmd); i--)
   ;

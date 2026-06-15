@@ -52,3 +52,17 @@ def test_copy_advertises_utf8_in_targets(xwpe):
     targets = _xclip("clipboard", target="TARGETS")
     assert "UTF8_STRING" in targets, \
         "TARGETS should advertise UTF8_STRING, got %r" % targets
+
+
+def test_paste_pulls_from_os_clipboard(xwpe):
+    """^V pastes what ANOTHER app put on the CLIPBOARD (the merged model).
+    Seed the OS clipboard from outside xwpe, paste, then copy the buffer back
+    out and read it -- if the seeded text is there, the paste landed."""
+    subprocess.run(["xclip", "-selection", "clipboard"], input=b"OSPASTE_42",
+                   env={**os.environ, "DISPLAY": DISPLAY})
+    time.sleep(0.3)
+    xwpe.key("ctrl+v")          # paste from the OS clipboard into the editor
+    _mark_whole_and_copy(xwpe)  # copy the buffer back out
+    got = _xclip("clipboard")
+    assert "OSPASTE_42" in got, \
+        "Paste should pull the external OS clipboard, got %r" % got
