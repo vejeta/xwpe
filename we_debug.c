@@ -5129,24 +5129,34 @@ static int             g_sem_stale = 0;
    well on the Borland-blue editor background. */
 static int e_lsp_sem_fg(SCHIRM *s, const char *t)
 {
+ /* Palette indices are xwpe's X11 colour order (WeXterm.c WpeXColorNames), NOT
+    ANSI -- e.g. 14 is Turquoise1 (a teal), 11 is Yellow, 12 is Blue.  These are
+    chosen to READ on the Borland-blue editor background: warm/light colours.
+    Cool colours (teal 14/6, Blue 12) and the dark Forest Green (2) wash out on
+    blue, so they are avoided. */
  if (!t)
   return(-1);
  if (!strcmp(t, "keyword") || !strcmp(t, "modifier"))
-  return(15);                            /* bright white */
+  return(15);                            /* White */
  if (!strcmp(t, "type") || !strcmp(t, "class") || !strcmp(t, "interface") ||
      !strcmp(t, "enum") || !strcmp(t, "struct") || !strcmp(t, "typeParameter") ||
      !strcmp(t, "namespace"))
-  return(11);                            /* light cyan -- the key win: types */
+  return(11);                            /* Yellow -- the key win: types */
  if (!strcmp(t, "function") || !strcmp(t, "method") || !strcmp(t, "macro"))
-  return(14);                            /* yellow -- callables */
+  return(9);                             /* bright Red -- the warmest of the 16
+                                            colours, high contrast on blue and
+                                            distinct from variable-green.  (True
+                                            orange would need a 17th colour / palette
+                                            redefinition, which does not pass through
+                                            a typical tmux; Red works everywhere.) */
  if (!strcmp(t, "parameter"))
-  return(13);                            /* light magenta */
+  return(13);                            /* Violet */
  if (!strcmp(t, "variable") || !strcmp(t, "property") || !strcmp(t, "enumMember"))
-  return(10);                            /* light green */
+  return(10);                            /* bright Green */
  if (!strcmp(t, "string") || !strcmp(t, "regexp"))
-  return(3);                             /* cyan */
- if (!strcmp(t, "number"))
-  return(12);                            /* light red */
+  return(5);                             /* Violet Red (was Brown 3, murky) */
+ /* number: left to the base highlighter (would share Red with methods, and the
+    base already shows literals in a readable colour on blue). */
  if (!strcmp(t, "comment"))
   return(s->fb->cc.fb & 0x0F);           /* the theme's comment foreground */
  return(-1);                             /* operator / event / decorator / ... */

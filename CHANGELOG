@@ -218,6 +218,16 @@ Changes
   (all-explicit types, no call sites) correctly shows none, without the wait.
   Covered by the clangd inlay assertion in tests/test_lsp_clangd.c and a
   non-blocking-toggle test in tests/test_clangd_lsp.py.
+* Semantic colours (Alt-Q M) are now picked for contrast on the Borland-blue
+  editor background.  Method/member tokens were teal -- low contrast on blue,
+  read as a murky dark green -- because the palette indices had been chosen
+  assuming ANSI ordering, which is not xwpe's colour order.  Methods are now
+  bright red (the warmest of the 16 colours, high contrast on blue and distinct
+  from variable-green, so a call like `xs.map` no longer blends into `xs`);
+  strings are violet-red; types stay yellow, variables green, keywords white.
+  (True orange would need a 17th colour -- a palette redefinition that does not
+  pass through a typical tmux -- so the standard 16-colour red is used, which
+  works on every terminal and in X11.)
 * Fixed: a language- or debug-server that exited could spin the editor at
   100% CPU.  The fd-loop kept polling the dead socket, which returned
   POLLHUP-without-POLLIN forever and nothing reaped it.  wpe_fd_poll now
