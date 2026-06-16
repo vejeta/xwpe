@@ -51,6 +51,40 @@ const char *e_lib_dir(void)
  return (d && *d) ? d : LIBRARY_DIR;
 }
 
+/* e_lib_file - resolve a data-file name under e_lib_dir(), falling back to
+   "<name>_eng" when the bare name is missing.  The English defaults ship in
+   the source tree with the "_eng" suffix (help.xwpe_eng, help.key_eng) and
+   are renamed by `make install`; this fallback lets `wpe` run from a build
+   tree (XWPE_LIB pointing at the checkout) without an install step, instead
+   of silently rendering an empty Help window.  Returns a malloc'd path the
+   caller must FREE -- the bare path even when neither variant exists, so
+   the existing fopen()-failure error path is preserved. */
+char *e_lib_file(const char *name)
+{
+ char *p = e_mkfilename((char *)e_lib_dir(), (char *)name);
+ struct stat st;
+ char *alt, *q;
+ size_t n;
+
+ if (!p || stat(p, &st) == 0)
+  return p;
+ n = strlen(name) + 5;                       /* + "_eng" + NUL */
+ alt = MALLOC(n);
+ if (!alt)
+  return p;
+ snprintf(alt, n, "%s_eng", name);
+ q = e_mkfilename((char *)e_lib_dir(), alt);
+ FREE(alt);
+ if (q && stat(q, &st) == 0)
+ {
+  FREE(p);
+  return q;
+ }
+ if (q)
+  FREE(q);
+ return p;
+}
+
 SCREENCELL *schirm = NULL;
 char e_we_sw = 0;
 

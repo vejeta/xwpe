@@ -532,6 +532,7 @@ struct dirfile *WpeGraphicalDirTree(struct dirfile *cd, struct dirfile *dd,
 
 /*   we_unix.c   */
 const char *e_lib_dir(void);   /* data-file dir: $XWPE_LIB or LIBRARY_DIR */
+char *e_lib_file(const char *name); /* <libdir>/<name>, or <name>_eng (build-tree fallback) */
 
 /*   we_fl_fkt.c   */
 char *e_mkfilename(char *dr, char *fn);

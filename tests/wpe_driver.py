@@ -101,6 +101,13 @@ class WpeSession:
         env = os.environ.copy()
         env.update(TERM="xterm-256color", COLUMNS=str(cols), LINES=str(rows),
                    LC_ALL="en_US.UTF-8", HOME=workdir)
+        # The menu/file/etc. tests do not exercise the LSP, but opening t.c
+        # on a box with clangd installed (e.g. Homebrew on macOS) pops up a
+        # "Starting language server..." Messages window that overlays the
+        # editor and breaks tests that screenshot the chrome (Help viewer,
+        # window operations, ...).  Opt out of the eager-on-open boot here;
+        # the LSP-specific tests use their own driver and override this.
+        env.setdefault("XWPE_LSP_NO_EAGER", "1")
         # Tests that exercise locale-dependent behaviour (e.g. the non-UTF-8
         # chrome fallback) pass env_extra to override LC_ALL/LANG; applied last
         # so the override wins over the UTF-8 default above.

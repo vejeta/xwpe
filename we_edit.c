@@ -324,7 +324,7 @@ int e_edit(ECNT *cn, char *filename)
  }
  if (strcmp(filename, "Help") == 0)
  {
-  complete_fname = e_mkfilename((char *)e_lib_dir(), HELP_FILE);
+  complete_fname = e_lib_file(HELP_FILE);
   f->dtmd = DTMD_HELP;
   f->ins = 8;
   f->hlp_str = e_hlp_str[25];

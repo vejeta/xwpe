@@ -2145,14 +2145,16 @@ int e_read_help_str()
  FILE *fp;
  char str[128];
  int i, len;
+ char *path = e_lib_file("help.key");
 
- sprintf(str, "%s/help.key", e_lib_dir());
  for (i = 0; i < E_HLP_NUM; i++)
  {
   e_hlp_str[i] = MALLOC(sizeof(char));
   *e_hlp_str[i] = '\0';
  }
- if (!(fp = fopen(str, "rb")))
+ fp = path ? fopen(path, "rb") : NULL;
+ FREE(path);
+ if (!fp)
   return(-1);
  for (i = 0; i < E_HLP_NUM && fgets(str, 128, fp); i++)
  {
