@@ -566,7 +566,18 @@ int e_str_nrc(unsigned char *s);
 int e_toupper(int c);
 #else
 #define e_str_nrc(s) strlen(s)
-#define e_toupper(c) toupper(c)
+/* Keep toupper() limited to the unsigned-char range it is defined for.
+   ncurses keycodes (KEY_DOWN=258, AltE=273, ...) are >0xff; macOS' BSD
+   libc treats them as Unicode codepoints under a UTF-8 locale and maps
+   them to "uppercase" neighbours (e.g. toupper(273)=272 = U+0111 -> U+0110),
+   which silently rewrites AltE into AltW and Down into End in the menu loop.
+   glibc happens not to do this, hiding the bug on Linux.  Implemented as
+   a static inline (not a macro) so the argument is evaluated exactly once
+   -- callers do e_toupper(e_getch()) and a macro would read input twice. */
+static inline int e_toupper(int c)
+{
+  return (c >= 0 && c <= 0xff) ? toupper(c) : c;
+}
 #endif
 int e_num_kst(char *s, int num, int max, FENSTER *f, int n, int sw);
 COLOR e_s_x_clr(int f, int b);
