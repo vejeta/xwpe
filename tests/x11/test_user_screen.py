@@ -23,18 +23,29 @@ import time
 import pytest
 
 from conftest import (
-    DISPLAY, WINDOW_NAME, XWPE_BIN, HERE,
-    _spawn, XwpeSession, changed_pixels,
+    DISPLAY, XWPE_BIN, HERE,
+    _spawn, _find_xwpe_window, _force_window_geometry,
+    XwpeSession, changed_pixels,
 )
 
 SAMPLE = os.path.normpath(os.path.join(HERE, "..", "inputs", "paint.c"))
 
 
 def _has_vterm():
-    """True if the xwpe binary was linked against libvterm."""
-    out = subprocess.run(["sh", "-c", "ldd %s 2>/dev/null" % XWPE_BIN],
-                         stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
-    return b"libvterm" in out.stdout
+    """True if the xwpe binary was linked against libvterm.
+
+    Linux ships `ldd`; macOS ships `otool -L`.  Probe both -- whichever exists
+    -- so the test is enabled on every platform that actually has the linkage,
+    not just the platform that happens to have GNU's loader-introspection."""
+    for cmd in (["otool", "-L", XWPE_BIN], ["ldd", XWPE_BIN]):
+        try:
+            r = subprocess.run(cmd, stdout=subprocess.PIPE,
+                               stderr=subprocess.DEVNULL)
+        except FileNotFoundError:
+            continue
+        if r.returncode == 0 and b"libvterm" in r.stdout:
+            return True
+    return False
 
 
 pytestmark = pytest.mark.skipif(
@@ -68,20 +79,21 @@ def paint_xwpe(xserver, tmp_path):
     assert os.path.exists(SAMPLE), "missing sample %s" % SAMPLE
     src = tmp_path / "paint.c"
     shutil.copyfile(SAMPLE, src)
+    # altMask override -- see the main xwpe fixture for the full rationale.
+    # Without this the macOS xwpe build defaults Alt to Mod4 while Xvfb delivers
+    # Alt_L on Mod1, so Alt+F5 reaches the editor as a bare F5 (Zoom) and the
+    # User Screen never opens.
+    (tmp_path / ".Xdefaults").write_text("xwpe.altMask: mod1\n")
+    # XWPE_LSP_NO_EAGER: mirror the main xwpe fixture -- a language server
+    # popping a Messages window mid-test would change the screen pixels we
+    # diff for the User Screen.
     proc = _spawn([XWPE_BIN, str(src)],
-                  env={**os.environ, "DISPLAY": DISPLAY, "HOME": str(tmp_path)},
+                  env={**os.environ, "DISPLAY": DISPLAY, "HOME": str(tmp_path),
+                       "XWPE_LSP_NO_EAGER": "1"},
                   cwd=str(tmp_path))
-    win = None
-    for _ in range(40):
-        out = subprocess.run(["xdotool", "search", "--name", WINDOW_NAME],
-                             env={**os.environ, "DISPLAY": DISPLAY},
-                             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
-        ids = out.stdout.decode().split()
-        if ids:
-            win = ids[0]
-            break
-        time.sleep(0.25)
+    win = _find_xwpe_window()
     assert win, "xwpe window did not appear"
+    _force_window_geometry(win)
     time.sleep(1.0)
     session = XwpeSession(proc, win)
     session.srcfile = str(src)
