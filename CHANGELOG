@@ -671,6 +671,33 @@ Changes
   the menu, window and help keys in the README, so a macOS user whose whole top
   row is grabbed by the OS knows xwpe stays fully keyboard-drivable.
 
+  macOS X11 (XQuartz) -- the xwpe GUI build:
+* Fixed: the `xwpe*altMask: modN` X-resource was silently ignored -- the parser
+  read the digit at offset 4 ("mod1"[4] is past the string), so mod1..mod5 all
+  fell through to the built-in default.  It now scans past the "mod" prefix and
+  any whitespace, accepting both "modN" and the legacy "mod N" spelling.  This
+  is what lets a macOS user point Alt at the right modifier (XQuartz delivers
+  Alt_L on a different mod than the Linux default).
+* Fixed: the window title (WM_NAME) could be missing.  XmbSetWMProperties drops
+  it when the libX11 locale module is incomplete (the Homebrew libX11 on macOS),
+  so xwpe now also sets the legacy STRING properties (XStoreName/XSetIconName)
+  and the EWMH _NET_WM_NAME/_NET_WM_ICON_NAME (UTF8_STRING) directly -- the
+  title is always discoverable by window managers, wmctrl and xdotool.
+* Fixed: a dialog opened during start-up could render squashed.  Pango's actual
+  font metrics (set by cr_init_pango_font) can differ from the seed metrics used
+  to size the initial grid; on macOS that gap is large enough that the File
+  Manager, laid out before the first ConfigureNotify, came out compressed.  The
+  cell grid (MAXSCOL/MAXSLNS) is now refit to the real font immediately after
+  Cairo init, so the very first frame matches the chrome.  (On Linux the seed
+  and Pango metrics nearly coincide, so the bug did not surface there.)
+* The headless X11 GUI test suite (tests/x11/) now runs on macOS under XQuartz,
+  not just Debian/Ubuntu CI: it auto-detects the toolchain (matchbox or twm for
+  the window manager; ImageMagick 6 `convert` or IM7 `magick`+`xwdtopnm` for the
+  XWD-to-PNG step), pins the window to a fixed geometry so coordinate-based pixel
+  scans match under either WM, finds the window by WM_CLASS (xdotool's --name
+  regex is broken in the Homebrew build), and enables the libvterm User Screen
+  tests via otool/ldd probing.  66/66 pass on both XQuartz and matchbox.
+
 1.6.4 (embedded VT terminal, Algol 68 source-level debugger, window-layout fixes)
 
   Borland "User Screen" (Alt-F5) on X11:
