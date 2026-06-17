@@ -367,7 +367,12 @@ void WpeXOptionsGet(XrmDatabase xresdb, XrmQuark *name_list,
  {
   if (WpeStrnccmp((char *)xval.addr, "mod", 3) == 0)
   {
-   switch (xval.addr[4] - '0')
+   /* Accept both "modN" (X11 convention) and "mod N" (a legacy spelling the
+      historical parser at xval.addr[4] silently required): scan past the
+      "mod" prefix and any whitespace to find the digit. */
+   const char *p = (const char *)xval.addr + 3;
+   while (*p == ' ' || *p == '\t') p++;
+   switch (*p - '0')
    {
     case 1:
      WpeXInfo.altmask = Mod1Mask;
@@ -538,6 +543,22 @@ void WpeXInit(int *argc, char **argv)
  
  XmbSetWMProperties(WpeXInfo.display, WpeXInfo.window, window_name,
    class_hint.res_name, argv, *argc, &size_hints, &wm_hints, &class_hint);
+ /* XmbSetWMProperties silently drops WM_NAME/WM_ICON_NAME when the libX11
+    locale module is incomplete (observed with the Homebrew libX11 on macOS,
+    where xprop shows everything except WM_NAME).  Always set the legacy
+    STRING properties and the EWMH UTF8_STRING properties directly so the
+    title is discoverable by xdotool/wmctrl and modern window managers. */
+ XStoreName(WpeXInfo.display, WpeXInfo.window, window_name);
+ XSetIconName(WpeXInfo.display, WpeXInfo.window, window_name);
+ {
+  Atom net_wm_name      = XInternAtom(WpeXInfo.display, "_NET_WM_NAME", False);
+  Atom net_wm_icon_name = XInternAtom(WpeXInfo.display, "_NET_WM_ICON_NAME", False);
+  Atom utf8             = XInternAtom(WpeXInfo.display, "UTF8_STRING", False);
+  XChangeProperty(WpeXInfo.display, WpeXInfo.window, net_wm_name, utf8, 8,
+    PropModeReplace, (unsigned char *)window_name, strlen(window_name));
+  XChangeProperty(WpeXInfo.display, WpeXInfo.window, net_wm_icon_name, utf8, 8,
+    PropModeReplace, (unsigned char *)window_name, strlen(window_name));
+ }
  XSelectInput(WpeXInfo.display, WpeXInfo.window, ExposureMask |
    KeyPressMask | ButtonPressMask | ButtonReleaseMask |
    Button1MotionMask | StructureNotifyMask);
