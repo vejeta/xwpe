@@ -1031,9 +1031,6 @@ int e_t_getch()
 
  e_refresh();
  c = e_t_getch_poll();
- { const char *_tp = getenv("XWPE_KEY_TRACE");
-   if (_tp) { FILE *_tf = fopen(_tp, "a");
-     if (_tf) { fprintf(_tf, "  poll=%d (0x%x) KCY=%d\n", c, c, KEY_CODE_YES); fclose(_tf); } } }
  if (c > KEY_CODE_YES)
  {
   switch (c)
@@ -1155,9 +1152,6 @@ int e_t_getch()
   timeout(ESC_ALT_DELAY_MS);
   c = fk_getch();
   timeout(-1);
-  { const char *_tp = getenv("XWPE_KEY_TRACE");
-    if (_tp) { FILE *_tf = fopen(_tp, "a");
-      if (_tf) { fprintf(_tf, "  esc_second=%d (0x%x ERR=%d)\n", c, c, ERR); fclose(_tf); } } }
   if (c == ERR)
    return(WPE_ESC);
   if (c > KEY_CODE_YES)
@@ -1210,9 +1204,6 @@ int e_t_getch()
   else if (c != WPE_ESC)
    c = e_tast_sim(c);
  }
- { const char *_tp = getenv("XWPE_KEY_TRACE");
-   if (_tp) { FILE *_tf = fopen(_tp, "a");
-     if (_tf) { fprintf(_tf, "key=%d\n", c); fclose(_tf); } } }
  return(c);
 }
 
