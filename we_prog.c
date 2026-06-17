@@ -1025,7 +1025,9 @@ static void e_make_multifile_hint(FENSTER *f)
 /* e_p_pump_fd - read whatever is available on fd into the per-fd line
    accumulator (*acc / *acclen), append every COMPLETE line (through its '\n')
    to the Messages buffer b, and keep the trailing partial for next time.
-   Returns 1 while the fd is open, 0 on EOF/error (the caller then closes it).
+   Returns the number of bytes read (>0) while the fd is open, 0 on EOF/error
+   (the caller then closes it).  The byte count feeds the runaway cap in
+   e_p_exec so a flooding child cannot pin xwpe at 100% CPU forever.
    Replaces the byte-at-a-time e_line_read, which also dropped the final
    fragment that had no trailing '\n'. */
 static int e_p_pump_fd(int fd, char **acc, int *acclen, BUFFER *b)
@@ -1048,7 +1050,7 @@ static int e_p_pump_fd(int fd, char **acc, int *acclen, BUFFER *b)
   *acclen -= (last + 1);
   memmove(*acc, *acc + last + 1, *acclen + 1);
  }
- return(1);
+ return(r);
 }
 
 int e_p_exec(int file, FENSTER *f, PIC *pic)
@@ -1078,6 +1080,15 @@ int e_p_exec(int file, FENSTER *f, PIC *pic)
  {
   char *eacc = MALLOC(1), *wacc = MALLOC(1);
   int eacclen = 0, wacclen = 0;
+  /* Runaway compiler/interpreter cap: a child that prints more than this in
+     one invocation is malfunctioning (e.g. a68g's abend->io_write_string
+     recursion, observed on macOS as wpe pinned at 100% CPU forever while it
+     drained the flood into Messages and repainted per chunk).  16 MiB is far
+     above any sane build's diagnostics, and SIGKILL stops the flood at the
+     source so the parent stops draining.  the project convention. */
+  unsigned long total_drained = 0;
+  const unsigned long E_P_EXEC_RUNAWAY_MAX = 16UL * 1024 * 1024;
+  int runaway = 0;
 
   eacc[0] = wacc[0] = '\0';
   is = b->mxlines - 1;
@@ -1085,6 +1096,7 @@ int e_p_exec(int file, FENSTER *f, PIC *pic)
   {
    struct pollfd pfd[2];
    int nfd = 0, ei = -1, wi = -1, before;
+   int ne = 0, nw = 0;
 
    if (efildes[0] >= 0) { pfd[nfd].fd = efildes[0]; pfd[nfd].events = POLLIN; ei = nfd++; }
    if (wfildes[0] >= 0) { pfd[nfd].fd = wfildes[0]; pfd[nfd].events = POLLIN; wi = nfd++; }
@@ -1096,10 +1108,10 @@ int e_p_exec(int file, FENSTER *f, PIC *pic)
    }
    before = b->mxlines;
    if (ei >= 0 && (pfd[ei].revents & (POLLIN | POLLHUP | POLLERR)) &&
-       !e_p_pump_fd(efildes[0], &eacc, &eacclen, b))
+       !(ne = e_p_pump_fd(efildes[0], &eacc, &eacclen, b)))
    {  close(efildes[0]);  efildes[0] = -1;  }
    if (wi >= 0 && (pfd[wi].revents & (POLLIN | POLLHUP | POLLERR)) &&
-       !e_p_pump_fd(wfildes[0], &wacc, &wacclen, b))
+       !(nw = e_p_pump_fd(wfildes[0], &wacc, &wacclen, b)))
    {  close(wfildes[0]);  wfildes[0] = -1;  }
    if (b->mxlines != before)            /* new lines -> repaint Messages live */
    {
@@ -1107,10 +1119,24 @@ int e_p_exec(int file, FENSTER *f, PIC *pic)
     e_schirm(mf, 1);
     e_refresh();
    }
+   total_drained += (unsigned long)(ne > 0 ? ne : 0) +
+                    (unsigned long)(nw > 0 ? nw : 0);
+   if (total_drained >= E_P_EXEC_RUNAWAY_MAX)
+   {
+    runaway = 1;
+    if (e_save_pid > 0)
+     kill(e_save_pid, SIGKILL);
+    if (efildes[0] >= 0) { close(efildes[0]); efildes[0] = -1; }
+    if (wfildes[0] >= 0) { close(wfildes[0]); wfildes[0] = -1; }
+    break;
+   }
   }
   /* The trailing fragment with no final '\n' -- the old reader dropped it. */
   if (eacclen > 0) print_to_end_of_buffer(b, eacc, 0);
   if (wacclen > 0) print_to_end_of_buffer(b, wacc, 0);
+  if (runaway)
+   print_to_end_of_buffer(b,
+    "xwpe: child output exceeded runaway cap, killed.", 0);
   FREE(eacc);
   FREE(wacc);
  }
