@@ -446,11 +446,19 @@ and `fish_add_path ~/.local/bin`. (The runtime variables -- `XWPE_LIB`,
   are Mission Control / brightness / volume, so xwpe never sees `F9` (build) or
   `F8` (step). Either tick *System Settings -> Keyboard -> "Use F1, F2, etc. keys
   as standard function keys"* (then press the **fn** key for the media actions),
-  or just use the equivalents that do not rely on the top row: `Alt-M` (Make),
-  `Alt-C` (Compile), and the `Ctrl-G` debug prefix -- `Ctrl-G S` steps (= F8),
-  `Ctrl-G R` runs/continues, `Ctrl-G P` shows program output. Verify a key
-  reaches the terminal the same way as above: `cat -v`, press `F9`, it should
-  print `^[[20~` (not switch a Space or dim the screen).
+  or just use the equivalents that do not rely on the top row. Every
+  function-key action has one (the Borland heritage), so the top row is never
+  required:
+    - **Build/debug:** `Alt-M` (Make = F9), `Alt-C` (Compile = Alt-F9), and the
+      `Ctrl-G` debug prefix -- `Ctrl-G S` steps (= F8), `Ctrl-G T` traces (= F7),
+      `Ctrl-G R` runs/continues, `Ctrl-G P` shows program output.
+    - **Menus / windows / help:** `Alt-Space` or `Esc` opens the menu bar
+      (= F10) and `Alt-`*letter* jumps to any menu directly; `Alt-N` cycles
+      windows (= F6) and `Alt-1`...`Alt-9` jump straight to a window by index;
+      `Alt-Z` zooms (= F5); `Alt-H` opens Help (= F1). So even with the whole
+      top row eaten by macOS, xwpe stays fully keyboard-drivable.
+  Verify a key reaches the terminal the same way as above: `cat -v`, press `F9`,
+  it should print `^[[20~` (not switch a Space or dim the screen).
 - **The prefix matters.** `--prefix="$HOME/.local"` keeps the whole install
   (`wpe`, `syntax_def`, the Help files, the man page) under your home directory,
   no sudo. For a system-wide install use `sudo make install` (default prefix
