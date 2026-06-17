@@ -636,6 +636,41 @@ Changes
   go-to-definition, references and the file outline (docs/demos/), so a
   developer sees the IDE features in their own ecosystem, not in Scala.
 
+  macOS console (kitty / iTerm2) keyboard and robustness:
+* Fixed: Alt-<letter> menu and LSP shortcuts were silently rewritten on macOS
+  -- in the "#" menu Alt-E opened Window instead of Edit, and the Alt-Q action
+  letters landed on the wrong command.  e_toupper() was the C library's
+  toupper(), and under a UTF-8 locale on macOS (BSD libc) toupper() maps
+  codepoints above 0xFF, so an Alt code such as Alt-E (273 in the DOS-scancode
+  order xwpe uses) folded to Alt-W (272).  e_toupper now leaves anything
+  outside 0x00-0xFF untouched.  Linux was unaffected (glibc toupper ignores
+  >0xFF), but the guard is correct on every platform.
+* Fixed: a use-after-free could crash xwpe right after a menu closed -- the key
+  dispatcher kept using the previously-active window pointer, which the menu
+  teardown may already have freed.  e_tst_fkt now re-reads the active window
+  after handling the menu and bails out if none remains.
+* Fixed: a language server that exits at start-up (a crashed binary, a wrong
+  PATH) could kill xwpe with SIGPIPE while it was still writing the initialize
+  request.  SIGPIPE is now ignored process-wide, so the write fails cleanly and
+  the dead session is reported instead of taking the editor down.
+* A runaway compiler or debugger can no longer pin xwpe at 100% CPU.  The
+  build-output drain (e_p_exec) is now bounded, and the debugger watchdog --
+  which counted whole replies but not the bytes absorbed by its stderr drain --
+  now counts every line drained from the child's STDERR toward its runaway
+  budget too.  A backend that floods stderr (a68g's abend->io_write_string
+  recursion under Ctrl-G r is the textbook case; once its stdout pipe fills the
+  echoes bounce back as "echo: I/O error" on stderr) now trips the guard in
+  well under a second instead of looping for hours.  This extends the 1.6.4
+  watchdog; tests/test_debugger_watchdog.py exercises the stderr-flood path.
+* `./wpe` run straight from a build tree now finds its help/data files: when a
+  data file is absent it falls back to the "<name>_eng" English copy that ships
+  in the source tree (e_lib_file), so the editor is usable before
+  `make install`.
+* Documented Alt-1...Alt-9 (jump straight to window N by index) alongside
+  F6 / Alt-N (cycle) in the manual, and the macOS function-key equivalents for
+  the menu, window and help keys in the README, so a macOS user whose whole top
+  row is grabbed by the OS knows xwpe stays fully keyboard-drivable.
+
 1.6.4 (embedded VT terminal, Algol 68 source-level debugger, window-layout fixes)
 
   Borland "User Screen" (Alt-F5) on X11:
