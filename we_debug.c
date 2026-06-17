@@ -301,8 +301,11 @@ int e_d_line_read_nb(int n, signed char *s, int max)
 {
  int flags, nread, i;
 
+ /* Same runaway guard as e_d_line_read's stderr drain: a flooding backend must
+    not pin this async (gdb fd-loop) reader in an unbounded stderr drain. */
  while (e_e_line_read(efildes[0], s, max) >= 0)
-  ;
+  if (++e_d_read_runaway > E_D_RUNAWAY_MAX)
+  {  e_d_read_runaway = 0;  break;  }
  flags = fcntl(n, F_GETFL, 0);
  fcntl(n, F_SETFL, flags | O_NONBLOCK);
  nread = read(n, e_d_async.nb_buf + e_d_async.nb_len, sizeof(e_d_async.nb_buf) - e_d_async.nb_len - 1);
@@ -1047,9 +1050,18 @@ int e_d_line_read(int n, signed char *s, int max, int sw, int esw)
  {  if((ret = e_e_line_read(efildes[0], s, max)) >= 0) return(ret);  }
  else
  {  int _drain = 0;
-    /* Drain buffered stderr, but never spin on a debugger that floods it. */
+    /* Drain buffered stderr, but never spin on a debugger that floods it.
+       Count every drained line toward the runaway budget too: a backend that
+       floods stderr (a68g's abend->io_write_string recursion, whose echoes
+       also bounce back as "echo: I/O error" once its stdout pipe fills) is
+       absorbed here up to E_D_DRAIN_MAX lines per call WITHOUT ever bumping the
+       once-per-call counter at the top of this function, so the flood would
+       otherwise stay invisible to the watchdog and spin for ~hours. */
     while(e_e_line_read(efildes[0], s, max) >= 0)
-     if (++_drain >= E_D_DRAIN_MAX) break;
+    {  if (++e_d_read_runaway > E_D_RUNAWAY_MAX)
+       {  e_d_read_runaway = 0;  s[0] = '\0';  return(-1);  }
+       if (++_drain >= E_D_DRAIN_MAX) break;
+    }
  }
  for(i = 0; i < max - 1; i++)
  {
