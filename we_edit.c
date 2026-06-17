@@ -888,6 +888,13 @@ int e_tst_fkt(int c, ECNT *e)
       status bar so project state (blst, project name) survives. */
    e_ed_rahmen(e->f[e->mxedt], 1);
    e_refresh_area(0, MAXSLNS - 1, MAXSCOL, 1);
+   /* WpeHandleMainmenu may close the active window (Window > Close, ^W,
+      Clear Desktop, ...).  Our cached `f = e->f[mxedt]` is then a freed
+      pointer, so subsequent dispatch (`switch (c)` below, return value
+      consumers) would use-after-free.  Refresh from the editor state. */
+   f = e->mxedt > 0 ? e->f[e->mxedt] : NULL;
+   if (!f)
+    return(0);
   }
 
  switch (c)
