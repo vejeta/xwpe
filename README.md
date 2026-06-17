@@ -390,10 +390,13 @@ For the IDE features, continue with Quick-path steps 2-3 (servers, then
 
 #### macOS (Homebrew)
 
-> **Untested on macOS** -- written to be portable, but no clean build is
-> confirmed yet; please [open an issue](https://codeberg.org/mendezr/xwpe/issues)
-> with results. `wpe` runs natively in a terminal (no XQuartz); the graphical
-> `xwpe` needs XQuartz and looks much the same this release.
+Both binaries build clean on macOS (Apple Silicon and Intel) against Homebrew:
+`wpe` runs natively in a terminal (no XQuartz), and the graphical `xwpe`
+links against XQuartz + Homebrew's Cairo/Pango/Xft stack and is exercised
+end-to-end by the X11 test suite (see `tests/README.md`). The
+**`contrib/setup.sh`** one-shot helper does all the steps below for you
+(`sh contrib/setup.sh` -- `--dry-run` to preview, `--skip-deps` if Homebrew
+is already populated).
 
 Build with Homebrew's keg-only `ncurses` (the `PKG_CONFIG_PATH` line points
 `configure` at it), and install to a user-writable prefix so `make install`
@@ -409,10 +412,36 @@ export PATH="$HOME/.local/bin:$PATH"      # add to ~/.zshrc to keep it
 wpe foo.c                                 # syntax_def + Help come from the install
 ```
 
+**Graphical `xwpe` (XQuartz).** Install [XQuartz](https://www.xquartz.org/)
+(`brew install --cask xquartz`, log out/in once so `$DISPLAY` is wired up),
+then add the X/Cairo/Pango stack and reconfigure with `--with-x`:
+
+```sh
+brew install --cask xquartz                                      # X server
+brew install cairo pango libxft libxext libx11                   # rendering stack
+./configure --with-x --without-gpm --prefix="$HOME/.local"
+make && make install
+xwpe foo.c                                                       # graphical build
+```
+
 That is a complete editor. For the `Alt-Q` IDE features, continue with Quick-path
 steps 2-3: install the servers ([External tools](#external-tools-it-drives)) and
 `source contrib/xwpe-env` (fish: `sh contrib/xwpe-env --shell fish | source`),
 which is what puts Metals/clangd on `PATH` and sets `JAVA_HOME`.
+
+To run the test suite locally (`tests/run-tests.sh`, including the headless
+`--x11` layer), the extras the harness drives are:
+
+```sh
+brew install xdotool xclip netpbm imagemagick                    # X11 test harness
+# XQuartz already provides Xvfb, xwd and twm; no separate install needed.
+# Pillow + pytest + pyte are auto-bootstrapped into tests/.venv on first run.
+```
+
+`tests/run-tests.sh --x11` self-skips with a precise reason if any of these
+are absent, so installing them is optional unless you want full coverage.
+See `tests/README.md` for the per-tool dependency table and the macOS notes
+(twm fallback, ImageMagick 7 / xwdtopnm bridge, `xwpe.altMask` override).
 
 Using **fish**? The two `export` lines above are bash/zsh; the fish equivalents
 are `set -x PKG_CONFIG_PATH (brew --prefix ncurses)/lib/pkgconfig $PKG_CONFIG_PATH`

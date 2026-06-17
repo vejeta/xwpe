@@ -87,11 +87,36 @@ absent, so the default `run-tests.sh` is unaffected on a headless buildd:
 | `xwd` | `x11-utils` | capture the root window |
 | `convert` | `imagemagick` | xwd -> PNG |
 | Pillow | `python3-pil` | load PNG, assert on pixels |
+| `xclip` (or `xsel`) | `xclip` | exercise `test_clipboard.py` (X selection owner) |
+| libvterm | `libvterm-dev` (build-time) | exercise `test_user_screen.py` (Alt-F5) |
+
+On **macOS** (XQuartz) the same coverage uses a different chain (no apt;
+`matchbox-window-manager` is not packaged for Homebrew; ImageMagick 7
+dropped both the legacy `convert` binary and its XWD decode delegate; `ldd`
+does not exist).  `conftest.py` probes each side and picks the first one
+that works -- the table below shows what to install for the macOS side; a
+test that needs a missing tool **skips** rather than fails:
+
+| Tool | Install (macOS) | Replaces (vs Debian) |
+|------|-----------------|----------------------|
+| `Xvfb`, `xwd`, `twm` | `brew install --cask xquartz` | XQuartz ships all three under `/opt/X11/bin` |
+| `xdotool` | `brew install xdotool` | same name |
+| `magick` + `xwdtopnm` | `brew install imagemagick netpbm` | replaces `convert` (IM7 has no XWD codec; netpbm bridges xwd -> ppm -> magick) |
+| `xclip` | `brew install xclip` | same name (enables `test_clipboard.py`) |
+| `libvterm` | `brew install libvterm` (build-time) | enables `test_user_screen.py` (Alt-F5) |
+| Pillow | `pip install pillow` (or via `tests/.venv`) | replaces `python3-pil` |
 
 A window manager is **not optional**: without one, `xwpe`'s X11 size handling
 oscillates into an unrecoverable resize feedback loop under bare Xvfb (`xwpe`
 never calls `XResizeWindow` itself -- a WM owns the geometry).  `matchbox`
-maximises the single window and the loop never starts.
+maximises the single window and the loop never starts.  On macOS the fallback
+is **`twm`** (shipped by XQuartz), launched with a minimal `RandomPlacement +
+NoGrabServer + NoTitle` `twmrc` the fixture writes to `/tmp` -- twm has no
+Alt-`<letter>` bindings in that config, so xwpe's menu hotkeys reach the
+application unmodified.  The fixture also pins the xwpe window to `+0+0
+1024x768` after launch via `xdotool windowmove`/`windowsize` so coordinate-
+based pixel scans match across both window managers (matchbox honours the
+geometry hint, twm's `RandomPlacement` offsets it).
 
 matchbox is started with an **empty `-kbdconfig`** (`tests/x11/matchbox-kbdconfig`):
 its default config grabs `<Alt>n` (next), `<Alt>p` (prev), `<Alt>c` (close),
@@ -121,6 +146,20 @@ The fix lives in `conftest.py`: `session.key()` routes every token through
 `ctrl+F9`) to its raw X keycode -- read live from `xmodmap -pke` -- so xdotool
 skips the broken resolver and the true function key reaches xwpe.  Tests just
 write `xwpe.key("F2")` or `xwpe.key("ctrl+F9")` as usual.
+
+#### Alt is forced to Mod1 (macOS / XQuartz)
+
+The macOS `xwpe` build defaults the Alt modifier to **Mod4** (Cmd on real
+XQuartz), but `xdotool` under `Xvfb` -- which the harness uses on every
+platform -- delivers `Alt_L` on **Mod1**.  Without an override, `Alt+<letter>`
+menu accelerators and `Alt+F5` (User Screen) reach the editor stripped of
+their modifier, so `Alt+F5` looks like a bare `F5` (Zoom) and the test diff
+matches the editor's syntax highlighting rather than the User Screen.  Each
+xwpe fixture writes a per-session `~/.Xdefaults` containing
+`xwpe.altMask: mod1` (read by `WeXterm.c::WpeXDefaults` when
+`RESOURCE_MANAGER` is unset; the fixture sets `HOME=tmp_path`), which puts
+the modifier back where xdotool emits it.  The override is a no-op on
+Debian where Alt is already Mod1.
 
 The X11 tests honour **`$XWPE_BIN`** (default `../xwpe`), mirroring `$WPE_BIN`.
 
