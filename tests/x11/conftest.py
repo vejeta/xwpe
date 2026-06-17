@@ -61,7 +61,11 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 XWPE_BIN = os.environ.get("XWPE_BIN") or os.path.normpath(os.path.join(HERE, "..", "..", "xwpe"))
 DISPLAY = os.environ.get("XWPE_TEST_DISPLAY", ":88")
 SCREEN = "1024x768x24"
+SCREEN_W, SCREEN_H = (int(v) for v in SCREEN.split("x")[:2])
 WINDOW_NAME = "Programming Environment"
+# WM_CLASS res_name set by WeXterm.c::WpeXInit -- used to locate the window via
+# xdotool's --classname (--name is broken in some xdotool builds; see _launch).
+WINDOW_CLASS = "xwpe"
 
 
 def _spawn(cmd, **kw):
@@ -84,6 +88,38 @@ def _sleep(seconds):
 def _xdo(*args):
     subprocess.run(["xdotool", *args], env={**os.environ, "DISPLAY": DISPLAY},
                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+def _find_xwpe_window(timeout=10.0, step=0.25):
+    """Wait up to `timeout` seconds for an xwpe window to appear; return its id.
+
+    Uses xdotool's --classname (XGetClassHint) rather than --name (a regex over
+    WM_NAME): the Homebrew xdotool's name regex returns nothing even for
+    `--name .` while xprop confirms WM_NAME is set, whereas --classname is
+    reliable across builds.  Returns None on timeout."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        out = subprocess.run(["xdotool", "search", "--classname", WINDOW_CLASS],
+                             env={**os.environ, "DISPLAY": DISPLAY},
+                             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        ids = out.stdout.decode().split()
+        if ids:
+            return ids[0]
+        _real_sleep(step)
+    return None
+
+
+def _force_window_geometry(win, x=0, y=0, w=SCREEN_W, h=SCREEN_H):
+    """Pin `win` at (x,y) with size (w,h) so screen-relative pixel scans match.
+
+    matchbox (Debian/CI) honours xwpe's geometry hint and places it at +0+0
+    full-screen; twm (the macOS fallback) uses RandomPlacement, leaving the
+    window at roughly +50+50 a few pixels smaller -- which throws off every
+    scrollbar/dialog coordinate scan and the bottom-strip status-bar diff.
+    Forcing the geometry via xdotool makes both WMs equivalent for the suite."""
+    _xdo("windowmove", win, str(x), str(y))
+    _xdo("windowsize", win, str(w), str(h))
+    _sleep(0.3)
 
 
 _FKEY_KEYCODE = {}
@@ -327,23 +363,9 @@ def xwpe(xserver, tmp_path):
                   env={**os.environ, "DISPLAY": DISPLAY, "HOME": str(tmp_path),
                        "XWPE_LSP_NO_EAGER": "1"},
                   cwd=str(tmp_path))
-    # Wait for the window to appear.  Locate by --classname (WM_CLASS res_name
-    # = "xwpe", set in WeXterm.c::WpeXInit): --name relies on a regex match
-    # against WM_NAME which is broken in some xdotool builds (the macOS
-    # Homebrew xdotool returns no matches even for `--name .`, while xprop
-    # confirms WM_NAME is set), whereas --classname looks the resource name
-    # up directly via XGetClassHint and works consistently.
-    win = None
-    for _ in range(40):
-        out = subprocess.run(["xdotool", "search", "--classname", "xwpe"],
-                             env={**os.environ, "DISPLAY": DISPLAY},
-                             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
-        ids = out.stdout.decode().split()
-        if ids:
-            win = ids[0]
-            break
-        _sleep(0.25)
+    win = _find_xwpe_window()
     assert win, "xwpe window did not appear"
+    _force_window_geometry(win)
     _sleep(1.0)
     session = XwpeSession(proc, win)
     session.srcfile = str(src)

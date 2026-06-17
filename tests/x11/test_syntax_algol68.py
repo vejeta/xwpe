@@ -22,8 +22,8 @@ import time
 import pytest
 
 from conftest import (
-    DISPLAY, WINDOW_NAME, XWPE_BIN, HERE,
-    _spawn, XwpeSession,
+    DISPLAY, XWPE_BIN, HERE,
+    _spawn, _find_xwpe_window, _force_window_geometry, XwpeSession,
 )
 
 # The repo's syntax_def carries the Algol 68 block.  xwpe reads
@@ -64,20 +64,16 @@ def _launch(xserver, tmp_path, fname, text):
     _install_syntax(str(tmp_path))
     src = tmp_path / fname
     src.write_text(text)
+    # XWPE_LSP_NO_EAGER: align with the conftest fixture -- a language server
+    # popping a Messages window mid-test would change pixels in the text band
+    # we diff for colour and would make this test flaky.
     proc = _spawn([XWPE_BIN, str(src)],
-                  env={**os.environ, "DISPLAY": DISPLAY, "HOME": str(tmp_path)},
+                  env={**os.environ, "DISPLAY": DISPLAY, "HOME": str(tmp_path),
+                       "XWPE_LSP_NO_EAGER": "1"},
                   cwd=str(tmp_path))
-    win = None
-    for _ in range(40):
-        out = subprocess.run(["xdotool", "search", "--name", WINDOW_NAME],
-                             env={**os.environ, "DISPLAY": DISPLAY},
-                             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
-        ids = out.stdout.decode().split()
-        if ids:
-            win = ids[0]
-            break
-        time.sleep(0.25)
+    win = _find_xwpe_window()
     assert win, "xwpe window did not appear for %s" % fname
+    _force_window_geometry(win)
     time.sleep(1.0)
     session = XwpeSession(proc, win)
     session.srcfile = str(src)
@@ -107,7 +103,7 @@ def _colour_changed(img_a, img_b, thresh=60):
 
 
 def _windows():
-    out = subprocess.run(["xdotool", "search", "--name", WINDOW_NAME],
+    out = subprocess.run(["xdotool", "search", "--classname", "xwpe"],
                          env={**os.environ, "DISPLAY": DISPLAY},
                          stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
     return out.stdout.decode().split()
