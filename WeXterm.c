@@ -642,6 +642,16 @@ void WpeXInit(int *argc, char **argv)
     0, 0, size_hints.width, size_hints.height);
 #ifdef HAVE_CAIRO
   wpe_render_cairo_init();
+  /* cr_init_pango_font() may have overwritten WpeXInfo.font_width/height
+     with Pango's actual rendered metrics, which can differ from the seed
+     core/Xft values used by WpeXGeometryGet to compute MAXSCOL/MAXSLNS.
+     Refit the cell grid to the existing window so the first frame -- and
+     in particular any dialog laid out before the first ConfigureNotify --
+     uses cell counts that match the chrome we are about to draw. */
+  MAXSCOL = size_hints.width  / WpeXInfo.font_width;
+  MAXSLNS = size_hints.height / WpeXInfo.font_height;
+  size_hints.width  = MAXSCOL * WpeXInfo.font_width;
+  size_hints.height = MAXSLNS * WpeXInfo.font_height;
 #endif
  }
 #endif
