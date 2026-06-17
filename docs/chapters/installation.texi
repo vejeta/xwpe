@@ -68,6 +68,30 @@ make
 sudo make install
 @end example
 
+@subsection On macOS (Homebrew + XQuartz)
+
+@cindex macOS
+@cindex Homebrew
+@cindex XQuartz
+
+xwpe builds on macOS with Homebrew.  The terminal @command{wpe} needs no
+X server; the X11 @command{xwpe} needs @uref{https://www.xquartz.org/,
+XQuartz}.  Homebrew's @code{ncurses} is keg-only, so point
+@env{PKG_CONFIG_PATH} at it before @command{configure}:
+
+@example
+brew install autoconf automake pkg-config ncurses libvterm json-c texinfo
+export PKG_CONFIG_PATH="$(brew --prefix ncurses)/lib/pkgconfig:$PKG_CONFIG_PATH"
+autoreconf -fi && ./configure && make && sudo make install
+@end example
+
+For the X11 build add @code{cairo pango libx11 libxft} and install
+XQuartz.  The repository's @file{contrib/setup.sh} automates the whole
+dependency-install-and-build for both Debian/Ubuntu and macOS; see the
+README's @samp{Building & installing} section for the full list and the
+keyboard notes (the Option key must be set to send Alt/Meta; the function
+keys are grabbed by macOS -- use the @kbd{Alt-}@var{letter} equivalents).
+
 @section Configure options
 
 @cindex configure options

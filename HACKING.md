@@ -756,6 +756,34 @@ characters, not a Meta/Esc prefix, so the whole `Alt-Q` layer looks dead --
 enable "Use Option as Meta key", or use iTerm2/kitty (which also ship modern
 terminfo).  Documented in README.
 
+The X11 `xwpe` build runs on **macOS under XQuartz** too (Homebrew libX11 +
+Xft/Cairo), with three X11-specific gotchas, all now handled in `WeXterm.c`:
+
+- **WM_NAME dropped.**  `XmbSetWMProperties` silently omits WM_NAME/WM_ICON_NAME
+  when the libX11 locale module is incomplete (the Homebrew build) -- window
+  managers, `wmctrl` and `xdotool --name` then cannot find the window.  We now
+  also set the legacy STRING props (`XStoreName`/`XSetIconName`) and the EWMH
+  `_NET_WM_NAME`/`_NET_WM_ICON_NAME` (UTF8_STRING) directly.
+- **altMask parser was off by one.**  The `xwpe*altMask: modN` X-resource read
+  the digit at index 4 (`"mod1"[4]` is past the string), so `mod1`..`mod5` were
+  ignored and Alt stayed on the built-in default.  Fixed to scan past `"mod"` +
+  whitespace.  Matters on macOS, where XQuartz delivers Alt on a different mod
+  than the Linux default, so the resource is how you point Alt at the right key.
+- **Pango metrics vs the seed grid.**  `cr_init_pango_font()` overwrites
+  `font_width/height` with Pango's real metrics; on macOS they differ enough
+  from the seed values that a dialog opened before the first `ConfigureNotify`
+  (the start-up File Manager) rendered squashed.  We refit `MAXSCOL`/`MAXSLNS`
+  to the real font right after `wpe_render_cairo_init()`.  On Linux the seed and
+  Pango metrics nearly coincide, so the bug never surfaced there.
+
+The headless X11 GUI suite (`tests/x11/`) is portable to XQuartz: it picks the
+window manager (`matchbox` on CI, `twm` from XQuartz -- with a minimal NoTitle /
+RandomPlacement / NoGrabServer rc), the XWD decoder (ImageMagick 6 `convert`, or
+IM7 `magick`+`xwdtopnm` since IM7 dropped the XWD delegate), pins the window to a
+fixed geometry so coordinate scans match under either WM, finds the window by
+WM_CLASS (the Homebrew `xdotool --name` regex is broken), and probes
+`otool`/`ldd` for the libvterm linkage.  66/66 pass on both XQuartz and matchbox.
+
 ## File Manager geometry (1.6.5)
 
 The File Manager box used to be hardcoded (`f->a=(11,2)`, `f->e=+55,+20`) --

@@ -474,6 +474,29 @@ Available bitmap fonts: @code{8x13}, @code{9x15}, @code{10x20}, and
 their bold variants (@code{8x13bold}, @code{9x15bold}, @code{10x20bold}).
 These are crisp bitmap fonts that do not suffer from antialiasing blur.
 
+@subsection The Alt key in X11 (altMask)
+
+@cindex altMask
+@cindex Alt key, X11
+@cindex Meta key
+@cindex XQuartz
+
+The menus and the @kbd{Alt-Q} language-server prefix need an Alt (Meta)
+modifier.  The X11 build uses @code{Mod1} (the usual Linux Alt) by
+default.  If your X server carries Alt on a different modifier -- notably
+@b{XQuartz on macOS}, where the Option key is mapped elsewhere -- point
+xwpe at it with the @code{altMask} resource:
+
+@example
+xwpe*altMask: mod1
+@end example
+
+It accepts @code{mod1} through @code{mod5}.  Run @command{xmodmap} to see
+which modifier carries @code{Alt_L}/@code{Alt_R} (or @code{Meta_L}) on
+your server, then set @code{altMask} to match.  On XQuartz, also enable
+@samp{Option keys send Alt_L and Alt_R} in the XQuartz preferences so the
+Option key reaches xwpe as Alt at all.
+
 @section Recovery mode
 
 @cindex recovery
