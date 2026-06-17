@@ -118,11 +118,18 @@ def test_clangd_definition_into_readonly_header(tmp_path):
         ]
         assert header_rows, \
             "Alt-Q D did not open the system header:\n%s" % "\n".join(rows)
-        # And the body really is the system header, not an empty/error window:
-        # printf's declaration (or its enclosing __BEGIN_DECLS block) is
-        # present in every libc/SDK variant we expect to see.
+        # And the body really is the system header, not an empty/error window.
+        # Match markers that survive whatever line clangd scrolls to and the
+        # exact libc/SDK spelling: glibc declares "printf (" WITH a space and
+        # decorates every prototype with __restrict / __THROW, and wraps the
+        # file in __BEGIN_DECLS; the macOS SDK header uses __restrict too.  The
+        # old check looked only for a space-less "printf(" on screen, which the
+        # glibc declaration ("extern int printf (...)") never matches once the
+        # view lands on the declaration rather than the __BEGIN_DECLS header.
         body = "\n".join(rows)
-        assert ("printf(" in body or "__BEGIN_DECLS" in body), \
+        assert ("printf (" in body or "printf(" in body
+                or "__BEGIN_DECLS" in body or "__restrict" in body
+                or "__THROW" in body), \
             "the read-only window does not look like a libc header:\n%s" \
             % body
 

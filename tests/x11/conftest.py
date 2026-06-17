@@ -184,11 +184,18 @@ class XwpeSession:
         return self
 
     def esc_menu(self, menu_key, item, delay=0.5):
-        """Open a menu via xwpe's ESC meta-prefix (the X11 equivalent of the
-        terminal's Alt encoding).  Needed for the '#' system menu, which has no
-        Alt-<letter> hotkey, but works for any menu."""
-        self.key("Escape", delay=delay)
-        self.key(menu_key, delay=delay)
+        """Open the leftmost '#' (System) menu and pick an item by its letter.
+
+        The '#' menu has no Alt-<letter> hotkey.  In a real terminal it is
+        reached with xwpe's ESC/Alt meta-prefix (Alt-# == the bytes ESC '#'),
+        but under X11 there is no such prefix: ESC is a standalone keysym and
+        the following '#' is simply typed into the buffer, while a synthetic
+        Alt-# is unreliable (xdotool composes '#' as Shift+3, so the modifier
+        state is Alt+Shift, not the bare Alt the menu code matches).  Open it
+        the way a GUI user does instead -- click its title at the far left of
+        the menu bar -- then press the item's letter.  (menu_key is kept for
+        call-site readability; the '#' menu is the only caller.)"""
+        self.click(15, 8, delay=delay)      # the '#' title, far left of the bar
         self.key(item, delay=delay)
         return self
 
@@ -256,8 +263,18 @@ def xwpe(xserver, tmp_path):
         "  int f = 6;\n"
         "  return 0;\n"
         "}\n")
+    # XWPE_LSP_NO_EAGER: these are chrome/dialog/menu tests that compare
+    # full-screen pixel deltas.  If a language server (clangd for the .c file)
+    # is installed on the box, its eager start pops an asynchronous "Messages"
+    # window ("Starting language server... ready.") at some point after the
+    # baseline screenshot -- ~17k changed pixels that make a closed dialog look
+    # un-closed and add a phantom scrollbar'd window to the overlap tests.  None
+    # of the X11 tests exercise LSP, so opt out of the eager boot for a
+    # deterministic screen (the opt-out the editor already exposes for exactly
+    # this -- see e_lsp_open_eager).
     proc = _spawn([XWPE_BIN, str(src)],
-                  env={**os.environ, "DISPLAY": DISPLAY, "HOME": str(tmp_path)},
+                  env={**os.environ, "DISPLAY": DISPLAY, "HOME": str(tmp_path),
+                       "XWPE_LSP_NO_EAGER": "1"},
                   cwd=str(tmp_path))
     # Wait for the window to appear.
     win = None
