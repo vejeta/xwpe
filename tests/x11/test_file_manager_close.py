@@ -20,26 +20,58 @@ def _open_file_manager(xwpe):
 
 
 def _find_close_glyph(img):
-    """Rightmost cell of the dialog close [X] in the title band.
+    """Pixel of the File-Manager close [X] -- the cell xe-2 on its top border.
 
-    The close glyph is painted in the window-border accent colour (a distinct
-    blue-purple, er.fb) along the top of the centred dialog; we take the
-    right-most run of such pixels in the top band -- that is the close box."""
+    The close box is the [X] that e_hit_close_button() accepts at column
+    (f->e.x - 2) on the window's TOP border row (f->a.y) -- a one-cell hit
+    target, and ONLY on that exact row (it rejects clicks one row lower).  It
+    is painted in the window-border accent colour (blue-purple, er.fb), the
+    same colour as the frame, so it cannot be told from the border by colour
+    alone.  Locate it geometrically instead:
+
+      * the File-Manager opens as window 2, cascaded BELOW the editor, so its
+        own top border is the topmost accent row in this band (~0.18h), well
+        below the editor's title bar at the very top of the screen;
+      * cap the x-scan short of the screen edge so the editor frame BEHIND the
+        File-Manager (full width, ~0.94w) does not capture "rightmost";
+      * the right border sits at f->e.x; the close box is ~one and a half cells
+        (a cell is ~13px at 1024 wide) left of it, on the border row.
+    """
     w, h = img.size
     px = img.load()
-    pts = []
-    for y in range(int(h * 0.02), int(h * 0.08)):
-        for x in range(int(w * 0.30), int(w * 0.95)):
-            r, g, b = px[x, y][:3]
-            # blue-purple accent: clearly more blue than red/green, not grey
-            if b > 100 and b - r > 40 and b - g > 40:
-                pts.append((x, y))
-    if not pts:
+    # The frame accent colour is identical to the editor BACKGROUND (both er.fb,
+    # RGB 72,61,139), so the title bar cannot be found by frame colour.  Anchor
+    # instead on the File-Manager's unmistakable bright-CYAN list panels (Dir
+    # tree / Files), which no other window paints, then read the [X] off the
+    # title bar that sits a fixed gap above them.  The close glyph is light text
+    # (like the "File-Manager" title and the window number) on the frame.
+    def is_cyan(x, y):
+        r, g, b = px[x, y][:3]
+        return r < 100 and g > 150 and b > 150
+
+    def is_light(x, y):
+        r, g, b = px[x, y][:3]
+        return r > 180 and g > 180 and b > 180
+
+    cyan = [(x, y) for y in range(0, h) for x in range(int(w * 0.20), int(w * 0.85))
+            if is_cyan(x, y)]
+    if not cyan:
         return None
-    xmax = max(p[0] for p in pts)
-    cluster = [p for p in pts if p[0] >= xmax - 12]
-    return (sum(p[0] for p in cluster) // len(cluster),
-            sum(p[1] for p in cluster) // len(cluster))
+    cyan_top = min(p[1] for p in cyan)             # top of the list panels
+    cyan_right = max(p[0] for p in cyan)           # right edge of the Files panel
+    # The title bar is the band of light glyphs above the panels (Directory/Name
+    # fields sit between).  Find its topmost light row, then the rightmost light
+    # pixel on it -- the [X] close glyph at the right end of the title.
+    band = [(x, y)
+            for y in range(max(0, cyan_top - 130), cyan_top - 60)
+            for x in range(int(w * 0.30), cyan_right + 40)
+            if is_light(x, y)]
+    if not band:
+        return None
+    title_y = min(p[1] for p in band)
+    row = [p for p in band if p[1] <= title_y + 6]
+    xr = max(p[0] for p in row)                    # right end of the title bar
+    return (xr - 17, title_y + 1)                  # centre of the [X] close cell
 
 
 def test_file_manager_close_box_dismisses(xwpe):
