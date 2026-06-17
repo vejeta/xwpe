@@ -23,12 +23,34 @@ Set XWPE_BIN to point at the xwpe binary (defaults to ../../xwpe).
 import os
 import shutil
 import subprocess
+import tempfile
 import time
 
 import pytest
 
-REQUIRED_BINS = ["Xvfb", "matchbox-window-manager", "xdotool", "xwd", "convert"]
+# The window manager and the XWD-to-PNG converter are platform-dependent:
+# matchbox + convert (ImageMagick 6) on Debian/Ubuntu CI, twm + magick +
+# xwdtopnm on macOS (XQuartz ships no matchbox; IM7 dropped the legacy `convert`
+# binary and its XWD codec).  Probe what's installed and pick the first chain
+# that works; the suite skips with a precise reason if nothing matches.
+_WM_BIN = next((b for b in ("matchbox-window-manager", "twm")
+                if shutil.which(b)), None)
+# Prefer `magick` when both are present: ImageMagick 7 keeps a `convert` shim
+# but its XWD decode delegate is gone, so `convert xwd:-` errors out -- only
+# `magick` (via xwdtopnm) decodes XWD on IM7.  IM6 ships `convert` only and
+# decodes XWD directly.
+_CONV_BIN = next((b for b in ("magick", "convert") if shutil.which(b)), None)
+_XWDTOPNM = shutil.which("xwdtopnm")  # needed only when convert is absent
+
+REQUIRED_BINS = ["Xvfb", "xdotool", "xwd"]
 _MISSING = [b for b in REQUIRED_BINS if shutil.which(b) is None]
+if _WM_BIN is None:
+    _MISSING.append("matchbox-window-manager|twm")
+if _CONV_BIN is None:
+    _MISSING.append("convert|magick")
+# IM7's `magick` cannot read xwd directly; needs xwdtopnm as a bridge.
+if _CONV_BIN == "magick" and _XWDTOPNM is None:
+    _MISSING.append("xwdtopnm (netpbm)")
 
 pytestmark = pytest.mark.skipif(
     bool(_MISSING),
@@ -217,10 +239,19 @@ class XwpeSession:
         xwd = subprocess.run(["xwd", "-root", "-silent"],
                              env={**os.environ, "DISPLAY": DISPLAY},
                              stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
-        png = subprocess.run(["convert", "xwd:-", "png:-"],
-                            input=xwd.stdout, stdout=subprocess.PIPE,
-                            stderr=subprocess.DEVNULL)
-        return Image.open(io.BytesIO(png.stdout)).convert("RGB")
+        if _CONV_BIN == "convert":
+            png = subprocess.run(["convert", "xwd:-", "png:-"],
+                                 input=xwd.stdout, stdout=subprocess.PIPE,
+                                 stderr=subprocess.DEVNULL).stdout
+        else:
+            # IM7 magick lost the xwd decode delegate, so route through netpbm.
+            pnm = subprocess.run(["xwdtopnm"], input=xwd.stdout,
+                                 stdout=subprocess.PIPE,
+                                 stderr=subprocess.DEVNULL).stdout
+            png = subprocess.run(["magick", "ppm:-", "png:-"], input=pnm,
+                                 stdout=subprocess.PIPE,
+                                 stderr=subprocess.DEVNULL).stdout
+        return Image.open(io.BytesIO(png)).convert("RGB")
 
 
 @pytest.fixture(scope="session")
@@ -234,13 +265,25 @@ def xserver():
             pass
     xvfb = _spawn(["Xvfb", DISPLAY, "-screen", "0", SCREEN])
     _sleep(2.0)
-    # Use an empty kbdconfig: matchbox's default grabs <Alt>n/p/c/d/m, <Alt>Tab
-    # etc. at the root, which are xwpe's own dialog/menu hotkeys -- the WM would
-    # swallow them and fake an "Alt-hotkey broken" divergence.  See the file.
-    kbd = os.path.join(HERE, "matchbox-kbdconfig")
-    wm = _spawn(["matchbox-window-manager", "-use_titlebar", "no",
-                 "-kbdconfig", kbd],
-                env={**os.environ, "DISPLAY": DISPLAY})
+    if _WM_BIN == "matchbox-window-manager":
+        # Use an empty kbdconfig: matchbox's default grabs <Alt>n/p/c/d/m, <Alt>Tab
+        # etc. at the root, which are xwpe's own dialog/menu hotkeys -- the WM would
+        # swallow them and fake an "Alt-hotkey broken" divergence.  See the file.
+        kbd = os.path.join(HERE, "matchbox-kbdconfig")
+        wm = _spawn([_WM_BIN, "-use_titlebar", "no", "-kbdconfig", kbd],
+                    env={**os.environ, "DISPLAY": DISPLAY})
+    else:
+        # twm (the macOS fallback): a default install pops a startup menu and
+        # grabs the X server for interactive window placement -- that locks out
+        # xdotool and xwd.  RandomPlacement + NoGrabServer disables both;
+        # NoTitle keeps the geometry the test suite expects.  twm has no Alt-
+        # <letter> bindings in this minimal config, so xwpe's menu hotkeys
+        # reach the application unmodified.
+        twmrc = os.path.join(tempfile.gettempdir(), "xwpe-test-twmrc")
+        with open(twmrc, "w") as fh:
+            fh.write("NoTitle\nRandomPlacement\nNoGrabServer\n")
+        wm = _spawn([_WM_BIN, "-f", twmrc],
+                    env={**os.environ, "DISPLAY": DISPLAY})
     _sleep(1.5)
     yield DISPLAY
     wm.terminate()
@@ -263,6 +306,14 @@ def xwpe(xserver, tmp_path):
         "  int f = 6;\n"
         "  return 0;\n"
         "}\n")
+    # Force xwpe.altMask: mod1.  The macOS build of xwpe (WeXterm.c:38) defaults
+    # the Alt modifier mask to Mod4 (Cmd on real XQuartz), but xdotool under
+    # Xvfb -- which is what the test harness uses on every platform -- delivers
+    # the Alt_L keysym on Mod1, so Alt+<letter> menu accelerators never reach
+    # the menu code without this override.  xwpe reads ~/.Xdefaults via
+    # WpeXDefaults() when RESOURCE_MANAGER is unset, and the fixture already
+    # sets HOME to tmp_path below, so a per-session resources file is enough.
+    (tmp_path / ".Xdefaults").write_text("xwpe.altMask: mod1\n")
     # XWPE_LSP_NO_EAGER: these are chrome/dialog/menu tests that compare
     # full-screen pixel deltas.  If a language server (clangd for the .c file)
     # is installed on the box, its eager start pops an asynchronous "Messages"
@@ -276,10 +327,15 @@ def xwpe(xserver, tmp_path):
                   env={**os.environ, "DISPLAY": DISPLAY, "HOME": str(tmp_path),
                        "XWPE_LSP_NO_EAGER": "1"},
                   cwd=str(tmp_path))
-    # Wait for the window to appear.
+    # Wait for the window to appear.  Locate by --classname (WM_CLASS res_name
+    # = "xwpe", set in WeXterm.c::WpeXInit): --name relies on a regex match
+    # against WM_NAME which is broken in some xdotool builds (the macOS
+    # Homebrew xdotool returns no matches even for `--name .`, while xprop
+    # confirms WM_NAME is set), whereas --classname looks the resource name
+    # up directly via XGetClassHint and works consistently.
     win = None
     for _ in range(40):
-        out = subprocess.run(["xdotool", "search", "--name", WINDOW_NAME],
+        out = subprocess.run(["xdotool", "search", "--classname", "xwpe"],
                              env={**os.environ, "DISPLAY": DISPLAY},
                              stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
         ids = out.stdout.decode().split()
