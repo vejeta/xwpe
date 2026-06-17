@@ -308,12 +308,18 @@ static void cr_init_surface(int pixel_w, int pixel_h)
  cairo_set_antialias(cr, CAIRO_ANTIALIAS_GRAY);
 }
 
+/* Point size baked into the desktop monospace-font-name (e.g. the 13 in
+   "JetBrains Mono 13"); 0 when the setting carries no size or is unset.
+   Filled in by cr_get_system_monospace_font(), read by cr_font_point_size(). */
+static int cr_monospace_pt;
+
 static const char *cr_get_system_monospace_font(void)
 {
  static char fontname[128];
  FILE *p = popen(
    "gsettings get org.gnome.desktop.interface monospace-font-name "
    "2>/dev/null", "r");
+ cr_monospace_pt = 0;
  if (p)
  {
   if (fgets(fontname, sizeof(fontname), p))
@@ -323,9 +329,17 @@ static const char *cr_get_system_monospace_font(void)
    while (*s == '\'' || *s == ' ') s++;
    e = s + strlen(s) - 1;
    while (e > s && (*e == '\'' || *e == '\n' || *e == ' ')) *e-- = 0;
-   /* Strip trailing size number */
-   while (e > s && (*e >= '0' && *e <= '9')) *e-- = 0;
-   while (e > s && *e == ' ') *e-- = 0;
+   /* The family name ends in a trailing point size ("JetBrains Mono 13").
+      Remember it -- so the editor honours the size the user configured --
+      then strip it off, leaving just the family for fontconfig. */
+   if (e > s && *e >= '0' && *e <= '9')
+   {
+    char *d = e;
+    while (d > s && *d >= '0' && *d <= '9') d--;
+    cr_monospace_pt = atoi(d + 1);
+    while (e > s && *e >= '0' && *e <= '9') *e-- = 0;
+    while (e > s && *e == ' ') *e-- = 0;
+   }
    pclose(p);
    if (*s) return s;
   }
@@ -333,6 +347,24 @@ static const char *cr_get_system_monospace_font(void)
    pclose(p);
  }
  return "monospace";
+}
+
+/* The point size to render the editor font at, in precedence order:
+   1. an explicit XWPE_FONT_SIZE override (works headless / over SSH / on macOS,
+      where there may be no desktop setting);
+   2. the size baked into the desktop monospace-font-name (cr_monospace_pt);
+   3. a sensible built-in default.
+   Call after cr_get_system_monospace_font() so cr_monospace_pt is current.
+   Clamped to a sane range so a typo cannot produce a 1px or 4000px grid. */
+static int cr_font_point_size(void)
+{
+ const char *env = getenv("XWPE_FONT_SIZE");
+ int pt = (env && *env) ? atoi(env) : 0;
+ if (pt < 4 || pt > 96)
+  pt = cr_monospace_pt;
+ if (pt < 4 || pt > 96)
+  pt = 10;
+ return pt;
 }
 
 static void cr_init_pango_font(void)
@@ -345,7 +377,8 @@ static void cr_init_pango_font(void)
 
  pg_layout = pango_cairo_create_layout(cr);
 
- snprintf(font_with_size, sizeof(font_with_size), "%s 10", sys_font);
+ snprintf(font_with_size, sizeof(font_with_size), "%s %d",
+          sys_font, cr_font_point_size());
  pg_font = pango_font_description_from_string(font_with_size);
  pango_layout_set_font_description(pg_layout, pg_font);
 

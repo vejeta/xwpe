@@ -359,9 +359,14 @@ def xwpe(xserver, tmp_path):
     # of the X11 tests exercise LSP, so opt out of the eager boot for a
     # deterministic screen (the opt-out the editor already exposes for exactly
     # this -- see e_lsp_open_eager).
+    # XWPE_FONT_SIZE: pin the Xft point size so the cell grid is a known size.
+    # xwpe now honours the desktop monospace-font-name size (or this override);
+    # without pinning, the coordinate-based pixel scans below would shift with
+    # whatever monospace size the test host happens to have configured (the
+    # GNOME schema default is "Monospace 11", not the 10 these tests assume).
     proc = _spawn([XWPE_BIN, str(src)],
                   env={**os.environ, "DISPLAY": DISPLAY, "HOME": str(tmp_path),
-                       "XWPE_LSP_NO_EAGER": "1"},
+                       "XWPE_LSP_NO_EAGER": "1", "XWPE_FONT_SIZE": "10"},
                   cwd=str(tmp_path))
     win = _find_xwpe_window()
     assert win, "xwpe window did not appear"

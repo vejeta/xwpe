@@ -89,7 +89,7 @@ def paint_xwpe(xserver, tmp_path):
     # diff for the User Screen.
     proc = _spawn([XWPE_BIN, str(src)],
                   env={**os.environ, "DISPLAY": DISPLAY, "HOME": str(tmp_path),
-                       "XWPE_LSP_NO_EAGER": "1"},
+                       "XWPE_LSP_NO_EAGER": "1", "XWPE_FONT_SIZE": "10"},
                   cwd=str(tmp_path))
     win = _find_xwpe_window()
     assert win, "xwpe window did not appear"

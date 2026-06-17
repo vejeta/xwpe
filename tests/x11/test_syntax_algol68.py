@@ -69,7 +69,7 @@ def _launch(xserver, tmp_path, fname, text):
     # we diff for colour and would make this test flaky.
     proc = _spawn([XWPE_BIN, str(src)],
                   env={**os.environ, "DISPLAY": DISPLAY, "HOME": str(tmp_path),
-                       "XWPE_LSP_NO_EAGER": "1"},
+                       "XWPE_LSP_NO_EAGER": "1", "XWPE_FONT_SIZE": "10"},
                   cwd=str(tmp_path))
     win = _find_xwpe_window()
     assert win, "xwpe window did not appear for %s" % fname

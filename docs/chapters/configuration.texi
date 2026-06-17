@@ -470,14 +470,19 @@ gsettings set org.gnome.desktop.interface monospace-font-name 'JetBrains Mono 11
 @end example
 
 @noindent
-or point fontconfig's @code{monospace} alias at the family you want.
+or point fontconfig's @code{monospace} alias at the family you want.  The
+@emph{size} in that setting is honoured (@samp{@dots{} 13} renders at 13
+point).  To override the size -- handy headless, over SSH, or on macOS where
+there may be no desktop setting -- set @env{XWPE_FONT_SIZE}:
+
+@example
+XWPE_FONT_SIZE=14 xwpe myfile.c
+@end example
 
 @quotation Note
-This version takes only the @emph{family} from that setting and renders
-at a fixed point size (the size you put in the setting is ignored).  The
-legacy @option{-fn} flag and @code{xwpe*font} X-resource selected a core
-@emph{bitmap} font; they have no effect on the default Xft build and
-apply only to a build made without Xft.
+The legacy @option{-fn} flag and @code{xwpe*font} X-resource selected a core
+@emph{bitmap} font; they have no effect on the default Xft build and apply
+only to a build made without Xft.
 @end quotation
 
 @subsection The Alt key in X11 (altMask)
