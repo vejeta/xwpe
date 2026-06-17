@@ -2785,8 +2785,15 @@ int e_d_p_message(char *str, FENSTER *f, int sw)
 
  if (sw)
   e_rep_win_tree(cn);
- else if (WpeIsXwin())
+ else
  {
+  /* Repaint just this window: async writers (LSP fd-loop callbacks, the
+     debugger's e_d_pty_flush_line) call us with sw=0 from outside the input
+     loop, so without a paint here the buffer update is invisible until the
+     next keystroke.  The previous WpeIsXwin() gate only redrew under X11 --
+     ncurses (the test harness, the common shell case) silently swallowed the
+     update.  Always paint; e_schirm + e_refresh are cheap and safe in both
+     modes, mirroring the debugger's e_d_messages_redraw pattern. */
   e_schirm(f, 0);
   e_cursor(f, 0);
   e_refresh();
@@ -2823,7 +2830,7 @@ int e_d_p_named(char *winname, char *str, FENSTER *f, int sw)
  e_messages_scroll_to_bottom(wf);
  if (sw)
   e_rep_win_tree(cn);
- else if (WpeIsXwin())
+ else
  {
   e_schirm(wf, 0);
   e_cursor(wf, 0);

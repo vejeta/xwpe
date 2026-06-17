@@ -289,6 +289,15 @@ int e_ini_unix(int *argc, char **argv)
  /* Ignore SIGINT */
  act.sa_handler = SIG_IGN;
  sigaction(SIGINT, &act, NULL);
+ /* Ignore SIGPIPE process-wide: writes to a child that has exited (a crashed
+    or fake LSP server, a debugger that quit) return -1 with errno=EPIPE and
+    are recovered by the caller (lsp_write_all returns -1, the fd loop reaps
+    the dead session).  Without this xwpe gets SIGPIPE-killed -- on macOS the
+    default action is termination, which made test_dead_server_does_not_spin
+    show up as the editor itself dying instead of cleanly tearing the session
+    down.  e_d_quit_basic kept its local SIG_IGN for the same reason on the
+    debugger path; this hoists it to the whole process. */
+ sigaction(SIGPIPE, &act, NULL);
  /* Catch SIGCHLD */
  act.sa_handler = WpeSignalChild;
  act.sa_flags = SA_NOCLDSTOP;
