@@ -258,7 +258,10 @@ Tile all open windows.
 @item A -- Cascade
 Cascade all open windows.
 @item X -- Next
-Switch to the next window.
+Cycle to the next window (@kbd{F6} or @kbd{Alt-N}).  To jump straight to a
+particular window instead of cycling, press @kbd{Alt-1}@dots{}@kbd{Alt-9}:
+the number is the window's index (the source file is window@tie{}1), so the
+jump is the same regardless of how many other windows are open.
 @item C -- Close
 Close the current window (@kbd{Ctrl-W}; the close box in the upper-right
 corner does the same).

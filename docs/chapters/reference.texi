@@ -211,7 +211,8 @@ These commands operate on the clipboard (kill-buffer).  (Documented since v1.4.)
 @headitem Key @tab Action @tab Alternative
 @item @key{F5} @tab Zoom the window (maximum size) @tab @kbd{Alt-Z}
 @item @kbd{Alt-F2} @tab Resize and move the window @tab @kbd{Ctrl-F5}
-@item @key{F6} @tab Switch to the next window @tab @kbd{Alt-N}
+@item @key{F6} @tab Cycle to the next window @tab @kbd{Alt-N}
+@item @kbd{Alt-1}@dots{}@kbd{Alt-9} @tab Jump straight to window 1@dots{}9 by index (the source window is 1) @tab
 @item @kbd{Ctrl-W} @tab Close this window (Borland @kbd{Alt-F3} dropped: the window manager / kernel grabs it) @tab @kbd{Ctrl-F4}
 @item @kbd{Alt-F5} @tab User Screen: the running program's full-screen output @tab
 @item @kbd{Shift-F4} @tab Tile all windows @tab
