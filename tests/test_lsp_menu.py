@@ -203,9 +203,13 @@ def test_mouse_click_opens_action_dropdown(tmp_path):
                        "Semantic colours", "Rename", "Format"):
             assert action in body, \
                 "action %r missing from the menu dropdown\n%s" % (action, body)
-        # it is a pull-UP anchored at the bar: the LAST item ("Format") sits just
-        # above the status bar (lower screen), not centered like the old dialog
-        last_row = next(i for i, r in enumerate(rows) if "Format" in r)
+        # it is a pull-UP anchored at the bar: the LAST visible menu item sits
+        # just above the status bar (lower screen), not centered like the old
+        # dialog.  Find the LAST row containing an Alt-Q shortcut label rather
+        # than pinning a specific item name -- the menu has grown new actions
+        # ("Next problem", "Prev problem") over time, so hard-coding "Format"
+        # (once last, now mid-list) would lock the test to a stale layout.
+        last_row = max(i for i, r in enumerate(rows) if "Alt-Q " in r and "Quit" not in r)
         assert last_row >= ROWS - 4, \
             "dropdown should bottom-anchor at the bar (last item row=%d of %d)\n%s" \
             % (last_row, ROWS, body)

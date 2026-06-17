@@ -21,7 +21,9 @@ PROG = (
 )
 
 ALT_Q = "\033q"
-F6 = "\033[17~"    # switch window (Messages <-> source)
+ALT_1 = "\0331"    # jump to window 1 (the source: deterministic across the
+                   #  number of background windows Metals may have opened --
+                   #  e.g. the Doctor -- which F6's cycle would skip past)
 
 pytestmark = pytest.mark.skipif(
     shutil.which("metals") is None or shutil.which("scala-cli") is None,
@@ -35,7 +37,7 @@ def test_scala_lsp_inline_diag_marks(tmp_path):
         w.key("e", delay=150.0)            # start Metals (cold) -> "LSP: no problems"
         w._drain(2.0)
         assert w.alive()
-        w.key(F6, delay=1.0)               # focus moved to Messages; back to source
+        w.key(ALT_1, delay=1.0)            # focus the source (window 1)
 
         # a hard parse error at the very top of the file (-> didChange on newline)
         for ch in "@@@":

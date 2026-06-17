@@ -38,10 +38,21 @@ def test_scala_lsp_format_buffer(tmp_path):
     (tmp_path / ".scalafmt.conf").write_text(
         'version = "3.8.1"\nrunner.dialect = scala3\n')
     with WpeSession(str(tmp_path), PROG, filename="Factorial.scala", wait=2.0) as w:
+        # Boot Metals FIRST: Alt-Q F (or any Alt-Q action) is rejected with
+        # "still starting" while the async handshake is in flight, so the
+        # format request must follow a completed e_lsp_ensure.  Alt-Q E waits
+        # via the per-key drain budget; on macOS the cold start is reliably
+        # under ~150s once Coursier has the metals + JDK artifacts cached.
         w.key(ALT_Q, delay=0.4)
-        w.key("f", delay=160.0)            # cold Metals import + scalafmt + rebuild
-        time.sleep(3.0)
-        w._drain(4.0)
+        w.key("e", delay=160.0)            # cold Metals import + first compile
+        w._drain(3.0)
+        assert w.alive(), "wpe died starting Metals"
+        # Now ask for the format: server is ready, e_lsp_ensure returns 0,
+        # scalafmt runs and the rebuilt buffer replaces the editor's text.
+        w.key(ALT_Q, delay=0.4)
+        w.key("f", delay=15.0)             # scalafmt + buffer rebuild
+        time.sleep(2.0)
+        w._drain(3.0)
         assert w.alive(), "wpe died applying the format"
         text = "\n".join(w.display())
         assert "var f = 1L" in text, \

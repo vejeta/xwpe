@@ -27,7 +27,9 @@ PROG = (
 
 ALT_Q = "\033q"
 CTRL_N = "\x0e"     # down a line
-CTRL_D = "\x04"     # right one character (WordStar)
+ARROW_R = "\033[C"  # right one character (arrow key escape: xwpe's Ctrl-D
+                    #  is DELETE, not WordStar-right, so use the canonical
+                    #  cursor-right sequence to avoid corrupting the buffer)
 
 pytestmark = pytest.mark.skipif(
     shutil.which("metals") is None or shutil.which("scala-cli") is None,
@@ -47,7 +49,7 @@ def test_scala_lsp_completion_popup(tmp_path):
         for _ in range(7):
             w.key(CTRL_N, delay=0.12)
         for _ in range(11):
-            w.key(CTRL_D, delay=0.05)
+            w.key(ARROW_R, delay=0.05)
 
         w.key(ALT_Q, delay=0.4)
         w.key("c", delay=8.0)              # completion request -> popup

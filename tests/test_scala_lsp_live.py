@@ -20,7 +20,10 @@ PROG = (
 )
 
 ALT_Q = "\033q"
-F6 = "\033[17~"    # switch window (Messages -> source)
+ALT_1 = "\0331"    # jump to window 1 (the source: deterministic across the
+                   #  number of background windows Metals may have opened --
+                   #  e.g. the Doctor -- which F6's cycle would skip past)
+ALT_2 = "\0332"    # jump to window 2 (Messages)
 
 pytestmark = pytest.mark.skipif(
     shutil.which("metals") is None or shutil.which("scala-cli") is None,
@@ -35,7 +38,7 @@ def test_scala_lsp_live_diagnostics(tmp_path):
         w.key("e", delay=150.0)            # start Metals (cold) -> "LSP: no problems"
         w._drain(2.0)
         assert w.alive()
-        w.key(F6, delay=1.0)               # focus moved to Messages; go back to source
+        w.key(ALT_1, delay=1.0)            # focus the source (window 1)
 
         # type a broken token at the top of the file, then a newline (-> didChange)
         for ch in "@@@":
@@ -45,7 +48,7 @@ def test_scala_lsp_live_diagnostics(tmp_path):
         # the summary is written to Messages WITHOUT stealing focus (sw=0)
         for _ in range(10):
             w.key(" ", delay=1.3)
-        w.key(F6, delay=1.5)               # raise Messages to view the live status
+        w.key(ALT_2, delay=1.5)            # raise Messages (window 2) to view the live status
         w._drain(2.0)
         assert w.alive(), "wpe died during live diagnostics"
         text = "\n".join(w.display())
