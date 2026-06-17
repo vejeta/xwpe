@@ -457,22 +457,28 @@ Then run @command{sudo setupcon} or reboot.
 
 @subsection X11 mode (xwpe/xwe)
 
-The X11 binaries use the @code{8x13} bitmap font by default.  Change it
-with the @option{-fn} flag or an X resource:
+Since 1.6.0 the X11 build renders text with @b{Xft} -- anti-aliased,
+through Cairo and Pango -- not the old @code{8x13} bitmap core font of the
+1.5 era.  The font @emph{family} follows your desktop's monospace setting:
+xwpe reads @code{org.gnome.desktop.interface monospace-font-name} via
+@command{gsettings} and falls back to fontconfig's @code{monospace} alias
+when that is unset.  To change the editor font, set your system monospace
+font, e.g.@:
 
 @example
-xwpe -fn 9x15 myfile.c
+gsettings set org.gnome.desktop.interface monospace-font-name 'JetBrains Mono 11'
 @end example
 
-Or in @file{~/.Xresources}:
+@noindent
+or point fontconfig's @code{monospace} alias at the family you want.
 
-@example
-xwpe*font: 9x15
-@end example
-
-Available bitmap fonts: @code{8x13}, @code{9x15}, @code{10x20}, and
-their bold variants (@code{8x13bold}, @code{9x15bold}, @code{10x20bold}).
-These are crisp bitmap fonts that do not suffer from antialiasing blur.
+@quotation Note
+This version takes only the @emph{family} from that setting and renders
+at a fixed point size (the size you put in the setting is ignored).  The
+legacy @option{-fn} flag and @code{xwpe*font} X-resource selected a core
+@emph{bitmap} font; they have no effect on the default Xft build and
+apply only to a build made without Xft.
+@end quotation
 
 @subsection The Alt key in X11 (altMask)
 
