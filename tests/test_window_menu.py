@@ -51,6 +51,10 @@ def run_windows(workdir, keys, wait=1.3, key_delay=0.5, settle=0.6):
     env['LINES'] = str(ROWS)
     env['LC_ALL'] = 'en_US.UTF-8'
     env['HOME'] = workdir
+    # No LSP test here: opt out of eager-on-open so a host with clangd
+    # (Homebrew on macOS) does not overlay the chrome with the
+    # "Starting language server..." Messages window we screenshot.
+    env.setdefault('XWPE_LSP_NO_EAGER', '1')
 
     proc = subprocess.Popen(
         [WPE_BIN, 'a.c', 'b.c', 'c.c'],

@@ -188,8 +188,17 @@ class WpeSession:
         with open(self.path) as fh:
             return fh.read()
 
-    def display(self):
-        """The current pyte screen as a list of row strings."""
+    def display(self, drain=0.6):
+        """The current pyte screen as a list of row strings.
+
+        Drains pending pty bytes for up to ``drain`` seconds first so a caller
+        that did `time.sleep(N)` after a key (instead of `key()`'s built-in
+        drain) still sees output that arrived during the sleep.  Without this
+        the slower-to-compile/run macOS pipeline left the run's "XQZ42",
+        "End output" and "Return-Code" lines stuck in the kernel pty buffer
+        and the display showed the pre-run snapshot."""
+        if drain > 0:
+            self._drain(drain)
         return self.screen.display
 
     def cell_bg(self, y, x):

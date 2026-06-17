@@ -13,6 +13,7 @@ stays responsive (low CPU / not in the run state) instead of spinning.  No real
 debugger is needed, so it always runs.
 """
 import os
+import subprocess
 import time
 
 from wpe_driver import WpeSession
@@ -31,17 +32,42 @@ DOWN = "\033OB"
 
 
 def _cpu_ticks(pid):
-    """utime+stime in clock ticks for pid, or -1 if gone."""
+    """utime+stime in clock ticks for pid, or -1 if gone.
+
+    Linux uses /proc/<pid>/stat; macOS (no procfs) falls back to ps(1)'s
+    cumulative CPU time, converted to centi-seconds to roughly match the
+    ratio the caller compares against (< 20 ticks per wall-second)."""
     try:
-        f = open("/proc/%d/stat" % pid).read().split()
-        return int(f[13]) + int(f[14])
+        return int(open("/proc/%d/stat" % pid).read().split()[13]) + \
+               int(open("/proc/%d/stat" % pid).read().split()[14])
+    except Exception:
+        pass
+    try:
+        out = subprocess.check_output(["ps", "-p", str(pid), "-o", "time="],
+                                      text=True).strip()
+        parts = out.replace("-", ":").split(":")
+        if len(parts) == 4:
+            h, m, sf = int(parts[1]), int(parts[2]), float(parts[3])
+            h += int(parts[0]) * 24
+        elif len(parts) == 3:
+            h, m, sf = int(parts[0]), int(parts[1]), float(parts[2])
+        else:
+            h, m, sf = 0, int(parts[0]), float(parts[1])
+        return int(((h * 3600 + m * 60) * 100) + sf * 100)
     except Exception:
         return -1
 
 
 def _run_state(pid):
+    """Single-letter run state (R/S/D/Z/T) for pid, or 'gone'."""
     try:
         return open("/proc/%d/stat" % pid).read().split()[2]
+    except Exception:
+        pass
+    try:
+        out = subprocess.check_output(["ps", "-p", str(pid), "-o", "state="],
+                                      text=True).strip()
+        return out[:1] if out else "gone"
     except Exception:
         return "gone"
 
@@ -79,8 +105,9 @@ def test_wpe_survives_a_flooding_debugger(tmp_path):
                 responsive = True            # exited cleanly -- not hung
                 break
             # < ~0.2s of CPU per wall second and sleeping == back in the input
-            # loop, i.e. the watchdog tripped instead of busy-looping.
-            if _run_state(pid) == "S" and (c1 - c0) < 20:
+            # loop, i.e. the watchdog tripped instead of busy-looping.  macOS
+            # ps reports state 'S'/'Ss'/'I'/... -- treat any non-R as sleeping.
+            if _run_state(pid) != "R" and (c1 - c0) < 20:
                 responsive = True
                 break
         assert responsive, \
