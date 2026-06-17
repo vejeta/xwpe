@@ -291,6 +291,11 @@ Changes
   bare linker error.
 
   UI polish:
+* The X11 (Xft) editor font size is now configurable, not hard-coded at 10pt.
+  xwpe honours the size in the desktop monospace-font-name setting (e.g.
+  "JetBrains Mono 13" renders at 13), and XWPE_FONT_SIZE overrides it (handy
+  headless, over SSH, or on macOS with no desktop setting).  The cell grid and
+  the FreeType glyphs follow the Pango metrics automatically.
 * The File Manager (F3, or opening with no file) is centred and grows
   with the terminal instead of a fixed ~56x21 box pinned near the
   top-left: it sizes to ~3/4 of the screen, clamped to a sane min/max
