@@ -30,6 +30,13 @@ import time
 
 import pyte
 
+# SafeScreen tolerates the private-mode CSI sequences (e.g. set_margins with
+# private=True) that some pyte versions reject on a raw pyte.Screen; the rest of
+# the harness already standardises on it.  Using the bare Screen here made the
+# test crash inside pyte's parser on Linux (TypeError: set_margins() got an
+# unexpected keyword argument 'private') even though wpe rendered correctly.
+from test_utf8_border import SafeScreen
+
 WPE_BIN = os.environ.get('WPE_BIN') or os.path.join(
     os.path.dirname(__file__), '..', 'wpe')
 COLS, ROWS = 80, 30
@@ -45,7 +52,7 @@ class _Wpe:
     """wpe with NO file argument: auto-FM opens, ESC drops us to empty desktop."""
 
     def __init__(self, workdir):
-        self.screen = pyte.Screen(COLS, ROWS)
+        self.screen = SafeScreen(COLS, ROWS)
         self.stream = pyte.Stream(self.screen)
         self.master_fd, slave = pty.openpty()
         env = os.environ.copy()
