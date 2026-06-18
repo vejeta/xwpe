@@ -476,7 +476,18 @@ int main(int argc, char **argv)
  if (cn->mxedt == 0) WpeManager(cn->f[cn->mxedt]);
  do
  {
-  if (cn->f[cn->mxedt]->dtmd == DTMD_FILEMANAGER) i = WpeHandleFileManager(cn);
+  if (cn->mxedt == 0)
+  {
+   /* No user windows left: cn->f[0] is the internal clipboard "Buffer" and
+      must NEVER be drawn as a real editor window (no frame, no [X], not
+      draggable).  Repaint the desktop, clear the status hints leftover from
+      whichever window was last active, hide the cursor and drive the top
+      menu bar.  Picking File>New / File-Manager / etc. bumps mxedt and the
+      next iteration resumes the normal editor / FM dispatch. */
+   e_show_empty_desk(cn);
+   i = WpeHandleMainmenu(-1, cn->f[0]);
+  }
+  else if (cn->f[cn->mxedt]->dtmd == DTMD_FILEMANAGER) i = WpeHandleFileManager(cn);
   else if (cn->f[cn->mxedt]->dtmd == DTMD_DATA) i = e_data_eingabe(cn);
   else i = e_eingabe(cn);
   if (i == AltX) i = e_quit(cn->f[cn->mxedt]);
@@ -558,6 +569,23 @@ void e_pack_button_bar(WOPT *bar, int n, int x0, int gap)
   bar[i].x = x;
   x += (int)strlen(bar[i].t) + gap;
  }
+}
+
+/* Render the empty desktop shown when no user windows are open.  Keep blst
+   pointing at a valid array (defensive: e_pr_uul indexes blst[i] up to nblst-1)
+   but force nblst=0 so the bottom hint bar is BLANK -- the previous window's
+   hints (FM "Edit Move COpy Remove ^W Close W. Alt-X Quit" etc.) would
+   otherwise stay on screen and lie about what is currently actionable.  Then
+   repaint background + top menu bar via e_ini_desk and hide the cursor (the
+   internal clipboard Buffer at f[0] has no visible frame to host it). */
+void e_show_empty_desk(ECNT *cn)
+{
+ if (cn->edopt & ED_CUA_STYLE) blst = eblst_u;
+ else                          blst = eblst_o;
+ nblst = 0;
+ e_ini_desk(cn);
+ fk_cursor(0);
+ e_refresh();
 }
 
 void e_ini_desk(ECNT *cn)

@@ -358,6 +358,7 @@ typedef struct wpeOptionSection {
 extern struct CNT *WpeEditor;
 
 void e_ini_desk(ECNT *cn);
+void e_show_empty_desk(ECNT *cn);
 void FARBE_Init(FARBE *fb);
 FARBE *e_ini_farbe();
 int e_switch_blst(ECNT *cn);
