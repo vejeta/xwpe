@@ -51,6 +51,7 @@ int e_x_kbhit(void);
 
 #include <X11/keysym.h>
 #include <X11/cursorfont.h>
+#include <X11/XKBlib.h>
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -1297,6 +1298,44 @@ int e_x_getch()
     charcount = e_XLookupString(&report.xkey, buffer, BUFSIZE, &keysym,
       NULL);
     key_b = report.xkey.state;
+    /* XQuartz's default "Option-as-Compose" mode delivers Alt+<letter> through
+       the dead-key compose pipeline (e.g. Alt+E -> the dead_acute keysym;
+       Alt+B -> the integral glyph U+222B as UTF-8) instead of as plain letter
+       + altmask, which silently breaks every Alt+<letter> menu accelerator
+       (and the Alt-Q LSP prefix, Alt-M Make, ...).  When Alt is held, ignore
+       the composed/dead keysym and recover the unmodified letter from the
+       physical keycode via XKB.  Letters, digits, '#' and Space map directly
+       to the AltX codes the menu code expects.  Outside Alt this branch is
+       skipped, so normal dead-key compose still works for accented characters
+       typed without Alt. */
+    if ((key_b & WpeXInfo.altmask) &&
+        (charcount == 0 ||
+         (charcount == 1 && (unsigned char)buffer[0] >= 0x80) ||
+         (charcount >= 2 && ((unsigned char)buffer[0] & 0xC0) == 0xC0)))
+    {
+     KeySym base = XkbKeycodeToKeysym(WpeXInfo.display,
+                                      report.xkey.keycode, 0, 0);
+     int alt = 0;
+     if (base >= XK_a && base <= XK_z)
+      alt = e_tast_sim((int)(base - XK_a + 'a'));
+     else if (base >= XK_A && base <= XK_Z)
+      alt = e_tast_sim((int)(base - XK_A + 'a'));
+     else if (base >= XK_0 && base <= XK_9)
+      alt = e_tast_sim((int)(base - XK_0 + '0'));
+     else if (base == XK_numbersign)
+      alt = AltSYS;
+     else if (base == XK_space)
+      alt = AltBl;
+     if (alt)
+     {
+      /* Eat any compose state the dead keysym would otherwise leave armed,
+         so the next plain letter is not turned into an accented char. */
+      e_compose_pending = 0;
+      return alt;
+     }
+     /* Fall through if XKB returned a key we do not handle (e.g. a function
+        or punctuation key); the existing decoder below covers those. */
+    }
     if (charcount == 0 && keysym >= XK_dead_grave && keysym <= XK_dead_horn)
     {
      e_compose_pending = keysym;
