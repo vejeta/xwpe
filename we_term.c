@@ -62,6 +62,11 @@ static int e_t_mouse_apply_event(MEVENT *mev);
 #define MOUSE_CELL_SUBDIV 8    /* g[] reports mouse pos in 1/8-cell units */
 
 int g_mouse_buttons = 0;
+/* CLICKED events carry no following RELEASED; the press bit accumulated into
+   g_mouse_buttons would stay set and any while(e_mshit()) spin-loop in
+   we_mouse.c / we_menue.c would hang.  Set when a CLICKED is observed and
+   consumed in fk_t_mouse's no-event branch to synthesize the release. */
+static int s_t_pending_click_release = 0;
 int e_t_initscr(void);
 int e_t_kbhit(void);
 int e_t_d_switch_out(int sw);
@@ -1388,19 +1393,42 @@ static int e_t_mouse_is_released(mmask_t bstate)
    at a time; g_mouse_buttons accumulates the pressed-button bitmask across
    events so a drag (press, then motion reports) keeps reporting the held
    button until the matching release arrives.  Updates e_mouse.{x,y,k} from the
-   event and returns the new button bitmask. */
+   event and returns the new button bitmask.
+
+   A fast click can arrive as a single synthesized BUTTON*_CLICKED (or
+   _DOUBLE_/_TRIPLE_) bstate with no matching _RELEASED to follow -- this
+   happens whenever the terminal/ncurses pair coalesces press+release (e.g.
+   macOS Terminal / iTerm; ncurses still synthesizes _CLICKED for same-poll
+   press+release sequences even with mouseinterval(0) in some terminfo
+   combinations).  Without an explicit release, the bit accumulated here would
+   stay set and any while(e_mshit()) drag-tracking loop (submenu, scroll
+   thumb, FM resize, ...) would spin forever.  Mark a pending synthetic
+   release; fk_t_mouse consumes it on the next no-event poll, so dispatch
+   still observes the click but the spin-loop exits one tick later. */
 static int e_t_mouse_apply_event(MEVENT *mev)
 {
  extern struct mouse e_mouse;
+ mmask_t click_mask = BUTTON1_CLICKED | BUTTON2_CLICKED | BUTTON3_CLICKED
+                    | BUTTON1_DOUBLE_CLICKED | BUTTON2_DOUBLE_CLICKED
+                    | BUTTON3_DOUBLE_CLICKED | BUTTON1_TRIPLE_CLICKED
+                    | BUTTON2_TRIPLE_CLICKED | BUTTON3_TRIPLE_CLICKED;
+ mmask_t press_mask = BUTTON1_PRESSED | BUTTON2_PRESSED | BUTTON3_PRESSED;
+ int is_click   = (mev->bstate & click_mask) != 0;
+ int is_press   = (mev->bstate & press_mask) != 0;
+ int is_release = e_t_mouse_is_released(mev->bstate);
  int btn = e_t_mouse_decode_button(mev->bstate);
 
  if (btn >= 0)
   g_mouse_buttons |= btn;
- else if (e_t_mouse_is_released(mev->bstate))
+ else if (is_release)
   g_mouse_buttons = 0;
  e_mouse.x = mev->x;
  e_mouse.y = mev->y;
  e_mouse.k = g_mouse_buttons;
+ if (is_click)
+  s_t_pending_click_release = 1;
+ else if (is_press || is_release)
+  s_t_pending_click_release = 0;
  return g_mouse_buttons;
 }
 
@@ -1424,6 +1452,12 @@ int fk_t_mouse(int *g)
  }
  else
  {
+  if (s_t_pending_click_release)
+  {
+   g_mouse_buttons = 0;
+   e_mouse.k = 0;
+   s_t_pending_click_release = 0;
+  }
   g[1] = g_mouse_buttons;
   g[2] = e_mouse.x * MOUSE_CELL_SUBDIV;
   g[3] = e_mouse.y * MOUSE_CELL_SUBDIV;
