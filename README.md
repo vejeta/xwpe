@@ -19,9 +19,11 @@ management, and a function-key driven menu system. Emacs cursor keys
 
 The **1.6.x series** brought xwpe from its 1993 origins to 2026:
 UTF-8 terminal support, working compilers and debuggers for 12 languages,
-a **Debug Adapter Protocol client** (the same protocol VS Code and Neovim
-use) so modern debuggers plug straight in, mouse support, X11 fixes, and a
-12-chapter Texinfo manual.
+a **Language Server Protocol client** and a **Debug Adapter Protocol client**
+(the same protocols VS Code and Neovim use) so modern language servers and
+debuggers plug straight in &mdash; IDE navigation and a real source-level
+debugger in a few-megabyte terminal program &mdash; plus mouse support, X11
+fixes, and a 12-chapter Texinfo manual.
 
 <p align="center">
   <img src="screenshots/xwpe-screenshot.png" width="720" alt="xwpe 1.6.x: Cairo rendering, Unicode borders, color emoji">
