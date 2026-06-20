@@ -137,7 +137,7 @@
     Alexei Pavlov <Alexei.Pavlov@lri.fr>
     Pedro <peteri@carme.sect.mce.hw.ac.uk>
     Duane Penzien <D.Penzien@computer.org>
-    Paulo César Pereira de Andrade <pcpa@conectiva.com.br>
+    Paulo CÃ©sar Pereira de Andrade <pcpa@conectiva.com.br>
     Yarick Rastrigin <yarick@relex.ru>
     Sebastiano Suraci <sebax@tin.it>
     Mark Spieth <mark@melb.interline.aust.com>
@@ -2061,8 +2061,8 @@
      The GNU General Public License
      Version 2, June 1991
 
-     Copyright (C) 1989, 1991 Free Software Foundation, Inc.
-                           675 Mass Ave, Cambridge, MA 02139, USA
+     Copyright (C) 1989, 1991 Free Software Foundation, Inc.,
+     51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
 
      Everyone is permitted to copy and distribute verbatim copies 
      of  this  license  document, but changing it is not allowed.
@@ -2414,8 +2414,8 @@
 
           You should have received a copy of the GNU General Pub-
           lic  License  along with this program; if not, write to
-          the Free Software Foundation, Inc., 675 Mass Ave,  Cam-
-          bridge, MA 02139, USA.
+          the Free Software Foundation, Inc., 51 Franklin Street,
+          Fifth Floor, Boston, MA 02110-1301 USA.
 
 
      Also add information on how to contact you by electronic and
