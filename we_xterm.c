@@ -1812,7 +1812,8 @@ int fk_x_mouse(int *g)
 /* e_clip_x_wait_notify - wait, event-driven, up to ~1s for the SelectionNotify
    that answers an XConvertSelection.  Returns 1 with the event in *ev, or 0 on
    timeout.  poll()s the X connection rather than busy-looping on sleep(0)
-   (the project convention); non-matching events stay queued (XCheckTypedEvent). */
+   (no busy-wait, no timing hacks); non-matching events stay queued
+   (XCheckTypedEvent). */
 static int e_clip_x_wait_notify(XEvent *ev)
 {
  int fd = ConnectionNumber(WpeXInfo.display);

@@ -1085,7 +1085,7 @@ int e_p_exec(int file, FENSTER *f, PIC *pic)
      recursion, observed on macOS as wpe pinned at 100% CPU forever while it
      drained the flood into Messages and repainted per chunk).  16 MiB is far
      above any sane build's diagnostics, and SIGKILL stops the flood at the
-     source so the parent stops draining.  the project convention. */
+     source so the parent stops draining. */
   unsigned long total_drained = 0;
   const unsigned long E_P_EXEC_RUNAWAY_MAX = 16UL * 1024 * 1024;
   int runaway = 0;

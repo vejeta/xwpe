@@ -4,8 +4,8 @@ A debugger backend can die abnormally mid-session (a68g, for instance, can fall
 into an abend->io_write_string recursion that floods its output until it
 SIGSEGVs).  Before the watchdog, xwpe's synchronous read loops would spin on
 that flood -- a tight CPU loop that hangs the editor (observed: a session stuck
-at ~100% CPU for many minutes).  the project convention forbids leaving xwpe in a busy
-loop.
+at ~100% CPU for many minutes).  The design rule is to never leave xwpe in a
+busy loop.
 
 This test stands a FAKE debugger on PATH that floods its output forever and
 never prints a prompt, drives xwpe into a debug session, and asserts that xwpe

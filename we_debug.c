@@ -172,7 +172,7 @@ char *npipe[5] = {  NULL, NULL, NULL, NULL, NULL  };
    when its output pipe breaks) must never hold xwpe in an unbounded read.  A
    normal debug step emits at most a handful of stderr lines; anything past this
    is a runaway, so we stop draining and let the loop re-enter on the next call
-   (the project convention: never leave xwpe in a busy loop). */
+   (never leave xwpe in a busy loop). */
 #define E_D_DRAIN_MAX    4096
 
 /* Settle time (ms) for the legacy external-xterm debugger before xwpe reclaims
@@ -983,7 +983,7 @@ int e_debug_switch(FENSTER *f, int c)
    e_d_pid so e_d_quit_basic does not double-reap).  The debugger read loops use
    this so a debugger that died -- but whose pipe never reaches EOF because the
    X11 launch path leaks xwpe's own write ends -- cannot hold xwpe forever
-   waiting for output that will never come (the project convention). */
+   waiting for output that will never come. */
 static int e_d_debugger_gone(void)
 {
  int st;
@@ -6222,8 +6222,8 @@ static int e_lsp_ui_type_definition(FENSTER *f)
 /* e_lsp_ui_trace - append a printf-style diagnostic line to the file named by
    $XWPE_UI_TRACE.  A no-op (and zero cost) unless that env var is set.  Used to
    confirm, from a headless VHS/pyte recording, WHICH Alt-Q action ran and what
-   key/word it saw -- the data-not-guesswork tool for demo debugging (the project notes
-   rule 19; the wpe-vs-we binary mix-up was found exactly this way). */
+   key/word it saw -- the data-not-guesswork tool for demo debugging (the
+   wpe-vs-we binary mix-up was found exactly this way). */
 static void e_lsp_ui_trace(const char *fmt, ...)
 {
  const char *tp = getenv("XWPE_UI_TRACE");
