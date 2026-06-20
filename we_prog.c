@@ -16,6 +16,7 @@
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
+#include <sys/ioctl.h>     /* TIOCSCTTY: pulled in transitively on glibc, explicit on the BSDs */
 #include <signal.h>
 #include <poll.h>
 #include <errno.h>
