@@ -14,6 +14,7 @@ class Xwpe < Formula
   depends_on "json-c"
   depends_on "libvterm"
   depends_on "ncurses"
+  depends_on "zlib"
 
   def install
     # ncurses is keg-only on macOS; teach pkg-config where ncursesw.pc lives.

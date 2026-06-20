@@ -19,6 +19,7 @@ class Xwpe < Formula
   depends_on :macos
   depends_on "ncurses"
   depends_on "pango"
+  depends_on "zlib"
 
   # XQuartz cannot be expressed as a `depends_on` -- Homebrew formulas may not
   # depend on casks. We require it manually at install time and document the
