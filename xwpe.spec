@@ -1,5 +1,5 @@
 Name:           xwpe
-Version:        1.6.3
+Version:        1.6.5
 Release:        1%{?dist}
 Summary:        Borland-style programming environment and editor for console and X11
 
@@ -18,6 +18,9 @@ BuildRequires:  libXft-devel
 BuildRequires:  cairo-devel
 BuildRequires:  pango-devel
 BuildRequires:  gpm-devel
+BuildRequires:  libvterm-devel
+BuildRequires:  json-c-devel
+BuildRequires:  zlib-devel
 BuildRequires:  texinfo
 BuildRequires:  desktop-file-utils
 BuildRequires:  libappstream-glib
@@ -86,6 +89,16 @@ make check
 %{_infodir}/xwpe.info*
 
 %changelog
+* Sat Jun 20 2026 Juan Manuel Méndez Rey <juan.mendezr@proton.me> - 1.6.5-1
+- New upstream release (bundles 1.6.4 and 1.6.5).
+- Embedded VT terminal (libvterm) with the Borland Alt-F5 User Screen; GNU
+  Algol 68 (ga68) compiler and gdb debug.
+- LSP client for C/C++, Python, Go, Rust and Scala (clangd / pyright-pylsp /
+  gopls / rust-analyzer / Metals) and a DAP debugger client (Go via Delve,
+  Rust via gdb, Scala via Bloop); async inlay hints and semantic colours.
+- BuildRequires: add libvterm-devel and json-c-devel (embedded terminal and
+  DAP/LSP JSON-RPC) and zlib-devel (xwpe links -lz).
+
 * Sat Jun 06 2026 Juan Manuel Méndez Rey <juan.mendezr@proton.me> - 1.6.3-1
 - New upstream release 1.6.3.
 - Modernized the spec for the 1.6.1+ autotools build: single "we" binary
