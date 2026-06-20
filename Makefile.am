@@ -403,14 +403,4 @@ EXTRA_DIST = \
   tests/inputs/hello.a68 \
   tests/inputs/hello_ga68.a68 \
   tests/inputs/Hello.java \
-  tests/fixtures/ascii.txt \
-  tests/fixtures/accents.txt \
-  tests/fixtures/long_accents.txt \
-  tests/fixtures/cjk.txt \
-  tests/fixtures/cyrillic.txt \
-  tests/fixtures/emoji.txt \
-  tests/fixtures/emoji_scroll.txt \
-  tests/fixtures/short.txt \
-  tests/fixtures/one_page.txt \
-  tests/fixtures/two_pages.txt \
   tools/compiletest.c
