@@ -87,6 +87,7 @@ noinst_HEADERS = \
   we_dap.h \
   we_bsp.h \
   we_lsp.h \
+  we_clip.h \
   attrb.h \
   edit.h \
   keys.h \
