@@ -2,7 +2,7 @@ class Xwpe < Formula
   desc "Borland-style IDE clone with LSP/DAP support (X11 + terminal UI)"
   homepage "https://codeberg.org/mendezr/xwpe"
   url "https://codeberg.org/mendezr/xwpe/archive/v1.6.5.tar.gz"
-  sha256 "d8dfafaa107da0367b3a75ab9ff00c4d3af52fb33668c8c924168fd294abe1c7"
+  sha256 "8026ad8605dab876b04da5ddd76a165c691f6de1a0995394cffa14dc69f1df50"
   license "GPL-2.0-or-later"
   head "https://codeberg.org/mendezr/xwpe.git", branch: "main"
 
