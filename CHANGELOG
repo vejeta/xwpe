@@ -69,6 +69,23 @@ Bugs fixed in 1.6.x:
   thumb, FM resize) spun forever.  fk_t_mouse now marks a pending synthetic
   release on a _CLICKED and consumes it on the next no-event poll, so dispatch
   still observes the click but the loop exits one tick later.
+* Window relayout no longer separates intentionally cascaded editors -- fixed
+  (1.6.5).  On resize, e_relayout_windows runs an overlap-resolution pass that
+  pushes a lower window down when a top-anchored one grew past it due to the
+  minimum-height expansion.  It also fired on editors the user had deliberately
+  cascaded on top of each other (already overlapping before the resize),
+  shoving them apart unexpectedly.  The pass now snapshots each window's
+  original a.y/e.y and skips any pair that was ALREADY overlapping (a
+  user-chosen cascade, not collateral damage from expansion), and only acts on
+  text editors -- popup-style windows (File Manager, Data, dropdowns) are
+  intentionally drawn over editors and must never be pushed.
+* macOS: setup.sh now auto-detects XQuartz and builds the X11 GUI (xwpe/xwe),
+  falling back to a terminal-only build (wpe) when XQuartz is absent.  XQuartz
+  ships an older cairo/fontconfig/freetype ABI than Homebrew's pango needs, so
+  the script orders the brewed pkg-config and -L lib dirs ahead of XQuartz's
+  (the linker honours -Wl,-search_paths_first) -- otherwise configure silently
+  disabled the Cairo backend or the binary crashed in cairo at runtime.  A
+  Homebrew tap formula (contrib/homebrew/) is included for `brew install`.
 * New headless X11 GUI test suite (tests/x11/): drives a real xwpe under
   Xvfb + matchbox-window-manager via xdotool and asserts on screenshots
   (Pillow).  Covers the Xft rendering and X11 key/mouse path that the pyte

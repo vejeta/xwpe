@@ -56,13 +56,57 @@ case "$os" in
     command -v brew >/dev/null 2>&1 || {
       echo "setup.sh: Homebrew is required on macOS -- https://brew.sh" >&2
       exit 1; }
+    # XQuartz (https://www.xquartz.org) installs to /opt/X11 and is the only
+    # X11 server on modern macOS; without it there is nothing for xwpe to draw
+    # against, so we fall back to a terminal-only build.
+    x11_root=
+    if   [ -d /opt/X11/include/X11 ]; then x11_root=/opt/X11
+    elif [ -d /usr/X11/include/X11  ]; then x11_root=/usr/X11
+    fi
     deps='brew install autoconf automake pkg-config ncurses libvterm json-c texinfo'
+    if [ -n "$x11_root" ]; then
+      # XQuartz ships libX11/libXext/libXft; Homebrew provides the higher-level
+      # cairo/pango stack that links on top of them.
+      deps="$deps libxft cairo pango"
+    fi
     have_apt=1
+    # XQuartz ships fontconfig 2.14 / cairo 1.17, both older than what brewed
+    # pangocairo requires (>= 2.17 / 1.18). If XQuartz's pkg-config dir wins
+    # the search, configure silently falls back to HAVE_PANGO=no and the
+    # Cairo backend (we_render_cairo.c) emits no symbols, breaking the link
+    # with undefined wpe_render_chrome / wpe_chrome_hit_* references. So
+    # brewed cairo/pango/fontconfig/freetype/libxft go first; XQuartz is
+    # appended at the end to fill the X11 protocol gaps (x11.pc, ...).
     PKG_CONFIG_PATH="$(brew --prefix ncurses)/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
+    LDFLAGS_EXTRA=
+    if [ -n "$x11_root" ]; then
+      for f in libxft freetype fontconfig pango cairo; do
+        p=$(brew --prefix "$f" 2>/dev/null) || continue
+        PKG_CONFIG_PATH="$p/lib/pkgconfig:$PKG_CONFIG_PATH"
+      done
+      PKG_CONFIG_PATH="$PKG_CONFIG_PATH:$x11_root/lib/pkgconfig"
+      # AC_PATH_XTRA puts -L/opt/X11/lib in X_LIBS so XQuartz also wins at
+      # link time, loading its older libcairo/libfontconfig/libfreetype at
+      # runtime against a pango built for the newer brewed ABIs -- which
+      # crashes (SIGSEGV in cairo). Prepend brewed lib dirs to LDFLAGS so
+      # the linker (which honours -Wl,-search_paths_first) finds the brewed
+      # copies first; XQuartz still resolves the pure-X11 libs (libSM, ICE,
+      # Xext, Xrender) that have no newer brewed competitor in the link.
+      for f in libxft freetype fontconfig pango cairo libx11; do
+        p=$(brew --prefix "$f" 2>/dev/null) || continue
+        LDFLAGS_EXTRA="-L$p/lib $LDFLAGS_EXTRA"
+      done
+    fi
     export PKG_CONFIG_PATH
     # Homebrew's prefix is user-writable AND already on PATH, so `wpe` works
     # with no sudo and no extra PATH step.
-    cfg_flags="--without-x --without-gpm --prefix=$(brew --prefix)"
+    if [ -n "$x11_root" ]; then
+      # AC_PATH_XTRA does not probe /opt/X11; point it at XQuartz explicitly so
+      # HAVE_X11 turns on and the install hook creates the xwpe/xwe symlinks.
+      cfg_flags="--with-x --without-gpm --prefix=$(brew --prefix) --x-includes=$x11_root/include --x-libraries=$x11_root/lib"
+    else
+      cfg_flags="--without-x --without-gpm --prefix=$(brew --prefix)"
+    fi
     do_install='make install'
     ;;
   *)
@@ -86,6 +130,13 @@ else
 fi
 
 # 2. build
+if [ "$os" = Darwin ]; then
+  if [ -n "${x11_root:-}" ]; then
+    say "XQuartz found at $x11_root -- building with X11 (xwpe/xwe)"
+  else
+    say "XQuartz not found -- building terminal-only (wpe). Install https://www.xquartz.org and re-run for the X11 GUI."
+  fi
+fi
 say "Building"
 [ -x ./configure ] || run autoreconf -fi
 # Wipe any prior build before reconfiguring: LIBRARY_DIR / XWPE_INFODIR are
@@ -93,6 +144,14 @@ say "Building"
 # previously built with a different --prefix has stale .o files that `make`
 # considers up to date and the relink picks up the OLD install paths.
 [ -f Makefile ] && run make clean
+# On macOS the brewed lib dirs (cairo/pango/...) need to be searched before
+# XQuartz's -L/opt/X11/lib (set by AC_PATH_XTRA from --x-libraries) so the
+# linker resolves the same newer ABI that brewed pango was built against.
+# Empty / unset on Linux, where this whole concern does not exist.
+if [ -n "${LDFLAGS_EXTRA:-}" ]; then
+  LDFLAGS="$LDFLAGS_EXTRA ${LDFLAGS:-}"
+  export LDFLAGS
+fi
 # shellcheck disable=SC2086
 run ./configure $cfg_flags
 run make

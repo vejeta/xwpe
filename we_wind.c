@@ -88,6 +88,16 @@ void e_repaint_desk_nopic(FENSTER *f)
 void e_relayout_windows(ECNT *cn, int old_scol, int old_slns)
 {
  int i;
+ /* Snapshot original a.y/e.y so the overlap-resolution pass below can
+    distinguish "newly overlapping after min-height expansion" (needs
+    pushing) from "intentionally cascaded by the user" (must be left
+    alone). */
+ int orig_ay[MAXEDT + 1], orig_ey[MAXEDT + 1];
+ for (i = 0; i <= cn->mxedt; i++)
+ {
+  orig_ay[i] = cn->f[i]->a.y;
+  orig_ey[i] = cn->f[i]->e.y;
+ }
  for (i = 0; i <= cn->mxedt; i++)
  {
   FENSTER *fw = cn->f[i];
@@ -133,17 +143,30 @@ void e_relayout_windows(ECNT *cn, int old_scol, int old_slns)
    fw->se = fw->e;
   }
  }
+ /* Separate stacked top-anchored text editors that ended up overlapping
+    only because the minimum-height expansion grew them past their
+    neighbours. Two cases must NOT trigger a push:
+      - Popup-style windows (FM, Data, dropdowns) are intentionally
+        drawn on top of editors.
+      - Editors that the user has cascaded on top of another editor
+        were already overlapping in the original layout, so the new
+        overlap is not a side-effect of expansion. */
  for (i = 0; i <= cn->mxedt; i++)
  {
   FENSTER *fw = cn->f[i];
   int j;
+  if (!DTMD_ISTEXT(fw->dtmd)) continue;
   for (j = 0; j <= cn->mxedt; j++)
   {
    FENSTER *other = cn->f[j];
    if (j == i) continue;
+   if (!DTMD_ISTEXT(other->dtmd)) continue;
    if (fw->a.y <= 1 && other->a.y > 1 && fw->e.y >= other->a.y)
    {
     int new_ay = fw->e.y + 1;
+    /* Skip when the two windows were already overlapping before the
+       relayout -- that's a user-chosen cascade, not collateral damage. */
+    if (orig_ey[i] >= orig_ay[j]) continue;
     if (new_ay <= other->e.y - 3)
      other->a.y = new_ay;
    }

@@ -395,10 +395,25 @@ For the IDE features, continue with Quick-path steps 2-3 (servers, then
 Both binaries build clean on macOS (Apple Silicon and Intel) against Homebrew:
 `wpe` runs natively in a terminal (no XQuartz), and the graphical `xwpe`
 links against XQuartz + Homebrew's Cairo/Pango/Xft stack and is exercised
-end-to-end by the X11 test suite (see `tests/README.md`). The
-**`contrib/setup.sh`** one-shot helper does all the steps below for you
-(`sh contrib/setup.sh` -- `--dry-run` to preview, `--skip-deps` if Homebrew
-is already populated).
+end-to-end by the X11 test suite (see `tests/README.md`).
+
+**Pre-built tap (shortest path).** A Homebrew tap on Codeberg packages the
+X11 build (`xwpe`, `xwe`, `wpe`, `we`) so a fresh install is three commands:
+
+```sh
+brew install --cask xquartz                                       # one-time
+brew tap mendezr/xwpe https://codeberg.org/mendezr/homebrew-xwpe
+brew install xwpe          # add --HEAD to track main instead of the tag
+```
+
+That covers the editor itself; for the `Alt-Q` IDE layer continue with
+Quick-path steps 2-3 (install the servers, then `source contrib/xwpe-env`).
+A terminal-only formula (no XQuartz, no GUI deps) for `homebrew-core` is in
+preparation -- once accepted, plain `brew install xwpe` will install `wpe`.
+
+**From source.** The **`contrib/setup.sh`** one-shot helper does the build
+steps below for you (`sh contrib/setup.sh` -- `--dry-run` to preview,
+`--skip-deps` if Homebrew is already populated).
 
 Build with Homebrew's keg-only `ncurses` (the `PKG_CONFIG_PATH` line points
 `configure` at it), and install to a user-writable prefix so `make install`
