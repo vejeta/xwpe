@@ -43,6 +43,12 @@ void e_mouse_tracking_enable(void)
     already enabled SGR and folds the reports into KEY_MOUSE before the parser
     ever sees them. */
  printf("\033[?1002h\033[?1006h");
+ /* Ask the terminal to show an arrow pointer instead of the text I-beam while
+    mouse tracking is active (OSC 22, kitty extension also honoured by iTerm2
+    and foot).  The shape names follow CSS, so "default" is the arrow and
+    "pointer" is the hyperlink hand -- we want the arrow.  Terminal.app
+    ignores unknown OSCs so this is a no-op there. */
+ printf("\033]22;default\a");
  fflush(stdout);
 #endif
 #endif
@@ -52,6 +58,9 @@ void e_mouse_tracking_disable(void)
 {
 #if MOUSE
 #ifdef NCURSES
+ /* Empty payload (not "default", which is the CSS arrow) pops back to the
+    terminal's own configured cursor on exit. */
+ printf("\033]22;\a");
  printf("\033[?1006l");
  printf("\033[?1002l");
  fflush(stdout);
