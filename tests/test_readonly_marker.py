@@ -82,3 +82,19 @@ def test_writable_file_has_no_lock(tmp_path):
             "a writable file should not show the read-only padlock:\n%r" % title
     finally:
         _close(proc, mfd)
+
+
+def test_unreadable_file_shows_lock_in_titlebar(tmp_path):
+    """A mode-000 file exists but is neither readable nor writable: xwpe cannot
+    read its content (the buffer comes up empty), but it is still a LOCKED file,
+    so the title bar must show the padlock -- not a silently-empty buffer that
+    looks editable but would fail to save."""
+    proc, mfd, screen = _open(str(tmp_path), "noperm.txt",
+                              "you cannot read this\n", 0o000)
+    try:
+        title = screen.display[1]
+        assert "noperm.txt" in title, "title bar missing the filename\n%s" % title
+        assert ("\U0001F512" in title or "#" in title), \
+            "an unreadable (0000) file is still locked; padlock missing:\n%r" % title
+    finally:
+        _close(proc, mfd)

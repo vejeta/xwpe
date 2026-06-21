@@ -371,7 +371,15 @@ int e_edit(ECNT *cn, char *filename)
 #endif
  if (ftype != 1)
   fp = fopen(complete_fname, "rb");
- if (fp != NULL && access(complete_fname, 2) != 0) f->ins = 8;
+ if (fp != NULL && access(complete_fname, 2) != 0)
+  f->ins = 8;
+ /* A file we could not even OPEN for reading but which EXISTS and is not
+    writable (mode 000) is still a locked file -- mark it read-only so the title
+    shows the lock, instead of a silently-empty editable buffer that would fail
+    to save.  access(,2) is W_OK; access(,0) is F_OK (exists). */
+ else if (fp == NULL && ftype != 1 &&
+          access(complete_fname, 0) == 0 && access(complete_fname, 2) != 0)
+  f->ins = 8;
 #ifdef UNIX
  if (fp != NULL)
  {
