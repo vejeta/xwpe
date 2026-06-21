@@ -1,0 +1,26 @@
+# Local OpenBSD build test for xwpe -- no GitHub, no hosted CI.
+# Same idea as freebsd-port/Vagrantfile. Requires vagrant + libvirt (or VirtualBox).
+#
+#   cd xwpe-dev/openbsd-test
+#   VAGRANT_DEFAULT_PROVIDER=libvirt vagrant up      # builds, prints PASS/FAIL
+#   vagrant destroy -f
+#
+# Bump the box if 7.x ages out.
+
+Vagrant.configure("2") do |config|
+  config.vm.box = "generic/openbsd7"
+  config.vm.boot_timeout = 600
+  config.ssh.shell = "sh"
+  config.vm.synced_folder ".", "/vagrant", disabled: true
+
+  config.vm.provider "virtualbox" do |vb|
+    vb.memory = 2048
+    vb.cpus   = 2
+  end
+  config.vm.provider "libvirt" do |lv|
+    lv.memory = 2048
+    lv.cpus   = 2
+  end
+
+  config.vm.provision "shell", path: "provision.sh", privileged: true
+end

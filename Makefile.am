@@ -291,6 +291,14 @@ TESTS = test_checkheader test_syntax_def test_fdloop test_clipboard test_lsp_buf
 EXTRA_DIST = \
   contrib/xwpe-env \
   contrib/setup.sh \
+  contrib/bsd-test/README.md \
+  contrib/bsd-test/sgr_mouse_probe.c \
+  contrib/bsd-test/freebsd/Vagrantfile \
+  contrib/bsd-test/freebsd/provision.sh \
+  contrib/bsd-test/openbsd/Vagrantfile \
+  contrib/bsd-test/openbsd/provision.sh \
+  contrib/bsd-test/netbsd/Vagrantfile \
+  contrib/bsd-test/netbsd/provision.sh \
   help.xwpe_eng \
   help.key_eng \
   syntax_def \

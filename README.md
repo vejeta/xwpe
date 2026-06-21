@@ -475,11 +475,12 @@ autoreconf -fi
 make
 ```
 
-**Ports.** A FreeBSD port already exists —
-[`devel/xwpe`](https://www.freshports.org/devel/xwpe/) at 1.5.30a — and an update
-to 1.6.6 will be submitted once the release is tagged (the 1.6.5 tarball predates
-the portability fixes); OpenBSD `ports@` and NetBSD `pkgsrc` ports are planned
-the same way.
+**Ports.** All three BSDs already package xwpe (at the old 1.5.30a):
+[FreeBSD `devel/xwpe`](https://www.freshports.org/devel/xwpe/),
+[OpenBSD `editors/xwpe`](https://openports.pl/path/editors/xwpe) and
+[NetBSD pkgsrc `editors/xwpe`](https://pkgsrc.se/editors/xwpe). An update to
+1.6.6 will be submitted to each once the release is tagged (the 1.5.30a/1.6.5
+tarballs predate the portability fixes).
 
 To run the test suite locally (`tests/run-tests.sh`, including the headless
 `--x11` layer), the extras the harness drives are:

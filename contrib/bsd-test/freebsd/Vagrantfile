@@ -1,0 +1,37 @@
+# Local FreeBSD build test for xwpe -- no GitHub, no hosted CI needed.
+#
+# Requires on the Linux host:
+#   - vagrant
+#   - a provider: VirtualBox, OR libvirt + the vagrant-libvirt plugin
+#     (Debian/liquorix usually has libvirt+qemu already; then run
+#      `vagrant up --provider=libvirt`).
+#
+# Usage:
+#   cd xwpe-dev/freebsd-port
+#   vagrant up                 # boots FreeBSD, builds xwpe, prints PASS/FAIL
+#   vagrant ssh                # poke around (e.g. run `make makeplist` on the port)
+#   vagrant destroy -f         # tear down
+#
+# Bump the box version if 14.2 ages out (freebsd/FreeBSD-14.2-RELEASE).
+
+Vagrant.configure("2") do |config|
+  # generic/freebsd14 ships libvirt AND virtualbox variants; the official
+  # freebsd/FreeBSD-14.2-RELEASE box is VirtualBox-only.
+  config.vm.box = "generic/freebsd14"
+  config.vm.boot_timeout = 600
+
+  # FreeBSD boxes default to /bin/sh and dislike the rsync of this folder.
+  config.ssh.shell = "sh"
+  config.vm.synced_folder ".", "/vagrant", disabled: true
+
+  config.vm.provider "virtualbox" do |vb|
+    vb.memory = 2048
+    vb.cpus   = 2
+  end
+  config.vm.provider "libvirt" do |lv|
+    lv.memory = 2048
+    lv.cpus   = 2
+  end
+
+  config.vm.provision "shell", path: "provision.sh", privileged: true
+end

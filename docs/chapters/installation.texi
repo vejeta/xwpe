@@ -113,8 +113,11 @@ base system.
 autoreconf -fi && ./configure --without-gpm && make
 @end example
 
-A FreeBSD port (@uref{https://www.freshports.org/devel/xwpe/, devel/xwpe})
-exists at 1.5.30a; an update to 1.6.6 follows the release tag.
+All three BSDs already package xwpe at 1.5.30a -- FreeBSD
+@uref{https://www.freshports.org/devel/xwpe/, devel/xwpe}, OpenBSD
+@uref{https://openports.pl/path/editors/xwpe, editors/xwpe} and NetBSD pkgsrc
+@uref{https://pkgsrc.se/editors/xwpe, editors/xwpe} -- and an update to 1.6.6
+follows the release tag.
 
 @section Configure options
 
