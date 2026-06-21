@@ -5567,15 +5567,26 @@ static void e_lsp_on_diag(const char *path, int line, int ch,
    see it; the depth counter is how it tells the fd-loop "a box is up, do not paint
    under me".  A counter, not a flag, so nested dialogs balance correctly. */
 static void e_lsp_ui_trace(const char *fmt, ...);   /* XWPE_UI_TRACE diag (below) */
+/* Keep the X11 fluid-scrollbar gate in sync with the modal depth: while any box
+   is up, the overlay must not paint over it (the box is not a window the
+   occlusion clip can see, so an unclipped bottom scrollbar bled over the Alt-Q
+   menu and dialogs -- X11 only; the console has no overlay). */
+static void e_lsp_modal_sync_chrome(void)
+{
+ extern int wpe_modal_active;
+ wpe_modal_active = (g_lsp_modal_depth > 0);
+}
 void e_lsp_modal_enter(void)
 {
  g_lsp_modal_depth++;
+ e_lsp_modal_sync_chrome();
  e_lsp_ui_trace("lsp modal enter depth=%d", g_lsp_modal_depth);
 }
 void e_lsp_modal_leave(void)
 {
  if (g_lsp_modal_depth > 0)
   g_lsp_modal_depth--;
+ e_lsp_modal_sync_chrome();
  e_lsp_ui_trace("lsp modal leave depth=%d", g_lsp_modal_depth);
 }
 

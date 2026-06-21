@@ -801,7 +801,7 @@ void wpe_render_chrome(void)
  extern ECNT *WpeEditor;
  int w;
 
- if (!cr || !WpeEditor || wpe_chrome_suppress)
+ if (!cr || !WpeEditor || wpe_chrome_suppress || wpe_modal_active)
   return;
 
  for (w = 1; w <= WpeEditor->mxedt; w++)

@@ -33,6 +33,7 @@ typedef struct WpeRenderBackend {
 
 extern WpeRenderBackend WpeRender;
 extern int wpe_chrome_suppress;
+extern int wpe_modal_active;
 extern int wpe_scroll_dragging;
 
 int wpe_render_cairo_init(void);
