@@ -117,6 +117,17 @@ AC_SUBST([UTIL_LIBS])
 # The sources pick the right one from these HAVE_*_H defines.
 AC_CHECK_HEADERS([pty.h util.h libutil.h])
 
+# --- backtrace() for the crash handler ---
+# backtrace()/backtrace_symbols_fd() are in libc on glibc but in libexecinfo
+# (base system) on the BSDs.  Route the flag through EXECINFO_LIBS like
+# UTIL_LIBS.  Not fatal if absent -- the crash handler just degrades.
+ace_save_LIBS="$LIBS"
+AC_SEARCH_LIBS([backtrace], [execinfo],
+  [AS_IF([test "x$ac_cv_search_backtrace" = "xnone required"],
+     [EXECINFO_LIBS=""], [EXECINFO_LIBS="$ac_cv_search_backtrace"])])
+LIBS="$ace_save_LIBS"
+AC_SUBST([EXECINFO_LIBS])
+
 # --- Required: zlib ---
 AC_CHECK_LIB([z], [inflate], [],
   [AC_MSG_ERROR([zlib is required. Install zlib1g-dev or zlib-devel.])])

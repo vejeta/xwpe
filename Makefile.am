@@ -70,6 +70,7 @@ we_LDADD = \
   $(JSONC_LIBS) \
   $(GPM_LIBS) \
   $(UTIL_LIBS) \
+  $(EXECINFO_LIBS) \
   -lz
 
 # --- Header files (for dist) ---
