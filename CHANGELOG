@@ -233,6 +233,12 @@ Changes
 
 Unreleased (1.6.6 in progress)
 
+* The read-only padlock no longer leaks onto tool/output panes (Messages,
+  Watches, Stack, "Metals Doctor", ...).  Those panes reuse the read-only flag
+  to mean "not editable" but back no file; the marker now gates on the window
+  actually naming a file that exists on disk, so a real locked file still earns
+  its lock while every synthetic pane (present and future) stays unmarked.
+
 * LSP semantic tokens can now use real 24-bit colour for categories the
   16-colour palette cannot express: method/function/macro names paint in a warm
   orange (#FF8C00) instead of falling back to bright red.  A single palette

@@ -599,17 +599,27 @@ void e_free_view(PIC **pp)
  *pp = NULL;
 }
 
-/* e_win_is_tool_pane - True for the synthetic output panes (Messages, Watches,
-   Stack).  They reuse the read-only flag (ins == 8) to mean "not editable", but
-   they are tool output, NOT files on disk -- so they must not wear the read-only
-   padlock, which says "this is a locked file".  (Help is excluded separately by
-   its DTMD_HELP.)  Used by the title-bar draw to keep the padlock honest. */
-static int e_win_is_tool_pane(FENSTER *f)
+/* e_win_backs_file - True only when the window's title names a real file on
+   disk -- the one thing the read-only padlock should mark.  The synthetic
+   tool/output panes (Messages, Watches, Stack, "Metals Doctor", and any other
+   e_d_p_named output window) reuse the read-only flag (ins == 8) to mean "not
+   editable", but they back no file -- so checking the file exists keeps the
+   padlock honest without enumerating every pane name (a new pane would
+   otherwise sprout a spurious lock, as "Metals Doctor" did).  A locked library
+   source (.metals/readonly, /usr/include header, a 0444 file) DOES exist, so it
+   still earns its lock.  (Help is excluded separately by its DTMD_HELP.) */
+static int e_win_backs_file(FENSTER *f)
 {
- return (f->datnam &&
-         (!strcmp(f->datnam, "Messages") ||
-          !strcmp(f->datnam, "Watches")  ||
-          !strcmp(f->datnam, "Stack")));
+ char *full;
+ int ok;
+
+ if (!f->datnam || !f->datnam[0])
+  return(0);
+ full = e_mkfilename(f->dirct, f->datnam);
+ ok = (full && access(full, F_OK) == 0);
+ if (full)
+  FREE(full);
+ return(ok);
 }
 
 /*    Frame for edit window   */
@@ -674,7 +684,7 @@ void e_ed_rahmen(FENSTER *f, int sw)
      unmistakably non-editable.  0x1F512 is LOCK; on a non-UTF console the chrome
      fallback (e_t_chrome_ascii) substitutes a stand-in. */
   int ro = (f->ins == 8 && f->dtmd != DTMD_HELP    /* a locked FILE...              */
-            && !e_win_is_tool_pane(f));            /* ...not a Messages/Watches pane */
+            && e_win_backs_file(f));               /* ...that exists on disk         */
   if (ro)
    g_rahmen_hdr_frb = f->fb->es.fb;       /* title text in the dimmer frame colour */
   e_std_rahmen(f->a.x, f->a.y, f->e.x, f->e.y, header, sw, f->fb->er.fb,

@@ -596,3 +596,21 @@ class TestMultipleMenuCycles:
                        'hello' in content.lower())
         assert has_content, \
             f"Display corrupted after compile+menu: {content[:300]}"
+
+
+def test_output_pane_has_no_padlock(compile_dir):
+    """Compiling spawns the read-only Messages output pane (ins==8).  It is a
+    tool pane backing no file, so it must NOT wear the read-only padlock -- only
+    real locked files on disk do (see test_readonly_marker.py).  Guards the
+    e_win_backs_file gate: the source compiled here is writable, so the padlock
+    glyph must not appear anywhere on screen."""
+    lines = run_wpe_in_dir(
+        compile_dir, 'one_error.c',
+        cols=80, rows=30, wait=1.5,
+        keys=[KEY_F9, ('wait', 3.0)]
+    )
+    content = '\n'.join(lines)
+    assert 'Messages' in content, \
+        f"compile did not open the Messages output pane:\n{content[:400]}"
+    assert '\U0001F512' not in content, \
+        f"read-only padlock leaked onto a tool/output pane:\n{content[:400]}"
