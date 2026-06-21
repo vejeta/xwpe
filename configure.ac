@@ -33,18 +33,22 @@ AC_CHECK_PROG([TEXI2ANY], [texi2any], [texi2any], [:])
 AC_CHECK_PROG([PANDOC], [pandoc], [pandoc], [:])
 
 # --- Required: ncursesw (wide character curses) ---
-# Linux/FreeBSD ship an ncursesw.pc; OpenBSD has wide-char curses in the base
-# system with no pkg-config file, so fall back to a direct link check there.
+# Probe, in order: an ncursesw.pc (Linux/FreeBSD); an ncurses.pc (NetBSD pkgsrc,
+# whose wide-char build ships only 'ncurses.pc' and carries the crucial
+# -I.../ncurses include path + -DNCURSES_WIDECHAR); finally a direct link check
+# for OpenBSD, which keeps wide-char curses (with the mouse API) in its base
+# system and provides no pkg-config file.
 PKG_CHECK_MODULES([NCURSESW], [ncursesw], [],
-  [ace_save_LIBS="$LIBS"
-   AC_SEARCH_LIBS([get_wch], [ncursesw curses],
-     [AS_IF([test "x$ac_cv_search_get_wch" = "xnone required"],
-        [NCURSESW_LIBS=""], [NCURSESW_LIBS="$ac_cv_search_get_wch"])],
-     [AC_MSG_ERROR([wide-character curses (ncursesw) is required. Install libncurses-dev or ncurses-devel.])])
-   LIBS="$ace_save_LIBS"
-   NCURSESW_CFLAGS=""
-   AC_SUBST([NCURSESW_CFLAGS])
-   AC_SUBST([NCURSESW_LIBS])])
+  [PKG_CHECK_MODULES([NCURSESW], [ncurses], [],
+    [ace_save_LIBS="$LIBS"
+     AC_SEARCH_LIBS([get_wch], [ncursesw curses],
+       [AS_IF([test "x$ac_cv_search_get_wch" = "xnone required"],
+          [NCURSESW_LIBS=""], [NCURSESW_LIBS="$ac_cv_search_get_wch"])],
+       [AC_MSG_ERROR([wide-character curses (ncursesw) is required. Install libncurses-dev or ncurses-devel.])])
+     LIBS="$ace_save_LIBS"
+     NCURSESW_CFLAGS=""
+     AC_SUBST([NCURSESW_CFLAGS])
+     AC_SUBST([NCURSESW_LIBS])])])
 
 # --- json-c: wire format for the DAP debug client (Go/Rust/Scala) ---
 PKG_CHECK_MODULES([JSONC], [json-c], [],
