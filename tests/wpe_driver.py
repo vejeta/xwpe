@@ -82,6 +82,32 @@ def incoherence(reason):
     return pytest.mark.xfail(reason="INCOHERENCE: " + reason, strict=False)
 
 
+def tool_usable(name, *args):
+    """True only if `name` is on PATH AND actually runs (exit 0).
+
+    shutil.which() finds the executable file, but a rustup / asdf / mise shim
+    can sit on PATH and still fail at *runtime* -- no default toolchain set, a
+    rust-toolchain.toml pinning a toolchain that is not installed, a component
+    (e.g. rust-analyzer) not added.  A which()-only skip guard then lets the
+    test RUN and FAIL with a confusing toolchain error instead of self-skipping.
+    Probing `name --version` (or the given args) and checking the exit status is
+    what distinguishes "installed and usable" from "a shim that errors", so a
+    misconfigured toolchain skips with a precise reason -- matching the rest of
+    the suite, which self-skips when a tool is absent."""
+    path = shutil.which(name)
+    if path is None:
+        return False
+    probe = list(args) if args else ["--version"]
+    try:
+        return subprocess.run(
+            [path, *probe],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            timeout=30,
+        ).returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
 class WpeSession:
     """A live wpe instance under a pyte-backed pty, with helpers to send
     keys, drive menus, save, and read back the file or the screen."""
@@ -101,6 +127,17 @@ class WpeSession:
         env = os.environ.copy()
         env.update(TERM="xterm-256color", COLUMNS=str(cols), LINES=str(rows),
                    LC_ALL="en_US.UTF-8", HOME=workdir)
+        # HOME=workdir gives xwpe a clean ~/.xwpe, but it also HIDES per-HOME
+        # toolchain config: the rustup `rustc` / `cargo` / `rust-analyzer` shims
+        # resolve the default toolchain from $HOME/.rustup, so under workdir they
+        # die with "rustup could not choose a version of rustc ... one wasn't
+        # configured" and every Rust compile/debug/LSP test breaks -- even though
+        # the toolchain is installed and works in a normal shell. Point the
+        # toolchain managers back at the real home (only if the user has not set
+        # them) so the shims keep resolving under the test HOME.
+        _real_home = os.path.expanduser("~")
+        env.setdefault("RUSTUP_HOME", os.path.join(_real_home, ".rustup"))
+        env.setdefault("CARGO_HOME", os.path.join(_real_home, ".cargo"))
         # The menu/file/etc. tests do not exercise the LSP, but opening t.c
         # on a box with clangd installed (e.g. Homebrew on macOS) pops up a
         # "Starting language server..." Messages window that overlays the

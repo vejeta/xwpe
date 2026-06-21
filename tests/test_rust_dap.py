@@ -9,12 +9,11 @@ adapter chatter handled the same way.
 Requires `rustc` and `gdb`.  Skips otherwise.
 """
 import re
-import shutil
 import time
 
 import pytest
 
-from wpe_driver import WpeSession
+from wpe_driver import WpeSession, tool_usable
 
 # Iterative factorial; `fact` grows 1 -> 2 -> 6 -> 24 -> 120.  The breakpoint
 # goes on line 6 (the multiply), reached every loop iteration.
@@ -35,8 +34,9 @@ CTRL_G = "\x07"
 CTRL_N = "\x0e"     # Emacs "down a line" -- pyte delivers it reliably (unlike \033[B)
 
 pytestmark = pytest.mark.skipif(
-    shutil.which("rustc") is None or shutil.which("gdb") is None,
-    reason="rustc and gdb required")
+    not tool_usable("rustc") or not tool_usable("gdb"),
+    reason="a usable rustc toolchain and gdb are required "
+           "(rustc/gdb must run, not just be on PATH)")
 
 
 def _text(w):

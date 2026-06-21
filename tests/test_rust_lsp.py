@@ -11,12 +11,11 @@ A Cargo.toml + src/main.rs are written so rust-analyzer loads a crate.
 Skips when rust-analyzer (or cargo) is absent.  rust-analyzer indexes std on
 first run, so this is the slowest bridge test.
 """
-import shutil
 import time
 
 import pytest
 
-from wpe_driver import WpeSession
+from wpe_driver import WpeSession, tool_usable
 
 PROG = (
     "fn add(a: i32, b: i32) -> i32 {\n"
@@ -32,8 +31,10 @@ PROG = (
 ALT_Q = "\033q"     # the LSP prefix (Alt-Q)
 
 pytestmark = pytest.mark.skipif(
-    shutil.which("rust-analyzer") is None or shutil.which("cargo") is None,
-    reason="rust-analyzer and cargo are required")
+    not tool_usable("rust-analyzer") or not tool_usable("cargo"),
+    reason="a usable rust-analyzer and cargo are required "
+           "(both must run, not just be on PATH; e.g. rustup needs a default "
+           "toolchain and the rust-analyzer component installed)")
 
 
 def _text(w):
