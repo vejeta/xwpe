@@ -157,16 +157,23 @@ variable, or a method call from a keyword, because it never sees the program's
 meaning.  Metals does: it returns @dfn{semantic tokens} that classify every
 identifier from the @emph{compiler's} point of view.  Toggling this on repaints
 the file from those tokens, with a dedicated palette so the categories that the
-regex lexer conflates become distinct: @strong{types/classes} in light cyan,
-@strong{functions/methods} in yellow, @strong{parameters} in light magenta,
-@strong{variables} in light green, @strong{keywords} in bright white, numbers
-and strings in their own shades.  The win is the one the big IDEs sell: at a
-glance a @code{type} reads differently from a @code{keyword}, a @code{function}
-call, and a @code{parameter}, even where the regex colouring would paint them
-all the same.
+regex lexer conflates become distinct: @strong{types/classes} in yellow,
+@strong{functions/methods} in orange, @strong{parameters} in violet,
+@strong{variables} in green, @strong{keywords} in white, strings in their own
+shade.  The win is the one the big IDEs sell: at a glance a @code{type} reads
+differently from a @code{keyword}, a @code{function} call, and a
+@code{parameter}, even where the regex colouring would paint them all the same.
 The set re-queries itself when the server reclassifies (e.g.@: a cross-file type
 resolves after indexing), updating on your next keystroke.  Press @kbd{Alt-Q M}
 again to turn it off and return to the regex colouring.  Off by default.
+
+The function/method @strong{orange} (@code{#FF8C00}) is a real 24-bit colour the
+16-colour palette cannot express.  In X11 it always shows.  In the terminal it
+shows exactly when the terminal can do 24-bit colour: a direct-colour terminfo
+(@env{TERM=xterm-direct}, kitty, or tmux configured with the @code{RGB}
+capability) renders it precisely, a 256-colour terminal that allows palette
+redefinition gets it via @code{OSC 4}, and anything else falls back to red.
+There is nothing to configure in xwpe -- it detects the terminal at start-up.
 @item Alt-Q L
 Code @dfn{lenses}: the @samp{run}/@samp{debug}/@samp{test} and reference-count
 annotations the server attaches to definitions (main methods, test suites), in
