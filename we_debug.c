@@ -534,6 +534,7 @@ static int  e_d_dap_run(FENSTER *f);
 static int  e_d_dap_step(FENSTER *f, int sw);
 static int  e_d_dap_watches(FENSTER *f, int sw);
 static void e_d_dap_quit(FENSTER *f);
+static void e_scala_pin_jdk(FENSTER *f, const char *who);  /* pin Scala JVM (below) */
 
 typedef struct {
  char buf[SVLINES][256];
@@ -3203,6 +3204,9 @@ static int e_d_dap_start(FENSTER *f)
      endpoint, keep the build server alive in g_bsp, then connect the engine. */
   char bhost[64], mainclass[256], berr[256];
   int bport = 0;
+  /* scala-cli launches Bloop from JAVA_HOME/PATH to COMPILE the debuggee, so the
+     too-new-JDK crash hits debug too -- pin it here, before the BSP spawns. */
+  e_scala_pin_jdk(f, "Scala debug");
   e_d_p_message("Starting Scala build server (BSP)...", f, 1);
   g_bsp = e_bsp_start(dir, f->datnam, bhost, sizeof(bhost), &bport,
                       mainclass, sizeof(mainclass), berr, sizeof(berr));
@@ -5891,16 +5895,18 @@ static int e_find_supported_jdk(char *out, size_t sz)
  return(0);
 }
 
-/* Metals' presentation compiler (hover / completion / go-to-definition) runs on
-   the JVM Metals itself uses -- NOT the project's pinned build JVM.  The Scala 3
-   compiler crashes at start-up on a too-new JDK (>= 24: "asTerm called on
-   not-a-Term"), which makes every PC-driven action silently return empty (hover
-   always "No hover information") while definition/diagnostics still work -- a
-   confusing split.  So, unless the user already pinned a supported JAVA_HOME,
-   detect a too-new default and repoint JAVA_HOME (and PATH) at an LTS JDK for the
-   Metals child, and say what was done.  No-op when the default JDK is already
-   fine or no LTS JDK is installed. */
-static void e_lsp_pin_jdk(FENSTER *f)
+/* Pin the JVM a Scala tool runs on away from a too-new default JDK.  The Scala 3
+   compiler crashes at start-up on JDK >= 24 ("asTerm called on not-a-Term"),
+   which silently breaks whatever drives it: for @who "Metals" the presentation
+   compiler (hover/completion go empty -- "No hover information" -- while
+   definition/diagnostics still work, a confusing split); for @who "Scala debug"
+   the Bloop build server, which scala-cli launches from JAVA_HOME/PATH to
+   compile the debuggee.  Both inherit this process's environment, so -- unless
+   the user already pinned a supported JAVA_HOME -- repoint JAVA_HOME (and PATH)
+   at an LTS JDK and say what was done.  setenv is idempotent across callers (the
+   second sees a usable JAVA_HOME and returns).  No-op when the default JDK is
+   already fine or no LTS JDK is installed. */
+static void e_scala_pin_jdk(FENSTER *f, const char *who)
 {
  const char *jh = getenv("JAVA_HOME");
  char jbin[1100], jdk[1024], msg[1200], newpath[4096];
@@ -5918,9 +5924,9 @@ static void e_lsp_pin_jdk(FENSTER *f)
   return;                        /* default is fine, or unknown -- do not meddle */
  if (!e_find_supported_jdk(jdk, sizeof(jdk)))
  {
-  snprintf(msg, sizeof(msg), "Metals: default JDK %d is too new for the Scala "
+  snprintf(msg, sizeof(msg), "%s: default JDK %d is too new for the Scala "
            "compiler and no LTS JDK (17/21) was found -- set JAVA_HOME to one.",
-           major);
+           who, major);
   e_d_p_message(msg, f, 1);
   return;
  }
@@ -5928,8 +5934,8 @@ static void e_lsp_pin_jdk(FENSTER *f)
  oldpath = getenv("PATH");
  snprintf(newpath, sizeof(newpath), "%s/bin:%s", jdk, oldpath ? oldpath : "");
  setenv("PATH", newpath, 1);
- snprintf(msg, sizeof(msg), "Metals: pinned JAVA_HOME=%s (default JDK %d is too "
-          "new for the Scala compiler).", jdk, major);
+ snprintf(msg, sizeof(msg), "%s: pinned JAVA_HOME=%s (default JDK %d is too "
+          "new for the Scala compiler).", who, jdk, major);
  e_d_p_message(msg, f, 1);
 }
 
@@ -6094,7 +6100,7 @@ static int e_lsp_is_dep_source(FENSTER *f)
 static void e_lsp_setup_scala_build(FENSTER *f, const char *dir)
 {
  char cmd[1400];
- e_lsp_pin_jdk(f);              /* keep Metals' Scala PC off a too-new JDK */
+ e_scala_pin_jdk(f, "Metals");  /* keep Metals' Scala PC off a too-new JDK */
  /* </dev/null: never let the child share xwpe's interactive terminal stdin. */
  snprintf(cmd, sizeof(cmd), "scala-cli setup-ide '%s' </dev/null >/dev/null 2>&1", dir);
  if (system(cmd) != 0)

@@ -209,7 +209,11 @@ connects its DAP engine to it.  Frames arrive Scala-demangled (e.g.
 package (2.11) is too old.  It is the heaviest backend at run time (a JVM build
 server plus a @file{.bsp}/@file{.scala-build} project beside the source), but the
 xwpe binary gains nothing heavy -- the toolchain stays an external tool.
-@end itemize
+The Scala 3 compiler crashes at start-up on a too-new JDK (24+); when the
+default @code{java} on @env{PATH} is too new and an LTS JDK (17/21) is installed,
+xwpe repoints @env{JAVA_HOME} at it for Bloop before starting the build server
+(and likewise for Metals), so debugging works out of the box without a
+@code{//> using jvm} pin.  Set @env{JAVA_HOME} yourself to override.
 Run/Continue (@kbd{Ctrl-G R}), Step Over (@kbd{F8}), Step Into (@kbd{F7}),
 watches (@kbd{Ctrl-G W}, evaluated with the DAP @code{evaluate} request) and
 Quit (@kbd{Ctrl-G Q}) all work as with gdb.

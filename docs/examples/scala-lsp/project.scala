@@ -9,7 +9,8 @@
 // Pin the JVM too: Metals' Scala 3 presentation compiler does not run on the
 // newest JDKs (24+ crash it at start-up).  Temurin 21 LTS keeps both the build
 // and Metals on a supported JVM; scala-cli downloads and caches it.  (xwpe also
-// auto-pins JAVA_HOME for Metals when the default JDK is too new.)
+// auto-pins JAVA_HOME for BOTH Metals and Scala debug (Bloop) when the default
+// JDK is too new, so a project WITHOUT this directive still works.)
 //> using jvm temurin:21
 //
 // Warn on unused imports/locals so the unused imports in actions.scala produce

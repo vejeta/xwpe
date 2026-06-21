@@ -233,6 +233,14 @@ Changes
 
 Unreleased (1.6.6 in progress)
 
+* Scala debug works out of the box on a machine whose default JDK is too new.
+  The Scala 3 compiler crashes at start-up on JDK 24+, and scala-cli/Bloop build
+  the debuggee with the JVM from JAVA_HOME/PATH -- so debug failed where the
+  default java was, e.g., OpenJDK 26.  xwpe now repoints JAVA_HOME at an LTS JDK
+  (17/21) before starting the Scala build server, exactly as it already did for
+  Metals (one shared e_scala_pin_jdk helper, labelled per caller).  A project no
+  longer needs a "//> using jvm" pin just to be debuggable.
+
 * X11: the fluid scrollbar no longer paints over a modal box.  A dialog, picker,
   pulldown or the Alt-Q LSP menu is not a window on the editor stack, so the
   scrollbar's window-occlusion clip could not see it and the editor's bottom
