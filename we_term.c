@@ -551,7 +551,9 @@ int e_t_initscr()
  }
 */
 #ifndef TERMCAP
- if ((stdscr=initscr())==(WINDOW *)ERR) exit(27);
+ /* initscr() sets the global stdscr itself; do not assign to it -- a
+    reentrant-built ncursesw (e.g. openSUSE) makes stdscr a non-lvalue macro. */
+ if (initscr()==(WINDOW *)ERR) exit(27);
 #ifdef NCURSES
  cbreak();
  noecho();
@@ -737,7 +739,7 @@ static const int e_t_ansi16_rgb[16] = {
 
 static void e_t_truecolor_detect(void)
 {
-#ifdef NCURSES
+#if defined(NCURSES) && defined(HAVE_INIT_EXTENDED_PAIR)
  e_t_tc_mode = E_TC_NONE;
  if (tigetflag("RGB") > 0 || COLORS >= (1 << 24))
   e_t_tc_mode = E_TC_DIRECT;
@@ -753,7 +755,7 @@ static void e_t_truecolor_detect(void)
    unavailable (the caller then paints the 16-colour fallback). */
 static int e_t_sem_tc_set(int slot, int bg)
 {
-#ifdef NCURSES
+#if defined(NCURSES) && defined(HAVE_INIT_EXTENDED_PAIR)
  static unsigned char inited[256];
  int r, g, b, key, pairno, ep;
 

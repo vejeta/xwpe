@@ -1,5 +1,5 @@
 Name:           xwpe
-Version:        1.6.5
+Version:        1.6.6
 Release:        1%{?dist}
 Summary:        Borland-style programming environment and editor for console and X11
 
@@ -89,6 +89,18 @@ make check
 %{_infodir}/xwpe.info*
 
 %changelog
+* Sun Jun 21 2026 Juan Manuel Méndez Rey <juan.mendezr@proton.me> - 1.6.6-1
+- New upstream release.
+- BSD portability: builds and links natively on FreeBSD, OpenBSD and NetBSD
+  (base-curses fallback, SGR console mouse without terminfo, C-standard probe).
+  On OpenBSD the console truecolor path is guarded on HAVE_INIT_EXTENDED_PAIR
+  (its base curses lacks init_extended_pair/_color) and falls back to 16 colours.
+- LSP truecolor semantic tokens (orange methods, teal types) on console and X11.
+- Scala debug auto-pins the Bloop/BSP JVM, like Metals.
+- Build: e_d_quit_basic() returns on every path, so GCC -Werror=return-type
+  (default on openSUSE Tumbleweed) no longer rejects the build; and do not
+  assign to stdscr (a non-lvalue macro in a reentrant-built ncursesw).
+
 * Sat Jun 20 2026 Juan Manuel Méndez Rey <juan.mendezr@proton.me> - 1.6.5-1
 - New upstream release (bundles 1.6.4 and 1.6.5).
 - Embedded VT terminal (libvterm) with the Borland Alt-F5 User Screen; GNU

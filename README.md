@@ -5,7 +5,7 @@
 # xwpe
 
 > [!NOTE]
-> The current release is **1.6.5**. The editor, compiler integration and
+> The current release is **1.6.6**. The editor, compiler integration and
 > debugger are stable; the **LSP client** (language-server features) is newer
 > and still maturing, so expect the occasional rough edge there &mdash; please
 > report what breaks. **Testers welcome.**

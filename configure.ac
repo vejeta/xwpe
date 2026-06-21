@@ -1,5 +1,5 @@
 AC_PREREQ([2.69])
-AC_INIT([xwpe], [1.6.5], [juan.mendezr@proton.me], [xwpe],
+AC_INIT([xwpe], [1.6.6], [juan.mendezr@proton.me], [xwpe],
         [https://codeberg.org/mendezr/xwpe])
 AC_CONFIG_SRCDIR([Xwpe.h])
 AC_CONFIG_AUX_DIR([build-aux])
@@ -49,6 +49,16 @@ PKG_CHECK_MODULES([NCURSESW], [ncursesw], [],
      NCURSESW_CFLAGS=""
      AC_SUBST([NCURSESW_CFLAGS])
      AC_SUBST([NCURSESW_LIBS])])])
+
+# --- Optional: ncurses extended-colour API (init_extended_pair/_color) ---
+# Drives LSP semantic-token truecolor on the console.  Present in ncurses 6
+# (Linux, FreeBSD ports, NetBSD pkgsrc) but absent from OpenBSD's base curses,
+# where linking it fails; probe for it and fall back to the 16-colour path when
+# it is missing (see e_t_sem_tc_set in we_term.c).
+ace_save_LIBS="$LIBS"
+LIBS="$NCURSESW_LIBS $LIBS"
+AC_CHECK_FUNCS([init_extended_pair])
+LIBS="$ace_save_LIBS"
 
 # --- json-c: wire format for the DAP debug client (Go/Rust/Scala) ---
 PKG_CHECK_MODULES([JSONC], [json-c], [],
