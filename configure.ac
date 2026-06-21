@@ -15,8 +15,18 @@ AC_CHECK_PROG([TEXI2ANY], [texi2any], [texi2any], [:])
 AC_CHECK_PROG([PANDOC], [pandoc], [pandoc], [:])
 
 # --- Required: ncursesw (wide character curses) ---
+# Linux/FreeBSD ship an ncursesw.pc; OpenBSD has wide-char curses in the base
+# system with no pkg-config file, so fall back to a direct link check there.
 PKG_CHECK_MODULES([NCURSESW], [ncursesw], [],
-  [AC_MSG_ERROR([ncursesw is required. Install libncurses-dev or ncurses-devel.])])
+  [ace_save_LIBS="$LIBS"
+   AC_SEARCH_LIBS([get_wch], [ncursesw curses],
+     [AS_IF([test "x$ac_cv_search_get_wch" = "xnone required"],
+        [NCURSESW_LIBS=""], [NCURSESW_LIBS="$ac_cv_search_get_wch"])],
+     [AC_MSG_ERROR([wide-character curses (ncursesw) is required. Install libncurses-dev or ncurses-devel.])])
+   LIBS="$ace_save_LIBS"
+   NCURSESW_CFLAGS=""
+   AC_SUBST([NCURSESW_CFLAGS])
+   AC_SUBST([NCURSESW_LIBS])])
 
 # --- json-c: wire format for the DAP debug client (Go/Rust/Scala) ---
 PKG_CHECK_MODULES([JSONC], [json-c], [],
