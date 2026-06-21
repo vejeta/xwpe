@@ -468,6 +468,16 @@ you must switch it to Meta first:
   - **kitty:** add `macos_option_as_alt yes` to `~/.config/kitty/kitty.conf`
     (kitty does NOT do this by default), then **fully quit and reopen kitty**
     (Cmd-Q) -- a config *reload* does not always apply this macOS setting.
+    While you are in `kitty.conf`, also unbind `cmd+f`: kitty's default opens
+    its own scrollback/search overlay on top of the editor, which looks like a
+    rogue vi-style command line appearing under xwpe.  Recommended snippet:
+    ```conf
+    macos_option_as_alt yes      # Option sends Esc+ so Alt-menus reach xwpe
+    map cmd+f no_op              # don't let kitty steal Cmd-F from the editor
+    ```
+    The arrow-vs-I-beam mouse pointer is handled by xwpe itself (it asks via
+    OSC 22 when it enables mouse tracking); kitty and iTerm2 honour it,
+    Terminal.app ignores it.
   - **iTerm2:** Profiles -> Keys -> *Left Option key* -> *Esc+*.
   - **Terminal.app:** Settings -> Profiles -> Keyboard -> *"Use Option as Meta
     key"*. Its dated terminfo also causes ncurses key/colour quirks, so prefer
