@@ -1001,7 +1001,13 @@ static int e_t_getch_poll(void)
 static mmask_t e_t_sgr_bstate(int b, int final)
 {
  if (b & 0x40)
-  return (b & 1) ? BUTTON5_PRESSED : BUTTON4_PRESSED;
+#if defined(BUTTON4_PRESSED) && defined(BUTTON5_PRESSED)
+  return (b & 1) ? BUTTON5_PRESSED : BUTTON4_PRESSED;   /* wheel down / up */
+#else
+  /* OpenBSD's base curses defines no wheel-button constants; the wheel is
+     not dispatched through the button bitmask anyway, so report no buttons. */
+  return 0;
+#endif
  if (final == 'm')
  {
   switch (b & 3)
