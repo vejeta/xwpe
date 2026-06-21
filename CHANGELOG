@@ -231,7 +231,7 @@ Bugs fixed in 1.6.x:
 
 Changes
 
-Unreleased (1.6.6 in progress)
+1.6.6 (BSD portability: FreeBSD/OpenBSD/NetBSD, LSP truecolor semantic tokens)
 
 * Documented that xwpe is fully usable without function keys -- macOS reserves
   F1-F12 for the system, but every command has a non-F-key binding (Alt-<letter>
@@ -284,7 +284,7 @@ Unreleased (1.6.6 in progress)
   Verified end to end with clangd (tests/test_truecolor_console.py) and a unit
   test of the palette (tests/test_lsp_truecolor.c).
 
-Unreleased (BSD portability)
+BSD portability (FreeBSD, OpenBSD, NetBSD):
 
 * Console mouse now works on terminals whose terminfo lacks an SGR-capable
   kmous -- FreeBSD's termcap console and OpenBSD's base curses.  wpe requests
@@ -300,6 +300,10 @@ Unreleased (BSD portability)
   is absent; detect a usable C standard flag (gnu17 -> gnu11 on NetBSD's base
   GCC 7); accept the vterm03 pkgsrc module name; avoid @geq{} so the manual
   builds with older makeinfo.  All no-ops on Linux/glibc.
+* Build: e_d_quit_basic() now returns a value on every path.  It is declared
+  int but the success path fell off the end, which GCC's -Werror=return-type
+  (the default on openSUSE Tumbleweed) rejects.  Callers ignore the result, so
+  it returns 0 -- no behaviour change; unblocks strict-toolchain distro builds.
 
 1.6.5 (LSP for five languages, GNU Algol 68 / ga68 toolchain, Algol 68 highlighting)
 

@@ -1397,6 +1397,7 @@ int e_d_quit_basic(FENSTER *f)
    e_d_switch_out(0);
   }
  }
+ return 0;
 }
 
 int e_d_quit(FENSTER *f)

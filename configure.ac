@@ -1,5 +1,5 @@
 AC_PREREQ([2.69])
-AC_INIT([xwpe], [1.6.5], [juan.mendezr@proton.me], [xwpe],
+AC_INIT([xwpe], [1.6.6], [juan.mendezr@proton.me], [xwpe],
         [https://codeberg.org/mendezr/xwpe])
 AC_CONFIG_SRCDIR([Xwpe.h])
 AC_CONFIG_AUX_DIR([build-aux])
