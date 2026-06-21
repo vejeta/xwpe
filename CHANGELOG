@@ -233,6 +233,13 @@ Changes
 
 Unreleased (1.6.6 in progress)
 
+* X11: the fluid scrollbar no longer paints over a modal box.  A dialog, picker,
+  pulldown or the Alt-Q LSP menu is not a window on the editor stack, so the
+  scrollbar's window-occlusion clip could not see it and the editor's bottom
+  bar bled over the box; the overlay is now suppressed while any modal box is up
+  (wpe_modal_active) and returns when it closes.  Console is unaffected (no
+  overlay -- the box's cells simply cover the bar).
+
 * Title-bar markers now distinguish two kinds of non-editable window: a real
   locked FILE on disk (0444, an extracted library source) keeps the padlock and
   a dimmed name, while a tool/output pane (Messages, Watches, Stack, "Metals
