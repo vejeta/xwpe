@@ -5180,7 +5180,8 @@ static int e_lsp_sem_fg(SCHIRM *s, const char *t)
    cell from e_lsp_decor_attr_at, AFTER diagnostics/highlight (which win). */
 static int e_lsp_sem_color_at(SCHIRM *s, int y, int x, int base)
 {
- int i, fg;
+ int i, fg, slot;
+ const char *legend;
 
  if (!g_sem_on)
   return(base);
@@ -5188,10 +5189,18 @@ static int e_lsp_sem_color_at(SCHIRM *s, int y, int x, int base)
   if (g_sem_active[i].line == y && x >= g_sem_active[i].start &&
       x < g_sem_active[i].start + g_sem_active[i].length)
   {
-   fg = e_lsp_sem_fg(s, e_lsp_semantic_legend(g_lsp, g_sem_active[i].type));
+   legend = e_lsp_semantic_legend(g_lsp, g_sem_active[i].type);
+   fg = e_lsp_sem_fg(s, legend);
    if (fg < 0)
     return(base);
-   return(16 * (base / 16) + fg);        /* keep the cell bg, set the token fg */
+   /* Keep the cell bg, set the token fg.  If the category has a dedicated
+      24-bit colour (e.g. method -> orange), flag the cell so the X11 and the
+      direct-colour console renderers paint the true RGB; the 16-colour fg
+      stays in the low byte as the fallback for everything else. */
+   slot = e_lsp_sem_truecolor(legend);
+   if (slot >= 0)
+    return(ATTR_TC_MAKE(slot, 16 * (base / 16) + fg));
+   return(16 * (base / 16) + fg);
   }
  return(base);
 }

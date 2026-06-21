@@ -83,6 +83,25 @@ extern SCREENCELL *altschirm;
  if (SCHIRM_INBOUNDS(x, y)) schirm[(y) * MAXSCOL + (x)].attr = (c); \
  } while(0)
 
+/* --- Truecolor semantic-token overlay (1.6.6) -------------------------------
+ * A cell attribute is normally 0..255: high nibble = background index, low
+ * nibble = foreground index (each 0..15).  An LSP semantic token that wants a
+ * 24-bit colour the 16-colour palette cannot express (the headline case:
+ * methods want orange, which the 16 colours lack) sets ATTR_TC and stores the
+ * truecolor SLOT (resolved to RGB by e_lsp_sem_slot_rgb in we_lsp.c) in bits
+ * 8..11.  The low byte still holds a valid 16-colour fallback, so any code path
+ * that ignores the flag -- or a terminal that cannot do 24-bit -- renders a
+ * sensible approximation.  ATTR_BASE() is that 8-bit fallback: EVERY consumer
+ * doing /16 or %16 colour arithmetic must mask through it so the flag bit never
+ * corrupts the background index. */
+#define ATTR_TC            0x1000
+#define ATTR_TC_SLOT_SHIFT 8
+#define ATTR_BASE(a)       ((a) & 0xFF)
+#define ATTR_IS_TC(a)      (((a) & ATTR_TC) != 0)
+#define ATTR_TC_SLOT(a)    (((a) >> ATTR_TC_SLOT_SHIFT) & 0x0F)
+#define ATTR_TC_MAKE(slot, base16) \
+ (ATTR_TC | (((slot) & 0x0F) << ATTR_TC_SLOT_SHIFT) | ((base16) & 0xFF))
+
 /*  Pointer to functions for function calls  */
 
 #define fk_locate(x, y) (*fk_u_locate)(x, y)

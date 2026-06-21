@@ -184,7 +184,7 @@ metainfodir = $(datadir)/metainfo
 metainfo_DATA = io.codeberg.mendezr.xwpe.metainfo.xml
 
 # --- Unit tests ---
-check_PROGRAMS = test_checkheader test_syntax_def test_fdloop test_clipboard test_lsp_buffer test_lsp_doctor test_lsp_semantic test_dap test_dap_dlv test_dap_gdb test_dap_lldb test_dap_scala test_lsp_scala test_lsp_clangd test_lsp_python test_lsp_gopls test_lsp_rust
+check_PROGRAMS = test_checkheader test_syntax_def test_fdloop test_clipboard test_lsp_buffer test_lsp_doctor test_lsp_semantic test_lsp_truecolor test_dap test_dap_dlv test_dap_gdb test_dap_lldb test_dap_scala test_lsp_scala test_lsp_clangd test_lsp_python test_lsp_gopls test_lsp_rust
 
 test_fdloop_SOURCES = tests/test_fdloop.c we_fdloop.c
 test_fdloop_CFLAGS = $(XWPE_STDFLAG)
@@ -219,6 +219,11 @@ test_lsp_doctor_LDADD = $(JSONC_LIBS)
 test_lsp_semantic_SOURCES = tests/test_lsp_semantic.c we_lsp.c we_dap_proto.c
 test_lsp_semantic_CFLAGS = $(XWPE_STDFLAG) $(JSONC_CFLAGS)
 test_lsp_semantic_LDADD = $(JSONC_LIBS)
+
+# Semantic-token truecolor palette unit test: pure token->RGB-slot lookup.
+test_lsp_truecolor_SOURCES = tests/test_lsp_truecolor.c we_lsp.c we_dap_proto.c
+test_lsp_truecolor_CFLAGS = $(XWPE_STDFLAG) $(JSONC_CFLAGS)
+test_lsp_truecolor_LDADD = $(JSONC_LIBS)
 
 # DAP transport unit test: links the pure transport core + json-c, no xwpe.
 test_dap_SOURCES = tests/test_dap.c we_dap_proto.c
@@ -279,7 +284,7 @@ test_lsp_rust_SOURCES = tests/test_lsp_rust.c we_lsp.c we_dap_proto.c
 test_lsp_rust_CFLAGS = $(XWPE_STDFLAG) $(JSONC_CFLAGS)
 test_lsp_rust_LDADD = $(JSONC_LIBS)
 
-TESTS = test_checkheader test_syntax_def test_fdloop test_clipboard test_lsp_buffer test_lsp_doctor test_lsp_semantic test_dap test_dap_dlv \
+TESTS = test_checkheader test_syntax_def test_fdloop test_clipboard test_lsp_buffer test_lsp_doctor test_lsp_semantic test_lsp_truecolor test_dap test_dap_dlv \
   test_dap_gdb test_dap_lldb test_dap_scala test_lsp_scala test_lsp_clangd test_lsp_python test_lsp_gopls test_lsp_rust
 
 # --- Extra files for distribution ---
@@ -312,6 +317,7 @@ EXTRA_DIST = \
   tests/test_lsp_buffer.c \
   tests/test_lsp_doctor.c \
   tests/test_lsp_semantic.c \
+  tests/test_lsp_truecolor.c \
   tests/test_dap.c \
   tests/test_dap_dlv.c \
   tests/test_dap_gdb.c \

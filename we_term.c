@@ -6,6 +6,7 @@
 /* GNU General Public License, see the file COPYING.      */
 
 #include "edit.h"
+#include "we_lsp.h"           /* e_lsp_sem_slot_rgb: semantic-token truecolor */
 #ifdef UNIX
 
 #include <termios.h>
@@ -56,6 +57,7 @@ int fk_t_mouse(int *g);
 static int e_t_mouse_decode_button(mmask_t bstate);
 static int e_t_mouse_is_released(mmask_t bstate);
 static int e_t_mouse_apply_event(MEVENT *mev);
+static void e_t_truecolor_detect(void);
 
 /* Input/mouse timing and scaling constants. */
 #define INPUT_POLL_MS     50   /* ncurses getch() wait between input polls */
@@ -567,10 +569,15 @@ int e_t_initscr()
 #endif
  if (has_colors())
  {
+  int ncol;
   start_color();
-  for (i = 0; i < COLORS; i++)
+  /* Only the 16x16 base pairs are ever selected (fk_colset uses bg,fg 0..15),
+     so cap the init at 16 -- never COLORS, which is 16777216 on a direct-colour
+     terminal and would loop forever. */
+  ncol = COLORS < 16 ? COLORS : 16;
+  for (i = 0; i < ncol; i++)
   {
-   for (k = 0; k < COLORS; k++)
+   for (k = 0; k < ncol; k++)
    {
     if (i != 0 || k != 0)
     {
@@ -578,6 +585,7 @@ int e_t_initscr()
     }
    }
   }
+  e_t_truecolor_detect();
  }
 #endif
  e_begscr();
@@ -699,12 +707,98 @@ int fk_attrset(int a)
  return(cur_attr = a);
 }
 
+/* --- Semantic-token truecolor on the console (1.6.6) ------------------------
+ * How a 24-bit semantic-token colour (ATTR_TC cells) reaches the terminal,
+ * decided once at start_color() time by e_t_truecolor_detect():
+ *   E_TC_DIRECT  -- the terminfo advertises RGB (xterm-direct, kitty, tmux with
+ *                   the RGB override): an ncurses colour NUMBER is itself a
+ *                   packed 24-bit RGB, so we hand init_extended_pair the packed
+ *                   fg/bg and ncurses emits the exact "ESC[38:2::r:g:b" SGR.
+ *   E_TC_PALETTE -- 256 colours and can_change_color(): redefine a high palette
+ *                   slot to the exact RGB (ncurses emits OSC 4) and reference it
+ *                   as a 256-colour index.
+ *   E_TC_NONE    -- neither (plain tmux/screen, 8/16-colour): fall back to the
+ *                   cell's 16-colour foreground (orange -> red), no regression.
+ * No raw escapes are written behind ncurses' back -- it owns the emission, so
+ * its attribute-state tracking stays in sync. */
+enum { E_TC_NONE = 0, E_TC_DIRECT, E_TC_PALETTE };
+static int e_t_tc_mode = E_TC_NONE;
+#define E_TC_PAIR_BASE   512    /* extended-pair numbers for semantic truecolor */
+#define E_TC_COLOR_BASE  240    /* palette slots (re)defined in PALETTE mode     */
+
+/* Standard ANSI-16 RGB.  In DIRECT mode every colour number is a raw RGB triple
+   (no palette), so a truecolor token cell's BACKGROUND must be given as the RGB
+   matching its 16-colour index, or it would render as a near-black RGB(0,0,n). */
+static const int e_t_ansi16_rgb[16] = {
+ 0x000000, 0xCD0000, 0x00CD00, 0xCDCD00, 0x0000EE, 0xCD00CD, 0x00CDCD, 0xE5E5E5,
+ 0x7F7F7F, 0xFF0000, 0x00FF00, 0xFFFF00, 0x5C5CFF, 0xFF00FF, 0x00FFFF, 0xFFFFFF
+};
+
+static void e_t_truecolor_detect(void)
+{
+#ifdef NCURSES
+ e_t_tc_mode = E_TC_NONE;
+ if (tigetflag("RGB") > 0 || COLORS >= (1 << 24))
+  e_t_tc_mode = E_TC_DIRECT;
+ else if (COLORS >= 256 && can_change_color())
+  e_t_tc_mode = E_TC_PALETTE;
+#endif
+}
+
+/* Select an ncurses extended pair painting semantic-token truecolor @slot (its
+   24-bit fg from e_lsp_sem_slot_rgb) over 16-colour background @bg.  Pairs are
+   allocated lazily into a (slot x bg) cache and initialised per the detected
+   tier.  Returns 1 if a truecolor pair was selected, 0 if truecolor is
+   unavailable (the caller then paints the 16-colour fallback). */
+static int e_t_sem_tc_set(int slot, int bg)
+{
+#ifdef NCURSES
+ static unsigned char inited[256];
+ int r, g, b, key, pairno, ep;
+
+ if (e_t_tc_mode == E_TC_NONE)
+  return(0);
+ if (!e_lsp_sem_slot_rgb(slot, &r, &g, &b))
+  return(0);
+ key = ((slot & 0x0F) << 4) | (bg & 0x0F);
+ pairno = E_TC_PAIR_BASE + key;
+ if (!inited[key])
+ {
+  if (e_t_tc_mode == E_TC_DIRECT)
+   init_extended_pair(pairno, (r << 16) | (g << 8) | b,
+                      e_t_ansi16_rgb[bg & 0x0F]);
+  else
+  {
+   int cno = E_TC_COLOR_BASE + (slot & 0x0F);
+   init_extended_color(cno, r * 1000 / 255, g * 1000 / 255, b * 1000 / 255);
+   init_extended_pair(pairno, cno, bg & 0x0F);
+  }
+  inited[key] = 1;
+ }
+ ep = pairno;
+ attr_set(A_NORMAL, 0, &ep);
+ return(1);
+#else
+ (void)slot; (void)bg;
+ return(0);
+#endif
+}
+
 void fk_colset(int c)
 {
- int bg;
+ int bg, base;
  if (cur_attr == c) return;
  cur_attr = c;
- bg = c / 16;
+ base = ATTR_BASE(c);
+ bg = base / 16;
+#ifdef NCURSES
+ /* A semantic-token cell that wants a 24-bit colour: paint it through an
+    extended truecolor pair if the terminal can; otherwise fall through to the
+    16-colour foundation below (the fallback fg is already in `base`). */
+ if (ATTR_IS_TC(c) && e_t_sem_tc_set(ATTR_TC_SLOT(c), bg))
+  return;
+#endif
+ c = base;          /* below here colour is the plain 0..255 attribute */
 #ifdef TERMCAP
  if ((c %= 16) >= col_num)
  {

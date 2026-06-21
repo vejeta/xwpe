@@ -1903,6 +1903,38 @@ const char *e_lsp_semantic_legend(e_lsp_session *s, int type)
  return s->sem_legend[type];
 }
 
+/* Semantic-token truecolor palette (1.6.6): slot -> 24-bit RGB.  Kept tiny on
+   purpose -- only the categories the 16-colour palette cannot express well.
+   Slot 0 is the headline: method/function/macro want a warm orange that reads
+   on the Borland-blue editor background, where the nearest 16-colour choice was
+   bright red.  Add slots here (and a branch in e_lsp_sem_truecolor) to give
+   more categories a dedicated colour; renderers pick them up automatically. */
+static const struct { int r, g, b; } e_lsp_sem_tc_palette[] = {
+ { 0xFF, 0x8C, 0x00 }    /* slot 0: method / function / macro -- orange */
+};
+#define LSP_SEM_TC_COUNT ((int)(sizeof(e_lsp_sem_tc_palette) / \
+                                sizeof(e_lsp_sem_tc_palette[0])))
+
+int e_lsp_sem_truecolor(const char *type)
+{
+ if (!type)
+  return LSP_SEM_TC_NONE;
+ if (!strcmp(type, "function") || !strcmp(type, "method") ||
+     !strcmp(type, "macro"))
+  return 0;
+ return LSP_SEM_TC_NONE;
+}
+
+int e_lsp_sem_slot_rgb(int slot, int *r, int *g, int *b)
+{
+ if (slot < 0 || slot >= LSP_SEM_TC_COUNT)
+  return 0;
+ if (r) *r = e_lsp_sem_tc_palette[slot].r;
+ if (g) *g = e_lsp_sem_tc_palette[slot].g;
+ if (b) *b = e_lsp_sem_tc_palette[slot].b;
+ return 1;
+}
+
 /* Capture the server's semantic-token legend from the initialize response
    (capabilities.semanticTokensProvider.legend.tokenTypes) so token indices can
    be resolved to names.  Called once, during the handshake. */

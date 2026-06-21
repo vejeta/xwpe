@@ -397,7 +397,8 @@ static void e_x_render_cell(int sc, int px, int py, int cw,
 static void e_xft_paint_cursor_cell(int cx, int cy, int inverted)
 {
  int ch = e_gt_char(cx, cy);
- int attr = e_gt_col(cx, cy);
+ int attr = ATTR_BASE(e_gt_col(cx, cy));   /* strip any truecolor flag: X11 uses
+                                              the 16-colour fallback for now */
  int fg_idx = inverted ? attr / 16 : attr % 16;
  int bg_idx = inverted ? attr % 16 : attr / 16;
  int n = cy * MAXSCOL + cx;
@@ -427,7 +428,7 @@ int fk_show_cursor()
   if (old_cursor_x > 0 || old_cursor_y > 0)
   {
    int oc = e_gt_char(old_cursor_x, old_cursor_y);
-   int oa = e_gt_col(old_cursor_x, old_cursor_y);
+   int oa = ATTR_BASE(e_gt_col(old_cursor_x, old_cursor_y));
    char obuf[2] = { e_x_map_char(oc), 0 };
    XSetForeground(WpeXInfo.display, WpeXInfo.gc,
      WpeXInfo.colors[oa % 16]);
@@ -448,7 +449,7 @@ int fk_show_cursor()
   }
   {
    int cc = e_gt_char(cur_x, cur_y);
-   int ca = e_gt_col(cur_x, cur_y);
+   int ca = ATTR_BASE(e_gt_col(cur_x, cur_y));
    char cbuf[2] = { e_x_map_char(cc), 0 };
    XSetForeground(WpeXInfo.display, WpeXInfo.gc,
      WpeXInfo.colors[ca / 16]);
@@ -831,7 +832,8 @@ static void e_x_render_dirty_cells(int force)
       || schirm[_n].flags != altschirm[_n].flags)
   {
    e_x_render_cell(sc, WpeXInfo.font_width * j, WpeXInfo.font_height * i,
-     (schirm[_n].flags & CELL_WIDE) ? 2 : 1, sa % 16, sa / 16);
+     (schirm[_n].flags & CELL_WIDE) ? 2 : 1,
+     ATTR_BASE(sa) % 16, ATTR_BASE(sa) / 16);
    altschirm[_n] = schirm[_n];
   }
  }
@@ -904,6 +906,8 @@ int e_x_refresh()
     {
      int sc = e_gt_char(j, i);
      int sa = e_gt_col(j, i);
+     int sab = ATTR_BASE(sa);   /* 16-colour indices; sa keeps any TC flag for
+                                   the dirty-check below */
      { int _n = i * MAXSCOL + j;
      if (sc != altschirm[_n].ch || sa != altschirm[_n].attr
 #ifdef NEWSTYLE
@@ -913,19 +917,19 @@ int e_x_refresh()
      {
       char xc = e_x_map_char(sc);
 #ifdef NOXCACHE
-      XSetForeground(WpeXInfo.display, WpeXInfo.gc, WpeXInfo.colors[sa % 16]);
-      XSetBackground(WpeXInfo.display, WpeXInfo.gc, WpeXInfo.colors[sa / 16]);
+      XSetForeground(WpeXInfo.display, WpeXInfo.gc, WpeXInfo.colors[sab % 16]);
+      XSetBackground(WpeXInfo.display, WpeXInfo.gc, WpeXInfo.colors[sab / 16]);
       XDrawImageString(WpeXInfo.display, WpeXInfo.window, WpeXInfo.gc, WpeXInfo.font_width*j,
           WpeXInfo.font_height*(i+1) - WpeXInfo.font_descent, &xc, 1);
 #else
-      if (   oldback != WpeXInfo.colors[sa / 16]
-          || oldfore != WpeXInfo.colors[sa % 16]
+      if (   oldback != WpeXInfo.colors[sab / 16]
+          || oldfore != WpeXInfo.colors[sab % 16]
           || i != oldI || j > oldJ+1 || stringcount >= STRBUFSIZE)
       {
        XDrawImageString(WpeXInfo.display, WpeXInfo.window, WpeXInfo.gc,
            oldX, oldY, stringbuf, stringcount);
-       oldback = WpeXInfo.colors[sa / 16];
-       oldfore = WpeXInfo.colors[sa % 16];
+       oldback = WpeXInfo.colors[sab / 16];
+       oldfore = WpeXInfo.colors[sab % 16];
        XSetForeground(WpeXInfo.display, WpeXInfo.gc, oldfore);
        XSetBackground(WpeXInfo.display, WpeXInfo.gc, oldback);
        oldX = WpeXInfo.font_width*j;

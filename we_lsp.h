@@ -333,4 +333,24 @@ int e_lsp_semantic_tokens(e_lsp_session *s, const char *path,
  * server declared in its initialize-response legend, or NULL if out of range. */
 const char *e_lsp_semantic_legend(e_lsp_session *s, int type);
 
+/* --- Semantic-token truecolor (1.6.6) ---------------------------------------
+ * A tiny, fixed set of 24-bit colours for the semantic-token categories the
+ * 16-colour palette cannot do justice to.  The headline case is
+ * method/function/macro: they fell back to bright red because the 16 colours
+ * have no orange, so they get a dedicated orange slot here.  This is the single
+ * source of truth for BOTH renderers that can show 24-bit colour -- X11/Xft and
+ * the direct-colour console -- while the 16-colour mapping (e_lsp_sem_fg in
+ * we_debug.c) stays the fallback wherever truecolor is unavailable. */
+#define LSP_SEM_TC_NONE (-1)
+
+/* The truecolor SLOT for a semantic token-type NAME (as from
+ * e_lsp_semantic_legend), or LSP_SEM_TC_NONE when the category has no dedicated
+ * 24-bit colour and should use the 16-colour mapping. */
+int e_lsp_sem_truecolor(const char *type);
+
+/* The 24-bit RGB (each component 0..255) for truecolor slot @slot.  Returns 1
+ * and fills *@r,*@g,*@b (any may be NULL) on success, or 0 if @slot is out of
+ * range. */
+int e_lsp_sem_slot_rgb(int slot, int *r, int *g, int *b);
+
 #endif /* WE_LSP_H */
