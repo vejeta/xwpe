@@ -1910,7 +1910,8 @@ const char *e_lsp_semantic_legend(e_lsp_session *s, int type)
    bright red.  Add slots here (and a branch in e_lsp_sem_truecolor) to give
    more categories a dedicated colour; renderers pick them up automatically. */
 static const struct { int r, g, b; } e_lsp_sem_tc_palette[] = {
- { 0xFF, 0x8C, 0x00 }    /* slot 0: method / function / macro -- orange */
+ { 0xFF, 0x8C, 0x00 },   /* slot 0: method / function / macro -- orange */
+ { 0x4E, 0xC9, 0xB0 }    /* slot 1: type / class / ... -- teal           */
 };
 #define LSP_SEM_TC_COUNT ((int)(sizeof(e_lsp_sem_tc_palette) / \
                                 sizeof(e_lsp_sem_tc_palette[0])))
@@ -1922,6 +1923,14 @@ int e_lsp_sem_truecolor(const char *type)
  if (!strcmp(type, "function") || !strcmp(type, "method") ||
      !strcmp(type, "macro"))
   return 0;
+ /* type-like categories: a teal the 16-colour palette cannot use on the
+    Borland-blue background (its nearest teal washes out), so it falls back to
+    yellow (e_lsp_sem_fg) where 24-bit colour is unavailable. */
+ if (!strcmp(type, "type") || !strcmp(type, "class") ||
+     !strcmp(type, "interface") || !strcmp(type, "enum") ||
+     !strcmp(type, "struct") || !strcmp(type, "typeParameter") ||
+     !strcmp(type, "namespace"))
+  return 1;
  return LSP_SEM_TC_NONE;
 }
 

@@ -271,7 +271,9 @@ Unreleased (1.6.6 in progress)
 
 * LSP semantic tokens can now use real 24-bit colour for categories the
   16-colour palette cannot express: method/function/macro names paint in a warm
-  orange (#FF8C00) instead of falling back to bright red.  A single palette
+  orange (#FF8C00) instead of red, and type/class names in a teal (#4EC9B0) the
+  16-colour palette could not use on the Borland-blue background (it falls back
+  to yellow there).  A single palette
   (we_lsp.c e_lsp_sem_truecolor / e_lsp_sem_slot_rgb) feeds both renderers.
   - Console: rendered through ncurses extended colour pairs, terminfo-gated --
     a direct-colour terminal (kitty, xterm-direct, tmux with the RGB override)

@@ -29,9 +29,14 @@ int main(void)
  chk("function -> slot 0", e_lsp_sem_truecolor("function"), 0);
  chk("macro -> slot 0",    e_lsp_sem_truecolor("macro"),    0);
 
+ /* type-like categories share the one teal slot (slot 1). */
+ chk("type -> slot 1",      e_lsp_sem_truecolor("type"),      1);
+ chk("class -> slot 1",     e_lsp_sem_truecolor("class"),     1);
+ chk("interface -> slot 1", e_lsp_sem_truecolor("interface"), 1);
+ chk("enum -> slot 1",      e_lsp_sem_truecolor("enum"),      1);
+
  /* categories the 16 colours handle well keep the 16-colour mapping. */
  chk("keyword -> none",  e_lsp_sem_truecolor("keyword"),  LSP_SEM_TC_NONE);
- chk("type -> none",     e_lsp_sem_truecolor("type"),     LSP_SEM_TC_NONE);
  chk("variable -> none", e_lsp_sem_truecolor("variable"), LSP_SEM_TC_NONE);
  chk("NULL -> none",     e_lsp_sem_truecolor(NULL),       LSP_SEM_TC_NONE);
  chk("unknown -> none",  e_lsp_sem_truecolor("nonsense"), LSP_SEM_TC_NONE);
@@ -42,6 +47,13 @@ int main(void)
  chk("slot 0 R = 0xFF", r, 0xFF);
  chk("slot 0 G = 0x8C", g, 0x8C);
  chk("slot 0 B = 0x00", b, 0x00);
+
+ /* slot 1 is teal #4EC9B0. */
+ r = g = b = -1;
+ chk("slot 1 resolves", e_lsp_sem_slot_rgb(1, &r, &g, &b), 1);
+ chk("slot 1 R = 0x4E", r, 0x4E);
+ chk("slot 1 G = 0xC9", g, 0xC9);
+ chk("slot 1 B = 0xB0", b, 0xB0);
 
  /* out-of-range slots are rejected, not read past the table. */
  chk("negative slot rejected", e_lsp_sem_slot_rgb(-1, &r, &g, &b), 0);
