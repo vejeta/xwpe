@@ -10,6 +10,24 @@ AM_INIT_AUTOMAKE([foreign subdir-objects -Wall])
 AC_PROG_CC
 AC_PROG_LN_S
 
+# Pick a C standard flag that keeps K&R unprototyped '()' semantics (so the
+# 1993 code still compiles) and that the compiler actually supports. Modern
+# GCC/Clang take -std=gnu17; NetBSD 9's base GCC 7 only knows up to gnu11,
+# which has identical K&R-() semantics. Both avoid the C23/gnu23 default where
+# 'f()' means 'f(void)'.
+AC_MSG_CHECKING([for a usable C standard flag])
+XWPE_STDFLAG=
+for ace_f in -std=gnu17 -std=gnu11; do
+  ace_save_CFLAGS="$CFLAGS"
+  CFLAGS="$CFLAGS $ace_f"
+  AC_COMPILE_IFELSE([AC_LANG_PROGRAM([], [])], [XWPE_STDFLAG="$ace_f"])
+  CFLAGS="$ace_save_CFLAGS"
+  test -n "$XWPE_STDFLAG" && break
+done
+AS_IF([test -z "$XWPE_STDFLAG"], [AC_MSG_RESULT([none])],
+  [AC_MSG_RESULT([$XWPE_STDFLAG])])
+AC_SUBST([XWPE_STDFLAG])
+
 # --- Optional: documentation tools ---
 AC_CHECK_PROG([TEXI2ANY], [texi2any], [texi2any], [:])
 AC_CHECK_PROG([PANDOC], [pandoc], [pandoc], [:])

@@ -4,7 +4,7 @@ AUTOMAKE_OPTIONS = foreign
 
 # --- Compiler flags ---
 # gnu17 is required: the code uses K&R-compatible GNU extensions
-AM_CFLAGS = -std=gnu17 \
+AM_CFLAGS = $(XWPE_STDFLAG) \
   $(NCURSESW_CFLAGS) \
   $(X_CFLAGS) \
   $(XFT_CFLAGS) \
@@ -187,96 +187,96 @@ metainfo_DATA = io.codeberg.mendezr.xwpe.metainfo.xml
 check_PROGRAMS = test_checkheader test_syntax_def test_fdloop test_clipboard test_lsp_buffer test_lsp_doctor test_lsp_semantic test_dap test_dap_dlv test_dap_gdb test_dap_lldb test_dap_scala test_lsp_scala test_lsp_clangd test_lsp_python test_lsp_gopls test_lsp_rust
 
 test_fdloop_SOURCES = tests/test_fdloop.c we_fdloop.c
-test_fdloop_CFLAGS = -std=gnu17
+test_fdloop_CFLAGS = $(XWPE_STDFLAG)
 
 # Clipboard helpers unit test: RFC 4648 base64 + OSC 52 framing (we_clip.c
 # only, no editor/X11). Always runs (no skip).
 test_clipboard_SOURCES = tests/test_clipboard.c we_clip.c
-test_clipboard_CFLAGS = -std=gnu17
+test_clipboard_CFLAGS = $(XWPE_STDFLAG)
 
 test_checkheader_SOURCES = tests/test_checkheader.c
-test_checkheader_CFLAGS = -std=gnu17
+test_checkheader_CFLAGS = $(XWPE_STDFLAG)
 test_checkheader_LDFLAGS =
 
 test_syntax_def_SOURCES = tests/test_syntax_def.c
-test_syntax_def_CFLAGS = -std=gnu17
+test_syntax_def_CFLAGS = $(XWPE_STDFLAG)
 test_syntax_def_LDFLAGS =
 
 # LSP buffer-serialization unit test: the pure e_lsp_join_lines invariant (one
 # '\n' per editor line, WPE_WR not doubled).  Links we_lsp.c only; no server,
 # always runs (no skip).
 test_lsp_buffer_SOURCES = tests/test_lsp_buffer.c we_lsp.c we_dap_proto.c
-test_lsp_buffer_CFLAGS = -std=gnu17 $(JSONC_CFLAGS)
+test_lsp_buffer_CFLAGS = $(XWPE_STDFLAG) $(JSONC_CFLAGS)
 test_lsp_buffer_LDADD = $(JSONC_LIBS)
 
 # LSP Doctor dedup unit test: the pure e_lsp_doc_is_new gate (re-pushed Doctor
 # rendered only when changed; reset per session shows it again).  we_lsp.c only.
 test_lsp_doctor_SOURCES = tests/test_lsp_doctor.c we_lsp.c we_dap_proto.c
-test_lsp_doctor_CFLAGS = -std=gnu17 $(JSONC_CFLAGS)
+test_lsp_doctor_CFLAGS = $(XWPE_STDFLAG) $(JSONC_CFLAGS)
 test_lsp_doctor_LDADD = $(JSONC_LIBS)
 
 # LSP semantic-tokens decode unit test: the pure delta-decode (we_lsp.c).
 test_lsp_semantic_SOURCES = tests/test_lsp_semantic.c we_lsp.c we_dap_proto.c
-test_lsp_semantic_CFLAGS = -std=gnu17 $(JSONC_CFLAGS)
+test_lsp_semantic_CFLAGS = $(XWPE_STDFLAG) $(JSONC_CFLAGS)
 test_lsp_semantic_LDADD = $(JSONC_LIBS)
 
 # DAP transport unit test: links the pure transport core + json-c, no xwpe.
 test_dap_SOURCES = tests/test_dap.c we_dap_proto.c
-test_dap_CFLAGS = -std=gnu17 $(JSONC_CFLAGS)
+test_dap_CFLAGS = $(XWPE_STDFLAG) $(JSONC_CFLAGS)
 test_dap_LDADD = $(JSONC_LIBS)
 
 # DAP engine integration test: drives a real `dlv dap` (SKIPs without dlv+go).
 test_dap_dlv_SOURCES = tests/test_dap_dlv.c we_dap.c we_dap_proto.c
-test_dap_dlv_CFLAGS = -std=gnu17 $(JSONC_CFLAGS)
+test_dap_dlv_CFLAGS = $(XWPE_STDFLAG) $(JSONC_CFLAGS)
 test_dap_dlv_LDADD = $(JSONC_LIBS) $(UTIL_LIBS)
 
 # DAP stdio transport integration test: drives a real `gdb --interpreter=dap`
 # on a rustc-built binary (the Rust slice).  SKIPs without gdb+rustc.
 test_dap_gdb_SOURCES = tests/test_dap_gdb.c we_dap.c we_dap_proto.c
-test_dap_gdb_CFLAGS = -std=gnu17 $(JSONC_CFLAGS)
+test_dap_gdb_CFLAGS = $(XWPE_STDFLAG) $(JSONC_CFLAGS)
 test_dap_gdb_LDADD = $(JSONC_LIBS) $(UTIL_LIBS)
 
 # Same stdio transport against `lldb-dap` (the LLVM adapter; native on macOS).
 # SKIPs without lldb-dap+rustc.
 test_dap_lldb_SOURCES = tests/test_dap_lldb.c we_dap.c we_dap_proto.c
-test_dap_lldb_CFLAGS = -std=gnu17 $(JSONC_CFLAGS)
+test_dap_lldb_CFLAGS = $(XWPE_STDFLAG) $(JSONC_CFLAGS)
 test_dap_lldb_LDADD = $(JSONC_LIBS) $(UTIL_LIBS)
 
 # JVM/Scala path: BSP bootstrap (we_bsp.c) + DAP TCP-client transport against a
 # real scala-cli/Bloop.  SKIPs without scala-cli; slow on a cold coursier cache.
 test_dap_scala_SOURCES = tests/test_dap_scala.c we_bsp.c we_dap.c we_dap_proto.c
-test_dap_scala_CFLAGS = -std=gnu17 $(JSONC_CFLAGS)
+test_dap_scala_CFLAGS = $(XWPE_STDFLAG) $(JSONC_CFLAGS)
 test_dap_scala_LDADD = $(JSONC_LIBS) $(UTIL_LIBS)
 
 # LSP engine: drives a real Metals language server on a single Scala file
 # (hover/definition/completion/diagnostics).  SKIPs without metals + scala-cli.
 test_lsp_scala_SOURCES = tests/test_lsp_scala.c we_lsp.c we_dap_proto.c
-test_lsp_scala_CFLAGS = -std=gnu17 $(JSONC_CFLAGS)
+test_lsp_scala_CFLAGS = $(XWPE_STDFLAG) $(JSONC_CFLAGS)
 test_lsp_scala_LDADD = $(JSONC_LIBS)
 
 # LSP engine, breadth: drives a real clangd on a single C file with the SAME
 # engine (only language id + spawned command differ).  Fast (no JVM/build
 # server).  SKIPs without clangd.
 test_lsp_clangd_SOURCES = tests/test_lsp_clangd.c we_lsp.c we_dap_proto.c
-test_lsp_clangd_CFLAGS = -std=gnu17 $(JSONC_CFLAGS)
+test_lsp_clangd_CFLAGS = $(XWPE_STDFLAG) $(JSONC_CFLAGS)
 test_lsp_clangd_LDADD = $(JSONC_LIBS)
 
 # LSP engine, breadth: drives a real Python server (pyright or pylsp) on a single
 # .py file -- whichever is installed -- with the SAME engine.  SKIPs without one.
 test_lsp_python_SOURCES = tests/test_lsp_python.c we_lsp.c we_dap_proto.c
-test_lsp_python_CFLAGS = -std=gnu17 $(JSONC_CFLAGS)
+test_lsp_python_CFLAGS = $(XWPE_STDFLAG) $(JSONC_CFLAGS)
 test_lsp_python_LDADD = $(JSONC_LIBS)
 
 # LSP engine, breadth: drives a real gopls on a single .go file in a tiny module.
 # SKIPs without gopls + go.
 test_lsp_gopls_SOURCES = tests/test_lsp_gopls.c we_lsp.c we_dap_proto.c
-test_lsp_gopls_CFLAGS = -std=gnu17 $(JSONC_CFLAGS)
+test_lsp_gopls_CFLAGS = $(XWPE_STDFLAG) $(JSONC_CFLAGS)
 test_lsp_gopls_LDADD = $(JSONC_LIBS)
 
 # LSP engine, breadth: drives a real rust-analyzer on a single .rs file in a tiny
 # crate.  Slowest (indexes std on cold start).  SKIPs without rust-analyzer + cargo.
 test_lsp_rust_SOURCES = tests/test_lsp_rust.c we_lsp.c we_dap_proto.c
-test_lsp_rust_CFLAGS = -std=gnu17 $(JSONC_CFLAGS)
+test_lsp_rust_CFLAGS = $(XWPE_STDFLAG) $(JSONC_CFLAGS)
 test_lsp_rust_LDADD = $(JSONC_LIBS)
 
 TESTS = test_checkheader test_syntax_def test_fdloop test_clipboard test_lsp_buffer test_lsp_doctor test_lsp_semantic test_dap test_dap_dlv \
