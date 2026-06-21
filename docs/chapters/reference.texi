@@ -65,6 +65,29 @@ minimum 80x25; e.g.@: @option{-g 80x20+4+4}).
 @item @kbd{Ctrl-F10} @tab @tab Start/continue debugger
 @end multitable
 
+@subsection Without function keys (macOS)
+
+macOS reserves @key{F1}--@key{F12} for system actions (brightness, volume,
+Mission Control), so they never reach a terminal app unless you tick
+@emph{System Settings -> Keyboard -> ``Use F1, F2, etc. keys as standard
+function keys''} (or hold @key{fn}).  You do not have to: every essential
+command also has a non-function-key binding, so xwpe is fully usable as shipped.
+
+@multitable @columnfractions .34 .33 .33
+@headitem Action @tab Function key @tab Without F-keys
+@item Open a menu @tab @key{F10} @tab @kbd{Alt-@var{letter}} (@kbd{Alt-F} File, @kbd{Alt-S} Search, @kbd{Alt-R} Run, ...)
+@item Make (build) @tab @key{F9} @tab @kbd{Alt-M}
+@item Compile file @tab @kbd{Alt-F9} @tab @kbd{Alt-C}
+@item Run program @tab @kbd{Ctrl-F9} @tab @kbd{Alt-U}
+@item Find / Replace @tab @key{F4} / @kbd{Alt-F4} @tab @kbd{Ctrl-O F} / @kbd{Ctrl-O A}
+@item Save @tab @key{F2} @tab File menu (@kbd{Alt-F}, then @kbd{S})
+@item Quit @tab @kbd{Alt-F4} @tab @kbd{Alt-X}
+@item Debugger (all) @tab @kbd{F7}/@kbd{F8}/@kbd{Ctrl-F@var{n}} @tab the @kbd{Ctrl-G} prefix: @kbd{Ctrl-G R} run, @kbd{Ctrl-G S} step, @kbd{Ctrl-G T} trace, @kbd{Ctrl-G B} breakpoint, @kbd{Ctrl-G K} stack, @kbd{Ctrl-G W} watch, @kbd{Ctrl-G Q} quit
+@end multitable
+
+The same equivalents help over an SSH session or in a terminal whose function
+keys are bound to something else.
+
 @subsection Ctrl-K chords (block operations)
 
 @multitable @columnfractions .20 .80

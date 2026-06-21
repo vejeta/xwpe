@@ -233,6 +233,12 @@ Changes
 
 Unreleased (1.6.6 in progress)
 
+* Documented that xwpe is fully usable without function keys -- macOS reserves
+  F1-F12 for the system, but every command has a non-F-key binding (Alt-<letter>
+  menus, Alt-M build / Alt-C compile / Alt-U run, the Ctrl-G debugger prefix,
+  Ctrl-O find/replace).  New "Reference -> Without function keys" manual section
+  and a README note for the macOS/Homebrew audience.
+
 * Scala debug works out of the box on a machine whose default JDK is too new.
   The Scala 3 compiler crashes at start-up on JDK 24+, and scala-cli/Bloop build
   the debuggee with the JVM from JAVA_HOME/PATH -- so debug failed where the

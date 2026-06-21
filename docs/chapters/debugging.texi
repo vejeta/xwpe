@@ -214,6 +214,7 @@ default @code{java} on @env{PATH} is too new and an LTS JDK (17/21) is installed
 xwpe repoints @env{JAVA_HOME} at it for Bloop before starting the build server
 (and likewise for Metals), so debugging works out of the box without a
 @code{//> using jvm} pin.  Set @env{JAVA_HOME} yourself to override.
+@end itemize
 Run/Continue (@kbd{Ctrl-G R}), Step Over (@kbd{F8}), Step Into (@kbd{F7}),
 watches (@kbd{Ctrl-G W}, evaluated with the DAP @code{evaluate} request) and
 Quit (@kbd{Ctrl-G Q}) all work as with gdb.

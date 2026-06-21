@@ -396,6 +396,14 @@ Both binaries build clean on macOS (Apple Silicon and Intel) against Homebrew:
 links against XQuartz + Homebrew's Cairo/Pango/Xft stack and is exercised
 end-to-end by the X11 test suite (see `tests/README.md`).
 
+> **Function keys on macOS.** macOS reserves `F1`–`F12` for system actions, so
+> they do not reach a terminal app unless you enable *System Settings → Keyboard
+> → "Use F1, F2, etc. keys as standard function keys"* (or hold `fn`). You do not
+> have to: every command has a non-F-key binding — `Alt-`*letter* opens menus,
+> `Alt-M` builds, `Alt-C` compiles, `Alt-U` runs, and the whole debugger is on the
+> `Ctrl-G` prefix (`Ctrl-G R` run, `Ctrl-G S` step, `Ctrl-G B` breakpoint, …). See
+> *Reference → Without function keys* in the manual.
+
 **Pre-built tap (shortest path).** A Homebrew tap on Codeberg packages the
 X11 build (`xwpe`, `xwe`, `wpe`, `we`) so a fresh install is three commands:
 
