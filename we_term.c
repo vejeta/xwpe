@@ -134,7 +134,7 @@ static int e_t_chrome_ascii(int cp)
   case 0x25FB:           return '^';   /* white medium square (X11 zoom) */
   case 0x25A3:           return 'v';   /* square with inner square (restore) */
   case 0x1F512:          return '#';   /* lock (read-only file title bar) */
-  case 0x1F527:          return '%';   /* wrench (tool/output pane title bar) */
+  case 0x2692:           return '%';   /* hammer & pick (tool/output pane title) */
   default:               return 0;
  }
 }

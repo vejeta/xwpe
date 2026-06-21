@@ -236,11 +236,14 @@ Unreleased (1.6.6 in progress)
 * Title-bar markers now distinguish two kinds of non-editable window: a real
   locked FILE on disk (0444, an extracted library source) keeps the padlock and
   a dimmed name, while a tool/output pane (Messages, Watches, Stack, "Metals
-  Doctor", ...) gets a WRENCH instead -- "a tool pane, not your document".  The
-  padlock no longer leaks onto those panes (it implied "locked file", which they
-  are not -- Messages even carries a running program's stdin); the kind is
-  decided by whether the window names a file that exists on disk, so present and
-  future panes are classified correctly without an enumerated name list.
+  Doctor", ...) gets a tool glyph instead (U+2692 hammer & pick) -- "a tool
+  pane, not your document".  The padlock no longer leaks onto those panes (it
+  implied "locked file", which they are not -- Messages even carries a running
+  program's stdin); the kind is decided by whether the window names a file that
+  exists on disk, so present and future panes are classified correctly without
+  an enumerated name list.  The tool glyph is a BMP width-1 monochrome symbol so
+  it renders consistently across terminals and Xft (a wide colour emoji blanked
+  on some terminals and rendered tiny/misaligned in the title cell).
 
 * LSP semantic tokens can now use real 24-bit colour for categories the
   16-colour palette cannot express: method/function/macro names paint in a warm

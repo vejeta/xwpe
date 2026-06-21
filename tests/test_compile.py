@@ -598,12 +598,14 @@ class TestMultipleMenuCycles:
             f"Display corrupted after compile+menu: {content[:300]}"
 
 
-def test_output_pane_marked_wrench_not_padlock(compile_dir):
+def test_output_pane_marked_tool_not_padlock(compile_dir):
     """Compiling spawns the Messages output pane (ins==8, backing no file).  It
-    is a tool pane, so it wears the WRENCH (U+1F527, 'this is a tool pane') and
-    NOT the padlock (U+1F512, 'this is a locked file' -- reserved for real files
-    on disk, see test_readonly_marker.py).  The source compiled here is writable,
-    so no padlock must appear anywhere on screen."""
+    is a tool pane, so it wears the tool glyph (U+2692 hammer & pick, 'this is a
+    tool pane') and NOT the padlock (U+1F512, 'this is a locked file' -- reserved
+    for real files on disk, see test_readonly_marker.py).  The source compiled
+    here is writable, so no padlock must appear anywhere on screen.  The tool
+    glyph is a BMP width-1 symbol so it renders consistently (the wrench emoji
+    blanked on some terminals)."""
     lines = run_wpe_in_dir(
         compile_dir, 'one_error.c',
         cols=80, rows=30, wait=1.5,
@@ -614,5 +616,5 @@ def test_output_pane_marked_wrench_not_padlock(compile_dir):
         f"compile did not open the Messages output pane:\n{content[:400]}"
     assert '\U0001F512' not in content, \
         f"read-only padlock leaked onto a tool/output pane:\n{content[:400]}"
-    assert '\U0001F527' in content, \
-        f"tool/output pane is missing the wrench marker:\n{content[:400]}"
+    assert '⚒' in content, \
+        f"tool/output pane is missing the tool marker:\n{content[:400]}"

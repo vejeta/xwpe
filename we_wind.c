@@ -622,9 +622,13 @@ static int e_win_backs_file(FENSTER *f)
  return(ok);
 }
 
-/* Title-bar markers (Unicode; e_t_chrome_ascii has the non-UTF stand-ins). */
-#define WIN_GLYPH_LOCK   0x1F512   /* padlock: a locked file you cannot edit   */
-#define WIN_GLYPH_WRENCH 0x1F527   /* wrench:  a tool/output pane, not a doc    */
+/* Title-bar markers (Unicode; e_t_chrome_ascii has the non-UTF stand-ins).  The
+   tool marker is a BMP, width-1, monochrome glyph on purpose: the wrench emoji
+   (0x1F527) is a wide colour SMP glyph that renders blank on some terminals
+   (kitty) and tiny/misaligned in the Xft cell, whereas U+2692 paints crisply
+   from the normal monospace font everywhere. */
+#define WIN_GLYPH_LOCK 0x1F512   /* padlock: a locked file you cannot edit       */
+#define WIN_GLYPH_TOOL 0x2692    /* hammer & pick: a tool/output pane, not a doc */
 
 /* The editability nature of a text window, which decides its title-bar marker. */
 typedef enum { WIN_DOCUMENT, WIN_LOCKED_FILE, WIN_TOOL_PANE } e_win_kind;
@@ -635,7 +639,7 @@ typedef enum { WIN_DOCUMENT, WIN_LOCKED_FILE, WIN_TOOL_PANE } e_win_kind;
                       edit this file, but it is locked").
      WIN_TOOL_PANE    a synthetic tool/output pane (Messages, Watches, Stack,
                       "Metals Doctor", ...: ins == 8 but backing no file) -- gets
-                      the wrench ("a tool pane, not your document").  NOT dimmed
+                      the tool glyph ("a tool pane, not your document").  NOT dimmed
                       and NOT "read-only": Messages also carries a running
                       program's stdin.
      WIN_DOCUMENT     a normal editable document (or Help) -- no marker. */
@@ -721,7 +725,7 @@ void e_ed_rahmen(FENSTER *f, int sw)
    if (kind == WIN_LOCKED_FILE)
     e_pr_char(f->a.x + 2, f->a.y, WIN_GLYPH_LOCK, f->fb->er.fb);
    else if (kind == WIN_TOOL_PANE)
-    e_pr_char(f->a.x + 2, f->a.y, WIN_GLYPH_WRENCH, f->fb->er.fb);
+    e_pr_char(f->a.x + 2, f->a.y, WIN_GLYPH_TOOL, f->fb->er.fb);
   }
  }
  if (header)
