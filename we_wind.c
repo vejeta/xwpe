@@ -622,6 +622,34 @@ static int e_win_backs_file(FENSTER *f)
  return(ok);
 }
 
+/* Title-bar markers (Unicode; e_t_chrome_ascii has the non-UTF stand-ins). */
+#define WIN_GLYPH_LOCK   0x1F512   /* padlock: a locked file you cannot edit   */
+#define WIN_GLYPH_WRENCH 0x1F527   /* wrench:  a tool/output pane, not a doc    */
+
+/* The editability nature of a text window, which decides its title-bar marker. */
+typedef enum { WIN_DOCUMENT, WIN_LOCKED_FILE, WIN_TOOL_PANE } e_win_kind;
+
+/* e_win_kind_of - Classify a text window for its title-bar marker:
+     WIN_LOCKED_FILE  a read-only file on disk (0444, an extracted library
+                      source) -- gets the padlock and a dimmed name ("you would
+                      edit this file, but it is locked").
+     WIN_TOOL_PANE    a synthetic tool/output pane (Messages, Watches, Stack,
+                      "Metals Doctor", ...: ins == 8 but backing no file) -- gets
+                      the wrench ("a tool pane, not your document").  NOT dimmed
+                      and NOT "read-only": Messages also carries a running
+                      program's stdin.
+     WIN_DOCUMENT     a normal editable document (or Help) -- no marker. */
+static e_win_kind e_win_kind_of(FENSTER *f)
+{
+ if (f->ins != 8 || f->dtmd == DTMD_HELP)
+  return(WIN_DOCUMENT);
+ if (e_win_backs_file(f))
+  return(WIN_LOCKED_FILE);
+ if (f->datnam && f->datnam[0])
+  return(WIN_TOOL_PANE);
+ return(WIN_DOCUMENT);
+}
+
 /*    Frame for edit window   */
 void e_ed_rahmen(FENSTER *f, int sw)
 {
@@ -679,19 +707,22 @@ void e_ed_rahmen(FENSTER *f, int sw)
   }
  }
  {
-  /* A read-only window (f->ins == 8: a 0444 file, an extracted library source):
-     draw its name DIMMED and a padlock at the left of the title bar so it is
-     unmistakably non-editable.  0x1F512 is LOCK; on a non-UTF console the chrome
-     fallback (e_t_chrome_ascii) substitutes a stand-in. */
-  int ro = (f->ins == 8 && f->dtmd != DTMD_HELP    /* a locked FILE...              */
-            && e_win_backs_file(f));               /* ...that exists on disk         */
-  if (ro)
-   g_rahmen_hdr_frb = f->fb->es.fb;       /* title text in the dimmer frame colour */
+  /* Mark a non-editable window at the left of its title bar (see e_win_kind_of):
+     a locked file gets the padlock and a dimmed name; a tool/output pane gets
+     the wrench. */
+  e_win_kind kind = e_win_kind_of(f);
+  if (kind == WIN_LOCKED_FILE)
+   g_rahmen_hdr_frb = f->fb->es.fb;       /* dim the locked-file title */
   e_std_rahmen(f->a.x, f->a.y, f->e.x, f->e.y, header, sw, f->fb->er.fb,
     f->fb->es.fb);
   g_rahmen_hdr_frb = -1;
-  if (ro && f->e.x - f->a.x > 8)
-   e_pr_char(f->a.x + 2, f->a.y, 0x1F512, f->fb->er.fb);
+  if (f->e.x - f->a.x > 8)
+  {
+   if (kind == WIN_LOCKED_FILE)
+    e_pr_char(f->a.x + 2, f->a.y, WIN_GLYPH_LOCK, f->fb->er.fb);
+   else if (kind == WIN_TOOL_PANE)
+    e_pr_char(f->a.x + 2, f->a.y, WIN_GLYPH_WRENCH, f->fb->er.fb);
+  }
  }
  if (header)
   WpeFree(header);
