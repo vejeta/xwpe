@@ -453,6 +453,34 @@ steps 2-3: install the servers ([External tools](#external-tools-it-drives)) and
 `source contrib/xwpe-env` (fish: `sh contrib/xwpe-env --shell fish | source`),
 which is what puts Metals/clangd on `PATH` and sets `JAVA_HOME`.
 
+#### BSD (FreeBSD / OpenBSD / NetBSD)
+
+Since 1.6.6 xwpe builds and links the **full X11 build** on **FreeBSD 14**,
+**OpenBSD 7.x** and **NetBSD 9** (verified in Vagrant VMs), and the console mouse
+in `wpe` works over SSH on all three. The portability lives in `configure.ac`
+(it links `libexecinfo` for `backtrace()`, falls back to the base `curses` /
+accepts `ncurses.pc`, detects a usable `-std` flag, and takes the `vterm03`
+module name) plus a `<sys/ioctl.h>` include and a terminfo-independent SGR mouse
+decoder — all no-ops on Linux.
+
+Build it like any autotools project, with the platform's package manager for the
+deps and `--without-gpm` (GPM is Linux-only); X is in the base system:
+
+```sh
+# FreeBSD:  pkg install autoconf automake pkgconf cairo pango json-c libvterm
+# OpenBSD:  pkg_add  autoconf automake cairo pango json-c libvterm   (curses is base)
+# NetBSD:   pkgin install autoconf automake pkgconf cairo pango json-c libvterm03 ncurses
+autoreconf -fi
+./configure --without-gpm      # add --without-x for the terminal-only wpe
+make
+```
+
+**Ports.** A FreeBSD port already exists —
+[`devel/xwpe`](https://www.freshports.org/devel/xwpe/) at 1.5.30a — and an update
+to 1.6.6 will be submitted once the release is tagged (the 1.6.5 tarball predates
+the portability fixes); OpenBSD `ports@` and NetBSD `pkgsrc` ports are planned
+the same way.
+
 To run the test suite locally (`tests/run-tests.sh`, including the headless
 `--x11` layer), the extras the harness drives are:
 

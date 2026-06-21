@@ -92,6 +92,30 @@ README's @samp{Building & installing} section for the full list and the
 keyboard notes (the Option key must be set to send Alt/Meta; the function
 keys are grabbed by macOS -- use the @kbd{Alt-}@var{letter} equivalents).
 
+@subsection On the BSDs (FreeBSD / OpenBSD / NetBSD)
+
+@cindex FreeBSD
+@cindex OpenBSD
+@cindex NetBSD
+@cindex BSD
+
+Since 1.6.6 xwpe builds the full X11 editor on FreeBSD 14, OpenBSD 7.x and
+NetBSD 9, and the console mouse in @command{wpe} works over SSH on all three.
+Install the dependencies with the platform's package manager and configure with
+@option{--without-gpm} (GPM is the Linux raw-console mouse daemon; the
+xterm-style console mouse @command{wpe} uses does not need it).  X11 is in the
+base system.
+
+@example
+# FreeBSD: pkg install autoconf automake pkgconf cairo pango json-c libvterm
+# OpenBSD: pkg_add  autoconf automake cairo pango json-c libvterm  (curses is base)
+# NetBSD:  pkgin install autoconf automake pkgconf cairo pango json-c libvterm03 ncurses
+autoreconf -fi && ./configure --without-gpm && make
+@end example
+
+A FreeBSD port (@uref{https://www.freshports.org/devel/xwpe/, devel/xwpe})
+exists at 1.5.30a; an update to 1.6.6 follows the release tag.
+
 @section Configure options
 
 @cindex configure options
