@@ -1670,6 +1670,20 @@ int fk_t_mouse(int *g)
    e_mouse.k = 0;
    s_t_pending_click_release = 0;
   }
+  else if (ch != ERR && ch != WPE_ESC && g_mouse_buttons != 0)
+  {
+   /* A non-mouse byte arrived while a drag-poll still thinks a button is
+      held.  The matching release SGR may be queued behind it in the kernel
+      tty buffer, but ungetch() pushes this byte to the front of ncurses'
+      pushback stack so the next getch() never reaches the release -- the
+      caller's while(e_mshit()) spins on the same byte.  Cause observed on
+      macOS Terminal: a cursor key pressed right after a menu-bar click is
+      delivered before the release SGR.  Synthesize the release here: clear
+      g_mouse_buttons so the drag loop returns and ungetch the key so the
+      next e_getch() through the main path picks it up normally. */
+   g_mouse_buttons = 0;
+   e_mouse.k = 0;
+  }
   e_t_mouse_publish(g);
   if (ch != ERR)
    ungetch(ch);
