@@ -117,7 +117,7 @@ internally.  Now skips the link step for non-GNU compiler styles.
 @item Scala hover/completion need an LTS JDK for Metals (auto-handled)
 Metals' presentation compiler (hover, completion, go-to-definition) runs on the
 JVM Metals itself uses, @emph{not} the project's @code{//> using jvm} build JVM.
-On a too-new JDK (@geq{}@tie{}24, e.g.@: OpenJDK@tie{}26) the Scala@tie{}3
+On a too-new JDK (>=@tie{}24, e.g.@: OpenJDK@tie{}26) the Scala@tie{}3
 compiler crashes at start-up (@code{asTerm called on not-a-Term}), so those
 actions silently return empty while diagnostics/definition still work.  xwpe
 mitigates this automatically: it pins @env{JAVA_HOME} to an installed LTS JDK

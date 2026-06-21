@@ -368,7 +368,7 @@ though diagnostics (which come from the build server) look fine.
 @noindent
 @strong{So the real requirement is that Metals run on a supported LTS JDK
 (17 or 21).}  @strong{xwpe handles this for you}: when it starts Metals it checks
-the default JDK, and if that is too new (@geq{}@tie{}24) it looks for an
+the default JDK, and if that is too new (>=@tie{}24) it looks for an
 installed LTS JDK and points @env{JAVA_HOME} at it for the Metals process,
 reporting what it picked in the Messages window
 (@samp{Metals: pinned JAVA_HOME=@dots{}}).  You only need to set @env{JAVA_HOME}
