@@ -20,6 +20,7 @@
 
 #ifndef NO_XWINDOWS
 #include "WeXterm.h"
+#include "we_lsp.h"           /* e_lsp_sem_slot_rgb, LSP_SEM_TC_MAX */
 #include <X11/Xft/Xft.h>
 #endif
 
@@ -31,7 +32,22 @@ static cairo_font_face_t *cr_ft_face;
 static cairo_scaled_font_t *cr_scaled;
 static FT_Face cr_ft_ftface;   /* owned by us: cairo references but never frees it */
 
-static double cairo_colors[16][3];
+/* 16 base colours + up to LSP_SEM_TC_MAX semantic-token truecolor slots at
+   indices 16+slot, so a foreground index >= 16 paints a slot's exact RGB. */
+static double cairo_colors[16 + LSP_SEM_TC_MAX][3];
+
+static void cairo_init_sem_truecolors(void)
+{
+ int s, r, g, b;
+ for (s = 0; s < LSP_SEM_TC_MAX; s++)
+ {
+  if (!e_lsp_sem_slot_rgb(s, &r, &g, &b))
+   break;
+  cairo_colors[16 + s][0] = r / 255.0;
+  cairo_colors[16 + s][1] = g / 255.0;
+  cairo_colors[16 + s][2] = b / 255.0;
+ }
+}
 
 static void cairo_init_colors(void)
 {
@@ -51,6 +67,7 @@ static void cairo_init_colors(void)
  for (i = 0; i < 16; i++)
   cairo_colors[i][0] = cairo_colors[i][1] = cairo_colors[i][2] = 0.0;
 #endif
+ cairo_init_sem_truecolors();
 }
 
 static void cr_draw_rect(int x, int y, int w, int h, int color_idx)

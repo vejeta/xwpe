@@ -397,12 +397,18 @@ static void e_x_render_cell(int sc, int px, int py, int cw,
 static void e_xft_paint_cursor_cell(int cx, int cy, int inverted)
 {
  int ch = e_gt_char(cx, cy);
- int attr = ATTR_BASE(e_gt_col(cx, cy));   /* strip any truecolor flag: X11 uses
-                                              the 16-colour fallback for now */
+ int raw = e_gt_col(cx, cy);
+ int attr = ATTR_BASE(raw);
  int fg_idx = inverted ? attr / 16 : attr % 16;
  int bg_idx = inverted ? attr % 16 : attr / 16;
  int n = cy * MAXSCOL + cx;
  int cw = (schirm[n].flags & CELL_WIDE) ? 2 : 1;
+
+ /* Restoring (not inverted) a semantic-token cell keeps its 24-bit colour, so
+    the cursor leaving an orange method does not smear it back to fallback red.
+    Under the cursor (inverted) the glyph takes the cell bg, as for any cell. */
+ if (!inverted && ATTR_IS_TC(raw))
+  fg_idx = 16 + ATTR_TC_SLOT(raw);
 
  e_x_render_cell(ch, WpeXInfo.font_width * cx, WpeXInfo.font_height * cy,
                  cw, fg_idx, bg_idx);
@@ -833,7 +839,8 @@ static void e_x_render_dirty_cells(int force)
   {
    e_x_render_cell(sc, WpeXInfo.font_width * j, WpeXInfo.font_height * i,
      (schirm[_n].flags & CELL_WIDE) ? 2 : 1,
-     ATTR_BASE(sa) % 16, ATTR_BASE(sa) / 16);
+     ATTR_IS_TC(sa) ? 16 + ATTR_TC_SLOT(sa) : ATTR_BASE(sa) % 16,
+     ATTR_BASE(sa) / 16);
    altschirm[_n] = schirm[_n];
   }
  }

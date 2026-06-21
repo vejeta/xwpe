@@ -323,6 +323,8 @@ EXTRA_DIST = \
   tests/test_dap_gdb.c \
   tests/test_dap_lldb.c \
   tests/test_utf8_border.py \
+  tests/test_mouse_sgr_raw.py \
+  tests/test_truecolor_console.py \
   tests/test_scrollbar.py \
   tests/test_compile.py \
   tests/test_make_output.py \

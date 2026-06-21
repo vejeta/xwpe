@@ -56,7 +56,8 @@ typedef struct wpeXStruct {
 #ifdef HAVE_XFT
  XftFont *xftfont;
  XftDraw *xftdraw;
- XftColor xftcolors[16];
+ XftColor xftcolors[24];   /* 16 base + up to 8 LSP truecolor slots (we_lsp.h
+                              LSP_SEM_TC_MAX): a fg index 16+slot picks a slot */
  Pixmap backbuf;
  FcPattern *xftpattern;
  FcFontSet *xftfont_set;

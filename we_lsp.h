@@ -343,6 +343,10 @@ const char *e_lsp_semantic_legend(e_lsp_session *s, int type);
  * we_debug.c) stays the fallback wherever truecolor is unavailable. */
 #define LSP_SEM_TC_NONE (-1)
 
+/* Upper bound on truecolor slots -- renderers size their colour tables to
+   16 + LSP_SEM_TC_MAX so a foreground index of 16+slot selects a slot's RGB. */
+#define LSP_SEM_TC_MAX 8
+
 /* The truecolor SLOT for a semantic token-type NAME (as from
  * e_lsp_semantic_legend), or LSP_SEM_TC_NONE when the category has no dedicated
  * 24-bit colour and should use the 16-colour mapping. */

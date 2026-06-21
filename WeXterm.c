@@ -30,6 +30,7 @@
 /* needed for the time being to call old routines */
 #include "model.h"
 #include "edit.h"
+#include "we_lsp.h"           /* e_lsp_sem_slot_rgb: semantic-token truecolor */
 
 #ifndef DEFAULT_ALTMASK
 #if defined(__linux__) || defined(__osf__)			/* a.r. */
@@ -610,6 +611,23 @@ void WpeXInit(int *argc, char **argv)
       DefaultVisual(WpeXInfo.display, WpeXInfo.screen),
       cmap, &rc, &WpeXInfo.xftcolors[ci]);
    }
+  }
+  /* LSP semantic-token truecolor slots occupy xftcolors[16 + slot]: a
+     foreground index >= 16 from the renderer selects the exact 24-bit colour
+     (e.g. method -> orange) that the 16-colour palette cannot express. */
+  for (ci = 0; ci < LSP_SEM_TC_MAX; ci++)
+  {
+   int r, g, b;
+   XRenderColor rc;
+   if (!e_lsp_sem_slot_rgb(ci, &r, &g, &b))
+    break;
+   rc.red   = r * 257;     /* 0..255 -> 0..65535 */
+   rc.green = g * 257;
+   rc.blue  = b * 257;
+   rc.alpha = 0xffff;
+   XftColorAllocValue(WpeXInfo.display,
+     DefaultVisual(WpeXInfo.display, WpeXInfo.screen),
+     cmap, &rc, &WpeXInfo.xftcolors[16 + ci]);
   }
  }
 #endif

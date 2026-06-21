@@ -231,6 +231,21 @@ Bugs fixed in 1.6.x:
 
 Changes
 
+Unreleased (1.6.6 in progress)
+
+* LSP semantic tokens can now use real 24-bit colour for categories the
+  16-colour palette cannot express: method/function/macro names paint in a warm
+  orange (#FF8C00) instead of falling back to bright red.  A single palette
+  (we_lsp.c e_lsp_sem_truecolor / e_lsp_sem_slot_rgb) feeds both renderers.
+  - Console: rendered through ncurses extended colour pairs, terminfo-gated --
+    a direct-colour terminal (kitty, xterm-direct, tmux with the RGB override)
+    gets the exact 24-bit colour; a 256-colour terminal that can redefine its
+    palette gets it via OSC 4; anything else falls back to the 16-colour red.
+    No raw escapes behind ncurses' back, so its attribute state stays in sync.
+  - X11/Xft and the Cairo backend paint the exact RGB directly.
+  Verified end to end with clangd (tests/test_truecolor_console.py) and a unit
+  test of the palette (tests/test_lsp_truecolor.c).
+
 Unreleased (BSD portability)
 
 * Console mouse now works on terminals whose terminfo lacks an SGR-capable
