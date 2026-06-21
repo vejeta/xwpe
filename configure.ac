@@ -109,10 +109,15 @@ AM_CONDITIONAL([HAVE_CAIRO], [test "x$have_cairo" = xyes])
 # Alt-F5 User Screen falls back to focusing the Messages panel (1.6.3 behaviour).
 have_vterm=no
 AS_IF([test "x$have_x11" = xyes], [
+  # NetBSD pkgsrc names the module 'vterm03' (versioned); everywhere else it is
+  # 'vterm'. Try both.
   PKG_CHECK_MODULES([VTERM], [vterm], [
     have_vterm=yes
     AC_DEFINE([HAVE_VTERM], [1], [Define if libvterm is available])
-  ], [have_vterm=no])
+  ], [PKG_CHECK_MODULES([VTERM], [vterm03], [
+       have_vterm=yes
+       AC_DEFINE([HAVE_VTERM], [1], [Define if libvterm is available])
+     ], [have_vterm=no])])
 ])
 
 # --- Optional: GPM mouse ---
