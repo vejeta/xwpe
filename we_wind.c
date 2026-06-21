@@ -623,12 +623,12 @@ static int e_win_backs_file(FENSTER *f)
 }
 
 /* Title-bar markers (Unicode; e_t_chrome_ascii has the non-UTF stand-ins).  The
-   tool marker is a BMP, width-1, monochrome glyph on purpose: the wrench emoji
-   (0x1F527) is a wide colour SMP glyph that renders blank on some terminals
-   (kitty) and tiny/misaligned in the Xft cell, whereas U+2692 paints crisply
-   from the normal monospace font everywhere. */
+   tool marker is a BMP, width-1, monochrome glyph on purpose: a wrench/tool
+   emoji (0x1F527) is a wide colour SMP glyph that renders blank on some
+   terminals (kitty) and tiny/misaligned in the Xft cell, whereas U+2699 paints
+   crisply from the normal monospace font everywhere. */
 #define WIN_GLYPH_LOCK 0x1F512   /* padlock: a locked file you cannot edit       */
-#define WIN_GLYPH_TOOL 0x2692    /* hammer & pick: a tool/output pane, not a doc */
+#define WIN_GLYPH_TOOL 0x2699    /* gear: a tool/output pane, not a document     */
 
 /* The editability nature of a text window, which decides its title-bar marker. */
 typedef enum { WIN_DOCUMENT, WIN_LOCKED_FILE, WIN_TOOL_PANE } e_win_kind;
@@ -639,7 +639,7 @@ typedef enum { WIN_DOCUMENT, WIN_LOCKED_FILE, WIN_TOOL_PANE } e_win_kind;
                       edit this file, but it is locked").
      WIN_TOOL_PANE    a synthetic tool/output pane (Messages, Watches, Stack,
                       "Metals Doctor", ...: ins == 8 but backing no file) -- gets
-                      the tool glyph ("a tool pane, not your document").  NOT dimmed
+                      the gear ("a tool pane, not your document").  NOT dimmed
                       and NOT "read-only": Messages also carries a running
                       program's stdin.
      WIN_DOCUMENT     a normal editable document (or Help) -- no marker. */

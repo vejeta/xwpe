@@ -236,7 +236,7 @@ Unreleased (1.6.6 in progress)
 * Title-bar markers now distinguish two kinds of non-editable window: a real
   locked FILE on disk (0444, an extracted library source) keeps the padlock and
   a dimmed name, while a tool/output pane (Messages, Watches, Stack, "Metals
-  Doctor", ...) gets a tool glyph instead (U+2692 hammer & pick) -- "a tool
+  Doctor", ...) gets a tool glyph instead (U+2699 gear) -- "a tool
   pane, not your document".  The padlock no longer leaks onto those panes (it
   implied "locked file", which they are not -- Messages even carries a running
   program's stdin); the kind is decided by whether the window names a file that
