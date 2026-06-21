@@ -310,18 +310,19 @@ compiler errors). Ctrl-G P shows output with full scroll at any time.
 
 ## Building & installing
 
-**One command (Debian/Ubuntu or macOS):**
+**One command (Linux, macOS or BSD):**
 
 ```sh
 sh contrib/setup.sh             # deps -> build -> install -> wire your shell
 sh contrib/setup.sh --dry-run   # ...or print exactly what it will run, first
 ```
 
-It installs the build dependencies (apt or brew), builds and installs xwpe, and
-adds the environment helper to your shell profile. It does **not** install the
-optional language servers -- pick those in step 2. Re-open your terminal when it
-finishes. (It is a short, readable POSIX script:
-[`contrib/setup.sh`](contrib/setup.sh).)
+It installs the build dependencies with whatever package manager it finds
+(Linux: apt / dnf / zypper / pacman / emerge; macOS: Homebrew; the BSDs: pkg /
+pkg_add / pkgin), builds and installs xwpe, and adds the environment helper to
+your shell profile. It does **not** install the optional language servers --
+pick those in step 2. Re-open your terminal when it finishes. (It is a short,
+readable POSIX script: [`contrib/setup.sh`](contrib/setup.sh).)
 
 **Or do it by hand** -- the same four steps, each detailed below:
 
@@ -396,13 +397,11 @@ Both binaries build clean on macOS (Apple Silicon and Intel) against Homebrew:
 links against XQuartz + Homebrew's Cairo/Pango/Xft stack and is exercised
 end-to-end by the X11 test suite (see `tests/README.md`).
 
-> **Function keys on macOS.** macOS reserves `F1`–`F12` for system actions, so
-> they do not reach a terminal app unless you enable *System Settings → Keyboard
-> → "Use F1, F2, etc. keys as standard function keys"* (or hold `fn`). You do not
-> have to: every command has a non-F-key binding — `Alt-`*letter* opens menus,
-> `Alt-M` builds, `Alt-C` compiles, `Alt-U` runs, and the whole debugger is on the
-> `Ctrl-G` prefix (`Ctrl-G R` run, `Ctrl-G S` step, `Ctrl-G B` breakpoint, …). See
-> *Reference → Without function keys* in the manual.
+> **macOS keyboard heads-up.** The Option key must be set as Meta, and the
+> top-row `F1`–`F12` are taken by the system -- but every command also has a
+> non-F-key binding, so xwpe is fully usable either way. Details (and the
+> one-time terminal setup) are in [macOS, shell & install
+> notes](#macos-shell--install-notes) just below.
 
 **Pre-built tap (shortest path).** A Homebrew tap on Codeberg packages the
 X11 build (`xwpe`, `xwe`, `wpe`, `we`) so a fresh install is three commands:
@@ -453,6 +452,83 @@ steps 2-3: install the servers ([External tools](#external-tools-it-drives)) and
 `source contrib/xwpe-env` (fish: `sh contrib/xwpe-env --shell fish | source`),
 which is what puts Metals/clangd on `PATH` and sets `JAVA_HOME`.
 
+#### macOS, shell & install notes
+
+These apply to the macOS build above (keyboard, shell) and to any platform
+(install prefix, running the tests).
+
+**The Meta key on a Mac is Option, not Command -- and you must enable it.**
+xwpe's Alt-menus and the whole `Alt-Q` LSP layer need a key that sends a
+Meta/`Esc` prefix. macOS reserves **Command (Cmd)** for the terminal and the
+system, so Cmd-X / Cmd-R / Cmd-E act on
+[kitty](https://sw.kovidgoyal.net/kitty/) / [iTerm2](https://iterm2.com/) and
+never reach xwpe -- **Command is never Alt.** The Alt key is **Option (Opt)**,
+but every Mac terminal defaults to using Option to type accented characters, so
+you must switch it to Meta first:
+  - **kitty:** add `macos_option_as_alt yes` to `~/.config/kitty/kitty.conf`
+    (kitty does NOT do this by default), then **fully quit and reopen kitty**
+    (Cmd-Q) -- a config *reload* does not always apply this macOS setting.
+  - **iTerm2:** Profiles -> Keys -> *Left Option key* -> *Esc+*.
+  - **Terminal.app:** Settings -> Profiles -> Keyboard -> *"Use Option as Meta
+    key"*. Its dated terminfo also causes ncurses key/colour quirks, so prefer
+    kitty or iTerm2. Keep `TERM=xterm-256color` everywhere.
+
+Verify it before launching xwpe: run `cat -v`, press **Option-X** -- it must
+print `^[x`. If it prints an accented glyph instead, Option is still a compose
+key (the setting did not take -- check the file and that you fully restarted).
+`Esc` alone prints `^[`; `Cmd-X` prints `^[[...u` (kitty's own protocol, which
+xwpe cannot use -- that is why Command is never Alt). Once `cat -v` shows `^[x`,
+drive xwpe with **Option** (Opt-Q, Opt-X, ...), exactly like Linux Alt.
+
+**Function keys (F8/F9...) are grabbed by macOS.** By default the top-row keys
+are Mission Control / brightness / volume, so xwpe never sees `F9` (build) or
+`F8` (step). Either tick *System Settings -> Keyboard -> "Use F1, F2, etc. keys
+as standard function keys"* (then press the **fn** key for the media actions),
+or just use the equivalents that do not rely on the top row. Every function-key
+action has one (the Borland heritage), so the top row is never required:
+  - **Build/debug:** `Alt-M` (Make = F9), `Alt-C` (Compile = Alt-F9), and the
+    `Ctrl-G` debug prefix -- `Ctrl-G S` steps (= F8), `Ctrl-G T` traces (= F7),
+    `Ctrl-G R` runs/continues, `Ctrl-G P` shows program output.
+  - **Menus / windows / help:** `Alt-Space` or `Esc` opens the menu bar (= F10)
+    and `Alt-`*letter* jumps to any menu directly; `Alt-N` cycles windows
+    (= F6) and `Alt-1`...`Alt-9` jump straight to a window by index; `Alt-Z`
+    zooms (= F5); `Alt-H` opens Help (= F1). So even with the whole top row
+    eaten by macOS, xwpe stays fully keyboard-drivable.
+
+Verify a key reaches the terminal the same way: `cat -v`, press `F9`, it should
+print `^[[20~` (not switch a Space or dim the screen).
+
+**Using fish?** The two `export` lines in the macOS build above are bash/zsh;
+the fish equivalents are `set -x PKG_CONFIG_PATH (brew --prefix
+ncurses)/lib/pkgconfig $PKG_CONFIG_PATH` and `fish_add_path ~/.local/bin`. (The
+runtime variables -- `XWPE_LIB`, `JAVA_HOME`, server `PATH` -- are handled
+per-shell by `contrib/xwpe-env`, see [Environment setup](#environment-setup).)
+
+**The install prefix matters.** `--prefix="$HOME/.local"` keeps the whole
+install (`wpe`, `syntax_def`, the Help files, the man page) under your home
+directory, no sudo. For a system-wide install use `sudo make install` (default
+prefix `/usr/local`; on Apple Silicon that directory must already exist and be
+writable). A bare `make install` with neither a prefix nor sudo fails with
+`gmkdir: cannot create directory '/usr/local/share': Permission denied` -- so
+pick one of the two. To **skip installing entirely**, `XWPE_LIB="$(pwd)" ./wpe
+foo.c` (or `source contrib/xwpe-env`) runs straight from the build tree with
+full syntax + Help. (**GPM is Linux-only**, `--without-gpm` elsewhere; the mouse
+still works through the terminal emulator.)
+
+**Running the test suite.** `tests/run-tests.sh` (including the headless `--x11`
+layer) drives a few extra tools; on macOS:
+
+```sh
+brew install xdotool xclip netpbm imagemagick                    # X11 test harness
+# XQuartz already provides Xvfb, xwd and twm; no separate install needed.
+# Pillow + pytest + pyte are auto-bootstrapped into tests/.venv on first run.
+```
+
+`tests/run-tests.sh --x11` self-skips with a precise reason if any of these
+are absent, so installing them is optional unless you want full coverage.
+See `tests/README.md` for the per-tool dependency table and the macOS notes
+(twm fallback, ImageMagick 7 / xwdtopnm bridge, `xwpe.altMask` override).
+
 #### BSD (FreeBSD / OpenBSD / NetBSD)
 
 Since 1.6.6 xwpe builds and links the **full X11 build** on **FreeBSD 14**,
@@ -481,77 +557,6 @@ make
 [NetBSD pkgsrc `editors/xwpe`](https://pkgsrc.se/editors/xwpe). An update to
 1.6.6 will be submitted to each once the release is tagged (the 1.5.30a/1.6.5
 tarballs predate the portability fixes).
-
-To run the test suite locally (`tests/run-tests.sh`, including the headless
-`--x11` layer), the extras the harness drives are:
-
-```sh
-brew install xdotool xclip netpbm imagemagick                    # X11 test harness
-# XQuartz already provides Xvfb, xwd and twm; no separate install needed.
-# Pillow + pytest + pyte are auto-bootstrapped into tests/.venv on first run.
-```
-
-`tests/run-tests.sh --x11` self-skips with a precise reason if any of these
-are absent, so installing them is optional unless you want full coverage.
-See `tests/README.md` for the per-tool dependency table and the macOS notes
-(twm fallback, ImageMagick 7 / xwdtopnm bridge, `xwpe.altMask` override).
-
-Using **fish**? The two `export` lines above are bash/zsh; the fish equivalents
-are `set -x PKG_CONFIG_PATH (brew --prefix ncurses)/lib/pkgconfig $PKG_CONFIG_PATH`
-and `fish_add_path ~/.local/bin`. (The runtime variables -- `XWPE_LIB`,
-`JAVA_HOME`, server `PATH` -- are handled per-shell by `contrib/xwpe-env`, see
-[Environment setup](#environment-setup).)
-
-- **The Meta key on a Mac is Option, not Command -- and you must enable it.**
-  xwpe's Alt-menus and the whole `Alt-Q` LSP layer need a key that sends a
-  Meta/`Esc` prefix. macOS reserves **Command (Cmd)** for the terminal and the
-  system, so Cmd-X / Cmd-R / Cmd-E act on
-  [kitty](https://sw.kovidgoyal.net/kitty/) / [iTerm2](https://iterm2.com/) and
-  never reach xwpe -- **Command is never Alt.** The Alt key is **Option (Opt)**,
-  but every Mac terminal defaults to using Option to type accented characters, so
-  you must switch it to Meta first:
-    - **kitty:** add `macos_option_as_alt yes` to `~/.config/kitty/kitty.conf`
-      (kitty does NOT do this by default), then **fully quit and reopen kitty**
-      (Cmd-Q) -- a config *reload* does not always apply this macOS setting.
-    - **iTerm2:** Profiles -> Keys -> *Left Option key* -> *Esc+*.
-    - **Terminal.app:** Settings -> Profiles -> Keyboard -> *"Use Option as Meta
-      key"*. Its dated terminfo also causes ncurses key/colour quirks, so prefer
-      kitty or iTerm2. Keep `TERM=xterm-256color` everywhere.
-
-  **Verify it before launching xwpe:** run `cat -v`, press **Option-X** -- it must
-  print `^[x`. If it prints an accented glyph instead, Option is still a compose
-  key (the setting did not take -- check the file and that you fully restarted).
-  `Esc` alone prints `^[`; `Cmd-X` prints `^[[...u` (kitty's own protocol, which
-  xwpe cannot use -- that is why Command is never Alt). Once `cat -v` shows `^[x`,
-  drive xwpe with **Option** (Opt-Q, Opt-X, ...), exactly like Linux Alt.
-- **Function keys (F8/F9...) are grabbed by macOS.** By default the top-row keys
-  are Mission Control / brightness / volume, so xwpe never sees `F9` (build) or
-  `F8` (step). Either tick *System Settings -> Keyboard -> "Use F1, F2, etc. keys
-  as standard function keys"* (then press the **fn** key for the media actions),
-  or just use the equivalents that do not rely on the top row. Every
-  function-key action has one (the Borland heritage), so the top row is never
-  required:
-    - **Build/debug:** `Alt-M` (Make = F9), `Alt-C` (Compile = Alt-F9), and the
-      `Ctrl-G` debug prefix -- `Ctrl-G S` steps (= F8), `Ctrl-G T` traces (= F7),
-      `Ctrl-G R` runs/continues, `Ctrl-G P` shows program output.
-    - **Menus / windows / help:** `Alt-Space` or `Esc` opens the menu bar
-      (= F10) and `Alt-`*letter* jumps to any menu directly; `Alt-N` cycles
-      windows (= F6) and `Alt-1`...`Alt-9` jump straight to a window by index;
-      `Alt-Z` zooms (= F5); `Alt-H` opens Help (= F1). So even with the whole
-      top row eaten by macOS, xwpe stays fully keyboard-drivable.
-  Verify a key reaches the terminal the same way as above: `cat -v`, press `F9`,
-  it should print `^[[20~` (not switch a Space or dim the screen).
-- **The prefix matters.** `--prefix="$HOME/.local"` keeps the whole install
-  (`wpe`, `syntax_def`, the Help files, the man page) under your home directory,
-  no sudo. For a system-wide install use `sudo make install` (default prefix
-  `/usr/local`; on Apple Silicon that directory must already exist and be
-  writable). A bare `make install` with neither a prefix nor sudo fails with
-  `gmkdir: cannot create directory '/usr/local/share': Permission denied` -- so
-  pick one of the two.
-- **Or skip installing entirely:** `XWPE_LIB="$(pwd)" ./wpe foo.c` (or `source
-  contrib/xwpe-env`) runs straight from the build tree with full syntax + Help.
-- **GPM is Linux-only** (`--without-gpm`); the mouse still works through the
-  terminal emulator.
 
 ### External tools it drives
 

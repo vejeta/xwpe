@@ -3,7 +3,8 @@
 #
 # Does, in order, what the README's "Building & installing" section spells out
 # step by step:
-#   1. install the build dependencies   (Debian/Ubuntu via apt, macOS via brew)
+#   1. install the build dependencies   (Linux: apt/dnf/zypper/pacman/emerge;
+#                                         macOS: brew; *BSD: pkg/pkg_add/pkgin)
 #   2. autoreconf + configure + make
 #   3. make install   (sudo on Linux's /usr/local; no sudo on macOS, where it
 #                       installs into Homebrew's prefix, already on PATH)
@@ -41,16 +42,53 @@ run() {                       # run, or just print under --dry-run
   if [ "$dry" = 1 ]; then printf '    %s\n' "$*"; else ( set -x; "$@" ); fi
 }
 
+# How to gain root for the system-wide package install and `make install`:
+# nothing if we already are root, else sudo, else doas (the OpenBSD default).
+if   [ "$(id -u)" -eq 0 ];                 then priv=''
+elif command -v sudo >/dev/null 2>&1;      then priv='sudo'
+elif command -v doas >/dev/null 2>&1;      then priv='doas'
+else priv=''
+fi
+
+# deps      -- command that installs the build deps (empty = no auto-installer)
+# deps_hint -- what to install by hand when there is no auto-installer
+deps=''
+deps_hint=''
+
 os=$(uname -s)
 case "$os" in
   Linux)
-    deps='sudo apt-get install -y build-essential autoconf automake pkg-config
-          texinfo libncurses-dev libx11-dev libxft-dev libcairo2-dev
-          libpango1.0-dev libvterm-dev libjson-c-dev libgpm-dev zlib1g-dev
-          librsvg2-bin'
-    have_apt=1; command -v apt-get >/dev/null 2>&1 || have_apt=0
+    # Native package manager: only the dep NAMES differ; build + install +
+    # shell-wiring are identical. apt (Debian/Ubuntu), dnf (Fedora/RHEL),
+    # zypper (openSUSE), pacman (Arch), emerge (Gentoo).
+    if command -v apt-get >/dev/null 2>&1; then
+      deps="$priv apt-get install -y build-essential autoconf automake pkg-config
+            texinfo libncurses-dev libx11-dev libxft-dev libcairo2-dev
+            libpango1.0-dev libvterm-dev libjson-c-dev libgpm-dev zlib1g-dev
+            librsvg2-bin"
+    elif command -v dnf >/dev/null 2>&1; then
+      deps="$priv dnf install -y gcc make autoconf automake pkgconf-pkg-config
+            texinfo ncurses-devel libX11-devel libXft-devel cairo-devel
+            pango-devel libvterm-devel json-c-devel gpm-devel zlib-devel"
+    elif command -v zypper >/dev/null 2>&1; then
+      deps="$priv zypper install -y gcc make autoconf automake pkgconf-pkg-config
+            texinfo ncurses-devel libX11-devel libXft-devel cairo-devel
+            pango-devel libvterm-devel libjson-c-devel gpm-devel zlib-devel"
+    elif command -v pacman >/dev/null 2>&1; then
+      deps="$priv pacman -S --needed --noconfirm base-devel autoconf automake
+            pkgconf texinfo ncurses libx11 libxft cairo pango libvterm json-c
+            gpm zlib"
+    elif command -v emerge >/dev/null 2>&1; then
+      # @system already provides autoconf/automake/pkgconf; pull the libraries
+      # (and texinfo). --noreplace is a no-op for anything already merged.
+      deps="$priv emerge --noreplace --quiet sys-apps/texinfo sys-libs/ncurses
+            x11-libs/libX11 x11-libs/libXft x11-libs/cairo x11-libs/pango
+            dev-libs/libvterm dev-libs/json-c sys-libs/gpm sys-libs/zlib"
+    else
+      deps_hint='install a C toolchain + autoconf, automake, pkg-config, texinfo and the -devel packages for ncursesw, X11, Xft, cairo, pango, libvterm, json-c, gpm, zlib (see the README per-distro lists)'
+    fi
     cfg_flags=''
-    do_install='sudo make install'
+    do_install="$priv make install"
     ;;
   Darwin)
     command -v brew >/dev/null 2>&1 || {
@@ -69,7 +107,6 @@ case "$os" in
       # cairo/pango stack that links on top of them.
       deps="$deps libxft cairo pango"
     fi
-    have_apt=1
     # XQuartz ships fontconfig 2.14 / cairo 1.17, both older than what brewed
     # pangocairo requires (>= 2.17 / 1.18). If XQuartz's pkg-config dir wins
     # the search, configure silently falls back to HAVE_PANGO=no and the
@@ -109,8 +146,23 @@ case "$os" in
     fi
     do_install='make install'
     ;;
+  FreeBSD)
+    deps="$priv pkg install -y autoconf automake pkgconf cairo pango json-c libvterm"
+    cfg_flags='--without-gpm'        # GPM is Linux-only; X11 is in the base system
+    do_install="$priv make install"
+    ;;
+  OpenBSD)
+    deps="$priv pkg_add autoconf automake cairo pango json-c libvterm"   # curses is base
+    cfg_flags='--without-gpm'
+    do_install="$priv make install"
+    ;;
+  NetBSD)
+    deps="$priv pkgin -y install autoconf automake pkgconf cairo pango json-c libvterm03 ncurses"
+    cfg_flags='--without-gpm'
+    do_install="$priv make install"
+    ;;
   *)
-    echo "setup.sh: unsupported OS '$os' (handles Linux/apt and macOS/brew)." >&2
+    echo "setup.sh: unsupported OS '$os'." >&2
     echo "Build manually -- see the README \"Building & installing\" section." >&2
     exit 1 ;;
 esac
@@ -120,13 +172,14 @@ cd "$root"
 # 1. dependencies
 if [ "$skip_deps" = 1 ]; then
   say "Skipping dependencies (--skip-deps)"
-elif [ "$os" = Linux ] && [ "$have_apt" = 0 ]; then
-  say "No apt here -- install the Debian deps' equivalent (see README), then re-run with --skip-deps"
-  exit 1
-else
+elif [ -n "$deps" ]; then
   say "Installing build dependencies"
   # shellcheck disable=SC2086
   run $deps
+else
+  say "No automatic dependency installer for this system -- install the deps, then re-run with --skip-deps:"
+  printf '    %s\n' "$deps_hint"
+  exit 1
 fi
 
 # 2. build
