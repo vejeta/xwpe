@@ -34,9 +34,15 @@ void e_mouse_tracking_enable(void)
 #if MOUSE
 #ifdef NCURSES
  mousemask(ALL_MOUSE_EVENTS | REPORT_MOUSE_POSITION, NULL);
- printf("\033[?1002h");
- if (COLS > MOUSE_X10_MAX_COL)
-  printf("\033[?1006h");
+ /* Enable button-event tracking, then ALWAYS request SGR (1006) extended
+    coordinates -- not just past 223 columns.  SGR is what every modern
+    terminal speaks, has no 223 cap, and lets the terminfo-independent SGR
+    parser in we_term.c (e_t_sgr_mouse) work on terminals whose curses cannot
+    decode mouse input itself (FreeBSD's termcap, OpenBSD's base curses).  On
+    ncurses-with-SGR systems (Linux, NetBSD pkgsrc) this is harmless: ncurses
+    already enabled SGR and folds the reports into KEY_MOUSE before the parser
+    ever sees them. */
+ printf("\033[?1002h\033[?1006h");
  fflush(stdout);
 #endif
 #endif

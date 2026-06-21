@@ -993,6 +993,75 @@ static int e_t_getch_poll(void)
    set_escdelay(25) above. */
 #define ESC_ALT_DELAY_MS 25
 
+/* Map an SGR (1006) mouse report's button field @b and final byte @final to the
+   ncurses bstate bits e_t_mouse_apply_event() expects, so a hand-decoded SGR
+   event is indistinguishable from one getmouse() would have returned.  Bit 0x40
+   marks the wheel (64 = up, 65 = down); otherwise the low two bits pick the
+   button and @final is 'M' for a press/motion or 'm' for a release. */
+static mmask_t e_t_sgr_bstate(int b, int final)
+{
+ if (b & 0x40)
+  return (b & 1) ? BUTTON5_PRESSED : BUTTON4_PRESSED;
+ if (final == 'm')
+ {
+  switch (b & 3)
+  {
+   case 0:  return BUTTON1_RELEASED;
+   case 1:  return BUTTON2_RELEASED;
+   case 2:  return BUTTON3_RELEASED;
+   default: return 0;
+  }
+ }
+ switch (b & 3)
+ {
+  case 0:  return BUTTON1_PRESSED;
+  case 1:  return BUTTON2_PRESSED;
+  case 2:  return BUTTON3_PRESSED;
+  default: return 0;     /* b&3 == 3: motion with no button held */
+ }
+}
+
+/* Decode an SGR mouse report "ESC [ < b ; x ; y M|m" whose introducer bytes
+   (ESC '[' '<') have already been read by e_t_csi_key().  ncurses folds an SGR
+   report into a KEY_MOUSE event only when its terminfo entry advertises an
+   SGR-capable kmous; where it does not -- FreeBSD's termcap console, OpenBSD's
+   base curses -- the raw bytes arrive here instead, so the console mouse would
+   silently do nothing.  Parse the report directly, fold it into the persistent
+   button state via e_t_mouse_apply_event(), and return the mouse sentinel (-1)
+   so e_t_getch() reports the event exactly as it does for the KEY_MOUSE path.
+   On Linux/NetBSD, ncurses consumes SGR into KEY_MOUSE and the '<' branch never
+   fires, so this is inert there -- no double handling, no regression.  Returns
+   0 on a malformed report so the caller can fall through to its generic path. */
+static int e_t_sgr_mouse(void)
+{
+ int n[3], i, c, final;
+ MEVENT mev;
+
+ timeout(ESC_ALT_DELAY_MS);
+ n[0] = n[1] = n[2] = 0;
+ for (i = 0; i < 3; i++)
+ {
+  while ((c = fk_getch()) >= '0' && c <= '9')
+   n[i] = n[i] * 10 + (c - '0');
+  if (i < 2 && c != ';')
+  {
+   timeout(-1);
+   return(0);
+  }
+ }
+ final = c;
+ timeout(-1);
+ if (final != 'M' && final != 'm')
+  return(0);
+
+ mev.bstate = e_t_sgr_bstate(n[0], final);
+ mev.x = n[1] - 1;     /* SGR coordinates are 1-based; cells are 0-based */
+ mev.y = n[2] - 1;
+ mev.z = 0;
+ e_t_mouse_apply_event(&mev);
+ return(-1);
+}
+
 /* Decode the tail of a VT100 cursor/navigation escape after we have already read
    ESC and the introducer byte (@intro is '[' for CSI or 'O' for SS3).  ncurses
    keypad() normally folds a whole arrow sequence into one KEY_DOWN/etc. code, but
@@ -1018,6 +1087,9 @@ static int e_t_csi_key(int intro)
   case 'D':  return(CLE);
   case 'H':  return(POS1);
   case 'F':  return(ENDE);
+  /* "ESC [ < ..." is an SGR (1006) mouse report ncurses did not fold into
+     KEY_MOUSE (FreeBSD termcap console / OpenBSD base curses); decode it here. */
+  case '<':  return(e_t_sgr_mouse());
   /* "ESC [ <n> ~" forms: consume the trailing '~' (or modifier digits). */
   case '1': case '7':  { int t; timeout(ESC_ALT_DELAY_MS); do t = fk_getch(); while (t >= '0' && t <= '9'); timeout(-1); return(POS1); }
   case '4': case '8':  { int t; timeout(ESC_ALT_DELAY_MS); do t = fk_getch(); while (t >= '0' && t <= '9'); timeout(-1); return(ENDE); }
@@ -1432,6 +1504,42 @@ static int e_t_mouse_apply_event(MEVENT *mev)
  return g_mouse_buttons;
 }
 
+/* Publish the current mouse button state and position into the drag-poll result
+   array g[] (g[1] = button bitmask, g[2]/g[3] = x/y in 1/8-cell units).  After
+   e_t_mouse_apply_event() e_mouse.{x,y} already mirror the event coordinates, so
+   both the KEY_MOUSE and the raw-SGR paths report through this one helper. */
+static void e_t_mouse_publish(int *g)
+{
+ extern struct mouse e_mouse;
+ g[1] = g_mouse_buttons;
+ g[2] = e_mouse.x * MOUSE_CELL_SUBDIV;
+ g[3] = e_mouse.y * MOUSE_CELL_SUBDIV;
+}
+
+/* During a drag-poll, getch() returned a bare ESC.  On terminals whose terminfo
+   lacks an SGR-capable kmous (FreeBSD termcap console, OpenBSD base curses) a
+   mouse report arrives as the raw bytes "ESC [ < ..." instead of KEY_MOUSE, so
+   without this the drag-tracking loops (scrollbar thumb, submenu, window move)
+   would never see the motion.  Try to consume the introducer and decode the
+   report; return 1 if a mouse event was applied, else push the two peeked bytes
+   back (the caller pushes the ESC) and return 0 for normal key handling. */
+static int e_t_mouse_poll_sgr(void)
+{
+ int b1, b2;
+
+ timeout(ESC_ALT_DELAY_MS);
+ b1 = fk_getch();
+ b2 = (b1 == '[') ? fk_getch() : ERR;
+ timeout(-1);
+ if (b1 == '[' && b2 == '<' && e_t_sgr_mouse() == -1)
+  return(1);
+ if (b2 != ERR)
+  ungetch(b2);
+ if (b1 != ERR)
+  ungetch(b1);
+ return(0);
+}
+
 int fk_t_mouse(int *g)
 {
 #if MOUSE
@@ -1446,9 +1554,12 @@ int fk_t_mouse(int *g)
  timeout(-1);
  if (ch == KEY_MOUSE && getmouse(&mev) == OK)
  {
-  g[1] = e_t_mouse_apply_event(&mev);
-  g[2] = mev.x * MOUSE_CELL_SUBDIV;
-  g[3] = mev.y * MOUSE_CELL_SUBDIV;
+  e_t_mouse_apply_event(&mev);
+  e_t_mouse_publish(g);
+ }
+ else if (ch == WPE_ESC && e_t_mouse_poll_sgr())
+ {
+  e_t_mouse_publish(g);
  }
  else
  {
@@ -1458,9 +1569,7 @@ int fk_t_mouse(int *g)
    e_mouse.k = 0;
    s_t_pending_click_release = 0;
   }
-  g[1] = g_mouse_buttons;
-  g[2] = e_mouse.x * MOUSE_CELL_SUBDIV;
-  g[3] = e_mouse.y * MOUSE_CELL_SUBDIV;
+  e_t_mouse_publish(g);
   if (ch != ERR)
    ungetch(ch);
  }

@@ -231,6 +231,23 @@ Bugs fixed in 1.6.x:
 
 Changes
 
+Unreleased (BSD portability)
+
+* Console mouse now works on terminals whose terminfo lacks an SGR-capable
+  kmous -- FreeBSD's termcap console and OpenBSD's base curses.  wpe requests
+  SGR (1006) mouse reporting unconditionally and decodes the raw
+  ESC [ < b ; x ; y M|m reports itself, so clicks, drags and the wheel behave
+  the same as on Linux/ncurses (which fold the identical reports into
+  KEY_MOUSE before wpe ever sees them, so this path stays inert there -- no
+  regression).  Regression test tests/test_mouse_sgr_raw.py forces the raw
+  path under TERM=vt220.
+* Builds and links natively on FreeBSD 14, OpenBSD 7.x and NetBSD 9 (full
+  X11 build): include <sys/ioctl.h> for TIOCSCTTY; link libexecinfo for
+  backtrace(); fall back to base curses / accept ncurses.pc when ncursesw.pc
+  is absent; detect a usable C standard flag (gnu17 -> gnu11 on NetBSD's base
+  GCC 7); accept the vterm03 pkgsrc module name; avoid @geq{} so the manual
+  builds with older makeinfo.  All no-ops on Linux/glibc.
+
 1.6.5 (LSP for five languages, GNU Algol 68 / ga68 toolchain, Algol 68 highlighting)
 
   LSP keyboard UX -- peeks at the cursor, that chain:
