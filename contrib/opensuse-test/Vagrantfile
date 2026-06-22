@@ -1,0 +1,31 @@
+# Local openSUSE Tumbleweed runtime test for xwpe -- no hosted CI needed.
+#
+# Unlike the BSD harness (which builds from source), this installs the *packaged*
+# RPM from the maintainer's OBS project (home:vejeta) and runs a console smoke
+# test, so it verifies the actual deliverable end to end: the build service
+# produced a working `wpe` that launches and drives its menu over a pty.
+#
+# Requires on the Linux host: vagrant + libvirt (or VirtualBox).
+#
+# Usage:
+#   cd contrib/opensuse-test
+#   VAGRANT_DEFAULT_PROVIDER=libvirt vagrant up      # installs the RPM, runs the probe
+#   VAGRANT_DEFAULT_PROVIDER=libvirt vagrant ssh      # poke around: run `wpe`
+#   vagrant destroy -f                                # tear down
+
+Vagrant.configure("2") do |config|
+  config.vm.box = "opensuse/Tumbleweed.x86_64"
+  config.vm.boot_timeout = 600
+  config.vm.synced_folder ".", "/vagrant", disabled: true
+
+  config.vm.provider "libvirt" do |lv|
+    lv.memory = 2048
+    lv.cpus   = 2
+  end
+  config.vm.provider "virtualbox" do |vb|
+    vb.memory = 2048
+    vb.cpus   = 2
+  end
+
+  config.vm.provision "shell", path: "provision.sh", privileged: true
+end
