@@ -1,0 +1,56 @@
+# Manual macOS CI for xwpe.
+#
+# Codeberg/Forgejo has no macOS runners, so macOS coverage runs on the GitHub
+# push-mirror (github.com/vejeta/xwpe) using GitHub's free Apple-Silicon macOS
+# runners. It is "workflow_dispatch" ONLY -- it never runs on push; you launch
+# it on demand from the Actions tab ("Run workflow") or with:
+#     gh workflow run macos.yml --repo vejeta/xwpe
+#
+# What it guards: the console build links and runs on macOS, and -- via the
+# forkpty mouse probe -- the macOS-specific console-mouse behaviour (the
+# arrow-cursor / drag-spin fixes) keeps working. X11 (XQuartz) is out of scope
+# here; it is heavy/flaky in CI and covered by the Homebrew tap.
+
+name: macOS (manual)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  macos:
+    name: macOS console (--without-x)
+    runs-on: macos-14        # Apple Silicon
+    env:
+      HOMEBREW_NO_AUTO_UPDATE: "1"
+      HOMEBREW_NO_INSTALL_CLEANUP: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install deps
+        run: brew install autoconf automake pkgconf ncurses json-c libvterm texinfo
+
+      - name: Build (--without-x)
+        run: |
+          # ncurses is keg-only on macOS: point pkg-config at its ncursesw.pc.
+          export PKG_CONFIG_PATH="$(brew --prefix ncurses)/lib/pkgconfig"
+          autoreconf -fi
+          ./configure --without-x --without-gpm
+          make
+
+      - name: make check
+        # LSP/DAP tests skip (exit 77) without their servers, as on the distro CIs.
+        run: make check
+
+      - name: Console mouse probe
+        # macOS keeps openpty() in libc, so no -lutil (unlike the BSDs/glibc).
+        run: |
+          cc -O2 -o /tmp/probe contrib/bsd-test/sgr_mouse_probe.c
+          /tmp/probe ./we xterm-256color
+
+      - name: Upload test logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-logs
+          path: tests/*.log
+          if-no-files-found: ignore
