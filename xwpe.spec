@@ -1,9 +1,11 @@
 Name:           xwpe
 Version:        1.6.6
-Release:        1%{?dist}
+Release:        2%{?dist}
 Summary:        Borland-style programming environment and editor for console and X11
 
-License:        GPL-2.0-only
+# Program is GPL-2.0-only; the bundled SVG icon is MIT (Expat) and the
+# AppStream metainfo is FSFAP, and both get installed.
+License:        GPL-2.0-only AND MIT AND FSFAP
 URL:            https://codeberg.org/mendezr/xwpe
 # Upstream "make dist" tarball, attached to the Codeberg release for this
 # version's tag; it unpacks to the standard name-version directory.
@@ -89,6 +91,11 @@ make check
 %{_infodir}/xwpe.info*
 
 %changelog
+* Mon Jun 22 2026 Juan Manuel Méndez Rey <juan.mendezr@proton.me> - 1.6.6-2
+- License: declare the full SPDX expression. The package ships the MIT-licensed
+  SVG icon and the FSFAP-licensed AppStream metainfo next to the GPL-2.0-only
+  program, so the tag is "GPL-2.0-only AND MIT AND FSFAP".
+
 * Sun Jun 21 2026 Juan Manuel Méndez Rey <juan.mendezr@proton.me> - 1.6.6-1
 - New upstream release.
 - BSD portability: builds and links natively on FreeBSD, OpenBSD and NetBSD
