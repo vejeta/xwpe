@@ -101,6 +101,11 @@ on a plain console, or in any terminal emulator.
   <br><em>One tour, the breadth of LSP &mdash; hover, inlay hints, highlight-all-uses, references, outline, and a <strong>rename refactor with Undo</strong> (here in C via clangd). Per-language tours and more clips in <a href="docs/demos/">docs/demos/</a>.</em>
 </p>
 
+<p align="center">
+  <img src="screenshots/xwpe-go-dap-debug.png" width="720" alt="Debugging a Go program in xwpe via Delve over DAP: the editor stopped at a breakpoint on line 9 (highlighted), and a Watches window below showing the live value fact: 6 as the factorial loop runs.">
+  <br><em>A real source-level debugger: Go through Delve/DAP &mdash; stopped at a breakpoint, with a live watch (<code>fact</code>) updating as the loop runs. More in <a href="docs/ide-setup.md">docs/ide-setup.md</a>.</em>
+</p>
+
 For the full release-by-release history (1.6.6, 1.6.5 LSP/DAP, 1.6.3, 1.6.2),
 see the [CHANGELOG](CHANGELOG).
 

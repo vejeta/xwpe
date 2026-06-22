@@ -57,6 +57,22 @@ go install github.com/go-delve/delve/cmd/dlv@latest         # Go (Delve)
 > (e.g. OpenJDK 26) crashes it (`asTerm called on not-a-Term`) so
 > hover/navigation silently return empty. Wiring `JAVA_HOME` is covered next.
 
+## Debugging in action
+
+xwpe drives a real source-level debugger -- breakpoints, stepping (F8/F7), live
+watches (Ctrl-G W) and program output in Messages -- with the same Borland keys
+for every backend (gdb, jdb, pdb, a68g, and the DAP client for Go/Rust/Scala).
+
+<p align="center">
+  <img src="../screenshots/xwpe-go-dap-debug.png" width="720" alt="Debugging a Go program in xwpe via Delve over DAP: the editor stopped at a breakpoint on line 9 (highlighted), and a Watches window below showing the live value fact: 6 as the factorial loop runs.">
+  <br><em>Go through Delve/DAP: stopped at a breakpoint, with a live watch (<code>fact</code>) updating as the loop runs.</em>
+</p>
+
+<p align="center">
+  <img src="../screenshots/xwpe-ga68-watch.gif" width="720" alt="Debugging a GNU Algol 68 (ga68) program in xwpe: Ctrl-G R compiles with ga68 and starts gdb, Ctrl-G W adds a watch on a variable, Window/Size-Move tiles the editor, Watches and Messages windows, and F8 single-steps while the watch value grows. The pressed keys are overlaid in the corner.">
+  <br><em>ga68 + gdb: stepping a factorial with a live watch (<code>fact</code>: 1 &rarr; 2 &rarr; 6 &rarr; 24 &rarr; 120). The full Algol 68 story (a68g's monitor vs ga68/gdb, per-file dialect detection) is in the manual: <code>info xwpe</code>, "Debugging Algol 68 programs".</em>
+</p>
+
 ## Environment
 
 xwpe finds the language servers, the JDK and (for an uninstalled build) its data
