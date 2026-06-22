@@ -1,0 +1,38 @@
+# macOS CI for xwpe.
+#
+# Codeberg/Forgejo has no macOS runners, so macOS coverage runs on Cirrus CI,
+# which provides free Apple-Silicon macOS VMs for open source.  Cirrus is a
+# GitHub App, so it watches a GitHub *mirror* of this Codeberg repo (set up a
+# push-mirror in the Codeberg repo settings); this file lives in the repo and
+# drives the build either way.
+#
+# What it guards: the console build links and runs on macOS, and -- via the
+# forkpty mouse probe -- the macOS-specific console-mouse behaviour (the
+# arrow-cursor / drag-spin fixes) keeps working.  X11 (XQuartz) is intentionally
+# out of scope here; it is heavy/flaky in CI and covered by the Homebrew tap.
+
+macos_task:
+  name: macOS console (--without-x)
+  macos_instance:
+    image: ghcr.io/cirruslabs/macos-runner:sonoma
+  env:
+    HOMEBREW_NO_AUTO_UPDATE: "1"
+    HOMEBREW_NO_INSTALL_CLEANUP: "1"
+  deps_script:
+    - brew install autoconf automake pkgconf ncurses json-c libvterm texinfo
+  build_script:
+    # ncurses is keg-only on macOS: point pkg-config at its ncursesw.pc.
+    - export PKG_CONFIG_PATH="$(brew --prefix ncurses)/lib/pkgconfig"
+    - autoreconf -fi
+    - ./configure --without-x --without-gpm
+    - make
+  check_script:
+    # LSP/DAP tests skip (exit 77) without their servers, as on the distro CIs.
+    - make check
+  probe_script:
+    # macOS keeps openpty() in libc, so no -lutil (unlike the BSDs/glibc).
+    - cc -O2 -o /tmp/probe contrib/bsd-test/sgr_mouse_probe.c
+    - /tmp/probe ./we xterm-256color
+  always:
+    testlog_artifacts:
+      path: "tests/*.log"
