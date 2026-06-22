@@ -11,7 +11,9 @@
  */
 #include <sys/types.h>
 #include <sys/wait.h>
-#if defined(__OpenBSD__) || defined(__NetBSD__) || defined(__APPLE__)
+#if defined(__linux__)
+#include <pty.h>           /* forkpty() on glibc/Linux */
+#elif defined(__OpenBSD__) || defined(__NetBSD__) || defined(__APPLE__)
 #include <util.h>          /* forkpty() on OpenBSD/NetBSD/macOS */
 #else
 #include <libutil.h>       /* forkpty() on FreeBSD */
