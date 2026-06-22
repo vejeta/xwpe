@@ -2,6 +2,24 @@ SUBDIRS = docs
 
 AUTOMAKE_OPTIONS = foreign
 
+# --- Reproducible release tarballs ---
+# "make dist" otherwise stamps the current date/time into the Texinfo
+# @UPDATED line (via build-aux/mdate-sh) and into the per-file mtimes that
+# tar records, so the tarball's sha256 changes on every run and downstream
+# packagers (Debian, Fedora, openSUSE, Homebrew, the BSD ports) see a moving
+# checksum. Pin every embedded timestamp to the last commit. A value already
+# set in the environment still takes precedence.
+SOURCE_DATE_EPOCH ?= $(shell git -C '$(top_srcdir)' log -1 --format=%ct 2>/dev/null)
+export SOURCE_DATE_EPOCH
+
+# automake honours SOURCE_DATE_EPOCH for mdate-sh and zeroes the gzip header,
+# but it does not pin the per-file mtimes in the dist tar; normalise them here
+# so the archive is byte-for-byte stable across repeated "make dist" runs.
+dist-hook:
+	if test -n "$(SOURCE_DATE_EPOCH)"; then \
+	  find "$(distdir)" -exec touch --no-dereference --date="@$(SOURCE_DATE_EPOCH)" {} + ; \
+	fi
+
 # --- Compiler flags ---
 # gnu17 is required: the code uses K&R-compatible GNU extensions
 AM_CFLAGS = $(XWPE_STDFLAG) \
