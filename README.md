@@ -47,7 +47,7 @@ until a package reaches your distro, the from-source build works everywhere.
 
 | Platform | Quickest path today | Full guide |
 |----------|---------------------|------------|
-| **Debian / Ubuntu** | build from source (a `.deb` is on the way) | [docs/install/debian.md](docs/install/debian.md) |
+| **Debian / Ubuntu** | `apt install xwpe` (Debian unstable; migrating to testing) | [docs/install/debian.md](docs/install/debian.md) |
 | **Fedora / RHEL** | build from source (Fedora review in progress) | [docs/install/fedora.md](docs/install/fedora.md) |
 | **openSUSE** | Tumbleweed package (landing) &middot; or build | [docs/install/opensuse.md](docs/install/opensuse.md) |
 | **Arch** | AUR: `yay -S xwpe` | [docs/install/arch.md](docs/install/arch.md) |

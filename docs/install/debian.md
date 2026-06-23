@@ -1,7 +1,13 @@
 # Installing xwpe on Debian / Ubuntu
 
-A package is on its way to Debian; until it lands, the from-source build is four
-lines and gives you a complete editor.
+xwpe 1.6.6 is in **Debian unstable**:
+
+```sh
+sudo apt install xwpe
+```
+
+It migrates to testing after the usual delay. On stable/oldstable or Ubuntu (or
+to track the latest), build from source -- it is four lines.
 
 ## Build from source
 
