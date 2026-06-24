@@ -52,10 +52,17 @@ if _CONV_BIN is None:
 if _CONV_BIN == "magick" and _XWDTOPNM is None:
     _MISSING.append("xwdtopnm (netpbm)")
 
-pytestmark = pytest.mark.skipif(
-    bool(_MISSING),
-    reason="X11 GUI test dependencies missing: " + ", ".join(_MISSING),
-)
+# A module-level `pytestmark` set in a conftest does NOT propagate to the
+# sibling test modules, so an earlier skipif here never actually engaged: the
+# suite ran and crashed on the first missing tool (e.g. xwdtopnm on an
+# ImageMagick-7 box without netpbm). `collect_ignore_glob` IS honoured from a
+# conftest, so when a required tool is absent skip collecting this directory's
+# tests entirely -- with the reason on stderr -- instead of letting them fail.
+if _MISSING:
+    import sys
+    print("SKIP xwpe X11 GUI tests: missing " + ", ".join(_MISSING),
+          file=sys.stderr)
+    collect_ignore_glob = ["test_*.py"]
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 XWPE_BIN = os.environ.get("XWPE_BIN") or os.path.normpath(os.path.join(HERE, "..", "..", "xwpe"))
