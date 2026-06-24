@@ -55,14 +55,20 @@ if _CONV_BIN == "magick" and _XWDTOPNM is None:
 # A module-level `pytestmark` set in a conftest does NOT propagate to the
 # sibling test modules, so an earlier skipif here never actually engaged: the
 # suite ran and crashed on the first missing tool (e.g. xwdtopnm on an
-# ImageMagick-7 box without netpbm). `collect_ignore_glob` IS honoured from a
-# conftest, so when a required tool is absent skip collecting this directory's
-# tests entirely -- with the reason on stderr -- instead of letting them fail.
-if _MISSING:
-    import sys
-    print("SKIP xwpe X11 GUI tests: missing " + ", ".join(_MISSING),
-          file=sys.stderr)
-    collect_ignore_glob = ["test_*.py"]
+# ImageMagick-7 box without netpbm). Mark every X11 test in this directory as
+# skipped via a collection hook instead. This yields a clean "skipped"
+# (pytest exit 0), not a crash and not "no tests collected" (exit 5, which a
+# plain `collect_ignore` would give for `pytest tests/x11`), so the suite stays
+# green when the GUI stack is absent (e.g. on a text-only CI runner).
+def pytest_collection_modifyitems(config, items):
+    if not _MISSING:
+        return
+    here = os.path.dirname(os.path.abspath(__file__))
+    skip = pytest.mark.skip(
+        reason="X11 GUI test dependencies missing: " + ", ".join(_MISSING))
+    for item in items:
+        if str(getattr(item, "fspath", "")).startswith(here):
+            item.add_marker(skip)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 XWPE_BIN = os.environ.get("XWPE_BIN") or os.path.normpath(os.path.join(HERE, "..", "..", "xwpe"))
