@@ -163,8 +163,6 @@ install-data-local:
 	$(MKDIR_P) $(DESTDIR)$(xwpedatadir)
 	$(INSTALL_DATA) $(srcdir)/help.xwpe_eng $(DESTDIR)$(xwpedatadir)/help.xwpe
 	$(INSTALL_DATA) $(srcdir)/help.key_eng $(DESTDIR)$(xwpedatadir)/help.key
-	$(MKDIR_P) $(DESTDIR)$(man1dir)
-	$(INSTALL_DATA) $(srcdir)/xwpe.1_eng $(DESTDIR)$(man1dir)/xwpe.1
 	$(MKDIR_P) $(DESTDIR)$(hicoloricondir)/scalable/apps
 	$(INSTALL_DATA) $(srcdir)/icons/xwpe.svg \
 		$(DESTDIR)$(hicoloricondir)/scalable/apps/xwpe.svg
@@ -186,14 +184,14 @@ install-data-local:
 uninstall-local:
 	rm -f $(DESTDIR)$(xwpedatadir)/help.xwpe \
 	      $(DESTDIR)$(xwpedatadir)/help.key \
-	      $(DESTDIR)$(man1dir)/xwpe.1 \
 	      $(DESTDIR)$(hicoloricondir)/scalable/apps/xwpe.svg
 	@for s in 256 128 64 48 32 24 16; do \
 		rm -f $(DESTDIR)$(hicoloricondir)/$${s}x$${s}/apps/xwpe.png; \
 	done
 
 # --- Man pages ---
-dist_man1_MANS = we.1 wpe.1 xwe.1
+# xwpe.1 is the real page; we.1/wpe.1/xwe.1 are ".so man1/xwpe.1" redirects.
+dist_man1_MANS = we.1 wpe.1 xwe.1 xwpe.1
 
 # --- Desktop file + AppStream MetaInfo ---
 desktopdir = $(datadir)/applications

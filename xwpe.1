@@ -15,7 +15,7 @@
 .if t .sp .5
 ..
 .ta .3i .6i .9i 1.2i 1.5i 1.8i
-.TH xwpe 1 "May 29, 2026" "xwpe 1.6.2" "User Commands"
+.TH xwpe 1 "June 27, 2026" "xwpe 1.6.7" "User Commands"
 .UC
 .SH NAME
 xwpe, xwe, wpe, we \- XWindow Programming Environment
@@ -76,10 +76,15 @@ special programming features. If it is invoked as `\fIxwe\fP'
 editor e.g. for shell-programming. 
 
 .SH COPYRIGHTS
-Copyright (C) 1993 Fred Kruse
-\fIxwpe\fP is free; anyone may redistribute copies of \fIxwpe\fP to
+Copyright (C) 1993-1999 Fred Kruse.
+.br
+Copyright (C) 2000-2006 Dennis Payne.
+.br
+Copyright (C) 2026 Juan Manuel M\['e]ndez Rey.
+.PP
+\fIxwpe\fP is free software; anyone may redistribute copies of \fIxwpe\fP to
 anyone under the terms stated in the
-\fIGNU General Public License\fP. The author assumes no
+\fIGNU General Public License\fP. The authors assume no
 responsibility for errors or omissions or damages resulting
 from the use of \fIxwpe\fP or this manual.
 
@@ -92,7 +97,7 @@ The default options are used. The option file will not be read.
 The default colors will be used. All other options are
 read from the option file.
 
-.IP "\fB-sf\fP" \fIoption file\fP
+.IP "\fB-sf\fP \fIoption file\fP"
 \fIoption file\fP will be used instead of the default file
 (\fI$HOME/.wpe/wperc\fP).
 
@@ -110,18 +115,18 @@ The next file has to be treated as a binary file.
 .IP "\fB-mn\fP"
 The next file is an ASCII-file (default)
 
-.IP "\fB-nc\fP" \fIN\fP
+.IP "\fB-nc\fP \fIN\fP"
 \fIN\fP is an integer specifying the maximum number of
 columns that will be used.
 
-.IP "\fB-nu\fP" \fIN\fP
+.IP "\fB-nu\fP \fIN\fP"
 The integer \fIN\fP gives the maximum number of steps saved
 for undo.
 
-.IP "\fB-nm\fP" \fIN\fP
+.IP "\fB-nm\fP \fIN\fP"
 The number of steps before an auto-save will be done.
 
-.IP "\fB-k\fP" \fIpassword\fP
+.IP "\fB-k\fP \fIpassword\fP"
 The next file should be decoded with `\fIpassword\fP' for
 reading and also be encoded for writing.
 
@@ -136,16 +141,16 @@ Interpret message file for 'extended' compiler output
 
 Command-line options used together with XWindow:
 
-.IP "\fB-display\fP" \fIDisp\fP
+.IP "\fB-display\fP \fIDisp\fP"
 Output to Display '\fIDisp\fP'
 
-.IP "\fB-fn\fP" \fIFontname\fP
+.IP "\fB-fn\fP \fIFontname\fP"
 
-.IP "\fB-font\fP" \fIFontname\fP
+.IP "\fB-font\fP \fIFontname\fP"
 
-.IP "\fB-g\fP" \fIGeometry\fP
+.IP "\fB-g\fP \fIGeometry\fP"
 
-.IP "\fB-geometry\fP" \fIGeometry\fP
+.IP "\fB-geometry\fP \fIGeometry\fP"
 (e.g. -g 80x20+4+4)
 
 .IP "\fB-iconic\fP"
@@ -174,7 +179,7 @@ environment itself and saving all selected options (see also
 \fIOptions-Menu\fP).
 
 
-.SHX-Resources:
+.SH X-Resources:
 
 The following resources are available. (They are normally
 stored in the file \fI.Xdefaults\fP.)
@@ -475,7 +480,7 @@ also marks a block.
 
 
 
-.SHThe Options-Menu (Alt-O):
+.SH The Options-Menu (Alt-O):
 
 
 \fIAdjust Colors\fP  A    Change the colors.
@@ -657,7 +662,7 @@ Alt Ctrl N          goto last row of this window
 .EE
 
 
-.SHEditing:
+.SH Editing:
 
 .EX
 <Return>       Insert a line-break.
@@ -716,7 +721,7 @@ Ctrl K  U      Shift a block to the left
 
 .EE
 
-.SHMarker-Commands:
+.SH Marker-Commands:
 
 .EX
 Ctrl K n       Set the marker no. n ( n = 1 - 9 )
@@ -1011,10 +1016,10 @@ file for editing
 created
  3. a mask (regular expression) selecting the files
 for the 'Files'-menu. '*' matches all characters,
-'?' matches exactly one character, '[a-z]' matches
+\&'?' matches exactly one character, '[a-z]' matches
 one charter in the range of "a..z". Pressing
 <Return> will select all matching files and the
-'Files'-menu will be selected.
+\&'Files'-menu will be selected.
 
 .IP "\fBAlt-F\fP"
 Select the 'Files'-menu which shows all files in the
@@ -1032,7 +1037,7 @@ working directory.
 
 .IP "\fBAlt-C\fP"
 Change the working directory to the one entered in the
-'Directory'-line or marked in the tree.
+\&'Directory'-line or marked in the tree.
 
 .IP "\fBAlt-E\fP"
 The file selected in the 'Name'-line will be opened for
@@ -1091,10 +1096,10 @@ changed. If the entry is
  1. a existing file, pressing <Return> will be executed.
  2. a mask (regular expression) selecting the files
 for the 'Files'-menu. '*' matches all characters,
-'?' matches exactly one character, '[a-z]' matches
+\&'?' matches exactly one character, '[a-z]' matches
 one character in the range of "a..z". Pressing
 <Return> will select all matching files and the
-'Files'-menu will be selected.
+\&'Files'-menu will be selected.
 
 .IP "\fBAlt-F\fP"
 Select the 'Files'-menu which shows all files in the
@@ -1112,7 +1117,7 @@ working directory.
 
 .IP "\fBAlt-C\fP"
 Change the working directory to the one entered in the
-'Directory'-line or marked in the tree.
+\&'Directory'-line or marked in the tree.
 
 .IP "\fBAlt-E\fP"
 The file selected in the 'Name'-line will be opened for
@@ -1187,7 +1192,7 @@ listed in the \fIFind-Window\fP.
 
 
 
-.SHGrep:
+.SH Grep:
 
 Search for files containing a substring. The files selected
 for the grep must match an expression also used for the
@@ -1228,7 +1233,7 @@ in the \fIGrep-Window\fP.
 
 
 
-.SHSearch and replace functions
+.SH Search and replace functions
 
 .IP "\fBAlt-T\fP"
 Enter the string to searched.
@@ -1493,7 +1498,7 @@ be edited.
 The cursor keys are used to walk around in this list and the
 search-function will find an entry. \fI<Return>\fP will jump
 within the stack (this is not possible together with the
-'\fIsdb\fP'-debugger).
+\&'\fIsdb\fP'-debugger).
 
 The stack may be examined if a \fIsignal\fP is catched by the
 programme. If this happens within a system-function than the
@@ -1997,7 +2002,7 @@ produced by a compilation should be interpreted if the
 \fICompiler-Style\fP '\fIOther\fP' was selected. It has to be
 changed for each compiler and work like this.
 
-'\fI*\fP' matches all characters, '\fI?\fP' matches exactly one
+\&'\fI*\fP' matches all characters, '\fI?\fP' matches exactly one
 character, '\fI[a-z]\fP' matches one character in the range of
 "a..z". (This was described in the section \fIFile-Manager\fP.)
 
@@ -2219,7 +2224,7 @@ Fred Kruse <fkr@cs.tu\-berlin.de> (original author, 1991\-1997).
 .br
 Dennis Payne <dulsi@identicalsoftware.com> (xwpe\-alpha 1.5.x, 2000\-2006).
 .br
-Juan Manuel Mendez Rey <juan.mendezr@proton.me> (current maintainer, 2026\-).
+Juan Manuel M\['e]ndez Rey <juan.mendezr@proton.me> (current maintainer, 2026\-).
 .PP
 See the AUTHORS file for the full list of 30+ contributors.
 .SH BUGS
@@ -2245,7 +2250,7 @@ or https://codeberg.org/mendezr/xwpe
 .SH HISTORY
 Written by Fred Kruse in 1993 at TU Berlin.
 Maintained by Dennis Payne (2000\-2006).
-Rescued and modernised by Juan Manuel Mendez Rey (2026).
+Rescued and modernised by Juan Manuel M\['e]ndez Rey (2026).
 This manpage was originally written by Fred Kruse in 1994 and
 restored from the 1.4.2 source in 2026.
 .SH LICENSE

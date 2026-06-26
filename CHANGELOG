@@ -231,6 +231,19 @@ Bugs fixed in 1.6.x:
 
 Changes
 
+1.6.8 (unreleased)
+
+* Man page: ship the modern xwpe.1 instead of the 1999 stub.  The build was
+  still installing the old xwpe.1_eng (a short Kruse-era page) while the
+  rewritten 61 KB manual -- every menu, key binding, option, the debugger and
+  the AUTHORS/BUGS/SEE ALSO sections -- sat unused in the tree, so every distro
+  shipped the obsolete page.  xwpe.1 is now installed via automake; the three
+  argv[0] aliases (we/wpe/xwe.1) keep redirecting to it with ".so".
+* Man page: troff cleanup (no more groff warnings) -- spaced ".SH" headings,
+  folded option arguments into their ".IP" tags so they render, escaped lines
+  that began with an apostrophe; refreshed the .TH date/version and the
+  maintainer credit (Juan Manuel Méndez Rey).
+
 1.6.7 (macOS console Backspace, reproducible release tarballs)
 
 * macOS: Backspace now works in the console editor (wpe) under Terminal.app,
