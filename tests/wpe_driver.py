@@ -28,6 +28,7 @@ import pty
 import select
 import shutil
 import subprocess
+import sys
 import time
 
 import pytest
@@ -36,6 +37,38 @@ import pyte
 from test_utf8_border import SafeScreen
 
 WPE_BIN = os.environ.get("WPE_BIN") or os.path.join(os.path.dirname(__file__), "..", "wpe")
+
+# The data files xwpe loads at runtime (the in-app help, syntax_def) live under
+# $XWPE_LIB when set, else the compiled-in install prefix. Point it at the
+# checkout so the in-tree help.xwpe_eng is found via the editor's "_eng"
+# fallback: the help/manual scenarios then pass from a plain build tree on any
+# OS, instead of silently depending on a system-installed copy that happens to
+# exist on the Linux dev box but not on a fresh macOS runner.
+XWPE_LIB_DIR = os.path.dirname(os.path.abspath(WPE_BIN))
+
+# macOS reserves the F1-F12 keys at the OS / terminal layer, so they never reach
+# wpe -- macOS users drive those actions from the menu instead, which is the
+# supported path there. Map each advertised function-key accelerator the tests
+# send to its menu route, applied ONLY on macOS so every Linux scenario stays
+# byte-for-byte unchanged. (The letters match we_menue.c in programming mode.)
+MACOS = sys.platform == "darwin" or os.environ.get("XWPE_TEST_OS") == "macos"
+
+_MACOS_KEY_ROUTE = {
+    "\033OP": ["\033h", "e"],    # F1 -> Help -> Editor (manual viewer)
+    "\033OQ": ["\033f", "s"],    # F2 -> File -> Save
+    "\033OR": ["\033f", "m"],    # F3 -> File -> File-Manager
+    "\033OS": ["\033s", "f"],    # F4 -> Search -> Find
+    "\033[20~": ["\033r", "m"],  # F9 -> Run -> Make
+    "\x0c": ["\033s", "s"],      # ^L -> Search -> Search again
+}
+
+
+def macos_key_route(k):
+    """The keystrokes to actually send for one logical key. Identity on Linux;
+    on macOS a dead function-key accelerator becomes its equivalent menu route."""
+    if MACOS and k in _MACOS_KEY_ROUTE:
+        return _MACOS_KEY_ROUTE[k]
+    return [k]
 
 # A loaded CI runner is 3-5x slower than a dev box, so the fixed wait/timeout
 # budgets that pass in-tree flake under autopkgtest. XWPE_TEST_WAIT_SCALE
@@ -127,6 +160,9 @@ class WpeSession:
         env = os.environ.copy()
         env.update(TERM="xterm-256color", COLUMNS=str(cols), LINES=str(rows),
                    LC_ALL="en_US.UTF-8", HOME=workdir)
+        # Load help/data from the checkout (hermetic), not a system-installed
+        # copy; an explicit caller-set XWPE_LIB still wins.
+        env.setdefault("XWPE_LIB", XWPE_LIB_DIR)
         # HOME=workdir gives xwpe a clean ~/.xwpe, but it also HIDES per-HOME
         # toolchain config: the rustup `rustc` / `cargo` / `rust-analyzer` shims
         # resolve the default toolchain from $HOME/.rustup, so under workdir they
@@ -205,10 +241,13 @@ class WpeSession:
 
     # -- input ---------------------------------------------------------------
     def key(self, *keys, delay=0.45):
-        """Send raw key strings, draining wpe output after each."""
+        """Send raw key strings, draining wpe output after each. On macOS a
+        function-key accelerator is replaced by its menu route (see
+        macos_key_route); on Linux every key is sent verbatim."""
         for k in keys:
-            os.write(self.master_fd, k.encode())
-            self._drain(delay)
+            for stroke in macos_key_route(k):
+                os.write(self.master_fd, stroke.encode())
+                self._drain(delay)
         return self
 
     def menu(self, alt_seq, item, delay=0.45):

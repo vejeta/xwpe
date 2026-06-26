@@ -90,10 +90,20 @@ jobs:
           # exactly as the Debian autopkgtest does, instead of weakening the
           # assertions.
           XWPE_TEST_WAIT_SCALE: "3"
+          # A login-shell TERM the macOS-smoke sanity check expects (CI shells
+          # have none); the editor under test always gets its own TERM regardless.
+          TERM: "xterm-256color"
         run: |
           python3 -m venv /tmp/ptenv
           /tmp/ptenv/bin/pip install --quiet pyte==0.8.1 pytest
-          WPE_BIN="$PWD/wpe" /tmp/ptenv/bin/python -m pytest -q tests --ignore=tests/x11 -k "not (clangd or gopls or rust or scala or metals or python_lsp or go_dap or dap or algol68 or ga68 or truecolor_console or compile or make_output or build_cwd or user_screen or debugger_watchdog or ctrl_f9 or alt_f5 or make_via_f9 or after_f9)"
+          # Load the in-app help from the checkout (the editor's "_eng" fallback)
+          # so the Help/manual scenarios pass without a `make install`.
+          export XWPE_LIB="$PWD"
+          # The function-key UI actions (Save/Find/Make/Help/File-Manager/menu
+          # entry) are driven through their macOS menu routes by the harness,
+          # since macOS reserves F1-F12; only the toolchain-bound language-server,
+          # DAP and broader compile/debug pipeline tests stay on the Linux CI.
+          WPE_BIN="$PWD/wpe" /tmp/ptenv/bin/python -m pytest -q tests --ignore=tests/x11 -k "not (clangd or gopls or rust or scala or metals or python_lsp or go_dap or dap or algol68 or ga68 or truecolor_console or compile or make_output or build_cwd or user_screen or debugger_watchdog or ctrl_f9 or alt_f5)"
 
       - name: Homebrew test-block reproduction (PTY drive)
         if: always()   # validate the formula fix even if a pyte UI test flaked

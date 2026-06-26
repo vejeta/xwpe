@@ -16,9 +16,15 @@ the VT100/ASCII line set on its own.
 pyte decodes the pty byte stream, so in the C locale it sees the literal ASCII
 stand-ins and in UTF-8 it sees the real codepoints; both are asserted here.
 """
-from wpe_driver import WpeSession
+from wpe_driver import WpeSession, MACOS
 
 SEED = "int main(void){\n  return 0;\n}\n"
+
+# A UTF-8 locale that actually exists on the host: macOS ships en_US.UTF-8 but
+# not the glibc-ism C.UTF-8, so naming C.UTF-8 there leaves ncurses in a non-UTF-8
+# locale and the Unicode chrome degrades to ASCII -- a locale-availability
+# artefact, not a regression. Pick the one present on each platform.
+UTF8_LOCALE = "en_US.UTF-8" if MACOS else "C.UTF-8"
 
 # The Unicode chrome buttons that must NOT survive on a non-UTF-8 terminal.
 UNICODE_BUTTONS = set("✕□▣◻")
@@ -55,7 +61,7 @@ def test_non_utf8_console_shows_ascii_buttons():
 def test_utf8_console_keeps_unicode_buttons():
     """In a UTF-8 locale the title bar keeps the real Unicode boxes (no regression)."""
     with WpeSession("/tmp", SEED, filename="t_chrome.c",
-                    env_extra={"LC_ALL": "C.UTF-8", "LANG": "C.UTF-8"}) as w:
+                    env_extra={"LC_ALL": UTF8_LOCALE, "LANG": UTF8_LOCALE}) as w:
         row = _title_row(w.display())
         assert w.alive(), "wpe died in the UTF-8 locale"
         assert UNICODE_BUTTONS & set(row), \

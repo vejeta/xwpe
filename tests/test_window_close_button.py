@@ -24,6 +24,7 @@ import time
 import pyte
 
 from test_utf8_border import SafeScreen
+from wpe_driver import macos_key_route, XWPE_LIB_DIR
 
 WPE_BIN = os.environ.get('WPE_BIN') or os.path.join(os.path.dirname(__file__), '..', 'wpe')
 CLOSE_GLYPH = '✕'          # the title-bar close box drawn by e_draw_window_buttons
@@ -53,6 +54,7 @@ class _Wpe:
         env = os.environ.copy()
         env.update(TERM='xterm-256color', COLUMNS=str(COLS), LINES=str(ROWS),
                    LC_ALL='en_US.UTF-8', HOME=workdir)
+        env.setdefault('XWPE_LIB', XWPE_LIB_DIR)
         self.proc = subprocess.Popen(
             [WPE_BIN, fname], stdin=slave, stdout=slave, stderr=slave,
             cwd=workdir, env=env, preexec_fn=os.setsid)
@@ -72,7 +74,17 @@ class _Wpe:
                 self.stream.feed(data.decode('utf-8', 'replace'))
 
     def send(self, b):
-        os.write(self.master_fd, b if isinstance(b, bytes) else b.encode())
+        # On macOS a function-key accelerator (e.g. F3 -> File-Manager) is dead,
+        # so it is replaced by its menu route; draining between the menu keystrokes
+        # gives the dropdown time to render. On Linux every key is sent verbatim.
+        if isinstance(b, bytes):
+            os.write(self.master_fd, b)
+            return
+        strokes = macos_key_route(b)
+        for stroke in strokes:
+            os.write(self.master_fd, stroke.encode())
+            if len(strokes) > 1:
+                self.drain(0.45)
 
     def click(self, col, row):
         """A real left click at 1-based (col,row): press, brief hold, release."""

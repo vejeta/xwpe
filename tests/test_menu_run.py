@@ -23,6 +23,7 @@ import time
 import pyte
 
 from test_utf8_border import SafeScreen
+from wpe_driver import macos_key_route
 
 WPE_BIN = os.environ.get('WPE_BIN') or os.path.join(os.path.dirname(__file__), '..', 'wpe')
 
@@ -73,8 +74,9 @@ def _run_keys(workdir, keys, settle=3.0):
     try:
         _drain(fd, stream, 1.0)
         for k in keys:
-            os.write(fd, k.encode())
-            _drain(fd, stream, 0.5)
+            for stroke in macos_key_route(k):   # F9 -> Run->Make on macOS; identity on Linux
+                os.write(fd, stroke.encode())
+                _drain(fd, stream, 0.5)
         _drain(fd, stream, settle)
         ran = any(RAN in line for line in screen.display)
         alive = proc.poll() is None
@@ -108,8 +110,9 @@ def test_make_via_f9_builds_executable(tmp_path):
     proc, fd, screen, stream = _session(str(tmp_path))
     try:
         _drain(fd, stream, 1.0)
-        os.write(fd, F9.encode())
-        _drain(fd, stream, 4.0)
+        for stroke in macos_key_route(F9):   # F9 -> Run->Make on macOS; identity on Linux
+            os.write(fd, stroke.encode())
+            _drain(fd, stream, 4.0)
         assert proc.poll() is None, "wpe died on F9 (Make)"
         # xwpe builds "<basename>.e" next to the source (gcc -o ./t.e ./t.o).
         exe = os.path.join(str(tmp_path), 't.e')

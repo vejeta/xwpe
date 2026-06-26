@@ -17,6 +17,8 @@ import select
 import subprocess
 import time
 
+from wpe_driver import macos_key_route
+
 WPE_BIN = os.environ.get('WPE_BIN') or os.path.join(os.path.dirname(__file__), '..', 'wpe')
 ENABLE_MOTION = b'\x1b[?1002h'
 ALT_SCREEN_ENTER = b'\x1b[?1049h'
@@ -53,7 +55,15 @@ def _read_raw(workdir, pre_keys_wait, action, action_wait):
     try:
         drain(pre_keys_wait)
         mark = len(buf)
-        os.write(master_fd, action)
+        # On macOS F9 is reserved; the compile is triggered from Run -> Make
+        # instead. The CSI ?1002h re-emit we assert on is wpe's own output and
+        # is platform-independent once the sub-process run is entered. On Linux
+        # there is one stroke and no intermediate drain, so behaviour is identical.
+        strokes = macos_key_route(action.decode("latin-1"))
+        for i, stroke in enumerate(strokes):
+            os.write(master_fd, stroke.encode("latin-1"))
+            if i < len(strokes) - 1:
+                drain(0.45)
         drain(action_wait)
         return bytes(buf[mark:])
     finally:

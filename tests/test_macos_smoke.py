@@ -34,6 +34,9 @@ def open_wpe(files, workdir, term='xterm-256color', extra_env=None):
     env = os.environ.copy()
     env.update(TERM=term, COLUMNS=str(COLS), LINES=str(ROWS),
                LC_ALL='en_US.UTF-8', HOME=workdir)
+    # Load the in-app help from the checkout so the F1/Help check works from a
+    # plain build tree (no `make install`), via the editor's "_eng" fallback.
+    env.setdefault('XWPE_LIB', os.path.dirname(os.path.abspath(WPE)))
     if extra_env:
         env.update(extra_env)
     proc = subprocess.Popen([WPE, *files], stdin=slave, stdout=slave,
@@ -47,6 +50,12 @@ def open_wpe(files, workdir, term='xterm-256color', extra_env=None):
 # scenarios don't flake (default 1.0; the Debian autopkgtest sets 3). All
 # scenario waits funnel through drain(), so scaling its deadline covers them.
 WAIT_SCALE = float(os.environ.get("XWPE_TEST_WAIT_SCALE", "1") or 1)
+
+# macOS reserves the F1-F12 keys at the OS / terminal layer, so they never reach
+# wpe; the menu accelerators are the supported path there. This smoke is the
+# trusted Darwin entry point, so on macOS it drives the same actions via their
+# menu routes.
+MACOS = sys.platform == 'darwin' or os.environ.get('XWPE_TEST_OS') == 'macos'
 
 
 def drain(master, stream, timeout):
@@ -77,6 +86,17 @@ def cleanup(proc, master):
 
 def screen_has(screen, s):
     return any(s in line for line in screen.display)
+
+
+def action(m, st, fkey, *menu, wait=0.7):
+    """Trigger an action: its function key on Linux, its menu route on macOS
+    (where F-keys are reserved by the OS). The menu strokes are sent one at a
+    time with a drain so each dropdown renders before the next keypress."""
+    if MACOS and menu:
+        for b in menu:
+            os.write(m, b); drain(m, st, wait)
+    else:
+        os.write(m, fkey); drain(m, st, wait)
 
 
 def cpu_percent(pid):
@@ -111,15 +131,22 @@ def _run_checks():
     wd = tempfile.mkdtemp(prefix='xwpe-smoke-')
     open(os.path.join(wd, 'e.c'), 'w').write('int main(void){return 0;}\n')
 
-    # F10 highlights menu bar -- Enter expands first dropdown
+    # System menu items appear: F10 highlights the menu bar (Enter expands the
+    # first dropdown) on Linux; on macOS F10 is reserved, so open the System
+    # menu directly with Alt-#.
     proc, m, scr, st = open_wpe(['e.c'], wd)
     drain(m, st, 1.5)
-    os.write(m, b'\x1b[21~'); drain(m, st, 0.5)
-    os.write(m, b'\r'); drain(m, st, 0.5)
+    if MACOS:
+        os.write(m, b'\x1b#'); drain(m, st, 0.5)        # Alt-# -> System menu
+        label = 'Alt-# opens System menu'
+    else:
+        os.write(m, b'\x1b[21~'); drain(m, st, 0.5)     # F10 highlights menu bar
+        os.write(m, b'\r'); drain(m, st, 0.5)           # Enter expands first dropdown
+        label = 'F10 opens menu bar (Enter expands)'
     opened = screen_has(scr, 'About WE') or screen_has(scr, 'System Info')
-    rec('§3', 'F10 opens menu bar (Enter expands)',
+    rec('§3', label,
         'PASS' if opened else 'FAIL',
-        '' if opened else 'no System-menu items after F10 + Enter')
+        '' if opened else 'no System-menu items found')
     cleanup(proc, m)
 
     # bare Esc is a no-op
@@ -185,7 +212,7 @@ def _run_checks():
     open(fp, 'w').write('int s(){return 0;}\n')
     proc, m, scr, st = open_wpe(['s.c'], wd)
     drain(m, st, 1.5)
-    os.write(m, b'\x1bOQ'); drain(m, st, 0.7)
+    action(m, st, b'\x1bOQ', b'\x1bf', b's')   # F2 / File -> Save
     os.write(m, b'\x1bx')
     t0 = time.time()
     while time.time() - t0 < 3 and proc.poll() is None:
@@ -199,7 +226,7 @@ def _run_checks():
             '#include <stdio.h>\nint main(){puts("hi");return 0;}\n')
         proc, m, scr, st = open_wpe(['hello.c'], wd)
         drain(m, st, 1.5)
-        os.write(m, b'\x1b[20~'); drain(m, st, 4.0)
+        action(m, st, b'\x1b[20~', b'\x1br', b'm', wait=4.0)   # F9 / Run -> Make
         has_o = any(os.path.exists(os.path.join(wd, n))
                     for n in ('hello.o', 'hello.e', 'hello'))
         rec('§1', 'F9 compile produces output',
@@ -211,7 +238,7 @@ def _run_checks():
 
     proc, m, scr, st = open_wpe(['e.c'], wd)
     drain(m, st, 1.5)
-    os.write(m, b'\x1bOR'); drain(m, st, 0.8)
+    action(m, st, b'\x1bOR', b'\x1bf', b'm', wait=0.8)   # F3 / File -> File-Manager
     fm_open = screen_has(scr, 'Name') and (
         screen_has(scr, 'Files') or screen_has(scr, 'DirTree'))
     rec('§3', 'F3 opens the File Manager dialog',
@@ -221,7 +248,7 @@ def _run_checks():
 
     proc, m, scr, st = open_wpe(['e.c'], wd)
     drain(m, st, 1.5)
-    os.write(m, b'\x1bOP'); drain(m, st, 1.5)
+    action(m, st, b'\x1bOP', b'\x1bh', b'e', wait=1.5)   # F1 / Help -> Editor
     help_open = any(screen_has(scr, s)
                     for s in ('Help', 'Topic', 'WPE', 'XWPE'))
     rec('§3', 'F1 Help opens a viewer',
