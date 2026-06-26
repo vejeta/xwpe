@@ -1323,6 +1323,14 @@ int e_t_getch()
   else
    c = WPE_TAB;
  }
+ else if (c == 127)
+ {
+  /* macOS Terminal.app, kitty and most modern emulators send DEL (0x7f) for
+     Backspace, but the xterm-256color terminfo entry advertises kbs=^H, so
+     ncurses never folds 0x7f into KEY_BACKSPACE and the byte arrives raw --
+     it would otherwise be inserted as ^? into the buffer. */
+  c = WPE_DC;
+ }
  else if (c == WPE_ESC)
  {
   /* A lone Esc must register on the first press. Wait only briefly for a
@@ -1371,6 +1379,8 @@ int e_t_getch()
    else if (bk & 4)
     c += 514;
   }
+  else if (c == 127)
+   c = AltBS;
   else if (c == '[' || c == 'O')
   {
    /* ESC '[' / ESC 'O' that ncurses did not fold into a KEY_ code: decode the
