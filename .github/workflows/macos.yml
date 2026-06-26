@@ -143,8 +143,8 @@ jobs:
                     break if output.include?(marker)
                   end
                 end
-                w.write "\ex" # Alt-X -> quit
-              rescue Timeout::Error
+                w.write "\ex" # Alt-X -> quit (best effort; child may be gone)
+              rescue Timeout::Error, Errno::EIO
                 nil
               ensure
                 begin
