@@ -83,12 +83,20 @@ jobs:
         # debugger and compile+run pipelines are toolchain-bound and timing-heavy;
         # they are covered by the Linux CI and the C `make check` above, so they
         # are excluded here to keep this gate fast and flake-free.
+        env:
+          # GitHub's macOS runners are markedly slower than the Linux ones (the
+          # suite takes ~10x longer here), so the per-scenario wait budgets that
+          # pass in-tree flake at the default scale. Stretch every wait by 3x,
+          # exactly as the Debian autopkgtest does, instead of weakening the
+          # assertions.
+          XWPE_TEST_WAIT_SCALE: "3"
         run: |
           python3 -m venv /tmp/ptenv
           /tmp/ptenv/bin/pip install --quiet pyte==0.8.1 pytest
-          WPE_BIN="$PWD/wpe" /tmp/ptenv/bin/python -m pytest -q tests --ignore=tests/x11 -k "not (clangd or gopls or rust or scala or metals or python_lsp or go_dap or dap or algol68 or ga68 or truecolor_console or compile or make_output or build_cwd or user_screen or debugger_watchdog or ctrl_f9 or alt_f5)"
+          WPE_BIN="$PWD/wpe" /tmp/ptenv/bin/python -m pytest -q tests --ignore=tests/x11 -k "not (clangd or gopls or rust or scala or metals or python_lsp or go_dap or dap or algol68 or ga68 or truecolor_console or compile or make_output or build_cwd or user_screen or debugger_watchdog or ctrl_f9 or alt_f5 or make_via_f9 or after_f9)"
 
       - name: Homebrew test-block reproduction (PTY drive)
+        if: always()   # validate the formula fix even if a pyte UI test flaked
         # Mirrors the Formula/x/xwpe.rb `test do` block exactly, so a failure here
         # is a failure Homebrew-core would hit. Drives `wpe` under a pseudo-terminal
         # with a file holding a unique marker and asserts ncurses both emitted an
@@ -146,6 +154,7 @@ jobs:
           ruby /tmp/brew_test.rb
 
       - name: Diagnostic - old read_nonblock poll (expected to be flaky on Intel)
+        if: always()   # evidence step: run regardless of earlier outcomes
         # Kept as evidence only: this is the loop the first Homebrew submission
         # shipped. On EOF read_nonblock(exception: false) returns nil, which is
         # not a String, so the loop sleeps and retries instead of stopping -- a
