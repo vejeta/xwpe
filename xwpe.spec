@@ -1,6 +1,6 @@
 Name:           xwpe
-Version:        1.6.6
-Release:        2%{?dist}
+Version:        1.6.7
+Release:        1%{?dist}
 Summary:        Borland-style programming environment and editor for console and X11
 
 # Program is GPL-2.0-only; the bundled SVG icon is MIT (Expat) and the
@@ -91,6 +91,10 @@ make check
 %{_infodir}/xwpe.info*
 
 %changelog
+* Fri Jun 26 2026 Juan Manuel Méndez Rey <juan.mendezr@proton.me> - 1.6.7-1
+- New upstream release 1.6.7: macOS console Backspace fix (DEL 0x7f -> Backspace);
+  reproducible "make dist" release tarballs.
+
 * Mon Jun 22 2026 Juan Manuel Méndez Rey <juan.mendezr@proton.me> - 1.6.6-2
 - License: declare the full SPDX expression. The package ships the MIT-licensed
   SVG icon and the FSFAP-licensed AppStream metainfo next to the GPL-2.0-only

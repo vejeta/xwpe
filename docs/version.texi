@@ -1,4 +1,4 @@
-@set UPDATED 12 June 2026
+@set UPDATED 11 June 2026
 @set UPDATED-MONTH June 2026
-@set EDITION 1.6.6
-@set VERSION 1.6.6
+@set EDITION 1.6.7
+@set VERSION 1.6.7

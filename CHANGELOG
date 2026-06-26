@@ -231,6 +231,21 @@ Bugs fixed in 1.6.x:
 
 Changes
 
+1.6.7 (macOS console Backspace, reproducible release tarballs)
+
+* macOS: Backspace now works in the console editor (wpe) under Terminal.app,
+  kitty and other emulators that send DEL (0x7f) for Backspace -- the raw byte
+  was previously inserted as ^? instead of deleting the character.  ESC+DEL maps
+  to Alt-Backspace.
+* Build: "make dist" is now reproducible -- SOURCE_DATE_EPOCH pins the Texinfo
+  @UPDATED date and the per-file tar mtimes, so the release tarball's sha256 no
+  longer drifts between rebuilds.
+* Tests: the X11 GUI test-suite now skips cleanly (instead of erroring) when its
+  headless stack is unavailable, e.g. on a text-only CI runner.
+* Docs: the README is reorganised around a per-platform install matrix, with
+  dedicated install guides under docs/install/ (Debian, Fedora, openSUSE, Arch,
+  macOS, BSD), plus BUILDING.md and docs/ide-setup.md.
+
 1.6.6 (BSD portability: FreeBSD/OpenBSD/NetBSD, LSP truecolor semantic tokens)
 
 * OpenBSD: the console truecolor path no longer breaks the link.  The
