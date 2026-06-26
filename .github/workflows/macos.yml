@@ -1,15 +1,23 @@
 # Manual macOS CI for xwpe.
 #
 # Codeberg/Forgejo has no macOS runners, so macOS coverage runs on the GitHub
-# push-mirror (github.com/vejeta/xwpe) using GitHub's free Apple-Silicon macOS
-# runners. It is "workflow_dispatch" ONLY -- it never runs on push; you launch
-# it on demand from the Actions tab ("Run workflow") or with:
+# push-mirror (github.com/vejeta/xwpe) using GitHub's free macOS runners. It is
+# "workflow_dispatch" ONLY -- it never runs on push; you launch it on demand
+# from the Actions tab ("Run workflow") or with:
 #     gh workflow run macos.yml --repo vejeta/xwpe
 #
-# What it guards: the console build links and runs on macOS, and -- via the
-# forkpty mouse probe -- the macOS-specific console-mouse behaviour (the
-# arrow-cursor / drag-spin fixes) keeps working. X11 (XQuartz) is out of scope
-# here; it is heavy/flaky in CI and covered by the Homebrew tap.
+# It runs on BOTH architectures, because they are genuinely different targets:
+#   - macos-14  : Apple Silicon (arm64)
+#   - macos-13  : Intel (x86_64)   <- the arch Homebrew bottles as "*-x86_64"
+# Skipping Intel here is what let an x86_64-only regression reach Homebrew-core
+# unseen, so both are first-class in the matrix now.
+#
+# What it guards: the console build links and runs on each arch; the
+# macOS-specific console-mouse behaviour (arrow-cursor / drag-spin fixes) keeps
+# working; and -- mirroring the Homebrew formula's own `test do` block -- that
+# `wpe` drives a real pseudo-terminal, initialises ncurses, and paints an opened
+# file's contents on screen. X11 (XQuartz) is out of scope here; it is
+# heavy/flaky in CI and covered by the Homebrew tap.
 
 name: macOS (manual)
 
@@ -18,8 +26,14 @@ on:
 
 jobs:
   macos:
-    name: macOS console (--without-x)
-    runs-on: macos-14        # Apple Silicon
+    name: macOS console (${{ matrix.runner }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-14   # Apple Silicon (arm64)
+          - runner: macos-13   # Intel (x86_64)
+    runs-on: ${{ matrix.runner }}
     env:
       HOMEBREW_NO_AUTO_UPDATE: "1"
       HOMEBREW_NO_INSTALL_CLEANUP: "1"
@@ -28,6 +42,11 @@ jobs:
       HOMEBREW_NO_REQUIRE_TAP_TRUST: "1"
     steps:
       - uses: actions/checkout@v5
+
+      - name: Show arch
+        run: |
+          uname -m
+          sw_vers || true
 
       - name: Install deps
         run: brew install autoconf automake pkgconf ncurses json-c libvterm texinfo
@@ -54,6 +73,132 @@ jobs:
           test_dap test_dap_dlv test_dap_gdb test_dap_lldb test_dap_scala
           test_lsp_scala test_lsp_clangd test_lsp_python test_lsp_gopls"
 
+      - name: pyte UI regression suite (keystrokes, menus, editing, rendering)
+        # The terminal UI is what users actually touch, and "simple" key/render
+        # regressions -- like Backspace not erasing on macOS terminals, which send
+        # DEL (0x7f) rather than BS -- slip straight past a C-only `make check`.
+        # Drive the real ncurses UI through a pseudo-terminal with pyte and assert
+        # on the screen and the file written to disk. Scope: the deterministic
+        # key / menu / editing / rendering scenarios. The language-server, DAP
+        # debugger and compile+run pipelines are toolchain-bound and timing-heavy;
+        # they are covered by the Linux CI and the C `make check` above, so they
+        # are excluded here to keep this gate fast and flake-free.
+        run: |
+          python3 -m venv /tmp/ptenv
+          /tmp/ptenv/bin/pip install --quiet pyte==0.8.1 pytest
+          WPE_BIN="$PWD/wpe" /tmp/ptenv/bin/python -m pytest -q tests --ignore=tests/x11 -k "not (clangd or gopls or rust or scala or metals or python_lsp or go_dap or dap or algol68 or ga68 or truecolor_console or compile or make_output or build_cwd or user_screen or debugger_watchdog or ctrl_f9 or alt_f5)"
+
+      - name: Homebrew test-block reproduction (PTY drive)
+        # Mirrors the Formula/x/xwpe.rb `test do` block exactly, so a failure here
+        # is a failure Homebrew-core would hit. Drives `wpe` under a pseudo-terminal
+        # with a file holding a unique marker and asserts ncurses both emitted an
+        # escape sequence (drew the screen) and rendered the marker (loaded the
+        # buffer). Reads with a BLOCKING readpartial that treats EOF -- which a
+        # closed pty surfaces as Errno::EIO on macOS -- as end-of-capture, so a
+        # fast-exiting child can never spin the loop to a spurious empty-output
+        # timeout (the x86_64-only failure mode of the earlier read_nonblock poll).
+        run: |
+          cat > /tmp/brew_test.rb <<'RUBY'
+          require "pty"
+          require "io/console"
+          require "timeout"
+          require "tmpdir"
+
+          marker = "XWPE_BREW_TEST_MARKER"
+          Dir.mktmpdir do |dir|
+            path = File.join(dir, "hello.c")
+            File.write(path, "// #{marker}\nint main(void) { return 0; }\n")
+            ENV["TERM"] = "xterm-256color"
+
+            output = +""
+            PTY.spawn("./wpe", path) do |r, w, pid|
+              r.winsize = [24, 80]
+              begin
+                Timeout.timeout(30) do
+                  loop do
+                    begin
+                      chunk = r.readpartial(4096)
+                    rescue Errno::EIO, EOFError
+                      break
+                    end
+                    output << chunk
+                    break if output.include?(marker)
+                  end
+                end
+                w.write "\ex" # Alt-X -> quit
+              rescue Timeout::Error
+                nil
+              ensure
+                begin
+                  Process.kill("TERM", pid)
+                rescue Errno::ESRCH
+                  nil
+                end
+              end
+            end
+
+            puts "captured #{output.bytesize} bytes; ESC[=#{output.match?(/\e\[/)} marker=#{output.include?(marker)}"
+            raise "ncurses did not draw the screen" unless output.match?(/\e\[/)
+            raise "marker not rendered" unless output.include?(marker)
+            puts "OK"
+          end
+          RUBY
+          ruby /tmp/brew_test.rb
+
+      - name: Diagnostic - old read_nonblock poll (expected to be flaky on Intel)
+        # Kept as evidence only: this is the loop the first Homebrew submission
+        # shipped. On EOF read_nonblock(exception: false) returns nil, which is
+        # not a String, so the loop sleeps and retries instead of stopping -- a
+        # fast-exiting or fast-EOF child leaves output empty until the 30s
+        # timeout. continue-on-error: it documents the bug, it does not gate CI.
+        continue-on-error: true
+        run: |
+          cat > /tmp/brew_test_old.rb <<'RUBY'
+          require "pty"
+          require "io/console"
+          require "timeout"
+          require "tmpdir"
+
+          marker = "XWPE_BREW_TEST_MARKER"
+          Dir.mktmpdir do |dir|
+            path = File.join(dir, "hello.c")
+            File.write(path, "// #{marker}\nint main(void) { return 0; }\n")
+            ENV["TERM"] = "xterm-256color"
+
+            output = +""
+            PTY.spawn("./wpe", path) do |r, w, pid|
+              r.winsize = [24, 80]
+              begin
+                Timeout.timeout(30) do
+                  loop do
+                    chunk = r.read_nonblock(4096, exception: false)
+                    if chunk.is_a?(String)
+                      output << chunk
+                      break if output.include?(marker)
+                    else
+                      sleep 0.1
+                    end
+                  end
+                end
+                w.write "\ex"
+              rescue Timeout::Error, Errno::EIO
+                nil
+              ensure
+                begin
+                  Process.kill("TERM", pid)
+                rescue Errno::ESRCH
+                  nil
+                end
+              end
+            end
+
+            puts "captured #{output.bytesize} bytes; ESC[=#{output.match?(/\e\[/)} marker=#{output.include?(marker)}"
+            raise "OLD-LOGIC FAILED (empty/short capture)" unless output.match?(/\e\[/) && output.include?(marker)
+            puts "old-logic OK"
+          end
+          RUBY
+          ruby /tmp/brew_test_old.rb
+
       - name: Console mouse probe
         if: always()    # the macOS-specific guard: run it even if a test above failed
         # macOS keeps openpty() in libc, so no -lutil (unlike the BSDs/glibc).
@@ -65,6 +210,6 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: test-logs
+          name: test-logs-${{ matrix.runner }}
           path: "*.log"
           if-no-files-found: ignore
