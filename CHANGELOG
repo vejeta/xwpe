@@ -233,6 +233,11 @@ Changes
 
 1.6.8 (unreleased)
 
+* Portability (GNU/Hurd): the LSP/DAP code (we_dap.c, we_lsp.c, we_bsp.c) used
+  PATH_MAX for path/URI buffers, but Hurd imposes no fixed path limit and so
+  leaves PATH_MAX undefined -- xwpe FTBFS'd there from 1.6.5 on ("'PATH_MAX'
+  undeclared").  Added a 4096-byte fallback in we_dap_proto.h (the header all
+  three include); Linux/BSD/macOS keep their system value.
 * Man page: ship the modern xwpe.1 instead of the 1999 stub.  The build was
   still installing the old xwpe.1_eng (a short Kruse-era page) while the
   rewritten 61 KB manual -- every menu, key binding, option, the debugger and

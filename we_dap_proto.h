@@ -18,6 +18,16 @@
 #include <stddef.h>
 #include <json-c/json.h>
 
+/* GNU/Hurd imposes no fixed path-length limit, so <limits.h> leaves PATH_MAX
+ * undefined there; the LSP/DAP code (we_lsp.c, we_dap.c, we_bsp.c, all of which
+ * include this header) uses PATH_MAX to size absolute-path and file:// URI
+ * buffers.  Provide the conventional 4096-byte fallback so those translation
+ * units build on Hurd; on Linux/BSD/macOS the system value is used unchanged. */
+#include <limits.h>
+#ifndef PATH_MAX
+#define PATH_MAX 4096
+#endif
+
 /* Streaming reader: append received bytes, pop complete messages.  The adapter
  * may deliver a frame split across several reads, or several frames in one
  * read, so the reader buffers until a whole frame is present. */
