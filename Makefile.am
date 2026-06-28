@@ -433,6 +433,8 @@ EXTRA_DIST = \
   tests/test_syntax_algol68.py \
   tests/test_debugger_watchdog.py \
   tests/test_macos_smoke.py \
+  tests/wayland/conftest.py \
+  tests/wayland/test_menu_edit.py \
   tests/x11/conftest.py \
   tests/x11/matchbox-kbdconfig \
   tests/x11/test_editor_options.py \
