@@ -75,6 +75,7 @@ static int g_ptr_px, g_ptr_py;    /* last pointer position, pixels        */
 static int g_ptr_btn;             /* currently-held xwpe button mask      */
 static int g_mouse_pending;       /* a click/scroll code awaiting e_w_getch */
 static const char *g_wl_mousetest;/* XWPE_WL_MOUSETEST: report first mouse code */
+static const char *g_wl_dump_path;/* XWPE_WL_DUMP: mirror each frame to this PPM */
 
 WpeWlInfo WpeWl;
 
@@ -525,7 +526,12 @@ static void kbd_key(void *data, struct wl_keyboard *kbd, uint32_t serial,
  sym = xkb_state_key_get_one_sym(WpeWl.xkb_state, code);
  u8len = xkb_state_key_get_utf8(WpeWl.xkb_state, code, u8, sizeof u8);
  wl_active_mods(&ctrl, &shift, &alt);
- wl_key_push(keysym_to_xwpe(sym, u8, u8len, ctrl, shift, alt));
+ {
+  int xwc = keysym_to_xwpe(sym, u8, u8len, ctrl, shift, alt);
+  WPE_TRACE("wayland", "kbd_key sym=0x%x u8len=%d ctrl=%d shift=%d alt=%d -> %d\n",
+            (unsigned)sym, u8len, ctrl, shift, alt, xwc);
+  wl_key_push(xwc);
+ }
 }
 
 static void kbd_modifiers(void *data, struct wl_keyboard *kbd, uint32_t serial,
@@ -558,7 +564,6 @@ static void ptr_enter(void *data, struct wl_pointer *p, uint32_t serial,
  (void)data; (void)p; (void)serial; (void)surface;
  g_ptr_px = wl_fixed_to_int(sx);
  g_ptr_py = wl_fixed_to_int(sy);
- WPE_TRACE("wayland", "ptr_enter px=%d py=%d\n", g_ptr_px, g_ptr_py);
 }
 static void ptr_leave(void *data, struct wl_pointer *p, uint32_t serial,
                       struct wl_surface *surface)
@@ -917,6 +922,16 @@ static int e_w_refresh(void)
  e_w_show_cursor();
  if (WpeRender.flush_all)
   WpeRender.flush_all();
+ /* Headless screenshot: when XWPE_WL_DUMP is set, mirror every painted frame to
+    that PPM (atomically) so a test can read the current screen at any time --
+    no signal/thread coordination needed. */
+ if (g_wl_dump_path && *g_wl_dump_path)
+ {
+  char tmp[PATH_MAX];
+  snprintf(tmp, sizeof tmp, "%s.tmp", g_wl_dump_path);
+  if (wpe_wl_dump_ppm(tmp) == 0)
+   rename(tmp, g_wl_dump_path);
+ }
  return 0;
 }
 
@@ -1053,26 +1068,26 @@ static void wl_pump_once(int block)
   wl_display_dispatch_pending(WpeWl.display);
 }
 
-/* fk_w_mouse - the editor's mouse poll/wait.  g[0] selects the mode (1 = wait
-   for a press, 2 = wait for release, 3 = poll); g[1] returns the held-button
-   mask; g[2]/g[3] return the position in 1/8-cell units.  Drives the drag loop
-   in we_mouse.c by pumping wl_pointer events while the button is held. */
+/* fk_w_mouse - report the current pointer state, exactly like the X11
+   fk_x_mouse: a single NON-BLOCKING poll.  The incoming g[0] (the editor's
+   "wait for press/release/poll" hint) is IGNORED -- fk_x_mouse ignores it too
+   and never blocks; the drag loop in we_mouse.c does its own looping on g[1].
+   On return g[0]=g[1]=the held-button mask, g[2]/g[3]=position in 1/8-cell units.
+
+   Blocking on g[0] was wrong and caused a 100%-CPU hang: at startup we_main.c
+   calls fk_mouse with g[0]=1 BEFORE e_w_getch has registered the wl fd, so a
+   wait-loop's wpe_fd_poll() (no fds yet) returned instantly and spun forever --
+   the editor never reached its input loop. */
 static int fk_w_mouse(int *g)
 {
  if (!g)
   return 0;
 
- /* The click is now being handled here, so drop any press still queued for
-    e_w_getch (avoids a stale click surfacing after the drag completes). */
- g_mouse_pending = 0;
+ if (WpeWl.display)
+  wl_pump_once(0);     /* absorb pending pointer events, never block */
+ g_mouse_pending = 0;  /* a click handled here is not also an e_w_getch event */
 
- switch (g[0])
- {
- case 1:  while (WpeWl.running && g_ptr_btn == 0) wl_pump_once(1); break;
- case 2:  while (WpeWl.running && g_ptr_btn != 0) wl_pump_once(1); break;
- default: wl_pump_once(0); break;   /* g[0] == 3: non-blocking poll */
- }
-
+ g[0] = g_ptr_btn;
  g[1] = g_ptr_btn;
  g[2] = WpeRender.font_width  ? (g_ptr_px * 8) / WpeRender.font_width  : 0;
  g[3] = WpeRender.font_height ? (g_ptr_py * 8) / WpeRender.font_height : 0;
@@ -1149,6 +1164,7 @@ int WpeWaylandInit(int *argc, char **argv)
 
  g_wl_uidump = getenv("XWPE_WL_UIDUMP");
  g_wl_mousetest = getenv("XWPE_WL_MOUSETEST");
+ g_wl_dump_path = getenv("XWPE_WL_DUMP");   /* e_w_refresh mirrors each frame here */
  {
   const char *after = getenv("XWPE_WL_UIDUMP_AFTER");
   g_wl_dump_after = (after && *after) ? atoi(after) : 0;
