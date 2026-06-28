@@ -57,10 +57,24 @@ extern int  e_x_sys_ini(), e_x_sys_end(), e_x_system();
 extern int  e_t_deb_out();
 extern void e_setlastpic();
 extern int  old_cursor_x, old_cursor_y;   /* defined in we_xterm.c */
+extern struct mouse e_mouse;              /* defined in we_main.c   */
 
 static const char *g_wl_uidump;   /* XWPE_WL_UIDUMP: dump an editor frame to PPM */
 static int g_wl_dump_after;       /* XWPE_WL_UIDUMP_AFTER: dump after N keys read */
 static int g_wl_keys_seen;        /* keys returned to the editor so far          */
+
+/* Pointer state, maintained from wl_pointer events (Wayland has no synchronous
+   pointer query like X11's XQueryPointer).  Button mask uses xwpe's codes:
+   left=1, middle=2, right=4 -- the values fk_mouse / e_w_getch hand the editor. */
+#ifndef BTN_LEFT
+#define BTN_LEFT   0x110
+#define BTN_RIGHT  0x111
+#define BTN_MIDDLE 0x112
+#endif
+static int g_ptr_px, g_ptr_py;    /* last pointer position, pixels        */
+static int g_ptr_btn;             /* currently-held xwpe button mask      */
+static int g_mouse_pending;       /* a click/scroll code awaiting e_w_getch */
+static const char *g_wl_mousetest;/* XWPE_WL_MOUSETEST: report first mouse code */
 
 WpeWlInfo WpeWl;
 
@@ -77,9 +91,10 @@ WpeWlInfo WpeWl;
 
 static uint32_t wl_umin(uint32_t a, uint32_t b) { return a < b ? a : b; }
 
-/* Forward declarations (used by the selftest, defined further down). */
+/* Forward declarations (used before their definitions further down). */
 static void e_w_render_dirty_cells(int force);
 static void wl_selftest_fill_grid(void);
+static void wl_pump_once(int block);
 
 /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - *\
   Shared-memory backing file
@@ -528,6 +543,91 @@ static const struct wl_keyboard_listener kbd_listener = {
  kbd_keymap, kbd_enter, kbd_leave, kbd_key, kbd_modifiers, kbd_repeat_info
 };
 
+/* Translate a Wayland button code (BTN_*) to xwpe's button bit. */
+static int wl_btn_bit(uint32_t button)
+{
+ if (button == BTN_LEFT)   return 1;
+ if (button == BTN_MIDDLE) return 2;
+ if (button == BTN_RIGHT)  return 4;
+ return 0;
+}
+
+static void ptr_enter(void *data, struct wl_pointer *p, uint32_t serial,
+                      struct wl_surface *surface, wl_fixed_t sx, wl_fixed_t sy)
+{
+ (void)data; (void)p; (void)serial; (void)surface;
+ g_ptr_px = wl_fixed_to_int(sx);
+ g_ptr_py = wl_fixed_to_int(sy);
+ WPE_TRACE("wayland", "ptr_enter px=%d py=%d\n", g_ptr_px, g_ptr_py);
+}
+static void ptr_leave(void *data, struct wl_pointer *p, uint32_t serial,
+                      struct wl_surface *surface)
+{ (void)data; (void)p; (void)serial; (void)surface; }
+
+static void ptr_motion(void *data, struct wl_pointer *p, uint32_t time,
+                       wl_fixed_t sx, wl_fixed_t sy)
+{
+ (void)data; (void)p; (void)time;
+ g_ptr_px = wl_fixed_to_int(sx);
+ g_ptr_py = wl_fixed_to_int(sy);
+}
+
+static void ptr_button(void *data, struct wl_pointer *p, uint32_t serial,
+                       uint32_t time, uint32_t button, uint32_t state)
+{
+ int bit = wl_btn_bit(button);
+
+ (void)data; (void)p; (void)serial; (void)time;
+ WPE_TRACE("wayland", "ptr_button button=%u state=%u bit=%d px=%d py=%d\n",
+           button, state, bit, g_ptr_px, g_ptr_py);
+ if (!bit)
+  return;
+ if (state == WL_POINTER_BUTTON_STATE_PRESSED)
+ {
+  int ctrl, shift, alt;
+  g_ptr_btn |= bit;
+  /* A press the editor can act on in e_w_getch (the X11 ButtonPress path). */
+  if (WpeRender.font_width > 0)
+  {
+   e_mouse.x = g_ptr_px / WpeRender.font_width;
+   e_mouse.y = g_ptr_py / WpeRender.font_height;
+  }
+  wl_active_mods(&ctrl, &shift, &alt);
+  e_mouse.k = (shift ? 3 : 0) | (ctrl ? 4 : 0) | (alt ? 8 : 0);
+  g_mouse_pending = -bit;
+ }
+ else
+ {
+  g_ptr_btn &= ~bit;
+ }
+}
+
+/* Vertical wheel -> the editor's scroll keys (one step per axis event). */
+static void ptr_axis(void *data, struct wl_pointer *p, uint32_t time,
+                     uint32_t axis, wl_fixed_t value)
+{
+ (void)data; (void)p; (void)time;
+ if (axis != WL_POINTER_AXIS_VERTICAL_SCROLL)
+  return;
+ if (value > 0)
+  g_mouse_pending = WPE_SCROLL_DOWN;
+ else if (value < 0)
+  g_mouse_pending = WPE_SCROLL_UP;
+}
+
+static void ptr_frame(void *d, struct wl_pointer *p) { (void)d; (void)p; }
+static void ptr_axis_source(void *d, struct wl_pointer *p, uint32_t s)
+{ (void)d; (void)p; (void)s; }
+static void ptr_axis_stop(void *d, struct wl_pointer *p, uint32_t t, uint32_t a)
+{ (void)d; (void)p; (void)t; (void)a; }
+static void ptr_axis_discrete(void *d, struct wl_pointer *p, uint32_t a, int32_t v)
+{ (void)d; (void)p; (void)a; (void)v; }
+
+static const struct wl_pointer_listener ptr_listener = {
+ ptr_enter, ptr_leave, ptr_motion, ptr_button, ptr_axis,
+ ptr_frame, ptr_axis_source, ptr_axis_stop, ptr_axis_discrete
+};
+
 static void seat_caps(void *data, struct wl_seat *seat, uint32_t caps)
 {
  (void)data;
@@ -541,7 +641,16 @@ static void seat_caps(void *data, struct wl_seat *seat, uint32_t caps)
   wl_keyboard_release(WpeWl.keyboard);
   WpeWl.keyboard = NULL;
  }
- /* wl_pointer is wired in the pointer phase. */
+ if ((caps & WL_SEAT_CAPABILITY_POINTER) && !WpeWl.pointer)
+ {
+  WpeWl.pointer = wl_seat_get_pointer(seat);
+  wl_pointer_add_listener(WpeWl.pointer, &ptr_listener, NULL);
+ }
+ else if (!(caps & WL_SEAT_CAPABILITY_POINTER) && WpeWl.pointer)
+ {
+  wl_pointer_release(WpeWl.pointer);
+  WpeWl.pointer = NULL;
+ }
 }
 static void seat_name(void *data, struct wl_seat *seat, const char *name)
 { (void)data; (void)seat; (void)name; }
@@ -610,6 +719,7 @@ static void wl_teardown(void)
  if (WpeWl.xkb_keymap) xkb_keymap_unref(WpeWl.xkb_keymap);
  if (WpeWl.xkb_ctx)    xkb_context_unref(WpeWl.xkb_ctx);
  if (WpeWl.keyboard)   wl_keyboard_release(WpeWl.keyboard);
+ if (WpeWl.pointer)    wl_pointer_release(WpeWl.pointer);
  if (WpeWl.buffer)        wl_buffer_destroy(WpeWl.buffer);
  if (WpeWl.pixels && WpeWl.pixels != MAP_FAILED) munmap(WpeWl.pixels, WpeWl.shm_size);
  if (WpeWl.shm_fd >= 0)   close(WpeWl.shm_fd);
@@ -639,9 +749,10 @@ static void wl_selftest(const char *dump_path)
  wl_create_window();
 
  /* Keyboard came up during connect/bind (seat + keymap roundtrips). */
- fprintf(stderr, "xwpe wayland selftest: keyboard=%s xkb_keymap=%s\n",
+ fprintf(stderr, "xwpe wayland selftest: keyboard=%s xkb_keymap=%s pointer=%s\n",
          WpeWl.keyboard ? "yes" : "no",
-         WpeWl.xkb_state ? "received" : "none");
+         WpeWl.xkb_state ? "received" : "none",
+         WpeWl.pointer ? "yes" : "no");
 
  /* Drive the protocol until the first frame is painted. */
  while (WpeWl.running && !WpeWl.painted && wl_display_dispatch(WpeWl.display) != -1)
@@ -809,22 +920,14 @@ static int e_w_refresh(void)
  return 0;
 }
 
-/* Non-blocking peek: drain any pending Wayland events, report queued keys. */
+/* Non-blocking peek: drain pending Wayland events, report a queued key or a
+   pending mouse click/scroll. */
 static int e_w_kbhit(void)
 {
- struct pollfd p;
-
  if (!WpeWl.display)
   return 0;
- wl_display_flush(WpeWl.display);
- p.fd = wl_display_get_fd(WpeWl.display);
- p.events = POLLIN;
- p.revents = 0;
- if (poll(&p, 1, 0) > 0 && (p.revents & POLLIN))
-  wl_display_dispatch(WpeWl.display);
- else
-  wl_display_dispatch_pending(WpeWl.display);
- return WpeWl.key_head != WpeWl.key_tail;
+ wl_pump_once(0);
+ return (WpeWl.key_head != WpeWl.key_tail) || g_mouse_pending != 0;
 }
 
 /* Blocking key read: pump the Wayland fd through xwpe's shared poll loop (so
@@ -855,33 +958,39 @@ static int e_w_getch(void)
  }
 
  wpe_fd_add(wl_display_get_fd(WpeWl.display), POLLIN, NULL, NULL);
- wl_display_dispatch_pending(WpeWl.display);
 
- while ((code = wl_key_pop()) == 0)
+ for (;;)
  {
-  struct pollfd p;
+  wl_display_dispatch_pending(WpeWl.display);
 
-  if (!WpeWl.running)
+  code = wl_key_pop();
+  if (code != 0)
   {
-   /* Window closed: let the editor run its quit path (returns if cancelled). */
+   g_wl_keys_seen++;
+   return code;
+  }
+  if (g_mouse_pending != 0)        /* a button press (-bit) or wheel step */
+  {
+   code = g_mouse_pending;
+   g_mouse_pending = 0;
+   if (g_wl_mousetest)             /* headless mouse-path verification */
+   {
+    fprintf(stderr, "WL_MOUSE code=%d cell=%d,%d mods=%d\n",
+            code, e_mouse.x, e_mouse.y, e_mouse.k);
+    _exit(0);
+   }
+   return code;
+  }
+  if (!WpeWl.running)              /* xdg_toplevel.close */
+  {
    extern int e_quit(FENSTER *);
    WpeWl.running = 1;
    e_quit(WpeEditor->f[WpeEditor->mxedt]);
    e_refresh();
    continue;
   }
-  wl_display_flush(WpeWl.display);
-  wpe_fd_poll(-1);
-  p.fd = wl_display_get_fd(WpeWl.display);
-  p.events = POLLIN;
-  p.revents = 0;
-  if (poll(&p, 1, 0) > 0 && (p.revents & POLLIN))
-   wl_display_dispatch(WpeWl.display);
-  else
-   wl_display_dispatch_pending(WpeWl.display);
+  wl_pump_once(1);                 /* block in the shared poll, then dispatch */
  }
- g_wl_keys_seen++;
- return code;
 }
 
 /* Allocate the screen-cell grid for MAXSCOL x MAXSLNS and match the wl_shm
@@ -925,8 +1034,50 @@ static int e_w_ini_size(void)
    model (the X11 backend uses a pixmap; we repaint from the window stack). */
 static int e_w_change(PIC *pic) { (void)pic; return 0; }
 
-/* Pointer state is wired in the pointer phase; report "no buttons" for now. */
-static int fk_w_mouse(int *g) { if (g) g[0] = 0; return 0; }
+/* Pump Wayland events once: block in the shared poll loop first when `block`,
+   then read-and-dispatch if the wl fd has data, else dispatch what is buffered
+   (never blocking on the wl fd when the poll woke for another descriptor). */
+static void wl_pump_once(int block)
+{
+ struct pollfd p;
+
+ wl_display_flush(WpeWl.display);
+ if (block)
+  wpe_fd_poll(-1);
+ p.fd = wl_display_get_fd(WpeWl.display);
+ p.events = POLLIN;
+ p.revents = 0;
+ if (poll(&p, 1, 0) > 0 && (p.revents & POLLIN))
+  wl_display_dispatch(WpeWl.display);
+ else
+  wl_display_dispatch_pending(WpeWl.display);
+}
+
+/* fk_w_mouse - the editor's mouse poll/wait.  g[0] selects the mode (1 = wait
+   for a press, 2 = wait for release, 3 = poll); g[1] returns the held-button
+   mask; g[2]/g[3] return the position in 1/8-cell units.  Drives the drag loop
+   in we_mouse.c by pumping wl_pointer events while the button is held. */
+static int fk_w_mouse(int *g)
+{
+ if (!g)
+  return 0;
+
+ /* The click is now being handled here, so drop any press still queued for
+    e_w_getch (avoids a stale click surfacing after the drag completes). */
+ g_mouse_pending = 0;
+
+ switch (g[0])
+ {
+ case 1:  while (WpeWl.running && g_ptr_btn == 0) wl_pump_once(1); break;
+ case 2:  while (WpeWl.running && g_ptr_btn != 0) wl_pump_once(1); break;
+ default: wl_pump_once(0); break;   /* g[0] == 3: non-blocking poll */
+ }
+
+ g[1] = g_ptr_btn;
+ g[2] = WpeRender.font_width  ? (g_ptr_px * 8) / WpeRender.font_width  : 0;
+ g[3] = WpeRender.font_height ? (g_ptr_py * 8) / WpeRender.font_height : 0;
+ return g[1];
+}
 
 static void e_w_display_end(void) { wl_teardown(); }
 
@@ -997,6 +1148,7 @@ int WpeWaylandInit(int *argc, char **argv)
   wl_selftest(selftest);          /* does not return */
 
  g_wl_uidump = getenv("XWPE_WL_UIDUMP");
+ g_wl_mousetest = getenv("XWPE_WL_MOUSETEST");
  {
   const char *after = getenv("XWPE_WL_UIDUMP_AFTER");
   g_wl_dump_after = (after && *after) ? atoi(after) : 0;

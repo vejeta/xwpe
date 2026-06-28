@@ -42,6 +42,8 @@ typedef struct WpeWlInfo {
  int               height;
  int               stride;     /* bytes per row (width * 4)                  */
 
+ /* Input devices. */
+ struct wl_pointer  *pointer;
  /* Keyboard (wl_keyboard + xkbcommon keymap/state). */
  struct wl_keyboard *keyboard;
  struct xkb_context *xkb_ctx;
