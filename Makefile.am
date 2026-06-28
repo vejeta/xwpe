@@ -435,6 +435,7 @@ EXTRA_DIST = \
   tests/test_macos_smoke.py \
   tests/wayland/conftest.py \
   tests/wayland/test_menu_edit.py \
+  tests/wayland/test_popup_close_button.py \
   tests/x11/conftest.py \
   tests/x11/matchbox-kbdconfig \
   tests/x11/test_editor_options.py \

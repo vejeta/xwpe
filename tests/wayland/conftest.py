@@ -196,9 +196,15 @@ def wlserver():
             os.unlink(p)
         except OSError:
             pass
+    # kiosk-shell fullscreens the single client at the output's (0,0) with no
+    # panel, so the xwpe surface origin == the weston window origin: an xdotool
+    # click relative to that window lands on the matching surface cell.  (The
+    # default desktop-shell centres/offsets the surface, breaking click-coord
+    # tests.)  Keyboard focus works under kiosk once the fk_w_mouse startup spin
+    # is fixed -- the earlier "kiosk breaks input" was that bug, not the shell.
     weston = _spawn(
-        ["weston", "--backend=x11-backend.so", "--width=1024", "--height=768",
-         "--socket=" + WL_SOCKET, "--idle-time=0"],
+        ["weston", "--backend=x11-backend.so", "--shell=kiosk-shell.so",
+         "--width=1024", "--height=768", "--socket=" + WL_SOCKET, "--idle-time=0"],
         env={**os.environ, "DISPLAY": DISPLAY, "XDG_RUNTIME_DIR": runtime})
     # Wait for the wl socket to appear.
     for _ in range(60):
@@ -236,6 +242,11 @@ def xwpe(wlserver, tmp_path):
            "XWPE_LIB": TREE,
            "XWPE_LSP_NO_EAGER": "1",
            "XWPE_FONT_SIZE": "10",
+           # Match the X11 suite's forced 1024x768 geometry so the centered
+           # dialogs land at the same window fraction (coordinate-based pixel
+           # scans -- e.g. the popup close [X] -- are calibrated for it).
+           "XWPE_WL_WIDTH": "1024",
+           "XWPE_WL_HEIGHT": "768",
            "XWPE_WL_DUMP": dump,
            "HOME": str(tmp_path)}
     proc = _spawn([XWPE_BIN, str(src)], env=env, cwd=str(tmp_path))

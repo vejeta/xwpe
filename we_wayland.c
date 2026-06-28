@@ -1178,10 +1178,17 @@ int WpeWaylandInit(int *argc, char **argv)
 
  /* Size the window to a cell grid (probe the font before the buffer exists). */
  wpe_render_wayland_probe_cell(&cw, &ch);
- cols = 80;
- rows = 30;
- WpeWl.width  = cols * cw;
- WpeWl.height = rows * ch;
+ /* Initial window size: an 80x30 cell grid by default, or an explicit pixel
+    size via XWPE_WL_WIDTH/XWPE_WL_HEIGHT (lets a test match another backend's
+    geometry so dialog-position assertions line up). */
+ {
+  const char *ew = getenv("XWPE_WL_WIDTH");
+  const char *eh = getenv("XWPE_WL_HEIGHT");
+  WpeWl.width  = (ew && *ew) ? atoi(ew) : 80 * cw;
+  WpeWl.height = (eh && *eh) ? atoi(eh) : 30 * ch;
+  if (WpeWl.width  < cw * 8) WpeWl.width  = cw * 8;
+  if (WpeWl.height < ch * 4) WpeWl.height = ch * 4;
+ }
 
  wl_create_window();
  while (WpeWl.running && !WpeWl.configured
@@ -1194,6 +1201,9 @@ int WpeWaylandInit(int *argc, char **argv)
   return 1;
  }
 
+ /* Grid from the actual surface size and the now-known cell metrics. */
+ cols = WpeWl.width  / (WpeRender.font_width  > 0 ? WpeRender.font_width  : cw);
+ rows = WpeWl.height / (WpeRender.font_height > 0 ? WpeRender.font_height : ch);
  MAXSCOL = cols;
  MAXSLNS = rows;
  if (e_w_ini_size() != 0)
