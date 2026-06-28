@@ -65,6 +65,10 @@ docs/examples/c-lsp/clsp-demo
 # Misc local debug dumps
 /debug.txt
 
+# Wayland xdg-shell glue (generated at build time by wayland-scanner)
+xdg-shell-client-protocol.h
+xdg-shell-protocol.c
+
 # Documentation build artifacts
 docs/xwpe.info
 docs/xwpe.info-*

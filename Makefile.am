@@ -91,6 +91,34 @@ we_LDADD = \
   $(EXECINFO_LIBS) \
   -lz
 
+# --- Native Wayland backend (optional, --with-wayland) ---
+# The xdg-shell protocol glue is generated at build time from the system
+# wayland-protocols XML by wayland-scanner: the client header must exist before
+# any .c that includes it is compiled (BUILT_SOURCES), and the generated .c is a
+# nodist source (regenerated locally, never shipped in the dist tarball).
+# we_wayland.c / we_render_wayland.c are listed in we_SOURCES under the
+# conditional, so automake still distributes them when the backend is off.
+if HAVE_WAYLAND
+we_SOURCES += we_wayland.c we_render_wayland.c
+nodist_we_SOURCES = xdg-shell-protocol.c
+BUILT_SOURCES = xdg-shell-client-protocol.h
+CLEANFILES = xdg-shell-client-protocol.h xdg-shell-protocol.c
+AM_CFLAGS += $(WAYLAND_CFLAGS)
+we_LDADD += $(WAYLAND_LIBS)
+
+xdg-shell-client-protocol.h:
+	$(WAYLAND_SCANNER) client-header \
+	  $(WAYLAND_PROTOCOLS_DIR)/stable/xdg-shell/xdg-shell.xml $@
+xdg-shell-protocol.c:
+	$(WAYLAND_SCANNER) private-code \
+	  $(WAYLAND_PROTOCOLS_DIR)/stable/xdg-shell/xdg-shell.xml $@
+
+# BUILT_SOURCES only fires for the default `all` target; this explicit
+# dependency guarantees the generated client header exists before we_wayland.c
+# is compiled even for `make we` or a parallel `make -j`.
+we_wayland.$(OBJEXT): xdg-shell-client-protocol.h
+endif
+
 # --- Header files (for dist) ---
 noinst_HEADERS = \
   Xwpe.h \
@@ -99,6 +127,7 @@ noinst_HEADERS = \
   WeProg.h \
   WeExpArr.h \
   we_render.h \
+  we_wayland.h \
   we_fdloop.h \
   we_trace.h \
   we_vterm.h \

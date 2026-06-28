@@ -113,6 +113,38 @@ AS_IF([test "x$have_cairo" = xyes], [
 ])
 AM_CONDITIONAL([HAVE_CAIRO], [test "x$have_cairo" = xyes])
 
+# --- Optional: native Wayland backend ---
+# Wayland exposes no server-side font protocol, so the client renders every
+# glyph itself; the native backend reuses the same Cairo+Pango stack as the X11
+# path (we_render_cairo.c / we_render_wayland.c).  It is therefore only offered
+# when Cairo+Pango are present.  Needs the client libraries, xkbcommon (keymap
+# translation), wayland-scanner (generates the xdg-shell glue) and the
+# wayland-protocols data dir (ships the xdg-shell XML).  Default: auto -- build
+# it when everything is found, otherwise quietly skip (X11/XWayland still works).
+AC_ARG_WITH([wayland],
+  [AS_HELP_STRING([--with-wayland],
+     [Enable the native Wayland backend (needs Cairo+Pango; default: auto)])],
+  [], [with_wayland=auto])
+
+have_wayland=no
+AS_IF([test "x$with_wayland" != xno], [
+  AS_IF([test "x$have_pango" = xyes], [
+    PKG_CHECK_MODULES([WAYLAND], [wayland-client wayland-cursor xkbcommon], [
+      AC_CHECK_PROG([WAYLAND_SCANNER], [wayland-scanner], [wayland-scanner], [:])
+      PKG_CHECK_VAR([WAYLAND_PROTOCOLS_DIR], [wayland-protocols], [pkgdatadir])
+      AS_IF([test "x$WAYLAND_SCANNER" != "x:" && test -n "$WAYLAND_PROTOCOLS_DIR"], [
+        have_wayland=yes
+        AC_DEFINE([HAVE_WAYLAND], [1], [Define if the native Wayland backend is built])
+      ], [AS_IF([test "x$with_wayland" = xyes],
+            [AC_MSG_ERROR([Wayland requested but wayland-scanner or wayland-protocols not found])])])
+    ], [AS_IF([test "x$with_wayland" = xyes],
+          [AC_MSG_ERROR([Wayland requested but wayland-client/wayland-cursor/xkbcommon not found])])])
+  ], [AS_IF([test "x$with_wayland" = xyes],
+        [AC_MSG_ERROR([the Wayland backend requires Cairo+Pango, which were not found])])])
+])
+AM_CONDITIONAL([HAVE_WAYLAND], [test "x$have_wayland" = xyes])
+AC_SUBST([WAYLAND_PROTOCOLS_DIR])
+
 # --- Optional: libvterm (embedded VT terminal for the xwpe Alt-F5 User Screen) ---
 # Pure C ANSI/CSI parser + cell grid; the panel is rendered with the existing
 # Cairo/Xft backend, so it is only useful when X11 is present.  Without it the
@@ -214,6 +246,7 @@ AC_MSG_RESULT([
     Xft:       $have_xft
     Cairo:     $have_cairo
     Pango:     $have_pango
+    Wayland:   $have_wayland
     libvterm:  $have_vterm
     GPM:       $have_gpm
     PRNTCMD:   $PRNTCMD

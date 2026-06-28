@@ -13,6 +13,9 @@
 int WpeXtermInit(int *argc, char **argv);
 int WpeTermInit(int *argc, char **argv);
 #endif
+#ifdef HAVE_WAYLAND
+int WpeWaylandInit(int *argc, char **argv);
+#endif
 
 #include <termios.h>
 #include <sys/types.h>
@@ -87,6 +90,7 @@ char *e_lib_file(const char *name)
 
 SCREENCELL *schirm = NULL;
 char e_we_sw = 0;
+WpeGfxBackend e_gfx_backend = WPE_GFX_X11;
 
 void WpeSignalUnknown(int sig);
 void WpeSignalChild(int sig);
@@ -156,6 +160,31 @@ int WpeZeroFunction(void)
 {
  return(0);
 }
+
+#if !defined(NO_XWINDOWS)
+/* e_pick_gfx_backend - choose the graphical backend for `xwpe` at startup.
+   Honours an explicit XWPE_BACKEND=x11|wayland|auto override; with no override
+   (or "auto") it prefers the native Wayland surface whenever the session
+   exposes WAYLAND_DISPLAY, otherwise X11.  X11 also covers XWayland, so the
+   user running `xwpe` on any desktop gets a window with no flag.  Console mode
+   (`wpe`) never reaches here.  When xwpe was built without the Wayland backend
+   this always returns X11, so a forced "wayland" still opens via XWayland. */
+static WpeGfxBackend e_pick_gfx_backend(void)
+{
+#ifdef HAVE_WAYLAND
+ const char *force = getenv("XWPE_BACKEND");
+
+ if (force && !strcmp(force, "wayland"))
+  return WPE_GFX_WAYLAND;
+ if (force && !strcmp(force, "x11"))
+  return WPE_GFX_X11;
+ /* "auto", empty, or anything else: detect from the session. */
+ if (getenv("WAYLAND_DISPLAY"))
+  return WPE_GFX_WAYLAND;
+#endif
+ return WPE_GFX_X11;
+}
+#endif /* !NO_XWINDOWS */
 
 int e_ini_unix(int *argc, char **argv)
 {
@@ -233,7 +262,22 @@ int e_ini_unix(int *argc, char **argv)
 #ifndef NO_XWINDOWS
  if (WpeIsXwin())
  {
+  e_gfx_backend = e_pick_gfx_backend();
+#ifdef HAVE_WAYLAND
+  /* Native Wayland first; if no compositor is reachable (or the native
+     backend is not yet up for this build), WpeWaylandInit() returns non-zero
+     and we fall back to X11 -- which transparently uses XWayland on a Wayland
+     session -- so `xwpe` always opens a window. */
+  if (e_gfx_backend == WPE_GFX_WAYLAND && WpeWaylandInit(argc, argv) == 0)
+   ;
+  else
+  {
+   e_gfx_backend = WPE_GFX_X11;
+   WpeXtermInit(argc, argv);
+  }
+#else
   WpeXtermInit(argc, argv);
+#endif
  }
  else
 #endif
