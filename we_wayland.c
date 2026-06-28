@@ -28,6 +28,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <ctype.h>
 #include <unistd.h>
 #include <fcntl.h>
 #include <errno.h>
@@ -300,6 +301,230 @@ static const struct wl_registry_listener registry_listener = {
 };
 
 /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - *\
+  Keyboard (wl_keyboard + xkbcommon)
+\* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
+
+#define WL_KEYQ_LEN ((int)(sizeof WpeWl.key_q / sizeof WpeWl.key_q[0]))
+
+static void wl_key_push(int code)
+{
+ int next = (WpeWl.key_tail + 1) % WL_KEYQ_LEN;
+ if (code == 0 || next == WpeWl.key_head)   /* drop unmapped keys / on overflow */
+  return;
+ WpeWl.key_q[WpeWl.key_tail] = code;
+ WpeWl.key_tail = next;
+}
+
+static int wl_key_pop(void)
+{
+ int code;
+ if (WpeWl.key_head == WpeWl.key_tail)
+  return 0;
+ code = WpeWl.key_q[WpeWl.key_head];
+ WpeWl.key_head = (WpeWl.key_head + 1) % WL_KEYQ_LEN;
+ return code;
+}
+
+/* keysym_to_xwpe - map an xkbcommon keysym (plus the UTF-8 text it produced and
+   the active modifiers) to an internal xwpe key code.  This mirrors the X11
+   translation in e_x_getch one-for-one: xkbcommon's XKB_KEY_* values are the
+   same numbers as Xlib's XK_*, so the two backends agree key-for-key.  `u8len`
+   plays the role of XLookupString's charcount: 1 means a character was
+   produced; 0 or >1 means a special key or a multibyte codepoint.  Returns 0
+   when nothing maps (the caller drops it). */
+int keysym_to_xwpe(xkb_keysym_t sym, const char *utf8, int u8len,
+                   int ctrl, int shift, int alt)
+{
+ int c = 0;
+
+ if (sym == XKB_KEY_ISO_Left_Tab)
+  return WPE_BTAB;
+
+ if (u8len == 1)
+ {
+  unsigned char ch = (unsigned char)utf8[0];
+
+  if (ch == 127)
+  {
+   if (ctrl)  return CENTF;
+   if (shift) return ShiftDel;
+   if (alt)   return AltDel;
+   return ENTF;
+  }
+  if (shift && ch == '\t')
+   return WPE_BTAB;
+  if (alt)
+   c = e_tast_sim(shift ? toupper(ch) : ch);   /* Alt+<letter> menu accelerator */
+  else
+   return ch;
+ }
+ else if (ctrl)
+ {
+  if      (sym == XKB_KEY_Left)   c = CCLE;
+  else if (sym == XKB_KEY_Right)  c = CCRI;
+  else if (sym == XKB_KEY_Home)   c = CPS1;
+  else if (sym == XKB_KEY_End)    c = CEND;
+  else if (sym == XKB_KEY_Insert) c = CEINFG;
+  else if (sym == XKB_KEY_Delete) c = CENTF;
+  else if (sym == XKB_KEY_Prior)  c = CBUP;
+  else if (sym == XKB_KEY_Next)   c = CBDO;
+  else if (sym == XKB_KEY_F1)  c = CF1;
+  else if (sym == XKB_KEY_F2)  c = CF2;
+  else if (sym == XKB_KEY_F3)  c = CF3;
+  else if (sym == XKB_KEY_F4)  c = CF4;
+  else if (sym == XKB_KEY_F5)  c = CF5;
+  else if (sym == XKB_KEY_F6)  c = CF6;
+  else if (sym == XKB_KEY_F7)  c = CF7;
+  else if (sym == XKB_KEY_F8)  c = CF8;
+  else if (sym == XKB_KEY_F9)  c = CF9;
+  else if (sym == XKB_KEY_F10) c = CF10;
+ }
+ else if (alt)
+ {
+  if      (sym == XKB_KEY_F1)  c = AF1;
+  else if (sym == XKB_KEY_F2)  c = AF2;
+  else if (sym == XKB_KEY_F3)  c = AF3;
+  else if (sym == XKB_KEY_F4)  c = AF4;
+  else if (sym == XKB_KEY_F5)  c = AF5;
+  else if (sym == XKB_KEY_F6)  c = AF6;
+  else if (sym == XKB_KEY_F7)  c = AF7;
+  else if (sym == XKB_KEY_F8)  c = AF8;
+  else if (sym == XKB_KEY_F9)  c = AF9;
+  else if (sym == XKB_KEY_F10) c = AF10;
+  else if (sym == XKB_KEY_Insert) c = AltEin;
+  else if (sym == XKB_KEY_Delete) c = AltDel;
+ }
+ else
+ {
+  if      (sym == XKB_KEY_Left)      c = CLE;
+  else if (sym == XKB_KEY_Right)     c = CRI;
+  else if (sym == XKB_KEY_Up)        c = CUP;
+  else if (sym == XKB_KEY_Down)      c = CDO;
+  else if (sym == XKB_KEY_Home)      c = POS1;
+  else if (sym == XKB_KEY_End)       c = ENDE;
+  else if (sym == XKB_KEY_Insert)    c = EINFG;
+  else if (sym == XKB_KEY_Delete)    c = ENTF;
+  else if (sym == XKB_KEY_BackSpace) c = CtrlH;
+  else if (sym == XKB_KEY_Prior)     c = BUP;
+  else if (sym == XKB_KEY_Next)      c = BDO;
+  else if (sym == XKB_KEY_F1)  c = F1;
+  else if (sym == XKB_KEY_F2)  c = F2;
+  else if (sym == XKB_KEY_F3)  c = F3;
+  else if (sym == XKB_KEY_F4)  c = F4;
+  else if (sym == XKB_KEY_F5)  c = F5;
+  else if (sym == XKB_KEY_F6)  c = F6;
+  else if (sym == XKB_KEY_F7)  c = F7;
+  else if (sym == XKB_KEY_F8)  c = F8;
+  else if (sym == XKB_KEY_F9)  c = F9;
+  else if (sym == XKB_KEY_F10) c = F10;
+  else if (sym == XKB_KEY_Help) c = HELP;
+ }
+
+ if (c != 0)
+ {
+  if (shift)
+   c += 512;
+  return c;
+ }
+ if (u8len >= 2 && ((unsigned char)utf8[0] & 0xC0) == 0xC0)
+ {
+  int cp = e_utf8_to_codepoint((unsigned char *)utf8, u8len);
+  if (cp > 0)
+   return cp;
+ }
+ return 0;
+}
+
+static void wl_active_mods(int *ctrl, int *shift, int *alt)
+{
+ *ctrl  = WpeWl.xkb_state && xkb_state_mod_name_is_active(
+            WpeWl.xkb_state, XKB_MOD_NAME_CTRL,  XKB_STATE_MODS_EFFECTIVE) > 0;
+ *shift = WpeWl.xkb_state && xkb_state_mod_name_is_active(
+            WpeWl.xkb_state, XKB_MOD_NAME_SHIFT, XKB_STATE_MODS_EFFECTIVE) > 0;
+ *alt   = WpeWl.xkb_state && xkb_state_mod_name_is_active(
+            WpeWl.xkb_state, XKB_MOD_NAME_ALT,   XKB_STATE_MODS_EFFECTIVE) > 0;
+}
+
+static void kbd_keymap(void *data, struct wl_keyboard *kbd, uint32_t format,
+                       int fd, uint32_t size)
+{
+ char *map;
+
+ (void)data; (void)kbd;
+ if (format != WL_KEYBOARD_KEYMAP_FORMAT_XKB_V1) { close(fd); return; }
+ map = mmap(NULL, size, PROT_READ, MAP_PRIVATE, fd, 0);
+ if (map == MAP_FAILED) { close(fd); return; }
+
+ if (WpeWl.xkb_state)  { xkb_state_unref(WpeWl.xkb_state);   WpeWl.xkb_state = NULL; }
+ if (WpeWl.xkb_keymap) { xkb_keymap_unref(WpeWl.xkb_keymap); WpeWl.xkb_keymap = NULL; }
+ WpeWl.xkb_keymap = xkb_keymap_new_from_string(WpeWl.xkb_ctx, map,
+   XKB_KEYMAP_FORMAT_TEXT_V1, XKB_KEYMAP_COMPILE_NO_FLAGS);
+ munmap(map, size);
+ close(fd);
+ if (WpeWl.xkb_keymap)
+  WpeWl.xkb_state = xkb_state_new(WpeWl.xkb_keymap);
+}
+
+static void kbd_enter(void *data, struct wl_keyboard *kbd, uint32_t serial,
+                      struct wl_surface *surface, struct wl_array *keys)
+{ (void)data; (void)kbd; (void)serial; (void)surface; (void)keys; WpeWl.kbd_focus = 1; }
+
+static void kbd_leave(void *data, struct wl_keyboard *kbd, uint32_t serial,
+                      struct wl_surface *surface)
+{ (void)data; (void)kbd; (void)serial; (void)surface; WpeWl.kbd_focus = 0; }
+
+static void kbd_key(void *data, struct wl_keyboard *kbd, uint32_t serial,
+                    uint32_t time, uint32_t key, uint32_t state)
+{
+ xkb_keycode_t code = key + 8;   /* evdev -> xkb keycode offset */
+ xkb_keysym_t sym;
+ char u8[16];
+ int u8len, ctrl, shift, alt;
+
+ (void)data; (void)kbd; (void)serial; (void)time;
+ if (state != WL_KEYBOARD_KEY_STATE_PRESSED || !WpeWl.xkb_state)
+  return;
+ sym = xkb_state_key_get_one_sym(WpeWl.xkb_state, code);
+ u8len = xkb_state_key_get_utf8(WpeWl.xkb_state, code, u8, sizeof u8);
+ wl_active_mods(&ctrl, &shift, &alt);
+ wl_key_push(keysym_to_xwpe(sym, u8, u8len, ctrl, shift, alt));
+}
+
+static void kbd_modifiers(void *data, struct wl_keyboard *kbd, uint32_t serial,
+                          uint32_t dep, uint32_t lat, uint32_t lck, uint32_t group)
+{
+ (void)data; (void)kbd; (void)serial;
+ if (WpeWl.xkb_state)
+  xkb_state_update_mask(WpeWl.xkb_state, dep, lat, lck, 0, 0, group);
+}
+
+static void kbd_repeat_info(void *data, struct wl_keyboard *kbd, int32_t rate, int32_t delay)
+{ (void)data; (void)kbd; (void)rate; (void)delay; }
+
+static const struct wl_keyboard_listener kbd_listener = {
+ kbd_keymap, kbd_enter, kbd_leave, kbd_key, kbd_modifiers, kbd_repeat_info
+};
+
+static void seat_caps(void *data, struct wl_seat *seat, uint32_t caps)
+{
+ (void)data;
+ if ((caps & WL_SEAT_CAPABILITY_KEYBOARD) && !WpeWl.keyboard)
+ {
+  WpeWl.keyboard = wl_seat_get_keyboard(seat);
+  wl_keyboard_add_listener(WpeWl.keyboard, &kbd_listener, NULL);
+ }
+ else if (!(caps & WL_SEAT_CAPABILITY_KEYBOARD) && WpeWl.keyboard)
+ {
+  wl_keyboard_release(WpeWl.keyboard);
+  WpeWl.keyboard = NULL;
+ }
+ /* wl_pointer is wired in the pointer phase. */
+}
+static void seat_name(void *data, struct wl_seat *seat, const char *name)
+{ (void)data; (void)seat; (void)name; }
+static const struct wl_seat_listener seat_listener = { seat_caps, seat_name };
+
+/* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - *\
   Bring-up and teardown
 \* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
 
@@ -328,6 +553,17 @@ static int wl_connect_and_bind(void)
             (void *)WpeWl.compositor, (void *)WpeWl.shm, (void *)WpeWl.wm_base);
   return -1;
  }
+
+ /* Keyboard: build an xkb context, then listen to the seat.  Two extra
+    roundtrips let the seat report its capabilities (-> we grab the keyboard)
+    and then deliver the keymap, so WpeWl.xkb_state is ready before first use. */
+ WpeWl.xkb_ctx = xkb_context_new(XKB_CONTEXT_NO_FLAGS);
+ if (WpeWl.seat)
+ {
+  wl_seat_add_listener(WpeWl.seat, &seat_listener, NULL);
+  wl_display_roundtrip(WpeWl.display);   /* seat capabilities -> get_keyboard */
+  wl_display_roundtrip(WpeWl.display);   /* wl_keyboard.keymap -> xkb_state    */
+ }
  return 0;
 }
 
@@ -347,6 +583,10 @@ static void wl_create_window(void)
 
 static void wl_teardown(void)
 {
+ if (WpeWl.xkb_state)  xkb_state_unref(WpeWl.xkb_state);
+ if (WpeWl.xkb_keymap) xkb_keymap_unref(WpeWl.xkb_keymap);
+ if (WpeWl.xkb_ctx)    xkb_context_unref(WpeWl.xkb_ctx);
+ if (WpeWl.keyboard)   wl_keyboard_release(WpeWl.keyboard);
  if (WpeWl.buffer)        wl_buffer_destroy(WpeWl.buffer);
  if (WpeWl.pixels && WpeWl.pixels != MAP_FAILED) munmap(WpeWl.pixels, WpeWl.shm_size);
  if (WpeWl.shm_fd >= 0)   close(WpeWl.shm_fd);
@@ -374,6 +614,11 @@ static void wl_selftest(const char *dump_path)
   _exit(2);
  }
  wl_create_window();
+
+ /* Keyboard came up during connect/bind (seat + keymap roundtrips). */
+ fprintf(stderr, "xwpe wayland selftest: keyboard=%s xkb_keymap=%s\n",
+         WpeWl.keyboard ? "yes" : "no",
+         WpeWl.xkb_state ? "received" : "none");
 
  /* Drive the protocol until the first frame is painted. */
  while (WpeWl.running && !WpeWl.painted && wl_display_dispatch(WpeWl.display) != -1)
@@ -498,6 +743,53 @@ static void wl_selftest_fill_grid(void)
  }
 }
 
+/* wl_keytest - deterministic, compositor-free check of keysym_to_xwpe (the
+   bug-prone translation that has to agree with the X11 path).  Drives a table
+   of (keysym, produced UTF-8, modifiers) -> expected xwpe code and reports.
+   Gated by XWPE_WL_KEYTEST; exits non-zero on any mismatch. */
+static void wl_keytest(void)
+{
+ static const struct {
+  xkb_keysym_t sym; const char *u8; int len, ctrl, shift, alt, want;
+  const char *name;
+ } t[] = {
+  { XKB_KEY_a,           "a",    1, 0,0,0, 'a',      "a"          },
+  { XKB_KEY_Z,           "Z",    1, 0,0,0, 'Z',      "Z"          },
+  { XKB_KEY_Up,          "",     0, 0,0,0, CUP,      "Up"         },
+  { XKB_KEY_Down,        "",     0, 0,0,0, CDO,      "Down"       },
+  { XKB_KEY_Left,        "",     0, 0,0,0, CLE,      "Left"       },
+  { XKB_KEY_Right,       "",     0, 0,0,0, CRI,      "Right"      },
+  { XKB_KEY_Home,        "",     0, 0,0,0, POS1,     "Home"       },
+  { XKB_KEY_End,         "",     0, 0,0,0, ENDE,     "End"        },
+  { XKB_KEY_Prior,       "",     0, 0,0,0, BUP,      "PgUp"       },
+  { XKB_KEY_Next,        "",     0, 0,0,0, BDO,      "PgDn"       },
+  { XKB_KEY_F1,          "",     0, 0,0,0, F1,       "F1"         },
+  { XKB_KEY_F10,         "",     0, 0,0,0, F10,      "F10"        },
+  { XKB_KEY_F1,          "",     0, 0,1,0, F1 + 512, "Shift+F1"   },
+  { XKB_KEY_F2,          "",     0, 0,0,1, AF2,      "Alt+F2"     },
+  { XKB_KEY_F3,          "",     0, 1,0,0, CF3,      "Ctrl+F3"    },
+  { XKB_KEY_Left,        "",     0, 1,0,0, CCLE,     "Ctrl+Left"  },
+  { XKB_KEY_Delete,      "\177", 1, 0,0,0, ENTF,     "Delete"     },
+  { XKB_KEY_Delete,      "\177", 1, 0,0,1, AltDel,   "Alt+Delete" },
+  { XKB_KEY_BackSpace,   "\010", 1, 0,0,0, CtrlH,    "BackSpace"  },
+  { XKB_KEY_ISO_Left_Tab,"",     0, 0,1,0, WPE_BTAB, "Shift+Tab"  },
+  { XKB_KEY_Help,        "",     0, 0,0,0, HELP,     "Help"       }
+ };
+ int n = (int)(sizeof t / sizeof t[0]), i, fails = 0;
+
+ for (i = 0; i < n; i++)
+ {
+  int got = keysym_to_xwpe(t[i].sym, t[i].u8, t[i].len,
+                           t[i].ctrl, t[i].shift, t[i].alt);
+  int ok = (got == t[i].want);
+  if (!ok) fails++;
+  fprintf(stderr, "  %-12s want=%d got=%d %s\n",
+          t[i].name, t[i].want, got, ok ? "OK" : "FAIL");
+ }
+ fprintf(stderr, "keysym_to_xwpe selftest: %d/%d passed\n", n - fails, n);
+ _exit(fails ? 4 : 0);
+}
+
 /* WpeWaylandInit - entry point from we_unix.c.  Returns 0 once the native
    surface drives the editor, non-zero to fall back to X11/XWayland.
    During bring-up the native editor path is gated behind XWPE_WL_NATIVE and
@@ -508,6 +800,9 @@ int WpeWaylandInit(int *argc, char **argv)
 
  (void)argc;
  (void)argv;
+
+ if (getenv("XWPE_WL_KEYTEST"))
+  wl_keytest();                   /* does not return; no compositor needed */
 
  selftest = getenv("XWPE_WL_SELFTEST");
  if (selftest && *selftest)

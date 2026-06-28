@@ -15,6 +15,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <wayland-client.h>
+#include <xkbcommon/xkbcommon.h>
 #include "xdg-shell-client-protocol.h"
 
 typedef struct WpeWlInfo {
@@ -40,6 +41,20 @@ typedef struct WpeWlInfo {
  int               width;      /* surface size in pixels                     */
  int               height;
  int               stride;     /* bytes per row (width * 4)                  */
+
+ /* Keyboard (wl_keyboard + xkbcommon keymap/state). */
+ struct wl_keyboard *keyboard;
+ struct xkb_context *xkb_ctx;
+ struct xkb_keymap  *xkb_keymap;
+ struct xkb_state   *xkb_state;
+
+ /* Decoded xwpe key codes waiting for e_w_getch.  One wl_keyboard key event
+    yields at most one code; a small ring decouples Wayland event dispatch
+    from the blocking getch caller (like the X11 path returning one key). */
+ int key_q[64];
+ int key_head;
+ int key_tail;
+ int kbd_focus;                /* surface currently has keyboard focus       */
 
  /* Lifecycle flags. */
  int configured;               /* first xdg_surface.configure acknowledged   */
