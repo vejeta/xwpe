@@ -35,13 +35,32 @@
 #include <limits.h>
 #include <sys/mman.h>
 
+#include <poll.h>
 #include "edit.h"            /* SCREENCELL, schirm/altschirm, MAXSCOL/MAXSLNS,
-                                e_gt_char/e_gt_col + ATTR_*/CELL_* (unixmakr.h) */
+                                e_gt_char/e_gt_col, the ATTR_ and CELL_ macros
+                                (unixmakr.h), the e_u_ and fk_u_ function-pointer
+                                slots, MCI/MCA/RD/RE/WBT/ctree, WpeEditor, cur_x,
+                                WpeNullFunction/WpeZeroFunction */
 #include "we_render.h"
 #include "we_wayland.h"
+#include "we_fdloop.h"
 #include "we_trace.h"
 
 extern int e_codepoint_to_utf8(int cp, unsigned char *out);  /* we_edit.c */
+extern int e_refresh();                                      /* editor refresh wrapper */
+
+/* Toolkit-agnostic backend functions reused as-is (audited: they touch only
+   schirm / editor globals, never Xlib).  K&R empty-paren externs slot into the
+   editor's function pointers without signature friction (-std=gnu17). */
+extern int  fk_x_locate(), fk_x_cursor(), fk_x_putchar(), x_bioskey();
+extern int  e_x_sys_ini(), e_x_sys_end(), e_x_system();
+extern int  e_t_deb_out();
+extern void e_setlastpic();
+extern int  old_cursor_x, old_cursor_y;   /* defined in we_xterm.c */
+
+static const char *g_wl_uidump;   /* XWPE_WL_UIDUMP: dump an editor frame to PPM */
+static int g_wl_dump_after;       /* XWPE_WL_UIDUMP_AFTER: dump after N keys read */
+static int g_wl_keys_seen;        /* keys returned to the editor so far          */
 
 WpeWlInfo WpeWl;
 
@@ -214,7 +233,11 @@ static void xdg_surface_configure(void *data, struct xdg_surface *xs, uint32_t s
   if (wl_alloc_buffer(WpeWl.width, WpeWl.height) < 0)
    return;
  }
- wl_paint_flat(WPE_WL_BG_ARGB);
+ /* Only flat-fill as a bring-up splash BEFORE the cell renderer is installed.
+    Once it is, the buffer holds the editor's rendered cells and a configure
+    (focus/raise/re-map) must re-present them, never repaint over them. */
+ if (!WpeRender.draw_text)
+  wl_paint_flat(WPE_WL_BG_ARGB);
  wl_surface_attach(WpeWl.surface, WpeWl.buffer, 0, 0);
  if (WpeWl.compositor_version >= 4)
   wl_surface_damage_buffer(WpeWl.surface, 0, 0, WpeWl.width, WpeWl.height);
@@ -743,6 +766,170 @@ static void wl_selftest_fill_grid(void)
  }
 }
 
+/* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - *\
+  Interactive backend (the e_w_* function-pointer targets)
+\* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
+
+/* Paint one cell, optionally inverting fg/bg for the text cursor (mirrors the
+   X11 e_xft_paint_cursor_cell decode). */
+static void e_w_render_one(int x, int y, int invert)
+{
+ int n  = y * MAXSCOL + x;
+ int sc = e_gt_char(x, y);
+ int sa = e_gt_col(x, y);
+ int base = ATTR_BASE(sa);
+ int fg = invert ? base / 16
+                 : (ATTR_IS_TC(sa) ? 16 + ATTR_TC_SLOT(sa) : base % 16);
+ int bg = invert ? base % 16 : base / 16;
+ int cw = (schirm[n].flags & CELL_WIDE) ? 2 : 1;
+
+ e_w_render_cell(sc, WpeRender.font_width * x, WpeRender.font_height * y, cw, fg, bg);
+}
+
+/* Draw the block cursor as a reverse-video cell, restoring the one it left. */
+static void e_w_show_cursor(void)
+{
+ if (!cur_on)
+  return;
+ if (old_cursor_x != cur_x || old_cursor_y != cur_y)
+  e_w_render_one(old_cursor_x, old_cursor_y, 0);
+ e_w_render_one(cur_x, cur_y, 1);
+ old_cursor_x = cur_x;
+ old_cursor_y = cur_y;
+}
+
+static int e_w_refresh(void)
+{
+ if (!schirm || !WpeWl.pixels)
+  return 0;
+ e_w_render_dirty_cells(0);
+ e_w_show_cursor();
+ if (WpeRender.flush_all)
+  WpeRender.flush_all();
+ return 0;
+}
+
+/* Non-blocking peek: drain any pending Wayland events, report queued keys. */
+static int e_w_kbhit(void)
+{
+ struct pollfd p;
+
+ if (!WpeWl.display)
+  return 0;
+ wl_display_flush(WpeWl.display);
+ p.fd = wl_display_get_fd(WpeWl.display);
+ p.events = POLLIN;
+ p.revents = 0;
+ if (poll(&p, 1, 0) > 0 && (p.revents & POLLIN))
+  wl_display_dispatch(WpeWl.display);
+ else
+  wl_display_dispatch_pending(WpeWl.display);
+ return WpeWl.key_head != WpeWl.key_tail;
+}
+
+/* Blocking key read: pump the Wayland fd through xwpe's shared poll loop (so
+   LSP/DAP fds keep being serviced) until a translated key is queued.  A 0-ms
+   poll on just the wl fd after wpe_fd_poll() tells us whether to read+dispatch
+   or merely dispatch what is already buffered -- never blocking on the wl fd
+   when the poll actually woke for some other descriptor. */
+static int e_w_getch(void)
+{
+ int code;
+
+ e_refresh();
+
+ /* Headless UI verification: once the editor has consumed the requested number
+    of keys (0 = the initial frame), dump the rendered buffer and exit.  Proves
+    the whole backend -- and, with XWPE_WL_UIDUMP_AFTER>0 + injected keystrokes,
+    the live input path -- without needing an interactive terminal. */
+ if (g_wl_uidump && g_wl_keys_seen >= g_wl_dump_after)
+ {
+  const char *path = g_wl_uidump;
+  g_wl_uidump = NULL;
+  wl_display_roundtrip(WpeWl.display);
+  wpe_wl_dump_ppm(path);
+  fprintf(stderr, "xwpe wayland UI dump -> %s (%dx%d, cell %dx%d, after %d keys)\n",
+          path, WpeWl.width, WpeWl.height,
+          WpeRender.font_width, WpeRender.font_height, g_wl_keys_seen);
+  _exit(0);
+ }
+
+ wpe_fd_add(wl_display_get_fd(WpeWl.display), POLLIN, NULL, NULL);
+ wl_display_dispatch_pending(WpeWl.display);
+
+ while ((code = wl_key_pop()) == 0)
+ {
+  struct pollfd p;
+
+  if (!WpeWl.running)
+  {
+   /* Window closed: let the editor run its quit path (returns if cancelled). */
+   extern int e_quit(FENSTER *);
+   WpeWl.running = 1;
+   e_quit(WpeEditor->f[WpeEditor->mxedt]);
+   e_refresh();
+   continue;
+  }
+  wl_display_flush(WpeWl.display);
+  wpe_fd_poll(-1);
+  p.fd = wl_display_get_fd(WpeWl.display);
+  p.events = POLLIN;
+  p.revents = 0;
+  if (poll(&p, 1, 0) > 0 && (p.revents & POLLIN))
+   wl_display_dispatch(WpeWl.display);
+  else
+   wl_display_dispatch_pending(WpeWl.display);
+ }
+ g_wl_keys_seen++;
+ return code;
+}
+
+/* Allocate the screen-cell grid for MAXSCOL x MAXSLNS and match the wl_shm
+   buffer to it.  Called once at init and again on resize (the e_u_ini_size
+   slot), mirroring e_ini_size minus the X pixmap. */
+static int e_w_ini_size(void)
+{
+ old_cursor_x = cur_x;
+ old_cursor_y = cur_y;
+ if (schirm)    free(schirm);
+ if (altschirm) free(altschirm);
+ schirm    = malloc(sizeof(SCREENCELL) * MAXSCOL * MAXSLNS);
+ altschirm = malloc(sizeof(SCREENCELL) * MAXSCOL * MAXSLNS);
+ if (!schirm || !altschirm)
+  return -1;
+#ifdef NEWSTYLE
+ /* The border/extension byte-plane (window frames, e_make_xrect): the graphical
+    builds use it unconditionally, so it must exist exactly like e_ini_size. */
+ if (extbyte)    free(extbyte);
+ if (altextbyte) free(altextbyte);
+ extbyte    = calloc((size_t)MAXSCOL * MAXSLNS, 1);
+ altextbyte = calloc((size_t)MAXSCOL * MAXSLNS, 1);
+ if (!extbyte || !altextbyte)
+  return -1;
+#endif
+
+ if (WpeWl.shm && WpeRender.font_width > 0)
+ {
+  int pw = WpeRender.font_width  * MAXSCOL;
+  int ph = WpeRender.font_height * MAXSLNS;
+  if (!WpeWl.pixels || pw != WpeWl.width || ph != WpeWl.height)
+  {
+   if (wl_alloc_buffer(pw, ph) == 0 && WpeRender.resize)
+    WpeRender.resize(pw, ph);
+  }
+ }
+ return 0;
+}
+
+/* Window-picture save/restore is unnecessary in the recompositing SCREENCELL
+   model (the X11 backend uses a pixmap; we repaint from the window stack). */
+static int e_w_change(PIC *pic) { (void)pic; return 0; }
+
+/* Pointer state is wired in the pointer phase; report "no buttons" for now. */
+static int fk_w_mouse(int *g) { if (g) g[0] = 0; return 0; }
+
+static void e_w_display_end(void) { wl_teardown(); }
+
 /* wl_keytest - deterministic, compositor-free check of keysym_to_xwpe (the
    bug-prone translation that has to agree with the X11 path).  Drives a table
    of (keysym, produced UTF-8, modifiers) -> expected xwpe code and reports.
@@ -797,6 +984,7 @@ static void wl_keytest(void)
 int WpeWaylandInit(int *argc, char **argv)
 {
  const char *selftest;
+ int cw, ch, cols, rows;
 
  (void)argc;
  (void)argv;
@@ -808,19 +996,86 @@ int WpeWaylandInit(int *argc, char **argv)
  if (selftest && *selftest)
   wl_selftest(selftest);          /* does not return */
 
- /* The renderer and input pumps are not wired yet, so even a reachable
-    compositor defers to X11/XWayland for now (W2/W3 flip this). */
+ g_wl_uidump = getenv("XWPE_WL_UIDUMP");
  {
-  struct wl_display *probe = wl_display_connect(NULL);
-  if (!probe)
-  {
-   WPE_TRACE("wayland", "no compositor reachable; using X11\n");
-   return 1;
-  }
-  WPE_TRACE("wayland", "compositor reachable; native backend not yet interactive, using XWayland\n");
-  wl_display_disconnect(probe);
+  const char *after = getenv("XWPE_WL_UIDUMP_AFTER");
+  g_wl_dump_after = (after && *after) ? atoi(after) : 0;
+ }
+
+ if (wl_connect_and_bind() != 0)
+ {
+  WPE_TRACE("wayland", "no usable compositor; falling back to X11\n");
   return 1;
  }
+
+ /* Size the window to a cell grid (probe the font before the buffer exists). */
+ wpe_render_wayland_probe_cell(&cw, &ch);
+ cols = 80;
+ rows = 30;
+ WpeWl.width  = cols * cw;
+ WpeWl.height = rows * ch;
+
+ wl_create_window();
+ while (WpeWl.running && !WpeWl.configured
+        && wl_display_dispatch(WpeWl.display) != -1)
+  ;
+ if (!WpeWl.configured || wpe_render_wayland_init() != 0)
+ {
+  WPE_TRACE("wayland", "surface/renderer bring-up failed; falling back to X11\n");
+  wl_teardown();
+  return 1;
+ }
+
+ MAXSCOL = cols;
+ MAXSLNS = rows;
+ if (e_w_ini_size() != 0)
+ {
+  wl_teardown();
+  return 1;
+ }
+
+ /* Publish the backend.  Reuse the audited schirm-only X functions; override
+    the I/O (refresh/getch/kbhit/mouse/display/resize) with the Wayland ones.
+    Mirrors WpeXtermInit's table -- the values it shares with us are unchanged. */
+ e_s_u_clr         = e_s_x_clr;
+ e_n_u_clr         = e_n_x_clr;
+ e_frb_u_menue     = e_frb_x_menue;
+ e_pr_u_col_kasten = e_pr_x_col_kasten;
+ fk_u_cursor       = fk_x_cursor;
+ fk_u_locate       = fk_x_locate;
+ e_u_refresh       = e_w_refresh;
+ e_u_getch         = e_w_getch;
+ u_bioskey         = x_bioskey;
+ e_u_sys_ini       = e_x_sys_ini;
+ e_u_sys_end       = e_x_sys_end;
+ e_u_system        = e_x_system;
+ fk_u_putchar      = fk_x_putchar;
+ fk_mouse          = fk_w_mouse;
+ e_u_kbhit         = e_w_kbhit;
+ e_u_change        = e_w_change;
+ e_u_ini_size      = e_w_ini_size;
+ e_u_setlastpic    = e_setlastpic;
+ WpeMouseChangeShape  = (void (*)(WpeMouseShape))WpeNullFunction;
+ WpeMouseRestoreShape = (void (*)(WpeMouseShape))WpeNullFunction;
+ WpeDisplayEnd     = e_w_display_end;
+ e_u_switch_screen = WpeZeroFunction;
+ e_u_d_switch_out  = (int (*)(int))WpeZeroFunction;
+ e_u_deb_out       = e_t_deb_out;
+
+ MCI = 7;   /* scrollbar track  (ACS via draw_acs, as X11) */
+ MCA = 11;  /* scrollbar thumb */
+ RD1 = 1; RD2 = 2; RD3 = 3; RD4 = 4; RD5 = 5; RD6 = 6;
+ RE1 = 1; RE2 = 2; RE3 = 3; RE4 = 4; RE5 = 5; RE6 = 6;
+ WBT = 1;
+ ctree[0] = "\016\022\030";
+ ctree[1] = "\016\022\022";
+ ctree[2] = "\016\030\022";
+ ctree[3] = "\025\022\022";
+ ctree[4] = "\016\022\022";
+
+ WPE_TRACE("wayland", "native backend up: %dx%d, %dx%d cells\n",
+           WpeWl.width, WpeWl.height, MAXSCOL, MAXSLNS);
+ return 0;
 }
 
 #endif /* HAVE_WAYLAND */

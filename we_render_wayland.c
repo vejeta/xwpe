@@ -296,6 +296,33 @@ static void wr_set_backend(void)
  WpeRender.cleanup    = wr_cleanup;
 }
 
+/* wpe_render_wayland_probe_cell - measure the monospace cell (width x height in
+   px) on a throwaway image surface, WITHOUT touching the real wl_shm buffer.
+   Lets WpeWaylandInit size the window to a cell grid before the buffer exists
+   (the persistent layout is built later by wpe_render_wayland_init). */
+int wpe_render_wayland_probe_cell(int *cw, int *ch)
+{
+ cairo_surface_t *s = cairo_image_surface_create(CAIRO_FORMAT_RGB24, 8, 8);
+ cairo_t *c = cairo_create(s);
+ PangoLayout *l = pango_cairo_create_layout(c);
+ PangoFontDescription *f;
+ PangoRectangle lg;
+ char fws[64];
+
+ snprintf(fws, sizeof fws, "monospace %d", wl_font_point_size());
+ f = pango_font_description_from_string(fws);
+ pango_layout_set_font_description(l, f);
+ pango_layout_set_text(l, "M", 1);
+ pango_layout_get_pixel_extents(l, NULL, &lg);
+ *cw = lg.width  > 0 ? lg.width  : 8;
+ *ch = lg.height > 0 ? lg.height : 16;
+ pango_font_description_free(f);
+ g_object_unref(l);
+ cairo_destroy(c);
+ cairo_surface_destroy(s);
+ return 0;
+}
+
 /* wpe_render_wayland_init - lay a Cairo image surface over the (already
    allocated) wl_shm buffer, load the font, build the colour table and publish
    the primitives through WpeRender.  Returns 0 on success. */

@@ -74,5 +74,9 @@ int wpe_wl_dump_ppm(const char *path);
    Must be called after the buffer is allocated.  Returns 0 on success. */
 int wpe_render_wayland_init(void);
 
+/* Measure the monospace cell in pixels on a throwaway surface, so the window
+   can be sized to a cell grid before the wl_shm buffer is allocated. */
+int wpe_render_wayland_probe_cell(int *cw, int *ch);
+
 #endif /* HAVE_WAYLAND */
 #endif /* WE_WAYLAND_H */
