@@ -83,6 +83,8 @@ DISPLAY = os.environ.get("XWPE_TEST_WL_DISPLAY", ":91")
 WL_SOCKET = "wl-xwpe-test"
 SCREEN = "1024x768x24"
 
+import hashlib
+
 # A loaded CI runner is slower; stretch every settle without slowing local runs.
 _WAIT_SCALE = float(os.environ.get("XWPE_TEST_WAIT_SCALE", "1") or 1)
 _real_sleep = time.sleep
@@ -92,9 +94,53 @@ def _sleep(seconds):
     _real_sleep(seconds * _WAIT_SCALE)
 
 
-def _spawn(cmd, **kw):
-    return subprocess.Popen(cmd, stdout=subprocess.DEVNULL,
-                            stderr=subprocess.DEVNULL, **kw)
+def _frame_digest(path):
+    """Content hash of the current XWPE_WL_DUMP frame, or None if unreadable."""
+    try:
+        with open(path, "rb") as fh:
+            return hashlib.md5(fh.read()).digest()
+    except OSError:
+        return None
+
+
+def wait_frame_quiet(dump, floor, quiet=0.3, cap=3.0):
+    """Adaptive settle: let xwpe begin reacting (the `floor`), then return once
+    the painted frame has stopped changing for `quiet` seconds, capped at `cap`.
+
+    This replaces a fixed post-key sleep.  On a CPU-starved CI runner xwpe paints
+    late, so a flat wait samples the screen before the paint ("0 px" / "dialog
+    did not appear") or fires the next key while the editor is mid-update (which
+    can drive it into an unexpected state); waiting for the frame to settle makes
+    the harness adapt to however long the paint actually takes, while a fast
+    machine still returns promptly.  All durations scale with WAIT_SCALE."""
+    _real_sleep(floor * _WAIT_SCALE)
+    deadline = time.monotonic() + cap * _WAIT_SCALE
+    quiet_need = quiet * _WAIT_SCALE
+    last = _frame_digest(dump)
+    last_change = time.monotonic()
+    while time.monotonic() < deadline:
+        _real_sleep(0.1 * _WAIT_SCALE)
+        sig = _frame_digest(dump)
+        if sig != last:
+            last, last_change = sig, time.monotonic()
+        elif time.monotonic() - last_change >= quiet_need:
+            return
+
+
+# Optional diagnostics dir: when set, capture weston and per-test xwpe stderr so
+# a CI failure can be explained (e.g. a real crash vs a slow-runner mistime).
+_LOGDIR = os.environ.get("XWPE_WL_LOGDIR")
+
+
+def _logfile(name):
+    if not _LOGDIR:
+        return subprocess.DEVNULL
+    os.makedirs(_LOGDIR, exist_ok=True)
+    return open(os.path.join(_LOGDIR, name), "ab")
+
+
+def _spawn(cmd, stderr=subprocess.DEVNULL, **kw):
+    return subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=stderr, **kw)
 
 
 def _xdo(*args, env=None):
@@ -211,13 +257,13 @@ class WaylandSession:
     def key(self, *keys, delay=0.5):
         for k in keys:
             self._key(DISPLAY, k)
-            _sleep(delay)
+            wait_frame_quiet(self.dump, floor=delay)  # wait for the paint to settle
         return self
 
     def type(self, text, delay=0.4):
         _xdo("type", "--window", self.wid, "--clearmodifiers", text,
              env={**os.environ, "DISPLAY": DISPLAY})
-        _sleep(delay)
+        wait_frame_quiet(self.dump, floor=delay)
         return self
 
     def click(self, px, py, delay=0.5):
@@ -227,7 +273,7 @@ class WaylandSession:
         _xdo("mousemove", "--window", self.wid, str(px + 1), str(py), env=d)  # real motion
         _sleep(0.1)
         _xdo("click", "1", env=d)
-        _sleep(delay)
+        wait_frame_quiet(self.dump, floor=delay)
         return self
 
     def menu(self, alt_letter, item, delay=0.5):
@@ -289,7 +335,8 @@ def wlserver():
     weston = _spawn(
         ["weston", "--backend=x11-backend.so", "--shell=kiosk-shell.so",
          "--width=1024", "--height=768", "--socket=" + WL_SOCKET, "--idle-time=0"],
-        env={**os.environ, "DISPLAY": DISPLAY, "XDG_RUNTIME_DIR": runtime})
+        env={**os.environ, "DISPLAY": DISPLAY, "XDG_RUNTIME_DIR": runtime},
+        stderr=_logfile("weston.log"))
     # Wait for the wl socket to appear.
     for _ in range(60):
         if os.path.exists(sockpath):
@@ -303,7 +350,7 @@ def wlserver():
 
 
 @pytest.fixture
-def xwpe(wlserver, tmp_path):
+def xwpe(wlserver, tmp_path, request):
     """Launch a fresh NATIVE-WAYLAND xwpe editing a small C file; tear down after."""
     assert os.path.exists(XWPE_BIN), "xwpe binary not found at %s (set XWPE_BIN)" % XWPE_BIN
     runtime = wlserver
@@ -333,7 +380,8 @@ def xwpe(wlserver, tmp_path):
            "XWPE_WL_HEIGHT": "768",
            "XWPE_WL_DUMP": dump,
            "HOME": str(tmp_path)}
-    proc = _spawn([XWPE_BIN, str(src)], env=env, cwd=str(tmp_path))
+    proc = _spawn([XWPE_BIN, str(src)], env=env, cwd=str(tmp_path),
+                  stderr=_logfile("xwpe-%s.log" % request.node.name))
     # Wait for the weston X window (the xdotool target) and the first frame dump.
     wid = None
     for _ in range(60):
@@ -351,8 +399,18 @@ def xwpe(wlserver, tmp_path):
     session.srcfile = str(src)
     session.focus()
     yield session
+    # Fully reap this xwpe AND let weston process its surface-destroy before the
+    # next test spawns a client.  Otherwise, under load, the dying client's
+    # surface can still hold the seat focus when the next xwpe starts, so its
+    # keystrokes land on the wrong (departing) surface -- the cross-test flake
+    # that makes an unrelated later test "die".
+    proc.terminate()
     try:
-        proc.terminate()
-        proc.wait(timeout=5)
+        proc.wait(timeout=10)
     except Exception:
         proc.kill()
+        try:
+            proc.wait(timeout=5)
+        except Exception:
+            pass
+    _sleep(0.4)
