@@ -109,63 +109,61 @@ jobs:
           # error, not a real failure.
           WPE_BIN="$PWD/wpe" /tmp/ptenv/bin/python -m pytest -q tests --ignore=tests/x11 --ignore=tests/wayland -k "not (clangd or gopls or rust or scala or metals or python_lsp or go_dap or dap or algol68 or ga68 or truecolor_console or compile or make_output or build_cwd or user_screen or debugger_watchdog or ctrl_f9 or alt_f5)"
 
-      - name: Homebrew test-block reproduction (PTY drive)
+      - name: Homebrew test-block reproduction (installed binary, on-disk A/B/C)
         if: always()   # validate the formula fix even if a pyte UI test flaked
-        # Mirrors the Formula/x/xwpe.rb `test do` block exactly, so a failure here
-        # is a failure Homebrew-core would hit. Drives `wpe` under a pseudo-terminal
-        # with a file holding a unique marker and asserts ncurses both emitted an
-        # escape sequence (drew the screen) and rendered the marker (loaded the
-        # buffer). Reads with a BLOCKING readpartial that treats EOF -- which a
-        # closed pty surfaces as Errno::EIO on macOS -- as end-of-capture, so a
-        # fast-exiting child can never spin the loop to a spurious empty-output
-        # timeout (the x86_64-only failure mode of the earlier read_nonblock poll).
+        # Faithful mirror of Formula/x/xwpe.rb `test do`: build + install to a
+        # prefix and drive the INSTALLED wpe (no XWPE_LIB, exactly as `brew test`
+        # does) through the three on-disk assertions -- edit+save lands the typed
+        # text, a read-only (0444) file is left unchanged, a directory opens the
+        # file manager and quits cleanly. On-disk ground truth, so it does NOT
+        # depend on scraping the rendered screen (the x86_64 "0 bytes" capture
+        # trap). A failure here is a failure Homebrew-core would hit.
         run: |
-          cat > /tmp/brew_test.rb <<'RUBY'
+          export PKG_CONFIG_PATH="$(brew --prefix ncurses)/lib/pkgconfig"
+          ./configure --prefix=/tmp/xp --without-x --without-gpm >/tmp/cf3.log 2>&1
+          make >/tmp/mk3.log 2>&1
+          make install >/tmp/inst3.log 2>&1
+          cat > /tmp/brew_abc.rb <<'RUBY'
           require "pty"
           require "io/console"
-          require "timeout"
           require "tmpdir"
-
-          marker = "XWPE_BREW_TEST_MARKER"
-          Dir.mktmpdir do |dir|
-            path = File.join(dir, "hello.c")
-            File.write(path, "// #{marker}\nint main(void) { return 0; }\n")
-            ENV["TERM"] = "xterm-256color"
-
-            output = +""
-            PTY.spawn("./wpe", path) do |r, w, pid|
+          ENV["TERM"] = "xterm-256color"
+          BIN = "/tmp/xp/bin/wpe"
+          drive = lambda do |arg, keys|
+            status = nil
+            PTY.spawn(BIN, arg.to_s) do |r, w, pid|
               r.winsize = [24, 80]
+              sleep 3
               begin
-                Timeout.timeout(30) do
-                  loop do
-                    begin
-                      chunk = r.readpartial(4096)
-                    rescue Errno::EIO, EOFError
-                      break
-                    end
-                    output << chunk
-                    break if output.include?(marker)
-                  end
-                end
-                w.write "\ex" # Alt-X -> quit (best effort; child may be gone)
-              rescue Timeout::Error, Errno::EIO
+                keys.each { |k| w.write k; sleep 2 }
+                w.write "\ex"
+                sleep 1
+              rescue Errno::EIO
                 nil
               ensure
                 begin
-                  Process.kill("TERM", pid)
+                  Process.kill "TERM", pid
                 rescue Errno::ESRCH
                   nil
                 end
+                status = (Process.wait2(pid)[1] rescue nil)
               end
             end
-
-            puts "captured #{output.bytesize} bytes; ESC[=#{output.match?(/\e\[/)} marker=#{output.include?(marker)}"
-            raise "ncurses did not draw the screen" unless output.match?(/\e\[/)
-            raise "marker not rendered" unless output.include?(marker)
-            puts "OK"
+            status
+          end
+          Dir.mktmpdir do |d|
+            ed = "#{d}/edit.c"; File.write(ed, ""); m = "xwpe_brew_marker"
+            drive.call(ed, [m, "\ef", "s"])
+            raise "A edit+save FAILED: #{File.read(ed).inspect}" unless File.read(ed).include?(m)
+            ro = "#{d}/ro.c"; File.write(ro, "ORIGINAL\n"); File.chmod(0o444, ro)
+            drive.call(ro, ["INJECTED", "\ef", "s"])
+            raise "B read-only MODIFIED: #{File.read(ro).inspect}" unless File.read(ro) == "ORIGINAL\n"
+            st = drive.call(d, [])
+            raise "C directory NOT clean: #{st.inspect}" unless st.nil? || st.success? || st.termsig == 15
+            puts "A/B/C all pass on the installed binary"
           end
           RUBY
-          ruby /tmp/brew_test.rb
+          ruby /tmp/brew_abc.rb
 
       - name: Diagnose the INSTALLED binary (true Homebrew condition)
         if: always()
