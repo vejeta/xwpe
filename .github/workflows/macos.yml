@@ -103,7 +103,11 @@ jobs:
           # entry) are driven through their macOS menu routes by the harness,
           # since macOS reserves F1-F12; only the toolchain-bound language-server,
           # DAP and broader compile/debug pipeline tests stay on the Linux CI.
-          WPE_BIN="$PWD/wpe" /tmp/ptenv/bin/python -m pytest -q tests --ignore=tests/x11 -k "not (clangd or gopls or rust or scala or metals or python_lsp or go_dap or dap or algol68 or ga68 or truecolor_console or compile or make_output or build_cwd or user_screen or debugger_watchdog or ctrl_f9 or alt_f5)"
+          # Ignore tests/x11 AND tests/wayland: both need a Linux display stack
+          # (Xvfb+matchbox / weston) absent on macOS, and they share test-module
+          # basenames with tests/ -- collecting them here is an import-file-mismatch
+          # error, not a real failure.
+          WPE_BIN="$PWD/wpe" /tmp/ptenv/bin/python -m pytest -q tests --ignore=tests/x11 --ignore=tests/wayland -k "not (clangd or gopls or rust or scala or metals or python_lsp or go_dap or dap or algol68 or ga68 or truecolor_console or compile or make_output or build_cwd or user_screen or debugger_watchdog or ctrl_f9 or alt_f5)"
 
       - name: Homebrew test-block reproduction (PTY drive)
         if: always()   # validate the formula fix even if a pyte UI test flaked
