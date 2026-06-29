@@ -27,6 +27,7 @@ Set XWPE_BIN to point at the xwpe binary (defaults to ../../xwpe).
 import os
 import shutil
 import subprocess
+import sys
 import time
 
 import pytest
@@ -88,11 +89,70 @@ def _xdo(*args, env=None):
                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
+_FKEY_KEYCODE = {}
+
+
+def _fkey_keycodes():
+    """Map F1..F12 -> the live X keycode by parsing `xmodmap -pke`.
+
+    `xdotool key F3` resolves the keysym to a keycode PLUS the modifiers to reach
+    its level; on xkeyboard-config >= 2.46 that resolver (xdotool #491) adds a
+    phantom Alt, so xwpe sees Alt+F3 (AF3), a different key -- the bare
+    accelerator looks dead.  Even under weston's x11-backend the injection goes
+    through the Xvfb keymap, so the bug applies; injecting the raw keycode skips
+    the resolver and lands the true function key.  Cached after first lookup."""
+    if _FKEY_KEYCODE:
+        return _FKEY_KEYCODE
+    out = subprocess.run(["xmodmap", "-pke"],
+                         env={**os.environ, "DISPLAY": DISPLAY},
+                         stdout=subprocess.PIPE, stderr=subprocess.DEVNULL).stdout.decode()
+    for line in out.splitlines():
+        parts = line.split()
+        if len(parts) >= 4 and parts[0] == "keycode" and parts[2] == "=":
+            sym = parts[3]
+            if len(sym) >= 2 and sym[0] in "Ff" and sym[1:].isdigit():
+                _FKEY_KEYCODE.setdefault(sym.upper(), parts[1])
+    return _FKEY_KEYCODE
+
+
+def _to_keycodes(keystroke):
+    """Rewrite an xdotool keystroke so any function-key token is its keycode
+    (bare 'F3' or combos like 'ctrl+F9'); other tokens pass through."""
+    fk = _fkey_keycodes()
+    return "+".join(fk.get(tok.upper(), tok) for tok in keystroke.split("+"))
+
+
 def changed_pixels(img_a, img_b, thresh=40):
     """Number of pixels that differ by more than `thresh` (0..255 grey)."""
     from PIL import ImageChops
     diff = ImageChops.difference(img_a, img_b).convert("L")
     return diff.point(lambda p: 255 if p > thresh else 0).histogram()[255]
+
+
+def incoherence(reason):
+    """Mark a test that asserts behaviour the editor does not currently honour
+    (a backend divergence found during coverage).  Recorded as a non-strict
+    xfail, matching the X11 suite's helper of the same name."""
+    return pytest.mark.xfail(reason="INCOHERENCE: " + reason, strict=False)
+
+
+def run_x11_module(caller_name, modname):
+    """Execute the body of tests/x11/<modname>.py inside the CALLER module's
+    namespace, compiled under the CALLER's filename so pytest collects its
+    test_* functions HERE -- bound to this directory's native-Wayland `xwpe`
+    fixture.  Zero duplication: the X11 module is the single source of truth, so
+    the two suites can never drift; only the fixture (Xlib vs wl_surface)
+    differs.  (Importing the X11 module instead fails: pytest keys collection
+    off the function's code filename, which would still be the x11 file.)  The
+    x11 dir is never put on sys.path, so the body's `from conftest import ...`
+    resolves to THIS conftest at runtime."""
+    caller = sys.modules[caller_name]
+    x11_path = os.path.normpath(
+        os.path.join(os.path.dirname(__file__), "..", "x11", modname + ".py"))
+    with open(x11_path) as fh:
+        src = fh.read()
+    code = compile(src, caller.__file__, "exec")
+    exec(code, caller.__dict__)
 
 
 def _load_ppm(path):
@@ -127,7 +187,7 @@ class WaylandSession:
         self.dump = dump        # XWPE_WL_DUMP path (continuously refreshed PPM)
 
     def _key(self, env_display, k):
-        _xdo("key", "--window", self.wid, "--clearmodifiers", k,
+        _xdo("key", "--window", self.wid, "--clearmodifiers", _to_keycodes(k),
              env={**os.environ, "DISPLAY": DISPLAY})
 
     def focus(self):
@@ -160,6 +220,17 @@ class WaylandSession:
     def menu(self, alt_letter, item, delay=0.5):
         """Open a top-level menu (Alt-<letter>) and pick an item by its key."""
         self.key("alt+" + alt_letter, delay=delay)
+        self.key(item, delay=delay)
+        return self
+
+    def esc_menu(self, menu_key, item, delay=0.5):
+        """Open the leftmost '#' (System) menu and pick an item by its letter.
+
+        The '#' menu has no Alt-<letter> hotkey, so a GUI user clicks its title
+        at the far left of the menu bar; do the same (kiosk-shell puts the
+        surface at the window origin, so this pixel maps to the '#' cell), then
+        press the item's letter.  (menu_key kept for call-site readability.)"""
+        self.click(15, 8, delay=delay)      # the '#' title, far left of the bar
         self.key(item, delay=delay)
         return self
 

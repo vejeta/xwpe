@@ -436,6 +436,14 @@ EXTRA_DIST = \
   tests/wayland/conftest.py \
   tests/wayland/test_menu_edit.py \
   tests/wayland/test_popup_close_button.py \
+  tests/wayland/test_block_marking.py \
+  tests/wayland/test_menu_search.py \
+  tests/wayland/test_menu_file.py \
+  tests/wayland/test_menu_window.py \
+  tests/wayland/test_menu_system.py \
+  tests/wayland/test_menu_help.py \
+  tests/wayland/test_menu_nav.py \
+  tests/wayland/test_editor_options.py \
   tests/x11/conftest.py \
   tests/x11/matchbox-kbdconfig \
   tests/x11/test_editor_options.py \
