@@ -371,6 +371,27 @@ int main(int argc, char **argv)
  int so = 0, sd = 1;
  char *tp;
 
+ /* Non-interactive query flags, answered before any terminal/UI setup so they
+    work with no controlling tty -- in scripts, pipes and packaging test suites.
+    They never start the editor. */
+ for (i = 1; i < argc; i++)
+ {
+  if (!strcmp(argv[i], "--version") || !strcmp(argv[i], "-V"))
+  {
+   printf("xwpe %s\n", VERSION);
+   return 0;
+  }
+  if (!strcmp(argv[i], "--help"))
+  {
+   printf("Usage: %s [file ...]\n"
+          "Wpe/Xwpe programming editor.  With no file it starts the full-screen\n"
+          "editor; file arguments are opened on start.\n"
+          "  --version, -V   print the version and exit\n"
+          "  --help          print this help and exit\n", argv[0]);
+   return 0;
+  }
+ }
+
  if ((cn = (ECNT *)MALLOC(sizeof(ECNT))) == NULL) {
   printf(" Fatal Error: %s\n", e_msg[ERR_LOWMEM]);
   return 0;

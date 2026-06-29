@@ -231,8 +231,16 @@ Bugs fixed in 1.6.x:
 
 Changes
 
-1.6.8 (unreleased)
+1.6.8 (native Wayland backend, x86_64 macOS startup-crash fix)
 
+* macOS (Intel/x86_64): fix a startup crash -- the editor segfaulted during
+  terminal initialisation, before drawing anything.  e_t_initscr() declared a
+  local `WINDOW *stdscr` that shadowed ncurses' global; initscr() initialises
+  the global, so keypad()/intrflush() read the uninitialised local and
+  dereferenced a garbage pointer (benign on arm64, fatal on x86_64).  Removed
+  the shadow.  The bug dates to the 1.5.30a era and hit every Intel-Mac launch.
+* New `--version`/`-V` and `--help` flags: print and exit without starting the
+  editor, so they work with no controlling terminal (scripts, pipes, CI).
 * Native Wayland backend: xwpe now runs as a native Wayland client
   (wl_surface), not only under XWayland.  No flag is needed -- on a Wayland
   session (WAYLAND_DISPLAY set) `xwpe` auto-selects the native backend; set

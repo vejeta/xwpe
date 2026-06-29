@@ -531,9 +531,6 @@ int init_cursor()
 int e_t_initscr()
 {
  int ret, i, k;
-#ifndef TERMCAP
- WINDOW * stdscr;
-#endif
 
  e_t_detect_unicode();
  ret = tcgetattr(1, &otermio); /* save old settings */
