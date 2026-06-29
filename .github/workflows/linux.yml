@@ -38,7 +38,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             build-essential autoconf automake autopoint pkg-config \
-            libncursesw5-dev libx11-dev libxext-dev libxft-dev \
+            libncursesw5-dev ncurses-term libx11-dev libxext-dev libxft-dev \
             libfontconfig1-dev libcairo2-dev libpango1.0-dev libfreetype-dev \
             libvterm-dev libjson-c-dev zlib1g-dev libgpm-dev \
             libwayland-dev wayland-protocols libwayland-bin libxkbcommon-dev \
@@ -83,7 +83,9 @@ jobs:
 
       - name: X11/Xft GUI suite (Xvfb + matchbox)
         # The conftest starts its own Xvfb + window manager; it skips cleanly if
-        # a tool is missing.
+        # a tool is missing.  always(): run even if the ncurses gate above failed,
+        # so a flake in one backend never hides another's result.
+        if: always()
         env:
           XDG_RUNTIME_DIR: /tmp/xdg
         run: XWPE_BIN="$PWD/xwpe" /tmp/ptenv/bin/python -m pytest -q tests/x11
@@ -92,6 +94,9 @@ jobs:
         # The conftest starts its own Xvfb + weston (x11-backend, kiosk-shell) and
         # skips cleanly if weston / wl-clipboard / Pillow is missing.  This is the
         # native wl_surface backend: real wl_keyboard/wl_pointer + wl_data_device.
+        # always(): run even if an earlier gate failed, so the Wayland result is
+        # always visible.
+        if: always()
         env:
           XDG_RUNTIME_DIR: /tmp/xdg
         run: XWPE_BIN="$PWD/xwpe" /tmp/ptenv/bin/python -m pytest -q tests/wayland -rxX
