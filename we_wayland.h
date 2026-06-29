@@ -44,6 +44,10 @@ typedef struct WpeWlInfo {
 
  /* Input devices. */
  struct wl_pointer  *pointer;
+ /* Clipboard (wl_data_device: the OS selection). */
+ struct wl_data_device_manager *ddm;
+ struct wl_data_device         *ddev;
+ uint32_t                       last_serial;  /* latest input serial for set_selection */
  /* Keyboard (wl_keyboard + xkbcommon keymap/state). */
  struct wl_keyboard *keyboard;
  struct xkb_context *xkb_ctx;

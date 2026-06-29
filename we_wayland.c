@@ -44,6 +44,7 @@
 #include "we_render.h"
 #include "we_wayland.h"
 #include "we_fdloop.h"
+#include "we_clip.h"        /* e_clip_os_set / e_clip_os_get function pointers */
 #include "we_trace.h"
 
 extern int e_codepoint_to_utf8(int cp, unsigned char *out);  /* we_edit.c */
@@ -332,6 +333,11 @@ static void registry_global(void *data, struct wl_registry *reg, uint32_t name,
   WpeWl.seat = wl_registry_bind(reg, name, &wl_seat_interface,
                                 wl_umin(version, 5));
  }
+ else if (!strcmp(iface, wl_data_device_manager_interface.name))
+ {
+  WpeWl.ddm = wl_registry_bind(reg, name, &wl_data_device_manager_interface,
+                               wl_umin(version, 3));
+ }
 }
 static void registry_global_remove(void *data, struct wl_registry *reg, uint32_t name)
 { (void)data; (void)reg; (void)name; }
@@ -520,7 +526,8 @@ static void kbd_key(void *data, struct wl_keyboard *kbd, uint32_t serial,
  char u8[16];
  int u8len, ctrl, shift, alt;
 
- (void)data; (void)kbd; (void)serial; (void)time;
+ (void)data; (void)kbd; (void)time;
+ WpeWl.last_serial = serial;     /* freshest serial for set_selection */
  if (state != WL_KEYBOARD_KEY_STATE_PRESSED || !WpeWl.xkb_state)
   return;
  sym = xkb_state_key_get_one_sym(WpeWl.xkb_state, code);
@@ -582,7 +589,8 @@ static void ptr_button(void *data, struct wl_pointer *p, uint32_t serial,
 {
  int bit = wl_btn_bit(button);
 
- (void)data; (void)p; (void)serial; (void)time;
+ (void)data; (void)p; (void)time;
+ WpeWl.last_serial = serial;     /* freshest serial for set_selection */
  WPE_TRACE("wayland", "ptr_button button=%u state=%u bit=%d px=%d py=%d\n",
            button, state, bit, g_ptr_px, g_ptr_py);
  if (!bit)
@@ -662,6 +670,200 @@ static void seat_name(void *data, struct wl_seat *seat, const char *name)
 static const struct wl_seat_listener seat_listener = { seat_caps, seat_name };
 
 /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - *\
+  Clipboard (wl_data_device: the system selection)
+
+  Mirrors the X11 e_clip_x_set/get contract: a Copy makes xwpe own the selection
+  and caches the text; e_clip_os_get returns NULL while WE own it (the editor's
+  internal clipboard is then authoritative) and the external text only when
+  another client owns the selection.
+\* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
+
+static const char *const WL_CLIP_MIME = "text/plain;charset=utf-8";
+
+static char *g_clip_text;            /* our copied text (we own the selection) */
+static size_t g_clip_len;
+static int    g_clip_we_own;         /* xwpe currently owns the OS selection    */
+static struct wl_data_source *g_clip_source;
+static struct wl_data_offer  *g_clip_offer;   /* current selection offer (any owner) */
+
+/* The compositor asks us to hand our copied text to a pasting client: write it
+   to the fd it gives and close.  Async-signal-unsafe work is fine here -- this
+   runs from the normal event dispatch, not a signal handler. */
+static void clip_source_send(void *data, struct wl_data_source *src,
+                             const char *mime, int fd)
+{
+ (void)data; (void)src; (void)mime;
+ if (g_clip_text)
+ {
+  size_t off = 0;
+  while (off < g_clip_len)
+  {
+   ssize_t n = write(fd, g_clip_text + off, g_clip_len - off);
+   if (n <= 0)
+    break;
+   off += (size_t)n;
+  }
+ }
+ close(fd);
+}
+/* Another client took the selection: we no longer own it. */
+static void clip_source_cancelled(void *data, struct wl_data_source *src)
+{
+ (void)data;
+ g_clip_we_own = 0;
+ if (src == g_clip_source)
+ {
+  wl_data_source_destroy(src);
+  g_clip_source = NULL;
+ }
+}
+static void clip_source_target(void *d, struct wl_data_source *s, const char *m)
+{ (void)d; (void)s; (void)m; }
+static void clip_source_dnd_drop(void *d, struct wl_data_source *s) { (void)d; (void)s; }
+static void clip_source_dnd_finished(void *d, struct wl_data_source *s) { (void)d; (void)s; }
+static void clip_source_action(void *d, struct wl_data_source *s, uint32_t a)
+{ (void)d; (void)s; (void)a; }
+static const struct wl_data_source_listener clip_source_listener = {
+ clip_source_target, clip_source_send, clip_source_cancelled,
+ clip_source_dnd_drop, clip_source_dnd_finished, clip_source_action
+};
+
+static void clip_offer_offer(void *d, struct wl_data_offer *o, const char *mime)
+{ (void)d; (void)o; (void)mime; }
+static void clip_offer_source_actions(void *d, struct wl_data_offer *o, uint32_t a)
+{ (void)d; (void)o; (void)a; }
+static void clip_offer_action(void *d, struct wl_data_offer *o, uint32_t a)
+{ (void)d; (void)o; (void)a; }
+static const struct wl_data_offer_listener clip_offer_listener = {
+ clip_offer_offer, clip_offer_source_actions, clip_offer_action
+};
+
+/* A new offer is being introduced; attach our listener before its mime events. */
+static void ddev_data_offer(void *data, struct wl_data_device *dd,
+                            struct wl_data_offer *offer)
+{
+ (void)data; (void)dd;
+ wl_data_offer_add_listener(offer, &clip_offer_listener, NULL);
+}
+/* The selection changed: remember the current offer (ours or external). */
+static void ddev_selection(void *data, struct wl_data_device *dd,
+                           struct wl_data_offer *offer)
+{
+ (void)data; (void)dd;
+ if (g_clip_offer && g_clip_offer != offer)
+  wl_data_offer_destroy(g_clip_offer);
+ g_clip_offer = offer;
+}
+static void ddev_enter(void *d, struct wl_data_device *dd, uint32_t s,
+                       struct wl_surface *su, wl_fixed_t x, wl_fixed_t y,
+                       struct wl_data_offer *o)
+{ (void)d; (void)dd; (void)s; (void)su; (void)x; (void)y; (void)o; }
+static void ddev_leave(void *d, struct wl_data_device *dd) { (void)d; (void)dd; }
+static void ddev_motion(void *d, struct wl_data_device *dd, uint32_t t,
+                        wl_fixed_t x, wl_fixed_t y)
+{ (void)d; (void)dd; (void)t; (void)x; (void)y; }
+static void ddev_drop(void *d, struct wl_data_device *dd) { (void)d; (void)dd; }
+static const struct wl_data_device_listener ddev_listener = {
+ ddev_data_offer, ddev_enter, ddev_leave, ddev_motion, ddev_drop, ddev_selection
+};
+
+/* e_clip_w_set - Copy: own the OS selection and cache the text (e_clip_os_set). */
+static void e_clip_w_set(const char *utf8, int len)
+{
+ if (!WpeWl.ddm || !WpeWl.ddev)
+  return;
+ free(g_clip_text);
+ g_clip_text = malloc((size_t)len + 1);
+ if (!g_clip_text)
+ {
+  g_clip_len = 0;
+  return;
+ }
+ memcpy(g_clip_text, utf8, len);
+ g_clip_text[len] = 0;
+ g_clip_len = (size_t)len;
+
+ g_clip_source = wl_data_device_manager_create_data_source(WpeWl.ddm);
+ wl_data_source_add_listener(g_clip_source, &clip_source_listener, NULL);
+ wl_data_source_offer(g_clip_source, WL_CLIP_MIME);
+ wl_data_source_offer(g_clip_source, "text/plain");
+ wl_data_source_offer(g_clip_source, "UTF8_STRING");
+ wl_data_source_offer(g_clip_source, "TEXT");
+ wl_data_source_offer(g_clip_source, "STRING");
+ wl_data_device_set_selection(WpeWl.ddev, g_clip_source, WpeWl.last_serial);
+ g_clip_we_own = 1;
+ wl_display_flush(WpeWl.display);
+}
+
+/* e_clip_w_get - Paste: NULL while WE own the selection (the editor's internal
+   clipboard is authoritative); otherwise read the external owner's text by
+   piping it from the current wl_data_offer.  Caller frees the result. */
+static char *e_clip_w_get(int *len)
+{
+ int fds[2];
+ char *buf = NULL;
+ size_t cap = 0, used = 0;
+ int wl_fd;
+
+ if (len)
+  *len = 0;
+ if (g_clip_we_own || !g_clip_offer || !WpeWl.display)
+  return NULL;                 /* we own it (use internal), or nothing offered */
+ if (pipe(fds) != 0)
+  return NULL;
+
+ wl_data_offer_receive(g_clip_offer, WL_CLIP_MIME, fds[1]);
+ close(fds[1]);
+ wl_display_flush(WpeWl.display);   /* let the owner start writing */
+
+ wl_fd = wl_display_get_fd(WpeWl.display);
+ for (;;)
+ {
+  struct pollfd pf[2];
+  char chunk[4096];
+  ssize_t n;
+
+  /* The owner writes asynchronously, so keep the wl event loop turning while
+     draining the read end -- no busy-wait, no fixed sleep. */
+  wl_display_flush(WpeWl.display);
+  pf[0].fd = fds[0]; pf[0].events = POLLIN; pf[0].revents = 0;
+  pf[1].fd = wl_fd;  pf[1].events = POLLIN; pf[1].revents = 0;
+  if (poll(pf, 2, 2000) <= 0)
+   break;                        /* timeout / error: stop with what we have */
+  if (pf[1].revents & POLLIN)
+   wl_display_dispatch(WpeWl.display);
+  if (pf[0].revents & (POLLIN | POLLHUP))
+  {
+   n = read(fds[0], chunk, sizeof chunk);
+   if (n < 0)
+    break;
+   if (n == 0)
+    break;                       /* EOF: owner finished writing */
+   if (used + (size_t)n + 1 > cap)
+   {
+    size_t ncap = (cap ? cap * 2 : 8192);
+    char *nb;
+    while (ncap < used + (size_t)n + 1)
+     ncap *= 2;
+    nb = realloc(buf, ncap);
+    if (!nb)
+     break;
+    buf = nb; cap = ncap;
+   }
+   memcpy(buf + used, chunk, (size_t)n);
+   used += (size_t)n;
+  }
+ }
+ close(fds[0]);
+ if (!buf)
+  return NULL;
+ buf[used] = 0;
+ if (len)
+  *len = (int)used;
+ return buf;
+}
+
+/* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - *\
   Bring-up and teardown
 \* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
 
@@ -698,6 +900,13 @@ static int wl_connect_and_bind(void)
  if (WpeWl.seat)
  {
   wl_seat_add_listener(WpeWl.seat, &seat_listener, NULL);
+  /* OS clipboard: a data device on this seat (the wl_data_device_manager was
+     bound in the registry pass).  Selection events flow through ddev_listener. */
+  if (WpeWl.ddm)
+  {
+   WpeWl.ddev = wl_data_device_manager_get_data_device(WpeWl.ddm, WpeWl.seat);
+   wl_data_device_add_listener(WpeWl.ddev, &ddev_listener, NULL);
+  }
   wl_display_roundtrip(WpeWl.display);   /* seat capabilities -> get_keyboard */
   wl_display_roundtrip(WpeWl.display);   /* wl_keyboard.keymap -> xkb_state    */
  }
@@ -723,6 +932,11 @@ static void wl_teardown(void)
  if (WpeWl.xkb_state)  xkb_state_unref(WpeWl.xkb_state);
  if (WpeWl.xkb_keymap) xkb_keymap_unref(WpeWl.xkb_keymap);
  if (WpeWl.xkb_ctx)    xkb_context_unref(WpeWl.xkb_ctx);
+ if (g_clip_offer)     { wl_data_offer_destroy(g_clip_offer); g_clip_offer = NULL; }
+ if (g_clip_source)    { wl_data_source_destroy(g_clip_source); g_clip_source = NULL; }
+ if (WpeWl.ddev)       wl_data_device_destroy(WpeWl.ddev);
+ if (WpeWl.ddm)        wl_data_device_manager_destroy(WpeWl.ddm);
+ free(g_clip_text); g_clip_text = NULL; g_clip_len = 0; g_clip_we_own = 0;
  if (WpeWl.keyboard)   wl_keyboard_release(WpeWl.keyboard);
  if (WpeWl.pointer)    wl_pointer_release(WpeWl.pointer);
  if (WpeWl.buffer)        wl_buffer_destroy(WpeWl.buffer);
@@ -1239,6 +1453,11 @@ int WpeWaylandInit(int *argc, char **argv)
  e_u_switch_screen = WpeZeroFunction;
  e_u_d_switch_out  = (int (*)(int))WpeZeroFunction;
  e_u_deb_out       = e_t_deb_out;
+ if (WpeWl.ddm && WpeWl.ddev)     /* OS clipboard via wl_data_device */
+ {
+  e_clip_os_set = e_clip_w_set;   /* ^C / ^Ins -> the Wayland selection */
+  e_clip_os_get = e_clip_w_get;   /* ^V <- another app's selection      */
+ }
 
  MCI = 7;   /* scrollbar track  (ACS via draw_acs, as X11) */
  MCA = 11;  /* scrollbar thumb */

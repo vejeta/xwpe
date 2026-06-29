@@ -436,6 +436,7 @@ EXTRA_DIST = \
   tests/wayland/conftest.py \
   tests/wayland/test_menu_edit.py \
   tests/wayland/test_popup_close_button.py \
+  tests/wayland/test_clipboard.py \
   tests/wayland/test_block_marking.py \
   tests/wayland/test_menu_search.py \
   tests/wayland/test_menu_file.py \
