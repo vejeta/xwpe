@@ -1,0 +1,105 @@
+# Manual Linux CI for xwpe -- the GUI test gates that need a real display.
+#
+# Codeberg/Forgejo has no Linux GUI runners wired up, so this runs on the GitHub
+# push-mirror (github.com/vejeta/xwpe).  It is "workflow_dispatch" ONLY -- it
+# never runs on push; launch it on demand from the Actions tab or with:
+#     gh workflow run linux.yml --repo vejeta/xwpe
+#
+# What it guards, on top of the C `make check`:
+#   - the build with the native Wayland backend (--with-wayland);
+#   - the ncurses UI under a pseudo-terminal (pyte);
+#   - the X11/Xft GUI under Xvfb + matchbox (tests/x11);
+#   - the NATIVE WAYLAND GUI under Xvfb + weston (tests/wayland) -- the editor on
+#     a real wl_surface, driven via wl_keyboard/wl_pointer, incl. the wl_data_device
+#     clipboard interop (wl-clipboard).
+# All three front-ends share one SCREENCELL/editor core, so running the same
+# operations under each catches a divergence in any single backend.
+
+name: Linux (manual)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  linux:
+    name: Linux build + GUI test gates
+    runs-on: ubuntu-latest
+    env:
+      DEBIAN_FRONTEND: noninteractive
+      # CI runners are slower and more loaded than a dev box; stretch every
+      # harness settle (keystroke -> screenshot) so timing flakes don't masquerade
+      # as failures -- same knob the Debian autopkgtest uses.
+      XWPE_TEST_WAIT_SCALE: "3"
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install build + GUI-test dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential autoconf automake autopoint pkg-config \
+            libncursesw5-dev libx11-dev libxext-dev libxft-dev \
+            libfontconfig1-dev libcairo2-dev libpango1.0-dev libfreetype-dev \
+            libvterm-dev libjson-c-dev zlib1g-dev libgpm-dev \
+            libwayland-dev wayland-protocols libwayland-bin libxkbcommon-dev \
+            xvfb x11-utils x11-xserver-utils xauth xdotool \
+            matchbox-window-manager imagemagick weston wl-clipboard \
+            python3 python3-pip python3-venv python3-pil
+
+      - name: Build (--with-wayland)
+        run: |
+          autoreconf -fi
+          ./configure --with-wayland
+          make -j"$(nproc)"
+          # Confirm the native Wayland backend was actually compiled in.
+          grep -q '#define HAVE_WAYLAND 1' config.h
+          ldd ./we | grep -Eiq 'wayland-client|xkbcommon'
+
+      - name: make check (C unit tests)
+        # The deterministic, server-free unit tests (the LSP/DAP server-driven
+        # ones are toolchain-bound; covered separately where the servers exist).
+        run: >-
+          make check
+          TESTS="test_checkheader test_syntax_def test_fdloop test_clipboard
+          test_lsp_buffer test_lsp_doctor test_lsp_semantic test_lsp_truecolor
+          test_dap"
+
+      - name: Set up a pytest venv + a private XDG_RUNTIME_DIR
+        run: |
+          python3 -m venv /tmp/ptenv
+          /tmp/ptenv/bin/pip install --quiet pyte==0.8.1 pytest pillow
+          mkdir -p /tmp/xdg && chmod 700 /tmp/xdg
+
+      - name: ncurses UI suite (pyte, pseudo-terminal)
+        # The deterministic key / menu / editing / rendering scenarios; the
+        # toolchain-bound LSP/DAP/compile pipelines are excluded to stay fast.
+        env:
+          TERM: "xterm-256color"
+        run: |
+          export XWPE_LIB="$PWD"
+          WPE_BIN="$PWD/wpe" /tmp/ptenv/bin/python -m pytest -q tests \
+            --ignore=tests/x11 --ignore=tests/wayland \
+            -k "not (clangd or gopls or rust or scala or metals or python_lsp or go_dap or dap or algol68 or ga68 or truecolor_console or compile or make_output or build_cwd or user_screen or debugger_watchdog or ctrl_f9 or alt_f5)"
+
+      - name: X11/Xft GUI suite (Xvfb + matchbox)
+        # The conftest starts its own Xvfb + window manager; it skips cleanly if
+        # a tool is missing.
+        env:
+          XDG_RUNTIME_DIR: /tmp/xdg
+        run: XWPE_BIN="$PWD/xwpe" /tmp/ptenv/bin/python -m pytest -q tests/x11
+
+      - name: Native Wayland GUI suite (Xvfb + weston)
+        # The conftest starts its own Xvfb + weston (x11-backend, kiosk-shell) and
+        # skips cleanly if weston / wl-clipboard / Pillow is missing.  This is the
+        # native wl_surface backend: real wl_keyboard/wl_pointer + wl_data_device.
+        env:
+          XDG_RUNTIME_DIR: /tmp/xdg
+        run: XWPE_BIN="$PWD/xwpe" /tmp/ptenv/bin/python -m pytest -q tests/wayland -rxX
+
+      - name: Upload test logs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: linux-test-logs
+          path: "*.log"
+          if-no-files-found: ignore

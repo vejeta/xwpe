@@ -38,18 +38,30 @@ try:
     import PIL  # noqa: F401
 except ImportError:
     _MISSING.append("python3-pil (Pillow)")
-# weston needs its x11-backend module; if absent the compositor cannot start.
-_WESTON_X11 = next(
-    (p for p in (
-        "/usr/lib/x86_64-linux-gnu/libweston-15/x11-backend.so",
-        "/usr/lib/weston/x11-backend.so",
-    ) if os.path.exists(p)),
-    None)
-if shutil.which("weston") and _WESTON_X11 is None:
-    # Probe more generally before giving up.
-    import glob
-    if not glob.glob("/usr/lib/**/libweston-*/x11-backend.so", recursive=True):
+# weston needs its x11-backend (to get input from Xvfb) and kiosk-shell (to
+# fullscreen the app at (0,0) for exact click coords).  If either module is
+# absent the compositor can't give the suite what it needs -> skip cleanly.
+import glob as _glob
+
+
+def _weston_has(module):
+    """True if weston ships `module` in a standard (non-recursive) location.
+    Bounded globs only -- a recursive /usr/lib/** walk is pathologically slow."""
+    if not shutil.which("weston"):
+        return False
+    for pat in ("/usr/lib/*/libweston-*/" + module,   # libweston-15 multiarch dir
+                "/usr/lib/libweston-*/" + module,
+                "/usr/lib/weston/" + module):
+        if _glob.glob(pat):
+            return True
+    return False
+
+
+if shutil.which("weston"):
+    if not _weston_has("x11-backend.so"):
         _MISSING.append("weston x11-backend.so")
+    if not _weston_has("kiosk-shell.so"):
+        _MISSING.append("weston kiosk-shell.so")
 
 
 def pytest_collection_modifyitems(config, items):
