@@ -172,6 +172,7 @@ jobs:
         # failure. Reproduce faithfully: configure with a real --prefix, install
         # there, then drive the installed wpe with NO XWPE_LIB, dumping everything.
         run: |
+          set +e   # diagnostic step: gather everything; never fail the job on a sub-command
           export PKG_CONFIG_PATH="$(brew --prefix ncurses)/lib/pkgconfig"
           ./configure --prefix=/tmp/xp --without-x --without-gpm >/tmp/cf2.log 2>&1
           make >/tmp/mk2.log 2>&1
@@ -203,8 +204,9 @@ jobs:
           RUBY
           ruby /tmp/probe.rb
           echo "=== installed wpe with stdin/out as PIPES (surface any stderr it prints) ==="
-          /tmp/xp/bin/wpe /tmp/h.c </dev/null >/tmp/wo.txt 2>/tmp/we.txt & p=$!; sleep 3; kill "$p" 2>/dev/null; wait "$p" 2>/dev/null
+          /tmp/xp/bin/wpe /tmp/h.c </dev/null >/tmp/wo.txt 2>/tmp/we.txt & p=$!; sleep 3; kill "$p" 2>/dev/null || true; wait "$p" 2>/dev/null || true
           echo "stdout bytes: $(wc -c </tmp/wo.txt) ; stderr:"; cat /tmp/we.txt | head -20
+          true   # diagnostic step: never let the killed-child exit status fail the job
 
       - name: Diagnostic - old read_nonblock poll (expected to be flaky on Intel)
         if: always()   # evidence step: run regardless of earlier outcomes
