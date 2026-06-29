@@ -62,8 +62,8 @@ sudo apt install build-essential autoconf automake pkg-config texinfo \
   libncurses-dev libx11-dev libxft-dev libcairo2-dev libpango1.0-dev \
   libvterm-dev libjson-c-dev libgpm-dev zlib1g-dev librsvg2-bin
 autoreconf -fi && ./configure && make && sudo make install
-wpe file.c          # terminal mode
-xwpe file.c         # X11 mode
+wpe file.c          # terminal mode (ncurses)
+xwpe file.c         # graphical mode: native Wayland (auto-detected) or X11
 ```
 
 `make install` is part of the build, not an afterthought: it installs the
@@ -94,7 +94,8 @@ on a plain console, or in any terminal emulator.
   five languages. Setup: [docs/ide-setup.md](docs/ide-setup.md); feature guide:
   [docs/LSP.md](docs/LSP.md).
 - **Mouse** everywhere &mdash; terminal emulators (xterm protocol), the bare
-  Linux console (GPM), and X11. Runs on Wayland via XWayland.
+  Linux console (GPM), X11, and a **native Wayland** backend (`wl_surface`,
+  auto-detected from `WAYLAND_DISPLAY`; falls back to XWayland when needed).
 
 <p align="center">
   <img src="docs/demos/gifs/c/tour.gif" width="760" alt="A tour of xwpe's LSP features on a C/C++ file via clangd: hover shows the signature, Alt-Q Y reveals inferred inlay-hint types, Alt-Q U highlights every use of the symbol, references list in Messages, the file outline pops up, and Alt-Q N renames a symbol across the whole file -- then Ctrl-U undoes the entire refactor.">

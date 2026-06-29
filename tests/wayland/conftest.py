@@ -51,6 +51,7 @@ def _weston_has(module):
         return False
     for pat in ("/usr/lib/*/libweston-*/" + module,   # libweston-15 multiarch dir
                 "/usr/lib/libweston-*/" + module,
+                "/usr/lib/*/weston/" + module,         # Debian multiarch weston dir
                 "/usr/lib/weston/" + module):
         if _glob.glob(pat):
             return True

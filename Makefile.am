@@ -100,9 +100,12 @@ we_LDADD = \
 # conditional, so automake still distributes them when the backend is off.
 if HAVE_WAYLAND
 we_SOURCES += we_wayland.c we_render_wayland.c
-nodist_we_SOURCES = xdg-shell-protocol.c
-BUILT_SOURCES = xdg-shell-client-protocol.h
-CLEANFILES = xdg-shell-client-protocol.h xdg-shell-protocol.c
+nodist_we_SOURCES = xdg-shell-protocol.c primary-selection-unstable-v1-protocol.c
+BUILT_SOURCES = xdg-shell-client-protocol.h \
+  primary-selection-unstable-v1-client-protocol.h
+CLEANFILES = xdg-shell-client-protocol.h xdg-shell-protocol.c \
+  primary-selection-unstable-v1-client-protocol.h \
+  primary-selection-unstable-v1-protocol.c
 AM_CFLAGS += $(WAYLAND_CFLAGS)
 we_LDADD += $(WAYLAND_LIBS)
 
@@ -113,10 +116,20 @@ xdg-shell-protocol.c:
 	$(WAYLAND_SCANNER) private-code \
 	  $(WAYLAND_PROTOCOLS_DIR)/stable/xdg-shell/xdg-shell.xml $@
 
+# Primary selection (middle-click paste): xwpe owns PRIMARY as well as CLIPBOARD,
+# matching the X11 backend.  Same wayland-scanner generation as xdg-shell.
+primary-selection-unstable-v1-client-protocol.h:
+	$(WAYLAND_SCANNER) client-header \
+	  $(WAYLAND_PROTOCOLS_DIR)/unstable/primary-selection/primary-selection-unstable-v1.xml $@
+primary-selection-unstable-v1-protocol.c:
+	$(WAYLAND_SCANNER) private-code \
+	  $(WAYLAND_PROTOCOLS_DIR)/unstable/primary-selection/primary-selection-unstable-v1.xml $@
+
 # BUILT_SOURCES only fires for the default `all` target; this explicit
-# dependency guarantees the generated client header exists before we_wayland.c
+# dependency guarantees the generated client headers exist before we_wayland.c
 # is compiled even for `make we` or a parallel `make -j`.
-we_wayland.$(OBJEXT): xdg-shell-client-protocol.h
+we_wayland.$(OBJEXT): xdg-shell-client-protocol.h \
+  primary-selection-unstable-v1-client-protocol.h
 endif
 
 # --- Header files (for dist) ---

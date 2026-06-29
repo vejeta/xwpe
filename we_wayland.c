@@ -338,6 +338,11 @@ static void registry_global(void *data, struct wl_registry *reg, uint32_t name,
   WpeWl.ddm = wl_registry_bind(reg, name, &wl_data_device_manager_interface,
                                wl_umin(version, 3));
  }
+ else if (!strcmp(iface, zwp_primary_selection_device_manager_v1_interface.name))
+ {
+  WpeWl.psm = wl_registry_bind(reg, name,
+                 &zwp_primary_selection_device_manager_v1_interface, 1);
+ }
 }
 static void registry_global_remove(void *data, struct wl_registry *reg, uint32_t name)
 { (void)data; (void)reg; (void)name; }
@@ -686,13 +691,12 @@ static int    g_clip_we_own;         /* xwpe currently owns the OS selection    
 static struct wl_data_source *g_clip_source;
 static struct wl_data_offer  *g_clip_offer;   /* current selection offer (any owner) */
 
-/* The compositor asks us to hand our copied text to a pasting client: write it
-   to the fd it gives and close.  Async-signal-unsafe work is fine here -- this
-   runs from the normal event dispatch, not a signal handler. */
-static void clip_source_send(void *data, struct wl_data_source *src,
-                             const char *mime, int fd)
+/* Write our cached copied text to a pasting client's fd and close it.  Shared by
+   the CLIPBOARD (wl_data_source) and PRIMARY (zwp_primary_selection_source)
+   send handlers -- both serve the same bytes.  Async-signal-unsafe work is fine
+   here: this runs from the normal event dispatch, not a signal handler. */
+static void clip_send_bytes(int fd)
 {
- (void)data; (void)src; (void)mime;
  if (g_clip_text)
  {
   size_t off = 0;
@@ -706,16 +710,26 @@ static void clip_source_send(void *data, struct wl_data_source *src,
  }
  close(fd);
 }
-/* Another client took the selection: we no longer own it. */
+/* The compositor asks us to hand our copied text to a pasting client. */
+static void clip_source_send(void *data, struct wl_data_source *src,
+                             const char *mime, int fd)
+{
+ (void)data; (void)src; (void)mime;
+ clip_send_bytes(fd);
+}
+/* A source was cancelled (another client took the selection, or we replaced it
+   on the next Copy).  Destroy whatever source was cancelled so it never leaks;
+   only drop ownership when the CURRENT source is the one being cancelled, so a
+   stale source's late cancellation cannot clear the ownership we just took. */
 static void clip_source_cancelled(void *data, struct wl_data_source *src)
 {
  (void)data;
- g_clip_we_own = 0;
  if (src == g_clip_source)
  {
-  wl_data_source_destroy(src);
+  g_clip_we_own = 0;
   g_clip_source = NULL;
  }
+ wl_data_source_destroy(src);
 }
 static void clip_source_target(void *d, struct wl_data_source *s, const char *m)
 { (void)d; (void)s; (void)m; }
@@ -767,6 +781,70 @@ static const struct wl_data_device_listener ddev_listener = {
  ddev_data_offer, ddev_enter, ddev_leave, ddev_motion, ddev_drop, ddev_selection
 };
 
+/* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - *\
+  Primary selection (zwp_primary_selection_v1: the middle-click selection)
+
+  The X11 backend owns BOTH the PRIMARY (middle-click paste) and CLIPBOARD
+  selections on a Copy (we_xterm.c).  We match that here: alongside the
+  wl_data_device CLIPBOARD source, a Copy also publishes a primary-selection
+  source serving the same bytes, so a middle-click in a Wayland-native terminal
+  or editor pastes the last Copy.  The text is shared (g_clip_text); only the
+  protocol objects differ.
+\* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
+
+static struct zwp_primary_selection_source_v1 *g_pclip_source;
+static struct zwp_primary_selection_offer_v1  *g_pclip_offer;
+static int    g_pclip_we_own;        /* xwpe currently owns the PRIMARY selection */
+
+static void pclip_source_send(void *data,
+        struct zwp_primary_selection_source_v1 *src, const char *mime, int fd)
+{ (void)data; (void)src; (void)mime; clip_send_bytes(fd); }
+
+static void pclip_source_cancelled(void *data,
+        struct zwp_primary_selection_source_v1 *src)
+{
+ (void)data;
+ if (src == g_pclip_source)
+ {
+  g_pclip_we_own = 0;
+  g_pclip_source = NULL;
+ }
+ zwp_primary_selection_source_v1_destroy(src);
+}
+static const struct zwp_primary_selection_source_v1_listener pclip_source_listener = {
+ pclip_source_send, pclip_source_cancelled
+};
+
+static void pclip_offer_offer(void *d,
+        struct zwp_primary_selection_offer_v1 *o, const char *mime)
+{ (void)d; (void)o; (void)mime; }
+static const struct zwp_primary_selection_offer_v1_listener pclip_offer_listener = {
+ pclip_offer_offer
+};
+
+/* A new primary offer is being introduced; attach our listener before its mime
+   events, exactly as ddev_data_offer does for the clipboard. */
+static void pdev_data_offer(void *data,
+        struct zwp_primary_selection_device_v1 *dev,
+        struct zwp_primary_selection_offer_v1 *offer)
+{
+ (void)data; (void)dev;
+ zwp_primary_selection_offer_v1_add_listener(offer, &pclip_offer_listener, NULL);
+}
+/* The primary selection changed: remember the current offer (ours or external). */
+static void pdev_selection(void *data,
+        struct zwp_primary_selection_device_v1 *dev,
+        struct zwp_primary_selection_offer_v1 *offer)
+{
+ (void)data; (void)dev;
+ if (g_pclip_offer && g_pclip_offer != offer)
+  zwp_primary_selection_offer_v1_destroy(g_pclip_offer);
+ g_pclip_offer = offer;
+}
+static const struct zwp_primary_selection_device_v1_listener pdev_listener = {
+ pdev_data_offer, pdev_selection
+};
+
 /* e_clip_w_set - Copy: own the OS selection and cache the text (e_clip_os_set). */
 static void e_clip_w_set(const char *utf8, int len)
 {
@@ -792,49 +870,55 @@ static void e_clip_w_set(const char *utf8, int len)
  wl_data_source_offer(g_clip_source, "STRING");
  wl_data_device_set_selection(WpeWl.ddev, g_clip_source, WpeWl.last_serial);
  g_clip_we_own = 1;
+
+ /* Own PRIMARY too, so a middle-click paste in a Wayland app gets the same
+    text (the X11 backend owns both PRIMARY and CLIPBOARD on a Copy). */
+ if (WpeWl.psm && WpeWl.pdev)
+ {
+  g_pclip_source =
+    zwp_primary_selection_device_manager_v1_create_source(WpeWl.psm);
+  zwp_primary_selection_source_v1_add_listener(g_pclip_source,
+    &pclip_source_listener, NULL);
+  zwp_primary_selection_source_v1_offer(g_pclip_source, WL_CLIP_MIME);
+  zwp_primary_selection_source_v1_offer(g_pclip_source, "text/plain");
+  zwp_primary_selection_source_v1_offer(g_pclip_source, "UTF8_STRING");
+  zwp_primary_selection_source_v1_offer(g_pclip_source, "TEXT");
+  zwp_primary_selection_source_v1_offer(g_pclip_source, "STRING");
+  zwp_primary_selection_device_v1_set_selection(WpeWl.pdev, g_pclip_source,
+    WpeWl.last_serial);
+  g_pclip_we_own = 1;
+ }
  wl_display_flush(WpeWl.display);
 }
 
-/* e_clip_w_get - Paste: NULL while WE own the selection (the editor's internal
-   clipboard is authoritative); otherwise read the external owner's text by
-   piping it from the current wl_data_offer.  Caller frees the result. */
-static char *e_clip_w_get(int *len)
+/* clip_pipe_drain - read a selection's bytes from read_fd until EOF/timeout.
+   The owning client writes asynchronously, so we keep the wl event loop turning
+   while draining -- no busy-wait, no fixed sleep.  The caller has already issued
+   the matching *_offer_receive() and closed the write end; the caller also
+   closes read_fd.  Returns malloc'd, NUL-terminated bytes (caller frees), or
+   NULL if nothing was read.  Shared by the CLIPBOARD and PRIMARY readers. */
+static char *clip_pipe_drain(int read_fd, int *len)
 {
- int fds[2];
- char *buf = NULL;
+ char  *buf = NULL;
  size_t cap = 0, used = 0;
- int wl_fd;
+ int    wl_fd = wl_display_get_fd(WpeWl.display);
 
- if (len)
-  *len = 0;
- if (g_clip_we_own || !g_clip_offer || !WpeWl.display)
-  return NULL;                 /* we own it (use internal), or nothing offered */
- if (pipe(fds) != 0)
-  return NULL;
-
- wl_data_offer_receive(g_clip_offer, WL_CLIP_MIME, fds[1]);
- close(fds[1]);
- wl_display_flush(WpeWl.display);   /* let the owner start writing */
-
- wl_fd = wl_display_get_fd(WpeWl.display);
  for (;;)
  {
   struct pollfd pf[2];
   char chunk[4096];
   ssize_t n;
 
-  /* The owner writes asynchronously, so keep the wl event loop turning while
-     draining the read end -- no busy-wait, no fixed sleep. */
   wl_display_flush(WpeWl.display);
-  pf[0].fd = fds[0]; pf[0].events = POLLIN; pf[0].revents = 0;
-  pf[1].fd = wl_fd;  pf[1].events = POLLIN; pf[1].revents = 0;
+  pf[0].fd = read_fd; pf[0].events = POLLIN; pf[0].revents = 0;
+  pf[1].fd = wl_fd;   pf[1].events = POLLIN; pf[1].revents = 0;
   if (poll(pf, 2, 2000) <= 0)
    break;                        /* timeout / error: stop with what we have */
   if (pf[1].revents & POLLIN)
    wl_display_dispatch(WpeWl.display);
   if (pf[0].revents & (POLLIN | POLLHUP))
   {
-   n = read(fds[0], chunk, sizeof chunk);
+   n = read(read_fd, chunk, sizeof chunk);
    if (n < 0)
     break;
    if (n == 0)
@@ -854,13 +938,54 @@ static char *e_clip_w_get(int *len)
    used += (size_t)n;
   }
  }
- close(fds[0]);
  if (!buf)
   return NULL;
  buf[used] = 0;
  if (len)
   *len = (int)used;
  return buf;
+}
+
+/* e_clip_w_get - Paste (e_clip_os_get): read the external owner's text.  Tries
+   the CLIPBOARD selection first (the ^C/^V selection of GUI apps), then the
+   PRIMARY selection (middle-click / select-to-copy), matching the X11 reader.
+   Returns NULL while WE own a selection (the editor's internal clipboard is
+   then authoritative) or when nothing is offered.  Caller frees the result. */
+static char *e_clip_w_get(int *len)
+{
+ int   fds[2];
+ char *res;
+
+ if (len)
+  *len = 0;
+ if (!WpeWl.display)
+  return NULL;
+
+ if (!g_clip_we_own && g_clip_offer)
+ {
+  if (pipe(fds) != 0)
+   return NULL;
+  wl_data_offer_receive(g_clip_offer, WL_CLIP_MIME, fds[1]);
+  close(fds[1]);
+  wl_display_flush(WpeWl.display);   /* let the owner start writing */
+  res = clip_pipe_drain(fds[0], len);
+  close(fds[0]);
+  if (res)
+   return res;
+ }
+ if (!g_pclip_we_own && g_pclip_offer)
+ {
+  if (pipe(fds) != 0)
+   return NULL;
+  zwp_primary_selection_offer_v1_receive(g_pclip_offer, WL_CLIP_MIME, fds[1]);
+  close(fds[1]);
+  wl_display_flush(WpeWl.display);
+  res = clip_pipe_drain(fds[0], len);
+  close(fds[0]);
+  if (res)
+   return res;
+ }
+ return NULL;
 }
 
 /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - *\
@@ -907,6 +1032,15 @@ static int wl_connect_and_bind(void)
    WpeWl.ddev = wl_data_device_manager_get_data_device(WpeWl.ddm, WpeWl.seat);
    wl_data_device_add_listener(WpeWl.ddev, &ddev_listener, NULL);
   }
+  /* Primary selection device on the same seat (manager bound in the registry
+     pass), so middle-click paste reaches the editor's copied text. */
+  if (WpeWl.psm)
+  {
+   WpeWl.pdev = zwp_primary_selection_device_manager_v1_get_device(WpeWl.psm,
+                                                                   WpeWl.seat);
+   zwp_primary_selection_device_v1_add_listener(WpeWl.pdev, &pdev_listener,
+                                                NULL);
+  }
   wl_display_roundtrip(WpeWl.display);   /* seat capabilities -> get_keyboard */
   wl_display_roundtrip(WpeWl.display);   /* wl_keyboard.keymap -> xkb_state    */
  }
@@ -934,9 +1068,14 @@ static void wl_teardown(void)
  if (WpeWl.xkb_ctx)    xkb_context_unref(WpeWl.xkb_ctx);
  if (g_clip_offer)     { wl_data_offer_destroy(g_clip_offer); g_clip_offer = NULL; }
  if (g_clip_source)    { wl_data_source_destroy(g_clip_source); g_clip_source = NULL; }
+ if (g_pclip_offer)    { zwp_primary_selection_offer_v1_destroy(g_pclip_offer); g_pclip_offer = NULL; }
+ if (g_pclip_source)   { zwp_primary_selection_source_v1_destroy(g_pclip_source); g_pclip_source = NULL; }
+ if (WpeWl.pdev)       zwp_primary_selection_device_v1_destroy(WpeWl.pdev);
+ if (WpeWl.psm)        zwp_primary_selection_device_manager_v1_destroy(WpeWl.psm);
  if (WpeWl.ddev)       wl_data_device_destroy(WpeWl.ddev);
  if (WpeWl.ddm)        wl_data_device_manager_destroy(WpeWl.ddm);
  free(g_clip_text); g_clip_text = NULL; g_clip_len = 0; g_clip_we_own = 0;
+ g_pclip_we_own = 0;
  if (WpeWl.keyboard)   wl_keyboard_release(WpeWl.keyboard);
  if (WpeWl.pointer)    wl_pointer_release(WpeWl.pointer);
  if (WpeWl.buffer)        wl_buffer_destroy(WpeWl.buffer);

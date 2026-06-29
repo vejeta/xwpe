@@ -233,6 +233,30 @@ Changes
 
 1.6.8 (unreleased)
 
+* Native Wayland backend: xwpe now runs as a native Wayland client
+  (wl_surface), not only under XWayland.  No flag is needed -- on a Wayland
+  session (WAYLAND_DISPLAY set) `xwpe` auto-selects the native backend; set
+  XWPE_BACKEND=x11 to force XWayland, or XWPE_BACKEND=wayland to request the
+  native path explicitly.  If the native backend cannot reach a compositor it
+  falls back to X11/XWayland, so `xwpe` always opens a window.  The ncurses
+  build (wpe) is unchanged -- one binary, three front-ends over the shared
+  SCREENCELL editor core.  Rendering is Cairo/Pango into a double-buffered wl_shm buffer
+  (the same cell/glyph pipeline as the X11/Xft backend); keyboard input is
+  wl_keyboard + xkbcommon, pointer/scroll is wl_pointer, and the system
+  clipboard is wl_data_device (copy/paste interop with other Wayland apps).  A
+  Copy also owns the primary selection (zwp_primary_selection_v1) when the
+  compositor offers it, so a middle-click pastes the text in Wayland-native apps
+  -- the same dual PRIMARY+CLIPBOARD ownership the X11 backend already had.
+  Live window resize (xdg_toplevel) reflows and repaints the editor.  Built
+  with ./configure --with-wayland (needs wayland-client, wayland-cursor,
+  xkbcommon, wayland-protocols and wayland-scanner).
+* Tests: a native-Wayland GUI suite (tests/wayland) drives the real editor on a
+  wl_surface under weston via wl_keyboard/wl_pointer, in parity with the X11
+  suite -- it reuses the X11 scenario bodies, so the same menu, editing,
+  block-marking and dialog operations are verified on all three front-ends,
+  plus a Wayland-specific wl_data_device clipboard test.  A manual Linux CI
+  workflow (GitHub Actions) builds --with-wayland and runs the ncurses, X11 and
+  Wayland GUI gates.
 * Portability (GNU/Hurd): the LSP/DAP code (we_dap.c, we_lsp.c, we_bsp.c) used
   PATH_MAX for path/URI buffers, but Hurd imposes no fixed path limit and so
   leaves PATH_MAX undefined -- xwpe FTBFS'd there from 1.6.5 on ("'PATH_MAX'

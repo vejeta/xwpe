@@ -17,6 +17,7 @@
 #include <wayland-client.h>
 #include <xkbcommon/xkbcommon.h>
 #include "xdg-shell-client-protocol.h"
+#include "primary-selection-unstable-v1-client-protocol.h"
 
 typedef struct WpeWlInfo {
  /* Connection + globals (bound from the registry). */
@@ -47,6 +48,10 @@ typedef struct WpeWlInfo {
  /* Clipboard (wl_data_device: the OS selection). */
  struct wl_data_device_manager *ddm;
  struct wl_data_device         *ddev;
+ /* Primary selection (middle-click paste): xwpe owns PRIMARY too, matching the
+    X11 backend, so a middle-click in a Wayland app pastes the last Copy. */
+ struct zwp_primary_selection_device_manager_v1 *psm;
+ struct zwp_primary_selection_device_v1         *pdev;
  uint32_t                       last_serial;  /* latest input serial for set_selection */
  /* Keyboard (wl_keyboard + xkbcommon keymap/state). */
  struct wl_keyboard *keyboard;
