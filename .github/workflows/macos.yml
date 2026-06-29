@@ -163,6 +163,49 @@ jobs:
           RUBY
           ruby /tmp/brew_test.rb
 
+      - name: Diagnose the INSTALLED binary (true Homebrew condition)
+        if: always()
+        # The step above runs ./wpe from the BUILD TREE with XWPE_LIB=$PWD, which
+        # is NOT what `brew test` does: Homebrew runs the INSTALLED wpe with no
+        # XWPE_LIB. If the installed binary cannot find its data (terminfo, help,
+        # syntax) it can die before painting -> 0 bytes, exactly the homebrew-core
+        # failure. Reproduce faithfully: configure with a real --prefix, install
+        # there, then drive the installed wpe with NO XWPE_LIB, dumping everything.
+        run: |
+          export PKG_CONFIG_PATH="$(brew --prefix ncurses)/lib/pkgconfig"
+          ./configure --prefix=/tmp/xp --without-x --without-gpm >/tmp/cf2.log 2>&1
+          make >/tmp/mk2.log 2>&1
+          make install >/tmp/inst.log 2>&1 || { echo "INSTALL FAILED"; tail -20 /tmp/inst.log; }
+          echo "=== installed tree ==="; ls -l /tmp/xp/bin/ ; echo "--- share ---"; ls -R /tmp/xp/share 2>/dev/null | head -20; echo "--- lib/xwpe ---"; ls /tmp/xp/lib/xwpe 2>/dev/null
+          echo "=== otool -L installed we (dylib resolution) ==="; otool -L /tmp/xp/bin/we 2>/dev/null
+          echo "=== terminfo xterm-256color present? ==="; infocmp xterm-256color >/dev/null 2>&1 && echo FOUND || echo MISSING
+          echo "=== run INSTALLED wpe under a pty, NO XWPE_LIB, capture all + timing ==="
+          cat > /tmp/probe.rb <<'RUBY'
+          require "pty"; require "io/console"; require "timeout"
+          ENV["TERM"] = "xterm-256color"
+          File.write("/tmp/h.c", "// XWPE_BREW_TEST_MARKER\nint main(void){return 0;}\n")
+          o = +""; k = nil; t = Time.now
+          PTY.spawn("/tmp/xp/bin/wpe", "/tmp/h.c") do |r, _w, pid|
+            r.winsize = [24, 80]
+            begin
+              Timeout.timeout(12) do
+                loop do
+                  begin; o << r.readpartial(4096); rescue Errno::EIO, EOFError; break; end
+                  break if o.include?("XWPE_BREW_TEST_MARKER")
+                end
+              end
+            rescue => e; k = e.class
+            ensure; (Process.kill("TERM", pid) rescue nil)
+            end
+          end
+          puts "INSTALLED: elapsed=#{(Time.now - t).round(1)}s bytes=#{o.bytesize} exc=#{k} esc=#{o.match?(/\e\[/)} marker=#{o.include?('XWPE_BREW_TEST_MARKER')}"
+          puts "head=#{o[0, 220].inspect}"
+          RUBY
+          ruby /tmp/probe.rb
+          echo "=== installed wpe with stdin/out as PIPES (surface any stderr it prints) ==="
+          /tmp/xp/bin/wpe /tmp/h.c </dev/null >/tmp/wo.txt 2>/tmp/we.txt & p=$!; sleep 3; kill "$p" 2>/dev/null; wait "$p" 2>/dev/null
+          echo "stdout bytes: $(wc -c </tmp/wo.txt) ; stderr:"; cat /tmp/we.txt | head -20
+
       - name: Diagnostic - old read_nonblock poll (expected to be flaky on Intel)
         if: always()   # evidence step: run regardless of earlier outcomes
         # Kept as evidence only: this is the loop the first Homebrew submission
