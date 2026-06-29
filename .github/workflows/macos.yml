@@ -133,9 +133,28 @@ jobs:
             status = nil
             PTY.spawn(BIN, arg.to_s) do |r, w, pid|
               r.winsize = [24, 80]
-              sleep 3
+              settle = lambda do |floor, cap|
+                sleep floor
+                deadline = Time.now + cap
+                last = Time.now
+                while Time.now < deadline
+                  ready, = IO.select([r], nil, nil, 0.2)
+                  if ready
+                    begin
+                      r.read_nonblock(4096); last = Time.now
+                    rescue IO::WaitReadable
+                      nil
+                    rescue Errno::EIO, EOFError
+                      break
+                    end
+                  elsif Time.now - last > 0.5
+                    break
+                  end
+                end
+              end
               begin
-                keys.each { |k| w.write k; sleep 2 }
+                settle.call(4, 12)                       # wait for first paint
+                keys.each { |k| w.write k; settle.call(2, 6) }
                 w.write "\ex"
                 sleep 1
               rescue Errno::EIO
