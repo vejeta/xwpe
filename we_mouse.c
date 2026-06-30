@@ -440,7 +440,7 @@ int fl_wnd_mouse(sw, k, fw)
    }
    else if(e_mouse.y == fw->ye && e_mouse.x >= fw->xa && e_mouse.x < fw->xe)
    {  fw->ja = e_lst_mouse(fw->xa, fw->ye, fw->xe-fw->xa, 1,
-				strlen(*(fw->df->name+fw->nf)),	fw->ja);
+				e_fl_sel_len(fw), fw->ja);
       return(0);
    }
    else if(e_mouse.y >= fw->ya && e_mouse.y < fw->ye &&

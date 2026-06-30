@@ -231,6 +231,18 @@ Bugs fixed in 1.6.x:
 
 Changes
 
+1.6.9 (unreleased)
+
+* File manager: fix an out-of-bounds read when the horizontal scrollbar of an
+  empty directory panel is clicked.  fl_wnd_mouse() measured the highlighted
+  entry with strlen(name[nf]) before the empty-list guard ran, so on a
+  directory with no listed files (nf == 0, count == 0) it read name[0] past the
+  end of a zero-length array.  Introduced e_fl_sel_len(), which returns 0 for an
+  empty or out-of-range selection without dereferencing the array, and routed
+  the scrollbar path and the two keyboard-navigation sites through it.  The flaw
+  predates the Payne era.  Reported by Jim Huang while porting xwpe to
+  libx11-compat (Xlib-on-SDL).  Covered by tests/test_fl_sel_len.c.
+
 1.6.8 (native Wayland backend, x86_64 macOS startup-crash fix)
 
 * macOS (Intel/x86_64): fix a startup crash -- the editor segfaulted during

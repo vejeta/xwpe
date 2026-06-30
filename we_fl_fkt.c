@@ -397,6 +397,27 @@ int freedf(struct dirfile *df)
 
 
 
+/**
+ * e_fl_sel_len - Width, in characters, of the file panel's selected name.
+ * @fw: file-manager list window whose highlighted entry (fw->nf) is measured.
+ *
+ * Returns strlen() of the currently selected directory entry, or 0 when the
+ * panel holds no entries (anz == 0) or the selection index has drifted out of
+ * range. The file manager calls this to size the horizontal scrollbar and to
+ * bound left/right scrolling of a long filename. It must stay safe on an empty
+ * directory: there the name array has no valid element, so measuring
+ * name[nf] would read past its end -- clicking the scrollbar of an empty panel
+ * used to do exactly that.
+ *
+ * Return: length of the selected name in characters, 0 when nothing is selected.
+ */
+int e_fl_sel_len(FLWND *fw)
+{
+   if(fw->df->anz <= 0) return(0);
+   if(fw->nf < 0 || fw->nf >= fw->df->anz) return(0);
+   return(strlen(*(fw->df->name + fw->nf)));
+}
+
 int e_file_window(int sw, FLWND *fw, int ft, int fz)
 {
    int i, c, nsu = 0;
@@ -404,7 +425,7 @@ int e_file_window(int sw, FLWND *fw, int ft, int fz)
    char sustr[18];
    if(fw->df->anz > 0)
    {  if(fw->nf >= fw->df->anz) fw->nf = fw->df->anz-1;
-      len = strlen(*(fw->df->name+fw->nf));
+      len = e_fl_sel_len(fw);
       /* Ensure the selected item is visible when entering the panel.
          Without this, Tab into a panel can land on an off-screen item,
          making it look like the panel was skipped. */
@@ -480,7 +501,7 @@ int e_file_window(int sw, FLWND *fw, int ft, int fz)
       else if(c) {  nsu = 0;  return(c);  }
       else if(fw->srcha < 0) nsu = 0;
       if(fw->nf > fw->df->anz-1) fw->nf = fw->df->anz-1;
-      len=strlen(*(fw->df->name+fw->nf));
+      len = e_fl_sel_len(fw);
       if(fw->ja >= len) fw->ja = !len ? len : len-1;
       if(fw->nf-fw->ia >= fw->ye - fw->ya) fw->ia = fw->nf+fw->ya-fw->ye+1;
       else if(fw->nf-fw->ia < 0) fw->ia = fw->nf;

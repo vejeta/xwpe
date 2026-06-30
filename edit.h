@@ -547,6 +547,7 @@ int e_write(int xa, int ya, int xe, int ye, FENSTER *f, int backup);
 char *e_new_qual(char *s, char *ns, char *sb);
 char *e_bakfilename(char *s);
 int freedf(struct dirfile *df);
+int e_fl_sel_len(FLWND *fw);
 int e_file_window(int sw, FLWND *fw, int ft, int fz);
 int e_pr_file_window(FLWND *fw, int c, int sw, int ft, int fz, int fs);
 int e_help_last(FENSTER *f);
