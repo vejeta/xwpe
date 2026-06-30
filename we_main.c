@@ -325,7 +325,7 @@ void ECNT_Init(ECNT *cn)
  cn->tabs = MALLOC((cn->tabn+1)*sizeof(char));
  WpeStringBlank(cn->tabs, cn->tabn);
  cn->flopt = FM_REKURSIVE_ACTIONS | FM_REMOVE_INTO_WB | FM_MOVE_PROMPT |
-   FM_MOVE_PROMPT | FM_PROMPT_DELETE;
+   FM_MOVE_PROMPT | FM_PROMPT_DELETE | FM_CLOSE_WINDOW;
  cn->edopt = ED_SOURCE_AUTO_INDENT | ED_ERRORS_STOP_AT | ED_SYNTAX_HIGHLIGHT;
 }
 
