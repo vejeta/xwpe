@@ -2032,14 +2032,39 @@ int e_put_pic_xrect(PIC *pic)
  return(i);
 }
 
+/* The window-frame extension plane (extbyte) is exactly MAXSCOL*MAXSLNS bytes.
+   A bottom-bar label or a window frame can legitimately be asked to draw one
+   column or row past the grid after a resize (e.g. e_pr_uul's last visible
+   button ends at the next button's x-1, which can equal MAXSCOL once the grid
+   shrinks); an unchecked extbyte write there runs off the end of the plane and
+   corrupts the heap.  These two helpers own the "stay inside the plane"
+   invariant so every e_make_xrect caller is safe -- an off-grid cell is simply
+   not part of any frame and is skipped. */
+static void e_extbyte_or(int x, int y, int bits)
+{
+ if (extbyte && x >= 0 && x < MAXSCOL && y >= 0 && y < MAXSLNS)
+  *(extbyte + y * MAXSCOL + x) |= bits;
+}
+static void e_extbyte_clear(int x, int y)
+{
+ if (extbyte && x >= 0 && x < MAXSCOL && y >= 0 && y < MAXSLNS)
+  *(extbyte + y * MAXSCOL + x) = 0;
+}
+
 int e_make_xrect_abs(int xa, int ya, int xe, int ye, int sw)
 {
  int j;
 
  for (j = xa; j <= xe; j++)
-  *(extbyte+ya*MAXSCOL+j) = *(extbyte+ye*MAXSCOL+j) = 0;
+ {
+  e_extbyte_clear(j, ya);
+  e_extbyte_clear(j, ye);
+ }
  for (j = ya; j <= ye; j++)
-  *(extbyte+j*MAXSCOL+xa) = *(extbyte+j*MAXSCOL+xe) = 0;
+ {
+  e_extbyte_clear(xa, j);
+  e_extbyte_clear(xe, j);
+ }
  return(e_make_xrect(xa, ya, xe, ye, sw));
 }
 
@@ -2052,13 +2077,13 @@ int e_make_xrect(int xa, int ya, int xe, int ye, int sw)
   sw = (sw & 1) ? 16 : 0;
   for (j = xa+1; j < xe; j++)
   {
-   *(extbyte+ya*MAXSCOL+j) |= (sw | 4);
-   *(extbyte+ye*MAXSCOL+j) |= (sw | 1);
+   e_extbyte_or(j, ya, sw | 4);
+   e_extbyte_or(j, ye, sw | 1);
   }
   for (j = ya+1; j < ye; j++)
   {
-   *(extbyte+j*MAXSCOL+xa) |= (sw | 2);
-   *(extbyte+j*MAXSCOL+xe) |= (sw | 8);
+   e_extbyte_or(xa, j, sw | 2);
+   e_extbyte_or(xe, j, sw | 8);
   }
  }
  else
@@ -2066,13 +2091,13 @@ int e_make_xrect(int xa, int ya, int xe, int ye, int sw)
   sw = (sw & 1) ? 16 : 0;
   for (j = xa; j <= xe; j++)
   {
-   *(extbyte+ya*MAXSCOL+j) |= (sw | 1);
-   *(extbyte+ye*MAXSCOL+j) |= (sw | 4);
+   e_extbyte_or(j, ya, sw | 1);
+   e_extbyte_or(j, ye, sw | 4);
   }
   for (j = ya; j <= ye; j++)
   {
-   *(extbyte+j*MAXSCOL+xa) |= (sw | 8);
-   *(extbyte+j*MAXSCOL+xe) |= (sw | 2);
+   e_extbyte_or(xa, j, sw | 8);
+   e_extbyte_or(xe, j, sw | 2);
   }
  }
  return(j);

@@ -233,6 +233,17 @@ Changes
 
 1.6.9 (unreleased)
 
+* Fix a heap corruption when the window is resized small (seen as a crash --
+  "free(): invalid next size" -- while dragging a native-Wayland window's edge on
+  kwin, and latent on X11).  The window-frame extension plane (extbyte) is
+  exactly MAXSCOL*MAXSLNS bytes, but once the grid shrinks far enough that a
+  bottom key-hint button no longer fits, that button's label frame asked
+  e_make_xrect to mark a cell one column past the plane, writing off its end.
+  e_make_xrect / e_make_xrect_abs now clamp every cell to the grid, so an
+  off-grid frame cell is simply skipped.  (Wayland exposed it because it
+  reallocates extbyte to the exact size on every resize; on X11 the allocator
+  padding usually absorbed the stray byte.)
+
 * Wayland: held keys now auto-repeat.  Wayland sends one press and one release
   per key and leaves repeating a held key to the client; xwpe now drives it from
   the compositor's repeat_info (rate/delay) with a timerfd in the fd-loop, so

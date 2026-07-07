@@ -38,3 +38,21 @@ def test_resize_refits_grid(xwpe):
     big = xwpe.screenshot()
     assert big is not None, "no frame after grow"
     assert big.size[0] > small.size[0], "buffer did not grow with the window"
+
+
+def test_deep_shrink_survives(xwpe):
+    """Shrinking the window far enough that the bottom key-hint bar's buttons no
+    longer fit must not crash.  With the grid down to ~48 columns a button's
+    start column runs past the grid, so the bar label's frame (e_make_xrect) was
+    asked to mark an extbyte cell one past the MAXSCOL*MAXSLNS plane -- an
+    off-grid write that corrupted the heap (ASAN: heap-buffer-overflow in
+    e_make_xrect).  A continuous grow/shrink sweep exercises many grid sizes."""
+    xwpe.type("int main(){ return 0; }")
+    for _ in range(2):
+        for w in range(1000, 380, -16):        # shrink deep, to ~48 columns
+            _xdo("windowsize", xwpe.wid, str(w), str(int(w * 0.75)))
+            time.sleep(0.03)
+        for w in range(380, 1000, 16):
+            _xdo("windowsize", xwpe.wid, str(w), str(int(w * 0.75)))
+            time.sleep(0.03)
+    assert xwpe.proc.poll() is None, "xwpe died shrinking the bottom bar past the grid"
