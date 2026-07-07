@@ -233,6 +233,16 @@ Changes
 
 1.6.9 (unreleased)
 
+* Fix the Messages window drifting out of place after a big shrink-then-grow of
+  the main window (it ended up a row below the editor, or off-screen entirely in
+  a small grid -- worst in the ncurses build, where it vanished).  On resize the
+  windows are scaled proportionally, but the bottom-docked Messages window cannot
+  be recovered that way once it has been squashed and clamped.  e_relayout_windows
+  now re-docks it with e_position_messages_window, which recomputes the
+  editor/messages split from the current editor extents instead of scaling the
+  old position -- so the layout recovers regardless of how far the window was
+  shrunk.  Shared fix: applies to the X11, Wayland and ncurses backends.
+
 * Fix a heap corruption when the window is resized small (seen as a crash --
   "free(): invalid next size" -- while dragging a native-Wayland window's edge on
   kwin, and latent on X11).  The window-frame extension plane (extbyte) is

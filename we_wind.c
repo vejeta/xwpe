@@ -172,6 +172,19 @@ void e_relayout_windows(ECNT *cn, int old_scol, int old_slns)
    }
   }
  }
+
+ /* Proportional scaling drifts the bottom-docked Messages window: a deep
+    shrink+grow leaves it a row below the editor, and in a small grid off the
+    screen entirely (hidden).  Re-dock it with its own splitter, which recomputes
+    the editor/messages split from the current editor extents rather than scaling
+    the old (squashed) position -- so the layout recovers no matter how far the
+    window was shrunk.  Shared by all three backends. */
+ for (i = 1; i <= cn->mxedt; i++)
+  if (!strcmp(cn->f[i]->datnam, "Messages"))
+  {
+   e_position_messages_window(cn->f[i], cn);
+   break;
+  }
 }
 
 void e_position_messages_window(FENSTER *msg, ECNT *cn)
