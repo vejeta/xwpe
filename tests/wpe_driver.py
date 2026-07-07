@@ -23,9 +23,12 @@ Incoherence flagging:
        manual review (turns green/XPASS when the behaviour is fixed).
 """
 import base64
+import fcntl
 import os
 import pty
 import select
+import struct
+import termios
 import shutil
 import subprocess
 import sys
@@ -248,6 +251,20 @@ class WpeSession:
             for stroke in macos_key_route(k):
                 os.write(self.master_fd, stroke.encode())
                 self._drain(delay)
+        return self
+
+    def resize(self, cols, rows, delay=0.6):
+        """Resize the terminal: set the pty window size (the kernel sends
+        SIGWINCH to wpe) and the pyte screen to match, then drain the repaint.
+        Drives the ncurses KEY_RESIZE -> resizeterm -> e_relayout_windows path,
+        the terminal peer of an X11 ConfigureNotify / a Wayland xdg configure."""
+        winsize = struct.pack("HHHH", rows, cols, 0, 0)
+        fcntl.ioctl(self.master_fd, termios.TIOCSWINSZ, winsize)
+        try:
+            self.screen.resize(rows, cols)
+        except Exception:
+            pass
+        self._drain(delay)
         return self
 
     def menu(self, alt_seq, item, delay=0.45):

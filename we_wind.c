@@ -210,6 +210,12 @@ void e_position_messages_window(FENSTER *msg, ECNT *cn)
   split_y = MAXSLNS - 5;
  if (split_y < 4)
   split_y = 4;
+ /* At a very small height the two clamps above conflict (MAXSLNS-5 < 4), which
+    would put the Messages top (split_y+1) below its bottom (MAXSLNS-2) -- an
+    inverted, corrupt window that does not recover on a later grow.  Cap the
+    split so Messages keeps at least one row (a.y <= e.y). */
+ if (split_y > MAXSLNS - 3)
+  split_y = MAXSLNS - 3;
 
  msg->a = e_set_pnt(0, split_y + 1);
  msg->e = e_set_pnt(MAXSCOL - 1, MAXSLNS - 2);
