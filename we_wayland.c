@@ -1231,6 +1231,10 @@ static void e_w_render_cell(int sc, int px, int py, int cw, int fg_idx, int bg_i
  {
   WpeRender.draw_acs(sc, px, py, fg_idx, bg_idx);
  }
+ else if (sc == WR_GLYPH_LOCK && WpeRender.draw_lock)
+ {
+  WpeRender.draw_lock(px, py, cw, fg_idx, bg_idx);
+ }
  else if (sc > 12 && sc != ' ')
  {
   unsigned char u8[8];

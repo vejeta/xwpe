@@ -248,6 +248,14 @@ Changes
   side effect, and the copy/paste helpers now bail on a read-only window instead
   of writing into it.
 
+* The read-only padlock now draws correctly under the X11 and Wayland (Cairo)
+  backends.  It had been a colour-emoji glyph (U+1F512), which renders at the
+  emoji font's own bitmap size and cannot be fit to a text cell, so it showed
+  clipped -- "half a padlock".  The graphical backends now paint the lock as a
+  vector icon scaled to the cell (a new draw_lock backend method, alongside
+  draw_acs), so it is crisp and monochrome at any font size; ncurses still draws
+  the emoji through the terminal, which sizes it correctly.
+
 * Wayland: fix a crash (SIGSEGV) when dragging a scrollbar thumb under the
   native Wayland backend.  The fluid scrollbar drag called XGrabPointer and ran
   the X11 event loop directly; with no X display in a native Wayland session

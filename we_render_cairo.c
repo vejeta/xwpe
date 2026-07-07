@@ -203,6 +203,37 @@ static void cr_draw_acs(int sc, int px, int py, int fg_idx, int bg_idx)
  }
 }
 
+/* Read-only padlock, drawn as a vector icon that fills cw cells -- see
+   we_render_wayland.c's wr_draw_lock; identical geometry so X11 and Wayland
+   render the same lock, and neither depends on a colour-emoji font. */
+static void cr_draw_lock(int px, int py, int cw, int fg_idx, int bg_idx)
+{
+ int cell_w = WpeRender.font_width * cw;
+ int cell_h = WpeRender.font_height;
+ int body_w = cell_w * 6 / 10;
+ int body_h = cell_h * 42 / 100;
+ int body_x = px + (cell_w - body_w) / 2;
+ int body_y = py + cell_h - body_h - cell_h / 10;
+ int shk_w  = body_w * 6 / 10;
+ int shk_x  = px + (cell_w - shk_w) / 2;
+ int shk_y  = py + cell_h * 12 / 100;
+ int shk_h  = body_y - shk_y;
+ int t      = cell_w > 12 ? 2 : 1;
+
+ cr_draw_rect(px, py, cell_w, cell_h, bg_idx);
+ cairo_set_source_rgb(cr, cairo_colors[fg_idx][0],
+   cairo_colors[fg_idx][1], cairo_colors[fg_idx][2]);
+ cairo_rectangle(cr, body_x, body_y, body_w, body_h);
+ cairo_rectangle(cr, shk_x, shk_y, shk_w, t);
+ cairo_rectangle(cr, shk_x, shk_y, t, shk_h);
+ cairo_rectangle(cr, shk_x + shk_w - t, shk_y, t, shk_h);
+ cairo_fill(cr);
+ cairo_set_source_rgb(cr, cairo_colors[bg_idx][0],
+   cairo_colors[bg_idx][1], cairo_colors[bg_idx][2]);
+ cairo_rectangle(cr, px + cell_w / 2 - t, body_y + body_h / 4, 2 * t, body_h / 2);
+ cairo_fill(cr);
+}
+
 static void cr_flush(int x, int y, int w, int h)
 {
 #ifndef NO_XWINDOWS
@@ -473,6 +504,7 @@ static void cr_set_render_backend(void)
  WpeRender.draw_line   = cr_draw_line;
  WpeRender.clear_rect  = cr_clear_rect;
  WpeRender.draw_acs    = cr_draw_acs;
+ WpeRender.draw_lock   = cr_draw_lock;
  WpeRender.flush       = cr_flush;
  WpeRender.flush_all   = cr_flush_all;
  WpeRender.blit        = cr_blit;

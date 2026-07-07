@@ -12,6 +12,11 @@
   drawing primitives through the WpeRenderBackend struct.
 \*-------------------------------------------------------------------------*/
 
+/* Codepoint xwpe stores in a title-bar cell to mark a read-only window.  In
+   ncurses it is drawn as the U+1F512 padlock emoji; the graphical backends
+   recognise it here and paint a vector lock via draw_lock instead. */
+#define WR_GLYPH_LOCK 0x1F512
+
 typedef struct WpeRenderBackend {
  void (*draw_rect)(int x, int y, int w, int h, int color_idx);
  void (*draw_text)(int x, int y, const char *utf8, int u8len,
@@ -20,6 +25,12 @@ typedef struct WpeRenderBackend {
                    int color_idx, int width);
  void (*clear_rect)(int x, int y, int w, int h, int color_idx);
  void (*draw_acs)(int sc, int px, int py, int fg_idx, int bg_idx);
+ /* Paint the read-only padlock as a vector icon scaled to cw cells.  The
+    colour-emoji glyph (WR_GLYPH_LOCK) renders at its own large bitmap size and
+    cannot be fit to a text cell, so the graphical backends draw it themselves
+    -- the same reason box/scrollbar glyphs go through draw_acs.  A backend that
+    leaves this NULL (ncurses) just paints the emoji character via the terminal. */
+ void (*draw_lock)(int px, int py, int cw, int fg_idx, int bg_idx);
  void (*flush)(int x, int y, int w, int h);
  void (*flush_all)(void);
  void (*blit)(int sx, int sy, int dx, int dy, int w, int h);

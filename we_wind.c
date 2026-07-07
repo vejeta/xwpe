@@ -627,7 +627,9 @@ static int e_win_backs_file(FENSTER *f)
    emoji (0x1F527) is a wide colour SMP glyph that renders blank on some
    terminals (kitty) and tiny/misaligned in the Xft cell, whereas U+2699 paints
    crisply from the normal monospace font everywhere. */
-#define WIN_GLYPH_LOCK 0x1F512   /* padlock: a locked file you cannot edit       */
+#define WIN_GLYPH_LOCK 0x1F512   /* padlock: a locked file you cannot edit; the  */
+                                 /* graphical backends draw this as a vector --  */
+                                 /* keep in sync with WR_GLYPH_LOCK (we_render.h) */
 #define WIN_GLYPH_TOOL 0x2699    /* gear: a tool/output pane, not a document     */
 
 /* The editability nature of a text window, which decides its title-bar marker. */
@@ -724,10 +726,17 @@ void e_ed_rahmen(FENSTER *f, int sw)
   g_rahmen_hdr_frb = -1;
   if (f->e.x - f->a.x > 8)
   {
-   if (kind == WIN_LOCKED_FILE)
-    e_pr_char(f->a.x + 2, f->a.y, WIN_GLYPH_LOCK, f->fb->er.fb);
-   else if (kind == WIN_TOOL_PANE)
-    e_pr_char(f->a.x + 2, f->a.y, WIN_GLYPH_TOOL, f->fb->er.fb);
+   /* The padlock / tool glyphs are wide emoji (wcwidth 2).  Draw them as a
+      wide cell so the next title-frame character becomes their spacer instead
+      of over-painting the glyph's right half (the "half padlock" under the
+      Cairo/Pango renderers, which draw the emoji its true two cells wide). */
+   int gl = (kind == WIN_LOCKED_FILE) ? WIN_GLYPH_LOCK
+          : (kind == WIN_TOOL_PANE)   ? WIN_GLYPH_TOOL : 0;
+   if (gl)
+   {
+    int cw = wcwidth(gl);
+    e_put_wide_cell(f->a.x + 2, f->a.y, gl, cw > 0 ? cw : 1, f->fb->er.fb, 1);
+   }
   }
  }
  if (header)

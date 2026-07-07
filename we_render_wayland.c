@@ -173,6 +173,38 @@ static void wr_draw_acs(int sc, int px, int py, int fg_idx, int bg_idx)
  }
 }
 
+/* Read-only padlock, drawn as a vector icon that fills cw cells -- a filled
+   body rectangle with an inverted-U shackle of three thin bars above it, plus a
+   background keyhole notch.  Rectangles only, like wr_draw_acs, so it scales to
+   any cell size and never depends on a colour-emoji font (which renders at its
+   own bitmap size and would show clipped). */
+static void wr_draw_lock(int px, int py, int cw, int fg_idx, int bg_idx)
+{
+ int cell_w = WpeRender.font_width * cw;
+ int cell_h = WpeRender.font_height;
+ int body_w = cell_w * 6 / 10;
+ int body_h = cell_h * 42 / 100;
+ int body_x = px + (cell_w - body_w) / 2;
+ int body_y = py + cell_h - body_h - cell_h / 10;
+ int shk_w  = body_w * 6 / 10;
+ int shk_x  = px + (cell_w - shk_w) / 2;
+ int shk_y  = py + cell_h * 12 / 100;
+ int shk_h  = body_y - shk_y;
+ int t      = cell_w > 12 ? 2 : 1;
+
+ wr_draw_rect(px, py, cell_w, cell_h, bg_idx);
+ wr_set_color(fg_idx);
+ cairo_rectangle(wcr, body_x, body_y, body_w, body_h);            /* body        */
+ cairo_rectangle(wcr, shk_x, shk_y, shk_w, t);                    /* shackle top */
+ cairo_rectangle(wcr, shk_x, shk_y, t, shk_h);                    /* shackle left*/
+ cairo_rectangle(wcr, shk_x + shk_w - t, shk_y, t, shk_h);        /* shackle rght*/
+ cairo_fill(wcr);
+ wr_set_color(bg_idx);
+ cairo_rectangle(wcr, px + cell_w / 2 - t, body_y + body_h / 4,   /* keyhole     */
+                 2 * t, body_h / 2);
+ cairo_fill(wcr);
+}
+
 /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - *\
   Present / blit / resize
 \* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
@@ -289,6 +321,7 @@ static void wr_set_backend(void)
  WpeRender.draw_line  = wr_draw_line;
  WpeRender.clear_rect = wr_clear_rect;
  WpeRender.draw_acs   = wr_draw_acs;
+ WpeRender.draw_lock  = wr_draw_lock;
  WpeRender.flush      = wr_flush;
  WpeRender.flush_all  = wr_flush_all;
  WpeRender.blit       = wr_blit;

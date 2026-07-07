@@ -355,6 +355,10 @@ static void e_x_render_cell(int sc, int px, int py, int cw,
    e_xft_draw_acs(sc, px, py, fg_idx);
   }
  }
+ else if (sc == WR_GLYPH_LOCK && WpeRender.draw_lock)
+ {
+  WpeRender.draw_lock(px, py, cw, fg_idx, bg_idx);
+ }
  else if (sc > 12 && sc != ' ')
  {
   char u8[6];
