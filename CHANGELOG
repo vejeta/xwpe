@@ -244,6 +244,17 @@ Changes
   reallocates extbyte to the exact size on every resize; on X11 the allocator
   padding usually absorbed the stray byte.)
 
+* Wayland: fix a use-after-free crash when resizing while the pointer moves over
+  the window.  The resize relayout repaints the desktop, and that repaint can
+  poll the pointer (fk_w_mouse -> wl_pump_once), which re-entered the relayout
+  and reallocated the cell grid while the outer repaint was still walking it.
+  The relayout is now non-reentrant (a configure that arrives mid-repaint is
+  applied on the next pass), and it no longer frees the window backing pics
+  before repainting -- e_repaint_desk dereferences the last view's pic on a
+  WpeIsXwin backend, so freeing them first left it dangling.  Both match the X11
+  ConfigureNotify path, which handles a resize at one point in its event loop and
+  never frees pics before repainting.
+
 * Wayland: held keys now auto-repeat.  Wayland sends one press and one release
   per key and leaves repeating a held key to the client; xwpe now drives it from
   the compositor's repeat_info (rate/delay) with a timerfd in the fd-loop, so

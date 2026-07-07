@@ -284,13 +284,22 @@ static void wl_note_configure_size(int w, int h)
    changed, the existing buffer is already correct and we just re-present. */
 static void wl_apply_pending_resize(void)
 {
+ static int in_progress;
  int old_scol, old_slns, cols, rows;
 
- if (!g_resize_pending)
+ /* Non-reentrant: the relayout below repaints the desktop, and that repaint can
+    poll the pointer (fk_w_mouse -> wl_pump_once), which would call back into
+    this function.  A nested run would reallocate the cell grid while the outer
+    e_repaint_desk is still walking it -> use-after-free.  A configure that
+    arrives mid-repaint just leaves g_resize_pending set for the next top-level
+    call.  (The X11 backend cannot hit this: it handles ConfigureNotify at a
+    single point in its event loop, never from inside a repaint.) */
+ if (!g_resize_pending || in_progress)
   return;
- g_resize_pending = 0;
  if (WpeRender.font_width <= 0 || WpeRender.font_height <= 0 || !WpeRender.draw_text)
   return;
+ in_progress = 1;
+ g_resize_pending = 0;
 
  cols = g_pending_w / WpeRender.font_width;
  rows = g_pending_h / WpeRender.font_height;
@@ -308,7 +317,12 @@ static void wl_apply_pending_resize(void)
   MAXSCOL = cols;
   MAXSLNS = rows;
   e_relayout_windows(WpeEditor, old_scol, old_slns);
-  e_free_all_pics(WpeEditor);
+  /* Do NOT e_free_all_pics here: this is a WpeIsXwin backend, so e_repaint_desk
+     dereferences e_X_l_pic (the last view's backing pic) and reallocates the
+     views itself via e_change_pic/e_u_ini_size.  Freeing the pics first leaves
+     e_X_l_pic dangling -> use-after-free.  The X11 ConfigureNotify path likewise
+     repaints without freeing pics; only the ncurses KEY_RESIZE path frees them,
+     and it can because it is not WpeIsXwin (e_repaint_desk skips the pic block). */
   e_repaint_desk(WpeEditor->f[WpeEditor->mxedt]);
   /* e_repaint_desk reallocated the grid, so the altschirm shadow it diffs
      against is fresh garbage; its dirty-cell refresh then leaves any cell whose
@@ -319,6 +333,7 @@ static void wl_apply_pending_resize(void)
   if (WpeRender.flush_all)
    WpeRender.flush_all();
  }
+ in_progress = 0;
 }
 
 /* xdg_surface.configure: the compositor is ready for content.  Acknowledge,
