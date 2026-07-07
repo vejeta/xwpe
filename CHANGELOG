@@ -242,6 +242,16 @@ Changes
   event loop, Wayland uses its implicit button grab and pumps wl_pointer events,
   the terminal has safe no-ops.  Covered by tests/wayland/test_mouse_scroll.py.
 
+* Wayland: fix a crash (SIGSEGV) on repaint after the compositor resized the
+  surface (e.g. a toplevel configure a few pixels smaller than requested).
+  xdg_toplevel_configure munmapped the shm buffer and xdg_surface_configure
+  mapped a fresh one, but the Cairo image surface still pointed at the freed
+  memory, so the next cell fill wrote through a dangling pointer.  Re-point the
+  surface at the new buffer (and repaint) after the reallocation.  Also guard
+  the cursor-cell renderer against an off-grid position, which would otherwise
+  index the cell array and fill pixels before the buffer start.  Covered by
+  tests/wayland/test_menu_edit.py.
+
 * File manager: fix an out-of-bounds read when the horizontal scrollbar of an
   empty directory panel is clicked.  fl_wnd_mouse() measured the highlighted
   entry with strlen(name[nf]) before the empty-list guard ran, so on a

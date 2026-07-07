@@ -237,6 +237,8 @@ static void wm_base_ping(void *data, struct xdg_wm_base *base, uint32_t serial)
 }
 static const struct xdg_wm_base_listener wm_base_listener = { wm_base_ping };
 
+static void e_w_render_dirty_cells(int force);   /* full repaint after a realloc */
+
 /* xdg_surface.configure: the compositor is ready for content.  Acknowledge,
    (re)allocate the buffer if needed, paint, attach and commit.  This is also
    the standard place to perform the very first paint. */
@@ -249,6 +251,16 @@ static void xdg_surface_configure(void *data, struct xdg_surface *xs, uint32_t s
  {
   if (wl_alloc_buffer(WpeWl.width, WpeWl.height) < 0)
    return;
+  /* wl_alloc_buffer munmapped the old pixels and mapped a fresh buffer at a new
+     address (this path runs after xdg_toplevel_configure drops the buffer on a
+     size change).  Re-point the Cairo image surface at the new memory, or the
+     next paint fills through a dangling pointer into freed memory -- a crash.
+     The fresh buffer is blank, so if the cell renderer is up, force a full
+     repaint to restore the editor's content. */
+  if (WpeRender.resize)
+   WpeRender.resize(WpeWl.width, WpeWl.height);
+  if (WpeRender.draw_text)
+   e_w_render_dirty_cells(1);
  }
  /* Only flat-fill as a bring-up splash BEFORE the cell renderer is installed.
     Once it is, the buffer holds the editor's rendered cells and a configure
@@ -1243,14 +1255,26 @@ static void wl_selftest_fill_grid(void)
    X11 e_xft_paint_cursor_cell decode). */
 static void e_w_render_one(int x, int y, int invert)
 {
- int n  = y * MAXSCOL + x;
- int sc = e_gt_char(x, y);
- int sa = e_gt_col(x, y);
- int base = ATTR_BASE(sa);
- int fg = invert ? base / 16
-                 : (ATTR_IS_TC(sa) ? 16 + ATTR_TC_SLOT(sa) : base % 16);
- int bg = invert ? base % 16 : base / 16;
- int cw = (schirm[n].flags & CELL_WIDE) ? 2 : 1;
+ int n, sc, sa, base, fg, bg, cw;
+
+ /* The text cursor can transiently sit off the visible grid -- e.g. while a
+    buffer edit such as Undo rescrolls the viewport, cur_x/cur_y (or the saved
+    old_cursor_x/y being restored) can be negative or past the last row/column.
+    The X11 backend paints through an X Drawable, which clips such coordinates;
+    this backend writes straight into the wl_shm buffer, so an off-grid cell
+    would index schirm[] and fill pixels before the buffer start and crash.
+    Skip it -- an off-screen cursor has nothing to paint. */
+ if (x < 0 || x >= MAXSCOL || y < 0 || y >= MAXSLNS)
+  return;
+
+ n  = y * MAXSCOL + x;
+ sc = e_gt_char(x, y);
+ sa = e_gt_col(x, y);
+ base = ATTR_BASE(sa);
+ fg = invert ? base / 16
+             : (ATTR_IS_TC(sa) ? 16 + ATTR_TC_SLOT(sa) : base % 16);
+ bg = invert ? base % 16 : base / 16;
+ cw = (schirm[n].flags & CELL_WIDE) ? 2 : 1;
 
  e_w_render_cell(sc, WpeRender.font_width * x, WpeRender.font_height * y, cw, fg, bg);
 }
