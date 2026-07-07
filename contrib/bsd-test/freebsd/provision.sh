@@ -22,9 +22,10 @@ pkg upgrade -y
 # newer libpcre2 than base; fetch(1) is in the base system, so we use that.
 pkg install -y autoconf automake libtool gmake pkgconf ncurses \
   libX11 libXft cairo pango libvterm json-c texinfo
-# Runtime-test tooling: Xvfb + a tiny WM + xdpyinfo drive the headless X11 smoke
-# (contrib/bsd-test/xvfb_smoke.sh); python3 checks the captured frame.
-pkg install -y xorg-vfbserver matchbox-window-manager xdpyinfo python3
+# Runtime-test tooling: Xvfb + a tiny WM (twm, in base xorg) + xdpyinfo drive the
+# headless X11 smoke (contrib/bsd-test/xvfb_smoke.sh); python3 checks the frame.
+# Non-fatal: if any is unavailable the smoke skips cleanly rather than aborting.
+pkg install -y xorg-vfbserver twm xdpyinfo python3 || true
 
 # FreeBSD's freetype2.pc has "Requires.private: ... bzip2 ...", but base bzip2
 # (libbz2 + bzlib.h are in the base system) ships no bzip2.pc, so pkg-config

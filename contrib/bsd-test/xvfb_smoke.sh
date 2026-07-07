@@ -52,7 +52,12 @@ fi
 if [ "$WM" = "matchbox-window-manager" ]; then
   DISPLAY="$D" "$WM" -use_titlebar no >/dev/null 2>&1 &
 else
-  DISPLAY="$D" "$WM" >/dev/null 2>&1 &
+  # twm asks for interactive window placement by default (a rubber-band that
+  # needs a mouse click), which never happens headless -- the window would stay
+  # unmapped.  RandomPlacement makes it map windows immediately at a fixed spot.
+  TWMRC=/tmp/xsmoke-twmrc
+  printf 'NoTitle\nRandomPlacement\nNoGrabServer\n' > "$TWMRC"
+  DISPLAY="$D" "$WM" -f "$TWMRC" >/dev/null 2>&1 &
 fi
 WMPID=$!
 sleep 1
