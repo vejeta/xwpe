@@ -1590,7 +1590,10 @@ static int e_w_getch(void)
  for (;;)
  {
   wl_display_dispatch_pending(WpeWl.display);
-  wl_apply_pending_resize();     /* coalesced re-fit for any configure just seen */
+  /* The ONE place a pending resize is applied: the top of the input loop, never
+     from inside a pump/repaint (see wl_pump_once).  A configure dispatched by
+     any nested pump just leaves g_resize_pending set for the next pass here. */
+  wl_apply_pending_resize();
 
   code = wl_key_pop();
   if (code != 0)
@@ -1681,9 +1684,11 @@ static void wl_pump_once(int block)
  else
   wl_display_dispatch_pending(WpeWl.display);
 
- /* One relayout per dispatch batch, collapsing a resize-drag's burst of
-    configure events into a single re-fit (see wl_apply_pending_resize). */
- wl_apply_pending_resize();
+ /* Deliberately does NOT apply a pending resize here.  wl_pump_once is also
+    reached from fk_w_mouse and fk_w_drag_next, which the editor calls from
+    inside a repaint; running the relayout from here would re-enter it.  The
+    resize is applied only at the top of the e_w_getch loop -- a single,
+    top-level point, like X11 handling ConfigureNotify in its event loop. */
 }
 
 /* fk_w_mouse - report the current pointer state, exactly like the X11
@@ -1701,6 +1706,10 @@ static int fk_w_mouse(int *g)
  if (!g)
   return 0;
 
+ /* The editor calls fk_mouse from inside a repaint (e_repaint_desk), so this
+    pump runs re-entrantly.  wl_pump_once only dispatches -- it does NOT apply a
+    pending resize (that is confined to the e_w_getch loop) -- so a configure or
+    key that arrives here is merely queued, never acted on mid-repaint. */
  if (WpeWl.display)
   wl_pump_once(0);     /* absorb pending pointer events, never block */
  g_mouse_pending = 0;  /* a click handled here is not also an e_w_getch event */
