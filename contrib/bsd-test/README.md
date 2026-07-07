@@ -1,9 +1,17 @@
 # BSD build + console-mouse test harness
 
-Reproducible Vagrant VMs that verify xwpe builds (full X11) and that the `wpe`
-console mouse works over SSH on **FreeBSD 14**, **OpenBSD 7.x** and **NetBSD 9**.
-This is the harness behind the 1.6.6 "builds on the BSDs" milestone; it is
-developer/maintainer tooling (like `tests/x11/`), not part of a normal build.
+Reproducible Vagrant VMs that verify xwpe **builds and RUNS** on **FreeBSD 14**,
+**OpenBSD 7.x** and **NetBSD 9**: after the build each `provision.sh` runs the
+shared `run_tests.sh`, which drives the unit tests, the `wpe` console mouse, and
+`xwpe` rendering under Xvfb. Developer/maintainer tooling (like `tests/x11/`),
+not part of a normal build.
+
+Shared, single-copy test code lives in this directory (never duplicated per
+platform); the per-platform folders hold only the `Vagrantfile` + `provision.sh`
+that install deps and build:
+- `sgr_mouse_probe.c` — console-mouse probe for `wpe`
+- `xvfb_smoke.sh` — headless X11 render smoke for `xwpe`
+- `run_tests.sh` — runs all three checks in order
 
 ## What it checks
 
@@ -40,6 +48,18 @@ developer/maintainer tooling (like `tests/x11/`), not part of a normal build.
    ```sh
    cc -O2 -o /tmp/probe contrib/bsd-test/sgr_mouse_probe.c -lutil   # -l util on all BSDs
    /tmp/probe /path/to/we xterm-direct        # also try: xterm-256color, vt220, wsvt25
+   ```
+
+3. **X11 render smoke.** `xvfb_smoke.sh` runs the built `xwpe` under Xvfb + a tiny
+   WM (`twm` with a `NoTitle/RandomPlacement/NoGrabServer` rc, or `matchbox`),
+   captures its window through xwpe's own `XWPE_X_DUMP` hook (a PPM — no external
+   screenshot tool) and asserts it painted a real multi-colour UI, not a blank
+   frame. This proves the X11 build actually *renders* on the platform, the
+   analogue of driving `wpe` under a pty. It **skips cleanly** if `Xvfb`, a WM or
+   `python3` is unavailable, so a bare box never fails the build over it.
+
+   ```sh
+   sh contrib/bsd-test/xvfb_smoke.sh /path/to/build-tree   # PASS / FAIL / SKIP
    ```
 
 ## Running it

@@ -75,30 +75,10 @@ else
   exit 1
 fi
 
-# --- Runtime tests: prove the binary RUNS, not just links. ---
-RC=0
-
-echo "=== unit tests (gmake check) ==="
-if gmake check >/tmp/xwpe-check.log 2>&1; then
-  echo "make check: PASS"
-else
-  echo "make check: FAIL"; grep -iE "FAIL:|error:" /tmp/xwpe-check.log | head; RC=1
-fi
-
-echo "=== console-mouse probe (wpe under a pty) ==="
-cc -O2 -o /tmp/probe contrib/bsd-test/sgr_mouse_probe.c -lutil
-if /tmp/probe ./we xterm-256color; then
-  echo "wpe mouse probe: PASS"
-else
-  echo "wpe mouse probe: FAIL"; RC=1
-fi
-
-echo "=== headless X11 smoke (xwpe under Xvfb) ==="
-sh contrib/bsd-test/xvfb_smoke.sh /tmp/xwpe-src || RC=1
-
-[ "$RC" = 0 ] && echo "ALL FREEBSD RUNTIME TESTS PASSED" \
-             || echo "SOME FREEBSD RUNTIME TESTS FAILED"
-exit "$RC"
+# Runtime tests (unit tests + wpe console-mouse probe + xwpe X11 Xvfb smoke),
+# shared across the three BSD provisioners.
+sh contrib/bsd-test/run_tests.sh /tmp/xwpe-src
+exit $?
 
 # To finish the port afterwards, from inside `vagrant ssh`:
 #   cd /tmp/xwpe-src && gmake install        # smoke-test the install

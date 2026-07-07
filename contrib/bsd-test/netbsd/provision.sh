@@ -58,3 +58,10 @@ gmake -j"$(sysctl -n hw.ncpu)" > /tmp/xwpe-build.log 2>&1 || {
 
 echo "=== result ==="
 if [ -x ./we ]; then echo "NETBSD BUILD OK:"; file ./we; else echo "FAILED: no ./we"; exit 1; fi
+
+# Runtime tests, shared across the BSD provisioners.  Xvfb/twm/xdpyinfo come with
+# the X sets installed above; python3 (for the smoke's frame check) is
+# best-effort -- the smoke skips cleanly if it or any tool is missing.
+pkgin -y install python311 || true
+sh contrib/bsd-test/run_tests.sh "/tmp/$SRCTOP"
+exit $?
