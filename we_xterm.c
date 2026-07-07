@@ -880,6 +880,59 @@ static void e_x_refresh_cairo_full(void)
 #endif /* HAVE_CAIRO */
 #endif
 
+#ifndef NO_XWINDOWS
+/* Extract one 8-bit colour channel from an XImage pixel using its bit mask,
+   scaling sub-8-bit masks (e.g. 16bpp 5-6-5) up to full range. */
+static unsigned char wpe_x_chan(unsigned long px, unsigned long mask)
+{
+ if (!mask)
+  return 0;
+ while (!(mask & 1UL)) { px >>= 1; mask >>= 1; }
+ px &= mask;
+ while (mask < 0xffUL) { px = (px << 1) | (px >> 4); mask = (mask << 1) | 1UL; }
+ while (mask > 0xffUL) { px >>= 1; mask >>= 1; }
+ return (unsigned char)(px & 0xffUL);
+}
+
+/* Headless screenshot: dump the on-screen window as a binary PPM, the X11
+   analogue of the Wayland XWPE_WL_DUMP path, so an X11 build can be verified
+   under Xvfb with no real screen and no external screenshot tool.  We grab the
+   window (not the back-buffer Pixmap): a Pixmap carries no visual, so XGetImage
+   leaves its RGB masks zero and every pixel decodes to black.  Written to a temp
+   file and renamed atomically by the caller. */
+static int wpe_x_dump_ppm(const char *path)
+{
+ int w = WpeXInfo.font_width * MAXSCOL;
+ int h = WpeXInfo.font_height * MAXSLNS;
+ XImage *img;
+ FILE *fp;
+ int x, y;
+
+ if (w <= 0 || h <= 0 || !WpeXInfo.window)
+  return -1;
+ img = XGetImage(WpeXInfo.display, WpeXInfo.window, 0, 0, w, h,
+                 AllPlanes, ZPixmap);
+ if (!img)
+  return -1;
+ fp = fopen(path, "wb");
+ if (!fp) { XDestroyImage(img); return -1; }
+ fprintf(fp, "P6\n%d %d\n255\n", w, h);
+ for (y = 0; y < h; y++)
+  for (x = 0; x < w; x++)
+  {
+   unsigned long px = XGetPixel(img, x, y);
+   unsigned char rgb[3];
+   rgb[0] = wpe_x_chan(px, img->red_mask);
+   rgb[1] = wpe_x_chan(px, img->green_mask);
+   rgb[2] = wpe_x_chan(px, img->blue_mask);
+   fwrite(rgb, 1, 3, fp);
+  }
+ fclose(fp);
+ XDestroyImage(img);
+ return 0;
+}
+#endif /* NO_XWINDOWS */
+
 int e_x_refresh()
 {
    int i, j, cur_tmp = cur_on;
@@ -980,6 +1033,22 @@ int e_x_refresh()
    if (WpeRender.flush_all)
     WpeRender.flush_all();
    XFlush(WpeXInfo.display);
+#ifndef NO_XWINDOWS
+   {
+    /* Mirror each painted frame to XWPE_X_DUMP (a PPM), like the Wayland dump,
+       for headless X11 verification under Xvfb. */
+    static const char *dump_path;
+    static int dump_read;
+    if (!dump_read) { dump_path = getenv("XWPE_X_DUMP"); dump_read = 1; }
+    if (dump_path && *dump_path && WpeXInfo.window)
+    {
+     char tmp[1024];
+     snprintf(tmp, sizeof tmp, "%s.tmp", dump_path);
+     if (wpe_x_dump_ppm(tmp) == 0)
+      rename(tmp, dump_path);
+    }
+   }
+#endif
    return(0);
 }
 
