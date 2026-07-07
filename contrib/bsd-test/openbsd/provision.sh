@@ -56,7 +56,10 @@ echo "=== autoreconf + configure (full build: wpe + xwpe; --without-gpm) ==="
 # mouse daemon and does not exist on OpenBSD. The ncurses console mouse (xterm
 # reporting, used by 'wpe') is unaffected by this.
 autoreconf -fi
-./configure --without-gpm
+# --disable-dependency-tracking: config.status would bootstrap the automake
+# .deps fragments with the default (BSD) make, which chokes on GNU-make syntax;
+# we build with gmake below, so skip that bootstrap.
+./configure --without-gpm --disable-dependency-tracking
 
 echo "=== build (full log -> /tmp/xwpe-build.log) ==="
 gmake -j"$(sysctl -n hw.ncpu)" > /tmp/xwpe-build.log 2>&1 || {

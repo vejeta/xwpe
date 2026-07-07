@@ -10,7 +10,13 @@ AUTOMAKE_OPTIONS = foreign
 # checksum. Pin every embedded timestamp to the last commit. A value already
 # set in the environment still takes precedence.
 SOURCE_DATE_EPOCH ?= $(shell git -C '$(top_srcdir)' log -1 --format=%ct 2>/dev/null)
-export SOURCE_DATE_EPOCH
+# Export it ONLY when it is a real value.  Building from a release/archive tarball
+# there is no .git, so the git command yields an EMPTY string; exporting
+# SOURCE_DATE_EPOCH='' makes clang/gcc reject the build ("must be a non-negative
+# decimal integer").  Packager builds (rpm, dpkg) set a valid value in the
+# environment, which the ?= above keeps.  (A GNU-make $(if)/$(eval) one-liner,
+# not an ifeq/endif block -- automake reserves `endif` for its own conditionals.)
+$(if $(strip $(SOURCE_DATE_EPOCH)),$(eval export SOURCE_DATE_EPOCH))
 
 # automake honours SOURCE_DATE_EPOCH for mdate-sh and zeroes the gzip header,
 # but it does not pin the per-file mtimes in the dist tar; normalise them here

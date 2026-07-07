@@ -43,7 +43,10 @@ echo "=== autoreconf + configure (full build: wpe + xwpe; --without-gpm) ==="
 # --without-gpm only: GPM is the Linux raw-console mouse daemon, absent on the
 # BSDs. The ncurses console mouse (xterm reporting, used by 'wpe') is unaffected.
 autoreconf -fi
-./configure --without-gpm
+# --disable-dependency-tracking: config.status would bootstrap the automake
+# .deps fragments with the default (BSD) make, which chokes on GNU-make syntax;
+# we build with gmake below, so skip that bootstrap.
+./configure --without-gpm --disable-dependency-tracking
 
 echo "=== build (full log -> /tmp/xwpe-build.log) ==="
 gmake -j"$(sysctl -n hw.ncpu)" > /tmp/xwpe-build.log 2>&1 || {

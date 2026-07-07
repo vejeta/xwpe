@@ -31,7 +31,12 @@ cd /tmp/xwpe-src
 
 echo "=== autoreconf + configure (--without-gpm: GPM is Linux-only) ==="
 autoreconf -fi
-./configure --without-gpm
+# --disable-dependency-tracking: config.status bootstraps the automake .deps
+# fragments by running the DEFAULT make, which on the BSDs is BSD make -- it
+# chokes on the GNU-make dependency syntax ("Something went wrong bootstrapping
+# makefile fragments").  We build with gmake below; disabling dep-tracking skips
+# that bootstrap entirely (fine for a one-shot from-scratch build).
+./configure --without-gpm --disable-dependency-tracking
 
 echo "=== build ==="
 echo "=== build (full log -> /tmp/xwpe-build.log) ==="

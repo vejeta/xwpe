@@ -8,12 +8,26 @@ developer/maintainer tooling (like `tests/x11/`), not part of a normal build.
 ## What it checks
 
 1. **Build + link.** Each `provision.sh` installs the deps with the platform's
-   package manager, fetches the latest `main` from Codeberg, runs
-   `autoreconf -fi && ./configure --without-gpm && make`, and reports the
-   resulting `./we` ELF. It exercises the BSD portability that lives in
-   `configure.ac` (libexecinfo for `backtrace()`; base `curses` / `ncurses.pc`
-   fallback; `-std` flag detection; the `vterm03` pkgsrc module name) plus the
-   `<sys/ioctl.h>` include — all no-ops on Linux.
+   package manager, fetches the latest `main` archive from Codeberg, runs
+   `autoreconf -fi && ./configure --without-gpm --disable-dependency-tracking`
+   and builds with **gmake** (`gmake -j$(ncpu)`), then reports the resulting
+   `./we` ELF. It exercises the BSD portability that lives in `configure.ac`
+   (libexecinfo for `backtrace()`; base `curses` / `ncurses.pc` fallback; `-std`
+   flag detection; the `vterm03` pkgsrc module name) plus the `<sys/ioctl.h>`
+   include — all no-ops on Linux.
+
+   Two BSD-only build gotchas the harness handles (both are why a plain
+   `./configure && make` from a tarball fails on the BSDs but not on Linux):
+   - **`--disable-dependency-tracking`.** `config.status` bootstraps the automake
+     `.deps` fragments by running the *default* make, which on the BSDs is BSD
+     make; it chokes on the GNU-make dependency syntax ("Something went wrong
+     bootstrapping makefile fragments"). We build with `gmake`, so the harness
+     disables dep-tracking to skip that bootstrap. (Alternatively
+     `MAKE=gmake ./configure`.)
+   - **`SOURCE_DATE_EPOCH` must not be empty.** Building from the archive/release
+     tarball there is no `.git`, so `Makefile.am`'s git-timestamp lookup is empty;
+     a modern clang/gcc rejects an empty `SOURCE_DATE_EPOCH`. Fixed upstream
+     (exported only when non-empty); packager builds set it in the environment.
 
 2. **Console mouse.** `sgr_mouse_probe.c` is a tiny `forkpty()` harness: it
    launches the real `wpe` under a pty, injects an SGR (1006) mouse click on the

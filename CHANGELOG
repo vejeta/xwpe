@@ -233,6 +233,16 @@ Changes
 
 1.6.9 (native Wayland real-desktop robustness: resize, decorations, crashes)
 
+* Fix building from the release tarball with a modern clang/gcc.  Since the 1.6.7
+  reproducibility work, Makefile.am exported SOURCE_DATE_EPOCH even when it was
+  empty (a from-tarball tree has no .git, so the git-timestamp lookup yields ""),
+  and clang/gcc reject an empty SOURCE_DATE_EPOCH ("must be a non-negative decimal
+  integer").  Now it is exported only when non-empty, so a plain
+  "./configure && make" from the tarball works; packager builds (rpm, dpkg) that
+  set a valid value in the environment, and the reproducible "make dist", are
+  unaffected.  (Debian/Fedora never hit it because their build tools set the
+  variable; it bit the BSD ports, which build from the archive tarball.)
+
 * Fix the Messages window drifting out of place after a big shrink-then-grow of
   the main window (it ended up a row below the editor, or off-screen entirely in
   a small grid -- worst in the ncurses build, where it vanished).  On resize the
