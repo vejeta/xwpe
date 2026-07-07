@@ -38,6 +38,7 @@
 #include <stdint.h>
 
 #include <poll.h>
+#include <wayland-cursor.h>
 #include "edit.h"            /* SCREENCELL, schirm/altschirm, MAXSCOL/MAXSLNS,
                                 e_gt_char/e_gt_col, the ATTR_ and CELL_ macros
                                 (unixmakr.h), the e_u_ and fk_u_ function-pointer
@@ -696,12 +697,61 @@ static int wl_btn_bit(uint32_t button)
  return 0;
 }
 
+/* Pointer cursor.  A client must set its own cursor whenever the pointer enters
+   its surface; if it does not, the compositor keeps whatever it last showed --
+   so the resize cursor from the decoration border leaks into the edit area.
+   xwpe uses a plain arrow over the whole window, matching the X11 backend
+   (WpeEditingShape = XC_top_left_arrow). */
+static struct wl_cursor_theme *g_cursor_theme;
+static struct wl_cursor       *g_cursor;
+static struct wl_surface      *g_cursor_surface;
+
+static void wl_cursor_init(void)
+{
+ const char *env;
+ int size = 24;
+
+ if (g_cursor_theme || !WpeWl.shm)
+  return;
+ env = getenv("XCURSOR_SIZE");
+ if (env && atoi(env) > 0)
+  size = atoi(env);
+ g_cursor_theme = wl_cursor_theme_load(getenv("XCURSOR_THEME"), size, WpeWl.shm);
+ if (!g_cursor_theme)
+  return;
+ g_cursor = wl_cursor_theme_get_cursor(g_cursor_theme, "left_ptr");
+ if (!g_cursor)
+  g_cursor = wl_cursor_theme_get_cursor(g_cursor_theme, "default");
+ if (WpeWl.compositor)
+  g_cursor_surface = wl_compositor_create_surface(WpeWl.compositor);
+}
+
+/* Point the seat at our arrow cursor for this enter serial. */
+static void wl_cursor_apply(uint32_t serial)
+{
+ struct wl_cursor_image *img;
+ struct wl_buffer *buf;
+
+ if (!WpeWl.pointer || !g_cursor || !g_cursor_surface)
+  return;
+ img = g_cursor->images[0];
+ buf = wl_cursor_image_get_buffer(img);
+ if (!buf)
+  return;
+ wl_pointer_set_cursor(WpeWl.pointer, serial, g_cursor_surface,
+                       img->hotspot_x, img->hotspot_y);
+ wl_surface_attach(g_cursor_surface, buf, 0, 0);
+ wl_surface_damage(g_cursor_surface, 0, 0, img->width, img->height);
+ wl_surface_commit(g_cursor_surface);
+}
+
 static void ptr_enter(void *data, struct wl_pointer *p, uint32_t serial,
                       struct wl_surface *surface, wl_fixed_t sx, wl_fixed_t sy)
 {
- (void)data; (void)p; (void)serial; (void)surface;
+ (void)data; (void)p; (void)surface;
  g_ptr_px = wl_fixed_to_int(sx);
  g_ptr_py = wl_fixed_to_int(sy);
+ wl_cursor_apply(serial);
 }
 static void ptr_leave(void *data, struct wl_pointer *p, uint32_t serial,
                       struct wl_surface *surface)
@@ -795,6 +845,7 @@ static void seat_caps(void *data, struct wl_seat *seat, uint32_t caps)
  {
   WpeWl.pointer = wl_seat_get_pointer(seat);
   wl_pointer_add_listener(WpeWl.pointer, &ptr_listener, NULL);
+  wl_cursor_init();               /* so ptr_enter can set our own arrow cursor */
  }
  else if (!(caps & WL_SEAT_CAPABILITY_POINTER) && WpeWl.pointer)
  {
@@ -1220,6 +1271,8 @@ static void wl_teardown(void)
  if (WpeWl.ddm)        wl_data_device_manager_destroy(WpeWl.ddm);
  free(g_clip_text); g_clip_text = NULL; g_clip_len = 0; g_clip_we_own = 0;
  g_pclip_we_own = 0;
+ if (g_cursor_surface) { wl_surface_destroy(g_cursor_surface); g_cursor_surface = NULL; }
+ if (g_cursor_theme)   { wl_cursor_theme_destroy(g_cursor_theme); g_cursor_theme = NULL; g_cursor = NULL; }
  if (WpeWl.keyboard)   wl_keyboard_release(WpeWl.keyboard);
  if (WpeWl.pointer)    wl_pointer_release(WpeWl.pointer);
  if (WpeWl.buffer)        wl_buffer_destroy(WpeWl.buffer);

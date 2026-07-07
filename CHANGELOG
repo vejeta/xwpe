@@ -265,6 +265,13 @@ Changes
   its windows -- the same handling as the X11 ConfigureNotify and the ncurses
   SIGWINCH paths.
 
+* Wayland: the pointer now shows xwpe's own arrow cursor over the window.  A
+  Wayland client must set its cursor whenever the pointer enters its surface; as
+  xwpe set none, the compositor kept whatever it last showed -- so the resize
+  cursor from the window's decoration border stayed visible inside the edit area.
+  xwpe now loads the cursor theme and sets a plain arrow on pointer-enter,
+  matching the X11 backend (WpeEditingShape).
+
 * Wayland: fix a crash (SIGSEGV) when dragging a scrollbar thumb under the
   native Wayland backend.  The fluid scrollbar drag called XGrabPointer and ran
   the X11 event loop directly; with no X display in a native Wayland session
