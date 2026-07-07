@@ -241,6 +241,47 @@ static const struct xdg_wm_base_listener wm_base_listener = { wm_base_ping };
 
 static void e_w_render_dirty_cells(int force);   /* full repaint after a realloc */
 
+/* wl_resize_grid - re-fit the cell grid to a new window pixel size and re-lay-out
+   the editor, the Wayland mirror of X11's ConfigureNotify handler (we_xterm.c)
+   and the ncurses KEY_RESIZE handler (we_term.c).  The compositor drives the
+   size, so cols/rows are derived from it.  e_repaint_desk (WpeIsXwin) reallocates
+   the grid and the wl_shm buffer through e_w_ini_size, then repaints; without
+   this a shrink would leave MAXSCOL/MAXSLNS too large and paint past the smaller
+   buffer.  A minimum grid keeps the editor usable and the buffer sane. */
+static void wl_resize_grid(int pixel_w, int pixel_h)
+{
+ int old_scol = MAXSCOL, old_slns = MAXSLNS;
+ int cols, rows;
+
+ if (WpeRender.font_width <= 0 || WpeRender.font_height <= 0)
+  return;
+ cols = pixel_w / WpeRender.font_width;
+ rows = pixel_h / WpeRender.font_height;
+ if (cols < 30) cols = 30;
+ if (rows < 6)  rows = 6;
+
+ if (cols == old_scol && rows == old_slns)
+ {
+  /* Grid unchanged: this is the first map, or a re-map/focus configure that
+     only dropped the buffer -- NOT a resize.  Do not disturb the window layout
+     (a full e_relayout_windows/e_repaint_desk here resets scroll state); just
+     make sure a buffer exists at the current size and repaint the cells. */
+  if (!WpeWl.pixels
+      && wl_alloc_buffer(WpeRender.font_width * MAXSCOL,
+                         WpeRender.font_height * MAXSLNS) == 0
+      && WpeRender.resize)
+   WpeRender.resize(WpeWl.width, WpeWl.height);
+  e_w_render_dirty_cells(1);
+  return;
+ }
+ /* A real resize: re-fit the grid and re-lay-out the windows. */
+ MAXSCOL = cols;
+ MAXSLNS = rows;
+ e_relayout_windows(WpeEditor, old_scol, old_slns);
+ e_free_all_pics(WpeEditor);
+ e_repaint_desk(WpeEditor->f[WpeEditor->mxedt]);
+}
+
 /* xdg_surface.configure: the compositor is ready for content.  Acknowledge,
    (re)allocate the buffer if needed, paint, attach and commit.  This is also
    the standard place to perform the very first paint. */
@@ -251,18 +292,25 @@ static void xdg_surface_configure(void *data, struct xdg_surface *xs, uint32_t s
 
  if (!WpeWl.pixels)
  {
-  if (wl_alloc_buffer(WpeWl.width, WpeWl.height) < 0)
-   return;
-  /* wl_alloc_buffer munmapped the old pixels and mapped a fresh buffer at a new
-     address (this path runs after xdg_toplevel_configure drops the buffer on a
-     size change).  Re-point the Cairo image surface at the new memory, or the
-     next paint fills through a dangling pointer into freed memory -- a crash.
-     The fresh buffer is blank, so if the cell renderer is up, force a full
-     repaint to restore the editor's content. */
-  if (WpeRender.resize)
-   WpeRender.resize(WpeWl.width, WpeWl.height);
+  /* This path runs after xdg_toplevel_configure drops the buffer on a size
+     change.  Once the editor is running a size change is a real resize: re-fit
+     the grid and re-lay-out the windows (e_repaint_desk reallocates the buffer
+     via e_w_ini_size and re-points Cairo).  Before the editor is up it is just
+     the first map -- allocate a buffer at the requested size and re-point Cairo,
+     or the next paint fills through a dangling pointer into freed memory. */
   if (WpeRender.draw_text)
-   e_w_render_dirty_cells(1);
+  {
+   wl_resize_grid(WpeWl.width, WpeWl.height);
+   if (!WpeWl.pixels && wl_alloc_buffer(WpeWl.width, WpeWl.height) < 0)
+    return;
+  }
+  else
+  {
+   if (wl_alloc_buffer(WpeWl.width, WpeWl.height) < 0)
+    return;
+   if (WpeRender.resize)
+    WpeRender.resize(WpeWl.width, WpeWl.height);
+  }
  }
  /* Only flat-fill as a bring-up splash BEFORE the cell renderer is installed.
     Once it is, the buffer holds the editor's rendered cells and a configure
@@ -356,6 +404,11 @@ static void registry_global(void *data, struct wl_registry *reg, uint32_t name,
  {
   WpeWl.psm = wl_registry_bind(reg, name,
                  &zwp_primary_selection_device_manager_v1_interface, 1);
+ }
+ else if (!strcmp(iface, zxdg_decoration_manager_v1_interface.name))
+ {
+  WpeWl.deco_manager = wl_registry_bind(reg, name,
+                 &zxdg_decoration_manager_v1_interface, 1);
  }
 }
 static void registry_global_remove(void *data, struct wl_registry *reg, uint32_t name)
@@ -1137,6 +1190,18 @@ static void wl_create_window(void)
  xdg_toplevel_add_listener(WpeWl.xdg_toplevel, &xdg_toplevel_listener, NULL);
  xdg_toplevel_set_title(WpeWl.xdg_toplevel, "xwpe");
  xdg_toplevel_set_app_id(WpeWl.xdg_toplevel, "io.codeberg.mendezr.xwpe");
+
+ /* Ask the compositor to draw the window frame (title bar + resize borders).
+    xwpe paints no client-side decoration, so without this the toplevel is
+    borderless and there is nothing for the user to grab to move or resize it. */
+ if (WpeWl.deco_manager)
+ {
+  WpeWl.toplevel_deco = zxdg_decoration_manager_v1_get_toplevel_decoration(
+    WpeWl.deco_manager, WpeWl.xdg_toplevel);
+  zxdg_toplevel_decoration_v1_set_mode(WpeWl.toplevel_deco,
+    ZXDG_TOPLEVEL_DECORATION_V1_MODE_SERVER_SIDE);
+ }
+
  wl_surface_commit(WpeWl.surface);
 }
 
@@ -1160,6 +1225,8 @@ static void wl_teardown(void)
  if (WpeWl.buffer)        wl_buffer_destroy(WpeWl.buffer);
  if (WpeWl.pixels && WpeWl.pixels != MAP_FAILED) munmap(WpeWl.pixels, WpeWl.shm_size);
  if (WpeWl.shm_fd >= 0)   close(WpeWl.shm_fd);
+ if (WpeWl.toplevel_deco) zxdg_toplevel_decoration_v1_destroy(WpeWl.toplevel_deco);
+ if (WpeWl.deco_manager)  zxdg_decoration_manager_v1_destroy(WpeWl.deco_manager);
  if (WpeWl.xdg_toplevel)  xdg_toplevel_destroy(WpeWl.xdg_toplevel);
  if (WpeWl.xdg_surface)   xdg_surface_destroy(WpeWl.xdg_surface);
  if (WpeWl.surface)       wl_surface_destroy(WpeWl.surface);

@@ -18,6 +18,7 @@
 #include <xkbcommon/xkbcommon.h>
 #include "xdg-shell-client-protocol.h"
 #include "primary-selection-unstable-v1-client-protocol.h"
+#include "xdg-decoration-unstable-v1-client-protocol.h"
 
 typedef struct WpeWlInfo {
  /* Connection + globals (bound from the registry). */
@@ -33,6 +34,12 @@ typedef struct WpeWlInfo {
  struct wl_surface   *surface;
  struct xdg_surface  *xdg_surface;
  struct xdg_toplevel *xdg_toplevel;
+
+ /* Server-side decorations (compositor-drawn title bar + resize borders), when
+    the compositor offers xdg-decoration.  Without it the toplevel is undecorated
+    and the user has no edge to grab. */
+ struct zxdg_decoration_manager_v1    *deco_manager;
+ struct zxdg_toplevel_decoration_v1   *toplevel_deco;
 
  /* Single shared-memory frame buffer (XRGB8888). */
  struct wl_buffer *buffer;

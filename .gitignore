@@ -70,6 +70,8 @@ xdg-shell-client-protocol.h
 xdg-shell-protocol.c
 primary-selection-unstable-v1-client-protocol.h
 primary-selection-unstable-v1-protocol.c
+xdg-decoration-unstable-v1-client-protocol.h
+xdg-decoration-unstable-v1-protocol.c
 
 # Documentation build artifacts
 docs/xwpe.info

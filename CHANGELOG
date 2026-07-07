@@ -256,6 +256,15 @@ Changes
   draw_acs), so it is crisp and monochrome at any font size; ncurses still draws
   the emoji through the terminal, which sizes it correctly.
 
+* Wayland: the window is now decorated and resizable.  A bare xdg_toplevel has
+  no frame, so the native-Wayland window had no title bar or borders and nothing
+  to grab -- and even if resized it would have crashed, because the grid stayed
+  at the old size and a shrink painted past the smaller buffer.  xwpe now asks
+  the compositor to draw the frame (xdg-decoration, server-side mode) and, on
+  every size change, re-fits the cell grid to the new window size and re-lays-out
+  its windows -- the same handling as the X11 ConfigureNotify and the ncurses
+  SIGWINCH paths.
+
 * Wayland: fix a crash (SIGSEGV) when dragging a scrollbar thumb under the
   native Wayland backend.  The fluid scrollbar drag called XGrabPointer and ran
   the X11 event loop directly; with no X display in a native Wayland session

@@ -100,12 +100,16 @@ we_LDADD = \
 # conditional, so automake still distributes them when the backend is off.
 if HAVE_WAYLAND
 we_SOURCES += we_wayland.c we_render_wayland.c
-nodist_we_SOURCES = xdg-shell-protocol.c primary-selection-unstable-v1-protocol.c
+nodist_we_SOURCES = xdg-shell-protocol.c primary-selection-unstable-v1-protocol.c \
+  xdg-decoration-unstable-v1-protocol.c
 BUILT_SOURCES = xdg-shell-client-protocol.h \
-  primary-selection-unstable-v1-client-protocol.h
+  primary-selection-unstable-v1-client-protocol.h \
+  xdg-decoration-unstable-v1-client-protocol.h
 CLEANFILES = xdg-shell-client-protocol.h xdg-shell-protocol.c \
   primary-selection-unstable-v1-client-protocol.h \
-  primary-selection-unstable-v1-protocol.c
+  primary-selection-unstable-v1-protocol.c \
+  xdg-decoration-unstable-v1-client-protocol.h \
+  xdg-decoration-unstable-v1-protocol.c
 AM_CFLAGS += $(WAYLAND_CFLAGS)
 we_LDADD += $(WAYLAND_LIBS)
 
@@ -125,11 +129,21 @@ primary-selection-unstable-v1-protocol.c:
 	$(WAYLAND_SCANNER) private-code \
 	  $(WAYLAND_PROTOCOLS_DIR)/unstable/primary-selection/primary-selection-unstable-v1.xml $@
 
+# Server-side decorations (title bar + resize borders): xwpe asks the compositor
+# to draw the window frame via xdg-decoration.  Same wayland-scanner generation.
+xdg-decoration-unstable-v1-client-protocol.h:
+	$(WAYLAND_SCANNER) client-header \
+	  $(WAYLAND_PROTOCOLS_DIR)/unstable/xdg-decoration/xdg-decoration-unstable-v1.xml $@
+xdg-decoration-unstable-v1-protocol.c:
+	$(WAYLAND_SCANNER) private-code \
+	  $(WAYLAND_PROTOCOLS_DIR)/unstable/xdg-decoration/xdg-decoration-unstable-v1.xml $@
+
 # BUILT_SOURCES only fires for the default `all` target; this explicit
 # dependency guarantees the generated client headers exist before we_wayland.c
 # is compiled even for `make we` or a parallel `make -j`.
 we_wayland.$(OBJEXT): xdg-shell-client-protocol.h \
-  primary-selection-unstable-v1-client-protocol.h
+  primary-selection-unstable-v1-client-protocol.h \
+  xdg-decoration-unstable-v1-client-protocol.h
 endif
 
 # --- Header files (for dist) ---
