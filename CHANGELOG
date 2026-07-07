@@ -231,7 +231,7 @@ Bugs fixed in 1.6.x:
 
 Changes
 
-1.6.9 (unreleased)
+1.6.9 (native Wayland real-desktop robustness: resize, decorations, crashes)
 
 * Fix the Messages window drifting out of place after a big shrink-then-grow of
   the main window (it ended up a row below the editor, or off-screen entirely in
