@@ -34,6 +34,8 @@
 #include <errno.h>
 #include <limits.h>
 #include <sys/mman.h>
+#include <sys/timerfd.h>
+#include <stdint.h>
 
 #include <poll.h>
 #include "edit.h"            /* SCREENCELL, schirm/altschirm, MAXSCOL/MAXSLNS,
@@ -507,6 +509,49 @@ static void wl_active_mods(int *ctrl, int *shift, int *alt)
             WpeWl.xkb_state, XKB_MOD_NAME_ALT,   XKB_STATE_MODS_EFFECTIVE) > 0;
 }
 
+/* Key auto-repeat.  Wayland sends ONE press and ONE release per key and leaves
+   repeating a held key to the client, using the compositor's repeat_info
+   (rate = keys/second, delay = ms before the first repeat).  We drive it with a
+   timerfd in the shared fd-loop: on the press of a repeatable key we arm the
+   timer (delay, then 1000/rate interval); each expiry re-injects the key; the
+   release (or a different key, or losing focus) disarms it. */
+static int g_repeat_fd    = -1;
+static int g_repeat_code  = 0;      /* xwpe key code currently repeating         */
+static int g_repeat_rate  = 25;     /* keys/second (0 = repeat disabled)         */
+static int g_repeat_delay = 600;    /* ms before the first repeat                */
+
+static void wl_repeat_disarm(void)
+{
+ struct itimerspec its;
+ if (g_repeat_fd < 0)
+  return;
+ memset(&its, 0, sizeof its);       /* all-zero = disarm the timer */
+ timerfd_settime(g_repeat_fd, 0, &its, NULL);
+}
+
+static void wl_repeat_arm(int xwc)
+{
+ struct itimerspec its;
+ if (g_repeat_fd < 0 || g_repeat_rate <= 0)
+  return;
+ g_repeat_code = xwc;
+ its.it_value.tv_sec     = g_repeat_delay / 1000;
+ its.it_value.tv_nsec    = (long)(g_repeat_delay % 1000) * 1000000L;
+ its.it_interval.tv_sec  = 0;
+ its.it_interval.tv_nsec = 1000000000L / g_repeat_rate;
+ timerfd_settime(g_repeat_fd, 0, &its, NULL);
+}
+
+/* fd-loop callback: the repeat timer fired -- re-inject the held key. */
+static void wl_repeat_fire(int fd, void *data)
+{
+ uint64_t expirations;
+ (void)data;
+ if (read(fd, &expirations, sizeof expirations) != (ssize_t)sizeof expirations)
+  return;
+ wl_key_push(g_repeat_code);
+}
+
 static void kbd_keymap(void *data, struct wl_keyboard *kbd, uint32_t format,
                        int fd, uint32_t size)
 {
@@ -533,7 +578,8 @@ static void kbd_enter(void *data, struct wl_keyboard *kbd, uint32_t serial,
 
 static void kbd_leave(void *data, struct wl_keyboard *kbd, uint32_t serial,
                       struct wl_surface *surface)
-{ (void)data; (void)kbd; (void)serial; (void)surface; WpeWl.kbd_focus = 0; }
+{ (void)data; (void)kbd; (void)serial; (void)surface; WpeWl.kbd_focus = 0;
+  wl_repeat_disarm(); }   /* focus lost: no key is held here any more */
 
 static void kbd_key(void *data, struct wl_keyboard *kbd, uint32_t serial,
                     uint32_t time, uint32_t key, uint32_t state)
@@ -545,7 +591,12 @@ static void kbd_key(void *data, struct wl_keyboard *kbd, uint32_t serial,
 
  (void)data; (void)kbd; (void)time;
  WpeWl.last_serial = serial;     /* freshest serial for set_selection */
- if (state != WL_KEYBOARD_KEY_STATE_PRESSED || !WpeWl.xkb_state)
+ if (state != WL_KEYBOARD_KEY_STATE_PRESSED)
+ {
+  wl_repeat_disarm();            /* key released: stop auto-repeat */
+  return;
+ }
+ if (!WpeWl.xkb_state)
   return;
  sym = xkb_state_key_get_one_sym(WpeWl.xkb_state, code);
  u8len = xkb_state_key_get_utf8(WpeWl.xkb_state, code, u8, sizeof u8);
@@ -555,6 +606,12 @@ static void kbd_key(void *data, struct wl_keyboard *kbd, uint32_t serial,
   WPE_TRACE("wayland", "kbd_key sym=0x%x u8len=%d ctrl=%d shift=%d alt=%d -> %d\n",
             (unsigned)sym, u8len, ctrl, shift, alt, xwc);
   wl_key_push(xwc);
+  /* Hold-to-repeat: arm for keys xkb marks repeatable (arrows, letters, ...),
+     never for modifiers/locks.  A new repeatable key replaces the previous. */
+  if (xwc && WpeWl.xkb_keymap && xkb_keymap_key_repeats(WpeWl.xkb_keymap, code))
+   wl_repeat_arm(xwc);
+  else
+   wl_repeat_disarm();
  }
 }
 
@@ -567,7 +624,11 @@ static void kbd_modifiers(void *data, struct wl_keyboard *kbd, uint32_t serial,
 }
 
 static void kbd_repeat_info(void *data, struct wl_keyboard *kbd, int32_t rate, int32_t delay)
-{ (void)data; (void)kbd; (void)rate; (void)delay; }
+{
+ (void)data; (void)kbd;
+ g_repeat_rate  = rate;    /* keys/second; 0 = the compositor asks for no repeat */
+ g_repeat_delay = delay;   /* ms before the first repeat */
+}
 
 static const struct wl_keyboard_listener kbd_listener = {
  kbd_keymap, kbd_enter, kbd_leave, kbd_key, kbd_modifiers, kbd_repeat_info
@@ -665,6 +726,12 @@ static void seat_caps(void *data, struct wl_seat *seat, uint32_t caps)
  {
   WpeWl.keyboard = wl_seat_get_keyboard(seat);
   wl_keyboard_add_listener(WpeWl.keyboard, &kbd_listener, NULL);
+  if (g_repeat_fd < 0)   /* one key-repeat timer, driven by the shared fd-loop */
+  {
+   g_repeat_fd = timerfd_create(CLOCK_MONOTONIC, TFD_CLOEXEC | TFD_NONBLOCK);
+   if (g_repeat_fd >= 0)
+    wpe_fd_add(g_repeat_fd, POLLIN, wl_repeat_fire, NULL);
+  }
  }
  else if (!(caps & WL_SEAT_CAPABILITY_KEYBOARD) && WpeWl.keyboard)
  {

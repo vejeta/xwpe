@@ -233,6 +233,12 @@ Changes
 
 1.6.9 (unreleased)
 
+* Wayland: held keys now auto-repeat.  Wayland sends one press and one release
+  per key and leaves repeating a held key to the client; xwpe now drives it from
+  the compositor's repeat_info (rate/delay) with a timerfd in the fd-loop, so
+  holding an arrow -- or any key xkb marks repeatable -- advances continuously,
+  as it already did under X11 and ncurses.
+
 * Show Buffer (Alt-Y): the clipboard viewer is now a read-only window -- it wears
   the read-only padlock and ignores typing, paste and copy.  Previously a paste
   or middle click into it was a self-paste (its buffer was both the copy source
