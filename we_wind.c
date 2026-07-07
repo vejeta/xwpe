@@ -647,6 +647,8 @@ static e_win_kind e_win_kind_of(FENSTER *f)
 {
  if (f->ins != 8 || f->dtmd == DTMD_HELP)
   return(WIN_DOCUMENT);
+ if (f->ed && f == f->ed->f[0])   /* the clipboard / Show Buffer viewer: */
+  return(WIN_LOCKED_FILE);        /* read-only, so it wears the padlock */
  if (e_win_backs_file(f))
   return(WIN_LOCKED_FILE);
  if (f->datnam && f->datnam[0])

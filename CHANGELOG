@@ -233,6 +233,15 @@ Changes
 
 1.6.9 (unreleased)
 
+* Show Buffer (Alt-Y): the clipboard viewer is now a read-only window -- it wears
+  the read-only padlock and ignores typing, paste and copy.  Previously a paste
+  or middle click into it was a self-paste (its buffer was both the copy source
+  and the paste destination) that corrupted the heap (double-free / "invalid
+  next size"), and a middle click below its content parked the cursor past the
+  buffer.  Marking it read-only (ins==8) makes every edit a no-op before any
+  side effect, and the copy/paste helpers now bail on a read-only window instead
+  of writing into it.
+
 * Wayland: fix a crash (SIGSEGV) when dragging a scrollbar thumb under the
   native Wayland backend.  The fluid scrollbar drag called XGrabPointer and ran
   the X11 event loop directly; with no X display in a native Wayland session

@@ -146,6 +146,8 @@ int e_show_clipboard(FENSTER *f)
  cn->edt[cn->mxedt]=j;
 
  f = cn->f[cn->mxedt] = cn->f[0];
+ f->ins = 8;   /* the Show Buffer is a read-only viewer: no typing/paste/copy,
+                  and it wears the read-only padlock (see e_win_kind_of) */
 #ifdef PROG
  if (WpeIsProg())
  {
@@ -244,6 +246,12 @@ int e_edt_copy(FENSTER *f)
  e_switch_window(f->ed->edt[i], f);
  f = f->ed->f[f->ed->mxedt];
  b = f->b;  save = f->save;
+ /* Copy is a no-op in a read-only window (the clipboard/Show Buffer viewer).
+    Otherwise b == b0 below and this frees window 0's lines and then copies from
+    the very buffer it just freed -- a use-after-free.  A viewer is not a source
+    to copy FROM into the clipboard; there is nothing to store. */
+ if (f->ins == 8)
+  return(0);
  if ((f->s->mark_end.y < f->s->mark_begin.y) ||
    ((f->s->mark_begin.y == f->s->mark_end.y) &&
      (f->s->mark_end.x <= f->s->mark_begin.x)))
@@ -288,6 +296,15 @@ int e_edt_einf(FENSTER *f)
  BUFFER *b;
  BUFFER *b0 = f->ed->f[0]->b;
  int i,y,len;
+
+ /* A read-only window (the clipboard/Show Buffer viewer, a locked file) rejects
+    paste -- ^V, Shift-Ins, or a middle click -- BEFORE any side effect: pasting
+    into the clipboard viewer is a self-paste that corrupts the heap, and editing
+    a read-only buffer makes no sense.  (The ins==8 check further down runs only
+    after e_clip_pull_os_into_buffer has already rebuilt window 0, so it is too
+    late to guard here.) */
+ if (f->ins == 8)
+  return(0);
 
  e_clip_pull_os_into_buffer(f->ed->f[0]);   /* merge: ^V from the OS clipboard */
 
