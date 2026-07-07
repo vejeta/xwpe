@@ -233,6 +233,15 @@ Changes
 
 1.6.9 (unreleased)
 
+* Wayland: fix a crash (SIGSEGV) when dragging a scrollbar thumb under the
+  native Wayland backend.  The fluid scrollbar drag called XGrabPointer and ran
+  the X11 event loop directly; with no X display in a native Wayland session
+  that dereferenced a null pointer.  The pointer grab and the drag event step
+  are now backend methods (fk_u_grab_pointer / fk_u_drag_next) dispatched
+  through the platform function-pointer table -- X11 keeps XGrabPointer + its
+  event loop, Wayland uses its implicit button grab and pumps wl_pointer events,
+  the terminal has safe no-ops.  Covered by tests/wayland/test_mouse_scroll.py.
+
 * File manager: fix an out-of-bounds read when the horizontal scrollbar of an
   empty directory panel is clicked.  fl_wnd_mouse() measured the highlighted
   entry with strlen(name[nf]) before the empty-list guard ran, so on a

@@ -551,24 +551,6 @@ static void e_scroll_render_h(FENSTER *f, int new_bx)
  e_refresh();
 }
 
-static int e_scroll_drag_next_event(int *px, int *py)
-{
- XEvent ev;
-
- XNextEvent(WpeXInfo.display, &ev);
- if (ev.type == ButtonRelease)
-  return 0;
- if (ev.type != MotionNotify)
-  return -1;
-
- while (XCheckTypedWindowEvent(WpeXInfo.display, WpeXInfo.window,
-        MotionNotify, &ev))
-  ;
- *px = ev.xmotion.x;
- *py = ev.xmotion.y;
- return 1;
-}
-
 static int e_scroll_pixel_to_pos(int px, int track_start, int track_end,
                                  int total, int visible)
 {
@@ -585,14 +567,12 @@ static int e_scroll_pixel_to_pos(int px, int track_start, int track_end,
 static void e_scroll_drag_begin(void)
 {
  wpe_scroll_dragging = 1;
- XGrabPointer(WpeXInfo.display, WpeXInfo.window, False,
-   Button1MotionMask | ButtonReleaseMask,
-   GrabModeAsync, GrabModeAsync, None, None, CurrentTime);
+ fk_u_grab_pointer(1);
 }
 
 static void e_scroll_drag_end(FENSTER *f, int saved_cur_on)
 {
- XUngrabPointer(WpeXInfo.display, CurrentTime);
+ fk_u_grab_pointer(0);
  wpe_scroll_dragging = 0;
  cur_on = saved_cur_on;
  e_scroll_drag_end_cursor(f);
@@ -616,7 +596,7 @@ void e_scroll_drag_h(FENSTER *f)
  for (;;)
  {
   int px, py, new_bx, rc;
-  rc = e_scroll_drag_next_event(&px, &py);
+  rc = fk_u_drag_next(&px, &py);
   if (rc == 0) break;
   if (rc < 0) continue;
 
@@ -650,7 +630,7 @@ static void e_scroll_drag_end_cursor(FENSTER *f)
 
 static void e_scroll_drag_end_h(FENSTER *f, int saved_cur_on)
 {
- XUngrabPointer(WpeXInfo.display, CurrentTime);
+ fk_u_grab_pointer(0);
  wpe_scroll_dragging = 0;
  cur_on = saved_cur_on;
  e_scroll_drag_end_cursor(f);
@@ -674,7 +654,7 @@ void e_scroll_drag_v(FENSTER *f)
  for (;;)
  {
   int px, py, new_by, rc;
-  rc = e_scroll_drag_next_event(&px, &py);
+  rc = fk_u_drag_next(&px, &py);
   if (rc == 0) break;
   if (rc < 0) continue;
 

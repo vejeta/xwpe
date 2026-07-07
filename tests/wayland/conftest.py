@@ -276,6 +276,39 @@ class WaylandSession:
         wait_frame_quiet(self.dump, floor=delay)
         return self
 
+    def drag(self, x1, y1, x2, y2, steps=12, delay=0.6):
+        """Press button 1 at (x1,y1), move to (x2,y2) over `steps`, release.
+
+        Drives the real Wayland pointer path (wl_pointer button PRESS ->
+        motion* -> RELEASE) so the scrollbar-thumb drag (e_scroll_drag_v/h)
+        runs end to end -- the mirror of the X11 suite's drag()."""
+        d = {**os.environ, "DISPLAY": DISPLAY}
+        _xdo("mousemove", "--window", self.wid, str(x1), str(y1), env=d)
+        _sleep(0.15)
+        _xdo("mousedown", "1", env=d)
+        _sleep(0.1)
+        for i in range(1, steps + 1):
+            ix = x1 + (x2 - x1) * i // steps
+            iy = y1 + (y2 - y1) * i // steps
+            _xdo("mousemove", "--window", self.wid, str(ix), str(iy), env=d)
+            _sleep(0.03)
+        _sleep(0.1)
+        _xdo("mouseup", "1", env=d)
+        wait_frame_quiet(self.dump, floor=delay)
+        return self
+
+    def wheel(self, direction, count=3, px=512, py=300, delay=0.4):
+        """Scroll the wheel `count` steps at (px,py). button 4 = up, 5 = down."""
+        d = {**os.environ, "DISPLAY": DISPLAY}
+        _xdo("mousemove", "--window", self.wid, str(px), str(py), env=d)
+        _sleep(0.1)
+        btn = "4" if direction == "up" else "5"
+        for _ in range(count):
+            _xdo("click", btn, env=d)
+            _sleep(0.05)
+        wait_frame_quiet(self.dump, floor=delay)
+        return self
+
     def menu(self, alt_letter, item, delay=0.5):
         """Open a top-level menu (Alt-<letter>) and pick an item by its key."""
         self.key("alt+" + alt_letter, delay=delay)

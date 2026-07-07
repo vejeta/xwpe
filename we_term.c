@@ -54,6 +54,8 @@ int e_find_key(int c, int j, int sw);
 void e_exitm(char *s, int n);
 int fk_t_locate(int x, int y);
 int fk_t_mouse(int *g);
+int fk_t_grab_pointer(int on);
+int fk_t_drag_next(int *px, int *py);
 static int e_t_mouse_decode_button(mmask_t bstate);
 static int e_t_mouse_is_released(mmask_t bstate);
 static int e_t_mouse_apply_event(MEVENT *mev);
@@ -197,6 +199,8 @@ int WpeDllInit(int *argc, char **argv)
  else
 #endif
   fk_mouse = fk_t_mouse;
+ fk_u_grab_pointer = fk_t_grab_pointer;
+ fk_u_drag_next = fk_t_drag_next;
  WpeMouseChangeShape = (void (*)(WpeMouseShape))WpeNullFunction;
  WpeMouseRestoreShape = WpeNullFunction;
  WpeDisplayEnd = e_endwin;
@@ -1647,6 +1651,22 @@ static int e_t_mouse_poll_sgr(void)
   ungetch(b2);
  if (b1 != ERR)
   ungetch(b1);
+ return(0);
+}
+
+/* The terminal backend has no pixel scrollbar, so its thumb-drag primitives are
+   never reached (the fluid-scrollbar hit-tests are graphical-only); provide safe
+   no-ops so the shared drag code never calls through a null pointer under wpe. */
+int fk_t_grab_pointer(int on)
+{
+ (void)on;
+ return(0);
+}
+
+int fk_t_drag_next(int *px, int *py)
+{
+ (void)px;
+ (void)py;
  return(0);
 }
 

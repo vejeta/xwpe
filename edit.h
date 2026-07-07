@@ -754,6 +754,16 @@ extern COLOR (*e_n_u_clr)(int fb);
 extern void (*e_pr_u_col_kasten)(int xa, int ya, int x, 
 					int y, FENSTER *f, int sw);
 extern int (*fk_mouse)(int g[]);
+/* Scrollbar fluid-drag pointer primitives, one implementation per backend
+   (the Kruse function-pointer table).  fk_u_grab_pointer(on): begin (1) / end
+   (0) an exclusive pointer grab for the duration of a scrollbar-thumb drag --
+   X11 uses XGrabPointer, Wayland relies on its implicit button grab (no-op),
+   the terminal has no pixel scrollbar (no-op).  fk_u_drag_next(&px,&py): wait
+   for the next drag event and report the pointer position in PIXELS; returns 1
+   on motion (px,py set), 0 when the button was released (drag done), -1 on an
+   unrelated event (caller skips it). */
+extern int (*fk_u_grab_pointer)(int on);
+extern int (*fk_u_drag_next)(int *px, int *py);
 extern int (*e_u_refresh)(void);
 extern int (*e_u_getch)(void);
 extern int (*e_u_sys_ini)(void);

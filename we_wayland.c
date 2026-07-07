@@ -1447,6 +1447,30 @@ static int fk_w_mouse(int *g)
  return g[1];
 }
 
+/* Wayland has no explicit pointer grab: between a button press and its release
+   the compositor delivers every pointer event to the focused surface (an
+   implicit grab), so a scrollbar drag needs no XGrabPointer equivalent. */
+static int fk_w_grab_pointer(int on)
+{
+ (void)on;
+ return 0;
+}
+
+/* Wayland scrollbar-drag event step, mirroring fk_x_drag_next's contract:
+   block for the next pointer event, then return 0 once the left button is
+   released (drag done), or 1 with the current pointer position (pixels). */
+static int fk_w_drag_next(int *px, int *py)
+{
+ if (!WpeWl.display)
+  return 0;
+ wl_pump_once(1);            /* block in the shared poll until a wl event arrives */
+ if (!(g_ptr_btn & 1))       /* left button no longer held -> drag finished */
+  return 0;
+ *px = g_ptr_px;
+ *py = g_ptr_py;
+ return 1;
+}
+
 static void e_w_display_end(void) { wl_teardown(); }
 
 /* wl_keytest - deterministic, compositor-free check of keysym_to_xwpe (the
@@ -1582,6 +1606,8 @@ int WpeWaylandInit(int *argc, char **argv)
  e_u_system        = e_x_system;
  fk_u_putchar      = fk_x_putchar;
  fk_mouse          = fk_w_mouse;
+ fk_u_grab_pointer = fk_w_grab_pointer;
+ fk_u_drag_next    = fk_w_drag_next;
  e_u_kbhit         = e_w_kbhit;
  e_u_change        = e_w_change;
  e_u_ini_size      = e_w_ini_size;

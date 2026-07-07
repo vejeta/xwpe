@@ -26,6 +26,8 @@ int fk_show_cursor(void);
 int e_ini_size(void);
 int e_x_getch(void);
 int fk_x_mouse(int *g);
+int fk_x_grab_pointer(int on);
+int fk_x_drag_next(int *px, int *py);
 int e_x_refresh(void);
 int fk_x_locate(int x, int y);
 int fk_x_cursor(int x);
@@ -148,6 +150,8 @@ int WpeDllInit(int *argc, char **argv)
  e_u_system = e_x_system;
  fk_u_putchar = fk_x_putchar;
  fk_mouse = fk_x_mouse;
+ fk_u_grab_pointer = fk_x_grab_pointer;
+ fk_u_drag_next = fk_x_drag_next;
  e_u_cp_X_to_buffer = e_x_cp_X_to_buffer;
  e_u_copy_X_buffer = e_x_copy_X_buffer;
  e_u_paste_X_buffer = e_x_paste_X_buffer;
@@ -1818,6 +1822,39 @@ int fk_x_mouse(int *g)
  g[2] = x/WpeXInfo.font_width * 8;
  g[3] = y/WpeXInfo.font_height * 8;
  return(g[1]);
+}
+
+/* X11 scrollbar-drag pointer grab: capture button/motion for the whole drag. */
+int fk_x_grab_pointer(int on)
+{
+ if (on)
+  XGrabPointer(WpeXInfo.display, WpeXInfo.window, False,
+    Button1MotionMask | ButtonReleaseMask,
+    GrabModeAsync, GrabModeAsync, None, None, CurrentTime);
+ else
+  XUngrabPointer(WpeXInfo.display, CurrentTime);
+ return(0);
+}
+
+/* X11 scrollbar-drag event step: 0 on release (done), -1 on an unrelated event,
+   1 on motion with the pointer position (pixels) in *px/*py.  Queued motions are
+   coalesced so the drag tracks the latest position, not every intermediate one. */
+int fk_x_drag_next(int *px, int *py)
+{
+ XEvent ev;
+
+ XNextEvent(WpeXInfo.display, &ev);
+ if (ev.type == ButtonRelease)
+  return(0);
+ if (ev.type != MotionNotify)
+  return(-1);
+
+ while (XCheckTypedWindowEvent(WpeXInfo.display, WpeXInfo.window,
+        MotionNotify, &ev))
+  ;
+ *px = ev.xmotion.x;
+ *py = ev.xmotion.y;
+ return(1);
 }
 
 /* e_clip_x_wait_notify - wait, event-driven, up to ~1s for the SelectionNotify

@@ -109,6 +109,8 @@ COLOR (*e_s_u_clr)(int f, int b);
 COLOR (*e_n_u_clr)(int fb);
 void (*e_pr_u_col_kasten)(int xa, int ya, int x, int y, FENSTER *f, int sw);
 int (*fk_mouse)(int g[]);
+int (*fk_u_grab_pointer)(int on);
+int (*fk_u_drag_next)(int *px, int *py);
 int (*e_u_refresh)(void);
 int (*e_u_getch)(void);
 int (*e_u_sys_ini)(void);
