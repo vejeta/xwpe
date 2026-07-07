@@ -154,6 +154,7 @@ noinst_HEADERS = \
   WeProg.h \
   WeExpArr.h \
   we_render.h \
+  we_render_glyphs.h \
   we_wayland.h \
   we_fdloop.h \
   we_trace.h \
