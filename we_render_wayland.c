@@ -18,6 +18,7 @@
 
 #include <stdlib.h>
 #include <string.h>
+#include <math.h>
 #include <cairo.h>
 #include <pango/pangocairo.h>
 
@@ -173,36 +174,62 @@ static void wr_draw_acs(int sc, int px, int py, int fg_idx, int bg_idx)
  }
 }
 
-/* Read-only padlock, drawn as a vector icon that fills cw cells -- a filled
-   body rectangle with an inverted-U shackle of three thin bars above it, plus a
-   background keyhole notch.  Rectangles only, like wr_draw_acs, so it scales to
-   any cell size and never depends on a colour-emoji font (which renders at its
-   own bitmap size and would show clipped). */
+/* Read-only padlock, drawn as a crisp vector icon that fills cw cells: a rounded
+   body, a stroked inverted-U shackle, and a keyhole punched out of the body.
+   Antialiased Cairo primitives (arcs + round caps), scaled to the cell, so it is
+   sharp and monochrome at any font size and never depends on a colour-emoji font
+   (which renders at its own bitmap size and would show clipped).  KEEP THE
+   GEOMETRY IDENTICAL to cr_draw_lock in we_render_cairo.c so X11 and Wayland
+   render the same lock (the two renderers are deliberately self-contained). */
 static void wr_draw_lock(int px, int py, int cw, int fg_idx, int bg_idx)
 {
- int cell_w = WpeRender.font_width * cw;
- int cell_h = WpeRender.font_height;
- int body_w = cell_w * 6 / 10;
- int body_h = cell_h * 42 / 100;
- int body_x = px + (cell_w - body_w) / 2;
- int body_y = py + cell_h - body_h - cell_h / 10;
- int shk_w  = body_w * 6 / 10;
- int shk_x  = px + (cell_w - shk_w) / 2;
- int shk_y  = py + cell_h * 12 / 100;
- int shk_h  = body_y - shk_y;
- int t      = cell_w > 12 ? 2 : 1;
+ double W  = WpeRender.font_width * cw;
+ double H  = WpeRender.font_height;
+ double bw = W * 0.60;                    /* body width               */
+ double bh = H * 0.42;                    /* body height              */
+ double bx = px + (W - bw) / 2.0;
+ double by = py + H - bh - H * 0.10;      /* body sits in the lower part */
+ double r  = bh * 0.24;                   /* body corner radius       */
+ double sr = bw * 0.30;                   /* shackle radius           */
+ double scx = px + W / 2.0;               /* shackle / keyhole centre */
+ double lw = H * 0.11;                    /* shackle thickness        */
+ double kr = bh * 0.16;                   /* keyhole radius           */
+ double ky = by + bh * 0.40;
 
- wr_draw_rect(px, py, cell_w, cell_h, bg_idx);
+ if (lw < 1.5) lw = 1.5;
+
+ wr_draw_rect(px, py, (int)W, (int)H, bg_idx);
  wr_set_color(fg_idx);
- cairo_rectangle(wcr, body_x, body_y, body_w, body_h);            /* body        */
- cairo_rectangle(wcr, shk_x, shk_y, shk_w, t);                    /* shackle top */
- cairo_rectangle(wcr, shk_x, shk_y, t, shk_h);                    /* shackle left*/
- cairo_rectangle(wcr, shk_x + shk_w - t, shk_y, t, shk_h);        /* shackle rght*/
+
+ /* save/restore so the line width + round cap set for the shackle do not leak
+    into later glyph drawing on the shared Cairo context */
+ cairo_save(wcr);
+
+ /* shackle: an inverted U -- the top half of a circle sitting on the body */
+ cairo_set_line_width(wcr, lw);
+ cairo_set_line_cap(wcr, CAIRO_LINE_CAP_ROUND);
+ cairo_new_path(wcr);
+ cairo_arc(wcr, scx, by, sr, M_PI, 2.0 * M_PI);
+ cairo_stroke(wcr);
+
+ /* body: a rounded rectangle */
+ cairo_new_path(wcr);
+ cairo_arc(wcr, bx + r,      by + r,      r, M_PI,       1.5 * M_PI);
+ cairo_arc(wcr, bx + bw - r, by + r,      r, 1.5 * M_PI, 2.0 * M_PI);
+ cairo_arc(wcr, bx + bw - r, by + bh - r, r, 0.0,        0.5 * M_PI);
+ cairo_arc(wcr, bx + r,      by + bh - r, r, 0.5 * M_PI, M_PI);
+ cairo_close_path(wcr);
  cairo_fill(wcr);
+
+ /* keyhole: a round hole with a short slot, punched in the background colour */
  wr_set_color(bg_idx);
- cairo_rectangle(wcr, px + cell_w / 2 - t, body_y + body_h / 4,   /* keyhole     */
-                 2 * t, body_h / 2);
+ cairo_new_path(wcr);
+ cairo_arc(wcr, scx, ky, kr, 0.0, 2.0 * M_PI);
  cairo_fill(wcr);
+ cairo_rectangle(wcr, scx - kr * 0.55, ky, kr * 1.1, bh * 0.32);
+ cairo_fill(wcr);
+
+ cairo_restore(wcr);
 }
 
 /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - *\
