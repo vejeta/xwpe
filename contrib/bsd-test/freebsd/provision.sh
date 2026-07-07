@@ -23,6 +23,21 @@ pkg upgrade -y
 pkg install -y autoconf automake libtool gmake pkgconf ncurses \
   libX11 libXft cairo pango libvterm json-c texinfo
 
+# FreeBSD's freetype2.pc has "Requires.private: ... bzip2 ...", but base bzip2
+# (libbz2 + bzlib.h are in the base system) ships no bzip2.pc, so pkg-config
+# cannot resolve xft/cairo/pango/fontconfig -> configure reports "Xft: no" and
+# the X11 build degrades. A real port build (poudriere) has this via the ports
+# framework; for this manual VM, drop a minimal bzip2.pc pointing at base libbz2.
+if ! pkg-config --exists bzip2 2>/dev/null; then
+  cat > /usr/local/libdata/pkgconfig/bzip2.pc <<'PC'
+Name: bzip2
+Description: bzip2 compression library (base system)
+Version: 1.0.8
+Libs: -lbz2
+Cflags:
+PC
+fi
+
 echo "=== fetching main archive (${ARCHIVE}) ==="
 rm -rf /tmp/xwpe-src && mkdir -p /tmp/xwpe-src
 fetch -o /tmp/xwpe-main.tar.gz "$ARCHIVE"

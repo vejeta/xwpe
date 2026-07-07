@@ -1264,13 +1264,18 @@ int e_d_getchar()
      break;
     }
    }
+#ifdef HAVE_XFT
    else if (_ev.type == Expose)
    {
+    /* Repaint the exposed area from the Xft/Cairo double buffer.  backbuf only
+       exists in the HAVE_XFT build; without it the window is drawn directly, so
+       there is nothing to copy here and the event is simply consumed. */
     XCopyArea(WpeXInfo.display, WpeXInfo.backbuf, WpeXInfo.window,
       WpeXInfo.gc, _ev.xexpose.x, _ev.xexpose.y,
       _ev.xexpose.width, _ev.xexpose.height,
       _ev.xexpose.x, _ev.xexpose.y);
    }
+#endif
   }
  }
 #endif
