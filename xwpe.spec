@@ -1,5 +1,5 @@
 Name:           xwpe
-Version:        1.6.7
+Version:        1.6.9
 Release:        1%{?dist}
 Summary:        Borland-style programming environment and editor for console and X11
 
@@ -19,6 +19,10 @@ BuildRequires:  libX11-devel
 BuildRequires:  libXft-devel
 BuildRequires:  cairo-devel
 BuildRequires:  pango-devel
+# Native Wayland backend (built unconditionally via --with-wayland below).
+BuildRequires:  wayland-devel
+BuildRequires:  wayland-protocols-devel
+BuildRequires:  libxkbcommon-devel
 BuildRequires:  gpm-devel
 BuildRequires:  libvterm-devel
 BuildRequires:  json-c-devel
@@ -54,7 +58,10 @@ through gdb, jdb and pdb.
 %autosetup
 
 %build
-%configure
+# Build the native Wayland backend explicitly (not just auto-detected), so the
+# package always ships Wayland support and the build fails loudly if a Wayland
+# dependency is ever missing.
+%configure --with-wayland
 %make_build
 
 %install
@@ -91,6 +98,16 @@ make check
 %{_infodir}/xwpe.info*
 
 %changelog
+* Mon Jul 07 2026 Juan Manuel Méndez Rey <juan.mendezr@proton.me> - 1.6.9-1
+- New upstream release 1.6.9: robust native Wayland backend on real desktops.
+- Build the Wayland backend explicitly (--with-wayland) with wayland-devel,
+  wayland-protocols-devel and libxkbcommon-devel, so the package ships native
+  Wayland support (server-side decorations, resizable window, key auto-repeat,
+  pointer cursor) rather than falling back to XWayland.
+- Real-desktop resize crashes fixed (extbyte overflow, re-entrant relayout
+  use-after-free, stale menu bar), with new resize tests across X11, Wayland
+  and ncurses run in %%check.
+
 * Fri Jun 26 2026 Juan Manuel Méndez Rey <juan.mendezr@proton.me> - 1.6.7-1
 - New upstream release 1.6.7: macOS console Backspace fix (DEL 0x7f -> Backspace);
   reproducible "make dist" release tarballs.
