@@ -983,6 +983,61 @@ int e_x_refresh()
    return(0);
 }
 
+/* Common prefix of the two ConfigureNotify handlers (e_x_change and e_x_getch):
+   drain the queued configures down to the final size, and -- only if the cell
+   grid actually changed -- update MAXSCOL/MAXSLNS and reallocate the Xft draw /
+   back buffer.  Returns 1 with the new pixel size (*pw,*ph) and the old grid
+   (*old_scol,*old_slns) when it resized, 0 otherwise.  The caller does the
+   repaint tail, which differs between the two sites (e_x_getch also invalidates
+   the last-view pic and returns WPE_RESIZE), so only this identical prefix is
+   shared.  Snaps to whole cells, like the code it replaces. */
+static int e_x_apply_configure(XEvent *report, int *pw, int *ph,
+                               int *old_scol, int *old_slns)
+{
+ int w, h;
+
+ while (XCheckTypedWindowEvent(WpeXInfo.display, WpeXInfo.window,
+        ConfigureNotify, report))
+  ;
+ w = (report->xconfigure.width  / WpeXInfo.font_width)  * WpeXInfo.font_width;
+ h = (report->xconfigure.height / WpeXInfo.font_height) * WpeXInfo.font_height;
+ if (w == MAXSCOL * WpeXInfo.font_width && h == MAXSLNS * WpeXInfo.font_height)
+  return 0;
+
+ *old_scol = MAXSCOL;
+ *old_slns = MAXSLNS;
+ MAXSCOL = w / WpeXInfo.font_width;
+ MAXSLNS = h / WpeXInfo.font_height;
+#ifdef HAVE_XFT
+ if (WpeXInfo.xftfont)
+ {
+  if (WpeXInfo.xftdraw)
+   XftDrawDestroy(WpeXInfo.xftdraw);
+  if (WpeRender.resize)
+  {
+   WpeRender.resize(w, h);
+  }
+  else
+  {
+   if (WpeXInfo.backbuf)
+    XFreePixmap(WpeXInfo.display, WpeXInfo.backbuf);
+   WpeXInfo.backbuf = XCreatePixmap(WpeXInfo.display, WpeXInfo.window,
+     w, h, DefaultDepth(WpeXInfo.display, WpeXInfo.screen));
+   XSetForeground(WpeXInfo.display, WpeXInfo.gc,
+     BlackPixel(WpeXInfo.display, WpeXInfo.screen));
+   XFillRectangle(WpeXInfo.display, WpeXInfo.backbuf, WpeXInfo.gc,
+     0, 0, w, h);
+  }
+  WpeXInfo.xftdraw = XftDrawCreate(WpeXInfo.display, WpeXInfo.backbuf,
+    DefaultVisual(WpeXInfo.display, WpeXInfo.screen),
+    DefaultColormap(WpeXInfo.display, WpeXInfo.screen));
+ }
+#endif
+ *pw = w;
+ *ph = h;
+ return 1;
+}
+
 int e_x_change(PIC *pic)
 {
  XEvent report;
@@ -1029,48 +1084,14 @@ int e_x_change(PIC *pic)
     }
     break;
    case ConfigureNotify:
-    while (XCheckTypedWindowEvent(WpeXInfo.display, WpeXInfo.window,
-           ConfigureNotify, &report))
-     ;
-    size_hints.width = (report.xconfigure.width / WpeXInfo.font_width) * WpeXInfo.font_width;
-    size_hints.height = (report.xconfigure.height / WpeXInfo.font_height) * WpeXInfo.font_height;
-    if (size_hints.width != MAXSCOL * WpeXInfo.font_width ||
-      size_hints.height != MAXSLNS * WpeXInfo.font_height)
-    {
-     { int _i, _old_scol = MAXSCOL, _old_slns = MAXSLNS;
-       MAXSCOL = size_hints.width / WpeXInfo.font_width;
-       MAXSLNS = size_hints.height / WpeXInfo.font_height;
-#ifdef HAVE_XFT
-       if (WpeXInfo.xftfont)
-       {
-        if (WpeXInfo.xftdraw)
-         XftDrawDestroy(WpeXInfo.xftdraw);
-        if (WpeRender.resize)
-        {
-         WpeRender.resize(size_hints.width, size_hints.height);
-        }
-        else
-        {
-         if (WpeXInfo.backbuf)
-          XFreePixmap(WpeXInfo.display, WpeXInfo.backbuf);
-         WpeXInfo.backbuf = XCreatePixmap(WpeXInfo.display, WpeXInfo.window,
-           size_hints.width, size_hints.height,
-           DefaultDepth(WpeXInfo.display, WpeXInfo.screen));
-         XSetForeground(WpeXInfo.display, WpeXInfo.gc,
-           BlackPixel(WpeXInfo.display, WpeXInfo.screen));
-         XFillRectangle(WpeXInfo.display, WpeXInfo.backbuf, WpeXInfo.gc,
-           0, 0, size_hints.width, size_hints.height);
-        }
-        WpeXInfo.xftdraw = XftDrawCreate(WpeXInfo.display, WpeXInfo.backbuf,
-          DefaultVisual(WpeXInfo.display, WpeXInfo.screen),
-          DefaultColormap(WpeXInfo.display, WpeXInfo.screen));
-       }
-#endif
+    { int _pw, _ph, _old_scol, _old_slns;
+      if (e_x_apply_configure(&report, &_pw, &_ph, &_old_scol, &_old_slns))
+      {
        XCopyArea(WpeXInfo.display, WpeXInfo.backbuf, WpeXInfo.window,
-         WpeXInfo.gc, 0, 0, size_hints.width, size_hints.height, 0, 0);
+         WpeXInfo.gc, 0, 0, _pw, _ph, 0, 0);
        e_relayout_windows(WpeEditor, _old_scol, _old_slns);
        e_x_repaint_desk(WpeEditor->f[WpeEditor->mxedt]);
-     }
+      }
     }
     break;
    case KeyPress:
@@ -1242,47 +1263,16 @@ int e_x_getch()
     }
     break;
    case ConfigureNotify:
-    while (XCheckTypedWindowEvent(WpeXInfo.display, WpeXInfo.window,
-           ConfigureNotify, &report))
-     ;
-    size_hints.width = (report.xconfigure.width / WpeXInfo.font_width) * WpeXInfo.font_width;
-    size_hints.height = (report.xconfigure.height / WpeXInfo.font_height) * WpeXInfo.font_height;
-    if (size_hints.width != MAXSCOL * WpeXInfo.font_width ||
-      size_hints.height != MAXSLNS * WpeXInfo.font_height)
-    {
-     { int _i, _old_scol = MAXSCOL, _old_slns = MAXSLNS;
-       MAXSCOL = size_hints.width / WpeXInfo.font_width;
-       MAXSLNS = size_hints.height / WpeXInfo.font_height;
-#ifdef HAVE_XFT
-       if (WpeXInfo.xftfont)
-       {
-        if (WpeXInfo.xftdraw)
-         XftDrawDestroy(WpeXInfo.xftdraw);
-        if (WpeRender.resize)
-        {
-         WpeRender.resize(size_hints.width, size_hints.height);
-        }
-        else
-        {
-         if (WpeXInfo.backbuf)
-          XFreePixmap(WpeXInfo.display, WpeXInfo.backbuf);
-         WpeXInfo.backbuf = XCreatePixmap(WpeXInfo.display, WpeXInfo.window,
-           size_hints.width, size_hints.height,
-           DefaultDepth(WpeXInfo.display, WpeXInfo.screen));
-         XSetForeground(WpeXInfo.display, WpeXInfo.gc,
-           BlackPixel(WpeXInfo.display, WpeXInfo.screen));
-         XFillRectangle(WpeXInfo.display, WpeXInfo.backbuf, WpeXInfo.gc,
-           0, 0, size_hints.width, size_hints.height);
-        }
-        WpeXInfo.xftdraw = XftDrawCreate(WpeXInfo.display, WpeXInfo.backbuf,
-          DefaultVisual(WpeXInfo.display, WpeXInfo.screen),
-          DefaultColormap(WpeXInfo.display, WpeXInfo.screen));
-       }
-#endif
+    { int _i, _pw, _ph, _old_scol, _old_slns;
+      if (e_x_apply_configure(&report, &_pw, &_ph, &_old_scol, &_old_slns))
+      {
        XCopyArea(WpeXInfo.display, WpeXInfo.backbuf, WpeXInfo.window,
-         WpeXInfo.gc, 0, 0, size_hints.width, size_hints.height, 0, 0);
+         WpeXInfo.gc, 0, 0, _pw, _ph, 0, 0);
        XFlush(WpeXInfo.display);
 
+       /* If the last-view pic is not a live window's, drop it: the grid (and so
+          every pic) was just resized, and e_x_repaint_desk would dereference a
+          stale one. */
        { extern PIC *e_X_l_pic;
          int _is_win_pic = 0;
          for (_i = 0; _i <= WpeEditor->mxedt; _i++)
@@ -1291,12 +1281,11 @@ int e_x_getch()
           (*e_u_setlastpic)(NULL);
        }
        XCopyArea(WpeXInfo.display, WpeXInfo.backbuf, WpeXInfo.window,
-         WpeXInfo.gc, 0, 0,
-         MAXSCOL * WpeXInfo.font_width, MAXSLNS * WpeXInfo.font_height, 0, 0);
+         WpeXInfo.gc, 0, 0, _pw, _ph, 0, 0);
        e_relayout_windows(WpeEditor, _old_scol, _old_slns);
        e_x_repaint_desk(WpeEditor->f[WpeEditor->mxedt]);
-     }
-     return WPE_RESIZE;
+       return WPE_RESIZE;
+      }
     }
     break;
    case ClientMessage:
