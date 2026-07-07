@@ -22,6 +22,9 @@ pkg upgrade -y
 # newer libpcre2 than base; fetch(1) is in the base system, so we use that.
 pkg install -y autoconf automake libtool gmake pkgconf ncurses \
   libX11 libXft cairo pango libvterm json-c texinfo
+# Runtime-test tooling: Xvfb + a tiny WM + xdpyinfo drive the headless X11 smoke
+# (contrib/bsd-test/xvfb_smoke.sh); python3 checks the captured frame.
+pkg install -y xorg-vfbserver matchbox-window-manager xdpyinfo python3
 
 # FreeBSD's freetype2.pc has "Requires.private: ... bzip2 ...", but base bzip2
 # (libbz2 + bzlib.h are in the base system) ships no bzip2.pc, so pkg-config
@@ -70,6 +73,31 @@ else
   echo "FREEBSD BUILD FAILED: ./we not produced"
   exit 1
 fi
+
+# --- Runtime tests: prove the binary RUNS, not just links. ---
+RC=0
+
+echo "=== unit tests (gmake check) ==="
+if gmake check >/tmp/xwpe-check.log 2>&1; then
+  echo "make check: PASS"
+else
+  echo "make check: FAIL"; grep -iE "FAIL:|error:" /tmp/xwpe-check.log | head; RC=1
+fi
+
+echo "=== console-mouse probe (wpe under a pty) ==="
+cc -O2 -o /tmp/probe contrib/bsd-test/sgr_mouse_probe.c -lutil
+if /tmp/probe ./we xterm-256color; then
+  echo "wpe mouse probe: PASS"
+else
+  echo "wpe mouse probe: FAIL"; RC=1
+fi
+
+echo "=== headless X11 smoke (xwpe under Xvfb) ==="
+sh contrib/bsd-test/xvfb_smoke.sh /tmp/xwpe-src || RC=1
+
+[ "$RC" = 0 ] && echo "ALL FREEBSD RUNTIME TESTS PASSED" \
+             || echo "SOME FREEBSD RUNTIME TESTS FAILED"
+exit "$RC"
 
 # To finish the port afterwards, from inside `vagrant ssh`:
 #   cd /tmp/xwpe-src && gmake install        # smoke-test the install
