@@ -260,10 +260,14 @@ Changes
   no frame, so the native-Wayland window had no title bar or borders and nothing
   to grab -- and even if resized it would have crashed, because the grid stayed
   at the old size and a shrink painted past the smaller buffer.  xwpe now asks
-  the compositor to draw the frame (xdg-decoration, server-side mode) and, on
-  every size change, re-fits the cell grid to the new window size and re-lays-out
-  its windows -- the same handling as the X11 ConfigureNotify and the ncurses
-  SIGWINCH paths.
+  the compositor to draw the frame (xdg-decoration, server-side mode) and, on a
+  size change, re-fits the cell grid to the new window size and re-lays-out its
+  windows -- the same handling as the X11 ConfigureNotify and the ncurses
+  SIGWINCH paths.  Resizing is smooth: the compositor streams a configure per
+  pointer motion, so the handlers only record the latest size and the (expensive)
+  relayout runs once per event-dispatch batch -- coalescing a drag's burst into a
+  single re-fit, the way the X11 handler drains its ConfigureNotify queue to the
+  final size, instead of playing every intermediate size back in slow motion.
 
 * Wayland: the pointer now shows xwpe's own arrow cursor over the window.  A
   Wayland client must set its cursor whenever the pointer enters its surface; as

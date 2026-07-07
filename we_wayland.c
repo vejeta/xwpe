@@ -242,50 +242,84 @@ static const struct xdg_wm_base_listener wm_base_listener = { wm_base_ping };
 
 static void e_w_render_dirty_cells(int force);   /* full repaint after a realloc */
 
-/* wl_resize_grid - re-fit the cell grid to a new window pixel size and re-lay-out
-   the editor, the Wayland mirror of X11's ConfigureNotify handler (we_xterm.c)
-   and the ncurses KEY_RESIZE handler (we_term.c).  The compositor drives the
-   size, so cols/rows are derived from it.  e_repaint_desk (WpeIsXwin) reallocates
-   the grid and the wl_shm buffer through e_w_ini_size, then repaints; without
-   this a shrink would leave MAXSCOL/MAXSLNS too large and paint past the smaller
-   buffer.  A minimum grid keeps the editor usable and the buffer sane. */
-static void wl_resize_grid(int pixel_w, int pixel_h)
-{
- int old_scol = MAXSCOL, old_slns = MAXSLNS;
- int cols, rows;
+/* --- Interactive resize (compositor-driven) ---------------------------- *\
+   During an interactive resize the compositor streams a configure event per
+   pointer motion.  Re-laying-out the editor from inside each callback backs up
+   a queue that then plays out in slow motion.  So the configure handlers only
+   RECORD the latest requested size (cheap); the grid re-fit + repaint happen
+   ONCE per event-dispatch cycle, in wl_apply_pending_resize, coalescing a whole
+   burst into a single relayout.  This is the Wayland equivalent of what the X11
+   ConfigureNotify handler does by draining the queue to the final size with
+   XCheckTypedWindowEvent (we_xterm.c), and of the ncurses KEY_RESIZE drain
+   (we_term.c).
+\* ----------------------------------------------------------------------- */
 
- if (WpeRender.font_width <= 0 || WpeRender.font_height <= 0)
+static int g_pending_w, g_pending_h;    /* latest size the compositor asked for */
+static int g_resize_pending;            /* a size change is waiting to be applied */
+static int g_last_conf_w, g_last_conf_h;/* last size actually configured (dedup) */
+
+/* Record the latest requested size (called from xdg_toplevel.configure).  Flags
+   a resize only when the size differs from the LAST configured one, so a
+   compositor that re-sends the same size (focus/re-map, or its sub-cell output
+   size every frame) is not mistaken for a new resize -- otherwise every repeat
+   would re-arm the pending flag and stall presentation. */
+static void wl_note_configure_size(int w, int h)
+{
+ if (w <= 0 || h <= 0)
   return;
- cols = pixel_w / WpeRender.font_width;
- rows = pixel_h / WpeRender.font_height;
+ if (w == g_last_conf_w && h == g_last_conf_h)
+  return;
+ g_last_conf_w = w;
+ g_last_conf_h = h;
+ g_pending_w = w;
+ g_pending_h = h;
+ g_resize_pending = 1;
+}
+
+/* Apply the latest pending size exactly once, after the event-dispatch batch.
+   Derives the cell grid from the pixel size (clamped to a usable minimum) and,
+   only when the grid actually changes, re-lays-out the windows and repaints --
+   e_repaint_desk (WpeIsXwin) reallocates the grid and the wl_shm buffer through
+   e_w_ini_size, re-points Cairo, and presents.  When only the sub-cell remainder
+   changed, the existing buffer is already correct and we just re-present. */
+static void wl_apply_pending_resize(void)
+{
+ int old_scol, old_slns, cols, rows;
+
+ if (!g_resize_pending)
+  return;
+ g_resize_pending = 0;
+ if (WpeRender.font_width <= 0 || WpeRender.font_height <= 0 || !WpeRender.draw_text)
+  return;
+
+ cols = g_pending_w / WpeRender.font_width;
+ rows = g_pending_h / WpeRender.font_height;
  if (cols < 30) cols = 30;
  if (rows < 6)  rows = 6;
+ old_scol = MAXSCOL;
+ old_slns = MAXSLNS;
 
- if (cols == old_scol && rows == old_slns)
+ /* Only a real change of cell dimensions needs a relayout + repaint (which also
+    reallocates the buffer and presents).  A sub-cell size change leaves the grid
+    and its buffer correct -- xdg_surface_configure has already re-presented the
+    current frame -- so there is nothing to do. */
+ if (cols != old_scol || rows != old_slns)
  {
-  /* Grid unchanged: this is the first map, or a re-map/focus configure that
-     only dropped the buffer -- NOT a resize.  Do not disturb the window layout
-     (a full e_relayout_windows/e_repaint_desk here resets scroll state); just
-     make sure a buffer exists at the current size and repaint the cells. */
-  if (!WpeWl.pixels
-      && wl_alloc_buffer(WpeRender.font_width * MAXSCOL,
-                         WpeRender.font_height * MAXSLNS) == 0
-      && WpeRender.resize)
-   WpeRender.resize(WpeWl.width, WpeWl.height);
-  e_w_render_dirty_cells(1);
-  return;
+  MAXSCOL = cols;
+  MAXSLNS = rows;
+  e_relayout_windows(WpeEditor, old_scol, old_slns);
+  e_free_all_pics(WpeEditor);
+  e_repaint_desk(WpeEditor->f[WpeEditor->mxedt]);
  }
- /* A real resize: re-fit the grid and re-lay-out the windows. */
- MAXSCOL = cols;
- MAXSLNS = rows;
- e_relayout_windows(WpeEditor, old_scol, old_slns);
- e_free_all_pics(WpeEditor);
- e_repaint_desk(WpeEditor->f[WpeEditor->mxedt]);
 }
 
 /* xdg_surface.configure: the compositor is ready for content.  Acknowledge,
-   (re)allocate the buffer if needed, paint, attach and commit.  This is also
-   the standard place to perform the very first paint. */
+   make sure a buffer exists, and present the current frame.  The expensive part
+   of a resize (re-fitting the grid and repainting) is NOT done here: a pending
+   size change is applied once, after the whole event batch, by
+   wl_apply_pending_resize -- so a burst of configures does not play back in slow
+   motion.  When a resize is pending we skip presenting the current (old-size)
+   buffer here and let the apply step present the correctly-sized frame. */
 static void xdg_surface_configure(void *data, struct xdg_surface *xs, uint32_t serial)
 {
  (void)data;
@@ -293,26 +327,23 @@ static void xdg_surface_configure(void *data, struct xdg_surface *xs, uint32_t s
 
  if (!WpeWl.pixels)
  {
-  /* This path runs after xdg_toplevel_configure drops the buffer on a size
-     change.  Once the editor is running a size change is a real resize: re-fit
-     the grid and re-lay-out the windows (e_repaint_desk reallocates the buffer
-     via e_w_ini_size and re-points Cairo).  Before the editor is up it is just
-     the first map -- allocate a buffer at the requested size and re-point Cairo,
-     or the next paint fills through a dangling pointer into freed memory. */
-  if (WpeRender.draw_text)
-  {
-   wl_resize_grid(WpeWl.width, WpeWl.height);
-   if (!WpeWl.pixels && wl_alloc_buffer(WpeWl.width, WpeWl.height) < 0)
-    return;
-  }
-  else
-  {
-   if (wl_alloc_buffer(WpeWl.width, WpeWl.height) < 0)
-    return;
-   if (WpeRender.resize)
-    WpeRender.resize(WpeWl.width, WpeWl.height);
-  }
+  /* First map (or a re-map after the buffer was released): allocate at the
+     current size and re-point Cairo, or the next paint fills through a dangling
+     pointer into freed memory. */
+  if (wl_alloc_buffer(WpeWl.width, WpeWl.height) < 0)
+   return;
+  if (WpeRender.resize)
+   WpeRender.resize(WpeWl.width, WpeWl.height);
  }
+
+ /* Editor up + a real resize queued: do NOT commit the current (old-size) buffer
+    against the just-acknowledged new size -- committing a mismatched buffer stalls
+    the compositor's configure sequence.  wl_apply_pending_resize (after this
+    dispatch batch) reallocates to the new size and presents the correct frame.
+    (The very first configure -- configured==0 -- must still paint the bring-up.) */
+ if (WpeRender.draw_text && WpeWl.configured && g_resize_pending)
+  return;
+
  /* Only flat-fill as a bring-up splash BEFORE the cell renderer is installed.
     Once it is, the buffer holds the editor's rendered cells and a configure
     (focus/raise/re-map) must re-present them, never repaint over them. */
@@ -330,23 +361,14 @@ static void xdg_surface_configure(void *data, struct xdg_surface *xs, uint32_t s
 }
 static const struct xdg_surface_listener xdg_surface_listener = { xdg_surface_configure };
 
-/* xdg_toplevel.configure: a size suggestion (and window state).  Headless and
-   first-map often give 0x0 -- keep our default in that case. */
+/* xdg_toplevel.configure: a size suggestion (and window state).  Record-only --
+   just note the requested size (wl_apply_pending_resize acts on it once the
+   dispatch batch is done).  Headless and first-map often give 0x0; ignored. */
 static void xdg_toplevel_configure(void *data, struct xdg_toplevel *tl,
                                    int32_t w, int32_t h, struct wl_array *states)
 {
  (void)data; (void)tl; (void)states;
- if (w > 0 && h > 0 && (w != WpeWl.width || h != WpeWl.height))
- {
-  /* Drop the stale buffer; xdg_surface_configure reallocates at the new size. */
-  WpeWl.width = w;
-  WpeWl.height = h;
-  if (WpeWl.pixels)
-  {
-   munmap(WpeWl.pixels, WpeWl.shm_size);
-   WpeWl.pixels = NULL;
-  }
- }
+ wl_note_configure_size(w, h);
 }
 static void xdg_toplevel_close(void *data, struct xdg_toplevel *tl)
 {
@@ -1545,6 +1567,7 @@ static int e_w_getch(void)
  for (;;)
  {
   wl_display_dispatch_pending(WpeWl.display);
+  wl_apply_pending_resize();     /* coalesced re-fit for any configure just seen */
 
   code = wl_key_pop();
   if (code != 0)
@@ -1634,6 +1657,10 @@ static void wl_pump_once(int block)
   wl_display_dispatch(WpeWl.display);
  else
   wl_display_dispatch_pending(WpeWl.display);
+
+ /* One relayout per dispatch batch, collapsing a resize-drag's burst of
+    configure events into a single re-fit (see wl_apply_pending_resize). */
+ wl_apply_pending_resize();
 }
 
 /* fk_w_mouse - report the current pointer state, exactly like the X11
