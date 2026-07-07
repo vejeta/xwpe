@@ -16,6 +16,7 @@
 #include <X11/Xlib.h>
 #include <string.h>
 #include <math.h>
+#include "we_render_glyphs.h"    /* wpe_glyph_acs / wpe_glyph_lock (shared with Wayland) */
 
 #include <fontconfig/fontconfig.h>
 
@@ -142,118 +143,14 @@ static void cr_clear_rect(int x, int y, int w, int h, int color_idx)
 
 static void cr_draw_acs(int sc, int px, int py, int fg_idx, int bg_idx)
 {
- int fw = WpeRender.font_width;
- int fh = WpeRender.font_height;
- int lw = fw > 8 ? 2 : 1;
- int mx = px + fw / 2;
- int my = py + fh / 2;
-
- cr_draw_rect(px, py, fw, fh, bg_idx);
-
- cairo_set_source_rgb(cr, cairo_colors[fg_idx][0],
-   cairo_colors[fg_idx][1], cairo_colors[fg_idx][2]);
-
- switch (sc)
- {
- case 1: /* upper-left corner */
-  cairo_rectangle(cr, mx, my, fw - fw/2, lw);
-  cairo_fill(cr);
-  cairo_rectangle(cr, mx, my, lw, fh - fh/2);
-  cairo_fill(cr);
-  break;
- case 2: /* upper-right corner */
-  cairo_rectangle(cr, px, my, fw/2 + lw, lw);
-  cairo_fill(cr);
-  cairo_rectangle(cr, mx, my, lw, fh - fh/2);
-  cairo_fill(cr);
-  break;
- case 3: /* lower-left corner */
-  cairo_rectangle(cr, mx, my, fw - fw/2, lw);
-  cairo_fill(cr);
-  cairo_rectangle(cr, mx, py, lw, fh/2 + lw);
-  cairo_fill(cr);
-  break;
- case 4: /* lower-right corner */
-  cairo_rectangle(cr, px, my, fw/2 + lw, lw);
-  cairo_fill(cr);
-  cairo_rectangle(cr, mx, py, lw, fh/2 + lw);
-  cairo_fill(cr);
-  break;
- case 5: /* horizontal line */
-  cairo_rectangle(cr, px, my, fw, lw);
-  cairo_fill(cr);
-  break;
- case 6: case 8: case 9: /* vertical line */
-  cairo_rectangle(cr, mx, py, lw, fh);
-  cairo_fill(cr);
-  break;
- case 7: case 10: /* scrollbar track (stipple) */
-  { int tx, ty;
-    for (ty = py; ty < py + fh; ty += 2)
-     for (tx = px; tx < px + fw; tx += 2)
-      cairo_rectangle(cr, tx, ty, 1, 1);
-    cairo_fill(cr);
-  }
-  break;
- case 11: /* scrollbar thumb */
-  { int m = fw > 8 ? 2 : 1;
-    cairo_rectangle(cr, px + m, py + m, fw - 2*m, fh - 2*m);
-    cairo_fill(cr);
-  }
-  break;
- }
+ wpe_glyph_acs(cr, sc, px, py, WpeRender.font_width, WpeRender.font_height,
+               cairo_colors[fg_idx], cairo_colors[bg_idx]);
 }
 
-/* Read-only padlock, drawn as a crisp vector icon that fills cw cells -- see
-   we_render_wayland.c's wr_draw_lock; KEEP THE GEOMETRY IDENTICAL so X11 and
-   Wayland render the same lock, and neither depends on a colour-emoji font. */
 static void cr_draw_lock(int px, int py, int cw, int fg_idx, int bg_idx)
 {
- double W  = WpeRender.font_width * cw;
- double H  = WpeRender.font_height;
- double bw = W * 0.60;
- double bh = H * 0.42;
- double bx = px + (W - bw) / 2.0;
- double by = py + H - bh - H * 0.10;
- double r  = bh * 0.24;
- double sr = bw * 0.30;
- double scx = px + W / 2.0;
- double lw = H * 0.11;
- double kr = bh * 0.16;
- double ky = by + bh * 0.40;
-
- if (lw < 1.5) lw = 1.5;
-
- cr_draw_rect(px, py, (int)W, (int)H, bg_idx);
- cairo_set_source_rgb(cr, cairo_colors[fg_idx][0],
-   cairo_colors[fg_idx][1], cairo_colors[fg_idx][2]);
-
- /* save/restore so the line width + round cap do not leak into later glyphs */
- cairo_save(cr);
-
- cairo_set_line_width(cr, lw);
- cairo_set_line_cap(cr, CAIRO_LINE_CAP_ROUND);
- cairo_new_path(cr);
- cairo_arc(cr, scx, by, sr, M_PI, 2.0 * M_PI);
- cairo_stroke(cr);
-
- cairo_new_path(cr);
- cairo_arc(cr, bx + r,      by + r,      r, M_PI,       1.5 * M_PI);
- cairo_arc(cr, bx + bw - r, by + r,      r, 1.5 * M_PI, 2.0 * M_PI);
- cairo_arc(cr, bx + bw - r, by + bh - r, r, 0.0,        0.5 * M_PI);
- cairo_arc(cr, bx + r,      by + bh - r, r, 0.5 * M_PI, M_PI);
- cairo_close_path(cr);
- cairo_fill(cr);
-
- cairo_set_source_rgb(cr, cairo_colors[bg_idx][0],
-   cairo_colors[bg_idx][1], cairo_colors[bg_idx][2]);
- cairo_new_path(cr);
- cairo_arc(cr, scx, ky, kr, 0.0, 2.0 * M_PI);
- cairo_fill(cr);
- cairo_rectangle(cr, scx - kr * 0.55, ky, kr * 1.1, bh * 0.32);
- cairo_fill(cr);
-
- cairo_restore(cr);
+ wpe_glyph_lock(cr, px, py, WpeRender.font_width * cw, WpeRender.font_height,
+                cairo_colors[fg_idx], cairo_colors[bg_idx]);
 }
 
 static void cr_flush(int x, int y, int w, int h)

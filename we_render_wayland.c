@@ -25,6 +25,7 @@
 #include "we_render.h"
 #include "we_wayland.h"
 #include "we_lsp.h"        /* e_lsp_sem_slot_rgb, LSP_SEM_TC_MAX */
+#include "we_render_glyphs.h"  /* wpe_glyph_acs / wpe_glyph_lock (shared with X11) */
 
 static cairo_surface_t      *wcr_surface;   /* image surface over WpeWl.pixels */
 static cairo_t              *wcr;
@@ -119,117 +120,19 @@ static void wr_draw_line(int x1, int y1, int x2, int y2, int color_idx, int widt
  cairo_stroke(wcr);
 }
 
-/* Box-drawing / scrollbar glyphs (sc 1..12), painted as filled rectangles --
-   the same geometry as we_render_cairo.c's cr_draw_acs so the two backends
-   draw an identical frame. */
+/* Box-drawing / scrollbar glyphs (sc 1..12) -- shared geometry with the X11
+   renderer (wpe_glyph_acs), so the two backends draw an identical frame. */
 static void wr_draw_acs(int sc, int px, int py, int fg_idx, int bg_idx)
 {
- int fw = WpeRender.font_width;
- int fh = WpeRender.font_height;
- int lw = fw > 8 ? 2 : 1;
- int mx = px + fw / 2;
- int my = py + fh / 2;
-
- wr_draw_rect(px, py, fw, fh, bg_idx);
- wr_set_color(fg_idx);
-
- switch (sc)
- {
- case 1: /* upper-left corner */
-  cairo_rectangle(wcr, mx, my, fw - fw/2, lw); cairo_fill(wcr);
-  cairo_rectangle(wcr, mx, my, lw, fh - fh/2); cairo_fill(wcr);
-  break;
- case 2: /* upper-right corner */
-  cairo_rectangle(wcr, px, my, fw/2 + lw, lw); cairo_fill(wcr);
-  cairo_rectangle(wcr, mx, my, lw, fh - fh/2); cairo_fill(wcr);
-  break;
- case 3: /* lower-left corner */
-  cairo_rectangle(wcr, mx, my, fw - fw/2, lw); cairo_fill(wcr);
-  cairo_rectangle(wcr, mx, py, lw, fh/2 + lw); cairo_fill(wcr);
-  break;
- case 4: /* lower-right corner */
-  cairo_rectangle(wcr, px, my, fw/2 + lw, lw); cairo_fill(wcr);
-  cairo_rectangle(wcr, mx, py, lw, fh/2 + lw); cairo_fill(wcr);
-  break;
- case 5: /* horizontal line */
-  cairo_rectangle(wcr, px, my, fw, lw); cairo_fill(wcr);
-  break;
- case 6: case 8: case 9: /* vertical line */
-  cairo_rectangle(wcr, mx, py, lw, fh); cairo_fill(wcr);
-  break;
- case 7: case 10: /* scrollbar track (stipple) */
-  { int tx, ty;
-    for (ty = py; ty < py + fh; ty += 2)
-     for (tx = px; tx < px + fw; tx += 2)
-      cairo_rectangle(wcr, tx, ty, 1, 1);
-    cairo_fill(wcr);
-  }
-  break;
- case 11: /* scrollbar thumb */
-  { int m = fw > 8 ? 2 : 1;
-    cairo_rectangle(wcr, px + m, py + m, fw - 2*m, fh - 2*m);
-    cairo_fill(wcr);
-  }
-  break;
- }
+ wpe_glyph_acs(wcr, sc, px, py, WpeRender.font_width, WpeRender.font_height,
+               wl_colors[fg_idx], wl_colors[bg_idx]);
 }
 
-/* Read-only padlock, drawn as a crisp vector icon that fills cw cells: a rounded
-   body, a stroked inverted-U shackle, and a keyhole punched out of the body.
-   Antialiased Cairo primitives (arcs + round caps), scaled to the cell, so it is
-   sharp and monochrome at any font size and never depends on a colour-emoji font
-   (which renders at its own bitmap size and would show clipped).  KEEP THE
-   GEOMETRY IDENTICAL to cr_draw_lock in we_render_cairo.c so X11 and Wayland
-   render the same lock (the two renderers are deliberately self-contained). */
+/* Read-only padlock -- shared geometry with the X11 renderer (wpe_glyph_lock). */
 static void wr_draw_lock(int px, int py, int cw, int fg_idx, int bg_idx)
 {
- double W  = WpeRender.font_width * cw;
- double H  = WpeRender.font_height;
- double bw = W * 0.60;                    /* body width               */
- double bh = H * 0.42;                    /* body height              */
- double bx = px + (W - bw) / 2.0;
- double by = py + H - bh - H * 0.10;      /* body sits in the lower part */
- double r  = bh * 0.24;                   /* body corner radius       */
- double sr = bw * 0.30;                   /* shackle radius           */
- double scx = px + W / 2.0;               /* shackle / keyhole centre */
- double lw = H * 0.11;                    /* shackle thickness        */
- double kr = bh * 0.16;                   /* keyhole radius           */
- double ky = by + bh * 0.40;
-
- if (lw < 1.5) lw = 1.5;
-
- wr_draw_rect(px, py, (int)W, (int)H, bg_idx);
- wr_set_color(fg_idx);
-
- /* save/restore so the line width + round cap set for the shackle do not leak
-    into later glyph drawing on the shared Cairo context */
- cairo_save(wcr);
-
- /* shackle: an inverted U -- the top half of a circle sitting on the body */
- cairo_set_line_width(wcr, lw);
- cairo_set_line_cap(wcr, CAIRO_LINE_CAP_ROUND);
- cairo_new_path(wcr);
- cairo_arc(wcr, scx, by, sr, M_PI, 2.0 * M_PI);
- cairo_stroke(wcr);
-
- /* body: a rounded rectangle */
- cairo_new_path(wcr);
- cairo_arc(wcr, bx + r,      by + r,      r, M_PI,       1.5 * M_PI);
- cairo_arc(wcr, bx + bw - r, by + r,      r, 1.5 * M_PI, 2.0 * M_PI);
- cairo_arc(wcr, bx + bw - r, by + bh - r, r, 0.0,        0.5 * M_PI);
- cairo_arc(wcr, bx + r,      by + bh - r, r, 0.5 * M_PI, M_PI);
- cairo_close_path(wcr);
- cairo_fill(wcr);
-
- /* keyhole: a round hole with a short slot, punched in the background colour */
- wr_set_color(bg_idx);
- cairo_new_path(wcr);
- cairo_arc(wcr, scx, ky, kr, 0.0, 2.0 * M_PI);
- cairo_fill(wcr);
- cairo_rectangle(wcr, scx - kr * 0.55, ky, kr * 1.1, bh * 0.32);
- cairo_fill(wcr);
-
- cairo_restore(wcr);
+ wpe_glyph_lock(wcr, px, py, WpeRender.font_width * cw, WpeRender.font_height,
+                wl_colors[fg_idx], wl_colors[bg_idx]);
 }
 
 /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - *\
