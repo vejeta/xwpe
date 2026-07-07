@@ -279,6 +279,10 @@ Changes
   relayout runs once per event-dispatch batch -- coalescing a drag's burst into a
   single re-fit, the way the X11 handler drains its ConfigureNotify queue to the
   final size, instead of playing every intermediate size back in slow motion.
+  The re-fit then forces one full repaint: reallocating the grid leaves the
+  dirty-cell shadow (altschirm) stale, so a plain incremental refresh could leave
+  newly exposed cells unpainted (stale pixels on the right of the menu bar after
+  a grow).
 
 * Wayland: the pointer now shows xwpe's own arrow cursor over the window.  A
   Wayland client must set its cursor whenever the pointer enters its surface; as

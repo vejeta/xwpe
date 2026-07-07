@@ -310,6 +310,14 @@ static void wl_apply_pending_resize(void)
   e_relayout_windows(WpeEditor, old_scol, old_slns);
   e_free_all_pics(WpeEditor);
   e_repaint_desk(WpeEditor->f[WpeEditor->mxedt]);
+  /* e_repaint_desk reallocated the grid, so the altschirm shadow it diffs
+     against is fresh garbage; its dirty-cell refresh then leaves any cell whose
+     garbage happened to match unpainted (stale pixels on the newly exposed edge,
+     e.g. the right of the menu bar).  Force one full repaint to paint every cell
+     and re-sync the shadow. */
+  e_w_render_dirty_cells(1);
+  if (WpeRender.flush_all)
+   WpeRender.flush_all();
  }
 }
 
