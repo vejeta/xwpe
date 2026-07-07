@@ -98,7 +98,7 @@ make check
 %{_infodir}/xwpe.info*
 
 %changelog
-* Mon Jul 07 2026 Juan Manuel Méndez Rey <juan.mendezr@proton.me> - 1.6.9-1
+* Tue Jul 07 2026 Juan Manuel Méndez Rey <juan.mendezr@proton.me> - 1.6.9-1
 - New upstream release 1.6.9: robust native Wayland backend on real desktops.
 - Build the Wayland backend explicitly (--with-wayland) with wayland-devel,
   wayland-protocols-devel and libxkbcommon-devel, so the package ships native
