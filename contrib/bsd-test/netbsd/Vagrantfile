@@ -5,10 +5,11 @@
 #   VAGRANT_DEFAULT_PROVIDER=libvirt vagrant up      # builds, prints PASS/FAIL
 #   vagrant destroy -f
 #
-# Bump the box if 9.x ages out (generic/netbsd10 when available).
+# Bump the box if it ages out.  pygolo/netbsd10 is NetBSD 10 with a live pkgsrc
+# binary repo; the old generic/netbsd9 (roboxes, frozen 2024) is NetBSD 9.3.
 
 Vagrant.configure("2") do |config|
-  config.vm.box = "generic/netbsd9"
+  config.vm.box = "pygolo/netbsd10"
   config.vm.boot_timeout = 600
   config.ssh.shell = "sh"
   config.vm.synced_folder ".", "/vagrant", disabled: true

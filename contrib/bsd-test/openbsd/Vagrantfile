@@ -5,10 +5,12 @@
 #   VAGRANT_DEFAULT_PROVIDER=libvirt vagrant up      # builds, prints PASS/FAIL
 #   vagrant destroy -f
 #
-# Bump the box if 7.x ages out.
+# Bump the box if 7.x ages out.  pygolo/openbsd7 tracks the current supported
+# release (7.7 as of 2025), whose packages are on the live mirrors; the old
+# generic/openbsd7 was 7.4, long EOL with its packages pruned everywhere.
 
 Vagrant.configure("2") do |config|
-  config.vm.box = "generic/openbsd7"
+  config.vm.box = "pygolo/openbsd7"
   config.vm.boot_timeout = 600
   config.ssh.shell = "sh"
   config.vm.synced_folder ".", "/vagrant", disabled: true

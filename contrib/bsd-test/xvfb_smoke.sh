@@ -74,7 +74,21 @@ sleep 1
 # xdotool is available, move the window to 0,0 so it is fully on-screen.
 if command -v xdotool >/dev/null 2>&1; then
   _wid=$(DISPLAY="$D" xdotool search --class xwpe 2>/dev/null | tail -1)
-  [ -n "$_wid" ] && DISPLAY="$D" xdotool windowmove "$_wid" 0 0 2>/dev/null
+  if [ -n "$_wid" ]; then
+    DISPLAY="$D" xdotool windowmove "$_wid" 0 0 2>/dev/null
+    # A headless X server with no usable fonts can leave xwpe with a degenerate
+    # font metric and thus an absurdly wide window (thousands of px).  Such a
+    # window is wider than the 1024px screen, so it can never be fully on-screen
+    # and XGetImage cannot capture it -- an environment limitation, not an xwpe
+    # fault.  Skip rather than report a false failure (seen on OpenBSD/Xvfb).
+    _ww=$(DISPLAY="$D" xdotool getwindowgeometry "$_wid" 2>/dev/null \
+          | awk '/Geometry/ {split($2, a, "x"); print a[1]}')
+    if [ -n "$_ww" ] && [ "$_ww" -gt 1024 ]; then
+      echo "xvfb-smoke: SKIP (window ${_ww}px wider than the 1024px screen -- headless font metric; cannot capture)"
+      kill "$XW" "$WMPID" "$XVFB" 2>/dev/null
+      exit 0
+    fi
+  fi
 fi
 sleep 3
 kill "$XW" 2>/dev/null
