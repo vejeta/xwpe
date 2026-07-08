@@ -930,6 +930,16 @@ static int wpe_x_dump_ppm(const char *path)
  h = wa.height;
  if (w <= 0 || h <= 0)
   return -1;
+ /* XGetImage on a window BadMatches if the requested rectangle is not wholly
+    on-screen.  Clamp to the screen size so an over-large window (e.g. a bad
+    font metric under a headless X server) still yields its visible top-left
+    corner instead of failing. */
+ {
+  int screen_w = DisplayWidth(WpeXInfo.display, WpeXInfo.screen);
+  int screen_h = DisplayHeight(WpeXInfo.display, WpeXInfo.screen);
+  if (w > screen_w) w = screen_w;
+  if (h > screen_h) h = screen_h;
+ }
 
  g_x_dump_error = 0;
  XSync(WpeXInfo.display, False);
