@@ -49,11 +49,14 @@ extern int wpe_scroll_dragging;
 
 int wpe_render_cairo_init(void);
 void wpe_render_chrome(void);
-#ifdef NO_XWINDOWS
-/* The Cairo chrome (the fluid scrollbar thumb) is X11-only; with no X11 there
-   is no chrome, so these hit-tests can never match.  Inline no-op stubs let the
-   shared mouse code (we_mouse.c) link in a --without-x build, where
-   we_render_cairo.c is not compiled. */
+#if defined(NO_XWINDOWS) || !defined(HAVE_CAIRO)
+/* The Cairo chrome (the fluid scrollbar thumb) is defined in we_render_cairo.c
+   only when Cairo is present (its body is #ifdef HAVE_CAIRO).  Without Cairo --
+   a --without-x build, OR an X11 build where Cairo/Pango were not detected (e.g.
+   an OpenBSD box that has Xft but not the full Cairo stack) -- there is no
+   chrome, so these hit-tests can never match.  Inline no-op stubs let the shared
+   mouse code (we_mouse.c) link.  Keyed on HAVE_CAIRO, not X11: an X11+Xft build
+   without Cairo would otherwise take the extern decls below and fail to link. */
 static inline int wpe_chrome_hit_vthumb(int col, int row) { (void)col; (void)row; return 0; }
 static inline int wpe_chrome_hit_hthumb(int col, int row) { (void)col; (void)row; return 0; }
 #else
