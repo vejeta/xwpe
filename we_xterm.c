@@ -894,26 +894,56 @@ static unsigned char wpe_x_chan(unsigned long px, unsigned long mask)
  return (unsigned char)(px & 0xffUL);
 }
 
+/* XGetImage raises a fatal Xlib error (BadMatch) if the window is not fully
+   viewable -- e.g. a window manager placed it partly off-screen.  A debug
+   screenshot must never kill the editor, so trap the error here and let the
+   dump just fail. */
+static int g_x_dump_error;
+static int wpe_x_dump_errh(Display *dpy, XErrorEvent *ev)
+{
+ (void)dpy; (void)ev;
+ g_x_dump_error = 1;
+ return 0;
+}
+
 /* Headless screenshot: dump the on-screen window as a binary PPM, the X11
    analogue of the Wayland XWPE_WL_DUMP path, so an X11 build can be verified
    under Xvfb with no real screen and no external screenshot tool.  We grab the
    window (not the back-buffer Pixmap): a Pixmap carries no visual, so XGetImage
-   leaves its RGB masks zero and every pixel decodes to black.  Written to a temp
-   file and renamed atomically by the caller. */
+   leaves its RGB masks zero and every pixel decodes to black.  Captured at the
+   window's actual size (a WM may have resized it) and only when it is viewable.
+   Written to a temp file and renamed atomically by the caller. */
 static int wpe_x_dump_ppm(const char *path)
 {
- int w = WpeXInfo.font_width * MAXSCOL;
- int h = WpeXInfo.font_height * MAXSLNS;
+ XWindowAttributes wa;
+ int (*old_handler)(Display *, XErrorEvent *);
+ int w, h;
  XImage *img;
  FILE *fp;
  int x, y;
 
- if (w <= 0 || h <= 0 || !WpeXInfo.window)
+ if (!WpeXInfo.window
+     || !XGetWindowAttributes(WpeXInfo.display, WpeXInfo.window, &wa)
+     || wa.map_state != IsViewable)
   return -1;
+ w = wa.width;
+ h = wa.height;
+ if (w <= 0 || h <= 0)
+  return -1;
+
+ g_x_dump_error = 0;
+ XSync(WpeXInfo.display, False);
+ old_handler = XSetErrorHandler(wpe_x_dump_errh);
  img = XGetImage(WpeXInfo.display, WpeXInfo.window, 0, 0, w, h,
                  AllPlanes, ZPixmap);
- if (!img)
+ XSync(WpeXInfo.display, False);
+ XSetErrorHandler(old_handler);
+ if (g_x_dump_error || !img)
+ {
+  if (img)
+   XDestroyImage(img);
   return -1;
+ }
  fp = fopen(path, "wb");
  if (!fp) { XDestroyImage(img); return -1; }
  fprintf(fp, "P6\n%d %d\n255\n", w, h);

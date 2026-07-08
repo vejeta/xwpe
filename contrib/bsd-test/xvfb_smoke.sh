@@ -68,14 +68,22 @@ env XWPE_LIB="$BUILDDIR" HOME=/tmp/xsmoke-home XWPE_FONT_SIZE=10 \
     XWPE_X_DUMP="$PPM" DISPLAY="$D" \
     "$XWPE" /tmp/xsmoke-home/t.c >/tmp/xsmoke-xwpe.log 2>&1 &
 XW=$!
-sleep 4
+sleep 1
+# A window manager may place the window partly off-screen, which makes xwpe's
+# XGetImage-based dump fail (BadMatch on a not-fully-viewable window).  If
+# xdotool is available, move the window to 0,0 so it is fully on-screen.
+if command -v xdotool >/dev/null 2>&1; then
+  _wid=$(DISPLAY="$D" xdotool search --class xwpe 2>/dev/null | tail -1)
+  [ -n "$_wid" ] && DISPLAY="$D" xdotool windowmove "$_wid" 0 0 2>/dev/null
+fi
+sleep 3
 kill "$XW" 2>/dev/null
 sleep 0.6
 kill "$WMPID" "$XVFB" 2>/dev/null
 
 if [ ! -f "$PPM" ]; then
   echo "xvfb-smoke: FAIL (xwpe produced no XWPE_X_DUMP frame -- console fallback?)"
-  head -c 200 /tmp/xsmoke-xwpe.log 2>/dev/null
+  head -n 5 /tmp/xsmoke-xwpe.log 2>/dev/null
   echo
   exit 1
 fi
