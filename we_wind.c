@@ -1030,6 +1030,7 @@ int e_close_window(FENSTER *f)
   {
    f = cn->f[cn->mxedt];
    e_ed_rahmen(f, 1);
+   e_refresh();
   }
   return(0);
  }
@@ -1059,6 +1060,7 @@ int e_close_window(FENSTER *f)
   {
    f = cn->f[cn->mxedt];
    e_ed_rahmen(f, 1);
+   e_refresh();
   }
   return(0);
  }
@@ -1124,6 +1126,7 @@ int e_close_window(FENSTER *f)
  {
   f = cn->f[cn->mxedt];
   e_ed_rahmen(f, 1);
+  e_refresh();
  }
  return(c);
 }
