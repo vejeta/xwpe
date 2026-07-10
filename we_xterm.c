@@ -1020,6 +1020,27 @@ int e_x_refresh()
    return(0);
 }
 
+#ifdef HAVE_XFT
+/* Copy an Expose rect from the Xft backbuf to the window, clamped to the
+   snapped whole-cell grid.  backbuf is MAXSCOL*font_width by MAXSLNS*font_height,
+   but under libx11-compat an Expose carries the full physical window size, whose
+   sub-cell remainder band runs past the pixmap after a live-resize.  Copying that
+   off-pixmap area drops the trailing row (the bottom function-key bar), so clamp
+   the extent; the remainder band is cleared separately by e_x_apply_resize.
+   Shared by both Expose handlers below so the clamp arithmetic lives in one
+   place. */
+static void e_x_copy_backbuf_clamped(int x, int y, int w, int h)
+{
+ int bw = MAXSCOL * WpeXInfo.font_width;
+ int bh = MAXSLNS * WpeXInfo.font_height;
+ if (x + w > bw) w = bw - x;
+ if (y + h > bh) h = bh - y;
+ if (w > 0 && h > 0)
+  XCopyArea(WpeXInfo.display, WpeXInfo.backbuf, WpeXInfo.window,
+    WpeXInfo.gc, x, y, w, h, x, y);
+}
+#endif
+
 int e_x_change(PIC *pic)
 {
  XEvent report;
@@ -1047,11 +1068,8 @@ int e_x_change(PIC *pic)
       break;
      }
      do {
-      XCopyArea(WpeXInfo.display, WpeXInfo.backbuf, WpeXInfo.window,
-        WpeXInfo.gc,
-        expose_report->x, expose_report->y,
-        expose_report->width, expose_report->height,
-        expose_report->x, expose_report->y);
+      e_x_copy_backbuf_clamped(expose_report->x, expose_report->y,
+        expose_report->width, expose_report->height);
      } while (XCheckTypedWindowEvent(WpeXInfo.display, WpeXInfo.window,
               Expose, &report));
     }
@@ -1398,11 +1416,8 @@ int e_x_getch()
       break;
      }
      do {
-      XCopyArea(WpeXInfo.display, WpeXInfo.backbuf, WpeXInfo.window,
-        WpeXInfo.gc,
-        report.xexpose.x, report.xexpose.y,
-        report.xexpose.width, report.xexpose.height,
-        report.xexpose.x, report.xexpose.y);
+      e_x_copy_backbuf_clamped(report.xexpose.x, report.xexpose.y,
+        report.xexpose.width, report.xexpose.height);
      } while (XCheckTypedWindowEvent(WpeXInfo.display, WpeXInfo.window,
               Expose, &report));
     }
