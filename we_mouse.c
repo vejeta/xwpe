@@ -187,7 +187,7 @@ static int e_hit_close_button(FENSTER *f)
 {
  extern struct mouse e_mouse;
  if (e_mouse.y != f->a.y) return 0;
- return e_mouse.x == f->e.x - 2;
+ return e_mouse.x >= f->e.x - 3 && e_mouse.x <= f->e.x - 1;
 }
 
 static int e_hit_maximize_button(FENSTER *f)

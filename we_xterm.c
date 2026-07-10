@@ -340,6 +340,7 @@ static int e_x_map_char_utf8(int sc, char *buf);
 static int e_x_wchar_to_utf8(int wc, char *buf);
 static XftFont *e_xft_fallback_font(int codepoint);
 static void e_xft_draw_acs(int sc, int px, int py, int fg_idx);
+static void e_xft_copy_cell_area(int x1, int y1, int x2, int y2);
 
 static void e_x_render_cell(int sc, int px, int py, int cw,
                             int fg_idx, int bg_idx)
@@ -431,9 +432,24 @@ int fk_show_cursor()
 #ifdef HAVE_XFT
  if (WpeXInfo.xftfont)
  {
+  if (cur_x < 0 || cur_x >= MAXSCOL || cur_y < 0 || cur_y >= MAXSLNS)
+   return 1;
+  int x1 = cur_x, y1 = cur_y, x2, y2 = cur_y + 1;
+  x2 = cur_x + ((schirm[cur_y * MAXSCOL + cur_x].flags & CELL_WIDE) ? 2 : 1);
   if (old_cursor_x > 0 || old_cursor_y > 0)
+  {
+   int on = old_cursor_y * MAXSCOL + old_cursor_x;
+   int ocw = (old_cursor_x >= 0 && old_cursor_x < MAXSCOL &&
+              old_cursor_y >= 0 && old_cursor_y < MAXSLNS &&
+              (schirm[on].flags & CELL_WIDE)) ? 2 : 1;
    e_xft_paint_cursor_cell(old_cursor_x, old_cursor_y, 0);  /* restore */
+   if (old_cursor_x < x1) x1 = old_cursor_x;
+   if (old_cursor_y < y1) y1 = old_cursor_y;
+   if (old_cursor_x + ocw > x2) x2 = old_cursor_x + ocw;
+   if (old_cursor_y + 1 > y2) y2 = old_cursor_y + 1;
+  }
   e_xft_paint_cursor_cell(cur_x, cur_y, 1);                 /* draw inverted */
+  e_xft_copy_cell_area(x1, y1, x2, y2);
  }
  else
 #endif /* HAVE_XFT */
@@ -825,9 +841,25 @@ static XftFont *e_xft_fallback_font(int rune)
    redraws only cells that differ from altschirm[] (the incremental refresh);
    force=1 redraws every cell (a full repaint).  CELL_WIDE_SPACER cells are
    never drawn -- the wide glyph to their left already covered them. */
-static void e_x_render_dirty_cells(int force)
+static void e_xft_copy_cell_area(int x1, int y1, int x2, int y2)
+{
+ if (x1 < 0) x1 = 0;
+ if (y1 < 0) y1 = 0;
+ if (x2 > MAXSCOL) x2 = MAXSCOL;
+ if (y2 > MAXSLNS) y2 = MAXSLNS;
+ if (x2 <= x1 || y2 <= y1)
+  return;
+ XCopyArea(WpeXInfo.display, WpeXInfo.backbuf, WpeXInfo.window,
+   WpeXInfo.gc, WpeXInfo.font_width * x1, WpeXInfo.font_height * y1,
+   WpeXInfo.font_width * (x2 - x1), WpeXInfo.font_height * (y2 - y1),
+   WpeXInfo.font_width * x1, WpeXInfo.font_height * y1);
+}
+
+static int e_x_render_dirty_cells(int force, int *x1, int *y1, int *x2, int *y2)
 {
  int i, j;
+ int have_dirty = 0;
+ int dx1 = MAXSCOL, dy1 = MAXSLNS, dx2 = 0, dy2 = 0;
  for (i = 0; i < MAXSLNS; i++)
  for (j = 0; j < MAXSCOL; j++)
  {
@@ -845,21 +877,34 @@ static void e_x_render_dirty_cells(int force)
   if (force || sc != altschirm[_n].ch || sa != altschirm[_n].attr
       || schirm[_n].flags != altschirm[_n].flags)
   {
+   int cw = (schirm[_n].flags & CELL_WIDE) ? 2 : 1;
    e_x_render_cell(sc, WpeXInfo.font_width * j, WpeXInfo.font_height * i,
-     (schirm[_n].flags & CELL_WIDE) ? 2 : 1,
+     cw,
      ATTR_IS_TC(sa) ? 16 + ATTR_TC_SLOT(sa) : ATTR_BASE(sa) % 16,
      ATTR_BASE(sa) / 16);
    altschirm[_n] = schirm[_n];
+   if (j < dx1) dx1 = j;
+   if (i < dy1) dy1 = i;
+   if (j + cw > dx2) dx2 = j + cw;
+   if (i + 1 > dy2) dy2 = i + 1;
+   have_dirty = 1;
   }
  }
+ if (have_dirty && x1 && y1 && x2 && y2)
+ {
+  *x1 = dx1;
+  *y1 = dy1;
+  *x2 = dx2;
+  *y2 = dy2;
+ }
+ return have_dirty;
 }
 
 static void e_x_refresh_xft(void)
 {
- e_x_render_dirty_cells(0);
- XCopyArea(WpeXInfo.display, WpeXInfo.backbuf, WpeXInfo.window,
-   WpeXInfo.gc, 0, 0,
-   WpeXInfo.font_width * MAXSCOL, WpeXInfo.font_height * MAXSLNS, 0, 0);
+ int x1, y1, x2, y2;
+ if (e_x_render_dirty_cells(0, &x1, &y1, &x2, &y2))
+  e_xft_copy_cell_area(x1, y1, x2, y2);
 }
 
 /* The Cairo refresh path calls wpe_render_chrome(), which lives in
@@ -868,13 +913,13 @@ static void e_x_refresh_xft(void)
 #ifdef HAVE_CAIRO
 static void e_x_refresh_cairo(void)
 {
- e_x_render_dirty_cells(0);
+ e_x_render_dirty_cells(0, NULL, NULL, NULL, NULL);
  wpe_render_chrome();
 }
 
 static void e_x_refresh_cairo_full(void)
 {
- e_x_render_dirty_cells(1);
+ e_x_render_dirty_cells(1, NULL, NULL, NULL, NULL);
  wpe_render_chrome();
 }
 #endif /* HAVE_CAIRO */
@@ -1147,6 +1192,27 @@ static int e_x_apply_configure(XEvent *report, int *pw, int *ph,
  return 1;
 }
 
+#ifdef HAVE_XFT
+/* Copy an Expose rect from the Xft backbuf to the window, clamped to the
+   snapped whole-cell grid.  backbuf is MAXSCOL*font_width by MAXSLNS*font_height,
+   but under libx11-compat an Expose carries the full physical window size, whose
+   sub-cell remainder band runs past the pixmap after a live-resize.  Copying that
+   off-pixmap area drops the trailing row (the bottom function-key bar), so clamp
+   the extent; the remainder band is cleared separately by e_x_apply_resize.
+   Shared by both Expose handlers below so the clamp arithmetic lives in one
+   place. */
+static void e_x_copy_backbuf_clamped(int x, int y, int w, int h)
+{
+ int bw = MAXSCOL * WpeXInfo.font_width;
+ int bh = MAXSLNS * WpeXInfo.font_height;
+ if (x + w > bw) w = bw - x;
+ if (y + h > bh) h = bh - y;
+ if (w > 0 && h > 0)
+  XCopyArea(WpeXInfo.display, WpeXInfo.backbuf, WpeXInfo.window,
+    WpeXInfo.gc, x, y, w, h, x, y);
+}
+#endif
+
 int e_x_change(PIC *pic)
 {
  XEvent report;
@@ -1174,11 +1240,8 @@ int e_x_change(PIC *pic)
       break;
      }
      do {
-      XCopyArea(WpeXInfo.display, WpeXInfo.backbuf, WpeXInfo.window,
-        WpeXInfo.gc,
-        expose_report->x, expose_report->y,
-        expose_report->width, expose_report->height,
-        expose_report->x, expose_report->y);
+      e_x_copy_backbuf_clamped(expose_report->x, expose_report->y,
+        expose_report->width, expose_report->height);
      } while (XCheckTypedWindowEvent(WpeXInfo.display, WpeXInfo.window,
               Expose, &report));
     }
@@ -1279,6 +1342,53 @@ static int e_compose_dead(KeySym dead, int base)
 }
 
 extern int e_utf8_to_codepoint(unsigned char *buf, int len);
+extern int e_utf8_charlen(unsigned char c);
+
+static unsigned char e_x_pending_utf8[BUFSIZE];
+static int e_x_pending_utf8_len;
+static int e_x_pending_utf8_pos;
+
+static int e_x_utf8_codepoint(unsigned char *buf, int len)
+{
+ if (len == 1 && buf[0] < 0x80)
+  return buf[0];
+ return e_utf8_to_codepoint(buf, len);
+}
+
+static int e_x_next_pending_utf8(void)
+{
+ if (e_x_pending_utf8_pos >= e_x_pending_utf8_len)
+  return -1;
+ int len = e_utf8_charlen(e_x_pending_utf8[e_x_pending_utf8_pos]);
+ if (len > e_x_pending_utf8_len - e_x_pending_utf8_pos)
+ {
+  e_x_pending_utf8_len = e_x_pending_utf8_pos = 0;
+  return -1;
+ }
+ int cp = e_x_utf8_codepoint(e_x_pending_utf8 + e_x_pending_utf8_pos, len);
+ e_x_pending_utf8_pos += len;
+ if (e_x_pending_utf8_pos >= e_x_pending_utf8_len)
+  e_x_pending_utf8_len = e_x_pending_utf8_pos = 0;
+ return cp;
+}
+
+static int e_x_first_utf8_codepoint(unsigned char *buf, int len)
+{
+ int first_len = e_utf8_charlen(buf[0]);
+ if (first_len > len)
+  return -1;
+ int cp = e_x_utf8_codepoint(buf, first_len);
+ if (cp > 0 && len > first_len)
+ {
+  int tail = len - first_len;
+  if (tail > BUFSIZE)
+   tail = BUFSIZE;
+  memcpy(e_x_pending_utf8, buf + first_len, tail);
+  e_x_pending_utf8_len = tail;
+  e_x_pending_utf8_pos = 0;
+ }
+ return cp;
+}
 
 /* Discard any typed-ahead keys / clicks (X11): the analogue of e_t_flush_input,
    used after a long synchronous operation so events queued during the freeze are
@@ -1290,6 +1400,98 @@ void e_x_flush_input(void)
                         KeyPressMask | ButtonPressMask | ButtonReleaseMask,
                         &report))
   ;
+ e_x_pending_utf8_len = e_x_pending_utf8_pos = 0;
+}
+
+/* Apply a window pixel size to the cell grid and repaint, mirroring the
+   ConfigureNotify handler in e_x_getch().  Snaps the size down to whole font
+   cells and no-ops when the resulting grid is unchanged, so it is safe to call
+   repeatedly (e.g. once per live-resize drag tick).  Shared by the live-resize
+   reflow hook below. */
+static void e_x_apply_resize(int win_pixel_w, int win_pixel_h)
+{
+ int snap_w = (win_pixel_w / WpeXInfo.font_width) * WpeXInfo.font_width;
+ int snap_h = (win_pixel_h / WpeXInfo.font_height) * WpeXInfo.font_height;
+ /* The cell grid snaps DOWN to whole font cells, but under libx11-compat the
+    window backing is the full physical pixel size.  That leaves a sub-cell
+    remainder band at the right/bottom edge (< one font cell) that we never
+    draw into: the backbuf->window XCopyArea below only covers the snapped
+    grid.  During a live-resize grow the shim carries the old backing over to
+    avoid a flash, so stale pixels (e.g. the previous bottom function-key bar)
+    survive in that band and show as a second, half-drawn bar.  Clear the band
+    to the window background so only real grid content ever appears there.  Run
+    this before the grid-unchanged early return so sub-cell growth (which
+    enlarges the backing without changing the grid) is handled too.  Uses the
+    same XClearArea path the shim uses for its own growth-margin clears, so the
+    band matches the surrounding background and never flashes real content. */
+ if (win_pixel_w > snap_w)
+  XClearArea(WpeXInfo.display, WpeXInfo.window, snap_w, 0,
+    win_pixel_w - snap_w, win_pixel_h, False);
+ if (win_pixel_h > snap_h)
+  XClearArea(WpeXInfo.display, WpeXInfo.window, 0, snap_h,
+    win_pixel_w, win_pixel_h - snap_h, False);
+ if (snap_w == MAXSCOL * WpeXInfo.font_width &&
+     snap_h == MAXSLNS * WpeXInfo.font_height)
+  return;
+ { int _i, _old_scol = MAXSCOL, _old_slns = MAXSLNS;
+   MAXSCOL = snap_w / WpeXInfo.font_width;
+   MAXSLNS = snap_h / WpeXInfo.font_height;
+#ifdef HAVE_XFT
+   if (WpeXInfo.xftfont)
+   {
+    if (WpeXInfo.xftdraw)
+     XftDrawDestroy(WpeXInfo.xftdraw);
+    if (WpeRender.resize)
+    {
+     WpeRender.resize(snap_w, snap_h);
+    }
+    else
+    {
+     if (WpeXInfo.backbuf)
+      XFreePixmap(WpeXInfo.display, WpeXInfo.backbuf);
+     WpeXInfo.backbuf = XCreatePixmap(WpeXInfo.display, WpeXInfo.window,
+       snap_w, snap_h,
+       DefaultDepth(WpeXInfo.display, WpeXInfo.screen));
+     XSetForeground(WpeXInfo.display, WpeXInfo.gc,
+       BlackPixel(WpeXInfo.display, WpeXInfo.screen));
+     XFillRectangle(WpeXInfo.display, WpeXInfo.backbuf, WpeXInfo.gc,
+       0, 0, snap_w, snap_h);
+    }
+    WpeXInfo.xftdraw = XftDrawCreate(WpeXInfo.display, WpeXInfo.backbuf,
+      DefaultVisual(WpeXInfo.display, WpeXInfo.screen),
+      DefaultColormap(WpeXInfo.display, WpeXInfo.screen));
+   }
+#endif
+   { extern PIC *e_X_l_pic;
+     int _is_win_pic = 0;
+     for (_i = 0; _i <= WpeEditor->mxedt; _i++)
+      if (e_X_l_pic == WpeEditor->f[_i]->pic) { _is_win_pic = 1; break; }
+     if (!_is_win_pic)
+      (*e_u_setlastpic)(NULL);
+   }
+   XCopyArea(WpeXInfo.display, WpeXInfo.backbuf, WpeXInfo.window,
+     WpeXInfo.gc, 0, 0,
+     MAXSCOL * WpeXInfo.font_width, MAXSLNS * WpeXInfo.font_height, 0, 0);
+   e_relayout_windows(WpeEditor, _old_scol, _old_slns);
+   e_x_repaint_desk(WpeEditor->f[WpeEditor->mxedt]);
+ }
+}
+
+/* libx11-compat live-resize hook: invoked on each tick of the macOS modal
+   resize loop with the live physical-pixel window size. */
+static void e_x_live_resize_reflow(int win_pixel_w, int win_pixel_h)
+{
+ e_x_apply_resize(win_pixel_w, win_pixel_h);
+}
+
+/* Register the reflow hook with libx11-compat if it is present.  Declared weak
+   so a build against a real libX11 (symbol absent) links and no-ops. */
+extern void libx11CompatRegisterLiveResizeReflow(void (*)(int, int))
+ __attribute__((weak));
+void e_x_register_live_resize(void)
+{
+ if (libx11CompatRegisterLiveResizeReflow)
+  libx11CompatRegisterLiveResizeReflow(e_x_live_resize_reflow);
 }
 
 int e_x_getch()
@@ -1305,6 +1507,9 @@ int e_x_getch()
  XSizeHints size_hints;
 
  e_refresh();
+ c = e_x_next_pending_utf8();
+ if (c > 0)
+  return c;
 
  XQueryPointer(WpeXInfo.display, WpeXInfo.window, &tmp_root, &tmp_win,
    &root_x, &root_y, &x, &y, &key_b);
@@ -1349,11 +1554,8 @@ int e_x_getch()
       break;
      }
      do {
-      XCopyArea(WpeXInfo.display, WpeXInfo.backbuf, WpeXInfo.window,
-        WpeXInfo.gc,
-        report.xexpose.x, report.xexpose.y,
-        report.xexpose.width, report.xexpose.height,
-        report.xexpose.x, report.xexpose.y);
+      e_x_copy_backbuf_clamped(report.xexpose.x, report.xexpose.y,
+        report.xexpose.width, report.xexpose.height);
      } while (XCheckTypedWindowEvent(WpeXInfo.display, WpeXInfo.window,
               Expose, &report));
     }
@@ -1574,9 +1776,9 @@ int e_x_getch()
       c = c + 512;
      return(c);
     }
-    if (charcount >= 2 && (buffer[0] & 0xC0) == 0xC0)
+    if (charcount >= 2)
     {
-     c = e_utf8_to_codepoint(buffer, charcount);
+     c = e_x_first_utf8_codepoint(buffer, charcount);
      if (c > 0)
       return(c);
     }
@@ -1662,6 +1864,9 @@ int e_x_kbhit()
  unsigned int key_b;
 
  e_refresh();
+ c = e_x_next_pending_utf8();
+ if (c > 0)
+  return c;
 
  if (XCheckMaskEvent(WpeXInfo.display, ButtonPressMask | KeyPressMask, &report) == False)
   return(0);
@@ -1694,9 +1899,9 @@ int e_x_kbhit()
    if (composed > 0) return composed;
   }
   e_compose_pending = 0;
-  if (charcount >= 2 && (buffer[0] & 0xC0) == 0xC0)
+  if (charcount >= 2)
   {
-   int cp = e_utf8_to_codepoint(buffer, charcount);
+   int cp = e_x_first_utf8_codepoint(buffer, charcount);
    if (cp > 0) return cp;
   }
   if(charcount == 1) return(*buffer);

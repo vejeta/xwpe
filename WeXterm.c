@@ -647,6 +647,29 @@ void WpeXInit(int *argc, char **argv)
  /* Create back buffer Pixmap and XftDraw (after XMapWindow so window exists) */
  if (WpeXInfo.xftfont)
  {
+  /* Size the initial cell grid from the MAPPED window rather than the requested
+     size_hints.  Under libx11-compat on a HiDPI backing the top-level window is
+     promoted to physical pixels at map time, so the real window is larger than
+     what was requested (e.g. 3040x1728 vs 1520x864).  xwpe normally corrects
+     MAXSCOL/MAXSLNS from that size only when it processes the post-map
+     ConfigureNotify in its event loop -- but main() draws the initial File
+     Manager before the event loop runs, so the first dialog would be laid out
+     with the stale requested grid (MAXSCOL=80) and be the wrong size.  Reading
+     the actual geometry here yields the same grid the ConfigureNotify handler
+     would compute (MAXSCOL=160), so the first dialog matches later ones and the
+     back buffer below is allocated at the correct size.  On a non-HiDPI host
+     XGetWindowAttributes returns the requested size, leaving this a no-op. */
+  {
+   XWindowAttributes wattr;
+   if (XGetWindowAttributes(WpeXInfo.display, WpeXInfo.window, &wattr) &&
+       wattr.width > 0 && wattr.height > 0)
+   {
+    MAXSCOL = wattr.width  / WpeXInfo.font_width;
+    MAXSLNS = wattr.height / WpeXInfo.font_height;
+    size_hints.width  = MAXSCOL * WpeXInfo.font_width;
+    size_hints.height = MAXSLNS * WpeXInfo.font_height;
+   }
+  }
   WpeXInfo.backbuf = XCreatePixmap(WpeXInfo.display, WpeXInfo.window,
     size_hints.width, size_hints.height,
     DefaultDepth(WpeXInfo.display, WpeXInfo.screen));
@@ -666,10 +689,35 @@ void WpeXInit(int *argc, char **argv)
      Refit the cell grid to the existing window so the first frame -- and
      in particular any dialog laid out before the first ConfigureNotify --
      uses cell counts that match the chrome we are about to draw. */
-  MAXSCOL = size_hints.width  / WpeXInfo.font_width;
-  MAXSLNS = size_hints.height / WpeXInfo.font_height;
-  size_hints.width  = MAXSCOL * WpeXInfo.font_width;
-  size_hints.height = MAXSLNS * WpeXInfo.font_height;
+  {
+   XWindowAttributes wattr;
+   int fit_w = size_hints.width, fit_h = size_hints.height;
+   int old_w = size_hints.width, old_h = size_hints.height;
+   if (XGetWindowAttributes(WpeXInfo.display, WpeXInfo.window, &wattr) &&
+       wattr.width > 0 && wattr.height > 0)
+   {
+    fit_w = wattr.width;
+    fit_h = wattr.height;
+   }
+   MAXSCOL = fit_w / WpeXInfo.font_width;
+   MAXSLNS = fit_h / WpeXInfo.font_height;
+   size_hints.width  = MAXSCOL * WpeXInfo.font_width;
+   size_hints.height = MAXSLNS * WpeXInfo.font_height;
+   /* wpe_render_cairo_init() sized the back buffer and cairo surface to the
+      pre-refit grid.  When the refit enlarged it (HiDPI physical promotion),
+      grow the render backing to match now, mirroring the ConfigureNotify
+      handler, so the first dialog is not clipped to the stale surface. */
+   if ((size_hints.width != old_w || size_hints.height != old_h) &&
+       WpeRender.resize)
+   {
+    if (WpeXInfo.xftdraw)
+     XftDrawDestroy(WpeXInfo.xftdraw);
+    WpeRender.resize(size_hints.width, size_hints.height);
+    WpeXInfo.xftdraw = XftDrawCreate(WpeXInfo.display, WpeXInfo.backbuf,
+      DefaultVisual(WpeXInfo.display, WpeXInfo.screen),
+      DefaultColormap(WpeXInfo.display, WpeXInfo.screen));
+   }
+  }
 #endif
  }
 #endif
@@ -693,6 +741,13 @@ void WpeXInit(int *argc, char **argv)
 
  e_abs_refr();
  /* end of untouched section */
+
+ /* Opt in to libx11-compat's live-resize reflow: during a macOS modal resize
+    drag it invokes our hook on each tick so the editor reflows and paints real
+    content into the grown area instead of a guessed fill.  Weak-linked, so this
+    is a no-op under a real libX11.  Registered here, once, after the window,
+    font metrics, back buffer and initial grid are all set up. */
+ { extern void e_x_register_live_resize(void); e_x_register_live_resize(); }
 
  return;
 }
