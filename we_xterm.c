@@ -1186,6 +1186,53 @@ static int e_compose_dead(KeySym dead, int base)
 }
 
 extern int e_utf8_to_codepoint(unsigned char *buf, int len);
+extern int e_utf8_charlen(unsigned char c);
+
+static unsigned char e_x_pending_utf8[BUFSIZE];
+static int e_x_pending_utf8_len;
+static int e_x_pending_utf8_pos;
+
+static int e_x_utf8_codepoint(unsigned char *buf, int len)
+{
+ if (len == 1 && buf[0] < 0x80)
+  return buf[0];
+ return e_utf8_to_codepoint(buf, len);
+}
+
+static int e_x_next_pending_utf8(void)
+{
+ if (e_x_pending_utf8_pos >= e_x_pending_utf8_len)
+  return -1;
+ int len = e_utf8_charlen(e_x_pending_utf8[e_x_pending_utf8_pos]);
+ if (len > e_x_pending_utf8_len - e_x_pending_utf8_pos)
+ {
+  e_x_pending_utf8_len = e_x_pending_utf8_pos = 0;
+  return -1;
+ }
+ int cp = e_x_utf8_codepoint(e_x_pending_utf8 + e_x_pending_utf8_pos, len);
+ e_x_pending_utf8_pos += len;
+ if (e_x_pending_utf8_pos >= e_x_pending_utf8_len)
+  e_x_pending_utf8_len = e_x_pending_utf8_pos = 0;
+ return cp;
+}
+
+static int e_x_first_utf8_codepoint(unsigned char *buf, int len)
+{
+ int first_len = e_utf8_charlen(buf[0]);
+ if (first_len > len)
+  return -1;
+ int cp = e_x_utf8_codepoint(buf, first_len);
+ if (cp > 0 && len > first_len)
+ {
+  int tail = len - first_len;
+  if (tail > BUFSIZE)
+   tail = BUFSIZE;
+  memcpy(e_x_pending_utf8, buf + first_len, tail);
+  e_x_pending_utf8_len = tail;
+  e_x_pending_utf8_pos = 0;
+ }
+ return cp;
+}
 
 /* Discard any typed-ahead keys / clicks (X11): the analogue of e_t_flush_input,
    used after a long synchronous operation so events queued during the freeze are
@@ -1197,6 +1244,7 @@ void e_x_flush_input(void)
                         KeyPressMask | ButtonPressMask | ButtonReleaseMask,
                         &report))
   ;
+ e_x_pending_utf8_len = e_x_pending_utf8_pos = 0;
 }
 
 int e_x_getch()
@@ -1212,6 +1260,9 @@ int e_x_getch()
  XSizeHints size_hints;
 
  e_refresh();
+ c = e_x_next_pending_utf8();
+ if (c > 0)
+  return c;
 
  XQueryPointer(WpeXInfo.display, WpeXInfo.window, &tmp_root, &tmp_win,
    &root_x, &root_y, &x, &y, &key_b);
@@ -1513,9 +1564,9 @@ int e_x_getch()
       c = c + 512;
      return(c);
     }
-    if (charcount >= 2 && (buffer[0] & 0xC0) == 0xC0)
+    if (charcount >= 2)
     {
-     c = e_utf8_to_codepoint(buffer, charcount);
+     c = e_x_first_utf8_codepoint(buffer, charcount);
      if (c > 0)
       return(c);
     }
@@ -1601,6 +1652,9 @@ int e_x_kbhit()
  unsigned int key_b;
 
  e_refresh();
+ c = e_x_next_pending_utf8();
+ if (c > 0)
+  return c;
 
  if (XCheckMaskEvent(WpeXInfo.display, ButtonPressMask | KeyPressMask, &report) == False)
   return(0);
@@ -1633,9 +1687,9 @@ int e_x_kbhit()
    if (composed > 0) return composed;
   }
   e_compose_pending = 0;
-  if (charcount >= 2 && (buffer[0] & 0xC0) == 0xC0)
+  if (charcount >= 2)
   {
-   int cp = e_utf8_to_codepoint(buffer, charcount);
+   int cp = e_x_first_utf8_codepoint(buffer, charcount);
    if (cp > 0) return cp;
   }
   if(charcount == 1) return(*buffer);

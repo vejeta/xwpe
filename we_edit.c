@@ -527,7 +527,7 @@ int e_eingabe(ECNT *e)
   }
 #endif
   if ((c > 31 || (c == WPE_TAB && !(f->flg & 1)) ||
-    (f->ins > 1 && f->ins != 8)) && c < 255)
+    (f->ins > 1 && f->ins != 8)) && (c < 255 || c > WPE_LSP_MENU))
   {
    if (f->ins == 8) continue;
    if (c >= 0x80)
