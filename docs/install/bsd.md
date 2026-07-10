@@ -32,7 +32,7 @@ All three BSDs already package xwpe (at the old 1.5.30a):
 [OpenBSD `editors/xwpe`](https://openports.pl/path/editors/xwpe) and
 [NetBSD pkgsrc `editors/xwpe`](https://pkgsrc.se/editors/xwpe).
 
-A 1.6.6 update has been submitted to each (the 1.5.30a/1.6.5 tarballs predate
+A 1.6.9 update has been submitted to each (the 1.5.30a/1.6.5 tarballs predate
 the portability fixes):
 
 - **FreeBSD** -- bug [296205](https://bugs.freebsd.org/bugzilla/show_bug.cgi?id=296205)
@@ -41,4 +41,4 @@ the portability fixes):
 - **OpenBSD** -- update posted to the `ports@openbsd.org` list.
 
 Once these land, `pkg install xwpe` / `pkg_add xwpe` / `pkgin install xwpe` will
-give 1.6.6 directly.
+give 1.6.9 directly.

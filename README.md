@@ -5,7 +5,7 @@
 # xwpe
 
 > [!NOTE]
-> The current release is **1.6.6**. The editor, compiler integration and
+> The current release is **1.6.9**. The editor, compiler integration and
 > debugger are stable; the **LSP client** (language-server features) is newer
 > and still maturing, so expect the occasional rough edge there &mdash; please
 > report what breaks. **Testers welcome.**
@@ -51,7 +51,7 @@ until a package reaches your distro, the from-source build works everywhere.
 | **Fedora / RHEL** | build from source (Fedora review in progress) | [docs/install/fedora.md](docs/install/fedora.md) |
 | **openSUSE** | Tumbleweed package (landing) &middot; or build | [docs/install/opensuse.md](docs/install/opensuse.md) |
 | **Arch** | AUR: `yay -S xwpe` | [docs/install/arch.md](docs/install/arch.md) |
-| **macOS** | Homebrew tap (1.6.6) &mdash; see guide | [docs/install/macos.md](docs/install/macos.md) |
+| **macOS** | Homebrew tap &mdash; see guide | [docs/install/macos.md](docs/install/macos.md) |
 | **FreeBSD / OpenBSD / NetBSD** | build from source (ports update on the way) | [docs/install/bsd.md](docs/install/bsd.md) |
 | **Any UNIX, from source** | `autoreconf -fi && ./configure && make && sudo make install` | [BUILDING.md](BUILDING.md) |
 
@@ -107,7 +107,7 @@ on a plain console, or in any terminal emulator.
   <br><em>A real source-level debugger: Go through Delve/DAP &mdash; stopped at a breakpoint, with a live watch (<code>fact</code>) updating as the loop runs. More in <a href="docs/ide-setup.md">docs/ide-setup.md</a>.</em>
 </p>
 
-For the full release-by-release history (1.6.6, 1.6.5 LSP/DAP, 1.6.3, 1.6.2),
+For the full release-by-release history (1.6.9, 1.6.6, 1.6.5 LSP/DAP, 1.6.3, 1.6.2),
 see the [CHANGELOG](CHANGELOG).
 
 ## Compiler support
