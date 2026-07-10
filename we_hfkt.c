@@ -289,6 +289,18 @@ int e_pr_uul(FARBE *fb)
  if (prj)
   e_pr_str(MAXSCOL - 2 - strlen(prj), MAXSLNS - 1,
            prj, fb->ms.fb, -1, -1, fb->ms.fb, fb->mt.fb);
+ /* The incremental Xft refresh copies only the bounding box of cells whose
+    char/attr differ from altschirm[].  When the bar is repainted after a
+    window that overlapped this row closes (e.g. the File-Manager), cells
+    whose glyph happens to be unchanged are skipped, so stale pixels survive
+    in the backbuf.  Break the altschirm sync for the whole bar row so the
+    next e_refresh re-renders and copies row MAXSLNS-1 in full. */
+ {
+  extern SCREENCELL *altschirm;
+  int _j;
+  for (_j = 0; _j < MAXSCOL; ++_j)
+   altschirm[(MAXSLNS - 1) * MAXSCOL + _j].ch = -1;
+ }
  return(i);
 }
 
