@@ -1247,6 +1247,97 @@ void e_x_flush_input(void)
  e_x_pending_utf8_len = e_x_pending_utf8_pos = 0;
 }
 
+/* Apply a window pixel size to the cell grid and repaint, mirroring the
+   ConfigureNotify handler in e_x_getch().  Snaps the size down to whole font
+   cells and no-ops when the resulting grid is unchanged, so it is safe to call
+   repeatedly (e.g. once per live-resize drag tick).  Shared by the live-resize
+   reflow hook below. */
+static void e_x_apply_resize(int win_pixel_w, int win_pixel_h)
+{
+ int snap_w = (win_pixel_w / WpeXInfo.font_width) * WpeXInfo.font_width;
+ int snap_h = (win_pixel_h / WpeXInfo.font_height) * WpeXInfo.font_height;
+ /* The cell grid snaps DOWN to whole font cells, but under libx11-compat the
+    window backing is the full physical pixel size.  That leaves a sub-cell
+    remainder band at the right/bottom edge (< one font cell) that we never
+    draw into: the backbuf->window XCopyArea below only covers the snapped
+    grid.  During a live-resize grow the shim carries the old backing over to
+    avoid a flash, so stale pixels (e.g. the previous bottom function-key bar)
+    survive in that band and show as a second, half-drawn bar.  Clear the band
+    to the window background so only real grid content ever appears there.  Run
+    this before the grid-unchanged early return so sub-cell growth (which
+    enlarges the backing without changing the grid) is handled too.  Uses the
+    same XClearArea path the shim uses for its own growth-margin clears, so the
+    band matches the surrounding background and never flashes real content. */
+ if (win_pixel_w > snap_w)
+  XClearArea(WpeXInfo.display, WpeXInfo.window, snap_w, 0,
+    win_pixel_w - snap_w, win_pixel_h, False);
+ if (win_pixel_h > snap_h)
+  XClearArea(WpeXInfo.display, WpeXInfo.window, 0, snap_h,
+    win_pixel_w, win_pixel_h - snap_h, False);
+ if (snap_w == MAXSCOL * WpeXInfo.font_width &&
+     snap_h == MAXSLNS * WpeXInfo.font_height)
+  return;
+ { int _i, _old_scol = MAXSCOL, _old_slns = MAXSLNS;
+   MAXSCOL = snap_w / WpeXInfo.font_width;
+   MAXSLNS = snap_h / WpeXInfo.font_height;
+#ifdef HAVE_XFT
+   if (WpeXInfo.xftfont)
+   {
+    if (WpeXInfo.xftdraw)
+     XftDrawDestroy(WpeXInfo.xftdraw);
+    if (WpeRender.resize)
+    {
+     WpeRender.resize(snap_w, snap_h);
+    }
+    else
+    {
+     if (WpeXInfo.backbuf)
+      XFreePixmap(WpeXInfo.display, WpeXInfo.backbuf);
+     WpeXInfo.backbuf = XCreatePixmap(WpeXInfo.display, WpeXInfo.window,
+       snap_w, snap_h,
+       DefaultDepth(WpeXInfo.display, WpeXInfo.screen));
+     XSetForeground(WpeXInfo.display, WpeXInfo.gc,
+       BlackPixel(WpeXInfo.display, WpeXInfo.screen));
+     XFillRectangle(WpeXInfo.display, WpeXInfo.backbuf, WpeXInfo.gc,
+       0, 0, snap_w, snap_h);
+    }
+    WpeXInfo.xftdraw = XftDrawCreate(WpeXInfo.display, WpeXInfo.backbuf,
+      DefaultVisual(WpeXInfo.display, WpeXInfo.screen),
+      DefaultColormap(WpeXInfo.display, WpeXInfo.screen));
+   }
+#endif
+   { extern PIC *e_X_l_pic;
+     int _is_win_pic = 0;
+     for (_i = 0; _i <= WpeEditor->mxedt; _i++)
+      if (e_X_l_pic == WpeEditor->f[_i]->pic) { _is_win_pic = 1; break; }
+     if (!_is_win_pic)
+      (*e_u_setlastpic)(NULL);
+   }
+   XCopyArea(WpeXInfo.display, WpeXInfo.backbuf, WpeXInfo.window,
+     WpeXInfo.gc, 0, 0,
+     MAXSCOL * WpeXInfo.font_width, MAXSLNS * WpeXInfo.font_height, 0, 0);
+   e_relayout_windows(WpeEditor, _old_scol, _old_slns);
+   e_x_repaint_desk(WpeEditor->f[WpeEditor->mxedt]);
+ }
+}
+
+/* libx11-compat live-resize hook: invoked on each tick of the macOS modal
+   resize loop with the live physical-pixel window size. */
+static void e_x_live_resize_reflow(int win_pixel_w, int win_pixel_h)
+{
+ e_x_apply_resize(win_pixel_w, win_pixel_h);
+}
+
+/* Register the reflow hook with libx11-compat if it is present.  Declared weak
+   so a build against a real libX11 (symbol absent) links and no-ops. */
+extern void libx11CompatRegisterLiveResizeReflow(void (*)(int, int))
+ __attribute__((weak));
+void e_x_register_live_resize(void)
+{
+ if (libx11CompatRegisterLiveResizeReflow)
+  libx11CompatRegisterLiveResizeReflow(e_x_live_resize_reflow);
+}
+
 int e_x_getch()
 {
  Window tmp_win, tmp_root;

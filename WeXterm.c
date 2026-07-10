@@ -742,6 +742,13 @@ void WpeXInit(int *argc, char **argv)
  e_abs_refr();
  /* end of untouched section */
 
+ /* Opt in to libx11-compat's live-resize reflow: during a macOS modal resize
+    drag it invokes our hook on each tick so the editor reflows and paints real
+    content into the grown area instead of a guessed fill.  Weak-linked, so this
+    is a no-op under a real libX11.  Registered here, once, after the window,
+    font metrics, back buffer and initial grid are all set up. */
+ { extern void e_x_register_live_resize(void); e_x_register_live_resize(); }
+
  return;
 }
 
