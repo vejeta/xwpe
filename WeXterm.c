@@ -258,6 +258,32 @@ xft_done:
  return ;
 }
 
+/* e_x_publish_size_hints - Re-send WM_NORMAL_HINTS with the current font
+   metrics as the ICCCM resize increment. WpeXGeometryGet publishes these once at
+   startup (width_inc=font_width, height_inc=font_height, min = 80x24 cells), but
+   after e_x_refit_font_for_dpi reloads the font at a different backing scale the
+   cell size changes, so the increment a resize snaps to must be re-advertised.
+   Under libx11-compat there is no window manager; the shim caches PResizeInc and
+   snaps drag-end resizes to it, so a stale increment leaves a sub-cell remainder
+   band. On a real X server this just keeps WM_NORMAL_HINTS accurate. */
+void e_x_publish_size_hints(void)
+{
+ XSizeHints size_hints;
+
+ if (!WpeXInfo.display || !WpeXInfo.window)
+  return;
+ if (WpeXInfo.font_width <= 0 || WpeXInfo.font_height <= 0)
+  return;
+ memset(&size_hints, 0, sizeof(size_hints));
+ size_hints.flags = PResizeInc | PMinSize | PBaseSize;
+ size_hints.width_inc  = WpeXInfo.font_width;
+ size_hints.height_inc = WpeXInfo.font_height;
+ size_hints.min_width  = size_hints.width_inc * 80;
+ size_hints.min_height = size_hints.height_inc * 24;
+ size_hints.base_width = size_hints.base_height = 0;
+ XSetWMNormalHints(WpeXInfo.display, WpeXInfo.window, &size_hints);
+}
+
 /* e_x_refit_font_for_dpi - Reload the font at the current backing scale when a
    mixed-DPI monitor move changed it (libx11-compat advertises the scale on the
    root window; see e_x_read_hidpi_scale). The libx11-compat core-font path
@@ -324,6 +350,11 @@ int e_x_refit_font_for_dpi(void)
  WpeXInfo.xftpattern = configured;
 
  wpe_font_dpi_scale = scale;
+ /* The cell size just changed, so re-advertise the resize increment. Under
+    libx11-compat the shim caches PResizeInc and snaps drag-end resizes to it;
+    without this it would keep snapping to the previous monitor's cell, leaving
+    a sub-cell remainder band on the new display. */
+ e_x_publish_size_hints();
  return 1;
 #else
  return 0;

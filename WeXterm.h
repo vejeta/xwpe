@@ -79,6 +79,11 @@ void WpeXMouseRestoreShape();
    the grid. No-op (returns 0) on a real X server or without Xft. */
 int e_x_refit_font_for_dpi(void);
 
+/* Re-advertise WM_NORMAL_HINTS resize increments from the current font metrics.
+   Called after a DPI refit so the shim's cached PResizeInc snap grid tracks the
+   new cell size; keeps WM_NORMAL_HINTS accurate on a real X server. */
+void e_x_publish_size_hints(void);
+
 #ifdef __cplusplus
 }
 #endif
