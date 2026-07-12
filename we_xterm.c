@@ -1153,6 +1153,11 @@ static int e_x_apply_configure(XEvent *report, int *pw, int *ph,
  while (XCheckTypedWindowEvent(WpeXInfo.display, WpeXInfo.window,
         ConfigureNotify, report))
   ;
+ /* A mixed-DPI monitor move changes the backing scale under libx11-compat; the
+    font is reloaded to the new density before the grid is snapped so the glyph
+    size tracks the destination monitor (no-op on a real X server). The new
+    font_width/height then make the grid comparison below detect the change. */
+ e_x_refit_font_for_dpi();
  w = (report->xconfigure.width  / WpeXInfo.font_width)  * WpeXInfo.font_width;
  h = (report->xconfigure.height / WpeXInfo.font_height) * WpeXInfo.font_height;
  if (w == MAXSCOL * WpeXInfo.font_width && h == MAXSLNS * WpeXInfo.font_height)

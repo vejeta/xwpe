@@ -80,6 +80,52 @@ static XrmOptionDescRec WpeXOptionTable[OPTION_TABLE_SIZE] = {
 static int WpeXMouseDefault[WpeLastShape] = {132, 142, 150, 88, 124};
 static Cursor WpeXMouseCursor[WpeLastShape];
 
+/* Backing scale the font was last built at, read from the libx11-compat root
+   window property. Lets a mixed-DPI monitor move detect that the font must be
+   reloaded at the new density. 1.0 (and unchanging) on a real X server. */
+static double wpe_font_dpi_scale = 1.0;
+
+/* Resolved core-font name from the last WpeXFontGet, so the DPI refit can
+   reload it (the shim re-scales its metrics by the current backing) to reseed
+   the Xft point size. */
+static char wpe_font_name[128] = "8x13";
+
+/* Read the libx11-compat HiDPI backing scale advertised on the root window
+   (_LIBX11_COMPAT_HIDPI_SCALE, a CARDINAL of scale * 1000). Returns 1.0 when
+   the property is absent, i.e. on a real X server or a non-HiDPI host, so the
+   font handling there is unchanged. */
+static double e_x_read_hidpi_scale(void)
+{
+ Atom scale_atom, actual_type;
+ int actual_format;
+ unsigned long nitems, bytes_after;
+ unsigned char *prop = NULL;
+ double scale = 1.0;
+
+ if (!WpeXInfo.display)
+  return 1.0;
+ scale_atom = XInternAtom(WpeXInfo.display, "_LIBX11_COMPAT_HIDPI_SCALE", True);
+ if (scale_atom == None)
+  return 1.0;
+ if (XGetWindowProperty(WpeXInfo.display,
+       RootWindow(WpeXInfo.display, WpeXInfo.screen), scale_atom, 0, 1, False,
+       XA_CARDINAL, &actual_type, &actual_format, &nitems, &bytes_after,
+       &prop) == Success
+     && prop)
+ {
+  if (actual_type == XA_CARDINAL && actual_format == 32 && nitems >= 1)
+  {
+   unsigned long fixed = *(unsigned long *)prop;
+   if (fixed > 0)
+    scale = (double)fixed / 1000.0;
+  }
+  XFree(prop);
+ }
+ if (scale < 0.5 || scale > 8.0)
+  scale = 1.0;
+ return scale;
+}
+
 /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - *\
   WpeXFontGet - Get font settings from the X resources.
 
@@ -95,12 +141,14 @@ void WpeXFontGet(XrmDatabase xresdb, XrmQuark *name_list,
  XrmRepresentation return_value;
  XrmValue xval;
 
+ wpe_font_dpi_scale = e_x_read_hidpi_scale();
  name_list[1] = XrmStringToQuark("font");
  class_list[1] = XrmStringToQuark("Font");
  if (XrmQGetResource(xresdb, name_list, class_list, &return_value, &xval))
  {
   font_name = (char *)xval.addr;
  }
+ snprintf(wpe_font_name, sizeof(wpe_font_name), "%s", font_name);
  WpeXInfo.font = XLoadQueryFont(WpeXInfo.display, font_name);
 #ifdef HAVE_XFT
  /* With Xft built in, the legacy "8x13" core bitmap font (Debian: xfonts-base)
@@ -208,6 +256,78 @@ xft_done:
 #endif
 
  return ;
+}
+
+/* e_x_refit_font_for_dpi - Reload the font at the current backing scale when a
+   mixed-DPI monitor move changed it (libx11-compat advertises the scale on the
+   root window; see e_x_read_hidpi_scale). The libx11-compat core-font path
+   scales its metrics by the backing, so the Xft point size -- seeded from those
+   metrics -- and thus the glyph size track the destination monitor. Returns 1
+   when the font was reloaded (caller recomputes MAXSCOL/MAXSLNS and the back
+   buffer), 0 when the scale was unchanged. No-op on a real X server, where the
+   scale is always 1.0. */
+int e_x_refit_font_for_dpi(void)
+{
+#ifdef HAVE_XFT
+ double scale = e_x_read_hidpi_scale();
+ int seed_h;
+ int pt_size;
+ char xft_spec[64];
+ FcPattern *parsed, *configured, *match;
+ FcResult fcres;
+ XftFont *newfont;
+
+ if (scale - wpe_font_dpi_scale < 0.001 &&
+     wpe_font_dpi_scale - scale < 0.001)
+  return 0;
+
+ /* Reseed the point size from the core font reloaded at the new backing (the
+    shim rescales its metrics); fall back to the 8x13 seed when no core font is
+    available. */
+ if (WpeXInfo.font)
+  { XFreeFont(WpeXInfo.display, WpeXInfo.font); WpeXInfo.font = NULL; }
+ WpeXInfo.font = XLoadQueryFont(WpeXInfo.display, wpe_font_name);
+ if (WpeXInfo.font &&
+     WpeXInfo.font->max_bounds.width == WpeXInfo.font->min_bounds.width)
+  seed_h = WpeXInfo.font->max_bounds.ascent +
+           WpeXInfo.font->max_bounds.descent;
+ else
+  seed_h = 13;
+ pt_size = seed_h <= 13 ? 10 : seed_h - 3;
+
+ snprintf(xft_spec, sizeof(xft_spec), "monospace:size=%d", pt_size);
+ parsed = FcNameParse((const FcChar8 *)xft_spec);
+ if (!parsed)
+  return 0;
+ configured = FcPatternDuplicate(parsed);
+ FcPatternDestroy(parsed);
+ if (!configured)
+  return 0;
+ FcConfigSubstitute(NULL, configured, FcMatchPattern);
+ XftDefaultSubstitute(WpeXInfo.display, WpeXInfo.screen, configured);
+ match = FcFontMatch(NULL, configured, &fcres);
+ if (!match)
+  { FcPatternDestroy(configured); return 0; }
+ newfont = XftFontOpenPattern(WpeXInfo.display, match);
+ if (!newfont)
+  { FcPatternDestroy(configured); FcPatternDestroy(match); return 0; }
+
+ if (WpeXInfo.xftfont)
+  XftFontClose(WpeXInfo.display, WpeXInfo.xftfont);
+ WpeXInfo.xftfont = newfont;
+ WpeXInfo.font_height  = WpeXInfo.xftfont->ascent + WpeXInfo.xftfont->descent;
+ WpeXInfo.font_width   = WpeXInfo.xftfont->max_advance_width;
+ WpeXInfo.font_descent = WpeXInfo.xftfont->descent;
+
+ if (WpeXInfo.xftpattern)
+  FcPatternDestroy(WpeXInfo.xftpattern);
+ WpeXInfo.xftpattern = configured;
+
+ wpe_font_dpi_scale = scale;
+ return 1;
+#else
+ return 0;
+#endif
 }
 
 /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - *\
