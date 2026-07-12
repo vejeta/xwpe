@@ -74,6 +74,11 @@ void WpeXInit(int *argc, char **argv);
 void WpeXMouseChangeShape(WpeMouseShape new_shape);
 void WpeXMouseRestoreShape();
 
+/* Reload the font at the current libx11-compat backing scale after a mixed-DPI
+   monitor move. Returns nonzero when the font changed so the caller recomputes
+   the grid. No-op (returns 0) on a real X server or without Xft. */
+int e_x_refit_font_for_dpi(void);
+
 #ifdef __cplusplus
 }
 #endif
