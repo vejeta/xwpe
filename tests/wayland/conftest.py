@@ -326,10 +326,30 @@ class WaylandSession:
         self.key(item, delay=delay)
         return self
 
-    def save(self, delay=0.6):
-        """File -> Save (Alt-F, s)."""
+    def save(self, delay=0.6, settle=4.0):
+        """File -> Save (Alt-F, s), then wait until the file is really rewritten.
+
+        The Wayland input path is asynchronous: under load the Alt-F/s keystrokes
+        and the disk write they trigger can land a little after the fixed key
+        delays.  Poll the file mtime so a caller that reads saved_text() right
+        after never observes the pre-save file -- the read-after-save race that
+        made the scrollbar-drag tests flaky in the full suite.  Every caller
+        saves a modified buffer, so the write always lands and this returns as
+        soon as it does (the timeout is only a backstop)."""
+        try:
+            before = os.path.getmtime(self.srcfile)
+        except OSError:
+            before = -1.0
         self.key("alt+f", delay=delay)
         self.key("s", delay=delay)
+        deadline = time.time() + settle
+        while time.time() < deadline:
+            try:
+                if os.path.getmtime(self.srcfile) != before:
+                    break
+            except OSError:
+                pass
+            time.sleep(0.05)
         return self
 
     def saved_text(self):
