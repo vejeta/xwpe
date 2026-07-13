@@ -64,19 +64,58 @@ LIBS="$ace_save_LIBS"
 PKG_CHECK_MODULES([JSONC], [json-c], [],
   [AC_MSG_ERROR([json-c is required for the DAP debug client. Install libjson-c-dev.])])
 
+# --- Optional: build the X11 binaries against the libx11-compat shim ---
+# libx11-compat (codeberg.org/mendezr/xwpe's upstream shim; canonical at
+# github.com/sysprog21/libx11-compat) is a drop-in X11->SDL translation layer:
+# it provides libX11/libXft/libXext on top of SDL2, so the ordinary X11 build
+# runs natively on macOS (pixel-exact Retina, live-resize, mixed-DPI) with NO
+# XQuartz, and on any host with SDL2.  Point --with-libx11-compat at a prefix
+# whose include/ has the X11 + Xft headers and lib/ has libX11.so, libXft.so and
+# libXext.so (the shim installs these as aliases of libX11-compat.so etc.).  The
+# shim renders through Xft only, so this path skips the Cairo/Pango/vterm stack
+# (and, transitively, the native Wayland backend).  xwpe already carries the
+# optional shim hooks (the live-resize reflow registration in we_xterm.c and the
+# _LIBX11_COMPAT_HIDPI_SCALE atom read in WeXterm.c); they are inert against a
+# real libX11 and activate automatically when the shim provides the symbols.
+AC_ARG_WITH([libx11-compat],
+  [AS_HELP_STRING([--with-libx11-compat@<:@=PREFIX@:>@],
+     [Build the X11 binaries against the libx11-compat X11->SDL shim (native macOS, no XQuartz)])],
+  [], [with_libx11_compat=no])
+
+libx11_compat_prefix=
+AS_IF([test "x$with_libx11_compat" != xno], [
+  AS_IF([test "x$with_libx11_compat" = xyes],
+    [AC_MSG_ERROR([--with-libx11-compat needs a prefix: --with-libx11-compat=/path/to/libx11-compat-install])],
+    [libx11_compat_prefix="$with_libx11_compat"])
+  AS_IF([test ! -d "$libx11_compat_prefix/include" -o ! -d "$libx11_compat_prefix/lib"],
+    [AC_MSG_ERROR([libx11-compat prefix '$libx11_compat_prefix' must contain include/ and lib/])])
+])
+
 # --- Optional: X11 ---
 AC_ARG_WITH([x],
   [AS_HELP_STRING([--without-x], [Disable X11 support])],
   [], [with_x=yes])
 
 have_x11=no
+x11_backend="none (X11 disabled)"
 AS_IF([test "x$with_x" != xno], [
-  AC_PATH_XTRA
-  AS_IF([test "x$no_x" != xyes], [
+  AS_IF([test "x$with_libx11_compat" != xno], [
+    # Link the X11 build against the shim instead of the system/XQuartz libX11.
     have_x11=yes
-    X_LIBS="$X_LIBS $X_PRE_LIBS -lX11 $X_EXTRA_LIBS"
+    x11_backend="libx11-compat shim ($libx11_compat_prefix)"
+    X_CFLAGS="-I$libx11_compat_prefix/include"
+    X_LIBS="-L$libx11_compat_prefix/lib -Wl,-rpath,$libx11_compat_prefix/lib -lX11 -lXext"
+  ], [
+    AC_PATH_XTRA
+    AS_IF([test "x$no_x" != xyes], [
+      have_x11=yes
+      x11_backend="system libX11"
+      X_LIBS="$X_LIBS $X_PRE_LIBS -lX11 $X_EXTRA_LIBS"
+    ])
   ])
 ])
+AC_SUBST([X_CFLAGS])
+AC_SUBST([X_LIBS])
 
 AS_IF([test "x$have_x11" != xyes], [
   AC_DEFINE([NO_XWINDOWS], [1], [Define if X11 support is not available])
@@ -86,10 +125,21 @@ AM_CONDITIONAL([HAVE_X11], [test "x$have_x11" = xyes])
 # --- Optional: Xft (antialiased font rendering, requires X11) ---
 have_xft=no
 AS_IF([test "x$have_x11" = xyes], [
-  PKG_CHECK_MODULES([XFT], [xft fontconfig], [
+  AS_IF([test "x$with_libx11_compat" != xno], [
+    # The shim provides Xft (libXft.so -> libXft-compat.so); take it from there
+    # instead of pkg-config, which would find the system/XQuartz Xft.
     have_xft=yes
+    XFT_CFLAGS="-I$libx11_compat_prefix/include"
+    XFT_LIBS="-L$libx11_compat_prefix/lib -Wl,-rpath,$libx11_compat_prefix/lib -lXft"
     AC_DEFINE([HAVE_XFT], [1], [Define if Xft is available])
-  ], [have_xft=no])
+    AC_SUBST([XFT_CFLAGS])
+    AC_SUBST([XFT_LIBS])
+  ], [
+    PKG_CHECK_MODULES([XFT], [xft fontconfig], [
+      have_xft=yes
+      AC_DEFINE([HAVE_XFT], [1], [Define if Xft is available])
+    ], [have_xft=no])
+  ])
 ])
 
 # --- Optional: Cairo + Pango (vector rendering, requires X11) ---
@@ -98,7 +148,7 @@ AS_IF([test "x$have_x11" = xyes], [
 # must be on the link line.  Xft/Cairo pull it transitively, but a strict
 # linker (Fedora's -Wl,--no-undefined-ish ld) requires the DSO named directly.
 have_cairo=no
-AS_IF([test "x$have_x11" = xyes], [
+AS_IF([test "x$have_x11" = xyes && test "x$with_libx11_compat" = xno], [
   PKG_CHECK_MODULES([CAIRO], [cairo cairo-xlib freetype2], [
     have_cairo=yes
     AC_DEFINE([HAVE_CAIRO], [1], [Define if Cairo is available])
@@ -150,7 +200,7 @@ AC_SUBST([WAYLAND_PROTOCOLS_DIR])
 # Cairo/Xft backend, so it is only useful when X11 is present.  Without it the
 # Alt-F5 User Screen falls back to focusing the Messages panel (1.6.3 behaviour).
 have_vterm=no
-AS_IF([test "x$have_x11" = xyes], [
+AS_IF([test "x$have_x11" = xyes && test "x$with_libx11_compat" = xno], [
   # NetBSD pkgsrc names the module 'vterm03' (versioned); everywhere else it is
   # 'vterm'. Try both.
   PKG_CHECK_MODULES([VTERM], [vterm], [
@@ -243,6 +293,7 @@ AC_MSG_RESULT([
   xwpe $PACKAGE_VERSION configuration:
     ncursesw:  yes (via pkg-config)
     X11:       $have_x11
+    X11 backend: $x11_backend
     Xft:       $have_xft
     Cairo:     $have_cairo
     Pango:     $have_pango

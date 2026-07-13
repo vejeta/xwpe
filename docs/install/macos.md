@@ -71,6 +71,33 @@ $PKG_CONFIG_PATH` and `fish_add_path ~/.local/bin`. (The runtime variables --
 `XWPE_LIB`, `JAVA_HOME`, server `PATH` -- are handled per-shell by
 `contrib/xwpe-env`, see [docs/ide-setup.md](../ide-setup.md).)
 
+### Native GUI without XQuartz (libx11-compat)
+
+The graphical `xwpe` can also run **natively on macOS with no XQuartz**, through
+[libx11-compat](https://github.com/sysprog21/libx11-compat) -- a drop-in X11
+implementation that translates Xlib to SDL2. You get a real Cocoa window,
+pixel-exact Retina text, and native live-resize; the editor is the same X11
+build, just linked against the shim instead of XQuartz's libX11.
+
+Build libx11-compat (see its README), then point `--with-libx11-compat` at an
+install prefix whose `include/` holds the X11 + Xft headers and `lib/` holds
+`libX11.so`, `libXft.so` and `libXext.so` (the shim installs these as aliases of
+`libX11-compat.so`). The shim renders through Xft, so this path skips the
+Cairo/Pango stack:
+
+```sh
+brew install sdl2 sdl2_ttf                       # the shim's runtime backend
+# ...build libx11-compat, install to $LX11C (its include/ and lib/)...
+./configure --with-libx11-compat="$LX11C" --without-gpm --prefix="$HOME/.local"
+make && make install
+xwpe foo.c                                       # native Cocoa window, no XQuartz
+```
+
+xwpe already carries the optional shim hooks (live-resize reflow, HiDPI scale),
+so nothing else is needed in the editor. A Homebrew formula that wires this up
+as `brew install` (libx11-compat + SDL2 as dependencies) is in progress -- until
+then this is the from-source path.
+
 ## Keyboard & terminal on macOS
 
 **The Meta key on a Mac is Option, not Command -- and you must enable it.**
