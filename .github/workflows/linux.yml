@@ -67,7 +67,7 @@ jobs:
       - name: Set up a pytest venv + a private XDG_RUNTIME_DIR
         run: |
           python3 -m venv /tmp/ptenv
-          /tmp/ptenv/bin/pip install --quiet pyte==0.8.1 pytest pillow
+          /tmp/ptenv/bin/pip install --quiet pyte==0.8.1 pytest pytest-rerunfailures pillow
           mkdir -p /tmp/xdg && chmod 700 /tmp/xdg
 
       - name: ncurses UI suite (pyte, pseudo-terminal)
@@ -101,25 +101,42 @@ jobs:
           XDG_RUNTIME_DIR: /tmp/xdg
         run: XWPE_BIN="$PWD/xwpe" /tmp/ptenv/bin/python -m pytest -q tests/x11
 
-      - name: Native Wayland GUI suite (Xvfb + weston)
+      - name: Native Wayland resize/relayout gate (BLOCKING)
+        # The one cross-cutting concern that has silently regressed before (the
+        # Messages-window relayout on shrink went unnoticed for weeks).  Gate the
+        # job HARD on the deterministic resize/relayout parity tests only: few
+        # enough to run reliably even on a slow shared runner, and wrapped in
+        # --reruns so a pure timing wobble retries and self-heals while a real
+        # code fault -- which fails every rerun -- fails the job.  This is the
+        # genuine red/green guard for the Wayland backend; the full suite below
+        # stays visible for breadth but does not gate (it is too large to run
+        # flake-free as a hard gate on this runner).
+        if: always()
+        env:
+          XDG_RUNTIME_DIR: /tmp/xdg
+          XWPE_WL_LOGDIR: ${{ github.workspace }}/wl-logs
+        run: >-
+          XWPE_BIN="$PWD/xwpe" /tmp/ptenv/bin/python -m pytest -q
+          tests/wayland/test_resize.py tests/wayland/test_resize_mouse.py
+          --reruns 3 --reruns-delay 5 -rxX
+
+      - name: Native Wayland GUI suite -- full breadth (Xvfb + weston)
         # The conftest starts its own Xvfb + weston (x11-backend, kiosk-shell) and
         # skips cleanly if weston / wl-clipboard / Pillow is missing.  This is the
         # native wl_surface backend: real wl_keyboard/wl_pointer + wl_data_device.
         # always(): run even if an earlier gate failed, so the Wayland result is
         # always visible.
         #
-        # NON-BLOCKING on this runner (like the ncurses gate, for the same class
-        # of reason): this drives a real-compositor GUI stack -- Xvfb + weston
-        # (GL via the X11 backend) + xwpe + xdotool, per test -- which the shared
-        # GitHub free runner has become too slow per-test to run reliably as a
-        # hard gate (the same job went 17 -> 31 min over a week as the runner
-        # degraded; the Wayland step alone takes ~3x its local wall-time).  The
-        # failures are pure timing, NOT a code fault: the captured per-test xwpe
-        # stderr is a clean exit in every case (no crash, no Wayland protocol
-        # error), and the full suite passes locally (49 passed, 2 skipped) and on
-        # a real Wayland desktop.  Kept visible (it runs and uploads logs) but it
-        # does not gate the job; the authoritative Wayland verification is the
-        # local/desktop run.
+        # NON-BLOCKING on this runner: the full suite drives a real-compositor GUI
+        # stack -- Xvfb + weston (GL via the X11 backend) + xwpe + xdotool, per
+        # test -- which the shared GitHub free runner has become too slow per-test
+        # to run flake-free as a hard gate (the job went 17 -> 31 min over a week
+        # as the runner degraded; the Wayland step alone takes ~3x its local
+        # wall-time).  Its failures are pure timing, NOT code faults: the captured
+        # per-test xwpe stderr is a clean exit in every case, and the suite passes
+        # locally (49 passed, 2 skipped) and on a real Wayland desktop.  The
+        # resize/relayout concern above is the hard gate; this stays visible for
+        # breadth and uploads logs.
         continue-on-error: true
         if: always()
         env:
