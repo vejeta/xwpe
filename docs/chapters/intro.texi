@@ -40,8 +40,11 @@ an X11 window.
 
 The terminal binaries (@command{we}, @command{wpe}) use ncursesw for
 display and work in any terminal emulator, tmux, screen, or the Linux
-console.  The X11 binaries (@command{xwe}, @command{xwpe}) create their
-own window with a fixed-width font.
+console.  The graphical binaries (@command{xwe}, @command{xwpe}) create
+their own window with a fixed-width font: on an X11 session through Xlib,
+and on a Wayland session through a native @code{wl_surface} backend that
+is selected automatically (from @env{WAYLAND_DISPLAY}), needing no X
+server and no XWayland.
 
 If you are unsure which to use, start with @command{wpe}.
 

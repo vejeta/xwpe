@@ -13,6 +13,7 @@ the Debian autopkgtest (the autopkgtest calls this same script):
 tests/run-tests.sh             # EVERYTHING: C unit + pyte (./wpe) + X11 (./xwpe)
 tests/run-tests.sh --asan      # build we-asan and run the pyte suite under it
 tests/run-tests.sh --x11       # ONLY the headless X11 GUI suite (./xwpe)
+tests/run-tests.sh --wayland   # ONLY the native Wayland GUI suite (./xwpe)
 tests/run-tests.sh --help
 ```
 
@@ -162,6 +163,42 @@ the modifier back where xdotool emits it.  The override is a no-op on
 Debian where Alt is already Mod1.
 
 The X11 tests honour **`$XWPE_BIN`** (default `../xwpe`), mirroring `$WPE_BIN`.
+
+## Native Wayland GUI tests (xwpe)
+
+`xwpe` also has a native `wl_surface` backend (`we_wayland.c`) that runs on a
+Wayland compositor with no X server.  The `tests/wayland/` suite is the Wayland
+counterpart to `tests/x11/`: the same SCREENCELL grid and Cairo renderer, but
+driven over `wl_keyboard`/`wl_pointer` instead of Xlib, so a regression in the
+Wayland input/render path is caught.  It mirrors the X11 modules (a shared
+`run_x11_module` helper runs the X11 test bodies under the Wayland fixture, so
+the two cannot drift) and adds Wayland-specific tests: resize/relayout, a
+`wl_pointer` scrollbar drag, and `wl_data_device` clipboard interop.
+
+```bash
+tests/run-tests.sh --wayland             # via the single entry point
+# or directly:
+XWPE_BIN=$PWD/xwpe tests/.venv/bin/python -m pytest -q tests/wayland/
+```
+
+Requirements (Debian package names) -- the suite **skips cleanly** if any are
+absent:
+
+| Tool | Debian package | Why |
+|------|----------------|-----|
+| `Xvfb` | `xvfb` | headless X server (weston takes its input from it) |
+| `weston` | `weston` | a real Wayland compositor (x11-backend + kiosk-shell) |
+| `xdotool` | `xdotool` | synthetic key/mouse (delivered to weston's X seat) |
+| `wl-copy` / `wl-paste` | `wl-clipboard` | external clipboard interop in `test_clipboard.py` |
+| Pillow | `python3-pil` | load the frame PPM dumps, assert on pixels |
+
+The pipeline: `Xvfb` gives weston (its **x11-backend**) a seat whose
+keyboard/pointer come from the X server, so `xdotool`'s XTEST events arrive as
+`wl_keyboard`/`wl_pointer` events; `xwpe` mirrors each painted frame to a PPM
+via `XWPE_WL_DUMP` (a race-free screenshot of the `wl_shm` buffer, since
+weston-x11 renders through GL that `xwd` cannot read); Pillow asserts on it.
+Most tests assert on the file written to disk (ground truth); a few assert on
+the dumped pixels.  The suite honours **`$XWPE_BIN`** (default `../xwpe`).
 
 ### Running pytest directly
 

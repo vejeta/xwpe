@@ -24,6 +24,12 @@ X11 client library (optional).  Needed for the X11 binaries
 (@command{xwpe}, @command{xwe}).  Pass @option{--without-x} to
 @command{configure} to disable.
 
+@item libwayland-dev, wayland-protocols, libxkbcommon-dev
+Wayland client libraries and protocol data (optional).  Enable the native
+Wayland backend for the graphical @command{xwpe} / @command{xwe}, so they
+run directly on a Wayland compositor with no X server.  Detected
+automatically; pass @option{--without-wayland} to skip.
+
 @item libgpm-dev
 General Purpose Mouse library (optional, Linux only).  Enables mouse
 support in the terminal binaries.  Pass @option{--without-gpm} to disable.
@@ -130,6 +136,14 @@ Disable X11 support.  Only the terminal binaries (@command{we},
 
 @item --without-gpm
 Disable GPM mouse support.  Mouse will still work in X11 mode.
+
+@item --with-wayland, --without-wayland
+Control the native Wayland backend (@code{wl_surface}, xdg-shell) for the
+graphical binaries.  The default is @emph{auto}: it is built when
+@code{wayland-client}, @code{wayland-cursor}, @code{libxkbcommon},
+@command{wayland-scanner} and @code{wayland-protocols} are present, and
+skipped otherwise.  @option{--with-wayland} requires it (configure fails
+if a dependency is missing); @option{--without-wayland} skips it.
 
 @item --prefix=@var{dir}
 Install to @var{dir} instead of @file{/usr/local}.

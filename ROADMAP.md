@@ -24,11 +24,25 @@ v1.5.31 takeover:
 - **Color emoji** in X11 via libXft/Cairo BGRA (Noto Color Emoji), plus emoji
   in terminal mode through ncursesw.
 - **Pixmap double-buffering / single-flush-per-frame.** Zero flicker on resize,
-  scroll, and window move. One present per frame -- the same model a Wayland
-  backend will use.
+  scroll, and window move. One present per frame -- the same model the Wayland
+  backend uses.
 - **Modern scrollbars.** Proportional thin track and thumb, triangular arrows,
   fluid real-time drag and mouse-wheel scroll, both axes.
 - **System monospace font** detection (matches the user's terminal font).
+
+### Native Wayland backend (1.6.8, hardened in 1.6.9)
+- **The graphical editor runs natively on Wayland** -- no X server, no
+  XWayland -- auto-selected from `WAYLAND_DISPLAY`. It plugs into the render
+  abstraction as a new backend (additive, not a rewrite): a `wl_display`
+  connection, `wl_surface` + **xdg-shell** for window management, `wl_shm`
+  buffers, and input via `wl_keyboard` / `wl_pointer` with **xkbcommon**. The
+  same Cairo+Pango calls and single-flush-per-frame model map directly onto
+  `wl_surface.commit`.
+- **Clipboard interop** via `wl_data_device` (both CLIPBOARD and PRIMARY,
+  interoperating with `wl-copy`/`wl-paste`), and a real-desktop robustness pass
+  (resize/relayout coalescing, pointer re-entrancy) in 1.6.9.
+- Covered by a headless `tests/wayland` suite (Xvfb + weston) that mirrors the
+  X11 suite, so a regression in the Wayland input/render path is caught.
 
 ### UTF-8 everywhere
 - Full UTF-8 in the terminal (ncursesw + a SCREENCELL buffer model) and in
@@ -112,20 +126,6 @@ of if/else chains, dialog layout calculations instead of hardcoded
 coordinates, and safer buffer sizing -- the boy-scout cleanup of the 1993
 "pointer soup", done opportunistically with the test net in place.
 
-## v1.8 -- Wayland
-
-The hard part is already done: the render layer is **backend-agnostic and
-Wayland-ready**. The same Cairo+Pango calls target X11 today
-(cairo_xlib_surface) and Wayland (cairo_image_surface) unchanged, and the
-single-flush-per-frame model maps directly to `wl_surface.commit`.
-
-What remains is the platform glue, not the drawing: a `wl_display` connection,
-`wl_surface` + **xdg-shell** for window management (instead of leaning on an X
-window manager), `wl_shm` buffers (then EGL), and input via `wl_keyboard` /
-`wl_pointer` with **xkbcommon**. It plugs in as a new backend behind the
-existing abstraction -- additive, not a rewrite. This is written once,
-Wayland-ready from the start; v1.8 is when the actual backend lands.
-
 ## v2.0 -- longer term
 
 - **DAP server mode**: expose xwpe's debugger to external editors.
@@ -141,7 +141,7 @@ Things we explicitly do not plan to do:
 - **Rewrite in another language.** The C codebase is solid and maintainable;
   the 1993 logic is correct. Only the rendering and I/O layers needed work.
 - **GUI toolkit migration (GTK, Qt).** xwpe's value is being a lightweight
-  terminal/X11 (soon Wayland) IDE. A full toolkit would make it just another
+  terminal / X11 / Wayland IDE. A full toolkit would make it just another
   IDE.
 - **Plugin system.** The codebase is small enough that features go in directly;
   a plugin API would add complexity without clear users.

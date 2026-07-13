@@ -1,0 +1,76 @@
+=======================================================================
+Testing the native Wayland backend
+=======================================================================
+
+xwpe has a native Wayland backend (we_wayland.c): the graphical xwpe / xwe
+run directly on a Wayland compositor (wl_surface + xdg-shell, wl_shm buffers,
+wl_keyboard / wl_pointer via xkbcommon, wl_data_device clipboard) with no X
+server and no XWayland.  It is selected automatically when WAYLAND_DISPLAY is
+set; force the X11 path with `xwpe -display :0` or an unset WAYLAND_DISPLAY.
+
+This file covers how the backend is tested: what the automated suite checks,
+and the short manual checklist for the things a headless runner cannot.
+
+
+1. Automated suite (tests/wayland/)
+-----------------------------------------------------------------------
+The Wayland counterpart to tests/x11/.  Same SCREENCELL grid and Cairo
+renderer, driven over wl_keyboard / wl_pointer instead of Xlib, so a
+regression in the Wayland input/render path is caught.  It mirrors the X11
+modules (a shared run_x11_module helper runs the X11 test bodies under the
+Wayland fixture, so the two suites cannot drift) and adds Wayland-specific
+tests: resize/relayout, a wl_pointer scrollbar drag, and wl_data_device
+clipboard interop.
+
+Run it:
+
+    tests/run-tests.sh --wayland
+    # or directly:
+    XWPE_BIN=$PWD/xwpe tests/.venv/bin/python -m pytest -q tests/wayland/
+
+Requirements (Debian package names); the suite skips cleanly if any is
+missing:
+
+    xvfb            headless X server (weston takes its input from it)
+    weston          a real Wayland compositor (x11-backend + kiosk-shell)
+    xdotool         synthetic key / mouse (delivered to weston's X seat)
+    wl-clipboard    wl-copy / wl-paste, for the clipboard interop test
+    python3-pil     Pillow, to load frame dumps and assert on pixels
+
+How the pipeline gets synthetic input into a wl_client: Xvfb gives weston
+(its x11-backend) a seat whose keyboard/pointer come from the X server, so
+xdotool's XTEST events arrive at xwpe as wl_keyboard / wl_pointer events.
+xwpe mirrors every painted frame to a PPM via XWPE_WL_DUMP -- a race-free
+screenshot of the wl_shm buffer, since weston-x11 renders through GL that
+`xwd` cannot read.  Most tests assert on the file written to disk (ground
+truth); a few assert on the dumped pixels.
+
+CI: .github/workflows/linux.yml runs this suite on every dispatch.  The
+resize/relayout parity tests are a BLOCKING gate (wrapped in --reruns so a
+slow-runner timing wobble self-heals while a real fault fails the job); the
+full suite runs alongside for breadth but is non-blocking, because the shared
+GitHub runner is too slow to run the whole real-compositor stack flake-free
+as a hard gate.
+
+
+2. Manual checklist (what the headless suite cannot assert)
+-----------------------------------------------------------------------
+The automated suite runs under Xvfb + weston, which is deliberately minimal.
+Before a release, sanity-check the backend on a real desktop; these are the
+things the emulated pipeline does not cover:
+
+  [ ] Runs on a real GNOME (Mutter) and a real KDE (KWin) Wayland session,
+      and on a wlroots compositor (sway).  Window opens, is decorated, and
+      can be moved and resized.
+  [ ] HiDPI / fractional scaling: text is crisp (not bitmap-scaled) at
+      200% and at 150% fractional scale; the grid refits on a scale change.
+  [ ] Interactive resize is smooth -- no flicker, no line shear, no crash --
+      including a fast drag and a maximize/unmaximize.
+  [ ] Clipboard interoperates with other Wayland apps in both directions:
+      copy in xwpe -> paste in a browser/terminal, and back.  Both CLIPBOARD
+      (Ctrl-C/V) and PRIMARY (middle-click) selections.
+  [ ] Keyboard: national layouts and dead-key compose produce accented
+      characters; held keys autorepeat; modifiers (Alt/Ctrl/Shift) reach the
+      menus.
+  [ ] Pointer: scrollbar drag, mouse-wheel scroll (both axes), and window
+      drag/resize via the title bar behave like the X11 build.
