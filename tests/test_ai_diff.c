@@ -38,6 +38,29 @@ int main(void)
  check(d && strstr(d, "-b") != NULL, "deletion: removes line");
  free(d);
 
+ /* --- structured segments (per-hunk accept) --- */
+ {
+  wpe_ai_seg *segs;
+  int n, i, changes = 0;
+  n = wpe_ai_diff_segments("a\nb\nc\n", "a\nB\nc\n", &segs);
+  for (i = 0; i < n; i++) if (segs[i].is_change) changes++;
+  check(changes == 1, "segments: exactly one change hunk");
+  for (i = 0; i < n; i++)
+   if (segs[i].is_change) {
+    check(segs[i].an == 1 && !strcmp(segs[i].a[0], "b"), "segments: old line b");
+    check(segs[i].bn == 1 && !strcmp(segs[i].b[0], "B"), "segments: new line B");
+   }
+  wpe_ai_segs_free(segs, n);
+ }
+ {
+  wpe_ai_seg *segs;
+  int n, i, changes = 0;
+  n = wpe_ai_diff_segments("a\nb\n", "a\nb\n", &segs);
+  for (i = 0; i < n; i++) if (segs[i].is_change) changes++;
+  check(changes == 0, "segments: identical has no change hunk");
+  wpe_ai_segs_free(segs, n);
+ }
+
  printf(fail ? "SOME TESTS FAILED\n" : "ALL OK\n");
  return fail;
 }

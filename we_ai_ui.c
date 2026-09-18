@@ -264,45 +264,77 @@ static char *ai_strip_fences(const char *s)
  return out;
 }
 
-/* Dump a diff to the pane and ask for confirmation (Enter=apply, Esc=discard). */
-static int ai_preview_and_confirm(FENSTER *f, const char *diff)
+/* Per-hunk accept/reject.  Shows each change hunk and asks y/n/a/q; returns the
+ * reconstructed file text (malloc'd) built from the accepted hunks, or NULL if
+ * the user cancelled or accepted nothing. */
+static char *ai_hunk_apply(FENSTER *f, wpe_ai_seg *segs, int nseg)
 {
- const char *p = diff;
- ai_pane(f, "--- proposed changes ---", 1);
- while (p && *p) {
-  const char *nl = strchr(p, '\n');
-  size_t l = nl ? (size_t)(nl - p) : strlen(p);
-  char line[512];
-  if (l >= sizeof line) l = sizeof line - 1;
-  memcpy(line, p, l);
-  line[l] = '\0';
-  if (line[0]) ai_pane(f, line, 0);
-  if (!nl) break;
-  p = nl + 1;
+ int i, k, total = 0, hunk = 0, any = 0, all = 0, cancel = 0;
+ int *acc = calloc(nseg > 0 ? nseg : 1, sizeof *acc);
+ size_t cap = 1024, len = 0;
+ char *out;
+ if (!acc) return NULL;
+ for (i = 0; i < nseg; i++) if (segs[i].is_change) total++;
+
+ ai_pane(f, "--- proposed changes (per hunk) ---", 1);
+ for (i = 0; i < nseg && !cancel; i++) {
+  if (!segs[i].is_change) continue;
+  hunk++;
+  if (all) { acc[i] = 1; any = 1; continue; }
+  { char hdr[80]; snprintf(hdr, sizeof hdr, "--- hunk %d/%d ---", hunk, total); ai_pane(f, hdr, 0); }
+  for (k = 0; k < segs[i].an; k++) { char ln[540]; snprintf(ln, sizeof ln, "-%.520s", segs[i].a[k]); ai_pane(f, ln, 0); }
+  for (k = 0; k < segs[i].bn; k++) { char ln[540]; snprintf(ln, sizeof ln, "+%.520s", segs[i].b[k]); ai_pane(f, ln, 0); }
+  ai_pane(f, "   y=apply  n=skip  a=all  q=cancel", 0);
+  for (;;) {
+   int c = e_toupper(e_getch());
+   if (c == 'Y' || c == 13 || c == '\r' || c == '\n') { acc[i] = 1; any = 1; break; }
+   if (c == 'N') { acc[i] = 0; break; }
+   if (c == 'A') { acc[i] = 1; any = 1; all = 1; break; }
+   if (c == 'Q' || c == WPE_ESC) { cancel = 1; break; }
+  }
  }
- ai_pane(f, "--- Enter = apply,  Esc = discard ---", 0);
- for (;;) {
-  int c = e_getch();
-  if (c == WPE_ESC || e_toupper(c) == 'N') return 0;
-  if (c == 13 || c == '\r' || c == '\n' || e_toupper(c) == 'Y') return 1;
+ if (cancel || !any) { free(acc); return NULL; }
+
+ out = malloc(cap);
+ if (!out) { free(acc); return NULL; }
+ out[0] = '\0';
+ for (i = 0; i < nseg; i++) {
+  char **lines;
+  int n2;
+  if (!segs[i].is_change) { lines = segs[i].a; n2 = segs[i].an; }
+  else if (acc[i])        { lines = segs[i].b; n2 = segs[i].bn; }
+  else                    { lines = segs[i].a; n2 = segs[i].an; }
+  for (k = 0; k < n2; k++) {
+   size_t ll = strlen(lines[k]);
+   if (len + ll + 2 > cap) { while (len + ll + 2 > cap) cap *= 2; out = realloc(out, cap); }
+   memcpy(out + len, lines[k], ll); len += ll; out[len++] = '\n';
+  }
  }
+ out[len] = '\0';
+ free(acc);
+ return out;
 }
 
 static int e_ai_edit(FENSTER *f)
 {
  static char instr[1024];
  char err[320], line[360];
- char *cur, *user, *reply, *clean, *diff;
+ char *cur, *user, *reply, *clean;
  const char *sys =
    "You are a precise code editor. Apply the user's instruction to the file "
    "below and return ONLY the complete modified file content - no markdown "
    "fences, no commentary, no explanation.";
  wpe_ai_msg msgs[2];
  wpe_ai_req req;
+ ECNT *cn = f->ed;
+ int save_id = -1, wi;
 
  instr[0] = '\0';
  if (!e_add_arguments(instr, "AI edit instruction", f, 0, AltB, NULL) || !instr[0])
   return 0;
+ /* Remember the edited window so focus returns to it after the pane work. */
+ for (wi = 1; wi <= cn->mxedt; wi++)
+  if (cn->f[wi] == f) { save_id = cn->edt[wi]; break; }
  err[0] = '\0';
  if (wpe_ai_preflight(e_ai_backend, err, sizeof err)) { ai_pane(f, err, 1); return 0; }
  err[0] = '\0';
@@ -335,18 +367,31 @@ static int e_ai_edit(FENSTER *f)
  free(cur);
  if (!clean) return 0;
 
- { char *now = ai_current_file_text(f);
-   diff = wpe_ai_diff(now ? now : "", clean);
-   free(now); }
- if (diff && diff[0] && ai_preview_and_confirm(f, diff)) {
-  e_ai_apply_text(f, clean);
-  ai_pane(f, "[AI edit] applied - Ctrl-U to undo", 0);
-  wpe_ai_trace("edit applied");
- } else {
-  ai_pane(f, diff && diff[0] ? "[AI edit] discarded" : "[AI edit] no change", 0);
-  wpe_ai_trace("edit discarded");
+ {
+  wpe_ai_seg *segs;
+  int nseg, has_change = 0, i;
+  char *now = ai_current_file_text(f);
+  nseg = wpe_ai_diff_segments(now ? now : "", clean, &segs);
+  free(now);
+  for (i = 0; i < nseg; i++) if (segs[i].is_change) { has_change = 1; break; }
+  if (!has_change) {
+   ai_pane(f, "[AI edit] no change", 0);
+   wpe_ai_trace("edit no-change");
+  } else {
+   char *result = ai_hunk_apply(f, segs, nseg);
+   if (result) {
+    e_ai_apply_text(f, result);
+    ai_pane(f, "[AI edit] applied - Ctrl-U to undo", 0);
+    wpe_ai_trace("edit applied");
+    free(result);
+    if (save_id >= 0) e_switch_window(save_id, f);  /* focus back to the file */
+   } else {
+    ai_pane(f, "[AI edit] discarded", 0);
+    wpe_ai_trace("edit discarded");
+   }
+  }
+  wpe_ai_segs_free(segs, nseg);
  }
- free(diff);
  free(clean);
  return 0;
 }

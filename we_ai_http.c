@@ -20,10 +20,32 @@
 #include <netdb.h>
 
 #ifdef WPE_AI_TLS
-#include <tls.h>
+# ifdef WPE_AI_TLS_OPENSSL
+#  include <openssl/ssl.h>
+#  include <openssl/err.h>
+# else
+#  include <tls.h>
+# endif
 #endif
 
 #include "we_ai_http.h"
+
+#if defined(WPE_AI_TLS) && defined(WPE_AI_TLS_OPENSSL)
+/* One lazily-created client context shared by all connections (single-threaded). */
+static SSL_CTX *ai_ssl_ctx(void)
+{
+ static SSL_CTX *ctx;
+ if (!ctx) {
+  ctx = SSL_CTX_new(TLS_client_method());
+  if (ctx) {
+   SSL_CTX_set_min_proto_version(ctx, TLS1_2_VERSION);
+   SSL_CTX_set_default_verify_paths(ctx);
+   /* We verify the hostname at connect via SSL_set1_host; leave mode default. */
+  }
+ }
+ return ctx;
+}
+#endif
 
 /* ===================== connection ======================================== */
 
@@ -100,26 +122,47 @@ int wpe_http_open(const char *url, wpe_http_conn *c, char *errbuf, size_t errsz)
  c->fd = fd;
 
  if (https) {
-#ifdef WPE_AI_TLS
-  struct tls_config *cfg = tls_config_new();
-  c->tls = tls_client();
-  if (!c->tls || !cfg || tls_configure(c->tls, cfg) < 0 ||
-      tls_connect_socket(c->tls, fd, host) < 0) {
-   ai_http_seterr(errbuf, errsz, "TLS setup failed");
-   if (cfg) tls_config_free(cfg);
-   wpe_http_close(c);
-   return -1;
+#if defined(WPE_AI_TLS) && defined(WPE_AI_TLS_OPENSSL)
+  {
+   SSL_CTX *ctx = ai_ssl_ctx();
+   SSL *ssl;
+   if (!ctx) { ai_http_seterr(errbuf, errsz, "TLS init failed"); wpe_http_close(c); return -1; }
+   ssl = SSL_new(ctx);
+   if (!ssl) { ai_http_seterr(errbuf, errsz, "TLS alloc failed"); wpe_http_close(c); return -1; }
+   SSL_set_fd(ssl, fd);
+   SSL_set_tlsext_host_name(ssl, host);   /* SNI */
+   SSL_set1_host(ssl, host);              /* verify the cert matches the host */
+   if (SSL_connect(ssl) != 1) {
+    ai_http_seterr(errbuf, errsz, "TLS handshake/verify failed");
+    SSL_free(ssl);
+    wpe_http_close(c);
+    return -1;
+   }
+   c->tls = ssl;
+   c->is_tls = 1;
   }
-  tls_config_free(cfg);
-  for (;;) {
-   int r = tls_handshake(c->tls);
-   if (r == 0) break;
-   if (r == TLS_WANT_POLLIN || r == TLS_WANT_POLLOUT) continue;
-   ai_http_seterr(errbuf, errsz, "TLS handshake failed");
-   wpe_http_close(c);
-   return -1;
+#elif defined(WPE_AI_TLS)
+  {
+   struct tls_config *cfg = tls_config_new();
+   c->tls = tls_client();
+   if (!c->tls || !cfg || tls_configure(c->tls, cfg) < 0 ||
+       tls_connect_socket(c->tls, fd, host) < 0) {
+    ai_http_seterr(errbuf, errsz, "TLS setup failed");
+    if (cfg) tls_config_free(cfg);
+    wpe_http_close(c);
+    return -1;
+   }
+   tls_config_free(cfg);
+   for (;;) {
+    int r = tls_handshake(c->tls);
+    if (r == 0) break;
+    if (r == TLS_WANT_POLLIN || r == TLS_WANT_POLLOUT) continue;
+    ai_http_seterr(errbuf, errsz, "TLS handshake failed");
+    wpe_http_close(c);
+    return -1;
+   }
+   c->is_tls = 1;
   }
-  c->is_tls = 1;
 #else
   ai_http_seterr(errbuf, errsz, "https needs --enable-ai-tls");
   wpe_http_close(c);
@@ -133,7 +176,16 @@ void wpe_http_close(wpe_http_conn *c)
 {
  if (!c) return;
 #ifdef WPE_AI_TLS
- if (c->tls) { tls_close(c->tls); tls_free(c->tls); c->tls = NULL; }
+ if (c->tls) {
+# ifdef WPE_AI_TLS_OPENSSL
+  SSL_shutdown((SSL *)c->tls);
+  SSL_free((SSL *)c->tls);
+# else
+  tls_close(c->tls);
+  tls_free(c->tls);
+# endif
+  c->tls = NULL;
+ }
 #endif
  if (c->fd >= 0) { close(c->fd); c->fd = -1; }
  c->is_tls = 0;
@@ -146,10 +198,20 @@ ssize_t wpe_http_read(wpe_http_conn *c, void *buf, size_t n)
  ssize_t r;
 #ifdef WPE_AI_TLS
  if (c->is_tls) {
+# ifdef WPE_AI_TLS_OPENSSL
+  int ret = SSL_read((SSL *)c->tls, buf, (int)n);
+  if (ret > 0) return ret;
+  {
+   int e = SSL_get_error((SSL *)c->tls, ret);
+   if (e == SSL_ERROR_WANT_READ || e == SSL_ERROR_WANT_WRITE) return 0;
+   return -1;                             /* clean close or error => EOF */
+  }
+# else
   r = tls_read(c->tls, buf, n);
   if (r == TLS_WANT_POLLIN || r == TLS_WANT_POLLOUT) return 0;
   if (r <= 0) return -1;
   return r;
+# endif
  }
 #endif
  r = read(c->fd, buf, n);
@@ -166,11 +228,21 @@ ssize_t wpe_http_write_all(wpe_http_conn *c, const void *buf, size_t n)
  while (off < n) {
 #ifdef WPE_AI_TLS
   if (c->is_tls) {
+# ifdef WPE_AI_TLS_OPENSSL
+   int w = SSL_write((SSL *)c->tls, p + off, (int)(n - off));
+   if (w > 0) { off += (size_t)w; continue; }
+   {
+    int e = SSL_get_error((SSL *)c->tls, w);
+    if (e == SSL_ERROR_WANT_READ || e == SSL_ERROR_WANT_WRITE) continue;
+    return -1;
+   }
+# else
    ssize_t w = tls_write(c->tls, p + off, n - off);
    if (w == TLS_WANT_POLLIN || w == TLS_WANT_POLLOUT) continue;
    if (w < 0) return -1;
    off += (size_t)w;
    continue;
+# endif
   }
 #endif
   {

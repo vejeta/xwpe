@@ -292,6 +292,8 @@ AM_CONDITIONAL([WPE_AI], [test "x$enable_ai" = "xyes"])
 # servers are plain HTTP and need none of this.  Prefers libtls (LibreSSL, the BSD
 # default), falls back to OpenSSL.
 have_ai_tls=no
+AITLS_CFLAGS=""
+AITLS_LIBS=""
 AS_IF([test "x$enable_ai" = "xyes"], [
   AC_ARG_ENABLE([ai-tls],
     [AS_HELP_STRING([--enable-ai-tls],
@@ -299,12 +301,19 @@ AS_IF([test "x$enable_ai" = "xyes"], [
     [], [enable_ai_tls=no])
   AS_IF([test "x$enable_ai_tls" = "xyes"], [
     PKG_CHECK_MODULES([AITLS], [libtls], [
-      have_ai_tls=yes
-      AC_DEFINE([WPE_AI_TLS], [1], [Enable TLS for cloud AI backends via libtls])
-    ], [AC_MSG_ERROR([--enable-ai-tls requested but libtls (LibreSSL/libretls) not found])])
+      have_ai_tls=yes; ai_tls_impl=libtls
+      AC_DEFINE([WPE_AI_TLS], [1], [Enable TLS for cloud AI backends])
+      AC_DEFINE([WPE_AI_TLS_LIBTLS], [1], [Use libtls (LibreSSL) for AI TLS])
+    ], [PKG_CHECK_MODULES([AITLS], [openssl], [
+         have_ai_tls=yes; ai_tls_impl=openssl
+         AC_DEFINE([WPE_AI_TLS], [1], [Enable TLS for cloud AI backends])
+         AC_DEFINE([WPE_AI_TLS_OPENSSL], [1], [Use OpenSSL for AI TLS])
+       ], [AC_MSG_ERROR([--enable-ai-tls requires libtls (LibreSSL/libretls) or openssl])])])
   ])
 ])
 AM_CONDITIONAL([WPE_AI_TLS], [test "x$have_ai_tls" = xyes])
+AC_SUBST([AITLS_CFLAGS])
+AC_SUBST([AITLS_LIBS])
 
 # --- Unconditional defines ---
 AC_DEFINE([UNIX], [1], [Building on a Unix system])

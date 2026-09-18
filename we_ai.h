@@ -90,6 +90,17 @@ char *wpe_ai_complete(const wpe_ai_req *req, int timeout_ms,
  * allocation failure.  Editor-free (unit-testable). */
 char *wpe_ai_diff(const char *a, const char *b);
 
+/* Structured diff for per-hunk accept/reject.  A segment is either kept context
+ * (is_change=0, lines in a[]) or a change hunk (is_change=1, old lines in a[],
+ * new lines in b[]).  Returns the segment count; *segs is malloc'd. */
+typedef struct {
+ int    is_change;
+ char **a; int an;
+ char **b; int bn;
+} wpe_ai_seg;
+int  wpe_ai_diff_segments(const char *a, const char *b, wpe_ai_seg **segs);
+void wpe_ai_segs_free(wpe_ai_seg *segs, int n);
+
 /* ----- editor entry points (we_ai_ui.c) --------------------------------- */
 struct FNST;                        /* editor window (edit.h)                 */
 int  e_ai_ui_key(struct FNST *f);   /* Alt-B: open/prompt the AI assistant    */

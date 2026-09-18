@@ -1,8 +1,8 @@
-"""AI assistant -- Edit mode smoke test (deterministic mock backend).
+"""AI assistant -- Edit mode (deterministic mock backend).
 
-The mock returns the whole modified file (XWPE_AI_MOCK_REPLY); the Edit flow
-diffs it against the buffer, previews, and on Enter applies it with one undo
-snapshot.  Verifies the prompt->generate->diff->accept->apply path ran.
+The mock returns the whole modified file; Edit diffs it, previews per hunk, and
+on 'y' applies it with one undo snapshot, then returns focus to the file window
+so a Save writes the change.  Covers accept-writes-file and reject-keeps-file.
 """
 import os
 import subprocess
@@ -19,28 +19,40 @@ def _ai_build():
         return False
 
 
-@pytest.mark.skipif(not _ai_build(), reason="wpe built without --enable-ai")
-def test_ai_edit_mock(tmp_path):
+pytestmark = pytest.mark.skipif(not _ai_build(), reason="wpe built without --enable-ai")
+
+
+def _edit(tmp_path, decision):
     trace = tmp_path / "ai.trace"
-    new_content = "int main(void){return 42;}"
     env = {
         "XWPE_AI_ENABLE": "1",
         "XWPE_AI_BACKEND": "mock",
-        "XWPE_AI_MOCK_REPLY": new_content,
+        "XWPE_AI_MOCK_REPLY": "int main(void){return 42;}",
         "XWPE_AI_TRACE": str(trace),
     }
     with WpeSession(str(tmp_path), "int main(void){return 0;}\n",
                     env_extra=env) as s:
-        s.key(ALT.BLOCK)                 # Alt-B
+        s.key(ALT.BLOCK)
         s.key("e")                       # Edit
-        s.key("return 42 instead")       # instruction
-        s.key("\r", delay=1.2)           # submit -> generate -> diff preview
+        s.key("return 42 instead")
+        s.key("\r", delay=1.3)           # submit -> generate -> per-hunk preview
         s._drain(1.0)
-        disp_preview = "\n".join(s.display())
-        s.key("\r", delay=0.8)           # accept the diff
+        disp = "\n".join(s.display())
+        s.key(decision, delay=0.9)       # 'y' accept / 'n' reject the hunk
         s._drain(0.6)
+        s.save()
+        disk = s.text()
+    return disp, disk, (trace.read_text() if trace.exists() else "")
 
-    txt = trace.read_text() if trace.exists() else ""
-    assert "edit instr=return 42 instead" in txt, txt
+
+def test_ai_edit_accept_writes_file(tmp_path):
+    disp, disk, txt = _edit(tmp_path, "y")
+    assert "42" in disp, "diff preview did not show the new content:\n" + disp
     assert "edit applied" in txt, txt
-    assert "42" in disp_preview, "diff preview did not show the new content"
+    assert "return 42" in disk, "file was not modified on disk:\n" + disk
+
+
+def test_ai_edit_reject_keeps_file(tmp_path):
+    disp, disk, txt = _edit(tmp_path, "n")
+    assert "edit discarded" in txt, txt
+    assert "return 0" in disk and "42" not in disk, "file changed despite reject:\n" + disk

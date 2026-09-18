@@ -407,9 +407,36 @@ struct wpe_ai_stream {
  * so the whole streaming path (framer + parser + fd-loop) is exercised with no
  * network and full determinism.  The reply text comes from $XWPE_AI_MOCK_REPLY
  * (default a short greeting), JSON-escaped via json-c so code payloads are safe. */
+/* Successive mock replies: XWPE_AI_MOCK_REPLY may hold several turns separated
+ * by the literal "@@TURN@@"; the Nth stream returns the Nth turn (last one
+ * repeats).  Lets a test script a multi-step agent conversation deterministically. */
+static int g_mock_turn = 0;
+
+static char *ai_mock_segment(void)
+{
+ const char *full = getenv("XWPE_AI_MOCK_REPLY");
+ const char *seg, *nx;
+ const char *sep = "@@TURN@@";
+ size_t seplen = 8, l;
+ int idx = 0;
+ if (!full) full = "Hello from the xwpe mock backend.";
+ seg = full;
+ for (;;) {
+  nx = strstr(seg, sep);
+  if (idx == g_mock_turn || !nx) {
+   l = nx && idx == g_mock_turn ? (size_t)(nx - seg) : strlen(seg);
+   break;
+  }
+  seg = nx + seplen;
+  idx++;
+ }
+ g_mock_turn++;
+ { char *r = malloc(l + 1); if (r) { memcpy(r, seg, l); r[l] = '\0'; } return r; }
+}
+
 static int ai_mock_open(struct wpe_ai_stream *st)
 {
- const char *reply = getenv("XWPE_AI_MOCK_REPLY");
+ char *reply = ai_mock_segment();
  struct json_object *o, *m;
  const char *body1;
  char *resp;
@@ -417,11 +444,12 @@ static int ai_mock_open(struct wpe_ai_stream *st)
  char tmpl[] = "/tmp/xwpe_ai_mockXXXXXX";
  int fd;
 
- if (!reply) reply = "Hello from the xwpe mock backend.";
+ if (!reply) return -1;
  o = json_object_new_object();
  m = json_object_new_object();
  json_object_object_add(m, "role", json_object_new_string("assistant"));
  json_object_object_add(m, "content", json_object_new_string(reply));
+ free(reply);                                 /* json_object copied it */
  json_object_object_add(o, "message", m);
  json_object_object_add(o, "done", json_object_new_boolean(0));
  body1 = json_object_to_json_string_ext(o, JSON_C_TO_STRING_PLAIN);

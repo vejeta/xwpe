@@ -123,6 +123,97 @@ char *wpe_ai_diff(const char *a, const char *b)
  return out;
 }
 
+/* ----- structured segments (per-hunk accept/reject) --------------------- */
+
+static void ai_seg_push(char ***arr, int *n, int *cap, const char *s)
+{
+ if (*n == *cap) {
+  *cap = *cap ? *cap * 2 : 8;
+  *arr = realloc(*arr, (size_t)(*cap) * sizeof **arr);
+ }
+ (*arr)[(*n)++] = strdup(s);
+}
+
+int wpe_ai_diff_segments(const char *a, const char *b, wpe_ai_seg **out)
+{
+ char **la, **lb;
+ int na, nb, i, j;
+ int *dp;
+ wpe_ai_seg *segs = NULL;
+ int ns = 0, scap = 0;
+
+ na = ai_split_lines(a, &la);
+ nb = ai_split_lines(b, &lb);
+ *out = NULL;
+
+ /* Pathological size: one all-encompassing change hunk (skip the O(n*m) LCS). */
+ if (na > AI_DIFF_MAX_LINES || nb > AI_DIFF_MAX_LINES) {
+  wpe_ai_seg seg;
+  int acap = 0, bcap = 0;
+  memset(&seg, 0, sizeof seg);
+  seg.is_change = 1;
+  for (i = 0; i < na; i++) ai_seg_push(&seg.a, &seg.an, &acap, la[i]);
+  for (j = 0; j < nb; j++) ai_seg_push(&seg.b, &seg.bn, &bcap, lb[j]);
+  segs = malloc(sizeof *segs);
+  if (segs) segs[ns++] = seg;
+  ai_free_lines(la, na); ai_free_lines(lb, nb);
+  *out = segs;
+  return ns;
+ }
+
+ dp = calloc((size_t)(na + 1) * (nb + 1), sizeof *dp);
+ if (!dp) { ai_free_lines(la, na); ai_free_lines(lb, nb); return 0; }
+#define DP(I, J) dp[(size_t)(I) * (nb + 1) + (J)]
+ for (i = na - 1; i >= 0; i--)
+  for (j = nb - 1; j >= 0; j--) {
+   if (!strcmp(la[i], lb[j])) DP(i, j) = DP(i + 1, j + 1) + 1;
+   else DP(i, j) = DP(i + 1, j) >= DP(i, j + 1) ? DP(i + 1, j) : DP(i, j + 1);
+  }
+
+ i = j = 0;
+ while (i < na || j < nb) {
+  wpe_ai_seg seg;
+  int acap = 0, bcap = 0;
+  memset(&seg, 0, sizeof seg);
+  if (i < na && j < nb && !strcmp(la[i], lb[j])) {
+   seg.is_change = 0;
+   while (i < na && j < nb && !strcmp(la[i], lb[j])) {
+    ai_seg_push(&seg.a, &seg.an, &acap, la[i]); i++; j++;
+   }
+  } else {
+   seg.is_change = 1;
+   while ((i < na || j < nb) && !(i < na && j < nb && !strcmp(la[i], lb[j]))) {
+    if (j >= nb || (i < na && DP(i + 1, j) >= DP(i, j + 1))) {
+     ai_seg_push(&seg.a, &seg.an, &acap, la[i]); i++;
+    } else {
+     ai_seg_push(&seg.b, &seg.bn, &bcap, lb[j]); j++;
+    }
+   }
+  }
+  if (ns == scap) { scap = scap ? scap * 2 : 8; segs = realloc(segs, (size_t)scap * sizeof *segs); }
+  segs[ns++] = seg;
+ }
+#undef DP
+ free(dp);
+ ai_free_lines(la, na);
+ ai_free_lines(lb, nb);
+ *out = segs;
+ return ns;
+}
+
+void wpe_ai_segs_free(wpe_ai_seg *segs, int n)
+{
+ int i, k;
+ if (!segs) return;
+ for (i = 0; i < n; i++) {
+  for (k = 0; k < segs[i].an; k++) free(segs[i].a[k]);
+  free(segs[i].a);
+  for (k = 0; k < segs[i].bn; k++) free(segs[i].b[k]);
+  free(segs[i].b);
+ }
+ free(segs);
+}
+
 #endif /* WPE_AI */
 
 typedef int wpe_ai_diff_translation_unit;

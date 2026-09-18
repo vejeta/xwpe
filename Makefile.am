@@ -387,15 +387,26 @@ TESTS = test_checkheader test_fl_sel_len test_syntax_def test_fdloop test_clipbo
   test_dap_gdb test_dap_lldb test_dap_scala test_lsp_scala test_lsp_clangd test_lsp_python test_lsp_gopls test_lsp_rust
 
 # --- AI assistant unit tests (only when --enable-ai) ---
-# The engine sources are guarded by WPE_AI; per-target CFLAGS bypass AM_CFLAGS
-# (so no -include config.h), hence the explicit -DWPE_AI here.
+# WPE_AI comes from config.h (the build is configured --enable-ai here).  The
+# framer test links AITLS_LIBS so it still links when the build also enabled TLS
+# (the TLS code is then compiled in, though these tests exercise only the plain
+# framer/diff); AITLS_LIBS is empty when --enable-ai-tls was not given.
 if WPE_AI
 check_PROGRAMS += test_ai_http test_ai_diff
 TESTS += test_ai_http test_ai_diff
 test_ai_http_SOURCES = tests/test_ai_http.c we_ai_http.c
-test_ai_http_CFLAGS = $(XWPE_STDFLAG) -DWPE_AI
+test_ai_http_CFLAGS = $(XWPE_STDFLAG) $(AITLS_CFLAGS)
+test_ai_http_LDADD = $(AITLS_LIBS)
 test_ai_diff_SOURCES = tests/test_ai_diff.c we_ai_diff.c
-test_ai_diff_CFLAGS = $(XWPE_STDFLAG) -DWPE_AI
+test_ai_diff_CFLAGS = $(XWPE_STDFLAG)
+# Live TLS smoke: built with the TLS backend but kept out of TESTS (it needs the
+# network); run by hand, e.g. ./test_ai_tls_live https://api.github.com /zen
+if WPE_AI_TLS
+check_PROGRAMS += test_ai_tls_live
+test_ai_tls_live_SOURCES = tests/test_ai_tls_live.c we_ai_http.c
+test_ai_tls_live_CFLAGS = $(XWPE_STDFLAG) $(AITLS_CFLAGS)
+test_ai_tls_live_LDADD = $(AITLS_LIBS)
+endif
 endif
 
 # --- Extra files for distribution ---
