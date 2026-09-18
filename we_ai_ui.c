@@ -103,7 +103,11 @@ static FENSTER *ai_pane_win(FENSTER *f)
 /* Repaint the pane window and keep the newest line in view. */
 static void ai_pane_paint(FENSTER *wf)
 {
- wf->b->b.y = wf->b->mxlines - 1;
+ int y = wf->b->mxlines - 1;
+ wf->b->b.y = y;
+ /* Keep the caret at the END of the newest line (following the streamed text),
+    like a terminal, instead of parked at column 0. */
+ wf->b->b.x = (y >= 0 && wf->b->bf[y].s) ? wf->b->bf[y].len : 0;
  e_messages_scroll_to_bottom(wf);
  e_schirm(wf, 0);
  e_cursor(wf, 0);
