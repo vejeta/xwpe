@@ -340,7 +340,7 @@ def xserver():
 
 
 @pytest.fixture
-def xwpe(xserver, tmp_path):
+def xwpe(xserver, tmp_path, request):
     """Launch a fresh xwpe editing a small C file; tear it down after."""
     assert os.path.exists(XWPE_BIN), "xwpe binary not found at %s (set XWPE_BIN)" % XWPE_BIN
     src = tmp_path / "t.c"
@@ -377,10 +377,10 @@ def xwpe(xserver, tmp_path):
     # without pinning, the coordinate-based pixel scans below would shift with
     # whatever monospace size the test host happens to have configured (the
     # GNOME schema default is "Monospace 11", not the 10 these tests assume).
-    proc = _spawn([XWPE_BIN, str(src)],
-                  env={**os.environ, "DISPLAY": DISPLAY, "HOME": str(tmp_path),
-                       "XWPE_LSP_NO_EAGER": "1", "XWPE_FONT_SIZE": "10"},
-                  cwd=str(tmp_path))
+    env = {**os.environ, "DISPLAY": DISPLAY, "HOME": str(tmp_path),
+           "XWPE_LSP_NO_EAGER": "1", "XWPE_FONT_SIZE": "10"}
+    env.update(getattr(request, "param", None) or {})   # optional per-test env (e.g. AI)
+    proc = _spawn([XWPE_BIN, str(src)], env=env, cwd=str(tmp_path))
     win = _find_xwpe_window()
     assert win, "xwpe window did not appear"
     _force_window_geometry(win)

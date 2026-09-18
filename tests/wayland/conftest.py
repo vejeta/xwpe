@@ -433,6 +433,7 @@ def xwpe(wlserver, tmp_path, request):
            "XWPE_WL_HEIGHT": "768",
            "XWPE_WL_DUMP": dump,
            "HOME": str(tmp_path)}
+    env.update(getattr(request, "param", None) or {})   # optional per-test env (e.g. AI)
     proc = _spawn([XWPE_BIN, str(src)], env=env, cwd=str(tmp_path),
                   stderr=_logfile("xwpe-%s.log" % request.node.name))
     # Wait for the weston X window (the xdotool target) and the first frame dump.
