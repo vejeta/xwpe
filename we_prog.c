@@ -172,6 +172,9 @@ int e_prog_switch(FENSTER *f, int c)
   case AltB:   /*  Alt B  AI assistant (Chat now; Edit/Agent as they land) */
    e_ai_ui_key(f);
    break;
+  case WPE_AI_MENU:   /*  click on the "Alt-B AI" bottom-bar entry -> menu */
+   e_ai_menu(f);
+   break;
 #endif
   case AltT:   /*  Alt T  NexT Error */
   case AF8:

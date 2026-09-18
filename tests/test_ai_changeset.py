@@ -57,8 +57,7 @@ def _run(tmp_path, review_key):
         s.key(ALT.BLOCK)
         s.key("g")
         s.key("rewrite it")
-        s.key("\r", delay=1.2)           # submit -> policy prompt
-        s.key("\r", delay=2.0)           # keep auto -> checkpoint -> run -> review
+        s.key("\r", delay=2.0)           # submit -> checkpoint -> run -> review
         s._drain(1.5)
         s.key(review_key, delay=1.5)     # a = keep all / r = revert all
         s._drain(1.0)

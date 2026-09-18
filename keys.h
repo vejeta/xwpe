@@ -162,3 +162,8 @@
    the "LSP" entry on the editor's bottom shortcut bar (mouse-clickable), handled
    in e_prog_switch.  Not a keyboard key -- the Alt-Q prefix is the keyboard path. */
 #define WPE_LSP_MENU    2003
+/* Synthetic action code: open the AI-assistant action menu.  Carried by the
+   "Alt-B AI" entry on the editor's bottom shortcut bar (mouse-clickable),
+   handled in e_prog_switch.  Not a keyboard key -- the Alt-B prefix is the
+   keyboard path. */
+#define WPE_AI_MENU     2004

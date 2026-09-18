@@ -42,6 +42,9 @@ int fk__cursor = 0;
 WOPT *eblst, *fblst, *mblst, *dblst, *xblst, *wblst, *rblst;
 WOPT *ablst, *sblst, *hblst, *gblst, *oblst;
 WOPT *eblst_lsp;   /* editor bottom bar shown while an LSP-supported file is active */
+#ifdef WPE_AI
+WOPT *eblst_ai;    /* editor bottom bar shown while the AI assistant is enabled */
+#endif
 
 char *e_hlp, *user_shell;
 WOPT *blst;
@@ -151,6 +154,31 @@ WOPT eblst_lsp_u[] = {  {"F1 Help",  0, 0, 2, F1},
 			{"Alt-F3 Srch", 40, 0, 6, AF3},
 			{"Alt-Q ? Metals", 52, 0, 7, WPE_LSP_MENU},
 			{"Alt-F4 Quit",  67, 0, 6, AF4}  };
+
+#ifdef WPE_AI
+/* Editor bottom bar shown while the AI assistant is enabled and the active
+   window holds a plain file that did NOT already get the contextual LSP bar.
+   It swaps the "Search Again" hint for an "Alt-B AI" entry: the highlighted
+   "Alt-B" (n=5) shows the keyboard prefix, and a click on the entry opens the
+   AI action menu (handled as WPE_AI_MENU in e_prog_switch).  Positions match the
+   plain editor bar -- "Alt-B AI" is no wider than the "Search Again" slot it
+   replaces, so nothing else needs repacking. */
+WOPT eblst_ai_o[] = {  {"F1 Help",  0, 0, 2, F1},
+		       {"F2 Save",  9, 0, 2, F2},
+		       {"F3 Files", 18, 0, 2,  F3},
+		       {"^W Close W.", 28, 0, 2, CtrlW},
+		       {"F4 Search", 45, 0, 2, F4},
+		       {"Alt-B AI", 56, 0, 5, WPE_AI_MENU},
+		       {"Alt-X Quit",  68, 0, 5, AltX}  };
+
+WOPT eblst_ai_u[] = {  {"F1 Help",  0, 0, 2, F1},
+		       {"Alt-F2 Save",  9, 0, 6, AF2},
+		       {"F2 Files", 22, 0, 2,  F2},
+		       {"^F4 Close ", 32, 0, 3, CF4},
+		       {"Alt-F3 Srch", 44, 0, 6, AF3},
+		       {"Alt-B AI", 57, 0, 5, WPE_AI_MENU},
+		       {"Alt-F4 Quit",  67, 0, 6, AF4}  };
+#endif
 
 WOPT fblst_o[] = {  {"F1 Help",  0, 0, 2, F1},
 		    {"Edit",  10, 0, 1, AltE},
@@ -534,6 +562,9 @@ int e_switch_blst(ECNT *cn)
    f = cn->f[i];
    if (f->blst == eblst_o) f->blst = eblst_u;
    else if (f->blst == eblst_lsp_o) f->blst = eblst_lsp_u;
+#ifdef WPE_AI
+   else if (f->blst == eblst_ai_o) f->blst = eblst_ai_u;
+#endif
    else if (f->blst == fblst_o) f->blst= fblst_u;
    else if (f->blst == mblst_o) f->blst= mblst_u;
    else if (f->blst == dblst_o) f->blst= dblst_u;
@@ -554,6 +585,9 @@ int e_switch_blst(ECNT *cn)
    f = cn->f[i];
    if (f->blst == eblst_u) f->blst= eblst_o;
    else if (f->blst == eblst_lsp_u) f->blst= eblst_lsp_o;
+#ifdef WPE_AI
+   else if (f->blst == eblst_ai_u) f->blst= eblst_ai_o;
+#endif
    else if (f->blst == fblst_u) f->blst= fblst_o;
    else if (f->blst == mblst_u) f->blst= mblst_o;
    else if (f->blst == dblst_u) f->blst= dblst_o;
@@ -624,6 +658,9 @@ void e_ini_desk(ECNT *cn)
   xblst = xblst_u; wblst = wblst_u; rblst = rblst_u; ablst = ablst_u;
   sblst = sblst_u; hblst = hblst_u; gblst = gblst_u; oblst = oblst_u;
   eblst_lsp = eblst_lsp_u;
+#ifdef WPE_AI
+  eblst_ai = eblst_ai_u;
+#endif
  }
  else
  {
@@ -631,6 +668,9 @@ void e_ini_desk(ECNT *cn)
   xblst = xblst_o; wblst = wblst_o; rblst = rblst_o; ablst = ablst_o;
   sblst = sblst_o; hblst = hblst_o; gblst = gblst_o; oblst = oblst_o;
   eblst_lsp = eblst_lsp_o;
+#ifdef WPE_AI
+  eblst_ai = eblst_ai_o;
+#endif
  }
  /* Pack the project (Data window) status bar compactly like the editor bar,
     leaving the right edge free for the "Project: <name>" label drawn by

@@ -36,6 +36,7 @@ typedef struct {
  size_t         flen, fcap;
  int            fd;
  int            active;
+ int            started;       /* a fresh reply line has been opened under "AI:" */
 } ai_chat_session;
 
 static ai_chat_session *g_ai_chat = NULL;
@@ -83,12 +84,67 @@ static void ai_chat_finish(ai_chat_session *s)
  free(s);
 }
 
-/* Accumulate a streamed delta; emit each COMPLETE line to the pane, keep the
- * trailing partial line buffered (so tokens paint line-by-line, never split). */
+/* Locate the "AI" output pane (creating it if needed), so streaming can paint
+ * directly into its buffer rather than only appending whole lines. */
+static FENSTER *ai_pane_win(FENSTER *f)
+{
+ ECNT *cn = f->ed;
+ int i;
+ for (i = cn->mxedt; i > 0 && strcmp(cn->f[i]->datnam, AI_PANE_NAME); i--)
+  ;
+ if (i == 0) {
+  if (e_edit(cn, AI_PANE_NAME))
+   return NULL;
+  i = cn->mxedt;
+ }
+ return cn->f[i];
+}
+
+/* Repaint the pane window and keep the newest line in view. */
+static void ai_pane_paint(FENSTER *wf)
+{
+ wf->b->b.y = wf->b->mxlines - 1;
+ e_messages_scroll_to_bottom(wf);
+ e_schirm(wf, 0);
+ e_cursor(wf, 0);
+ e_refresh();
+}
+
+/* Replace the text of the pane's LAST line in place (no new line added), so a
+ * partial line grows token-by-token as the model streams -- the "live typing"
+ * effect a real chat has, instead of a whole line appearing at once. */
+static void ai_pane_set_last(FENSTER *wf, const char *text)
+{
+ BUFFER *b = wf->b;
+ size_t L = strlen(text);
+ int y;
+ if (b->mxlines == 0)
+  e_new_line(0, b);
+ y = b->mxlines - 1;
+ b->bf[y].s = REALLOC(b->bf[y].s, L + 2);
+ memcpy(b->bf[y].s, text, L);
+ b->bf[y].s[L] = '\n';
+ b->bf[y].s[L + 1] = '\0';
+ b->bf[y].len = (int)L;
+ b->bf[y].nrc = (int)L + 1;
+ ai_pane_paint(wf);
+}
+
+/* Finalise the current line and open a fresh (empty) line after it. */
+static void ai_pane_commit(FENSTER *wf)
+{
+ BUFFER *b = wf->b;
+ e_new_line(b->mxlines, b);
+}
+
+/* Stream a delta into the pane: append its characters to the current line and
+ * start a new line at each '\n', repainting so tokens appear as they arrive.
+ * The whole reply is also accumulated for the session log. */
 static void ai_delta_cb(const char *delta, void *ud)
 {
  ai_chat_session *s = ud;
- size_t dl = strlen(delta), start, i;
+ size_t dl = strlen(delta), i;
+ FENSTER *wf;
 
  if (s->flen + dl + 1 > s->fcap) {            /* keep the whole reply too */
   size_t nc = s->fcap ? s->fcap : 512;
@@ -103,32 +159,37 @@ static void ai_delta_cb(const char *delta, void *ud)
   s->full[s->flen] = '\0';
  }
 
- if (s->plen + dl + 1 > s->pcap) {
-  size_t nc = s->pcap ? s->pcap : 256;
-  char *nb;
-  while (s->plen + dl + 1 > nc) nc *= 2;
-  nb = realloc(s->pending, nc);
-  if (!nb) return;
-  s->pending = nb;
-  s->pcap = nc;
+ wf = ai_pane_win(s->ref);
+ if (!wf) return;
+ if (!s->started) {          /* open a reply line under the "AI:" header once */
+  ai_pane_commit(wf);
+  s->started = 1;
  }
- memcpy(s->pending + s->plen, delta, dl);
- s->plen += dl;
- s->pending[s->plen] = '\0';
 
- start = 0;
- for (i = 0; i < s->plen; i++) {
-  if (s->pending[i] == '\n') {
-   s->pending[i] = '\0';
-   ai_pane(s->ref, s->pending + start, 0);
-   start = i + 1;
+ for (i = 0; i < dl; i++) {
+  char c = delta[i];
+  if (c == '\r')
+   continue;
+  if (c == '\n') {
+   ai_pane_set_last(wf, s->pending ? s->pending : "");
+   ai_pane_commit(wf);
+   s->plen = 0;
+   if (s->pending) s->pending[0] = '\0';
+   continue;
   }
- }
- if (start) {
-  memmove(s->pending, s->pending + start, s->plen - start);
-  s->plen -= start;
+  if (s->plen + 2 > s->pcap) {
+   size_t nc = s->pcap ? s->pcap : 256;
+   char *nb;
+   while (s->plen + 2 > nc) nc *= 2;
+   nb = realloc(s->pending, nc);
+   if (!nb) return;
+   s->pending = nb;
+   s->pcap = nc;
+  }
+  s->pending[s->plen++] = c;
   s->pending[s->plen] = '\0';
  }
+ ai_pane_set_last(wf, s->pending ? s->pending : "");   /* live partial line */
 }
 
 /* fd-loop callback: drain readable bytes, stream deltas into the pane. */
@@ -145,7 +206,7 @@ static void ai_fd_cb(int fd, void *data)
   return;
  }
  if (done) {
-  if (s->plen) { s->pending[s->plen] = '\0'; ai_pane(s->ref, s->pending, 0); s->plen = 0; }
+  /* the trailing partial is already on screen (painted live in ai_delta_cb) */
   if (s->full && s->flen) wpe_ai_session_append("assistant", s->full);
   wpe_ai_session_save(s->ref);
   wpe_ai_trace("chat done");
@@ -422,25 +483,68 @@ static int e_ai_edit(FENSTER *f)
 
 /* ======================= model picker =================================== */
 
+/* A navigable radio list (arrows move, Enter confirms, Esc cancels) built on the
+ * standard dialog widgets -- the same interaction as the LSP pickers, so choosing
+ * a model feels like every other list in the editor rather than a blind prompt.
+ * Returns the chosen index in labels[0..n), or -1 if cancelled.  Mirrors the LSP
+ * picker's structure; the sw ids MUST be unique and non-zero or the modal dialog
+ * cannot take initial focus and would spin (see the LSP picker for the why). */
+#define AI_PICK_MAXW 44
+static int e_ai_pick(FENSTER *f, const char *title, const char *const *labels,
+                     int n)
+{
+ W_OPTSTR *o;
+ static char rows[16][AI_PICK_MAXW + 4];
+ static char name[80];
+ int i, sel = -1, vis, mxlen = 0, w, bw, bh;
+
+ vis = n < 16 ? n : 16;
+ for (i = 0; i < vis; i++) {
+  snprintf(rows[i], sizeof rows[i], "%.*s", AI_PICK_MAXW, labels[i]);
+  if ((int)strlen(rows[i]) > mxlen) mxlen = strlen(rows[i]);
+ }
+ snprintf(name, sizeof name, "%.60s", title);
+ w = mxlen + 4;
+ if ((int)strlen(name) + 2 > w) w = strlen(name) + 2;
+ o = e_init_opt_kst(f);
+ if (!o) return -1;
+ bw = w + 4;
+ bh = vis + 3;
+ o->xa = 8;
+ o->ya = 3;
+ o->xe = o->xa + bw;
+ o->ye = o->ya + bh;
+ o->bgsw = 0;
+ o->crsw = AltO;                        /* Enter on a radio confirms via Ok      */
+ o->name = name;
+ for (i = 0; i < vis; i++)
+  e_add_pswstr(0, 3, 1 + i, -1, 10001 + i, 0, rows[i], o);
+ e_add_bttstr((o->xe - o->xa - 4) / 2, o->ye - o->ya - 1, 0, AltO, "Ok", NULL, o);
+ if (e_opt_kst(o) != WPE_ESC)
+  sel = o->pstr[0]->num;
+ freeostr(o);
+ if (sel < 0 || sel >= vis) return -1;
+ return sel;
+}
+
 static int e_ai_pick_model(FENSTER *f)
 {
  char *names[32];
- char err[256], line[220];
- static char sel[128];
- int n, i;
+ char title[80], line[220];
+ int n, i, sel;
 
- err[0] = '\0';
- n = wpe_ai_list_models(e_ai_backend, names, 32, err, sizeof err);
- if (n <= 0) { ai_pane(f, err[0] ? err : "no models found", 1); return 0; }
- ai_pane(f, "--- available models (type the exact name) ---", 1);
- for (i = 0; i < n; i++) ai_pane(f, names[i], 0);
- sel[0] = '\0';
- if (e_add_arguments(sel, "Model name", f, 0, AltB, NULL) && sel[0]) {
+ title[0] = '\0';
+ n = wpe_ai_list_models(e_ai_backend, names, 32, title, sizeof title);
+ if (n <= 0) { ai_pane(f, title[0] ? title : "no models found", 1); return 0; }
+ snprintf(title, sizeof title, "Model (%d available)", n);
+ sel = e_ai_pick(f, title, (const char *const *)names, n);
+ if (sel >= 0) {
   free(e_ai_model);
-  e_ai_model = strdup(sel);
-  snprintf(line, sizeof line, "[AI] model = %s (Save Options to persist)", sel);
-  ai_pane(f, line, 0);
-  wpe_ai_trace("model set %s", sel);
+  e_ai_model = strdup(names[sel]);
+  snprintf(line, sizeof line, "[AI] model = %s (Save Options to persist)",
+           names[sel]);
+  ai_pane(f, line, 1);
+  wpe_ai_trace("model set %s", names[sel]);
  }
  for (i = 0; i < n; i++) free(names[i]);
  return 0;
@@ -448,6 +552,7 @@ static int e_ai_pick_model(FENSTER *f)
 
 int e_ai_agent(FENSTER *f);         /* defined in the Agent section below */
 static int e_ai_plan(FENSTER *f);   /* defined in the PLAN section below  */
+static void e_ai_cycle_policy(FENSTER *f);  /* defined below e_ai_ui_key    */
 
 /* ======================= Alt-B prefix dispatch ========================== */
 int e_ai_ui_key(FENSTER *f)
@@ -466,14 +571,14 @@ int e_ai_ui_key(FENSTER *f)
   case 'G': return e_ai_agent(f);       /* aGent (tool harness, policy dial) */
   case 'P': return e_ai_plan(f);        /* Plan: multi-file, permission first */
   case 'M': return e_ai_pick_model(f);  /* pick Model                        */
+  case 'Y': e_ai_cycle_policy(f); return 0;  /* cYcle permission policy       */
   case 'N':                             /* New session (forget the workspace) */
    wpe_ai_session_reset(f);
    ai_pane(f, "[AI] session reset for this workspace", 1);
    return 0;
-  case WPE_ESC: return 0;
-  default:
-   ai_pane(f, "AI (Alt-B):  a = Ask  e = Edit  p = Plan  g = aGent  m = Model  n = New session", 1);
-   return 0;
+  case WPE_ESC: return 0;                /* cancel -- no action, no menu       */
+  default:                               /* '?', F1, anything else -> the menu */
+   return e_ai_menu(f);
  }
 }
 
@@ -527,20 +632,17 @@ static int ai_agent_approve(FENSTER *f, const char *what, int is_run)
  }
 }
 
-/* Per-run choice of the permission dial (Enter keeps the configured one). */
-static void ai_choose_policy(FENSTER *f)
+/* Alt-B y: cycle the permission dial ask -> edits -> auto.  Also settable from
+ * the AI menu (radio) and persisted as AIPolicy via Save Options. */
+static void e_ai_cycle_policy(FENSTER *f)
 {
- char line[160];
- int c;
+ char line[140];
+ e_ai_policy = (e_ai_policy + 1) % 3;
  snprintf(line, sizeof line,
-   "[agent] policy: a = ask   e = edits   u = auto   (Enter = keep '%s')",
+   "[AI] permission policy = %s   (ask -> edits -> auto; Save Options to keep)",
    wpe_ai_policy_name(e_ai_policy));
  ai_pane(f, line, 1);
- c = e_toupper(e_getch());
- if (c == 'A') e_ai_policy = WPE_AI_POLICY_ASK;
- else if (c == 'E') e_ai_policy = WPE_AI_POLICY_EDITS;
- else if (c == 'U') e_ai_policy = WPE_AI_POLICY_AUTO;
- wpe_ai_trace("agent policy=%s", wpe_ai_policy_name(e_ai_policy));
+ wpe_ai_trace("policy set %s", wpe_ai_policy_name(e_ai_policy));
 }
 
 /* growable conversation */
@@ -596,7 +698,7 @@ int e_ai_agent(FENSTER *f)
  { char line[1100]; snprintf(line, sizeof line, "[agent] task: %s", goal); ai_pane(f, line, 1); }
  wpe_ai_trace("agent task=%s", goal);
 
- ai_choose_policy(f);
+ wpe_ai_trace("agent policy=%s", wpe_ai_policy_name(e_ai_policy));
  wpe_ai_session_load(f);
  /* claudecli: pre-grant per the dial (it cannot prompt in -p mode). */
  e_ai_cli_mode = e_ai_policy == WPE_AI_POLICY_AUTO  ? WPE_AI_CLI_AUTO
@@ -910,6 +1012,99 @@ static int e_ai_plan(FENSTER *f)
   }
  }
  for (i = 0; i < np; i++) { free(props[i].path); free(props[i].text); }
+ return 0;
+}
+
+/* ======================= Bottom-bar action menu ========================= */
+/* The "Alt-B AI" entry on the editor's bottom bar (mouse-clickable) and any
+ * unrecognised Alt-B letter open this popup so every AI action is discoverable
+ * without memorising the prefix letters -- the same role e_lsp_ui_menu plays
+ * for the language server. */
+
+#define AI_MENU_TEXTW 25
+
+/* Cycle the permission dial (ask -> edits -> auto) from the menu. */
+static int e_ai_menu_policy(FENSTER *f)
+{
+ e_ai_cycle_policy(f);
+ return 0;
+}
+
+/* Forget the workspace conversation so the next request starts fresh. */
+static int e_ai_menu_new_session(FENSTER *f)
+{
+ wpe_ai_session_reset(f);
+ ai_pane(f, "[AI] session reset for this workspace", 1);
+ return 0;
+}
+
+/* Turn the assistant off (clears the runtime ED_AI_ENABLE toggle).  The bar
+ * loses its "Alt-B AI" entry the next time this window is drawn; Options >
+ * Editor turns it back on. */
+static int e_ai_menu_disable(FENSTER *f)
+{
+ if (WpeEditor)
+  WpeEditor->edopt &= ~ED_AI_ENABLE;
+ ai_pane(f, "[AI] assistant disabled - re-enable it in Options > Editor", 1);
+ return 0;
+}
+
+/* Fill `it` with the menu rows (name left, "Alt-B <key>" right-aligned so the
+ * keyboard shortcut lines up like the LSP menu).  Returns the row count. */
+static int e_ai_menu_items(OPTK *it)
+{
+ static char label[8][AI_MENU_TEXTW + 4];
+ static const struct { const char *name; char key; int (*fkt)(FENSTER *); } a[] = {
+  { "Ask (chat)",        'A', e_ai_chat            },
+  { "Edit current file", 'E', e_ai_edit            },
+  { "Plan (multi-file)", 'P', e_ai_plan            },
+  { "Agent (tools)",     'G', e_ai_agent           },
+  { "Pick model",        'M', e_ai_pick_model      },
+  { "Policy dial",       'Y', e_ai_menu_policy     },
+  { "New session",       'N', e_ai_menu_new_session},
+  { "Disable",           'D', e_ai_menu_disable    }
+ };
+ int i, n = (int)(sizeof(a) / sizeof(a[0]));
+
+ for (i = 0; i < n; i++)
+ {
+  char code[12];
+  int pad, hl;
+  snprintf(code, sizeof code, "Alt-B %c", a[i].key);            /* 7 chars */
+  pad = AI_MENU_TEXTW - (int)strlen(a[i].name) - (int)strlen(code);
+  if (pad < 1)
+   pad = 1;
+  snprintf(label[i], sizeof label[i], "%s%*s%s", a[i].name, pad, "", code);
+  hl = (int)strlen(label[i]) - 1;                /* the letter in "Alt-B X" */
+  it[i] = WpeFillSubmenuItem(label[i], hl, a[i].key, a[i].fkt);
+ }
+ return n;
+}
+
+int e_ai_menu(FENSTER *f)
+{
+ OPTK items[8];
+ int n, xa, xe, ya, ye, w;
+
+ if (!wpe_ai_enabled())
+ {
+  ai_pane(f, "AI assistant is off - enable it in Options > Editor.", 1);
+  return 0;
+ }
+ n = e_ai_menu_items(items);
+ wpe_ai_trace("menu open n=%d", n);
+ w = AI_MENU_TEXTW + 5;                   /* box width incl. frame + margins   */
+ xa = 54;                                 /* roughly under the "Alt-B AI" entry */
+ if (xa + w > MAXSCOL - 1)                /* keep it on screen                  */
+  xa = MAXSCOL - 1 - w;
+ if (xa < 1)
+  xa = 1;
+ xe = xa + w;
+ ye = MAXSLNS - 2;                        /* bottom edge just above the bar...   */
+ ya = ye - (n + 1);                       /* ...so the list opens upward         */
+ if (ya < 1)
+  ya = 1;
+ WpeHandleSubmenu(xa, ya, xe, ye, 0, items, f);
  return 0;
 }
 

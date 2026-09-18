@@ -103,6 +103,10 @@ int e_edit(ECNT *cn, char *filename)
  extern WOPT *eblst, *hblst, *mblst, *dblst;
  extern WOPT *eblst_lsp;                 /* editor bar variant for LSP-backed files */
  extern const char *e_lsp_server_label(FENSTER *);  /* non-NULL => file has a server */
+#ifdef WPE_AI
+ extern WOPT *eblst_ai;                  /* editor bar variant while AI is enabled */
+ extern int wpe_ai_enabled(void);        /* runtime AI toggle (ED_AI_ENABLE bit)   */
+#endif
  FILE *fp = NULL;
  FENSTER *f, *fo;
  char *complete_fname, *path, *file;
@@ -368,6 +372,14 @@ int e_edit(ECNT *cn, char *filename)
     a non-LSP file shows its normal bar, exactly the desired contextual behaviour. */
  if (ftype == 0 && e_lsp_server_label(f))
   f->blst = eblst_lsp;
+#endif
+#ifdef WPE_AI
+ /* AI enabled + a plain editor file that did NOT already get the contextual LSP
+    bar: show the "Alt-B AI" entry so the assistant menu is discoverable and
+    mouse-clickable.  On an LSP-backed file the LSP bar keeps priority and Alt-B
+    still opens the AI menu from the keyboard. */
+ if (ftype == 0 && wpe_ai_enabled() && f->blst != eblst_lsp)
+  f->blst = eblst_ai;
 #endif
  if (ftype != 1)
   fp = fopen(complete_fname, "rb");

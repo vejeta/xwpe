@@ -38,8 +38,7 @@ def _agent(tmp_path, policy, extra_keys):
         s.key(ALT.BLOCK)
         s.key("g")                       # aGent
         s.key("write a file")
-        s.key("\r", delay=1.2)           # submit -> policy prompt
-        s.key("\r", delay=1.2)           # Enter = keep the configured policy
+        s.key("\r", delay=1.2)           # submit -> agent loop (policy from env)
         for k in extra_keys:
             s.key(k, delay=1.2)
         s._drain(1.5)
