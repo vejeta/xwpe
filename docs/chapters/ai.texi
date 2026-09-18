@@ -102,6 +102,12 @@ this function do?'' works.  The editor stays fully interactive while the reply
 streams; @key{Esc} cancels.  The conversation is remembered for the workspace
 (see @emph{Sessions}, below).
 
+Chat streams token by token.  @emph{Edit}, @emph{Plan} and @emph{Agent} (below)
+need the whole reply before they can act, so while the model is thinking they
+show a rotating @samp{-\|/} indicator and the seconds elapsed in the @samp{AI}
+pane -- a slow local model looks busy, not frozen -- and @key{Esc} aborts the
+wait at any time.
+
 @section Edit
 
 @cindex AI, edit

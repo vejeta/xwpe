@@ -103,9 +103,17 @@ int   wpe_ai_stream_pump(wpe_ai_stream *st,
 int   wpe_ai_stream_http_status(wpe_ai_stream *st);
 void  wpe_ai_stream_free(wpe_ai_stream *st);
 
-/* Blocking convenience: collect the FULL assistant reply (for Edit/Agent, which
- * need the whole answer before acting).  Returns malloc'd text or NULL. */
+/* Called repeatedly while wpe_ai_complete waits, ~8x/second, with the seconds
+ * elapsed so far -- the UI uses it to animate a "working" spinner so a slow
+ * local model does not look frozen.  May be NULL. */
+typedef void (*wpe_ai_progress_cb)(void *ud, int elapsed_s);
+
+/* Collect the FULL assistant reply (for Edit/Plan/Agent, which need the whole
+ * answer before acting).  Pumps a progress callback while it waits and aborts if
+ * the user presses Esc.  Returns malloc'd text, or NULL (errbuf says why:
+ * "cancelled", "timed out", ...). */
 char *wpe_ai_complete(const wpe_ai_req *req, int timeout_ms,
+                      wpe_ai_progress_cb progress, void *ud,
                       char *errbuf, size_t errsz);
 
 /* ----- line diff (we_ai_diff.c) ----------------------------------------- */

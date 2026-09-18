@@ -137,6 +137,36 @@ static void ai_pane_commit(FENSTER *wf)
  e_new_line(b->mxlines, b);
 }
 
+/* A "working" indicator for the blocking Edit/Plan/Agent waits: a rotating
+ * -\|/ plus the seconds elapsed, redrawn in place on one pane line so a slow
+ * local model looks alive instead of frozen.  wpe_ai_complete calls ai_spin_cb
+ * ~8x/second (see wpe_ai_progress_cb). */
+typedef struct { FENSTER *f; const char *label; int i; } ai_spin;
+
+static void ai_spin_cb(void *ud, int elapsed_s)
+{
+ ai_spin *sp = ud;
+ FENSTER *wf = ai_pane_win(sp->f);
+ static const char frames[] = "-\\|/";
+ char line[120];
+ if (!wf) return;
+ snprintf(line, sizeof line, "%s %c  %ds  (Esc cancels)",
+          sp->label, frames[sp->i & 3], elapsed_s);
+ sp->i++;
+ ai_pane_set_last(wf, line);
+}
+
+/* Open a fresh pane line and return a spinner bound to `label`, ready to hand to
+ * wpe_ai_complete as its progress callback. */
+static ai_spin ai_spin_begin(FENSTER *f, const char *label)
+{
+ ai_spin sp;
+ FENSTER *wf = ai_pane_win(f);
+ sp.f = f; sp.label = label; sp.i = 0;
+ if (wf) { ai_pane_commit(wf); ai_pane_set_last(wf, label); }
+ return sp;
+}
+
 /* Stream a delta into the pane: append its characters to the current line and
  * start a new line at each '\n', repainting so tokens appear as they arrive.
  * The whole reply is also accumulated for the session log. */
@@ -454,10 +484,12 @@ static int e_ai_edit(FENSTER *f)
  msgs[1].role = "user";   msgs[1].content = user ? user : instr;
  req.model = NULL; req.msgs = msgs; req.nmsgs = 2;
 
- ai_pane(f, "[AI edit] waiting for the model... (Esc cancels; large local models are slow)", 1);
  wpe_ai_trace("edit instr=%s", instr);
  err[0] = '\0';
- reply = wpe_ai_complete(&req, 120000, err, sizeof err);
+ {
+  ai_spin sp = ai_spin_begin(f, "[AI edit] working");
+  reply = wpe_ai_complete(&req, 120000, ai_spin_cb, &sp, err, sizeof err);
+ }
  free(user);
  if (!reply) {
   snprintf(line, sizeof line, "[AI edit] %s", err[0] ? err : "no response");
@@ -734,9 +766,11 @@ int e_ai_agent(FENSTER *f)
   if (!msgs) break;
   for (i = 0; i < ml.n; i++) { msgs[i].role = ml.role[i]; msgs[i].content = ml.content[i]; }
   req.model = NULL; req.msgs = msgs; req.nmsgs = ml.n;
-  ai_pane(f, "[agent] thinking... (Esc cancels)", 0);
   err[0] = '\0';
-  reply = wpe_ai_complete(&req, 120000, err, sizeof err);
+  {
+   ai_spin sp = ai_spin_begin(f, "[agent] working");
+   reply = wpe_ai_complete(&req, 120000, ai_spin_cb, &sp, err, sizeof err);
+  }
   free(msgs);
   if (!reply) { ai_pane(f, err[0] ? err : "[agent] no response", 0); break; }
   ai_ml_add(&ml, "assistant", reply);
@@ -916,9 +950,11 @@ static int e_ai_plan(FENSTER *f)
   if (!msgs) break;
   for (i = 0; i < ml.n; i++) { msgs[i].role = ml.role[i]; msgs[i].content = ml.content[i]; }
   req.model = NULL; req.msgs = msgs; req.nmsgs = ml.n;
-  ai_pane(f, "[plan] thinking... (Esc cancels)", 0);
   err[0] = '\0';
-  reply = wpe_ai_complete(&req, 180000, err, sizeof err);
+  {
+   ai_spin sp = ai_spin_begin(f, "[plan] working");
+   reply = wpe_ai_complete(&req, 180000, ai_spin_cb, &sp, err, sizeof err);
+  }
   free(msgs);
   if (!reply) { ai_pane(f, err[0] ? err : "[plan] no response", 0); break; }
   ai_ml_add(&ml, "assistant", reply);

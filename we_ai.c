@@ -852,30 +852,37 @@ static void ai_collect_cb(const char *delta, void *ud)
 }
 
 char *wpe_ai_complete(const wpe_ai_req *req, int timeout_ms,
+                      wpe_ai_progress_cb progress, void *ud,
                       char *errbuf, size_t errsz)
 {
  wpe_ai_stream *st = wpe_ai_stream_start(req, errbuf, errsz);
  struct ai_collect c;
- long deadline;
+ long deadline, start;
  int done = 0, fd;
 
  if (!st) return NULL;
  c.buf = NULL; c.len = 0; c.cap = 0;
  fd = wpe_ai_stream_fd(st);
- deadline = ai_now_ms() + timeout_ms;
+ start = ai_now_ms();
+ deadline = start + timeout_ms;
+ if (progress) progress(ud, 0);
  while (!done) {
   struct pollfd pf[2];
   int pr;
   long left = deadline - ai_now_ms();
   if (left <= 0) { if (errbuf) snprintf(errbuf, errsz, "timed out"); break; }
   pf[0].fd = fd;            pf[0].events = POLLIN; pf[0].revents = 0;
-  /* Also watch the terminal so a synchronous Edit/Plan/Agent wait is not a dead
-     freeze: pressing Esc aborts it instead of forcing the user to wait out a
-     slow local model (or kill xwpe). */
+  /* Also watch the terminal so an Edit/Plan/Agent wait is not a dead freeze:
+     Esc aborts it instead of forcing the user to wait out a slow local model. */
   pf[1].fd = STDIN_FILENO;  pf[1].events = POLLIN; pf[1].revents = 0;
-  pr = poll(pf, 2, (int)(left > 250 ? 250 : left));
+  /* Wake ~8x/second so the caller can spin its "working" indicator even while
+     the model is silent (no tokens arriving). */
+  pr = poll(pf, 2, (int)(left > 120 ? 120 : left));
   if (pr < 0) { if (errno == EINTR) continue; break; }
-  if (pr == 0) continue;
+  if (pr == 0) {                      /* timed slice: just animate progress */
+   if (progress) progress(ud, (int)((ai_now_ms() - start) / 1000));
+   continue;
+  }
   if (pf[1].revents & POLLIN) {
    unsigned char ch;
    if (read(STDIN_FILENO, &ch, 1) == 1 && ch == 27) {  /* Esc */
@@ -891,6 +898,7 @@ char *wpe_ai_complete(const wpe_ai_req *req, int timeout_ms,
    if (errbuf) snprintf(errbuf, errsz, "transport error");
    break;
   }
+  if (progress) progress(ud, (int)((ai_now_ms() - start) / 1000));
  }
  wpe_ai_stream_free(st);
  if (!done) { free(c.buf); return NULL; }
