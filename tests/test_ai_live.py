@@ -59,5 +59,8 @@ def test_ai_live_openai(tmp_path):
 @pytest.mark.skipif(not os.environ.get("ANTHROPIC_API_KEY"),
                     reason="ANTHROPIC_API_KEY not set")
 def test_ai_live_claude(tmp_path):
-    disp = _chat(tmp_path, "claude", "https://api.anthropic.com", "claude-sonnet-5")
+    # Override with a valid Anthropic model id, e.g.
+    #   CLAUDE_MODEL=claude-3-5-sonnet-latest
+    model = os.environ.get("CLAUDE_MODEL", "claude-sonnet-5")
+    disp = _chat(tmp_path, "claude", "https://api.anthropic.com", model)
     assert "pong" in disp.lower(), "model reply not visible in pane:\n" + disp
