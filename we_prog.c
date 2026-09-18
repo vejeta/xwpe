@@ -8,6 +8,7 @@
 #include "messages.h"
 #include "edit.h"
 #include "WeExpArr.h"
+#include "we_ai.h"       /* AI assistant entry point (guarded by WPE_AI) */
 
 #ifdef PROG
 
@@ -167,6 +168,11 @@ int e_prog_switch(FENSTER *f, int c)
   case AltA:   /*  Alt A  Execute MAke */
    e_exec_make(f);
    break;
+#ifdef WPE_AI
+  case AltB:   /*  Alt B  AI assistant (Chat now; Edit/Agent as they land) */
+   e_ai_ui_key(f);
+   break;
+#endif
   case AltT:   /*  Alt T  NexT Error */
   case AF8:
    e_next_error(f);

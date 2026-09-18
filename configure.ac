@@ -272,6 +272,40 @@ AC_ARG_ENABLE([trace],
 AS_IF([test "x$enable_trace" = "xyes"],
   [AC_DEFINE([WPE_TRACE], [1], [Enable the WPE_TRACE debug logging facility])])
 
+# --- Optional: AI assistant integration (off by default) ---
+# A local-first (Ollama / OpenAI-compatible / Claude) assistant grafted onto the
+# existing fd-loop + LSP spine.  Default: no -- a build without it is byte-for-byte
+# the classic editor, so distributions and AI-averse users are unaffected.  json-c
+# (already required above) covers the wire format and the HTTP client is in-tree,
+# so the plain-HTTP backends (Ollama and localhost OpenAI-compatible servers) add
+# no new dependency.
+AC_ARG_ENABLE([ai],
+  [AS_HELP_STRING([--enable-ai],
+     [build the optional AI assistant (Chat/Edit/Agent; default: no)])],
+  [], [enable_ai=no])
+AS_IF([test "x$enable_ai" = "xyes"],
+  [AC_DEFINE([WPE_AI], [1], [Enable the optional AI assistant integration])])
+AM_CONDITIONAL([WPE_AI], [test "x$enable_ai" = "xyes"])
+
+# --- Optional: TLS for the cloud AI backends (Claude / remote OpenAI) ---
+# Only needed to reach HTTPS endpoints; Ollama and localhost OpenAI-compatible
+# servers are plain HTTP and need none of this.  Prefers libtls (LibreSSL, the BSD
+# default), falls back to OpenSSL.
+have_ai_tls=no
+AS_IF([test "x$enable_ai" = "xyes"], [
+  AC_ARG_ENABLE([ai-tls],
+    [AS_HELP_STRING([--enable-ai-tls],
+       [enable TLS so the AI assistant can reach HTTPS backends like Claude (default: no)])],
+    [], [enable_ai_tls=no])
+  AS_IF([test "x$enable_ai_tls" = "xyes"], [
+    PKG_CHECK_MODULES([AITLS], [libtls], [
+      have_ai_tls=yes
+      AC_DEFINE([WPE_AI_TLS], [1], [Enable TLS for cloud AI backends via libtls])
+    ], [AC_MSG_ERROR([--enable-ai-tls requested but libtls (LibreSSL/libretls) not found])])
+  ])
+])
+AM_CONDITIONAL([WPE_AI_TLS], [test "x$have_ai_tls" = xyes])
+
 # --- Unconditional defines ---
 AC_DEFINE([UNIX], [1], [Building on a Unix system])
 AC_DEFINE([NCURSES], [1], [Using ncurses library])
@@ -300,6 +334,8 @@ AC_MSG_RESULT([
     Wayland:   $have_wayland
     libvterm:  $have_vterm
     GPM:       $have_gpm
+    AI:        $enable_ai
+    AI TLS:    $have_ai_tls
     PRNTCMD:   $PRNTCMD
     pandoc:    $PANDOC
 ])

@@ -8,6 +8,7 @@
 #include "messages.h"
 #include "edit.h"
 #include "WeExpArr.h"
+#include "we_ai.h"        /* AI backend config keys (guarded by WPE_AI) */
 #include <ctype.h>
 #include <sys/types.h>
 #include <sys/stat.h>
@@ -974,6 +975,17 @@ int WpeReadProgramming(ECNT *cn, char *section, char *option, char *value)
   e_deb_type = atoi(value);
  else if (WpeStrccmp("DAPAdapter", option) == 0)
   e_dap_adapter = atoi(value);
+#ifdef WPE_AI
+ else if (WpeStrccmp("AIBackend", option) == 0)
+  e_ai_backend = atoi(value);
+ else if (WpeStrccmp("AIEndpoint", option) == 0) {
+  free(e_ai_endpoint);
+  e_ai_endpoint = WpeStrdup(value);
+ } else if (WpeStrccmp("AIModel", option) == 0) {
+  free(e_ai_model);
+  e_ai_model = WpeStrdup(value);
+ }
+#endif
  return 0;
 }
 
@@ -985,6 +997,11 @@ int WpeWriteProgramming(ECNT *cn, char *section, FILE *opt_file)
  fprintf(opt_file, "IncludePath : %s\n", e_prog.sys_include);
  fprintf(opt_file, "Debugger : %d\n", e_deb_type);
  fprintf(opt_file, "DAPAdapter : %d\n", e_dap_adapter);
+#ifdef WPE_AI
+ fprintf(opt_file, "AIBackend : %d\n", e_ai_backend);
+ fprintf(opt_file, "AIEndpoint : %s\n", e_ai_endpoint ? e_ai_endpoint : "");
+ fprintf(opt_file, "AIModel : %s\n", e_ai_model ? e_ai_model : "");
+#endif
  return 0;
 }
 
@@ -2095,6 +2112,11 @@ int e_edt_options(FENSTER *f)
  e_add_sswstr(26, 4, 1, AltH, f->ed->autosv & 2 ? 1 : 0, "CHanges         ", o);
  e_add_sswstr(4, 6, 2, AltD, f->ed->edopt & ED_OLD_TILE_METHOD ? 1 : 0, "OlD Style     ", o);
  e_add_sswstr(4, 4, 13, AltK, f->ed->edopt & ED_BLOCK_WORDSTAR ? 1 : 0, "WordStar blocK", o);
+#ifdef WPE_AI
+ /* Runtime on/off for the AI assistant (sstr index 5; read back below).  Off by
+    default -- keeps the classic experience until the user opts in. */
+ e_add_sswstr(4, 7, 0, AltA, f->ed->edopt & ED_AI_ENABLE ? 1 : 0, "Ai assistant  ", o);
+#endif
  e_add_pswstr(0, 26, 7, 1, AltL, 0, "OLd-Style       ", o);
  e_add_pswstr(0, 26, 8, 0, AltC, f->ed->edopt & ED_CUA_STYLE, "CUA-Style       ", o);
  e_add_pswstr(1, 26, 11, 3, AltY, 0, "OnlY Source-Text", o);
@@ -2115,11 +2137,14 @@ int e_edt_options(FENSTER *f)
   f->ed->maxchg = o->nstr[2]->num;
   f->ed->numundo = o->nstr[3]->num;
   f->ed->autoindent = o->nstr[4]->num;
-  f->ed->edopt = ((f->ed->edopt & ~ED_EDITOR_OPTIONS) + o->pstr[0]->num) +
+  f->ed->edopt = ((f->ed->edopt & ~(ED_EDITOR_OPTIONS | ED_AI_ENABLE)) + o->pstr[0]->num) +
     (o->pstr[1]->num == 0 ? ED_SOURCE_AUTO_INDENT : 0) +
     (o->pstr[1]->num == 1 ? ED_ALWAYS_AUTO_INDENT : 0) +
     (o->sstr[3]->num ? ED_OLD_TILE_METHOD : 0) +
     (o->sstr[0]->num ? ED_SHOW_ENDMARKS : 0) +
+#ifdef WPE_AI
+    (o->sstr[5]->num ? ED_AI_ENABLE : 0) +
+#endif
     (o->sstr[4]->num ? ED_BLOCK_WORDSTAR : 0);
   if (f->ed->print_cmd)
    WpeFree(f->ed->print_cmd);

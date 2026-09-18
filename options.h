@@ -57,6 +57,13 @@
  * end without touching the other (classic Borland/WordStar behaviour). */
 #define ED_BLOCK_WORDSTAR     0x0004
 
+/* AI assistant enabled at runtime.  Deliberately NOT part of ED_EDITOR_OPTIONS
+ * (the default-on mask): the assistant is opt-in, so a fresh profile has it OFF
+ * and no AI menu/key/text appears until the user turns it on.  Only meaningful
+ * in a build configured with --enable-ai (WPE_AI); harmless as a bare constant
+ * otherwise. */
+#define ED_AI_ENABLE          0x0200
+
 #define ED_EDITOR_OPTIONS \
   (ED_CUA_STYLE | ED_OLD_TILE_METHOD | ED_SOURCE_AUTO_INDENT | \
   ED_ALWAYS_AUTO_INDENT | ED_SHOW_ENDMARKS | ED_BLOCK_WORDSTAR)

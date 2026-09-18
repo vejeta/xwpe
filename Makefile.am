@@ -152,6 +152,20 @@ we_wayland.$(OBJEXT): xdg-shell-client-protocol.h \
   xdg-decoration-unstable-v1-client-protocol.h
 endif
 
+# --- AI assistant (optional, --enable-ai) ---
+# Grafted onto the fd-loop + LSP spine (Ollama / OpenAI-compatible / Claude).
+# Listed under the conditional so automake still ships the sources in the dist
+# tarball when AI is off, exactly like the Wayland backend above.  json-c is
+# already linked; the plain-HTTP backends (Ollama, localhost OpenAI-compatible)
+# need no extra library.  TLS libs are pulled in only under --enable-ai-tls.
+if WPE_AI
+we_SOURCES += we_ai.c we_ai_http.c we_ai_ui.c we_ai_diff.c we_ai_agent.c
+if WPE_AI_TLS
+AM_CFLAGS += $(AITLS_CFLAGS)
+we_LDADD += $(AITLS_LIBS)
+endif
+endif
+
 # --- Header files (for dist) ---
 noinst_HEADERS = \
   Xwpe.h \
@@ -169,6 +183,8 @@ noinst_HEADERS = \
   we_dap.h \
   we_bsp.h \
   we_lsp.h \
+  we_ai.h \
+  we_ai_http.h \
   we_clip.h \
   attrb.h \
   edit.h \
@@ -369,6 +385,18 @@ test_lsp_rust_LDADD = $(JSONC_LIBS)
 
 TESTS = test_checkheader test_fl_sel_len test_syntax_def test_fdloop test_clipboard test_lsp_buffer test_lsp_doctor test_lsp_semantic test_lsp_truecolor test_dap test_dap_dlv \
   test_dap_gdb test_dap_lldb test_dap_scala test_lsp_scala test_lsp_clangd test_lsp_python test_lsp_gopls test_lsp_rust
+
+# --- AI assistant unit tests (only when --enable-ai) ---
+# The engine sources are guarded by WPE_AI; per-target CFLAGS bypass AM_CFLAGS
+# (so no -include config.h), hence the explicit -DWPE_AI here.
+if WPE_AI
+check_PROGRAMS += test_ai_http test_ai_diff
+TESTS += test_ai_http test_ai_diff
+test_ai_http_SOURCES = tests/test_ai_http.c we_ai_http.c
+test_ai_http_CFLAGS = $(XWPE_STDFLAG) -DWPE_AI
+test_ai_diff_SOURCES = tests/test_ai_diff.c we_ai_diff.c
+test_ai_diff_CFLAGS = $(XWPE_STDFLAG) -DWPE_AI
+endif
 
 # --- Extra files for distribution ---
 EXTRA_DIST = \

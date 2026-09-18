@@ -14,6 +14,7 @@
 #include <signal.h>
 #include "messages.h"
 #include "edit.h"
+#include "we_ai.h"      /* AI assistant config init (guarded by WPE_AI) */
 
 #ifdef UNIX
 #include <sys/types.h>
@@ -459,6 +460,9 @@ int main(int argc, char **argv)
   }
  }
  if (so == 0) err = e_opt_read(cn);
+#ifdef WPE_AI
+ wpe_ai_config_init();  /* bake defaults + apply XWPE_AI_* env over the config */
+#endif
  e_edit(cn, ""); /* Clipboard (must first read option file) */
  if ((tp = getenv("INFOPATH")) != NULL)
  {
