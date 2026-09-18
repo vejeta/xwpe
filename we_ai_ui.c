@@ -398,10 +398,39 @@ static void ai_chat_next_turn(ai_chat_session *s)
 }
 
 /* Alt-B: prompt for a question and start an asynchronous streaming reply. */
+/* Multi-line composer: open a scratch editor window so the user writes the
+ * prompt with the FULL editor (many lines, cut/paste, arrows, ...), finish with
+ * @key{Esc}, and confirm Send.  Reuses the editor itself as the text area.
+ * Returns 1 and fills `out` on Send, 0 otherwise. */
+static int e_ai_compose(char *out, size_t outsz, const char *title, FENSTER *f)
+{
+ ECNT *cn = f->ed;
+ FENSTER *w;
+ char *text;
+ size_t l;
+
+ if (e_edit(cn, (char *)title)) return 0;    /* scratch window, empty buffer   */
+ w = cn->f[cn->mxedt];
+ e_eingabe(cn);                              /* the real editor, until Esc     */
+ text = ai_current_file_text(w);             /* join the typed lines           */
+ w->save = 0;                                /* skip the "save changes?" prompt */
+ e_close_window(w);
+ if (!text) return 0;
+ l = strlen(text);
+ while (l && (text[l-1] == '\n' || text[l-1] == '\r' ||
+              text[l-1] == ' '  || text[l-1] == '\t')) text[--l] = '\0';
+ if (!text[0]) { free(text); return 0; }     /* empty -> cancel                */
+ if (e_message(1, "Send this prompt to the AI?", f) != 'Y') { free(text); return 0; }
+ strncpy(out, text, outsz - 1);
+ out[outsz - 1] = '\0';
+ free(text);
+ return 1;
+}
+
 /* A roomier prompt than e_add_arguments, which caps input at 128 characters.
- * xwpe's dialog widgets are single-line, so this is a wide field (holds up to
- * AI_PROMPT_MAX and scrolls horizontally) rather than a wrapped text area.
- * Returns 1 and fills `out` on Send, 0 on Cancel. */
+ * xwpe's dialog widgets are single-line, so the field holds up to AI_PROMPT_MAX
+ * and scrolls; a @samp{Multi-line} button opens the full editor composer for a
+ * long, multi-line prompt.  Returns 1 and fills `out` on Send, 0 on Cancel. */
 static int e_ai_prompt(char *out, const char *title, FENSTER *f)
 {
  W_OPTSTR *o = e_init_opt_kst(f);
@@ -415,10 +444,17 @@ static int e_ai_prompt(char *out, const char *title, FENSTER *f)
  o->name = head;
  o->crsw = AltO;
  out[0] = '\0';
- e_add_wrstr(3, 2, 3, 3, 62, AI_PROMPT_MAX - 1, 0, AltT, "Prompt (Enter=Send, Esc=Cancel):", out, NULL, o);
- e_add_bttstr(24, 6, 1, AltO, " Send ", NULL, o);
- e_add_bttstr(40, 6, -1, WPE_ESC, "Cancel", NULL, o);
+ e_add_wrstr(3, 2, 3, 3, 62, AI_PROMPT_MAX - 1, 0, AltT, "Prompt (Enter=Send, Alt-M=multi-line, Esc=Cancel):", out, NULL, o);
+ e_add_bttstr(18, 6, 1, AltO, " Send ", NULL, o);
+ e_add_bttstr(32, 6, 4, AltM, "Multi-line", NULL, o);
+ e_add_bttstr(50, 6, -1, WPE_ESC, "Cancel", NULL, o);
  ret = e_opt_kst(o);
+ if (ret == AltM) {                          /* switch to the full-editor composer */
+  char comp_title[96];
+  freeostr(o);
+  snprintf(comp_title, sizeof comp_title, "%.60s  (type, Esc to finish)", title);
+  return e_ai_compose(out, AI_PROMPT_MAX, comp_title, f);
+ }
  if (ret != WPE_ESC) {
   strncpy(out, o->wstr[0]->txt, AI_PROMPT_MAX - 1);
   out[AI_PROMPT_MAX - 1] = '\0';
