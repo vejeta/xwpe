@@ -557,29 +557,17 @@ static void e_ai_cycle_policy(FENSTER *f);  /* defined below e_ai_ui_key    */
 /* ======================= Alt-B prefix dispatch ========================== */
 int e_ai_ui_key(FENSTER *f)
 {
- int c;
  if (!wpe_ai_enabled()) {
   ai_pane(f, "AI assistant is off - enable it in Options > Editor "
              "(the \"Ai assistant\" box), then press Alt-B again.", 1);
   return 0;
  }
- c = e_toupper(e_getch());
- wpe_ai_trace("ui_key c=%d", c);
- switch (c) {
-  case 'A': return e_ai_chat(f);        /* Ask (chat)                        */
-  case 'E': return e_ai_edit(f);        /* Edit the current file             */
-  case 'G': return e_ai_agent(f);       /* aGent (tool harness, policy dial) */
-  case 'P': return e_ai_plan(f);        /* Plan: multi-file, permission first */
-  case 'M': return e_ai_pick_model(f);  /* pick Model                        */
-  case 'Y': e_ai_cycle_policy(f); return 0;  /* cYcle permission policy       */
-  case 'N':                             /* New session (forget the workspace) */
-   wpe_ai_session_reset(f);
-   ai_pane(f, "[AI] session reset for this workspace", 1);
-   return 0;
-  case WPE_ESC: return 0;                /* cancel -- no action, no menu       */
-  default:                               /* '?', F1, anything else -> the menu */
-   return e_ai_menu(f);
- }
+ /* Alt-B shows the action menu straight away -- the way Alt-F shows the File
+    menu -- instead of an invisible "press another key" prefix.  The menu takes
+    the item's letter as a shortcut (a=Ask e=Edit p=Plan g=Agent m=Model
+    y=policY n=New d=Disable), so a quick Alt-B a still jumps straight to Ask;
+    pausing just leaves the menu on screen to pick from. */
+ return e_ai_menu(f);
 }
 
 /* ======================= Agent mode ==================================== */

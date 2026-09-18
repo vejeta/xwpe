@@ -33,12 +33,13 @@ def test_ai_disabled_shows_hint(tmp_path):
     assert "is off" in disp, "disabled hint not shown:\n" + disp
 
 
-def test_ai_prefix_hint(tmp_path):
+def test_ai_prefix_opens_menu(tmp_path):
+    # Alt-B alone opens the action menu straight away (like Alt-F opens File),
+    # no invisible second-key prefix.
     env = {"XWPE_AI_ENABLE": "1", "XWPE_AI_BACKEND": "mock"}
     with WpeSession(str(tmp_path), "int main(void){return 0;}\n",
                     env_extra=env) as s:
         s.key(ALT.BLOCK)
-        s.key("z")                       # unknown mode key -> hint
         s._drain(0.6)
         disp = "\n".join(s.display())
-    assert "Ask" in disp and "Edit" in disp, "prefix hint not shown:\n" + disp
+    assert "Ask" in disp and "Edit" in disp, "Alt-B did not open the menu:\n" + disp

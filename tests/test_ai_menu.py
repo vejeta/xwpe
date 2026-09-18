@@ -85,8 +85,7 @@ def test_ai_menu_opens_and_lists_actions(tmp_path):
     }
     with WpeSession(str(tmp_path), SEED, filename="notes.txt",
                     env_extra=env) as s:
-        s.key(ALT.BLOCK)                 # Alt-B prefix
-        s.key("?")                       # unbound key -> open the action menu
+        s.key(ALT.BLOCK)                 # Alt-B opens the menu directly
         s._drain(0.8)
         disp = "\n".join(s.display())
     txt = trace.read_text() if trace.exists() else ""

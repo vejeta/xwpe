@@ -40,9 +40,12 @@ make
 
 Then turn it on at run time in one of two ways: tick @samp{Ai assistant} under
 @samp{Options}, @samp{Editor}, or start with @env{XWPE_AI_ENABLE=1}.  With it on
-you get the @samp{AI} menu on the menu bar and the @key{Alt-B} prefix.  Press
-@key{Alt-B} then one letter (programming mode only, i.e.@: run as @command{wpe}
-or @command{xwpe}):
+a clickable @samp{Alt-B AI} entry appears on the bottom status bar and
+@key{Alt-B} opens the assistant's action menu -- the same way @key{Alt-F} opens
+the @samp{File} menu.  Pick an entry with the arrow keys and @key{Enter}, or
+press its letter; the letter also works as type-ahead, so @kbd{Alt-B a} jumps
+straight to Ask (programming mode only, i.e.@: run as @command{wpe} or
+@command{xwpe}):
 
 @table @kbd
 @item Alt-B a
