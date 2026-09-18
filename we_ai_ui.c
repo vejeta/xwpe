@@ -48,8 +48,27 @@ typedef struct {
 } ai_chat_session;
 
 #define AI_CHAT_MAX_TOOL_TURNS 6   /* cap chat's read-only investigation loop */
+#define AI_REPLY_PREFIX "AI: "     /* speaker label kept on the reply's first line */
 
 static ai_chat_session *g_ai_chat = NULL;
+
+/* Seed the streaming line buffer with `seed` so the reply keeps its "AI: "
+ * speaker label on the first line while tokens append after it (instead of the
+ * label sitting alone on its own line above the answer). */
+static void ai_chat_set_pending(ai_chat_session *s, const char *seed)
+{
+ size_t n = strlen(seed);
+ if (n + 1 > s->pcap) {
+  size_t nc = s->pcap ? s->pcap : 256;
+  char *nb;
+  while (n + 1 > nc) nc *= 2;
+  nb = realloc(s->pending, nc);
+  if (!nb) return;
+  s->pending = nb; s->pcap = nc;
+ }
+ memcpy(s->pending, seed, n + 1);
+ s->plen = n;
+}
 
 /* read-only tool helpers (defined in the Agent section) + the turn starter */
 static char *ai_run_capture(const char *cmd);
@@ -92,12 +111,14 @@ static char *ai_current_file_text(FENSTER *f)
 static void ai_chat_finish(ai_chat_session *s)
 {
  if (!s) return;
+ wpe_ai_trace("chat finish begin fd=%d", s->fd);
  if (s->fd >= 0) wpe_fd_del(s->fd);
  wpe_ai_stream_free(s->st);
  free(s->pending);
  free(s->full);
  if (g_ai_chat == s) g_ai_chat = NULL;
  free(s);
+ wpe_ai_trace("chat finish end");
 }
 
 /* Locate the "AI" output pane (creating it if needed), so streaming can paint
@@ -283,7 +304,7 @@ static void ai_fd_cb(int fd, void *data)
   } else {
    /* nothing streamed: replace the "gathering..." placeholder. */
    FENSTER *wf = ai_pane_win(s->ref);
-   if (wf) ai_pane_set_last(wf, "  (no answer)");
+   if (wf) ai_pane_set_last(wf, AI_REPLY_PREFIX "(no answer)");
   }
   wpe_ai_session_save(s->ref);
   wpe_ai_trace("chat done");
@@ -386,11 +407,11 @@ static void ai_chat_next_turn(ai_chat_session *s)
  s->active = 1;
  s->started = 0;
  s->flen = 0; if (s->full) s->full[0] = '\0';
- s->plen = 0; if (s->pending) s->pending[0] = '\0';
+ ai_chat_set_pending(s, AI_REPLY_PREFIX);     /* reply streams after "AI: " */
  wf = ai_pane_win(f);
  if (wf) {
   ai_pane_commit(wf);
-  ai_pane_set_last(wf, "  (gathering the answer...)");
+  ai_pane_set_last(wf, AI_REPLY_PREFIX "(gathering the answer...)");
   s->started = 1;
  }
  wpe_fd_add(s->fd, POLLIN, ai_fd_cb, s);
@@ -402,7 +423,8 @@ static void ai_chat_next_turn(ai_chat_session *s)
  * prompt with the FULL editor (many lines, cut/paste, arrows, ...), finish with
  * @key{Esc}, and confirm Send.  Reuses the editor itself as the text area.
  * Returns 1 and fills `out` on Send, 0 otherwise. */
-static int e_ai_compose(char *out, size_t outsz, const char *title, FENSTER *f)
+static int e_ai_compose(char *out, size_t outsz, const char *title,
+                        const char *seed, FENSTER *f)
 {
  ECNT *cn = f->ed;
  FENSTER *w;
@@ -411,6 +433,12 @@ static int e_ai_compose(char *out, size_t outsz, const char *title, FENSTER *f)
 
  if (e_edit(cn, (char *)title)) return 0;    /* scratch window, empty buffer   */
  w = cn->f[cn->mxedt];
+ if (seed && *seed) {                        /* carry over what was already typed */
+  e_buffer_set_text(w->b, seed);
+  w->b->b.y = w->b->mxlines ? w->b->mxlines - 1 : 0;   /* caret after the text */
+  w->b->b.x = w->b->bf[w->b->b.y].len;
+  e_firstl(w, 1);
+ }
  e_eingabe(cn);                              /* the real editor, until Esc     */
  text = ai_current_file_text(w);             /* join the typed lines           */
  w->save = 0;                                /* skip the "save changes?" prompt */
@@ -450,10 +478,13 @@ static int e_ai_prompt(char *out, const char *title, FENSTER *f)
  e_add_bttstr(50, 6, -1, WPE_ESC, "Cancel", NULL, o);
  ret = e_opt_kst(o);
  if (ret == AltM) {                          /* switch to the full-editor composer */
-  char comp_title[96];
+  char comp_title[96], seed[AI_PROMPT_MAX];
+  strncpy(seed, o->wstr[0]->txt, sizeof seed - 1);   /* keep what was typed */
+  seed[sizeof seed - 1] = '\0';
   freeostr(o);
-  snprintf(comp_title, sizeof comp_title, "%.60s  (type, Esc to finish)", title);
-  return e_ai_compose(out, AI_PROMPT_MAX, comp_title, f);
+  snprintf(comp_title, sizeof comp_title,
+           "%.48s  (Esc finishes, then Y sends)", title);
+  return e_ai_compose(out, AI_PROMPT_MAX, comp_title, seed, f);
  }
  if (ret != WPE_ESC) {
   strncpy(out, o->wstr[0]->txt, AI_PROMPT_MAX - 1);
@@ -491,7 +522,8 @@ static int e_ai_chat(FENSTER *f)
 
  snprintf(line, sizeof line, "You: %s", prompt);
  ai_pane(f, line, 1);
- ai_pane(f, "AI:", 0);
+ /* The "AI:" label is placed on the reply line itself (see ai_chat_next_turn),
+    so the gathering hint and the answer share one line after "AI: ". */
 
  e_ai_cli_mode = WPE_AI_CLI_TEXTONLY;
  wpe_ai_session_load(f);                       /* resume this workspace's talk */
