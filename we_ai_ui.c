@@ -208,6 +208,12 @@ static void ai_fd_cb(int fd, void *data)
  if (done) {
   /* the trailing partial is already on screen (painted live in ai_delta_cb) */
   if (s->full && s->flen) wpe_ai_session_append("assistant", s->full);
+  else {
+   /* nothing streamed: replace the "gathering..." placeholder so it does not
+      look like the request is still running. */
+   FENSTER *wf = ai_pane_win(s->ref);
+   if (wf) ai_pane_set_last(wf, "  (no answer)");
+  }
   wpe_ai_session_save(s->ref);
   wpe_ai_trace("chat done");
   s->active = 0;
@@ -293,6 +299,18 @@ static int e_ai_chat(FENSTER *f)
  s->fd = wpe_ai_stream_fd(s->st);
  s->active = 1;
  g_ai_chat = s;
+ /* Show a liveness placeholder on the reply line so the wait for the first
+    token is not dead air (a big local model can take seconds to warm up).  The
+    reply line is opened now and marked started, so the first streamed token
+    overwrites the placeholder in place rather than adding a new line. */
+ {
+  FENSTER *wf = ai_pane_win(f);
+  if (wf) {
+   ai_pane_commit(wf);
+   ai_pane_set_last(wf, "  (gathering the answer...)");
+   s->started = 1;
+  }
+ }
  wpe_fd_add(s->fd, POLLIN, ai_fd_cb, s);
  wpe_ai_trace("chat stream fd=%d", s->fd);
  return 0;

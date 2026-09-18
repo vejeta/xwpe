@@ -45,3 +45,23 @@ def test_ai_chat_mock(tmp_path):
     txt = trace.read_text() if trace.exists() else ""
     assert "chat prompt=hello" in txt, txt
     assert "chat done" in txt, txt
+
+
+def test_ai_chat_empty_reply_clears_placeholder(tmp_path):
+    # A reply that streams nothing must not leave the "gathering..." liveness
+    # placeholder on screen -- it becomes "(no answer)".
+    env = {
+        "XWPE_AI_ENABLE": "1",
+        "XWPE_AI_BACKEND": "mock",
+        "XWPE_AI_MOCK_REPLY": "",
+    }
+    with WpeSession(str(tmp_path), "int main(void){return 0;}\n",
+                    env_extra=env) as s:
+        s.key(ALT.BLOCK)
+        s.key("a")
+        s.key("anything")
+        s.key("\r", delay=1.0)
+        s._drain(1.2)
+        disp = "\n".join(s.display())
+    assert "gathering the answer" not in disp, "placeholder stuck:\n" + disp
+    assert "(no answer)" in disp, "empty reply not handled:\n" + disp
