@@ -31,7 +31,7 @@ def _chat(tmp_path, backend, endpoint, model):
     }
     with WpeSession(str(tmp_path), "int main(void){return 0;}\n",
                     env_extra=env) as s:
-        s.key(ALT.BLOCK)                 # Alt-B
+        s.key(ALT.AI)                 # Alt-G
         s.key("a")                       # Ask
         s.key("Reply with exactly the single word PONG")
         s.key("\r", delay=2.0)           # submit -> real streaming reply

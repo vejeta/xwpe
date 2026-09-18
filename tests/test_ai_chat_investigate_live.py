@@ -51,7 +51,7 @@ def test_chat_reads_another_file(tmp_path):
            "XWPE_AI_ENDPOINT": OLLAMA, "XWPE_AI_MODEL": MODEL}
     with WpeSession(str(tmp_path), "int main(void){return 0;}\n",
                     filename="stack.c", env_extra=env) as s:
-        s.key(ALT.BLOCK); s.key("a", delay=0.8)
+        s.key(ALT.AI); s.key("a", delay=0.8)
         s.key("Read the file notes.md and tell me the value of SECRETWORD.")
         s.key("\r", delay=2.0)
         found = False

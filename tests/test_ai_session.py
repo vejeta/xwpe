@@ -2,7 +2,7 @@
 
 claudecli: the session_id from the CLI's JSON is persisted and passed back as
 `--resume <id>` on the next run (a fake `claude` on PATH records its argv);
-Alt-B n forgets it.  mock: the transcript (user/assistant turns) is persisted.
+Alt-G n forgets it.  mock: the transcript (user/assistant turns) is persisted.
 HOME is the test workdir, so the session file lives under <workdir>/.xwpe/ai/.
 """
 import os
@@ -45,7 +45,7 @@ def _chat(tmp_path, env, prompt, wait=3.0):
     env = dict(env, XWPE_AI_ENABLE="1", XWPE_AI_TRACE=str(trace))
     with WpeSession(str(tmp_path), "int main(void){return 0;}\n",
                     env_extra=env) as s:
-        s.key(ALT.BLOCK)
+        s.key(ALT.AI)
         s.key("a")
         s.key(prompt)
         s.key("\r", delay=1.0)
@@ -72,11 +72,11 @@ def test_ai_session_claudecli_resume(tmp_path):
     txt = _chat(tmp_path, env, "again")
     assert "--resume sess-123" in log.read_text(), log.read_text()
 
-    # Alt-B n forgets the workspace session
+    # Alt-G n forgets the workspace session
     trace = tmp_path / "ai.trace"
     with WpeSession(str(tmp_path), "int main(void){return 0;}\n",
                     env_extra=dict(env, XWPE_AI_ENABLE="1", XWPE_AI_TRACE=str(trace))) as s:
-        s.key(ALT.BLOCK)
+        s.key(ALT.AI)
         s.key("n")
         s._drain(0.8)
     assert "session reset" in trace.read_text()

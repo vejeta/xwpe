@@ -109,6 +109,7 @@ class ALT:
     OPTIONS = "\033o"
     WINDOW = "\033w"
     HELP = "\033h"
+    AI = "\033g"        # Alt-G: the AI assistant prefix (not a menu)
 
 
 def incoherence(reason):

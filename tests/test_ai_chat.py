@@ -1,10 +1,10 @@
 """AI assistant -- Chat mode smoke test (deterministic mock backend).
 
 Runs only against a --enable-ai build (the AI entry point is compiled out
-otherwise, so Alt-B is a no-op and this test self-skips).  Uses the in-process
+otherwise, so Alt-G is a no-op and this test self-skips).  Uses the in-process
 mock backend (XWPE_AI_BACKEND=mock) so no Ollama/model/network is needed: the
 reply text is whatever XWPE_AI_MOCK_REPLY says, streamed through the full HTTP
-framer + fd-loop path.  Must run the programming-mode `wpe` binary (Alt-B is
+framer + fd-loop path.  Must run the programming-mode `wpe` binary (Alt-G is
 dispatched in e_prog_switch).
 """
 import os
@@ -34,7 +34,7 @@ def test_ai_chat_mock(tmp_path):
     }
     with WpeSession(str(tmp_path), "int main(void){return 0;}\n",
                     env_extra=env) as s:
-        s.key(ALT.BLOCK)              # Alt-B: the AI prefix
+        s.key(ALT.AI)              # Alt-G: the AI prefix
         s.key("a")                    # a = Ask (chat)
         s.key("hello")                # type the prompt into the dialog
         s.key("\r", delay=1.0)        # submit; the mock streams asynchronously
@@ -57,7 +57,7 @@ def test_ai_chat_empty_reply_clears_placeholder(tmp_path):
     }
     with WpeSession(str(tmp_path), "int main(void){return 0;}\n",
                     env_extra=env) as s:
-        s.key(ALT.BLOCK)
+        s.key(ALT.AI)
         s.key("a")
         s.key("anything")
         s.key("\r", delay=1.0)
@@ -81,7 +81,7 @@ def test_ai_chat_investigates_files(tmp_path):
     }
     with WpeSession(str(tmp_path), "int main(void){return 0;}\n",
                     filename="stack.c", env_extra=env) as s:
-        s.key(ALT.BLOCK)
+        s.key(ALT.AI)
         s.key("a")
         s.key("what does notes.txt say")
         s.key("\r", delay=1.2)

@@ -32,7 +32,7 @@ def _agent(tmp_path, reply, task="do the task", approve=None):
     }
     with WpeSession(str(tmp_path), "int main(void){return 0;}\n",
                     env_extra=env) as s:
-        s.key(ALT.BLOCK)
+        s.key(ALT.AI)
         s.key("g")                       # aGent
         s.key(task)
         s.key("\r", delay=1.6)           # submit -> agent loop (policy = ask)

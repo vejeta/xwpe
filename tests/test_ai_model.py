@@ -1,6 +1,6 @@
 """AI assistant -- the model picker is a navigable radio list.
 
-Alt-B m opens the standard dialog radio list (arrows move, Enter confirms), the
+Alt-G m opens the standard dialog radio list (arrows move, Enter confirms), the
 same widget every LSP picker uses, instead of a blind "type the name" prompt.
 The mock backend advertises one model, so Enter on the open list selects it and
 the choice is recorded (trace: "model set mock-model").
@@ -15,7 +15,7 @@ def _ai_build():
     try:
         out = subprocess.run(["strings", os.path.abspath(WPE_BIN)],
                              stdout=subprocess.PIPE, timeout=30).stdout
-        return b"Alt-B AI" in out
+        return b"Alt-G AI" in out
     except Exception:
         return False
 
@@ -32,7 +32,7 @@ def test_ai_model_picker_selects(tmp_path):
     }
     with WpeSession(str(tmp_path), "hello\n", filename="notes.txt",
                     env_extra=env) as s:
-        s.key(ALT.BLOCK)
+        s.key(ALT.AI)
         s.key("m", delay=1.0)            # pick Model -> radio list opens
         disp = "\n".join(s.display())
         s.key("\r", delay=1.0)           # Enter confirms the focused radio

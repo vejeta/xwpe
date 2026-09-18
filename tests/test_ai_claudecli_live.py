@@ -33,7 +33,7 @@ def test_ai_claudecli_chat(tmp_path):
     }
     with WpeSession(str(tmp_path), "int main(void){return 0;}\n",
                     env_extra=env) as s:
-        s.key(ALT.BLOCK)
+        s.key(ALT.AI)
         s.key("a")
         s.key("Reply with exactly the single word PONG")
         s.key("\r", delay=2.0)

@@ -35,7 +35,7 @@ def _agent(tmp_path, policy, extra_keys):
         env["XWPE_AI_POLICY"] = policy
     with WpeSession(str(tmp_path), "int main(void){return 0;}\n",
                     env_extra=env) as s:
-        s.key(ALT.BLOCK)
+        s.key(ALT.AI)
         s.key("g")                       # aGent
         s.key("write a file")
         s.key("\r", delay=1.2)           # submit -> agent loop (policy from env)

@@ -158,17 +158,17 @@ WOPT eblst_lsp_u[] = {  {"F1 Help",  0, 0, 2, F1},
 #ifdef WPE_AI
 /* Editor bottom bar shown while the AI assistant is enabled and the active
    window holds a plain file that did NOT already get the contextual LSP bar.
-   It swaps the "Search Again" hint for an "Alt-B AI" entry: the highlighted
-   "Alt-B" (n=5) shows the keyboard prefix, and a click on the entry opens the
+   It swaps the "Search Again" hint for an "Alt-G AI" entry: the highlighted
+   "Alt-G" (n=5) shows the keyboard prefix, and a click on the entry opens the
    AI action menu (handled as WPE_AI_MENU in e_prog_switch).  Positions match the
-   plain editor bar -- "Alt-B AI" is no wider than the "Search Again" slot it
+   plain editor bar -- "Alt-G AI" is no wider than the "Search Again" slot it
    replaces, so nothing else needs repacking. */
 WOPT eblst_ai_o[] = {  {"F1 Help",  0, 0, 2, F1},
 		       {"F2 Save",  9, 0, 2, F2},
 		       {"F3 Files", 18, 0, 2,  F3},
 		       {"^W Close W.", 28, 0, 2, CtrlW},
 		       {"F4 Search", 45, 0, 2, F4},
-		       {"Alt-B AI", 56, 0, 5, WPE_AI_MENU},
+		       {"Alt-G AI", 56, 0, 5, WPE_AI_MENU},
 		       {"Alt-X Quit",  68, 0, 5, AltX}  };
 
 WOPT eblst_ai_u[] = {  {"F1 Help",  0, 0, 2, F1},
@@ -176,7 +176,7 @@ WOPT eblst_ai_u[] = {  {"F1 Help",  0, 0, 2, F1},
 		       {"F2 Files", 22, 0, 2,  F2},
 		       {"^F4 Close ", 32, 0, 3, CF4},
 		       {"Alt-F3 Srch", 44, 0, 6, AF3},
-		       {"Alt-B AI", 57, 0, 5, WPE_AI_MENU},
+		       {"Alt-G AI", 57, 0, 5, WPE_AI_MENU},
 		       {"Alt-F4 Quit",  67, 0, 6, AF4}  };
 #endif
 
@@ -611,7 +611,7 @@ extern const char *e_lsp_server_label(FENSTER *);  /* non-NULL => file has a ser
  * e_ai_refresh_bars - Re-pick each editor window's bottom bar after the AI
  * runtime toggle flips.  Used when the user ticks/unticks "Ai assistant" in
  * Options > Editor: without this the open windows keep the bar chosen when they
- * were opened, so the "Alt-B AI" entry would not appear until a file was
+ * were opened, so the "Alt-G AI" entry would not appear until a file was
  * reopened.  Only the swappable editor-file bars (plain / LSP / AI) are touched;
  * Help/Messages/Watch windows keep their own bars.
  */

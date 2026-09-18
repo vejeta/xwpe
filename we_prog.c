@@ -169,15 +169,12 @@ int e_prog_switch(FENSTER *f, int c)
    e_exec_make(f);
    break;
 #ifdef WPE_AI
-  case AltB:   /*  Alt-B: the AI assistant, but ONLY when it is enabled.  Alt-B is
-                   also the menu-bar "Block" accelerator (opt[]: {"Block",...,AltB}),
-                   so when the assistant is off we must NOT consume the key -- return
-                   it unhandled so the Block menu opens as it always has. */
-   if (!wpe_ai_enabled())
-    return(c);
+  case AltG:   /*  Alt-G  AI assistant prefix (Alt-B is the Block menu; Alt-G is a
+                   free Alt-letter, chosen like the LSP's Alt-Q so the assistant
+                   never shadows an existing key).  The bar entry reads "Alt-G AI". */
    e_ai_ui_key(f);
    break;
-  case WPE_AI_MENU:   /*  click on the "Alt-B AI" bottom-bar entry -> menu */
+  case WPE_AI_MENU:   /*  click on the "Alt-G AI" bottom-bar entry -> menu */
    e_ai_menu(f);
    break;
 #endif

@@ -1,4 +1,4 @@
-"""AI assistant -- PLAN mode (Alt-B p): multi-file study -> plan -> permission
+"""AI assistant -- PLAN mode (Alt-G p): multi-file study -> plan -> permission
 -> apply.  Deterministic mock: the reply carries a PLAN over two files (the
 open one and one only on disk).  Covers apply-all, cancel, and file-by-file.
 """
@@ -36,7 +36,7 @@ def _plan(tmp_path, keys):
     }
     with WpeSession(str(tmp_path), "int main(void){return 0;}\n",
                     env_extra=env) as s:
-        s.key(ALT.BLOCK)
+        s.key(ALT.AI)
         s.key("p")                       # Plan
         s.key("fix both files")
         s.key("\r", delay=1.6)           # study (none needed) -> plan pane

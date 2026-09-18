@@ -29,7 +29,7 @@ def test_ai_compose_multiline(tmp_path):
            "XWPE_AI_MOCK_REPLY": "ok", "XWPE_AI_TRACE": str(trace)}
     with WpeSession(str(tmp_path), "int main(void){return 0;}\n",
                     filename="stack.c", env_extra=env) as s:
-        s.key(ALT.BLOCK); s.key("a", delay=0.8)   # Ask -> wide prompt dialog
+        s.key(ALT.AI); s.key("a", delay=0.8)   # Ask -> wide prompt dialog
         s.key("\033m", delay=1.0)                  # Alt-M -> multi-line composer
         s.key("FIRSTLINE_MARKER"); s.key("\r")     # line 1 + newline (Enter edits)
         s.key("SECONDLINE_MARKER")                 # line 2

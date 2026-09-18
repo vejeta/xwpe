@@ -32,7 +32,7 @@ def _edit(tmp_path, decision):
     }
     with WpeSession(str(tmp_path), "int main(void){return 0;}\n",
                     env_extra=env) as s:
-        s.key(ALT.BLOCK)
+        s.key(ALT.AI)
         s.key("e")                       # Edit
         s.key("return 42 instead")
         s.key("\r", delay=1.3)           # submit -> generate -> per-hunk preview

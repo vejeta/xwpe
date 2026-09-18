@@ -15,7 +15,7 @@ def _has_ai():
     try:
         out = subprocess.run(["strings", XWPE_BIN],
                              stdout=subprocess.PIPE, timeout=30).stdout
-        return b"Alt-B AI" in out
+        return b"Alt-G AI" in out
     except Exception:
         return False
 
@@ -31,7 +31,7 @@ AI_ENV = {
 @pytest.mark.parametrize("xwpe", [AI_ENV], indirect=True)
 def test_ai_pane_paints_under_x11(xwpe):
     before = xwpe.screenshot()
-    xwpe.key("alt+b")                 # AI prefix
+    xwpe.key("alt+g")                 # AI prefix
     xwpe.key("a", delay=0.6)          # a = Ask -> prompt dialog
     xwpe.key("h", "i")                # a prompt
     xwpe.key("Return", delay=1.6)     # submit -> the AI pane paints the reply

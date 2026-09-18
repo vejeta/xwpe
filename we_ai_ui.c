@@ -397,7 +397,7 @@ static void ai_chat_next_turn(ai_chat_session *s)
  wpe_ai_trace("chat stream fd=%d turn=%d", s->fd, s->turns);
 }
 
-/* Alt-B: prompt for a question and start an asynchronous streaming reply. */
+/* Alt-G: prompt for a question and start an asynchronous streaming reply. */
 /* Multi-line composer: open a scratch editor window so the user writes the
  * prompt with the FULL editor (many lines, cut/paste, arrows, ...), finish with
  * @key{Esc}, and confirm Send.  Reuses the editor itself as the text area.
@@ -976,7 +976,7 @@ static int e_ai_edit(FENSTER *f)
  ai_async_op *op;
 
  if (wpe_ai_busy()) {
-  ai_pane(f, "[AI] a task is already running - press Alt-B to cancel it first", 1);
+  ai_pane(f, "[AI] a task is already running - press Alt-G to cancel it first", 1);
   return 0;
  }
  instr[0] = '\0';
@@ -1105,25 +1105,25 @@ int e_ai_agent(FENSTER *f);         /* defined in the Agent section below */
 static int e_ai_plan(FENSTER *f);   /* defined in the PLAN section below  */
 static void e_ai_cycle_policy(FENSTER *f);  /* defined below e_ai_ui_key    */
 
-/* ======================= Alt-B prefix dispatch ========================== */
+/* ======================= Alt-G prefix dispatch ========================== */
 int e_ai_ui_key(FENSTER *f)
 {
  if (!wpe_ai_enabled()) {
   ai_pane(f, "AI assistant is off - enable it in Options > Editor "
-             "(the \"Ai assistant\" box), then press Alt-B again.", 1);
+             "(the \"Ai assistant\" box), then press Alt-G again.", 1);
   return 0;
  }
- /* A background task is running (async Edit): Alt-B cancels it rather than
+ /* A background task is running (async Edit): Alt-G cancels it rather than
     opening the menu, so there is a one-key way out and no modal stacks on top of
     the in-flight work. */
  if (wpe_ai_busy()) {
   wpe_ai_cancel();
   return 0;
  }
- /* Alt-B shows the action menu straight away -- the way Alt-F shows the File
+ /* Alt-G shows the action menu straight away -- the way Alt-F shows the File
     menu -- instead of an invisible "press another key" prefix.  The menu takes
     the item's letter as a shortcut (a=Ask e=Edit p=Plan g=Agent m=Model
-    y=policY n=New d=Disable), so a quick Alt-B a still jumps straight to Ask;
+    y=policY n=New d=Disable), so a quick Alt-G a still jumps straight to Ask;
     pausing just leaves the menu on screen to pick from. */
  return e_ai_menu(f);
 }
@@ -1178,7 +1178,7 @@ static int ai_agent_approve(FENSTER *f, const char *what, int is_run)
  }
 }
 
-/* Alt-B y: cycle the permission dial ask -> edits -> auto.  Also settable from
+/* Alt-G y: cycle the permission dial ask -> edits -> auto.  Also settable from
  * the AI menu (radio) and persisted as AIPolicy via Save Options. */
 static void e_ai_cycle_policy(FENSTER *f)
 {
@@ -1289,7 +1289,7 @@ int e_ai_agent(FENSTER *f)
    "summary. Output nothing else; wait for each tool result before continuing.";
 
  if (wpe_ai_busy()) {
-  ai_pane(f, "[AI] a task is already running - press Alt-B to cancel it first", 1);
+  ai_pane(f, "[AI] a task is already running - press Alt-G to cancel it first", 1);
   return 0;
  }
  goal[0] = '\0';
@@ -1530,7 +1530,7 @@ static int e_ai_plan(FENSTER *f)
    "approves it. Output nothing else.";
 
  if (wpe_ai_busy()) {
-  ai_pane(f, "[AI] a task is already running - press Alt-B to cancel it first", 1);
+  ai_pane(f, "[AI] a task is already running - press Alt-G to cancel it first", 1);
   return 0;
  }
  task[0] = '\0';
@@ -1588,8 +1588,8 @@ static int e_ai_plan(FENSTER *f)
 }
 
 /* ======================= Bottom-bar action menu ========================= */
-/* The "Alt-B AI" entry on the editor's bottom bar (mouse-clickable) and any
- * unrecognised Alt-B letter open this popup so every AI action is discoverable
+/* The "Alt-G AI" entry on the editor's bottom bar (mouse-clickable) and any
+ * unrecognised Alt-G letter open this popup so every AI action is discoverable
  * without memorising the prefix letters -- the same role e_lsp_ui_menu plays
  * for the language server. */
 
@@ -1611,7 +1611,7 @@ static int e_ai_menu_new_session(FENSTER *f)
 }
 
 /* Turn the assistant off (clears the runtime ED_AI_ENABLE toggle).  The bar
- * loses its "Alt-B AI" entry the next time this window is drawn; Options >
+ * loses its "Alt-G AI" entry the next time this window is drawn; Options >
  * Editor turns it back on. */
 static int e_ai_menu_disable(FENSTER *f)
 {
@@ -1621,7 +1621,7 @@ static int e_ai_menu_disable(FENSTER *f)
  return 0;
 }
 
-/* Fill `it` with the menu rows (name left, "Alt-B <key>" right-aligned so the
+/* Fill `it` with the menu rows (name left, "Alt-G <key>" right-aligned so the
  * keyboard shortcut lines up like the LSP menu).  Returns the row count. */
 static int e_ai_menu_items(OPTK *it)
 {
@@ -1642,12 +1642,12 @@ static int e_ai_menu_items(OPTK *it)
  {
   char code[12];
   int pad, hl;
-  snprintf(code, sizeof code, "Alt-B %c", a[i].key);            /* 7 chars */
+  snprintf(code, sizeof code, "Alt-G %c", a[i].key);            /* 7 chars */
   pad = AI_MENU_TEXTW - (int)strlen(a[i].name) - (int)strlen(code);
   if (pad < 1)
    pad = 1;
   snprintf(label[i], sizeof label[i], "%s%*s%s", a[i].name, pad, "", code);
-  hl = (int)strlen(label[i]) - 1;                /* the letter in "Alt-B X" */
+  hl = (int)strlen(label[i]) - 1;                /* the letter in "Alt-G X" */
   it[i] = WpeFillSubmenuItem(label[i], hl, a[i].key, a[i].fkt);
  }
  return n;
@@ -1666,7 +1666,7 @@ int e_ai_menu(FENSTER *f)
  n = e_ai_menu_items(items);
  wpe_ai_trace("menu open n=%d", n);
  w = AI_MENU_TEXTW + 5;                   /* box width incl. frame + margins   */
- xa = 54;                                 /* roughly under the "Alt-B AI" entry */
+ xa = 54;                                 /* roughly under the "Alt-G AI" entry */
  if (xa + w > MAXSCOL - 1)                /* keep it on screen                  */
   xa = MAXSCOL - 1 - w;
  if (xa < 1)

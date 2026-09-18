@@ -72,7 +72,7 @@ def test_ai_ollama_chat(tmp_path):
     trace = tmp_path / "ai.trace"
     with WpeSession(str(tmp_path), "int main(void){return 0;}\n",
                     env_extra=_env(trace)) as s:
-        s.key(ALT.BLOCK)
+        s.key(ALT.AI)
         s.key("a")
         s.key("In one short sentence, what is a semicolon in C?")
         s.key("\r", delay=2.0)
@@ -104,7 +104,7 @@ def test_ai_ollama_edit_fixes_bug(tmp_path):
 
     with WpeSession(str(tmp_path), buggy, filename="bug.c",
                     env_extra=_env(trace)) as s:
-        s.key(ALT.BLOCK)
+        s.key(ALT.AI)
         s.key("e")                       # Edit
         s.key("Fix the compile error. Return ONLY the corrected C file.")
         s.key("\r", delay=1.0)           # submit -> generation starts

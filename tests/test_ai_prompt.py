@@ -15,7 +15,7 @@ def _ai_build():
     try:
         out = subprocess.run(["strings", os.path.abspath(WPE_BIN)],
                              stdout=subprocess.PIPE, timeout=30).stdout
-        return b"Alt-B AI" in out
+        return b"Alt-G AI" in out
     except Exception:
         return False
 
@@ -30,7 +30,7 @@ def test_ai_prompt_accepts_long_text(tmp_path):
            "XWPE_AI_MOCK_REPLY": "ok", "XWPE_AI_TRACE": str(trace)}
     with WpeSession(str(tmp_path), "int main(void){return 0;}\n",
                     filename="stack.c", env_extra=env) as s:
-        s.key(ALT.BLOCK); s.key("a", delay=0.8)
+        s.key(ALT.AI); s.key("a", delay=0.8)
         s.key(longp)
         s.key("\r", delay=1.5)
         s._drain(1.0)

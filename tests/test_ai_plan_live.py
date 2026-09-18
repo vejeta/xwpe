@@ -1,4 +1,4 @@
-"""AI assistant -- LIVE PLAN mode (Alt-B p) against a real local Ollama model.
+"""AI assistant -- LIVE PLAN mode (Alt-G p) against a real local Ollama model.
 
 A bug that spans files: main.c prints add(2,3), add.h declares it, add.c
 returns a - b.  The model must STUDY the workspace (read the other files),
@@ -80,7 +80,7 @@ def test_ai_plan_live_fixes_cross_file_bug(tmp_path):
     }
     with WpeSession(str(tmp_path), main_c, filename="main.c",
                     env_extra=env) as s:
-        s.key(ALT.BLOCK)
+        s.key(ALT.AI)
         s.key("p")                       # Plan
         s.key("This program must print 5 but it prints -1: add() in add.c "
               "returns a - b. Read the files, then fix add() to return the "

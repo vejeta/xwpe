@@ -32,7 +32,7 @@ def test_ai_plan_multiline_preserved(tmp_path):
     }
     with WpeSession(str(tmp_path), "int main(void){return 0;}\n", filename="t.c",
                     env_extra=env) as s:
-        s.key(ALT.BLOCK)
+        s.key(ALT.AI)
         s.key("p")
         s.key("rewrite it")
         s.key("\r", delay=1.6)

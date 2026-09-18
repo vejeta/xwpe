@@ -46,27 +46,27 @@ lines, cut and paste, the arrow keys), finish with @key{Esc}, and confirm Send.
 
 Then turn it on at run time in one of two ways: tick @samp{Ai assistant} under
 @samp{Options}, @samp{Editor}, or start with @env{XWPE_AI_ENABLE=1}.  With it on
-a clickable @samp{Alt-B AI} entry appears on the bottom status bar and
-@key{Alt-B} opens the assistant's action menu -- the same way @key{Alt-F} opens
+a clickable @samp{Alt-G AI} entry appears on the bottom status bar and
+@key{Alt-G} opens the assistant's action menu -- the same way @key{Alt-F} opens
 the @samp{File} menu.  Pick an entry with the arrow keys and @key{Enter}, or
-press its letter; the letter also works as type-ahead, so @kbd{Alt-B a} jumps
+press its letter; the letter also works as type-ahead, so @kbd{Alt-G a} jumps
 straight to Ask (programming mode only, i.e.@: run as @command{wpe} or
 @command{xwpe}):
 
 @table @kbd
-@item Alt-B a
+@item Alt-G a
 Ask -- chat.
-@item Alt-B e
+@item Alt-G e
 Edit the current file.
-@item Alt-B p
+@item Alt-G p
 Plan a multi-file change.
-@item Alt-B g
+@item Alt-G g
 Agent -- an autonomous loop.
-@item Alt-B m
+@item Alt-G m
 pick the Model.
-@item Alt-B y
+@item Alt-G y
 cycle the permission policy (ask / edits / auto).
-@item Alt-B n
+@item Alt-G n
 start a New session.
 @end table
 
@@ -82,7 +82,7 @@ chat/edit/plan/agent interface works with all of them.
 @table @asis
 @item @code{ollama} (default)
 Ollama's HTTP API on @code{http://localhost:11434}.  Local, free, no key.  The
-model list comes from the server, and @kbd{Alt-B m} picks one.
+model list comes from the server, and @kbd{Alt-G m} picks one.
 @item @code{openai}
 Any OpenAI-compatible server -- @command{llama.cpp}, LM Studio, vLLM, or OpenAI
 itself.  Set @code{AIEndpoint} to its URL; an API key comes from
@@ -102,7 +102,7 @@ A deterministic in-process backend used by the test suite; no network.
 @section Chat
 
 @cindex AI, chat
-@kbd{Alt-B a} asks for a prompt and streams the reply into the @samp{AI} pane.
+@kbd{Alt-G a} asks for a prompt and streams the reply into the @samp{AI} pane.
 The current file (and the selection, if any) is sent as context, so ``what does
 this function do?'' works.  Chat can also @emph{investigate the workspace}: it
 is given the list of workspace files and may read any of them (or grep, or list
@@ -120,7 +120,7 @@ wait at any time.
 @section Edit
 
 @cindex AI, edit
-@kbd{Alt-B e} asks for an instruction (``add error handling'', ``fix the compile
+@kbd{Alt-G e} asks for an instruction (``add error handling'', ``fix the compile
 error''), sends the current file, and shows the model's rewrite as a @dfn{diff}
 you review hunk by hunk: @kbd{y} applies this hunk, @kbd{n} skips it, @kbd{a}
 applies all the rest, @kbd{q} cancels.  Applying uses one whole-buffer undo
@@ -130,7 +130,7 @@ you @emph{save}.
 @section Plan (multi-file)
 
 @cindex AI, plan
-@kbd{Alt-B p} tackles a change that spans several files.  The assistant first
+@kbd{Alt-G p} tackles a change that spans several files.  The assistant first
 @dfn{studies} the workspace -- the files you have open, plus the members of the
 open project (@pxref{Projects}) and, if asked, the surrounding folder -- reading
 whatever it needs with read-only tools.  It then proposes a @dfn{plan}: the
@@ -156,7 +156,7 @@ with @kbd{Ctrl-U}.
 
 @cindex AI, agent
 @cindex AI, permissions
-@kbd{Alt-B g} runs the model as an autonomous agent with a small, bounded set of
+@kbd{Alt-G g} runs the model as an autonomous agent with a small, bounded set of
 tools: @code{read_file}, @code{list_dir} and @code{grep} run on their own, while
 @code{write_file} and @code{run_command} are governed by the @dfn{permission
 dial}:
@@ -170,7 +170,7 @@ writes go through automatically; commands still ask.
 everything runs unattended; you review the result afterwards.
 @end table
 
-Set the dial from the @samp{AI} menu, with @kbd{Alt-B y}, or with @code{AIPolicy}
+Set the dial from the @samp{AI} menu, with @kbd{Alt-G y}, or with @code{AIPolicy}
 / @env{XWPE_AI_POLICY}.  @code{edits} and @code{auto} always take a checkpoint
 first.  For the @code{claudecli} backend the dial maps onto the CLI's own
 @option{--permission-mode} so the same rules apply.
@@ -201,7 +201,7 @@ The conversation is tied to the workspace and resumes automatically.  For
 @code{claudecli} xwpe keeps the CLI's own session id and passes @option{--resume};
 for the other backends it keeps a short transcript that seeds the next prompt.
 It is stored beside the project file (as @file{.xwpe-ai-session}) when a project
-is open, otherwise under @file{~/.xwpe/ai/}.  @kbd{Alt-B n} forgets the current
+is open, otherwise under @file{~/.xwpe/ai/}.  @kbd{Alt-G n} forgets the current
 session and starts fresh.
 
 @section Configuration
