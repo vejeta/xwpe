@@ -697,6 +697,43 @@ static int ai_mock_open(struct wpe_ai_stream *st)
           "%s\n{\"done\":true}\n", body1);
  json_object_put(o);
 
+ {
+  /* XWPE_AI_MOCK_DELAY_MS>0 makes the mock reply arrive after a delay instead of
+     instantly, so headless tests can exercise the ASYNCHRONOUS behaviour (the
+     editor staying live, the spinner, Esc-cancel) that an instant reply cannot
+     show.  A forked child sleeps then writes the response to a pipe -- only the
+     FAKE backend sleeps; xwpe itself never blocks, it polls the pipe on its
+     fd-loop exactly as it would a slow real server. */
+  const char *dly = getenv("XWPE_AI_MOCK_DELAY_MS");
+  int delay_ms = dly ? atoi(dly) : 0;
+  if (delay_ms > 0) {
+   int p[2];
+   pid_t pid;
+   if (pipe(p) < 0) { free(resp); return -1; }
+   pid = fork();
+   if (pid < 0) { free(resp); close(p[0]); close(p[1]); return -1; }
+   if (pid == 0) {
+    ssize_t w;
+    close(p[0]);
+    usleep((useconds_t)delay_ms * 1000);
+    w = write(p[1], resp, strlen(resp));
+    (void)w;
+    close(p[1]);
+    _exit(0);
+   }
+   close(p[1]);
+   free(resp);
+   { int fl = fcntl(p[0], F_GETFL, 0); if (fl != -1) fcntl(p[0], F_SETFL, fl | O_NONBLOCK); }
+   memset(&st->conn, 0, sizeof st->conn);
+   st->conn.fd = p[0];
+   st->conn.is_tls = 0;
+   strncpy(st->conn.host, "mock", sizeof st->conn.host - 1);
+   st->pid = pid;                    /* reaped in wpe_ai_stream_free */
+   wpe_http_stream_init(&st->hs);
+   return 0;
+  }
+ }
+
  fd = mkstemp(tmpl);
  if (fd < 0) { free(resp); return -1; }
  unlink(tmpl);
@@ -821,10 +858,10 @@ void wpe_ai_stream_free(wpe_ai_stream *st)
  if (!st) return;
  if (st->is_subproc) {
   if (st->out_fd >= 0) close(st->out_fd);
-  if (st->pid > 0) { int status; waitpid(st->pid, &status, 0); }
  } else {
   wpe_http_close(&st->conn);
  }
+ if (st->pid > 0) { int status; waitpid(st->pid, &status, 0); }  /* claudecli or delayed mock */
  wpe_http_stream_free(&st->hs);
  free(st);
 }
