@@ -169,7 +169,12 @@ int e_prog_switch(FENSTER *f, int c)
    e_exec_make(f);
    break;
 #ifdef WPE_AI
-  case AltB:   /*  Alt B  AI assistant (Chat now; Edit/Agent as they land) */
+  case AltB:   /*  Alt-B: the AI assistant, but ONLY when it is enabled.  Alt-B is
+                   also the menu-bar "Block" accelerator (opt[]: {"Block",...,AltB}),
+                   so when the assistant is off we must NOT consume the key -- return
+                   it unhandled so the Block menu opens as it always has. */
+   if (!wpe_ai_enabled())
+    return(c);
    e_ai_ui_key(f);
    break;
   case WPE_AI_MENU:   /*  click on the "Alt-B AI" bottom-bar entry -> menu */

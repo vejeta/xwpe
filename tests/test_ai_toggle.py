@@ -22,15 +22,18 @@ def _ai_build():
 pytestmark = pytest.mark.skipif(not _ai_build(), reason="wpe built without --enable-ai")
 
 
-def test_ai_disabled_shows_hint(tmp_path):
-    # No XWPE_AI_ENABLE -> the assistant is OFF at runtime.
+def test_ai_disabled_altb_is_block_menu(tmp_path):
+    # No XWPE_AI_ENABLE -> the assistant is OFF.  Alt-B is the menu-bar "Block"
+    # accelerator, so with the assistant off it must open the Block menu, NOT
+    # trigger the AI: the assistant never shadows an existing key.
     env = {"XWPE_AI_BACKEND": "mock"}
     with WpeSession(str(tmp_path), "int main(void){return 0;}\n",
                     env_extra=env) as s:
-        s.key(ALT.BLOCK)                 # Alt-B with AI disabled
+        s.key(ALT.BLOCK)                 # Alt-B with AI disabled -> Block menu
         s._drain(0.6)
         disp = "\n".join(s.display())
-    assert "is off" in disp, "disabled hint not shown:\n" + disp
+    assert "is off" not in disp, "Alt-B wrongly triggered the AI while disabled:\n" + disp
+    assert "Mark" in disp, "Alt-B did not open the Block menu when AI is off:\n" + disp
 
 
 def test_ai_prefix_opens_menu(tmp_path):
