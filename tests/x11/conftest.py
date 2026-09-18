@@ -378,7 +378,12 @@ def xwpe(xserver, tmp_path, request):
     # whatever monospace size the test host happens to have configured (the
     # GNOME schema default is "Monospace 11", not the 10 these tests assume).
     env = {**os.environ, "DISPLAY": DISPLAY, "HOME": str(tmp_path),
-           "XWPE_LSP_NO_EAGER": "1", "XWPE_FONT_SIZE": "10"}
+           "XWPE_LSP_NO_EAGER": "1", "XWPE_FONT_SIZE": "10",
+           # Force the X11 backend: xwpe auto-detects Wayland when WAYLAND_DISPLAY
+           # is set (e_pick_gfx_backend), so on a Wayland HOST session it would
+           # otherwise connect to the real compositor instead of this headless
+           # Xvfb -- and no X window would ever appear here.
+           "XWPE_BACKEND": "x11"}
     env.update(getattr(request, "param", None) or {})   # optional per-test env (e.g. AI)
     proc = _spawn([XWPE_BIN, str(src)], env=env, cwd=str(tmp_path))
     win = _find_xwpe_window()
