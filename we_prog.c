@@ -1397,6 +1397,45 @@ int e_make_error_list(FENSTER *f)
  return(ret);
 }
 
+/* e_set_error_list - replace the Next/Prev-Error list with explicit locations.
+ *
+ * Lets a tool other than the compiler feed the Alt-T / Alt-V navigation: the
+ * AI changeset review writes one line per changed hunk into Messages and then
+ * registers each (file, line) here, so the user steps change-to-change with
+ * the same keys used to step compile-error-to-error.  ys[i] is the Messages
+ * line each entry points back to (0 if unknown). */
+int e_set_error_list(int n, char **files, int *lines, int *ys, char **texts)
+{
+ int i;
+ if (err_li)
+ {
+  for (i = 0; i < err_num; i++)
+  {
+   if(err_li[i].file) FREE(err_li[i].file);
+   if(err_li[i].text) FREE(err_li[i].text);
+   if(err_li[i].srch) FREE(err_li[i].srch);
+  }
+  FREE(err_li);
+  err_li = NULL;
+ }
+ err_num = 0;
+ err_no = 0;
+ if (n <= 0) return(0);
+ err_li = MALLOC(sizeof(struct ERR_LI) * n);
+ if (!err_li) return(-1);
+ for (i = 0; i < n; i++)
+ {
+  err_li[i].file = WpeStrdup(files[i] ? files[i] : "");
+  err_li[i].text = WpeStrdup(texts && texts[i] ? texts[i] : "");
+  err_li[i].srch = NULL;
+  err_li[i].x = 0;
+  err_li[i].y = ys ? ys[i] : 0;
+  err_li[i].line = lines ? lines[i] : 1;
+ }
+ err_num = n;
+ return(0);
+}
+
 int e_previous_error(FENSTER *f)
 {
  int i, cur_line;

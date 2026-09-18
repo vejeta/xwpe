@@ -35,7 +35,8 @@ def _agent(tmp_path, reply, task="do the task", approve=None):
         s.key(ALT.BLOCK)
         s.key("g")                       # aGent
         s.key(task)
-        s.key("\r", delay=1.6)           # submit -> agent loop
+        s.key("\r", delay=1.6)           # submit -> policy prompt
+        s.key("\r", delay=1.0)           # Enter = keep the configured policy (ask)
         s._drain(1.0)
         if approve is not None:
             s.key(approve, delay=1.2)    # answer the approval prompt

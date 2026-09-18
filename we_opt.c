@@ -984,7 +984,8 @@ int WpeReadProgramming(ECNT *cn, char *section, char *option, char *value)
  } else if (WpeStrccmp("AIModel", option) == 0) {
   free(e_ai_model);
   e_ai_model = WpeStrdup(value);
- }
+ } else if (WpeStrccmp("AIPolicy", option) == 0)
+  e_ai_policy = wpe_ai_policy_from_name(value);
 #endif
  return 0;
 }
@@ -1001,6 +1002,7 @@ int WpeWriteProgramming(ECNT *cn, char *section, FILE *opt_file)
  fprintf(opt_file, "AIBackend : %d\n", e_ai_backend);
  fprintf(opt_file, "AIEndpoint : %s\n", e_ai_endpoint ? e_ai_endpoint : "");
  fprintf(opt_file, "AIModel : %s\n", e_ai_model ? e_ai_model : "");
+ fprintf(opt_file, "AIPolicy : %s\n", wpe_ai_policy_name(e_ai_policy));
 #endif
  return 0;
 }

@@ -25,6 +25,24 @@ enum {
  * subprocess backend only when it can actually work. */
 int  wpe_ai_claude_cli_available(void);
 
+/* ----- permission dial (agent / plan modes) ------------------------------ */
+enum { WPE_AI_POLICY_ASK = 0, WPE_AI_POLICY_EDITS = 1, WPE_AI_POLICY_AUTO = 2 };
+extern int  e_ai_policy;               /* persisted AIPolicy; XWPE_AI_POLICY   */
+int         wpe_ai_policy_from_name(const char *name);
+const char *wpe_ai_policy_name(int policy);
+
+/* claudecli control: how much the CLI may do on its own, and session resume.
+ * The UI sets these before each call; the CLI cannot prompt in -p mode, so the
+ * permission must be pre-granted according to the policy. */
+enum { WPE_AI_CLI_TEXTONLY = 0, WPE_AI_CLI_EDITS = 1, WPE_AI_CLI_AUTO = 2 };
+extern int   e_ai_cli_mode;
+extern char *e_ai_resume_session;      /* passed as --resume <id>, or NULL     */
+extern char *e_ai_last_session_id;     /* session_id from the last CLI reply   */
+
+/* Run a shell command; capture bounded stdout+stderr (malloc'd, never NULL on
+ * a spawn failure -- returns a short note instead). */
+char *wpe_ai_run_capture(const char *cmd);
+
 /* Effective config (defaults baked in so an EMPTY config file just works).
  * Persisted in the Programming section as AIBackend/AIEndpoint/AIModel and
  * overridable at run time by XWPE_AI_BACKEND / _ENDPOINT / _MODEL. */
@@ -109,6 +127,32 @@ void wpe_ai_segs_free(wpe_ai_seg *segs, int n);
 /* ----- editor entry points (we_ai_ui.c) --------------------------------- */
 struct FNST;                        /* editor window (edit.h)                 */
 int  e_ai_ui_key(struct FNST *f);   /* Alt-B: open/prompt the AI assistant    */
+
+/* ----- workspace layer (we_ai_ws.c, editor-side) ------------------------ */
+/* Scope: the full paths the agent may study -- the open text windows, plus
+ * the open .prj members (with_project) and the current file's directory
+ * (with_folder, bounded).  Returns count; *out = malloc'd array of malloc'd
+ * paths (free with wpe_ai_free_list). */
+int   wpe_ai_scope_files(struct FNST *f, int with_project, int with_folder,
+                         char ***out);
+void  wpe_ai_free_list(char **list, int n);
+/* Text of a scope file: the in-memory buffer when it is open (so unsaved
+ * edits count), else the file on disk.  Malloc'd, or NULL. */
+char *wpe_ai_read_scope_file(struct FNST *f, const char *path);
+/* Checkpoint before an edits/auto run: a git ref (stash create / HEAD) when
+ * the workspace is a git tree, else snapshot copies of the scope files. */
+int   wpe_ai_checkpoint_create(struct FNST *f, char **scope, int nscope);
+int   wpe_ai_checkpoint_active(void);
+/* After the run: compute what changed on disk, write it to Messages as
+ * `path:line: [AI] ...` lines registered for Alt-T / Alt-V, and run the
+ * review loop (a = keep all, r = revert all, f = file by file, c = commit). */
+int   wpe_ai_changeset_review(struct FNST *f);
+/* Sessions tied to the workspace (claudecli session id and/or a transcript). */
+void  wpe_ai_session_load(struct FNST *f);
+void  wpe_ai_session_save(struct FNST *f);
+void  wpe_ai_session_reset(struct FNST *f);
+void  wpe_ai_session_append(const char *role, const char *content);
+int   wpe_ai_session_messages(wpe_ai_msg *buf, int max);
 
 #endif /* WPE_AI */
 

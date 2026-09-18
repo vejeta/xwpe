@@ -52,6 +52,7 @@ int e_exec_inf(FENSTER *f, char **argv, int n);
 int e_print_arg(FILE *fp, char *s, char **argv, int n);
 int e_show_error(int n, FENSTER *f);
 int e_make_error_list(FENSTER *f);
+int e_set_error_list(int n, char **files, int *lines, int *ys, char **texts);
 int e_previous_error(FENSTER *f);
 int e_next_error(FENSTER *f);
 int e_line_read(int n, char *s, int max);

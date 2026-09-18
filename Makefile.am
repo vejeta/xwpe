@@ -159,7 +159,7 @@ endif
 # already linked; the plain-HTTP backends (Ollama, localhost OpenAI-compatible)
 # need no extra library.  TLS libs are pulled in only under --enable-ai-tls.
 if WPE_AI
-we_SOURCES += we_ai.c we_ai_http.c we_ai_ui.c we_ai_diff.c we_ai_agent.c
+we_SOURCES += we_ai.c we_ai_http.c we_ai_ui.c we_ai_diff.c we_ai_agent.c we_ai_ws.c
 if WPE_AI_TLS
 AM_CFLAGS += $(AITLS_CFLAGS)
 we_LDADD += $(AITLS_LIBS)

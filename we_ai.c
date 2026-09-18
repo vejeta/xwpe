@@ -29,6 +29,8 @@
 #include "we_ai.h"
 #include "we_ai_http.h"
 
+static char *ai_strdup(const char *s);   /* defined below; used early */
+
 /* ----- configuration globals (defaults chosen so an empty config works) --- */
 int   e_ai_backend  = WPE_AI_OLLAMA;
 char *e_ai_endpoint = NULL;            /* filled by wpe_ai_config_init()       */
@@ -82,6 +84,49 @@ static int ai_which(const char *prog)
 
 int wpe_ai_claude_cli_available(void) { return ai_which("claude"); }
 
+/* ----- permission dial + claudecli control globals ----------------------- */
+int   e_ai_policy          = WPE_AI_POLICY_ASK;
+int   e_ai_cli_mode        = WPE_AI_CLI_TEXTONLY;
+char *e_ai_resume_session  = NULL;
+char *e_ai_last_session_id = NULL;
+
+int wpe_ai_policy_from_name(const char *name)
+{
+ if (!name)                        return WPE_AI_POLICY_ASK;
+ if (!strcasecmp(name, "edits"))   return WPE_AI_POLICY_EDITS;
+ if (!strcasecmp(name, "auto"))    return WPE_AI_POLICY_AUTO;
+ return WPE_AI_POLICY_ASK;
+}
+
+const char *wpe_ai_policy_name(int policy)
+{
+ switch (policy) {
+  case WPE_AI_POLICY_EDITS: return "edits";
+  case WPE_AI_POLICY_AUTO:  return "auto";
+  default:                  return "ask";
+ }
+}
+
+char *wpe_ai_run_capture(const char *cmd)
+{
+ FILE *fp;
+ char *out, full[2100];
+ size_t cap = 4096, len = 0;
+ int ch;
+ snprintf(full, sizeof full, "%s 2>&1", cmd);
+ fp = popen(full, "r");
+ if (!fp) return ai_strdup("(could not run command)");
+ out = malloc(cap);
+ if (!out) { pclose(fp); return ai_strdup("(out of memory)"); }
+ while ((ch = fgetc(fp)) != EOF && len < 6000) {
+  if (len + 2 > cap) { char *nb; cap *= 2; nb = realloc(out, cap); if (!nb) break; out = nb; }
+  out[len++] = (char)ch;
+ }
+ out[len] = '\0';
+ pclose(fp);
+ return out;
+}
+
 int wpe_ai_enabled(void)
 {
  const char *e = getenv("XWPE_AI_ENABLE");   /* test/dev force-enable override */
@@ -108,6 +153,8 @@ void wpe_ai_config_init(void)
 
  if ((e = getenv("XWPE_AI_BACKEND")))
   e_ai_backend = wpe_ai_backend_from_name(e);
+ if ((e = getenv("XWPE_AI_POLICY")))
+  e_ai_policy = wpe_ai_policy_from_name(e);
 
  if ((e = getenv("XWPE_AI_ENDPOINT"))) {
   free(e_ai_endpoint);
@@ -521,7 +568,7 @@ static int ai_claudecli_open(struct wpe_ai_stream *st, const wpe_ai_req *req)
   return -1;
  }
  if (pid == 0) {                      /* child */
-  char *argv[8];
+  char *argv[24];
   int a = 0, dn;
   dup2(in[0], 0);
   dup2(out[1], 1);
@@ -533,6 +580,20 @@ static int ai_claudecli_open(struct wpe_ai_stream *st, const wpe_ai_req *req)
   argv[a++] = "--output-format";
   argv[a++] = "json";
   if (e_ai_model && *e_ai_model) { argv[a++] = "--model"; argv[a++] = e_ai_model; }
+  if (e_ai_resume_session && *e_ai_resume_session) {
+   argv[a++] = "--resume"; argv[a++] = e_ai_resume_session;
+  }
+  /* The permission dial, pre-granted (claude -p cannot prompt).  Placed last:
+     --disallowedTools is variadic and swallows following bare arguments. */
+  if (e_ai_cli_mode == WPE_AI_CLI_AUTO) {
+   argv[a++] = "--dangerously-skip-permissions";
+  } else if (e_ai_cli_mode == WPE_AI_CLI_EDITS) {
+   argv[a++] = "--permission-mode"; argv[a++] = "acceptEdits";
+  } else {                            /* text-only: xwpe owns every edit */
+   argv[a++] = "--disallowedTools";
+   argv[a++] = "Write"; argv[a++] = "Edit"; argv[a++] = "MultiEdit";
+   argv[a++] = "NotebookEdit"; argv[a++] = "Bash";
+  }
   argv[a] = NULL;
   execvp("claude", argv);
   _exit(127);
@@ -570,6 +631,10 @@ static void ai_parse_claudecli(const char *body, char **delta)
   *delta = ai_strdup(json_object_get_string(r));
  else
   *delta = ai_strdup("[claude-cli: no result field]");
+ if (json_object_object_get_ex(o, "session_id", &r)) {   /* for --resume */
+  free(e_ai_last_session_id);
+  e_ai_last_session_id = ai_strdup(json_object_get_string(r));
+ }
  json_object_put(o);
 }
 

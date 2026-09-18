@@ -32,6 +32,8 @@ typedef struct {
  FENSTER       *ref;           /* anchor window (gives us cn = ref->ed)        */
  char          *pending;       /* incomplete trailing line being streamed      */
  size_t         plen, pcap;
+ char          *full;          /* whole reply so far (for the session log)     */
+ size_t         flen, fcap;
  int            fd;
  int            active;
 } ai_chat_session;
@@ -76,6 +78,7 @@ static void ai_chat_finish(ai_chat_session *s)
  if (s->fd >= 0) wpe_fd_del(s->fd);
  wpe_ai_stream_free(s->st);
  free(s->pending);
+ free(s->full);
  if (g_ai_chat == s) g_ai_chat = NULL;
  free(s);
 }
@@ -86,6 +89,19 @@ static void ai_delta_cb(const char *delta, void *ud)
 {
  ai_chat_session *s = ud;
  size_t dl = strlen(delta), start, i;
+
+ if (s->flen + dl + 1 > s->fcap) {            /* keep the whole reply too */
+  size_t nc = s->fcap ? s->fcap : 512;
+  char *nb;
+  while (s->flen + dl + 1 > nc) nc *= 2;
+  nb = realloc(s->full, nc);
+  if (nb) { s->full = nb; s->fcap = nc; }
+ }
+ if (s->full && s->flen + dl + 1 <= s->fcap) {
+  memcpy(s->full + s->flen, delta, dl);
+  s->flen += dl;
+  s->full[s->flen] = '\0';
+ }
 
  if (s->plen + dl + 1 > s->pcap) {
   size_t nc = s->pcap ? s->pcap : 256;
@@ -130,6 +146,8 @@ static void ai_fd_cb(int fd, void *data)
  }
  if (done) {
   if (s->plen) { s->pending[s->plen] = '\0'; ai_pane(s->ref, s->pending, 0); s->plen = 0; }
+  if (s->full && s->flen) wpe_ai_session_append("assistant", s->full);
+  wpe_ai_session_save(s->ref);
   wpe_ai_trace("chat done");
   s->active = 0;
   ai_chat_finish(s);
@@ -157,10 +175,11 @@ static int e_ai_chat(FENSTER *f)
 {
  static char prompt[2048];
  char err[320], line[2200];
- wpe_ai_msg msgs[2];
+ wpe_ai_msg msgs[14];
  wpe_ai_req req;
  char *sys;
  ai_chat_session *s;
+ int nm = 0, np, i;
 
  prompt[0] = '\0';
  if (!e_add_arguments(prompt, "Ask AI", f, 0, AltB, NULL) || !prompt[0])
@@ -186,12 +205,17 @@ static int e_ai_chat(FENSTER *f)
  ai_pane(f, line, 1);
  ai_pane(f, "AI:", 0);
 
+ e_ai_cli_mode = WPE_AI_CLI_TEXTONLY;
+ wpe_ai_session_load(f);                       /* resume this workspace's talk */
  sys = ai_build_system(f);
- msgs[0].role = "system"; msgs[0].content = sys ? sys : "";
- msgs[1].role = "user";   msgs[1].content = prompt;
+ msgs[nm].role = "system"; msgs[nm].content = sys ? sys : ""; nm++;
+ np = wpe_ai_session_messages(msgs + nm, 10);   /* prior turns, bounded */
+ for (i = 0; i < np; i++) nm++;
+ msgs[nm].role = "user";   msgs[nm].content = prompt; nm++;
+ wpe_ai_session_append("user", prompt);
  req.model = NULL;
  req.msgs = msgs;
- req.nmsgs = 2;
+ req.nmsgs = nm;
 
  s = calloc(1, sizeof *s);
  if (!s) { free(sys); return 0; }
@@ -422,7 +446,8 @@ static int e_ai_pick_model(FENSTER *f)
  return 0;
 }
 
-int e_ai_agent(FENSTER *f);   /* defined in the Agent section below */
+int e_ai_agent(FENSTER *f);         /* defined in the Agent section below */
+static int e_ai_plan(FENSTER *f);   /* defined in the PLAN section below  */
 
 /* ======================= Alt-B prefix dispatch ========================== */
 int e_ai_ui_key(FENSTER *f)
@@ -438,11 +463,16 @@ int e_ai_ui_key(FENSTER *f)
  switch (c) {
   case 'A': return e_ai_chat(f);        /* Ask (chat)                        */
   case 'E': return e_ai_edit(f);        /* Edit the current file             */
-  case 'G': return e_ai_agent(f);       /* aGent (tool harness)              */
+  case 'G': return e_ai_agent(f);       /* aGent (tool harness, policy dial) */
+  case 'P': return e_ai_plan(f);        /* Plan: multi-file, permission first */
   case 'M': return e_ai_pick_model(f);  /* pick Model                        */
+  case 'N':                             /* New session (forget the workspace) */
+   wpe_ai_session_reset(f);
+   ai_pane(f, "[AI] session reset for this workspace", 1);
+   return 0;
   case WPE_ESC: return 0;
   default:
-   ai_pane(f, "AI (Alt-B):  a = Ask   e = Edit   g = aGent   m = Model", 1);
+   ai_pane(f, "AI (Alt-B):  a = Ask  e = Edit  p = Plan  g = aGent  m = Model  n = New session", 1);
    return 0;
  }
 }
@@ -453,25 +483,7 @@ int e_ai_ui_key(FENSTER *f)
 #define AI_TOOL_OUT_MAX    6000
 
 /* Run a shell command; capture bounded stdout+stderr (malloc'd). */
-static char *ai_run_capture(const char *cmd)
-{
- FILE *fp;
- char *out, full[2100];
- size_t cap = 4096, len = 0;
- int ch;
- snprintf(full, sizeof full, "%s 2>&1", cmd);
- fp = popen(full, "r");
- if (!fp) return strdup("(could not run command)");
- out = malloc(cap);
- if (!out) { pclose(fp); return NULL; }
- while ((ch = fgetc(fp)) != EOF && len < AI_TOOL_OUT_MAX) {
-  if (len + 2 > cap) { char *nb; cap *= 2; nb = realloc(out, cap); if (!nb) break; out = nb; }
-  out[len++] = (char)ch;
- }
- out[len] = '\0';
- pclose(fp);
- return out;
-}
+static char *ai_run_capture(const char *cmd) { return wpe_ai_run_capture(cmd); }
 
 static char *ai_read_file_bounded(const char *path)
 {
@@ -491,10 +503,20 @@ static char *ai_read_file_bounded(const char *path)
  return out;
 }
 
-/* Approve a mutating tool call (write_file / run_command).  1 = approved. */
-static int ai_agent_approve(FENSTER *f, const char *what)
+/* Approve a mutating tool call (write_file / run_command) according to the
+ * permission dial: auto passes everything, edits passes writes but asks for
+ * commands, ask prompts every time.  1 = approved. */
+static int ai_agent_approve(FENSTER *f, const char *what, int is_run)
 {
  char line[640];
+ if (e_ai_policy == WPE_AI_POLICY_AUTO ||
+     (e_ai_policy == WPE_AI_POLICY_EDITS && !is_run)) {
+  snprintf(line, sizeof line, "[agent] auto-approved (%s): %s",
+           wpe_ai_policy_name(e_ai_policy), what);
+  ai_pane(f, line, 0);
+  wpe_ai_trace("agent auto-approve %s", what);
+  return 1;
+ }
  snprintf(line, sizeof line, "[agent] APPROVE?  %s", what);
  ai_pane(f, line, 1);
  ai_pane(f, "   y = allow    n / Esc = deny", 0);
@@ -503,6 +525,22 @@ static int ai_agent_approve(FENSTER *f, const char *what)
   if (c == WPE_ESC || e_toupper(c) == 'N') return 0;
   if (e_toupper(c) == 'Y' || c == 13 || c == '\r' || c == '\n') return 1;
  }
+}
+
+/* Per-run choice of the permission dial (Enter keeps the configured one). */
+static void ai_choose_policy(FENSTER *f)
+{
+ char line[160];
+ int c;
+ snprintf(line, sizeof line,
+   "[agent] policy: a = ask   e = edits   u = auto   (Enter = keep '%s')",
+   wpe_ai_policy_name(e_ai_policy));
+ ai_pane(f, line, 1);
+ c = e_toupper(e_getch());
+ if (c == 'A') e_ai_policy = WPE_AI_POLICY_ASK;
+ else if (c == 'E') e_ai_policy = WPE_AI_POLICY_EDITS;
+ else if (c == 'U') e_ai_policy = WPE_AI_POLICY_AUTO;
+ wpe_ai_trace("agent policy=%s", wpe_ai_policy_name(e_ai_policy));
 }
 
 /* growable conversation */
@@ -558,9 +596,25 @@ int e_ai_agent(FENSTER *f)
  { char line[1100]; snprintf(line, sizeof line, "[agent] task: %s", goal); ai_pane(f, line, 1); }
  wpe_ai_trace("agent task=%s", goal);
 
+ ai_choose_policy(f);
+ wpe_ai_session_load(f);
+ /* claudecli: pre-grant per the dial (it cannot prompt in -p mode). */
+ e_ai_cli_mode = e_ai_policy == WPE_AI_POLICY_AUTO  ? WPE_AI_CLI_AUTO
+               : e_ai_policy == WPE_AI_POLICY_EDITS ? WPE_AI_CLI_EDITS
+               : WPE_AI_CLI_TEXTONLY;
+ if (e_ai_policy != WPE_AI_POLICY_ASK) {           /* never unattended without a checkpoint */
+  char **scope; int nsc = wpe_ai_scope_files(f, e_project_is_open(), 1, &scope);
+  wpe_ai_checkpoint_create(f, scope, nsc);
+  wpe_ai_free_list(scope, nsc);
+  ai_pane(f, "[agent] checkpoint taken - changes are reviewable/revertible at the end", 0);
+ }
+
  memset(&ml, 0, sizeof ml);
  ai_ml_add(&ml, "system", sys);
+ { wpe_ai_msg prior[12]; int np = wpe_ai_session_messages(prior, 12), i;
+   for (i = 0; i < np; i++) ai_ml_add(&ml, prior[i].role, prior[i].content); }
  ai_ml_add(&ml, "user", goal);
+ wpe_ai_session_append("user", goal);
 
  for (iter = 0; iter < AI_AGENT_MAX_ITERS; iter++) {
   wpe_ai_msg *msgs;
@@ -608,7 +662,7 @@ int e_ai_agent(FENSTER *f)
    } else if (!strcmp(tool, "grep")) {
     char cmd[1300]; snprintf(cmd, sizeof cmd, "grep -rn -- %s .", arg); result = ai_run_capture(cmd);
    } else if (!strcmp(tool, "run_command")) {
-    if (ai_agent_approve(f, arg)) result = ai_run_capture(arg);
+    if (ai_agent_approve(f, arg, 1)) result = ai_run_capture(arg);
     else result = strdup("(denied by user)");
    } else if (!strcmp(tool, "write_file")) {
     char *content = NULL;
@@ -619,7 +673,7 @@ int e_ai_agent(FENSTER *f)
      if (content) { memcpy(content, body, cl); content[cl] = '\0'; }
     }
     { char what[720]; snprintf(what, sizeof what, "write_file %s (%zu bytes)", arg, content ? strlen(content) : 0);
-      if (content && ai_agent_approve(f, what)) {
+      if (content && ai_agent_approve(f, what, 0)) {
        FILE *w = fopen(arg, "wb");
        if (w) { fwrite(content, 1, strlen(content), w); fclose(w); result = strdup("(written)"); }
        else result = strdup("(write failed)");
@@ -636,7 +690,226 @@ int e_ai_agent(FENSTER *f)
   free(reply);
  }
  if (iter >= AI_AGENT_MAX_ITERS) ai_pane(f, "[agent] stopped (max steps)", 0);
+ if (ml.n > 0 && !strcmp(ml.role[ml.n - 1], "assistant"))
+  wpe_ai_session_append("assistant", ml.content[ml.n - 1]);
+ wpe_ai_session_save(f);
  ai_ml_free(&ml);
+ if (e_ai_policy != WPE_AI_POLICY_ASK && wpe_ai_checkpoint_active())
+  wpe_ai_changeset_review(f);                   /* review "like compile errors" */
+ return 0;
+}
+
+/* ======================= PLAN mode (multi-file) ========================= */
+
+#define AI_PLAN_MAX 32
+
+typedef struct { char *path; char *text; } ai_proposal;
+
+/* Collect PROPOSE <path> ... @@END blocks from a reply.  Returns 1 if the reply
+ * also carried @@PLAN-DONE (or DONE). */
+static int ai_plan_parse(const char *reply, ai_proposal *props, int *np)
+{
+ const char *p = reply;
+ int done = 0;
+ while (p && *p) {
+  const char *nl = strchr(p, '\n');
+  size_t l = nl ? (size_t)(nl - p) : strlen(p);
+  if (!strncmp(p, "@@PLAN-DONE", 11) || (l >= 4 && !strncmp(p, "DONE", 4))) done = 1;
+  else if (!strncmp(p, "PROPOSE ", 8) && *np < AI_PLAN_MAX) {
+   char path[1024];
+   size_t pl = l - 8;
+   const char *body, *endm;
+   if (pl >= sizeof path) pl = sizeof path - 1;
+   memcpy(path, p + 8, pl); path[pl] = '\0';
+   while (pl && (path[pl-1] == ' ' || path[pl-1] == '\r')) path[--pl] = '\0';
+   body = nl ? nl + 1 : p + l;
+   endm = strstr(body, "\n@@END");
+   if (!endm && !strncmp(body, "@@END", 5)) endm = body;
+   {
+    size_t cl = endm ? (size_t)(endm - body) : strlen(body);
+    props[*np].path = strdup(path);
+    props[*np].text = malloc(cl + 2);
+    if (props[*np].text) { memcpy(props[*np].text, body, cl); props[*np].text[cl] = '\n'; props[*np].text[cl + 1] = '\0'; }
+    (*np)++;
+   }
+   if (endm) { p = strchr(endm + 1, '\n'); if (p) p++; continue; }
+   break;
+  }
+  if (!nl) break;
+  p = nl + 1;
+ }
+ return done;
+}
+
+static int e_ai_plan(FENSTER *f)
+{
+ static char task[1024];
+ char err[320], line[1400];
+ struct ai_mlist ml;
+ ai_proposal props[AI_PLAN_MAX];
+ int np = 0, iter, i, done = 0;
+ char **scope; int nsc;
+ char *cur;
+ const char *sys =
+   "You are a coding agent working on a multi-file workspace inside the xwpe "
+   "editor. First STUDY: reply with EXACTLY ONE read-only action per turn as a "
+   "single first line:\n"
+   "  TOOL read_file <path>\n  TOOL grep <pattern>\n  TOOL list_dir <path>\n"
+   "When you know what to change, reply with a PLAN: for each file to change,\n"
+   "  PROPOSE <path>\n  <the complete new content of that file>\n  @@END\n"
+   "(repeat for every file), then a final line:  @@PLAN-DONE <one-line summary>\n"
+   "Do not modify files yourself; the editor applies the plan after the user "
+   "approves it. Output nothing else.";
+
+ task[0] = '\0';
+ if (!e_add_arguments(task, "AI plan: task", f, 0, AltB, NULL) || !task[0]) return 0;
+ err[0] = '\0';
+ if (wpe_ai_preflight(e_ai_backend, err, sizeof err)) { ai_pane(f, err, 1); return 0; }
+ err[0] = '\0';
+ if (wpe_ai_ensure_model(err, sizeof err)) { ai_pane(f, err[0] ? err : "no model set", 1); return 0; }
+
+ e_ai_cli_mode = WPE_AI_CLI_TEXTONLY;               /* xwpe owns every edit */
+ wpe_ai_session_load(f);
+ nsc = wpe_ai_scope_files(f, e_project_is_open(), 1, &scope);
+ snprintf(line, sizeof line, "[plan] task: %s  (scope: %d files)", task, nsc);
+ ai_pane(f, line, 1);
+ wpe_ai_trace("plan task=%s scope=%d", task, nsc);
+
+ memset(&ml, 0, sizeof ml);
+ ai_ml_add(&ml, "system", sys);
+ {
+  size_t cap = 4096, len = 0;
+  char *u = malloc(cap);
+  if (u) {
+   len += (size_t)snprintf(u, cap, "TASK: %s\n\nWORKSPACE FILES:\n", task);
+   for (i = 0; i < nsc; i++) {
+    size_t need = len + strlen(scope[i]) + 4;
+    if (need > cap) { while (need > cap) cap *= 2; u = realloc(u, cap); }
+    len += (size_t)snprintf(u + len, cap - len, "  %s\n", scope[i]);
+   }
+   cur = ai_current_file_text(f);
+   if (cur) {
+    char *full = e_mkfilename(f->dirct, f->datnam);
+    size_t need = len + strlen(cur) + strlen(full ? full : "") + 64;
+    if (need > cap) { while (need > cap) cap *= 2; u = realloc(u, cap); }
+    len += (size_t)snprintf(u + len, cap - len, "\nCURRENT FILE (%s):\n%s", full ? full : "", cur);
+    free(full); free(cur);
+   }
+   ai_ml_add(&ml, "user", u);
+   free(u);
+  }
+ }
+
+ for (iter = 0; iter < AI_AGENT_MAX_ITERS + 4 && !done; iter++) {
+  wpe_ai_msg *msgs = malloc(ml.n * sizeof *msgs);
+  wpe_ai_req req;
+  char *reply, action[1100], *firstnl;
+  if (!msgs) break;
+  for (i = 0; i < ml.n; i++) { msgs[i].role = ml.role[i]; msgs[i].content = ml.content[i]; }
+  req.model = NULL; req.msgs = msgs; req.nmsgs = ml.n;
+  err[0] = '\0';
+  reply = wpe_ai_complete(&req, 180000, err, sizeof err);
+  free(msgs);
+  if (!reply) { ai_pane(f, err[0] ? err : "[plan] no response", 0); break; }
+  ai_ml_add(&ml, "assistant", reply);
+
+  done = ai_plan_parse(reply, props, &np);
+  firstnl = strchr(reply, '\n');
+  { size_t l = firstnl ? (size_t)(firstnl - reply) : strlen(reply);
+    if (l >= sizeof action) l = sizeof action - 1; memcpy(action, reply, l); action[l] = '\0'; }
+  if (!done && !strncmp(action, "TOOL ", 5)) {
+   char *tool = action + 5, *arg = strchr(tool, ' '), *result = NULL, paneln[640];
+   if (arg) { *arg = '\0'; arg++; } else arg = (char *)"";
+   snprintf(paneln, sizeof paneln, "[plan] %s %s", tool, arg);
+   ai_pane(f, paneln, 0);
+   wpe_ai_trace("plan tool=%s arg=%s", tool, arg);
+   if (!strcmp(tool, "read_file"))      result = wpe_ai_read_scope_file(f, arg);
+   else if (!strcmp(tool, "list_dir")) { char cmd[1200]; snprintf(cmd, sizeof cmd, "ls -la %s", arg[0] ? arg : "."); result = ai_run_capture(cmd); }
+   else if (!strcmp(tool, "grep"))     { char cmd[1300]; snprintf(cmd, sizeof cmd, "grep -rn -- %s .", arg); result = ai_run_capture(cmd); }
+   else result = strdup("(only read-only tools are allowed in plan mode)");
+   if (!result) result = strdup("(not found)");
+   { size_t n2 = strlen(result) + 32; char *tr = malloc(n2);
+     if (tr) { snprintf(tr, n2, "TOOL RESULT:\n%s", result); ai_ml_add(&ml, "user", tr); free(tr); } }
+   free(result);
+  } else if (!done && np == 0) {
+   ai_pane(f, action, 0);               /* neither a tool nor a plan: final text */
+   free(reply);
+   break;
+  }
+  free(reply);
+ }
+ wpe_ai_session_append("user", task);
+ if (ml.n > 0 && !strcmp(ml.role[ml.n - 1], "assistant")) wpe_ai_session_append("assistant", ml.content[ml.n - 1]);
+ wpe_ai_session_save(f);
+ ai_ml_free(&ml);
+ wpe_ai_free_list(scope, nsc);
+
+ if (np == 0) {
+  ai_pane(f, "[plan] the model proposed no file changes", 0);
+  wpe_ai_trace("plan proposals=0");
+  return 0;
+ }
+
+ /* ---- the permission moment: list the proposed files with +/- counts ---- */
+ snprintf(line, sizeof line, "[plan] the AI proposes to change %d file%s:", np, np == 1 ? "" : "s");
+ ai_pane(f, line, 1);
+ for (i = 0; i < np; i++) {
+  char *now = wpe_ai_read_scope_file(f, props[i].path);
+  wpe_ai_seg *segs; int ns, k, plus = 0, minus = 0;
+  ns = wpe_ai_diff_segments(now ? now : "", props[i].text, &segs);
+  for (k = 0; k < ns; k++) if (segs[k].is_change) { plus += segs[k].bn; minus += segs[k].an; }
+  wpe_ai_segs_free(segs, ns);
+  snprintf(line, sizeof line, "   %s  (+%d -%d)%s", props[i].path, plus, minus, now ? "" : "  [new file]");
+  ai_pane(f, line, 0);
+  free(now);
+ }
+ wpe_ai_trace("plan proposals=%d", np);
+ ai_pane(f, "   a = apply all    f = review file by file    q = cancel", 0);
+ {
+  int mode = 0;                               /* 1 = all, 2 = file by file */
+  for (;;) {
+   int c = e_toupper(e_getch());
+   if (c == 'A') { mode = 1; break; }
+   if (c == 'F' || c == 13 || c == '\r' || c == '\n') { mode = 2; break; }
+   if (c == 'Q' || c == WPE_ESC) { mode = 0; break; }
+  }
+  if (mode == 0) {
+   ai_pane(f, "[plan] cancelled - nothing changed", 0);
+   wpe_ai_trace("plan cancelled");
+  } else {
+   int applied = 0;
+   for (i = 0; i < np; i++) {
+    ECNT *cn = f->ed;
+    FENSTER *w;
+    if (e_edit(cn, props[i].path) != 0) {        /* open (or switch to) it */
+     snprintf(line, sizeof line, "[plan] could not open %s", props[i].path);
+     ai_pane(f, line, 0);
+     continue;
+    }
+    w = cn->f[cn->mxedt];
+    if (mode == 1) {
+     e_ai_apply_text(w, props[i].text);
+     applied++;
+     wpe_ai_trace("plan applied %s", props[i].path);
+    } else {
+     char *now = ai_current_file_text(w);
+     wpe_ai_seg *segs; int ns;
+     ns = wpe_ai_diff_segments(now ? now : "", props[i].text, &segs);
+     free(now);
+     {
+      char *result = ai_hunk_apply(w, segs, ns);
+      if (result) { e_ai_apply_text(w, result); free(result); applied++; wpe_ai_trace("plan applied %s", props[i].path); }
+      else wpe_ai_trace("plan skipped %s", props[i].path);
+     }
+     wpe_ai_segs_free(segs, ns);
+    }
+   }
+   snprintf(line, sizeof line, "[plan] applied %d of %d file%s - each is open (Ctrl-U undoes per window)", applied, np, np == 1 ? "" : "s");
+   ai_pane(f, line, 0);
+   wpe_ai_trace("plan done applied=%d", applied);
+  }
+ }
+ for (i = 0; i < np; i++) { free(props[i].path); free(props[i].text); }
  return 0;
 }
 
