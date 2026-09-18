@@ -47,12 +47,24 @@ def _agent(tmp_path, policy, extra_keys):
 
 
 def test_ai_policy_auto_no_prompt(tmp_path):
-    txt = _agent(tmp_path, "auto", [])
+    # 'a' answers the end-of-run changeset review (keep all): the snapshot
+    # checkpoint now detects the NEW out.txt, so the review loop asks.
+    txt = _agent(tmp_path, "auto", ["a"])
     assert "agent policy=auto" in txt, txt
     assert "checkpoint" in txt, "auto must take a checkpoint first:\n" + txt
     assert "agent auto-approve" in txt, txt
     assert (tmp_path / "out.txt").exists() and "hello agent" in (tmp_path / "out.txt").read_text()
     assert "agent done" in txt, txt
+    assert "changeset n=1" in txt, "snapshot mode must detect the new file:\n" + txt
+    assert "changeset keep all" in txt, txt
+
+
+def test_ai_policy_auto_revert_new_file(tmp_path):
+    # 'r' reverts all: the file the agent CREATED (snapshot mode) is deleted.
+    txt = _agent(tmp_path, "auto", ["r"])
+    assert "changeset n=1" in txt, txt
+    assert "changeset revert all" in txt, txt
+    assert not (tmp_path / "out.txt").exists(), "reverting must delete the new file"
 
 
 def test_ai_policy_ask_prompts(tmp_path):

@@ -231,14 +231,71 @@ static char   ck_dir[1024];
 static char   ck_snapdir[1024];
 static char **ck_files;
 static int    ck_n;
+static char **ck_before;  static int ck_before_n;  /* files present before   */
+static char **ck_dirs;    static int ck_dirs_n;    /* dirs watched for new   */
 
 int wpe_ai_checkpoint_active(void) { return ck_mode != 0; }
 
 static void ck_clear(void)
 {
  wpe_ai_free_list(ck_files, ck_n);
+ wpe_ai_free_list(ck_before, ck_before_n);
+ wpe_ai_free_list(ck_dirs, ck_dirs_n);
  ck_files = NULL; ck_n = 0;
+ ck_before = NULL; ck_before_n = 0;
+ ck_dirs = NULL; ck_dirs_n = 0;
  ck_mode = 0; ck_ref[0] = '\0';
+}
+
+/* Regular, non-hidden files directly inside dir (full paths), bounded. */
+static void ws_list_dir_files(const char *dir, char ***l, int *n, int *cap)
+{
+ DIR *d = opendir(dir);
+ struct dirent *de;
+ int added = 0;
+ while (d && (de = readdir(d)) && added < 2000) {
+  char *p;
+  size_t L;
+  struct stat st;
+  if (de->d_name[0] == '.') continue;
+  L = strlen(dir) + strlen(de->d_name) + 2;
+  p = malloc(L);
+  if (!p) continue;
+  snprintf(p, L, "%s/%s", dir, de->d_name);
+  if (stat(p, &st) == 0 && S_ISREG(st.st_mode) && !ws_list_has(*l, *n, p)) {
+   ws_list_push(l, n, cap, p);
+   added++;
+  } else free(p);
+ }
+ if (d) closedir(d);
+}
+
+/* Drop trailing slashes so the same directory always has ONE spelling (the
+ * root may arrive as ".../dir/" while a file's dirname is ".../dir"). */
+static void ws_strip_slash(char *d)
+{
+ size_t l = strlen(d);
+ while (l > 1 && d[l - 1] == '/') d[--l] = '\0';
+}
+
+/* The directories to watch for NEW files: the root plus every scope file's dir. */
+static void ws_watch_dirs(char **scope, int nscope)
+{
+ int i, cap = 0;
+ wpe_ai_free_list(ck_dirs, ck_dirs_n);
+ ck_dirs = NULL; ck_dirs_n = 0;
+ ws_list_push(&ck_dirs, &ck_dirs_n, &cap, ws_strdup(ck_dir));
+ for (i = 0; i < nscope; i++) {
+  const char *sl = strrchr(scope[i], '/');
+  char *d;
+  if (!sl) continue;
+  d = ws_strdup(scope[i]);
+  d[sl - scope[i]] = '\0';
+  if (!d[0]) { free(d); d = ws_strdup("/"); }
+  ws_strip_slash(d);
+  if (!ws_list_has(ck_dirs, ck_dirs_n, d)) ws_list_push(&ck_dirs, &ck_dirs_n, &cap, d);
+  else free(d);
+ }
 }
 
 int wpe_ai_checkpoint_create(FENSTER *f, char **scope, int nscope)
@@ -250,6 +307,7 @@ int wpe_ai_checkpoint_create(FENSTER *f, char **scope, int nscope)
  ck_clear();
  strncpy(ck_dir, root, sizeof ck_dir - 1);
  ck_dir[sizeof ck_dir - 1] = '\0';
+ ws_strip_slash(ck_dir);
  free(root);
 
  ws_shq(q, sizeof q, ck_dir);
@@ -287,6 +345,14 @@ int wpe_ai_checkpoint_create(FENSTER *f, char **scope, int nscope)
     ws_list_push(&ck_files, &ck_n, &cap, ws_strdup(scope[i]));
    }
    free(text);
+  }
+  /* remember what exists now, so files the run CREATES are detected too */
+  ws_watch_dirs(scope, nscope);
+  {
+   int cap = 0, k;
+   wpe_ai_free_list(ck_before, ck_before_n);
+   ck_before = NULL; ck_before_n = 0;
+   for (k = 0; k < ck_dirs_n; k++) ws_list_dir_files(ck_dirs[k], &ck_before, &ck_before_n, &cap);
   }
  }
  ck_mode = 2;
@@ -421,6 +487,16 @@ static int ws_collect_changes(ws_change **c, int *n)
    wpe_ai_segs_free(segs, ns);
    free(old); free(now);
   }
+  /* files that did not exist at checkpoint time = new files */
+  {
+   char **nowl = NULL;
+   int nn = 0, ncap = 0, k;
+   for (k = 0; k < ck_dirs_n; k++) ws_list_dir_files(ck_dirs[k], &nowl, &nn, &ncap);
+   for (k = 0; k < nn; k++)
+    if (!ws_list_has(ck_before, ck_before_n, nowl[k]))
+     ws_add_change(c, n, &cap, nowl[k], 1, "[AI] new file", 1);
+   wpe_ai_free_list(nowl, nn);
+  }
   return *n;
  }
  return 0;
@@ -466,6 +542,7 @@ static void ws_revert_path(FENSTER *f, const char *path, int is_new)
   out = wpe_ai_run_capture(cmd); free(out);
  } else if (ck_mode == 2) {
   int i;
+  if (is_new) { unlink(path); wpe_ai_trace("changeset revert %s", path); return; }
   for (i = 0; i < ck_n; i++) if (!strcmp(ck_files[i], path)) {
    char snap[1200], *text;
    snprintf(snap, sizeof snap, "%s/%d", ck_snapdir, i);
