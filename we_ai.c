@@ -864,15 +864,30 @@ char *wpe_ai_complete(const wpe_ai_req *req, int timeout_ms,
  fd = wpe_ai_stream_fd(st);
  deadline = ai_now_ms() + timeout_ms;
  while (!done) {
-  struct pollfd pf;
+  struct pollfd pf[2];
   int pr;
   long left = deadline - ai_now_ms();
   if (left <= 0) { if (errbuf) snprintf(errbuf, errsz, "timed out"); break; }
-  pf.fd = fd; pf.events = POLLIN; pf.revents = 0;
-  pr = poll(&pf, 1, (int)(left > 500 ? 500 : left));
+  pf[0].fd = fd;            pf[0].events = POLLIN; pf[0].revents = 0;
+  /* Also watch the terminal so a synchronous Edit/Plan/Agent wait is not a dead
+     freeze: pressing Esc aborts it instead of forcing the user to wait out a
+     slow local model (or kill xwpe). */
+  pf[1].fd = STDIN_FILENO;  pf[1].events = POLLIN; pf[1].revents = 0;
+  pr = poll(pf, 2, (int)(left > 250 ? 250 : left));
   if (pr < 0) { if (errno == EINTR) continue; break; }
   if (pr == 0) continue;
-  if (wpe_ai_stream_pump(st, ai_collect_cb, &c, &done) < 0) {
+  if (pf[1].revents & POLLIN) {
+   unsigned char ch;
+   if (read(STDIN_FILENO, &ch, 1) == 1 && ch == 27) {  /* Esc */
+    if (errbuf) snprintf(errbuf, errsz, "cancelled");
+    free(c.buf);
+    wpe_ai_stream_free(st);
+    return NULL;
+   }
+   /* any other key: swallow it and keep waiting */
+  }
+  if ((pf[0].revents & POLLIN) &&
+      wpe_ai_stream_pump(st, ai_collect_cb, &c, &done) < 0) {
    if (errbuf) snprintf(errbuf, errsz, "transport error");
    break;
   }

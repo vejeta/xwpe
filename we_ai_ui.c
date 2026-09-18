@@ -436,7 +436,7 @@ static int e_ai_edit(FENSTER *f)
  msgs[1].role = "user";   msgs[1].content = user ? user : instr;
  req.model = NULL; req.msgs = msgs; req.nmsgs = 2;
 
- ai_pane(f, "[AI edit] generating...", 1);
+ ai_pane(f, "[AI edit] waiting for the model... (Esc cancels; large local models are slow)", 1);
  wpe_ai_trace("edit instr=%s", instr);
  err[0] = '\0';
  reply = wpe_ai_complete(&req, 120000, err, sizeof err);
@@ -728,6 +728,7 @@ int e_ai_agent(FENSTER *f)
   if (!msgs) break;
   for (i = 0; i < ml.n; i++) { msgs[i].role = ml.role[i]; msgs[i].content = ml.content[i]; }
   req.model = NULL; req.msgs = msgs; req.nmsgs = ml.n;
+  ai_pane(f, "[agent] thinking... (Esc cancels)", 0);
   err[0] = '\0';
   reply = wpe_ai_complete(&req, 120000, err, sizeof err);
   free(msgs);
@@ -909,6 +910,7 @@ static int e_ai_plan(FENSTER *f)
   if (!msgs) break;
   for (i = 0; i < ml.n; i++) { msgs[i].role = ml.role[i]; msgs[i].content = ml.content[i]; }
   req.model = NULL; req.msgs = msgs; req.nmsgs = ml.n;
+  ai_pane(f, "[plan] thinking... (Esc cancels)", 0);
   err[0] = '\0';
   reply = wpe_ai_complete(&req, 180000, err, sizeof err);
   free(msgs);
