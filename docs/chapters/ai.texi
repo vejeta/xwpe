@@ -38,6 +38,10 @@ Configure and build with the feature on:
 make
 @end example
 
+Every mode asks for its instruction in a wide prompt box that holds a long,
+detailed request (xwpe's dialog boxes are single-line, so it scrolls
+horizontally rather than wrapping).  @key{Enter} sends, @key{Esc} cancels.
+
 Then turn it on at run time in one of two ways: tick @samp{Ai assistant} under
 @samp{Options}, @samp{Editor}, or start with @env{XWPE_AI_ENABLE=1}.  With it on
 a clickable @samp{Alt-B AI} entry appears on the bottom status bar and

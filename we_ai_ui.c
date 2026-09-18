@@ -31,6 +31,7 @@ int e_d_p_named(char *winname, char *str, FENSTER *f, int sw);
 
 #define AI_PANE_NAME  "AI"
 #define AI_CTX_MAX    16000     /* cap the current-file context we send        */
+#define AI_PROMPT_MAX 2000      /* room for a real instruction, not 128 chars   */
 
 /* ----- one active chat at a time (MVP) ----------------------------------- */
 typedef struct {
@@ -397,14 +398,43 @@ static void ai_chat_next_turn(ai_chat_session *s)
 }
 
 /* Alt-B: prompt for a question and start an asynchronous streaming reply. */
+/* A roomier prompt than e_add_arguments, which caps input at 128 characters.
+ * xwpe's dialog widgets are single-line, so this is a wide field (holds up to
+ * AI_PROMPT_MAX and scrolls horizontally) rather than a wrapped text area.
+ * Returns 1 and fills `out` on Send, 0 on Cancel. */
+static int e_ai_prompt(char *out, const char *title, FENSTER *f)
+{
+ W_OPTSTR *o = e_init_opt_kst(f);
+ static char head[80];
+ int ret;
+
+ if (!o) return 0;
+ o->xa = 6;  o->ya = 4;  o->xe = 73;  o->ye = 11;
+ o->bgsw = 0;
+ snprintf(head, sizeof head, "%.70s", title);
+ o->name = head;
+ o->crsw = AltO;
+ out[0] = '\0';
+ e_add_wrstr(3, 2, 3, 3, 62, AI_PROMPT_MAX - 1, 0, AltT, "Prompt (Enter=Send, Esc=Cancel):", out, NULL, o);
+ e_add_bttstr(24, 6, 1, AltO, " Send ", NULL, o);
+ e_add_bttstr(40, 6, -1, WPE_ESC, "Cancel", NULL, o);
+ ret = e_opt_kst(o);
+ if (ret != WPE_ESC) {
+  strncpy(out, o->wstr[0]->txt, AI_PROMPT_MAX - 1);
+  out[AI_PROMPT_MAX - 1] = '\0';
+ }
+ freeostr(o);
+ return (ret == WPE_ESC) ? 0 : 1;
+}
+
 static int e_ai_chat(FENSTER *f)
 {
- static char prompt[2048];
+ static char prompt[AI_PROMPT_MAX];
  char err[320], line[2200];
  ai_chat_session *s;
 
  prompt[0] = '\0';
- if (!e_add_arguments(prompt, "Ask AI", f, 0, AltB, NULL) || !prompt[0])
+ if (!e_ai_prompt(prompt, "Ask AI", f) || !prompt[0])
   return 0;
  wpe_ai_trace("chat prompt=%s", prompt);
 
@@ -896,7 +926,7 @@ static void ai_conv_start(ai_async_op *op, const char *label)
 
 static int e_ai_edit(FENSTER *f)
 {
- static char instr[1024];
+ static char instr[AI_PROMPT_MAX];
  char err[320], line[360];
  char *cur, *user;
  const char *sys =
@@ -914,7 +944,7 @@ static int e_ai_edit(FENSTER *f)
   return 0;
  }
  instr[0] = '\0';
- if (!e_add_arguments(instr, "AI edit instruction", f, 0, AltB, NULL) || !instr[0])
+ if (!e_ai_prompt(instr, "AI edit instruction", f) || !instr[0])
   return 0;
  /* Remember the edited window so focus returns to it after the pane work. */
  for (wi = 1; wi <= cn->mxedt; wi++)
@@ -1204,7 +1234,7 @@ static void ai_agent_finish(ai_async_op *op)
 
 int e_ai_agent(FENSTER *f)
 {
- static char goal[1024];
+ static char goal[AI_PROMPT_MAX];
  char err[320];
  ECNT *cn = f->ed;
  ai_async_op *op;
@@ -1227,7 +1257,7 @@ int e_ai_agent(FENSTER *f)
   return 0;
  }
  goal[0] = '\0';
- if (!e_add_arguments(goal, "AI agent task", f, 0, AltB, NULL) || !goal[0])
+ if (!e_ai_prompt(goal, "AI agent task", f) || !goal[0])
   return 0;
  err[0] = '\0';
  if (wpe_ai_preflight(e_ai_backend, err, sizeof err)) { ai_pane(f, err, 1); return 0; }
@@ -1446,7 +1476,7 @@ static void ai_plan_finish(ai_async_op *op)
 
 static int e_ai_plan(FENSTER *f)
 {
- static char task[1024];
+ static char task[AI_PROMPT_MAX];
  char err[320], line[1400];
  ECNT *cn = f->ed;
  ai_async_op *op;
@@ -1468,7 +1498,7 @@ static int e_ai_plan(FENSTER *f)
   return 0;
  }
  task[0] = '\0';
- if (!e_add_arguments(task, "AI plan: task", f, 0, AltB, NULL) || !task[0]) return 0;
+ if (!e_ai_prompt(task, "AI plan: task", f) || !task[0]) return 0;
  err[0] = '\0';
  if (wpe_ai_preflight(e_ai_backend, err, sizeof err)) { ai_pane(f, err, 1); return 0; }
  err[0] = '\0';
