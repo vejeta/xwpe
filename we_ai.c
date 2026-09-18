@@ -22,6 +22,8 @@
 #include <poll.h>
 #include <errno.h>
 #include <time.h>
+#include <sys/types.h>
+#include <sys/wait.h>
 #include <json-c/json.h>
 
 #include "we_ai.h"
@@ -38,6 +40,9 @@ int wpe_ai_backend_from_name(const char *name)
  if (!strcasecmp(name, "openai"))    return WPE_AI_OPENAI;
  if (!strcasecmp(name, "claude") ||
      !strcasecmp(name, "anthropic")) return WPE_AI_CLAUDE;
+ if (!strcasecmp(name, "claudecli") ||
+     !strcasecmp(name, "claude-cli") ||
+     !strcasecmp(name, "cli"))       return WPE_AI_CLAUDECLI;
  if (!strcasecmp(name, "mock"))      return WPE_AI_MOCK;
  return WPE_AI_OLLAMA;
 }
@@ -45,12 +50,37 @@ int wpe_ai_backend_from_name(const char *name)
 const char *wpe_ai_backend_name(int backend)
 {
  switch (backend) {
-  case WPE_AI_OPENAI: return "openai";
-  case WPE_AI_CLAUDE: return "claude";
-  case WPE_AI_MOCK:   return "mock";
-  default:            return "ollama";
+  case WPE_AI_OPENAI:    return "openai";
+  case WPE_AI_CLAUDE:    return "claude";
+  case WPE_AI_CLAUDECLI: return "claudecli";
+  case WPE_AI_MOCK:      return "mock";
+  default:               return "ollama";
  }
 }
+
+/* Search PATH for an executable (small, self-contained). */
+static int ai_which(const char *prog)
+{
+ const char *path = getenv("PATH");
+ char buf[1024];
+ size_t plen = strlen(prog);
+ if (!path || !*path) path = "/usr/bin:/bin:/usr/local/bin";
+ while (*path) {
+  const char *colon = strchr(path, ':');
+  size_t l = colon ? (size_t)(colon - path) : strlen(path);
+  if (l > 0 && l + plen + 2 < sizeof buf) {
+   memcpy(buf, path, l);
+   buf[l] = '/';
+   memcpy(buf + l + 1, prog, plen + 1);
+   if (access(buf, X_OK) == 0) return 1;
+  }
+  if (!colon) break;
+  path = colon + 1;
+ }
+ return 0;
+}
+
+int wpe_ai_claude_cli_available(void) { return ai_which("claude"); }
 
 int wpe_ai_enabled(void)
 {
@@ -130,25 +160,62 @@ static const char *ai_path(int backend)
  }
 }
 
+static char *ai_read_first_line(const char *path)
+{
+ FILE *fp = fopen(path, "r");
+ char line[1024], *r = NULL;
+ if (!fp) return NULL;
+ if (fgets(line, sizeof line, fp)) {
+  size_t l = strlen(line);
+  while (l && (line[l-1] == '\n' || line[l-1] == '\r' ||
+               line[l-1] == ' '  || line[l-1] == '\t')) line[--l] = '\0';
+  if (l) r = ai_strdup(line);
+ }
+ fclose(fp);
+ return r;
+}
+
+/* Resolve an API key by the expectable convention: the standard env var first
+ * (e.g. ANTHROPIC_API_KEY), then <ENV>_FILE, then the XDG config file
+ * $XDG_CONFIG_HOME/xwpe/<file_base> (default ~/.config/xwpe/<file_base>).
+ * Returns malloc'd key or NULL. */
+static char *ai_get_api_key(const char *env_name, const char *file_base)
+{
+ const char *e = getenv(env_name), *home, *xdg;
+ char fenv[80], path[1024];
+ if (e && *e) return ai_strdup(e);
+ snprintf(fenv, sizeof fenv, "%s_FILE", env_name);
+ e = getenv(fenv);
+ if (e && *e) { char *k = ai_read_first_line(e); if (k) return k; }
+ xdg = getenv("XDG_CONFIG_HOME");
+ home = getenv("HOME");
+ if (xdg && *xdg) snprintf(path, sizeof path, "%s/xwpe/%s", xdg, file_base);
+ else if (home)   snprintf(path, sizeof path, "%s/.config/xwpe/%s", home, file_base);
+ else return NULL;
+ return ai_read_first_line(path);
+}
+
 /* Fill hdrs[] (NULL-terminated) with malloc'd "Key: Value" strings; count. */
 static int ai_headers(int backend, char *hdrs[], int max)
 {
  int n = 0;
- const char *k;
+ char *k;
  char b[600];
  if (n < max) hdrs[n++] = ai_strdup("Content-Type: application/json");
  if (backend == WPE_AI_OPENAI) {
-  k = getenv("OPENAI_API_KEY");
-  if (k && *k && n < max) {
+  k = ai_get_api_key("OPENAI_API_KEY", "openai-api-key");
+  if (k && n < max) {
    snprintf(b, sizeof b, "Authorization: Bearer %s", k);
    hdrs[n++] = ai_strdup(b);
   }
+  free(k);
  } else if (backend == WPE_AI_CLAUDE) {
-  k = getenv("ANTHROPIC_API_KEY");
-  if (k && *k && n < max) {
+  k = ai_get_api_key("ANTHROPIC_API_KEY", "anthropic-api-key");
+  if (k && n < max) {
    snprintf(b, sizeof b, "x-api-key: %s", k);
    hdrs[n++] = ai_strdup(b);
   }
+  free(k);
   if (n < max) hdrs[n++] = ai_strdup("anthropic-version: 2023-06-01");
  }
  hdrs[n] = NULL;
@@ -315,6 +382,12 @@ int wpe_ai_preflight(int backend, char *errbuf, size_t errsz)
 {
  wpe_http_conn conn;
  if (backend == WPE_AI_MOCK) return 0;
+ if (backend == WPE_AI_CLAUDECLI) {
+  if (wpe_ai_claude_cli_available()) return 0;
+  if (errbuf) snprintf(errbuf, errsz,
+    "Claude Code CLI not found - install `claude` and log in (claude auth)");
+  return -1;
+ }
  if (wpe_http_open(e_ai_endpoint, &conn, errbuf, errsz) != 0) {
   if (backend == WPE_AI_OLLAMA && errbuf)
    snprintf(errbuf, errsz,
@@ -337,6 +410,10 @@ int wpe_ai_list_models(int backend, char **names, int max,
 
  if (backend == WPE_AI_MOCK) {
   if (max > 0) { names[0] = ai_strdup("mock-model"); return 1; }
+  return 0;
+ }
+ if (backend == WPE_AI_CLAUDECLI) {
+  if (max > 0) { names[0] = ai_strdup("(Claude Code login)"); return 1; }
   return 0;
  }
  if (backend == WPE_AI_CLAUDE) {
@@ -380,6 +457,7 @@ int wpe_ai_ensure_model(char *errbuf, size_t errsz)
 {
  char *names[32];
  int n, i;
+ if (e_ai_backend == WPE_AI_CLAUDECLI) return 0;  /* CLI picks its own model */
  if (e_ai_model && *e_ai_model) return 0;
  if (errbuf && errsz) errbuf[0] = '\0';
  n = wpe_ai_list_models(e_ai_backend, names, 32, errbuf, errsz);
@@ -401,7 +479,99 @@ struct wpe_ai_stream {
  wpe_http_stream hs;
  int             done;
  int             eof;
+ int             is_subproc;   /* claudecli: read a child pipe, not a socket   */
+ pid_t           pid;
+ int             out_fd;       /* child stdout (subprocess transport)          */
 };
+
+/* Flatten the request into a single prompt for the `claude` CLI (one -p call). */
+static char *ai_flatten_prompt(const wpe_ai_req *req)
+{
+ size_t cap = 1024, len = 0;
+ char *p = malloc(cap);
+ int i;
+ if (!p) return NULL;
+ p[0] = '\0';
+ for (i = 0; i < req->nmsgs; i++) {
+  const char *c = req->msgs[i].content ? req->msgs[i].content : "";
+  size_t need = len + strlen(c) + 3;
+  if (need > cap) { char *np; while (need > cap) cap *= 2; np = realloc(p, cap); if (!np) { free(p); return NULL; } p = np; }
+  len += (size_t)snprintf(p + len, cap - len, "%s\n\n", c);
+ }
+ return p;
+}
+
+/* Spawn `claude -p --output-format json`, feeding the prompt on stdin and
+ * reading the single JSON result off the child's stdout.  Uses the user's own
+ * Claude Code login -- no API key, no extra dependency. */
+static int ai_claudecli_open(struct wpe_ai_stream *st, const wpe_ai_req *req)
+{
+ int in[2], out[2];
+ pid_t pid;
+ char *prompt;
+
+ if (pipe(in) != 0) return -1;
+ if (pipe(out) != 0) { close(in[0]); close(in[1]); return -1; }
+ prompt = ai_flatten_prompt(req);
+
+ pid = fork();
+ if (pid < 0) {
+  close(in[0]); close(in[1]); close(out[0]); close(out[1]);
+  free(prompt);
+  return -1;
+ }
+ if (pid == 0) {                      /* child */
+  char *argv[8];
+  int a = 0, dn;
+  dup2(in[0], 0);
+  dup2(out[1], 1);
+  dn = open("/dev/null", O_WRONLY);
+  if (dn >= 0) { dup2(dn, 2); close(dn); }
+  close(in[0]); close(in[1]); close(out[0]); close(out[1]);
+  argv[a++] = "claude";
+  argv[a++] = "-p";
+  argv[a++] = "--output-format";
+  argv[a++] = "json";
+  if (e_ai_model && *e_ai_model) { argv[a++] = "--model"; argv[a++] = e_ai_model; }
+  argv[a] = NULL;
+  execvp("claude", argv);
+  _exit(127);
+ }
+ /* parent */
+ close(in[0]);
+ close(out[1]);
+ if (prompt) {
+  size_t pl = strlen(prompt), off = 0;
+  while (off < pl) { ssize_t w = write(in[1], prompt + off, pl - off); if (w <= 0) break; off += (size_t)w; }
+  free(prompt);
+ }
+ close(in[1]);                        /* EOF to the child's stdin */
+ { int fl = fcntl(out[0], F_GETFL, 0); if (fl != -1) fcntl(out[0], F_SETFL, fl | O_NONBLOCK); }
+
+ st->is_subproc = 1;
+ st->pid = pid;
+ st->out_fd = out[0];
+ wpe_http_stream_init(&st->hs);
+ st->hs.header_done = 1;              /* no HTTP: treat all child output as body */
+ st->hs.status = 200;
+ return 0;
+}
+
+/* Parse the `claude -p --output-format json` object: the reply is in .result. */
+static void ai_parse_claudecli(const char *body, char **delta)
+{
+ struct json_object *o, *r;
+ *delta = NULL;
+ o = json_tokener_parse(body ? body : "");
+ if (!o) { *delta = ai_strdup("[claude-cli produced no output]"); return; }
+ if (json_object_object_get_ex(o, "result", &r))
+  *delta = ai_strdup(json_object_get_string(r));
+ else if (json_object_object_get_ex(o, "error", &r))
+  *delta = ai_strdup(json_object_get_string(r));
+ else
+  *delta = ai_strdup("[claude-cli: no result field]");
+ json_object_put(o);
+}
 
 /* Mock: stage a canned HTTP response (NDJSON) in a temp file and read it back,
  * so the whole streaming path (framer + parser + fd-loop) is exercised with no
@@ -493,6 +663,16 @@ wpe_ai_stream *wpe_ai_stream_start(const wpe_ai_req *req, char *errbuf, size_t e
   return st;
  }
 
+ if (st->backend == WPE_AI_CLAUDECLI) {
+  if (ai_claudecli_open(st, req) != 0) {
+   if (errbuf) snprintf(errbuf, errsz, "could not start the claude CLI");
+   free(st);
+   return NULL;
+  }
+  wpe_ai_trace("stream start backend=claudecli");
+  return st;
+ }
+
  {
   char *hdrs[8];
   char *body;
@@ -521,7 +701,8 @@ wpe_ai_stream *wpe_ai_stream_start(const wpe_ai_req *req, char *errbuf, size_t e
  return st;
 }
 
-int wpe_ai_stream_fd(wpe_ai_stream *st) { return st ? st->conn.fd : -1; }
+int wpe_ai_stream_fd(wpe_ai_stream *st)
+{ return st ? (st->is_subproc ? st->out_fd : st->conn.fd) : -1; }
 int wpe_ai_stream_http_status(wpe_ai_stream *st)
 { return st ? wpe_http_stream_status(&st->hs) : 0; }
 
@@ -532,6 +713,26 @@ int wpe_ai_stream_pump(wpe_ai_stream *st,
  char buf[4096];
  char *line;
  size_t llen;
+
+ if (st->is_subproc) {                        /* claudecli: read the child pipe */
+  for (;;) {
+   ssize_t r = read(st->out_fd, buf, sizeof buf);
+   if (r > 0) { wpe_http_stream_push(&st->hs, buf, (size_t)r); }
+   else if (r == 0) { st->eof = 1; wpe_http_stream_eof(&st->hs); break; }
+   else {
+    if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR) break;
+    st->eof = 1; wpe_http_stream_eof(&st->hs); break;
+   }
+  }
+  if (st->eof && !st->done) {                 /* whole reply in; parse .result */
+   char *delta = NULL;
+   ai_parse_claudecli(st->hs.body ? st->hs.body : "", &delta);
+   if (delta) { if (*delta && cb) cb(delta, ud); free(delta); }
+   st->done = 1;
+  }
+  *done = st->done;
+  return 0;
+ }
 
  for (;;) {
   ssize_t r = wpe_http_read(&st->conn, buf, sizeof buf);
@@ -553,7 +754,12 @@ int wpe_ai_stream_pump(wpe_ai_stream *st,
 void wpe_ai_stream_free(wpe_ai_stream *st)
 {
  if (!st) return;
- wpe_http_close(&st->conn);
+ if (st->is_subproc) {
+  if (st->out_fd >= 0) close(st->out_fd);
+  if (st->pid > 0) { int status; waitpid(st->pid, &status, 0); }
+ } else {
+  wpe_http_close(&st->conn);
+ }
  wpe_http_stream_free(&st->hs);
  free(st);
 }

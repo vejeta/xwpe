@@ -14,11 +14,16 @@
 
 /* ----- backend selection ------------------------------------------------- */
 enum {
-  WPE_AI_OLLAMA = 0,   /* native Ollama HTTP API on localhost (default)       */
-  WPE_AI_OPENAI = 1,   /* generic OpenAI-compatible /v1/chat/completions      */
-  WPE_AI_CLAUDE = 2,   /* Anthropic Messages API                              */
-  WPE_AI_MOCK   = 3    /* in-process canned stream: deterministic, no network */
+  WPE_AI_OLLAMA    = 0, /* native Ollama HTTP API on localhost (default)       */
+  WPE_AI_OPENAI    = 1, /* generic OpenAI-compatible /v1/chat/completions      */
+  WPE_AI_CLAUDE    = 2, /* Anthropic Messages API (needs an API key)           */
+  WPE_AI_MOCK      = 3, /* in-process canned stream: deterministic, no network */
+  WPE_AI_CLAUDECLI = 4  /* subprocess: the `claude` CLI, using its own login   */
 };
+
+/* True if the Claude Code CLI (`claude`) is on PATH -- lets the UI offer the
+ * subprocess backend only when it can actually work. */
+int  wpe_ai_claude_cli_available(void);
 
 /* Effective config (defaults baked in so an EMPTY config file just works).
  * Persisted in the Programming section as AIBackend/AIEndpoint/AIModel and
