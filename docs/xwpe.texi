@@ -56,6 +56,7 @@ xwpe was written by Fred Kruse in 1993, maintained by Dennis Payne from
 * Debugging::             gdb/sdb/dbx backends, breakpoints, watches.
 * Language servers::      LSP for Scala, C/C++, Python, Go, Rust: completion, hover, definition.
 * Projects::              Project files and multi-file builds.
+* AI assistant::          Ollama/Claude in the bottom pane: chat, edit, multi-file plan, agent.
 * Tutorials::             Step-by-step walkthroughs.
 * Bugs and limits::       Known issues and workarounds.
 * History::               From Fred Kruse (1993) to today.
@@ -72,6 +73,7 @@ xwpe was written by Fred Kruse in 1993, maintained by Dennis Payne from
 @include chapters/debugging.texi
 @include chapters/lsp.texi
 @include chapters/projects.texi
+@include chapters/ai.texi
 @include chapters/tutorials.texi
 @include chapters/bugs-and-limits.texi
 @include chapters/history.texi

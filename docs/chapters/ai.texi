@@ -1,0 +1,212 @@
+@node AI assistant
+@chapter AI assistant
+
+@cindex AI
+@cindex assistant
+@cindex Ollama
+@cindex Claude
+@cindex agent
+@cindex chat
+@cindex large language model
+
+Where a language server (@pxref{Language servers}) @emph{understands} your code,
+the @dfn{AI assistant} lets you @emph{talk} to a large language model from
+inside the editor: ask a question, have it rewrite the open file, plan a change
+across several files, or run as an autonomous agent -- all in the bottom pane,
+next to compiler and debugger output, driven from the keyboard like everything
+else.
+
+The assistant is @strong{off unless you ask for it}, twice over.  It is compiled
+only when xwpe is configured with @option{--enable-ai}, so a normal build
+contains none of it and is byte-for-byte the classic editor.  Even in a build
+that has it, it does nothing until you turn it on.  This is deliberate: the
+appeal is @dfn{the best old interface, optionally superpowered}, never
+@dfn{another AI editor that happens to look retro}.
+
+It is also @strong{local-first}.  The default backend is Ollama
+(@uref{https://ollama.com}) running on your own machine -- no account, no API
+key, no telemetry, and it works over SSH.  Cloud models are opt-in.
+
+@section Enabling the assistant
+
+@cindex AI, enabling
+Configure and build with the feature on:
+
+@example
+./configure --enable-ai                    # local backends only
+./configure --enable-ai --enable-ai-tls    # also HTTPS (Claude, remote OpenAI)
+make
+@end example
+
+Then turn it on at run time in one of two ways: tick @samp{Ai assistant} under
+@samp{Options}, @samp{Editor}, or start with @env{XWPE_AI_ENABLE=1}.  With it on
+you get the @samp{AI} menu on the menu bar and the @key{Alt-B} prefix.  Press
+@key{Alt-B} then one letter (programming mode only, i.e.@: run as @command{wpe}
+or @command{xwpe}):
+
+@table @kbd
+@item Alt-B a
+Ask -- chat.
+@item Alt-B e
+Edit the current file.
+@item Alt-B p
+Plan a multi-file change.
+@item Alt-B g
+Agent -- an autonomous loop.
+@item Alt-B m
+pick the Model.
+@item Alt-B y
+cycle the permission policy (ask / edits / auto).
+@item Alt-B n
+start a New session.
+@end table
+
+The same actions are on the @samp{AI} menu, which also holds the enable toggle,
+the policy radio, the model picker and @samp{New Session}.
+
+@section Backends
+
+@cindex AI, backends
+The backend is chosen with @code{AIBackend} (or @env{XWPE_AI_BACKEND}); the same
+chat/edit/plan/agent interface works with all of them.
+
+@table @asis
+@item @code{ollama} (default)
+Ollama's HTTP API on @code{http://localhost:11434}.  Local, free, no key.  The
+model list comes from the server, and @kbd{Alt-B m} picks one.
+@item @code{openai}
+Any OpenAI-compatible server -- @command{llama.cpp}, LM Studio, vLLM, or OpenAI
+itself.  Set @code{AIEndpoint} to its URL; an API key comes from
+@env{OPENAI_API_KEY}.
+@item @code{claude}
+Anthropic's Messages API.  Needs @option{--enable-ai-tls} and
+@env{ANTHROPIC_API_KEY}.
+@item @code{claudecli}
+Runs the @command{claude} command-line tool (Claude Code) as a subprocess, using
+@emph{its} login.  No API key, no extra dependency, and it draws on your Claude
+subscription rather than per-token API billing.  Offered only when
+@command{claude} is on @env{PATH}.
+@item @code{mock}
+A deterministic in-process backend used by the test suite; no network.
+@end table
+
+@section Chat
+
+@cindex AI, chat
+@kbd{Alt-B a} asks for a prompt and streams the reply into the @samp{AI} pane.
+The current file (and the selection, if any) is sent as context, so ``what does
+this function do?'' works.  The editor stays fully interactive while the reply
+streams; @key{Esc} cancels.  The conversation is remembered for the workspace
+(see @emph{Sessions}, below).
+
+@section Edit
+
+@cindex AI, edit
+@kbd{Alt-B e} asks for an instruction (``add error handling'', ``fix the compile
+error''), sends the current file, and shows the model's rewrite as a @dfn{diff}
+you review hunk by hunk: @kbd{y} applies this hunk, @kbd{n} skips it, @kbd{a}
+applies all the rest, @kbd{q} cancels.  Applying uses one whole-buffer undo
+step, so @kbd{Ctrl-U} reverts the whole edit.  Nothing is written to disk until
+you @emph{save}.
+
+@section Plan (multi-file)
+
+@cindex AI, plan
+@kbd{Alt-B p} tackles a change that spans several files.  The assistant first
+@dfn{studies} the workspace -- the files you have open, plus the members of the
+open project (@pxref{Projects}) and, if asked, the surrounding folder -- reading
+whatever it needs with read-only tools.  It then proposes a @dfn{plan}: the
+complete new content for each file it wants to change.
+
+xwpe collects the proposal without touching anything and shows the list with
+per-file line counts:
+
+@example
+The AI proposes to change 3 files:
+   src/parser.c  (+12 -4)
+   src/parser.h  (+2  -0)
+   src/main.c    (+1  -1)
+ a = apply all    f = review file by file    q = cancel
+@end example
+
+@kbd{a} applies every file; @kbd{f} opens each and lets you accept it hunk by
+hunk.  Each changed file is @strong{opened in its own window and left open}, so
+you can read it, step between them with @kbd{Alt-1}@dots{}, and undo any one
+with @kbd{Ctrl-U}.
+
+@section Agent and the permission dial
+
+@cindex AI, agent
+@cindex AI, permissions
+@kbd{Alt-B g} runs the model as an autonomous agent with a small, bounded set of
+tools: @code{read_file}, @code{list_dir} and @code{grep} run on their own, while
+@code{write_file} and @code{run_command} are governed by the @dfn{permission
+dial}:
+
+@table @asis
+@item @code{ask} (default)
+every write or command asks you @kbd{y}/@kbd{n}.
+@item @code{edits}
+writes go through automatically; commands still ask.
+@item @code{auto}
+everything runs unattended; you review the result afterwards.
+@end table
+
+Set the dial from the @samp{AI} menu, with @kbd{Alt-B y}, or with @code{AIPolicy}
+/ @env{XWPE_AI_POLICY}.  @code{edits} and @code{auto} always take a checkpoint
+first.  For the @code{claudecli} backend the dial maps onto the CLI's own
+@option{--permission-mode} so the same rules apply.
+
+@section Reviewing changes like compile errors
+
+@cindex AI, review
+@cindex AI, checkpoint
+@cindex AI, revert
+Before an @code{edits} or @code{auto} run, xwpe takes a @dfn{checkpoint}: a
+@command{git} reference when the workspace is a git tree, otherwise a private
+snapshot of the files under @file{~/.xwpe/checkpoints/}.  Afterwards it writes
+the @dfn{changeset} into the @samp{Messages} window, one line per changed hunk in
+the compiler's @code{file:line:} format -- so you step through the AI's changes
+with the very same @kbd{Alt-T} (Next) and @kbd{Alt-V} (Previous) keys you use for
+compile errors, each jump opening the file at the change.
+
+A review prompt then offers @kbd{a} keep all, @kbd{r} revert everything back to
+the checkpoint, @kbd{f} decide file by file, and (in a git tree) @kbd{c} commit
+the change as one auditable commit.  Reverting a file the agent created deletes
+it.  This makes trying a weaker local model in @code{auto} safe: if it makes a
+mess, one @kbd{r} puts you back.
+
+@section Sessions
+
+@cindex AI, sessions
+The conversation is tied to the workspace and resumes automatically.  For
+@code{claudecli} xwpe keeps the CLI's own session id and passes @option{--resume};
+for the other backends it keeps a short transcript that seeds the next prompt.
+It is stored beside the project file (as @file{.xwpe-ai-session}) when a project
+is open, otherwise under @file{~/.xwpe/ai/}.  @kbd{Alt-B n} forgets the current
+session and starts fresh.
+
+@section Configuration
+
+@cindex AI, configuration
+These keys live in the @code{[Programming]} section of @file{xwperc}
+(@pxref{Configuration}) and are written by @samp{Save Options}:
+
+@table @code
+@item AIBackend
+@code{ollama} (0), @code{openai} (1), @code{claude} (2), @code{claudecli} (4).
+@item AIEndpoint
+Base URL for the HTTP backends (default @code{http://localhost:11434}).
+@item AIModel
+Model name; empty means ``pick the first the server offers''.
+@item AIPolicy
+@code{ask}, @code{edits} or @code{auto}.
+@end table
+
+Environment overrides (handy for scripts and tests): @env{XWPE_AI_ENABLE},
+@env{XWPE_AI_BACKEND}, @env{XWPE_AI_ENDPOINT}, @env{XWPE_AI_MODEL},
+@env{XWPE_AI_POLICY}, and @env{XWPE_AI_TRACE} (a path to log assistant events
+to).  API keys are read from the standard environment variable first
+(@env{ANTHROPIC_API_KEY}, @env{OPENAI_API_KEY}), then from @code{@var{NAME}_FILE},
+then from @file{~/.config/xwpe/anthropic-api-key} (or @file{openai-api-key}); the
+@code{claudecli} backend needs none of this.

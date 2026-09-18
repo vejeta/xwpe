@@ -10,6 +10,7 @@ xwpe_TEXINFOS = \
   chapters/debugging.texi \
   chapters/lsp.texi \
   chapters/projects.texi \
+  chapters/ai.texi \
   chapters/configuration.texi \
   chapters/reference.texi \
   chapters/tutorials.texi \

@@ -64,22 +64,28 @@ through gdb, jdb and pdb.
 %configure --with-wayland
 %make_build
 
+# Render the Texinfo manual to a single HTML page shipped as %doc. HTML is
+# preferred over PDF so no TeX toolchain is pulled into the build.
+makeinfo --html --no-split -I docs -o xwpe.html docs/xwpe.texi
+
 %install
 %make_install
 
 # The info dir index is owned by the info system, not by this package.
 rm -f %{buildroot}%{_infodir}/dir
 
+%check
+make check
+
+# Validate the installed desktop entry and AppStream metainfo. These check
+# files staged under the buildroot, so they belong in %check (after %install).
 desktop-file-validate %{buildroot}%{_datadir}/applications/xwpe.desktop
 appstream-util validate-relax --nonet \
     %{buildroot}%{_metainfodir}/io.codeberg.mendezr.xwpe.metainfo.xml
 
-%check
-make check
-
 %files
 %license COPYING
-%doc README.md CHANGELOG AUTHORS
+%doc README.md CHANGELOG AUTHORS xwpe.html
 %{_bindir}/we
 %{_bindir}/wpe
 %{_bindir}/xwe
