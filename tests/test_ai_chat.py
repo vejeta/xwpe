@@ -65,3 +65,28 @@ def test_ai_chat_empty_reply_clears_placeholder(tmp_path):
         disp = "\n".join(s.display())
     assert "gathering the answer" not in disp, "placeholder stuck:\n" + disp
     assert "(no answer)" in disp, "empty reply not handled:\n" + disp
+
+
+def test_ai_chat_investigates_files(tmp_path):
+    # headless proof of the read-only tool loop: turn 1 is a read_file tool call,
+    # turn 2 (mock @@TURN@@) is the answer.  Chat must run the tool on the real
+    # file and then reach the answer -- all without a live model.
+    (tmp_path / "notes.txt").write_text("hello from notes\n")
+    trace = tmp_path / "ai.trace"
+    env = {
+        "XWPE_AI_ENABLE": "1",
+        "XWPE_AI_BACKEND": "mock",
+        "XWPE_AI_MOCK_REPLY": "TOOL read_file notes.txt@@TURN@@ANSWERMARKER here it is",
+        "XWPE_AI_TRACE": str(trace),
+    }
+    with WpeSession(str(tmp_path), "int main(void){return 0;}\n",
+                    filename="stack.c", env_extra=env) as s:
+        s.key(ALT.BLOCK)
+        s.key("a")
+        s.key("what does notes.txt say")
+        s.key("\r", delay=1.2)
+        s._drain(1.5)
+        disp = "\n".join(s.display())
+    txt = trace.read_text() if trace.exists() else ""
+    assert "turn=1" in txt, "chat did not take a second (tool) turn:\n" + txt
+    assert "ANSWERMARKER" in disp, "chat did not reach the answer after the tool:\n" + disp
