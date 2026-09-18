@@ -2549,12 +2549,15 @@ static void e_buffer_append_line(BUFFER *b, const char *str)
  int i, len = (int)strlen(str);
 
  e_new_line(b->mxlines, b);          /* canonical empty line: len 0, nrc 0 */
- if (len == 0)
-  return;                            /* the blank line we used to drop -- keep it */
  i = b->mxlines - 1;
- b->bf[i].s = REALLOC(b->bf[i].s, len + 1);
+ /* Store content PLUS the WPE_WR line terminator, exactly like a line read from
+    a file (we_fl_fkt.c) -- without it e_write() runs one line into the next on
+    save (and blank lines vanish).  Applies to empty lines too, so blanks are
+    kept. */
+ b->bf[i].s = REALLOC(b->bf[i].s, len + 2);
  memcpy(b->bf[i].s, str, len);
- b->bf[i].s[len] = '\0';
+ b->bf[i].s[len] = WPE_WR;
+ b->bf[i].s[len + 1] = '\0';
  b->bf[i].len = e_str_len((unsigned char *)b->bf[i].s);
  b->bf[i].nrc = e_str_nrc((unsigned char *)b->bf[i].s);
 }
