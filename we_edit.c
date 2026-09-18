@@ -540,8 +540,12 @@ int e_eingabe(ECNT *e)
    e_lsp_on_edit(f, c);          /* live LSP diagnostics + didChange */
   }
 #endif
+  /* Synthetic keycodes (WPE_SCROLL_UP..WPE_AI_MENU) share the numeric range of
+     real Unicode codepoints, so they must be excluded from character insertion:
+     keep the ceiling at the HIGHEST synthetic code or a bottom-bar click on the
+     AI entry gets typed into the buffer as U+07D4 instead of opening the menu. */
   if ((c > 31 || (c == WPE_TAB && !(f->flg & 1)) ||
-    (f->ins > 1 && f->ins != 8)) && (c < 255 || c > WPE_LSP_MENU))
+    (f->ins > 1 && f->ins != 8)) && (c < 255 || c > WPE_AI_MENU))
   {
    if (f->ins == 8) continue;
    if (c >= 0x80)
