@@ -30,7 +30,11 @@ ORIG = "int main(void){return 0;}\n"
 
 def _git_repo(tmp_path):
     def g(*a):
-        subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", *a],
+        # commit.gpgsign=false: the host's ~/.gitconfig may force signed commits,
+        # which fail non-interactively (no pinentry) -- the test must not depend
+        # on the developer's GPG setup.
+        subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t",
+                        "-c", "commit.gpgsign=false", *a],
                        cwd=tmp_path, check=True,
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     g("init", "-q")
@@ -54,7 +58,7 @@ def _run(tmp_path, review_key):
         "XWPE_AI_TRACE": str(trace),
     }
     with WpeSession(str(tmp_path), ORIG, env_extra=env) as s:
-        s.key(ALT.BLOCK)
+        s.key(ALT.AI)
         s.key("g")
         s.key("rewrite it")
         s.key("\r", delay=2.0)           # submit -> checkpoint -> run -> review
