@@ -19,6 +19,12 @@
 #include <string.h>
 #include <stdio.h>
 #include <poll.h>
+#include <unistd.h>
+#include <stdint.h>
+#include <time.h>
+#ifdef __linux__
+#include <sys/timerfd.h>
+#endif
 
 /* e_d_p_named is defined in we_prog.c; declared here in case progr.h predates it. */
 int e_d_p_named(char *winname, char *str, FENSTER *f, int sw);
@@ -100,6 +106,10 @@ static FENSTER *ai_pane_win(FENSTER *f)
  return cn->f[i];
 }
 
+/* While a background op runs, the caret belongs in the USER'S window, not the
+ * pane -- so they keep typing in their code while the AI streams/spins. */
+static FENSTER *g_ai_bg_win = NULL;
+
 /* Repaint the pane window and keep the newest line in view. */
 static void ai_pane_paint(FENSTER *wf)
 {
@@ -110,7 +120,10 @@ static void ai_pane_paint(FENSTER *wf)
  wf->b->b.x = (y >= 0 && wf->b->bf[y].s) ? wf->b->bf[y].len : 0;
  e_messages_scroll_to_bottom(wf);
  e_schirm(wf, 0);
- e_cursor(wf, 0);
+ if (g_ai_bg_win)
+  e_cursor(g_ai_bg_win, 0);   /* background op: leave the caret in the user's file */
+ else
+  e_cursor(wf, 0);
  e_refresh();
 }
 
@@ -452,11 +465,219 @@ static char *ai_hunk_apply(FENSTER *f, wpe_ai_seg *segs, int nseg)
  return out;
 }
 
+/* ================= asynchronous operations (non-blocking) =================
+ * Edit/Plan/Agent used to block the editor in a nested poll loop while the model
+ * generated.  Instead they now run on the shared fd-loop like chat: start the
+ * stream, return control to the editor at once, and finish (show the diff, run
+ * the next agent turn) from the fd callback.  A periodic timerfd "heartbeat"
+ * animates the spinner during model silence -- the editor stays fully live.
+ */
+
+/* --- heartbeat: a ~120ms periodic timer, present only while AI work is in
+ * flight, so the idle wpe_fd_poll(-1) gets the wakeups it needs to spin.
+ * Mirrors the Wayland key-repeat timerfd idiom. */
+static int  g_ai_hb_fd = -1;
+static int  g_ai_hb_refs = 0;
+static void (*g_ai_hb_tick)(void) = NULL;   /* animates the active spinner */
+
+static void ai_hb_fire(int fd, void *data)
+{
+ uint64_t exp;
+ (void)data;
+ if (read(fd, &exp, sizeof exp) != (ssize_t)sizeof exp)
+  return;
+ if (g_ai_hb_tick)
+  g_ai_hb_tick();
+}
+
+static void ai_hb_acquire(void (*tick)(void))
+{
+ g_ai_hb_tick = tick;
+ if (g_ai_hb_refs++ > 0)
+  return;
+#ifdef __linux__
+ g_ai_hb_fd = timerfd_create(CLOCK_MONOTONIC, TFD_CLOEXEC | TFD_NONBLOCK);
+ if (g_ai_hb_fd >= 0) {
+  struct itimerspec its;
+  its.it_value.tv_sec = 0;    its.it_value.tv_nsec = 120000000L;
+  its.it_interval.tv_sec = 0; its.it_interval.tv_nsec = 120000000L;
+  timerfd_settime(g_ai_hb_fd, 0, &its, NULL);
+  wpe_fd_add(g_ai_hb_fd, POLLIN, ai_hb_fire, NULL);
+ }
+#endif
+ /* Without timerfd the spinner still ticks when tokens arrive; only the silent
+    gaps go unanimated.  Async operation itself does not depend on the timer. */
+}
+
+static void ai_hb_release(void)
+{
+ if (--g_ai_hb_refs > 0)
+  return;
+ g_ai_hb_refs = 0;
+ g_ai_hb_tick = NULL;
+#ifdef __linux__
+ if (g_ai_hb_fd >= 0) {
+  wpe_fd_del(g_ai_hb_fd);
+  close(g_ai_hb_fd);
+  g_ai_hb_fd = -1;
+ }
+#endif
+}
+
+/* --- one background operation at a time (Edit, for now). */
+typedef struct {
+ wpe_ai_stream *st;
+ int      fd;
+ FENSTER *f;                 /* target window -- validated before applying     */
+ ECNT    *cn;
+ int      save_id;
+ ai_spin  spin;
+ time_t   start;
+ char    *acc;               /* whole reply collected from the stream          */
+ size_t   acc_len, acc_cap;
+} ai_async_op;
+
+static ai_async_op *g_ai_op = NULL;
+
+/* True while a background op is running -- new AI actions refuse until it ends
+ * (or the user cancels it). */
+int wpe_ai_busy(void) { return g_ai_op != NULL; }
+
+static void ai_op_collect(const char *delta, void *ud)
+{
+ ai_async_op *op = ud;
+ size_t dl = strlen(delta);
+ if (op->acc_len + dl + 1 > op->acc_cap) {
+  size_t nc = op->acc_cap ? op->acc_cap : 1024;
+  char *nb;
+  while (op->acc_len + dl + 1 > nc) nc *= 2;
+  nb = realloc(op->acc, nc);
+  if (!nb) return;
+  op->acc = nb; op->acc_cap = nc;
+ }
+ memcpy(op->acc + op->acc_len, delta, dl);
+ op->acc_len += dl;
+ op->acc[op->acc_len] = '\0';
+}
+
+/* animate the in-flight op's spinner (called from the heartbeat) */
+static void ai_op_tick(void)
+{
+ if (g_ai_op)
+  ai_spin_cb(&g_ai_op->spin, (int)(time(NULL) - g_ai_op->start));
+}
+
+/* Detach the op from the fd-loop and free it.  Must run BEFORE any modal review
+ * so no AI callbacks (this stream, the heartbeat) fire underneath it. */
+static void ai_op_detach(ai_async_op *op)
+{
+ if (op->fd >= 0) wpe_fd_del(op->fd);
+ ai_hb_release();
+ wpe_ai_stream_free(op->st);
+ op->st = NULL;
+ op->fd = -1;
+ if (g_ai_op == op) g_ai_op = NULL;
+ g_ai_bg_win = NULL;          /* pane caret handling returns to normal */
+}
+
+static void ai_op_free(ai_async_op *op)
+{
+ free(op->acc);
+ free(op);
+}
+
+/* True if window `f` is still one of the desktop's live windows. */
+static int ai_window_alive(ECNT *cn, FENSTER *f)
+{
+ int i;
+ for (i = 0; i <= cn->mxedt; i++)
+  if (cn->f[i] == f) return 1;
+ return 0;
+}
+
+/* Cancel whatever background op is running (user asked, or a new action starts).*/
+void wpe_ai_cancel(void)
+{
+ ai_async_op *op = g_ai_op;
+ if (!op) return;
+ ai_op_detach(op);
+ if (ai_window_alive(op->cn, op->f))
+  ai_pane(op->f, "[AI] cancelled", 0);
+ ai_op_free(op);
+}
+
+/* Stream done: reconstruct the file, review the diff, apply.  Runs from the fd
+ * callback but only after ai_op_detach() has removed the AI fds. */
+static void ai_edit_done(ai_async_op *op)
+{
+ FENSTER *f = op->f;
+ char *clean;
+ wpe_ai_seg *segs;
+ int nseg, has_change = 0, i;
+ char *now;
+
+ ai_op_detach(op);                        /* leave the loop before going modal */
+ if (!ai_window_alive(op->cn, f)) {       /* the file window was closed meanwhile */
+  wpe_ai_trace("edit target gone");
+  ai_op_free(op);
+  return;
+ }
+ if (op->acc_len == 0) {
+  ai_pane(f, "[AI edit] no response", 0);
+  ai_op_free(op);
+  return;
+ }
+ clean = ai_strip_fences(op->acc);
+ if (!clean) { ai_op_free(op); return; }
+
+ now = ai_current_file_text(f);
+ nseg = wpe_ai_diff_segments(now ? now : "", clean, &segs);
+ free(now);
+ for (i = 0; i < nseg; i++) if (segs[i].is_change) { has_change = 1; break; }
+ if (!has_change) {
+  ai_pane(f, "[AI edit] no change", 0);
+  wpe_ai_trace("edit no-change");
+ } else {
+  char *result = ai_hunk_apply(f, segs, nseg);
+  if (result) {
+   e_ai_apply_text(f, result);
+   ai_pane(f, "[AI edit] applied - Ctrl-U to undo", 0);
+   wpe_ai_trace("edit applied");
+   free(result);
+   if (op->save_id >= 0) e_switch_window(op->save_id, f);
+  } else {
+   ai_pane(f, "[AI edit] discarded", 0);
+   wpe_ai_trace("edit discarded");
+  }
+ }
+ wpe_ai_segs_free(segs, nseg);
+ free(clean);
+ ai_op_free(op);
+}
+
+/* fd-loop callback for the background Edit stream. */
+static void ai_edit_fd_cb(int fd, void *data)
+{
+ ai_async_op *op = data;
+ int done = 0;
+ (void)fd;
+ if (wpe_ai_stream_pump(op->st, ai_op_collect, op, &done) < 0) {
+  FENSTER *f = op->f;
+  ECNT *cn = op->cn;
+  ai_op_detach(op);
+  if (ai_window_alive(cn, f)) ai_pane(f, "[AI edit] transport error", 0);
+  ai_op_free(op);
+  return;
+ }
+ if (done)
+  ai_edit_done(op);
+}
+
 static int e_ai_edit(FENSTER *f)
 {
  static char instr[1024];
  char err[320], line[360];
- char *cur, *user, *reply, *clean;
+ char *cur, *user;
  const char *sys =
    "You are a precise code editor. Apply the user's instruction to the file "
    "below and return ONLY the complete modified file content - no markdown "
@@ -465,7 +686,12 @@ static int e_ai_edit(FENSTER *f)
  wpe_ai_req req;
  ECNT *cn = f->ed;
  int save_id = -1, wi;
+ ai_async_op *op;
 
+ if (wpe_ai_busy()) {
+  ai_pane(f, "[AI] a task is already running - press Alt-B to cancel it first", 1);
+  return 0;
+ }
  instr[0] = '\0';
  if (!e_add_arguments(instr, "AI edit instruction", f, 0, AltB, NULL) || !instr[0])
   return 0;
@@ -490,48 +716,32 @@ static int e_ai_edit(FENSTER *f)
 
  wpe_ai_trace("edit instr=%s", instr);
  err[0] = '\0';
- {
-  ai_spin sp = ai_spin_begin(f, "[AI edit] working");
-  reply = wpe_ai_complete(&req, 120000, ai_spin_cb, &sp, err, sizeof err);
- }
+ op = calloc(1, sizeof *op);
+ if (!op) { free(user); free(cur); return 0; }
+ op->st = wpe_ai_stream_start(&req, err, sizeof err);
  free(user);
- if (!reply) {
-  snprintf(line, sizeof line, "[AI edit] %s", err[0] ? err : "no response");
-  ai_pane(f, line, 0);
-  free(cur);
+ free(cur);
+ if (!op->st) {
+  snprintf(line, sizeof line, "[AI edit] %s", err[0] ? err : "could not start");
+  ai_pane(f, line, 1);
+  free(op);
   return 0;
  }
- clean = ai_strip_fences(reply);
- free(reply);
- free(cur);
- if (!clean) return 0;
-
- {
-  wpe_ai_seg *segs;
-  int nseg, has_change = 0, i;
-  char *now = ai_current_file_text(f);
-  nseg = wpe_ai_diff_segments(now ? now : "", clean, &segs);
-  free(now);
-  for (i = 0; i < nseg; i++) if (segs[i].is_change) { has_change = 1; break; }
-  if (!has_change) {
-   ai_pane(f, "[AI edit] no change", 0);
-   wpe_ai_trace("edit no-change");
-  } else {
-   char *result = ai_hunk_apply(f, segs, nseg);
-   if (result) {
-    e_ai_apply_text(f, result);
-    ai_pane(f, "[AI edit] applied - Ctrl-U to undo", 0);
-    wpe_ai_trace("edit applied");
-    free(result);
-    if (save_id >= 0) e_switch_window(save_id, f);  /* focus back to the file */
-   } else {
-    ai_pane(f, "[AI edit] discarded", 0);
-    wpe_ai_trace("edit discarded");
-   }
-  }
-  wpe_ai_segs_free(segs, nseg);
- }
- free(clean);
+ /* Register the stream on the shared fd-loop and RETURN -- the editor stays
+    interactive; ai_edit_fd_cb finishes (diff + apply) when the reply lands. */
+ op->f = f; op->cn = cn; op->save_id = save_id;
+ op->fd = wpe_ai_stream_fd(op->st);
+ op->start = time(NULL);
+ op->spin = ai_spin_begin(f, "[AI edit] working");
+ g_ai_op = op;
+ g_ai_bg_win = f;
+ ai_hb_acquire(ai_op_tick);
+ wpe_fd_add(op->fd, POLLIN, ai_edit_fd_cb, op);
+ /* Hand focus back to the file so the user keeps editing while the model works;
+    the pane spins in the background (its paints leave the caret here). */
+ if (save_id >= 0)
+  e_switch_window(save_id, cn->f[cn->mxedt]);
+ wpe_ai_trace("edit stream fd=%d (async)", op->fd);
  return 0;
 }
 
@@ -614,6 +824,13 @@ int e_ai_ui_key(FENSTER *f)
  if (!wpe_ai_enabled()) {
   ai_pane(f, "AI assistant is off - enable it in Options > Editor "
              "(the \"Ai assistant\" box), then press Alt-B again.", 1);
+  return 0;
+ }
+ /* A background task is running (async Edit): Alt-B cancels it rather than
+    opening the menu, so there is a one-key way out and no modal stacks on top of
+    the in-flight work. */
+ if (wpe_ai_busy()) {
+  wpe_ai_cancel();
   return 0;
  }
  /* Alt-B shows the action menu straight away -- the way Alt-F shows the File
