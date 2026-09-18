@@ -98,9 +98,12 @@ A deterministic in-process backend used by the test suite; no network.
 @cindex AI, chat
 @kbd{Alt-B a} asks for a prompt and streams the reply into the @samp{AI} pane.
 The current file (and the selection, if any) is sent as context, so ``what does
-this function do?'' works.  The editor stays fully interactive while the reply
-streams; @key{Esc} cancels.  The conversation is remembered for the workspace
-(see @emph{Sessions}, below).
+this function do?'' works.  Chat can also @emph{investigate the workspace}: it
+is given the list of workspace files and may read any of them (or grep, or list
+a directory) on its own before answering, so ``what does @file{config.h}
+define?'' works even when that file is not open.  The editor stays fully
+interactive while the reply streams; @key{Esc} cancels.  The conversation is
+remembered for the workspace (see @emph{Sessions}, below).
 
 Chat streams token by token.  @emph{Edit}, @emph{Plan} and @emph{Agent} (below)
 need the whole reply before they can act, so while the model is thinking they

@@ -43,9 +43,18 @@ typedef struct {
  int            fd;
  int            active;
  int            started;       /* a fresh reply line has been opened under "AI:" */
+ int            turns;         /* read-only tool turns taken before answering    */
 } ai_chat_session;
 
+#define AI_CHAT_MAX_TOOL_TURNS 6   /* cap chat's read-only investigation loop */
+
 static ai_chat_session *g_ai_chat = NULL;
+
+/* read-only tool helpers (defined in the Agent section) + the turn starter */
+static char *ai_run_capture(const char *cmd);
+static char *ai_read_file_bounded(const char *path);
+static void  ai_chat_next_turn(ai_chat_session *s);
+static char *ai_chat_tool_result(FENSTER *f, const char *reply);
 
 static void ai_pane(FENSTER *f, const char *line, int surface)
 {
@@ -254,10 +263,24 @@ static void ai_fd_cb(int fd, void *data)
  }
  if (done) {
   /* the trailing partial is already on screen (painted live in ai_delta_cb) */
-  if (s->full && s->flen) wpe_ai_session_append("assistant", s->full);
-  else {
-   /* nothing streamed: replace the "gathering..." placeholder so it does not
-      look like the request is still running. */
+  if (s->full && s->flen) {
+   char *tr = (s->turns < AI_CHAT_MAX_TOOL_TURNS)
+              ? ai_chat_tool_result(s->ref, s->full) : NULL;
+   wpe_ai_session_append("assistant", s->full);
+   if (tr) {
+    /* the model asked to investigate: feed the tool result and take another
+       turn -- the editor never blocked, this just continues in the background */
+    { size_t n = strlen(tr) + 32; char *m = malloc(n);
+      if (m) { snprintf(m, n, "TOOL RESULT:\n%s", tr); wpe_ai_session_append("user", m); free(m); } }
+    free(tr);
+    s->turns++;
+    wpe_fd_del(s->fd);                 /* close this turn's stream */
+    wpe_ai_stream_free(s->st); s->st = NULL;
+    ai_chat_next_turn(s);              /* stream the next turn (answer or tool) */
+    return;
+   }
+  } else {
+   /* nothing streamed: replace the "gathering..." placeholder. */
    FENSTER *wf = ai_pane_win(s->ref);
    if (wf) ai_pane_set_last(wf, "  (no answer)");
   }
@@ -268,20 +291,109 @@ static void ai_fd_cb(int fd, void *data)
  }
 }
 
-/* Build the system prompt (assistant role + current-file context). */
+/* Build the chat system prompt: the assistant may INVESTIGATE the workspace
+ * with read-only tools before answering, so questions about other files (not
+ * just the open one) work.  Includes the workspace file listing and the current
+ * file for immediate context. */
 static char *ai_build_system(FENSTER *f)
 {
  char *ctx = ai_current_file_text(f);
+ char **scope;
+ int nsc, i;
+ size_t cap = 8192, len = 0;
+ char *sys = malloc(cap);
  const char *head =
-   "You are an AI assistant embedded in the xwpe console editor. "
-   "Answer concisely in plain text. When the user asks about code, use the "
-   "current file shown below.\n\n--- current file ---\n";
- size_t n = strlen(head) + (ctx ? strlen(ctx) : 0) + 8;
- char *sys = malloc(n);
+   "You are an AI assistant embedded in the xwpe console editor. Answer "
+   "concisely in plain text.\n"
+   "You may INVESTIGATE the workspace before answering.  To read a file or "
+   "search, reply with EXACTLY ONE line and nothing else:\n"
+   "  TOOL read_file <path>\n"
+   "  TOOL grep <pattern>\n"
+   "  TOOL list_dir <path>\n"
+   "I will reply with the result; then either use another tool or give your "
+   "answer.  When you can answer, reply with the answer directly (no TOOL "
+   "line).  Do not guess about files you have not read.\n\n";
  if (!sys) { free(ctx); return NULL; }
- snprintf(sys, n, "%s%s", head, ctx ? ctx : "");
+ len += (size_t)snprintf(sys + len, cap - len, "%s", head);
+ nsc = wpe_ai_scope_files(f, e_project_is_open(), 1, &scope);
+ if (len < cap - 32)
+  len += (size_t)snprintf(sys + len, cap - len, "WORKSPACE FILES:\n");
+ for (i = 0; i < nsc && len < cap - 256; i++)
+  len += (size_t)snprintf(sys + len, cap - len, "  %s\n", scope[i]);
+ wpe_ai_free_list(scope, nsc);
+ if (ctx && len < cap - 512)
+  snprintf(sys + len, cap - len, "\n--- current file ---\n%.*s",
+           (int)(cap - len - 32), ctx);
  free(ctx);
  return sys;
+}
+
+/* If the reply is a read-only tool call, run it and return the result (malloc'd,
+ * to be fed back as the next turn's input); else return NULL so the reply is
+ * treated as the final answer.  Chat only ever runs read-only tools. */
+static char *ai_chat_tool_result(FENSTER *f, const char *reply)
+{
+ char action[1100], *nl, *arg;
+ (void)f;
+ nl = strchr(reply, '\n');
+ { size_t l = nl ? (size_t)(nl - reply) : strlen(reply);
+   if (l >= sizeof action) l = sizeof action - 1;
+   memcpy(action, reply, l); action[l] = '\0'; }
+ /* trim trailing spaces */
+ { size_t l = strlen(action); while (l && (action[l-1]==' '||action[l-1]=='\r')) action[--l]='\0'; }
+ if (strncmp(action, "TOOL ", 5)) return NULL;
+ arg = strchr(action + 5, ' ');
+ if (arg) { *arg = '\0'; arg++; } else arg = (char *)"";
+ if (!strcmp(action + 5, "read_file"))
+  return ai_read_file_bounded(arg);
+ if (!strcmp(action + 5, "grep")) {
+  char cmd[1300]; snprintf(cmd, sizeof cmd, "grep -rn -- %s .", arg); return ai_run_capture(cmd);
+ }
+ if (!strcmp(action + 5, "list_dir")) {
+  char cmd[1200]; snprintf(cmd, sizeof cmd, "ls -la %s", arg[0] ? arg : "."); return ai_run_capture(cmd);
+ }
+ return NULL;   /* unknown/non-read-only: treat the line as a normal answer */
+}
+
+/* Start (or continue) a chat turn: rebuild the request from the workspace
+ * conversation and stream the reply into the pane.  Reused for the first turn
+ * and for each read-only investigation turn. */
+static void ai_chat_next_turn(ai_chat_session *s)
+{
+ FENSTER *f = s->ref;
+ wpe_ai_msg msgs[16];
+ wpe_ai_req req;
+ char *sys, err[320];
+ int nm = 0, np, i;
+ FENSTER *wf;
+
+ sys = ai_build_system(f);
+ msgs[nm].role = "system"; msgs[nm].content = sys ? sys : ""; nm++;
+ np = wpe_ai_session_messages(msgs + nm, 12);
+ for (i = 0; i < np; i++) nm++;
+ req.model = NULL; req.msgs = msgs; req.nmsgs = nm;
+ err[0] = '\0';
+ s->st = wpe_ai_stream_start(&req, err, sizeof err);
+ free(sys);
+ if (!s->st) {
+  ai_pane(f, err[0] ? err : "[AI error] could not start", 0);
+  s->active = 0;
+  ai_chat_finish(s);
+  return;
+ }
+ s->fd = wpe_ai_stream_fd(s->st);
+ s->active = 1;
+ s->started = 0;
+ s->flen = 0; if (s->full) s->full[0] = '\0';
+ s->plen = 0; if (s->pending) s->pending[0] = '\0';
+ wf = ai_pane_win(f);
+ if (wf) {
+  ai_pane_commit(wf);
+  ai_pane_set_last(wf, "  (gathering the answer...)");
+  s->started = 1;
+ }
+ wpe_fd_add(s->fd, POLLIN, ai_fd_cb, s);
+ wpe_ai_trace("chat stream fd=%d turn=%d", s->fd, s->turns);
 }
 
 /* Alt-B: prompt for a question and start an asynchronous streaming reply. */
@@ -289,11 +401,7 @@ static int e_ai_chat(FENSTER *f)
 {
  static char prompt[2048];
  char err[320], line[2200];
- wpe_ai_msg msgs[14];
- wpe_ai_req req;
- char *sys;
  ai_chat_session *s;
- int nm = 0, np, i;
 
  prompt[0] = '\0';
  if (!e_add_arguments(prompt, "Ask AI", f, 0, AltB, NULL) || !prompt[0])
@@ -321,45 +429,15 @@ static int e_ai_chat(FENSTER *f)
 
  e_ai_cli_mode = WPE_AI_CLI_TEXTONLY;
  wpe_ai_session_load(f);                       /* resume this workspace's talk */
- sys = ai_build_system(f);
- msgs[nm].role = "system"; msgs[nm].content = sys ? sys : ""; nm++;
- np = wpe_ai_session_messages(msgs + nm, 10);   /* prior turns, bounded */
- for (i = 0; i < np; i++) nm++;
- msgs[nm].role = "user";   msgs[nm].content = prompt; nm++;
  wpe_ai_session_append("user", prompt);
- req.model = NULL;
- req.msgs = msgs;
- req.nmsgs = nm;
 
  s = calloc(1, sizeof *s);
- if (!s) { free(sys); return 0; }
- err[0] = '\0';
- s->st = wpe_ai_stream_start(&req, err, sizeof err);
- free(sys);
- if (!s->st) {
-  snprintf(line, sizeof line, "[AI error] %s", err[0] ? err : "could not start");
-  ai_pane(f, line, 0);
-  free(s);
-  return 0;
- }
+ if (!s) return 0;
  s->ref = f;
- s->fd = wpe_ai_stream_fd(s->st);
- s->active = 1;
  g_ai_chat = s;
- /* Show a liveness placeholder on the reply line so the wait for the first
-    token is not dead air (a big local model can take seconds to warm up).  The
-    reply line is opened now and marked started, so the first streamed token
-    overwrites the placeholder in place rather than adding a new line. */
- {
-  FENSTER *wf = ai_pane_win(f);
-  if (wf) {
-   ai_pane_commit(wf);
-   ai_pane_set_last(wf, "  (gathering the answer...)");
-   s->started = 1;
-  }
- }
- wpe_fd_add(s->fd, POLLIN, ai_fd_cb, s);
- wpe_ai_trace("chat stream fd=%d", s->fd);
+ /* Stream the reply; the model may take a few read-only tool turns first to
+    investigate the workspace, all in the background (see ai_fd_cb). */
+ ai_chat_next_turn(s);
  return 0;
 }
 
