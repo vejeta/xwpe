@@ -604,6 +604,41 @@ int e_switch_blst(ECNT *cn)
  return(0);
 }
 
+#ifdef WPE_AI
+extern const char *e_lsp_server_label(FENSTER *);  /* non-NULL => file has a server */
+
+/**
+ * e_ai_refresh_bars - Re-pick each editor window's bottom bar after the AI
+ * runtime toggle flips.  Used when the user ticks/unticks "Ai assistant" in
+ * Options > Editor: without this the open windows keep the bar chosen when they
+ * were opened, so the "Alt-B AI" entry would not appear until a file was
+ * reopened.  Only the swappable editor-file bars (plain / LSP / AI) are touched;
+ * Help/Messages/Watch windows keep their own bars.
+ */
+void e_ai_refresh_bars(ECNT *cn)
+{
+ int i, on = wpe_ai_enabled(), cua = (cn->edopt & ED_CUA_STYLE) ? 1 : 0;
+
+ for (i = 0; i <= cn->mxedt; i++)
+ {
+  FENSTER *f = cn->f[i];
+  WOPT *b = f->blst;
+  if (b != eblst_o && b != eblst_u &&
+      b != eblst_lsp_o && b != eblst_lsp_u &&
+      b != eblst_ai_o && b != eblst_ai_u)
+   continue;                            /* not an editor-file bar -- leave it   */
+  if (on)
+   f->blst = cua ? eblst_ai_u : eblst_ai_o;
+#ifdef DEBUGGER
+  else if (e_lsp_server_label(f))
+   f->blst = cua ? eblst_lsp_u : eblst_lsp_o;
+#endif
+  else
+   f->blst = cua ? eblst_u : eblst_o;
+ }
+}
+#endif
+
 /**
  * e_pack_button_bar - Arrange a status-bar's clickable shortcuts compactly.
  *

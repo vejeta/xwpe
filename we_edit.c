@@ -374,11 +374,13 @@ int e_edit(ECNT *cn, char *filename)
   f->blst = eblst_lsp;
 #endif
 #ifdef WPE_AI
- /* AI enabled + a plain editor file that did NOT already get the contextual LSP
-    bar: show the "Alt-B AI" entry so the assistant menu is discoverable and
-    mouse-clickable.  On an LSP-backed file the LSP bar keeps priority and Alt-B
-    still opens the AI menu from the keyboard. */
- if (ftype == 0 && wpe_ai_enabled() && f->blst != eblst_lsp)
+ /* AI enabled: a plain editor file shows the "Alt-B AI" bottom-bar entry so the
+    assistant is discoverable and mouse-clickable.  When the assistant is on it
+    takes the shared bar slot even on a language-server file (the LSP actions
+    stay on the Alt-Q keyboard prefix); this is what the user opted into.  The
+    bar is re-selected here on every open AND refreshed live by e_ai_refresh_bars
+    when the runtime toggle flips in Options > Editor. */
+ if (ftype == 0 && wpe_ai_enabled())
   f->blst = eblst_ai;
 #endif
  if (ftype != 1)

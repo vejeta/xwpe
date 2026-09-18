@@ -128,6 +128,8 @@ void wpe_ai_segs_free(wpe_ai_seg *segs, int n);
 struct FNST;                        /* editor window (edit.h)                 */
 int  e_ai_ui_key(struct FNST *f);   /* Alt-B: open/prompt the AI assistant    */
 int  e_ai_menu(struct FNST *f);     /* bottom-bar "Alt-B AI" click: action menu */
+struct CNT;                         /* desktop (ECNT, edit.h)                  */
+void e_ai_refresh_bars(struct CNT *cn); /* re-pick editor bars after the toggle */
 
 /* ----- workspace layer (we_ai_ws.c, editor-side) ------------------------ */
 /* Scope: the full paths the agent may study -- the open text windows, plus
