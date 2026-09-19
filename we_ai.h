@@ -101,6 +101,10 @@ int   wpe_ai_stream_pump(wpe_ai_stream *st,
                          void (*cb)(const char *delta, void *ud), void *ud,
                          int *done);
 int   wpe_ai_stream_http_status(wpe_ai_stream *st);
+/* True when a completed stream reported a backend failure rather than a reply
+ * (e.g. the claude CLI is not logged in); callers that write files or run tools
+ * must refuse to act on it. */
+int   wpe_ai_stream_had_error(wpe_ai_stream *st);
 void  wpe_ai_stream_free(wpe_ai_stream *st);
 
 /* Called repeatedly while wpe_ai_complete waits, ~8x/second, with the seconds

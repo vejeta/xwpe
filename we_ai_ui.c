@@ -1160,6 +1160,7 @@ struct ai_async_op {
  time_t   start;
  char    *acc;               /* current turn's reply collected from the stream */
  size_t   acc_len, acc_cap;
+ int      had_error;          /* the finished turn was a backend failure         */
  /* multi-turn state (unused by single-turn Edit) */
  struct ai_mlist ml;         /* the running conversation                        */
  const char *label;          /* spinner label, e.g. "[agent] working"          */
@@ -1267,6 +1268,18 @@ static void ai_edit_done(ai_async_op *op)
   ai_op_free(op);
   return;
  }
+ /* The backend reported a failure (e.g. the claude CLI is not logged in); its
+    message is a diagnostic, not new file content.  Show it and apply NOTHING --
+    an error must never overwrite the buffer. */
+ if (op->had_error) {
+  char l[360];
+  snprintf(l, sizeof l, "[AI edit] backend error: %.320s",
+           op->acc_len ? op->acc : "the backend did not return a result");
+  ai_pane(f, l, 1);
+  wpe_ai_trace("edit error (not applied)");
+  ai_op_free(op);
+  return;
+ }
  if (op->acc_len == 0) {
   ai_pane(f, "[AI edit] no response", 0);
   ai_op_free(op);
@@ -1314,8 +1327,10 @@ static void ai_edit_fd_cb(int fd, void *data)
   ai_op_free(op);
   return;
  }
- if (done)
+ if (done) {
+  op->had_error = wpe_ai_stream_had_error(op->st);   /* capture before detach frees st */
   ai_edit_done(op);
+ }
 }
 
 /* ---- generic multi-turn driver (Agent, Plan) -------------------------------
@@ -1364,6 +1379,20 @@ static void ai_conv_on_reply(ai_async_op *op)
  int r;
  op->paused = 1;                    /* no spinner while process() may go modal   */
  ai_op_stream_close(op);            /* leave the loop before any modal review    */
+ /* A backend failure (e.g. the claude CLI not logged in) is not a turn to act
+    on: do NOT feed it to process(), which could run a tool call or apply an
+    edit parsed from an error string.  Report and stop. */
+ if (op->had_error) {
+  if (ai_window_alive(op->cn, op->f)) {
+   char l[360];
+   snprintf(l, sizeof l, "%s: backend error: %.300s", op->label,
+            (op->acc && op->acc[0]) ? op->acc : "no result");
+   ai_pane(op->f, l, 0);
+  }
+  wpe_ai_trace("conv error (stopped)");
+  ai_conv_finish(op);
+  return;
+ }
  ai_ml_add(&op->ml, "assistant", op->acc ? op->acc : "");
  r = op->process ? op->process(op, op->acc ? op->acc : "") : 1;
  op->iter++;
@@ -1389,8 +1418,10 @@ static void ai_conv_fd_cb(int fd, void *data)
   ai_conv_finish(op);
   return;
  }
- if (done)
+ if (done) {
+  op->had_error = wpe_ai_stream_had_error(op->st);   /* capture before stream_close */
   ai_conv_on_reply(op);
+ }
 }
 
 static void ai_conv_finish(ai_async_op *op)

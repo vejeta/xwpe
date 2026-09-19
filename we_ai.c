@@ -534,6 +534,7 @@ struct wpe_ai_stream {
  int             is_subproc;   /* claudecli: read a child pipe, not a socket   */
  pid_t           pid;
  int             out_fd;       /* child stdout (subprocess transport)          */
+ int             had_error;    /* backend reported a failure, not a real reply */
 };
 
 /* Flatten the request into a single prompt for the `claude` CLI (one -p call).
@@ -642,18 +643,34 @@ static int ai_claudecli_open(struct wpe_ai_stream *st, const wpe_ai_req *req)
 }
 
 /* Parse the `claude -p --output-format json` object: the reply is in .result. */
-static void ai_parse_claudecli(const char *body, char **delta)
+static void ai_parse_claudecli(const char *body, char **delta, int *had_error)
 {
- struct json_object *o, *r;
+ struct json_object *o, *r, *ie;
  *delta = NULL;
+ if (had_error) *had_error = 0;
  o = json_tokener_parse(body ? body : "");
- if (!o) { *delta = ai_strdup("[claude-cli produced no output]"); return; }
+ /* No JSON at all means the CLI failed before producing a result envelope
+    (crash, or a bare error line): a failure, never file content. */
+ if (!o) {
+  *delta = ai_strdup("[claude-cli produced no output]");
+  if (had_error) *had_error = 1;
+  return;
+ }
  if (json_object_object_get_ex(o, "result", &r))
   *delta = ai_strdup(json_object_get_string(r));
- else if (json_object_object_get_ex(o, "error", &r))
+ else if (json_object_object_get_ex(o, "error", &r)) {
   *delta = ai_strdup(json_object_get_string(r));
- else
+  if (had_error) *had_error = 1;
+ } else {
   *delta = ai_strdup("[claude-cli: no result field]");
+  if (had_error) *had_error = 1;
+ }
+ /* claude -p signals failure with is_error:true and puts the human-readable
+    reason (e.g. "Not logged in - Please run /login") in .result.  That text is
+    a diagnostic, not a reply -- flag it so callers that ACT on the reply (Edit,
+    Plan, Agent) refuse it instead of writing it into the file. */
+ if (json_object_object_get_ex(o, "is_error", &ie) && json_object_get_boolean(ie))
+  if (had_error) *had_error = 1;
  if (json_object_object_get_ex(o, "session_id", &r)) {   /* for --resume */
   free(e_ai_last_session_id);
   e_ai_last_session_id = ai_strdup(json_object_get_string(r));
@@ -828,6 +845,12 @@ wpe_ai_stream *wpe_ai_stream_start(const wpe_ai_req *req, char *errbuf, size_t e
 
 int wpe_ai_stream_fd(wpe_ai_stream *st)
 { return st ? (st->is_subproc ? st->out_fd : st->conn.fd) : -1; }
+/* True once the completed stream carried a backend failure (e.g. the claude CLI
+   not logged in) rather than a genuine reply.  Callers that ACT on the reply
+   must check this before applying, so an error message is never written to a
+   file or run as a tool call. */
+int wpe_ai_stream_had_error(wpe_ai_stream *st)
+{ return st ? st->had_error : 0; }
 int wpe_ai_stream_http_status(wpe_ai_stream *st)
 { return st ? wpe_http_stream_status(&st->hs) : 0; }
 
@@ -851,7 +874,7 @@ int wpe_ai_stream_pump(wpe_ai_stream *st,
   }
   if (st->eof && !st->done) {                 /* whole reply in; parse .result */
    char *delta = NULL;
-   ai_parse_claudecli(st->hs.body ? st->hs.body : "", &delta);
+   ai_parse_claudecli(st->hs.body ? st->hs.body : "", &delta, &st->had_error);
    if (delta) { if (*delta && cb) cb(delta, ud); free(delta); }
    st->done = 1;
   }
