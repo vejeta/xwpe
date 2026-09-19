@@ -516,22 +516,28 @@ static void ai_fd_cb(int fd, void *data)
  * the user switches backends mid-chat, the history still holds the previous
  * backend's self-description, and without this line the new backend just parrots
  * it.  Rebuilt every turn, so it always names the backend now in use. */
-static size_t ai_append_identity(char *sys, size_t cap, size_t len)
+static void ai_identity_text(char *buf, size_t n)
 {
  const char *be = wpe_ai_backend_name(e_ai_backend);
  const char *tail =
    ". If you are asked which model, backend, or maker you are, answer from "
    "this line and ignore any earlier turn in the conversation that names a "
-   "different model or maker -- earlier turns may come from another backend.\n\n";
- wpe_ai_trace("chat identity backend=%s model=%s", be, e_ai_model ? e_ai_model : "");
- if (len >= cap - 256) return len;
+   "different model or maker -- earlier turns may come from another backend.";
  if (e_ai_model && *e_ai_model && strcmp(e_ai_model, "default"))
-  len += (size_t)snprintf(sys + len, cap - len,
-                          "You are served by the \"%s\" backend, model \"%s\"%s",
-                          be, e_ai_model, tail);
+  snprintf(buf, n, "You are served by the \"%s\" backend, model \"%s\"%s",
+           be, e_ai_model, tail);
  else
-  len += (size_t)snprintf(sys + len, cap - len,
-                          "You are served by the \"%s\" backend%s", be, tail);
+  snprintf(buf, n, "You are served by the \"%s\" backend%s", be, tail);
+}
+
+static size_t ai_append_identity(char *sys, size_t cap, size_t len)
+{
+ char id[512];
+ wpe_ai_trace("chat identity backend=%s model=%s",
+              wpe_ai_backend_name(e_ai_backend), e_ai_model ? e_ai_model : "");
+ if (len >= cap - 32) return len;
+ ai_identity_text(id, sizeof id);
+ len += (size_t)snprintf(sys + len, cap - len, "%s\n\n", id);
  return len;
 }
 
@@ -1023,6 +1029,17 @@ static char *ai_diff_fmt(char gutter, const char *text)
  return s;
 }
 
+/* Like ai_diff_fmt but prefixed with the new-file line number (blank for a
+   deleted line, which has none), so the reviewer can point at "line 42". */
+static char *ai_diff_fmt_n(int lineno, char gutter, const char *text)
+{
+ char *s = malloc(560);
+ if (!s) return NULL;
+ if (lineno > 0) snprintf(s, 560, "%4d %c%.512s", lineno, gutter, text ? text : "");
+ else            snprintf(s, 560, "     %c%.512s", gutter, text ? text : "");
+ return s;
+}
+
 /* ai_diff_box_show - Render rows[] (each with its own colour attr) in a boxed,
    scrollable overlay and return the key the reviewer pressed.  PgUp/PgDn scroll
    when the content is taller than the box, so nothing is lost off the top; a key
@@ -1122,14 +1139,20 @@ static int ai_diff_review_hunk(FENSTER *f, wpe_ai_seg *segs, int nseg,
  ra = malloc((size_t)nrows * sizeof *ra);
  if (!rt || !ra) { free(rt); free(ra); return 'Q'; }
 
- for (k = segs[i-1].an - pc; pc && k < segs[i-1].an; k++)
-  { rt[idx] = ai_diff_fmt(' ', segs[i-1].a[k]); ra[idx++] = ctx; }
- for (k = 0; k < segs[i].an; k++)
-  { rt[idx] = ai_diff_fmt('-', segs[i].a[k]); ra[idx++] = red; }
- for (k = 0; k < segs[i].bn; k++)
-  { rt[idx] = ai_diff_fmt('+', segs[i].b[k]); ra[idx++] = green; }
- for (k = 0; nc && k < nc; k++)
-  { rt[idx] = ai_diff_fmt(' ', segs[i+1].a[k]); ra[idx++] = ctx; }
+ { int j, newstart = 1, ln;
+   for (j = 0; j < i; j++) newstart += segs[j].is_change ? segs[j].bn : segs[j].an;
+   ln = newstart - pc;                          /* context above the change */
+   for (k = segs[i-1].an - pc; pc && k < segs[i-1].an; k++)
+    { rt[idx] = ai_diff_fmt_n(ln++, ' ', segs[i-1].a[k]); ra[idx++] = ctx; }
+   for (k = 0; k < segs[i].an; k++)              /* deleted: no new-file number */
+    { rt[idx] = ai_diff_fmt_n(0, '-', segs[i].a[k]); ra[idx++] = red; }
+   ln = newstart;
+   for (k = 0; k < segs[i].bn; k++)              /* added: numbered in the new file */
+    { rt[idx] = ai_diff_fmt_n(ln++, '+', segs[i].b[k]); ra[idx++] = green; }
+   ln = newstart + segs[i].bn;                   /* context below the change */
+   for (k = 0; nc && k < nc; k++)
+    { rt[idx] = ai_diff_fmt_n(ln++, ' ', segs[i+1].a[k]); ra[idx++] = ctx; }
+ }
 
  snprintf(title, sizeof title, " Proposed change %d/%d ", hunk, total);
  snprintf(hint, sizeof hint, " y apply  n skip  a all  q cancel  PgUp/PgDn ");
@@ -1166,27 +1189,30 @@ static int ai_diff_confirm_write(FENSTER *f, const char *path,
  ra = malloc((size_t)cap * sizeof *ra);
  if (!rt || !ra) { free(rt); free(ra); wpe_ai_segs_free(segs, nseg); return 1; }
 
+ { int nl = 1;                                   /* running new-file line number */
  for (i = 0; i < nseg; i++) {
   if (segs[i].is_change) {
-   for (k = 0; k < segs[i].an && nrows < cap; k++)
-    { rt[nrows] = ai_diff_fmt('-', segs[i].a[k]); ra[nrows++] = red; }
+   for (k = 0; k < segs[i].an && nrows < cap; k++)      /* deleted: no new number */
+    { rt[nrows] = ai_diff_fmt_n(0, '-', segs[i].a[k]); ra[nrows++] = red; }
    for (k = 0; k < segs[i].bn && nrows < cap; k++)
-    { rt[nrows] = ai_diff_fmt('+', segs[i].b[k]); ra[nrows++] = green; }
+    { rt[nrows] = ai_diff_fmt_n(nl++, '+', segs[i].b[k]); ra[nrows++] = green; }
   } else {
    int an = segs[i].an;
    int head = (i > 0) ? AI_DIFF_CTX : 0;          /* context after a change */
    int tail = (i + 1 < nseg) ? AI_DIFF_CTX : 0;   /* context before the next */
    if (an <= head + tail) {
     for (k = 0; k < an && nrows < cap; k++)
-     { rt[nrows] = ai_diff_fmt(' ', segs[i].a[k]); ra[nrows++] = ctx; }
+     { rt[nrows] = ai_diff_fmt_n(nl++, ' ', segs[i].a[k]); ra[nrows++] = ctx; }
    } else {
     for (k = 0; k < head && nrows < cap; k++)
-     { rt[nrows] = ai_diff_fmt(' ', segs[i].a[k]); ra[nrows++] = ctx; }
-    if (nrows < cap) { rt[nrows] = ai_diff_fmt(' ', "..."); ra[nrows++] = ctx; }
+     { rt[nrows] = ai_diff_fmt_n(nl++, ' ', segs[i].a[k]); ra[nrows++] = ctx; }
+    if (nrows < cap) { rt[nrows] = ai_diff_fmt_n(0, ' ', "..."); ra[nrows++] = ctx; }
+    nl += an - head - tail;                       /* the hidden lines still count */
     for (k = an - tail; k < an && nrows < cap; k++)
-     { rt[nrows] = ai_diff_fmt(' ', segs[i].a[k]); ra[nrows++] = ctx; }
+     { rt[nrows] = ai_diff_fmt_n(nl++, ' ', segs[i].a[k]); ra[nrows++] = ctx; }
    }
   }
+ }
  }
  snprintf(title, sizeof title, " Write %.48s ? ", path ? path : "file");
  snprintf(hint, sizeof hint, " y allow  n / Esc deny  PgUp/PgDn ");
@@ -1198,12 +1224,15 @@ static int ai_diff_confirm_write(FENSTER *f, const char *path,
  return allow;
 }
 
-static char *ai_hunk_apply(FENSTER *f, wpe_ai_seg *segs, int nseg)
+static char *ai_hunk_apply(FENSTER *f, wpe_ai_seg *segs, int nseg,
+                           int *naccepted, int *ntotal)
 {
- int i, total = 0, hunk = 0, any = 0, all = 0, cancel = 0, k;
+ int i, total = 0, hunk = 0, any = 0, all = 0, cancel = 0, k, nacc = 0;
  int *acc = calloc(nseg > 0 ? nseg : 1, sizeof *acc);
  size_t cap = 1024, len = 0;
  char *out;
+ if (naccepted) *naccepted = 0;
+ if (ntotal) *ntotal = 0;
  if (!acc) return NULL;
  for (i = 0; i < nseg; i++) if (segs[i].is_change) total++;
 
@@ -1211,13 +1240,15 @@ static char *ai_hunk_apply(FENSTER *f, wpe_ai_seg *segs, int nseg)
   int decision;
   if (!segs[i].is_change) continue;
   hunk++;
-  if (all) { acc[i] = 1; any = 1; continue; }
+  if (all) { acc[i] = 1; any = 1; nacc++; continue; }
   decision = ai_diff_review_hunk(f, segs, nseg, i, hunk, total);
-  if (decision == 'Y')      { acc[i] = 1; any = 1; }
-  else if (decision == 'A') { acc[i] = 1; any = 1; all = 1; }
+  if (decision == 'Y')      { acc[i] = 1; any = 1; nacc++; }
+  else if (decision == 'A') { acc[i] = 1; any = 1; all = 1; nacc++; }
   else if (decision == 'N') { acc[i] = 0; }
   else                      { cancel = 1; }        /* 'Q' / Esc */
  }
+ if (ntotal) *ntotal = total;
+ if (naccepted) *naccepted = nacc;
  if (cancel || !any) { free(acc); return NULL; }
 
  out = malloc(cap);
@@ -1470,11 +1501,17 @@ static void ai_edit_done(ai_async_op *op)
   ai_pane(f, "[AI edit] no change", 0);
   wpe_ai_trace("edit no-change");
  } else {
-  char *result = ai_hunk_apply(f, segs, nseg);
+  int nacc = 0, ntot = 0;
+  char *result = ai_hunk_apply(f, segs, nseg, &nacc, &ntot);
   if (result) {
+   char msg[80];
    e_ai_apply_text(f, result);
-   ai_pane(f, "[AI edit] applied - Ctrl-U to undo", 0);
-   wpe_ai_trace("edit applied");
+   if (ntot > 1)
+    snprintf(msg, sizeof msg, "[AI edit] applied %d of %d hunks - Ctrl-U to undo", nacc, ntot);
+   else
+    snprintf(msg, sizeof msg, "[AI edit] applied - Ctrl-U to undo");
+   ai_pane(f, msg, 0);
+   wpe_ai_trace("edit applied %d/%d", nacc, ntot);
    free(result);
    if (op->save_id >= 0) e_switch_window(op->save_id, f);
   } else {
@@ -2102,6 +2139,7 @@ int e_ai_agent(FENSTER *f)
  op->process = ai_agent_process;
  op->finish = ai_agent_finish;
  ai_ml_add(&op->ml, "system", sys);
+ { char id[512]; ai_identity_text(id, sizeof id); ai_ml_add(&op->ml, "system", id); }
  { wpe_ai_msg prior[12]; int np = wpe_ai_session_messages(prior, 12), i;
    for (i = 0; i < np; i++) ai_ml_add(&op->ml, prior[i].role, prior[i].content); }
  ai_ml_add(&op->ml, "user", goal);
@@ -2270,7 +2308,7 @@ static void ai_plan_finish(ai_async_op *op)
      ns = wpe_ai_diff_segments(now ? now : "", pd->props[i].text, &segs);
      free(now);
      {
-      char *result = ai_hunk_apply(w, segs, ns);
+      char *result = ai_hunk_apply(w, segs, ns, NULL, NULL);
       if (result) { e_ai_apply_text(w, result); free(result); applied++; wpe_ai_trace("plan applied %s", pd->props[i].path); }
       else wpe_ai_trace("plan skipped %s", pd->props[i].path);
      }
