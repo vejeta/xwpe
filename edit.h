@@ -641,6 +641,7 @@ void e_free_all_pics(ECNT *cn);
 void e_repaint_desk_nopic(FENSTER *f);
 void e_relayout_windows(ECNT *cn, int old_scol, int old_slns);
 void e_position_messages_window(FENSTER *msg, ECNT *cn);
+void e_position_ai_window(FENSTER *ai, ECNT *cn);
 int e_repaint_desk(FENSTER *f);
 int e_sys_info(FENSTER *f);
 int e_ad_colors(FENSTER *f);

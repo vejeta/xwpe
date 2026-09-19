@@ -164,6 +164,8 @@ static FENSTER *ai_pane_win(FENSTER *f)
   if (e_edit(cn, AI_PANE_NAME))
    return NULL;
   i = cn->mxedt;
+  e_position_ai_window(cn->f[i], cn);   /* dock at the bottom, not over the editor */
+  e_rep_win_tree(cn);
  }
  return cn->f[i];
 }

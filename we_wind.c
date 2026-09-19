@@ -185,6 +185,12 @@ void e_relayout_windows(ECNT *cn, int old_scol, int old_slns)
    e_position_messages_window(cn->f[i], cn);
    break;
   }
+ for (i = 1; i <= cn->mxedt; i++)
+  if (!strcmp(cn->f[i]->datnam, "AI"))
+  {
+   e_position_ai_window(cn->f[i], cn);
+   break;
+  }
 }
 
 void e_position_messages_window(FENSTER *msg, ECNT *cn)
@@ -197,6 +203,7 @@ void e_position_messages_window(FENSTER *msg, ECNT *cn)
   if (cn->f[j] == msg) continue;
   if (!strcmp(cn->f[j]->datnam, "Messages")) continue;
   if (!strcmp(cn->f[j]->datnam, "Watches")) continue;
+  if (!strcmp(cn->f[j]->datnam, "AI")) continue;   /* AI pane is bottom-docked too */
   if (cn->f[j]->e.y > lowest_editor)
    lowest_editor = cn->f[j]->e.y;
  }
@@ -230,6 +237,61 @@ void e_position_messages_window(FENSTER *msg, ECNT *cn)
      while its a.y stays split_y+1, leaving an inverted, one-row-tall window. */
   if (!strcmp(cn->f[j]->datnam, "Messages")) continue;
   if (!strcmp(cn->f[j]->datnam, "Watches")) continue;
+  if (!strcmp(cn->f[j]->datnam, "AI")) continue;
+  if (cn->f[j]->e.y > split_y)
+   cn->f[j]->e.y = split_y;
+ }
+}
+
+/* Dock the AI chat pane along the bottom like the Messages window, so it never
+ * overlaps the editor: the editor keeps the top, the conversation reads down the
+ * bottom half.  The pane is given the bottom HALF (a conversation is tall) rather
+ * than the Messages default third.  When the Messages window is also open the two
+ * share the bottom strip side by side -- Messages on the left, AI on the right --
+ * so neither hides the other. */
+void e_position_ai_window(FENSTER *ai, ECNT *cn)
+{
+ int j, lowest_editor = -1, split_y, default_split = MAXSLNS / 2;
+ FENSTER *msg = NULL;
+
+ for (j = 1; j <= cn->mxedt; j++)
+ {
+  if (cn->f[j] == ai) continue;
+  if (!strcmp(cn->f[j]->datnam, "AI")) continue;
+  if (!strcmp(cn->f[j]->datnam, "Messages")) { msg = cn->f[j]; continue; }
+  if (!strcmp(cn->f[j]->datnam, "Watches")) continue;
+  if (cn->f[j]->e.y > lowest_editor)
+   lowest_editor = cn->f[j]->e.y;
+ }
+
+ if (lowest_editor > 0 && lowest_editor <= default_split)
+  split_y = lowest_editor;
+ else
+  split_y = default_split;
+ if (split_y > MAXSLNS - 5) split_y = MAXSLNS - 5;
+ if (split_y < 4) split_y = 4;
+ if (split_y > MAXSLNS - 3) split_y = MAXSLNS - 3;
+
+ if (msg)                                  /* share the bottom strip, left|right */
+ {
+  int mid = MAXSCOL / 2;
+  msg->a = e_set_pnt(0, split_y + 1);
+  msg->e = e_set_pnt(mid - 1, MAXSLNS - 2);
+  ai->a  = e_set_pnt(mid, split_y + 1);
+  ai->e  = e_set_pnt(MAXSCOL - 1, MAXSLNS - 2);
+ }
+ else
+ {
+  ai->a = e_set_pnt(0, split_y + 1);
+  ai->e = e_set_pnt(MAXSCOL - 1, MAXSLNS - 2);
+ }
+
+ for (j = 1; j <= cn->mxedt; j++)
+ {
+  if (cn->f[j] == ai) continue;
+  if (!strcmp(cn->f[j]->datnam, "Messages")) continue;
+  if (!strcmp(cn->f[j]->datnam, "Watches")) continue;
+  if (!strcmp(cn->f[j]->datnam, "AI")) continue;
   if (cn->f[j]->e.y > split_y)
    cn->f[j]->e.y = split_y;
  }
