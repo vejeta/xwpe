@@ -53,6 +53,26 @@ typedef struct {
 
 static ai_chat_session *g_ai_chat = NULL;
 
+/* Chat "focus mode": the pane keeps a live "> " input row as its LAST line, and
+ * the streamed reply is inserted ABOVE that row, so the conversation reads down
+ * the window with a fixed input at the bottom (like a modern chat).  The input
+ * row is an ordinary buffer line, so every backend paints it for free.  While
+ * focus mode is on, the whole-line and streaming pane writers target the line
+ * ABOVE the input row instead of the last line. */
+static int  g_ai_chat_focus = 0;
+static char g_ai_input[AI_PROMPT_MAX];
+static int  g_ai_input_len = 0;
+
+/* Pane line the stream writes into: the last line normally, or the line just
+ * above the "> " input row when focus mode owns the bottom row. */
+static int ai_stream_y(FENSTER *wf)
+{
+ int y = wf->b->mxlines - 1;
+ if (g_ai_chat_focus && y > 0) y--;
+ if (y < 0) y = 0;
+ return y;
+}
+
 /* Seed the streaming line buffer with `seed` so the reply keeps its "AI: "
  * speaker label on the first line while tokens append after it (instead of the
  * label sitting alone on its own line above the answer). */
@@ -77,9 +97,17 @@ static char *ai_run_capture(const char *cmd);
 static char *ai_read_file_bounded(const char *path);
 static void  ai_chat_next_turn(ai_chat_session *s);
 static char *ai_chat_tool_result(FENSTER *f, const char *reply);
+static FENSTER *ai_pane_win(FENSTER *f);
+static void  ai_tr_line(FENSTER *wf, const char *str);
+static void  ai_pane_paint(FENSTER *wf);
 
 static void ai_pane(FENSTER *f, const char *line, int surface)
 {
+ if (g_ai_chat_focus) {                 /* keep the "> " input row at the bottom */
+  FENSTER *wf = ai_pane_win(f);
+  if (wf) { ai_tr_line(wf, line); ai_pane_paint(wf); }
+  return;
+ }
  e_d_p_named(AI_PANE_NAME, (char *)line, f, surface ? 1 : 0);
 }
 
@@ -160,31 +188,67 @@ static void ai_pane_paint(FENSTER *wf)
  e_refresh();
 }
 
-/* Replace the text of the pane's LAST line in place (no new line added), so a
- * partial line grows token-by-token as the model streams -- the "live typing"
- * effect a real chat has, instead of a whole line appearing at once. */
-static void ai_pane_set_last(FENSTER *wf, const char *text)
+/* Overwrite pane line `y` with `text` in place (no new line added). */
+static void ai_pane_set_line(FENSTER *wf, int y, const char *text)
 {
  BUFFER *b = wf->b;
  size_t L = strlen(text);
- int y;
  if (b->mxlines == 0)
   e_new_line(0, b);
- y = b->mxlines - 1;
+ if (y < 0) y = 0;
+ if (y >= b->mxlines) y = b->mxlines - 1;
  b->bf[y].s = REALLOC(b->bf[y].s, L + 2);
  memcpy(b->bf[y].s, text, L);
  b->bf[y].s[L] = '\n';
  b->bf[y].s[L + 1] = '\0';
  b->bf[y].len = (int)L;
  b->bf[y].nrc = (int)L + 1;
+}
+
+/* Replace the text of the pane's current stream line in place (the last line, or
+ * the line above the input row in focus mode), so a partial line grows
+ * token-by-token as the model streams -- the "live typing" effect a real chat
+ * has, instead of a whole line appearing at once. */
+static void ai_pane_set_last(FENSTER *wf, const char *text)
+{
+ ai_pane_set_line(wf, ai_stream_y(wf), text);
  ai_pane_paint(wf);
 }
 
-/* Finalise the current line and open a fresh (empty) line after it. */
+/* Redraw the "> " input row (the pane's last line) from the input buffer. */
+static void ai_input_render(FENSTER *wf)
+{
+ char row[AI_PROMPT_MAX + 8];
+ snprintf(row, sizeof row, "> %s", g_ai_input);
+ ai_pane_set_line(wf, wf->b->mxlines - 1, row);
+ ai_pane_paint(wf);
+}
+
+/* Finalise the current line and open a fresh (empty) one after it -- inserted
+ * BEFORE the input row when focus mode owns the bottom row. */
 static void ai_pane_commit(FENSTER *wf)
 {
  BUFFER *b = wf->b;
- e_new_line(b->mxlines, b);
+ if (g_ai_chat_focus && b->mxlines > 0)
+  e_new_line(b->mxlines - 1, b);
+ else
+  e_new_line(b->mxlines, b);
+}
+
+/* Append one finished transcript line, keeping the "> " input row (if any) at
+ * the very bottom by inserting just above it. */
+static void ai_tr_line(FENSTER *wf, const char *str)
+{
+ BUFFER *b = wf->b;
+ int at;
+ if (!g_ai_chat_focus) {
+  print_to_end_of_buffer(b, (char *)str, b->mx.x);
+  return;
+ }
+ at = b->mxlines - 1;                    /* the input row index */
+ if (at < 0) at = 0;
+ e_new_line(at, b);                      /* insert a blank line before the row */
+ ai_pane_set_line(wf, at, str);
 }
 
 /* Columns of reply text the pane can show on one line: inside its two borders,
@@ -539,18 +603,108 @@ static int e_ai_prompt(char *out, const char *title, FENSTER *f)
  return (ret == WPE_ESC) ? 0 : 1;
 }
 
+/* Send `text` as one chat turn: echo "You: ..." above the input row, add it to
+ * the workspace conversation (context preserved) and start the async stream. */
+static void e_ai_chat_send(FENSTER *f, const char *text)
+{
+ ai_chat_session *s;
+ char line[AI_PROMPT_MAX + 8];
+
+ wpe_ai_trace("chat prompt=%s", text);
+ if (g_ai_chat) { g_ai_chat->active = 0; ai_chat_finish(g_ai_chat); }
+ snprintf(line, sizeof line, "You: %s", text);
+ ai_pane(f, line, 0);                          /* inserts above the input row */
+ wpe_ai_session_append("user", text);
+ s = calloc(1, sizeof *s);
+ if (!s) return;
+ s->ref = f;
+ g_ai_chat = s;
+ /* Stream the reply; the model may take a few read-only tool turns first to
+    investigate the workspace, all in the background (see ai_fd_cb). */
+ ai_chat_next_turn(s);
+}
+
+/* Focused chat loop: the pane shows a fixed "> " input row at the bottom and the
+ * reply streams in above it.  e_getch pumps the fd-loop, so the answer paints
+ * while the user reads or types the next follow-up.  Enter sends, Esc leaves the
+ * chat (any in-flight reply keeps streaming into the transcript). `seed` is text
+ * carried in from the Ask popup: sent at once when send_now, else pre-loaded into
+ * the input row to keep editing. */
+static void e_ai_chat_loop(FENSTER *f, const char *seed, int send_now)
+{
+ FENSTER *wf;
+ int c, wi;
+
+ wf = ai_pane_win(f);
+ if (!wf) return;
+ for (wi = 1; wi <= f->ed->mxedt; wi++)         /* bring the pane to the front */
+  if (f->ed->f[wi] == wf) { e_switch_window(f->ed->edt[wi], wf); break; }
+ wf = ai_pane_win(f);
+ if (!wf) return;
+
+ g_ai_chat_focus = 1;
+ g_ai_input[0] = '\0';
+ g_ai_input_len = 0;
+ if (wf->b->mxlines == 0) e_new_line(0, wf->b);
+ e_new_line(wf->b->mxlines, wf->b);             /* the input row = the last line */
+ if (seed && *seed && !send_now) {
+  strncpy(g_ai_input, seed, sizeof g_ai_input - 1);
+  g_ai_input[sizeof g_ai_input - 1] = '\0';
+  g_ai_input_len = (int)strlen(g_ai_input);
+ }
+ ai_input_render(wf);
+ if (seed && *seed && send_now)
+  e_ai_chat_send(f, seed);
+
+ for (;;) {
+  c = e_getch();
+  if (c == WPE_ESC)
+   break;
+  if (c == WPE_CR) {
+   if (g_ai_input_len > 0) {
+    char sb[AI_PROMPT_MAX];
+    strncpy(sb, g_ai_input, sizeof sb - 1);
+    sb[sizeof sb - 1] = '\0';
+    g_ai_input[0] = '\0';
+    g_ai_input_len = 0;
+    ai_input_render(wf);
+    e_ai_chat_send(f, sb);
+   }
+   continue;
+  }
+  if (c == WPE_DC) {                            /* backspace, UTF-8 aware */
+   if (g_ai_input_len > 0) {
+    g_ai_input_len--;
+    while (g_ai_input_len > 0 &&
+           ((unsigned char)g_ai_input[g_ai_input_len] & 0xC0) == 0x80)
+     g_ai_input_len--;
+    g_ai_input[g_ai_input_len] = '\0';
+    ai_input_render(wf);
+   }
+   continue;
+  }
+  if (c >= 32 && c < 256 && g_ai_input_len < (int)sizeof g_ai_input - 1) {
+   g_ai_input[g_ai_input_len++] = (char)c;
+   g_ai_input[g_ai_input_len] = '\0';
+   ai_input_render(wf);
+  }
+  /* other keys (arrows, function keys) are ignored in the input row for now */
+ }
+
+ g_ai_chat_focus = 0;
+ { BUFFER *b = wf->b;                            /* drop the input row on exit */
+   if (b->mxlines > 0) { int y = b->mxlines - 1; FREE(b->bf[y].s); b->mxlines--; } }
+ ai_pane_paint(wf);
+}
+
 static int e_ai_chat(FENSTER *f)
 {
  static char prompt[AI_PROMPT_MAX];
- char err[320], line[2200];
- ai_chat_session *s;
+ char err[320], line[400];
 
  prompt[0] = '\0';
  if (!e_ai_prompt(prompt, "Ask AI", f) || !prompt[0])
   return 0;
- wpe_ai_trace("chat prompt=%s", prompt);
-
- if (g_ai_chat) { g_ai_chat->active = 0; ai_chat_finish(g_ai_chat); }
 
  err[0] = '\0';
  if (wpe_ai_preflight(e_ai_backend, err, sizeof err)) {
@@ -565,22 +719,9 @@ static int e_ai_chat(FENSTER *f)
   return 0;
  }
 
- snprintf(line, sizeof line, "You: %s", prompt);
- ai_pane(f, line, 1);
- /* The "AI:" label is placed on the reply line itself (see ai_chat_next_turn),
-    so the gathering hint and the answer share one line after "AI: ". */
-
  e_ai_cli_mode = WPE_AI_CLI_TEXTONLY;
- wpe_ai_session_load(f);                       /* resume this workspace's talk */
- wpe_ai_session_append("user", prompt);
-
- s = calloc(1, sizeof *s);
- if (!s) return 0;
- s->ref = f;
- g_ai_chat = s;
- /* Stream the reply; the model may take a few read-only tool turns first to
-    investigate the workspace, all in the background (see ai_fd_cb). */
- ai_chat_next_turn(s);
+ wpe_ai_session_load(f);                        /* resume this workspace's talk */
+ e_ai_chat_loop(f, prompt, 1 /* send the popup text at once */);
  return 0;
 }
 
