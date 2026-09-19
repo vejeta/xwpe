@@ -2005,9 +2005,17 @@ int e_ins_nchar(BUFFER *b, SCHIRM *sch, unsigned char *s, int xa, int ya,
     else if(sch->mark_end.x >= xa)
      sch->mark_end.x += n;
    }
-   for (j = i+1; *(b->bf[ya].s+j) != WPE_WR && *(b->bf[ya].s+j) != '\0'; j++)
+   /* Copy the wrapped tail into the fresh next line, bounded to mx.x-1 columns
+      so the WPE_WR terminator and the following '\0' both land inside its
+      mx.x+1 byte buffer.  The trailing '\0' is essential: e_str_nrc is strlen
+      (NOT WPE_WR-aware, unlike e_str_len), so without it strlen runs past the
+      WPE_WR into adjacent memory when the tail fills the line -- a heap
+      overflow when editing a very long unbroken run. */
+   for (j = i+1; *(b->bf[ya].s+j) != WPE_WR && *(b->bf[ya].s+j) != '\0'
+        && (j-i-1) < b->mx.x - 1; j++)
     *(b->bf[ya+1].s+j-i-1) = *(b->bf[ya].s+j);
    *(b->bf[ya+1].s+j-i-1) = WPE_WR;
+   *(b->bf[ya+1].s+j-i) = '\0';
    b->bf[ya+1].len = e_str_len(b->bf[ya+1].s);
    b->bf[ya+1].nrc = e_str_nrc(b->bf[ya+1].s);
    sc_txt_4(ya, b, 1);
@@ -2564,20 +2572,55 @@ char *e_buffer_to_text(BUFFER *b)
    e_new_line produces. */
 static void e_buffer_append_line(BUFFER *b, const char *str)
 {
- int i, len = (int)strlen(str);
+ int len = (int)strlen(str);
+ int maxc = b->mx.x - 1;             /* last column an insert may write into */
+ int start = 0;
 
- e_new_line(b->mxlines, b);          /* canonical empty line: len 0, nrc 0 */
- i = b->mxlines - 1;
- /* Store content PLUS the WPE_WR line terminator, exactly like a line read from
-    a file (we_fl_fkt.c) -- without it e_write() runs one line into the next on
-    save (and blank lines vanish).  Applies to empty lines too, so blanks are
-    kept. */
- b->bf[i].s = REALLOC(b->bf[i].s, len + 2);
- memcpy(b->bf[i].s, str, len);
- b->bf[i].s[len] = WPE_WR;
- b->bf[i].s[len + 1] = '\0';
- b->bf[i].len = e_str_len((unsigned char *)b->bf[i].s);
- b->bf[i].nrc = e_str_nrc((unsigned char *)b->bf[i].s);
+ /* xwpe is a WordPerfect-style editor: every PHYSICAL line lives in an
+    e_new_line()-allocated mx.x+1 buffer and holds at most mx.x-1 columns of
+    content -- the file reader (e_readin) SOFT-WRAPS any longer logical line at
+    the margin.  A soft-wrapped continuation ends WITHOUT the WPE_WR terminator
+    (so e_write rejoins the pieces on save, preserving the content); only the
+    logical line's final piece carries WPE_WR.  This rebuild path must obey the
+    same invariant: storing a whole over-long line in one content-sized buffer
+    left the insert/auto-wrap machinery (e_ins_nchar, which writes at index
+    mx.x) reading and writing past the line -- a heap overflow that crashed on
+    the next keystroke over a line an AI/LSP/Undo rewrite had produced. */
+ if (maxc < 1)
+  maxc = 1;
+ do
+ {
+  int seg = len - start;
+  int hard = 1;
+  int k;
+
+  if (seg > maxc)                    /* break this piece at a word boundary */
+  {
+   int cut = maxc;                   /* at most maxc chars, so [seg]+[seg+1] fit */
+   int brk = cut;
+   while (brk > 0 && str[start + brk - 1] != ' ' && str[start + brk - 1] != '-')
+    brk--;                           /* brk = chars up to & including a boundary */
+   if (brk > 0)
+    cut = brk;                       /* break just after the space/dash */
+   else                              /* no boundary in reach: hard-cut the run, */
+    while (cut > 1 &&                /* but never in the middle of a UTF-8 char */
+           ((unsigned char)str[start + cut] & 0xC0) == 0x80)
+     cut--;
+   seg = cut;
+   hard = 0;                         /* soft wrap: continuation, no WPE_WR */
+  }
+  e_new_line(b->mxlines, b);         /* mx.x+1 bytes, so [seg]+[seg+1] fit */
+  k = b->mxlines - 1;
+  memcpy(b->bf[k].s, str + start, seg);
+  if (hard)
+   b->bf[k].s[seg] = WPE_WR;         /* logical line end: e_write emits '\n' */
+  else
+   b->bf[k].s[seg] = '\0';           /* soft wrap: e_write rejoins on save */
+  b->bf[k].s[seg + 1] = '\0';
+  b->bf[k].len = e_str_len((unsigned char *)b->bf[k].s);
+  b->bf[k].nrc = e_str_nrc((unsigned char *)b->bf[k].s);
+  start += seg;
+ } while (start < len);
 }
 
 /* e_buffer_set_text - replace the WHOLE buffer content with `text` (lines split
