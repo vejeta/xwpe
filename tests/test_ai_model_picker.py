@@ -1,9 +1,9 @@
-"""AI model picker -- radio list of the backend's available models.
+"""AI model picker -- scrollable list of the backend's available models.
 
-Alt-G m opens a radio dialog of the models the active backend offers (queried
-live for Ollama/OpenAI, the CLI aliases for Claude), with the model in use
-pre-marked; picking one sets it.  Uses claudecli so the list is deterministic
-(default/sonnet/opus/haiku) and needs no network.
+Alt-G m opens a scrollable overlay of the models the active backend offers
+(queried live for Ollama/OpenAI, the CLI aliases for Claude), with the model in
+use pre-selected; Up/Down move, Enter picks.  Uses claudecli so the list is
+deterministic (default/sonnet/opus/haiku) and needs no network.
 """
 import os
 import subprocess
@@ -38,9 +38,9 @@ def test_claudecli_model_picker(tmp_path):
         disp = "\n".join(s.display())
         for want in ("default", "sonnet", "opus", "haiku"):
             assert want in disp, "model %r not offered:\n%s" % (want, disp)
-        # the current model ("default") is pre-marked as the active radio
-        assert any("(*) default" in ln or "(*)default" in ln.replace(" ", "  ")
-                   for ln in s.display()), "current model not pre-marked:\n" + disp
+        assert "PgUp/PgDn" in disp, "picker is not the scrollable overlay:\n" + disp
+        # "default" is pre-selected (index 0); Down lands on the next model,
+        # sonnet, and Enter sets it -- which also proves the pre-selection.
         s.key("\033[B", delay=0.3)       # down -> sonnet
         s.key("\r", delay=0.6)           # confirm
         s._drain(0.4)

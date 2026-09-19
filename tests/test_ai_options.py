@@ -38,14 +38,38 @@ def test_ai_options_dialog_renders_current(tmp_path):
         s.key("i", delay=0.6)            # AI -> dialog
         disp = "\n".join(s.display())
         s.key("\033", delay=0.3)
+    # backend + policy are radios; the model is a button showing the current
+    # choice (the full list lives in the scrollable picker behind it).
     for want in ("AI settings", "Backend", "Model", "Permission",
-                 "Claude CLI", "Ollama", "sonnet", "opus"):
+                 "Claude CLI", "Ollama", "sonnet", "(change)"):
         assert want in disp, "AI dialog missing %r:\n%s" % (want, disp)
-    # current backend/model/policy are the marked radios
+    # current backend is the marked radio
     assert "(*) Claude CLI" in disp.replace("  ", " ").replace(" (", " (") \
         or "(*)Claude CLI" in disp.replace(" ", "") \
         or any("(*)" in ln and "Claude CLI" in ln for ln in disp.splitlines()), \
         "current backend not pre-marked:\n" + disp
+
+
+def test_ai_options_model_picker_scrolls_and_selects(tmp_path):
+    # Alt-M opens the scrollable model picker; Down + Enter selects a different
+    # model, and the dialog reopens with it on the button.  claudecli's list is
+    # deterministic (default/sonnet/opus/haiku), no network.
+    trace = tmp_path / "ai.trace"
+    env = dict(ENV); env["XWPE_AI_TRACE"] = str(trace)
+    with WpeSession(str(tmp_path), "int main(void){return 0;}\n",
+                    env_extra=env) as s:
+        s.key("\033o", delay=0.5)
+        s.key("i", delay=0.6)
+        s.key("\033m", delay=0.8)        # Alt-M -> scrollable picker
+        pick = "\n".join(s.display())
+        assert "Model (" in pick and "available)" in pick, \
+            "scrollable model picker did not open:\n" + pick
+        assert "PgUp/PgDn" in pick, "picker is not the scrollable overlay:\n" + pick
+        s.key("\033[B", delay=0.3)       # Down one item
+        s.key("\r", delay=0.6)           # Enter -> select
+        s.key("\033", delay=0.4)         # leave the reopened dialog
+    txt = trace.read_text() if trace.exists() else ""
+    assert "model set" in txt, "picking a model was not recorded:\n" + txt
 
 
 def test_ai_options_ok_reads_radios(tmp_path):

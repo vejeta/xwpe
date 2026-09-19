@@ -1733,50 +1733,71 @@ static int e_ai_edit(FENSTER *f)
 
 /* ======================= model picker =================================== */
 
-/* A navigable radio list (arrows move, Enter confirms, Esc cancels) built on the
- * standard dialog widgets -- the same interaction as the LSP pickers, so choosing
- * a model feels like every other list in the editor rather than a blind prompt.
- * Returns the chosen index in labels[0..n), or -1 if cancelled.  Mirrors the LSP
- * picker's structure; the sw ids MUST be unique and non-zero or the modal dialog
- * cannot take initial focus and would spin (see the LSP picker for the why). */
+/* e_ai_pick - a SCROLLABLE single-choice list in a boxed overlay.  Up/Down move
+ * the selection, PgUp/PgDn page, Enter confirms, Esc cancels; the selected row is
+ * highlighted.  Unlike a fixed radio group it has no length cap, so a backend
+ * with many models (Ollama tags, the OpenAI catalogue) is fully browsable rather
+ * than truncated at the box's height.  Returns the chosen index in labels[0..n),
+ * or -1 if cancelled. */
 #define AI_PICK_MAXW 44
 static int e_ai_pick(FENSTER *f, const char *title, const char *const *labels,
                      int n, int cur)
 {
- W_OPTSTR *o;
- static char rows[16][AI_PICK_MAXW + 4];
- static char name[80];
- int i, sel = -1, vis, mxlen = 0, w, bw, bh;
+ int sel = (cur >= 0 && cur < n) ? cur : 0, top = 0;
+ int i, maxw = 0, boxw, vis, xa, ya, xe, ye, ret = -1;
+ const char *hint = " Up/Dn move  PgUp/PgDn page  Enter ok  Esc cancel ";
 
- vis = n < 16 ? n : 16;
- for (i = 0; i < vis; i++) {
-  snprintf(rows[i], sizeof rows[i], "%.*s", AI_PICK_MAXW, labels[i]);
-  if ((int)strlen(rows[i]) > mxlen) mxlen = strlen(rows[i]);
+ if (n <= 0) return -1;
+ for (i = 0; i < n; i++)
+  if (labels[i] && (int)strlen(labels[i]) > maxw) maxw = (int)strlen(labels[i]);
+ if (maxw > AI_PICK_MAXW) maxw = AI_PICK_MAXW;
+ if (maxw < (int)strlen(title)) maxw = (int)strlen(title);
+ if (maxw < (int)strlen(hint)) maxw = (int)strlen(hint);
+ boxw = maxw + 4;
+ if (boxw > MAXSCOL - 4) boxw = MAXSCOL - 4;
+ vis = n;
+ if (vis > MAXSLNS - 8) vis = MAXSLNS - 8;
+ if (vis < 1) vis = 1;
+ xa = (MAXSCOL - boxw) / 2; if (xa < 1) xa = 1;
+ xe = xa + boxw; ya = 2; ye = ya + vis + 1;
+
+ fk_cursor(0);
+ for (;;) {
+  PIC *pic;
+  int c, j;
+  if (sel < top) top = sel;                     /* keep the selection on screen */
+  if (sel >= top + vis) top = sel - vis + 1;
+  if (top > n - vis) top = n - vis;
+  if (top < 0) top = 0;
+  pic = e_std_kst(xa, ya, xe, ye, (char *)title, 1,
+                  f->fb->nr.fb, f->fb->nt.fb, f->fb->ne.fb);
+  if (!pic) break;
+  for (j = 0; j < vis; j++) {
+   int row = top + j, attr;
+   char line[600];
+   if (row >= n) break;
+   attr = (row == sel) ? f->fb->fz.fb : f->fb->nt.fb;   /* highlight the choice */
+   snprintf(line, sizeof line, " %-*.*s", boxw - 3, boxw - 3,
+            labels[row] ? labels[row] : "");
+   e_pr_str(xa + 1, ya + 1 + j, line, attr, 0, 0, 0, 0);
+  }
+  { int hl = (int)strlen(hint), hx = xa + (xe - xa - hl) / 2;
+    if (hx < xa + 1) hx = xa + 1;
+    e_pr_str(hx, ye, (char *)hint, f->fb->nr.fb, 0, 0, 0, 0); }
+  e_refresh();
+
+  c = e_getch();
+  if (c == CUP)      { if (sel > 0) sel--; e_close_view(pic, 1); continue; }
+  if (c == CDO)      { if (sel < n - 1) sel++; e_close_view(pic, 1); continue; }
+  if (c == BUP)      { sel -= vis; if (sel < 0) sel = 0; e_close_view(pic, 1); continue; }
+  if (c == BDO)      { sel += vis; if (sel > n - 1) sel = n - 1; e_close_view(pic, 1); continue; }
+  if (c == 13 || c == '\r' || c == '\n') { ret = sel; e_close_view(pic, 1); break; }
+  if (c == WPE_ESC)  { ret = -1; e_close_view(pic, 1); break; }
+  e_close_view(pic, 1);                          /* ignore other keys, redraw */
  }
- snprintf(name, sizeof name, "%.60s", title);
- w = mxlen + 4;
- if ((int)strlen(name) + 2 > w) w = strlen(name) + 2;
- o = e_init_opt_kst(f);
- if (!o) return -1;
- bw = w + 4;
- bh = vis + 3;
- o->xa = 8;
- o->ya = 3;
- o->xe = o->xa + bw;
- o->ye = o->ya + bh;
- o->bgsw = 0;
- o->crsw = AltO;                        /* Enter on a radio confirms via Ok      */
- o->name = name;
- for (i = 0; i < vis; i++)
-  e_add_pswstr(0, 3, 1 + i, -1, 10001 + i, 0, rows[i], o);
- if (cur >= 0 && cur < vis)
-  o->pstr[0]->num = cur;                /* pre-mark the current choice (radio) */
- e_add_bttstr((o->xe - o->xa - 4) / 2, o->ye - o->ya - 1, 0, AltO, "Ok", NULL, o);
- if (e_opt_kst(o) != WPE_ESC)
-  sel = o->pstr[0]->num;
- freeostr(o);
- if (sel < 0 || sel >= vis) return -1;
- return sel;
+ fk_cursor(1);
+ e_cursor(f, 0);
+ return ret;
 }
 
 static int e_ai_pick_model(FENSTER *f)
@@ -1815,84 +1836,74 @@ int e_ai_options(FENSTER *f)
  static const char *bklab[4] = { "Claude CLI (login)", "Ollama (local)   ",
                                  "OpenAI-compatible", "Claude API (key) " };
  static const char *pol[3] = { "Ask each action ", "Auto-accept edits", "Auto (skip asks)" };
- char *models[32];
- static char mrows[16][40];
- char merr[160];
+ static char mlabel[48];
  W_OPTSTR *o;
- int i, bcur, mcur, nmodels, edopt_before, ret, new_be;
+ int i, bcur, edopt_before, ret, new_be;
 
- /* The dialog is static (widgets are fixed at build time), so the Model radios
-    can only list ONE backend.  To make the list follow the Backend choice, loop:
-    if Ok changed the backend, apply it and REOPEN with that backend's models. */
+ /* The dialog only shows the CURRENT model on a button; the (unbounded) model
+    list lives in a scrollable picker (e_ai_choose_model), so the dialog stays a
+    fixed size no matter how many models a backend offers.  Loop so a backend
+    change or a model pick reopens the dialog with the updated labels. */
  for (;;) {
   o = e_init_opt_kst(f);
   if (!o) return 0;
-  bcur = mcur = 0;
+  bcur = 0;
   for (i = 0; i < 4; i++) if (bk[i] == e_ai_backend) bcur = i;
-  merr[0] = '\0';
-  nmodels = wpe_ai_list_models(e_ai_backend, models, 32, merr, sizeof merr);
-  if (nmodels < 0) nmodels = 0;
-  if (nmodels > 16) nmodels = 16;
-  for (i = 0; i < nmodels; i++) {
-   snprintf(mrows[i], sizeof mrows[i], "%.36s", models[i]);
-   if (e_ai_model && !strcmp(e_ai_model, models[i])) mcur = i;
-  }
+  snprintf(mlabel, sizeof mlabel, "%.30s  (change)",
+           (e_ai_model && *e_ai_model) ? e_ai_model : "(backend default)");
 
   o->xa = 5; o->ya = 2; o->xe = 60; o->ye = 21; o->bgsw = 0; o->crsw = AltO;
   o->name = "AI settings";
   e_add_sswstr(3, 2, 0, AltE, (f->ed->edopt & ED_AI_ENABLE) ? 1 : 0, "Enable AI assistant", o);
 
-  /* Every field needs a UNIQUE, non-zero `sw`: e_opt_kst navigates spatially but
-     returns the target field's sw to focus it, and sw==0 means "no field", so a
-     zero sw makes a widget unreachable by Tab/arrows/mouse.  These are field IDs
-     above the key range (no Alt accelerator, but fully navigable). */
+  /* Every radio field needs a UNIQUE, non-zero `sw`: e_opt_kst navigates
+     spatially but returns the target field's sw to focus it, and sw==0 means
+     "no field", so a zero sw makes a widget unreachable by Tab/arrows/mouse. */
   e_add_txtstr(3, 4, "Backend:", o);
   for (i = 0; i < 4; i++)
    e_add_pswstr(0, 4, 5 + i, i, 4000 + i, (i == 3) ? bcur : 0, (char *)bklab[i], o);
 
   e_add_txtstr(28, 4, "Model:", o);
-  if (nmodels == 0)
-   e_add_txtstr(28, 5, merr[0] ? merr : "(backend offline)", o);
-  for (i = 0; i < nmodels; i++)
-   e_add_pswstr(1, 29, 5 + i, i, 4100 + i, (i == nmodels - 1) ? mcur : 0, mrows[i], o);
+  e_add_bttstr(28, 5, 0, AltM, mlabel, NULL, o);   /* opens the scrollable picker */
 
   e_add_txtstr(3, 11, "Permission:", o);
   for (i = 0; i < 3; i++)
-   e_add_pswstr(2, 4, 12 + i, i, 4200 + i, (i == 2) ? e_ai_policy : 0, (char *)pol[i], o);
+   e_add_pswstr(1, 4, 12 + i, i, 4200 + i, (i == 2) ? e_ai_policy : 0, (char *)pol[i], o);
 
-  e_add_txtstr(3, 16, "(pick a Backend + Ok to reload its model list)", o);
+  e_add_txtstr(3, 16, "(Alt-M picks the model; a Backend change reloads its list)", o);
   e_add_bttstr(12, 17, 1, AltO, " Ok ", NULL, o);
   e_add_bttstr(31, 17, -1, WPE_ESC, "Cancel", NULL, o);
 
   edopt_before = f->ed->edopt;
   ret = e_opt_kst(o);
-  if (ret == WPE_ESC) { for (i = 0; i < nmodels; i++) free(models[i]); freeostr(o); return 0; }
+  if (ret == WPE_ESC) { freeostr(o); return 0; }
 
-  /* Enable + policy are applied every time so they survive a reload. */
+  /* Enable + policy + backend are read on every return so they survive the
+     reopen after a Model pick or a Backend change. */
   f->ed->edopt = (f->ed->edopt & ~ED_AI_ENABLE) | (o->sstr[0]->num ? ED_AI_ENABLE : 0);
-  e_ai_policy  = (o->pstr[2]->num >= 0 && o->pstr[2]->num < 3) ? o->pstr[2]->num : 0;
+  e_ai_policy  = (o->pstr[1]->num >= 0 && o->pstr[1]->num < 3) ? o->pstr[1]->num : 0;
   new_be = bk[(o->pstr[0]->num >= 0 && o->pstr[0]->num < 4) ? o->pstr[0]->num : 0];
   if (f->ed->edopt != edopt_before) {
    e_switch_blst(f->ed); e_ai_refresh_bars(f->ed); e_repaint_desk(f);
   }
 
-  if (new_be != e_ai_backend) {                 /* backend changed: reload models */
+  if (new_be != e_ai_backend) {                 /* backend changed: reset + reopen */
    e_ai_backend = new_be;
-   free(e_ai_model); e_ai_model = NULL;          /* the new list will pre-pick its first */
+   free(e_ai_model); e_ai_model = NULL;          /* pick a model for the new backend */
    wpe_ai_trace("options reload backend=%s", wpe_ai_backend_name(e_ai_backend));
-   for (i = 0; i < nmodels; i++) free(models[i]);
    freeostr(o);
-   continue;                                     /* reopen with new_be's models */
+   continue;
   }
 
-  if (nmodels > 0 && o->pstr[1]->num >= 0 && o->pstr[1]->num < nmodels) {
-   free(e_ai_model);
-   e_ai_model = strdup(models[o->pstr[1]->num]);
+  if (ret == AltM) {                            /* Model button: scrollable picker */
+   freeostr(o);
+   e_ai_pick_model(f);
+   continue;                                     /* reopen so the label updates */
   }
+
   wpe_ai_trace("options backend=%s model=%s policy=%s enable=%d",
                wpe_ai_backend_name(e_ai_backend), e_ai_model ? e_ai_model : "-",
                wpe_ai_policy_name(e_ai_policy), (f->ed->edopt & ED_AI_ENABLE) ? 1 : 0);
-  for (i = 0; i < nmodels; i++) free(models[i]);
   freeostr(o);
   return 0;
  }
