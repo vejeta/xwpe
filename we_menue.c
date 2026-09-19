@@ -228,6 +228,9 @@ int WpeHandleMainmenu(int n, FENSTER *f)
   else
 #endif
     mainmenu[MENOPT - 3].no_of_items = 5;
+#ifdef WPE_AI
+  mainmenu[MENOPT - 3].no_of_items += 1;   /* + "AI" settings entry (last) */
+#endif
   if((mainmenu[MENOPT - 3].menuitems = MALLOC(mainmenu[MENOPT - 3].no_of_items * sizeof(OPTK))) == NULL)
     e_error(e_msg[ERR_LOWMEM], 1, f->fb);
   mainmenu[MENOPT - 3].menuitems[0] = WpeFillSubmenuItem("Adjust Colors", 0, 'A', e_ad_colors);
@@ -244,6 +247,10 @@ int WpeHandleMainmenu(int n, FENSTER *f)
     mainmenu[MENOPT - 3].menuitems[7] = WpeFillSubmenuItem("Debugger", 0, 'D', e_deb_options);
 #endif
   }
+#endif
+#ifdef WPE_AI
+  mainmenu[MENOPT - 3].menuitems[mainmenu[MENOPT - 3].no_of_items - 1] =
+    WpeFillSubmenuItem("AI", 1, 'I', e_ai_options);
 #endif
 #ifdef NEWSTYLE
   if(WpeIsXwin())

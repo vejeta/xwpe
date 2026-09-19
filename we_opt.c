@@ -2114,11 +2114,7 @@ int e_edt_options(FENSTER *f)
  e_add_sswstr(26, 4, 1, AltH, f->ed->autosv & 2 ? 1 : 0, "CHanges         ", o);
  e_add_sswstr(4, 6, 2, AltD, f->ed->edopt & ED_OLD_TILE_METHOD ? 1 : 0, "OlD Style     ", o);
  e_add_sswstr(4, 4, 13, AltK, f->ed->edopt & ED_BLOCK_WORDSTAR ? 1 : 0, "WordStar blocK", o);
-#ifdef WPE_AI
- /* Runtime on/off for the AI assistant (sstr index 5; read back below).  Off by
-    default -- keeps the classic experience until the user opts in. */
- e_add_sswstr(4, 7, 0, AltA, f->ed->edopt & ED_AI_ENABLE ? 1 : 0, "Ai assistant  ", o);
-#endif
+ /* The AI assistant on/off + backend/model/policy now live in Options -> AI. */
  e_add_pswstr(0, 26, 7, 1, AltL, 0, "OLd-Style       ", o);
  e_add_pswstr(0, 26, 8, 0, AltC, f->ed->edopt & ED_CUA_STYLE, "CUA-Style       ", o);
  e_add_pswstr(1, 26, 11, 3, AltY, 0, "OnlY Source-Text", o);
@@ -2139,14 +2135,11 @@ int e_edt_options(FENSTER *f)
   f->ed->maxchg = o->nstr[2]->num;
   f->ed->numundo = o->nstr[3]->num;
   f->ed->autoindent = o->nstr[4]->num;
-  f->ed->edopt = ((f->ed->edopt & ~(ED_EDITOR_OPTIONS | ED_AI_ENABLE)) + o->pstr[0]->num) +
+  f->ed->edopt = ((f->ed->edopt & ~ED_EDITOR_OPTIONS) + o->pstr[0]->num) +
     (o->pstr[1]->num == 0 ? ED_SOURCE_AUTO_INDENT : 0) +
     (o->pstr[1]->num == 1 ? ED_ALWAYS_AUTO_INDENT : 0) +
     (o->sstr[3]->num ? ED_OLD_TILE_METHOD : 0) +
     (o->sstr[0]->num ? ED_SHOW_ENDMARKS : 0) +
-#ifdef WPE_AI
-    (o->sstr[5]->num ? ED_AI_ENABLE : 0) +
-#endif
     (o->sstr[4]->num ? ED_BLOCK_WORDSTAR : 0);
   if (f->ed->print_cmd)
    WpeFree(f->ed->print_cmd);

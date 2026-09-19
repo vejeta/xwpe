@@ -1536,6 +1536,82 @@ static int e_ai_pick_model(FENSTER *f)
  return 0;
 }
 
+/* Options -> AI...: the settings home.  Enable checkbox, Backend radio, a Model
+ * radio populated live from the selected backend, and a Policy radio -- all
+ * marking the current choice.  Applies to the running session; Save Options
+ * persists it (like the Editor dialog).  Changing the backend re-lists its
+ * models on the next open. */
+int e_ai_options(FENSTER *f)
+{
+ static const int bk[4] = { WPE_AI_CLAUDECLI, WPE_AI_OLLAMA, WPE_AI_OPENAI, WPE_AI_CLAUDE };
+ static const char *bklab[4] = { "Claude CLI (login)", "Ollama (local)   ",
+                                 "OpenAI-compatible", "Claude API (key) " };
+ static const char *pol[3] = { "Ask each action ", "Auto-accept edits", "Auto (skip asks)" };
+ char *models[32];
+ static char mrows[16][40];
+ char merr[160];
+ W_OPTSTR *o;
+ int i, bcur = 0, mcur = 0, nmodels, edopt_before, ret;
+
+ o = e_init_opt_kst(f);
+ if (!o) return 0;
+ for (i = 0; i < 4; i++) if (bk[i] == e_ai_backend) bcur = i;
+ merr[0] = '\0';
+ nmodels = wpe_ai_list_models(e_ai_backend, models, 32, merr, sizeof merr);
+ if (nmodels < 0) nmodels = 0;
+ if (nmodels > 16) nmodels = 16;
+ for (i = 0; i < nmodels; i++) {
+  snprintf(mrows[i], sizeof mrows[i], "%.36s", models[i]);
+  if (e_ai_model && !strcmp(e_ai_model, models[i])) mcur = i;
+ }
+
+ o->xa = 5; o->ya = 2; o->xe = 60; o->ye = 21; o->bgsw = 0; o->crsw = AltO;
+ o->name = "AI settings";
+ e_add_sswstr(3, 2, 0, AltE, (f->ed->edopt & ED_AI_ENABLE) ? 1 : 0, "Enable AI assistant", o);
+
+ e_add_txtstr(3, 4, "Backend:", o);
+ for (i = 0; i < 4; i++)
+  e_add_pswstr(0, 4, 5 + i, i, 0, (i == 3) ? bcur : 0, (char *)bklab[i], o);
+
+ e_add_txtstr(28, 4, "Model:", o);
+ if (nmodels == 0)
+  e_add_txtstr(28, 5, merr[0] ? merr : "(backend offline)", o);
+ for (i = 0; i < nmodels; i++)
+  e_add_pswstr(1, 29, 5 + i, i, 0, (i == nmodels - 1) ? mcur : 0, mrows[i], o);
+
+ e_add_txtstr(3, 11, "Permission:", o);
+ for (i = 0; i < 3; i++)
+  e_add_pswstr(2, 4, 12 + i, i, 0, (i == 2) ? e_ai_policy : 0, (char *)pol[i], o);
+
+ e_add_txtstr(3, 16, "(change backend, then reopen to list its models)", o);
+ e_add_bttstr(12, 17, 1, AltO, " Ok ", NULL, o);
+ e_add_bttstr(31, 17, -1, WPE_ESC, "Cancel", NULL, o);
+
+ edopt_before = f->ed->edopt;
+ ret = e_opt_kst(o);
+ if (ret != WPE_ESC) {
+  f->ed->edopt = (f->ed->edopt & ~ED_AI_ENABLE) |
+                 (o->sstr[0]->num ? ED_AI_ENABLE : 0);
+  e_ai_backend = bk[(o->pstr[0]->num >= 0 && o->pstr[0]->num < 4) ? o->pstr[0]->num : 0];
+  e_ai_policy  = (o->pstr[2]->num >= 0 && o->pstr[2]->num < 3) ? o->pstr[2]->num : 0;
+  if (nmodels > 0 && o->pstr[1]->num >= 0 && o->pstr[1]->num < nmodels) {
+   free(e_ai_model);
+   e_ai_model = strdup(models[o->pstr[1]->num]);
+  }
+  if (f->ed->edopt != edopt_before) {
+   e_switch_blst(f->ed);
+   e_ai_refresh_bars(f->ed);
+   e_repaint_desk(f);
+  }
+  wpe_ai_trace("options backend=%s model=%s policy=%s enable=%d",
+               wpe_ai_backend_name(e_ai_backend), e_ai_model ? e_ai_model : "-",
+               wpe_ai_policy_name(e_ai_policy), (f->ed->edopt & ED_AI_ENABLE) ? 1 : 0);
+ }
+ for (i = 0; i < nmodels; i++) free(models[i]);
+ freeostr(o);
+ return 0;
+}
+
 int e_ai_agent(FENSTER *f);         /* defined in the Agent section below */
 static int e_ai_plan(FENSTER *f);   /* defined in the PLAN section below  */
 static void e_ai_cycle_policy(FENSTER *f);  /* defined below e_ai_ui_key    */
