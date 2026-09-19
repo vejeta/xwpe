@@ -60,6 +60,35 @@ def test_typing_on_applied_long_line_does_not_crash(tmp_path):
         assert s.alive(), "editor crashed typing on the AI-applied long line"
 
 
+def test_typing_on_unbroken_run_does_not_crash(tmp_path):
+    # The pathological shape: a very long line with NO space or dash to wrap at
+    # (a URL, a base64 blob).  Editing near its start makes the auto-wrap machine
+    # hand its own recursion a chunk bigger than one line holds; every write is
+    # now bounded to the line buffer and the line is always terminated, so it
+    # clamps instead of running off the end.  Hammer it and require survival.
+    unbroken = "A1b2C3d4" * 40                         # 320 cols, no break point
+    env = {
+        "XWPE_AI_ENABLE": "1",
+        "XWPE_AI_BACKEND": "mock",
+        "XWPE_AI_MOCK_REPLY": unbroken + "\ntail\n",
+    }
+    with WpeSession(str(tmp_path), "int main(void){return 0;}\n",
+                    env_extra=env) as s:
+        s.key(ALT.AI)
+        s.key("e")
+        s.key("rewrite it")
+        s.key("\r", delay=1.3)
+        s._drain(1.0)
+        s.key("y", delay=1.0)
+        s._drain(0.6)
+        assert s.alive(), "editor died applying the unbroken run"
+        s.key("\033[H")                  # Home: to the very start of the run
+        s.key("Xy ", delay=0.5)          # type where the wrap must cascade
+        s.key("Z", "Z", "Z", delay=0.3)
+        s._drain(0.5)
+        assert s.alive(), "editor crashed typing on an unbroken long run"
+
+
 def test_applied_long_line_saves_back_rejoined(tmp_path):
     # The soft-wrap is invisible on save: e_write drops the soft breaks, so the
     # file round-trips the long logical line rather than gaining hard newlines.

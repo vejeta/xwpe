@@ -1971,13 +1971,10 @@ int e_ins_nchar(BUFFER *b, SCHIRM *sch, unsigned char *s, int xa, int ya,
    b->bf[ya].nrc = e_str_nrc(b->bf[ya].s);
   }
   for (; i > 0 && *(b->bf[ya].s+i) != ' ' && *(b->bf[ya].s+i) != '-'; i--);
-  if (i == 0)
-  {
-   if (s[n-1] != ' ' && s[n-1] != '-')
-    i = b->bf[ya].len - 2;
-   else
-    i--;
-  }
+  if (i <= 0)                          /* no word boundary within reach: break */
+   i = b->bf[ya].len - 2;              /* near the end so only a short tail (a */
+  if (i < 0)                           /* few columns) wraps -- never the whole */
+   i = 0;                              /* line, which fed a runaway recursion   */
   if (*(b->bf[ya].s+b->bf[ya].len) == WPE_WR || ya == b->mxlines)
   {
    e_new_line(ya+1, b);
@@ -2069,12 +2066,23 @@ int e_ins_nchar(BUFFER *b, SCHIRM *sch, unsigned char *s, int xa, int ya,
   if(sch->mark_end.y == ya && sch->mark_end.x >= xa)
    sch->mark_end.x += n;
  }
+ /* Insert s at xa, shifting the tail right by n.  Bound every write to the
+    mx.x+1 line buffer: the wrap logic above keeps a normal keystroke inside the
+    line, but a pathological caller (a huge unbroken run the wrap recursion hands
+    down, or a large block/undo insert) can present an n that would not fit --
+    clamp rather than run off the end and corrupt the heap. */
  for (j = b->bf[ya].len; j >= xa; --j)
-  *(b->bf[ya].s+j+n) = *(b->bf[ya].s+j);
- for (j = 0; j < n; ++j)
+  if (j + n <= b->mx.x)
+   *(b->bf[ya].s+j+n) = *(b->bf[ya].s+j);
+ for (j = 0; j < n && xa + j <= b->mx.x; ++j)
   *(b->bf[ya].s+xa+j) = *(s+j);
  if (b->bf[ya].s[b->bf[ya].len] == WPE_WR)
   b->bf[ya].s[b->bf[ya].len+1] = '\0';
+ /* If the clamp above dropped this line's terminator (a pathological over-long
+    insert), pin one at the buffer's last valid index so the length recomputes
+    below -- e_str_nrc is strlen -- cannot read past the mx.x+1 buffer.  A
+    well-formed line already ends within bounds, so this is a no-op for it. */
+ b->bf[ya].s[b->mx.x] = '\0';
  b->b.x = xa + n;
  b->b.y = ya;
  b->bf[ya].len = e_str_len(b->bf[ya].s);
