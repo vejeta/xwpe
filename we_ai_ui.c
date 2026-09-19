@@ -1852,7 +1852,14 @@ int e_ai_options(FENSTER *f)
   snprintf(mlabel, sizeof mlabel, "%.30s  (change)",
            (e_ai_model && *e_ai_model) ? e_ai_model : "(backend default)");
 
-  o->xa = 5; o->ya = 2; o->xe = 60; o->ye = 21; o->bgsw = 0; o->crsw = AltO;
+  /* Centre the dialog on the whole screen (like the other menu dialogs), not
+     wherever the active editor window happens to sit. */
+  { int w = 55, h = 20;
+    o->xa = (MAXSCOL - w) / 2; if (o->xa < 1) o->xa = 1;
+    o->xe = o->xa + w;
+    o->ya = (MAXSLNS - h) / 2; if (o->ya < 1) o->ya = 1;
+    o->ye = o->ya + h; }
+  o->bgsw = 0; o->crsw = AltO;
   o->name = "AI settings";
   e_add_sswstr(3, 2, 0, AltE, (f->ed->edopt & ED_AI_ENABLE) ? 1 : 0, "Enable AI assistant", o);
 
@@ -1870,9 +1877,10 @@ int e_ai_options(FENSTER *f)
   for (i = 0; i < 3; i++)
    e_add_pswstr(1, 4, 12 + i, i, 4200 + i, (i == 2) ? e_ai_policy : 0, (char *)pol[i], o);
 
-  e_add_txtstr(3, 16, "(Alt-M picks the model; a Backend change reloads its list)", o);
-  e_add_bttstr(12, 17, 1, AltO, " Ok ", NULL, o);
-  e_add_bttstr(31, 17, -1, WPE_ESC, "Cancel", NULL, o);
+  e_add_txtstr(3, 16, "Tab/arrows move between fields; Space selects.", o);
+  e_add_txtstr(3, 17, "Press Model to choose from the backend's list.", o);
+  e_add_bttstr(12, 19, 1, AltO, " Ok ", NULL, o);
+  e_add_bttstr(31, 19, -1, WPE_ESC, "Cancel", NULL, o);
 
   edopt_before = f->ed->edopt;
   ret = e_opt_kst(o);
@@ -1896,9 +1904,16 @@ int e_ai_options(FENSTER *f)
   }
 
   if (ret == AltM) {                            /* Model button: scrollable picker */
-   freeostr(o);
+   /* e_opt_kst restores the screen under the dialog before it returns, so draw
+      the settings box back as a backdrop and float the picker over IT -- the
+      dialog stays visible while you choose instead of blinking to the editor.
+      Reopen afterwards so the Model button shows the new choice. */
+   PIC *bg = e_std_kst(o->xa, o->ya, o->xe, o->ye, "AI settings", 1,
+                       o->frt, o->ftt, o->frs);
    e_ai_pick_model(f);
-   continue;                                     /* reopen so the label updates */
+   if (bg) e_close_view(bg, 1);
+   freeostr(o);
+   continue;
   }
 
   wpe_ai_trace("options backend=%s model=%s policy=%s enable=%d",
