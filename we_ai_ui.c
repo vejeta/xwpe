@@ -64,6 +64,7 @@ static char g_ai_input[AI_PROMPT_MAX];  /* may hold '\n' -- a multi-line prompt 
 static int  g_ai_input_len = 0;
 static int  g_ai_input_rows = 0;        /* pane lines the input region occupies    */
 static int  g_ai_input_pos = 0;         /* caret byte offset within g_ai_input     */
+static int  g_ai_scroll_lock = 0;       /* user scrolled up: hold the view there   */
 
 /* First pane line the stream writes into: the last line normally, or the line
  * just above the input region when focus mode owns the bottom rows. */
@@ -208,7 +209,15 @@ static void ai_pane_paint(FENSTER *wf)
      like a terminal, instead of parked at column 0. */
   wf->b->b.x = (y >= 0 && wf->b->bf[y].s) ? wf->b->bf[y].len : 0;
  }
- e_messages_scroll_to_bottom(wf);
+ if (g_ai_scroll_lock) {
+  /* user scrolled up to browse -- leave the view where they left it */
+ } else if (g_ai_chat_focus) {
+  int vh = wf->e.y - wf->a.y - 1;               /* pin the input row to the bottom */
+  int bottom = wf->b->mxlines - vh;
+  wf->s->c.y = bottom > 0 ? bottom : 0;
+ } else {
+  e_messages_scroll_to_bottom(wf);
+ }
  e_schirm(wf, 0);
  if (g_ai_bg_win)
   e_cursor(g_ai_bg_win, 0);   /* background op: leave the caret in the user's file */
@@ -217,17 +226,20 @@ static void ai_pane_paint(FENSTER *wf)
  e_refresh();
 }
 
-/* Scroll the transcript view by `delta` lines without moving the input caret,
- * so PgUp/PgDn browse history.  Typing snaps back to the bottom on the next
- * ai_pane_paint (its scroll-to-bottom keeps the caret visible). */
+/* Scroll the transcript view by `delta` lines to peek at history.  The view
+ * holds until the next key: any edit key repaints and snaps back to the input
+ * (ai_pane_paint scrolls to the bottom), so PgUp/PgDn browse, then editing
+ * returns to the prompt. */
 static void ai_pane_scroll(FENSTER *wf, int delta)
 {
  SCHIRM *s = wf->s;
  int visible_h = wf->e.y - wf->a.y - 1;
  int maxtop = wf->b->mxlines - visible_h;
+ if (maxtop < 0) maxtop = 0;
  s->c.y += delta;
  if (s->c.y > maxtop) s->c.y = maxtop;
  if (s->c.y < 0) s->c.y = 0;
+ g_ai_scroll_lock = (s->c.y < maxtop);          /* released once back at the bottom */
  e_schirm(wf, 0);
  e_cursor(wf, 0);
  e_refresh();
@@ -814,6 +826,7 @@ static void e_ai_chat_loop(FENSTER *f, const char *seed, int send_now)
  if (!wf) return;
 
  g_ai_chat_focus = 1;
+ g_ai_scroll_lock = 0;
  g_ai_input[0] = '\0';
  g_ai_input_len = 0;
  g_ai_input_pos = 0;
@@ -836,10 +849,32 @@ static void e_ai_chat_loop(FENSTER *f, const char *seed, int send_now)
   if (c == WPE_ESC)
    break;
   if (c < 0) {                                  /* a mouse event */
-   e_edt_mouse(c, wf);                           /* menu/status bar, drag/resize/scroll */
-   ai_input_render(wf);                          /* restore the "> " row + caret */
-   continue;
+   extern struct mouse e_mouse;
+   int inside = (e_mouse.x >= wf->a.x && e_mouse.x <= wf->e.x &&
+                 e_mouse.y >= wf->a.y && e_mouse.y <= wf->e.y);
+   int onbar  = (e_mouse.y == 0 || e_mouse.y == MAXSLNS - 1);
+   if (inside || onbar) {                        /* the pane, menu or status bar */
+    int maxtop;
+    e_edt_mouse(c, wf);                           /* drag/resize/cursor/scroll/menu */
+    maxtop = wf->b->mxlines - (wf->e.y - wf->a.y - 1);
+    g_ai_scroll_lock = (maxtop > 0 && wf->s->c.y < maxtop);  /* scrollbar moved it */
+    ai_input_render(wf);
+    continue;
+   }
+   { int j;                                       /* clicked ANOTHER window: leave the */
+     for (j = wf->ed->mxedt; j > 0; j--) {        /* chat and give it the focus */
+      FENSTER *g = wf->ed->f[j];
+      if (g != wf && e_mouse.x >= g->a.x && e_mouse.x <= g->e.x &&
+          e_mouse.y >= g->a.y && e_mouse.y <= g->e.y) {
+       home_edt = wf->ed->edt[j];
+       break;
+      }
+     } }
+   break;
   }
+  if (c == BUP) { ai_pane_scroll(wf, -(wf->e.y - wf->a.y - 2)); continue; }
+  if (c == BDO) { ai_pane_scroll(wf, +(wf->e.y - wf->a.y - 2)); continue; }
+  g_ai_scroll_lock = 0;                          /* any edit key returns to the input */
   if (c == WPE_CR) {                            /* Enter: send the whole input */
    if (g_ai_input_len > 0) {
     char sb[AI_PROMPT_MAX];
@@ -862,8 +897,6 @@ static void e_ai_chat_loop(FENSTER *f, const char *seed, int send_now)
   if (c == ENDE)     { g_ai_input_pos = ai_in_eol(g_ai_input_pos);  ai_input_render(wf); continue; }
   if (c == CUP)      { ai_in_vmove(-1);                          ai_input_render(wf); continue; }
   if (c == CDO)      { ai_in_vmove(1);                           ai_input_render(wf); continue; }
-  if (c == BUP)      { ai_pane_scroll(wf, -(wf->e.y - wf->a.y - 2)); continue; }
-  if (c == BDO)      { ai_pane_scroll(wf, +(wf->e.y - wf->a.y - 2)); continue; }
   if ((c >= 32 && c < 255) || c > WPE_AI_MENU) { /* a printable char (ASCII or a
                                                     real Unicode codepoint) */
    unsigned char u8[4];
