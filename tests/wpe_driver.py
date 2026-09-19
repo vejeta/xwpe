@@ -178,6 +178,20 @@ class WpeSession:
         _real_home = os.path.expanduser("~")
         env.setdefault("RUSTUP_HOME", os.path.join(_real_home, ".rustup"))
         env.setdefault("CARGO_HOME", os.path.join(_real_home, ".cargo"))
+        # Same problem for the claude CLI backend: it reads its credentials from
+        # $HOME/.claude/ + $HOME/.claude.json, so under HOME=workdir a real login
+        # is invisible and every claudecli turn comes back "Not logged in".  Link
+        # the real ones into the test HOME (read-only use) so a claudecli-live
+        # test can authenticate; if they do not exist (CI, no login) nothing is
+        # linked and that test simply self-skips.  ~/.xwpe stays isolated.
+        for _c in (".claude", ".claude.json"):
+            _src = os.path.join(_real_home, _c)
+            _dst = os.path.join(workdir, _c)
+            if os.path.exists(_src) and not os.path.exists(_dst):
+                try:
+                    os.symlink(_src, _dst)
+                except OSError:
+                    pass
         # The menu/file/etc. tests do not exercise the LSP, but opening t.c
         # on a box with clangd installed (e.g. Homebrew on macOS) pops up a
         # "Starting language server..." Messages window that overlays the
