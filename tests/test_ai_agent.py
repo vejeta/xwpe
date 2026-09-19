@@ -87,3 +87,24 @@ def test_agent_pane_docks_at_bottom(tmp_path):
     assert file_row < pane_row, \
         "the agent pane is not docked below the file (file row %d, pane row %d):\n%s" \
         % (file_row, pane_row, text)
+
+
+def test_agent_offers_followup_when_done(tmp_path):
+    # When the agent finishes it arms the chat input on the same pane so the
+    # user can type a follow-up (with the agent's context) instead of a dead log.
+    turns = ("TOOL list_dir .@@TURN@@DONE looked around"
+             "@@TURN@@FOLLOWUP_REPLY_MARKER")
+    env = {"XWPE_AI_ENABLE": "1", "XWPE_AI_BACKEND": "mock", "XWPE_AI_POLICY": "ask",
+           "XWPE_AI_MOCK_REPLY": turns}
+    with WpeSession(str(tmp_path), "int main(void){return 0;}\n",
+                    env_extra=env, filename="t.c") as s:
+        s.key(ALT.AI); s.key("g")
+        s.key("look around"); s.key("\r", delay=1.0); s._drain(1.5)
+        armed = "\n".join(s.display())
+        assert "type a follow-up" in armed, "no follow-up prompt after the agent:\n" + armed
+        # a follow-up typed in the pane is sent as a chat turn (proving the input
+        # row was armed and consumes keys)
+        s.key("and then?"); s.key("\r", delay=1.0); s._drain(0.8)
+        after = "\n".join(s.display())
+    assert "FOLLOWUP_REPLY_MARKER" in after, \
+        "the in-pane follow-up did not send / get a reply:\n" + after

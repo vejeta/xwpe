@@ -2131,11 +2131,12 @@ static void ai_agent_finish(ai_async_op *op)
  wpe_ai_session_save(op->f);
  if (e_ai_policy != WPE_AI_POLICY_ASK && wpe_ai_checkpoint_active())
   wpe_ai_changeset_review(op->f);
- /* Hand focus back to the file the user launched from: the agent pane is a
-    read-only log, so without this it stays active and typed keys land in it
-    (looking like a chat that ignores you) instead of in the code. */
- if (op->save_id >= 0 && op->cn->mxedt >= 0)
-  e_switch_window(op->save_id, op->cn->f[op->cn->mxedt]);
+ /* Leave the pane ready for a follow-up instead of a dead log: arm the chat
+    input on it (the agent's transcript stays visible), so the user types the
+    next instruction right here rather than re-opening Alt-G.  The workspace
+    session carries the context forward; Esc leaves. */
+ ai_pane(op->f, "[agent] done - type a follow-up below (Enter sends, Esc leaves)", 0);
+ e_ai_chat_arm(op->f);
 }
 
 int e_ai_agent(FENSTER *f)
