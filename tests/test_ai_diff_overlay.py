@@ -70,6 +70,29 @@ def test_diff_overlay_shows_context_and_colors(tmp_path):
         assert plus.bg in ("green", "brightgreen"), "added line not green: bg=%s" % plus.bg
 
 
+def test_diff_overlay_appears_near_the_change(tmp_path):
+    # A change deep in the file: the review box should open near those lines, not
+    # float at the top of the screen.
+    orig = "".join("int v%02d = %d;\n" % (i, i) for i in range(14))
+    new = orig.replace("int v10 = 10;", "int v10 = 999;")
+    env = {"XWPE_AI_ENABLE": "1", "XWPE_AI_BACKEND": "mock", "XWPE_AI_MOCK_REPLY": new}
+    with WpeSession(str(tmp_path), orig, env_extra=env, filename="t.c") as s:
+        s.key(ALT.AI); s.key("e"); s._drain(0.5)
+        s.key("bump v10"); s.key("\r", delay=0.8)
+        end = time.time() + 15
+        box_row = -1
+        while time.time() < end:
+            s._drain(0.5)
+            disp = s.display()
+            box_row = next((y for y, ln in enumerate(disp) if "Proposed change" in ln), -1)
+            if box_row >= 0:
+                break
+        assert box_row >= 0, "diff overlay did not appear"
+        # the change is ~line 11 of 14; the box must be well below the top rows,
+        # not pinned at the first line like the old centered placement.
+        assert box_row >= 7, "overlay not positioned near the change (row %d)" % box_row
+
+
 def test_diff_overlay_apply_and_undo(tmp_path):
     env = {"XWPE_AI_ENABLE": "1", "XWPE_AI_BACKEND": "mock", "XWPE_AI_MOCK_REPLY": NEW,
            "XWPE_AI_TRACE": str(tmp_path / "e.trace")}

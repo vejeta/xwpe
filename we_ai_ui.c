@@ -1047,7 +1047,8 @@ static char *ai_diff_fmt_n(int lineno, char gutter, const char *text)
    ignored.  Returns 13 for Enter, WPE_ESC for Esc, else the uppercased key.  The
    shared preview surface for the Edit review and the agent write confirmation. */
 static int ai_diff_box_show(FENSTER *f, char **rt, int *ra, int nrows,
-                            const char *title, const char *hint, const char *accept)
+                            const char *title, const char *hint, const char *accept,
+                            int ya_pref)
 {
  int maxw = 0, boxw, vis, xa, ya, xe, ye, top = 0, k, ret = WPE_ESC;
 
@@ -1062,7 +1063,18 @@ static int ai_diff_box_show(FENSTER *f, char **rt, int *ra, int nrows,
  if (vis < 1) vis = 1;
  xa = (MAXSCOL - boxw) / 2; if (xa < 1) xa = 1;
  xe = xa + boxw;
- ya = 2; ye = ya + vis + 1;
+ /* Place the box next to the lines it is about (ya_pref = their screen row) so
+    the change reads in place; drop it just below, or flip above when there is no
+    room below, and clamp to the screen.  ya_pref <= 0 keeps it near the top. */
+ if (ya_pref > 0) {
+  ya = ya_pref + 1;
+  if (ya + vis + 1 > MAXSLNS - 2) ya = ya_pref - vis - 2;   /* flip above */
+  if (ya < 1) ya = 1;
+  if (ya + vis + 1 > MAXSLNS - 2) ya = 2;                   /* still no fit: top */
+ } else {
+  ya = 2;
+ }
+ ye = ya + vis + 1;
 
  fk_cursor(0);
  for (;;) {
@@ -1156,7 +1168,15 @@ static int ai_diff_review_hunk(FENSTER *f, wpe_ai_seg *segs, int nseg,
 
  snprintf(title, sizeof title, " Proposed change %d/%d ", hunk, total);
  snprintf(hint, sizeof hint, " y apply  n skip  a all  q cancel  PgUp/PgDn ");
- key = ai_diff_box_show(f, rt, ra, nrows, title, hint, "YNAQ");
+ /* Screen row of this hunk in the file on screen (which still shows the OLD
+    text): count old-file lines before it, then map through the window's scroll
+    so the box appears over the lines being changed, not floating at the top. */
+ { int j, oldstart = 1, srow;
+   for (j = 0; j < i; j++) oldstart += segs[j].an;
+   srow = f->a.y + (oldstart - 1) - f->s->c.y + 1;
+   if (srow < f->a.y + 1) srow = f->a.y + 1;
+   if (srow > f->e.y - 1) srow = f->e.y - 1;
+   key = ai_diff_box_show(f, rt, ra, nrows, title, hint, "YNAQ", srow); }
  if (key == 13 || key == 'Y')      ret = 'Y';
  else if (key == 'N')              ret = 'N';
  else if (key == 'A')              ret = 'A';
@@ -1216,7 +1236,7 @@ static int ai_diff_confirm_write(FENSTER *f, const char *path,
  }
  snprintf(title, sizeof title, " Write %.48s ? ", path ? path : "file");
  snprintf(hint, sizeof hint, " y allow  n / Esc deny  PgUp/PgDn ");
- key = ai_diff_box_show(f, rt, ra, nrows, title, hint, "YN");
+ key = ai_diff_box_show(f, rt, ra, nrows, title, hint, "YN", -1);
  allow = (key == 13 || key == 'Y');
  for (k = 0; k < nrows; k++) free(rt[k]);
  free(rt); free(ra);
