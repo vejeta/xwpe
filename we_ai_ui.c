@@ -1023,12 +1023,86 @@ static char *ai_diff_fmt(char gutter, const char *text)
  return s;
 }
 
-/* ai_diff_review_hunk - Show one proposed hunk in a colored, scrollable box and
-   read the reviewer's decision.  Deleted lines use the breakpoint (red) colour,
-   added lines the stop-line (green) colour, context the normal text colour, so a
-   change reads like a diff instead of a monochrome wall.  PgUp/PgDn scroll when
-   the hunk is taller than the box, so nothing is lost off the top.  Returns the
-   decision key: 'Y' apply, 'N' skip, 'A' apply the rest, 'Q'/Esc cancel. */
+/* ai_diff_box_show - Render rows[] (each with its own colour attr) in a boxed,
+   scrollable overlay and return the key the reviewer pressed.  PgUp/PgDn scroll
+   when the content is taller than the box, so nothing is lost off the top; a key
+   in `accept` (case-insensitive), or Enter/Esc, ends it -- any other key is
+   ignored.  Returns 13 for Enter, WPE_ESC for Esc, else the uppercased key.  The
+   shared preview surface for the Edit review and the agent write confirmation. */
+static int ai_diff_box_show(FENSTER *f, char **rt, int *ra, int nrows,
+                            const char *title, const char *hint, const char *accept)
+{
+ int maxw = 0, boxw, vis, xa, ya, xe, ye, top = 0, k, ret = WPE_ESC;
+
+ for (k = 0; k < nrows; k++)
+  if (rt[k] && (int)strlen(rt[k]) > maxw) maxw = (int)strlen(rt[k]);
+ if (maxw < (int)strlen(title)) maxw = (int)strlen(title);
+ if (maxw < (int)strlen(hint)) maxw = (int)strlen(hint);
+ boxw = maxw + 3;
+ if (boxw > MAXSCOL - 4) boxw = MAXSCOL - 4;
+ vis = nrows;
+ if (vis > MAXSLNS - 8) vis = MAXSLNS - 8;
+ if (vis < 1) vis = 1;
+ xa = (MAXSCOL - boxw) / 2; if (xa < 1) xa = 1;
+ xe = xa + boxw;
+ ya = 2; ye = ya + vis + 1;
+
+ fk_cursor(0);
+ for (;;) {
+  PIC *pic = e_std_kst(xa, ya, xe, ye, (char *)title, 1,
+                       f->fb->nr.fb, f->fb->nt.fb, f->fb->ne.fb);
+  int c, j;
+  if (!pic) break;
+  for (j = 0; j < vis; j++) {
+   int row = top + j;
+   char line[600];
+   if (row >= nrows) break;
+   snprintf(line, sizeof line, "%-*.*s", boxw - 2, boxw - 2, rt[row]);
+   e_pr_str(xa + 1, ya + 1 + j, line, ra[row], 0, 0, 0, 0);
+  }
+  { int hl = (int)strlen(hint), hx = xa + (xe - xa - hl) / 2;
+    if (hx < xa + 1) hx = xa + 1;
+    e_pr_str(hx, ye, (char *)hint, f->fb->nr.fb, 0, 0, 0, 0); }
+  e_refresh();
+
+  c = e_getch();
+  if (c == BUP)      { top -= vis; if (top < 0) top = 0; e_close_view(pic, 1); continue; }
+  if (c == BDO)      { top += vis; if (top > nrows - vis) top = nrows - vis; if (top < 0) top = 0;
+                       e_close_view(pic, 1); continue; }
+  if (c == 13 || c == '\r' || c == '\n') ret = 13;
+  else if (c == WPE_ESC)                 ret = WPE_ESC;
+  else {
+   int uc = e_toupper(c);
+   if (accept && strchr(accept, uc)) ret = uc;
+   else { e_close_view(pic, 1); continue; }           /* ignore other keys */
+  }
+  e_close_view(pic, 1);
+  break;
+ }
+ fk_cursor(1);
+ e_cursor(f, 0);
+ return ret;
+}
+
+/* Read a whole file, or NULL if it does not exist / is too big -- used to show
+   what an agent write_file would replace. */
+static char *ai_slurp_file(const char *path)
+{
+ FILE *fp = fopen(path, "rb");
+ long n;
+ char *b;
+ if (!fp) return NULL;
+ fseek(fp, 0, SEEK_END); n = ftell(fp); fseek(fp, 0, SEEK_SET);
+ if (n < 0 || n > 4000000) { fclose(fp); return NULL; }
+ b = malloc((size_t)n + 1);
+ if (b) { size_t r = fread(b, 1, (size_t)n, fp); b[r] = '\0'; }
+ fclose(fp);
+ return b;
+}
+
+/* ai_diff_review_hunk - Show one proposed hunk in the colored diff box and read
+   the reviewer's decision: 'Y' apply, 'N' skip, 'A' apply the rest, 'Q'/Esc
+   cancel.  Deleted lines are red, added lines green, context normal. */
 static int ai_diff_review_hunk(FENSTER *f, wpe_ai_seg *segs, int nseg,
                                int i, int hunk, int total)
 {
@@ -1040,7 +1114,7 @@ static int ai_diff_review_hunk(FENSTER *f, wpe_ai_seg *segs, int nseg,
  int nrows = pc + segs[i].an + segs[i].bn + nc;
  char **rt;
  int   *ra;
- int    idx = 0, k, maxw = 0, boxw, vis, xa, ya, xe, ye, top = 0, ret = 'Q';
+ int    idx = 0, k, key, ret;
  char   title[48], hint[80];
 
  if (nrows <= 0) return 'Y';                    /* nothing to show -> accept */
@@ -1057,57 +1131,71 @@ static int ai_diff_review_hunk(FENSTER *f, wpe_ai_seg *segs, int nseg,
  for (k = 0; nc && k < nc; k++)
   { rt[idx] = ai_diff_fmt(' ', segs[i+1].a[k]); ra[idx++] = ctx; }
 
- for (k = 0; k < nrows; k++)
-  if (rt[k] && (int)strlen(rt[k]) > maxw) maxw = (int)strlen(rt[k]);
  snprintf(title, sizeof title, " Proposed change %d/%d ", hunk, total);
  snprintf(hint, sizeof hint, " y apply  n skip  a all  q cancel  PgUp/PgDn ");
- if (maxw < (int)strlen(title)) maxw = (int)strlen(title);
- if (maxw < (int)strlen(hint)) maxw = (int)strlen(hint);
- boxw = maxw + 3;
- if (boxw > MAXSCOL - 4) boxw = MAXSCOL - 4;
- vis = nrows;
- if (vis > MAXSLNS - 8) vis = MAXSLNS - 8;
- if (vis < 1) vis = 1;
- xa = (MAXSCOL - boxw) / 2; if (xa < 1) xa = 1;
- xe = xa + boxw;
- ya = 2; ye = ya + vis + 1;
-
- fk_cursor(0);
- for (;;) {
-  PIC *pic = e_std_kst(xa, ya, xe, ye, title, 1,
-                       f->fb->nr.fb, f->fb->nt.fb, f->fb->ne.fb);
-  int c, j;
-  if (!pic) break;
-  for (j = 0; j < vis; j++) {
-   int row = top + j;
-   char line[600];
-   if (row >= nrows) break;
-   snprintf(line, sizeof line, "%-*.*s", boxw - 2, boxw - 2, rt[row]);
-   e_pr_str(xa + 1, ya + 1 + j, line, ra[row], 0, 0, 0, 0);
-  }
-  { int hl = (int)strlen(hint), hx = xa + (xe - xa - hl) / 2;
-    if (hx < xa + 1) hx = xa + 1;
-    e_pr_str(hx, ye, hint, f->fb->nr.fb, 0, 0, 0, 0); }
-  e_refresh();
-
-  c = e_getch();
-  if (c == BUP)      { top -= vis; if (top < 0) top = 0; e_close_view(pic, 1); continue; }
-  if (c == BDO)      { top += vis; if (top > nrows - vis) top = nrows - vis; if (top < 0) top = 0;
-                       e_close_view(pic, 1); continue; }
-  c = e_toupper(c);
-  if (c == 'Y' || c == 13 || c == '\r' || c == '\n') ret = 'Y';
-  else if (c == 'N')                                 ret = 'N';
-  else if (c == 'A')                                 ret = 'A';
-  else if (c == 'Q' || c == WPE_ESC)                 ret = 'Q';
-  else { e_close_view(pic, 1); continue; }           /* ignore other keys */
-  e_close_view(pic, 1);
-  break;
- }
- fk_cursor(1);
- e_cursor(f, 0);
+ key = ai_diff_box_show(f, rt, ra, nrows, title, hint, "YNAQ");
+ if (key == 13 || key == 'Y')      ret = 'Y';
+ else if (key == 'N')              ret = 'N';
+ else if (key == 'A')              ret = 'A';
+ else                              ret = 'Q';   /* 'Q' / Esc / closed */
  for (k = 0; k < nrows; k++) free(rt[k]);
  free(rt); free(ra);
  return ret;
+}
+
+/* ai_diff_confirm_write - Preview what the agent's write_file would do to `path`
+   as a colored diff (new file: all-green additions; overwrite: a real diff with
+   context) and ask a single allow/deny.  So the user SEES the change before it
+   lands, instead of approving a blind "write_file x (N bytes)".  Returns 1 to
+   allow, 0 to deny.  Long unchanged runs collapse to a few context lines. */
+static int ai_diff_confirm_write(FENSTER *f, const char *path,
+                                 const char *oldtext, const char *newtext)
+{
+ int red = f->fb->db.fb, green = f->fb->dy.fb, ctx = f->fb->nt.fb;
+ wpe_ai_seg *segs;
+ int nseg = wpe_ai_diff_segments(oldtext ? oldtext : "", newtext ? newtext : "", &segs);
+ int i, k, cap = 0, nrows = 0, key, allow;
+ char **rt = NULL;
+ int   *ra = NULL;
+ char   title[80], hint[64];
+
+ for (i = 0; i < nseg; i++)            /* upper bound on the rows we may emit */
+  cap += segs[i].an + segs[i].bn + 1;
+ if (cap <= 0) { wpe_ai_segs_free(segs, nseg); return 1; }   /* no change -> allow */
+ rt = malloc((size_t)cap * sizeof *rt);
+ ra = malloc((size_t)cap * sizeof *ra);
+ if (!rt || !ra) { free(rt); free(ra); wpe_ai_segs_free(segs, nseg); return 1; }
+
+ for (i = 0; i < nseg; i++) {
+  if (segs[i].is_change) {
+   for (k = 0; k < segs[i].an && nrows < cap; k++)
+    { rt[nrows] = ai_diff_fmt('-', segs[i].a[k]); ra[nrows++] = red; }
+   for (k = 0; k < segs[i].bn && nrows < cap; k++)
+    { rt[nrows] = ai_diff_fmt('+', segs[i].b[k]); ra[nrows++] = green; }
+  } else {
+   int an = segs[i].an;
+   int head = (i > 0) ? AI_DIFF_CTX : 0;          /* context after a change */
+   int tail = (i + 1 < nseg) ? AI_DIFF_CTX : 0;   /* context before the next */
+   if (an <= head + tail) {
+    for (k = 0; k < an && nrows < cap; k++)
+     { rt[nrows] = ai_diff_fmt(' ', segs[i].a[k]); ra[nrows++] = ctx; }
+   } else {
+    for (k = 0; k < head && nrows < cap; k++)
+     { rt[nrows] = ai_diff_fmt(' ', segs[i].a[k]); ra[nrows++] = ctx; }
+    if (nrows < cap) { rt[nrows] = ai_diff_fmt(' ', "..."); ra[nrows++] = ctx; }
+    for (k = an - tail; k < an && nrows < cap; k++)
+     { rt[nrows] = ai_diff_fmt(' ', segs[i].a[k]); ra[nrows++] = ctx; }
+   }
+  }
+ }
+ snprintf(title, sizeof title, " Write %.48s ? ", path ? path : "file");
+ snprintf(hint, sizeof hint, " y allow  n / Esc deny  PgUp/PgDn ");
+ key = ai_diff_box_show(f, rt, ra, nrows, title, hint, "YN");
+ allow = (key == 13 || key == 'Y');
+ for (k = 0; k < nrows; k++) free(rt[k]);
+ free(rt); free(ra);
+ wpe_ai_segs_free(segs, nseg);
+ return allow;
 }
 
 static char *ai_hunk_apply(FENSTER *f, wpe_ai_seg *segs, int nseg)
@@ -1911,8 +1999,20 @@ static int ai_agent_process(ai_async_op *op, char *reply)
     content = malloc(cl + 1);
     if (content) { memcpy(content, body, cl); content[cl] = '\0'; }
    }
-   { char what[720]; snprintf(what, sizeof what, "write_file %s (%zu bytes)", arg, content ? strlen(content) : 0);
-     if (content && ai_agent_approve(f, what, 0)) {
+   { char what[720]; int allow;
+     snprintf(what, sizeof what, "write_file %s (%zu bytes)", arg, content ? strlen(content) : 0);
+     if (!content)                            allow = 0;
+     else if (e_ai_policy != WPE_AI_POLICY_ASK) allow = ai_agent_approve(f, what, 0);  /* auto/edits */
+     else {
+      /* Ask: show WHAT will be written as a diff (new file, or the change to an
+         existing one) so the user approves seeing the content, not just a byte
+         count. */
+      char *old = ai_slurp_file(arg);
+      allow = ai_diff_confirm_write(f, arg, old ? old : "", content);
+      wpe_ai_trace("agent write confirm %s -> %s", arg, allow ? "allow" : "deny");
+      free(old);
+     }
+     if (content && allow) {
       FILE *w = fopen(arg, "wb");
       if (w) { fwrite(content, 1, strlen(content), w); fclose(w);
                wpe_ai_reload_open_window(f, arg);   /* show the change if the file is open */
