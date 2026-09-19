@@ -1569,19 +1569,23 @@ int e_ai_options(FENSTER *f)
  o->name = "AI settings";
  e_add_sswstr(3, 2, 0, AltE, (f->ed->edopt & ED_AI_ENABLE) ? 1 : 0, "Enable AI assistant", o);
 
+ /* Every field needs a UNIQUE, non-zero `sw`: e_opt_kst navigates spatially but
+    returns the target field's sw to focus it, and sw==0 means "no field", so a
+    zero sw makes a widget unreachable by Tab/arrows/mouse.  These are just field
+    IDs above the key range (no Alt accelerator, but fully navigable). */
  e_add_txtstr(3, 4, "Backend:", o);
  for (i = 0; i < 4; i++)
-  e_add_pswstr(0, 4, 5 + i, i, 0, (i == 3) ? bcur : 0, (char *)bklab[i], o);
+  e_add_pswstr(0, 4, 5 + i, i, 4000 + i, (i == 3) ? bcur : 0, (char *)bklab[i], o);
 
  e_add_txtstr(28, 4, "Model:", o);
  if (nmodels == 0)
   e_add_txtstr(28, 5, merr[0] ? merr : "(backend offline)", o);
  for (i = 0; i < nmodels; i++)
-  e_add_pswstr(1, 29, 5 + i, i, 0, (i == nmodels - 1) ? mcur : 0, mrows[i], o);
+  e_add_pswstr(1, 29, 5 + i, i, 4100 + i, (i == nmodels - 1) ? mcur : 0, mrows[i], o);
 
  e_add_txtstr(3, 11, "Permission:", o);
  for (i = 0; i < 3; i++)
-  e_add_pswstr(2, 4, 12 + i, i, 0, (i == 2) ? e_ai_policy : 0, (char *)pol[i], o);
+  e_add_pswstr(2, 4, 12 + i, i, 4200 + i, (i == 2) ? e_ai_policy : 0, (char *)pol[i], o);
 
  e_add_txtstr(3, 16, "(change backend, then reopen to list its models)", o);
  e_add_bttstr(12, 17, 1, AltO, " Ok ", NULL, o);

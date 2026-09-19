@@ -63,3 +63,24 @@ def test_ai_options_ok_reads_radios(tmp_path):
     assert "backend=claudecli" in line and "model=sonnet" in line \
         and "policy=ask" in line and "enable=1" in line, \
         "AI dialog did not apply the settings:\n" + txt
+
+
+def test_ai_options_keyboard_navigation(tmp_path):
+    # Tab/arrows must move between the radio groups and Space must select -- the
+    # widgets carry unique non-zero sw ids so e_opt_kst can focus them (a zero sw
+    # made them unreachable).  Tab to the Backend group, arrow to Ollama, select.
+    trace = tmp_path / "ai.trace"
+    env = dict(ENV); env["XWPE_AI_TRACE"] = str(trace)
+    with WpeSession(str(tmp_path), "int main(void){return 0;}\n",
+                    env_extra=env) as s:
+        s.key("\033o", delay=0.5)
+        s.key("i", delay=0.6)
+        s.key("\t", delay=0.35)          # Enable -> Backend group
+        s.key("\033[B", delay=0.35)      # down -> Ollama
+        s.key(" ", delay=0.35)           # select
+        s.key("\033o", delay=0.6)        # Ok
+        s._drain(0.4)
+    txt = trace.read_text() if trace.exists() else ""
+    line = next((l for l in txt.splitlines() if l.startswith("options ")), "")
+    assert "backend=ollama" in line, \
+        "Tab/arrow/Space navigation did not reach and select a radio:\n" + txt
