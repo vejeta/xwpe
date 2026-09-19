@@ -7463,6 +7463,9 @@ const char *e_lsp_server_label(FENSTER *f)
 }
 
 extern WOPT eblst_lsp_o[], eblst_lsp_u[];   /* the LSP bottom bars (we_main.c) */
+#ifdef WPE_AI
+extern WOPT eblst_lspai_o[], eblst_lspai_u[]; /* combined LSP+AI bars (we_main.c) */
+#endif
 
 /* e_lsp_pack_bar - Re-lay-out a 7-button LSP bar after its label changed, so the
    buttons stay tight and the last one never runs off the screen edge.  A uniform
@@ -7502,6 +7505,14 @@ void e_lsp_bar_label(FENSTER *f)
  eblst_lsp_u[5].t = lbl;
  e_lsp_pack_bar(eblst_lsp_o);     /* re-fit the row to the (maybe longer) label */
  e_lsp_pack_bar(eblst_lsp_u);
+#ifdef WPE_AI
+ /* The combined LSP+AI bar names the server too, so a .c with AI on still reads
+    "Alt-Q ? clangd" -- the LSP hint is at index 4 there (the AI hint follows). */
+ eblst_lspai_o[4].t = lbl;
+ eblst_lspai_u[4].t = lbl;
+ e_lsp_pack_bar(eblst_lspai_o);
+ e_lsp_pack_bar(eblst_lspai_u);
+#endif
 }
 
 /* The "3" of the 3+1 start UX: when a language-server file is OPENED, boot the

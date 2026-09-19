@@ -48,27 +48,28 @@ def test_ai_bar_entry_absent_when_disabled(tmp_path):
 
 
 def test_ai_bar_entry_on_code_file(tmp_path):
-    # On a .c file (which gets the contextual LSP bar) the AI entry still wins
-    # the slot when the assistant is enabled -- the user opted in and wants it
-    # visible where code lives.
+    # On a .c file (which gets the contextual LSP bar) enabling AI shows the
+    # COMBINED bar: the "Alt-Q ? <server>" LSP hint stays AND the "Alt-G AI"
+    # entry is added -- both features are usable at once, neither hint is lost.
     env = {"XWPE_AI_ENABLE": "1", "XWPE_AI_BACKEND": "mock"}
     with WpeSession(str(tmp_path), "int main(void){return 0;}\n",
                     filename="prog.c", env_extra=env) as s:
         s._drain(0.6)
         disp = "\n".join(s.display())
     assert "Alt-G AI" in disp, "AI bar entry missing on a code file:\n" + disp
+    assert "Alt-Q" in disp, "LSP hint lost on a code file when AI is on:\n" + disp
 
 
 def test_ai_bar_refreshes_when_toggled_in_options(tmp_path):
-    # Start disabled -> no entry; tick Options>Editor 'Ai assistant' -> the bar
-    # must gain the entry WITHOUT reopening the file.
+    # Start disabled -> no entry; enable via Options>AI (where the toggle now
+    # lives) -> the bar must gain the entry WITHOUT reopening the file.
     env = {"XWPE_AI_BACKEND": "mock"}
     with WpeSession(str(tmp_path), "hello\n", filename="notes.txt",
                     env_extra=env) as s:
         s._drain(0.5)
         before = "\n".join(s.display())
-        s.key(ALT.OPTIONS, delay=0.8); s.key("e", delay=1.0)   # Options>Editor
-        s.key("\033a", delay=0.7)                              # tick Ai assistant
+        s.key("\033o", delay=0.8); s.key("i", delay=1.0)       # Options>AI
+        s.key(" ", delay=0.7)                                  # toggle Enable (focused first)
         s.key("\033o", delay=1.0)                              # Ok
         s._drain(0.8)
         after = "\n".join(s.display())

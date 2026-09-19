@@ -44,6 +44,7 @@ WOPT *ablst, *sblst, *hblst, *gblst, *oblst;
 WOPT *eblst_lsp;   /* editor bottom bar shown while an LSP-supported file is active */
 #ifdef WPE_AI
 WOPT *eblst_ai;    /* editor bottom bar shown while the AI assistant is enabled */
+WOPT *eblst_lspai; /* editor bottom bar when a file has BOTH an LSP server and AI */
 #endif
 
 char *e_hlp, *user_shell;
@@ -178,6 +179,30 @@ WOPT eblst_ai_u[] = {  {"F1 Help",  0, 0, 2, F1},
 		       {"Alt-F3 Srch", 44, 0, 6, AF3},
 		       {"Alt-G AI", 57, 0, 5, WPE_AI_MENU},
 		       {"Alt-F4 Quit",  67, 0, 6, AF4}  };
+
+/* Combined editor bottom bar for a file that has BOTH a language server AND the
+   AI assistant enabled: it must show BOTH prefixes so neither feature loses its
+   discoverability -- "Alt-Q ? LSP" opens the language-server action menu (the
+   "Alt-Q ?" in red shows the keyboard prefix) and "Alt-G AI" opens the AI menu.
+   To fit both in 80 columns the "Search Again" and "Search" hints are dropped
+   (F4/^L still work); the server name is shown generically as "LSP" since the
+   slot is shared.  Alt-Q and Alt-G both keep working regardless -- this only
+   restores their on-screen hints. */
+WOPT eblst_lspai_o[] = {  {"F1 Help",  0, 0, 2, F1},
+			  {"F2 Save",  9, 0, 2, F2},
+			  {"F3 Files", 18, 0, 2,  F3},
+			  {"^W Close", 28, 0, 2, CtrlW},
+			  {"Alt-Q ? LSP", 40, 0, 7, WPE_LSP_MENU},
+			  {"Alt-G AI", 54, 0, 5, WPE_AI_MENU},
+			  {"Alt-X Quit",  68, 0, 5, AltX}  };
+
+WOPT eblst_lspai_u[] = {  {"F1 Help",  0, 0, 2, F1},
+			  {"Alt-F2 Save",  8, 0, 6, AF2},
+			  {"F2 Files", 20, 0, 2,  F2},
+			  {"^F4 Close", 30, 0, 3, CF4},
+			  {"Alt-Q ? LSP", 40, 0, 7, WPE_LSP_MENU},
+			  {"Alt-G AI", 54, 0, 5, WPE_AI_MENU},
+			  {"Alt-F4 Quit",  67, 0, 6, AF4}  };
 #endif
 
 WOPT fblst_o[] = {  {"F1 Help",  0, 0, 2, F1},
@@ -564,6 +589,7 @@ int e_switch_blst(ECNT *cn)
    else if (f->blst == eblst_lsp_o) f->blst = eblst_lsp_u;
 #ifdef WPE_AI
    else if (f->blst == eblst_ai_o) f->blst = eblst_ai_u;
+   else if (f->blst == eblst_lspai_o) f->blst = eblst_lspai_u;
 #endif
    else if (f->blst == fblst_o) f->blst= fblst_u;
    else if (f->blst == mblst_o) f->blst= mblst_u;
@@ -587,6 +613,7 @@ int e_switch_blst(ECNT *cn)
    else if (f->blst == eblst_lsp_u) f->blst= eblst_lsp_o;
 #ifdef WPE_AI
    else if (f->blst == eblst_ai_u) f->blst= eblst_ai_o;
+   else if (f->blst == eblst_lspai_u) f->blst= eblst_lspai_o;
 #endif
    else if (f->blst == fblst_u) f->blst= fblst_o;
    else if (f->blst == mblst_u) f->blst= mblst_o;
@@ -625,16 +652,26 @@ void e_ai_refresh_bars(ECNT *cn)
   WOPT *b = f->blst;
   if (b != eblst_o && b != eblst_u &&
       b != eblst_lsp_o && b != eblst_lsp_u &&
-      b != eblst_ai_o && b != eblst_ai_u)
+      b != eblst_ai_o && b != eblst_ai_u &&
+      b != eblst_lspai_o && b != eblst_lspai_u)
    continue;                            /* not an editor-file bar -- leave it   */
-  if (on)
-   f->blst = cua ? eblst_ai_u : eblst_ai_o;
 #ifdef DEBUGGER
+  /* When a file has a language server AND AI is on, show the COMBINED bar so the
+     "Alt-Q ? LSP" hint is never lost -- LSP and AI are usable at the same time. */
+  if (on && e_lsp_server_label(f))
+   f->blst = cua ? eblst_lspai_u : eblst_lspai_o;
+  else if (on)
+   f->blst = cua ? eblst_ai_u : eblst_ai_o;
   else if (e_lsp_server_label(f))
    f->blst = cua ? eblst_lsp_u : eblst_lsp_o;
-#endif
   else
    f->blst = cua ? eblst_u : eblst_o;
+#else
+  if (on)
+   f->blst = cua ? eblst_ai_u : eblst_ai_o;
+  else
+   f->blst = cua ? eblst_u : eblst_o;
+#endif
  }
 }
 #endif
@@ -695,6 +732,7 @@ void e_ini_desk(ECNT *cn)
   eblst_lsp = eblst_lsp_u;
 #ifdef WPE_AI
   eblst_ai = eblst_ai_u;
+  eblst_lspai = eblst_lspai_u;
 #endif
  }
  else
@@ -705,6 +743,7 @@ void e_ini_desk(ECNT *cn)
   eblst_lsp = eblst_lsp_o;
 #ifdef WPE_AI
   eblst_ai = eblst_ai_o;
+  eblst_lspai = eblst_lspai_o;
 #endif
  }
  /* Pack the project (Data window) status bar compactly like the editor bar,

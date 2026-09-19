@@ -105,6 +105,7 @@ int e_edit(ECNT *cn, char *filename)
  extern const char *e_lsp_server_label(FENSTER *);  /* non-NULL => file has a server */
 #ifdef WPE_AI
  extern WOPT *eblst_ai;                  /* editor bar variant while AI is enabled */
+ extern WOPT *eblst_lspai;               /* combined bar: LSP server + AI both on   */
  extern int wpe_ai_enabled(void);        /* runtime AI toggle (ED_AI_ENABLE bit)   */
 #endif
  FILE *fp = NULL;
@@ -374,14 +375,21 @@ int e_edit(ECNT *cn, char *filename)
   f->blst = eblst_lsp;
 #endif
 #ifdef WPE_AI
- /* AI enabled: a plain editor file shows the "Alt-B AI" bottom-bar entry so the
-    assistant is discoverable and mouse-clickable.  When the assistant is on it
-    takes the shared bar slot even on a language-server file (the LSP actions
-    stay on the Alt-Q keyboard prefix); this is what the user opted into.  The
-    bar is re-selected here on every open AND refreshed live by e_ai_refresh_bars
-    when the runtime toggle flips in Options > Editor. */
- if (ftype == 0 && wpe_ai_enabled())
-  f->blst = eblst_ai;
+ /* AI enabled: a plain editor file shows the "Alt-G AI" bottom-bar entry so the
+    assistant is discoverable and mouse-clickable.  On a language-server file the
+    COMBINED bar is used instead, so BOTH the "Alt-Q ? LSP" and "Alt-G AI" hints
+    are shown -- LSP and AI are usable at the same time and neither loses its
+    on-screen hint (Alt-Q keeps working regardless).  The bar is re-selected here
+    on every open AND refreshed live by e_ai_refresh_bars when the runtime toggle
+    flips in Options > Editor. */
+ if (ftype == 0 && wpe_ai_enabled()) {
+#ifdef DEBUGGER
+  if (e_lsp_server_label(f))
+   f->blst = eblst_lspai;               /* LSP + AI: show both hints */
+  else
+#endif
+   f->blst = eblst_ai;                  /* AI only */
+ }
 #endif
  if (ftype != 1)
   fp = fopen(complete_fname, "rb");
