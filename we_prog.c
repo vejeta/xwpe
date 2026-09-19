@@ -3365,6 +3365,13 @@ int e_c_project(FENSTER *f)
  }
  e_arg = (char **) MALLOC(e_argc*sizeof(char *));
  arg = (char **) MALLOC(argc*sizeof(char *));
+ /* MALLOC leaves slot 0 uninitialised.  The CMP/FILES lookups below can bail
+    out early (e.g. a project whose variables did not load) straight into
+    e_free_arg, which FREEs every non-NULL slot -- so an unset slot must read
+    NULL or it frees a wild pointer and glibc aborts.  The build loops set
+    slot 0 on their first iteration, so this only matters on the early exits. */
+ if (e_arg) e_arg[0] = NULL;
+ if (arg) arg[0] = NULL;
  df = e_p_get_var("CMP");
  if (!df)
  {
