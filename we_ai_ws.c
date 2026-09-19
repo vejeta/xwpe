@@ -364,11 +364,33 @@ int wpe_ai_checkpoint_create(FENSTER *f, char **scope, int nscope)
 
 typedef struct { char *path; int line; char *text; int is_new; } ws_change;
 
+/* Collapse runs of '/' to a single '/' in place, so paths built from a scope
+   list (which may carry a "dir//name" from a trailing-slash join) compare equal
+   to the plainly-spelled ones -- otherwise the same file shows up twice in the
+   changeset and reverts match only one spelling. */
+static void ws_path_norm(char *p)
+{
+ char *r = p, *w = p;
+ int prev_slash = 0;
+ for (; *r; r++) {
+  if (*r == '/' && prev_slash) continue;
+  *w++ = *r;
+  prev_slash = (*r == '/');
+ }
+ *w = '\0';
+}
+
 static void ws_add_change(ws_change **c, int *n, int *cap, const char *path,
                           int line, const char *text, int is_new)
 {
+ char *np = ws_strdup(path);
+ int i;
+ if (np) ws_path_norm(np);
+ for (i = 0; i < *n; i++)                       /* drop a duplicate for the same spot */
+  if ((*c)[i].line == line && np && (*c)[i].path && !strcmp((*c)[i].path, np))
+   { free(np); return; }
  if (*n == *cap) { *cap = *cap ? *cap * 2 : 16; *c = realloc(*c, (size_t)(*cap) * sizeof **c); }
- (*c)[*n].path = ws_strdup(path);
+ (*c)[*n].path = np ? np : ws_strdup(path);
  (*c)[*n].line = line;
  (*c)[*n].text = ws_strdup(text);
  (*c)[*n].is_new = is_new;
@@ -526,6 +548,28 @@ static void ws_reload_window(FENSTER *f, const char *path)
  e_rep_win_tree(w->ed);
  e_refresh();
  free(text);
+}
+
+/* wpe_ai_reload_open_window - If `path` is open in a window, reload its buffer
+   from disk (one undo step).  Called after the agent's write_file so an edit to
+   the file the user is looking at shows immediately, instead of leaving a stale
+   buffer on screen while disk has the new content.  A no-op if the file is not
+   open. */
+void wpe_ai_reload_open_window(FENSTER *f, const char *path)
+{
+ /* ws_find_window compares against the window's ABSOLUTE path, but a tool may
+    have written a path relative to the editor's working directory -- resolve it
+    so a relative write still finds and refreshes the open window. */
+ if (path && path[0] != '/') {
+  char cwd[1024], abs[1200];
+  if (getcwd(cwd, sizeof cwd)) {
+   snprintf(abs, sizeof abs, "%s/%s", cwd, path);
+   ws_path_norm(abs);
+   ws_reload_window(f, abs);
+   return;
+  }
+ }
+ ws_reload_window(f, path);
 }
 
 static void ws_revert_path(FENSTER *f, const char *path, int is_new)

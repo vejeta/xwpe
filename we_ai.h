@@ -164,6 +164,9 @@ int   wpe_ai_checkpoint_active(void);
  * `path:line: [AI] ...` lines registered for Alt-T / Alt-V, and run the
  * review loop (a = keep all, r = revert all, f = file by file, c = commit). */
 int   wpe_ai_changeset_review(struct FNST *f);
+/* Reload an open window from disk after a tool wrote its file, so the agent's
+ * change is visible immediately (no-op if the path is not open). */
+void  wpe_ai_reload_open_window(struct FNST *f, const char *path);
 /* Sessions tied to the workspace (claudecli session id and/or a transcript). */
 void  wpe_ai_session_load(struct FNST *f);
 void  wpe_ai_session_save(struct FNST *f);

@@ -1914,7 +1914,9 @@ static int ai_agent_process(ai_async_op *op, char *reply)
    { char what[720]; snprintf(what, sizeof what, "write_file %s (%zu bytes)", arg, content ? strlen(content) : 0);
      if (content && ai_agent_approve(f, what, 0)) {
       FILE *w = fopen(arg, "wb");
-      if (w) { fwrite(content, 1, strlen(content), w); fclose(w); result = strdup("(written)"); }
+      if (w) { fwrite(content, 1, strlen(content), w); fclose(w);
+               wpe_ai_reload_open_window(f, arg);   /* show the change if the file is open */
+               result = strdup("(written)"); }
       else result = strdup("(write failed)");
      } else result = strdup("(denied by user)"); }
    free(content);
