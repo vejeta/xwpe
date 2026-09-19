@@ -586,21 +586,30 @@ static int e_ai_prompt(char *out, const char *title, FENSTER *f)
  e_add_bttstr(32, 6, 4, AltM, "Multi-line", NULL, o);
  e_add_bttstr(50, 6, -1, WPE_ESC, "Cancel", NULL, o);
  ret = e_opt_kst(o);
- if (ret == AltM) {                          /* switch to the full-editor composer */
-  char comp_title[96], seed[AI_PROMPT_MAX];
-  strncpy(seed, o->wstr[0]->txt, sizeof seed - 1);   /* keep what was typed */
-  seed[sizeof seed - 1] = '\0';
-  freeostr(o);
-  snprintf(comp_title, sizeof comp_title,
-           "%.48s  (Esc finishes, then Y sends)", title);
-  return e_ai_compose(out, AI_PROMPT_MAX, comp_title, seed, f);
- }
- if (ret != WPE_ESC) {
+ if (ret != WPE_ESC) {                        /* keep what was typed either way */
   strncpy(out, o->wstr[0]->txt, AI_PROMPT_MAX - 1);
   out[AI_PROMPT_MAX - 1] = '\0';
  }
  freeostr(o);
- return (ret == WPE_ESC) ? 0 : 1;
+ if (ret == WPE_ESC) return 0;                /* cancel   */
+ if (ret == AltM)    return 2;                /* Multi-line: caller decides where */
+ return 1;                                    /* Send     */
+}
+
+/* One-shot prompt for Edit/Plan/Agent, which have no persistent input row: the
+ * Multi-line button opens the full-editor composer, as before.  (Chat instead
+ * carries the text into its fixed input row -- see e_ai_chat.) */
+static int e_ai_prompt1(char *out, const char *title, FENSTER *f)
+{
+ int r = e_ai_prompt(out, title, f);
+ if (r == 2) {
+  char seed[AI_PROMPT_MAX], ct[96];
+  strncpy(seed, out, sizeof seed - 1);
+  seed[sizeof seed - 1] = '\0';
+  snprintf(ct, sizeof ct, "%.48s  (Esc finishes, then Y sends)", title);
+  return e_ai_compose(out, AI_PROMPT_MAX, ct, seed, f);
+ }
+ return r;
 }
 
 /* Send `text` as one chat turn: echo "You: ..." above the input row, add it to
@@ -701,10 +710,12 @@ static int e_ai_chat(FENSTER *f)
 {
  static char prompt[AI_PROMPT_MAX];
  char err[320], line[400];
+ int mode;
 
  prompt[0] = '\0';
- if (!e_ai_prompt(prompt, "Ask AI", f) || !prompt[0])
-  return 0;
+ mode = e_ai_prompt(prompt, "Ask AI", f);       /* 0 cancel, 1 send, 2 to input row */
+ if (mode == 0) return 0;
+ if (mode == 1 && !prompt[0]) return 0;
 
  err[0] = '\0';
  if (wpe_ai_preflight(e_ai_backend, err, sizeof err)) {
@@ -721,7 +732,9 @@ static int e_ai_chat(FENSTER *f)
 
  e_ai_cli_mode = WPE_AI_CLI_TEXTONLY;
  wpe_ai_session_load(f);                        /* resume this workspace's talk */
- e_ai_chat_loop(f, prompt, 1 /* send the popup text at once */);
+ /* Send-now on Enter; on Multi-line, drop into the input row pre-loaded with the
+    text so the user keeps composing there -- no separate composer window. */
+ e_ai_chat_loop(f, prompt, mode == 1);
  return 0;
 }
 
@@ -1198,7 +1211,7 @@ static int e_ai_edit(FENSTER *f)
   return 0;
  }
  instr[0] = '\0';
- if (!e_ai_prompt(instr, "AI edit instruction", f) || !instr[0])
+ if (!e_ai_prompt1(instr, "AI edit instruction", f) || !instr[0])
   return 0;
  /* Remember the edited window so focus returns to it after the pane work. */
  for (wi = 1; wi <= cn->mxedt; wi++)
@@ -1511,7 +1524,7 @@ int e_ai_agent(FENSTER *f)
   return 0;
  }
  goal[0] = '\0';
- if (!e_ai_prompt(goal, "AI agent task", f) || !goal[0])
+ if (!e_ai_prompt1(goal, "AI agent task", f) || !goal[0])
   return 0;
  err[0] = '\0';
  if (wpe_ai_preflight(e_ai_backend, err, sizeof err)) { ai_pane(f, err, 1); return 0; }
@@ -1752,7 +1765,7 @@ static int e_ai_plan(FENSTER *f)
   return 0;
  }
  task[0] = '\0';
- if (!e_ai_prompt(task, "AI plan: task", f) || !task[0]) return 0;
+ if (!e_ai_prompt1(task, "AI plan: task", f) || !task[0]) return 0;
  err[0] = '\0';
  if (wpe_ai_preflight(e_ai_backend, err, sizeof err)) { ai_pane(f, err, 1); return 0; }
  err[0] = '\0';

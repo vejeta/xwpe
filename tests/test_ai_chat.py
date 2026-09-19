@@ -92,10 +92,10 @@ def test_ai_reply_shares_the_AI_line(tmp_path):
 
 
 def test_ai_multiline_carries_over_typed_text(tmp_path):
-    # Typing in the one-line Ask box then switching to the multi-line composer
-    # (Alt-M) must KEEP what was typed, so the user does not retype it.  Esc
-    # finishes the composer and 'y' confirms Send; the sent prompt must equal
-    # the text seeded from the one-line field.
+    # Typing in the one-line Ask box then pressing Multi-line (Alt-M) drops the
+    # text straight into the pane's fixed input row -- no separate composer
+    # window -- so the user keeps composing there and Enter sends it.  The sent
+    # prompt must equal the text carried over from the popup field.
     trace = tmp_path / "ai.trace"
     env = {
         "XWPE_AI_ENABLE": "1",
@@ -109,17 +109,19 @@ def test_ai_multiline_carries_over_typed_text(tmp_path):
         s.key("a")
         s.key("carry me over")        # type into the one-line field
         s._drain(0.4)
-        s.key("\033m", delay=0.8)     # Alt-M -> multi-line composer (seeded)
+        s.key("\033m", delay=1.0)     # Alt-M -> input row, pre-loaded (not sent)
         s._drain(0.6)
-        s.key("\033", delay=0.8)      # Esc -> finish composing
-        s._drain(0.5)
-        s.key("y", delay=1.0)         # confirm Send
-        s._drain(1.2)
+        disp = s.display()
+        assert any("carry me over" in ln for ln in disp), \
+            "Multi-line did not carry the text into the input row:\n" + "\n".join(disp)
+        s.key("\r", delay=1.2)        # Enter -> send from the input row
+        s._drain(1.0)
+        s.key("\033", delay=0.4)      # Esc -> leave chat
     txt = trace.read_text() if trace.exists() else ""
     prompts = [l for l in txt.splitlines() if l.startswith("chat prompt=")]
     assert prompts, "no chat was submitted:\n" + txt
     assert any("carry me over" in l for l in prompts), \
-        "the composer lost the text typed in the one-line box:\n" + txt
+        "the input row lost the text carried from the popup:\n" + txt
 
 
 def test_ai_chat_investigates_files(tmp_path):
