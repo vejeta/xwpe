@@ -510,6 +510,31 @@ static void ai_fd_cb(int fd, void *data)
  }
 }
 
+/* Tell the model which backend and model are actually serving THIS turn, so an
+ * identity question ("which model are you?") is answered from the truth of the
+ * moment rather than from an earlier turn in the shared conversation -- after
+ * the user switches backends mid-chat, the history still holds the previous
+ * backend's self-description, and without this line the new backend just parrots
+ * it.  Rebuilt every turn, so it always names the backend now in use. */
+static size_t ai_append_identity(char *sys, size_t cap, size_t len)
+{
+ const char *be = wpe_ai_backend_name(e_ai_backend);
+ const char *tail =
+   ". If you are asked which model, backend, or maker you are, answer from "
+   "this line and ignore any earlier turn in the conversation that names a "
+   "different model or maker -- earlier turns may come from another backend.\n\n";
+ wpe_ai_trace("chat identity backend=%s model=%s", be, e_ai_model ? e_ai_model : "");
+ if (len >= cap - 256) return len;
+ if (e_ai_model && *e_ai_model && strcmp(e_ai_model, "default"))
+  len += (size_t)snprintf(sys + len, cap - len,
+                          "You are served by the \"%s\" backend, model \"%s\"%s",
+                          be, e_ai_model, tail);
+ else
+  len += (size_t)snprintf(sys + len, cap - len,
+                          "You are served by the \"%s\" backend%s", be, tail);
+ return len;
+}
+
 /* Build the chat system prompt: the assistant may INVESTIGATE the workspace
  * with read-only tools before answering, so questions about other files (not
  * just the open one) work.  Includes the workspace file listing and the current
@@ -534,6 +559,7 @@ static char *ai_build_system(FENSTER *f)
    "line).  Do not guess about files you have not read.\n\n";
  if (!sys) { free(ctx); return NULL; }
  len += (size_t)snprintf(sys + len, cap - len, "%s", head);
+ len = ai_append_identity(sys, cap, len);
  nsc = wpe_ai_scope_files(f, e_project_is_open(), 1, &scope);
  if (len < cap - 32)
   len += (size_t)snprintf(sys + len, cap - len, "WORKSPACE FILES:\n");
