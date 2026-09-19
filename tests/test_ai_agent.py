@@ -66,3 +66,24 @@ def test_ai_agent_run_command_denied(tmp_path):
     assert "agent tool=run_command" in txt, txt
     assert not sentinel.exists(), "denied command still ran!"
     assert "agent done" in txt, txt
+
+
+def test_agent_pane_docks_at_bottom(tmp_path):
+    # The agent's output pane must dock at the bottom like the chat pane, leaving
+    # the edited file visible above it -- not open as a full window over the file.
+    env = {"XWPE_AI_ENABLE": "1", "XWPE_AI_BACKEND": "mock",
+           "XWPE_AI_MOCK_REPLY": "TOOL list_dir .@@TURN@@DONE looked around"}
+    with WpeSession(str(tmp_path), "int main(void){return 0;}\n",
+                    env_extra=env, filename="prog.c") as s:
+        s.key(ALT.AI); s.key("g")
+        s.key("look around"); s.key("\r", delay=1.2)
+        s._drain(1.5)
+        disp = s.display()
+    text = "\n".join(disp)
+    file_row = next((y for y, ln in enumerate(disp) if "int main(void)" in ln), -1)
+    pane_row = next((y for y, ln in enumerate(disp) if "[agent]" in ln), -1)
+    assert file_row >= 0, "the edited file is not visible -- pane took the whole screen:\n" + text
+    assert pane_row >= 0, "the agent pane did not render:\n" + text
+    assert file_row < pane_row, \
+        "the agent pane is not docked below the file (file row %d, pane row %d):\n%s" \
+        % (file_row, pane_row, text)

@@ -113,6 +113,10 @@ static void ai_pane(FENSTER *f, const char *line, int surface)
   if (wf) { ai_tr_line(wf, line); ai_pane_paint(wf); }
   return;
  }
+ /* Ensure the AI pane is created AND docked at the bottom (beside Messages)
+    before appending -- the same placement as the chat pane.  Without this the
+    Edit/Plan/Agent output opened as a full window over the file being edited. */
+ ai_pane_win(f);
  e_d_p_named(AI_PANE_NAME, (char *)line, f, surface ? 1 : 0);
 }
 
@@ -1629,7 +1633,7 @@ static void ai_conv_on_reply(ai_async_op *op)
  op->iter++;
  if (r != 0 || op->iter >= op->max_iter) {
   if (op->iter >= op->max_iter && r == 0 && ai_window_alive(op->cn, op->f))
-   ai_pane(op->f, "[AI] stopped (max steps)", 0);
+   ai_pane(op->f, "[AI] reached the step limit - Alt-G g to continue the task", 0);
   ai_conv_finish(op);
   return;
  }
@@ -1973,7 +1977,11 @@ int e_ai_ui_key(FENSTER *f)
 
 /* ======================= Agent mode ==================================== */
 
-#define AI_AGENT_MAX_ITERS 8
+/* Turns the agent may take.  Each file read/list/grep and each edit/command is
+   one turn, so a real task ("look at the project, then improve/build it") spends
+   several just investigating -- 8 ran out mid-investigation.  24 leaves room to
+   look around AND act while still bounding a runaway. */
+#define AI_AGENT_MAX_ITERS 24
 #define AI_TOOL_OUT_MAX    6000
 
 /* Run a shell command; capture bounded stdout+stderr (malloc'd). */
@@ -2123,6 +2131,11 @@ static void ai_agent_finish(ai_async_op *op)
  wpe_ai_session_save(op->f);
  if (e_ai_policy != WPE_AI_POLICY_ASK && wpe_ai_checkpoint_active())
   wpe_ai_changeset_review(op->f);
+ /* Hand focus back to the file the user launched from: the agent pane is a
+    read-only log, so without this it stays active and typed keys land in it
+    (looking like a chat that ignores you) instead of in the code. */
+ if (op->save_id >= 0 && op->cn->mxedt >= 0)
+  e_switch_window(op->save_id, op->cn->f[op->cn->mxedt]);
 }
 
 int e_ai_agent(FENSTER *f)
