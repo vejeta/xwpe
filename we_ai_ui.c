@@ -1010,31 +1010,125 @@ static char *ai_strip_fences(const char *s)
 /* Per-hunk accept/reject.  Shows each change hunk and asks y/n/a/q; returns the
  * reconstructed file text (malloc'd) built from the accepted hunks, or NULL if
  * the user cancelled or accepted nothing. */
+/* Unchanged lines shown on each side of a hunk, so the reviewer sees WHERE the
+   change lands (like a unified diff's context). */
+#define AI_DIFF_CTX 2
+
+/* Format one overlay row: a one-char gutter (' ' context, '-' delete, '+' add)
+   plus the line text, clipped so it never spills past the box border. */
+static char *ai_diff_fmt(char gutter, const char *text)
+{
+ char *s = malloc(544);
+ if (s) snprintf(s, 544, "%c%.520s", gutter, text ? text : "");
+ return s;
+}
+
+/* ai_diff_review_hunk - Show one proposed hunk in a colored, scrollable box and
+   read the reviewer's decision.  Deleted lines use the breakpoint (red) colour,
+   added lines the stop-line (green) colour, context the normal text colour, so a
+   change reads like a diff instead of a monochrome wall.  PgUp/PgDn scroll when
+   the hunk is taller than the box, so nothing is lost off the top.  Returns the
+   decision key: 'Y' apply, 'N' skip, 'A' apply the rest, 'Q'/Esc cancel. */
+static int ai_diff_review_hunk(FENSTER *f, wpe_ai_seg *segs, int nseg,
+                               int i, int hunk, int total)
+{
+ int red = f->fb->db.fb, green = f->fb->dy.fb, ctx = f->fb->nt.fb;
+ int pc = (i > 0 && !segs[i-1].is_change)
+          ? (segs[i-1].an < AI_DIFF_CTX ? segs[i-1].an : AI_DIFF_CTX) : 0;
+ int nc = (i+1 < nseg && !segs[i+1].is_change)
+          ? (segs[i+1].an < AI_DIFF_CTX ? segs[i+1].an : AI_DIFF_CTX) : 0;
+ int nrows = pc + segs[i].an + segs[i].bn + nc;
+ char **rt;
+ int   *ra;
+ int    idx = 0, k, maxw = 0, boxw, vis, xa, ya, xe, ye, top = 0, ret = 'Q';
+ char   title[48], hint[80];
+
+ if (nrows <= 0) return 'Y';                    /* nothing to show -> accept */
+ rt = malloc((size_t)nrows * sizeof *rt);
+ ra = malloc((size_t)nrows * sizeof *ra);
+ if (!rt || !ra) { free(rt); free(ra); return 'Q'; }
+
+ for (k = segs[i-1].an - pc; pc && k < segs[i-1].an; k++)
+  { rt[idx] = ai_diff_fmt(' ', segs[i-1].a[k]); ra[idx++] = ctx; }
+ for (k = 0; k < segs[i].an; k++)
+  { rt[idx] = ai_diff_fmt('-', segs[i].a[k]); ra[idx++] = red; }
+ for (k = 0; k < segs[i].bn; k++)
+  { rt[idx] = ai_diff_fmt('+', segs[i].b[k]); ra[idx++] = green; }
+ for (k = 0; nc && k < nc; k++)
+  { rt[idx] = ai_diff_fmt(' ', segs[i+1].a[k]); ra[idx++] = ctx; }
+
+ for (k = 0; k < nrows; k++)
+  if (rt[k] && (int)strlen(rt[k]) > maxw) maxw = (int)strlen(rt[k]);
+ snprintf(title, sizeof title, " Proposed change %d/%d ", hunk, total);
+ snprintf(hint, sizeof hint, " y apply  n skip  a all  q cancel  PgUp/PgDn ");
+ if (maxw < (int)strlen(title)) maxw = (int)strlen(title);
+ if (maxw < (int)strlen(hint)) maxw = (int)strlen(hint);
+ boxw = maxw + 3;
+ if (boxw > MAXSCOL - 4) boxw = MAXSCOL - 4;
+ vis = nrows;
+ if (vis > MAXSLNS - 8) vis = MAXSLNS - 8;
+ if (vis < 1) vis = 1;
+ xa = (MAXSCOL - boxw) / 2; if (xa < 1) xa = 1;
+ xe = xa + boxw;
+ ya = 2; ye = ya + vis + 1;
+
+ fk_cursor(0);
+ for (;;) {
+  PIC *pic = e_std_kst(xa, ya, xe, ye, title, 1,
+                       f->fb->nr.fb, f->fb->nt.fb, f->fb->ne.fb);
+  int c, j;
+  if (!pic) break;
+  for (j = 0; j < vis; j++) {
+   int row = top + j;
+   char line[600];
+   if (row >= nrows) break;
+   snprintf(line, sizeof line, "%-*.*s", boxw - 2, boxw - 2, rt[row]);
+   e_pr_str(xa + 1, ya + 1 + j, line, ra[row], 0, 0, 0, 0);
+  }
+  { int hl = (int)strlen(hint), hx = xa + (xe - xa - hl) / 2;
+    if (hx < xa + 1) hx = xa + 1;
+    e_pr_str(hx, ye, hint, f->fb->nr.fb, 0, 0, 0, 0); }
+  e_refresh();
+
+  c = e_getch();
+  if (c == BUP)      { top -= vis; if (top < 0) top = 0; e_close_view(pic, 1); continue; }
+  if (c == BDO)      { top += vis; if (top > nrows - vis) top = nrows - vis; if (top < 0) top = 0;
+                       e_close_view(pic, 1); continue; }
+  c = e_toupper(c);
+  if (c == 'Y' || c == 13 || c == '\r' || c == '\n') ret = 'Y';
+  else if (c == 'N')                                 ret = 'N';
+  else if (c == 'A')                                 ret = 'A';
+  else if (c == 'Q' || c == WPE_ESC)                 ret = 'Q';
+  else { e_close_view(pic, 1); continue; }           /* ignore other keys */
+  e_close_view(pic, 1);
+  break;
+ }
+ fk_cursor(1);
+ e_cursor(f, 0);
+ for (k = 0; k < nrows; k++) free(rt[k]);
+ free(rt); free(ra);
+ return ret;
+}
+
 static char *ai_hunk_apply(FENSTER *f, wpe_ai_seg *segs, int nseg)
 {
- int i, k, total = 0, hunk = 0, any = 0, all = 0, cancel = 0;
+ int i, total = 0, hunk = 0, any = 0, all = 0, cancel = 0, k;
  int *acc = calloc(nseg > 0 ? nseg : 1, sizeof *acc);
  size_t cap = 1024, len = 0;
  char *out;
  if (!acc) return NULL;
  for (i = 0; i < nseg; i++) if (segs[i].is_change) total++;
 
- ai_pane(f, "--- proposed changes (per hunk) ---", 1);
  for (i = 0; i < nseg && !cancel; i++) {
+  int decision;
   if (!segs[i].is_change) continue;
   hunk++;
   if (all) { acc[i] = 1; any = 1; continue; }
-  { char hdr[80]; snprintf(hdr, sizeof hdr, "--- hunk %d/%d ---", hunk, total); ai_pane(f, hdr, 0); }
-  for (k = 0; k < segs[i].an; k++) { char ln[540]; snprintf(ln, sizeof ln, "-%.520s", segs[i].a[k]); ai_pane(f, ln, 0); }
-  for (k = 0; k < segs[i].bn; k++) { char ln[540]; snprintf(ln, sizeof ln, "+%.520s", segs[i].b[k]); ai_pane(f, ln, 0); }
-  ai_pane(f, "   y=apply  n=skip  a=all  q=cancel", 0);
-  for (;;) {
-   int c = e_toupper(e_getch());
-   if (c == 'Y' || c == 13 || c == '\r' || c == '\n') { acc[i] = 1; any = 1; break; }
-   if (c == 'N') { acc[i] = 0; break; }
-   if (c == 'A') { acc[i] = 1; any = 1; all = 1; break; }
-   if (c == 'Q' || c == WPE_ESC) { cancel = 1; break; }
-  }
+  decision = ai_diff_review_hunk(f, segs, nseg, i, hunk, total);
+  if (decision == 'Y')      { acc[i] = 1; any = 1; }
+  else if (decision == 'A') { acc[i] = 1; any = 1; all = 1; }
+  else if (decision == 'N') { acc[i] = 0; }
+  else                      { cancel = 1; }        /* 'Q' / Esc */
  }
  if (cancel || !any) { free(acc); return NULL; }
 
