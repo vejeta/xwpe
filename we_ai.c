@@ -531,7 +531,20 @@ struct wpe_ai_stream {
  int             out_fd;       /* child stdout (subprocess transport)          */
 };
 
-/* Flatten the request into a single prompt for the `claude` CLI (one -p call). */
+/* Flatten the request into a single prompt for the `claude` CLI (one -p call).
+ * claude -p takes one text blob, not a role-structured message array, so LABEL
+ * each turn: without "User:"/"Assistant:" markers the model sees the prior turns
+ * as one undifferentiated block and, asked about the conversation, claims to have
+ * no context even though the history is present.  The labels make it read the
+ * blob as the ongoing dialogue it is.  The system turn is emitted unlabelled as
+ * the leading instructions. */
+static const char *ai_role_label(const char *role)
+{
+ if (role && !strcmp(role, "assistant")) return "Assistant: ";
+ if (role && !strcmp(role, "system"))    return "";
+ return "User: ";
+}
+
 static char *ai_flatten_prompt(const wpe_ai_req *req)
 {
  size_t cap = 1024, len = 0;
@@ -541,9 +554,10 @@ static char *ai_flatten_prompt(const wpe_ai_req *req)
  p[0] = '\0';
  for (i = 0; i < req->nmsgs; i++) {
   const char *c = req->msgs[i].content ? req->msgs[i].content : "";
-  size_t need = len + strlen(c) + 3;
+  const char *lbl = ai_role_label(req->msgs[i].role);
+  size_t need = len + strlen(lbl) + strlen(c) + 3;
   if (need > cap) { char *np; while (need > cap) cap *= 2; np = realloc(p, cap); if (!np) { free(p); return NULL; } p = np; }
-  len += (size_t)snprintf(p + len, cap - len, "%s\n\n", c);
+  len += (size_t)snprintf(p + len, cap - len, "%s%s\n\n", lbl, c);
  }
  return p;
 }
