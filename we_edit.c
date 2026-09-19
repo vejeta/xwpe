@@ -2677,6 +2677,39 @@ void e_buffer_set_text(BUFFER *b, const char *text)
  free(copy);
 }
 
+/* e_replace_buffer_undoable - swap the whole buffer for `newtext` as ONE undoable
+   step, keeping the cursor where the user was working and repainting now.  This
+   is the shared spine of every "the tool rewrote the file" action -- an LSP code
+   action / rename / format (via e_lsp_replace_buffer, which then notifies the
+   server) and an accepted AI edit (via e_ai_apply_text).  One 'B' undo snapshot
+   means a single Ctrl-U reverts the whole change; the cursor is clamped to the
+   rebuilt buffer so the edited spot stays on screen instead of snapping to the
+   top.  Callers that have a language server attached notify it afterwards. */
+void e_replace_buffer_undoable(FENSTER *f, const char *newtext)
+{
+ BUFFER *b = f->b;
+ int cx = b->b.x, cy = b->b.y, llen;
+
+ e_add_undo('B', b, b->b.x, b->b.y, 0);   /* snapshot OLD buffer for Ctrl-U */
+ e_buffer_set_text(b, newtext);
+ if (cy >= b->mxlines)
+  cy = b->mxlines > 0 ? b->mxlines - 1 : 0;
+ if (cy < 0)
+  cy = 0;
+ llen = b->bf[cy].s ? b->bf[cy].len : 0;
+ if (cx > llen)
+  cx = llen;
+ if (cx < 0)
+  cx = 0;
+ b->b.x = cx;
+ b->b.y = cy;
+ f->save++;                         /* mark the window modified */
+ e_firstl(f, 1);                    /* re-open the view over the new buffer */
+ e_schirm(f, 1);
+ e_rep_win_tree(f->ed);             /* full repaint */
+ e_refresh();                       /* flush to the terminal now, not next key */
+}
+
 int e_make_undo(FENSTER *f)
 {
  return(e_make_rudo(f, 0));

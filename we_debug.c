@@ -7257,35 +7257,10 @@ static int e_lsp_ui_code_actions(FENSTER *f)
    swaps the content via the shared e_buffer_set_text. */
 static void e_lsp_replace_buffer(FENSTER *f, const char *newtext)
 {
- BUFFER *b = f->b;
- int cx = b->b.x, cy = b->b.y, llen;
-
- e_add_undo('B', b, b->b.x, b->b.y, 0);   /* snapshot OLD buffer for Ctrl-U */
- e_buffer_set_text(b, newtext);
- /* Keep the cursor where the user was working (clamped to the rebuilt buffer),
-    so a rename/format/code-action shows the edited spot in place -- a rename
-    leaves the symbol on its own line, so this keeps it on screen instead of
-    snapping the view to the top of the file. */
- if (cy >= b->mxlines)
-  cy = b->mxlines > 0 ? b->mxlines - 1 : 0;
- if (cy < 0)
-  cy = 0;
- llen = b->bf[cy].s ? b->bf[cy].len : 0;
- if (cx > llen)
-  cx = llen;
- if (cx < 0)
-  cx = 0;
- b->b.x = cx;
- b->b.y = cy;
- f->save++;                         /* mark the window modified */
- e_firstl(f, 1);                    /* re-open the view over the new buffer */
- e_schirm(f, 1);
- e_rep_win_tree(f->ed);             /* full repaint (as the Watches rebuild) */
- e_refresh();                       /* flush to the terminal NOW: a code action
-                                       applied from the closing picker must show
-                                       its rewrite immediately, not on the next
-                                       keystroke (same flush the worksheet results
-                                       need from the fd-loop). */
+ /* One undoable whole-buffer swap with the cursor kept in place -- the shared
+    spine (we_edit.c), so a rename/format/code-action reverts with a single
+    Ctrl-U and shows the edited spot immediately, not on the next keystroke. */
+ e_replace_buffer_undoable(f, newtext);
  e_lsp_after_bulk_edit(f);          /* tell the server the buffer changed, so its
                                        diagnostics re-publish for the fixed text
                                        (e.g. the error a quick-fix removed clears) */

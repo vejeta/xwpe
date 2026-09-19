@@ -967,20 +967,12 @@ static int e_ai_chat(FENSTER *f)
 /* ======================= Edit mode ====================================== */
 
 /* Apply new whole-file text with one undo snapshot (mirrors the LSP apply). */
+/* Apply an accepted AI edit: the same one-undo whole-buffer swap the LSP apply
+   path uses, so an AI edit reverts with a single Ctrl-U exactly like a code
+   action.  Shared spine lives in we_edit.c. */
 static void e_ai_apply_text(FENSTER *f, const char *newtext)
 {
- BUFFER *b = f->b;
- e_add_undo('B', b, b->b.x, b->b.y, 0);
- e_buffer_set_text(b, newtext);
- if (b->b.y >= b->mxlines) b->b.y = b->mxlines ? b->mxlines - 1 : 0;
- if (b->b.y < 0) b->b.y = 0;
- if (b->b.x > b->bf[b->b.y].len) b->b.x = b->bf[b->b.y].len;
- if (b->b.x < 0) b->b.x = 0;
- f->save++;
- e_firstl(f, 1);
- e_schirm(f, 1);
- e_rep_win_tree(f->ed);
- e_refresh();
+ e_replace_buffer_undoable(f, newtext);
 }
 
 /* Strip a leading ```lang fence and a trailing ``` fence, if present.  Always
