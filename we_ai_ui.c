@@ -166,6 +166,10 @@ static FENSTER *ai_pane_win(FENSTER *f)
    return NULL;
   i = cn->mxedt;
   e_position_ai_window(cn->f[i], cn);   /* dock at the bottom, not over the editor */
+  /* Free every window's save-under before the relayout repaint: docking moves
+     the editor's bottom edge, and a stale save-under would restore an old strip
+     (a black column down the left edge).  This is what e_switch_window does. */
+  e_free_all_pics(cn);
   e_rep_win_tree(cn);
  }
  return cn->f[i];
@@ -798,8 +802,10 @@ static void ai_in_vmove(int dir)        /* caret up/down one line, keep column *
 static void e_ai_chat_loop(FENSTER *f, const char *seed, int send_now)
 {
  FENSTER *wf;
- int c, wi;
+ int c, wi, home_edt = -1;
 
+ for (wi = 1; wi <= f->ed->mxedt; wi++)         /* remember the caller's window */
+  if (f->ed->f[wi] == f) { home_edt = f->ed->edt[wi]; break; }
  wf = ai_pane_win(f);
  if (!wf) return;
  for (wi = 1; wi <= f->ed->mxedt; wi++)         /* bring the pane to the front */
@@ -829,6 +835,11 @@ static void e_ai_chat_loop(FENSTER *f, const char *seed, int send_now)
   c = e_getch();
   if (c == WPE_ESC)
    break;
+  if (c < 0) {                                  /* a mouse event */
+   e_edt_mouse(c, wf);                           /* menu/status bar, drag/resize/scroll */
+   ai_input_render(wf);                          /* restore the "> " row + caret */
+   continue;
+  }
   if (c == WPE_CR) {                            /* Enter: send the whole input */
    if (g_ai_input_len > 0) {
     char sb[AI_PROMPT_MAX];
@@ -872,6 +883,8 @@ static void e_ai_chat_loop(FENSTER *f, const char *seed, int send_now)
     g_ai_input_rows--;
    } }
  ai_pane_paint(wf);
+ if (home_edt >= 0)                              /* return focus to the user's file */
+  e_switch_window(home_edt, wf);
 }
 
 static int e_ai_chat(FENSTER *f)
