@@ -40,7 +40,12 @@ static SSL_CTX *ai_ssl_ctx(void)
   if (ctx) {
    SSL_CTX_set_min_proto_version(ctx, TLS1_2_VERSION);
    SSL_CTX_set_default_verify_paths(ctx);
-   /* We verify the hostname at connect via SSL_set1_host; leave mode default. */
+   /* Enforce peer verification.  Without SSL_VERIFY_PEER the client mode is
+      SSL_VERIFY_NONE, so SSL_connect succeeds on ANY certificate -- SSL_set1_host
+      records the expected name but nothing acts on the result, leaving the
+      connection to a cloud API (carrying the API key) open to a MITM.  With this
+      set, SSL_connect fails when the chain or the hostname does not check out. */
+   SSL_CTX_set_verify(ctx, SSL_VERIFY_PEER, NULL);
   }
  }
  return ctx;
