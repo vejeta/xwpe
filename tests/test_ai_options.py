@@ -78,9 +78,33 @@ def test_ai_options_keyboard_navigation(tmp_path):
         s.key("\t", delay=0.35)          # Enable -> Backend group
         s.key("\033[B", delay=0.35)      # down -> Ollama
         s.key(" ", delay=0.35)           # select
-        s.key("\033o", delay=0.6)        # Ok
+        s.key("\033o", delay=0.6)        # Ok -> reloads with Ollama's models
         s._drain(0.4)
+        s.key("\033", delay=0.4)         # leave the reopened dialog
     txt = trace.read_text() if trace.exists() else ""
-    line = next((l for l in txt.splitlines() if l.startswith("options ")), "")
-    assert "backend=ollama" in line, \
+    # changing the backend triggers a reload of that backend's model list
+    assert "options reload backend=ollama" in txt, \
         "Tab/arrow/Space navigation did not reach and select a radio:\n" + txt
+
+
+def test_ai_options_backend_change_reloads_models(tmp_path):
+    # Selecting a different backend reloads the Model list for it: switch to
+    # Ollama and the dialog reopens listing Ollama models, not the Claude ones.
+    trace = tmp_path / "ai.trace"
+    env = dict(ENV); env["XWPE_AI_TRACE"] = str(trace)
+    with WpeSession(str(tmp_path), "int main(void){return 0;}\n",
+                    env_extra=env) as s:
+        s.key("\033o", delay=0.5)
+        s.key("i", delay=0.6)
+        s.key("\t", delay=0.35)          # Backend group
+        s.key("\033[B", delay=0.35)      # Ollama
+        s.key(" ", delay=0.35)
+        s.key("\033o", delay=0.8)        # Ok -> reload
+        disp = "\n".join(s.display())
+        s.key("\033", delay=0.4)
+    # the reopened dialog no longer offers the Claude CLI aliases as models
+    assert "options reload backend=ollama" in (trace.read_text() if trace.exists() else "")
+    # and Ollama is now the marked backend
+    assert any("(*) Ollama" in ln for ln in disp.splitlines()) \
+        or "(*)Ollama" in disp.replace(" ", ""), \
+        "backend did not switch to Ollama on reload:\n" + disp

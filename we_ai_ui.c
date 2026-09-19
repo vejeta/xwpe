@@ -1551,69 +1551,83 @@ int e_ai_options(FENSTER *f)
  static char mrows[16][40];
  char merr[160];
  W_OPTSTR *o;
- int i, bcur = 0, mcur = 0, nmodels, edopt_before, ret;
+ int i, bcur, mcur, nmodels, edopt_before, ret, new_be;
 
- o = e_init_opt_kst(f);
- if (!o) return 0;
- for (i = 0; i < 4; i++) if (bk[i] == e_ai_backend) bcur = i;
- merr[0] = '\0';
- nmodels = wpe_ai_list_models(e_ai_backend, models, 32, merr, sizeof merr);
- if (nmodels < 0) nmodels = 0;
- if (nmodels > 16) nmodels = 16;
- for (i = 0; i < nmodels; i++) {
-  snprintf(mrows[i], sizeof mrows[i], "%.36s", models[i]);
-  if (e_ai_model && !strcmp(e_ai_model, models[i])) mcur = i;
- }
+ /* The dialog is static (widgets are fixed at build time), so the Model radios
+    can only list ONE backend.  To make the list follow the Backend choice, loop:
+    if Ok changed the backend, apply it and REOPEN with that backend's models. */
+ for (;;) {
+  o = e_init_opt_kst(f);
+  if (!o) return 0;
+  bcur = mcur = 0;
+  for (i = 0; i < 4; i++) if (bk[i] == e_ai_backend) bcur = i;
+  merr[0] = '\0';
+  nmodels = wpe_ai_list_models(e_ai_backend, models, 32, merr, sizeof merr);
+  if (nmodels < 0) nmodels = 0;
+  if (nmodels > 16) nmodels = 16;
+  for (i = 0; i < nmodels; i++) {
+   snprintf(mrows[i], sizeof mrows[i], "%.36s", models[i]);
+   if (e_ai_model && !strcmp(e_ai_model, models[i])) mcur = i;
+  }
 
- o->xa = 5; o->ya = 2; o->xe = 60; o->ye = 21; o->bgsw = 0; o->crsw = AltO;
- o->name = "AI settings";
- e_add_sswstr(3, 2, 0, AltE, (f->ed->edopt & ED_AI_ENABLE) ? 1 : 0, "Enable AI assistant", o);
+  o->xa = 5; o->ya = 2; o->xe = 60; o->ye = 21; o->bgsw = 0; o->crsw = AltO;
+  o->name = "AI settings";
+  e_add_sswstr(3, 2, 0, AltE, (f->ed->edopt & ED_AI_ENABLE) ? 1 : 0, "Enable AI assistant", o);
 
- /* Every field needs a UNIQUE, non-zero `sw`: e_opt_kst navigates spatially but
-    returns the target field's sw to focus it, and sw==0 means "no field", so a
-    zero sw makes a widget unreachable by Tab/arrows/mouse.  These are just field
-    IDs above the key range (no Alt accelerator, but fully navigable). */
- e_add_txtstr(3, 4, "Backend:", o);
- for (i = 0; i < 4; i++)
-  e_add_pswstr(0, 4, 5 + i, i, 4000 + i, (i == 3) ? bcur : 0, (char *)bklab[i], o);
+  /* Every field needs a UNIQUE, non-zero `sw`: e_opt_kst navigates spatially but
+     returns the target field's sw to focus it, and sw==0 means "no field", so a
+     zero sw makes a widget unreachable by Tab/arrows/mouse.  These are field IDs
+     above the key range (no Alt accelerator, but fully navigable). */
+  e_add_txtstr(3, 4, "Backend:", o);
+  for (i = 0; i < 4; i++)
+   e_add_pswstr(0, 4, 5 + i, i, 4000 + i, (i == 3) ? bcur : 0, (char *)bklab[i], o);
 
- e_add_txtstr(28, 4, "Model:", o);
- if (nmodels == 0)
-  e_add_txtstr(28, 5, merr[0] ? merr : "(backend offline)", o);
- for (i = 0; i < nmodels; i++)
-  e_add_pswstr(1, 29, 5 + i, i, 4100 + i, (i == nmodels - 1) ? mcur : 0, mrows[i], o);
+  e_add_txtstr(28, 4, "Model:", o);
+  if (nmodels == 0)
+   e_add_txtstr(28, 5, merr[0] ? merr : "(backend offline)", o);
+  for (i = 0; i < nmodels; i++)
+   e_add_pswstr(1, 29, 5 + i, i, 4100 + i, (i == nmodels - 1) ? mcur : 0, mrows[i], o);
 
- e_add_txtstr(3, 11, "Permission:", o);
- for (i = 0; i < 3; i++)
-  e_add_pswstr(2, 4, 12 + i, i, 4200 + i, (i == 2) ? e_ai_policy : 0, (char *)pol[i], o);
+  e_add_txtstr(3, 11, "Permission:", o);
+  for (i = 0; i < 3; i++)
+   e_add_pswstr(2, 4, 12 + i, i, 4200 + i, (i == 2) ? e_ai_policy : 0, (char *)pol[i], o);
 
- e_add_txtstr(3, 16, "(change backend, then reopen to list its models)", o);
- e_add_bttstr(12, 17, 1, AltO, " Ok ", NULL, o);
- e_add_bttstr(31, 17, -1, WPE_ESC, "Cancel", NULL, o);
+  e_add_txtstr(3, 16, "(pick a Backend + Ok to reload its model list)", o);
+  e_add_bttstr(12, 17, 1, AltO, " Ok ", NULL, o);
+  e_add_bttstr(31, 17, -1, WPE_ESC, "Cancel", NULL, o);
 
- edopt_before = f->ed->edopt;
- ret = e_opt_kst(o);
- if (ret != WPE_ESC) {
-  f->ed->edopt = (f->ed->edopt & ~ED_AI_ENABLE) |
-                 (o->sstr[0]->num ? ED_AI_ENABLE : 0);
-  e_ai_backend = bk[(o->pstr[0]->num >= 0 && o->pstr[0]->num < 4) ? o->pstr[0]->num : 0];
+  edopt_before = f->ed->edopt;
+  ret = e_opt_kst(o);
+  if (ret == WPE_ESC) { for (i = 0; i < nmodels; i++) free(models[i]); freeostr(o); return 0; }
+
+  /* Enable + policy are applied every time so they survive a reload. */
+  f->ed->edopt = (f->ed->edopt & ~ED_AI_ENABLE) | (o->sstr[0]->num ? ED_AI_ENABLE : 0);
   e_ai_policy  = (o->pstr[2]->num >= 0 && o->pstr[2]->num < 3) ? o->pstr[2]->num : 0;
+  new_be = bk[(o->pstr[0]->num >= 0 && o->pstr[0]->num < 4) ? o->pstr[0]->num : 0];
+  if (f->ed->edopt != edopt_before) {
+   e_switch_blst(f->ed); e_ai_refresh_bars(f->ed); e_repaint_desk(f);
+  }
+
+  if (new_be != e_ai_backend) {                 /* backend changed: reload models */
+   e_ai_backend = new_be;
+   free(e_ai_model); e_ai_model = NULL;          /* the new list will pre-pick its first */
+   wpe_ai_trace("options reload backend=%s", wpe_ai_backend_name(e_ai_backend));
+   for (i = 0; i < nmodels; i++) free(models[i]);
+   freeostr(o);
+   continue;                                     /* reopen with new_be's models */
+  }
+
   if (nmodels > 0 && o->pstr[1]->num >= 0 && o->pstr[1]->num < nmodels) {
    free(e_ai_model);
    e_ai_model = strdup(models[o->pstr[1]->num]);
   }
-  if (f->ed->edopt != edopt_before) {
-   e_switch_blst(f->ed);
-   e_ai_refresh_bars(f->ed);
-   e_repaint_desk(f);
-  }
   wpe_ai_trace("options backend=%s model=%s policy=%s enable=%d",
                wpe_ai_backend_name(e_ai_backend), e_ai_model ? e_ai_model : "-",
                wpe_ai_policy_name(e_ai_policy), (f->ed->edopt & ED_AI_ENABLE) ? 1 : 0);
+  for (i = 0; i < nmodels; i++) free(models[i]);
+  freeostr(o);
+  return 0;
  }
- for (i = 0; i < nmodels; i++) free(models[i]);
- freeostr(o);
- return 0;
 }
 
 int e_ai_agent(FENSTER *f);         /* defined in the Agent section below */
