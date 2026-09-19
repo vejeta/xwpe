@@ -27,6 +27,44 @@ def _rows_with(disp, needle):
     return [i for i, ln in enumerate(disp) if needle in ln]
 
 
+def _sgr(button, col, row, press=True):
+    return "\x1b[<%d;%d;%d%s" % (button, col, row, "M" if press else "m")
+
+
+def test_chat_is_a_normal_window(tmp_path):
+    # The pane is an ordinary window: you can click away to the editor and back
+    # while composing, and Enter still SENDS (it does not turn into a newline the
+    # way it did once the old modal loop had exited).
+    trace = tmp_path / "ai.trace"
+    env = {
+        "XWPE_AI_ENABLE": "1",
+        "XWPE_AI_BACKEND": "mock",
+        "XWPE_AI_MOCK_REPLY": "R1",
+        "XWPE_AI_TRACE": str(trace),
+    }
+    with WpeSession(str(tmp_path), "int main(void){return 0;}\n",
+                    env_extra=env) as s:
+        s.key(ALT.AI)
+        s.key("a")
+        s._drain(0.5)
+        disp = s.display()
+        ed_row = (next((i for i, l in enumerate(disp) if "int main" in l), 2)) + 1
+        ai_row = (max(_rows_with(disp, "> "), default=20)) + 1
+        s.key("hello there")                 # compose in the chat
+        s._drain(0.3)
+        s.key(_sgr(0, 10, ed_row), _sgr(0, 10, ed_row, False), delay=0.4)  # -> editor
+        s._drain(0.3)
+        s.key(_sgr(0, 5, ai_row), _sgr(0, 5, ai_row, False), delay=0.4)    # -> pane
+        s._drain(0.3)
+        s.key("\r", delay=1.2)               # Enter must SEND
+        s._drain(0.6)
+        s.key("\033", delay=0.3)
+    txt = trace.read_text() if trace.exists() else ""
+    prompts = [l for l in txt.splitlines() if l.startswith("chat prompt=")]
+    assert any("hello there" in p for p in prompts), \
+        "Enter did not send after switching windows (still modal?):\n" + txt
+
+
 def test_fixed_input_row_and_followups(tmp_path):
     trace = tmp_path / "ai.trace"
     env = {

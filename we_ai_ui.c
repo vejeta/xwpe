@@ -65,6 +65,8 @@ static int  g_ai_input_len = 0;
 static int  g_ai_input_rows = 0;        /* pane lines the input region occupies    */
 static int  g_ai_input_pos = 0;         /* caret byte offset within g_ai_input     */
 static int  g_ai_scroll_lock = 0;       /* user scrolled up: hold the view there   */
+static FENSTER *g_ai_chat_pane = NULL;  /* the armed chat pane (NULL = no chat)     */
+static int  g_ai_home_edt = -1;         /* window to refocus when the chat closes   */
 
 /* First pane line the stream writes into: the last line normally, or the line
  * just above the input region when focus mode owns the bottom rows. */
@@ -194,19 +196,25 @@ static void ai_input_caret(FENSTER *wf, int *cy, int *cx)
  *cx = 2 + col;
 }
 
-/* Repaint the pane window and keep the caret in view. */
+/* Repaint the pane window and keep the caret in view.  The pane is an ordinary
+ * window, so the caret belongs to whichever window is FOCUSED: it sits in the
+ * chat input row only while the pane itself is focused; when the user has
+ * switched to their file (or an async op runs), the pane repaints in the
+ * background and the caret stays in the focused/user window. */
 static void ai_pane_paint(FENSTER *wf)
 {
- if (g_ai_chat_focus && !g_ai_bg_win) {      /* caret sits in the input region */
+ FENSTER *act = wf->ed->f[wf->ed->mxedt];       /* the focused window */
+ FENSTER *caret = g_ai_bg_win ? g_ai_bg_win : act;
+ int pane_focused = (act == wf && !g_ai_bg_win);
+
+ if (pane_focused && g_ai_chat_focus) {         /* caret sits in the input region */
   int cy, cx;
   ai_input_caret(wf, &cy, &cx);
   wf->b->b.y = cy;
   wf->b->b.x = cx;
- } else {
+ } else if (pane_focused) {
   int y = wf->b->mxlines - 1;
   wf->b->b.y = y;
-  /* Keep the caret at the END of the newest line (following the streamed text),
-     like a terminal, instead of parked at column 0. */
   wf->b->b.x = (y >= 0 && wf->b->bf[y].s) ? wf->b->bf[y].len : 0;
  }
  if (g_ai_scroll_lock) {
@@ -219,10 +227,7 @@ static void ai_pane_paint(FENSTER *wf)
   e_messages_scroll_to_bottom(wf);
  }
  e_schirm(wf, 0);
- if (g_ai_bg_win)
-  e_cursor(g_ai_bg_win, 0);   /* background op: leave the caret in the user's file */
- else
-  e_cursor(wf, 0);
+ e_cursor(caret, 0);
  e_refresh();
 }
 
@@ -805,19 +810,38 @@ static void ai_in_vmove(int dir)        /* caret up/down one line, keep column *
  }
 }
 
-/* Focused chat loop: the pane shows a fixed "> " input row at the bottom and the
- * reply streams in above it.  e_getch pumps the fd-loop, so the answer paints
- * while the user reads or types the next follow-up.  Enter sends, Esc leaves the
- * chat (any in-flight reply keeps streaming into the transcript). `seed` is text
- * carried in from the Ask popup: sent at once when send_now, else pre-loaded into
- * the input row to keep editing. */
-static void e_ai_chat_loop(FENSTER *f, const char *seed, int send_now)
+/* Close the chat: drop the "> " input region and hand focus back to the file the
+ * chat was opened from.  The transcript stays in the (now ordinary) pane. */
+static void e_ai_chat_close(void)
+{
+ FENSTER *wf = g_ai_chat_pane;
+ if (!wf) return;
+ g_ai_chat_focus = 0;
+ g_ai_chat_pane = NULL;
+ { BUFFER *b = wf->b;
+   while (g_ai_input_rows > 0 && b->mxlines > 0) {
+    int y = b->mxlines - 1;
+    FREE(b->bf[y].s);
+    b->mxlines--;
+    g_ai_input_rows--;
+   } }
+ ai_pane_paint(wf);
+ if (g_ai_home_edt >= 0)
+  e_switch_window(g_ai_home_edt, wf);
+}
+
+/* Arm the chat: dock and focus the pane, add the "> " input row, and remember it
+ * as the active chat pane.  From here the pane is an ORDINARY window -- the main
+ * editor loop drives it, so mouse, scrolling, resizing and switching to other
+ * windows all work; only the input keys are intercepted (see e_ai_chat_key). */
+static void e_ai_chat_arm(FENSTER *f)
 {
  FENSTER *wf;
- int c, wi, home_edt = -1;
+ int wi;
 
+ g_ai_home_edt = -1;
  for (wi = 1; wi <= f->ed->mxedt; wi++)         /* remember the caller's window */
-  if (f->ed->f[wi] == f) { home_edt = f->ed->edt[wi]; break; }
+  if (f->ed->f[wi] == f) { g_ai_home_edt = f->ed->edt[wi]; break; }
  wf = ai_pane_win(f);
  if (!wf) return;
  for (wi = 1; wi <= f->ed->mxedt; wi++)         /* bring the pane to the front */
@@ -825,6 +849,7 @@ static void e_ai_chat_loop(FENSTER *f, const char *seed, int send_now)
  wf = ai_pane_win(f);
  if (!wf) return;
 
+ g_ai_chat_pane = wf;
  g_ai_chat_focus = 1;
  g_ai_scroll_lock = 0;
  g_ai_input[0] = '\0';
@@ -834,96 +859,64 @@ static void e_ai_chat_loop(FENSTER *f, const char *seed, int send_now)
  if (wf->b->mxlines == 0) e_new_line(0, wf->b);
  if (wf->b->mxlines <= 1)                        /* one-time hint on a fresh chat */
   ai_tr_line(wf, "[Enter=send  Ctrl-J=newline  arrows move  PgUp/PgDn scroll  Esc leaves]");
- if (seed && *seed && !send_now) {
-  strncpy(g_ai_input, seed, sizeof g_ai_input - 1);
-  g_ai_input[sizeof g_ai_input - 1] = '\0';
-  g_ai_input_len = (int)strlen(g_ai_input);
-  g_ai_input_pos = g_ai_input_len;
- }
- ai_input_render(wf);                           /* creates the input region */
- if (seed && *seed && send_now)
-  e_ai_chat_send(f, seed);
+ ai_input_render(wf);                            /* creates the input region */
+}
 
- for (;;) {
-  c = e_getch();
-  if (c == WPE_ESC)
-   break;
-  if (c < 0) {                                  /* a mouse event */
-   extern struct mouse e_mouse;
-   int inside = (e_mouse.x >= wf->a.x && e_mouse.x <= wf->e.x &&
-                 e_mouse.y >= wf->a.y && e_mouse.y <= wf->e.y);
-   int onbar  = (e_mouse.y == 0 || e_mouse.y == MAXSLNS - 1);
-   if (inside || onbar) {                        /* the pane, menu or status bar */
-    int maxtop;
-    e_edt_mouse(c, wf);                           /* drag/resize/cursor/scroll/menu */
-    maxtop = wf->b->mxlines - (wf->e.y - wf->a.y - 1);
-    g_ai_scroll_lock = (maxtop > 0 && wf->s->c.y < maxtop);  /* scrollbar moved it */
-    ai_input_render(wf);
-    continue;
-   }
-   { int j;                                       /* clicked ANOTHER window: leave the */
-     for (j = wf->ed->mxedt; j > 0; j--) {        /* chat and give it the focus */
-      FENSTER *g = wf->ed->f[j];
-      if (g != wf && e_mouse.x >= g->a.x && e_mouse.x <= g->e.x &&
-          e_mouse.y >= g->a.y && e_mouse.y <= g->e.y) {
-       home_edt = wf->ed->edt[j];
-       break;
-      }
-     } }
-   break;
-  }
-  if (c == BUP) { ai_pane_scroll(wf, -(wf->e.y - wf->a.y - 2)); continue; }
-  if (c == BDO) { ai_pane_scroll(wf, +(wf->e.y - wf->a.y - 2)); continue; }
-  g_ai_scroll_lock = 0;                          /* any edit key returns to the input */
-  if (c == WPE_CR) {                            /* Enter: send the whole input */
-   if (g_ai_input_len > 0) {
-    char sb[AI_PROMPT_MAX];
-    strncpy(sb, g_ai_input, sizeof sb - 1);
-    sb[sizeof sb - 1] = '\0';
-    g_ai_input[0] = '\0';
-    g_ai_input_len = 0;
-    g_ai_input_pos = 0;
-    ai_input_render(wf);
-    e_ai_chat_send(f, sb);
-   }
-   continue;
-  }
-  if (c == WPE_WR)   { ai_in_insert("\n", 1);                    ai_input_render(wf); continue; }
-  if (c == WPE_DC)   { ai_in_backspace();                        ai_input_render(wf); continue; }
-  if (c == ENTF)     { ai_in_delete();                           ai_input_render(wf); continue; }
-  if (c == CLE)      { g_ai_input_pos = ai_in_prev(g_ai_input_pos); ai_input_render(wf); continue; }
-  if (c == CRI)      { g_ai_input_pos = ai_in_next(g_ai_input_pos); ai_input_render(wf); continue; }
-  if (c == POS1)     { g_ai_input_pos = ai_in_bol(g_ai_input_pos);  ai_input_render(wf); continue; }
-  if (c == ENDE)     { g_ai_input_pos = ai_in_eol(g_ai_input_pos);  ai_input_render(wf); continue; }
-  if (c == CUP)      { ai_in_vmove(-1);                          ai_input_render(wf); continue; }
-  if (c == CDO)      { ai_in_vmove(1);                           ai_input_render(wf); continue; }
-  if ((c >= 32 && c < 255) || c > WPE_AI_MENU) { /* a printable char (ASCII or a
-                                                    real Unicode codepoint) */
-   unsigned char u8[4];
-   int n = (c >= 0x80) ? e_codepoint_to_utf8(c, u8) : (u8[0] = (unsigned char)c, 1);
-   ai_in_insert((char *)u8, n);
+/* Handle one key while the AI chat pane is the FOCUSED window.  Returns 1 if the
+ * key was an input action (consumed), 0 to let the editor handle it normally
+ * (window switch, function keys, ...).  Mouse is handled by the editor before
+ * this is reached, so dragging/resizing/switching windows all keep working. */
+int e_ai_chat_key(FENSTER *f, int c)
+{
+ FENSTER *wf = f;
+
+ if (!g_ai_chat_focus || f != g_ai_chat_pane)
+  return 0;
+ if (c == WPE_ESC) { e_ai_chat_close(); return 1; }
+ if (c == BUP) { ai_pane_scroll(wf, -(wf->e.y - wf->a.y - 2)); return 1; }
+ if (c == BDO) { ai_pane_scroll(wf, +(wf->e.y - wf->a.y - 2)); return 1; }
+ g_ai_scroll_lock = 0;                           /* any edit key returns to the input */
+ if (c == WPE_CR) {                             /* Enter: send the whole input */
+  if (g_ai_input_len > 0) {
+   char sb[AI_PROMPT_MAX];
+   strncpy(sb, g_ai_input, sizeof sb - 1);
+   sb[sizeof sb - 1] = '\0';
+   g_ai_input[0] = '\0';
+   g_ai_input_len = 0;
+   g_ai_input_pos = 0;
    ai_input_render(wf);
+   e_ai_chat_send(f, sb);
   }
-  /* other keys (function keys, etc.) are ignored in the input row */
+  return 1;
  }
-
- g_ai_chat_focus = 0;
- { BUFFER *b = wf->b;                            /* drop the input region on exit */
-   while (g_ai_input_rows > 0 && b->mxlines > 0) {
-    int y = b->mxlines - 1;
-    FREE(b->bf[y].s);
-    b->mxlines--;
-    g_ai_input_rows--;
-   } }
- ai_pane_paint(wf);
- if (home_edt >= 0)                              /* return focus to the user's file */
-  e_switch_window(home_edt, wf);
+ if (c == WPE_WR)   { ai_in_insert("\n", 1);                       ai_input_render(wf); return 1; }
+ if (c == WPE_DC)   { ai_in_backspace();                           ai_input_render(wf); return 1; }
+ if (c == ENTF)     { ai_in_delete();                              ai_input_render(wf); return 1; }
+ if (c == CLE)      { g_ai_input_pos = ai_in_prev(g_ai_input_pos); ai_input_render(wf); return 1; }
+ if (c == CRI)      { g_ai_input_pos = ai_in_next(g_ai_input_pos); ai_input_render(wf); return 1; }
+ if (c == POS1)     { g_ai_input_pos = ai_in_bol(g_ai_input_pos);  ai_input_render(wf); return 1; }
+ if (c == ENDE)     { g_ai_input_pos = ai_in_eol(g_ai_input_pos);  ai_input_render(wf); return 1; }
+ if (c == CUP)      { ai_in_vmove(-1);                             ai_input_render(wf); return 1; }
+ if (c == CDO)      { ai_in_vmove(1);                              ai_input_render(wf); return 1; }
+ if ((c >= 32 && c < 255) || c > WPE_AI_MENU) { /* a printable char (ASCII/Unicode) */
+  unsigned char u8[4];
+  int n = (c >= 0x80) ? e_codepoint_to_utf8(c, u8) : (u8[0] = (unsigned char)c, 1);
+  ai_in_insert((char *)u8, n);
+  ai_input_render(wf);
+  return 1;
+ }
+ return 0;                                        /* not an input key: editor handles it */
 }
 
 static int e_ai_chat(FENSTER *f)
 {
  char err[320], line[400];
 
+ if (g_ai_chat_pane) {                            /* already open: just refocus it */
+  int wi;
+  for (wi = 1; wi <= f->ed->mxedt; wi++)
+   if (f->ed->f[wi] == g_ai_chat_pane) { e_switch_window(f->ed->edt[wi], f); return 0; }
+ }
  err[0] = '\0';
  if (wpe_ai_preflight(e_ai_backend, err, sizeof err)) {
   snprintf(line, sizeof line, "[AI unavailable] %s", err);
@@ -938,10 +931,10 @@ static int e_ai_chat(FENSTER *f)
  }
 
  e_ai_cli_mode = WPE_AI_CLI_TEXTONLY;
- wpe_ai_session_load(f);                        /* resume this workspace's talk */
- /* Open straight into the pane's input row -- no entry popup.  Type and Enter to
-    send, Ctrl-J for a newline, Esc to leave. */
- e_ai_chat_loop(f, "", 0);
+ wpe_ai_session_load(f);                         /* resume this workspace's talk */
+ /* Open straight into the pane's input row -- no popup.  The pane is now a normal
+    window: type and Enter to send, Ctrl-J for a newline, Esc to leave. */
+ e_ai_chat_arm(f);
  return 0;
 }
 

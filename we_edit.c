@@ -540,6 +540,13 @@ int e_eingabe(ECNT *e)
    e_lsp_on_edit(f, c);          /* live LSP diagnostics + didChange */
   }
 #endif
+#ifdef WPE_AI
+  /* When the AI chat pane is focused, its input row eats the editing keys (and
+     Esc closes the chat); everything else -- mouse (already handled above),
+     window switching, function keys -- falls through to normal editing, so the
+     pane behaves as an ordinary window. */
+  if (e_ai_chat_key(f, c)) { if (c == WPE_ESC) c = 0; continue; }
+#endif
   /* Synthetic keycodes (WPE_SCROLL_UP..WPE_AI_MENU) share the numeric range of
      real Unicode codepoints, so they must be excluded from character insertion:
      keep the ceiling at the HIGHEST synthetic code or a bottom-bar click on the
