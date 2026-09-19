@@ -60,15 +60,16 @@ static ai_chat_session *g_ai_chat = NULL;
  * focus mode is on, the whole-line and streaming pane writers target the line
  * ABOVE the input row instead of the last line. */
 static int  g_ai_chat_focus = 0;
-static char g_ai_input[AI_PROMPT_MAX];
+static char g_ai_input[AI_PROMPT_MAX];  /* may hold '\n' -- a multi-line prompt   */
 static int  g_ai_input_len = 0;
+static int  g_ai_input_rows = 0;        /* pane lines the input region occupies    */
 
-/* Pane line the stream writes into: the last line normally, or the line just
- * above the "> " input row when focus mode owns the bottom row. */
+/* First pane line the stream writes into: the last line normally, or the line
+ * just above the input region when focus mode owns the bottom rows. */
 static int ai_stream_y(FENSTER *wf)
 {
  int y = wf->b->mxlines - 1;
- if (g_ai_chat_focus && y > 0) y--;
+ if (g_ai_chat_focus) y -= g_ai_input_rows;
  if (y < 0) y = 0;
  return y;
 }
@@ -215,28 +216,54 @@ static void ai_pane_set_last(FENSTER *wf, const char *text)
  ai_pane_paint(wf);
 }
 
-/* Redraw the "> " input row (the pane's last line) from the input buffer. */
+/* Redraw the input region (the pane's last g_ai_input_rows lines) from the input
+ * buffer, which may hold '\n'-separated lines.  The first line shows "> ", the
+ * rest are indented so a multi-line prompt aligns under it; the region grows and
+ * shrinks with the number of lines. */
 static void ai_input_render(FENSTER *wf)
 {
+ BUFFER *b = wf->b;
+ int want = 1, i;
+ const char *p;
  char row[AI_PROMPT_MAX + 8];
- snprintf(row, sizeof row, "> %s", g_ai_input);
- ai_pane_set_line(wf, wf->b->mxlines - 1, row);
+
+ for (p = g_ai_input; *p; p++)
+  if (*p == '\n') want++;
+
+ if (b->mxlines == 0) e_new_line(0, b);
+ while (g_ai_input_rows < want) { e_new_line(b->mxlines, b); g_ai_input_rows++; }
+ while (g_ai_input_rows > want && g_ai_input_rows > 1) {
+  int y = b->mxlines - 1;
+  FREE(b->bf[y].s);
+  b->mxlines--;
+  g_ai_input_rows--;
+ }
+ p = g_ai_input;
+ for (i = 0; i < want; i++) {
+  const char *nl = strchr(p, '\n');
+  int seglen = nl ? (int)(nl - p) : (int)strlen(p);
+  if (seglen > (int)sizeof row - 4) seglen = (int)sizeof row - 4;
+  snprintf(row, sizeof row, "%s%.*s", i == 0 ? "> " : "  ", seglen, p);
+  ai_pane_set_line(wf, b->mxlines - want + i, row);
+  if (!nl) break;
+  p = nl + 1;
+ }
  ai_pane_paint(wf);
 }
 
 /* Finalise the current line and open a fresh (empty) one after it -- inserted
- * BEFORE the input row when focus mode owns the bottom row. */
+ * BEFORE the input region when focus mode owns the bottom rows. */
 static void ai_pane_commit(FENSTER *wf)
 {
  BUFFER *b = wf->b;
- if (g_ai_chat_focus && b->mxlines > 0)
-  e_new_line(b->mxlines - 1, b);
+ if (g_ai_chat_focus && b->mxlines > g_ai_input_rows)
+  e_new_line(b->mxlines - g_ai_input_rows, b);
  else
   e_new_line(b->mxlines, b);
 }
 
-/* Append one finished transcript line, keeping the "> " input row (if any) at
- * the very bottom by inserting just above it. */
+/* Append one finished transcript line, keeping the input region (if any) at the
+ * very bottom by inserting just above it. */
 static void ai_tr_line(FENSTER *wf, const char *str)
 {
  BUFFER *b = wf->b;
@@ -245,9 +272,9 @@ static void ai_tr_line(FENSTER *wf, const char *str)
   print_to_end_of_buffer(b, (char *)str, b->mx.x);
   return;
  }
- at = b->mxlines - 1;                    /* the input row index */
+ at = b->mxlines - g_ai_input_rows;      /* first input-region line */
  if (at < 0) at = 0;
- e_new_line(at, b);                      /* insert a blank line before the row */
+ e_new_line(at, b);                      /* insert a blank line before the region */
  ai_pane_set_line(wf, at, str);
 }
 
@@ -619,10 +646,23 @@ static void e_ai_chat_send(FENSTER *f, const char *text)
  ai_chat_session *s;
  char line[AI_PROMPT_MAX + 8];
 
+ const char *p = text;
+ int first = 1;
+
  wpe_ai_trace("chat prompt=%s", text);
  if (g_ai_chat) { g_ai_chat->active = 0; ai_chat_finish(g_ai_chat); }
- snprintf(line, sizeof line, "You: %s", text);
- ai_pane(f, line, 0);                          /* inserts above the input row */
+ /* Echo the prompt one transcript line per input line, so a multi-line prompt
+    reads cleanly ("You: ..." then indented continuations) instead of showing an
+    embedded newline as a control glyph. */
+ while (first || *p) {
+  const char *nl = strchr(p, '\n');
+  int seg = nl ? (int)(nl - p) : (int)strlen(p);
+  snprintf(line, sizeof line, "%s%.*s", first ? "You: " : "     ", seg, p);
+  ai_pane(f, line, 0);                         /* inserts above the input region */
+  first = 0;
+  if (!nl) break;
+  p = nl + 1;
+ }
  wpe_ai_session_append("user", text);
  s = calloc(1, sizeof *s);
  if (!s) return;
@@ -654,14 +694,14 @@ static void e_ai_chat_loop(FENSTER *f, const char *seed, int send_now)
  g_ai_chat_focus = 1;
  g_ai_input[0] = '\0';
  g_ai_input_len = 0;
+ g_ai_input_rows = 0;
  if (wf->b->mxlines == 0) e_new_line(0, wf->b);
- e_new_line(wf->b->mxlines, wf->b);             /* the input row = the last line */
  if (seed && *seed && !send_now) {
   strncpy(g_ai_input, seed, sizeof g_ai_input - 1);
   g_ai_input[sizeof g_ai_input - 1] = '\0';
   g_ai_input_len = (int)strlen(g_ai_input);
  }
- ai_input_render(wf);
+ ai_input_render(wf);                           /* creates the input region */
  if (seed && *seed && send_now)
   e_ai_chat_send(f, seed);
 
@@ -669,7 +709,7 @@ static void e_ai_chat_loop(FENSTER *f, const char *seed, int send_now)
   c = e_getch();
   if (c == WPE_ESC)
    break;
-  if (c == WPE_CR) {
+  if (c == WPE_CR) {                            /* Enter: send the whole input */
    if (g_ai_input_len > 0) {
     char sb[AI_PROMPT_MAX];
     strncpy(sb, g_ai_input, sizeof sb - 1);
@@ -678,6 +718,14 @@ static void e_ai_chat_loop(FENSTER *f, const char *seed, int send_now)
     g_ai_input_len = 0;
     ai_input_render(wf);
     e_ai_chat_send(f, sb);
+   }
+   continue;
+  }
+  if (c == WPE_WR) {                            /* Ctrl-J: newline in the input */
+   if (g_ai_input_len < (int)sizeof g_ai_input - 1) {
+    g_ai_input[g_ai_input_len++] = '\n';
+    g_ai_input[g_ai_input_len] = '\0';
+    ai_input_render(wf);
    }
    continue;
   }
@@ -701,21 +749,19 @@ static void e_ai_chat_loop(FENSTER *f, const char *seed, int send_now)
  }
 
  g_ai_chat_focus = 0;
- { BUFFER *b = wf->b;                            /* drop the input row on exit */
-   if (b->mxlines > 0) { int y = b->mxlines - 1; FREE(b->bf[y].s); b->mxlines--; } }
+ { BUFFER *b = wf->b;                            /* drop the input region on exit */
+   while (g_ai_input_rows > 0 && b->mxlines > 0) {
+    int y = b->mxlines - 1;
+    FREE(b->bf[y].s);
+    b->mxlines--;
+    g_ai_input_rows--;
+   } }
  ai_pane_paint(wf);
 }
 
 static int e_ai_chat(FENSTER *f)
 {
- static char prompt[AI_PROMPT_MAX];
  char err[320], line[400];
- int mode;
-
- prompt[0] = '\0';
- mode = e_ai_prompt(prompt, "Ask AI", f);       /* 0 cancel, 1 send, 2 to input row */
- if (mode == 0) return 0;
- if (mode == 1 && !prompt[0]) return 0;
 
  err[0] = '\0';
  if (wpe_ai_preflight(e_ai_backend, err, sizeof err)) {
@@ -732,9 +778,9 @@ static int e_ai_chat(FENSTER *f)
 
  e_ai_cli_mode = WPE_AI_CLI_TEXTONLY;
  wpe_ai_session_load(f);                        /* resume this workspace's talk */
- /* Send-now on Enter; on Multi-line, drop into the input row pre-loaded with the
-    text so the user keeps composing there -- no separate composer window. */
- e_ai_chat_loop(f, prompt, mode == 1);
+ /* Open straight into the pane's input row -- no entry popup.  Type and Enter to
+    send, Ctrl-J for a newline, Esc to leave. */
+ e_ai_chat_loop(f, "", 0);
  return 0;
 }
 

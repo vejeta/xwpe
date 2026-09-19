@@ -91,11 +91,9 @@ def test_ai_reply_shares_the_AI_line(tmp_path):
         "reply is not on the 'AI:' line (label split from answer):\n" + joined
 
 
-def test_ai_multiline_carries_over_typed_text(tmp_path):
-    # Typing in the one-line Ask box then pressing Multi-line (Alt-M) drops the
-    # text straight into the pane's fixed input row -- no separate composer
-    # window -- so the user keeps composing there and Enter sends it.  The sent
-    # prompt must equal the text carried over from the popup field.
+def test_ai_multiline_input_row(tmp_path):
+    # The input row is multi-line: Ctrl-J (\n) adds a line, Enter sends the whole
+    # thing.  Both lines must reach the model and show as a grown input region.
     trace = tmp_path / "ai.trace"
     env = {
         "XWPE_AI_ENABLE": "1",
@@ -106,22 +104,22 @@ def test_ai_multiline_carries_over_typed_text(tmp_path):
     with WpeSession(str(tmp_path), "int main(void){return 0;}\n",
                     env_extra=env) as s:
         s.key(ALT.AI)
-        s.key("a")
-        s.key("carry me over")        # type into the one-line field
-        s._drain(0.4)
-        s.key("\033m", delay=1.0)     # Alt-M -> input row, pre-loaded (not sent)
-        s._drain(0.6)
+        s.key("a")                    # Ask -> straight into the input row (no popup)
+        s.key("alpha line")           # first input line
+        s.key("\n")                   # Ctrl-J -> newline within the input
+        s.key("beta line")            # second input line
+        s._drain(0.5)
         disp = s.display()
-        assert any("carry me over" in ln for ln in disp), \
-            "Multi-line did not carry the text into the input row:\n" + "\n".join(disp)
-        s.key("\r", delay=1.2)        # Enter -> send from the input row
+        assert any("alpha line" in ln for ln in disp) and \
+               any("beta line" in ln for ln in disp), \
+            "the input row did not grow to two lines:\n" + "\n".join(disp)
+        s.key("\r", delay=1.2)        # Enter -> send the whole multi-line prompt
         s._drain(1.0)
         s.key("\033", delay=0.4)      # Esc -> leave chat
     txt = trace.read_text() if trace.exists() else ""
-    prompts = [l for l in txt.splitlines() if l.startswith("chat prompt=")]
-    assert prompts, "no chat was submitted:\n" + txt
-    assert any("carry me over" in l for l in prompts), \
-        "the input row lost the text carried from the popup:\n" + txt
+    # The trace records the full prompt; the newline splits it across two lines.
+    assert "chat prompt=alpha line" in txt and "beta line" in txt, \
+        "the multi-line prompt was not sent in full:\n" + txt
 
 
 def test_ai_chat_investigates_files(tmp_path):
