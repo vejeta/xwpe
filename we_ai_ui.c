@@ -2178,10 +2178,15 @@ int e_ai_agent(FENSTER *f)
 
  wpe_ai_trace("agent policy=%s", wpe_ai_policy_name(e_ai_policy));
  wpe_ai_session_load(f);
- /* claudecli: pre-grant per the dial (it cannot prompt in -p mode). */
- e_ai_cli_mode = e_ai_policy == WPE_AI_POLICY_AUTO  ? WPE_AI_CLI_AUTO
-               : e_ai_policy == WPE_AI_POLICY_EDITS ? WPE_AI_CLI_EDITS
-               : WPE_AI_CLI_TEXTONLY;
+ /* claudecli MUST stay text-only for the agent: our agent drives its OWN tool
+    protocol -- the model replies "TOOL read_file x" etc. and WE run each tool
+    under the permission dial.  The auto/edits dial used to let the CLI use its
+    own Write/Edit/Bash tools (--dangerously-skip-permissions / acceptEdits),
+    which bypasses that protocol entirely (the model would edit files itself and
+    reply with a summary, not the TOOL lines the agent parses).  Keep it text-
+    only; the xwpe policy still gates whether WE run each parsed tool
+    (ai_agent_approve), independent of the CLI's own permission mode. */
+ e_ai_cli_mode = WPE_AI_CLI_TEXTONLY;
  if (e_ai_policy != WPE_AI_POLICY_ASK) {           /* never unattended without a checkpoint */
   char **scope; int nsc = wpe_ai_scope_files(f, e_project_is_open(), 1, &scope);
   wpe_ai_checkpoint_create(f, scope, nsc);
