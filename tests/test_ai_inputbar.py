@@ -75,3 +75,36 @@ def test_fixed_input_row_and_followups(tmp_path):
     prompts = [l for l in txt.splitlines() if l.startswith("chat prompt=")]
     assert any("first question" in l for l in prompts), "first turn not sent:\n" + txt
     assert any("second question" in l for l in prompts), "follow-up not sent:\n" + txt
+
+
+def test_input_row_cursor_editing(tmp_path):
+    # The input row is a small line editor: type "abc", move the caret left twice,
+    # insert "X" -> the sent prompt is "aXbc" (inserted at the caret, not the end).
+    # Also proves the entry hint shows and arrow keys reach the row.
+    trace = tmp_path / "ai.trace"
+    env = {
+        "XWPE_AI_ENABLE": "1",
+        "XWPE_AI_BACKEND": "mock",
+        "XWPE_AI_MOCK_REPLY": "ok",
+        "XWPE_AI_TRACE": str(trace),
+    }
+    with WpeSession(str(tmp_path), "int main(void){return 0;}\n",
+                    env_extra=env) as s:
+        s.key(ALT.AI)
+        s.key("a")
+        s._drain(0.5)
+        hint = s.display()
+        assert any("Enter=send" in ln for ln in hint), \
+            "the entry hint was not shown:\n" + "\n".join(hint)
+        s.key("abc")
+        s.key("\033[D")               # Left
+        s.key("\033[D")               # Left  -> caret is a|bc
+        s.key("X")                    # insert at the caret -> aXbc
+        s._drain(0.3)
+        s.key("\r", delay=1.2)
+        s._drain(0.6)
+        s.key("\033", delay=0.4)
+    txt = trace.read_text() if trace.exists() else ""
+    prompts = [l for l in txt.splitlines() if l.startswith("chat prompt=")]
+    assert any("aXbc" in l for l in prompts), \
+        "the caret did not insert mid-line (arrow keys not reaching the row):\n" + txt

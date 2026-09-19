@@ -63,6 +63,7 @@ static int  g_ai_chat_focus = 0;
 static char g_ai_input[AI_PROMPT_MAX];  /* may hold '\n' -- a multi-line prompt   */
 static int  g_ai_input_len = 0;
 static int  g_ai_input_rows = 0;        /* pane lines the input region occupies    */
+static int  g_ai_input_pos = 0;         /* caret byte offset within g_ai_input     */
 
 /* First pane line the stream writes into: the last line normally, or the line
  * just above the input region when focus mode owns the bottom rows. */
@@ -174,20 +175,57 @@ static FENSTER *ai_pane_win(FENSTER *f)
  * pane -- so they keep typing in their code while the AI streams/spins. */
 static FENSTER *g_ai_bg_win = NULL;
 
-/* Repaint the pane window and keep the newest line in view. */
+/* Place the pane caret at the input cursor: its row within the input region and
+ * its display column (past the "> "/"  " 2-column prefix). */
+static void ai_input_caret(FENSTER *wf, int *cy, int *cx)
+{
+ int rows = g_ai_input_rows > 0 ? g_ai_input_rows : 1;
+ int line_idx = 0, col = 0, i;
+ for (i = 0; i < g_ai_input_pos && i < g_ai_input_len; i++) {
+  if (g_ai_input[i] == '\n') { line_idx++; col = 0; }
+  else if (((unsigned char)g_ai_input[i] & 0xC0) != 0x80) col++;  /* one per glyph */
+ }
+ *cy = wf->b->mxlines - rows + line_idx;
+ *cx = 2 + col;
+}
+
+/* Repaint the pane window and keep the caret in view. */
 static void ai_pane_paint(FENSTER *wf)
 {
- int y = wf->b->mxlines - 1;
- wf->b->b.y = y;
- /* Keep the caret at the END of the newest line (following the streamed text),
-    like a terminal, instead of parked at column 0. */
- wf->b->b.x = (y >= 0 && wf->b->bf[y].s) ? wf->b->bf[y].len : 0;
+ if (g_ai_chat_focus && !g_ai_bg_win) {      /* caret sits in the input region */
+  int cy, cx;
+  ai_input_caret(wf, &cy, &cx);
+  wf->b->b.y = cy;
+  wf->b->b.x = cx;
+ } else {
+  int y = wf->b->mxlines - 1;
+  wf->b->b.y = y;
+  /* Keep the caret at the END of the newest line (following the streamed text),
+     like a terminal, instead of parked at column 0. */
+  wf->b->b.x = (y >= 0 && wf->b->bf[y].s) ? wf->b->bf[y].len : 0;
+ }
  e_messages_scroll_to_bottom(wf);
  e_schirm(wf, 0);
  if (g_ai_bg_win)
   e_cursor(g_ai_bg_win, 0);   /* background op: leave the caret in the user's file */
  else
   e_cursor(wf, 0);
+ e_refresh();
+}
+
+/* Scroll the transcript view by `delta` lines without moving the input caret,
+ * so PgUp/PgDn browse history.  Typing snaps back to the bottom on the next
+ * ai_pane_paint (its scroll-to-bottom keeps the caret visible). */
+static void ai_pane_scroll(FENSTER *wf, int delta)
+{
+ SCHIRM *s = wf->s;
+ int visible_h = wf->e.y - wf->a.y - 1;
+ int maxtop = wf->b->mxlines - visible_h;
+ s->c.y += delta;
+ if (s->c.y > maxtop) s->c.y = maxtop;
+ if (s->c.y < 0) s->c.y = 0;
+ e_schirm(wf, 0);
+ e_cursor(wf, 0);
  e_refresh();
 }
 
@@ -675,6 +713,82 @@ static void e_ai_chat_send(FENSTER *f, const char *text)
  ai_chat_next_turn(s);
 }
 
+/* ----- input-row editing: a small line editor over g_ai_input ------------- */
+
+static int ai_in_prev(int p)            /* byte index of the char before p */
+{
+ if (p <= 0) return 0;
+ p--;
+ while (p > 0 && ((unsigned char)g_ai_input[p] & 0xC0) == 0x80) p--;
+ return p;
+}
+static int ai_in_next(int p)            /* byte index of the char after p */
+{
+ if (p >= g_ai_input_len) return g_ai_input_len;
+ p++;
+ while (p < g_ai_input_len && ((unsigned char)g_ai_input[p] & 0xC0) == 0x80) p++;
+ return p;
+}
+static int ai_in_bol(int p)             /* start of the input line holding p */
+{
+ while (p > 0 && g_ai_input[p - 1] != '\n') p--;
+ return p;
+}
+static int ai_in_eol(int p)             /* end of the input line holding p */
+{
+ while (p < g_ai_input_len && g_ai_input[p] != '\n') p++;
+ return p;
+}
+static void ai_in_insert(const char *bytes, int n)   /* insert at the caret */
+{
+ int i;
+ if (n <= 0 || g_ai_input_len + n >= (int)sizeof g_ai_input) return;
+ memmove(g_ai_input + g_ai_input_pos + n, g_ai_input + g_ai_input_pos,
+         (size_t)(g_ai_input_len - g_ai_input_pos));
+ for (i = 0; i < n; i++) g_ai_input[g_ai_input_pos + i] = bytes[i];
+ g_ai_input_len += n;
+ g_ai_input_pos += n;
+ g_ai_input[g_ai_input_len] = '\0';
+}
+static void ai_in_backspace(void)       /* delete the char before the caret */
+{
+ int q;
+ if (g_ai_input_pos <= 0) return;
+ q = ai_in_prev(g_ai_input_pos);
+ memmove(g_ai_input + q, g_ai_input + g_ai_input_pos,
+         (size_t)(g_ai_input_len - g_ai_input_pos));
+ g_ai_input_len -= (g_ai_input_pos - q);
+ g_ai_input_pos = q;
+ g_ai_input[g_ai_input_len] = '\0';
+}
+static void ai_in_delete(void)          /* delete the char at the caret */
+{
+ int q;
+ if (g_ai_input_pos >= g_ai_input_len) return;
+ q = ai_in_next(g_ai_input_pos);
+ memmove(g_ai_input + g_ai_input_pos, g_ai_input + q,
+         (size_t)(g_ai_input_len - q));
+ g_ai_input_len -= (q - g_ai_input_pos);
+ g_ai_input[g_ai_input_len] = '\0';
+}
+static void ai_in_vmove(int dir)        /* caret up/down one line, keep column */
+{
+ int bol = ai_in_bol(g_ai_input_pos);
+ int col = g_ai_input_pos - bol;
+ if (dir < 0) {
+  if (bol == 0) return;
+  { int pbol = ai_in_bol(bol - 1), peol = bol - 1;
+    g_ai_input_pos = pbol + col;
+    if (g_ai_input_pos > peol) g_ai_input_pos = peol; }
+ } else {
+  int eol = ai_in_eol(g_ai_input_pos);
+  if (eol >= g_ai_input_len) return;
+  { int nbol = eol + 1, neol = ai_in_eol(nbol);
+    g_ai_input_pos = nbol + col;
+    if (g_ai_input_pos > neol) g_ai_input_pos = neol; }
+ }
+}
+
 /* Focused chat loop: the pane shows a fixed "> " input row at the bottom and the
  * reply streams in above it.  e_getch pumps the fd-loop, so the answer paints
  * while the user reads or types the next follow-up.  Enter sends, Esc leaves the
@@ -696,12 +810,16 @@ static void e_ai_chat_loop(FENSTER *f, const char *seed, int send_now)
  g_ai_chat_focus = 1;
  g_ai_input[0] = '\0';
  g_ai_input_len = 0;
+ g_ai_input_pos = 0;
  g_ai_input_rows = 0;
  if (wf->b->mxlines == 0) e_new_line(0, wf->b);
+ if (wf->b->mxlines <= 1)                        /* one-time hint on a fresh chat */
+  ai_tr_line(wf, "[Enter=send  Ctrl-J=newline  arrows move  PgUp/PgDn scroll  Esc leaves]");
  if (seed && *seed && !send_now) {
   strncpy(g_ai_input, seed, sizeof g_ai_input - 1);
   g_ai_input[sizeof g_ai_input - 1] = '\0';
   g_ai_input_len = (int)strlen(g_ai_input);
+  g_ai_input_pos = g_ai_input_len;
  }
  ai_input_render(wf);                           /* creates the input region */
  if (seed && *seed && send_now)
@@ -718,36 +836,31 @@ static void e_ai_chat_loop(FENSTER *f, const char *seed, int send_now)
     sb[sizeof sb - 1] = '\0';
     g_ai_input[0] = '\0';
     g_ai_input_len = 0;
+    g_ai_input_pos = 0;
     ai_input_render(wf);
     e_ai_chat_send(f, sb);
    }
    continue;
   }
-  if (c == WPE_WR) {                            /* Ctrl-J: newline in the input */
-   if (g_ai_input_len < (int)sizeof g_ai_input - 1) {
-    g_ai_input[g_ai_input_len++] = '\n';
-    g_ai_input[g_ai_input_len] = '\0';
-    ai_input_render(wf);
-   }
-   continue;
-  }
-  if (c == WPE_DC) {                            /* backspace, UTF-8 aware */
-   if (g_ai_input_len > 0) {
-    g_ai_input_len--;
-    while (g_ai_input_len > 0 &&
-           ((unsigned char)g_ai_input[g_ai_input_len] & 0xC0) == 0x80)
-     g_ai_input_len--;
-    g_ai_input[g_ai_input_len] = '\0';
-    ai_input_render(wf);
-   }
-   continue;
-  }
-  if (c >= 32 && c < 256 && g_ai_input_len < (int)sizeof g_ai_input - 1) {
-   g_ai_input[g_ai_input_len++] = (char)c;
-   g_ai_input[g_ai_input_len] = '\0';
+  if (c == WPE_WR)   { ai_in_insert("\n", 1);                    ai_input_render(wf); continue; }
+  if (c == WPE_DC)   { ai_in_backspace();                        ai_input_render(wf); continue; }
+  if (c == ENTF)     { ai_in_delete();                           ai_input_render(wf); continue; }
+  if (c == CLE)      { g_ai_input_pos = ai_in_prev(g_ai_input_pos); ai_input_render(wf); continue; }
+  if (c == CRI)      { g_ai_input_pos = ai_in_next(g_ai_input_pos); ai_input_render(wf); continue; }
+  if (c == POS1)     { g_ai_input_pos = ai_in_bol(g_ai_input_pos);  ai_input_render(wf); continue; }
+  if (c == ENDE)     { g_ai_input_pos = ai_in_eol(g_ai_input_pos);  ai_input_render(wf); continue; }
+  if (c == CUP)      { ai_in_vmove(-1);                          ai_input_render(wf); continue; }
+  if (c == CDO)      { ai_in_vmove(1);                           ai_input_render(wf); continue; }
+  if (c == BUP)      { ai_pane_scroll(wf, -(wf->e.y - wf->a.y - 2)); continue; }
+  if (c == BDO)      { ai_pane_scroll(wf, +(wf->e.y - wf->a.y - 2)); continue; }
+  if ((c >= 32 && c < 255) || c > WPE_AI_MENU) { /* a printable char (ASCII or a
+                                                    real Unicode codepoint) */
+   unsigned char u8[4];
+   int n = (c >= 0x80) ? e_codepoint_to_utf8(c, u8) : (u8[0] = (unsigned char)c, 1);
+   ai_in_insert((char *)u8, n);
    ai_input_render(wf);
   }
-  /* other keys (arrows, function keys) are ignored in the input row for now */
+  /* other keys (function keys, etc.) are ignored in the input row */
  }
 
  g_ai_chat_focus = 0;
