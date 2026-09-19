@@ -1,9 +1,8 @@
-"""AI assistant -- the multi-line prompt composer.
+"""AI assistant -- a multi-line chat prompt.
 
-The prompt dialog has a "Multi-line" button (Alt-M) that opens a real editor
-window as a text area: you write several lines with the full editor, finish
-with Esc, and confirm Send.  This drives that flow and checks a two-line prompt
-reaches the backend whole.
+The chat pane is a normal window with a fixed input row: Enter sends, Ctrl-J
+starts a new line.  This drives a two-line prompt (line one, Ctrl-J, line two,
+Enter) and checks it reaches the backend whole.
 """
 import os
 import subprocess
@@ -15,7 +14,7 @@ def _ai_build():
     try:
         out = subprocess.run(["strings", os.path.abspath(WPE_BIN)],
                              stdout=subprocess.PIPE, timeout=30).stdout
-        return b"Send this prompt to the AI?" in out
+        return b"xwpe console editor" in out
     except Exception:
         return False
 
@@ -29,12 +28,11 @@ def test_ai_compose_multiline(tmp_path):
            "XWPE_AI_MOCK_REPLY": "ok", "XWPE_AI_TRACE": str(trace)}
     with WpeSession(str(tmp_path), "int main(void){return 0;}\n",
                     filename="stack.c", env_extra=env) as s:
-        s.key(ALT.AI); s.key("a", delay=0.8)   # Ask -> wide prompt dialog
-        s.key("\033m", delay=1.0)                  # Alt-M -> multi-line composer
-        s.key("FIRSTLINE_MARKER"); s.key("\r")     # line 1 + newline (Enter edits)
-        s.key("SECONDLINE_MARKER")                 # line 2
-        s.key("\033", delay=1.0)                   # Esc -> finish editing
-        s.key("y", delay=1.2)                      # confirm Send
+        s.key(ALT.AI); s.key("a", delay=0.8)       # Ask -> arm the chat pane
+        s.key("FIRSTLINE_MARKER")                   # line 1
+        s.key("\x0a", delay=0.3)                    # Ctrl-J -> newline (Enter would send)
+        s.key("SECONDLINE_MARKER")                  # line 2
+        s.key("\r", delay=1.0)                      # Enter -> send
         s._drain(1.0)
     txt = trace.read_text() if trace.exists() else ""
     assert "FIRSTLINE_MARKER" in txt and "SECONDLINE_MARKER" in txt, \
