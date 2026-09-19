@@ -39,6 +39,7 @@ typedef struct {
  FENSTER       *ref;           /* anchor window (gives us cn = ref->ed)        */
  char          *pending;       /* incomplete trailing line being streamed      */
  size_t         plen, pcap;
+ int            pcols;         /* display columns in `pending` (for word-wrap)   */
  char          *full;          /* whole reply so far (for the session log)     */
  size_t         flen, fcap;
  int            fd;
@@ -68,6 +69,7 @@ static void ai_chat_set_pending(ai_chat_session *s, const char *seed)
  }
  memcpy(s->pending, seed, n + 1);
  s->plen = n;
+ s->pcols = (int)n;              /* the "AI: " seed is plain ASCII */
 }
 
 /* read-only tool helpers (defined in the Agent section) + the turn starter */
@@ -185,6 +187,42 @@ static void ai_pane_commit(FENSTER *wf)
  e_new_line(b->mxlines, b);
 }
 
+/* Columns of reply text the pane can show on one line: inside its two borders,
+ * never wider than the line buffer, and never absurdly small. */
+static int ai_pane_width(FENSTER *wf)
+{
+ int w = wf->e.x - wf->a.x - 2;
+ if (w > wf->b->mx.x - 1) w = wf->b->mx.x - 1;
+ if (w < 16) w = 16;
+ return w;
+}
+
+/* The streamed line has reached the pane width: emit it up to the last space
+ * (word wrap; a hard break if the run has no space) and carry the remainder to a
+ * fresh line, so a long reply reads DOWN the window instead of scrolling off to
+ * the right.  Continuation lines carry no "AI:" prefix, matching a real chat. */
+static void ai_stream_wrap(ai_chat_session *s, FENSTER *wf)
+{
+ int brk = (int)s->plen;                 /* default: hard break at the end */
+ int k, start, rem, col, m;
+ for (k = (int)s->plen - 1; k > 0; k--)
+  if (s->pending[k] == ' ') { brk = k; break; }
+ { char saved = s->pending[brk];         /* emit pending[0..brk) as one line */
+   s->pending[brk] = '\0';
+   ai_pane_set_last(wf, s->pending);
+   ai_pane_commit(wf);
+   s->pending[brk] = saved; }
+ start = (brk < (int)s->plen && s->pending[brk] == ' ') ? brk + 1 : brk;
+ rem = (int)s->plen - start;
+ if (rem < 0) rem = 0;
+ memmove(s->pending, s->pending + start, (size_t)rem);
+ s->pending[rem] = '\0';
+ s->plen = rem;
+ for (col = 0, m = 0; m < rem; m++)
+  if (((unsigned char)s->pending[m] & 0xC0) != 0x80) col++;
+ s->pcols = col;
+}
+
 /* A "working" indicator for the blocking Edit/Plan/Agent waits: a rotating
  * -\|/ plus the seconds elapsed, redrawn in place on one pane line so a slow
  * local model looks alive instead of frozen.  wpe_ai_complete calls ai_spin_cb
@@ -237,8 +275,10 @@ static void ai_delta_cb(const char *delta, void *ud)
   s->full[s->flen] = '\0';
  }
 
+ int width;
  wf = ai_pane_win(s->ref);
  if (!wf) return;
+ width = ai_pane_width(wf);
  if (!s->started) {          /* open a reply line under the "AI:" header once */
   ai_pane_commit(wf);
   s->started = 1;
@@ -252,6 +292,7 @@ static void ai_delta_cb(const char *delta, void *ud)
    ai_pane_set_last(wf, s->pending ? s->pending : "");
    ai_pane_commit(wf);
    s->plen = 0;
+   s->pcols = 0;
    if (s->pending) s->pending[0] = '\0';
    continue;
   }
@@ -266,6 +307,10 @@ static void ai_delta_cb(const char *delta, void *ud)
   }
   s->pending[s->plen++] = c;
   s->pending[s->plen] = '\0';
+  if (((unsigned char)c & 0xC0) != 0x80)   /* not a UTF-8 continuation byte */
+   s->pcols++;
+  if (s->pcols >= width)                    /* soft-wrap at the pane width */
+   ai_stream_wrap(s, wf);
  }
  ai_pane_set_last(wf, s->pending ? s->pending : "");   /* live partial line */
 }
