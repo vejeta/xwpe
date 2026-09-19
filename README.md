@@ -93,6 +93,11 @@ on a plain console, or in any terminal emulator.
   uses: **C/C++ (clangd), Python, Go, Rust, Scala (Metals)** &mdash; one engine,
   five languages. Setup: [docs/ide-setup.md](docs/ide-setup.md); feature guide:
   [docs/LSP.md](docs/LSP.md).
+- **AI assistant (experimental, opt-in)** &mdash; a local-first Chat / Edit /
+  Agent behind the `Alt-G` prefix, backed by Ollama, an OpenAI-compatible
+  server, the Claude API, or the Claude CLI. Off by default and absent from a
+  stock build; enable with `./configure --enable-ai`. Guide:
+  [docs/AI.md](docs/AI.md).
 - **Mouse** everywhere &mdash; terminal emulators (xterm protocol), the bare
   Linux console (GPM), X11, and a **native Wayland** backend (`wl_surface`,
   auto-detected from `WAYLAND_DISPLAY`; falls back to XWayland when needed).
