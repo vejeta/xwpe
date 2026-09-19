@@ -460,8 +460,13 @@ int wpe_ai_list_models(int backend, char **names, int max,
   return 0;
  }
  if (backend == WPE_AI_CLAUDECLI) {
-  if (max > 0) { names[0] = ai_strdup("(Claude Code login)"); return 1; }
-  return 0;
+  /* The Claude CLI takes --model with an alias; "default" means "no --model",
+     i.e. whatever the Claude Code login selects. */
+  if (cnt < max) names[cnt++] = ai_strdup("default");
+  if (cnt < max) names[cnt++] = ai_strdup("sonnet");
+  if (cnt < max) names[cnt++] = ai_strdup("opus");
+  if (cnt < max) names[cnt++] = ai_strdup("haiku");
+  return cnt;
  }
  if (backend == WPE_AI_CLAUDE) {
   if (cnt < max) names[cnt++] = ai_strdup("claude-sonnet-5");
@@ -593,7 +598,11 @@ static int ai_claudecli_open(struct wpe_ai_stream *st, const wpe_ai_req *req)
   argv[a++] = "-p";
   argv[a++] = "--output-format";
   argv[a++] = "json";
-  if (e_ai_model && *e_ai_model) { argv[a++] = "--model"; argv[a++] = e_ai_model; }
+  /* "default" (or empty) = let the Claude Code login pick; otherwise pass the
+     chosen alias (sonnet/opus/haiku/...). */
+  if (e_ai_model && *e_ai_model && strcmp(e_ai_model, "default")) {
+   argv[a++] = "--model"; argv[a++] = e_ai_model;
+  }
   if (e_ai_resume_session && *e_ai_resume_session) {
    argv[a++] = "--resume"; argv[a++] = e_ai_resume_session;
   }

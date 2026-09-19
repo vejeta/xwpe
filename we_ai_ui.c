@@ -1473,7 +1473,7 @@ static int e_ai_edit(FENSTER *f)
  * cannot take initial focus and would spin (see the LSP picker for the why). */
 #define AI_PICK_MAXW 44
 static int e_ai_pick(FENSTER *f, const char *title, const char *const *labels,
-                     int n)
+                     int n, int cur)
 {
  W_OPTSTR *o;
  static char rows[16][AI_PICK_MAXW + 4];
@@ -1501,6 +1501,8 @@ static int e_ai_pick(FENSTER *f, const char *title, const char *const *labels,
  o->name = name;
  for (i = 0; i < vis; i++)
   e_add_pswstr(0, 3, 1 + i, -1, 10001 + i, 0, rows[i], o);
+ if (cur >= 0 && cur < vis)
+  o->pstr[0]->num = cur;                /* pre-mark the current choice (radio) */
  e_add_bttstr((o->xe - o->xa - 4) / 2, o->ye - o->ya - 1, 0, AltO, "Ok", NULL, o);
  if (e_opt_kst(o) != WPE_ESC)
   sel = o->pstr[0]->num;
@@ -1518,8 +1520,10 @@ static int e_ai_pick_model(FENSTER *f)
  title[0] = '\0';
  n = wpe_ai_list_models(e_ai_backend, names, 32, title, sizeof title);
  if (n <= 0) { ai_pane(f, title[0] ? title : "no models found", 1); return 0; }
+ for (i = 0; i < n; i++)                 /* pre-mark the model in use */
+  if (e_ai_model && !strcmp(e_ai_model, names[i])) break;
  snprintf(title, sizeof title, "Model (%d available)", n);
- sel = e_ai_pick(f, title, (const char *const *)names, n);
+ sel = e_ai_pick(f, title, (const char *const *)names, n, i < n ? i : 0);
  if (sel >= 0) {
   free(e_ai_model);
   e_ai_model = strdup(names[sel]);
