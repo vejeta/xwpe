@@ -94,8 +94,9 @@ def test_agent_offers_followup_when_done(tmp_path):
     # user can type a follow-up (with the agent's context) instead of a dead log.
     turns = ("TOOL list_dir .@@TURN@@DONE looked around"
              "@@TURN@@FOLLOWUP_REPLY_MARKER")
+    trace = tmp_path / "ai.trace"
     env = {"XWPE_AI_ENABLE": "1", "XWPE_AI_BACKEND": "mock", "XWPE_AI_POLICY": "ask",
-           "XWPE_AI_MOCK_REPLY": turns}
+           "XWPE_AI_MOCK_REPLY": turns, "XWPE_AI_TRACE": str(trace)}
     with WpeSession(str(tmp_path), "int main(void){return 0;}\n",
                     env_extra=env, filename="t.c") as s:
         s.key(ALT.AI); s.key("g")
@@ -103,8 +104,12 @@ def test_agent_offers_followup_when_done(tmp_path):
         armed = "\n".join(s.display())
         assert "type a follow-up" in armed, "no follow-up prompt after the agent:\n" + armed
         # a follow-up typed in the pane is sent as a chat turn (proving the input
-        # row was armed and consumes keys)
-        s.key("and then?"); s.key("\r", delay=1.0); s._drain(0.8)
+        # row was armed and consumes keys -- including the FIRST key, which used to
+        # leak into the file because the editor loop passed a stale focused window)
+        s.key("CONTINUEWORK"); s.key("\r", delay=1.0); s._drain(0.8)
         after = "\n".join(s.display())
+    txt = trace.read_text() if trace.exists() else ""
+    assert "chat prompt=CONTINUEWORK" in txt, \
+        "the follow-up lost its first key(s) -- stale focus:\n" + txt
     assert "FOLLOWUP_REPLY_MARKER" in after, \
         "the in-pane follow-up did not send / get a reply:\n" + after

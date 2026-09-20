@@ -1126,10 +1126,23 @@ static void e_ai_chat_arm(FENSTER *f)
  * this is reached, so dragging/resizing/switching windows all keep working. */
 int e_ai_chat_key(FENSTER *f, int c)
 {
- FENSTER *wf = f;
+ FENSTER *wf;
 
- if (!g_ai_chat_focus || f != g_ai_chat_pane)
+ if (!g_ai_chat_focus || !g_ai_chat_pane)
   return 0;
+ /* The editor's key loop refreshes its own `f` only at the END of an iteration,
+    so right after the chat was armed from an ASYNC callback (the agent finishing
+    and arming a follow-up), the first key arrives with a STALE `f` -- the window
+    that was focused before the arm.  If the chat pane is actually the current top
+    window, the key is the pane's; treat it so, instead of leaking that first key
+    into the old file.  If the user really switched to another window, let the
+    editor have it. */
+ if (f != g_ai_chat_pane) {
+  if (f->ed->f[f->ed->mxedt] != g_ai_chat_pane)
+   return 0;
+  f = g_ai_chat_pane;
+ }
+ wf = f;
  if (c == WPE_ESC) { e_ai_chat_close(); return 1; }
  if (c == BUP) { ai_pane_scroll(wf, -(wf->e.y - wf->a.y - 2)); return 1; }
  if (c == BDO) { ai_pane_scroll(wf, +(wf->e.y - wf->a.y - 2)); return 1; }
