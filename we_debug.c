@@ -5110,6 +5110,25 @@ static int             g_diag_npending = 0;
 static e_lsp_diag_mark g_hl_active[LSP_MAX_DIAG];
 static int             g_hl_nactive = 0;
 
+/* e_lsp_diag_snapshot - the current file's live diagnostics as plain text, so
+   the AI assistant can put the same errors/warnings the user sees (the red
+   squiggles) into its prompt and "fix this" works without pasting them.  Writes
+   one per line ("  line N (error|warning): msg"); returns how many. */
+int e_lsp_diag_snapshot(char *out, size_t sz)
+{
+ int i, n = 0;
+ size_t len = 0;
+ if (!out || sz == 0) return 0;
+ out[0] = '\0';
+ for (i = 0; i < g_diag_nactive && len + 96 < sz; i++) {
+  const char *sev = g_diag_active[i].sev == 1 ? "error" : "warning";
+  len += (size_t)snprintf(out + len, sz - len, "  line %d (%s): %.140s\n",
+                          g_diag_active[i].line + 1, sev, g_diag_active[i].msg);
+  n++;
+ }
+ return n;
+}
+
 extern int col_num;                        /* 0 = monochrome ncurses (we_unix.c) */
 
 /* The cell attribute for a diagnostic of `severity`, correct for the active

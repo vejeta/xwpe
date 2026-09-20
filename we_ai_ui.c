@@ -581,10 +581,31 @@ static size_t ai_append_identity(char *sys, size_t cap, size_t len)
  return len;
 }
 
+#ifdef DEBUGGER
+extern int e_lsp_diag_snapshot(char *out, size_t sz);   /* we_debug.c */
+#endif
+
+/* The current file's live diagnostics as a prompt block (or "" if none), so the
+ * assistant sees the same errors/warnings the user does and "fix this" works
+ * without pasting them.  Shared by chat, Edit and Agent. */
+static const char *ai_diag_block(char *buf, size_t sz)
+{
+ buf[0] = '\0';
+#ifdef DEBUGGER
+ { char d[1600]; int nd = e_lsp_diag_snapshot(d, sizeof d);
+   if (nd > 0) {
+    snprintf(buf, sz, "\nDIAGNOSTICS reported for the current file "
+                      "(from the language server):\n%s", d);
+    wpe_ai_trace("prompt diagnostics=%d", nd);
+   } }
+#endif
+ return buf;
+}
+
 /* Build the chat system prompt: the assistant may INVESTIGATE the workspace
  * with read-only tools before answering, so questions about other files (not
- * just the open one) work.  Includes the workspace file listing and the current
- * file for immediate context. */
+ * just the open one) work.  Includes the workspace file listing, any live
+ * diagnostics, and the current file for immediate context. */
 static char *ai_build_system(FENSTER *f)
 {
  char *ctx = ai_current_file_text(f);
@@ -612,6 +633,9 @@ static char *ai_build_system(FENSTER *f)
  for (i = 0; i < nsc && len < cap - 256; i++)
   len += (size_t)snprintf(sys + len, cap - len, "  %s\n", scope[i]);
  wpe_ai_free_list(scope, nsc);
+ { char diag[1700];
+   if (ai_diag_block(diag, sizeof diag)[0] && len < cap - 1800)
+    len += (size_t)snprintf(sys + len, cap - len, "%s", diag); }
  if (ctx && len < cap - 512)
   snprintf(sys + len, cap - len, "\n--- current file ---\n%.*s",
            (int)(cap - len - 32), ctx);
@@ -1755,9 +1779,11 @@ static int e_ai_edit(FENSTER *f)
  }
 
  cur = ai_current_file_text(f);
- { size_t n = strlen(instr) + (cur ? strlen(cur) : 0) + 64;
+ { char diag[1700]; ai_diag_block(diag, sizeof diag);
+   size_t n = strlen(instr) + (cur ? strlen(cur) : 0) + strlen(diag) + 64;
    user = malloc(n);
-   if (user) snprintf(user, n, "%s\n\n--- file ---\n%s", instr, cur ? cur : ""); }
+   if (user) snprintf(user, n, "%s%s\n\n--- file ---\n%s",
+                      instr, diag, cur ? cur : ""); }
  msgs[0].role = "system"; msgs[0].content = sys;
  msgs[1].role = "user";   msgs[1].content = user ? user : instr;
  req.model = NULL; req.msgs = msgs; req.nmsgs = 2;
@@ -2243,6 +2269,7 @@ int e_ai_agent(FENSTER *f)
  op->finish = ai_agent_finish;
  ai_ml_add(&op->ml, "system", sys);
  { char id[512]; ai_identity_text(id, sizeof id); ai_ml_add(&op->ml, "system", id); }
+ { char diag[1700]; if (ai_diag_block(diag, sizeof diag)[0]) ai_ml_add(&op->ml, "system", diag); }
  { wpe_ai_msg prior[12]; int np = wpe_ai_session_messages(prior, 12), i;
    for (i = 0; i < np; i++) ai_ml_add(&op->ml, prior[i].role, prior[i].content); }
  ai_ml_add(&op->ml, "user", goal);
