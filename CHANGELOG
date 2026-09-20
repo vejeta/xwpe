@@ -259,6 +259,10 @@ Changes
     - When a language server is running, the diagnostics it reports for the
       current file are folded into the prompt for Ask, Edit and the agent, so
       "fix this" works without pasting the error.
+    - All pane output (agent and multi-file answers, not just the streamed chat)
+      word-wraps to one shared measure, capped at a readable ~80 columns even in
+      a wide pane, so a long answer reads down the window instead of running off
+      the right edge.
     - The Multi-file edit approval is a modal confirmation popup (the same boxed
       overlay as the Edit review), colored and focus-grabbing, rather than a
       prompt in the pane: Enter/A applies all, F reviews file-by-file, Q/Esc

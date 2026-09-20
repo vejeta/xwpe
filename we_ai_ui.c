@@ -111,7 +111,11 @@ static FENSTER *ai_pane_win(FENSTER *f);
 static void  ai_tr_line(FENSTER *wf, const char *str);
 static void  ai_pane_paint(FENSTER *wf);
 
-static void ai_pane(FENSTER *f, const char *line, int surface)
+static int ai_pane_width(FENSTER *wf);          /* defined below */
+
+/* Append ONE ready line to the pane (no wrapping): into the transcript above the
+   input row in chat-focus, otherwise to the end of the docked pane. */
+static void ai_pane_put1(FENSTER *f, const char *line, int surface)
 {
  if (g_ai_chat_focus) {                 /* keep the "> " input row at the bottom */
   FENSTER *wf = ai_pane_win(f);
@@ -123,6 +127,40 @@ static void ai_pane(FENSTER *f, const char *line, int surface)
     Edit/Plan/Agent output opened as a full window over the file being edited. */
  ai_pane_win(f);
  e_d_p_named(AI_PANE_NAME, (char *)line, f, surface ? 1 : 0);
+}
+
+/* Append `line` to the pane, word-wrapped to the pane's CURRENT width, so a long
+   answer or summary reads DOWN the window instead of running off to the right --
+   the same width the streamed chat reply wraps to, now applied to every pane
+   message (agent / multi-file answers and status lines).  Display-only wrapping
+   of our own transcript window; it never touches a source file.  Column counting
+   skips UTF-8 continuation bytes so multibyte text wraps by character. */
+static void ai_pane(FENSTER *f, const char *line, int surface)
+{
+ FENSTER *wf = ai_pane_win(f);
+ int width = wf ? ai_pane_width(wf) : 76;
+ const char *p = line;
+ int first = 1;
+
+ if (!line || !*line) { ai_pane_put1(f, "", surface); return; }
+ while (*p) {
+  int col = 0, i = 0, lastspace = -1, cut;
+  char seg[1200];
+  while (p[i] && col < width) {                  /* consume up to `width` columns */
+   if (p[i] == ' ') lastspace = i;
+   if (((unsigned char)p[i] & 0xC0) != 0x80) col++;
+   i++;
+  }
+  while (p[i] && ((unsigned char)p[i] & 0xC0) == 0x80) i++;   /* trailing cont bytes */
+  if (!p[i]) { ai_pane_put1(f, p, first ? surface : 0); break; }  /* the rest fits */
+  cut = (lastspace > 0) ? lastspace : i;         /* break at a space, else hard */
+  if (cut >= (int)sizeof seg) cut = (int)sizeof seg - 1;
+  memcpy(seg, p, (size_t)cut); seg[cut] = '\0';
+  ai_pane_put1(f, seg, first ? surface : 0);
+  p += cut;
+  while (*p == ' ') p++;                          /* drop the break space */
+  first = 0;
+ }
 }
 
 /* Append a possibly multi-line string to the pane, one pane line per '\n', so a
@@ -458,12 +496,17 @@ static void ai_tr_line(FENSTER *wf, const char *str)
  ai_pane_set_line(wf, at, str);
 }
 
-/* Columns of reply text the pane can show on one line: inside its two borders,
- * never wider than the line buffer, and never absurdly small. */
+/* Columns the pane wraps reply text to: inside its two borders, never wider than
+ * the line buffer, capped at a readable prose measure even when the pane is much
+ * wider (long unbroken lines of prose are hard to read -- editors and chat UIs
+ * cap the measure rather than fill the whole width), and never absurdly small.
+ * Chat streaming and every pane message share this, so wrapping is consistent. */
+#define AI_PANE_MAX_COLS 80
 static int ai_pane_width(FENSTER *wf)
 {
  int w = wf->e.x - wf->a.x - 2;
  if (w > wf->b->mx.x - 1) w = wf->b->mx.x - 1;
+ if (w > AI_PANE_MAX_COLS) w = AI_PANE_MAX_COLS;
  if (w < 16) w = 16;
  return w;
 }
