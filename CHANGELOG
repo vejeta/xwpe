@@ -240,15 +240,24 @@ Changes
     - Ask (Alt-G a): a chat pane docked at the bottom that can read the
       workspace to answer and keeps context across the conversation.  A read-
       only "TOOL" investigation is shown as a dim status, not echoed as a reply.
-    - Edit (Alt-G e): rewrite the current file from an instruction, shown as a
-      colored diff over the affected lines (red removed / green added, with
-      context and new-file line numbers); per-hunk y/n/a/q, one Ctrl-U undoes it.
+    - Edit (Alt-G e): rewrite the current file, or -- when a block is marked --
+      just the selected region, from an instruction.  Shown as a colored diff
+      over the affected lines (red removed / green added, with context and new-
+      file line numbers).  Each change is an independent hunk with its own
+      y/n/a/q, so some can be accepted and others rejected; the accepted hunks
+      apply as one edit that a single Ctrl-U undoes.
     - Agent (Alt-G g): a tool-using agent (list/read/grep/write_file/run_command)
       docked beside Messages.  Mutating steps are gated by a permission dial
       (ask/edits/auto); a write is previewed as a diff; unattended runs take a
       checkpoint and offer a reviewable changeset; when it finishes you can type
       a follow-up in the pane.  Plan (Alt-G p) applies multi-file edits; the
       model list (Alt-G m) is a scrollable picker.
+    - Fix the build (Alt-G b): run the build (make when a makefile is present,
+      else a syntax-only compile of the current file) and, on failure, loop the
+      agent -- read the errors, edit the sources, re-build -- until it passes.
+    - When a language server is running, the diagnostics it reports for the
+      current file are folded into the prompt for Ask, Edit and the agent, so
+      "fix this" works without pasting the error.
     - Backends: Ollama (local, default), an OpenAI-compatible server, the Claude
       API (needs --enable-ai-tls), and the Claude CLI (uses its own login).  The
       HTTPS client verifies the server certificate (chain + hostname).

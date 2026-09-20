@@ -10,18 +10,29 @@ model works):
 
 - **Ask** (`Alt-G a`) -- a **chat** pane docked at the bottom. It can read files
   in the workspace to answer, and keeps context across the conversation.
-- **Edit** (`Alt-G e`) -- rewrite the current file from an instruction. The
-  proposed change is shown as a **colored diff over the affected lines**
-  (red = removed, green = added, with context); `y`/`n`/`a`/`q` per hunk, and a
-  single **`Ctrl-U`** undoes the whole edit.
+- **Edit** (`Alt-G e`) -- rewrite the current file from an instruction. If a
+  **block is marked**, only that region is sent and changed -- the rest of the
+  file is untouched; with no selection it edits the whole file. The proposed
+  change is shown as a **colored diff over the affected lines** (red = removed,
+  green = added, with context). Each change is an independent hunk with its own
+  `y`/`n`/`a`/`q`, so you can accept some and reject others; the accepted hunks
+  apply as **one** edit that a single **`Ctrl-U`** undoes.
 - **Agent** (`Alt-G g`) -- a tool-using agent: it lists/reads/greps files and
   proposes `write_file` / `run_command` steps. Every mutating step is shown for
   approval (a write is previewed as a diff); an unattended run takes a checkpoint
   first and offers a reviewable changeset at the end. When it finishes you can
   type a **follow-up** right in the pane.
+- **Fix the build** (`Alt-G b`) -- runs the build (`make` when a makefile is
+  present, otherwise a syntax-only compile of the current file) and, if it fails,
+  loops the agent: read the errors, edit the sources, re-build, repeat until it
+  passes. It uses the same tools and permission dial as the agent.
 
 `Alt-G p` runs a multi-file **Plan**, and `Alt-G m` opens the scrollable
 **model picker**.
+
+When a [language server](LSP.md) is running, the errors and warnings it reports
+for the current file (the ones you see underlined) are folded into the prompt for
+Ask, Edit, and the agent -- so "fix this" works without pasting the message.
 
 Nothing about the model ships inside xwpe: Ollama and OpenAI-compatible servers
 are plain HTTP, and the Claude CLI is a subprocess using your own login. The
