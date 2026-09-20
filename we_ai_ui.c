@@ -125,6 +125,24 @@ static void ai_pane(FENSTER *f, const char *line, int surface)
  e_d_p_named(AI_PANE_NAME, (char *)line, f, surface ? 1 : 0);
 }
 
+/* Append a possibly multi-line string to the pane, one pane line per '\n', so a
+   multi-line answer or summary is shown in full instead of only its first line. */
+static void ai_pane_multiline(FENSTER *f, const char *text, int surface)
+{
+ const char *p = text;
+ if (!p) return;
+ while (*p) {
+  const char *nl = strchr(p, '\n');
+  size_t l = nl ? (size_t)(nl - p) : strlen(p);
+  char buf[1024];
+  if (l >= sizeof buf) l = sizeof buf - 1;
+  memcpy(buf, p, l); buf[l] = '\0';
+  ai_pane(f, buf, surface);
+  if (!nl) break;
+  p = nl + 1;
+ }
+}
+
 /* Join the current file's lines into a single (bounded) text block. */
 static char *ai_current_file_text(FENSTER *f)
 {
@@ -2246,12 +2264,15 @@ static int ai_agent_process(ai_async_op *op, char *reply)
    memcpy(action, reply, l); action[l] = '\0'; }
 
  if (!strncmp(action, "DONE", 4)) {
-  ai_pane(f, action[0] ? action : "[agent] done", 0);
+  /* Show the whole DONE reply, not just its first line: for a question task the
+     model's answer follows the DONE marker, and dropping it left the user with
+     only "DONE - answering directly" and no answer. */
+  ai_pane_multiline(f, reply[0] ? reply : "[agent] done", 0);
   wpe_ai_trace("agent done");
   return 1;
  }
  if (strncmp(action, "TOOL ", 5)) {            /* not a tool call = final answer */
-  ai_pane(f, action, 0);
+  ai_pane_multiline(f, reply, 0);              /* render the full answer, all lines */
   return 1;
  }
  {
@@ -2347,8 +2368,10 @@ static int ai_agent_launch(FENSTER *f, const char *goal, const char *extra)
    "  TOOL write_file <path>\n"
    "For write_file, put the new file content on the following lines, ending "
    "with a line that is exactly @@END .\n"
-   "When the task is complete, reply with a line beginning DONE and a short "
-   "summary. Output nothing else; wait for each tool result before continuing.";
+   "When the task is complete, reply with a line beginning DONE; then, on the "
+   "following lines, give the user your answer (if they asked a question) or a "
+   "short summary of what you changed. Output nothing else; wait for each tool "
+   "result before continuing.";
 
  err[0] = '\0';
  if (wpe_ai_preflight(e_ai_backend, err, sizeof err)) { ai_pane(f, err, 1); return 0; }
