@@ -258,6 +258,23 @@ Changes
       checkpointed and reviewable).  The permission dial gates its tools per tool
       (ask = y/n per call, edits = auto edits/ask commands, auto = unattended).
       A generic host layer; a build without the flag contains none of it.
+    - Browse the pane's history from the keyboard while the "> " prompt stays
+      docked at the bottom: PgUp/PgDn page through the transcript and the arrows
+      scroll it a line at a time; typing any character snaps the view back to the
+      prompt so the next key lands in the input.
+    - Options > AI: the Model field spells out its Alt-M shortcut; the model
+      picker floats OVER the settings dialog (which stays put and repaints in
+      place) instead of clearing it and reopening centred on the wrong window;
+      and Alt-M lists the models of the backend currently selected in the radio,
+      so switching to Ollama then Alt-M no longer offers Claude's models (it had
+      needed an Ok in between).
+    - Ollama reasoning models (qwen3, deepseek-r1, ...) work with the Agent now.
+      They stream their chain of thought in a separate field and often preface
+      the "TOOL ..."/"DONE" line with a sentence of reasoning: the Agent scans
+      for the action line instead of judging only the first line (so a preamble
+      no longer aborts the run before the tool executes), and if a turn produces
+      no content at all the kept thinking is shown rather than a blank reply.
+      Before, the Agent could show only "working -> done" with no answer.
     - Tested across ncurses, X11 and native Wayland, plus a live Claude CLI path.
 * Fix a project Make (F9) that could abort with glibc "free(): invalid pointer"
   when a project variable (e.g. CMP) was missing -- e_c_project freed an

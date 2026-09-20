@@ -370,24 +370,30 @@ static void ai_pane_paint(FENSTER *wf)
  if (wpe_modal_active)
   return;
 
- if (pane_focused && g_ai_chat_focus) {         /* caret sits in the input region */
-  int cy, cx;
-  ai_input_caret(wf, &cy, &cx);
-  wf->b->b.y = cy;
-  wf->b->b.x = cx;
- } else if (pane_focused) {
-  int y = wf->b->mxlines - 1;
-  wf->b->b.y = y;
-  wf->b->b.x = (y >= 0 && wf->b->bf[y].s) ? wf->b->bf[y].len : 0;
- }
- if (g_ai_scroll_lock) {
-  /* user scrolled up to browse -- leave the view where they left it */
- } else if (g_ai_chat_focus) {
-  int vh = wf->e.y - wf->a.y - 1;               /* pin the input row to the bottom */
-  int bottom = wf->b->mxlines - vh;
-  wf->s->c.y = bottom > 0 ? bottom : 0;
+ if (pane_focused && g_ai_scroll_lock) {
+  /* Browsing the transcript: the caret rests on a history line and the view
+     follows it.  Do NOT move the caret back to the input or re-pin the view --
+     a focused window always scrolls to keep its caret visible (e_cursor), so
+     touching either here is exactly what would undo the browse. */
+  e_cursor(wf, 0);
  } else {
-  e_messages_scroll_to_bottom(wf);
+  if (pane_focused && g_ai_chat_focus) {        /* caret sits in the input region */
+   int cy, cx;
+   ai_input_caret(wf, &cy, &cx);
+   wf->b->b.y = cy;
+   wf->b->b.x = cx;
+  } else if (pane_focused) {
+   int y = wf->b->mxlines - 1;
+   wf->b->b.y = y;
+   wf->b->b.x = (y >= 0 && wf->b->bf[y].s) ? wf->b->bf[y].len : 0;
+  }
+  if (g_ai_chat_focus) {
+   int vh = wf->e.y - wf->a.y - 1;              /* pin the input row to the bottom */
+   int bottom = wf->b->mxlines - vh;
+   wf->s->c.y = bottom > 0 ? bottom : 0;
+  } else {
+   e_messages_scroll_to_bottom(wf);
+  }
  }
  e_schirm(wf, 0);
  e_cursor(caret, 0);
@@ -400,17 +406,30 @@ static void ai_pane_paint(FENSTER *wf)
  * returns to the prompt. */
 static void ai_pane_scroll(FENSTER *wf, int delta)
 {
+ BUFFER *b = wf->b;
  SCHIRM *s = wf->s;
- int visible_h = wf->e.y - wf->a.y - 1;
- int maxtop = wf->b->mxlines - visible_h;
- if (maxtop < 0) maxtop = 0;
+ int vh = wf->e.y - wf->a.y - 1;
+ int bottom = b->mxlines - vh;                    /* view offset that pins the input */
+
+ if (bottom < 0) bottom = 0;
+
+ /* A focused window always re-pins its view to keep the caret visible
+    (e_cursor), so moving the view offset alone is undone at once.  Scroll the
+    transcript one/page line at a time AND park the caret on the top visible
+    line, so e_cursor is already satisfied and leaves the offset where we put it
+    -- the pager feel a chat wants.  Reaching the bottom pin leaves browse mode
+    and snaps back to the prompt. */
  s->c.y += delta;
- if (s->c.y > maxtop) s->c.y = maxtop;
  if (s->c.y < 0) s->c.y = 0;
- g_ai_scroll_lock = (s->c.y < maxtop);          /* released once back at the bottom */
- e_schirm(wf, 0);
- e_cursor(wf, 0);
- e_refresh();
+ if (s->c.y >= bottom) {
+  g_ai_scroll_lock = 0;
+  ai_pane_paint(wf);
+  return;
+ }
+ g_ai_scroll_lock = 1;
+ b->b.y = s->c.y;
+ b->b.x = 0;
+ ai_pane_paint(wf);
 }
 
 /* Overwrite pane line `y` with `text` in place (no new line added). */
@@ -1146,7 +1165,23 @@ int e_ai_chat_key(FENSTER *f, int c)
  if (c == WPE_ESC) { e_ai_chat_close(); return 1; }
  if (c == BUP) { ai_pane_scroll(wf, -(wf->e.y - wf->a.y - 2)); return 1; }
  if (c == BDO) { ai_pane_scroll(wf, +(wf->e.y - wf->a.y - 2)); return 1; }
- g_ai_scroll_lock = 0;                           /* any edit key returns to the input */
+ /* Up/Down move within a multi-line input; at its edges (or a single-line input)
+    they browse the transcript, so you can read back the history with the arrows.
+    Handled before the scroll-lock reset below so they keep the browsed view. */
+ if (c == CUP) {
+  if (g_ai_scroll_lock) { ai_pane_scroll(wf, -1); return 1; }   /* browse older */
+  { int before = g_ai_input_pos; ai_in_vmove(-1);
+    if (g_ai_input_pos != before) { ai_input_render(wf); return 1; } }
+  ai_pane_scroll(wf, -1);                                       /* top of input: older */
+  return 1;
+ }
+ if (c == CDO) {
+  if (g_ai_scroll_lock) { ai_pane_scroll(wf, +1); return 1; }   /* reading back: newer */
+  { int before = g_ai_input_pos; ai_in_vmove(1);
+    if (g_ai_input_pos != before) ai_input_render(wf); }
+  return 1;
+ }
+ g_ai_scroll_lock = 0;                           /* any other edit key returns to the input */
  if (c == WPE_CR) {                             /* Enter: send the whole input */
   if (g_ai_input_len > 0) {
    char sb[AI_PROMPT_MAX];
@@ -1167,8 +1202,6 @@ int e_ai_chat_key(FENSTER *f, int c)
  if (c == CRI)      { g_ai_input_pos = ai_in_next(g_ai_input_pos); ai_input_render(wf); return 1; }
  if (c == POS1)     { g_ai_input_pos = ai_in_bol(g_ai_input_pos);  ai_input_render(wf); return 1; }
  if (c == ENDE)     { g_ai_input_pos = ai_in_eol(g_ai_input_pos);  ai_input_render(wf); return 1; }
- if (c == CUP)      { ai_in_vmove(-1);                             ai_input_render(wf); return 1; }
- if (c == CDO)      { ai_in_vmove(1);                              ai_input_render(wf); return 1; }
  if ((c >= 32 && c < 255) || c > WPE_AI_MENU) { /* a printable char (ASCII/Unicode) */
   unsigned char u8[4];
   int n = (c >= 0x80) ? e_codepoint_to_utf8(c, u8) : (u8[0] = (unsigned char)c, 1);
@@ -2092,7 +2125,11 @@ static int e_ai_pick(FENSTER *f, const char *title, const char *const *labels,
  return ret;
 }
 
-static int e_ai_pick_model(FENSTER *f)
+/* Choose a model for the current backend from the scrollable picker.  When
+   `announce` is set the choice is echoed into the pane (the Alt-G menu path);
+   the Options dialog passes 0 and refreshes its own Model button instead, so it
+   is not disturbed. */
+static int e_ai_pick_model_apply(FENSTER *f, int announce)
 {
  char *names[32];
  char title[80], line[220];
@@ -2108,13 +2145,74 @@ static int e_ai_pick_model(FENSTER *f)
  if (sel >= 0) {
   free(e_ai_model);
   e_ai_model = strdup(names[sel]);
-  snprintf(line, sizeof line, "[AI] model = %s (Save Options to persist)",
-           names[sel]);
-  ai_pane(f, line, 1);
+  if (announce) {
+   snprintf(line, sizeof line, "[AI] model = %s (Save Options to persist)",
+            names[sel]);
+   ai_pane(f, line, 1);
+  }
   wpe_ai_trace("model set %s", names[sel]);
  }
  for (i = 0; i < n; i++) free(names[i]);
  return 0;
+}
+
+static int e_ai_pick_model(FENSTER *f)          /* Alt-G menu "Pick model" */
+{
+ return e_ai_pick_model_apply(f, 1);
+}
+
+/* The Model button's caption (fixed width so an in-place refresh always
+   overwrites the previous, possibly longer, name) and the open settings dialog,
+   shared with the button's action so the picker can float OVER the dialog and
+   update the caption without tearing the dialog down. */
+#define AI_OPT_MLABELW 24
+static char       g_ai_opt_mlabel[AI_OPT_MLABELW + 1];
+static W_OPTSTR  *g_ai_opt_dlg;
+/* Backend order of the settings dialog's Backend radio (index -> backend id),
+   shared with the Model button's action so it can list the models of the
+   backend currently SELECTED in the radio, before Ok has applied it. */
+static const int  g_ai_bk_order[4] =
+ { WPE_AI_CLAUDECLI, WPE_AI_OLLAMA, WPE_AI_OPENAI, WPE_AI_CLAUDE };
+
+static void ai_opt_mlabel(void)
+{
+ snprintf(g_ai_opt_mlabel, sizeof g_ai_opt_mlabel, "%-*.*s",
+          AI_OPT_MLABELW, AI_OPT_MLABELW,
+          (e_ai_model && *e_ai_model) ? e_ai_model : "(backend default)");
+}
+
+/* Model button action.  The scrollable picker (e_ai_pick) saves the screen it
+   covers and restores it on close, so it floats OVER the settings dialog and
+   leaves it in place -- no blink to the editor, no re-centre.  Rewrite the Model
+   caption in the live dialog and return 0 so the option engine keeps it open. */
+static int e_ai_opt_pick_model(FENSTER *f)
+{
+ int i;
+
+ /* List the models of the backend SELECTED in the radio right now, not the one
+    a previous Ok applied: the radio changes e_ai_backend only on Ok, so without
+    this Alt-M would offer the old backend's models (e.g. Claude's after picking
+    Ollama).  Sync the global from the live radio first (resetting the model, as
+    a backend switch does), so one Alt-M shows the right list. */
+ if (g_ai_opt_dlg && g_ai_opt_dlg->pn > 0) {
+  int idx = g_ai_opt_dlg->pstr[0]->num;
+  int be = (idx >= 0 && idx < 4) ? g_ai_bk_order[idx] : e_ai_backend;
+  if (be != e_ai_backend) {
+   e_ai_backend = be;
+   free(e_ai_model);
+   e_ai_model = NULL;
+  }
+ }
+ e_ai_pick_model_apply(f, 0);                    /* announce=0: do not raise the pane */
+ ai_opt_mlabel();
+ if (g_ai_opt_dlg)
+  for (i = 0; i < g_ai_opt_dlg->bn; i++)
+   if (g_ai_opt_dlg->bstr[i]->sw == AltM) {
+    strcpy(g_ai_opt_dlg->bstr[i]->header, g_ai_opt_mlabel);   /* same width, fits */
+    break;
+   }
+ fk_cursor(0);                                   /* keep the dialog's caret hidden */
+ return -1;             /* keep the dialog open and repaint it under the closed picker */
 }
 
 /* Options -> AI...: the settings home.  Enable checkbox, Backend radio, a Model
@@ -2124,11 +2222,10 @@ static int e_ai_pick_model(FENSTER *f)
  * models on the next open. */
 int e_ai_options(FENSTER *f)
 {
- static const int bk[4] = { WPE_AI_CLAUDECLI, WPE_AI_OLLAMA, WPE_AI_OPENAI, WPE_AI_CLAUDE };
+ const int *bk = g_ai_bk_order;
  static const char *bklab[4] = { "Claude CLI (login)", "Ollama (local)   ",
                                  "OpenAI-compatible", "Claude API (key) " };
  static const char *pol[3] = { "Ask each action ", "Auto-accept edits", "Auto (skip asks)" };
- static char mlabel[48];
  W_OPTSTR *o;
  int i, bcur, edopt_before, ret, new_be;
 
@@ -2139,10 +2236,10 @@ int e_ai_options(FENSTER *f)
  for (;;) {
   o = e_init_opt_kst(f);
   if (!o) return 0;
+  g_ai_opt_dlg = o;                              /* the Model button's fkt refreshes it */
   bcur = 0;
   for (i = 0; i < 4; i++) if (bk[i] == e_ai_backend) bcur = i;
-  snprintf(mlabel, sizeof mlabel, "%.30s  (change)",
-           (e_ai_model && *e_ai_model) ? e_ai_model : "(backend default)");
+  ai_opt_mlabel();
 
   /* Centre the dialog on the whole screen (like the other menu dialogs), not
      wherever the active editor window happens to sit. */
@@ -2165,8 +2262,8 @@ int e_ai_options(FENSTER *f)
   for (i = 0; i < 4; i++)
    e_add_pswstr(0, 4, 5 + i, i, 4000 + i, (i == 3) ? bcur : 0, (char *)bklab[i], o);
 
-  e_add_txtstr(28, 4, "Model:", o);
-  e_add_bttstr(28, 5, 0, AltM, mlabel, NULL, o);   /* opens the scrollable picker */
+  e_add_txtstr(28, 4, "Model (Alt-M):", o);
+  e_add_bttstr(28, 5, 0, AltM, g_ai_opt_mlabel, e_ai_opt_pick_model, o);
 
   e_add_txtstr(3, 11, "Permission (agent writes / commands):", o);
   for (i = 0; i < 3; i++)
@@ -2179,22 +2276,23 @@ int e_ai_options(FENSTER *f)
                "Built-in - the editor's own tool loop", o);
   e_add_pswstr(2, 4, 18, 1, 4301, e_ai_agent_engine,
                "Claude Code - the claude CLI, its own tools", o);
-  e_add_txtstr(3, 20, "Tab/arrows move; Space selects; Model picks the model.", o);
+  e_add_txtstr(3, 20, "Tab/arrows move; Space selects; Alt-M = model.", o);
   e_add_bttstr(12, 22, 1, AltO, " Ok ", NULL, o);
   e_add_bttstr(31, 22, -1, WPE_ESC, "Cancel", NULL, o);
 #else
   e_add_txtstr(3, 16, "Tab/arrows move between fields; Space selects.", o);
-  e_add_txtstr(3, 17, "Press Model to choose from the backend's list.", o);
+  e_add_txtstr(3, 17, "Alt-M chooses a model from the backend's list.", o);
   e_add_bttstr(12, 19, 1, AltO, " Ok ", NULL, o);
   e_add_bttstr(31, 19, -1, WPE_ESC, "Cancel", NULL, o);
 #endif
 
   edopt_before = f->ed->edopt;
   ret = e_opt_kst(o);
-  if (ret == WPE_ESC) { freeostr(o); return 0; }
+  if (ret == WPE_ESC) { g_ai_opt_dlg = NULL; freeostr(o); return 0; }
 
   /* Enable + policy + backend are read on every return so they survive the
-     reopen after a Model pick or a Backend change. */
+     reopen after a Backend change.  A Model pick happens in place (the Model
+     button's fkt floats the picker over the dialog), so it never returns here. */
   f->ed->edopt = (f->ed->edopt & ~ED_AI_ENABLE) | (o->sstr[0]->num ? ED_AI_ENABLE : 0);
   e_ai_policy  = (o->pstr[1]->num >= 0 && o->pstr[1]->num < 3) ? o->pstr[1]->num : 0;
   new_be = bk[(o->pstr[0]->num >= 0 && o->pstr[0]->num < 4) ? o->pstr[0]->num : 0];
@@ -2210,19 +2308,7 @@ int e_ai_options(FENSTER *f)
    e_ai_backend = new_be;
    free(e_ai_model); e_ai_model = NULL;          /* pick a model for the new backend */
    wpe_ai_trace("options reload backend=%s", wpe_ai_backend_name(e_ai_backend));
-   freeostr(o);
-   continue;
-  }
-
-  if (ret == AltM) {                            /* Model button: scrollable picker */
-   /* e_opt_kst restores the screen under the dialog before it returns, so draw
-      the settings box back as a backdrop and float the picker over IT -- the
-      dialog stays visible while you choose instead of blinking to the editor.
-      Reopen afterwards so the Model button shows the new choice. */
-   PIC *bg = e_std_kst(o->xa, o->ya, o->xe, o->ye, "AI settings", 1,
-                       o->frt, o->ftt, o->frs);
-   e_ai_pick_model(f);
-   if (bg) e_close_view(bg, 1);
+   g_ai_opt_dlg = NULL;
    freeostr(o);
    continue;
   }
@@ -2230,6 +2316,7 @@ int e_ai_options(FENSTER *f)
   wpe_ai_trace("options backend=%s model=%s policy=%s enable=%d",
                wpe_ai_backend_name(e_ai_backend), e_ai_model ? e_ai_model : "-",
                wpe_ai_policy_name(e_ai_policy), (f->ed->edopt & ED_AI_ENABLE) ? 1 : 0);
+  g_ai_opt_dlg = NULL;
   freeostr(o);
   return 0;
  }
@@ -2339,15 +2426,27 @@ static void e_ai_cycle_policy(FENSTER *f)
 static int ai_agent_process(ai_async_op *op, char *reply)
 {
  FENSTER *f = op->f;
- char *firstnl, action[1100];
+ char *firstnl, *act = NULL, *scan, action[1100];
 
  if (!ai_window_alive(op->cn, f)) return 1;
- firstnl = strchr(reply, '\n');
- { size_t l = firstnl ? (size_t)(firstnl - reply) : strlen(reply);
-   if (l >= sizeof action) l = sizeof action - 1;
-   memcpy(action, reply, l); action[l] = '\0'; }
 
- if (!strncmp(action, "DONE", 4)) {
+ /* Locate the protocol action: the first line that begins with "TOOL " or
+    "DONE".  A tool-using model -- a local one especially -- often prefaces that
+    line with a sentence of reasoning ("let me read the files first..."); judging
+    only the reply's first line then mistakes the preamble for the final answer
+    and the tool call is never run.  Scan the line starts instead. */
+ for (scan = reply; scan; ) {
+  if (!strncmp(scan, "TOOL ", 5) || !strncmp(scan, "DONE", 4)) { act = scan; break; }
+  scan = strchr(scan, '\n');
+  if (scan) scan++;
+ }
+
+ if (!act) {                                   /* no marker: the whole reply is the answer */
+  ai_pane_multiline(f, reply[0] ? reply : "[agent] done", 0);
+  wpe_ai_trace("agent answer (no marker)");
+  return 1;
+ }
+ if (!strncmp(act, "DONE", 4)) {
   /* Show the whole DONE reply, not just its first line: for a question task the
      model's answer follows the DONE marker, and dropping it left the user with
      only "DONE - answering directly" and no answer. */
@@ -2355,10 +2454,22 @@ static int ai_agent_process(ai_async_op *op, char *reply)
   wpe_ai_trace("agent done");
   return 1;
  }
- if (strncmp(action, "TOOL ", 5)) {            /* not a tool call = final answer */
-  ai_pane_multiline(f, reply, 0);              /* render the full answer, all lines */
-  return 1;
+ /* A TOOL line, possibly after a preamble: show the preamble as the agent's
+    thought so its reasoning is not lost, then act on the tool line. */
+ if (act > reply) {
+  char pre[1024];
+  size_t pl = (size_t)(act - reply);
+  while (pl && (reply[pl-1] == '\n' || reply[pl-1] == ' ' || reply[pl-1] == '\t')) pl--;
+  if (pl) {
+   if (pl >= sizeof pre) pl = sizeof pre - 1;
+   memcpy(pre, reply, pl); pre[pl] = '\0';
+   ai_pane_multiline(f, pre, 0);
+  }
  }
+ firstnl = strchr(act, '\n');
+ { size_t l = firstnl ? (size_t)(firstnl - act) : strlen(act);
+   if (l >= sizeof action) l = sizeof action - 1;
+   memcpy(action, act, l); action[l] = '\0'; }
  {
   char *tool = action + 5, *arg = strchr(tool, ' '), *result = NULL, paneln[640];
   if (arg) { *arg = '\0'; arg++; } else arg = (char *)"";

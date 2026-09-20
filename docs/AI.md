@@ -46,6 +46,11 @@ the diff box), **Q/Esc** cancels; nothing is written until you approve. (This is
 what some tools call a "workspace edit"; it is *not* an agent "plan mode.")
 `Alt-G m` opens the scrollable **model picker**.
 
+The pane keeps its `> ` prompt docked at the bottom while you type. To read back a
+long conversation, **PgUp/PgDn** page through the transcript and the **arrow keys**
+scroll it a line at a time; typing any character returns the view to the prompt so
+the next key lands in the input.
+
 When a [language server](LSP.md) is running, the errors and warnings it reports
 for the current file (the ones you see underlined) are folded into the prompt for
 Ask, Edit, and the agent -- so "fix this" works without pasting the message.

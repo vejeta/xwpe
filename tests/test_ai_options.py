@@ -39,9 +39,10 @@ def test_ai_options_dialog_renders_current(tmp_path):
         disp = "\n".join(s.display())
         s.key("\033", delay=0.3)
     # backend + policy are radios; the model is a button showing the current
-    # choice (the full list lives in the scrollable picker behind it).
-    for want in ("AI settings", "Backend", "Model", "Permission",
-                 "Claude CLI", "Ollama", "sonnet", "(change)"):
+    # choice (the full list lives in the scrollable picker behind it).  The
+    # Model field spells out its Alt-M shortcut so the picker is discoverable.
+    for want in ("AI settings", "Backend", "Model (Alt-M)", "Permission",
+                 "Claude CLI", "Ollama", "sonnet"):
         assert want in disp, "AI dialog missing %r:\n%s" % (want, disp)
     # current backend is the marked radio
     assert "(*) Claude CLI" in disp.replace("  ", " ").replace(" (", " (") \
@@ -51,9 +52,10 @@ def test_ai_options_dialog_renders_current(tmp_path):
 
 
 def test_ai_options_model_picker_scrolls_and_selects(tmp_path):
-    # Alt-M opens the scrollable model picker; Down + Enter selects a different
-    # model, and the dialog reopens with it on the button.  claudecli's list is
-    # deterministic (default/sonnet/opus/haiku), no network.
+    # Alt-M floats the scrollable model picker; Down + Enter selects a different
+    # model and the settings dialog reopens -- centred on screen, with the new
+    # model on the button.  claudecli's list is deterministic
+    # (default/sonnet/opus/haiku), no network.
     trace = tmp_path / "ai.trace"
     env = dict(ENV); env["XWPE_AI_TRACE"] = str(trace)
     with WpeSession(str(tmp_path), "int main(void){return 0;}\n",
@@ -65,11 +67,61 @@ def test_ai_options_model_picker_scrolls_and_selects(tmp_path):
         assert "Model (" in pick and "available)" in pick, \
             "scrollable model picker did not open:\n" + pick
         assert "PgUp/PgDn" in pick, "picker is not the scrollable overlay:\n" + pick
-        s.key("\033[B", delay=0.3)       # Down one item
-        s.key("\r", delay=0.6)           # Enter -> select
+        # the picker floats OVER the settings dialog -- the dialog is NOT erased,
+        # its Permission section and Ok/Cancel still show around the picker.
+        assert "Permission" in pick and "Cancel" in pick, \
+            "the settings dialog was erased instead of drawn under the picker:\n" + pick
+        s.key("\033[B", delay=0.3)       # Down: sonnet -> opus
+        s.key("\r", delay=0.7)           # Enter -> select, dialog reopens
+        back = s.display()
         s.key("\033", delay=0.4)         # leave the reopened dialog
+    joined = "\n".join(back)
     txt = trace.read_text() if trace.exists() else ""
     assert "model set" in txt, "picking a model was not recorded:\n" + txt
+    # the settings dialog is back (picker closed) with the new model on the
+    # button, and it is centred on screen -- the "AI settings" title, the radios
+    # and Ok/Cancel are all present, not squeezed into a pane.
+    assert "AI settings" in joined and "Permission" in joined and "Cancel" in joined, \
+        "the settings dialog did not reopen cleanly:\n" + joined
+    assert "PgUp/PgDn" not in joined, "the picker did not close:\n" + joined
+    assert any("opus" in ln for ln in back), \
+        "the Model button did not show the newly picked model:\n" + joined
+    # centred: the dialog's left border is indented well off column 0 (it is not
+    # jammed into a corner or the bottom AI pane).
+    title_row = next((ln for ln in back if "AI settings" in ln), "")
+    assert title_row.index("AI settings") > 20, \
+        "the dialog is not centred on screen:\n" + joined
+
+
+def _ollama_up():
+    import urllib.request
+    try:
+        urllib.request.urlopen("http://localhost:11434/api/tags", timeout=3).read()
+        return True
+    except Exception:
+        return False
+
+
+@pytest.mark.skipif(not _ollama_up(), reason="no local Ollama for the model list")
+def test_model_picker_follows_selected_backend_radio(tmp_path):
+    # The exact reported bug: on Claude CLI, switch the Backend radio to Ollama,
+    # then Alt-M must list OLLAMA's models -- not Claude's -- WITHOUT pressing Ok
+    # first.  Claude CLI's aliases are static (default/sonnet/opus/haiku); their
+    # absence from the picker proves the picker followed the selected backend.
+    env = dict(ENV); env["XWPE_AI_MODEL"] = ""     # ENV starts on claudecli
+    with WpeSession(str(tmp_path), "int main(void){return 0;}\n",
+                    env_extra=env) as s:
+        s.key("\033o", delay=0.5)
+        s.key("i", delay=0.6)
+        s.key("\t", delay=0.35)          # Enable -> Backend group (on Claude CLI)
+        s.key("\033[B", delay=0.35)      # down -> Ollama
+        s.key(" ", delay=0.35)           # select Ollama
+        s.key("\033m", delay=1.0)        # Alt-M -> picker for the SELECTED backend
+        pick = "\n".join(s.display())
+    assert "available)" in pick, "the model picker did not open:\n" + pick
+    for claude_only in ("sonnet", "opus", "haiku"):
+        assert claude_only not in pick, \
+            "Alt-M still listed Claude's models after selecting Ollama:\n" + pick
 
 
 def test_ai_options_ok_reads_radios(tmp_path):

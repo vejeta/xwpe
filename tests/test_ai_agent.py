@@ -68,6 +68,18 @@ def test_ai_agent_run_command_denied(tmp_path):
     assert "agent done" in txt, txt
 
 
+def test_ai_agent_tool_after_preamble(tmp_path):
+    # A model (a local one especially) often writes a sentence of reasoning
+    # BEFORE its "TOOL ..." line.  The agent must find the tool line anyway and
+    # run it -- not mistake the preamble for the final answer and stop.
+    reply = ("Let me read the files first so I do not invent details.\n"
+             "TOOL list_dir .@@TURN@@DONE it is C")
+    txt = _agent(tmp_path, reply, task="inspect")
+    assert "agent tool=list_dir" in txt, \
+        "the preamble before TOOL was mistaken for the answer; tool never ran:\n" + txt
+    assert "agent done" in txt, txt
+
+
 def test_agent_pane_docks_at_bottom(tmp_path):
     # The agent's output pane must dock at the bottom like the chat pane, leaving
     # the edited file visible above it -- not open as a full window over the file.

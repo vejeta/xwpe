@@ -2041,7 +2041,18 @@ e_opt_kst_restart:
             o->fbz, o->bstr[i]->nc, -1, o->fbz, o->ftt);
          if(!sw)
          {  if(o->bstr[i]->fkt != NULL)
-            {  if((ret = o->bstr[i]->fkt(o->f)) > 0) c = WPE_ESC;
+            {  ret = o->bstr[i]->fkt(o->f);
+               if (ret > 0) c = WPE_ESC;
+               else if (ret < 0)
+               {  /* The action floated an overlay over the dialog (e.g. a
+                     scrollable picker) and wants the whole dialog repainted in
+                     place -- the overlay's own restore cannot rebuild it under
+                     the panel/schirm split.  Redraw from scratch, same box. */
+                  e_close_view(o->pic, 0);
+                  o->pic = NULL;
+                  c = 0;
+                  goto e_opt_kst_restart;
+               }
                else
                {  c = cold;
                   e_pr_str(o->xa+o->bstr[i]->x, o->ya+o->bstr[i]->y, o->bstr[i]->header,

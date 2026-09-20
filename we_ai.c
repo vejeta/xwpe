@@ -319,12 +319,13 @@ static char *ai_build_body(int backend, const wpe_ai_req *req)
 /* Parse one streamed body line.  On assistant text, *delta = malloc'd copy
  * (caller frees).  Sets *done when the stream signals completion. */
 static void ai_parse_line(int backend, const char *line, size_t len,
-                          char **delta, int *done)
+                          char **delta, char **think, int *done)
 {
  const char *p = line;
  struct json_object *o, *tmp;
  (void)len;
  *delta = NULL;
+ if (think) *think = NULL;
  if (backend == WPE_AI_MOCK) backend = WPE_AI_OLLAMA;
 
  if (backend == WPE_AI_OPENAI || backend == WPE_AI_CLAUDE) {
@@ -341,6 +342,8 @@ static void ai_parse_line(int backend, const char *line, size_t len,
    struct json_object *c;
    if (json_object_object_get_ex(tmp, "content", &c))
     *delta = ai_strdup(json_object_get_string(c));
+   if (think && json_object_object_get_ex(tmp, "thinking", &c))
+    *think = ai_strdup(json_object_get_string(c));
   }
   if (json_object_object_get_ex(o, "done", &tmp) && json_object_get_boolean(tmp))
    *done = 1;
@@ -539,6 +542,15 @@ struct wpe_ai_stream {
  pid_t           pid;
  int             out_fd;       /* child stdout (subprocess transport)          */
  int             had_error;    /* backend reported a failure, not a real reply */
+ /* Ollama reasoning models (qwen3, deepseek-r1) stream their chain of thought
+    in a separate "thinking" field and can finish a turn with "content" empty.
+    We render content only, so accumulate thinking as a fallback and, if the
+    turn produced no content at all, hand the thinking over as the reply -- so a
+    "thought but did not answer" turn is never shown as blank. */
+ char           *think;
+ size_t          think_len, think_cap;
+ int             got_content;  /* the turn emitted at least one content delta   */
+ int             think_used;   /* the thinking fallback was already handed over  */
 };
 
 /* Flatten the request into a single prompt for the `claude` CLI (one -p call).
@@ -893,11 +905,33 @@ int wpe_ai_stream_pump(wpe_ai_stream *st,
   else { st->eof = 1; wpe_http_stream_eof(&st->hs); break; }  /* EOF/error    */
  }
  while (wpe_http_stream_next_line(&st->hs, &line, &llen)) {
-  char *delta = NULL;
+  char *delta = NULL, *think = NULL;
   int d = 0;
-  ai_parse_line(st->backend, line, llen, &delta, &d);
-  if (delta) { if (*delta && cb) cb(delta, ud); free(delta); }
+  ai_parse_line(st->backend, line, llen, &delta, &think, &d);
+  if (delta) { if (*delta) { st->got_content = 1; if (cb) cb(delta, ud); } free(delta); }
+  if (think) {                                /* stash chain-of-thought as a fallback */
+   size_t tl = strlen(think);
+   if (tl) {
+    size_t need = st->think_len + tl + 1;
+    if (need > st->think_cap) {
+     size_t nc = st->think_cap ? st->think_cap : 256;
+     char *np;
+     while (need > nc) nc *= 2;
+     np = realloc(st->think, nc);
+     if (np) { st->think = np; st->think_cap = nc; }
+    }
+    if (st->think_cap >= need) { memcpy(st->think + st->think_len, think, tl + 1); st->think_len += tl; }
+   }
+   free(think);
+  }
   if (d) st->done = 1;
+ }
+ /* Turn finished with no content at all (a reasoning model that only "thought"):
+    hand the accumulated thinking over as the reply, once, so nothing is blank. */
+ if ((st->done || st->eof) && !st->got_content && !st->think_used &&
+     st->think && st->think_len) {
+  if (cb) cb(st->think, ud);
+  st->think_used = 1;
  }
  *done = (st->done || st->eof) ? 1 : 0;
  return 0;
@@ -913,6 +947,7 @@ void wpe_ai_stream_free(wpe_ai_stream *st)
  }
  if (st->pid > 0) { int status; waitpid(st->pid, &status, 0); }  /* claudecli or delayed mock */
  wpe_http_stream_free(&st->hs);
+ free(st->think);
  free(st);
 }
 
