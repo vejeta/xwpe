@@ -317,6 +317,11 @@ static FENSTER *ai_pane_win(FENSTER *f)
   if (e_edit(cn, AI_PANE_NAME))
    return NULL;
   i = cn->mxedt;
+  /* Mark it a tool/output pane like Messages (ins == 8, backs no file): it is
+     never offered for saving on quit and wears the gear marker, not the padlock.
+     The chat input still works -- e_ai_chat_key consumes those keys before the
+     ins-gated editing path (we_edit.c). */
+  cn->f[i]->ins = 8;
   e_position_ai_window(cn->f[i], cn);   /* dock at the bottom, not over the editor */
   /* Free every window's save-under before the relayout repaint: docking moves
      the editor's bottom edge, and a stale save-under would restore an old strip
