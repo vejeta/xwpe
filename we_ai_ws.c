@@ -181,6 +181,42 @@ int wpe_ai_scope_files(FENSTER *f, int with_project, int with_folder, char ***ou
  return n;
 }
 
+/* A prompt block naming the files currently OPEN in the editor, with the one the
+   user is focused on marked, so every AI mode is handed the working set directly
+   instead of having to discover it (e.g. by inspecting running processes).
+   Writes into buf (empty string when nothing qualifies) and returns it. */
+char *wpe_ai_open_windows_block(FENSTER *f, char *buf, size_t n)
+{
+ ECNT *cn = f->ed;
+ char **seen = NULL;
+ size_t len = 0;
+ /* When AI is invoked, f is often the AI pane rather than a file window, so mark
+    the topmost real file window as focused; when f IS a file window, mark it. */
+ int i, nseen = 0, cap = 0, count = 0, f_real = ws_is_real_file_window(f);
+
+ buf[0] = '\0';
+ for (i = cn->mxedt; i > 0 && len < n - 96; i--) {
+  FENSTER *w = cn->f[i];
+  char *p;
+  int focused;
+  if (!ws_is_real_file_window(w)) continue;
+  p = e_mkfilename(w->dirct, w->datnam);
+  if (!p) continue;
+  if (ws_list_has(seen, nseen, p)) { free(p); continue; }   /* one entry per file */
+  ws_list_push(&seen, &nseen, &cap, p);                     /* takes ownership of p */
+  if (count == 0)
+   len += (size_t)snprintf(buf + len, n - len,
+     "FILES OPEN IN THE EDITOR (the user's working set right now; prefer these "
+     "when the request does not name a file):\n");
+  focused = f_real ? (w == f) : (count == 0);
+  len += (size_t)snprintf(buf + len, n - len, "  %s%s\n", p,
+     focused ? "   <- focused (the file the user is looking at)" : "");
+  count++;
+ }
+ wpe_ai_free_list(seen, nseen);
+ return buf;
+}
+
 static char *ws_window_text(FENSTER *w)
 {
  BUFFER *b = w->b;

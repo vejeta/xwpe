@@ -760,6 +760,22 @@ static size_t ai_append_identity(char *sys, size_t cap, size_t len)
  return len;
 }
 
+/**
+ * ai_append_open_files - Append the editor's open-files block to a system prompt
+ * being built, so a text-assembled prompt (chat) carries the working set too.
+ * @sys: prompt buffer being grown; @cap: its size; @len: current length.
+ * @f:   the window the mode was invoked from (marks the focused file).
+ * Return: the new length (unchanged when there is nothing to add or no room).
+ */
+static size_t ai_append_open_files(char *sys, size_t cap, size_t len, FENSTER *f)
+{
+ char ow[1400];
+ if (!wpe_ai_open_windows_block(f, ow, sizeof ow)[0]) return len;
+ if (len >= cap - strlen(ow) - 4) return len;
+ len += (size_t)snprintf(sys + len, cap - len, "%s\n", ow);
+ return len;
+}
+
 #ifdef DEBUGGER
 extern int e_lsp_diag_snapshot(char *out, size_t sz);   /* we_debug.c */
 #endif
@@ -806,6 +822,7 @@ static char *ai_build_system(FENSTER *f)
  if (!sys) { free(ctx); return NULL; }
  len += (size_t)snprintf(sys + len, cap - len, "%s", head);
  len = ai_append_identity(sys, cap, len);
+ len = ai_append_open_files(sys, cap, len, f);
  nsc = wpe_ai_scope_files(f, e_project_is_open(), 1, &scope);
  if (len < cap - 32)
   len += (size_t)snprintf(sys + len, cap - len, "WORKSPACE FILES:\n");
@@ -1647,6 +1664,50 @@ static void ai_ml_free(struct ai_mlist *m)
  m->role = NULL; m->content = NULL; m->n = m->cap = 0;
 }
 
+/**
+ * ai_ml_add_identity - State which backend/model is answering, as a system turn.
+ * @m: the conversation being seeded.
+ *
+ * Keeps the assistant from claiming a different maker when the history was built
+ * by another backend (see ai_identity_text).
+ */
+static void ai_ml_add_identity(struct ai_mlist *m)
+{
+ char id[512];
+ ai_identity_text(id, sizeof id);
+ ai_ml_add(m, "system", id);
+}
+
+/**
+ * ai_ml_add_open_files - Hand the editor's open files to the model as a system
+ * turn, so a mode knows the user's working set without having to discover it.
+ * @m: the conversation being seeded.
+ * @f: the window the mode was invoked from (used to mark the focused file).
+ *
+ * A no-op when nothing qualifies (no real file windows open).
+ */
+static void ai_ml_add_open_files(struct ai_mlist *m, FENSTER *f)
+{
+ char ow[1400];
+ if (wpe_ai_open_windows_block(f, ow, sizeof ow)[0])
+  ai_ml_add(m, "system", ow);
+}
+
+/**
+ * ai_ml_add_diagnostics - Fold the current file's live language-server
+ * diagnostics into the conversation as a system turn, so "fix this" needs no
+ * pasting.
+ * @m: the conversation being seeded.
+ *
+ * A no-op when the language server has reported nothing.
+ */
+static void ai_ml_add_diagnostics(struct ai_mlist *m)
+{
+ char diag[1700];
+ if (ai_diag_block(diag, sizeof diag)[0])
+  ai_ml_add(m, "system", diag);
+}
+
 /* --- one background operation at a time.  A single-turn op (Edit) leaves
  * `process` NULL; a multi-turn op (Agent, Plan) supplies process()/finish() and
  * the driver keeps taking turns until process() says stop. */
@@ -2012,12 +2073,13 @@ static int e_ai_edit(FENSTER *f)
 
  if (have_sel) { cur = ai_lines_text(f, sy0, sy1); sys = sys_sel; }
  else          { cur = ai_current_file_text(f);    sys = sys_file; }
- { char diag[1700]; ai_diag_block(diag, sizeof diag);
+ { char diag[1700], ow[1400]; ai_diag_block(diag, sizeof diag);
+   wpe_ai_open_windows_block(f, ow, sizeof ow);
    const char *hdr = have_sel ? "--- selected region ---" : "--- file ---";
-   size_t n = strlen(instr) + (cur ? strlen(cur) : 0) + strlen(diag) + 64;
+   size_t n = strlen(instr) + (cur ? strlen(cur) : 0) + strlen(diag) + strlen(ow) + 64;
    user = malloc(n);
-   if (user) snprintf(user, n, "%s%s\n\n%s\n%s",
-                      instr, diag, hdr, cur ? cur : ""); }
+   if (user) snprintf(user, n, "%s%s\n%s\n%s\n%s",
+                      instr, diag, ow, hdr, cur ? cur : ""); }
  msgs[0].role = "system"; msgs[0].content = sys;
  msgs[1].role = "user";   msgs[1].content = user ? user : instr;
  req.model = NULL; req.msgs = msgs; req.nmsgs = 2;
@@ -2606,9 +2668,10 @@ static int ai_agent_launch(FENSTER *f, const char *goal, const char *extra)
  op->process = ai_agent_process;
  op->finish = ai_agent_finish;
  ai_ml_add(&op->ml, "system", sys);
- { char id[512]; ai_identity_text(id, sizeof id); ai_ml_add(&op->ml, "system", id); }
+ ai_ml_add_identity(&op->ml);
+ ai_ml_add_open_files(&op->ml, f);
  if (extra && extra[0]) ai_ml_add(&op->ml, "system", extra);
- { char diag[1700]; if (ai_diag_block(diag, sizeof diag)[0]) ai_ml_add(&op->ml, "system", diag); }
+ ai_ml_add_diagnostics(&op->ml);
  { wpe_ai_msg prior[12]; int np = wpe_ai_session_messages(prior, 12), i;
    for (i = 0; i < np; i++) ai_ml_add(&op->ml, prior[i].role, prior[i].content); }
  ai_ml_add(&op->ml, "user", goal);
@@ -2928,6 +2991,7 @@ static int e_ai_plan(FENSTER *f)
  op->ud = pd; op->free_ud = ai_plan_free_data;
 
  ai_ml_add(&op->ml, "system", sys);
+ ai_ml_add_open_files(&op->ml, f);
  {
   size_t cap = 4096, len = 0;
   char *u = malloc(cap), *cur;

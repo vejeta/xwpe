@@ -258,6 +258,9 @@ Changes
       checkpointed and reviewable).  The permission dial gates its tools per tool
       (ask = y/n per call, edits = auto edits/ask commands, auto = unattended).
       A generic host layer; a build without the flag contains none of it.
+    - Every mode (Ask, Edit, Multi-file, Agent, Fix-build) is now handed the
+      files currently open in the editor as context, with the focused one marked
+      -- so you no longer have to tell the assistant what you are working on.
     - Browse the pane's history from the keyboard while the "> " prompt stays
       docked at the bottom: PgUp/PgDn page through the transcript and the arrows
       scroll it a line at a time; typing any character snaps the view back to the

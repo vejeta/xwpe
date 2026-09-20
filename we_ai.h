@@ -160,6 +160,9 @@ void e_ai_refresh_bars(struct CNT *cn); /* re-pick editor bars after the toggle 
 int   wpe_ai_scope_files(struct FNST *f, int with_project, int with_folder,
                          char ***out);
 void  wpe_ai_free_list(char **list, int n);
+/* A prompt block naming the files currently open in the editor (working set),
+ * the focused one marked.  Writes into buf and returns it ("" if none). */
+char *wpe_ai_open_windows_block(struct FNST *f, char *buf, size_t n);
 /* Text of a scope file: the in-memory buffer when it is open (so unsaved
  * edits count), else the file on disk.  Malloc'd, or NULL. */
 char *wpe_ai_read_scope_file(struct FNST *f, const char *path);
