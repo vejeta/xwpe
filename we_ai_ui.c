@@ -1209,7 +1209,10 @@ static int ai_diff_box_show(FENSTER *f, char **rt, int *ra, int nrows,
                             const char *title, const char *hint, const char *accept,
                             int ya_pref)
 {
+ extern int wpe_modal_active;
  int maxw = 0, boxw, vis, xa, ya, xe, ye, top = 0, k, ret = WPE_ESC;
+ int modal_save = wpe_modal_active;
+ wpe_modal_active = 1;              /* a review/confirm box is up: async paints defer */
 
  for (k = 0; k < nrows; k++)
   if (rt[k] && (int)strlen(rt[k]) > maxw) maxw = (int)strlen(rt[k]);
@@ -1269,6 +1272,7 @@ static int ai_diff_box_show(FENSTER *f, char **rt, int *ra, int nrows,
  }
  fk_cursor(1);
  e_cursor(f, 0);
+ wpe_modal_active = modal_save;
  return ret;
 }
 
@@ -2583,28 +2587,35 @@ static void ai_plan_finish(ai_async_op *op)
   wpe_ai_trace("plan proposals=0");
   return;
  }
- snprintf(line, sizeof line, "[plan] the AI proposes to change %d file%s:", np, np == 1 ? "" : "s");
+ snprintf(line, sizeof line, "[plan] the AI proposes to change %d file%s (review in the dialog):",
+          np, np == 1 ? "" : "s");
  ai_pane(f, line, 1);
- for (i = 0; i < np; i++) {
-  char *now = wpe_ai_read_scope_file(f, pd->props[i].path);
-  wpe_ai_seg *segs; int ns, k, plus = 0, minus = 0;
-  ns = wpe_ai_diff_segments(now ? now : "", pd->props[i].text, &segs);
-  for (k = 0; k < ns; k++) if (segs[k].is_change) { plus += segs[k].bn; minus += segs[k].an; }
-  wpe_ai_segs_free(segs, ns);
-  snprintf(line, sizeof line, "   %s  (+%d -%d)%s", pd->props[i].path, plus, minus, now ? "" : "  [new file]");
-  ai_pane(f, line, 0);
-  free(now);
- }
  wpe_ai_trace("plan proposals=%d", np);
- ai_pane(f, "   a = apply all    f = review file by file    q = cancel", 0);
+ /* Present the plan as a modal confirmation popup -- the same boxed overlay the
+    Edit review uses -- so the choice is an explicit dialog that grabs focus and
+    nothing paints under it, not a log line the user might miss.  Enter/A applies
+    all; F drops into the per-file diff review (also a popup); Esc cancels. */
  {
-  int mode = 0;
-  for (;;) {
-   int c = e_toupper(e_getch());
-   if (c == 'A') { mode = 1; break; }
-   if (c == 'F' || c == 13 || c == '\r' || c == '\n') { mode = 2; break; }
-   if (c == 'Q' || c == WPE_ESC) { mode = 0; break; }
+  char *rt[AI_PLAN_MAX]; int ra[AI_PLAN_MAX]; int nr = 0, key, mode;
+  char title[80];
+  snprintf(title, sizeof title, "Apply AI plan - %d file%s", np, np == 1 ? "" : "s");
+  for (i = 0; i < np && nr < AI_PLAN_MAX; i++) {
+   char *now = wpe_ai_read_scope_file(f, pd->props[i].path);
+   wpe_ai_seg *segs; int ns, k, plus = 0, minus = 0;
+   char row[600];
+   ns = wpe_ai_diff_segments(now ? now : "", pd->props[i].text, &segs);
+   for (k = 0; k < ns; k++) if (segs[k].is_change) { plus += segs[k].bn; minus += segs[k].an; }
+   wpe_ai_segs_free(segs, ns);
+   snprintf(row, sizeof row, "  %s  (+%d -%d)%s", pd->props[i].path, plus, minus, now ? "" : "  [new file]");
+   rt[nr] = strdup(row); ra[nr] = f->fb->dy.fb; nr++;      /* green: a proposed change */
+   free(now);
   }
+  key = ai_diff_box_show(f, rt, ra, nr, title,
+        " Enter/A = Apply all    F = Review file-by-file    Q/Esc = Cancel ", "AFQ", 0);
+  for (i = 0; i < nr; i++) free(rt[i]);
+  if (key == 13 || key == 'A') mode = 1;
+  else if (key == 'F')         mode = 2;
+  else                         mode = 0;
   if (mode == 0) {
    ai_pane(f, "[plan] cancelled - nothing changed", 0);
    wpe_ai_trace("plan cancelled");

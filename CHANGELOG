@@ -258,6 +258,11 @@ Changes
     - When a language server is running, the diagnostics it reports for the
       current file are folded into the prompt for Ask, Edit and the agent, so
       "fix this" works without pasting the error.
+    - The Plan approval is a modal confirmation popup (the same boxed overlay as
+      the Edit review), colored and focus-grabbing, rather than a prompt in the
+      pane: Enter/A applies all, F reviews file-by-file, Q/Esc cancels.  While any
+      AI menu, dialog or review box is open, the streaming spinner no longer
+      repaints the pane under it (it was drawing over an open menu).
     - Backends: Ollama (local, default), an OpenAI-compatible server, the Claude
       API (needs --enable-ai-tls), and the Claude CLI (uses its own login).  The
       HTTPS client verifies the server certificate (chain + hostname).

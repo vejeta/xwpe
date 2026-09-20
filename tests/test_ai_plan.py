@@ -72,3 +72,12 @@ def test_ai_plan_file_by_file(tmp_path):
     assert ("plan applied %s" % t) in txt, txt
     assert ("plan skipped %s" % other) in txt, txt
     assert "plan done applied=1" in txt, txt
+
+
+def test_ai_plan_approval_is_modal_popup(tmp_path):
+    # the approval is a titled, boxed dialog (not a log line), and Enter applies all
+    disp, txt, t, other = _plan(tmp_path, ["\r"])
+    assert "Apply AI plan" in disp, "approval is not shown as a titled popup:\n" + disp
+    assert "Review file-by-file" in disp and "Cancel" in disp, \
+        "popup choices/hint missing:\n" + disp
+    assert "plan done applied=2" in txt, txt          # Enter = apply all
