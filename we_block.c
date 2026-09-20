@@ -225,6 +225,47 @@ static void e_clip_export_buffer(BUFFER *b0)
  free(text);
 }
 
+/* e_block_to_text - serialize the marked block straight from the SOURCE buffer.
+   A line longer than mx.x is stored word-wrapped across several buffer lines;
+   only a segment that ends in the real line marker (nrc > len, i.e. a trailing
+   WPE_WR) is a true line break.  Joining the wrap-continuation segments -- as
+   saving the file does -- keeps a copied long line whole, so the OS clipboard
+   gets the full lines instead of the fragments the per-buffer-line clip serializer
+   produced.  Returns a malloc'd string (caller frees), or NULL for an empty
+   selection. */
+static char *e_block_to_text(BUFFER *b, SCHIRM *s)
+{
+ int kay = s->mark_begin.y, kax = s->mark_begin.x;
+ int key = s->mark_end.y, kex = s->mark_end.x;
+ size_t cap = 1024, len = 0;
+ char *t;
+ int y;
+
+ if (key < kay || (kay == key && kex <= kax)) return NULL;
+ if ((t = malloc(cap)) == NULL) return NULL;
+ for (y = kay; y <= key && y < b->mxlines; y++) {
+  const char *ls = (const char *)b->bf[y].s;
+  int ll = b->bf[y].len, a, e;
+  if (ll < 0) ll = 0;
+  a = (y == kay) ? kax : 0;
+  e = (y == key) ? kex : ll;
+  if (a < 0) a = 0;
+  if (e > ll) e = ll;
+  if (e < a) e = a;
+  if (len + (size_t)(e - a) + 2 > cap) {
+   char *nt;
+   while (len + (size_t)(e - a) + 2 > cap) cap *= 2;
+   if ((nt = realloc(t, cap)) == NULL) { free(t); return NULL; }
+   t = nt;
+  }
+  if (ls && e > a) { memcpy(t + len, ls + a, (size_t)(e - a)); len += (size_t)(e - a); }
+  if (y < key && b->bf[y].nrc > b->bf[y].len)   /* real line end, not a wrap segment */
+   t[len++] = '\n';
+ }
+ t[len] = '\0';
+ return t;
+}
+
 int e_edt_del(FENSTER *f)
 {
  e_edt_copy(f);
@@ -266,7 +307,21 @@ int e_edt_copy(FENSTER *f)
  b0->bf[0].len = 0;
  e_copy_block(0, 0, b, b0, f);
  f->save = save;
- e_clip_export_buffer(b0);     /* plain Copy/Cut also lands on the OS clipboard */
+ /* Export to the OS clipboard from the SOURCE selection, not the clip buffer:
+    e_buffer_to_text splits a wrapped long line at every buffer segment, so the
+    OS clipboard got fragments.  e_block_to_text rejoins the wrap-continuations.
+    Fall back to the clip buffer if serializing the selection fails. */
+ {
+  char *bt = e_block_to_text(b, f->s);
+  if (bt) {
+   int L = (int)strlen(bt);
+   if (L > 0 && bt[L - 1] == '\n') L--;
+   e_clip_os_set(bt, L);
+   free(bt);
+  } else {
+   e_clip_export_buffer(b0);
+  }
+ }
  return(0);
 }
 

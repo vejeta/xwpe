@@ -39,6 +39,7 @@ ASAN_BIN = os.path.join(os.path.dirname(__file__), '..', 'we-asan')
 
 CK = '\x0b'          # Ctrl-K prefix
 CU = '\x15'          # Ctrl-U (Undo)
+CC = '\x03'          # Ctrl-C (Copy to clipboard)
 DOWN = '\033[B'
 HOME = '\033[H'
 ALT_B = '\033b'
@@ -144,6 +145,18 @@ def test_block_copy_markwhole_no_overflow(tmp_path):
         str(tmp_path), 'AAA\nBBB\nCCC\n',
         [ALT_B, B_MARK_WHOLE, DOWN, DOWN, ALT_B, B_COPY])
     assert_no_asan(report, 'Mark Whole + Copy')
+
+
+def test_block_copy_long_line_no_overflow(tmp_path):
+    # A line loaded longer than mx.x (120) is stored word-wrapped across several
+    # buffer segments.  Copying it runs the block copy over multiple segments and
+    # the selection serializer that rejoins them (e_block_to_text) -- a
+    # memory-safety guard that this multi-segment path keeps the heap clean.
+    longline = 'L' + ''.join('abcdefghij'[i % 10] for i in range(248)) + 'Z'
+    report, _ = run_asan(
+        str(tmp_path), longline + '\nsecond line\n',
+        [CK, 'x', CC])          # Mark Whole, Copy
+    assert_no_asan(report, 'copy a long (wrapped) line')
 
 
 def test_block_move_after_undo_no_overflow(tmp_path):
