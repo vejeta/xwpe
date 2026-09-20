@@ -124,6 +124,27 @@ def test_model_picker_follows_selected_backend_radio(tmp_path):
             "Alt-M still listed Claude's models after selecting Ollama:\n" + pick
 
 
+def test_model_pick_keeps_other_fields(tmp_path):
+    # Picking a model must not disturb other fields.  The in-place redraw after
+    # the picker used to re-fire the focused field's accelerator and clear the
+    # Enable checkbox; it must stay as the user left it.
+    def enable(disp):
+        return next((ln for ln in disp if "Enable AI" in ln), "")
+    with WpeSession(str(tmp_path), "int main(void){return 0;}\n",
+                    env_extra=dict(ENV)) as s:
+        s.key("\033o", delay=0.5)
+        s.key("i", delay=0.6)
+        s.key(" ", delay=0.4)            # toggle Enable (focused first)
+        assert "[X]" in enable(s.display()), \
+            "the Enable checkbox did not toggle on:\n" + "\n".join(s.display())
+        s.key("\033m", delay=0.8)        # Alt-M -> picker (claudecli, static list)
+        s.key("\033[B", delay=0.3)       # Down
+        s.key("\r", delay=0.7)           # Enter -> pick, dialog repaints in place
+        after = enable(s.display())
+    assert "[X]" in after, \
+        "picking a model cleared the Enable checkbox:\n" + after
+
+
 def test_ai_options_ok_reads_radios(tmp_path):
     trace = tmp_path / "ai.trace"
     env = dict(ENV); env["XWPE_AI_TRACE"] = str(trace)

@@ -2047,10 +2047,15 @@ e_opt_kst_restart:
                {  /* The action floated an overlay over the dialog (e.g. a
                      scrollable picker) and wants the whole dialog repainted in
                      place -- the overlay's own restore cannot rebuild it under
-                     the panel/schirm split.  Redraw from scratch, same box. */
+                     the panel/schirm split.  Redraw from scratch, same box.
+                     sw = 1 restores the fresh-entry state: the refocus that the
+                     restart performs then just highlights a field instead of
+                     "activating" it (with sw == 0 the re-focused accelerator was
+                     taken as a keypress -- it toggled the Enable checkbox). */
                   e_close_view(o->pic, 0);
                   o->pic = NULL;
                   c = 0;
+                  sw = 1;
                   goto e_opt_kst_restart;
                }
                else
