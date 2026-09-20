@@ -295,9 +295,18 @@ static void ai_input_caret(FENSTER *wf, int *cy, int *cx)
  * background and the caret stays in the focused/user window. */
 static void ai_pane_paint(FENSTER *wf)
 {
+ extern int wpe_modal_active;                    /* a dropdown/dialog box is open */
  FENSTER *act = wf->ed->f[wf->ed->mxedt];       /* the focused window */
  FENSTER *caret = g_ai_bg_win ? g_ai_bg_win : act;
  int pane_focused = (act == wf && !g_ai_bg_win);
+
+ /* A menu or dialog is up on top of us (its whole lifetime sets this flag): do
+    NOT repaint under it, or a streaming token / the working spinner draws over
+    the box and corrupts it -- the same guard the async language-server painter
+    uses.  The buffer already holds the new text; the next paint once the box
+    closes shows it. */
+ if (wpe_modal_active)
+  return;
 
  if (pane_focused && g_ai_chat_focus) {         /* caret sits in the input region */
   int cy, cx;
