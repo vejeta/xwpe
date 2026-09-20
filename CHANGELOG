@@ -231,6 +231,33 @@ Bugs fixed in 1.6.x:
 
 Changes
 
+1.7.0 (AI assistant: Chat / Edit / Agent -- experimental, opt-in)
+
+* New optional AI assistant behind the Alt-G prefix, off by default and absent
+  from a stock build (configure --enable-ai; add --enable-ai-tls for HTTPS
+  backends).  The classic editor is byte-for-byte unchanged when AI is off.
+  See docs/AI.md.
+    - Ask (Alt-G a): a chat pane docked at the bottom that can read the
+      workspace to answer and keeps context across the conversation.  A read-
+      only "TOOL" investigation is shown as a dim status, not echoed as a reply.
+    - Edit (Alt-G e): rewrite the current file from an instruction, shown as a
+      colored diff over the affected lines (red removed / green added, with
+      context and new-file line numbers); per-hunk y/n/a/q, one Ctrl-U undoes it.
+    - Agent (Alt-G g): a tool-using agent (list/read/grep/write_file/run_command)
+      docked beside Messages.  Mutating steps are gated by a permission dial
+      (ask/edits/auto); a write is previewed as a diff; unattended runs take a
+      checkpoint and offer a reviewable changeset; when it finishes you can type
+      a follow-up in the pane.  Plan (Alt-G p) applies multi-file edits; the
+      model list (Alt-G m) is a scrollable picker.
+    - Backends: Ollama (local, default), an OpenAI-compatible server, the Claude
+      API (needs --enable-ai-tls), and the Claude CLI (uses its own login).  The
+      HTTPS client verifies the server certificate (chain + hostname).
+    - Tested across ncurses (pyte), X11 and native Wayland, plus a live Claude
+      CLI path.
+* Fix a project Make (F9) that could abort with glibc "free(): invalid pointer"
+  when a project variable (e.g. CMP) was missing -- e_c_project freed an
+  uninitialised argument slot; it is now zero-initialised.
+
 1.6.9 (native Wayland real-desktop robustness: resize, decorations, crashes)
 
 * Fix building from the release tarball with a modern clang/gcc.  Since the 1.6.7
