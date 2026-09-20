@@ -164,6 +164,9 @@ if WPE_AI_TLS
 AM_CFLAGS += $(AITLS_CFLAGS)
 we_LDADD += $(AITLS_LIBS)
 endif
+if WPE_AI_AGENT_HOST
+we_SOURCES += we_ai_host.c
+endif
 endif
 
 # --- Header files (for dist) ---
@@ -185,6 +188,7 @@ noinst_HEADERS = \
   we_lsp.h \
   we_ai.h \
   we_ai_http.h \
+  we_ai_host.h \
   we_clip.h \
   attrb.h \
   edit.h \

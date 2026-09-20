@@ -315,6 +315,25 @@ AM_CONDITIONAL([WPE_AI_TLS], [test "x$have_ai_tls" = xyes])
 AC_SUBST([AITLS_CFLAGS])
 AC_SUBST([AITLS_LIBS])
 
+# --- Optional: external agent host (run an agent CLI like Claude Code in-editor) ---
+# A generic host for an external coding-agent CLI that speaks stream-json (Claude
+# Code first; aider/opencode/etc. as adapters later).  The real agent runs its own
+# tools; xwpe renders its stream, reflects its on-disk edits into open buffers, and
+# gates it via the permission dial.  Nested under --enable-ai, default no; needs no
+# extra library (the agent CLI is spawned as a subprocess).
+have_ai_agent_host=no
+AS_IF([test "x$enable_ai" = "xyes"], [
+  AC_ARG_ENABLE([ai-agent-host],
+    [AS_HELP_STRING([--enable-ai-agent-host],
+       [host an external agent CLI (Claude Code) inside the editor (default: no)])],
+    [], [enable_ai_agent_host=no])
+  AS_IF([test "x$enable_ai_agent_host" = "xyes"], [
+    have_ai_agent_host=yes
+    AC_DEFINE([WPE_AI_AGENT_HOST], [1], [Enable hosting an external agent CLI])
+  ])
+])
+AM_CONDITIONAL([WPE_AI_AGENT_HOST], [test "x$have_ai_agent_host" = "xyes"])
+
 # --- Unconditional defines ---
 AC_DEFINE([UNIX], [1], [Building on a Unix system])
 AC_DEFINE([NCURSES], [1], [Using ncurses library])
@@ -345,6 +364,7 @@ AC_MSG_RESULT([
     GPM:       $have_gpm
     AI:        $enable_ai
     AI TLS:    $have_ai_tls
+    AI host:   $have_ai_agent_host
     PRNTCMD:   $PRNTCMD
     pandoc:    $PANDOC
 ])

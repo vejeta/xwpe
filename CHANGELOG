@@ -272,6 +272,13 @@ Changes
     - Backends: Ollama (local, default), an OpenAI-compatible server, the Claude
       API (needs --enable-ai-tls), and the Claude CLI (uses its own login).  The
       HTTPS client verifies the server certificate (chain + hostname).
+    - External agent host (Alt-G h; a further opt-in, --enable-ai-agent-host,
+      default off).  Runs a real agent CLI -- Claude Code first -- as a persistent
+      stream-json session with its OWN tools, and xwpe is the front-end: its
+      assistant text and tool activity stream into the pane, a file it edits is
+      reloaded into its open window (one Ctrl-U reverts), and its permissions map
+      to the dial.  Built as a generic host (a per-CLI adapter), so it is agnostic
+      at the host layer; a build without the flag contains none of it.
     - Tested across ncurses (pyte), X11 and native Wayland, plus a live Claude
       CLI path.
 * Fix a project Make (F9) that could abort with glibc "free(): invalid pointer"

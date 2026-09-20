@@ -14,6 +14,7 @@
 #include "progr.h"
 #include "we_fdloop.h"
 #include "we_ai.h"
+#include "we_ai_host.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -2797,6 +2798,134 @@ static int e_ai_plan(FENSTER *f)
  return 0;
 }
 
+#ifdef WPE_AI_AGENT_HOST
+/* ================= external agent host (Claude Code native) ==============
+ * Runs the real `claude` agent as a persistent stream-json session and renders
+ * it in the docked pane: its assistant text and tool activity stream in, and a
+ * file it edits on disk is reloaded into its open window (one Ctrl-U reverts).
+ * The session stays live across turns; Alt-G h feeds the next turn, and Alt-G h
+ * with an empty prompt (or Esc) ends it. */
+
+static wpe_host *g_host;                /* the live session, or NULL */
+static ECNT     *g_host_cn;             /* container, for liveness checks */
+static FENSTER  *g_host_win;            /* pane's anchor window */
+static int       g_host_fd = -1;        /* child stdout on the fd-loop */
+static int       g_host_turn;           /* a turn is streaming */
+
+static void e_ai_host_end(const char *why)
+{
+ if (g_host_fd >= 0) { wpe_fd_del(g_host_fd); g_host_fd = -1; }
+ if (g_host) { wpe_host_free(g_host); g_host = NULL; }
+ if (g_host_win && why) ai_pane(g_host_win, why, 1);
+ g_host_win = NULL; g_host_cn = NULL; g_host_turn = 0;
+}
+
+/* Non-host code (e.g. Options > Disable) asks whether a host is up. */
+int  wpe_ai_host_active(void) { return g_host != NULL; }
+void wpe_ai_host_shutdown(void) { if (g_host) e_ai_host_end(NULL); }
+
+static void host_ev_text(const char *text, void *ud)
+{ ai_pane_multiline((FENSTER *)ud, text, 0); }
+
+static void host_ev_tool(const char *tool, const char *arg, void *ud)
+{
+ char l[720];
+ snprintf(l, sizeof l, "[host] %s %.640s", tool, arg ? arg : "");
+ ai_pane((FENSTER *)ud, l, 0);
+ wpe_ai_trace("host tool=%s arg=%s", tool, arg ? arg : "");
+}
+
+static void host_ev_file(const char *path, void *ud)
+{
+ FENSTER *f = ud;
+ char l[1200];
+ wpe_ai_reload_open_window(f, path);         /* refresh the open buffer, one undo */
+ snprintf(l, sizeof l, "[host] edited %.1100s", path ? path : "");
+ ai_pane(f, l, 0);
+ wpe_ai_trace("host edit=%s", path ? path : "");
+}
+
+static void host_ev_notice(const char *text, void *ud)
+{ ai_pane((FENSTER *)ud, text ? text : "", 0); }
+
+static void host_ev_result(const char *summary, int is_error, void *ud)
+{
+ FENSTER *f = ud;
+ char l[720];
+ if (summary && summary[0] && strcmp(summary, "success"))
+  snprintf(l, sizeof l, "[host] %s%.640s", is_error ? "error: " : "", summary);
+ else
+  snprintf(l, sizeof l, "[host] turn complete - Alt-G h continues, Esc there ends");
+ ai_pane(f, l, 0);
+ g_host_turn = 0;
+ wpe_ai_trace("host result is_error=%d", is_error);
+}
+
+static const wpe_host_events g_host_ev = {
+ host_ev_text, host_ev_tool, host_ev_file, host_ev_notice, host_ev_result
+};
+
+/* fd-loop callback: drain and render the session's stream-json events. */
+static void host_fd_cb(int fd, void *data)
+{
+ int turn_done = 0, hup = 0;
+ (void)fd; (void)data;
+ if (!g_host) return;
+ if (!ai_window_alive(g_host_cn, g_host_win)) { e_ai_host_end(NULL); return; }
+ wpe_host_pump(g_host, &g_host_ev, g_host_win, &turn_done, &hup);
+ if (hup) e_ai_host_end("[host] session ended");
+}
+
+int e_ai_host(FENSTER *f)
+{
+ static char task[AI_PROMPT_MAX];
+ char err[320];
+
+ if (!wpe_ai_enabled()) {
+  ai_pane(f, "AI assistant is off - enable it in Options > Editor.", 1);
+  return 0;
+ }
+ if (wpe_ai_busy()) {
+  ai_pane(f, "[AI] a task is already running - press Alt-G to cancel it first", 1);
+  return 0;
+ }
+ if (g_host && g_host_turn) {
+  ai_pane(f, "[host] still working on the previous turn", 1);
+  return 0;
+ }
+ task[0] = '\0';
+ if (!e_ai_prompt1(task, g_host ? "Claude Code: next (Esc ends)" : "Claude Code: task", f)
+     || !task[0]) {
+  if (g_host) e_ai_host_end("[host] session ended");   /* empty/Esc ends a live one */
+  return 0;
+ }
+ if (!g_host) {
+  err[0] = '\0';
+  g_host = wpe_host_start(e_ai_model, "", e_ai_policy, err, sizeof err);
+  if (!g_host) {
+   char l[360];
+   snprintf(l, sizeof l, "[host] could not start claude: %.320s", err[0] ? err : "?");
+   ai_pane(f, l, 1);
+   return 0;
+  }
+  g_host_win = f; g_host_cn = f->ed;
+  g_host_fd = wpe_host_fd(g_host);
+  wpe_fd_add(g_host_fd, POLLIN, host_fd_cb, NULL);
+  ai_pane(f, "[host] Claude Code session started", 1);
+  wpe_ai_trace("host start policy=%s", wpe_ai_policy_name(e_ai_policy));
+ }
+ { char l[1100]; snprintf(l, sizeof l, "[host] you: %.1000s", task); ai_pane(f, l, 0); }
+ if (wpe_host_send(g_host, task) != 0) {
+  e_ai_host_end("[host] send failed - session ended");
+  return 0;
+ }
+ g_host_turn = 1;
+ ai_pane(f, "[host] working...", 0);
+ wpe_ai_trace("host send");
+ return 0;
+}
+#endif /* WPE_AI_AGENT_HOST */
+
 /* ======================= Bottom-bar action menu ========================= */
 /* The "Alt-G AI" entry on the editor's bottom bar (mouse-clickable) and any
  * unrecognised Alt-G letter open this popup so every AI action is discoverable
@@ -2835,12 +2964,15 @@ static int e_ai_menu_disable(FENSTER *f)
  * keyboard shortcut lines up like the LSP menu).  Returns the row count. */
 static int e_ai_menu_items(OPTK *it)
 {
- static char label[9][AI_MENU_TEXTW + 4];
+ static char label[10][AI_MENU_TEXTW + 4];
  static const struct { const char *name; char key; int (*fkt)(FENSTER *); } a[] = {
   { "Ask (chat)",        'A', e_ai_chat            },
   { "Edit current file", 'E', e_ai_edit            },
   { "Multi-file edit",   'F', e_ai_plan            },
   { "Agent (tools)",     'G', e_ai_agent           },
+#ifdef WPE_AI_AGENT_HOST
+  { "Claude Code (host)",'H', e_ai_host            },
+#endif
   { "Fix the build",     'B', e_ai_fix_build       },
   { "Pick model",        'M', e_ai_pick_model      },
   { "Policy dial",       'Y', e_ai_menu_policy     },
@@ -2866,7 +2998,7 @@ static int e_ai_menu_items(OPTK *it)
 
 int e_ai_menu(FENSTER *f)
 {
- OPTK items[9];
+ OPTK items[10];
  int n, xa, xe, ya, ye, w;
 
  if (!wpe_ai_enabled())
@@ -2888,6 +3020,12 @@ int e_ai_menu(FENSTER *f)
  if (ya < 1)
   ya = 1;
  WpeHandleSubmenu(xa, ya, xe, ye, 0, items, f);
+ /* A menu action (Ask, or a host follow-up) may have armed the chat input while
+    the menu was still up -- ai_pane_paint suppresses painting under an open
+    dropdown, so the prompt/hint would not appear until the next keystroke.  The
+    menu is closed now, so paint the pane once here to surface it immediately. */
+ if (g_ai_chat_focus && g_ai_chat_pane)
+  ai_pane_paint(g_ai_chat_pane);
  return 0;
 }
 

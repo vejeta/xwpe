@@ -61,6 +61,7 @@ Configure and build with the feature on:
 @example
 ./configure --enable-ai                    # local backends only
 ./configure --enable-ai --enable-ai-tls    # also HTTPS (Claude, remote OpenAI)
+./configure --enable-ai --enable-ai-agent-host  # also host the Claude Code CLI
 make
 @end example
 
@@ -90,6 +91,8 @@ Multi-file edit -- change several files together.
 Agent -- an autonomous loop.
 @item Alt-G b
 Fix the Build (an agent that builds until it passes).
+@item Alt-G h
+Host Claude Code (only in an @option{--enable-ai-agent-host} build).
 @item Alt-G m
 pick the Model.
 @item Alt-G y
@@ -234,6 +237,29 @@ hands the agent a loop: run the build, read the compiler errors, edit the
 sources, build again, repeat until it passes.  It uses the same tools and
 permission dial as @kbd{Alt-G g}, so you approve edits and commands exactly as in
 a normal agent run.
+
+@section Hosting an external agent (Claude Code)
+
+@cindex AI, agent host
+@cindex Claude Code
+Everything above is @emph{agnostic}: xwpe drives the model itself.  A further,
+separately compiled option (@option{--enable-ai-agent-host}, off by default) does
+the opposite -- it runs a real coding-agent CLI, @strong{Claude Code} first, with
+@emph{its own} tools, and makes xwpe the front-end.
+
+@kbd{Alt-G h} starts a persistent @command{claude} session (a bidirectional
+stream-json subprocess on the fd-loop).  Its answer text and tool activity stream
+into the pane; when one of its tools writes a file, xwpe reloads that file into
+its open window as one undo step, so @kbd{Ctrl-U} reverts the agent's edit.  The
+permission dial maps to the CLI's own permission mode (Auto runs unattended,
+Edits auto-accepts writes, Ask denies tool use until you raise the dial).  The
+session stays live across turns: @kbd{Alt-G h} feeds the next turn, and an empty
+prompt (or @key{Esc}) ends it.
+
+This is built as a generic host -- an agent CLI that speaks a line-delimited JSON
+event stream on stdout and takes turns on stdin -- so other agent CLIs can be
+added later as small adapters.  A build without @option{--enable-ai-agent-host}
+contains none of it.
 
 @section Reviewing changes like compile errors
 

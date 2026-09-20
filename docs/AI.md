@@ -26,6 +26,14 @@ model works):
   present, otherwise a syntax-only compile of the current file) and, if it fails,
   loops the agent: read the errors, edit the sources, re-build, repeat until it
   passes. It uses the same tools and permission dial as the agent.
+- **Claude Code (host)** (`Alt-G h`, only in a `--enable-ai-agent-host` build) --
+  runs the real **Claude Code** CLI as a persistent session using **its own**
+  tools, with xwpe as the front-end: its answer text and tool activity stream
+  into the pane, a file it edits on disk is reloaded into its open window (one
+  `Ctrl-U` reverts), and the permission dial maps to the CLI's permission mode.
+  The session stays live across turns -- `Alt-G h` feeds the next turn, an empty
+  prompt (or `Esc`) ends it. This is a generic "host an agent CLI that speaks
+  stream-json" (Claude Code first; others as adapters later).
 
 `Alt-G f` runs a **Multi-file edit**: it studies the workspace read-only, then
 proposes a coordinated change across several files and shows it as a **modal
@@ -51,6 +59,7 @@ The assistant is a configure-time option, **off by default**:
 ```sh
 ./configure --enable-ai            # Chat/Edit/Agent, local + Claude-CLI backends
 ./configure --enable-ai --enable-ai-tls   # + HTTPS backends (Claude API, remote OpenAI)
+./configure --enable-ai --enable-ai-agent-host  # + host the Claude Code CLI (Alt-G h)
 ```
 
 `--enable-ai-tls` links libtls (LibreSSL) or OpenSSL and is only needed to reach
