@@ -20,6 +20,7 @@
 #include <stdio.h>
 #include <poll.h>
 #include <unistd.h>
+#include <sys/stat.h>
 #include <stdint.h>
 #include <time.h>
 #ifdef __linux__
@@ -2313,9 +2314,12 @@ static void ai_agent_finish(ai_async_op *op)
  e_ai_chat_arm(op->f);
 }
 
-int e_ai_agent(FENSTER *f)
+/* Launch the autonomous agent on an already-formed `goal` (no prompt).  `extra`
+   is an optional extra system message appended after the agent's identity (NULL
+   for none) -- the build-fix loop uses it to state the exact build command.
+   Shared by Alt-G g (prompted) and e_ai_fix_build. */
+static int ai_agent_launch(FENSTER *f, const char *goal, const char *extra)
 {
- static char goal[AI_PROMPT_MAX];
  char err[320];
  ECNT *cn = f->ed;
  ai_async_op *op;
@@ -2333,13 +2337,6 @@ int e_ai_agent(FENSTER *f)
    "When the task is complete, reply with a line beginning DONE and a short "
    "summary. Output nothing else; wait for each tool result before continuing.";
 
- if (wpe_ai_busy()) {
-  ai_pane(f, "[AI] a task is already running - press Alt-G to cancel it first", 1);
-  return 0;
- }
- goal[0] = '\0';
- if (!e_ai_prompt1(goal, "AI agent task", f) || !goal[0])
-  return 0;
  err[0] = '\0';
  if (wpe_ai_preflight(e_ai_backend, err, sizeof err)) { ai_pane(f, err, 1); return 0; }
  err[0] = '\0';
@@ -2379,6 +2376,7 @@ int e_ai_agent(FENSTER *f)
  op->finish = ai_agent_finish;
  ai_ml_add(&op->ml, "system", sys);
  { char id[512]; ai_identity_text(id, sizeof id); ai_ml_add(&op->ml, "system", id); }
+ if (extra && extra[0]) ai_ml_add(&op->ml, "system", extra);
  { char diag[1700]; if (ai_diag_block(diag, sizeof diag)[0]) ai_ml_add(&op->ml, "system", diag); }
  { wpe_ai_msg prior[12]; int np = wpe_ai_session_messages(prior, 12), i;
    for (i = 0; i < np; i++) ai_ml_add(&op->ml, prior[i].role, prior[i].content); }
@@ -2386,6 +2384,80 @@ int e_ai_agent(FENSTER *f)
  wpe_ai_session_append("user", goal);
  ai_conv_start(op, "[agent] working");
  return 0;
+}
+
+int e_ai_agent(FENSTER *f)
+{
+ static char goal[AI_PROMPT_MAX];
+ if (wpe_ai_busy()) {
+  ai_pane(f, "[AI] a task is already running - press Alt-G to cancel it first", 1);
+  return 0;
+ }
+ goal[0] = '\0';
+ if (!e_ai_prompt1(goal, "AI agent task", f) || !goal[0])
+  return 0;
+ return ai_agent_launch(f, goal, NULL);
+}
+
+/* ai_build_command - the command that builds the current work, written into
+   `out`.  Prefers `make` when a makefile is present (the usual project build);
+   otherwise a syntax-only compile of the current file by its language, so a lone
+   source file can still be checked.  Falls back to `make`.  The command is shown
+   to the user and handed to the agent verbatim -- nothing is hidden. */
+static void ai_build_command(FENSTER *f, char *out, size_t sz)
+{
+ const char *dir = (f->dirct && f->dirct[0]) ? f->dirct : ".";
+ const char *mk[] = { "GNUmakefile", "makefile", "Makefile", NULL };
+ char path[1200];
+ int i;
+ struct stat st;
+ for (i = 0; mk[i]; i++) {
+  snprintf(path, sizeof path, "%s%c%s", dir, DIRC, mk[i]);
+  if (!stat(path, &st)) { snprintf(out, sz, "make"); return; }
+ }
+ if (f->datnam && f->datnam[0]) {
+  char *full = e_mkfilename(f->dirct, f->datnam);
+  const char *dot = strrchr(f->datnam, '.');
+  const char *cc = NULL;
+  if (dot) {
+   if (!strcmp(dot, ".c")) cc = "gcc";
+   else if (!strcmp(dot, ".cc") || !strcmp(dot, ".cpp") ||
+            !strcmp(dot, ".cxx") || !strcmp(dot, ".C")) cc = "g++";
+  }
+  if (cc && full) {
+   snprintf(out, sz, "%s -fsyntax-only -Wall '%s'", cc, full);
+   free(full);
+   return;
+  }
+  free(full);
+ }
+ snprintf(out, sz, "make");
+}
+
+/* e_ai_fix_build - run the build, and if it fails let the agent fix it in a loop:
+   run the build command, read the compiler errors, edit the sources, re-run,
+   repeat until it builds.  A specialised agent task -- it reuses the whole agent
+   machinery (tools, permission dial, checkpoint/changeset) and just seeds the
+   goal and the exact build command, so the user does not have to type either. */
+static int e_ai_fix_build(FENSTER *f)
+{
+ char cmd[1024], extra[1700];
+ if (wpe_ai_busy()) {
+  ai_pane(f, "[AI] a task is already running - press Alt-G to cancel it first", 1);
+  return 0;
+ }
+ ai_build_command(f, cmd, sizeof cmd);
+ wpe_ai_trace("fix-build cmd=%s", cmd);
+ { char line[1200]; snprintf(line, sizeof line, "[fix-build] build command: %s", cmd);
+   ai_pane(f, line, 1); }
+ snprintf(extra, sizeof extra,
+   "You are fixing a failing build. The build command is:\n  %s\n"
+   "First run it with `TOOL run_command %s`. If it succeeds (no errors), reply "
+   "DONE. Otherwise read the compiler errors, edit the source files to fix the "
+   "root cause (not by silencing warnings), then run the build command again. "
+   "Repeat until the build succeeds, then reply DONE with a short summary of "
+   "what you changed.", cmd, cmd);
+ return ai_agent_launch(f, "Fix the failing build.", extra);
 }
 
 /* ======================= PLAN mode (multi-file) ========================= */
@@ -2677,12 +2749,13 @@ static int e_ai_menu_disable(FENSTER *f)
  * keyboard shortcut lines up like the LSP menu).  Returns the row count. */
 static int e_ai_menu_items(OPTK *it)
 {
- static char label[8][AI_MENU_TEXTW + 4];
+ static char label[9][AI_MENU_TEXTW + 4];
  static const struct { const char *name; char key; int (*fkt)(FENSTER *); } a[] = {
   { "Ask (chat)",        'A', e_ai_chat            },
   { "Edit current file", 'E', e_ai_edit            },
   { "Plan (multi-file)", 'P', e_ai_plan            },
   { "Agent (tools)",     'G', e_ai_agent           },
+  { "Fix the build",     'B', e_ai_fix_build       },
   { "Pick model",        'M', e_ai_pick_model      },
   { "Policy dial",       'Y', e_ai_menu_policy     },
   { "New session",       'N', e_ai_menu_new_session},
@@ -2707,7 +2780,7 @@ static int e_ai_menu_items(OPTK *it)
 
 int e_ai_menu(FENSTER *f)
 {
- OPTK items[8];
+ OPTK items[9];
  int n, xa, xe, ya, ye, w;
 
  if (!wpe_ai_enabled())
