@@ -46,6 +46,10 @@ typedef struct {
  int            active;
  int            started;       /* a fresh reply line has been opened under "AI:" */
  int            turns;         /* read-only tool turns taken before answering    */
+ int            decided;       /* this turn: 0 undecided, 1 = answer (stream it),
+                                  2 = a TOOL investigation (shown as a dim status,
+                                  the raw protocol line is NOT echoed as "AI:")  */
+ size_t         shown;         /* bytes of `full` already painted (decided==1)   */
 } ai_chat_session;
 
 #define AI_CHAT_MAX_TOOL_TURNS 6   /* cap chat's read-only investigation loop */
@@ -432,6 +436,35 @@ static void ai_delta_cb(const char *delta, void *ud)
  }
 
  int width;
+ /* Decide from the reply's first line: a "TOOL ..." line is the model asking to
+    INVESTIGATE (read a file, grep, ...), not its answer -- echoing it as "AI:
+    TOOL read_file /path" reads like a broken reply, so show a dim status line
+    and suppress the raw protocol; anything else is the answer and streams. */
+ if (!s->decided && s->full) {
+  const char *nl = memchr(s->full, '\n', s->flen);
+  if (s->flen < 5 && !nl) return;                    /* wait: could be "TOOL " */
+  if (!strncmp(s->full, "TOOL ", 5)) {
+   char first[600], *tool, *arg, status[640];
+   size_t fl = nl ? (size_t)(nl - s->full) : s->flen;
+   const char *pretty;
+   if (fl >= sizeof first) fl = sizeof first - 1;
+   memcpy(first, s->full, fl); first[fl] = '\0';
+   tool = first + 5; arg = strchr(tool, ' ');
+   if (arg) { *arg = '\0'; arg++; } else arg = (char *)"";
+   pretty = !strcmp(tool, "read_file") ? "reading"
+          : !strcmp(tool, "grep")      ? "searching for"
+          : !strcmp(tool, "list_dir")  ? "listing"
+          : tool;
+   snprintf(status, sizeof status, "  . %s %.560s", pretty, arg);
+   wf = ai_pane_win(s->ref);
+   if (wf) ai_pane_set_last(wf, status);              /* replace "(gathering...)" */
+   s->decided = 2;
+   return;
+  }
+  s->decided = 1;                                     /* an answer -- stream it */
+ }
+ if (s->decided == 2) return;                         /* keep hiding the investigation */
+
  wf = ai_pane_win(s->ref);
  if (!wf) return;
  width = ai_pane_width(wf);
@@ -440,8 +473,10 @@ static void ai_delta_cb(const char *delta, void *ud)
   s->started = 1;
  }
 
- for (i = 0; i < dl; i++) {
-  char c = delta[i];
+ /* Paint the not-yet-shown portion of `full` (this covers both the delta just
+    arrived and anything buffered while we were deciding). */
+ for (i = s->shown; i < s->flen; i++) {
+  char c = s->full[i];
   if (c == '\r')
    continue;
   if (c == '\n') {
@@ -468,6 +503,7 @@ static void ai_delta_cb(const char *delta, void *ud)
   if (s->pcols >= width)                    /* soft-wrap at the pane width */
    ai_stream_wrap(s, wf);
  }
+ s->shown = s->flen;                                   /* painted up to here */
  ai_pane_set_last(wf, s->pending ? s->pending : "");   /* live partial line */
 }
 
@@ -639,6 +675,8 @@ static void ai_chat_next_turn(ai_chat_session *s)
  s->fd = wpe_ai_stream_fd(s->st);
  s->active = 1;
  s->started = 0;
+ s->decided = 0;
+ s->shown = 0;
  s->flen = 0; if (s->full) s->full[0] = '\0';
  ai_chat_set_pending(s, AI_REPLY_PREFIX);     /* reply streams after "AI: " */
  wf = ai_pane_win(f);

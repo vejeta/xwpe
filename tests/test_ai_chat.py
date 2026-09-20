@@ -145,3 +145,24 @@ def test_ai_chat_investigates_files(tmp_path):
     txt = trace.read_text() if trace.exists() else ""
     assert "turn=1" in txt, "chat did not take a second (tool) turn:\n" + txt
     assert "ANSWERMARKER" in disp, "chat did not reach the answer after the tool:\n" + disp
+
+
+def test_chat_hides_tool_investigation(tmp_path):
+    # When the model investigates (a "TOOL read_file ..." line), the chat shows a
+    # dim status, not the raw protocol echoed as an "AI:" reply, then the answer.
+    env = {
+        "XWPE_AI_ENABLE": "1",
+        "XWPE_AI_BACKEND": "mock",
+        "XWPE_AI_MOCK_REPLY": "TOOL read_file main.c@@TURN@@ANSWER_MARKER_42",
+    }
+    (tmp_path / "main.c").write_text("int main(void){return 0;}\n")
+    with WpeSession(str(tmp_path), "int main(void){return 0;}\n",
+                    env_extra=env, filename="main.c") as s:
+        s.key(ALT.AI); s.key("a", delay=0.6)
+        s.key("what does this do?"); s.key("\r", delay=1.5)
+        s._drain(1.5)
+        disp = "\n".join(s.display())
+    assert "ANSWER_MARKER_42" in disp, "the answer did not render:\n" + disp
+    assert "reading main.c" in disp, "the investigation status was not shown:\n" + disp
+    # the raw TOOL protocol must NOT be echoed as a reply
+    assert "TOOL read_file" not in disp, "chat leaked the raw TOOL line:\n" + disp
