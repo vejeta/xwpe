@@ -151,6 +151,89 @@ static char *ai_current_file_text(FENSTER *f)
  return t;
 }
 
+/* ai_block_range - the marked block as a whole-line range [*y0..*y1], or 0 if
+   there is no active selection.  Edit works line-granular (it diffs and splices
+   whole lines), so a partial-line mark is widened to the lines it touches; a
+   block that ends at column 0 does not pull in that trailing line. */
+static int ai_block_range(FENSTER *f, int *y0, int *y1)
+{
+ SCHIRM *s = f->s;
+ int a = s->mark_begin.y, b = s->mark_end.y;
+ if (b < a || (a == b && s->mark_end.x <= s->mark_begin.x))
+  return 0;                                  /* empty / inverted -> no selection */
+ if (s->mark_end.x == 0 && b > a) b--;       /* mark at col 0 excludes that line */
+ if (b < a) b = a;
+ if (a < 0) a = 0;
+ if (b > f->b->mxlines - 1) b = f->b->mxlines - 1;
+ *y0 = a; *y1 = b;
+ return 1;
+}
+
+/* ai_lines_text - lines [y0..y1] of the file joined with '\n', malloc'd.  Used to
+   send only the selected region to the model for a scoped Edit. */
+static char *ai_lines_text(FENSTER *f, int y0, int y1)
+{
+ BUFFER *b = f->b;
+ size_t cap = 1024, len = 0;
+ char *t = malloc(cap);
+ int y;
+ if (!t) return NULL;
+ for (y = y0; y <= y1 && y < b->mxlines; y++) {
+  const char *ls = (const char *)b->bf[y].s;
+  int ll = b->bf[y].len;
+  if (ll < 0) ll = 0;
+  if (len + (size_t)ll + 2 > cap) {
+   char *nt;
+   while (len + (size_t)ll + 2 > cap) cap *= 2;
+   nt = realloc(t, cap);
+   if (!nt) { free(t); return NULL; }
+   t = nt;
+  }
+  if (ls && ll > 0) { memcpy(t + len, ls, (size_t)ll); len += (size_t)ll; }
+  t[len++] = '\n';
+ }
+ t[len] = '\0';
+ return t;
+}
+
+/* ai_splice_lines - the whole file with lines [y0..y1] replaced by `snippet`, so
+   a selection edit reuses the proven whole-file diff+apply path while confining
+   the change to the selected region.  A trailing '\n' on `snippet` is dropped so
+   the join does not introduce a blank line. */
+static char *ai_splice_lines(FENSTER *f, int y0, int y1, const char *snippet)
+{
+ BUFFER *b = f->b;
+ size_t cap = 4096, len = 0, sl = strlen(snippet);
+ char *t = malloc(cap);
+ int y;
+ if (!t) return NULL;
+ while (sl > 0 && snippet[sl - 1] == '\n') sl--;   /* one join newline, not two */
+ for (y = 0; y < b->mxlines; y++) {
+  const char *ls;
+  int ll;
+  if (y == y0) {                                    /* splice the new region in  */
+   if (len + sl + 2 > cap) {
+    char *nt; while (len + sl + 2 > cap) cap *= 2;
+    nt = realloc(t, cap); if (!nt) { free(t); return NULL; }
+    t = nt;
+   }
+   memcpy(t + len, snippet, sl); len += sl; t[len++] = '\n';
+  }
+  if (y >= y0 && y <= y1) continue;                 /* drop the old region       */
+  ls = (const char *)b->bf[y].s; ll = b->bf[y].len;
+  if (ll < 0) ll = 0;
+  if (len + (size_t)ll + 2 > cap) {
+   char *nt; while (len + (size_t)ll + 2 > cap) cap *= 2;
+   nt = realloc(t, cap); if (!nt) { free(t); return NULL; }
+   t = nt;
+  }
+  if (ls && ll > 0) { memcpy(t + len, ls, (size_t)ll); len += (size_t)ll; }
+  t[len++] = '\n';
+ }
+ t[len] = '\0';
+ return t;
+}
+
 static void ai_chat_finish(ai_chat_session *s)
 {
  if (!s) return;
@@ -1452,6 +1535,7 @@ struct ai_async_op {
  char    *acc;               /* current turn's reply collected from the stream */
  size_t   acc_len, acc_cap;
  int      had_error;          /* the finished turn was a backend failure         */
+ int      sel_y0, sel_y1;     /* Edit scope: selected line range, or -1 = whole file */
  /* multi-turn state (unused by single-turn Edit) */
  struct ai_mlist ml;         /* the running conversation                        */
  const char *label;          /* spinner label, e.g. "[agent] working"          */
@@ -1578,6 +1662,18 @@ static void ai_edit_done(ai_async_op *op)
  }
  clean = ai_strip_fences(op->acc);
  if (!clean) { ai_op_free(op); return; }
+
+ /* A selection edit returns only the modified region; splice it back into the
+    current file at the selected lines so the diff below shows just that hunk and
+    the proven whole-file apply path is reused. */
+ if (op->sel_y0 >= 0) {
+  int y0 = op->sel_y0, y1 = op->sel_y1, last = f->b->mxlines - 1;
+  char *full;
+  if (y0 > last) y0 = last;
+  if (y1 > last) y1 = last;
+  full = ai_splice_lines(f, y0, y1, clean);
+  if (full) { free(clean); clean = full; }
+ }
 
  now = ai_current_file_text(f);
  nseg = wpe_ai_diff_segments(now ? now : "", clean, &segs);
@@ -1750,22 +1846,31 @@ static int e_ai_edit(FENSTER *f)
  static char instr[AI_PROMPT_MAX];
  char err[320], line[360];
  char *cur, *user;
- const char *sys =
+ static const char sys_file[] =
    "You are a precise code editor. Apply the user's instruction to the file "
    "below and return ONLY the complete modified file content - no markdown "
    "fences, no commentary, no explanation.";
+ static const char sys_sel[] =
+   "You are a precise code editor. The user selected a region of a file. Apply "
+   "the instruction to the SELECTED REGION below and return ONLY the modified "
+   "region, keeping its indentation - no markdown fences, no commentary, and do "
+   "NOT include the rest of the file.";
+ const char *sys;
  wpe_ai_msg msgs[2];
  wpe_ai_req req;
  ECNT *cn = f->ed;
  int save_id = -1, wi;
+ int sy0 = -1, sy1 = -1, have_sel;
  ai_async_op *op;
 
  if (wpe_ai_busy()) {
   ai_pane(f, "[AI] a task is already running - press Alt-G to cancel it first", 1);
   return 0;
  }
+ have_sel = ai_block_range(f, &sy0, &sy1);
  instr[0] = '\0';
- if (!e_ai_prompt1(instr, "AI edit instruction", f) || !instr[0])
+ if (!e_ai_prompt1(instr, have_sel ? "AI edit instruction (selection)"
+                                   : "AI edit instruction", f) || !instr[0])
   return 0;
  /* Remember the edited window so focus returns to it after the pane work. */
  for (wi = 1; wi <= cn->mxedt; wi++)
@@ -1778,12 +1883,14 @@ static int e_ai_edit(FENSTER *f)
   return 0;
  }
 
- cur = ai_current_file_text(f);
+ if (have_sel) { cur = ai_lines_text(f, sy0, sy1); sys = sys_sel; }
+ else          { cur = ai_current_file_text(f);    sys = sys_file; }
  { char diag[1700]; ai_diag_block(diag, sizeof diag);
+   const char *hdr = have_sel ? "--- selected region ---" : "--- file ---";
    size_t n = strlen(instr) + (cur ? strlen(cur) : 0) + strlen(diag) + 64;
    user = malloc(n);
-   if (user) snprintf(user, n, "%s%s\n\n--- file ---\n%s",
-                      instr, diag, cur ? cur : ""); }
+   if (user) snprintf(user, n, "%s%s\n\n%s\n%s",
+                      instr, diag, hdr, cur ? cur : ""); }
  msgs[0].role = "system"; msgs[0].content = sys;
  msgs[1].role = "user";   msgs[1].content = user ? user : instr;
  req.model = NULL; req.msgs = msgs; req.nmsgs = 2;
@@ -1804,9 +1911,12 @@ static int e_ai_edit(FENSTER *f)
  /* Register the stream on the shared fd-loop and RETURN -- the editor stays
     interactive; ai_edit_fd_cb finishes (diff + apply) when the reply lands. */
  op->f = f; op->cn = cn; op->save_id = save_id;
+ op->sel_y0 = have_sel ? sy0 : -1;
+ op->sel_y1 = have_sel ? sy1 : -1;
  op->fd = wpe_ai_stream_fd(op->st);
  op->start = time(NULL);
- op->spin = ai_spin_begin(f, "[AI edit] working");
+ op->spin = ai_spin_begin(f, have_sel ? "[AI edit] working (selection)"
+                                      : "[AI edit] working");
  g_ai_op = op;
  g_ai_bg_win = f;
  ai_hb_acquire(ai_op_tick);
@@ -1815,7 +1925,7 @@ static int e_ai_edit(FENSTER *f)
     the pane spins in the background (its paints leave the caret here). */
  if (save_id >= 0)
   e_switch_window(save_id, cn->f[cn->mxedt]);
- wpe_ai_trace("edit stream fd=%d (async)", op->fd);
+ wpe_ai_trace("edit stream fd=%d (async) sel=%d..%d", op->fd, op->sel_y0, op->sel_y1);
  return 0;
 }
 
