@@ -36,6 +36,13 @@ const char *wpe_ai_policy_name(int policy);
  * permission must be pre-granted according to the policy. */
 enum { WPE_AI_CLI_TEXTONLY = 0, WPE_AI_CLI_EDITS = 1, WPE_AI_CLI_AUTO = 2 };
 extern int   e_ai_cli_mode;
+
+/* Which engine runs the Agent (Alt-G g): the built-in tool loop (works with any
+   completion backend), or a hosted external agent CLI -- Claude Code -- that runs
+   its own tools (only usable in a --enable-ai-agent-host build).  Persisted as
+   AIAgentEngine; overridable with XWPE_AI_AGENT_ENGINE=builtin|claude-code. */
+enum { WPE_AI_ENGINE_BUILTIN = 0, WPE_AI_ENGINE_CLAUDE_HOST = 1 };
+extern int   e_ai_agent_engine;
 extern char *e_ai_resume_session;      /* passed as --resume <id>, or NULL     */
 extern char *e_ai_last_session_id;     /* session_id from the last CLI reply   */
 

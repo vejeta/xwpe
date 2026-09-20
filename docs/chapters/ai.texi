@@ -91,8 +91,6 @@ Multi-file edit -- change several files together.
 Agent -- an autonomous loop.
 @item Alt-G b
 Fix the Build (an agent that builds until it passes).
-@item Alt-G h
-Host Claude Code (only in an @option{--enable-ai-agent-host} build).
 @item Alt-G m
 pick the Model.
 @item Alt-G y
@@ -243,23 +241,27 @@ a normal agent run.
 @cindex AI, agent host
 @cindex Claude Code
 Everything above is @emph{agnostic}: xwpe drives the model itself.  A further,
-separately compiled option (@option{--enable-ai-agent-host}, off by default) does
-the opposite -- it runs a real coding-agent CLI, @strong{Claude Code} first, with
-@emph{its own} tools, and makes xwpe the front-end.
+separately compiled option (@option{--enable-ai-agent-host}, off by default) lets
+the @strong{Agent} run on a different @dfn{engine}: instead of the editor's own
+tool loop, it hosts a real coding-agent CLI -- @strong{Claude Code} first -- that
+runs @emph{its own} tools, with xwpe as the front-end.
 
-@kbd{Alt-G h} starts a persistent @command{claude} session (a bidirectional
+Choose the engine in @samp{Options}, @samp{AI} (the @samp{Agent engine} radio:
+@samp{Built-in} or @samp{Claude Code}).  With @samp{Claude Code} selected,
+@kbd{Alt-G g} starts a persistent @command{claude} session (a bidirectional
 stream-json subprocess on the fd-loop).  Its answer text and tool activity stream
 into the pane; when one of its tools writes a file, xwpe reloads that file into
 its open window as one undo step, so @kbd{Ctrl-U} reverts the agent's edit.  The
-permission dial maps to the CLI's own permission mode (Auto runs unattended,
-Edits auto-accepts writes, Ask denies tool use until you raise the dial).  The
-session stays live across turns: @kbd{Alt-G h} feeds the next turn, and an empty
-prompt (or @key{Esc}) ends it.
+permission dial maps to the CLI's own permission mode (Auto runs unattended;
+Edits and Ask auto-accept edits, and xwpe takes a checkpoint at the start of the
+session so the whole run is reviewable/revertible when it ends).  The session
+stays live across turns: @kbd{Alt-G g} feeds the next turn, and an empty prompt
+(or @key{Esc}) ends it and offers the changeset review.
 
-This is built as a generic host -- an agent CLI that speaks a line-delimited JSON
+It is built as a generic host -- an agent CLI that speaks a line-delimited JSON
 event stream on stdout and takes turns on stdin -- so other agent CLIs can be
 added later as small adapters.  A build without @option{--enable-ai-agent-host}
-contains none of it.
+contains none of it, and the @samp{Agent engine} radio does not appear.
 
 @section Reviewing changes like compile errors
 

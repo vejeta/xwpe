@@ -2129,6 +2129,9 @@ int e_ai_options(FENSTER *f)
   /* Centre the dialog on the whole screen (like the other menu dialogs), not
      wherever the active editor window happens to sit. */
   { int w = 55, h = 20;
+#ifdef WPE_AI_AGENT_HOST
+    h = 24;                              /* room for the Agent-engine section */
+#endif
     o->xa = (MAXSCOL - w) / 2; if (o->xa < 1) o->xa = 1;
     o->xe = o->xa + w;
     o->ya = (MAXSLNS - h) / 2; if (o->ya < 1) o->ya = 1;
@@ -2140,21 +2143,33 @@ int e_ai_options(FENSTER *f)
   /* Every radio field needs a UNIQUE, non-zero `sw`: e_opt_kst navigates
      spatially but returns the target field's sw to focus it, and sw==0 means
      "no field", so a zero sw makes a widget unreachable by Tab/arrows/mouse. */
-  e_add_txtstr(3, 4, "Backend:", o);
+  e_add_txtstr(3, 4, "Backend (for Ask / Edit / Multi-file):", o);
   for (i = 0; i < 4; i++)
    e_add_pswstr(0, 4, 5 + i, i, 4000 + i, (i == 3) ? bcur : 0, (char *)bklab[i], o);
 
   e_add_txtstr(28, 4, "Model:", o);
   e_add_bttstr(28, 5, 0, AltM, mlabel, NULL, o);   /* opens the scrollable picker */
 
-  e_add_txtstr(3, 11, "Permission:", o);
+  e_add_txtstr(3, 11, "Permission (agent writes / commands):", o);
   for (i = 0; i < 3; i++)
    e_add_pswstr(1, 4, 12 + i, i, 4200 + i, (i == 2) ? e_ai_policy : 0, (char *)pol[i], o);
 
+#ifdef WPE_AI_AGENT_HOST
+  /* Which engine the Agent (Alt-G g) uses -- spell out what each is for. */
+  e_add_txtstr(3, 16, "Agent engine (what Alt-G g runs):", o);
+  e_add_pswstr(2, 4, 17, 0, 4300, 0,
+               "Built-in - the editor's own tool loop", o);
+  e_add_pswstr(2, 4, 18, 1, 4301, e_ai_agent_engine,
+               "Claude Code - the claude CLI, its own tools", o);
+  e_add_txtstr(3, 20, "Tab/arrows move; Space selects; Model picks the model.", o);
+  e_add_bttstr(12, 22, 1, AltO, " Ok ", NULL, o);
+  e_add_bttstr(31, 22, -1, WPE_ESC, "Cancel", NULL, o);
+#else
   e_add_txtstr(3, 16, "Tab/arrows move between fields; Space selects.", o);
   e_add_txtstr(3, 17, "Press Model to choose from the backend's list.", o);
   e_add_bttstr(12, 19, 1, AltO, " Ok ", NULL, o);
   e_add_bttstr(31, 19, -1, WPE_ESC, "Cancel", NULL, o);
+#endif
 
   edopt_before = f->ed->edopt;
   ret = e_opt_kst(o);
@@ -2165,6 +2180,10 @@ int e_ai_options(FENSTER *f)
   f->ed->edopt = (f->ed->edopt & ~ED_AI_ENABLE) | (o->sstr[0]->num ? ED_AI_ENABLE : 0);
   e_ai_policy  = (o->pstr[1]->num >= 0 && o->pstr[1]->num < 3) ? o->pstr[1]->num : 0;
   new_be = bk[(o->pstr[0]->num >= 0 && o->pstr[0]->num < 4) ? o->pstr[0]->num : 0];
+#ifdef WPE_AI_AGENT_HOST
+  e_ai_agent_engine = (o->pstr[2]->num == 1) ? WPE_AI_ENGINE_CLAUDE_HOST
+                                             : WPE_AI_ENGINE_BUILTIN;
+#endif
   if (f->ed->edopt != edopt_before) {
    e_switch_blst(f->ed); e_ai_refresh_bars(f->ed); e_repaint_desk(f);
   }
@@ -2199,6 +2218,9 @@ int e_ai_options(FENSTER *f)
 }
 
 int e_ai_agent(FENSTER *f);         /* defined in the Agent section below */
+#ifdef WPE_AI_AGENT_HOST
+int e_ai_host(FENSTER *f);          /* the Claude Code agent engine, below */
+#endif
 static int e_ai_plan(FENSTER *f);   /* defined in the PLAN section below  */
 static void e_ai_cycle_policy(FENSTER *f);  /* defined below e_ai_ui_key    */
 
@@ -2469,6 +2491,12 @@ static int ai_agent_launch(FENSTER *f, const char *goal, const char *extra)
 int e_ai_agent(FENSTER *f)
 {
  static char goal[AI_PROMPT_MAX];
+#ifdef WPE_AI_AGENT_HOST
+ /* When the Agent engine is set to Claude Code (Options > AI), Alt-G g runs the
+    hosted CLI with its own tools instead of the built-in tool loop. */
+ if (e_ai_agent_engine == WPE_AI_ENGINE_CLAUDE_HOST)
+  return e_ai_host(f);
+#endif
  if (wpe_ai_busy()) {
   ai_pane(f, "[AI] a task is already running - press Alt-G to cancel it first", 1);
   return 0;
@@ -2830,7 +2858,7 @@ static void host_ev_text(const char *text, void *ud)
 static void host_ev_tool(const char *tool, const char *arg, void *ud)
 {
  char l[720];
- snprintf(l, sizeof l, "[host] %s %.640s", tool, arg ? arg : "");
+ snprintf(l, sizeof l, "[agent] %s %.640s", tool, arg ? arg : "");
  ai_pane((FENSTER *)ud, l, 0);
  wpe_ai_trace("host tool=%s arg=%s", tool, arg ? arg : "");
 }
@@ -2840,7 +2868,7 @@ static void host_ev_file(const char *path, void *ud)
  FENSTER *f = ud;
  char l[1200];
  wpe_ai_reload_open_window(f, path);         /* refresh the open buffer, one undo */
- snprintf(l, sizeof l, "[host] edited %.1100s", path ? path : "");
+ snprintf(l, sizeof l, "[agent] edited %.1100s", path ? path : "");
  ai_pane(f, l, 0);
  wpe_ai_trace("host edit=%s", path ? path : "");
 }
@@ -2852,10 +2880,12 @@ static void host_ev_result(const char *summary, int is_error, void *ud)
 {
  FENSTER *f = ud;
  char l[720];
- if (summary && summary[0] && strcmp(summary, "success"))
-  snprintf(l, sizeof l, "[host] %s%.640s", is_error ? "error: " : "", summary);
+ /* The assistant text already streamed via on_text; do NOT re-print the result
+    field on success (it repeats the whole answer).  Surface only errors. */
+ if (is_error)
+  snprintf(l, sizeof l, "[agent] error: %.640s", (summary && summary[0]) ? summary : "run failed");
  else
-  snprintf(l, sizeof l, "[host] turn complete - Alt-G h continues, Esc there ends");
+  snprintf(l, sizeof l, "[agent] turn complete - Alt-G g continues, Esc there ends");
  ai_pane(f, l, 0);
  g_host_turn = 0;
  wpe_ai_trace("host result is_error=%d", is_error);
@@ -2873,7 +2903,7 @@ static void host_fd_cb(int fd, void *data)
  if (!g_host) return;
  if (!ai_window_alive(g_host_cn, g_host_win)) { e_ai_host_end(NULL); return; }
  wpe_host_pump(g_host, &g_host_ev, g_host_win, &turn_done, &hup);
- if (hup) e_ai_host_end("[host] session ended");
+ if (hup) e_ai_host_end("[agent] Claude Code session ended");
 }
 
 int e_ai_host(FENSTER *f)
@@ -2890,13 +2920,19 @@ int e_ai_host(FENSTER *f)
   return 0;
  }
  if (g_host && g_host_turn) {
-  ai_pane(f, "[host] still working on the previous turn", 1);
+  ai_pane(f, "[agent] still working on the previous turn", 1);
   return 0;
  }
  task[0] = '\0';
  if (!e_ai_prompt1(task, g_host ? "Claude Code: next (Esc ends)" : "Claude Code: task", f)
      || !task[0]) {
-  if (g_host) e_ai_host_end("[host] session ended");   /* empty/Esc ends a live one */
+  if (g_host) {                          /* empty/Esc ends a live session */
+   /* Safe to go modal here (user context, not the fd callback): let the user
+      review/revert what the agent changed against the start-of-session
+      checkpoint, then tear down. */
+   if (wpe_ai_checkpoint_active()) wpe_ai_changeset_review(f);
+   e_ai_host_end("[agent] Claude Code session ended");
+  }
   return 0;
  }
  if (!g_host) {
@@ -2904,23 +2940,28 @@ int e_ai_host(FENSTER *f)
   g_host = wpe_host_start(e_ai_model, "", e_ai_policy, err, sizeof err);
   if (!g_host) {
    char l[360];
-   snprintf(l, sizeof l, "[host] could not start claude: %.320s", err[0] ? err : "?");
+   snprintf(l, sizeof l, "[agent] could not start claude: %.320s", err[0] ? err : "?");
    ai_pane(f, l, 1);
    return 0;
   }
   g_host_win = f; g_host_cn = f->ed;
   g_host_fd = wpe_host_fd(g_host);
   wpe_fd_add(g_host_fd, POLLIN, host_fd_cb, NULL);
-  ai_pane(f, "[host] Claude Code session started", 1);
+  /* The agent edits files on disk with its own tools; take a checkpoint so the
+     whole session is reviewable/revertible when it ends (Alt-G g, then Esc). */
+  { char **scope; int nsc = wpe_ai_scope_files(f, e_project_is_open(), 1, &scope);
+    wpe_ai_checkpoint_create(f, scope, nsc);
+    wpe_ai_free_list(scope, nsc); }
+  ai_pane(f, "[agent] engine: Claude Code - session started (Esc at the prompt ends it)", 1);
   wpe_ai_trace("host start policy=%s", wpe_ai_policy_name(e_ai_policy));
  }
- { char l[1100]; snprintf(l, sizeof l, "[host] you: %.1000s", task); ai_pane(f, l, 0); }
+ { char l[1100]; snprintf(l, sizeof l, "[agent] you: %.1000s", task); ai_pane(f, l, 0); }
  if (wpe_host_send(g_host, task) != 0) {
-  e_ai_host_end("[host] send failed - session ended");
+  e_ai_host_end("[agent] send failed - session ended");
   return 0;
  }
  g_host_turn = 1;
- ai_pane(f, "[host] working...", 0);
+ ai_pane(f, "[agent] working...", 0);
  wpe_ai_trace("host send");
  return 0;
 }
@@ -2964,15 +3005,12 @@ static int e_ai_menu_disable(FENSTER *f)
  * keyboard shortcut lines up like the LSP menu).  Returns the row count. */
 static int e_ai_menu_items(OPTK *it)
 {
- static char label[10][AI_MENU_TEXTW + 4];
+ static char label[9][AI_MENU_TEXTW + 4];
  static const struct { const char *name; char key; int (*fkt)(FENSTER *); } a[] = {
   { "Ask (chat)",        'A', e_ai_chat            },
   { "Edit current file", 'E', e_ai_edit            },
   { "Multi-file edit",   'F', e_ai_plan            },
   { "Agent (tools)",     'G', e_ai_agent           },
-#ifdef WPE_AI_AGENT_HOST
-  { "Claude Code (host)",'H', e_ai_host            },
-#endif
   { "Fix the build",     'B', e_ai_fix_build       },
   { "Pick model",        'M', e_ai_pick_model      },
   { "Policy dial",       'Y', e_ai_menu_policy     },
@@ -2998,7 +3036,7 @@ static int e_ai_menu_items(OPTK *it)
 
 int e_ai_menu(FENSTER *f)
 {
- OPTK items[10];
+ OPTK items[9];
  int n, xa, xe, ya, ye, w;
 
  if (!wpe_ai_enabled())

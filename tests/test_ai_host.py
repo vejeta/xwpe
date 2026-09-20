@@ -24,7 +24,7 @@ def _host_build():
     try:
         out = subprocess.run(["strings", os.path.abspath(WPE_BIN)],
                              stdout=subprocess.PIPE, timeout=30).stdout
-        return b"Claude Code (host)" in out
+        return b"engine: Claude Code" in out
     except Exception:
         return False
 
@@ -56,12 +56,13 @@ def test_host_streams_and_reloads_edited_buffer(tmp_path):
     mock.write_text(MOCK)
     trace = tmp_path / "h.trace"
     env = {"XWPE_AI_ENABLE": "1",
+           "XWPE_AI_AGENT_ENGINE": "claude-code",     # Agent runs the hosted CLI
            "XWPE_AI_HOST_CMD": "python3 %s" % mock,
            "XWPE_AI_TRACE": str(trace)}
     with WpeSession(str(tmp_path), "int main(void){return 0;}\n",
                     env_extra=env, filename="t.c") as s:
         s._drain(0.5)
-        s.key(ALT.AI); s.key("h"); s._drain(0.5)      # Alt-G h
+        s.key(ALT.AI); s.key("g"); s._drain(0.5)      # Alt-G g -> host engine
         s.key("please edit t.c"); s.key("\r", delay=1.0)
         end = time.time() + 12
         while time.time() < end:
@@ -79,16 +80,57 @@ def test_host_streams_and_reloads_edited_buffer(tmp_path):
     assert "host tool=Write" in txt, "the tool_use was not shown:\n" + txt
 
 
+MOCK_THINK = textwrap.dedent('''\
+    import sys, json
+    def emit(o):
+        sys.stdout.write(json.dumps(o) + "\\n"); sys.stdout.flush()
+    while True:
+        line = sys.stdin.readline()
+        if not line:
+            break
+        for _ in range(6):                       # noisy thinking-token status events
+            emit({"type": "system", "subtype": "thinking_tokens", "tokens": 42})
+        emit({"type": "assistant", "message": {"content": [
+            {"type": "text", "text": "UNIQUEANSWER from the agent"}]}})
+        # result echoes the same text -- must NOT be printed a second time
+        emit({"type": "result", "subtype": "success", "is_error": False,
+              "result": "UNIQUEANSWER from the agent"})
+''')
+
+
+def test_host_suppresses_thinking_and_does_not_double_answer(tmp_path):
+    mock = tmp_path / "mock_think.py"
+    mock.write_text(MOCK_THINK)
+    trace = tmp_path / "h.trace"
+    env = {"XWPE_AI_ENABLE": "1", "XWPE_AI_AGENT_ENGINE": "claude-code",
+           "XWPE_AI_HOST_CMD": "python3 %s" % mock, "XWPE_AI_TRACE": str(trace)}
+    with WpeSession(str(tmp_path), "int main(void){return 0;}\n",
+                    env_extra=env, filename="t.c") as s:
+        s._drain(0.5)
+        s.key(ALT.AI); s.key("g"); s._drain(0.5)
+        s.key("hello"); s.key("\r", delay=1.0)
+        end = time.time() + 12
+        while time.time() < end:
+            s._drain(0.6)
+            if "host result" in (trace.read_text() if trace.exists() else ""):
+                break
+        disp = "\n".join(s.display())
+    assert "thinking_tokens" not in disp, "thinking status events spammed the pane:\n" + disp
+    assert disp.count("UNIQUEANSWER") == 1, \
+        "the answer was printed %d times (expected 1):\n%s" % (disp.count("UNIQUEANSWER"), disp)
+
+
 def test_host_second_turn_continues_same_session(tmp_path):
     mock = tmp_path / "mock_host.py"
     mock.write_text(MOCK)
     trace = tmp_path / "h.trace"
     env = {"XWPE_AI_ENABLE": "1",
+           "XWPE_AI_AGENT_ENGINE": "claude-code",
            "XWPE_AI_HOST_CMD": "python3 %s" % mock,
            "XWPE_AI_TRACE": str(trace)}
 
     def _turn(s, text):
-        s.key(ALT.AI); s.key("h"); s._drain(0.5)
+        s.key(ALT.AI); s.key("g"); s._drain(0.5)
         s.key(text); s.key("\r", delay=1.0)
         end = time.time() + 12
         while time.time() < end:

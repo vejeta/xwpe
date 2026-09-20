@@ -37,6 +37,7 @@ struct wpe_host {
     turn boundary, once the writes are surely on disk. */
  char            edited[HOST_MAX_EDITS][HOST_PATH_MAX];
  int             nedited;
+ int             text_seen;             /* assistant text streamed this turn */
 };
 
 /* ------------------------------------------------------------------ helpers */
@@ -131,15 +132,17 @@ wpe_host *wpe_host_start(const char *model, const char *resume, int policy,
   argv[a++] = "--verbose";
   if (model && *model && strcmp(model, "default")) { argv[a++] = "--model"; argv[a++] = (char *)model; }
   if (resume && *resume) { argv[a++] = "--resume"; argv[a++] = (char *)resume; }
-  /* Permission dial -> the CLI's own permission mode.  ASK denies tool use for
-     now (no per-tool prompt yet); Edits/Auto let the agent act. */
+  /* Permission dial -> the CLI's own permission mode.  Auto runs unattended;
+     Edits and (for now) Ask both auto-accept edits -- the CLI cannot show a
+     per-tool prompt in -p mode yet, so mapping Ask to "manual" would deny every
+     tool and the agent could do nothing.  The editor takes a checkpoint before
+     the session and offers a reviewable/revertible changeset when it ends, so
+     Ask is still safe.  (True per-tool prompts are the --permission-prompts host
+     bridge, a later step.) */
   if (policy == WPE_AI_POLICY_AUTO) {
    argv[a++] = "--dangerously-skip-permissions";
-  } else if (policy == WPE_AI_POLICY_EDITS) {
-   argv[a++] = "--permission-mode"; argv[a++] = "acceptEdits";
   } else {
-   argv[a++] = "--permission-mode"; argv[a++] = "manual";
-   argv[a++] = "--permission-prompts"; argv[a++] = "none";
+   argv[a++] = "--permission-mode"; argv[a++] = "acceptEdits";
   }
   argv[a] = NULL;
   execvp("claude", argv);
@@ -178,6 +181,7 @@ int wpe_host_send(wpe_host *h, const char *user_text)
  int rc = 0;
 
  if (!h || h->in_fd < 0) return -1;
+ h->text_seen = 0;                      /* a fresh turn begins */
  o = json_object_new_object();
  m = json_object_new_object();
  json_object_object_add(m, "role", json_object_new_string("user"));
@@ -218,8 +222,10 @@ static void host_handle_assistant(wpe_host *h, struct json_object *msg,
   if (!blk || !json_object_object_get_ex(blk, "type", &t)) continue;
   bt = json_object_get_string(t);
   if (!strcmp(bt, "text")) {
-   if (json_object_object_get_ex(blk, "text", &x) && ev->on_text)
-    ev->on_text(json_object_get_string(x), ud);
+   if (json_object_object_get_ex(blk, "text", &x)) {
+    h->text_seen = 1;
+    if (ev->on_text) ev->on_text(json_object_get_string(x), ud);
+   }
   } else if (!strcmp(bt, "tool_use")) {
    struct json_object *nm, *in = NULL;
    const char *tool = "tool";
@@ -258,10 +264,15 @@ static void host_handle_line(wpe_host *h, const char *line,
   struct json_object *m;
   if (json_object_object_get_ex(o, "message", &m)) host_handle_assistant(h, m, ev, ud);
  } else if (!strcmp(type, "system")) {
+  /* system events are status/init/thinking-token counters -- Opus 5 emits many
+     during a thinking phase.  Do NOT print one pane line each (it spammed the
+     window); surface only an error subtype. */
   struct json_object *sub;
   const char *s = json_object_object_get_ex(o, "subtype", &sub)
-                    ? json_object_get_string(sub) : "system";
-  if (ev->on_notice) { char l[160]; snprintf(l, sizeof l, "[host] %s", s); ev->on_notice(l, ud); }
+                    ? json_object_get_string(sub) : "";
+  if (ev->on_notice && s[0] && strstr(s, "error")) {
+   char l[160]; snprintf(l, sizeof l, "[agent] %s", s); ev->on_notice(l, ud);
+  }
  } else if (!strcmp(type, "result")) {
   const char *summary = "";
   int is_err = 0;
@@ -272,6 +283,10 @@ static void host_handle_line(wpe_host *h, const char *line,
   { int i; for (i = 0; i < h->nedited; i++)                 /* writes are on disk now */
      if (ev->on_file_edit) ev->on_file_edit(h->edited[i], ud); }
   h->nedited = 0;
+  /* Normally the answer streamed via on_text; only if the turn produced NO text
+     (e.g. a pure result) do we surface the result string as the answer, so the
+     answer neither doubles nor goes missing. */
+  if (!is_err && !h->text_seen && summary[0] && ev->on_text) ev->on_text(summary, ud);
   if (ev->on_result) ev->on_result(summary, is_err, ud);
   if (turn_done) *turn_done = 1;
  }

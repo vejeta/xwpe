@@ -86,6 +86,7 @@ int wpe_ai_claude_cli_available(void) { return ai_which("claude"); }
 
 /* ----- permission dial + claudecli control globals ----------------------- */
 int   e_ai_policy          = WPE_AI_POLICY_ASK;
+int   e_ai_agent_engine    = WPE_AI_ENGINE_BUILTIN;
 int   e_ai_cli_mode        = WPE_AI_CLI_TEXTONLY;
 char *e_ai_resume_session  = NULL;
 char *e_ai_last_session_id = NULL;
@@ -155,6 +156,9 @@ void wpe_ai_config_init(void)
   e_ai_backend = wpe_ai_backend_from_name(e);
  if ((e = getenv("XWPE_AI_POLICY")))
   e_ai_policy = wpe_ai_policy_from_name(e);
+ if ((e = getenv("XWPE_AI_AGENT_ENGINE")))
+  e_ai_agent_engine = (!strcmp(e, "claude-code") || !strcmp(e, "host"))
+                        ? WPE_AI_ENGINE_CLAUDE_HOST : WPE_AI_ENGINE_BUILTIN;
 
  if ((e = getenv("XWPE_AI_ENDPOINT"))) {
   free(e_ai_endpoint);

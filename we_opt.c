@@ -986,6 +986,11 @@ int WpeReadProgramming(ECNT *cn, char *section, char *option, char *value)
   e_ai_model = WpeStrdup(value);
  } else if (WpeStrccmp("AIPolicy", option) == 0)
   e_ai_policy = wpe_ai_policy_from_name(value);
+#ifdef WPE_AI_AGENT_HOST
+ else if (WpeStrccmp("AIAgentEngine", option) == 0)
+  e_ai_agent_engine = (WpeStrccmp(value, "claude-code") == 0)
+                        ? WPE_AI_ENGINE_CLAUDE_HOST : WPE_AI_ENGINE_BUILTIN;
+#endif
 #endif
  return 0;
 }
@@ -1003,6 +1008,10 @@ int WpeWriteProgramming(ECNT *cn, char *section, FILE *opt_file)
  fprintf(opt_file, "AIEndpoint : %s\n", e_ai_endpoint ? e_ai_endpoint : "");
  fprintf(opt_file, "AIModel : %s\n", e_ai_model ? e_ai_model : "");
  fprintf(opt_file, "AIPolicy : %s\n", wpe_ai_policy_name(e_ai_policy));
+#ifdef WPE_AI_AGENT_HOST
+ fprintf(opt_file, "AIAgentEngine : %s\n",
+         e_ai_agent_engine == WPE_AI_ENGINE_CLAUDE_HOST ? "claude-code" : "builtin");
+#endif
 #endif
  return 0;
 }
