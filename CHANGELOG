@@ -231,56 +231,31 @@ Bugs fixed in 1.6.x:
 
 Changes
 
-1.7.0 (AI assistant: Chat / Edit / Agent -- experimental, opt-in)
+1.7.0 (AI assistant -- experimental, opt-in)
 
 * New optional AI assistant behind the Alt-G prefix, off by default and absent
-  from a stock build (configure --enable-ai; add --enable-ai-tls for HTTPS
-  backends).  The classic editor is byte-for-byte unchanged when AI is off.
-  See docs/AI.md.
-    - Ask (Alt-G a): a chat pane docked at the bottom that can read the
-      workspace to answer and keeps context across the conversation.  A read-
-      only "TOOL" investigation is shown as a dim status, not echoed as a reply.
-    - Edit (Alt-G e): rewrite the current file, or -- when a block is marked --
-      just the selected region, from an instruction.  Shown as a colored diff
-      over the affected lines (red removed / green added, with context and new-
-      file line numbers).  Each change is an independent hunk with its own
-      y/n/a/q, so some can be accepted and others rejected; the accepted hunks
-      apply as one edit that a single Ctrl-U undoes.
-    - Agent (Alt-G g): a tool-using agent (list/read/grep/write_file/run_command)
-      docked beside Messages.  Mutating steps are gated by a permission dial
-      (ask/edits/auto); a write is previewed as a diff; unattended runs take a
-      checkpoint and offer a reviewable changeset; when it finishes you can type
-      a follow-up in the pane; a question-only run shows the model's answer.
-      Multi-file edit (Alt-G f) proposes a coordinated change across several
-      files, approved together; the model list (Alt-G m) is a scrollable picker.
-    - Fix the build (Alt-G b): run the build (make when a makefile is present,
-      else a syntax-only compile of the current file) and, on failure, loop the
-      agent -- read the errors, edit the sources, re-build -- until it passes.
-    - When a language server is running, the diagnostics it reports for the
-      current file are folded into the prompt for Ask, Edit and the agent, so
-      "fix this" works without pasting the error.
-    - All pane output (agent and multi-file answers, not just the streamed chat)
-      word-wraps to one shared measure, capped at a readable ~80 columns even in
-      a wide pane, so a long answer reads down the window instead of running off
-      the right edge.
-    - The Multi-file edit approval is a modal confirmation popup (the same boxed
-      overlay as the Edit review), colored and focus-grabbing, rather than a
-      prompt in the pane: Enter/A applies all, F reviews file-by-file, Q/Esc
-      cancels.  While any AI menu, dialog or review box is open, the streaming
-      spinner no longer repaints the pane under it (it was drawing over an open
-      menu).
+  from a stock build.  The classic editor is byte-for-byte unchanged when AI is
+  off.  Build flags: --enable-ai (local + Claude-CLI backends), --enable-ai-tls
+  (HTTPS backends), --enable-ai-agent-host (host an external agent CLI).  Full
+  details in docs/AI.md.
+    - Modes (Alt-G then a letter): Ask a question (chat), Edit the current file
+      or a marked block, Multi-file edit across several files, run an Agent with
+      tools, or Fix the build in a loop.  Edits are shown as a colored diff,
+      accepted per hunk, and undone with a single Ctrl-U; nothing is written to
+      disk until you save.
+    - The agent's file writes and commands are gated by a permission dial
+      (ask/edits/auto); unattended runs take a checkpoint and present a
+      reviewable changeset (navigable like compile errors: keep/revert/commit).
+    - Diagnostics the language server reports for the file are folded into the
+      prompt, so "fix this" needs no pasting.
     - Backends: Ollama (local, default), an OpenAI-compatible server, the Claude
-      API (needs --enable-ai-tls), and the Claude CLI (uses its own login).  The
-      HTTPS client verifies the server certificate (chain + hostname).
-    - External agent host (Alt-G h; a further opt-in, --enable-ai-agent-host,
-      default off).  Runs a real agent CLI -- Claude Code first -- as a persistent
-      stream-json session with its OWN tools, and xwpe is the front-end: its
-      assistant text and tool activity stream into the pane, a file it edits is
-      reloaded into its open window (one Ctrl-U reverts), and its permissions map
-      to the dial.  Built as a generic host (a per-CLI adapter), so it is agnostic
-      at the host layer; a build without the flag contains none of it.
-    - Tested across ncurses (pyte), X11 and native Wayland, plus a live Claude
-      CLI path.
+      API, and the Claude CLI (its own login); HTTPS backends verify the server
+      certificate.
+    - External agent host (Alt-G h, --enable-ai-agent-host): run a real agent CLI
+      -- Claude Code first -- with its own tools as a persistent session, with
+      xwpe as the front-end (its edits reload into your buffers, one Ctrl-U to
+      revert).  A generic host layer; a build without the flag contains none of it.
+    - Tested across ncurses, X11 and native Wayland, plus a live Claude CLI path.
 * Fix a project Make (F9) that could abort with glibc "free(): invalid pointer"
   when a project variable (e.g. CMP) was missing -- e_c_project freed an
   uninitialised argument slot; it is now zero-initialised.
