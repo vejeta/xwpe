@@ -250,19 +250,21 @@ Changes
       docked beside Messages.  Mutating steps are gated by a permission dial
       (ask/edits/auto); a write is previewed as a diff; unattended runs take a
       checkpoint and offer a reviewable changeset; when it finishes you can type
-      a follow-up in the pane.  Plan (Alt-G p) applies multi-file edits; the
-      model list (Alt-G m) is a scrollable picker.
+      a follow-up in the pane; a question-only run shows the model's answer.
+      Multi-file edit (Alt-G f) proposes a coordinated change across several
+      files, approved together; the model list (Alt-G m) is a scrollable picker.
     - Fix the build (Alt-G b): run the build (make when a makefile is present,
       else a syntax-only compile of the current file) and, on failure, loop the
       agent -- read the errors, edit the sources, re-build -- until it passes.
     - When a language server is running, the diagnostics it reports for the
       current file are folded into the prompt for Ask, Edit and the agent, so
       "fix this" works without pasting the error.
-    - The Plan approval is a modal confirmation popup (the same boxed overlay as
-      the Edit review), colored and focus-grabbing, rather than a prompt in the
-      pane: Enter/A applies all, F reviews file-by-file, Q/Esc cancels.  While any
-      AI menu, dialog or review box is open, the streaming spinner no longer
-      repaints the pane under it (it was drawing over an open menu).
+    - The Multi-file edit approval is a modal confirmation popup (the same boxed
+      overlay as the Edit review), colored and focus-grabbing, rather than a
+      prompt in the pane: Enter/A applies all, F reviews file-by-file, Q/Esc
+      cancels.  While any AI menu, dialog or review box is open, the streaming
+      spinner no longer repaints the pane under it (it was drawing over an open
+      menu).
     - Backends: Ollama (local, default), an OpenAI-compatible server, the Claude
       API (needs --enable-ai-tls), and the Claude CLI (uses its own login).  The
       HTTPS client verifies the server certificate (chain + hostname).

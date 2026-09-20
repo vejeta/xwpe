@@ -91,4 +91,4 @@ def test_ai_menu_opens_and_lists_actions(tmp_path):
         disp = "\n".join(s.display())
     txt = trace.read_text() if trace.exists() else ""
     assert "menu open" in txt, "menu did not open:\n" + txt
-    assert "Ask" in disp and "Plan" in disp, "menu actions not listed:\n" + disp
+    assert "Ask" in disp and "Multi-file" in disp, "menu actions not listed:\n" + disp

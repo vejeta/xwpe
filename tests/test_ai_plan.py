@@ -37,7 +37,7 @@ def _plan(tmp_path, keys):
     with WpeSession(str(tmp_path), "int main(void){return 0;}\n",
                     env_extra=env) as s:
         s.key(ALT.AI)
-        s.key("p")                       # Plan
+        s.key("f")                       # Multi-file edit
         s.key("fix both files")
         s.key("\r", delay=1.6)           # study (none needed) -> plan pane
         s._drain(1.0)

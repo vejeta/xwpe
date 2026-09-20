@@ -27,11 +27,12 @@ model works):
   loops the agent: read the errors, edit the sources, re-build, repeat until it
   passes. It uses the same tools and permission dial as the agent.
 
-`Alt-G p` runs a multi-file **Plan**: it studies the workspace read-only, then
-proposes a coordinated changeset across several files and shows it as a **modal
+`Alt-G f` runs a **Multi-file edit**: it studies the workspace read-only, then
+proposes a coordinated change across several files and shows it as a **modal
 approval dialog** -- **Enter/A** applies all, **F** reviews file-by-file (each in
-the diff box), **Q/Esc** cancels; nothing is written until you approve. `Alt-G m`
-opens the scrollable **model picker**.
+the diff box), **Q/Esc** cancels; nothing is written until you approve. (This is
+what some tools call a "workspace edit"; it is *not* an agent "plan mode.")
+`Alt-G m` opens the scrollable **model picker**.
 
 When a [language server](LSP.md) is running, the errors and warnings it reports
 for the current file (the ones you see underlined) are folded into the prompt for

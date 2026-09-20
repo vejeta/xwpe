@@ -11,10 +11,36 @@
 
 Where a language server (@pxref{Language servers}) @emph{understands} your code,
 the @dfn{AI assistant} lets you @emph{talk} to a large language model from
-inside the editor: ask a question, have it rewrite the open file, plan a change
-across several files, or run as an autonomous agent -- all in the bottom pane,
-next to compiler and debugger output, driven from the keyboard like everything
-else.
+inside the editor: ask a question, have it rewrite the open file (or just a
+marked block), edit several files together, or run as an autonomous agent -- all
+in the bottom pane, next to compiler and debugger output, driven from the
+keyboard like everything else.
+
+@subheading Which mode do I use?
+
+@table @asis
+@item @kbd{Alt-G a} Ask
+A read-only conversation.  Best for ``what does this do?'', ``how would I@dots{}?''
+-- it never changes a file.
+@item @kbd{Alt-G e} Edit
+Rewrite @emph{one} file (or a @emph{marked block}) from an instruction, reviewed
+as a diff.  Best for a focused change in the file you are in.
+@item @kbd{Alt-G f} Multi-file edit
+Study the workspace, then propose a coordinated change across @emph{several}
+files, approved together.  Best for a change that touches more than one file.
+(Some tools call this a ``workspace edit''; note it is @emph{not} the ``plan
+mode'' of an agent, which merely drafts steps.)
+@item @kbd{Alt-G g} Agent
+An autonomous loop that reads, greps, writes files and runs commands under a
+permission dial, step by step.  Best for an open-ended task (``add a test for
+@code{foo} and make it pass'').
+@item @kbd{Alt-G b} Fix the build
+A canned agent that builds, reads the errors, edits, and rebuilds until it
+passes.
+@end table
+
+In short: @strong{Ask} answers, @strong{Edit} changes one file, @strong{Multi-file
+edit} changes several at once, and @strong{Agent} takes actions on its own.
 
 The assistant is @strong{off unless you ask for it}, twice over.  It is compiled
 only when xwpe is configured with @option{--enable-ai}, so a normal build
@@ -57,11 +83,13 @@ straight to Ask (programming mode only, i.e.@: run as @command{wpe} or
 @item Alt-G a
 Ask -- chat.
 @item Alt-G e
-Edit the current file.
-@item Alt-G p
-Plan a multi-file change.
+Edit the current file (or a marked block).
+@item Alt-G f
+Multi-file edit -- change several files together.
 @item Alt-G g
 Agent -- an autonomous loop.
+@item Alt-G b
+Fix the Build (an agent that builds until it passes).
 @item Alt-G m
 pick the Model.
 @item Alt-G y
@@ -77,7 +105,7 @@ the policy radio, the model picker and @samp{New Session}.
 
 @cindex AI, backends
 The backend is chosen with @code{AIBackend} (or @env{XWPE_AI_BACKEND}); the same
-chat/edit/plan/agent interface works with all of them.
+chat / edit / multi-file / agent interface works with all of them.
 
 @table @asis
 @item @code{ollama} (default)
@@ -127,30 +155,47 @@ applies all the rest, @kbd{q} cancels.  Applying uses one whole-buffer undo
 step, so @kbd{Ctrl-U} reverts the whole edit.  Nothing is written to disk until
 you @emph{save}.
 
-@section Plan (multi-file)
+If a @dfn{block is marked}, Edit works on @emph{just that region}: only the
+selected lines are sent and only they are changed, so editing one function does
+not ship (or risk changing) the rest of the file.  With no selection it edits the
+whole file, as above.
 
-@cindex AI, plan
-@kbd{Alt-G p} tackles a change that spans several files.  The assistant first
-@dfn{studies} the workspace -- the files you have open, plus the members of the
-open project (@pxref{Projects}) and, if asked, the surrounding folder -- reading
-whatever it needs with read-only tools.  It then proposes a @dfn{plan}: the
-complete new content for each file it wants to change.
+@cindex AI, diagnostics
+When a language server (@pxref{Language servers}) is running, the errors and
+warnings it reports for the current file -- the ones you see underlined -- are
+folded into the prompt for Ask, Edit and the agent, so ``fix this'' works without
+pasting the message.
 
-xwpe collects the proposal without touching anything and shows the list with
-per-file line counts:
+@section Multi-file edit
+
+@cindex AI, multi-file edit
+@cindex AI, workspace edit
+@kbd{Alt-G f} tackles a change that spans several files (what some tools call a
+@dfn{workspace edit}; it is @emph{not} an agent ``plan mode'' that only drafts
+steps).  The assistant first @dfn{studies} the workspace -- the files you have
+open, plus the members of the open project (@pxref{Projects}) and, if asked, the
+surrounding folder -- reading whatever it needs with read-only tools.  It then
+proposes the complete new content for each file it wants to change.
+
+xwpe collects the proposal without touching anything and shows it in a
+@dfn{modal approval dialog} -- a boxed, colored popup listing each file with its
+per-file line counts, so the choice is an explicit confirmation and nothing paints
+under it:
 
 @example
-The AI proposes to change 3 files:
-   src/parser.c  (+12 -4)
-   src/parser.h  (+2  -0)
-   src/main.c    (+1  -1)
- a = apply all    f = review file by file    q = cancel
++------------- Apply AI plan - 3 files -------------+
+|   src/parser.c  (+12 -4)                          |
+|   src/parser.h  (+2  -0)                           |
+|   src/main.c    (+1  -1)                           |
+| Enter/A = Apply all   F = Review file-by-file   Q/Esc = Cancel |
++---------------------------------------------------+
 @end example
 
-@kbd{a} applies every file; @kbd{f} opens each and lets you accept it hunk by
-hunk.  Each changed file is @strong{opened in its own window and left open}, so
-you can read it, step between them with @kbd{Alt-1}@dots{}, and undo any one
-with @kbd{Ctrl-U}.
+@key{Enter} or @kbd{a} applies every file; @kbd{f} opens each and lets you accept
+it hunk by hunk (in the same diff box as Edit); @kbd{q} or @key{Esc} cancels.
+Each changed file is @strong{opened in its own window and left open}, so you can
+read it, step between them with @kbd{Alt-1}@dots{}, and undo any one with
+@kbd{Ctrl-U}.
 
 @section Agent and the permission dial
 
@@ -174,6 +219,21 @@ Set the dial from the @samp{AI} menu, with @kbd{Alt-G y}, or with @code{AIPolicy
 / @env{XWPE_AI_POLICY}.  @code{edits} and @code{auto} always take a checkpoint
 first.  For the @code{claudecli} backend the dial maps onto the CLI's own
 @option{--permission-mode} so the same rules apply.
+
+When an agent task is really a question rather than a change, the model answers
+directly: it finishes with a short line and its answer follows in the pane, so you
+see the reply even though this is not the chat.
+
+@section Fix the build
+
+@cindex AI, fix build
+@kbd{Alt-G b} is a canned agent for the commonest loop.  It picks the build
+command -- @command{make} when a makefile is present, otherwise a syntax-only
+compile of the current file by its language -- shows it, and if the build fails
+hands the agent a loop: run the build, read the compiler errors, edit the
+sources, build again, repeat until it passes.  It uses the same tools and
+permission dial as @kbd{Alt-G g}, so you approve edits and commands exactly as in
+a normal agent run.
 
 @section Reviewing changes like compile errors
 

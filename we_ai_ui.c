@@ -2796,7 +2796,7 @@ static int e_ai_menu_items(OPTK *it)
  static const struct { const char *name; char key; int (*fkt)(FENSTER *); } a[] = {
   { "Ask (chat)",        'A', e_ai_chat            },
   { "Edit current file", 'E', e_ai_edit            },
-  { "Plan (multi-file)", 'P', e_ai_plan            },
+  { "Multi-file edit",   'F', e_ai_plan            },
   { "Agent (tools)",     'G', e_ai_agent           },
   { "Fix the build",     'B', e_ai_fix_build       },
   { "Pick model",        'M', e_ai_pick_model      },
