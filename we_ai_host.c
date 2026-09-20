@@ -132,17 +132,19 @@ wpe_host *wpe_host_start(const char *model, const char *resume, int policy,
   argv[a++] = "--verbose";
   if (model && *model && strcmp(model, "default")) { argv[a++] = "--model"; argv[a++] = (char *)model; }
   if (resume && *resume) { argv[a++] = "--resume"; argv[a++] = (char *)resume; }
-  /* Permission dial -> the CLI's own permission mode.  Auto runs unattended;
-     Edits and (for now) Ask both auto-accept edits -- the CLI cannot show a
-     per-tool prompt in -p mode yet, so mapping Ask to "manual" would deny every
-     tool and the agent could do nothing.  The editor takes a checkpoint before
-     the session and offers a reviewable/revertible changeset when it ends, so
-     Ask is still safe.  (True per-tool prompts are the --permission-prompts host
-     bridge, a later step.) */
+  /* Permission dial -> the CLI's permission mode, with per-tool prompts routed
+     back to the editor (--permission-prompts host --permission-prompt-tool stdio:
+     the CLI emits a control_request and blocks until we answer on stdin).
+       Auto  : run unattended, no prompts.
+       Edits : auto-accept file edits, ask before commands/other gated tools.
+       Ask   : ask before every gated tool. */
   if (policy == WPE_AI_POLICY_AUTO) {
    argv[a++] = "--dangerously-skip-permissions";
   } else {
-   argv[a++] = "--permission-mode"; argv[a++] = "acceptEdits";
+   argv[a++] = "--permission-mode";
+   argv[a++] = (policy == WPE_AI_POLICY_EDITS) ? "acceptEdits" : "default";
+   argv[a++] = "--permission-prompts"; argv[a++] = "host";
+   argv[a++] = "--permission-prompt-tool"; argv[a++] = "stdio";
   }
   argv[a] = NULL;
   execvp("claude", argv);
@@ -198,6 +200,45 @@ int wpe_host_send(wpe_host *h, const char *user_text)
  if (rc == 0) { char nl = '\n'; if (write(h->in_fd, &nl, 1) < 0) rc = -1; }
  json_object_put(o);
  return rc;
+}
+
+/* Answer a can_use_tool permission request on stdin, in the CLI's control-response
+   envelope (verified against claude 2.1.278):
+   {"type":"control_response","response":{"subtype":"success","request_id":R,
+     "response":{"behavior":"allow","updatedInput":<input>}}}  (or deny + message).
+   The CLI blocks until this arrives. */
+static void host_answer_permission(wpe_host *h, const char *request_id,
+                                   int allow, struct json_object *input)
+{
+ struct json_object *o, *outer, *inner;
+ const char *line;
+ size_t len, off;
+
+ if (!h || h->in_fd < 0 || !request_id) return;
+ inner = json_object_new_object();
+ json_object_object_add(inner, "behavior", json_object_new_string(allow ? "allow" : "deny"));
+ if (allow) {
+  if (input) json_object_object_add(inner, "updatedInput", json_object_get(input));
+ } else {
+  json_object_object_add(inner, "message", json_object_new_string("Denied by the user"));
+ }
+ outer = json_object_new_object();
+ json_object_object_add(outer, "subtype", json_object_new_string("success"));
+ json_object_object_add(outer, "request_id", json_object_new_string(request_id));
+ json_object_object_add(outer, "response", inner);
+ o = json_object_new_object();
+ json_object_object_add(o, "type", json_object_new_string("control_response"));
+ json_object_object_add(o, "response", outer);
+
+ line = json_object_to_json_string_ext(o, JSON_C_TO_STRING_PLAIN);
+ len = strlen(line);
+ for (off = 0; off < len; ) {
+  ssize_t w = write(h->in_fd, line + off, len - off);
+  if (w < 0) { if (errno == EINTR) continue; break; }
+  off += (size_t)w;
+ }
+ { char nl = '\n'; ssize_t w = write(h->in_fd, &nl, 1); (void)w; }
+ json_object_put(o);
 }
 
 /* ------------------------------------------------------------------ parse */
@@ -289,6 +330,22 @@ static void host_handle_line(wpe_host *h, const char *line,
   if (!is_err && !h->text_seen && summary[0] && ev->on_text) ev->on_text(summary, ud);
   if (ev->on_result) ev->on_result(summary, is_err, ud);
   if (turn_done) *turn_done = 1;
+ } else if (!strcmp(type, "control_request")) {
+  /* The agent asks to use a gated tool; ask the user (on_permission) and answer
+     on stdin, which unblocks the CLI. */
+  struct json_object *req, *sub, *tn, *inp = NULL, *rq;
+  const char *reqid = json_object_object_get_ex(o, "request_id", &rq)
+                        ? json_object_get_string(rq) : NULL;
+  const char *subt = "", *tool = "tool";
+  if (json_object_object_get_ex(o, "request", &req)) {
+   if (json_object_object_get_ex(req, "subtype", &sub)) subt = json_object_get_string(sub);
+   if (json_object_object_get_ex(req, "tool_name", &tn)) tool = json_object_get_string(tn);
+   json_object_object_get_ex(req, "input", &inp);
+  }
+  if (!strcmp(subt, "can_use_tool")) {
+   int allow = ev->on_permission ? ev->on_permission(tool, host_tool_arg(tool, inp), ud) : 0;
+   host_answer_permission(h, reqid, allow, inp);
+  }
  }
  /* "user" (tool_result echoes) and "stream_event" (partials) are ignored in
     this phase; full assistant messages carry the text and tool calls. */

@@ -2839,6 +2839,7 @@ static ECNT     *g_host_cn;             /* container, for liveness checks */
 static FENSTER  *g_host_win;            /* pane's anchor window */
 static int       g_host_fd = -1;        /* child stdout on the fd-loop */
 static int       g_host_turn;           /* a turn is streaming */
+static int       g_host_in_prompt;      /* a permission y/n modal is up */
 
 static void e_ai_host_end(const char *why)
 {
@@ -2891,8 +2892,26 @@ static void host_ev_result(const char *summary, int is_error, void *ud)
  wpe_ai_trace("host result is_error=%d", is_error);
 }
 
+/* The agent wants to use a tool: ask y/n (reusing the agent approval dialog),
+   returning 1 allow / 0 deny.  g_host_in_prompt stops the fd pump from
+   re-entering while the modal reads a key. */
+static int host_ev_permission(const char *tool, const char *arg, void *ud)
+{
+ FENSTER *f = ud;
+ char what[720];
+ int is_run = tool && !strcmp(tool, "Bash");
+ int ok;
+ snprintf(what, sizeof what, "%s %.640s", tool ? tool : "tool", arg ? arg : "");
+ g_host_in_prompt = 1;
+ ok = ai_agent_approve(f, what, is_run);
+ g_host_in_prompt = 0;
+ wpe_ai_trace("host permission tool=%s allow=%d", tool ? tool : "?", ok);
+ return ok;
+}
+
 static const wpe_host_events g_host_ev = {
- host_ev_text, host_ev_tool, host_ev_file, host_ev_notice, host_ev_result
+ host_ev_text, host_ev_tool, host_ev_file, host_ev_notice, host_ev_result,
+ host_ev_permission
 };
 
 /* fd-loop callback: drain and render the session's stream-json events. */
@@ -2900,7 +2919,7 @@ static void host_fd_cb(int fd, void *data)
 {
  int turn_done = 0, hup = 0;
  (void)fd; (void)data;
- if (!g_host) return;
+ if (!g_host || g_host_in_prompt) return;   /* not while a permission modal is up */
  if (!ai_window_alive(g_host_cn, g_host_win)) { e_ai_host_end(NULL); return; }
  wpe_host_pump(g_host, &g_host_ev, g_host_win, &turn_done, &hup);
  if (hup) e_ai_host_end("[agent] Claude Code session ended");

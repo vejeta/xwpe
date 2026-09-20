@@ -32,9 +32,11 @@ with any backend) or *Claude Code* (runs the real `claude` CLI as a persistent
 session using **its own** tools, with xwpe as the front-end). With the Claude
 Code engine, `Alt-G g` streams the agent's answer and tool activity into the
 pane, reloads any file it edits into that file's window (one `Ctrl-U` reverts),
-maps the permission dial to the CLI's permission mode, and keeps the session live
-across turns -- `Alt-G g` feeds the next turn, an empty prompt (or `Esc`) ends it
-and offers a reviewable/revertible changeset. It is built as a generic "host an
+and keeps the session live across turns -- `Alt-G g` feeds the next turn, an
+empty prompt (or `Esc`) ends it and offers a reviewable/revertible changeset. The
+permission dial gates its tools **per tool**: *Ask* pops a `y`/`n` for each gated
+tool call, *Edits* auto-accepts file edits but asks before commands, *Auto* runs
+unattended (a checkpoint is taken either way). It is built as a generic "host an
 agent CLI that speaks stream-json" (Claude Code first; others as adapters later).
 
 `Alt-G f` runs a **Multi-file edit**: it studies the workspace read-only, then

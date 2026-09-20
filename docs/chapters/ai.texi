@@ -252,11 +252,13 @@ Choose the engine in @samp{Options}, @samp{AI} (the @samp{Agent engine} radio:
 stream-json subprocess on the fd-loop).  Its answer text and tool activity stream
 into the pane; when one of its tools writes a file, xwpe reloads that file into
 its open window as one undo step, so @kbd{Ctrl-U} reverts the agent's edit.  The
-permission dial maps to the CLI's own permission mode (Auto runs unattended;
-Edits and Ask auto-accept edits, and xwpe takes a checkpoint at the start of the
-session so the whole run is reviewable/revertible when it ends).  The session
-stays live across turns: @kbd{Alt-G g} feeds the next turn, and an empty prompt
-(or @key{Esc}) ends it and offers the changeset review.
+permission dial gates the agent's tools @emph{per tool}: @code{ask} pops a
+@kbd{y}/@kbd{n} for each gated tool call (the CLI blocks until you answer),
+@code{edits} auto-accepts file edits but asks before commands, and @code{auto}
+runs unattended.  Either way xwpe takes a checkpoint at the start of the session,
+so the whole run is reviewable/revertible when it ends.  The session stays live
+across turns: @kbd{Alt-G g} feeds the next turn, and an empty prompt (or @key{Esc})
+ends it and offers the changeset review.
 
 It is built as a generic host -- an agent CLI that speaks a line-delimited JSON
 event stream on stdout and takes turns on stdin -- so other agent CLIs can be

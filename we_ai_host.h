@@ -29,6 +29,8 @@ typedef struct {
  void (*on_file_edit)(const char *path, void *ud);       /* a tool wrote this path */
  void (*on_notice)(const char *text, void *ud);          /* system/init/error line */
  void (*on_result)(const char *summary, int is_error, void *ud); /* end of a turn */
+ /* The agent asks to use a tool; return 1 to allow, 0 to deny.  NULL denies. */
+ int  (*on_permission)(const char *tool, const char *arg, void *ud);
 } wpe_host_events;
 
 /* Spawn the agent CLI.  `model` and `resume` may be NULL or "".  `policy` is a

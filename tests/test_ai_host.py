@@ -120,6 +120,63 @@ def test_host_suppresses_thinking_and_does_not_double_answer(tmp_path):
         "the answer was printed %d times (expected 1):\n%s" % (disp.count("UNIQUEANSWER"), disp)
 
 
+MOCK_PERM = textwrap.dedent('''\
+    import sys, json
+    def emit(o):
+        sys.stdout.write(json.dumps(o) + "\\n"); sys.stdout.flush()
+    sys.stdin.readline()                         # the user turn
+    emit({"type": "system", "subtype": "init", "session_id": "m"})
+    emit({"type": "control_request", "request_id": "r1", "request": {
+        "subtype": "can_use_tool", "tool_name": "Bash",
+        "input": {"command": "echo hi"}}})
+    resp = sys.stdin.readline()                   # our control_response
+    allowed = '"behavior":"allow"' in resp.replace(" ", "")
+    emit({"type": "assistant", "message": {"content": [
+        {"type": "text", "text": "ALLOWEDPATH" if allowed else "DENIEDPATH"}]}})
+    emit({"type": "result", "subtype": "success", "is_error": False, "result": "done"})
+''')
+
+
+def _wait(s, needle, tmo=12):
+    end = time.time() + tmo
+    while time.time() < end:
+        s._drain(0.5)
+        if needle in "\n".join(s.display()):
+            return True
+    return False
+
+
+def _perm_run(tmp_path, answer_key):
+    mock = tmp_path / "mock_perm.py"
+    mock.write_text(MOCK_PERM)
+    trace = tmp_path / "h.trace"
+    env = {"XWPE_AI_ENABLE": "1", "XWPE_AI_AGENT_ENGINE": "claude-code",
+           "XWPE_AI_POLICY": "ask", "XWPE_AI_HOST_CMD": "python3 %s" % mock,
+           "XWPE_AI_TRACE": str(trace)}
+    with WpeSession(str(tmp_path), "int main(void){return 0;}\n",
+                    env_extra=env, filename="t.c") as s:
+        s._drain(0.5)
+        s.key(ALT.AI); s.key("g"); s._drain(0.5)
+        s.key("run echo hi"); s.key("\r", delay=0.8)
+        assert _wait(s, "APPROVE"), "no per-tool permission prompt appeared"
+        s.key(answer_key, delay=0.8)
+        _wait(s, "done", tmo=8)
+        disp = "\n".join(s.display())
+    return trace.read_text(), disp
+
+
+def test_host_permission_allow(tmp_path):
+    txt, disp = _perm_run(tmp_path, "y")            # allow the tool
+    assert "host permission tool=Bash allow=1" in txt, txt
+    assert "ALLOWEDPATH" in disp, "allow was not sent to the agent:\n" + disp
+
+
+def test_host_permission_deny(tmp_path):
+    txt, disp = _perm_run(tmp_path, "n")            # deny the tool
+    assert "host permission tool=Bash allow=0" in txt, txt
+    assert "DENIEDPATH" in disp, "deny was not sent to the agent:\n" + disp
+
+
 def test_host_second_turn_continues_same_session(tmp_path):
     mock = tmp_path / "mock_host.py"
     mock.write_text(MOCK)
