@@ -1829,11 +1829,17 @@ static int ai_window_alive(ECNT *cn, FENSTER *f)
 void wpe_ai_cancel(void)
 {
  ai_async_op *op = g_ai_op;
+ FENSTER *f;
+ int alive;
  if (!op) return;
+ f = op->f;
+ alive = ai_window_alive(op->cn, f);
  ai_op_detach(op);
- if (ai_window_alive(op->cn, op->f))
-  ai_pane(op->f, "[AI] cancelled", 0);
+ if (alive) ai_pane(f, "[AI] cancelled", 0);
  ai_op_free(op);
+ /* Leave the pane ready to type in: arm the chat input so the user can continue
+    right there (ask a follow-up / a new question) instead of a dead pane. */
+ if (alive) e_ai_chat_arm(f);
 }
 
 /* Stream done: reconstruct the file, review the diff, apply.  Runs from the fd

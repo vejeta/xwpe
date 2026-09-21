@@ -1759,8 +1759,13 @@ int e_get_opt_sw(int c, int x, int y, W_OPTSTR *o)
 static void e_opt_center_dialog(W_OPTSTR *o, int dlg_w, int dlg_h)
 {
    FENSTER *ef = o->f->ed->f[o->f->ed->mxedt];
-   o->xa = ef->a.x + (ef->e.x - ef->a.x - dlg_w) / 2;
-   o->ya = ef->a.y + (ef->e.y - ef->a.y - dlg_h) / 2;
+   int bx = ef->a.x, by = ef->a.y, bex = ef->e.x, bey = ef->e.y;
+   /* A tool/output pane (AI, Messages -- ins == 8) is a small docked strip; a
+      dialog centred on it lands squashed in a corner (and, when it is the pane
+      the user just used, unusable).  Centre such dialogs on the whole screen. */
+   if (ef->ins == 8) { bx = 0; by = 1; bex = MAXSCOL - 1; bey = MAXSLNS - 2; }
+   o->xa = bx + (bex - bx - dlg_w) / 2;
+   o->ya = by + (bey - by - dlg_h) / 2;
    if (o->xa < 0) o->xa = 0;
    if (o->ya < 1) o->ya = 1;
    o->xe = o->xa + dlg_w;
