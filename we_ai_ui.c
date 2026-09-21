@@ -2670,28 +2670,16 @@ static int ai_agent_approve(FENSTER *f, const char *what, int is_run)
  * -- the same file the option dialog saves to. */
 static void ai_persist_settings(FENSTER *f) { e_save_opt(f); }
 
-/* Show a short status WITHOUT disturbing the user: add it to the pane only if it
- * is already open; never pop the pane up for a mere status line. */
-static void ai_pane_status(FENSTER *f, const char *line)
-{
- ECNT *cn = f->ed;
- int i;
- for (i = cn->mxedt; i > 0 && strcmp(cn->f[i]->datnam, AI_PANE_NAME); i--)
-  ;
- if (i > 0)
-  ai_pane(f, line, 0);                    /* pane open: quiet line, do not raise it */
-}
-
 /* Alt-G y: cycle the permission level ask -> edits -> auto.  It is remembered
- * automatically (persisted), and confirmed discreetly (a pane line only when the
- * pane is already open) -- it does not pop the pane up for a settings change. */
+ * automatically (persisted) and confirmed with a quiet pane line -- surface 0,
+ * so the pane shows the confirmation without stealing focus from your file. */
 static void e_ai_cycle_policy(FENSTER *f)
 {
  char line[80];
  e_ai_policy = (e_ai_policy + 1) % 3;
  snprintf(line, sizeof line, "[AI] Permissions: %s (ask -> edits -> auto)",
           wpe_ai_policy_name(e_ai_policy));
- ai_pane_status(f, line);
+ ai_pane(f, line, 0);
  ai_persist_settings(f);
  wpe_ai_trace("policy set %s", wpe_ai_policy_name(e_ai_policy));
 }
