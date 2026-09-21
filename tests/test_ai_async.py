@@ -56,7 +56,7 @@ def test_editor_interactive_and_spinner_during_generation(tmp_path):
         "typing did not land while generating (editor was blocked):\n" + disp
 
 
-def test_alt_b_cancels_a_running_task(tmp_path):
+def test_esc_cancels_a_running_task(tmp_path):
     env = {"XWPE_AI_ENABLE": "1", "XWPE_AI_BACKEND": "mock",
            "XWPE_AI_MOCK_REPLY": "int main(void){return 1;}",
            "XWPE_AI_MOCK_DELAY_MS": "4000"}
@@ -64,6 +64,6 @@ def test_alt_b_cancels_a_running_task(tmp_path):
                     env_extra=env) as s:
         _start_edit(s)
         s._drain(1.0)                          # task is running (reply not in yet)
-        s.key(ALT.AI); s._drain(1.0)        # Alt-G cancels it
+        s.key("\033"); s._drain(1.0)           # Esc cancels it (Alt-G no longer does)
         disp = "\n".join(s.display())
-    assert "cancelled" in disp, "Alt-G did not cancel the running task:\n" + disp
+    assert "cancelled" in disp, "Esc did not cancel the running task:\n" + disp

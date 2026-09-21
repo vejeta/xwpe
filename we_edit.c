@@ -549,6 +549,9 @@ int e_eingabe(ECNT *e)
   }
 #endif
 #ifdef WPE_AI
+  /* A background AI task is running: Esc cancels it (what the spinner promises)
+     instead of leaving the editor or closing the chat pane. */
+  if (c == WPE_ESC && wpe_ai_busy()) { wpe_ai_cancel(); c = 0; continue; }
   /* When the AI chat pane is focused, its input row eats the editing keys (and
      Esc closes the chat); everything else -- mouse (already handled above),
      window switching, function keys -- falls through to normal editing, so the

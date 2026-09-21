@@ -32,7 +32,7 @@ def test_prompt_centered_after_cancel(tmp_path):
                     env_extra=dict(SLOW), filename="t.c") as s:
         s.key(ALT.AI); s.key("g"); s._drain(0.5)
         s.key("task one"); s.key("\r", delay=0.8); s._drain(0.6)   # working
-        s.key(ALT.AI); s._drain(0.6)                                # cancel
+        s.key("\033"); s._drain(0.6)                                # Esc cancels
         s.key(ALT.AI); s.key("g"); s._drain(0.6)                    # agent again
         disp = s.display()
         row = next((r for r in disp if "AI agent task" in r), "")
@@ -51,7 +51,7 @@ def test_pane_typeable_after_cancel(tmp_path):
                     env_extra=dict(SLOW), filename="t.c") as s:
         s.key(ALT.AI); s.key("g"); s._drain(0.5)
         s.key("task one"); s.key("\r", delay=0.8); s._drain(0.6)   # working
-        s.key(ALT.AI); s._drain(1.0)                                # cancel -> arms input
+        s.key("\033"); s._drain(1.0)                                # Esc cancels -> arms input
         s.key("CONTINUEHERE"); s._drain(0.4)                        # type in the pane
         s.key("\r", delay=0.6)                                      # send it as a chat turn
         s._drain(0.5)

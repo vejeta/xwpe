@@ -984,7 +984,11 @@ static int e_ai_prompt(char *out, const char *title, FENSTER *f)
  e_add_bttstr(18, 6, 1, AltO, " Send ", NULL, o);
  e_add_bttstr(32, 6, 4, AltM, "Multi-line", NULL, o);
  e_add_bttstr(50, 6, -1, WPE_ESC, "Cancel", NULL, o);
- ret = e_opt_kst(o);
+ /* A background task may be animating its spinner: mark a modal so the AI
+    heartbeat's repaint (which moves the caret to the pane) is suppressed while
+    this dialog owns the input -- otherwise it steals focus and eats keystrokes. */
+ { extern int wpe_modal_active; int sv = wpe_modal_active; wpe_modal_active = 1;
+   ret = e_opt_kst(o); wpe_modal_active = sv; }
  if (ret != WPE_ESC) {                        /* keep what was typed either way */
   strncpy(out, o->wstr[0]->txt, AI_PROMPT_MAX - 1);
   out[AI_PROMPT_MAX - 1] = '\0';
@@ -1825,12 +1829,60 @@ static int ai_window_alive(ECNT *cn, FENSTER *f)
  return 0;
 }
 
+/* ---- request queue (stack depth 1) ------------------------------------------
+ * A second request started while a task runs is queued rather than cancelling
+ * the first (or being refused): it launches automatically when the current task
+ * ends.  Depth 1 keeps it predictable -- one running plus one waiting, the
+ * newest replacing any already waiting -- and a cancel (Esc) discards it. */
+static struct {
+ int      pending;
+ void   (*launch)(FENSTER *f, const char *goal);
+ char     goal[AI_PROMPT_MAX];
+ FENSTER *f;
+ ECNT    *cn;
+} g_ai_queue;
+
+/** ai_queue_clear - Drop any queued request (e.g. on cancel). */
+static void ai_queue_clear(void) { g_ai_queue.pending = 0; }
+
+/**
+ * ai_enqueue - Queue `goal` to be launched by `launch` when the running task
+ * ends.  @f is the window it belongs to.  Replaces an already-queued request.
+ */
+static void ai_enqueue(FENSTER *f, void (*launch)(FENSTER *, const char *),
+                       const char *goal)
+{
+ char line[AI_PROMPT_MAX + 64];
+ if (g_ai_queue.pending)
+  ai_pane(f, "[AI] replaced the queued request", 0);
+ g_ai_queue.pending = 1;
+ g_ai_queue.launch  = launch;
+ g_ai_queue.f       = f;
+ g_ai_queue.cn      = f->ed;
+ strncpy(g_ai_queue.goal, goal, sizeof g_ai_queue.goal - 1);
+ g_ai_queue.goal[sizeof g_ai_queue.goal - 1] = '\0';
+ snprintf(line, sizeof line, "[AI] queued -- runs after the current task: %s", goal);
+ ai_pane(f, line, 1);
+}
+
+/** ai_queue_run - Launch the queued request, if any, now nothing is running. */
+static void ai_queue_run(void)
+{
+ void (*launch)(FENSTER *, const char *) = g_ai_queue.launch;
+ FENSTER *f = g_ai_queue.f;
+ if (!g_ai_queue.pending) return;
+ g_ai_queue.pending = 0;                 /* clear before launching (re-entrancy) */
+ if (launch && ai_window_alive(g_ai_queue.cn, f))
+  launch(f, g_ai_queue.goal);
+}
+
 /* Cancel whatever background op is running (user asked, or a new action starts).*/
 void wpe_ai_cancel(void)
 {
  ai_async_op *op = g_ai_op;
  FENSTER *f;
  int alive;
+ ai_queue_clear();                    /* a cancel discards any queued follow-up */
  if (!op) return;
  f = op->f;
  alive = ai_window_alive(op->cn, f);
@@ -1933,11 +1985,13 @@ static void ai_edit_fd_cb(int fd, void *data)
   ai_op_detach(op);
   if (ai_window_alive(cn, f)) ai_pane(f, "[AI edit] transport error", 0);
   ai_op_free(op);
+  ai_queue_run();
   return;
  }
  if (done) {
   op->had_error = wpe_ai_stream_had_error(op->st);   /* capture before detach frees st */
   ai_edit_done(op);
+  ai_queue_run();                    /* start the next queued request, if any */
  }
 }
 
@@ -2041,6 +2095,7 @@ static void ai_conv_finish(ai_async_op *op)
  if (op->finish && ai_window_alive(op->cn, op->f))
   op->finish(op);
  ai_op_free(op);
+ ai_queue_run();                    /* start the next queued request, if any */
 }
 
 /* Launch a multi-turn op: op->ml is seeded, process()/finish()/max_iter set. */
@@ -2079,7 +2134,7 @@ static int e_ai_edit(FENSTER *f)
  ai_async_op *op;
 
  if (wpe_ai_busy()) {
-  ai_pane(f, "[AI] a task is already running - press Alt-G to cancel it first", 1);
+  ai_pane(f, "[AI] a task is already running - press Esc to cancel it, or wait", 1);
   return 0;
  }
  have_sel = ai_block_range(f, &sy0, &sy1);
@@ -2501,13 +2556,9 @@ int e_ai_ui_key(FENSTER *f)
              "(the \"Ai assistant\" box), then press Alt-G again.", 1);
   return 0;
  }
- /* A background task is running (async Edit): Alt-G cancels it rather than
-    opening the menu, so there is a one-key way out and no modal stacks on top of
-    the in-flight work. */
- if (wpe_ai_busy()) {
-  wpe_ai_cancel();
-  return 0;
- }
+ /* Alt-G no longer cancels a running task (that surprised users): Esc cancels
+    it, and a second action is QUEUED to run after the current one.  Alt-G just
+    opens the menu, even while a task runs. */
  /* First use: state the trust model and get an explicit go-ahead once. */
  if (!ai_consent_gate(f))
   return 0;
@@ -2786,6 +2837,12 @@ static int ai_agent_launch(FENSTER *f, const char *goal, const char *extra)
  return 0;
 }
 
+/* Queue adapter for the agent (matches the void(FENSTER*,const char*) slot). */
+static void ai_launch_agent(FENSTER *f, const char *goal)
+{
+ ai_agent_launch(f, goal, NULL);
+}
+
 int e_ai_agent(FENSTER *f)
 {
  static char goal[AI_PROMPT_MAX];
@@ -2795,13 +2852,15 @@ int e_ai_agent(FENSTER *f)
  if (e_ai_agent_engine == WPE_AI_ENGINE_CLAUDE_HOST)
   return e_ai_host(f);
 #endif
- if (wpe_ai_busy()) {
-  ai_pane(f, "[AI] a task is already running - press Alt-G to cancel it first", 1);
-  return 0;
- }
+ /* Prompt first, then decide: if a task is already running, queue this one to
+    start when that finishes (instead of cancelling it or refusing). */
  goal[0] = '\0';
  if (!e_ai_prompt1(goal, "AI agent task", f) || !goal[0])
   return 0;
+ if (wpe_ai_busy()) {
+  ai_enqueue(f, ai_launch_agent, goal);
+  return 0;
+ }
  return ai_agent_launch(f, goal, NULL);
 }
 
@@ -2849,7 +2908,7 @@ static int e_ai_fix_build(FENSTER *f)
 {
  char cmd[1024], extra[1700];
  if (wpe_ai_busy()) {
-  ai_pane(f, "[AI] a task is already running - press Alt-G to cancel it first", 1);
+  ai_pane(f, "[AI] a task is already running - press Esc to cancel it, or wait", 1);
   return 0;
  }
  ai_build_command(f, cmd, sizeof cmd);
@@ -3067,7 +3126,7 @@ static int e_ai_plan(FENSTER *f)
    "approves it. Output nothing else.";
 
  if (wpe_ai_busy()) {
-  ai_pane(f, "[AI] a task is already running - press Alt-G to cancel it first", 1);
+  ai_pane(f, "[AI] a task is already running - press Esc to cancel it, or wait", 1);
   return 0;
  }
  task[0] = '\0';
@@ -3234,7 +3293,7 @@ int e_ai_host(FENSTER *f)
   return 0;
  }
  if (wpe_ai_busy()) {
-  ai_pane(f, "[AI] a task is already running - press Alt-G to cancel it first", 1);
+  ai_pane(f, "[AI] a task is already running - press Esc to cancel it, or wait", 1);
   return 0;
  }
  if (g_host && g_host_turn) {
@@ -3375,7 +3434,10 @@ int e_ai_menu(FENSTER *f)
  ya = ye - (n + 1);                       /* ...so the list opens upward         */
  if (ya < 1)
   ya = 1;
- WpeHandleSubmenu(xa, ya, xe, ye, 0, items, f);
+ /* Suppress the AI heartbeat's repaint while the menu owns the input (a task may
+    be running underneath): otherwise it steals the caret and drops keystrokes. */
+ { extern int wpe_modal_active; int sv = wpe_modal_active; wpe_modal_active = 1;
+   WpeHandleSubmenu(xa, ya, xe, ye, 0, items, f); wpe_modal_active = sv; }
  /* A menu action (Ask, or a host follow-up) may have armed the chat input while
     the menu was still up -- ai_pane_paint suppresses painting under an open
     dropdown, so the prompt/hint would not appear until the next keystroke.  The

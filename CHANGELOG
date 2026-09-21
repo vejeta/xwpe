@@ -269,11 +269,16 @@ Changes
       policy, so the setup is visible without opening Options.
     - A one-time first-use notice states the trust model (local by default,
       opt-in, every edit previewed and revertible) before the first action.
-    - Cancelling a running task (Alt-G while it works) now leaves the pane armed
-      for input, so you can keep working (ask a follow-up) instead of a dead
-      "cancelled" pane; and an AI prompt/dialog opened while the AI pane is the
-      active window centres on the whole screen instead of being squashed onto
-      that small docked pane (shared fix for any dialog over a tool pane).
+    - Cancelling a running task now leaves the pane armed for input, so you can
+      keep working (ask a follow-up) instead of a dead "cancelled" pane; and an
+      AI prompt/dialog opened while the AI pane is the active window centres on
+      the whole screen instead of being squashed onto that small docked pane
+      (shared fix for any dialog over a tool pane).
+    - Alt-G no longer cancels a running task (that surprised people).  Esc is the
+      explicit cancel, and starting a second action while one runs QUEUES it to
+      run when the current finishes (one waiting slot; the newest replaces it),
+      instead of cancelling the first.  A modal AI prompt/menu opened over a
+      running task also no longer loses the caret to the task's spinner.
     - Browse the pane's history from the keyboard while the "> " prompt stays
       docked at the bottom: PgUp/PgDn page through the transcript and the arrows
       scroll it a line at a time; typing any character snaps the view back to the
