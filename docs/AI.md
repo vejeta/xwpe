@@ -5,6 +5,30 @@ same way the `Alt-Q` prefix drives the [language server](LSP.md). It is
 **opt-in and off by default** -- a stock build contains none of it, so a distro
 (or anyone who does not want AI in their editor) gets the exact classic editor.
 
+## Quick start (local, private, free -- with Ollama)
+
+No API key, no account, nothing leaves your machine:
+
+```sh
+# 1. a local model server + a code-tuned model
+ollama serve &                 # if not already running
+ollama pull qwen2.5-coder      # or deepseek-coder, codellama, ...
+
+# 2. an AI-enabled xwpe
+./configure --enable-ai && make
+
+# 3. run it, enable the assistant once (Options > AI, or Options > Editor),
+#    then use the Alt-G prefix
+./wpe
+```
+
+That is all: with Ollama as the backend and no model chosen, xwpe auto-selects a
+code model (preferring a larger one you have installed), so the first `Alt-G a`
+just works. Point it elsewhere with `XWPE_AI_BACKEND` / `XWPE_AI_ENDPOINT` /
+`XWPE_AI_MODEL` or in **Options > AI** (Alt-M lists the backend's models). Every
+mode is handed the files you have open as context, so you never have to tell it
+what you are working on.
+
 It has three modes, all streaming and non-blocking (you keep editing while the
 model works):
 
