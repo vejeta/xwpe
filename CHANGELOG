@@ -304,6 +304,17 @@ Changes
       (ask / edits / auto) with the active one highlighted -- the highlight
       moves as you cycle -- plus a short description of what it does, so it is
       clear which level is selected and what it means.
+    - Options > AI now applies and saves the whole dialog on a single Ok, even
+      when the backend was changed.  Previously changing the Backend radio made Ok
+      reopen the dialog (to relist that backend's models) WITHOUT saving, so a
+      user who did not press Ok a second time kept the old backend -- the chosen
+      backend and permission level silently failed to persist.  Ok now applies
+      every field once (the model list already follows the selected backend via
+      Alt-M), so the choice you confirm is the one that sticks across sessions.
+    - The model picker names its source for the HTTP backends ("Model (N) at
+      <endpoint>"): both Ollama and OpenAI-compatible read the single AIEndpoint,
+      so with the endpoint on the Ollama default the OpenAI-compatible list shows
+      Ollama's models -- the title now makes that visible instead of surprising.
     - The Alt-G menu is clearer and grouped: the actions (Ask, Edit, Multi-file,
       Agent, "Build & fix (agent)") sit above a divider; below it the quick
       settings -- "Permissions: <level>" (shows and cycles ask/edits/auto),

@@ -118,7 +118,8 @@ def test_model_picker_follows_selected_backend_radio(tmp_path):
         s.key(" ", delay=0.35)           # select Ollama
         s.key("\033m", delay=1.0)        # Alt-M -> picker for the SELECTED backend
         pick = "\n".join(s.display())
-    assert "available)" in pick, "the model picker did not open:\n" + pick
+    # the Ollama/OpenAI picker title names its endpoint ("Model (N) at <url>")
+    assert "Model (" in pick, "the model picker did not open:\n" + pick
     for claude_only in ("sonnet", "opus", "haiku"):
         assert claude_only not in pick, \
             "Alt-M still listed Claude's models after selecting Ollama:\n" + pick
@@ -165,7 +166,8 @@ def test_ai_options_ok_reads_radios(tmp_path):
 def test_ai_options_keyboard_navigation(tmp_path):
     # Tab/arrows must move between the radio groups and Space must select -- the
     # widgets carry unique non-zero sw ids so e_opt_kst can focus them (a zero sw
-    # made them unreachable).  Tab to the Backend group, arrow to Ollama, select.
+    # made them unreachable).  Tab to the Backend group, arrow to Ollama, select,
+    # Ok -- one Ok APPLIES the choice and closes (no second-Ok reopen).
     trace = tmp_path / "ai.trace"
     env = dict(ENV); env["XWPE_AI_TRACE"] = str(trace)
     with WpeSession(str(tmp_path), "int main(void){return 0;}\n",
@@ -175,20 +177,25 @@ def test_ai_options_keyboard_navigation(tmp_path):
         s.key("\t", delay=0.35)          # Enable -> Backend group
         s.key("\033[B", delay=0.35)      # down -> Ollama
         s.key(" ", delay=0.35)           # select
-        s.key("\033o", delay=0.6)        # Ok -> reloads with Ollama's models
+        s.key("\033o", delay=0.6)        # Ok -> applies Ollama and CLOSES
         s._drain(0.4)
-        s.key("\033", delay=0.4)         # leave the reopened dialog
+        closed = "AI settings" not in "\n".join(s.display())
     txt = trace.read_text() if trace.exists() else ""
-    # changing the backend triggers a reload of that backend's model list
-    assert "options reload backend=ollama" in txt, \
-        "Tab/arrow/Space navigation did not reach and select a radio:\n" + txt
+    line = next((l for l in txt.splitlines() if l.startswith("options ")), "")
+    assert "backend=ollama" in line, \
+        "Tab/arrow/Space navigation did not reach/select the Ollama radio:\n" + txt
+    assert "reload" not in txt, \
+        "Ok reopened the dialog instead of saving on the first Ok:\n" + txt
+    assert closed, "Ok did not close the dialog on the first press"
 
 
-def test_ai_options_backend_change_reloads_models(tmp_path):
-    # Selecting a different backend reloads the Model list for it: switch to
-    # Ollama and the dialog reopens listing Ollama models, not the Claude ones.
+def test_ai_options_backend_change_applies_on_ok(tmp_path):
+    # Switching the Backend radio and pressing Ok ONCE applies the new backend
+    # (no reopen, no lost choice).  Regression guard for the bug where Ok merely
+    # reopened the dialog to "reload models", so a user who did not press Ok a
+    # second time kept the old backend.
     trace = tmp_path / "ai.trace"
-    env = dict(ENV); env["XWPE_AI_TRACE"] = str(trace)
+    env = dict(ENV); env["XWPE_AI_TRACE"] = str(trace)   # starts on claudecli
     with WpeSession(str(tmp_path), "int main(void){return 0;}\n",
                     env_extra=env) as s:
         s.key("\033o", delay=0.5)
@@ -196,12 +203,47 @@ def test_ai_options_backend_change_reloads_models(tmp_path):
         s.key("\t", delay=0.35)          # Backend group
         s.key("\033[B", delay=0.35)      # Ollama
         s.key(" ", delay=0.35)
-        s.key("\033o", delay=0.8)        # Ok -> reload
+        s.key("\033o", delay=0.8)        # Ok -> applies + closes
+        s._drain(0.4)
         disp = "\n".join(s.display())
-        s.key("\033", delay=0.4)
-    # the reopened dialog no longer offers the Claude CLI aliases as models
-    assert "options reload backend=ollama" in (trace.read_text() if trace.exists() else "")
-    # and Ollama is now the marked backend
-    assert any("(*) Ollama" in ln for ln in disp.splitlines()) \
-        or "(*)Ollama" in disp.replace(" ", ""), \
-        "backend did not switch to Ollama on reload:\n" + disp
+    txt = trace.read_text() if trace.exists() else ""
+    line = next((l for l in txt.splitlines() if l.startswith("options ")), "")
+    assert "backend=ollama" in line, \
+        "Ok did not apply the switched-to backend:\n" + txt
+    assert "AI settings" not in disp, \
+        "Ok reopened the dialog instead of applying + closing:\n" + disp
+
+
+def test_ai_options_backend_persists_across_relaunch(tmp_path):
+    # The end-to-end guard for the reported bug: change the backend in Options>AI,
+    # press Ok, close xwpe, reopen -- the chosen backend must still be marked.  No
+    # XWPE_AI_BACKEND override here, so the saved config is authoritative; the
+    # config is seeded on claudecli so switching to Ollama is a real change.
+    import tempfile
+    home = tempfile.mkdtemp()
+    cfg = os.path.join(home, ".config", "xwpe")
+    os.makedirs(cfg)
+    with open(os.path.join(cfg, "xwperc"), "w") as fh:
+        fh.write("[Programming]\nAIBackend : 4\nAIModel : sonnet\nAIPolicy : ask\n")
+    env = {"XWPE_AI_ENABLE": "1", "HOME": home}     # NB: no XWPE_AI_BACKEND
+
+    # session 1: switch Claude CLI -> Ollama and Ok
+    with WpeSession(str(tmp_path), "int main(void){return 0;}\n",
+                    env_extra=dict(env)) as s:
+        s.key("\033o", delay=0.5); s.key("i", delay=0.6)
+        s.key("\t", delay=0.35)          # Enable -> Backend group (Claude CLI)
+        s.key("\033[B", delay=0.35)      # down -> Ollama
+        s.key(" ", delay=0.35)           # select Ollama
+        s.key("\033o", delay=0.8)        # Ok -> applies + saves + closes
+
+    # session 2: same HOME -> the Backend radio must show Ollama, not Claude CLI
+    with WpeSession(str(tmp_path), "int main(void){return 0;}\n",
+                    env_extra=dict(env)) as s:
+        s.key("\033o", delay=0.5); s.key("i", delay=0.6)
+        disp = s.display()
+    joined = "\n".join(disp)
+    assert any("(*) Ollama" in ln for ln in disp) \
+        or "(*)Ollama" in joined.replace(" ", ""), \
+        "the chosen backend (Ollama) did not persist across relaunch:\n" + joined
+    assert not any("(*) Claude CLI" in ln for ln in disp), \
+        "the backend reverted to Claude CLI after relaunch:\n" + joined

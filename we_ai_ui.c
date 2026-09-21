@@ -2330,7 +2330,15 @@ static int e_ai_pick_model_apply(FENSTER *f, int announce)
  if (n <= 0) { ai_pane(f, title[0] ? title : "no models found", 1); return 0; }
  for (i = 0; i < n; i++)                 /* pre-mark the model in use */
   if (e_ai_model && !strcmp(e_ai_model, names[i])) break;
- snprintf(title, sizeof title, "Model (%d available)", n);
+ /* Name the source for the HTTP backends: both read the single AIEndpoint, so
+    OpenAI-compatible lists whatever that URL serves.  Left on the Ollama default
+    (localhost:11434, which also answers /v1/models) it returns Ollama's models --
+    spelling out the endpoint makes that visible instead of surprising. */
+ if (e_ai_backend == WPE_AI_OLLAMA || e_ai_backend == WPE_AI_OPENAI)
+  snprintf(title, sizeof title, "Model (%d) at %s", n,
+           e_ai_endpoint ? e_ai_endpoint : "?");
+ else
+  snprintf(title, sizeof title, "Model (%d available)", n);
  sel = e_ai_pick(f, title, (const char *const *)names, n, i < n ? i : 0);
  if (sel >= 0) {
   free(e_ai_model);
@@ -2413,98 +2421,94 @@ int e_ai_options(FENSTER *f)
  W_OPTSTR *o;
  int i, bcur, edopt_before, ret, new_be;
 
- /* The dialog only shows the CURRENT model on a button; the (unbounded) model
-    list lives in a scrollable picker (e_ai_choose_model), so the dialog stays a
-    fixed size no matter how many models a backend offers.  Loop so a backend
-    change or a model pick reopens the dialog with the updated labels. */
- for (;;) {
-  o = e_init_opt_kst(f);
-  if (!o) return 0;
-  g_ai_opt_dlg = o;                              /* the Model button's fkt refreshes it */
-  bcur = 0;
-  for (i = 0; i < 4; i++) if (bk[i] == e_ai_backend) bcur = i;
-  ai_opt_mlabel();
+ /* The dialog shows the CURRENT model on a button; the (unbounded) model list
+    lives in a scrollable picker floated over the dialog by the Model button, so
+    the dialog itself stays a fixed size.  The Model button syncs the backend
+    from the radio before listing, so a backend switch relists there and the
+    dialog never needs to reopen -- Ok applies every field and saves ONCE, so the
+    choice the user confirmed with Ok is exactly the one that persists. */
+ o = e_init_opt_kst(f);
+ if (!o) return 0;
+ g_ai_opt_dlg = o;                              /* the Model button's fkt refreshes it */
+ bcur = 0;
+ for (i = 0; i < 4; i++) if (bk[i] == e_ai_backend) bcur = i;
+ ai_opt_mlabel();
 
-  /* Centre the dialog on the whole screen (like the other menu dialogs), not
-     wherever the active editor window happens to sit. */
-  { int w = 55, h = 20;
+ /* Centre the dialog on the whole screen (like the other menu dialogs), not
+    wherever the active editor window happens to sit. */
+ { int w = 55, h = 20;
 #ifdef WPE_AI_AGENT_HOST
-    h = 24;                              /* room for the Agent-engine section */
+   h = 24;                              /* room for the Agent-engine section */
 #endif
-    o->xa = (MAXSCOL - w) / 2; if (o->xa < 1) o->xa = 1;
-    o->xe = o->xa + w;
-    o->ya = (MAXSLNS - h) / 2; if (o->ya < 1) o->ya = 1;
-    o->ye = o->ya + h; }
-  o->bgsw = 0; o->crsw = AltO;
-  o->name = "AI settings";
-  e_add_sswstr(3, 2, 0, AltE, (f->ed->edopt & ED_AI_ENABLE) ? 1 : 0, "Enable AI assistant", o);
+   o->xa = (MAXSCOL - w) / 2; if (o->xa < 1) o->xa = 1;
+   o->xe = o->xa + w;
+   o->ya = (MAXSLNS - h) / 2; if (o->ya < 1) o->ya = 1;
+   o->ye = o->ya + h; }
+ o->bgsw = 0; o->crsw = AltO;
+ o->name = "AI settings";
+ e_add_sswstr(3, 2, 0, AltE, (f->ed->edopt & ED_AI_ENABLE) ? 1 : 0, "Enable AI assistant", o);
 
-  /* Every radio field needs a UNIQUE, non-zero `sw`: e_opt_kst navigates
-     spatially but returns the target field's sw to focus it, and sw==0 means
-     "no field", so a zero sw makes a widget unreachable by Tab/arrows/mouse. */
-  e_add_txtstr(3, 4, "Backend (for Ask / Edit / Multi-file):", o);
-  for (i = 0; i < 4; i++)
-   e_add_pswstr(0, 4, 5 + i, i, 4000 + i, (i == 3) ? bcur : 0, (char *)bklab[i], o);
+ /* Every radio field needs a UNIQUE, non-zero `sw`: e_opt_kst navigates
+    spatially but returns the target field's sw to focus it, and sw==0 means
+    "no field", so a zero sw makes a widget unreachable by Tab/arrows/mouse. */
+ e_add_txtstr(3, 4, "Backend (for Ask / Edit / Multi-file):", o);
+ for (i = 0; i < 4; i++)
+  e_add_pswstr(0, 4, 5 + i, i, 4000 + i, (i == 3) ? bcur : 0, (char *)bklab[i], o);
 
-  e_add_txtstr(28, 4, "Model (Alt-M):", o);
-  e_add_bttstr(28, 5, 0, AltM, g_ai_opt_mlabel, e_ai_opt_pick_model, o);
+ e_add_txtstr(28, 4, "Model (Alt-M):", o);
+ e_add_bttstr(28, 5, 0, AltM, g_ai_opt_mlabel, e_ai_opt_pick_model, o);
 
-  e_add_txtstr(3, 11, "Permission (agent writes / commands):", o);
-  for (i = 0; i < 3; i++)
-   e_add_pswstr(1, 4, 12 + i, i, 4200 + i, (i == 2) ? e_ai_policy : 0, (char *)pol[i], o);
+ e_add_txtstr(3, 11, "Permission (agent writes / commands):", o);
+ for (i = 0; i < 3; i++)
+  e_add_pswstr(1, 4, 12 + i, i, 4200 + i, (i == 2) ? e_ai_policy : 0, (char *)pol[i], o);
 
 #ifdef WPE_AI_AGENT_HOST
-  /* Which engine the Agent (Alt-G g) uses -- spell out what each is for. */
-  e_add_txtstr(3, 16, "Agent engine (what Alt-G g runs):", o);
-  e_add_pswstr(2, 4, 17, 0, 4300, 0,
-               "Built-in - the editor's own tool loop", o);
-  e_add_pswstr(2, 4, 18, 1, 4301, e_ai_agent_engine,
-               "Claude Code - the claude CLI, its own tools", o);
-  e_add_txtstr(3, 20, "Tab/arrows move; Space selects; Alt-M = model.", o);
-  e_add_bttstr(12, 22, 1, AltO, " Ok ", NULL, o);
-  e_add_bttstr(31, 22, -1, WPE_ESC, "Cancel", NULL, o);
+ /* Which engine the Agent (Alt-G g) uses -- spell out what each is for. */
+ e_add_txtstr(3, 16, "Agent engine (what Alt-G g runs):", o);
+ e_add_pswstr(2, 4, 17, 0, 4300, 0,
+              "Built-in - the editor's own tool loop", o);
+ e_add_pswstr(2, 4, 18, 1, 4301, e_ai_agent_engine,
+              "Claude Code - the claude CLI, its own tools", o);
+ e_add_txtstr(3, 20, "Tab/arrows move; Space selects; Alt-M = model.", o);
+ e_add_bttstr(12, 22, 1, AltO, " Ok ", NULL, o);
+ e_add_bttstr(31, 22, -1, WPE_ESC, "Cancel", NULL, o);
 #else
-  e_add_txtstr(3, 16, "Tab/arrows move between fields; Space selects.", o);
-  e_add_txtstr(3, 17, "Alt-M chooses a model from the backend's list.", o);
-  e_add_bttstr(12, 19, 1, AltO, " Ok ", NULL, o);
-  e_add_bttstr(31, 19, -1, WPE_ESC, "Cancel", NULL, o);
+ e_add_txtstr(3, 16, "Tab/arrows move between fields; Space selects.", o);
+ e_add_txtstr(3, 17, "Alt-M chooses a model from the backend's list.", o);
+ e_add_bttstr(12, 19, 1, AltO, " Ok ", NULL, o);
+ e_add_bttstr(31, 19, -1, WPE_ESC, "Cancel", NULL, o);
 #endif
 
-  edopt_before = f->ed->edopt;
-  ret = e_opt_kst(o);
-  if (ret == WPE_ESC) { g_ai_opt_dlg = NULL; freeostr(o); return 0; }
+ edopt_before = f->ed->edopt;
+ ret = e_opt_kst(o);
+ if (ret == WPE_ESC) { g_ai_opt_dlg = NULL; freeostr(o); return 0; }
 
-  /* Enable + policy + backend are read on every return so they survive the
-     reopen after a Backend change.  A Model pick happens in place (the Model
-     button's fkt floats the picker over the dialog), so it never returns here. */
-  f->ed->edopt = (f->ed->edopt & ~ED_AI_ENABLE) | (o->sstr[0]->num ? ED_AI_ENABLE : 0);
-  e_ai_policy  = (o->pstr[1]->num >= 0 && o->pstr[1]->num < 3) ? o->pstr[1]->num : 0;
-  new_be = bk[(o->pstr[0]->num >= 0 && o->pstr[0]->num < 4) ? o->pstr[0]->num : 0];
+ /* Ok read: apply EVERY field, then save once.  (A Model pick happens in place:
+    the Model button floats the picker over the dialog and never returns here.) */
+ f->ed->edopt = (f->ed->edopt & ~ED_AI_ENABLE) | (o->sstr[0]->num ? ED_AI_ENABLE : 0);
+ e_ai_policy  = (o->pstr[1]->num >= 0 && o->pstr[1]->num < 3) ? o->pstr[1]->num : 0;
+ new_be = bk[(o->pstr[0]->num >= 0 && o->pstr[0]->num < 4) ? o->pstr[0]->num : 0];
 #ifdef WPE_AI_AGENT_HOST
-  e_ai_agent_engine = (o->pstr[2]->num == 1) ? WPE_AI_ENGINE_CLAUDE_HOST
-                                             : WPE_AI_ENGINE_BUILTIN;
+ e_ai_agent_engine = (o->pstr[2]->num == 1) ? WPE_AI_ENGINE_CLAUDE_HOST
+                                            : WPE_AI_ENGINE_BUILTIN;
 #endif
-  if (f->ed->edopt != edopt_before) {
-   e_switch_blst(f->ed); e_ai_refresh_bars(f->ed); e_repaint_desk(f);
-  }
-
-  if (new_be != e_ai_backend) {                 /* backend changed: reset + reopen */
-   e_ai_backend = new_be;
-   free(e_ai_model); e_ai_model = NULL;          /* pick a model for the new backend */
-   wpe_ai_trace("options reload backend=%s", wpe_ai_backend_name(e_ai_backend));
-   g_ai_opt_dlg = NULL;
-   freeostr(o);
-   continue;
-  }
-
-  wpe_ai_trace("options backend=%s model=%s policy=%s enable=%d",
-               wpe_ai_backend_name(e_ai_backend), e_ai_model ? e_ai_model : "-",
-               wpe_ai_policy_name(e_ai_policy), (f->ed->edopt & ED_AI_ENABLE) ? 1 : 0);
-  e_save_opt(f);              /* Ok persists the working mode -- no separate save */
-  g_ai_opt_dlg = NULL;
-  freeostr(o);
-  return 0;
+ if (f->ed->edopt != edopt_before) {
+  e_switch_blst(f->ed); e_ai_refresh_bars(f->ed); e_repaint_desk(f);
  }
+ if (new_be != e_ai_backend) {
+  /* Model names are backend-specific, so a backend switch drops the old model;
+     the new backend then auto-picks one (or the user reopens and Alt-M's it). */
+  e_ai_backend = new_be;
+  free(e_ai_model); e_ai_model = NULL;
+ }
+
+ wpe_ai_trace("options backend=%s model=%s policy=%s enable=%d",
+              wpe_ai_backend_name(e_ai_backend), e_ai_model ? e_ai_model : "-",
+              wpe_ai_policy_name(e_ai_policy), (f->ed->edopt & ED_AI_ENABLE) ? 1 : 0);
+ e_save_opt(f);              /* Ok persists the working mode -- no separate save */
+ g_ai_opt_dlg = NULL;
+ freeostr(o);
+ return 0;
 }
 
 int e_ai_agent(FENSTER *f);         /* defined in the Agent section below */
