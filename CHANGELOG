@@ -261,6 +261,14 @@ Changes
     - Every mode (Ask, Edit, Multi-file, Agent, Fix-build) is now handed the
       files currently open in the editor as context, with the focused one marked
       -- so you no longer have to tell the assistant what you are working on.
+    - Zero-config first use with Ollama: when no model is chosen, a code-tuned
+      model is auto-selected (preferring a larger one you have installed), and
+      when Ollama is not usable the message says exactly what to do (try
+      "ollama serve", or "ollama pull qwen2.5-coder").
+    - The AI pane shows a header with the active backend, model and permission
+      policy, so the setup is visible without opening Options.
+    - A one-time first-use notice states the trust model (local by default,
+      opt-in, every edit previewed and revertible) before the first action.
     - Browse the pane's history from the keyboard while the "> " prompt stays
       docked at the bottom: PgUp/PgDn page through the transcript and the arrows
       scroll it a line at a time; typing any character snaps the view back to the

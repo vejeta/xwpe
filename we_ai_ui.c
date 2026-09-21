@@ -749,6 +749,23 @@ static void ai_identity_text(char *buf, size_t n)
   snprintf(buf, n, "You are served by the \"%s\" backend%s", be, tail);
 }
 
+/**
+ * ai_status_text - One-line "who am I talking to" indicator for the pane header:
+ * the active backend, model and permission policy.
+ * @buf: destination; @n: its size.
+ *
+ * Shown at the top of a fresh AI pane so the working setup is visible without
+ * opening Options (the bottom bar is a fixed 80-column layout with no room for a
+ * variable model name).
+ */
+static void ai_status_text(char *buf, size_t n)
+{
+ const char *be = wpe_ai_backend_name(e_ai_backend);
+ const char *pol = wpe_ai_policy_name(e_ai_policy);
+ const char *model = (e_ai_model && *e_ai_model) ? e_ai_model : "(default)";
+ snprintf(buf, n, "[AI: %s | model: %s | policy: %s]", be, model, pol);
+}
+
 static size_t ai_append_identity(char *sys, size_t cap, size_t len)
 {
  char id[512];
@@ -1151,8 +1168,12 @@ static void e_ai_chat_arm(FENSTER *f)
  g_ai_input_pos = 0;
  g_ai_input_rows = 0;
  if (wf->b->mxlines == 0) e_new_line(0, wf->b);
- if (wf->b->mxlines <= 1)                        /* one-time hint on a fresh chat */
+ if (wf->b->mxlines <= 1) {                       /* one-time header on a fresh chat */
+  char st[200];
+  ai_status_text(st, sizeof st);
+  ai_tr_line(wf, st);
   ai_tr_line(wf, "[Enter=send  Ctrl-J=newline  arrows move  PgUp/PgDn scroll  Esc leaves]");
+ }
  ai_input_render(wf);                            /* creates the input region */
 }
 
@@ -2391,6 +2412,81 @@ int e_ai_host(FENSTER *f);          /* the Claude Code agent engine, below */
 static int e_ai_plan(FENSTER *f);   /* defined in the PLAN section below  */
 static void e_ai_cycle_policy(FENSTER *f);  /* defined below e_ai_ui_key    */
 
+/* ======================= first-use consent ============================= */
+
+/**
+ * ai_consent_path - Path of the "first-use notice accepted" marker file.
+ * @buf: destination; @n: its size.  Overridable with XWPE_AI_CONSENT_FILE.
+ * Return: buf.
+ */
+static const char *ai_consent_path(char *buf, size_t n)
+{
+ const char *e = getenv("XWPE_AI_CONSENT_FILE");
+ const char *xdg = getenv("XDG_CONFIG_HOME");
+ const char *home = getenv("HOME");
+ if (e && *e)          snprintf(buf, n, "%s", e);
+ else if (xdg && *xdg) snprintf(buf, n, "%s/xwpe/ai_consented", xdg);
+ else if (home)        snprintf(buf, n, "%s/.config/xwpe/ai_consented", home);
+ else                  snprintf(buf, n, ".xwpe_ai_consented");
+ return buf;
+}
+
+/**
+ * ai_consent_given - Whether the first-use notice has been accepted.
+ *
+ * An explicit XWPE_AI_CONSENTED wins (for tests); otherwise the marker file;
+ * otherwise a dev/CI force-enable (XWPE_AI_ENABLE) implies it, so scripted and
+ * test runs are never blocked on the prompt.
+ */
+static int ai_consent_given(void)
+{
+ char buf[1024];
+ const char *e = getenv("XWPE_AI_CONSENTED");
+ if (e) return *e == '1';
+ if (access(ai_consent_path(buf, sizeof buf), F_OK) == 0) return 1;
+ return getenv("XWPE_AI_ENABLE") ? 1 : 0;
+}
+
+/** ai_consent_remember - Persist that the first-use notice was accepted. */
+static void ai_consent_remember(void)
+{
+ char buf[1024];
+ char *slash;
+ ai_consent_path(buf, sizeof buf);
+ slash = strrchr(buf, '/');
+ if (slash) { *slash = '\0'; mkdir(buf, 0700); *slash = '/'; }  /* best-effort dir */
+ { FILE *fp = fopen(buf, "w"); if (fp) { fputs("1\n", fp); fclose(fp); } }
+}
+
+/**
+ * ai_consent_gate - Show the one-time first-use notice before any AI action.
+ * @f: the current window (the notice renders in the AI pane).
+ * Return: 1 to proceed (choice remembered), 0 if the user declined.
+ *
+ * States the trust model up front -- local by default, opt-in, every edit
+ * previewed and revertible -- so enabling the assistant is an informed choice.
+ */
+static int ai_consent_gate(FENSTER *f)
+{
+ if (ai_consent_given()) return 1;
+ ai_pane(f, "AI assistant -- first use.  It runs LOCALLY by default (Ollama on", 1);
+ ai_pane(f, "localhost): nothing leaves your machine unless you point it at a", 0);
+ ai_pane(f, "remote backend.  It is opt-in, every edit is previewed, and one", 0);
+ ai_pane(f, "Ctrl-U reverts it.", 0);
+ ai_pane(f, "   Enter / y = enable and continue      n / Esc = not now", 0);
+ for (;;) {
+  int c = e_getch();
+  if (c == WPE_ESC || e_toupper(c) == 'N') {
+   ai_pane(f, "[AI] not enabled - press Alt-G again when you want it", 0);
+   return 0;
+  }
+  if (e_toupper(c) == 'Y' || c == 13 || c == '\r' || c == '\n') {
+   ai_consent_remember();
+   return 1;
+  }
+ }
+}
+
 /* ======================= Alt-G prefix dispatch ========================== */
 int e_ai_ui_key(FENSTER *f)
 {
@@ -2406,6 +2502,9 @@ int e_ai_ui_key(FENSTER *f)
   wpe_ai_cancel();
   return 0;
  }
+ /* First use: state the trust model and get an explicit go-ahead once. */
+ if (!ai_consent_gate(f))
+  return 0;
  /* Alt-G shows the action menu straight away -- the way Alt-F shows the File
     menu -- instead of an invisible "press another key" prefix.  The menu takes
     the item's letter as a shortcut (a=Ask e=Edit p=Plan g=Agent m=Model
@@ -2638,6 +2737,7 @@ static int ai_agent_launch(FENSTER *f, const char *goal, const char *extra)
   return 0;
  }
 
+ { char st[200]; ai_status_text(st, sizeof st); ai_pane(f, st, 0); }
  { char line[1100]; snprintf(line, sizeof line, "[agent] task: %s", goal); ai_pane(f, line, 1); }
  wpe_ai_trace("agent task=%s", goal);
 
