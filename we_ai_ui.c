@@ -2336,8 +2336,7 @@ static int e_ai_pick_model_apply(FENSTER *f, int announce)
   free(e_ai_model);
   e_ai_model = strdup(names[sel]);
   if (announce) {
-   snprintf(line, sizeof line, "[AI] model = %s (Save Options to persist)",
-            names[sel]);
+   snprintf(line, sizeof line, "[AI] model = %s", names[sel]);
    ai_pane(f, line, 1);
   }
   wpe_ai_trace("model set %s", names[sel]);
@@ -2501,6 +2500,7 @@ int e_ai_options(FENSTER *f)
   wpe_ai_trace("options backend=%s model=%s policy=%s enable=%d",
                wpe_ai_backend_name(e_ai_backend), e_ai_model ? e_ai_model : "-",
                wpe_ai_policy_name(e_ai_policy), (f->ed->edopt & ED_AI_ENABLE) ? 1 : 0);
+  e_save_opt(f);              /* Ok persists the working mode -- no separate save */
   g_ai_opt_dlg = NULL;
   freeostr(o);
   return 0;
@@ -2665,16 +2665,34 @@ static int ai_agent_approve(FENSTER *f, const char *what, int is_run)
  }
 }
 
-/* Alt-G y: cycle the permission dial ask -> edits -> auto.  Also settable from
- * the AI menu (radio) and persisted as AIPolicy via Save Options. */
+/* Persist the current settings (the working mode) so choices stick across
+ * sessions without a manual "Save Options".  e_save_opt writes the active config
+ * -- the same file the option dialog saves to. */
+static void ai_persist_settings(FENSTER *f) { e_save_opt(f); }
+
+/* Show a short status WITHOUT disturbing the user: add it to the pane only if it
+ * is already open; never pop the pane up for a mere status line. */
+static void ai_pane_status(FENSTER *f, const char *line)
+{
+ ECNT *cn = f->ed;
+ int i;
+ for (i = cn->mxedt; i > 0 && strcmp(cn->f[i]->datnam, AI_PANE_NAME); i--)
+  ;
+ if (i > 0)
+  ai_pane(f, line, 0);                    /* pane open: quiet line, do not raise it */
+}
+
+/* Alt-G y: cycle the permission level ask -> edits -> auto.  It is remembered
+ * automatically (persisted), and confirmed discreetly (a pane line only when the
+ * pane is already open) -- it does not pop the pane up for a settings change. */
 static void e_ai_cycle_policy(FENSTER *f)
 {
- char line[140];
+ char line[80];
  e_ai_policy = (e_ai_policy + 1) % 3;
- snprintf(line, sizeof line,
-   "[AI] permission policy = %s   (ask -> edits -> auto; Save Options to keep)",
-   wpe_ai_policy_name(e_ai_policy));
- ai_pane(f, line, 1);
+ snprintf(line, sizeof line, "[AI] Permissions: %s (ask -> edits -> auto)",
+          wpe_ai_policy_name(e_ai_policy));
+ ai_pane_status(f, line);
+ ai_persist_settings(f);
  wpe_ai_trace("policy set %s", wpe_ai_policy_name(e_ai_policy));
 }
 

@@ -282,6 +282,11 @@ Changes
     - Lines in the AI pane that ask you to act (approve a step, the first-use
       notice, "type a follow-up") are shown in red, so a prompt never blends into
       the agent's ordinary output.
+    - The AI working mode (backend, model, permission level, engine, enable) now
+      persists automatically -- changing it in Options > AI, or cycling the
+      permission level from the menu, is saved without a separate "Save Options".
+      The permission toggle is also discreet: it no longer pops the pane up for a
+      settings change, and does not nag about saving.
     - The Alt-G menu is clearer and grouped: the actions (Ask, Edit, Multi-file,
       Agent, "Build & fix (agent)") sit above a divider; below it the quick
       settings -- "Permissions: <level>" (shows and cycles ask/edits/auto),
