@@ -417,6 +417,79 @@ static char *e_info_search_path(const char *fallback)
  return(path);
 }
 
+/* Create `path` and any missing parent directories (best-effort, mode 0700). */
+static void e_mkdirs(const char *path)
+{
+ char tmp[1024];
+ size_t i, n = strlen(path);
+ if (n == 0 || n >= sizeof tmp) return;
+ memcpy(tmp, path, n + 1);
+ for (i = 1; i < n; i++)
+  if (tmp[i] == '/') { tmp[i] = '\0'; mkdir(tmp, 0700); tmp[i] = '/'; }
+ mkdir(tmp, 0700);
+}
+
+/* Copy file `src` to `dst` (best-effort).  Returns 0 on success. */
+static int e_copy_file(const char *src, const char *dst)
+{
+ FILE *in = fopen(src, "rb"), *out;
+ char buf[4096];
+ size_t r;
+ if (!in) return -1;
+ out = fopen(dst, "wb");
+ if (!out) { fclose(in); return -1; }
+ while ((r = fread(buf, 1, sizeof buf, in)) > 0)
+  if (fwrite(buf, 1, r, out) != r) { fclose(in); fclose(out); return -1; }
+ fclose(in);
+ return fclose(out) == 0 ? 0 : -1;
+}
+
+/* The user config file per the XDG Base Directory spec:
+   $XDG_CONFIG_HOME/xwpe/xwperc (default ~/.config/xwpe/xwperc).  A legacy
+   ~/.xwpe/xwperc is migrated (copied) the first time so existing settings carry
+   over; if that copy fails, the legacy file is used so nothing is lost.  Returns
+   a malloc'd path. */
+static char *e_xdg_config_file(void)
+{
+ const char *xdg = getenv("XDG_CONFIG_HOME");
+ const char *home = getenv("HOME");
+ char dir[1024], xdgfile[1120], legacy[1120];
+ char *p;
+ size_t n;
+ if (!home || !*home) home = ".";
+ if (xdg && *xdg) snprintf(dir, sizeof dir, "%s/xwpe", xdg);
+ else             snprintf(dir, sizeof dir, "%s/.config/xwpe", home);
+ snprintf(xdgfile, sizeof xdgfile, "%s/%s", dir, OPTION_FILE);
+ snprintf(legacy, sizeof legacy, "%s/%s/%s", home, XWPE_HOME, OPTION_FILE);
+
+ e_mkdirs(dir);                          /* so saving here works even on a fresh box */
+ if (access(xdgfile, F_OK) != 0 && access(legacy, F_OK) == 0) {
+  if (e_copy_file(legacy, xdgfile) != 0) {   /* migration failed: keep the legacy file */
+   n = strlen(legacy) + 1; p = MALLOC(n); if (p) memcpy(p, legacy, n); return p;
+  }
+  /* Migrated: leave a note in the old directory so anyone who looks there knows
+     where the settings went (the legacy dir is kept as a backup, not deleted). */
+  {
+   char note[1160];
+   FILE *nf;
+   snprintf(note, sizeof note, "%s/%s/MOVED_TO_XDG.txt", home, XWPE_HOME);
+   nf = fopen(note, "w");
+   if (nf) {
+    fprintf(nf,
+      "xwpe now stores its files following the XDG Base Directory specification.\n"
+      "Your settings were copied automatically:\n\n"
+      "  configuration : %s\n"
+      "  runtime state : $XDG_STATE_HOME/xwpe/  (default ~/.local/state/xwpe/)\n\n"
+      "This directory (~/%s) is kept only as a backup and is no longer read.\n"
+      "You can delete it once the new location works for you.\n",
+      xdgfile, XWPE_HOME);
+    fclose(nf);
+   }
+  }
+ }
+ n = strlen(xdgfile) + 1; p = MALLOC(n); if (p) memcpy(p, xdgfile, n); return p;
+}
+
 int main(int argc, char **argv)
 {
  FARBE *fb;
@@ -505,11 +578,7 @@ int main(int argc, char **argv)
   }
   else
   {
-   cn->optfile = e_mkfilename(getenv("HOME"), XWPE_HOME);
-   cn->optfile = REALLOC(cn->optfile,
-     strlen(cn->optfile) + strlen(OPTION_FILE) + 2);
-   strcat(cn->optfile, DIRS);
-   strcat(cn->optfile, OPTION_FILE);
+   cn->optfile = e_xdg_config_file();    /* ~/.config/xwpe/xwperc (XDG), legacy migrated */
   }
  }
  if (so == 0) err = e_opt_read(cn);

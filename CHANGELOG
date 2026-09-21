@@ -233,6 +233,17 @@ Changes
 
 1.7.0 (AI assistant -- experimental, opt-in)
 
+* Config and runtime state now follow the XDG Base Directory spec.  The user
+  config moves from ~/.xwpe/xwperc to $XDG_CONFIG_HOME/xwpe/xwperc (default
+  ~/.config/xwpe/xwperc) and a legacy ~/.xwpe/xwperc is migrated (copied) on
+  first run, so existing settings carry over; if that copy fails the legacy file
+  keeps being used, so nothing is lost.  The old ~/.xwpe/ is kept as a backup
+  with a note (MOVED_TO_XDG.txt) pointing to the new location.  AI runtime state
+  (per-workspace session
+  memory, checkpoints) moves to $XDG_STATE_HOME/xwpe/ (default
+  ~/.local/state/xwpe/).  A project-local ./xwperc still takes priority when
+  present.  Covered by tests/test_xdg.py.
+
 * New optional AI assistant behind the Alt-G prefix, off by default and absent
   from a stock build.  The classic editor is byte-for-byte unchanged when AI is
   off.  Build flags: --enable-ai (local + Claude-CLI backends), --enable-ai-tls

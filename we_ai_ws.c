@@ -51,6 +51,16 @@ static void ws_shq(char *dst, size_t sz, const char *src)
  dst[o] = '\0';
 }
 
+/* Base directory for xwpe's runtime state, per the XDG Base Directory spec:
+   $XDG_STATE_HOME/xwpe (default ~/.local/state/xwpe).  Writes into buf. */
+static void ws_state_dir(char *buf, size_t sz)
+{
+ const char *xdg = getenv("XDG_STATE_HOME");
+ const char *home = getenv("HOME");
+ if (xdg && *xdg) snprintf(buf, sz, "%s/xwpe", xdg);
+ else             snprintf(buf, sz, "%s/.local/state/xwpe", (home && *home) ? home : ".");
+}
+
 static void ws_list_push(char ***l, int *n, int *cap, char *s)
 {
  if (*n == *cap) { *cap = *cap ? *cap * 2 : 8; *l = realloc(*l, (size_t)(*cap) * sizeof **l); }
@@ -365,10 +375,10 @@ int wpe_ai_checkpoint_create(FENSTER *f, char **scope, int nscope)
 
  /* snapshot copies */
  {
-  const char *home = getenv("HOME");
+  char sdir[1024];
   time_t now = time(NULL);
-  if (!home) home = ".";
-  snprintf(ck_snapdir, sizeof ck_snapdir, "%s/.xwpe/checkpoints/%ld", home, (long)now);
+  ws_state_dir(sdir, sizeof sdir);
+  snprintf(ck_snapdir, sizeof ck_snapdir, "%s/checkpoints/%ld", sdir, (long)now);
   ws_shq(q, sizeof q, ck_snapdir);
   snprintf(cmd, sizeof cmd, "mkdir -p %s", q);
   out = wpe_ai_run_capture(cmd); free(out);
@@ -467,8 +477,8 @@ static void ws_changes_from_gitdiff(const char *diff, const char *path,
  }
 }
 
-/* xwpe's own state (.xwpe/, the session sidecar) and any other dot-path are
- * not part of a reviewable changeset. */
+/* Dot-paths (the project-mode ".xwpe-ai-session" sidecar and any other hidden
+ * file) are not part of a reviewable changeset. */
 static int ws_hidden_path(const char *rel)
 {
  const char *p = rel;
@@ -751,14 +761,13 @@ static void ws_session_path(FENSTER *f, char *buf, size_t sz)
   snprintf(buf, sz, "%s/.xwpe-ai-session", root);
   free(root);
  } else {
-  const char *home = getenv("HOME");
-  char q[1100], cmd[1300], *out;
-  if (!home) home = ".";
-  snprintf(buf, sz, "%s/.xwpe/ai", home);
+  char sdir[1024], q[1100], cmd[1300], *out;
+  ws_state_dir(sdir, sizeof sdir);
+  snprintf(buf, sz, "%s/ai", sdir);
   ws_shq(q, sizeof q, buf);
   snprintf(cmd, sizeof cmd, "mkdir -p %s", q);
   out = wpe_ai_run_capture(cmd); free(out);
-  snprintf(buf, sz, "%s/.xwpe/ai/%lu.session", home, ws_hash(f->dirct ? f->dirct : "."));
+  snprintf(buf, sz, "%s/ai/%lu.session", sdir, ws_hash(f->dirct ? f->dirct : "."));
  }
 }
 
