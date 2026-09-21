@@ -60,5 +60,5 @@ def test_spinner_does_not_repaint_over_menu(tmp_path):
         s._drain(2.0)                                     # let a spinner tick land
         disp = "\n".join(s.display())
     # the menu survived the repaint that fires while it is open
-    assert "Ask" in disp and "Fix the build" in disp, \
+    assert "Ask" in disp and "Build & fix (agent)" in disp, \
         "the spinner repainted over the open menu (items lost):\n" + disp

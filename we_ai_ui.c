@@ -2346,11 +2346,6 @@ static int e_ai_pick_model_apply(FENSTER *f, int announce)
  return 0;
 }
 
-static int e_ai_pick_model(FENSTER *f)          /* Alt-G menu "Pick model" */
-{
- return e_ai_pick_model_apply(f, 1);
-}
-
 /* The Model button's caption (fixed width so an in-place refresh always
    overwrites the previous, possibly longer, name) and the open settings dialog,
    shared with the button's action so the picker can float OVER the dialog and
@@ -3396,9 +3391,10 @@ int e_ai_host(FENSTER *f)
  * without memorising the prefix letters -- the same role e_lsp_ui_menu plays
  * for the language server. */
 
-#define AI_MENU_TEXTW 25
+#define AI_MENU_TEXTW 30
 
-/* Cycle the permission dial (ask -> edits -> auto) from the menu. */
+/* Cycle the permission level (ask -> edits -> auto) from the menu.  The menu row
+ * shows the CURRENT level ("Permissions: ask"), so this reads like a toggle. */
 static int e_ai_menu_policy(FENSTER *f)
 {
  e_ai_cycle_policy(f);
@@ -3409,57 +3405,65 @@ static int e_ai_menu_policy(FENSTER *f)
 static int e_ai_menu_new_session(FENSTER *f)
 {
  wpe_ai_session_reset(f);
- ai_pane(f, "[AI] session reset for this workspace", 1);
+ ai_pane(f, "[AI] conversation cleared for this workspace", 1);
  return 0;
 }
 
-/* Turn the assistant off (clears the runtime ED_AI_ENABLE toggle).  The bar
- * loses its "Alt-G AI" entry the next time this window is drawn; Options >
- * Editor turns it back on. */
-static int e_ai_menu_disable(FENSTER *f)
-{
- if (WpeEditor)
-  WpeEditor->edopt &= ~ED_AI_ENABLE;
- ai_pane(f, "[AI] assistant disabled - re-enable it in Options > Editor", 1);
- return 0;
-}
+/* The divider row's action: do nothing (the submenu calls the selected row's
+ * fkt on Enter, so it must not be NULL). */
+static int e_ai_menu_divider(FENSTER *f) { (void)f; return 0; }
 
 /* Fill `it` with the menu rows (name left, "Alt-G <key>" right-aligned so the
- * keyboard shortcut lines up like the LSP menu).  Returns the row count. */
+ * keyboard shortcut lines up like the LSP menu).  The Model and Permissions rows
+ * show the CURRENT value so the active setup is visible; a blank separator
+ * divides the actions from the settings.  Returns the row count. */
 static int e_ai_menu_items(OPTK *it)
 {
- static char label[9][AI_MENU_TEXTW + 4];
- static const struct { const char *name; char key; int (*fkt)(FENSTER *); } a[] = {
-  { "Ask (chat)",        'A', e_ai_chat            },
-  { "Edit current file", 'E', e_ai_edit            },
-  { "Multi-file edit",   'F', e_ai_plan            },
-  { "Agent (tools)",     'G', e_ai_agent           },
-  { "Fix the build",     'B', e_ai_fix_build       },
-  { "Pick model",        'M', e_ai_pick_model      },
-  { "Policy dial",       'Y', e_ai_menu_policy     },
-  { "New session",       'N', e_ai_menu_new_session},
-  { "Disable",           'D', e_ai_menu_disable    }
- };
- int i, n = (int)(sizeof(a) / sizeof(a[0]));
+ static char label[10][AI_MENU_TEXTW + 4];
+ static char perm_row[48];
+ struct row { const char *name; char key; int (*fkt)(FENSTER *); };
+ int i, n;
 
- for (i = 0; i < n; i++)
+ snprintf(perm_row, sizeof perm_row, "Permissions: %s",
+          wpe_ai_policy_name(e_ai_policy));
+
  {
-  char code[12];
-  int pad, hl;
-  snprintf(code, sizeof code, "Alt-G %c", a[i].key);            /* 7 chars */
-  pad = AI_MENU_TEXTW - (int)strlen(a[i].name) - (int)strlen(code);
-  if (pad < 1)
-   pad = 1;
-  snprintf(label[i], sizeof label[i], "%s%*s%s", a[i].name, pad, "", code);
-  hl = (int)strlen(label[i]) - 1;                /* the letter in "Alt-G X" */
-  it[i] = WpeFillSubmenuItem(label[i], hl, a[i].key, a[i].fkt);
+  struct row a[] = {
+   { "Ask (chat)",         'A', e_ai_chat             },
+   { "Edit current file",  'E', e_ai_edit             },
+   { "Multi-file edit",    'F', e_ai_plan             },
+   { "Agent (tools)",      'G', e_ai_agent            },
+   { "Build & fix (agent)",'B', e_ai_fix_build        },
+   { NULL,                 0,   NULL                  },   /* separator */
+   { perm_row,             'Y', e_ai_menu_policy      },
+   { "Clear conversation", 'N', e_ai_menu_new_session },
+   { "AI settings...",     'S', e_ai_options          }
+  };
+  n = (int)(sizeof(a) / sizeof(a[0]));
+  for (i = 0; i < n; i++) {
+   char code[12];
+   int pad, hl, j;
+   if (!a[i].name) {                             /* blank, non-selectable divider */
+    for (j = 0; j < AI_MENU_TEXTW; j++) label[i][j] = '-';
+    label[i][AI_MENU_TEXTW] = '\0';
+    it[i] = WpeFillSubmenuItem(label[i], -1, 0, e_ai_menu_divider);
+    continue;
+   }
+   snprintf(code, sizeof code, "Alt-G %c", a[i].key);          /* 7 chars */
+   pad = AI_MENU_TEXTW - (int)strlen(a[i].name) - (int)strlen(code);
+   if (pad < 1)
+    pad = 1;
+   snprintf(label[i], sizeof label[i], "%s%*s%s", a[i].name, pad, "", code);
+   hl = (int)strlen(label[i]) - 1;               /* the letter in "Alt-G X" */
+   it[i] = WpeFillSubmenuItem(label[i], hl, a[i].key, a[i].fkt);
+  }
  }
  return n;
 }
 
 int e_ai_menu(FENSTER *f)
 {
- OPTK items[9];
+ OPTK items[12];
  int n, xa, xe, ya, ye, w;
 
  if (!wpe_ai_enabled())

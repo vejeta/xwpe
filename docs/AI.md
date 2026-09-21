@@ -41,15 +41,22 @@ model works):
   green = added, with context). Each change is an independent hunk with its own
   `y`/`n`/`a`/`q`, so you can accept some and reject others; the accepted hunks
   apply as **one** edit that a single **`Ctrl-U`** undoes.
-- **Agent** (`Alt-G g`) -- a tool-using agent: it lists/reads/greps files and
-  proposes `write_file` / `run_command` steps. Every mutating step is shown for
-  approval (a write is previewed as a diff); an unattended run takes a checkpoint
-  first and offers a reviewable changeset at the end. When it finishes you can
-  type a **follow-up** right in the pane.
-- **Fix the build** (`Alt-G b`) -- runs the build (`make` when a makefile is
-  present, otherwise a syntax-only compile of the current file) and, if it fails,
-  loops the agent: read the errors, edit the sources, re-build, repeat until it
-  passes. It uses the same tools and permission dial as the agent.
+- **Agent (tools)** (`Alt-G g`) -- a tool-using agent: it lists/reads/greps files
+  and proposes `write_file` / `run_command` steps **one at a time**, each shown
+  for approval (a write is previewed as a diff); an unattended run takes a
+  checkpoint first and offers a reviewable changeset at the end. When it finishes
+  you can type a **follow-up** right in the pane.  (Multi-file edit vs Agent:
+  Multi-file proposes one coordinated change and asks once; the Agent works
+  step-by-step, reading and acting as it goes.)
+- **Build & fix (agent)** (`Alt-G b`) -- a specialized agent: runs the build
+  (`make` when a makefile is present, otherwise a syntax-only compile of the
+  current file) and, if it fails, loops -- read the errors, edit the sources,
+  re-build -- until it passes. Same tools and permission level as the agent.
+
+The `Alt-G` menu groups the **actions** above and, below a divider, the quick
+**settings**: *Permissions* (shows and cycles ask/edits/auto), *Clear
+conversation*, and *AI settings...* which opens **Options > AI** (the model, the
+enable toggle and the full configuration live there).
 The **Agent** can run on one of two **engines** (choose in Options > AI, only in
 a `--enable-ai-agent-host` build): *Built-in* (the editor's own tool loop, works
 with any backend) or *Claude Code* (runs the real `claude` CLI as a persistent

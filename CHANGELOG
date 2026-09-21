@@ -280,8 +280,16 @@ Changes
       instead of cancelling the first.  A modal AI prompt/menu opened over a
       running task also no longer loses the caret to the task's spinner.
     - Lines in the AI pane that ask you to act (approve a step, the first-use
-      notice, "type a follow-up") are highlighted, so a prompt never blends into
+      notice, "type a follow-up") are shown in red, so a prompt never blends into
       the agent's ordinary output.
+    - The Alt-G menu is clearer and grouped: the actions (Ask, Edit, Multi-file,
+      Agent, "Build & fix (agent)") sit above a divider; below it the quick
+      settings -- "Permissions: <level>" (shows and cycles ask/edits/auto),
+      "Clear conversation", and "AI settings..." which opens Options > AI.  The
+      model and the enable toggle now live in Options > AI (reachable from that
+      entry) rather than being duplicated in the menu.  ("Fix the build" ->
+      "Build & fix (agent)", "Policy dial" -> "Permissions", "New session" ->
+      "Clear conversation".)
     - Browse the pane's history from the keyboard while the "> " prompt stays
       docked at the bottom: PgUp/PgDn page through the transcript and the arrows
       scroll it a line at a time; typing any character snaps the view back to the

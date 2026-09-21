@@ -92,3 +92,33 @@ def test_ai_menu_opens_and_lists_actions(tmp_path):
     txt = trace.read_text() if trace.exists() else ""
     assert "menu open" in txt, "menu did not open:\n" + txt
     assert "Ask" in disp and "Multi-file" in disp, "menu actions not listed:\n" + disp
+
+
+def test_menu_shows_clear_labels_and_state(tmp_path):
+    # the menu uses clear labels, surfaces the active permission level, has a
+    # divider between the actions and the settings, and points to Options>AI for
+    # the full settings (Model/enable now live there, not in the menu).
+    env = {"XWPE_AI_ENABLE": "1", "XWPE_AI_BACKEND": "mock",
+           "XWPE_AI_POLICY": "edits"}
+    with WpeSession(str(tmp_path), SEED, filename="notes.txt",
+                    env_extra=env) as s:
+        s.key(ALT.AI); s._drain(0.6)
+        disp = "\n".join(s.display())
+    for want in ("Build & fix (agent)", "Permissions: edits",
+                 "Clear conversation", "AI settings", "----"):
+        assert want in disp, "menu missing %r:\n%s" % (want, disp)
+    # the old jargon is gone, and the settings moved out of the action list
+    for gone in ("Policy dial", "Fix the build", "Pick model", "Disable"):
+        assert gone not in disp, "old menu label still present: %r\n%s" % (gone, disp)
+
+
+def test_menu_settings_entry_opens_options(tmp_path):
+    # "AI settings..." (Alt-G s) opens the Options > AI dialog.
+    env = {"XWPE_AI_ENABLE": "1", "XWPE_AI_BACKEND": "mock"}
+    with WpeSession(str(tmp_path), SEED, filename="notes.txt",
+                    env_extra=env) as s:
+        s.key(ALT.AI); s._drain(0.5)
+        s.key("s"); s._drain(0.8)
+        disp = "\n".join(s.display())
+    assert "AI settings" in disp and "Backend" in disp and "Permission" in disp, \
+        "the settings entry did not open Options > AI:\n" + disp
