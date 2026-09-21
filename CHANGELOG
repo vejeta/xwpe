@@ -279,6 +279,9 @@ Changes
       run when the current finishes (one waiting slot; the newest replaces it),
       instead of cancelling the first.  A modal AI prompt/menu opened over a
       running task also no longer loses the caret to the task's spinner.
+    - Lines in the AI pane that ask you to act (approve a step, the first-use
+      notice, "type a follow-up") are highlighted, so a prompt never blends into
+      the agent's ordinary output.
     - Browse the pane's history from the keyboard while the "> " prompt stays
       docked at the bottom: PgUp/PgDn page through the transcript and the arrows
       scroll it a line at a time; typing any character snaps the view back to the

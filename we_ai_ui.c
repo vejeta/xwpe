@@ -111,6 +111,7 @@ static char *ai_chat_tool_result(FENSTER *f, const char *reply);
 static FENSTER *ai_pane_win(FENSTER *f);
 static void  ai_tr_line(FENSTER *wf, const char *str);
 static void  ai_pane_paint(FENSTER *wf);
+static void  ai_pane_hl_attention(FENSTER *wf);
 
 static int ai_pane_width(FENSTER *wf);          /* defined below */
 
@@ -128,6 +129,10 @@ static void ai_pane_put1(FENSTER *f, const char *line, int surface)
     Edit/Plan/Agent output opened as a full window over the file being edited. */
  ai_pane_win(f);
  e_d_p_named(AI_PANE_NAME, (char *)line, f, surface ? 1 : 0);
+ /* e_d_p_named draws in the normal colour; repaint any attention line red on
+    top (agent approval, the first-use notice run outside the chat-input path). */
+ { FENSTER *wf = ai_pane_win(f);
+   if (wf) { ai_pane_hl_attention(wf); e_refresh(); } }
 }
 
 /* Append `line` to the pane, word-wrapped to the pane's CURRENT width, so a long
@@ -161,6 +166,46 @@ static void ai_pane(FENSTER *f, const char *line, int surface)
   p += cut;
   while (*p == ' ') p++;                          /* drop the break space */
   first = 0;
+ }
+}
+
+/* Lines that ASK the user to act (approve a step, the first-use notice, "type a
+   follow-up") carry this marker and are drawn in a distinct colour, so a prompt
+   never blends into the agent's ordinary output.  Content-based, so it survives
+   scrolling and line insertion. */
+#define AI_ATTN_MARK    ">> "
+#define AI_ATTN_MARKLEN 3
+
+/** ai_pane_attn - Add an attention line (marked + highlighted) to the pane. */
+static void ai_pane_attn(FENSTER *f, const char *text)
+{
+ char buf[1300];
+ snprintf(buf, sizeof buf, "%s%s", AI_ATTN_MARK, text);
+ ai_pane(f, buf, 1);
+}
+
+/* Repaint the pane's visible attention lines in the highlight colour, on top of
+   what e_schirm just drew in the normal colour. */
+static void ai_pane_hl_attention(FENSTER *wf)
+{
+ BUFFER *b = wf->b;
+ SCHIRM *s = wf->s;
+ int rows = wf->e.y - wf->a.y;                    /* interior rows e_schirm draws */
+ /* Red foreground on the pane's own background ("this needs your input").  The
+    attribute is 16*bg + fg; keep the pane's text background and set a red
+    foreground (ANSI colour index 1, as init_pair maps them). */
+ int color = 16 * wf->fb->nt.b + 1;
+ int y;
+ for (y = s->c.y; y < b->mxlines && y < s->c.y + rows; y++) {
+  const char *ls = b->bf[y].s;
+  int row, n;
+  char tmp[1300];
+  if (!ls || strncmp(ls, AI_ATTN_MARK, AI_ATTN_MARKLEN)) continue;
+  n = b->bf[y].len;
+  if (n >= (int)sizeof tmp) n = (int)sizeof tmp - 1;
+  memcpy(tmp, ls, (size_t)n); tmp[n] = '\0';
+  row = wf->a.y + 1 + (y - s->c.y);
+  e_pr_str(wf->a.x + 1, row, tmp, color, 0, 0, 0, 0);
  }
 }
 
@@ -396,6 +441,7 @@ static void ai_pane_paint(FENSTER *wf)
   }
  }
  e_schirm(wf, 0);
+ ai_pane_hl_attention(wf);          /* colour the "needs your input" lines */
  e_cursor(caret, 0);
  e_refresh();
 }
@@ -2530,11 +2576,11 @@ static void ai_consent_remember(void)
 static int ai_consent_gate(FENSTER *f)
 {
  if (ai_consent_given()) return 1;
- ai_pane(f, "AI assistant -- first use.  It runs LOCALLY by default (Ollama on", 1);
- ai_pane(f, "localhost): nothing leaves your machine unless you point it at a", 0);
- ai_pane(f, "remote backend.  It is opt-in, every edit is previewed, and one", 0);
- ai_pane(f, "Ctrl-U reverts it.", 0);
- ai_pane(f, "   Enter / y = enable and continue      n / Esc = not now", 0);
+ ai_pane_attn(f, "AI assistant -- first use.  It runs LOCALLY by default (Ollama on");
+ ai_pane_attn(f, "localhost): nothing leaves your machine unless you point it at a");
+ ai_pane_attn(f, "remote backend.  It is opt-in, every edit is previewed, and one");
+ ai_pane_attn(f, "Ctrl-U reverts it.");
+ ai_pane_attn(f, "Enter / y = enable and continue      n / Esc = not now");
  for (;;) {
   int c = e_getch();
   if (c == WPE_ESC || e_toupper(c) == 'N') {
@@ -2614,9 +2660,9 @@ static int ai_agent_approve(FENSTER *f, const char *what, int is_run)
   wpe_ai_trace("agent auto-approve %s", what);
   return 1;
  }
- snprintf(line, sizeof line, "[agent] APPROVE?  %s", what);
- ai_pane(f, line, 1);
- ai_pane(f, "   y = allow    n / Esc = deny", 0);
+ snprintf(line, sizeof line, "APPROVE?  %s", what);
+ ai_pane_attn(f, line);
+ ai_pane_attn(f, "y = allow    n / Esc = deny");
  for (;;) {
   int c = e_getch();
   if (c == WPE_ESC || e_toupper(c) == 'N') return 0;
@@ -2757,7 +2803,7 @@ static void ai_agent_finish(ai_async_op *op)
     input on it (the agent's transcript stays visible), so the user types the
     next instruction right here rather than re-opening Alt-G.  The workspace
     session carries the context forward; Esc leaves. */
- ai_pane(op->f, "[agent] done - type a follow-up below (Enter sends, Esc leaves)", 0);
+ ai_pane_attn(op->f, "done - type a follow-up below (Enter sends, Esc leaves)");
  e_ai_chat_arm(op->f);
 }
 
