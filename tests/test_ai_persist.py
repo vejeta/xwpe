@@ -41,14 +41,18 @@ def test_policy_toggle_is_quiet_and_persists(tmp_path):
         s.key(ALT.AI); s._drain(0.4)
         s.key("y"); s._drain(0.6)
         disp = s.display()
-        # a visible confirmation, without the "Save Options" nag, and without
-        # stealing focus from the file (the editor stays the top window).
-        assert any("Permissions: edits" in r for r in disp), \
-            "the toggle gave no visible confirmation:\n" + "\n".join(disp)
+        # a one-shot flash on the bottom status line: visible, no "Save Options"
+        # nag, and it opens neither the AI pane nor a modal box.
+        assert "Permissions: edits" in disp[-1], \
+            "the toggle did not flash a confirmation on the status line:\n" + "\n".join(disp)
         assert not any("Save Options" in r for r in disp), \
             "the toggle still nags about Save Options:\n" + "\n".join(disp)
-        assert any("t.c" in r for r in disp[:3]), \
-            "the toggle stole focus from the file:\n" + "\n".join(disp)
+        assert not any(GEAR in r for r in disp), \
+            "the toggle opened the AI pane (should be a status-line flash):\n" + "\n".join(disp)
+        # the next keystroke restores the key hints
+        s.key("\033[B"); s._drain(0.4)
+        assert "F1 Help" in s.display()[-1], \
+            "the flash did not clear on the next key:\n" + "\n".join(s.display())
 
     # session 2: same HOME -> the change stuck without a manual save
     with WpeSession(work, "int main(void){return 0;}\n",

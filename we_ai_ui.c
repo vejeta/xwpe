@@ -2670,16 +2670,43 @@ static int ai_agent_approve(FENSTER *f, const char *what, int is_run)
  * -- the same file the option dialog saves to. */
 static void ai_persist_settings(FENSTER *f) { e_save_opt(f); }
 
+/* One-shot flash message on the bottom status line: it takes the whole bar row
+ * (which is otherwise full of key hints) and the next keystroke restores it.  A
+ * quick confirmation that opens neither the pane nor a modal box. */
+static int g_ai_flash_active = 0;
+
+void wpe_ai_flash(FENSTER *f, const char *msg)
+{
+ char buf[MAXSCOL + 1];
+ int n;
+ if (!f || !f->fb) return;
+ n = (int)strlen(msg);
+ if (n > MAXSCOL - 2) n = MAXSCOL - 2;
+ memcpy(buf, msg, (size_t)n); buf[n] = '\0';
+ e_blk(MAXSCOL, 0, MAXSLNS - 1, f->fb->mt.fb);                 /* clear the bar row */
+ e_pr_str(1, MAXSLNS - 1, buf, f->fb->ms.fb, -1, -1, f->fb->ms.fb, f->fb->mt.fb);
+ e_refresh();
+ g_ai_flash_active = 1;
+}
+
+int wpe_ai_flash_clear(FENSTER *f)
+{
+ if (!g_ai_flash_active) return 0;
+ g_ai_flash_active = 0;
+ if (f && f->fb) { e_pr_uul(f->fb); e_refresh(); }             /* redraw the key hints */
+ return 1;
+}
+
 /* Alt-G y: cycle the permission level ask -> edits -> auto.  It is remembered
- * automatically (persisted) and confirmed with a quiet pane line -- surface 0,
- * so the pane shows the confirmation without stealing focus from your file. */
+ * automatically (persisted) and confirmed with a one-shot flash on the status
+ * line -- no pane, no modal; the next key restores the bar. */
 static void e_ai_cycle_policy(FENSTER *f)
 {
  char line[80];
  e_ai_policy = (e_ai_policy + 1) % 3;
- snprintf(line, sizeof line, "[AI] Permissions: %s (ask -> edits -> auto)",
+ snprintf(line, sizeof line, " Permissions: %s   (ask -> edits -> auto)",
           wpe_ai_policy_name(e_ai_policy));
- ai_pane(f, line, 0);
+ wpe_ai_flash(f, line);
  ai_persist_settings(f);
  wpe_ai_trace("policy set %s", wpe_ai_policy_name(e_ai_policy));
 }
@@ -3407,11 +3434,12 @@ static int e_ai_menu_policy(FENSTER *f)
  return 0;
 }
 
-/* Forget the workspace conversation so the next request starts fresh. */
+/* Forget the workspace conversation so the next request starts fresh.  Confirmed
+ * with a status-line flash, so it never opens the pane just to report it. */
 static int e_ai_menu_new_session(FENSTER *f)
 {
  wpe_ai_session_reset(f);
- ai_pane(f, "[AI] conversation cleared for this workspace", 1);
+ wpe_ai_flash(f, " AI conversation cleared for this workspace");
  return 0;
 }
 

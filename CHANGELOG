@@ -296,8 +296,11 @@ Changes
     - The AI working mode (backend, model, permission level, engine, enable) now
       persists automatically -- changing it in Options > AI, or cycling the
       permission level from the menu, is saved without a separate "Save Options".
-      The permission toggle confirms quietly in the pane (without stealing focus
-      from your file) and no longer nags about saving.
+      Quick confirmations (cycling the permission level, "Clear conversation")
+      use a one-shot flash on the status line (Turbo Vision style: it takes the
+      bar row and the next key restores the key hints) -- so they never open the
+      pane or a modal box just to report; the permission toggle also no longer
+      nags about saving.
     - The Alt-G menu is clearer and grouped: the actions (Ask, Edit, Multi-file,
       Agent, "Build & fix (agent)") sit above a divider; below it the quick
       settings -- "Permissions: <level>" (shows and cycles ask/edits/auto),

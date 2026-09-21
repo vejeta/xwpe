@@ -122,3 +122,18 @@ def test_menu_settings_entry_opens_options(tmp_path):
         disp = "\n".join(s.display())
     assert "AI settings" in disp and "Backend" in disp and "Permission" in disp, \
         "the settings entry did not open Options > AI:\n" + disp
+
+
+def test_clear_conversation_flashes_without_opening_pane(tmp_path):
+    # "Clear conversation" (Alt-G n) confirms with a status-line flash and must
+    # not open the AI pane just to report it.
+    env = {"XWPE_AI_ENABLE": "1", "XWPE_AI_BACKEND": "mock"}
+    with WpeSession(str(tmp_path), SEED, filename="notes.txt",
+                    env_extra=env) as s:
+        s.key(ALT.AI); s._drain(0.5)
+        s.key("n"); s._drain(0.6)
+        disp = s.display()
+    assert "conversation cleared" in disp[-1], \
+        "no status-line confirmation for Clear conversation:\n" + "\n".join(disp)
+    assert not any("⚙" in r for r in disp), \
+        "Clear conversation opened the AI pane instead of flashing:\n" + "\n".join(disp)
