@@ -512,20 +512,93 @@ int wpe_ai_list_models(int backend, char **names, int max,
  return cnt;
 }
 
+/* Case-insensitive substring test (strcasestr is not portable). */
+static int ai_name_has(const char *hay, const char *needle)
+{
+ size_t nl = strlen(needle);
+ if (!hay) return 0;
+ for (; *hay; hay++)
+  if (!strncasecmp(hay, needle, nl)) return 1;
+ return 0;
+}
+
+/* Model-name fragments that mark a code-tuned model.  A code editor should
+ * answer coding questions well, so auto-selection favours these over a general
+ * chat model (which, if small, tends to ramble). */
+static const char *ai_code_model_hints[] = {
+ "qwen2.5-coder", "qwen3-coder", "deepseek-coder", "codestral", "codellama",
+ "starcoder", "codegemma", "granite-code", "coder", "code", NULL
+};
+
+static int ai_is_code_model(const char *name)
+{
+ int h;
+ for (h = 0; ai_code_model_hints[h]; h++)
+  if (ai_name_has(name, ai_code_model_hints[h])) return 1;
+ return 0;
+}
+
+/* A rough "how strong" score from the parameter size in an Ollama tag: the
+ * number before a 'b'/'B' ("7b", "32b", "3.8b"), scaled by 10 so a decimal is
+ * kept (3.8b -> 38, 32b -> 320).  0 when the tag carries no size.  A model the
+ * user chose to install is trusted, so among equally-suitable models the larger
+ * (stronger) one wins. */
+static int ai_model_size(const char *name)
+{
+ int best = 0;
+ const char *p;
+ if (!name) return 0;
+ for (p = name; *p; ) {
+  if (*p >= '0' && *p <= '9') {
+   double v = 0; double frac;
+   const char *q = p;
+   while (*q >= '0' && *q <= '9') { v = v * 10 + (*q - '0'); q++; }
+   if (*q == '.') { q++; for (frac = 0.1; *q >= '0' && *q <= '9'; q++, frac *= 0.1) v += (*q - '0') * frac; }
+   if (*q == 'b' || *q == 'B') { int s = (int)(v * 10 + 0.5); if (s > best) best = s; }
+   p = (q > p) ? q : p + 1;
+  } else p++;
+ }
+ return best;
+}
+
+/* Index of the model to auto-select: prefer a code-tuned model, and within the
+ * same class prefer the larger (stronger) one; fall back to the first listed. */
+static int ai_pick_model(char **names, int n)
+{
+ int i, best = -1, best_code = -1, best_size = -1;
+ for (i = 0; i < n; i++) {
+  int code = ai_is_code_model(names[i]);
+  int size = ai_model_size(names[i]);
+  if (best < 0 || code > best_code || (code == best_code && size > best_size)) {
+   best = i; best_code = code; best_size = size;
+  }
+ }
+ return best < 0 ? 0 : best;
+}
+
 int wpe_ai_ensure_model(char *errbuf, size_t errsz)
 {
  char *names[32];
- int n, i;
+ int n, i, pick;
  if (e_ai_backend == WPE_AI_CLAUDECLI) return 0;  /* CLI picks its own model */
  if (e_ai_model && *e_ai_model) return 0;
  if (errbuf && errsz) errbuf[0] = '\0';
  n = wpe_ai_list_models(e_ai_backend, names, 32, errbuf, errsz);
  if (n <= 0) {
-  if (errbuf && !errbuf[0]) snprintf(errbuf, errsz, "no models available");
+  /* Keep a transport error (e.g. "Ollama not reachable ...") if list_models set
+     one; only fill in the "nothing installed" case, with a copy-paste next step. */
+  if (errbuf && errsz && !errbuf[0]) {
+   if (e_ai_backend == WPE_AI_OLLAMA)
+    snprintf(errbuf, errsz,
+      "No Ollama models found.  Install a code model, e.g.:  ollama pull qwen2.5-coder");
+   else
+    snprintf(errbuf, errsz, "no models available");
+  }
   return -1;
  }
+ pick = ai_pick_model(names, n);                  /* prefer a code model, then larger */
  free(e_ai_model);
- e_ai_model = ai_strdup(names[0]);
+ e_ai_model = ai_strdup(names[pick]);
  for (i = 0; i < n; i++) free(names[i]);
  return 0;
 }
