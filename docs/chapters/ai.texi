@@ -34,7 +34,7 @@ mode'' of an agent, which merely drafts steps.)
 An autonomous loop that reads, greps, writes files and runs commands under a
 permission dial, step by step.  Best for an open-ended task (``add a test for
 @code{foo} and make it pass'').
-@item @kbd{Alt-G b} Fix the build
+@item @kbd{Alt-G b} Build & fix (agent)
 A canned agent that builds, reads the errors, edits, and rebuilds until it
 passes.
 @end table
@@ -90,17 +90,25 @@ Multi-file edit -- change several files together.
 @item Alt-G g
 Agent -- an autonomous loop.
 @item Alt-G b
-Fix the Build (an agent that builds until it passes).
-@item Alt-G m
-pick the Model.
+Build & fix -- an agent that builds until it passes.
 @item Alt-G y
-cycle the permission policy (ask / edits / auto).
+cycle the permission level (ask @result{} edits @result{} auto).  It does not
+open a window: it @dfn{flashes} a one-line confirmation across the bottom status
+bar showing all three levels with the active one highlighted, so you see which
+is selected and what it does; the next keystroke restores the key hints.  The
+choice is remembered automatically across sessions.
 @item Alt-G n
-start a New session.
+Clear conversation -- forget the workspace's history.  Also a status-bar flash,
+not a window.
+@item Alt-G s
+AI settings -- open @samp{Options}, @samp{AI} (backend, model, permission level,
+enable toggle).
 @end table
 
-The same actions are on the @samp{AI} menu, which also holds the enable toggle,
-the policy radio, the model picker and @samp{New Session}.
+The same actions are on the @samp{AI} menu, which groups the four modes and
+@samp{Build & fix} above a divider, then the quick permission toggle,
+@samp{Clear conversation} and @samp{AI settings@dots{}}.  The backend, model and
+enable toggle live in @samp{Options}, @samp{AI}, reached with @kbd{Alt-G s}.
 
 @section Backends
 
@@ -111,7 +119,8 @@ chat / edit / multi-file / agent interface works with all of them.
 @table @asis
 @item @code{ollama} (default)
 Ollama's HTTP API on @code{http://localhost:11434}.  Local, free, no key.  The
-model list comes from the server, and @kbd{Alt-G m} picks one.
+model list comes from the server; @kbd{Alt-G s} (@samp{Options}, @samp{AI})
+picks one with @key{Alt-M}.
 @item @code{openai}
 Any OpenAI-compatible server -- @command{llama.cpp}, LM Studio, vLLM, or OpenAI
 itself.  Set @code{AIEndpoint} to its URL; an API key comes from
@@ -225,10 +234,11 @@ When an agent task is really a question rather than a change, the model answers
 directly: it finishes with a short line and its answer follows in the pane, so you
 see the reply even though this is not the chat.
 
-@section Fix the build
+@section Build & fix
 
-@cindex AI, fix build
-@kbd{Alt-G b} is a canned agent for the commonest loop.  It picks the build
+@cindex AI, build and fix
+@kbd{Alt-G b}, @samp{Build & fix (agent)}, is a canned agent for the commonest
+loop.  It picks the build
 command -- @command{make} when a makefile is present, otherwise a syntax-only
 compile of the current file by its language -- shows it, and if the build fails
 hands the agent a loop: run the build, read the compiler errors, edit the
@@ -272,7 +282,8 @@ contains none of it, and the @samp{Agent engine} radio does not appear.
 @cindex AI, revert
 Before an @code{edits} or @code{auto} run, xwpe takes a @dfn{checkpoint}: a
 @command{git} reference when the workspace is a git tree, otherwise a private
-snapshot of the files under @file{~/.xwpe/checkpoints/}.  Afterwards it writes
+snapshot of the files under @file{$XDG_STATE_HOME/xwpe/checkpoints/} (default
+@file{~/.local/state/xwpe/checkpoints/}).  Afterwards it writes
 the @dfn{changeset} into the @samp{Messages} window, one line per changed hunk in
 the compiler's @code{file:line:} format -- so you step through the AI's changes
 with the very same @kbd{Alt-T} (Next) and @kbd{Alt-V} (Previous) keys you use for
@@ -291,14 +302,18 @@ The conversation is tied to the workspace and resumes automatically.  For
 @code{claudecli} xwpe keeps the CLI's own session id and passes @option{--resume};
 for the other backends it keeps a short transcript that seeds the next prompt.
 It is stored beside the project file (as @file{.xwpe-ai-session}) when a project
-is open, otherwise under @file{~/.xwpe/ai/}.  @kbd{Alt-G n} forgets the current
-session and starts fresh.
+is open, otherwise under @file{$XDG_STATE_HOME/xwpe/ai/} (default
+@file{~/.local/state/xwpe/ai/}).  @kbd{Alt-G n}, @samp{Clear conversation},
+forgets the current session and starts fresh.
 
 @section Configuration
 
 @cindex AI, configuration
 These keys live in the @code{[Programming]} section of @file{xwperc}
-(@pxref{Configuration}) and are written by @samp{Save Options}:
+(@pxref{Configuration}), now kept under @file{$XDG_CONFIG_HOME/xwpe/} (default
+@file{~/.config/xwpe/}, migrated from the legacy @file{~/.xwpe/} on first run).
+Changing the AI working mode -- the backend, model or permission level -- saves
+itself immediately, so it sticks across sessions without @samp{Save Options}:
 
 @table @code
 @item AIBackend

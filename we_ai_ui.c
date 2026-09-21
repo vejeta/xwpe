@@ -2697,16 +2697,46 @@ int wpe_ai_flash_clear(FENSTER *f)
  return 1;
 }
 
-/* Alt-G y: cycle the permission level ask -> edits -> auto.  It is remembered
- * automatically (persisted) and confirmed with a one-shot flash on the status
- * line -- no pane, no modal; the next key restores the bar. */
+/* Mark the bar as flashed by a caller that painted the row itself (e.g. a
+ * multi-colour flash), so the next keystroke restores the key hints just like a
+ * plain wpe_ai_flash would. */
+static void wpe_ai_flash_mark(void) { g_ai_flash_active = 1; }
+
+/* Alt-G y: cycle the permission level ask -> edits -> auto.  Confirmed with a
+ * one-shot status-line flash that shows all three levels with the ACTIVE one
+ * highlighted (so you see which is selected, and the highlight moves as you
+ * cycle) plus a short description of what it does.  Persisted automatically. */
 static void e_ai_cycle_policy(FENSTER *f)
 {
- char line[80];
+ static const char *word[3] = { "ask", "edits", "auto" };
+ static const char *desc[3] = {
+   "ask before each edit and command",
+   "auto-accept edits, ask before commands",
+   "run edits and commands unattended"
+ };
+ int col, i, act, base, hi;
+ char seg[64];
+ if (!f || !f->fb) return;
  e_ai_policy = (e_ai_policy + 1) % 3;
- snprintf(line, sizeof line, " Permissions: %s   (ask -> edits -> auto)",
-          wpe_ai_policy_name(e_ai_policy));
- wpe_ai_flash(f, line);
+ act  = e_ai_policy;
+ base = f->fb->mt.fb;                                   /* bar normal            */
+ hi   = f->fb->ms.fb;                                   /* bar shortcut highlight */
+
+ e_blk(MAXSCOL, 0, MAXSLNS - 1, base);                  /* take the whole bar row */
+ col = 1;
+ e_pr_str(col, MAXSLNS - 1, "Permissions:", base, -1, -1, base, base);
+ col += 13;
+ for (i = 0; i < 3; i++) {                              /* ask  edits  auto       */
+  int c = (i == act) ? hi : base;
+  snprintf(seg, sizeof seg, "%s", word[i]);
+  e_pr_str(col, MAXSLNS - 1, seg, c, -1, -1, c, base);
+  col += (int)strlen(word[i]) + 2;
+ }
+ snprintf(seg, sizeof seg, "-- %s", desc[act]);
+ e_pr_str(col + 1, MAXSLNS - 1, seg, base, -1, -1, base, base);
+ e_refresh();
+ wpe_ai_flash_mark();                                   /* next key restores the bar */
+
  ai_persist_settings(f);
  wpe_ai_trace("policy set %s", wpe_ai_policy_name(e_ai_policy));
 }

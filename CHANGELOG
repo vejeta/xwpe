@@ -300,7 +300,10 @@ Changes
       use a one-shot flash on the status line (Turbo Vision style: it takes the
       bar row and the next key restores the key hints) -- so they never open the
       pane or a modal box just to report; the permission toggle also no longer
-      nags about saving.
+      nags about saving.  The permission flash spells out all three levels
+      (ask / edits / auto) with the active one highlighted -- the highlight
+      moves as you cycle -- plus a short description of what it does, so it is
+      clear which level is selected and what it means.
     - The Alt-G menu is clearer and grouped: the actions (Ask, Edit, Multi-file,
       Agent, "Build & fix (agent)") sit above a divider; below it the quick
       settings -- "Permissions: <level>" (shows and cycles ask/edits/auto),
