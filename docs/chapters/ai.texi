@@ -337,6 +337,18 @@ bridge that serves TLS with its own certificate (e.g. a Proton Lumo bridge on
 @code{https://127.0.0.1:8443}).  It is trusted @emph{in addition to} the system
 CA store and verification still runs in full (chain and hostname) -- it is not a
 blanket ``skip verify''.  Empty means the system CA store only.
+@item AIProvider
+A saved OpenAI-compatible provider profile, as
+@code{name|endpoint|model|cafile} (model and cafile optional); repeat the key for
+several.  Pick one, or save the current settings as a new one, with the
+@samp{Provider} button (@key{Alt-V}) in @samp{Options}, @samp{AI}: it switches the
+backend to OpenAI-compatible and applies the profile's endpoint, model and CA
+file.  Each profile's API key lives in
+@file{~/.config/xwpe/openai-api-key-@var{name}} (falling back to the generic
+@file{openai-api-key}), so Groq, a Proton Lumo bridge and so on can each carry
+their own key.
+@item AIProviderName
+The active profile's name (empty for an ad-hoc endpoint typed into the field).
 @item AIPolicy
 @code{ask}, @code{edits} or @code{auto}.
 @end table

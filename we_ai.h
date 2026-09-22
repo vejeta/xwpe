@@ -58,6 +58,19 @@ extern char *e_ai_endpoint;   /* base URL; default http://localhost:11434      *
 extern char *e_ai_model;      /* model name; "" => auto-pick first from server */
 extern char *e_ai_cafile;     /* extra CA/self-signed cert to trust; NULL=system */
 
+/* Named OpenAI-compatible provider profiles the user can switch between (Groq,
+ * OpenRouter, a local bridge, ...).  Each carries its own endpoint, model and CA
+ * file; its API key lives in ~/.config/xwpe/openai-api-key-<name> (falling back
+ * to the generic key).  e_ai_provider is the active profile name, or NULL for an
+ * ad-hoc endpoint typed straight into the dialog. */
+struct wpe_ai_provider { char *name, *endpoint, *model, *cafile; };
+extern char *e_ai_provider;
+int         wpe_ai_provider_count(void);
+const struct wpe_ai_provider *wpe_ai_provider_get(int i);
+const struct wpe_ai_provider *wpe_ai_provider_find(const char *name);
+void        wpe_ai_provider_set(const char *name, const char *endpoint,
+                                const char *model, const char *cafile);
+
 int         wpe_ai_backend_from_name(const char *name);
 const char *wpe_ai_backend_name(int backend);
 /* Ollama default endpoint when the given URL is an OpenAI-style (path-carrying)

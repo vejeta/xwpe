@@ -38,6 +38,51 @@ char *e_ai_model    = NULL;            /* "" => auto-pick the first model       
 char *e_ai_cafile   = NULL;            /* extra CA/self-signed cert to trust (TLS),
                                           for a local HTTPS bridge; NULL => system
                                           CA store only                          */
+char *e_ai_provider = NULL;            /* active provider profile name, or NULL   */
+
+/* ---- provider profiles: named OpenAI-compatible endpoints ---------------- */
+static struct wpe_ai_provider *g_ai_providers;
+static int                     g_ai_provider_n;
+
+int wpe_ai_provider_count(void) { return g_ai_provider_n; }
+
+const struct wpe_ai_provider *wpe_ai_provider_get(int i)
+{
+ return (i >= 0 && i < g_ai_provider_n) ? &g_ai_providers[i] : NULL;
+}
+
+const struct wpe_ai_provider *wpe_ai_provider_find(const char *name)
+{
+ int i;
+ if (!name) return NULL;
+ for (i = 0; i < g_ai_provider_n; i++)
+  if (!strcmp(g_ai_providers[i].name, name)) return &g_ai_providers[i];
+ return NULL;
+}
+
+/* Add a named provider, or replace the fields of one that already has that name.
+ * Copies every value; a NULL model/cafile is stored as "". */
+void wpe_ai_provider_set(const char *name, const char *endpoint,
+                         const char *model, const char *cafile)
+{
+ int i;
+ struct wpe_ai_provider *p = NULL;
+ if (!name || !*name || !endpoint) return;
+ for (i = 0; i < g_ai_provider_n; i++)
+  if (!strcmp(g_ai_providers[i].name, name)) { p = &g_ai_providers[i]; break; }
+ if (!p) {
+  struct wpe_ai_provider *na = realloc(g_ai_providers,
+                                       (size_t)(g_ai_provider_n + 1) * sizeof *na);
+  if (!na) return;
+  g_ai_providers = na;
+  p = &g_ai_providers[g_ai_provider_n++];
+  memset(p, 0, sizeof *p);
+  p->name = ai_strdup(name);
+ }
+ free(p->endpoint); p->endpoint = ai_strdup(endpoint);
+ free(p->model);    p->model    = ai_strdup(model  ? model  : "");
+ free(p->cafile);   p->cafile   = ai_strdup(cafile ? cafile : "");
+}
 
 int wpe_ai_backend_from_name(const char *name)
 {
@@ -315,7 +360,16 @@ static int ai_headers(int backend, char *hdrs[], int max)
  char b[600];
  if (n < max) hdrs[n++] = ai_strdup("Content-Type: application/json");
  if (backend == WPE_AI_OPENAI) {
-  k = ai_get_api_key("OPENAI_API_KEY", "openai-api-key");
+  /* With a provider profile active, prefer its own key file
+     (openai-api-key-<name>) so Groq/Proton/... can each carry a distinct key;
+     fall back to the generic OPENAI_API_KEY / openai-api-key. */
+  k = NULL;
+  if (e_ai_provider && *e_ai_provider) {
+   char base[160];
+   snprintf(base, sizeof base, "openai-api-key-%s", e_ai_provider);
+   k = ai_get_api_key("OPENAI_API_KEY", base);
+  }
+  if (!k) k = ai_get_api_key("OPENAI_API_KEY", "openai-api-key");
   if (k && n < max) {
    snprintf(b, sizeof b, "Authorization: Bearer %s", k);
    hdrs[n++] = ai_strdup(b);

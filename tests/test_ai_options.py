@@ -507,3 +507,90 @@ def test_aicafile_trusts_a_self_signed_https_endpoint(tmp_path):
         "the self-signed endpoint was trusted WITHOUT AICAFile (verify bypassed!)"
     assert withca, \
         "AICAFile did not let xwpe verify and use the self-signed endpoint"
+
+
+def test_provider_profiles_pick_and_persist(tmp_path):
+    # Provider profiles: Options > AI lists saved OpenAI-compatible providers
+    # (Alt-V), and picking one loads its endpoint/model and switches the backend
+    # to OpenAI-compatible.  The choice AND the provider list persist.
+    import tempfile
+    home = tempfile.mkdtemp()
+    cfg = os.path.join(home, ".config", "xwpe")
+    os.makedirs(cfg)
+    cfgfile = os.path.join(cfg, "xwperc")
+    with open(cfgfile, "w") as fh:
+        fh.write("[Programming]\nAIBackend : 0\nAIEndpoint : http://localhost:11434\n"
+                 "AIProvider : groq|https://api.groq.com/openai/v1|openai/gpt-oss-120b|\n"
+                 "AIProvider : local8080|http://localhost:8080/v1||\n"
+                 "AIPolicy : ask\n")
+    env = {"XWPE_AI_ENABLE": "1", "HOME": home, "OPENAI_API_KEY": ""}
+    with WpeSession(str(tmp_path), "int main(void){return 0;}\n",
+                    env_extra=dict(env)) as s:
+        s.key("\033o", delay=0.5); s.key("i", delay=0.6)
+        s.key("\033v", delay=1.0)         # Alt-V -> provider picker
+        pick = "\n".join(s.display())
+        s.key("\r", delay=0.7)            # pick the first (groq)
+        s.key("\033o", delay=0.8)         # Ok
+    for want in ("groq", "local8080", "Save current"):
+        assert want in pick, "provider picker missing %r:\n%s" % (want, pick)
+    saved = open(cfgfile).read()
+    assert "AIProviderName : groq" in saved, "active provider not saved:\n" + saved
+    assert "AIEndpoint : https://api.groq.com/openai/v1" in saved, \
+        "the provider's endpoint was not applied/saved:\n" + saved
+    assert ("AIProvider : groq|https://api.groq.com/openai/v1|openai/gpt-oss-120b|"
+            in saved and "AIProvider : local8080|" in saved), \
+        "the provider list did not persist:\n" + saved
+
+
+def _auth_recording_server():
+    """A local OpenAI server that records the Authorization header of the last
+    GET .../models it served.  Returns (server, port, seen)."""
+    import threading, json
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+    seen = {"auth": None}
+
+    class H(BaseHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+
+        def do_GET(self):
+            if self.path.endswith("/models"):
+                seen["auth"] = self.headers.get("Authorization")
+                b = json.dumps({"object": "list", "data": [{"id": "m1"}]}).encode()
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(b)))
+                self.end_headers()
+                self.wfile.write(b)
+            else:
+                self.send_response(404)
+                self.end_headers()
+
+    srv = HTTPServer(("127.0.0.1", 0), H)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    return srv, srv.server_address[1], seen
+
+
+def test_provider_uses_its_own_key_file(tmp_path):
+    # A per-provider key file (openai-api-key-<name>) is used when that provider
+    # is active, so Groq/Proton/... can each carry a distinct key.
+    srv, port, seen = _auth_recording_server()
+    try:
+        ep = "http://127.0.0.1:%d/v1" % port
+        home = str(tmp_path / "home")
+        cfg = os.path.join(home, ".config", "xwpe")
+        os.makedirs(cfg)
+        with open(os.path.join(cfg, "xwperc"), "w") as fh:
+            fh.write("[Programming]\nAIBackend : 1\nAIEndpoint : %s\n"
+                     "AIProviderName : myprov\nAIProvider : myprov|%s||\n"
+                     "AIPolicy : ask\n" % (ep, ep))
+        with open(os.path.join(cfg, "openai-api-key-myprov"), "w") as fh:
+            fh.write("secret-key-123\n")
+        env = {"XWPE_AI_ENABLE": "1", "HOME": home, "OPENAI_API_KEY": ""}
+        with WpeSession(str(tmp_path), "int main(void){return 0;}\n",
+                        env_extra=dict(env)) as s:
+            s.key("\033o", delay=0.5); s.key("i", delay=0.6)
+            s.key("\033m", delay=1.5)     # Alt-M -> lists models (sends the key)
+    finally:
+        srv.shutdown()
+    assert seen["auth"] == "Bearer secret-key-123", \
+        "the per-provider key file was not used: %r" % seen["auth"]

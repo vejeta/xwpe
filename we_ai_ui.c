@@ -2373,6 +2373,15 @@ static void ai_opt_mlabel(void)
           (e_ai_model && *e_ai_model) ? e_ai_model : "(backend default)");
 }
 
+/* The Provider button's caption: the active profile name, or a hint to pick one. */
+static char g_ai_opt_plabel[AI_OPT_MLABELW + 1];
+static void ai_opt_plabel(void)
+{
+ snprintf(g_ai_opt_plabel, sizeof g_ai_opt_plabel, "%-*.*s",
+          AI_OPT_MLABELW, AI_OPT_MLABELW,
+          (e_ai_provider && *e_ai_provider) ? e_ai_provider : "(none - pick/save)");
+}
+
 /* Apply an endpoint URL typed in the settings dialog's Endpoint field (trimmed);
  * a blank field falls back to the local Ollama default so the HTTP backends
  * always have a reachable URL.  Shared by the Ok handler and the Model button so
@@ -2446,6 +2455,70 @@ static int e_ai_opt_pick_model(FENSTER *f)
  return -1;             /* keep the dialog open and repaint it under the closed picker */
 }
 
+/* Refresh the live dialog widgets from the e_ai_* globals after a provider
+ * profile is loaded: the Backend radio, the Endpoint field, and the Model and
+ * Provider button captions.  The Ok read still reads the widgets, so keeping them
+ * in sync means the loaded profile is exactly what Ok saves. */
+static void ai_opt_sync_widgets(void)
+{
+ int i;
+ if (!g_ai_opt_dlg) return;
+ if (g_ai_opt_dlg->pn > 0)
+  for (i = 0; i < 4; i++)
+   if (g_ai_bk_order[i] == e_ai_backend) { g_ai_opt_dlg->pstr[0]->num = i; break; }
+ if (g_ai_opt_dlg->wn > AI_OPT_ENDPOINT_WSTR) {
+  W_O_WRSTR *w = g_ai_opt_dlg->wstr[AI_OPT_ENDPOINT_WSTR];
+  snprintf(w->txt, (size_t)w->wmx + 1, "%s", e_ai_endpoint ? e_ai_endpoint : "");
+ }
+ ai_opt_mlabel();
+ ai_opt_plabel();
+ for (i = 0; i < g_ai_opt_dlg->bn; i++) {
+  if (g_ai_opt_dlg->bstr[i]->sw == AltM)
+   strcpy(g_ai_opt_dlg->bstr[i]->header, g_ai_opt_mlabel);
+  else if (g_ai_opt_dlg->bstr[i]->sw == AltV)
+   strcpy(g_ai_opt_dlg->bstr[i]->header, g_ai_opt_plabel);
+ }
+}
+
+/* Provider button (Alt-V): pick a saved OpenAI-compatible provider profile, or
+ * save the current endpoint/model/CA as a new named one.  Loading a profile
+ * switches the backend to OpenAI-compatible and applies its endpoint, model, CA
+ * file and active name, so its model list and its own key file
+ * (openai-api-key-<name>) are used.  Returns -1 to repaint the dialog in place. */
+static int e_ai_opt_pick_provider(FENSTER *f)
+{
+ int np = wpe_ai_provider_count();
+ const char *labels[34];
+ char names[32][80];
+ int i, n = 0, sel;
+ for (i = 0; i < np && n < 32; i++) {
+  snprintf(names[n], sizeof names[n], "%s", wpe_ai_provider_get(i)->name);
+  labels[n] = names[n];
+  n++;
+ }
+ labels[n++] = "[ + Save current as... ]";
+ sel = e_ai_pick(f, "AI providers", labels, n, 0);
+ if (sel < 0) { fk_cursor(0); return -1; }
+ if (sel < np) {
+  const struct wpe_ai_provider *p = wpe_ai_provider_get(sel);
+  e_ai_backend = WPE_AI_OPENAI;
+  free(e_ai_endpoint); e_ai_endpoint = strdup(p->endpoint);
+  free(e_ai_model);    e_ai_model    = strdup((p->model && *p->model) ? p->model : "");
+  free(e_ai_cafile);   e_ai_cafile   = (p->cafile && *p->cafile) ? strdup(p->cafile) : NULL;
+  free(e_ai_provider); e_ai_provider = strdup(p->name);
+ } else {
+  char name[80] = "";
+  if (e_add_arguments(name, "Save provider as", f, 0, AltO, NULL) && name[0]) {
+   wpe_ai_provider_set(name, e_ai_endpoint ? e_ai_endpoint : "",
+                       e_ai_model, e_ai_cafile);
+   free(e_ai_provider); e_ai_provider = strdup(name);
+  }
+ }
+ ai_opt_sync_widgets();
+ fk_cursor(0);
+ return -1;
+}
+
 /* Options -> AI...: the settings home.  Enable checkbox, Backend radio, a Model
  * radio populated live from the selected backend, and a Policy radio -- all
  * marking the current choice.  Applies to the running session; Save Options
@@ -2472,6 +2545,7 @@ int e_ai_options(FENSTER *f)
  bcur = 0;
  for (i = 0; i < 4; i++) if (bk[i] == e_ai_backend) bcur = i;
  ai_opt_mlabel();
+ ai_opt_plabel();
 
  /* Centre the dialog on the whole screen (like the other menu dialogs), not
     wherever the active editor window happens to sit. */
@@ -2496,6 +2570,12 @@ int e_ai_options(FENSTER *f)
 
  e_add_txtstr(28, 4, "Model (Alt-M):", o);
  e_add_bttstr(28, 5, 0, AltM, g_ai_opt_mlabel, e_ai_opt_pick_model, o);
+
+ /* Provider profiles: switch among saved OpenAI-compatible endpoints (Groq,
+    OpenRouter, a local Lumo bridge, ...) or save the current one as a new named
+    provider -- each carries its own endpoint, model, CA file and key. */
+ e_add_txtstr(28, 7, "Provider (Alt-V):", o);
+ e_add_bttstr(28, 8, 0, AltV, g_ai_opt_plabel, e_ai_opt_pick_provider, o);
 
  /* The single endpoint URL the HTTP backends (Ollama, OpenAI-compatible) talk
     to.  Editable here so OpenAI-compatible can point at any server -- Groq,

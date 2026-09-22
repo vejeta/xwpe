@@ -335,6 +335,13 @@ Changes
       that serves TLS with its own certificate (e.g. a Proton Lumo bridge on
       https://127.0.0.1) can be used.  Full verification -- chain and hostname --
       still runs; it is not a blanket skip-verify.
+    - Provider profiles: Options > AI gained a "Provider" button (Alt-V) to switch
+      among saved OpenAI-compatible providers (Groq, OpenRouter, a local bridge,
+      ...) or save the current endpoint/model/CA as a new named one.  Each profile
+      carries its own endpoint, model and CA file, and its own API key
+      (~/.config/xwpe/openai-api-key-<name>, falling back to the generic key), so
+      several providers can coexist and be selected in one keystroke.  Stored as
+      repeatable AIProvider lines + AIProviderName in the config.
     - The Alt-G menu is clearer and grouped: the actions (Ask, Edit, Multi-file,
       Agent, "Build & fix (agent)") sit above a divider; below it the quick
       settings -- "Permissions: <level>" (shows and cycles ask/edits/auto),

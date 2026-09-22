@@ -961,6 +961,25 @@ int WpeWriteColor(ECNT *cn, char *section, FILE *opt_file)
  return 0;
 }
 
+#ifdef WPE_AI
+/* Parse an AIProvider config value "name|endpoint|model|cafile" (model/cafile
+ * optional) and register the profile.  Splits a private copy on '|'. */
+static void e_ai_read_provider(const char *value)
+{
+ char buf[1024], *f[4], *p;
+ int nf = 0;
+ snprintf(buf, sizeof buf, "%s", value ? value : "");
+ for (p = buf; nf < 4; ) {
+  f[nf++] = p;
+  p = strchr(p, '|');
+  if (!p) break;
+  *p++ = '\0';
+ }
+ if (nf >= 2 && f[0][0])
+  wpe_ai_provider_set(f[0], f[1], nf >= 3 ? f[2] : "", nf >= 4 ? f[3] : "");
+}
+#endif
+
 int WpeReadProgramming(ECNT *cn, char *section, char *option, char *value)
 {
  if (WpeStrccmp("Arguments", option) == 0)
@@ -987,6 +1006,11 @@ int WpeReadProgramming(ECNT *cn, char *section, char *option, char *value)
  } else if (WpeStrccmp("AICAFile", option) == 0) {
   free(e_ai_cafile);
   e_ai_cafile = (value && *value) ? WpeStrdup(value) : NULL;
+ } else if (WpeStrccmp("AIProviderName", option) == 0) {
+  free(e_ai_provider);
+  e_ai_provider = (value && *value) ? WpeStrdup(value) : NULL;
+ } else if (WpeStrccmp("AIProvider", option) == 0) {
+  e_ai_read_provider(value);
  } else if (WpeStrccmp("AIPolicy", option) == 0)
   e_ai_policy = wpe_ai_policy_from_name(value);
 #ifdef WPE_AI_AGENT_HOST
@@ -1011,6 +1035,15 @@ int WpeWriteProgramming(ECNT *cn, char *section, FILE *opt_file)
  fprintf(opt_file, "AIEndpoint : %s\n", e_ai_endpoint ? e_ai_endpoint : "");
  fprintf(opt_file, "AIModel : %s\n", e_ai_model ? e_ai_model : "");
  fprintf(opt_file, "AICAFile : %s\n", e_ai_cafile ? e_ai_cafile : "");
+ fprintf(opt_file, "AIProviderName : %s\n", e_ai_provider ? e_ai_provider : "");
+ {
+  int i, np = wpe_ai_provider_count();
+  for (i = 0; i < np; i++) {
+   const struct wpe_ai_provider *p = wpe_ai_provider_get(i);
+   fprintf(opt_file, "AIProvider : %s|%s|%s|%s\n", p->name, p->endpoint,
+           p->model ? p->model : "", p->cafile ? p->cafile : "");
+  }
+ }
  fprintf(opt_file, "AIPolicy : %s\n", wpe_ai_policy_name(e_ai_policy));
 #ifdef WPE_AI_AGENT_HOST
  fprintf(opt_file, "AIAgentEngine : %s\n",
