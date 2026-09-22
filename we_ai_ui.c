@@ -1242,15 +1242,53 @@ static int e_ai_prompt1(char *out, const char *title, FENSTER *f)
 
 /* Send `text` as one chat turn: echo "You: ..." above the input row, add it to
  * the workspace conversation (context preserved) and start the async stream. */
+/**
+ * ai_slash_expand - Expand a leading /command in the chat input to a full,
+ * file-scoped instruction, so a common ask is one token.
+ * @text: the user's raw input; @out/@n: expansion buffer.
+ * Return: 1 and fill @out for a known slash command, else 0 (send verbatim).
+ *
+ * Any text after the command is kept as a specific focus ("/fix the off-by-one").
+ * The transcript still echoes what the user typed; only the model sees the
+ * expansion.
+ */
+static int ai_slash_expand(const char *text, char *out, size_t n)
+{
+ static const struct { const char *cmd, *tmpl; } t[] = {
+  { "/explain", "Explain what the current file (or the selected code) does, concisely." },
+  { "/fix",     "Find and fix the problem in the current file; use the diagnostics shown, if any." },
+  { "/test",    "Write a focused unit test for the main logic of the current file." },
+  { "/doc",     "Add clear doc comments to the functions in the current file." },
+  { "/review",  "Review the current file for bugs, edge cases and style; list concrete issues." }
+ };
+ size_t i;
+ if (*text != '/') return 0;
+ for (i = 0; i < sizeof t / sizeof t[0]; i++) {
+  size_t cl = strlen(t[i].cmd);
+  const char *rest;
+  if (strncmp(text, t[i].cmd, cl) || (text[cl] && text[cl] != ' ')) continue;
+  rest = text + cl;
+  while (*rest == ' ') rest++;
+  if (*rest) snprintf(out, n, "%s  (focus: %s)", t[i].tmpl, rest);
+  else       snprintf(out, n, "%s", t[i].tmpl);
+  return 1;
+ }
+ return 0;
+}
+
 static void e_ai_chat_send(FENSTER *f, const char *text)
 {
  ai_chat_session *s;
  char line[AI_PROMPT_MAX + 8];
+ char expanded[AI_PROMPT_MAX];
+ const char *tosend = text;
 
  const char *p = text;
  int first = 1;
 
- wpe_ai_trace("chat prompt=%s", text);
+ if (ai_slash_expand(text, expanded, sizeof expanded))
+  tosend = expanded;              /* echo what was typed; send the expansion */
+ wpe_ai_trace("chat prompt=%s", tosend);
  if (g_ai_chat) { g_ai_chat->active = 0; ai_chat_finish(g_ai_chat); }
  /* Echo the prompt one transcript line per input line, so a multi-line prompt
     reads cleanly ("You: ..." then indented continuations) instead of showing an
@@ -1264,7 +1302,7 @@ static void e_ai_chat_send(FENSTER *f, const char *text)
   if (!nl) break;
   p = nl + 1;
  }
- wpe_ai_session_append("user", text);
+ wpe_ai_session_append("user", tosend);
  s = calloc(1, sizeof *s);
  if (!s) return;
  s->ref = f;
@@ -1402,6 +1440,7 @@ static void e_ai_chat_arm(FENSTER *f)
   ai_status_text(st, sizeof st);
   ai_tr_line(wf, st);
   ai_tr_line(wf, "[Enter=send  Ctrl-J=newline  arrows move  PgUp/PgDn scroll  Esc leaves]");
+  ai_tr_line(wf, "[Shortcuts: /explain  /fix  /test  /doc  /review]");
  }
  ai_input_render(wf);                            /* creates the input region */
 }
