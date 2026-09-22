@@ -935,8 +935,30 @@ static char *ai_build_system(FENSTER *f)
    "I will reply with the result; then either use another tool or give your "
    "answer.  When you can answer, reply with the answer directly (no TOOL "
    "line).  Do not guess about files you have not read.\n\n";
+ /* Capability manifest: tell the model what the xwpe AI integration ALREADY
+    does, so it neither re-proposes built features as new ideas nor prints code
+    for the user to retype -- it should point them to the shortcut that does the
+    job.  Grounds every meta-question ("how could we improve this?") in reality. */
+ const char *caps =
+   "XWPE AI CAPABILITIES that already exist -- do NOT propose these as new; when "
+   "the user would benefit, point them to the shortcut:\n"
+   "- Edit the current file or selection: Alt-G e (applies your instruction; the "
+   "change previews as a diff and Ctrl-U reverts it as one undo step).\n"
+   "- Multi-file edit: Alt-G f.  Autonomous Agent (the read tools above PLUS "
+   "run_command and write_file, gated by the permission dial ask/edits/auto): "
+   "Alt-G g.  Build & fix until the compile passes: Alt-G b.\n"
+   "- Replies stream token by token; Esc cancels a run mid-generation.\n"
+   "- Proposed edits are reviewed as a diff changeset (Alt-T / Alt-V) and are "
+   "revertible; a checkpoint is taken before a non-interactive run.\n"
+   "- You already receive the open files, the workspace file list, the current "
+   "file, and live language-server diagnostics (below).\n"
+   "- Backend and model are user-selectable (Ollama, OpenAI-compatible, Claude) "
+   "in Options > AI.\n"
+   "So when the user asks to CHANGE code, tell them to use Edit (Alt-G e) or the "
+   "Agent (Alt-G g) rather than printing code for them to retype.\n\n";
  if (!sys) { free(ctx); return NULL; }
  len += (size_t)snprintf(sys + len, cap - len, "%s", head);
+ len += (size_t)snprintf(sys + len, cap - len, "%s", caps);
  len = ai_append_identity(sys, cap, len);
  len = ai_append_open_files(sys, cap, len, f);
  nsc = wpe_ai_scope_files(f, e_project_is_open(), 1, &scope);
