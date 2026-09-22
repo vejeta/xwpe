@@ -3096,12 +3096,16 @@ int e_ai_options(FENSTER *f)
  for (i = 0; i < 3; i++)
   e_add_pswstr(1, 38, 5 + i, i, 4200 + i, (i == 2) ? e_ai_policy : 0, (char *)pol[i], o);
 
- /* --- Connection: used by the OpenAI-compatible and Ollama backends.  Editable
-        here (endpoint/CA/key) so a server or a self-signed local bridge needs no
-        hand-edited xwperc; Provider switches saved profiles / saves the current. */
- /* Say plainly that this whole section is for the HTTP backends only, so a
-    populated Endpoint/CA/Model does not look "mixed" when Claude CLI/API (which
-    ignore them) is the selected backend. */
+ /* Model sits with Backend/Permission as a general choice -- every backend but
+    Claude CLI uses it -- NOT inside the Connection block below, which is the
+    HTTP-only (Ollama / OpenAI-compatible) endpoint/CA/key that Provider switches
+    among saved profiles. */
+ e_add_txtstr(3, 9, "Model (Alt-M):", o);
+ e_add_bttstr(20, 9, 0, AltM, g_ai_opt_mlabel, e_ai_opt_pick_model, o);
+
+ /* Say plainly that the Connection block is for the HTTP backends only, so a
+    populated Endpoint/CA does not look "mixed" when Claude CLI/API (which ignore
+    them) is the selected backend. */
  e_add_txtstr(3, 10, "Connection - Ollama / OpenAI-compatible backends ONLY:", o);
  e_add_txtstr(5, 11, "Provider (Alt-V):", o);
  e_add_bttstr(22, 11, 0, AltV, g_ai_opt_plabel, e_ai_opt_pick_provider, o);
@@ -3113,8 +3117,6 @@ int e_ai_options(FENSTER *f)
    e_add_wrstr(5, 14, 22, 14, 40, 255, -1, AltK, "API key (Alt-K):",
                k ? k : "", NULL, o);                          /* wstr[2] */
    free(k); }
- e_add_txtstr(5, 15, "Model (Alt-M):", o);
- e_add_bttstr(22, 15, 0, AltM, g_ai_opt_mlabel, e_ai_opt_pick_model, o);
  e_add_bttstr(5, 16, 0, AltA, "Advanced (Alt-A)...", e_ai_opt_advanced, o);
 
 #ifdef WPE_AI_AGENT_HOST
