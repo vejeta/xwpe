@@ -3242,10 +3242,33 @@ static void e_ai_cycle_policy(FENSTER *f)
 }
 
 /**
+ * ai_run_edit_hook - Run the configured post-edit hook on a just-written file.
+ * @f: current window; @path: the file the AI edited.
+ *
+ * A no-op unless AIEditHook is set (e.g. "clang-format -i").  The path is
+ * appended to the command; the file is reloaded afterwards since the hook may
+ * have reformatted it, so an AI edit stays consistent with the repo's tooling --
+ * the way an editor's format-on-save or a git hook would.
+ */
+static void ai_run_edit_hook(FENSTER *f, const char *path)
+{
+ char cmd[1400], status[720], *out;
+ if (!e_ai_edit_hook || !*e_ai_edit_hook) return;
+ snprintf(status, sizeof status, "[hook] %s %s", e_ai_edit_hook, path);
+ ai_pane(f, status, 0);
+ snprintf(cmd, sizeof cmd, "%s %s", e_ai_edit_hook, path);
+ out = wpe_ai_run_capture(cmd);
+ free(out);
+ wpe_ai_reload_open_window(f, path);
+ wpe_ai_trace("edit hook ran on %s", path);
+}
+
+/**
  * ai_agent_commit_write - Approve (per the permission dial) and write `content`
  * to `path`, reloading it if open.  Shared by write_file and apply_patch so both
  * go through the same review: auto/edits ask ai_agent_approve, ASK shows the
- * change as a diff (ai_diff_confirm_write) first.  Returns a malloc'd TOOL RESULT.
+ * change as a diff (ai_diff_confirm_write) first.  Runs the post-edit hook after
+ * a successful write.  Returns a malloc'd TOOL RESULT.
  */
 static char *ai_agent_commit_write(FENSTER *f, const char *path, const char *content)
 {
@@ -3268,6 +3291,7 @@ static char *ai_agent_commit_write(FENSTER *f, const char *path, const char *con
   fwrite(content, 1, strlen(content), w);
   fclose(w);
   wpe_ai_reload_open_window(f, path);   /* show the change if the file is open */
+  ai_run_edit_hook(f, path);            /* e.g. clang-format, then reload again */
   return strdup("(written)");
  }
 }
