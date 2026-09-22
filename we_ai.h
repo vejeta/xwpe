@@ -59,6 +59,9 @@ extern char *e_ai_model;      /* model name; "" => auto-pick first from server *
 
 int         wpe_ai_backend_from_name(const char *name);
 const char *wpe_ai_backend_name(int backend);
+/* Ollama default endpoint when the given URL is an OpenAI-style (path-carrying)
+ * base rather than an Ollama one; NULL to keep the current endpoint. */
+const char *wpe_ai_ollama_endpoint_fixup(const char *url);
 
 /* True when the ED_AI_ENABLE edopt bit is set on the desktop (runtime toggle). */
 int  wpe_ai_enabled(void);

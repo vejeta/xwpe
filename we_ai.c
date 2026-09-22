@@ -221,6 +221,26 @@ static void ai_endpoint_prefix(char *out, size_t n)
  if (len) snprintf(out, n, "%s", path);
 }
 
+/* Ollama serves its API at the host ROOT (/api/tags, /api/chat); a URL that
+ * carries a path segment (/v1, /openai/v1, /api/v1) is an OpenAI-compatible base,
+ * not an Ollama one.  When the endpoint is such an OpenAI-style URL (as it is
+ * right after switching the dialog's Backend radio from an OpenAI provider to
+ * Ollama, since the endpoint field is shared) return the Ollama default so the
+ * list/chat go to the local server; otherwise NULL to keep the current endpoint
+ * (a bare host -- local or a remote Ollama -- is left as-is). */
+const char *wpe_ai_ollama_endpoint_fixup(const char *url)
+{
+ char host[256], path[512];
+ int port = 0, https = 0;
+ size_t l;
+ if (!url || !*url) return "http://localhost:11434";
+ if (wpe_http_parse_url(url, host, sizeof host, &port, &https, path, sizeof path) != 0)
+  return "http://localhost:11434";
+ l = strlen(path);
+ while (l && path[l - 1] == '/') path[--l] = '\0';
+ return l ? "http://localhost:11434" : NULL;
+}
+
 /* Build the request path for a backend, honouring the endpoint's path prefix.
  * OpenAI-compatible and Claude take their path relative to that prefix (a bare
  * host defaults to /v1); Ollama's paths are absolute from the host root. */

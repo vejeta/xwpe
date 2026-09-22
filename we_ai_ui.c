@@ -2420,6 +2420,20 @@ static int e_ai_opt_pick_model(FENSTER *f)
     field, not the one a previous Ok saved -- so Alt-M works before Ok. */
  if (g_ai_opt_dlg && g_ai_opt_dlg->wn > AI_OPT_ENDPOINT_WSTR)
   ai_set_endpoint(g_ai_opt_dlg->wstr[AI_OPT_ENDPOINT_WSTR]->txt);
+ /* Switching the Backend radio to Ollama leaves the shared endpoint field on the
+    previous (OpenAI) URL; Ollama serves /api/... at the host root, so an
+    OpenAI-style base would 404.  Fall back to the local Ollama server and show
+    that in the field. */
+ if (e_ai_backend == WPE_AI_OLLAMA) {
+  const char *fix = wpe_ai_ollama_endpoint_fixup(e_ai_endpoint);
+  if (fix) {
+   free(e_ai_endpoint); e_ai_endpoint = strdup(fix);
+   if (g_ai_opt_dlg && g_ai_opt_dlg->wn > AI_OPT_ENDPOINT_WSTR) {
+    W_O_WRSTR *w = g_ai_opt_dlg->wstr[AI_OPT_ENDPOINT_WSTR];
+    snprintf(w->txt, (size_t)w->wmx + 1, "%s", fix);
+   }
+  }
+ }
  e_ai_pick_model_apply(f, 0);                    /* announce=0: do not raise the pane */
  ai_opt_mlabel();
  if (g_ai_opt_dlg)
@@ -2534,6 +2548,12 @@ int e_ai_options(FENSTER *f)
      the new backend then auto-picks one (or the user reopens and Alt-M's it). */
   e_ai_backend = new_be;
   free(e_ai_model); e_ai_model = NULL;
+ }
+ if (e_ai_backend == WPE_AI_OLLAMA) {
+  /* Keep Ollama on a root endpoint: a leftover OpenAI-style base (from the shared
+     field) would send /api/... under /v1 and fail. */
+  const char *fix = wpe_ai_ollama_endpoint_fixup(e_ai_endpoint);
+  if (fix) { free(e_ai_endpoint); e_ai_endpoint = strdup(fix); }
  }
 
  wpe_ai_trace("options backend=%s model=%s policy=%s enable=%d",

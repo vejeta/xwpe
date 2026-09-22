@@ -125,6 +125,36 @@ def test_model_picker_follows_selected_backend_radio(tmp_path):
             "Alt-M still listed Claude's models after selecting Ollama:\n" + pick
 
 
+@pytest.mark.skipif(not _ollama_up(), reason="no local Ollama for the model list")
+def test_ollama_ignores_leftover_openai_endpoint(tmp_path):
+    # Regression: the endpoint field is shared, so switching the Backend radio to
+    # Ollama leaves an OpenAI base (e.g. Groq's https .../openai/v1) in it.  Ollama
+    # serves /api/... at the host root, so that base would 404.  Alt-M must fall
+    # back to the local Ollama server (and the picker title must name it).
+    import tempfile
+    home = tempfile.mkdtemp()
+    cfg = os.path.join(home, ".config", "xwpe")
+    os.makedirs(cfg)
+    with open(os.path.join(cfg, "xwperc"), "w") as fh:
+        fh.write("[Programming]\nAIBackend : 1\n"
+                 "AIEndpoint : https://api.groq.com/openai/v1\nAIPolicy : ask\n")
+    env = {"XWPE_AI_ENABLE": "1", "HOME": home, "OPENAI_API_KEY": ""}
+    with WpeSession(str(tmp_path), "int main(void){return 0;}\n",
+                    env_extra=dict(env)) as s:
+        s.key("\033o", delay=0.5); s.key("i", delay=0.6)
+        s.key("\t", delay=0.35)          # Enable -> Backend group (lands on Claude CLI)
+        s.key("\033[B", delay=0.35)      # down -> Ollama
+        s.key(" ", delay=0.35)           # select Ollama
+        s.key("\033m", delay=2.5)        # Alt-M -> picker (lists from the fixed endpoint)
+        s.key("\033", delay=0.6)         # close the picker; the field now shows the fix
+        disp = s.display()
+    field = next((r for r in disp if "http://" in r or "https://" in r), "")
+    assert "localhost:11434" in field, \
+        "Ollama did not fall back to the local endpoint:\n" + "\n".join(disp)
+    assert "api.groq.com" not in field, \
+        "Ollama kept the leftover Groq endpoint:\n" + "\n".join(disp)
+
+
 def test_model_pick_keeps_other_fields(tmp_path):
     # Picking a model must not disturb other fields.  The in-place redraw after
     # the picker used to re-fire the focused field's accelerator and clear the
