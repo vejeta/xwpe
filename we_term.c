@@ -1042,6 +1042,13 @@ void e_t_flush_input(void)
      if (tf) { fprintf(tf, "e_t_flush_input RAN\n"); fclose(tf); } } }
 }
 
+/* Set by e_t_getch_poll when the value it returns is a UTF-8 character it
+   decoded (not a raw key), so e_t_getch does not mistake a Unicode codepoint
+   >= 256 (CJK, emoji, Latin Extended) for an ncurses KEY_ code and swallow it
+   through the function-key switch.  A real key code comes straight from
+   fk_getch and leaves this 0. */
+static int e_t_input_was_char;
+
 static int e_t_getch_poll(void)
 {
  static int stdin_registered = 0;
@@ -1083,7 +1090,9 @@ static int e_t_getch_poll(void)
   if (c != ERR)
   {
    if ((unsigned int)c >= 0xC0 && (unsigned int)c <= 0xF7)
-    c = e_t_utf8_assemble(c);
+    { c = e_t_utf8_assemble(c); e_t_input_was_char = 1; }
+   else
+    e_t_input_was_char = 0;
    return c;
   }
   if (e_d_async_pending)
@@ -1228,7 +1237,7 @@ int e_t_getch()
 
  e_refresh();
  c = e_t_getch_poll();
- if (c > KEY_CODE_YES)
+ if (c > KEY_CODE_YES && !e_t_input_was_char)
  {
   switch (c)
   {

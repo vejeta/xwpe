@@ -408,6 +408,17 @@ Changes
 * Fix a project Make (F9) that could abort with glibc "free(): invalid pointer"
   when a project variable (e.g. CMP) was missing -- e_c_project freed an
   uninitialised argument slot; it is now zero-initialised.
+* Typing and pasting a wide character (CJK, emoji) now work in the terminal
+  (ncurses) build, in the editor and the AI chat input alike.  The ncurses input
+  path assembles a typed multi-byte key into its Unicode codepoint, but any
+  codepoint >= 256 was then mistaken for an ncurses function-key code and dropped
+  by the key-translation switch, so only Latin-1 (<= U+00FF, e.g. e-acute) could
+  be typed; a decoded character is now flagged so it bypasses that switch.  (X11
+  and Wayland already delivered these codepoints directly.)  Characters in the
+  U+0100..U+07D6 band -- Latin Extended, Greek, Cyrillic, Hebrew, Arabic --
+  remain untypeable in every backend because xwpe's own keycodes occupy that
+  numeric range (the Alt-<letter> codes are 271..305); separating them needs a
+  cross-backend "this key was a character" signal and is tracked for a follow-up.
 
 1.6.9 (native Wayland real-desktop robustness: resize, decorations, crashes)
 

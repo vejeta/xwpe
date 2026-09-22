@@ -48,3 +48,50 @@ def test_input_caret_after_accented_char(tmp_path):
     # And it is NOT parked on top of the e-acute (the pre-fix symptom).
     assert rows[cy][cx] != E_ACUTE, \
         "caret is sitting on top of the e-acute:\n" + "\n".join(rows)
+
+
+CJK = "\u65e5"          # 26085, 3-byte, wcwidth 2
+EMOJI = "\U0001F600"    # 128512, 4-byte, wcwidth 2
+
+
+@pytest.mark.parametrize("ch", [CJK, EMOJI], ids=["cjk", "emoji"])
+def test_input_wide_char_types_and_renders(tmp_path, ch):
+    # A wide (2-column) character -- CJK / emoji, codepoint >= U+0100 -- must
+    # type into the AI input and render.  It used to be swallowed by the ncurses
+    # key path (mistaken for a KEY_ code), so nothing appeared.  The caret must
+    # also advance PAST it, not stick on it.
+    env = {"XWPE_AI_ENABLE": "1", "XWPE_AI_BACKEND": "mock",
+           "XWPE_AI_MOCK_REPLY": "ok"}
+    with WpeSession(str(tmp_path), "int main(void){return 0;}\n",
+                    env_extra=env, filename="t.c") as s:
+        s.key(ALT.AI); s.key("a", delay=0.6)
+        s.key("A" + ch, delay=0.4)
+        rows = s.display()
+        cy, cx = s.screen.cursor.y, s.screen.cursor.x
+    row = rows[cy]
+    assert ch in row, \
+        "the wide char did not render in the AI input row:\n" + "\n".join(rows)
+    col = row.find(ch)
+    assert cx > col, (
+        "caret did not advance past the wide char (col=%d cx=%d):\n%s"
+        % (col, cx, "\n".join(rows)))
+
+
+def test_pane_prints_accented_cjk_emoji(tmp_path):
+    # The AI transcript renders any UTF-8 the model returns -- accented, CJK and
+    # emoji alike -- the same way the editor renders buffer text.  Drive a mock
+    # reply carrying all three and confirm each glyph reaches the pane.
+    reply = "caf\u00e9 \u65e5\u672c\u8a9e \U0001F600 done"
+    env = {"XWPE_AI_ENABLE": "1", "XWPE_AI_BACKEND": "mock",
+           "XWPE_AI_MOCK_REPLY": reply}
+    import time
+    with WpeSession(str(tmp_path), "int main(void){return 0;}\n",
+                    env_extra=env, filename="t.c") as s:
+        s.key(ALT.AI); s.key("a", delay=0.6)
+        s.key("hi", delay=0.1)
+        s.key("\r", delay=1.0)
+        time.sleep(2)
+        joined = "\n".join(s.display())
+    for glyph in ("caf\u00e9", "\u65e5\u672c\u8a9e", "\U0001F600"):
+        assert glyph in joined, \
+            "the AI pane did not render %r:\n%s" % (glyph, joined)
