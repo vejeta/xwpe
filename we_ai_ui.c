@@ -53,6 +53,7 @@ typedef struct {
                                   the raw protocol line is NOT echoed as "AI:")  */
  int            hide_tool;     /* a TOOL line begun after a preamble is being
                                   hidden: show its dim status, not the raw line   */
+ int            fell_back;     /* this chat already retried with the fallback model */
  size_t         shown;         /* bytes of `full` already painted (decided==1)   */
 } ai_chat_session;
 
@@ -647,6 +648,24 @@ static ai_spin ai_spin_begin(FENSTER *f, const char *label)
 
 static void ai_split_tool(char *action, char **tool, char **arg);   /* defined below */
 
+/**
+ * ai_tool_result_nonempty - Make an empty tool result explicit.
+ * @result: a malloc'd tool output (or NULL).  Return: a malloc'd result.
+ *
+ * A blank or whitespace-only result (grep found nothing, an empty directory, a
+ * command that printed nothing) reads to the model like a broken tool, so it may
+ * stall or repeat.  Turn it into an explicit note so it learns "nothing matched"
+ * and tries elsewhere.  Frees the input.
+ */
+static char *ai_tool_result_nonempty(char *result)
+{
+ const char *p = result;
+ while (p && (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n')) p++;
+ if (p && *p) return result;
+ free(result);
+ return strdup("(no output -- nothing matched; try a different path or pattern)");
+}
+
 /* Format a "TOOL <name> <arg>" protocol line as a dim one-line status
  * ("  . reading <arg>"), so the raw protocol is never shown as the assistant's
  * answer -- for both a leading tool call and one that follows a preamble.
@@ -795,6 +814,7 @@ static void ai_fd_cb(int fd, void *data)
    if (tr) {
     /* the model asked to investigate: feed the tool result and take another
        turn -- the editor never blocked, this just continues in the background */
+    tr = ai_tool_result_nonempty(tr);   /* an empty result becomes an explicit note */
     { size_t n = strlen(tr) + 32; char *m = malloc(n);
       if (m) { snprintf(m, n, "TOOL RESULT:\n%s", tr); wpe_ai_session_append("user", m); free(m); } }
     free(tr);
@@ -810,6 +830,23 @@ static void ai_fd_cb(int fd, void *data)
       the plain empty-answer placeholder. */
    FENSTER *wf = ai_pane_win(s->ref);
    char *emsg = wpe_ai_stream_error_message(s->st);
+   /* Model fallback: a real failure (an error, not just an empty answer) retries
+      this turn ONCE on the configured fallback model, so a primary that is down
+      or too slow does not dead-end the chat. */
+   if (emsg && !s->fell_back && e_ai_model_fallback && *e_ai_model_fallback &&
+       (!e_ai_model || strcmp(e_ai_model, e_ai_model_fallback))) {
+    char line[440];
+    snprintf(line, sizeof line,
+             AI_REPLY_PREFIX "primary model failed (%s) - retrying with %s",
+             emsg, e_ai_model_fallback);
+    if (wf) ai_pane_set_last(wf, line);
+    free(emsg);
+    s->fell_back = 1;
+    wpe_fd_del(s->fd);
+    wpe_ai_stream_free(s->st); s->st = NULL;
+    ai_chat_next_turn(s);            /* re-run this turn on the fallback model */
+    return;
+   }
    if (wf) {
     if (emsg) {
      char line[440];
@@ -1123,7 +1160,10 @@ static void ai_chat_next_turn(ai_chat_session *s)
  msgs[nm].role = "system"; msgs[nm].content = sys ? sys : ""; nm++;
  np = wpe_ai_session_messages(msgs + nm, 12);
  for (i = 0; i < np; i++) nm++;
- req.model = NULL; req.msgs = msgs; req.nmsgs = nm;
+ /* After a primary-model failure this turn runs on the configured fallback
+    model (req.model overrides e_ai_model for this request only). */
+ req.model = s->fell_back ? e_ai_model_fallback : NULL;
+ req.msgs = msgs; req.nmsgs = nm;
  err[0] = '\0';
  s->st = wpe_ai_stream_start(&req, err, sizeof err);
  free(sys);
@@ -3422,7 +3462,7 @@ static int ai_agent_process(ai_async_op *op, char *reply)
   } else {
    result = strdup("(unknown tool)");
   }
-  if (!result) result = strdup("(no result)");
+  result = ai_tool_result_nonempty(result);   /* empty output -> explicit note */
   { size_t n = strlen(result) + 32; char *tr = malloc(n);
     if (tr) { snprintf(tr, n, "TOOL RESULT:\n%s", result); ai_ml_add(&op->ml, "user", tr); free(tr); } }
   free(result);
@@ -3707,7 +3747,7 @@ static int ai_plan_process(ai_async_op *op, char *reply)
   else if (!strcmp(tool, "list_dir")) { char cmd[1200]; snprintf(cmd, sizeof cmd, "ls -la %s", arg[0] ? arg : "."); result = ai_run_capture(cmd); }
   else if (!strcmp(tool, "grep"))     { char cmd[1300]; snprintf(cmd, sizeof cmd, "grep -rn -- %s .", arg); result = ai_run_capture(cmd); }
   else result = strdup("(only read-only tools are allowed in plan mode)");
-  if (!result) result = strdup("(not found)");
+  result = ai_tool_result_nonempty(result);   /* empty output -> explicit note */
   { size_t n2 = strlen(result) + 32; char *tr = malloc(n2);
     if (tr) { snprintf(tr, n2, "TOOL RESULT:\n%s", result); ai_ml_add(&op->ml, "user", tr); free(tr); } }
   free(result);

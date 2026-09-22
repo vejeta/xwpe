@@ -56,6 +56,7 @@ char *wpe_ai_run_capture(const char *cmd);
 extern int   e_ai_backend;    /* one of the enum values; default OLLAMA        */
 extern char *e_ai_endpoint;   /* base URL; default http://localhost:11434      */
 extern char *e_ai_model;      /* model name; "" => auto-pick first from server */
+extern char *e_ai_model_fallback; /* retried once when the primary model fails (or NULL) */
 extern char *e_ai_cafile;     /* extra CA/self-signed cert to trust; NULL=system */
 
 /* Named OpenAI-compatible provider profiles the user can switch between (Groq,

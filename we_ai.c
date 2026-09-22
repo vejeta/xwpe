@@ -36,6 +36,7 @@ static char *ai_read_first_line(const char *path); /* defined below; used early 
 int   e_ai_backend  = WPE_AI_OLLAMA;
 char *e_ai_endpoint = NULL;            /* filled by wpe_ai_config_init()       */
 char *e_ai_model    = NULL;            /* "" => auto-pick the first model       */
+char *e_ai_model_fallback = NULL;      /* retried once when the primary fails    */
 char *e_ai_cafile   = NULL;            /* extra CA/self-signed cert to trust (TLS),
                                           for a local HTTPS bridge; NULL => system
                                           CA store only                          */
