@@ -39,6 +39,7 @@ char *e_ai_model    = NULL;            /* "" => auto-pick the first model       
 char *e_ai_model_fallback = NULL;      /* retried once when the primary fails    */
 char *e_ai_edit_hook = NULL;           /* command run on a file after an AI edit  */
 char *e_ai_host_command = NULL;        /* agent-host CLI to run (default: claude)  */
+int   e_ai_host_adapter = 0;           /* 0 = claude-code (stream-json), 1 = text  */
 char *e_ai_cafile   = NULL;            /* extra CA/self-signed cert to trust (TLS),
                                           for a local HTTPS bridge; NULL => system
                                           CA store only                          */
@@ -214,6 +215,9 @@ void wpe_ai_config_init(void)
  if ((e = getenv("XWPE_AI_AGENT_ENGINE")))
   e_ai_agent_engine = (!strcmp(e, "claude-code") || !strcmp(e, "host"))
                         ? WPE_AI_ENGINE_CLAUDE_HOST : WPE_AI_ENGINE_BUILTIN;
+ if ((e = getenv("XWPE_AI_HOST_ADAPTER")))
+  e_ai_host_adapter = !strcmp(e, "text") ? WPE_AI_HOST_ADAPTER_TEXT
+                                         : WPE_AI_HOST_ADAPTER_CLAUDE;
 
  if ((e = getenv("XWPE_AI_ENDPOINT"))) {
   free(e_ai_endpoint);

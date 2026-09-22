@@ -4162,6 +4162,14 @@ static int       g_host_fd = -1;        /* child stdout on the fd-loop */
 static int       g_host_turn;           /* a turn is streaming */
 static int       g_host_in_prompt;      /* a permission y/n modal is up */
 
+/* A short name for the hosted engine, for the pane messages: the configured
+   command, else "Claude Code" (the built-in default). */
+static const char *host_engine_name(void)
+{
+ if (e_ai_host_command && *e_ai_host_command) return e_ai_host_command;
+ return "Claude Code";
+}
+
 static void e_ai_host_end(const char *why)
 {
  if (g_host_fd >= 0) { wpe_fd_del(g_host_fd); g_host_fd = -1; }
@@ -4243,7 +4251,11 @@ static void host_fd_cb(int fd, void *data)
  if (!g_host || g_host_in_prompt) return;   /* not while a permission modal is up */
  if (!ai_window_alive(g_host_cn, g_host_win)) { e_ai_host_end(NULL); return; }
  wpe_host_pump(g_host, &g_host_ev, g_host_win, &turn_done, &hup);
- if (hup) e_ai_host_end("[agent] Claude Code session ended");
+ if (hup) {
+  char l[120];
+  snprintf(l, sizeof l, "[agent] %.80s session ended", host_engine_name());
+  e_ai_host_end(l);
+ }
 }
 
 int e_ai_host(FENSTER *f)
@@ -4264,23 +4276,29 @@ int e_ai_host(FENSTER *f)
   return 0;
  }
  task[0] = '\0';
- if (!e_ai_prompt1(task, g_host ? "Claude Code: next (Esc ends)" : "Claude Code: task", f)
-     || !task[0]) {
-  if (g_host) {                          /* empty/Esc ends a live session */
-   /* Safe to go modal here (user context, not the fd callback): let the user
-      review/revert what the agent changed against the start-of-session
-      checkpoint, then tear down. */
-   if (wpe_ai_checkpoint_active()) wpe_ai_changeset_review(f);
-   e_ai_host_end("[agent] Claude Code session ended");
-  }
-  return 0;
+ { char title[120];
+   snprintf(title, sizeof title, "%.80s: %s", host_engine_name(),
+            g_host ? "next (Esc ends)" : "task");
+   if (!e_ai_prompt1(task, title, f) || !task[0]) {
+    if (g_host) {                        /* empty/Esc ends a live session */
+     /* Safe to go modal here (user context, not the fd callback): let the user
+        review/revert what the agent changed against the start-of-session
+        checkpoint, then tear down. */
+     char l[120];
+     if (wpe_ai_checkpoint_active()) wpe_ai_changeset_review(f);
+     snprintf(l, sizeof l, "[agent] %.80s session ended", host_engine_name());
+     e_ai_host_end(l);
+    }
+    return 0;
+   }
  }
  if (!g_host) {
   err[0] = '\0';
   g_host = wpe_host_start(e_ai_model, "", e_ai_policy, err, sizeof err);
   if (!g_host) {
    char l[360];
-   snprintf(l, sizeof l, "[agent] could not start claude: %.320s", err[0] ? err : "?");
+   snprintf(l, sizeof l, "[agent] could not start %.80s: %.240s",
+            host_engine_name(), err[0] ? err : "?");
    ai_pane(f, l, 1);
    return 0;
   }
@@ -4292,8 +4310,11 @@ int e_ai_host(FENSTER *f)
   { char **scope; int nsc = wpe_ai_scope_files(f, e_project_is_open(), 1, &scope);
     wpe_ai_checkpoint_create(f, scope, nsc);
     wpe_ai_free_list(scope, nsc); }
-  ai_pane(f, "[agent] engine: Claude Code - session started (Esc at the prompt ends it)", 1);
-  wpe_ai_trace("host start policy=%s", wpe_ai_policy_name(e_ai_policy));
+  { char l[160];
+    snprintf(l, sizeof l, "[agent] engine: %.80s - session started (Esc at the prompt ends it)",
+             host_engine_name());
+    ai_pane(f, l, 1); }
+  wpe_ai_trace("host start policy=%s adapter=%d", wpe_ai_policy_name(e_ai_policy), e_ai_host_adapter);
  }
  { char l[1100]; snprintf(l, sizeof l, "[agent] you: %.1000s", task); ai_pane(f, l, 0); }
  if (wpe_host_send(g_host, task) != 0) {

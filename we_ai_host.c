@@ -38,6 +38,7 @@ struct wpe_host {
  char            edited[HOST_MAX_EDITS][HOST_PATH_MAX];
  int             nedited;
  int             text_seen;             /* assistant text streamed this turn */
+ int             adapter;               /* WPE_AI_HOST_ADAPTER_* : how to read stdout */
 };
 
 /* ------------------------------------------------------------------ helpers */
@@ -107,6 +108,12 @@ wpe_host *wpe_host_start(const char *model, const char *resume, int policy,
  if (!hostcmd || !*hostcmd) hostcmd = e_ai_host_command;
 
  if (err && errsz) err[0] = '\0';
+ /* The "text" adapter renders a plain prompt-in/text-out CLI, so it needs a
+    command to run -- there is no built-in text CLI. */
+ if (e_ai_host_adapter == WPE_AI_HOST_ADAPTER_TEXT && (!hostcmd || !*hostcmd)) {
+  if (err) snprintf(err, errsz, "AIHostAdapter text needs AIHostCommand set");
+  return NULL;
+ }
  if (pipe(in) != 0) { if (err) snprintf(err, errsz, "pipe: %s", strerror(errno)); return NULL; }
  if (pipe(out) != 0) { close(in[0]); close(in[1]);
    if (err) snprintf(err, errsz, "pipe: %s", strerror(errno)); return NULL; }
@@ -167,6 +174,7 @@ wpe_host *wpe_host_start(const char *model, const char *resume, int policy,
  h->pid = pid;
  h->in_fd = in[1];
  h->out_fd = out[0];
+ h->adapter = e_ai_host_adapter;
  host_set_nonblock(h->out_fd);
  wpe_http_stream_init(&h->hs);
  h->hs.header_done = 1;                 /* raw pipe: bytes are body, not HTTP */
@@ -189,6 +197,24 @@ int wpe_host_send(wpe_host *h, const char *user_text)
 
  if (!h || h->in_fd < 0) return -1;
  h->text_seen = 0;                      /* a fresh turn begins */
+
+ /* Text adapter: a plain prompt-in/text-out CLI.  Write the prompt as-is, then
+    close its stdin so it gets EOF, processes, and exits -- its stdout streams
+    back as the answer and the turn ends when it closes stdout.  (One-shot: the
+    session ends after the turn; a fresh Alt-G g starts the next.) */
+ if (h->adapter == WPE_AI_HOST_ADAPTER_TEXT) {
+  const char *t = user_text ? user_text : "";
+  size_t tl = strlen(t), o2;
+  for (o2 = 0; o2 < tl; ) {
+   ssize_t w = write(h->in_fd, t + o2, tl - o2);
+   if (w < 0) { if (errno == EINTR) continue; return -1; }
+   o2 += (size_t)w;
+  }
+  { char nl = '\n'; if (write(h->in_fd, &nl, 1) < 0) return -1; }
+  close(h->in_fd); h->in_fd = -1;        /* EOF: let the CLI produce its answer */
+  return 0;
+ }
+
  o = json_object_new_object();
  m = json_object_new_object();
  json_object_object_add(m, "role", json_object_new_string("user"));
@@ -292,6 +318,11 @@ static void host_handle_line(wpe_host *h, const char *line,
  const char *type;
 
  if (!line || !line[0]) return;
+ if (h->adapter == WPE_AI_HOST_ADAPTER_TEXT) {   /* plain CLI: the line IS the answer */
+  h->text_seen = 1;
+  if (ev->on_text) ev->on_text(line, ud);
+  return;
+ }
  tok = json_tokener_new();
  o = json_tokener_parse_ex(tok, line, (int)strlen(line));
  if (!o || json_tokener_get_error(tok) != json_tokener_success) {

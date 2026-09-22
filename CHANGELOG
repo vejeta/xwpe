@@ -280,7 +280,12 @@ Changes
       A generic host layer; a build without the flag contains none of it.  The
       hosted CLI is set with AIHostCommand (empty runs claude; a different command
       such as aider/opencode runs through the shell, so hosting another agent
-      needs no build change), overridable with XWPE_AI_HOST_CMD.
+      needs no build change), overridable with XWPE_AI_HOST_CMD.  A second adapter
+      selects how the CLI's output is read (AIHostCommand + AIHostAdapter): the
+      default claude-code stream-json protocol, or a plain "text" adapter that
+      writes the prompt to the CLI's stdin and renders its stdout as the answer --
+      so a prompt-in/text-out CLI (aider --message, sgpt, a script) can be hosted
+      too, one turn per invocation, proving the host is not vendor-specific.
     - Every mode (Ask, Edit, Multi-file, Agent, Fix-build) is now handed the
       files currently open in the editor as context, with the focused one marked
       -- so you no longer have to tell the assistant what you are working on.

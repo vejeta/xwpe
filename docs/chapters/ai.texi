@@ -313,10 +313,15 @@ so the whole run is reviewable/revertible when it ends.  The session stays live
 across turns: @kbd{Alt-G g} feeds the next turn, and an empty prompt (or @key{Esc})
 ends it and offers the changeset review.
 
-It is built as a generic host -- an agent CLI that speaks a line-delimited JSON
-event stream on stdout and takes turns on stdin -- so other agent CLIs can be
-added later as small adapters.  A build without @option{--enable-ai-agent-host}
-contains none of it, and the @samp{Agent engine} radio does not appear.
+It is built as a generic host, so which CLI it runs, and how its output is read,
+are configurable (@code{AIHostCommand}, @code{AIHostAdapter}).  Two adapters
+exist: @code{claude-code} (the stream-json event protocol above) and @code{text}
+-- a plain prompt-in/text-out CLI whose stdout is rendered as the answer, for
+hosting @command{aider}, @command{sgpt} or any script (one turn per
+invocation, without the tool/edit/permission integration the stream-json protocol
+gives).  Further agent CLIs are new adapters, not a fork of this control flow.  A
+build without @option{--enable-ai-agent-host} contains none of it, and the
+@samp{Agent engine} radio does not appear.
 
 @section Reviewing changes like compile errors
 
@@ -413,13 +418,22 @@ The agent CLI to host when @code{AIAgentEngine} is @code{claude-code}; empty run
 @command{claude}.  A different command (@command{aider}, @command{opencode},
 @dots{}) is run through the shell, so hosting another agent needs no build change.
 Overridden by @env{XWPE_AI_HOST_CMD}.
+@item AIHostAdapter
+How the hosted CLI's output is read: @code{claude-code} (the default -- the
+stream-json event protocol, with tool calls, on-disk edits reflected into your
+buffers, and per-tool permission prompts) or @code{text} (a plain
+prompt-in/text-out CLI: xwpe writes the prompt to its stdin, closes it, and
+renders the CLI's stdout as the answer; one turn per invocation, no tool or edit
+reflection).  Use @code{text} to host @command{aider --message}, @command{sgpt}
+or any prompt-to-text script.  Overridden by @env{XWPE_AI_HOST_ADAPTER}.
 @end table
 
 Environment overrides (handy for scripts and tests): @env{XWPE_AI_ENABLE},
 @env{XWPE_AI_BACKEND}, @env{XWPE_AI_ENDPOINT}, @env{XWPE_AI_MODEL},
 @env{XWPE_AI_CAFILE}, @env{XWPE_AI_POLICY}, @env{XWPE_AI_AGENT_ENGINE}
 (@code{builtin}/@code{claude-code}), @env{XWPE_AI_HOST_CMD} (the agent CLI to
-host), and @env{XWPE_AI_TRACE} (a path to log assistant events to).  API keys are read from the standard environment variable first
+host), @env{XWPE_AI_HOST_ADAPTER} (@code{claude-code}/@code{text}), and
+@env{XWPE_AI_TRACE} (a path to log assistant events to).  API keys are read from the standard environment variable first
 (@env{ANTHROPIC_API_KEY}, @env{OPENAI_API_KEY}), then from @code{@var{NAME}_FILE},
 then from @file{~/.config/xwpe/anthropic-api-key} (or @file{openai-api-key}, or a
 provider's own @file{openai-api-key-@var{name}}); the @code{claudecli} backend

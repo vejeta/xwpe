@@ -59,6 +59,11 @@ extern char *e_ai_model;      /* model name; "" => auto-pick first from server *
 extern char *e_ai_model_fallback; /* retried once when the primary model fails (or NULL) */
 extern char *e_ai_edit_hook;      /* command run on a file after an AI edit (or NULL) */
 extern char *e_ai_host_command;   /* agent-host CLI, e.g. "claude"/"aider" (or NULL => claude) */
+/* Which host adapter parses the CLI's output: stream-json (Claude Code) or a
+   plain "prompt in -> text out" CLI whose stdout is rendered as the answer. */
+#define WPE_AI_HOST_ADAPTER_CLAUDE 0
+#define WPE_AI_HOST_ADAPTER_TEXT   1
+extern int   e_ai_host_adapter;
 extern char *e_ai_cafile;     /* extra CA/self-signed cert to trust; NULL=system */
 
 /* Named OpenAI-compatible provider profiles the user can switch between (Groq,

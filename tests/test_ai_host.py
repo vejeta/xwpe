@@ -24,7 +24,7 @@ def _host_build():
     try:
         out = subprocess.run(["strings", os.path.abspath(WPE_BIN)],
                              stdout=subprocess.PIPE, timeout=30).stdout
-        return b"engine: Claude Code" in out
+        return b"AIHostAdapter text needs AIHostCommand" in out
     except Exception:
         return False
 
