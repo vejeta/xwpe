@@ -85,8 +85,9 @@ def test_ai_options_model_picker_scrolls_and_selects(tmp_path):
             "scrollable model picker did not open:\n" + pick
         assert "PgUp/PgDn" in pick, "picker is not the scrollable overlay:\n" + pick
         # the picker floats OVER the settings dialog -- the dialog is NOT erased,
-        # its Permission section and Ok/Cancel still show around the picker.
-        assert "Permission" in pick and "Cancel" in pick, \
+        # its content still frames the picker (Enable above, Connection + Cancel
+        # below; "Permission" sits behind the centred picker, so is not a proxy).
+        assert "Connection" in pick and "Cancel" in pick, \
             "the settings dialog was erased instead of drawn under the picker:\n" + pick
         s.key("\033[B", delay=0.3)       # Down: sonnet -> opus
         s.key("\r", delay=0.7)           # Enter -> select, dialog reopens
@@ -648,3 +649,34 @@ def test_cafile_field_edits_and_persists(tmp_path):
     saved = open(cfgfile).read()
     assert "AICAFile : /tmp/proton.pem" in saved, \
         "the CA file typed in the dialog was not saved:\n" + saved
+
+
+def test_api_key_field_used_by_altm_and_saved(tmp_path):
+    # An API key typed in the dialog (Alt-K) is used immediately by Alt-M (so an
+    # authenticated endpoint lists its models before the provider is saved), and
+    # is persisted to a key file.  The field is never pre-filled with the secret.
+    srv, port, seen = _auth_recording_server()
+    try:
+        home = str(tmp_path / "home")
+        cfg = os.path.join(home, ".config", "xwpe")
+        os.makedirs(cfg)
+        with open(os.path.join(cfg, "xwperc"), "w") as fh:
+            fh.write("[Programming]\nAIBackend : 1\n"
+                     "AIEndpoint : http://127.0.0.1:%d/v1\nAIPolicy : ask\n" % port)
+        env = {"XWPE_AI_ENABLE": "1", "HOME": home, "OPENAI_API_KEY": ""}
+        with WpeSession(str(tmp_path), "int main(void){return 0;}\n",
+                        env_extra=dict(env)) as s:
+            s.key("\033o", delay=0.5); s.key("i", delay=0.6)
+            s.key("\033k", delay=0.5)         # Alt-K -> API key field
+            for ch in "typed-key-xyz":
+                s.key(ch, delay=0.03)
+            s.key("\033m", delay=1.5)         # Alt-M commits the field and lists
+            s.key("\033", delay=0.3)          # close the picker
+            s.key("\033o", delay=0.8)         # Ok (persists the key)
+    finally:
+        srv.shutdown()
+    assert seen["auth"] == "Bearer typed-key-xyz", \
+        "Alt-M did not use the key typed in the dialog: %r" % seen["auth"]
+    kf = os.path.join(cfg, "openai-api-key")
+    assert os.path.exists(kf) and open(kf).read().strip() == "typed-key-xyz", \
+        "the typed key was not persisted to a key file"

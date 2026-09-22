@@ -359,5 +359,9 @@ Environment overrides (handy for scripts and tests): @env{XWPE_AI_ENABLE},
 @env{XWPE_AI_CAFILE}, @env{XWPE_AI_POLICY}, and @env{XWPE_AI_TRACE} (a path to
 log assistant events to).  API keys are read from the standard environment variable first
 (@env{ANTHROPIC_API_KEY}, @env{OPENAI_API_KEY}), then from @code{@var{NAME}_FILE},
-then from @file{~/.config/xwpe/anthropic-api-key} (or @file{openai-api-key}); the
-@code{claudecli} backend needs none of this.
+then from @file{~/.config/xwpe/anthropic-api-key} (or @file{openai-api-key}, or a
+provider's own @file{openai-api-key-@var{name}}); the @code{claudecli} backend
+needs none of this.  An OpenAI key can also be typed into the @samp{API key} field
+of @samp{Options}, @samp{AI} (@key{Alt-K}): it is used at once (so @key{Alt-M}
+lists an authenticated endpoint's models) and written to the key file; the field
+is never pre-filled with the stored secret.

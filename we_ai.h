@@ -65,6 +65,9 @@ extern char *e_ai_cafile;     /* extra CA/self-signed cert to trust; NULL=system
  * ad-hoc endpoint typed straight into the dialog. */
 struct wpe_ai_provider { char *name, *endpoint, *model, *cafile; };
 extern char *e_ai_provider;
+extern char *e_ai_key;        /* session OpenAI key from the dialog; NULL=use files */
+/* Persist an OpenAI key to ~/.config/xwpe/openai-api-key[-<provider>] (0600). */
+int         wpe_ai_write_openai_key(const char *provider, const char *key);
 int         wpe_ai_provider_count(void);
 const struct wpe_ai_provider *wpe_ai_provider_get(int i);
 const struct wpe_ai_provider *wpe_ai_provider_find(const char *name);

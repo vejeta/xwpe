@@ -2399,10 +2399,30 @@ static void ai_set_endpoint(const char *text)
  e_ai_endpoint = strdup(buf[0] ? buf : "http://localhost:11434");
 }
 
+/* Adopt an API key typed in the dialog's key field (trimmed) as the session key,
+ * so it is used immediately by Alt-M without waiting for Ok.  A blank field
+ * leaves the current key untouched (the field is never pre-filled with the
+ * secret).  Returns 1 if a new key was set. */
+static int ai_set_typed_key(const char *text)
+{
+ char buf[600];
+ const char *s = text ? text : "";
+ size_t n;
+ while (*s == ' ' || *s == '\t') s++;
+ snprintf(buf, sizeof buf, "%s", s);
+ n = strlen(buf);
+ while (n && (buf[n - 1] == ' ' || buf[n - 1] == '\t')) buf[--n] = '\0';
+ if (!buf[0]) return 0;
+ free(e_ai_key);
+ e_ai_key = strdup(buf);
+ return 1;
+}
+
 /* The write-string fields' indices in the dialog (in the order added), so the
  * Model button and Ok handler read the same fields. */
 #define AI_OPT_ENDPOINT_WSTR 0
 #define AI_OPT_CAFILE_WSTR   1
+#define AI_OPT_KEY_WSTR      2
 
 /* Model button action.  The scrollable picker (e_ai_pick) saves the screen it
    covers and restores it on close, so it floats OVER the settings dialog and
@@ -2438,6 +2458,10 @@ static int e_ai_opt_pick_model(FENSTER *f)
   free(e_ai_cafile);
   e_ai_cafile = (ca && *ca) ? strdup(ca) : NULL;
  }
+ /* Use a key typed in the field so an authenticated endpoint (Groq, a Lumo
+    bridge, ...) lists its models from Alt-M before the provider is saved. */
+ if (g_ai_opt_dlg && g_ai_opt_dlg->wn > AI_OPT_KEY_WSTR)
+  ai_set_typed_key(g_ai_opt_dlg->wstr[AI_OPT_KEY_WSTR]->txt);
  /* Switching the Backend radio to Ollama leaves the shared endpoint field on the
     previous (OpenAI) URL; Ollama serves /api/... at the host root, so an
     OpenAI-style base would 404.  Fall back to the local Ollama server and show
@@ -2526,6 +2550,10 @@ static int e_ai_opt_pick_provider(FENSTER *f)
    wpe_ai_provider_set(name, e_ai_endpoint ? e_ai_endpoint : "",
                        e_ai_model, e_ai_cafile);
    free(e_ai_provider); e_ai_provider = strdup(name);
+   /* Move a key typed this session into the new provider's own key file, so it
+      is found as openai-api-key-<name> on the next launch. */
+   if (e_ai_key && *e_ai_key)
+    wpe_ai_write_openai_key(name, e_ai_key);
   }
  }
  ai_opt_sync_widgets();
@@ -2561,14 +2589,15 @@ int e_ai_options(FENSTER *f)
  ai_opt_mlabel();
  ai_opt_plabel();
 
- /* Lay the dialog out in labelled SECTIONS -- On/off, Backend, the OpenAI /
-    Ollama Connection (provider, model, endpoint, CA), Permission, and (when
-    built) the Agent engine -- so the grown set of fields reads as groups, not a
-    jumble.  Single column, kept within ~20 rows so it fits a 24-line terminal.
-    e_opt_kst centres it; the size set here is what it centres. */
- { int w = 60, h = 18;
+ /* Lay the dialog out in labelled SECTIONS with blank rows between them, so the
+    grown set of fields reads as groups.  Backend and Permission (short radios)
+    sit side by side to save height; the Connection fields are full width because
+    URLs are long, and run top-to-bottom in the order you fill them -- Provider,
+    Endpoint, CA file, API key, then Model (picked last, once the rest is set).
+    Kept within ~22 rows so it fits a 24-line terminal.  e_opt_kst centres it. */
+ { int w = 64, h = 20;
 #ifdef WPE_AI_AGENT_HOST
-   h = 20;                              /* one more section: the Agent engine */
+   h = 21;                              /* one more row: the Agent engine */
 #endif
    o->xa = (MAXSCOL - w) / 2; if (o->xa < 1) o->xa = 1;
    o->xe = o->xa + w;
@@ -2580,42 +2609,43 @@ int e_ai_options(FENSTER *f)
  e_add_sswstr(3, 2, 0, AltE, (f->ed->edopt & ED_AI_ENABLE) ? 1 : 0,
               "Enable AI assistant", o);
 
- /* --- Backend: which service answers Ask / Edit / Multi-file / Agent.  Every
-        radio needs a UNIQUE non-zero sw (sw==0 means "no field", unreachable). */
- e_add_txtstr(3, 3, "Backend:", o);
+ /* --- Backend (left) + Permission (right), side by side.  Every radio needs a
+        UNIQUE non-zero sw (sw==0 means "no field", unreachable).  Add order sets
+        the group index, so backend (0) precedes permission (1) precedes agent. */
+ e_add_txtstr(3, 4, "Backend:", o);
+ e_add_txtstr(36, 4, "Permission:", o);
  for (i = 0; i < 4; i++)
-  e_add_pswstr(0, 5, 4 + i, i, 4000 + i, (i == 3) ? bcur : 0, (char *)bklab[i], o);
-
- /* --- Connection: used by the OpenAI-compatible and Ollama backends.  Provider
-        picks a saved profile (or saves the current one); Endpoint/CA are editable
-        so a server or a self-signed local bridge needs no hand-edited xwperc. */
- e_add_txtstr(3, 8, "Connection (OpenAI-compatible / Ollama):", o);
- e_add_txtstr(5, 9, "Provider (Alt-V):", o);
- e_add_bttstr(24, 9, 0, AltV, g_ai_opt_plabel, e_ai_opt_pick_provider, o);
- e_add_txtstr(5, 10, "Model (Alt-M):", o);
- e_add_bttstr(24, 10, 0, AltM, g_ai_opt_mlabel, e_ai_opt_pick_model, o);
- e_add_wrstr(5, 11, 24, 11, 33, 255, -1, AltU, "Endpoint (Alt-U):",
-             e_ai_endpoint ? e_ai_endpoint : "", NULL, o);   /* wstr[0] */
- e_add_wrstr(5, 12, 24, 12, 33, 511, -1, AltC, "CA file (Alt-C):",
-             e_ai_cafile ? e_ai_cafile : "", NULL, o);        /* wstr[1] */
-
- /* --- Permission: how the Agent's file writes and commands are gated. */
- e_add_txtstr(3, 13, "Permission (agent writes / commands):", o);
+  e_add_pswstr(0, 5, 5 + i, i, 4000 + i, (i == 3) ? bcur : 0, (char *)bklab[i], o);
  for (i = 0; i < 3; i++)
-  e_add_pswstr(1, 5, 14 + i, i, 4200 + i, (i == 2) ? e_ai_policy : 0, (char *)pol[i], o);
+  e_add_pswstr(1, 38, 5 + i, i, 4200 + i, (i == 2) ? e_ai_policy : 0, (char *)pol[i], o);
+
+ /* --- Connection: used by the OpenAI-compatible and Ollama backends.  Editable
+        here (endpoint/CA/key) so a server or a self-signed local bridge needs no
+        hand-edited xwperc; Provider switches saved profiles / saves the current. */
+ e_add_txtstr(3, 10, "Connection (OpenAI-compatible / Ollama):", o);
+ e_add_txtstr(5, 11, "Provider (Alt-V):", o);
+ e_add_bttstr(22, 11, 0, AltV, g_ai_opt_plabel, e_ai_opt_pick_provider, o);
+ e_add_wrstr(5, 12, 22, 12, 40, 255, -1, AltU, "Endpoint (Alt-U):",
+             e_ai_endpoint ? e_ai_endpoint : "", NULL, o);   /* wstr[0] */
+ e_add_wrstr(5, 13, 22, 13, 40, 511, -1, AltC, "CA file (Alt-C):",
+             e_ai_cafile ? e_ai_cafile : "", NULL, o);        /* wstr[1] */
+ e_add_wrstr(5, 14, 22, 14, 40, 255, -1, AltK, "API key (Alt-K):",
+             "", NULL, o);                                    /* wstr[2] (blank) */
+ e_add_txtstr(5, 15, "Model (Alt-M):", o);
+ e_add_bttstr(22, 15, 0, AltM, g_ai_opt_mlabel, e_ai_opt_pick_model, o);
 
 #ifdef WPE_AI_AGENT_HOST
  /* --- Agent engine: the editor's own tool loop, or the Claude Code CLI. */
  e_add_txtstr(3, 17, "Agent (Alt-G g):", o);
  e_add_pswstr(2, 20, 17, 0, 4300, 0, "Built-in", o);
  e_add_pswstr(2, 35, 17, 1, 4301, e_ai_agent_engine, "Claude Code", o);
- e_add_txtstr(3, 18, "Tab/arrows move  Space selects  Alt-U/C/M/V edit", o);
- e_add_bttstr(20, 19, 1, AltO, "  Ok  ", NULL, o);
- e_add_bttstr(36, 19, -1, WPE_ESC, "Cancel", NULL, o);
+ e_add_txtstr(3, 18, "Tab/arrows move  Space selects  Alt-U/C/K/M/V edit", o);
+ e_add_bttstr(24, 19, 1, AltO, "  Ok  ", NULL, o);
+ e_add_bttstr(40, 19, -1, WPE_ESC, "Cancel", NULL, o);
 #else
- e_add_txtstr(3, 16, "Tab/arrows move  Space selects  Alt-U/C/M/V edit", o);
- e_add_bttstr(20, 17, 1, AltO, "  Ok  ", NULL, o);
- e_add_bttstr(36, 17, -1, WPE_ESC, "Cancel", NULL, o);
+ e_add_txtstr(3, 17, "Tab/arrows move  Space selects  Alt-U/C/K/M/V edit", o);
+ e_add_bttstr(24, 18, 1, AltO, "  Ok  ", NULL, o);
+ e_add_bttstr(40, 18, -1, WPE_ESC, "Cancel", NULL, o);
 #endif
 
  edopt_before = f->ed->edopt;
@@ -2635,6 +2665,10 @@ int e_ai_options(FENSTER *f)
   free(e_ai_cafile);
   e_ai_cafile = (ca && *ca) ? strdup(ca) : NULL;
  }
+ if (o->wn > AI_OPT_KEY_WSTR && ai_set_typed_key(o->wstr[AI_OPT_KEY_WSTR]->txt))
+  /* Persist a newly typed key to the active provider's file (or the generic
+     one), so it survives the session; e_ai_key holds it meanwhile. */
+  wpe_ai_write_openai_key(e_ai_provider, e_ai_key);
 #ifdef WPE_AI_AGENT_HOST
  e_ai_agent_engine = (o->pstr[2]->num == 1) ? WPE_AI_ENGINE_CLAUDE_HOST
                                             : WPE_AI_ENGINE_BUILTIN;

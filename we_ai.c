@@ -39,6 +39,9 @@ char *e_ai_cafile   = NULL;            /* extra CA/self-signed cert to trust (TL
                                           for a local HTTPS bridge; NULL => system
                                           CA store only                          */
 char *e_ai_provider = NULL;            /* active provider profile name, or NULL   */
+char *e_ai_key      = NULL;            /* OpenAI key typed in the dialog this
+                                          session; overrides the key files/env so
+                                          Alt-M works before the provider is saved */
 
 /* ---- provider profiles: named OpenAI-compatible endpoints ---------------- */
 static struct wpe_ai_provider *g_ai_providers;
@@ -294,6 +297,32 @@ const char *wpe_ai_ollama_endpoint_fixup(const char *url)
  return l ? "http://localhost:11434" : NULL;
 }
 
+/* Write the OpenAI API key for a provider (NULL/"" => the generic file) to
+ * $XDG_CONFIG_HOME/xwpe/openai-api-key[-<provider>] with 0600 perms, so a key
+ * typed in the settings dialog persists.  Returns 0 on success. */
+int wpe_ai_write_openai_key(const char *provider, const char *key)
+{
+ const char *xdg = getenv("XDG_CONFIG_HOME"), *home = getenv("HOME");
+ char dir[1024], path[1200];
+ FILE *fp;
+ int fd;
+ if (!key) return -1;
+ if (xdg && *xdg) snprintf(dir, sizeof dir, "%s/xwpe", xdg);
+ else if (home)   snprintf(dir, sizeof dir, "%s/.config/xwpe", home);
+ else return -1;
+ if (provider && *provider)
+  snprintf(path, sizeof path, "%s/openai-api-key-%s", dir, provider);
+ else
+  snprintf(path, sizeof path, "%s/openai-api-key", dir);
+ fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+ if (fd < 0) return -1;
+ fp = fdopen(fd, "w");
+ if (!fp) { close(fd); return -1; }
+ fprintf(fp, "%s\n", key);
+ fclose(fp);
+ return 0;
+}
+
 /* Build the request path for a backend, honouring the endpoint's path prefix.
  * OpenAI-compatible and Claude take their path relative to that prefix (a bare
  * host defaults to /v1); Ollama's paths are absolute from the host root. */
@@ -360,11 +389,13 @@ static int ai_headers(int backend, char *hdrs[], int max)
  char b[600];
  if (n < max) hdrs[n++] = ai_strdup("Content-Type: application/json");
  if (backend == WPE_AI_OPENAI) {
-  /* With a provider profile active, prefer its own key file
+  /* A key typed in the dialog this session wins (so Alt-M works before the
+     provider is saved); then a provider profile's own key file
      (openai-api-key-<name>) so Groq/Proton/... can each carry a distinct key;
-     fall back to the generic OPENAI_API_KEY / openai-api-key. */
+     then the generic OPENAI_API_KEY / openai-api-key. */
   k = NULL;
-  if (e_ai_provider && *e_ai_provider) {
+  if (e_ai_key && *e_ai_key) k = ai_strdup(e_ai_key);
+  if (!k && e_ai_provider && *e_ai_provider) {
    char base[160];
    snprintf(base, sizeof base, "openai-api-key-%s", e_ai_provider);
    k = ai_get_api_key("OPENAI_API_KEY", base);
