@@ -50,3 +50,24 @@ def test_first_use_accept_proceeds(tmp_path):
         after = "\n".join(s.display())
     assert "Ask (chat)" in after and "Agent (tools)" in after, \
         "accepting consent did not open the AI menu:\n" + after
+
+
+def test_first_use_shortcut_runs_action(tmp_path):
+    # A habitual "Alt-G a" on the very first use must not appear to hang: the
+    # letter both accepts the notice AND runs Ask, straight into the chat input
+    # (it must NOT drop the user on the menu waiting for a second keystroke).
+    env = dict(ENV)
+    env["XWPE_AI_MOCK_REPLY"] = "PONGCONSENT42"
+    with WpeSession(str(tmp_path), "int main(void){return 0;}\n",
+                    env_extra=env) as s:
+        s.key(ALT.AI); s._drain(0.5)
+        s.key("a", delay=0.5)                     # habitual shortcut = accept + Ask
+        menu = "\n".join(s.display())
+        assert "Agent (tools)" not in menu, \
+            "Alt-G a stopped on the menu instead of opening Ask:\n" + menu
+        s.key("hello", delay=0.1)
+        s.key("\r", delay=1.0)
+        s._drain(1.2)
+        after = "\n".join(s.display())
+    assert "PONGCONSENT42" in after, \
+        "Alt-G a on first use did not reach a working chat:\n" + after

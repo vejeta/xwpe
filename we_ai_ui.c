@@ -386,13 +386,18 @@ static FENSTER *g_ai_bg_win = NULL;
 static void ai_input_caret(FENSTER *wf, int *cy, int *cx)
 {
  int rows = g_ai_input_rows > 0 ? g_ai_input_rows : 1;
- int line_idx = 0, col = 0, i;
+ int line_idx = 0, bcol = 0, i;
+ /* The caret x is a BYTE offset into the rendered line: e_cursor walks the line
+    bytes and converts a multi-byte glyph to its single display column itself
+    (e_utf8_visual_step).  So count every byte on the current line here, NOT one
+    per glyph -- returning a glyph count would drop the caret onto the trailing
+    byte of an accented character (the cursor "sticks" on the e-acute). */
  for (i = 0; i < g_ai_input_pos && i < g_ai_input_len; i++) {
-  if (g_ai_input[i] == '\n') { line_idx++; col = 0; }
-  else if (((unsigned char)g_ai_input[i] & 0xC0) != 0x80) col++;  /* one per glyph */
+  if (g_ai_input[i] == '\n') { line_idx++; bcol = 0; }
+  else bcol++;
  }
  *cy = wf->b->mxlines - rows + line_idx;
- *cx = 2 + col;
+ *cx = 2 + bcol;                       /* 2 = the "> "/"  " prefix bytes */
 }
 
 /* Repaint the pane window and keep the caret in view.  The pane is an ordinary
@@ -2771,21 +2776,36 @@ static void ai_consent_remember(void)
  { FILE *fp = fopen(buf, "w"); if (fp) { fputs("1\n", fp); fclose(fp); } }
 }
 
+/* Shared with the AI action menu below (defined next to e_ai_menu_items):
+   whether a letter is an AI menu shortcut, so the consent gate can accept a
+   habitual "Alt-G a" as both the go-ahead and the action to run. */
+static int ai_menu_has_key(int key);
+static int ai_menu_dispatch_key(FENSTER *f, int key);
+
 /**
  * ai_consent_gate - Show the one-time first-use notice before any AI action.
- * @f: the current window (the notice renders in the AI pane).
+ * @f:        the current window (the notice renders in the AI pane).
+ * @pass_key: out; set to the menu letter the user typed (e.g. 'a') when they
+ *            answered the notice with a habitual shortcut, else left 0.
  * Return: 1 to proceed (choice remembered), 0 if the user declined.
  *
  * States the trust model up front -- local by default, opt-in, every edit
  * previewed and revertible -- so enabling the assistant is an informed choice.
+ * Only the final prompt line is drawn in the attention colour; the notice
+ * itself is plain text, so the panel does not look like an error.  Pressing a
+ * menu shortcut (a Ask, e Edit, g Agent, s Settings...) counts as the
+ * go-ahead AND is reported back so the caller runs that action straight away --
+ * so the very first "Alt-G a" reaches Ask instead of appearing to hang.
  */
-static int ai_consent_gate(FENSTER *f)
+static int ai_consent_gate(FENSTER *f, int *pass_key)
 {
+ if (pass_key) *pass_key = 0;
  if (ai_consent_given()) return 1;
- ai_pane_attn(f, "AI assistant -- first use.  It runs LOCALLY by default (Ollama on");
- ai_pane_attn(f, "localhost): nothing leaves your machine unless you point it at a");
- ai_pane_attn(f, "remote backend.  It is opt-in, every edit is previewed, and one");
- ai_pane_attn(f, "Ctrl-U reverts it.");
+ ai_pane(f, "AI assistant -- first use.  It runs LOCALLY by default (Ollama on", 1);
+ ai_pane(f, "localhost): nothing leaves your machine unless you point it at a", 1);
+ ai_pane(f, "remote backend.  It is opt-in, every edit is previewed, and one", 1);
+ ai_pane(f, "Ctrl-U reverts it.", 1);
+ ai_pane(f, "After enabling, Alt-G opens a menu: a Ask  e Edit  g Agent  s Settings.", 1);
  ai_pane_attn(f, "Enter / y = enable and continue      n / Esc = not now");
  for (;;) {
   int c = e_getch();
@@ -2797,6 +2817,12 @@ static int ai_consent_gate(FENSTER *f)
    ai_consent_remember();
    return 1;
   }
+  if (ai_menu_has_key(c)) {          /* habitual Alt-G <letter>: enable + do it */
+   ai_consent_remember();
+   if (pass_key) *pass_key = c;
+   return 1;
+  }
+  /* Any other key just leaves the notice up until the user chooses. */
  }
 }
 
@@ -2811,13 +2837,19 @@ int e_ai_ui_key(FENSTER *f)
  /* Alt-G no longer cancels a running task (that surprised users): Esc cancels
     it, and a second action is QUEUED to run after the current one.  Alt-G just
     opens the menu, even while a task runs. */
- /* First use: state the trust model and get an explicit go-ahead once. */
- if (!ai_consent_gate(f))
-  return 0;
+ /* First use: state the trust model and get an explicit go-ahead once.  If the
+    user answered the notice with a menu shortcut, run that action directly. */
+ {
+  int pass = 0;
+  if (!ai_consent_gate(f, &pass))
+   return 0;
+  if (pass && ai_menu_dispatch_key(f, pass))
+   return 0;
+ }
  /* Alt-G shows the action menu straight away -- the way Alt-F shows the File
     menu -- instead of an invisible "press another key" prefix.  The menu takes
-    the item's letter as a shortcut (a=Ask e=Edit p=Plan g=Agent m=Model
-    y=policY n=New d=Disable), so a quick Alt-G a still jumps straight to Ask;
+    the item's letter as a shortcut (a=Ask e=Edit f=multi-File g=Agent b=Build
+    y=policY n=New s=Settings), so a quick Alt-G a still jumps straight to Ask;
     pausing just leaves the menu on screen to pick from. */
  return e_ai_menu(f);
 }
@@ -3692,46 +3724,89 @@ static int e_ai_menu_divider(FENSTER *f) { (void)f; return 0; }
  * keyboard shortcut lines up like the LSP menu).  The Model and Permissions rows
  * show the CURRENT value so the active setup is visible; a blank separator
  * divides the actions from the settings.  Returns the row count. */
+/* The AI action menu, as one source of truth shared by three call sites: the
+   dropdown built in e_ai_menu_items, the shortcut probe ai_menu_has_key, and
+   the direct dispatch ai_menu_dispatch_key.  A NULL name is a divider.  The
+   Permissions row shows the live policy, so its caption is filled in at build
+   time; only its key and function are constant here. */
+static const struct ai_menu_row {
+ const char *name; char key; int (*fkt)(FENSTER *);
+} ai_menu_rows[] = {
+ { "Ask (chat)",          'A', e_ai_chat             },
+ { "Edit current file",   'E', e_ai_edit             },
+ { "Multi-file edit",     'F', e_ai_plan             },
+ { "Agent (tools)",       'G', e_ai_agent            },
+ { "Build & fix (agent)", 'B', e_ai_fix_build        },
+ { NULL,                  0,   NULL                  },   /* separator */
+ { "Permissions",         'Y', e_ai_menu_policy      },
+ { "Clear conversation",  'N', e_ai_menu_new_session },
+ { "AI settings...",      'S', e_ai_options          }
+};
+#define AI_MENU_NROWS ((int)(sizeof ai_menu_rows / sizeof ai_menu_rows[0]))
+
+/**
+ * ai_menu_has_key - Whether a typed letter is one of the AI menu shortcuts.
+ * @key: the character the user pressed (case-insensitive).
+ * Return: 1 if a selectable menu row uses that letter, else 0.
+ */
+static int ai_menu_has_key(int key)
+{
+ int i, up = e_toupper(key);
+ for (i = 0; i < AI_MENU_NROWS; i++)
+  if (ai_menu_rows[i].fkt && ai_menu_rows[i].key &&
+      e_toupper((int)ai_menu_rows[i].key) == up)
+   return 1;
+ return 0;
+}
+
+/**
+ * ai_menu_dispatch_key - Run the AI menu action bound to a shortcut letter.
+ * @f:   current window.
+ * @key: a letter the user typed (case-insensitive), e.g. 'a' for Ask.
+ * Return: 1 if a menu action matched and ran, 0 if no action uses that letter.
+ *
+ * Lets a habitual "Alt-G a" reach Ask directly -- including right after the
+ * one-time consent notice, where the letter would otherwise be swallowed.
+ */
+static int ai_menu_dispatch_key(FENSTER *f, int key)
+{
+ int i, up = e_toupper(key);
+ for (i = 0; i < AI_MENU_NROWS; i++)
+  if (ai_menu_rows[i].fkt && ai_menu_rows[i].key &&
+      e_toupper((int)ai_menu_rows[i].key) == up) {
+   ai_menu_rows[i].fkt(f);
+   return 1;
+  }
+ return 0;
+}
+
 static int e_ai_menu_items(OPTK *it)
 {
  static char label[10][AI_MENU_TEXTW + 4];
  static char perm_row[48];
- struct row { const char *name; char key; int (*fkt)(FENSTER *); };
- int i, n;
+ int i, n = AI_MENU_NROWS;
 
  snprintf(perm_row, sizeof perm_row, "Permissions: %s",
           wpe_ai_policy_name(e_ai_policy));
-
- {
-  struct row a[] = {
-   { "Ask (chat)",         'A', e_ai_chat             },
-   { "Edit current file",  'E', e_ai_edit             },
-   { "Multi-file edit",    'F', e_ai_plan             },
-   { "Agent (tools)",      'G', e_ai_agent            },
-   { "Build & fix (agent)",'B', e_ai_fix_build        },
-   { NULL,                 0,   NULL                  },   /* separator */
-   { perm_row,             'Y', e_ai_menu_policy      },
-   { "Clear conversation", 'N', e_ai_menu_new_session },
-   { "AI settings...",     'S', e_ai_options          }
-  };
-  n = (int)(sizeof(a) / sizeof(a[0]));
-  for (i = 0; i < n; i++) {
-   char code[12];
-   int pad, hl, j;
-   if (!a[i].name) {                             /* blank, non-selectable divider */
-    for (j = 0; j < AI_MENU_TEXTW; j++) label[i][j] = '-';
-    label[i][AI_MENU_TEXTW] = '\0';
-    it[i] = WpeFillSubmenuItem(label[i], -1, 0, e_ai_menu_divider);
-    continue;
-   }
-   snprintf(code, sizeof code, "Alt-G %c", a[i].key);          /* 7 chars */
-   pad = AI_MENU_TEXTW - (int)strlen(a[i].name) - (int)strlen(code);
-   if (pad < 1)
-    pad = 1;
-   snprintf(label[i], sizeof label[i], "%s%*s%s", a[i].name, pad, "", code);
-   hl = (int)strlen(label[i]) - 1;               /* the letter in "Alt-G X" */
-   it[i] = WpeFillSubmenuItem(label[i], hl, a[i].key, a[i].fkt);
+ for (i = 0; i < n; i++) {
+  const char *name = ai_menu_rows[i].name;
+  char code[12];
+  int pad, hl, j;
+  if (!name) {                                  /* blank, non-selectable divider */
+   for (j = 0; j < AI_MENU_TEXTW; j++) label[i][j] = '-';
+   label[i][AI_MENU_TEXTW] = '\0';
+   it[i] = WpeFillSubmenuItem(label[i], -1, 0, e_ai_menu_divider);
+   continue;
   }
+  if (ai_menu_rows[i].fkt == e_ai_menu_policy)  /* show the live policy caption */
+   name = perm_row;
+  snprintf(code, sizeof code, "Alt-G %c", ai_menu_rows[i].key);   /* 7 chars */
+  pad = AI_MENU_TEXTW - (int)strlen(name) - (int)strlen(code);
+  if (pad < 1)
+   pad = 1;
+  snprintf(label[i], sizeof label[i], "%s%*s%s", name, pad, "", code);
+  hl = (int)strlen(label[i]) - 1;               /* the letter in "Alt-G X" */
+  it[i] = WpeFillSubmenuItem(label[i], hl, ai_menu_rows[i].key, ai_menu_rows[i].fkt);
  }
  return n;
 }

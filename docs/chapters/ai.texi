@@ -110,6 +110,13 @@ The same actions are on the @samp{AI} menu, which groups the four modes and
 @samp{Clear conversation} and @samp{AI settings@dots{}}.  The backend, model and
 enable toggle live in @samp{Options}, @samp{AI}, reached with @kbd{Alt-G s}.
 
+The very first time you invoke an action, a one-time notice states the trust
+model (local by default, opt-in, every edit previewed and revertible with
+@kbd{Ctrl-U}) and asks you to confirm with @key{Enter} or @kbd{y} (or decline
+with @kbd{n} or @key{Esc}).  Answering it with an action letter counts as the
+confirmation and runs that action, so a habitual @kbd{Alt-G a} still lands
+straight in Ask on the first use.
+
 @section Backends
 
 @cindex AI, backends
