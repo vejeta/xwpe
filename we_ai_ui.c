@@ -876,6 +876,55 @@ static size_t ai_append_identity(char *sys, size_t cap, size_t len)
  return len;
 }
 
+/* The project's standing AI instructions, capped so a large file cannot crowd
+   out the rest of the prompt.  Kept modest on purpose. */
+#define AI_PROJECT_MEMORY_MAX 4096
+
+/**
+ * ai_project_memory - Read the project's AI instructions file into `out`.
+ * @out: buffer to fill (always NUL-terminated); @n: its size.
+ * Return: bytes read (0 when there is no project instructions file).
+ *
+ * Looks for AGENTS.md (the emerging cross-tool convention), then the
+ * xwpe-specific .xwpe-ai.md, in the working directory -- which is xwpe's cwd,
+ * i.e. where it was launched: the project root.  Lets a repo carry standing
+ * instructions (build command, code style, "do not touch X") that every AI turn
+ * follows -- the cross-tool per-repo agent-instructions convention -- without the
+ * user restating them each turn.
+ */
+static size_t ai_project_memory(char *out, size_t n)
+{
+ static const char *names[] = { "AGENTS.md", ".xwpe-ai.md" };
+ size_t i, got = 0;
+ out[0] = '\0';
+ for (i = 0; i < sizeof names / sizeof names[0]; i++) {
+  FILE *fp = fopen(names[i], "rb");
+  if (!fp) continue;
+  got = fread(out, 1, n - 1, fp);
+  fclose(fp);
+  out[got] = '\0';
+  wpe_ai_trace("project memory %s bytes=%zu", names[i], got);
+  break;
+ }
+ return got;
+}
+
+/**
+ * ai_append_project_memory - Add the project instructions to a text prompt.
+ * @sys/@cap/@len: prompt buffer being grown.  Return: the new length.
+ * A no-op when there is no AGENTS.md / .xwpe-ai.md, or no room left.
+ */
+static size_t ai_append_project_memory(char *sys, size_t cap, size_t len)
+{
+ char mem[AI_PROJECT_MEMORY_MAX];
+ size_t got = ai_project_memory(mem, sizeof mem);
+ if (!got || len >= cap - got - 96) return len;
+ len += (size_t)snprintf(sys + len, cap - len,
+   "PROJECT INSTRUCTIONS (from the project's AGENTS.md -- follow these):\n%s\n\n",
+   mem);
+ return len;
+}
+
 /**
  * ai_append_open_files - Append the editor's open-files block to a system prompt
  * being built, so a text-assembled prompt (chat) carries the working set too.
@@ -951,7 +1000,8 @@ static char *ai_build_system(FENSTER *f)
    "- Proposed edits are reviewed as a diff changeset (Alt-T / Alt-V) and are "
    "revertible; a checkpoint is taken before a non-interactive run.\n"
    "- You already receive the open files, the workspace file list, the current "
-   "file, and live language-server diagnostics (below).\n"
+   "file, live language-server diagnostics, and the project's AGENTS.md "
+   "instructions when present (all below).\n"
    "- Backend and model are user-selectable (Ollama, OpenAI-compatible, Claude) "
    "in Options > AI.\n"
    "So when the user asks to CHANGE code, tell them to use Edit (Alt-G e) or the "
@@ -959,6 +1009,7 @@ static char *ai_build_system(FENSTER *f)
  if (!sys) { free(ctx); return NULL; }
  len += (size_t)snprintf(sys + len, cap - len, "%s", head);
  len += (size_t)snprintf(sys + len, cap - len, "%s", caps);
+ len = ai_append_project_memory(sys, cap, len);
  len = ai_append_identity(sys, cap, len);
  len = ai_append_open_files(sys, cap, len, f);
  nsc = wpe_ai_scope_files(f, e_project_is_open(), 1, &scope);
@@ -1882,6 +1933,22 @@ static void ai_ml_add_open_files(struct ai_mlist *m, FENSTER *f)
  char ow[1400];
  if (wpe_ai_open_windows_block(f, ow, sizeof ow)[0])
   ai_ml_add(m, "system", ow);
+}
+
+/**
+ * ai_ml_add_project_memory - Seed the conversation with the project's standing
+ * AI instructions (AGENTS.md), as a system turn.  A no-op when there is none.
+ * The message-list peer of ai_append_project_memory, so the agent and the other
+ * async modes follow the same repo conventions the chat does.
+ */
+static void ai_ml_add_project_memory(struct ai_mlist *m)
+{
+ char mem[AI_PROJECT_MEMORY_MAX + 96];
+ char body[AI_PROJECT_MEMORY_MAX];
+ if (!ai_project_memory(body, sizeof body)) return;
+ snprintf(mem, sizeof mem,
+   "PROJECT INSTRUCTIONS (from the project's AGENTS.md -- follow these):\n%s", body);
+ ai_ml_add(m, "system", mem);
 }
 
 /**
@@ -3277,6 +3344,7 @@ static int ai_agent_launch(FENSTER *f, const char *goal, const char *extra)
  ai_ml_add(&op->ml, "system", sys);
  ai_ml_add_identity(&op->ml);
  ai_ml_add_open_files(&op->ml, f);
+ ai_ml_add_project_memory(&op->ml);
  if (extra && extra[0]) ai_ml_add(&op->ml, "system", extra);
  ai_ml_add_diagnostics(&op->ml);
  { wpe_ai_msg prior[12]; int np = wpe_ai_session_messages(prior, 12), i;
@@ -3607,6 +3675,7 @@ static int e_ai_plan(FENSTER *f)
 
  ai_ml_add(&op->ml, "system", sys);
  ai_ml_add_open_files(&op->ml, f);
+ ai_ml_add_project_memory(&op->ml);
  {
   size_t cap = 4096, len = 0;
   char *u = malloc(cap), *cur;
