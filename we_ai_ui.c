@@ -2520,6 +2520,162 @@ static int e_ai_edit(FENSTER *f)
  return 0;
 }
 
+/* ================= inline completion at the cursor (Alt-G c) ============= */
+
+/* Payload for a completion op: the file text on each side of the cursor, kept so
+   the reply can be spliced back in exactly where it was requested. */
+typedef struct { char *before, *after; } ai_complete_ud;
+
+static void ai_complete_ud_free(void *ud)
+{
+ ai_complete_ud *c = ud;
+ if (!c) return;
+ free(c->before); free(c->after); free(c);
+}
+
+/**
+ * ai_complete_done - Insert a finished completion at the cursor.
+ * Rebuilds the file as before + suggestion + after and applies it through the
+ * proven whole-file path, so the insertion is one Ctrl-U undo step and never a
+ * partial write.  A backend error or empty suggestion changes nothing.
+ */
+static void ai_complete_done(ai_async_op *op)
+{
+ FENSTER *f = op->f;
+ ai_complete_ud *c = op->ud;
+ char *clean, *newtext;
+ size_t bl, il, al;
+
+ ai_op_detach(op);
+ if (!ai_window_alive(op->cn, f)) { ai_op_free(op); return; }
+ if (op->had_error) { ai_pane(f, "[AI complete] backend error", 1); ai_op_free(op); return; }
+ if (op->acc_len == 0) { ai_pane(f, "[AI complete] no suggestion", 0); ai_op_free(op); return; }
+ clean = ai_strip_fences(op->acc);
+ if (!clean || !*clean || !c) { free(clean); ai_op_free(op); return; }
+ bl = strlen(c->before); il = strlen(clean); al = strlen(c->after);
+ newtext = malloc(bl + il + al + 1);
+ if (newtext) {
+  memcpy(newtext, c->before, bl);
+  memcpy(newtext + bl, clean, il);
+  memcpy(newtext + bl + il, c->after, al);
+  newtext[bl + il + al] = '\0';
+  e_ai_apply_text(f, newtext);
+  ai_pane(f, "[AI] completed at cursor - Ctrl-U to undo", 0);
+  free(newtext);
+  if (op->save_id >= 0) e_switch_window(op->save_id, f);
+  e_schirm(f, 1);          /* repaint the file window: the apply ran from the */
+  e_cursor(f, 1);          /* fd-loop with focus on the pane, so force a redraw */
+  e_refresh();
+ }
+ free(clean);
+ ai_op_free(op);
+}
+
+static void ai_complete_fd_cb(int fd, void *data)
+{
+ ai_async_op *op = data;
+ int done = 0;
+ (void)fd;
+ if (wpe_ai_stream_pump(op->st, ai_op_collect, op, &done) < 0) {
+  FENSTER *f = op->f; ECNT *cn = op->cn;
+  ai_op_detach(op);
+  if (ai_window_alive(cn, f)) ai_pane(f, "[AI complete] transport error", 0);
+  ai_op_free(op); ai_queue_run(); return;
+ }
+ if (done) {
+  op->had_error = wpe_ai_stream_had_error(op->st);
+  ai_complete_done(op);
+  ai_queue_run();
+ }
+}
+
+/**
+ * e_ai_complete - Fill in code at the cursor (Alt-G c).
+ * Sends the code around the cursor to the model and inserts its suggestion there
+ * as one undo step (Ctrl-U reverts) -- a local, low-ceremony alternative to
+ * chat/edit for "finish this line/block".  Editor stays interactive; the
+ * suggestion lands when the reply arrives.
+ */
+static int e_ai_complete(FENSTER *f)
+{
+ char err[320], line[360];
+ char *text, *before, *after, *user = NULL;
+ const char *pbz;
+ ai_complete_ud *ud;
+ ai_async_op *op;
+ BUFFER *b = f->b;
+ ECNT *cn = f->ed;
+ int save_id = -1, wi, y, i, x, ll;
+ size_t off = 0, bl;
+ static const char sys[] =
+   "You are a code completion engine. Complete the code at the <CURSOR> marker. "
+   "Return ONLY the text to insert at the cursor -- no markdown fences, no "
+   "commentary, and do not repeat the surrounding code.";
+ wpe_ai_msg msgs[2];
+ wpe_ai_req req;
+
+ if (!DTMD_ISTEXT(f->dtmd)) { ai_pane(f, "[AI] no file to complete here", 1); return 0; }
+ if (wpe_ai_busy()) { ai_pane(f, "[AI] a task is already running - Esc to cancel", 1); return 0; }
+ err[0] = '\0';
+ if (wpe_ai_preflight(e_ai_backend, err, sizeof err)) { ai_pane(f, err, 1); return 0; }
+ err[0] = '\0';
+ if (wpe_ai_ensure_model(err, sizeof err)) { ai_pane(f, err[0] ? err : "no model set", 1); return 0; }
+
+ text = ai_current_file_text(f);
+ if (!text) return 0;
+ y = b->b.y; if (y < 0) y = 0; if (y > b->mxlines - 1) y = b->mxlines - 1;
+ for (i = 0; i < y && i < b->mxlines; i++)
+  off += (size_t)(b->bf[i].len < 0 ? 0 : b->bf[i].len) + 1;
+ x = b->b.x; ll = b->bf[y].len < 0 ? 0 : b->bf[y].len;
+ if (x > ll) x = ll; if (x < 0) x = 0;
+ off += (size_t)x;
+ if (off > strlen(text)) off = strlen(text);
+ before = malloc(off + 1);
+ after = strdup(text + off);
+ if (!before || !after) { free(before); free(after); free(text); return 0; }
+ memcpy(before, text, off); before[off] = '\0';
+ free(text);
+
+ bl = strlen(before);
+ pbz = bl > 2000 ? before + (bl - 2000) : before;      /* last ~2000 chars of context */
+ { size_t n = strlen(pbz) + 900;
+   user = malloc(n);
+   if (user) snprintf(user, n, "%s<CURSOR>%.800s", pbz, after); }
+ if (!user) { free(before); free(after); return 0; }
+
+ msgs[0].role = "system"; msgs[0].content = sys;
+ msgs[1].role = "user";   msgs[1].content = user;
+ req.model = NULL; req.msgs = msgs; req.nmsgs = 2;
+
+ for (wi = 1; wi <= cn->mxedt; wi++) if (cn->f[wi] == f) { save_id = cn->edt[wi]; break; }
+
+ op = calloc(1, sizeof *op);
+ ud = calloc(1, sizeof *ud);
+ if (!op || !ud) { free(op); free(ud); free(before); free(after); free(user); return 0; }
+ ud->before = before; ud->after = after;
+ op->st = wpe_ai_stream_start(&req, err, sizeof err);
+ free(user);
+ if (!op->st) {
+  snprintf(line, sizeof line, "[AI complete] %s", err[0] ? err : "could not start");
+  ai_pane(f, line, 1);
+  ai_complete_ud_free(ud); free(op);
+  return 0;
+ }
+ op->f = f; op->cn = cn; op->save_id = save_id;
+ op->sel_y0 = op->sel_y1 = -1;
+ op->ud = ud; op->free_ud = ai_complete_ud_free;
+ op->fd = wpe_ai_stream_fd(op->st);
+ op->start = time(NULL);
+ op->spin = ai_spin_begin(f, "[AI] completing");
+ g_ai_op = op;
+ g_ai_bg_win = f;
+ ai_hb_acquire(ai_op_tick);
+ wpe_fd_add(op->fd, POLLIN, ai_complete_fd_cb, op);
+ if (save_id >= 0) e_switch_window(save_id, cn->f[cn->mxedt]);
+ wpe_ai_trace("complete stream fd=%d off=%zu", op->fd, off);
+ return 0;
+}
+
 /* ======================= model picker =================================== */
 
 /* e_ai_pick - a SCROLLABLE single-choice list in a boxed overlay.  Up/Down move
@@ -4194,6 +4350,7 @@ static const struct ai_menu_row {
 } ai_menu_rows[] = {
  { "Ask (chat)",          'A', e_ai_chat             },
  { "Edit current file",   'E', e_ai_edit             },
+ { "Complete at cursor",  'C', e_ai_complete         },
  { "Multi-file edit",     'F', e_ai_plan             },
  { "Agent (tools)",       'G', e_ai_agent            },
  { "Build & fix (agent)", 'B', e_ai_fix_build        },
