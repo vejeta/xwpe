@@ -518,6 +518,9 @@ int wpe_ai_list_models(int backend, char **names, int max,
  nh = ai_headers(backend, hdrs, 8);
  rc = ai_fetch("GET", path, hdrs, NULL, 5000, &resp, &st, errbuf, errsz);
  for (i = 0; i < nh; i++) free(hdrs[i]);
+ wpe_ai_trace("MODELS path=%s rc=%d status=%d nhdr=%d err=%s resp=%.160s",
+              path, rc, st, nh, errbuf && errbuf[0] ? errbuf : "-",
+              resp ? resp : "(null)");
  if (rc < 0 || !resp) { free(resp); return -1; }
 
  o = json_tokener_parse(resp);
