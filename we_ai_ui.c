@@ -3099,7 +3099,10 @@ int e_ai_options(FENSTER *f)
  /* --- Connection: used by the OpenAI-compatible and Ollama backends.  Editable
         here (endpoint/CA/key) so a server or a self-signed local bridge needs no
         hand-edited xwperc; Provider switches saved profiles / saves the current. */
- e_add_txtstr(3, 10, "Connection (OpenAI-compatible / Ollama):", o);
+ /* Say plainly that this whole section is for the HTTP backends only, so a
+    populated Endpoint/CA/Model does not look "mixed" when Claude CLI/API (which
+    ignore them) is the selected backend. */
+ e_add_txtstr(3, 10, "Connection - Ollama / OpenAI-compatible backends ONLY:", o);
  e_add_txtstr(5, 11, "Provider (Alt-V):", o);
  e_add_bttstr(22, 11, 0, AltV, g_ai_opt_plabel, e_ai_opt_pick_provider, o);
  e_add_wrstr(5, 12, 22, 12, 40, 255, -1, AltU, "Endpoint (Alt-U):",

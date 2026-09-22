@@ -466,7 +466,9 @@ Changes
       or a git hook.  Applies to both write_file and apply_patch.  Editable, with
       the fallback model and the agent-host command, in a new "Advanced..."
       (Alt-A) dialog off Options > AI -- kept separate so the main dialog still
-      fits a 24-line terminal.
+      fits a 24-line terminal.  The Connection section is now labelled "Ollama /
+      OpenAI-compatible backends ONLY", so a populated Endpoint/Model no longer
+      looks "mixed" when Claude CLI/API (which ignore those fields) is selected.
     - Agent plan mode: for a multi-step task the agent can reply `TOOL plan` with
       one task per line, loaded as a "[ ] task" checklist into the Messages window
       BEFORE it acts so you see the intended steps and can course-correct; as it
