@@ -41,6 +41,14 @@
 
 extern int MAXSLNS, MAXSCOL, MENOPT;
 #define MAXEDT 35
+
+/* Set by the active backend's getch when the value it just returned is a text
+   character it decoded (UTF-8 / a text keysym), cleared when it returned a key
+   code, mouse event or synthetic code.  Character insertion consults this for
+   codepoints >= 256, because xwpe's own key codes (the Alt-<letter> codes are
+   271..305, synthetics 2000..2006) share the numeric range of Unicode
+   codepoints and cannot be told apart from a typed character by value alone. */
+extern int e_input_was_char;
 #endif
 
 #define MAXLINES 10

@@ -70,6 +70,8 @@ typedef struct WpeWlInfo {
     yields at most one code; a small ring decouples Wayland event dispatch
     from the blocking getch caller (like the X11 path returning one key). */
  int key_q[64];
+ int key_char_q[64];           /* parallel to key_q: 1 if that code is a decoded
+                                  character (not a key code), for e_input_was_char */
  int key_head;
  int key_tail;
  int kbd_focus;                /* surface currently has keyboard focus       */

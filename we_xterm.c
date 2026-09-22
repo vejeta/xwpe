@@ -1374,6 +1374,8 @@ static int e_x_next_pending_utf8(void)
  e_x_pending_utf8_pos += len;
  if (e_x_pending_utf8_pos >= e_x_pending_utf8_len)
   e_x_pending_utf8_len = e_x_pending_utf8_pos = 0;
+ if (cp > 0)
+  e_input_was_char = 1;             /* a decoded character, not a key code */
  return cp;
 }
 
@@ -1392,6 +1394,8 @@ static int e_x_first_utf8_codepoint(unsigned char *buf, int len)
   e_x_pending_utf8_len = tail;
   e_x_pending_utf8_pos = 0;
  }
+ if (cp > 0)
+  e_input_was_char = 1;             /* a decoded character, not a key code */
  return cp;
 }
 
@@ -1512,6 +1516,8 @@ int e_x_getch()
  XSizeHints size_hints;
 
  e_refresh();
+ e_input_was_char = 0;               /* default; the UTF-8 decoders set it when a
+                                        typed character is returned */
  c = e_x_next_pending_utf8();
  if (c > 0)
   return c;
@@ -1869,6 +1875,8 @@ int e_x_kbhit()
  unsigned int key_b;
 
  e_refresh();
+ e_input_was_char = 0;               /* default; the UTF-8 decoders set it when a
+                                        typed character is returned */
  c = e_x_next_pending_utf8();
  if (c > 0)
   return c;

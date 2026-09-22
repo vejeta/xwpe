@@ -469,21 +469,31 @@ static const struct wl_registry_listener registry_listener = {
 
 #define WL_KEYQ_LEN ((int)(sizeof WpeWl.key_q / sizeof WpeWl.key_q[0]))
 
-static void wl_key_push(int code)
+/* Set by keysym_to_xwpe for the code it just produced: 1 when it decoded a
+   character (a Unicode codepoint), 0 for a key code.  Captured into the key
+   queue at push time so e_w_getch can restore e_input_was_char when the code is
+   later popped -- the code alone cannot say, since xwpe key codes overlap the
+   Unicode range. */
+static int g_wl_last_was_char = 0;
+
+static void wl_key_push(int code, int is_char)
 {
  int next = (WpeWl.key_tail + 1) % WL_KEYQ_LEN;
  if (code == 0 || next == WpeWl.key_head)   /* drop unmapped keys / on overflow */
   return;
  WpeWl.key_q[WpeWl.key_tail] = code;
+ WpeWl.key_char_q[WpeWl.key_tail] = is_char;
  WpeWl.key_tail = next;
 }
 
-static int wl_key_pop(void)
+static int wl_key_pop(int *is_char)
 {
  int code;
  if (WpeWl.key_head == WpeWl.key_tail)
   return 0;
  code = WpeWl.key_q[WpeWl.key_head];
+ if (is_char)
+  *is_char = WpeWl.key_char_q[WpeWl.key_head];
  WpeWl.key_head = (WpeWl.key_head + 1) % WL_KEYQ_LEN;
  return code;
 }
@@ -499,6 +509,8 @@ int keysym_to_xwpe(xkb_keysym_t sym, const char *utf8, int u8len,
                    int ctrl, int shift, int alt)
 {
  int c = 0;
+
+ g_wl_last_was_char = 0;             /* a key code unless the decoder says otherwise */
 
  if (sym == XKB_KEY_ISO_Left_Tab)
   return WPE_BTAB;
@@ -593,7 +605,10 @@ int keysym_to_xwpe(xkb_keysym_t sym, const char *utf8, int u8len,
  {
   int cp = e_utf8_to_codepoint((unsigned char *)utf8, u8len);
   if (cp > 0)
+  {
+   g_wl_last_was_char = 1;           /* a decoded character, not a key code */
    return cp;
+  }
  }
  return 0;
 }
@@ -616,6 +631,7 @@ static void wl_active_mods(int *ctrl, int *shift, int *alt)
    release (or a different key, or losing focus) disarms it. */
 static int g_repeat_fd    = -1;
 static int g_repeat_code  = 0;      /* xwpe key code currently repeating         */
+static int g_repeat_was_char = 0;   /* is that repeating code a decoded character */
 static int g_repeat_rate  = 25;     /* keys/second (0 = repeat disabled)         */
 static int g_repeat_delay = 600;    /* ms before the first repeat                */
 
@@ -634,6 +650,7 @@ static void wl_repeat_arm(int xwc)
  if (g_repeat_fd < 0 || g_repeat_rate <= 0)
   return;
  g_repeat_code = xwc;
+ g_repeat_was_char = g_wl_last_was_char;   /* still valid from this key's decode */
  its.it_value.tv_sec     = g_repeat_delay / 1000;
  its.it_value.tv_nsec    = (long)(g_repeat_delay % 1000) * 1000000L;
  its.it_interval.tv_sec  = 0;
@@ -648,7 +665,7 @@ static void wl_repeat_fire(int fd, void *data)
  (void)data;
  if (read(fd, &expirations, sizeof expirations) != (ssize_t)sizeof expirations)
   return;
- wl_key_push(g_repeat_code);
+ wl_key_push(g_repeat_code, g_repeat_was_char);
 }
 
 static void kbd_keymap(void *data, struct wl_keyboard *kbd, uint32_t format,
@@ -704,7 +721,7 @@ static void kbd_key(void *data, struct wl_keyboard *kbd, uint32_t serial,
   int xwc = keysym_to_xwpe(sym, u8, u8len, ctrl, shift, alt);
   WPE_TRACE("wayland", "kbd_key sym=0x%x u8len=%d ctrl=%d shift=%d alt=%d -> %d\n",
             (unsigned)sym, u8len, ctrl, shift, alt, xwc);
-  wl_key_push(xwc);
+  wl_key_push(xwc, g_wl_last_was_char);
   /* Hold-to-repeat: arm for keys xkb marks repeatable (arrows, letters, ...),
      never for modifiers/locks.  A new repeatable key replaces the previous. */
   if (xwc && WpeWl.xkb_keymap && xkb_keymap_key_repeats(WpeWl.xkb_keymap, code))
@@ -1595,16 +1612,21 @@ static int e_w_getch(void)
      any nested pump just leaves g_resize_pending set for the next pass here. */
   wl_apply_pending_resize();
 
-  code = wl_key_pop();
-  if (code != 0)
   {
-   g_wl_keys_seen++;
-   return code;
+   int is_char = 0;
+   code = wl_key_pop(&is_char);
+   if (code != 0)
+   {
+    e_input_was_char = is_char;     /* character vs key code, decided at decode */
+    g_wl_keys_seen++;
+    return code;
+   }
   }
   if (g_mouse_pending != 0)        /* a button press (-bit) or wheel step */
   {
    code = g_mouse_pending;
    g_mouse_pending = 0;
+   e_input_was_char = 0;           /* a mouse event is never a typed character */
    if (g_wl_mousetest)             /* headless mouse-path verification */
    {
     fprintf(stderr, "WL_MOUSE code=%d cell=%d,%d mods=%d\n",
@@ -1790,7 +1812,42 @@ static void wl_keytest(void)
   fprintf(stderr, "  %-12s want=%d got=%d %s\n",
           t[i].name, t[i].want, got, ok ? "OK" : "FAIL");
  }
- fprintf(stderr, "keysym_to_xwpe selftest: %d/%d passed\n", n - fails, n);
+
+ /* Typed multibyte characters: the codepoint must come back AND be flagged as a
+    character (g_wl_last_was_char), so insertion admits it even when it equals an
+    xwpe key code by value (U+0130 == 304 == Alt-N).  A key code leaves the flag
+    0.  This is the Wayland peer of the ncurses/X11 typing tests, which the GUI
+    harness cannot reach: xdotool's remapped Unicode keysyms do not survive
+    weston's own xkb keymap (they arrive as sym 0 / u8len 0). */
+ {
+  static const struct { const char *u8; int len, want; const char *name; } cc[] = {
+   { "\xc4\x81",     2, 0x0101, "a-macron U+0101"       },
+   { "\xc4\xb0",     2, 0x0130, "I-dot U+0130 (=Alt-N)" },
+   { "\xd0\xb4",     2, 0x0434, "Cyrillic-de U+0434"    },
+   { "\xe6\x97\xa5", 3, 0x65E5, "CJK U+65E5"            }
+  };
+  int m = (int)(sizeof cc / sizeof cc[0]), k;
+  int got;
+
+  for (k = 0; k < m; k++)
+  {
+   got = keysym_to_xwpe(0, cc[k].u8, cc[k].len, 0, 0, 0);
+   int ok = (got == cc[k].want && g_wl_last_was_char == 1);
+   if (!ok) fails++;
+   fprintf(stderr, "  %-22s want=%d/char got=%d/%d %s\n",
+           cc[k].name, cc[k].want, got, g_wl_last_was_char, ok ? "OK" : "FAIL");
+  }
+  got = keysym_to_xwpe(XKB_KEY_n, "n", 1, 0, 0, 1);   /* Alt+n: a key code */
+  {
+   int ok = (g_wl_last_was_char == 0);
+   if (!ok) fails++;
+   fprintf(stderr, "  %-22s got=%d char=%d %s\n",
+           "Alt+n is not a char", got, g_wl_last_was_char, ok ? "OK" : "FAIL");
+  }
+ }
+
+ fprintf(stderr, "keysym_to_xwpe selftest: %d %s\n",
+         fails, fails ? "FAILURES" : "passed (all)");
  _exit(fails ? 4 : 0);
 }
 

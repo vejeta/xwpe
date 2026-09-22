@@ -55,6 +55,12 @@ static int e_debug_console_input(int c, FENSTER *f)
 }
 #endif
 
+/* "The last getch returned a decoded text character" -- see edit.h.  Defined
+   here because we_edit.c is always compiled (the backend that read the key sets
+   it); character insertion below reads it to admit typed Unicode >= 256 that
+   would otherwise look like an xwpe key code. */
+int e_input_was_char = 0;
+
 char *e_make_postf();
 int e_del_a_ind();
 int e_tab_a_ind();
@@ -561,12 +567,13 @@ int e_eingabe(ECNT *e)
      pane behaves as an ordinary window. */
   if (e_ai_chat_key(f, c)) { if (c == WPE_ESC) c = 0; continue; }
 #endif
-  /* Synthetic keycodes (WPE_SCROLL_UP..WPE_AI_MENU) share the numeric range of
-     real Unicode codepoints, so they must be excluded from character insertion:
-     keep the ceiling at the HIGHEST synthetic code or a bottom-bar click on the
-     AI entry gets typed into the buffer as U+07D4 instead of opening the menu. */
+  /* xwpe's own key codes (Alt-<letter> 271..305, synthetics 2000..2006) share
+     the numeric range of real Unicode codepoints, so a value >= 255 is inserted
+     as text only when the backend flagged it as a decoded character; a key code
+     leaves e_input_was_char 0 and falls through to its handler below.  ASCII and
+     Latin-1 (< 255) are always text. */
   if ((c > 31 || (c == WPE_TAB && !(f->flg & 1)) ||
-    (f->ins > 1 && f->ins != 8)) && (c < 255 || c > WPE_AI_MENU))
+    (f->ins > 1 && f->ins != 8)) && (c < 255 || e_input_was_char))
   {
    if (f->ins == 8) continue;
    if (c >= 0x80)

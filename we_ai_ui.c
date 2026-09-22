@@ -1307,7 +1307,7 @@ int e_ai_chat_key(FENSTER *f, int c)
  if (c == CRI)      { g_ai_input_pos = ai_in_next(g_ai_input_pos); ai_input_render(wf); return 1; }
  if (c == POS1)     { g_ai_input_pos = ai_in_bol(g_ai_input_pos);  ai_input_render(wf); return 1; }
  if (c == ENDE)     { g_ai_input_pos = ai_in_eol(g_ai_input_pos);  ai_input_render(wf); return 1; }
- if ((c >= 32 && c < 255) || c > WPE_AI_MENU) { /* a printable char (ASCII/Unicode) */
+ if ((c >= 32 && c < 255) || e_input_was_char) { /* a printable char (ASCII/Unicode) */
   unsigned char u8[4];
   int n = (c >= 0x80) ? e_codepoint_to_utf8(c, u8) : (u8[0] = (unsigned char)c, 1);
   ai_in_insert((char *)u8, n);
