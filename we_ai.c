@@ -202,12 +202,45 @@ static long ai_now_ms(void)
  return (long)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
 }
 
-static const char *ai_path(int backend)
+/* The path prefix carried by the configured endpoint URL (e.g. "/v1",
+ * "/openai/v1", "/api/v1"), trailing slash removed; empty for a bare host.
+ * Lets the OpenAI-compatible endpoint include the version segment the way Groq
+ * (/openai/v1) and OpenRouter (/api/v1) do, instead of assuming /v1 at the root. */
+static void ai_endpoint_prefix(char *out, size_t n)
+{
+ char host[256], path[512];
+ int port = 0, https = 0;
+ size_t len;
+ out[0] = '\0';
+ if (!e_ai_endpoint || !n) return;
+ if (wpe_http_parse_url(e_ai_endpoint, host, sizeof host, &port, &https,
+                        path, sizeof path) != 0)
+  return;
+ len = strlen(path);
+ while (len && path[len - 1] == '/') path[--len] = '\0';   /* drop trailing '/' */
+ if (len) snprintf(out, n, "%s", path);
+}
+
+/* Build the request path for a backend, honouring the endpoint's path prefix.
+ * OpenAI-compatible and Claude take their path relative to that prefix (a bare
+ * host defaults to /v1); Ollama's paths are absolute from the host root. */
+static void ai_make_path(int backend, const char *suffix, char *out, size_t n)
+{
+ char pfx[512];
+ ai_endpoint_prefix(pfx, sizeof pfx);
+ if (backend == WPE_AI_OPENAI || backend == WPE_AI_CLAUDE)
+  snprintf(out, n, "%s%s", pfx[0] ? pfx : "/v1", suffix);
+ else
+  snprintf(out, n, "%s%s", pfx, suffix);          /* ollama: prefix normally "" */
+}
+
+/* The chat/completion request path for a backend (into out). */
+static void ai_chat_path(int backend, char *out, size_t n)
 {
  switch (backend) {
-  case WPE_AI_OPENAI: return "/v1/chat/completions";
-  case WPE_AI_CLAUDE: return "/v1/messages";
-  default:            return "/api/chat";   /* ollama */
+  case WPE_AI_OPENAI: ai_make_path(backend, "/chat/completions", out, n); break;
+  case WPE_AI_CLAUDE: ai_make_path(backend, "/messages", out, n);         break;
+  default:            ai_make_path(backend, "/api/chat", out, n);         break;
  }
 }
 
@@ -458,7 +491,7 @@ int wpe_ai_list_models(int backend, char **names, int max,
 {
  char *hdrs[8];
  char *resp = NULL;
- const char *path;
+ char path[600];
  int nh, i, st = 0, cnt = 0, rc;
  struct json_object *o, *arr, *it, *nm;
 
@@ -480,7 +513,8 @@ int wpe_ai_list_models(int backend, char **names, int max,
   if (cnt < max) names[cnt++] = ai_strdup("claude-opus-5");
   return cnt;
  }
- path = (backend == WPE_AI_OPENAI) ? "/v1/models" : "/api/tags";
+ ai_make_path(backend, (backend == WPE_AI_OPENAI) ? "/models" : "/api/tags",
+              path, sizeof path);
  nh = ai_headers(backend, hdrs, 8);
  rc = ai_fetch("GET", path, hdrs, NULL, 5000, &resp, &st, errbuf, errsz);
  for (i = 0; i < nh; i++) free(hdrs[i]);
@@ -907,6 +941,7 @@ wpe_ai_stream *wpe_ai_stream_start(const wpe_ai_req *req, char *errbuf, size_t e
  {
   char *hdrs[8];
   char *body;
+  char path[600];
   int nh, i, rc;
   nh = ai_headers(st->backend, hdrs, 8);
   body = ai_build_body(st->backend, req);
@@ -915,7 +950,8 @@ wpe_ai_stream *wpe_ai_stream_start(const wpe_ai_req *req, char *errbuf, size_t e
    free(body); free(st);
    return NULL;
   }
-  rc = wpe_http_request(&st->conn, "POST", ai_path(st->backend),
+  ai_chat_path(st->backend, path, sizeof path);
+  rc = wpe_http_request(&st->conn, "POST", path,
                         (const char *const *)hdrs, body);
   for (i = 0; i < nh; i++) free(hdrs[i]);
   free(body);

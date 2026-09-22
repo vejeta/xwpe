@@ -321,3 +321,68 @@ def test_ai_options_endpoint_persists(tmp_path):
     saved = open(os.path.join(cfg, "xwperc")).read()
     assert ("AIEndpoint : " + url) in saved, \
         "the endpoint was not preserved through Ok:\n" + saved
+
+
+def _path_recording_server():
+    """A local OpenAI-compatible server that records the exact request path of
+    the last GET .../models it served.  Returns (server, port, seen) where
+    seen['path'] is that path.  It answers a /models request at ANY prefix."""
+    import threading, json
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+    seen = {"path": None}
+
+    class H(BaseHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+
+        def do_GET(self):
+            if self.path.endswith("/models"):
+                seen["path"] = self.path
+                body = json.dumps(
+                    {"object": "list", "data": [{"id": "srv-model-1"}]}).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+            else:
+                self.send_response(404)
+                self.end_headers()
+
+    srv = HTTPServer(("127.0.0.1", 0), H)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    return srv, srv.server_address[1], seen
+
+
+@pytest.mark.parametrize("suffix,expected", [
+    ("",           "/v1/models"),          # bare host -> default /v1 (OpenAI, local)
+    ("/v1",        "/v1/models"),           # explicit /v1 (lumo-tamer, OpenAI)
+    ("/openai/v1", "/openai/v1/models"),    # Groq
+    ("/api/v1",    "/api/v1/models"),       # OpenRouter
+])
+def test_openai_endpoint_honors_path_prefix(tmp_path, suffix, expected):
+    # The OpenAI-compatible path is taken relative to the endpoint's own path, so
+    # a base URL may carry the version segment (Groq /openai/v1, OpenRouter
+    # /api/v1); a bare host still defaults to /v1.  The fake server records the
+    # exact path xwpe requested so the mapping is asserted, not assumed.
+    import tempfile
+    srv, port, seen = _path_recording_server()
+    try:
+        endpoint = "http://127.0.0.1:%d%s" % (port, suffix)
+        home = tempfile.mkdtemp()
+        cfg = os.path.join(home, ".config", "xwpe")
+        os.makedirs(cfg)
+        with open(os.path.join(cfg, "xwperc"), "w") as fh:
+            fh.write("[Programming]\nAIBackend : 1\nAIEndpoint : %s\nAIPolicy : ask\n"
+                     % endpoint)
+        env = {"XWPE_AI_ENABLE": "1", "HOME": home}
+        with WpeSession(str(tmp_path), "int main(void){return 0;}\n",
+                        env_extra=dict(env)) as s:
+            s.key("\033o", delay=0.5); s.key("i", delay=0.6)
+            s.key("\033m", delay=1.1)
+            listed = "srv-model-1" in "\n".join(s.display())
+    finally:
+        srv.shutdown()
+    assert seen["path"] == expected, \
+        "endpoint %s requested %r, expected %r" % (endpoint, seen["path"], expected)
+    assert listed, "the model from %s was not listed" % endpoint

@@ -317,9 +317,17 @@ Changes
       Ollama's models -- the title now makes that visible instead of surprising.
     - Options > AI gained an "Endpoint URL" field (Alt-U), so the
       OpenAI-compatible backend can be pointed at any server (Groq, OpenRouter,
-      llama.cpp, LM Studio, vLLM, OpenAI itself) from the dialog instead of
+      llama.cpp, LM Studio, vLLM, OpenAI itself, or a local bridge such as
+      lumo-tamer/proton-cli for Proton Lumo) from the dialog instead of
       hand-editing xwperc.  Alt-M lists that server's models before Ok, and the
       URL persists like the other settings.
+    - The OpenAI-compatible request path is now taken relative to the endpoint's
+      own path, so a base URL may include the version segment the provider
+      documents -- Groq's /openai/v1, OpenRouter's /api/v1, OpenAI's /v1 -- while
+      a bare host still defaults to /v1.  Previously the path was hard-wired to
+      /v1 at the host root, so only servers that served /v1 at the root worked
+      (and an endpoint whose path was longer than a few characters was rejected
+      as malformed).
     - The Alt-G menu is clearer and grouped: the actions (Ask, Edit, Multi-file,
       Agent, "Build & fix (agent)") sit above a divider; below it the quick
       settings -- "Permissions: <level>" (shows and cycles ask/edits/auto),

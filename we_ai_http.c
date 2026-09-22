@@ -90,7 +90,10 @@ static void ai_http_seterr(char *buf, size_t sz, const char *msg)
 int wpe_http_open(const char *url, wpe_http_conn *c, char *errbuf, size_t errsz)
 {
  int https = 0, port = 0, fd = -1;
- char host[256], path[8];
+ char host[256], path[512];   /* the endpoint path is not used for the connection
+                                 (only host/port are), but it must be big enough
+                                 to hold a prefixed base URL, e.g. /openai/v1,
+                                 or the parse rejects the endpoint as malformed */
  struct addrinfo hints, *res = NULL, *ai;
  char portstr[16];
 

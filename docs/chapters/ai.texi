@@ -123,11 +123,16 @@ model list comes from the server; @kbd{Alt-G s} (@samp{Options}, @samp{AI})
 picks one with @key{Alt-M}.
 @item @code{openai}
 Any OpenAI-compatible server -- @command{llama.cpp}, LM Studio, vLLM, Groq,
-OpenRouter, or OpenAI itself.  Set its URL in the @samp{Endpoint URL} field of
-@samp{Options}, @samp{AI} (@key{Alt-U}), or with @code{AIEndpoint}; an API key
-comes from @env{OPENAI_API_KEY}.  The endpoint defaults to the local Ollama port,
-which also answers @code{/v1/models}, so until you point it at your own server
-the model list (and the picker's title) shows that Ollama endpoint.
+OpenRouter, OpenAI itself, or a local bridge to another provider.  Set its URL in
+the @samp{Endpoint URL} field of @samp{Options}, @samp{AI} (@key{Alt-U}), or with
+@code{AIEndpoint}; an API key comes from @env{OPENAI_API_KEY}.  The request path
+is taken relative to the URL you give, so the endpoint may carry the version
+segment the provider documents -- @code{https://api.groq.com/openai/v1},
+@code{https://openrouter.ai/api/v1}, @code{https://api.openai.com/v1} -- while a
+bare host (@code{http://localhost:11434}) defaults to @code{/v1}.  The endpoint
+defaults to the local Ollama port, which also answers @code{/v1/models}, so until
+you point it at your own server the model list (and the picker's title) shows
+that Ollama endpoint.
 @item @code{claude}
 Anthropic's Messages API.  Needs @option{--enable-ai-tls} and
 @env{ANTHROPIC_API_KEY}.
