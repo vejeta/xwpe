@@ -623,3 +623,28 @@ def test_provider_save_current_as_new(tmp_path):
         "the saved provider was not made active:\n" + saved
     assert "AIProvider : mygroq|https://api.groq.com/openai/v1|gpt-x|" in saved, \
         "the current settings were not saved as a named provider:\n" + saved
+
+
+def test_cafile_field_edits_and_persists(tmp_path):
+    # The CA file is editable in the dialog (Alt-C), so a self-signed HTTPS bridge
+    # (Proton Lumo) is configurable from the UI without hand-editing xwperc.
+    import tempfile
+    home = tempfile.mkdtemp()
+    cfg = os.path.join(home, ".config", "xwpe")
+    os.makedirs(cfg)
+    cfgfile = os.path.join(cfg, "xwperc")
+    with open(cfgfile, "w") as fh:
+        fh.write("[Programming]\nAIBackend : 1\n"
+                 "AIEndpoint : https://127.0.0.1:8443/v1\nAIPolicy : ask\n")
+    env = {"XWPE_AI_ENABLE": "1", "HOME": home, "OPENAI_API_KEY": ""}
+    with WpeSession(str(tmp_path), "int main(void){return 0;}\n",
+                    env_extra=dict(env)) as s:
+        s.key("\033o", delay=0.5); s.key("i", delay=0.6)
+        s.key("\033c", delay=0.5)         # Alt-C -> focus the CA file field
+        for ch in "/tmp/proton.pem":
+            s.key(ch, delay=0.03)
+        s.key("\r", delay=0.4)            # commit the field
+        s.key("\033o", delay=0.8)         # Ok
+    saved = open(cfgfile).read()
+    assert "AICAFile : /tmp/proton.pem" in saved, \
+        "the CA file typed in the dialog was not saved:\n" + saved

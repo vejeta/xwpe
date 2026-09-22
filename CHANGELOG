@@ -335,6 +335,12 @@ Changes
       that serves TLS with its own certificate (e.g. a Proton Lumo bridge on
       https://127.0.0.1) can be used.  Full verification -- chain and hostname --
       still runs; it is not a blanket skip-verify.
+    - Options > AI was reorganised into labelled sections -- Enable, Backend, the
+      OpenAI-compatible / Ollama Connection (Provider, Model, Endpoint, CA file),
+      Permission, and the Agent engine -- so the grown set of fields reads as
+      groups instead of a jumble, and it fits a 24-line terminal.  The CA file is
+      now an editable field (Alt-C), so a self-signed HTTPS bridge (Proton Lumo)
+      is fully configurable from the dialog without hand-editing xwperc.
     - Provider profiles: Options > AI gained a "Provider" button (Alt-V) to switch
       among saved OpenAI-compatible providers (Groq, OpenRouter, a local bridge,
       ...) or save the current endpoint/model/CA as a new named one.  Each profile
