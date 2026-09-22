@@ -1320,22 +1320,33 @@ int e_data_ein_mouse(f)
    return(c);
 }
 
+/* Save the dialog's currently drawn image so the drag loop can stamp it at the
+   next position -- the visual "the box follows the pointer" feedback.  The
+   geometry matches the classic per-backend framing (the X11 frame reserves the
+   last column/row).  Each drag step opens a FRESH snapshot and frees it within
+   the same step: e_close_view() frees the view, so keeping one snapshot and
+   re-stamping it after it was freed is a use-after-free -- that crashed xwpe on
+   the second motion of a title-bar drag (and again on release).  Shared with
+   the keyboard mover (e_opt_move), which had the identical fault. */
+PIC *e_opt_drag_snapshot(W_OPTSTR *o)
+{
+#ifndef NEWSTYLE
+#if !defined(DJGPP)
+ if (!WpeIsXwin())
+  return e_open_view(o->xa, o->ya, o->xe, o->ye, 0, 2);
+#endif
+ return e_open_view(o->xa, o->ya, o->xe - 2, o->ye - 1, 0, 2);
+#else
+ return e_open_view(o->xa, o->ya, o->xe, o->ye, 0, 2);
+#endif
+}
+
 void e_opt_eck_mouse(o)
      W_OPTSTR *o;
 {
    int g[4];
    int xold, yold, x, y, xa;
-   PIC *pic;
    e_std_rahmen(o->xa, o->ya, o->xe, o->ye, o->name, 0, o->frt, o->frs);
-#ifndef NEWSTYLE
-#if !defined(DJGPP)
-   if(!WpeIsXwin()) pic = e_open_view(o->xa, o->ya, o->xe, o->ye, 0, 2);
-   else 
-#endif
-	pic = e_open_view(o->xa, o->ya, o->xe-2, o->ye-1, 0, 2);
-#else
-   pic = e_open_view(o->xa, o->ya, o->xe, o->ye, 0, 2);
-#endif
    g[0] = 3;  g[1] = 1;
    fk_mouse(g);
    xold = g[2]/8;
@@ -1349,7 +1360,8 @@ void e_opt_eck_mouse(o)
       if(x < 0) x = 0;
       else if(x > MAXSCOL-1) x = MAXSCOL-1;
       if(xold != x || yold != y)
-      {  xold = x;  yold = y;
+      {  PIC *snap = e_opt_drag_snapshot(o);   /* the box as drawn at the OLD spot */
+	 xold = x;  yold = y;
 	 x -= xa;
 	 if(x < 0) x = 0;
 	 else if(x + o->xe - o->xa > MAXSCOL-1)
@@ -1362,15 +1374,14 @@ void e_opt_eck_mouse(o)
 	 o->pic = e_change_pic(o->xa, o->ya, o->xe, o->ye, o->pic, 1, o->frt);
 	 if(o->pic == NULL)  e_error(e_msg[ERR_LOWMEM], 1, o->f->fb);
 	 g[0] = 1;  fk_mouse(g);
-	 pic->a.x = o->xa;  pic->a.y = o->ya;
-	 pic->e.x = o->xe;  pic->e.y = o->ye;
-	 e_close_view(pic, 2);
+	 if(snap != NULL)
+	 {  snap->a.x = o->xa;  snap->a.y = o->ya;   /* stamp it at the NEW spot */
+	    snap->e.x = o->xe;  snap->e.y = o->ye;
+	    e_close_view(snap, 2);                    /* frees snap; never reused */
+	 }
       }
       g[0] = 3;  fk_mouse(g);
    }
-   pic->a.x = o->xa;  pic->a.y = o->ya;
-   pic->e.x = o->xe;  pic->e.y = o->ye;
-   e_close_view(pic, 1);
    e_std_rahmen(o->xa, o->ya, o->xe, o->ye, o->name, 1, o->frt, o->frs);
 }
 

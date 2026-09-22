@@ -1591,20 +1591,8 @@ int e_opt_move(W_OPTSTR *o)
 {
  int xa = o->xa, ya = o->ya, xe = o->xe, ye = o->ye;
  int c = 0;
- PIC *pic;
 
  e_std_rahmen(o->xa, o->ya, o->xe, o->ye, o->name, 0, o->frt, o->frs);
-#ifndef NEWSTYLE
- if (!WpeIsXwin())
-  pic = e_open_view(o->xa, o->ya, o->xe, o->ye, 0, 2);
- else 
- {
-  pic = e_open_view(o->xa, o->ya, o->xe-2, o->ye-1, 0, 2);
-  e_close_view(pic, 2);
- }
-#else
- pic = e_open_view(o->xa, o->ya, o->xe, o->ye, 0, 2);
-#endif
  while ((c = e_getch()) != WPE_ESC && c != WPE_CR)
  {
   switch(c)
@@ -1624,6 +1612,7 @@ int e_opt_move(W_OPTSTR *o)
   }
   if ( xa != o->xa || ya != o->ya || xe != o->xe || ye != o->ye)
   {
+   PIC *snap = e_opt_drag_snapshot(o);   /* the box as drawn at the OLD spot */
    o->xa = xa;
    o->ya = ya;
    o->xe = xe;
@@ -1631,14 +1620,13 @@ int e_opt_move(W_OPTSTR *o)
    o->pic = e_change_pic(o->xa, o->ya, o->xe, o->ye, o->pic, 1, o->frt);
    if (o->pic == NULL)
     e_error(e_msg[ERR_LOWMEM], 1, o->f->fb);
-   pic->a.x = o->xa;  pic->a.y = o->ya;
-   pic->e.x = o->xe;  pic->e.y = o->ye;
-   e_close_view(pic, 2);
+   if (snap != NULL)
+   {  snap->a.x = o->xa;  snap->a.y = o->ya;   /* stamp it at the NEW spot */
+      snap->e.x = o->xe;  snap->e.y = o->ye;
+      e_close_view(snap, 2);                    /* frees snap; never reused */
+   }
   }
  }
- pic->a.x = o->xa;  pic->a.y = o->ya;
- pic->e.x = o->xe;  pic->e.y = o->ye;
- e_close_view(pic, 1);
  e_std_rahmen(o->xa, o->ya, o->xe, o->ye, o->name, 1, o->frt, o->frs);
  return(c);
 }
