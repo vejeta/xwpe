@@ -404,6 +404,17 @@ Changes
       no longer parks the caret on top of the glyph: the input caret is now a byte
       offset like the editor's, so the cursor advances one column past a multi-byte
       character instead of sticking on its trailing byte.
+    - Chat no longer stalls when the model prefaces a tool call with a sentence.
+      A code model often answers a chat question by saying what it will do ("Let
+      me look at the current code") and then emitting its investigation line on a
+      later line (TOOL read_file ...).  Chat judged only the reply's first line,
+      so the preamble hid the tool call: the read was never run, the turn ended,
+      and the user saw the raw "TOOL read_file:" line and nothing more.  The tool
+      line is now found past the preamble (as the agent already did), a trailing
+      colon on the tool name is tolerated ("read_file:"), and the raw protocol
+      line is shown as a dim "  . reading <path>" status while the reasoning
+      preamble stays visible -- then the read result feeds the next turn and the
+      real answer streams.
     - Tested across ncurses, X11 and native Wayland, plus a live Claude CLI path.
 * Fix a project Make (F9) that could abort with glibc "free(): invalid pointer"
   when a project variable (e.g. CMP) was missing -- e_c_project freed an

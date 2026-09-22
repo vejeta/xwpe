@@ -51,6 +51,8 @@ typedef struct {
  int            decided;       /* this turn: 0 undecided, 1 = answer (stream it),
                                   2 = a TOOL investigation (shown as a dim status,
                                   the raw protocol line is NOT echoed as "AI:")  */
+ int            hide_tool;     /* a TOOL line begun after a preamble is being
+                                  hidden: show its dim status, not the raw line   */
  size_t         shown;         /* bytes of `full` already painted (decided==1)   */
 } ai_chat_session;
 
@@ -643,6 +645,30 @@ static ai_spin ai_spin_begin(FENSTER *f, const char *label)
  return sp;
 }
 
+static void ai_split_tool(char *action, char **tool, char **arg);   /* defined below */
+
+/* Format a "TOOL <name> <arg>" protocol line as a dim one-line status
+ * ("  . reading <arg>"), so the raw protocol is never shown as the assistant's
+ * answer -- for both a leading tool call and one that follows a preamble.
+ * `line` need not be NUL-terminated at `len`. */
+static void ai_tool_status(const char *line, size_t len, char *out, size_t n)
+{
+ char first[600], *tool, *arg;
+ const char *pretty;
+ size_t l;
+ if (len >= sizeof first) len = sizeof first - 1;
+ memcpy(first, line, len); first[len] = '\0';
+ l = strlen(first);
+ while (l && (first[l-1] == ' ' || first[l-1] == '\r' || first[l-1] == '\n'))
+  first[--l] = '\0';
+ ai_split_tool(first, &tool, &arg);
+ pretty = !strcmp(tool, "read_file") ? "reading"
+        : !strcmp(tool, "grep")      ? "searching for"
+        : !strcmp(tool, "list_dir")  ? "listing"
+        : tool;
+ snprintf(out, n, "  . %s %.560s", pretty, arg);
+}
+
 /* Stream a delta into the pane: append its characters to the current line and
  * start a new line at each '\n', repainting so tokens appear as they arrive.
  * The whole reply is also accumulated for the session log. */
@@ -674,18 +700,9 @@ static void ai_delta_cb(const char *delta, void *ud)
   const char *nl = memchr(s->full, '\n', s->flen);
   if (s->flen < 5 && !nl) return;                    /* wait: could be "TOOL " */
   if (!strncmp(s->full, "TOOL ", 5)) {
-   char first[600], *tool, *arg, status[640];
+   char status[640];
    size_t fl = nl ? (size_t)(nl - s->full) : s->flen;
-   const char *pretty;
-   if (fl >= sizeof first) fl = sizeof first - 1;
-   memcpy(first, s->full, fl); first[fl] = '\0';
-   tool = first + 5; arg = strchr(tool, ' ');
-   if (arg) { *arg = '\0'; arg++; } else arg = (char *)"";
-   pretty = !strcmp(tool, "read_file") ? "reading"
-          : !strcmp(tool, "grep")      ? "searching for"
-          : !strcmp(tool, "list_dir")  ? "listing"
-          : tool;
-   snprintf(status, sizeof status, "  . %s %.560s", pretty, arg);
+   ai_tool_status(s->full, fl, status, sizeof status);
    wf = ai_pane_win(s->ref);
    if (wf) ai_pane_set_last(wf, status);              /* replace "(gathering...)" */
    s->decided = 2;
@@ -704,12 +721,24 @@ static void ai_delta_cb(const char *delta, void *ud)
  }
 
  /* Paint the not-yet-shown portion of `full` (this covers both the delta just
-    arrived and anything buffered while we were deciding). */
+    arrived and anything buffered while we were deciding).  A model may put a
+    reasoning preamble on the first line(s) and its TOOL call on a later line; a
+    line that begins "TOOL " is hidden the same way a leading one is -- its dim
+    status replaces the raw protocol, and nothing after it is echoed. */
  for (i = s->shown; i < s->flen; i++) {
   char c = s->full[i];
   if (c == '\r')
    continue;
   if (c == '\n') {
+   if (s->hide_tool) {                     /* the hidden TOOL line just ended */
+    char status[640];
+    ai_tool_status(s->pending, s->plen, status, sizeof status);
+    ai_pane_set_last(wf, status);
+    s->decided = 2;                        /* suppress anything after the tool */
+    s->plen = 0; s->pcols = 0; if (s->pending) s->pending[0] = '\0';
+    s->shown = i + 1;
+    return;
+   }
    ai_pane_set_last(wf, s->pending ? s->pending : "");
    ai_pane_commit(wf);
    s->plen = 0;
@@ -728,13 +757,20 @@ static void ai_delta_cb(const char *delta, void *ud)
   }
   s->pending[s->plen++] = c;
   s->pending[s->plen] = '\0';
+  if (!s->hide_tool && s->plen == 5 && !strncmp(s->pending, "TOOL ", 5))
+   s->hide_tool = 1;                        /* this fresh line is a tool call   */
   if (((unsigned char)c & 0xC0) != 0x80)   /* not a UTF-8 continuation byte */
    s->pcols++;
-  if (s->pcols >= width)                    /* soft-wrap at the pane width */
+  if (!s->hide_tool && s->pcols >= width)   /* soft-wrap at the pane width */
    ai_stream_wrap(s, wf);
  }
  s->shown = s->flen;                                   /* painted up to here */
- ai_pane_set_last(wf, s->pending ? s->pending : "");   /* live partial line */
+ if (s->hide_tool) {                                   /* tool line still arriving */
+  char status[640];
+  ai_tool_status(s->pending, s->plen, status, sizeof status);
+  ai_pane_set_last(wf, status);
+ } else
+  ai_pane_set_last(wf, s->pending ? s->pending : "");  /* live partial line */
 }
 
 /* fd-loop callback: drain readable bytes, stream deltas into the pane. */
@@ -919,28 +955,72 @@ static char *ai_build_system(FENSTER *f)
  return sys;
 }
 
-/* If the reply is a read-only tool call, run it and return the result (malloc'd,
- * to be fed back as the next turn's input); else return NULL so the reply is
- * treated as the final answer.  Chat only ever runs read-only tools. */
+/**
+ * ai_scan_tool_line - Find the model's "TOOL ..." action line within a reply.
+ * @reply: the full assistant reply.
+ * Return: a pointer to the start of the first line beginning with "TOOL ", or
+ *         NULL when the reply has none.
+ *
+ * A tool-using model -- a local one especially -- often prefaces the tool line
+ * with a sentence of reasoning ("Let me look at the current code..."), so the
+ * action is not on the reply's first line.  Judging only the first line then
+ * mistakes the preamble for the answer and the tool is never run.  Scan the line
+ * starts instead (the same rule the agent loop uses).
+ */
+static const char *ai_scan_tool_line(const char *reply)
+{
+ const char *scan;
+ for (scan = reply; scan; ) {
+  if (!strncmp(scan, "TOOL ", 5)) return scan;
+  scan = strchr(scan, '\n');
+  if (scan) scan++;
+ }
+ return NULL;
+}
+
+/**
+ * ai_split_tool - Split a "TOOL <name> <arg>" line into its name and argument.
+ * @action: a mutable copy of the tool line (modified in place).
+ * @tool:   out; the tool name, with a trailing ':' stripped.
+ * @arg:    out; the argument text (empty string when absent).
+ *
+ * Tolerates the "TOOL read_file: /path" colon that models commonly write, so the
+ * name still matches "read_file" instead of "read_file:".
+ */
+static void ai_split_tool(char *action, char **tool, char **arg)
+{
+ char *nm = action + 5, *sp = strchr(nm, ' ');
+ size_t l;
+ if (sp) { *sp = '\0'; *arg = sp + 1; } else *arg = (char *)"";
+ l = strlen(nm);
+ if (l && nm[l - 1] == ':') nm[l - 1] = '\0';
+ *tool = nm;
+}
+
+/* If the reply contains a read-only tool call, run it and return the result
+ * (malloc'd, to be fed back as the next turn's input); else return NULL so the
+ * reply is treated as the final answer.  Chat only ever runs read-only tools.
+ * The tool line is found past any reasoning preamble (ai_scan_tool_line). */
 static char *ai_chat_tool_result(FENSTER *f, const char *reply)
 {
- char action[1100], *nl, *arg;
+ char action[1100], *tool, *arg;
+ const char *line, *nl;
  (void)f;
- nl = strchr(reply, '\n');
- { size_t l = nl ? (size_t)(nl - reply) : strlen(reply);
+ line = ai_scan_tool_line(reply);
+ if (!line) return NULL;
+ nl = strchr(line, '\n');
+ { size_t l = nl ? (size_t)(nl - line) : strlen(line);
    if (l >= sizeof action) l = sizeof action - 1;
-   memcpy(action, reply, l); action[l] = '\0'; }
+   memcpy(action, line, l); action[l] = '\0'; }
  /* trim trailing spaces */
  { size_t l = strlen(action); while (l && (action[l-1]==' '||action[l-1]=='\r')) action[--l]='\0'; }
- if (strncmp(action, "TOOL ", 5)) return NULL;
- arg = strchr(action + 5, ' ');
- if (arg) { *arg = '\0'; arg++; } else arg = (char *)"";
- if (!strcmp(action + 5, "read_file"))
+ ai_split_tool(action, &tool, &arg);
+ if (!strcmp(tool, "read_file"))
   return ai_read_file_bounded(arg);
- if (!strcmp(action + 5, "grep")) {
+ if (!strcmp(tool, "grep")) {
   char cmd[1300]; snprintf(cmd, sizeof cmd, "grep -rn -- %s .", arg); return ai_run_capture(cmd);
  }
- if (!strcmp(action + 5, "list_dir")) {
+ if (!strcmp(tool, "list_dir")) {
   char cmd[1200]; snprintf(cmd, sizeof cmd, "ls -la %s", arg[0] ? arg : "."); return ai_run_capture(cmd);
  }
  return NULL;   /* unknown/non-read-only: treat the line as a normal answer */
@@ -976,6 +1056,7 @@ static void ai_chat_next_turn(ai_chat_session *s)
  s->active = 1;
  s->started = 0;
  s->decided = 0;
+ s->hide_tool = 0;
  s->shown = 0;
  s->flen = 0; if (s->full) s->full[0] = '\0';
  ai_chat_set_pending(s, AI_REPLY_PREFIX);     /* reply streams after "AI: " */
@@ -3036,8 +3117,8 @@ static int ai_agent_process(ai_async_op *op, char *reply)
    if (l >= sizeof action) l = sizeof action - 1;
    memcpy(action, act, l); action[l] = '\0'; }
  {
-  char *tool = action + 5, *arg = strchr(tool, ' '), *result = NULL, paneln[640];
-  if (arg) { *arg = '\0'; arg++; } else arg = (char *)"";
+  char *tool, *arg, *result = NULL, paneln[640];
+  ai_split_tool(action, &tool, &arg);   /* shared parse: tolerates "read_file:" */
   snprintf(paneln, sizeof paneln, "[agent] %s %s", tool, arg);
   ai_pane(f, paneln, 0);
   wpe_ai_trace("agent tool=%s arg=%s", tool, arg);
