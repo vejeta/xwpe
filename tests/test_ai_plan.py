@@ -1,8 +1,12 @@
-"""AI assistant -- PLAN mode (Alt-G p): multi-file study -> plan -> permission
--> apply.  Deterministic mock: the reply carries a PLAN over two files (the
-open one and one only on disk).  Covers apply-all, cancel, and file-by-file.
+"""Agent plan mode: the agent states a checklist before acting, and ticks it off.
+
+For a multi-step task the agent can reply TOOL plan with one task per line; xwpe
+shows it as a "[ ] task" checklist so the user sees the intended steps before any
+change.  As the agent finishes a step it reports TOOL step_done, appending a
+"[x] step" row -- a lightweight live TODO list in the transcript.
 """
 import os
+import time
 import subprocess
 import pytest
 from wpe_driver import WpeSession, ALT, WPE_BIN
@@ -12,7 +16,7 @@ def _ai_build():
     try:
         out = subprocess.run(["strings", os.path.abspath(WPE_BIN)],
                              stdout=subprocess.PIPE, timeout=30).stdout
-        return b"PROPOSE" in out
+        return b"xwpe console editor" in out
     except Exception:
         return False
 
@@ -20,64 +24,25 @@ def _ai_build():
 pytestmark = pytest.mark.skipif(not _ai_build(), reason="wpe built without --enable-ai")
 
 
-def _plan(tmp_path, keys):
-    t = tmp_path / "t.c"
-    other = tmp_path / "other.c"
-    other.write_text("int other(void){return 0;}\n")
-    trace = tmp_path / "ai.trace"
-    reply = ("PROPOSE %s\nint main(void){return 42;}\n@@END\n" % t
-             + "PROPOSE %s\nint other(void){return 7;}\n@@END\n" % other
-             + "@@PLAN-DONE two files fixed")
-    env = {
-        "XWPE_AI_ENABLE": "1",
-        "XWPE_AI_BACKEND": "mock",
-        "XWPE_AI_MOCK_REPLY": reply,
-        "XWPE_AI_TRACE": str(trace),
-    }
+def test_agent_plan_and_step_done(tmp_path):
+    turns = ("TOOL plan\nInspect the file\nChange the return value\nVerify build\n@@END"
+             "@@TURN@@TOOL step_done Inspect the file"
+             "@@TURN@@DONE finished the task")
+    env = {"XWPE_AI_ENABLE": "1", "XWPE_AI_BACKEND": "mock", "XWPE_AI_POLICY": "auto",
+           "XWPE_AI_MOCK_REPLY": turns, "XWPE_AI_TRACE": str(tmp_path / "a.trace")}
     with WpeSession(str(tmp_path), "int main(void){return 0;}\n",
-                    env_extra=env) as s:
-        s.key(ALT.AI)
-        s.key("f")                       # Multi-file edit
-        s.key("fix both files")
-        s.key("\r", delay=1.6)           # study (none needed) -> plan pane
-        s._drain(1.0)
-        disp_plan = "\n".join(s.display())
-        for k in keys:
-            s.key(k, delay=0.9)
-        s._drain(1.0)
-        s.save()                         # saves the active (last applied) window
-    txt = trace.read_text() if trace.exists() else ""
-    return disp_plan, txt, t, other
-
-
-def test_ai_plan_apply_all(tmp_path):
-    disp, txt, t, other = _plan(tmp_path, ["a"])
-    assert "proposes to change 2 files" in disp, disp
-    assert "plan proposals=2" in txt, txt
-    assert ("plan applied %s" % t) in txt and ("plan applied %s" % other) in txt, txt
-    assert "plan done applied=2" in txt, txt
-    # the last applied window (other.c) was saved to disk by the test
-    assert "return 7" in other.read_text()
-
-
-def test_ai_plan_cancel(tmp_path):
-    disp, txt, t, other = _plan(tmp_path, ["q"])
-    assert "plan cancelled" in txt, txt
-    assert "return 0" in other.read_text() and "7" not in other.read_text()
-
-
-def test_ai_plan_file_by_file(tmp_path):
-    # f = file by file; then per-hunk: y for t.c, n for other.c
-    disp, txt, t, other = _plan(tmp_path, ["f", "y", "n"])
-    assert ("plan applied %s" % t) in txt, txt
-    assert ("plan skipped %s" % other) in txt, txt
-    assert "plan done applied=1" in txt, txt
-
-
-def test_ai_plan_approval_is_modal_popup(tmp_path):
-    # the approval is a titled, boxed dialog (not a log line), and Enter applies all
-    disp, txt, t, other = _plan(tmp_path, ["\r"])
-    assert "Apply AI plan" in disp, "approval is not shown as a titled popup:\n" + disp
-    assert "Review file-by-file" in disp and "Cancel" in disp, \
-        "popup choices/hint missing:\n" + disp
-    assert "plan done applied=2" in txt, txt          # Enter = apply all
+                    env_extra=env, filename="t.c") as s:
+        s.key(ALT.AI); s.key("g"); s._drain(0.5)
+        s.key("do a multi step change"); s.key("\r", delay=0.8)
+        end = time.time() + 15
+        while time.time() < end:
+            s._drain(0.5)
+            t = (tmp_path / "a.trace").read_text() if (tmp_path / "a.trace").exists() else ""
+            if "agent done" in t:
+                break
+        disp = "\n".join(s.display())
+    assert "[plan]" in disp, "the plan header was not shown:\n" + disp
+    assert "[ ] Inspect the file" in disp and "[ ] Change the return value" in disp, \
+        "the plan checklist was not rendered:\n" + disp
+    assert "[x] Inspect the file" in disp, \
+        "the completed step was not ticked off:\n" + disp

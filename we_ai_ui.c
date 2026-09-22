@@ -3264,6 +3264,37 @@ static void ai_run_edit_hook(FENSTER *f, const char *path)
 }
 
 /**
+ * ai_render_plan - Show a plan the agent laid out as a checklist in the pane.
+ * @f: current window; @body: the task lines after the TOOL line, up to @@END.
+ *
+ * A multi-step agent run is legible when it states its plan first: each task
+ * line becomes a "[ ] <task>" row the user sees BEFORE the agent acts, so they
+ * can course-correct.  As the agent finishes a step it reports step_done, which
+ * appends a "[x] <step>" row -- a lightweight live TODO list in the transcript.
+ */
+static void ai_render_plan(FENSTER *f, const char *body)
+{
+ const char *p = body, *stop = strstr(body, "\n@@END");
+ int n = 0;
+ ai_pane(f, "[plan]", 0);
+ while (p && *p && (!stop || p < stop)) {
+  const char *nl = strchr(p, '\n');
+  int len = nl ? (int)(nl - p) : (int)strlen(p);
+  if (stop && (!nl || nl > stop)) len = (int)(stop - p);
+  while (len && (*p == ' ' || *p == '\t' || *p == '-' || *p == '*')) { p++; len--; }
+  if (len > 0) {
+   char row[720];
+   snprintf(row, sizeof row, "  [ ] %.*s", len, p);
+   ai_pane(f, row, 0);
+   n++;
+  }
+  if (!nl) break;
+  p = nl + 1;
+ }
+ if (!n) ai_pane(f, "  (no steps given)", 0);
+}
+
+/**
  * ai_agent_commit_write - Approve (per the permission dial) and write `content`
  * to `path`, reloading it if open.  Shared by write_file and apply_patch so both
  * go through the same review: auto/edits ask ai_agent_approve, ASK shows the
@@ -3483,6 +3514,15 @@ static int ai_agent_process(ai_async_op *op, char *reply)
    }
    free(old);
    free(newc);
+  } else if (!strcmp(tool, "plan")) {
+   ai_render_plan(f, firstnl ? firstnl + 1 : "");
+   result = strdup("(plan shown -- now do the steps, one tool per turn, "
+                   "reporting each with TOOL step_done <task>)");
+  } else if (!strcmp(tool, "step_done")) {
+   char row[720];
+   snprintf(row, sizeof row, "  [x] %s", arg[0] ? arg : "(step)");
+   ai_pane(f, row, 0);
+   result = strdup("(recorded)");
   } else {
    result = strdup("(unknown tool)");
   }
@@ -3524,6 +3564,9 @@ static int ai_agent_launch(FENSTER *f, const char *goal, const char *extra)
  const char *sys =
    "You are an autonomous coding agent working in the current directory of the "
    "xwpe editor. Reply with EXACTLY ONE action per turn as a single first line:\n"
+   "  TOOL plan          (for a multi-step task: follow with one task per line, "
+   "then a line that is exactly @@END; shown to the user before you act)\n"
+   "  TOOL step_done <task>   (mark a planned step complete as you finish it)\n"
    "  TOOL list_dir <path>\n"
    "  TOOL read_file <path>\n"
    "  TOOL grep <pattern>\n"
