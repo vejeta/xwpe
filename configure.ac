@@ -287,19 +287,22 @@ AS_IF([test "x$enable_ai" = "xyes"],
   [AC_DEFINE([WPE_AI], [1], [Enable the optional AI assistant integration])])
 AM_CONDITIONAL([WPE_AI], [test "x$enable_ai" = "xyes"])
 
-# --- Optional: TLS for the cloud AI backends (Claude / remote OpenAI) ---
-# Only needed to reach HTTPS endpoints; Ollama and localhost OpenAI-compatible
-# servers are plain HTTP and need none of this.  Prefers libtls (LibreSSL, the BSD
-# default), falls back to OpenSSL.
+# --- TLS for the cloud AI backends (Claude / remote OpenAI / Groq / ...) ---
+# Real OpenAI-compatible providers are HTTPS, so TLS is ON BY DEFAULT whenever
+# the AI assistant is built and a TLS library is present: it is auto-detected
+# (libtls -- LibreSSL, the BSD default -- preferred, OpenSSL fallback).  Without
+# it the assistant reaches only plain-HTTP backends (Ollama, a local bridge).
+# --disable-ai-tls builds without it; --enable-ai-tls forces it (and errors if no
+# library is found, rather than silently dropping HTTPS).
 have_ai_tls=no
 AITLS_CFLAGS=""
 AITLS_LIBS=""
 AS_IF([test "x$enable_ai" = "xyes"], [
   AC_ARG_ENABLE([ai-tls],
     [AS_HELP_STRING([--enable-ai-tls],
-       [enable TLS so the AI assistant can reach HTTPS backends like Claude (default: no)])],
-    [], [enable_ai_tls=no])
-  AS_IF([test "x$enable_ai_tls" = "xyes"], [
+       [TLS for HTTPS AI backends like Claude/Groq/OpenAI (default: auto -- on when libtls or openssl is present; use --disable-ai-tls to force off)])],
+    [], [enable_ai_tls=auto])
+  AS_IF([test "x$enable_ai_tls" != "xno"], [
     PKG_CHECK_MODULES([AITLS], [libtls], [
       have_ai_tls=yes; ai_tls_impl=libtls
       AC_DEFINE([WPE_AI_TLS], [1], [Enable TLS for cloud AI backends])
@@ -308,7 +311,11 @@ AS_IF([test "x$enable_ai" = "xyes"], [
          have_ai_tls=yes; ai_tls_impl=openssl
          AC_DEFINE([WPE_AI_TLS], [1], [Enable TLS for cloud AI backends])
          AC_DEFINE([WPE_AI_TLS_OPENSSL], [1], [Use OpenSSL for AI TLS])
-       ], [AC_MSG_ERROR([--enable-ai-tls requires libtls (LibreSSL/libretls) or openssl])])])
+       ], [
+         AS_IF([test "x$enable_ai_tls" = "xyes"],
+           [AC_MSG_ERROR([--enable-ai-tls requires libtls (LibreSSL/libretls) or openssl])],
+           [AC_MSG_WARN([no libtls/openssl found -- the AI assistant will reach only plain-HTTP backends; install libtls-dev or libssl-dev for HTTPS (Claude/Groq/OpenAI)])])
+       ])])
   ])
 ])
 AM_CONDITIONAL([WPE_AI_TLS], [test "x$have_ai_tls" = xyes])

@@ -246,9 +246,11 @@ Changes
 
 * New optional AI assistant behind the Alt-G prefix, off by default and absent
   from a stock build.  The classic editor is byte-for-byte unchanged when AI is
-  off.  Build flags: --enable-ai (local + Claude-CLI backends), --enable-ai-tls
-  (HTTPS backends), --enable-ai-agent-host (host an external agent CLI).  Full
-  details in docs/AI.md.
+  off.  Build flags: --enable-ai (local + Claude-CLI backends); TLS for HTTPS
+  backends is auto-detected and ON by default when a TLS library (libtls or
+  openssl) is present (--disable-ai-tls forces it off, --enable-ai-tls requires
+  it); --enable-ai-agent-host hosts an external agent CLI.  Full details in
+  docs/AI.md.
     - Modes (Alt-G then a letter): Ask a question (chat), Edit the current file
       or a marked block, Multi-file edit across several files, run an Agent with
       tools, or Fix the build in a loop.  Edits are shown as a colored diff,
