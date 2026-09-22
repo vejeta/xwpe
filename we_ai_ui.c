@@ -2508,7 +2508,8 @@ static int e_ai_opt_pick_provider(FENSTER *f)
   free(e_ai_provider); e_ai_provider = strdup(p->name);
  } else {
   char name[80] = "";
-  if (e_add_arguments(name, "Save provider as", f, 0, AltO, NULL) && name[0]) {
+  /* field sw must differ from the dialog's confirm key (AltO) or Ok is shadowed */
+  if (e_add_arguments(name, "Save provider as", f, 0, AltN, NULL) && name[0]) {
    wpe_ai_provider_set(name, e_ai_endpoint ? e_ai_endpoint : "",
                        e_ai_model, e_ai_cafile);
    free(e_ai_provider); e_ai_provider = strdup(name);

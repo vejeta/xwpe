@@ -594,3 +594,32 @@ def test_provider_uses_its_own_key_file(tmp_path):
         srv.shutdown()
     assert seen["auth"] == "Bearer secret-key-123", \
         "the per-provider key file was not used: %r" % seen["auth"]
+
+
+def test_provider_save_current_as_new(tmp_path):
+    # "[ + Save current as... ]" in the provider picker prompts for a name and
+    # saves the current endpoint/model as a new profile, which then persists.
+    import tempfile
+    home = tempfile.mkdtemp()
+    cfg = os.path.join(home, ".config", "xwpe")
+    os.makedirs(cfg)
+    cfgfile = os.path.join(cfg, "xwperc")
+    with open(cfgfile, "w") as fh:
+        fh.write("[Programming]\nAIBackend : 1\n"
+                 "AIEndpoint : https://api.groq.com/openai/v1\nAIModel : gpt-x\n"
+                 "AIPolicy : ask\n")
+    env = {"XWPE_AI_ENABLE": "1", "HOME": home, "OPENAI_API_KEY": ""}
+    with WpeSession(str(tmp_path), "int main(void){return 0;}\n",
+                    env_extra=dict(env)) as s:
+        s.key("\033o", delay=0.5); s.key("i", delay=0.6)
+        s.key("\033v", delay=1.0)         # Alt-V -> picker (only the Save entry)
+        s.key("\r", delay=0.7)            # pick "[ + Save current as... ]"
+        for ch in "mygroq":
+            s.key(ch, delay=0.04)         # type the name
+        s.key("\r", delay=0.7)            # Enter confirms the name
+        s.key("\033o", delay=0.8)         # Ok
+    saved = open(cfgfile).read()
+    assert "AIProviderName : mygroq" in saved, \
+        "the saved provider was not made active:\n" + saved
+    assert "AIProvider : mygroq|https://api.groq.com/openai/v1|gpt-x|" in saved, \
+        "the current settings were not saved as a named provider:\n" + saved
