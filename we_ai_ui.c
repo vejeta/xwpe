@@ -2373,6 +2373,27 @@ static void ai_opt_mlabel(void)
           (e_ai_model && *e_ai_model) ? e_ai_model : "(backend default)");
 }
 
+/* Apply an endpoint URL typed in the settings dialog's Endpoint field (trimmed);
+ * a blank field falls back to the local Ollama default so the HTTP backends
+ * always have a reachable URL.  Shared by the Ok handler and the Model button so
+ * Alt-M lists from a freshly typed URL. */
+static void ai_set_endpoint(const char *text)
+{
+ char buf[512];
+ const char *s = text ? text : "";
+ size_t n;
+ while (*s == ' ' || *s == '\t') s++;
+ snprintf(buf, sizeof buf, "%s", s);
+ n = strlen(buf);
+ while (n && (buf[n - 1] == ' ' || buf[n - 1] == '\t')) buf[--n] = '\0';
+ free(e_ai_endpoint);
+ e_ai_endpoint = strdup(buf[0] ? buf : "http://localhost:11434");
+}
+
+/* The Endpoint field's index in the dialog's write-string list (it is the only
+ * one), so the Model button and Ok handler read the same field. */
+#define AI_OPT_ENDPOINT_WSTR 0
+
 /* Model button action.  The scrollable picker (e_ai_pick) saves the screen it
    covers and restores it on close, so it floats OVER the settings dialog and
    leaves it in place -- no blink to the editor, no re-centre.  Rewrite the Model
@@ -2395,6 +2416,10 @@ static int e_ai_opt_pick_model(FENSTER *f)
    e_ai_model = NULL;
   }
  }
+ /* Honour a URL the user just typed: list models from the endpoint shown in the
+    field, not the one a previous Ok saved -- so Alt-M works before Ok. */
+ if (g_ai_opt_dlg && g_ai_opt_dlg->wn > AI_OPT_ENDPOINT_WSTR)
+  ai_set_endpoint(g_ai_opt_dlg->wstr[AI_OPT_ENDPOINT_WSTR]->txt);
  e_ai_pick_model_apply(f, 0);                    /* announce=0: do not raise the pane */
  ai_opt_mlabel();
  if (g_ai_opt_dlg)
@@ -2458,6 +2483,13 @@ int e_ai_options(FENSTER *f)
  e_add_txtstr(28, 4, "Model (Alt-M):", o);
  e_add_bttstr(28, 5, 0, AltM, g_ai_opt_mlabel, e_ai_opt_pick_model, o);
 
+ /* The single endpoint URL the HTTP backends (Ollama, OpenAI-compatible) talk
+    to.  Editable here so OpenAI-compatible can point at any server -- Groq,
+    llama.cpp, LM Studio, vLLM, OpenAI itself -- without hand-editing xwperc.
+    Ignored by the claudecli/claude backends. */
+ e_add_wrstr(3, 9, 3, 10, 48, 255, -1, AltU, "Endpoint URL (Alt-U; Ollama / OpenAI):",
+             e_ai_endpoint ? e_ai_endpoint : "", NULL, o);
+
  e_add_txtstr(3, 11, "Permission (agent writes / commands):", o);
  for (i = 0; i < 3; i++)
   e_add_pswstr(1, 4, 12 + i, i, 4200 + i, (i == 2) ? e_ai_policy : 0, (char *)pol[i], o);
@@ -2488,6 +2520,8 @@ int e_ai_options(FENSTER *f)
  f->ed->edopt = (f->ed->edopt & ~ED_AI_ENABLE) | (o->sstr[0]->num ? ED_AI_ENABLE : 0);
  e_ai_policy  = (o->pstr[1]->num >= 0 && o->pstr[1]->num < 3) ? o->pstr[1]->num : 0;
  new_be = bk[(o->pstr[0]->num >= 0 && o->pstr[0]->num < 4) ? o->pstr[0]->num : 0];
+ if (o->wn > AI_OPT_ENDPOINT_WSTR)
+  ai_set_endpoint(o->wstr[AI_OPT_ENDPOINT_WSTR]->txt);   /* apply the typed URL */
 #ifdef WPE_AI_AGENT_HOST
  e_ai_agent_engine = (o->pstr[2]->num == 1) ? WPE_AI_ENGINE_CLAUDE_HOST
                                             : WPE_AI_ENGINE_BUILTIN;

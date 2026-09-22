@@ -247,3 +247,77 @@ def test_ai_options_backend_persists_across_relaunch(tmp_path):
         "the chosen backend (Ollama) did not persist across relaunch:\n" + joined
     assert not any("(*) Claude CLI" in ln for ln in disp), \
         "the backend reverted to Claude CLI after relaunch:\n" + joined
+
+
+def _fake_openai_server(models):
+    """A throwaway local OpenAI-compatible server: GET /v1/models returns the
+    given model ids.  Returns (server, port); call server.shutdown() when done."""
+    import threading, json
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+
+    class H(BaseHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+
+        def do_GET(self):
+            if self.path.rstrip("/").endswith("/v1/models"):
+                body = json.dumps(
+                    {"object": "list", "data": [{"id": m} for m in models]}).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+            else:
+                self.send_response(404)
+                self.end_headers()
+
+    srv = HTTPServer(("127.0.0.1", 0), H)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    return srv, srv.server_address[1]
+
+
+def test_openai_endpoint_lists_from_that_server(tmp_path):
+    # The Endpoint field makes OpenAI-compatible usable against ANY server: point
+    # it at a local fake OpenAI server and Alt-M lists THAT server's /v1/models --
+    # proving the path is not hard-wired to the Ollama endpoint.  No network, no
+    # Ollama: the returned ids are distinctive so they cannot come from elsewhere.
+    srv, port = _fake_openai_server(["fake-model-alpha", "fake-model-beta"])
+    try:
+        home = str(tmp_path / "home")
+        os.makedirs(os.path.join(home, ".config", "xwpe"))
+        with open(os.path.join(home, ".config", "xwpe", "xwperc"), "w") as fh:
+            fh.write("[Programming]\nAIBackend : 1\n"
+                     "AIEndpoint : http://127.0.0.1:%d\nAIPolicy : ask\n" % port)
+        env = {"XWPE_AI_ENABLE": "1", "HOME": home}
+        with WpeSession(str(tmp_path), "int main(void){return 0;}\n",
+                        env_extra=env) as s:
+            s.key("\033o", delay=0.5); s.key("i", delay=0.6)
+            s.key("\033m", delay=1.3)         # Alt-M -> picker from the fake server
+            pick = "\n".join(s.display())
+    finally:
+        srv.shutdown()
+    assert "fake-model-alpha" in pick and "fake-model-beta" in pick, \
+        "OpenAI-compatible did not list the endpoint's own models:\n" + pick
+    assert ("127.0.0.1:%d" % port) in pick, \
+        "the picker did not name the configured endpoint:\n" + pick
+
+
+def test_ai_options_endpoint_persists(tmp_path):
+    # A non-default Endpoint URL survives Ok + relaunch: the field reads back into
+    # AIEndpoint, and neither Ok nor a backend change wipes it.
+    import tempfile
+    home = tempfile.mkdtemp()
+    cfg = os.path.join(home, ".config", "xwpe")
+    os.makedirs(cfg)
+    url = "http://example.test:9999/v1"
+    with open(os.path.join(cfg, "xwperc"), "w") as fh:
+        fh.write("[Programming]\nAIBackend : 1\nAIEndpoint : %s\nAIPolicy : ask\n" % url)
+    env = {"XWPE_AI_ENABLE": "1", "HOME": home}
+    with WpeSession(str(tmp_path), "int main(void){return 0;}\n",
+                    env_extra=dict(env)) as s:
+        s.key("\033o", delay=0.5); s.key("i", delay=0.6)
+        s.key("\033o", delay=0.6)             # Ok (no edits) -> must keep the URL
+    saved = open(os.path.join(cfg, "xwperc")).read()
+    assert ("AIEndpoint : " + url) in saved, \
+        "the endpoint was not preserved through Ok:\n" + saved

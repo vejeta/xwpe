@@ -122,9 +122,12 @@ Ollama's HTTP API on @code{http://localhost:11434}.  Local, free, no key.  The
 model list comes from the server; @kbd{Alt-G s} (@samp{Options}, @samp{AI})
 picks one with @key{Alt-M}.
 @item @code{openai}
-Any OpenAI-compatible server -- @command{llama.cpp}, LM Studio, vLLM, or OpenAI
-itself.  Set @code{AIEndpoint} to its URL; an API key comes from
-@env{OPENAI_API_KEY}.
+Any OpenAI-compatible server -- @command{llama.cpp}, LM Studio, vLLM, Groq,
+OpenRouter, or OpenAI itself.  Set its URL in the @samp{Endpoint URL} field of
+@samp{Options}, @samp{AI} (@key{Alt-U}), or with @code{AIEndpoint}; an API key
+comes from @env{OPENAI_API_KEY}.  The endpoint defaults to the local Ollama port,
+which also answers @code{/v1/models}, so until you point it at your own server
+the model list (and the picker's title) shows that Ollama endpoint.
 @item @code{claude}
 Anthropic's Messages API.  Needs @option{--enable-ai-tls} and
 @env{ANTHROPIC_API_KEY}.
@@ -319,7 +322,8 @@ itself immediately, so it sticks across sessions without @samp{Save Options}:
 @item AIBackend
 @code{ollama} (0), @code{openai} (1), @code{claude} (2), @code{claudecli} (4).
 @item AIEndpoint
-Base URL for the HTTP backends (default @code{http://localhost:11434}).
+Base URL for the HTTP backends (default @code{http://localhost:11434}); also
+editable in the @samp{Endpoint URL} field of @samp{Options}, @samp{AI}.
 @item AIModel
 Model name; empty means ``pick the first the server offers''.
 @item AIPolicy
