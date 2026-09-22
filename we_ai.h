@@ -130,6 +130,8 @@ int   wpe_ai_stream_pump(wpe_ai_stream *st,
                          void (*cb)(const char *delta, void *ud), void *ud,
                          int *done);
 int   wpe_ai_stream_http_status(wpe_ai_stream *st);
+/* Human message if the finished stream carried an HTTP error; NULL when OK. */
+char *wpe_ai_stream_error_message(wpe_ai_stream *st);
 /* True when a completed stream reported a backend failure rather than a reply
  * (e.g. the claude CLI is not logged in); callers that write files or run tools
  * must refuse to act on it. */

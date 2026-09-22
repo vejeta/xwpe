@@ -1124,6 +1124,35 @@ int wpe_ai_stream_had_error(wpe_ai_stream *st)
 int wpe_ai_stream_http_status(wpe_ai_stream *st)
 { return st ? wpe_http_stream_status(&st->hs) : 0; }
 
+/* If the finished stream carried an HTTP error (status >= 400), return a
+ * malloc'd human message -- the JSON error.message the server sent (e.g. "The
+ * model `x` does not exist or you do not have access to it"), or a generic
+ * "server error (HTTP n)".  NULL when the response was OK, so the caller can tell
+ * a real failure from a genuinely empty answer. */
+char *wpe_ai_stream_error_message(wpe_ai_stream *st)
+{
+ int status;
+ struct json_object *o, *err, *msg;
+ char buf[400];
+ if (!st) return NULL;
+ status = wpe_http_stream_status(&st->hs);
+ if (status < 400) return NULL;
+ if (st->hs.body && st->hs.body_len > 0) {
+  o = json_tokener_parse(st->hs.body);
+  if (o) {
+   if (json_object_object_get_ex(o, "error", &err) &&
+       json_object_object_get_ex(err, "message", &msg)) {
+    snprintf(buf, sizeof buf, "%s", json_object_get_string(msg));
+    json_object_put(o);
+    return ai_strdup(buf);
+   }
+   json_object_put(o);
+  }
+ }
+ snprintf(buf, sizeof buf, "server error (HTTP %d)", status);
+ return ai_strdup(buf);
+}
+
 int wpe_ai_stream_pump(wpe_ai_stream *st,
                        void (*cb)(const char *delta, void *ud), void *ud,
                        int *done)

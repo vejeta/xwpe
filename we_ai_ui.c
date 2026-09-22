@@ -764,9 +764,21 @@ static void ai_fd_cb(int fd, void *data)
     return;
    }
   } else {
-   /* nothing streamed: replace the "gathering..." placeholder. */
+   /* nothing streamed: show the server's error if the request failed (e.g. a
+      model the key cannot access -> "(no answer)" told the user nothing), else
+      the plain empty-answer placeholder. */
    FENSTER *wf = ai_pane_win(s->ref);
-   if (wf) ai_pane_set_last(wf, AI_REPLY_PREFIX "(no answer)");
+   char *emsg = wpe_ai_stream_error_message(s->st);
+   if (wf) {
+    if (emsg) {
+     char line[440];
+     snprintf(line, sizeof line, AI_REPLY_PREFIX "error: %s", emsg);
+     ai_pane_set_last(wf, line);
+    } else {
+     ai_pane_set_last(wf, AI_REPLY_PREFIX "(no answer)");
+    }
+   }
+   free(emsg);
   }
   wpe_ai_session_save(s->ref);
   wpe_ai_trace("chat done");
