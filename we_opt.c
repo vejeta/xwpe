@@ -1009,6 +1009,9 @@ int WpeReadProgramming(ECNT *cn, char *section, char *option, char *value)
  } else if (WpeStrccmp("AIEditHook", option) == 0) {
   free(e_ai_edit_hook);
   e_ai_edit_hook = (value && *value) ? WpeStrdup(value) : NULL;
+ } else if (WpeStrccmp("AIHostCommand", option) == 0) {
+  free(e_ai_host_command);
+  e_ai_host_command = (value && *value) ? WpeStrdup(value) : NULL;
  } else if (WpeStrccmp("AICAFile", option) == 0) {
   free(e_ai_cafile);
   e_ai_cafile = (value && *value) ? WpeStrdup(value) : NULL;
@@ -1044,6 +1047,8 @@ int WpeWriteProgramming(ECNT *cn, char *section, FILE *opt_file)
   fprintf(opt_file, "AIModelFallback : %s\n", e_ai_model_fallback);
  if (e_ai_edit_hook && *e_ai_edit_hook)
   fprintf(opt_file, "AIEditHook : %s\n", e_ai_edit_hook);
+ if (e_ai_host_command && *e_ai_host_command)
+  fprintf(opt_file, "AIHostCommand : %s\n", e_ai_host_command);
  fprintf(opt_file, "AICAFile : %s\n", e_ai_cafile ? e_ai_cafile : "");
  fprintf(opt_file, "AIProviderName : %s\n", e_ai_provider ? e_ai_provider : "");
  {

@@ -164,6 +164,13 @@ define?'' works even when that file is not open.  The editor stays fully
 interactive while the reply streams; @key{Esc} cancels.  The conversation is
 remembered for the workspace (see @emph{Sessions}, below).
 
+@cindex AI, slash commands
+A leading @dfn{slash command} expands to a full, file-scoped instruction, so a
+common ask is one token: @code{/explain}, @code{/fix}, @code{/test}, @code{/doc},
+@code{/review}.  Text after the command is kept as a specific focus
+(@code{/fix the off-by-one}); the transcript shows what you typed and only the
+model receives the expansion.
+
 Chat streams token by token.  @emph{Edit}, @emph{Plan} and @emph{Agent} (below)
 need the whole reply before they can act, so while the model is thinking they
 show a rotating @samp{-\|/} indicator and the seconds elapsed in the @samp{AI}
@@ -227,9 +234,9 @@ read it, step between them with @kbd{Alt-1}@dots{}, and undo any one with
 @cindex AI, agent
 @cindex AI, permissions
 @kbd{Alt-G g} runs the model as an autonomous agent with a small, bounded set of
-tools: @code{read_file}, @code{list_dir} and @code{grep} run on their own, while
-@code{write_file} and @code{run_command} are governed by the @dfn{permission
-dial}:
+tools: @code{read_file}, @code{list_dir}, @code{grep} and @code{glob} (find files
+by name) run on their own, while @code{write_file}, @code{apply_patch} and
+@code{run_command} are governed by the @dfn{permission dial}:
 
 @table @asis
 @item @code{ask} (default)
@@ -249,6 +256,17 @@ When an agent task is really a question rather than a change, the model answers
 directly: it finishes with a short line and its answer follows in the pane, so you
 see the reply even though this is not the chat.
 
+@cindex AI, apply_patch
+@cindex AI, plan mode
+To change an existing file the agent prefers @code{apply_patch} -- a precise
+@code{SEARCH}/@code{REPLACE} edit rather than a whole-file rewrite -- which goes
+through the same review, checkpoint and one-step @kbd{Ctrl-U} undo as
+@code{write_file}, and a search that does not match is reported back for a retry
+instead of a bad write.  For a multi-step task the agent can first lay out a
+@dfn{plan}: it shows a @samp{[ ] task} checklist @emph{before} it acts, so you see
+the intended steps, and ticks each off (@samp{[x]}) as it finishes -- a
+lightweight live to-do list in the pane.
+
 @section Build & fix
 
 @cindex AI, build and fix
@@ -260,6 +278,16 @@ hands the agent a loop: run the build, read the compiler errors, edit the
 sources, build again, repeat until it passes.  It uses the same tools and
 permission dial as @kbd{Alt-G g}, so you approve edits and commands exactly as in
 a normal agent run.
+
+@section Complete at cursor
+
+@cindex AI, completion
+@kbd{Alt-G c}, @samp{Complete at cursor}, fills in code where the cursor is: xwpe
+sends the code around the cursor to the model and splices its suggestion in at the
+cursor as one whole-buffer undo step, so @kbd{Ctrl-U} reverts it.  It is a local,
+low-ceremony alternative to Chat or Edit for ``finish this line/block''; the
+editor stays interactive while the model works and the suggestion lands when the
+reply arrives.
 
 @section Hosting an external agent (Claude Code)
 
@@ -330,6 +358,15 @@ These keys live in the @code{[Programming]} section of @file{xwperc}
 Changing the AI working mode -- the backend, model or permission level -- saves
 itself immediately, so it sticks across sessions without @samp{Save Options}:
 
+@cindex AI, project instructions
+@cindex AGENTS.md
+If the working directory (the project root) holds an @file{AGENTS.md} -- or the
+xwpe-specific @file{.xwpe-ai.md} -- its contents are folded into every AI turn
+(chat, edit and agent) under a @samp{PROJECT INSTRUCTIONS} heading, so a repo's
+standing rules (the build command, code style, ``do not touch @file{vendor/}'')
+are followed without restating them.  It is bounded so a large file cannot crowd
+out the prompt.
+
 @table @code
 @item AIBackend
 @code{ollama} (0), @code{openai} (1), @code{claude} (2), @code{claudecli} (4).
@@ -359,12 +396,30 @@ their own key.
 The active profile's name (empty for an ad-hoc endpoint typed into the field).
 @item AIPolicy
 @code{ask}, @code{edits} or @code{auto}.
+@item AIModelFallback
+A model retried once, automatically, when the primary fails a turn (unavailable,
+or too slow / timed out); xwpe says @samp{primary model failed @dots{} retrying
+with @var{fallback}} and continues on it.  Empty disables the fallback.
+@item AIEditHook
+A command run on a file the agent just wrote or patched, e.g.@:
+@code{clang-format -i}; the path is appended and the buffer reloads afterwards, so
+AI edits stay consistent with the repo's tooling (like format-on-save).
+@item AIAgentEngine
+@code{builtin} (the editor's own tool loop) or @code{claude-code} (host the
+external agent for @kbd{Alt-G g}; see @emph{Hosting an external agent}, above);
+the latter needs a build configured with @option{--enable-ai-agent-host}.
+@item AIHostCommand
+The agent CLI to host when @code{AIAgentEngine} is @code{claude-code}; empty runs
+@command{claude}.  A different command (@command{aider}, @command{opencode},
+@dots{}) is run through the shell, so hosting another agent needs no build change.
+Overridden by @env{XWPE_AI_HOST_CMD}.
 @end table
 
 Environment overrides (handy for scripts and tests): @env{XWPE_AI_ENABLE},
 @env{XWPE_AI_BACKEND}, @env{XWPE_AI_ENDPOINT}, @env{XWPE_AI_MODEL},
-@env{XWPE_AI_CAFILE}, @env{XWPE_AI_POLICY}, and @env{XWPE_AI_TRACE} (a path to
-log assistant events to).  API keys are read from the standard environment variable first
+@env{XWPE_AI_CAFILE}, @env{XWPE_AI_POLICY}, @env{XWPE_AI_AGENT_ENGINE}
+(@code{builtin}/@code{claude-code}), @env{XWPE_AI_HOST_CMD} (the agent CLI to
+host), and @env{XWPE_AI_TRACE} (a path to log assistant events to).  API keys are read from the standard environment variable first
 (@env{ANTHROPIC_API_KEY}, @env{OPENAI_API_KEY}), then from @code{@var{NAME}_FILE},
 then from @file{~/.config/xwpe/anthropic-api-key} (or @file{openai-api-key}, or a
 provider's own @file{openai-api-key-@var{name}}); the @code{claudecli} backend

@@ -277,7 +277,10 @@ Changes
       edits reload into your buffers, one Ctrl-U to revert; the session is
       checkpointed and reviewable).  The permission dial gates its tools per tool
       (ask = y/n per call, edits = auto edits/ask commands, auto = unattended).
-      A generic host layer; a build without the flag contains none of it.
+      A generic host layer; a build without the flag contains none of it.  The
+      hosted CLI is set with AIHostCommand (empty runs claude; a different command
+      such as aider/opencode runs through the shell, so hosting another agent
+      needs no build change), overridable with XWPE_AI_HOST_CMD.
     - Every mode (Ask, Edit, Multi-file, Agent, Fix-build) is now handed the
       files currently open in the editor as context, with the focused one marked
       -- so you no longer have to tell the assistant what you are working on.

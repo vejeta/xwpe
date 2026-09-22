@@ -99,7 +99,12 @@ wpe_host *wpe_host_start(const char *model, const char *resume, int policy,
  int in[2], out[2];
  pid_t pid;
  wpe_host *h;
- const char *hostcmd = getenv("XWPE_AI_HOST_CMD");   /* tests: a mock CLI */
+ /* Which agent CLI to host: XWPE_AI_HOST_CMD (tests / one-off) wins, else the
+    persisted AIHostCommand (Options), else NULL -> the built-in `claude` argv.
+    A configured command runs via the shell, so `aider`/`opencode`/... need no
+    code change -- just a different AIHostCommand. */
+ const char *hostcmd = getenv("XWPE_AI_HOST_CMD");
+ if (!hostcmd || !*hostcmd) hostcmd = e_ai_host_command;
 
  if (err && errsz) err[0] = '\0';
  if (pipe(in) != 0) { if (err) snprintf(err, errsz, "pipe: %s", strerror(errno)); return NULL; }

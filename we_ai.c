@@ -38,6 +38,7 @@ char *e_ai_endpoint = NULL;            /* filled by wpe_ai_config_init()       *
 char *e_ai_model    = NULL;            /* "" => auto-pick the first model       */
 char *e_ai_model_fallback = NULL;      /* retried once when the primary fails    */
 char *e_ai_edit_hook = NULL;           /* command run on a file after an AI edit  */
+char *e_ai_host_command = NULL;        /* agent-host CLI to run (default: claude)  */
 char *e_ai_cafile   = NULL;            /* extra CA/self-signed cert to trust (TLS),
                                           for a local HTTPS bridge; NULL => system
                                           CA store only                          */
