@@ -90,3 +90,61 @@ def test_chat_shows_backend_error(tmp_path):
         "the chat did not surface the backend error:\n" + disp
     assert "(no answer)" not in disp, \
         "the chat still showed a blank answer instead of the error:\n" + disp
+
+
+def _instream_error_server():
+    """/v1/models is fine; POST returns HTTP 200 text/event-stream carrying an
+    error EVENT -- the shape a failing local bridge (Proton Lumo) sends."""
+    class H(BaseHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+
+        def do_GET(self):
+            b = json.dumps({"object": "list", "data": [{"id": "lumo"}]}).encode()
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(b)))
+            self.end_headers()
+            self.wfile.write(b)
+
+        def do_POST(self):
+            self.rfile.read(int(self.headers.get("Content-Length", 0)))
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.end_headers()
+            self.wfile.write(
+                b'data: {"error":{"message":"Internal server error",'
+                b'"type":"server_error"}}\n\n')
+
+    srv = HTTPServer(("127.0.0.1", 0), H)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    return srv, srv.server_address[1]
+
+
+def test_chat_shows_in_stream_error(tmp_path):
+    # An error the server sends as an EVENT inside a 200 SSE stream (as a failing
+    # Proton Lumo bridge does) must also surface, not read as an empty answer.
+    import time
+    srv, port = _instream_error_server()
+    try:
+        home = str(tmp_path / "home")
+        cfg = os.path.join(home, ".config", "xwpe")
+        os.makedirs(cfg)
+        with open(os.path.join(cfg, "xwperc"), "w") as fh:
+            fh.write("[Programming]\nAIBackend : 1\n"
+                     "AIEndpoint : http://127.0.0.1:%d/v1\nAIModel : lumo\n"
+                     "AIPolicy : ask\n" % port)
+        env = {"XWPE_AI_ENABLE": "1", "HOME": home, "OPENAI_API_KEY": "x"}
+        with WpeSession(str(tmp_path), "int main(void){return 0;}\n",
+                        env_extra=dict(env), filename="t.c") as s:
+            s.key("\033g", delay=0.6); s.key("a", delay=0.8)
+            for ch in "hi":
+                s.key(ch, delay=0.03)
+            s.key("\r", delay=0.5)
+            time.sleep(4)
+            disp = "\n".join(s.display())
+    finally:
+        srv.shutdown()
+    assert "Internal server error" in disp, \
+        "the in-stream error was not surfaced:\n" + disp
+    assert "(no answer)" not in disp, \
+        "the chat showed a blank answer instead of the in-stream error:\n" + disp

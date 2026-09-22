@@ -794,6 +794,8 @@ struct wpe_ai_stream {
  pid_t           pid;
  int             out_fd;       /* child stdout (subprocess transport)          */
  int             had_error;    /* backend reported a failure, not a real reply */
+ char           *err_msg;      /* error text from an in-stream {"error":...} event
+                                  (HTTP 200 + SSE error, as a failing bridge sends) */
  /* Ollama reasoning models (qwen3, deepseek-r1) stream their chain of thought
     in a separate "thinking" field and can finish a turn with "content" empty.
     We render content only, so accumulate thinking as a fallback and, if the
@@ -1135,6 +1137,7 @@ char *wpe_ai_stream_error_message(wpe_ai_stream *st)
  struct json_object *o, *err, *msg;
  char buf[400];
  if (!st) return NULL;
+ if (st->err_msg && *st->err_msg) return ai_strdup(st->err_msg);  /* in-stream error */
  status = wpe_http_stream_status(&st->hs);
  if (status < 400) return NULL;
  if (st->hs.body && st->hs.body_len > 0) {
@@ -1151,6 +1154,32 @@ char *wpe_ai_stream_error_message(wpe_ai_stream *st)
  }
  snprintf(buf, sizeof buf, "server error (HTTP %d)", status);
  return ai_strdup(buf);
+}
+
+/* If one streamed line is an error event -- {"error":{"message":...}} (OpenAI)
+ * or {"error":"..."} (Ollama), which a server can send with HTTP 200 inside the
+ * SSE/NDJSON body -- return a malloc'd message; NULL otherwise. */
+static char *ai_line_error_message(int backend, const char *line)
+{
+ const char *p = line;
+ struct json_object *o, *err, *msg;
+ char *r = NULL;
+ if (backend == WPE_AI_OPENAI || backend == WPE_AI_CLAUDE) {
+  if (!strncmp(p, "data:", 5)) { p += 5; while (*p == ' ') p++; }
+  if (!strncmp(p, "[DONE]", 6)) return NULL;
+ }
+ if (!*p) return NULL;
+ o = json_tokener_parse(p);
+ if (!o) return NULL;
+ if (json_object_object_get_ex(o, "error", &err)) {
+  if (json_object_get_type(err) == json_type_object &&
+      json_object_object_get_ex(err, "message", &msg))
+   r = ai_strdup(json_object_get_string(msg));
+  else if (json_object_get_type(err) == json_type_string)
+   r = ai_strdup(json_object_get_string(err));
+ }
+ json_object_put(o);
+ return r;
 }
 
 int wpe_ai_stream_pump(wpe_ai_stream *st,
@@ -1191,6 +1220,10 @@ int wpe_ai_stream_pump(wpe_ai_stream *st,
   char *delta = NULL, *think = NULL;
   int d = 0;
   ai_parse_line(st->backend, line, llen, &delta, &think, &d);
+  if (!st->err_msg) {                          /* an in-stream error event (HTTP 200) */
+   char *em = ai_line_error_message(st->backend, line);
+   if (em) { st->err_msg = em; st->had_error = 1; }
+  }
   if (delta) { if (*delta) { st->got_content = 1; if (cb) cb(delta, ud); } free(delta); }
   if (think) {                                /* stash chain-of-thought as a fallback */
    size_t tl = strlen(think);
@@ -1231,6 +1264,7 @@ void wpe_ai_stream_free(wpe_ai_stream *st)
  if (st->pid > 0) { int status; waitpid(st->pid, &status, 0); }  /* claudecli or delayed mock */
  wpe_http_stream_free(&st->hs);
  free(st->think);
+ free(st->err_msg);
  free(st);
 }
 

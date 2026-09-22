@@ -390,10 +390,11 @@ Changes
       field, often many deltas before any content, and a turn can be
       reasoning-only.  The streamed reasoning is kept and shown when the turn
       produces no content, instead of "(no answer)".
-    - Chat surfaces a backend HTTP error instead of a blank "(no answer)": when
-      the endpoint rejects the request -- most often a model the key cannot access
-      (404 "model_not_found") -- the server's error message is shown, so the fix
-      (pick an accessible model) is clear.
+    - Chat surfaces a backend error instead of a blank "(no answer)": whether it
+      comes as an HTTP error status (a model the key cannot access -> 404
+      "model_not_found") or as an error EVENT inside a 200 SSE stream (as a
+      failing local bridge such as Proton Lumo sends), the server's message is
+      shown, so a real failure is not mistaken for an empty answer.
     - Tested across ncurses, X11 and native Wayland, plus a live Claude CLI path.
 * Fix a project Make (F9) that could abort with glibc "free(): invalid pointer"
   when a project variable (e.g. CMP) was missing -- e_c_project freed an
