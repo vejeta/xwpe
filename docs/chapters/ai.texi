@@ -404,7 +404,9 @@ The active profile's name (empty for an ad-hoc endpoint typed into the field).
 @item AIModelFallback
 A model retried once, automatically, when the primary fails a turn (unavailable,
 or too slow / timed out); xwpe says @samp{primary model failed @dots{} retrying
-with @var{fallback}} and continues on it.  Empty disables the fallback.
+with @var{fallback}} and continues on it.  Empty disables the fallback.  Editable
+in @samp{Options}, @samp{AI}, @samp{Advanced@dots{}} (@key{Alt-A}), with the two
+below.
 @item AIEditHook
 A command run on a file the agent just wrote or patched, e.g.@:
 @code{clang-format -i}; the path is appended and the buffer reloads afterwards, so

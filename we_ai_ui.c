@@ -2997,6 +2997,47 @@ static int e_ai_opt_pick_provider(FENSTER *f)
  return -1;
 }
 
+/* Advanced AI settings (the "Advanced..." button in the AI dialog): the less
+ * common knobs -- the fallback model, the post-edit hook, and (host builds) the
+ * agent-host command -- kept in their own dialog so the main one stays within a
+ * 24-line terminal.  Each is also a plain xwperc key; this is discoverability. */
+static int e_ai_opt_advanced(FENSTER *f)
+{
+ W_OPTSTR *o = e_init_opt_kst(f);
+ int ret, w = 66, h = 12;
+ const char *v;
+ if (!o) return 0;
+ o->xa = (MAXSCOL - w) / 2; if (o->xa < 1) o->xa = 1; o->xe = o->xa + w;
+ o->ya = (MAXSLNS - h) / 2; if (o->ya < 1) o->ya = 1; o->ye = o->ya + h;
+ o->bgsw = 0; o->crsw = AltO;
+ o->name = "Advanced AI settings";
+ e_add_wrstr(3, 2, 24, 2, 38, 255, -1, AltM, "Model fallback (Alt-M):",
+             e_ai_model_fallback ? e_ai_model_fallback : "", NULL, o);   /* wstr[0] */
+ e_add_wrstr(3, 4, 24, 4, 38, 511, -1, AltH, "Edit hook (Alt-H):",
+             e_ai_edit_hook ? e_ai_edit_hook : "", NULL, o);             /* wstr[1] */
+#ifdef WPE_AI_AGENT_HOST
+ e_add_wrstr(3, 6, 24, 6, 38, 511, -1, AltD, "Host command (Alt-D):",
+             e_ai_host_command ? e_ai_host_command : "", NULL, o);       /* wstr[2] */
+#endif
+ e_add_txtstr(3, 8, "Fallback: a model retried once when the primary fails a turn.", o);
+ e_add_txtstr(3, 9, "Edit hook: a command run on a file after an AI edit (clang-format).", o);
+ e_add_bttstr(24, 11, 1, AltO, "  Ok  ", NULL, o);
+ e_add_bttstr(40, 11, -1, WPE_ESC, "Cancel", NULL, o);
+ ret = e_opt_kst(o);
+ if (ret == WPE_ESC) { freeostr(o); return 0; }
+ v = o->wstr[0]->txt; while (v && (*v == ' ' || *v == '\t')) v++;
+ free(e_ai_model_fallback); e_ai_model_fallback = (v && *v) ? strdup(v) : NULL;
+ v = o->wstr[1]->txt; while (v && (*v == ' ' || *v == '\t')) v++;
+ free(e_ai_edit_hook); e_ai_edit_hook = (v && *v) ? strdup(v) : NULL;
+#ifdef WPE_AI_AGENT_HOST
+ v = o->wstr[2]->txt; while (v && (*v == ' ' || *v == '\t')) v++;
+ free(e_ai_host_command); e_ai_host_command = (v && *v) ? strdup(v) : NULL;
+#endif
+ e_save_opt(f);
+ freeostr(o);
+ return 0;
+}
+
 /* Options -> AI...: the settings home.  Enable checkbox, Backend radio, a Model
  * radio populated live from the selected backend, and a Policy radio -- all
  * marking the current choice.  Applies to the running session; Save Options
@@ -3071,6 +3112,7 @@ int e_ai_options(FENSTER *f)
    free(k); }
  e_add_txtstr(5, 15, "Model (Alt-M):", o);
  e_add_bttstr(22, 15, 0, AltM, g_ai_opt_mlabel, e_ai_opt_pick_model, o);
+ e_add_bttstr(5, 16, 0, AltA, "Advanced (Alt-A)...", e_ai_opt_advanced, o);
 
 #ifdef WPE_AI_AGENT_HOST
  /* --- Agent engine: the editor's own tool loop, or the Claude Code CLI. */

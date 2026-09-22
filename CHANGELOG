@@ -463,7 +463,10 @@ Changes
     - Post-edit hook: a new AIEditHook command (e.g. "clang-format -i") runs on a
       file the AI just wrote or patched, then the buffer reloads, so AI edits stay
       consistent with the repo's tooling -- the editor equivalent of format-on-save
-      or a git hook.  Applies to both write_file and apply_patch.
+      or a git hook.  Applies to both write_file and apply_patch.  Editable, with
+      the fallback model and the agent-host command, in a new "Advanced..."
+      (Alt-A) dialog off Options > AI -- kept separate so the main dialog still
+      fits a 24-line terminal.
     - Agent plan mode: for a multi-step task the agent can reply `TOOL plan` with
       one task per line, shown as a "[ ] task" checklist BEFORE it acts so you see
       the intended steps and can course-correct; as it finishes a step it reports
