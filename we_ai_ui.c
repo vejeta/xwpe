@@ -981,6 +981,7 @@ static char *ai_build_system(FENSTER *f)
    "  TOOL read_file <path>\n"
    "  TOOL grep <pattern>\n"
    "  TOOL list_dir <path>\n"
+   "  TOOL glob <name-pattern>   (e.g. *.c -- find files by name across the tree)\n"
    "I will reply with the result; then either use another tool or give your "
    "answer.  When you can answer, reply with the answer directly (no TOOL "
    "line).  Do not guess about files you have not read.\n\n";
@@ -1095,6 +1096,13 @@ static char *ai_chat_tool_result(FENSTER *f, const char *reply)
  }
  if (!strcmp(tool, "list_dir")) {
   char cmd[1200]; snprintf(cmd, sizeof cmd, "ls -la %s", arg[0] ? arg : "."); return ai_run_capture(cmd);
+ }
+ if (!strcmp(tool, "glob")) {
+  char cmd[1300];
+  snprintf(cmd, sizeof cmd,
+    "find . -name %s -not -path '*/.*' 2>/dev/null | head -200",
+    arg[0] ? arg : "*");
+  return ai_run_capture(cmd);
  }
  return NULL;   /* unknown/non-read-only: treat the line as a normal answer */
 }
@@ -3218,6 +3226,11 @@ static int ai_agent_process(ai_async_op *op, char *reply)
    result = ai_read_file_bounded(arg);
   } else if (!strcmp(tool, "grep")) {
    char cmd[1300]; snprintf(cmd, sizeof cmd, "grep -rn -- %s .", arg); result = ai_run_capture(cmd);
+  } else if (!strcmp(tool, "glob")) {
+   char cmd[1300];
+   snprintf(cmd, sizeof cmd, "find . -name %s -not -path '*/.*' 2>/dev/null | head -200",
+            arg[0] ? arg : "*");
+   result = ai_run_capture(cmd);
   } else if (!strcmp(tool, "run_command")) {
    if (ai_agent_approve(f, arg, 1)) result = ai_run_capture(arg);
    else result = strdup("(denied by user)");
@@ -3294,6 +3307,7 @@ static int ai_agent_launch(FENSTER *f, const char *goal, const char *extra)
    "  TOOL list_dir <path>\n"
    "  TOOL read_file <path>\n"
    "  TOOL grep <pattern>\n"
+   "  TOOL glob <name-pattern>\n"
    "  TOOL run_command <shell command>\n"
    "  TOOL write_file <path>\n"
    "For write_file, put the new file content on the following lines, ending "
