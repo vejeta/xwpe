@@ -2507,6 +2507,12 @@ static void ai_opt_sync_widgets(void)
   W_O_WRSTR *w = g_ai_opt_dlg->wstr[AI_OPT_CAFILE_WSTR];
   snprintf(w->txt, (size_t)w->wmx + 1, "%s", e_ai_cafile ? e_ai_cafile : "");
  }
+ if (g_ai_opt_dlg->wn > AI_OPT_KEY_WSTR) {       /* show the loaded provider's key */
+  W_O_WRSTR *w = g_ai_opt_dlg->wstr[AI_OPT_KEY_WSTR];
+  char *k = wpe_ai_read_openai_key_file(e_ai_provider);
+  snprintf(w->txt, (size_t)w->wmx + 1, "%s", k ? k : "");
+  free(k);
+ }
  ai_opt_mlabel();
  ai_opt_plabel();
  for (i = 0; i < g_ai_opt_dlg->bn; i++) {
@@ -2629,8 +2635,10 @@ int e_ai_options(FENSTER *f)
              e_ai_endpoint ? e_ai_endpoint : "", NULL, o);   /* wstr[0] */
  e_add_wrstr(5, 13, 22, 13, 40, 511, -1, AltC, "CA file (Alt-C):",
              e_ai_cafile ? e_ai_cafile : "", NULL, o);        /* wstr[1] */
- e_add_wrstr(5, 14, 22, 14, 40, 255, -1, AltK, "API key (Alt-K):",
-             "", NULL, o);                                    /* wstr[2] (blank) */
+ { char *k = wpe_ai_read_openai_key_file(e_ai_provider);      /* show the saved key */
+   e_add_wrstr(5, 14, 22, 14, 40, 255, -1, AltK, "API key (Alt-K):",
+               k ? k : "", NULL, o);                          /* wstr[2] */
+   free(k); }
  e_add_txtstr(5, 15, "Model (Alt-M):", o);
  e_add_bttstr(22, 15, 0, AltM, g_ai_opt_mlabel, e_ai_opt_pick_model, o);
 

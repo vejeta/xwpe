@@ -363,5 +363,7 @@ then from @file{~/.config/xwpe/anthropic-api-key} (or @file{openai-api-key}, or 
 provider's own @file{openai-api-key-@var{name}}); the @code{claudecli} backend
 needs none of this.  An OpenAI key can also be typed into the @samp{API key} field
 of @samp{Options}, @samp{AI} (@key{Alt-K}): it is used at once (so @key{Alt-M}
-lists an authenticated endpoint's models) and written to the key file; the field
-is never pre-filled with the stored secret.
+lists an authenticated endpoint's models) and written to the active provider's
+key file.  The field shows the key stored for the current provider, so you can
+see one is set (it comes from the key file, not from any @env{OPENAI_API_KEY}
+override).

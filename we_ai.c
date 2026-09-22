@@ -29,7 +29,8 @@
 #include "we_ai.h"
 #include "we_ai_http.h"
 
-static char *ai_strdup(const char *s);   /* defined below; used early */
+static char *ai_strdup(const char *s);            /* defined below; used early */
+static char *ai_read_first_line(const char *path); /* defined below; used early */
 
 /* ----- configuration globals (defaults chosen so an empty config works) --- */
 int   e_ai_backend  = WPE_AI_OLLAMA;
@@ -321,6 +322,24 @@ int wpe_ai_write_openai_key(const char *provider, const char *key)
  fprintf(fp, "%s\n", key);
  fclose(fp);
  return 0;
+}
+
+/* Read the stored OpenAI key for a provider from its file (NULL/"" => the generic
+ * file), for showing in the settings dialog so the user can see a key is set.
+ * Does NOT consult the environment (that is a runtime override, not the stored
+ * key).  Returns a malloc'd string or NULL. */
+char *wpe_ai_read_openai_key_file(const char *provider)
+{
+ const char *xdg = getenv("XDG_CONFIG_HOME"), *home = getenv("HOME");
+ char path[1200];
+ if (xdg && *xdg) {
+  if (provider && *provider) snprintf(path, sizeof path, "%s/xwpe/openai-api-key-%s", xdg, provider);
+  else                       snprintf(path, sizeof path, "%s/xwpe/openai-api-key", xdg);
+ } else if (home) {
+  if (provider && *provider) snprintf(path, sizeof path, "%s/.config/xwpe/openai-api-key-%s", home, provider);
+  else                       snprintf(path, sizeof path, "%s/.config/xwpe/openai-api-key", home);
+ } else return NULL;
+ return ai_read_first_line(path);
 }
 
 /* Build the request path for a backend, honouring the endpoint's path prefix.

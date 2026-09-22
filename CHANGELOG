@@ -351,8 +351,8 @@ Changes
       HTTPS bridge (Proton Lumo) is fully configurable from the dialog without
       hand-editing xwperc.  A key typed here is used immediately by Alt-M (so an
       authenticated endpoint lists its models before the provider is saved) and is
-      written to the provider's key file; the field is never pre-filled with the
-      secret.
+      written to the active provider's key file, and the field shows the key
+      stored for that provider so you can see one is set.
     - Provider profiles: Options > AI gained a "Provider" button (Alt-V) to switch
       among saved OpenAI-compatible providers (Groq, OpenRouter, a local bridge,
       ...) or save the current endpoint/model/CA as a new named one.  Each profile
