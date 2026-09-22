@@ -384,11 +384,21 @@ static void ai_parse_line(int backend, const char *line, size_t len,
   struct json_object *ch;
   if (json_object_object_get_ex(o, "choices", &ch) &&
       json_object_array_length(ch) > 0) {
-   struct json_object *c0 = json_object_array_get_idx(ch, 0), *d, *cont, *fin;
-   if (json_object_object_get_ex(c0, "delta", &d) &&
-       json_object_object_get_ex(d, "content", &cont)) {
-    const char *s = json_object_get_string(cont);
-    if (s) *delta = ai_strdup(s);
+   struct json_object *c0 = json_object_array_get_idx(ch, 0), *d, *cont, *fin, *rsn;
+   if (json_object_object_get_ex(c0, "delta", &d)) {
+    if (json_object_object_get_ex(d, "content", &cont)) {
+     const char *s = json_object_get_string(cont);
+     if (s) *delta = ai_strdup(s);
+    }
+    /* Reasoning models served over the OpenAI API (gpt-oss, deepseek-r1, ...)
+       stream their chain of thought in a separate "reasoning" field, often for
+       many deltas before any content -- and a reply can be reasoning-only.  Keep
+       it as the fallback (same as Ollama's "thinking") so such a turn shows the
+       reasoning rather than nothing ("(no answer)"). */
+    if (think && json_object_object_get_ex(d, "reasoning", &rsn)) {
+     const char *s = json_object_get_string(rsn);
+     if (s && *s) *think = ai_strdup(s);
+    }
    }
    if (json_object_object_get_ex(c0, "finish_reason", &fin) &&
        json_object_get_type(fin) != json_type_null)

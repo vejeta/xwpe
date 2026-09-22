@@ -355,6 +355,11 @@ Changes
       no longer aborts the run before the tool executes), and if a turn produces
       no content at all the kept thinking is shown rather than a blank reply.
       Before, the Agent could show only "working -> done" with no answer.
+    - The same reasoning fallback now covers reasoning models served over the
+      OpenAI-compatible API (e.g. gpt-oss via Groq): they stream a "reasoning"
+      field, often many deltas before any content, and a turn can be
+      reasoning-only.  The streamed reasoning is kept and shown when the turn
+      produces no content, instead of "(no answer)".
     - Tested across ncurses, X11 and native Wayland, plus a live Claude CLI path.
 * Fix a project Make (F9) that could abort with glibc "free(): invalid pointer"
   when a project variable (e.g. CMP) was missing -- e_c_project freed an
