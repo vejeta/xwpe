@@ -3461,35 +3461,95 @@ static void ai_run_edit_hook(FENSTER *f, const char *path)
  wpe_ai_trace("edit hook ran on %s", path);
 }
 
+/* ---------------- agent plan / live TODO list (Messages window) ------------ */
+
+#define AI_PLAN_MAX 32
+static char g_ai_plan[AI_PLAN_MAX][200];  /* the tasks the agent laid out */
+static int  g_ai_plan_done[AI_PLAN_MAX];  /* per-task: completed?         */
+static int  g_ai_plan_n;
+
 /**
- * ai_render_plan - Show a plan the agent laid out as a checklist in the pane.
- * @f: current window; @body: the task lines after the TOOL line, up to @@END.
+ * ai_plan_show - Draw the plan as a live checklist in the Messages window.
  *
- * A multi-step agent run is legible when it states its plan first: each task
- * line becomes a "[ ] <task>" row the user sees BEFORE the agent acts, so they
- * can course-correct.  As the agent finishes a step it reports step_done, which
- * appends a "[x] <step>" row -- a lightweight live TODO list in the transcript.
+ * A long agent run is far more legible with a dockable to-do list than a
+ * scrolling pane log: the plan sits in the Messages window and is REDRAWN IN
+ * PLACE (sw=1 clears and restarts) each time a step completes, so its status --
+ * "3/7 done", "[x]" per finished task -- updates live instead of scrolling away.
  */
-static void ai_render_plan(FENSTER *f, const char *body)
+static void ai_plan_show(FENSTER *f)
+{
+ char line[260];
+ int i, ndone = 0;
+ for (i = 0; i < g_ai_plan_n; i++) if (g_ai_plan_done[i]) ndone++;
+ snprintf(line, sizeof line, "=== Agent plan: %d/%d done ===", ndone, g_ai_plan_n);
+ e_d_p_message(line, f, 1);
+ for (i = 0; i < g_ai_plan_n; i++) {
+  snprintf(line, sizeof line, "  [%c] %s", g_ai_plan_done[i] ? 'x' : ' ', g_ai_plan[i]);
+  e_d_p_message(line, f, 0);
+ }
+ if (g_ai_plan_n == 0) e_d_p_message("  (no steps given)", f, 0);
+}
+
+/**
+ * ai_todo_load - Load the agent's plan body (task lines up to @@END) into the
+ * checklist, all pending, and show it before the agent acts so the user can
+ * course-correct.
+ */
+static void ai_todo_load(FENSTER *f, const char *body)
 {
  const char *p = body, *stop = strstr(body, "\n@@END");
- int n = 0;
- ai_pane(f, "[plan]", 0);
- while (p && *p && (!stop || p < stop)) {
+ g_ai_plan_n = 0;
+ while (p && *p && (!stop || p < stop) && g_ai_plan_n < AI_PLAN_MAX) {
   const char *nl = strchr(p, '\n');
   int len = nl ? (int)(nl - p) : (int)strlen(p);
   if (stop && (!nl || nl > stop)) len = (int)(stop - p);
   while (len && (*p == ' ' || *p == '\t' || *p == '-' || *p == '*')) { p++; len--; }
   if (len > 0) {
-   char row[720];
-   snprintf(row, sizeof row, "  [ ] %.*s", len, p);
-   ai_pane(f, row, 0);
-   n++;
+   int k = len < (int)sizeof g_ai_plan[0] - 1 ? len : (int)sizeof g_ai_plan[0] - 1;
+   memcpy(g_ai_plan[g_ai_plan_n], p, (size_t)k);
+   g_ai_plan[g_ai_plan_n][k] = '\0';
+   g_ai_plan_done[g_ai_plan_n] = 0;
+   g_ai_plan_n++;
   }
   if (!nl) break;
   p = nl + 1;
  }
- if (!n) ai_pane(f, "  (no steps given)", 0);
+ ai_plan_show(f);
+}
+
+/**
+ * ai_plan_mark_done - Tick off a finished step and redraw the checklist.
+ * Match the reported text to a pending task (substring either way); fall back to
+ * the earliest pending task, since an agent usually finishes them in order.
+ */
+static void ai_plan_progress(FENSTER *f, const char *task)
+{
+ char line[280];
+ int i, ndone = 0;
+ for (i = 0; i < g_ai_plan_n; i++) if (g_ai_plan_done[i]) ndone++;
+ snprintf(line, sizeof line, "[plan] %d/%d done  ok: %.200s",
+          ndone, g_ai_plan_n, task && *task ? task : "(step)");
+ ai_pane(f, line, 0);            /* visible progress in the pane during the run */
+}
+
+static void ai_plan_mark_done(FENSTER *f, const char *arg)
+{
+ int i, first_pending = -1;
+ for (i = 0; i < g_ai_plan_n; i++) {
+  if (g_ai_plan_done[i]) continue;
+  if (first_pending < 0) first_pending = i;
+  if (arg && *arg && (strstr(g_ai_plan[i], arg) || strstr(arg, g_ai_plan[i]))) {
+   g_ai_plan_done[i] = 1;
+   ai_plan_show(f);                          /* update the Messages-window list */
+   ai_plan_progress(f, g_ai_plan[i]);        /* and a compact pane line         */
+   return;
+  }
+ }
+ if (first_pending >= 0) {
+  g_ai_plan_done[first_pending] = 1;
+  ai_plan_show(f);
+  ai_plan_progress(f, arg);
+ }
 }
 
 /**
@@ -3713,13 +3773,13 @@ static int ai_agent_process(ai_async_op *op, char *reply)
    free(old);
    free(newc);
   } else if (!strcmp(tool, "plan")) {
-   ai_render_plan(f, firstnl ? firstnl + 1 : "");
+   ai_todo_load(f, firstnl ? firstnl + 1 : "");
+   ai_pane(f, "[plan] laid out - the checklist is in the Messages window "
+              "(updates as steps finish)", 0);
    result = strdup("(plan shown -- now do the steps, one tool per turn, "
                    "reporting each with TOOL step_done <task>)");
   } else if (!strcmp(tool, "step_done")) {
-   char row[720];
-   snprintf(row, sizeof row, "  [x] %s", arg[0] ? arg : "(step)");
-   ai_pane(f, row, 0);
+   ai_plan_mark_done(f, arg);
    result = strdup("(recorded)");
   } else {
    result = strdup("(unknown tool)");

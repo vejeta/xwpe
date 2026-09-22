@@ -1,9 +1,10 @@
-"""Agent plan mode: the agent states a checklist before acting, and ticks it off.
+"""Agent plan mode: the agent states a checklist, and ticks it off live.
 
 For a multi-step task the agent can reply TOOL plan with one task per line; xwpe
-shows it as a "[ ] task" checklist so the user sees the intended steps before any
-change.  As the agent finishes a step it reports TOOL step_done, appending a
-"[x] step" row -- a lightweight live TODO list in the transcript.
+loads it as a live checklist in the Messages window (dockable, redrawn in place
+as steps finish) and notes it in the AI pane.  Each TOOL step_done ticks a task
+and shows compact progress ("[plan] 1/3 done  ok: ...") in the pane, which stays
+visible during the run.
 """
 import os
 import time
@@ -41,8 +42,7 @@ def test_agent_plan_and_step_done(tmp_path):
             if "agent done" in t:
                 break
         disp = "\n".join(s.display())
-    assert "[plan]" in disp, "the plan header was not shown:\n" + disp
-    assert "[ ] Inspect the file" in disp and "[ ] Change the return value" in disp, \
-        "the plan checklist was not rendered:\n" + disp
-    assert "[x] Inspect the file" in disp, \
-        "the completed step was not ticked off:\n" + disp
+    assert "[plan]" in disp, "the plan note was not shown in the pane:\n" + disp
+    # the finished step shows live progress in the pane
+    assert "1/3 done" in disp and "Inspect the file" in disp, \
+        "the completed step's progress was not shown:\n" + disp

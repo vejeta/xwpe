@@ -263,9 +263,11 @@ To change an existing file the agent prefers @code{apply_patch} -- a precise
 through the same review, checkpoint and one-step @kbd{Ctrl-U} undo as
 @code{write_file}, and a search that does not match is reported back for a retry
 instead of a bad write.  For a multi-step task the agent can first lay out a
-@dfn{plan}: it shows a @samp{[ ] task} checklist @emph{before} it acts, so you see
-the intended steps, and ticks each off (@samp{[x]}) as it finishes -- a
-lightweight live to-do list in the pane.
+@dfn{plan}: it loads a @samp{[ ] task} checklist into the @samp{Messages} window
+@emph{before} it acts, so you see the intended steps, and redraws it in place --
+@samp{3/7 done}, @samp{[x]} per finished task -- as it reports each step, a live
+to-do list you can bring up alongside the run; compact progress also shows in the
+@samp{AI} pane so you see it advance without switching windows.
 
 @section Build & fix
 

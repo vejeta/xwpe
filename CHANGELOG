@@ -468,9 +468,11 @@ Changes
       (Alt-A) dialog off Options > AI -- kept separate so the main dialog still
       fits a 24-line terminal.
     - Agent plan mode: for a multi-step task the agent can reply `TOOL plan` with
-      one task per line, shown as a "[ ] task" checklist BEFORE it acts so you see
-      the intended steps and can course-correct; as it finishes a step it reports
-      `TOOL step_done`, appending a "[x] step" row -- a lightweight live TODO list.
+      one task per line, loaded as a "[ ] task" checklist into the Messages window
+      BEFORE it acts so you see the intended steps and can course-correct; as it
+      reports each `TOOL step_done` the list is redrawn in place ("3/7 done",
+      "[x]" per task) -- a live to-do list -- and compact progress shows in the AI
+      pane so you follow it without switching windows.
     - Inline completion (Alt-G c, "Complete at cursor"): sends the code around the
       cursor to the model and splices its suggestion in at the cursor, as one
       Ctrl-U undo step -- a local, low-ceremony alternative to chat/edit for
