@@ -2974,6 +2974,14 @@ static int e_ai_opt_pick_provider(FENSTER *f)
  if (sel < 0) { fk_cursor(0); return -1; }
  if (sel < np) {
   const struct wpe_ai_provider *p = wpe_ai_provider_get(sel);
+  /* Persist a key TYPED for the current provider before the field reloads with
+     the picked provider's own key file, so switching does not silently drop a
+     key entered but not yet confirmed with Ok. */
+  if (g_ai_opt_dlg && g_ai_opt_dlg->wn > AI_OPT_KEY_WSTR) {
+   const char *typed = g_ai_opt_dlg->wstr[AI_OPT_KEY_WSTR]->txt;
+   if (typed && *typed && ai_set_typed_key(typed))
+    wpe_ai_write_openai_key(e_ai_provider, e_ai_key);
+  }
   e_ai_backend = WPE_AI_OPENAI;
   free(e_ai_endpoint); e_ai_endpoint = strdup(p->endpoint);
   free(e_ai_model);    e_ai_model    = strdup((p->model && *p->model) ? p->model : "");
