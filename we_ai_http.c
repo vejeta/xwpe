@@ -30,16 +30,36 @@
 
 #include "we_ai_http.h"
 
+/* The extra CA/self-signed cert to trust, owned by we_ai.c (AICAFile /
+ * XWPE_AI_CAFILE); we_ai_http.c does not pull the whole we_ai.h/edit.h graph. */
+extern char *e_ai_cafile;
+
 #if defined(WPE_AI_TLS) && defined(WPE_AI_TLS_OPENSSL)
-/* One lazily-created client context shared by all connections (single-threaded). */
+/* One lazily-created client context shared by all connections (single-threaded).
+ * Rebuilt when the configured CA file changes (switching to/from a provider that
+ * carries its own self-signed cert). */
 static SSL_CTX *ai_ssl_ctx(void)
 {
  static SSL_CTX *ctx;
+ static char *loaded_cafile;         /* the CA file baked into ctx, or NULL       */
+ const char *want = (e_ai_cafile && *e_ai_cafile) ? e_ai_cafile : NULL;
+ int changed = (!want) != (!loaded_cafile) ||
+               (want && loaded_cafile && strcmp(want, loaded_cafile) != 0);
+ if (ctx && changed) {
+  SSL_CTX_free(ctx); ctx = NULL;
+  free(loaded_cafile); loaded_cafile = NULL;
+ }
  if (!ctx) {
   ctx = SSL_CTX_new(TLS_client_method());
   if (ctx) {
    SSL_CTX_set_min_proto_version(ctx, TLS1_2_VERSION);
    SSL_CTX_set_default_verify_paths(ctx);
+   /* Also trust a user-provided CA / self-signed cert (a local HTTPS bridge such
+      as proton-cli).  Verification still runs in full -- SSL_VERIFY_PEER plus the
+      SSL_set1_host name check below -- just against this CA in addition to the
+      system store, so it is not a blanket skip-verify. */
+   if (want && SSL_CTX_load_verify_locations(ctx, want, NULL) == 1)
+    loaded_cafile = strdup(want);
    /* Enforce peer verification.  Without SSL_VERIFY_PEER the client mode is
       SSL_VERIFY_NONE, so SSL_connect succeeds on ANY certificate -- SSL_set1_host
       records the expected name but nothing acts on the result, leaving the
@@ -152,6 +172,10 @@ int wpe_http_open(const char *url, wpe_http_conn *c, char *errbuf, size_t errsz)
 #elif defined(WPE_AI_TLS)
   {
    struct tls_config *cfg = tls_config_new();
+   /* Trust an extra CA / self-signed cert (a local HTTPS bridge) in addition to
+      the system store; verification (including the hostname) still runs. */
+   if (cfg && e_ai_cafile && *e_ai_cafile)
+    tls_config_set_ca_file(cfg, e_ai_cafile);
    c->tls = tls_client();
    if (!c->tls || !cfg || tls_configure(c->tls, cfg) < 0 ||
        tls_connect_socket(c->tls, fd, host) < 0) {

@@ -35,6 +35,9 @@ static char *ai_strdup(const char *s);   /* defined below; used early */
 int   e_ai_backend  = WPE_AI_OLLAMA;
 char *e_ai_endpoint = NULL;            /* filled by wpe_ai_config_init()       */
 char *e_ai_model    = NULL;            /* "" => auto-pick the first model       */
+char *e_ai_cafile   = NULL;            /* extra CA/self-signed cert to trust (TLS),
+                                          for a local HTTPS bridge; NULL => system
+                                          CA store only                          */
 
 int wpe_ai_backend_from_name(const char *name)
 {
@@ -173,6 +176,11 @@ void wpe_ai_config_init(void)
  }
  if (!e_ai_model)
   e_ai_model = ai_strdup("");
+
+ if ((e = getenv("XWPE_AI_CAFILE"))) {
+  free(e_ai_cafile);
+  e_ai_cafile = (*e) ? ai_strdup(e) : NULL;
+ }
 }
 
 /* ----- observability ----------------------------------------------------- */

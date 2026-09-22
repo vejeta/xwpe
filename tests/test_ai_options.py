@@ -20,6 +20,23 @@ def _ai_build():
         return False
 
 
+def _tls_build():
+    try:
+        out = subprocess.run(["ldd", os.path.abspath(WPE_BIN)],
+                             stdout=subprocess.PIPE, timeout=30).stdout
+        return b"libssl" in out or b"libtls" in out
+    except Exception:
+        return False
+
+
+def _have_openssl():
+    try:
+        return subprocess.run(["openssl", "version"], stdout=subprocess.DEVNULL,
+                              stderr=subprocess.DEVNULL, timeout=10).returncode == 0
+    except Exception:
+        return False
+
+
 pytestmark = pytest.mark.skipif(not _ai_build(), reason="wpe built without --enable-ai")
 
 ENV = {
@@ -416,3 +433,77 @@ def test_openai_endpoint_honors_path_prefix(tmp_path, suffix, expected):
     assert seen["path"] == expected, \
         "endpoint %s requested %r, expected %r" % (endpoint, seen["path"], expected)
     assert listed, "the model from %s was not listed" % endpoint
+
+
+def _self_signed_https_server(tmp_path, models):
+    """A local HTTPS OpenAI server with a fresh self-signed cert for 127.0.0.1
+    (like a local Proton bridge).  Returns (server, port, cert_path)."""
+    import threading, json, ssl
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+    cert = str(tmp_path / "cert.pem")
+    key = str(tmp_path / "key.pem")
+    subprocess.run(["openssl", "req", "-x509", "-newkey", "rsa:2048",
+                    "-keyout", key, "-out", cert, "-days", "2", "-nodes",
+                    "-subj", "/CN=127.0.0.1",
+                    "-addext", "subjectAltName=IP:127.0.0.1"],
+                   check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+    class H(BaseHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+
+        def do_GET(self):
+            if self.path.endswith("/models"):
+                b = json.dumps({"object": "list",
+                                "data": [{"id": m} for m in models]}).encode()
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(b)))
+                self.end_headers()
+                self.wfile.write(b)
+            else:
+                self.send_response(404)
+                self.end_headers()
+
+    srv = HTTPServer(("127.0.0.1", 0), H)
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    ctx.load_cert_chain(cert, key)
+    srv.socket = ctx.wrap_socket(srv.socket, server_side=True)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    return srv, srv.server_address[1], cert
+
+
+@pytest.mark.skipif(not _tls_build(), reason="wpe built without TLS")
+@pytest.mark.skipif(not _have_openssl(), reason="openssl CLI not available")
+def test_aicafile_trusts_a_self_signed_https_endpoint(tmp_path):
+    # A local HTTPS bridge (proton-cli serves Proton Lumo on 127.0.0.1 with a
+    # self-signed cert) is REJECTED by default -- xwpe verifies certs -- and
+    # accepted only when AICAFile points at that cert.  Verification still runs;
+    # this is not a blanket skip-verify.
+    srv, port, cert = _self_signed_https_server(tmp_path, ["selfsigned-model-1"])
+    endpoint = "https://127.0.0.1:%d/v1" % port
+
+    def run(with_cafile):
+        home = str(tmp_path / ("home_%d" % with_cafile))
+        os.makedirs(os.path.join(home, ".config", "xwpe"))
+        conf = ("[Programming]\nAIBackend : 1\nAIEndpoint : %s\n" % endpoint)
+        if with_cafile:
+            conf += "AICAFile : %s\n" % cert
+        conf += "AIPolicy : ask\n"
+        with open(os.path.join(home, ".config", "xwpe", "xwperc"), "w") as fh:
+            fh.write(conf)
+        env = {"XWPE_AI_ENABLE": "1", "HOME": home, "OPENAI_API_KEY": ""}
+        with WpeSession(str(tmp_path), "int main(void){return 0;}\n",
+                        env_extra=dict(env)) as s:
+            s.key("\033o", delay=0.5); s.key("i", delay=0.6)
+            s.key("\033m", delay=3.0)
+            return "selfsigned-model-1" in "\n".join(s.display())
+
+    try:
+        without = run(0)
+        withca = run(1)
+    finally:
+        srv.shutdown()
+    assert not without, \
+        "the self-signed endpoint was trusted WITHOUT AICAFile (verify bypassed!)"
+    assert withca, \
+        "AICAFile did not let xwpe verify and use the self-signed endpoint"

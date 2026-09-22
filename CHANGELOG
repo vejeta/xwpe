@@ -330,6 +330,11 @@ Changes
       /v1 at the host root, so only servers that served /v1 at the root worked
       (and an endpoint whose path was longer than a few characters was rejected
       as malformed).
+    - New AICAFile setting (and XWPE_AI_CAFILE): trust an extra CA or self-signed
+      certificate for HTTPS, in addition to the system CA store, so a local bridge
+      that serves TLS with its own certificate (e.g. a Proton Lumo bridge on
+      https://127.0.0.1) can be used.  Full verification -- chain and hostname --
+      still runs; it is not a blanket skip-verify.
     - The Alt-G menu is clearer and grouped: the actions (Ask, Edit, Multi-file,
       Agent, "Build & fix (agent)") sit above a divider; below it the quick
       settings -- "Permissions: <level>" (shows and cycles ask/edits/auto),

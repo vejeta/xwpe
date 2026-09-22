@@ -56,6 +56,7 @@ char *wpe_ai_run_capture(const char *cmd);
 extern int   e_ai_backend;    /* one of the enum values; default OLLAMA        */
 extern char *e_ai_endpoint;   /* base URL; default http://localhost:11434      */
 extern char *e_ai_model;      /* model name; "" => auto-pick first from server */
+extern char *e_ai_cafile;     /* extra CA/self-signed cert to trust; NULL=system */
 
 int         wpe_ai_backend_from_name(const char *name);
 const char *wpe_ai_backend_name(int backend);

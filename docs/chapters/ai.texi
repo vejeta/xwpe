@@ -331,14 +331,20 @@ Base URL for the HTTP backends (default @code{http://localhost:11434}); also
 editable in the @samp{Endpoint URL} field of @samp{Options}, @samp{AI}.
 @item AIModel
 Model name; empty means ``pick the first the server offers''.
+@item AICAFile
+Path to an extra CA or self-signed certificate to trust for HTTPS, for a local
+bridge that serves TLS with its own certificate (e.g. a Proton Lumo bridge on
+@code{https://127.0.0.1:8443}).  It is trusted @emph{in addition to} the system
+CA store and verification still runs in full (chain and hostname) -- it is not a
+blanket ``skip verify''.  Empty means the system CA store only.
 @item AIPolicy
 @code{ask}, @code{edits} or @code{auto}.
 @end table
 
 Environment overrides (handy for scripts and tests): @env{XWPE_AI_ENABLE},
 @env{XWPE_AI_BACKEND}, @env{XWPE_AI_ENDPOINT}, @env{XWPE_AI_MODEL},
-@env{XWPE_AI_POLICY}, and @env{XWPE_AI_TRACE} (a path to log assistant events
-to).  API keys are read from the standard environment variable first
+@env{XWPE_AI_CAFILE}, @env{XWPE_AI_POLICY}, and @env{XWPE_AI_TRACE} (a path to
+log assistant events to).  API keys are read from the standard environment variable first
 (@env{ANTHROPIC_API_KEY}, @env{OPENAI_API_KEY}), then from @code{@var{NAME}_FILE},
 then from @file{~/.config/xwpe/anthropic-api-key} (or @file{openai-api-key}); the
 @code{claudecli} backend needs none of this.
