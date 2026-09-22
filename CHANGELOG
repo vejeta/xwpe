@@ -244,6 +244,13 @@ Changes
   ~/.local/state/xwpe/).  A project-local ./xwperc still takes priority when
   present.  Covered by tests/test_xdg.py.
 
+* Bracketed paste (xterm mode 2004) in the terminal build: pasted text is now
+  inserted literally instead of being run as keystrokes.  Pasting into a dialog
+  field -- e.g. an API key into Options > AI -- no longer lets a trailing newline
+  confirm, or a stray control byte cancel, the dialog; the paste's markers are
+  swallowed (no more garbage characters in the buffer) and a multi-line paste
+  into the editor keeps its line breaks.
+
 * New optional AI assistant behind the Alt-G prefix, off by default and absent
   from a stock build.  The classic editor is byte-for-byte unchanged when AI is
   off.  Build flags: --enable-ai (local + Claude-CLI backends); TLS for HTTPS

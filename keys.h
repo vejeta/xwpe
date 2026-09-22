@@ -158,6 +158,13 @@
 #define WPE_SCROLL_UP   2000
 #define WPE_SCROLL_DOWN 2001
 #define WPE_RESIZE      2002
+/* Bracketed-paste markers (xterm mode 2004): the terminal wraps pasted text in
+   ESC[200~ ... ESC[201~.  Delivered as these codes so consumers can insert the
+   content literally instead of running Enter/Esc/commands that the pasted bytes
+   would otherwise trigger (a pasted API key ending in a newline used to confirm
+   or cancel a dialog). */
+#define WPE_PASTE_BEG   2005
+#define WPE_PASTE_END   2006
 /* Synthetic action code: open the language-server (LSP) action menu.  Carried by
    the "LSP" entry on the editor's bottom shortcut bar (mouse-clickable), handled
    in e_prog_switch.  Not a keyboard key -- the Alt-Q prefix is the keyboard path. */

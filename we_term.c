@@ -66,6 +66,11 @@ static void e_t_truecolor_detect(void);
 #define MOUSE_CELL_SUBDIV 8    /* g[] reports mouse pos in 1/8-cell units */
 
 int g_mouse_buttons = 0;
+/* Set while a bracketed paste (terminal mode 2004) is streaming, between the
+   ESC[200~ and ESC[201~ markers (which are swallowed, never returned as keys).
+   The dialog line editor consults it to drop pasted line breaks/tabs so pasted
+   text cannot confirm/cancel a dialog. */
+int g_bracketed_paste = 0;
 /* CLICKED events carry no following RELEASED; the press bit accumulated into
    g_mouse_buttons would stay set and any while(e_mshit()) spin-loop in
    we_mouse.c / we_menue.c would hang.  Set when a CLICKED is observed and
@@ -565,6 +570,13 @@ int e_t_initscr()
     Esc closes dialogs/menus (no 3-press workaround that can be misread as
     an escape sequence and spin the File Manager). */
  set_escdelay(25);
+ /* Enable bracketed paste (xterm mode 2004): the terminal then wraps pasted
+    text in ESC[200~ ... ESC[201~, so xwpe can insert it literally instead of
+    running the Enter/Esc/commands the pasted bytes would otherwise trigger
+    (e.g. a pasted API key ending in a newline confirming or cancelling a
+    dialog).  Disabled again in e_endwin. */
+ printf("\033[?2004h");
+ fflush(stdout);
 #if MOUSE
  mousemask(ALL_MOUSE_EVENTS | REPORT_MOUSE_POSITION, NULL);
  mouseinterval(0);
@@ -653,6 +665,8 @@ void e_endwin()
 #if MOUSE
  e_mouse_tracking_disable();
 #endif
+ printf("\033[?2004l");                 /* leave bracketed paste as we found it */
+ fflush(stdout);
  endwin();
 #else
  fk_putp(ratt_bo);
@@ -1197,7 +1211,9 @@ static int e_t_csi_key(int intro)
   /* "ESC [ <n> ~" forms: consume the trailing '~' (or modifier digits). */
   case '1': case '7':  { int t; timeout(ESC_ALT_DELAY_MS); do t = fk_getch(); while (t >= '0' && t <= '9'); timeout(-1); return(POS1); }
   case '4': case '8':  { int t; timeout(ESC_ALT_DELAY_MS); do t = fk_getch(); while (t >= '0' && t <= '9'); timeout(-1); return(ENDE); }
-  case '2':  { int t; timeout(ESC_ALT_DELAY_MS); do t = fk_getch(); while (t >= '0' && t <= '9'); timeout(-1); return(EINFG); }
+  /* "ESC [ 2 ~" is Insert; "ESC [ 200 ~" / "ESC [ 201 ~" are the bracketed-paste
+     start/end markers -- accumulate the digits to tell them apart. */
+  case '2':  { int t, n = 2; timeout(ESC_ALT_DELAY_MS); while ((t = fk_getch()) >= '0' && t <= '9') n = n * 10 + (t - '0'); timeout(-1); return(n == 200 ? WPE_PASTE_BEG : n == 201 ? WPE_PASTE_END : EINFG); }
   case '3':  { int t; timeout(ESC_ALT_DELAY_MS); do t = fk_getch(); while (t >= '0' && t <= '9'); timeout(-1); return(ENTF); }
   case '5':  { int t; timeout(ESC_ALT_DELAY_MS); do t = fk_getch(); while (t >= '0' && t <= '9'); timeout(-1); return(BUP); }
   case '6':  { int t; timeout(ESC_ALT_DELAY_MS); do t = fk_getch(); while (t >= '0' && t <= '9'); timeout(-1); return(BDO); }
@@ -1395,6 +1411,16 @@ int e_t_getch()
   else if (c != WPE_ESC)
    c = e_tast_sim(c);
  }
+ /* Bracketed-paste markers are never returned as keys (they would insert as
+    garbage in the editor); they only raise/lower g_bracketed_paste for the whole
+    time the pasted bytes stream, and consumers that care (the dialog line editor)
+    check that flag.  Fetch the next real key so callers never see the marker. */
+ if (c == WPE_PASTE_BEG) { g_bracketed_paste = 1; return e_t_getch(); }
+ if (c == WPE_PASTE_END) { g_bracketed_paste = 0; return e_t_getch(); }
+ /* A paste carries verbatim LF newlines; map them to CR so the editor inserts
+    real line breaks (a non-bracketed paste used to arrive as CR).  A single-line
+    dialog field drops the CR itself while g_bracketed_paste is set. */
+ if (g_bracketed_paste && c == '\n') c = WPE_CR;
  return(c);
 }
 

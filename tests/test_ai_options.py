@@ -680,3 +680,30 @@ def test_api_key_field_used_by_altm_and_saved(tmp_path):
     kf = os.path.join(cfg, "openai-api-key")
     assert os.path.exists(kf) and open(kf).read().strip() == "typed-key-xyz", \
         "the typed key was not persisted to a key file"
+
+
+def test_bracketed_paste_into_key_field(tmp_path):
+    # A terminal paste (bracketed-paste mode 2004) of an API key ending in a
+    # newline must insert the key cleanly WITHOUT the trailing newline confirming
+    # or the paste's control bytes cancelling the dialog.  Regression for "the
+    # dialog closes without saving when I paste my key".
+    import tempfile
+    home = tempfile.mkdtemp()
+    cfg = os.path.join(home, ".config", "xwpe")
+    os.makedirs(cfg)
+    with open(os.path.join(cfg, "xwperc"), "w") as fh:
+        fh.write("[Programming]\nAIBackend : 1\n"
+                 "AIEndpoint : https://x.test/v1\nAIPolicy : ask\n")
+    env = {"XWPE_AI_ENABLE": "1", "HOME": home, "OPENAI_API_KEY": ""}
+    with WpeSession(str(tmp_path), "int main(void){return 0;}\n",
+                    env_extra=dict(env)) as s:
+        s.key("\033o", delay=0.5); s.key("i", delay=0.6)
+        s.key("\033k", delay=0.5)          # Alt-K -> API key field
+        # a bracketed paste: ESC[200~ <key> \n ESC[201~
+        s.key("\033[200~gsk_PastedKey42\n\033[201~", delay=0.7)
+        assert "AI settings" in "\n".join(s.display()), \
+            "the paste closed the dialog (a newline/Esc leaked as a command)"
+        s.key("\033o", delay=0.8)          # now confirm with Ok
+    kf = os.path.join(cfg, "openai-api-key")
+    assert os.path.exists(kf) and open(kf).read().strip() == "gsk_PastedKey42", \
+        "the pasted key was not inserted cleanly / not saved"

@@ -346,6 +346,7 @@ int e_schreib_leiste(char *s, int x, int y, int n, int max, int ft, int fs)
 #if  MOUSE
  extern struct mouse e_mouse;
 #endif
+ extern int g_bracketed_paste;      /* set while a terminal paste streams */
  int c, i, ja = 0, jc, l = strlen(s);
  int sond = 0, first = 1;
  unsigned char *tmp = MALLOC(max+1);
@@ -364,8 +365,16 @@ int e_schreib_leiste(char *s, int x, int y, int n, int max, int ft, int fs)
 #ifdef NEWSTYLE
  e_make_xrect(x, y, x+n-1, y, 1);
 #endif
- while ((c = e_getch()) != WPE_ESC)
+ /* `|| g_bracketed_paste` keeps the loop alive on an Esc byte arriving inside a
+    terminal paste (mode 2004); such control bytes are swallowed just below so a
+    pasted API key -- or any text ending in a newline -- inserts its printable
+    characters without confirming, cancelling or navigating the dialog. */
+ while ((c = e_getch()) != WPE_ESC || g_bracketed_paste)
  {
+  if (g_bracketed_paste && (c == WPE_CR || c == '\n' || c == WPE_TAB ||
+                            c == WPE_BTAB || c == WPE_ESC || c == CtrlP ||
+                            c == CtrlN))
+   continue;             /* a single-line field drops pasted line breaks/tabs */
   if (c == WPE_RESIZE)
   {
    strcpy(s, tmp);
