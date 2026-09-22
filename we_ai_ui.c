@@ -3162,6 +3162,124 @@ static void e_ai_cycle_policy(FENSTER *f)
  wpe_ai_trace("policy set %s", wpe_ai_policy_name(e_ai_policy));
 }
 
+/**
+ * ai_agent_commit_write - Approve (per the permission dial) and write `content`
+ * to `path`, reloading it if open.  Shared by write_file and apply_patch so both
+ * go through the same review: auto/edits ask ai_agent_approve, ASK shows the
+ * change as a diff (ai_diff_confirm_write) first.  Returns a malloc'd TOOL RESULT.
+ */
+static char *ai_agent_commit_write(FENSTER *f, const char *path, const char *content)
+{
+ char what[720];
+ int allow;
+ if (!content) return strdup("(no content)");
+ snprintf(what, sizeof what, "write %s (%zu bytes)", path, strlen(content));
+ if (e_ai_policy != WPE_AI_POLICY_ASK) {
+  allow = ai_agent_approve(f, what, 0);
+ } else {
+  char *old = ai_slurp_file(path);
+  allow = ai_diff_confirm_write(f, path, old ? old : "", content);
+  wpe_ai_trace("agent write confirm %s -> %s", path, allow ? "allow" : "deny");
+  free(old);
+ }
+ if (!allow) return strdup("(denied by user)");
+ {
+  FILE *w = fopen(path, "wb");
+  if (!w) return strdup("(write failed)");
+  fwrite(content, 1, strlen(content), w);
+  fclose(w);
+  wpe_ai_reload_open_window(f, path);   /* show the change if the file is open */
+  return strdup("(written)");
+ }
+}
+
+/**
+ * ai_apply_search_replace - Apply SEARCH/REPLACE blocks to a file's text.
+ * @old:  the current file content.
+ * @body: the patch text after the TOOL line, up to a "@@END" line.
+ * @out:  set to the malloc'd new content on success.
+ * @err:  filled with a reason on failure.
+ * Return: 1 on success, 0 on failure (unmatched search, malformed, no block).
+ *
+ * Each block is
+ *     <<<<<<< SEARCH
+ *     <exact lines to replace>
+ *     =======
+ *     <new lines>
+ *     >>>>>>> REPLACE
+ * and its SEARCH text must occur verbatim (the first match is replaced), so an
+ * edit is precise and self-checking -- a mismatch returns an error the agent
+ * loop hands back as "TOOL ERROR" for the model to retry, instead of silently
+ * rewriting the wrong place.
+ */
+static int ai_apply_search_replace(const char *old, const char *body,
+                                   char **out, char *err, size_t errn)
+{
+ static const char *S = "<<<<<<< SEARCH";
+ static const char *M = "=======";
+ static const char *R = ">>>>>>> REPLACE";
+ char *cur = strdup(old ? old : "");
+ const char *p = body;
+ const char *stop = strstr(body, "\n@@END");
+ int blocks = 0;
+
+ if (!cur) { snprintf(err, errn, "out of memory"); return 0; }
+ for (;;) {
+  const char *sb = strstr(p, S), *mid, *re, *send, *rend;
+  char *search, *replace, *hit, *nc;
+  size_t sl, rl, pre, post;
+
+  if (!sb || (stop && sb >= stop)) break;          /* no more blocks */
+  sb += strlen(S);
+  if (*sb == '\n') sb++;                            /* to the line after the marker */
+  mid = strstr(sb, M);
+  if (!mid) { snprintf(err, errn, "block missing the ======= divider"); free(cur); return 0; }
+  send = mid;
+  if (send > sb && send[-1] == '\n') send--;        /* drop the newline before ======= */
+  sl = (size_t)(send - sb);
+  re = mid + strlen(M);
+  if (*re == '\n') re++;
+  rend = strstr(re, R);
+  if (!rend) { snprintf(err, errn, "block missing >>>>>>> REPLACE"); free(cur); return 0; }
+  { const char *e = rend; if (e > re && e[-1] == '\n') e--; rl = (size_t)(e - re); }
+
+  search = malloc(sl + 1);
+  replace = malloc(rl + 1);
+  if (!search || !replace) { free(search); free(replace); free(cur);
+    snprintf(err, errn, "out of memory"); return 0; }
+  memcpy(search, sb, sl);  search[sl] = '\0';
+  memcpy(replace, re, rl);  replace[rl] = '\0';
+
+  hit = sl ? strstr(cur, search) : NULL;
+  if (!hit) {
+   char snip[80];
+   size_t k = sl < sizeof snip - 1 ? sl : sizeof snip - 1;
+   char *nlp;
+   memcpy(snip, search, k); snip[k] = '\0';
+   if ((nlp = strchr(snip, '\n'))) *nlp = '\0';
+   snprintf(err, errn, "SEARCH text not found: \"%s\"", snip);
+   free(search); free(replace); free(cur); return 0;
+  }
+  pre = (size_t)(hit - cur);
+  post = strlen(hit + sl);
+  nc = malloc(pre + rl + post + 1);
+  if (!nc) { free(search); free(replace); free(cur);
+    snprintf(err, errn, "out of memory"); return 0; }
+  memcpy(nc, cur, pre);
+  memcpy(nc + pre, replace, rl);
+  memcpy(nc + pre + rl, hit + sl, post);
+  nc[pre + rl + post] = '\0';
+
+  free(cur); cur = nc;
+  free(search); free(replace);
+  p = rend + strlen(R);
+  blocks++;
+ }
+ if (!blocks) { snprintf(err, errn, "no SEARCH/REPLACE block found"); free(cur); return 0; }
+ *out = cur;
+ return 1;
+}
+
 /* One agent turn: parse the action, run the tool (write/run ask for approval),
  * feed the result back.  Returns 1 when the agent is done, 0 to keep going.
  * Runs from the conversation driver with the spinner paused, so its approval
@@ -3242,27 +3360,26 @@ static int ai_agent_process(ai_async_op *op, char *reply)
     content = malloc(cl + 1);
     if (content) { memcpy(content, body, cl); content[cl] = '\0'; }
    }
-   { char what[720]; int allow;
-     snprintf(what, sizeof what, "write_file %s (%zu bytes)", arg, content ? strlen(content) : 0);
-     if (!content)                            allow = 0;
-     else if (e_ai_policy != WPE_AI_POLICY_ASK) allow = ai_agent_approve(f, what, 0);  /* auto/edits */
-     else {
-      /* Ask: show WHAT will be written as a diff (new file, or the change to an
-         existing one) so the user approves seeing the content, not just a byte
-         count. */
-      char *old = ai_slurp_file(arg);
-      allow = ai_diff_confirm_write(f, arg, old ? old : "", content);
-      wpe_ai_trace("agent write confirm %s -> %s", arg, allow ? "allow" : "deny");
-      free(old);
-     }
-     if (content && allow) {
-      FILE *w = fopen(arg, "wb");
-      if (w) { fwrite(content, 1, strlen(content), w); fclose(w);
-               wpe_ai_reload_open_window(f, arg);   /* show the change if the file is open */
-               result = strdup("(written)"); }
-      else result = strdup("(write failed)");
-     } else result = strdup("(denied by user)"); }
+   result = ai_agent_commit_write(f, arg, content);   /* shared review + write */
    free(content);
+  } else if (!strcmp(tool, "apply_patch")) {
+   /* Precise edit: apply SEARCH/REPLACE blocks against the current file, then
+      write the result through the same review as write_file.  An unmatched
+      SEARCH becomes a TOOL ERROR so the model retries with better context. */
+   char *old = ai_slurp_file(arg);
+   char *newc = NULL, perr[300];
+   if (!old) {
+    result = strdup("TOOL ERROR: file not found (use write_file to create it)");
+   } else if (!firstnl) {
+    result = strdup("TOOL ERROR: apply_patch needs SEARCH/REPLACE blocks");
+   } else if (!ai_apply_search_replace(old, firstnl + 1, &newc, perr, sizeof perr)) {
+    char *r = malloc(strlen(perr) + 16);
+    if (r) { snprintf(r, strlen(perr) + 16, "TOOL ERROR: %s", perr); result = r; }
+   } else {
+    result = ai_agent_commit_write(f, arg, newc);
+   }
+   free(old);
+   free(newc);
   } else {
    result = strdup("(unknown tool)");
   }
@@ -3310,8 +3427,19 @@ static int ai_agent_launch(FENSTER *f, const char *goal, const char *extra)
    "  TOOL glob <name-pattern>\n"
    "  TOOL run_command <shell command>\n"
    "  TOOL write_file <path>\n"
+   "  TOOL apply_patch <path>\n"
    "For write_file, put the new file content on the following lines, ending "
    "with a line that is exactly @@END .\n"
+   "PREFER apply_patch to change an EXISTING file (write_file is for a new file "
+   "or a full rewrite).  For apply_patch, follow the TOOL line with one or more "
+   "blocks and then a line that is exactly @@END :\n"
+   "<<<<<<< SEARCH\n"
+   "<exact lines from the file to replace>\n"
+   "=======\n"
+   "<the new lines>\n"
+   ">>>>>>> REPLACE\n"
+   "The SEARCH text must match the file verbatim; include enough surrounding "
+   "lines to be unique.\n"
    "When the task is complete, reply with a line beginning DONE; then, on the "
    "following lines, give the user your answer (if they asked a question) or a "
    "short summary of what you changed. Output nothing else; wait for each tool "
