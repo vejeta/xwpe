@@ -708,7 +708,12 @@ int e_blck_copy(FENSTER *f)
  e_switch_window(f->ed->edt[i], f);
  f = f->ed->f[f->ed->mxedt];
  b = f->b;
- if (f->ins == 8) return(0);
+ /* Block-Copy (Ctrl-K C / Block menu) duplicates the block at the cursor, which
+    would edit the buffer -- impossible in a read-only tool pane (ins == 8: the
+    AI chat / Messages output).  Rather than do nothing, treat it there as a
+    clipboard copy, so the instinctive "Copy" pulls the selected text out of the
+    pane like Edit > Copy does. */
+ if (f->ins == 8) return(e_edt_copy(f));
  f->save = 1;
  e_undo_sw = 1;
  e_copy_block(b->b.x, b->b.y, b, b, f);

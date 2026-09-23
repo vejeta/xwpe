@@ -26,7 +26,12 @@ def _ai_build():
 pytestmark = pytest.mark.skipif(not _ai_build(), reason="wpe built without --enable-ai")
 
 
-def test_copy_ai_reply_to_clipboard(tmp_path):
+# The two "Copy" commands a user reaches for.  ^C is the clipboard copy
+# (e_edt_copy); ^K ^C is the WordStar Block-Copy (e_blck_copy), which in a
+# read-only pane now also copies to the clipboard instead of doing nothing.
+@pytest.mark.parametrize("copy_keys", [("\x03",), ("\x0b", "c")],
+                         ids=["ctrl-c", "ctrl-k-c"])
+def test_copy_ai_reply_to_clipboard(tmp_path, copy_keys):
     env = {"XWPE_AI_ENABLE": "1", "XWPE_AI_BACKEND": "mock",
            "XWPE_AI_MOCK_REPLY": "COPYME123"}
     with WpeSession(tempfile.mkdtemp(), "int main(void){return 0;}\n",
@@ -42,11 +47,13 @@ def test_copy_ai_reply_to_clipboard(tmp_path):
                 break
         assert row is not None, "the mock reply did not appear in the pane"
 
-        # Drag-select the reply word (SGR mouse), then Ctrl-C, then Show Buffer.
+        # Drag-select the reply word (SGR mouse -- the keyboard arrows belong to
+        # the chat input), then copy, then Show Buffer.
         s.key("\033[<0;%d;%dM" % (col + 1, row + 1), delay=0.2)   # press at word start
         s.key("\033[<32;%d;%dM" % (col + 11, row + 1), delay=0.2)  # drag past word end
         s.key("\033[<0;%d;%dm" % (col + 11, row + 1), delay=0.3)   # release
-        s.key("\x03", delay=0.5)                                   # Ctrl-C -> copy
+        for k in copy_keys:
+            s.key(k, delay=0.4)                                    # ^C or ^K ^C
         s.key("\033y", delay=0.8)                                  # Alt-Y -> Show Buffer
         disp = s.display()
 
