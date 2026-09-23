@@ -1846,13 +1846,18 @@ static int e_opt_element_visible(W_OPTSTR *o, int ex, int ey)
 
 static int e_opt_kst_run(W_OPTSTR *o)
 {
-   int ret = 0, csv, sw = 1, i, j, num, cold, c = o->bgsw;
+   int ret = 0, csv, sw = 1, i, j, num, cold, c = o->bgsw, keep_pos = 0;
    char *tmp;
    int dlg_w = o->xe - o->xa;
    int dlg_h = o->ye - o->ya;
    fk_cursor(0);
 e_opt_kst_restart:
-   e_opt_center_dialog(o, dlg_w, dlg_h);
+   /* Keep a user-dragged position across an in-place repaint (a picker button
+      that returns -1, e.g. Alt-M / Alt-V): centre only on the first layout and
+      on a screen resize, not on every restart -- otherwise the dialog jumps back
+      to centre and forgets where the user moved it. */
+   if (!keep_pos) e_opt_center_dialog(o, dlg_w, dlg_h);
+   keep_pos = 0;
    o->pic = e_std_kst(o->xa, o->ya, o->xe, o->ye, o->name, 1, o->frt, o->ftt, o->frs);
    if(o->pic == NULL) {  e_error(e_msg[ERR_LOWMEM], 0, o->f->fb); return(-1);  }
    if(!c) c = e_get_opt_sw(CDO, 0, 0, o);
@@ -2122,6 +2127,7 @@ e_opt_kst_restart:
                   o->pic = NULL;
                   c = 0;
                   sw = 1;
+                  keep_pos = 1;   /* in-place repaint: keep the dragged position */
                   goto e_opt_kst_restart;
                }
                else
