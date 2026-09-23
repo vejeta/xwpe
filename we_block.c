@@ -287,11 +287,13 @@ int e_edt_copy(FENSTER *f)
  e_switch_window(f->ed->edt[i], f);
  f = f->ed->f[f->ed->mxedt];
  b = f->b;  save = f->save;
- /* Copy is a no-op in a read-only window (the clipboard/Show Buffer viewer).
-    Otherwise b == b0 below and this frees window 0's lines and then copies from
-    the very buffer it just freed -- a use-after-free.  A viewer is not a source
-    to copy FROM into the clipboard; there is nothing to store. */
- if (f->ins == 8)
+ /* The only window that must NOT be a copy source is the clipboard viewer
+    itself (window 0): the code below frees window 0's lines and then copies
+    from the source, so if the source IS window 0 that is a use-after-free.
+    Guard exactly that, by buffer identity -- other read-only panes (ins == 8:
+    the AI chat/Messages output) are legitimate sources; refusing them left
+    their text uncopyable. */
+ if (b == b0)
   return(0);
  if ((f->s->mark_end.y < f->s->mark_begin.y) ||
    ((f->s->mark_begin.y == f->s->mark_end.y) &&
