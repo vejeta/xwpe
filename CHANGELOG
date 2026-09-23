@@ -258,246 +258,93 @@ Changes
   openssl) is present (--disable-ai-tls forces it off, --enable-ai-tls requires
   it); --enable-ai-agent-host hosts an external agent CLI.  Full details in
   docs/AI.md.
-    - Modes (Alt-G then a letter): Ask a question (chat), Edit the current file
-      or a marked block, Multi-file edit across several files, run an Agent with
-      tools, or Fix the build in a loop.  Edits are shown as a colored diff,
-      accepted per hunk, and undone with a single Ctrl-U; nothing is written to
-      disk until you save.
-    - The agent's file writes and commands are gated by a permission dial
-      (ask/edits/auto); unattended runs take a checkpoint and present a
-      reviewable changeset (navigable like compile errors: keep/revert/commit).
-    - Diagnostics the language server reports for the file are folded into the
-      prompt, so "fix this" needs no pasting.
-    - Backends: Ollama (local, default), an OpenAI-compatible server, the Claude
+    - Modes (Alt-G then a letter): Ask (chat), Edit the current file or a marked
+      block, Multi-file edit, Complete at cursor (Alt-G c, splices a suggestion as
+      one Ctrl-U step), run an Agent with tools, or Build & fix in a loop.  Edits
+      show as a coloured per-hunk diff, undo with one Ctrl-U, and nothing hits disk
+      until you save.  Every mode is handed the open files (focused one marked) and
+      the language server's diagnostics for the file as context, so you need not
+      restate what you are working on.
+    - Safety: the agent's writes and commands are gated by a permission dial
+      (ask/edits/auto); unattended runs take a checkpoint and present a reviewable
+      changeset, navigable like compile errors (keep/revert/commit).  A one-time
+      notice states the trust model (local, opt-in, every edit previewed and
+      revertible) before the first action.
+    - Backends: Ollama (local, default), any OpenAI-compatible server, the Claude
       API, and the Claude CLI (its own login); HTTPS backends verify the server
-      certificate.
-    - Agent engine (--enable-ai-agent-host, chosen in Options > AI): the Agent
-      can run on the built-in loop, or host a real agent CLI -- Claude Code first
-      -- with its own tools as a persistent session, xwpe as the front-end (its
-      edits reload into your buffers, one Ctrl-U to revert; the session is
-      checkpointed and reviewable).  The permission dial gates its tools per tool
-      (ask = y/n per call, edits = auto edits/ask commands, auto = unattended).
-      A generic host layer; a build without the flag contains none of it.  The
-      hosted CLI is set with AIHostCommand (empty runs claude; a different command
-      such as aider/opencode runs through the shell, so hosting another agent
-      needs no build change), overridable with XWPE_AI_HOST_CMD.  A second adapter
-      selects how the CLI's output is read (AIHostCommand + AIHostAdapter): the
-      default claude-code stream-json protocol, or a plain "text" adapter that
-      writes the prompt to the CLI's stdin and renders its stdout as the answer --
-      so a prompt-in/text-out CLI (aider --message, sgpt, a script) can be hosted
-      too, one turn per invocation, proving the host is not vendor-specific.
-    - Every mode (Ask, Edit, Multi-file, Agent, Fix-build) is now handed the
-      files currently open in the editor as context, with the focused one marked
-      -- so you no longer have to tell the assistant what you are working on.
-    - Zero-config first use with Ollama: when no model is chosen, a code-tuned
-      model is auto-selected (preferring a larger one you have installed), and
-      when Ollama is not usable the message says exactly what to do (try
-      "ollama serve", or "ollama pull qwen2.5-coder").
-    - The AI pane shows a header with the active backend, model and permission
-      policy, so the setup is visible without opening Options.
-    - A one-time first-use notice states the trust model (local by default,
-      opt-in, every edit previewed and revertible) before the first action.
-      The notice reads as plain text with only its final prompt line highlighted
-      (it no longer looks like a five-line error), and answering it with a menu
-      shortcut works: a habitual "Alt-G a" enables the assistant AND opens Ask in
-      one go, instead of swallowing the letter and appearing to hang.
-    - Cancelling a running task now leaves the pane armed for input, so you can
-      keep working (ask a follow-up) instead of a dead "cancelled" pane; and an
-      AI prompt/dialog opened while the AI pane is the active window centres on
-      the whole screen instead of being squashed onto that small docked pane
-      (shared fix for any dialog over a tool pane).
-    - Alt-G no longer cancels a running task (that surprised people).  Esc is the
-      explicit cancel, and starting a second action while one runs QUEUES it to
-      run when the current finishes (one waiting slot; the newest replaces it),
-      instead of cancelling the first.  A modal AI prompt/menu opened over a
-      running task also no longer loses the caret to the task's spinner.
-    - Lines in the AI pane that ask you to act (approve a step, "type a
-      follow-up", the final line of the first-use notice) are shown in red, so a
-      prompt never blends into the agent's ordinary output.  Only the prompt line
-      is coloured -- an explanatory notice above it stays plain text.
-    - The AI working mode (backend, model, permission level, engine, enable) now
-      persists automatically -- changing it in Options > AI, or cycling the
-      permission level from the menu, is saved without a separate "Save Options".
-      Quick confirmations (cycling the permission level, "Clear conversation")
-      use a one-shot flash on the status line (Turbo Vision style: it takes the
-      bar row and the next key restores the key hints) -- so they never open the
-      pane or a modal box just to report; the permission toggle also no longer
-      nags about saving.  The permission flash spells out all three levels
-      (ask / edits / auto) with the active one highlighted -- the highlight
-      moves as you cycle -- plus a short description of what it does, so it is
-      clear which level is selected and what it means.
-    - Options > AI now applies and saves the whole dialog on a single Ok, even
-      when the backend was changed.  Previously changing the Backend radio made Ok
-      reopen the dialog (to relist that backend's models) WITHOUT saving, so a
-      user who did not press Ok a second time kept the old backend -- the chosen
-      backend and permission level silently failed to persist.  Ok now applies
-      every field once (the model list already follows the selected backend via
-      Alt-M), so the choice you confirm is the one that sticks across sessions.
-    - The model picker names its source for the HTTP backends ("Model (N) at
-      <endpoint>"): both Ollama and OpenAI-compatible read the single AIEndpoint,
-      so with the endpoint on the Ollama default the OpenAI-compatible list shows
-      Ollama's models -- the title now makes that visible instead of surprising.
-    - Options > AI gained an "Endpoint URL" field (Alt-U), so the
-      OpenAI-compatible backend can be pointed at any server (Groq, OpenRouter,
-      llama.cpp, LM Studio, vLLM, OpenAI itself, or a local bridge such as
-      lumo-tamer/proton-cli for Proton Lumo) from the dialog instead of
-      hand-editing xwperc.  Alt-M lists that server's models before Ok, and the
-      URL persists like the other settings.
-    - The OpenAI-compatible request path is now taken relative to the endpoint's
-      own path, so a base URL may include the version segment the provider
-      documents -- Groq's /openai/v1, OpenRouter's /api/v1, OpenAI's /v1 -- while
-      a bare host still defaults to /v1.  Previously the path was hard-wired to
-      /v1 at the host root, so only servers that served /v1 at the root worked
-      (and an endpoint whose path was longer than a few characters was rejected
-      as malformed).
-    - New AICAFile setting (and XWPE_AI_CAFILE): trust an extra CA or self-signed
-      certificate for HTTPS, in addition to the system CA store, so a local bridge
-      that serves TLS with its own certificate (e.g. a Proton Lumo bridge on
-      https://127.0.0.1) can be used.  Full verification -- chain and hostname --
-      still runs; it is not a blanket skip-verify.
-    - Options > AI was reorganised into labelled sections with blank-row spacing:
-      Backend and Permission side by side, then the OpenAI-compatible / Ollama
-      Connection full width (Provider, Endpoint, CA file, API key, then Model
-      last -- the order you fill them), then the Agent engine.  It reads as groups
-      instead of a jumble and still fits a 24-line terminal.  The CA file (Alt-C)
-      and the API key (Alt-K) are now editable fields, so a server or a self-signed
-      HTTPS bridge (Proton Lumo) is fully configurable from the dialog without
-      hand-editing xwperc.  A key typed here is used immediately by Alt-M (so an
-      authenticated endpoint lists its models before the provider is saved) and is
-      written to the active provider's key file, and the field shows the key
-      stored for that provider so you can see one is set.
-    - Provider profiles: Options > AI gained a "Provider" button (Alt-V) to switch
-      among saved OpenAI-compatible providers (Groq, OpenRouter, a local bridge,
-      ...) or save the current endpoint/model/CA as a new named one.  Each profile
-      carries its own endpoint, model and CA file, and its own API key
-      (~/.config/xwpe/openai-api-key-<name>, falling back to the generic key), so
-      several providers can coexist and be selected in one keystroke.  Stored as
-      repeatable AIProvider lines + AIProviderName in the config.
-    - The Alt-G menu is clearer and grouped: the actions (Ask, Edit, Multi-file,
-      Agent, "Build & fix (agent)") sit above a divider; below it the quick
-      settings -- "Permissions: <level>" (shows and cycles ask/edits/auto),
-      "Clear conversation", and "AI settings..." which opens Options > AI.  The
-      model and the enable toggle now live in Options > AI (reachable from that
-      entry) rather than being duplicated in the menu.  ("Fix the build" ->
-      "Build & fix (agent)", "Policy dial" -> "Permissions", "New session" ->
-      "Clear conversation".)
-    - Browse the pane's history from the keyboard while the "> " prompt stays
-      docked at the bottom: PgUp/PgDn page through the transcript and the arrows
-      scroll it a line at a time; typing any character snaps the view back to the
-      prompt so the next key lands in the input.
-    - Options > AI: the Model field spells out its Alt-M shortcut; the model
-      picker floats OVER the settings dialog (which stays put and repaints in
-      place) instead of clearing it and reopening centred on the wrong window;
-      and Alt-M lists the models of the backend currently selected in the radio,
-      so switching to Ollama then Alt-M no longer offers Claude's models (it had
-      needed an Ok in between).
-    - Ollama reasoning models (qwen3, deepseek-r1, ...) work with the Agent now.
-      They stream their chain of thought in a separate field and often preface
-      the "TOOL ..."/"DONE" line with a sentence of reasoning: the Agent scans
-      for the action line instead of judging only the first line (so a preamble
-      no longer aborts the run before the tool executes), and if a turn produces
-      no content at all the kept thinking is shown rather than a blank reply.
-      Before, the Agent could show only "working -> done" with no answer.
-    - The same reasoning fallback now covers reasoning models served over the
-      OpenAI-compatible API (e.g. gpt-oss via Groq): they stream a "reasoning"
-      field, often many deltas before any content, and a turn can be
-      reasoning-only.  The streamed reasoning is kept and shown when the turn
-      produces no content, instead of "(no answer)".
-    - Chat surfaces a backend error instead of a blank "(no answer)": whether it
-      comes as an HTTP error status (a model the key cannot access -> 404
-      "model_not_found") or as an error EVENT inside a 200 SSE stream (as a
-      failing local bridge such as Proton Lumo sends), the server's message is
-      shown, so a real failure is not mistaken for an empty answer.
-    - Typing an accented character (e-acute, u-umlaut, ...) in the chat input row
-      no longer parks the caret on top of the glyph: the input caret is now a byte
-      offset like the editor's, so the cursor advances one column past a multi-byte
-      character instead of sticking on its trailing byte.
-    - Chat no longer stalls when the model prefaces a tool call with a sentence.
-      A code model often answers a chat question by saying what it will do ("Let
-      me look at the current code") and then emitting its investigation line on a
-      later line (TOOL read_file ...).  Chat judged only the reply's first line,
-      so the preamble hid the tool call: the read was never run, the turn ended,
-      and the user saw the raw "TOOL read_file:" line and nothing more.  The tool
-      line is now found past the preamble (as the agent already did), a trailing
-      colon on the tool name is tolerated ("read_file:"), and the raw protocol
-      line is shown as a dim "  . reading <path>" status while the reasoning
-      preamble stays visible -- then the read result feeds the next turn and the
-      real answer streams.
-    - The chat system prompt now carries a capability manifest -- the Edit /
-      Multi-file / Agent / Build-&-fix shortcuts, that replies stream and Esc
-      cancels, that edits are a revertible reviewed diff, what context it already
-      receives, and that backend/model are user-selectable.  So the model answers
-      a "how could we improve this?" question from what xwpe actually offers, and
-      points you at Edit (Alt-G e) or the Agent (Alt-G g) instead of re-proposing
-      built features or printing code to retype.
-    - Project instructions file: xwpe now reads AGENTS.md (or .xwpe-ai.md) from
-      the working directory and folds it into every AI turn -- chat, edit and
-      agent alike -- following the cross-tool per-repo agent-instructions
-      convention, so a repo's standing instructions (build command, code style,
-      "do not touch X") are followed without restating them.  Bounded so a large
-      file cannot crowd the prompt.
-    - New read-only investigation tool `glob <name-pattern>` (chat and agent),
-      finding files by name across the tree -- completing the read_file / grep /
-      list_dir / glob set so the assistant can locate files it has not been shown.
-    - New agent tools `web_search <query>` and `web_fetch <URL>`: give a backend
-      with no web tool of its own (Ollama, a Groq/Lumo OpenAI endpoint) a route
-      onto the web.  web_fetch reads a page over the built-in TLS HTTP client (no
-      curl), reduced from HTML to text; web_search builds a query URL from a
-      configurable template (AISearchURL / XWPE_AI_SEARCH_URL, "%s" = query; a
-      keyless default otherwise -- point it at a SearXNG instance for stable JSON)
-      and fetches it, so the model can find pages, not only read known URLs.  Both
-      are network egress, so they are gated by the permission dial like
-      run_command.  The Claude CLI backend, which has its own web tools, now
-      launches with WebSearch/WebFetch pre-allowed so it can browse in any
-      permission mode (previously they were denied, since `claude -p` cannot
-      prompt).  With that backend on Auto/Edits, the Agent also tips the user that
-      full model autonomy is the Claude Code agent engine.
-    - AI task popup: the Send / Multi-line / Cancel buttons now carry working
-      Alt-S / Alt-M / Alt-C accelerators (each underlined letter matches the key
-      that fires it), and the multi-line composer spells out its two-step exit
-      (Esc finishes, then Y sends / N cancels).
-    - New agent tool `apply_patch`: a precise SEARCH/REPLACE edit of an existing
-      file instead of a whole-file rewrite.  The agent gives one or more
-      <<<<<<< SEARCH / ======= / >>>>>>> REPLACE blocks; the matched text is
-      replaced and the result is written through the SAME review the whole-file
-      write uses (diff-confirm under Ask, checkpoint + changeset review otherwise,
-      one-step Ctrl-U revert), so precise edits are as safe and reviewable as
-      before -- and far cheaper in tokens on a large file.  A SEARCH that does not
-      match returns a TOOL ERROR the model retries, never a silent bad write.
-    - Chat slash commands: /explain /fix /test /doc /review in the input expand
-      to a full instruction scoped to the current file, so a common ask is one
-      token.  Any text after the command is kept as a specific focus ("/fix the
-      off-by-one").  The transcript echoes what you typed; only the model gets the
-      expansion.
-    - An empty tool result is fed back as an explicit note ("nothing matched; try
-      a different path or pattern") instead of a blank, so a grep with no hit, an
-      empty directory or a silent command no longer reads to the model as a broken
-      tool that makes it stall or repeat.
-    - Model fallback: a new AIModelFallback setting is retried once, automatically,
-      when the primary model fails a turn (unavailable, or too slow / timed out),
-      so a down primary no longer dead-ends the chat -- xwpe says "primary model
-      failed ... retrying with <fallback>" and continues on the fallback.
-    - Post-edit hook: a new AIEditHook command (e.g. "clang-format -i") runs on a
-      file the AI just wrote or patched, then the buffer reloads, so AI edits stay
-      consistent with the repo's tooling -- the editor equivalent of format-on-save
-      or a git hook.  Applies to both write_file and apply_patch.  Editable, with
-      the fallback model and the agent-host command, in a new "Advanced..."
-      (Alt-A) dialog off Options > AI -- kept separate so the main dialog still
-      fits a 24-line terminal.  The Options > AI dialog is also clearer: Model
-      moves up next to Backend/Permission (every backend but Claude CLI uses it),
-      and the Connection block below is labelled "Ollama / OpenAI-compatible
-      backends ONLY" -- so a populated Endpoint/CA no longer looks "mixed" when
-      Claude CLI/API (which ignore those fields) is the selected backend.
-    - Agent plan mode: for a multi-step task the agent can reply `TOOL plan` with
-      one task per line, loaded as a "[ ] task" checklist into the Messages window
-      BEFORE it acts so you see the intended steps and can course-correct; as it
-      reports each `TOOL step_done` the list is redrawn in place ("3/7 done",
-      "[x]" per task) -- a live to-do list -- and compact progress shows in the AI
-      pane so you follow it without switching windows.
-    - Inline completion (Alt-G c, "Complete at cursor"): sends the code around the
-      cursor to the model and splices its suggestion in at the cursor, as one
-      Ctrl-U undo step -- a local, low-ceremony alternative to chat/edit for
-      "finish this line/block".  The editor stays interactive while it works.
+      certificate.  Reasoning models -- Ollama qwen3/deepseek-r1, or gpt-oss over
+      the OpenAI API -- work: their separate chain-of-thought is kept and shown
+      when a turn has no other content, and a reasoning preamble before the
+      TOOL/DONE line no longer aborts the run.  A backend error (an HTTP status, or
+      an error event inside a 200 SSE stream as a failing Proton Lumo bridge sends)
+      is surfaced instead of a blank "(no answer)".  AIModelFallback is retried
+      once when the primary model fails or times out.
+    - Agent engine (--enable-ai-agent-host): the Agent runs on the built-in tool
+      loop, or hosts a real agent CLI (Claude Code first) as a persistent session
+      with xwpe as the front-end -- its edits reload into your buffers (one Ctrl-U
+      to revert), checkpointed and reviewable, its tools gated by the same dial.
+      The hosted command is AIHostCommand (empty runs claude; aider/opencode/a
+      script run through the shell, no build change; XWPE_AI_HOST_CMD overrides),
+      with AIHostAdapter selecting the claude-code stream-json protocol or a plain
+      prompt-in/text-out "text" adapter.  A stock build without the flag has none
+      of it.
+    - Agent tools: read_file, list_dir, grep and glob (read-only); write_file and
+      apply_patch (a precise SEARCH/REPLACE edit, reviewed like a whole-file write
+      -- diff-confirm/checkpoint, one Ctrl-U revert -- cheaper on a large file, an
+      unmatched SEARCH retried not silently mis-written); run_command; and
+      web_search/web_fetch, giving a backend with no web tool of its own a route
+      onto the web (web_fetch reads a page as text over the built-in TLS client;
+      web_search builds a query URL from AISearchURL / XWPE_AI_SEARCH_URL -- keyless
+      default, SearXNG-friendly).  Mutating and network tools obey the dial; an
+      empty tool result is fed back as an explicit note so a no-hit grep does not
+      read as a broken tool.  The Claude CLI backend pre-allows its own WebSearch/
+      WebFetch so it browses in any mode; on Auto/Edits the Agent tips that full
+      model autonomy is the Claude Code engine.
+    - Agent plan mode: for a multi-step task the agent replies TOOL plan with one
+      task per line, loaded as a live "[ ]" checklist in the Messages window before
+      it acts and ticked off (TOOL step_done, "3/7 done") as it goes, with compact
+      progress in the pane.
+    - Options > AI: labelled sections (Backend and Permission side by side, then
+      the Ollama / OpenAI-compatible Connection block -- Provider, Endpoint
+      (Alt-U), CA file (Alt-C), API key (Alt-K), Model (Alt-M) -- then the Agent
+      engine), fitting a 24-line terminal and applied and saved on a single Ok.
+      The endpoint points the OpenAI-compatible backend at any server (Groq,
+      OpenRouter, llama.cpp, LM Studio, vLLM, OpenAI, or a local Proton Lumo
+      bridge), with the version path taken from the endpoint (/openai/v1, /api/v1,
+      /v1; a bare host defaults to /v1).  Provider profiles (Alt-V) switch among
+      saved endpoint/model/CA sets, each with its own API-key file
+      (~/.config/xwpe/openai-api-key-<name>).  AICAFile / XWPE_AI_CAFILE trusts an
+      extra CA for a self-signed HTTPS bridge (full verification still runs).  An
+      "Advanced..." (Alt-A) sub-dialog holds the fallback model, the post-edit hook
+      and the host command.  The model picker (Alt-M) floats over the dialog, lists
+      the selected backend's models, and names its source ("Model (N) at
+      <endpoint>").  Settings and the menu's permission level persist automatically
+      -- a one-shot status-line flash confirms quick changes instead of a modal box.
+    - Post-edit hook: AIEditHook (e.g. "clang-format -i") runs on a file the AI
+      just wrote or patched and the buffer reloads -- the editor equivalent of
+      format-on-save -- for both write_file and apply_patch.
+    - Project instructions: xwpe reads AGENTS.md (or .xwpe-ai.md) from the working
+      directory and folds it (bounded) into every turn, following the cross-tool
+      per-repo convention.
+    - Chat: slash commands (/explain /fix /test /doc /review) expand to a
+      file-scoped instruction; the system prompt carries a capability manifest so
+      the model points you at the right shortcut instead of re-proposing built
+      features; the pane shows a header (backend/model/policy); a tool call the
+      model prefaces with a sentence no longer stalls the turn.  PgUp/PgDn and the
+      arrows browse the transcript with the "> " prompt docked, and typing snaps
+      back to it; Home/End and Ctrl-A/Ctrl-E move to line start/end; and text can
+      be selected and copied out of the AI (and Messages) panes to the clipboard
+      and the OS clipboard.
+    - Menu & flow: the Alt-G menu groups the actions above the quick settings
+      (Permissions, Clear conversation, AI settings...); Esc is the explicit cancel
+      and a second action started mid-run is queued (not cancelling the first),
+      leaving the pane armed for a follow-up; a prompt opened over the docked pane
+      centres on the whole screen and keeps a dragged position across an in-place
+      repaint, and its Send / Multi-line / Cancel buttons carry Alt-S / Alt-M /
+      Alt-C accelerators; action-required lines are shown in red.
+    - Zero-config first use with Ollama picks a code-tuned model and, when Ollama
+      is not usable, says exactly what to do (ollama serve / ollama pull).  Accented
+      and any other Unicode characters type correctly in the chat input.
     - Tested across ncurses, X11 and native Wayland, plus a live Claude CLI path.
 * Fix a project Make (F9) that could abort with glibc "free(): invalid pointer"
   when a project variable (e.g. CMP) was missing -- e_c_project freed an
