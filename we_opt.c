@@ -1644,6 +1644,17 @@ int e_get_sw_cmp(int xin, int yin, int x, int y, int xmin, int ymin, int c)
       ((c == CRI || c == CCRI) && yin == y && xin > x && xin < xmin) );
 }
 
+/* Width of a check/radio widget's clickable strip: the "[ ]"/"( ) " glyph PLUS
+   its label, so a click anywhere on "[ ] Enable AI" or "( ) Ollama" toggles it,
+   not only the 3-cell glyph.  Buttons already hit-test their whole label; this
+   brings the check and radio widgets in line, which is what a user expects when
+   they click the text.  The label is drawn 4 cells past the glyph (see the
+   "[ ]" / "( ) " draws in e_opt_kst_run). */
+static int e_opt_glyph_hit_width(const char *header)
+{
+   return header ? 4 + (int)strlen(header) : 2;
+}
+
 static int e_get_opt_sw_spatial(int c, int x, int y, W_OPTSTR *o)
 {
    int i, j, xmin, ymin, ret = 0;
@@ -1667,7 +1678,7 @@ static int e_get_opt_sw_spatial(int c, int x, int y, W_OPTSTR *o)
    }
    for(i = 0; i < o->sn; i++)
    {  if(e_get_sw_cmp(o->sstr[i]->x, o->sstr[i]->y, x, y,
-         c ? xmin : 2, ymin, c))
+         c ? xmin : e_opt_glyph_hit_width(o->sstr[i]->header), ymin, c))
       {  xmin = o->sstr[i]->x;  ymin = o->sstr[i]->y;
          ret = o->sstr[i]->sw;
       }
@@ -1675,7 +1686,7 @@ static int e_get_opt_sw_spatial(int c, int x, int y, W_OPTSTR *o)
    for(i = 0; i < o->pn; i++)
       for(j = 0; j < o->pstr[i]->np; j++)
       {  if(e_get_sw_cmp(o->pstr[i]->ps[j]->x, o->pstr[i]->ps[j]->y, x, y,
-            c ? xmin : 2, ymin, c))
+            c ? xmin : e_opt_glyph_hit_width(o->pstr[i]->ps[j]->header), ymin, c))
          {  xmin = o->pstr[i]->ps[j]->x;  ymin = o->pstr[i]->ps[j]->y;
             ret = o->pstr[i]->ps[j]->sw;
          }
