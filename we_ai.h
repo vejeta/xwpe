@@ -98,6 +98,13 @@ int  wpe_ai_enabled(void);
  * file loaded.  Idempotent; call once at startup and after loading options. */
 void wpe_ai_config_init(void);
 
+/* True when the model name is one the Claude backends accept (a CLI alias or a
+ * claude-* id); false for a model from another backend.  wpe_ai_normalize_model
+ * drops a model incompatible with the active backend (Claude only -- Ollama /
+ * OpenAI take any name), resetting it to the backend default. */
+int  wpe_ai_model_is_claude(const char *m);
+void wpe_ai_normalize_model(void);
+
 /* ----- observability ----------------------------------------------------- */
 /* Append one line to $XWPE_AI_TRACE, if set (same idiom as XWPE_UI_TRACE).    */
 void wpe_ai_trace(const char *fmt, ...);

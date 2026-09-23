@@ -142,6 +142,33 @@ static int ai_which(const char *prog)
 
 int wpe_ai_claude_cli_available(void) { return ai_which("claude"); }
 
+/* True when `m` names a model the Claude backends understand: one of the CLI
+   aliases or a full claude-* id.  A model left over from another backend (an
+   Ollama name like "qwen3:8b", a Groq id) is NOT one -- passing it to
+   `claude --model` fails with "the selected model may not exist / no access",
+   so the Claude paths must not send it. */
+int wpe_ai_model_is_claude(const char *m)
+{
+ if (!m || !*m) return 0;
+ return !strcmp(m, "default") || !strcmp(m, "sonnet") || !strcmp(m, "opus") ||
+        !strcmp(m, "haiku") || !strncmp(m, "claude", 6);
+}
+
+/* Drop a model that cannot belong to the active backend, so a stale value from
+   a previous backend does not break it: only the Claude backends can validate
+   (their model set is fixed); Ollama / OpenAI-compatible take any name the
+   server offers, so those are left alone.  Reset to "" = the backend's default
+   (auto-pick / the login default).  Called after the config file and the env
+   overrides have both been applied. */
+void wpe_ai_normalize_model(void)
+{
+ if ((e_ai_backend == WPE_AI_CLAUDECLI || e_ai_backend == WPE_AI_CLAUDE) &&
+     e_ai_model && *e_ai_model && !wpe_ai_model_is_claude(e_ai_model)) {
+  free(e_ai_model);
+  e_ai_model = ai_strdup("");
+ }
+}
+
 /* ----- permission dial + claudecli control globals ----------------------- */
 int   e_ai_policy          = WPE_AI_POLICY_ASK;
 int   e_ai_agent_engine    = WPE_AI_ENGINE_BUILTIN;
@@ -244,6 +271,11 @@ void wpe_ai_config_init(void)
   free(e_ai_search_url);
   e_ai_search_url = (*e) ? ai_strdup(e) : NULL;
  }
+
+ /* Both the file and the env overrides are in now -- drop a model that cannot
+    belong to the resolved backend (e.g. an Ollama name left over from a previous
+    session while the backend is now Claude CLI), so it does not break the run. */
+ wpe_ai_normalize_model();
 }
 
 /* ----- observability ----------------------------------------------------- */
@@ -968,8 +1000,11 @@ static int ai_claudecli_open(struct wpe_ai_stream *st, const wpe_ai_req *req)
   argv[a++] = "--output-format";
   argv[a++] = "json";
   /* "default" (or empty) = let the Claude Code login pick; otherwise pass the
-     chosen alias (sonnet/opus/haiku/...). */
-  if (e_ai_model && *e_ai_model && strcmp(e_ai_model, "default")) {
+     chosen alias (sonnet/opus/haiku/...).  Never forward a non-Claude model
+     (a stale Ollama/Groq id from another backend): `claude --model qwen...`
+     fails, so fall back to the login default instead. */
+  if (e_ai_model && *e_ai_model && strcmp(e_ai_model, "default") &&
+      wpe_ai_model_is_claude(e_ai_model)) {
    argv[a++] = "--model"; argv[a++] = e_ai_model;
   }
   if (e_ai_resume_session && *e_ai_resume_session) {
