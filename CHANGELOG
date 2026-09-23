@@ -439,14 +439,19 @@ Changes
     - New read-only investigation tool `glob <name-pattern>` (chat and agent),
       finding files by name across the tree -- completing the read_file / grep /
       list_dir / glob set so the assistant can locate files it has not been shown.
-    - New agent tool `web_fetch <URL>`: reads a web page over the built-in TLS
-      HTTP client (no curl), reduces it from HTML to text and feeds it back to
-      the model, so a backend with no web tool of its own (Ollama, a Groq/Lumo
-      OpenAI endpoint) can still use up-to-date external information.  It is
-      network egress, so it is gated by the permission dial like run_command.
-      The Claude CLI backend, which has its own web tools, now launches with
-      WebSearch/WebFetch pre-allowed so it can browse in any permission mode
-      (previously they were denied, since `claude -p` cannot prompt).
+    - New agent tools `web_search <query>` and `web_fetch <URL>`: give a backend
+      with no web tool of its own (Ollama, a Groq/Lumo OpenAI endpoint) a route
+      onto the web.  web_fetch reads a page over the built-in TLS HTTP client (no
+      curl), reduced from HTML to text; web_search builds a query URL from a
+      configurable template (AISearchURL / XWPE_AI_SEARCH_URL, "%s" = query; a
+      keyless default otherwise -- point it at a SearXNG instance for stable JSON)
+      and fetches it, so the model can find pages, not only read known URLs.  Both
+      are network egress, so they are gated by the permission dial like
+      run_command.  The Claude CLI backend, which has its own web tools, now
+      launches with WebSearch/WebFetch pre-allowed so it can browse in any
+      permission mode (previously they were denied, since `claude -p` cannot
+      prompt).  With that backend on Auto/Edits, the Agent also tips the user that
+      full model autonomy is the Claude Code agent engine.
     - AI task popup: the Send / Multi-line / Cancel buttons now carry working
       Alt-S / Alt-M / Alt-C accelerators (each underlined letter matches the key
       that fires it), and the multi-line composer spells out its two-step exit

@@ -235,8 +235,12 @@ read it, step between them with @kbd{Alt-1}@dots{}, and undo any one with
 @cindex AI, permissions
 @kbd{Alt-G g} runs the model as an autonomous agent with a small, bounded set of
 tools: @code{read_file}, @code{list_dir}, @code{grep} and @code{glob} (find files
-by name) run on their own, while @code{write_file}, @code{apply_patch} and
-@code{run_command} are governed by the @dfn{permission dial}:
+by name) run on their own, while @code{web_search}, @code{web_fetch},
+@code{write_file}, @code{apply_patch} and @code{run_command} are governed by the
+@dfn{permission dial}.  @code{web_fetch} reads a web page over the built-in TLS
+client and @code{web_search} looks one up (its query engine is set by
+@code{AISearchURL}), so a backend with no web tool of its own can still use
+external information; both are network access, so they are gated like a command:
 
 @table @asis
 @item @code{ask} (default)
@@ -389,6 +393,11 @@ bridge that serves TLS with its own certificate (e.g. a Proton Lumo bridge on
 @samp{Options}, @samp{AI} (@key{Alt-C}).  It is trusted @emph{in addition to} the
 system CA store and verification still runs in full (chain and hostname) -- it is
 not a blanket ``skip verify''.  Empty means the system CA store only.
+@item AISearchURL
+URL template for the agent's @code{web_search} tool, with @code{%s} where the
+URL-encoded query goes (e.g. @code{https://searx.example/search?q=%s&format=json}
+for a SearXNG instance).  Also settable with @env{XWPE_AI_SEARCH_URL}.  Empty
+means a built-in keyless default.
 @item AIProvider
 A saved OpenAI-compatible provider profile, as
 @code{name|endpoint|model|cafile} (model and cafile optional); repeat the key for
