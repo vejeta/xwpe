@@ -84,6 +84,10 @@ def test_ai_options_model_picker_scrolls_and_selects(tmp_path):
         assert "Model (" in pick and "available)" in pick, \
             "scrollable model picker did not open:\n" + pick
         assert "PgUp/PgDn" in pick, "picker is not the scrollable overlay:\n" + pick
+        # the backend's models are listed -- claudecli's aliases are static, so
+        # all four must be offered (they fit, so all show).
+        for model in ("default", "sonnet", "opus", "haiku"):
+            assert model in pick, "model %r not offered in the picker:\n%s" % (model, pick)
         # the picker floats OVER the settings dialog -- the dialog is NOT erased,
         # its content still frames the picker (Enable above, Connection + Cancel
         # below; "Permission" sits behind the centred picker, so is not a proxy).
