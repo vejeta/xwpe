@@ -1244,7 +1244,7 @@ static int e_ai_prompt(char *out, const char *title, FENSTER *f)
  o->bgsw = 0;
  snprintf(head, sizeof head, "%.70s", title);
  o->name = head;
- o->crsw = AltO;
+ o->crsw = AltS;   /* Enter confirms via the Send button (sw=AltS), same as Alt-S */
  out[0] = '\0';
  e_add_wrstr(3, 2, 3, 3, 62, AI_PROMPT_MAX - 1, 0, AltT, "Prompt (Enter or Alt-S=Send, Alt-M=Multi-line, Alt-C/Esc=Cancel):", out, NULL, o);
  /* Each button's underlined letter (nc) must match the key that fires it (sw)
