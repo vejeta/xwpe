@@ -629,6 +629,17 @@ int wpe_ai_preflight(int backend, char *errbuf, size_t errsz)
    snprintf(errbuf, errsz,
             "Ollama not reachable at %s - is it running? (try `ollama serve`)",
             e_ai_endpoint ? e_ai_endpoint : "?");
+  /* OpenAI-compatible endpoints are usually a local server or bridge (a Lumo/
+     Proton bridge, vLLM, LM Studio, a Groq proxy...).  A refused connection
+     almost always means that process is not running or not listening on the
+     configured port -- say so and point at where to fix it, rather than only
+     echoing the raw socket error. */
+  else if (backend == WPE_AI_OPENAI && errbuf) {
+   size_t n = strlen(errbuf);
+   snprintf(errbuf + n, errsz > n ? errsz - n : 0,
+            " -- start the local server/bridge that serves this endpoint, "
+            "or set it in Options > AI > Endpoint (Alt-U)");
+  }
   return -1;
  }
  wpe_http_close(&conn);

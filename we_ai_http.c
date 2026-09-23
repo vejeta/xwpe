@@ -135,17 +135,27 @@ int wpe_http_open(const char *url, wpe_http_conn *c, char *errbuf, size_t errsz)
   ai_http_seterr(errbuf, errsz, "cannot resolve host");
   return -1;
  }
- for (ai = res; ai; ai = ai->ai_next) {
-  fd = socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
-  if (fd < 0) continue;
-  if (connect(fd, ai->ai_addr, ai->ai_addrlen) == 0) break;
-  close(fd);
-  fd = -1;
- }
- freeaddrinfo(res);
- if (fd < 0) {
-  ai_http_seterr(errbuf, errsz, "connection refused");
-  return -1;
+ {
+  int cerr = ECONNREFUSED;   /* the last connect()/socket() failure's errno */
+  for (ai = res; ai; ai = ai->ai_next) {
+   fd = socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
+   if (fd < 0) { cerr = errno; continue; }
+   if (connect(fd, ai->ai_addr, ai->ai_addrlen) == 0) break;
+   cerr = errno;
+   close(fd);
+   fd = -1;
+  }
+  freeaddrinfo(res);
+  if (fd < 0) {
+   /* Report the real reason and where, not a bare "connection refused":
+      "Connection refused" means nothing is listening on host:port (the local
+      server or bridge is down); other errno values (timed out, no route) point
+      elsewhere.  The address makes it obvious which endpoint is unreachable. */
+   if (errbuf && errsz)
+    snprintf(errbuf, errsz, "cannot connect to %s:%d (%s)",
+             host, port, strerror(cerr));
+   return -1;
+  }
  }
  c->fd = fd;
 
