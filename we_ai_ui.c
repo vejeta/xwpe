@@ -1032,9 +1032,9 @@ static char *ai_build_system(FENSTER *f)
    "- Edit the current file or selection: Alt-G e (applies your instruction; the "
    "change previews as a diff and Ctrl-U reverts it as one undo step).\n"
    "- Multi-file edit: Alt-G f.  Autonomous Agent (the read tools above PLUS "
-   "web_fetch to read a web page, run_command and write_file, gated by the "
-   "permission dial ask/edits/auto): Alt-G g.  Build & fix until the compile "
-   "passes: Alt-G b.\n"
+   "web_search and web_fetch to use the web, run_command and write_file, gated "
+   "by the permission dial ask/edits/auto): Alt-G g.  Build & fix until the "
+   "compile passes: Alt-G b.\n"
    "- Replies stream token by token; Esc cancels a run mid-generation.\n"
    "- Proposed edits are reviewed as a diff changeset (Alt-T / Alt-V) and are "
    "revertible; a checkpoint is taken before a non-interactive run.\n"
@@ -3745,6 +3745,35 @@ static char *ai_html_to_text(const char *html)
  return out;
 }
 
+/* Percent-encode a query for a URL, leaving RFC 3986 unreserved bytes as-is. */
+static void ai_url_encode(const char *s, char *out, size_t outsz)
+{
+ static const char hex[] = "0123456789ABCDEF";
+ size_t o = 0;
+ for (; s && *s && o + 4 < outsz; s++) {
+  unsigned char c = (unsigned char)*s;
+  if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+      (c >= '0' && c <= '9') || c == '-' || c == '_' || c == '.' || c == '~')
+   out[o++] = (char)c;
+  else {
+   out[o++] = '%'; out[o++] = hex[c >> 4]; out[o++] = hex[c & 15];
+  }
+ }
+ out[o] = '\0';
+}
+
+/* Build the search URL from the template: the first "%s" is replaced with the
+ * (already-encoded) query; a template with no "%s" gets the query appended.  The
+ * template is passed as DATA (a %-arg), so a stray % in it is never a format. */
+static void ai_search_url_build(const char *tmpl, const char *q, char *out, size_t outsz)
+{
+ const char *pct = strstr(tmpl, "%s");
+ if (pct)
+  snprintf(out, outsz, "%.*s%s%s", (int)(pct - tmpl), tmpl, q, pct + 2);
+ else
+  snprintf(out, outsz, "%s%s", tmpl, q);
+}
+
 /* One agent turn: parse the action, run the tool (write/run ask for approval),
  * feed the result back.  Returns 1 when the agent is done, 0 to keep going.
  * Runs from the conversation driver with the spinner paused, so its approval
@@ -3836,6 +3865,28 @@ static int ai_agent_process(ai_async_op *op, char *reply)
      if (result) snprintf(result, n, "TOOL ERROR: %s", werr[0] ? werr : "fetch failed");
     }
    }
+  } else if (!strcmp(tool, "web_search")) {
+   /* Search the web for the model: build a query URL from a configurable
+      template (AISearchURL, default a keyless engine) and fetch it as text.
+      The model reads the result links, then web_fetch's the promising one. */
+   if (!ai_agent_approve(f, arg, 1)) {
+    result = strdup("(denied by user)");
+   } else {
+    char enc[1024], surl[1400], *raw = NULL, werr[200];
+    const char *tmpl = (e_ai_search_url && *e_ai_search_url) ? e_ai_search_url
+                       : "https://lite.duckduckgo.com/lite/?q=%s";
+    werr[0] = '\0';
+    ai_url_encode(arg, enc, sizeof enc);
+    ai_search_url_build(tmpl, enc, surl, sizeof surl);
+    if (wpe_ai_web_fetch(surl, 65536, &raw, werr, sizeof werr) == 0 && raw) {
+     result = ai_html_to_text(raw);
+     free(raw);
+    } else {
+     size_t n = strlen(werr) + 20;
+     result = malloc(n);
+     if (result) snprintf(result, n, "TOOL ERROR: %s", werr[0] ? werr : "search failed");
+    }
+   }
   } else if (!strcmp(tool, "write_file")) {
    char *content = NULL;
    if (firstnl) {
@@ -3922,6 +3973,8 @@ static int ai_agent_launch(FENSTER *f, const char *goal, const char *extra)
    "  TOOL grep <pattern>\n"
    "  TOOL glob <name-pattern>\n"
    "  TOOL run_command <shell command>\n"
+   "  TOOL web_search <query>   (search the web; returns result links to then "
+   "read with web_fetch)\n"
    "  TOOL web_fetch <http(s) URL>   (read a web page when you need up-to-date "
    "or external information)\n"
    "  TOOL write_file <path>\n"
@@ -4015,6 +4068,22 @@ int e_ai_agent(FENSTER *f)
  goal[0] = '\0';
  if (!e_ai_prompt1(goal, "AI agent task", f) || !goal[0])
   return 0;
+#ifdef WPE_AI_AGENT_HOST
+ /* One-time nudge for the Claude CLI backend: the built-in agent runs the model
+    text-only and applies each tool itself under the dial -- it never hands the
+    model --dangerously-skip-permissions, so "Auto" does not make Claude act on
+    its own here.  Full autonomy (the model driving its own tools) is the Claude
+    Code agent engine, which is where the dial reaches the model's own tools. */
+ {
+  static int nudged = 0;
+  if (!nudged && e_ai_backend == WPE_AI_CLAUDECLI && e_ai_policy != WPE_AI_POLICY_ASK) {
+   nudged = 1;
+   ai_pane(f, "[tip] For full autonomy (the model runs its own tools/edits), set "
+              "Options > AI: Agent = Claude Code -- the built-in agent keeps every "
+              "tool under xwpe's review.", 0);
+  }
+ }
+#endif
  if (wpe_ai_busy()) {
   ai_enqueue(f, ai_launch_agent, goal);
   return 0;

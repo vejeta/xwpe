@@ -1018,6 +1018,9 @@ int WpeReadProgramming(ECNT *cn, char *section, char *option, char *value)
  } else if (WpeStrccmp("AICAFile", option) == 0) {
   free(e_ai_cafile);
   e_ai_cafile = (value && *value) ? WpeStrdup(value) : NULL;
+ } else if (WpeStrccmp("AISearchURL", option) == 0) {
+  free(e_ai_search_url);
+  e_ai_search_url = (value && *value) ? WpeStrdup(value) : NULL;
  } else if (WpeStrccmp("AIProviderName", option) == 0) {
   free(e_ai_provider);
   e_ai_provider = (value && *value) ? WpeStrdup(value) : NULL;
@@ -1055,6 +1058,8 @@ int WpeWriteProgramming(ECNT *cn, char *section, FILE *opt_file)
  if (e_ai_host_adapter == WPE_AI_HOST_ADAPTER_TEXT)
   fprintf(opt_file, "AIHostAdapter : text\n");
  fprintf(opt_file, "AICAFile : %s\n", e_ai_cafile ? e_ai_cafile : "");
+ if (e_ai_search_url && *e_ai_search_url)
+  fprintf(opt_file, "AISearchURL : %s\n", e_ai_search_url);
  fprintf(opt_file, "AIProviderName : %s\n", e_ai_provider ? e_ai_provider : "");
  {
   int i, np = wpe_ai_provider_count();

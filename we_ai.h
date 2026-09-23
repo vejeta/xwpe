@@ -65,6 +65,7 @@ extern char *e_ai_host_command;   /* agent-host CLI, e.g. "claude"/"aider" (or N
 #define WPE_AI_HOST_ADAPTER_TEXT   1
 extern int   e_ai_host_adapter;
 extern char *e_ai_cafile;     /* extra CA/self-signed cert to trust; NULL=system */
+extern char *e_ai_search_url; /* web_search URL template, "%s" = query; NULL=default */
 
 /* Named OpenAI-compatible provider profiles the user can switch between (Groq,
  * OpenRouter, a local bridge, ...).  Each carries its own endpoint, model and CA

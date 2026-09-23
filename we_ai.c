@@ -40,6 +40,8 @@ char *e_ai_model_fallback = NULL;      /* retried once when the primary fails   
 char *e_ai_edit_hook = NULL;           /* command run on a file after an AI edit  */
 char *e_ai_host_command = NULL;        /* agent-host CLI to run (default: claude)  */
 int   e_ai_host_adapter = 0;           /* 0 = claude-code (stream-json), 1 = text  */
+char *e_ai_search_url = NULL;          /* web_search URL template ("%s" = query);
+                                          NULL => the built-in keyless default      */
 char *e_ai_cafile   = NULL;            /* extra CA/self-signed cert to trust (TLS),
                                           for a local HTTPS bridge; NULL => system
                                           CA store only                          */
@@ -236,6 +238,11 @@ void wpe_ai_config_init(void)
  if ((e = getenv("XWPE_AI_CAFILE"))) {
   free(e_ai_cafile);
   e_ai_cafile = (*e) ? ai_strdup(e) : NULL;
+ }
+
+ if ((e = getenv("XWPE_AI_SEARCH_URL"))) {
+  free(e_ai_search_url);
+  e_ai_search_url = (*e) ? ai_strdup(e) : NULL;
  }
 }
 
