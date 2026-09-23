@@ -114,6 +114,12 @@ typedef struct {
  * errbuf (e.g. "Ollama not reachable at ... - run `ollama serve`"). */
 int  wpe_ai_preflight(int backend, char *errbuf, size_t errsz);
 
+/* GET an arbitrary http/https URL, returning its body (bounded to maxbytes,
+ * caller frees *out).  Backs the built-in agent's web_fetch tool.  0 on
+ * success, -1 on failure with a reason in errbuf. */
+int  wpe_ai_web_fetch(const char *url, size_t maxbytes, char **out,
+                      char *errbuf, size_t errsz);
+
 /* List available model names (Ollama /api/tags, OpenAI /v1/models, mock: one).
  * Fills names[0..max) with malloc'd strings; returns the count or -1. */
 int  wpe_ai_list_models(int backend, char **names, int max,

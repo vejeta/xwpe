@@ -1032,8 +1032,9 @@ static char *ai_build_system(FENSTER *f)
    "- Edit the current file or selection: Alt-G e (applies your instruction; the "
    "change previews as a diff and Ctrl-U reverts it as one undo step).\n"
    "- Multi-file edit: Alt-G f.  Autonomous Agent (the read tools above PLUS "
-   "run_command and write_file, gated by the permission dial ask/edits/auto): "
-   "Alt-G g.  Build & fix until the compile passes: Alt-G b.\n"
+   "web_fetch to read a web page, run_command and write_file, gated by the "
+   "permission dial ask/edits/auto): Alt-G g.  Build & fix until the compile "
+   "passes: Alt-G b.\n"
    "- Replies stream token by token; Esc cancels a run mid-generation.\n"
    "- Proposed edits are reviewed as a diff changeset (Alt-T / Alt-V) and are "
    "revertible; a checkpoint is taken before a non-interactive run.\n"
@@ -3692,6 +3693,58 @@ static int ai_apply_search_replace(const char *old, const char *body,
  return 1;
 }
 
+/* Reduce fetched HTML to readable text for the model: drop <script>/<style>
+ * bodies and every tag, decode the few common entities, and cap the length.
+ * Not a real parser -- just enough that a page reads as text, not markup, and
+ * does not flood the context.  Returns a malloc'd string (caller frees). */
+static char *ai_html_to_text(const char *html)
+{
+ size_t n = html ? strlen(html) : 0, o = 0, i = 0;
+ const size_t CAP = 12000;            /* keep a page down to a summarisable size */
+ char *out = malloc(n + 1);
+ if (!out) return NULL;
+ while (html[i] && o < CAP) {
+  if (html[i] == '<') {
+   /* Skip the entire body of <script>/<style>, not just the tag. */
+   if (!strncasecmp(html + i, "<script", 7) || !strncasecmp(html + i, "<style", 6)) {
+    const char *close = (html[i + 1] == 's' || html[i + 1] == 'S') &&
+                        (html[i + 3] == 'r' || html[i + 3] == 'R')
+                        ? "</script" : "</style";
+    size_t cl = strlen(close);
+    i += 6;
+    while (html[i] && strncasecmp(html + i, close, cl)) i++;
+    while (html[i] && html[i] != '>') i++;
+    if (html[i]) i++;
+    continue;
+   }
+   while (html[i] && html[i] != '>') i++;   /* drop the tag */
+   if (html[i]) i++;
+   if (o && out[o - 1] != '\n' && out[o - 1] != ' ') out[o++] = ' ';
+   continue;
+  }
+  if (html[i] == '&') {                      /* decode a handful of entities */
+   static const struct { const char *e; char c; } ent[] = {
+    {"&amp;", '&'}, {"&lt;", '<'}, {"&gt;", '>'}, {"&quot;", '"'},
+    {"&#39;", '\''}, {"&apos;", '\''}, {"&nbsp;", ' '}
+   };
+   int k, matched = 0;
+   for (k = 0; k < (int)(sizeof ent / sizeof ent[0]); k++) {
+    size_t el = strlen(ent[k].e);
+    if (!strncmp(html + i, ent[k].e, el)) { out[o++] = ent[k].c; i += el; matched = 1; break; }
+   }
+   if (matched) continue;
+  }
+  out[o++] = html[i++];
+ }
+ if (o >= CAP) {                             /* mark that the page was clipped */
+  const char *mark = "\n...(truncated)";
+  size_t ml = strlen(mark);
+  if (o + ml < n + 1) { memcpy(out + o, mark, ml); o += ml; }
+ }
+ out[o] = '\0';
+ return out;
+}
+
 /* One agent turn: parse the action, run the tool (write/run ask for approval),
  * feed the result back.  Returns 1 when the agent is done, 0 to keep going.
  * Runs from the conversation driver with the spinner paused, so its approval
@@ -3764,6 +3817,25 @@ static int ai_agent_process(ai_async_op *op, char *reply)
   } else if (!strcmp(tool, "run_command")) {
    if (ai_agent_approve(f, arg, 1)) result = ai_run_capture(arg);
    else result = strdup("(denied by user)");
+  } else if (!strcmp(tool, "web_fetch")) {
+   /* Read a web page.  Network egress, so it goes through the same approval as
+      run_command; the body is reduced to text so the model reads content, not
+      markup.  This is the built-in agent's only route onto the web, for models
+      that have no web tool of their own (Ollama, a Groq/Lumo OpenAI endpoint). */
+   if (!ai_agent_approve(f, arg, 1)) {
+    result = strdup("(denied by user)");
+   } else {
+    char *raw = NULL, werr[200];
+    werr[0] = '\0';
+    if (wpe_ai_web_fetch(arg, 65536, &raw, werr, sizeof werr) == 0 && raw) {
+     result = ai_html_to_text(raw);
+     free(raw);
+    } else {
+     size_t n = strlen(werr) + 20;
+     result = malloc(n);
+     if (result) snprintf(result, n, "TOOL ERROR: %s", werr[0] ? werr : "fetch failed");
+    }
+   }
   } else if (!strcmp(tool, "write_file")) {
    char *content = NULL;
    if (firstnl) {
@@ -3850,6 +3922,8 @@ static int ai_agent_launch(FENSTER *f, const char *goal, const char *extra)
    "  TOOL grep <pattern>\n"
    "  TOOL glob <name-pattern>\n"
    "  TOOL run_command <shell command>\n"
+   "  TOOL web_fetch <http(s) URL>   (read a web page when you need up-to-date "
+   "or external information)\n"
    "  TOOL write_file <path>\n"
    "  TOOL apply_patch <path>\n"
    "For write_file, put the new file content on the following lines, ending "

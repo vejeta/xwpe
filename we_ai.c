@@ -612,6 +612,79 @@ static int ai_fetch(const char *method, const char *path, char *hdrs[],
  return rc;
 }
 
+/* wpe_ai_web_fetch - GET an arbitrary http/https URL and return its body,
+   bounded to `maxbytes` (caller frees *out).  This is what gives the built-in
+   agent a way onto the web: a model with no web tool of its own (Ollama, or a
+   Groq/Lumo endpoint reached over the plain OpenAI protocol) can still read a
+   page the user points it at, via the same TLS HTTP client the AI backends use
+   -- no curl, no extra dependency.  Returns 0 on success, -1 on failure (with a
+   reason in errbuf).  A >= 400 status is returned as content, prefixed with the
+   code, so the model can react to it rather than seeing a bare failure. */
+int wpe_ai_web_fetch(const char *url, size_t maxbytes, char **out,
+                     char *errbuf, size_t errsz)
+{
+ wpe_http_conn conn;
+ wpe_http_stream hs;
+ char host[256], path[1024], buf[4096];
+ int port = 0, https = 0, st = 0;
+ long deadline;
+ int rc = -1;
+
+ if (out) *out = NULL;
+ if (errbuf && errsz) errbuf[0] = '\0';
+ if (!url || !*url) { if (errbuf) snprintf(errbuf, errsz, "empty URL"); return -1; }
+ if (wpe_http_parse_url(url, host, sizeof host, &port, &https, path, sizeof path)) {
+  if (errbuf) snprintf(errbuf, errsz, "malformed URL (use http:// or https://)");
+  return -1;
+ }
+ if (wpe_http_open(url, &conn, errbuf, errsz)) return -1;
+ if (wpe_http_request(&conn, "GET", path, NULL, NULL)) {
+  if (errbuf) snprintf(errbuf, errsz, "request failed");
+  wpe_http_close(&conn);
+  return -1;
+ }
+ wpe_http_stream_init(&hs);
+ deadline = ai_now_ms() + 20000;
+ while (!wpe_http_stream_done(&hs)) {
+  struct pollfd pf;
+  int pr;
+  long left = deadline - ai_now_ms();
+  if (left <= 0) { if (errbuf) snprintf(errbuf, errsz, "timed out"); break; }
+  pf.fd = conn.fd; pf.events = POLLIN; pf.revents = 0;
+  pr = poll(&pf, 1, (int)(left > 1000 ? 1000 : left));
+  if (pr < 0) { if (errno == EINTR) continue; break; }
+  if (pr == 0) continue;
+  {
+   ssize_t r = wpe_http_read(&conn, buf, sizeof buf);
+   if (r > 0) {
+    if (wpe_http_stream_push(&hs, buf, (size_t)r) < 0) break;
+    if (maxbytes && hs.body_len >= maxbytes) break;   /* enough for a summary */
+   } else if (r < 0) { wpe_http_stream_eof(&hs); break; }   /* EOF => complete */
+  }
+ }
+ if (wpe_http_stream_done(&hs) || hs.body_len > 0) {
+  size_t n = hs.body_len;
+  const char *b = hs.body ? hs.body : "";
+  st = wpe_http_stream_status(&hs);
+  if (maxbytes && n > maxbytes) n = maxbytes;
+  if (out) {
+   if (st >= 400) {
+    *out = malloc(n + 32);
+    if (*out) snprintf(*out, n + 32, "(HTTP %d)\n%.*s", st, (int)n, b);
+   } else {
+    *out = malloc(n + 1);
+    if (*out) { memcpy(*out, b, n); (*out)[n] = '\0'; }
+   }
+  }
+  rc = 0;
+ } else if (errbuf && !errbuf[0]) {
+  snprintf(errbuf, errsz, "no response");
+ }
+ wpe_http_stream_free(&hs);
+ wpe_http_close(&conn);
+ return rc;
+}
+
 /* ===================== reachability / models ============================= */
 
 int wpe_ai_preflight(int backend, char *errbuf, size_t errsz)
