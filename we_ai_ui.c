@@ -1245,10 +1245,15 @@ static int e_ai_prompt(char *out, const char *title, FENSTER *f)
  o->name = head;
  o->crsw = AltO;
  out[0] = '\0';
- e_add_wrstr(3, 2, 3, 3, 62, AI_PROMPT_MAX - 1, 0, AltT, "Prompt (Enter=Send, Alt-M=multi-line, Esc=Cancel):", out, NULL, o);
- e_add_bttstr(18, 6, 1, AltO, " Send ", NULL, o);
- e_add_bttstr(32, 6, 4, AltM, "Multi-line", NULL, o);
- e_add_bttstr(50, 6, -1, WPE_ESC, "Cancel", NULL, o);
+ e_add_wrstr(3, 2, 3, 3, 62, AI_PROMPT_MAX - 1, 0, AltT, "Prompt (Enter or Alt-S=Send, Alt-M=Multi-line, Alt-C/Esc=Cancel):", out, NULL, o);
+ /* Each button's underlined letter (nc) must match the key that fires it (sw)
+    so the accelerator shown is the accelerator that works: Alt-S sends, Alt-M
+    opens the multi-line composer, Alt-C cancels.  Enter still sends via crsw
+    (AltO) and Esc still cancels via the engine, so both plain keys keep working
+    alongside the Alt accelerators. */
+ e_add_bttstr(18, 6, 1, AltS, " Send ", NULL, o);
+ e_add_bttstr(32, 6, 0, AltM, "Multi-line", NULL, o);
+ e_add_bttstr(50, 6, 0, AltC, "Cancel", NULL, o);
  /* A background task may be animating its spinner: mark a modal so the AI
     heartbeat's repaint (which moves the caret to the pane) is suppressed while
     this dialog owns the input -- otherwise it steals focus and eats keystrokes. */
@@ -1259,9 +1264,9 @@ static int e_ai_prompt(char *out, const char *title, FENSTER *f)
   out[AI_PROMPT_MAX - 1] = '\0';
  }
  freeostr(o);
- if (ret == WPE_ESC) return 0;                /* cancel   */
+ if (ret == WPE_ESC || ret == AltC) return 0; /* cancel (Esc or the Cancel button) */
  if (ret == AltM)    return 2;                /* Multi-line: caller decides where */
- return 1;                                    /* Send     */
+ return 1;                                    /* Send (Enter/crsw=AltO, or Alt-S)  */
 }
 
 /* One-shot prompt for Edit/Plan/Agent, which have no persistent input row: the
@@ -1274,7 +1279,9 @@ static int e_ai_prompt1(char *out, const char *title, FENSTER *f)
   char seed[AI_PROMPT_MAX], ct[96];
   strncpy(seed, out, sizeof seed - 1);
   seed[sizeof seed - 1] = '\0';
-  snprintf(ct, sizeof ct, "%.48s  (Esc finishes, then Y sends)", title);
+  /* Spell out the two-step exit: in a full editor Esc reads as "cancel", but
+     here it FINISHES the prompt and a Send? Y/N confirm follows -- say so. */
+  snprintf(ct, sizeof ct, "%.40s  [Esc = done, then Y sends / N cancels]", title);
   return e_ai_compose(out, AI_PROMPT_MAX, ct, seed, f);
  }
  return r;
