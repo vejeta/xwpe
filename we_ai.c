@@ -895,6 +895,14 @@ static int ai_claudecli_open(struct wpe_ai_stream *st, const wpe_ai_req *req)
   if (e_ai_resume_session && *e_ai_resume_session) {
    argv[a++] = "--resume"; argv[a++] = e_ai_resume_session;
   }
+  /* Pre-approve the read-only web tools so the model can look things up.
+     `claude -p` cannot prompt, so any tool that is not pre-allowed is denied --
+     that is why Claude used to answer "give me permission to the web tool".
+     WebSearch/WebFetch only read the network (they never touch the workspace),
+     so allowing them in every mode is safe and does NOT disturb the agent's own
+     tool protocol (the file/shell tools stay governed by the dial below).
+     Placed before the dial block; --allowedTools stops at the next --flag. */
+  argv[a++] = "--allowedTools"; argv[a++] = "WebSearch"; argv[a++] = "WebFetch";
   /* The permission dial, pre-granted (claude -p cannot prompt).  Placed last:
      --disallowedTools is variadic and swallows following bare arguments. */
   if (e_ai_cli_mode == WPE_AI_CLI_AUTO) {
