@@ -14,6 +14,8 @@ import tempfile
 from wpe_driver import WpeSession
 
 
+# @scenario SC-dialog-engine-05
+# @scenario SC-dialog-engine-06
 def test_ai_dialog_title_drag_does_not_crash(tmp_path):
     home = tempfile.mkdtemp()
     os.makedirs(os.path.join(home, ".config", "xwpe"), exist_ok=True)

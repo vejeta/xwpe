@@ -23,6 +23,8 @@ def _ai_build():
 pytestmark = pytest.mark.skipif(not _ai_build(), reason="wpe built without --enable-ai")
 
 
+# @scenario SC-ai-options-40
+# @scenario SC-ai-options-41
 def test_advanced_dialog_sets_fallback(tmp_path):
     home = str(tmp_path / "home")
     cfg = os.path.join(home, ".config", "xwpe")

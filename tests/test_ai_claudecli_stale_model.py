@@ -26,6 +26,8 @@ def _ai_build():
 pytestmark = pytest.mark.skipif(not _ai_build(), reason="wpe built without --enable-ai")
 
 
+# @scenario SC-ai-options-50
+# @scenario SC-ai-options-52
 def test_stale_ollama_model_not_forwarded(tmp_path):
     argv_file = tmp_path / "claude_argv.txt"
     bindir = tmp_path / "bin"

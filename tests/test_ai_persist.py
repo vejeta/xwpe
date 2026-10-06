@@ -43,6 +43,7 @@ def _fg(s, y, x):
     return s.screen.buffer[y][x].fg
 
 
+# @scenario SC-ai-options-18
 def test_policy_toggle_is_quiet_and_persists(tmp_path):
     home = tempfile.mkdtemp()
     work = str(tmp_path)

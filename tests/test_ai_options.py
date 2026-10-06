@@ -47,6 +47,9 @@ ENV = {
 }
 
 
+# @scenario SC-ai-options-01
+# @scenario SC-ai-options-04
+# @scenario SC-ai-options-06
 def test_ai_options_dialog_renders_current(tmp_path):
     with WpeSession(str(tmp_path), "int main(void){return 0;}\n",
                     env_extra=dict(ENV)) as s:
@@ -68,6 +71,9 @@ def test_ai_options_dialog_renders_current(tmp_path):
         "current backend not pre-marked:\n" + disp
 
 
+# @scenario SC-ai-options-19
+# @scenario SC-ai-options-20
+# @scenario SC-dialog-engine-18
 def test_ai_options_model_picker_scrolls_and_selects(tmp_path):
     # Alt-M floats the scrollable model picker; Down + Enter selects a different
     # model and the settings dialog reopens -- centred on screen, with the new
@@ -124,6 +130,7 @@ def _ollama_up():
         return False
 
 
+# @scenario SC-ai-options-21
 @pytest.mark.skipif(not _ollama_up(), reason="no local Ollama for the model list")
 def test_model_picker_follows_selected_backend_radio(tmp_path):
     # The exact reported bug: on Claude CLI, switch the Backend radio to Ollama,
@@ -147,6 +154,7 @@ def test_model_picker_follows_selected_backend_radio(tmp_path):
             "Alt-M still listed Claude's models after selecting Ollama:\n" + pick
 
 
+# @scenario SC-ai-options-16
 @pytest.mark.skipif(not _ollama_up(), reason="no local Ollama for the model list")
 def test_ollama_ignores_leftover_openai_endpoint(tmp_path):
     # Regression: the endpoint field is shared, so switching the Backend radio to
@@ -177,6 +185,8 @@ def test_ollama_ignores_leftover_openai_endpoint(tmp_path):
         "Ollama kept the leftover Groq endpoint:\n" + "\n".join(disp)
 
 
+# @scenario SC-ai-options-05
+# @scenario SC-ai-options-23
 def test_model_pick_keeps_other_fields(tmp_path):
     # Picking a model must not disturb other fields.  The in-place redraw after
     # the picker used to re-fire the focused field's accelerator and clear the
@@ -198,6 +208,8 @@ def test_model_pick_keeps_other_fields(tmp_path):
         "picking a model cleared the Enable checkbox:\n" + after
 
 
+# @scenario SC-ai-options-10
+# @scenario SC-ai-options-48
 def test_ai_options_ok_reads_radios(tmp_path):
     trace = tmp_path / "ai.trace"
     env = dict(ENV); env["XWPE_AI_TRACE"] = str(trace)
@@ -215,6 +227,11 @@ def test_ai_options_ok_reads_radios(tmp_path):
         "AI dialog did not apply the settings:\n" + txt
 
 
+# @scenario SC-ai-options-46
+# @scenario SC-dialog-engine-19
+# @scenario SC-dialog-engine-22
+# @scenario SC-dialog-engine-23
+# @scenario SC-dialog-engine-24
 def test_ai_options_keyboard_navigation(tmp_path):
     # Tab/arrows must move between the radio groups and Space must select -- the
     # widgets carry unique non-zero sw ids so e_opt_kst can focus them (a zero sw
@@ -241,6 +258,7 @@ def test_ai_options_keyboard_navigation(tmp_path):
     assert closed, "Ok did not close the dialog on the first press"
 
 
+# @scenario SC-ai-options-13
 def test_ai_options_backend_change_applies_on_ok(tmp_path):
     # Switching the Backend radio and pressing Ok ONCE applies the new backend
     # (no reopen, no lost choice).  Regression guard for the bug where Ok merely
@@ -266,6 +284,7 @@ def test_ai_options_backend_change_applies_on_ok(tmp_path):
         "Ok reopened the dialog instead of applying + closing:\n" + disp
 
 
+# @scenario SC-ai-options-14
 def test_ai_options_backend_persists_across_relaunch(tmp_path):
     # The end-to-end guard for the reported bug: change the backend in Options>AI,
     # press Ok, close xwpe, reopen -- the chosen backend must still be marked.  No
@@ -329,6 +348,7 @@ def _fake_openai_server(models):
     return srv, srv.server_address[1]
 
 
+# @scenario SC-ai-options-22
 def test_openai_endpoint_lists_from_that_server(tmp_path):
     # The Endpoint field makes OpenAI-compatible usable against ANY server: point
     # it at a local fake OpenAI server and Alt-M lists THAT server's /v1/models --
@@ -355,6 +375,7 @@ def test_openai_endpoint_lists_from_that_server(tmp_path):
         "the picker did not name the configured endpoint:\n" + pick
 
 
+# @scenario SC-ai-options-29
 def test_ai_options_endpoint_persists(tmp_path):
     # A non-default Endpoint URL survives Ok + relaunch: the field reads back into
     # AIEndpoint, and neither Ok nor a backend change wipes it.
@@ -406,6 +427,7 @@ def _path_recording_server():
     return srv, srv.server_address[1], seen
 
 
+# @scenario SC-ai-options-24
 @pytest.mark.parametrize("suffix,expected", [
     ("",           "/v1/models"),          # bare host -> default /v1 (OpenAI, local)
     ("/v1",        "/v1/models"),           # explicit /v1 (lumo-tamer, OpenAI)
@@ -477,6 +499,7 @@ def _self_signed_https_server(tmp_path, models):
     return srv, srv.server_address[1], cert
 
 
+# @scenario SC-ai-options-31
 @pytest.mark.skipif(not _tls_build(), reason="wpe built without TLS")
 @pytest.mark.skipif(not _have_openssl(), reason="openssl CLI not available")
 def test_aicafile_trusts_a_self_signed_https_endpoint(tmp_path):
@@ -514,6 +537,8 @@ def test_aicafile_trusts_a_self_signed_https_endpoint(tmp_path):
         "AICAFile did not let xwpe verify and use the self-signed endpoint"
 
 
+# @scenario SC-ai-options-35
+# @scenario SC-ai-options-36
 def test_provider_profiles_pick_and_persist(tmp_path):
     # Provider profiles: Options > AI lists saved OpenAI-compatible providers
     # (Alt-V), and picking one loads its endpoint/model and switches the backend
@@ -575,6 +600,7 @@ def _auth_recording_server():
     return srv, srv.server_address[1], seen
 
 
+# @scenario SC-ai-options-37
 def test_provider_uses_its_own_key_file(tmp_path):
     # A per-provider key file (openai-api-key-<name>) is used when that provider
     # is active, so Groq/Proton/... can each carry a distinct key.
@@ -630,6 +656,7 @@ def test_provider_save_current_as_new(tmp_path):
         "the current settings were not saved as a named provider:\n" + saved
 
 
+# @scenario SC-ai-options-30
 def test_cafile_field_edits_and_persists(tmp_path):
     # The CA file is editable in the dialog (Alt-C), so a self-signed HTTPS bridge
     # (Proton Lumo) is configurable from the UI without hand-editing xwperc.
@@ -655,6 +682,7 @@ def test_cafile_field_edits_and_persists(tmp_path):
         "the CA file typed in the dialog was not saved:\n" + saved
 
 
+# @scenario SC-ai-options-32
 def test_api_key_field_used_by_altm_and_saved(tmp_path):
     # An API key typed in the dialog (Alt-K) is used immediately by Alt-M (so an
     # authenticated endpoint lists its models before the provider is saved), and
@@ -686,6 +714,7 @@ def test_api_key_field_used_by_altm_and_saved(tmp_path):
         "the typed key was not persisted to a key file"
 
 
+# @scenario SC-ai-options-34
 def test_bracketed_paste_into_key_field(tmp_path):
     # A terminal paste (bracketed-paste mode 2004) of an API key ending in a
     # newline must insert the key cleanly WITHOUT the trailing newline confirming

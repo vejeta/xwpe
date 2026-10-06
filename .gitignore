@@ -45,6 +45,7 @@ xwpe
 
 # Test artifacts
 tests/.venv/
+tests/harness/out/
 __pycache__/
 *.pyc
 tests/.pytest_cache/

@@ -23,6 +23,7 @@ def _open_ai_settings(tmp_path):
                       env_extra={"XWPE_AI_ENABLE": "1", "HOME": home})
 
 
+# @scenario SC-dialog-engine-14
 def test_radio_label_click_selects(tmp_path):
     with _open_ai_settings(tmp_path) as s:
         s.key("\033o", delay=0.5); s.key("i", delay=0.7)
@@ -36,6 +37,8 @@ def test_radio_label_click_selects(tmp_path):
         "the previously selected radio was not cleared:\n" + disp
 
 
+# @scenario SC-dialog-engine-13
+# @scenario SC-dialog-engine-36
 def test_checkbox_label_click_toggles(tmp_path):
     with _open_ai_settings(tmp_path) as s:
         s.key("\033o", delay=0.5); s.key("i", delay=0.7)

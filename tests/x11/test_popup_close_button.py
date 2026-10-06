@@ -30,6 +30,7 @@ def _find_close_x(img):
             sum(p[1] for p in pts) // len(pts))
 
 
+# @scenario SC-dialog-engine-17
 def test_clicking_close_box_dismisses_dialog(xwpe):
     """Click the dialog's [X] -> the Editor-Options dialog closes (back to editor)."""
     editor = xwpe.screenshot()

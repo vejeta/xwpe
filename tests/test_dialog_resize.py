@@ -163,6 +163,7 @@ class WpeSession:
 class TestDialogResizeSurvival:
     """Verify dialogs survive resize without crashing."""
 
+    # @scenario SC-dialog-engine-21
     def test_goto_line_resize_shrink(self):
         """Open Goto Line dialog, shrink terminal, verify no crash."""
         with WpeSession('test.c', cols=80, rows=30) as s:
@@ -189,6 +190,7 @@ class TestDialogResizeSurvival:
             s.send(KEY_ESC)
             assert s.alive()
 
+    # @scenario SC-dialog-engine-28
     def test_goto_line_resize_multiple(self):
         """Resize multiple times rapidly with dialog open."""
         with WpeSession('test.c', cols=80, rows=30) as s:

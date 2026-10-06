@@ -23,6 +23,7 @@ def _read_key_file(cfg, provider):
         return fh.read().strip()
 
 
+# @scenario SC-ai-options-39
 def test_typed_key_survives_provider_switch(tmp_path):
     home = tempfile.mkdtemp()
     cfg = os.path.join(home, ".config", "xwpe")

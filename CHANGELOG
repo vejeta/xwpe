@@ -346,6 +346,16 @@ Changes
       is not usable, says exactly what to do (ollama serve / ollama pull).  Accented
       and any other Unicode characters type correctly in the chat input.
     - Tested across ncurses, X11 and native Wayland, plus a live Claude CLI path.
+    - Scenario harness (tests/harness/): the behaviours of Options > AI and of
+      the shared option-dialog engine are written down as scenarios (SC-<area>-NN)
+      and each is mapped to the test that proves it (a `# @scenario` line above
+      the test).  `tests/harness/run.sh <area> [ncurses|asan|x11|wayland|c-unit]`
+      runs exactly that subset and writes a per-scenario PASS/FAIL/BLOCKED
+      verdict; `harness.py check` fails when a scenario has no collectable test
+      or an AI test file is mapped nowhere.  Writing the scenarios turned up
+      engine bugs recorded as xfail tests (Esc on a radio commits the dialog, a
+      terminal resize flips the first checkbox, a paste can press accelerators)
+      which turn green as each is fixed.
 * Fix a project Make (F9) that could abort with glibc "free(): invalid pointer"
   when a project variable (e.g. CMP) was missing -- e_c_project freed an
   uninitialised argument slot; it is now zero-initialised.

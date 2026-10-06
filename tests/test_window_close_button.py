@@ -113,6 +113,7 @@ class _Wpe:
         self.proc.wait()
 
 
+# @scenario SC-dialog-engine-34
 def test_close_box_click_closes_window(tmp_path):
     w = _Wpe(str(tmp_path))
     try:

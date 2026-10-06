@@ -23,6 +23,7 @@ def _has_ai():
 AI_ENV = {"XWPE_AI_ENABLE": "1", "XWPE_AI_BACKEND": "claudecli", "XWPE_AI_MODEL": "sonnet"}
 
 
+# @scenario SC-ai-options-27
 @pytest.mark.skipif(not _has_ai(), reason="xwpe built without --enable-ai")
 @pytest.mark.parametrize("xwpe", [AI_ENV], indirect=True)
 def test_ai_model_picker_paints_under_wayland(xwpe):

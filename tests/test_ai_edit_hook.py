@@ -24,6 +24,7 @@ def _ai_build():
 pytestmark = pytest.mark.skipif(not _ai_build(), reason="wpe built without --enable-ai")
 
 
+# @scenario SC-ai-options-43
 def test_edit_hook_runs_after_write(tmp_path):
     home = str(tmp_path / "home")
     cfg = os.path.join(home, ".config", "xwpe")

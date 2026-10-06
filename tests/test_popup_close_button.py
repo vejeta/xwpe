@@ -24,6 +24,7 @@ def _row_with(rows, needle):
     return ""
 
 
+# @scenario SC-dialog-engine-33
 def test_message_popup_has_close_but_no_maximize(tmp_path):
     """A "String NOT found" popup shows a close box and no maximize box."""
     with WpeSession(str(tmp_path), "int main(){\n  return 0;\n}\n") as w:

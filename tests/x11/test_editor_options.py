@@ -39,6 +39,8 @@ def test_editor_options_opens(xwpe):
     assert changed_pixels(before, after) > 2000, "Editor-Options dialog did not appear"
 
 
+# @scenario SC-dialog-engine-26
+# @scenario SC-dialog-engine-31
 def test_checkbox_toggle_renders_mark(xwpe):
     """Alt-K toggles the 'WordStar block' checkbox; the [X] glyph must
     appear, then disappear on a second Alt-K.  This is the direct
