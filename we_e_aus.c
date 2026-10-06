@@ -237,11 +237,27 @@ void e_pr_nstr(int x, int y, int n, char *str, int col, int col2)
 
 /*
    Enter digits */
+/**
+ * e_pasted_control_byte - Is @c a control key a single-line field must drop
+ * while a terminal paste streams?
+ *
+ * A paste (xterm mode 2004) delivers its text through the key reader, so a
+ * trailing newline would confirm the dialog, a tab would move the focus and a
+ * stray Esc would cancel it, all before the user has seen what landed in the
+ * field.  Inside a one-line field only the printable characters are wanted.
+ */
+static int e_pasted_control_byte(int c)
+{
+ return (c == WPE_CR || c == '\n' || c == WPE_TAB || c == WPE_BTAB ||
+         c == WPE_ESC || c == CtrlP || c == CtrlN);
+}
+
 int e_schreib_zif(int *num, int x, int y, int max, int ft, int fs)
 {
 #if  MOUSE
  extern struct mouse e_mouse;
 #endif
+ extern int g_bracketed_paste;      /* set while a terminal paste streams */
  int c, i, jc = max-1, ntmp = *num, nnum = WpeNumberOfPlaces(ntmp);
  int first = 1;
  char *s = MALLOC((max+1)*sizeof(char));
@@ -251,8 +267,12 @@ int e_schreib_zif(int *num, int x, int y, int max, int ft, int fs)
  e_pr_char(x + max, y, ' ', fs);
  fk_locate(x+jc, y);
  fk_cursor(1);
- while ((c = e_getch()) != WPE_ESC)
+ /* `|| g_bracketed_paste` keeps the loop alive on an Esc byte arriving inside
+    a terminal paste; the pasted digits are typed, the control bytes dropped. */
+ while ((c = e_getch()) != WPE_ESC || g_bracketed_paste)
  {
+  if (g_bracketed_paste && e_pasted_control_byte(c))
+   continue;
   if (c == WPE_RESIZE)
   {
    *num = WpeStringToNumber(s);
@@ -371,9 +391,7 @@ int e_schreib_leiste(char *s, int x, int y, int n, int max, int ft, int fs)
     characters without confirming, cancelling or navigating the dialog. */
  while ((c = e_getch()) != WPE_ESC || g_bracketed_paste)
  {
-  if (g_bracketed_paste && (c == WPE_CR || c == '\n' || c == WPE_TAB ||
-                            c == WPE_BTAB || c == WPE_ESC || c == CtrlP ||
-                            c == CtrlN))
+  if (g_bracketed_paste && e_pasted_control_byte(c))
    continue;             /* a single-line field drops pasted line breaks/tabs */
   if (c == WPE_RESIZE)
   {

@@ -7,7 +7,7 @@
     {"id": "SC-dialog-engine-04", "requirement": "Title-bar drag", "layer": "ncurses", "test": "tests/test_opt_dialog_keeppos.py::test_dialog_keeps_dragged_position_after_model_picker", "status": "covered"},
     {"id": "SC-dialog-engine-05", "requirement": "Title-bar drag", "layer": "ncurses", "test": "tests/test_opt_dialog_drag.py::test_ai_dialog_title_drag_does_not_crash", "status": "covered"},
     {"id": "SC-dialog-engine-06", "requirement": "Title-bar drag", "layer": "asan", "test": "tests/test_opt_dialog_drag.py::test_ai_dialog_title_drag_does_not_crash", "status": "covered"},
-    {"id": "SC-dialog-engine-07", "requirement": "Title-bar drag", "layer": "ncurses", "test": null, "status": "blocked", "reason": "UNKNOWN/CONFLICT: hidden close hot-cell at title column xa+3 (we_mouse.c:1400-1404); decision pending (tasks 3.1)"},
+    {"id": "SC-dialog-engine-07", "requirement": "Title-bar drag", "layer": "ncurses", "test": "tests/test_opt_dialog_buttons.py::test_title_grab_near_left_corner_drags_not_closes", "status": "new"},
     {"id": "SC-dialog-engine-08", "requirement": "Keyboard move", "layer": "ncurses", "test": "tests/test_opt_dialog_move.py::test_keyboard_move_moves_and_restores_focus", "status": "new"},
     {"id": "SC-dialog-engine-08b", "requirement": "Keyboard move", "layer": "ncurses", "test": "tests/test_opt_dialog_move.py::test_keyboard_move_does_not_toggle_focused_widget", "status": "new"},
     {"id": "SC-dialog-engine-09", "requirement": "Keyboard move", "layer": "ncurses", "test": "tests/test_opt_dialog_move.py::test_keyboard_move_clamps_to_screen", "status": "new"},
@@ -43,6 +43,15 @@
     {"id": "SC-dialog-engine-35", "requirement": "Modal not painted over", "layer": "ncurses", "test": "tests/test_opt_dialog_place.py::test_async_update_does_not_paint_over_dialog", "status": "new"},
     {"id": "SC-dialog-engine-36", "requirement": "Mouse without GPM", "layer": "ncurses", "test": "tests/test_opt_label_click.py::test_checkbox_label_click_toggles", "status": "covered"},
     {"id": "SC-dialog-engine-37", "requirement": "Bounded widget tables", "layer": "c-unit", "test": null, "status": "blocked", "reason": "the focus-order table is a static in we_opt.c with no guard and no linkable unit; needs a decision on a guard + c-unit (tasks 2.13)"},
-    {"id": "SC-dialog-engine-38", "requirement": "Documentation", "layer": "doc", "test": null, "status": "blocked", "reason": "UNKNOWN/CONFLICT: interface.texi '[z]' zoom text; dialog drag / close box / keyboard move undocumented (tasks 3.3)"}
+    {"id": "SC-dialog-engine-38", "requirement": "Documentation", "layer": "doc", "test": null, "status": "blocked", "reason": "UNKNOWN/CONFLICT: interface.texi '[z]' zoom text; dialog drag / close box / keyboard move undocumented (tasks 3.3)"},
+    {"id": "SC-dialog-engine-39", "requirement": "A paste never drives the dialog", "layer": "ncurses", "test": "tests/test_opt_dialog_paste.py::test_pasted_accelerator_letter_does_not_press_widget", "status": "new"},
+    {"id": "SC-dialog-engine-40", "requirement": "A paste never drives the dialog", "layer": "ncurses", "test": "tests/test_opt_dialog_paste.py::test_pasted_newline_outside_a_field_does_not_submit", "status": "new"},
+    {"id": "SC-dialog-engine-41", "requirement": "A paste never drives the dialog", "layer": "ncurses", "test": "tests/test_opt_dialog_paste.py::test_paste_into_numeric_field_keeps_digits_drops_newline", "status": "new"},
+    {"id": "SC-dialog-engine-42", "requirement": "Only button 1 acts", "layer": "ncurses", "test": "tests/test_opt_dialog_buttons.py::test_wheel_over_checkbox_does_not_toggle", "status": "new"},
+    {"id": "SC-dialog-engine-42r", "requirement": "Only button 1 acts", "layer": "ncurses", "test": "tests/test_opt_dialog_buttons.py::test_wheel_over_radio_does_not_select", "status": "new"},
+    {"id": "SC-dialog-engine-43", "requirement": "Only button 1 acts", "layer": "ncurses", "test": "tests/test_opt_dialog_buttons.py::test_other_buttons_over_checkbox_do_not_toggle", "status": "new"},
+    {"id": "SC-dialog-engine-43c", "requirement": "Only button 1 acts", "layer": "ncurses", "test": "tests/test_opt_dialog_buttons.py::test_other_buttons_on_close_box_do_not_close", "status": "new"},
+    {"id": "SC-dialog-engine-43t", "requirement": "Only button 1 acts", "layer": "ncurses", "test": "tests/test_opt_dialog_buttons.py::test_button2_on_title_row_does_not_drag", "status": "new"},
+    {"id": "SC-dialog-engine-44", "requirement": "Terminal resize", "layer": "ncurses", "test": "tests/test_opt_dialog_place.py::test_resize_does_not_toggle_first_checkbox", "status": "new"}
   ]
 }

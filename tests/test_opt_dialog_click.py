@@ -16,7 +16,7 @@ import subprocess
 
 import pytest
 
-from wpe_driver import WpeSession, ALT, WPE_BIN, incoherence
+from wpe_driver import WpeSession, ALT, WPE_BIN
 
 
 def _ai_build():
@@ -95,12 +95,8 @@ def _options_applied(trace):
 
 
 def _dismiss(s):
-    """Esc closes the dialog.  From the Enable checkbox, which has the initial
-    focus, the engine spends the first Esc moving the focus to Cancel; press it
-    again when the box is still up."""
+    """One Esc closes the dialog from whatever widget has the focus."""
     s.key(ESC, delay=0.6)
-    if _is_open(s):
-        s.key(ESC, delay=0.6)
 
 
 def _tab_to_cancel(s):
@@ -167,10 +163,9 @@ def test_clicks_outside_frame_are_inert(tmp_path):
 
 
 # @scenario SC-dialog-engine-17n
-@incoherence("from the initial focus (the Enable checkbox) the close box behaves exactly "
-             "like Esc there: the first click only moves the focus to Cancel and the "
-             "dialog stays open; a second click, or Esc, closes it")
 def test_close_box_click_dismisses_like_esc(tmp_path):
+    # From the initial focus (the Enable checkbox) one click on the close box
+    # must dismiss the dialog, exactly like one Esc there.
     trace = tmp_path / "ai.trace"
     with _open_ai_settings(tmp_path, trace) as s:
         _click_close_box(s)
@@ -198,11 +193,9 @@ def test_close_box_click_from_a_field_dismisses_like_esc(tmp_path):
 
 
 # @scenario SC-dialog-engine-17n
-@incoherence("with a radio group focused (Tab from the checkbox lands on Backend) the "
-             "close box, like Esc there, APPLIES the options: the radio handler sets "
-             "sw = 1 on WPE_ESC but still falls through e_get_opt_sw, which resets sw "
-             "to 0, so the loop exits with ret == 0 and the caller treats it as Ok")
 def test_close_box_click_from_a_radio_does_not_apply(tmp_path):
+    # With a radio group focused (Tab from the checkbox lands on Backend) the
+    # close box, like Esc there, must cancel: nothing applied.
     trace = tmp_path / "ai.trace"
     with _open_ai_settings(tmp_path, trace) as s:
         s.key(TAB, delay=0.3)                # Enable -> Backend radio group

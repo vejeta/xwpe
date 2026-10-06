@@ -1385,28 +1385,118 @@ void e_opt_eck_mouse(o)
    e_std_rahmen(o->xa, o->ya, o->xe, o->ye, o->name, 1, o->frt, o->frs);
 }
 
-int e_opt_mouse(W_OPTSTR *o)
+/* Button bits of a mouse report, in the one order the dialog engine relies on:
+   left, middle, right.  The X11 and Wayland readers return these bits negated
+   as the key code (-1, -2, -4); the terminal readers (ncurses, GPM) return -1
+   and keep the bits in e_mouse.k. */
+#define MOUSE_BTN_LEFT   1
+#define MOUSE_BTN_MIDDLE 2
+#define MOUSE_BTN_RIGHT  4
+
+/* The close glyph of a dialog sits this many cells left of its right border
+   (e_draw_titlebar_buttons in we_wind.c paints it at xe-2).  It is the ONLY
+   cell of the title row that closes the dialog: the rest of the row drags it. */
+#define OPT_CLOSE_BOX_FROM_RIGHT 2
+
+/**
+ * e_mouse_report_buttons - Which buttons a mouse report from e_getch names.
+ * @c: the negative code e_getch returned for the report
+ *
+ * Lets the dialog engine tell a left click from a wheel step or a middle or
+ * right click without knowing which backend produced the report.  A wheel
+ * step on the terminal arrives with no button bit set.
+ */
+static int e_mouse_report_buttons(int c)
 {
  extern struct mouse e_mouse;
- int c;
 
- if (e_mouse.y < o->ya || e_mouse.y >= o->ye ||
-   e_mouse.x <= o->xa || e_mouse.x >= o->xe)
-  return(-1);
- else if (e_mouse.y == o->ya)
- {
-  /* Close the dialog on a click of either close box: the classic Borland one
-     at the top-left (xa+3) or the modernized [X] at the top-right (xe-2).
-     Anywhere else on the title bar starts a move (e_opt_eck_mouse). */
-  if (e_mouse.x == o->xa+3 || e_mouse.x == o->xe-2)
-  {  while(e_mshit());  return(WPE_ESC);  }
-  else
-  {  e_opt_eck_mouse(o);  return(-1);  }
- }
+ if (WpeIsXwin())
+  return(-c);
+ return(e_mouse.k);
+}
+
+/**
+ * e_opt_pointer_inside - Is the pointer on the dialog, borders included?
+ *
+ * The left and bottom borders count as outside (a click there does nothing),
+ * the title row and the right border as inside, as the frame has always been
+ * hit-tested.
+ */
+static int e_opt_pointer_inside(W_OPTSTR *o)
+{
+ extern struct mouse e_mouse;
+
+ if (e_mouse.y < o->ya || e_mouse.y >= o->ye)
+  return(0);
+ if (e_mouse.x <= o->xa || e_mouse.x >= o->xe)
+  return(0);
+ return(1);
+}
+
+static int e_opt_pointer_on_title_row(W_OPTSTR *o)
+{
+ extern struct mouse e_mouse;
+
+ return(e_mouse.y == o->ya);
+}
+
+static int e_opt_pointer_on_close_box(W_OPTSTR *o)
+{
+ extern struct mouse e_mouse;
+
+ if (!e_opt_pointer_on_title_row(o))
+  return(0);
+ return(e_mouse.x == o->xe - OPT_CLOSE_BOX_FROM_RIGHT);
+}
+
+/**
+ * e_mouse_wait_release - Swallow the rest of a press so the next key is clean.
+ */
+static void e_mouse_wait_release(void)
+{
  while (e_mshit())
   ;
- if ((c = e_get_opt_sw(0, e_mouse.x, e_mouse.y, o))) return(c);
- else return(-1);
+}
+
+/**
+ * e_opt_mouse - Resolve a mouse report inside a dialog into what it asks for.
+ * @o: the dialog
+ * @c: the negative code e_getch returned for the report
+ *
+ * Only button 1 does anything in a dialog: a press on the drawn close box
+ * closes it like Esc (WPE_ESC), a press elsewhere on the title row drags it,
+ * and a press on a widget returns that widget's code so the engine activates
+ * it as a click should.  A scroll-wheel step and the middle and right buttons
+ * are ignored, so rolling the wheel over "[ ] Enable" no longer toggles it,
+ * and a click that lands on nothing returns -1 for "nothing to do".
+ */
+int e_opt_mouse(W_OPTSTR *o, int c)
+{
+ extern struct mouse e_mouse;
+ int buttons = e_mouse_report_buttons(c);
+
+ if (!e_opt_pointer_inside(o))
+  return(-1);
+ if (!(buttons & MOUSE_BTN_LEFT))
+ {
+  e_mouse_wait_release();
+  return(-1);
+ }
+ if (e_opt_pointer_on_close_box(o))
+ {
+  e_mouse_wait_release();
+  return(WPE_ESC);
+ }
+ if (e_opt_pointer_on_title_row(o))
+ {
+  e_opt_eck_mouse(o);
+  return(-1);
+ }
+ e_mouse_wait_release();
+ c = e_get_opt_sw(0, e_mouse.x, e_mouse.y, o);
+ if (c)
+  return(c);
+ return(-1);
 }
 
 #endif

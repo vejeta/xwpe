@@ -628,7 +628,7 @@ int e_opt_cw_mouse(int xa, int ya, int md);
 int e_opt_bs_mouse(void);
 void e_opt_eck_mouse(W_OPTSTR *o);
 PIC *e_opt_drag_snapshot(W_OPTSTR *o);
-int e_opt_mouse(W_OPTSTR *o);
+int e_opt_mouse(W_OPTSTR *o, int c);
 
 int e_data_ein_mouse(FENSTER *f);
 int e_opt_bs_mouse_1(void);

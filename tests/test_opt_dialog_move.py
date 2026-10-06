@@ -16,7 +16,7 @@ import subprocess
 
 import pytest
 
-from wpe_driver import WpeSession, ALT, WPE_BIN, COLS, ROWS, incoherence
+from wpe_driver import WpeSession, ALT, WPE_BIN, COLS, ROWS
 
 
 def _ai_build():
@@ -77,6 +77,14 @@ def _row_with(s, needle):
     return next((r for r in s.display() if needle in r), "")
 
 
+def _checkbox_mark(s, label):
+    """The "[ ]" / "[X]" glyph drawn in front of a checkbox label."""
+    row = _row_with(s, label)
+    assert label in row, "no %r checkbox on screen:\n%s" % (label, "\n".join(s.display()))
+    at = row.index(label)
+    return row[at - 4:at - 1]
+
+
 def _arrows(s, key, times):
     """Hold an arrow key: one write of `times` presses, one drain."""
     s.key(key * times, delay=1.0)
@@ -102,18 +110,22 @@ def test_keyboard_move_moves_and_restores_focus(tmp_path):
         "typing after the move did not reach the Endpoint field: %r" % endpoint
 
 
-# @scenario SC-dialog-engine-08
-@incoherence("leaving move mode with Enter toggles the Enable checkbox that had the "
-             "focus: e_opt_kst_run re-enters the checkbox with sw == 0 and c == cold, "
-             "which its handler reads as a click")
+# @scenario SC-dialog-engine-08b
 def test_keyboard_move_does_not_toggle_focused_widget(tmp_path):
+    # Leaving move mode with Enter gives the focus back to the Enable checkbox;
+    # a refocus is not a click, so the box must keep its mark.  The row itself
+    # shifts with the move, so the comparison reads the "[ ]" / "[X]" glyph.
     with _open_ai_settings(tmp_path) as s:
-        before = _row_with(s, "Enable AI")
+        opened = _title_pos(s)
+        before = _checkbox_mark(s, "Enable AI")
         s.key(ALT_F2, delay=0.6)
         _arrows(s, RIGHT, 1)
         s.key(ENTER, delay=0.6)
-        after = _row_with(s, "Enable AI")
-    assert before.strip() == after.strip(), \
+        moved = _title_pos(s)
+        after = _checkbox_mark(s, "Enable AI")
+    assert moved == (opened[0], opened[1] + 1), \
+        "Right x1 did not move the title from %r to %r" % (opened, moved)
+    assert before == after, \
         "the move flipped the focused checkbox:\nBEFORE: %r\nAFTER:  %r" % (before, after)
 
 

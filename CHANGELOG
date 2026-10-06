@@ -356,6 +356,36 @@ Changes
       engine bugs recorded as xfail tests (Esc on a radio commits the dialog, a
       terminal resize flips the first checkbox, a paste can press accelerators)
       which turn green as each is fixed.
+* Fixed: Esc in a dialog did not cancel while a checkbox or a radio button had
+  the focus.  From the initial focus of Options > AI the first Esc only moved
+  the focus to Cancel and a second one was needed; from a radio button Esc
+  closed the dialog as if Ok had been pressed and the options were applied and
+  saved.  The close box in the title row showed the same two faces.  Now one
+  Esc, or one click on the close box, cancels from whatever widget has the
+  focus and nothing is applied.
+* Fixed: a dialog's focused checkbox flipped on its own after the dialog was
+  moved from the keyboard (Alt-F2, arrows, Enter), and the FIRST checkbox of
+  any open dialog flipped on every terminal resize ("Show Endmark" in Options
+  > Editor, "Enable" in Options > AI went [ ] -> [X] -> [ ] on successive
+  resizes).  Giving the focus back to a widget is no longer taken as a click.
+* Fixed: a terminal paste with the focus on a checkbox, a radio or a button
+  drove the dialog as if typed: a pasted letter pressed the widget whose
+  accelerator it is, a pasted newline confirmed the dialog through its default
+  button.  Pasted text now reaches only a focused text or numeric field (which
+  keeps its characters and drops the line breaks) and is ignored everywhere
+  else in the dialog.
+* Fixed: the scroll wheel over a checkbox or radio label toggled it, and the
+  middle and right mouse buttons pressed widgets, closed the dialog from the
+  close box and dragged it by the title.  Only button 1 acts in a dialog now;
+  the wheel and the other buttons do nothing there.
+* Fixed: grabbing a dialog's title row three cells from its left corner closed
+  the dialog instead of starting a drag, because an invisible close cell was
+  still hit-tested where the classic Borland close box used to be.  The drawn
+  close box at the right is the only place that closes the dialog.
+* Fixed: on a terminal too narrow for a dialog, widgets whose first cell was
+  inside the frame were painted straight through its right border (the
+  Permission radios and the Endpoint field of Options > AI at 50 columns).  A
+  widget is drawn only when it fits inside the frame.
 * Fix a project Make (F9) that could abort with glibc "free(): invalid pointer"
   when a project variable (e.g. CMP) was missing -- e_c_project freed an
   uninitialised argument slot; it is now zero-initialised.

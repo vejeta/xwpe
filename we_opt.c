@@ -10,6 +10,7 @@
 #include "WeExpArr.h"
 #include "we_ai.h"        /* AI backend config keys (guarded by WPE_AI) */
 #include <ctype.h>
+#include <limits.h>
 #include <sys/types.h>
 #include <sys/stat.h>
 
@@ -1592,13 +1593,37 @@ W_OPTSTR *e_init_opt_kst(FENSTER *f)
  return(o);
 }
 
+/**
+ * e_opt_getch - Read the next key for a dialog, leaving a terminal paste alone.
+ *
+ * A bracketed paste (xterm mode 2004) streams its text through the same key
+ * reader as typing does.  Only a focused text field has a use for the pasted
+ * characters, and it reads them itself; anywhere else in a dialog -- on a
+ * checkbox, a radio, a button, in the keyboard move mode -- a pasted letter
+ * would be taken as an accelerator (an "o" pressing Ok and closing the box)
+ * and a pasted newline as Enter.  So while the terminal says a paste is
+ * streaming, its bytes are swallowed and the first key typed after it is
+ * returned.  The terminal backend clears the flag when it sees the paste's
+ * end marker, so the loop ends with the paste.
+ */
+static int e_opt_getch(void)
+{
+ extern int g_bracketed_paste;
+ int c;
+
+ do
+  c = e_getch();
+ while (g_bracketed_paste);
+ return c;
+}
+
 int e_opt_move(W_OPTSTR *o)
 {
  int xa = o->xa, ya = o->ya, xe = o->xe, ye = o->ye;
  int c = 0;
 
  e_std_rahmen(o->xa, o->ya, o->xe, o->ye, o->name, 0, o->frt, o->frs);
- while ((c = e_getch()) != WPE_ESC && c != WPE_CR)
+ while ((c = e_opt_getch()) != WPE_ESC && c != WPE_CR)
  {
   switch(c)
   {
@@ -1649,15 +1674,19 @@ int e_get_sw_cmp(int xin, int yin, int x, int y, int xmin, int ymin, int c)
       ((c == CRI || c == CCRI) && yin == y && xin > x && xin < xmin) );
 }
 
+/* A checkbox or radio is drawn as its 3-cell "[ ]" / "( )" glyph, a space, and
+   then its label: the label starts this many cells past the glyph's column. */
+#define OPT_GLYPH_WIDTH 4
+
 /* Width of a check/radio widget's clickable strip: the "[ ]"/"( ) " glyph PLUS
    its label, so a click anywhere on "[ ] Enable AI" or "( ) Ollama" toggles it,
    not only the 3-cell glyph.  Buttons already hit-test their whole label; this
    brings the check and radio widgets in line, which is what a user expects when
-   they click the text.  The label is drawn 4 cells past the glyph (see the
-   "[ ]" / "( ) " draws in e_opt_kst_run). */
+   they click the text.  The label is drawn OPT_GLYPH_WIDTH cells past the glyph
+   (see e_opt_draw_widgets). */
 static int e_opt_glyph_hit_width(const char *header)
 {
-   return header ? 4 + (int)strlen(header) : 2;
+   return header ? OPT_GLYPH_WIDTH + (int)strlen(header) : 2;
 }
 
 static int e_get_opt_sw_spatial(int c, int x, int y, W_OPTSTR *o)
@@ -1837,19 +1866,722 @@ static void e_opt_center_dialog(W_OPTSTR *o, int dlg_w, int dlg_h)
    if (o->ya >= o->ye - 2) o->ya = 1;
 }
 
-static int e_opt_element_visible(W_OPTSTR *o, int ex, int ey)
+/**
+ * e_opt_element_visible - Decide whether a widget may be drawn in the frame.
+ * @o:     the dialog
+ * @ex:    the widget's first column, relative to the frame's left border
+ * @ey:    the widget's row, relative to the frame's top border
+ * @width: the cells the widget paints from @ex to the right
+ *
+ * When the screen is too small the dialog is clamped into the top-left corner
+ * and its frame shrinks, but the user must still see a clean border rather
+ * than labels and fields running through it.  A widget is drawn only when its
+ * whole extent lies strictly inside the frame (the border rows and columns
+ * excluded); one that would cross the right border is left out entirely, just
+ * like one whose row falls below the bottom border.  All-or-nothing is the
+ * honest choice: a text field cut mid-way would show a truncated value with no
+ * hint that it is truncated.
+ */
+static int e_opt_element_visible(W_OPTSTR *o, int ex, int ey, int width)
 {
  int ax = o->xa + ex;
  int ay = o->ya + ey;
- return (ay > o->ya && ay < o->ye && ax > o->xa && ax < o->xe);
+ int last = ax + width - 1;
+ return (ay > o->ya && ay < o->ye && ax > o->xa && last < o->xe);
+}
+
+/**
+ * e_opt_field_visible - Visibility of a labelled field (text or numeric).
+ *
+ * The label and the entry box are drawn at separate cells; the user sees the
+ * field as one thing, so it is drawn only when both parts fit.
+ */
+static int e_opt_field_visible(W_OPTSTR *o, int xt, int yt, const char *header,
+                               int xw, int yw, int nw)
+{
+ if (!e_opt_element_visible(o, xt, yt, (int)strlen(header)))
+  return 0;
+ return e_opt_element_visible(o, xw, yw, nw);
+}
+
+/**
+ * e_opt_draw_text_field - Paint a text field's current value in its box.
+ *
+ * Used at the first layout and again after the user has left the field, so
+ * what is shown is always the value the dialog holds.  A field with a
+ * drop-down history (@df) draws its arrow with the value.
+ */
+static void e_opt_draw_text_field(W_OPTSTR *o, int i)
+{
+ W_O_WRSTR *w = o->wstr[i];
+ int x = o->xa + w->xw;
+ int y = o->ya + w->yw;
+
+ if (!w->df)
+  e_schr_nchar(w->txt, x, y, 0, w->nw, o->fwt);
+ else
+  e_schr_nchar_wsv(w->txt, x, y, 0, w->nw, o->fwt, o->fws);
+}
+
+/* The two looks of a check/radio label and of a button face. */
+#define OPT_LOOK_PLAIN   0
+#define OPT_LOOK_FOCUSED 1
+
+/**
+ * e_opt_draw_checkbox_label - Paint a checkbox's label plain or highlighted.
+ *
+ * The highlight is the user's only sign of which checkbox will react to
+ * Space; it goes on when the box takes the focus and off when it loses it.
+ */
+static void e_opt_draw_checkbox_label(W_OPTSTR *o, int i, int look)
+{
+ W_O_SSWSTR *s = o->sstr[i];
+ int x = o->xa + s->x + OPT_GLYPH_WIDTH;
+ int y = o->ya + s->y;
+
+ if (look == OPT_LOOK_FOCUSED)
+  e_pr_str(x, y, s->header, o->fsa, s->nc, 1, o->fsa, 0);
+ else
+  e_pr_str(x, y, s->header, o->fst, s->nc, 1, o->fss, 0);
+}
+
+/**
+ * e_opt_draw_radio_label - Paint one radio option's label plain or highlighted.
+ */
+static void e_opt_draw_radio_label(W_OPTSTR *o, int i, int j, int look)
+{
+ W_O_SPSWSTR *p = o->pstr[i]->ps[j];
+ int x = o->xa + p->x + OPT_GLYPH_WIDTH;
+ int y = o->ya + p->y;
+
+ if (look == OPT_LOOK_FOCUSED)
+  e_pr_str(x, y, p->header, o->fsa, p->nc, 1, o->fsa, 0);
+ else
+  e_pr_str(x, y, p->header, o->fst, p->nc, 1, o->fss, 0);
+}
+
+/**
+ * e_opt_draw_button - Paint a button face plain or in its focused colours.
+ */
+static void e_opt_draw_button(W_OPTSTR *o, int i, int look)
+{
+ W_O_BTTSTR *b = o->bstr[i];
+ int x = o->xa + b->x;
+ int y = o->ya + b->y;
+
+ if (look == OPT_LOOK_FOCUSED)
+  e_pr_str(x, y, b->header, o->fbz, b->nc, -1, o->fbz, o->ftt);
+ else
+  e_pr_str(x, y, b->header, o->fbt, b->nc, -1, o->fbs, o->ftt);
+}
+
+/**
+ * e_opt_draw_widgets - Lay out every widget of a freshly framed dialog.
+ *
+ * Runs at the first layout and after every from-scratch redraw (a terminal
+ * resize, a picker that floated over the box).  Each widget is drawn only when
+ * it fits inside the frame, so a dialog clipped by a small screen keeps a
+ * clean border.
+ */
+static void e_opt_draw_widgets(W_OPTSTR *o)
+{
+ int i, j;
+
+ for (i = 0; i < o->tn; i++)
+ {
+  W_O_TXTSTR *t = o->tstr[i];
+  if (!e_opt_element_visible(o, t->x, t->y, (int)strlen(t->txt)))
+   continue;
+  e_pr_str(o->xa + t->x, o->ya + t->y, t->txt, o->ftt, -1, 0, 0, 0);
+ }
+ for (i = 0; i < o->wn; i++)
+ {
+  W_O_WRSTR *w = o->wstr[i];
+  if (!e_opt_field_visible(o, w->xt, w->yt, w->header, w->xw, w->yw, w->nw))
+   continue;
+  e_pr_str(o->xa + w->xt, o->ya + w->yt, w->header, o->ftt, w->nc, 1, o->fts, 0);
+  e_opt_draw_text_field(o, i);
+ }
+ for (i = 0; i < o->nn; i++)
+ {
+  W_O_NUMSTR *n = o->nstr[i];
+  if (!e_opt_field_visible(o, n->xt, n->yt, n->header, n->xw, n->yw, n->nw))
+   continue;
+  e_pr_str(o->xa + n->xt, o->ya + n->yt, n->header, o->ftt, n->nc, 1, o->fts, 0);
+  e_schr_nzif(n->num, o->xa + n->xw, o->ya + n->yw, n->nw, o->fwt);
+ }
+ for (i = 0; i < o->sn; i++)
+ {
+  W_O_SSWSTR *s = o->sstr[i];
+  if (!e_opt_element_visible(o, s->x, s->y, e_opt_glyph_hit_width(s->header)))
+   continue;
+  e_opt_draw_checkbox_label(o, i, OPT_LOOK_PLAIN);
+  e_pr_str(o->xa + s->x, o->ya + s->y, "[ ]", o->fst, -1, 1, 0, 0);
+  if (s->num)
+   e_pr_char(o->xa + s->x + 1, o->ya + s->y, 'X', o->fst);
+ }
+ for (i = 0; i < o->pn; i++)
+ {
+  for (j = 0; j < o->pstr[i]->np; j++)
+  {
+   W_O_SPSWSTR *p = o->pstr[i]->ps[j];
+   if (!e_opt_element_visible(o, p->x, p->y, e_opt_glyph_hit_width(p->header)))
+    continue;
+   e_pr_str(o->xa + p->x, o->ya + p->y, "( ) ", o->fst, -1, 1, 0, 0);
+   e_opt_draw_radio_label(o, i, j, OPT_LOOK_PLAIN);
+   e_pr_str(o->xa + p->x, o->ya + p->y, "( )", o->fst, -1, 1, 0, 0);
+   if (o->pstr[i]->num == j)
+    e_pr_char(o->xa + p->x + 1, o->ya + p->y, '*', o->fst);
+  }
+ }
+ for (i = 0; i < o->bn; i++)
+ {
+  W_O_BTTSTR *b = o->bstr[i];
+  if (!e_opt_element_visible(o, b->x, b->y, (int)strlen(b->header)))
+   continue;
+  e_opt_draw_button(o, i, OPT_LOOK_PLAIN);
+ }
+}
+
+/**
+ * e_opt_draw_marks - Refresh every [X] and (*) mark from the dialog's values.
+ *
+ * Drawn as Borland-style text glyphs in EVERY mode.  The former NEWSTYLE+X11
+ * branch drew a 3D bevel via e_make_xrect_abs whose checked and unchecked
+ * states differ only by a subtle highlight bit -- invisible to the user, so
+ * toggling a box in xwpe looked like nothing happened (the value DID flip).
+ * The 'X' / '*' glyphs match the first layout and the ncurses path, and
+ * render clearly under Xft.
+ */
+static void e_opt_draw_marks(W_OPTSTR *o)
+{
+ int i, j;
+
+ for (i = 0; i < o->sn; i++)
+ {
+  W_O_SSWSTR *s = o->sstr[i];
+  if (s->num)
+   e_pr_char(o->xa + s->x + 1, o->ya + s->y, 'X', o->fst);
+  else
+   e_pr_char(o->xa + s->x + 1, o->ya + s->y, ' ', o->fst);
+ }
+ for (i = 0; i < o->pn; i++)
+ {
+  for (j = 0; j < o->pstr[i]->np; j++)
+  {
+   W_O_SPSWSTR *p = o->pstr[i]->ps[j];
+   if (o->pstr[i]->num == j)
+    e_pr_char(o->xa + p->x + 1, o->ya + p->y, '*', o->fst);
+   else
+    e_pr_char(o->xa + p->x + 1, o->ya + p->y, ' ', o->fst);
+  }
+ }
+}
+
+/* What the loop does with the widget code it carries: give that widget the
+   focus (highlight it and wait for a key) or activate it (toggle the checkbox,
+   select the radio, press the button).  A mouse click or an accelerator letter
+   asks for activation; everything else -- a focus move, Space on a toggle, an
+   unknown key, leaving the move mode, a redraw after a resize -- asks for the
+   focus only.  Keeping the two apart is what stops a mere refocus from
+   flipping the checkbox that happens to be under the focus. */
+#define OPT_ACTIVATE 0
+#define OPT_FOCUS    1
+
+/* Answer of a button run: go on with the loop, or redraw the box in place. */
+#define OPT_CONTINUE 0
+#define OPT_RESTART  1
+
+/* The input state the dialog loop carries from one key to the next. */
+struct opt_run {
+ int c;      /* the key or widget code to dispatch next */
+ int cold;   /* the widget that had the focus last */
+ int sw;     /* OPT_FOCUS or OPT_ACTIVATE, the meaning of c */
+ int ret;    /* the dialog's result: 0 applies, WPE_ESC cancels, else a button's code */
+};
+
+/**
+ * e_opt_refocus - Give the focus back to the widget that had it.
+ *
+ * Used after anything that is neither a click nor an accelerator: an unknown
+ * key, Space on a toggle, leaving the keyboard move mode, a button action
+ * that kept the dialog open.  The widget is highlighted again and waits for
+ * the next key; it is never activated, so moving the box or pressing a key
+ * the dialog does not know cannot flip the checkbox under the focus.
+ */
+static void e_opt_refocus(struct opt_run *r)
+{
+ r->c = r->cold;
+ r->sw = OPT_FOCUS;
+}
+
+/**
+ * e_opt_cancel - End the dialog without applying anything.
+ *
+ * Esc from whatever widget has the focus, and the drawn close box (which the
+ * mouse layer reports as Esc), both mean "forget it": the loop ends and the
+ * caller sees WPE_ESC, so nothing is applied or saved.  One Esc is enough
+ * from a checkbox or a radio as much as from a text field or a button; the
+ * widget itself has no say in it.
+ */
+static void e_opt_cancel(struct opt_run *r)
+{
+ r->c = WPE_ESC;
+ r->sw = OPT_ACTIVATE;
+ r->ret = WPE_ESC;
+}
+
+/**
+ * e_opt_submit_default - Enter on a non-button widget presses the default button.
+ *
+ * The Borland convention: Enter anywhere in the dialog is Ok.  The default
+ * button's code is dispatched for activation, so its action runs (or the
+ * dialog returns its code) exactly as if it had been clicked.
+ */
+static void e_opt_submit_default(W_OPTSTR *o, struct opt_run *r)
+{
+ r->c = o->crsw;
+ r->sw = OPT_ACTIVATE;
+}
+
+/**
+ * e_opt_press_button - Enter on a focused button presses that very button.
+ *
+ * A Cancel button carries the cancel key itself as its code, so pressing it
+ * is the same as Esc: the dialog ends with nothing applied.  Any other button
+ * is dispatched for activation, as a click on it would be.
+ */
+static void e_opt_press_button(W_OPTSTR *o, struct opt_run *r, int i)
+{
+ if (o->bstr[i]->sw == WPE_ESC)
+ {
+  e_opt_cancel(r);
+  return;
+ }
+ r->c = o->bstr[i]->sw;
+ r->sw = OPT_ACTIVATE;
+}
+
+/**
+ * e_opt_focus_by_key - Turn a navigation key into the widget it leads to.
+ * @x, @y: screen cell of the widget that has the focus now
+ *
+ * Tab, Shift-Tab and the arrows move the focus: the key is replaced by the
+ * code of the widget they lead to, for focusing.  Any other key is kept as it
+ * is, for activation: the loop then matches it against the accelerators (a
+ * letter presses the widget whose hot letter it is) and, when nothing
+ * matches, the focus simply returns to where it was.
+ */
+static void e_opt_focus_by_key(W_OPTSTR *o, struct opt_run *r, int x, int y)
+{
+ int key = r->c;
+
+ r->c = e_get_opt_sw(key, x, y, o);
+ if (r->c != key)
+  r->sw = OPT_FOCUS;
+ else
+  r->sw = OPT_ACTIVATE;
+}
+
+/**
+ * e_opt_read_key - Wait for the focused widget's next key or mouse action.
+ *
+ * A mouse report is resolved by the mouse layer into the code of the widget
+ * under the pointer (to be activated, like an accelerator), into Esc for the
+ * close box, or into -1 for a click that means nothing in this dialog.
+ */
+static int e_opt_read_key(W_OPTSTR *o)
+{
+ int c = e_opt_getch();
+
+#if MOUSE
+ if (c < 0)
+  c = e_opt_mouse(o, c);
+#endif
+ return c;
+}
+
+/**
+ * e_opt_code_matches - Does key or widget code @c name this widget?
+ *
+ * A widget is addressed either by its own code (the focus mover and the mouse
+ * layer produce those) or by its accelerator letter, typed plain or with Alt.
+ */
+static int e_opt_code_matches(int c, int sw, int nc, const char *header)
+{
+ if (sw == c)
+  return 1;
+ if (nc < 0 || c < 0 || c > UCHAR_MAX)
+  return 0;
+ return toupper(c) == header[nc];
+}
+
+static int e_opt_find_text_field(W_OPTSTR *o, int c)
+{
+ int i;
+
+ for (i = 0; i < o->wn; i++)
+  if (e_opt_code_matches(c, o->wstr[i]->sw, o->wstr[i]->nc, o->wstr[i]->header))
+   return i;
+ return -1;
+}
+
+static int e_opt_find_num_field(W_OPTSTR *o, int c)
+{
+ int i;
+
+ for (i = 0; i < o->nn; i++)
+  if (e_opt_code_matches(c, o->nstr[i]->sw, o->nstr[i]->nc, o->nstr[i]->header))
+   return i;
+ return -1;
+}
+
+static int e_opt_find_checkbox(W_OPTSTR *o, int c)
+{
+ int i;
+
+ for (i = 0; i < o->sn; i++)
+  if (e_opt_code_matches(c, o->sstr[i]->sw, o->sstr[i]->nc, o->sstr[i]->header))
+   return i;
+ return -1;
+}
+
+/* Find the radio option named by @c; returns 1 and fills @group / @option. */
+static int e_opt_find_radio(W_OPTSTR *o, int c, int *group, int *option)
+{
+ int i, j;
+
+ for (i = 0; i < o->pn; i++)
+  for (j = 0; j < o->pstr[i]->np; j++)
+  {
+   W_O_SPSWSTR *p = o->pstr[i]->ps[j];
+   if (e_opt_code_matches(c, p->sw, p->nc, p->header))
+   {
+    *group = i;
+    *option = j;
+    return 1;
+   }
+  }
+ return 0;
+}
+
+static int e_opt_find_button(W_OPTSTR *o, int c)
+{
+ int i;
+
+ for (i = 0; i < o->bn; i++)
+  if (e_opt_code_matches(c, o->bstr[i]->sw, o->bstr[i]->nc, o->bstr[i]->header))
+   return i;
+ return -1;
+}
+
+/**
+ * e_opt_route_field_key - Act on the key that made the user leave a field.
+ *
+ * Enter submits the dialog through its default button, Esc cancels it, a
+ * navigation key moves the focus, and anything else is offered to the
+ * accelerators by the loop.
+ */
+static void e_opt_route_field_key(W_OPTSTR *o, struct opt_run *r, int x, int y)
+{
+ e_opt_focus_by_key(o, r, x, y);
+ if (r->c == WPE_CR)
+  e_opt_submit_default(o, r);
+ else if (r->c == WPE_ESC)
+  e_opt_cancel(r);
+}
+
+/**
+ * e_opt_run_text_field - Let the user edit a text field until a key leaves it.
+ *
+ * The value is kept unless the user leaves with Esc; a mouse click outside the
+ * field is handed to the mouse layer like any other click in the dialog.
+ */
+static void e_opt_run_text_field(W_OPTSTR *o, struct opt_run *r, int i)
+{
+ W_O_WRSTR *w = o->wstr[i];
+ int x = o->xa + w->xw;
+ int y = o->ya + w->yw;
+ char *tmp = MALLOC((w->wmx + 1) * sizeof(char));
+ int c;
+
+ r->cold = r->c;
+ strcpy(tmp, w->txt);
+ if (!w->df)
+  c = e_schreib_leiste(tmp, x, y, w->nw, w->wmx, o->fwt, o->fws);
+ else
+  c = e_schr_lst_wsv(tmp, x, y, w->nw, w->wmx, o->fwt, o->fws, w->df, o->f);
+#if MOUSE
+ if (c < 0)
+  c = e_opt_mouse(o, c);
+#endif
+ if (c != WPE_ESC)
+  strcpy(w->txt, tmp);
+ e_opt_draw_text_field(o, i);
+ r->c = c;
+ e_opt_route_field_key(o, r, x, y);
+ free(tmp);
+ fk_cursor(0);
+}
+
+/**
+ * e_opt_run_num_field - Let the user edit a numeric field until a key leaves it.
+ */
+static void e_opt_run_num_field(W_OPTSTR *o, struct opt_run *r, int i)
+{
+ W_O_NUMSTR *n = o->nstr[i];
+ int x = o->xa + n->xw;
+ int y = o->ya + n->yw;
+ int num = n->num;
+ int c;
+
+ r->cold = r->c;
+ c = e_schreib_zif(&num, x, y, n->nw, o->fwt, o->fws);
+#if MOUSE
+ if (c < 0)
+  c = e_opt_mouse(o, c);
+#endif
+ if (c != WPE_ESC)
+  n->num = num;
+ r->c = c;
+ e_opt_route_field_key(o, r, x, y);
+ if (r->c != r->cold)
+  e_schr_nzif(n->num, x, y, n->nw, o->fwt);
+ fk_cursor(0);
+}
+
+/**
+ * e_opt_route_checkbox_key - Act on a key pressed while a checkbox has the focus.
+ *
+ * Space toggles it and keeps the focus (the mark is redrawn at the top of the
+ * loop); Enter submits the dialog; Esc cancels it; a navigation key moves the
+ * focus; anything else goes to the accelerators.
+ */
+static void e_opt_route_checkbox_key(W_OPTSTR *o, struct opt_run *r, int i)
+{
+ W_O_SSWSTR *s = o->sstr[i];
+
+ if (r->c == ' ')
+ {
+  s->num = !s->num;
+  e_opt_refocus(r);
+ }
+ else if (r->c == WPE_CR)
+  e_opt_submit_default(o, r);
+ else if (r->c == WPE_ESC)
+  e_opt_cancel(r);
+ else
+  e_opt_focus_by_key(o, r, o->xa + s->x, o->ya + s->y);
+}
+
+/**
+ * e_opt_run_checkbox - Activate a checkbox, or focus it and take one key.
+ *
+ * Activation (a click, an accelerator) flips the box and hands the focus back
+ * to where it was.  Focusing highlights the label and waits for the user.
+ */
+static void e_opt_run_checkbox(W_OPTSTR *o, struct opt_run *r, int i)
+{
+ W_O_SSWSTR *s = o->sstr[i];
+
+ if (r->sw == OPT_ACTIVATE)
+ {
+  s->num = !s->num;
+  e_opt_refocus(r);
+  return;
+ }
+ r->cold = r->c;
+ e_opt_draw_checkbox_label(o, i, OPT_LOOK_FOCUSED);
+ r->c = e_opt_read_key(o);
+ e_opt_route_checkbox_key(o, r, i);
+ if (r->c != r->cold)
+  e_opt_draw_checkbox_label(o, i, OPT_LOOK_PLAIN);
+}
+
+/**
+ * e_opt_route_radio_key - Act on a key pressed while a radio option has the focus.
+ *
+ * Space selects the option and keeps the focus.  Enter SELECTS it and submits
+ * the dialog (Borland Enter=OK), so Down-to-it + Enter is one move and Space
+ * first is optional.  Esc cancels; a navigation key moves the focus; anything
+ * else goes to the accelerators.
+ */
+static void e_opt_route_radio_key(W_OPTSTR *o, struct opt_run *r, int i, int j)
+{
+ W_O_SPSWSTR *p = o->pstr[i]->ps[j];
+
+ if (r->c == ' ')
+ {
+  o->pstr[i]->num = j;
+  e_opt_refocus(r);
+ }
+ else if (r->c == WPE_CR)
+ {
+  o->pstr[i]->num = j;
+  e_opt_submit_default(o, r);
+ }
+ else if (r->c == WPE_ESC)
+  e_opt_cancel(r);
+ else
+  e_opt_focus_by_key(o, r, o->xa + p->x, o->ya + p->y);
+}
+
+/**
+ * e_opt_run_radio - Activate a radio option, or focus it and take one key.
+ */
+static void e_opt_run_radio(W_OPTSTR *o, struct opt_run *r, int i, int j)
+{
+ if (r->sw == OPT_ACTIVATE)
+ {
+  o->pstr[i]->num = j;
+  e_opt_refocus(r);
+  return;
+ }
+ r->cold = r->c;
+ e_opt_draw_radio_label(o, i, j, OPT_LOOK_FOCUSED);
+ r->c = e_opt_read_key(o);
+ e_opt_route_radio_key(o, r, i, j);
+ if (r->c != r->cold)
+  e_opt_draw_radio_label(o, i, j, OPT_LOOK_PLAIN);
+}
+
+/**
+ * e_opt_activate_button - Press a button and act on what its action answers.
+ *
+ * A button without an action ends the dialog with the button's own code
+ * (Ok / Cancel).  An action that returns a positive value ends the dialog
+ * with it; zero keeps the dialog open with the focus back where it was; a
+ * negative value means the action floated an overlay over the dialog (a
+ * scrollable picker) and wants the whole box repainted in place, because the
+ * overlay's own restore cannot rebuild it under the panel/schirm split.
+ */
+static int e_opt_activate_button(W_OPTSTR *o, struct opt_run *r, int i)
+{
+ W_O_BTTSTR *b = o->bstr[i];
+
+ if (b->fkt == NULL)
+ {
+  r->ret = b->sw;
+  r->c = WPE_ESC;
+  return OPT_CONTINUE;
+ }
+ r->ret = b->fkt(o->f);
+ if (r->ret > 0)
+ {
+  r->c = WPE_ESC;
+  return OPT_CONTINUE;
+ }
+ if (r->ret < 0)
+  return OPT_RESTART;
+ e_opt_refocus(r);
+ e_opt_draw_button(o, i, OPT_LOOK_PLAIN);
+ return OPT_CONTINUE;
+}
+
+/**
+ * e_opt_route_button_key - Act on a key pressed while a button has the focus.
+ *
+ * Enter presses this button, Esc cancels the dialog, a navigation key moves
+ * the focus, anything else goes to the accelerators.
+ */
+static void e_opt_route_button_key(W_OPTSTR *o, struct opt_run *r, int i)
+{
+ W_O_BTTSTR *b = o->bstr[i];
+
+ if (r->c == WPE_CR)
+  e_opt_press_button(o, r, i);
+ else if (r->c == WPE_ESC)
+  e_opt_cancel(r);
+ else
+  e_opt_focus_by_key(o, r, o->xa + b->x, o->ya + b->y);
+}
+
+/**
+ * e_opt_run_button - Press a button, or focus it and take one key.
+ *
+ * Returns OPT_RESTART when the button's action asks for an in-place redraw of
+ * the dialog, OPT_CONTINUE otherwise.
+ */
+static int e_opt_run_button(W_OPTSTR *o, struct opt_run *r, int i)
+{
+ e_opt_draw_button(o, i, OPT_LOOK_FOCUSED);
+ if (r->sw == OPT_ACTIVATE)
+  return e_opt_activate_button(o, r, i);
+ r->cold = r->c;
+ r->c = e_opt_read_key(o);
+ e_opt_route_button_key(o, r, i);
+ if (r->c != r->cold)
+  e_opt_draw_button(o, i, OPT_LOOK_PLAIN);
+ return OPT_CONTINUE;
+}
+
+/**
+ * e_opt_is_move_key - Is @c the key that starts the keyboard move mode?
+ *
+ * Alt-F2 with the classic key style, Ctrl-L with the CUA style.
+ */
+static int e_opt_is_move_key(W_OPTSTR *o, int c)
+{
+ if (o->f->ed->edopt & ED_CUA_STYLE)
+  return c == CtrlL;
+ return c == AF2;
+}
+
+/**
+ * e_opt_prepare_restart - Tear the box down for a from-scratch redraw.
+ *
+ * After a terminal resize, or when a button's action floated a picker over
+ * the dialog, the box is drawn again from the top of e_opt_kst_run.  The
+ * focus goes to the first widget (c == 0 lets the layout pick it) and in
+ * FOCUS mode: a redraw is not a click, so the widget it lands on is
+ * highlighted, never toggled -- a resize used to flip the first checkbox.
+ */
+static void e_opt_prepare_restart(W_OPTSTR *o, struct opt_run *r)
+{
+ e_close_view(o->pic, 0);
+ o->pic = NULL;
+ r->c = 0;
+ r->sw = OPT_FOCUS;
+}
+
+/**
+ * e_opt_wait_esc_or_resize - Hold a dialog the screen cannot show.
+ *
+ * When the frame had to be clipped, nothing in it is safe to operate, so
+ * every key is swallowed until the user gives up (Esc) or the terminal grows
+ * (a resize, after which the box is laid out again).
+ */
+static int e_opt_wait_esc_or_resize(void)
+{
+ int c;
+
+ do
+  c = e_opt_getch();
+ while (c != WPE_ESC && c != WPE_RESIZE);
+ return c;
+}
+
+/**
+ * e_opt_close - Take the box off the screen and give the editor back.
+ */
+static void e_opt_close(W_OPTSTR *o)
+{
+ e_close_view(o->pic, 1);
+ e_mouse_flush();
+ e_repaint_desk_nopic(o->f->ed->f[o->f->ed->mxedt]);
 }
 
 static int e_opt_kst_run(W_OPTSTR *o)
 {
-   int ret = 0, csv, sw = 1, i, j, num, cold, c = o->bgsw, keep_pos = 0;
-   char *tmp;
+   struct opt_run r;
+   int i, j, keep_pos = 0;
    int dlg_w = o->xe - o->xa;
    int dlg_h = o->ye - o->ya;
+
+   r.c = o->bgsw;
+   r.cold = 0;
+   r.sw = OPT_FOCUS;
+   r.ret = 0;
    fk_cursor(0);
 e_opt_kst_restart:
    /* Keep a user-dragged position across an in-place repaint (a picker button
@@ -1860,311 +2592,73 @@ e_opt_kst_restart:
    keep_pos = 0;
    o->pic = e_std_kst(o->xa, o->ya, o->xe, o->ye, o->name, 1, o->frt, o->ftt, o->frs);
    if(o->pic == NULL) {  e_error(e_msg[ERR_LOWMEM], 0, o->f->fb); return(-1);  }
-   if(!c) c = e_get_opt_sw(CDO, 0, 0, o);
-   for(i = 0; i < o->tn; i++)
-      if (e_opt_element_visible(o, o->tstr[i]->x, o->tstr[i]->y))
-      e_pr_str(o->xa+o->tstr[i]->x, o->ya+o->tstr[i]->y, o->tstr[i]->txt,
-      o->ftt, -1, 0, 0, 0);
-   for(i = 0; i < o->wn; i++)
-   {  if (!e_opt_element_visible(o, o->wstr[i]->xw, o->wstr[i]->yw)) continue;
-      e_pr_str(o->xa+o->wstr[i]->xt, o->ya+o->wstr[i]->yt, o->wstr[i]->header,
-         o->ftt, o->wstr[i]->nc, 1, o->fts, 0);
-      if(!o->wstr[i]->df)
-         e_schr_nchar(o->wstr[i]->txt, o->xa+o->wstr[i]->xw,
-         o->ya+o->wstr[i]->yw, 0, o->wstr[i]->nw, o->fwt);
-      else
-         e_schr_nchar_wsv(o->wstr[i]->txt, o->xa+o->wstr[i]->xw,
-         o->ya+o->wstr[i]->yw, 0, o->wstr[i]->nw, o->fwt, o->fws);
-   }
-   for(i = 0; i < o->nn; i++)
-   {  if (!e_opt_element_visible(o, o->nstr[i]->xw, o->nstr[i]->yw)) continue;
-      e_pr_str(o->xa+o->nstr[i]->xt, o->ya+o->nstr[i]->yt, o->nstr[i]->header,
-         o->ftt, o->nstr[i]->nc, 1, o->fts, 0);
-      e_schr_nzif(o->nstr[i]->num, o->xa+o->nstr[i]->xw, o->ya+o->nstr[i]->yw,
-         o->nstr[i]->nw, o->fwt);
-   }
-   for(i = 0; i < o->sn; i++)
-   {  if (!e_opt_element_visible(o, o->sstr[i]->x, o->sstr[i]->y)) continue;
-      e_pr_str(o->xa+o->sstr[i]->x+4, o->ya+o->sstr[i]->y, o->sstr[i]->header,
-         o->fst, o->sstr[i]->nc, 1, o->fss, 0);
-      e_pr_str(o->xa+o->sstr[i]->x, o->ya+o->sstr[i]->y, "[ ]", o->fst, -1, 1, 0, 0);
-      if(o->sstr[i]->num)
-         e_pr_char(o->xa+o->sstr[i]->x+1, o->ya+o->sstr[i]->y, 'X', o->fst);
-   }
-   for(i = 0; i < o->pn; i++)
-   {  for(j = 0; j < o->pstr[i]->np; j++)
-      {  if (!e_opt_element_visible(o, o->pstr[i]->ps[j]->x, o->pstr[i]->ps[j]->y)) continue;
-         e_pr_str(o->xa+o->pstr[i]->ps[j]->x, o->ya+o->pstr[i]->ps[j]->y, "( ) ",
-            o->fst, -1, 1, 0, 0);
-         e_pr_str(o->xa+o->pstr[i]->ps[j]->x+4, o->ya+o->pstr[i]->ps[j]->y,
-            o->pstr[i]->ps[j]->header, o->fst, o->pstr[i]->ps[j]->nc,
-            1, o->fss, 0);
-         e_pr_str(o->xa+o->pstr[i]->ps[j]->x, o->ya+o->pstr[i]->ps[j]->y, "( )", o->fst, -1, 1, 0, 0);
-         if(o->pstr[i]->num == j)
-            e_pr_char(o->xa+o->pstr[i]->ps[j]->x+1, o->ya+o->pstr[i]->ps[j]->y, '*', o->fst);
-      }
-   }
-   for(i = 0; i < o->bn; i++)
-   {  if (!e_opt_element_visible(o, o->bstr[i]->x, o->bstr[i]->y)) continue;
-      e_pr_str(o->xa+o->bstr[i]->x, o->ya+o->bstr[i]->y, o->bstr[i]->header,
-         o->fbt, o->bstr[i]->nc, -1, o->fbs, o->ftt);
-   }
-   cold = c;
+   if(!r.c) r.c = e_get_opt_sw(CDO, 0, 0, o);
+   e_opt_draw_widgets(o);
+   r.cold = r.c;
    if (o->xe - o->xa < dlg_w || o->ye - o->ya < dlg_h)
    {
-      while ((c = e_getch()) != WPE_ESC && c != WPE_RESIZE)
-         ;
-      if (c == WPE_RESIZE)
+      if (e_opt_wait_esc_or_resize() == WPE_RESIZE)
       {
-         e_close_view(o->pic, 0);
-         o->pic = NULL;
-         c = 0;
+         e_opt_prepare_restart(o, &r);
          goto e_opt_kst_restart;
       }
-      e_close_view(o->pic, 1);
-      e_mouse_flush();
-      e_repaint_desk_nopic(o->f->ed->f[o->f->ed->mxedt]);
+      e_opt_close(o);
       return(WPE_ESC);
    }
-   while (c != WPE_ESC || sw)
+   /* The loop ends on Esc in activate mode only: Esc in focus mode names the
+      Cancel button (its code is WPE_ESC) and merely focuses it. */
+   while (r.c != WPE_ESC || r.sw == OPT_FOCUS)
    {
-      if (c == WPE_RESIZE)
+      if (r.c == WPE_RESIZE)
       {
-         e_close_view(o->pic, 0);
-         o->pic = NULL;
-         c = 0;
+         e_opt_prepare_restart(o, &r);
          goto e_opt_kst_restart;
       }
-      /* Draw the check/radio marks as Borland-style text glyphs ([X] / (*) )
-         in EVERY mode.  The former NEWSTYLE+X11 branch drew a 3D bevel via
-         e_make_xrect_abs whose checked vs unchecked states differ only by a
-         subtle highlight bit -- invisible to the user, so toggling a box in
-         xwpe looked like nothing happened (the value DID flip).  The 'X'/'*'
-         glyphs match the initial draw above and the ncurses path, and render
-         clearly under Xft. */
-      {  for(i = 0; i < o->sn; i++)
-         {  if(o->sstr[i]->num)
-               e_pr_char(o->xa+o->sstr[i]->x+1, o->ya+o->sstr[i]->y, 'X', o->fst);
-            else
-               e_pr_char(o->xa+o->sstr[i]->x+1, o->ya+o->sstr[i]->y, ' ', o->fst);
+      e_opt_draw_marks(o);
+      if (e_opt_is_move_key(o, r.c))
+      {
+         e_opt_move(o);
+         e_opt_refocus(&r);
+         continue;
+      }
+      i = e_opt_find_text_field(o, r.c);
+      if (i >= 0)
+      {
+         e_opt_run_text_field(o, &r, i);
+         continue;
+      }
+      i = e_opt_find_num_field(o, r.c);
+      if (i >= 0)
+      {
+         e_opt_run_num_field(o, &r, i);
+         continue;
+      }
+      i = e_opt_find_checkbox(o, r.c);
+      if (i >= 0)
+      {
+         e_opt_run_checkbox(o, &r, i);
+         continue;
+      }
+      if (e_opt_find_radio(o, r.c, &i, &j))
+      {
+         e_opt_run_radio(o, &r, i, j);
+         continue;
+      }
+      i = e_opt_find_button(o, r.c);
+      if (i >= 0)
+      {
+         if (e_opt_run_button(o, &r, i) == OPT_RESTART)
+         {
+            e_opt_prepare_restart(o, &r);
+            keep_pos = 1;   /* in-place repaint: keep the dragged position */
+            goto e_opt_kst_restart;
          }
-         for(i = 0; i < o->pn; i++)
-            for(j = 0; j < o->pstr[i]->np; j++)
-            {  if(o->pstr[i]->num == j)
-                  e_pr_char(o->xa+o->pstr[i]->ps[j]->x+1, o->ya+o->pstr[i]->ps[j]->y, '*', o->fst);
-               else
-                  e_pr_char(o->xa+o->pstr[i]->ps[j]->x+1, o->ya+o->pstr[i]->ps[j]->y, ' ', o->fst);
-            }
+         continue;
       }
-      if((c == AF2 && !(o->f->ed->edopt & ED_CUA_STYLE))
-         || (o->f->ed->edopt & ED_CUA_STYLE && c == CtrlL))
-      {  e_opt_move(o);  c = cold;  continue;  }
-      for(i = 0; i < o->wn; i++)
-         if(o->wstr[i]->sw == c || (o->wstr[i]->nc >= 0 &&
-         toupper(c) == o->wstr[i]->header[o->wstr[i]->nc]))
-      {  cold = c;
-         tmp = MALLOC((o->wstr[i]->wmx + 1) * sizeof(char));
-         strcpy(tmp, o->wstr[i]->txt);
-#if MOUSE
-         if(!o->wstr[i]->df && (c = e_schreib_leiste(tmp,
-            o->xa+o->wstr[i]->xw, o->ya+o->wstr[i]->yw,
-            o->wstr[i]->nw, o->wstr[i]->wmx, o->fwt, o->fws)) < 0)
-            c = e_opt_mouse(o);
-         else if(o->wstr[i]->df && (c = e_schr_lst_wsv(tmp,
-            o->xa+o->wstr[i]->xw, o->ya+o->wstr[i]->yw,
-            o->wstr[i]->nw, o->wstr[i]->wmx, o->fwt, o->fws,
-            o->wstr[i]->df, o->f)) < 0)
-            c = e_opt_mouse(o);
-#else
-         if(!o->wstr[i]->df)
-            c = e_schreib_leiste(tmp,
-            o->xa+o->wstr[i]->xw, o->ya+o->wstr[i]->yw,
-            o->wstr[i]->nw, o->wstr[i]->wmx, o->fwt, o->fws);
-         else if(o->wstr[i]->df)
-            c = e_schr_lst_wsv(tmp,
-            o->xa+o->wstr[i]->xw, o->ya+o->wstr[i]->yw,
-            o->wstr[i]->nw, o->wstr[i]->wmx, o->fwt, o->fws,
-            o->wstr[i]->df, o->f);
-#endif
-         if(c != WPE_ESC) strcpy(o->wstr[i]->txt, tmp);
-         csv = c;
-         if(!o->wstr[i]->df)
-            e_schr_nchar(o->wstr[i]->txt, o->xa+o->wstr[i]->xw,
-            o->ya+o->wstr[i]->yw, 0, o->wstr[i]->nw, o->fwt);
-         else
-            e_schr_nchar_wsv(o->wstr[i]->txt, o->xa+o->wstr[i]->xw,
-            o->ya+o->wstr[i]->yw, 0, o->wstr[i]->nw, o->fwt, o->fws);
-         if((c = e_get_opt_sw(c, o->xa+o->wstr[i]->xw,
-            o->ya+o->wstr[i]->yw, o)) != csv)  sw = 1;
-         else sw = 0;
-         if(c == WPE_CR)  c = o->crsw;
-         else if(c == WPE_ESC) ret = WPE_ESC;
-         free(tmp);
-         fk_cursor(0);
-         break;
-      }
-      if(i < o->wn) continue;
-      for(i = 0; i < o->nn; i++)
-         if(o->nstr[i]->sw == c || (o->nstr[i]->nc >= 0 &&
-         toupper(c) == o->nstr[i]->header[o->nstr[i]->nc]))
-      {  cold = c;
-         num = o->nstr[i]->num;
-#if MOUSE
-         if((c = e_schreib_zif(&num, o->xa+o->nstr[i]->xw, o->ya+o->nstr[i]->yw,
-            o->nstr[i]->nw, o->fwt, o->fws)) < 0)
-            c = e_opt_mouse(o);
-#else
-         c = e_schreib_zif(&num, o->xa+o->nstr[i]->xw, o->ya+o->nstr[i]->yw,
-            o->nstr[i]->nw, o->fwt, o->fws);
-#endif
-         if(c != WPE_ESC) o->nstr[i]->num = num;
-         csv = c;
-         if((c = e_get_opt_sw(c, o->xa+o->nstr[i]->xw,
-            o->ya+o->nstr[i]->yw, o)) != csv)  sw = 1;
-         else sw = 0;
-         if(c != cold) e_schr_nzif(o->nstr[i]->num, o->xa+o->nstr[i]->xw,
-            o->ya+o->nstr[i]->yw, o->nstr[i]->nw, o->fwt);
-         if(c == WPE_CR)  c = o->crsw;
-         else if(c == WPE_ESC) ret = WPE_ESC;
-         fk_cursor(0);
-         break;
-      }
-      if(i < o->nn) continue;
-      for(i = 0; i < o->sn; i++)
-         if(o->sstr[i]->sw == c || (o->sstr[i]->nc >= 0 &&
-         toupper(c) == o->sstr[i]->header[o->sstr[i]->nc]))
-      {  if(!sw)
-         {  o->sstr[i]->num = !o->sstr[i]->num;
-            sw = 1;
-            c = cold;
-            break;
-         }
-         cold = c;
-         e_pr_str(o->xa+o->sstr[i]->x+4, o->ya+o->sstr[i]->y, o->sstr[i]->header,
-            o->fsa, o->sstr[i]->nc, 1, o->fsa, 0);
-#if MOUSE
-         if((c = e_getch()) < 0) c = e_opt_mouse(o);
-#else
-         c = e_getch();
-#endif
-         /* Space toggles the focused checkbox (modern expectation); the
-            top-of-loop redraw shows the new [X], and c==cold keeps focus. */
-         if(c == ' ') {  o->sstr[i]->num = !o->sstr[i]->num;  c = cold;  break;  }
-         /* Enter confirms the dialog (Borland Enter=OK): route it to the default
-            button (crsw), like the text/numeric fields do, instead of a no-op. */
-         if(c == WPE_CR) {  c = o->crsw;  sw = 0;  break;  }
-         else if(c == WPE_ESC)  sw = 1;
-         else
-         {  csv = c;
-            if((c = e_get_opt_sw(c, o->xa+o->sstr[i]->x,
-               o->ya+o->sstr[i]->y, o)) != csv)  sw = 1;
-            else sw = 0;
-         }
-         if(c != cold)
-            e_pr_str(o->xa+o->sstr[i]->x+4, o->ya+o->sstr[i]->y, o->sstr[i]->header,
-            o->fst, o->sstr[i]->nc, 1, o->fss, 0);
-         break;
-      }
-      if(i < o->sn) continue;
-      for(i = 0; i < o->pn; i++)
-      {  for(j = 0; j < o->pstr[i]->np; j++)
-            if(o->pstr[i]->ps[j]->sw == c || (o->pstr[i]->ps[j]->nc >= 0 &&
-            toupper(c) == o->pstr[i]->ps[j]->header[o->pstr[i]->ps[j]->nc]))
-         {  if(!sw)
-            {  o->pstr[i]->num = j;
-               sw = 1;
-               c = cold;
-               break;
-            }
-            cold = c;
-            e_pr_str(o->xa+o->pstr[i]->ps[j]->x+4, o->ya+o->pstr[i]->ps[j]->y, o->pstr[i]->ps[j]->header,
-               o->fsa, o->pstr[i]->ps[j]->nc, 1, o->fsa, 0);
-#if MOUSE
-            if((c = e_getch()) < 0) c = e_opt_mouse(o);
-#else
-            c = e_getch();
-#endif
-            /* Space selects the focused radio option (modern expectation). */
-            if(c == ' ') {  o->pstr[i]->num = j;  c = cold;  break;  }
-            /* Enter SELECTS the focused option and confirms the dialog (Borland
-               Enter=OK): pick the option under the cursor, then route to the
-               default button (crsw).  So Down-to-it + Enter is one move -- Space
-               first is optional. */
-            if(c == WPE_CR)  {  o->pstr[i]->num = j;  c = o->crsw;  sw = 0;  break;  }
-            else if(c == WPE_ESC)  sw = 1;
-            {  csv = c;
-               if((c = e_get_opt_sw(c, o->xa+o->pstr[i]->ps[j]->x,
-                  o->ya+o->pstr[i]->ps[j]->y, o)) != csv)  sw = 1;
-               else sw = 0;
-            }
-            if(c != cold)
-               e_pr_str(o->xa+o->pstr[i]->ps[j]->x+4, o->ya+o->pstr[i]->ps[j]->y, o->pstr[i]->ps[j]->header,
-               o->fst, o->pstr[i]->ps[j]->nc, 1, o->fss, 0);
-            break;
-         }
-         if(j < o->pstr[i]->np) break;
-      }
-      if(i < o->pn) continue;
-      for(i = 0; i < o->bn; i++)
-         if(o->bstr[i]->sw == c || (o->bstr[i]->nc >= 0 &&
-         toupper(c) == o->bstr[i]->header[o->bstr[i]->nc]))
-      {  e_pr_str(o->xa+o->bstr[i]->x, o->ya+o->bstr[i]->y, o->bstr[i]->header,
-            o->fbz, o->bstr[i]->nc, -1, o->fbz, o->ftt);
-         if(!sw)
-         {  if(o->bstr[i]->fkt != NULL)
-            {  ret = o->bstr[i]->fkt(o->f);
-               if (ret > 0) c = WPE_ESC;
-               else if (ret < 0)
-               {  /* The action floated an overlay over the dialog (e.g. a
-                     scrollable picker) and wants the whole dialog repainted in
-                     place -- the overlay's own restore cannot rebuild it under
-                     the panel/schirm split.  Redraw from scratch, same box.
-                     sw = 1 restores the fresh-entry state: the refocus that the
-                     restart performs then just highlights a field instead of
-                     "activating" it (with sw == 0 the re-focused accelerator was
-                     taken as a keypress -- it toggled the Enable checkbox). */
-                  e_close_view(o->pic, 0);
-                  o->pic = NULL;
-                  c = 0;
-                  sw = 1;
-                  keep_pos = 1;   /* in-place repaint: keep the dragged position */
-                  goto e_opt_kst_restart;
-               }
-               else
-               {  c = cold;
-                  e_pr_str(o->xa+o->bstr[i]->x, o->ya+o->bstr[i]->y, o->bstr[i]->header,
-                     o->fbt, o->bstr[i]->nc, -1, o->fbs,  o->ftt);
-               }
-            }
-            else {  ret = o->bstr[i]->sw;  c = WPE_ESC;  }
-            break;
-         }
-         cold = c;
-#if MOUSE
-         if((c = e_getch()) < 0) c = e_opt_mouse(o);
-#else
-         c = e_getch();
-#endif
-         if(c == WPE_CR) {  ret = c = o->bstr[i]->sw;  sw = 0;  break;  }
-         else if(c == WPE_ESC) {  sw = 0;  ret = WPE_ESC;  break;  }
-         csv = c;
-         if((c = e_get_opt_sw(c, o->xa+o->bstr[i]->x,
-            o->ya+o->bstr[i]->y, o)) != csv)  sw = 1;
-         else sw = 0;
-         if(c != cold)
-            e_pr_str(o->xa+o->bstr[i]->x, o->ya+o->bstr[i]->y, o->bstr[i]->header,
-            o->fbt, o->bstr[i]->nc, -1, o->fbs,  o->ftt);
-         break;
-      }
-      if(i < o->bn) continue;
-
-      c = cold;
-      sw = 1;
+      e_opt_refocus(&r);
    }
-   e_close_view(o->pic, 1);
-   e_mouse_flush();
-   e_repaint_desk_nopic(o->f->ed->f[o->f->ed->mxedt]);
-   return(ret);
+   e_opt_close(o);
+   return(r.ret);
 }
 
 /* e_opt_kst - public entry to the modal dialog/picker/menu engine.  Runs the

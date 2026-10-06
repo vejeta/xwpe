@@ -23,7 +23,7 @@ import subprocess
 import pytest
 
 import wpe_driver
-from wpe_driver import WpeSession, ALT, WPE_BIN, incoherence
+from wpe_driver import WpeSession, ALT, WPE_BIN
 
 
 def _ai_build():
@@ -92,12 +92,8 @@ def _inside(rows, frame):
 
 
 def _dismiss(s):
-    """Esc closes the dialog.  From the Enable checkbox, which has the initial
-    focus, the engine spends the first Esc moving the focus to Cancel; press it
-    again when the box is still up."""
+    """One Esc closes the dialog from whatever widget has the focus."""
     s.key(ESC, delay=0.6)
-    if _row_of(s, TITLE) is not None:
-        s.key(ESC, delay=0.6)
 
 
 @pytest.fixture
@@ -209,11 +205,11 @@ def test_clipped_widgets_are_not_drawn(tmp_path, pty_sized_wpe):
             "widget %r lies below the frame yet was drawn:\n%s" % (label, joined)
 
 
-# @scenario SC-dialog-engine-30
-@incoherence("a widget whose origin is inside the frame is drawn through the right "
-             "border: e_opt_element_visible checks the origin only, so at 50x16 the "
-             "Permission radios and the Endpoint field overwrite the border column")
+# @scenario SC-dialog-engine-30b
 def test_clipped_widgets_do_not_bleed_through_the_border(tmp_path, pty_sized_wpe):
+    # A widget is drawn only when its whole extent fits inside the frame: at
+    # 50x16 the Permission radios and the Endpoint field would cross the right
+    # border, so they are left out and the border column stays intact.
     with WpeSession(str(tmp_path), SEED, cols=60, rows=30, env_extra=ENV) as s:
         _open_ai_settings(s)
         _real_resize(s, 50, 16)
@@ -222,6 +218,34 @@ def test_clipped_widgets_do_not_bleed_through_the_border(tmp_path, pty_sized_wpe
     broken = [y for y in range(top + 1, bottom) if rows[y][right] != V_BORDER]
     assert not broken, \
         "widget text overwrote the right border on rows %r:\n%s" % (broken, "\n".join(rows))
+
+
+def _checkbox_mark(s, label):
+    """The "[ ]" / "[X]" glyph drawn in front of a checkbox label."""
+    row = next((r for r in s.display() if label in r), "")
+    assert label in row, "no %r checkbox on screen:\n%s" % (label, "\n".join(s.display()))
+    at = row.index(label)
+    return row[at - 4:at - 1]
+
+
+# @scenario SC-dialog-engine-44
+def test_resize_does_not_toggle_first_checkbox(tmp_path, pty_sized_wpe):
+    # A resize lays the dialog out again with the focus on its first widget;
+    # the relayout is not a click, so "[ ] Enable AI" keeps its mark across
+    # several resizes (it used to flip on every one).
+    with WpeSession(str(tmp_path), SEED, env_extra=ENV) as s:
+        _open_ai_settings(s)
+        before = _checkbox_mark(s, "Enable AI")
+        marks = []
+        for cols, rows in ((100, 30), (80, 30), (90, 28)):
+            _real_resize(s, cols, rows)
+            assert _row_of(s, TITLE) is not None, \
+                "the dialog vanished on the resize to %dx%d:\n%s" % (
+                    cols, rows, "\n".join(s.display()))
+            marks.append(_checkbox_mark(s, "Enable AI"))
+        _dismiss(s)
+    assert marks == [before] * len(marks), \
+        "a resize flipped the first checkbox: before %r, after each resize %r" % (before, marks)
 
 
 # @scenario SC-dialog-engine-35

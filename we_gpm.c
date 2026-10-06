@@ -47,6 +47,24 @@ int WpeGpmMouseInit(void)
  return(0);
 }
 
+/**
+ * WpeGpmButtonsToXwpe - Put GPM's button bits in the editor's own order.
+ *
+ * GPM numbers the buttons right-to-left (GPM_B_LEFT is 4, GPM_B_RIGHT is 1);
+ * the editor's input layer and the dialog engine read e_mouse.k the other way
+ * round (left = 1, middle = 2, right = 4), the order the ncurses reader uses,
+ * so a console user's left click is a left click in a dialog too.
+ */
+static int WpeGpmButtonsToXwpe(int buttons)
+{
+ int k = 0;
+
+ if (buttons & GPM_B_LEFT)   k |= 1;
+ if (buttons & GPM_B_MIDDLE) k |= 2;
+ if (buttons & GPM_B_RIGHT)  k |= 4;
+ return(k);
+}
+
 int WpeGpmHandler(Gpm_Event *ep, void *data)
 {
  extern struct mouse e_mouse;
@@ -56,7 +74,7 @@ int WpeGpmHandler(Gpm_Event *ep, void *data)
  {
   e_mouse.x = ep->x;
   e_mouse.y = ep->y;
-  e_mouse.k = ep->buttons;
+  e_mouse.k = WpeGpmButtonsToXwpe(ep->buttons);
   /* Inherited Suraci (1998) gpm_handler return convention: a negative value
      tells libgpm's Gpm_Getc() that this event was consumed, and its magnitude
      carries the button bitmask back to xwpe's input layer (XOR 5 swaps the
