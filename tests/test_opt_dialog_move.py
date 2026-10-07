@@ -16,7 +16,8 @@ import subprocess
 
 import pytest
 
-from wpe_driver import WpeSession, ALT, WPE_BIN, COLS, ROWS
+from wpe_driver import (WpeSession, ALT, WPE_BIN, COLS, ROWS,
+                        checkbox_mark, row_with, title_pos)
 
 
 def _ai_build():
@@ -51,11 +52,7 @@ def _open_ai_settings(tmp_path):
 
 
 def _title_pos(s):
-    for i, row in enumerate(s.display()):
-        c = row.find(TITLE)
-        if c >= 0:
-            return (i, c)
-    return None
+    return title_pos(s, TITLE)
 
 
 def _frame(s):
@@ -71,18 +68,6 @@ def _frame(s):
     assert left >= 0 and right > left and bottom > top, \
         "dialog frame not intact (%d,%d,%d,%d):\n%s" % (top, bottom, left, right, "\n".join(rows))
     return top, bottom, left, right
-
-
-def _row_with(s, needle):
-    return next((r for r in s.display() if needle in r), "")
-
-
-def _checkbox_mark(s, label):
-    """The "[ ]" / "[X]" glyph drawn in front of a checkbox label."""
-    row = _row_with(s, label)
-    assert label in row, "no %r checkbox on screen:\n%s" % (label, "\n".join(s.display()))
-    at = row.index(label)
-    return row[at - 4:at - 1]
 
 
 def _arrows(s, key, times):
@@ -102,7 +87,7 @@ def test_keyboard_move_moves_and_restores_focus(tmp_path):
         moved = _title_pos(s)
         s.key(ALT_U, delay=0.4)             # focus the Endpoint field
         s.key("XYZ", delay=0.4)
-        endpoint = _row_with(s, "Endpoint")
+        endpoint = row_with(s, "Endpoint")
     assert moved == (opened[0] + 2, opened[1] + 3), \
         "Right x3 / Down x2 did not move the title from %r to %r: %r" % (
             opened, (opened[0] + 2, opened[1] + 3), moved)
@@ -117,12 +102,12 @@ def test_keyboard_move_does_not_toggle_focused_widget(tmp_path):
     # shifts with the move, so the comparison reads the "[ ]" / "[X]" glyph.
     with _open_ai_settings(tmp_path) as s:
         opened = _title_pos(s)
-        before = _checkbox_mark(s, "Enable AI")
+        before = checkbox_mark(s, "Enable AI")
         s.key(ALT_F2, delay=0.6)
         _arrows(s, RIGHT, 1)
         s.key(ENTER, delay=0.6)
         moved = _title_pos(s)
-        after = _checkbox_mark(s, "Enable AI")
+        after = checkbox_mark(s, "Enable AI")
     assert moved == (opened[0], opened[1] + 1), \
         "Right x1 did not move the title from %r to %r" % (opened, moved)
     assert before == after, \

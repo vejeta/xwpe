@@ -18,7 +18,7 @@ import subprocess
 
 import pytest
 
-from wpe_driver import WpeSession, ALT, WPE_BIN
+from wpe_driver import WpeSession, ALT, WPE_BIN, title_pos
 
 
 def _ai_build():
@@ -78,11 +78,7 @@ def _is_open(s):
 
 
 def _title_pos(s):
-    for i, row in enumerate(s.display()):
-        c = row.find(TITLE)
-        if c >= 0:
-            return (i, c)
-    return None
+    return title_pos(s, TITLE)
 
 
 def _label_pos(s, label):

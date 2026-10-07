@@ -8,15 +8,13 @@ where it was moved.
 import os
 import tempfile
 
-from wpe_driver import WpeSession
+from wpe_driver import WpeSession, title_pos
+
+TITLE = "AI settings"
 
 
 def _title_pos(s):
-    for i, row in enumerate(s.display()):
-        c = row.find("AI settings")
-        if c >= 0:
-            return (i, c)
-    return None
+    return title_pos(s, TITLE)
 
 
 # @scenario SC-dialog-engine-01

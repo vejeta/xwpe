@@ -19,7 +19,7 @@ import subprocess
 
 import pytest
 
-from wpe_driver import WpeSession, ALT, WPE_BIN
+from wpe_driver import WpeSession, ALT, WPE_BIN, checkbox_mark, row_with
 
 
 def _ai_build():
@@ -63,18 +63,6 @@ def _options_applied(trace):
     return any(line.startswith("options ") for line in text.splitlines())
 
 
-def _row_with(s, needle):
-    return next((r for r in s.display() if needle in r), "")
-
-
-def _checkbox_mark(s, label):
-    """The "[ ]" / "[X]" glyph drawn in front of a checkbox label."""
-    row = _row_with(s, label)
-    assert label in row, "no %r checkbox on screen:\n%s" % (label, "\n".join(s.display()))
-    at = row.index(label)
-    return row[at - 4:at - 1]
-
-
 # @scenario SC-dialog-engine-39
 @needs_ai
 def test_pasted_accelerator_letter_does_not_press_widget(tmp_path):
@@ -82,9 +70,9 @@ def test_pasted_accelerator_letter_does_not_press_widget(tmp_path):
     # the Advanced sub-dialog.  Pasted, neither may act.
     trace = tmp_path / "ai.trace"
     with _open_ai_settings(tmp_path, trace) as s:
-        before = _checkbox_mark(s, "Enable AI")
+        before = checkbox_mark(s, "Enable AI")
         s.key(_paste("ea"), delay=0.7)
-        after = _checkbox_mark(s, "Enable AI")
+        after = checkbox_mark(s, "Enable AI")
         still_open = _is_open(s)
         advanced = any("Advanced" in row and TITLE not in row and "(Alt-A)" not in row
                        for row in s.display())
@@ -107,10 +95,10 @@ def test_pasted_newline_outside_a_field_does_not_submit(tmp_path):
     trace = tmp_path / "ai.trace"
     with _open_ai_settings(tmp_path, trace) as s:
         s.key(TAB, delay=0.3)
-        before = _row_with(s, "Ollama")
+        before = row_with(s, "Ollama")
         s.key(_paste("some text\n"), delay=0.7)
         still_open = _is_open(s)
-        after = _row_with(s, "Ollama")
+        after = row_with(s, "Ollama")
         rows = s.display()
         s.key(ESC, delay=0.6)
     assert still_open, \
@@ -130,7 +118,7 @@ def test_paste_into_numeric_field_keeps_digits_drops_newline(tmp_path):
         s.key(ALT_T, delay=0.4)                  # the Tabstops field
         s.key(_paste("7\n"), delay=0.7)
         still_open = _is_open(s, EDITOR_TITLE)
-        field = _row_with(s, "Tabstops")
+        field = row_with(s, "Tabstops")
         rows = s.display()
         s.key(ESC, delay=0.6)
     assert still_open, \

@@ -7,23 +7,18 @@ only the widgets whose origin falls inside the frame are drawn, and every key
 is swallowed until Esc or a resize.  While a box is up, asynchronous painters
 (the AI pane's streamed reply) must leave the screen alone.
 
-The resizes here are real resizes.  WpeSession.resize() alone never reaches
-the ncurses backend: the child runs in its own session without a controlling
-tty, so TIOCSWINSZ raises no SIGWINCH, and the harness exports LINES/COLUMNS,
-which ncurses prefers over the pty size.  The tests therefore run wpe through
-a two-line wrapper that unsets both variables and send SIGWINCH themselves.
+The resizes go through WpeSession.resize(): the pty is the editor's
+controlling terminal, so TIOCSWINSZ reaches it as SIGWINCH and KEY_RESIZE.
 
 Driven on the AI settings dialog (Options > AI), 64x21 cells.
 """
 import os
-import signal
-import stat
 import subprocess
 
 import pytest
 
 import wpe_driver
-from wpe_driver import WpeSession, ALT, WPE_BIN
+from wpe_driver import WpeSession, ALT, WPE_BIN, checkbox_mark
 
 
 def _ai_build():
@@ -96,25 +91,6 @@ def _dismiss(s):
     s.key(ESC, delay=0.6)
 
 
-@pytest.fixture
-def pty_sized_wpe(tmp_path, monkeypatch):
-    """Run wpe without the harness's LINES/COLUMNS so ncurses sizes itself
-    from the pty, which is what a real terminal resize changes."""
-    wrapper = tmp_path / "wpe"
-    wrapper.write_text("#!/bin/sh\nunset LINES COLUMNS\nexec \"%s\" \"$@\"\n"
-                       % os.path.abspath(WPE_BIN))
-    wrapper.chmod(stat.S_IRWXU)
-    monkeypatch.setattr(wpe_driver, "WPE_BIN", str(wrapper))
-
-
-def _real_resize(s, cols, rows):
-    """Resize the pty and deliver the SIGWINCH the kernel would send to a
-    foreground process group; drain the relayout."""
-    s.resize(cols, rows, delay=0.2)
-    os.kill(s.proc.pid, signal.SIGWINCH)
-    s._drain(1.0)
-
-
 # @scenario SC-dialog-engine-02
 def test_dialog_over_docked_pane_centres_on_screen(tmp_path):
     env = dict(ENV, XWPE_AI_MOCK_REPLY="PANEREPLY")
@@ -166,10 +142,10 @@ def test_degenerate_geometry_falls_back_to_corner(tmp_path):
 
 
 # @scenario SC-dialog-engine-29
-def test_screen_too_small_swallows_keys_until_esc(tmp_path, pty_sized_wpe):
+def test_screen_too_small_swallows_keys_until_esc(tmp_path):
     with WpeSession(str(tmp_path), SEED, env_extra=ENV) as s:
         _open_ai_settings(s)
-        _real_resize(s, 40, 12)
+        s.resize(40, 12, delay=1.0)
         assert s.alive(), "xwpe died on the shrink to 40x12"
         shrunk = s.display()
         assert _row_of(s, TITLE) is not None, \
@@ -189,10 +165,10 @@ def test_screen_too_small_swallows_keys_until_esc(tmp_path, pty_sized_wpe):
 
 
 # @scenario SC-dialog-engine-30
-def test_clipped_widgets_are_not_drawn(tmp_path, pty_sized_wpe):
+def test_clipped_widgets_are_not_drawn(tmp_path):
     with WpeSession(str(tmp_path), SEED, cols=60, rows=30, env_extra=ENV) as s:
         _open_ai_settings(s)
-        _real_resize(s, 50, 16)
+        s.resize(50, 16, delay=1.0)
         rows = s.display()
         top, bottom, left, right = _frame(s)
     joined = "\n".join(rows)
@@ -206,13 +182,13 @@ def test_clipped_widgets_are_not_drawn(tmp_path, pty_sized_wpe):
 
 
 # @scenario SC-dialog-engine-30b
-def test_clipped_widgets_do_not_bleed_through_the_border(tmp_path, pty_sized_wpe):
+def test_clipped_widgets_do_not_bleed_through_the_border(tmp_path):
     # A widget is drawn only when its whole extent fits inside the frame: at
     # 50x16 the Permission radios and the Endpoint field would cross the right
     # border, so they are left out and the border column stays intact.
     with WpeSession(str(tmp_path), SEED, cols=60, rows=30, env_extra=ENV) as s:
         _open_ai_settings(s)
-        _real_resize(s, 50, 16)
+        s.resize(50, 16, delay=1.0)
         rows = s.display()
         top, bottom, left, right = _frame(s)
     broken = [y for y in range(top + 1, bottom) if rows[y][right] != V_BORDER]
@@ -220,30 +196,26 @@ def test_clipped_widgets_do_not_bleed_through_the_border(tmp_path, pty_sized_wpe
         "widget text overwrote the right border on rows %r:\n%s" % (broken, "\n".join(rows))
 
 
-def _checkbox_mark(s, label):
-    """The "[ ]" / "[X]" glyph drawn in front of a checkbox label."""
-    row = next((r for r in s.display() if label in r), "")
-    assert label in row, "no %r checkbox on screen:\n%s" % (label, "\n".join(s.display()))
-    at = row.index(label)
-    return row[at - 4:at - 1]
-
-
 # @scenario SC-dialog-engine-44
-def test_resize_does_not_toggle_first_checkbox(tmp_path, pty_sized_wpe):
+def test_resize_does_not_toggle_first_checkbox(tmp_path):
     # A resize lays the dialog out again with the focus on its first widget;
     # the relayout is not a click, so "[ ] Enable AI" keeps its mark across
     # several resizes (it used to flip on every one).
     with WpeSession(str(tmp_path), SEED, env_extra=ENV) as s:
         _open_ai_settings(s)
-        before = _checkbox_mark(s, "Enable AI")
-        marks = []
+        before = checkbox_mark(s, "Enable AI")
+        marks, frames = [], []
         for cols, rows in ((100, 30), (80, 30), (90, 28)):
-            _real_resize(s, cols, rows)
+            s.resize(cols, rows, delay=1.0)
             assert _row_of(s, TITLE) is not None, \
                 "the dialog vanished on the resize to %dx%d:\n%s" % (
                     cols, rows, "\n".join(s.display()))
-            marks.append(_checkbox_mark(s, "Enable AI"))
+            marks.append(checkbox_mark(s, "Enable AI"))
+            frames.append(_frame(s))
         _dismiss(s)
+    # The box is re-centred on each width, so the resizes really happened.
+    assert len(set(frames)) == len(frames), \
+        "the dialog was not placed again on every resize: frames %r" % (frames,)
     assert marks == [before] * len(marks), \
         "a resize flipped the first checkbox: before %r, after each resize %r" % (before, marks)
 

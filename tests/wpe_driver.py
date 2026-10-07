@@ -81,6 +81,61 @@ def macos_key_route(k):
 WAIT_SCALE = float(os.environ.get("XWPE_TEST_WAIT_SCALE", "1") or 1)
 COLS, ROWS = 80, 30
 
+# How the editor learns its screen size, and why the harness must not get in
+# the way:
+#
+# * ncurses reads the pty size with TIOCGWINSZ on stdout, both at initscr()
+#   and again on every SIGWINCH (resizeterm -> KEY_RESIZE).  A fresh pty is
+#   0x0, so the driver sets the size on the master BEFORE spawning; the slave
+#   shares it.
+# * The kernel raises SIGWINCH from TIOCSWINSZ only towards the foreground
+#   process group of the pty's CONTROLLING terminal.  A child that merely
+#   setsid()s has no controlling terminal and never hears about a resize, so
+#   the child adopts the pty with TIOCSCTTY right after setsid().
+# * LINES / COLUMNS in the environment override the pty size inside ncurses
+#   (use_env(TRUE) is the default), for the initial size AND every relayout:
+#   with them set, a resize re-lays-out to the OLD size.  They are never
+#   exported to the child; any inherited copy is dropped.
+PTY_WINSIZE_FORMAT = "HHHH"             # struct winsize: rows, cols, xpixel, ypixel
+SIZE_ENV_VARS = ("LINES", "COLUMNS")
+# In the forked child fd 0 is already the pty slave.  The number, not
+# sys.stdin.fileno(): under pytest sys.stdin is a capture stub whose fileno()
+# raises, and an exception in the pre-exec step aborts the spawn.
+CHILD_TTY_FD = 0
+
+
+def set_pty_size(master_fd, cols, rows):
+    """Set the window size of the pty behind ``master_fd`` (TIOCSWINSZ).
+
+    Use ``termios.TIOCSWINSZ`` rather than a hardcoded number: the terminal
+    ioctl numbers differ by architecture (ppc64el, mips, alpha, sparc use the
+    BSD-style encoding) and a wrong constant fails with ENOTTY there.
+    Once the pty is the child's controlling terminal this ioctl alone makes
+    the kernel send SIGWINCH to the child; no explicit signal is needed."""
+    winsize = struct.pack(PTY_WINSIZE_FORMAT, rows, cols, 0, 0)
+    fcntl.ioctl(master_fd, termios.TIOCSWINSZ, winsize)
+
+
+def adopt_pty_as_controlling_tty():
+    """Pre-exec step for the child: start a new session, then make the pty on
+    stdin its controlling terminal (TIOCSCTTY) so TIOCSWINSZ on the master
+    reaches it as SIGWINCH and ncurses turns it into KEY_RESIZE.
+
+    Runs in the forked child between the fd setup (stdin is already the pty
+    slave) and the exec.  TIOCSCTTY exists on Linux, the BSDs and macOS; the
+    guard only keeps the harness importable elsewhere."""
+    os.setsid()
+    if hasattr(termios, "TIOCSCTTY"):
+        fcntl.ioctl(CHILD_TTY_FD, termios.TIOCSCTTY, 0)
+
+
+def strip_size_env(env):
+    """Remove LINES / COLUMNS from ``env`` so ncurses sizes itself from the
+    pty (see SIZE_ENV_VARS above); returns ``env`` for chaining."""
+    for name in SIZE_ENV_VARS:
+        env.pop(name, None)
+    return env
+
 
 class _RepStream(pyte.Stream):
     """A pyte Stream that also handles REP (CSI Pn b).
@@ -117,6 +172,35 @@ def incoherence(reason):
     currently does not (an incoherence found during coverage).  Recorded as
     xfail so CI stays green; `pytest -rxX` prints the review queue."""
     return pytest.mark.xfail(reason="INCOHERENCE: " + reason, strict=False)
+
+
+def row_with(session, needle):
+    """The first screen row containing ``needle``, or "" if none does.  For
+    reading one widget's row (a field, a radio line) without pinning where
+    the dialog landed."""
+    return next((r for r in session.display() if needle in r), "")
+
+
+def title_pos(session, title):
+    """(row, col) of ``title`` on the screen, or None.  A dialog's title sits
+    on its top border, so this is where the box IS; compare two readings to
+    assert a move, a re-centre or that a box stayed put."""
+    for i, row in enumerate(session.display()):
+        c = row.find(title)
+        if c >= 0:
+            return (i, c)
+    return None
+
+
+def checkbox_mark(session, label):
+    """The "[ ]" / "[X]" glyph drawn in front of a checkbox ``label``.
+
+    Reads the mark, not the whole row, so the comparison survives the row
+    shifting (a moved or re-centred dialog) and still catches a toggle."""
+    row = row_with(session, label)
+    assert label in row, "no %r checkbox on screen:\n%s" % (label, "\n".join(session.display()))
+    at = row.index(label)
+    return row[at - 4:at - 1]
 
 
 def tool_usable(name, *args):
@@ -161,9 +245,9 @@ class WpeSession:
                                                 # (pyte swallows OSC 52, so the
                                                 # clipboard test scans this)
         self.master_fd, slave_fd = pty.openpty()
-        env = os.environ.copy()
-        env.update(TERM="xterm-256color", COLUMNS=str(cols), LINES=str(rows),
-                   LC_ALL="en_US.UTF-8", HOME=workdir)
+        set_pty_size(self.master_fd, cols, rows)    # the child inherits it
+        env = strip_size_env(os.environ.copy())
+        env.update(TERM="xterm-256color", LC_ALL="en_US.UTF-8", HOME=workdir)
         # Load help/data from the checkout (hermetic), not a system-installed
         # copy; an explicit caller-set XWPE_LIB still wins.
         env.setdefault("XWPE_LIB", XWPE_LIB_DIR)
@@ -203,7 +287,7 @@ class WpeSession:
         # chrome fallback) pass env_extra to override LC_ALL/LANG; applied last
         # so the override wins over the UTF-8 default above.
         if env_extra:
-            env.update(env_extra)
+            env.update(strip_size_env(dict(env_extra)))
         # Make the editor under test use THIS repo's syntax_def, not whatever
         # stale copy is installed on the machine: it reads $HOME/.xwpe/syntax_def
         # first and we set HOME=workdir, so drop the build-tree copy there.
@@ -214,7 +298,8 @@ class WpeSession:
             shutil.copyfile(_synt, os.path.join(_xd, "syntax_def"))
         self.proc = subprocess.Popen(
             [WPE_BIN, filename], stdin=slave_fd, stdout=slave_fd,
-            stderr=slave_fd, cwd=workdir, env=env, preexec_fn=os.setsid)
+            stderr=slave_fd, cwd=workdir, env=env,
+            preexec_fn=adopt_pty_as_controlling_tty)
         os.close(slave_fd)
         self._drain(wait)
 
@@ -270,11 +355,13 @@ class WpeSession:
 
     def resize(self, cols, rows, delay=0.6):
         """Resize the terminal: set the pty window size (the kernel sends
-        SIGWINCH to wpe) and the pyte screen to match, then drain the repaint.
-        Drives the ncurses KEY_RESIZE -> resizeterm -> e_relayout_windows path,
-        the terminal peer of an X11 ConfigureNotify / a Wayland xdg configure."""
-        winsize = struct.pack("HHHH", rows, cols, 0, 0)
-        fcntl.ioctl(self.master_fd, termios.TIOCSWINSZ, winsize)
+        SIGWINCH to wpe, which is its controlling terminal) and the pyte
+        screen to match, then drain the repaint.  This is the one sanctioned
+        way to drive the ncurses KEY_RESIZE -> resizeterm ->
+        e_relayout_windows path, the terminal peer of an X11 ConfigureNotify /
+        a Wayland xdg configure; do not kill(SIGWINCH) on top of it, a second
+        KEY_RESIZE can double the relayout and hide ordering bugs."""
+        set_pty_size(self.master_fd, cols, rows)
         try:
             self.screen.resize(rows, cols)
         except Exception:

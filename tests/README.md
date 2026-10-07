@@ -417,3 +417,31 @@ or debugging a pyte test -- they are easy to relearn the slow way.
 - **Trace the LSP wire** with `env XWPE_LSP_TRACE=/path/to/log` -- every
   JSON-RPC SEND/RESP is appended, which is the fastest way to answer "did the
   request fire and what did the server return?".
+
+- **A terminal resize only reaches wpe through its controlling tty.** The
+  kernel raises `SIGWINCH` from `TIOCSWINSZ` towards the foreground process
+  group of the pty's *controlling* terminal; a child that merely `setsid()`s
+  has none and never hears about the resize (ncurses then never produces
+  `KEY_RESIZE`, and the editor never relayouts). `WpeSession` therefore makes
+  the child adopt the pty with `TIOCSCTTY` right after `setsid()`
+  (`adopt_pty_as_controlling_tty`). A hand-rolled spawn with
+  `preexec_fn=os.setsid` alone will pass every resize test without any resize
+  happening -- that is how `test_resize_ncurses.py` and
+  `test_dialog_resize.py` stayed green for months while asserting nothing.
+
+- **Never put `LINES` / `COLUMNS` in the child's environment.** ncurses
+  prefers them over the pty size (`use_env(TRUE)` is the default) for the
+  initial screen AND for every relayout, so with them set a resize re-lays-out
+  to the OLD size. The driver sizes the pty with `TIOCSWINSZ` before the spawn
+  (the slave inherits it) and strips both variables from the environment,
+  including from `env_extra`.
+
+- **`WpeSession.resize(cols, rows)` is the one sanctioned way to drive
+  `KEY_RESIZE`.** It sets the pty size (which is the `SIGWINCH`), resizes the
+  pyte screen and drains the repaint. Do not add an `os.kill(pid, SIGWINCH)`
+  on top: the ioctl already raised one, and a second `KEY_RESIZE` doubles the
+  relayout, which hides ordering bugs. A resize test must assert something
+  that is only true after the relayout (the status line on the new last row,
+  a frame corner on the new last column, a dialog re-centred), never just
+  `alive()`; prove it fails against a build whose `KEY_RESIZE` case is a
+  no-op before trusting it.
