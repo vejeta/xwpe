@@ -62,8 +62,9 @@ TAB_STOPS_BUTTONS = ["Ok", "Cancel"]
 AGENT_ROW_LABEL = "Built-in"
 
 
-def _open_ai_settings(tmp_path, trace, **session_kw):
+def _open_ai_settings(tmp_path, trace, env_overrides=None, **session_kw):
     env = dict(ENV, XWPE_AI_TRACE=str(trace))
+    env.update(env_overrides or {})
     s = WpeSession(str(tmp_path), SEED, env_extra=env, **session_kw)
     _reopen(s)
     return s
@@ -176,9 +177,10 @@ def test_picker_refocus_keeps_checkbox_and_one_esc_closes(tmp_path):
     # Tick Enable, float the model picker (its return repaints the dialog in
     # place and refocuses the checkbox), close the picker: the tick must
     # survive the refocus, and ONE Esc must then close the dialog without
-    # applying anything.
+    # applying anything.  The box shows the effective state, so the assistant
+    # is left OFF here (no XWPE_AI_ENABLE) for the box to open as [ ].
     trace = tmp_path / "ai.trace"
-    with _open_ai_settings(tmp_path, trace) as s:
+    with _open_ai_settings(tmp_path, trace, env_overrides={"XWPE_AI_ENABLE": ""}) as s:
         s.key(SPACE, delay=0.4)
         ticked = checkbox_mark(s, ENABLE_LABEL)
         s.key(ALT_M, delay=0.8)

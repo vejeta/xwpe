@@ -216,8 +216,10 @@ def test_dialog_fits_24_lines(tmp_path, rows):
     # row is cut off.  A dialog taller than the screen is also NOT this dialog:
     # the dialog engine shows a clipped dialog as a view-only shell that answers
     # Esc alone, so Space toggling the Enable box proves it fits AND is live.
+    # The box shows the effective state, so the assistant is left OFF here
+    # (no XWPE_AI_ENABLE) for it to open as [ ] and Space to tick it.
     with WpeSession(session_dir(tmp_path, "r%d" % rows), SEED, rows=rows,
-                    env_extra=dict(ENABLED)) as s:
+                    env_extra=dict(ENABLED, XWPE_AI_ENABLE="")) as s:
         open_dialog(s)
         before = s.display()
         s.key(" ", delay=0.4)            # Enable is focused first: Space toggles it

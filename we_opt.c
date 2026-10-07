@@ -1047,20 +1047,23 @@ int WpeWriteProgramming(ECNT *cn, char *section, FILE *opt_file)
  fprintf(opt_file, "Debugger : %d\n", e_deb_type);
  fprintf(opt_file, "DAPAdapter : %d\n", e_dap_adapter);
 #ifdef WPE_AI
- fprintf(opt_file, "AIBackend : %d\n", e_ai_backend);
- fprintf(opt_file, "AIEndpoint : %s\n", e_ai_endpoint ? e_ai_endpoint : "");
- fprintf(opt_file, "AIModel : %s\n", e_ai_model ? e_ai_model : "");
+ /* The keys an XWPE_AI_* variable can shadow are written through the config
+    layer, which answers with the file's own value while the environment still
+    overrides it: a one-session override never lands in xwperc. */
+ fprintf(opt_file, "AIBackend : %d\n", wpe_ai_cfg_int_to_save(WPE_AI_CFG_BACKEND));
+ fprintf(opt_file, "AIEndpoint : %s\n", wpe_ai_cfg_str_to_save(WPE_AI_CFG_ENDPOINT));
+ fprintf(opt_file, "AIModel : %s\n", wpe_ai_cfg_str_to_save(WPE_AI_CFG_MODEL));
  if (e_ai_model_fallback && *e_ai_model_fallback)
   fprintf(opt_file, "AIModelFallback : %s\n", e_ai_model_fallback);
  if (e_ai_edit_hook && *e_ai_edit_hook)
   fprintf(opt_file, "AIEditHook : %s\n", e_ai_edit_hook);
  if (e_ai_host_command && *e_ai_host_command)
   fprintf(opt_file, "AIHostCommand : %s\n", e_ai_host_command);
- if (e_ai_host_adapter == WPE_AI_HOST_ADAPTER_TEXT)
+ if (wpe_ai_cfg_int_to_save(WPE_AI_CFG_HOST_ADAPTER) == WPE_AI_HOST_ADAPTER_TEXT)
   fprintf(opt_file, "AIHostAdapter : text\n");
- fprintf(opt_file, "AICAFile : %s\n", e_ai_cafile ? e_ai_cafile : "");
- if (e_ai_search_url && *e_ai_search_url)
-  fprintf(opt_file, "AISearchURL : %s\n", e_ai_search_url);
+ fprintf(opt_file, "AICAFile : %s\n", wpe_ai_cfg_str_to_save(WPE_AI_CFG_CAFILE));
+ if (*wpe_ai_cfg_str_to_save(WPE_AI_CFG_SEARCH_URL))
+  fprintf(opt_file, "AISearchURL : %s\n", wpe_ai_cfg_str_to_save(WPE_AI_CFG_SEARCH_URL));
  fprintf(opt_file, "AIProviderName : %s\n", e_ai_provider ? e_ai_provider : "");
  {
   int i, np = wpe_ai_provider_count();
@@ -1070,10 +1073,12 @@ int WpeWriteProgramming(ECNT *cn, char *section, FILE *opt_file)
            p->model ? p->model : "", p->cafile ? p->cafile : "");
   }
  }
- fprintf(opt_file, "AIPolicy : %s\n", wpe_ai_policy_name(e_ai_policy));
+ fprintf(opt_file, "AIPolicy : %s\n",
+         wpe_ai_policy_name(wpe_ai_cfg_int_to_save(WPE_AI_CFG_POLICY)));
 #ifdef WPE_AI_AGENT_HOST
  fprintf(opt_file, "AIAgentEngine : %s\n",
-         e_ai_agent_engine == WPE_AI_ENGINE_CLAUDE_HOST ? "claude-code" : "builtin");
+         wpe_ai_cfg_int_to_save(WPE_AI_CFG_AGENT_ENGINE) == WPE_AI_ENGINE_CLAUDE_HOST
+           ? "claude-code" : "builtin");
 #endif
 #endif
  return 0;
@@ -1350,7 +1355,7 @@ int e_add_arguments(char *str, char *head, FENSTER *f, int n, int sw,
  o->name = head;
  o->crsw = AltO;
  sprintf(tmp, "%s:", head);
- e_add_wrstr(4, 2, 4, 3, 30, 128, n, sw, tmp, str, df, o);
+ e_add_wrstr(4, 2, 4, 3, 30, E_ARG_FIELD_MAX, n, sw, tmp, str, df, o);
  e_add_bttstr(7, 5, 1, AltO, " Ok ", NULL, o);
  e_add_bttstr(24, 5, -1, WPE_ESC, "Cancel", NULL, o);
  FREE(tmp);

@@ -664,6 +664,10 @@ void e_pr_ed_beispiel(int xa, int ya, FENSTER *f, int sw, int md);
 int e_opt_save(FENSTER *f);
 int e_save_opt(FENSTER *f);
 int e_opt_read(ECNT *cn);
+/* The longest text e_add_arguments hands back (its field's capacity).  A
+   caller's buffer must hold E_ARG_FIELD_MAX + 1 bytes, or a long entry runs
+   past it. */
+#define E_ARG_FIELD_MAX 128
 int e_add_arguments(char *str, char *head, FENSTER *f, int n, int sw,
   struct dirfile **df);
 W_O_TXTSTR **e_add_txtstr(int x, int y, char *txt, W_OPTSTR *o);

@@ -2837,6 +2837,17 @@ static void ai_set_endpoint(const char *text)
  e_ai_endpoint = strdup(buf[0] ? buf : "http://localhost:11434");
 }
 
+/* Apply a CA file path typed in the settings dialog's CA file field (trimmed);
+ * a blank field means the system CA store only.  Shared by the Ok handler and
+ * the provider operations so a self-signed bridge works before Ok. */
+static void ai_set_cafile(const char *text)
+{
+ const char *ca = text ? text : "";
+ while (*ca == ' ' || *ca == '\t') ca++;
+ free(e_ai_cafile);
+ e_ai_cafile = (*ca) ? strdup(ca) : NULL;
+}
+
 /* Adopt an API key typed in the dialog's key field (trimmed) as the session key,
  * so it is used immediately by Alt-M without waiting for Ok.  A blank field
  * leaves the current key untouched (the field is never pre-filled with the
@@ -2862,6 +2873,30 @@ static int ai_set_typed_key(const char *text)
 #define AI_OPT_CAFILE_WSTR   1
 #define AI_OPT_KEY_WSTR      2
 
+/**
+ * ai_opt_commit_connection_fields - Make the Connection fields the session's values.
+ * @o: the open AI settings dialog (NULL: nothing to commit)
+ *
+ * What the user sees in Endpoint, CA file and API key is what every provider
+ * operation works with: the Model listing (Alt-M), a provider switch or
+ * "Save current as..." (Alt-V), and Ok all commit the fields first, so a URL
+ * or a key typed but not yet confirmed is never silently replaced by an older
+ * value.  Returns 1 when the key field carried a key (so the caller can
+ * persist it to the right key file), 0 otherwise.
+ */
+static int ai_opt_commit_connection_fields(W_OPTSTR *o)
+{
+ int key_typed = 0;
+ if (!o) return 0;
+ if (o->wn > AI_OPT_ENDPOINT_WSTR)
+  ai_set_endpoint(o->wstr[AI_OPT_ENDPOINT_WSTR]->txt);
+ if (o->wn > AI_OPT_CAFILE_WSTR)
+  ai_set_cafile(o->wstr[AI_OPT_CAFILE_WSTR]->txt);
+ if (o->wn > AI_OPT_KEY_WSTR)
+  key_typed = ai_set_typed_key(o->wstr[AI_OPT_KEY_WSTR]->txt);
+ return key_typed;
+}
+
 /* Model button action.  The scrollable picker (e_ai_pick) saves the screen it
    covers and restores it on close, so it floats OVER the settings dialog and
    leaves it in place -- no blink to the editor, no re-centre.  Rewrite the Model
@@ -2884,22 +2919,10 @@ static int e_ai_opt_pick_model(FENSTER *f)
    e_ai_model = NULL;
   }
  }
- /* Honour a URL the user just typed: list models from the endpoint shown in the
-    field, not the one a previous Ok saved -- so Alt-M works before Ok. */
- if (g_ai_opt_dlg && g_ai_opt_dlg->wn > AI_OPT_ENDPOINT_WSTR)
-  ai_set_endpoint(g_ai_opt_dlg->wstr[AI_OPT_ENDPOINT_WSTR]->txt);
- /* Trust the CA file shown in the field too, so listing an HTTPS bridge with a
-    self-signed cert works from Alt-M before Ok. */
- if (g_ai_opt_dlg && g_ai_opt_dlg->wn > AI_OPT_CAFILE_WSTR) {
-  const char *ca = g_ai_opt_dlg->wstr[AI_OPT_CAFILE_WSTR]->txt;
-  while (ca && (*ca == ' ' || *ca == '\t')) ca++;
-  free(e_ai_cafile);
-  e_ai_cafile = (ca && *ca) ? strdup(ca) : NULL;
- }
- /* Use a key typed in the field so an authenticated endpoint (Groq, a Lumo
-    bridge, ...) lists its models from Alt-M before the provider is saved. */
- if (g_ai_opt_dlg && g_ai_opt_dlg->wn > AI_OPT_KEY_WSTR)
-  ai_set_typed_key(g_ai_opt_dlg->wstr[AI_OPT_KEY_WSTR]->txt);
+ /* List from the URL, CA file and key the user just typed, not the ones a
+    previous Ok saved -- so Alt-M works before Ok, also against an authenticated
+    endpoint (Groq, a Lumo bridge, ...) or a self-signed HTTPS bridge. */
+ ai_opt_commit_connection_fields(g_ai_opt_dlg);
  /* Switching the Backend radio to Ollama leaves the shared endpoint field on the
     previous (OpenAI) URL; Ollama serves /api/... at the host root, so an
     OpenAI-style base would 404.  Fall back to the local Ollama server and show
@@ -2961,17 +2984,95 @@ static void ai_opt_sync_widgets(void)
  }
 }
 
+/**
+ * ai_opt_switch_provider - Make a saved profile the active one.
+ * @p: the picked profile
+ * @key_typed: the key field carried a key for the profile being left
+ *
+ * A key typed for the current profile is written to that profile's key file
+ * BEFORE the field reloads with the picked profile's own key, so switching
+ * never silently drops a key entered but not yet confirmed with Ok.  The
+ * backend becomes OpenAI-compatible and the profile's endpoint, model, CA file
+ * and name are applied, so its model list and its key file are the ones used.
+ */
+static void ai_opt_switch_provider(const struct wpe_ai_provider *p, int key_typed)
+{
+ if (key_typed)
+  wpe_ai_write_openai_key(e_ai_provider, e_ai_key);
+ e_ai_backend = WPE_AI_OPENAI;
+ free(e_ai_endpoint); e_ai_endpoint = strdup(p->endpoint);
+ free(e_ai_model);    e_ai_model    = strdup((p->model && *p->model) ? p->model : "");
+ free(e_ai_cafile);   e_ai_cafile   = (p->cafile && *p->cafile) ? strdup(p->cafile) : NULL;
+ free(e_ai_provider); e_ai_provider = strdup(p->name);
+}
+
+/**
+ * ai_strip_blanks - Drop the blanks around a typed name, in place.
+ */
+static void ai_strip_blanks(char *s)
+{
+ char *first = s;
+ size_t n;
+ while (*first == ' ' || *first == '\t') first++;
+ memmove(s, first, strlen(first) + 1);
+ n = strlen(s);
+ while (n && (s[n - 1] == ' ' || s[n - 1] == '\t')) s[--n] = '\0';
+}
+
+/**
+ * ai_opt_refuse_provider_name - Say why a typed provider name cannot be saved.
+ *
+ * Shown instead of silently dropping the name, so the user knows what to
+ * retype: the length limit, and that '|' (the field separator of the
+ * AIProvider line in xwperc) and '/' (a path separator in the key file's name)
+ * cannot be part of a name.
+ */
+static void ai_opt_refuse_provider_name(FENSTER *f)
+{
+ static char msg[96];
+ snprintf(msg, sizeof msg, "Provider name: up to %d characters, without '|' or '/'",
+          WPE_AI_PROVIDER_NAME_MAX);
+ e_error(msg, 0, f->fb);
+}
+
+/**
+ * ai_opt_save_provider_as - Store the Connection fields as a new named profile.
+ *
+ * Asks for a name and saves the endpoint, model and CA file the dialog shows
+ * under it, making it the active profile; the session key (typed in the field
+ * or set by Alt-M) goes to that name's own key file, so the profile is
+ * complete on the next launch and the key field keeps showing it.  A name
+ * that cannot be stored is refused with a message and nothing changes.
+ */
+static void ai_opt_save_provider_as(FENSTER *f)
+{
+ char name[E_ARG_FIELD_MAX + 1] = "";
+ /* field sw must differ from the dialog's confirm key (AltO) or Ok is shadowed */
+ if (!e_add_arguments(name, "Save provider as", f, 0, AltN, NULL))
+  return;
+ ai_strip_blanks(name);
+ if (!name[0])
+  return;
+ if (!wpe_ai_provider_name_usable(name)) {
+  ai_opt_refuse_provider_name(f);
+  return;
+ }
+ wpe_ai_provider_set(name, e_ai_endpoint ? e_ai_endpoint : "", e_ai_model, e_ai_cafile);
+ free(e_ai_provider); e_ai_provider = strdup(name);
+ if (e_ai_key && *e_ai_key)
+  wpe_ai_write_openai_key(name, e_ai_key);
+}
+
 /* Provider button (Alt-V): pick a saved OpenAI-compatible provider profile, or
- * save the current endpoint/model/CA as a new named one.  Loading a profile
- * switches the backend to OpenAI-compatible and applies its endpoint, model, CA
- * file and active name, so its model list and its own key file
- * (openai-api-key-<name>) are used.  Returns -1 to repaint the dialog in place. */
+ * save the current endpoint/model/CA as a new named one.  Either operation
+ * works with what the Connection fields show (committed first), so a typed
+ * URL or key is part of it.  Returns -1 to repaint the dialog in place. */
 static int e_ai_opt_pick_provider(FENSTER *f)
 {
  int np = wpe_ai_provider_count();
  const char *labels[34];
- char names[32][80];
- int i, n = 0, sel;
+ char names[32][WPE_AI_PROVIDER_NAME_MAX + 1];
+ int i, n = 0, sel, key_typed;
  for (i = 0; i < np && n < 32; i++) {
   snprintf(names[n], sizeof names[n], "%s", wpe_ai_provider_get(i)->name);
   labels[n] = names[n];
@@ -2980,34 +3081,11 @@ static int e_ai_opt_pick_provider(FENSTER *f)
  labels[n++] = "[ + Save current as... ]";
  sel = e_ai_pick(f, "AI providers", labels, n, 0);
  if (sel < 0) { fk_cursor(0); return -1; }
- if (sel < np) {
-  const struct wpe_ai_provider *p = wpe_ai_provider_get(sel);
-  /* Persist a key TYPED for the current provider before the field reloads with
-     the picked provider's own key file, so switching does not silently drop a
-     key entered but not yet confirmed with Ok. */
-  if (g_ai_opt_dlg && g_ai_opt_dlg->wn > AI_OPT_KEY_WSTR) {
-   const char *typed = g_ai_opt_dlg->wstr[AI_OPT_KEY_WSTR]->txt;
-   if (typed && *typed && ai_set_typed_key(typed))
-    wpe_ai_write_openai_key(e_ai_provider, e_ai_key);
-  }
-  e_ai_backend = WPE_AI_OPENAI;
-  free(e_ai_endpoint); e_ai_endpoint = strdup(p->endpoint);
-  free(e_ai_model);    e_ai_model    = strdup((p->model && *p->model) ? p->model : "");
-  free(e_ai_cafile);   e_ai_cafile   = (p->cafile && *p->cafile) ? strdup(p->cafile) : NULL;
-  free(e_ai_provider); e_ai_provider = strdup(p->name);
- } else {
-  char name[80] = "";
-  /* field sw must differ from the dialog's confirm key (AltO) or Ok is shadowed */
-  if (e_add_arguments(name, "Save provider as", f, 0, AltN, NULL) && name[0]) {
-   wpe_ai_provider_set(name, e_ai_endpoint ? e_ai_endpoint : "",
-                       e_ai_model, e_ai_cafile);
-   free(e_ai_provider); e_ai_provider = strdup(name);
-   /* Move a key typed this session into the new provider's own key file, so it
-      is found as openai-api-key-<name> on the next launch. */
-   if (e_ai_key && *e_ai_key)
-    wpe_ai_write_openai_key(name, e_ai_key);
-  }
- }
+ key_typed = ai_opt_commit_connection_fields(g_ai_opt_dlg);
+ if (sel < np)
+  ai_opt_switch_provider(wpe_ai_provider_get(sel), key_typed);
+ else
+  ai_opt_save_provider_as(f);
  ai_opt_sync_widgets();
  fk_cursor(0);
  return -1;
@@ -3016,7 +3094,10 @@ static int e_ai_opt_pick_provider(FENSTER *f)
 /* Advanced AI settings (the "Advanced..." button in the AI dialog): the less
  * common knobs -- the fallback model, the post-edit hook, and (host builds) the
  * agent-host command -- kept in their own dialog so the main one stays within a
- * 24-line terminal.  Each is also a plain xwperc key; this is discoverability. */
+ * 24-line terminal.  Each is also a plain xwperc key; this is discoverability.
+ * Returns -1 whichever way it closes: the sub-dialog's own close repaints the
+ * desktop under the main dialog, so the engine must paint the main box again
+ * in place (its pending edits intact), as it does after a picker. */
 static int e_ai_opt_advanced(FENSTER *f)
 {
  W_OPTSTR *o = e_init_opt_kst(f);
@@ -3040,7 +3121,7 @@ static int e_ai_opt_advanced(FENSTER *f)
  e_add_bttstr(24, 11, 1, AltO, "  Ok  ", NULL, o);
  e_add_bttstr(40, 11, -1, WPE_ESC, "Cancel", NULL, o);
  ret = e_opt_kst(o);
- if (ret == WPE_ESC) { freeostr(o); return 0; }
+ if (ret == WPE_ESC) { freeostr(o); return -1; }
  v = o->wstr[0]->txt; while (v && (*v == ' ' || *v == '\t')) v++;
  free(e_ai_model_fallback); e_ai_model_fallback = (v && *v) ? strdup(v) : NULL;
  v = o->wstr[1]->txt; while (v && (*v == ' ' || *v == '\t')) v++;
@@ -3051,7 +3132,72 @@ static int e_ai_opt_advanced(FENSTER *f)
 #endif
  e_save_opt(f);
  freeostr(o);
- return 0;
+ return -1;
+}
+
+/* The session values the AI dialog opened with.  Compared with the values Ok
+ * applied, they tell which keys the USER changed: only those replace an
+ * XWPE_AI_* override in xwperc (wpe_ai_cfg_user_changed); the others keep the
+ * file's own value, so a one-session override never becomes configuration. */
+struct ai_opt_opened {
+ int   backend, policy, agent_engine;
+ char *endpoint, *model, *cafile;
+};
+
+/**
+ * ai_opt_opened_take - Remember the values shown when the dialog opens.
+ */
+static void ai_opt_opened_take(struct ai_opt_opened *was)
+{
+ was->backend      = e_ai_backend;
+ was->policy       = e_ai_policy;
+ was->agent_engine = e_ai_agent_engine;
+ was->endpoint     = strdup(e_ai_endpoint ? e_ai_endpoint : "");
+ was->model        = strdup(e_ai_model ? e_ai_model : "");
+ was->cafile       = strdup(e_ai_cafile ? e_ai_cafile : "");
+}
+
+/**
+ * ai_opt_opened_drop - Release what ai_opt_opened_take kept.
+ */
+static void ai_opt_opened_drop(struct ai_opt_opened *was)
+{
+ free(was->endpoint);
+ free(was->model);
+ free(was->cafile);
+}
+
+/**
+ * ai_str_changed - True when a session string no longer reads as it did.
+ */
+static int ai_str_changed(const char *was, const char *now)
+{
+ return strcmp(was ? was : "", now ? now : "") != 0;
+}
+
+/**
+ * ai_opt_report_user_changes - Tell the config layer which keys Ok changed.
+ *
+ * Called once Ok has applied every field, right before the options are saved.
+ * A key whose value differs from the one the dialog opened with was changed by
+ * the user (typed, picked with Alt-M or Alt-V, or reset by a backend switch),
+ * so it is what the user wants in xwperc even when an XWPE_AI_* variable was
+ * overriding it; a key left alone keeps the file's own value.
+ */
+static void ai_opt_report_user_changes(const struct ai_opt_opened *was)
+{
+ if (was->backend != e_ai_backend)
+  wpe_ai_cfg_user_changed(WPE_AI_CFG_BACKEND);
+ if (was->policy != e_ai_policy)
+  wpe_ai_cfg_user_changed(WPE_AI_CFG_POLICY);
+ if (was->agent_engine != e_ai_agent_engine)
+  wpe_ai_cfg_user_changed(WPE_AI_CFG_AGENT_ENGINE);
+ if (ai_str_changed(was->endpoint, e_ai_endpoint))
+  wpe_ai_cfg_user_changed(WPE_AI_CFG_ENDPOINT);
+ if (ai_str_changed(was->model, e_ai_model))
+  wpe_ai_cfg_user_changed(WPE_AI_CFG_MODEL);
+ if (ai_str_changed(was->cafile, e_ai_cafile))
+  wpe_ai_cfg_user_changed(WPE_AI_CFG_CAFILE);
 }
 
 /* Options -> AI...: the settings home.  Enable checkbox, Backend radio, a Model
@@ -3066,6 +3212,7 @@ int e_ai_options(FENSTER *f)
                                  "OpenAI-compatible", "Claude API (key) " };
  static const char *pol[3] = { "Ask each action ", "Auto-accept edits", "Auto (skip asks)" };
  W_OPTSTR *o;
+ struct ai_opt_opened opened;
  int i, bcur, edopt_before, ret, new_be;
 
  /* The dialog shows the CURRENT model on a button; the (unbounded) model list
@@ -3077,6 +3224,7 @@ int e_ai_options(FENSTER *f)
  o = e_init_opt_kst(f);
  if (!o) return 0;
  g_ai_opt_dlg = o;                              /* the Model button's fkt refreshes it */
+ ai_opt_opened_take(&opened);
  bcur = 0;
  for (i = 0; i < 4; i++) if (bk[i] == e_ai_backend) bcur = i;
  ai_opt_mlabel();
@@ -3099,8 +3247,10 @@ int e_ai_options(FENSTER *f)
  o->bgsw = 0; o->crsw = AltO;
  o->name = "AI settings";
 
- e_add_sswstr(3, 2, 0, AltE, (f->ed->edopt & ED_AI_ENABLE) ? 1 : 0,
-              "Enable AI assistant", o);
+ /* The box shows the EFFECTIVE state (XWPE_AI_ENABLE=1 keeps the assistant on
+    whatever the saved bit says), so it never contradicts what Alt-G does; Ok
+    writes the saved bit from the box. */
+ e_add_sswstr(3, 2, 0, AltE, wpe_ai_enabled() ? 1 : 0, "Enable AI assistant", o);
 
  /* --- Backend (left) + Permission (right), side by side.  Every radio needs a
         UNIQUE non-zero sw (sw==0 means "no field", unreachable).  Add order sets
@@ -3151,22 +3301,19 @@ int e_ai_options(FENSTER *f)
 
  edopt_before = f->ed->edopt;
  ret = e_opt_kst(o);
- if (ret == WPE_ESC) { g_ai_opt_dlg = NULL; freeostr(o); return 0; }
+ if (ret == WPE_ESC) {
+  ai_opt_opened_drop(&opened);
+  g_ai_opt_dlg = NULL;
+  freeostr(o);
+  return 0;
+ }
 
  /* Ok read: apply EVERY field, then save once.  (A Model pick happens in place:
     the Model button floats the picker over the dialog and never returns here.) */
  f->ed->edopt = (f->ed->edopt & ~ED_AI_ENABLE) | (o->sstr[0]->num ? ED_AI_ENABLE : 0);
  e_ai_policy  = (o->pstr[1]->num >= 0 && o->pstr[1]->num < 3) ? o->pstr[1]->num : 0;
  new_be = bk[(o->pstr[0]->num >= 0 && o->pstr[0]->num < 4) ? o->pstr[0]->num : 0];
- if (o->wn > AI_OPT_ENDPOINT_WSTR)
-  ai_set_endpoint(o->wstr[AI_OPT_ENDPOINT_WSTR]->txt);   /* apply the typed URL */
- if (o->wn > AI_OPT_CAFILE_WSTR) {                       /* apply the typed CA file */
-  const char *ca = o->wstr[AI_OPT_CAFILE_WSTR]->txt;
-  while (ca && (*ca == ' ' || *ca == '\t')) ca++;
-  free(e_ai_cafile);
-  e_ai_cafile = (ca && *ca) ? strdup(ca) : NULL;
- }
- if (o->wn > AI_OPT_KEY_WSTR && ai_set_typed_key(o->wstr[AI_OPT_KEY_WSTR]->txt))
+ if (ai_opt_commit_connection_fields(o))
   /* Persist a newly typed key to the active provider's file (or the generic
      one), so it survives the session; e_ai_key holds it meanwhile. */
   wpe_ai_write_openai_key(e_ai_provider, e_ai_key);
@@ -3189,6 +3336,8 @@ int e_ai_options(FENSTER *f)
   const char *fix = wpe_ai_ollama_endpoint_fixup(e_ai_endpoint);
   if (fix) { free(e_ai_endpoint); e_ai_endpoint = strdup(fix); }
  }
+ ai_opt_report_user_changes(&opened);
+ ai_opt_opened_drop(&opened);
 
  wpe_ai_trace("options backend=%s model=%s policy=%s enable=%d",
               wpe_ai_backend_name(e_ai_backend), e_ai_model ? e_ai_model : "-",

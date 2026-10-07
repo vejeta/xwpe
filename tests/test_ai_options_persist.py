@@ -9,7 +9,10 @@ contract.  These tests cover that contract from the outside:
 - Cancel (Esc) leaves xwperc byte-identical and writes no key file, in the main
   dialog and in the Advanced sub-dialog alike.
 - An API key goes to its key file and never into xwperc.
-- XWPE_AI_* environment overrides are what the dialog shows and what Ok saves.
+- XWPE_AI_* environment overrides are what the dialog shows and what the
+  session uses; an Ok without edits keeps the file's own values, and only a
+  value the user changed in the dialog is written.
+- A provider name that cannot be stored (too long, '|' or '/') is refused.
 
 Non-default radios are seeded through the config file written BEFORE launch
 (HOME is redirected to a fresh directory, so ~/.config/xwpe/xwperc is ours),
@@ -22,7 +25,7 @@ import subprocess
 import sys
 
 import pytest
-from wpe_driver import WpeSession, ALT, WPE_BIN, incoherence
+from wpe_driver import WpeSession, ALT, WPE_BIN, title_pos
 
 
 def _ai_build():
@@ -242,9 +245,6 @@ def test_enable_sets_options2_bit(tmp_path):
         % (saved, fresh)
 
 
-@incoherence("XWPE_AI_ENABLE=1 forces the assistant on (Alt-G opens the AI "
-             "menu) but the dialog's Enable box still reads the Options2 bit, "
-             "so it shows [ ] while the assistant is in fact on")
 # @scenario SC-ai-options-12
 def test_env_force_enable_overrides_file(tmp_path):
     # Options2 bit clear in the file, XWPE_AI_ENABLE=1 in the environment: the
@@ -330,10 +330,6 @@ def test_key_never_written_to_xwperc(tmp_path):
     assert secret not in saved, "the API key leaked into xwperc:\n" + saved
 
 
-@incoherence("'[ + Save current as... ]' writes the new provider's key file only "
-             "from the session key, which a key typed in the field does not set "
-             "until Alt-M or Ok; the field is then reloaded empty from the new "
-             "provider's (absent) key file, so the typed key is lost")
 # @scenario SC-ai-options-38
 def test_save_current_as_moves_session_key(tmp_path):
     # Type a key, Alt-V, pick "[ + Save current as... ]", name it, Enter, Ok:
@@ -473,11 +469,14 @@ def test_cancel_leaves_xwperc_byte_identical(tmp_path):
 
 # @scenario SC-ai-options-51
 def test_env_endpoint_policy_cafile_override_file(tmp_path):
-    # XWPE_AI_ENDPOINT / _POLICY / _CAFILE beat the file: the dialog shows the
-    # environment's values and Ok saves them, replacing the file's.
+    # XWPE_AI_ENDPOINT / _POLICY / _CAFILE beat the file for the session: the
+    # dialog shows the environment's values.  They are a temporary override, so
+    # an Ok without edits leaves the file's own values in xwperc; only a value
+    # the user changes in the dialog is written.
     home = str(tmp_path / "home")
-    write_xwperc(home, ["AIBackend : 1", "AIEndpoint : http://file.test:1111/v1",
-                        "AICAFile : /file/ca.pem", "AIPolicy : ask"])
+    file_values = {"AIEndpoint": "http://file.test:1111/v1",
+                   "AICAFile": "/file/ca.pem", "AIPolicy": "ask"}
+    write_xwperc(home, ["AIBackend : 1"] + ["%s : %s" % kv for kv in file_values.items()])
     env = {"XWPE_AI_ENDPOINT": "http://env.test:2222/v1",
            "XWPE_AI_POLICY": "auto", "XWPE_AI_CAFILE": "/env/ca.pem"}
     with session(tmp_path, home, **env) as s:
@@ -490,11 +489,159 @@ def test_env_endpoint_policy_cafile_override_file(tmp_path):
             "the dialog does not mark the env policy:\n" + "\n".join(disp)
         press_ok(s)
     saved = read_xwperc(home)
-    assert xwperc_value(saved, "AIEndpoint") == env["XWPE_AI_ENDPOINT"], \
-        "Ok did not save the env endpoint:\n" + saved
-    assert xwperc_value(saved, "AICAFile") == env["XWPE_AI_CAFILE"], \
-        "Ok did not save the env CA file:\n" + saved
-    assert xwperc_value(saved, "AIPolicy") == "auto", \
-        "Ok did not save the env policy:\n" + saved
-    assert "file.test" not in saved and "/file/ca.pem" not in saved, \
-        "the file's old values survived the env override:\n" + saved
+    for key, value in file_values.items():
+        assert xwperc_value(saved, key) == value, \
+            "an edit-free Ok replaced the file's %s with the environment override:\n%s" \
+            % (key, saved)
+    assert "env.test" not in saved and "/env/ca.pem" not in saved, \
+        "an environment override was written into xwperc:\n" + saved
+
+
+def test_env_backend_and_model_not_persisted_by_edit_free_ok(tmp_path):
+    # XWPE_AI_BACKEND / _MODEL pick the session's backend and model (the dialog
+    # marks Claude CLI and shows the env model) but an Ok without edits keeps
+    # the file's AIBackend / AIModel: a one-session override must not replace
+    # the configuration the next plain launch starts from.
+    home = str(tmp_path / "home")
+    write_xwperc(home, ["AIBackend : 1", "AIModel : gpt-x",
+                        "AIEndpoint : http://file.test:1111/v1", "AIPolicy : ask"])
+    with session(tmp_path, home, XWPE_AI_BACKEND="claudecli", XWPE_AI_MODEL="sonnet") as s:
+        disp = open_dialog(s)
+        assert radio_marked(disp, "Claude CLI"), \
+            "the dialog does not mark the env backend:\n" + "\n".join(disp)
+        assert "sonnet" in row_with(disp, "Model (Alt-M)"), \
+            "the dialog does not show the env model:\n" + "\n".join(disp)
+        press_ok(s)
+    saved = read_xwperc(home)
+    assert xwperc_value(saved, "AIBackend") == "1", \
+        "an edit-free Ok replaced the file's AIBackend with the env backend:\n" + saved
+    assert xwperc_value(saved, "AIModel") == "gpt-x", \
+        "an edit-free Ok replaced the file's AIModel:\n" + saved
+
+
+def test_env_backend_keeps_file_model_that_it_cannot_use(tmp_path):
+    # The file says Ollama with an Ollama model; XWPE_AI_BACKEND=claudecli for
+    # one session drops that model at run time (a Claude backend cannot use it).
+    # An edit-free Ok must still keep AIModel in the file: the next plain launch
+    # is an Ollama session again and needs its model.
+    home = str(tmp_path / "home")
+    write_xwperc(home, ["AIBackend : 0", "AIModel : qwen3:8b", "AIPolicy : ask"])
+    with session(tmp_path, home, XWPE_AI_BACKEND="claudecli") as s:
+        disp = open_dialog(s)
+        assert radio_marked(disp, "Claude CLI"), \
+            "the dialog does not mark the env backend:\n" + "\n".join(disp)
+        press_ok(s)
+    saved = read_xwperc(home)
+    assert xwperc_value(saved, "AIBackend") == "0", \
+        "an edit-free Ok replaced the file's AIBackend with the env backend:\n" + saved
+    assert xwperc_value(saved, "AIModel") == "qwen3:8b", \
+        "an edit-free Ok under an env backend dropped the file's model:\n" + saved
+
+
+def test_env_override_edit_persists_only_the_edited_key(tmp_path):
+    # With XWPE_AI_ENDPOINT and XWPE_AI_POLICY set, the user retypes only the
+    # Endpoint field: Ok writes the typed endpoint (a value the user changed)
+    # and keeps the file's AIPolicy (still only overridden by the environment).
+    home = str(tmp_path / "home")
+    write_xwperc(home, ["AIBackend : 1", "AIEndpoint : http://file.test:1111/v1",
+                        "AIPolicy : ask"])
+    env = {"XWPE_AI_ENDPOINT": "http://env.test:2222/v1", "XWPE_AI_POLICY": "auto"}
+    typed = "http://typed.test:3333/v1"
+    with session(tmp_path, home, **env) as s:
+        open_dialog(s)
+        s.key(alt("u"), delay=0.4)                   # typing replaces the field
+        type_text(s, typed)
+        assert typed in row_with(s.display(), "Endpoint"), \
+            "the endpoint was not typed into the field"
+        press_ok(s)
+    saved = read_xwperc(home)
+    assert xwperc_value(saved, "AIEndpoint") == typed, \
+        "Ok did not save the endpoint the user edited:\n" + saved
+    assert xwperc_value(saved, "AIPolicy") == "ask", \
+        "Ok replaced the file's AIPolicy with the untouched env policy:\n" + saved
+
+
+def test_advanced_close_repaints_main_dialog(tmp_path):
+    # Tick Enable, open Advanced (Alt-A) and leave it with Esc: the main dialog
+    # must be painted again where it was, Enable still ticked.  The same after
+    # Advanced Ok.  The main Ok then applies the tick.  (Before the fix the
+    # main dialog stayed modal but invisible: the editor showed through and the
+    # pending tick could only be saved blind.)
+    home = str(tmp_path / "home")
+    write_xwperc(home, ["AIBackend : 4", "AIPolicy : ask"], general=["Options2 : 152"])
+    with session(tmp_path, home) as s:
+        open_dialog(s)
+        where = title_pos(s, "AI settings")
+        s.key(alt("e"), delay=0.4)
+        assert "[X]" in enable_row(s.display()), "Alt-E did not tick the Enable box"
+        for leave in (press_cancel, press_ok):
+            s.key(alt("a"), delay=0.8)
+            assert "Advanced AI settings" in "\n".join(s.display()), \
+                "Alt-A did not open the Advanced sub-dialog"
+            leave(s)
+            disp = s.display()
+            assert "Advanced AI settings" not in "\n".join(disp), \
+                "the Advanced sub-dialog did not close"
+            assert dialog_open(disp) and "Backend:" in "\n".join(disp), \
+                "after leaving Advanced with %s the main dialog is not painted:\n%s" \
+                % (leave.__name__, "\n".join(disp))
+            assert title_pos(s, "AI settings") == where, \
+                "the main dialog moved after Advanced closed: %r -> %r" \
+                % (where, title_pos(s, "AI settings"))
+            assert "[X]" in enable_row(disp), \
+                "the Enable tick was lost when Advanced closed:\n" + "\n".join(disp)
+        press_ok(s)
+        assert not dialog_open(s.display()), "the main Ok did not close the dialog"
+    saved = xwperc_value(read_xwperc(home), "Options2")
+    assert saved is not None and int(saved) & OPTIONS2_AI_ENABLE, \
+        "the Enable tick made before Advanced was not applied by Ok: Options2 = %r" % saved
+
+
+def provider_lines(text):
+    return [ln for ln in text.splitlines() if ln.startswith("AIProvider :")]
+
+
+def save_provider_as(s, name):
+    """Alt-V, '[ + Save current as... ]' (the only entry of a fresh profile),
+    type the name, Enter."""
+    s.key(alt("v"), delay=1.0)
+    assert "Save current" in "\n".join(s.display()), "the provider picker did not open"
+    s.key(ENTER, delay=0.7)
+    assert "Save provider as" in "\n".join(s.display()), "the name prompt did not open"
+    type_text(s, name)
+    s.key(ENTER, delay=0.8)
+
+
+@pytest.mark.parametrize("name", [
+    "p" * 100,                          # longer than a provider name may be
+    "groq|http://evil",                 # '|' separates the AIProvider fields
+    "groq/sub",                         # '/' would put the key file in a subdir
+], ids=["too-long", "pipe", "slash"])
+def test_provider_name_refused_when_unusable(tmp_path, name):
+    # A name that cannot be stored (over the limit, or carrying the '|' field
+    # separator of the AIProvider line or a '/' that breaks the key file path)
+    # is refused with a visible message; nothing is saved, the editor stays up
+    # and the dialog is back for another try.
+    home = str(tmp_path / "home")
+    write_xwperc(home, ["AIBackend : 1", "AIEndpoint : http://127.0.0.1:1/v1",
+                        "AIPolicy : ask"])
+    with session(tmp_path, home) as s:
+        open_dialog(s)
+        save_provider_as(s, name)
+        assert s.alive(), "the editor died on the provider name"
+        shown = "\n".join(s.display())
+        assert "Provider name" in shown, "no message refused the name:\n" + shown
+        s.key(ENTER, delay=0.6)                       # dismiss the message
+        disp = s.display()
+        assert dialog_open(disp), "the dialog is not back after the message:\n" + "\n".join(disp)
+        assert "(none" in row_with(disp, "Provider (Alt-V)"), \
+            "the refused name became the active provider:\n" + "\n".join(disp)
+        press_ok(s)
+        assert s.alive(), "the editor died on Ok"
+    saved = read_xwperc(home)
+    assert provider_lines(saved) == [], \
+        "an unusable provider name was written to xwperc:\n" + saved
+    assert xwperc_value(saved, "AIProviderName") == "", \
+        "the refused name was made the active provider:\n" + saved
+    assert sorted(os.listdir(cfg_dir(home))) == ["xwperc"], \
+        "a stray file appeared next to xwperc: %s" % sorted(os.listdir(cfg_dir(home)))

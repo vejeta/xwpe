@@ -392,6 +392,32 @@ Changes
   desktop after the terminal grew, the Ok button of the "String not found"
   message after it shrank, until something else repainted that cell.  A
   widget leaving for a resize no longer paints itself; the fresh box does.
+* Fixed: Options > AI, "[ + Save current as... ]" lost the API key typed in
+  the same session.  Only a key already confirmed by Alt-M or Ok reached the
+  new profile's key file, and the key field came back empty.  The Endpoint,
+  CA file and API key fields are now committed to the session before any
+  provider operation (the Model listing, a provider switch, Save current as,
+  Ok), so the new profile's key file holds the typed key and the field keeps
+  showing it.
+* Fixed: Options > AI, after the Advanced sub-dialog closed with Ok or Esc
+  the main dialog was no longer painted but still took the keys.  The editor
+  showed through, and a pending edit such as a ticked Enable box could only
+  be saved blind.  The main dialog is painted again where it was, with its
+  edits intact.
+* Fixed: Options > AI showed the Enable box unticked while XWPE_AI_ENABLE=1
+  kept the assistant on.  The box now shows the effective state; Ok still
+  writes the saved bit from the box.
+* Fixed: Ok in Options > AI wrote the XWPE_AI_BACKEND, _MODEL, _ENDPOINT,
+  _POLICY and _CAFILE environment overrides into xwperc, so a one-session
+  override became permanent configuration.  The file's own values are now
+  kept apart from the session's: an Ok without edits leaves them as they
+  were, and only a value changed in the dialog is written.  The same holds
+  for Save Options and for the Advanced sub-dialog's Ok.
+* Fixed: a provider name longer than 79 characters typed into "Save provider
+  as" overran a fixed buffer (a stack overflow, caught by AddressSanitizer),
+  a name with '|' corrupted the AIProvider line of xwperc, and one with '/'
+  made the key file path invalid.  The prompt's buffer now matches its field,
+  and such a name is refused with a message instead of being stored.
 * Fix a project Make (F9) that could abort with glibc "free(): invalid pointer"
   when a project variable (e.g. CMP) was missing -- e_c_project freed an
   uninitialised argument slot; it is now zero-initialised.

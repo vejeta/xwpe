@@ -74,6 +74,13 @@ extern char *e_ai_search_url; /* web_search URL template, "%s" = query; NULL=def
  * ad-hoc endpoint typed straight into the dialog. */
 struct wpe_ai_provider { char *name, *endpoint, *model, *cafile; };
 extern char *e_ai_provider;
+/* The longest provider name the configuration carries.  Also the width of the
+ * name labels in the provider picker. */
+#define WPE_AI_PROVIDER_NAME_MAX 79
+/* True when a typed name can be stored: non-empty, within the limit, and
+ * without '|' (the field separator of the AIProvider line in xwperc) or '/'
+ * (the key file is named openai-api-key-<name>, so '/' would make a path). */
+int         wpe_ai_provider_name_usable(const char *name);
 extern char *e_ai_key;        /* session OpenAI key from the dialog; NULL=use files */
 /* Persist an OpenAI key to ~/.config/xwpe/openai-api-key[-<provider>] (0600). */
 int         wpe_ai_write_openai_key(const char *provider, const char *key);
@@ -91,12 +98,39 @@ const char *wpe_ai_backend_name(int backend);
  * base rather than an Ollama one; NULL to keep the current endpoint. */
 const char *wpe_ai_ollama_endpoint_fixup(const char *url);
 
-/* True when the ED_AI_ENABLE edopt bit is set on the desktop (runtime toggle). */
+/* True when the assistant is on for this session: XWPE_AI_ENABLE=1 in the
+ * environment, else the ED_AI_ENABLE edopt bit on the desktop (the saved
+ * toggle).  The effective state, which the Options dialog's Enable box shows. */
 int  wpe_ai_enabled(void);
 
 /* Apply built-in defaults + XWPE_AI_* env overrides over whatever the config
- * file loaded.  Idempotent; call once at startup and after loading options. */
+ * file loaded.  Call once at startup, after the config file has been read. */
 void wpe_ai_config_init(void);
+
+/* ----- what the file carries vs. what the session uses ------------------- */
+/* The xwperc keys an XWPE_AI_* variable can shadow for one session.  The
+ * file's own value of each is kept apart from the effective e_ai_* global, so
+ * Save Options never turns a one-session override into configuration: the
+ * writer gets the file's value for a key the environment still shadows, and
+ * the effective value once the user has changed that key in the dialog. */
+enum wpe_ai_cfg_key {
+  WPE_AI_CFG_BACKEND = 0,     /* AIBackend     <- XWPE_AI_BACKEND      (int)    */
+  WPE_AI_CFG_POLICY,          /* AIPolicy      <- XWPE_AI_POLICY       (int)    */
+  WPE_AI_CFG_ENDPOINT,        /* AIEndpoint    <- XWPE_AI_ENDPOINT     (string) */
+  WPE_AI_CFG_MODEL,           /* AIModel       <- XWPE_AI_MODEL        (string) */
+  WPE_AI_CFG_CAFILE,          /* AICAFile      <- XWPE_AI_CAFILE       (string) */
+  WPE_AI_CFG_AGENT_ENGINE,    /* AIAgentEngine <- XWPE_AI_AGENT_ENGINE (int)    */
+  WPE_AI_CFG_HOST_ADAPTER,    /* AIHostAdapter <- XWPE_AI_HOST_ADAPTER (int)    */
+  WPE_AI_CFG_SEARCH_URL,      /* AISearchURL   <- XWPE_AI_SEARCH_URL   (string) */
+  WPE_AI_CFG_KEYS
+};
+/* The value Save Options writes for a key (int keys / string keys; a string
+ * key answers "" when it has no value). */
+int         wpe_ai_cfg_int_to_save(enum wpe_ai_cfg_key key);
+const char *wpe_ai_cfg_str_to_save(enum wpe_ai_cfg_key key);
+/* The user changed this key in the dialog: from now on its effective value is
+ * what the file should carry, environment override or not. */
+void        wpe_ai_cfg_user_changed(enum wpe_ai_cfg_key key);
 
 /* True when the model name is one the Claude backends accept (a CLI alias or a
  * claude-* id); false for a model from another backend.  wpe_ai_normalize_model

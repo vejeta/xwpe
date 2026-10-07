@@ -94,6 +94,14 @@ void wpe_ai_provider_set(const char *name, const char *endpoint,
  free(p->cafile);   p->cafile   = ai_strdup(cafile ? cafile : "");
 }
 
+int wpe_ai_provider_name_usable(const char *name)
+{
+ if (!name || !*name) return 0;
+ if (strlen(name) > WPE_AI_PROVIDER_NAME_MAX) return 0;
+ if (strchr(name, '|') || strchr(name, '/')) return 0;
+ return 1;
+}
+
 int wpe_ai_backend_from_name(const char *name)
 {
  if (!name)                          return WPE_AI_OLLAMA;
@@ -233,49 +241,163 @@ static char *ai_strdup(const char *s)
  return p;
 }
 
-void wpe_ai_config_init(void)
+/* ----- the file's values vs. the session's ------------------------------- */
+/* One xwperc key an XWPE_AI_* variable may shadow for the session.  The value
+ * the file carried is kept here while the e_ai_* global holds the effective
+ * one, so Save Options can write the file's value back unchanged. */
+struct ai_file_value {
+ int   shadowed;   /* the session value came from the environment, not the file */
+ int   ival;       /* the file's value of an int key                             */
+ char *sval;       /* the file's value of a string key, or NULL                  */
+};
+static struct ai_file_value g_ai_file[WPE_AI_CFG_KEYS];
+
+/* The global each key lives in: one pointer is set, by the key's type. */
+struct ai_cfg_binding { int *ival; char **sval; };
+static const struct ai_cfg_binding g_ai_cfg_bind[WPE_AI_CFG_KEYS] = {
+ { &e_ai_backend,      NULL },              /* WPE_AI_CFG_BACKEND      */
+ { &e_ai_policy,       NULL },              /* WPE_AI_CFG_POLICY       */
+ { NULL,               &e_ai_endpoint },    /* WPE_AI_CFG_ENDPOINT     */
+ { NULL,               &e_ai_model },       /* WPE_AI_CFG_MODEL        */
+ { NULL,               &e_ai_cafile },      /* WPE_AI_CFG_CAFILE       */
+ { &e_ai_agent_engine, NULL },              /* WPE_AI_CFG_AGENT_ENGINE */
+ { &e_ai_host_adapter, NULL },              /* WPE_AI_CFG_HOST_ADAPTER */
+ { NULL,               &e_ai_search_url },  /* WPE_AI_CFG_SEARCH_URL   */
+};
+
+/**
+ * ai_file_remember - Keep the current value of one key as the file's value.
+ */
+static void ai_file_remember(enum wpe_ai_cfg_key key)
+{
+ struct ai_file_value *v = &g_ai_file[key];
+ const struct ai_cfg_binding *b = &g_ai_cfg_bind[key];
+ v->shadowed = 0;
+ v->ival = b->ival ? *b->ival : 0;
+ free(v->sval);
+ v->sval = (b->sval && *b->sval) ? ai_strdup(*b->sval) : NULL;
+}
+
+/**
+ * ai_file_remember_all - Snapshot the overridable keys as the file loaded them.
+ *
+ * Taken with the built-in defaults already baked in and BEFORE the environment
+ * is read, so what is remembered is exactly what Save Options would write
+ * without any XWPE_AI_* variable set.
+ */
+static void ai_file_remember_all(void)
+{
+ int key;
+ for (key = 0; key < WPE_AI_CFG_KEYS; key++)
+  ai_file_remember((enum wpe_ai_cfg_key)key);
+}
+
+/**
+ * ai_file_shadow - Note that the session value of a key is not the file's.
+ */
+static void ai_file_shadow(enum wpe_ai_cfg_key key)
+{
+ g_ai_file[key].shadowed = 1;
+}
+
+int wpe_ai_cfg_int_to_save(enum wpe_ai_cfg_key key)
+{
+ if (g_ai_file[key].shadowed)
+  return g_ai_file[key].ival;
+ return *g_ai_cfg_bind[key].ival;
+}
+
+const char *wpe_ai_cfg_str_to_save(enum wpe_ai_cfg_key key)
+{
+ const char *s;
+ if (g_ai_file[key].shadowed)
+  s = g_ai_file[key].sval;
+ else
+  s = *g_ai_cfg_bind[key].sval;
+ return s ? s : "";
+}
+
+void wpe_ai_cfg_user_changed(enum wpe_ai_cfg_key key)
+{
+ g_ai_file[key].shadowed = 0;
+}
+
+/**
+ * ai_config_bake_defaults - Give the keys a value an empty config can run with.
+ */
+static void ai_config_bake_defaults(void)
+{
+ if (!e_ai_endpoint)
+  e_ai_endpoint = ai_strdup("http://localhost:11434");
+ if (!e_ai_model)
+  e_ai_model = ai_strdup("");
+}
+
+/**
+ * ai_config_apply_env - Let the XWPE_AI_* variables override the file for this run.
+ *
+ * Each key a variable replaces is marked shadowed, so Save Options keeps the
+ * file's own value for it: the override is for this session, not configuration.
+ */
+static void ai_config_apply_env(void)
 {
  const char *e;
 
- if ((e = getenv("XWPE_AI_BACKEND")))
+ if ((e = getenv("XWPE_AI_BACKEND"))) {
   e_ai_backend = wpe_ai_backend_from_name(e);
- if ((e = getenv("XWPE_AI_POLICY")))
+  ai_file_shadow(WPE_AI_CFG_BACKEND);
+ }
+ if ((e = getenv("XWPE_AI_POLICY"))) {
   e_ai_policy = wpe_ai_policy_from_name(e);
- if ((e = getenv("XWPE_AI_AGENT_ENGINE")))
+  ai_file_shadow(WPE_AI_CFG_POLICY);
+ }
+ if ((e = getenv("XWPE_AI_AGENT_ENGINE"))) {
   e_ai_agent_engine = (!strcmp(e, "claude-code") || !strcmp(e, "host"))
                         ? WPE_AI_ENGINE_CLAUDE_HOST : WPE_AI_ENGINE_BUILTIN;
- if ((e = getenv("XWPE_AI_HOST_ADAPTER")))
+  ai_file_shadow(WPE_AI_CFG_AGENT_ENGINE);
+ }
+ if ((e = getenv("XWPE_AI_HOST_ADAPTER"))) {
   e_ai_host_adapter = !strcmp(e, "text") ? WPE_AI_HOST_ADAPTER_TEXT
                                          : WPE_AI_HOST_ADAPTER_CLAUDE;
-
+  ai_file_shadow(WPE_AI_CFG_HOST_ADAPTER);
+ }
  if ((e = getenv("XWPE_AI_ENDPOINT"))) {
   free(e_ai_endpoint);
   e_ai_endpoint = ai_strdup(e);
+  ai_file_shadow(WPE_AI_CFG_ENDPOINT);
  }
- if (!e_ai_endpoint)
-  e_ai_endpoint = ai_strdup("http://localhost:11434");
-
  if ((e = getenv("XWPE_AI_MODEL"))) {
   free(e_ai_model);
   e_ai_model = ai_strdup(e);
+  ai_file_shadow(WPE_AI_CFG_MODEL);
  }
- if (!e_ai_model)
-  e_ai_model = ai_strdup("");
-
  if ((e = getenv("XWPE_AI_CAFILE"))) {
   free(e_ai_cafile);
   e_ai_cafile = (*e) ? ai_strdup(e) : NULL;
+  ai_file_shadow(WPE_AI_CFG_CAFILE);
  }
-
  if ((e = getenv("XWPE_AI_SEARCH_URL"))) {
   free(e_ai_search_url);
   e_ai_search_url = (*e) ? ai_strdup(e) : NULL;
+  ai_file_shadow(WPE_AI_CFG_SEARCH_URL);
  }
+}
+
+void wpe_ai_config_init(void)
+{
+ ai_config_bake_defaults();
+ ai_file_remember_all();
+ ai_config_apply_env();
 
  /* Both the file and the env overrides are in now -- drop a model that cannot
     belong to the resolved backend (e.g. an Ollama name left over from a previous
     session while the backend is now Claude CLI), so it does not break the run. */
  wpe_ai_normalize_model();
+ /* A model goes with its backend: under an environment backend the session's
+    model (dropped just above, or auto-picked later) is not the file's, whose
+    own backend needs it again on the next plain launch. */
+ if (g_ai_file[WPE_AI_CFG_BACKEND].shadowed)
+  ai_file_shadow(WPE_AI_CFG_MODEL);
 }
 
 /* ----- observability ----------------------------------------------------- */
