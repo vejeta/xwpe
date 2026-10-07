@@ -9,6 +9,10 @@
 #include <poll.h>
 #include "we_ai_http.h"
 
+/* The extra CA file is owned by the configuration layer (we_ai.c), which
+ * this test does not link; left empty, the system trust store is used. */
+char *e_ai_cafile = NULL;
+
 int main(int argc, char **argv)
 {
 #ifndef WPE_AI_TLS

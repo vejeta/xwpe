@@ -4,6 +4,11 @@
 #include <string.h>
 #include "we_ai_http.h"
 
+/* The extra CA file is owned by the configuration layer (we_ai.c), which
+ * this test does not link; the framer only ever reads it when a TLS
+ * connection is opened, so an empty stand-in keeps the test self-contained. */
+char *e_ai_cafile = NULL;
+
 static int fail;
 static void check(int cond, const char *msg)
 {
