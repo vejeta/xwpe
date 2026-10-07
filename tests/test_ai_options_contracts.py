@@ -20,8 +20,7 @@ import stat
 import subprocess
 
 import pytest
-from wpe_driver import (WpeSession, ALT, WPE_BIN, row_with, title_pos, checkbox_mark,
-                        incoherence)
+from wpe_driver import WpeSession, ALT, WPE_BIN, row_with, title_pos, checkbox_mark
 
 
 def _ai_build():
@@ -436,10 +435,9 @@ def open_advanced(s):
 # @scenario SC-ai-options-40
 def test_advanced_dialog_shows_fields_and_buttons(tmp_path):
     # Alt-A opens "Advanced AI settings" with its labelled fields (Host command
-    # only in a host build), the Fallback explanation, Ok and Cancel.  The
-    # Model fallback label is 23 characters from column 3 and its input field
-    # starts at column 24, so the field overwrites its last two characters:
-    # the row reads "Model fallback (Alt-M" and that is what is asserted.
+    # only in a host build), the Fallback explanation, Ok and Cancel.  Each
+    # label is asserted in full: the fields start after the longest label, so
+    # no label is overwritten by its own field.
     home = str(tmp_path / "home")
     write_xwperc(home, ["AIBackend : 4", "AIPolicy : ask"])
     with session(tmp_path, home) as s:
@@ -448,7 +446,7 @@ def test_advanced_dialog_shows_fields_and_buttons(tmp_path):
         press_cancel(s)                              # Esc the sub-dialog
         press_cancel(s)                              # Esc the main one
     joined = "\n".join(adv)
-    for want in ("Model fallback (Alt-M", "Edit hook (Alt-H):", "Fallback: a model retried once"):
+    for want in ("Model fallback (Alt-M):", "Edit hook (Alt-H):", "Fallback: a model retried once"):
         assert want in joined, "the Advanced dialog lacks %r:\n%s" % (want, joined)
     host_build = any("Host command" in ln for ln in adv)
     if host_build:
@@ -457,10 +455,6 @@ def test_advanced_dialog_shows_fields_and_buttons(tmp_path):
     assert ok_row, "Ok and Cancel are not both on one row of the Advanced dialog:\n" + joined
 
 
-@incoherence("the Advanced dialog's second explanatory line, 'Edit hook: a "
-             "command run on a file after an AI edit (clang-format).', is 67 "
-             "columns from column 3 in a 66-column dialog, so the engine draws "
-             "nothing on its row: only the Fallback line is on screen")
 # @scenario SC-ai-options-40
 def test_advanced_dialog_shows_both_explanatory_lines(tmp_path):
     # The spec promises two explanatory lines under the fields: one for the

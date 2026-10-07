@@ -3101,19 +3101,23 @@ static int e_ai_opt_pick_provider(FENSTER *f)
 static int e_ai_opt_advanced(FENSTER *f)
 {
  W_OPTSTR *o = e_init_opt_kst(f);
- int ret, w = 66, h = 12;
+ /* Wide enough for the longest help line below (67 cells at column 3 --
+    the engine draws a line only when it fits inside the frame) and for the
+    23-cell field labels to end before their fields start.  Still inside an
+    80-column terminal. */
+ int ret, w = 72, h = 12;
  const char *v;
  if (!o) return 0;
  o->xa = (MAXSCOL - w) / 2; if (o->xa < 1) o->xa = 1; o->xe = o->xa + w;
  o->ya = (MAXSLNS - h) / 2; if (o->ya < 1) o->ya = 1; o->ye = o->ya + h;
  o->bgsw = 0; o->crsw = AltO;
  o->name = "Advanced AI settings";
- e_add_wrstr(3, 2, 24, 2, 38, 255, -1, AltM, "Model fallback (Alt-M):",
+ e_add_wrstr(3, 2, 27, 2, 38, 255, -1, AltM, "Model fallback (Alt-M):",
              e_ai_model_fallback ? e_ai_model_fallback : "", NULL, o);   /* wstr[0] */
- e_add_wrstr(3, 4, 24, 4, 38, 511, -1, AltH, "Edit hook (Alt-H):",
+ e_add_wrstr(3, 4, 27, 4, 38, 511, -1, AltH, "Edit hook (Alt-H):",
              e_ai_edit_hook ? e_ai_edit_hook : "", NULL, o);             /* wstr[1] */
 #ifdef WPE_AI_AGENT_HOST
- e_add_wrstr(3, 6, 24, 6, 38, 511, -1, AltD, "Host command (Alt-D):",
+ e_add_wrstr(3, 6, 27, 6, 38, 511, -1, AltD, "Host command (Alt-D):",
              e_ai_host_command ? e_ai_host_command : "", NULL, o);       /* wstr[2] */
 #endif
  e_add_txtstr(3, 8, "Fallback: a model retried once when the primary fails a turn.", o);

@@ -418,6 +418,10 @@ Changes
   a name with '|' corrupted the AIProvider line of xwperc, and one with '/'
   made the key file path invalid.  The prompt's buffer now matches its field,
   and such a name is refused with a message instead of being stored.
+* Fixed: the "Advanced AI settings" dialog showed only one of its two help
+  lines (the Edit hook one was wider than the box and was never drawn), and
+  the "Model fallback (Alt-M):" label was cut by its own field.  The box is
+  wider now, so both lines and every label are visible.
 * Fix a project Make (F9) that could abort with glibc "free(): invalid pointer"
   when a project variable (e.g. CMP) was missing -- e_c_project freed an
   uninitialised argument slot; it is now zero-initialised.
