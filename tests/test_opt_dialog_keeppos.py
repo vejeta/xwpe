@@ -17,10 +17,8 @@ def _title_pos(s):
     return title_pos(s, TITLE)
 
 
-# @scenario SC-dialog-engine-01
 # @scenario SC-dialog-engine-04
 # @scenario SC-dialog-engine-11
-# @scenario SC-dialog-engine-12
 def test_dialog_keeps_dragged_position_after_model_picker(tmp_path):
     home = tempfile.mkdtemp()
     os.makedirs(os.path.join(home, ".config", "xwpe"), exist_ok=True)

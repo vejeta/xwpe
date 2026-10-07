@@ -228,10 +228,9 @@ def test_ai_options_ok_reads_radios(tmp_path):
 
 
 # @scenario SC-ai-options-46
-# @scenario SC-dialog-engine-19
 # @scenario SC-dialog-engine-22
-# @scenario SC-dialog-engine-23
 # @scenario SC-dialog-engine-24
+# @scenario SC-dialog-engine-25
 def test_ai_options_keyboard_navigation(tmp_path):
     # Tab/arrows must move between the radio groups and Space must select -- the
     # widgets carry unique non-zero sw ids so e_opt_kst can focus them (a zero sw

@@ -14,7 +14,13 @@
 # MISSING, so the script can gate CI.
 #
 # Honours WPE_BIN / XWPE_BIN like the rest of the suite; the asan layer builds
-# we-asan through tests/run-tests.sh --asan when it is missing.
+# we-asan through tests/run-tests.sh --asan when it is missing, and runs it
+# through the name wpe-asan: the editor turns its programming layer (the Run,
+# Debug and AI menus, Alt-G) on only when the name it was started under begins
+# with "wpe", so a sanitizer binary started as we-asan is a plain text editor
+# and every programming-mode scenario fails for a reason that has nothing to
+# do with memory.  Sanitizer builds run about twice as slow, so the waits are
+# stretched with XWPE_TEST_WAIT_SCALE (2 unless the caller sets it).
 set -u
 
 here=$(cd "$(dirname "$0")" && pwd)
@@ -59,8 +65,12 @@ case "$layer" in
     ;;
   asan)
     [ -x "$top/we-asan" ] || tests/run-tests.sh --asan >/dev/null
-    ASAN_OPTIONS="detect_leaks=0:abort_on_error=1:log_path=$out/asan-$cap" \
-      run_pytest "WPE_BIN=$top/we-asan" $files
+    # The name decides the mode (see the header): expose the sanitizer binary
+    # as wpe-asan and start it under that name.
+    ln -sfn we-asan "$top/wpe-asan"
+    export ASAN_OPTIONS="detect_leaks=0:abort_on_error=1:log_path=$out/asan-$cap"
+    export XWPE_TEST_WAIT_SCALE="${XWPE_TEST_WAIT_SCALE:-2}"
+    run_pytest "WPE_BIN=$top/wpe-asan" $files
     ;;
   x11|wayland)
     run_pytest "XWPE_BIN=${XWPE_BIN:-$top/xwpe}" $files

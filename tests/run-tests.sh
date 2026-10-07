@@ -18,6 +18,13 @@
 # against the in-tree binary, a sanitizer build, or an installed /usr/bin/wpe.
 # The X11 GUI tests honour $XWPE_BIN (default ../xwpe).
 #
+# Whatever binary runs, its NAME must begin with "wpe": the editor turns its
+# programming layer (the Run, Debug and AI menus, Alt-G) on only when the name
+# it was started under does, so a build started as "we" or "we-asan" is a
+# plain text editor and every programming-mode scenario fails for a reason
+# that has nothing to do with the code under test.  The sanitizer build is
+# therefore started through the wpe-asan link, never as we-asan.
+#
 # pyte/pytest: a system install (python3-pyte, python3-pytest) is used if
 # present (e.g. in a Debian autopkgtest with no network); otherwise a local
 # venv is bootstrapped under tests/.venv.
@@ -93,12 +100,16 @@ asan)
   make CFLAGS="-fsanitize=address -g -O1 -fno-omit-frame-pointer" \
        LDFLAGS="-fsanitize=address" >/dev/null
   cp we we-asan
+  ln -sfn we-asan wpe-asan        # the name turns programming mode on (see above)
   echo "== restoring the normal binary =="
   make clean >/dev/null
   make >/dev/null
-  echo "== pyte suite under AddressSanitizer (WPE_BIN=./we-asan) =="
+  echo "== pyte suite under AddressSanitizer (WPE_BIN=./wpe-asan) =="
+  # ASan runs about twice as slow, so stretch every wait unless the caller
+  # already chose a scale.
   ASAN_OPTIONS="detect_leaks=0:abort_on_error=1:log_path=$top/asan-run" \
-    WPE_BIN="$top/we-asan" "$PY" -m pytest -q "$here" --ignore="$here/x11"
+    XWPE_TEST_WAIT_SCALE="${XWPE_TEST_WAIT_SCALE:-2}" \
+    WPE_BIN="$top/wpe-asan" "$PY" -m pytest -q "$here" --ignore="$here/x11"
   ;;
 
 x11)

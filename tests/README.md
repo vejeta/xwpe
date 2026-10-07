@@ -397,17 +397,20 @@ or debugging a pyte test -- they are easy to relearn the slow way.
   Press F2 (`"\033OQ"`) to save and read the file back from the workdir -- the
   saved buffer is solid even when the screen looks wrong.
 
-- **`e_opt_kst` radio dialogs (the LSP picker, Options groups) are NOT reliably
-  driven to a NON-default entry from a headless pty.** In that dialog arrow keys
-  move the *focus* (reverse-video, invisible to pyte's plain `.display`) and
-  Space selects the focused radio; Enter then confirms the *selected* one.
-  Arrows+Space+Enter, Tab, and even a synthesized mouse click all proved
-  inconsistent -- they tended to confirm the default first option. For a test
-  that needs a specific picker entry, assert it is **offered** (scan
-  `w.display()` for its label) rather than trying to apply it; apply only the
-  default entry, or verify the apply path with a standalone wire/disk probe.
-  (Whether real interactive keyboard selection has the same trouble is an open
-  question -- see the picker-reliability task.)
+- **`e_opt_kst` radio dialogs (the LSP picker, Options groups) ARE driven to a
+  NON-default entry by keyboard from a headless pty.** The arrows used to be
+  lost in a modal dialog (the raw `ESC [ B` slipped through ncurses
+  un-assembled and was read as an Alt combo); `e_t_csi_key` in `we_term.c`
+  decodes them now, see `tests/docs/picker-keyboard-investigation.md`. The
+  reliable sequences: Tab to the group, Down/Up (`"\033[B"` / `"\033[A"`) to
+  the option, then Space to select it (focus stays) or Enter, which selects
+  the focused option AND confirms the dialog; for a checkbox, Space toggles
+  and Enter confirms. Focus is reverse video, invisible in pyte's plain
+  `.display`, so do not assert on it: assert the outcome on the trace
+  (`XWPE_AI_TRACE`, the `options backend=...` line) or on disk, as
+  `test_ai_options.py::test_ai_options_keyboard_navigation` does. A radio
+  can still be pre-set through `xwperc` (the config-file route) when a test
+  needs a non-default starting state rather than a keyboard move.
 
 - **Live-Metals tests cost ~3 min each** (cold JVM index ~150 s) and must pin
   the toolchain: a `project.scala` with `//> using jvm temurin:21` (newer JDKs
