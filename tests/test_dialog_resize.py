@@ -15,7 +15,7 @@ The original crash this file was written for: e_pr_char (macro) wrote to
 schirm[] without bounds checking, so after a REALLOC to smaller dimensions the
 old coordinates overwrote heap metadata.
 """
-from wpe_driver import WpeSession, ALT, incoherence
+from wpe_driver import WpeSession, ALT
 
 ESC = "\033"
 F2_SAVE = "\033OQ"
@@ -238,11 +238,6 @@ class TestDialogResizeSurvival:
         assert saved.startswith("hello"), \
             "the editor did not take input after the resize cycle: %r" % saved
 
-    @incoherence("after a resize the focused widget is drawn once more at its "
-                 "pre-resize position: the Goto Line field value lingers on the "
-                 "desk after a grow, the popup's Ok button after a shrink "
-                 "(observed on 906ec3f: '7' at row 3 col 31 of 120x40, 'Ok' at "
-                 "row 11 col 37 of 40x15)")
     def test_resize_leaves_no_stale_focused_widget(self, tmp_path):
         with WpeSession(str(tmp_path), SEED, cols=40, rows=15) as s:
             _open_goto_line(s)

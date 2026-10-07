@@ -386,6 +386,12 @@ Changes
   inside the frame were painted straight through its right border (the
   Permission radios and the Endpoint field of Options > AI at 50 columns).  A
   widget is drawn only when it fits inside the frame.
+* Fixed: after a terminal resize with a dialog open, the widget that had the
+  focus was painted once more where it stood before the resize, outside the
+  box that was laid out again: the number typed in Goto Line stayed on the
+  desktop after the terminal grew, the Ok button of the "String not found"
+  message after it shrank, until something else repainted that cell.  A
+  widget leaving for a resize no longer paints itself; the fresh box does.
 * Fix a project Make (F9) that could abort with glibc "free(): invalid pointer"
   when a project variable (e.g. CMP) was missing -- e_c_project freed an
   uninitialised argument slot; it is now zero-initialised.

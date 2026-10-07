@@ -2292,6 +2292,39 @@ static void e_opt_route_field_key(W_OPTSTR *o, struct opt_run *r, int x, int y)
 }
 
 /**
+ * e_opt_leaving_for_restart - Did a terminal resize end the widget's turn?
+ *
+ * A resize reaches the focused widget as the key WPE_RESIZE, and by then the
+ * terminal layer has already laid the desk out again for the new screen: the
+ * cells the widget was drawn in belong to the editor windows now, while the
+ * box is torn down and drawn from scratch at the top of e_opt_kst_run.  So
+ * the widget must not paint itself "plain" on the way out as it does when
+ * the focus moves to a neighbour: its coordinates describe the old layout,
+ * and the value of a Goto Line field or the face of an Ok button would stay
+ * on the desktop, outside the new box, until something else repaints that
+ * cell.
+ */
+static int e_opt_leaving_for_restart(const struct opt_run *r)
+{
+ return r->c == WPE_RESIZE;
+}
+
+/**
+ * e_opt_focus_moved_on - Must the widget be repainted plain on the way out?
+ *
+ * True when the key moved the focus to another widget of a layout that still
+ * stands; the widget then loses its highlight.  Not when the key names the
+ * widget itself (it keeps the focus and is run again), nor after a resize
+ * (see e_opt_leaving_for_restart).
+ */
+static int e_opt_focus_moved_on(const struct opt_run *r)
+{
+ if (e_opt_leaving_for_restart(r))
+  return 0;
+ return r->c != r->cold;
+}
+
+/**
  * e_opt_run_text_field - Let the user edit a text field until a key leaves it.
  *
  * The value is kept unless the user leaves with Esc; a mouse click outside the
@@ -2317,9 +2350,10 @@ static void e_opt_run_text_field(W_OPTSTR *o, struct opt_run *r, int i)
 #endif
  if (c != WPE_ESC)
   strcpy(w->txt, tmp);
- e_opt_draw_text_field(o, i);
  r->c = c;
  e_opt_route_field_key(o, r, x, y);
+ if (!e_opt_leaving_for_restart(r))
+  e_opt_draw_text_field(o, i);
  free(tmp);
  fk_cursor(0);
 }
@@ -2345,7 +2379,7 @@ static void e_opt_run_num_field(W_OPTSTR *o, struct opt_run *r, int i)
   n->num = num;
  r->c = c;
  e_opt_route_field_key(o, r, x, y);
- if (r->c != r->cold)
+ if (e_opt_focus_moved_on(r))
   e_schr_nzif(n->num, x, y, n->nw, o->fwt);
  fk_cursor(0);
 }
@@ -2394,7 +2428,7 @@ static void e_opt_run_checkbox(W_OPTSTR *o, struct opt_run *r, int i)
  e_opt_draw_checkbox_label(o, i, OPT_LOOK_FOCUSED);
  r->c = e_opt_read_key(o);
  e_opt_route_checkbox_key(o, r, i);
- if (r->c != r->cold)
+ if (e_opt_focus_moved_on(r))
   e_opt_draw_checkbox_label(o, i, OPT_LOOK_PLAIN);
 }
 
@@ -2441,7 +2475,7 @@ static void e_opt_run_radio(W_OPTSTR *o, struct opt_run *r, int i, int j)
  e_opt_draw_radio_label(o, i, j, OPT_LOOK_FOCUSED);
  r->c = e_opt_read_key(o);
  e_opt_route_radio_key(o, r, i, j);
- if (r->c != r->cold)
+ if (e_opt_focus_moved_on(r))
   e_opt_draw_radio_label(o, i, j, OPT_LOOK_PLAIN);
 }
 
@@ -2510,7 +2544,7 @@ static int e_opt_run_button(W_OPTSTR *o, struct opt_run *r, int i)
  r->cold = r->c;
  r->c = e_opt_read_key(o);
  e_opt_route_button_key(o, r, i);
- if (r->c != r->cold)
+ if (e_opt_focus_moved_on(r))
   e_opt_draw_button(o, i, OPT_LOOK_PLAIN);
  return OPT_CONTINUE;
 }
