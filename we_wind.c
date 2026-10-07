@@ -8,6 +8,9 @@
 #include "messages.h"
 #include "edit.h"
 #include <wchar.h>
+#ifdef WPE_AI
+#include "we_ai.h"
+#endif
 
 #define MAXSVSTR 20
 
@@ -1169,6 +1172,12 @@ int e_close_window(FENSTER *f)
    else if (c == 'Y')
     e_save(f);
   }
+#ifdef WPE_AI
+  /* The close is certain now and the window is still whole: a background AI
+     task started from it must let go of it here, before its name, buffer and
+     screen are freed below, or its next heartbeat paints through freed memory. */
+  wpe_ai_window_closing(f);
+#endif
   /* Check if file system could have an autosave or emergency save file
      >12 check is to eliminate dos file systems */
   if ((maxname = pathconf(f->dirct, _PC_NAME_MAX) >= strlen(f->datnam) + 4) &&

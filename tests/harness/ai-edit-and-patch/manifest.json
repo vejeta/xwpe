@@ -6,6 +6,7 @@
     {"id": "SC-ai-edit-07", "requirement": "What is sent", "layer": "ncurses", "test": "tests/test_ai_edit_selection.py::test_edit_scoped_to_selection", "status": "covered"},
     {"id": "SC-ai-edit-09", "requirement": "The reply is handled safely", "layer": "ncurses", "test": null, "status": "blocked", "reason": "UNKNOWN/CONFLICT: a prose preamble before the fence lands in the file; intended contract pending (tasks 1.4)"},
     {"id": "SC-ai-edit-11", "requirement": "The reply is handled safely", "layer": "ncurses", "test": null, "status": "blocked", "reason": "UNKNOWN/CONFLICT: no garbage/truncated-reply guard exists; the guard is undecided (tasks 1.4)"},
+    {"id": "SC-ai-edit-14", "requirement": "The reply is handled safely", "layer": "ncurses", "test": "tests/test_ai_edit_pending_window.py::test_close_window_during_pending_edit", "status": "new"},
     {"id": "SC-ai-edit-15", "requirement": "The reply is handled safely", "layer": "ncurses", "test": "tests/test_ai_edit_error_guard.py::test_edit_refuses_backend_error", "status": "covered"},
     {"id": "SC-ai-edit-16", "requirement": "The change is presented as per-hunk diffs", "layer": "ncurses", "test": "tests/test_ai_diff_overlay.py::test_diff_overlay_shows_context_and_colors", "status": "covered"},
     {"id": "SC-ai-edit-16b", "requirement": "The change is presented as per-hunk diffs", "layer": "ncurses", "test": "tests/test_ai_edit_polish.py::test_edit_line_numbers_and_apply_tally", "status": "covered"},

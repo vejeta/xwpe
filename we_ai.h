@@ -229,6 +229,10 @@ int  e_ai_ui_key(struct FNST *f);   /* Alt-B: open/prompt the AI assistant    */
 int  e_ai_menu(struct FNST *f);     /* bottom-bar "Alt-B AI" click: action menu */
 int  wpe_ai_busy(void);             /* a background AI task (async Edit) is running */
 void wpe_ai_cancel(void);           /* tear down the running background task       */
+/* e_close_window calls this before freeing a window: every pending AI task,
+ * stream or queued request that targets it is dropped so nothing paints or
+ * applies through the freed window. */
+void wpe_ai_window_closing(struct FNST *closing);
 /* One-shot status-line message (Turbo Vision style): takes the bottom bar row;
  * the next keystroke restores the key hints.  wpe_ai_flash_clear returns 1 if it
  * cleared a flash (called from the editor key loop on every key). */

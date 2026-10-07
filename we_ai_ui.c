@@ -380,6 +380,24 @@ static FENSTER *ai_pane_win(FENSTER *f)
  return cn->f[i];
 }
 
+/**
+ * ai_pane_existing - Find the AI pane only if it is already open.
+ * @cn: the desktop.  Return: the pane window, or NULL when none is open.
+ *
+ * ai_pane_win opens the pane when it is missing, which pushes a window onto the
+ * desktop stack.  Callers that run while the stack is being changed underneath
+ * them (a window close in progress) must only ever paint into a pane that
+ * already exists, so they look it up with this and leave creation alone.
+ */
+static FENSTER *ai_pane_existing(ECNT *cn)
+{
+ int i;
+ for (i = cn->mxedt; i > 0; i--)
+  if (!strcmp(cn->f[i]->datnam, AI_PANE_NAME))
+   return cn->f[i];
+ return NULL;
+}
+
 /* While a background op runs, the caret belongs in the USER'S window, not the
  * pane -- so they keep typing in their code while the AI streams/spins. */
 static FENSTER *g_ai_bg_win = NULL;
@@ -2070,6 +2088,8 @@ struct ai_async_op {
  int      fd;
  FENSTER *f;                 /* target window -- validated before applying     */
  ECNT    *cn;
+ const char *kind;           /* "edit", "complete", "agent", "plan": names the
+                                task in traces and in the pane when it is dropped */
  int      save_id;
  ai_spin  spin;
  time_t   start;
@@ -2510,6 +2530,7 @@ static int e_ai_edit(FENSTER *f)
  /* Register the stream on the shared fd-loop and RETURN -- the editor stays
     interactive; ai_edit_fd_cb finishes (diff + apply) when the reply lands. */
  op->f = f; op->cn = cn; op->save_id = save_id;
+ op->kind = "edit";
  op->sel_y0 = have_sel ? sy0 : -1;
  op->sel_y1 = have_sel ? sy1 : -1;
  op->fd = wpe_ai_stream_fd(op->st);
@@ -2670,6 +2691,7 @@ static int e_ai_complete(FENSTER *f)
   return 0;
  }
  op->f = f; op->cn = cn; op->save_id = save_id;
+ op->kind = "complete";
  op->sel_y0 = op->sel_y1 = -1;
  op->ud = ud; op->free_ud = ai_complete_ud_free;
  op->fd = wpe_ai_stream_fd(op->st);
@@ -4184,6 +4206,7 @@ static int ai_agent_launch(FENSTER *f, const char *goal, const char *extra)
  op = calloc(1, sizeof *op);
  if (!op) return 0;
  op->f = f; op->cn = cn; op->save_id = save_id;
+ op->kind = "agent";
  op->max_iter = AI_AGENT_MAX_ITERS;
  op->process = ai_agent_process;
  op->finish = ai_agent_finish;
@@ -4530,6 +4553,7 @@ static int e_ai_plan(FENSTER *f)
  op = calloc(1, sizeof *op);
  if (!op) { ai_plan_free_data(pd); return 0; }
  op->f = f; op->cn = cn; op->save_id = save_id;
+ op->kind = "plan";
  op->max_iter = AI_AGENT_MAX_ITERS + 4;
  op->process = ai_plan_process;
  op->finish = ai_plan_finish;
@@ -4901,6 +4925,163 @@ int e_ai_menu(FENSTER *f)
  if (g_ai_chat_focus && g_ai_chat_pane)
   ai_pane_paint(g_ai_chat_pane);
  return 0;
+}
+
+/* ================= a window closes: let go of it ==========================
+ * Everything asynchronous in this file remembers the window it was started
+ * from: the background op (Edit, Complete, Agent, Plan) repaints its spinner
+ * through it on every heartbeat and applies the reply to it, a chat stream
+ * paints into the pane found from it, the queued follow-up launches on it, the
+ * armed chat input lives in it, and the hosted agent anchors its pane to it.
+ * e_close_window tells us here, before it frees the window, so none of those
+ * is left holding freed memory. */
+
+/**
+ * ai_op_note_window_gone - Tell the user the task went away with its window.
+ * @cn: the desktop; @closing: the window on its way out; @kind: "edit", ...
+ *
+ * The spinner line would otherwise sit frozen at "[AI edit] working" with no
+ * reply ever coming.  Writes into the pane that is already open and nowhere
+ * else: opening the pane here would push a window onto the stack while
+ * e_close_window is in the middle of popping one, and painting into the pane
+ * when the pane is the window being closed would paint into freed memory.
+ */
+static void ai_op_note_window_gone(ECNT *cn, FENSTER *closing, const char *kind)
+{
+ FENSTER *wf = ai_pane_existing(cn);
+ char line[120];
+ if (!wf || wf == closing)
+  return;
+ snprintf(line, sizeof line, "[AI %s] dropped - its window was closed", kind);
+ ai_pane_set_last(wf, line);
+}
+
+/**
+ * ai_op_drop_for_window - End the background op if it targets the closing window.
+ * @closing: the window e_close_window is about to free.
+ *
+ * Leaves the fd-loop (stream and heartbeat) first, so no spinner tick or reply
+ * callback can run against the window after this returns, then frees the op
+ * and notes it in the pane.  The reply is never applied anywhere: its target
+ * file is gone.  The trace line ("edit target gone") is the same one the late
+ * reply path prints, so a trace reader sees one event whichever side caught it.
+ */
+static void ai_op_drop_for_window(FENSTER *closing)
+{
+ ai_async_op *op = g_ai_op;
+ ECNT *cn;
+ const char *kind;
+ if (!op || op->f != closing)
+  return;
+ cn = op->cn;
+ kind = op->kind ? op->kind : "task";
+ wpe_ai_trace("%s target gone", kind);
+ ai_op_detach(op);
+ ai_op_free(op);
+ ai_op_note_window_gone(cn, closing, kind);
+}
+
+/**
+ * ai_queue_drop_for_window - Forget a queued request whose window is closing.
+ * @closing: the window e_close_window is about to free.
+ *
+ * A request queued behind the running task would launch on that window when
+ * the task ends; with the window gone there is nothing to launch it on.
+ */
+static void ai_queue_drop_for_window(FENSTER *closing)
+{
+ if (!g_ai_queue.pending || g_ai_queue.f != closing)
+  return;
+ wpe_ai_trace("queued request dropped (window closed)");
+ ai_queue_clear();
+}
+
+/**
+ * ai_chat_drop_for_window - End a streaming chat anchored to the closing window.
+ * @closing: the window e_close_window is about to free.
+ *
+ * The chat finds the pane and the workspace through its anchor window on every
+ * delta; once that window is gone the stream is closed and the partial answer
+ * stays in the pane as far as it got.
+ */
+static void ai_chat_drop_for_window(FENSTER *closing)
+{
+ ai_chat_session *s = g_ai_chat;
+ if (!s || s->ref != closing)
+  return;
+ wpe_ai_trace("chat target gone");
+ s->active = 0;
+ ai_chat_finish(s);
+}
+
+/**
+ * ai_chat_input_drop_for_window - Disarm the chat input when its pane closes.
+ * @closing: the window e_close_window is about to free.
+ *
+ * The "> " input rows live in the pane's own buffer, which is freed with the
+ * pane; forgetting the armed pane here keeps the next keystroke from being
+ * routed into it.
+ */
+static void ai_chat_input_drop_for_window(FENSTER *closing)
+{
+ if (!g_ai_chat_pane || g_ai_chat_pane != closing)
+  return;
+ g_ai_chat_focus = 0;
+ g_ai_chat_pane = NULL;
+ g_ai_input_rows = 0;
+}
+
+#ifdef WPE_AI_AGENT_HOST
+/**
+ * ai_host_drop_for_window - End the hosted agent session anchored to the window.
+ * @closing: the window e_close_window is about to free.
+ *
+ * The host renders its events through its anchor window; ending the session
+ * here (silently, the pane message would need the window) stops the child and
+ * its fd-loop callback before the window is freed.
+ */
+static void ai_host_drop_for_window(FENSTER *closing)
+{
+ if (!g_host || g_host_win != closing)
+  return;
+ wpe_ai_trace("host target gone");
+ e_ai_host_end(NULL);
+}
+#endif
+
+/**
+ * wpe_ai_window_closing - Let go of every pending AI reference to a window.
+ * @closing: the window e_close_window is about to free.
+ *
+ * Called from e_close_window once the close is certain (after the "save?"
+ * question, before the window is freed).  Until now a background Edit, Agent or
+ * Plan kept the window it was started from and repainted its spinner through it
+ * on every heartbeat, so closing that window with Ctrl-W while "[AI edit]
+ * working" was spinning crashed the editor on the next tick (a read through the
+ * freed window).  For the user: Ctrl-W on a file during a pending AI task just
+ * closes the file; the pane reports the task as dropped, nothing is applied
+ * anywhere, and the editor keeps taking keys.
+ *
+ * The close notifies the AI layer rather than having every heartbeat re-check
+ * the window stack: a liveness scan after the free can only compare addresses,
+ * and a freed window's address is reused by the next window opened, so a late
+ * check can mistake a new file for the old target; the stream and the
+ * heartbeat would also keep running for a reply nobody can apply.  Dropping at
+ * close time is exact, happens once, and is the same answer for every kind of
+ * pending work: the op, the queued request, the chat stream, the armed chat
+ * input, the hosted agent and the background caret window.
+ */
+void wpe_ai_window_closing(FENSTER *closing)
+{
+ ai_queue_drop_for_window(closing);
+ ai_op_drop_for_window(closing);
+ ai_chat_drop_for_window(closing);
+ ai_chat_input_drop_for_window(closing);
+#ifdef WPE_AI_AGENT_HOST
+ ai_host_drop_for_window(closing);
+#endif
+ if (g_ai_bg_win == closing)
+  g_ai_bg_win = NULL;
 }
 
 #endif /* WPE_AI */
