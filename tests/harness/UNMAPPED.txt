@@ -12,7 +12,6 @@ tests/test_ai_agent.py
 tests/test_ai_agent_answer.py
 tests/test_ai_agent_preview.py
 tests/test_ai_agent_write.py
-tests/test_ai_apply_patch.py
 tests/test_ai_async.py
 tests/test_ai_async_live.py
 tests/test_ai_attention.py
@@ -27,18 +26,10 @@ tests/test_ai_chat_investigate_live.py
 tests/test_ai_chat_tool_preamble.py
 tests/test_ai_claudecli_live.py
 tests/test_ai_claudecli_web.py
-tests/test_ai_complete.py
 tests/test_ai_compose.py
 tests/test_ai_consent.py
 tests/test_ai_context.py
 tests/test_ai_diagnostics.py
-tests/test_ai_diff_overlay.py
-tests/test_ai_edit.py
-tests/test_ai_edit_error_guard.py
-tests/test_ai_edit_hunks.py
-tests/test_ai_edit_longline.py
-tests/test_ai_edit_polish.py
-tests/test_ai_edit_selection.py
 tests/test_ai_endpoint_down.py
 tests/test_ai_fix_build.py
 tests/test_ai_glob.py
@@ -79,9 +70,7 @@ tests/test_ai_toggle.py
 tests/test_ai_tool_feedback.py
 tests/test_ai_web_fetch.py
 tests/test_ai_web_search.py
-tests/wayland/test_ai_diff.py
 tests/wayland/test_ai_pane.py
 tests/wayland/test_ai_resize.py
-tests/x11/test_ai_diff.py
 tests/x11/test_ai_pane.py
 tests/x11/test_ai_resize.py
