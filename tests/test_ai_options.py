@@ -131,27 +131,43 @@ def _ollama_up():
 
 
 # @scenario SC-ai-options-21
-@pytest.mark.skipif(not _ollama_up(), reason="no local Ollama for the model list")
 def test_model_picker_follows_selected_backend_radio(tmp_path):
-    # The exact reported bug: on Claude CLI, switch the Backend radio to Ollama,
-    # then Alt-M must list OLLAMA's models -- not Claude's -- WITHOUT pressing Ok
-    # first.  Claude CLI's aliases are static (default/sonnet/opus/haiku); their
-    # absence from the picker proves the picker followed the selected backend.
-    env = dict(ENV); env["XWPE_AI_MODEL"] = ""     # ENV starts on claudecli
-    with WpeSession(str(tmp_path), "int main(void){return 0;}\n",
-                    env_extra=env) as s:
-        s.key("\033o", delay=0.5)
-        s.key("i", delay=0.6)
-        s.key("\t", delay=0.35)          # Enable -> Backend group (on Claude CLI)
-        s.key("\033[B", delay=0.35)      # down -> Ollama
-        s.key(" ", delay=0.35)           # select Ollama
-        s.key("\033m", delay=1.0)        # Alt-M -> picker for the SELECTED backend
-        pick = "\n".join(s.display())
-    # the Ollama/OpenAI picker title names its endpoint ("Model (N) at <url>")
-    assert "Model (" in pick, "the model picker did not open:\n" + pick
+    # The exact reported bug: on Claude CLI, switch the Backend radio to another
+    # backend, then Alt-M must list THAT backend's models -- not Claude's --
+    # WITHOUT pressing Ok first.  The other backend is OpenAI-compatible pointed
+    # at a local fake server (no Ollama, no network): its distinctive ids can
+    # only come from the backend selected in the radio, and Claude CLI's static
+    # aliases (sonnet/opus/haiku) must be absent.
+    srv, port = _fake_openai_server(["radio-model-one", "radio-model-two"])
+    try:
+        home = str(tmp_path / "home")
+        os.makedirs(os.path.join(home, ".config", "xwpe"))
+        with open(os.path.join(home, ".config", "xwpe", "xwperc"), "w") as fh:
+            fh.write("[Programming]\nAIBackend : 4\n"              # saved: Claude CLI
+                     "AIEndpoint : http://127.0.0.1:%d\nAIPolicy : ask\n" % port)
+        env = {"XWPE_AI_ENABLE": "1", "HOME": home, "OPENAI_API_KEY": ""}
+        with WpeSession(str(tmp_path), "int main(void){return 0;}\n",
+                        env_extra=env) as s:
+            s.key("\033o", delay=0.5)
+            s.key("i", delay=0.6)
+            assert any("(*) Claude CLI" in ln for ln in s.display()), \
+                "the dialog did not open on the saved Claude CLI backend"
+            s.key("\t", delay=0.35)          # Enable -> Backend group (on Claude CLI)
+            s.key("\033[B", delay=0.35)      # down -> Ollama
+            s.key("\033[B", delay=0.35)      # down -> OpenAI-compatible
+            s.key(" ", delay=0.35)           # select OpenAI-compatible
+            s.key("\033m", delay=1.3)        # Alt-M -> picker for the SELECTED backend
+            pick = "\n".join(s.display())
+    finally:
+        srv.shutdown()
+    # the OpenAI-compatible picker title names its endpoint ("Model (N) at <url>")
+    assert "Model (" in pick and ("127.0.0.1:%d" % port) in pick, \
+        "the picker did not open on the selected backend's endpoint:\n" + pick
+    assert "radio-model-one" in pick and "radio-model-two" in pick, \
+        "Alt-M did not list the selected backend's models:\n" + pick
     for claude_only in ("sonnet", "opus", "haiku"):
         assert claude_only not in pick, \
-            "Alt-M still listed Claude's models after selecting Ollama:\n" + pick
+            "Alt-M still listed Claude's models after selecting OpenAI-compatible:\n" + pick
 
 
 # @scenario SC-ai-options-16
@@ -185,7 +201,6 @@ def test_ollama_ignores_leftover_openai_endpoint(tmp_path):
         "Ollama kept the leftover Groq endpoint:\n" + "\n".join(disp)
 
 
-# @scenario SC-ai-options-05
 # @scenario SC-ai-options-23
 def test_model_pick_keeps_other_fields(tmp_path):
     # Picking a model must not disturb other fields.  The in-place redraw after
@@ -193,8 +208,10 @@ def test_model_pick_keeps_other_fields(tmp_path):
     # Enable checkbox; it must stay as the user left it.
     def enable(disp):
         return next((ln for ln in disp if "Enable AI" in ln), "")
+    # No XWPE_AI_ENABLE override: the box shows the effective state, so with
+    # the override on it would open [X] and Space would untick it.
     with WpeSession(str(tmp_path), "int main(void){return 0;}\n",
-                    env_extra=dict(ENV)) as s:
+                    env_extra=dict(ENV, XWPE_AI_ENABLE="")) as s:
         s.key("\033o", delay=0.5)
         s.key("i", delay=0.6)
         s.key(" ", delay=0.4)            # toggle Enable (focused first)
@@ -212,7 +229,9 @@ def test_model_pick_keeps_other_fields(tmp_path):
 # @scenario SC-ai-options-48
 def test_ai_options_ok_reads_radios(tmp_path):
     trace = tmp_path / "ai.trace"
-    env = dict(ENV); env["XWPE_AI_TRACE"] = str(trace)
+    # No XWPE_AI_ENABLE override (see test_model_pick_keeps_other_fields):
+    # the box opens [ ], Space ticks it, Ok traces enable=1.
+    env = dict(ENV, XWPE_AI_ENABLE=""); env["XWPE_AI_TRACE"] = str(trace)
     with WpeSession(str(tmp_path), "int main(void){return 0;}\n",
                     env_extra=env) as s:
         s.key("\033o", delay=0.5)
@@ -685,7 +704,10 @@ def test_cafile_field_edits_and_persists(tmp_path):
 def test_api_key_field_used_by_altm_and_saved(tmp_path):
     # An API key typed in the dialog (Alt-K) is used immediately by Alt-M (so an
     # authenticated endpoint lists its models before the provider is saved), and
-    # is persisted to a key file.  The field is never pre-filled with the secret.
+    # is persisted to a key file.  On open the field IS pre-filled with the key
+    # stored in that file (test_ai_options_contracts.py asserts that); here no
+    # key file exists yet, so the field starts empty and the typed key is all
+    # the server can see.
     srv, port, seen = _auth_recording_server()
     try:
         home = str(tmp_path / "home")
