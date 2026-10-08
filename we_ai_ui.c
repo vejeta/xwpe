@@ -340,6 +340,160 @@ static char *ai_splice_lines(FENSTER *f, int y0, int y1, const char *snippet)
  return t;
 }
 
+/**
+ * ai_full_file_text - The whole current file joined with '\n', never capped.
+ * @f: the file window.
+ *
+ * The text a reply is diffed against and the buffer is rebuilt from.  It has
+ * to be the complete file, not the capped copy that goes to the model: diffing
+ * against a truncated copy showed the file's tail as a deletion and accepting
+ * the edit wrote a shortened file to disk.  Return: malloc'd text, or NULL.
+ */
+static char *ai_full_file_text(FENSTER *f)
+{
+ return ai_lines_text(f, 0, f->b->mxlines - 1);
+}
+
+/* ai_line_bytes - what line y costs in the context sent to the model: the
+   line and its '\n'. */
+static size_t ai_line_bytes(BUFFER *b, int y)
+{
+ int ll = b->bf[y].len;
+ if (ll < 0) ll = 0;
+ return (size_t)ll + 1;
+}
+
+/**
+ * ai_file_fits_cap - Whether the whole file can be sent to the model.
+ * @f: the file window.
+ *
+ * Return: 1 when the file is within AI_CTX_MAX and an Edit may send it whole,
+ * 0 when only a window of it can go.
+ */
+static int ai_file_fits_cap(FENSTER *f)
+{
+ BUFFER *b = f->b;
+ size_t used = 0;
+ int y;
+ for (y = 0; y < b->mxlines; y++) {
+  used += ai_line_bytes(b, y);
+  if (used > AI_CTX_MAX) return 0;
+ }
+ return 1;
+}
+
+/**
+ * ai_context_window - Pick the lines around the cursor that fit the cap.
+ * @f: the file window.
+ * @y0: receives the first line of the window (0-based).
+ * @y1: receives the last line of the window (inclusive).
+ *
+ * On a file larger than the context cap an Edit sends only a window of whole
+ * lines: it starts at the cursor line and grows one line downwards, then one
+ * upwards, while the next line still fits, so the user's cursor sits in the
+ * middle of what the model sees and the reply is spliced over exactly these
+ * lines.  A single line longer than the cap is still sent on its own; the
+ * window is never empty.
+ */
+static void ai_context_window(FENSTER *f, int *y0, int *y1)
+{
+ BUFFER *b = f->b;
+ int last = b->mxlines - 1;
+ int cur = b->b.y;
+ int lo, hi, grew;
+ size_t used;
+ if (cur < 0) cur = 0;
+ if (cur > last) cur = last;
+ lo = hi = cur;
+ used = ai_line_bytes(b, cur);
+ do {
+  grew = 0;
+  if (hi < last && used + ai_line_bytes(b, hi + 1) <= AI_CTX_MAX) {
+   hi++;
+   used += ai_line_bytes(b, hi);
+   grew = 1;
+  }
+  if (lo > 0 && used + ai_line_bytes(b, lo - 1) <= AI_CTX_MAX) {
+   lo--;
+   used += ai_line_bytes(b, lo);
+   grew = 1;
+  }
+ } while (grew);
+ *y0 = lo;
+ *y1 = hi;
+}
+
+/* What an Edit sends to the model and splices the reply over. */
+enum ai_edit_scope {
+ AI_SCOPE_FILE,     /* the whole file: it fits the cap, the reply is the whole file */
+ AI_SCOPE_BLOCK,    /* the marked block: the reply replaces those lines            */
+ AI_SCOPE_WINDOW    /* a window around the cursor: the file is over the cap        */
+};
+
+/**
+ * ai_edit_scope_pick - Decide how much of the file an Edit sends.
+ * @f: the file window.
+ * @y0: receives the first line for BLOCK and WINDOW, -1 for FILE.
+ * @y1: receives the last line for BLOCK and WINDOW, -1 for FILE.
+ *
+ * A marked block wins.  Otherwise a file within the cap goes whole, and a
+ * larger one goes as a window around the cursor so that it is edited the way
+ * a block is: the reply replaces the window and every line outside it stays
+ * untouched, instead of the file being rebuilt from a truncated copy.
+ */
+static enum ai_edit_scope ai_edit_scope_pick(FENSTER *f, int *y0, int *y1)
+{
+ if (ai_block_range(f, y0, y1)) return AI_SCOPE_BLOCK;
+ if (ai_file_fits_cap(f)) {
+  *y0 = -1;
+  *y1 = -1;
+  return AI_SCOPE_FILE;
+ }
+ ai_context_window(f, y0, y1);
+ return AI_SCOPE_WINDOW;
+}
+
+/* ai_edit_scope_header - the line that introduces the text in the prompt, so
+   the model knows whether it sees the file, a marked region or a window and,
+   for a window, where in the file that window sits. */
+static void ai_edit_scope_header(enum ai_edit_scope scope, int y0, int y1,
+                                 int nlines, char *hdr, size_t size)
+{
+ if (scope == AI_SCOPE_BLOCK)
+  snprintf(hdr, size, "--- selected region ---");
+ else if (scope == AI_SCOPE_WINDOW)
+  snprintf(hdr, size, "--- lines %d-%d of %d ---", y0 + 1, y1 + 1, nlines);
+ else
+  snprintf(hdr, size, "--- file ---");
+}
+
+/* ai_edit_spin_label - the pane label while the model works, naming the scope
+   so the user knows a selection or a window edit is in flight. */
+static const char *ai_edit_spin_label(enum ai_edit_scope scope)
+{
+ if (scope == AI_SCOPE_BLOCK)  return "[AI edit] working (selection)";
+ if (scope == AI_SCOPE_WINDOW) return "[AI edit] working (window)";
+ return "[AI edit] working";
+}
+
+/**
+ * ai_edit_announce_window - Tell the user which lines of a large file went out.
+ * @f: the file window.
+ * @y0: first line sent (0-based).
+ * @y1: last line sent (inclusive).
+ *
+ * The pane line "[AI edit] lines 431-770 of 1200 sent" is the user's only hint
+ * that the model did not see the whole file, so the instruction may need to be
+ * repeated with the cursor elsewhere for the rest of it.
+ */
+static void ai_edit_announce_window(FENSTER *f, int y0, int y1)
+{
+ char line[120];
+ snprintf(line, sizeof line, "[AI edit] lines %d-%d of %d sent",
+          y0 + 1, y1 + 1, f->b->mxlines);
+ ai_pane(f, line, 0);
+}
+
 static void ai_chat_finish(ai_chat_session *s)
 {
  if (!s) return;
@@ -2392,9 +2546,9 @@ static void ai_edit_done(ai_async_op *op)
  clean = ai_strip_fences(op->acc);
  if (!clean) { ai_op_free(op); return; }
 
- /* A selection edit returns only the modified region; splice it back into the
-    current file at the selected lines so the diff below shows just that hunk and
-    the proven whole-file apply path is reused. */
+ /* A block or window edit returns only the modified region; splice it back
+    into the current file at those lines so the diff below shows just that hunk
+    and the proven whole-file apply path is reused. */
  if (op->sel_y0 >= 0) {
   int y0 = op->sel_y0, y1 = op->sel_y1, last = f->b->mxlines - 1;
   char *full;
@@ -2404,7 +2558,9 @@ static void ai_edit_done(ai_async_op *op)
   if (full) { free(clean); clean = full; }
  }
 
- now = ai_current_file_text(f);
+ /* Diff against the complete file, never the capped copy sent to the model:
+    the lines beyond the cap must not surface as a phantom deletion hunk. */
+ now = ai_full_file_text(f);
  nseg = wpe_ai_diff_segments(now ? now : "", clean, &segs);
  free(now);
  for (i = 0; i < nseg; i++) if (segs[i].is_change) { has_change = 1; break; }
@@ -2600,19 +2756,28 @@ static int e_ai_edit(FENSTER *f)
    "the instruction to the SELECTED REGION below and return ONLY the modified "
    "region, keeping its indentation - no markdown fences, no commentary, and do "
    "NOT include the rest of the file.";
+ static const char sys_window[] =
+   "You are a precise code editor. The file is too large to send whole, so you "
+   "see only a window of consecutive lines around the cursor; the header gives "
+   "their position in the file. Apply the instruction to the WINDOW below and "
+   "return ONLY the modified window, keeping its indentation - no markdown "
+   "fences, no commentary, and do NOT include the rest of the file.";
  const char *sys;
+ char hdr[80];
  wpe_ai_msg msgs[2];
  wpe_ai_req req;
  ECNT *cn = f->ed;
  int save_id = -1, wi;
  int sy0 = -1, sy1 = -1, have_sel;
+ enum ai_edit_scope scope;
  ai_async_op *op;
 
  if (wpe_ai_busy()) {
   ai_pane(f, "[AI] a task is already running - press Esc to cancel it, or wait", 1);
   return 0;
  }
- have_sel = ai_block_range(f, &sy0, &sy1);
+ scope = ai_edit_scope_pick(f, &sy0, &sy1);
+ have_sel = (scope == AI_SCOPE_BLOCK);
  instr[0] = '\0';
  if (!e_ai_prompt1(instr, have_sel ? "AI edit instruction (selection)"
                                    : "AI edit instruction", f) || !instr[0])
@@ -2628,12 +2793,17 @@ static int e_ai_edit(FENSTER *f)
   return 0;
  }
 
- if (have_sel) { cur = ai_lines_text(f, sy0, sy1); sys = sys_sel; }
- else          { cur = ai_current_file_text(f);    sys = sys_file; }
+ /* The text for the model: whole file, marked block, or the window around the
+    cursor on a file over the cap.  The reply is diffed and applied against the
+    full buffer in ai_edit_done, never against this prompt text. */
+ if (scope == AI_SCOPE_FILE)       { cur = ai_current_file_text(f);   sys = sys_file;   }
+ else if (scope == AI_SCOPE_BLOCK) { cur = ai_lines_text(f, sy0, sy1); sys = sys_sel;    }
+ else                              { cur = ai_lines_text(f, sy0, sy1); sys = sys_window; }
+ ai_edit_scope_header(scope, sy0, sy1, f->b->mxlines, hdr, sizeof hdr);
+ if (scope == AI_SCOPE_WINDOW) ai_edit_announce_window(f, sy0, sy1);
  { char diag[1700], ow[1400]; ai_diag_block(diag, sizeof diag);
    wpe_ai_open_windows_block(f, ow, sizeof ow);
-   const char *hdr = have_sel ? "--- selected region ---" : "--- file ---";
-   size_t n = strlen(instr) + (cur ? strlen(cur) : 0) + strlen(diag) + strlen(ow) + 64;
+   size_t n = strlen(instr) + (cur ? strlen(cur) : 0) + strlen(diag) + strlen(ow) + sizeof hdr + 64;
    user = malloc(n);
    if (user) snprintf(user, n, "%s%s\n%s\n%s\n%s",
                       instr, diag, ow, hdr, cur ? cur : ""); }
@@ -2658,12 +2828,11 @@ static int e_ai_edit(FENSTER *f)
     interactive; ai_edit_fd_cb finishes (diff + apply) when the reply lands. */
  op->f = f; op->cn = cn; op->save_id = save_id;
  op->kind = "edit";
- op->sel_y0 = have_sel ? sy0 : -1;
- op->sel_y1 = have_sel ? sy1 : -1;
+ op->sel_y0 = sy0;                  /* -1 for a whole-file edit, else the lines sent */
+ op->sel_y1 = sy1;
  op->fd = wpe_ai_stream_fd(op->st);
  op->start = time(NULL);
- op->spin = ai_spin_begin(f, have_sel ? "[AI edit] working (selection)"
-                                      : "[AI edit] working");
+ op->spin = ai_spin_begin(f, ai_edit_spin_label(scope));
  g_ai_op = op;
  g_ai_bg_win = f;
  ai_hb_acquire(ai_op_tick);
@@ -2790,7 +2959,10 @@ static int e_ai_complete(FENSTER *f)
  err[0] = '\0';
  if (wpe_ai_ensure_model(err, sizeof err)) { ai_pane(f, err[0] ? err : "no model set", 1); return 0; }
 
- text = ai_current_file_text(f);
+ /* Split the COMPLETE file at the cursor: the reply is spliced back as
+    before + suggestion + after, so a capped copy here would drop the tail.
+    Only the prompt below is trimmed to the context around the cursor. */
+ text = ai_full_file_text(f);
  if (!text) return 0;
  y = b->b.y; if (y < 0) y = 0; if (y > b->mxlines - 1) y = b->mxlines - 1;
  for (i = 0; i < y && i < b->mxlines; i++)
@@ -4630,7 +4802,7 @@ static void ai_plan_finish(ai_async_op *op)
      applied++;
      wpe_ai_trace("plan applied %s", pd->props[i].path);
     } else {
-     char *now = ai_current_file_text(w);
+     char *now = ai_full_file_text(w);        /* the diff needs the whole file */
      wpe_ai_seg *segs; int ns;
      ns = wpe_ai_diff_segments(now ? now : "", pd->props[i].text, &segs);
      free(now);
