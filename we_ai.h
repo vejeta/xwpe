@@ -233,6 +233,10 @@ void wpe_ai_cancel(void);           /* tear down the running background task    
  * stream or queued request that targets it is dropped so nothing paints or
  * applies through the freed window. */
 void wpe_ai_window_closing(struct FNST *closing);
+/* The editor key loop calls this just before it waits for a key: a reply that
+ * finished while a dialog, prompt, picker or the file manager was open is held
+ * until then, and this runs its review or apply now, before the next key. */
+void wpe_ai_deliver_held_reply(void);
 /* One-shot status-line message (Turbo Vision style): takes the bottom bar row;
  * the next keystroke restores the key hints.  wpe_ai_flash_clear returns 1 if it
  * cleared a flash (called from the editor key loop on every key). */

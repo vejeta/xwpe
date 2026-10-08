@@ -2102,6 +2102,9 @@ struct ai_async_op {
  const char *label;          /* spinner label, e.g. "[agent] working"          */
  int      iter, max_iter;
  int      paused;            /* skip the spinner while a modal (approval) is up */
+ int      ready;             /* the reply is complete but a dialog was open when
+                                it landed: it waits for the editor's key loop   */
+ void   (*deliver)(ai_async_op *op);  /* the done path to run once it is idle    */
  int    (*process)(ai_async_op *op, char *reply);  /* 0=continue 1=done -1=abort */
  void   (*finish)(ai_async_op *op);                /* finalize (apply, save)     */
  void    *ud;               /* op-specific payload (proposals, scope, ...)      */
@@ -2175,6 +2178,117 @@ static int ai_window_alive(ECNT *cn, FENSTER *f)
  for (i = 0; i <= cn->mxedt; i++)
   if (cn->f[i] == f) return 1;
  return 0;
+}
+
+/* ---- a reply that lands behind a dialog waits for the editor ----------------
+ * The fd-loop that completes a reply is pumped from inside the key read of
+ * every dialog, prompt, picker and the file manager, not only from the
+ * editor's own key loop.  Running the review or the apply from there stacked
+ * the hunk box over the open dialog and read the next key the user typed into
+ * that dialog as a review key (an "a" meant for a task description applied
+ * the whole edit unseen).  So a finished reply is handed over only when the
+ * editor is idle; otherwise it is held, stream closed, and the editor's key
+ * loop delivers it before it waits for the next key. */
+
+/**
+ * ai_editor_idle - Is the editor in its own key loop, free to open a review box?
+ * @cn: the desktop.
+ *
+ * True when no transient box (dialog, prompt, picker, pulldown, a review of
+ * its own) owns the screen and the window on top is a text window: the file
+ * manager is a window of its own type with its own key loop, so a reply
+ * landing while it is up must wait as well.  The same two checks the
+ * language-server painter uses to keep its output from drawing under a box.
+ */
+static int ai_editor_idle(ECNT *cn)
+{
+ extern int wpe_modal_active;
+ FENSTER *top;
+ if (wpe_modal_active)
+  return 0;
+ if (!cn || cn->mxedt < 1)
+  return 0;
+ top = cn->f[cn->mxedt];
+ if (!top)
+  return 0;
+ return DTMD_ISTEXT(top->dtmd);
+}
+
+/**
+ * ai_op_hold_reply - Keep a finished reply until the editor is idle again.
+ * @op: the task whose reply is complete; @deliver: its done path.
+ *
+ * The user sees the spinner line change to "reply ready" and keeps using the
+ * dialog undisturbed; the review opens by itself once the dialog closes.  The
+ * stream is closed here, so the done path later finds nothing left to read,
+ * and Esc-cancel or closing the target window meanwhile drops the reply the
+ * usual way, since the task stays the running one until it is delivered.
+ */
+static void ai_op_hold_reply(ai_async_op *op, void (*deliver)(ai_async_op *op))
+{
+ FENSTER *wf = ai_pane_existing(op->cn);   /* never open the pane under a dialog */
+ char line[120];
+ const char *kind = op->kind ? op->kind : "task";
+ ai_op_stream_close(op);
+ op->ready = 1;
+ op->deliver = deliver;
+ op->paused = 1;                        /* no spinner: the wait is not the model's */
+ snprintf(line, sizeof line, "[AI %s] reply ready - shown when the dialog closes", kind);
+ if (wf)
+  ai_pane_set_last(wf, line);
+ wpe_ai_trace("%s reply held (dialog open)", kind);
+}
+
+/**
+ * ai_op_deliver_held - Run the done path of a reply that was held.
+ * @op: a task with a held reply, now that the editor is idle.
+ *
+ * From here on the task behaves exactly as if its reply had just landed: the
+ * review box opens (Edit, Multi-file), the completion is spliced in (Complete),
+ * the next agent turn runs.
+ */
+static void ai_op_deliver_held(ai_async_op *op)
+{
+ void (*deliver)(ai_async_op *op) = op->deliver;
+ op->ready = 0;
+ op->deliver = NULL;
+ wpe_ai_trace("%s reply delivered", op->kind ? op->kind : "task");
+ deliver(op);
+}
+
+/**
+ * ai_op_reply_complete - A task's reply is complete: finish now or hold it.
+ * @op: the task; @deliver: its done path (review, apply, next turn).
+ *
+ * Called from the stream callback the moment the backend is done.  With the
+ * editor idle this is the ordinary immediate finish; with a dialog open the
+ * reply is held and the key loop delivers it when the dialog closes.
+ */
+static void ai_op_reply_complete(ai_async_op *op, void (*deliver)(ai_async_op *op))
+{
+ if (ai_editor_idle(op->cn)) {
+  deliver(op);
+  return;
+ }
+ ai_op_hold_reply(op, deliver);
+}
+
+/**
+ * wpe_ai_deliver_held_reply - Deliver a held reply now that the editor is idle.
+ *
+ * The editor's key loop calls this just before it waits for a key, which is
+ * the one point that is certainly outside every dialog's own key loop.  A
+ * reply held behind a dialog opens its review here, before the user's next
+ * keystroke, so that keystroke can never be mistaken for a review key.
+ */
+void wpe_ai_deliver_held_reply(void)
+{
+ ai_async_op *op = g_ai_op;
+ if (!op || !op->ready)
+  return;
+ if (!ai_editor_idle(op->cn))
+  return;
+ ai_op_deliver_held(op);
 }
 
 /* ---- request queue (stack depth 1) ------------------------------------------
@@ -2321,6 +2435,20 @@ static void ai_edit_done(ai_async_op *op)
  ai_op_free(op);
 }
 
+/**
+ * ai_edit_deliver - The Edit done path: review and apply, then the queue.
+ * @op: the finished Edit task.
+ *
+ * Run at once when the reply lands with the editor idle, or later from the
+ * key loop when it landed behind a dialog; either way the queued follow-up
+ * request (if any) starts only after the review has ended.
+ */
+static void ai_edit_deliver(ai_async_op *op)
+{
+ ai_edit_done(op);
+ ai_queue_run();                    /* start the next queued request, if any */
+}
+
 /* fd-loop callback for the background Edit stream. */
 static void ai_edit_fd_cb(int fd, void *data)
 {
@@ -2337,9 +2465,8 @@ static void ai_edit_fd_cb(int fd, void *data)
   return;
  }
  if (done) {
-  op->had_error = wpe_ai_stream_had_error(op->st);   /* capture before detach frees st */
-  ai_edit_done(op);
-  ai_queue_run();                    /* start the next queued request, if any */
+  op->had_error = wpe_ai_stream_had_error(op->st);   /* capture before the stream goes */
+  ai_op_reply_complete(op, ai_edit_deliver);
  }
 }
 
@@ -2430,7 +2557,7 @@ static void ai_conv_fd_cb(int fd, void *data)
  }
  if (done) {
   op->had_error = wpe_ai_stream_had_error(op->st);   /* capture before stream_close */
-  ai_conv_on_reply(op);
+  ai_op_reply_complete(op, ai_conv_on_reply);
  }
 }
 
@@ -2600,6 +2727,20 @@ static void ai_complete_done(ai_async_op *op)
  ai_op_free(op);
 }
 
+/**
+ * ai_complete_deliver - The Complete done path: splice in, then the queue.
+ * @op: the finished Complete task.
+ *
+ * Run at once when the reply lands with the editor idle, or later from the
+ * key loop when it landed behind a dialog, so the suggestion is never written
+ * into the file while the user is inside a dialog.
+ */
+static void ai_complete_deliver(ai_async_op *op)
+{
+ ai_complete_done(op);
+ ai_queue_run();
+}
+
 static void ai_complete_fd_cb(int fd, void *data)
 {
  ai_async_op *op = data;
@@ -2613,8 +2754,7 @@ static void ai_complete_fd_cb(int fd, void *data)
  }
  if (done) {
   op->had_error = wpe_ai_stream_had_error(op->st);
-  ai_complete_done(op);
-  ai_queue_run();
+  ai_op_reply_complete(op, ai_complete_deliver);
  }
 }
 

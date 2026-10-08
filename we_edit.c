@@ -525,6 +525,9 @@ int e_eingabe(ECNT *e)
   else if (!DTMD_ISTEXT(f->dtmd)) return(0);
   else
   {
+#ifdef WPE_AI
+   wpe_ai_deliver_held_reply();   /* a reply that landed behind a dialog: review it now */
+#endif
    if (f->save > f->ed->maxchg) e_autosave(f);
 #if  MOUSE
    if ((c = e_getch()) < 0) cc = c = e_edt_mouse(c, f);
