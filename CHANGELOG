@@ -438,6 +438,19 @@ Changes
   emoji, etc. all type and paste -- even a character whose codepoint equals a key
   code exactly (U+0130, 304, is Alt-N) is inserted as text while the Alt-N key
   still opens its menu.
+* Fixed: closing a file window while an AI task was still waiting for its reply
+  crashed the editor within a fraction of a second, as soon as the task next
+  painted its progress indicator through the window that had just been freed.
+  The task now releases the closing window at once, reports that the pending
+  work was dropped, and applies nothing.
+* Fixed: when an AI reply arrived while a dialog, prompt, picker, or file
+  manager was open, the review popup could be drawn over that UI, and the next
+  key typed for that UI could be consumed as a review key.  The review now waits
+  until the editor is idle, and the pane reports that the reply is ready.
+* Fixed: on files larger than the edit context limit, accepting an AI edit or a
+  completion could leave only the sent slice and drop the rest of the file.  The
+  sent text is now a window around the cursor, and comparison plus apply always
+  run against the full file, so text outside the window is preserved.
 
 1.6.9 (native Wayland real-desktop robustness: resize, decorations, crashes)
 

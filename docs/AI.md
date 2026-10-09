@@ -29,18 +29,26 @@ just works. Point it elsewhere with `XWPE_AI_BACKEND` / `XWPE_AI_ENDPOINT` /
 mode is handed the files you have open as context, so you never have to tell it
 what you are working on.
 
-It has three modes, all streaming and non-blocking (you keep editing while the
-model works):
+It has six main actions, all streaming and non-blocking (you keep editing while
+the model works):
 
 - **Ask** (`Alt-G a`) -- a **chat** pane docked at the bottom. It can read files
   in the workspace to answer, and keeps context across the conversation.
-- **Edit** (`Alt-G e`) -- rewrite the current file from an instruction. If a
-  **block is marked**, only that region is sent and changed -- the rest of the
-  file is untouched; with no selection it edits the whole file. The proposed
-  change is shown as a **colored diff over the affected lines** (red = removed,
-  green = added, with context). Each change is an independent hunk with its own
-  `y`/`n`/`a`/`q`, so you can accept some and reject others; the accepted hunks
-  apply as **one** edit that a single **`Ctrl-U`** undoes.
+- **Edit** (`Alt-G e`) -- rewrite code from an instruction. It sends a marked
+  block when one is active, the whole file when it fits the context limit, or a
+  consecutive window around the cursor when the file is larger. For that large
+  file case, the pane reports the sent range, for example
+  `[AI edit] lines 431-770 of 1200 sent`, and the request includes that same
+  range header. The reply replaces exactly the sent text and leaves the rest of
+  the file untouched. The proposed change appears in a **colored diff popup**
+  next to the changed lines, below when there is room and above otherwise, one
+  hunk at a time. Review keys are `y` or Enter to apply, `n` to skip, `a` to
+  apply the rest, `q` or Esc to cancel the review and keep the file exactly as
+  it was before the review, and PgUp or PgDn to scroll a hunk taller than the
+  popup. Accepted hunks apply as **one** edit that a single **`Ctrl-U`** undoes.
+- **Multi-file edit** (`Alt-G f`) -- studies the workspace read-only, then
+  proposes one coordinated change across several files. Its status lines in the
+  assistant pane are prefixed `[plan]`.
 - **Agent (tools)** (`Alt-G g`) -- a tool-using agent: it lists/reads/greps files
   and proposes `write_file` / `run_command` steps **one at a time**, each shown
   for approval (a write is previewed as a diff); an unattended run takes a
@@ -52,6 +60,11 @@ model works):
   (`make` when a makefile is present, otherwise a syntax-only compile of the
   current file) and, if it fails, loops -- read the errors, edit the sources,
   re-build -- until it passes. Same tools and permission level as the agent.
+
+- **Complete at cursor** (`Alt-G c`) -- fills in code where the cursor is. It
+  sends the nearby context, the last 2000 characters before the cursor and the
+  first 800 after it, and splices the returned text in at the cursor as one
+  edit that a single **`Ctrl-U`** undoes.
 
 The `Alt-G` menu groups the **actions** above and, below a divider, the quick
 **settings**: *Permissions* (shows and cycles ask/edits/auto), *Clear
@@ -72,9 +85,9 @@ agent CLI that speaks stream-json" (Claude Code first; others as adapters later)
 
 `Alt-G f` runs a **Multi-file edit**: it studies the workspace read-only, then
 proposes a coordinated change across several files and shows it as a **modal
-approval dialog** -- **Enter/A** applies all, **F** reviews file-by-file (each in
-the diff box), **Q/Esc** cancels; nothing is written until you approve. (This is
-what some tools call a "workspace edit"; it is *not* an agent "plan mode.")
+approval dialog**. **Enter/A** applies all, **F** reviews file-by-file (each in
+the diff box), and **Q/Esc** cancels. Nothing is written until you approve. (This
+is what some tools call a "workspace edit"; it is *not* an agent plan mode.)
 `Alt-G m` opens the scrollable **model picker**.
 
 The pane keeps its `> ` prompt docked at the bottom while you type. To read back a

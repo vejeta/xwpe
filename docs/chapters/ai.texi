@@ -171,7 +171,8 @@ common ask is one token: @code{/explain}, @code{/fix}, @code{/test}, @code{/doc}
 (@code{/fix the off-by-one}); the transcript shows what you typed and only the
 model receives the expansion.
 
-Chat streams token by token.  @emph{Edit}, @emph{Plan} and @emph{Agent} (below)
+Chat streams token by token.  @emph{Edit}, @emph{Multi-file edit} and
+@emph{Agent} (below)
 need the whole reply before they can act, so while the model is thinking they
 show a rotating @samp{-\|/} indicator and the seconds elapsed in the @samp{AI}
 pane -- a slow local model looks busy, not frozen -- and @key{Esc} aborts the
@@ -181,16 +182,21 @@ wait at any time.
 
 @cindex AI, edit
 @kbd{Alt-G e} asks for an instruction (``add error handling'', ``fix the compile
-error''), sends the current file, and shows the model's rewrite as a @dfn{diff}
-you review hunk by hunk: @kbd{y} applies this hunk, @kbd{n} skips it, @kbd{a}
-applies all the rest, @kbd{q} cancels.  Applying uses one whole-buffer undo
-step, so @kbd{Ctrl-U} reverts the whole edit.  Nothing is written to disk until
-you @emph{save}.
+error'') and sends exactly one of these scopes: the marked block when one is
+active, the whole file when it fits the context limit, or one consecutive window
+of lines around the cursor when the file is larger.  For that window case the
+pane says @samp{[AI edit] lines 431-770 of 1200 sent}, and the request carries a
+header with the same line range.  The reply replaces exactly the text that was
+sent, so every line outside that scope stays untouched.
 
-If a @dfn{block is marked}, Edit works on @emph{just that region}: only the
-selected lines are sent and only they are changed, so editing one function does
-not ship (or risk changing) the rest of the file.  With no selection it edits the
-whole file, as above.
+The model's rewrite is shown as a @dfn{diff} you review hunk by hunk in a popup
+next to those lines (below when there is room, above otherwise).  @kbd{y} or
+@key{Enter} applies this hunk, @kbd{n} skips it, @kbd{a} applies all remaining
+hunks, and @kbd{q} or @key{Esc} cancels the review and leaves the file exactly as
+it was before that review started.  @key{PgUp} and @key{PgDn} scroll inside a
+hunk taller than the popup.  Applying uses one whole-buffer undo step, so
+@kbd{Ctrl-U} reverts the whole edit.  Nothing is written to disk until you
+@emph{save}.
 
 @cindex AI, diagnostics
 When a language server (@pxref{Language servers}) is running, the errors and
@@ -208,6 +214,8 @@ steps).  The assistant first @dfn{studies} the workspace -- the files you have
 open, plus the members of the open project (@pxref{Projects}) and, if asked, the
 surrounding folder -- reading whatever it needs with read-only tools.  It then
 proposes the complete new content for each file it wants to change.
+Status lines for this mode in the assistant pane are prefixed with
+@samp{[plan]}.
 
 xwpe collects the proposal without touching anything and shows it in a
 @dfn{modal approval dialog} -- a boxed, colored popup listing each file with its
@@ -289,8 +297,9 @@ a normal agent run.
 
 @cindex AI, completion
 @kbd{Alt-G c}, @samp{Complete at cursor}, fills in code where the cursor is: xwpe
-sends the code around the cursor to the model and splices its suggestion in at the
-cursor as one whole-buffer undo step, so @kbd{Ctrl-U} reverts it.  It is a local,
+sends the nearby context to the model (the last 2000 characters before the cursor
+and the first 800 after it), then splices its suggestion in at the cursor as one
+whole-buffer undo step, so @kbd{Ctrl-U} reverts it.  It is a local,
 low-ceremony alternative to Chat or Edit for ``finish this line/block''; the
 editor stays interactive while the model works and the suggestion lands when the
 reply arrives.
