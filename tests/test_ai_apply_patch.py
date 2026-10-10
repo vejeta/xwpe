@@ -28,6 +28,15 @@ def _ai_build():
 pytestmark = pytest.mark.skipif(not _ai_build(), reason="wpe built without --enable-ai")
 
 
+def _wait_screen(s, needle, tmo=12):
+    end = time.time() + tmo
+    while time.time() < end:
+        s._drain(0.5)
+        if needle in "\n".join(s.display()):
+            return True
+    return False
+
+
 def test_agent_apply_patch_edits_in_place(tmp_path):
     turns = ("TOOL apply_patch t.c\n"
              "<<<<<<< SEARCH\n"
@@ -88,3 +97,31 @@ def test_apply_patch_unmatched_search_is_tool_error(tmp_path):
         text = fh.read()
     assert "return 0;" in text and "return 42;" not in text, \
         "an unmatched SEARCH should not have modified the file:\n" + text
+
+
+# @scenario SC-ai-edit-47
+def test_apply_patch_ask_denies_on_escape_and_keeps_disk_unchanged(tmp_path):
+    turns = ("TOOL apply_patch t.c\n"
+             "<<<<<<< SEARCH\n"
+             "  return 0;\n"
+             "=======\n"
+             "  return 42;\n"
+             ">>>>>>> REPLACE\n"
+             "@@END"
+             "@@TURN@@DONE changed t.c")
+    trace = tmp_path / "c.trace"
+    env = {"XWPE_AI_ENABLE": "1", "XWPE_AI_BACKEND": "mock", "XWPE_AI_POLICY": "ask",
+           "XWPE_AI_MOCK_REPLY": turns, "XWPE_AI_TRACE": str(trace)}
+    seed = "int main(void)\n{\n  return 0;\n}\n"
+    with WpeSession(str(tmp_path), seed, env_extra=env, filename="t.c") as s:
+        s.key(ALT.AI); s.key("g"); s._drain(0.5)
+        s.key("patch it"); s.key("\r", delay=0.8)
+        assert _wait_screen(s, "Write t.c ?"), "write-approval box did not open"
+        s.key("\033", delay=0.8)   # Esc = deny
+        s._drain(0.8)
+        disp = "\n".join(s.display())
+        assert "-> deny" in trace.read_text(), "the denial was not recorded:\n" + disp
+    with open(os.path.join(str(tmp_path), "t.c")) as fh:
+        assert fh.read() == seed, "disk changed although Esc denied the write"
+    txt = trace.read_text() if trace.exists() else ""
+    assert "agent write confirm t.c -> deny" in txt, "trace did not record the Esc denial:\n" + txt
