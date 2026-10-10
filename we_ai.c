@@ -201,23 +201,164 @@ const char *wpe_ai_policy_name(int policy)
  }
 }
 
-char *wpe_ai_run_capture(const char *cmd)
+/* ----- running one command for a tool result ----------------------------- */
+
+/* How much of a command's output the result carries.  Everything past it is
+ * read and dropped, never stored: the model gets a bounded result and the
+ * command still reaches its own end instead of stalling on a full pipe. */
+#define AI_CAPTURE_MAX   6000
+/* One read() at a time, and the scratch buffer it reads into. */
+#define AI_CAPTURE_CHUNK 4096
+/* Exit status of a child whose shell could not be executed, the convention
+ * every shell uses for "command not found". */
+#define AI_CAPTURE_NOEXEC 127
+
+/**
+ * wpe_ai_child_new_session - Put the calling child in a session of its own.
+ *
+ * Called in every process the assistant starts, between the fork and the exec.
+ * A child otherwise keeps the editor's controlling terminal and can reopen it
+ * as /dev/tty: its text then lands on the screen around ncurses, which the
+ * user sees as the display going black with the command's output scrolling
+ * over the editor until the next full repaint.  In its own session the child
+ * has no controlling terminal, that open fails, and the pipe the editor reads
+ * is the only way out of the child.
+ *
+ * A freshly forked child is never a process group leader, so this cannot fail
+ * for the one reason POSIX gives; should it fail anyway the caller carries on
+ * and runs the command, because a command the user asked for is worth more
+ * than the isolation around it.
+ *
+ * Return: 1 when the child got its own session, 0 when it did not.
+ */
+int wpe_ai_child_new_session(void)
 {
- FILE *fp;
- char *out, full[2100];
- size_t cap = 4096, len = 0;
- int ch;
- snprintf(full, sizeof full, "%s 2>&1", cmd);
- fp = popen(full, "r");
- if (!fp) return ai_strdup("(could not run command)");
- out = malloc(cap);
- if (!out) { pclose(fp); return ai_strdup("(out of memory)"); }
- while ((ch = fgetc(fp)) != EOF && len < 6000) {
-  if (len + 2 > cap) { char *nb; cap *= 2; nb = realloc(out, cap); if (!nb) break; out = nb; }
-  out[len++] = (char)ch;
+ if (setsid() == (pid_t)-1) return 0;
+ return 1;
+}
+
+/**
+ * ai_capture_child_no_input - Point the command's standard input at /dev/null.
+ *
+ * The editor's terminal is otherwise still on descriptor 0, so a command that
+ * reads input would take the keys the user is typing, and could write back
+ * onto the screen through that descriptor.  Reading /dev/null ends at once
+ * instead, so such a command fails quickly rather than stalling the run.
+ */
+static void ai_capture_child_no_input(void)
+{
+ int devnull = open("/dev/null", O_RDONLY);
+ if (devnull < 0) return;
+ dup2(devnull, 0);
+ close(devnull);
+}
+
+/**
+ * ai_capture_child - Become the command: own session, our pipe, then the shell.
+ * @cmd: the command line, handed to `/bin/sh -c` exactly as the caller wrote it
+ * @pfd: the pipe, read end [0] (the editor's) and write end [1] (ours)
+ *
+ * Standard error is pointed at the same pipe as standard output, which is the
+ * merged stream every caller parses.  Does not return.
+ */
+static void ai_capture_child(const char *cmd, int *pfd)
+{
+ char *argv[4];
+
+ wpe_ai_child_new_session();
+ ai_capture_child_no_input();
+ dup2(pfd[1], 1);
+ dup2(pfd[1], 2);
+ close(pfd[0]);
+ close(pfd[1]);
+ argv[0] = "/bin/sh";
+ argv[1] = "-c";
+ argv[2] = (char *)cmd;
+ argv[3] = NULL;
+ execv("/bin/sh", argv);
+ _exit(AI_CAPTURE_NOEXEC);
+}
+
+/**
+ * ai_capture_start - Start one command with its output on a pipe we own.
+ * @cmd: the command line; @fd: filled with the read end; @pid: filled with the child
+ *
+ * Return: 0 when the command is running, -1 when it could not be started.
+ */
+static int ai_capture_start(const char *cmd, int *fd, pid_t *pid)
+{
+ int pfd[2];
+ pid_t child;
+
+ if (pipe(pfd) != 0) return -1;
+ child = fork();
+ if (child < 0) { close(pfd[0]); close(pfd[1]); return -1; }
+ if (child == 0) ai_capture_child(cmd, pfd);     /* does not return */
+ close(pfd[1]);
+ *fd = pfd[0];
+ *pid = child;
+ return 0;
+}
+
+/**
+ * ai_capture_store - Keep as much of one read as the bounded result allows.
+ */
+static void ai_capture_store(char *out, size_t *len, const char *buf, size_t n)
+{
+ size_t room = AI_CAPTURE_MAX - *len;
+ if (n > room) n = room;
+ if (n == 0) return;
+ memcpy(out + *len, buf, n);
+ *len += n;
+}
+
+/**
+ * ai_capture_read - Read the command's output into one allocated string.
+ * @fd: the read end of the command's pipe
+ *
+ * Reads all the way to end of file even once the result is full, so a chatty
+ * command finishes its work instead of blocking on a pipe nobody empties --
+ * which would hang the editor with the user's task half done.
+ *
+ * Return: a NUL-terminated string the caller frees, or NULL out of memory.
+ */
+static char *ai_capture_read(int fd)
+{
+ char buf[AI_CAPTURE_CHUNK];
+ char *out = malloc(AI_CAPTURE_MAX + 1);
+ size_t len = 0;
+
+ if (!out) return NULL;
+ for (;;) {
+  ssize_t n = read(fd, buf, sizeof buf);
+  if (n < 0 && errno == EINTR) continue;
+  if (n <= 0) break;
+  ai_capture_store(out, &len, buf, (size_t)n);
  }
  out[len] = '\0';
- pclose(fp);
+ return out;
+}
+
+/**
+ * ai_capture_wait - Reap the command's child once its output has ended.
+ */
+static void ai_capture_wait(pid_t pid)
+{
+ while (waitpid(pid, NULL, 0) == -1 && errno == EINTR)
+  ;
+}
+
+char *wpe_ai_run_capture(const char *cmd)
+{
+ int fd;
+ pid_t pid;
+ char *out;
+
+ if (ai_capture_start(cmd, &fd, &pid) != 0) return ai_strdup("(could not run command)");
+ out = ai_capture_read(fd);
+ close(fd);
+ ai_capture_wait(pid);
+ if (!out) return ai_strdup("(out of memory)");
  return out;
 }
 
@@ -1112,6 +1253,7 @@ static int ai_claudecli_open(struct wpe_ai_stream *st, const wpe_ai_req *req)
  if (pid == 0) {                      /* child */
   char *argv[24];
   int a = 0, dn;
+  wpe_ai_child_new_session();         /* no controlling terminal to paint on */
   dup2(in[0], 0);
   dup2(out[1], 1);
   dn = open("/dev/null", O_WRONLY);

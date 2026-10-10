@@ -158,6 +158,14 @@ The dial governs what the assistant may do without asking:
   commit). Nothing is ever written blind -- an AI edit is always previewed and
   is one `Ctrl-U` away from undone.
 
+Whatever the dial says, a command the assistant runs **cannot reach your
+screen**: it runs in a session of its own with no terminal attached, so its
+output comes back only as text in the assistant pane. A command that writes to
+`/dev/tty` used to paint straight over the editor -- the screen went black and
+the command's lines scrolled across the file until the next repaint. The same
+holds for the external agent CLI behind the *Claude Code* engine and for the
+post-edit hook.
+
 ## Configuration / environment
 
 All of these mirror the Options > AI dialog and are handy for scripting or a

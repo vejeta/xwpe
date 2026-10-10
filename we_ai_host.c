@@ -127,6 +127,7 @@ wpe_host *wpe_host_start(const char *model, const char *resume, int policy,
  if (pid == 0) {                        /* child */
   char *argv[24];
   int a = 0, dn;
+  wpe_ai_child_new_session();           /* no controlling terminal to paint on */
   dup2(in[0], 0);
   dup2(out[1], 1);
   dn = open("/dev/null", O_WRONLY);

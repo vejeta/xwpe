@@ -47,8 +47,14 @@ extern char *e_ai_resume_session;      /* passed as --resume <id>, or NULL     *
 extern char *e_ai_last_session_id;     /* session_id from the last CLI reply   */
 
 /* Run a shell command; capture bounded stdout+stderr (malloc'd, never NULL on
- * a spawn failure -- returns a short note instead). */
+ * a spawn failure -- returns a short note instead).  The command runs in a
+ * session of its own, so it cannot reach the editor's screen. */
 char *wpe_ai_run_capture(const char *cmd);
+
+/* Put the calling child process in a session of its own, between a fork and
+ * the exec that follows it.  Every process the assistant starts goes through
+ * this, so none of them can paint over the editor; see we_ai.c. */
+int   wpe_ai_child_new_session(void);
 
 /* Effective config (defaults baked in so an EMPTY config file just works).
  * Persisted in the Programming section as AIBackend/AIEndpoint/AIModel and

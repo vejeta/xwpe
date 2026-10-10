@@ -274,6 +274,16 @@ Set the dial from the @samp{AI} menu, with @kbd{Alt-G y}, or with @code{AIPolicy
 first.  For the @code{claudecli} backend the dial maps onto the CLI's own
 @option{--permission-mode} so the same rules apply.
 
+@cindex AI, command output
+Whatever the dial allows, a command the assistant runs cannot reach your screen.
+Each one runs in a session of its own with no terminal attached, so opening
+@file{/dev/tty} fails and the only thing that comes back is the text xwpe reads
+and shows in the @samp{AI} pane.  Without that, a command that wrote to
+@file{/dev/tty} painted straight over the editor, around the screen library: the
+display went black and the command's lines scrolled across the file until the
+next repaint.  The same isolation applies to the hosted external agent CLI
+described below and to the post-edit hook (@code{AIEditHook}).
+
 When an agent task is really a question rather than a change, the model answers
 directly: it finishes with a short line and its answer follows in the pane, so you
 see the reply even though this is not the chat.

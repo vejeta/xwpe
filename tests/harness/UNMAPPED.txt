@@ -68,6 +68,7 @@ tests/test_ai_status.py
 tests/test_ai_tls.py
 tests/test_ai_toggle.py
 tests/test_ai_tool_feedback.py
+tests/test_ai_tool_tty.py
 tests/test_ai_web_fetch.py
 tests/test_ai_web_search.py
 tests/wayland/test_ai_pane.py
