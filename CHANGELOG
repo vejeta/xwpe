@@ -438,6 +438,15 @@ Changes
   emoji, etc. all type and paste -- even a character whose codepoint equals a key
   code exactly (U+0130, 304, is Alt-N) is inserted as text while the Alt-N key
   still opens its menu.
+* The window waiting for an assistant reply keeps its text until the reply
+  lands, and says so on its status row; the menus, the cursor and the other
+  windows stay as live as ever, and Esc still cancels.  A keystroke accepted
+  during the wait used to come back as a change to revert, move the lines a
+  block edit belonged to, or be overwritten by a completion.
+* A second assistant action asked for while one is running is queued instead
+  of refused, at every entry point, and the pane says which one is waiting.
+  The refusal it replaces was written where the progress indicator overwrote
+  it within a tick, so nobody ever read it.
 * Fixed: closing a file window while an AI task was still waiting for its reply
   crashed the editor within a fraction of a second, as soon as the task next
   painted its progress indicator through the window that had just been freed.

@@ -44,7 +44,10 @@ def test_editor_interactive_and_spinner_during_generation(tmp_path):
                     env_extra=env) as s:
         _start_edit(s)
         sp0 = _spin_secs("\n".join(s.display()))
-        # the editor MUST accept typing while the model "generates"
+        # The editor loop keeps running while the model generates, but the text
+        # of the window that is waiting may not change: the reply is spliced
+        # over the lines that were sent, so a keystroke accepted here would
+        # either be offered back as a change to revert or move the target.
         s.key("Z"); s.key("Z"); s.key("Z")
         s._drain(1.6)
         disp = "\n".join(s.display())
@@ -52,8 +55,10 @@ def test_editor_interactive_and_spinner_during_generation(tmp_path):
         # cancel so we do not fall into the diff modal
         s.key(ALT.AI); s._drain(0.8)
     assert sp1 > sp0 >= 0, "spinner did not advance (editor loop stalled):\n" + disp
-    assert "ZZZ" in disp.replace(" ", ""), \
-        "typing did not land while generating (editor was blocked):\n" + disp
+    assert "ZZZ" not in disp.replace(" ", ""), \
+        "the waiting window took the typed text:\n" + disp
+    assert "working on this window" in disp, \
+        "the refusal was not explained on the status row:\n" + disp
 
 
 def test_esc_cancels_a_running_task(tmp_path):

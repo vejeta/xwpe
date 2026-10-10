@@ -576,9 +576,9 @@ int e_eingabe(ECNT *e)
      leaves e_input_was_char 0 and falls through to its handler below.  ASCII and
      Latin-1 (< 255) are always text. */
   if ((c > 31 || (c == WPE_TAB && !(f->flg & 1)) ||
-    (f->ins > 1 && f->ins != 8)) && (c < 255 || e_input_was_char))
+    (f->ins > 1 && f->ins != WPE_INS_READONLY)) && (c < 255 || e_input_was_char))
   {
-   if (f->ins == 8) continue;
+   if (e_window_text_locked(f)) continue;
    if (c >= 0x80)
    {
     unsigned char u8[4];
@@ -592,8 +592,9 @@ int e_eingabe(ECNT *e)
   }
   else if (c == WPE_DC)
   {
-   if (f->ins == 8)
+   if (e_window_text_locked(f))
    {
+    /* In the Help viewer Backspace is "go back one page", not a deletion. */
     if (f->dtmd == DTMD_HELP) e_help_last(f);
     continue;
    }
@@ -633,10 +634,12 @@ int e_eingabe(ECNT *e)
   }
   else if (c == ENTF || c == 4)
   {
-   if (f->ins == 8)
+   if (e_window_text_locked(f))
    {
 #ifdef DEBUGGER
-    if (WpeIsProg()) e_d_is_watch(c, f);
+    /* Del removes an entry in the read-only Watches pane; a file window
+       waiting for an assistant reply has no watch list of its own. */
+    if (WpeIsProg() && f->ins == WPE_INS_READONLY) e_d_is_watch(c, f);
 #endif
     continue;
    }
@@ -661,20 +664,24 @@ int e_eingabe(ECNT *e)
   else if (c == WPE_CR)
   {
 #ifdef PROG
-   if (f->ins == 8)
+   if (e_window_text_locked(f))
    {
+    /* Enter follows a link in Help and submits a line to a running program
+       in the console pane; neither inserts a line break. */
     if (f->dtmd == DTMD_HELP) {  e_help_ret(f);  goto weiter;  }
-    if (WpeIsProg())  {  e_d_car_ret(f);  goto weiter;  }
+    if (WpeIsProg() && f->ins == WPE_INS_READONLY)
+    {  e_d_car_ret(f);  goto weiter;  }
     else continue;
    }
 #else
-   if (f->ins == 8) continue;
+   if (e_window_text_locked(f)) continue;
 #endif
    e_car_ret(b, s);
    e_schirm(f, 1);
   }
   else if (c == WPE_TAB)
   {
+   if (e_window_text_locked(f)) continue;
    e_tab_a_ind(b, s);
    e_schirm(f, 1);
   }
@@ -828,7 +835,7 @@ int e_tst_cur(int c, ECNT *e)
 	 break;
       case AltI:
       case EINFG:
-	 if (f->ins == 8) {
+	 if (f->ins == WPE_INS_READONLY) {
 #ifdef DEBUGGER
 	    if (WpeIsProg()) e_d_is_watch(c, f);
 #endif
@@ -842,7 +849,7 @@ int e_tst_cur(int c, ECNT *e)
 #endif
 	 break;
       case AltJ:
-	 if (f->ins == 8) break;
+	 if (f->ins == WPE_INS_READONLY) break;
 	 if(f->ins & 2) f->ins &= ~2;
 	 else f->ins |= 2;
 #ifdef NEWSTYLE
@@ -862,7 +869,7 @@ int e_tst_cur(int c, ECNT *e)
 	 b->b.x = b->bf[b->b.y].len;
 	 break;
       case CtrlT:
-	 if(f->ins == 8) break;
+	 if(e_window_text_locked(f)) break;
 	 if( b->b.x < b->bf[b->b.y].len )
 	 {  c = e_su_lblk(b->b.x, b->bf[b->b.y].s);
 	    e_del_nchar(b, s, b->b.x, b->b.y, c-b->b.x);
@@ -874,24 +881,24 @@ int e_tst_cur(int c, ECNT *e)
 	 e_schirm(f, 1);
 	 break;
       case CtrlZ:
-	 if(f->ins == 8) break;
+	 if(e_window_text_locked(f)) break;
 	 e_del_nchar(b, s, b->b.x, b->b.y, b->bf[b->b.y].len-b->b.x);
 	 e_schirm(f, 1);
 	 break;
       case DGZ:
-	 if(f->ins == 8) break;
+	 if(e_window_text_locked(f)) break;
 	 e_del_line(b->b.y, b, s);
 	 if(b->b.y > b->mxlines - 1) (b->b.y)--;
 	 e_schirm(f, 1);
 	 break;
       case AF7:
       case AltV:
-	 if(f->dtmd != DTMD_HELP || f->ins != 8) return(c);
+	 if(f->dtmd != DTMD_HELP || f->ins != WPE_INS_READONLY) return(c);
          e_help_next(f, 0);
 	 break;
       case AF8:
       case AltT:
-	 if(f->dtmd != DTMD_HELP || f->ins != 8) return(c);
+	 if(f->dtmd != DTMD_HELP || f->ins != WPE_INS_READONLY) return(c);
          e_help_next(f, 1);
 	 break;
       default:
@@ -975,11 +982,13 @@ int e_tst_fkt(int c, ECNT *e)
   case UNDO:
   case AltBS:
   case CtrlU:
+   if (e_window_text_locked(f)) break;
    e_make_undo(f);
    break;
   case AGAIN:
   case SABS:
   case CtrlR:
+   if (e_window_text_locked(f)) break;
    e_make_redo(f);
    break;
   case CUT:
@@ -1171,13 +1180,13 @@ int e_ctrl_o(FENSTER *f)
  switch(c)
  {
   case 'Y':     /*  delete end of line    */
-   if (f->ins == 8) break;
+   if (e_window_text_locked(f)) break;
    e_del_nchar(b, s, b->b.x, b->b.y, b->bf[b->b.y].len-b->b.x);
    e_schirm(f, 1);
    e_cursor(f, 1);
    break;
   case 'T':     /*  delete up to beginning of next word    */
-   if (f->ins == 8) break;
+   if (e_window_text_locked(f)) break;
    if (b->b.x <= 0 && b->b.y > 0)
    {
     b->b.y--;

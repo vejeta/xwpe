@@ -76,6 +76,12 @@ struct mouse {
 #define DTMD_ISTEXT(x)     (x > 'Z')
 #define DTMD_ISMARKABLE(x) (x > DTMD_HELP) /* Means end marks can be shown*/
 
+/* FENSTER.ins value that marks a window whose text the user cannot change:
+   the Help viewer, the clipboard/Show Buffer viewer, a locked file on disk and
+   every tool/output pane (Messages, Watches, the AI pane).  Asked through
+   e_window_text_locked, never compared by hand in new code. */
+#define WPE_INS_READONLY   8
+
 struct dirfile {
  int anz;      /* number elements in the list */
  char **name;  /* the list elements */
@@ -700,6 +706,7 @@ int e_frb_x_menue(int sw, int xa, int ya, FENSTER *f, int md);
 void e_pr_x_col_kasten(int xa, int ya, int x, int y, FENSTER *f, int sw);
 
 /*   we_wind.c   */
+int e_window_text_locked(FENSTER *f);
 int e_error(char *text, int sw, FARBE *f);
 int e_message(int sw, char *str, FENSTER *f);
 void e_firstl(FENSTER *f, int sw);

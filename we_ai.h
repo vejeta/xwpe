@@ -229,6 +229,14 @@ int  e_ai_ui_key(struct FNST *f);   /* Alt-B: open/prompt the AI assistant    */
 int  e_ai_menu(struct FNST *f);     /* bottom-bar "Alt-B AI" click: action menu */
 int  wpe_ai_busy(void);             /* a background AI task (async Edit) is running */
 void wpe_ai_cancel(void);           /* tear down the running background task       */
+/* True while an Edit or a Complete started from `f` is waiting for its reply.
+ * The reply is spliced over the lines that were sent, at the line numbers
+ * captured when the request left, so the editor refuses the keys that would
+ * move them until the task ends. */
+int  wpe_ai_window_locked(struct FNST *f);
+/* Say on the status row why the window will not take the key, and that Esc
+ * cancels the task that holds it. */
+void wpe_ai_report_window_locked(struct FNST *f);
 /* e_close_window calls this before freeing a window: every pending AI task,
  * stream or queued request that targets it is dropped so nothing paints or
  * applies through the freed window. */

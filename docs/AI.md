@@ -29,7 +29,7 @@ just works. Point it elsewhere with `XWPE_AI_BACKEND` / `XWPE_AI_ENDPOINT` /
 mode is handed the files you have open as context, so you never have to tell it
 what you are working on.
 
-It has six main actions, all streaming and non-blocking (you keep editing while
+It has six main actions, all streaming and non-blocking (the editor stays live while
 the model works):
 
 - **Ask** (`Alt-G a`) -- a **chat** pane docked at the bottom. It can read files
@@ -65,6 +65,14 @@ the model works):
   sends the nearby context, the last 2000 characters before the cursor and the
   first 800 after it, and splices the returned text in at the cursor as one
   edit that a single **`Ctrl-U`** undoes.
+
+**While a request is out**, the menus, the cursor keys and your other windows
+work as usual, and `Esc` cancels. The text of the window that is waiting is
+locked, and its status row says so: the reply is written back over the lines
+that were sent, so a keystroke accepted meanwhile would be offered back to you
+as a change to revert. Asking for a second action while one runs does not
+refuse it: it is queued, the pane says so, and it starts by itself when the
+running one ends.
 
 The `Alt-G` menu groups the **actions** above and, below a divider, the quick
 **settings**: *Permissions* (shows and cycles ask/edits/auto), *Clear

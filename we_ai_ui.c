@@ -2233,6 +2233,13 @@ static void ai_ml_add_diagnostics(struct ai_mlist *m)
   ai_ml_add(m, "system", diag);
 }
 
+/* The kinds of background task, named so the pane text, the traces and the
+ * "does this task lock its window" test all agree on one spelling. */
+#define AI_KIND_EDIT     "edit"
+#define AI_KIND_COMPLETE "complete"
+#define AI_KIND_AGENT    "agent"
+#define AI_KIND_PLAN     "plan"
+
 /* --- one background operation at a time.  A single-turn op (Edit) leaves
  * `process` NULL; a multi-turn op (Agent, Plan) supplies process()/finish() and
  * the driver keeps taking turns until process() says stop. */
@@ -2267,9 +2274,59 @@ struct ai_async_op {
 
 static ai_async_op *g_ai_op = NULL;
 
-/* True while a background op is running -- new AI actions refuse until it ends
- * (or the user cancels it). */
+/* True while a background op is running -- a new AI action is queued behind it
+ * until it ends (or the user cancels it). */
 int wpe_ai_busy(void) { return g_ai_op != NULL; }
+
+/**
+ * ai_op_splices_its_window - Does this task write back over the lines it sent?
+ * @op: the running task.  Return: 1 for Edit and Complete, 0 otherwise.
+ *
+ * Edit and Complete rebuild the file from text captured when the request left
+ * and splice the reply at the line numbers captured with it.  Agent and Plan
+ * read the buffer again at the moment they write, so they keep the file
+ * editable while they think.
+ */
+static int ai_op_splices_its_window(const ai_async_op *op)
+{
+ if (!op->kind)
+  return 0;
+ if (!strcmp(op->kind, AI_KIND_EDIT))
+  return 1;
+ if (!strcmp(op->kind, AI_KIND_COMPLETE))
+  return 1;
+ return 0;
+}
+
+/**
+ * wpe_ai_window_locked - Is this window waiting for a reply of its own?
+ * @f: the window the editor is about to change.  Return: 1 while it waits.
+ *
+ * What the user gains: the text an Edit or a Complete is about to splice back
+ * is still the text that was sent, so the change lands where it was meant to
+ * and the review shows the model's work only -- never a hunk that undoes what
+ * was typed during the wait.  Every other window stays fully editable.
+ */
+int wpe_ai_window_locked(FENSTER *f)
+{
+ ai_async_op *op = g_ai_op;
+ if (!op || !f || op->f != f)
+  return 0;
+ return ai_op_splices_its_window(op);
+}
+
+/**
+ * wpe_ai_report_window_locked - Say on the status row why the key was refused.
+ * @f: the locked window.
+ *
+ * What the user gains: a refused keystroke is never silent.  The bottom row
+ * names the reason and the way out (Esc cancels the task and frees the
+ * window); the next keystroke restores the ordinary key hints.
+ */
+void wpe_ai_report_window_locked(FENSTER *f)
+{
+ wpe_ai_flash(f, " The assistant is working on this window (Esc cancels)");
+}
 
 static void ai_op_collect(const char *delta, void *ud)
 {
@@ -2462,6 +2519,23 @@ static struct {
 static void ai_queue_clear(void) { g_ai_queue.pending = 0; }
 
 /**
+ * ai_pane_open_spinner_line - Give the progress indicator a line of its own.
+ * @f: the window the pane belongs to.
+ *
+ * The indicator rewrites the pane's LAST line on every tick, so a notice
+ * appended while a task runs is erased within a fraction of a second and the
+ * user never reads it.  Opening a fresh line after the notice leaves the
+ * indicator that empty line to live on and the notice stays where it was
+ * written, scrolling up with the rest of the transcript.
+ */
+static void ai_pane_open_spinner_line(FENSTER *f)
+{
+ FENSTER *wf = ai_pane_win(f);
+ if (wf)
+  ai_pane_commit(wf);
+}
+
+/**
  * ai_enqueue - Queue `goal` to be launched by `launch` when the running task
  * ends.  @f is the window it belongs to.  Replaces an already-queued request.
  */
@@ -2477,8 +2551,13 @@ static void ai_enqueue(FENSTER *f, void (*launch)(FENSTER *, const char *),
  g_ai_queue.cn      = f->ed;
  strncpy(g_ai_queue.goal, goal, sizeof g_ai_queue.goal - 1);
  g_ai_queue.goal[sizeof g_ai_queue.goal - 1] = '\0';
- snprintf(line, sizeof line, "[AI] queued -- runs after the current task: %s", goal);
+ if (goal[0])
+  snprintf(line, sizeof line,
+           "[AI] queued \"%s\" - it starts when the running one ends", goal);
+ else
+  snprintf(line, sizeof line, "[AI] queued - it starts when the running one ends");
  ai_pane(f, line, 1);
+ ai_pane_open_spinner_line(f);
 }
 
 /** ai_queue_run - Launch the queued request, if any, now nothing is running. */
@@ -2742,9 +2821,16 @@ static void ai_conv_start(ai_async_op *op, const char *label)
   e_switch_window(op->save_id, op->cn->f[op->cn->mxedt]);
 }
 
-static int e_ai_edit(FENSTER *f)
+/**
+ * ai_edit_launch - Send an Edit instruction and leave the editor live.
+ * @f: the file window the change belongs to; @instr: what the user asked for.
+ *
+ * Split from the prompt so the same launch serves Alt-G e and a request that
+ * was queued behind a running task: the user types the instruction once, and
+ * it starts here either immediately or when the queue reaches it.
+ */
+static void ai_edit_launch(FENSTER *f, const char *instr)
 {
- static char instr[AI_PROMPT_MAX];
  char err[320], line[360];
  char *cur, *user;
  static const char sys_file[] =
@@ -2768,29 +2854,22 @@ static int e_ai_edit(FENSTER *f)
  wpe_ai_req req;
  ECNT *cn = f->ed;
  int save_id = -1, wi;
- int sy0 = -1, sy1 = -1, have_sel;
+ int sy0 = -1, sy1 = -1;
  enum ai_edit_scope scope;
  ai_async_op *op;
 
- if (wpe_ai_busy()) {
-  ai_pane(f, "[AI] a task is already running - press Esc to cancel it, or wait", 1);
-  return 0;
- }
+ /* Pick the scope now, not when the instruction was typed: a queued request
+    sends the block that is marked when it actually starts. */
  scope = ai_edit_scope_pick(f, &sy0, &sy1);
- have_sel = (scope == AI_SCOPE_BLOCK);
- instr[0] = '\0';
- if (!e_ai_prompt1(instr, have_sel ? "AI edit instruction (selection)"
-                                   : "AI edit instruction", f) || !instr[0])
-  return 0;
  /* Remember the edited window so focus returns to it after the pane work. */
  for (wi = 1; wi <= cn->mxedt; wi++)
   if (cn->f[wi] == f) { save_id = cn->edt[wi]; break; }
  err[0] = '\0';
- if (wpe_ai_preflight(e_ai_backend, err, sizeof err)) { ai_pane(f, err, 1); return 0; }
+ if (wpe_ai_preflight(e_ai_backend, err, sizeof err)) { ai_pane(f, err, 1); return; }
  err[0] = '\0';
  if (wpe_ai_ensure_model(err, sizeof err)) {
   ai_pane(f, err[0] ? err : "no model set", 1);
-  return 0;
+  return;
  }
 
  /* The text for the model: whole file, marked block, or the window around the
@@ -2814,7 +2893,7 @@ static int e_ai_edit(FENSTER *f)
  wpe_ai_trace("edit instr=%s", instr);
  err[0] = '\0';
  op = calloc(1, sizeof *op);
- if (!op) { free(user); free(cur); return 0; }
+ if (!op) { free(user); free(cur); return; }
  op->st = wpe_ai_stream_start(&req, err, sizeof err);
  free(user);
  free(cur);
@@ -2822,12 +2901,12 @@ static int e_ai_edit(FENSTER *f)
   snprintf(line, sizeof line, "[AI edit] %s", err[0] ? err : "could not start");
   ai_pane(f, line, 1);
   free(op);
-  return 0;
+  return;
  }
  /* Register the stream on the shared fd-loop and RETURN -- the editor stays
     interactive; ai_edit_fd_cb finishes (diff + apply) when the reply lands. */
  op->f = f; op->cn = cn; op->save_id = save_id;
- op->kind = "edit";
+ op->kind = AI_KIND_EDIT;
  op->sel_y0 = sy0;                  /* -1 for a whole-file edit, else the lines sent */
  op->sel_y1 = sy1;
  op->fd = wpe_ai_stream_fd(op->st);
@@ -2837,11 +2916,38 @@ static int e_ai_edit(FENSTER *f)
  g_ai_bg_win = f;
  ai_hb_acquire(ai_op_tick);
  wpe_fd_add(op->fd, POLLIN, ai_edit_fd_cb, op);
- /* Hand focus back to the file so the user keeps editing while the model works;
-    the pane spins in the background (its paints leave the caret here). */
+ /* Hand focus back to the file so the user watches the change land there and
+    can cancel with Esc; the pane spins in the background (its paints leave the
+    caret here).  Its text is held until the reply is spliced in. */
  if (save_id >= 0)
   e_switch_window(save_id, cn->f[cn->mxedt]);
+ wpe_ai_report_window_locked(f);
  wpe_ai_trace("edit stream fd=%d (async) sel=%d..%d", op->fd, op->sel_y0, op->sel_y1);
+}
+
+/**
+ * e_ai_edit - Change the current file by instruction (Alt-G e).
+ * @f: the file window.  Return: 0, the editor-action convention.
+ *
+ * Asks for the instruction first and only then looks at what is running, so a
+ * second request can be typed while the first is still generating: it is
+ * queued and starts by itself when that one ends.
+ */
+static int e_ai_edit(FENSTER *f)
+{
+ static char instr[AI_PROMPT_MAX];
+ int sy0 = -1, sy1 = -1;
+ int have_sel = (ai_edit_scope_pick(f, &sy0, &sy1) == AI_SCOPE_BLOCK);
+
+ instr[0] = '\0';
+ if (!e_ai_prompt1(instr, have_sel ? "AI edit instruction (selection)"
+                                   : "AI edit instruction", f) || !instr[0])
+  return 0;
+ if (wpe_ai_busy()) {
+  ai_enqueue(f, ai_edit_launch, instr);
+  return 0;
+ }
+ ai_edit_launch(f, instr);
  return 0;
 }
 
@@ -2934,6 +3040,8 @@ static void ai_complete_fd_cb(int fd, void *data)
  * chat/edit for "finish this line/block".  Editor stays interactive; the
  * suggestion lands when the reply arrives.
  */
+static void ai_launch_complete(FENSTER *f, const char *goal);
+
 static int e_ai_complete(FENSTER *f)
 {
  char err[320], line[360];
@@ -2953,7 +3061,7 @@ static int e_ai_complete(FENSTER *f)
  wpe_ai_req req;
 
  if (!DTMD_ISTEXT(f->dtmd)) { ai_pane(f, "[AI] no file to complete here", 1); return 0; }
- if (wpe_ai_busy()) { ai_pane(f, "[AI] a task is already running - Esc to cancel", 1); return 0; }
+ if (wpe_ai_busy()) { ai_enqueue(f, ai_launch_complete, ""); return 0; }
  err[0] = '\0';
  if (wpe_ai_preflight(e_ai_backend, err, sizeof err)) { ai_pane(f, err, 1); return 0; }
  err[0] = '\0';
@@ -3003,7 +3111,7 @@ static int e_ai_complete(FENSTER *f)
   return 0;
  }
  op->f = f; op->cn = cn; op->save_id = save_id;
- op->kind = "complete";
+ op->kind = AI_KIND_COMPLETE;
  op->sel_y0 = op->sel_y1 = -1;
  op->ud = ud; op->free_ud = ai_complete_ud_free;
  op->fd = wpe_ai_stream_fd(op->st);
@@ -3014,8 +3122,23 @@ static int e_ai_complete(FENSTER *f)
  ai_hb_acquire(ai_op_tick);
  wpe_fd_add(op->fd, POLLIN, ai_complete_fd_cb, op);
  if (save_id >= 0) e_switch_window(save_id, cn->f[cn->mxedt]);
+ wpe_ai_report_window_locked(f);
  wpe_ai_trace("complete stream fd=%d off=%zu", op->fd, off);
  return 0;
+}
+
+/**
+ * ai_launch_complete - Queue hook: run the completion now that nothing else is.
+ * @f: the window the user asked to complete in; @goal: unused, Complete takes
+ * no instruction.
+ *
+ * What the user gains: Alt-G c pressed during another task is not lost; the
+ * suggestion arrives at the cursor as soon as the running task is done.
+ */
+static void ai_launch_complete(FENSTER *f, const char *goal)
+{
+ (void)goal;
+ e_ai_complete(f);
 }
 
 /* ======================= model picker =================================== */
@@ -4518,7 +4641,7 @@ static int ai_agent_launch(FENSTER *f, const char *goal, const char *extra)
  op = calloc(1, sizeof *op);
  if (!op) return 0;
  op->f = f; op->cn = cn; op->save_id = save_id;
- op->kind = "agent";
+ op->kind = AI_KIND_AGENT;
  op->max_iter = AI_AGENT_MAX_ITERS;
  op->process = ai_agent_process;
  op->finish = ai_agent_finish;
@@ -4619,11 +4742,13 @@ static void ai_build_command(FENSTER *f, char *out, size_t sz)
    repeat until it builds.  A specialised agent task -- it reuses the whole agent
    machinery (tools, permission dial, checkpoint/changeset) and just seeds the
    goal and the exact build command, so the user does not have to type either. */
+static void ai_launch_fix_build(FENSTER *f, const char *goal);
+
 static int e_ai_fix_build(FENSTER *f)
 {
  char cmd[1024], extra[1700];
  if (wpe_ai_busy()) {
-  ai_pane(f, "[AI] a task is already running - press Esc to cancel it, or wait", 1);
+  ai_enqueue(f, ai_launch_fix_build, "");
   return 0;
  }
  ai_build_command(f, cmd, sizeof cmd);
@@ -4638,6 +4763,19 @@ static int e_ai_fix_build(FENSTER *f)
    "Repeat until the build succeeds, then reply DONE with a short summary of "
    "what you changed.", cmd, cmd);
  return ai_agent_launch(f, "Fix the failing build.", extra);
+}
+
+/**
+ * ai_launch_fix_build - Queue hook: start the build-and-fix loop when free.
+ * @f: the window it was asked from; @goal: unused, the goal is fixed.
+ *
+ * What the user gains: asking for a build fix during another task behaves
+ * like every other action -- it waits its turn instead of being refused.
+ */
+static void ai_launch_fix_build(FENSTER *f, const char *goal)
+{
+ (void)goal;
+ e_ai_fix_build(f);
 }
 
 /* ======================= PLAN mode (multi-file) ========================= */
@@ -4821,9 +4959,15 @@ static void ai_plan_finish(ai_async_op *op)
  }
 }
 
-static int e_ai_plan(FENSTER *f)
+/**
+ * ai_plan_launch - Start a multi-file study-and-propose run on `task`.
+ * @f: the window it was asked from; @task: what the user wants changed.
+ *
+ * Split from the prompt so Alt-G f and a queued request share one launch: the
+ * task is typed once and runs either now or when the running task ends.
+ */
+static void ai_plan_launch(FENSTER *f, const char *task)
 {
- static char task[AI_PROMPT_MAX];
  char err[320], line[1400];
  ECNT *cn = f->ed;
  ai_async_op *op;
@@ -4840,21 +4984,15 @@ static int e_ai_plan(FENSTER *f)
    "Do not modify files yourself; the editor applies the plan after the user "
    "approves it. Output nothing else.";
 
- if (wpe_ai_busy()) {
-  ai_pane(f, "[AI] a task is already running - press Esc to cancel it, or wait", 1);
-  return 0;
- }
- task[0] = '\0';
- if (!e_ai_prompt1(task, "AI plan: task", f) || !task[0]) return 0;
  err[0] = '\0';
- if (wpe_ai_preflight(e_ai_backend, err, sizeof err)) { ai_pane(f, err, 1); return 0; }
+ if (wpe_ai_preflight(e_ai_backend, err, sizeof err)) { ai_pane(f, err, 1); return; }
  err[0] = '\0';
- if (wpe_ai_ensure_model(err, sizeof err)) { ai_pane(f, err[0] ? err : "no model set", 1); return 0; }
+ if (wpe_ai_ensure_model(err, sizeof err)) { ai_pane(f, err[0] ? err : "no model set", 1); return; }
 
  e_ai_cli_mode = WPE_AI_CLI_TEXTONLY;               /* xwpe owns every edit */
  wpe_ai_session_load(f);
  pd = calloc(1, sizeof *pd);
- if (!pd) return 0;
+ if (!pd) return;
  pd->nsc = wpe_ai_scope_files(f, e_project_is_open(), 1, &pd->scope);
  snprintf(line, sizeof line, "[plan] task: %s  (scope: %d files)", task, pd->nsc);
  ai_pane(f, line, 1);
@@ -4863,9 +5001,9 @@ static int e_ai_plan(FENSTER *f)
  for (wi = 1; wi <= cn->mxedt; wi++)
   if (cn->f[wi] == f) { save_id = cn->edt[wi]; break; }
  op = calloc(1, sizeof *op);
- if (!op) { ai_plan_free_data(pd); return 0; }
+ if (!op) { ai_plan_free_data(pd); return; }
  op->f = f; op->cn = cn; op->save_id = save_id;
- op->kind = "plan";
+ op->kind = AI_KIND_PLAN;
  op->max_iter = AI_AGENT_MAX_ITERS + 4;
  op->process = ai_plan_process;
  op->finish = ai_plan_finish;
@@ -4898,6 +5036,28 @@ static int e_ai_plan(FENSTER *f)
  }
  wpe_ai_session_append("user", task);
  ai_conv_start(op, "[plan] working");
+}
+
+/**
+ * e_ai_plan - Change several files at once (Alt-G f, "Multi-file edit").
+ * @f: the window it was asked from.  Return: 0, the editor-action convention.
+ *
+ * Asks for the task first and only then looks at what is running, so the task
+ * can be typed while another one finishes; it is then queued and starts by
+ * itself, like every other assistant action.
+ */
+static int e_ai_plan(FENSTER *f)
+{
+ static char task[AI_PROMPT_MAX];
+
+ task[0] = '\0';
+ if (!e_ai_prompt1(task, "AI plan: task", f) || !task[0])
+  return 0;
+ if (wpe_ai_busy()) {
+  ai_enqueue(f, ai_plan_launch, task);
+  return 0;
+ }
+ ai_plan_launch(f, task);
  return 0;
 }
 

@@ -31,7 +31,7 @@ int e_blck_del(FENSTER *f)
  {
   return(0);
  }
- if (f->ins == 8)
+ if (e_window_text_locked(f))
   return(WPE_ESC);
  if (s->mark_begin.y == s->mark_end.y)
  {
@@ -73,7 +73,7 @@ int e_blck_dup(char *dup, FENSTER *f)
   return(0);
  e_switch_window(f->ed->edt[i], f);
  f = f->ed->f[f->ed->mxedt];
- if (f->ins == 8)
+ if (e_window_text_locked(f))
   return(0);
  b = f->b;  s = f->s;
  i=s->mark_end.x - s->mark_begin.x;
@@ -354,13 +354,14 @@ int e_edt_einf(FENSTER *f)
  BUFFER *b0 = f->ed->f[0]->b;
  int i,y,len;
 
- /* A read-only window (the clipboard/Show Buffer viewer, a locked file) rejects
-    paste -- ^V, Shift-Ins, or a middle click -- BEFORE any side effect: pasting
-    into the clipboard viewer is a self-paste that corrupts the heap, and editing
-    a read-only buffer makes no sense.  (The ins==8 check further down runs only
-    after e_clip_pull_os_into_buffer has already rebuilt window 0, so it is too
-    late to guard here.) */
- if (f->ins == 8)
+ /* A window closed to text changes (the clipboard/Show Buffer viewer, a locked
+    file, one waiting for an assistant reply) rejects paste -- ^V, Shift-Ins, or
+    a middle click -- BEFORE any side effect: pasting into the clipboard viewer
+    is a self-paste that corrupts the heap, and editing a read-only buffer makes
+    no sense.  (The check further down runs only after
+    e_clip_pull_os_into_buffer has already rebuilt window 0, so it is too late
+    to guard here.) */
+ if (e_window_text_locked(f))
   return(0);
 
  e_clip_pull_os_into_buffer(f->ed->f[0]);   /* merge: ^V from the OS clipboard */
@@ -372,7 +373,7 @@ int e_edt_einf(FENSTER *f)
  e_switch_window(f->ed->edt[i], f);
  f = f->ed->f[f->ed->mxedt];
  b = f->b;
- if (f->ins == 8)
+ if (e_window_text_locked(f))
   return(0);
  e_undo_sw = 1;
  
@@ -574,7 +575,7 @@ void e_move_block(int x, int y, BUFFER *bv, BUFFER *bz, FENSTER *f)
  unsigned char *cstr;
 
  if (key < kay || (kay == key && kex <= kax)) return;
- if (f->ins == 8)
+ if (e_window_text_locked(f))
  {
   return;
  }
@@ -709,11 +710,12 @@ int e_blck_copy(FENSTER *f)
  f = f->ed->f[f->ed->mxedt];
  b = f->b;
  /* Block-Copy (Ctrl-K C / Block menu) duplicates the block at the cursor, which
-    would edit the buffer -- impossible in a read-only tool pane (ins == 8: the
-    AI chat / Messages output).  Rather than do nothing, treat it there as a
-    clipboard copy, so the instinctive "Copy" pulls the selected text out of the
-    pane like Edit > Copy does. */
- if (f->ins == 8) return(e_edt_copy(f));
+    would edit the buffer -- impossible in a window closed to text changes (a
+    read-only tool pane such as the AI chat / Messages output, or a window
+    waiting for an assistant reply).  Rather than do nothing, treat it there as
+    a clipboard copy, so the instinctive "Copy" pulls the selected text out
+    like Edit > Copy does. */
+ if (e_window_text_locked(f)) return(e_edt_copy(f));
  f->save = 1;
  e_undo_sw = 1;
  e_copy_block(b->b.x, b->b.y, b, b, f);
@@ -1106,7 +1108,7 @@ int e_blck_to_right(FENSTER *f)
 /*            Read block from file   */
 int e_blck_read(FENSTER *f)
 {
- if (f->ins == 8)
+ if (e_window_text_locked(f))
   return(WPE_ESC);
  WpeCreateFileManager(1, f->ed, "");
  f->save = f->ed->maxchg + 1;
