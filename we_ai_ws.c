@@ -37,8 +37,16 @@ static char *ws_strdup(const char *s)
  return p;
 }
 
-/* Single-quote a string for /bin/sh. */
-static void ws_shq(char *dst, size_t sz, const char *src)
+/**
+ * wpe_ai_shell_quote - Single-quote one argument for /bin/sh.
+ * @dst/@sz: the quoted result; @src: the argument as the user knows it.
+ *
+ * Every path the assistant hands to a shell goes through this, so a file
+ * called "a b.c" or "it's.c" reaches the command as that one file instead of
+ * being split at the space or ending the quote early.  An embedded single
+ * quote is written as '\'' , the only way to carry one inside single quotes.
+ */
+void wpe_ai_shell_quote(char *dst, size_t sz, const char *src)
 {
  size_t o = 0;
  if (sz < 3) { if (sz) dst[0] = '\0'; return; }
@@ -356,7 +364,7 @@ int wpe_ai_checkpoint_create(FENSTER *f, char **scope, int nscope)
  ws_strip_slash(ck_dir);
  free(root);
 
- ws_shq(q, sizeof q, ck_dir);
+ wpe_ai_shell_quote(q, sizeof q, ck_dir);
  snprintf(cmd, sizeof cmd, "cd %s && git rev-parse --is-inside-work-tree 2>/dev/null", q);
  out = wpe_ai_run_capture(cmd);
  if (out && !strncmp(out, "true", 4)) {
@@ -379,7 +387,7 @@ int wpe_ai_checkpoint_create(FENSTER *f, char **scope, int nscope)
   time_t now = time(NULL);
   ws_state_dir(sdir, sizeof sdir);
   snprintf(ck_snapdir, sizeof ck_snapdir, "%s/checkpoints/%ld", sdir, (long)now);
-  ws_shq(q, sizeof q, ck_snapdir);
+  wpe_ai_shell_quote(q, sizeof q, ck_snapdir);
   snprintf(cmd, sizeof cmd, "mkdir -p %s", q);
   out = wpe_ai_run_capture(cmd); free(out);
   for (i = 0; i < nscope; i++) {
@@ -496,7 +504,7 @@ static int ws_collect_changes(ws_change **c, int *n)
  *c = NULL; *n = 0;
  if (ck_mode == 1) {
   char q[1100], cmd[1400], *out, *line;
-  ws_shq(q, sizeof q, ck_dir);
+  wpe_ai_shell_quote(q, sizeof q, ck_dir);
   snprintf(cmd, sizeof cmd, "cd %s && git diff --name-only %s 2>/dev/null", q, ck_ref);
   out = wpe_ai_run_capture(cmd);
   line = out;
@@ -505,7 +513,7 @@ static int ws_collect_changes(ws_change **c, int *n)
    if (nl) *nl = '\0';
    if (*line && !ws_hidden_path(line)) {
     snprintf(full, sizeof full, "%s/%s", ck_dir, line);
-    ws_shq(qf, sizeof qf, line);
+    wpe_ai_shell_quote(qf, sizeof qf, line);
     snprintf(cmd, sizeof cmd, "cd %s && git diff %s -- %s 2>/dev/null", q, ck_ref, qf);
     d = wpe_ai_run_capture(cmd);
     ws_changes_from_gitdiff(d ? d : "", full, c, n, &cap);
@@ -577,15 +585,20 @@ static void ws_free_changes(ws_change *c, int n)
  free(c);
 }
 
-/* Reload an open window from disk (after a revert) with one undo snapshot. */
-static void ws_reload_window(FENSTER *f, const char *path)
+/* The most a file reloaded into a window may hold, in bytes. */
+#define WS_RELOAD_MAX 4000000
+
+/**
+ * ws_window_show_text - Put `text` in the window's buffer and repaint it.
+ * @w: an open file window; @text: the complete new content.
+ *
+ * Takes no undo snapshot of its own: the caller decides whether this is a new
+ * step for Ctrl-U or the continuation of one already taken.  The cursor is
+ * kept on a line that still exists and the window is marked modified, so the
+ * user sees the new text at once and is asked before losing it.
+ */
+static void ws_window_show_text(FENSTER *w, const char *text)
 {
- FENSTER *w = ws_find_window(f, path);
- char *text;
- if (!w) return;
- text = ws_read_file(path, 4000000);
- if (!text) return;
- e_add_undo('B', w->b, w->b->b.x, w->b->b.y, 0);
  e_buffer_set_text(w->b, text);
  if (w->b->b.y >= w->b->mxlines) w->b->b.y = w->b->mxlines ? w->b->mxlines - 1 : 0;
  w->save++;
@@ -593,29 +606,129 @@ static void ws_reload_window(FENSTER *f, const char *path)
  e_schirm(w, 1);
  e_rep_win_tree(w->ed);
  e_refresh();
- free(text);
 }
 
-/* wpe_ai_reload_open_window - If `path` is open in a window, reload its buffer
-   from disk (one undo step).  Called after the agent's write_file so an edit to
-   the file the user is looking at shows immediately, instead of leaving a stale
-   buffer on screen while disk has the new content.  A no-op if the file is not
-   open. */
-void wpe_ai_reload_open_window(FENSTER *f, const char *path)
+/**
+ * ws_window_reload_undoable - Reload a window from its file as ONE undo step.
+ * @w: the open window; @path: the file to read.
+ *
+ * The text the user had is snapshotted first, so a single Ctrl-U brings it
+ * back after a tool rewrote the file or a changeset revert restored it.
+ * Return: 1 when the file was read and shown, 0 when it could not be read
+ * (the buffer is then left untouched and no undo step is taken).
+ */
+static int ws_window_reload_undoable(FENSTER *w, const char *path)
 {
- /* ws_find_window compares against the window's ABSOLUTE path, but a tool may
-    have written a path relative to the editor's working directory -- resolve it
-    so a relative write still finds and refreshes the open window. */
- if (path && path[0] != '/') {
-  char cwd[1024], abs[1200];
-  if (getcwd(cwd, sizeof cwd)) {
-   snprintf(abs, sizeof abs, "%s/%s", cwd, path);
-   ws_path_norm(abs);
-   ws_reload_window(f, abs);
-   return;
-  }
- }
- ws_reload_window(f, path);
+ char *text = ws_read_file(path, WS_RELOAD_MAX);
+ if (!text) return 0;
+ e_add_undo('B', w->b, w->b->b.x, w->b->b.y, 0);
+ ws_window_show_text(w, text);
+ free(text);
+ return 1;
+}
+
+/* Reload an open window from disk (after a revert) with one undo snapshot. */
+static void ws_reload_window(FENSTER *f, const char *path)
+{
+ FENSTER *w = ws_find_window(f, path);
+ if (!w) return;
+ ws_window_reload_undoable(w, path);
+}
+
+/**
+ * ws_absolute_path - The path a tool gave, as the window table knows it.
+ * @path: as the tool wrote it; @buf/@sz: room for the resolved path.
+ *
+ * ws_find_window compares against the window's ABSOLUTE path, but a tool may
+ * name a file relative to the editor's working directory; resolving it here
+ * means a relative write still finds and refreshes the window the user is
+ * looking at.  Return: `buf` when resolved, else `path` itself.
+ */
+static const char *ws_absolute_path(const char *path, char *buf, size_t sz)
+{
+ char cwd[1024];
+ if (!path || path[0] == '/') return path;
+ if (!getcwd(cwd, sizeof cwd)) return path;
+ snprintf(buf, sz, "%s/%s", cwd, path);
+ ws_path_norm(buf);
+ return buf;
+}
+
+/**
+ * wpe_ai_reload_open_window - Show a file a tool just wrote, as one undo step.
+ * @f: any window of the editor; @path: the file, as the tool named it.
+ *
+ * Called after the agent's write_file or apply_patch so an edit to the file
+ * the user is looking at shows immediately, instead of leaving a stale buffer
+ * on screen while disk has the new content.  Return: 1 when a window showed
+ * the file, 0 when it is not open (nothing happens).
+ */
+int wpe_ai_reload_open_window(FENSTER *f, const char *path)
+{
+ char abs[1200];
+ const char *full = ws_absolute_path(path, abs, sizeof abs);
+ FENSTER *w = ws_find_window(f, full);
+ if (!w) return 0;
+ return ws_window_reload_undoable(w, full);
+}
+
+/**
+ * wpe_ai_window_take_file - Replace a window's text with a file's, no new undo step.
+ * @w: the open window; @path: the file whose text the window takes.
+ *
+ * For the post-edit hook: its reformatting joins the undo step the change
+ * already took, so the user undoes change and reformat with one Ctrl-U instead
+ * of seeing a half-undone file after the first.  Return: 1 when taken.
+ */
+int wpe_ai_window_take_file(FENSTER *w, const char *path)
+{
+ char *text = ws_read_file(path, WS_RELOAD_MAX);
+ if (!text) return 0;
+ ws_window_show_text(w, text);
+ free(text);
+ return 1;
+}
+
+/**
+ * wpe_ai_refresh_open_window - Re-read an open file after the hook rewrote it.
+ * @f: any window of the editor; @path: the file, as the tool named it.
+ *
+ * The same lookup as wpe_ai_reload_open_window, but the buffer is refreshed
+ * within the undo step that reload took.  Return: 1 when refreshed.
+ */
+int wpe_ai_refresh_open_window(FENSTER *f, const char *path)
+{
+ char abs[1200];
+ const char *full = ws_absolute_path(path, abs, sizeof abs);
+ FENSTER *w = ws_find_window(f, full);
+ if (!w) return 0;
+ return wpe_ai_window_take_file(w, full);
+}
+
+/**
+ * wpe_ai_window_hook_copy - Write a window's text to a temporary copy for the hook.
+ * @w: the window holding the accepted change; @tmp/@sz: receives the copy's path.
+ *
+ * An accepted Edit stays in the buffer until the user saves, and a hook must
+ * not break that promise by touching the file, so it works on a copy.  The
+ * copy is a dot-file beside the real file that keeps its name and extension
+ * (".ai-hook-<pid>-t.c"), so a formatter still sees the language and finds the
+ * configuration file of that directory.  Return: 1 when the copy was written.
+ */
+int wpe_ai_window_hook_copy(FENSTER *w, char *tmp, size_t sz)
+{
+ char name[600], *full, *text;
+ int ok;
+ if (!ws_is_real_file_window(w)) return 0;
+ snprintf(name, sizeof name, ".ai-hook-%ld-%s", (long)getpid(), w->datnam);
+ full = e_mkfilename(w->dirct, name);
+ if (!full) return 0;
+ text = ws_window_text(w);
+ ok = text && strlen(full) < sz && ws_write_file(full, text) == 0;
+ if (ok) strcpy(tmp, full);
+ free(text);
+ free(full);
+ return ok;
 }
 
 static void ws_revert_path(FENSTER *f, const char *path, int is_new)
@@ -625,8 +738,8 @@ static void ws_revert_path(FENSTER *f, const char *path, int is_new)
   const char *rel = path;
   size_t dl = strlen(ck_dir);
   if (!strncmp(path, ck_dir, dl) && path[dl] == '/') rel = path + dl + 1;
-  ws_shq(q, sizeof q, ck_dir);
-  ws_shq(qf, sizeof qf, rel);
+  wpe_ai_shell_quote(q, sizeof q, ck_dir);
+  wpe_ai_shell_quote(qf, sizeof qf, rel);
   if (is_new) snprintf(cmd, sizeof cmd, "cd %s && rm -f -- %s", q, qf);
   else        snprintf(cmd, sizeof cmd, "cd %s && git checkout %s -- %s 2>&1", q, ck_ref, qf);
   out = wpe_ai_run_capture(cmd); free(out);
@@ -712,8 +825,8 @@ int wpe_ai_changeset_review(FENSTER *f)
    char q[1100], qm[600], cmd[1900], *out;
    strcpy(msg, "AI-assisted change");
    if (e_add_arguments(msg, "Commit message", f, 0, AltB, NULL) && msg[0]) {
-    ws_shq(q, sizeof q, ck_dir);
-    ws_shq(qm, sizeof qm, msg);
+    wpe_ai_shell_quote(q, sizeof q, ck_dir);
+    wpe_ai_shell_quote(qm, sizeof qm, msg);
     snprintf(cmd, sizeof cmd, "cd %s && git add -A && git commit -q -m %s 2>&1", q, qm);
     out = wpe_ai_run_capture(cmd);
     e_d_p_message(out && *out ? out : "[AI] committed", f, 0);
@@ -764,7 +877,7 @@ static void ws_session_path(FENSTER *f, char *buf, size_t sz)
   char sdir[1024], q[1100], cmd[1300], *out;
   ws_state_dir(sdir, sizeof sdir);
   snprintf(buf, sz, "%s/ai", sdir);
-  ws_shq(q, sizeof q, buf);
+  wpe_ai_shell_quote(q, sizeof q, buf);
   snprintf(cmd, sizeof cmd, "mkdir -p %s", q);
   out = wpe_ai_run_capture(cmd); free(out);
   snprintf(buf, sz, "%s/ai/%lu.session", sdir, ws_hash(f->dirct ? f->dirct : "."));

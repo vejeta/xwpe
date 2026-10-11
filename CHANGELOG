@@ -244,6 +244,17 @@ Changes
   ~/.local/state/xwpe/).  A project-local ./xwperc still takes priority when
   present.  Covered by tests/test_xdg.py.
 
+* AI post-edit hook (AIEditHook) and Ctrl-U after an assistant change: an
+  agent write followed by the hook's reformatting is now ONE Ctrl-U step (it
+  took two), and the pane says "Ctrl-U to undo (buffer only)" since the disk
+  keeps the agent's text until you save or revert it in the changeset review.
+  The hook now also runs on a file changed by an accepted Edit, Complete or
+  Multi-file change, on a temporary copy beside the file so nothing is written
+  before you save, with the same single undo step.  The path is quoted (a hook
+  on "a b.c" used to write a file named "a"), a hook that exits non-zero is
+  reported in the pane with its exit status, and the buffer is not reloaded
+  from a failed hook.  Tests: tests/test_ai_edit_hook_contracts.py.
+
 * Bracketed paste (xterm mode 2004) in the terminal build: pasted text is now
   inserted literally instead of being run as keystrokes.  Pasting into a dialog
   field -- e.g. an API key into Options > AI -- no longer lets a trailing newline

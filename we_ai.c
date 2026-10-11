@@ -24,6 +24,7 @@
 #include <time.h>
 #include <sys/types.h>
 #include <sys/wait.h>
+#include <signal.h>
 #include <json-c/json.h>
 
 #include "we_ai.h"
@@ -212,6 +213,8 @@ const char *wpe_ai_policy_name(int policy)
 /* Exit status of a child whose shell could not be executed, the convention
  * every shell uses for "command not found". */
 #define AI_CAPTURE_NOEXEC 127
+/* Shells report a child killed by a signal as 128 plus the signal number. */
+#define AI_CAPTURE_SIGNAL_BASE 128
 
 /**
  * wpe_ai_child_new_session - Put the calling child in a session of its own.
@@ -261,11 +264,27 @@ static void ai_capture_child_no_input(void)
  * Standard error is pointed at the same pipe as standard output, which is the
  * merged stream every caller parses.  Does not return.
  */
+/**
+ * ai_capture_child_signals - Give the command the signal mask a shell expects.
+ *
+ * The editor blocks SIGCHLD around the fork so that it, not its own handler,
+ * reaps the command (see ai_capture_hold_sigchld); the child inherits that
+ * mask across exec and a shell with SIGCHLD blocked may never notice its own
+ * children ending.  Clearing the mask here gives the command a normal start.
+ */
+static void ai_capture_child_signals(void)
+{
+ sigset_t none;
+ sigemptyset(&none);
+ sigprocmask(SIG_SETMASK, &none, NULL);
+}
+
 static void ai_capture_child(const char *cmd, int *pfd)
 {
  char *argv[4];
 
  wpe_ai_child_new_session();
+ ai_capture_child_signals();
  ai_capture_child_no_input();
  dup2(pfd[1], 1);
  dup2(pfd[1], 2);
@@ -340,26 +359,85 @@ static char *ai_capture_read(int fd)
 }
 
 /**
- * ai_capture_wait - Reap the command's child once its output has ended.
+ * ai_capture_exit_status - The command's exit status in the shell's terms.
+ * @wstatus: what waitpid() reported for the child.
+ *
+ * A command that exited gives its own status; one killed by a signal is
+ * reported as 128 plus the signal number, the convention a shell uses, so a
+ * caller that shows the status to the user shows what their own shell would.
  */
-static void ai_capture_wait(pid_t pid)
+static int ai_capture_exit_status(int wstatus)
 {
- while (waitpid(pid, NULL, 0) == -1 && errno == EINTR)
+ if (WIFEXITED(wstatus)) return WEXITSTATUS(wstatus);
+ if (WIFSIGNALED(wstatus)) return AI_CAPTURE_SIGNAL_BASE + WTERMSIG(wstatus);
+ return AI_CAPTURE_NOEXEC;
+}
+
+/**
+ * ai_capture_wait - Reap the command's child once its output has ended.
+ *
+ * Return: the child's exit status, see ai_capture_exit_status().
+ */
+static int ai_capture_wait(pid_t pid)
+{
+ int wstatus = 0;
+ while (waitpid(pid, &wstatus, 0) == -1 && errno == EINTR)
   ;
+ return ai_capture_exit_status(wstatus);
+}
+
+/**
+ * ai_capture_hold_sigchld - Keep the command's child reapable by this code.
+ * @old: receives the signal mask to restore once the child is reaped.
+ *
+ * The editor's SIGCHLD handler reaps every child with waitpid(-1) and drops
+ * the status.  If it got to the command's child first, waitpid() here would
+ * fail and the command would look as if it had succeeded, so a hook that
+ * refused a file would go unreported and its half-done output be taken as
+ * the result.  Blocking SIGCHLD from before the fork until the reap keeps the
+ * child ours; the same guard protects the compiler run in we_prog.c.
+ */
+static void ai_capture_hold_sigchld(sigset_t *old)
+{
+ sigset_t chld;
+ sigemptyset(&chld);
+ sigaddset(&chld, SIGCHLD);
+ sigprocmask(SIG_BLOCK, &chld, old);
+}
+
+/**
+ * ai_capture_release_sigchld - Put the signal mask back after the reap.
+ */
+static void ai_capture_release_sigchld(const sigset_t *old)
+{
+ sigprocmask(SIG_SETMASK, old, NULL);
+}
+
+char *wpe_ai_run_capture_status(const char *cmd, int *status)
+{
+ int fd, exited;
+ pid_t pid;
+ char *out;
+ sigset_t old_mask;
+
+ ai_capture_hold_sigchld(&old_mask);
+ if (ai_capture_start(cmd, &fd, &pid) != 0) {
+  ai_capture_release_sigchld(&old_mask);
+  if (status) *status = AI_CAPTURE_NOEXEC;
+  return ai_strdup("(could not run command)");
+ }
+ out = ai_capture_read(fd);
+ close(fd);
+ exited = ai_capture_wait(pid);
+ ai_capture_release_sigchld(&old_mask);
+ if (status) *status = exited;
+ if (!out) return ai_strdup("(out of memory)");
+ return out;
 }
 
 char *wpe_ai_run_capture(const char *cmd)
 {
- int fd;
- pid_t pid;
- char *out;
-
- if (ai_capture_start(cmd, &fd, &pid) != 0) return ai_strdup("(could not run command)");
- out = ai_capture_read(fd);
- close(fd);
- ai_capture_wait(pid);
- if (!out) return ai_strdup("(out of memory)");
- return out;
+ return wpe_ai_run_capture_status(cmd, NULL);
 }
 
 int wpe_ai_enabled(void)

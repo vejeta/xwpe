@@ -1768,15 +1768,145 @@ static int e_ai_chat(FENSTER *f)
  return 0;
 }
 
+/* ======================= Post-edit hook ================================= */
+
+/* The exit status a hook returns when its work is done; any other status is a
+   failure the user is told about, and the buffer is left as it was. */
+#define AI_HOOK_OK 0
+
+/**
+ * ai_hook_configured - Whether the user set a post-edit hook (AIEditHook).
+ *
+ * The hook is optional: with none set every assistant change lands as it is
+ * and no "[hook]" line appears in the pane.
+ */
+static int ai_hook_configured(void)
+{
+ return e_ai_edit_hook && *e_ai_edit_hook;
+}
+
+/**
+ * ai_hook_command - Build the hook's command line with the path quoted.
+ * @cmd/@sz: the command buffer; @path: the file the hook works on.
+ *
+ * The path is single-quoted for /bin/sh, so a file called "a b.c", or one
+ * with a quote in its name, reaches the hook as one argument instead of
+ * being split into two files the user never asked for.
+ */
+static void ai_hook_command(char *cmd, size_t sz, const char *path)
+{
+ char quoted[1200];
+ wpe_ai_shell_quote(quoted, sizeof quoted, path);
+ snprintf(cmd, sz, "%s %s", e_ai_edit_hook, quoted);
+}
+
+/**
+ * ai_hook_announce - Tell the user which hook runs on which file.
+ * @f: the window the pane belongs to; @shown: the file as the user knows it.
+ */
+static void ai_hook_announce(FENSTER *f, const char *shown)
+{
+ char line[720];
+ snprintf(line, sizeof line, "[hook] %s %s", e_ai_edit_hook, shown);
+ ai_pane(f, line, 0);
+}
+
+/**
+ * ai_hook_report_failure - Say that the hook failed, and with what status.
+ * @f: the window the pane belongs to; @shown: the file as the user knows it;
+ * @status: the hook's exit status; @out: its merged output, shown when it said
+ * anything.
+ *
+ * A formatter that refuses a file (a syntax error, a missing configuration)
+ * exits non-zero: the user sees the status and the tool's own words in the
+ * pane, and knows the text on screen is the assistant's, not the hook's.
+ */
+static void ai_hook_report_failure(FENSTER *f, const char *shown, int status,
+                                   const char *out)
+{
+ char line[720];
+ snprintf(line, sizeof line, "[hook] failed, exit status %d: %s "
+          "(buffer kept as the assistant left it)", status, shown);
+ ai_pane(f, line, 1);
+ if (out && *out) ai_pane_multiline(f, out, 0);
+}
+
+/**
+ * ai_hook_run_on_file - Run the hook on one file on disk.
+ * @f: the window the pane belongs to; @path: the file handed to the hook;
+ * @shown: the name the pane shows for it (the real file when the hook works
+ * on a temporary copy).
+ *
+ * Return: the hook's exit status; AI_HOOK_OK when its result may be taken.
+ */
+static int ai_hook_run_on_file(FENSTER *f, const char *path, const char *shown)
+{
+ char cmd[2000], *out;
+ int status = AI_HOOK_OK;
+ ai_hook_announce(f, shown);
+ ai_hook_command(cmd, sizeof cmd, path);
+ out = wpe_ai_run_capture_status(cmd, &status);
+ if (status != AI_HOOK_OK) ai_hook_report_failure(f, shown, status, out);
+ free(out);
+ wpe_ai_trace("edit hook ran on %s status %d", shown, status);
+ return status;
+}
+
+/**
+ * ai_run_edit_hook - Run the hook on a file the agent just wrote or patched.
+ * @f: the window the pane belongs to; @path: the file, as the agent named it.
+ *
+ * The file is already on disk, so the hook works on it in place, and the open
+ * window then takes the hook's result inside the undo step the write took: a
+ * write and its reformatting are one change to the user, and one Ctrl-U puts
+ * back the text from before the write.  A failed hook leaves the buffer
+ * showing the agent's text.  A no-op without a hook.
+ */
+static void ai_run_edit_hook(FENSTER *f, const char *path)
+{
+ if (!ai_hook_configured()) return;
+ if (ai_hook_run_on_file(f, path, path) != AI_HOOK_OK) return;
+ wpe_ai_refresh_open_window(f, path);
+}
+
+/**
+ * ai_hook_after_accept - Run the hook on an accepted change, leaving disk alone.
+ * @f: the window holding the accepted text.
+ *
+ * An accepted Edit, completion or multi-file change lives in the buffer until
+ * the user saves, and that holds with a hook set: the buffer's text goes to a
+ * temporary copy beside the file, the hook runs on the copy, and the copy's
+ * text replaces the buffer within the undo step the accept took, so one Ctrl-U
+ * reverts both.  The copy is removed either way; a failed hook changes nothing.
+ */
+static void ai_hook_after_accept(FENSTER *f)
+{
+ char tmp[1400], *shown;
+ if (!ai_hook_configured()) return;
+ if (!wpe_ai_window_hook_copy(f, tmp, sizeof tmp)) return;
+ shown = e_mkfilename(f->dirct, f->datnam);
+ if (ai_hook_run_on_file(f, tmp, shown ? shown : tmp) == AI_HOOK_OK)
+  wpe_ai_window_take_file(f, tmp);
+ unlink(tmp);
+ free(shown);
+}
+
 /* ======================= Edit mode ====================================== */
 
-/* Apply new whole-file text with one undo snapshot (mirrors the LSP apply). */
-/* Apply an accepted AI edit: the same one-undo whole-buffer swap the LSP apply
-   path uses, so an AI edit reverts with a single Ctrl-U exactly like a code
-   action.  Shared spine lives in we_edit.c. */
+/**
+ * e_ai_apply_text - Put an accepted AI change into the window as one undo step.
+ * @f: the window; @newtext: the whole file as accepted.
+ *
+ * The same one-undo whole-buffer swap the LSP apply path uses (the shared
+ * spine is in we_edit.c), so an Edit, a completion or a multi-file change
+ * reverts with a single Ctrl-U exactly like a code action.  With a post-edit
+ * hook set, its reformatting lands inside that same step and the file on disk
+ * stays as it was until the user saves.
+ */
 static void e_ai_apply_text(FENSTER *f, const char *newtext)
 {
  e_replace_buffer_undoable(f, newtext);
+ ai_hook_after_accept(f);
 }
 
 /* Strip a leading ```lang fence and a trailing ``` fence, if present, and
@@ -4642,28 +4772,6 @@ static void e_ai_cycle_policy(FENSTER *f)
  wpe_ai_trace("policy set %s", wpe_ai_policy_name(e_ai_policy));
 }
 
-/**
- * ai_run_edit_hook - Run the configured post-edit hook on a just-written file.
- * @f: current window; @path: the file the AI edited.
- *
- * A no-op unless AIEditHook is set (e.g. "clang-format -i").  The path is
- * appended to the command; the file is reloaded afterwards since the hook may
- * have reformatted it, so an AI edit stays consistent with the repo's tooling --
- * the way an editor's format-on-save or a git hook would.
- */
-static void ai_run_edit_hook(FENSTER *f, const char *path)
-{
- char cmd[1400], status[720], *out;
- if (!e_ai_edit_hook || !*e_ai_edit_hook) return;
- snprintf(status, sizeof status, "[hook] %s %s", e_ai_edit_hook, path);
- ai_pane(f, status, 0);
- snprintf(cmd, sizeof cmd, "%s %s", e_ai_edit_hook, path);
- out = wpe_ai_run_capture(cmd);
- free(out);
- wpe_ai_reload_open_window(f, path);
- wpe_ai_trace("edit hook ran on %s", path);
-}
-
 /* ---------------- agent plan / live TODO list (Messages window) ------------ */
 
 #define AI_PLAN_MAX 32
@@ -4756,11 +4864,59 @@ static void ai_plan_mark_done(FENSTER *f, const char *arg)
 }
 
 /**
+ * ai_agent_write_file - Put the agent's content on disk.
+ * @path: the file, as the agent named it; @content: its complete new text.
+ *
+ * Return: 1 when written, 0 when the file could not be opened for writing.
+ */
+static int ai_agent_write_file(const char *path, const char *content)
+{
+ FILE *w = fopen(path, "wb");
+ if (!w) return 0;
+ fwrite(content, 1, strlen(content), w);
+ fclose(w);
+ return 1;
+}
+
+/**
+ * ai_agent_report_undo_hint - Tell the user how far Ctrl-U reaches after a write.
+ * @f: the window the pane belongs to; @path: the file, as the agent named it.
+ *
+ * The agent's text is already on disk, so Ctrl-U in the file window restores
+ * the buffer only; the file keeps the agent's version until the user saves or
+ * reverts it in the changeset review.  Said once per write so nobody expects
+ * Ctrl-U to have undone the write on disk.
+ */
+static void ai_agent_report_undo_hint(FENSTER *f, const char *path)
+{
+ char line[720];
+ snprintf(line, sizeof line, "[agent] wrote %s - Ctrl-U to undo (buffer only)", path);
+ ai_pane(f, line, 0);
+}
+
+/**
+ * ai_agent_show_written - Bring a written file into its window as one change.
+ * @f: the window the pane belongs to; @path: the file, as the agent named it.
+ *
+ * The open window reloads as one undo step, the post-edit hook (if any)
+ * reformats inside that same step, and the pane says what Ctrl-U will do, so
+ * a write and its reformatting read as one change the user can take back with
+ * one key.  A file that is not open is only written and run through the hook.
+ */
+static void ai_agent_show_written(FENSTER *f, const char *path)
+{
+ int shown = wpe_ai_reload_open_window(f, path);
+ ai_run_edit_hook(f, path);
+ if (shown) ai_agent_report_undo_hint(f, path);
+}
+
+/**
  * ai_agent_commit_write - Approve (per the permission dial) and write `content`
  * to `path`, reloading it if open.  Shared by write_file and apply_patch so both
  * go through the same review: auto/edits ask ai_agent_approve, ASK shows the
  * change as a diff (ai_diff_confirm_write) first.  Runs the post-edit hook after
- * a successful write.  Returns a malloc'd TOOL RESULT.
+ * a successful write, within the write's undo step.  Returns a malloc'd TOOL
+ * RESULT.
  */
 static char *ai_agent_commit_write(FENSTER *f, const char *path, const char *content)
 {
@@ -4777,15 +4933,9 @@ static char *ai_agent_commit_write(FENSTER *f, const char *path, const char *con
   free(old);
  }
  if (!allow) return strdup("(denied by user)");
- {
-  FILE *w = fopen(path, "wb");
-  if (!w) return strdup("(write failed)");
-  fwrite(content, 1, strlen(content), w);
-  fclose(w);
-  wpe_ai_reload_open_window(f, path);   /* show the change if the file is open */
-  ai_run_edit_hook(f, path);            /* e.g. clang-format, then reload again */
-  return strdup("(written)");
- }
+ if (!ai_agent_write_file(path, content)) return strdup("(write failed)");
+ ai_agent_show_written(f, path);
+ return strdup("(written)");
 }
 
 /**

@@ -60,7 +60,10 @@ the model works):
 - **Agent (tools)** (`Alt-G g`) -- a tool-using agent: it lists/reads/greps files
   and proposes `write_file` / `run_command` steps **one at a time**, each shown
   for approval (a write is previewed as a diff); an unattended run takes a
-  checkpoint first and offers a reviewable changeset at the end. When it finishes
+  checkpoint first and offers a reviewable changeset at the end. A write to a
+  file you have open reloads it as one **`Ctrl-U`** step, hook reformatting
+  included; the pane says `Ctrl-U to undo (buffer only)` because the disk keeps
+  the agent's text until you save or revert it in the changeset. When it finishes
   you can type a **follow-up** right in the pane.  (Multi-file edit vs Agent:
   Multi-file proposes one coordinated change and asks once; the Agent works
   step-by-step, reading and acting as it goes.)
@@ -193,6 +196,16 @@ fixed setup:
 | `XWPE_AI_KEY` | API key for the OpenAI/Claude HTTP backends |
 | `XWPE_AI_POLICY` | `ask` / `edits` / `auto` |
 | `XWPE_AI_TRACE=path` | append a diagnostic trace (prompt built, tool run, ...) |
+
+**Post-edit hook.** `AIEditHook` in the `[Programming]` section of `xwperc`
+(e.g. `clang-format -i`) runs on every file the assistant wrote, patched or
+edited, with the path appended and quoted. After an agent write it runs on the
+file on disk; after an accepted Edit, completion or multi-file change it runs
+on a temporary copy beside the file, so nothing reaches the disk before you
+save. Either way its rewrite joins the change's undo step: one `Ctrl-U` reverts
+the change and the reformatting together. A hook that exits non-zero is
+reported in the pane with its exit status, and the buffer is left as the
+assistant left it.
 
 ## Privacy and safety
 

@@ -474,9 +474,21 @@ with @var{fallback}} and continues on it.  Empty disables the fallback.  Editabl
 in @samp{Options}, @samp{AI}, @samp{Advanced@dots{}} (@key{Alt-A}), with the two
 below.
 @item AIEditHook
-A command run on a file the agent just wrote or patched, e.g.@:
-@code{clang-format -i}; the path is appended and the buffer reloads afterwards, so
-AI edits stay consistent with the repo's tooling (like format-on-save).
+A command run on a file the assistant wrote, patched or edited, e.g.@:
+@code{clang-format -i}, so AI edits stay consistent with the repo's tooling
+(like format-on-save).  The path is appended, quoted, so a name with a space
+in it reaches the command whole.  After an agent @code{write_file} or
+@code{apply_patch} the hook runs on the file on disk and the open window takes
+its result inside the undo step the write took: one @kbd{Ctrl-U} puts back the
+text from before the write, in the buffer only, since the disk keeps the agent's
+text until you save or revert it in the changeset review, and the pane says
+@samp{Ctrl-U to undo (buffer only)}.  After an accepted Edit, completion or
+multi-file change the hook runs on a temporary copy of the buffer beside the
+file (same directory and extension, so a formatter finds its configuration),
+the copy's text replaces the buffer within that same single undo step, and
+nothing is written to the file until you save.  A hook that exits non-zero is
+reported in the pane with its exit status and its output, and the buffer is
+left as the assistant left it.
 @item AIAgentEngine
 @code{builtin} (the editor's own tool loop) or @code{claude-code} (host the
 external agent for @kbd{Alt-G g}; see @emph{Hosting an external agent}, above);

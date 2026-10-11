@@ -50,6 +50,13 @@ extern char *e_ai_last_session_id;     /* session_id from the last CLI reply   *
  * a spawn failure -- returns a short note instead).  The command runs in a
  * session of its own, so it cannot reach the editor's screen. */
 char *wpe_ai_run_capture(const char *cmd);
+/* The same, also handing back the command's exit status (0 = success, a
+ * shell-style 128+signal when it was killed, 127 when it could not start),
+ * for a caller that must know whether the command did its job. */
+char *wpe_ai_run_capture_status(const char *cmd, int *status);
+/* Single-quote one argument for /bin/sh -c, so a path with a space or a
+ * quote in it reaches a command as the one argument it is. */
+void  wpe_ai_shell_quote(char *dst, size_t sz, const char *src);
 
 /* Put the calling child process in a session of its own, between a fork and
  * the exec that follows it.  Every process the assistant starts goes through
@@ -288,8 +295,19 @@ int   wpe_ai_checkpoint_active(void);
  * review loop (a = keep all, r = revert all, f = file by file, c = commit). */
 int   wpe_ai_changeset_review(struct FNST *f);
 /* Reload an open window from disk after a tool wrote its file, so the agent's
- * change is visible immediately (no-op if the path is not open). */
-void  wpe_ai_reload_open_window(struct FNST *f, const char *path);
+ * change is visible immediately, as one undo step.  Returns 1 when a window
+ * showed the file, 0 when the path is not open (nothing happens). */
+int   wpe_ai_reload_open_window(struct FNST *f, const char *path);
+/* Refresh an open window from disk WITHOUT a new undo step: for the post-edit
+ * hook's rewrite, which belongs to the undo step the write already took, so
+ * one Ctrl-U reverts write and reformat together.  Returns 1 when refreshed. */
+int   wpe_ai_refresh_open_window(struct FNST *f, const char *path);
+/* The window's buffer written to a temporary copy beside its file (same
+ * directory and extension), for a hook that must not touch the file itself
+ * before the user saves.  Fills `tmp` with the copy's path; 1 on success. */
+int   wpe_ai_window_hook_copy(struct FNST *w, char *tmp, size_t sz);
+/* Replace the window's buffer with a file's text, without a new undo step. */
+int   wpe_ai_window_take_file(struct FNST *w, const char *path);
 /* Sessions tied to the workspace (claudecli session id and/or a transcript). */
 void  wpe_ai_session_load(struct FNST *f);
 void  wpe_ai_session_save(struct FNST *f);
