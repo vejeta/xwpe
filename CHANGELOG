@@ -527,6 +527,21 @@ Changes
   words "outside the workspace", in the colour of a deletion, and the pane names
   it when it is applied.  It is not refused, the model may be right, but it is
   no longer silent.
+* Fixed: the AI edit review box opened without bringing the hunk on screen.  A
+  change far from the cursor (line 51 of a 60-line file, say) was reviewed with
+  the window still showing lines 1-13, the box drawn over the window's status
+  row and the assistant pane, and after "y" the change landed out of sight.  The
+  window now scrolls to the hunk's first line before the box opens, with the
+  cursor on it and its column kept, as Search and Goto Line do; the box opens
+  inside the window one row below that line, or above it when there is no room,
+  and never covers the status row or the pane (in a short window it takes the
+  side with more room and PgDn shows the rest).  When the review ends the cursor
+  rests on the first accepted hunk, so it is on screen.  A row wider than the
+  box now ends in ">" at the clip column, so a change past the box's edge is no
+  longer shown as two identical-looking rows.  A reply with CRLF line endings is
+  read as LF before the diff: it used to turn every line of the file into a
+  change and, once accepted, leave a carriage return on every line but the last.
+  Tests: tests/test_ai_review_box_contracts.py.
 
 1.6.9 (native Wayland real-desktop robustness: resize, decorations, crashes)
 

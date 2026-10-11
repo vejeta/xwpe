@@ -7,6 +7,7 @@ one undoable step (Ctrl-U reverts).  Uses the mock backend so the whole review
 path runs with no model/network.
 """
 import os
+import re
 import time
 import subprocess
 import pytest
@@ -88,9 +89,18 @@ def test_diff_overlay_appears_near_the_change(tmp_path):
             if box_row >= 0:
                 break
         assert box_row >= 0, "diff overlay did not appear"
-        # the change is ~line 11 of 14; the box must be well below the top rows,
-        # not pinned at the first line like the old centered placement.
-        assert box_row >= 7, "overlay not positioned near the change (row %d)" % box_row
+        # The box sits next to the line it changes: one row below the hunk's
+        # first line when there is room, one row above it otherwise (here the
+        # change is near the bottom, so the box opens above).  The hunk's own
+        # line is the one in the file area, drawn against the window border,
+        # not the gutter row inside the box.
+        hunk_row = next((y for y, ln in enumerate(disp)
+                         if re.match(r"^x\s*int v10 = 10;", ln)), -1)
+        hint_row = next((y for y, ln in enumerate(disp) if "y apply" in ln), -1)
+        assert hunk_row >= 0, "the hunk's line is not on screen beside the box:\n" + "\n".join(disp)
+        assert box_row == hunk_row + 1 or hint_row == hunk_row - 1, \
+            "overlay not adjacent to the change (box title row %d, hint row %d, hunk row %d)" \
+            % (box_row, hint_row, hunk_row)
 
 
 def test_diff_overlay_apply_and_undo(tmp_path):

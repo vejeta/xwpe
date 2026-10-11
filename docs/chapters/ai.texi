@@ -219,13 +219,25 @@ never lands in the source.  A reply with no fence at all is taken whole, as the
 file.  The question above about a too-short reply is asked about the extracted
 code, so a long preamble cannot disguise a one-line refusal.
 
+A reply with CRLF line endings is read as LF before anything is compared, so
+only the lines the model really changed are shown and no carriage return reaches
+the buffer; a file that is itself CRLF is the editor's business as always
+(carriage returns stripped on load and written back on save).
+
 The model's rewrite is shown as a @dfn{diff} you review hunk by hunk in a popup
-next to those lines (below when there is room, above otherwise).  @kbd{y} or
-@key{Enter} applies this hunk and @kbd{n} skips it.  @kbd{a} applies all
-remaining hunks, except that it stops at a hunk which deletes more lines than it
-adds and shows that one for its own decision -- its key line names the tally,
-@samp{deletes 2 adds 0} -- so no text is removed unseen.  @key{PgUp} and
-@key{PgDn} scroll inside a hunk taller than the popup.
+inside the file window.  Before the popup opens, the file scrolls so the hunk's
+first line is on screen and the cursor is placed on it, keeping its column, the
+way Search and Goto Line bring a line into view.  The popup then sits one row
+below that line (above it when there is no room below), never on the window's
+status row and never over the assistant pane.  In a short window, where the
+popup fits whole on neither side, it takes the side with more room and
+@key{PgDn} shows the rest.  A row wider than the popup is cut at its edge and
+ends in @samp{>}, so a change beyond the edge is never shown as two rows that
+read the same.  @kbd{y} or @key{Enter} applies this hunk and @kbd{n} skips it.
+@kbd{a} applies all remaining hunks, except that it stops at a hunk which
+deletes more lines than it adds and shows that one for its own decision -- its
+key line names the tally, @samp{deletes 2 adds 0} -- so no text is removed
+unseen.  @key{PgUp} and @key{PgDn} scroll inside a hunk taller than the popup.
 
 @kbd{q} or @key{Esc} cancels the review and leaves the file exactly as it was
 before that review started: the hunks already accepted are dropped with the
@@ -234,7 +246,9 @@ dropped)}.  To stop reviewing and @emph{keep} what you have accepted, press
 @kbd{n} on the hunks that are left.
 
 Applying uses one whole-buffer undo step, so @kbd{Ctrl-U} reverts the whole
-edit.  Nothing is written to disk until you @emph{save}.
+edit.  When the review ends the cursor rests on the first line of the first hunk
+you accepted, column kept, so that change is on screen.  Nothing is written to
+disk until you @emph{save}.
 
 @cindex AI, diagnostics
 When a language server (@pxref{Language servers}) is running, the errors and

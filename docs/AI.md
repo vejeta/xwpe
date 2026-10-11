@@ -49,16 +49,24 @@ the model works):
   dropped, exactly one final newline); the prose around it, and any second
   fenced block, is shown in the pane under
   `[AI edit] the model's commentary (not part of the file):` instead of landing
-  in the source. Otherwise the proposed change appears in a
-  **colored diff popup** next to the changed lines, below when there is room and
-  above otherwise, one hunk at a time. Review keys are `y` or Enter to apply,
+  in the source. A reply with CRLF line endings is read as LF before the
+  comparison, so only the real changes show and no carriage return reaches the
+  buffer (a CRLF file itself is handled by the editor as always). Otherwise the
+  proposed change appears in a **colored diff popup** inside the file window,
+  one hunk at a time: the file first scrolls to the hunk's first line and puts
+  the cursor on it (column kept), as Search and Goto Line do, and the popup
+  opens one row below that line, above it when there is no room below, never on
+  the window's status row or over the assistant pane. A row wider than the popup
+  ends in `>` at the clip column, so a change past the edge is never two rows
+  that read the same. Review keys are `y` or Enter to apply,
   `n` to skip, `a` to apply the rest (it stops at a hunk that deletes more lines
   than it adds and shows that one instead), `q` or Esc to cancel the review and
   keep the file exactly as it was before the review -- hunks already accepted
   are dropped too, and the pane says how many, so press `n` on the remaining
   hunks when you want to keep them -- and PgUp or PgDn to scroll a hunk taller
   than the popup. Accepted hunks apply as **one** edit that a single
-  **`Ctrl-U`** undoes.
+  **`Ctrl-U`** undoes, and the cursor rests on the first accepted hunk so it is
+  on screen.
 - **Multi-file edit** (`Alt-G f`) -- studies the workspace read-only, then
   proposes one coordinated change across several files. Its status lines in the
   assistant pane are prefixed `[plan]`.

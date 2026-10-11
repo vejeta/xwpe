@@ -2062,14 +2062,40 @@ static void ai_reply_split(const char *reply, ai_reply_parts *parts)
 }
 
 /**
- * ai_file_text - The text a file reply lands as: trimmed, ending in one newline.
+ * ai_copy_lf_only - Copy reply bytes, turning every CRLF line ending into LF.
+ * @out: room for @len bytes; @in: the reply bytes; @len: how many.
+ *
+ * What the user gains: a model that answers with Windows line endings no
+ * longer turns every line of the file into a change.  The buffer holds lines
+ * without carriage returns (the editor strips them on load and writes them
+ * back on save for a CRLF file), so a reply is diffed and spliced on the same
+ * terms: the review shows only the lines that really changed, and no stray
+ * carriage return reaches the buffer or the disk.  A carriage return that is
+ * not followed by a line feed is content and is kept.
+ *
+ * Return: the number of bytes written to @out.
+ */
+static size_t ai_copy_lf_only(char *out, const char *in, size_t len)
+{
+ size_t i, n = 0;
+ for (i = 0; i < len; i++) {
+  if (in[i] == '\r' && i + 1 < len && in[i + 1] == '\n')
+   continue;
+  out[n++] = in[i];
+ }
+ return n;
+}
+
+/**
+ * ai_file_text - The text a file reply lands as: LF endings, trimmed, one final newline.
  * @code: the first byte of the code; @len: how many bytes of it.
  *
  * A file ends with a newline however the model closed its answer, so blank
- * lines and spaces at the end are cut and exactly one newline is added.  This
- * is the cleaner for a reply that is a FILE (Edit, Multi-file); a completion
- * is cleaned by ai_completion_text instead, which keeps the reply byte for
- * byte.
+ * lines and spaces at the end are cut and exactly one newline is added; CRLF
+ * line endings become LF (see ai_copy_lf_only) before anything is diffed.
+ * This is the cleaner for a reply that is a FILE (Edit, Multi-file); a
+ * completion is cleaned by ai_completion_text instead, which keeps the
+ * reply's own leading and trailing bytes.
  *
  * Return: a fresh malloc'd copy, or NULL when out of memory.
  */
@@ -2077,15 +2103,16 @@ static char *ai_file_text(const char *code, size_t len)
 {
  const char *end = code + len;
  char *out;
+ size_t n;
  while (end > code && (end[-1] == '\n' || end[-1] == '\r' ||
                        end[-1] == ' ' || end[-1] == '\t'))
   end--;
  len = (size_t)(end - code);
  out = malloc(len + 2);
  if (!out) return NULL;
- memcpy(out, code, len);
- out[len] = '\n';
- out[len + 1] = '\0';
+ n = ai_copy_lf_only(out, code, len);
+ out[n] = '\n';
+ out[n + 1] = '\0';
  return out;
 }
 
@@ -2259,17 +2286,19 @@ static const char *ai_before_closing_fence(const char *start, const char *end)
 }
 
 /**
- * ai_completion_text - The text a completion inserts, exactly as the model returned it.
+ * ai_completion_text - The text a completion inserts, as the model returned it.
  * @reply: the whole reply.
  *
- * Only markdown fences are removed.  No newline is added or taken away: a
- * completion goes in at the cursor, which may be in the middle of a line, so
- * "foo(" completed with "bar)" must read "foo(bar)" and not break the line.
- * (The Edit cleaner, ai_edit_file_from_reply, normalises to one final newline
- * because its reply is a whole file, and sends the prose around the fences
- * to the pane; a completion is a fragment at the cursor, where the bytes
- * before a fence may be the completion itself, so it keeps this simpler
- * edge-only finder.)
+ * Only markdown fences are removed and CRLF line endings become LF (see
+ * ai_copy_lf_only), so a multi-line completion from a model that answers with
+ * Windows line endings does not leave a carriage return at the end of each
+ * line.  No newline is added or taken away: a completion goes in at the
+ * cursor, which may be in the middle of a line, so "foo(" completed with
+ * "bar)" must read "foo(bar)" and not break the line.  (The Edit cleaner,
+ * ai_edit_file_from_reply, normalises to one final newline because its reply
+ * is a whole file, and sends the prose around the fences to the pane; a
+ * completion is a fragment at the cursor, where the bytes before a fence may
+ * be the completion itself, so it keeps this simpler edge-only finder.)
  *
  * Return: a fresh malloc'd copy, or NULL when out of memory.
  */
@@ -2278,10 +2307,11 @@ static char *ai_completion_text(const char *reply)
  const char *start = ai_after_opening_fence(reply);
  const char *end = ai_before_closing_fence(start, start + strlen(start));
  size_t len = (size_t)(end - start);
+ size_t n;
  char *out = malloc(len + 1);
  if (!out) return NULL;
- memcpy(out, start, len);
- out[len] = '\0';
+ n = ai_copy_lf_only(out, start, len);
+ out[n] = '\0';
  return out;
 }
 
@@ -2312,12 +2342,152 @@ static char *ai_diff_fmt_n(int lineno, char gutter, const char *text)
  return s;
 }
 
+/* The glyph that ends a review row too wide for the box.  Plain ASCII, so it
+   reads the same in a monochrome terminal as under colours: the reviewer sees
+   that the row goes on past the edge and that a `-`/`+` pair which looks the
+   same here differs further right. */
+#define AI_CLIP_MARK '>'
+
+/**
+ * ai_box_row_text - Lay one review row out at the box's inner width.
+ * @out: the buffer the row is drawn from; @n: its size;
+ * @row: the row as formatted (gutter, number, text); @width: columns inside the box.
+ *
+ * What the user gains: a change beyond the box's edge is never shown as two
+ * rows that read identical.  A row that fits is padded to the width so the
+ * box background is solid; a row wider than the box is cut and its last
+ * column becomes AI_CLIP_MARK, the sign that there is more to the right.
+ */
+static void ai_box_row_text(char *out, size_t n, const char *row, int width)
+{
+ int clipped;
+ if (width >= (int)n) width = (int)n - 1;
+ if (width < 1) { out[0] = '\0'; return; }
+ clipped = (int)strlen(row) > width;
+ snprintf(out, n, "%-*.*s", width, width, row);
+ if (clipped) out[width - 1] = AI_CLIP_MARK;
+}
+
+/* The rows a box needs besides its body: the title row and the key-hint row. */
+#define AI_BOX_FRAME_ROWS 2
+/* The fewest body rows worth placing beside the hunk; with less room on either
+   side the box covers the window body from its top instead, and PgDn scrolls. */
+#define AI_BOX_MIN_BODY_ROWS 3
+
+/**
+ * ai_window_first_row - The first screen row of a window's text area.
+ * @f: the window.
+ *
+ * Return: the row below the window's top border.
+ */
+static int ai_window_first_row(const FENSTER *f)
+{
+ return f->a.y + 1;
+}
+
+/**
+ * ai_window_last_row - The last screen row of a window's text area.
+ * @f: the window.
+ *
+ * Return: the row above the window's status row, which the box never covers.
+ */
+static int ai_window_last_row(const FENSTER *f)
+{
+ return f->e.y - 1;
+}
+
+/**
+ * ai_box_room_below - Body rows a box can have under a line and stay in the window.
+ * @f: the window; @hunk_row: the screen row of the hunk's first line.
+ *
+ * Return: the room, possibly negative when the line is at the bottom.
+ */
+static int ai_box_room_below(const FENSTER *f, int hunk_row)
+{
+ return ai_window_last_row(f) - hunk_row - AI_BOX_FRAME_ROWS;
+}
+
+/**
+ * ai_box_room_above - Body rows a box can have over a line and stay in the window.
+ * @f: the window; @hunk_row: the screen row of the hunk's first line.
+ *
+ * Return: the room, possibly negative when the line is at the top.
+ */
+static int ai_box_room_above(const FENSTER *f, int hunk_row)
+{
+ return hunk_row - ai_window_first_row(f) - AI_BOX_FRAME_ROWS;
+}
+
+/**
+ * ai_box_place_in_window - Choose where the hunk box goes and how tall it is.
+ * @f: the window being edited; @hunk_row: the screen row of the hunk's first
+ * line, already scrolled into view; @nrows: the rows the box has to show;
+ * @ya: receives the title row; @vis: receives the number of body rows.
+ *
+ * What the user gains: the box sits one row below the line it is about, so the
+ * change reads in place, and it always stays inside the file window: never on
+ * the status row, never over the assistant pane under it.  When the box does
+ * not fit below it opens above the line; when it fits whole on neither side it
+ * takes the side with more room and PgDn scrolls the rest; when neither side
+ * has even AI_BOX_MIN_BODY_ROWS it covers the window body from the top, which
+ * is the one case where it hides the line itself.
+ */
+static void ai_box_place_in_window(const FENSTER *f, int hunk_row, int nrows,
+                                   int *ya, int *vis)
+{
+ int below = ai_box_room_below(f, hunk_row);
+ int above = ai_box_room_above(f, hunk_row);
+ int body = ai_window_last_row(f) - ai_window_first_row(f) + 1 - AI_BOX_FRAME_ROWS;
+ if (nrows <= below) {
+  *vis = nrows;
+  *ya = hunk_row + 1;
+  return;
+ }
+ if (nrows <= above) {
+  *vis = nrows;
+  *ya = hunk_row - nrows - AI_BOX_FRAME_ROWS;
+  return;
+ }
+ if (below >= above && below >= AI_BOX_MIN_BODY_ROWS) {
+  *vis = below;
+  *ya = hunk_row + 1;
+  return;
+ }
+ if (above >= AI_BOX_MIN_BODY_ROWS) {
+  *vis = above;
+  *ya = hunk_row - above - AI_BOX_FRAME_ROWS;
+  return;
+ }
+ *vis = nrows < body ? nrows : body;
+ if (*vis < 1) *vis = 1;
+ *ya = ai_window_first_row(f);
+}
+
+/**
+ * ai_box_place_at_top - Place a box that is about no particular line.
+ * @nrows: the rows the box has to show; @ya: receives the title row;
+ * @vis: receives the number of body rows.
+ *
+ * The agent's write preview is about a file, not a line of the window, so it
+ * opens under the menu bar and may be as tall as the screen allows.
+ */
+static void ai_box_place_at_top(int nrows, int *ya, int *vis)
+{
+ *vis = nrows;
+ if (*vis > MAXSLNS - 8) *vis = MAXSLNS - 8;
+ if (*vis < 1) *vis = 1;
+ *ya = 2;
+}
+
 /* ai_diff_box_show - Render rows[] (each with its own colour attr) in a boxed,
    scrollable overlay and return the key the reviewer pressed.  PgUp/PgDn scroll
    when the content is taller than the box, so nothing is lost off the top; a key
    in `accept` (case-insensitive), or Enter/Esc, ends it -- any other key is
    ignored.  Returns 13 for Enter, WPE_ESC for Esc, else the uppercased key.  The
-   shared preview surface for the Edit review and the agent write confirmation. */
+   shared preview surface for the Edit review and the agent write confirmation.
+   ya_pref > 0 is the screen row of the hunk's first line, which the caller has
+   scrolled into view: the box then stays inside the window f (see
+   ai_box_place_in_window); ya_pref <= 0 opens it under the menu bar. */
 static int ai_diff_box_show(FENSTER *f, char **rt, int *ra, int nrows,
                             const char *title, const char *hint, const char *accept,
                             int ya_pref)
@@ -2333,22 +2503,12 @@ static int ai_diff_box_show(FENSTER *f, char **rt, int *ra, int nrows,
  if (maxw < (int)strlen(hint)) maxw = (int)strlen(hint);
  boxw = maxw + 3;
  if (boxw > MAXSCOL - 4) boxw = MAXSCOL - 4;
- vis = nrows;
- if (vis > MAXSLNS - 8) vis = MAXSLNS - 8;
- if (vis < 1) vis = 1;
  xa = (MAXSCOL - boxw) / 2; if (xa < 1) xa = 1;
  xe = xa + boxw;
- /* Place the box next to the lines it is about (ya_pref = their screen row) so
-    the change reads in place; drop it just below, or flip above when there is no
-    room below, and clamp to the screen.  ya_pref <= 0 keeps it near the top. */
- if (ya_pref > 0) {
-  ya = ya_pref + 1;
-  if (ya + vis + 1 > MAXSLNS - 2) ya = ya_pref - vis - 2;   /* flip above */
-  if (ya < 1) ya = 1;
-  if (ya + vis + 1 > MAXSLNS - 2) ya = 2;                   /* still no fit: top */
- } else {
-  ya = 2;
- }
+ if (ya_pref > 0)
+  ai_box_place_in_window(f, ya_pref, nrows, &ya, &vis);
+ else
+  ai_box_place_at_top(nrows, &ya, &vis);
  ye = ya + vis + 1;
 
  fk_cursor(0);
@@ -2361,7 +2521,7 @@ static int ai_diff_box_show(FENSTER *f, char **rt, int *ra, int nrows,
    int row = top + j;
    char line[600];
    if (row >= nrows) break;
-   snprintf(line, sizeof line, "%-*.*s", boxw - 2, boxw - 2, rt[row]);
+   ai_box_row_text(line, sizeof line, rt[row], boxw - 2);
    e_pr_str(xa + 1, ya + 1 + j, line, ra[row], 0, 0, 0, 0);
   }
   { int hl = (int)strlen(hint), hx = xa + (xe - xa - hl) / 2;
@@ -2506,6 +2666,81 @@ static int ai_diff_context_lines(const wpe_ai_seg *segs, int nseg, int j)
  return AI_DIFF_CTX;
 }
 
+/**
+ * ai_hunk_old_start - The line, in the file as it is now, where a hunk begins.
+ * @segs: the review's segments; @i: the hunk's index.
+ *
+ * Return: the 1-based line; one past the last line for an insertion at the end.
+ */
+static int ai_hunk_old_start(const wpe_ai_seg *segs, int i)
+{
+ int j, line = 1;
+ for (j = 0; j < i; j++) line += segs[j].an;
+ return line;
+}
+
+/**
+ * ai_scroll_line_into_view - Bring a line of the file on screen, cursor on it.
+ * @f: the window; @line: the 1-based line.
+ *
+ * What the user gains: the hunk about to be reviewed is visible in the file
+ * before its box opens, however far from the cursor the model's change is.
+ * The cursor moves to the line and keeps its column (clamped to the line's
+ * length), and the window scrolls exactly as it does for Search and Goto Line:
+ * the editor's one scroll-into-view path, e_cursor, so the view behaves as the
+ * user already knows it.  A line past the end of the file lands on the last
+ * line.  The status row is repainted so it names the line the cursor is on:
+ * the review runs outside the key loop, which is what normally repaints it.
+ */
+static void ai_scroll_line_into_view(FENSTER *f, int line)
+{
+ BUFFER *b = f->b;
+ int y = line - 1;
+ if (y > b->mxlines - 1) y = b->mxlines - 1;
+ if (y < 0) y = 0;
+ b->b.y = y;
+ e_cursor(f, 1);
+ e_zlsplt(f);
+}
+
+/**
+ * ai_line_screen_row - The screen row a line of the file is drawn on.
+ * @f: the window; @line: the 1-based line, already scrolled into view.
+ *
+ * Return: the row inside the window's text area, clamped to it.
+ */
+static int ai_line_screen_row(const FENSTER *f, int line)
+{
+ int row = f->a.y + (line - 1) - f->s->c.y + 1;
+ if (row < ai_window_first_row(f)) row = ai_window_first_row(f);
+ if (row > ai_window_last_row(f)) row = ai_window_last_row(f);
+ return row;
+}
+
+/**
+ * ai_review_hunk_in_place - Open the hunk box next to the lines it changes.
+ * @f: the window; @segs/@i: the review's segments and this hunk's index;
+ * @rt/@ra/@nrows: the box rows and their colours; @title/@hint: its caption.
+ *
+ * What the user gains: the file scrolls to the hunk's first line first, so the
+ * old text is in view, and the box opens one row below that line inside the
+ * window (above when there is no room), never on the status row or over the
+ * pane.  The file still shows the OLD text while the box is up, so the line is
+ * counted in old-file lines.
+ *
+ * Return: the key the reviewer pressed, as ai_diff_box_show reports it.
+ */
+static int ai_review_hunk_in_place(FENSTER *f, const wpe_ai_seg *segs, int i,
+                                   char **rt, int *ra, int nrows,
+                                   const char *title, const char *hint)
+{
+ int line = ai_hunk_old_start(segs, i);
+ int row;
+ ai_scroll_line_into_view(f, line);
+ row = ai_line_screen_row(f, line);
+ return ai_diff_box_show(f, rt, ra, nrows, title, hint, "YNAQ", row);
+}
+
 /* ai_diff_review_hunk - Show one proposed hunk in the colored diff box and read
    the reviewer's decision: 'Y' apply, 'N' skip, 'A' apply the rest, 'Q'/Esc
    cancel.  Deleted lines are red, added lines green, context normal.  The
@@ -2547,15 +2782,7 @@ static int ai_diff_review_hunk(FENSTER *f, wpe_ai_seg *segs, int nseg,
 
  ai_review_title(title, sizeof title, caption, hunk, total);
  ai_review_hint(hint, sizeof hint, caption, &segs[i]);
- /* Screen row of this hunk in the file on screen (which still shows the OLD
-    text): count old-file lines before it, then map through the window's scroll
-    so the box appears over the lines being changed, not floating at the top. */
- { int j, oldstart = 1, srow;
-   for (j = 0; j < i; j++) oldstart += segs[j].an;
-   srow = f->a.y + (oldstart - 1) - f->s->c.y + 1;
-   if (srow < f->a.y + 1) srow = f->a.y + 1;
-   if (srow > f->e.y - 1) srow = f->e.y - 1;
-   key = ai_diff_box_show(f, rt, ra, nrows, title, hint, "YNAQ", srow); }
+ key = ai_review_hunk_in_place(f, segs, i, rt, ra, nrows, title, hint);
  if (key == 13 || key == 'Y')      ret = 'Y';
  else if (key == 'N')              ret = 'N';
  else if (key == 'A')              ret = 'A';
@@ -2623,6 +2850,29 @@ static int ai_diff_confirm_write(FENSTER *f, const char *path,
  return allow;
 }
 
+/**
+ * ai_cursor_to_first_accepted - Park the cursor where the first accepted hunk lands.
+ * @f: the window; @segs/@nseg: the review's segments; @acc: which were accepted.
+ *
+ * What the user gains: when the review ends, the first change they said yes to
+ * is on screen with the cursor on its first line, column kept, instead of the
+ * view resting wherever the last hunk was reviewed.  Every segment before that
+ * hunk keeps its old lines, so its line is the same in the old and the new
+ * file; the whole-buffer swap that follows keeps the cursor's row and column,
+ * clamped to the new text.  Nothing moves when no hunk was accepted.
+ */
+static void ai_cursor_to_first_accepted(FENSTER *f, const wpe_ai_seg *segs, int nseg,
+                                        const int *acc)
+{
+ int i, line = 1;
+ for (i = 0; i < nseg; i++) {
+  if (segs[i].is_change && acc[i]) break;
+  line += segs[i].an;
+ }
+ if (i >= nseg) return;
+ ai_scroll_line_into_view(f, line);
+}
+
 static char *ai_hunk_apply(FENSTER *f, wpe_ai_seg *segs, int nseg,
                            const ai_review_caption *caption,
                            int *naccepted, int *ntotal)
@@ -2654,6 +2904,7 @@ static char *ai_hunk_apply(FENSTER *f, wpe_ai_seg *segs, int nseg,
  if (ntotal) *ntotal = total;
  if (naccepted) *naccepted = nacc;
  if (cancel || !any) { free(acc); return NULL; }
+ ai_cursor_to_first_accepted(f, segs, nseg, acc);
 
  out = malloc(cap);
  if (!out) { free(acc); return NULL; }
@@ -3333,6 +3584,24 @@ static void ai_edit_report_discarded(FENSTER *f, int naccepted)
  wpe_ai_trace("edit discarded (%d accepted dropped)", naccepted);
 }
 
+/**
+ * ai_edit_show_applied - Repaint the edited window with the accepted change in view.
+ * @f: the window the edit landed in.
+ *
+ * The apply ran from the fd loop with the focus on the pane, so the window is
+ * redrawn here the way a completion's is; e_cursor keeps the first accepted
+ * hunk, where the review left the cursor, inside the view, and e_zlsplt
+ * repaints the status row's line and column, which only the key loop would
+ * otherwise do.
+ */
+static void ai_edit_show_applied(FENSTER *f)
+{
+ e_schirm(f, 1);
+ e_cursor(f, 1);
+ e_zlsplt(f);
+ e_refresh();
+}
+
 /* Stream done: reconstruct the file, review the diff, apply.  Runs from the fd
  * callback but only after ai_op_detach() has removed the AI fds. */
 static void ai_edit_done(ai_async_op *op)
@@ -3414,6 +3683,7 @@ static void ai_edit_done(ai_async_op *op)
    wpe_ai_trace("edit applied %d/%d", nacc, ntot);
    free(result);
    if (op->save_id >= 0) e_switch_window(op->save_id, f);
+   ai_edit_show_applied(f);
   } else {
    ai_edit_report_discarded(f, nacc);
   }
@@ -5789,8 +6059,10 @@ static int ai_plan_parse(const char *reply, ai_proposal *props, int *np)
    {
     size_t cl = endm ? (size_t)(endm - body) : strlen(body);
     props[*np].path = strdup(path);
-    props[*np].text = malloc(cl + 2);
-    if (props[*np].text) { memcpy(props[*np].text, body, cl); props[*np].text[cl] = '\n'; props[*np].text[cl + 1] = '\0'; }
+    /* The same cleaner as an Edit reply: one final newline, CRLF made LF, so
+       a proposal with Windows line endings is diffed against the buffer on
+       equal terms and shows only its real changes. */
+    props[*np].text = ai_file_text(body, cl);
     (*np)++;
    }
    if (endm) { p = strchr(endm + 1, '\n'); if (p) p++; continue; }
