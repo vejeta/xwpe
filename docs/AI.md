@@ -40,12 +40,20 @@ the model works):
   file case, the pane reports the sent range, for example
   `[AI edit] lines 431-770 of 1200 sent`, and the request includes that same
   range header. The reply replaces exactly the sent text and leaves the rest of
-  the file untouched. The proposed change appears in a **colored diff popup**
-  next to the changed lines, below when there is room and above otherwise, one
-  hunk at a time. Review keys are `y` or Enter to apply, `n` to skip, `a` to
-  apply the rest, `q` or Esc to cancel the review and keep the file exactly as
-  it was before the review, and PgUp or PgDn to scroll a hunk taller than the
-  popup. Accepted hunks apply as **one** edit that a single **`Ctrl-U`** undoes.
+  the file untouched. A reply that could not be the new file -- prose, blank, an
+  empty fence pair, or so much shorter than the file that it reads as a
+  truncation -- is questioned first in a box naming both line counts
+  (`reply has 1 line, file has 3: review anyway?`); No or Esc ends the edit with
+  buffer and file untouched. Otherwise the proposed change appears in a
+  **colored diff popup** next to the changed lines, below when there is room and
+  above otherwise, one hunk at a time. Review keys are `y` or Enter to apply,
+  `n` to skip, `a` to apply the rest (it stops at a hunk that deletes more lines
+  than it adds and shows that one instead), `q` or Esc to cancel the review and
+  keep the file exactly as it was before the review -- hunks already accepted
+  are dropped too, and the pane says how many, so press `n` on the remaining
+  hunks when you want to keep them -- and PgUp or PgDn to scroll a hunk taller
+  than the popup. Accepted hunks apply as **one** edit that a single
+  **`Ctrl-U`** undoes.
 - **Multi-file edit** (`Alt-G f`) -- studies the workspace read-only, then
   proposes one coordinated change across several files. Its status lines in the
   assistant pane are prefixed `[plan]`.

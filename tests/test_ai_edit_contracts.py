@@ -153,7 +153,9 @@ def test_skip_all_hunks_leaves_window_unmodified_and_quit_needs_no_prompt(tmp_pa
         s.key("n", delay=0.7)
         s._drain(0.5)
         s.key("\033x", delay=0.8)  # Alt-X: quit
-        s._drain(0.8)
+        end = time.time() + 10     # tearing down the pane as well takes a while,
+        while time.time() < end and s.alive():   # so wait for the exit, do not
+            s._drain(0.5)                        # assume one drain is enough
         assert not s.alive(), "window stayed modified (quit asked again)"
     with open(tmp_path / "t.c") as fh:
         assert fh.read() == seed, "disk changed after skipping every hunk"

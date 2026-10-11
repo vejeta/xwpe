@@ -1931,6 +1931,42 @@ static char *ai_slurp_file(const char *path)
  return b;
 }
 
+/**
+ * ai_hunk_deletes_more_than_it_adds - Does this hunk remove more lines than it
+ * puts back?
+ * @seg: the change segment about to be reviewed.
+ *
+ * This is the shape in which code disappears: the model dropped a block instead
+ * of rewriting it.  "Apply the rest" stops on one of these, so the user sees the
+ * deletion while it is still a proposal rather than discovering the lines gone.
+ *
+ * Return: 1 when the deletions outnumber the additions, 0 otherwise.
+ */
+static int ai_hunk_deletes_more_than_it_adds(const wpe_ai_seg *seg)
+{
+ return seg->an > seg->bn;
+}
+
+/**
+ * ai_diff_hunk_hint - Write the key line shown under one hunk.
+ * @out: buffer for the hint.
+ * @n:   its size.
+ * @seg: the change segment being shown.
+ *
+ * A hunk that deletes more than it adds carries its line tally in front of the
+ * keys, so a reviewer who pressed "apply the rest" reads why the box came back
+ * and how much text would go, before deciding again.
+ */
+static void ai_diff_hunk_hint(char *out, size_t n, const wpe_ai_seg *seg)
+{
+ if (!ai_hunk_deletes_more_than_it_adds(seg)) {
+  snprintf(out, n, " y apply  n skip  a all  q cancel  PgUp/PgDn ");
+  return;
+ }
+ snprintf(out, n, " deletes %d adds %d:  y apply  n skip  a all  q cancel  PgUp/PgDn ",
+          seg->an, seg->bn);
+}
+
 /* ai_diff_review_hunk - Show one proposed hunk in the colored diff box and read
    the reviewer's decision: 'Y' apply, 'N' skip, 'A' apply the rest, 'Q'/Esc
    cancel.  Deleted lines are red, added lines green, context normal. */
@@ -1946,7 +1982,7 @@ static int ai_diff_review_hunk(FENSTER *f, wpe_ai_seg *segs, int nseg,
  char **rt;
  int   *ra;
  int    idx = 0, k, key, ret;
- char   title[48], hint[80];
+ char   title[80], hint[80];
 
  if (nrows <= 0) return 'Y';                    /* nothing to show -> accept */
  rt = malloc((size_t)nrows * sizeof *rt);
@@ -1969,7 +2005,7 @@ static int ai_diff_review_hunk(FENSTER *f, wpe_ai_seg *segs, int nseg,
  }
 
  snprintf(title, sizeof title, " Proposed change %d/%d ", hunk, total);
- snprintf(hint, sizeof hint, " y apply  n skip  a all  q cancel  PgUp/PgDn ");
+ ai_diff_hunk_hint(hint, sizeof hint, &segs[i]);
  /* Screen row of this hunk in the file on screen (which still shows the OLD
     text): count old-file lines before it, then map through the window's scroll
     so the box appears over the lines being changed, not floating at the top. */
@@ -2062,6 +2098,10 @@ static char *ai_hunk_apply(FENSTER *f, wpe_ai_seg *segs, int nseg,
   int decision;
   if (!segs[i].is_change) continue;
   hunk++;
+  /* "Apply the rest" never removes text unseen: a hunk that deletes more than
+     it adds ends the blanket accept and is shown for its own decision. */
+  if (all && ai_hunk_deletes_more_than_it_adds(&segs[i]))
+   all = 0;
   if (all) { acc[i] = 1; any = 1; nacc++; continue; }
   decision = ai_diff_review_hunk(f, segs, nseg, i, hunk, total);
   if (decision == 'Y')      { acc[i] = 1; any = 1; nacc++; }
@@ -2589,6 +2629,169 @@ void wpe_ai_cancel(void)
  if (alive) e_ai_chat_arm(f);
 }
 
+/* Share of the file's lines a reply must keep to be taken at face value as the
+   new file.  Under it the reply is a refusal ("I cannot do that"), a stray
+   sentence or a generation that stopped early, so it is questioned before
+   anything is reviewed instead of being diffed as if it were code. */
+#define AI_REPLY_KEEP_PCT 60
+/* Denominator of the share above, named so the comparison holds no bare number. */
+#define AI_PCT_WHOLE 100
+
+/**
+ * ai_text_line_count - How many lines this text holds.
+ * @text: the text to measure, or NULL.
+ *
+ * Both line counts the confirmation names come from here, so the question the
+ * user reads matches what the editor compared.
+ *
+ * Return: the number of lines, counting a last line that has no newline.
+ */
+static int ai_text_line_count(const char *text)
+{
+ const char *p;
+ int n = 0;
+ if (!text) return 0;
+ for (p = text; *p; p++)
+  if (*p == '\n') n++;
+ if (p > text && p[-1] != '\n') n++;
+ return n;
+}
+
+/**
+ * ai_text_is_blank - Is there nothing but whitespace in this text?
+ * @text: the text to inspect, or NULL.
+ *
+ * Catches the replies that would leave an empty buffer: a whitespace-only answer
+ * and a bare fence pair, which the fence stripper reduces to nothing.
+ *
+ * Return: 1 when no printable character is present, 0 otherwise.
+ */
+static int ai_text_is_blank(const char *text)
+{
+ const char *p;
+ if (!text) return 1;
+ for (p = text; *p; p++)
+  if (*p != ' ' && *p != '\t' && *p != '\n' && *p != '\r') return 0;
+ return 1;
+}
+
+/**
+ * ai_reply_truncates_file - Would taking this reply drop much of the file?
+ * @reply_lines: lines the reply would leave.
+ * @file_lines:  lines the file has now.
+ *
+ * The one test that covers both a prose refusal (a sentence where a file was
+ * asked for) and a generation that stopped halfway: either way the user would
+ * be asked to review a file that is mostly gone.
+ *
+ * Return: 1 when the reply keeps less than AI_REPLY_KEEP_PCT of the lines.
+ */
+static int ai_reply_truncates_file(int reply_lines, int file_lines)
+{
+ return reply_lines * AI_PCT_WHOLE < file_lines * AI_REPLY_KEEP_PCT;
+}
+
+/**
+ * ai_reply_would_destroy_file - Is this reply too small to be the new file?
+ * @filetext: the file as it stands.
+ * @reply:    the cleaned reply, spliced into place already.
+ *
+ * Return: 1 when the reply is blank or a truncation of the file, 0 otherwise.
+ */
+static int ai_reply_would_destroy_file(const char *filetext, const char *reply)
+{
+ if (ai_text_is_blank(reply) && !ai_text_is_blank(filetext))
+  return 1;
+ return ai_reply_truncates_file(ai_text_line_count(reply),
+                                ai_text_line_count(filetext));
+}
+
+/**
+ * ai_line_word - "line" or "lines", for a count the user reads.
+ * @n: the count the word belongs to.
+ *
+ * Return: the singular form for one line, the plural otherwise.
+ */
+static const char *ai_line_word(int n)
+{
+ if (n == 1) return "line";
+ return "lines";
+}
+
+/**
+ * ai_reply_confirm_question - Write the question that names both line counts.
+ * @out:         buffer for the question.
+ * @n:           its size.
+ * @reply_lines: lines the reply would leave.
+ * @file_lines:  lines the file has now.
+ *
+ * The numbers are what makes the question answerable: "reply has 1 line, file
+ * has 3" tells the user it is a refusal, not a rewrite, without reading a diff.
+ */
+static void ai_reply_confirm_question(char *out, size_t n,
+                                      int reply_lines, int file_lines)
+{
+ snprintf(out, n, "reply has %d %s, file has %d: review anyway?",
+          reply_lines, ai_line_word(reply_lines), file_lines);
+}
+
+/**
+ * ai_edit_reply_trusted - Let a reply reach the review, asking first when it
+ * would destroy the file.
+ * @f:        the file window the edit is for.
+ * @filetext: the file as it stands.
+ * @reply:    the cleaned reply, spliced into place already.
+ *
+ * A reply that is prose, blank or half a file used to be diffed like any other,
+ * and a single Enter then replaced the file with it.  Such a reply now stops at
+ * the editor's own question box, which names both line counts; answering No or
+ * Esc leaves buffer and disk exactly as they were.  A reply of a normal size
+ * reaches the review untouched, so ordinary edits are no slower.
+ *
+ * Return: 1 to go on to the review, 0 when the user declined.
+ */
+static int ai_edit_reply_trusted(FENSTER *f, const char *filetext, const char *reply)
+{
+ extern int wpe_modal_active;
+ char question[160];
+ int modal_save, answer;
+
+ if (!ai_reply_would_destroy_file(filetext, reply))
+  return 1;
+ ai_reply_confirm_question(question, sizeof question,
+                           ai_text_line_count(reply),
+                           ai_text_line_count(filetext));
+ modal_save = wpe_modal_active;
+ wpe_modal_active = 1;            /* a question is up: async paints defer */
+ answer = e_message(1, question, f);
+ wpe_modal_active = modal_save;
+ return answer == 'Y';
+}
+
+/**
+ * ai_edit_report_discarded - Say that the review ended with nothing applied.
+ * @f:          the file window the edit was for.
+ * @naccepted:  how many hunks had been accepted before the cancel.
+ *
+ * Cancelling drops the hunks already accepted as well, which is invisible unless
+ * it is said: the pane names the count so the user knows what to redo rather
+ * than assuming those hunks landed.
+ */
+static void ai_edit_report_discarded(FENSTER *f, int naccepted)
+{
+ char msg[80];
+
+ if (naccepted <= 0) {
+  ai_pane(f, "[AI edit] discarded", 0);
+  wpe_ai_trace("edit discarded");
+  return;
+ }
+ snprintf(msg, sizeof msg, "[AI edit] discarded (%d accepted %s dropped)",
+          naccepted, naccepted == 1 ? "hunk" : "hunks");
+ ai_pane(f, msg, 0);
+ wpe_ai_trace("edit discarded (%d accepted dropped)", naccepted);
+}
+
 /* Stream done: reconstruct the file, review the diff, apply.  Runs from the fd
  * callback but only after ai_op_detach() has removed the AI fds. */
 static void ai_edit_done(ai_async_op *op)
@@ -2640,6 +2843,16 @@ static void ai_edit_done(ai_async_op *op)
  /* Diff against the complete file, never the capped copy sent to the model:
     the lines beyond the cap must not surface as a phantom deletion hunk. */
  now = ai_full_file_text(f);
+ /* A reply that would leave almost nothing of the file is questioned before the
+    diff opens, so one keystroke cannot replace the file with a refusal. */
+ if (!ai_edit_reply_trusted(f, now ? now : "", clean)) {
+  ai_pane(f, "[AI edit] reply declined (nothing changed)", 0);
+  wpe_ai_trace("edit reply declined");
+  free(now);
+  free(clean);
+  ai_op_free(op);
+  return;
+ }
  nseg = wpe_ai_diff_segments(now ? now : "", clean, &segs);
  free(now);
  for (i = 0; i < nseg; i++) if (segs[i].is_change) { has_change = 1; break; }
@@ -2661,8 +2874,7 @@ static void ai_edit_done(ai_async_op *op)
    free(result);
    if (op->save_id >= 0) e_switch_window(op->save_id, f);
   } else {
-   ai_pane(f, "[AI edit] discarded", 0);
-   wpe_ai_trace("edit discarded");
+   ai_edit_report_discarded(f, nacc);
   }
  }
  wpe_ai_segs_free(segs, nseg);

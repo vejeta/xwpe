@@ -199,14 +199,30 @@ pane says @samp{[AI edit] lines 431-770 of 1200 sent}, and the request carries a
 header with the same line range.  The reply replaces exactly the text that was
 sent, so every line outside that scope stays untouched.
 
+A reply that could not be the new file is questioned before any diff opens: when
+it is prose (``I cannot do that''), whitespace only, an empty pair of code fences
+or so much shorter than the file that it reads as a truncation, xwpe asks in a
+message box that names both line counts, @samp{reply has 1 line, file has 3:
+review anyway?}.  @kbd{Yes} goes on to the review as usual; @kbd{No} or
+@key{Esc} ends the edit there, the pane reports @samp{[AI edit] reply declined
+(nothing changed)}, and buffer and file are untouched.
+
 The model's rewrite is shown as a @dfn{diff} you review hunk by hunk in a popup
 next to those lines (below when there is room, above otherwise).  @kbd{y} or
-@key{Enter} applies this hunk, @kbd{n} skips it, @kbd{a} applies all remaining
-hunks, and @kbd{q} or @key{Esc} cancels the review and leaves the file exactly as
-it was before that review started.  @key{PgUp} and @key{PgDn} scroll inside a
-hunk taller than the popup.  Applying uses one whole-buffer undo step, so
-@kbd{Ctrl-U} reverts the whole edit.  Nothing is written to disk until you
-@emph{save}.
+@key{Enter} applies this hunk and @kbd{n} skips it.  @kbd{a} applies all
+remaining hunks, except that it stops at a hunk which deletes more lines than it
+adds and shows that one for its own decision -- its key line names the tally,
+@samp{deletes 2 adds 0} -- so no text is removed unseen.  @key{PgUp} and
+@key{PgDn} scroll inside a hunk taller than the popup.
+
+@kbd{q} or @key{Esc} cancels the review and leaves the file exactly as it was
+before that review started: the hunks already accepted are dropped with the
+rest, and the pane says how many, @samp{[AI edit] discarded (1 accepted hunks
+dropped)}.  To stop reviewing and @emph{keep} what you have accepted, press
+@kbd{n} on the hunks that are left.
+
+Applying uses one whole-buffer undo step, so @kbd{Ctrl-U} reverts the whole
+edit.  Nothing is written to disk until you @emph{save}.
 
 @cindex AI, diagnostics
 When a language server (@pxref{Language servers}) is running, the errors and

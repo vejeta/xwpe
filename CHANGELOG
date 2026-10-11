@@ -471,6 +471,21 @@ Changes
   only come back as the result xwpe shows in the AI pane.  A command that reads
   from standard input now gets an immediate end of file instead of taking the
   keys you were typing.
+* Fixed: an AI edit reply that was not a file at all could replace the file with
+  one keystroke.  "I cannot do that" overwrote a three-line file, a reply of
+  nothing but whitespace (or an empty pair of code fences) left a single blank
+  line on disk, and a reply that stopped halfway through a long file was offered
+  as if the missing half had been deleted on purpose.  Such a reply is now
+  questioned before the diff opens, in a box that names both line counts ("reply
+  has 1 line, file has 3: review anyway?"); answering No or Esc leaves the buffer
+  and the file untouched.  Accepting "apply the rest" also stops at any hunk that
+  deletes more lines than it adds and shows that hunk for its own decision, so a
+  block of code is never dropped unseen.
+* Cancelling an AI edit review with q or Esc says what it cost: the pane now
+  reports "[AI edit] discarded (1 accepted hunks dropped)".  Cancelling always
+  dropped the hunks accepted earlier in the review as well -- buffer and file end
+  up exactly as they were -- but nothing said so, so those hunks looked applied.
+  To stop reviewing and keep what was accepted, press n on the remaining hunks.
 
 1.6.9 (native Wayland real-desktop robustness: resize, decorations, crashes)
 
