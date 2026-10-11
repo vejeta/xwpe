@@ -508,6 +508,25 @@ Changes
   "foo(" with "bar)" used to leave "foo(bar)" followed by an empty line, because
   a line break was added to every reply; it now reads "foo(bar)" on one line, and
   one Ctrl-U removes it.
+* Fixed: an AI edit reply wrapped in markdown fences put the model's prose into
+  the file.  "Here is the updated file:" above the fence and "Let me know if you
+  need more." below it were written to disk together with the fence lines, and
+  a reply holding a second fenced block (a test, say) delivered both blocks and
+  the sentence between them.  Only the content of the outermost pair of fences
+  is now the file, with the language tag dropped and the text ending in exactly
+  one newline; everything the model wrote around it is shown in the assistant
+  pane under "[AI edit] the model's commentary (not part of the file):".  A
+  reply with no fence is still taken whole.
+* Fixed: the Multi-file approval box ("Apply AI plan") counted its (+a -b) per
+  file against the file on disk, while Apply all replaced the open buffer, so an
+  edit typed but not saved before the plan was neither counted nor shown and
+  was lost when the plan applied.  The counts now come from the buffer as it is,
+  unsaved edits included (one Ctrl-U still brings them back).  A file the plan
+  would write outside the workspace ("../outside.c" from a project) used to be
+  listed and applied like any other; its row now carries a "!" mark and the
+  words "outside the workspace", in the colour of a deletion, and the pane names
+  it when it is applied.  It is not refused, the model may be right, but it is
+  no longer silent.
 
 1.6.9 (native Wayland real-desktop robustness: resize, decorations, crashes)
 

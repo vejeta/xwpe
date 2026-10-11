@@ -44,7 +44,12 @@ the model works):
   empty fence pair, or so much shorter than the file that it reads as a
   truncation -- is questioned first in a box naming both line counts
   (`reply has 1 line, file has 3: review anyway?`); No or Esc ends the edit with
-  buffer and file untouched. Otherwise the proposed change appears in a
+  buffer and file untouched. When the model wraps the file in markdown fences,
+  only the content of the outermost fence pair becomes the file (language tag
+  dropped, exactly one final newline); the prose around it, and any second
+  fenced block, is shown in the pane under
+  `[AI edit] the model's commentary (not part of the file):` instead of landing
+  in the source. Otherwise the proposed change appears in a
   **colored diff popup** next to the changed lines, below when there is room and
   above otherwise, one hunk at a time. Review keys are `y` or Enter to apply,
   `n` to skip, `a` to apply the rest (it stops at a hunk that deletes more lines
@@ -109,8 +114,14 @@ agent CLI that speaks stream-json" (Claude Code first; others as adapters later)
 
 `Alt-G f` runs a **Multi-file edit**: it studies the workspace read-only, then
 proposes a coordinated change across several files and shows it as a **modal
-approval dialog**. **Enter/A** applies all, **F** reviews file-by-file (each in
-the diff box), and **Q/Esc** cancels. Nothing is written until you approve. (This
+approval dialog**. Each file is listed with its `(+added -removed)` counts taken
+against the buffer as it is now, unsaved edits included; `[new file]` marks a
+file that does not exist yet; and a `!` mark with the words
+`outside the workspace` flags a path the model wants to write beyond the
+project's (or the current file's) directory. Such a file is not refused, but you
+see it before approving and the pane names it when it is applied. **Enter/A**
+applies all, **F** reviews file-by-file (each in the diff box), and **Q/Esc**
+cancels. Nothing is written until you approve. (This
 is what some tools call a "workspace edit"; it is *not* an agent plan mode.)
 `Alt-G m` opens the scrollable **model picker**.
 

@@ -270,11 +270,27 @@ static FENSTER *ws_find_window(FENSTER *f, const char *path)
  return NULL;
 }
 
+static const char *ws_absolute_path(const char *path, char *buf, size_t sz);
+
+/**
+ * wpe_ai_read_scope_file - A workspace file as the editor has it now.
+ * @f: any window of the editor; @path: the file, as the model named it.
+ *
+ * An open window wins over the disk, unsaved edits included, so a plan's
+ * read_file and the approval box's counts see the text Apply all will
+ * replace.  The path is resolved the way the window table spells it, so a
+ * relative "t.c" finds the open "/home/u/proj/t.c" instead of falling back
+ * to the disk copy that lacks the user's last keystrokes.
+ *
+ * Return: malloc'd text, or NULL when the file is neither open nor on disk.
+ */
 char *wpe_ai_read_scope_file(FENSTER *f, const char *path)
 {
- FENSTER *w = ws_find_window(f, path);
+ char abs[1200];
+ const char *full = ws_absolute_path(path, abs, sizeof abs);
+ FENSTER *w = ws_find_window(f, full);
  if (w) return ws_window_text(w);
- return ws_read_file(path, 200000);
+ return ws_read_file(full, 200000);
 }
 
 /* ===================== checkpoint ======================================== */
@@ -636,22 +652,99 @@ static void ws_reload_window(FENSTER *f, const char *path)
 }
 
 /**
+ * ws_path_resolve_dots - Fold the "." and ".." segments of an absolute path in place.
+ * @p: an absolute path with single slashes (see ws_path_norm).
+ *
+ * A proposal for "../outside.c" and the window table's "/home/u/outside.c"
+ * must name the same file, for the counts to come from the open buffer and
+ * for the workspace check to see where the file really goes.  Lexical only:
+ * no symbolic link is followed and the file need not exist, since a proposal
+ * may be the one creating it.
+ */
+static void ws_path_resolve_dots(char *p)
+{
+ char *r = p, *w = p;
+ if (*r != '/') return;
+ while (*r) {
+  char *seg = r;                        /* at the '/' that opens a segment */
+  size_t n;
+  r++;
+  while (*r && *r != '/') r++;
+  n = (size_t)(r - seg - 1);            /* the segment without its slash   */
+  if (n == 0) continue;                 /* "//" or a trailing slash        */
+  if (n == 1 && seg[1] == '.') continue;
+  if (n == 2 && seg[1] == '.' && seg[2] == '.') {
+   while (w > p && *--w != '/') ;       /* drop the segment before it      */
+   continue;
+  }
+  memmove(w, seg, n + 1);
+  w += n + 1;
+ }
+ if (w == p) *w++ = '/';
+ *w = '\0';
+}
+
+/**
  * ws_absolute_path - The path a tool gave, as the window table knows it.
  * @path: as the tool wrote it; @buf/@sz: room for the resolved path.
  *
  * ws_find_window compares against the window's ABSOLUTE path, but a tool may
- * name a file relative to the editor's working directory; resolving it here
- * means a relative write still finds and refreshes the window the user is
- * looking at.  Return: `buf` when resolved, else `path` itself.
+ * name a file relative to the editor's working directory, or through ".."
+ * segments; resolving it here means a relative write still finds and
+ * refreshes the window the user is looking at, a Multi-file count is taken
+ * from that window, and the workspace check compares like with like.
+ *
+ * Return: `buf` when resolved, else `path` itself (no working directory, or
+ * a path too long for the buffer).
  */
 static const char *ws_absolute_path(const char *path, char *buf, size_t sz)
 {
  char cwd[1024];
- if (!path || path[0] == '/') return path;
- if (!getcwd(cwd, sizeof cwd)) return path;
- snprintf(buf, sz, "%s/%s", cwd, path);
+ if (!path) return path;
+ if (path[0] == '/') {
+  if (strlen(path) >= sz) return path;
+  snprintf(buf, sz, "%s", path);
+ } else {
+  if (!getcwd(cwd, sizeof cwd)) return path;
+  if (strlen(cwd) + 1 + strlen(path) >= sz) return path;
+  snprintf(buf, sz, "%s/%s", cwd, path);
+ }
  ws_path_norm(buf);
+ ws_path_resolve_dots(buf);
  return buf;
+}
+
+/**
+ * wpe_ai_path_outside_workspace - Would this path land outside the workspace?
+ * @f: any window of the editor; @path: the file, as the model named it.
+ *
+ * The workspace is the project's directory when a project is open, else the
+ * directory of the file the request came from: the same root the scope list
+ * and the checkpoint use.  A Multi-file proposal for "../outside.c" is
+ * flagged with this so the user sees, before approving, that the model is
+ * writing beyond the tree.  It is not refused: the model may be right.
+ *
+ * Return: 1 when the file lies outside, 0 when inside or when it cannot be
+ * told (no root, or the root is "/", below which nothing is outside).
+ */
+int wpe_ai_path_outside_workspace(FENSTER *f, const char *path)
+{
+ char abs[1200], rootbuf[1200];
+ const char *full = ws_absolute_path(path, abs, sizeof abs);
+ char *root = ws_root(f);
+ const char *rootfull;
+ size_t rl;
+ int outside;
+ if (!root || !full) { free(root); return 0; }
+ rootfull = ws_absolute_path(root, rootbuf, sizeof rootbuf);
+ rl = strlen(rootfull);
+ while (rl > 1 && rootfull[rl - 1] == '/') rl--;
+ if (rl <= 1) outside = 0;
+ else if (strncmp(full, rootfull, rl) != 0) outside = 1;
+ else if (full[rl] != '/' && full[rl] != '\0') outside = 1;
+ else outside = 0;
+ free(root);
+ return outside;
 }
 
 /**

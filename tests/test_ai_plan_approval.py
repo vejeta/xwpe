@@ -151,3 +151,80 @@ def test_plan_review_file_by_file_uses_the_same_hunk_review_box(tmp_path):
         s._drain(0.5)
         s.save()
         assert s.text() == ORIG, "cancelling file-by-file review changed disk"
+
+
+def _trace(tmp_path):
+    p = tmp_path / "e.trace"
+    return p.read_text() if p.exists() else ""
+
+
+def _wait_trace(s, tmp_path, needle, tmo=12):
+    end = time.time() + tmo
+    while time.time() < end:
+        s._drain(0.4)
+        if needle in _trace(tmp_path):
+            return True
+    return False
+
+
+# @scenario SC-ai-edit-43
+def test_plan_counts_follow_the_unsaved_buffer_and_apply_all_replaces_it(tmp_path):
+    """The (+a -b) of the box is counted against the buffer as it is now.
+
+    An unsaved "ZZZ" typed into t.c before the plan turns line 1 into
+    "ZZZint a = 1;", so the proposal (NEW) now changes two lines, not one: the
+    box must say (+2 -2), and Apply all must replace that live buffer as one
+    undo step, so one Ctrl-U brings the ZZZ back.  Before the fix the counts
+    were taken from the file on disk (+1 -1) and the unsaved edit was lost
+    without ever having been counted or shown.
+    """
+    plan = "PROPOSE t.c\n" + NEW + "@@END\n@@PLAN-DONE bumped b\n"
+    with WpeSession(str(tmp_path), ORIG, env_extra=_env(tmp_path, plan), filename="t.c") as s:
+        s.key("ZZZ", delay=0.3)
+        assert _wait_screen(s, "ZZZint a = 1;", tmo=4), "the unsaved edit did not reach the buffer"
+        _start_plan(s, "bump b")
+        assert _wait_screen(s, "Apply AI plan"), "approval box did not open"
+        box = "\n".join(s.display())
+        assert "(+2 -2)" in box, "counts ignore the unsaved buffer:\n" + box
+        assert "(+1 -1)" not in box, "counts were taken from the disk, not the buffer:\n" + box
+        s.key("a", delay=0.9)
+        assert _wait_trace(s, tmp_path, "plan done applied=1"), "apply all did not finish:\n" + _trace(tmp_path)
+        after = "\n".join(s.display())
+        assert "ZZZ" not in after, "apply all did not replace the live buffer:\n" + after
+        assert "int b = 22;" in after, "the proposal did not reach the buffer:\n" + after
+        with open(s.path, "rb") as fh:
+            assert fh.read() == ORIG.encode("utf-8"), "t.c was written to disk before Save"
+        s.key("\x15", delay=0.8)   # Ctrl-U: one step back to the unsaved buffer
+        assert _wait_screen(s, "ZZZint a = 1;", tmo=4), \
+            "one Ctrl-U did not bring the unsaved edit back:\n" + "\n".join(s.display())
+
+
+# @scenario SC-ai-edit-45
+def test_plan_path_outside_the_workspace_is_marked_in_the_box_and_named_on_apply(tmp_path):
+    """A proposal for a file outside the workspace is flagged, not refused.
+
+    The box row carries a visible mark and the words "outside the workspace",
+    and when the user applies it anyway the pane names the file and says it
+    went outside.  Before the fix "../outside.c" was listed and applied like
+    any other file, with no warning anywhere.
+    """
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    plan = "PROPOSE ../outside.c\nint outside;\n@@END\n@@PLAN-DONE add a file\n"
+    with WpeSession(str(proj), ORIG, env_extra=_env(tmp_path, plan), filename="t.c") as s:
+        _start_plan(s, "add outside.c")
+        assert _wait_screen(s, "Apply AI plan"), "approval box did not open"
+        box = "\n".join(s.display())
+        row = [r for r in s.display() if "../outside.c" in r and "(+" in r]
+        assert row, "the proposal row is missing:\n" + box
+        assert "outside the workspace" in row[0], "the row does not say it is outside:\n" + row[0]
+        assert "! ../outside.c" in row[0], "the row carries no visible mark before the path:\n" + row[0]
+        assert "[new file]" in row[0], "a file that does not exist is not marked new:\n" + row[0]
+        s.key("a", delay=0.9)
+        assert _wait_trace(s, tmp_path, "plan done applied=1"), "apply all did not finish:\n" + _trace(tmp_path)
+        pane = "\n".join(r for r in s.display() if "[plan]" in r)
+        assert "outside.c" in pane and "outside the workspace" in pane, \
+            "the pane did not name the file that went outside:\n" + pane
+        assert not os.path.exists(tmp_path / "outside.c"), "the new file was written before Save"
+        with open(s.path, "rb") as fh:
+            assert fh.read() == ORIG.encode("utf-8"), "t.c changed for a proposal that named another file"

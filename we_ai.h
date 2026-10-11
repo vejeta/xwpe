@@ -286,6 +286,7 @@ char *wpe_ai_open_windows_block(struct FNST *f, char *buf, size_t n);
 /* Text of a scope file: the in-memory buffer when it is open (so unsaved
  * edits count), else the file on disk.  Malloc'd, or NULL. */
 char *wpe_ai_read_scope_file(struct FNST *f, const char *path);
+int   wpe_ai_path_outside_workspace(struct FNST *f, const char *path);
 /* Checkpoint before an edits/auto run: a git ref (stash create / HEAD) when
  * the workspace is a git tree, else snapshot copies of the scope files. */
 int   wpe_ai_checkpoint_create(struct FNST *f, char **scope, int nscope);

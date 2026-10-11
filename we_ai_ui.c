@@ -1909,46 +1909,303 @@ static void e_ai_apply_text(FENSTER *f, const char *newtext)
  ai_hook_after_accept(f);
 }
 
-/* Strip a leading ```lang fence and a trailing ``` fence, if present, and
- * normalise the text to exactly one final newline: this is the cleaner for a
- * reply that is a FILE (Edit, Multi-file), where a file ends with a newline
- * however the model closed its answer.  A completion is cleaned by
- * ai_completion_text instead, which keeps the reply byte for byte.  Always
- * returns a fresh malloc'd copy. */
-static char *ai_strip_fences(const char *s)
+/* Reply bytes a fence may be wrapped in: blanks and line breaks around the
+   fence are the fence's, the ones inside the reply belong to the user. */
+#define AI_FENCE "```"
+#define AI_FENCE_LEN 3
+
+/* An Edit reply taken apart at its outermost fence pair.  The code is the
+   file; the text before the opening fence and after the closing one is the
+   model's commentary, which the user reads in the pane.  All pointers point
+   into the reply. */
+typedef struct {
+ const char *code;    size_t code_len;
+ const char *before;  size_t before_len;
+ const char *after;   size_t after_len;
+ int fenced;
+} ai_reply_parts;
+
+/**
+ * ai_fence_run_len - How many backticks open a fence on this line.
+ * @line: the first byte of a line.
+ *
+ * A fence is a line whose first non-blank characters are three or more
+ * backticks.  The run length matters because a longer run opens a fence that
+ * only an equally long run closes, which is how a reply quotes a fence inside
+ * a fence without ending the block early.
+ *
+ * Return: the run length, or 0 when the line is not a fence.
+ */
+static int ai_fence_run_len(const char *line)
 {
- const char *start = s, *end;
- size_t len;
+ const char *p = line;
+ int n = 0;
+ while (*p == ' ' || *p == '\t') p++;
+ while (*p == '`') { n++; p++; }
+ if (n < AI_FENCE_LEN) return 0;
+ return n;
+}
+
+/**
+ * ai_fence_closes - Does this line close a fence opened with @run backticks?
+ * @line: the first byte of a line; @run: the opening fence's run length.
+ *
+ * A closing fence is a run at least as long as the opening one with nothing
+ * but blanks after it: "```c" opens, a bare "```" closes, and a "```" met
+ * inside a "````" block is content of the block.
+ *
+ * Return: 1 when the line closes the fence, 0 otherwise.
+ */
+static int ai_fence_closes(const char *line, int run)
+{
+ const char *p = line;
+ int n = ai_fence_run_len(line);
+ if (n < run) return 0;
+ while (*p == ' ' || *p == '\t') p++;
+ p += n;
+ while (*p == ' ' || *p == '\t' || *p == '\r') p++;
+ return *p == '\n' || *p == '\0';
+}
+
+/**
+ * ai_next_line - The first byte of the line after the one @p is on.
+ * @p: any byte of a line.
+ *
+ * Return: the byte after the next newline, or the end of the text.
+ */
+static const char *ai_next_line(const char *p)
+{
+ const char *nl = strchr(p, '\n');
+ if (!nl) return p + strlen(p);
+ return nl + 1;
+}
+
+/**
+ * ai_find_opening_fence - The first fence line of a reply.
+ * @reply: the whole reply.
+ *
+ * Return: that line's first byte, or NULL when the reply has no fence.
+ */
+static const char *ai_find_opening_fence(const char *reply)
+{
+ const char *line = reply;
+ while (*line) {
+  if (ai_fence_run_len(line)) return line;
+  line = ai_next_line(line);
+ }
+ return NULL;
+}
+
+/**
+ * ai_find_closing_fence - The line that closes the fence opened at @open.
+ * @open: the opening fence line.
+ *
+ * Return: that line's first byte, or NULL when the model never closed the
+ * fence (the code then runs to the end of the reply).
+ */
+static const char *ai_find_closing_fence(const char *open)
+{
+ int run = ai_fence_run_len(open);
+ const char *line = ai_next_line(open);
+ while (*line) {
+  if (ai_fence_closes(line, run)) return line;
+  line = ai_next_line(line);
+ }
+ return NULL;
+}
+
+/**
+ * ai_skip_blanks - The first byte of a text that is not blank.
+ * @s: the text.
+ *
+ * Return: a pointer into @s.
+ */
+static const char *ai_skip_blanks(const char *s)
+{
+ while (*s == ' ' || *s == '\n' || *s == '\r' || *s == '\t') s++;
+ return s;
+}
+
+/**
+ * ai_reply_split - Take an Edit reply apart into the file and the commentary.
+ * @reply: the whole reply; @parts: receives the pieces, pointing into @reply.
+ *
+ * What the user gains: a model that writes "Here is the updated file:", wraps
+ * the code in ```c fences and signs off with "Let me know if you need more."
+ * no longer gets that prose into the file.  Only the content of the first
+ * fence pair is the file, its language tag dropped; everything around it,
+ * a second fenced block included, is commentary for the pane.  A reply with
+ * no fence at all is the file whole, leading blank lines dropped, as before.
+ */
+static void ai_reply_split(const char *reply, ai_reply_parts *parts)
+{
+ const char *open, *close;
+ memset(parts, 0, sizeof *parts);
+ open = ai_find_opening_fence(reply);
+ if (!open) {
+  parts->code = ai_skip_blanks(reply);
+  parts->code_len = strlen(parts->code);
+  return;
+ }
+ parts->fenced = 1;
+ parts->before = reply;
+ parts->before_len = (size_t)(open - reply);
+ parts->code = ai_next_line(open);
+ close = ai_find_closing_fence(open);
+ if (!close) {
+  parts->code_len = strlen(parts->code);
+  return;
+ }
+ parts->code_len = (size_t)(close - parts->code);
+ parts->after = ai_next_line(close);
+ parts->after_len = strlen(parts->after);
+}
+
+/**
+ * ai_file_text - The text a file reply lands as: trimmed, ending in one newline.
+ * @code: the first byte of the code; @len: how many bytes of it.
+ *
+ * A file ends with a newline however the model closed its answer, so blank
+ * lines and spaces at the end are cut and exactly one newline is added.  This
+ * is the cleaner for a reply that is a FILE (Edit, Multi-file); a completion
+ * is cleaned by ai_completion_text instead, which keeps the reply byte for
+ * byte.
+ *
+ * Return: a fresh malloc'd copy, or NULL when out of memory.
+ */
+static char *ai_file_text(const char *code, size_t len)
+{
+ const char *end = code + len;
  char *out;
- while (*start == ' ' || *start == '\n' || *start == '\r' || *start == '\t')
-  start++;
- if (!strncmp(start, "```", 3)) {
-  const char *nl = strchr(start, '\n');
-  if (nl) start = nl + 1;
- }
- len = strlen(start);
- end = start + len;
- while (end > start && (end[-1] == '\n' || end[-1] == '\r' ||
-                        end[-1] == ' ' || end[-1] == '\t'))
+ while (end > code && (end[-1] == '\n' || end[-1] == '\r' ||
+                       end[-1] == ' ' || end[-1] == '\t'))
   end--;
- if (end - start >= 3 && !strncmp(end - 3, "```", 3)) {
-  end -= 3;
-  while (end > start && (end[-1] == '\n' || end[-1] == '\r' || end[-1] == ' '))
-   end--;
- }
- len = (size_t)(end - start);
+ len = (size_t)(end - code);
  out = malloc(len + 2);
  if (!out) return NULL;
- memcpy(out, start, len);
+ memcpy(out, code, len);
  out[len] = '\n';
  out[len + 1] = '\0';
  return out;
 }
 
-/* Reply bytes a fence may be wrapped in: blanks and line breaks around the
-   fence are the fence's, the ones inside the reply belong to the user. */
-#define AI_FENCE "```"
-#define AI_FENCE_LEN 3
+/**
+ * ai_bytes_have_ink - Is there a printable character among these bytes?
+ * @s: the bytes; @len: how many.
+ *
+ * The blank lines a model leaves around a fence are the fence's spacing, not
+ * commentary; only text with a visible character is worth a pane line.
+ *
+ * Return: 1 when a non-blank byte is present, 0 otherwise.
+ */
+static int ai_bytes_have_ink(const char *s, size_t len)
+{
+ size_t i;
+ if (!s) return 0;
+ for (i = 0; i < len; i++)
+  if (s[i] != ' ' && s[i] != '\t' && s[i] != '\n' && s[i] != '\r') return 1;
+ return 0;
+}
+
+/**
+ * ai_pane_bytes - Show a piece of a reply in the pane, line by line.
+ * @f: the file window; @s: the bytes; @len: how many.
+ *
+ * Blank lines at either end are dropped so the commentary starts with its
+ * first word; the lines between are shown as they were written.
+ */
+static void ai_pane_bytes(FENSTER *f, const char *s, size_t len)
+{
+ const char *start = s, *end = s + len;
+ char *copy;
+ while (start < end && (*start == ' ' || *start == '\t' || *start == '\n' || *start == '\r'))
+  start++;
+ while (end > start && (end[-1] == ' ' || end[-1] == '\t' || end[-1] == '\n' || end[-1] == '\r'))
+  end--;
+ len = (size_t)(end - start);
+ copy = malloc(len + 1);
+ if (!copy) return;
+ memcpy(copy, start, len);
+ copy[len] = '\0';
+ ai_pane_multiline(f, copy, 0);
+ free(copy);
+}
+
+/* The pane line that introduces what the model wrote around the code. */
+#define AI_COMMENTARY_LINE "[AI edit] the model's commentary (not part of the file):"
+
+/**
+ * ai_edit_show_commentary - Put the prose around the fences in the pane.
+ * @f: the file window; @parts: the reply taken apart.
+ *
+ * What the user gains: the sentences the model wrote around the code are
+ * neither lost nor mistaken for code.  They appear under one line that says
+ * what they are, so a note such as "I also removed the unused include" is
+ * read, while the file receives only the code.  Nothing is shown when the
+ * reply had no prose.
+ */
+static void ai_edit_show_commentary(FENSTER *f, const ai_reply_parts *parts)
+{
+ int before = ai_bytes_have_ink(parts->before, parts->before_len);
+ int after = ai_bytes_have_ink(parts->after, parts->after_len);
+ if (!before && !after) return;
+ ai_pane(f, AI_COMMENTARY_LINE, 0);
+ if (before) ai_pane_bytes(f, parts->before, parts->before_len);
+ if (after) ai_pane_bytes(f, parts->after, parts->after_len);
+ wpe_ai_trace("edit commentary shown (%lu bytes before, %lu after)",
+              (unsigned long)parts->before_len, (unsigned long)parts->after_len);
+}
+
+/**
+ * ai_edit_file_from_reply - The file an Edit reply proposes; the rest to the pane.
+ * @f: the file window the edit is for; @reply: the whole reply.
+ *
+ * The one entry point of the Edit cleaner: the reply is split at its outermost
+ * fence pair, the commentary is shown, and the code comes back as file text
+ * ending in one newline.  The guard that questions a reply much shorter than
+ * the file runs on this result, so a long preamble cannot make a one-line
+ * refusal look like a file.
+ *
+ * Return: malloc'd file text, or NULL when out of memory.
+ */
+static int ai_file_has_fence_lines(FENSTER *f);
+
+static char *ai_edit_file_from_reply(FENSTER *f, const char *reply)
+{
+ ai_reply_parts parts;
+ /* A file that carries fence lines itself (Markdown, a README with code
+    samples) must not be split at its own first fence: for such a file the
+    reply is the file, whole, as every reply was before fences were cleaned. */
+ if (ai_file_has_fence_lines(f))
+  return ai_file_text(reply, strlen(reply));
+ ai_reply_split(reply, &parts);
+ ai_edit_show_commentary(f, &parts);
+ return ai_file_text(parts.code, parts.code_len);
+}
+
+/**
+ * ai_file_has_fence_lines - Does the file being edited carry fence lines of its own?
+ * @f: the file window the edit is for.
+ *
+ * A Markdown page or a README with code samples has lines of three backticks
+ * as content.  A reply that returns such a file unfenced would otherwise be cut
+ * at the file's own first fence and most of it shown as commentary: the user
+ * would see their document offered back as deletions.  For these files the
+ * cleaner steps aside and the reply is taken whole; a wrapper of four or more
+ * backticks around such a file is still recognised by the normal path.
+ *
+ * Return: 1 when a line of the file starts with a fence, 0 otherwise.
+ */
+static int ai_file_has_fence_lines(FENSTER *f)
+{
+ char *text = ai_full_file_text(f);
+ int found;
+ if (!text)
+  return 0;
+ found = ai_find_opening_fence(text) != NULL;
+ free(text);
+ return found;
+}
 
 /**
  * ai_after_opening_fence - Where a reply's text starts once a leading fence is skipped.
@@ -2008,8 +2265,11 @@ static const char *ai_before_closing_fence(const char *start, const char *end)
  * Only markdown fences are removed.  No newline is added or taken away: a
  * completion goes in at the cursor, which may be in the middle of a line, so
  * "foo(" completed with "bar)" must read "foo(bar)" and not break the line.
- * (The Edit cleaner, ai_strip_fences, normalises to one final newline because
- * its reply is a whole file.)
+ * (The Edit cleaner, ai_edit_file_from_reply, normalises to one final newline
+ * because its reply is a whole file, and sends the prose around the fences
+ * to the pane; a completion is a fragment at the cursor, where the bytes
+ * before a fence may be the completion itself, so it keeps this simpler
+ * edge-only finder.)
  *
  * Return: a fresh malloc'd copy, or NULL when out of memory.
  */
@@ -3106,7 +3366,7 @@ static void ai_edit_done(ai_async_op *op)
   ai_op_free(op);
   return;
  }
- clean = ai_strip_fences(op->acc);
+ clean = ai_edit_file_from_reply(f, op->acc);
  if (!clean) { ai_op_free(op); return; }
 
  /* A block or window edit returns only the modified region; splice it back
@@ -5596,14 +5856,168 @@ static int ai_plan_process(ai_async_op *op, char *reply)
  return done ? 1 : 0;
 }
 
+/* Mark in the approval box's gutter for a file the plan would write outside
+   the workspace; the row says so in words too, and the pane repeats it when
+   the file is applied. */
+#define AI_PLAN_OUTSIDE_MARK "!"
+#define AI_PLAN_OUTSIDE_WORD "outside the workspace"
+
+/* What the user chose in the approval box. */
+#define AI_PLAN_CANCEL    0
+#define AI_PLAN_APPLY_ALL 1
+#define AI_PLAN_REVIEW    2
+
+/**
+ * ai_plan_count_change - Lines a proposal adds and removes against the live file.
+ * @f: the window the plan was asked from; @p: the proposal;
+ * @plus: receives the lines added; @minus: receives the lines removed.
+ *
+ * The file is read as the editor has it now, unsaved edits included, so the
+ * numbers in the box are the numbers Apply all acts on: an edit typed before
+ * the plan is counted, not overwritten in silence.
+ *
+ * Return: 1 when the file exists (as a buffer or on disk), 0 for a new file.
+ */
+static int ai_plan_count_change(FENSTER *f, const ai_proposal *p, int *plus, int *minus)
+{
+ char *now = wpe_ai_read_scope_file(f, p->path);
+ wpe_ai_seg *segs;
+ int ns, k;
+ *plus = 0;
+ *minus = 0;
+ ns = wpe_ai_diff_segments(now ? now : "", p->text, &segs);
+ for (k = 0; k < ns; k++) {
+  if (!segs[k].is_change) continue;
+  *plus += segs[k].bn;
+  *minus += segs[k].an;
+ }
+ wpe_ai_segs_free(segs, ns);
+ if (!now) return 0;
+ free(now);
+ return 1;
+}
+
+/**
+ * ai_row_append - Add a piece of text to a box row, within the row's size.
+ * @row: the row so far; @sz: its size; @text: what to add.
+ */
+static void ai_row_append(char *row, size_t sz, const char *text)
+{
+ size_t used = strlen(row);
+ if (used >= sz) return;
+ snprintf(row + used, sz - used, "%s", text);
+}
+
+/**
+ * ai_plan_row - One line of the approval box for a proposal.
+ * @f: the window the plan was asked from; @p: the proposal;
+ * @row: receives the text; @sz: its size; @attr: receives the row's colour.
+ *
+ * The row reads "  path  (+a -b)", with "[new file]" when nothing exists
+ * under that name yet.  A file the plan would write outside the workspace
+ * carries the gutter mark and the words "outside the workspace", in the
+ * colour of a deletion, so the user sees before approving that the model is
+ * reaching beyond the tree.  It is not refused: the model may be right that
+ * the file belongs there, but the user must see it.
+ */
+static void ai_plan_row(FENSTER *f, const ai_proposal *p, char *row, size_t sz, int *attr)
+{
+ int plus, minus, exists, outside;
+ char counts[64];
+ exists = ai_plan_count_change(f, p, &plus, &minus);
+ outside = wpe_ai_path_outside_workspace(f, p->path);
+ snprintf(counts, sizeof counts, "  (+%d -%d)", plus, minus);
+ if (outside) snprintf(row, sz, "%s %s", AI_PLAN_OUTSIDE_MARK, p->path);
+ else snprintf(row, sz, "  %s", p->path);
+ ai_row_append(row, sz, counts);
+ if (!exists) ai_row_append(row, sz, "  [new file]");
+ if (outside) ai_row_append(row, sz, "  " AI_PLAN_OUTSIDE_WORD);
+ if (outside) *attr = f->fb->db.fb;      /* the deletion colour: look twice   */
+ else *attr = f->fb->dy.fb;             /* green: a proposed change          */
+}
+
+/**
+ * ai_plan_report_outside - Record in the pane that an applied file lies outside the workspace.
+ * @f: the window the plan was asked from; @path: the file, as the model named it.
+ *
+ * The box warned before the choice; this line is the record after it, so a
+ * user reading the pane later knows which file to look for beyond the tree.
+ * Says nothing for a file inside the workspace.
+ */
+static void ai_plan_report_outside(FENSTER *f, const char *path)
+{
+ char line[1400];
+ if (!wpe_ai_path_outside_workspace(f, path)) return;
+ snprintf(line, sizeof line, "[plan] applied %s, %s", path, AI_PLAN_OUTSIDE_WORD);
+ ai_pane(f, line, 0);
+ wpe_ai_trace("plan applied outside workspace %s", path);
+}
+
+/**
+ * ai_plan_choice - Show the approval box and return what the user chose.
+ * @f: the window the plan was asked from; @pd: the proposals; @title: the box title.
+ *
+ * The plan is a modal confirmation popup, the same boxed overlay the Edit
+ * review uses, so the choice is an explicit dialog that grabs the focus and
+ * nothing paints under it, not a log line the user might miss.  Its rows are
+ * the preview of a Multi-file change: live counts per file, the new-file and
+ * outside-the-workspace marks.
+ *
+ * Return: AI_PLAN_APPLY_ALL, AI_PLAN_REVIEW or AI_PLAN_CANCEL.
+ */
+static int ai_plan_choice(FENSTER *f, ai_plan_data *pd, const char *title)
+{
+ char *rt[AI_PLAN_MAX];
+ int ra[AI_PLAN_MAX];
+ int nr = 0, i, key;
+ for (i = 0; i < pd->np && nr < AI_PLAN_MAX; i++) {
+  char row[600];
+  ai_plan_row(f, &pd->props[i], row, sizeof row, &ra[nr]);
+  rt[nr] = strdup(row);
+  nr++;
+ }
+ key = ai_diff_box_show(f, rt, ra, nr, title,
+       " Enter/A = Apply all    F = Review file-by-file    Q/Esc = Cancel ", "AFQ", 0);
+ for (i = 0; i < nr; i++) free(rt[i]);
+ if (key == 13 || key == 'A') return AI_PLAN_APPLY_ALL;
+ if (key == 'F') return AI_PLAN_REVIEW;
+ return AI_PLAN_CANCEL;
+}
+
+/**
+ * ai_plan_review_file - Offer one proposal hunk by hunk in the open window.
+ * @w: the window holding the file; @p: the proposal.
+ *
+ * The same diff box as an Edit, against the whole file as the window has it.
+ *
+ * Return: 1 when the user accepted something and it was applied, 0 otherwise.
+ */
+static int ai_plan_review_file(FENSTER *w, const ai_proposal *p)
+{
+ char *now = ai_full_file_text(w);        /* the diff needs the whole file */
+ wpe_ai_seg *segs;
+ int ns, applied = 0;
+ char *result;
+ ns = wpe_ai_diff_segments(now ? now : "", p->text, &segs);
+ free(now);
+ result = ai_hunk_apply(w, segs, ns, NULL, NULL, NULL);
+ if (result) {
+  e_ai_apply_text(w, result);
+  free(result);
+  applied = 1;
+ }
+ wpe_ai_segs_free(segs, ns);
+ return applied;
+}
+
 /* Plan wrap-up: persist, then the permission moment -- list the proposed files
  * with +/- counts and apply-all / file-by-file / cancel. */
 static void ai_plan_finish(ai_async_op *op)
 {
  ai_plan_data *pd = op->ud;
  FENSTER *f = op->f;
- char line[1400];
- int i, np = pd->np;
+ char line[1400], title[80];
+ int i, np = pd->np, mode, applied = 0;
 
  if (op->ml.n > 0 && !strcmp(op->ml.role[op->ml.n - 1], "assistant"))
   wpe_ai_session_append("assistant", op->ml.content[op->ml.n - 1]);
@@ -5618,67 +6032,41 @@ static void ai_plan_finish(ai_async_op *op)
           np, np == 1 ? "" : "s");
  ai_pane(f, line, 1);
  wpe_ai_trace("plan proposals=%d", np);
- /* Present the plan as a modal confirmation popup -- the same boxed overlay the
-    Edit review uses -- so the choice is an explicit dialog that grabs focus and
-    nothing paints under it, not a log line the user might miss.  Enter/A applies
-    all; F drops into the per-file diff review (also a popup); Esc cancels. */
- {
-  char *rt[AI_PLAN_MAX]; int ra[AI_PLAN_MAX]; int nr = 0, key, mode;
-  char title[80];
-  snprintf(title, sizeof title, "Apply AI plan - %d file%s", np, np == 1 ? "" : "s");
-  for (i = 0; i < np && nr < AI_PLAN_MAX; i++) {
-   char *now = wpe_ai_read_scope_file(f, pd->props[i].path);
-   wpe_ai_seg *segs; int ns, k, plus = 0, minus = 0;
-   char row[600];
-   ns = wpe_ai_diff_segments(now ? now : "", pd->props[i].text, &segs);
-   for (k = 0; k < ns; k++) if (segs[k].is_change) { plus += segs[k].bn; minus += segs[k].an; }
-   wpe_ai_segs_free(segs, ns);
-   snprintf(row, sizeof row, "  %s  (+%d -%d)%s", pd->props[i].path, plus, minus, now ? "" : "  [new file]");
-   rt[nr] = strdup(row); ra[nr] = f->fb->dy.fb; nr++;      /* green: a proposed change */
-   free(now);
-  }
-  key = ai_diff_box_show(f, rt, ra, nr, title,
-        " Enter/A = Apply all    F = Review file-by-file    Q/Esc = Cancel ", "AFQ", 0);
-  for (i = 0; i < nr; i++) free(rt[i]);
-  if (key == 13 || key == 'A') mode = 1;
-  else if (key == 'F')         mode = 2;
-  else                         mode = 0;
-  if (mode == 0) {
-   ai_pane(f, "[plan] cancelled - nothing changed", 0);
-   wpe_ai_trace("plan cancelled");
-  } else {
-   int applied = 0;
-   for (i = 0; i < np; i++) {
-    ECNT *cn = f->ed;
-    FENSTER *w;
-    if (e_edit(cn, pd->props[i].path) != 0) {
-     snprintf(line, sizeof line, "[plan] could not open %s", pd->props[i].path);
-     ai_pane(f, line, 0);
-     continue;
-    }
-    w = cn->f[cn->mxedt];
-    if (mode == 1) {
-     e_ai_apply_text(w, pd->props[i].text);
-     applied++;
-     wpe_ai_trace("plan applied %s", pd->props[i].path);
-    } else {
-     char *now = ai_full_file_text(w);        /* the diff needs the whole file */
-     wpe_ai_seg *segs; int ns;
-     ns = wpe_ai_diff_segments(now ? now : "", pd->props[i].text, &segs);
-     free(now);
-     {
-      char *result = ai_hunk_apply(w, segs, ns, NULL, NULL, NULL);
-      if (result) { e_ai_apply_text(w, result); free(result); applied++; wpe_ai_trace("plan applied %s", pd->props[i].path); }
-      else wpe_ai_trace("plan skipped %s", pd->props[i].path);
-     }
-     wpe_ai_segs_free(segs, ns);
-    }
-   }
-   snprintf(line, sizeof line, "[plan] applied %d of %d file%s - each is open (Ctrl-U undoes per window)", applied, np, np == 1 ? "" : "s");
-   ai_pane(f, line, 0);
-   wpe_ai_trace("plan done applied=%d", applied);
-  }
+ snprintf(title, sizeof title, "Apply AI plan - %d file%s", np, np == 1 ? "" : "s");
+ mode = ai_plan_choice(f, pd, title);
+ if (mode == AI_PLAN_CANCEL) {
+  ai_pane(f, "[plan] cancelled - nothing changed", 0);
+  wpe_ai_trace("plan cancelled");
+  return;
  }
+ for (i = 0; i < np; i++) {
+  ECNT *cn = f->ed;
+  FENSTER *w;
+  const char *path = pd->props[i].path;
+  int done;
+  if (e_edit(cn, pd->props[i].path) != 0) {
+   snprintf(line, sizeof line, "[plan] could not open %s", path);
+   ai_pane(f, line, 0);
+   continue;
+  }
+  w = cn->f[cn->mxedt];
+  if (mode == AI_PLAN_APPLY_ALL) {
+   e_ai_apply_text(w, pd->props[i].text);
+   done = 1;
+  } else {
+   done = ai_plan_review_file(w, &pd->props[i]);
+  }
+  if (!done) {
+   wpe_ai_trace("plan skipped %s", path);
+   continue;
+  }
+  applied++;
+  wpe_ai_trace("plan applied %s", path);
+  ai_plan_report_outside(f, path);
+ }
+ snprintf(line, sizeof line, "[plan] applied %d of %d file%s - each is open (Ctrl-U undoes per window)", applied, np, np == 1 ? "" : "s");
+ ai_pane(f, line, 0);
+ wpe_ai_trace("plan done applied=%d", applied);
 }
 
 /**

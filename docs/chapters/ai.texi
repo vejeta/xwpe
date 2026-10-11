@@ -207,6 +207,18 @@ review anyway?}.  @kbd{Yes} goes on to the review as usual; @kbd{No} or
 @key{Esc} ends the edit there, the pane reports @samp{[AI edit] reply declined
 (nothing changed)}, and buffer and file are untouched.
 
+The reply need not be bare code.  When the model wraps the file in markdown
+fences (a @code{```c} line before it and a @code{```} line after it), only the
+content of the outermost pair of fences becomes the file, with the language tag
+dropped and the text ending in exactly one newline.  Whatever the model wrote
+around the fences -- a preamble such as ``Here is the updated file:'', a closing
+remark, or a second fenced block holding a test -- is not file content: it is
+shown in the assistant pane under the line @samp{[AI edit] the model's
+commentary (not part of the file):}, so a note about the change is read and
+never lands in the source.  A reply with no fence at all is taken whole, as the
+file.  The question above about a too-short reply is asked about the extracted
+code, so a long preamble cannot disguise a one-line refusal.
+
 The model's rewrite is shown as a @dfn{diff} you review hunk by hunk in a popup
 next to those lines (below when there is room, above otherwise).  @kbd{y} or
 @key{Enter} applies this hunk and @kbd{n} skips it.  @kbd{a} applies all
@@ -249,13 +261,25 @@ per-file line counts, so the choice is an explicit confirmation and nothing pain
 under it:
 
 @example
-+------------- Apply AI plan - 3 files -------------+
-|   src/parser.c  (+12 -4)                          |
-|   src/parser.h  (+2  -0)                           |
-|   src/main.c    (+1  -1)                           |
-| Enter/A = Apply all   F = Review file-by-file   Q/Esc = Cancel |
-+---------------------------------------------------+
++------------- Apply AI plan - 4 files ------------------------------+
+|   src/parser.c  (+12 -4)                                           |
+|   src/parser.h  (+2 -0)                                            |
+|   src/main.c    (+1 -1)                                            |
+| ! ../shared/util.h  (+3 -0)  [new file]  outside the workspace     |
+| Enter/A = Apply all   F = Review file-by-file   Q/Esc = Cancel     |
++--------------------------------------------------------------------+
 @end example
+
+The counts are taken against each file @emph{as the editor has it now}, unsaved
+edits included, so they are the lines Apply all will add and remove; an edit you
+typed before asking is counted, not lost.  A file that does not exist yet says
+@samp{[new file]}.  A file the model wants to write outside the workspace -- the
+project's directory when a project is open, else the directory of the file you
+asked from -- carries a @samp{!} mark and the words @samp{outside the
+workspace}, in the colour of a deletion.  It is not refused, the model may be
+right that the file belongs there, but you see it before you approve, and the
+pane names it again when it is applied.  This dialog, with the @kbd{f}
+file-by-file review below, is the preview of a Multi-file change.
 
 @key{Enter} or @kbd{a} applies every file; @kbd{f} opens each and lets you accept
 it hunk by hunk (in the same diff box as Edit); @kbd{q} or @key{Esc} cancels.
