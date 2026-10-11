@@ -172,10 +172,16 @@ def cmd_report(capability, layer, source):
     else:
         raw = junit_results(source)
         lookup = lambda test_id: junit_lookup(raw, test_id)
+    # A scenario may be pinned by several tests (several rows with one id);
+    # the scenario's verdict is the worst of them, never the last one listed.
+    severity = {"FAIL": 0, "MISSING": 1, "BLOCKED": 2, "PASS": 3}
     report = {}
     for scenario in scenarios_for_layer(manifest, layer):
         result = lookup(scenario["test"]) if scenario.get("test") else None
-        report[scenario["id"]] = verdict(scenario, result)
+        this = verdict(scenario, result)
+        seen = report.get(scenario["id"])
+        if seen is None or severity[this] < severity[seen]:
+            report[scenario["id"]] = this
     json.dump(report, sys.stdout, indent=1, sort_keys=True)
     print()
     return 0 if all(v in ("PASS", "BLOCKED") for v in report.values()) else 1

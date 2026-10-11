@@ -37,7 +37,11 @@ REGION = "int b = 22;\nint c = 33;\n"          # a block edit answers the region
 SPLICED = "int a = 1;\nint b = 22;\nint c = 33;\nint d = 4;\nint e = 5;\n"
 SUGGESTION = "/*done*/"                        # what Complete inserts at the cursor
 
-MOCK_DELAY_MS = 5000           # the reply lands well after the keys below
+# The reply must land well after the keys below.  The driver scales its key
+# waits by XWPE_TEST_WAIT_SCALE (the sanitizer build runs at 2, autopkgtest at
+# 3); the mock's delay has to grow with them or the reply overtakes the keys
+# and Esc lands on the review box instead of on the pending task.
+MOCK_DELAY_MS = int(5000 * float(os.environ.get("XWPE_TEST_WAIT_SCALE", "1")))
 LONG_DELAY_MS = 9000           # room for a menu, a second window and typing in it
 QUEUE_DELAY_MS = 6000          # long enough to type a second request and watch it
 READABLE_S = 2.0               # the queued notice must survive this much spinning
