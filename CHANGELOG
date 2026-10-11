@@ -259,8 +259,9 @@ Changes
   it); --enable-ai-agent-host hosts an external agent CLI.  Full details in
   docs/AI.md.
     - Modes (Alt-G then a letter): Ask (chat), Edit the current file or a marked
-      block, Multi-file edit, Complete at cursor (Alt-G c, splices a suggestion as
-      one Ctrl-U step), run an Agent with tools, or Build & fix in a loop.  Edits
+      block, Multi-file edit, Complete at cursor (Alt-G c, shows the suggestion in
+      the review box and inserts it as one Ctrl-U step), run an Agent with tools,
+      or Build & fix in a loop.  Edits
       show as a coloured per-hunk diff, undo with one Ctrl-U, and nothing hits disk
       until you save.  Every mode is handed the open files (focused one marked) and
       the language server's diagnostics for the file as context, so you need not
@@ -486,6 +487,16 @@ Changes
   dropped the hunks accepted earlier in the review as well -- buffer and file end
   up exactly as they were -- but nothing said so, so those hunks looked applied.
   To stop reviewing and keep what was accepted, press n on the remaining hunks.
+* A completion (Alt-G c) is shown before it lands, and lands exactly where the
+  cursor is.  The suggestion used to be written into the file the moment the
+  reply arrived; it now opens in the same one-hunk review box as an Edit, titled
+  "Proposed completion", and goes in only on y or Enter -- n, q or Esc leave the
+  file as it was and the pane says "[AI complete] discarded".  A reply that
+  arrives behind a dialog waits for it, as an Edit's does.  The accepted text is
+  inserted as the model returned it, cleaned only of markdown fences: completing
+  "foo(" with "bar)" used to leave "foo(bar)" followed by an empty line, because
+  a line break was added to every reply; it now reads "foo(bar)" on one line, and
+  one Ctrl-U removes it.
 
 1.6.9 (native Wayland real-desktop robustness: resize, decorations, crashes)
 

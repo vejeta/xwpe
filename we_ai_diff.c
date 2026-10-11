@@ -17,8 +17,10 @@
 #define AI_DIFF_MAX_LINES 4000   /* LCS is O(n*m); fall back beyond this        */
 
 /* Split text into a vector of line strings (without newline).  Returns count,
- * *lines = malloc'd array of malloc'd strings (caller frees). */
-static int ai_split_lines(const char *t, char ***lines_out)
+ * *lines = malloc'd array of malloc'd strings (caller frees).  Shared with the
+ * editor side, which lays a completion out as one hunk from the text around
+ * the cursor without running the diff. */
+int wpe_ai_split_lines(const char *t, char ***lines_out)
 {
  int cap = 64, n = 0;
  char **lines = malloc(cap * sizeof *lines);
@@ -48,7 +50,7 @@ static int ai_split_lines(const char *t, char ***lines_out)
  return n;
 }
 
-static void ai_free_lines(char **lines, int n)
+void wpe_ai_free_lines(char **lines, int n)
 {
  int i;
  for (i = 0; i < n; i++) free(lines[i]);
@@ -82,8 +84,8 @@ char *wpe_ai_diff(const char *a, const char *b)
  char *out = NULL;
  size_t olen = 0, ocap = 0;
 
- na = ai_split_lines(a, &la);
- nb = ai_split_lines(b, &lb);
+ na = wpe_ai_split_lines(a, &la);
+ nb = wpe_ai_split_lines(b, &lb);
 
  /* Guard against pathological sizes: emit a compact summary instead of LCS. */
  if (na > AI_DIFF_MAX_LINES || nb > AI_DIFF_MAX_LINES) {
@@ -91,14 +93,14 @@ char *wpe_ai_diff(const char *a, const char *b)
   snprintf(summary, sizeof summary,
            "(large change: %d lines -> %d lines; accept to apply)", na, nb);
   ai_out(&out, &olen, &ocap, ' ', summary);
-  ai_free_lines(la, na);
-  ai_free_lines(lb, nb);
+  wpe_ai_free_lines(la, na);
+  wpe_ai_free_lines(lb, nb);
   return out ? out : NULL;
  }
 
  /* LCS length table: dp[i][j] over (na+1)*(nb+1). */
  dp = calloc((size_t)(na + 1) * (nb + 1), sizeof *dp);
- if (!dp) { ai_free_lines(la, na); ai_free_lines(lb, nb); return NULL; }
+ if (!dp) { wpe_ai_free_lines(la, na); wpe_ai_free_lines(lb, nb); return NULL; }
 #define DP(I, J) dp[(size_t)(I) * (nb + 1) + (J)]
  for (i = na - 1; i >= 0; i--)
   for (j = nb - 1; j >= 0; j--) {
@@ -117,8 +119,8 @@ char *wpe_ai_diff(const char *a, const char *b)
 #undef DP
 
  free(dp);
- ai_free_lines(la, na);
- ai_free_lines(lb, nb);
+ wpe_ai_free_lines(la, na);
+ wpe_ai_free_lines(lb, nb);
  if (!out) out = strdup("");    /* identical texts => empty diff */
  return out;
 }
@@ -142,8 +144,8 @@ int wpe_ai_diff_segments(const char *a, const char *b, wpe_ai_seg **out)
  wpe_ai_seg *segs = NULL;
  int ns = 0, scap = 0;
 
- na = ai_split_lines(a, &la);
- nb = ai_split_lines(b, &lb);
+ na = wpe_ai_split_lines(a, &la);
+ nb = wpe_ai_split_lines(b, &lb);
  *out = NULL;
 
  /* Pathological size: one all-encompassing change hunk (skip the O(n*m) LCS). */
@@ -156,13 +158,13 @@ int wpe_ai_diff_segments(const char *a, const char *b, wpe_ai_seg **out)
   for (j = 0; j < nb; j++) ai_seg_push(&seg.b, &seg.bn, &bcap, lb[j]);
   segs = malloc(sizeof *segs);
   if (segs) segs[ns++] = seg;
-  ai_free_lines(la, na); ai_free_lines(lb, nb);
+  wpe_ai_free_lines(la, na); wpe_ai_free_lines(lb, nb);
   *out = segs;
   return ns;
  }
 
  dp = calloc((size_t)(na + 1) * (nb + 1), sizeof *dp);
- if (!dp) { ai_free_lines(la, na); ai_free_lines(lb, nb); return 0; }
+ if (!dp) { wpe_ai_free_lines(la, na); wpe_ai_free_lines(lb, nb); return 0; }
 #define DP(I, J) dp[(size_t)(I) * (nb + 1) + (J)]
  for (i = na - 1; i >= 0; i--)
   for (j = nb - 1; j >= 0; j--) {
@@ -195,8 +197,8 @@ int wpe_ai_diff_segments(const char *a, const char *b, wpe_ai_seg **out)
  }
 #undef DP
  free(dp);
- ai_free_lines(la, na);
- ai_free_lines(lb, nb);
+ wpe_ai_free_lines(la, na);
+ wpe_ai_free_lines(lb, nb);
  *out = segs;
  return ns;
 }

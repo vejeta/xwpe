@@ -1,9 +1,11 @@
 """Inline completion (Alt-G c): the model's suggestion is inserted at the cursor.
 
 A low-ceremony alternative to chat/edit for "finish this": xwpe sends the code
-around the cursor to the model and splices the reply in at the cursor through the
-proven whole-file apply path, so it is one Ctrl-U undo step.  With the cursor at
-the start of the buffer, the mock suggestion is inserted there.
+around the cursor to the model, shows the reply in the " Proposed completion "
+review box, and on y splices it in at the cursor through the proven whole-file
+apply path, so it is one Ctrl-U undo step.  With the cursor at the start of the
+buffer, the mock suggestion is inserted there, exactly as returned (no newline
+is added after it).
 """
 import os
 import time
@@ -32,10 +34,18 @@ def test_complete_inserts_at_cursor(tmp_path):
         end = time.time() + 12
         while time.time() < end:
             s._drain(0.5)
-            if "PREFIX" in "\n".join(s.display()):
+            if "Proposed completion" in "\n".join(s.display()):
+                break
+        box = "\n".join(s.display())
+        s.key("y", delay=0.8)                              # take the suggestion
+        end = time.time() + 12
+        while time.time() < end:
+            s._drain(0.5)
+            if "completed at cursor" in "\n".join(s.display()):
                 break
         disp = "\n".join(s.display())
         s.save()
+    assert "Proposed completion" in box, "the completion was not offered for review:\n" + box
     assert "PREFIX" in disp, "the completion was not inserted on screen:\n" + disp
     with open(os.path.join(str(tmp_path), "t.c")) as fh:
         text = fh.read()

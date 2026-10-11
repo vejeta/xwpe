@@ -1779,7 +1779,11 @@ static void e_ai_apply_text(FENSTER *f, const char *newtext)
  e_replace_buffer_undoable(f, newtext);
 }
 
-/* Strip a leading ```lang fence and a trailing ``` fence, if present.  Always
+/* Strip a leading ```lang fence and a trailing ``` fence, if present, and
+ * normalise the text to exactly one final newline: this is the cleaner for a
+ * reply that is a FILE (Edit, Multi-file), where a file ends with a newline
+ * however the model closed its answer.  A completion is cleaned by
+ * ai_completion_text instead, which keeps the reply byte for byte.  Always
  * returns a fresh malloc'd copy. */
 static char *ai_strip_fences(const char *s)
 {
@@ -1808,6 +1812,86 @@ static char *ai_strip_fences(const char *s)
  memcpy(out, start, len);
  out[len] = '\n';
  out[len + 1] = '\0';
+ return out;
+}
+
+/* Reply bytes a fence may be wrapped in: blanks and line breaks around the
+   fence are the fence's, the ones inside the reply belong to the user. */
+#define AI_FENCE "```"
+#define AI_FENCE_LEN 3
+
+/**
+ * ai_after_opening_fence - Where a reply's text starts once a leading fence is skipped.
+ * @s: the whole reply.
+ *
+ * A model told not to use fences sometimes does anyway ("```c" on a line of
+ * its own); the user wants the code, not the fence line.  A reply with no
+ * fence is returned from its first byte, leading blanks included, because at
+ * a cursor in the middle of a line those blanks may be the completion.
+ *
+ * Return: a pointer into @s.
+ */
+static const char *ai_after_opening_fence(const char *s)
+{
+ const char *p = s;
+ const char *nl;
+ while (*p == ' ' || *p == '\n' || *p == '\r' || *p == '\t')
+  p++;
+ if (strncmp(p, AI_FENCE, AI_FENCE_LEN))
+  return s;
+ nl = strchr(p, '\n');
+ if (!nl)
+  return p + AI_FENCE_LEN;
+ return nl + 1;
+}
+
+/**
+ * ai_before_closing_fence - Where a reply's text ends once a trailing fence is cut.
+ * @start: the text's first byte; @end: one past its last byte.
+ *
+ * Cuts a closing "```" together with the blanks after it and the line break
+ * that put the fence on a line of its own; a reply with no fence keeps every
+ * byte, a final newline included, since the model chose to end the completion
+ * with a line break.
+ *
+ * Return: the new end, a pointer into the text.
+ */
+static const char *ai_before_closing_fence(const char *start, const char *end)
+{
+ const char *e = end;
+ while (e > start && (e[-1] == '\n' || e[-1] == '\r' || e[-1] == ' ' || e[-1] == '\t'))
+  e--;
+ if (e - start < AI_FENCE_LEN || strncmp(e - AI_FENCE_LEN, AI_FENCE, AI_FENCE_LEN))
+  return end;
+ e -= AI_FENCE_LEN;
+ if (e > start && e[-1] == '\n')
+  e--;
+ if (e > start && e[-1] == '\r')
+  e--;
+ return e;
+}
+
+/**
+ * ai_completion_text - The text a completion inserts, exactly as the model returned it.
+ * @reply: the whole reply.
+ *
+ * Only markdown fences are removed.  No newline is added or taken away: a
+ * completion goes in at the cursor, which may be in the middle of a line, so
+ * "foo(" completed with "bar)" must read "foo(bar)" and not break the line.
+ * (The Edit cleaner, ai_strip_fences, normalises to one final newline because
+ * its reply is a whole file.)
+ *
+ * Return: a fresh malloc'd copy, or NULL when out of memory.
+ */
+static char *ai_completion_text(const char *reply)
+{
+ const char *start = ai_after_opening_fence(reply);
+ const char *end = ai_before_closing_fence(start, start + strlen(start));
+ size_t len = (size_t)(end - start);
+ char *out = malloc(len + 1);
+ if (!out) return NULL;
+ memcpy(out, start, len);
+ out[len] = '\0';
  return out;
 }
 
@@ -1967,17 +2051,82 @@ static void ai_diff_hunk_hint(char *out, size_t n, const wpe_ai_seg *seg)
           seg->an, seg->bn);
 }
 
+/**
+ * ai_review_caption - How the hunk review box is captioned.
+ * @title: the box title, or NULL for the Edit review's numbered
+ *         " Proposed change n/total ".
+ * @hint:  the key line under the box, or NULL for the Edit review's keys
+ *         (y/n/a/q, with the deletion tally when a hunk removes more than it adds).
+ *
+ * The Edit review numbers its hunks; a review that is by nature one hunk, the
+ * completion at the cursor, names what the hunk is instead, so the user reads
+ * "Proposed completion" and not "change 1/1".
+ */
+typedef struct {
+ const char *title;
+ const char *hint;
+} ai_review_caption;
+
+/**
+ * ai_review_title - Write the title of the hunk being reviewed.
+ * @out/@n: the buffer; @caption: the review's caption, NULL for the Edit default;
+ * @hunk/@total: this hunk's place among the review's hunks.
+ */
+static void ai_review_title(char *out, size_t n, const ai_review_caption *caption,
+                            int hunk, int total)
+{
+ if (caption && caption->title) {
+  snprintf(out, n, "%s", caption->title);
+  return;
+ }
+ snprintf(out, n, " Proposed change %d/%d ", hunk, total);
+}
+
+/**
+ * ai_review_hint - Write the key line shown under the hunk being reviewed.
+ * @out/@n: the buffer; @caption: the review's caption, NULL for the Edit default;
+ * @seg: the hunk, whose line tally the Edit default may mention.
+ */
+static void ai_review_hint(char *out, size_t n, const ai_review_caption *caption,
+                           const wpe_ai_seg *seg)
+{
+ if (caption && caption->hint) {
+  snprintf(out, n, "%s", caption->hint);
+  return;
+ }
+ ai_diff_hunk_hint(out, n, seg);
+}
+
+/**
+ * ai_diff_context_lines - How many unchanged lines of a neighbouring segment to show.
+ * @segs/@nseg: the review's segments; @j: the neighbour's index (may be out of range).
+ *
+ * Return: up to AI_DIFF_CTX lines when @j is a kept-lines segment, else 0, so
+ * a hunk at the very start or end of the file simply has no context on that
+ * side instead of reading past the segment array.
+ */
+static int ai_diff_context_lines(const wpe_ai_seg *segs, int nseg, int j)
+{
+ if (j < 0 || j >= nseg)
+  return 0;
+ if (segs[j].is_change)
+  return 0;
+ if (segs[j].an < AI_DIFF_CTX)
+  return segs[j].an;
+ return AI_DIFF_CTX;
+}
+
 /* ai_diff_review_hunk - Show one proposed hunk in the colored diff box and read
    the reviewer's decision: 'Y' apply, 'N' skip, 'A' apply the rest, 'Q'/Esc
-   cancel.  Deleted lines are red, added lines green, context normal. */
+   cancel.  Deleted lines are red, added lines green, context normal.  The
+   caption names the review (NULL: the Edit review's numbered hunks). */
 static int ai_diff_review_hunk(FENSTER *f, wpe_ai_seg *segs, int nseg,
-                               int i, int hunk, int total)
+                               int i, int hunk, int total,
+                               const ai_review_caption *caption)
 {
  int red = f->fb->db.fb, green = f->fb->dy.fb, ctx = f->fb->nt.fb;
- int pc = (i > 0 && !segs[i-1].is_change)
-          ? (segs[i-1].an < AI_DIFF_CTX ? segs[i-1].an : AI_DIFF_CTX) : 0;
- int nc = (i+1 < nseg && !segs[i+1].is_change)
-          ? (segs[i+1].an < AI_DIFF_CTX ? segs[i+1].an : AI_DIFF_CTX) : 0;
+ int pc = ai_diff_context_lines(segs, nseg, i - 1);
+ int nc = ai_diff_context_lines(segs, nseg, i + 1);
  int nrows = pc + segs[i].an + segs[i].bn + nc;
  char **rt;
  int   *ra;
@@ -1992,8 +2141,10 @@ static int ai_diff_review_hunk(FENSTER *f, wpe_ai_seg *segs, int nseg,
  { int j, newstart = 1, ln;
    for (j = 0; j < i; j++) newstart += segs[j].is_change ? segs[j].bn : segs[j].an;
    ln = newstart - pc;                          /* context above the change */
-   for (k = segs[i-1].an - pc; pc && k < segs[i-1].an; k++)
-    { rt[idx] = ai_diff_fmt_n(ln++, ' ', segs[i-1].a[k]); ra[idx++] = ctx; }
+   if (pc) {
+    for (k = segs[i-1].an - pc; k < segs[i-1].an; k++)
+     { rt[idx] = ai_diff_fmt_n(ln++, ' ', segs[i-1].a[k]); ra[idx++] = ctx; }
+   }
    for (k = 0; k < segs[i].an; k++)              /* deleted: no new-file number */
     { rt[idx] = ai_diff_fmt_n(0, '-', segs[i].a[k]); ra[idx++] = red; }
    ln = newstart;
@@ -2004,8 +2155,8 @@ static int ai_diff_review_hunk(FENSTER *f, wpe_ai_seg *segs, int nseg,
     { rt[idx] = ai_diff_fmt_n(ln++, ' ', segs[i+1].a[k]); ra[idx++] = ctx; }
  }
 
- snprintf(title, sizeof title, " Proposed change %d/%d ", hunk, total);
- ai_diff_hunk_hint(hint, sizeof hint, &segs[i]);
+ ai_review_title(title, sizeof title, caption, hunk, total);
+ ai_review_hint(hint, sizeof hint, caption, &segs[i]);
  /* Screen row of this hunk in the file on screen (which still shows the OLD
     text): count old-file lines before it, then map through the window's scroll
     so the box appears over the lines being changed, not floating at the top. */
@@ -2083,6 +2234,7 @@ static int ai_diff_confirm_write(FENSTER *f, const char *path,
 }
 
 static char *ai_hunk_apply(FENSTER *f, wpe_ai_seg *segs, int nseg,
+                           const ai_review_caption *caption,
                            int *naccepted, int *ntotal)
 {
  int i, total = 0, hunk = 0, any = 0, all = 0, cancel = 0, k, nacc = 0;
@@ -2103,7 +2255,7 @@ static char *ai_hunk_apply(FENSTER *f, wpe_ai_seg *segs, int nseg,
   if (all && ai_hunk_deletes_more_than_it_adds(&segs[i]))
    all = 0;
   if (all) { acc[i] = 1; any = 1; nacc++; continue; }
-  decision = ai_diff_review_hunk(f, segs, nseg, i, hunk, total);
+  decision = ai_diff_review_hunk(f, segs, nseg, i, hunk, total, caption);
   if (decision == 'Y')      { acc[i] = 1; any = 1; nacc++; }
   else if (decision == 'A') { acc[i] = 1; any = 1; all = 1; nacc++; }
   else if (decision == 'N') { acc[i] = 0; }
@@ -2495,8 +2647,7 @@ static void ai_op_hold_reply(ai_async_op *op, void (*deliver)(ai_async_op *op))
  * @op: a task with a held reply, now that the editor is idle.
  *
  * From here on the task behaves exactly as if its reply had just landed: the
- * review box opens (Edit, Multi-file), the completion is spliced in (Complete),
- * the next agent turn runs.
+ * review box opens (Edit, Multi-file, Complete), the next agent turn runs.
  */
 static void ai_op_deliver_held(ai_async_op *op)
 {
@@ -2861,7 +3012,7 @@ static void ai_edit_done(ai_async_op *op)
   wpe_ai_trace("edit no-change");
  } else {
   int nacc = 0, ntot = 0;
-  char *result = ai_hunk_apply(f, segs, nseg, &nacc, &ntot);
+  char *result = ai_hunk_apply(f, segs, nseg, NULL, &nacc, &ntot);
   if (result) {
    char msg[80];
    e_ai_apply_text(f, result);
@@ -3176,51 +3327,259 @@ static void ai_complete_ud_free(void *ud)
  free(c->before); free(c->after); free(c);
 }
 
+/* The completion review is one hunk by nature: the box says what it is instead
+   of numbering it, and lists the keys that make sense for a single hunk (the
+   same keys the Edit review reads: y/Enter take it, n, q and Esc leave it). */
+static const ai_review_caption ai_complete_caption = {
+ " Proposed completion ",
+ " y insert  n / q / Esc discard  PgUp/PgDn "
+};
+
+/* A completion review has at most three segments: the lines above the cursor
+   line, the cursor line itself (the hunk), the lines below it. */
+#define AI_COMPLETE_SEGS_MAX 3
+
 /**
- * ai_complete_done - Insert a finished completion at the cursor.
- * Rebuilds the file as before + suggestion + after and applies it through the
- * proven whole-file path, so the insertion is one Ctrl-U undo step and never a
- * partial write.  A backend error or empty suggestion changes nothing.
+ * ai_copy_span - A malloc'd, NUL-terminated copy of the first @len bytes of @s.
+ */
+static char *ai_copy_span(const char *s, size_t len)
+{
+ char *out = malloc(len + 1);
+ if (!out) return NULL;
+ memcpy(out, s, len);
+ out[len] = '\0';
+ return out;
+}
+
+/**
+ * ai_cursor_line_start - Where the cursor line begins inside the text before the cursor.
+ * @before: the file up to the cursor.  Return: the line's first byte.
+ */
+static const char *ai_cursor_line_start(const char *before)
+{
+ const char *nl = strrchr(before, '\n');
+ if (!nl) return before;
+ return nl + 1;
+}
+
+/**
+ * ai_cursor_line_end - Where the cursor line ends inside the text after the cursor.
+ * @after: the file from the cursor on.  Return: its '\n', or the end of the text.
+ */
+static const char *ai_cursor_line_end(const char *after)
+{
+ const char *nl = strchr(after, '\n');
+ if (!nl) return after + strlen(after);
+ return nl;
+}
+
+/**
+ * ai_lines_below_cursor - The text that follows the cursor line.
+ * @line_end: where the cursor line ends (ai_cursor_line_end).
+ * Return: the first byte after the line break, or "" when the cursor line is
+ * the last.
+ */
+static const char *ai_lines_below_cursor(const char *line_end)
+{
+ if (*line_end == '\n') return line_end + 1;
+ return line_end;
+}
+
+/**
+ * ai_cursor_line_with - The cursor line with @insert placed at the cursor.
+ * @prefix/@plen: the line up to the cursor; @insert: the text at the cursor,
+ * "" for the line as it is; @suffix/@slen: the line from the cursor on.
+ *
+ * Newline-terminated, so a suggestion with line breaks of its own splits into
+ * exactly the lines the file will have once it is in.  Return: malloc'd text,
+ * or NULL.
+ */
+static char *ai_cursor_line_with(const char *prefix, size_t plen, const char *insert,
+                                 const char *suffix, size_t slen)
+{
+ size_t ilen = strlen(insert);
+ char *out = malloc(plen + ilen + slen + 2);
+ if (!out) return NULL;
+ memcpy(out, prefix, plen);
+ memcpy(out + plen, insert, ilen);
+ memcpy(out + plen + ilen, suffix, slen);
+ out[plen + ilen + slen] = '\n';
+ out[plen + ilen + slen + 1] = '\0';
+ return out;
+}
+
+/**
+ * ai_segs_add_context - Append the lines of @text as a kept-lines segment.
+ * @segs/@n: the segment array and its count.
+ *
+ * Nothing is appended for empty text, so a completion on the first or last
+ * line has no empty context segment above or below it.
+ */
+static void ai_segs_add_context(wpe_ai_seg *segs, int *n, const char *text)
+{
+ wpe_ai_seg *seg = &segs[*n];
+ memset(seg, 0, sizeof *seg);
+ seg->is_change = 0;
+ seg->an = wpe_ai_split_lines(text, &seg->a);
+ if (seg->an > 0) {
+  (*n)++;
+  return;
+ }
+ wpe_ai_free_lines(seg->a, 0);
+ seg->a = NULL;
+}
+
+/**
+ * ai_segs_add_change - Append the hunk in which @old_text becomes @new_text.
+ * @segs/@n: the segment array and its count.
+ */
+static void ai_segs_add_change(wpe_ai_seg *segs, int *n, const char *old_text,
+                               const char *new_text)
+{
+ wpe_ai_seg *seg = &segs[*n];
+ memset(seg, 0, sizeof *seg);
+ seg->is_change = 1;
+ seg->an = wpe_ai_split_lines(old_text, &seg->a);
+ seg->bn = wpe_ai_split_lines(new_text, &seg->b);
+ (*n)++;
+}
+
+/**
+ * ai_complete_segments - Lay a completion out as one reviewable hunk.
+ * @c:     the file before and after the cursor, captured when the request left.
+ * @clean: the suggestion, fences removed.
+ * @out:   receives the segments (free with wpe_ai_segs_free).
+ *
+ * The hunk is the cursor line as it is against the lines it becomes with the
+ * suggestion spliced in at the cursor; everything above and below is kept as
+ * context.  The review box then shows the completion in place, with the line
+ * numbers of the real file, and the accept path rebuilds the file from the very
+ * segments the user looked at: no second splice, so what was shown is what
+ * lands.  Return: the segment count, 0 when out of memory.
+ */
+static int ai_complete_segments(const ai_complete_ud *c, const char *clean,
+                                wpe_ai_seg **out)
+{
+ const char *prefix = ai_cursor_line_start(c->before);
+ const char *line_end = ai_cursor_line_end(c->after);
+ const char *below = ai_lines_below_cursor(line_end);
+ size_t above_len = (size_t)(prefix - c->before);
+ size_t slen = (size_t)(line_end - c->after);
+ char *above = ai_copy_span(c->before, above_len);
+ char *old_line = ai_cursor_line_with(prefix, strlen(prefix), "", c->after, slen);
+ char *new_lines = ai_cursor_line_with(prefix, strlen(prefix), clean, c->after, slen);
+ wpe_ai_seg *segs = calloc(AI_COMPLETE_SEGS_MAX, sizeof *segs);
+ int n = 0;
+
+ *out = NULL;
+ if (above && old_line && new_lines && segs) {
+  ai_segs_add_context(segs, &n, above);
+  ai_segs_add_change(segs, &n, old_line, new_lines);
+  ai_segs_add_context(segs, &n, below);
+  *out = segs;
+ } else {
+  free(segs);
+ }
+ free(above);
+ free(old_line);
+ free(new_lines);
+ return n;
+}
+
+/**
+ * ai_complete_report_discarded - Say that the completion was left out.
+ * @f: the window the completion was for.
+ *
+ * The user pressed n, q or Esc on the box; the pane records it so the quiet
+ * screen is not mistaken for a reply that never came.
+ */
+static void ai_complete_report_discarded(FENSTER *f)
+{
+ ai_pane(f, "[AI complete] discarded", 0);
+ wpe_ai_trace("complete discarded");
+}
+
+/**
+ * ai_complete_insert - Put the accepted completion into the file.
+ * @f: the window; @op: the finished task; @newtext: the file with the
+ * completion in, as rebuilt from the reviewed hunk.
+ *
+ * Goes through the proven whole-file path, so the insertion is one Ctrl-U undo
+ * step and never a partial write, and the pane says so.
+ */
+static void ai_complete_insert(FENSTER *f, ai_async_op *op, const char *newtext)
+{
+ e_ai_apply_text(f, newtext);
+ ai_pane(f, "[AI] completed at cursor - Ctrl-U to undo", 0);
+ wpe_ai_trace("complete applied");
+ if (op->save_id >= 0) e_switch_window(op->save_id, f);
+ e_schirm(f, 1);          /* repaint the file window: the apply ran from the */
+ e_cursor(f, 1);          /* fd-loop with focus on the pane, so force a redraw */
+ e_refresh();
+}
+
+/**
+ * ai_complete_review - Show the completion in the review box and act on the answer.
+ * @f: the window; @op: the finished task; @segs/@nseg: the completion as one hunk.
+ *
+ * The user sees the suggestion at its place, in the same box, colours and keys
+ * as an Edit hunk, and the file changes only on y or Enter; n, q and Esc leave
+ * it as it was.
+ */
+static void ai_complete_review(FENSTER *f, ai_async_op *op, wpe_ai_seg *segs, int nseg)
+{
+ char *result = ai_hunk_apply(f, segs, nseg, &ai_complete_caption, NULL, NULL);
+ if (!result) {
+  ai_complete_report_discarded(f);
+  return;
+ }
+ ai_complete_insert(f, op, result);
+ free(result);
+}
+
+/**
+ * ai_complete_done - A completion has arrived: review it, then insert or drop it.
+ * @op: the finished Complete task.
+ *
+ * Cleans the reply of fences only, lays it out as the one hunk the cursor line
+ * becomes, and opens the review box.  A backend error or an empty suggestion
+ * changes nothing and says so.
  */
 static void ai_complete_done(ai_async_op *op)
 {
  FENSTER *f = op->f;
  ai_complete_ud *c = op->ud;
- char *clean, *newtext;
- size_t bl, il, al;
+ char *clean;
+ wpe_ai_seg *segs = NULL;
+ int nseg;
 
  ai_op_detach(op);
  if (!ai_window_alive(op->cn, f)) { ai_op_free(op); return; }
  if (op->had_error) { ai_pane(f, "[AI complete] backend error", 1); ai_op_free(op); return; }
  if (op->acc_len == 0) { ai_pane(f, "[AI complete] no suggestion", 0); ai_op_free(op); return; }
- clean = ai_strip_fences(op->acc);
- if (!clean || !*clean || !c) { free(clean); ai_op_free(op); return; }
- bl = strlen(c->before); il = strlen(clean); al = strlen(c->after);
- newtext = malloc(bl + il + al + 1);
- if (newtext) {
-  memcpy(newtext, c->before, bl);
-  memcpy(newtext + bl, clean, il);
-  memcpy(newtext + bl + il, c->after, al);
-  newtext[bl + il + al] = '\0';
-  e_ai_apply_text(f, newtext);
-  ai_pane(f, "[AI] completed at cursor - Ctrl-U to undo", 0);
-  free(newtext);
-  if (op->save_id >= 0) e_switch_window(op->save_id, f);
-  e_schirm(f, 1);          /* repaint the file window: the apply ran from the */
-  e_cursor(f, 1);          /* fd-loop with focus on the pane, so force a redraw */
-  e_refresh();
+ clean = ai_completion_text(op->acc);
+ if (!clean || !c) { free(clean); ai_op_free(op); return; }
+ if (!*clean) {
+  ai_pane(f, "[AI complete] no suggestion", 0);
+  free(clean);
+  ai_op_free(op);
+  return;
  }
+ nseg = ai_complete_segments(c, clean, &segs);
+ if (nseg > 0)
+  ai_complete_review(f, op, segs, nseg);
+ wpe_ai_segs_free(segs, nseg);
  free(clean);
  ai_op_free(op);
 }
 
 /**
- * ai_complete_deliver - The Complete done path: splice in, then the queue.
+ * ai_complete_deliver - The Complete done path: review and insert, then the queue.
  * @op: the finished Complete task.
  *
  * Run at once when the reply lands with the editor idle, or later from the
- * key loop when it landed behind a dialog, so the suggestion is never written
- * into the file while the user is inside a dialog.
+ * key loop when it landed behind a dialog, so the review box never opens over
+ * a dialog and a key typed into the dialog is never read as its answer.
  */
 static void ai_complete_deliver(ai_async_op *op)
 {
@@ -3247,10 +3606,11 @@ static void ai_complete_fd_cb(int fd, void *data)
 
 /**
  * e_ai_complete - Fill in code at the cursor (Alt-G c).
- * Sends the code around the cursor to the model and inserts its suggestion there
- * as one undo step (Ctrl-U reverts) -- a local, low-ceremony alternative to
- * chat/edit for "finish this line/block".  Editor stays interactive; the
- * suggestion lands when the reply arrives.
+ * Sends the code around the cursor to the model; when the reply arrives the
+ * suggestion is shown at its place in the review box, and y or Enter inserts
+ * it exactly at the cursor as one undo step (Ctrl-U reverts) -- a local,
+ * low-ceremony alternative to chat/edit for "finish this line/block".  The
+ * editor stays interactive while the model works.
  */
 static void ai_launch_complete(FENSTER *f, const char *goal);
 
@@ -5157,7 +5517,7 @@ static void ai_plan_finish(ai_async_op *op)
      ns = wpe_ai_diff_segments(now ? now : "", pd->props[i].text, &segs);
      free(now);
      {
-      char *result = ai_hunk_apply(w, segs, ns, NULL, NULL);
+      char *result = ai_hunk_apply(w, segs, ns, NULL, NULL, NULL);
       if (result) { e_ai_apply_text(w, result); free(result); applied++; wpe_ai_trace("plan applied %s", pd->props[i].path); }
       else wpe_ai_trace("plan skipped %s", pd->props[i].path);
      }

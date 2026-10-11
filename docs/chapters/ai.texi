@@ -334,11 +334,21 @@ a normal agent run.
 @cindex AI, completion
 @kbd{Alt-G c}, @samp{Complete at cursor}, fills in code where the cursor is: xwpe
 sends the nearby context to the model (the last 2000 characters before the cursor
-and the first 800 after it), then splices its suggestion in at the cursor as one
-whole-buffer undo step, so @kbd{Ctrl-U} reverts it.  It is a local,
-low-ceremony alternative to Chat or Edit for ``finish this line/block''; the
-editor stays interactive while the model works and the suggestion lands when the
-reply arrives.
+and the first 800 after it).  When the reply arrives it is not written into the
+file yet: a one-hunk box titled @samp{Proposed completion} shows the suggestion
+at its place, in the same colours and with the same keys as the Edit review, and
+the file changes only when you take it with @kbd{y} or @key{Enter}; @kbd{n},
+@kbd{q} or @key{Esc} leave the file untouched and the pane says
+@samp{[AI complete] discarded}.  A reply that arrives while a dialog is open
+waits, like an Edit's, and opens its box once the dialog closes.
+
+An accepted suggestion is inserted exactly as the model returned it, cleaned only
+of markdown fences: no line break is added after it, so completing @code{foo(}
+with @code{bar)} reads @code{foo(bar)} on one line.  It goes in as one
+whole-buffer undo step, the pane says @samp{completed at cursor - Ctrl-U to undo},
+and one @kbd{Ctrl-U} removes it.  It is a local, low-ceremony alternative to Chat
+or Edit for ``finish this line/block''; the editor stays interactive while the
+model works.
 
 @section Hosting an external agent (Claude Code)
 

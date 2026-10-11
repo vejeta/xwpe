@@ -127,14 +127,19 @@ def test_whole_file_edit_over_cap_keeps_the_tail(tmp_path):
 
 # @scenario SC-ai-edit-33
 def test_complete_over_cap_keeps_the_tail(tmp_path):
-    """Complete at line 600 of a 1200-line file: the suggestion lands at the
-    cursor and the file keeps all 1200 lines around it.  The reply is cleaned
-    to a line of its own ("PREFIX\\n", as on a small file), so the file is the
-    1200 original lines plus that one line, in order."""
-    with WpeSession(str(tmp_path), BIG, env_extra=_env(tmp_path, "PREFIX ")) as s:
+    """Complete at line 600 of a 1200-line file: the suggestion is reviewed,
+    y lands it at the cursor and the file keeps all 1200 lines around it.  The
+    reply is inserted exactly as returned, so the model's own "PREFIX\\n" is a
+    line of its own and the file is the 1200 original lines plus that one line,
+    in order."""
+    with WpeSession(str(tmp_path), BIG, env_extra=_env(tmp_path, "PREFIX\n")) as s:
         _goto_line(s, CURSOR_LINE)
         s.key(ALT.AI, delay=0.6); s.key("c", delay=0.8)
-        assert _wait(s, "PREFIX"), "completion did not land:\n" + "\n".join(s.display())
+        assert _wait(s, "Proposed completion"), \
+            "the completion was not offered for review:\n" + "\n".join(s.display())
+        s.key("y", delay=0.8)
+        assert _wait(s, "completed at cursor"), \
+            "completion did not land:\n" + "\n".join(s.display())
         s.save()
         n = _count_lines(s.path)
         out = s.text()

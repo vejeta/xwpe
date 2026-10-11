@@ -218,6 +218,12 @@ char *wpe_ai_complete(const wpe_ai_req *req, int timeout_ms,
  * allocation failure.  Editor-free (unit-testable). */
 char *wpe_ai_diff(const char *a, const char *b);
 
+/* Split text into its lines, the '\n' removed; a last line without '\n' still
+ * counts.  *lines is a malloc'd array of malloc'd strings, the same shape as a
+ * segment's a[]/b[] below (free with wpe_ai_free_lines).  Returns the count. */
+int  wpe_ai_split_lines(const char *t, char ***lines);
+void wpe_ai_free_lines(char **lines, int n);
+
 /* Structured diff for per-hunk accept/reject.  A segment is either kept context
  * (is_change=0, lines in a[]) or a change hunk (is_change=1, old lines in a[],
  * new lines in b[]).  Returns the segment count; *segs is malloc'd. */

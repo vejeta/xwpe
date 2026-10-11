@@ -71,8 +71,13 @@ the model works):
 
 - **Complete at cursor** (`Alt-G c`) -- fills in code where the cursor is. It
   sends the nearby context, the last 2000 characters before the cursor and the
-  first 800 after it, and splices the returned text in at the cursor as one
-  edit that a single **`Ctrl-U`** undoes.
+  first 800 after it. The reply is shown first, in a one-hunk **Proposed
+  completion** box with the same colours and keys as the Edit review: `y` or
+  Enter inserts it, `n`, `q` or Esc leave the file untouched (the pane says
+  `[AI complete] discarded`). An accepted suggestion goes in exactly as
+  returned, cleaned only of markdown fences and with no line break added, so
+  `foo(` completed with `bar)` reads `foo(bar)`; it is one edit that a single
+  **`Ctrl-U`** undoes.
 
 **While a request is out**, the menus, the cursor keys and your other windows
 work as usual, and `Esc` cancels. The text of the window that is waiting is

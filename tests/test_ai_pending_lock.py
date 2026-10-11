@@ -239,6 +239,10 @@ def test_completion_is_not_raced_by_typing(tmp_path):
         assert "YY" not in _screen(s).replace(" ", ""), \
             "typing reached the window waiting for its completion:\n" + _screen(s)
 
+        # The suggestion is offered in the review box first; y takes it.
+        assert _wait_screen(s, "Proposed completion", 12), \
+            "the completion was not offered for review:\n" + _trace(trace) + "\n" + _screen(s)
+        s.key("y", delay=0.8)
         assert _wait_screen(s, "completed at cursor", 12), \
             "the completion never landed:\n" + _trace(trace) + "\n" + _screen(s)
         s._drain(0.6)
