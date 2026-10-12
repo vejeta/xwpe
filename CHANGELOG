@@ -233,6 +233,20 @@ Changes
 
 1.7.0 (AI assistant -- experimental, opt-in)
 
+* Agent and chat read tools: the argument of list_dir, grep and glob now
+  reaches the shell as one word.  "TOOL grep two words" searches for the
+  phrase "two words" (it used to search "two" in a file called "words"), and
+  a line such as "list_dir . ; touch x", which a fetched web page could plant
+  in the model's context, lists an odd name instead of running the second
+  command without asking.  The same holds in the chat (Alt-G a), the agent
+  (Alt-G g) and a Multi-file study.  Agent writes outside the workspace: a
+  write_file or apply_patch to a file beyond the working tree (an absolute
+  path outside it, or one that climbs out with "..") now always shows the
+  write box, under edits and auto too, with the "! outside the workspace"
+  mark the Multi-file dialog uses; denied, nothing is written; approved, the
+  pane names the file as outside the workspace.  Such a run used to write any
+  path silently.  Tests: tests/test_ai_agent_tool_safety.py.
+
 * Config and runtime state now follow the XDG Base Directory spec.  The user
   config moves from ~/.xwpe/xwperc to $XDG_CONFIG_HOME/xwpe/xwperc (default
   ~/.config/xwpe/xwperc) and a legacy ~/.xwpe/xwperc is migrated (copied) on

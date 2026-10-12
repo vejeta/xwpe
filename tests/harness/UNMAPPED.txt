@@ -11,6 +11,7 @@
 tests/test_ai_agent.py
 tests/test_ai_agent_answer.py
 tests/test_ai_agent_preview.py
+tests/test_ai_agent_tool_safety.py
 tests/test_ai_agent_write.py
 tests/test_ai_async.py
 tests/test_ai_async_live.py

@@ -193,6 +193,13 @@ The dial governs what the assistant may do without asking:
   commit). Nothing is ever written blind -- an AI edit is always previewed and
   is one `Ctrl-U` away from undone.
 
+Whatever the dial, the argument of `list_dir`, `grep` and `glob` is passed to
+the shell as a single word: a pattern with spaces is one pattern, and no
+character in it is a command. A write to a file outside the working tree (an
+absolute path beyond it, or one that climbs out with `..`) always asks, under
+*edits* and *auto* too; the write box carries the `!` mark and the words
+`outside the workspace`, and the pane names the file again once it is written.
+
 Whatever the dial says, a command the assistant runs **cannot reach your
 screen**: it runs in a session of its own with no terminal attached, so its
 output comes back only as text in the assistant pane. A command that writes to

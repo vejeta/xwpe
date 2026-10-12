@@ -1281,13 +1281,97 @@ static void ai_split_tool(char *action, char **tool, char **arg)
  *tool = nm;
 }
 
+/* A TOOL line, and so a tool argument, is at most this long: every loop copies
+   the model's line into a buffer of this size before splitting it.  The shell
+   quoter writes an embedded quote as four bytes and adds the two enclosing
+   quotes, so the quoted form of a full-length argument needs four times the
+   line and a little; the command buffer adds room for the fixed command text. */
+#define AI_TOOL_LINE_MAX       1100
+#define AI_TOOL_ARG_QUOTED_MAX (4 * AI_TOOL_LINE_MAX + 4)
+#define AI_TOOL_CMD_MAX        (AI_TOOL_ARG_QUOTED_MAX + 64)
+
+/* The read-only tools that run a shell command (read_file reads the file itself). */
+#define AI_TOOL_LIST_DIR "list_dir"
+#define AI_TOOL_GREP     "grep"
+#define AI_TOOL_GLOB     "glob"
+
+/**
+ * ai_tool_is_shell_readonly - Is this tool one of the read-only shell tools?
+ * @tool: the name after "TOOL ".
+ *
+ * list_dir, grep and glob run without asking under every dial, so they are
+ * the tools whose argument must be made harmless before it reaches the shell.
+ * Return: 1 for those three, 0 for anything else.
+ */
+static int ai_tool_is_shell_readonly(const char *tool)
+{
+ if (!strcmp(tool, AI_TOOL_LIST_DIR)) return 1;
+ if (!strcmp(tool, AI_TOOL_GREP)) return 1;
+ if (!strcmp(tool, AI_TOOL_GLOB)) return 1;
+ return 0;
+}
+
+/**
+ * ai_tool_shell_command - Build the shell command for a read-only tool.
+ * @tool: list_dir, grep or glob; @arg: the model's argument, exactly as it
+ * wrote it (may be empty); @cmd/@sz: receives the command.
+ *
+ * The argument reaches /bin/sh as exactly one word, quoted with the same
+ * quoter the hook path and the checkpoint use.  So "two words" is one grep
+ * pattern, not a pattern and a file; and a line a fetched web page planted in
+ * the model's context, such as ". ; touch x", lists an odd name instead of
+ * running a second command that no dial was ever asked about.  An empty
+ * argument lists the current directory or matches every name, as before.
+ * The chat loop, the agent loop and plan mode all build their commands here,
+ * so one site cannot be fixed and another left behind.
+ *
+ * Return: 1 when @tool is one of the three and @cmd is filled, 0 otherwise.
+ */
+static int ai_tool_shell_command(const char *tool, const char *arg, char *cmd, size_t sz)
+{
+ char quoted[AI_TOOL_ARG_QUOTED_MAX];
+ if (!strcmp(tool, AI_TOOL_LIST_DIR)) {
+  wpe_ai_shell_quote(quoted, sizeof quoted, arg[0] ? arg : ".");
+  snprintf(cmd, sz, "ls -la -- %s", quoted);   /* "--": a name that starts with "-" is a name, not an option */
+  return 1;
+ }
+ if (!strcmp(tool, AI_TOOL_GREP)) {
+  wpe_ai_shell_quote(quoted, sizeof quoted, arg);
+  snprintf(cmd, sz, "grep -rn -- %s .", quoted);
+  return 1;
+ }
+ if (!strcmp(tool, AI_TOOL_GLOB)) {
+  wpe_ai_shell_quote(quoted, sizeof quoted, arg[0] ? arg : "*");
+  snprintf(cmd, sz, "find . -name %s -not -path '*/.*' 2>/dev/null | head -200", quoted);
+  return 1;
+ }
+ return 0;
+}
+
+/**
+ * ai_tool_run_readonly - Run list_dir, grep or glob and capture its output.
+ * @tool: the tool name; @arg: the model's argument, as it wrote it.
+ *
+ * The one place the three read-only shell tools are run from, whichever loop
+ * asked, so the user gets the same one-word guarantee from a chat
+ * investigation, an agent run and a plan study.
+ * Return: the malloc'd output (the caller frees), NULL when @tool is not one
+ * of the three or the command could not be started.
+ */
+static char *ai_tool_run_readonly(const char *tool, const char *arg)
+{
+ char cmd[AI_TOOL_CMD_MAX];
+ if (!ai_tool_shell_command(tool, arg, cmd, sizeof cmd)) return NULL;
+ return ai_run_capture(cmd);
+}
+
 /* If the reply contains a read-only tool call, run it and return the result
  * (malloc'd, to be fed back as the next turn's input); else return NULL so the
  * reply is treated as the final answer.  Chat only ever runs read-only tools.
  * The tool line is found past any reasoning preamble (ai_scan_tool_line). */
 static char *ai_chat_tool_result(FENSTER *f, const char *reply)
 {
- char action[1100], *tool, *arg;
+ char action[AI_TOOL_LINE_MAX], *tool, *arg;
  const char *line, *nl;
  (void)f;
  line = ai_scan_tool_line(reply);
@@ -1301,19 +1385,8 @@ static char *ai_chat_tool_result(FENSTER *f, const char *reply)
  ai_split_tool(action, &tool, &arg);
  if (!strcmp(tool, "read_file"))
   return ai_read_file_bounded(arg);
- if (!strcmp(tool, "grep")) {
-  char cmd[1300]; snprintf(cmd, sizeof cmd, "grep -rn -- %s .", arg); return ai_run_capture(cmd);
- }
- if (!strcmp(tool, "list_dir")) {
-  char cmd[1200]; snprintf(cmd, sizeof cmd, "ls -la %s", arg[0] ? arg : "."); return ai_run_capture(cmd);
- }
- if (!strcmp(tool, "glob")) {
-  char cmd[1300];
-  snprintf(cmd, sizeof cmd,
-    "find . -name %s -not -path '*/.*' 2>/dev/null | head -200",
-    arg[0] ? arg : "*");
-  return ai_run_capture(cmd);
- }
+ if (ai_tool_is_shell_readonly(tool))
+  return ai_tool_run_readonly(tool, arg);
  return NULL;   /* unknown/non-read-only: treat the line as a normal answer */
 }
 
@@ -2792,13 +2865,47 @@ static int ai_diff_review_hunk(FENSTER *f, wpe_ai_seg *segs, int nseg,
  return ret;
 }
 
+/* Mark in a box's gutter for a file the assistant would write outside the
+   workspace; the row says so in words too, and the pane repeats it when the
+   file is written.  Shared by the Multi-file plan's approval box and the
+   agent's write box so the user learns one sign. */
+#define AI_PLAN_OUTSIDE_MARK "!"
+#define AI_PLAN_OUTSIDE_WORD "outside the workspace"
+
+/* A write box for a file outside the workspace carries one more row, the mark. */
+#define AI_DIFF_OUTSIDE_ROWS 1
+
+/**
+ * ai_diff_add_outside_row - Put the outside-the-workspace mark at the top of a write box.
+ * @rt/@ra: the box rows and their colours; @nrows: how many so far, advanced
+ * by one; @path: the file, as the model named it; @attr: the deletion colour.
+ *
+ * The first thing the user reads in the box is "! outside the workspace:
+ * <path>" in the colour of a deletion, so a write that reaches beyond the
+ * project is seen as such before the diff below it is judged.  The word
+ * comes before the path so it stays on screen when the path is too long for
+ * the box.
+ */
+static void ai_diff_add_outside_row(char **rt, int *ra, int *nrows,
+                                    const char *path, int attr)
+{
+ char row[1400];
+ snprintf(row, sizeof row, "%s %s: %s", AI_PLAN_OUTSIDE_MARK, AI_PLAN_OUTSIDE_WORD, path);
+ rt[*nrows] = strdup(row);
+ ra[*nrows] = attr;
+ (*nrows)++;
+}
+
 /* ai_diff_confirm_write - Preview what the agent's write_file would do to `path`
    as a colored diff (new file: all-green additions; overwrite: a real diff with
    context) and ask a single allow/deny.  So the user SEES the change before it
    lands, instead of approving a blind "write_file x (N bytes)".  Returns 1 to
-   allow, 0 to deny.  Long unchanged runs collapse to a few context lines. */
+   allow, 0 to deny.  Long unchanged runs collapse to a few context lines.
+   `outside` != 0 says the file lies outside the workspace: the box then opens
+   even for an unchanged file and its first row carries the mark. */
 static int ai_diff_confirm_write(FENSTER *f, const char *path,
-                                 const char *oldtext, const char *newtext)
+                                 const char *oldtext, const char *newtext,
+                                 int outside)
 {
  int red = f->fb->db.fb, green = f->fb->dy.fb, ctx = f->fb->nt.fb;
  wpe_ai_seg *segs;
@@ -2810,10 +2917,12 @@ static int ai_diff_confirm_write(FENSTER *f, const char *path,
 
  for (i = 0; i < nseg; i++)            /* upper bound on the rows we may emit */
   cap += segs[i].an + segs[i].bn + 1;
- if (cap <= 0) { wpe_ai_segs_free(segs, nseg); return 1; }   /* no change -> allow */
+ if (cap <= 0 && !outside) { wpe_ai_segs_free(segs, nseg); return 1; }   /* no change -> allow */
+ if (outside) cap += AI_DIFF_OUTSIDE_ROWS;
  rt = malloc((size_t)cap * sizeof *rt);
  ra = malloc((size_t)cap * sizeof *ra);
  if (!rt || !ra) { free(rt); free(ra); wpe_ai_segs_free(segs, nseg); return 1; }
+ if (outside) ai_diff_add_outside_row(rt, ra, &nrows, path, red);
 
  { int nl = 1;                                   /* running new-file line number */
  for (i = 0; i < nseg; i++) {
@@ -5441,30 +5550,97 @@ static void ai_agent_show_written(FENSTER *f, const char *path)
 }
 
 /**
- * ai_agent_commit_write - Approve (per the permission dial) and write `content`
- * to `path`, reloading it if open.  Shared by write_file and apply_patch so both
- * go through the same review: auto/edits ask ai_agent_approve, ASK shows the
- * change as a diff (ai_diff_confirm_write) first.  Runs the post-edit hook after
- * a successful write, within the write's undo step.  Returns a malloc'd TOOL
+ * ai_agent_confirm_write - Show the agent's write as a diff and take a y/n.
+ * @f: the window the pane belongs to; @path: the file, as the agent named it;
+ * @content: the text the agent wants in it; @outside: 1 when the file lies
+ * outside the workspace, so the box carries the mark.
+ *
+ * The user sees what would change before it lands, instead of approving a
+ * blind "write x (N bytes)", and the trace records the answer either way.
+ * Return: 1 to allow, 0 to deny.
+ */
+static int ai_agent_confirm_write(FENSTER *f, const char *path,
+                                  const char *content, int outside)
+{
+ char *old = ai_slurp_file(path);
+ int allow = ai_diff_confirm_write(f, path, old ? old : "", content, outside);
+ wpe_ai_trace("agent write confirm %s -> %s", path, allow ? "allow" : "deny");
+ free(old);
+ return allow;
+}
+
+/**
+ * ai_agent_approve_write - Let the dial decide a write inside the workspace.
+ * @f: the window the pane belongs to; @path: the file; @content: its new text.
+ *
+ * Under edits and auto the write is auto-approved and the pane says so; under
+ * ask the user sees the diff box.  Only for a file inside the workspace: a
+ * write beyond it never reaches this function.
+ * Return: 1 to allow, 0 to deny.
+ */
+static int ai_agent_approve_write(FENSTER *f, const char *path, const char *content)
+{
+ char what[720];
+ if (e_ai_policy == WPE_AI_POLICY_ASK) return ai_agent_confirm_write(f, path, content, 0);
+ snprintf(what, sizeof what, "write %s (%zu bytes)", path, strlen(content));
+ return ai_agent_approve(f, what, 0);
+}
+
+/**
+ * ai_agent_ask_outside_write - Ask about a write outside the workspace, whatever the dial.
+ * @f: the window the pane belongs to; @path: the file, as the agent named it;
+ * @content: its new text.
+ *
+ * An unattended run (edits or auto) may rewrite the project freely because
+ * the checkpoint and the review cover it; a file beyond the working tree is
+ * covered by neither, so the user is asked every time and the box says why.
+ * Return: 1 to allow, 0 to deny.
+ */
+static int ai_agent_ask_outside_write(FENSTER *f, const char *path, const char *content)
+{
+ wpe_ai_trace("agent write outside workspace %s", path);
+ return ai_agent_confirm_write(f, path, content, 1);
+}
+
+/**
+ * ai_agent_report_outside - Record in the pane that a written file lies outside the workspace.
+ * @f: the window the pane belongs to; @path: the file, as the agent named it.
+ *
+ * The box warned before the choice; this line is the record after it, so a
+ * user reading the pane later knows which file to look for beyond the tree,
+ * and the trace keeps the same fact.
+ */
+static void ai_agent_report_outside(FENSTER *f, const char *path)
+{
+ char line[1400];
+ snprintf(line, sizeof line, "[agent] wrote %s, %s", path, AI_PLAN_OUTSIDE_WORD);
+ ai_pane(f, line, 0);
+ wpe_ai_trace("agent wrote outside workspace %s", path);
+}
+
+/**
+ * ai_agent_commit_write - Approve and write `content` to `path`, reloading it if open.
+ * @f: the window the pane belongs to; @path: the file, as the agent named it;
+ * @content: its new text, NULL when the model sent none.
+ *
+ * Shared by write_file and apply_patch so both go through the same review: a
+ * file inside the workspace follows the permission dial (ai_agent_approve_write),
+ * a file outside it always asks with the marked box (ai_agent_ask_outside_write)
+ * and is reported as outside once written.  Runs the post-edit hook after a
+ * successful write, within the write's undo step.  Returns a malloc'd TOOL
  * RESULT.
  */
 static char *ai_agent_commit_write(FENSTER *f, const char *path, const char *content)
 {
- char what[720];
- int allow;
+ int outside, allow;
  if (!content) return strdup("(no content)");
- snprintf(what, sizeof what, "write %s (%zu bytes)", path, strlen(content));
- if (e_ai_policy != WPE_AI_POLICY_ASK) {
-  allow = ai_agent_approve(f, what, 0);
- } else {
-  char *old = ai_slurp_file(path);
-  allow = ai_diff_confirm_write(f, path, old ? old : "", content);
-  wpe_ai_trace("agent write confirm %s -> %s", path, allow ? "allow" : "deny");
-  free(old);
- }
+ outside = wpe_ai_path_outside_workspace(f, path);
+ if (outside) allow = ai_agent_ask_outside_write(f, path, content);
+ else allow = ai_agent_approve_write(f, path, content);
  if (!allow) return strdup("(denied by user)");
  if (!ai_agent_write_file(path, content)) return strdup("(write failed)");
  ai_agent_show_written(f, path);
+ if (outside) ai_agent_report_outside(f, path);
  return strdup("(written)");
 }
 
@@ -5643,7 +5819,7 @@ static void ai_search_url_build(const char *tmpl, const char *q, char *out, size
 static int ai_agent_process(ai_async_op *op, char *reply)
 {
  FENSTER *f = op->f;
- char *firstnl, *act = NULL, *scan, action[1100];
+ char *firstnl, *act = NULL, *scan, action[AI_TOOL_LINE_MAX];
 
  if (!ai_window_alive(op->cn, f)) return 1;
 
@@ -5694,17 +5870,10 @@ static int ai_agent_process(ai_async_op *op, char *reply)
   ai_pane(f, paneln, 0);
   wpe_ai_trace("agent tool=%s arg=%s", tool, arg);
 
-  if (!strcmp(tool, "list_dir")) {
-   char cmd[1200]; snprintf(cmd, sizeof cmd, "ls -la %s", arg[0] ? arg : "."); result = ai_run_capture(cmd);
+  if (ai_tool_is_shell_readonly(tool)) {
+   result = ai_tool_run_readonly(tool, arg);   /* the argument is one shell word */
   } else if (!strcmp(tool, "read_file")) {
    result = ai_read_file_bounded(arg);
-  } else if (!strcmp(tool, "grep")) {
-   char cmd[1300]; snprintf(cmd, sizeof cmd, "grep -rn -- %s .", arg); result = ai_run_capture(cmd);
-  } else if (!strcmp(tool, "glob")) {
-   char cmd[1300];
-   snprintf(cmd, sizeof cmd, "find . -name %s -not -path '*/.*' 2>/dev/null | head -200",
-            arg[0] ? arg : "*");
-   result = ai_run_capture(cmd);
   } else if (!strcmp(tool, "run_command")) {
    if (ai_agent_approve(f, arg, 1)) result = ai_run_capture(arg);
    else result = strdup("(denied by user)");
@@ -6097,7 +6266,7 @@ static int ai_plan_process(ai_async_op *op, char *reply)
 {
  ai_plan_data *pd = op->ud;
  FENSTER *f = op->f;
- char action[1100], *firstnl;
+ char action[AI_TOOL_LINE_MAX], *firstnl;
  int done;
 
  if (!ai_window_alive(op->cn, f)) return 1;
@@ -6112,8 +6281,8 @@ static int ai_plan_process(ai_async_op *op, char *reply)
   ai_pane(f, paneln, 0);
   wpe_ai_trace("plan tool=%s arg=%s", tool, arg);
   if (!strcmp(tool, "read_file"))      result = wpe_ai_read_scope_file(f, arg);
-  else if (!strcmp(tool, "list_dir")) { char cmd[1200]; snprintf(cmd, sizeof cmd, "ls -la %s", arg[0] ? arg : "."); result = ai_run_capture(cmd); }
-  else if (!strcmp(tool, "grep"))     { char cmd[1300]; snprintf(cmd, sizeof cmd, "grep -rn -- %s .", arg); result = ai_run_capture(cmd); }
+  else if (!strcmp(tool, AI_TOOL_LIST_DIR)) result = ai_tool_run_readonly(tool, arg);
+  else if (!strcmp(tool, AI_TOOL_GREP))     result = ai_tool_run_readonly(tool, arg);
   else result = strdup("(only read-only tools are allowed in plan mode)");
   result = ai_tool_result_nonempty(result);   /* empty output -> explicit note */
   { size_t n2 = strlen(result) + 32; char *tr = malloc(n2);
@@ -6128,11 +6297,8 @@ static int ai_plan_process(ai_async_op *op, char *reply)
  return done ? 1 : 0;
 }
 
-/* Mark in the approval box's gutter for a file the plan would write outside
-   the workspace; the row says so in words too, and the pane repeats it when
-   the file is applied. */
-#define AI_PLAN_OUTSIDE_MARK "!"
-#define AI_PLAN_OUTSIDE_WORD "outside the workspace"
+/* The outside-the-workspace mark and word are defined with the agent's write
+   box (ai_diff_confirm_write), which shows them for the same reason. */
 
 /* What the user chose in the approval box. */
 #define AI_PLAN_CANCEL    0

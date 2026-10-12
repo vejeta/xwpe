@@ -328,6 +328,17 @@ Set the dial from the @samp{AI} menu, with @kbd{Alt-G y}, or with @code{AIPolicy
 first.  For the @code{claudecli} backend the dial maps onto the CLI's own
 @option{--permission-mode} so the same rules apply.
 
+@cindex AI, tool argument
+@cindex AI, outside the workspace
+Whatever the dial, the argument of @code{list_dir}, @code{grep} and @code{glob}
+reaches the shell as a single word: a pattern with spaces is one pattern, and no
+character in it (a @samp{;}, a @samp{$(...)}) is a command, so a line planted in
+a fetched page cannot run anything through a read-only tool.  A write to a file
+outside the working tree (an absolute path beyond it, or one that climbs out
+with @file{..}) always asks, under @code{edits} and @code{auto} too: the write
+box carries the @samp{!} mark and the words @samp{outside the workspace}, as the
+Multi-file dialog does, and the pane names the file again once it is written.
+
 @cindex AI, command output
 Whatever the dial allows, a command the assistant runs cannot reach your screen.
 Each one runs in a session of its own with no terminal attached, so opening
