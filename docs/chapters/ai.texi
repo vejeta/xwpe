@@ -349,6 +349,31 @@ display went black and the command's lines scrolled across the file until the
 next repaint.  The same isolation applies to the hosted external agent CLI
 described below and to the post-edit hook (@code{AIEditHook}).
 
+@cindex AI, tool time limit
+@cindex AIToolTimeout
+While a command or a web tool runs, xwpe reads no keys, so the pane says what
+is happening: its last line reads @samp{[agent] running run_command @dots{}
+(result follows)} (or @code{web_search}, @code{web_fetch}) from before the run
+starts until its result lands.  A command is given @code{AIToolTimeout} seconds
+(default 60; also @env{XWPE_AI_TOOL_TIMEOUT}): when it runs longer, xwpe ends it
+(the whole process group, TERM then KILL), the pane says @samp{run_command timed
+out after @var{N} s} and the model reads @samp{TOOL ERROR: timed out after
+@var{N} s}, so it can split the work or you can raise the key for a command that
+legitimately needs longer.  The read-only tools and the post-edit hook run
+through the same function and share the limit.  The web tools have their own,
+shorter time limit on the connection.  A tool result is bounded in size as well:
+a command's output or a file read with @code{read_file} is cut at 6000 bytes and
+then ends with the line @samp{(output cut at 6000 bytes)}, so the model knows it
+saw the beginning only and asks for a narrower command or a grep instead of
+taking the first part for the whole.
+
+When you answer a request with @kbd{n} or @key{Esc}, the pane records it:
+@samp{[agent] denied: run_command @var{cmd}}, and likewise for
+@code{web_search}, @code{web_fetch}, @code{write_file} and @code{apply_patch}.
+The model is told @samp{(denied by user)} and the run goes on; the trace
+(@env{XWPE_AI_TRACE}) carries the same line, so a denial is never a request that
+seemed to vanish.
+
 When an agent task is really a question rather than a change, the model answers
 directly: it finishes with a short line and its answer follows in the pane, so you
 see the reply even though this is not the chat.
@@ -502,6 +527,14 @@ URL template for the agent's @code{web_search} tool, with @code{%s} where the
 URL-encoded query goes (e.g. @code{https://searx.example/search?q=%s&format=json}
 for a SearXNG instance).  Also settable with @env{XWPE_AI_SEARCH_URL}.  Empty
 means a built-in keyless default.
+@item AIToolTimeout
+Seconds a command run for a tool result may take before xwpe ends it and tells
+the model @samp{TOOL ERROR: timed out after @var{N} s}; default 60.  Also
+settable with @env{XWPE_AI_TOOL_TIMEOUT}, for one session.  Covers the agent's
+@code{run_command}, the read-only tools (@code{list_dir}, @code{grep},
+@code{glob}) in every loop, and the post-edit hook (@code{AIEditHook}).  A value
+that is not a positive number means the default; the key is written to
+@file{xwperc} only when it differs from the default.
 @item AIProvider
 A saved OpenAI-compatible provider profile, as
 @code{name|endpoint|model|cafile} (model and cafile optional); repeat the key for
@@ -537,7 +570,10 @@ file (same directory and extension, so a formatter finds its configuration),
 the copy's text replaces the buffer within that same single undo step, and
 nothing is written to the file until you save.  A hook that exits non-zero is
 reported in the pane with its exit status and its output, and the buffer is
-left as the assistant left it.
+left as the assistant left it.  The hook runs through the same function as a
+tool command and inherits its time limit (@code{AIToolTimeout}): a hook that
+hangs is ended after that many seconds and reported as failed, with the timeout
+as its output, instead of holding the editor.
 @item AIAgentEngine
 @code{builtin} (the editor's own tool loop) or @code{claude-code} (host the
 external agent for @kbd{Alt-G g}; see @emph{Hosting an external agent}, above);

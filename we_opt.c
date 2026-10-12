@@ -1022,6 +1022,8 @@ int WpeReadProgramming(ECNT *cn, char *section, char *option, char *value)
  } else if (WpeStrccmp("AISearchURL", option) == 0) {
   free(e_ai_search_url);
   e_ai_search_url = (value && *value) ? WpeStrdup(value) : NULL;
+ } else if (WpeStrccmp("AIToolTimeout", option) == 0) {
+  e_ai_tool_timeout = wpe_ai_tool_timeout_from_text(value);
  } else if (WpeStrccmp("AIProviderName", option) == 0) {
   free(e_ai_provider);
   e_ai_provider = (value && *value) ? WpeStrdup(value) : NULL;
@@ -1064,6 +1066,10 @@ int WpeWriteProgramming(ECNT *cn, char *section, FILE *opt_file)
  fprintf(opt_file, "AICAFile : %s\n", wpe_ai_cfg_str_to_save(WPE_AI_CFG_CAFILE));
  if (*wpe_ai_cfg_str_to_save(WPE_AI_CFG_SEARCH_URL))
   fprintf(opt_file, "AISearchURL : %s\n", wpe_ai_cfg_str_to_save(WPE_AI_CFG_SEARCH_URL));
+ /* The tool time limit is written only when the user set one, so an xwperc
+    that never named it stays as it was. */
+ if (wpe_ai_cfg_int_to_save(WPE_AI_CFG_TOOL_TIMEOUT) != WPE_AI_TOOL_TIMEOUT_DEFAULT)
+  fprintf(opt_file, "AIToolTimeout : %d\n", wpe_ai_cfg_int_to_save(WPE_AI_CFG_TOOL_TIMEOUT));
  fprintf(opt_file, "AIProviderName : %s\n", e_ai_provider ? e_ai_provider : "");
  {
   int i, np = wpe_ai_provider_count();

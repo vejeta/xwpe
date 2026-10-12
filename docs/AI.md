@@ -208,6 +208,22 @@ the command's lines scrolled across the file until the next repaint. The same
 holds for the external agent CLI behind the *Claude Code* engine and for the
 post-edit hook.
 
+While a command or a web tool runs the editor reads no keys, so the pane's last
+line says `[agent] running run_command ... (result follows)` (or `web_search`,
+`web_fetch`) for the whole run. A command gets `AIToolTimeout` seconds (default
+60, `XWPE_AI_TOOL_TIMEOUT` for one session); past that it is ended (its whole
+process group, TERM then KILL), the pane says `run_command timed out after N s`
+and the model reads `TOOL ERROR: timed out after N s`. The read-only tools and
+the post-edit hook share the limit. A command's output or a file read with
+`read_file` is cut at 6000 bytes and then ends with the line
+`(output cut at 6000 bytes)`, so the model asks for less instead of taking the
+beginning for the whole.
+
+Every denial is visible: answering a request with `n` or `Esc` puts
+`[agent] denied: <tool> <arg>` in the pane (and in the trace) for a command, a
+web tool and a write alike; the model is told `(denied by user)` and the run
+goes on.
+
 ## Configuration / environment
 
 All of these mirror the Options > AI dialog and are handy for scripting or a
@@ -221,6 +237,7 @@ fixed setup:
 | `XWPE_AI_MODEL` | model name/alias |
 | `XWPE_AI_KEY` | API key for the OpenAI/Claude HTTP backends |
 | `XWPE_AI_POLICY` | `ask` / `edits` / `auto` |
+| `XWPE_AI_TOOL_TIMEOUT` | seconds a tool command may run before it is ended (`AIToolTimeout`, default 60) |
 | `XWPE_AI_TRACE=path` | append a diagnostic trace (prompt built, tool run, ...) |
 
 **Post-edit hook.** `AIEditHook` in the `[Programming]` section of `xwperc`
@@ -231,7 +248,8 @@ on a temporary copy beside the file, so nothing reaches the disk before you
 save. Either way its rewrite joins the change's undo step: one `Ctrl-U` reverts
 the change and the reformatting together. A hook that exits non-zero is
 reported in the pane with its exit status, and the buffer is left as the
-assistant left it.
+assistant left it. The hook shares the tool time limit (`AIToolTimeout`): one
+that hangs is ended after that many seconds and reported as failed.
 
 ## Privacy and safety
 

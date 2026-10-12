@@ -46,14 +46,41 @@ extern int   e_ai_agent_engine;
 extern char *e_ai_resume_session;      /* passed as --resume <id>, or NULL     */
 extern char *e_ai_last_session_id;     /* session_id from the last CLI reply   */
 
+/* How much of a tool result the model gets: a command's output and a file read
+ * with read_file are both cut here, and a cut result ends with a line saying
+ * so (wpe_ai_tool_result_mark_cut), so the model asks for less instead of
+ * taking the first part for the whole. */
+#define WPE_AI_TOOL_OUT_MAX 6000
+
+/* How long a command run for a tool result may take, in seconds, before the
+ * editor ends it and tells the model it timed out: the AIToolTimeout key,
+ * overridable with XWPE_AI_TOOL_TIMEOUT.  Every command the assistant runs
+ * (the agent's run_command, the read tools, the post-edit hook) shares it. */
+#define WPE_AI_TOOL_TIMEOUT_DEFAULT 60
+extern int e_ai_tool_timeout;
+/* The seconds a configuration value names; a value that is not a positive
+ * number gives the default, so a mistyped key never removes the bound. */
+int   wpe_ai_tool_timeout_from_text(const char *text);
+
 /* Run a shell command; capture bounded stdout+stderr (malloc'd, never NULL on
  * a spawn failure -- returns a short note instead).  The command runs in a
- * session of its own, so it cannot reach the editor's screen. */
+ * session of its own, so it cannot reach the editor's screen, and is ended
+ * after e_ai_tool_timeout seconds. */
 char *wpe_ai_run_capture(const char *cmd);
 /* The same, also handing back the command's exit status (0 = success, a
  * shell-style 128+signal when it was killed, 127 when it could not start),
  * for a caller that must know whether the command did its job. */
 char *wpe_ai_run_capture_status(const char *cmd, int *status);
+/* The same with an explicit bound: after timeout_s seconds the command's
+ * process group is ended (TERM, then KILL), *timed_out is set and the result
+ * is the "TOOL ERROR: timed out after N s" line the model reads.  Both
+ * out-parameters may be NULL. */
+char *wpe_ai_run_capture_bounded(const char *cmd, int timeout_s,
+                                 int *status, int *timed_out);
+/* Append the "(output cut at N bytes)" line to a result that was cut at
+ * WPE_AI_TOOL_OUT_MAX.  Takes the malloc'd result and its length; returns the
+ * (possibly reallocated) result, or the input unchanged when memory is short. */
+char *wpe_ai_tool_result_mark_cut(char *result, size_t len);
 /* Single-quote one argument for /bin/sh -c, so a path with a space or a
  * quote in it reaches a command as the one argument it is. */
 void  wpe_ai_shell_quote(char *dst, size_t sz, const char *src);
@@ -135,6 +162,7 @@ enum wpe_ai_cfg_key {
   WPE_AI_CFG_AGENT_ENGINE,    /* AIAgentEngine <- XWPE_AI_AGENT_ENGINE (int)    */
   WPE_AI_CFG_HOST_ADAPTER,    /* AIHostAdapter <- XWPE_AI_HOST_ADAPTER (int)    */
   WPE_AI_CFG_SEARCH_URL,      /* AISearchURL   <- XWPE_AI_SEARCH_URL   (string) */
+  WPE_AI_CFG_TOOL_TIMEOUT,    /* AIToolTimeout <- XWPE_AI_TOOL_TIMEOUT (int)    */
   WPE_AI_CFG_KEYS
 };
 /* The value Save Options writes for a key (int keys / string keys; a string

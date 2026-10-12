@@ -1294,6 +1294,15 @@ static void ai_split_tool(char *action, char **tool, char **arg)
 #define AI_TOOL_LIST_DIR "list_dir"
 #define AI_TOOL_GREP     "grep"
 #define AI_TOOL_GLOB     "glob"
+/* The tools the permission dial governs: commands (and the web, which is
+   gated like a command) and writes. */
+#define AI_TOOL_RUN_COMMAND "run_command"
+#define AI_TOOL_WEB_FETCH   "web_fetch"
+#define AI_TOOL_WEB_SEARCH  "web_search"
+#define AI_TOOL_WRITE_FILE  "write_file"
+#define AI_TOOL_APPLY_PATCH "apply_patch"
+/* What the model reads when the user refused a tool, whichever tool it was. */
+#define AI_TOOL_DENIED_RESULT "(denied by user)"
 
 /**
  * ai_tool_is_shell_readonly - Is this tool one of the read-only shell tools?
@@ -5288,11 +5297,21 @@ int e_ai_ui_key(FENSTER *f)
    several just investigating -- 8 ran out mid-investigation.  24 leaves room to
    look around AND act while still bounding a runaway. */
 #define AI_AGENT_MAX_ITERS 24
-#define AI_TOOL_OUT_MAX    6000
 
-/* Run a shell command; capture bounded stdout+stderr (malloc'd). */
+/* Run a shell command; capture bounded stdout+stderr (malloc'd).  The bound
+   on its size and on its time (AIToolTimeout) is the capture function's. */
 static char *ai_run_capture(const char *cmd) { return wpe_ai_run_capture(cmd); }
 
+/**
+ * ai_read_file_bounded - The first WPE_AI_TOOL_OUT_MAX bytes of a file, for the model.
+ * @path: the file, as the model named it.
+ *
+ * A file longer than the bound is cut and the result ends with the cut note,
+ * so the model asks for a narrower read (a grep, a line range) instead of
+ * taking the beginning for the whole file.  A missing file is a result, not
+ * an error, so the run goes on.
+ * Return: the malloc'd result, or NULL out of memory.
+ */
 static char *ai_read_file_bounded(const char *path)
 {
  FILE *fp = fopen(path, "rb");
@@ -5302,12 +5321,13 @@ static char *ai_read_file_bounded(const char *path)
  if (!fp) return strdup("(file not found)");
  out = malloc(cap);
  if (!out) { fclose(fp); return NULL; }
- while ((ch = fgetc(fp)) != EOF && len < AI_TOOL_OUT_MAX) {
+ while ((ch = fgetc(fp)) != EOF && len < WPE_AI_TOOL_OUT_MAX) {
   if (len + 2 > cap) { char *nb; cap *= 2; nb = realloc(out, cap); if (!nb) break; out = nb; }
   out[len++] = (char)ch;
  }
  out[len] = '\0';
  fclose(fp);
+ if (ch != EOF) return wpe_ai_tool_result_mark_cut(out, len);   /* more bytes followed */
  return out;
 }
 
@@ -5333,6 +5353,61 @@ static int ai_agent_approve(FENSTER *f, const char *what, int is_run)
   if (c == WPE_ESC || e_toupper(c) == 'N') return 0;
   if (e_toupper(c) == 'Y' || c == 13 || c == '\r' || c == '\n') return 1;
  }
+}
+
+/**
+ * ai_agent_deny - Record a refused tool everywhere it is read: model, pane, trace.
+ * @f: the window the pane belongs to; @tool: the tool the user refused;
+ * @arg: its argument (a command, a URL or query, a path).
+ *
+ * A denial used to reach the model alone, so the pane showed the request and
+ * then nothing, and a user who pressed n could not tell whether the key was
+ * taken.  The pane now says "[agent] denied: <tool> <arg>" and the trace has
+ * the same line; the one function serves the command, the two web tools and
+ * the writes, so the three records cannot drift apart.
+ * Return: the malloc'd result the model reads.
+ */
+static char *ai_agent_deny(FENSTER *f, const char *tool, const char *arg)
+{
+ char line[AI_TOOL_LINE_MAX + 32];
+ snprintf(line, sizeof line, "[agent] denied: %s %s", tool, arg);
+ ai_pane(f, line, 0);
+ wpe_ai_trace("agent deny %s %s", tool, arg);
+ return strdup(AI_TOOL_DENIED_RESULT);
+}
+
+/**
+ * ai_agent_show_running - Say in the pane that a tool is running, before it does.
+ * @f: the window the pane belongs to; @tool: the tool about to run.
+ *
+ * The editor reads no keys while a command or a web tool runs, and the working
+ * spinner is stopped for the turn, so without this line the pane froze on the
+ * tool's request and nothing said an answer would follow.  The line is painted
+ * and flushed to the terminal before the blocking call starts, so it is on
+ * screen for the whole run.
+ */
+static void ai_agent_show_running(FENSTER *f, const char *tool)
+{
+ char line[160];
+ snprintf(line, sizeof line, "[agent] running %s ... (result follows)", tool);
+ ai_pane(f, line, 0);
+}
+
+/**
+ * ai_agent_report_timeout - Tell the user a tool was ended at its time limit.
+ * @f: the window the pane belongs to; @tool: the tool that ran too long;
+ * @result: the timeout result the model gets, traced so a test can read it.
+ *
+ * The pane names the limit (AIToolTimeout) so the user knows why the command
+ * stopped and which key to raise for a command that legitimately needs longer.
+ */
+static void ai_agent_report_timeout(FENSTER *f, const char *tool, const char *result)
+{
+ char line[200];
+ snprintf(line, sizeof line, "[agent] %s timed out after %d s (AIToolTimeout) "
+          "and was ended", tool, e_ai_tool_timeout);
+ ai_pane(f, line, 0);
+ wpe_ai_trace("agent tool timed out: %s", result);
 }
 
 /* Persist the current settings (the working mode) so choices stick across
@@ -5620,24 +5695,26 @@ static void ai_agent_report_outside(FENSTER *f, const char *path)
 
 /**
  * ai_agent_commit_write - Approve and write `content` to `path`, reloading it if open.
- * @f: the window the pane belongs to; @path: the file, as the agent named it;
- * @content: its new text, NULL when the model sent none.
+ * @f: the window the pane belongs to; @tool: write_file or apply_patch, for
+ * the deny line; @path: the file, as the agent named it; @content: its new
+ * text, NULL when the model sent none.
  *
  * Shared by write_file and apply_patch so both go through the same review: a
  * file inside the workspace follows the permission dial (ai_agent_approve_write),
  * a file outside it always asks with the marked box (ai_agent_ask_outside_write)
- * and is reported as outside once written.  Runs the post-edit hook after a
- * successful write, within the write's undo step.  Returns a malloc'd TOOL
- * RESULT.
+ * and is reported as outside once written.  A refusal is recorded by
+ * ai_agent_deny, as for a command.  Runs the post-edit hook after a successful
+ * write, within the write's undo step.  Returns a malloc'd TOOL RESULT.
  */
-static char *ai_agent_commit_write(FENSTER *f, const char *path, const char *content)
+static char *ai_agent_commit_write(FENSTER *f, const char *tool, const char *path,
+                                   const char *content)
 {
  int outside, allow;
  if (!content) return strdup("(no content)");
  outside = wpe_ai_path_outside_workspace(f, path);
  if (outside) allow = ai_agent_ask_outside_write(f, path, content);
  else allow = ai_agent_approve_write(f, path, content);
- if (!allow) return strdup("(denied by user)");
+ if (!allow) return ai_agent_deny(f, tool, path);
  if (!ai_agent_write_file(path, content)) return strdup("(write failed)");
  ai_agent_show_written(f, path);
  if (outside) ai_agent_report_outside(f, path);
@@ -5812,6 +5889,93 @@ static void ai_search_url_build(const char *tmpl, const char *q, char *out, size
   snprintf(out, outsz, "%s%s", tmpl, q);
 }
 
+/* The most of a page the web tools read before reducing it to text. */
+#define AI_WEB_FETCH_MAX 65536
+
+/**
+ * ai_agent_tool_run_command - Run the model's command, bounded in size and time.
+ * @f: the window the pane belongs to; @arg: the command line, as the model wrote it.
+ *
+ * The dial decides first; a refusal is recorded by ai_agent_deny.  The pane
+ * says the command is running before it starts, and when it outlives
+ * AIToolTimeout the command is ended, the pane says so and the model reads
+ * "TOOL ERROR: timed out after N s", so a hung command costs the user the
+ * configured seconds and not the editor.
+ * Return: the malloc'd result the model reads.
+ */
+static char *ai_agent_tool_run_command(FENSTER *f, const char *arg)
+{
+ int status = 0, timed_out = 0;
+ char *result;
+ if (!ai_agent_approve(f, arg, 1)) return ai_agent_deny(f, AI_TOOL_RUN_COMMAND, arg);
+ ai_agent_show_running(f, AI_TOOL_RUN_COMMAND);
+ result = wpe_ai_run_capture_bounded(arg, e_ai_tool_timeout, &status, &timed_out);
+ if (timed_out) ai_agent_report_timeout(f, AI_TOOL_RUN_COMMAND, result);
+ return result;
+}
+
+/**
+ * ai_agent_fetch_as_text - GET a page and reduce it to text for the model.
+ * @url: what to fetch; @failed: the words for a failure with no reason.
+ *
+ * The body is reduced to text so the model reads content, not markup; a
+ * failure comes back as a TOOL ERROR line the model can read and act on.
+ * Return: the malloc'd result, or NULL out of memory.
+ */
+static char *ai_agent_fetch_as_text(const char *url, const char *failed)
+{
+ char *raw = NULL, *result, werr[200];
+ size_t n;
+ werr[0] = '\0';
+ if (wpe_ai_web_fetch(url, AI_WEB_FETCH_MAX, &raw, werr, sizeof werr) == 0 && raw) {
+  result = ai_html_to_text(raw);
+  free(raw);
+  return result;
+ }
+ n = strlen(werr) + 20;
+ result = malloc(n);
+ if (result) snprintf(result, n, "TOOL ERROR: %s", werr[0] ? werr : failed);
+ return result;
+}
+
+/**
+ * ai_agent_tool_web_fetch - Read a web page for the model.
+ * @f: the window the pane belongs to; @arg: the URL.
+ *
+ * Network egress, so it goes through the same approval as run_command, and the
+ * pane says the fetch is running while the editor waits on it (the fetch has
+ * its own time limit).  This is the built-in agent's only route onto the web,
+ * for models that have no web tool of their own.
+ * Return: the malloc'd result the model reads.
+ */
+static char *ai_agent_tool_web_fetch(FENSTER *f, const char *arg)
+{
+ if (!ai_agent_approve(f, arg, 1)) return ai_agent_deny(f, AI_TOOL_WEB_FETCH, arg);
+ ai_agent_show_running(f, AI_TOOL_WEB_FETCH);
+ return ai_agent_fetch_as_text(arg, "fetch failed");
+}
+
+/**
+ * ai_agent_tool_web_search - Search the web for the model.
+ * @f: the window the pane belongs to; @arg: the query, as the model wrote it.
+ *
+ * Builds a query URL from the configurable template (AISearchURL, default a
+ * keyless engine) and fetches it as text; the model reads the result links,
+ * then web_fetch's the promising one.  Gated and announced like web_fetch.
+ * Return: the malloc'd result the model reads.
+ */
+static char *ai_agent_tool_web_search(FENSTER *f, const char *arg)
+{
+ char enc[1024], surl[1400];
+ const char *tmpl = (e_ai_search_url && *e_ai_search_url) ? e_ai_search_url
+                    : "https://lite.duckduckgo.com/lite/?q=%s";
+ if (!ai_agent_approve(f, arg, 1)) return ai_agent_deny(f, AI_TOOL_WEB_SEARCH, arg);
+ ai_agent_show_running(f, AI_TOOL_WEB_SEARCH);
+ ai_url_encode(arg, enc, sizeof enc);
+ ai_search_url_build(tmpl, enc, surl, sizeof surl);
+ return ai_agent_fetch_as_text(surl, "search failed");
+}
+
 /* One agent turn: parse the action, run the tool (write/run ask for approval),
  * feed the result back.  Returns 1 when the agent is done, 0 to keep going.
  * Runs from the conversation driver with the spinner paused, so its approval
@@ -5874,51 +6038,13 @@ static int ai_agent_process(ai_async_op *op, char *reply)
    result = ai_tool_run_readonly(tool, arg);   /* the argument is one shell word */
   } else if (!strcmp(tool, "read_file")) {
    result = ai_read_file_bounded(arg);
-  } else if (!strcmp(tool, "run_command")) {
-   if (ai_agent_approve(f, arg, 1)) result = ai_run_capture(arg);
-   else result = strdup("(denied by user)");
-  } else if (!strcmp(tool, "web_fetch")) {
-   /* Read a web page.  Network egress, so it goes through the same approval as
-      run_command; the body is reduced to text so the model reads content, not
-      markup.  This is the built-in agent's only route onto the web, for models
-      that have no web tool of their own (Ollama, a Groq/Lumo OpenAI endpoint). */
-   if (!ai_agent_approve(f, arg, 1)) {
-    result = strdup("(denied by user)");
-   } else {
-    char *raw = NULL, werr[200];
-    werr[0] = '\0';
-    if (wpe_ai_web_fetch(arg, 65536, &raw, werr, sizeof werr) == 0 && raw) {
-     result = ai_html_to_text(raw);
-     free(raw);
-    } else {
-     size_t n = strlen(werr) + 20;
-     result = malloc(n);
-     if (result) snprintf(result, n, "TOOL ERROR: %s", werr[0] ? werr : "fetch failed");
-    }
-   }
-  } else if (!strcmp(tool, "web_search")) {
-   /* Search the web for the model: build a query URL from a configurable
-      template (AISearchURL, default a keyless engine) and fetch it as text.
-      The model reads the result links, then web_fetch's the promising one. */
-   if (!ai_agent_approve(f, arg, 1)) {
-    result = strdup("(denied by user)");
-   } else {
-    char enc[1024], surl[1400], *raw = NULL, werr[200];
-    const char *tmpl = (e_ai_search_url && *e_ai_search_url) ? e_ai_search_url
-                       : "https://lite.duckduckgo.com/lite/?q=%s";
-    werr[0] = '\0';
-    ai_url_encode(arg, enc, sizeof enc);
-    ai_search_url_build(tmpl, enc, surl, sizeof surl);
-    if (wpe_ai_web_fetch(surl, 65536, &raw, werr, sizeof werr) == 0 && raw) {
-     result = ai_html_to_text(raw);
-     free(raw);
-    } else {
-     size_t n = strlen(werr) + 20;
-     result = malloc(n);
-     if (result) snprintf(result, n, "TOOL ERROR: %s", werr[0] ? werr : "search failed");
-    }
-   }
-  } else if (!strcmp(tool, "write_file")) {
+  } else if (!strcmp(tool, AI_TOOL_RUN_COMMAND)) {
+   result = ai_agent_tool_run_command(f, arg);   /* gated, announced, bounded */
+  } else if (!strcmp(tool, AI_TOOL_WEB_FETCH)) {
+   result = ai_agent_tool_web_fetch(f, arg);
+  } else if (!strcmp(tool, AI_TOOL_WEB_SEARCH)) {
+   result = ai_agent_tool_web_search(f, arg);
+  } else if (!strcmp(tool, AI_TOOL_WRITE_FILE)) {
    char *content = NULL;
    if (firstnl) {
     char *body = firstnl + 1, *endm = strstr(body, "\n@@END");
@@ -5926,9 +6052,9 @@ static int ai_agent_process(ai_async_op *op, char *reply)
     content = malloc(cl + 1);
     if (content) { memcpy(content, body, cl); content[cl] = '\0'; }
    }
-   result = ai_agent_commit_write(f, arg, content);   /* shared review + write */
+   result = ai_agent_commit_write(f, AI_TOOL_WRITE_FILE, arg, content);   /* shared review + write */
    free(content);
-  } else if (!strcmp(tool, "apply_patch")) {
+  } else if (!strcmp(tool, AI_TOOL_APPLY_PATCH)) {
    /* Precise edit: apply SEARCH/REPLACE blocks against the current file, then
       write the result through the same review as write_file.  An unmatched
       SEARCH becomes a TOOL ERROR so the model retries with better context. */
@@ -5942,7 +6068,7 @@ static int ai_agent_process(ai_async_op *op, char *reply)
     char *r = malloc(strlen(perr) + 16);
     if (r) { snprintf(r, strlen(perr) + 16, "TOOL ERROR: %s", perr); result = r; }
    } else {
-    result = ai_agent_commit_write(f, arg, newc);
+    result = ai_agent_commit_write(f, AI_TOOL_APPLY_PATCH, arg, newc);
    }
    free(old);
    free(newc);

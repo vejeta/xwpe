@@ -233,6 +233,23 @@ Changes
 
 1.7.0 (AI assistant -- experimental, opt-in)
 
+* Agent: a tool run is named and bounded, and every denial is visible.  While
+  the agent runs a command or a web tool the pane's last line now reads
+  "[agent] running run_command ... (result follows)" for the whole run; it
+  used to stop on the request with the spinner frozen and nothing saying an
+  answer would follow.  A command now gets AIToolTimeout seconds (default 60;
+  XWPE_AI_TOOL_TIMEOUT for one session): past that it is ended, the pane says
+  "run_command timed out after N s" and the model reads "TOOL ERROR: timed
+  out after N s", so a hung command costs the configured seconds, not the
+  editor (Esc was unread until the command ended on its own).  The read-only
+  tools and the post-edit hook (AIEditHook) share the limit.  Pressing n or
+  Esc on an approval now shows "[agent] denied: <tool> <arg>" in the pane and
+  the trace, for a command, a web tool and a write alike; a denied command
+  used to leave no trace at all.  A command result or a file read with
+  read_file over 6000 bytes now ends with "(output cut at 6000 bytes)"
+  instead of being cut silently, so the model knows to ask for less.
+  Tests: tests/test_ai_agent_run_visibility.py.
+
 * Agent and chat read tools: the argument of list_dir, grep and glob now
   reaches the shell as one word.  "TOOL grep two words" searches for the
   phrase "two words" (it used to search "two" in a file called "words"), and

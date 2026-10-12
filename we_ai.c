@@ -32,6 +32,7 @@
 
 static char *ai_strdup(const char *s);            /* defined below; used early */
 static char *ai_read_first_line(const char *path); /* defined below; used early */
+static long  ai_now_ms(void);                      /* defined below; used early */
 
 /* ----- configuration globals (defaults chosen so an empty config works) --- */
 int   e_ai_backend  = WPE_AI_OLLAMA;
@@ -43,6 +44,8 @@ char *e_ai_host_command = NULL;        /* agent-host CLI to run (default: claude
 int   e_ai_host_adapter = 0;           /* 0 = claude-code (stream-json), 1 = text  */
 char *e_ai_search_url = NULL;          /* web_search URL template ("%s" = query);
                                           NULL => the built-in keyless default      */
+int   e_ai_tool_timeout = WPE_AI_TOOL_TIMEOUT_DEFAULT;  /* seconds a tool command
+                                          may run before the editor ends it         */
 char *e_ai_cafile   = NULL;            /* extra CA/self-signed cert to trust (TLS),
                                           for a local HTTPS bridge; NULL => system
                                           CA store only                          */
@@ -206,10 +209,22 @@ const char *wpe_ai_policy_name(int policy)
 
 /* How much of a command's output the result carries.  Everything past it is
  * read and dropped, never stored: the model gets a bounded result and the
- * command still reaches its own end instead of stalling on a full pipe. */
-#define AI_CAPTURE_MAX   6000
+ * command still reaches its own end instead of stalling on a full pipe.  A
+ * result that lost bytes this way ends with the cut note, so the model knows
+ * it saw the beginning only. */
+#define AI_CAPTURE_MAX   WPE_AI_TOOL_OUT_MAX
+/* The cut note, one text for every bounded result; the number is the bound. */
+#define AI_CAPTURE_CUT_NOTE_FMT "\n(output cut at %d bytes)"
+/* Room the note needs after the bounded output, with its NUL. */
+#define AI_CAPTURE_CUT_NOTE_ROOM 64
 /* One read() at a time, and the scratch buffer it reads into. */
 #define AI_CAPTURE_CHUNK 4096
+/* What the model reads when a command outlived its time limit. */
+#define AI_CAPTURE_TIMEOUT_FMT "TOOL ERROR: timed out after %d s"
+/* After SIGTERM a command gets this long to end on its own before SIGKILL, so
+ * one that cleans up on TERM may, and one that ignores it still ends. */
+#define AI_CAPTURE_KILL_GRACE_MS 2000
+#define AI_CAPTURE_MS_PER_S 1000
 /* Exit status of a child whose shell could not be executed, the convention
  * every shell uses for "command not found". */
 #define AI_CAPTURE_NOEXEC 127
@@ -319,43 +334,193 @@ static int ai_capture_start(const char *cmd, int *fd, pid_t *pid)
  return 0;
 }
 
+/* What one command run produced: the bounded text and what happened to it. */
+struct ai_capture {
+ char  *out;        /* the bounded output, NUL-terminated; NULL out of memory */
+ size_t len;        /* bytes kept in out                                      */
+ int    cut;        /* bytes past the bound were read and dropped             */
+ int    timed_out;  /* the deadline passed before the output ended            */
+};
+
 /**
  * ai_capture_store - Keep as much of one read as the bounded result allows.
+ * @cap: the result so far; @buf/@n: the bytes just read.
+ *
+ * Notes when bytes had to be dropped, so the finished result can say it was
+ * cut instead of passing the first part off as the whole.
  */
-static void ai_capture_store(char *out, size_t *len, const char *buf, size_t n)
+static void ai_capture_store(struct ai_capture *cap, const char *buf, size_t n)
 {
- size_t room = AI_CAPTURE_MAX - *len;
- if (n > room) n = room;
+ size_t room = AI_CAPTURE_MAX - cap->len;
+ if (n > room) { cap->cut = 1; n = room; }
  if (n == 0) return;
- memcpy(out + *len, buf, n);
- *len += n;
+ memcpy(cap->out + cap->len, buf, n);
+ cap->len += n;
+}
+
+/**
+ * ai_capture_deadline - The moment a command started now must have ended by.
+ * @timeout_s: the bound in seconds (e_ai_tool_timeout for a tool run).
+ */
+static long ai_capture_deadline(int timeout_s)
+{
+ return ai_now_ms() + (long)timeout_s * AI_CAPTURE_MS_PER_S;
+}
+
+/**
+ * ai_capture_wait_output - Wait for the command to write, or for its deadline.
+ * @fd: the read end of the command's pipe; @deadline_ms: when to stop waiting.
+ *
+ * A poll() with the time left, never a sleep and never a loop that spins: the
+ * editor is blocked for exactly as long as the command works or the bound
+ * allows, and not a moment more.
+ * Return: 1 when the pipe has output (or end of file) to read, 0 when the
+ * deadline passed first.
+ */
+static int ai_capture_wait_output(int fd, long deadline_ms)
+{
+ struct pollfd pfd;
+ for (;;) {
+  long left = deadline_ms - ai_now_ms();
+  int r;
+  if (left <= 0) return 0;
+  pfd.fd = fd;
+  pfd.events = POLLIN;
+  pfd.revents = 0;
+  r = poll(&pfd, 1, (int)left);
+  if (r < 0 && errno == EINTR) continue;
+  if (r == 0) return 0;
+  return 1;
+ }
 }
 
 /**
  * ai_capture_read - Read the command's output into one allocated string.
- * @fd: the read end of the command's pipe
+ * @fd: the read end of the command's pipe; @deadline_ms: when to give up;
+ * @cap: receives the output and what happened to it.
  *
  * Reads all the way to end of file even once the result is full, so a chatty
  * command finishes its work instead of blocking on a pipe nobody empties --
- * which would hang the editor with the user's task half done.
- *
- * Return: a NUL-terminated string the caller frees, or NULL out of memory.
+ * which would hang the editor with the user's task half done.  A command that
+ * is still running at the deadline is left to the caller to end: the user gets
+ * the editor back after the configured time instead of after Ctrl-C from
+ * another terminal.
  */
-static char *ai_capture_read(int fd)
+static void ai_capture_read(int fd, long deadline_ms, struct ai_capture *cap)
 {
  char buf[AI_CAPTURE_CHUNK];
- char *out = malloc(AI_CAPTURE_MAX + 1);
- size_t len = 0;
 
- if (!out) return NULL;
+ cap->len = 0;
+ cap->cut = 0;
+ cap->timed_out = 0;
+ cap->out = malloc(AI_CAPTURE_MAX + AI_CAPTURE_CUT_NOTE_ROOM);
+ if (!cap->out) return;
  for (;;) {
-  ssize_t n = read(fd, buf, sizeof buf);
+  ssize_t n;
+  if (!ai_capture_wait_output(fd, deadline_ms)) { cap->timed_out = 1; break; }
+  n = read(fd, buf, sizeof buf);
   if (n < 0 && errno == EINTR) continue;
   if (n <= 0) break;
-  ai_capture_store(out, &len, buf, (size_t)n);
+  ai_capture_store(cap, buf, (size_t)n);
  }
- out[len] = '\0';
- return out;
+ cap->out[cap->len] = '\0';
+}
+
+/**
+ * ai_capture_signal_group - Send a signal to the command and everything it started.
+ * @pid: the child the editor forked; @sig: SIGTERM or SIGKILL.
+ *
+ * The child put itself in a session of its own, so its pid is its process
+ * group and the group holds the shell and whatever the shell ran.  Signalling
+ * the group ends a pipeline whole, not only the shell in front of it.  Should
+ * the group be gone already, the pid alone is tried, which is harmless for an
+ * exited child that is still ours to reap.
+ */
+static void ai_capture_signal_group(pid_t pid, int sig)
+{
+ if (kill(-pid, sig) == 0) return;
+ kill(pid, sig);
+}
+
+/**
+ * ai_capture_drain_until_eof - Give an ended command its grace to close the pipe.
+ * @fd: the read end of the command's pipe; @deadline_ms: the end of the grace.
+ *
+ * Output that still arrives is read and dropped; the model already has its
+ * timeout answer.  End of file within the grace means every process holding
+ * the pipe has gone.
+ * Return: 1 on end of file, 0 when the grace ran out first.
+ */
+static int ai_capture_drain_until_eof(int fd, long deadline_ms)
+{
+ char buf[AI_CAPTURE_CHUNK];
+ for (;;) {
+  ssize_t n;
+  if (!ai_capture_wait_output(fd, deadline_ms)) return 0;
+  n = read(fd, buf, sizeof buf);
+  if (n < 0 && errno == EINTR) continue;
+  if (n <= 0) return 1;
+ }
+}
+
+/**
+ * ai_capture_end_child - End a command that outlived its time limit.
+ * @pid: the child the editor forked; @fd: the read end of its pipe.
+ *
+ * TERM first, so a command that cleans up on it may; KILL once the grace is
+ * over, so one that ignores TERM ends all the same.  KILL is sent even when
+ * the pipe closed within the grace: a process that closed its output and kept
+ * running would otherwise outlive the editor's wait for it.  Signals go to
+ * the process group, never to a name, so nothing but this command is touched.
+ */
+static void ai_capture_end_child(pid_t pid, int fd)
+{
+ long grace_end = ai_now_ms() + AI_CAPTURE_KILL_GRACE_MS;
+ ai_capture_signal_group(pid, SIGTERM);
+ ai_capture_drain_until_eof(fd, grace_end);
+ ai_capture_signal_group(pid, SIGKILL);
+}
+
+/**
+ * ai_capture_timeout_result - The result the model reads for a command that timed out.
+ * @timeout_s: the bound that was exceeded.
+ *
+ * Names the limit, so the model can split the work or the user can raise
+ * AIToolTimeout, instead of a silent empty result.
+ * Return: a malloc'd line, or NULL out of memory.
+ */
+static char *ai_capture_timeout_result(int timeout_s)
+{
+ char line[80];
+ snprintf(line, sizeof line, AI_CAPTURE_TIMEOUT_FMT, timeout_s);
+ return ai_strdup(line);
+}
+
+char *wpe_ai_tool_result_mark_cut(char *result, size_t len)
+{
+ char note[AI_CAPTURE_CUT_NOTE_ROOM];
+ size_t need;
+ char *grown;
+ snprintf(note, sizeof note, AI_CAPTURE_CUT_NOTE_FMT, WPE_AI_TOOL_OUT_MAX);
+ need = len + strlen(note) + 1;
+ grown = realloc(result, need);
+ if (!grown) return result;
+ memcpy(grown + len, note, strlen(note) + 1);
+ return grown;
+}
+
+/**
+ * ai_capture_finish_text - Turn what was read into the result the model gets.
+ * @cap: the finished capture (not timed out).
+ *
+ * A cut result ends with the cut note; an untouched one is returned as read.
+ * Return: the malloc'd result, or NULL out of memory.
+ */
+static char *ai_capture_finish_text(struct ai_capture *cap)
+{
+ if (!cap->out) return NULL;
+ if (!cap->cut) return cap->out;
+ return wpe_ai_tool_result_mark_cut(cap->out, cap->len);
 }
 
 /**
@@ -413,26 +578,49 @@ static void ai_capture_release_sigchld(const sigset_t *old)
  sigprocmask(SIG_SETMASK, old, NULL);
 }
 
-char *wpe_ai_run_capture_status(const char *cmd, int *status)
+/**
+ * ai_capture_report - Hand the caller the status and whether the bound fired.
+ */
+static void ai_capture_report(int *status, int exited, int *timed_out, int fired)
+{
+ if (status) *status = exited;
+ if (timed_out) *timed_out = fired;
+}
+
+char *wpe_ai_run_capture_bounded(const char *cmd, int timeout_s,
+                                 int *status, int *timed_out)
 {
  int fd, exited;
  pid_t pid;
+ struct ai_capture cap;
  char *out;
  sigset_t old_mask;
 
  ai_capture_hold_sigchld(&old_mask);
  if (ai_capture_start(cmd, &fd, &pid) != 0) {
   ai_capture_release_sigchld(&old_mask);
-  if (status) *status = AI_CAPTURE_NOEXEC;
+  ai_capture_report(status, AI_CAPTURE_NOEXEC, timed_out, 0);
   return ai_strdup("(could not run command)");
  }
- out = ai_capture_read(fd);
+ wpe_ai_trace("agent tool pid=%d", (int)pid);
+ ai_capture_read(fd, ai_capture_deadline(timeout_s), &cap);
+ if (cap.timed_out) ai_capture_end_child(pid, fd);
  close(fd);
  exited = ai_capture_wait(pid);
  ai_capture_release_sigchld(&old_mask);
- if (status) *status = exited;
+ ai_capture_report(status, exited, timed_out, cap.timed_out);
+ if (cap.timed_out) {
+  free(cap.out);
+  return ai_capture_timeout_result(timeout_s);
+ }
+ out = ai_capture_finish_text(&cap);
  if (!out) return ai_strdup("(out of memory)");
  return out;
+}
+
+char *wpe_ai_run_capture_status(const char *cmd, int *status)
+{
+ return wpe_ai_run_capture_bounded(cmd, e_ai_tool_timeout, status, NULL);
 }
 
 char *wpe_ai_run_capture(const char *cmd)
@@ -482,6 +670,7 @@ static const struct ai_cfg_binding g_ai_cfg_bind[WPE_AI_CFG_KEYS] = {
  { &e_ai_agent_engine, NULL },              /* WPE_AI_CFG_AGENT_ENGINE */
  { &e_ai_host_adapter, NULL },              /* WPE_AI_CFG_HOST_ADAPTER */
  { NULL,               &e_ai_search_url },  /* WPE_AI_CFG_SEARCH_URL   */
+ { &e_ai_tool_timeout, NULL },              /* WPE_AI_CFG_TOOL_TIMEOUT */
 };
 
 /**
@@ -600,6 +789,17 @@ static void ai_config_apply_env(void)
   e_ai_search_url = (*e) ? ai_strdup(e) : NULL;
   ai_file_shadow(WPE_AI_CFG_SEARCH_URL);
  }
+ if ((e = getenv("XWPE_AI_TOOL_TIMEOUT"))) {
+  e_ai_tool_timeout = wpe_ai_tool_timeout_from_text(e);
+  ai_file_shadow(WPE_AI_CFG_TOOL_TIMEOUT);
+ }
+}
+
+int wpe_ai_tool_timeout_from_text(const char *text)
+{
+ int seconds = text ? atoi(text) : 0;
+ if (seconds <= 0) return WPE_AI_TOOL_TIMEOUT_DEFAULT;
+ return seconds;
 }
 
 void wpe_ai_config_init(void)
