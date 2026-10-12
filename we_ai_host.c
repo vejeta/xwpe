@@ -27,6 +27,12 @@
 #define HOST_MAX_EDITS 32
 #define HOST_PATH_MAX  1024
 
+/* The control-request subtype that asks the CLI to stop the turn it is in, and
+   the prefix of the request ids the editor mints for it (each id is fresh so a
+   reply can be told from an earlier one). */
+#define HOST_CONTROL_INTERRUPT      "interrupt"
+#define HOST_INTERRUPT_ID_PREFIX    "xwpe-interrupt-"
+
 struct wpe_host {
  pid_t           pid;
  int             in_fd;                 /* child stdin  (we write user turns) */
@@ -39,6 +45,7 @@ struct wpe_host {
  int             nedited;
  int             text_seen;             /* assistant text streamed this turn */
  int             adapter;               /* WPE_AI_HOST_ADAPTER_* : how to read stdout */
+ int             interrupts;            /* interrupt requests sent, for fresh ids */
 };
 
 /* ------------------------------------------------------------------ helpers */
@@ -189,12 +196,37 @@ const char *wpe_host_session_id(wpe_host *h) { return h ? h->session_id : ""; }
 
 /* ------------------------------------------------------------------ send */
 
+/**
+ * host_write_line - Write one stream-json object to the CLI's stdin, newline-ended.
+ * @h: the live session; @o: the object, serialised plain (one line, no spaces).
+ *
+ * Every message the editor sends on the channel (a user turn, a permission
+ * answer, an interrupt) goes through here, so a partial write or a closed stdin
+ * is handled once and the three cannot frame their lines differently.
+ * Return: 0 when the whole line went out, -1 on a write error.
+ */
+static int host_write_line(wpe_host *h, struct json_object *o)
+{
+ const char *line;
+ size_t len, off;
+ char nl = '\n';
+
+ if (!h || h->in_fd < 0 || !o) return -1;
+ line = json_object_to_json_string_ext(o, JSON_C_TO_STRING_PLAIN);
+ len = strlen(line);
+ for (off = 0; off < len; ) {
+  ssize_t w = write(h->in_fd, line + off, len - off);
+  if (w < 0) { if (errno == EINTR) continue; return -1; }
+  off += (size_t)w;
+ }
+ if (write(h->in_fd, &nl, 1) < 0) return -1;
+ return 0;
+}
+
 int wpe_host_send(wpe_host *h, const char *user_text)
 {
  struct json_object *o, *m;
- const char *line;
- size_t len, off;
- int rc = 0;
+ int rc;
 
  if (!h || h->in_fd < 0) return -1;
  h->text_seen = 0;                      /* a fresh turn begins */
@@ -222,14 +254,39 @@ int wpe_host_send(wpe_host *h, const char *user_text)
  json_object_object_add(m, "content", json_object_new_string(user_text ? user_text : ""));
  json_object_object_add(o, "type", json_object_new_string("user"));
  json_object_object_add(o, "message", m);
- line = json_object_to_json_string_ext(o, JSON_C_TO_STRING_PLAIN);
- len = strlen(line);
- for (off = 0; off < len; ) {
-  ssize_t w = write(h->in_fd, line + off, len - off);
-  if (w < 0) { if (errno == EINTR) continue; rc = -1; break; }
-  off += (size_t)w;
- }
- if (rc == 0) { char nl = '\n'; if (write(h->in_fd, &nl, 1) < 0) rc = -1; }
+ rc = host_write_line(h, o);
+ json_object_put(o);
+ return rc;
+}
+
+/**
+ * wpe_host_interrupt - Ask the CLI to stop the turn it is in.
+ * @h: the live session.
+ *
+ * Pressing Esc while the hosted engine works used to do nothing: the user could
+ * only wait for the turn or end the whole session at the prompt.  This writes
+ * the protocol's interrupt control request on the CLI's stdin with a fresh
+ * request id; a CLI that honours it ends the turn with its usual result and
+ * stays alive for the next one, so the user keeps the conversation.
+ * Return: 0 when the request went out, -1 when stdin is closed (the text
+ * adapter, a one-shot CLI) or the write failed.
+ */
+int wpe_host_interrupt(wpe_host *h)
+{
+ struct json_object *o, *req;
+ char id[64];
+ int rc;
+
+ if (!h || h->in_fd < 0) return -1;
+ h->interrupts++;
+ snprintf(id, sizeof id, "%s%d", HOST_INTERRUPT_ID_PREFIX, h->interrupts);
+ req = json_object_new_object();
+ json_object_object_add(req, "subtype", json_object_new_string(HOST_CONTROL_INTERRUPT));
+ o = json_object_new_object();
+ json_object_object_add(o, "type", json_object_new_string("control_request"));
+ json_object_object_add(o, "request_id", json_object_new_string(id));
+ json_object_object_add(o, "request", req);
+ rc = host_write_line(h, o);
  json_object_put(o);
  return rc;
 }
@@ -243,8 +300,6 @@ static void host_answer_permission(wpe_host *h, const char *request_id,
                                    int allow, struct json_object *input)
 {
  struct json_object *o, *outer, *inner;
- const char *line;
- size_t len, off;
 
  if (!h || h->in_fd < 0 || !request_id) return;
  inner = json_object_new_object();
@@ -261,15 +316,7 @@ static void host_answer_permission(wpe_host *h, const char *request_id,
  o = json_object_new_object();
  json_object_object_add(o, "type", json_object_new_string("control_response"));
  json_object_object_add(o, "response", outer);
-
- line = json_object_to_json_string_ext(o, JSON_C_TO_STRING_PLAIN);
- len = strlen(line);
- for (off = 0; off < len; ) {
-  ssize_t w = write(h->in_fd, line + off, len - off);
-  if (w < 0) { if (errno == EINTR) continue; break; }
-  off += (size_t)w;
- }
- { char nl = '\n'; ssize_t w = write(h->in_fd, &nl, 1); (void)w; }
+ host_write_line(h, o);                 /* a failed answer surfaces as the CLI's hang-up */
  json_object_put(o);
 }
 

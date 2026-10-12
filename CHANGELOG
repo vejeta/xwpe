@@ -233,6 +233,24 @@ Changes
 
 1.7.0 (AI assistant -- experimental, opt-in)
 
+* Hosted agent engine: its permission requests follow the dial like the
+  built-in tools, and Esc interrupts a turn.  Under the dial position "edits"
+  the external CLI's Bash, WebFetch and WebSearch now ask with the command
+  box, its file-editing tools (Write, Edit, MultiEdit, NotebookEdit) are
+  auto-approved with the "[agent] auto-approved (edits): ..." line, and any
+  other tool asks; a web fetch used to pass as if it were a file edit.  A
+  refusal now shows "[agent] denied: <tool> <arg>" in the pane and the trace
+  as well as answering the CLI "Denied by the user".  Pressing Esc while the
+  engine works used to do nothing (the only way out was to end the whole
+  session at the Alt-G g prompt); it now says "[agent] interrupting ...",
+  sends the engine its interrupt request, and when the engine ends the turn
+  the pane shows "[agent] turn interrupted - Alt-G g continues, Esc there
+  ends" with the session kept, so the next Alt-G g continues the same
+  conversation.  An engine that has not ended the turn within AIToolTimeout
+  seconds is ended as if it had exited, review first for anything written.
+  Esc at the Alt-G g prompt keeps its meaning.
+  Tests: tests/test_ai_host_dial_and_interrupt.py.
+
 * Agent and chat: project instructions are announced and cannot remove tools,
   and a dial raised mid-run gets a checkpoint.  When AGENTS.md (or .xwpe-ai.md)
   from the working directory is folded into a run, the pane now says so:

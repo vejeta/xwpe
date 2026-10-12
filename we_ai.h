@@ -276,6 +276,12 @@ int  e_ai_ui_key(struct FNST *f);   /* Alt-B: open/prompt the AI assistant    */
 int  e_ai_menu(struct FNST *f);     /* bottom-bar "Alt-B AI" click: action menu */
 int  wpe_ai_busy(void);             /* a background AI task (async Edit) is running */
 void wpe_ai_cancel(void);           /* tear down the running background task       */
+/* The hosted agent engine (Alt-G g on an external CLI) is streaming a turn.
+ * Esc then asks the engine to stop that turn and keeps the session alive, the
+ * same key the built-in loop cancels with; both are 0 / a no-op in a build
+ * without the agent host. */
+int  wpe_ai_host_turn_active(void);
+void wpe_ai_host_interrupt(void);
 /* True while an Edit or a Complete started from `f` is waiting for its reply.
  * The reply is spliced over the lines that were sent, at the line numbers
  * captured when the request left, so the editor refuses the keys that would

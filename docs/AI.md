@@ -114,11 +114,19 @@ session using **its own** tools, with xwpe as the front-end). With the Claude
 Code engine, `Alt-G g` streams the agent's answer and tool activity into the
 pane, reloads any file it edits into that file's window (one `Ctrl-U` reverts),
 and keeps the session live across turns -- `Alt-G g` feeds the next turn, an
-empty prompt (or `Esc`) ends it and offers a reviewable/revertible changeset. The
-permission dial gates its tools **per tool**: *Ask* pops a `y`/`n` for each gated
-tool call, *Edits* auto-accepts file edits but asks before commands, *Auto* runs
-unattended (a checkpoint is taken either way). It is built as a generic "host an
-agent CLI that speaks stream-json" (Claude Code first; others as adapters later).
+empty prompt (or `Esc` at that prompt) ends it and offers a reviewable/revertible
+changeset. `Esc` while a turn is streaming interrupts that turn instead, as it
+cancels a built-in run: the pane says `[agent] interrupting ...`, the engine gets
+its interrupt request, and the turn ends with `[agent] turn interrupted` while the
+session stays alive; an engine that has not ended the turn within `AIToolTimeout`
+seconds is ended as if it had exited. The permission dial gates its tools **per
+tool**, classed like the editor's own: *Ask* pops a `y`/`n` for each gated tool
+call; *Edits* auto-accepts the file-editing tools (`Write`, `Edit`, `MultiEdit`,
+`NotebookEdit`) and asks for `Bash`, `WebFetch`, `WebSearch` and any other tool;
+*Auto* runs unattended (a checkpoint is taken either way). A refusal shows
+`[agent] denied: <tool> <arg>` and the CLI reads "Denied by the user". It is
+built as a generic "host an agent CLI that speaks stream-json" (Claude Code
+first; others as adapters later).
 
 `Alt-G f` runs a **Multi-file edit**: it studies the workspace read-only, then
 proposes a coordinated change across several files and shows it as a **modal
@@ -155,7 +163,7 @@ The assistant is a configure-time option, **off by default**:
 ```sh
 ./configure --enable-ai            # Chat/Edit/Agent, local + Claude-CLI backends
 ./configure --enable-ai --enable-ai-tls   # + HTTPS backends (Claude API, remote OpenAI)
-./configure --enable-ai --enable-ai-agent-host  # + host the Claude Code CLI (Alt-G h)
+./configure --enable-ai --enable-ai-agent-host  # + host the Claude Code CLI (Alt-G g, engine setting)
 ```
 
 `--enable-ai-tls` links libtls (LibreSSL) or OpenSSL and is only needed to reach

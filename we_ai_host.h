@@ -52,6 +52,12 @@ int         wpe_host_send(wpe_host *h, const char *user_text);
 void        wpe_host_pump(wpe_host *h, const wpe_host_events *ev, void *ud,
                           int *turn_done, int *hup);
 
+/* Ask the CLI to stop the turn it is in (the protocol's interrupt control
+   request).  The turn ends with the CLI's usual result and the session stays
+   alive.  Returns 0 when the request was written, -1 when stdin is closed or
+   the write failed. */
+int         wpe_host_interrupt(wpe_host *h);
+
 /* The session id the CLI reported (for --resume), or "" if none yet. */
 const char *wpe_host_session_id(wpe_host *h);
 

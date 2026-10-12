@@ -444,13 +444,27 @@ Choose the engine in @samp{Options}, @samp{AI} (the @samp{Agent engine} radio:
 stream-json subprocess on the fd-loop).  Its answer text and tool activity stream
 into the pane; when one of its tools writes a file, xwpe reloads that file into
 its open window as one undo step, so @kbd{Ctrl-U} reverts the agent's edit.  The
-permission dial gates the agent's tools @emph{per tool}: @code{ask} pops a
-@kbd{y}/@kbd{n} for each gated tool call (the CLI blocks until you answer),
-@code{edits} auto-accepts file edits but asks before commands, and @code{auto}
-runs unattended.  Either way xwpe takes a checkpoint at the start of the session,
-so the whole run is reviewable/revertible when it ends.  The session stays live
-across turns: @kbd{Alt-G g} feeds the next turn, and an empty prompt (or @key{Esc})
-ends it and offers the changeset review.
+permission dial gates the agent's tools @emph{per tool}, with the CLI's tools
+classed like the editor's own: @code{ask} pops a @kbd{y}/@kbd{n} for each gated
+tool call (the CLI blocks until you answer); @code{edits} auto-accepts the
+file-editing tools (@code{Write}, @code{Edit}, @code{MultiEdit},
+@code{NotebookEdit}) with the line @samp{[agent] auto-approved (edits): ...} and
+asks with the command box for @code{Bash}, @code{WebFetch}, @code{WebSearch} and
+any tool it does not know; @code{auto} runs unattended.  A refusal answers the
+CLI ``Denied by the user'' and the pane shows @samp{[agent] denied: <tool>
+<arg>}, as for a built-in tool.  Either way xwpe takes a checkpoint at the start
+of the session, so the whole run is reviewable/revertible when it ends.  The
+session stays live across turns: @kbd{Alt-G g} feeds the next turn, and an empty
+prompt (or @key{Esc} at that prompt) ends it and offers the changeset review.
+
+@key{Esc} while a turn is streaming interrupts that turn, as it cancels a
+built-in run: the pane says @samp{[agent] interrupting ...}, the editor sends the
+engine its interrupt request on the session's channel, and when the engine ends
+the turn the pane shows @samp{[agent] turn interrupted - Alt-G g continues, Esc
+there ends} with the session still alive.  An engine that has not ended the turn
+within @code{AIToolTimeout} seconds (default 60) is ended as if it had exited:
+the review opens for anything written and the pane says @samp{[agent] <engine>
+session ended}.
 
 It is built as a generic host, so which CLI it runs, and how its output is read,
 are configurable (@code{AIHostCommand}, @code{AIHostAdapter}).  Two adapters

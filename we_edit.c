@@ -564,6 +564,9 @@ int e_eingabe(ECNT *e)
   /* A background AI task is running: Esc cancels it (what the spinner promises)
      instead of leaving the editor or closing the chat pane. */
   if (c == WPE_ESC && wpe_ai_busy()) { wpe_ai_cancel(); c = 0; continue; }
+  /* The hosted agent engine is streaming a turn: the same key asks it to stop
+     that turn, and the session stays alive for the next Alt-G g. */
+  if (c == WPE_ESC && wpe_ai_host_turn_active()) { wpe_ai_host_interrupt(); c = 0; continue; }
   /* When the AI chat pane is focused, its input row eats the editing keys (and
      Esc closes the chat); everything else -- mouse (already handled above),
      window switching, function keys -- falls through to normal editing, so the

@@ -6883,8 +6883,9 @@ static int e_ai_plan(FENSTER *f)
  * Runs the real `claude` agent as a persistent stream-json session and renders
  * it in the docked pane: its assistant text and tool activity stream in, and a
  * file it edits on disk is reloaded into its open window (one Ctrl-U reverts).
- * The session stays live across turns; Alt-G h feeds the next turn, and Alt-G h
- * with an empty prompt (or Esc) ends it. */
+ * The session stays live across turns; Alt-G g feeds the next turn, Esc during
+ * a turn asks the engine to stop that turn, and Alt-G g with an empty prompt
+ * (or Esc there) ends the session. */
 
 static wpe_host *g_host;                /* the live session, or NULL */
 static ECNT     *g_host_cn;             /* container, for liveness checks */
@@ -6892,6 +6893,25 @@ static FENSTER  *g_host_win;            /* pane's anchor window */
 static int       g_host_fd = -1;        /* child stdout on the fd-loop */
 static int       g_host_turn;           /* a turn is streaming */
 static int       g_host_in_prompt;      /* a permission y/n modal is up */
+static int       g_host_interrupting;   /* Esc asked the engine to stop its turn */
+static int       g_host_deadline_fd = -1; /* one-shot timer: the engine's time to comply */
+static time_t    g_host_deadline_at;    /* the same bound, for a build without timerfd */
+
+/* The CLI's tool names, as it sends them in can_use_tool requests. */
+#define HOST_TOOL_BASH          "Bash"
+#define HOST_TOOL_WEBFETCH      "WebFetch"
+#define HOST_TOOL_WEBSEARCH     "WebSearch"
+#define HOST_TOOL_WRITE         "Write"
+#define HOST_TOOL_EDIT          "Edit"
+#define HOST_TOOL_MULTIEDIT     "MultiEdit"
+#define HOST_TOOL_NOTEBOOKEDIT  "NotebookEdit"
+
+/* How the permission dial reads a CLI tool: the classes the built-in loop has. */
+enum host_tool_class {
+ HOST_TOOL_CLASS_COMMAND,               /* runs a command or reaches the web */
+ HOST_TOOL_CLASS_WRITE,                 /* edits a file */
+ HOST_TOOL_CLASS_OTHER                  /* anything else the CLI gates */
+};
 
 /* A short name for the hosted engine, for the pane messages: the configured
    command, else "Claude Code" (the built-in default). */
@@ -6901,12 +6921,71 @@ static const char *host_engine_name(void)
  return "Claude Code";
 }
 
+/**
+ * host_deadline_disarm - Drop the timer that bounds an interrupted turn.
+ *
+ * Called when the engine ended the turn in time, or when the session ends for
+ * any reason, so a stale timer never fires into a session that no longer exists.
+ */
+static void host_deadline_disarm(void)
+{
+#ifdef __linux__
+ if (g_host_deadline_fd >= 0) {
+  wpe_fd_del(g_host_deadline_fd);
+  close(g_host_deadline_fd);
+  g_host_deadline_fd = -1;
+ }
+#endif
+ g_host_deadline_at = 0;
+}
+
+/**
+ * host_bring_pane_to_front - Put the pane on top so its last line is read.
+ * @f: the window the session was anchored to (gives the desktop).
+ *
+ * When the session ends after the changeset review, the review's Messages
+ * window sits on top of the pane, docked in the same place, and the "session
+ * ended" line lands under it where the user cannot see it; uncovering it later
+ * showed a stale image of the pane.  Switching to the pane is how the chat
+ * surfaces it: a full repaint from the buffer, with the last line in view.
+ */
+static void host_bring_pane_to_front(FENSTER *f)
+{
+ ECNT *cn = f->ed;
+ FENSTER *wf = ai_pane_existing(cn);
+ int wi;
+ if (!wf) return;
+ if (cn->f[cn->mxedt] == wf) return;        /* already on top */
+ for (wi = 1; wi <= cn->mxedt; wi++)
+  if (cn->f[wi] == wf) { e_switch_window(cn->edt[wi], wf); return; }
+}
+
 static void e_ai_host_end(const char *why)
 {
+ host_deadline_disarm();
+ g_host_interrupting = 0;
  if (g_host_fd >= 0) { wpe_fd_del(g_host_fd); g_host_fd = -1; }
  if (g_host) { wpe_host_free(g_host); g_host = NULL; }
- if (g_host_win && why) ai_pane(g_host_win, why, 1);
+ wpe_ai_trace("host end notice=%s", why ? why : "(none)");
+ if (g_host_win && why) {
+  ai_pane(g_host_win, why, 1);
+  host_bring_pane_to_front(g_host_win);
+ }
  g_host_win = NULL; g_host_cn = NULL; g_host_turn = 0;
+}
+
+/**
+ * host_end_session_notice - End the session and say so in the pane.
+ *
+ * The one line every way of ending a session shows, "[agent] <engine> session
+ * ended", so the user reads the same words whether the prompt was left empty,
+ * the CLI exited, or an interrupted turn ran past its bound.
+ */
+static void host_end_session_notice(void)
+{
+ char l[120];
+ snprintf(l, sizeof l, "[agent] %.80s session ended", host_engine_name());
+ e_ai_host_end(l);
 }
 
 /* Non-host code (e.g. Options > Disable) asks whether a host is up. */
@@ -6937,35 +7016,111 @@ static void host_ev_file(const char *path, void *ud)
 static void host_ev_notice(const char *text, void *ud)
 { ai_pane((FENSTER *)ud, text ? text : "", 0); }
 
-static void host_ev_result(const char *summary, int is_error, void *ud)
+/**
+ * host_turn_end_notice - Tell the user how the turn ended and what comes next.
+ * @f: the pane's window; @summary: the CLI's result text; @is_error: its flag.
+ *
+ * The assistant text already streamed, so the result field is not repeated on
+ * success.  An error is named; a turn the user interrupted with Esc says so,
+ * so the shorter answer is not mistaken for the engine's own ending; a normal
+ * end says how to continue.  All three name Alt-G g as the way on.
+ */
+static void host_turn_end_notice(FENSTER *f, const char *summary, int is_error)
 {
- FENSTER *f = ud;
  char l[720];
- /* The assistant text already streamed via on_text; do NOT re-print the result
-    field on success (it repeats the whole answer).  Surface only errors. */
  if (is_error)
   snprintf(l, sizeof l, "[agent] error: %.640s", (summary && summary[0]) ? summary : "run failed");
+ else if (g_host_interrupting)
+  snprintf(l, sizeof l, "[agent] turn interrupted - Alt-G g continues, Esc there ends");
  else
   snprintf(l, sizeof l, "[agent] turn complete - Alt-G g continues, Esc there ends");
  ai_pane(f, l, 0);
- g_host_turn = 0;
- wpe_ai_trace("host result is_error=%d", is_error);
 }
 
-/* The agent wants to use a tool: ask y/n (reusing the agent approval dialog),
-   returning 1 allow / 0 deny.  g_host_in_prompt stops the fd pump from
-   re-entering while the modal reads a key. */
+/**
+ * host_turn_finish - Leave the turn: no turn streams, no interrupt is pending.
+ *
+ * Drops the bound armed by an interrupt, so an engine that complied in time is
+ * never ended by a timer meant for one that did not.
+ */
+static void host_turn_finish(void)
+{
+ host_deadline_disarm();
+ g_host_interrupting = 0;
+ g_host_turn = 0;
+}
+
+static void host_ev_result(const char *summary, int is_error, void *ud)
+{
+ FENSTER *f = ud;
+ host_turn_end_notice(f, summary, is_error);
+ wpe_ai_trace("host result is_error=%d interrupted=%d", is_error, g_host_interrupting);
+ host_turn_finish();
+}
+
+/**
+ * ai_host_tool_class - Class a CLI tool the way the built-in loop classes its own.
+ * @name: the tool name from the can_use_tool request.
+ *
+ * The dial reads "edits" as "file edits pass, anything that runs or reaches
+ * out asks".  The CLI's Bash, WebFetch and WebSearch are the commands; its
+ * Write, Edit, MultiEdit and NotebookEdit are the writes; a tool the editor
+ * does not know asks rather than passing as if it were an edit, which is how a
+ * web fetch used to be auto-approved under edits.
+ * Return: HOST_TOOL_CLASS_COMMAND, HOST_TOOL_CLASS_WRITE or HOST_TOOL_CLASS_OTHER.
+ */
+static enum host_tool_class ai_host_tool_class(const char *name)
+{
+ if (!name) return HOST_TOOL_CLASS_OTHER;
+ if (!strcmp(name, HOST_TOOL_BASH))      return HOST_TOOL_CLASS_COMMAND;
+ if (!strcmp(name, HOST_TOOL_WEBFETCH))  return HOST_TOOL_CLASS_COMMAND;
+ if (!strcmp(name, HOST_TOOL_WEBSEARCH)) return HOST_TOOL_CLASS_COMMAND;
+ if (!strcmp(name, HOST_TOOL_WRITE))     return HOST_TOOL_CLASS_WRITE;
+ if (!strcmp(name, HOST_TOOL_EDIT))      return HOST_TOOL_CLASS_WRITE;
+ if (!strcmp(name, HOST_TOOL_MULTIEDIT)) return HOST_TOOL_CLASS_WRITE;
+ if (!strcmp(name, HOST_TOOL_NOTEBOOKEDIT)) return HOST_TOOL_CLASS_WRITE;
+ return HOST_TOOL_CLASS_OTHER;
+}
+
+/**
+ * ai_host_tool_asks_under_edits - Does this class need the box under "edits"?
+ * @cls: the tool's class.
+ *
+ * Only a write passes on the dial's word; a command and anything unclassified
+ * ask, so the user sees every request that is not a file edit.
+ * Return: 1 when the dial position edits must still ask, 0 when it may pass.
+ */
+static int ai_host_tool_asks_under_edits(enum host_tool_class cls)
+{
+ if (cls == HOST_TOOL_CLASS_WRITE) return 0;
+ return 1;
+}
+
+/**
+ * host_ev_permission - The CLI asks to use a tool; the dial and the user decide.
+ * @tool: the CLI's tool name; @arg: its short argument; @ud: the pane's window.
+ *
+ * Reuses the built-in loop's approval (auto passes everything with the
+ * auto-approved line, edits passes writes and asks for the rest, ask asks
+ * every time) and its denial record, so a refused WebFetch shows
+ * "[agent] denied: WebFetch <url>" exactly as a refused web_fetch does.
+ * g_host_in_prompt stops the fd pump from re-entering while the box reads a key.
+ * Return: 1 allow, 0 deny (the CLI then reads "Denied by the user").
+ */
 static int host_ev_permission(const char *tool, const char *arg, void *ud)
 {
  FENSTER *f = ud;
  char what[720];
- int is_run = tool && !strcmp(tool, "Bash");
+ const char *name = tool ? tool : "tool";
+ const char *shown = arg ? arg : "";
+ enum host_tool_class cls = ai_host_tool_class(tool);
  int ok;
- snprintf(what, sizeof what, "%s %.640s", tool ? tool : "tool", arg ? arg : "");
+ snprintf(what, sizeof what, "%s %.640s", name, shown);
  g_host_in_prompt = 1;
- ok = ai_agent_approve(f, what, is_run);
+ ok = ai_agent_approve(f, what, ai_host_tool_asks_under_edits(cls));
  g_host_in_prompt = 0;
- wpe_ai_trace("host permission tool=%s allow=%d", tool ? tool : "?", ok);
+ if (!ok) free(ai_agent_deny(f, name, shown));   /* the pane and trace lines; the model text is the CLI's own */
+ wpe_ai_trace("host permission tool=%s allow=%d", name, ok);
  return ok;
 }
 
@@ -6973,6 +7128,77 @@ static const wpe_host_events g_host_ev = {
  host_ev_text, host_ev_tool, host_ev_file, host_ev_notice, host_ev_result,
  host_ev_permission
 };
+
+/**
+ * host_end_interrupt_overdue - End a session whose engine ignored the interrupt.
+ *
+ * The user pressed Esc, AIToolTimeout seconds passed and the turn is still
+ * open: waiting longer would leave the editor tied to an engine that does not
+ * listen.  The session ends as on a child exit, with the same pane line.  The
+ * changeset review opens first when something was checkpointed and the editor
+ * is in its own key loop; from inside a dialog's key read a modal review would
+ * stack on the dialog, so there the session simply ends.
+ */
+static void host_end_interrupt_overdue(void)
+{
+ if (!g_host || !g_host_interrupting) return;
+ wpe_ai_trace("host interrupt deadline: session ended after %d s", e_ai_tool_timeout);
+ if (wpe_ai_checkpoint_active() && ai_editor_idle(g_host_cn))
+  wpe_ai_changeset_review(g_host_win);
+ host_end_session_notice();
+}
+
+/**
+ * host_deadline_fire - The one-shot timer of an interrupted turn ran out.
+ * @fd: the timer; @data: unused.
+ *
+ * Runs on the fd-loop like the heartbeat, so the editor never blocks waiting
+ * for the engine: it keeps taking keys and the bound still holds.
+ */
+static void host_deadline_fire(int fd, void *data)
+{
+ uint64_t exp;
+ (void)data;
+ if (read(fd, &exp, sizeof exp) != (ssize_t)sizeof exp) return;
+ host_end_interrupt_overdue();
+}
+
+/**
+ * host_deadline_check - The bound for a build without timerfd.
+ *
+ * Checked whenever the engine's stdout wakes the fd callback; an engine that
+ * keeps streaming past the bound is ended there.  On Linux the one-shot timer
+ * fires first, also during the engine's silence.
+ */
+static void host_deadline_check(void)
+{
+ if (!g_host_interrupting || !g_host_deadline_at) return;
+ if (time(NULL) < g_host_deadline_at) return;
+ host_end_interrupt_overdue();
+}
+
+/**
+ * host_deadline_arm - Give the engine AIToolTimeout seconds to end the turn.
+ *
+ * Mirrors the heartbeat's timerfd idiom (a one-shot here) so the wait is an
+ * fd-loop event, not a loop; the wall-clock copy serves host_deadline_check
+ * where timerfd does not exist.
+ */
+static void host_deadline_arm(void)
+{
+ host_deadline_disarm();
+ g_host_deadline_at = time(NULL) + e_ai_tool_timeout;
+#ifdef __linux__
+ g_host_deadline_fd = timerfd_create(CLOCK_MONOTONIC, TFD_CLOEXEC | TFD_NONBLOCK);
+ if (g_host_deadline_fd >= 0) {
+  struct itimerspec its;
+  memset(&its, 0, sizeof its);
+  its.it_value.tv_sec = e_ai_tool_timeout;
+  timerfd_settime(g_host_deadline_fd, 0, &its, NULL);
+  wpe_fd_add(g_host_deadline_fd, POLLIN, host_deadline_fire, NULL);
+ }
+#endif
+}
 
 /* fd-loop callback: drain and render the session's stream-json events. */
 static void host_fd_cb(int fd, void *data)
@@ -6982,11 +7208,43 @@ static void host_fd_cb(int fd, void *data)
  if (!g_host || g_host_in_prompt) return;   /* not while a permission modal is up */
  if (!ai_window_alive(g_host_cn, g_host_win)) { e_ai_host_end(NULL); return; }
  wpe_host_pump(g_host, &g_host_ev, g_host_win, &turn_done, &hup);
- if (hup) {
-  char l[120];
-  snprintf(l, sizeof l, "[agent] %.80s session ended", host_engine_name());
-  e_ai_host_end(l);
- }
+ if (hup) { host_end_session_notice(); return; }
+ host_deadline_check();
+}
+
+/**
+ * wpe_ai_host_turn_active - Is the hosted engine streaming a turn right now?
+ *
+ * The editor's key loop asks this before Esc, so the key that cancels a
+ * built-in task also interrupts a hosted one instead of closing the pane.
+ * Return: 1 while a turn is open, 0 otherwise.
+ */
+int wpe_ai_host_turn_active(void)
+{
+ if (!g_host) return 0;
+ return g_host_turn;
+}
+
+/**
+ * wpe_ai_host_interrupt - Esc during a hosted turn: ask the engine to stop it.
+ *
+ * The pane says "[agent] interrupting ..." at once, the request goes out on the
+ * stream-json channel, and the engine gets AIToolTimeout seconds to end the
+ * turn; when it does, the pane shows "turn interrupted" and the session stays
+ * alive for the next Alt-G g.  A second Esc while the first is pending changes
+ * nothing.  A write failure (the CLI's stdin gone) is left to the same bound,
+ * so the user is never stuck either way.
+ */
+void wpe_ai_host_interrupt(void)
+{
+ int rc;
+ if (!wpe_ai_host_turn_active()) return;
+ if (g_host_interrupting) { wpe_ai_trace("host interrupt already pending"); return; }
+ g_host_interrupting = 1;
+ rc = wpe_host_interrupt(g_host);
+ ai_pane(g_host_win, "[agent] interrupting ...", 0);
+ wpe_ai_trace("host interrupt sent rc=%d bound=%d s", rc, e_ai_tool_timeout);
+ host_deadline_arm();
 }
 
 int e_ai_host(FENSTER *f)
@@ -7015,10 +7273,8 @@ int e_ai_host(FENSTER *f)
      /* Safe to go modal here (user context, not the fd callback): let the user
         review/revert what the agent changed against the start-of-session
         checkpoint, then tear down. */
-     char l[120];
      if (wpe_ai_checkpoint_active()) wpe_ai_changeset_review(f);
-     snprintf(l, sizeof l, "[agent] %.80s session ended", host_engine_name());
-     e_ai_host_end(l);
+     host_end_session_notice();
     }
     return 0;
    }
@@ -7053,10 +7309,13 @@ int e_ai_host(FENSTER *f)
   return 0;
  }
  g_host_turn = 1;
- ai_pane(f, "[agent] working...", 0);
+ ai_pane(f, "[agent] working... (Esc interrupts the turn)", 0);
  wpe_ai_trace("host send");
  return 0;
 }
+#else  /* no agent host in this build: Esc has no hosted turn to interrupt */
+int  wpe_ai_host_turn_active(void) { return 0; }
+void wpe_ai_host_interrupt(void) { }
 #endif /* WPE_AI_AGENT_HOST */
 
 /* ======================= Bottom-bar action menu ========================= */

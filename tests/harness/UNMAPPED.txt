@@ -37,6 +37,7 @@ tests/test_ai_endpoint_down.py
 tests/test_ai_fix_build.py
 tests/test_ai_glob.py
 tests/test_ai_host.py
+tests/test_ai_host_dial_and_interrupt.py
 tests/test_ai_host_nudge.py
 tests/test_ai_host_text.py
 tests/test_ai_identity.py

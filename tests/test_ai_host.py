@@ -1,6 +1,7 @@
 """External agent host (Claude Code native): stream + on-disk edit -> buffer.
 
-Alt-G h runs an external agent CLI as a persistent stream-json session.  The CLI
+Alt-G g, with the external engine selected, runs an agent CLI as a persistent
+stream-json session.  The CLI
 is replaced here by a deterministic mock (XWPE_AI_HOST_CMD) that, for each user
 turn, writes the open file on disk and emits stream-json events (assistant text,
 a Write tool_use, a result).  The host must render the text/tool lines in the
