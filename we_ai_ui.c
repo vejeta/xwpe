@@ -1086,12 +1086,43 @@ static size_t ai_append_identity(char *sys, size_t cap, size_t len)
 }
 
 /* The project's standing AI instructions, capped so a large file cannot crowd
-   out the rest of the prompt.  Kept modest on purpose. */
-#define AI_PROJECT_MEMORY_MAX 4096
+   out the rest of the prompt.  Kept modest on purpose.  The buffer holds
+   AI_PROJECT_MEMORY_USABLE bytes of the file and the terminating NUL. */
+#define AI_PROJECT_MEMORY_MAX    4096
+#define AI_PROJECT_MEMORY_USABLE (AI_PROJECT_MEMORY_MAX - 1)
+
+/* The heading of the project block in the prompt, and the sentence that
+   follows the block in the same system message: the instructions say how to
+   use the tools, the editor says which tools there are.  A local model took
+   "do not open network connections" in a repository's AGENTS.md, written for
+   other coding agents, as an order to refuse the editor's own web tools; the
+   sentence is written once and used by the agent, the plan and the chat. */
+#define AI_PROJECT_BLOCK_HEAD \
+  "PROJECT INSTRUCTIONS (from the project's AGENTS.md -- follow these):\n"
+#define AI_PROJECT_TOOLS_STAND \
+  "The tool list above stands: project instructions govern how the tools are " \
+  "used, never which tools exist.\nA rule in them that forbids a tool does not " \
+  "remove it from this editor's list."
+/* Room for the heading, the two newlines and the sentence around the body. */
+#define AI_PROJECT_BLOCK_EXTRA 400
+
+/* The pane line that says which project instructions a run folded in. */
+#define AI_PROJECT_ANNOUNCE_LINE     "[agent] project instructions: %s (%zu bytes)"
+#define AI_PROJECT_ANNOUNCE_CUT_LINE "[agent] project instructions: %s (%zu bytes, cut at %d)"
+
+/* What ai_project_memory found: the file's name, how much of it the prompt
+   carries, and how long it really is (longer than `loaded` means it was cut). */
+struct ai_project_memory_info {
+ const char *name;
+ size_t      loaded;
+ size_t      total;
+};
 
 /**
  * ai_project_memory - Read the project's AI instructions file into `out`.
  * @out: buffer to fill (always NUL-terminated); @n: its size.
+ * @info: filled with the file's name and sizes, so the caller can tell the
+ *        user what was folded in and whether the file was cut.
  * Return: bytes read (0 when there is no project instructions file).
  *
  * Looks for AGENTS.md (the emerging cross-tool convention), then the
@@ -1101,17 +1132,23 @@ static size_t ai_append_identity(char *sys, size_t cap, size_t len)
  * follows -- the cross-tool per-repo agent-instructions convention -- without the
  * user restating them each turn.
  */
-static size_t ai_project_memory(char *out, size_t n)
+static size_t ai_project_memory(char *out, size_t n, struct ai_project_memory_info *info)
 {
  static const char *names[] = { "AGENTS.md", ".xwpe-ai.md" };
  size_t i, got = 0;
+ struct stat st;
  out[0] = '\0';
+ info->name = NULL; info->loaded = 0; info->total = 0;
  for (i = 0; i < sizeof names / sizeof names[0]; i++) {
   FILE *fp = fopen(names[i], "rb");
   if (!fp) continue;
   got = fread(out, 1, n - 1, fp);
+  if (fstat(fileno(fp), &st) == 0) info->total = (size_t)st.st_size;
   fclose(fp);
   out[got] = '\0';
+  info->name = names[i];
+  info->loaded = got;
+  if (info->total < got) info->total = got;
   wpe_ai_trace("project memory %s bytes=%zu", names[i], got);
   break;
  }
@@ -1119,18 +1156,80 @@ static size_t ai_project_memory(char *out, size_t n)
 }
 
 /**
+ * ai_project_memory_cut - Was the instructions file longer than the prompt carries?
+ * @info: what ai_project_memory found.  Return: 1 when the file was cut.
+ */
+static int ai_project_memory_cut(const struct ai_project_memory_info *info)
+{
+ return info->total > info->loaded;
+}
+
+/**
+ * ai_project_memory_announce - Tell the user which project instructions a run folds in.
+ * @f: the window the pane belongs to; @info: what ai_project_memory found.
+ *
+ * Until now only the trace said that AGENTS.md was loaded, so when the model
+ * followed a rule from it (a repository's "do not open network connections",
+ * written for other agents) the user could not see where the refusal came
+ * from.  The pane line names the file and its size, and says "cut at N" when
+ * the file was longer than the prompt carries, so a rule near its end that the
+ * model never saw is not a mystery either.
+ */
+static void ai_project_memory_announce(FENSTER *f, const struct ai_project_memory_info *info)
+{
+ char line[200];
+ if (ai_project_memory_cut(info))
+  snprintf(line, sizeof line, AI_PROJECT_ANNOUNCE_CUT_LINE, info->name, info->total,
+           AI_PROJECT_MEMORY_USABLE);
+ else
+  snprintf(line, sizeof line, AI_PROJECT_ANNOUNCE_LINE, info->name, info->loaded);
+ ai_pane(f, line, 0);
+}
+
+/**
+ * ai_project_block_text - Form the project block for a prompt: heading, file, precedence.
+ * @out: destination; @n: its size; @body: the instructions file's text.
+ *
+ * One builder for the chat and the message-list prompts, so the heading and
+ * the tool-list-stands sentence cannot differ between them.
+ */
+static void ai_project_block_text(char *out, size_t n, const char *body)
+{
+ snprintf(out, n, "%s%s\n\n%s", AI_PROJECT_BLOCK_HEAD, body, AI_PROJECT_TOOLS_STAND);
+}
+
+/**
+ * ai_chat_announce_project_memory - Show the project-instructions line once per chat session.
+ * @f: the window the pane belongs to; @info: what ai_project_memory found.
+ *
+ * The chat rebuilds its prompt on every turn, and an answer may take several
+ * read-only turns, so the line would otherwise repeat under every question.
+ * The session remembers that it was shown (see wpe_ai_session_project_announced).
+ */
+static void ai_chat_announce_project_memory(FENSTER *f, const struct ai_project_memory_info *info)
+{
+ if (wpe_ai_session_project_announced()) return;
+ ai_project_memory_announce(f, info);
+ wpe_ai_session_mark_project_announced();
+}
+
+/**
  * ai_append_project_memory - Add the project instructions to a text prompt.
- * @sys/@cap/@len: prompt buffer being grown.  Return: the new length.
+ * @sys/@cap/@len: prompt buffer being grown; @f: the window the chat pane
+ * belongs to, for the once-per-session announcement.  Return: the new length.
  * A no-op when there is no AGENTS.md / .xwpe-ai.md, or no room left.
  */
-static size_t ai_append_project_memory(char *sys, size_t cap, size_t len)
+static size_t ai_append_project_memory(char *sys, size_t cap, size_t len, FENSTER *f)
 {
  char mem[AI_PROJECT_MEMORY_MAX];
- size_t got = ai_project_memory(mem, sizeof mem);
- if (!got || len >= cap - got - 96) return len;
- len += (size_t)snprintf(sys + len, cap - len,
-   "PROJECT INSTRUCTIONS (from the project's AGENTS.md -- follow these):\n%s\n\n",
-   mem);
+ char block[AI_PROJECT_MEMORY_MAX + AI_PROJECT_BLOCK_EXTRA];
+ struct ai_project_memory_info info;
+ size_t got = ai_project_memory(mem, sizeof mem, &info);
+ if (!got) return len;
+ ai_project_block_text(block, sizeof block, mem);
+ if (len >= cap - strlen(block) - 4) return len;
+ len += (size_t)snprintf(sys + len, cap - len, "%s\n\n", block);
+ ai_chat_announce_project_memory(f, &info);
  return len;
 }
 
@@ -1220,7 +1319,7 @@ static char *ai_build_system(FENSTER *f)
  if (!sys) { free(ctx); return NULL; }
  len += (size_t)snprintf(sys + len, cap - len, "%s", head);
  len += (size_t)snprintf(sys + len, cap - len, "%s", caps);
- len = ai_append_project_memory(sys, cap, len);
+ len = ai_append_project_memory(sys, cap, len, f);
  len = ai_append_identity(sys, cap, len);
  len = ai_append_open_files(sys, cap, len, f);
  nsc = wpe_ai_scope_files(f, e_project_is_open(), 1, &scope);
@@ -3156,17 +3255,23 @@ static void ai_ml_add_open_files(struct ai_mlist *m, FENSTER *f)
 /**
  * ai_ml_add_project_memory - Seed the conversation with the project's standing
  * AI instructions (AGENTS.md), as a system turn.  A no-op when there is none.
+ * @m: the conversation being seeded; @f: the window the pane belongs to.
+ *
  * The message-list peer of ai_append_project_memory, so the agent and the other
- * async modes follow the same repo conventions the chat does.
+ * async modes follow the same repo conventions the chat does.  The block ends
+ * with the sentence that keeps the tool list in force, and the pane names the
+ * file and its size at launch, so the user knows which rules the run follows
+ * and whether the file was cut.
  */
-static void ai_ml_add_project_memory(struct ai_mlist *m)
+static void ai_ml_add_project_memory(struct ai_mlist *m, FENSTER *f)
 {
- char mem[AI_PROJECT_MEMORY_MAX + 96];
+ char block[AI_PROJECT_MEMORY_MAX + AI_PROJECT_BLOCK_EXTRA];
  char body[AI_PROJECT_MEMORY_MAX];
- if (!ai_project_memory(body, sizeof body)) return;
- snprintf(mem, sizeof mem,
-   "PROJECT INSTRUCTIONS (from the project's AGENTS.md -- follow these):\n%s", body);
- ai_ml_add(m, "system", mem);
+ struct ai_project_memory_info info;
+ if (!ai_project_memory(body, sizeof body, &info)) return;
+ ai_project_block_text(block, sizeof block, body);
+ ai_ml_add(m, "system", block);
+ ai_project_memory_announce(f, &info);
 }
 
 /**
@@ -3213,6 +3318,8 @@ struct ai_async_op {
  struct ai_mlist ml;         /* the running conversation                        */
  const char *label;          /* spinner label, e.g. "[agent] working"          */
  int      iter, max_iter;
+ int      checkpointed;      /* this run took its checkpoint: at launch, or before
+                                the first write after the dial was raised        */
  int      paused;            /* skip the spinner while a modal (approval) is up */
  int      ready;             /* the reply is complete but a dialog was open when
                                 it landed: it waits for the editor's key loop   */
@@ -5693,24 +5800,58 @@ static void ai_agent_report_outside(FENSTER *f, const char *path)
  wpe_ai_trace("agent wrote outside workspace %s", path);
 }
 
+/* The pane line for a checkpoint, at launch and before a write that needs one. */
+#define AI_AGENT_CHECKPOINT_LINE \
+  "[agent] checkpoint taken - changes are reviewable/revertible at the end"
+
+/**
+ * ai_agent_ensure_checkpoint - Take this run's checkpoint if the dial now calls for one.
+ * @op: the running agent task.
+ *
+ * A run that may write without asking (dial at edits or auto) is covered by a
+ * checkpoint, so the review at the end can show and revert what it wrote.  The
+ * launch takes it when the dial is already raised; the dial is read live at
+ * each approval and Alt-G y can raise it while a turn is out, so the write path
+ * asks the same question again and takes the checkpoint before the first write
+ * that follows.  Under ask every write is approved in its own box and nothing
+ * is taken; a run never takes two.
+ */
+static void ai_agent_ensure_checkpoint(ai_async_op *op)
+{
+ char **scope;
+ int nsc;
+ if (e_ai_policy == WPE_AI_POLICY_ASK) return;
+ if (op->checkpointed) return;
+ nsc = wpe_ai_scope_files(op->f, e_project_is_open(), 1, &scope);
+ wpe_ai_checkpoint_create(op->f, scope, nsc);
+ wpe_ai_free_list(scope, nsc);
+ op->checkpointed = 1;
+ ai_pane(op->f, AI_AGENT_CHECKPOINT_LINE, 0);
+}
+
 /**
  * ai_agent_commit_write - Approve and write `content` to `path`, reloading it if open.
- * @f: the window the pane belongs to; @tool: write_file or apply_patch, for
- * the deny line; @path: the file, as the agent named it; @content: its new
- * text, NULL when the model sent none.
+ * @op: the running agent task (its window owns the pane); @tool: write_file or
+ * apply_patch, for the deny line; @path: the file, as the agent named it;
+ * @content: its new text, NULL when the model sent none.
  *
  * Shared by write_file and apply_patch so both go through the same review: a
  * file inside the workspace follows the permission dial (ai_agent_approve_write),
  * a file outside it always asks with the marked box (ai_agent_ask_outside_write)
- * and is reported as outside once written.  A refusal is recorded by
- * ai_agent_deny, as for a command.  Runs the post-edit hook after a successful
- * write, within the write's undo step.  Returns a malloc'd TOOL RESULT.
+ * and is reported as outside once written.  Before the dial is consulted the
+ * run's checkpoint is taken if the dial now calls for one and none exists yet
+ * (ai_agent_ensure_checkpoint), so a dial raised mid-run still ends in a
+ * review.  A refusal is recorded by ai_agent_deny, as for a command.  Runs the
+ * post-edit hook after a successful write, within the write's undo step.
+ * Returns a malloc'd TOOL RESULT.
  */
-static char *ai_agent_commit_write(FENSTER *f, const char *tool, const char *path,
+static char *ai_agent_commit_write(ai_async_op *op, const char *tool, const char *path,
                                    const char *content)
 {
+ FENSTER *f = op->f;
  int outside, allow;
  if (!content) return strdup("(no content)");
+ ai_agent_ensure_checkpoint(op);
  outside = wpe_ai_path_outside_workspace(f, path);
  if (outside) allow = ai_agent_ask_outside_write(f, path, content);
  else allow = ai_agent_approve_write(f, path, content);
@@ -6052,7 +6193,7 @@ static int ai_agent_process(ai_async_op *op, char *reply)
     content = malloc(cl + 1);
     if (content) { memcpy(content, body, cl); content[cl] = '\0'; }
    }
-   result = ai_agent_commit_write(f, AI_TOOL_WRITE_FILE, arg, content);   /* shared review + write */
+   result = ai_agent_commit_write(op, AI_TOOL_WRITE_FILE, arg, content);   /* shared review + write */
    free(content);
   } else if (!strcmp(tool, AI_TOOL_APPLY_PATCH)) {
    /* Precise edit: apply SEARCH/REPLACE blocks against the current file, then
@@ -6068,7 +6209,7 @@ static int ai_agent_process(ai_async_op *op, char *reply)
     char *r = malloc(strlen(perr) + 16);
     if (r) { snprintf(r, strlen(perr) + 16, "TOOL ERROR: %s", perr); result = r; }
    } else {
-    result = ai_agent_commit_write(f, AI_TOOL_APPLY_PATCH, arg, newc);
+    result = ai_agent_commit_write(op, AI_TOOL_APPLY_PATCH, arg, newc);
    }
    free(old);
    free(newc);
@@ -6092,14 +6233,17 @@ static int ai_agent_process(ai_async_op *op, char *reply)
  return 0;                                      /* keep going */
 }
 
-/* Agent wrap-up: persist the exchange and, for an unattended run, offer the
- * changeset review (navigable like compile errors). */
+/* Agent wrap-up: persist the exchange and, for a run that took a checkpoint
+ * (at launch, or before a write once the dial was raised), offer the changeset
+ * review (navigable like compile errors). */
 static void ai_agent_finish(ai_async_op *op)
 {
  if (op->ml.n > 0 && !strcmp(op->ml.role[op->ml.n - 1], "assistant"))
   wpe_ai_session_append("assistant", op->ml.content[op->ml.n - 1]);
  wpe_ai_session_save(op->f);
- if (e_ai_policy != WPE_AI_POLICY_ASK && wpe_ai_checkpoint_active())
+ /* A run that took a checkpoint is reviewed whatever the dial reads now: the
+    dial may have been lowered again after the writes it allowed. */
+ if (op->checkpointed && wpe_ai_checkpoint_active())
   wpe_ai_changeset_review(op->f);
  /* Leave the pane ready for a follow-up instead of a dead log: arm the chat
     input on it (the agent's transcript stays visible), so the user types the
@@ -6176,12 +6320,6 @@ static int ai_agent_launch(FENSTER *f, const char *goal, const char *extra)
     only; the xwpe policy still gates whether WE run each parsed tool
     (ai_agent_approve), independent of the CLI's own permission mode. */
  e_ai_cli_mode = WPE_AI_CLI_TEXTONLY;
- if (e_ai_policy != WPE_AI_POLICY_ASK) {           /* never unattended without a checkpoint */
-  char **scope; int nsc = wpe_ai_scope_files(f, e_project_is_open(), 1, &scope);
-  wpe_ai_checkpoint_create(f, scope, nsc);
-  wpe_ai_free_list(scope, nsc);
-  ai_pane(f, "[agent] checkpoint taken - changes are reviewable/revertible at the end", 0);
- }
 
  for (wi = 1; wi <= cn->mxedt; wi++)
   if (cn->f[wi] == f) { save_id = cn->edt[wi]; break; }
@@ -6192,10 +6330,15 @@ static int ai_agent_launch(FENSTER *f, const char *goal, const char *extra)
  op->max_iter = AI_AGENT_MAX_ITERS;
  op->process = ai_agent_process;
  op->finish = ai_agent_finish;
+ /* The prompt's order: the tool list, who answers, the open files, then the
+    project instructions (which end by saying the tool list stands).  The pane
+    follows the same order: the task line, the project instructions, then the
+    checkpoint a raised dial calls for -- never unattended without one. */
  ai_ml_add(&op->ml, "system", sys);
  ai_ml_add_identity(&op->ml);
  ai_ml_add_open_files(&op->ml, f);
- ai_ml_add_project_memory(&op->ml);
+ ai_ml_add_project_memory(&op->ml, f);
+ ai_agent_ensure_checkpoint(op);
  if (extra && extra[0]) ai_ml_add(&op->ml, "system", extra);
  ai_ml_add_diagnostics(&op->ml);
  { wpe_ai_msg prior[12]; int np = wpe_ai_session_messages(prior, 12), i;
@@ -6685,7 +6828,7 @@ static void ai_plan_launch(FENSTER *f, const char *task)
 
  ai_ml_add(&op->ml, "system", sys);
  ai_ml_add_open_files(&op->ml, f);
- ai_ml_add_project_memory(&op->ml);
+ ai_ml_add_project_memory(&op->ml, f);
  {
   size_t cap = 4096, len = 0;
   char *u = malloc(cap), *cur;

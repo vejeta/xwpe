@@ -233,6 +233,23 @@ Changes
 
 1.7.0 (AI assistant -- experimental, opt-in)
 
+* Agent and chat: project instructions are announced and cannot remove tools,
+  and a dial raised mid-run gets a checkpoint.  When AGENTS.md (or .xwpe-ai.md)
+  from the working directory is folded into a run, the pane now says so:
+  "[agent] project instructions: AGENTS.md (N bytes)" right after the task
+  line, and "(N bytes, cut at 4095)" when the file was longer than the prompt
+  carries; the chat shows the same line on the first turn of a session.  It
+  used to be said in the trace only, and a long file was cut silently.  The
+  prompt now states, right after the project block, that the tool list above
+  stands: the instructions say how the tools are used, never which exist, so a
+  repository's "do not open network connections", written for other coding
+  agents, no longer makes the model refuse the editor's own web search.  The
+  permission dial was read live at each approval but the checkpoint was
+  decided once at launch, so a run started under ask and raised to auto with
+  Alt-G y wrote freely and ended with no review; the first write under a
+  raised dial now takes the checkpoint, with the same pane line, and the
+  review opens at the end.  Tests: tests/test_ai_agent_project_instructions.py.
+
 * Agent: a tool run is named and bounded, and every denial is visible.  While
   the agent runs a command or a web tool the pane's last line now reads
   "[agent] running run_command ... (result follows)" for the whole run; it

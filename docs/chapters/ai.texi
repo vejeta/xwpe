@@ -325,7 +325,11 @@ everything runs unattended; you review the result afterwards.
 
 Set the dial from the @samp{AI} menu, with @kbd{Alt-G y}, or with @code{AIPolicy}
 / @env{XWPE_AI_POLICY}.  @code{edits} and @code{auto} always take a checkpoint
-first.  For the @code{claudecli} backend the dial maps onto the CLI's own
+first.  The dial is read live: raised with @kbd{Alt-G y} while a run waits for
+the model, it applies to the next tool, and the first write that follows takes
+the checkpoint the launch would have taken, with the same @samp{[agent]
+checkpoint taken} line, so the review at the end covers a run that started
+under @code{ask}.  For the @code{claudecli} backend the dial maps onto the CLI's own
 @option{--permission-mode} so the same rules apply.
 
 @cindex AI, tool argument
@@ -501,11 +505,19 @@ itself immediately, so it sticks across sessions without @samp{Save Options}:
 @cindex AI, project instructions
 @cindex AGENTS.md
 If the working directory (the project root) holds an @file{AGENTS.md} -- or the
-xwpe-specific @file{.xwpe-ai.md} -- its contents are folded into every AI turn
-(chat, edit and agent) under a @samp{PROJECT INSTRUCTIONS} heading, so a repo's
-standing rules (the build command, code style, ``do not touch @file{vendor/}'')
-are followed without restating them.  It is bounded so a large file cannot crowd
-out the prompt.
+xwpe-specific @file{.xwpe-ai.md} -- its contents are folded into the chat, the
+agent and the Multi-file edit under a @samp{PROJECT INSTRUCTIONS} heading, so a
+repo's standing rules (the build command, code style, ``do not touch
+@file{vendor/}'') are followed without restating them.  The pane says so: an
+agent run shows @samp{[agent] project instructions: AGENTS.md (@var{N} bytes)}
+right after its task line, and the chat shows the same line on the first turn
+of a session.  The file is bounded to 4095 bytes so it cannot crowd out the
+prompt; a longer file is cut and the line says so, @samp{(@var{N} bytes, cut at
+4095)}, so a rule near its end that the model never saw is not a mystery.
+Project instructions govern how the tools are used, never which tools exist:
+the prompt states, right after the block, that the tool list above stands, so a
+rule written for other coding agents (``do not open network connections'') does
+not make the model refuse the editor's own @code{web_search}.
 
 @table @code
 @item AIBackend

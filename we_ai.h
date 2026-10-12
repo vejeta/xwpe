@@ -343,6 +343,10 @@ void  wpe_ai_session_save(struct FNST *f);
 void  wpe_ai_session_reset(struct FNST *f);
 void  wpe_ai_session_append(const char *role, const char *content);
 int   wpe_ai_session_messages(wpe_ai_msg *buf, int max);
+/* Whether the pane has named this session's project instructions (AGENTS.md)
+   yet; the chat says it once per session.  Cleared with the session. */
+int   wpe_ai_session_project_announced(void);
+void  wpe_ai_session_mark_project_announced(void);
 
 #endif /* WPE_AI */
 

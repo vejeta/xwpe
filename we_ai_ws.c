@@ -940,6 +940,8 @@ static struct {
  char  *cli;                 /* claudecli session id                         */
  char **role, **content;
  int    n;
+ int    project_announced;   /* the pane has said which project instructions
+                                this session folds in; cleared with the session */
 } sess;
 
 #define WS_SESS_MAX 40
@@ -951,7 +953,22 @@ static void sess_free(void)
  for (i = 0; i < sess.n; i++) { free(sess.role[i]); free(sess.content[i]); }
  free(sess.role); free(sess.content);
  sess.role = sess.content = NULL; sess.n = 0;
+ sess.project_announced = 0;
 }
+
+/**
+ * wpe_ai_session_project_announced - Has this session already named its project instructions?
+ *
+ * The chat folds AGENTS.md into every turn but tells the user once per
+ * session, so the transcript is not peppered with the same line; the flag
+ * lives with the session and starts over when the session is loaded or
+ * cleared, not when a backend or model changes.
+ * Return: 1 once the pane has shown the line for this session.
+ */
+int wpe_ai_session_project_announced(void) { return sess.project_announced; }
+
+/** wpe_ai_session_mark_project_announced - Record that the pane showed the line. */
+void wpe_ai_session_mark_project_announced(void) { sess.project_announced = 1; }
 
 static unsigned long ws_hash(const char *s)
 {

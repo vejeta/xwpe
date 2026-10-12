@@ -193,6 +193,12 @@ The dial governs what the assistant may do without asking:
   commit). Nothing is ever written blind -- an AI edit is always previewed and
   is one `Ctrl-U` away from undone.
 
+The dial is read live. Raising it with `Alt-G y` while a run waits for the
+model applies to the next tool, and the first write that follows takes the
+checkpoint the launch would have taken (the pane shows the same
+`[agent] checkpoint taken` line), so a run started under *ask* and raised to
+*auto* still ends in the review.
+
 Whatever the dial, the argument of `list_dir`, `grep` and `glob` is passed to
 the shell as a single word: a pattern with spaces is one pattern, and no
 character in it is a command. A write to a file outside the working tree (an
@@ -250,6 +256,18 @@ the change and the reformatting together. A hook that exits non-zero is
 reported in the pane with its exit status, and the buffer is left as the
 assistant left it. The hook shares the tool time limit (`AIToolTimeout`): one
 that hangs is ended after that many seconds and reported as failed.
+
+**Project instructions.** An `AGENTS.md` (or `.xwpe-ai.md`) in the working
+directory is folded into the chat, the agent and the Multi-file edit under a
+`PROJECT INSTRUCTIONS` heading, so a repository's standing rules are followed
+without restating them. The pane says so: an agent run shows
+`[agent] project instructions: AGENTS.md (N bytes)` right after its task line,
+and the chat shows the same line on the first turn of a session. The file is
+bounded to 4095 bytes; a longer one is cut and the line says
+`(N bytes, cut at 4095)`. The instructions govern how the tools are used, never
+which tools exist: the prompt states, right after the block, that the tool list
+above stands, so a rule written for other coding agents ("do not open network
+connections") does not make the model refuse the editor's own web search.
 
 ## Privacy and safety
 
