@@ -964,6 +964,24 @@ static void ai_delta_cb(const char *delta, void *ud)
   ai_pane_set_last(wf, s->pending ? s->pending : "");  /* live partial line */
 }
 
+/**
+ * ai_chat_paint_held - Paint a reply the painter was still holding when the turn ended.
+ * @s: the chat whose stream has just completed.
+ *
+ * The painter holds the first bytes of a reply until five bytes or a newline
+ * tell an answer from a "TOOL ..." line.  A whole reply shorter than that
+ * ("ok", "Yes", "42") never reached the decision, and the finish path freed
+ * the bytes unpainted: the pane stayed on "(gathering the answer...)" after
+ * the turn was over.  Once the stream has ended nothing more can arrive, so
+ * what is held is the answer and is painted as such.
+ */
+static void ai_chat_paint_held(ai_chat_session *s)
+{
+ if (s->decided || !s->full || !s->flen) return;
+ s->decided = 1;
+ ai_delta_cb("", s);
+}
+
 /* fd-loop callback: drain readable bytes, stream deltas into the pane. */
 static void ai_fd_cb(int fd, void *data)
 {
@@ -978,7 +996,9 @@ static void ai_fd_cb(int fd, void *data)
   return;
  }
  if (done) {
-  /* the trailing partial is already on screen (painted live in ai_delta_cb) */
+  /* the trailing partial is already on screen (painted live in ai_delta_cb),
+     except a reply too short for the painter to have decided on: paint it now */
+  ai_chat_paint_held(s);
   if (s->full && s->flen) {
    char *tr = (s->turns < AI_CHAT_MAX_TOOL_TURNS)
               ? ai_chat_tool_result(s->ref, s->full) : NULL;
@@ -3313,6 +3333,10 @@ struct ai_async_op {
  char    *acc;               /* current turn's reply collected from the stream */
  size_t   acc_len, acc_cap;
  int      had_error;          /* the finished turn was a backend failure         */
+ char    *err_msg;            /* the backend's own words for that failure, kept
+                                from the stream before it is freed               */
+ int      transport_failed;   /* the run ended because the connection died: the
+                                pane's last word is the error, no follow-up      */
  int      sel_y0, sel_y1;     /* Edit scope: selected line range, or -1 = whole file */
  /* multi-turn state (unused by single-turn Edit) */
  struct ai_mlist ml;         /* the running conversation                        */
@@ -3419,6 +3443,23 @@ static void ai_op_stream_close(ai_async_op *op)
  if (op->st) { wpe_ai_stream_free(op->st); op->st = NULL; }
 }
 
+/**
+ * ai_op_capture_failure - Keep what the finished stream says about a failed turn.
+ * @op: the task whose stream just completed.
+ *
+ * The pane line for a backend error is built after the stream is closed, and
+ * the stream owns the server's message; read both the flag and the message
+ * here, while the stream is still there, so the user reads "model m is on
+ * fire" instead of "no result".  Shared by Edit, Complete and the multi-turn
+ * driver, so none of them can lose the message again.
+ */
+static void ai_op_capture_failure(ai_async_op *op)
+{
+ op->had_error = wpe_ai_stream_had_error(op->st);
+ free(op->err_msg);
+ op->err_msg = wpe_ai_stream_error_message(op->st);
+}
+
 /* Detach the op from the fd-loop and free it.  Must run BEFORE any modal review
  * so no AI callbacks (this stream, the heartbeat) fire underneath it. */
 static void ai_op_detach(ai_async_op *op)
@@ -3437,6 +3478,7 @@ static void ai_op_free(ai_async_op *op)
  if (op->free_ud && op->ud) op->free_ud(op->ud);
  ai_ml_free(&op->ml);
  free(op->acc);
+ free(op->err_msg);
  free(op);
 }
 
@@ -3948,7 +3990,7 @@ static void ai_edit_fd_cb(int fd, void *data)
   return;
  }
  if (done) {
-  op->had_error = wpe_ai_stream_had_error(op->st);   /* capture before the stream goes */
+  ai_op_capture_failure(op);                /* before the stream goes */
   ai_op_reply_complete(op, ai_edit_deliver);
  }
 }
@@ -3989,8 +4031,43 @@ static void ai_conv_next_turn(ai_async_op *op)
  op->paused = 0;
  op->acc_len = 0;
  if (op->acc) op->acc[0] = '\0';
+ free(op->err_msg);
+ op->err_msg = NULL;
  op->spin = ai_spin_begin(op->f, op->label);
  wpe_fd_add(op->fd, POLLIN, ai_conv_fd_cb, op);
+}
+
+/**
+ * ai_conv_backend_error_text - The words the pane shows for a failed turn.
+ * @op: the task whose turn the backend answered with an error.
+ *
+ * The server's own message first ("model m is on fire", "The model `x` does
+ * not exist"), then whatever text the turn streamed (the claude CLI's "not
+ * logged in"), and "no result" only when there is nothing else to say.
+ * Return: a string owned by the op, valid until its next turn.
+ */
+static const char *ai_conv_backend_error_text(const ai_async_op *op)
+{
+ if (op->err_msg && op->err_msg[0]) return op->err_msg;
+ if (op->acc && op->acc[0]) return op->acc;
+ return "no result";
+}
+
+/**
+ * ai_conv_report_backend_error - Tell the user a turn failed, with the reason.
+ * @op: the task whose turn the backend answered with an error.
+ *
+ * The line "[agent] working: backend error: <reason>" used to end in "no
+ * result" whatever the server had said, because the message lived in the
+ * stream that was already freed; the reason is read from the op now.
+ */
+static void ai_conv_report_backend_error(ai_async_op *op)
+{
+ char l[360];
+ if (!ai_window_alive(op->cn, op->f)) return;
+ snprintf(l, sizeof l, "%s: backend error: %.300s", op->label,
+          ai_conv_backend_error_text(op));
+ ai_pane(op->f, l, 0);
 }
 
 /* A turn's reply is complete: hand it to process(), then continue or finish. */
@@ -4003,12 +4080,7 @@ static void ai_conv_on_reply(ai_async_op *op)
     on: do NOT feed it to process(), which could run a tool call or apply an
     edit parsed from an error string.  Report and stop. */
  if (op->had_error) {
-  if (ai_window_alive(op->cn, op->f)) {
-   char l[360];
-   snprintf(l, sizeof l, "%s: backend error: %.300s", op->label,
-            (op->acc && op->acc[0]) ? op->acc : "no result");
-   ai_pane(op->f, l, 0);
-  }
+  ai_conv_report_backend_error(op);
   wpe_ai_trace("conv error (stopped)");
   ai_conv_finish(op);
   return;
@@ -4035,11 +4107,13 @@ static void ai_conv_fd_cb(int fd, void *data)
   ECNT *cn = op->cn;
   ai_op_stream_close(op);
   if (ai_window_alive(cn, f)) ai_pane(f, "[AI] transport error", 0);
+  op->transport_failed = 1;         /* the run stops on this line, no follow-up */
+  wpe_ai_trace("conv transport error (stopped)");
   ai_conv_finish(op);
   return;
  }
  if (done) {
-  op->had_error = wpe_ai_stream_had_error(op->st);   /* capture before stream_close */
+  ai_op_capture_failure(op);        /* before stream_close */
   ai_op_reply_complete(op, ai_conv_on_reply);
  }
 }
@@ -4484,7 +4558,7 @@ static void ai_complete_fd_cb(int fd, void *data)
   ai_op_free(op); ai_queue_run(); return;
  }
  if (done) {
-  op->had_error = wpe_ai_stream_had_error(op->st);
+  ai_op_capture_failure(op);
   ai_op_reply_complete(op, ai_complete_deliver);
  }
 }
@@ -5483,6 +5557,29 @@ static char *ai_agent_deny(FENSTER *f, const char *tool, const char *arg)
  return strdup(AI_TOOL_DENIED_RESULT);
 }
 
+/* What the model reads when a write could not be made. */
+#define AI_TOOL_WRITE_FAILED_RESULT "(write failed)"
+
+/**
+ * ai_agent_report_write_failed - Record a write that could not be made: model, pane, trace.
+ * @f: the window the pane belongs to; @path: the file the agent named.
+ *
+ * "(write failed)" used to reach the model alone: the pane's last word was
+ * "auto-approved", so a user whose agent wrote into a directory that does not
+ * exist believed the file was there.  The pane now says "[agent] write
+ * failed: <path>" and the trace has the same fact, so the failure is read
+ * where the approval was.
+ * Return: the malloc'd result the model reads.
+ */
+static char *ai_agent_report_write_failed(FENSTER *f, const char *path)
+{
+ char line[AI_TOOL_LINE_MAX + 32];
+ snprintf(line, sizeof line, "[agent] write failed: %s", path);
+ ai_pane(f, line, 0);
+ wpe_ai_trace("agent write failed %s", path);
+ return strdup(AI_TOOL_WRITE_FAILED_RESULT);
+}
+
 /**
  * ai_agent_show_running - Say in the pane that a tool is running, before it does.
  * @f: the window the pane belongs to; @tool: the tool about to run.
@@ -5856,10 +5953,48 @@ static char *ai_agent_commit_write(ai_async_op *op, const char *tool, const char
  if (outside) allow = ai_agent_ask_outside_write(f, path, content);
  else allow = ai_agent_approve_write(f, path, content);
  if (!allow) return ai_agent_deny(f, tool, path);
- if (!ai_agent_write_file(path, content)) return strdup("(write failed)");
+ if (!ai_agent_write_file(path, content)) return ai_agent_report_write_failed(f, path);
  ai_agent_show_written(f, path);
  if (outside) ai_agent_report_outside(f, path);
  return strdup("(written)");
+}
+
+/* The line that closes a tool body, and the same marker at the body's start. */
+#define AI_TOOL_BODY_END_LINE "\n@@END"
+#define AI_TOOL_BODY_END_WORD "@@END"
+
+/**
+ * ai_tool_body_content - The file content a write_file body carries.
+ * @firstnl: the newline that ends the "TOOL write_file <path>" line.
+ *
+ * Every body line up to the "@@END" line is content, each with its newline,
+ * the last one included: "hello" followed by a newline and the marker is the
+ * six bytes "hello\n", so a text file the agent writes ends with a newline as
+ * one saved by the editor does.  The cut used to stop before that newline,
+ * and every agent-written file lacked its final newline unless the model left
+ * a blank line before the marker.  CR bytes are kept, so CRLF content lands
+ * verbatim.  A body that is only the marker is empty content; a body with no
+ * marker is taken whole.
+ * Return: the malloc'd content, NULL out of memory.
+ */
+static char *ai_tool_body_content(const char *firstnl)
+{
+ const char *body = firstnl + 1;
+ const char *endm;
+ size_t len;
+ char *content;
+ if (!strncmp(body, AI_TOOL_BODY_END_WORD, strlen(AI_TOOL_BODY_END_WORD)))
+  len = 0;
+ else {
+  endm = strstr(body, AI_TOOL_BODY_END_LINE);
+  if (endm) len = (size_t)(endm + 1 - body);       /* through the final newline */
+  else len = strlen(body);
+ }
+ content = malloc(len + 1);
+ if (!content) return NULL;
+ memcpy(content, body, len);
+ content[len] = '\0';
+ return content;
 }
 
 /**
@@ -6187,12 +6322,7 @@ static int ai_agent_process(ai_async_op *op, char *reply)
    result = ai_agent_tool_web_search(f, arg);
   } else if (!strcmp(tool, AI_TOOL_WRITE_FILE)) {
    char *content = NULL;
-   if (firstnl) {
-    char *body = firstnl + 1, *endm = strstr(body, "\n@@END");
-    size_t cl = endm ? (size_t)(endm - body) : strlen(body);
-    content = malloc(cl + 1);
-    if (content) { memcpy(content, body, cl); content[cl] = '\0'; }
-   }
+   if (firstnl) content = ai_tool_body_content(firstnl);   /* final newline included */
    result = ai_agent_commit_write(op, AI_TOOL_WRITE_FILE, arg, content);   /* shared review + write */
    free(content);
   } else if (!strcmp(tool, AI_TOOL_APPLY_PATCH)) {
@@ -6233,6 +6363,24 @@ static int ai_agent_process(ai_async_op *op, char *reply)
  return 0;                                      /* keep going */
 }
 
+/**
+ * ai_agent_offer_follow_up - Leave the pane ready for the next instruction.
+ * @op: the agent task that has just ended.
+ *
+ * A finished run arms the chat input on the pane (the transcript stays in
+ * view) so the user types the follow-up right there instead of re-opening
+ * Alt-G; the workspace session carries the context forward and Esc leaves.
+ * A run that ended because the connection died offers none of this: its last
+ * line stays "[AI] transport error", so the user reads a failure, never a
+ * task that looks done and asks what to do next.
+ */
+static void ai_agent_offer_follow_up(ai_async_op *op)
+{
+ if (op->transport_failed) return;
+ ai_pane_attn(op->f, "done - type a follow-up below (Enter sends, Esc leaves)");
+ e_ai_chat_arm(op->f);
+}
+
 /* Agent wrap-up: persist the exchange and, for a run that took a checkpoint
  * (at launch, or before a write once the dial was raised), offer the changeset
  * review (navigable like compile errors). */
@@ -6245,12 +6393,7 @@ static void ai_agent_finish(ai_async_op *op)
     dial may have been lowered again after the writes it allowed. */
  if (op->checkpointed && wpe_ai_checkpoint_active())
   wpe_ai_changeset_review(op->f);
- /* Leave the pane ready for a follow-up instead of a dead log: arm the chat
-    input on it (the agent's transcript stays visible), so the user types the
-    next instruction right here rather than re-opening Alt-G.  The workspace
-    session carries the context forward; Esc leaves. */
- ai_pane_attn(op->f, "done - type a follow-up below (Enter sends, Esc leaves)");
- e_ai_chat_arm(op->f);
+ ai_agent_offer_follow_up(op);
 }
 
 /* Launch the autonomous agent on an already-formed `goal` (no prompt).  `extra`
@@ -6988,6 +7131,26 @@ static void host_end_session_notice(void)
  e_ai_host_end(l);
 }
 
+/**
+ * host_take_checkpoint - Checkpoint the workspace for a hosted session, and say so.
+ * @f: the window the session is anchored to (its pane shows the line).
+ *
+ * The hosted engine edits files on disk with its own tools, so the checkpoint
+ * is taken at session start, whatever the dial, and the whole session is
+ * reviewable and revertible when it ends (Alt-G g, then Esc).  It used to be
+ * taken silently; the pane now shows the same "[agent] checkpoint taken" line
+ * the built-in loop shows, so the user knows the safety net is there before
+ * the first turn goes out.
+ */
+static void host_take_checkpoint(FENSTER *f)
+{
+ char **scope;
+ int nsc = wpe_ai_scope_files(f, e_project_is_open(), 1, &scope);
+ wpe_ai_checkpoint_create(f, scope, nsc);
+ wpe_ai_free_list(scope, nsc);
+ ai_pane(f, AI_AGENT_CHECKPOINT_LINE, 0);
+}
+
 /* Non-host code (e.g. Options > Disable) asks whether a host is up. */
 int  wpe_ai_host_active(void) { return g_host != NULL; }
 void wpe_ai_host_shutdown(void) { if (g_host) e_ai_host_end(NULL); }
@@ -7292,11 +7455,7 @@ int e_ai_host(FENSTER *f)
   g_host_win = f; g_host_cn = f->ed;
   g_host_fd = wpe_host_fd(g_host);
   wpe_fd_add(g_host_fd, POLLIN, host_fd_cb, NULL);
-  /* The agent edits files on disk with its own tools; take a checkpoint so the
-     whole session is reviewable/revertible when it ends (Alt-G g, then Esc). */
-  { char **scope; int nsc = wpe_ai_scope_files(f, e_project_is_open(), 1, &scope);
-    wpe_ai_checkpoint_create(f, scope, nsc);
-    wpe_ai_free_list(scope, nsc); }
+  host_take_checkpoint(f);
   { char l[160];
     snprintf(l, sizeof l, "[agent] engine: %.80s - session started (Esc at the prompt ends it)",
              host_engine_name());

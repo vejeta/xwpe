@@ -63,6 +63,9 @@ typedef struct {
  long   chunk_left;                       /* bytes left in current chunk, or  */
                                           /* -1 when a chunk-size line is due  */
  int    body_complete;                    /* final chunk / EOF / length met   */
+ int    framed_end;                       /* the framing itself ended the body:
+                                             Content-Length met or the final
+                                             chunk seen, not a mere socket EOF */
  char  *body; size_t body_len, body_cap;  /* de-chunked body                  */
  size_t line_pos;                         /* cursor for line extraction       */
 } wpe_http_stream;
@@ -83,6 +86,12 @@ void wpe_http_stream_eof(wpe_http_stream *s);
 
 int  wpe_http_stream_status(const wpe_http_stream *s);
 int  wpe_http_stream_done(const wpe_http_stream *s);
+
+/* True once the HTTP framing itself ended the body (Content-Length reached or
+ * the terminating chunk read).  A body that ended only because the peer closed
+ * the socket does not count: the caller tells a complete answer from a
+ * connection that died with it. */
+int  wpe_http_stream_framed(const wpe_http_stream *s);
 
 #endif /* WPE_AI */
 

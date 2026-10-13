@@ -370,6 +370,26 @@ static int ai_line_has(const char *p, size_t len, const char *needle)
  return 0;
 }
 
+#define AI_HTTP_STATUS_PREFIX "HTTP/"
+
+/**
+ * ai_parse_status_line - Read the status code off a line that is an HTTP status line.
+ * @s: the stream; @n: the length of the header block.
+ *
+ * Only a line that opens with "HTTP/" carries a status.  Bytes that merely
+ * happen to hold a blank and digits, as a server answering something that is
+ * not HTTP can send, leave the status at 0, so the caller reads "no status
+ * line" and reports a transport error instead of a reply.
+ */
+static void ai_parse_status_line(wpe_http_stream *s, size_t n)
+{
+ const char *h = s->raw;
+ size_t plen = strlen(AI_HTTP_STATUS_PREFIX), j;
+ if (n < plen || strncmp(h, AI_HTTP_STATUS_PREFIX, plen) != 0) return;
+ for (j = plen; j < n && h[j] != ' '; j++) ;
+ if (j < n) s->status = atoi(h + j + 1);
+}
+
 /* Parse the HTTP status line + headers.  Scans by index over raw[0..hdr_end)
  * without mutating the buffer, so the trailing body bytes stay intact. */
 static void ai_parse_headers(wpe_http_stream *s, size_t hdr_end)
@@ -377,8 +397,7 @@ static void ai_parse_headers(wpe_http_stream *s, size_t hdr_end)
  char *h = s->raw;
  size_t i, n = hdr_end;
 
- { size_t j; for (j = 0; j < n && h[j] != ' '; j++) ;
-   if (j < n) s->status = atoi(h + j + 1); }
+ ai_parse_status_line(s, n);
 
  i = 0;
  while (i < n) {
@@ -396,6 +415,21 @@ static void ai_parse_headers(wpe_http_stream *s, size_t hdr_end)
  s->raw_consumed = hdr_end + 4;         /* skip the "\r\n\r\n" */
 }
 
+/**
+ * ai_body_ends_by_framing - Record that the HTTP framing closed the body.
+ * @s: the stream whose Content-Length was reached or final chunk was read.
+ *
+ * Both marks are set: body_complete, which the line reader uses to hand back
+ * a final unterminated line, and framed_end, which tells a complete answer
+ * from a socket that merely closed, so a reply cut by a dying connection is
+ * reported to the user as a transport error and never as a finished turn.
+ */
+static void ai_body_ends_by_framing(wpe_http_stream *s)
+{
+ s->body_complete = 1;
+ s->framed_end = 1;
+}
+
 /* Turn newly available raw body bytes into decoded body. */
 static int ai_decode_body(wpe_http_stream *s)
 {
@@ -408,7 +442,7 @@ static int ai_decode_body(wpe_http_stream *s)
     return -1;
    s->raw_consumed += avail;
    if (s->content_length >= 0 && (long)s->body_len >= s->content_length)
-    s->body_complete = 1;
+    ai_body_ends_by_framing(s);
    continue;
   }
 
@@ -419,7 +453,7 @@ static int ai_decode_body(wpe_http_stream *s)
    if (!eol) return 0;                  /* wait for the full size line */
    sz = strtol(src, NULL, 16);
    s->raw_consumed += (size_t)(eol - src) + 1;
-   if (sz == 0) { s->body_complete = 1; return 0; }
+   if (sz == 0) { ai_body_ends_by_framing(s); return 0; }
    s->chunk_left = sz;
    continue;
   }
@@ -487,6 +521,7 @@ int wpe_http_stream_next_line(wpe_http_stream *s, char **line, size_t *len)
 void wpe_http_stream_eof(wpe_http_stream *s) { s->body_complete = 1; }
 int  wpe_http_stream_status(const wpe_http_stream *s) { return s->status; }
 int  wpe_http_stream_done(const wpe_http_stream *s) { return s->body_complete; }
+int  wpe_http_stream_framed(const wpe_http_stream *s) { return s->framed_end; }
 
 #endif /* WPE_AI */
 

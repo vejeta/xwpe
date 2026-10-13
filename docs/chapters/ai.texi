@@ -329,8 +329,12 @@ first.  The dial is read live: raised with @kbd{Alt-G y} while a run waits for
 the model, it applies to the next tool, and the first write that follows takes
 the checkpoint the launch would have taken, with the same @samp{[agent]
 checkpoint taken} line, so the review at the end covers a run that started
-under @code{ask}.  For the @code{claudecli} backend the dial maps onto the CLI's own
-@option{--permission-mode} so the same rules apply.
+under @code{ask}.  With the @code{claudecli} backend the built-in agent runs the
+CLI text-only: the model answers with the editor's own tool protocol and the
+CLI's tools stay off, so the dial governs the editor's tools exactly as with any
+other backend and the CLI's own @option{--permission-mode} is not involved (the
+hosted engine, below, is where the dial maps onto it).  Under @code{auto} the
+pane adds a tip pointing to that engine.
 
 @cindex AI, tool argument
 @cindex AI, outside the workspace
@@ -363,7 +367,9 @@ starts until its result lands.  A command is given @code{AIToolTimeout} seconds
 (the whole process group, TERM then KILL), the pane says @samp{run_command timed
 out after @var{N} s} and the model reads @samp{TOOL ERROR: timed out after
 @var{N} s}, so it can split the work or you can raise the key for a command that
-legitimately needs longer.  The read-only tools and the post-edit hook run
+legitimately needs longer.  The bound reaches the command's process group; a
+command that detaches itself from it (@command{setsid}, @command{nohup @dots{}
+&}) is beyond it and runs on.  The read-only tools and the post-edit hook run
 through the same function and share the limit.  The web tools have their own,
 shorter time limit on the connection.  A tool result is bounded in size as well:
 a command's output or a file read with @code{read_file} is cut at 6000 bytes and
@@ -376,11 +382,34 @@ When you answer a request with @kbd{n} or @key{Esc}, the pane records it:
 @code{web_search}, @code{web_fetch}, @code{write_file} and @code{apply_patch}.
 The model is told @samp{(denied by user)} and the run goes on; the trace
 (@env{XWPE_AI_TRACE}) carries the same line, so a denial is never a request that
-seemed to vanish.
+seemed to vanish.  A write that cannot be made (its directory does not exist) is
+told the same way: the pane says @samp{[agent] write failed: @var{path}}, nothing
+is created, the model reads @samp{(write failed)} and the run goes on.
+
+@cindex AI, write_file body
+The body of a @code{write_file} is the file, written verbatim: every line with
+its newline, the last one included, so a text file the agent writes ends with a
+newline as one saved by the editor does, and CRLF content lands as it was sent.
+@code{apply_patch} edits that text in place and keeps the same ending.
 
 When an agent task is really a question rather than a change, the model answers
 directly: it finishes with a short line and its answer follows in the pane, so you
-see the reply even though this is not the chat.
+see the reply even though this is not the chat.  A reply with neither a
+@samp{TOOL} line nor that closing line is taken as the answer as well: it is
+shown whole, the run ends and the follow-up prompt opens under it.
+
+@cindex AI, transport error
+@cindex AI, backend error
+A turn that fails is reported as a failure, never as a finished task.  When the
+server answers an error, the pane says @samp{[agent] working: backend error:
+@var{message}} with the server's own words (@samp{model m is on fire}, @samp{The
+model `x' does not exist}); the run stops, no tool runs, the session is saved and
+the review opens if files were written.  When the connection itself dies (closed
+with no bytes, an answer that is not HTTP, a reply cut before its end) the pane
+says @samp{[AI] transport error}: the run stops, nothing is applied, and neither
+@samp{[agent] done} nor the follow-up prompt appears, so a dead server cannot be
+mistaken for a completed task.  Chat, Edit and Complete report the same failure
+under their own prefix (@samp{[AI edit] transport error}, and so on).
 
 @cindex AI, apply_patch
 @cindex AI, plan mode
@@ -453,7 +482,8 @@ asks with the command box for @code{Bash}, @code{WebFetch}, @code{WebSearch} and
 any tool it does not know; @code{auto} runs unattended.  A refusal answers the
 CLI ``Denied by the user'' and the pane shows @samp{[agent] denied: <tool>
 <arg>}, as for a built-in tool.  Either way xwpe takes a checkpoint at the start
-of the session, so the whole run is reviewable/revertible when it ends.  The
+of the session and says so with the same @samp{[agent] checkpoint taken} line as
+the built-in loop, so the whole run is reviewable/revertible when it ends.  The
 session stays live across turns: @kbd{Alt-G g} feeds the next turn, and an empty
 prompt (or @key{Esc} at that prompt) ends it and offers the changeset review.
 
@@ -558,9 +588,11 @@ Seconds a command run for a tool result may take before xwpe ends it and tells
 the model @samp{TOOL ERROR: timed out after @var{N} s}; default 60.  Also
 settable with @env{XWPE_AI_TOOL_TIMEOUT}, for one session.  Covers the agent's
 @code{run_command}, the read-only tools (@code{list_dir}, @code{grep},
-@code{glob}) in every loop, and the post-edit hook (@code{AIEditHook}).  A value
-that is not a positive number means the default; the key is written to
-@file{xwperc} only when it differs from the default.
+@code{glob}) in every loop, and the post-edit hook (@code{AIEditHook}).  The
+bound ends the command's process group; a command that detaches itself from it
+(@command{setsid}, @command{nohup @dots{} &}) is beyond it.  A value that is not
+a positive number means the default; the key is written to @file{xwperc} only
+when it differs from the default.
 @item AIProvider
 A saved OpenAI-compatible provider profile, as
 @code{name|endpoint|model|cafile} (model and cafile optional); repeat the key for

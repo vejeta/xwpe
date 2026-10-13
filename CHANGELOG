@@ -233,6 +233,28 @@ Changes
 
 1.7.0 (AI assistant -- experimental, opt-in)
 
+* Agent and chat: a failure is reported as a failure, and what the agent
+  writes is written whole.  A server that closed the connection with no
+  bytes, or answered something that was not HTTP, used to end an agent run
+  as a finished task ("[agent] done"); the pane now says "[AI] transport
+  error", the run stops, nothing is applied and no follow-up prompt opens,
+  so a dead server cannot pass for a completed task.  An HTTP error with a
+  message used to show "backend error: no result"; the pane now shows the
+  server's own words.  A chat reply shorter than five bytes ("ok", "42")
+  never painted and the pane stayed on "(gathering the answer...)"; it
+  paints now.  write_file dropped the newline that ends the last body line,
+  so every file the agent wrote lacked its final newline and apply_patch
+  inherited it; the final newline is content now, and CRLF text lands as
+  sent.  A write that could not be made was told to the model only; the pane
+  now says "[agent] write failed: <path>".  Closing the run's window with
+  Ctrl-W during a turn repainted the screen only when the reply arrived
+  (nine seconds against a nine-second reply); it repaints at once.  The
+  hosted engine took its checkpoint silently; it now shows the same
+  "[agent] checkpoint taken" line as the built-in loop.  The manual says
+  that AIToolTimeout ends the command's process group and that a command
+  which detaches itself (setsid, nohup) is beyond it.
+  Tests: tests/test_ai_agent_gaps.py, tests/test_ai_chat_short_reply.py.
+
 * Hosted agent engine: its permission requests follow the dial like the
   built-in tools, and Esc interrupts a turn.  Under the dial position "edits"
   the external CLI's Bash, WebFetch and WebSearch now ask with the command

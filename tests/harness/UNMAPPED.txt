@@ -10,6 +10,7 @@
 # still undocumented.
 tests/test_ai_agent.py
 tests/test_ai_agent_answer.py
+tests/test_ai_agent_gaps.py
 tests/test_ai_agent_preview.py
 tests/test_ai_agent_project_instructions.py
 tests/test_ai_agent_run_visibility.py
@@ -26,6 +27,7 @@ tests/test_ai_chat.py
 tests/test_ai_chat_ctrl_ae.py
 tests/test_ai_chat_error.py
 tests/test_ai_chat_investigate_live.py
+tests/test_ai_chat_short_reply.py
 tests/test_ai_chat_tool_preamble.py
 tests/test_ai_claudecli_live.py
 tests/test_ai_claudecli_web.py

@@ -123,7 +123,8 @@ seconds is ended as if it had exited. The permission dial gates its tools **per
 tool**, classed like the editor's own: *Ask* pops a `y`/`n` for each gated tool
 call; *Edits* auto-accepts the file-editing tools (`Write`, `Edit`, `MultiEdit`,
 `NotebookEdit`) and asks for `Bash`, `WebFetch`, `WebSearch` and any other tool;
-*Auto* runs unattended (a checkpoint is taken either way). A refusal shows
+*Auto* runs unattended (a checkpoint is taken either way, announced with the same
+`[agent] checkpoint taken` line as the built-in loop). A refusal shows
 `[agent] denied: <tool> <arg>` and the CLI reads "Denied by the user". It is
 built as a generic "host an agent CLI that speaks stream-json" (Claude Code
 first; others as adapters later).
@@ -198,8 +199,10 @@ The dial governs what the assistant may do without asking:
 - **Auto-accept edits** -- writes apply automatically; commands still ask.
 - **Auto** -- runs unattended; a checkpoint is taken first and every change is
   listed in the end-of-run changeset (keep all / revert all / file-by-file /
-  commit). Nothing is ever written blind -- an AI edit is always previewed and
-  is one `Ctrl-U` away from undone.
+  commit). An Edit, a completion or a Multi-file change is always previewed
+  before it lands. An agent write under *edits* or *auto* is written first and
+  reviewed after, in that changeset, and stays one `Ctrl-U` away from undone in
+  the window that shows the file.
 
 The dial is read live. Raising it with `Alt-G y` while a run waits for the
 model applies to the next tool, and the first write that follows takes the
@@ -227,8 +230,10 @@ line says `[agent] running run_command ... (result follows)` (or `web_search`,
 `web_fetch`) for the whole run. A command gets `AIToolTimeout` seconds (default
 60, `XWPE_AI_TOOL_TIMEOUT` for one session); past that it is ended (its whole
 process group, TERM then KILL), the pane says `run_command timed out after N s`
-and the model reads `TOOL ERROR: timed out after N s`. The read-only tools and
-the post-edit hook share the limit. A command's output or a file read with
+and the model reads `TOOL ERROR: timed out after N s`. The bound reaches the
+command's process group; a command that detaches itself from it (`setsid`,
+`nohup ... &`) is beyond it and runs on. The read-only tools and the post-edit
+hook share the limit. A command's output or a file read with
 `read_file` is cut at 6000 bytes and then ends with the line
 `(output cut at 6000 bytes)`, so the model asks for less instead of taking the
 beginning for the whole.
@@ -236,7 +241,25 @@ beginning for the whole.
 Every denial is visible: answering a request with `n` or `Esc` puts
 `[agent] denied: <tool> <arg>` in the pane (and in the trace) for a command, a
 web tool and a write alike; the model is told `(denied by user)` and the run
-goes on.
+goes on. A write that cannot be made (its directory does not exist) is told the
+same way: `[agent] write failed: <path>` in the pane, nothing created, the model
+reads `(write failed)` and the run goes on.
+
+A `write_file` body is the file, written verbatim: every line with its newline,
+the last one included, so a file the agent writes ends with a newline as a saved
+file does, and CRLF content lands as sent. `apply_patch` edits that text in
+place and keeps the same ending. A reply with neither a `TOOL` line nor the
+closing `DONE` is taken as the answer: shown whole, the run ends and the
+follow-up prompt opens under it.
+
+A turn that fails is reported as a failure, never as a finished task. A server
+that answers an error shows `[agent] working: backend error: <message>` with the
+server's own words; the run stops, no tool runs, the session is saved and the
+review opens if files were written. A connection that dies (closed with no
+bytes, an answer that is not HTTP, a reply cut before its end) shows
+`[AI] transport error`: the run stops, nothing is applied, and neither
+`[agent] done` nor the follow-up prompt appears. Chat, Edit and Complete report
+the same failure under their own prefix.
 
 ## Configuration / environment
 

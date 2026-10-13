@@ -1865,6 +1865,74 @@ static char *ai_line_error_message(int backend, const char *line)
  return r;
 }
 
+/* The first HTTP status that is an error answer, not a reply to parse. */
+#define AI_HTTP_ERROR_STATUS 400
+
+/**
+ * ai_stream_note_error_status - Mark a turn answered with an HTTP error as a failure.
+ * @st: the stream whose headers are in.
+ *
+ * A 4xx or 5xx answer carries a diagnostic, not a reply: the caller must never
+ * act on its body (run a tool, apply an edit parsed from an error page), so
+ * the same flag the in-stream error events set is raised here, and
+ * wpe_ai_stream_error_message gives the user the server's own words.
+ */
+static void ai_stream_note_error_status(struct wpe_ai_stream *st)
+{
+ if (wpe_http_stream_status(&st->hs) >= AI_HTTP_ERROR_STATUS) st->had_error = 1;
+}
+
+/**
+ * ai_stream_turn_complete - Did the protocol end this turn?
+ * @st: the stream after its latest bytes were parsed.
+ *
+ * A turn is finished when the backend said so (its end marker: [DONE], a final
+ * finish_reason, "done":true, message_stop), when the HTTP framing closed the
+ * body (Content-Length reached or the final chunk read), or when an error
+ * status has been answered in full.  A peer that merely hung up has finished
+ * nothing: the user is told of a transport error, not of a completed task.
+ * Return: 1 when the turn is complete, 0 otherwise.
+ */
+static int ai_stream_turn_complete(const struct wpe_ai_stream *st)
+{
+ if (st->done) return 1;
+ if (wpe_http_stream_framed(&st->hs)) return 1;
+ if (wpe_http_stream_status(&st->hs) >= AI_HTTP_ERROR_STATUS && st->eof) return 1;
+ return 0;
+}
+
+/**
+ * ai_stream_hung_up_early - Did the connection end before the turn did?
+ * @st: the stream after its latest bytes were parsed.
+ *
+ * True for a connection closed with no bytes, an answer that is not HTTP (no
+ * status line), and a reply cut before its end marker or its framed end.  The
+ * pump then fails the turn, so Chat, Edit, Complete and the agent all show
+ * their transport-error line, stop, and apply nothing.
+ * Return: 1 when the peer hung up on an unfinished turn, 0 otherwise.
+ */
+static int ai_stream_hung_up_early(const struct wpe_ai_stream *st)
+{
+ return st->eof && !ai_stream_turn_complete(st);
+}
+
+/**
+ * ai_stream_hand_over_thinking - Give a turn that only "thought" its thinking as the reply.
+ * @st: the completed stream; @cb, @ud: the delta sink.
+ *
+ * A reasoning model can finish a turn with its content empty and all its
+ * words in the thinking field; handing that text over once keeps the user
+ * from reading a blank answer.
+ */
+static void ai_stream_hand_over_thinking(struct wpe_ai_stream *st,
+                                         void (*cb)(const char *delta, void *ud), void *ud)
+{
+ if (st->got_content || st->think_used) return;
+ if (!st->think || !st->think_len) return;
+ if (cb) cb(st->think, ud);
+ st->think_used = 1;
+}
+
 int wpe_ai_stream_pump(wpe_ai_stream *st,
                        void (*cb)(const char *delta, void *ud), void *ud,
                        int *done)
@@ -1872,6 +1940,7 @@ int wpe_ai_stream_pump(wpe_ai_stream *st,
  char buf[4096];
  char *line;
  size_t llen;
+ int complete;
 
  if (st->is_subproc) {                        /* claudecli: read the child pipe */
   for (;;) {
@@ -1925,26 +1994,51 @@ int wpe_ai_stream_pump(wpe_ai_stream *st,
   }
   if (d) st->done = 1;
  }
- /* Turn finished with no content at all (a reasoning model that only "thought"):
-    hand the accumulated thinking over as the reply, once, so nothing is blank. */
- if ((st->done || st->eof) && !st->got_content && !st->think_used &&
-     st->think && st->think_len) {
-  if (cb) cb(st->think, ud);
-  st->think_used = 1;
+ ai_stream_note_error_status(st);
+ if (ai_stream_hung_up_early(st)) {
+  wpe_ai_trace("stream transport error: connection ended before the turn (status %d)",
+               wpe_http_stream_status(&st->hs));
+  return -1;
  }
- *done = (st->done || st->eof) ? 1 : 0;
+ complete = ai_stream_turn_complete(st);
+ if (complete) ai_stream_hand_over_thinking(st, cb, ud);
+ *done = complete;
  return 0;
+}
+
+/**
+ * ai_stream_reap_child - Let go of the stream's child without blocking on it.
+ * @st: a stream with a child (the claude CLI, or the mock's delayed writer).
+ *
+ * A stream freed before its end (Esc, the window closed, the task dropped)
+ * used to block here on a waiting waitpid until the child finished on its own,
+ * so the editor froze for the rest of the reply: a window closed mid-run
+ * stayed painted for nine seconds against a nine-second reply, because the
+ * close could not repaint until the free returned.  The child is reaped only
+ * if it has already exited; one still running is left to the editor's own
+ * SIGCHLD reaper (WpeSignalChild in we_unix.c, which collects every child),
+ * so freeing the stream returns at once and the close repaints without
+ * waiting.  The child is not signalled: its output pipe is closed just after,
+ * so a one-shot stream child (the mock writer, a `claude -p` call) ends on its
+ * own, and nothing is read or waited for on the way out, so the window
+ * dispatcher keeps control and the next window takes keys immediately.
+ */
+static void ai_stream_reap_child(struct wpe_ai_stream *st)
+{
+ int status;
+ if (st->pid <= 0) return;
+ waitpid(st->pid, &status, WNOHANG);
 }
 
 void wpe_ai_stream_free(wpe_ai_stream *st)
 {
  if (!st) return;
+ ai_stream_reap_child(st);                     /* before the fd it reads is closed */
  if (st->is_subproc) {
   if (st->out_fd >= 0) close(st->out_fd);
  } else {
   wpe_http_close(&st->conn);
  }
- if (st->pid > 0) { int status; waitpid(st->pid, &status, 0); }  /* claudecli or delayed mock */
  wpe_http_stream_free(&st->hs);
  free(st->think);
  free(st->err_msg);

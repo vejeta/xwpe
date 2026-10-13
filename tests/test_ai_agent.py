@@ -55,7 +55,8 @@ def test_ai_agent_write_file_approved(tmp_path):
     assert "agent tool=write_file" in txt, txt
     out = tmp_path / "agent_out.txt"
     assert out.exists(), "agent did not create the file"
-    assert "hello agent" in out.read_text()
+    # The body is written verbatim, the newline that ends its last line included.
+    assert out.read_text() == "hello agent\n", repr(out.read_text())
     assert "agent done" in txt, txt
 
 
