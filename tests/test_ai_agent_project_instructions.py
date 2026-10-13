@@ -46,12 +46,18 @@ REVIEW_PROMPT = "a = keep all"
 FOLLOWUP_LINE = "type a follow-up"
 CHAT_REPLY = "The project keeps every function short."
 
-# A slow first turn leaves room to press Alt-G y twice while the run waits for
-# the model; the two presses take about four seconds at the sanitizer's wait
-# scale, so the reply is held back for longer than that.
-SLOW_TURN_MS = 8000
-TURN_POLL_S = 25
-TRACE_POLL_S = 6
+# The driver scales its own key/drain waits by XWPE_TEST_WAIT_SCALE (the
+# sanitizer build runs at 2, the Debian autopkgtest at 3), but a fixed
+# XWPE_AI_MOCK_DELAY_MS does not: the mock's reply lands at the same
+# wall-clock time regardless of that factor.  A slow first turn leaves room
+# to press Alt-G y twice while the run waits for the model; the two presses
+# take about four seconds at the sanitizer's wait scale, so the reply must be
+# held back for longer than that at every scale, and the poll bounds that
+# wait on the dial switch and the final review must grow with it too.
+WAIT_SCALE = float(os.environ.get("XWPE_TEST_WAIT_SCALE", "1"))
+SLOW_TURN_MS = int(8000 * WAIT_SCALE)
+TURN_POLL_S = int(25 * WAIT_SCALE)
+TRACE_POLL_S = int(6 * WAIT_SCALE)
 
 
 def _ai_build():

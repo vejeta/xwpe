@@ -25,8 +25,18 @@ ESC = "\033"
 FOLLOWUP_LINE = "type a follow-up"
 WRITE_BOX = " Write "
 STEP_LIMIT_LINE = "[AI] reached the step limit - Alt-G g to continue the task"
+CHECKPOINT_LINE = "[agent] checkpoint taken - changes are reviewable/revertible at the end"
 TURN_POLL_S = 15
 LOOP_POLL_S = 60
+
+# The driver scales its own key/drain waits by XWPE_TEST_WAIT_SCALE (the
+# sanitizer build runs at 2, the Debian autopkgtest at 3), but a fixed
+# XWPE_AI_MOCK_DELAY_MS does not: the mock's reply still lands at the same
+# wall-clock time regardless of how the harness wait factor is set.  A window
+# measured straight off time.time(), rather than through a driver drain, must
+# be scaled by hand to stay in the same proportion to that delay.
+WAIT_SCALE = float(os.environ.get("XWPE_TEST_WAIT_SCALE", "1"))
+SPINNER_DELAY_MS = int(4500 * WAIT_SCALE)
 
 
 def _ai_build():
@@ -83,6 +93,10 @@ def _seed_xwperc(tmp_path, lines):
 def _start_agent(s, task, delay=1.0):
     s.key(ALT.AI); s.key("g")
     s.key(task); s.key("\r", delay=delay)
+
+
+def _row_index(rows, needle):
+    return next((i for i, r in enumerate(rows) if needle in r), -1)
 
 
 # @scenario SC-ai-agent-01
@@ -210,11 +224,11 @@ def test_no_review_opens_under_ask(tmp_path):
 
 # @scenario SC-ai-agent-39
 def test_spinner_glyph_and_seconds_advance(tmp_path):
-    env = _env(tmp_path, "DONE slow", "ask", XWPE_AI_MOCK_DELAY_MS="4500")
+    env = _env(tmp_path, "DONE slow", "ask", XWPE_AI_MOCK_DELAY_MS=str(SPINNER_DELAY_MS))
     samples = []
     with WpeSession(str(tmp_path), SEED, env_extra=env) as s:
         _start_agent(s, "wait", delay=0.3)
-        end = time.time() + 4.0
+        end = time.time() + 4.0 * WAIT_SCALE
         while time.time() < end:
             s._drain(0.3)
             line = next((r for r in s.display(drain=0) if "[agent] working" in r), None)
@@ -227,3 +241,31 @@ def test_spinner_glyph_and_seconds_advance(tmp_path):
     assert len(uniq) >= 3, "the working line did not change over 4 s: %r" % uniq
     secs = sorted({int(m.group(1)) for x in samples for m in [re.search(r"(\d+)s", x)] if m})
     assert len(secs) >= 2, "the seconds counter did not advance: %r" % secs
+
+
+# @scenario SC-ai-agent-03
+def test_launch_checkpoint_shown_before_the_first_tool_line_under_auto(tmp_path):
+    env = _env(tmp_path, "TOOL list_dir .@@TURN@@DONE done", "auto")
+    with WpeSession(str(tmp_path), SEED, env_extra=env) as s:
+        _start_agent(s, "list it", delay=1.0)
+        assert _seen_within(s, FOLLOWUP_LINE, TURN_POLL_S), _screen(s)
+        rows = s.display()
+    text = "\n".join(rows)
+    ck_row = _row_index(rows, CHECKPOINT_LINE)
+    tool_row = _row_index(rows, "[agent] list_dir .")
+    assert ck_row >= 0, "no checkpoint line in the pane under auto:\n" + text
+    assert tool_row >= 0, "no tool line in the pane:\n" + text
+    assert ck_row < tool_row, \
+        "the checkpoint line did not come before the first tool line:\n" + text
+
+
+# @scenario SC-ai-agent-03
+def test_launch_takes_no_checkpoint_under_ask(tmp_path):
+    env = _env(tmp_path, "TOOL list_dir .@@TURN@@DONE done", "ask")
+    with WpeSession(str(tmp_path), SEED, env_extra=env) as s:
+        _start_agent(s, "list it", delay=1.0)
+        assert _seen_within(s, FOLLOWUP_LINE, TURN_POLL_S), _screen(s)
+        rows = s.display()
+    text = "\n".join(rows)
+    assert _row_index(rows, CHECKPOINT_LINE) < 0, \
+        "a checkpoint line appeared under ask, where nothing is taken:\n" + text

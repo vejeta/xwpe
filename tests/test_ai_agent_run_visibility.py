@@ -320,6 +320,28 @@ def test_agent_denied_web_search_is_visible_and_nothing_fetched(tmp_path):
     assert "agent done" in txt, txt
 
 
+# @scenario SC-ai-agent-20
+def test_agent_denied_write_is_visible_and_nothing_written(tmp_path):
+    reply = "TOOL write_file out.txt\nhello\n@@END@@TURN@@DONE gave up"
+    with WpeSession(str(tmp_path), SEED, env_extra=_env(tmp_path, reply, "ask")) as s:
+        s.key(ALT.AI); s.key("g")
+        s.key("write"); s.key("\r", delay=1.0)
+        assert _seen_within(s, " Write ", TURN_POLL_S), \
+            "no write box under ask:\n" + _screen(s)
+        s.key("n", delay=1.2)
+        s._drain(1.0)
+        screen = _screen(s)
+    txt = _trace(tmp_path)
+    assert not (tmp_path / "out.txt").exists(), \
+        "a denied write still landed on disk"
+    assert "[agent] denied: write_file out.txt" in screen, \
+        "the pane does not show the denial:\n" + screen
+    assert "agent write confirm out.txt -> deny" in txt, \
+        "the trace does not record the write confirmation:\n" + txt
+    assert "agent deny write_file out.txt" in txt, \
+        "the trace does not record the denial:\n" + txt
+
+
 # @scenario SC-ai-agent-15
 def test_agent_cut_command_output_ends_with_the_cut_line(tmp_path):
     cmd = "head -c %d /dev/zero | tr '\\0' x" % OVERSIZE

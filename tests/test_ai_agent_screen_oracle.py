@@ -20,6 +20,13 @@ SEED = "int main(void){return 0;}\n"
 ESC = "\033"
 MENU_BAR = "  #   File  Edit  Search  Block   Run   Debug  Project  Options  Window   Help"
 BAR_WORD = "F1 Help"
+# The write and command boxes are centred dialogs, not confined to the docked
+# pane: they legitimately cover part of the editor while open (SC-ai-agent-18,
+# -19 test the boxes themselves). Their own markers detect that a sample
+# landed while one was up, so the third oracle clause below can skip it rather
+# than mistake an intentional overlay for a stale repaint.
+WRITE_BOX = " Write "
+COMMAND_BOX = "APPROVE?"
 
 
 def _ai_build():
@@ -78,9 +85,111 @@ def screen_invariant_violations(rows, label):
     return out
 
 
-def _watch_invariant(s, seconds, label, found, step=0.1):
+def _dock_top(rows):
+    """The screen row where the bottom-docked pane's own frame begins,
+    whichever window currently fills that slot: "q AI q" while the agent
+    pane shows, "q Messages q" while the changeset review has taken its
+    place there (the two share the exact same split, never both titling the
+    same row at once).  None while nothing is docked yet."""
+    return next((i for i, r in enumerate(rows)
+                 if "q AI q" in r or "q Messages q" in r), None)
+
+
+def _editor_body(rows):
+    """The editor window's own CONTENT rows: from just under its title row to
+    the docked pane, with its own top and bottom border left out, and the
+    rightmost column of each remaining row dropped too.
+
+    Both border rows are window chrome, not content, and are not held to the
+    invariant: the bottom one carries the live cursor position, which
+    legitimately changes, and the top one carries the active window's
+    control icons ("[]" / "x") which appear and disappear as focus moves
+    between the editor and the docked pane during a run -- found by probing
+    this very oracle (a "violation" that was only the icons toggling).  The
+    rightmost column of a content row is where the scrollbar track shows on
+    the focused window and a plain border otherwise, the same focus-driven
+    chrome one column over, so it is dropped from every row for the same
+    reason.  None while the pane has not docked yet, so there is nothing yet
+    to hold constant."""
+    top = _dock_top(rows)
+    if top is None or top < 3:
+        return None
+    return [r[:-1] for r in rows[2:top - 1]]
+
+
+def _editor_changed(rows, state, allowed_new_line=None):
+    """The third oracle clause: has the editor body in `rows` moved away from
+    the invariant held in `state`?  `state` is a dict carried across calls
+    for one run: its "baseline" is set from the first screen that shows the
+    editor, and is allowed to advance exactly once, to a screen where every
+    differing row (and only those rows) now carries `allowed_new_line` where
+    it did not before -- a file reloaded by an approved write, named by a
+    marker unique to its new text.  That reload becomes the new baseline for
+    every later call; any other difference is reported back to the caller,
+    which decides whether it is a real violation.  Never mutates the
+    baseline on a reported difference, so a caller may re-check the very
+    next sample before deciding anything."""
+    body = _editor_body(rows)
+    if body is None:
+        return False                            # pane not docked yet: nothing to compare
+    baseline = state.get("baseline")
+    if baseline is None:
+        state["baseline"] = body
+        return False
+    if body == baseline:
+        return False
+    if allowed_new_line is not None and not state.get("reloaded"):
+        same_shape = len(body) == len(baseline)
+        diffs = [i for i in range(len(baseline))
+                 if same_shape and body[i] != baseline[i]]
+        if (same_shape and diffs and
+                all(allowed_new_line in body[i] for i in diffs) and
+                all(allowed_new_line not in baseline[i] for i in diffs)):
+            state["baseline"] = body
+            state["reloaded"] = True
+            return False
+    return True
+
+
+def _note_editor_change(s, rows, state, label, found, allowed_new_line, step):
+    """Called after every drain with `editor_state` set.  Two kinds of
+    difference are not the stale-repaint bug this oracle hunts for, and are
+    not recorded:
+
+    - A centred dialog (the write or command box) legitimately covers part
+      of the editor while it is open; those boxes are tested in their own
+      right (SC-ai-agent-18, -19), so a sample taken while one is up is
+      skipped here rather than compared at all.
+    - A sampled editor body that reads as entirely BLANK is a redraw caught
+      between its own erase and the text that follows, not stale content,
+      just an incomplete one, since the pty stream can be read mid-burst; it
+      gets one more drain to finish before anything is decided.
+
+    Any OTHER difference (real, non-blank content where the baseline or the
+    one allowed reload should be, with no box open) is recorded straight
+    away."""
+    text = "\n".join(rows)
+    if WRITE_BOX in text or COMMAND_BOX in text:
+        return
+    if not _editor_changed(rows, state, allowed_new_line):
+        return
+    body = _editor_body(rows)
+    if body is not None and all(not r.strip() for r in body):
+        s._drain(step)
+        rows = s.display(drain=0)
+        if WRITE_BOX in "\n".join(rows) or COMMAND_BOX in "\n".join(rows):
+            return
+        if not _editor_changed(rows, state, allowed_new_line):
+            return
+    found.append((["%s: an editor row outside the pane changed" % label], list(rows)))
+
+
+def _watch_invariant(s, seconds, label, found, editor_state=None, allowed_new_line=None, step=0.1):
     """Drain for `seconds`, checking the oracle after every drain; append
-    any violations (with the screen that showed them) to `found`."""
+    any violations (with the screen that showed them) to `found`.  When
+    `editor_state` is given, also check the third clause (the editor rows
+    outside the pane hold, modulo one named reload) via
+    `_note_editor_change`."""
     end = time.time() + seconds
     while time.time() < end:
         s._drain(step)
@@ -88,6 +197,8 @@ def _watch_invariant(s, seconds, label, found, step=0.1):
         v = screen_invariant_violations(rows, label)
         if v:
             found.append((v, list(rows)))
+        if editor_state is not None:
+            _note_editor_change(s, rows, editor_state, label, found, allowed_new_line, step)
 
 
 # @scenario SC-ai-agent-48
@@ -105,43 +216,56 @@ def test_invariant_holds_under_ask_with_boxes_reload_denial_and_flash(tmp_path):
     env = _env(tmp_path, turns, "ask")
     del env["XWPE_AI_POLICY"]
     found = []
+    editor_state = {}
+    RELOAD = "AGENTEDIT"          # unique to the approved write's new text
     with WpeSession(str(tmp_path), SEED, env_extra=env) as s:
         # a status flash from Alt-G y, three times round the dial back to ask
         for _ in range(3):
             s.key(ALT.AI); s.key("y", delay=0.3)
-            _watch_invariant(s, 0.4, "flash", found)
+            _watch_invariant(s, 0.4, "flash", found, editor_state, RELOAD)
         s.key("\033[B", delay=0.3)
-        _watch_invariant(s, 0.3, "after flash", found)
+        _watch_invariant(s, 0.3, "after flash", found, editor_state, RELOAD)
         s.key(ALT.AI); s.key("g"); s.key("varied run"); s.key("\r", delay=0.1)
         end = time.time() + 15
         while time.time() < end and " Write " not in _screen(s, 0):
-            _watch_invariant(s, 0.1, "turns 1-3", found)
-        _watch_invariant(s, 0.5, "write box", found)
+            _watch_invariant(s, 0.1, "turns 1-3", found, editor_state, RELOAD)
+        _watch_invariant(s, 0.5, "write box", found, editor_state, RELOAD)
         s.key("y", delay=0.1)
         end = time.time() + 15
         while time.time() < end and "APPROVE?" not in _screen(s, 0):
-            _watch_invariant(s, 0.1, "after write t.c", found)
+            _watch_invariant(s, 0.1, "after write t.c", found, editor_state, RELOAD)
         after_write = _screen(s, 0)              # the wrote-line is still in view here
-        _watch_invariant(s, 0.5, "command box", found)
+        _watch_invariant(s, 0.5, "command box", found, editor_state, RELOAD)
         s.key("n", delay=0.1)
         end = time.time() + 15
         while time.time() < end and " Write " not in _screen(s, 0):
-            _watch_invariant(s, 0.1, "after deny", found)
-        _watch_invariant(s, 0.3, "write box new.txt", found)
+            _watch_invariant(s, 0.1, "after deny", found, editor_state, RELOAD)
+        _watch_invariant(s, 0.3, "write box new.txt", found, editor_state, RELOAD)
         s.key("y", delay=0.1)
         end = time.time() + 20
         while time.time() < end and "type a follow-up" not in _screen(s, 0):
-            _watch_invariant(s, 0.1, "to the end", found)
-        _watch_invariant(s, 1.0, "at the end", found)
+            _watch_invariant(s, 0.1, "to the end", found, editor_state, RELOAD)
+        _watch_invariant(s, 1.0, "at the end", found, editor_state, RELOAD)
         rows = s.display()
         s.key(ESC, delay=0.5)
-        _watch_invariant(s, 0.5, "after Esc from the pane", found)
+        _watch_invariant(s, 0.5, "after Esc from the pane", found, editor_state, RELOAD)
     text = "\n".join(rows)
     assert "AGENTEDIT" in text, "the written t.c was not reloaded into its window:\n" + text
     assert "[agent] wrote t.c - Ctrl-U to undo (buffer only)" in after_write, after_write
     assert "[agent] denied: run_command touch" in text, text
     assert (tmp_path / "new.txt").read_text() == "fresh\n"
     assert not found, "%d screen-invariant violations, first: %s" % (len(found), found[0][0])
+    assert editor_state.get("baseline") is not None, \
+        "the editor rows were never captured (the pane never docked)"
+    # Under a slow binary (the sanitizer build, a wait factor of 2 or 3) the
+    # first non-blank capture of the editor can land after the approved write
+    # already reloaded t.c, so the baseline itself carries the new text and no
+    # later drain has a reload to allow: that is the same single change, seen
+    # from the other side, and the clause held for every drain after it.
+    reloaded_seen = editor_state.get("reloaded") or \
+        any(RELOAD in row for row in editor_state["baseline"])
+    assert reloaded_seen, \
+        "the approved write to t.c never showed as the one allowed editor change"
 
 
 # @scenario SC-ai-agent-48
@@ -156,16 +280,21 @@ def test_invariant_holds_under_auto_with_a_plan_and_full_review(tmp_path):
         "DONE done"])
     env = _env(tmp_path, turns, "auto")
     found = []
+    editor_state = {}
+    # a.txt is never opened in a window here, so the editor ("t.c") is not
+    # expected to change at all in this run: no allowed_new_line is passed.
     with WpeSession(str(tmp_path), SEED, env_extra=env) as s:
         s.key(ALT.AI); s.key("g"); s.key("auto run"); s.key("\r", delay=0.1)
         end = time.time() + 25
         while time.time() < end and "a = keep all" not in _screen(s, 0):
-            _watch_invariant(s, 0.1, "auto turns", found)
-        _watch_invariant(s, 0.5, "review open", found)
+            _watch_invariant(s, 0.1, "auto turns", found, editor_state)
+        _watch_invariant(s, 0.5, "review open", found, editor_state)
         s.key("a", delay=0.1)
         end = time.time() + 10
         while time.time() < end and "type a follow-up" not in _screen(s, 0):
-            _watch_invariant(s, 0.1, "review closing", found)
-        _watch_invariant(s, 1.0, "end", found)
+            _watch_invariant(s, 0.1, "review closing", found, editor_state)
+        _watch_invariant(s, 1.0, "end", found, editor_state)
     assert (tmp_path / "a.txt").read_text() == "BBB\n"
     assert not found, "%d screen-invariant violations, first: %s" % (len(found), found[0][0])
+    assert editor_state.get("baseline") is not None, \
+        "the editor rows were never captured (the pane never docked)"

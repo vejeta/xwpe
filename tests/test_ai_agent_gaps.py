@@ -65,12 +65,19 @@ TURN_POLL_S = 20
 REVIEW_POLL_S = 25
 TRACE_POLL_S = 15
 
-# The reply is held back long enough for the close to be sampled well before
-# the stream's child would have exited on its own; the unfixed tree repaints
-# only at that exit, so the bound below separates the two by seconds.
-SLOW_REPLY_MS = 9000
-REPAINT_BOUND_S = 2.0
+# The driver scales its own key/drain waits by XWPE_TEST_WAIT_SCALE (the
+# sanitizer build runs at 2, the Debian autopkgtest at 3); a fixed
+# XWPE_AI_MOCK_DELAY_MS does not, since the mock's reply lands at the same
+# wall-clock time regardless of that factor.  The reply is held back long
+# enough for the close to be sampled well before the stream's child would
+# have exited on its own; the unfixed tree repaints only at that exit, so the
+# bound below separates the two by seconds, scaled by hand so the separation
+# holds at every scale.
+WAIT_SCALE = float(os.environ.get("XWPE_TEST_WAIT_SCALE", "1"))
+SLOW_REPLY_MS = int(9000 * WAIT_SCALE)
+REPAINT_BOUND_S = 2.0 * WAIT_SCALE
 TIMELINE_S = 11
+APPLY_NOTHING_DELAY_MS = int(5000 * WAIT_SCALE)
 
 
 def _ai_build():
@@ -398,7 +405,7 @@ def test_window_closed_during_run_repaints_at_once(tmp_path):
 # @scenario SC-ai-agent-44
 def test_window_closed_during_run_applies_nothing(tmp_path):
     env = _env(tmp_path, "TOOL write_file t.c\nSHOULD NOT LAND\n@@END@@TURN@@DONE x", "auto",
-               XWPE_AI_MOCK_DELAY_MS="5000")
+               XWPE_AI_MOCK_DELAY_MS=str(APPLY_NOTHING_DELAY_MS))
     with WpeSession(str(tmp_path), SEED, env_extra=env) as s:
         _start_agent(s, "slow", delay=0.5)
         s.key(CTRL_W, delay=1.0)

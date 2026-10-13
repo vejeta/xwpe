@@ -168,6 +168,38 @@ def test_unknown_tool_is_reported_and_the_loop_continues(tmp_path):
     assert "agent done" in txt
 
 
+# @scenario SC-ai-agent-29
+def test_apply_patch_tool_errors_are_fed_back_distinctly(tmp_path):
+    """Each of the three ways apply_patch can fail reads back to the model as
+    its own named TOOL ERROR, never a generic failure the model cannot act
+    on: an unmatched SEARCH, a path that does not exist, and a reply with no
+    SEARCH/REPLACE body at all."""
+    unmatched = tmp_path / "unmatched"; unmatched.mkdir()
+    missing = tmp_path / "missing"; missing.mkdir()
+    no_blocks = tmp_path / "no-blocks"; no_blocks.mkdir()
+
+    captured, _, _ = _run_openai(
+        unmatched,
+        ["TOOL apply_patch t.c\n<<<<<<< SEARCH\nnonexistent line\n"
+         "=======\nnew line\n>>>>>>> REPLACE\n@@END", "DONE done"], "auto", 2)
+    r = _tool_results(captured[1])
+    assert r and r[-1].startswith("TOOL RESULT:\nTOOL ERROR: SEARCH text not found"), r
+
+    captured, _, _ = _run_openai(
+        missing,
+        ["TOOL apply_patch does-not-exist.txt\n<<<<<<< SEARCH\nx\n"
+         "=======\ny\n>>>>>>> REPLACE\n@@END", "DONE done"], "auto", 2)
+    r = _tool_results(captured[1])
+    assert r and r[-1] == ("TOOL RESULT:\nTOOL ERROR: file not found "
+                            "(use write_file to create it)"), r
+
+    # No newline at all after the TOOL line: the model gave no body, not even
+    # an empty one, so this is the "no body" branch, not "no blocks in body".
+    captured, _, _ = _run_openai(no_blocks, ["TOOL apply_patch t.c", "DONE done"], "auto", 2)
+    r = _tool_results(captured[1])
+    assert r and r[-1] == "TOOL RESULT:\nTOOL ERROR: apply_patch needs SEARCH/REPLACE blocks", r
+
+
 # @scenario SC-ai-agent-24
 def test_web_fetch_bounds_the_get_and_the_text_handed_to_the_model(tmp_path):
     # 65 000 bytes of markup with no text, then text: a 65536-byte GET bound

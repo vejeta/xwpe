@@ -26,6 +26,14 @@ TURN_POLL_S = 20
 REVIEW_POLL_S = 25
 BAR_WORD = "F1 Help"
 
+# The driver scales its own key/drain waits by XWPE_TEST_WAIT_SCALE (the
+# sanitizer build runs at 2, the Debian autopkgtest at 3); a fixed
+# XWPE_AI_MOCK_DELAY_MS does not, so the dial-switch-mid-turn test below
+# scales its own mock delay and the poll bounds that wait on it by hand to
+# keep the same margin at every scale.
+WAIT_SCALE = float(os.environ.get("XWPE_TEST_WAIT_SCALE", "1"))
+DIAL_SWITCH_DELAY_MS = int(6000 * WAIT_SCALE)
+
 
 def _ai_build():
     try:
@@ -199,15 +207,16 @@ def test_altg_y_flashes_persists_to_xwperc_and_shows_in_next_header(tmp_path):
 # @scenario SC-ai-agent-22
 def test_dial_lowered_mid_run_asks_for_the_next_write_and_still_reviews(tmp_path):
     turns = "TOOL write_file out.txt\nhello\n@@END@@TURN@@DONE wrote"
-    env = _env(tmp_path, turns, "auto", XWPE_AI_MOCK_DELAY_MS="6000")
+    env = _env(tmp_path, turns, "auto", XWPE_AI_MOCK_DELAY_MS=str(DIAL_SWITCH_DELAY_MS))
     with WpeSession(str(tmp_path), SEED, env_extra=env) as s:
         _start_agent(s, "write", delay=0.3)
         s.key(ALT.AI); s.key("y")                  # auto -> ask
         assert _traced_within(tmp_path, "policy set ask", 6), _trace(tmp_path)
-        got_box = _seen_within(s, " Write ", 20)
+        got_box = _seen_within(s, " Write ", int(20 * WAIT_SCALE))
         if got_box:
             s.key("y", delay=1.0)
-        assert _seen_within(s, REVIEW_PROMPT, 20) or _seen_within(s, FOLLOWUP_LINE, 5), _screen(s)
+        assert _seen_within(s, REVIEW_PROMPT, int(20 * WAIT_SCALE)) or \
+            _seen_within(s, FOLLOWUP_LINE, int(5 * WAIT_SCALE)), _screen(s)
         review = _screen(s)
         if REVIEW_PROMPT in review:
             s.key("a", delay=1.0)
