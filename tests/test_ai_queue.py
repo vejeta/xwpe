@@ -9,8 +9,16 @@ import subprocess
 import pytest
 from wpe_driver import WpeSession, ALT, WPE_BIN
 
+# The driver scales its key waits by XWPE_TEST_WAIT_SCALE (the sanitizer build
+# runs at 2); the mock's reply delay must grow with them, or under the slower
+# binary the reply lands before the Esc the test sends and the cancel is read
+# as a cancel of nothing.
+WAIT_SCALE = float(os.environ.get("XWPE_TEST_WAIT_SCALE", "1"))
+SLOW_DELAY_MS = int(2500 * WAIT_SCALE)
+LONG_DELAY_MS = int(12000 * WAIT_SCALE)
 SLOW = {"XWPE_AI_ENABLE": "1", "XWPE_AI_BACKEND": "mock",
-        "XWPE_AI_MOCK_REPLY": "DONE finished", "XWPE_AI_MOCK_DELAY_MS": "2500"}
+        "XWPE_AI_MOCK_REPLY": "DONE finished",
+        "XWPE_AI_MOCK_DELAY_MS": str(SLOW_DELAY_MS)}
 
 
 def _ai_build():
@@ -64,7 +72,7 @@ def test_esc_cancels_running_task(tmp_path):
 def test_esc_clears_the_queue(tmp_path):
     # task one must still be running when Esc is pressed, so it runs long enough
     # that the enqueue + Esc happen well within its window.
-    env = dict(SLOW); env["XWPE_AI_MOCK_DELAY_MS"] = "12000"
+    env = dict(SLOW); env["XWPE_AI_MOCK_DELAY_MS"] = str(LONG_DELAY_MS)
     with WpeSession(str(tmp_path), "int main(void){return 0;}\n",
                     env_extra=env, filename="t.c") as s:
         _start_agent(s, "TASKONE")
