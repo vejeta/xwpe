@@ -294,6 +294,7 @@ def _search_server():
 
 
 # @scenario SC-ai-agent-20
+# @scenario SC-ai-agent-27
 def test_agent_denied_web_search_is_visible_and_nothing_fetched(tmp_path):
     srv, paths = _search_server()
     try:

@@ -8,21 +8,12 @@
 # ai-menu-and-popups, ai-agent-host, ai-edit-journeys), remove the files it
 # maps from this list.  A file that stays here is a file whose behaviour is
 # still undocumented.
-tests/test_ai_agent.py
-tests/test_ai_agent_answer.py
-tests/test_ai_agent_gaps.py
-tests/test_ai_agent_preview.py
-tests/test_ai_agent_project_instructions.py
-tests/test_ai_agent_run_visibility.py
-tests/test_ai_agent_tool_safety.py
-tests/test_ai_agent_write.py
 tests/test_ai_async.py
 tests/test_ai_async_live.py
 tests/test_ai_attention.py
 tests/test_ai_bottombar_click.py
 tests/test_ai_cancel.py
 tests/test_ai_capabilities_prompt.py
-tests/test_ai_changeset.py
 tests/test_ai_chat.py
 tests/test_ai_chat_ctrl_ae.py
 tests/test_ai_chat_error.py
@@ -38,9 +29,6 @@ tests/test_ai_diagnostics.py
 tests/test_ai_endpoint_down.py
 tests/test_ai_fix_build.py
 tests/test_ai_glob.py
-tests/test_ai_host.py
-tests/test_ai_host_dial_and_interrupt.py
-tests/test_ai_host_nudge.py
 tests/test_ai_host_text.py
 tests/test_ai_identity.py
 tests/test_ai_input_utf8.py
@@ -58,15 +46,11 @@ tests/test_ai_pane_copy.py
 tests/test_ai_pane_dock.py
 tests/test_ai_pane_quit.py
 tests/test_ai_pane_wrap.py
-tests/test_ai_pane_wrap_agent.py
-tests/test_ai_plan.py
 tests/test_ai_plan_live.py
 tests/test_ai_plan_multiline.py
-tests/test_ai_policy.py
 tests/test_ai_project_memory.py
 tests/test_ai_prompt.py
 tests/test_ai_prompt_accelerators.py
-tests/test_ai_queue.py
 tests/test_ai_scroll.py
 tests/test_ai_session.py
 tests/test_ai_slash.py
@@ -74,9 +58,6 @@ tests/test_ai_status.py
 tests/test_ai_tls.py
 tests/test_ai_toggle.py
 tests/test_ai_tool_feedback.py
-tests/test_ai_tool_tty.py
-tests/test_ai_web_fetch.py
-tests/test_ai_web_search.py
 tests/wayland/test_ai_pane.py
 tests/wayland/test_ai_resize.py
 tests/x11/test_ai_pane.py
