@@ -246,7 +246,7 @@ unseen.  @key{PgUp} and @key{PgDn} scroll inside a hunk taller than the popup.
 
 @kbd{q} or @key{Esc} cancels the review and leaves the file exactly as it was
 before that review started: the hunks already accepted are dropped with the
-rest, and the pane says how many, @samp{[AI edit] discarded (1 accepted hunks
+rest, and the pane says how many, @samp{[AI edit] discarded (2 accepted hunks
 dropped)}.  To stop reviewing and @emph{keep} what you have accepted, press
 @kbd{n} on the hunks that are left.  The close glyph on the popup's title row
 cancels the same way.  After @key{Esc} the popup is gone and the keyboard is the
