@@ -224,17 +224,14 @@ def test_edit_prompt_selection_title(tmp_path):
 # SC-ai-edit-37, sharper -- Complete's spinner in a text window, and the
 # guard in a real non-text window.
 #
-# we_ai_ui.c:4351: ai_spin_begin(f, "[AI] completing").
-# we_ai_ui.c:4295: `if (!DTMD_ISTEXT(f->dtmd)) { ai_pane(f, "[AI] no file to
-# complete here", 1); return 0; }`.
+# we_ai_ui.c: ai_spin_begin(f, "[AI] completing").
+# we_ai_ui.c: ai_refuse_non_file_window() shows AI_NO_FILE_LINE, the one pane
+# line Edit, Complete and Multi-file share for a window that is not a file.
 #
-# The packet's suggested non-text window (the AI pane, after a chat reply) was
-# tried first and found NOT to exercise this guard: the pane is an ordinary
-# e_edit() buffer (dtmd = DTMD_NORMAL = 'n', which IS > 'Z', i.e. IS text per
-# edit.h:76), so Alt-G c there actually starts a completion and opens a
-# "Proposed completion" box over the pane -- see the report. The File-Manager
-# window (dtmd = DTMD_FILEMANAGER = 'F', edit.h:72, NOT > 'Z') is a genuine
-# non-text window and is used here instead.
+# The File-Manager window (dtmd = DTMD_FILEMANAGER = 'F', edit.h, not a text
+# window) is the non-file window driven here; the AI pane case, where the
+# window IS a text buffer but not a file, is pinned by
+# test_ai_edit_blocked_contracts.py.
 # ===========================================================================
 def test_complete_spinner_in_text_window(tmp_path):
     env = _env(tmp_path, XWPE_AI_MOCK_DELAY_MS="1500")
@@ -253,8 +250,8 @@ def test_complete_refuses_a_real_non_text_window(tmp_path):
         s.key(ALT.AI); s.key("c", delay=0.8)
         s._drain(0.5)
         disp = "\n".join(s.display())
-        assert "[AI] no file to complete here" in disp, \
-            "the non-text-window guard message is missing:\n" + disp
+        assert "[AI] no file here" in disp, \
+            "the non-file-window guard message is missing:\n" + disp
     txt = _trace(tmp_path)
     assert "stream start" not in txt, "a completion stream opened on a non-text window:\n" + txt
 

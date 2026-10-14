@@ -2780,68 +2780,253 @@ static void ai_box_place_at_top(int nrows, int *ya, int *vis)
  *ya = 2;
 }
 
+/* The frame of a review box on the screen: its corners, its width and how many
+   body rows it shows.  Laid out when the box opens and again after every
+   terminal resize, so the box always fits the screen it is drawn on. */
+typedef struct {
+ int xa, ya, xe, ye;     /* the border corners */
+ int boxw;               /* columns, border included */
+ int vis;                /* body rows shown */
+} ai_box_frame;
+
+/* The box's close glyph is this many cells left of its right border on the
+   title row: e_draw_titlebar_buttons paints every popup's close box at xe-2,
+   and the dialog engine hit-tests the same cell. */
+#define AI_BOX_CLOSE_FROM_RIGHT 2
+/* Columns the box keeps clear of the screen's edges, both sides together. */
+#define AI_BOX_SIDE_MARGIN 4
+/* Border columns around the rows: the frame on the left and on the right,
+   plus the cell the title row's glyphs need. */
+#define AI_BOX_BORDER_COLS 3
+/* Bit 0 of the mouse layer's button mask is the left button. */
+#define AI_MOUSE_LEFT 1
+
+/**
+ * ai_box_content_width - The widest line the box has to show.
+ * @rt/@nrows: the rows; @title/@hint: the caption lines.
+ *
+ * Return: columns of the widest row, title or hint; the frame is added by
+ * ai_box_frame_fit, and a wider screen never changes it.
+ */
+static int ai_box_content_width(char **rt, int nrows, const char *title, const char *hint)
+{
+ int maxw = 0, k;
+ for (k = 0; k < nrows; k++)
+  if (rt[k] && (int)strlen(rt[k]) > maxw) maxw = (int)strlen(rt[k]);
+ if (maxw < (int)strlen(title)) maxw = (int)strlen(title);
+ if (maxw < (int)strlen(hint)) maxw = (int)strlen(hint);
+ return maxw;
+}
+
+/**
+ * ai_box_frame_fit - Lay the box out for the screen as it is right now.
+ * @f: the window the box is about; @anchor_row: the screen row of the hunk's
+ * first line (0 for a box about no line); @nrows: rows to show;
+ * @content_width: from ai_box_content_width; @fr: receives the frame.
+ *
+ * What the user gains: the same layout rule places the box when it opens and
+ * after a resize, so a box on a 60-column screen is 60 columns wide at most and
+ * one next to a hunk stays inside the file window (ai_box_place_in_window),
+ * whatever the screen was when it first opened.
+ */
+static void ai_box_frame_fit(const FENSTER *f, int anchor_row, int nrows,
+                             int content_width, ai_box_frame *fr)
+{
+ fr->boxw = content_width + AI_BOX_BORDER_COLS;
+ if (fr->boxw > MAXSCOL - AI_BOX_SIDE_MARGIN) fr->boxw = MAXSCOL - AI_BOX_SIDE_MARGIN;
+ fr->xa = (MAXSCOL - fr->boxw) / 2;
+ if (fr->xa < 1) fr->xa = 1;
+ fr->xe = fr->xa + fr->boxw;
+ if (anchor_row > 0)
+  ai_box_place_in_window(f, anchor_row, nrows, &fr->ya, &fr->vis);
+ else
+  ai_box_place_at_top(nrows, &fr->ya, &fr->vis);
+ fr->ye = fr->ya + fr->vis + 1;
+}
+
+static void ai_scroll_line_into_view(FENSTER *f, int line);
+static int ai_line_screen_row(const FENSTER *f, int line);
+
+/**
+ * ai_box_anchor_after_resize - Where the hunk's line is once the windows are relaid.
+ * @f: the window the box is about; @anchor_row: the anchor the box opened with.
+ *
+ * What the user gains: after a resize the box is still next to the hunk it is
+ * about.  The terminal layer relays every window and repaints the desk before
+ * it reports WPE_RESIZE, so the line the review parked the cursor on may now
+ * be drawn on another row or be out of view: it is brought into view again,
+ * exactly as when the box opened, and its new row becomes the anchor.  A box
+ * about no particular line (the Multi-file approval) keeps its anchor of 0.
+ *
+ * Return: the screen row to place the box next to, or 0.
+ */
+static int ai_box_anchor_after_resize(FENSTER *f, int anchor_row)
+{
+ int line;
+ if (anchor_row <= 0)
+  return anchor_row;
+ line = f->b->b.y + 1;
+ ai_scroll_line_into_view(f, line);
+ return ai_line_screen_row(f, line);
+}
+
+/**
+ * ai_box_scrolled_top - The first row shown after a page up or down.
+ * @top: the first row shown now; @delta: rows to move, negative for up;
+ * @nrows: all rows; @vis: body rows the box shows.
+ *
+ * Return: the new first row, kept so the box never scrolls past the last row
+ * or above the first one.  With @delta 0 it only re-clamps @top, which is
+ * what a box that just changed height needs.
+ */
+static int ai_box_scrolled_top(int top, int delta, int nrows, int vis)
+{
+ top += delta;
+ if (top > nrows - vis) top = nrows - vis;
+ if (top < 0) top = 0;
+ return top;
+}
+
+/**
+ * ai_box_paint - Draw the box: its frame and title, the rows from @top, the hint.
+ * @f: the window (for the colours); @fr: the frame; @rt/@ra/@nrows: the rows
+ * and their colours; @top: the first row shown; @title/@hint: the captions.
+ *
+ * Return: the saved background to give back to e_close_view, or NULL when the
+ * screen could not be saved.
+ */
+static PIC *ai_box_paint(FENSTER *f, const ai_box_frame *fr, char **rt, int *ra,
+                         int nrows, int top, const char *title, const char *hint)
+{
+ PIC *pic = e_std_kst(fr->xa, fr->ya, fr->xe, fr->ye, (char *)title, 1,
+                      f->fb->nr.fb, f->fb->nt.fb, f->fb->ne.fb);
+ int j, hint_len, hint_x;
+ if (!pic) return NULL;
+ for (j = 0; j < fr->vis; j++) {
+  int row = top + j;
+  char line[600];
+  if (row >= nrows) break;
+  ai_box_row_text(line, sizeof line, rt[row], fr->boxw - 2);
+  e_pr_str(fr->xa + 1, fr->ya + 1 + j, line, ra[row], 0, 0, 0, 0);
+ }
+ hint_len = (int)strlen(hint);
+ hint_x = fr->xa + (fr->xe - fr->xa - hint_len) / 2;
+ if (hint_x < fr->xa + 1) hint_x = fr->xa + 1;
+ e_pr_str(hint_x, fr->ye, (char *)hint, f->fb->nr.fb, 0, 0, 0, 0);
+ e_refresh();
+ return pic;
+}
+
+/**
+ * ai_box_click_closes - Was this mouse report a left click on the box's close glyph?
+ * @fr: the box; @c: the negative code e_getch returned for the report.
+ *
+ * What the user gains: the close glyph on the box's title row does what it does
+ * on every other dialog of this editor, it cancels, exactly as q and Esc do
+ * (e_opt_mouse and e_error resolve a click on that cell to Esc the same way).
+ * A click anywhere else is ignored like an unrelated key.  The rest of the
+ * press is swallowed so the release does not reach the editor as a click of
+ * its own.  The terminal reports the buttons in e_mouse.k, the graphical
+ * backends in the code itself, negated; the mouse layer reads them the same way.
+ *
+ * Return: 1 for a click on the close glyph, 0 for anything else.
+ */
+static int ai_box_click_closes(const ai_box_frame *fr, int c)
+{
+#if MOUSE
+ extern struct mouse e_mouse;
+ int buttons;
+ if (WpeIsXwin()) buttons = -c;
+ else buttons = e_mouse.k;
+ if (!(buttons & AI_MOUSE_LEFT)) return 0;
+ if (e_mouse.y != fr->ya) return 0;
+ if (e_mouse.x != fr->xe - AI_BOX_CLOSE_FROM_RIGHT) return 0;
+ while (e_mshit() != 0)
+  ;
+ return 1;
+#else
+ (void)fr; (void)c;
+ return 0;
+#endif
+}
+
+/**
+ * ai_box_key_decision - What a key pressed on the box decides, if anything.
+ * @c: the key; @accept: the letters that end the box, upper case.
+ *
+ * Return: 13 for Enter, WPE_ESC for Esc, the upper-cased letter for one in
+ * @accept, 0 for a key the box ignores (it stays open, unchanged).
+ */
+static int ai_box_key_decision(int c, const char *accept)
+{
+ int uc;
+ if (c == 13 || c == '\r' || c == '\n') return 13;
+ if (c == WPE_ESC) return WPE_ESC;
+ uc = e_toupper(c);
+ if (accept && strchr(accept, uc)) return uc;
+ return 0;
+}
+
 /* ai_diff_box_show - Render rows[] (each with its own colour attr) in a boxed,
    scrollable overlay and return the key the reviewer pressed.  PgUp/PgDn scroll
    when the content is taller than the box, so nothing is lost off the top; a key
-   in `accept` (case-insensitive), or Enter/Esc, ends it -- any other key is
-   ignored.  Returns 13 for Enter, WPE_ESC for Esc, else the uppercased key.  The
-   shared preview surface for the Edit review and the agent write confirmation.
-   ya_pref > 0 is the screen row of the hunk's first line, which the caller has
-   scrolled into view: the box then stays inside the window f (see
-   ai_box_place_in_window); ya_pref <= 0 opens it under the menu bar. */
+   in `accept` (case-insensitive), Enter, Esc or a click on the close glyph ends
+   it -- any other key or click is ignored.  Returns 13 for Enter, WPE_ESC for
+   Esc and the close glyph, else the uppercased key.  The shared preview surface
+   for the Edit review and the agent write confirmation.  ya_pref > 0 is the
+   screen row of the hunk's first line, which the caller has scrolled into view:
+   the box then stays inside the window f (see ai_box_place_in_window); ya_pref
+   <= 0 opens it under the menu bar.  A terminal resize lays the box out again
+   for the new screen, same hunk and same rows shown, and the keys go on
+   working. */
 static int ai_diff_box_show(FENSTER *f, char **rt, int *ra, int nrows,
                             const char *title, const char *hint, const char *accept,
                             int ya_pref)
 {
  extern int wpe_modal_active;
- int maxw = 0, boxw, vis, xa, ya, xe, ye, top = 0, k, ret = WPE_ESC;
+ ai_box_frame fr;
+ int width = ai_box_content_width(rt, nrows, title, hint);
+ int top = 0, ret = WPE_ESC;
  int modal_save = wpe_modal_active;
  wpe_modal_active = 1;              /* a review/confirm box is up: async paints defer */
 
- for (k = 0; k < nrows; k++)
-  if (rt[k] && (int)strlen(rt[k]) > maxw) maxw = (int)strlen(rt[k]);
- if (maxw < (int)strlen(title)) maxw = (int)strlen(title);
- if (maxw < (int)strlen(hint)) maxw = (int)strlen(hint);
- boxw = maxw + 3;
- if (boxw > MAXSCOL - 4) boxw = MAXSCOL - 4;
- xa = (MAXSCOL - boxw) / 2; if (xa < 1) xa = 1;
- xe = xa + boxw;
- if (ya_pref > 0)
-  ai_box_place_in_window(f, ya_pref, nrows, &ya, &vis);
- else
-  ai_box_place_at_top(nrows, &ya, &vis);
- ye = ya + vis + 1;
-
+ ai_box_frame_fit(f, ya_pref, nrows, width, &fr);
  fk_cursor(0);
  for (;;) {
-  PIC *pic = e_std_kst(xa, ya, xe, ye, (char *)title, 1,
-                       f->fb->nr.fb, f->fb->nt.fb, f->fb->ne.fb);
-  int c, j;
+  PIC *pic = ai_box_paint(f, &fr, rt, ra, nrows, top, title, hint);
+  int c, decision;
   if (!pic) break;
-  for (j = 0; j < vis; j++) {
-   int row = top + j;
-   char line[600];
-   if (row >= nrows) break;
-   ai_box_row_text(line, sizeof line, rt[row], boxw - 2);
-   e_pr_str(xa + 1, ya + 1 + j, line, ra[row], 0, 0, 0, 0);
-  }
-  { int hl = (int)strlen(hint), hx = xa + (xe - xa - hl) / 2;
-    if (hx < xa + 1) hx = xa + 1;
-    e_pr_str(hx, ye, (char *)hint, f->fb->nr.fb, 0, 0, 0, 0); }
-  e_refresh();
-
   c = e_getch();
-  if (c == BUP)      { top -= vis; if (top < 0) top = 0; e_close_view(pic, 1); continue; }
-  if (c == BDO)      { top += vis; if (top > nrows - vis) top = nrows - vis; if (top < 0) top = 0;
-                       e_close_view(pic, 1); continue; }
-  if (c == 13 || c == '\r' || c == '\n') ret = 13;
-  else if (c == WPE_ESC)                 ret = WPE_ESC;
-  else {
-   int uc = e_toupper(c);
-   if (accept && strchr(accept, uc)) ret = uc;
-   else { e_close_view(pic, 1); continue; }           /* ignore other keys */
+  if (c == WPE_RESIZE) {
+   /* The terminal layer has relaid the windows and repainted the desk under
+      the box, so the background saved at the old size is dropped, not put
+      back; the box is then laid out again for the new screen. */
+   e_close_view(pic, 0);
+   ya_pref = ai_box_anchor_after_resize(f, ya_pref);
+   ai_box_frame_fit(f, ya_pref, nrows, width, &fr);
+   top = ai_box_scrolled_top(top, 0, nrows, fr.vis);
+   continue;
   }
+  if (c == BUP) {
+   top = ai_box_scrolled_top(top, -fr.vis, nrows, fr.vis);
+   e_close_view(pic, 1);
+   continue;
+  }
+  if (c == BDO) {
+   top = ai_box_scrolled_top(top, fr.vis, nrows, fr.vis);
+   e_close_view(pic, 1);
+   continue;
+  }
+  if (c < 0 && ai_box_click_closes(&fr, c))
+   decision = WPE_ESC;
+  else if (c < 0)
+   decision = 0;                                    /* a click elsewhere */
+  else
+   decision = ai_box_key_decision(c, accept);
   e_close_view(pic, 1);
+  if (decision == 0)
+   continue;                                        /* ignore other keys */
+  ret = decision;
   break;
  }
  fk_cursor(1);
@@ -3099,6 +3284,13 @@ static int ai_diff_review_hunk(FENSTER *f, wpe_ai_seg *segs, int nseg,
    agent's write box so the user learns one sign. */
 #define AI_PLAN_OUTSIDE_MARK "!"
 #define AI_PLAN_OUTSIDE_WORD "outside the workspace"
+
+/* The Multi-file edit (Alt-G f) has one name wherever the user meets it: the
+   menu row, the prompt, every pane line and the approval box's title all say
+   "Multi-file edit", so a line in the pane is read as belonging to the action
+   the menu offered and not to some other "plan". */
+#define AI_MULTIFILE_NAME   "Multi-file edit"
+#define AI_MULTIFILE_PREFIX "[" AI_MULTIFILE_NAME "]"
 
 /* A write box for a file outside the workspace carries one more row, the mark. */
 #define AI_DIFF_OUTSIDE_ROWS 1
@@ -4368,20 +4560,53 @@ static void ai_edit_launch(FENSTER *f, const char *instr)
  wpe_ai_trace("edit stream fd=%d (async) sel=%d..%d", op->fd, op->sel_y0, op->sel_y1);
 }
 
+/* The one pane line for an editing action asked from a window that is not a
+   file: the AI pane itself, Messages, a read-only viewer.  Edit, Complete and
+   Multi-file all say it, so the user learns one sentence. */
+#define AI_NO_FILE_LINE \
+ "[AI] no file here - Edit, Complete and Multi-file work on a file window"
+
+/**
+ * ai_refuse_non_file_window - Stop an editing action asked from a non-file window.
+ * @f: the window Alt-G e, c or f was pressed in.
+ *
+ * What the user gains: the assistant never diffs or overwrites its own pane,
+ * the Messages window or a read-only viewer.  After a chat reply or a cancelled
+ * task the focus rests on the pane, and the next Alt-G e used to open its
+ * prompt there, diff the transcript and let "y" replace it with the file.  Now
+ * nothing is sent, no prompt opens, and the pane says AI_NO_FILE_LINE; the
+ * transcript is untouched.  The same question gates the three actions, through
+ * wpe_ai_window_is_editable_file.
+ *
+ * Return: 1 when the action must stop (the pane has been told), 0 to go on.
+ */
+static int ai_refuse_non_file_window(FENSTER *f)
+{
+ if (wpe_ai_window_is_editable_file(f))
+  return 0;
+ ai_pane(f, AI_NO_FILE_LINE, 1);
+ wpe_ai_trace("edit refused: not a file window (%s)", f && f->datnam ? f->datnam : "?");
+ return 1;
+}
+
 /**
  * e_ai_edit - Change the current file by instruction (Alt-G e).
  * @f: the file window.  Return: 0, the editor-action convention.
  *
  * Asks for the instruction first and only then looks at what is running, so a
  * second request can be typed while the first is still generating: it is
- * queued and starts by itself when that one ends.
+ * queued and starts by itself when that one ends.  A window that is not a file
+ * is refused before the prompt opens (ai_refuse_non_file_window).
  */
 static int e_ai_edit(FENSTER *f)
 {
  static char instr[AI_PROMPT_MAX];
  int sy0 = -1, sy1 = -1;
- int have_sel = (ai_edit_scope_pick(f, &sy0, &sy1) == AI_SCOPE_BLOCK);
+ int have_sel;
 
+ if (ai_refuse_non_file_window(f))
+  return 0;
+ have_sel = (ai_edit_scope_pick(f, &sy0, &sy1) == AI_SCOPE_BLOCK);
  instr[0] = '\0';
  if (!e_ai_prompt1(instr, have_sel ? "AI edit instruction (selection)"
                                    : "AI edit instruction", f) || !instr[0])
@@ -4712,7 +4937,7 @@ static int e_ai_complete(FENSTER *f)
  wpe_ai_msg msgs[2];
  wpe_ai_req req;
 
- if (!DTMD_ISTEXT(f->dtmd)) { ai_pane(f, "[AI] no file to complete here", 1); return 0; }
+ if (ai_refuse_non_file_window(f)) return 0;
  if (wpe_ai_busy()) { ai_enqueue(f, ai_launch_complete, ""); return 0; }
  err[0] = '\0';
  if (wpe_ai_preflight(e_ai_backend, err, sizeof err)) { ai_pane(f, err, 1); return 0; }
@@ -6810,7 +7035,7 @@ static int ai_plan_process(ai_async_op *op, char *reply)
  if (!done && !strncmp(action, "TOOL ", 5)) {
   char *tool = action + 5, *arg = strchr(tool, ' '), *result = NULL, paneln[640];
   if (arg) { *arg = '\0'; arg++; } else arg = (char *)"";
-  snprintf(paneln, sizeof paneln, "[plan] %s %s", tool, arg);
+  snprintf(paneln, sizeof paneln, AI_MULTIFILE_PREFIX " %s %s", tool, arg);
   ai_pane(f, paneln, 0);
   wpe_ai_trace("plan tool=%s arg=%s", tool, arg);
   if (!strcmp(tool, "read_file"))      result = wpe_ai_read_scope_file(f, arg);
@@ -6919,7 +7144,7 @@ static void ai_plan_report_outside(FENSTER *f, const char *path)
 {
  char line[1400];
  if (!wpe_ai_path_outside_workspace(f, path)) return;
- snprintf(line, sizeof line, "[plan] applied %s, %s", path, AI_PLAN_OUTSIDE_WORD);
+ snprintf(line, sizeof line, AI_MULTIFILE_PREFIX " applied %s, %s", path, AI_PLAN_OUTSIDE_WORD);
  ai_pane(f, line, 0);
  wpe_ai_trace("plan applied outside workspace %s", path);
 }
@@ -6995,18 +7220,18 @@ static void ai_plan_finish(ai_async_op *op)
  wpe_ai_session_save(f);
 
  if (np == 0) {
-  ai_pane(f, "[plan] the model proposed no file changes", 0);
+  ai_pane(f, AI_MULTIFILE_PREFIX " the model proposed no file changes", 0);
   wpe_ai_trace("plan proposals=0");
   return;
  }
- snprintf(line, sizeof line, "[plan] the AI proposes to change %d file%s (review in the dialog):",
+ snprintf(line, sizeof line, AI_MULTIFILE_PREFIX " the AI proposes to change %d file%s (review in the dialog):",
           np, np == 1 ? "" : "s");
  ai_pane(f, line, 1);
  wpe_ai_trace("plan proposals=%d", np);
- snprintf(title, sizeof title, "Apply AI plan - %d file%s", np, np == 1 ? "" : "s");
+ snprintf(title, sizeof title, AI_MULTIFILE_NAME " - %d file%s", np, np == 1 ? "" : "s");
  mode = ai_plan_choice(f, pd, title);
  if (mode == AI_PLAN_CANCEL) {
-  ai_pane(f, "[plan] cancelled - nothing changed", 0);
+  ai_pane(f, AI_MULTIFILE_PREFIX " cancelled - nothing changed", 0);
   wpe_ai_trace("plan cancelled");
   return;
  }
@@ -7016,7 +7241,7 @@ static void ai_plan_finish(ai_async_op *op)
   const char *path = pd->props[i].path;
   int done;
   if (e_edit(cn, pd->props[i].path) != 0) {
-   snprintf(line, sizeof line, "[plan] could not open %s", path);
+   snprintf(line, sizeof line, AI_MULTIFILE_PREFIX " could not open %s", path);
    ai_pane(f, line, 0);
    continue;
   }
@@ -7035,7 +7260,7 @@ static void ai_plan_finish(ai_async_op *op)
   wpe_ai_trace("plan applied %s", path);
   ai_plan_report_outside(f, path);
  }
- snprintf(line, sizeof line, "[plan] applied %d of %d file%s - each is open (Ctrl-U undoes per window)", applied, np, np == 1 ? "" : "s");
+ snprintf(line, sizeof line, AI_MULTIFILE_PREFIX " applied %d of %d file%s - each is open (Ctrl-U undoes per window)", applied, np, np == 1 ? "" : "s");
  ai_pane(f, line, 0);
  wpe_ai_trace("plan done applied=%d", applied);
 }
@@ -7075,7 +7300,7 @@ static void ai_plan_launch(FENSTER *f, const char *task)
  pd = calloc(1, sizeof *pd);
  if (!pd) return;
  pd->nsc = wpe_ai_scope_files(f, e_project_is_open(), 1, &pd->scope);
- snprintf(line, sizeof line, "[plan] task: %s  (scope: %d files)", task, pd->nsc);
+ snprintf(line, sizeof line, AI_MULTIFILE_PREFIX " task: %s  (scope: %d files)", task, pd->nsc);
  ai_pane(f, line, 1);
  wpe_ai_trace("plan task=%s scope=%d", task, pd->nsc);
 
@@ -7116,7 +7341,7 @@ static void ai_plan_launch(FENSTER *f, const char *task)
   }
  }
  wpe_ai_session_append("user", task);
- ai_conv_start(op, "[plan] working");
+ ai_conv_start(op, AI_MULTIFILE_PREFIX " working");
 }
 
 /**
@@ -7125,14 +7350,17 @@ static void ai_plan_launch(FENSTER *f, const char *task)
  *
  * Asks for the task first and only then looks at what is running, so the task
  * can be typed while another one finishes; it is then queued and starts by
- * itself, like every other assistant action.
+ * itself, like every other assistant action.  A window that is not a file is
+ * refused before the prompt opens (ai_refuse_non_file_window).
  */
 static int e_ai_plan(FENSTER *f)
 {
  static char task[AI_PROMPT_MAX];
 
+ if (ai_refuse_non_file_window(f))
+  return 0;
  task[0] = '\0';
- if (!e_ai_prompt1(task, "AI plan: task", f) || !task[0])
+ if (!e_ai_prompt1(task, AI_MULTIFILE_NAME ": task", f) || !task[0])
   return 0;
  if (wpe_ai_busy()) {
   ai_enqueue(f, ai_plan_launch, task);

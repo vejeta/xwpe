@@ -2738,6 +2738,35 @@ void e_replace_buffer_undoable(FENSTER *f, const char *newtext)
  e_refresh();                       /* flush to the terminal now, not next key */
 }
 
+/**
+ * e_rudo_whole_buffer - Undo or redo a 'B' step: swap the whole text back.
+ * @f: the window; @b, @s: its buffer and screen; @ud: the 'B' entry being replayed.
+ *
+ * What the user gains: one Ctrl-U reverts a tool's rewrite of the file (an
+ * accepted assistant edit, a language-server action) as one step, and the
+ * window then shows it is modified like after any other undo: the status row
+ * carries its mark and quitting asks whether to save.  That last part was
+ * missing: the ordinary undo branches change the text through e_ins_nchar and
+ * e_del_nchar, which count the change in f->save, while this branch rebuilds
+ * the buffer directly, so after Save then Ctrl-U the window read as clean, the
+ * editor quit without a question and the reverted text was lost.  The inverse
+ * snapshot is recorded FIRST, onto the opposite list (e_redo_sw routes it), so
+ * Undo and Redo stay symmetric.
+ */
+static void e_rudo_whole_buffer(FENSTER *f, BUFFER *b, SCHIRM *s, Undo *ud)
+{
+ e_add_undo('B', b, ud->b.x, ud->b.y, 0);
+ e_buffer_set_text(b, (char *)ud->u.pt);
+ FREE(ud->u.pt);
+ if (b->b.y >= b->mxlines) b->b.y = (b->mxlines > 0) ? b->mxlines - 1 : 0;
+ if (b->b.y < 0) b->b.y = 0;
+ if (b->b.x > b->bf[b->b.y].len) b->b.x = b->bf[b->b.y].len;
+ if (b->b.x < 0) b->b.x = 0;
+ s->mark_begin = s->mark_end = b->b;
+ f->save++;                         /* the text differs from the disk again */
+ e_firstl(f, 1);
+}
+
 int e_make_undo(FENSTER *f)
 {
  return(e_make_rudo(f, 0));
@@ -2848,20 +2877,7 @@ int e_make_rudo(FENSTER *f, int sw)
   e_add_undo('c', b, ud->b.x, ud->b.y, 0);
  }
  else if (ud->type == 'B')
- {
-  /* Whole-buffer restore.  Record the inverse FIRST -- snapshot the now-current
-     text onto the opposite (redo/undo) list (e_redo_sw routes it) -- then swap
-     the buffer to the saved snapshot.  Symmetric, so Undo and Redo both work. */
-  e_add_undo('B', b, ud->b.x, ud->b.y, 0);
-  e_buffer_set_text(b, (char *)ud->u.pt);
-  FREE(ud->u.pt);
-  if (b->b.y >= b->mxlines) b->b.y = (b->mxlines > 0) ? b->mxlines - 1 : 0;
-  if (b->b.y < 0) b->b.y = 0;
-  if (b->b.x > b->bf[b->b.y].len) b->b.x = b->bf[b->b.y].len;
-  if (b->b.x < 0) b->b.x = 0;
-  s->mark_begin = s->mark_end = b->b;
-  e_firstl(f, 1);
- }
+  e_rudo_whole_buffer(f, b, s, ud);
  if (!sw) b->ud = ud->next;
  else b->rd = ud->next;
  e_redo_sw = 0;

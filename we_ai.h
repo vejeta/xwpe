@@ -345,6 +345,10 @@ void  wpe_ai_free_list(char **list, int n);
 /* A prompt block naming the files currently open in the editor (working set),
  * the focused one marked.  Writes into buf and returns it ("" if none). */
 char *wpe_ai_open_windows_block(struct FNST *f, char *buf, size_t n);
+/* The one question Edit, Complete and Multi-file ask before anything is sent:
+ * is this a real file window whose text the user may change (not the AI pane,
+ * not Messages, not a read-only viewer or tool pane)?  1 when it is. */
+int   wpe_ai_window_is_editable_file(struct FNST *w);
 /* Text of a scope file: the in-memory buffer when it is open (so unsaved
  * edits count), else the file on disk.  Malloc'd, or NULL. */
 char *wpe_ai_read_scope_file(struct FNST *f, const char *path);

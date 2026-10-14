@@ -64,12 +64,17 @@ the model works):
   keep the file exactly as it was before the review -- hunks already accepted
   are dropped too, and the pane says how many, so press `n` on the remaining
   hunks when you want to keep them -- and PgUp or PgDn to scroll a hunk taller
-  than the popup. Accepted hunks apply as **one** edit that a single
-  **`Ctrl-U`** undoes, and the cursor rests on the first accepted hunk so it is
-  on screen.
+  than the popup. The close glyph on the popup's title row cancels like `q`.
+  After Esc the keyboard is the editor's again: a letter typed next goes into
+  the file as text, not to the review. Resizing the terminal while the popup is
+  open lays it out again for the new size, next to the same hunk. Accepted
+  hunks apply as **one** edit that a single **`Ctrl-U`** undoes, and the cursor
+  rests on the first accepted hunk so it is on screen.
 - **Multi-file edit** (`Alt-G f`) -- studies the workspace read-only, then
-  proposes one coordinated change across several files. Its status lines in the
-  assistant pane are prefixed `[plan]`.
+  proposes one coordinated change across several files. It has one name
+  wherever you meet it: the menu row, the prompt (`Multi-file edit: task`),
+  its status lines in the assistant pane, prefixed `[Multi-file edit]`, and the
+  approval dialog's title.
 - **Agent (tools)** (`Alt-G g`) -- a tool-using agent: it lists/reads/greps files
   and proposes `write_file` / `run_command` steps **one at a time**, each shown
   for approval (a write is previewed as a diff); an unattended run takes a
@@ -96,12 +101,17 @@ the model works):
   **`Ctrl-U`** undoes.
 
 **While a request is out**, the menus, the cursor keys and your other windows
-work as usual, and `Esc` cancels. The text of the window that is waiting is
+work as usual, and `Esc` cancels. Esc leaves the pane armed: the pane says
+`[AI] cancelled`, its input line is ready for a follow-up, and a second Esc
+returns to the file window. The text of the window that is waiting is
 locked, and its status row says so: the reply is written back over the lines
 that were sent, so a keystroke accepted meanwhile would be offered back to you
 as a change to revert. Asking for a second action while one runs does not
 refuse it: it is queued, the pane says so, and it starts by itself when the
-running one ends.
+running one ends. Edit, Complete and Multi-file edit work on a file window
+only: asked from the pane itself, from Messages or from a read-only viewer they
+send nothing and the pane says
+`[AI] no file here - Edit, Complete and Multi-file work on a file window`.
 
 The `Alt-G` menu groups the **actions** above and, below a divider, the quick
 **settings**: *Permissions* (shows and cycles ask/edits/auto), *Clear
@@ -131,7 +141,8 @@ first; others as adapters later).
 
 `Alt-G f` runs a **Multi-file edit**: it studies the workspace read-only, then
 proposes a coordinated change across several files and shows it as a **modal
-approval dialog**. Each file is listed with its `(+added -removed)` counts taken
+approval dialog** titled `Multi-file edit - N files`. Each file is listed with
+its `(+added -removed)` counts taken
 against the buffer as it is now, unsaved edits included; `[new file]` marks a
 file that does not exist yet; and a `!` mark with the words
 `outside the workspace` flags a path the model wants to write beyond the

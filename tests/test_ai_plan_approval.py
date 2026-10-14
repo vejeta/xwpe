@@ -7,6 +7,10 @@ from wpe_driver import WpeSession, ALT, WPE_BIN
 
 ORIG = "int a = 1;\nint b = 2;\nint c = 3;\n"
 NEW = "int a = 1;\nint b = 22;\nint c = 3;\n"
+# The Multi-file edit has one name everywhere: the pane lines carry it as a
+# prefix and the approval box carries it as its title.
+PREFIX = "[Multi-file edit]"
+BOX_TITLE = "Multi-file edit -"
 
 
 def _ai_build():
@@ -65,8 +69,8 @@ def test_plan_reports_task_scope_and_no_proposals(tmp_path):
     with WpeSession(str(tmp_path), ORIG,
                     env_extra=_env(tmp_path, "I would change t.c like this")) as s:
         _start_plan(s, "explain why this file is fine")
-        assert _wait_screen(s, "[plan] task:"), "task+scope line not shown"
-        assert _wait_screen(s, "[plan] the model proposed no file changes"), \
+        assert _wait_screen(s, PREFIX + " task:"), "task+scope line not shown"
+        assert _wait_screen(s, PREFIX + " the model proposed no file changes"), \
             "missing 'no proposals' message"
         disp = "\n".join(s.display())
         assert "scope:" in disp and "files" in disp, "scope count not visible:\n" + disp
@@ -88,15 +92,15 @@ def test_plan_approval_lists_counts_and_cancel_keys_leave_everything_unchanged(t
         (case / "other.c").write_text("int other = 1;\n")
         with WpeSession(str(case), ORIG, env_extra=_env(case, plan), filename="t.c") as s:
             _start_plan(s, "bump both files")
-            assert _wait_screen(s, "Apply AI plan"), "approval box did not open"
+            assert _wait_screen(s, BOX_TITLE), "approval box did not open"
             disp = "\n".join(s.display())
             assert "t.c" in disp and "other.c" in disp, "approval list is incomplete:\n" + disp
             assert "(+1 -1)" in disp, "per-file +/- counts are missing:\n" + disp
             s.key(cancel, delay=0.8)
             s._drain(0.6)
             after = "\n".join(s.display())
-            assert "Apply AI plan" not in after, "approval box stayed open after cancel"
-            assert "[plan] cancelled" in after, "cancel feedback missing"
+            assert BOX_TITLE not in after, "approval box stayed open after cancel"
+            assert PREFIX + " cancelled" in after, "cancel feedback missing"
             s.save()
             assert s.text() == ORIG, "t.c changed after cancelling approval"
         assert (case / "other.c").read_text() == "int other = 1;\n", \
@@ -115,9 +119,9 @@ def test_plan_apply_all_opens_files_without_writing_disk_and_refuses_directories
     )
     with WpeSession(str(tmp_path), ORIG, env_extra=_env(tmp_path, plan), filename="t.c") as s:
         _start_plan(s, "apply all file updates")
-        assert _wait_screen(s, "Apply AI plan"), "approval box did not open"
+        assert _wait_screen(s, BOX_TITLE), "approval box did not open"
         s.key("a", delay=0.9)
-        assert _wait_screen(s, "[plan] applied 2 of 3 files"), \
+        assert _wait_screen(s, PREFIX + " applied 2 of 3 files"), \
             "applied/total count did not report the directory as not-applied"
         disp = "\n".join(s.display())
         assert "could not open sub" in disp, "directory path refusal message missing"
@@ -141,7 +145,7 @@ def test_plan_review_file_by_file_uses_the_same_hunk_review_box(tmp_path):
     plan = "PROPOSE t.c\n" + NEW + "@@END\n@@PLAN-DONE one file\n"
     with WpeSession(str(tmp_path), ORIG, env_extra=_env(tmp_path, plan), filename="t.c") as s:
         _start_plan(s, "review one file")
-        assert _wait_screen(s, "Apply AI plan"), "approval box did not open"
+        assert _wait_screen(s, BOX_TITLE), "approval box did not open"
         s.key("f", delay=0.8)
         assert _wait_screen(s, "Proposed change"), "file-by-file review did not open hunk box"
         disp = "\n".join(s.display())
@@ -183,7 +187,7 @@ def test_plan_counts_follow_the_unsaved_buffer_and_apply_all_replaces_it(tmp_pat
         s.key("ZZZ", delay=0.3)
         assert _wait_screen(s, "ZZZint a = 1;", tmo=4), "the unsaved edit did not reach the buffer"
         _start_plan(s, "bump b")
-        assert _wait_screen(s, "Apply AI plan"), "approval box did not open"
+        assert _wait_screen(s, BOX_TITLE), "approval box did not open"
         box = "\n".join(s.display())
         assert "(+2 -2)" in box, "counts ignore the unsaved buffer:\n" + box
         assert "(+1 -1)" not in box, "counts were taken from the disk, not the buffer:\n" + box
@@ -213,7 +217,7 @@ def test_plan_path_outside_the_workspace_is_marked_in_the_box_and_named_on_apply
     plan = "PROPOSE ../outside.c\nint outside;\n@@END\n@@PLAN-DONE add a file\n"
     with WpeSession(str(proj), ORIG, env_extra=_env(tmp_path, plan), filename="t.c") as s:
         _start_plan(s, "add outside.c")
-        assert _wait_screen(s, "Apply AI plan"), "approval box did not open"
+        assert _wait_screen(s, BOX_TITLE), "approval box did not open"
         box = "\n".join(s.display())
         row = [r for r in s.display() if "../outside.c" in r and "(+" in r]
         assert row, "the proposal row is missing:\n" + box
@@ -222,7 +226,7 @@ def test_plan_path_outside_the_workspace_is_marked_in_the_box_and_named_on_apply
         assert "[new file]" in row[0], "a file that does not exist is not marked new:\n" + row[0]
         s.key("a", delay=0.9)
         assert _wait_trace(s, tmp_path, "plan done applied=1"), "apply all did not finish:\n" + _trace(tmp_path)
-        pane = "\n".join(r for r in s.display() if "[plan]" in r)
+        pane = "\n".join(r for r in s.display() if PREFIX in r)
         assert "outside.c" in pane and "outside the workspace" in pane, \
             "the pane did not name the file that went outside:\n" + pane
         assert not os.path.exists(tmp_path / "outside.c"), "the new file was written before Save"

@@ -176,7 +176,12 @@ Chat streams token by token.  @emph{Edit}, @emph{Multi-file edit} and
 need the whole reply before they can act, so while the model is thinking they
 show a rotating @samp{-\|/} indicator and the seconds elapsed in the @samp{AI}
 pane -- a slow local model looks busy, not frozen -- and @key{Esc} aborts the
-wait at any time.
+wait at any time.  @key{Esc} leaves the pane armed: the pane says @samp{[AI]
+cancelled}, its input line is ready for a follow-up, and a second @key{Esc}
+returns to the file window.  Edit, Complete and Multi-file edit work on a file
+window only: asked from the pane itself, from Messages or from a read-only
+viewer they send nothing and the pane says @samp{[AI] no file here - Edit,
+Complete and Multi-file work on a file window}.
 
 The editor stays live while a request is out: the menus answer, the cursor
 moves, and your other windows are editable as always.  The @emph{text} of the
@@ -243,7 +248,12 @@ unseen.  @key{PgUp} and @key{PgDn} scroll inside a hunk taller than the popup.
 before that review started: the hunks already accepted are dropped with the
 rest, and the pane says how many, @samp{[AI edit] discarded (1 accepted hunks
 dropped)}.  To stop reviewing and @emph{keep} what you have accepted, press
-@kbd{n} on the hunks that are left.
+@kbd{n} on the hunks that are left.  The close glyph on the popup's title row
+cancels the same way.  After @key{Esc} the popup is gone and the keyboard is the
+editor's again: a letter typed next is inserted into the file as ordinary text,
+it is not read as a review key.  Resizing the terminal while the popup is open
+lays it out again for the new size, next to the same hunk, and the keys keep
+working.
 
 Applying uses one whole-buffer undo step, so @kbd{Ctrl-U} reverts the whole
 edit.  When the review ends the cursor rests on the first line of the first hunk
@@ -266,8 +276,9 @@ steps).  The assistant first @dfn{studies} the workspace -- the files you have
 open, plus the members of the open project (@pxref{Projects}) and, if asked, the
 surrounding folder -- reading whatever it needs with read-only tools.  It then
 proposes the complete new content for each file it wants to change.
-Status lines for this mode in the assistant pane are prefixed with
-@samp{[plan]}.
+The action has one name wherever you meet it: the menu row, the prompt
+(@samp{Multi-file edit: task}), the status lines in the assistant pane, which
+are prefixed with @samp{[Multi-file edit]}, and the approval dialog's title.
 
 xwpe collects the proposal without touching anything and shows it in a
 @dfn{modal approval dialog} -- a boxed, colored popup listing each file with its
@@ -275,7 +286,7 @@ per-file line counts, so the choice is an explicit confirmation and nothing pain
 under it:
 
 @example
-+------------- Apply AI plan - 4 files ------------------------------+
++------------- Multi-file edit - 4 files ----------------------------+
 |   src/parser.c  (+12 -4)                                           |
 |   src/parser.h  (+2 -0)                                            |
 |   src/main.c    (+1 -1)                                            |

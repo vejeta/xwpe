@@ -233,6 +233,28 @@ Changes
 
 1.7.0 (AI assistant -- experimental, opt-in)
 
+* The Edit review keeps five promises it had only written down.  Alt-G e, c
+  and f asked from the AI pane (where the focus rests after a chat reply or a
+  cancelled task), from Messages or from a read-only viewer now send nothing
+  and the pane says "[AI] no file here - Edit, Complete and Multi-file work
+  on a file window"; before, the next Alt-G e diffed the pane's own
+  transcript and "y" overwrote it with the file.  Ctrl-U after Save marks the
+  window modified again, so the status row shows its mark and Alt-X asks
+  before the reverted text is lost; before, the editor quit silently and the
+  text was gone.  Resizing the terminal while a hunk box is open lays the box
+  out again for the new size, next to the same hunk, with its key hint on
+  screen; before, the box stayed at its old place and ran off a small
+  screen.  The close glyph on the box's title row cancels the review as q
+  does, naming the accepted hunks that were dropped; before, it was painted
+  but dead.  A connection that dies under an Edit is reported as "[AI edit]
+  transport error" with buffer and disk untouched, now pinned by a test.  The
+  Multi-file edit has one name everywhere: the prompt says "Multi-file edit:
+  task", the pane lines are prefixed "[Multi-file edit]" and the approval box
+  is titled "Multi-file edit - N files"; before, the pane said "[plan]" and
+  the box "Apply AI plan".  The manual now says that a letter typed after Esc
+  goes into the file as text, and that Esc leaves the pane armed for a
+  follow-up.  Tests: tests/test_ai_edit_blocked_contracts.py.
+
 * Project instructions go where the assistant acts, the editor's own file
   wins, and the bound is a key.  The instructions file was folded into every
   chat turn, a question answered from the open file included, where it spent

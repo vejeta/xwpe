@@ -141,6 +141,29 @@ static int ws_is_real_file_window(FENSTER *w)
  return 1;
 }
 
+/**
+ * wpe_ai_window_is_editable_file - May the assistant rewrite this window's text?
+ * @w: the window an Edit, a Complete or a Multi-file edit was asked from.
+ *
+ * What the user gains: the assistant edits files and nothing else.  The AI
+ * pane, the Messages window and every other tool pane are text windows to the
+ * editor (they are buffers with a name), and the pane is where the focus rests
+ * after a chat reply or a cancelled task; without this question the next Alt-G
+ * e diffed the pane's own transcript and "y" overwrote it with a file.  A
+ * window is editable here when it is a real file window (ws_is_real_file_window:
+ * a text buffer backed by a path, not one of the editor's named panes) whose
+ * text the user may change as well: the read-only viewers (Help, the clipboard,
+ * a locked file on disk) and the output panes all carry WPE_INS_READONLY.
+ *
+ * Return: 1 for a file window the assistant may edit, 0 for anything else.
+ */
+int wpe_ai_window_is_editable_file(FENSTER *w)
+{
+ if (!ws_is_real_file_window(w)) return 0;
+ if (w->ins == WPE_INS_READONLY) return 0;
+ return 1;
+}
+
 static int ws_source_like(const char *name)
 {
  const char *ext = strrchr(name, '.');
