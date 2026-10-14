@@ -962,8 +962,9 @@ static void sess_free(void)
 /**
  * wpe_ai_session_project_announced - Has this session already named its project instructions?
  *
- * The chat folds AGENTS.md into every turn but tells the user once per
- * session, so the transcript is not peppered with the same line; the flag
+ * The chat folds the project instructions into every turn once it has used
+ * a tool (or always, under AIProjectInstructions "all") but tells the user
+ * once per session, so the transcript is not peppered with the same line; the flag
  * lives with the session and starts over when the session is loaded or
  * cleared, not when a backend or model changes.
  * Return: 1 once the pane has shown the line for this session.
