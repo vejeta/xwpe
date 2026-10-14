@@ -233,6 +233,23 @@ Changes
 
 1.7.0 (AI assistant -- experimental, opt-in)
 
+* Project instructions go where the assistant acts, the editor's own file
+  wins, and the bound is a key.  The instructions file was folded into every
+  chat turn, a question answered from the open file included, where it spent
+  a tenth of a local model's window for nothing.  Under the new key
+  AIProjectInstructions (XWPE_AI_PROJECT_INSTRUCTIONS) set to agent, the
+  default, the Agent, the Multi-file edit and Build & fix carry it, and the
+  chat carries it from the turn in which it first reads or searches the
+  repository, for the rest of the session; a plain Ask does not.  "all" keeps
+  the old behaviour, every chat turn; "off" never folds it.  When both
+  .xwpe-ai.md and AGENTS.md exist, .xwpe-ai.md is the one read and named, so
+  a repository whose AGENTS.md serves other coding agents can still give this
+  editor its own instructions; AGENTS.md is read only when .xwpe-ai.md is
+  absent.  The 4095-byte bound is now AIProjectInstructionsMax
+  (XWPE_AI_PROJECT_INSTRUCTIONS_MAX; at most 65536), and the pane line for a
+  cut file names it: "(N bytes, cut at M; AIProjectInstructionsMax raises
+  it)".  Tests: tests/test_ai_agent_project_instructions.py.
+
 * Agent and chat: a failure is reported as a failure, and what the agent
   writes is written whole.  A server that closed the connection with no
   bytes, or answered something that was not HTTP, used to end an agent run

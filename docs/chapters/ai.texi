@@ -548,16 +548,29 @@ itself immediately, so it sticks across sessions without @samp{Save Options}:
 
 @cindex AI, project instructions
 @cindex AGENTS.md
-If the working directory (the project root) holds an @file{AGENTS.md} -- or the
-xwpe-specific @file{.xwpe-ai.md} -- its contents are folded into the chat, the
-agent and the Multi-file edit under a @samp{PROJECT INSTRUCTIONS} heading, so a
-repo's standing rules (the build command, code style, ``do not touch
-@file{vendor/}'') are followed without restating them.  The pane says so: an
-agent run shows @samp{[agent] project instructions: AGENTS.md (@var{N} bytes)}
-right after its task line, and the chat shows the same line on the first turn
-of a session.  The file is bounded to 4095 bytes so it cannot crowd out the
-prompt; a longer file is cut and the line says so, @samp{(@var{N} bytes, cut at
-4095)}, so a rule near its end that the model never saw is not a mystery.
+@cindex .xwpe-ai.md
+If the working directory (the project root) holds a @file{.xwpe-ai.md} -- or,
+when that file is absent, an @file{AGENTS.md} -- its contents are folded into
+the prompt under a @samp{PROJECT INSTRUCTIONS} heading, so a repo's standing
+rules (the build command, code style, ``do not touch @file{vendor/}'') are
+followed without restating them.  The editor's own file wins, so a repository
+whose @file{AGENTS.md} serves other coding agents can still give this editor
+its own instructions.  Where the block goes is set by
+@code{AIProjectInstructions}: under @code{agent}, the default, the Agent, the
+Multi-file edit and Build & fix carry it, and the chat carries it from the turn
+in which it first uses a tool, for the rest of the session; a plain Ask does
+not, because the file exists for work that acts on the repository and on the
+current file it is context spent for nothing, a tenth of a local model's
+window.  @code{all} folds it into every chat turn as well; @code{off} never
+folds it.  Edit and Complete never carry it: their prompts ask for file text
+only.  The pane says so: an agent run shows @samp{[agent] project instructions:
+.xwpe-ai.md (@var{N} bytes)} right after its task line, and the chat shows the
+same line once per session, on the first turn that carries the block.  The
+prompt carries at most @code{AIProjectInstructionsMax} bytes of the file
+(default 4095) so it cannot crowd out the prompt; a longer file is cut and the
+line says so, @samp{(@var{N} bytes, cut at @var{M}; AIProjectInstructionsMax
+raises it)}, so a rule near its end that the model never saw is not a mystery
+and the key that shows all of it is on the same line.
 Project instructions govern how the tools are used, never which tools exist:
 the prompt states, right after the block, that the tool list above stands, so a
 rule written for other coding agents (``do not open network connections'') does
@@ -593,6 +606,20 @@ bound ends the command's process group; a command that detaches itself from it
 (@command{setsid}, @command{nohup @dots{} &}) is beyond it.  A value that is not
 a positive number means the default; the key is written to @file{xwperc} only
 when it differs from the default.
+@item AIProjectInstructions
+Where the project instructions file (@file{.xwpe-ai.md}, else @file{AGENTS.md})
+is folded into the prompt: @code{agent} (the default: the Agent, the Multi-file
+edit, Build & fix, and the chat from the turn in which it first uses a tool),
+@code{all} (every chat turn as well) or @code{off} (never).  Any other value
+reads as @code{agent}.  Also settable with @env{XWPE_AI_PROJECT_INSTRUCTIONS},
+for one session; written to @file{xwperc} only when it differs from the default.
+@item AIProjectInstructionsMax
+Bytes of the project instructions file the prompt carries; default 4095, kept
+small so the file cannot crowd a local model's window.  A longer file is cut
+and the pane line names this key.  A value above 65536 is capped there; a
+value that is not a positive number means the default.  Also settable with
+@env{XWPE_AI_PROJECT_INSTRUCTIONS_MAX}, for one session; written to
+@file{xwperc} only when it differs from the default.
 @item AIProvider
 A saved OpenAI-compatible provider profile, as
 @code{name|endpoint|model|cafile} (model and cafile optional); repeat the key for

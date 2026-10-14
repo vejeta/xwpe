@@ -62,6 +62,32 @@ extern int e_ai_tool_timeout;
  * number gives the default, so a mistyped key never removes the bound. */
 int   wpe_ai_tool_timeout_from_text(const char *text);
 
+/* Where the project's instructions file (.xwpe-ai.md, else AGENTS.md, in the
+ * working directory) is folded into the prompt: the AIProjectInstructions key,
+ * overridable with XWPE_AI_PROJECT_INSTRUCTIONS.  agent, the default: the
+ * Agent, the Multi-file edit and Build & fix carry it, and the chat carries it
+ * from the turn in which it first uses a tool; all: every chat turn as well;
+ * off: never.  The file exists for work that acts on the repository; on the
+ * current file it is context spent for nothing, a tenth of a local model's
+ * window.  Any other name reads as agent. */
+enum { WPE_AI_PROJECT_AGENT = 0, WPE_AI_PROJECT_ALL = 1, WPE_AI_PROJECT_OFF = 2 };
+extern int   e_ai_project_scope;
+int          wpe_ai_project_scope_from_name(const char *name);
+const char  *wpe_ai_project_scope_name(int scope);
+
+/* How many bytes of the instructions file the prompt carries: the
+ * AIProjectInstructionsMax key, overridable with
+ * XWPE_AI_PROJECT_INSTRUCTIONS_MAX.  The default stays small so the file cannot
+ * crowd a local model's window; the pane line that reports a cut names the
+ * key.  The buffers are allocated from the bound, so the cap only keeps a
+ * mistyped value from asking for memory no instructions file needs. */
+#define WPE_AI_PROJECT_MAX_DEFAULT 4095
+#define WPE_AI_PROJECT_MAX_CAP     65536
+extern int   e_ai_project_max;
+/* The bytes a configuration value names; a value that is not a positive
+ * number gives the default, one above the cap gives the cap. */
+int          wpe_ai_project_max_from_text(const char *text);
+
 /* Run a shell command; capture bounded stdout+stderr (malloc'd, never NULL on
  * a spawn failure -- returns a short note instead).  The command runs in a
  * session of its own, so it cannot reach the editor's screen, and is ended
@@ -163,6 +189,8 @@ enum wpe_ai_cfg_key {
   WPE_AI_CFG_HOST_ADAPTER,    /* AIHostAdapter <- XWPE_AI_HOST_ADAPTER (int)    */
   WPE_AI_CFG_SEARCH_URL,      /* AISearchURL   <- XWPE_AI_SEARCH_URL   (string) */
   WPE_AI_CFG_TOOL_TIMEOUT,    /* AIToolTimeout <- XWPE_AI_TOOL_TIMEOUT (int)    */
+  WPE_AI_CFG_PROJECT_SCOPE,   /* AIProjectInstructions <- XWPE_AI_PROJECT_INSTRUCTIONS (int) */
+  WPE_AI_CFG_PROJECT_MAX,     /* AIProjectInstructionsMax <- XWPE_AI_PROJECT_INSTRUCTIONS_MAX (int) */
   WPE_AI_CFG_KEYS
 };
 /* The value Save Options writes for a key (int keys / string keys; a string
@@ -353,6 +381,11 @@ int   wpe_ai_session_messages(wpe_ai_msg *buf, int max);
    yet; the chat says it once per session.  Cleared with the session. */
 int   wpe_ai_session_project_announced(void);
 void  wpe_ai_session_mark_project_announced(void);
+/* Whether a chat turn of this session has answered with a tool line yet: from
+   that turn on the chat acts on the repository and, under the default scope,
+   carries the project instructions.  Cleared with the session. */
+int   wpe_ai_session_tool_turn_opened(void);
+void  wpe_ai_session_mark_tool_turn(void);
 
 #endif /* WPE_AI */
 

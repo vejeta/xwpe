@@ -1,12 +1,15 @@
 """Project instructions (AGENTS.md) are injected into the AI system prompt.
 
 Following the cross-tool per-repo agent-instructions convention, xwpe reads
-AGENTS.md (or .xwpe-ai.md) from the working directory and folds it into every AI
-turn, so the model follows the repo's standing instructions without the user
-restating them.  This stands up a
-local OpenAI-compatible server, captures the request, and asserts the file's
-content reached the system message -- and that with no such file, nothing is
-injected.
+.xwpe-ai.md (or AGENTS.md) from the working directory and folds it into the
+prompt of the modes that act on the repository, so the model follows the
+repo's standing instructions without the user restating them.  A plain chat
+turn carries the file only under AIProjectInstructions all (the default,
+agent, waits for the chat's first tool turn; tests/test_ai_agent_project_instructions.py
+covers that), so the positive case here seeds that key in xwperc.  This stands
+up a local OpenAI-compatible server, captures the request, and asserts the
+file's content reached the system message -- and that with no such file,
+nothing is injected.
 """
 import os
 import json
@@ -60,7 +63,10 @@ def _capturing_server(captured):
     return srv, srv.server_address[1]
 
 
-def _ask_capture(tmp_path, write_agents):
+def _ask_capture(tmp_path, write_agents, scope_all=False):
+    """One plain chat turn against the capturing server; `scope_all` seeds
+    AIProjectInstructions : all, the scope under which a plain turn folds the
+    file in."""
     captured = []
     srv, port = _capturing_server(captured)
     try:
@@ -71,6 +77,8 @@ def _ask_capture(tmp_path, write_agents):
             fh.write("[Programming]\nAIBackend : 1\n"
                      "AIEndpoint : http://127.0.0.1:%d/v1\nAIModel : m\n"
                      "AIPolicy : ask\n" % port)
+            if scope_all:
+                fh.write("AIProjectInstructions : all\n")
         if write_agents:
             with open(os.path.join(str(tmp_path), "AGENTS.md"), "w") as fh:
                 fh.write(MARK + "\n")
@@ -87,7 +95,9 @@ def _ask_capture(tmp_path, write_agents):
 
 
 def test_agents_md_injected(tmp_path):
-    body = _ask_capture(tmp_path, write_agents=True)
+    """With AIProjectInstructions : all seeded in xwperc, a plain chat turn
+    carries the AGENTS.md block (under the default scope it would not)."""
+    body = _ask_capture(tmp_path, write_agents=True, scope_all=True)
     assert body, "xwpe sent no request"
     assert MARK in body, \
         "AGENTS.md instructions were not injected into the prompt:\n" + body[:2000]

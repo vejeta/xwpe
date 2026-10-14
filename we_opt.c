@@ -1024,6 +1024,10 @@ int WpeReadProgramming(ECNT *cn, char *section, char *option, char *value)
   e_ai_search_url = (value && *value) ? WpeStrdup(value) : NULL;
  } else if (WpeStrccmp("AIToolTimeout", option) == 0) {
   e_ai_tool_timeout = wpe_ai_tool_timeout_from_text(value);
+ } else if (WpeStrccmp("AIProjectInstructions", option) == 0) {
+  e_ai_project_scope = wpe_ai_project_scope_from_name(value);
+ } else if (WpeStrccmp("AIProjectInstructionsMax", option) == 0) {
+  e_ai_project_max = wpe_ai_project_max_from_text(value);
  } else if (WpeStrccmp("AIProviderName", option) == 0) {
   free(e_ai_provider);
   e_ai_provider = (value && *value) ? WpeStrdup(value) : NULL;
@@ -1070,6 +1074,13 @@ int WpeWriteProgramming(ECNT *cn, char *section, FILE *opt_file)
     that never named it stays as it was. */
  if (wpe_ai_cfg_int_to_save(WPE_AI_CFG_TOOL_TIMEOUT) != WPE_AI_TOOL_TIMEOUT_DEFAULT)
   fprintf(opt_file, "AIToolTimeout : %d\n", wpe_ai_cfg_int_to_save(WPE_AI_CFG_TOOL_TIMEOUT));
+ /* The same for where the project instructions go and how much of the file the
+    prompt carries: written only when the user moved them off the defaults. */
+ if (wpe_ai_cfg_int_to_save(WPE_AI_CFG_PROJECT_SCOPE) != WPE_AI_PROJECT_AGENT)
+  fprintf(opt_file, "AIProjectInstructions : %s\n",
+          wpe_ai_project_scope_name(wpe_ai_cfg_int_to_save(WPE_AI_CFG_PROJECT_SCOPE)));
+ if (wpe_ai_cfg_int_to_save(WPE_AI_CFG_PROJECT_MAX) != WPE_AI_PROJECT_MAX_DEFAULT)
+  fprintf(opt_file, "AIProjectInstructionsMax : %d\n", wpe_ai_cfg_int_to_save(WPE_AI_CFG_PROJECT_MAX));
  fprintf(opt_file, "AIProviderName : %s\n", e_ai_provider ? e_ai_provider : "");
  {
   int i, np = wpe_ai_provider_count();

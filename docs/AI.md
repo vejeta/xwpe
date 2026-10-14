@@ -275,6 +275,8 @@ fixed setup:
 | `XWPE_AI_KEY` | API key for the OpenAI/Claude HTTP backends |
 | `XWPE_AI_POLICY` | `ask` / `edits` / `auto` |
 | `XWPE_AI_TOOL_TIMEOUT` | seconds a tool command may run before it is ended (`AIToolTimeout`, default 60) |
+| `XWPE_AI_PROJECT_INSTRUCTIONS` | where the project instructions file is folded in: `agent` (default), `all` or `off` (`AIProjectInstructions`) |
+| `XWPE_AI_PROJECT_INSTRUCTIONS_MAX` | bytes of the project instructions file the prompt carries (`AIProjectInstructionsMax`, default 4095, at most 65536) |
 | `XWPE_AI_TRACE=path` | append a diagnostic trace (prompt built, tool run, ...) |
 
 **Post-edit hook.** `AIEditHook` in the `[Programming]` section of `xwperc`
@@ -288,14 +290,27 @@ reported in the pane with its exit status, and the buffer is left as the
 assistant left it. The hook shares the tool time limit (`AIToolTimeout`): one
 that hangs is ended after that many seconds and reported as failed.
 
-**Project instructions.** An `AGENTS.md` (or `.xwpe-ai.md`) in the working
-directory is folded into the chat, the agent and the Multi-file edit under a
+**Project instructions.** A `.xwpe-ai.md` (or, when it is absent, an
+`AGENTS.md`) in the working directory is folded into the prompt under a
 `PROJECT INSTRUCTIONS` heading, so a repository's standing rules are followed
-without restating them. The pane says so: an agent run shows
-`[agent] project instructions: AGENTS.md (N bytes)` right after its task line,
-and the chat shows the same line on the first turn of a session. The file is
-bounded to 4095 bytes; a longer one is cut and the line says
-`(N bytes, cut at 4095)`. The instructions govern how the tools are used, never
+without restating them. The editor's own file wins, so a repository whose
+`AGENTS.md` serves other coding agents can still give this editor its own
+instructions. Where the block goes is set by `AIProjectInstructions`
+(`XWPE_AI_PROJECT_INSTRUCTIONS`): under `agent`, the default, the Agent, the
+Multi-file edit and Build & fix carry it, and the chat carries it from the
+turn in which it first uses a tool, for the rest of the session; a plain Ask
+does not, because the file exists for work that acts on the repository and on
+the current file it is context spent for nothing, a tenth of a local model's
+window. `all` folds it into every chat turn as well; `off` never folds it.
+Edit and Complete never carry it: their prompts ask for file text only. The
+pane says so: an agent run shows
+`[agent] project instructions: .xwpe-ai.md (N bytes)` right after its task
+line, and the chat shows the same line once per session, on the first turn
+that carries the block. The prompt carries at most `AIProjectInstructionsMax`
+bytes of the file (`XWPE_AI_PROJECT_INSTRUCTIONS_MAX`; default 4095, at most
+65536); a longer one is cut and the line names the key:
+`(N bytes, cut at M; AIProjectInstructionsMax raises it)`. The instructions
+govern how the tools are used, never
 which tools exist: the prompt states, right after the block, that the tool list
 above stands, so a rule written for other coding agents ("do not open network
 connections") does not make the model refuse the editor's own web search.

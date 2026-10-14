@@ -942,6 +942,8 @@ static struct {
  int    n;
  int    project_announced;   /* the pane has said which project instructions
                                 this session folds in; cleared with the session */
+ int    tool_turn_opened;    /* a chat turn of this session answered with a tool
+                                line: the chat now acts on the repository       */
 } sess;
 
 #define WS_SESS_MAX 40
@@ -954,6 +956,7 @@ static void sess_free(void)
  free(sess.role); free(sess.content);
  sess.role = sess.content = NULL; sess.n = 0;
  sess.project_announced = 0;
+ sess.tool_turn_opened = 0;
 }
 
 /**
@@ -969,6 +972,22 @@ int wpe_ai_session_project_announced(void) { return sess.project_announced; }
 
 /** wpe_ai_session_mark_project_announced - Record that the pane showed the line. */
 void wpe_ai_session_mark_project_announced(void) { sess.project_announced = 1; }
+
+/**
+ * wpe_ai_session_tool_turn_opened - Has a chat turn of this session used a tool yet?
+ *
+ * A question answered from the open file costs the user nothing of the
+ * project instructions; the turn in which the model first asks to read or
+ * search the repository is where those instructions start to matter, and
+ * from that turn on the chat carries them for the rest of the session.  The
+ * flag lives with the session, so a cleared or reloaded session starts plain
+ * again.
+ * Return: 1 once a chat turn has answered with a tool line.
+ */
+int wpe_ai_session_tool_turn_opened(void) { return sess.tool_turn_opened; }
+
+/** wpe_ai_session_mark_tool_turn - Record that a chat turn answered with a tool line. */
+void wpe_ai_session_mark_tool_turn(void) { sess.tool_turn_opened = 1; }
 
 static unsigned long ws_hash(const char *s)
 {

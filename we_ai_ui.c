@@ -1005,7 +1005,10 @@ static void ai_fd_cb(int fd, void *data)
    wpe_ai_session_append("assistant", s->full);
    if (tr) {
     /* the model asked to investigate: feed the tool result and take another
-       turn -- the editor never blocked, this just continues in the background */
+       turn -- the editor never blocked, this just continues in the background.
+       From this turn on the chat acts on the repository, and the next prompt
+       carries the project instructions under the default scope. */
+    wpe_ai_session_mark_tool_turn();
     tr = ai_tool_result_nonempty(tr);   /* an empty result becomes an explicit note */
     { size_t n = strlen(tr) + 32; char *m = malloc(n);
       if (m) { snprintf(m, n, "TOOL RESULT:\n%s", tr); wpe_ai_session_append("user", m); free(m); } }
@@ -1105,30 +1108,46 @@ static size_t ai_append_identity(char *sys, size_t cap, size_t len)
  return len;
 }
 
-/* The project's standing AI instructions, capped so a large file cannot crowd
-   out the rest of the prompt.  Kept modest on purpose.  The buffer holds
-   AI_PROJECT_MEMORY_USABLE bytes of the file and the terminating NUL. */
-#define AI_PROJECT_MEMORY_MAX    4096
-#define AI_PROJECT_MEMORY_USABLE (AI_PROJECT_MEMORY_MAX - 1)
+/* The project's standing AI instructions.  The prompt carries at most
+   e_ai_project_max bytes of the file (AIProjectInstructionsMax, default
+   WPE_AI_PROJECT_MAX_DEFAULT), so a large file cannot crowd out the rest of a
+   local model's window; the body and the block are allocated from that bound,
+   which is why the key may be raised without touching this file. */
 
-/* The heading of the project block in the prompt, and the sentence that
-   follows the block in the same system message: the instructions say how to
-   use the tools, the editor says which tools there are.  A local model took
-   "do not open network connections" in a repository's AGENTS.md, written for
-   other coding agents, as an order to refuse the editor's own web tools; the
-   sentence is written once and used by the agent, the plan and the chat. */
-#define AI_PROJECT_BLOCK_HEAD \
-  "PROJECT INSTRUCTIONS (from the project's AGENTS.md -- follow these):\n"
+/* The heading of the project block in the prompt, naming the file it came
+   from, and the sentence that follows the block in the same system message:
+   the instructions say how to use the tools, the editor says which tools there
+   are.  A local model took "do not open network connections" in a repository's
+   AGENTS.md, written for other coding agents, as an order to refuse the
+   editor's own web tools; the sentence is written once and used by the agent,
+   the plan and the chat. */
+#define AI_PROJECT_BLOCK_HEAD_FMT \
+  "PROJECT INSTRUCTIONS (from the project's %s -- follow these):\n"
 #define AI_PROJECT_TOOLS_STAND \
   "The tool list above stands: project instructions govern how the tools are " \
   "used, never which tools exist.\nA rule in them that forbids a tool does not " \
   "remove it from this editor's list."
-/* Room for the heading, the two newlines and the sentence around the body. */
+/* Room for the heading with its file name, the two newlines and the sentence
+   around the body. */
 #define AI_PROJECT_BLOCK_EXTRA 400
 
-/* The pane line that says which project instructions a run folded in. */
+/* The pane line that says which project instructions a run folded in.  The
+   cut line names the key that raises the bound, as the timeout line names
+   AIToolTimeout, so the user learns from the line itself how to change it. */
 #define AI_PROJECT_ANNOUNCE_LINE     "[agent] project instructions: %s (%zu bytes)"
-#define AI_PROJECT_ANNOUNCE_CUT_LINE "[agent] project instructions: %s (%zu bytes, cut at %d)"
+#define AI_PROJECT_ANNOUNCE_CUT_LINE \
+  "[agent] project instructions: %s (%zu bytes, cut at %d; AIProjectInstructionsMax raises it)"
+
+/* The files looked for, in order: the editor's own file first, so a
+   repository whose AGENTS.md serves other coding agents can still give this
+   editor its own instructions; AGENTS.md (the cross-tool convention) only when
+   .xwpe-ai.md is absent. */
+static const char *ai_project_file_names[] = { ".xwpe-ai.md", "AGENTS.md" };
+
+/* Which prompt is being built, for the question of whether the project
+   instructions belong in it: a chat turn, or a mode that acts on the
+   repository (the Agent, the Multi-file edit, Build & fix). */
+enum ai_prompt_mode { AI_PROMPT_CHAT = 0, AI_PROMPT_ACTS = 1 };
 
 /* What ai_project_memory found: the file's name, how much of it the prompt
    carries, and how long it really is (longer than `loaded` means it was cut). */
@@ -1139,40 +1158,75 @@ struct ai_project_memory_info {
 };
 
 /**
- * ai_project_memory - Read the project's AI instructions file into `out`.
- * @out: buffer to fill (always NUL-terminated); @n: its size.
+ * ai_project_instructions_wanted - Does this prompt carry the project instructions?
+ * @mode: what is being built; @session_used_tool: for a chat turn, whether a
+ * turn of this session has already answered with a tool line.
+ *
+ * The one place the AIProjectInstructions key is read, so every builder
+ * answers the same way.  Under agent, the default, the modes that act on the
+ * repository carry the file, and the chat carries it from the turn in which it
+ * first uses a tool: a question answered from the open file would spend a
+ * tenth of a local model's window on rules about the repository for nothing.
+ * all folds it into every turn; off never does.
+ * Return: 1 when the block belongs in the prompt.
+ */
+static int ai_project_instructions_wanted(enum ai_prompt_mode mode, int session_used_tool)
+{
+ if (e_ai_project_scope == WPE_AI_PROJECT_OFF) return 0;
+ if (e_ai_project_scope == WPE_AI_PROJECT_ALL) return 1;
+ if (mode == AI_PROMPT_ACTS) return 1;
+ return session_used_tool;
+}
+
+/**
+ * ai_project_memory_open - Open the instructions file that applies, noting its name and size.
+ * @info: receives the file's name and real length.
+ * Return: the open file, or NULL when neither file exists.
+ */
+static FILE *ai_project_memory_open(struct ai_project_memory_info *info)
+{
+ size_t i;
+ struct stat st;
+ for (i = 0; i < sizeof ai_project_file_names / sizeof ai_project_file_names[0]; i++) {
+  FILE *fp = fopen(ai_project_file_names[i], "rb");
+  if (!fp) continue;
+  info->name = ai_project_file_names[i];
+  if (fstat(fileno(fp), &st) == 0) info->total = (size_t)st.st_size;
+  return fp;
+ }
+ return NULL;
+}
+
+/**
+ * ai_project_memory - Read the project's AI instructions file, bounded by the key.
  * @info: filled with the file's name and sizes, so the caller can tell the
  *        user what was folded in and whether the file was cut.
- * Return: bytes read (0 when there is no project instructions file).
+ * Return: the first e_ai_project_max bytes of the file, NUL-terminated and
+ * malloc'd (the caller frees it), or NULL when there is no instructions file
+ * or no memory.
  *
- * Looks for AGENTS.md (the emerging cross-tool convention), then the
- * xwpe-specific .xwpe-ai.md, in the working directory -- which is xwpe's cwd,
- * i.e. where it was launched: the project root.  Lets a repo carry standing
- * instructions (build command, code style, "do not touch X") that every AI turn
- * follows -- the cross-tool per-repo agent-instructions convention -- without the
- * user restating them each turn.
+ * Looks for .xwpe-ai.md, then AGENTS.md, in the working directory -- which is
+ * xwpe's cwd, i.e. where it was launched: the project root.  Lets a repo carry
+ * standing instructions (build command, code style, "do not touch X") that the
+ * assistant follows where it acts on the repository, without the user
+ * restating them each turn.
  */
-static size_t ai_project_memory(char *out, size_t n, struct ai_project_memory_info *info)
+static char *ai_project_memory(struct ai_project_memory_info *info)
 {
- static const char *names[] = { "AGENTS.md", ".xwpe-ai.md" };
- size_t i, got = 0;
- struct stat st;
- out[0] = '\0';
+ FILE *fp;
+ char *out;
+ size_t bound = (size_t)e_ai_project_max;
  info->name = NULL; info->loaded = 0; info->total = 0;
- for (i = 0; i < sizeof names / sizeof names[0]; i++) {
-  FILE *fp = fopen(names[i], "rb");
-  if (!fp) continue;
-  got = fread(out, 1, n - 1, fp);
-  if (fstat(fileno(fp), &st) == 0) info->total = (size_t)st.st_size;
-  fclose(fp);
-  out[got] = '\0';
-  info->name = names[i];
-  info->loaded = got;
-  if (info->total < got) info->total = got;
-  wpe_ai_trace("project memory %s bytes=%zu", names[i], got);
-  break;
- }
- return got;
+ fp = ai_project_memory_open(info);
+ if (!fp) return NULL;
+ out = malloc(bound + 1);
+ if (!out) { fclose(fp); return NULL; }
+ info->loaded = fread(out, 1, bound, fp);
+ fclose(fp);
+ out[info->loaded] = '\0';
+ if (info->total < info->loaded) info->total = info->loaded;
+ wpe_ai_trace("project memory %s bytes=%zu", info->name, info->loaded);
+ return out;
 }
 
 /**
@@ -1188,34 +1242,42 @@ static int ai_project_memory_cut(const struct ai_project_memory_info *info)
  * ai_project_memory_announce - Tell the user which project instructions a run folds in.
  * @f: the window the pane belongs to; @info: what ai_project_memory found.
  *
- * Until now only the trace said that AGENTS.md was loaded, so when the model
+ * Until now only the trace said that the file was loaded, so when the model
  * followed a rule from it (a repository's "do not open network connections",
  * written for other agents) the user could not see where the refusal came
- * from.  The pane line names the file and its size, and says "cut at N" when
- * the file was longer than the prompt carries, so a rule near its end that the
- * model never saw is not a mystery either.
+ * from.  The pane line names the file and its size, and when the file was
+ * longer than the prompt carries says "cut at N; AIProjectInstructionsMax
+ * raises it", so a rule near its end that the model never saw is not a mystery
+ * and the key that lets the user see all of it is on the same line.
  */
 static void ai_project_memory_announce(FENSTER *f, const struct ai_project_memory_info *info)
 {
  char line[200];
  if (ai_project_memory_cut(info))
   snprintf(line, sizeof line, AI_PROJECT_ANNOUNCE_CUT_LINE, info->name, info->total,
-           AI_PROJECT_MEMORY_USABLE);
+           e_ai_project_max);
  else
   snprintf(line, sizeof line, AI_PROJECT_ANNOUNCE_LINE, info->name, info->loaded);
  ai_pane(f, line, 0);
 }
 
 /**
- * ai_project_block_text - Form the project block for a prompt: heading, file, precedence.
- * @out: destination; @n: its size; @body: the instructions file's text.
+ * ai_project_block_alloc - Form the project block for a prompt: heading, file, precedence.
+ * @info: what ai_project_memory found (the heading names the file);
+ * @body: the instructions file's text.
+ * Return: the malloc'd block (the caller frees it), or NULL out of memory.
  *
  * One builder for the chat and the message-list prompts, so the heading and
  * the tool-list-stands sentence cannot differ between them.
  */
-static void ai_project_block_text(char *out, size_t n, const char *body)
+static char *ai_project_block_alloc(const struct ai_project_memory_info *info, const char *body)
 {
- snprintf(out, n, "%s%s\n\n%s", AI_PROJECT_BLOCK_HEAD, body, AI_PROJECT_TOOLS_STAND);
+ size_t n = strlen(body) + strlen(info->name) + AI_PROJECT_BLOCK_EXTRA;
+ char *out = malloc(n);
+ if (!out) return NULL;
+ snprintf(out, n, AI_PROJECT_BLOCK_HEAD_FMT, info->name);
+ snprintf(out + strlen(out), n - strlen(out), "%s\n\n%s", body, AI_PROJECT_TOOLS_STAND);
+ return out;
 }
 
 /**
@@ -1234,23 +1296,57 @@ static void ai_chat_announce_project_memory(FENSTER *f, const struct ai_project_
 }
 
 /**
+ * ai_chat_wants_project_memory - Does this chat turn carry the project instructions?
+ *
+ * Asks ai_project_instructions_wanted for a chat turn, with the session's
+ * record of whether a turn has used a tool yet; a turn left out is traced, so
+ * a user wondering why the model ignored the file can see the scope at work.
+ * Return: 1 when the block belongs in this turn's prompt.
+ */
+static int ai_chat_wants_project_memory(void)
+{
+ if (ai_project_instructions_wanted(AI_PROMPT_CHAT, wpe_ai_session_tool_turn_opened()))
+  return 1;
+ wpe_ai_trace("project instructions left out scope=%s mode=chat",
+              wpe_ai_project_scope_name(e_ai_project_scope));
+ return 0;
+}
+
+/**
  * ai_append_project_memory - Add the project instructions to a text prompt.
  * @sys/@cap/@len: prompt buffer being grown; @f: the window the chat pane
  * belongs to, for the once-per-session announcement.  Return: the new length.
- * A no-op when there is no AGENTS.md / .xwpe-ai.md, or no room left.
+ * A no-op when the scope leaves this turn out, when there is no .xwpe-ai.md /
+ * AGENTS.md, or when no room is left.
  */
 static size_t ai_append_project_memory(char *sys, size_t cap, size_t len, FENSTER *f)
 {
- char mem[AI_PROJECT_MEMORY_MAX];
- char block[AI_PROJECT_MEMORY_MAX + AI_PROJECT_BLOCK_EXTRA];
+ char *mem, *block;
  struct ai_project_memory_info info;
- size_t got = ai_project_memory(mem, sizeof mem, &info);
- if (!got) return len;
- ai_project_block_text(block, sizeof block, mem);
- if (len >= cap - strlen(block) - 4) return len;
- len += (size_t)snprintf(sys + len, cap - len, "%s\n\n", block);
- ai_chat_announce_project_memory(f, &info);
+ if (!ai_chat_wants_project_memory()) return len;
+ mem = ai_project_memory(&info);
+ if (!mem) return len;
+ block = ai_project_block_alloc(&info, mem);
+ free(mem);
+ if (!block) return len;
+ if (len + strlen(block) + 4 < cap) {
+  len += (size_t)snprintf(sys + len, cap - len, "%s\n\n", block);
+  ai_chat_announce_project_memory(f, &info);
+ }
+ free(block);
  return len;
+}
+
+/**
+ * ai_project_block_room - Bytes a text prompt must reserve for the project block.
+ *
+ * The chat's system prompt is one allocated buffer; sizing it with the
+ * configured bound in mind means a raised AIProjectInstructionsMax reaches the
+ * model instead of being dropped for want of room.
+ */
+static size_t ai_project_block_room(void)
+{
+ return (size_t)e_ai_project_max + AI_PROJECT_BLOCK_EXTRA;
 }
 
 /**
@@ -1290,6 +1386,10 @@ static const char *ai_diag_block(char *buf, size_t sz)
  return buf;
 }
 
+/* Room for everything in the chat's system prompt but the project block, which
+   is sized apart from its configured bound (ai_project_block_room). */
+#define AI_CHAT_SYSTEM_BASE 8192
+
 /* Build the chat system prompt: the assistant may INVESTIGATE the workspace
  * with read-only tools before answering, so questions about other files (not
  * just the open one) work.  Includes the workspace file listing, any live
@@ -1299,7 +1399,7 @@ static char *ai_build_system(FENSTER *f)
  char *ctx = ai_current_file_text(f);
  char **scope;
  int nsc, i;
- size_t cap = 8192, len = 0;
+ size_t cap = AI_CHAT_SYSTEM_BASE + ai_project_block_room(), len = 0;
  char *sys = malloc(cap);
  const char *head =
    "You are an AI assistant embedded in the xwpe console editor. Answer "
@@ -1330,8 +1430,8 @@ static char *ai_build_system(FENSTER *f)
    "- Proposed edits are reviewed as a diff changeset (Alt-T / Alt-V) and are "
    "revertible; a checkpoint is taken before a non-interactive run.\n"
    "- You already receive the open files, the workspace file list, the current "
-   "file, live language-server diagnostics, and the project's AGENTS.md "
-   "instructions when present (all below).\n"
+   "file, live language-server diagnostics, and the project's instructions "
+   "file (.xwpe-ai.md or AGENTS.md) when one is folded in (all below).\n"
    "- Backend and model are user-selectable (Ollama, OpenAI-compatible, Claude) "
    "in Options > AI.\n"
    "So when the user asks to CHANGE code, tell them to use Edit (Alt-G e) or the "
@@ -3273,8 +3373,25 @@ static void ai_ml_add_open_files(struct ai_mlist *m, FENSTER *f)
 }
 
 /**
+ * ai_ml_wants_project_memory - Does a mode that acts on the repository carry the instructions?
+ *
+ * Asks ai_project_instructions_wanted for the Agent, the Multi-file edit and
+ * Build & fix; only the key set to off leaves them out, and a run left out is
+ * traced so the user can see why the model never saw the file.
+ * Return: 1 when the block belongs in the conversation.
+ */
+static int ai_ml_wants_project_memory(void)
+{
+ if (ai_project_instructions_wanted(AI_PROMPT_ACTS, 0)) return 1;
+ wpe_ai_trace("project instructions left out scope=%s mode=acts",
+              wpe_ai_project_scope_name(e_ai_project_scope));
+ return 0;
+}
+
+/**
  * ai_ml_add_project_memory - Seed the conversation with the project's standing
- * AI instructions (AGENTS.md), as a system turn.  A no-op when there is none.
+ * AI instructions (.xwpe-ai.md, else AGENTS.md), as a system turn.  A no-op
+ * when the key is off or there is no file.
  * @m: the conversation being seeded; @f: the window the pane belongs to.
  *
  * The message-list peer of ai_append_project_memory, so the agent and the other
@@ -3285,12 +3402,16 @@ static void ai_ml_add_open_files(struct ai_mlist *m, FENSTER *f)
  */
 static void ai_ml_add_project_memory(struct ai_mlist *m, FENSTER *f)
 {
- char block[AI_PROJECT_MEMORY_MAX + AI_PROJECT_BLOCK_EXTRA];
- char body[AI_PROJECT_MEMORY_MAX];
+ char *body, *block;
  struct ai_project_memory_info info;
- if (!ai_project_memory(body, sizeof body, &info)) return;
- ai_project_block_text(block, sizeof block, body);
+ if (!ai_ml_wants_project_memory()) return;
+ body = ai_project_memory(&info);
+ if (!body) return;
+ block = ai_project_block_alloc(&info, body);
+ free(body);
+ if (!block) return;
  ai_ml_add(m, "system", block);
+ free(block);
  ai_project_memory_announce(f, &info);
 }
 

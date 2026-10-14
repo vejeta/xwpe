@@ -46,6 +46,11 @@ char *e_ai_search_url = NULL;          /* web_search URL template ("%s" = query)
                                           NULL => the built-in keyless default      */
 int   e_ai_tool_timeout = WPE_AI_TOOL_TIMEOUT_DEFAULT;  /* seconds a tool command
                                           may run before the editor ends it         */
+int   e_ai_project_scope = WPE_AI_PROJECT_AGENT;  /* where the project instructions
+                                          are folded in: the modes that act, every
+                                          mode, or nowhere                          */
+int   e_ai_project_max = WPE_AI_PROJECT_MAX_DEFAULT;  /* bytes of the instructions
+                                          file the prompt carries                   */
 char *e_ai_cafile   = NULL;            /* extra CA/self-signed cert to trust (TLS),
                                           for a local HTTPS bridge; NULL => system
                                           CA store only                          */
@@ -671,6 +676,8 @@ static const struct ai_cfg_binding g_ai_cfg_bind[WPE_AI_CFG_KEYS] = {
  { &e_ai_host_adapter, NULL },              /* WPE_AI_CFG_HOST_ADAPTER */
  { NULL,               &e_ai_search_url },  /* WPE_AI_CFG_SEARCH_URL   */
  { &e_ai_tool_timeout, NULL },              /* WPE_AI_CFG_TOOL_TIMEOUT */
+ { &e_ai_project_scope, NULL },             /* WPE_AI_CFG_PROJECT_SCOPE */
+ { &e_ai_project_max,  NULL },              /* WPE_AI_CFG_PROJECT_MAX   */
 };
 
 /**
@@ -793,6 +800,14 @@ static void ai_config_apply_env(void)
   e_ai_tool_timeout = wpe_ai_tool_timeout_from_text(e);
   ai_file_shadow(WPE_AI_CFG_TOOL_TIMEOUT);
  }
+ if ((e = getenv("XWPE_AI_PROJECT_INSTRUCTIONS"))) {
+  e_ai_project_scope = wpe_ai_project_scope_from_name(e);
+  ai_file_shadow(WPE_AI_CFG_PROJECT_SCOPE);
+ }
+ if ((e = getenv("XWPE_AI_PROJECT_INSTRUCTIONS_MAX"))) {
+  e_ai_project_max = wpe_ai_project_max_from_text(e);
+  ai_file_shadow(WPE_AI_CFG_PROJECT_MAX);
+ }
 }
 
 int wpe_ai_tool_timeout_from_text(const char *text)
@@ -800,6 +815,51 @@ int wpe_ai_tool_timeout_from_text(const char *text)
  int seconds = text ? atoi(text) : 0;
  if (seconds <= 0) return WPE_AI_TOOL_TIMEOUT_DEFAULT;
  return seconds;
+}
+
+/**
+ * wpe_ai_project_scope_from_name - The scope an AIProjectInstructions value names.
+ * @name: the value from xwperc or the environment (NULL allowed).
+ *
+ * A user who mistypes the key keeps the default, agent, rather than losing the
+ * instructions where the assistant acts or paying for them on every turn.
+ * Return: WPE_AI_PROJECT_ALL, WPE_AI_PROJECT_OFF, else WPE_AI_PROJECT_AGENT.
+ */
+int wpe_ai_project_scope_from_name(const char *name)
+{
+ if (!name)                      return WPE_AI_PROJECT_AGENT;
+ if (!strcasecmp(name, "all"))   return WPE_AI_PROJECT_ALL;
+ if (!strcasecmp(name, "off"))   return WPE_AI_PROJECT_OFF;
+ return WPE_AI_PROJECT_AGENT;
+}
+
+/**
+ * wpe_ai_project_scope_name - The word Save Options and the trace write for a scope.
+ */
+const char *wpe_ai_project_scope_name(int scope)
+{
+ switch (scope) {
+  case WPE_AI_PROJECT_ALL: return "all";
+  case WPE_AI_PROJECT_OFF: return "off";
+  default:                 return "agent";
+ }
+}
+
+/**
+ * wpe_ai_project_max_from_text - The bound an AIProjectInstructionsMax value names.
+ * @text: the value from xwperc or the environment (NULL allowed).
+ *
+ * The prompt's buffers are allocated from this bound, so a value that is not
+ * a positive number means the default and one above WPE_AI_PROJECT_MAX_CAP
+ * means the cap: a mistyped key neither drops the instructions nor asks for
+ * memory no instructions file needs.
+ */
+int wpe_ai_project_max_from_text(const char *text)
+{
+ long bytes = text ? atol(text) : 0;
+ if (bytes <= 0) return WPE_AI_PROJECT_MAX_DEFAULT;
+ if (bytes > WPE_AI_PROJECT_MAX_CAP) return WPE_AI_PROJECT_MAX_CAP;
+ return (int)bytes;
 }
 
 void wpe_ai_config_init(void)
