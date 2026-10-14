@@ -63,7 +63,13 @@ Save all modified files.
 @item E -- Execute
 Open the execution manager.
 @item H -- SHell
-Start a UNIX shell.
+Start a UNIX shell (the one named by @env{SHELL}).  In the terminal the
+editor hands the shell the whole terminal in its normal state: mouse
+tracking, bracketed paste and the alternate screen are switched off and the
+line discipline is the cooked one the terminal had before the editor
+started, so typing, pasting and the mouse behave as in any other shell.
+When the shell exits (@command{exit} or @kbd{Ctrl-D}) the editor repaints
+its screen from its own buffer and switches its modes back on.
 @item F -- Find
 Search for a file by name.
 @item G -- Grep

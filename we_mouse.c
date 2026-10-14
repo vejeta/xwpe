@@ -21,6 +21,17 @@
    on SGR 1006 extended reporting, which is not byte-limited. */
 #define MOUSE_X10_MAX_COL 223
 
+/* xterm private modes for console mouse tracking: 1002 reports button events
+   and drags, 1006 switches the reports to SGR encoding (no 223-column cap,
+   readable without terminfo).  OSC 22 picks the pointer shape: "default" is
+   the arrow, an empty name pops back to the terminal's own pointer. */
+#define TERM_MOUSE_BUTTON_TRACKING_ON  "\033[?1002h"
+#define TERM_MOUSE_BUTTON_TRACKING_OFF "\033[?1002l"
+#define TERM_MOUSE_SGR_REPORTS_ON      "\033[?1006h"
+#define TERM_MOUSE_SGR_REPORTS_OFF     "\033[?1006l"
+#define TERM_POINTER_SHAPE_ARROW       "\033]22;default\a"
+#define TERM_POINTER_SHAPE_RESET       "\033]22;\a"
+
 int e_mouse_cursor();
 void e_scroll_drag_v(FENSTER *f);
 void e_scroll_drag_h(FENSTER *f);
@@ -42,13 +53,14 @@ void e_mouse_tracking_enable(void)
     ncurses-with-SGR systems (Linux, NetBSD pkgsrc) this is harmless: ncurses
     already enabled SGR and folds the reports into KEY_MOUSE before the parser
     ever sees them. */
- printf("\033[?1002h\033[?1006h");
+ printf(TERM_MOUSE_BUTTON_TRACKING_ON);
+ printf(TERM_MOUSE_SGR_REPORTS_ON);
  /* Ask the terminal to show an arrow pointer instead of the text I-beam while
     mouse tracking is active (OSC 22, kitty extension also honoured by iTerm2
     and foot).  The shape names follow CSS, so "default" is the arrow and
     "pointer" is the hyperlink hand -- we want the arrow.  Terminal.app
     ignores unknown OSCs so this is a no-op there. */
- printf("\033]22;default\a");
+ printf(TERM_POINTER_SHAPE_ARROW);
  fflush(stdout);
 #endif
 #endif
@@ -60,9 +72,9 @@ void e_mouse_tracking_disable(void)
 #ifdef NCURSES
  /* Empty payload (not "default", which is the CSS arrow) pops back to the
     terminal's own configured cursor on exit. */
- printf("\033]22;\a");
- printf("\033[?1006l");
- printf("\033[?1002l");
+ printf(TERM_POINTER_SHAPE_RESET);
+ printf(TERM_MOUSE_SGR_REPORTS_OFF);
+ printf(TERM_MOUSE_BUTTON_TRACKING_OFF);
  fflush(stdout);
 #endif
 #endif

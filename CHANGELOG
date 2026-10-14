@@ -233,6 +233,22 @@ Changes
 
 1.7.0 (AI assistant -- experimental, opt-in)
 
+* File > Shell gives the shell a usable terminal and the editor comes back
+  repainted (console).  The shell opened by File > Shell (and the full-screen
+  run of a shell script, which waits for Return) looked as if it needed a
+  reset: no echo, no
+  line editing, and a paste or a mouse movement printed escape sequences;
+  after "exit" the editor's screen was wrong, the menu bar overwritten by the
+  shell's last output.  The editor had left the terminal correctly and then,
+  through a leftover screen switch, re-entered its alternate screen, raw mode
+  and mouse tracking before the shell started.  Now the shell path leaves and
+  takes back the terminal the same way the F9 compile path and the User
+  Screen (Alt-F5) do: mouse tracking, bracketed paste, keypad mode and the
+  alternate screen off and a cooked tty for the child; on return a full
+  repaint from the editor's buffer and every mode on again.  Bracketed paste
+  is now switched back on after a compile as well, where it used to stay off
+  for the rest of the session.  Tests: tests/test_file_shell.py.
+
 * The Edit review keeps five promises it had only written down.  Alt-G e, c
   and f asked from the AI pane (where the focus rests after a chat reply or a
   cancelled task), from Messages or from a read-only viewer now send nothing

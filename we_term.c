@@ -65,6 +65,18 @@ static void e_t_truecolor_detect(void);
 #define INPUT_POLL_MS     50   /* ncurses getch() wait between input polls */
 #define MOUSE_CELL_SUBDIV 8    /* g[] reports mouse pos in 1/8-cell units */
 
+/* xterm private mode 2004, bracketed paste: the terminal wraps pasted text in
+   ESC[200~ ... ESC[201~ so the editor can insert it literally.  Switched on
+   while the editor owns the terminal, off whenever it hands the terminal to a
+   child (a compile, File > Shell, the User Screen). */
+#define TERM_BRACKETED_PASTE_ON  "\033[?2004h"
+#define TERM_BRACKETED_PASTE_OFF "\033[?2004l"
+
+static void e_t_bracketed_paste_enable(void);
+static void e_t_bracketed_paste_disable(void);
+static void e_t_leave_terminal(void);
+static void e_t_take_terminal_back(void);
+
 int g_mouse_buttons = 0;
 /* Set while a bracketed paste (terminal mode 2004) is streaming, between the
    ESC[200~ and ESC[201~ markers (which are swallowed, never returned as keys).
@@ -570,13 +582,7 @@ int e_t_initscr()
     Esc closes dialogs/menus (no 3-press workaround that can be misread as
     an escape sequence and spin the File Manager). */
  set_escdelay(25);
- /* Enable bracketed paste (xterm mode 2004): the terminal then wraps pasted
-    text in ESC[200~ ... ESC[201~, so xwpe can insert it literally instead of
-    running the Enter/Esc/commands the pasted bytes would otherwise trigger
-    (e.g. a pasted API key ending in a newline confirming or cancelling a
-    dialog).  Disabled again in e_endwin. */
- printf("\033[?2004h");
- fflush(stdout);
+ e_t_bracketed_paste_enable();
 #if MOUSE
  mousemask(ALL_MOUSE_EVENTS | REPORT_MOUSE_POSITION, NULL);
  mouseinterval(0);
@@ -659,14 +665,46 @@ int e_begscr()
 
 #define fk_putp(p) ( p ? e_putp(p) : e_putp(att_no) )
 
+/**
+ * e_t_bracketed_paste_enable - Ask the terminal to mark pasted text.
+ *
+ * With bracketed paste on, text the user pastes arrives wrapped in
+ * ESC[200~ ... ESC[201~ and is inserted literally, instead of the pasted
+ * bytes running the Enter/Esc/commands they contain (a pasted key ending in a
+ * newline would otherwise confirm or cancel a dialog).  Called at startup and
+ * every time the editor takes the terminal back from a child.
+ */
+static void e_t_bracketed_paste_enable(void)
+{
+#ifdef NCURSES
+ printf(TERM_BRACKETED_PASTE_ON);
+ fflush(stdout);
+#endif
+}
+
+/**
+ * e_t_bracketed_paste_disable - Leave bracketed paste as the terminal had it.
+ *
+ * A child process (a shell, a compiler asking a question) that inherits the
+ * mode would see pasted text arrive wrapped in markers it does not understand
+ * and print them as "^[[200~" garbage; the same holds for the terminal after
+ * the editor exits.
+ */
+static void e_t_bracketed_paste_disable(void)
+{
+#ifdef NCURSES
+ printf(TERM_BRACKETED_PASTE_OFF);
+ fflush(stdout);
+#endif
+}
+
 void e_endwin()
 {
 #ifdef NCURSES
 #if MOUSE
  e_mouse_tracking_disable();
 #endif
- printf("\033[?2004l");                 /* leave bracketed paste as we found it */
- fflush(stdout);
+ e_t_bracketed_paste_disable();
  endwin();
 #else
  fk_putp(ratt_bo);
@@ -945,13 +983,30 @@ int e_t_refresh()
  return(0);
 }
 
-int e_t_sys_ini()
+/**
+ * e_t_leave_terminal - Hand the real terminal to a child process.
+ *
+ * The one way the console editor steps aside for something else that needs
+ * the terminal: a compile or tool run (F9), File > Shell, the User Screen.
+ * Pending screen output is flushed, the editor's own tty settings and file
+ * flags are remembered for e_t_take_terminal_back, and e_endwin then turns
+ * the private modes off in order (mouse tracking, bracketed paste, then
+ * ncurses' endwin, which leaves the alternate screen and keypad transmit
+ * mode) and restores the cooked line discipline the terminal had before the
+ * editor started.  The child therefore sees an ordinary terminal: a paste or
+ * a mouse movement in a shell prints text, not escape sequences, and what
+ * the user types is echoed and line-edited.
+ *
+ * Nothing may touch ncurses between this call and e_t_take_terminal_back: a
+ * refresh() would silently re-enter the alternate screen, raw mode and mouse
+ * tracking before the child has even started.
+ */
+static void e_t_leave_terminal(void)
 {
  e_refresh();
  tcgetattr(0, &ttermio);
  svflgs = fcntl( 0, F_GETFL, 0 );
  e_endwin();
- return(0);   
 }
 
 /**
@@ -971,13 +1026,51 @@ static void e_t_rearm_mouse(void)
  e_mouse_tracking_enable();  /* then the motion-tracking escape, emitted last */
 }
 
-int e_t_sys_end()
+/**
+ * e_t_take_terminal_back - Return from a child to a fully repainted editor.
+ *
+ * The counterpart of e_t_leave_terminal.  The editor's tty settings and file
+ * flags come back, the terminal is told to clear itself on the next refresh
+ * (clearok) so that whatever the child scrolled or printed cannot survive
+ * under the editor's picture, the whole screen is marked for redraw from the
+ * editor's own buffer, and the private modes go on again in the order
+ * e_t_rearm_mouse documents, bracketed paste last.  The user gets the screen
+ * back exactly as it was before the child ran, with the mouse and paste
+ * working as before.
+ */
+static void e_t_take_terminal_back(void)
 {
  tcsetattr(0, TCSADRAIN, &ttermio);
  fcntl( 0, F_SETFL, svflgs );
+#ifdef NCURSES
+ clearok(stdscr, TRUE);
+#endif
  e_abs_refr();
  e_t_rearm_mouse();
+ e_t_bracketed_paste_enable();
  fk_locate(0, 0);
+}
+
+/**
+ * e_t_sys_ini - Leave the terminal before running a tool (F9 compile path).
+ *
+ * The console backend behind the e_sys_ini pointer; see e_t_leave_terminal.
+ */
+int e_t_sys_ini()
+{
+ e_t_leave_terminal();
+ return(0);
+}
+
+/**
+ * e_t_sys_end - Take the terminal back after a tool has run (F9 compile path).
+ *
+ * The console backend behind the e_sys_end pointer; see
+ * e_t_take_terminal_back.
+ */
+int e_t_sys_end()
+{
+ e_t_take_terminal_back();
  return(0);
 }
 
@@ -1827,7 +1920,7 @@ int e_t_user_screen(FENSTER *f)
  (void)f;
 
  e_d_pty_drain();
- endwin();
+ e_t_leave_terminal();
  /* Borland's "User Screen": leave the editor and show the program's own
     full screen.  Replay the captured output VERBATIM -- the bytes the program
     wrote to its terminal, including cursor positioning, ANSI colour and box
@@ -1856,8 +1949,7 @@ int e_t_user_screen(FENSTER *f)
    read(0, &_c, 1);
    tcsetattr(0, TCSANOW, &_old);
  }
- clearok(stdscr, TRUE);
- refresh();
+ e_t_take_terminal_back();
  return(0);
 }
 
@@ -1901,15 +1993,31 @@ void e_exitm(char *s, int n)
  exit(n);
 }
 
+/**
+ * e_s_sys_ini - Give a child the whole screen (File > Shell, Execute).
+ *
+ * The same leave as the compile path: on the console that is
+ * e_t_leave_terminal, whose endwin already leaves the alternate screen; in
+ * xwpe it is a no-op.  It used to add a screen switch after the leave, and on
+ * ncurses that switch is a refresh(), which re-entered the alternate screen,
+ * raw mode and mouse tracking before the child started -- the shell then
+ * looked as if it needed a reset.
+ */
 int e_s_sys_ini()
 {
- e_sys_ini();
- return(e_switch_screen(0));
+ return(e_sys_ini());
 }
 
+/**
+ * e_s_sys_end - Take the whole screen back from a child (File > Shell,
+ * Execute).
+ *
+ * The same return as the compile path: e_t_take_terminal_back on the console
+ * (the next refresh re-enters the alternate screen and repaints everything),
+ * a no-op in xwpe.
+ */
 int e_s_sys_end()
 {
- e_switch_screen(1);
  return(e_sys_end());
 }
 
