@@ -1,9 +1,10 @@
 """AI chat -- the fixed input row at the bottom of the pane (Cursor/Copilot-style).
 
-Alt-G a opens the Ask popup; sending drops into a focused chat where the pane
-keeps a "> " input row pinned at the bottom and the reply streams in ABOVE it.
-Follow-ups are typed straight into the row -- no re-opening the popup -- and the
-whole conversation accumulates in the transcript.  Esc leaves the chat.
+Alt-G a opens the pane straight into a focused chat: the pane keeps a "> "
+input row pinned at the bottom and the reply streams in ABOVE it.  Questions
+and follow-ups are typed straight into the row (there is no prompt box for
+Ask) and the whole conversation accumulates in the transcript.  Esc leaves
+the chat.
 """
 import os
 import subprocess

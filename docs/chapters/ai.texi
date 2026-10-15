@@ -65,11 +65,13 @@ Configure and build with the feature on:
 make
 @end example
 
-Every mode asks for its instruction in a wide prompt box that holds a long,
-detailed request; @key{Enter} sends, @key{Esc} cancels.  For a real multi-line
-prompt, press the @samp{Multi-line} button (@key{Alt-M}): it opens a scratch
-editor window as a text area, so you compose with the full editor (several
-lines, cut and paste, the arrow keys), finish with @key{Esc}, and confirm Send.
+Edit, Complete, Multi-file and the agent ask for their instruction in a wide
+prompt box that holds a long, detailed request; @key{Enter} sends, @key{Esc}
+cancels.  For a real multi-line prompt, press the @samp{Multi-line} button
+(@key{Alt-M}): it opens a scratch editor window as a text area, so you compose
+with the full editor (several lines, cut and paste, the arrow keys), finish
+with @key{Esc}, and confirm Send.  Ask has no box: the question is typed in
+the pane's own input row (see the Chat section below).
 
 Then turn it on at run time in one of two ways: tick @samp{Enable AI assistant}
 under @samp{Options}, @samp{AI}, or start with @env{XWPE_AI_ENABLE=1}.  Pressing
@@ -157,7 +159,9 @@ A deterministic in-process backend used by the test suite; no network.
 @section Chat
 
 @cindex AI, chat
-@kbd{Alt-G a} asks for a prompt and streams the reply into the @samp{AI} pane.
+@kbd{Alt-G a} opens the @samp{AI} pane with its input row (@samp{> }) at the
+bottom; type the question there and press @key{Enter}, @kbd{Ctrl-J} breaks the
+line, and the reply streams into the pane above the row.
 The file the chat was opened from (and the selection marked in it, if any) is
 sent as context, so ``what does this function do?'' works; the pane's own
 transcript is never sent as the file, and when that file window has been
