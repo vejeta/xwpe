@@ -3542,8 +3542,9 @@ static void ai_in_caret_on_line(int bol, int eol, int col)
 /**
  * ai_in_vmove - Move the caret a line up (@dir < 0) or down, keeping its column.
  *
- * Return: 1 when the caret moved, 0 at the first or last line of the input,
- * where the key is the transcript's instead and browses it.
+ * Return: 1 when the caret moved, 0 at the first or last line of the input.
+ * The callers decide what the key does there: Up browses the transcript,
+ * Down does nothing.
  */
 static int ai_in_vmove(int dir)
 {
@@ -3810,7 +3811,7 @@ static int ai_chat_key_is_printable(int c)
  * view where the user left it, so clicking into the file to work there does
  * not lose the place being read in the pane.
  */
-static int ai_chat_key_action(int c)
+static enum ai_chat_key_action ai_chat_key_action(int c)
 {
  if (ai_in_paste_break(c)) return AI_KEY_PASTE_BREAK;
  if (c == WPE_CR) return AI_KEY_SEND;
@@ -3872,7 +3873,7 @@ static void ai_chat_type_char(FENSTER *wf, int c)
  * Every edit repaints the row, so the caret and the text never lag behind
  * the key.
  */
-static void ai_chat_input_act(FENSTER *wf, int action, int c)
+static void ai_chat_input_act(FENSTER *wf, enum ai_chat_key_action action, int c)
 {
  switch (action) {
  case AI_KEY_PASTE_BREAK:                /* pasted text is literal */
@@ -3960,7 +3961,7 @@ static void ai_chat_key_down(FENSTER *wf)
 int e_ai_chat_key(FENSTER *f, int c)
 {
  FENSTER *wf = ai_chat_focused_pane(f);
- int action;
+ enum ai_chat_key_action action;
 
  if (!wf)
   return 0;
