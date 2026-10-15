@@ -72,6 +72,167 @@ typedef struct {
 
 static ai_chat_session *g_ai_chat = NULL;
 
+/* The line every entry point writes when the assistant is switched off: the
+   box that turns it on lives in Options > AI. */
+#define AI_OFF_LINE "AI assistant is off - enable it in Options > AI " \
+                    "(the \"Enable AI assistant\" box), then press Alt-G again."
+
+/* ----- who wrote each pane line ----------------------------------------------
+ * The pane tells who wrote a line by its colour, from the colour scheme, with
+ * the prefix ("You:", "AI:", "[agent]", ">> ") as the second cue.  The code
+ * that writes a line names its role, and the role is kept per line here, so
+ * the painter never guesses from the text and the colours survive every
+ * repaint under every backend.  The assistant's own text paints in the editor
+ * text colour and needs no entry of its own. */
+enum ai_role {
+ AI_ROLE_ASSISTANT = 0,  /* "AI: ..." and the reply: the editor text entry   */
+ AI_ROLE_USER,           /* "You: ..." and its continuation rows             */
+ AI_ROLE_MACHINERY,      /* "[agent] ...", "[AI edit] ...", "[AI] ...", headers */
+ AI_ROLE_ATTENTION,      /* ">> ...": a key is awaited                        */
+ AI_ROLE_ERROR           /* "AI: error: ...", transport and backend errors   */
+};
+
+static unsigned char *g_ai_roles = NULL;   /* one role per pane line          */
+static int g_ai_roles_n = 0;               /* lines the table covers          */
+static int g_ai_roles_cap = 0;
+
+/**
+ * ai_roles_reserve - Make room for `n` roles.  Return: 1 on success.
+ */
+static int ai_roles_reserve(int n)
+{
+ unsigned char *grown;
+ int cap = g_ai_roles_cap ? g_ai_roles_cap : 64;
+ if (n <= g_ai_roles_cap) return 1;
+ while (cap < n) cap *= 2;
+ grown = realloc(g_ai_roles, (size_t)cap);
+ if (!grown) return 0;
+ g_ai_roles = grown;
+ g_ai_roles_cap = cap;
+ return 1;
+}
+
+/**
+ * ai_roles_sync - Make the table as long as the pane buffer.
+ * @b: the pane buffer.
+ *
+ * Lines the table does not know (rows added at the end: the input row, a
+ * fresh buffer's first line) count as the assistant's; rows removed at the
+ * end drop their role.  Every writer calls this after it changed the buffer,
+ * so the table and the buffer never disagree for long.
+ */
+static void ai_roles_sync(BUFFER *b)
+{
+ int n = b->mxlines;
+ if (n < 0) n = 0;
+ if (!ai_roles_reserve(n)) return;
+ while (g_ai_roles_n < n)
+  g_ai_roles[g_ai_roles_n++] = AI_ROLE_ASSISTANT;
+ g_ai_roles_n = n;
+}
+
+/**
+ * ai_roles_insert - A line was inserted at `at`: record who wrote it.
+ * @b: the pane buffer, already holding the new line.
+ * @at: the index of the new line.
+ * @role: the writer.
+ */
+static void ai_roles_insert(BUFFER *b, int at, int role)
+{
+ int before = b->mxlines - 1;
+ if (before < 0) before = 0;
+ if (!ai_roles_reserve(b->mxlines)) return;
+ while (g_ai_roles_n < before)
+  g_ai_roles[g_ai_roles_n++] = AI_ROLE_ASSISTANT;
+ g_ai_roles_n = before;
+ if (at < 0) at = 0;
+ if (at > g_ai_roles_n) at = g_ai_roles_n;
+ memmove(g_ai_roles + at + 1, g_ai_roles + at, (size_t)(g_ai_roles_n - at));
+ g_ai_roles[at] = (unsigned char)role;
+ g_ai_roles_n++;
+}
+
+/**
+ * ai_roles_set - Change who wrote line `y` (a line rewritten in place).
+ */
+static void ai_roles_set(BUFFER *b, int y, int role)
+{
+ ai_roles_sync(b);
+ if (y >= 0 && y < g_ai_roles_n)
+  g_ai_roles[y] = (unsigned char)role;
+}
+
+/**
+ * ai_roles_set_appended - Lines were appended from index `from` on: record
+ * their writer.
+ */
+static void ai_roles_set_appended(BUFFER *b, int from, int role)
+{
+ int y;
+ ai_roles_sync(b);
+ for (y = from; y < g_ai_roles_n; y++)
+  g_ai_roles[y] = (unsigned char)role;
+}
+
+/**
+ * ai_roles_forget - The pane is gone: so is every role.
+ */
+static void ai_roles_forget(void)
+{
+ g_ai_roles_n = 0;
+}
+
+/**
+ * ai_role_of - Who wrote line `y`; the assistant when unknown.
+ */
+static int ai_role_of(int y)
+{
+ if (y < 0 || y >= g_ai_roles_n) return AI_ROLE_ASSISTANT;
+ return g_ai_roles[y];
+}
+
+/**
+ * ai_is_pane - Is this window the AI pane?
+ */
+static int ai_is_pane(const FENSTER *f)
+{
+ return f && f->datnam && !strcmp(f->datnam, AI_PANE_NAME);
+}
+
+/**
+ * ai_role_attr - The scheme colour a role paints in.
+ * @wf: the pane (its colour scheme).
+ * @role: the writer.
+ * @base: the editor text colour, for the assistant.
+ *
+ * The scheme entries are the user's to change in Options > Colors or in
+ * xwperc; a monochrome scheme holds attribute bits in the same slots.
+ */
+static int ai_role_attr(const FENSTER *wf, int role, int base)
+{
+ if (role == AI_ROLE_USER) return wf->fb->aiu.fb;
+ if (role == AI_ROLE_MACHINERY) return wf->fb->aim.fb;
+ if (role == AI_ROLE_ATTENTION) return wf->fb->aia.fb;
+ if (role == AI_ROLE_ERROR) return wf->fb->aie.fb;
+ return base;
+}
+
+/**
+ * wpe_ai_pane_line_attr - The colour the row painter paints line `y` in.
+ * @f: the window being painted.
+ * @y: the buffer line.
+ * @base: the editor text colour.
+ *
+ * Called from the shared row painter for every window, so the pane's roles
+ * show on the terminal, X11 and Wayland alike and on every repaint (a menu
+ * closing, a window switch, a resize); other windows get `base` back.
+ */
+int wpe_ai_pane_line_attr(FENSTER *f, int y, int base)
+{
+ if (!ai_is_pane(f)) return base;
+ return ai_role_attr(f, ai_role_of(y), base);
+}
+
 /* Chat "focus mode": the pane keeps a live "> " input row as its LAST line, and
  * the streamed reply is inserted ABOVE that row, so the conversation reads down
  * the window with a fixed input at the bottom (like a modern chat).  The input
@@ -122,9 +283,8 @@ static char *ai_read_file_bounded(const char *path);
 static void  ai_chat_next_turn(ai_chat_session *s);
 static char *ai_chat_tool_result(FENSTER *f, const char *reply);
 static FENSTER *ai_pane_win(FENSTER *f);
-static void  ai_tr_line(FENSTER *wf, const char *str);
+static void  ai_tr_line(FENSTER *wf, const char *str, int role);
 static void  ai_pane_paint(FENSTER *wf);
-static void  ai_pane_hl_attention(FENSTER *wf);
 
 static int ai_pane_width(FENSTER *wf);          /* defined below */
 
@@ -138,40 +298,74 @@ static void ai_chat_wait_end(ai_chat_session *s);
 static void ai_enqueue(FENSTER *f, void (*launch)(FENSTER *, const char *),
                        const char *goal);
 
-/* Append ONE ready line to the pane (no wrapping): into the transcript above the
-   input row in chat-focus, otherwise to the end of the docked pane. */
-static void ai_pane_put1(FENSTER *f, const char *line, int surface)
+/**
+ * ai_pane_show - Repaint the pane after its lines or roles changed.
+ * @wf: the pane.
+ *
+ * The buffer writer painted the new line before its role was recorded; this
+ * paints it again in the role's colour, so the user never sees a line change
+ * colour on the next keystroke.
+ */
+static void ai_pane_show(FENSTER *wf)
 {
+ e_schirm(wf, 0);
+ e_refresh();
+}
+
+/**
+ * ai_pane_put1 - Append ONE ready line (no wrapping) to the pane as `role`.
+ * @f: the window the pane belongs to.
+ * @line: the text.
+ * @role: who wrote it (enum ai_role).
+ * @surface: raise the pane as well.
+ *
+ * Into the transcript above the input row in chat-focus, otherwise to the end
+ * of the docked pane; either way the line is recorded with its writer so it
+ * paints in that writer's colour from the first paint on.
+ */
+static void ai_pane_put1(FENSTER *f, const char *line, int role, int surface)
+{
+ FENSTER *wf;
+ int before;
+
  if (g_ai_chat_focus) {                 /* keep the "> " input row at the bottom */
-  FENSTER *wf = ai_pane_win(f);
-  if (wf) { ai_tr_line(wf, line); ai_pane_paint(wf); }
+  wf = ai_pane_win(f);
+  if (wf) { ai_tr_line(wf, line, role); ai_pane_paint(wf); }
   return;
  }
  /* Ensure the AI pane is created AND docked at the bottom (beside Messages)
     before appending -- the same placement as the chat pane.  Without this the
     Edit/Plan/Agent output opened as a full window over the file being edited. */
- ai_pane_win(f);
+ wf = ai_pane_win(f);
+ if (!wf) return;
+ before = wf->b->mxlines;
  e_d_p_named(AI_PANE_NAME, (char *)line, f, surface ? 1 : 0);
- /* e_d_p_named draws in the normal colour; repaint any attention line red on
-    top (agent approval, the first-use notice run outside the chat-input path). */
- { FENSTER *wf = ai_pane_win(f);
-   if (wf) { ai_pane_hl_attention(wf); e_refresh(); } }
+ ai_roles_set_appended(wf->b, before, role);
+ ai_pane_show(wf);
 }
 
-/* Append `line` to the pane, word-wrapped to the pane's CURRENT width, so a long
-   answer or summary reads DOWN the window instead of running off to the right --
-   the same width the streamed chat reply wraps to, now applied to every pane
-   message (agent / multi-file answers and status lines).  Display-only wrapping
-   of our own transcript window; it never touches a source file.  Column counting
-   skips UTF-8 continuation bytes so multibyte text wraps by character. */
-static void ai_pane(FENSTER *f, const char *line, int surface)
+/**
+ * ai_pane - Append `line` to the pane as `role`, word-wrapped to the pane's
+ * current width.
+ * @f: the window the pane belongs to.
+ * @line: the text.
+ * @role: who wrote it (enum ai_role); every row of a wrapped line keeps it.
+ * @surface: raise the pane as well.
+ *
+ * A long answer or summary reads DOWN the window instead of running off to the
+ * right -- the same width the streamed chat reply wraps to, applied to every
+ * pane message.  Display-only wrapping of our own transcript window; it never
+ * touches a source file.  Column counting skips UTF-8 continuation bytes so
+ * multibyte text wraps by character.
+ */
+static void ai_pane(FENSTER *f, const char *line, int role, int surface)
 {
  FENSTER *wf = ai_pane_win(f);
  int width = wf ? ai_pane_width(wf) : 76;
  const char *p = line;
  int first = 1;
 
- if (!line || !*line) { ai_pane_put1(f, "", surface); return; }
+ if (!line || !*line) { ai_pane_put1(f, "", role, surface); return; }
  while (*p) {
   int col = 0, i = 0, lastspace = -1, cut;
   char seg[1200];
@@ -181,11 +375,11 @@ static void ai_pane(FENSTER *f, const char *line, int surface)
    i++;
   }
   while (p[i] && ((unsigned char)p[i] & 0xC0) == 0x80) i++;   /* trailing cont bytes */
-  if (!p[i]) { ai_pane_put1(f, p, first ? surface : 0); break; }  /* the rest fits */
+  if (!p[i]) { ai_pane_put1(f, p, role, first ? surface : 0); break; }  /* the rest fits */
   cut = (lastspace > 0) ? lastspace : i;         /* break at a space, else hard */
   if (cut >= (int)sizeof seg) cut = (int)sizeof seg - 1;
   memcpy(seg, p, (size_t)cut); seg[cut] = '\0';
-  ai_pane_put1(f, seg, first ? surface : 0);
+  ai_pane_put1(f, seg, role, first ? surface : 0);
   p += cut;
   while (*p == ' ') p++;                          /* drop the break space */
   first = 0;
@@ -193,48 +387,28 @@ static void ai_pane(FENSTER *f, const char *line, int surface)
 }
 
 /* Lines that ASK the user to act (approve a step, the first-use notice, "type a
-   follow-up") carry this marker and are drawn in a distinct colour, so a prompt
-   never blends into the agent's ordinary output.  Content-based, so it survives
-   scrolling and line insertion. */
+   follow-up") carry this marker as the second cue beside their colour, so a
+   prompt never blends into the agent's ordinary output. */
 #define AI_ATTN_MARK    ">> "
-#define AI_ATTN_MARKLEN 3
 
-/** ai_pane_attn - Add an attention line (marked + highlighted) to the pane. */
+/**
+ * ai_pane_attn - Add an attention line (marked, in the attention colour).
+ * @f: the window the pane belongs to.
+ * @text: the request, without the marker.
+ */
 static void ai_pane_attn(FENSTER *f, const char *text)
 {
  char buf[1300];
  snprintf(buf, sizeof buf, "%s%s", AI_ATTN_MARK, text);
- ai_pane(f, buf, 1);
+ ai_pane(f, buf, AI_ROLE_ATTENTION, 1);
 }
 
-/* Repaint the pane's visible attention lines in the highlight colour, on top of
-   what e_schirm just drew in the normal colour. */
-static void ai_pane_hl_attention(FENSTER *wf)
-{
- BUFFER *b = wf->b;
- SCHIRM *s = wf->s;
- int rows = wf->e.y - wf->a.y;                    /* interior rows e_schirm draws */
- /* Red foreground on the pane's own background ("this needs your input").  The
-    attribute is 16*bg + fg; keep the pane's text background and set a red
-    foreground (ANSI colour index 1, as init_pair maps them). */
- int color = 16 * wf->fb->nt.b + 1;
- int y;
- for (y = s->c.y; y < b->mxlines && y < s->c.y + rows; y++) {
-  const char *ls = b->bf[y].s;
-  int row, n;
-  char tmp[1300];
-  if (!ls || strncmp(ls, AI_ATTN_MARK, AI_ATTN_MARKLEN)) continue;
-  n = b->bf[y].len;
-  if (n >= (int)sizeof tmp) n = (int)sizeof tmp - 1;
-  memcpy(tmp, ls, (size_t)n); tmp[n] = '\0';
-  row = wf->a.y + 1 + (y - s->c.y);
-  e_pr_str(wf->a.x + 1, row, tmp, color, 0, 0, 0, 0);
- }
-}
-
-/* Append a possibly multi-line string to the pane, one pane line per '\n', so a
-   multi-line answer or summary is shown in full instead of only its first line. */
-static void ai_pane_multiline(FENSTER *f, const char *text, int surface)
+/**
+ * ai_pane_multiline - Append a possibly multi-line string as `role`, one pane
+ * line per '\n', so a multi-line answer or summary is shown in full instead
+ * of only its first line.
+ */
+static void ai_pane_multiline(FENSTER *f, const char *text, int role, int surface)
 {
  const char *p = text;
  if (!p) return;
@@ -244,7 +418,7 @@ static void ai_pane_multiline(FENSTER *f, const char *text, int surface)
   char buf[1024];
   if (l >= sizeof buf) l = sizeof buf - 1;
   memcpy(buf, p, l); buf[l] = '\0';
-  ai_pane(f, buf, surface);
+  ai_pane(f, buf, role, surface);
   if (!nl) break;
   p = nl + 1;
  }
@@ -511,7 +685,7 @@ static void ai_edit_announce_window(FENSTER *f, int y0, int y1)
  char line[120];
  snprintf(line, sizeof line, "[AI edit] lines %d-%d of %d sent",
           y0 + 1, y1 + 1, f->b->mxlines);
- ai_pane(f, line, 0);
+ ai_pane(f, line, AI_ROLE_MACHINERY, 0);
 }
 
 static void ai_chat_finish(ai_chat_session *s)
@@ -641,7 +815,6 @@ static void ai_pane_paint(FENSTER *wf)
   }
  }
  e_schirm(wf, 0);
- ai_pane_hl_attention(wf);          /* colour the "needs your input" lines */
  e_cursor(caret, 0);
  e_refresh();
 }
@@ -683,8 +856,10 @@ static void ai_pane_set_line(FENSTER *wf, int y, const char *text)
 {
  BUFFER *b = wf->b;
  size_t L = strlen(text);
- if (b->mxlines == 0)
+ if (b->mxlines == 0) {
   e_new_line(0, b);
+  ai_roles_sync(b);
+ }
  if (y < 0) y = 0;
  if (y >= b->mxlines) y = b->mxlines - 1;
  b->bf[y].s = REALLOC(b->bf[y].s, L + 2);
@@ -702,6 +877,29 @@ static void ai_pane_set_line(FENSTER *wf, int y, const char *text)
 static void ai_pane_set_last(FENSTER *wf, const char *text)
 {
  ai_pane_set_line(wf, ai_stream_y(wf), text);
+ ai_pane_paint(wf);
+}
+
+/**
+ * ai_pane_set_last_role - Change who owns the stream line.
+ * @wf: the pane.
+ * @role: the writer (enum ai_role).
+ *
+ * A waiting line that becomes an error, a spinner label that the chat's
+ * "AI:" line takes over: the colour follows the line's new owner at once.
+ */
+static void ai_pane_set_last_role(FENSTER *wf, int role)
+{
+ ai_roles_set(wf->b, ai_stream_y(wf), role);
+}
+
+/**
+ * ai_pane_set_last_as - Replace the stream line's text and its owner together.
+ */
+static void ai_pane_set_last_as(FENSTER *wf, const char *text, int role)
+{
+ ai_pane_set_line(wf, ai_stream_y(wf), text);
+ ai_pane_set_last_role(wf, role);
  ai_pane_paint(wf);
 }
 
@@ -727,6 +925,7 @@ static void ai_input_render(FENSTER *wf)
   b->mxlines--;
   g_ai_input_rows--;
  }
+ ai_roles_sync(b);                       /* the input rows are plain text */
  p = g_ai_input;
  for (i = 0; i < want; i++) {
   const char *nl = strchr(p, '\n');
@@ -745,25 +944,38 @@ static void ai_input_render(FENSTER *wf)
 static void ai_pane_commit(FENSTER *wf)
 {
  BUFFER *b = wf->b;
+ int at;
  if (g_ai_chat_focus && b->mxlines > g_ai_input_rows)
-  e_new_line(b->mxlines - g_ai_input_rows, b);
+  at = b->mxlines - g_ai_input_rows;
  else
-  e_new_line(b->mxlines, b);
+  at = b->mxlines;
+ e_new_line(at, b);
+ ai_roles_insert(b, at, AI_ROLE_ASSISTANT);   /* the stream line is the reply's */
 }
 
-/* Append one finished transcript line, keeping the input region (if any) at the
- * very bottom by inserting just above it. */
-static void ai_tr_line(FENSTER *wf, const char *str)
+/**
+ * ai_tr_line - Append one finished transcript line as `role`.
+ * @wf: the pane.
+ * @str: the text.
+ * @role: who wrote it (enum ai_role).
+ *
+ * The input region (if any) stays at the very bottom: the line goes just
+ * above it.
+ */
+static void ai_tr_line(FENSTER *wf, const char *str, int role)
 {
  BUFFER *b = wf->b;
  int at;
  if (!g_ai_chat_focus) {
+  at = b->mxlines;
   print_to_end_of_buffer(b, (char *)str, b->mx.x);
+  ai_roles_set_appended(b, at, role);
   return;
  }
  at = b->mxlines - g_ai_input_rows;      /* first input-region line */
  if (at < 0) at = 0;
  e_new_line(at, b);                      /* insert a blank line before the region */
+ ai_roles_insert(b, at, role);
  ai_pane_set_line(wf, at, str);
 }
 
@@ -834,7 +1046,7 @@ static ai_spin ai_spin_begin(FENSTER *f, const char *label)
  ai_spin sp;
  FENSTER *wf = ai_pane_win(f);
  sp.f = f; sp.label = label; sp.i = 0;
- if (wf) { ai_pane_commit(wf); ai_pane_set_last(wf, label); }
+ if (wf) { ai_pane_commit(wf); ai_pane_set_last_as(wf, label, AI_ROLE_MACHINERY); }
  return sp;
 }
 
@@ -916,7 +1128,7 @@ static void ai_delta_cb(const char *delta, void *ud)
    ai_tool_status(s->full, fl, status, sizeof status);
    wf = ai_pane_win(s->ref);
    ai_chat_wait_end(s);                               /* the status owns the line */
-   if (wf) ai_pane_set_last(wf, status);              /* replace "(gathering...)" */
+   if (wf) ai_pane_set_last_as(wf, status, AI_ROLE_MACHINERY);  /* replace "(gathering...)" */
    s->decided = 2;
    return;
   }
@@ -946,7 +1158,7 @@ static void ai_delta_cb(const char *delta, void *ud)
    if (s->hide_tool) {                     /* the hidden TOOL line just ended */
     char status[640];
     ai_tool_status(s->pending, s->plen, status, sizeof status);
-    ai_pane_set_last(wf, status);
+    ai_pane_set_last_as(wf, status, AI_ROLE_MACHINERY);
     s->decided = 2;                        /* suppress anything after the tool */
     s->plen = 0; s->pcols = 0; if (s->pending) s->pending[0] = '\0';
     s->shown = i + 1;
@@ -981,7 +1193,7 @@ static void ai_delta_cb(const char *delta, void *ud)
  if (s->hide_tool) {                                   /* tool line still arriving */
   char status[640];
   ai_tool_status(s->pending, s->plen, status, sizeof status);
-  ai_pane_set_last(wf, status);
+  ai_pane_set_last_as(wf, status, AI_ROLE_MACHINERY);
  } else
   ai_pane_set_last(wf, s->pending ? s->pending : "");  /* live partial line */
 }
@@ -1032,10 +1244,10 @@ static void ai_chat_report_transport_error(ai_chat_session *s)
 {
  FENSTER *wf = ai_pane_win(s->ref);
  if (wf && ai_chat_waiting_line_stands(s)) {
-  ai_pane_set_last(wf, AI_CHAT_TRANSPORT_LINE);
+  ai_pane_set_last_as(wf, AI_CHAT_TRANSPORT_LINE, AI_ROLE_ERROR);
   return;
  }
- ai_pane(s->ref, AI_CHAT_TRANSPORT_LINE, 0);
+ ai_pane(s->ref, AI_CHAT_TRANSPORT_LINE, AI_ROLE_ERROR, 0);
 }
 
 /* fd-loop callback: drain readable bytes, stream deltas into the pane. */
@@ -1090,7 +1302,7 @@ static void ai_fd_cb(int fd, void *data)
     snprintf(line, sizeof line,
              AI_REPLY_PREFIX "primary model failed (%s) - retrying with %s",
              emsg, e_ai_model_fallback);
-    if (wf) ai_pane_set_last(wf, line);
+    if (wf) ai_pane_set_last_as(wf, line, AI_ROLE_MACHINERY);
     free(emsg);
     s->fell_back = 1;
     wpe_fd_del(s->fd);
@@ -1102,7 +1314,7 @@ static void ai_fd_cb(int fd, void *data)
     if (emsg) {
      char line[440];
      snprintf(line, sizeof line, AI_REPLY_PREFIX "error: %s", emsg);
-     ai_pane_set_last(wf, line);
+     ai_pane_set_last_as(wf, line, AI_ROLE_ERROR);
     } else {
      ai_pane_set_last(wf, AI_REPLY_PREFIX "(no answer)");
     }
@@ -1204,7 +1416,7 @@ static void ai_chat_emit_header_if_due(FENSTER *wf)
  if (!ai_chat_header_due())
   return;
  ai_header_text_shown(st, sizeof st);
- ai_tr_line(wf, st);
+ ai_tr_line(wf, st, AI_ROLE_MACHINERY);
 }
 
 /**
@@ -1221,8 +1433,9 @@ static void ai_chat_emit_hints_once(FENSTER *wf)
  if (g_ai_hints_shown)
   return;
  g_ai_hints_shown = 1;
- ai_tr_line(wf, "[Enter=send  Ctrl-J=newline  arrows move  PgUp/PgDn scroll  Esc leaves]");
- ai_tr_line(wf, "[Shortcuts: /explain  /fix  /test  /doc  /review]");
+ ai_tr_line(wf, "[Enter=send  Ctrl-J=newline  arrows move  PgUp/PgDn scroll  Esc leaves]",
+            AI_ROLE_MACHINERY);
+ ai_tr_line(wf, "[Shortcuts: /explain  /fix  /test  /doc  /review]", AI_ROLE_MACHINERY);
 }
 
 /**
@@ -1398,7 +1611,7 @@ static void ai_project_memory_announce(FENSTER *f, const struct ai_project_memor
            e_ai_project_max);
  else
   snprintf(line, sizeof line, AI_PROJECT_ANNOUNCE_LINE, info->name, info->loaded);
- ai_pane(f, line, 0);
+ ai_pane(f, line, AI_ROLE_MACHINERY, 0);
 }
 
 /**
@@ -1534,9 +1747,65 @@ static const char *ai_diag_block(char *buf, size_t sz)
  * with read-only tools before answering, so questions about other files (not
  * just the open one) work.  Includes the workspace file listing, any live
  * diagnostics, and the current file for immediate context. */
-static char *ai_build_system(FENSTER *f)
+/**
+ * ai_chat_home_window - The file window the chat was armed from, if open.
+ * @cn: the desktop.
+ *
+ * The chat's questions come through the pane, but the file the user asked
+ * about is the window they pressed Alt-G a in; when that window has been
+ * closed, or the chat was armed from the pane itself, there is no file.
+ * Return: the window, or NULL.
+ */
+static FENSTER *ai_chat_home_window(ECNT *cn)
 {
- char *ctx = ai_current_file_text(f);
+ int wi;
+ if (g_ai_home_edt < 0) return NULL;
+ for (wi = 1; wi <= cn->mxedt; wi++) {
+  if (cn->edt[wi] != g_ai_home_edt) continue;
+  if (ai_is_pane(cn->f[wi])) return NULL;
+  return cn->f[wi];
+ }
+ return NULL;
+}
+
+/**
+ * ai_append_selection - Add the marked block of the context window, if any.
+ * @sys: the prompt; @cap: its size; @len: bytes written so far.
+ * @ctx: the file window, or NULL.
+ *
+ * "What does this do?" about a marked block gets the block spelled out
+ * beside the whole file, so the answer is about the lines the user marked.
+ * Return: the new length.
+ */
+static size_t ai_append_selection(char *sys, size_t cap, size_t len, FENSTER *ctx)
+{
+ int y0, y1;
+ char *sel;
+ if (!ctx || !ai_block_range(ctx, &y0, &y1)) return len;
+ sel = ai_lines_text(ctx, y0, y1);
+ if (!sel) return len;
+ if (len < cap - 512)
+  len += (size_t)snprintf(sys + len, cap - len,
+                          "\n--- selection (lines %d-%d) ---\n%.*s",
+                          y0 + 1, y1 + 1, (int)(cap - len - 64), sel);
+ free(sel);
+ return len;
+}
+
+/**
+ * ai_build_system - The chat's system prompt.
+ * @f: the window the pane belongs to (project memory, identity).
+ * @ctx: the file window whose text is the context, or NULL for none.
+ *
+ * The assistant may INVESTIGATE the workspace with read-only tools before
+ * answering, so questions about other files (not just the open one) work.
+ * Includes the workspace file listing, any live diagnostics, and the current
+ * file -- the one the chat was opened from, never the pane's own transcript.
+ */
+static char *ai_build_system(FENSTER *f, FENSTER *ctx)
+{
+ char *ctx_text = ctx ? ai_current_file_text(ctx) : NULL;
+ FENSTER *focused = ctx ? ctx : f;
  char **scope;
  int nsc, i;
  size_t cap = AI_CHAT_SYSTEM_BASE + ai_project_block_room(), len = 0;
@@ -1576,12 +1845,12 @@ static char *ai_build_system(FENSTER *f)
    "in Options > AI.\n"
    "So when the user asks to CHANGE code, tell them to use Edit (Alt-G e) or the "
    "Agent (Alt-G g) rather than printing code for them to retype.\n\n";
- if (!sys) { free(ctx); return NULL; }
+ if (!sys) { free(ctx_text); return NULL; }
  len += (size_t)snprintf(sys + len, cap - len, "%s", head);
  len += (size_t)snprintf(sys + len, cap - len, "%s", caps);
  len = ai_append_project_memory(sys, cap, len, f);
  len = ai_append_identity(sys, cap, len);
- len = ai_append_open_files(sys, cap, len, f);
+ len = ai_append_open_files(sys, cap, len, focused);
  nsc = wpe_ai_scope_files(f, e_project_is_open(), 1, &scope);
  if (len < cap - 32)
   len += (size_t)snprintf(sys + len, cap - len, "WORKSPACE FILES:\n");
@@ -1591,10 +1860,11 @@ static char *ai_build_system(FENSTER *f)
  { char diag[1700];
    if (ai_diag_block(diag, sizeof diag)[0] && len < cap - 1800)
     len += (size_t)snprintf(sys + len, cap - len, "%s", diag); }
- if (ctx && len < cap - 512)
+ len = ai_append_selection(sys, cap, len, ctx);
+ if (ctx_text && len < cap - 512)
   snprintf(sys + len, cap - len, "\n--- current file ---\n%.*s",
-           (int)(cap - len - 32), ctx);
- free(ctx);
+           (int)(cap - len - 32), ctx_text);
+ free(ctx_text);
  return sys;
 }
 
@@ -1769,7 +2039,7 @@ static void ai_chat_next_turn(ai_chat_session *s)
  char *sys, err[320];
  int nm = 0, np, i;
 
- sys = ai_build_system(f);
+ sys = ai_build_system(f, ai_chat_home_window(f->ed));
  msgs[nm].role = "system"; msgs[nm].content = sys ? sys : ""; nm++;
  np = wpe_ai_session_messages(msgs + nm, 12);
  for (i = 0; i < np; i++) nm++;
@@ -1781,7 +2051,7 @@ static void ai_chat_next_turn(ai_chat_session *s)
  s->st = wpe_ai_stream_start(&req, err, sizeof err);
  free(sys);
  if (!s->st) {
-  ai_pane(f, err[0] ? err : "[AI error] could not start", 0);
+  ai_pane(f, err[0] ? err : "[AI error] could not start", AI_ROLE_ERROR, 0);
   ai_chat_turn_over(s);
   return;
  }
@@ -1962,7 +2232,7 @@ static void ai_chat_echo_question(FENSTER *f, const char *text)
   const char *nl = strchr(p, '\n');
   int seg = nl ? (int)(nl - p) : (int)strlen(p);
   snprintf(line, sizeof line, "%s%.*s", first ? "You: " : "     ", seg, p);
-  ai_pane(f, line, 0);                         /* inserts above the input region */
+  ai_pane(f, line, AI_ROLE_USER, 0);           /* inserts above the input region */
   first = 0;
   if (!nl) break;
   p = nl + 1;
@@ -2109,7 +2379,8 @@ static void e_ai_chat_close(void)
     FREE(b->bf[y].s);
     b->mxlines--;
     g_ai_input_rows--;
-   } }
+   }
+   ai_roles_sync(b); }
  ai_pane_paint(wf);
  if (g_ai_home_edt >= 0)
   e_switch_window(g_ai_home_edt, wf);
@@ -2142,6 +2413,7 @@ static void e_ai_chat_arm(FENSTER *f)
  g_ai_input_pos = 0;
  g_ai_input_rows = 0;
  if (wf->b->mxlines == 0) e_new_line(0, wf->b);
+ ai_roles_sync(wf->b);
  /* The header when the setup changed (or was never shown), the hints once per
     pane: whatever another action wrote to the pane before this arm. */
  ai_chat_emit_header_if_due(wf);
@@ -2265,13 +2537,13 @@ static int e_ai_chat(FENSTER *f)
  err[0] = '\0';
  if (wpe_ai_preflight(e_ai_backend, err, sizeof err)) {
   snprintf(line, sizeof line, "[AI unavailable] %s", err);
-  ai_pane(f, line, 1);
+  ai_pane(f, line, AI_ROLE_ERROR, 1);
   return 0;
  }
  err[0] = '\0';
  if (wpe_ai_ensure_model(err, sizeof err)) {
   snprintf(line, sizeof line, "[AI] %s", err[0] ? err : "no model set (set AIModel)");
-  ai_pane(f, line, 1);
+  ai_pane(f, line, AI_ROLE_ERROR, 1);
   return 0;
  }
 
@@ -2323,7 +2595,7 @@ static void ai_hook_announce(FENSTER *f, const char *shown)
 {
  char line[720];
  snprintf(line, sizeof line, "[hook] %s %s", e_ai_edit_hook, shown);
- ai_pane(f, line, 0);
+ ai_pane(f, line, AI_ROLE_MACHINERY, 0);
 }
 
 /**
@@ -2342,8 +2614,8 @@ static void ai_hook_report_failure(FENSTER *f, const char *shown, int status,
  char line[720];
  snprintf(line, sizeof line, "[hook] failed, exit status %d: %s "
           "(buffer kept as the assistant left it)", status, shown);
- ai_pane(f, line, 1);
- if (out && *out) ai_pane_multiline(f, out, 0);
+ ai_pane(f, line, AI_ROLE_ERROR, 1);
+ if (out && *out) ai_pane_multiline(f, out, AI_ROLE_MACHINERY, 0);
 }
 
 /**
@@ -2669,7 +2941,7 @@ static void ai_pane_bytes(FENSTER *f, const char *s, size_t len)
  if (!copy) return;
  memcpy(copy, start, len);
  copy[len] = '\0';
- ai_pane_multiline(f, copy, 0);
+ ai_pane_multiline(f, copy, AI_ROLE_ASSISTANT, 0);
  free(copy);
 }
 
@@ -2691,7 +2963,7 @@ static void ai_edit_show_commentary(FENSTER *f, const ai_reply_parts *parts)
  int before = ai_bytes_have_ink(parts->before, parts->before_len);
  int after = ai_bytes_have_ink(parts->after, parts->after_len);
  if (!before && !after) return;
- ai_pane(f, AI_COMMENTARY_LINE, 0);
+ ai_pane(f, AI_COMMENTARY_LINE, AI_ROLE_MACHINERY, 0);
  if (before) ai_pane_bytes(f, parts->before, parts->before_len);
  if (after) ai_pane_bytes(f, parts->after, parts->after_len);
  wpe_ai_trace("edit commentary shown (%lu bytes before, %lu after)",
@@ -4094,7 +4366,7 @@ static void ai_op_hold_reply(ai_async_op *op, void (*deliver)(ai_async_op *op))
  op->paused = 1;                        /* no spinner: the wait is not the model's */
  snprintf(line, sizeof line, "[AI %s] reply ready - shown when the dialog closes", kind);
  if (wf)
-  ai_pane_set_last(wf, line);
+  ai_pane_set_last_as(wf, line, AI_ROLE_MACHINERY);
  wpe_ai_trace("%s reply held (dialog open)", kind);
 }
 
@@ -4191,7 +4463,7 @@ static void ai_enqueue(FENSTER *f, void (*launch)(FENSTER *, const char *),
 {
  char line[AI_PROMPT_MAX + 64];
  if (g_ai_queue.pending)
-  ai_pane(f, "[AI] replaced the queued request", 0);
+  ai_pane(f, "[AI] replaced the queued request", AI_ROLE_MACHINERY, 0);
  g_ai_queue.pending = 1;
  g_ai_queue.launch  = launch;
  g_ai_queue.f       = f;
@@ -4203,7 +4475,7 @@ static void ai_enqueue(FENSTER *f, void (*launch)(FENSTER *, const char *),
            "[AI] queued \"%s\" - it starts when the running one ends", goal);
  else
   snprintf(line, sizeof line, "[AI] queued - it starts when the running one ends");
- ai_pane(f, line, 1);
+ ai_pane(f, line, AI_ROLE_MACHINERY, 1);
  ai_pane_open_spinner_line(f);
 }
 
@@ -4232,7 +4504,7 @@ void wpe_ai_cancel(void)
  alive = ai_window_alive(op->cn, f);
  wpe_ai_trace("%s cancelled", kind);
  ai_op_detach(op);
- if (alive) ai_pane(f, "[AI] cancelled", 0);
+ if (alive) ai_pane(f, "[AI] cancelled", AI_ROLE_MACHINERY, 0);
  ai_op_free(op);
  /* Leave the pane ready to type in, so the user can continue right there
     (ask a follow-up / a new question) instead of facing a dead pane. */
@@ -4340,6 +4612,7 @@ static void ai_chat_wait_begin(ai_chat_session *s)
  if (!wf) return;
  if (s->op) {
   s->op->spin = ai_spin_begin(s->ref, AI_CHAT_WAIT_LABEL);
+  ai_pane_set_last_role(wf, AI_ROLE_ASSISTANT);   /* the "AI:" line is the reply's */
   s->op->start = time(NULL);
   s->op->paused = 0;
  } else {
@@ -4516,13 +4789,13 @@ static void ai_edit_report_discarded(FENSTER *f, int naccepted)
  char msg[80];
 
  if (naccepted <= 0) {
-  ai_pane(f, "[AI edit] discarded", 0);
+  ai_pane(f, "[AI edit] discarded", AI_ROLE_MACHINERY, 0);
   wpe_ai_trace("edit discarded");
   return;
  }
  snprintf(msg, sizeof msg, "[AI edit] discarded (%d accepted %s dropped)",
           naccepted, naccepted == 1 ? "hunk" : "hunks");
- ai_pane(f, msg, 0);
+ ai_pane(f, msg, AI_ROLE_MACHINERY, 0);
  wpe_ai_trace("edit discarded (%d accepted dropped)", naccepted);
 }
 
@@ -4567,13 +4840,13 @@ static void ai_edit_done(ai_async_op *op)
   char l[360];
   snprintf(l, sizeof l, "[AI edit] backend error: %.320s",
            ai_op_backend_error_text(op, "the backend did not return a result"));
-  ai_pane(f, l, 1);
+  ai_pane(f, l, AI_ROLE_ERROR, 1);
   wpe_ai_trace("edit error (not applied)");
   ai_op_free(op);
   return;
  }
  if (op->acc_len == 0) {
-  ai_pane(f, "[AI edit] no response", 0);
+  ai_pane(f, "[AI edit] no response", AI_ROLE_ERROR, 0);
   ai_op_free(op);
   return;
  }
@@ -4598,7 +4871,7 @@ static void ai_edit_done(ai_async_op *op)
  /* A reply that would leave almost nothing of the file is questioned before the
     diff opens, so one keystroke cannot replace the file with a refusal. */
  if (!ai_edit_reply_trusted(f, now ? now : "", clean)) {
-  ai_pane(f, "[AI edit] reply declined (nothing changed)", 0);
+  ai_pane(f, "[AI edit] reply declined (nothing changed)", AI_ROLE_MACHINERY, 0);
   wpe_ai_trace("edit reply declined");
   free(now);
   free(clean);
@@ -4609,7 +4882,7 @@ static void ai_edit_done(ai_async_op *op)
  free(now);
  for (i = 0; i < nseg; i++) if (segs[i].is_change) { has_change = 1; break; }
  if (!has_change) {
-  ai_pane(f, "[AI edit] no change", 0);
+  ai_pane(f, "[AI edit] no change", AI_ROLE_MACHINERY, 0);
   wpe_ai_trace("edit no-change");
  } else {
   int nacc = 0, ntot = 0;
@@ -4621,7 +4894,7 @@ static void ai_edit_done(ai_async_op *op)
     snprintf(msg, sizeof msg, "[AI edit] applied %d of %d hunks - Ctrl-U to undo", nacc, ntot);
    else
     snprintf(msg, sizeof msg, "[AI edit] applied - Ctrl-U to undo");
-   ai_pane(f, msg, 0);
+   ai_pane(f, msg, AI_ROLE_MACHINERY, 0);
    wpe_ai_trace("edit applied %d/%d", nacc, ntot);
    free(result);
    if (op->save_id >= 0) e_switch_window(op->save_id, f);
@@ -4659,7 +4932,7 @@ static void ai_edit_fd_cb(int fd, void *data)
   FENSTER *f = op->f;
   ECNT *cn = op->cn;
   ai_op_detach(op);
-  if (ai_window_alive(cn, f)) ai_pane(f, "[AI edit] transport error", 0);
+  if (ai_window_alive(cn, f)) ai_pane(f, "[AI edit] transport error", AI_ROLE_ERROR, 0);
   ai_op_free(op);
   ai_queue_run();
   return;
@@ -4696,7 +4969,7 @@ static void ai_conv_next_turn(ai_async_op *op)
  if (!op->st) {
   if (ai_window_alive(op->cn, op->f)) {
    char l[360]; snprintf(l, sizeof l, "%s: %s", op->label, err[0] ? err : "stream failed");
-   ai_pane(op->f, l, 0);
+   ai_pane(op->f, l, AI_ROLE_ERROR, 0);
   }
   ai_conv_finish(op);
   return;
@@ -4726,7 +4999,7 @@ static void ai_conv_report_backend_error(ai_async_op *op)
  if (!ai_window_alive(op->cn, op->f)) return;
  snprintf(l, sizeof l, "%s: backend error: %.300s", op->label,
           ai_op_backend_error_text(op, "no result"));
- ai_pane(op->f, l, 0);
+ ai_pane(op->f, l, AI_ROLE_ERROR, 0);
 }
 
 /* A turn's reply is complete: hand it to process(), then continue or finish. */
@@ -4749,7 +5022,8 @@ static void ai_conv_on_reply(ai_async_op *op)
  op->iter++;
  if (r != 0 || op->iter >= op->max_iter) {
   if (op->iter >= op->max_iter && r == 0 && ai_window_alive(op->cn, op->f))
-   ai_pane(op->f, "[AI] reached the step limit - Alt-G g to continue the task", 0);
+   ai_pane(op->f, "[AI] reached the step limit - Alt-G g to continue the task",
+           AI_ROLE_MACHINERY, 0);
   ai_conv_finish(op);
   return;
  }
@@ -4765,7 +5039,7 @@ static void ai_conv_fd_cb(int fd, void *data)
   FENSTER *f = op->f;
   ECNT *cn = op->cn;
   ai_op_stream_close(op);
-  if (ai_window_alive(cn, f)) ai_pane(f, "[AI] transport error", 0);
+  if (ai_window_alive(cn, f)) ai_pane(f, "[AI] transport error", AI_ROLE_ERROR, 0);
   op->transport_failed = 1;         /* the run stops on this line, no follow-up */
   wpe_ai_trace("conv transport error (stopped)");
   ai_conv_finish(op);
@@ -4846,10 +5120,10 @@ static void ai_edit_launch(FENSTER *f, const char *instr)
  for (wi = 1; wi <= cn->mxedt; wi++)
   if (cn->f[wi] == f) { save_id = cn->edt[wi]; break; }
  err[0] = '\0';
- if (wpe_ai_preflight(e_ai_backend, err, sizeof err)) { ai_pane(f, err, 1); return; }
+ if (wpe_ai_preflight(e_ai_backend, err, sizeof err)) { ai_pane(f, err, AI_ROLE_ERROR, 1); return; }
  err[0] = '\0';
  if (wpe_ai_ensure_model(err, sizeof err)) {
-  ai_pane(f, err[0] ? err : "no model set", 1);
+  ai_pane(f, err[0] ? err : "no model set", AI_ROLE_ERROR, 1);
   return;
  }
 
@@ -4880,7 +5154,7 @@ static void ai_edit_launch(FENSTER *f, const char *instr)
  free(cur);
  if (!op->st) {
   snprintf(line, sizeof line, "[AI edit] %s", err[0] ? err : "could not start");
-  ai_pane(f, line, 1);
+  ai_pane(f, line, AI_ROLE_ERROR, 1);
   free(op);
   return;
  }
@@ -4930,7 +5204,7 @@ static int ai_refuse_non_file_window(FENSTER *f)
 {
  if (wpe_ai_window_is_editable_file(f))
   return 0;
- ai_pane(f, AI_NO_FILE_LINE, 1);
+ ai_pane(f, AI_NO_FILE_LINE, AI_ROLE_MACHINERY, 1);
  wpe_ai_trace("edit refused: not a file window (%s)", f && f->datnam ? f->datnam : "?");
  return 1;
 }
@@ -5146,7 +5420,7 @@ static int ai_complete_segments(const ai_complete_ud *c, const char *clean,
  */
 static void ai_complete_report_discarded(FENSTER *f)
 {
- ai_pane(f, "[AI complete] discarded", 0);
+ ai_pane(f, "[AI complete] discarded", AI_ROLE_MACHINERY, 0);
  wpe_ai_trace("complete discarded");
 }
 
@@ -5161,7 +5435,7 @@ static void ai_complete_report_discarded(FENSTER *f)
 static void ai_complete_insert(FENSTER *f, ai_async_op *op, const char *newtext)
 {
  e_ai_apply_text(f, newtext);
- ai_pane(f, "[AI] completed at cursor - Ctrl-U to undo", 0);
+ ai_pane(f, "[AI] completed at cursor - Ctrl-U to undo", AI_ROLE_MACHINERY, 0);
  wpe_ai_trace("complete applied");
  if (op->save_id >= 0) e_switch_window(op->save_id, f);
  e_schirm(f, 1);          /* repaint the file window: the apply ran from the */
@@ -5206,12 +5480,12 @@ static void ai_complete_done(ai_async_op *op)
 
  ai_op_detach(op);
  if (!ai_window_alive(op->cn, f)) { ai_op_free(op); return; }
- if (op->had_error) { ai_pane(f, "[AI complete] backend error", 1); ai_op_free(op); return; }
- if (op->acc_len == 0) { ai_pane(f, "[AI complete] no suggestion", 0); ai_op_free(op); return; }
+ if (op->had_error) { ai_pane(f, "[AI complete] backend error", AI_ROLE_ERROR, 1); ai_op_free(op); return; }
+ if (op->acc_len == 0) { ai_pane(f, "[AI complete] no suggestion", AI_ROLE_MACHINERY, 0); ai_op_free(op); return; }
  clean = ai_completion_text(op->acc);
  if (!clean || !c) { free(clean); ai_op_free(op); return; }
  if (!*clean) {
-  ai_pane(f, "[AI complete] no suggestion", 0);
+  ai_pane(f, "[AI complete] no suggestion", AI_ROLE_MACHINERY, 0);
   free(clean);
   ai_op_free(op);
   return;
@@ -5246,7 +5520,7 @@ static void ai_complete_fd_cb(int fd, void *data)
  if (wpe_ai_stream_pump(op->st, ai_op_collect, op, &done) < 0) {
   FENSTER *f = op->f; ECNT *cn = op->cn;
   ai_op_detach(op);
-  if (ai_window_alive(cn, f)) ai_pane(f, "[AI complete] transport error", 0);
+  if (ai_window_alive(cn, f)) ai_pane(f, "[AI complete] transport error", AI_ROLE_ERROR, 0);
   ai_op_free(op); ai_queue_run(); return;
  }
  if (done) {
@@ -5286,9 +5560,9 @@ static int e_ai_complete(FENSTER *f)
  if (ai_refuse_non_file_window(f)) return 0;
  if (wpe_ai_busy()) { ai_enqueue(f, ai_launch_complete, ""); return 0; }
  err[0] = '\0';
- if (wpe_ai_preflight(e_ai_backend, err, sizeof err)) { ai_pane(f, err, 1); return 0; }
+ if (wpe_ai_preflight(e_ai_backend, err, sizeof err)) { ai_pane(f, err, AI_ROLE_ERROR, 1); return 0; }
  err[0] = '\0';
- if (wpe_ai_ensure_model(err, sizeof err)) { ai_pane(f, err[0] ? err : "no model set", 1); return 0; }
+ if (wpe_ai_ensure_model(err, sizeof err)) { ai_pane(f, err[0] ? err : "no model set", AI_ROLE_ERROR, 1); return 0; }
 
  /* Split the COMPLETE file at the cursor: the reply is spliced back as
     before + suggestion + after, so a capped copy here would drop the tail.
@@ -5329,7 +5603,7 @@ static int e_ai_complete(FENSTER *f)
  free(user);
  if (!op->st) {
   snprintf(line, sizeof line, "[AI complete] %s", err[0] ? err : "could not start");
-  ai_pane(f, line, 1);
+  ai_pane(f, line, AI_ROLE_ERROR, 1);
   ai_complete_ud_free(ud); free(op);
   return 0;
  }
@@ -5445,7 +5719,7 @@ static int e_ai_pick_model_apply(FENSTER *f, int announce)
 
  title[0] = '\0';
  n = wpe_ai_list_models(e_ai_backend, names, 32, title, sizeof title);
- if (n <= 0) { ai_pane(f, title[0] ? title : "no models found", 1); return 0; }
+ if (n <= 0) { ai_pane(f, title[0] ? title : "no models found", AI_ROLE_ERROR, 1); return 0; }
  for (i = 0; i < n; i++)                 /* pre-mark the model in use */
   if (e_ai_model && !strcmp(e_ai_model, names[i])) break;
  /* Name the source for the HTTP backends: both read the single AIEndpoint, so
@@ -5463,7 +5737,7 @@ static int e_ai_pick_model_apply(FENSTER *f, int announce)
   e_ai_model = strdup(names[sel]);
   if (announce) {
    snprintf(line, sizeof line, "[AI] model = %s", names[sel]);
-   ai_pane(f, line, 1);
+   ai_pane(f, line, AI_ROLE_MACHINERY, 1);
   }
   wpe_ai_trace("model set %s", names[sel]);
  }
@@ -6110,16 +6384,20 @@ static int ai_consent_gate(FENSTER *f, int *pass_key)
 {
  if (pass_key) *pass_key = 0;
  if (ai_consent_given()) return 1;
- ai_pane(f, "AI assistant -- first use.  It runs LOCALLY by default (Ollama on", 1);
- ai_pane(f, "localhost): nothing leaves your machine unless you point it at a", 1);
- ai_pane(f, "remote backend.  It is opt-in, every edit is previewed, and one", 1);
- ai_pane(f, "Ctrl-U reverts it.", 1);
- ai_pane(f, "After enabling, Alt-G opens a menu: a Ask  e Edit  g Agent  s Settings.", 1);
+ ai_pane(f, "AI assistant -- first use.  It runs LOCALLY by default (Ollama on",
+         AI_ROLE_MACHINERY, 1);
+ ai_pane(f, "localhost): nothing leaves your machine unless you point it at a",
+         AI_ROLE_MACHINERY, 1);
+ ai_pane(f, "remote backend.  It is opt-in, every edit is previewed, and one",
+         AI_ROLE_MACHINERY, 1);
+ ai_pane(f, "Ctrl-U reverts it.", AI_ROLE_MACHINERY, 1);
+ ai_pane(f, "After enabling, Alt-G opens a menu: a Ask  e Edit  g Agent  s Settings.",
+         AI_ROLE_MACHINERY, 1);
  ai_pane_attn(f, "Enter / y = enable and continue      n / Esc = not now");
  for (;;) {
   int c = e_getch();
   if (c == WPE_ESC || e_toupper(c) == 'N') {
-   ai_pane(f, "[AI] not enabled - press Alt-G again when you want it", 0);
+   ai_pane(f, "[AI] not enabled - press Alt-G again when you want it", AI_ROLE_MACHINERY, 0);
    return 0;
   }
   if (e_toupper(c) == 'Y' || c == 13 || c == '\r' || c == '\n') {
@@ -6139,8 +6417,7 @@ static int ai_consent_gate(FENSTER *f, int *pass_key)
 int e_ai_ui_key(FENSTER *f)
 {
  if (!wpe_ai_enabled()) {
-  ai_pane(f, "AI assistant is off - enable it in Options > Editor "
-             "(the \"Ai assistant\" box), then press Alt-G again.", 1);
+  ai_pane(f, AI_OFF_LINE, AI_ROLE_MACHINERY, 1);
   return 0;
  }
  /* Alt-G no longer cancels a running task (that surprised users): Esc cancels
@@ -6214,7 +6491,7 @@ static int ai_agent_approve(FENSTER *f, const char *what, int is_run)
      (e_ai_policy == WPE_AI_POLICY_EDITS && !is_run)) {
   snprintf(line, sizeof line, "[agent] auto-approved (%s): %s",
            wpe_ai_policy_name(e_ai_policy), what);
-  ai_pane(f, line, 0);
+  ai_pane(f, line, AI_ROLE_MACHINERY, 0);
   wpe_ai_trace("agent auto-approve %s", what);
   return 1;
  }
@@ -6244,7 +6521,7 @@ static char *ai_agent_deny(FENSTER *f, const char *tool, const char *arg)
 {
  char line[AI_TOOL_LINE_MAX + 32];
  snprintf(line, sizeof line, "[agent] denied: %s %s", tool, arg);
- ai_pane(f, line, 0);
+ ai_pane(f, line, AI_ROLE_MACHINERY, 0);
  wpe_ai_trace("agent deny %s %s", tool, arg);
  return strdup(AI_TOOL_DENIED_RESULT);
 }
@@ -6267,7 +6544,7 @@ static char *ai_agent_report_write_failed(FENSTER *f, const char *path)
 {
  char line[AI_TOOL_LINE_MAX + 32];
  snprintf(line, sizeof line, "[agent] write failed: %s", path);
- ai_pane(f, line, 0);
+ ai_pane(f, line, AI_ROLE_ERROR, 0);
  wpe_ai_trace("agent write failed %s", path);
  return strdup(AI_TOOL_WRITE_FAILED_RESULT);
 }
@@ -6286,7 +6563,7 @@ static void ai_agent_show_running(FENSTER *f, const char *tool)
 {
  char line[160];
  snprintf(line, sizeof line, "[agent] running %s ... (result follows)", tool);
- ai_pane(f, line, 0);
+ ai_pane(f, line, AI_ROLE_MACHINERY, 0);
 }
 
 /**
@@ -6302,7 +6579,7 @@ static void ai_agent_report_timeout(FENSTER *f, const char *tool, const char *re
  char line[200];
  snprintf(line, sizeof line, "[agent] %s timed out after %d s (AIToolTimeout) "
           "and was ended", tool, e_ai_tool_timeout);
- ai_pane(f, line, 0);
+ ai_pane(f, line, AI_ROLE_ERROR, 0);
  wpe_ai_trace("agent tool timed out: %s", result);
 }
 
@@ -6450,7 +6727,7 @@ static void ai_plan_progress(FENSTER *f, const char *task)
  for (i = 0; i < g_ai_plan_n; i++) if (g_ai_plan_done[i]) ndone++;
  snprintf(line, sizeof line, "[plan] %d/%d done  ok: %.200s",
           ndone, g_ai_plan_n, task && *task ? task : "(step)");
- ai_pane(f, line, 0);            /* visible progress in the pane during the run */
+ ai_pane(f, line, AI_ROLE_MACHINERY, 0);            /* visible progress in the pane during the run */
 }
 
 static void ai_plan_mark_done(FENSTER *f, const char *arg)
@@ -6501,7 +6778,7 @@ static void ai_agent_report_undo_hint(FENSTER *f, const char *path)
 {
  char line[720];
  snprintf(line, sizeof line, "[agent] wrote %s - Ctrl-U to undo (buffer only)", path);
- ai_pane(f, line, 0);
+ ai_pane(f, line, AI_ROLE_MACHINERY, 0);
 }
 
 /**
@@ -6585,7 +6862,7 @@ static void ai_agent_report_outside(FENSTER *f, const char *path)
 {
  char line[1400];
  snprintf(line, sizeof line, "[agent] wrote %s, %s", path, AI_PLAN_OUTSIDE_WORD);
- ai_pane(f, line, 0);
+ ai_pane(f, line, AI_ROLE_MACHINERY, 0);
  wpe_ai_trace("agent wrote outside workspace %s", path);
 }
 
@@ -6615,7 +6892,7 @@ static void ai_agent_ensure_checkpoint(ai_async_op *op)
  wpe_ai_checkpoint_create(op->f, scope, nsc);
  wpe_ai_free_list(scope, nsc);
  op->checkpointed = 1;
- ai_pane(op->f, AI_AGENT_CHECKPOINT_LINE, 0);
+ ai_pane(op->f, AI_AGENT_CHECKPOINT_LINE, AI_ROLE_MACHINERY, 0);
 }
 
 /**
@@ -6967,7 +7244,7 @@ static int ai_agent_process(ai_async_op *op, char *reply)
  }
 
  if (!act) {                                   /* no marker: the whole reply is the answer */
-  ai_pane_multiline(f, reply[0] ? reply : "[agent] done", 0);
+  ai_pane_multiline(f, reply[0] ? reply : "[agent] done", AI_ROLE_ASSISTANT, 0);
   wpe_ai_trace("agent answer (no marker)");
   return 1;
  }
@@ -6975,7 +7252,7 @@ static int ai_agent_process(ai_async_op *op, char *reply)
   /* Show the whole DONE reply, not just its first line: for a question task the
      model's answer follows the DONE marker, and dropping it left the user with
      only "DONE - answering directly" and no answer. */
-  ai_pane_multiline(f, reply[0] ? reply : "[agent] done", 0);
+  ai_pane_multiline(f, reply[0] ? reply : "[agent] done", AI_ROLE_ASSISTANT, 0);
   wpe_ai_trace("agent done");
   return 1;
  }
@@ -6988,7 +7265,7 @@ static int ai_agent_process(ai_async_op *op, char *reply)
   if (pl) {
    if (pl >= sizeof pre) pl = sizeof pre - 1;
    memcpy(pre, reply, pl); pre[pl] = '\0';
-   ai_pane_multiline(f, pre, 0);
+   ai_pane_multiline(f, pre, AI_ROLE_ASSISTANT, 0);
   }
  }
  firstnl = strchr(act, '\n');
@@ -6999,7 +7276,7 @@ static int ai_agent_process(ai_async_op *op, char *reply)
   char *tool, *arg, *result = NULL, paneln[640];
   ai_split_tool(action, &tool, &arg);   /* shared parse: tolerates "read_file:" */
   snprintf(paneln, sizeof paneln, "[agent] %s %s", tool, arg);
-  ai_pane(f, paneln, 0);
+  ai_pane(f, paneln, AI_ROLE_MACHINERY, 0);
   wpe_ai_trace("agent tool=%s arg=%s", tool, arg);
 
   if (ai_tool_is_shell_readonly(tool)) {
@@ -7038,7 +7315,7 @@ static int ai_agent_process(ai_async_op *op, char *reply)
   } else if (!strcmp(tool, "plan")) {
    ai_todo_load(f, firstnl ? firstnl + 1 : "");
    ai_pane(f, "[plan] laid out - the checklist is in the Messages window "
-              "(updates as steps finish)", 0);
+              "(updates as steps finish)", AI_ROLE_MACHINERY, 0);
    result = strdup("(plan shown -- now do the steps, one tool per turn, "
                    "reporting each with TOOL step_done <task>)");
   } else if (!strcmp(tool, "step_done")) {
@@ -7133,15 +7410,15 @@ static int ai_agent_launch(FENSTER *f, const char *goal, const char *extra)
    "result before continuing.";
 
  err[0] = '\0';
- if (wpe_ai_preflight(e_ai_backend, err, sizeof err)) { ai_pane(f, err, 1); return 0; }
+ if (wpe_ai_preflight(e_ai_backend, err, sizeof err)) { ai_pane(f, err, AI_ROLE_ERROR, 1); return 0; }
  err[0] = '\0';
  if (wpe_ai_ensure_model(err, sizeof err)) {
-  ai_pane(f, err[0] ? err : "no model set", 1);
+  ai_pane(f, err[0] ? err : "no model set", AI_ROLE_ERROR, 1);
   return 0;
  }
 
- { char st[AI_HEADER_MAX]; ai_header_text_shown(st, sizeof st); ai_pane(f, st, 0); }
- { char line[1100]; snprintf(line, sizeof line, "[agent] task: %s", goal); ai_pane(f, line, 1); }
+ { char st[AI_HEADER_MAX]; ai_header_text_shown(st, sizeof st); ai_pane(f, st, AI_ROLE_MACHINERY, 0); }
+ { char line[1100]; snprintf(line, sizeof line, "[agent] task: %s", goal); ai_pane(f, line, AI_ROLE_MACHINERY, 1); }
  wpe_ai_trace("agent task=%s", goal);
 
  wpe_ai_trace("agent policy=%s", wpe_ai_policy_name(e_ai_policy));
@@ -7216,7 +7493,7 @@ int e_ai_agent(FENSTER *f)
    nudged = 1;
    ai_pane(f, "[tip] For full autonomy (the model runs its own tools/edits), set "
               "Options > AI: Agent = Claude Code -- the built-in agent keeps every "
-              "tool under xwpe's review.", 0);
+              "tool under xwpe's review.", AI_ROLE_MACHINERY, 0);
   }
  }
 #endif
@@ -7279,7 +7556,7 @@ static int e_ai_fix_build(FENSTER *f)
  ai_build_command(f, cmd, sizeof cmd);
  wpe_ai_trace("fix-build cmd=%s", cmd);
  { char line[1200]; snprintf(line, sizeof line, "[fix-build] build command: %s", cmd);
-   ai_pane(f, line, 1); }
+   ai_pane(f, line, AI_ROLE_MACHINERY, 1); }
  snprintf(extra, sizeof extra,
    "You are fixing a failing build. The build command is:\n  %s\n"
    "First run it with `TOOL run_command %s`. If it succeeds (no errors), reply "
@@ -7382,7 +7659,7 @@ static int ai_plan_process(ai_async_op *op, char *reply)
   char *tool = action + 5, *arg = strchr(tool, ' '), *result = NULL, paneln[640];
   if (arg) { *arg = '\0'; arg++; } else arg = (char *)"";
   snprintf(paneln, sizeof paneln, AI_MULTIFILE_PREFIX " %s %s", tool, arg);
-  ai_pane(f, paneln, 0);
+  ai_pane(f, paneln, AI_ROLE_MACHINERY, 0);
   wpe_ai_trace("plan tool=%s arg=%s", tool, arg);
   if (!strcmp(tool, "read_file"))      result = wpe_ai_read_scope_file(f, arg);
   else if (!strcmp(tool, AI_TOOL_LIST_DIR)) result = ai_tool_run_readonly(tool, arg);
@@ -7395,7 +7672,7 @@ static int ai_plan_process(ai_async_op *op, char *reply)
   return 0;
  }
  if (!done && pd->np == 0) {
-  ai_pane(f, action, 0);                /* neither a tool nor a plan: final text */
+  ai_pane(f, action, AI_ROLE_ASSISTANT, 0);   /* neither a tool nor a plan: final text */
   return 1;
  }
  return done ? 1 : 0;
@@ -7491,7 +7768,7 @@ static void ai_plan_report_outside(FENSTER *f, const char *path)
  char line[1400];
  if (!wpe_ai_path_outside_workspace(f, path)) return;
  snprintf(line, sizeof line, AI_MULTIFILE_PREFIX " applied %s, %s", path, AI_PLAN_OUTSIDE_WORD);
- ai_pane(f, line, 0);
+ ai_pane(f, line, AI_ROLE_MACHINERY, 0);
  wpe_ai_trace("plan applied outside workspace %s", path);
 }
 
@@ -7566,18 +7843,18 @@ static void ai_plan_finish(ai_async_op *op)
  wpe_ai_session_save(f);
 
  if (np == 0) {
-  ai_pane(f, AI_MULTIFILE_PREFIX " the model proposed no file changes", 0);
+  ai_pane(f, AI_MULTIFILE_PREFIX " the model proposed no file changes", AI_ROLE_MACHINERY, 0);
   wpe_ai_trace("plan proposals=0");
   return;
  }
  snprintf(line, sizeof line, AI_MULTIFILE_PREFIX " the AI proposes to change %d file%s (review in the dialog):",
           np, np == 1 ? "" : "s");
- ai_pane(f, line, 1);
+ ai_pane(f, line, AI_ROLE_MACHINERY, 1);
  wpe_ai_trace("plan proposals=%d", np);
  snprintf(title, sizeof title, AI_MULTIFILE_NAME " - %d file%s", np, np == 1 ? "" : "s");
  mode = ai_plan_choice(f, pd, title);
  if (mode == AI_PLAN_CANCEL) {
-  ai_pane(f, AI_MULTIFILE_PREFIX " cancelled - nothing changed", 0);
+  ai_pane(f, AI_MULTIFILE_PREFIX " cancelled - nothing changed", AI_ROLE_MACHINERY, 0);
   wpe_ai_trace("plan cancelled");
   return;
  }
@@ -7588,7 +7865,7 @@ static void ai_plan_finish(ai_async_op *op)
   int done;
   if (e_edit(cn, pd->props[i].path) != 0) {
    snprintf(line, sizeof line, AI_MULTIFILE_PREFIX " could not open %s", path);
-   ai_pane(f, line, 0);
+   ai_pane(f, line, AI_ROLE_ERROR, 0);
    continue;
   }
   w = cn->f[cn->mxedt];
@@ -7607,7 +7884,7 @@ static void ai_plan_finish(ai_async_op *op)
   ai_plan_report_outside(f, path);
  }
  snprintf(line, sizeof line, AI_MULTIFILE_PREFIX " applied %d of %d file%s - each is open (Ctrl-U undoes per window)", applied, np, np == 1 ? "" : "s");
- ai_pane(f, line, 0);
+ ai_pane(f, line, AI_ROLE_MACHINERY, 0);
  wpe_ai_trace("plan done applied=%d", applied);
 }
 
@@ -7637,9 +7914,9 @@ static void ai_plan_launch(FENSTER *f, const char *task)
    "approves it. Output nothing else.";
 
  err[0] = '\0';
- if (wpe_ai_preflight(e_ai_backend, err, sizeof err)) { ai_pane(f, err, 1); return; }
+ if (wpe_ai_preflight(e_ai_backend, err, sizeof err)) { ai_pane(f, err, AI_ROLE_ERROR, 1); return; }
  err[0] = '\0';
- if (wpe_ai_ensure_model(err, sizeof err)) { ai_pane(f, err[0] ? err : "no model set", 1); return; }
+ if (wpe_ai_ensure_model(err, sizeof err)) { ai_pane(f, err[0] ? err : "no model set", AI_ROLE_ERROR, 1); return; }
 
  e_ai_cli_mode = WPE_AI_CLI_TEXTONLY;               /* xwpe owns every edit */
  wpe_ai_session_load(f);
@@ -7647,7 +7924,7 @@ static void ai_plan_launch(FENSTER *f, const char *task)
  if (!pd) return;
  pd->nsc = wpe_ai_scope_files(f, e_project_is_open(), 1, &pd->scope);
  snprintf(line, sizeof line, AI_MULTIFILE_PREFIX " task: %s  (scope: %d files)", task, pd->nsc);
- ai_pane(f, line, 1);
+ ai_pane(f, line, AI_ROLE_MACHINERY, 1);
  wpe_ai_trace("plan task=%s scope=%d", task, pd->nsc);
 
  for (wi = 1; wi <= cn->mxedt; wi++)
@@ -7806,7 +8083,7 @@ static void e_ai_host_end(const char *why)
  if (g_host) { wpe_host_free(g_host); g_host = NULL; }
  wpe_ai_trace("host end notice=%s", why ? why : "(none)");
  if (g_host_win && why) {
-  ai_pane(g_host_win, why, 1);
+  ai_pane(g_host_win, why, AI_ROLE_MACHINERY, 1);
   host_bring_pane_to_front(g_host_win);
  }
  g_host_win = NULL; g_host_cn = NULL; g_host_turn = 0;
@@ -7843,7 +8120,7 @@ static void host_take_checkpoint(FENSTER *f)
  int nsc = wpe_ai_scope_files(f, e_project_is_open(), 1, &scope);
  wpe_ai_checkpoint_create(f, scope, nsc);
  wpe_ai_free_list(scope, nsc);
- ai_pane(f, AI_AGENT_CHECKPOINT_LINE, 0);
+ ai_pane(f, AI_AGENT_CHECKPOINT_LINE, AI_ROLE_MACHINERY, 0);
 }
 
 /* Non-host code (e.g. Options > Disable) asks whether a host is up. */
@@ -7851,13 +8128,13 @@ int  wpe_ai_host_active(void) { return g_host != NULL; }
 void wpe_ai_host_shutdown(void) { if (g_host) e_ai_host_end(NULL); }
 
 static void host_ev_text(const char *text, void *ud)
-{ ai_pane_multiline((FENSTER *)ud, text, 0); }
+{ ai_pane_multiline((FENSTER *)ud, text, AI_ROLE_ASSISTANT, 0); }
 
 static void host_ev_tool(const char *tool, const char *arg, void *ud)
 {
  char l[720];
  snprintf(l, sizeof l, "[agent] %s %.640s", tool, arg ? arg : "");
- ai_pane((FENSTER *)ud, l, 0);
+ ai_pane((FENSTER *)ud, l, AI_ROLE_MACHINERY, 0);
  wpe_ai_trace("host tool=%s arg=%s", tool, arg ? arg : "");
 }
 
@@ -7867,12 +8144,12 @@ static void host_ev_file(const char *path, void *ud)
  char l[1200];
  wpe_ai_reload_open_window(f, path);         /* refresh the open buffer, one undo */
  snprintf(l, sizeof l, "[agent] edited %.1100s", path ? path : "");
- ai_pane(f, l, 0);
+ ai_pane(f, l, AI_ROLE_MACHINERY, 0);
  wpe_ai_trace("host edit=%s", path ? path : "");
 }
 
 static void host_ev_notice(const char *text, void *ud)
-{ ai_pane((FENSTER *)ud, text ? text : "", 0); }
+{ ai_pane((FENSTER *)ud, text ? text : "", AI_ROLE_MACHINERY, 0); }
 
 /**
  * host_turn_end_notice - Tell the user how the turn ended and what comes next.
@@ -7892,7 +8169,7 @@ static void host_turn_end_notice(FENSTER *f, const char *summary, int is_error)
   snprintf(l, sizeof l, "[agent] turn interrupted - Alt-G g continues, Esc there ends");
  else
   snprintf(l, sizeof l, "[agent] turn complete - Alt-G g continues, Esc there ends");
- ai_pane(f, l, 0);
+ ai_pane(f, l, AI_ROLE_MACHINERY, 0);
 }
 
 /**
@@ -8100,7 +8377,7 @@ void wpe_ai_host_interrupt(void)
  if (g_host_interrupting) { wpe_ai_trace("host interrupt already pending"); return; }
  g_host_interrupting = 1;
  rc = wpe_host_interrupt(g_host);
- ai_pane(g_host_win, "[agent] interrupting ...", 0);
+ ai_pane(g_host_win, "[agent] interrupting ...", AI_ROLE_MACHINERY, 0);
  wpe_ai_trace("host interrupt sent rc=%d bound=%d s", rc, e_ai_tool_timeout);
  host_deadline_arm();
 }
@@ -8111,15 +8388,16 @@ int e_ai_host(FENSTER *f)
  char err[320];
 
  if (!wpe_ai_enabled()) {
-  ai_pane(f, "AI assistant is off - enable it in Options > Editor.", 1);
+  ai_pane(f, AI_OFF_LINE, AI_ROLE_MACHINERY, 1);
   return 0;
  }
  if (wpe_ai_busy()) {
-  ai_pane(f, "[AI] a task is already running - press Esc to cancel it, or wait", 1);
+  ai_pane(f, "[AI] a task is already running - press Esc to cancel it, or wait",
+          AI_ROLE_MACHINERY, 1);
   return 0;
  }
  if (g_host && g_host_turn) {
-  ai_pane(f, "[agent] still working on the previous turn", 1);
+  ai_pane(f, "[agent] still working on the previous turn", AI_ROLE_MACHINERY, 1);
   return 0;
  }
  task[0] = '\0';
@@ -8144,7 +8422,7 @@ int e_ai_host(FENSTER *f)
    char l[360];
    snprintf(l, sizeof l, "[agent] could not start %.80s: %.240s",
             host_engine_name(), err[0] ? err : "?");
-   ai_pane(f, l, 1);
+   ai_pane(f, l, AI_ROLE_ERROR, 1);
    return 0;
   }
   g_host_win = f; g_host_cn = f->ed;
@@ -8154,16 +8432,16 @@ int e_ai_host(FENSTER *f)
   { char l[160];
     snprintf(l, sizeof l, "[agent] engine: %.80s - session started (Esc at the prompt ends it)",
              host_engine_name());
-    ai_pane(f, l, 1); }
+    ai_pane(f, l, AI_ROLE_MACHINERY, 1); }
   wpe_ai_trace("host start policy=%s adapter=%d", wpe_ai_policy_name(e_ai_policy), e_ai_host_adapter);
  }
- { char l[1100]; snprintf(l, sizeof l, "[agent] you: %.1000s", task); ai_pane(f, l, 0); }
+ { char l[1100]; snprintf(l, sizeof l, "[agent] you: %.1000s", task); ai_pane(f, l, AI_ROLE_USER, 0); }
  if (wpe_host_send(g_host, task) != 0) {
   e_ai_host_end("[agent] send failed - session ended");
   return 0;
  }
  g_host_turn = 1;
- ai_pane(f, "[agent] working... (Esc interrupts the turn)", 0);
+ ai_pane(f, "[agent] working... (Esc interrupts the turn)", AI_ROLE_MACHINERY, 0);
  wpe_ai_trace("host send");
  return 0;
 }
@@ -8300,7 +8578,7 @@ int e_ai_menu(FENSTER *f)
 
  if (!wpe_ai_enabled())
  {
-  ai_pane(f, "AI assistant is off - enable it in Options > Editor.", 1);
+  ai_pane(f, AI_OFF_LINE, AI_ROLE_MACHINERY, 1);
   return 0;
  }
  n = e_ai_menu_items(items);
@@ -8355,7 +8633,7 @@ static void ai_op_note_window_gone(ECNT *cn, FENSTER *closing, const char *kind)
  if (!wf || wf == closing)
   return;
  snprintf(line, sizeof line, "[AI %s] dropped - its window was closed", kind);
- ai_pane_set_last(wf, line);
+ ai_pane_set_last_as(wf, line, AI_ROLE_MACHINERY);
 }
 
 /**
@@ -8500,6 +8778,8 @@ void wpe_ai_window_closing(FENSTER *closing)
  ai_op_drop_for_window(closing);
  ai_chat_drop_for_window(closing);
  ai_chat_input_drop_for_window(closing);
+ if (ai_is_pane(closing))
+  ai_roles_forget();
 #ifdef WPE_AI_AGENT_HOST
  ai_host_drop_for_window(closing);
 #endif

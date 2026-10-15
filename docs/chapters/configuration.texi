@@ -66,7 +66,12 @@ See @ref{Compiler options dialog} for the full list of fields.
 Select debugger backend: gdb, sdb, or dbx.  Choose between
 full-screen and normal terminal mode.
 @item Adjust Colors
-Modify the 16-colour scheme used by the interface.
+Modify the 16-colour scheme used by the interface: the editor, the desktop,
+the option dialogs, program text, and the @samp{AI pane Colors} section, whose
+four entries (@samp{User}, @samp{Machinery}, @samp{Attention}, @samp{Error})
+colour the AI pane's lines by who wrote them (@pxref{AI assistant}).  In
+@file{xwperc} the pane's entries are the keys @code{aiu}, @code{aim},
+@code{aia} and @code{aie} of the colour section, beside the editor's own.
 @end table
 
 @anchor{Editor options dialog}

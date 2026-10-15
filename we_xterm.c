@@ -588,6 +588,13 @@ int e_X_sw_color()
  fb->fz = e_n_clr(A_Standout);
  fb->fs = e_n_clr(A_Standout);
  fb->of = e_n_clr(A_Standout);
+ /* The AI pane's roles on a one-plane display: the user's words and errors
+    bold, a line awaiting a key in reverse; the machinery stays plain, since
+    this display has no dim. */
+ fb->aiu = e_n_clr(A_Bold);
+ fb->aim = e_n_clr(A_Normal);
+ fb->aia = e_n_clr(A_Reverse);
+ fb->aie = e_n_clr(A_Bold);
  fb->df = e_s_x_clr(7, 4);
  fb->dc = 0xB1;
 #ifdef DEBUGGER

@@ -882,6 +882,13 @@ void FARBE_Init(FARBE *fb)
  fb->ck = e_s_x_clr(13, 4); /*  C-Prog. Constants (bright magenta on blue) */
  fb->cp = e_s_x_clr(10, 4); /*  C-Prog. Pre-processor         */
  fb->cc = e_s_x_clr( 7, 4); /*  C-Prog. Comments               */
+ /* The AI pane's roles on its blue background: the user's words stand out in
+    white, the machinery steps back in the grey of a comment, a line that
+    waits for a key wears a dialog's default-button green, an error is red. */
+ fb->aiu = e_s_x_clr(15, 4); /*  AI pane: user, white on blue        */
+ fb->aim = e_s_x_clr( 7, 4); /*  AI pane: machinery, light grey      */
+ fb->aia = e_s_x_clr(15, 2); /*  AI pane: attention, white on green  */
+ fb->aie = e_s_x_clr( 9, 4); /*  AI pane: error, light red           */
  fb->dc = ' ';
  fb->ws = 7;
 }
@@ -942,6 +949,12 @@ FARBE *e_ini_farbe()
    u_fb->ck = e_n_t_clr(0);
    u_fb->cp = e_n_t_clr(0);
    u_fb->cc = e_n_t_clr(0);
+   /* No colour: the user's words bold, the machinery dim, a line awaiting a
+      key in reverse, an error bold. */
+   u_fb->aiu = e_n_t_clr(A_BOLD);
+   u_fb->aim = e_n_t_clr(A_DIM);
+   u_fb->aia = e_n_t_clr(A_REVERSE);
+   u_fb->aie = e_n_t_clr(A_BOLD);
    u_fb->dc = 0x20;
    u_fb->ws = 0;
   }

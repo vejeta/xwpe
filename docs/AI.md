@@ -17,7 +17,7 @@ ollama pull qwen2.5-coder      # or deepseek-coder, codellama, ...
 # 2. an AI-enabled xwpe
 ./configure --enable-ai && make
 
-# 3. run it, enable the assistant once (Options > AI, or Options > Editor),
+# 3. run it, enable the assistant once (Options > AI, "Enable AI assistant"),
 #    then use the Alt-G prefix
 ./wpe
 ```
@@ -196,6 +196,16 @@ zero AI code.
 Enable it at runtime in **Options > AI** (tick "Enable AI assistant"), or set
 `XWPE_AI_ENABLE=1`. The same dialog picks the **backend**, the **model** (via the
 scrollable picker), and the **permission policy**. "Save Options" persists them.
+Pressing Alt-G while the assistant is off writes a line in the AI pane that
+names this dialog.
+
+The AI pane colours each line by who wrote it, from the colour scheme: your
+own "You:" lines white, the reply in the editor text colour, the machinery
+lines ("[agent] ...", "[AI edit] ...", the header) light grey, a line that
+waits for a key (">> ...") white on green, an error light red.  The entries
+are the "AI pane Colors" section of Options > Adjust Colors (keys `aiu`,
+`aim`, `aia`, `aie` in xwperc's colour section).  The chat sends the file it
+was opened from (and its marked block) as context, never its own transcript.
 
 ## Backends
 

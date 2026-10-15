@@ -322,6 +322,12 @@ void wpe_ai_report_window_locked(struct FNST *f);
  * stream or queued request that targets it is dropped so nothing paints or
  * applies through the freed window. */
 void wpe_ai_window_closing(struct FNST *closing);
+/* The row painter asks this for the colour of line `y` of window `f` before
+ * it paints the line in the editor text colour `base`: in the AI pane the
+ * answer is the scheme entry of the role that wrote the line (user,
+ * machinery, attention, error), so the pane tells who said what on every
+ * repaint, under every backend; any other window gets `base` back. */
+int  wpe_ai_pane_line_attr(struct FNST *f, int y, int base);
 /* The editor key loop calls this just before it waits for a key: a reply that
  * finished while a dialog, prompt, picker or the file manager was open is held
  * until then, and this runs its review or apply now, before the next key. */

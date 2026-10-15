@@ -325,13 +325,14 @@ int e_sys_info(FENSTER *f)
 /*   color adjustments  */
 int e_ad_colors(FENSTER *f)
 {
- int n, xa = 48, ya = 2, num = 4;
+ int n, xa = 48, ya = 2, num = 5;
  OPTK *opt = MALLOC(num * sizeof(OPTK));
 
  opt[0].t = "Editor Colors";     opt[0].x = 0;  opt[0].o = 'E';
  opt[1].t = "Desk Colors";       opt[1].x = 0;  opt[1].o = 'D';
  opt[2].t = "Option Colors";     opt[2].x = 0;  opt[2].o = 'O';
  opt[3].t = "Progr. Colors";     opt[3].x = 0;  opt[3].o = 'P';
+ opt[4].t = "AI pane Colors";    opt[4].x = 0;  opt[4].o = 'A';
 
  n = e_opt_sec_box(xa, ya, num, opt, f, 1);
 
@@ -381,6 +382,11 @@ int e_dif_colors(int sw, int xa, int ya, FENSTER *f, int md)
   bg = 32;
   num = 5;
  }
+ else if (md == COLOR_MODE_AI)
+ {
+  bg = COLOR_AI_FIRST_ENTRY;
+  num = COLOR_AI_ENTRIES;
+ }
  else
  {
   bg = 0;
@@ -427,7 +433,8 @@ char *text[] = {  "Border", "Bord. Bt.", "Text", "Txt Mrk.1", "Txt Mrk.2",
 		  "Write",  "Wrt. Mrk.", "Data", "Data M.A", "Data M.P",
 		  "Switch", "Swtch. S.", "Swtch. A.", "Button",
 		  "Bttn. Sw.", "Bttn. Ak.",
-		  "Text", "Res. Wrd.", "Constants", "Pre-Proc.", "Comments"
+		  "Text", "Res. Wrd.", "Constants", "Pre-Proc.", "Comments",
+		  "User", "Machinery", "Attention", "Error"
 	       };
 
 /*   draw color box */
@@ -454,6 +461,12 @@ void e_pr_dif_colors(int sw, int xa, int ya, FENSTER *f, int sw2, int md)
   bg = 31;
   header = "C-Prog.";
  }
+ else if (md == COLOR_MODE_AI)
+ {
+  ye = ya + COLOR_AI_ENTRIES + 1;
+  bg = COLOR_AI_FIRST_NAME;
+  header = "AI pane";
+ }
  else
  {
   ye = ya + 12;
@@ -478,6 +491,7 @@ int e_frb_x_menue(int sw, int xa, int ya, FENSTER *f, int md)
  if (md == 1) sw += 11;
  else if (md == 2) sw += 16;
  else if (md == 3) sw += 32;
+ else if (md == COLOR_MODE_AI) sw += COLOR_AI_FIRST_ENTRY;
  y = frb[sw].b;
  x = frb[sw].f;
  do
@@ -642,6 +656,20 @@ void e_pr_ed_beispiel(int xa, int ya, FENSTER *f, int sw, int md)
    e_pr_str(xa+4, ya+7, "int char {} [] ; ,", fb->cr.fb, 0, 0, 0, 0);
    e_pr_str(xa+4, ya+9, "\"Constants\" 12 0x13", fb->ck.fb, 0, 0, 0, 0);
    e_pr_str(xa+4, ya+11, "/*   Comments    */", fb->cc.fb, 0, 0, 0, 0);
+  }
+  else if (md == COLOR_MODE_AI)
+  {
+   /* One line per role, at the rows e_opt_bs_mouse_ai maps clicks on. */
+   e_pr_str(xa+4, ya+OPT_AI_EXAMPLE_USER_LINE, "You: what does this do?",
+     fb->aiu.fb, 0, 0, 0, 0);
+   e_pr_str(xa+4, ya+OPT_AI_EXAMPLE_REPLY_LINE, "AI: it returns the sum",
+     fb->et.fb, 0, 0, 0, 0);
+   e_pr_str(xa+4, ya+OPT_AI_EXAMPLE_MACHINERY_LINE, "[agent] running the tests",
+     fb->aim.fb, 0, 0, 0, 0);
+   e_pr_str(xa+4, ya+OPT_AI_EXAMPLE_ATTENTION_LINE, ">> y = allow   n / Esc = deny",
+     fb->aia.fb, 0, 0, 0, 0);
+   e_pr_str(xa+4, ya+OPT_AI_EXAMPLE_ERROR_LINE, "[AI edit] backend error",
+     fb->aie.fb, 0, 0, 0, 0);
   }
   else
   {
@@ -873,6 +901,14 @@ int WpeReadColor(ECNT *cn, char *section, char *option, char *value)
   c = &fb->cp;
  else if (WpeStrccmp("cc", option) == 0)
   c = &fb->cc;
+ else if (WpeStrccmp("aiu", option) == 0)
+  c = &fb->aiu;
+ else if (WpeStrccmp("aim", option) == 0)
+  c = &fb->aim;
+ else if (WpeStrccmp("aia", option) == 0)
+  c = &fb->aia;
+ else if (WpeStrccmp("aie", option) == 0)
+  c = &fb->aie;
  else if (WpeStrccmp("dc", option) == 0)
   fb->dc = atoi(value);
  else if (WpeStrccmp("ws", option) == 0)
@@ -957,6 +993,10 @@ int WpeWriteColor(ECNT *cn, char *section, FILE *opt_file)
  fprintf(opt_file, "ck : %d %d\n", fb->ck.f, fb->ck.b);
  fprintf(opt_file, "cp : %d %d\n", fb->cp.f, fb->cp.b);
  fprintf(opt_file, "cc : %d %d\n", fb->cc.f, fb->cc.b);
+ fprintf(opt_file, "aiu : %d %d\n", fb->aiu.f, fb->aiu.b);
+ fprintf(opt_file, "aim : %d %d\n", fb->aim.f, fb->aim.b);
+ fprintf(opt_file, "aia : %d %d\n", fb->aia.f, fb->aia.b);
+ fprintf(opt_file, "aie : %d %d\n", fb->aie.f, fb->aie.b);
  fprintf(opt_file, "dc : %d\n", fb->dc);
  fprintf(opt_file, "ws : %d\n", fb->ws);
  return 0;

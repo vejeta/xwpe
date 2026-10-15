@@ -886,6 +886,7 @@ int e_frb_t_menue(int sw, int xa, int ya, FENSTER *f, int md)
  if (md == 1) sw += 11;
  else if (md == 2) sw += 16;
  else if (md == 3) sw += 32;
+ else if (md == COLOR_MODE_AI) sw += COLOR_AI_FIRST_ENTRY;
  fsv = fb = frb[sw].fb;
  if (fb == 0) y = 0;
  else

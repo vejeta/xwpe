@@ -71,8 +71,10 @@ prompt, press the @samp{Multi-line} button (@key{Alt-M}): it opens a scratch
 editor window as a text area, so you compose with the full editor (several
 lines, cut and paste, the arrow keys), finish with @key{Esc}, and confirm Send.
 
-Then turn it on at run time in one of two ways: tick @samp{Ai assistant} under
-@samp{Options}, @samp{Editor}, or start with @env{XWPE_AI_ENABLE=1}.  With it on
+Then turn it on at run time in one of two ways: tick @samp{Enable AI assistant}
+under @samp{Options}, @samp{AI}, or start with @env{XWPE_AI_ENABLE=1}.  Pressing
+@key{Alt-G} while it is off writes a line in the @samp{AI} pane that names that
+dialog.  With it on
 a clickable @samp{Alt-G AI} entry appears on the bottom status bar and
 @key{Alt-G} opens the assistant's action menu -- the same way @key{Alt-F} opens
 the @samp{File} menu.  Pick an entry with the arrow keys and @key{Enter}, or
@@ -156,8 +158,10 @@ A deterministic in-process backend used by the test suite; no network.
 
 @cindex AI, chat
 @kbd{Alt-G a} asks for a prompt and streams the reply into the @samp{AI} pane.
-The current file (and the selection, if any) is sent as context, so ``what does
-this function do?'' works.  Chat can also @emph{investigate the workspace}: it
+The file the chat was opened from (and the selection marked in it, if any) is
+sent as context, so ``what does this function do?'' works; the pane's own
+transcript is never sent as the file, and when that file window has been
+closed no file goes with the question.  Chat can also @emph{investigate the workspace}: it
 is given the list of workspace files and may read any of them (or grep, or list
 a directory) on its own before answering, so ``what does @file{config.h}
 define?'' works even when that file is not open.  The editor stays fully
@@ -171,6 +175,22 @@ when another action had already written to the pane.  When the backend, the
 model or the permission dial change while the chat is open (Options > AI
 closed with Ok, @kbd{Alt-G y}, a provider switch), a new header line with
 the current values precedes the next turn; the transcript above it is kept.
+
+@cindex AI, pane colours
+The pane tells who wrote a line by its colour, taken from the colour scheme,
+with the prefix as the second cue.  In the default scheme your own lines
+(@samp{You: @dots{}}) are white on the pane's blue; the assistant's reply is in
+the editor text colour; the machinery lines (@samp{[agent] @dots{}},
+@samp{[AI edit] @dots{}}, the header, the checkpoint line) are light grey, the
+colour of a comment; a line that waits for a key (@samp{>> @dots{}}) is white
+on green, like a dialog's default button; an error (@samp{AI: error: @dots{}},
+a transport or backend error, @samp{[AI unavailable]}) is light red.  The four
+entries are the @samp{AI pane Colors} section of @samp{Options}, @samp{Adjust
+Colors} (@samp{User}, @samp{Machinery}, @samp{Attention}, @samp{Error}) and the
+keys @code{aiu}, @code{aim}, @code{aia} and @code{aie} of the colour section
+of @file{xwperc}; they are saved and restored with the scheme.  On a terminal
+without colour your lines are bold, the machinery dim, the attention line in
+reverse video and an error bold.
 
 While the model works on a question the pane shows @samp{AI: (gathering the
 answer...)} with the same rotating indicator, seconds count and @samp{(Esc

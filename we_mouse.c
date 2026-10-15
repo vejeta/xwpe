@@ -1197,6 +1197,7 @@ int e_opt_cw_mouse(xa, ya, md)
    {  if(md == 1) return(e_opt_bs_mouse_1());
       else if(md == 2) return(e_opt_bs_mouse_2());
       else if(md == 3) return(e_opt_bs_mouse_3());
+      else if(md == COLOR_MODE_AI) return(e_opt_bs_mouse_ai());
       else return(e_opt_bs_mouse());
    }
    if(e_mouse.x > xa && e_mouse.x < xa+12
@@ -1263,6 +1264,28 @@ int e_opt_bs_mouse_3()
    else if(e_mouse.y == 9) sw = 1;
    else if(e_mouse.y == 11) sw = 2;
    else if(e_mouse.y == 13) sw = 4;
+   return(sw+375);
+}
+
+/**
+ * e_opt_bs_mouse_ai - Map a click on the AI pane colour example to its entry.
+ *
+ * The example shows one line per role at the rows e_pr_ed_beispiel draws
+ * them on; clicking the user's, the machinery, the attention or the error
+ * line selects that entry, so the mouse works in this section as in the
+ * others.  A click elsewhere in the example keeps the selection.
+ */
+int e_opt_bs_mouse_ai()
+{
+   extern struct mouse e_mouse;  /*  return = sw + 375;  */
+   int sw = -1;
+   if(e_mouse.y < 2 || e_mouse.y > 21 ||
+	   e_mouse.x < 1 || e_mouse.x > 32) return(0);
+   else if(e_mouse.y == OPT_AI_EXAMPLE_USER_ROW) sw = 0;
+   else if(e_mouse.y == OPT_AI_EXAMPLE_MACHINERY_ROW) sw = 1;
+   else if(e_mouse.y == OPT_AI_EXAMPLE_ATTENTION_ROW) sw = 2;
+   else if(e_mouse.y == OPT_AI_EXAMPLE_ERROR_ROW) sw = 3;
+   if (sw < 0) return(0);
    return(sw+375);
 }
 

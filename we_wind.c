@@ -1509,6 +1509,9 @@ void e_pr_line(int y, FENSTER *f)
  BUFFER *b = f->b;
  SCHIRM *s = f->s;
  int i, j, k, frb;
+ /* The colour this line's plain text paints in: the editor text entry, or
+    in the AI pane the entry of the role that wrote the line. */
+ int text_frb = s->fb->et.fb;
 #ifdef DEBUGGER
  int fsw = 0;
  /* Inline LSP decorations in the plain (syntax-off) painter, mirroring
@@ -1519,6 +1522,9 @@ void e_pr_line(int y, FENSTER *f)
  extern int e_lsp_decor_active_for(FENSTER *f);
  extern int e_lsp_decor_attr_at(SCHIRM *s, int y, int x, int base);
  int diag_on = e_lsp_decor_active_for(f);
+#endif
+#ifdef WPE_AI
+ text_frb = wpe_ai_pane_line_attr(f, y, text_frb);
 #endif
 
  for (i = j = 0; j < NUM_COLS_OFF_SCREEN_LEFT && i < b->bf[y].len; j++)
@@ -1570,7 +1576,7 @@ void e_pr_line(int y, FENSTER *f)
     (y == s->mark_begin.y && i >= s->mark_begin.x) ) ) )
    frb = s->fb->ez.fb;
   else
-   frb = s->fb->et.fb;
+   frb = text_frb;
 #ifdef DEBUGGER
   if (diag_on)
    frb = e_lsp_decor_attr_at(s, y, i, frb);  /* recolor LSP problem/highlight cells */

@@ -233,6 +233,24 @@ Changes
 
 1.7.0 (AI assistant -- experimental, opt-in)
 
+* The AI pane tells who wrote a line by its colour.  Every transcript line
+  painted in the editor text colour, and the lines that wait for a key were
+  red on the Options-text background, drawn one column too far left over the
+  pane's border.  Now your own "You:" lines are white, the reply keeps the
+  editor text colour, the machinery lines ("[agent] ...", "[AI edit] ...",
+  the header, the checkpoint line) are light grey, a line that waits for a
+  key (">> ...") is white on green, and an error ("AI: error: ...", a
+  transport or backend error, "[AI unavailable]") is light red; on a
+  terminal without colour they are bold, dim, reverse and bold.  The four
+  entries are the new "AI pane Colors" section of Options > Adjust Colors
+  (User, Machinery, Attention, Error), keys aiu, aim, aia and aie in xwperc,
+  saved and restored with the scheme.  The "AI assistant is off" line
+  pointed at Options > Editor, where the box no longer is; it names
+  Options > AI.  A question sent from the pane carried the pane's own
+  transcript as the current file; it now carries the file the chat was
+  opened from (and its marked block), or no file when that window is gone.
+  Tests: tests/test_ai_pane_roles.py.
+
 * A chat turn is busy like any other assistant action.  Esc while a chat
   reply was streaming closed the input row and the reply kept painting into
   the pane behind it; a second question typed meanwhile ended the running

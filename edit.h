@@ -151,9 +151,38 @@ typedef struct frb {
  COLOR ck;   /* constants in program */
  COLOR cp;   /* preprocessor command */
  COLOR cc;   /* comments in program */
+ /* The AI pane tells who wrote a line by its colour; the assistant's own
+    text uses the editor text entry `et`.  These four sit after the program
+    entries because Options > Colors addresses the struct as an array. */
+ COLOR aiu;  /* AI pane: the user's lines ("You: ...") */
+ COLOR aim;  /* AI pane: machinery ("[agent] ...", "[AI edit] ...", status) */
+ COLOR aia;  /* AI pane: attention (">> ...", a key is awaited) */
+ COLOR aie;  /* AI pane: errors */
  char dc;    /* desktop fill character */
- char ws; 
+ char ws;
 } FARBE;
+
+/* Options > Colors walks FARBE as an array from `er`: the AI pane's section
+   is the fifth, its first entry `aiu` sits at this index, its names follow
+   the program section's in the name table (which has no entry for `of`). */
+#define COLOR_MODE_AI          4
+#define COLOR_AI_FIRST_ENTRY   37
+#define COLOR_AI_FIRST_NAME    36
+#define COLOR_AI_ENTRIES       4
+
+/* The AI pane example in Options > Colors: the colour example box is drawn
+   from screen row OPT_EXAMPLE_TOP_ROW, one line per role at these offsets;
+   the mouse map (e_opt_bs_mouse_ai) reads the same rows. */
+#define OPT_EXAMPLE_TOP_ROW            2
+#define OPT_AI_EXAMPLE_USER_LINE       3
+#define OPT_AI_EXAMPLE_REPLY_LINE      5
+#define OPT_AI_EXAMPLE_MACHINERY_LINE  7
+#define OPT_AI_EXAMPLE_ATTENTION_LINE  9
+#define OPT_AI_EXAMPLE_ERROR_LINE      11
+#define OPT_AI_EXAMPLE_USER_ROW      (OPT_EXAMPLE_TOP_ROW + OPT_AI_EXAMPLE_USER_LINE)
+#define OPT_AI_EXAMPLE_MACHINERY_ROW (OPT_EXAMPLE_TOP_ROW + OPT_AI_EXAMPLE_MACHINERY_LINE)
+#define OPT_AI_EXAMPLE_ATTENTION_ROW (OPT_EXAMPLE_TOP_ROW + OPT_AI_EXAMPLE_ATTENTION_LINE)
+#define OPT_AI_EXAMPLE_ERROR_ROW     (OPT_EXAMPLE_TOP_ROW + OPT_AI_EXAMPLE_ERROR_LINE)
 
 typedef struct undo {
  int type;
@@ -640,6 +669,7 @@ int e_data_ein_mouse(FENSTER *f);
 int e_opt_bs_mouse_1(void);
 int e_opt_bs_mouse_2(void);
 int e_opt_bs_mouse_3(void);
+int e_opt_bs_mouse_ai(void);
 int e_rahmen_mouse(FENSTER *f);
 #endif
 
@@ -658,6 +688,8 @@ void e_repaint_desk_nopic(FENSTER *f);
 void e_relayout_windows(ECNT *cn, int old_scol, int old_slns);
 void e_position_messages_window(FENSTER *msg, ECNT *cn);
 void e_position_ai_window(FENSTER *ai, ECNT *cn);
+void e_position_bottom_strip(ECNT *cn);
+int e_win_is_bottom_docked(FENSTER *f);
 int e_ai_chat_key(FENSTER *f, int c);
 int e_ai_options(FENSTER *f);
 int e_repaint_desk(FENSTER *f);
