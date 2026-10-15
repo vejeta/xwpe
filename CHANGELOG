@@ -233,6 +233,19 @@ Changes
 
 1.7.0 (AI assistant -- experimental, opt-in)
 
+* The AI pane keeps the place you are reading while a reply lands, also
+  after you have clicked into the file window.  Paging two pages up the
+  transcript and then working in the file snapped the pane back to the
+  input row the moment the answer arrived (only the pane itself kept the
+  place, and a click into the file lost it at once); now the lines you
+  were reading stay until you type in the input row.  The mouse wheel
+  over the pane browses the transcript three lines a step and keeps the
+  place the same way as PgUp/PgDn and the arrows.  In the terminal a
+  wheel step reached the editor as a bare click and only moved the caret
+  to the pointer; it now scrolls the window three lines, as it already
+  did under X11 and Wayland.
+  Tests: tests/test_ai_pane_scroll_lock.py.
+
 * Pasting into the AI chat's input row is literal.  A terminal paste of
   several lines sent one question per line: each pasted line break was
   taken as Enter, so "first line / second line / third line" fired two

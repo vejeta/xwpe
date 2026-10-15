@@ -245,6 +245,7 @@ static int  g_ai_input_len = 0;
 static int  g_ai_input_rows = 0;        /* pane lines the input region occupies    */
 static int  g_ai_input_pos = 0;         /* caret byte offset within g_ai_input     */
 static int  g_ai_scroll_lock = 0;       /* user scrolled up: hold the view there   */
+#define AI_WHEEL_LINES 3                /* transcript lines one wheel step browses */
 static FENSTER *g_ai_chat_pane = NULL;  /* the armed chat pane (NULL = no chat)     */
 static int  g_ai_home_edt = -1;         /* window to refocus when the chat closes   */
 
@@ -769,6 +770,38 @@ static void ai_input_caret(FENSTER *wf, int *cy, int *cx)
  *cx = 2 + bcol;                       /* 2 = the "> "/"  " prefix bytes */
 }
 
+/**
+ * ai_pane_keeps_browsed_view - Is the transcript held where the user scrolled it?
+ *
+ * True from a PgUp, arrow or wheel step away from the bottom until a key
+ * snaps the view back (or the user scrolls down to the input row again).
+ * The hold does not depend on which window is focused: the user who paged
+ * two pages up and then clicked into the file keeps reading the same lines
+ * while the reply lands below them.
+ */
+static int ai_pane_keeps_browsed_view(void)
+{
+ return g_ai_scroll_lock != 0;
+}
+
+/**
+ * ai_pane_hold_browsed_view - Leave the view offset alone and park the caret.
+ * @wf: the pane.
+ * @pane_focused: the pane is the focused window.
+ *
+ * The caret rests on the top visible line, so neither a focused window's own
+ * scroll-to-caret (e_cursor) nor a later switch back to the pane drags the
+ * view to the bottom: the lines the user was reading stay on screen while
+ * new transcript lines are added below them.
+ */
+static void ai_pane_hold_browsed_view(FENSTER *wf, int pane_focused)
+{
+ wf->b->b.y = wf->s->c.y;
+ wf->b->b.x = 0;
+ if (pane_focused)
+  e_cursor(wf, 0);
+}
+
 /* Repaint the pane window and keep the caret in view.  The pane is an ordinary
  * window, so the caret belongs to whichever window is FOCUSED: it sits in the
  * chat input row only while the pane itself is focused; when the user has
@@ -789,12 +822,13 @@ static void ai_pane_paint(FENSTER *wf)
  if (wpe_modal_active)
   return;
 
- if (pane_focused && g_ai_scroll_lock) {
-  /* Browsing the transcript: the caret rests on a history line and the view
-     follows it.  Do NOT move the caret back to the input or re-pin the view --
-     a focused window always scrolls to keep its caret visible (e_cursor), so
-     touching either here is exactly what would undo the browse. */
-  e_cursor(wf, 0);
+ if (ai_pane_keeps_browsed_view()) {
+  /* Browsing the transcript, focused or not: the caret rests on a history
+     line and the view follows it.  Do NOT move the caret back to the input or
+     re-pin the view -- a focused window always scrolls to keep its caret
+     visible (e_cursor), so touching either here is exactly what would undo
+     the browse. */
+  ai_pane_hold_browsed_view(wf, pane_focused);
  } else {
   if (pane_focused && g_ai_chat_focus) {        /* caret sits in the input region */
    int cy, cx;
@@ -821,8 +855,9 @@ static void ai_pane_paint(FENSTER *wf)
 
 /* Scroll the transcript view by `delta` lines to peek at history.  The view
  * holds until the next key: any edit key repaints and snaps back to the input
- * (ai_pane_paint scrolls to the bottom), so PgUp/PgDn browse, then editing
- * returns to the prompt. */
+ * (ai_pane_paint scrolls to the bottom), so PgUp/PgDn, the arrows and the
+ * mouse wheel browse, then editing returns to the prompt.  Every way of
+ * browsing comes through here, so they all lock the view the same way. */
 static void ai_pane_scroll(FENSTER *wf, int delta)
 {
  BUFFER *b = wf->b;
@@ -2538,29 +2573,89 @@ static void ai_chat_offer_input(FENSTER *f)
  e_ai_chat_arm(f);
 }
 
+/**
+ * ai_chat_focused_pane - The armed chat pane when it is the window on top.
+ * @f: the window the editor loop believes is focused.
+ *
+ * The editor's key loop refreshes its own `f` only at the END of an iteration,
+ * so right after the chat was armed from an ASYNC callback (the agent finishing
+ * and arming a follow-up), the first key arrives with a STALE `f` -- the window
+ * that was focused before the arm.  Answering from the window stack instead
+ * sends that first key (or wheel step) to the pane rather than leaking it into
+ * the old file.  NULL when the chat is not armed or the user really switched
+ * to another window, so the editor keeps the key.
+ */
+static FENSTER *ai_chat_focused_pane(FENSTER *f)
+{
+ if (!g_ai_chat_focus || !g_ai_chat_pane)
+  return NULL;
+ if (f == g_ai_chat_pane)
+  return g_ai_chat_pane;
+ if (f->ed->f[f->ed->mxedt] == g_ai_chat_pane)
+  return g_ai_chat_pane;
+ return NULL;
+}
+
+/**
+ * e_ai_chat_wheel - One mouse-wheel step while the chat pane is on top.
+ * @f: the window the editor loop believes is focused.
+ * @c: the key code (WPE_SCROLL_UP or WPE_SCROLL_DOWN).
+ *
+ * Browses the transcript three lines per step through the same scroller as
+ * PgUp/PgDn and the arrows, so the view locks where the wheel left it and the
+ * next reply line does not re-pin it to the input row.  Returns 1 when the
+ * step was the pane's; 0 lets the editor scroll the focused window as before.
+ */
+int e_ai_chat_wheel(FENSTER *f, int c)
+{
+ FENSTER *wf = ai_chat_focused_pane(f);
+
+ if (!wf)
+  return 0;
+ if (c == WPE_SCROLL_UP) {
+  ai_pane_scroll(wf, -AI_WHEEL_LINES);
+  return 1;
+ }
+ if (c == WPE_SCROLL_DOWN) {
+  ai_pane_scroll(wf, +AI_WHEEL_LINES);
+  return 1;
+ }
+ return 0;
+}
+
+/**
+ * ai_chat_is_input_key - Does this key act on the input row?
+ * @c: the key code.
+ *
+ * Only such a key ends a browse of the transcript.  A window switch (the key
+ * a click on the file window turns into) or a function key goes back to the
+ * editor and leaves the browsed view where the user left it, so clicking into
+ * the file to work there does not lose the place being read in the pane.
+ */
+static int ai_chat_is_input_key(int c)
+{
+ if (ai_in_paste_break(c))
+  return 1;
+ if (c == WPE_CR || c == WPE_WR || c == WPE_DC || c == ENTF)
+  return 1;
+ if (c == CLE || c == CRI || c == POS1 || c == CtrlA || c == ENDE || c == CtrlE)
+  return 1;
+ if ((c >= 32 && c < 255) || e_input_was_char)
+  return 1;
+ return 0;
+}
+
 /* Handle one key while the AI chat pane is the FOCUSED window.  Returns 1 if the
  * key was an input action (consumed), 0 to let the editor handle it normally
  * (window switch, function keys, ...).  Mouse is handled by the editor before
  * this is reached, so dragging/resizing/switching windows all keep working. */
 int e_ai_chat_key(FENSTER *f, int c)
 {
- FENSTER *wf;
+ FENSTER *wf = ai_chat_focused_pane(f);
 
- if (!g_ai_chat_focus || !g_ai_chat_pane)
+ if (!wf)
   return 0;
- /* The editor's key loop refreshes its own `f` only at the END of an iteration,
-    so right after the chat was armed from an ASYNC callback (the agent finishing
-    and arming a follow-up), the first key arrives with a STALE `f` -- the window
-    that was focused before the arm.  If the chat pane is actually the current top
-    window, the key is the pane's; treat it so, instead of leaking that first key
-    into the old file.  If the user really switched to another window, let the
-    editor have it. */
- if (f != g_ai_chat_pane) {
-  if (f->ed->f[f->ed->mxedt] != g_ai_chat_pane)
-   return 0;
-  f = g_ai_chat_pane;
- }
- wf = f;
+ f = wf;
  if (c == WPE_ESC) { e_ai_chat_close(); return 1; }
  if (c == BUP) { ai_pane_scroll(wf, -(wf->e.y - wf->a.y - 2)); return 1; }
  if (c == BDO) { ai_pane_scroll(wf, +(wf->e.y - wf->a.y - 2)); return 1; }
@@ -2580,7 +2675,9 @@ int e_ai_chat_key(FENSTER *f, int c)
     if (g_ai_input_pos != before) ai_input_render(wf); }
   return 1;
  }
- g_ai_scroll_lock = 0;                           /* any other edit key returns to the input */
+ if (!ai_chat_is_input_key(c))
+  return 0;                                      /* the editor's key: the browsed view stays */
+ g_ai_scroll_lock = 0;                           /* an input key returns to the input */
  if (ai_in_paste_break(c)) { ai_in_newline(wf); return 1; }   /* pasted text is literal */
  if (c == WPE_CR) {                             /* Enter: send the whole input */
   if (g_ai_input_len > 0) {

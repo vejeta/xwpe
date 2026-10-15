@@ -186,6 +186,15 @@ model or the permission dial change while the chat is open (Options > AI
 closed with Ok, @kbd{Alt-G y}, a provider switch), a new header line with
 the current values precedes the next turn; the transcript above it is kept.
 
+@cindex AI, browsing the transcript
+The pane keeps its @samp{> } input row docked at the bottom while you type.
+To read back a long conversation, @key{PgUp} and @key{PgDn} page through the
+transcript, the arrow keys scroll it a line at a time and the mouse wheel
+three lines a step.  The view then stays where you left it while a reply
+lands, also after you have clicked into the file window to work there;
+typing in the input row returns the view to the prompt so the next key lands
+in the input.
+
 @cindex AI, pane colours
 The pane tells who wrote a line by its colour, taken from the colour scheme,
 with the prefix as the second cue.  In the default scheme your own lines

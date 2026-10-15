@@ -544,6 +544,13 @@ int e_eingabe(ECNT *e)
   if (c == WPE_SCROLL_UP || c == WPE_SCROLL_DOWN)
   {
    int delta = (c == WPE_SCROLL_UP) ? -3 : 3;
+#ifdef WPE_AI
+   /* The armed chat pane browses its transcript through its own scroller, so
+      the wheel locks the view exactly as PgUp and the arrows do; any other
+      window scrolls as before. */
+   if (e_ai_chat_wheel(f, c))
+    continue;
+#endif
    s->c.y += delta;
    if (s->c.y < 0) s->c.y = 0;
    if (s->c.y > b->mxlines - 1) s->c.y = b->mxlines - 1;

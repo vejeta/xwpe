@@ -170,9 +170,12 @@ is what some tools call a "workspace edit"; it is *not* an agent plan mode.)
 `Alt-G m` opens the scrollable **model picker**.
 
 The pane keeps its `> ` prompt docked at the bottom while you type. To read back a
-long conversation, **PgUp/PgDn** page through the transcript and the **arrow keys**
-scroll it a line at a time; typing any character returns the view to the prompt so
-the next key lands in the input. The pane's first lines are a header,
+long conversation, **PgUp/PgDn** page through the transcript, the **arrow keys**
+scroll it a line at a time and the **mouse wheel** three lines a step. The view
+then stays where you left it while a reply lands, also after you have clicked
+into the file window to work there; typing any character in the input row
+returns the view to the prompt so the next key lands in the input. The pane's
+first lines are a header,
 `[AI: <backend> | model: <model> | policy: <dial>]`, and two hint lines; when
 the backend, the model or the permission dial change while the chat is open, a
 new header line with the current values precedes the next turn. A question

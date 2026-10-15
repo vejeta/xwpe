@@ -50,6 +50,7 @@ tests/test_ai_pane_dock.py
 tests/test_ai_pane_placement.py
 tests/test_ai_pane_quit.py
 tests/test_ai_pane_roles.py
+tests/test_ai_pane_scroll_lock.py
 tests/test_ai_pane_wrap.py
 tests/test_ai_plan_live.py
 tests/test_ai_plan_multiline.py

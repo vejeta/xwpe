@@ -1290,20 +1290,43 @@ static mmask_t e_t_sgr_bstate(int b, int final)
  }
 }
 
+/**
+ * e_t_mouse_wheel_key - The scroll key a wheel event stands for, else 0.
+ * @bstate: the ncurses button state of the event.
+ *
+ * X11 and Wayland report a wheel step as WPE_SCROLL_UP / WPE_SCROLL_DOWN; the
+ * terminal used to fold it into the button bitmask, where it carried no
+ * button and reached the editor as a bare caret placement at the pointer, so
+ * rolling the wheel over a terminal window moved the caret instead of the
+ * view.  Reporting the same key gives the terminal the same scroll.
+ */
+static int e_t_mouse_wheel_key(mmask_t bstate)
+{
+#if defined(BUTTON4_PRESSED) && defined(BUTTON5_PRESSED)
+ if (bstate & BUTTON4_PRESSED)
+  return(WPE_SCROLL_UP);
+ if (bstate & BUTTON5_PRESSED)
+  return(WPE_SCROLL_DOWN);
+#endif
+ (void)bstate;
+ return(0);
+}
+
 /* Decode an SGR mouse report "ESC [ < b ; x ; y M|m" whose introducer bytes
    (ESC '[' '<') have already been read by e_t_csi_key().  ncurses folds an SGR
    report into a KEY_MOUSE event only when its terminfo entry advertises an
    SGR-capable kmous; where it does not -- FreeBSD's termcap console, OpenBSD's
    base curses -- the raw bytes arrive here instead, so the console mouse would
    silently do nothing.  Parse the report directly, fold it into the persistent
-   button state via e_t_mouse_apply_event(), and return the mouse sentinel (-1)
-   so e_t_getch() reports the event exactly as it does for the KEY_MOUSE path.
+   button state via e_t_mouse_apply_event(), and return the mouse sentinel (-1),
+   or the scroll key for a wheel step, so e_t_getch() reports the event exactly
+   as it does for the KEY_MOUSE path.
    On Linux/NetBSD, ncurses consumes SGR into KEY_MOUSE and the '<' branch never
    fires, so this is inert there -- no double handling, no regression.  Returns
    0 on a malformed report so the caller can fall through to its generic path. */
 static int e_t_sgr_mouse(void)
 {
- int n[3], i, c, final;
+ int n[3], i, c, final, wheel;
  MEVENT mev;
 
  timeout(ESC_ALT_DELAY_MS);
@@ -1328,6 +1351,9 @@ static int e_t_sgr_mouse(void)
  mev.y = n[2] - 1;
  mev.z = 0;
  e_t_mouse_apply_event(&mev);
+ wheel = e_t_mouse_wheel_key(mev.bstate);
+ if (wheel != 0)
+  return(wheel);
  return(-1);
 }
 
@@ -1444,7 +1470,11 @@ int e_t_getch()
     MEVENT mev;
     if (getmouse(&mev) == OK)
     {
+     int wheel;
      e_t_mouse_apply_event(&mev);
+     wheel = e_t_mouse_wheel_key(mev.bstate);
+     if (wheel != 0)
+      return(wheel);
      return(-1);
     }
     c = 0;
@@ -1814,8 +1844,9 @@ static void e_t_mouse_publish(int *g)
    mouse report arrives as the raw bytes "ESC [ < ..." instead of KEY_MOUSE, so
    without this the drag-tracking loops (scrollbar thumb, submenu, window move)
    would never see the motion.  Try to consume the introducer and decode the
-   report; return 1 if a mouse event was applied, else push the two peeked bytes
-   back (the caller pushes the ESC) and return 0 for normal key handling. */
+   report; return 1 if a mouse event was applied (a wheel step during a drag is
+   applied and otherwise ignored, as it always was), else push the two peeked
+   bytes back (the caller pushes the ESC) and return 0 for normal key handling. */
 static int e_t_mouse_poll_sgr(void)
 {
  int b1, b2;
@@ -1824,7 +1855,7 @@ static int e_t_mouse_poll_sgr(void)
  b1 = fk_getch();
  b2 = (b1 == '[') ? fk_getch() : ERR;
  timeout(-1);
- if (b1 == '[' && b2 == '<' && e_t_sgr_mouse() == -1)
+ if (b1 == '[' && b2 == '<' && e_t_sgr_mouse() != 0)
   return(1);
  if (b2 != ERR)
   ungetch(b2);

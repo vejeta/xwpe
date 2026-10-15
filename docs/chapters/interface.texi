@@ -359,6 +359,15 @@ mouse position.  Hold @key{Alt} to paste from the X selection buffer
 instead.
 @end itemize
 
+@subsubheading Mouse wheel
+
+@itemize @bullet
+@item A wheel step scrolls the window three lines, in the terminal as
+under X11 and Wayland; a caret that scrolls out of view follows into the
+visible part.  In the AI pane the wheel browses the transcript and keeps
+the place as @key{PgUp} and @key{PgDn} do (@pxref{AI assistant}).
+@end itemize
+
 @subsubheading Window frame controls
 
 @itemize @bullet
