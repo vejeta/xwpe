@@ -16,7 +16,7 @@ import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 import pytest
-from wpe_driver import WpeSession, ALT, WPE_BIN
+from wpe_driver import WpeSession, ALT, WPE_BIN, pane_text_with_history
 
 SEED = "int main(void){return 0;}\n"
 
@@ -25,6 +25,20 @@ REVIEW_PROMPT = "a = keep all"
 TURN_POLL_S = 20
 REVIEW_POLL_S = 25
 BAR_WORD = "F1 Help"
+# Pane lines the dial tests read back.  The end-of-run review opens Messages
+# beside the pane, halving it: these lines then wrap over two rows or scroll
+# above the view, so they are read as the pane's logical lines, paged back.
+EDITS_WRITE_LINE = "[agent] auto-approved (edits): write a.txt (5 bytes)"
+DENIED_WEB_LINE = "[agent] denied: web_search x"
+AUTO_WEB_LINE = "[agent] auto-approved (auto): x y"
+RUNNING_WEB_LINE = "[agent] running web_search ... (result follows)"
+EDITS_HEADER_TAIL = "policy: edits]"
+# The review's per-file question names the file by its full path in the
+# Messages window, an ordinary editor window that is cut at its border, not
+# wrapped; the question is read with the terminal widened, as a user with a
+# long temporary path would widen it.
+WIDE_COLS = 160
+WIDE_ROWS = 30
 
 # The driver scales its own key/drain waits by XWPE_TEST_WAIT_SCALE (the
 # sanitizer build runs at 2, the Debian autopkgtest at 3); a fixed
@@ -142,11 +156,11 @@ def test_edits_auto_approves_writes_and_asks_for_commands_and_web(tmp_path):
             review = _screen(s)
             s.key("a", delay=1.0)
             assert _seen_within(s, FOLLOWUP_LINE, TURN_POLL_S), _screen(s)
-            rows = s.display()
+            lines = pane_text_with_history(s, [EDITS_WRITE_LINE, DENIED_WEB_LINE])
     finally:
         srv.shutdown()
     txt = _trace(tmp_path)
-    text = "\n".join(rows)
+    text = "\n".join(lines)
     # By the time the command box is up the header has scrolled off the pane
     # (ten lines in an eleven-row pane), so the dial is read from the trace.
     assert "agent policy=edits" in txt, txt
@@ -155,9 +169,9 @@ def test_edits_auto_approves_writes_and_asks_for_commands_and_web(tmp_path):
     # "alpha\n@@END" lands as 6 bytes; apply_patch then matches the literal
     # "alpha" substring and leaves the newline, writing "beta\n" (5 bytes).
     assert "agent auto-approve write a.txt (6 bytes)" in txt, txt     # scrolled off the pane by now
-    assert "[agent] auto-approved (edits): write a.txt (5 bytes)" in text, text  # apply_patch
+    assert EDITS_WRITE_LINE in text, text                            # apply_patch
     assert "agent deny run_command touch" in txt, txt       # its pane line scrolled off by the end
-    assert "[agent] denied: web_search x" in text, text
+    assert DENIED_WEB_LINE in text, text
     assert not marker.exists()
     assert not paths, paths
     assert (tmp_path / "a.txt").read_text() == "beta\n"
@@ -173,12 +187,12 @@ def test_auto_web_search_is_auto_approved_and_reaches_the_server(tmp_path):
         with WpeSession(str(tmp_path), SEED, env_extra=env) as s:
             _start_agent(s, "search", delay=1.0)
             assert _seen_within(s, FOLLOWUP_LINE, TURN_POLL_S), _screen(s)
-            rows = s.display()
+            lines = pane_text_with_history(s, [AUTO_WEB_LINE, RUNNING_WEB_LINE])
     finally:
         srv.shutdown()
-    text = "\n".join(rows)
-    assert "[agent] auto-approved (auto): x y" in text, text
-    assert "[agent] running web_search ... (result follows)" in text, text
+    text = "\n".join(lines)
+    assert AUTO_WEB_LINE in text, text
+    assert RUNNING_WEB_LINE in text, text
     assert paths == ["/find?q=x%20y"], paths
 
 
@@ -194,13 +208,13 @@ def test_altg_y_flashes_persists_to_xwperc_and_shows_in_next_header(tmp_path):
         rows2 = s.display()
         rc = _read_xwperc(tmp_path)
         _start_agent(s, "x", delay=1.5)
-        text = _screen(s)
+        text = "\n".join(pane_text_with_history(s, [EDITS_HEADER_TAIL]))
     assert "Permissions:" in bar and "ask" in bar and "edits" in bar and "auto" in bar, bar
     assert "auto-accept edits, ask before commands" in bar, bar
     assert BAR_WORD not in bar
     assert BAR_WORD in rows2[-1], rows2[-1]
     assert "AIPolicy : edits" in rc, rc
-    assert "policy: edits]" in text, text
+    assert EDITS_HEADER_TAIL in text, text
     assert "policy set edits" in _trace(tmp_path)
 
 
@@ -235,6 +249,7 @@ def test_review_file_by_file_keeps_one_and_reverts_the_other(tmp_path):
     with WpeSession(str(tmp_path), SEED, env_extra=env) as s:
         _start_agent(s, "write two", delay=1.0)
         assert _seen_within(s, REVIEW_PROMPT, 20), _screen(s)
+        s.resize(WIDE_COLS, WIDE_ROWS)       # the question's path fits the wider Messages
         s.key("f", delay=1.0)
         q1 = _screen(s)
         s.key("y", delay=1.0)
@@ -243,8 +258,9 @@ def test_review_file_by_file_keeps_one_and_reverts_the_other(tmp_path):
         assert _seen_within(s, FOLLOWUP_LINE, TURN_POLL_S), _screen(s)
     txt = _trace(tmp_path)
     import re
-    # The question's "?  y = keep  n = revert" tail can scroll off the pane
-    # when tmp_path is long, so only the "keep <path>" prefix is matched.
+    # The question's "?  y = keep  n = revert" tail can be cut at the
+    # window's border when tmp_path is long, so only the "keep <path>"
+    # prefix is matched.
     asked1 = re.findall(r"keep \S*/(\w\.txt)", q1)
     asked2 = re.findall(r"keep \S*/(\w\.txt)", q2)
     assert len(asked1) == 1, "no per-file question after f:\n" + q1

@@ -19,11 +19,17 @@ import stat
 import time
 import subprocess
 import pytest
-from wpe_driver import WpeSession, ALT, WPE_BIN
+from wpe_driver import WpeSession, ALT, WPE_BIN, pane_text_with_history
 
 CTRL_U = "\x15"
 ESC = "\033"
 MARK = "HOOKRAN99"
+# What the pane says after the write and after a failed hook.  The review's
+# Messages window halves the pane, so these lines wrap over two rows and
+# their first row scrolls above the view: they are read as the pane's
+# logical lines, paged back with PgUp.
+UNDO_NOTE = "Ctrl-U to undo (buffer only)"
+HOOK_STATUS = "status 3"
 SEED = "int main(void){return 0;}\n"
 AGENT_TEXT = "int main(void){return 1;}\n"
 EDIT_ORIG = "int a = 1;\nint b = 2;\nint c = 3;\n"
@@ -146,9 +152,9 @@ def test_agent_write_pane_says_the_undo_is_buffer_only(tmp_path):
     env = _agent_env(home, "t.c", AGENT_TEXT, tmp_path / "a.trace")
     with WpeSession(str(tmp_path), SEED, env_extra=env, filename="t.c") as s:
         _run_agent_write(s, tmp_path, "a.trace")
-        shown = "\n".join(s.display())
-        assert "Ctrl-U to undo (buffer only)" in shown, \
-            "the pane did not say the undo is buffer only:\n" + shown
+        pane = "\n".join(pane_text_with_history(s, [UNDO_NOTE]))
+        assert UNDO_NOTE in pane, \
+            "the pane did not say the undo is buffer only:\n" + pane
 
 
 # @scenario SC-ai-edit-50
@@ -195,7 +201,8 @@ def test_failed_hook_is_reported_with_its_status_and_the_buffer_is_not_reloaded(
     with WpeSession(str(tmp_path), SEED, env_extra=env, filename="t.c") as s:
         _run_agent_write(s, tmp_path, "a.trace")
         shown = "\n".join(s.display())
-        assert "status 3" in shown, "the pane did not report the hook's exit status:\n" + shown
+        pane = "\n".join(pane_text_with_history(s, [HOOK_STATUS]))
+        assert HOOK_STATUS in pane, "the pane did not report the hook's exit status:\n" + pane
         assert "return 1;" in shown, "the agent write did not reach the buffer:\n" + shown
         assert MARK not in shown, \
             "the buffer was reloaded from the output of a failed hook:\n" + shown

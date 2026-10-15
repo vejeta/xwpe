@@ -21,7 +21,7 @@ import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 import pytest
-from wpe_driver import WpeSession, ALT, WPE_BIN
+from wpe_driver import WpeSession, ALT, WPE_BIN, pane_text_with_history
 
 OUTSIDE_WORD = "outside the workspace"
 OUTSIDE_MARK = "!"
@@ -221,7 +221,10 @@ def _outside_path(tmp_path):
 
 def _agent_outside_write(tmp_path, answer):
     """Under auto, ask the agent to write beyond the workspace and answer the
-    write box with `answer`.  Returns (box screen, screen after, trace)."""
+    write box with `answer`.  Returns (box screen, the pane's lines after,
+    trace).  The end-of-run review opens Messages beside the pane and halves
+    it, so the pane's "outside the workspace" line wraps over two rows: the
+    pane is read as its logical lines, paged back with PgUp if needed."""
     rel, real = _outside_path(tmp_path)
     reply = "TOOL write_file %s\nbeyond the tree\n@@END@@TURN@@DONE wrote it" % rel
     with WpeSession(str(tmp_path), "int main(void){return 0;}\n",
@@ -231,7 +234,7 @@ def _agent_outside_write(tmp_path, answer):
         _wait_for(s, " Write ")
         box = "\n".join(s.display())
         s.key(answer, delay=0.8); s._drain(1.5)
-        after = "\n".join(s.display())
+        after = "\n".join(pane_text_with_history(s, [OUTSIDE_WORD]))
     return rel, real, box, after, _trace(tmp_path)
 
 

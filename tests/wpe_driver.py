@@ -236,6 +236,205 @@ def tool_usable(name, *args):
         return False
 
 
+# -- reading the AI pane ------------------------------------------------------
+#
+# The pane is an ordinary framed window whose transcript is word-wrapped to the
+# pane's present width before every paint (ai_pane_reflow in we_ai_ui.c).  A
+# test that asserts a phrase the pane wrote must therefore read the pane's
+# LOGICAL lines, not screen rows: once Messages shares the bottom strip the
+# pane is half as wide and a line written at 76 columns spans two rows.
+#
+# The frame as pyte sees it: ncurses draws the borders in the alternate
+# character set, so the horizontal line is "q", the top corners "l" / "k" and
+# the bottom corners "m" / "j".
+FRAME_HLINE_RUN = "qqq"
+FRAME_TOP_LEFT = "l"
+FRAME_TOP_RIGHT = "k"
+FRAME_BOTTOM_LEFT = "m"
+PANE_NAME = "AI"
+# ai_pane_width() wraps one column short of the interior (e.x - a.x - 2: the
+# caret's column after the input text) and never wider than AI_PANE_MAX_COLS.
+PANE_CARET_COLUMNS = 1
+PANE_WRAP_MAX_COLS = 80
+# How far back pane_text_with_history pages by default, and where a click
+# lands to focus the pane (second interior column of the first transcript row).
+PANE_HISTORY_PAGES = 4
+PANE_CLICK_COLUMN = 2
+PANE_CLICK_ROW = 2
+KEY_PGUP = "\033[5~"
+
+
+def title_row(disp, name):
+    """The screen row of window ``name``'s title bar, or -1 when it is not
+    open.  The name must sit on a row of the frame's horizontal line, so a
+    mention of the name inside a file or the pane's own text does not pass
+    for the window."""
+    for y, r in enumerate(disp):
+        if " %s " % name in r and FRAME_HLINE_RUN in r:
+            return y
+    return -1
+
+
+def pane_frame(disp, name=PANE_NAME):
+    """(title row, left border column, right border column) of the pane
+    ``name``; fails with the screen when the pane is not open.  The columns
+    are found from the corners nearest the title, so the pane is read
+    correctly whether it spans the terminal or shares the strip with
+    Messages."""
+    y = title_row(disp, name)
+    assert y >= 0, "the %s pane is not open:\n%s" % (name, "\n".join(disp))
+    title = disp[y]
+    at = title.index(" %s " % name)
+    x0 = title.rfind(FRAME_TOP_LEFT, 0, at)
+    x1 = title.index(FRAME_TOP_RIGHT, at)
+    return y, x0, x1
+
+
+def pane_rows(disp, name=PANE_NAME):
+    """The interior text of every row of the pane, top to bottom, down to
+    its bottom border.  Trailing blanks are KEPT: every row is exactly as
+    wide as the pane's interior, which is how pane_logical_lines learns the
+    width the wrapper cut at.  rstrip() a row to compare it as text."""
+    y, x0, x1 = pane_frame(disp, name)
+    rows = []
+    for r in disp[y + 1:]:
+        if r[x0:x0 + 1] == FRAME_BOTTOM_LEFT:
+            break
+        rows.append(r[x0 + 1:x1])
+    return rows
+
+
+def pane_wrap_width(rows):
+    """The columns the pane wrapped its text to, from the interior width of
+    its rows (see PANE_CARET_COLUMNS / PANE_WRAP_MAX_COLS)."""
+    if not rows:
+        return 0
+    width = len(rows[0]) - PANE_CARET_COLUMNS
+    if width > PANE_WRAP_MAX_COLS:
+        width = PANE_WRAP_MAX_COLS
+    return width
+
+
+def first_word(row):
+    """The first word of a row, "" for a blank one."""
+    words = row.split()
+    if words:
+        return words[0]
+    return ""
+
+
+def row_continues(row, next_row, width):
+    """Does ``next_row`` carry on the line ``row`` began, by the wrapper's
+    rule (ai_wrap_cut in we_ai_ui.c)?
+
+    The wrapper cuts a row "up to and including the last space that fits
+    (the space stays on the row, so the rows joined again read exactly as
+    written), or a hard cut at the width inside a word longer than the
+    row".  The break space cannot be told from the row's padding on the
+    screen (the fill has the same attributes), so the same rule is read the
+    way the user reads it: the row is full to the wrap width (a hanging
+    break space or a hard cut), or the next row's first word would not have
+    fitted after this row's last one -- which is exactly why the wrapper
+    broke there.  A line that merely ends long, followed by a line opening
+    with a long word, reads as one line too; that only ever merges two
+    neighbours, it never loses or reorders text, so a phrase searched with
+    ``in`` and an order of lines both hold."""
+    text = row.rstrip()
+    following = first_word(next_row)
+    if not text or not following:
+        return False
+    if len(text) >= width:
+        return True
+    return len(text) + 1 + len(following) > width
+
+
+def row_is_hard_cut(row, width):
+    """Was ``row`` cut inside one word longer than the pane (no space the
+    wrapper could break after)?  Its continuation then glues on without a
+    space, as the wrapper took none away."""
+    text = row.rstrip()
+    return len(text) >= width and " " not in text.strip()
+
+
+def pane_logical_lines(rows):
+    """The rows of the pane joined back into the lines the pane wrote, each
+    normalised to single spaces so a phrase can be searched with ``in``
+    whatever width the pane had when it was painted.  Rows come from
+    pane_rows (trailing blanks kept); a blank row is an empty line."""
+    width = pane_wrap_width(rows)
+    lines = []
+    current = ""
+    open_line = False
+    hard = False
+    for i, row in enumerate(rows):
+        text = row.rstrip()
+        if open_line and hard:
+            current = current + text
+        elif open_line:
+            current = current + " " + text
+        else:
+            current = text
+        next_row = ""
+        if i + 1 < len(rows):
+            next_row = rows[i + 1]
+        open_line = row_continues(row, next_row, width)
+        hard = open_line and row_is_hard_cut(row, width)
+        if not open_line:
+            lines.append(" ".join(current.split()))
+    return lines
+
+
+def click_into_pane(session, name=PANE_NAME):
+    """Give the pane the focus with a mouse click (SGR 1006 press and
+    release, 1-based cells) on its first transcript row, so PgUp/PgDn reach
+    it.  The focus stays in the pane afterwards: a test that goes on to use
+    its file window presses Esc, which leaves the pane the way the user
+    does."""
+    disp = session.display(drain=0)
+    y, x0, _ = pane_frame(disp, name)
+    col = x0 + PANE_CLICK_COLUMN
+    row = y + PANE_CLICK_ROW
+    session.key("\033[<0;%d;%dM" % (col, row), delay=0.2)
+    session.key("\033[<0;%d;%dm" % (col, row), delay=0.3)
+
+
+def missing_from_pane(rows, needles):
+    """The needles (words or phrases) no logical line of ``rows`` holds."""
+    text = "\n".join(pane_logical_lines(rows))
+    return [n for n in needles if n not in text]
+
+
+def pane_rows_with_history(session, needle_words, pages=PANE_HISTORY_PAGES,
+                           name=PANE_NAME):
+    """Every pane row now on screen plus, when needles are missing from
+    them, the rows PgUp brings back into the view, up to ``pages`` pages:
+    the way the transcript is read once it is longer than the pane.  The
+    pane is clicked into first; see click_into_pane for the focus after."""
+    rows = pane_rows(session.display(), name)
+    if not missing_from_pane(rows, needle_words):
+        return rows
+    click_into_pane(session, name)
+    seen = list(rows)
+    for _ in range(pages):
+        session.key(KEY_PGUP, delay=0.4)
+        page = pane_rows(session.display(), name)
+        seen = page + seen
+        if not missing_from_pane(seen, needle_words):
+            break
+    return seen
+
+
+def pane_text_with_history(session, needle_words, pages=PANE_HISTORY_PAGES,
+                           name=PANE_NAME):
+    """The pane's logical lines now visible plus the pages PgUp brings back
+    while any of ``needle_words`` is still missing (see
+    pane_rows_with_history), joined by pane_logical_lines: a phrase the pane
+    wrote is found whether the pane wrapped it over two rows or it scrolled
+    above the view."""
+    rows = pane_rows_with_history(session, needle_words, pages, name)
+    return pane_logical_lines(rows)
+
+
 class WpeSession:
     """A live wpe instance under a pyte-backed pty, with helpers to send
     keys, drive menus, save, and read back the file or the screen."""

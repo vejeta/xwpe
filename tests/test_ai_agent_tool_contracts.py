@@ -23,10 +23,11 @@ import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 import pytest
-from wpe_driver import WpeSession, ALT, WPE_BIN
+from wpe_driver import WpeSession, ALT, WPE_BIN, pane_text_with_history
 
 SEED = "int main(void){return 0;}\n"
 TURN_POLL_S = 20
+RUNNING_WEB_FETCH = "[agent] running web_fetch ... (result follows)"
 
 
 def _ai_build():
@@ -120,10 +121,13 @@ def _tool_results(request_body):
             if m.get("role") == "user" and m["content"].startswith("TOOL RESULT:")]
 
 
-def _run_openai(tmp_path, replies, policy, want_requests, timeout=TURN_POLL_S):
+def _run_openai(tmp_path, replies, policy, want_requests, timeout=TURN_POLL_S,
+                pane_needles=()):
     """Drive one agent run against the capturing server, auto-approving
     (policy auto, so nothing asks).  Returns the captured requests, the
-    final screen rows and the trace."""
+    pane's logical lines at the end (paged back with PgUp while any of
+    `pane_needles` is missing from the view: the end-of-run review halves
+    the pane and its oldest lines scroll above the view) and the trace."""
     captured = []
     srv, port = _multi_turn_server(captured, replies)
     try:
@@ -136,7 +140,7 @@ def _run_openai(tmp_path, replies, policy, want_requests, timeout=TURN_POLL_S):
                 s._drain(0.5)
             _seen_within(s, "type a follow-up", 8)
             s._drain(1.0)
-            rows = s.display()
+            rows = pane_text_with_history(s, pane_needles)
     finally:
         srv.shutdown()
         srv.server_close()
@@ -231,7 +235,7 @@ def test_web_fetch_bounds_the_get_and_the_text_handed_to_the_model(tmp_path):
         captured, rows, txt = _run_openai(
             tmp_path, ["TOOL web_fetch http://127.0.0.1:%d/bound" % port,
                        "TOOL web_fetch http://127.0.0.1:%d/big" % port, "DONE ok"], "auto", 3,
-            timeout=40)
+            timeout=40, pane_needles=[RUNNING_WEB_FETCH])
     finally:
         srv.shutdown()
     assert paths[:2] == ["/bound", "/big"], paths
@@ -242,7 +246,7 @@ def test_web_fetch_bounds_the_get_and_the_text_handed_to_the_model(tmp_path):
     body2 = r2[len("TOOL RESULT:\n"):]
     assert body2.endswith("...(truncated)"), body2[-100:]
     assert len(body2) <= 12000 + len("\n...(truncated)") + 8, len(body2)
-    assert "[agent] running web_fetch ... (result follows)" in "\n".join(rows)
+    assert RUNNING_WEB_FETCH in "\n".join(rows), "\n".join(rows)
 
 
 def _one_page_server(pages):
@@ -291,7 +295,7 @@ def test_web_fetch_gives_up_after_20s_and_reports_a_timeout(tmp_path):
         t0 = time.time()
         captured, rows, txt = _run_openai(
             tmp_path, ["TOOL web_fetch http://127.0.0.1:%d/slow" % port, "DONE ok"], "auto", 2,
-            timeout=45)
+            timeout=45, pane_needles=[RUNNING_WEB_FETCH])
     finally:
         srv.shutdown()
     dt = time.time() - t0
@@ -299,5 +303,5 @@ def test_web_fetch_gives_up_after_20s_and_reports_a_timeout(tmp_path):
     r = _tool_results(captured[1])[-1]
     assert "TOOL ERROR:" in r and "timed out" in r, r
     assert "agent done" in txt
-    assert "[agent] running web_fetch ... (result follows)" in "\n".join(rows)
+    assert RUNNING_WEB_FETCH in "\n".join(rows), "\n".join(rows)
     assert dt < 45, "the 20 s bound was not honoured: took %.1fs" % dt

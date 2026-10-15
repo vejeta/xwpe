@@ -45,7 +45,7 @@ import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 import pytest
-from wpe_driver import WpeSession, ALT, WPE_BIN
+from wpe_driver import WpeSession, ALT, WPE_BIN, pane_rows, pane_logical_lines
 
 SEED = "int main(void){return 0;}\n"
 CTRL_W = "\x17"
@@ -120,6 +120,23 @@ def _trace(tmp_path):
 
 def _screen(s, drain=0.2):
     return "\n".join(s.display(drain=drain))
+
+
+def _pane_text(disp):
+    """The pane's logical lines on a screen snapshot, as one searchable
+    text.  The review's Messages window halves the pane, so the server's
+    message wraps over two rows; the rows are joined back first."""
+    return "\n".join(pane_logical_lines(pane_rows(disp)))
+
+
+def _pane_text_with_review(rows, review):
+    """The pane's lines at the end of the run and, when a review opened,
+    the pane's lines while it was up: the message is shown before the
+    review and kept after it."""
+    text = _pane_text(rows)
+    if review is not None:
+        text = text + "\n" + _pane_text(review)
+    return text
 
 
 def _seen_within(s, needle, timeout):
@@ -316,7 +333,7 @@ def test_backend_error_mid_loop_shows_the_servers_message(tmp_path):
     captured, rows, review, txt = _run_openai(
         tmp_path, ["TOOL write_file a.txt\nAAA\n@@END", "DONE never"], "auto", 2,
         status_for_turn=lambda n: 500 if n == 1 else 200)
-    text = "\n".join(rows) + "\n" + "\n".join(review or [])
+    text = _pane_text_with_review(rows, review)
     assert BACKEND_ERROR_LINE in text, text
     assert SERVER_MESSAGE in text, \
         "the pane does not show the server's own message:\n" + text
@@ -337,7 +354,7 @@ def test_in_stream_error_event_mid_loop_shows_the_servers_message(tmp_path):
     captured, rows, review, txt = _run_openai(
         tmp_path, ["TOOL write_file a.txt\nAAA\n@@END", "DONE never"], "auto", 2,
         fault_for_turn=lambda n: "error_event" if n == 1 else None)
-    text = "\n".join(rows) + "\n" + "\n".join(review or [])
+    text = _pane_text_with_review(rows, review)
     assert len(captured) >= 2, "the second turn was never requested:\n" + txt
     assert TRANSPORT_LINE not in text, \
         "an error event the server sent in full was shown as a transport error:\n" + text

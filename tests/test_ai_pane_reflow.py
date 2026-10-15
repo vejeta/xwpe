@@ -22,10 +22,10 @@ import subprocess
 import time
 
 import pytest
-from wpe_driver import WpeSession, ALT, WPE_BIN
+from wpe_driver import (WpeSession, ALT, WPE_BIN, title_row, pane_frame, pane_rows,
+                        pane_rows_with_history)
 
 KEY_F9 = "\033[20~"                 # Make (compile + link): opens Messages
-PGUP = "\033[5~"
 SEED = "int main(void){return 0;}\n"
 COLS_NORMAL = 80
 COLS_WIDE = 120
@@ -66,39 +66,9 @@ def _seen_within(s, needle, timeout):
     return False
 
 
-def _title_row(disp, name):
-    """Row of a window's title bar: the name between the frame's q-runs."""
-    for y, r in enumerate(disp):
-        if " %s " % name in r and "qqq" in r:
-            return y
-    return -1
-
-
-def _pane_frame(disp):
-    """(title row, left border column, right border column) of the AI pane."""
-    y = _title_row(disp, "AI")
-    assert y >= 0, "the pane is not open:\n" + "\n".join(disp)
-    title = disp[y]
-    at = title.index(" AI ")
-    x0 = title.rfind("l", 0, at)
-    x1 = title.index("k", at)
-    return y, x0, x1
-
-
-def _pane_rows(disp):
-    """The interior text of every row of the pane, trailing blanks dropped."""
-    y, x0, x1 = _pane_frame(disp)
-    rows = []
-    for r in disp[y + 1:]:
-        if r[x0:x0 + 1] == "m":          # the bottom border
-            break
-        rows.append(r[x0 + 1:x1].rstrip())
-    return rows
-
-
 def _pane_width(disp):
     """The columns a pane row may use: the interior minus the border columns."""
-    _, x0, x1 = _pane_frame(disp)
+    _, x0, x1 = pane_frame(disp)
     return x1 - x0 - 1
 
 
@@ -111,33 +81,6 @@ def _missing(rows, words):
     for r in rows:
         present.update(r.split())
     return [w for w in words if w not in present]
-
-
-def _click_into_pane(s):
-    disp = s.display(drain=0)
-    y, x0, x1 = _pane_frame(disp)
-    col = x0 + 2
-    row = y + 2
-    s.key("\033[<0;%d;%dM" % (col, row), delay=0.2)
-    s.key("\033[<0;%d;%dm" % (col, row), delay=0.3)
-
-
-def _pane_text_with_history(s, words):
-    """Every pane row now on screen plus, when words are missing from them,
-    the rows PgUp brings back into the view (the way the transcript is read
-    back once it is longer than the pane)."""
-    rows = _pane_rows(s.display())
-    if not _missing(rows, words):
-        return rows
-    _click_into_pane(s)
-    seen = list(rows)
-    for _ in range(4):
-        s.key(PGUP, delay=0.4)
-        page = _pane_rows(s.display())
-        seen = page + seen
-        if not _missing(seen, words):
-            break
-    return seen
 
 
 def _ask(s, question, last_word):
@@ -162,15 +105,15 @@ def test_reply_written_at_full_width_is_whole_after_messages_opens(tmp_path):
     with WpeSession(str(tmp_path), SEED, env_extra=_env(tmp_path, LONG_REPLY),
                     filename="t.c") as s:
         _ask(s, "q", "w29")
-        before = _pane_rows(s.display())
+        before = pane_rows(s.display())
         rows_before = len(_rows_with_words(before, LONG_WORDS))
         s.key(KEY_F9, delay=3.0)
         s._drain(1.0)
         disp = s.display()
-        msg_y = _title_row(disp, "Messages")
-        ai_y = _title_row(disp, "AI")
+        msg_y = title_row(disp, "Messages")
+        ai_y = title_row(disp, "AI")
         width = _pane_width(disp)
-        after = _pane_text_with_history(s, LONG_WORDS)
+        after = pane_rows_with_history(s, LONG_WORDS)
     assert msg_y >= 0 and msg_y == ai_y, \
         "Messages did not open beside the pane:\n" + "\n".join(disp)
     assert width < COLS_NORMAL // 2, "the pane did not narrow: %d columns" % width
@@ -188,7 +131,7 @@ def test_resize_rewraps_the_reply_and_the_row_count_follows_the_width(tmp_path):
     with WpeSession(str(tmp_path), SEED, env_extra=_env(tmp_path, RESIZE_REPLY),
                     filename="t.c") as s:
         _ask(s, "q", "w18")
-        rows = _pane_rows(s.display())
+        rows = pane_rows(s.display())
         assert len(_rows_with_words(rows, RESIZE_WORDS)) == 2, \
             "the reply should start on two rows at 80 columns:\n" + "\n".join(rows)
         for cols, want in steps:
@@ -196,7 +139,7 @@ def test_resize_rewraps_the_reply_and_the_row_count_follows_the_width(tmp_path):
             s._drain(0.5)
             disp = s.display()
             width = _pane_width(disp)
-            rows = _pane_text_with_history(s, RESIZE_WORDS)
+            rows = pane_rows_with_history(s, RESIZE_WORDS)
             found.append((cols, width, len(_rows_with_words(rows, RESIZE_WORDS)), rows))
     for (cols, want), (_, width, got, rows) in zip(steps, found):
         _assert_whole_at_width(rows, RESIZE_WORDS, width, "at %d columns" % cols)

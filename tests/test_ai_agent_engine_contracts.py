@@ -26,12 +26,12 @@ import textwrap
 import time
 
 import pytest
-from wpe_driver import WpeSession, ALT, WPE_BIN
+from wpe_driver import WpeSession, ALT, WPE_BIN, pane_text_with_history
 
 SEED = "int main(void){return 0;}\n"
 FOLLOWUP_LINE = "type a follow-up"
 REVIEW_PROMPT = "a = keep all"
-PGUP = "\033[5~"
+TIP_LINE = "[tip] For full autonomy"
 TURN_POLL_S = 20
 
 PROCFACTS = (
@@ -264,14 +264,14 @@ def _claudecli_agent(tmp_path, policy):
 
 
 def _rows_with_history(s):
-    """The pane's rows at the end of a run: the view pinned on the input row,
-    then the view one page up.  The tip shown before the run, the header and
-    the run's own lines are more than the pane holds once the hint lines are
-    written at the first chat arm, so the oldest rows are read the way a
-    user reads them, with PgUp from the input row."""
-    rows = s.display()
-    s.key(PGUP); s._drain(0.3)
-    return rows + s.display()
+    """The pane's lines at the end of a run: the view pinned on the input
+    row, then the pages PgUp brings back while the tip is not among them.
+    The tip shown before the run, the header and the run's own lines are
+    more than the pane holds once the hint lines are written at the first
+    chat arm (and the review's Messages window has halved the pane), so the
+    oldest lines are read the way a user reads them, with PgUp from the
+    input row."""
+    return pane_text_with_history(s, [TIP_LINE])
 
 
 # @scenario SC-ai-agent-23
@@ -282,7 +282,7 @@ def test_claudecli_text_only_under_auto_with_tip(tmp_path):
     assert "--allowedTools" in argv and "WebSearch" in argv and "WebFetch" in argv, argv
     assert "--dangerously-skip-permissions" not in argv, argv
     assert "--permission-mode" not in argv, argv
-    assert "[tip] For full autonomy" in text, text
+    assert TIP_LINE in text, text
 
 
 # @scenario SC-ai-agent-23

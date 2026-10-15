@@ -18,7 +18,7 @@ import subprocess
 import time
 
 import pytest
-from wpe_driver import WpeSession, ALT, WPE_BIN
+from wpe_driver import WpeSession, ALT, WPE_BIN, title_row, pane_rows
 
 SEED = "int main(void){return 0;}\n"
 PGUP = "\033[5~"
@@ -88,24 +88,13 @@ def _seen_within(s, needle, timeout):
     return False
 
 
-def _interior(row):
-    """A pane row without its two border columns, trailing blanks dropped."""
-    return row[1:-1].rstrip()
-
-
-def _title_row(rows, name):
-    """Row of a window's title bar: the name between the frame's q-runs."""
-    for y, r in enumerate(rows):
-        if " %s " % name in r and "qqq" in r:
-            return y
-    return -1
-
-
 def _top_line(s):
-    """The first transcript row of the AI pane, as the user sees it now."""
+    """The first transcript row of the AI pane, as the user sees it now;
+    None while the pane is not open."""
     disp = s.display(drain=0)
-    y = _title_row(disp, "AI")
-    return _interior(disp[y + 1]) if y >= 0 else None
+    if title_row(disp, "AI") < 0:
+        return None
+    return pane_rows(disp)[0].rstrip()
 
 
 def _line_number(top):

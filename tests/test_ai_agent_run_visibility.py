@@ -28,7 +28,8 @@ import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 import pytest
-from wpe_driver import WpeSession, ALT, WPE_BIN
+from wpe_driver import (WpeSession, ALT, WPE_BIN, title_row, pane_rows,
+                        pane_logical_lines, pane_text_with_history)
 
 import subprocess
 
@@ -93,6 +94,22 @@ def _seen_within(s, needle, timeout):
     return False
 
 
+def _pane_seen_within(s, needle, timeout):
+    """Drain until the pane holds `needle` in one of its logical lines or
+    `timeout` seconds pass.  The end-of-run review opens Messages beside
+    the pane and halves it, so a line that was one row a moment ago may be
+    two rows by the time it is read; the lines are joined back first."""
+    end = time.time() + timeout
+    while time.time() < end:
+        s._drain(0.25)
+        disp = s.display(drain=0)
+        if title_row(disp, "AI") < 0:
+            continue
+        if needle in "\n".join(pane_logical_lines(pane_rows(disp))):
+            return True
+    return False
+
+
 def _seed_xwperc(tmp_path, lines):
     """Write a [Programming] section into the test HOME's xwperc.  The driver
     sets HOME to the workdir, so this is the configuration the editor reads."""
@@ -124,8 +141,8 @@ def test_agent_slow_command_shows_running_line_and_times_out(tmp_path):
     with WpeSession(str(tmp_path), SEED, env_extra=_env(tmp_path, reply, "auto")) as s:
         s.key(ALT.AI); s.key("g")
         s.key("wait for it"); s.key("\r", delay=0.3)
-        running = _seen_within(s, RUNNING_LINE, RUNNING_POLL_S)
-        timed_out = _seen_within(s, TIMEOUT_PANE, TIMEOUT_POLL_S)
+        running = _pane_seen_within(s, RUNNING_LINE, RUNNING_POLL_S)
+        timed_out = _pane_seen_within(s, TIMEOUT_PANE, TIMEOUT_POLL_S)
         s._drain(1.0)
         txt = _trace(tmp_path)
         pid = _traced_tool_pid(txt)
@@ -157,14 +174,14 @@ def test_agent_quick_command_shows_running_line_and_completes(tmp_path):
         s.key(ALT.AI); s.key("g")
         s.key("run it"); s.key("\r", delay=1.6)
         s._drain(2.0)
-        screen = _screen(s)
+        pane = "\n".join(pane_text_with_history(s, [RUNNING_LINE]))
     txt = _trace(tmp_path)
-    assert RUNNING_LINE in screen, \
-        "the pane never said the command was running:\n" + screen
+    assert RUNNING_LINE in pane, \
+        "the pane never said the command was running:\n" + pane
     assert "agent tool pid=" in txt, "the trace does not name the tool child:\n" + txt
     assert "agent done" in txt, txt
     assert "timed out" not in txt, "the timeout fired on an instant command:\n" + txt
-    assert "timed out" not in screen, screen
+    assert "timed out" not in pane, pane
 
 
 def _agent_server(captured, first_reply):

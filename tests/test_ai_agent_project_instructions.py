@@ -41,7 +41,7 @@ import subprocess
 import time
 
 import pytest
-from wpe_driver import WpeSession, ALT, WPE_BIN
+from wpe_driver import WpeSession, ALT, WPE_BIN, pane_text_with_history
 
 SEED = "int main(void){return 0;}\n"
 
@@ -63,10 +63,21 @@ NETWORK_RULE = "do not open network connections"
 CHECKPOINT_LINE = "[agent] checkpoint taken"
 REVIEW_PROMPT = "a = keep all"
 FOLLOWUP_LINE = "type a follow-up"
-# The header the mock backend writes once the dial reads auto, and the "> "
-# input row at the pane's bottom (its row starts with the pane's border).
+# The header the mock backend writes once the dial reads auto, the write it
+# auto-approves, and the "> " input row at the pane's bottom, which reads as
+# the one-character line ">" once the pane's rows are joined into lines and
+# normalised.  The end-of-run review opens Messages beside the pane and
+# halves it, so the header and the write line wrap over two rows and the
+# run's oldest lines scroll above the view: the pane is read as its logical
+# lines, paged back with PgUp.
 HEADER_AUTO = "[AI: mock | model: mock-model | policy: auto]"
-INPUT_ROW = "x> "
+AUTO_WRITE_LINE = "[agent] auto-approved (auto): write out.txt"
+INPUT_LINE = ">"
+# The review lists the written file by its full path in the Messages window,
+# an ordinary editor window cut at its border, not wrapped: it is read with
+# the terminal widened, as a user with a long temporary path would widen it.
+WIDE_COLS = 160
+WIDE_ROWS = 30
 CHAT_REPLY = "The project keeps every function short."
 # The two files, each with a sentence the other does not have, so the body
 # shows which one was folded in.
@@ -150,6 +161,12 @@ def _write_agents_md(tmp_path, size):
 
 def _row_index(rows, needle):
     return next((i for i, r in enumerate(rows) if needle in r), -1)
+
+
+def _line_index(lines, line):
+    """The index of the line that IS `line` (not merely holds it), -1 if
+    none: the input row's ">" would otherwise be found in ">> done"."""
+    return next((i for i, l in enumerate(lines) if l == line), -1)
 
 
 def _stub_claude_capturing(dir_, capture, reply):
@@ -292,17 +309,24 @@ def test_dial_raised_mid_run_takes_checkpoint_before_the_write(tmp_path):
             "Alt-G y did not reach the dial during the turn:\n" + _trace(tmp_path)
         assert _seen_within(s, REVIEW_PROMPT, TURN_POLL_S), \
             "no review at the end of a run raised to auto:\n" + "\n".join(s.display())
+        s.resize(WIDE_COLS, WIDE_ROWS)       # the listed path fits the wider Messages
         review = "\n".join(s.display())
         assert "AI changeset: 1 change" in review, review
         assert "out.txt:" in review, "the Messages window does not list the written file:\n" + review
         s.key("a", delay=1.0)                                # keep all
-        # The review's Messages window covered the pane; the follow-up prompt
-        # brings the pane back, with the run's lines in the order they were shown.
+        # The review's Messages window halved the pane; the follow-up prompt
+        # brings the input row back, with the run's lines in the order they
+        # were shown, the oldest of them above the view.
         assert _seen_within(s, FOLLOWUP_LINE, TRACE_POLL_S), "\n".join(s.display())
-        rows = s.display()
-        screen = "\n".join(rows)
-        ck_row = _row_index(rows, CHECKPOINT_LINE)
-        ok_row = _row_index(rows, "[agent] auto-approved (auto): write out.txt")
+        lines = pane_text_with_history(s, [CHECKPOINT_LINE, AUTO_WRITE_LINE])
+        screen = "\n".join(lines)
+        # The checkpoint line's last row fills the pane and the write line
+        # opens with the "[agent]" tag, so the screen cannot show where the
+        # one ends and the other begins (pane_logical_lines reads such
+        # neighbours as one line): the order asserted is the reading order
+        # of the two phrases in the pane's text.
+        ck_row = screen.find(CHECKPOINT_LINE)
+        ok_row = screen.find(AUTO_WRITE_LINE)
         assert ck_row >= 0, "no checkpoint line in the pane:\n" + screen
         assert ok_row >= 0, "the write was not auto-approved under the raised dial:\n" + screen
         assert ck_row < ok_row, \
@@ -337,16 +361,16 @@ def test_dial_raised_mid_run_shows_the_new_header_only_after_the_done_line(tmp_p
         assert _seen_within(s, REVIEW_PROMPT, TURN_POLL_S), "\n".join(s.display())
         s.key("a", delay=1.0)                                # keep all
         assert _seen_within(s, FOLLOWUP_LINE, TRACE_POLL_S), "\n".join(s.display())
-        rows = s.display()
-    screen = "\n".join(rows)
-    ok_row = _row_index(rows, "[agent] auto-approved (auto): write out.txt")
-    done_row = _row_index(rows, FOLLOWUP_LINE)
-    header_row = _row_index(rows, HEADER_AUTO)
-    input_row = _row_index(rows, INPUT_ROW)
+        lines = pane_text_with_history(s, [AUTO_WRITE_LINE, FOLLOWUP_LINE, HEADER_AUTO])
+    screen = "\n".join(lines)
+    ok_row = _row_index(lines, AUTO_WRITE_LINE)
+    done_row = _row_index(lines, FOLLOWUP_LINE)
+    header_row = _row_index(lines, HEADER_AUTO)
+    input_row = _line_index(lines, INPUT_LINE)
     assert ok_row >= 0 and done_row >= 0 and header_row >= 0 and input_row >= 0, screen
     assert ok_row < done_row < header_row < input_row, \
         "the header for the raised dial must follow the done line and precede " \
-        "the input row (rows %d, %d, %d, %d):\n%s" \
+        "the input row (lines %d, %d, %d, %d):\n%s" \
         % (ok_row, done_row, header_row, input_row, screen)
 
 

@@ -17,7 +17,7 @@ import subprocess
 import time
 
 import pytest
-from wpe_driver import WpeSession, ALT, WPE_BIN
+from wpe_driver import WpeSession, ALT, WPE_BIN, pane_text_with_history
 
 SEED = "int main(void){return 0;}\n"
 ESC = "\033"
@@ -26,6 +26,7 @@ FOLLOWUP_LINE = "type a follow-up"
 WRITE_BOX = " Write "
 STEP_LIMIT_LINE = "[AI] reached the step limit - Alt-G g to continue the task"
 CHECKPOINT_LINE = "[agent] checkpoint taken - changes are reviewable/revertible at the end"
+LIST_DIR_LINE = "[agent] list_dir ."
 TURN_POLL_S = 15
 LOOP_POLL_S = 60
 
@@ -249,10 +250,12 @@ def test_launch_checkpoint_shown_before_the_first_tool_line_under_auto(tmp_path)
     with WpeSession(str(tmp_path), SEED, env_extra=env) as s:
         _start_agent(s, "list it", delay=1.0)
         assert _seen_within(s, FOLLOWUP_LINE, TURN_POLL_S), _screen(s)
-        rows = s.display()
-    text = "\n".join(rows)
-    ck_row = _row_index(rows, CHECKPOINT_LINE)
-    tool_row = _row_index(rows, "[agent] list_dir .")
+        # The review's Messages window halves the pane, so the checkpoint
+        # line is above the view: read the pane's lines back with PgUp.
+        lines = pane_text_with_history(s, [CHECKPOINT_LINE, LIST_DIR_LINE])
+    text = "\n".join(lines)
+    ck_row = _row_index(lines, CHECKPOINT_LINE)
+    tool_row = _row_index(lines, LIST_DIR_LINE)
     assert ck_row >= 0, "no checkpoint line in the pane under auto:\n" + text
     assert tool_row >= 0, "no tool line in the pane:\n" + text
     assert ck_row < tool_row, \
