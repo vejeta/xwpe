@@ -161,8 +161,25 @@ this function do?'' works.  Chat can also @emph{investigate the workspace}: it
 is given the list of workspace files and may read any of them (or grep, or list
 a directory) on its own before answering, so ``what does @file{config.h}
 define?'' works even when that file is not open.  The editor stays fully
-interactive while the reply streams; @key{Esc} cancels.  The conversation is
-remembered for the workspace (see @emph{Sessions}, below).
+interactive while the reply streams.  The conversation is remembered for the
+workspace (see @emph{Sessions}, below).
+
+The pane opens with a header line, @samp{[AI: <backend> | model: <model> |
+policy: <dial>]}, and two hint lines naming the input keys and the slash
+shortcuts; they appear the first time the chat is opened in a session, even
+when another action had already written to the pane.  When the backend, the
+model or the permission dial change while the chat is open (Options > AI
+closed with Ok, @kbd{Alt-G y}, a provider switch), a new header line with
+the current values precedes the next turn; the transcript above it is kept.
+
+While the model works on a question the pane shows @samp{AI: (gathering the
+answer...)} with the same rotating indicator, seconds count and @samp{(Esc
+cancels)} as the other actions.  A chat turn is busy like any other: @key{Esc}
+while the reply streams cancels the turn, the pane says @samp{[AI] cancelled}
+and the input row is ready again; @key{Esc} with no turn running leaves the
+pane and returns to the file window.  A second question sent while a reply
+streams is not lost and does not cut the running turn: it is queued, the pane
+says so, and it starts by itself when the running turn ends.
 
 @cindex AI, slash commands
 A leading @dfn{slash command} expands to a full, file-scoped instruction, so a
@@ -173,11 +190,12 @@ model receives the expansion.
 
 Chat streams token by token.  @emph{Edit}, @emph{Multi-file edit} and
 @emph{Agent} (below)
-need the whole reply before they can act, so while the model is thinking they
-show a rotating @samp{-\|/} indicator and the seconds elapsed in the @samp{AI}
-pane -- a slow local model looks busy, not frozen -- and @key{Esc} aborts the
-wait at any time.  @key{Esc} leaves the pane armed: the pane says @samp{[AI]
-cancelled}, its input line is ready for a follow-up, and a second @key{Esc}
+need the whole reply before they can act.  Whichever action is waiting on the
+model, the @samp{AI} pane shows a rotating @samp{-\|/} indicator and the
+seconds elapsed on its waiting line -- a slow local model looks busy, not
+frozen -- and @key{Esc} aborts the wait at any time.  @key{Esc} leaves the
+pane armed: the pane says @samp{[AI] cancelled}, its input line is ready for a
+follow-up, and a second @key{Esc}
 returns to the file window.  Edit, Complete and Multi-file edit work on a file
 window only: asked from the pane itself, from Messages or from a read-only
 viewer they send nothing and the pane says @samp{[AI] no file here - Edit,

@@ -20,6 +20,7 @@ tests/test_ai_chat_error.py
 tests/test_ai_chat_investigate_live.py
 tests/test_ai_chat_short_reply.py
 tests/test_ai_chat_tool_preamble.py
+tests/test_ai_chat_turn_contracts.py
 tests/test_ai_claudecli_live.py
 tests/test_ai_claudecli_web.py
 tests/test_ai_compose.py

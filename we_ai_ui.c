@@ -36,9 +36,13 @@ int e_d_p_named(char *winname, char *str, FENSTER *f, int sw);
 #define AI_PROMPT_MAX 2000      /* room for a real instruction, not 128 chars   */
 
 /* ----- one active chat at a time (MVP) ----------------------------------- */
+struct ai_async_op;                 /* the background task a chat turn runs as */
 typedef struct {
  wpe_ai_stream *st;
  FENSTER       *ref;           /* anchor window (gives us cn = ref->ed)        */
+ struct ai_async_op *op;       /* the task that makes this turn "busy": Esc
+                                  cancels it, a second question queues behind
+                                  it, the heartbeat spins its waiting line     */
  char          *pending;       /* incomplete trailing line being streamed      */
  size_t         plen, pcap;
  int            pcols;         /* display columns in `pending` (for word-wrap)   */
@@ -59,6 +63,12 @@ typedef struct {
 
 #define AI_CHAT_MAX_TOOL_TURNS 6   /* cap chat's read-only investigation loop */
 #define AI_REPLY_PREFIX "AI: "     /* speaker label kept on the reply's first line */
+/* The waiting line of a chat turn.  The shared heartbeat appends the spinner
+   glyph, the seconds and "(Esc cancels)" to it while nothing has been painted
+   in its place yet; the text itself stays what the tests look for. */
+#define AI_CHAT_WAIT_LABEL AI_REPLY_PREFIX "(gathering the answer...)"
+/* The chat's own word for a peer that hung up without saying anything. */
+#define AI_CHAT_TRANSPORT_LINE "[AI: transport error]"
 
 static ai_chat_session *g_ai_chat = NULL;
 
@@ -117,6 +127,16 @@ static void  ai_pane_paint(FENSTER *wf);
 static void  ai_pane_hl_attention(FENSTER *wf);
 
 static int ai_pane_width(FENSTER *wf);          /* defined below */
+
+/* The chat turn as a background task (defined with the task machinery below,
+   which its functions need the shape of): registration, the waiting line the
+   heartbeat spins, the end of a turn, and the queue a second request joins. */
+static void ai_chat_op_begin(ai_chat_session *s);
+static void ai_chat_turn_over(ai_chat_session *s);
+static void ai_chat_wait_begin(ai_chat_session *s);
+static void ai_chat_wait_end(ai_chat_session *s);
+static void ai_enqueue(FENSTER *f, void (*launch)(FENSTER *, const char *),
+                       const char *goal);
 
 /* Append ONE ready line to the pane (no wrapping): into the transcript above the
    input row in chat-focus, otherwise to the end of the docked pane. */
@@ -895,11 +915,13 @@ static void ai_delta_cb(const char *delta, void *ud)
    size_t fl = nl ? (size_t)(nl - s->full) : s->flen;
    ai_tool_status(s->full, fl, status, sizeof status);
    wf = ai_pane_win(s->ref);
+   ai_chat_wait_end(s);                               /* the status owns the line */
    if (wf) ai_pane_set_last(wf, status);              /* replace "(gathering...)" */
    s->decided = 2;
    return;
   }
   s->decided = 1;                                     /* an answer -- stream it */
+  ai_chat_wait_end(s);                                /* the reply owns the line */
  }
  if (s->decided == 2) return;                         /* keep hiding the investigation */
 
@@ -982,6 +1004,40 @@ static void ai_chat_paint_held(ai_chat_session *s)
  ai_delta_cb("", s);
 }
 
+/**
+ * ai_chat_waiting_line_stands - Is the pane's stream line still the waiting line?
+ * @s: the chat whose turn is ending.
+ *
+ * Until the painter decides what the reply is, the line under the user's
+ * question is the waiting line and nothing else; once a reply or a tool
+ * status has been painted there, that content is the user's and stays.
+ * Return: 1 while the waiting line is all that is on the stream line.
+ */
+static int ai_chat_waiting_line_stands(const ai_chat_session *s)
+{
+ return s->decided == 0;
+}
+
+/**
+ * ai_chat_report_transport_error - Tell the user the peer hung up.
+ * @s: the chat whose connection died.
+ *
+ * A server that closes without a byte, or answers something that is not
+ * HTTP, ends the turn with "[AI: transport error]" in place of the waiting
+ * line, so "(gathering the answer...)" is never left standing over an answer
+ * that cannot come.  A reply that had started to paint is kept and the
+ * transport line follows it.
+ */
+static void ai_chat_report_transport_error(ai_chat_session *s)
+{
+ FENSTER *wf = ai_pane_win(s->ref);
+ if (wf && ai_chat_waiting_line_stands(s)) {
+  ai_pane_set_last(wf, AI_CHAT_TRANSPORT_LINE);
+  return;
+ }
+ ai_pane(s->ref, AI_CHAT_TRANSPORT_LINE, 0);
+}
+
 /* fd-loop callback: drain readable bytes, stream deltas into the pane. */
 static void ai_fd_cb(int fd, void *data)
 {
@@ -990,9 +1046,9 @@ static void ai_fd_cb(int fd, void *data)
  (void)fd;
  if (!s || !s->active) return;
  if (wpe_ai_stream_pump(s->st, ai_delta_cb, s, &done) < 0) {
-  ai_pane(s->ref, "[AI: transport error]", 0);
-  s->active = 0;
-  ai_chat_finish(s);
+  ai_chat_report_transport_error(s);
+  wpe_ai_trace("chat transport error");
+  ai_chat_turn_over(s);
   return;
  }
  if (done) {
@@ -1055,8 +1111,7 @@ static void ai_fd_cb(int fd, void *data)
   }
   wpe_ai_session_save(s->ref);
   wpe_ai_trace("chat done");
-  s->active = 0;
-  ai_chat_finish(s);
+  ai_chat_turn_over(s);
  }
 }
 
@@ -1095,6 +1150,91 @@ static void ai_status_text(char *buf, size_t n)
  const char *pol = wpe_ai_policy_name(e_ai_policy);
  const char *model = (e_ai_model && *e_ai_model) ? e_ai_model : "(default)";
  snprintf(buf, n, "[AI: %s | model: %s | policy: %s]", be, model, pol);
+}
+
+/* ----- the pane header follows the configuration ---------------------------
+ * The header is a transcript line, so it cannot be repainted when Options > AI
+ * is closed with Ok, Alt-G y cycles the dial or the provider switches.  What
+ * the last header said is remembered instead, and the next time the chat is
+ * armed or a turn starts, a header is written only if the values changed. */
+#define AI_HEADER_MAX 200
+static char g_ai_header_shown[AI_HEADER_MAX];   /* "" = no header shown yet     */
+static int  g_ai_hints_shown = 0;               /* the two hint lines were shown */
+
+/**
+ * ai_header_text_shown - Build the header line and remember it as shown.
+ * @buf: destination; @n: its size.
+ *
+ * Every place that writes the header into the pane builds it here, so the
+ * chat knows the backend, model and dial the user last read and does not
+ * repeat a header that is still true.
+ */
+static void ai_header_text_shown(char *buf, size_t n)
+{
+ ai_status_text(buf, n);
+ strncpy(g_ai_header_shown, buf, sizeof g_ai_header_shown - 1);
+ g_ai_header_shown[sizeof g_ai_header_shown - 1] = '\0';
+}
+
+/**
+ * ai_chat_header_due - Does the pane need a header with the current values?
+ *
+ * True before any header was shown, and whenever the backend, the model or
+ * the permission dial differ from the values the last header showed, so the
+ * user reads the setup that will serve the next turn, not an earlier one.
+ * Return: 1 when a header must be written.
+ */
+static int ai_chat_header_due(void)
+{
+ char now[AI_HEADER_MAX];
+ ai_status_text(now, sizeof now);
+ return strcmp(now, g_ai_header_shown) != 0;
+}
+
+/**
+ * ai_chat_emit_header_if_due - Write a header line when the setup changed.
+ * @wf: the pane window.
+ *
+ * The line goes above the input row like any transcript line; the lines
+ * before it are untouched and the view stays pinned where it was.
+ */
+static void ai_chat_emit_header_if_due(FENSTER *wf)
+{
+ char st[AI_HEADER_MAX];
+ if (!ai_chat_header_due())
+  return;
+ ai_header_text_shown(st, sizeof st);
+ ai_tr_line(wf, st);
+}
+
+/**
+ * ai_chat_emit_hints_once - Write the key-hint and slash-hint lines once.
+ * @wf: the pane window.
+ *
+ * Shown the first time the chat is armed in a session, whatever another
+ * action (an Edit, the first-use notice, "assistant is off") wrote to the
+ * pane before; a user who closes the pane and opens it again reads them
+ * again in the fresh pane.
+ */
+static void ai_chat_emit_hints_once(FENSTER *wf)
+{
+ if (g_ai_hints_shown)
+  return;
+ g_ai_hints_shown = 1;
+ ai_tr_line(wf, "[Enter=send  Ctrl-J=newline  arrows move  PgUp/PgDn scroll  Esc leaves]");
+ ai_tr_line(wf, "[Shortcuts: /explain  /fix  /test  /doc  /review]");
+}
+
+/**
+ * ai_chat_forget_header - The pane is gone: its header and hints with it.
+ *
+ * Called when the pane window closes, so the next pane opens with the
+ * header and the hints again instead of a bare transcript.
+ */
+static void ai_chat_forget_header(void)
+{
+ g_ai_header_shown[0] = '\0';
+ g_ai_hints_shown = 0;
 }
 
 static size_t ai_append_identity(char *sys, size_t cap, size_t len)
@@ -1628,7 +1768,6 @@ static void ai_chat_next_turn(ai_chat_session *s)
  wpe_ai_req req;
  char *sys, err[320];
  int nm = 0, np, i;
- FENSTER *wf;
 
  sys = ai_build_system(f);
  msgs[nm].role = "system"; msgs[nm].content = sys ? sys : ""; nm++;
@@ -1643,8 +1782,7 @@ static void ai_chat_next_turn(ai_chat_session *s)
  free(sys);
  if (!s->st) {
   ai_pane(f, err[0] ? err : "[AI error] could not start", 0);
-  s->active = 0;
-  ai_chat_finish(s);
+  ai_chat_turn_over(s);
   return;
  }
  s->fd = wpe_ai_stream_fd(s->st);
@@ -1655,12 +1793,7 @@ static void ai_chat_next_turn(ai_chat_session *s)
  s->shown = 0;
  s->flen = 0; if (s->full) s->full[0] = '\0';
  ai_chat_set_pending(s, AI_REPLY_PREFIX);     /* reply streams after "AI: " */
- wf = ai_pane_win(f);
- if (wf) {
-  ai_pane_commit(wf);
-  ai_pane_set_last(wf, AI_REPLY_PREFIX "(gathering the answer...)");
-  s->started = 1;
- }
+ ai_chat_wait_begin(s);                       /* the waiting line, spun by the heartbeat */
  wpe_fd_add(s->fd, POLLIN, ai_fd_cb, s);
  wpe_ai_trace("chat stream fd=%d turn=%d", s->fd, s->turns);
 }
@@ -1797,23 +1930,34 @@ static int ai_slash_expand(const char *text, char *out, size_t n)
  return 0;
 }
 
-static void e_ai_chat_send(FENSTER *f, const char *text)
+/**
+ * ai_chat_refresh_header - Precede the turn with a header if the setup changed.
+ * @f: the window the pane belongs to.
+ *
+ * Options > AI closed with Ok, Alt-G y, or a provider switch since the last
+ * header: the user reads the backend, model and dial this turn runs under,
+ * right above their question, and the transcript above stays as it was.
+ */
+static void ai_chat_refresh_header(FENSTER *f)
 {
- ai_chat_session *s;
- char line[AI_PROMPT_MAX + 8];
- char expanded[AI_PROMPT_MAX];
- const char *tosend = text;
+ FENSTER *wf = ai_pane_win(f);
+ if (wf)
+  ai_chat_emit_header_if_due(wf);
+}
 
+/**
+ * ai_chat_echo_question - Show the user's own line in the transcript.
+ * @f: the window the pane belongs to; @text: the question as typed.
+ *
+ * One transcript line per input line, so a multi-line prompt reads cleanly
+ * ("You: ..." then indented continuations) instead of showing an embedded
+ * newline as a control glyph.
+ */
+static void ai_chat_echo_question(FENSTER *f, const char *text)
+{
+ char line[AI_PROMPT_MAX + 8];
  const char *p = text;
  int first = 1;
-
- if (ai_slash_expand(text, expanded, sizeof expanded))
-  tosend = expanded;              /* echo what was typed; send the expansion */
- wpe_ai_trace("chat prompt=%s", tosend);
- if (g_ai_chat) { g_ai_chat->active = 0; ai_chat_finish(g_ai_chat); }
- /* Echo the prompt one transcript line per input line, so a multi-line prompt
-    reads cleanly ("You: ..." then indented continuations) instead of showing an
-    embedded newline as a control glyph. */
  while (first || *p) {
   const char *nl = strchr(p, '\n');
   int seg = nl ? (int)(nl - p) : (int)strlen(p);
@@ -1823,14 +1967,56 @@ static void e_ai_chat_send(FENSTER *f, const char *text)
   if (!nl) break;
   p = nl + 1;
  }
+}
+
+/**
+ * ai_chat_launch - Start one chat turn now: echo, record, stream.
+ * @f: the window the pane belongs to; @text: the question as typed.
+ *
+ * The one launch for a question sent while nothing runs and for a question
+ * that waited in the queue behind a running task: either way the user sees
+ * "You: ..." and the waiting line at the moment the turn actually starts.
+ * The turn is registered as the running task first, so from here Esc
+ * cancels it and a further question queues behind it.
+ */
+static void ai_chat_launch(FENSTER *f, const char *text)
+{
+ ai_chat_session *s;
+ char expanded[AI_PROMPT_MAX];
+ const char *tosend = text;
+
+ if (ai_slash_expand(text, expanded, sizeof expanded))
+  tosend = expanded;              /* echo what was typed; send the expansion */
+ wpe_ai_trace("chat prompt=%s", tosend);
+ ai_chat_refresh_header(f);
+ ai_chat_echo_question(f, text);
  wpe_ai_session_append("user", tosend);
  s = calloc(1, sizeof *s);
  if (!s) return;
  s->ref = f;
  g_ai_chat = s;
+ ai_chat_op_begin(s);
  /* Stream the reply; the model may take a few read-only tool turns first to
     investigate the workspace, all in the background (see ai_fd_cb). */
  ai_chat_next_turn(s);
+}
+
+/**
+ * e_ai_chat_send - Send the input row's text as a chat turn, or queue it.
+ * @f: the window the pane belongs to; @text: the question as typed.
+ *
+ * While a reply is still streaming, or an Edit, Complete, Multi-file or
+ * Agent task runs, the question is queued the way a second Edit is: the pane
+ * says so, the running turn is not cut, and the question starts by itself
+ * when the running one ends.
+ */
+static void e_ai_chat_send(FENSTER *f, const char *text)
+{
+ if (wpe_ai_busy()) {
+  ai_enqueue(f, ai_chat_launch, text);
+  return;
+ }
+ ai_chat_launch(f, text);
 }
 
 /* ----- input-row editing: a small line editor over g_ai_input ------------- */
@@ -1956,14 +2142,43 @@ static void e_ai_chat_arm(FENSTER *f)
  g_ai_input_pos = 0;
  g_ai_input_rows = 0;
  if (wf->b->mxlines == 0) e_new_line(0, wf->b);
- if (wf->b->mxlines <= 1) {                       /* one-time header on a fresh chat */
-  char st[200];
-  ai_status_text(st, sizeof st);
-  ai_tr_line(wf, st);
-  ai_tr_line(wf, "[Enter=send  Ctrl-J=newline  arrows move  PgUp/PgDn scroll  Esc leaves]");
-  ai_tr_line(wf, "[Shortcuts: /explain  /fix  /test  /doc  /review]");
- }
+ /* The header when the setup changed (or was never shown), the hints once per
+    pane: whatever another action wrote to the pane before this arm. */
+ ai_chat_emit_header_if_due(wf);
+ ai_chat_emit_hints_once(wf);
  ai_input_render(wf);                            /* creates the input region */
+}
+
+/**
+ * ai_chat_focus_pane - Bring the armed chat pane to the front.
+ * @f: the window the request came from.
+ *
+ * The user's next keystroke lands in the input row; nothing is appended to
+ * the transcript.
+ */
+static void ai_chat_focus_pane(FENSTER *f)
+{
+ int wi;
+ for (wi = 1; wi <= f->ed->mxedt; wi++)
+  if (f->ed->f[wi] == g_ai_chat_pane) { e_switch_window(f->ed->edt[wi], f); return; }
+}
+
+/**
+ * ai_chat_offer_input - Leave the pane ready to type in after a cancel.
+ * @f: the window the cancelled task belonged to.
+ *
+ * The user can continue right there (ask a follow-up, a new question)
+ * instead of facing a dead pane.  A chat that is already armed keeps its
+ * input row and its home window; arming it again would leave a second input
+ * row in the transcript and forget the file Esc returns to.
+ */
+static void ai_chat_offer_input(FENSTER *f)
+{
+ if (g_ai_chat_pane && g_ai_chat_focus) {
+  ai_chat_focus_pane(f);
+  return;
+ }
+ e_ai_chat_arm(f);
 }
 
 /* Handle one key while the AI chat pane is the FOCUSED window.  Returns 1 if the
@@ -2044,9 +2259,8 @@ static int e_ai_chat(FENSTER *f)
  char err[320], line[400];
 
  if (g_ai_chat_pane) {                            /* already open: just refocus it */
-  int wi;
-  for (wi = 1; wi <= f->ed->mxedt; wi++)
-   if (f->ed->f[wi] == g_ai_chat_pane) { e_switch_window(f->ed->edt[wi], f); return 0; }
+  ai_chat_focus_pane(f);
+  return 0;
  }
  err[0] = '\0';
  if (wpe_ai_preflight(e_ai_backend, err, sizeof err)) {
@@ -3628,6 +3842,7 @@ static void ai_ml_add_diagnostics(struct ai_mlist *m)
 #define AI_KIND_COMPLETE "complete"
 #define AI_KIND_AGENT    "agent"
 #define AI_KIND_PLAN     "plan"
+#define AI_KIND_CHAT     "chat"
 
 /* --- one background operation at a time.  A single-turn op (Edit) leaves
  * `process` NULL; a multi-turn op (Agent, Plan) supplies process()/finish() and
@@ -4009,16 +4224,143 @@ void wpe_ai_cancel(void)
  ai_async_op *op = g_ai_op;
  FENSTER *f;
  int alive;
+ const char *kind;
  ai_queue_clear();                    /* a cancel discards any queued follow-up */
  if (!op) return;
  f = op->f;
+ kind = op->kind ? op->kind : "task";
  alive = ai_window_alive(op->cn, f);
+ wpe_ai_trace("%s cancelled", kind);
  ai_op_detach(op);
  if (alive) ai_pane(f, "[AI] cancelled", 0);
  ai_op_free(op);
- /* Leave the pane ready to type in: arm the chat input so the user can continue
-    right there (ask a follow-up / a new question) instead of a dead pane. */
- if (alive) e_ai_chat_arm(f);
+ /* Leave the pane ready to type in, so the user can continue right there
+    (ask a follow-up / a new question) instead of facing a dead pane. */
+ if (alive) ai_chat_offer_input(f);
+}
+
+/* ---- the chat turn as a background task ------------------------------------
+ * A chat reply streams through its own painter (ai_delta_cb), but the turn is
+ * owned by the same machinery as Edit, Complete, Multi-file and Agent: while it
+ * runs the editor is "busy", so Esc cancels it with the shared line, a second
+ * question (or any other action) queues behind it, the heartbeat spins its
+ * waiting line, and closing the pane drops it.  The task carries no stream of
+ * its own: the session keeps the stream, and the task's payload is the
+ * session, so ending the task ends the session. */
+
+/**
+ * ai_chat_op_release - End the chat session when its task is dropped.
+ * @ud: the chat session the task carried.
+ *
+ * Runs from the task's free path on Esc and when the pane closes: the stream
+ * is closed, nothing more is painted, and the partial answer stays as far as
+ * it got.
+ */
+static void ai_chat_op_release(void *ud)
+{
+ ai_chat_session *s = ud;
+ if (!s) return;
+ s->op = NULL;
+ s->active = 0;
+ ai_chat_finish(s);
+}
+
+/**
+ * ai_chat_op_begin - Register the chat turn as the running background task.
+ * @s: the chat session that is about to stream.
+ *
+ * From here Esc cancels the turn, a second question is queued, and the
+ * heartbeat rewrites the waiting line.  The caret stays in the pane's input
+ * row (no background window), so the next question can be typed meanwhile.
+ */
+static void ai_chat_op_begin(ai_chat_session *s)
+{
+ ai_async_op *op = calloc(1, sizeof *op);
+ if (!op) return;                     /* the turn still streams, just not as a task */
+ op->f = s->ref;
+ op->cn = s->ref->ed;
+ op->kind = AI_KIND_CHAT;
+ op->fd = -1;
+ op->save_id = -1;
+ op->start = time(NULL);
+ op->spin.f = s->ref;
+ op->spin.label = AI_CHAT_WAIT_LABEL;
+ op->spin.i = 0;
+ op->ud = s;
+ op->free_ud = ai_chat_op_release;
+ s->op = op;
+ g_ai_op = op;
+ ai_hb_acquire(ai_op_tick);
+}
+
+/**
+ * ai_chat_op_end - Let go of the task when the chat turn ended on its own.
+ * @s: the chat session whose stream is complete (or failed).
+ *
+ * The session ends itself afterwards, so the task must not end it again:
+ * the payload is detached before the task is freed.
+ */
+static void ai_chat_op_end(ai_chat_session *s)
+{
+ ai_async_op *op = s->op;
+ s->op = NULL;
+ if (!op) return;
+ op->ud = NULL;
+ ai_op_detach(op);
+ ai_op_free(op);
+}
+
+/**
+ * ai_chat_turn_over - The chat turn is over: free everything, run the queue.
+ * @s: the chat session that finished, failed or could not start.
+ *
+ * The one end for every outcome but a cancel, so a question queued behind
+ * the turn starts by itself whichever way the turn ended.
+ */
+static void ai_chat_turn_over(ai_chat_session *s)
+{
+ s->active = 0;
+ ai_chat_op_end(s);
+ ai_chat_finish(s);
+ ai_queue_run();
+}
+
+/**
+ * ai_chat_wait_begin - Open the waiting line for a turn and start it spinning.
+ * @s: the chat session starting a turn (the first, or a tool turn).
+ *
+ * The line reads "AI: (gathering the answer...)" and the heartbeat appends
+ * the spinner glyph, the seconds and "(Esc cancels)" to it, so a slow model
+ * looks alive and the way out is named.  Without a task (allocation failed)
+ * the line is written once, as before.
+ */
+static void ai_chat_wait_begin(ai_chat_session *s)
+{
+ FENSTER *wf = ai_pane_win(s->ref);
+ if (!wf) return;
+ if (s->op) {
+  s->op->spin = ai_spin_begin(s->ref, AI_CHAT_WAIT_LABEL);
+  s->op->start = time(NULL);
+  s->op->paused = 0;
+ } else {
+  ai_pane_commit(wf);
+  ai_pane_set_last(wf, AI_CHAT_WAIT_LABEL);
+ }
+ s->started = 1;
+}
+
+/**
+ * ai_chat_wait_end - The stream line now holds content: stop the spinner.
+ * @s: the chat session whose painter decided what the reply is.
+ *
+ * From the first painted byte of an answer, or the dim tool status, the line
+ * belongs to the reply; a heartbeat tick must not write the waiting text over
+ * it.  The spinner starts again with the next turn's waiting line.
+ */
+static void ai_chat_wait_end(ai_chat_session *s)
+{
+ if (s->op)
+  s->op->paused = 1;
 }
 
 /* Share of the file's lines a reply must keep to be taken at face value as the
@@ -6798,7 +7140,7 @@ static int ai_agent_launch(FENSTER *f, const char *goal, const char *extra)
   return 0;
  }
 
- { char st[200]; ai_status_text(st, sizeof st); ai_pane(f, st, 0); }
+ { char st[AI_HEADER_MAX]; ai_header_text_shown(st, sizeof st); ai_pane(f, st, 0); }
  { char line[1100]; snprintf(line, sizeof line, "[agent] task: %s", goal); ai_pane(f, line, 1); }
  wpe_ai_trace("agent task=%s", goal);
 
@@ -8026,12 +8368,30 @@ static void ai_op_note_window_gone(ECNT *cn, FENSTER *closing, const char *kind)
  * file is gone.  The trace line ("edit target gone") is the same one the late
  * reply path prints, so a trace reader sees one event whichever side caught it.
  */
+/**
+ * ai_op_targets_window - Does the running task go away with this window?
+ * @op: the running task; @closing: the window e_close_window is about to free.
+ *
+ * An Edit, Complete, Agent or Plan belongs to the file window it was started
+ * from.  A chat turn belongs to the pane it streams into: Ctrl-W on the pane
+ * ends the stream, so no token can re-create an empty pane afterwards.
+ * Return: 1 when the task must be dropped with the window.
+ */
+static int ai_op_targets_window(const ai_async_op *op, const FENSTER *closing)
+{
+ if (op->f == closing)
+  return 1;
+ if (!op->kind || strcmp(op->kind, AI_KIND_CHAT))
+  return 0;
+ return closing->datnam && !strcmp(closing->datnam, AI_PANE_NAME);
+}
+
 static void ai_op_drop_for_window(FENSTER *closing)
 {
  ai_async_op *op = g_ai_op;
  ECNT *cn;
  const char *kind;
- if (!op || op->f != closing)
+ if (!op || !ai_op_targets_window(op, closing))
   return;
  cn = op->cn;
  kind = op->kind ? op->kind : "task";
@@ -8062,7 +8422,9 @@ static void ai_queue_drop_for_window(FENSTER *closing)
  *
  * The chat finds the pane and the workspace through its anchor window on every
  * delta; once that window is gone the stream is closed and the partial answer
- * stays in the pane as far as it got.
+ * stays in the pane as far as it got.  A turn that runs as a task is dropped
+ * with the task (ai_op_drop_for_window); this catches a session that got no
+ * task, so no stream ever outlives its window.
  */
 static void ai_chat_drop_for_window(FENSTER *closing)
 {
@@ -8089,6 +8451,7 @@ static void ai_chat_input_drop_for_window(FENSTER *closing)
  g_ai_chat_focus = 0;
  g_ai_chat_pane = NULL;
  g_ai_input_rows = 0;
+ ai_chat_forget_header();            /* the next pane shows the header and hints again */
 }
 
 #ifdef WPE_AI_AGENT_HOST

@@ -101,7 +101,10 @@ the model works):
   **`Ctrl-U`** undoes.
 
 **While a request is out**, the menus, the cursor keys and your other windows
-work as usual, and `Esc` cancels. Esc leaves the pane armed: the pane says
+work as usual, and `Esc` cancels. This holds for a chat reply as it does for
+an Edit or an agent run: the waiting line `AI: (gathering the answer...)`
+carries the same spinner, seconds count and `(Esc cancels)`, and Esc while the
+reply streams cancels that turn. Esc leaves the pane armed: the pane says
 `[AI] cancelled`, its input line is ready for a follow-up, and a second Esc
 returns to the file window. The text of the window that is waiting is
 locked, and its status row says so: the reply is written back over the lines
@@ -156,7 +159,12 @@ is what some tools call a "workspace edit"; it is *not* an agent plan mode.)
 The pane keeps its `> ` prompt docked at the bottom while you type. To read back a
 long conversation, **PgUp/PgDn** page through the transcript and the **arrow keys**
 scroll it a line at a time; typing any character returns the view to the prompt so
-the next key lands in the input.
+the next key lands in the input. The pane's first lines are a header,
+`[AI: <backend> | model: <model> | policy: <dial>]`, and two hint lines; when
+the backend, the model or the permission dial change while the chat is open, a
+new header line with the current values precedes the next turn. A question
+sent while a reply is still streaming is queued, the pane says so, and it
+starts when the running turn ends.
 
 When a [language server](LSP.md) is running, the errors and warnings it reports
 for the current file (the ones you see underlined) are folded into the prompt for

@@ -233,6 +233,26 @@ Changes
 
 1.7.0 (AI assistant -- experimental, opt-in)
 
+* A chat turn is busy like any other assistant action.  Esc while a chat
+  reply was streaming closed the input row and the reply kept painting into
+  the pane behind it; a second question typed meanwhile ended the running
+  turn without a word and its partial reply stayed.  A chat turn now runs as
+  the background task the Edit, Complete, Multi-file and Agent modes share:
+  Esc cancels it with the "[AI] cancelled" line and the input row is ready
+  again; a second question (or another action) is queued, the pane says so,
+  and it starts when the running turn ends; the waiting line "AI: (gathering
+  the answer...)" carries the shared spinner, the seconds and "(Esc
+  cancels)"; and Ctrl-W on the pane ends the stream, so no late token
+  re-creates an empty pane.  The pane header "[AI: <backend> | model: <m> |
+  policy: <p>]" and the two hint lines now appear the first time the chat is
+  opened even when an Edit, the first-use notice or the "assistant is off"
+  line had already written to the pane, and a new header precedes the next
+  turn when the backend, the model or the permission dial changed since the
+  last one (Options > AI Ok, Alt-G y, a provider switch).  A peer that closes
+  with no bytes or answers non-HTTP now replaces the waiting line with
+  "[AI: transport error]" instead of leaving it standing.  Tests:
+  tests/test_ai_chat_turn_contracts.py.
+
 * A server's error message is shown again when it arrives inside the stream.
   Some servers answer HTTP 200 and then send one error event in the stream
   ("Internal server error", as a failing Proton Lumo bridge does) and close
