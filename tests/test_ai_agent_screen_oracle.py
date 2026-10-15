@@ -252,7 +252,13 @@ def test_invariant_holds_under_ask_with_boxes_reload_denial_and_flash(tmp_path):
     text = "\n".join(rows)
     assert "AGENTEDIT" in text, "the written t.c was not reloaded into its window:\n" + text
     assert "[agent] wrote t.c - Ctrl-U to undo (buffer only)" in after_write, after_write
-    assert "[agent] denied: run_command touch" in text, text
+    # The pane is only 8 rows here and the run has several more turns after
+    # the denial, so by the end the denied-command line has scrolled out of
+    # the visible rows; the denial on screen at the moment it happens is
+    # tests/test_ai_agent_run_visibility.py's job. The trace is written at
+    # the same call as the pane line (ai_agent_deny in we_ai_ui.c) and does
+    # not scroll, so it is what this run-end check can still read.
+    assert "agent deny run_command touch" in _trace(tmp_path), _trace(tmp_path)
     assert (tmp_path / "new.txt").read_text() == "fresh\n"
     assert not found, "%d screen-invariant violations, first: %s" % (len(found), found[0][0])
     assert editor_state.get("baseline") is not None, \
