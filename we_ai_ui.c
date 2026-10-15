@@ -74,6 +74,11 @@ typedef struct {
                                   hidden: show its dim status, not the raw line   */
  int            fell_back;     /* this chat already retried with the fallback model */
  size_t         shown;         /* bytes of `full` already painted (decided==1)   */
+ int            web_declined;  /* the user answered the web notice with "not now":
+                                  this question does not ask again              */
+ char          *sources;       /* the URLs this question's web tools read, for
+                                  the "sources:" line that ends the answer     */
+ size_t         srclen, srccap;
 } ai_chat_session;
 
 #define AI_CHAT_MAX_TOOL_TURNS 6   /* cap chat's read-only investigation loop */
@@ -434,7 +439,13 @@ static void ai_chat_set_pending(ai_chat_session *s, const char *seed)
 static char *ai_run_capture(const char *cmd);
 static char *ai_read_file_bounded(const char *path);
 static void  ai_chat_next_turn(ai_chat_session *s);
-static char *ai_chat_tool_result(FENSTER *f, const char *reply);
+static char *ai_chat_tool_result(ai_chat_session *s, const char *reply);
+/* The chat's web tools and its refusals live with the agent's web tools,
+   which they call; the sources line ends an answer that used them. */
+static char *ai_chat_run_web_tool(ai_chat_session *s, const char *tool, const char *arg);
+static char *ai_chat_refuse_tool(FENSTER *f, const char *tool, const char *lead,
+                                 const char *why);
+static void ai_chat_show_sources(ai_chat_session *s);
 static FENSTER *ai_pane_win(FENSTER *f);
 static void  ai_tr_line(FENSTER *wf, const char *str, int role);
 static void  ai_pane_paint(FENSTER *wf);
@@ -929,6 +940,7 @@ static void ai_chat_finish(ai_chat_session *s)
  wpe_ai_stream_free(s->st);
  free(s->pending);
  free(s->full);
+ free(s->sources);
  if (g_ai_chat == s) g_ai_chat = NULL;
  free(s);
  wpe_ai_trace("chat finish end");
@@ -2260,7 +2272,7 @@ static int ai_chat_take_tool_turn(ai_chat_session *s)
 {
  char *tr = NULL;
  if (s->turns < AI_CHAT_MAX_TOOL_TURNS)
-  tr = ai_chat_tool_result(s->ref, s->full);
+  tr = ai_chat_tool_result(s, s->full);
  wpe_ai_session_append("assistant", s->full);
  if (!tr)
   return 0;
@@ -2368,6 +2380,7 @@ static void ai_chat_reply_done(ai_chat_session *s)
   return;
  if (!has_text && ai_chat_end_empty_reply(s))
   return;
+ ai_chat_show_sources(s);
  wpe_ai_session_save(s->ref);
  wpe_ai_trace("chat done");
  ai_chat_turn_over(s);
@@ -2430,6 +2443,10 @@ static void ai_status_text(char *buf, size_t n)
  const char *be = wpe_ai_backend_name(e_ai_backend);
  const char *pol = wpe_ai_policy_name(e_ai_policy);
  const char *model = (e_ai_model && *e_ai_model) ? e_ai_model : "(default)";
+ if (wpe_ai_web_state() == WPE_AI_WEB_ON) {
+  snprintf(buf, n, "[AI: %s | model: %s | policy: %s | web]", be, model, pol);
+  return;
+ }
  snprintf(buf, n, "[AI: %s | model: %s | policy: %s]", be, model, pol);
 }
 
@@ -2863,6 +2880,69 @@ static size_t ai_append_selection(char *sys, size_t cap, size_t len, FENSTER *ct
  return len;
 }
 
+/* The chat's tool list, as the model reads it: the workspace tools always,
+   the two web tools only while web access is on, so the model is never
+   offered a tool the chat would refuse. */
+#define AI_CHAT_TOOLS_OPEN \
+   "You are an AI assistant embedded in the xwpe console editor. Answer " \
+   "concisely in plain text.\n" \
+   "You may INVESTIGATE the workspace before answering.  To read a file or " \
+   "search, reply with EXACTLY ONE line and nothing else:\n" \
+   "  TOOL read_file <path>\n" \
+   "  TOOL grep <pattern>\n" \
+   "  TOOL list_dir <path>\n" \
+   "  TOOL glob <name-pattern>   (e.g. *.c -- find files by name across the tree)\n"
+#define AI_CHAT_TOOLS_WEB \
+   "  TOOL web_search <query>\n" \
+   "  TOOL web_fetch <url>\n" \
+   "Use the workspace first; use the web for what changed after you were " \
+   "trained, and name the pages you used.\n"
+#define AI_CHAT_TOOLS_CLOSE \
+   "I will reply with the result; then either use another tool or give your " \
+   "answer.  When you can answer, reply with the answer directly (no TOOL " \
+   "line).  Do not guess about files you have not read.\n\n"
+/* The Agent's line of the capability manifest, by the web switch: with the
+   web off it says whose the web tools are, so a model does not ask the chat
+   for them (which is what left a turn dead in silence). */
+#define AI_CAPS_AGENT_WEB_OFF \
+   "Autonomous Agent (the read tools above PLUS web_search and web_fetch -- " \
+   "the Agent's tools, not the chat's: the chat has no web tool while web " \
+   "access is off in Options > AI -- plus run_command and write_file, gated " \
+   "by the permission dial ask/edits/auto): Alt-G g."
+#define AI_CAPS_AGENT_WEB_ON \
+   "Autonomous Agent (the read tools above PLUS web_search and web_fetch, " \
+   "which the chat has too, run_command and write_file, gated by the " \
+   "permission dial ask/edits/auto): Alt-G g."
+
+/**
+ * ai_append_tool_list - Open the system prompt with the tools the chat runs.
+ * @sys: the prompt; @cap: its size; @len: bytes written so far.
+ *
+ * The model is offered exactly what the chat will run, so a turn never
+ * asks for a web tool the switch would refuse.  Return: the new length.
+ */
+static size_t ai_append_tool_list(char *sys, size_t cap, size_t len)
+{
+ len += (size_t)snprintf(sys + len, cap - len, "%s", AI_CHAT_TOOLS_OPEN);
+ if (wpe_ai_web_state() == WPE_AI_WEB_ON)
+  len += (size_t)snprintf(sys + len, cap - len, "%s", AI_CHAT_TOOLS_WEB);
+ len += (size_t)snprintf(sys + len, cap - len, "%s", AI_CHAT_TOOLS_CLOSE);
+ return len;
+}
+
+/**
+ * ai_agent_capability_sentence - The manifest's Agent sentence for this session.
+ *
+ * Names the web tools as the Agent's while the web is off, so the model
+ * points the user to Alt-G g or Options > AI instead of asking the chat.
+ * Return: the sentence to place in the capability manifest.
+ */
+static const char *ai_agent_capability_sentence(void)
+{
+ if (wpe_ai_web_state() == WPE_AI_WEB_ON) return AI_CAPS_AGENT_WEB_ON;
+ return AI_CAPS_AGENT_WEB_OFF;
+}
+
 /**
  * ai_build_system - The chat's system prompt.
  * @f: the window the pane belongs to (project memory, identity).
@@ -2881,31 +2961,18 @@ static char *ai_build_system(FENSTER *f, FENSTER *ctx)
  int nsc, i;
  size_t cap = AI_CHAT_SYSTEM_BASE + ai_project_block_room(), len = 0;
  char *sys = malloc(cap);
- const char *head =
-   "You are an AI assistant embedded in the xwpe console editor. Answer "
-   "concisely in plain text.\n"
-   "You may INVESTIGATE the workspace before answering.  To read a file or "
-   "search, reply with EXACTLY ONE line and nothing else:\n"
-   "  TOOL read_file <path>\n"
-   "  TOOL grep <pattern>\n"
-   "  TOOL list_dir <path>\n"
-   "  TOOL glob <name-pattern>   (e.g. *.c -- find files by name across the tree)\n"
-   "I will reply with the result; then either use another tool or give your "
-   "answer.  When you can answer, reply with the answer directly (no TOOL "
-   "line).  Do not guess about files you have not read.\n\n";
  /* Capability manifest: tell the model what the xwpe AI integration ALREADY
     does, so it neither re-proposes built features as new ideas nor prints code
     for the user to retype -- it should point them to the shortcut that does the
     job.  Grounds every meta-question ("how could we improve this?") in reality. */
- const char *caps =
+ const char *caps_open =
    "XWPE AI CAPABILITIES that already exist -- do NOT propose these as new; when "
    "the user would benefit, point them to the shortcut:\n"
    "- Edit the current file or selection: Alt-G e (applies your instruction; the "
    "change previews as a diff and Ctrl-U reverts it as one undo step).\n"
-   "- Multi-file edit: Alt-G f.  Autonomous Agent (the read tools above PLUS "
-   "web_search and web_fetch to use the web, run_command and write_file, gated "
-   "by the permission dial ask/edits/auto): Alt-G g.  Build & fix until the "
-   "compile passes: Alt-G b.\n"
+   "- Multi-file edit: Alt-G f.  ";
+ const char *caps_rest =
+   "  Build & fix until the compile passes: Alt-G b.\n"
    "- Replies stream token by token; Esc cancels a run mid-generation.\n"
    "- Proposed edits are reviewed as a diff changeset (Alt-T / Alt-V) and are "
    "revertible; a checkpoint is taken before a non-interactive run.\n"
@@ -2917,8 +2984,10 @@ static char *ai_build_system(FENSTER *f, FENSTER *ctx)
    "So when the user asks to CHANGE code, tell them to use Edit (Alt-G e) or the "
    "Agent (Alt-G g) rather than printing code for them to retype.\n\n";
  if (!sys) { free(ctx_text); return NULL; }
- len += (size_t)snprintf(sys + len, cap - len, "%s", head);
- len += (size_t)snprintf(sys + len, cap - len, "%s", caps);
+ len = ai_append_tool_list(sys, cap, len);
+ len += (size_t)snprintf(sys + len, cap - len, "%s", caps_open);
+ len += (size_t)snprintf(sys + len, cap - len, "%s", ai_agent_capability_sentence());
+ len += (size_t)snprintf(sys + len, cap - len, "%s", caps_rest);
  len = ai_append_project_memory(sys, cap, len, f);
  len = ai_append_identity(sys, cap, len);
  len = ai_append_open_files(sys, cap, len, focused);
@@ -3008,6 +3077,9 @@ static void ai_split_tool(char *action, char **tool, char **arg)
 #define AI_TOOL_STEP_DONE   "step_done"
 /* What the model reads when the user refused a tool, whichever tool it was. */
 #define AI_TOOL_DENIED_RESULT "(denied by user)"
+/* How the model reads a tool that could not do what it asked. */
+#define AI_TOOL_ERROR_HEAD "TOOL ERROR: "
+#define AI_TOOL_ERROR_HEAD_LEN (sizeof AI_TOOL_ERROR_HEAD - 1)
 /* What the model reads for a tool name it made up. */
 #define AI_TOOL_UNKNOWN_RESULT "(unknown tool)"
 /* The line that closes a tool body (a write, a patch, a plan), and the same
@@ -3105,15 +3177,39 @@ static char *ai_tool_run_readonly(const char *tool, const char *arg)
  return ai_run_capture(cmd);
 }
 
-/* If the reply contains a read-only tool call, run it and return the result
- * (malloc'd, to be fed back as the next turn's input); else return NULL so the
- * reply is treated as the final answer.  Chat only ever runs read-only tools.
- * The tool line is found past any reasoning preamble (ai_scan_tool_line). */
-static char *ai_chat_tool_result(FENSTER *f, const char *reply)
+/* The lead of the result a refused tool line gets, and the pane's reason. */
+#define AI_CHAT_REFUSED_UNKNOWN "that tool is not available in the chat"
+#define AI_CHAT_REFUSED_WHY_UNKNOWN "no such tool"
+
+/**
+ * ai_tool_is_web - Is this tool one of the two web tools?
+ * @tool: the name after "TOOL ".
+ * Return: 1 for web_search and web_fetch, 0 for anything else.
+ */
+static int ai_tool_is_web(const char *tool)
+{
+ if (!strcmp(tool, AI_TOOL_WEB_SEARCH)) return 1;
+ if (!strcmp(tool, AI_TOOL_WEB_FETCH)) return 1;
+ return 0;
+}
+
+/**
+ * ai_chat_tool_result - Run the tool a chat reply asks for, or refuse it aloud.
+ * @s: the chat; @reply: the model's whole reply.
+ *
+ * The workspace tools run read-only; a web tool goes through the web switch
+ * (and its first-use notice) and then the permission dial; a tool the chat
+ * cannot run -- a web tool while the web is off, a name the model invented
+ * -- is answered with a result naming the tools it may use, so the turn
+ * goes on to an answer instead of dying in silence.  The tool line is found
+ * past any reasoning preamble (ai_scan_tool_line).
+ * Return: the malloc'd result the model reads next, NULL when the reply has
+ * no tool line and is the answer.
+ */
+static char *ai_chat_tool_result(ai_chat_session *s, const char *reply)
 {
  char action[AI_TOOL_LINE_MAX], *tool, *arg;
  const char *line, *nl;
- (void)f;
  line = ai_scan_tool_line(reply);
  if (!line) return NULL;
  nl = strchr(line, '\n');
@@ -3127,7 +3223,10 @@ static char *ai_chat_tool_result(FENSTER *f, const char *reply)
   return ai_read_file_bounded(arg);
  if (ai_tool_is_shell_readonly(tool))
   return ai_tool_run_readonly(tool, arg);
- return NULL;   /* unknown/non-read-only: treat the line as a normal answer */
+ if (ai_tool_is_web(tool))
+  return ai_chat_run_web_tool(s, tool, arg);
+ return ai_chat_refuse_tool(s->ref, tool, AI_CHAT_REFUSED_UNKNOWN,
+                            AI_CHAT_REFUSED_WHY_UNKNOWN);
 }
 
 /* Start (or continue) a chat turn: rebuild the request from the workspace
@@ -7776,6 +7875,13 @@ int e_ai_options(FENSTER *f)
     whatever the saved bit says), so it never contradicts what Alt-G does; Ok
     writes the saved bit from the box. */
  e_add_sswstr(3, 2, 0, AltE, wpe_ai_enabled() ? 1 : 0, "Enable AI assistant", o);
+ /* The web switch sits beside the assistant's own, on the row a user reads
+    first: it decides whether anything leaves this machine, which is not a
+    setting to hide behind the Advanced button.  Ticked = the saved AIWeb is
+    on; see the Ok read below for why clearing an unanswered box leaves it
+    unanswered. */
+ e_add_sswstr(36, 2, 0, AltW,
+              wpe_ai_web_state() == WPE_AI_WEB_ON ? 1 : 0, "Web access", o);
 
  /* --- Backend (left) + Permission (right), side by side.  Every radio needs a
         UNIQUE non-zero sw (sw==0 means "no field", unreachable).  Add order sets
@@ -7836,6 +7942,14 @@ int e_ai_options(FENSTER *f)
  /* Ok read: apply EVERY field, then save once.  (A Model pick happens in place:
     the Model button floats the picker over the dialog and never returns here.) */
  f->ed->edopt = (f->ed->edopt & ~ED_AI_ENABLE) | (o->sstr[0]->num ? ED_AI_ENABLE : 0);
+ /* Ticking the box turns the web on and answers the switch for good.  Clearing
+    it turns the web off only when it was on: a user who opens the dialog and
+    presses Ok without touching an unanswered box has not refused the web, so
+    the first-use notice still gets its one chance to ask. */
+ if (o->sstr[1]->num)
+  e_ai_web = WPE_AI_WEB_ON;
+ else if (wpe_ai_web_state() == WPE_AI_WEB_ON)
+  e_ai_web = WPE_AI_WEB_OFF;
  e_ai_policy  = (o->pstr[1]->num >= 0 && o->pstr[1]->num < 3) ? o->pstr[1]->num : 0;
  new_be = bk[(o->pstr[0]->num >= 0 && o->pstr[0]->num < 4) ? o->pstr[0]->num : 0];
  if (ai_opt_commit_connection_fields(o))
@@ -9217,8 +9331,6 @@ static void ai_search_url_build(const char *tmpl, const char *q, char *out, size
 
 /* The most of a page the web tools read before reducing it to text. */
 #define AI_WEB_FETCH_MAX 65536
-/* How the model reads a tool that could not do what it asked. */
-#define AI_TOOL_ERROR_HEAD "TOOL ERROR: "
 /* Room a fetch's error line adds to the fetcher's reason for the head. */
 #define AI_FETCH_ERROR_ROOM 20
 /* Room for the fetcher's reason, and for the encoded query and the URL
@@ -9300,6 +9412,11 @@ static const char *ai_search_url_template(void)
  return AI_SEARCH_URL_DEFAULT;
 }
 
+/* The web switch's side of the two web tools, defined with the chat's below. */
+static int ai_web_is_off(void);
+static char *ai_agent_refuse_web(FENSTER *f, const char *tool, const char *arg);
+static void ai_agent_note_search_engine(FENSTER *f, const char *surl);
+
 /**
  * ai_agent_tool_web_fetch - Read a web page for the model.
  * @f: the window the pane belongs to; @arg: the URL.
@@ -9312,9 +9429,24 @@ static const char *ai_search_url_template(void)
  */
 static char *ai_agent_tool_web_fetch(FENSTER *f, const char *arg)
 {
+ if (ai_web_is_off()) return ai_agent_refuse_web(f, AI_TOOL_WEB_FETCH, arg);
  if (!ai_agent_approve(f, arg, 1)) return ai_agent_deny(f, AI_TOOL_WEB_FETCH, arg);
  ai_agent_show_running(f, AI_TOOL_WEB_FETCH);
  return ai_agent_fetch_as_text(arg, "fetch failed");
+}
+
+/**
+ * ai_search_url_for_query - The URL a search for @arg goes to.
+ * @arg: the query as the model wrote it; @out: the URL; @n: its room.
+ *
+ * One place encodes the query into the configured template, so the agent's
+ * search and the chat's sources line name the same address.
+ */
+static void ai_search_url_for_query(const char *arg, char *out, size_t n)
+{
+ char enc[AI_URL_QUERY_MAX];
+ ai_url_encode(arg, enc, sizeof enc);
+ ai_search_url_build(ai_search_url_template(), enc, out, n);
 }
 
 /**
@@ -9328,12 +9460,304 @@ static char *ai_agent_tool_web_fetch(FENSTER *f, const char *arg)
  */
 static char *ai_agent_tool_web_search(FENSTER *f, const char *arg)
 {
- char enc[AI_URL_QUERY_MAX], surl[AI_URL_MAX];
+ char surl[AI_URL_MAX];
+ if (ai_web_is_off()) return ai_agent_refuse_web(f, AI_TOOL_WEB_SEARCH, arg);
  if (!ai_agent_approve(f, arg, 1)) return ai_agent_deny(f, AI_TOOL_WEB_SEARCH, arg);
+ ai_search_url_for_query(arg, surl, sizeof surl);
+ ai_agent_note_search_engine(f, surl);
  ai_agent_show_running(f, AI_TOOL_WEB_SEARCH);
- ai_url_encode(arg, enc, sizeof enc);
- ai_search_url_build(ai_search_url_template(), enc, surl, sizeof surl);
  return ai_agent_fetch_as_text(surl, "search failed");
+}
+
+/* ----- the chat's web tools, behind the web switch ------------------------
+ * The chat runs the agent's two web functions as they are: the dial, the
+ * approval line, the running line and the denial are the agent's.  What is
+ * the chat's own is the switch's first-use notice, the refusal of a tool it
+ * cannot run, and the sources line that ends an answer built from the web. */
+
+/* The tools the chat offers the model, as the refusal names them. */
+#define AI_CHAT_TOOLS_WORKSPACE "read_file, grep, list_dir, glob"
+#define AI_CHAT_TOOLS_WITH_WEB  AI_CHAT_TOOLS_WORKSPACE ", web_search, web_fetch"
+/* The lead of a refused web tool's result, and the pane's reasons. */
+#define AI_CHAT_REFUSED_WEB_OFF     "web access is off"
+#define AI_CHAT_REFUSED_WEB_NOT_NOW "web access not enabled"
+#define AI_CHAT_WHY_WEB_OFF     "web access is off (Options > AI turns it on)"
+#define AI_CHAT_WHY_WEB_NOT_NOW "web access not enabled"
+/* Room for a refusal's result and its pane line. */
+#define AI_CHAT_REFUSAL_MAX 320
+/* The line that ends an answer which read the web, and the glue between URLs. */
+#define AI_SOURCES_HEAD "    sources: "
+#define AI_SOURCES_SEP  ", "
+/* First size of the sources buffer; it doubles when it fills. */
+#define AI_SOURCES_FIRST 256
+/* The notice's line that names the engine, with room for its host. */
+#define AI_URL_HOST_MAX 200
+/* The notice's attention line, and the pane line for "not now". */
+#define AI_WEB_NOTICE_KEYS "Enter / y = enable web access      n / Esc = not now"
+#define AI_WEB_NOT_NOW_LINE \
+  "[AI] web access not enabled - the question is answered without it"
+
+/* What the chat decided about reaching the web for this tool line. */
+enum ai_web_answer { AI_WEB_ALLOWED = 0, AI_WEB_OFF, AI_WEB_NOT_NOW };
+
+/**
+ * ai_url_host - The host part of a URL, for a line that names where a request goes.
+ * @url: the address; @out: the host (with its port, if any); @n: its room.
+ *
+ * The user reads "lite.duckduckgo.com", not a 200-byte query URL.
+ */
+static void ai_url_host(const char *url, char *out, size_t n)
+{
+ const char *p = strstr(url, "://");
+ size_t l;
+ if (p) p += 3; else p = url;
+ l = strcspn(p, "/?#");
+ if (l >= n) l = n - 1;
+ memcpy(out, p, l);
+ out[l] = '\0';
+}
+
+/**
+ * ai_agent_note_search_engine - Name the engine a search goes to, before it goes.
+ * @f: the window the pane belongs to; @surl: the query URL.
+ *
+ * The approval line shows the query; this line shows where it is sent, so
+ * the transcript names both halves of what left the machine.
+ */
+static void ai_agent_note_search_engine(FENSTER *f, const char *surl)
+{
+ char host[AI_URL_HOST_MAX], line[AI_AGENT_PANE_LINE_MAX];
+ ai_url_host(surl, host, sizeof host);
+ snprintf(line, sizeof line, "[agent] search engine: %s", host);
+ ai_pane(f, line, AI_ROLE_MACHINERY, 0);
+}
+
+/**
+ * ai_web_is_off - Has the user switched the web off (saved or for this session)?
+ *
+ * Unanswered is not off: the agent runs its web tools under the dial as it
+ * always did, and the chat asks its notice.
+ * Return: 1 when AIWeb is off.
+ */
+static int ai_web_is_off(void)
+{
+ return wpe_ai_web_state() == WPE_AI_WEB_OFF;
+}
+
+/**
+ * ai_agent_refuse_web - Refuse a web tool while the switch is off: model, pane, trace.
+ * @f: the window the pane belongs to; @tool: the web tool; @arg: its argument.
+ *
+ * The pane names the switch, so a user who turned the web off in Options > AI
+ * reads why the agent could not search, and the model reads an error it can
+ * act on instead of a page.
+ * Return: the malloc'd result the model reads.
+ */
+static char *ai_agent_refuse_web(FENSTER *f, const char *tool, const char *arg)
+{
+ char line[AI_AGENT_ARG_LINE_MAX];
+ snprintf(line, sizeof line, "[agent] %s refused: %s: %s", tool, AI_CHAT_WHY_WEB_OFF, arg);
+ ai_pane(f, line, AI_ROLE_MACHINERY, 0);
+ wpe_ai_trace("agent web off %s %s", tool, arg);
+ return ai_tool_error_alloc(AI_CHAT_WHY_WEB_OFF);
+}
+
+/**
+ * ai_chat_tools_offered - The tools the chat may run, as the model is told them.
+ * Return: the four workspace tools, plus the two web tools while the web is on.
+ */
+static const char *ai_chat_tools_offered(void)
+{
+ if (wpe_ai_web_state() == WPE_AI_WEB_ON) return AI_CHAT_TOOLS_WITH_WEB;
+ return AI_CHAT_TOOLS_WORKSPACE;
+}
+
+/**
+ * ai_chat_refuse_tool - Answer a tool line the chat cannot run: model, pane, trace.
+ * @f: the window the pane belongs to; @tool: the tool the model named;
+ * @lead: the result's first words; @why: the pane's reason.
+ *
+ * The painter has already shown the tool line as a dim status, so this is
+ * the line the user reads: which tool was not run and why.  The model reads
+ * the tools it may use instead, so the turn goes on to an answer.
+ * Return: the malloc'd result the model reads.
+ */
+static char *ai_chat_refuse_tool(FENSTER *f, const char *tool, const char *lead,
+                                 const char *why)
+{
+ char result[AI_CHAT_REFUSAL_MAX], line[AI_CHAT_REFUSAL_MAX];
+ snprintf(result, sizeof result, "(%s: you may use %s; answer from what you have)",
+          lead, ai_chat_tools_offered());
+ snprintf(line, sizeof line, "[AI] %s was not run: %s; answering from what the chat has.",
+          tool, why);
+ ai_pane(f, line, AI_ROLE_MACHINERY, 0);
+ wpe_ai_trace("chat tool refused %s: %s", tool, result);
+ return strdup(result);
+}
+
+/**
+ * ai_web_notice - Ask once, at first need, whether the chat may reach the web.
+ * @f: the window the pane belongs to.
+ *
+ * Shaped like the assistant's own first-use notice: plain lines saying what
+ * leaves the machine (the query, to the engine set in Options > AI) and that
+ * the model stays where it is, one attention line, a blocking read.  y or
+ * Enter saves AIWeb : on at once, so a crash later cannot lose the answer;
+ * n or Esc leaves the switch unanswered, so the question comes back at the
+ * next need, and the permanent off lives in Options > AI, which the notice
+ * names.  Any other key leaves the notice up.
+ * Return: 1 when the web is now on, 0 for not now.
+ */
+static int ai_web_notice(FENSTER *f)
+{
+ char host[AI_URL_HOST_MAX], line[AI_CHAT_NOTE_MAX];
+ ai_url_host(ai_search_url_template(), host, sizeof host);
+ ai_pane(f, "Web access -- first use.  To answer this the assistant wants to search the",
+         AI_ROLE_MACHINERY, 1);
+ snprintf(line, sizeof line,
+          "web.  Your query is sent to the search engine set in Options > AI (now %s)", host);
+ ai_pane(f, line, AI_ROLE_MACHINERY, 1);
+ ai_pane(f, "and the pages it picks are fetched from there; nothing else leaves this",
+         AI_ROLE_MACHINERY, 1);
+ ai_pane(f, "machine, and the model stays where it is -- local stays local.  Every search",
+         AI_ROLE_MACHINERY, 1);
+ ai_pane(f, "and every page is shown here, and Options > AI turns this off again.",
+         AI_ROLE_MACHINERY, 1);
+ ai_pane_attn(f, AI_WEB_NOTICE_KEYS);
+ for (;;) {
+  int c = e_getch();
+  if (c == WPE_ESC || e_toupper(c) == 'N') {
+   ai_pane(f, AI_WEB_NOT_NOW_LINE, AI_ROLE_MACHINERY, 0);
+   wpe_ai_trace("chat web access not enabled");
+   return 0;
+  }
+  if (e_toupper(c) == 'Y' || c == WPE_CR || c == WPE_WR) {
+   e_ai_web = WPE_AI_WEB_ON;
+   ai_persist_settings(f);
+   wpe_ai_trace("chat web access enabled");
+   return 1;
+  }
+ }
+}
+
+/**
+ * ai_chat_web_answer - May this turn reach the web?
+ * @s: the chat asking.
+ *
+ * On: yes.  Off: no.  Unanswered: the notice decides, and it is shown at
+ * most once per question -- a model that keeps asking after a "not now"
+ * reads the refusal again, it does not put the notice back on the screen.
+ * Return: AI_WEB_ALLOWED, AI_WEB_OFF or AI_WEB_NOT_NOW.
+ */
+static enum ai_web_answer ai_chat_web_answer(ai_chat_session *s)
+{
+ int state = wpe_ai_web_state();
+ if (state == WPE_AI_WEB_ON) return AI_WEB_ALLOWED;
+ if (state == WPE_AI_WEB_OFF) return AI_WEB_OFF;
+ if (s->web_declined) return AI_WEB_NOT_NOW;   /* asked once per question */
+ if (ai_web_notice(s->ref)) return AI_WEB_ALLOWED;
+ s->web_declined = 1;
+ return AI_WEB_NOT_NOW;
+}
+
+/**
+ * ai_chat_web_result_read - Did a web tool read what it was asked for?
+ * @result: what the tool returned.
+ *
+ * A denial and a TOOL ERROR read nothing, so they name no source.
+ * Return: 1 when the result is a page or search results.
+ */
+static int ai_chat_web_result_read(const char *result)
+{
+ if (!result) return 0;
+ if (!strcmp(result, AI_TOOL_DENIED_RESULT)) return 0;
+ if (!strncmp(result, AI_TOOL_ERROR_HEAD, AI_TOOL_ERROR_HEAD_LEN)) return 0;
+ return 1;
+}
+
+/**
+ * ai_chat_sources_append - Add a URL to this question's sources.
+ * @s: the chat; @url: the address a web tool read.
+ */
+static void ai_chat_sources_append(ai_chat_session *s, const char *url)
+{
+ size_t ul = strlen(url), need = s->srclen + ul + sizeof AI_SOURCES_SEP;
+ if (!ai_chat_buf_reserve(&s->sources, &s->srccap, need, AI_SOURCES_FIRST))
+  return;
+ if (s->srclen) {
+  memcpy(s->sources + s->srclen, AI_SOURCES_SEP, sizeof AI_SOURCES_SEP - 1);
+  s->srclen += sizeof AI_SOURCES_SEP - 1;
+ }
+ memcpy(s->sources + s->srclen, url, ul);
+ s->srclen += ul;
+ s->sources[s->srclen] = '\0';
+}
+
+/**
+ * ai_chat_note_source - Remember the URL a web tool read, for the sources line.
+ * @s: the chat; @tool/@arg: the web tool and its argument; @result: what it got.
+ *
+ * A search is remembered by the URL its query went to, a fetch by the page,
+ * so the answer ends with every address it was built from.
+ */
+static void ai_chat_note_source(ai_chat_session *s, const char *tool, const char *arg,
+                                const char *result)
+{
+ char url[AI_URL_MAX];
+ if (!ai_chat_web_result_read(result)) return;
+ if (!strcmp(tool, AI_TOOL_WEB_SEARCH))
+  ai_search_url_for_query(arg, url, sizeof url);
+ else
+  snprintf(url, sizeof url, "%s", arg);
+ ai_chat_sources_append(s, url);
+}
+
+/**
+ * ai_chat_run_web_tool - Run a chat's web tool behind the switch and the dial.
+ * @s: the chat; @tool: web_search or web_fetch; @arg: the query or the URL.
+ *
+ * The switch is asked first (its notice at first need), then the agent's
+ * function approves through the dial, prints its lines and runs; a refusal
+ * is answered aloud so the turn goes on.
+ * Return: the malloc'd result the model reads.
+ */
+static char *ai_chat_run_web_tool(ai_chat_session *s, const char *tool, const char *arg)
+{
+ FENSTER *f = s->ref;
+ enum ai_web_answer answer = ai_chat_web_answer(s);
+ char *result;
+ if (answer == AI_WEB_OFF)
+  return ai_chat_refuse_tool(f, tool, AI_CHAT_REFUSED_WEB_OFF, AI_CHAT_WHY_WEB_OFF);
+ if (answer == AI_WEB_NOT_NOW)
+  return ai_chat_refuse_tool(f, tool, AI_CHAT_REFUSED_WEB_NOT_NOW, AI_CHAT_WHY_WEB_NOT_NOW);
+ if (!strcmp(tool, AI_TOOL_WEB_SEARCH))
+  result = ai_agent_tool_web_search(f, arg);
+ else
+  result = ai_agent_tool_web_fetch(f, arg);
+ ai_chat_note_source(s, tool, arg, result);
+ return result;
+}
+
+/**
+ * ai_chat_show_sources - End an answer that read the web with the URLs it read.
+ * @s: the chat, its answer painted.
+ *
+ * The user can check the answer against the pages it came from; a turn that
+ * never reached the web ends as before.
+ */
+static void ai_chat_show_sources(ai_chat_session *s)
+{
+ char *line;
+ size_t n;
+ if (!s->sources || !s->srclen) return;
+ if (!ai_pane_win(s->ref)) return;
+ n = sizeof AI_SOURCES_HEAD + s->srclen;
+ line = malloc(n);
+ if (!line) return;
+ snprintf(line, n, AI_SOURCES_HEAD "%s", s->sources);
+ ai_pane(s->ref, line, AI_ROLE_MACHINERY, 0);
+ wpe_ai_trace("chat sources %s", s->sources);
+ free(line);
 }
 
 /* The line that ends a run: the model's answer or summary follows it. */

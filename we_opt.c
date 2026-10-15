@@ -1075,6 +1075,8 @@ int WpeReadProgramming(ECNT *cn, char *section, char *option, char *value)
   e_ai_read_provider(value);
  } else if (WpeStrccmp("AIPolicy", option) == 0)
   e_ai_policy = wpe_ai_policy_from_name(value);
+ else if (WpeStrccmp("AIWeb", option) == 0)
+  e_ai_web = wpe_ai_web_from_name(value);
 #ifdef WPE_AI_AGENT_HOST
  else if (WpeStrccmp("AIAgentEngine", option) == 0)
   e_ai_agent_engine = (WpeStrccmp(value, "claude-code") == 0)
@@ -1132,6 +1134,11 @@ int WpeWriteProgramming(ECNT *cn, char *section, FILE *opt_file)
  }
  fprintf(opt_file, "AIPolicy : %s\n",
          wpe_ai_policy_name(wpe_ai_cfg_int_to_save(WPE_AI_CFG_POLICY)));
+ /* The web switch is written only once it has been answered (the notice's y,
+    or Options > AI), so an xwperc that never named it keeps asking; and the
+    saved state goes to the file, never a one-session XWPE_AI_WEB override. */
+ if (e_ai_web != WPE_AI_WEB_UNSET)
+  fprintf(opt_file, "AIWeb : %s\n", wpe_ai_web_name(e_ai_web));
 #ifdef WPE_AI_AGENT_HOST
  fprintf(opt_file, "AIAgentEngine : %s\n",
          wpe_ai_cfg_int_to_save(WPE_AI_CFG_AGENT_ENGINE) == WPE_AI_ENGINE_CLAUDE_HOST

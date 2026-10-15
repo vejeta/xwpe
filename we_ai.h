@@ -31,6 +31,17 @@ extern int  e_ai_policy;               /* persisted AIPolicy; XWPE_AI_POLICY   *
 int         wpe_ai_policy_from_name(const char *name);
 const char *wpe_ai_policy_name(int policy);
 
+/* ----- web access (the chat's and the agent's web tools) ------------------
+ * One saved switch, AIWeb, with a third state for "never asked": the chat
+ * asks once at the first turn that wants the web and remembers the answer.
+ * XWPE_AI_WEB=0|1 overrides it for one session the way XWPE_AI_ENABLE does;
+ * the override never lands in xwperc. */
+enum { WPE_AI_WEB_UNSET = -1, WPE_AI_WEB_OFF = 0, WPE_AI_WEB_ON = 1 };
+extern int  e_ai_web;                  /* persisted AIWeb, or WPE_AI_WEB_UNSET */
+int         wpe_ai_web_from_name(const char *name);
+const char *wpe_ai_web_name(int state);
+int         wpe_ai_web_state(void);    /* effective: XWPE_AI_WEB, else e_ai_web */
+
 /* claudecli control: how much the CLI may do on its own, and session resume.
  * The UI sets these before each call; the CLI cannot prompt in -p mode, so the
  * permission must be pre-granted according to the policy. */

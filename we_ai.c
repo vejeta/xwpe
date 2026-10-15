@@ -210,6 +210,49 @@ const char *wpe_ai_policy_name(int policy)
  }
 }
 
+/* ----- web access switch ------------------------------------------------- */
+int e_ai_web = WPE_AI_WEB_UNSET;
+
+/**
+ * wpe_ai_web_from_name - Read an AIWeb value as it stands in xwperc.
+ * @name: "on" or "off" (any case); anything else reads as off.
+ *
+ * A key the user wrote by hand with a stray value keeps the web off, the
+ * safe side of a switch about what leaves the machine.
+ * Return: WPE_AI_WEB_ON or WPE_AI_WEB_OFF.
+ */
+int wpe_ai_web_from_name(const char *name)
+{
+ if (name && !strcasecmp(name, "on")) return WPE_AI_WEB_ON;
+ return WPE_AI_WEB_OFF;
+}
+
+/**
+ * wpe_ai_web_name - The word xwperc carries for a web switch state.
+ * Return: "on" or "off".
+ */
+const char *wpe_ai_web_name(int state)
+{
+ if (state == WPE_AI_WEB_ON) return "on";
+ return "off";
+}
+
+/**
+ * wpe_ai_web_state - The web switch as this session sees it.
+ *
+ * XWPE_AI_WEB=1 or 0 in the environment wins for the session (a test, or a
+ * user who wants the web off today without touching the file); otherwise
+ * the saved AIWeb, which may still be unanswered.
+ * Return: WPE_AI_WEB_ON, WPE_AI_WEB_OFF or WPE_AI_WEB_UNSET.
+ */
+int wpe_ai_web_state(void)
+{
+ const char *e = getenv("XWPE_AI_WEB");
+ if (e && *e == '1') return WPE_AI_WEB_ON;
+ if (e && *e == '0') return WPE_AI_WEB_OFF;
+ return e_ai_web;
+}
+
 /* ----- running one command for a tool result ----------------------------- */
 
 /* How much of a command's output the result carries.  Everything past it is

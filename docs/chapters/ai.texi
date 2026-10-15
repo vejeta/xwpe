@@ -172,6 +172,38 @@ define?'' works even when that file is not open.  The editor stays fully
 interactive while the reply streams.  The conversation is remembered for the
 workspace (see @emph{Sessions}, below).
 
+@cindex AI, web access
+@cindex AIWeb
+@anchor{Web access}
+@strong{Web access.}  The chat can also search the web and read pages, with
+the agent's @code{web_search} and @code{web_fetch} tools, but only behind one
+saved switch, @code{AIWeb}, which is off until you say yes.  The first turn
+that wants the web while the switch has never been answered shows a notice in
+the pane: your query is sent to the search engine set by @code{AISearchURL}
+(named in the notice), the pages it picks are fetched from there, nothing else
+leaves the machine and the model stays where it is; the attention line reads
+@samp{Enter / y = enable web access      n / Esc = not now}.  @kbd{y} writes
+@samp{AIWeb : on} to @file{xwperc} at once and the turn goes on; @kbd{n}
+answers the question without the web and asks again the next time it is
+needed.  The permanent off is Options > AI (@samp{AIWeb : off}), where turning
+things off belongs, so there is no ``never'' key to hit by accident: the
+@samp{Web access} box sits on the first row of Options > AI (@kbd{Alt-W}),
+beside @samp{Enable AI assistant}, and Ok saves what it says.  Clearing a box
+you were never asked about changes nothing, so the notice still gets its one
+chance.  With the
+web on, each search and each page goes through the permission dial exactly as
+the agent's web calls do (@code{ask} and @code{edits} ask @samp{APPROVE?
+<query>}, @code{auto} runs it), the transcript shows the query, the engine
+(@samp{[agent] search engine: <host>}) and every URL read, the answer ends
+with a @samp{sources:} line listing them, and the pane header gains
+@samp{| web}.  With the web off the chat's prompt offers no web tool and names
+@code{web_search} and @code{web_fetch} as the Agent's, and the agent's own web
+tools refuse with a line naming the switch.  A tool line the chat cannot run
+-- a web tool with the switch off, a name the model invented -- is never left
+unanswered: the pane says which tool was not run and why, the model is told
+which tools it may use, and the answer follows.  @env{XWPE_AI_WEB=0} or
+@env{1} overrides the switch for one session without touching the file.
+
 @cindex AI, pane placement
 The pane docks along the bottom of the screen like the @samp{Messages}
 window, under the file windows, and takes the bottom half; the file windows
@@ -188,7 +220,8 @@ pane instead of ending cut at the border, and a reply that wraps over
 several rows is copied as the one line it is.
 
 The pane opens with a header line, @samp{[AI: <backend> | model: <model> |
-policy: <dial>]}, and two hint lines naming the input keys and the slash
+policy: <dial>]} (with @samp{| web} appended while web access is on), and
+two hint lines naming the input keys and the slash
 shortcuts; they appear the first time the chat is opened in a session, even
 when another action had already written to the pane.  When the backend, the
 model or the permission dial change while the chat is open (Options > AI
@@ -679,6 +712,12 @@ bridge that serves TLS with its own certificate (e.g. a Proton Lumo bridge on
 @samp{Options}, @samp{AI} (@key{Alt-C}).  It is trusted @emph{in addition to} the
 system CA store and verification still runs in full (chain and hostname) -- it is
 not a blanket ``skip verify''.  Empty means the system CA store only.
+@item AIWeb
+@code{on} or @code{off}: whether the chat's and the agent's @code{web_search}
+and @code{web_fetch} may reach the web (@pxref{Web access}).  Absent until the
+chat's first-use notice is answered with @kbd{y} or Options > AI sets it; the
+environment's @env{XWPE_AI_WEB=0|1} overrides it for one session and is never
+written to the file.
 @item AISearchURL
 URL template for the agent's @code{web_search} tool, with @code{%s} where the
 URL-encoded query goes (e.g. @code{https://searx.example/search?q=%s&format=json}

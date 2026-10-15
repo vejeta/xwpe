@@ -180,11 +180,33 @@ then stays where you left it while a reply lands, also after you have clicked
 into the file window to work there; typing any character in the input row
 returns the view to the prompt so the next key lands in the input. The pane's
 first lines are a header,
-`[AI: <backend> | model: <model> | policy: <dial>]`, and two hint lines; when
+`[AI: <backend> | model: <model> | policy: <dial>]` (`| web` is appended
+while web access is on), and two hint lines; when
 the backend, the model or the permission dial change while the chat is open, a
 new header line with the current values precedes the next turn. A question
 sent while a reply is still streaming is queued, the pane says so, and it
 starts when the running turn ends.
+
+**Web access.** The chat can search the web and read pages with the agent's
+`web_search` and `web_fetch`, behind one saved switch, `AIWeb`, off until you
+say yes. The first turn that wants the web while the switch was never answered
+shows a notice in the pane -- your query goes to the engine set by
+`AISearchURL` (named there), the pages it picks are fetched, nothing else
+leaves the machine, the model stays where it is -- and the line
+`Enter / y = enable web access      n / Esc = not now`. `y` writes
+`AIWeb : on` to xwperc at once and the turn goes on; `n` answers without the
+web and asks again next time. The permanent off is the **Web access** box on
+the first row of Options > AI (`Alt-W`, beside *Enable AI assistant*); Ok
+saves what the box says, and clearing a box you were never asked about leaves
+the question still to be asked. With the web on, every search and page goes through the
+permission dial like the agent's (`APPROVE?  <query>` under *ask* and *edits*,
+unasked under *auto*), the transcript shows the query, `[agent] search engine:
+<host>` and every URL read, the answer ends with a `sources:` line, and with
+the web off the chat offers no web tool, names them as the Agent's, and the
+agent's web tools refuse with a line naming the switch. A tool line the chat
+cannot run (a web tool with the switch off, an invented name) is answered, not
+dropped: the pane says which tool was not run and why, and the answer follows.
+`XWPE_AI_WEB=0|1` overrides the switch for one session.
 
 When a [language server](LSP.md) is running, the errors and warnings it reports
 for the current file (the ones you see underlined) are folded into the prompt for
@@ -323,6 +345,7 @@ fixed setup:
 | `XWPE_AI_MODEL` | model name/alias |
 | `XWPE_AI_KEY` | API key for the OpenAI/Claude HTTP backends |
 | `XWPE_AI_POLICY` | `ask` / `edits` / `auto` |
+| `XWPE_AI_WEB` | `1` / `0`: web access for the chat and the agent's web tools, for one session (`AIWeb`, asked once at first need, off by default) |
 | `XWPE_AI_TOOL_TIMEOUT` | seconds a tool command may run before it is ended (`AIToolTimeout`, default 60) |
 | `XWPE_AI_PROJECT_INSTRUCTIONS` | where the project instructions file is folded in: `agent` (default), `all` or `off` (`AIProjectInstructions`) |
 | `XWPE_AI_PROJECT_INSTRUCTIONS_MAX` | bytes of the project instructions file the prompt carries (`AIProjectInstructionsMax`, default 4095, at most 65536) |

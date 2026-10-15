@@ -233,6 +233,26 @@ Changes
 
 1.7.0 (AI assistant -- experimental, opt-in)
 
+* The chat can reach the web, and it is off until you say yes.  Asking
+  the chat about something newer than its model knew used to end in
+  silence: the pane showed ". web_search ..." and nothing followed, because
+  the chat had no web tool and did not say so.  Now a tool the chat cannot
+  run is always answered (the pane says which one and why, the model is
+  told what it may use instead, and the answer follows), and the chat has
+  web_search and web_fetch behind one saved switch, AIWeb.  The first turn
+  that needs the web asks you once, in the pane: what leaves the machine
+  (your query, to the engine set by AISearchURL), that the model stays
+  where it is, and that Options > AI turns it off again; y saves
+  "AIWeb : on" at once, n answers without the web and asks again next
+  time.  With the web on each search and page goes through the permission
+  dial like the agent's, the transcript shows the query, the engine and
+  every URL read, the answer ends with a "sources:" line, and the pane
+  header reads "... | web".  With AIWeb off the agent's web tools refuse
+  too, naming the switch.  The switch is also a "Web access" box on the
+  first row of Options > AI (Alt-W), beside "Enable AI assistant".
+  XWPE_AI_WEB=0|1 overrides it for one session.
+  Tests: tests/test_ai_chat_web.py, tests/test_ai_options_web.py.
+
 * The waiting line of an Edit, a Complete or an agent run ends with the
   task.  "[AI edit] working - 5s (Esc cancels)" stayed in the pane,
   frozen at the seconds it had when the review opened, above "[AI edit]
