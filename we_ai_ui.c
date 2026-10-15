@@ -2315,16 +2315,101 @@ static int ai_in_eol(int p)             /* end of the input line holding p */
  while (p < g_ai_input_len && g_ai_input[p] != '\n') p++;
  return p;
 }
-static void ai_in_insert(const char *bytes, int n)   /* insert at the caret */
+/**
+ * ai_in_fits - Would @n more bytes keep the input under AI_PROMPT_MAX?
+ *
+ * The one place that knows the limit, so the key that is refused and the
+ * message that says why always agree on where the row ends.
+ */
+static int ai_in_fits(int n)
+{
+ return g_ai_input_len + n < (int)sizeof g_ai_input;
+}
+
+/**
+ * ai_in_insert - Put @n bytes into the input at the caret.
+ *
+ * Returns 1 when the bytes are in the row, 0 when they would take it past
+ * its limit and were left out, so the caller can tell the user instead of
+ * letting the row silently stop growing.  A multi-byte character is taken
+ * whole or not at all: the row never ends in a broken character.
+ */
+static int ai_in_insert(const char *bytes, int n)
 {
  int i;
- if (n <= 0 || g_ai_input_len + n >= (int)sizeof g_ai_input) return;
+ if (n <= 0) return 1;
+ if (!ai_in_fits(n)) return 0;
  memmove(g_ai_input + g_ai_input_pos + n, g_ai_input + g_ai_input_pos,
          (size_t)(g_ai_input_len - g_ai_input_pos));
  for (i = 0; i < n; i++) g_ai_input[g_ai_input_pos + i] = bytes[i];
  g_ai_input_len += n;
  g_ai_input_pos += n;
  g_ai_input[g_ai_input_len] = '\0';
+ return 1;
+}
+
+/**
+ * ai_in_refuse_at_limit - Say on the status row that the input is full.
+ * @wf: the chat pane (the bar row belongs to its screen).
+ *
+ * The key that did not fit is dropped; without a word about it the row just
+ * stops growing and the user wonders whether the keyboard died.  The bar
+ * shows "Input at its limit (N bytes)" with the real limit, and the next key
+ * restores the key hints.  A paste that crosses the limit keeps what fitted
+ * and leaves this same line on the bar when it ends.
+ */
+static void ai_in_refuse_at_limit(FENSTER *wf)
+{
+ char msg[80];
+ snprintf(msg, sizeof msg, " Input at its limit (%d bytes)", AI_PROMPT_MAX);
+ wpe_ai_flash(wf, msg);
+}
+
+/**
+ * ai_in_type - Take @n bytes the user typed or pasted and show the result.
+ * @wf: the chat pane.
+ *
+ * The one entry point for text entering the row: the row repaints when the
+ * bytes fit, the status row says so when they do not.  A refused key is
+ * never a silent nothing.
+ */
+static void ai_in_type(FENSTER *wf, const char *bytes, int n)
+{
+ if (!ai_in_insert(bytes, n)) {
+  ai_in_refuse_at_limit(wf);
+  return;
+ }
+ ai_input_render(wf);
+}
+
+/**
+ * ai_in_newline - Break the input line at the caret.
+ * @wf: the chat pane.
+ *
+ * Ctrl-J and a line break inside a paste both land here, so a multi-line
+ * prompt looks the same however its lines were entered.
+ */
+static void ai_in_newline(FENSTER *wf)
+{
+ ai_in_type(wf, "\n", 1);
+}
+
+extern int g_bracketed_paste;           /* we_term.c: set while a paste streams */
+
+/**
+ * ai_in_paste_break - Is key @c a line break arriving inside a terminal paste?
+ *
+ * While a bracketed paste streams, Enter is not the Send command: the line
+ * breaks in the pasted text are part of it.  Nothing leaves the row until
+ * the user presses Enter after the paste, so a multi-line clipboard lands in
+ * the input as it was copied instead of firing one turn per line.  The
+ * terminal reader delivers a pasted LF as Enter, and the LF of a CR LF pair
+ * not at all, so one key here is one line break.
+ */
+static int ai_in_paste_break(int c)
+{
+ if (!g_bracketed_paste) return 0;
+ return (c == WPE_CR || c == WPE_WR);
 }
 static void ai_in_backspace(void)       /* delete the char before the caret */
 {
@@ -2496,6 +2581,7 @@ int e_ai_chat_key(FENSTER *f, int c)
   return 1;
  }
  g_ai_scroll_lock = 0;                           /* any other edit key returns to the input */
+ if (ai_in_paste_break(c)) { ai_in_newline(wf); return 1; }   /* pasted text is literal */
  if (c == WPE_CR) {                             /* Enter: send the whole input */
   if (g_ai_input_len > 0) {
    char sb[AI_PROMPT_MAX];
@@ -2509,7 +2595,7 @@ int e_ai_chat_key(FENSTER *f, int c)
   }
   return 1;
  }
- if (c == WPE_WR)   { ai_in_insert("\n", 1);                       ai_input_render(wf); return 1; }
+ if (c == WPE_WR)   { ai_in_newline(wf);                                                return 1; }
  if (c == WPE_DC)   { ai_in_backspace();                           ai_input_render(wf); return 1; }
  if (c == ENTF)     { ai_in_delete();                              ai_input_render(wf); return 1; }
  if (c == CLE)      { g_ai_input_pos = ai_in_prev(g_ai_input_pos); ai_input_render(wf); return 1; }
@@ -2519,8 +2605,7 @@ int e_ai_chat_key(FENSTER *f, int c)
  if ((c >= 32 && c < 255) || e_input_was_char) { /* a printable char (ASCII/Unicode) */
   unsigned char u8[4];
   int n = (c >= 0x80) ? e_codepoint_to_utf8(c, u8) : (u8[0] = (unsigned char)c, 1);
-  ai_in_insert((char *)u8, n);
-  ai_input_render(wf);
+  ai_in_type(wf, (char *)u8, n);
   return 1;
  }
  return 0;                                        /* not an input key: editor handles it */

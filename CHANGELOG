@@ -233,6 +233,24 @@ Changes
 
 1.7.0 (AI assistant -- experimental, opt-in)
 
+* Pasting into the AI chat's input row is literal.  A terminal paste of
+  several lines sent one question per line: each pasted line break was
+  taken as Enter, so "first line / second line / third line" fired two
+  turns and left only the last line in the row.  Now, while the paste
+  streams, every line break goes into the input as a line break (the same
+  as Ctrl-J) and nothing is sent until you press Enter.  A CR LF line
+  ending, as text copied from a Windows application carries, is one line
+  break -- in the chat row and in a file window, which used to get a blank
+  line after every pasted line.
+  Tests: tests/test_ai_chat_input_paste_limit.py, tests/test_paste_crlf.py.
+
+* The AI chat's input row says when it is full.  The row holds 2000
+  bytes; a key past that was dropped without a word, so the row simply
+  stopped growing.  The key is still refused, and the status row now
+  reads "Input at its limit (2000 bytes)" until the next key.  A paste
+  that crosses the limit keeps what fits and shows the same line.
+  Tests: tests/test_ai_chat_input_paste_limit.py.
+
 * The bottom shortcut bar no longer appears twice in the terminal after a
   dialog or menu closes.  With the AI pane focused (or any window whose
   bottom border sits right above the bar), closing Options > AI, Options >

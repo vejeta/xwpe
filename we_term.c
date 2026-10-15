@@ -83,6 +83,27 @@ int g_mouse_buttons = 0;
    The dialog line editor consults it to drop pasted line breaks/tabs so pasted
    text cannot confirm/cancel a dialog. */
 int g_bracketed_paste = 0;
+/* The last key delivered from the running paste was a raw CR: the LF that may
+   follow it is the second half of a CR LF line ending, not a line of its own. */
+static int s_t_paste_after_cr = 0;
+
+/**
+ * e_t_paste_swallows_lf - Is @c the LF half of a pasted CR LF pair?
+ * @c: the key just read while a bracketed paste streams.
+ *
+ * Text copied from a CRLF source (a Windows application, a DOS-format file)
+ * ends every line with CR and LF.  Each of the two became an Enter, so the
+ * editor and the chat input row got a blank line after every pasted line.
+ * The LF right after a CR is now folded into that CR's line break; a lone LF,
+ * or two of them for a blank line in a Unix paste, still breaks the line.
+ * Also remembers whether @c itself is a CR for the next call.
+ */
+static int e_t_paste_swallows_lf(int c)
+{
+ int after_cr = s_t_paste_after_cr;
+ s_t_paste_after_cr = (c == WPE_CR);
+ return (c == '\n' && after_cr);
+}
 /* CLICKED events carry no following RELEASED; the press bit accumulated into
    g_mouse_buttons would stay set and any while(e_mshit()) spin-loop in
    we_mouse.c / we_menue.c would hang.  Set when a CLICKED is observed and
@@ -1545,11 +1566,13 @@ int e_t_getch()
     garbage in the editor); they only raise/lower g_bracketed_paste for the whole
     time the pasted bytes stream, and consumers that care (the dialog line editor)
     check that flag.  Fetch the next real key so callers never see the marker. */
- if (c == WPE_PASTE_BEG) { g_bracketed_paste = 1; return e_t_getch(); }
+ if (c == WPE_PASTE_BEG) { g_bracketed_paste = 1; s_t_paste_after_cr = 0; return e_t_getch(); }
  if (c == WPE_PASTE_END) { g_bracketed_paste = 0; return e_t_getch(); }
  /* A paste carries verbatim LF newlines; map them to CR so the editor inserts
     real line breaks (a non-bracketed paste used to arrive as CR).  A single-line
-    dialog field drops the CR itself while g_bracketed_paste is set. */
+    dialog field drops the CR itself while g_bracketed_paste is set.  The LF of
+    a CR LF pair is one line ending with its CR, so it is not delivered at all. */
+ if (g_bracketed_paste && e_t_paste_swallows_lf(c)) return e_t_getch();
  if (g_bracketed_paste && c == '\n') c = WPE_CR;
  return(c);
 }

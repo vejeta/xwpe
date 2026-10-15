@@ -211,6 +211,17 @@ pane and returns to the file window.  A second question sent while a reply
 streams is not lost and does not cut the running turn: it is queued, the pane
 says so, and it starts by itself when the running turn ends.
 
+@cindex AI, pasting into the chat
+@cindex AI, chat input limit
+Text pasted into the input row (a terminal paste; the editor keeps bracketed
+paste on) enters the row as it was copied: every line break in the pasted text
+is a line break in the input, a CR LF line ending counts as one, and nothing is
+sent until you press @key{Enter} after the paste.  @kbd{Ctrl-J} breaks the
+line the same way by hand.  The input holds 2000 bytes.  A key that would take
+it past that is refused and the status row reads @samp{Input at its limit
+(2000 bytes)} until the next key; a paste that crosses the limit keeps what
+fits and shows the same line.
+
 @cindex AI, slash commands
 A leading @dfn{slash command} expands to a full, file-scoped instruction, so a
 common ask is one token: @code{/explain}, @code{/fix}, @code{/test}, @code{/doc},

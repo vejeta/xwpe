@@ -121,6 +121,14 @@ only: asked from the pane itself, from Messages or from a read-only viewer they
 send nothing and the pane says
 `[AI] no file here - Edit, Complete and Multi-file work on a file window`.
 
+**Pasting into the chat** is literal: a terminal paste of several lines goes
+into the input row as it was copied, every line break a line break (a CR LF
+ending counts as one), and nothing is sent until you press Enter after the
+paste; `Ctrl-J` breaks the line by hand. The input holds 2000 bytes. A key past
+that is refused and the status row reads `Input at its limit (2000 bytes)`
+until the next key; a paste that crosses the limit keeps what fits and shows
+the same line.
+
 The `Alt-G` menu groups the **actions** above and, below a divider, the quick
 **settings**: *Permissions* (shows and cycles ask/edits/auto), *Clear
 conversation*, and *AI settings...* which opens **Options > AI** (the model, the

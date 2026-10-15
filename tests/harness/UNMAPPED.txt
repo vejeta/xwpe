@@ -18,6 +18,7 @@ tests/test_ai_chat.py
 tests/test_ai_chat_ctrl_ae.py
 tests/test_ai_chat_error.py
 tests/test_ai_chat_input_contracts.py
+tests/test_ai_chat_input_paste_limit.py
 tests/test_ai_chat_investigate_live.py
 tests/test_ai_chat_short_reply.py
 tests/test_ai_chat_tool_preamble.py
