@@ -12,6 +12,9 @@ import tempfile
 import pytest
 from wpe_driver import WpeSession, ALT, WPE_BIN
 
+PGUP = "\033[5~"
+TIP_TEXT = "full autonomy"
+
 
 def _host_build():
     try:
@@ -50,6 +53,13 @@ def test_agent_nudges_to_host_engine(tmp_path):
         s.key("\033s", delay=1.5)                          # Alt-S = Send
         s._drain(1.0)
         disp = "\n".join(s.display())
+        # The tip is written before the run; by the run's end the header, the
+        # run's lines, the hint lines and the input row have pushed its first
+        # row above the pane, so read it the way a user does: PgUp from the
+        # input row the finished run armed.
+        if TIP_TEXT not in disp:
+            s.key(PGUP); s._drain(0.3)
+            disp = "\n".join(s.display())
 
-    assert "full autonomy" in disp, \
+    assert TIP_TEXT in disp, \
         "no host-engine tip shown for claudecli + Auto:\n" + disp

@@ -43,6 +43,43 @@ class SafeScreen(pyte.Screen):
         if ch:
             self.draw(ch * count)
 
+    def scroll_up(self, count=1):
+        """ECMA-48 SU (CSI Pn S): scroll the scrolling region up Pn lines.
+
+        ncurses repaints a window whose lines all moved up by the same count
+        (the AI pane pinning its input row after a few lines were appended)
+        with a scrolling region (DECSTBM) and one SU, then rewrites only the
+        rows that are new at the bottom.  pyte has no SU handler, so without
+        this the rows above the rewritten ones keep their old text and the
+        screen shows a mix of two paints that no real terminal ever shows.
+        The cursor stays where it was, as on a terminal.
+        Register it on the stream with: stream.csi['S'] = 'scroll_up'.
+        """
+        self._scroll_region(max(1, int(count or 1)), self.index)
+
+    def scroll_down(self, count=1):
+        """ECMA-48 SD (CSI Pn T): scroll the scrolling region down Pn lines.
+
+        The counterpart of SU, emitted when the lines all moved down (the
+        pane paged up with PgUp); see scroll_up for why pyte needs it.
+        Register it on the stream with: stream.csi['T'] = 'scroll_down'.
+        """
+        self._scroll_region(max(1, int(count or 1)), self.reverse_index)
+
+    def _scroll_region(self, count, step):
+        """Scroll the region `count` lines with `step`, which scrolls one line
+        when the cursor stands on the region's edge it moves away from: index
+        at the bottom margin, reverse_index at the top margin."""
+        top, bottom = self.margins or pyte.screens.Margins(0, self.lines - 1)
+        saved_x, saved_y = self.cursor.x, self.cursor.y
+        if step == self.index:
+            self.cursor.y = bottom
+        else:
+            self.cursor.y = top
+        for _ in range(count):
+            step()
+        self.cursor.x, self.cursor.y = saved_x, saved_y
+
 WPE_BIN = os.environ.get('WPE_BIN') or os.path.join(os.path.dirname(__file__), '..', 'wpe')
 TEST_DIR = os.path.join(os.path.dirname(__file__), 'fixtures')
 

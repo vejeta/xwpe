@@ -35,6 +35,7 @@
     {"id": "SC-ai-agent-21", "requirement": "The permission dial", "layer": "ncurses", "test": "tests/test_ai_agent_dial_contracts.py::test_altg_y_flashes_persists_to_xwperc_and_shows_in_next_header", "status": "new"},
     {"id": "SC-ai-agent-22", "requirement": "The permission dial", "layer": "ncurses", "test": "tests/test_ai_agent_dial_contracts.py::test_dial_lowered_mid_run_asks_for_the_next_write_and_still_reviews", "status": "new"},
     {"id": "SC-ai-agent-22", "requirement": "The permission dial", "layer": "ncurses", "test": "tests/test_ai_agent_project_instructions.py::test_dial_raised_mid_run_takes_checkpoint_before_the_write", "status": "new"},
+    {"id": "SC-ai-agent-22", "requirement": "The permission dial", "layer": "ncurses", "test": "tests/test_ai_agent_project_instructions.py::test_dial_raised_mid_run_shows_the_new_header_only_after_the_done_line", "status": "new"},
     {"id": "SC-ai-agent-23", "requirement": "The permission dial", "layer": "ncurses", "test": "tests/test_ai_agent_engine_contracts.py::test_claudecli_text_only_under_auto_with_tip", "status": "new"},
     {"id": "SC-ai-agent-23", "requirement": "The permission dial", "layer": "ncurses", "test": "tests/test_ai_agent_engine_contracts.py::test_claudecli_text_only_under_ask_no_tip", "status": "new"},
     {"id": "SC-ai-agent-23", "requirement": "The permission dial", "layer": "ncurses", "test": "tests/test_ai_host_nudge.py::test_agent_nudges_to_host_engine", "status": "covered"},

@@ -63,6 +63,10 @@ NETWORK_RULE = "do not open network connections"
 CHECKPOINT_LINE = "[agent] checkpoint taken"
 REVIEW_PROMPT = "a = keep all"
 FOLLOWUP_LINE = "type a follow-up"
+# The header the mock backend writes once the dial reads auto, and the "> "
+# input row at the pane's bottom (its row starts with the pane's border).
+HEADER_AUTO = "[AI: mock | model: mock-model | policy: auto]"
+INPUT_ROW = "x> "
 CHAT_REPLY = "The project keeps every function short."
 # The two files, each with a sentence the other does not have, so the body
 # shows which one was folded in.
@@ -313,6 +317,37 @@ def test_dial_raised_mid_run_takes_checkpoint_before_the_write(tmp_path):
     at = [txt.find(m) for m in order]
     assert all(i >= 0 for i in at), dict(zip(order, at))
     assert at == sorted(at), "trace order is wrong: %s\n%s" % (dict(zip(order, at)), txt)
+
+
+# @scenario SC-ai-agent-22
+def test_dial_raised_mid_run_shows_the_new_header_only_after_the_done_line(tmp_path):
+    """During a run the pane shows the agent's lines only.  The dial raised
+    with Alt-G y mid-run changes the setup the header describes, but the
+    header for that setup, the hint lines and the input row are written at
+    the run's end, after the done line, never between the agent's lines."""
+    reply = "TOOL write_file out.txt\nhello agent\n@@END@@TURN@@DONE wrote it"
+    env = _env(tmp_path, reply, policy="ask")
+    env["XWPE_AI_MOCK_DELAY_MS"] = str(SLOW_TURN_MS)
+    with WpeSession(str(tmp_path), SEED, env_extra=env) as s:
+        s.key(ALT.AI); s.key("g")
+        s.key("write a file"); s.key("\r", delay=0.3)
+        s.key(ALT.AI); s.key("y")
+        s.key(ALT.AI); s.key("y")
+        assert _traced_within(tmp_path, "policy set auto", TRACE_POLL_S), _trace(tmp_path)
+        assert _seen_within(s, REVIEW_PROMPT, TURN_POLL_S), "\n".join(s.display())
+        s.key("a", delay=1.0)                                # keep all
+        assert _seen_within(s, FOLLOWUP_LINE, TRACE_POLL_S), "\n".join(s.display())
+        rows = s.display()
+    screen = "\n".join(rows)
+    ok_row = _row_index(rows, "[agent] auto-approved (auto): write out.txt")
+    done_row = _row_index(rows, FOLLOWUP_LINE)
+    header_row = _row_index(rows, HEADER_AUTO)
+    input_row = _row_index(rows, INPUT_ROW)
+    assert ok_row >= 0 and done_row >= 0 and header_row >= 0 and input_row >= 0, screen
+    assert ok_row < done_row < header_row < input_row, \
+        "the header for the raised dial must follow the done line and precede " \
+        "the input row (rows %d, %d, %d, %d):\n%s" \
+        % (ok_row, done_row, header_row, input_row, screen)
 
 
 # ----- where the block goes, which file wins, how long it may be -----------

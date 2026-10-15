@@ -31,6 +31,7 @@ from wpe_driver import WpeSession, ALT, WPE_BIN
 SEED = "int main(void){return 0;}\n"
 FOLLOWUP_LINE = "type a follow-up"
 REVIEW_PROMPT = "a = keep all"
+PGUP = "\033[5~"
 TURN_POLL_S = 20
 
 PROCFACTS = (
@@ -257,9 +258,20 @@ def _claudecli_agent(tmp_path, policy):
         if _seen_within(s, REVIEW_PROMPT, 6):
             s.key("a", delay=1.0)
         assert _seen_within(s, FOLLOWUP_LINE, 20), _screen(s)
-        rows = s.display()
+        rows = _rows_with_history(s)
     argv = open(capture + ".argv").read().split("\n")
     return rows, argv, open(facts).read()
+
+
+def _rows_with_history(s):
+    """The pane's rows at the end of a run: the view pinned on the input row,
+    then the view one page up.  The tip shown before the run, the header and
+    the run's own lines are more than the pane holds once the hint lines are
+    written at the first chat arm, so the oldest rows are read the way a
+    user reads them, with PgUp from the input row."""
+    rows = s.display()
+    s.key(PGUP); s._drain(0.3)
+    return rows + s.display()
 
 
 # @scenario SC-ai-agent-23

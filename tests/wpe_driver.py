@@ -138,17 +138,24 @@ def strip_size_env(env):
 
 
 class _RepStream(pyte.Stream):
-    """A pyte Stream that also handles REP (CSI Pn b).
+    """A pyte Stream that also handles REP (CSI Pn b), SU (CSI Pn S) and
+    SD (CSI Pn T).
 
     ncurses emits REP to compress long identical runs (window borders) on a
     non-UTF-8 terminal; without it pyte drops the repeats and a full-width
-    border looks short.  Extending the class-level ``csi`` map is the
-    version-stable way to add a control: the parser binds its CSI dispatcher
-    from ``csi`` when the Stream is constructed, so no private re-init is
-    needed.  (Older pyte exposed ``_initialize_parser`` for this; newer pyte --
-    the one in Debian -- removed it, which broke the previous approach.)
+    border looks short.  It emits SU/SD inside a scrolling region when every
+    line of a window moved by the same count (the AI pane after a few lines
+    were appended above its pinned input row, or paged with PgUp) and then
+    rewrites only the rows that are new; without them the rows that should
+    have scrolled keep their old text.  Extending the class-level ``csi`` map
+    is the version-stable way to add a control: the parser binds its CSI
+    dispatcher from ``csi`` when the Stream is constructed, so no private
+    re-init is needed.  (Older pyte exposed ``_initialize_parser`` for this;
+    newer pyte -- the one in Debian -- removed it, which broke the previous
+    approach.)
     """
-    csi = {**pyte.Stream.csi, "b": "repeat_last"}
+    csi = {**pyte.Stream.csi, "b": "repeat_last",
+           "S": "scroll_up", "T": "scroll_down"}
 
 
 class ALT:
