@@ -6026,6 +6026,10 @@ static void ai_op_hold_reply(ai_async_op *op, void (*deliver)(ai_async_op *op))
  snprintf(line, sizeof line, "[AI %s] reply ready - shown when the dialog closes", kind);
  if (wf)
   ai_pane_set_last_as(wf, line, AI_ROLE_MACHINERY);
+ /* This text has taken the waiting line's row, so the row is no longer the
+    task's to remove when it ends: the transcript keeps the note that the
+    reply waited for the user's dialog, as it keeps every other line. */
+ op->spin.open = 0;
  wpe_ai_trace("%s reply held (dialog open)", kind);
 }
 
