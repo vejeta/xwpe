@@ -35,6 +35,23 @@ int e_d_p_named(char *winname, char *str, FENSTER *f, int sw);
 #define AI_CTX_MAX    16000     /* cap the current-file context we send        */
 #define AI_PROMPT_MAX 2000      /* room for a real instruction, not 128 chars   */
 
+/* A UTF-8 continuation byte is 10xxxxxx: it adds to the character before it
+   and takes no column of its own. */
+#define AI_UTF8_CONT_MASK 0xC0
+#define AI_UTF8_CONT_BITS 0x80
+
+/**
+ * ai_utf8_continues - Is byte @c the continuation of a multibyte character?
+ *
+ * The pane counts columns and the input row steps the caret by this, so an
+ * accented or CJK character wraps, moves and deletes as one character and
+ * never leaves half of itself behind.
+ */
+static int ai_utf8_continues(char c)
+{
+ return ((unsigned char)c & AI_UTF8_CONT_MASK) == AI_UTF8_CONT_BITS;
+}
+
 /* ----- one active chat at a time (MVP) ----------------------------------- */
 struct ai_async_op;                 /* the background task a chat turn runs as */
 typedef struct {
@@ -52,9 +69,7 @@ typedef struct {
  int            active;
  int            started;       /* a fresh reply line has been opened under "AI:" */
  int            turns;         /* read-only tool turns taken before answering    */
- int            decided;       /* this turn: 0 undecided, 1 = answer (stream it),
-                                  2 = a TOOL investigation (shown as a dim status,
-                                  the raw protocol line is NOT echoed as "AI:")  */
+ int            decided;       /* what this turn's reply is (enum ai_reply_kind) */
  int            hide_tool;     /* a TOOL line begun after a preamble is being
                                   hidden: show its dim status, not the raw line   */
  int            fell_back;     /* this chat already retried with the fallback model */
@@ -69,6 +84,26 @@ typedef struct {
 #define AI_CHAT_WAIT_LABEL AI_REPLY_PREFIX "(gathering the answer...)"
 /* The chat's own word for a peer that hung up without saying anything. */
 #define AI_CHAT_TRANSPORT_LINE "[AI: transport error]"
+
+/* What the painter has made of this turn's reply so far. */
+enum ai_reply_kind {
+ AI_REPLY_UNDECIDED = 0,  /* too few bytes to tell yet                        */
+ AI_REPLY_ANSWER,         /* an answer: stream it                             */
+ AI_REPLY_TOOL            /* a TOOL investigation: shown as a dim status, the
+                             raw protocol line is NOT echoed as "AI:"         */
+};
+/* The protocol line a model opens a tool call with, and the room the dim
+   status line that stands in for it gets. */
+#define AI_TOOL_PREFIX     "TOOL "
+#define AI_TOOL_PREFIX_LEN (sizeof AI_TOOL_PREFIX - 1)
+#define AI_TOOL_STATUS_MAX 640
+/* The session-log line a tool's output is fed back under. */
+#define AI_TOOL_RESULT_HEAD "TOOL RESULT:\n"
+/* First sizes of the reply buffers; each doubles when it fills. */
+#define AI_FULL_FIRST    512
+#define AI_PENDING_FIRST 256
+/* Room for a one-line note that quotes the server's error text. */
+#define AI_CHAT_NOTE_MAX 440
 
 static ai_chat_session *g_ai_chat = NULL;
 
@@ -327,12 +362,22 @@ static int  g_ai_input_len = 0;
 static int  g_ai_input_rows = 0;        /* pane lines the input region occupies    */
 static int  g_ai_input_pos = 0;         /* caret byte offset within g_ai_input     */
 static int  g_ai_scroll_lock = 0;       /* user scrolled up: hold the view there   */
-#define AI_WHEEL_LINES 3                /* transcript lines one wheel step browses */
 static FENSTER *g_ai_chat_pane = NULL;  /* the armed chat pane (NULL = no chat)     */
 static int  g_ai_home_edt = -1;         /* window to refocus when the chat closes   */
+/* The input region's prefix: "> " on its first row, blanks of the same width
+   under it, so a multi-line prompt aligns under its first line. */
+#define AI_INPUT_PROMPT     "> "
+#define AI_INPUT_INDENT     "  "
+#define AI_INPUT_PREFIX_LEN 2
 
-/* First pane line the stream writes into: the last line normally, or the line
- * just above the input region when focus mode owns the bottom rows. */
+/**
+ * ai_stream_y - The pane row the reply streams into.
+ * @wf: the pane.
+ *
+ * The last row normally, or the row just above the input region when the
+ * chat owns the bottom rows: the reply grows above the "> " row, never
+ * over it.
+ */
 static int ai_stream_y(FENSTER *wf)
 {
  int y = wf->b->mxlines - 1;
@@ -341,20 +386,45 @@ static int ai_stream_y(FENSTER *wf)
  return y;
 }
 
-/* Seed the streaming line buffer with `seed` so the reply keeps its "AI: "
- * speaker label on the first line while tokens append after it (instead of the
- * label sitting alone on its own line above the answer). */
+/**
+ * ai_chat_buf_reserve - Make @buf hold @need bytes, doubling from @first.
+ * @cap: the buffer's present size, updated.
+ *
+ * Return: 1 when the room is there, 0 when memory ran out and the buffer is
+ * as it was.  The reply text and the stream line both grow through here, so
+ * a long answer never stops short of the pane for want of room.
+ */
+static int ai_chat_buf_reserve(char **buf, size_t *cap, size_t need, size_t first)
+{
+ size_t nc = *cap;
+ char *nb;
+ if (need <= nc)
+  return 1;
+ if (nc == 0)
+  nc = first;
+ while (need > nc)
+  nc *= 2;
+ nb = realloc(*buf, nc);
+ if (!nb)
+  return 0;
+ *buf = nb;
+ *cap = nc;
+ return 1;
+}
+
+/**
+ * ai_chat_set_pending - Seed the stream line with @seed.
+ * @s: the chat starting a turn.
+ *
+ * The reply keeps its "AI: " speaker label on its first line while tokens
+ * append after it, instead of the label sitting alone on a line above the
+ * answer.
+ */
 static void ai_chat_set_pending(ai_chat_session *s, const char *seed)
 {
  size_t n = strlen(seed);
- if (n + 1 > s->pcap) {
-  size_t nc = s->pcap ? s->pcap : 256;
-  char *nb;
-  while (n + 1 > nc) nc *= 2;
-  nb = realloc(s->pending, nc);
-  if (!nb) return;
-  s->pending = nb; s->pcap = nc;
- }
+ if (!ai_chat_buf_reserve(&s->pending, &s->pcap, n + 1, AI_PENDING_FIRST))
+  return;
  memcpy(s->pending, seed, n + 1);
  s->plen = n;
  s->pcols = (int)n;              /* the "AI: " seed is plain ASCII */
@@ -488,10 +558,10 @@ static int ai_wrap_cut(const char *p, int width, int *cut)
  int col = 0, i = 0, lastspace = -1;
  while (p[i] && col < width) {                  /* consume up to `width` columns */
   if (p[i] == ' ') lastspace = i;
-  if (((unsigned char)p[i] & 0xC0) != 0x80) col++;
+  if (!ai_utf8_continues(p[i])) col++;
   i++;
  }
- while (p[i] && ((unsigned char)p[i] & 0xC0) == 0x80) i++;   /* trailing cont bytes */
+ while (p[i] && ai_utf8_continues(p[i])) i++;   /* trailing cont bytes */
  if (!p[i]) { *cut = i; return 0; }             /* the rest fits */
  if (p[i] == ' ') { *cut = i + 1; return 1; }   /* the break space hangs past the margin */
  if (lastspace > 0) { *cut = lastspace + 1; return 1; }   /* break after a space */
@@ -844,6 +914,13 @@ static void ai_edit_announce_window(FENSTER *f, int y0, int y1)
  ai_pane(f, line, AI_ROLE_MACHINERY, 0);
 }
 
+/**
+ * ai_chat_finish - Free a chat session and its stream.
+ * @s: the session, or NULL.
+ *
+ * The stream's descriptor leaves the fd loop first, so a late byte from the
+ * server can never reach a freed session.
+ */
 static void ai_chat_finish(ai_chat_session *s)
 {
  if (!s) return;
@@ -857,8 +934,14 @@ static void ai_chat_finish(ai_chat_session *s)
  wpe_ai_trace("chat finish end");
 }
 
-/* Locate the "AI" output pane (creating it if needed), so streaming can paint
- * directly into its buffer rather than only appending whole lines. */
+/**
+ * ai_pane_win - The "AI" output pane, opened and docked when it is missing.
+ * @f: the window the request came from.
+ *
+ * Every writer paints straight into the pane's buffer, so a reply streams
+ * token by token instead of appearing a whole line at a time.  Return: the
+ * pane, or NULL when a window could not be opened.
+ */
 static FENSTER *ai_pane_win(FENSTER *f)
 {
  ECNT *cn = f->ed;
@@ -906,23 +989,84 @@ static FENSTER *ai_pane_existing(ECNT *cn)
  * pane -- so they keep typing in their code while the AI streams/spins. */
 static FENSTER *g_ai_bg_win = NULL;
 
-/* Place the pane caret at the input cursor: its row within the input region and
- * its display column (past the "> "/"  " 2-column prefix). */
+/**
+ * ai_top_window - The window on top of the desktop: the one the keys go to.
+ * @f: any window of the same desktop.
+ */
+static FENSTER *ai_top_window(FENSTER *f)
+{
+ return f->ed->f[f->ed->mxedt];
+}
+
+/**
+ * ai_pane_view_rows - Rows of the pane that show buffer lines.
+ * @wf: the pane.
+ *
+ * The frame takes the rest.  The input row is pinned by this count, so it
+ * sits on the last visible row whatever height the pane has.
+ */
+static int ai_pane_view_rows(FENSTER *wf)
+{
+ return wf->e.y - wf->a.y - 1;
+}
+
+/* Rows a page step keeps on screen, so the reader does not lose the thread
+   between one page of the transcript and the next. */
+#define AI_PAGE_KEEP_ROWS 1
+
+/**
+ * ai_pane_page_rows - Lines PgUp and PgDn browse at a time.
+ * @wf: the pane.
+ */
+static int ai_pane_page_rows(FENSTER *wf)
+{
+ return ai_pane_view_rows(wf) - AI_PAGE_KEEP_ROWS;
+}
+
+/**
+ * ai_pane_bottom_offset - The view offset that puts the last line on the last row.
+ * @wf: the pane.
+ *
+ * Zero while the transcript is shorter than the pane.  At this offset the
+ * input row and the newest reply line are both on screen.
+ */
+static int ai_pane_bottom_offset(FENSTER *wf)
+{
+ int bottom = wf->b->mxlines - ai_pane_view_rows(wf);
+ if (bottom < 0)
+  return 0;
+ return bottom;
+}
+
+/**
+ * ai_input_caret - Where the pane caret goes while the user types.
+ * @wf: the pane.
+ * @cy: out, the buffer row within the input region.
+ * @cx: out, the byte offset in that row, past the "> " prefix.
+ *
+ * The caret x is a BYTE offset into the rendered line: e_cursor walks the
+ * line bytes and converts a multi-byte glyph to its single display column
+ * itself (e_utf8_visual_step).  So every byte on the current line counts
+ * here, NOT one per glyph: a glyph count would drop the caret onto the
+ * trailing byte of an accented character (the cursor "sticks" on the
+ * e-acute).
+ */
 static void ai_input_caret(FENSTER *wf, int *cy, int *cx)
 {
- int rows = g_ai_input_rows > 0 ? g_ai_input_rows : 1;
+ int rows = g_ai_input_rows;
  int line_idx = 0, bcol = 0, i;
- /* The caret x is a BYTE offset into the rendered line: e_cursor walks the line
-    bytes and converts a multi-byte glyph to its single display column itself
-    (e_utf8_visual_step).  So count every byte on the current line here, NOT one
-    per glyph -- returning a glyph count would drop the caret onto the trailing
-    byte of an accented character (the cursor "sticks" on the e-acute). */
+ if (rows <= 0)
+  rows = 1;
  for (i = 0; i < g_ai_input_pos && i < g_ai_input_len; i++) {
-  if (g_ai_input[i] == '\n') { line_idx++; bcol = 0; }
-  else bcol++;
+  if (g_ai_input[i] == '\n') {
+   line_idx++;
+   bcol = 0;
+  } else {
+   bcol++;
+  }
  }
  *cy = wf->b->mxlines - rows + line_idx;
- *cx = 2 + bcol;                       /* 2 = the "> "/"  " prefix bytes */
+ *cx = AI_INPUT_PREFIX_LEN + bcol;
 }
 
 /**
@@ -966,8 +1110,47 @@ static void ai_pane_hold_browsed_view(FENSTER *wf, int pane_focused)
  */
 static int ai_pane_is_focused(FENSTER *wf)
 {
- FENSTER *act = wf->ed->f[wf->ed->mxedt];       /* the focused window */
- return act == wf && !g_ai_bg_win;
+ return ai_top_window(wf) == wf && !g_ai_bg_win;
+}
+
+/**
+ * ai_pane_caret_to_input - Put the caret where the user is typing.
+ * @wf: the pane, focused with the chat armed.
+ */
+static void ai_pane_caret_to_input(FENSTER *wf)
+{
+ int cy, cx;
+ ai_input_caret(wf, &cy, &cx);
+ wf->b->b.y = cy;
+ wf->b->b.x = cx;
+}
+
+/**
+ * ai_pane_caret_to_end - Put the caret after the last line written.
+ * @wf: the pane, focused with no chat armed.
+ *
+ * The pane is then an ordinary output window and the caret rests where the
+ * next line would go, as it does in Messages.
+ */
+static void ai_pane_caret_to_end(FENSTER *wf)
+{
+ int y = wf->b->mxlines - 1;
+ wf->b->b.y = y;
+ wf->b->b.x = 0;
+ if (y >= 0 && wf->b->bf[y].s)
+  wf->b->b.x = wf->b->bf[y].len;
+}
+
+/**
+ * ai_pane_pin_input_row - Scroll so the input row is the last row on screen.
+ * @wf: the pane with the chat armed.
+ *
+ * Focused or not, the pane shows the input row and the newest reply line
+ * above it; a line added while the user works in the file shows at once.
+ */
+static void ai_pane_pin_input_row(FENSTER *wf)
+{
+ wf->s->c.y = ai_pane_bottom_offset(wf);
 }
 
 /**
@@ -989,37 +1172,47 @@ static void ai_pane_place_view(FENSTER *wf, int pane_focused)
      visible (e_cursor), so touching either here is exactly what would undo
      the browse. */
   ai_pane_hold_browsed_view(wf, pane_focused);
- } else {
-  if (pane_focused && g_ai_chat_focus) {        /* caret sits in the input region */
-   int cy, cx;
-   ai_input_caret(wf, &cy, &cx);
-   wf->b->b.y = cy;
-   wf->b->b.x = cx;
-  } else if (pane_focused) {
-   int y = wf->b->mxlines - 1;
-   wf->b->b.y = y;
-   wf->b->b.x = (y >= 0 && wf->b->bf[y].s) ? wf->b->bf[y].len : 0;
-  }
-  if (g_ai_chat_focus) {
-   int vh = wf->e.y - wf->a.y - 1;              /* pin the input row to the bottom */
-   int bottom = wf->b->mxlines - vh;
-   wf->s->c.y = bottom > 0 ? bottom : 0;
-  } else {
-   e_messages_scroll_to_bottom(wf);
-  }
+  return;
  }
+ if (pane_focused && g_ai_chat_focus)
+  ai_pane_caret_to_input(wf);
+ else if (pane_focused)
+  ai_pane_caret_to_end(wf);
+ if (g_ai_chat_focus)
+  ai_pane_pin_input_row(wf);
+ else
+  e_messages_scroll_to_bottom(wf);
 }
 
-/* Repaint the pane window and keep the caret in view.  The pane is an ordinary
- * window, so the caret belongs to whichever window is FOCUSED: it sits in the
- * chat input row only while the pane itself is focused; when the user has
- * switched to their file (or an async op runs), the pane repaints in the
- * background and the caret stays in the focused/user window. */
+/**
+ * ai_caret_window - The window whose caret is shown after a pane repaint.
+ * @act: the window on top.
+ *
+ * While a background task runs the caret stays in the user's own window, so
+ * they keep typing in their code while the reply streams or the spinner
+ * turns; otherwise it is the focused window's.
+ */
+static FENSTER *ai_caret_window(FENSTER *act)
+{
+ if (g_ai_bg_win)
+  return g_ai_bg_win;
+ return act;
+}
+
+/**
+ * ai_pane_paint - Repaint the pane and keep the caret in view.
+ * @wf: the pane.
+ *
+ * The pane is an ordinary window, so the caret belongs to whichever window
+ * is FOCUSED: it sits in the chat input row only while the pane itself is
+ * focused; when the user has switched to their file (or a background task
+ * runs), the pane repaints in the background and the caret stays in the
+ * user's window.
+ */
 static void ai_pane_paint(FENSTER *wf)
 {
  extern int wpe_modal_active;                    /* a dropdown/dialog box is open */
- FENSTER *act = wf->ed->f[wf->ed->mxedt];       /* the focused window */
- FENSTER *caret = g_ai_bg_win ? g_ai_bg_win : act;
+ FENSTER *caret = ai_caret_window(ai_top_window(wf));
  int pane_focused = ai_pane_is_focused(wf);
 
  /* A menu or dialog is up on top of us (its whole lifetime sets this flag): do
@@ -1037,19 +1230,20 @@ static void ai_pane_paint(FENSTER *wf)
  e_refresh();
 }
 
-/* Scroll the transcript view by `delta` lines to peek at history.  The view
- * holds until the next key: any edit key repaints and snaps back to the input
- * (ai_pane_paint scrolls to the bottom), so PgUp/PgDn, the arrows and the
- * mouse wheel browse, then editing returns to the prompt.  Every way of
- * browsing comes through here, so they all lock the view the same way. */
+/**
+ * ai_pane_scroll - Browse the transcript by @delta lines.
+ * @wf: the pane.
+ *
+ * The view holds until the next input key: that key repaints and snaps back
+ * to the input (ai_pane_paint pins the bottom), so PgUp/PgDn, the arrows and
+ * the mouse wheel browse, then typing returns to the prompt.  Every way of
+ * browsing comes through here, so they all lock the view the same way.
+ */
 static void ai_pane_scroll(FENSTER *wf, int delta)
 {
  BUFFER *b = wf->b;
  SCHIRM *s = wf->s;
- int vh = wf->e.y - wf->a.y - 1;
- int bottom = b->mxlines - vh;                    /* view offset that pins the input */
-
- if (bottom < 0) bottom = 0;
+ int bottom = ai_pane_bottom_offset(wf);          /* view offset that pins the input */
 
  /* A focused window always re-pins its view to keep the caret visible
     (e_cursor), so moving the view offset alone is undone at once.  Scroll the
@@ -1085,7 +1279,14 @@ static void ai_pane_set_row_bytes(BUFFER *b, int y, const char *text, size_t n)
  b->bf[y].nrc = (int)n + 1;
 }
 
-/* Overwrite pane line `y` with `text` in place (no new line added). */
+/**
+ * ai_pane_set_line - Overwrite pane row @y with @text in place.
+ * @wf: the pane.
+ *
+ * No row is added: the stream line, the input rows and a status that
+ * replaces the waiting line all change under the user's eyes without the
+ * transcript moving.
+ */
 static void ai_pane_set_line(FENSTER *wf, int y, const char *text)
 {
  BUFFER *b = wf->b;
@@ -1098,10 +1299,13 @@ static void ai_pane_set_line(FENSTER *wf, int y, const char *text)
  ai_pane_set_row_bytes(b, y, text, strlen(text));
 }
 
-/* Replace the text of the pane's current stream line in place (the last line, or
- * the line above the input row in focus mode), so a partial line grows
- * token-by-token as the model streams -- the "live typing" effect a real chat
- * has, instead of a whole line appearing at once. */
+/**
+ * ai_pane_set_last - Replace the text of the stream line in place.
+ * @wf: the pane.
+ *
+ * A partial line grows token by token as the model streams, the "live
+ * typing" a real chat has, instead of a whole line appearing at once.
+ */
 static void ai_pane_set_last(FENSTER *wf, const char *text)
 {
  ai_pane_set_line(wf, ai_stream_y(wf), text);
@@ -1133,44 +1337,120 @@ static void ai_pane_set_last_as(FENSTER *wf, const char *text, int role)
  ai_pane_paint(wf);
 }
 
-/* Redraw the input region (the pane's last g_ai_input_rows lines) from the input
- * buffer, which may hold '\n'-separated lines.  The first line shows "> ", the
- * rest are indented so a multi-line prompt aligns under it; the region grows and
- * shrinks with the number of lines. */
+/**
+ * ai_input_line_count - Rows the input region needs for the text in it.
+ *
+ * One per line break and one more: an empty input still has its "> " row.
+ */
+static int ai_input_line_count(void)
+{
+ const char *p;
+ int want = 1;
+ for (p = g_ai_input; *p; p++)
+  if (*p == '\n') want++;
+ return want;
+}
+
+/**
+ * ai_input_drop_last_row - Take the pane's last row out of the input region.
+ * @b: the pane buffer, whose last row belongs to the input region.
+ */
+static void ai_input_drop_last_row(BUFFER *b)
+{
+ int y = b->mxlines - 1;
+ FREE(b->bf[y].s);
+ b->mxlines--;
+ g_ai_input_rows--;
+}
+
+/**
+ * ai_input_fit_rows - Give the input region exactly @want rows.
+ * @b: the pane buffer.
+ *
+ * The region grows and shrinks at the end of the pane as line breaks are
+ * typed and deleted, never below its one "> " row, and the rows are recorded
+ * as plain text so they never take a transcript colour.
+ */
+static void ai_input_fit_rows(BUFFER *b, int want)
+{
+ if (b->mxlines == 0)
+  e_new_line(0, b);
+ while (g_ai_input_rows < want) {
+  e_new_line(b->mxlines, b);
+  g_ai_input_rows++;
+ }
+ while (g_ai_input_rows > want && g_ai_input_rows > 1)
+  ai_input_drop_last_row(b);
+ ai_roles_sync(b);
+}
+
+/* Room in a rendered input row beyond the prompt text, and the part of it
+   kept free of text: the prefix, the terminator and a margin. */
+#define AI_INPUT_ROW_PAD     8
+#define AI_INPUT_ROW_RESERVE 4
+
+/**
+ * ai_input_put_row - Paint one line of the input text as pane row @y.
+ * @wf: the pane.
+ * @first: the line is the first of the input.
+ * @text: the start of the line; @len: its bytes.
+ *
+ * The first line shows the "> " prompt, the ones under it are indented by
+ * the same width, so a multi-line prompt reads as one block.
+ */
+static void ai_input_put_row(FENSTER *wf, int y, int first,
+                             const char *text, int len)
+{
+ char row[AI_PROMPT_MAX + AI_INPUT_ROW_PAD];
+ const char *prefix;
+ if (first)
+  prefix = AI_INPUT_PROMPT;
+ else
+  prefix = AI_INPUT_INDENT;
+ if (len > (int)sizeof row - AI_INPUT_ROW_RESERVE)
+  len = (int)sizeof row - AI_INPUT_ROW_RESERVE;
+ snprintf(row, sizeof row, "%s%.*s", prefix, len, text);
+ ai_pane_set_line(wf, y, row);
+}
+
+/**
+ * ai_input_render - Redraw the input region from the input text.
+ * @wf: the pane.
+ *
+ * The region is the pane's last g_ai_input_rows rows; the text may hold
+ * '\n'-separated lines, one row each.  Every change to the input ends here,
+ * so what the user sees is always the text that Enter would send.
+ */
 static void ai_input_render(FENSTER *wf)
 {
  BUFFER *b = wf->b;
- int want = 1, i;
- const char *p;
- char row[AI_PROMPT_MAX + 8];
+ int want = ai_input_line_count();
+ const char *p = g_ai_input;
+ int i;
 
- for (p = g_ai_input; *p; p++)
-  if (*p == '\n') want++;
-
- if (b->mxlines == 0) e_new_line(0, b);
- while (g_ai_input_rows < want) { e_new_line(b->mxlines, b); g_ai_input_rows++; }
- while (g_ai_input_rows > want && g_ai_input_rows > 1) {
-  int y = b->mxlines - 1;
-  FREE(b->bf[y].s);
-  b->mxlines--;
-  g_ai_input_rows--;
- }
- ai_roles_sync(b);                       /* the input rows are plain text */
- p = g_ai_input;
+ ai_input_fit_rows(b, want);
  for (i = 0; i < want; i++) {
   const char *nl = strchr(p, '\n');
-  int seglen = nl ? (int)(nl - p) : (int)strlen(p);
-  if (seglen > (int)sizeof row - 4) seglen = (int)sizeof row - 4;
-  snprintf(row, sizeof row, "%s%.*s", i == 0 ? "> " : "  ", seglen, p);
-  ai_pane_set_line(wf, b->mxlines - want + i, row);
-  if (!nl) break;
+  int seglen;
+  if (nl)
+   seglen = (int)(nl - p);
+  else
+   seglen = (int)strlen(p);
+  ai_input_put_row(wf, b->mxlines - want + i, i == 0, p, seglen);
+  if (!nl)
+   break;
   p = nl + 1;
  }
  ai_pane_paint(wf);
 }
 
-/* Finalise the current line and open a fresh (empty) one after it -- inserted
- * BEFORE the input region when focus mode owns the bottom rows. */
+/**
+ * ai_pane_commit - Finish the stream line and open an empty one after it.
+ * @wf: the pane.
+ *
+ * The new line goes BEFORE the input region when the chat owns the bottom
+ * rows, so the reply keeps reading down towards the "> " row.
+ */
 static void ai_pane_commit(FENSTER *wf)
 {
  BUFFER *b = wf->b;
@@ -1210,11 +1490,16 @@ static void ai_tr_line(FENSTER *wf, const char *str, int role)
  ai_pane_set_line(wf, at, str);
 }
 
-/* Columns the pane wraps reply text to: inside its two borders, never wider than
- * the line buffer, capped at the readable prose measure AI_PANE_MAX_COLS, and
- * never absurdly small.  Chat streaming, every pane message and the re-wrap
- * after a width change share this, so wrapping is consistent. */
 #define AI_PANE_MIN_COLS 16
+/**
+ * ai_pane_width - Columns the pane wraps reply text to.
+ * @wf: the pane.
+ *
+ * Inside its two borders, never wider than the line buffer, capped at the
+ * readable prose measure AI_PANE_MAX_COLS, and never absurdly small.  Chat
+ * streaming, every pane message and the re-wrap after a width change share
+ * this, so a line always breaks the same way.
+ */
 static int ai_pane_width(FENSTER *wf)
 {
  int w = wf->e.x - wf->a.x - 2;
@@ -1224,10 +1509,15 @@ static int ai_pane_width(FENSTER *wf)
  return w;
 }
 
-/* The streamed line has reached the pane width: emit it up to the last space
- * (word wrap; a hard break if the run has no space) and carry the remainder to a
- * fresh line, so a long reply reads DOWN the window instead of scrolling off to
- * the right.  Continuation lines carry no "AI:" prefix, matching a real chat. */
+/**
+ * ai_stream_wrap - Break the stream line at the pane width.
+ * @s: the chat; @wf: the pane.
+ *
+ * The line is emitted up to its last space (a hard break when the run has
+ * none) and the rest carries over to a fresh row, so a long reply reads
+ * DOWN the window instead of scrolling off to the right.  Continuation rows
+ * carry no "AI:" prefix, as in a real chat.
+ */
 static void ai_stream_wrap(ai_chat_session *s, FENSTER *wf)
 {
  int brk = (int)s->plen;                 /* default: hard break at the end */
@@ -1248,7 +1538,7 @@ static void ai_stream_wrap(ai_chat_session *s, FENSTER *wf)
  s->pending[rem] = '\0';
  s->plen = rem;
  for (col = 0, m = 0; m < rem; m++)
-  if (((unsigned char)s->pending[m] & 0xC0) != 0x80) col++;
+  if (!ai_utf8_continues(s->pending[m])) col++;
  s->pcols = col;
 }
 
@@ -1596,10 +1886,14 @@ static char *ai_tool_result_nonempty(char *result)
  return strdup("(no output -- nothing matched; try a different path or pattern)");
 }
 
-/* Format a "TOOL <name> <arg>" protocol line as a dim one-line status
- * ("  . reading <arg>"), so the raw protocol is never shown as the assistant's
- * answer -- for both a leading tool call and one that follows a preamble.
- * `line` need not be NUL-terminated at `len`. */
+/**
+ * ai_tool_status - Word a "TOOL <name> <arg>" protocol line as a status.
+ * @line: the protocol line, not necessarily NUL-terminated at @len.
+ * @out: the status, "  . reading <arg>"; @n: its room.
+ *
+ * The raw protocol is never shown as the assistant's answer, whether the
+ * tool call leads the reply or follows a preamble.
+ */
 static void ai_tool_status(const char *line, size_t len, char *out, size_t n)
 {
  char first[600], *tool, *arg;
@@ -1618,110 +1912,243 @@ static void ai_tool_status(const char *line, size_t len, char *out, size_t n)
  snprintf(out, n, "  . %s %.560s", pretty, arg);
 }
 
-/* Stream a delta into the pane: append its characters to the current line and
- * start a new line at each '\n', repainting so tokens appear as they arrive.
- * The whole reply is also accumulated for the session log. */
+/**
+ * ai_chat_keep_full - Add @delta to the whole reply kept for the session log.
+ * @s: the chat; @dl: the delta's length.
+ *
+ * The conversation resumes later with the complete answer, not just the
+ * part that was painted.  When memory runs out the delta is left out.
+ */
+static void ai_chat_keep_full(ai_chat_session *s, const char *delta, size_t dl)
+{
+ if (!ai_chat_buf_reserve(&s->full, &s->fcap, s->flen + dl + 1, AI_FULL_FIRST))
+  return;
+ memcpy(s->full + s->flen, delta, dl);
+ s->flen += dl;
+ s->full[s->flen] = '\0';
+}
+
+/**
+ * ai_chat_pending_text - The stream line's text so far, "" before any.
+ */
+static const char *ai_chat_pending_text(const ai_chat_session *s)
+{
+ if (s->pending)
+  return s->pending;
+ return "";
+}
+
+/**
+ * ai_chat_pending_reset - Start the stream line afresh, empty.
+ */
+static void ai_chat_pending_reset(ai_chat_session *s)
+{
+ s->plen = 0;
+ s->pcols = 0;
+ if (s->pending)
+  s->pending[0] = '\0';
+}
+
+/**
+ * ai_chat_pending_append - Add byte @c to the stream line.
+ *
+ * Return: 0 when memory ran out and the byte was not added.
+ */
+static int ai_chat_pending_append(ai_chat_session *s, char c)
+{
+ if (!ai_chat_buf_reserve(&s->pending, &s->pcap, s->plen + 2, AI_PENDING_FIRST))
+  return 0;
+ s->pending[s->plen++] = c;
+ s->pending[s->plen] = '\0';
+ return 1;
+}
+
+/**
+ * ai_chat_show_tool_status - Put a tool call's dim status on the stream line.
+ * @wf: the pane.
+ * @line: the "TOOL <name> <arg>" protocol line; @len: its bytes.
+ *
+ * The user reads "  . reading <path>" where the raw protocol would have
+ * looked like a broken reply.
+ */
+static void ai_chat_show_tool_status(FENSTER *wf, const char *line, size_t len)
+{
+ char status[AI_TOOL_STATUS_MAX];
+ ai_tool_status(line, len, status, sizeof status);
+ ai_pane_set_last_as(wf, status, AI_ROLE_MACHINERY);
+}
+
+/**
+ * ai_chat_show_leading_tool - The reply opens with a tool call: show its status.
+ * @s: the chat.
+ * @nl: the end of the first line, or NULL while it is still arriving.
+ *
+ * The status replaces the waiting line, and the turn is marked a tool
+ * investigation so nothing of the protocol is echoed as "AI:".
+ */
+static void ai_chat_show_leading_tool(ai_chat_session *s, const char *nl)
+{
+ FENSTER *wf = ai_pane_win(s->ref);
+ size_t fl = s->flen;
+ if (nl)
+  fl = (size_t)(nl - s->full);
+ ai_chat_wait_end(s);                               /* the status owns the line */
+ if (wf)
+  ai_chat_show_tool_status(wf, s->full, fl);
+ s->decided = AI_REPLY_TOOL;
+}
+
+/**
+ * ai_chat_decide_first_line - Tell an answer from a tool call by the first line.
+ * @s: the chat, its reply so far undecided.
+ *
+ * A "TOOL ..." line is the model asking to INVESTIGATE (read a file, grep,
+ * ...), not its answer; anything else is the answer and streams.  Return: 1
+ * once decided, 0 while there are too few bytes to tell "TOOL " from text.
+ */
+static int ai_chat_decide_first_line(ai_chat_session *s)
+{
+ const char *nl = memchr(s->full, '\n', s->flen);
+ if (s->flen < AI_TOOL_PREFIX_LEN && !nl)
+  return 0;                                         /* wait: could be "TOOL " */
+ if (!strncmp(s->full, AI_TOOL_PREFIX, AI_TOOL_PREFIX_LEN)) {
+  ai_chat_show_leading_tool(s, nl);
+  return 1;
+ }
+ s->decided = AI_REPLY_ANSWER;                      /* an answer -- stream it */
+ ai_chat_wait_end(s);                               /* the reply owns the line */
+ return 1;
+}
+
+/**
+ * ai_chat_reply_streams - May the painter put the reply's bytes on the pane?
+ * @s: the chat.
+ *
+ * Return: 0 while the first line is undecided and while a tool investigation
+ * is being hidden; 1 for an answer.
+ */
+static int ai_chat_reply_streams(ai_chat_session *s)
+{
+ if (s->decided == AI_REPLY_UNDECIDED && s->full && !ai_chat_decide_first_line(s))
+  return 0;
+ return s->decided != AI_REPLY_TOOL;
+}
+
+/**
+ * ai_chat_open_reply_line - Open the reply's line under the "AI:" header, once.
+ */
+static void ai_chat_open_reply_line(ai_chat_session *s, FENSTER *wf)
+{
+ if (s->started)
+  return;
+ ai_pane_commit(wf);
+ s->started = 1;
+}
+
+/**
+ * ai_chat_end_hidden_tool_line - The hidden TOOL line ended at byte @i of the reply.
+ *
+ * Its dim status stands on the stream line and nothing after it is echoed:
+ * the turn is a tool investigation from here on.
+ */
+static void ai_chat_end_hidden_tool_line(ai_chat_session *s, FENSTER *wf, size_t i)
+{
+ ai_chat_show_tool_status(wf, s->pending, s->plen);
+ s->decided = AI_REPLY_TOOL;
+ ai_chat_pending_reset(s);
+ s->shown = i + 1;
+}
+
+/**
+ * ai_chat_commit_stream_line - A line of the answer is complete.
+ *
+ * It is painted whole and a fresh line opens under it for what follows.
+ */
+static void ai_chat_commit_stream_line(ai_chat_session *s, FENSTER *wf)
+{
+ ai_pane_set_last(wf, ai_chat_pending_text(s));
+ ai_pane_commit(wf);
+ ai_chat_pending_reset(s);
+}
+
+/**
+ * ai_chat_paint_char - Add byte @c of the answer to the stream line.
+ * @width: the pane's wrap width.
+ *
+ * A line that begins "TOOL " after a reasoning preamble is hidden the way a
+ * leading one is; an answer line wraps at the pane width.  Return: 0 when
+ * memory ran out and painting must stop.
+ */
+static int ai_chat_paint_char(ai_chat_session *s, FENSTER *wf, char c, int width)
+{
+ if (!ai_chat_pending_append(s, c))
+  return 0;
+ if (!s->hide_tool && s->plen == AI_TOOL_PREFIX_LEN &&
+     !strncmp(s->pending, AI_TOOL_PREFIX, AI_TOOL_PREFIX_LEN))
+  s->hide_tool = 1;                        /* this fresh line is a tool call */
+ if (!ai_utf8_continues(c))
+  s->pcols++;
+ if (!s->hide_tool && s->pcols >= width)   /* soft-wrap at the pane width */
+  ai_stream_wrap(s, wf);
+ return 1;
+}
+
+/**
+ * ai_chat_show_partial_line - Paint the line that is still arriving.
+ *
+ * The answer's live partial line grows token by token; a tool line still
+ * arriving shows as its dim status.
+ */
+static void ai_chat_show_partial_line(ai_chat_session *s, FENSTER *wf)
+{
+ if (s->hide_tool) {
+  ai_chat_show_tool_status(wf, s->pending, s->plen);
+  return;
+ }
+ ai_pane_set_last(wf, ai_chat_pending_text(s));
+}
+
+/**
+ * ai_delta_cb - Stream a delta of the reply into the pane.
+ * @delta: the bytes just arrived; @ud: the chat.
+ *
+ * Tokens appear as they arrive, a new line opens at each '\n', and the whole
+ * reply is kept for the session log.  Everything of the reply not yet shown
+ * is painted, which covers the bytes held while the first line was being
+ * decided.
+ */
 static void ai_delta_cb(const char *delta, void *ud)
 {
  ai_chat_session *s = ud;
- size_t dl = strlen(delta), i;
  FENSTER *wf;
-
- if (s->flen + dl + 1 > s->fcap) {            /* keep the whole reply too */
-  size_t nc = s->fcap ? s->fcap : 512;
-  char *nb;
-  while (s->flen + dl + 1 > nc) nc *= 2;
-  nb = realloc(s->full, nc);
-  if (nb) { s->full = nb; s->fcap = nc; }
- }
- if (s->full && s->flen + dl + 1 <= s->fcap) {
-  memcpy(s->full + s->flen, delta, dl);
-  s->flen += dl;
-  s->full[s->flen] = '\0';
- }
-
  int width;
- /* Decide from the reply's first line: a "TOOL ..." line is the model asking to
-    INVESTIGATE (read a file, grep, ...), not its answer -- echoing it as "AI:
-    TOOL read_file /path" reads like a broken reply, so show a dim status line
-    and suppress the raw protocol; anything else is the answer and streams. */
- if (!s->decided && s->full) {
-  const char *nl = memchr(s->full, '\n', s->flen);
-  if (s->flen < 5 && !nl) return;                    /* wait: could be "TOOL " */
-  if (!strncmp(s->full, "TOOL ", 5)) {
-   char status[640];
-   size_t fl = nl ? (size_t)(nl - s->full) : s->flen;
-   ai_tool_status(s->full, fl, status, sizeof status);
-   wf = ai_pane_win(s->ref);
-   ai_chat_wait_end(s);                               /* the status owns the line */
-   if (wf) ai_pane_set_last_as(wf, status, AI_ROLE_MACHINERY);  /* replace "(gathering...)" */
-   s->decided = 2;
-   return;
-  }
-  s->decided = 1;                                     /* an answer -- stream it */
-  ai_chat_wait_end(s);                                /* the reply owns the line */
- }
- if (s->decided == 2) return;                         /* keep hiding the investigation */
+ size_t i;
 
+ ai_chat_keep_full(s, delta, strlen(delta));
+ if (!ai_chat_reply_streams(s))
+  return;
  wf = ai_pane_win(s->ref);
- if (!wf) return;
+ if (!wf)
+  return;
  width = ai_pane_width(wf);
- if (!s->started) {          /* open a reply line under the "AI:" header once */
-  ai_pane_commit(wf);
-  s->started = 1;
- }
-
- /* Paint the not-yet-shown portion of `full` (this covers both the delta just
-    arrived and anything buffered while we were deciding).  A model may put a
-    reasoning preamble on the first line(s) and its TOOL call on a later line; a
-    line that begins "TOOL " is hidden the same way a leading one is -- its dim
-    status replaces the raw protocol, and nothing after it is echoed. */
+ ai_chat_open_reply_line(s, wf);
  for (i = s->shown; i < s->flen; i++) {
   char c = s->full[i];
   if (c == '\r')
    continue;
+  if (c == '\n' && s->hide_tool) {
+   ai_chat_end_hidden_tool_line(s, wf, i);
+   return;
+  }
   if (c == '\n') {
-   if (s->hide_tool) {                     /* the hidden TOOL line just ended */
-    char status[640];
-    ai_tool_status(s->pending, s->plen, status, sizeof status);
-    ai_pane_set_last_as(wf, status, AI_ROLE_MACHINERY);
-    s->decided = 2;                        /* suppress anything after the tool */
-    s->plen = 0; s->pcols = 0; if (s->pending) s->pending[0] = '\0';
-    s->shown = i + 1;
-    return;
-   }
-   ai_pane_set_last(wf, s->pending ? s->pending : "");
-   ai_pane_commit(wf);
-   s->plen = 0;
-   s->pcols = 0;
-   if (s->pending) s->pending[0] = '\0';
+   ai_chat_commit_stream_line(s, wf);
    continue;
   }
-  if (s->plen + 2 > s->pcap) {
-   size_t nc = s->pcap ? s->pcap : 256;
-   char *nb;
-   while (s->plen + 2 > nc) nc *= 2;
-   nb = realloc(s->pending, nc);
-   if (!nb) return;
-   s->pending = nb;
-   s->pcap = nc;
-  }
-  s->pending[s->plen++] = c;
-  s->pending[s->plen] = '\0';
-  if (!s->hide_tool && s->plen == 5 && !strncmp(s->pending, "TOOL ", 5))
-   s->hide_tool = 1;                        /* this fresh line is a tool call   */
-  if (((unsigned char)c & 0xC0) != 0x80)   /* not a UTF-8 continuation byte */
-   s->pcols++;
-  if (!s->hide_tool && s->pcols >= width)   /* soft-wrap at the pane width */
-   ai_stream_wrap(s, wf);
+  if (!ai_chat_paint_char(s, wf, c, width))
+   return;
  }
  s->shown = s->flen;                                   /* painted up to here */
- if (s->hide_tool) {                                   /* tool line still arriving */
-  char status[640];
-  ai_tool_status(s->pending, s->plen, status, sizeof status);
-  ai_pane_set_last_as(wf, status, AI_ROLE_MACHINERY);
- } else
-  ai_pane_set_last(wf, s->pending ? s->pending : "");  /* live partial line */
+ ai_chat_show_partial_line(s, wf);
 }
 
 /**
@@ -1737,8 +2164,8 @@ static void ai_delta_cb(const char *delta, void *ud)
  */
 static void ai_chat_paint_held(ai_chat_session *s)
 {
- if (s->decided || !s->full || !s->flen) return;
- s->decided = 1;
+ if (s->decided != AI_REPLY_UNDECIDED || !s->full || !s->flen) return;
+ s->decided = AI_REPLY_ANSWER;
  ai_delta_cb("", s);
 }
 
@@ -1753,7 +2180,7 @@ static void ai_chat_paint_held(ai_chat_session *s)
  */
 static int ai_chat_waiting_line_stands(const ai_chat_session *s)
 {
- return s->decided == 0;
+ return s->decided == AI_REPLY_UNDECIDED;
 }
 
 /**
@@ -1776,7 +2203,173 @@ static void ai_chat_report_transport_error(ai_chat_session *s)
  ai_pane(s->ref, AI_CHAT_TRANSPORT_LINE, AI_ROLE_ERROR, 0);
 }
 
-/* fd-loop callback: drain readable bytes, stream deltas into the pane. */
+/**
+ * ai_chat_record_tool_result - Give the tool's output to the model as the next turn's input.
+ * @tr: the tool's output.
+ *
+ * The model reads what it asked for and answers from it, the way a person
+ * would after looking the file up.
+ */
+static void ai_chat_record_tool_result(const char *tr)
+{
+ size_t n = strlen(tr) + sizeof AI_TOOL_RESULT_HEAD;
+ char *m = malloc(n);
+ if (!m)
+  return;
+ snprintf(m, n, AI_TOOL_RESULT_HEAD "%s", tr);
+ wpe_ai_session_append("user", m);
+ free(m);
+}
+
+/**
+ * ai_chat_restart_turn - Close this turn's stream and start the next one.
+ * @s: the chat.
+ *
+ * The editor never blocks: the next turn (an answer, another tool call, the
+ * retry on the fallback model) streams in the background like the first.
+ */
+static void ai_chat_restart_turn(ai_chat_session *s)
+{
+ wpe_fd_del(s->fd);
+ wpe_ai_stream_free(s->st);
+ s->st = NULL;
+ ai_chat_next_turn(s);
+}
+
+/**
+ * ai_chat_take_tool_turn - Act on a reply that asks to look at the repository.
+ * @s: the chat, its reply complete.
+ *
+ * The reply joins the session log either way.  A tool call within the turn
+ * budget runs read-only and its result feeds the next turn; from here on the
+ * chat acts on the repository and the next prompt carries the project
+ * instructions under the default scope.  Return: 1 when a tool turn is now
+ * streaming, 0 when the reply was the answer.
+ */
+static int ai_chat_take_tool_turn(ai_chat_session *s)
+{
+ char *tr = NULL;
+ if (s->turns < AI_CHAT_MAX_TOOL_TURNS)
+  tr = ai_chat_tool_result(s->ref, s->full);
+ wpe_ai_session_append("assistant", s->full);
+ if (!tr)
+  return 0;
+ wpe_ai_session_mark_tool_turn();
+ tr = ai_tool_result_nonempty(tr);      /* an empty result becomes an explicit note */
+ ai_chat_record_tool_result(tr);
+ free(tr);
+ s->turns++;
+ ai_chat_restart_turn(s);
+ return 1;
+}
+
+/**
+ * ai_chat_fallback_wanted - Should this failed turn be retried on the fallback model?
+ * @emsg: the server's error, NULL for a plain empty answer.
+ *
+ * Once per chat, for a real failure, when a fallback model is set and is not
+ * the model that failed: a primary that is down or too slow does not
+ * dead-end the chat.
+ */
+static int ai_chat_fallback_wanted(const ai_chat_session *s, const char *emsg)
+{
+ if (!emsg || s->fell_back)
+  return 0;
+ if (!e_ai_model_fallback || !*e_ai_model_fallback)
+  return 0;
+ if (e_ai_model && !strcmp(e_ai_model, e_ai_model_fallback))
+  return 0;
+ return 1;
+}
+
+/**
+ * ai_chat_announce_fallback - Say on the stream line that the turn is retried.
+ * @wf: the pane, or NULL when it is gone.
+ *
+ * The user learns which model failed and why before the retry streams.
+ */
+static void ai_chat_announce_fallback(FENSTER *wf, const char *emsg)
+{
+ char line[AI_CHAT_NOTE_MAX];
+ snprintf(line, sizeof line,
+          AI_REPLY_PREFIX "primary model failed (%s) - retrying with %s",
+          emsg, e_ai_model_fallback);
+ if (wf)
+  ai_pane_set_last_as(wf, line, AI_ROLE_MACHINERY);
+}
+
+/**
+ * ai_chat_show_empty_reply - Nothing streamed: say why on the stream line.
+ * @wf: the pane.
+ * @emsg: the server's error, NULL when the answer was simply empty.
+ *
+ * A request the server refused (a model the key cannot access) shows its
+ * error, where "(no answer)" told the user nothing.
+ */
+static void ai_chat_show_empty_reply(FENSTER *wf, const char *emsg)
+{
+ char line[AI_CHAT_NOTE_MAX];
+ if (!emsg) {
+  ai_pane_set_last(wf, AI_REPLY_PREFIX "(no answer)");
+  return;
+ }
+ snprintf(line, sizeof line, AI_REPLY_PREFIX "error: %s", emsg);
+ ai_pane_set_last_as(wf, line, AI_ROLE_ERROR);
+}
+
+/**
+ * ai_chat_end_empty_reply - End a turn that produced no text.
+ * @s: the chat.
+ *
+ * Return: 1 when the turn goes on, retried on the fallback model; 0 when it
+ * ends with the error or the placeholder on the stream line.
+ */
+static int ai_chat_end_empty_reply(ai_chat_session *s)
+{
+ FENSTER *wf = ai_pane_win(s->ref);
+ char *emsg = wpe_ai_stream_error_message(s->st);
+ if (ai_chat_fallback_wanted(s, emsg)) {
+  ai_chat_announce_fallback(wf, emsg);
+  free(emsg);
+  s->fell_back = 1;
+  ai_chat_restart_turn(s);
+  return 1;
+ }
+ if (wf)
+  ai_chat_show_empty_reply(wf, emsg);
+ free(emsg);
+ return 0;
+}
+
+/**
+ * ai_chat_reply_done - The stream has ended: close the turn or take the next.
+ * @s: the chat.
+ *
+ * The trailing partial line is already on screen (painted live), except a
+ * reply too short for the painter to have decided on, painted here.  The
+ * session is saved once the turn really ends, so the talk resumes complete.
+ */
+static void ai_chat_reply_done(ai_chat_session *s)
+{
+ int has_text;
+ ai_chat_paint_held(s);
+ has_text = (s->full != NULL && s->flen > 0);
+ if (has_text && ai_chat_take_tool_turn(s))
+  return;
+ if (!has_text && ai_chat_end_empty_reply(s))
+  return;
+ wpe_ai_session_save(s->ref);
+ wpe_ai_trace("chat done");
+ ai_chat_turn_over(s);
+}
+
+/**
+ * ai_fd_cb - The stream has bytes: drain them into the pane.
+ * @fd: the stream's descriptor; @data: the chat.
+ *
+ * Called from the editor's fd loop, so the reply arrives while the user
+ * keeps editing; a peer that hangs up ends the turn with a word about it.
+ */
 static void ai_fd_cb(int fd, void *data)
 {
  ai_chat_session *s = data;
@@ -1789,68 +2382,8 @@ static void ai_fd_cb(int fd, void *data)
   ai_chat_turn_over(s);
   return;
  }
- if (done) {
-  /* the trailing partial is already on screen (painted live in ai_delta_cb),
-     except a reply too short for the painter to have decided on: paint it now */
-  ai_chat_paint_held(s);
-  if (s->full && s->flen) {
-   char *tr = (s->turns < AI_CHAT_MAX_TOOL_TURNS)
-              ? ai_chat_tool_result(s->ref, s->full) : NULL;
-   wpe_ai_session_append("assistant", s->full);
-   if (tr) {
-    /* the model asked to investigate: feed the tool result and take another
-       turn -- the editor never blocked, this just continues in the background.
-       From this turn on the chat acts on the repository, and the next prompt
-       carries the project instructions under the default scope. */
-    wpe_ai_session_mark_tool_turn();
-    tr = ai_tool_result_nonempty(tr);   /* an empty result becomes an explicit note */
-    { size_t n = strlen(tr) + 32; char *m = malloc(n);
-      if (m) { snprintf(m, n, "TOOL RESULT:\n%s", tr); wpe_ai_session_append("user", m); free(m); } }
-    free(tr);
-    s->turns++;
-    wpe_fd_del(s->fd);                 /* close this turn's stream */
-    wpe_ai_stream_free(s->st); s->st = NULL;
-    ai_chat_next_turn(s);              /* stream the next turn (answer or tool) */
-    return;
-   }
-  } else {
-   /* nothing streamed: show the server's error if the request failed (e.g. a
-      model the key cannot access -> "(no answer)" told the user nothing), else
-      the plain empty-answer placeholder. */
-   FENSTER *wf = ai_pane_win(s->ref);
-   char *emsg = wpe_ai_stream_error_message(s->st);
-   /* Model fallback: a real failure (an error, not just an empty answer) retries
-      this turn ONCE on the configured fallback model, so a primary that is down
-      or too slow does not dead-end the chat. */
-   if (emsg && !s->fell_back && e_ai_model_fallback && *e_ai_model_fallback &&
-       (!e_ai_model || strcmp(e_ai_model, e_ai_model_fallback))) {
-    char line[440];
-    snprintf(line, sizeof line,
-             AI_REPLY_PREFIX "primary model failed (%s) - retrying with %s",
-             emsg, e_ai_model_fallback);
-    if (wf) ai_pane_set_last_as(wf, line, AI_ROLE_MACHINERY);
-    free(emsg);
-    s->fell_back = 1;
-    wpe_fd_del(s->fd);
-    wpe_ai_stream_free(s->st); s->st = NULL;
-    ai_chat_next_turn(s);            /* re-run this turn on the fallback model */
-    return;
-   }
-   if (wf) {
-    if (emsg) {
-     char line[440];
-     snprintf(line, sizeof line, AI_REPLY_PREFIX "error: %s", emsg);
-     ai_pane_set_last_as(wf, line, AI_ROLE_ERROR);
-    } else {
-     ai_pane_set_last(wf, AI_REPLY_PREFIX "(no answer)");
-    }
-   }
-   free(emsg);
-  }
-  wpe_ai_session_save(s->ref);
-  wpe_ai_trace("chat done");
-  ai_chat_turn_over(s);
- }
+ if (done)
+  ai_chat_reply_done(s);
 }
 
 /* Tell the model which backend and model are actually serving THIS turn, so an
@@ -2586,7 +3119,7 @@ static void ai_chat_next_turn(ai_chat_session *s)
  s->fd = wpe_ai_stream_fd(s->st);
  s->active = 1;
  s->started = 0;
- s->decided = 0;
+ s->decided = AI_REPLY_UNDECIDED;
  s->hide_tool = 0;
  s->shown = 0;
  s->flen = 0; if (s->full) s->full[0] = '\0';
@@ -2819,26 +3352,47 @@ static void e_ai_chat_send(FENSTER *f, const char *text)
 
 /* ----- input-row editing: a small line editor over g_ai_input ------------- */
 
-static int ai_in_prev(int p)            /* byte index of the char before p */
+/**
+ * ai_in_prev - Byte index of the character before @p in the input.
+ *
+ * Steps over a whole multibyte character, so Left and Backspace never land
+ * inside one.
+ */
+static int ai_in_prev(int p)
 {
  if (p <= 0) return 0;
  p--;
- while (p > 0 && ((unsigned char)g_ai_input[p] & 0xC0) == 0x80) p--;
+ while (p > 0 && ai_utf8_continues(g_ai_input[p])) p--;
  return p;
 }
-static int ai_in_next(int p)            /* byte index of the char after p */
+/**
+ * ai_in_next - Byte index of the character after @p in the input.
+ *
+ * Steps over a whole multibyte character, so Right and Delete never land
+ * inside one.
+ */
+static int ai_in_next(int p)
 {
  if (p >= g_ai_input_len) return g_ai_input_len;
  p++;
- while (p < g_ai_input_len && ((unsigned char)g_ai_input[p] & 0xC0) == 0x80) p++;
+ while (p < g_ai_input_len && ai_utf8_continues(g_ai_input[p])) p++;
  return p;
 }
-static int ai_in_bol(int p)             /* start of the input line holding p */
+/**
+ * ai_in_bol - Start of the input line holding byte @p.
+ *
+ * Home and the arrows work on the line of a multi-line prompt, not on the
+ * whole input.
+ */
+static int ai_in_bol(int p)
 {
  while (p > 0 && g_ai_input[p - 1] != '\n') p--;
  return p;
 }
-static int ai_in_eol(int p)             /* end of the input line holding p */
+/**
+ * ai_in_eol - End of the input line holding byte @p.
+ */
+static int ai_in_eol(int p)
 {
  while (p < g_ai_input_len && g_ai_input[p] != '\n') p++;
  return p;
@@ -2939,91 +3493,187 @@ static int ai_in_paste_break(int c)
  if (!g_bracketed_paste) return 0;
  return (c == WPE_CR || c == WPE_WR);
 }
-static void ai_in_backspace(void)       /* delete the char before the caret */
+/**
+ * ai_in_cut - Take the bytes [@from, @to) out of the input.
+ *
+ * The text after the cut closes up and the row stays terminated; the caret
+ * is the caller's to place.
+ */
+static void ai_in_cut(int from, int to)
+{
+ memmove(g_ai_input + from, g_ai_input + to, (size_t)(g_ai_input_len - to));
+ g_ai_input_len -= (to - from);
+ g_ai_input[g_ai_input_len] = '\0';
+}
+
+/**
+ * ai_in_backspace - Delete the character before the caret, whole.
+ */
+static void ai_in_backspace(void)
 {
  int q;
  if (g_ai_input_pos <= 0) return;
  q = ai_in_prev(g_ai_input_pos);
- memmove(g_ai_input + q, g_ai_input + g_ai_input_pos,
-         (size_t)(g_ai_input_len - g_ai_input_pos));
- g_ai_input_len -= (g_ai_input_pos - q);
+ ai_in_cut(q, g_ai_input_pos);
  g_ai_input_pos = q;
- g_ai_input[g_ai_input_len] = '\0';
 }
-static void ai_in_delete(void)          /* delete the char at the caret */
+
+/**
+ * ai_in_delete - Delete the character at the caret, whole.
+ */
+static void ai_in_delete(void)
 {
- int q;
  if (g_ai_input_pos >= g_ai_input_len) return;
- q = ai_in_next(g_ai_input_pos);
- memmove(g_ai_input + g_ai_input_pos, g_ai_input + q,
-         (size_t)(g_ai_input_len - q));
- g_ai_input_len -= (q - g_ai_input_pos);
- g_ai_input[g_ai_input_len] = '\0';
+ ai_in_cut(g_ai_input_pos, ai_in_next(g_ai_input_pos));
 }
-static void ai_in_vmove(int dir)        /* caret up/down one line, keep column */
+
+/**
+ * ai_in_caret_on_line - Put the caret at column @col of the line [@bol, @eol].
+ *
+ * A shorter line takes the caret at its end, as the arrows do in the editor.
+ */
+static void ai_in_caret_on_line(int bol, int eol, int col)
+{
+ g_ai_input_pos = bol + col;
+ if (g_ai_input_pos > eol)
+  g_ai_input_pos = eol;
+}
+
+/**
+ * ai_in_vmove - Move the caret a line up (@dir < 0) or down, keeping its column.
+ *
+ * Return: 1 when the caret moved, 0 at the first or last line of the input,
+ * where the key is the transcript's instead and browses it.
+ */
+static int ai_in_vmove(int dir)
 {
  int bol = ai_in_bol(g_ai_input_pos);
  int col = g_ai_input_pos - bol;
+ int eol;
  if (dir < 0) {
-  if (bol == 0) return;
-  { int pbol = ai_in_bol(bol - 1), peol = bol - 1;
-    g_ai_input_pos = pbol + col;
-    if (g_ai_input_pos > peol) g_ai_input_pos = peol; }
- } else {
-  int eol = ai_in_eol(g_ai_input_pos);
-  if (eol >= g_ai_input_len) return;
-  { int nbol = eol + 1, neol = ai_in_eol(nbol);
-    g_ai_input_pos = nbol + col;
-    if (g_ai_input_pos > neol) g_ai_input_pos = neol; }
+  if (bol == 0)
+   return 0;
+  ai_in_caret_on_line(ai_in_bol(bol - 1), bol - 1, col);
+  return 1;
  }
+ eol = ai_in_eol(g_ai_input_pos);
+ if (eol >= g_ai_input_len)
+  return 0;
+ ai_in_caret_on_line(eol + 1, ai_in_eol(eol + 1), col);
+ return 1;
 }
 
-/* Close the chat: drop the "> " input region and hand focus back to the file the
- * chat was opened from.  The transcript stays in the (now ordinary) pane. */
+/**
+ * ai_input_clear - Empty the input text and put the caret at its start.
+ *
+ * What was typed is gone from the row: after Enter sent it, and when the
+ * chat is armed afresh.
+ */
+static void ai_input_clear(void)
+{
+ g_ai_input[0] = '\0';
+ g_ai_input_len = 0;
+ g_ai_input_pos = 0;
+}
+
+/**
+ * ai_input_drop_rows - Remove the whole input region from the pane.
+ * @b: the pane buffer.
+ *
+ * The transcript above it stays; the pane reads as the plain output window
+ * it was before the chat.
+ */
+static void ai_input_drop_rows(BUFFER *b)
+{
+ while (g_ai_input_rows > 0 && b->mxlines > 0)
+  ai_input_drop_last_row(b);
+ ai_roles_sync(b);
+}
+
+/**
+ * ai_window_slot - Where window @w stands in the desktop's window list.
+ * @f: any window of the desktop.
+ *
+ * Return: its index, 0 when it is not on the desktop.  The index names the
+ * window to e_switch_window, which brings it to the front.
+ */
+static int ai_window_slot(FENSTER *f, FENSTER *w)
+{
+ int wi;
+ for (wi = 1; wi <= f->ed->mxedt; wi++)
+  if (f->ed->f[wi] == w) return wi;
+ return 0;
+}
+
+/**
+ * e_ai_chat_close - Esc: leave the chat.
+ *
+ * The "> " input region goes and focus returns to the file the chat was
+ * opened from; the transcript stays in the (now ordinary) pane to be read
+ * or copied.
+ */
 static void e_ai_chat_close(void)
 {
  FENSTER *wf = g_ai_chat_pane;
  if (!wf) return;
  g_ai_chat_focus = 0;
  g_ai_chat_pane = NULL;
- { BUFFER *b = wf->b;
-   while (g_ai_input_rows > 0 && b->mxlines > 0) {
-    int y = b->mxlines - 1;
-    FREE(b->bf[y].s);
-    b->mxlines--;
-    g_ai_input_rows--;
-   }
-   ai_roles_sync(b); }
+ ai_input_drop_rows(wf->b);
  ai_pane_paint(wf);
  if (g_ai_home_edt >= 0)
   e_switch_window(g_ai_home_edt, wf);
 }
 
-/* Arm the chat: dock and focus the pane, add the "> " input row, and remember it
- * as the active chat pane.  From here the pane is an ORDINARY window -- the main
- * editor loop drives it, so mouse, scrolling, resizing and switching to other
- * windows all work; only the input keys are intercepted (see e_ai_chat_key). */
+/**
+ * ai_chat_remember_home - Note the window Esc returns to when the chat closes.
+ * @f: the window the chat was opened from.
+ */
+static void ai_chat_remember_home(FENSTER *f)
+{
+ int wi = ai_window_slot(f, f);
+ g_ai_home_edt = -1;
+ if (wi)
+  g_ai_home_edt = f->ed->edt[wi];
+}
+
+/**
+ * ai_chat_raise_pane - Bring the pane in front of the other windows.
+ * @f: the window the request came from.
+ * @wf: the pane.
+ *
+ * The user sees the transcript and the input row without hunting for them
+ * under the file they were editing.
+ */
+static void ai_chat_raise_pane(FENSTER *f, FENSTER *wf)
+{
+ int wi = ai_window_slot(f, wf);
+ if (wi)
+  e_switch_window(f->ed->edt[wi], wf);
+}
+
+/**
+ * e_ai_chat_arm - Open the chat: dock and focus the pane, add the "> " row.
+ * @f: the window the chat was asked for from.
+ *
+ * From here the pane is an ORDINARY window the main editor loop drives, so
+ * mouse, scrolling, resizing and switching to other windows all work; only
+ * the input keys are intercepted (see e_ai_chat_key).
+ */
 static void e_ai_chat_arm(FENSTER *f)
 {
  FENSTER *wf;
- int wi;
 
- g_ai_home_edt = -1;
- for (wi = 1; wi <= f->ed->mxedt; wi++)         /* remember the caller's window */
-  if (f->ed->f[wi] == f) { g_ai_home_edt = f->ed->edt[wi]; break; }
+ ai_chat_remember_home(f);
  wf = ai_pane_win(f);
  if (!wf) return;
- for (wi = 1; wi <= f->ed->mxedt; wi++)         /* bring the pane to the front */
-  if (f->ed->f[wi] == wf) { e_switch_window(f->ed->edt[wi], wf); break; }
+ ai_chat_raise_pane(f, wf);
  wf = ai_pane_win(f);
  if (!wf) return;
 
  g_ai_chat_pane = wf;
  g_ai_chat_focus = 1;
  g_ai_scroll_lock = 0;
- g_ai_input[0] = '\0';
- g_ai_input_len = 0;
- g_ai_input_pos = 0;
+ ai_input_clear();
  g_ai_input_rows = 0;
  if (wf->b->mxlines == 0) e_new_line(0, wf->b);
  ai_roles_sync(wf->b);
@@ -3043,9 +3693,9 @@ static void e_ai_chat_arm(FENSTER *f)
  */
 static void ai_chat_focus_pane(FENSTER *f)
 {
- int wi;
- for (wi = 1; wi <= f->ed->mxedt; wi++)
-  if (f->ed->f[wi] == g_ai_chat_pane) { e_switch_window(f->ed->edt[wi], f); return; }
+ int wi = ai_window_slot(f, g_ai_chat_pane);
+ if (wi)
+  e_switch_window(f->ed->edt[wi], f);
 }
 
 /**
@@ -3084,7 +3734,7 @@ static FENSTER *ai_chat_focused_pane(FENSTER *f)
   return NULL;
  if (f == g_ai_chat_pane)
   return g_ai_chat_pane;
- if (f->ed->f[f->ed->mxedt] == g_ai_chat_pane)
+ if (ai_top_window(f) == g_ai_chat_pane)
   return g_ai_chat_pane;
  return NULL;
 }
@@ -3106,101 +3756,253 @@ int e_ai_chat_wheel(FENSTER *f, int c)
  if (!wf)
   return 0;
  if (c == WPE_SCROLL_UP) {
-  ai_pane_scroll(wf, -AI_WHEEL_LINES);
+  ai_pane_scroll(wf, -WPE_WHEEL_LINES);
   return 1;
  }
  if (c == WPE_SCROLL_DOWN) {
-  ai_pane_scroll(wf, +AI_WHEEL_LINES);
+  ai_pane_scroll(wf, +WPE_WHEEL_LINES);
   return 1;
  }
  return 0;
+}
+
+/* What a key does to the input row.  The one list of the keys the chat takes
+   from the editor: the key handler reads it to act, and a key not in it goes
+   back to the editor with the browsed view left where the user put it. */
+enum ai_chat_key_action {
+ AI_KEY_NOT_INPUT = 0,   /* the editor's: a window switch, a function key */
+ AI_KEY_PASTE_BREAK,     /* a line break inside a terminal paste          */
+ AI_KEY_SEND,            /* Enter                                         */
+ AI_KEY_NEWLINE,         /* Ctrl-J                                        */
+ AI_KEY_BACKSPACE,
+ AI_KEY_DELETE,
+ AI_KEY_LEFT,
+ AI_KEY_RIGHT,
+ AI_KEY_BOL,             /* Home, Ctrl-A                                  */
+ AI_KEY_EOL,             /* End, Ctrl-E                                   */
+ AI_KEY_CHAR             /* a printable character, ASCII or Unicode       */
+};
+
+/* The key codes that are a typed character: from the space up to, not
+   including, the editor's byte limit; a code point past it arrives with
+   e_input_was_char set by the key reader. */
+#define AI_PRINTABLE_FIRST 32
+#define AI_PRINTABLE_END   255
+#define AI_ASCII_END       0x80   /* the first code point that needs UTF-8 */
+#define AI_UTF8_MAX        4      /* bytes a code point takes at most      */
+
+/**
+ * ai_chat_key_is_printable - Is key @c a character to put in the input?
+ */
+static int ai_chat_key_is_printable(int c)
+{
+ if (c >= AI_PRINTABLE_FIRST && c < AI_PRINTABLE_END)
+  return 1;
+ return e_input_was_char;
 }
 
 /**
- * ai_chat_is_input_key - Does this key act on the input row?
- * @c: the key code.
+ * ai_chat_key_action - What key @c does to the input row.
  *
- * Only such a key ends a browse of the transcript.  A window switch (the key
- * a click on the file window turns into) or a function key goes back to the
- * editor and leaves the browsed view where the user left it, so clicking into
- * the file to work there does not lose the place being read in the pane.
+ * Return: the action, AI_KEY_NOT_INPUT for a key that is the editor's.  Only
+ * an input key ends a browse of the transcript: a window switch (the key a
+ * click on the file window turns into) or a function key leaves the browsed
+ * view where the user left it, so clicking into the file to work there does
+ * not lose the place being read in the pane.
  */
-static int ai_chat_is_input_key(int c)
+static int ai_chat_key_action(int c)
 {
- if (ai_in_paste_break(c))
-  return 1;
- if (c == WPE_CR || c == WPE_WR || c == WPE_DC || c == ENTF)
-  return 1;
- if (c == CLE || c == CRI || c == POS1 || c == CtrlA || c == ENDE || c == CtrlE)
-  return 1;
- if ((c >= 32 && c < 255) || e_input_was_char)
-  return 1;
- return 0;
+ if (ai_in_paste_break(c)) return AI_KEY_PASTE_BREAK;
+ if (c == WPE_CR) return AI_KEY_SEND;
+ if (c == WPE_WR) return AI_KEY_NEWLINE;
+ if (c == WPE_DC) return AI_KEY_BACKSPACE;
+ if (c == ENTF) return AI_KEY_DELETE;
+ if (c == CLE) return AI_KEY_LEFT;
+ if (c == CRI) return AI_KEY_RIGHT;
+ if (c == POS1 || c == CtrlA) return AI_KEY_BOL;
+ if (c == ENDE || c == CtrlE) return AI_KEY_EOL;
+ if (ai_chat_key_is_printable(c)) return AI_KEY_CHAR;
+ return AI_KEY_NOT_INPUT;
 }
 
-/* Handle one key while the AI chat pane is the FOCUSED window.  Returns 1 if the
- * key was an input action (consumed), 0 to let the editor handle it normally
- * (window switch, function keys, ...).  Mouse is handled by the editor before
- * this is reached, so dragging/resizing/switching windows all keep working. */
+/**
+ * ai_chat_send_input - Enter: send the whole input as the next question.
+ * @wf: the pane.
+ *
+ * The row empties as the question goes out, so the echo "You: ..." above
+ * and the fresh "> " row tell the user it was taken.  An empty row sends
+ * nothing.
+ */
+static void ai_chat_send_input(FENSTER *wf)
+{
+ char sb[AI_PROMPT_MAX];
+ if (g_ai_input_len <= 0)
+  return;
+ strncpy(sb, g_ai_input, sizeof sb - 1);
+ sb[sizeof sb - 1] = '\0';
+ ai_input_clear();
+ ai_input_render(wf);
+ e_ai_chat_send(wf, sb);
+}
+
+/**
+ * ai_chat_type_char - Put the character key @c into the input row.
+ * @wf: the pane.
+ *
+ * A code point past ASCII goes in as its UTF-8 bytes, so an accented or
+ * CJK character typed on any keyboard layout lands whole.
+ */
+static void ai_chat_type_char(FENSTER *wf, int c)
+{
+ unsigned char u8[AI_UTF8_MAX];
+ int n;
+ if (c >= AI_ASCII_END) {
+  n = e_codepoint_to_utf8(c, u8);
+ } else {
+  u8[0] = (unsigned char)c;
+  n = 1;
+ }
+ ai_in_type(wf, (char *)u8, n);
+}
+
+/**
+ * ai_chat_input_act - Carry out input @action for key @c and show the result.
+ * @wf: the pane.
+ *
+ * Every edit repaints the row, so the caret and the text never lag behind
+ * the key.
+ */
+static void ai_chat_input_act(FENSTER *wf, int action, int c)
+{
+ switch (action) {
+ case AI_KEY_PASTE_BREAK:                /* pasted text is literal */
+ case AI_KEY_NEWLINE:
+  ai_in_newline(wf);
+  return;
+ case AI_KEY_SEND:
+  ai_chat_send_input(wf);
+  return;
+ case AI_KEY_CHAR:
+  ai_chat_type_char(wf, c);
+  return;
+ case AI_KEY_BACKSPACE:
+  ai_in_backspace();
+  break;
+ case AI_KEY_DELETE:
+  ai_in_delete();
+  break;
+ case AI_KEY_LEFT:
+  g_ai_input_pos = ai_in_prev(g_ai_input_pos);
+  break;
+ case AI_KEY_RIGHT:
+  g_ai_input_pos = ai_in_next(g_ai_input_pos);
+  break;
+ case AI_KEY_BOL:
+  g_ai_input_pos = ai_in_bol(g_ai_input_pos);
+  break;
+ case AI_KEY_EOL:
+  g_ai_input_pos = ai_in_eol(g_ai_input_pos);
+  break;
+ default:
+  return;
+ }
+ ai_input_render(wf);
+}
+
+/**
+ * ai_chat_key_up - The Up arrow in the chat pane.
+ * @wf: the pane.
+ *
+ * Moves within a multi-line input; at its first line (or a one-line input)
+ * it browses the transcript, so the history can be read back with the
+ * arrows.  While a browse is on it keeps browsing, older.
+ */
+static void ai_chat_key_up(FENSTER *wf)
+{
+ if (g_ai_scroll_lock) {
+  ai_pane_scroll(wf, -1);
+  return;
+ }
+ if (ai_in_vmove(-1)) {
+  ai_input_render(wf);
+  return;
+ }
+ ai_pane_scroll(wf, -1);                /* top of the input: older */
+}
+
+/**
+ * ai_chat_key_down - The Down arrow in the chat pane.
+ * @wf: the pane.
+ *
+ * Moves within a multi-line input; while a browse is on it browses newer,
+ * back towards the input row.  At the input's last line it does nothing.
+ */
+static void ai_chat_key_down(FENSTER *wf)
+{
+ if (g_ai_scroll_lock) {
+  ai_pane_scroll(wf, +1);
+  return;
+ }
+ if (ai_in_vmove(1))
+  ai_input_render(wf);
+}
+
+/**
+ * e_ai_chat_key - One key while the chat pane is the focused window.
+ * @f: the window the editor loop believes is focused.
+ * @c: the key code.
+ *
+ * Return: 1 when the key was the chat's (Esc, browsing, an input key), 0 to
+ * let the editor handle it as usual (a window switch, a function key).  The
+ * mouse is the editor's before this is reached, so dragging, resizing and
+ * switching windows all keep working.
+ */
 int e_ai_chat_key(FENSTER *f, int c)
 {
  FENSTER *wf = ai_chat_focused_pane(f);
+ int action;
 
  if (!wf)
   return 0;
- f = wf;
- if (c == WPE_ESC) { e_ai_chat_close(); return 1; }
- if (c == BUP) { ai_pane_scroll(wf, -(wf->e.y - wf->a.y - 2)); return 1; }
- if (c == BDO) { ai_pane_scroll(wf, +(wf->e.y - wf->a.y - 2)); return 1; }
- /* Up/Down move within a multi-line input; at its edges (or a single-line input)
-    they browse the transcript, so you can read back the history with the arrows.
-    Handled before the scroll-lock reset below so they keep the browsed view. */
+ if (c == WPE_ESC) {
+  e_ai_chat_close();
+  return 1;
+ }
+ if (c == BUP) {
+  ai_pane_scroll(wf, -ai_pane_page_rows(wf));
+  return 1;
+ }
+ if (c == BDO) {
+  ai_pane_scroll(wf, +ai_pane_page_rows(wf));
+  return 1;
+ }
+ /* The arrows come before the scroll-lock reset below, so they keep the
+    browsed view. */
  if (c == CUP) {
-  if (g_ai_scroll_lock) { ai_pane_scroll(wf, -1); return 1; }   /* browse older */
-  { int before = g_ai_input_pos; ai_in_vmove(-1);
-    if (g_ai_input_pos != before) { ai_input_render(wf); return 1; } }
-  ai_pane_scroll(wf, -1);                                       /* top of input: older */
+  ai_chat_key_up(wf);
   return 1;
  }
  if (c == CDO) {
-  if (g_ai_scroll_lock) { ai_pane_scroll(wf, +1); return 1; }   /* reading back: newer */
-  { int before = g_ai_input_pos; ai_in_vmove(1);
-    if (g_ai_input_pos != before) ai_input_render(wf); }
+  ai_chat_key_down(wf);
   return 1;
  }
- if (!ai_chat_is_input_key(c))
-  return 0;                                      /* the editor's key: the browsed view stays */
- g_ai_scroll_lock = 0;                           /* an input key returns to the input */
- if (ai_in_paste_break(c)) { ai_in_newline(wf); return 1; }   /* pasted text is literal */
- if (c == WPE_CR) {                             /* Enter: send the whole input */
-  if (g_ai_input_len > 0) {
-   char sb[AI_PROMPT_MAX];
-   strncpy(sb, g_ai_input, sizeof sb - 1);
-   sb[sizeof sb - 1] = '\0';
-   g_ai_input[0] = '\0';
-   g_ai_input_len = 0;
-   g_ai_input_pos = 0;
-   ai_input_render(wf);
-   e_ai_chat_send(f, sb);
-  }
-  return 1;
- }
- if (c == WPE_WR)   { ai_in_newline(wf);                                                return 1; }
- if (c == WPE_DC)   { ai_in_backspace();                           ai_input_render(wf); return 1; }
- if (c == ENTF)     { ai_in_delete();                              ai_input_render(wf); return 1; }
- if (c == CLE)      { g_ai_input_pos = ai_in_prev(g_ai_input_pos); ai_input_render(wf); return 1; }
- if (c == CRI)      { g_ai_input_pos = ai_in_next(g_ai_input_pos); ai_input_render(wf); return 1; }
- if (c == POS1 || c == CtrlA) { g_ai_input_pos = ai_in_bol(g_ai_input_pos); ai_input_render(wf); return 1; }
- if (c == ENDE || c == CtrlE) { g_ai_input_pos = ai_in_eol(g_ai_input_pos); ai_input_render(wf); return 1; }
- if ((c >= 32 && c < 255) || e_input_was_char) { /* a printable char (ASCII/Unicode) */
-  unsigned char u8[4];
-  int n = (c >= 0x80) ? e_codepoint_to_utf8(c, u8) : (u8[0] = (unsigned char)c, 1);
-  ai_in_type(wf, (char *)u8, n);
-  return 1;
- }
- return 0;                                        /* not an input key: editor handles it */
+ action = ai_chat_key_action(c);
+ if (action == AI_KEY_NOT_INPUT)
+  return 0;                             /* the editor's key: the browsed view stays */
+ g_ai_scroll_lock = 0;                  /* an input key returns to the input */
+ ai_chat_input_act(wf, action, c);
+ return 1;
 }
 
+/**
+ * e_ai_chat - Alt-G: open the chat, or bring the open one to the front.
+ * @f: the window the request came from.
+ *
+ * The assistant must be reachable and a model set; otherwise the pane says
+ * what is missing and nothing else changes.  The workspace's saved talk is
+ * resumed, and the user types straight into the pane's input row: Enter
+ * sends, Ctrl-J breaks the line, Esc leaves.
+ */
 static int e_ai_chat(FENSTER *f)
 {
  char err[320], line[400];

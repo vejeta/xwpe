@@ -158,6 +158,9 @@
 #define WPE_SCROLL_UP   2000
 #define WPE_SCROLL_DOWN 2001
 #define WPE_RESIZE      2002
+/* Lines one mouse-wheel step scrolls: the editor's windows and the AI pane
+   move by the same amount, so the wheel feels the same wherever it is used. */
+#define WPE_WHEEL_LINES 3
 /* Bracketed-paste markers (xterm mode 2004): the terminal wraps pasted text in
    ESC[200~ ... ESC[201~.  Delivered as these codes so consumers can insert the
    content literally instead of running Enter/Esc/commands that the pasted bytes
