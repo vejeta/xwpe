@@ -12,6 +12,12 @@ import subprocess
 import pytest
 from wpe_driver import WpeSession, ALT, WPE_BIN
 
+# The driver scales its own key/drain waits by XWPE_TEST_WAIT_SCALE (the
+# in-tree default of 1 leaves the numbers below unchanged); scale the mock
+# reply's delay the same way so both readings of the spinner still fall
+# while the task is working under a slower or faster test host.
+WAIT_SCALE = float(os.environ.get("XWPE_TEST_WAIT_SCALE", "1") or 1)
+
 
 def _ai_build():
     try:
@@ -39,7 +45,12 @@ def _start_edit(s):
 def test_editor_interactive_and_spinner_during_generation(tmp_path):
     env = {"XWPE_AI_ENABLE": "1", "XWPE_AI_BACKEND": "mock",
            "XWPE_AI_MOCK_REPLY": "int main(void){return 1;}",
-           "XWPE_AI_MOCK_DELAY_MS": "4000"}
+           # Raised from the 4000 ms the other test in this file still uses:
+           # the second reading below comes ~4.1s after Enter, and the
+           # result now replaces the waiting line as soon as the reply
+           # lands (it no longer stays frozen), so a 4000 ms reply would
+           # have already opened the review by the second reading.
+           "XWPE_AI_MOCK_DELAY_MS": str(int(8000 * WAIT_SCALE))}
     with WpeSession(str(tmp_path), "AAA\n", filename="stack.c",
                     env_extra=env) as s:
         _start_edit(s)

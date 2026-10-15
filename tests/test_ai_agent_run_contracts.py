@@ -253,12 +253,19 @@ def test_launch_checkpoint_shown_before_the_first_tool_line_under_auto(tmp_path)
         # The review's Messages window halves the pane, so the checkpoint
         # line is above the view: read the pane's lines back with PgUp.
         lines = pane_text_with_history(s, [CHECKPOINT_LINE, LIST_DIR_LINE])
+    # The checkpoint line and "[agent] list_dir ." are now adjacent rows,
+    # and pane_logical_lines' join rule reads them as one logical line (the
+    # checkpoint line is 70 characters and the next word would not have
+    # fitted on its row), so their row indexes are equal and cannot tell
+    # which came first. Assert the reading order of the two phrases in the
+    # pane's text instead, as test_ai_agent_project_instructions.py does for
+    # the same situation.
     text = "\n".join(lines)
-    ck_row = _row_index(lines, CHECKPOINT_LINE)
-    tool_row = _row_index(lines, LIST_DIR_LINE)
-    assert ck_row >= 0, "no checkpoint line in the pane under auto:\n" + text
-    assert tool_row >= 0, "no tool line in the pane:\n" + text
-    assert ck_row < tool_row, \
+    ck_at = text.find(CHECKPOINT_LINE)
+    tool_at = text.find(LIST_DIR_LINE)
+    assert ck_at >= 0, "no checkpoint line in the pane under auto:\n" + text
+    assert tool_at >= 0, "no tool line in the pane:\n" + text
+    assert ck_at < tool_at, \
         "the checkpoint line did not come before the first tool line:\n" + text
 
 

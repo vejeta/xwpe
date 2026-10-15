@@ -1840,7 +1840,12 @@ void wpe_ai_pane_before_paint(FENSTER *f)
  * -\|/ plus the seconds elapsed, redrawn in place on one pane line so a slow
  * local model looks alive instead of frozen.  wpe_ai_complete calls ai_spin_cb
  * ~8x/second (see wpe_ai_progress_cb). */
-typedef struct { FENSTER *f; const char *label; int i; } ai_spin;
+typedef struct {
+ FENSTER *f;
+ const char *label;
+ int i;
+ int open;        /* the pane's stream line is this task's waiting line */
+} ai_spin;
 
 static void ai_spin_cb(void *ud, int elapsed_s)
 {
@@ -1856,13 +1861,18 @@ static void ai_spin_cb(void *ud, int elapsed_s)
 }
 
 /* Open a fresh pane line and return a spinner bound to `label`, ready to hand to
- * wpe_ai_complete as its progress callback. */
+ * wpe_ai_complete as its progress callback.  The line is the task's until
+ * ai_spin_end takes it out, or the chat's painter writes the answer over it. */
 static ai_spin ai_spin_begin(FENSTER *f, const char *label)
 {
  ai_spin sp;
  FENSTER *wf = ai_pane_win(f);
- sp.f = f; sp.label = label; sp.i = 0;
- if (wf) { ai_pane_commit(wf); ai_pane_set_last_as(wf, label, AI_ROLE_MACHINERY); }
+ sp.f = f; sp.label = label; sp.i = 0; sp.open = 0;
+ if (wf) {
+  ai_pane_commit(wf);
+  ai_pane_set_last_as(wf, label, AI_ROLE_MACHINERY);
+  sp.open = 1;
+ }
  return sp;
 }
 
@@ -5789,10 +5799,51 @@ static const char *ai_op_backend_error_text(const ai_async_op *op, const char *n
  return none;
 }
 
+/**
+ * ai_spin_end - The task is over: take its waiting line out of the pane.
+ * @sp: the task's spinner; @cn: the desktop its pane is on.
+ *
+ * The result line the task writes next ("[AI edit] applied 2 of 2 hunks",
+ * "[AI] cancelled", the agent's first tool line) lands where the waiting
+ * line stood, the way the chat's answer takes over "AI: (gathering the
+ * answer...)": the user never reads "working - 5s (Esc cancels)" frozen
+ * above a result that has already come.  The status row's "working on this
+ * window" goes at the same moment.  Edit, Complete, Multi-file, Agent and
+ * Plan all end through here, so they all end alike; a second call finds
+ * nothing to do.
+ */
+static int ai_window_alive(ECNT *cn, FENSTER *f);   /* defined below */
+
+/* A pane buffer never goes below one row; a waiting line that is the only
+   row is emptied rather than removed. */
+#define AI_PANE_LONE_ROW 1
+
+static void ai_spin_end(ai_spin *sp, ECNT *cn)
+{
+ FENSTER *wf;
+ if (!sp->open) return;
+ sp->open = 0;
+ if (ai_window_alive(cn, sp->f))
+  wpe_ai_flash_clear(sp->f);
+ wf = ai_pane_existing(cn);
+ if (!wf) return;
+ if (wf->b->mxlines <= AI_PANE_LONE_ROW) {  /* the buffer keeps one row: empty it */
+  ai_pane_set_last(wf, "");
+  return;
+ }
+ ai_pane_drop_row(wf->b, ai_stream_y(wf));
+ if (wf->b->b.y >= wf->b->mxlines)
+  wf->b->b.y = wf->b->mxlines - 1;
+ ai_pane_paint(wf);
+}
+
 /* Detach the op from the fd-loop and free it.  Must run BEFORE any modal review
- * so no AI callbacks (this stream, the heartbeat) fire underneath it. */
+ * so no AI callbacks (this stream, the heartbeat) fire underneath it.  The
+ * waiting line goes here too: every result line written after it takes its
+ * place. */
 static void ai_op_detach(ai_async_op *op)
 {
+ ai_spin_end(&op->spin, op->cn);
  if (op->fd >= 0) wpe_fd_del(op->fd);
  ai_hb_release();
  wpe_ai_stream_free(op->st);
@@ -6079,7 +6130,9 @@ static void ai_chat_op_begin(ai_chat_session *s)
  * @s: the chat session whose stream is complete (or failed).
  *
  * The session ends itself afterwards, so the task must not end it again:
- * the payload is detached before the task is freed.
+ * the payload is detached before the task is freed.  The chat has written
+ * its own ending over the waiting line by now (the answer, "(no answer)",
+ * the transport line), so that line is kept, not taken out as a task's is.
  */
 static void ai_chat_op_end(ai_chat_session *s)
 {
@@ -6087,6 +6140,7 @@ static void ai_chat_op_end(ai_chat_session *s)
  s->op = NULL;
  if (!op) return;
  op->ud = NULL;
+ op->spin.open = 0;
  ai_op_detach(op);
  ai_op_free(op);
 }
@@ -6141,8 +6195,9 @@ static void ai_chat_wait_begin(ai_chat_session *s)
  */
 static void ai_chat_wait_end(ai_chat_session *s)
 {
- if (s->op)
-  s->op->paused = 1;
+ if (!s->op) return;
+ s->op->paused = 1;
+ s->op->spin.open = 0;             /* the reply owns the line: it is not removed */
 }
 
 /* Share of the file's lines a reply must keep to be taken at face value as the
@@ -6516,6 +6571,7 @@ static void ai_conv_on_reply(ai_async_op *op)
 {
  int r;
  op->paused = 1;                    /* no spinner while process() may go modal   */
+ ai_spin_end(&op->spin, op->cn);    /* what process() writes takes the line's place */
  ai_op_stream_close(op);            /* leave the loop before any modal review    */
  /* A backend failure (e.g. the claude CLI not logged in) is not a turn to act
     on: do NOT feed it to process(), which could run a tool call or apply an
@@ -6548,6 +6604,7 @@ static void ai_conv_fd_cb(int fd, void *data)
   FENSTER *f = op->f;
   ECNT *cn = op->cn;
   ai_op_stream_close(op);
+  ai_spin_end(&op->spin, cn);       /* the error line takes the waiting line's place */
   if (ai_window_alive(cn, f)) ai_pane(f, "[AI] transport error", AI_ROLE_ERROR, 0);
   op->transport_failed = 1;         /* the run stops on this line, no follow-up */
   wpe_ai_trace("conv transport error (stopped)");
@@ -6563,6 +6620,7 @@ static void ai_conv_fd_cb(int fd, void *data)
 static void ai_conv_finish(ai_async_op *op)
 {
  ai_op_stream_close(op);
+ ai_spin_end(&op->spin, op->cn);    /* nothing waits any more: finish() writes here */
  ai_hb_release();                   /* stop the heartbeat before finish() modals */
  if (g_ai_op == op) g_ai_op = NULL;
  g_ai_bg_win = NULL;
@@ -10911,11 +10969,12 @@ int e_ai_menu(FENSTER *f)
  * ai_op_note_window_gone - Tell the user the task went away with its window.
  * @cn: the desktop; @closing: the window on its way out; @kind: "edit", ...
  *
- * The spinner line would otherwise sit frozen at "[AI edit] working" with no
- * reply ever coming.  Writes into the pane that is already open and nowhere
- * else: opening the pane here would push a window onto the stack while
- * e_close_window is in the middle of popping one, and painting into the pane
- * when the pane is the window being closed would paint into freed memory.
+ * The spinner line has already gone with the task (ai_spin_end), so the note
+ * is appended where it stood rather than written over whatever line is last
+ * now.  Writes into the pane that is already open and nowhere else: opening
+ * the pane here would push a window onto the stack while e_close_window is
+ * in the middle of popping one, and painting into the pane when the pane is
+ * the window being closed would paint into freed memory.
  */
 static void ai_op_note_window_gone(ECNT *cn, FENSTER *closing, const char *kind)
 {
@@ -10924,7 +10983,8 @@ static void ai_op_note_window_gone(ECNT *cn, FENSTER *closing, const char *kind)
  if (!wf || wf == closing)
   return;
  snprintf(line, sizeof line, "[AI %s] dropped - its window was closed", kind);
- ai_pane_set_last_as(wf, line, AI_ROLE_MACHINERY);
+ ai_tr_line(wf, line, AI_ROLE_MACHINERY);
+ ai_pane_paint(wf);
 }
 
 /**

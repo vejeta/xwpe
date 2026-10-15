@@ -233,6 +233,15 @@ Changes
 
 1.7.0 (AI assistant -- experimental, opt-in)
 
+* The waiting line of an Edit, a Complete or an agent run ends with the
+  task.  "[AI edit] working - 5s (Esc cancels)" stayed in the pane,
+  frozen at the seconds it had when the review opened, above "[AI edit]
+  applied 3 of 3 hunks - Ctrl-U to undo"; the result line now takes its
+  place, the way the chat's answer takes over "AI: (gathering the
+  answer...)", and the status row's "The assistant is working on this
+  window" goes at the same moment.  The same holds for a review left
+  with Esc, a cancelled task and a backend or transport error.
+
 * The AI pane wraps its transcript again to whatever width it has.  A
   build (F9) or a changeset review opens Messages beside the pane and
   halves it; every line written before that stayed cut at the new border

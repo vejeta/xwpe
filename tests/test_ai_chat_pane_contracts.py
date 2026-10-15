@@ -264,7 +264,9 @@ def test_caret_stays_in_the_file_window_while_a_background_edit_finishes(tmp_pat
     op), a keystroke must insert into the FILE, proving the caret is there
     and not left parked in the pane the task spun in.
     """
-    with WpeSession(str(tmp_path), SEED, env_extra=_env(tmp_path, SEED)) as s:
+    with WpeSession(str(tmp_path), SEED,
+                    env_extra=_env(tmp_path, SEED,
+                                   XWPE_AI_MOCK_DELAY_MS=str(int(2500 * WAIT_SCALE)))) as s:
         before = s.display()
         file_y = title_row(before, "t.c")
 

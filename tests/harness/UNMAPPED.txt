@@ -19,6 +19,7 @@ tests/test_ai_claudecli_web.py
 tests/test_ai_compose.py
 tests/test_ai_context.py
 tests/test_ai_diagnostics.py
+tests/test_ai_edit_waiting_line.py
 tests/test_ai_fix_build.py
 tests/test_ai_glob.py
 tests/test_ai_host_text.py
