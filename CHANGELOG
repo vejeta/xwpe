@@ -233,6 +233,17 @@ Changes
 
 1.7.0 (AI assistant -- experimental, opt-in)
 
+* The bottom shortcut bar no longer appears twice in the terminal after a
+  dialog or menu closes.  With the AI pane focused (or any window whose
+  bottom border sits right above the bar), closing Options > AI, Options >
+  Editor or the Window menu painted " F1 Help  F2 Save ..." a second time
+  one row up, over the window's status row, with the tail of the bar at the
+  start of the last row; the next key healed it.  The console repaint had
+  recorded a line wrap after a cursor move away from a completed row and
+  then sent the bar without positioning the cursor.  It now records the
+  cursor from the cell it just wrote, so the bar stays on the last row.
+  Tests: tests/test_bottom_bar_after_dialog.py.
+
 * The AI pane and the Messages window share the bottom of the screen.  A
   build (F9) or a changeset review started while the chat was open put the
   Messages window across the whole width, over the pane; now the two share

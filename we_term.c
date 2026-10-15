@@ -892,6 +892,37 @@ void fk_colset(int c)
 #endif
 }
 
+/**
+ * e_t_advance_cursor - Record where the terminal cursor stands after a cell.
+ *
+ * Called by e_t_refresh once per cell it writes, after any move to (x, y).
+ * The glyph leaves the cursor on the next column of the same row; when the
+ * cell was the terminal's last column it leaves it on the first column of the
+ * row below (the terminal holds that wrap pending until the next glyph, and
+ * only attribute sequences are sent in between, so the next glyph does land
+ * there).  The record used to be taken from the cursor position BEFORE the
+ * move: a move away from a completed row was booked as a wrap, the next row's
+ * first cell then went out without a move, and its text landed where the
+ * moved-to cell had left the cursor.  The user saw the bottom shortcut bar a
+ * second time, one row up over the focused window's status row, whenever a
+ * dialog or menu closed with that window's bottom border right above the bar
+ * (the docked AI pane always is).  Taking the record from the cell just
+ * written keeps one bar, on the last row.
+ */
+static void e_t_advance_cursor(int x, int y, int width)
+{
+ if (x + 1 < width)
+ {
+  cur_x = x + 1;
+  cur_y = y;
+ }
+ else
+ {
+  cur_x = 0;
+  cur_y = y + 1;
+ }
+}
+
 int e_t_refresh()
 {
  int x = cur_x, y = cur_y, i, j, c;
@@ -912,10 +943,7 @@ int e_t_refresh()
    {
     if (cur_x != j || cur_y != i)
      term_move(j, i);
-    if (cur_x < MAXSCOL)
-    {  cur_x = j + 1;  cur_y = i;  }
-    else
-    {  cur_x = 0;  cur_y = i+1;  }
+    e_t_advance_cursor(j, i, COLS);
     if (col_num <= 0)
      fk_attrset(e_gt_col(j, i));
     else
