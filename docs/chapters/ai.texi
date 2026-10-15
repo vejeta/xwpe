@@ -168,6 +168,16 @@ define?'' works even when that file is not open.  The editor stays fully
 interactive while the reply streams.  The conversation is remembered for the
 workspace (see @emph{Sessions}, below).
 
+@cindex AI, pane placement
+The pane docks along the bottom of the screen like the @samp{Messages}
+window, under the file windows, and takes the bottom half; the file windows
+are shortened to end above it, never covered.  When the @samp{Messages}
+window is open as well (a build with @kbd{F9}, a changeset review) the two
+share the bottom strip from the same row, @samp{Messages} on the left half
+and the pane on the right, whichever of them opened first.  Window > Tile
+and Window > Cascade arrange the file windows above the strip and leave the
+pane where it is, as they leave @samp{Messages}.
+
 The pane opens with a header line, @samp{[AI: <backend> | model: <model> |
 policy: <dial>]}, and two hint lines naming the input keys and the slash
 shortcuts; they appear the first time the chat is opened in a session, even

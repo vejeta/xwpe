@@ -196,17 +196,71 @@ void e_relayout_windows(ECNT *cn, int old_scol, int old_slns)
   }
 }
 
-void e_position_messages_window(FENSTER *msg, ECNT *cn)
+/* The windows that live in the bottom strip and keep their place when the
+   file windows are placed, tiled or cascaded. */
+#define STRIP_WINDOW_MESSAGES "Messages"
+#define STRIP_WINDOW_WATCHES  "Watches"
+#define STRIP_WINDOW_AI       "AI"
+
+/* The strip's default split row: the lower third for Messages alone, the
+   bottom half for the AI pane (a conversation is tall). */
+#define STRIP_SPLIT_MESSAGES  (2 * MAXSLNS / 3)
+#define STRIP_SPLIT_AI        (MAXSLNS / 2)
+/* The editor keeps at least this many rows above the strip ... */
+#define STRIP_SPLIT_MIN       4
+/* ... and the strip keeps at least this many rows for itself. */
+#define STRIP_SPLIT_MAX       (MAXSLNS - 5)
+/* At a very small height the two clamps above conflict (MAXSLNS-5 < 4), which
+   would put the strip's top (split+1) below its bottom (MAXSLNS-2): an
+   inverted, corrupt window that does not recover on a later grow.  Cap the
+   split so the strip keeps at least one row (a.y <= e.y). */
+#define STRIP_SPLIT_LAST      (MAXSLNS - 3)
+/* The strip's last row: the row above the status line. */
+#define STRIP_BOTTOM_ROW      (MAXSLNS - 2)
+
+/**
+ * e_win_is_bottom_docked - Is this window one of the bottom strip's panes?
+ * @f: the window.
+ *
+ * Messages, Watches and the AI pane dock along the bottom; the file windows
+ * are placed, clamped, tiled and cascaded around them.  Every function that
+ * must leave them alone asks here, so adding a docked window is one change
+ * and the compiler's output and the conversation stay put in every command.
+ * Return: 1 for a docked pane, 0 for a file window or any other window.
+ */
+static int e_win_is_bottom_docked(const FENSTER *f)
 {
- int j, lowest_editor = -1;
- int split_y, default_split = 2 * MAXSLNS / 3;
+ if (f == NULL || f->datnam == NULL)
+  return 0;
+ if (!strcmp(f->datnam, STRIP_WINDOW_MESSAGES))
+  return 1;
+ if (!strcmp(f->datnam, STRIP_WINDOW_WATCHES))
+  return 1;
+ if (!strcmp(f->datnam, STRIP_WINDOW_AI))
+  return 1;
+ return 0;
+}
+
+/**
+ * e_strip_split_row - The row the bottom strip starts under.
+ * @cn: the desktop.
+ * @self: the window being placed; its own extent is not yet meaningful.
+ * @default_split: the split used when no file window ends above it.
+ *
+ * A file window the user made short keeps its height (the strip starts under
+ * it); otherwise the default applies.  The clamps keep both the editor and the
+ * strip usable at any terminal size, so a shrink never produces an inverted
+ * window.
+ * Return: the split row; the strip's first row is the one below it.
+ */
+static int e_strip_split_row(ECNT *cn, const FENSTER *self, int default_split)
+{
+ int j, lowest_editor = -1, split_y;
 
  for (j = 1; j <= cn->mxedt; j++)
  {
-  if (cn->f[j] == msg) continue;
-  if (!strcmp(cn->f[j]->datnam, "Messages")) continue;
-  if (!strcmp(cn->f[j]->datnam, "Watches")) continue;
-  if (!strcmp(cn->f[j]->datnam, "AI")) continue;   /* AI pane is bottom-docked too */
+  if (cn->f[j] == self) continue;
+  if (e_win_is_bottom_docked(cn->f[j])) continue;
   if (cn->f[j]->e.y > lowest_editor)
    lowest_editor = cn->f[j]->e.y;
  }
@@ -216,88 +270,150 @@ void e_position_messages_window(FENSTER *msg, ECNT *cn)
  else
   split_y = default_split;
 
- if (split_y > MAXSLNS - 5)
-  split_y = MAXSLNS - 5;
- if (split_y < 4)
-  split_y = 4;
- /* At a very small height the two clamps above conflict (MAXSLNS-5 < 4), which
-    would put the Messages top (split_y+1) below its bottom (MAXSLNS-2) -- an
-    inverted, corrupt window that does not recover on a later grow.  Cap the
-    split so Messages keeps at least one row (a.y <= e.y). */
- if (split_y > MAXSLNS - 3)
-  split_y = MAXSLNS - 3;
+ if (split_y > STRIP_SPLIT_MAX)
+  split_y = STRIP_SPLIT_MAX;
+ if (split_y < STRIP_SPLIT_MIN)
+  split_y = STRIP_SPLIT_MIN;
+ if (split_y > STRIP_SPLIT_LAST)
+  split_y = STRIP_SPLIT_LAST;
+ return split_y;
+}
 
- msg->a = e_set_pnt(0, split_y + 1);
- msg->e = e_set_pnt(MAXSCOL - 1, MAXSLNS - 2);
+/**
+ * e_strip_clamp_editors - Keep every file window above the strip.
+ * @cn: the desktop.
+ * @self: the window being placed; it is never clamped.
+ * @split_y: the strip's split row.
+ *
+ * Only file windows are clamped, so the text never hides under the strip.
+ * The docked panes are placed by the strip itself and must be skipped exactly
+ * as in the split computation: clamping one of them (positioning Watches with
+ * Messages open) would collapse it to e.y = split_y with a.y = split_y + 1, an
+ * inverted one-row window.
+ */
+static void e_strip_clamp_editors(ECNT *cn, const FENSTER *self, int split_y)
+{
+ int j;
 
  for (j = 1; j <= cn->mxedt; j++)
  {
-  if (cn->f[j] == msg) continue;
-  /* Only clamp EDITOR windows to make room at the bottom.  The Messages and
-     Watches windows are themselves bottom-docked (this function positions both
-     of them), so they must be excluded exactly as in the split_y computation
-     above -- otherwise positioning Watches collapses Messages to e.y = split_y
-     while its a.y stays split_y+1, leaving an inverted, one-row-tall window. */
-  if (!strcmp(cn->f[j]->datnam, "Messages")) continue;
-  if (!strcmp(cn->f[j]->datnam, "Watches")) continue;
-  if (!strcmp(cn->f[j]->datnam, "AI")) continue;
+  if (cn->f[j] == self) continue;
+  if (e_win_is_bottom_docked(cn->f[j])) continue;
   if (cn->f[j]->e.y > split_y)
    cn->f[j]->e.y = split_y;
  }
 }
 
-/* Dock the AI chat pane along the bottom like the Messages window, so it never
- * overlaps the editor: the editor keeps the top, the conversation reads down the
- * bottom half.  The pane is given the bottom HALF (a conversation is tall) rather
- * than the Messages default third.  When the Messages window is also open the two
- * share the bottom strip side by side -- Messages on the left, AI on the right --
- * so neither hides the other. */
+/**
+ * e_strip_find_window - The open window of that name, or NULL.
+ * @cn: the desktop.
+ * @self: the window being placed; never returned, so a window does not find
+ *        itself when it is created under a docked pane's name.
+ * @name: the window's name as shown in its title.
+ */
+static FENSTER *e_strip_find_window(ECNT *cn, const FENSTER *self,
+                                    const char *name)
+{
+ int j;
+
+ for (j = 1; j <= cn->mxedt; j++)
+ {
+  if (cn->f[j] == self) continue;
+  if (cn->f[j]->datnam == NULL) continue;
+  if (!strcmp(cn->f[j]->datnam, name))
+   return cn->f[j];
+ }
+ return NULL;
+}
+
+/**
+ * e_place_strip_full - Give one docked window the whole strip.
+ * @f: the window.
+ * @split_y: the strip's split row.
+ */
+static void e_place_strip_full(FENSTER *f, int split_y)
+{
+ f->a = e_set_pnt(0, split_y + 1);
+ f->e = e_set_pnt(MAXSCOL - 1, STRIP_BOTTOM_ROW);
+}
+
+/**
+ * e_place_strip_pair - Share the strip between Messages and the AI pane.
+ * @msg: the Messages window, placed on the left half.
+ * @ai: the AI pane, placed on the right half.
+ * @split_y: the strip's split row, the same for both.
+ *
+ * The one geometry for the two windows, whichever of them opened second: a
+ * compile started with the chat open never covers the conversation and a chat
+ * opened during a build never covers the compiler's output.
+ */
+static void e_place_strip_pair(FENSTER *msg, FENSTER *ai, int split_y)
+{
+ int mid = MAXSCOL / 2;
+
+ msg->a = e_set_pnt(0, split_y + 1);
+ msg->e = e_set_pnt(mid - 1, STRIP_BOTTOM_ROW);
+ ai->a = e_set_pnt(mid, split_y + 1);
+ ai->e = e_set_pnt(MAXSCOL - 1, STRIP_BOTTOM_ROW);
+}
+
+/**
+ * e_position_messages_window - Dock Messages (or Watches) along the bottom.
+ * @msg: the window being placed.  It may still be under construction, so
+ *       only its pointer is trusted, never its name or extent.
+ * @cn: the desktop.
+ *
+ * Alone, the window takes the full width under the lower third of the
+ * screen, or under a shorter file window, and the file windows are clamped
+ * above it so the compiler's output never hides the text being edited.  When
+ * the AI pane is open the two share the strip from the pane's split row,
+ * Messages on the left and the pane on the right: a compile started with the
+ * chat open shows its output without covering the conversation, and the
+ * editors are not pushed up further than the pane already did.
+ */
+void e_position_messages_window(FENSTER *msg, ECNT *cn)
+{
+ FENSTER *ai = e_strip_find_window(cn, msg, STRIP_WINDOW_AI);
+ int split_y;
+
+ if (ai)
+ {
+  split_y = e_strip_split_row(cn, msg, STRIP_SPLIT_AI);
+  e_place_strip_pair(msg, ai, split_y);
+  /* The pane was drawn at the full width: its save-under holds that strip
+     and the next repaint would restore it over Messages.  Drop it, so the
+     repaint opens a fresh view at the pane's new rectangle. */
+  e_free_view(&ai->pic);
+ }
+ else
+ {
+  split_y = e_strip_split_row(cn, msg, STRIP_SPLIT_MESSAGES);
+  e_place_strip_full(msg, split_y);
+ }
+ e_strip_clamp_editors(cn, msg, split_y);
+}
+
+/**
+ * e_position_ai_window - Dock the AI chat pane along the bottom.
+ * @ai: the pane.
+ * @cn: the desktop.
+ *
+ * Like Messages, the pane never overlaps the editor: the editor keeps the
+ * top, the conversation reads down the bottom half (a conversation is tall,
+ * so it gets the half rather than the Messages third).  When Messages is
+ * also open the two share the strip side by side, Messages on the left and
+ * the pane on the right, so neither hides the other.
+ */
 void e_position_ai_window(FENSTER *ai, ECNT *cn)
 {
- int j, lowest_editor = -1, split_y, default_split = MAXSLNS / 2;
- FENSTER *msg = NULL;
+ int split_y = e_strip_split_row(cn, ai, STRIP_SPLIT_AI);
+ FENSTER *msg = e_strip_find_window(cn, ai, STRIP_WINDOW_MESSAGES);
 
- for (j = 1; j <= cn->mxedt; j++)
- {
-  if (cn->f[j] == ai) continue;
-  if (!strcmp(cn->f[j]->datnam, "AI")) continue;
-  if (!strcmp(cn->f[j]->datnam, "Messages")) { msg = cn->f[j]; continue; }
-  if (!strcmp(cn->f[j]->datnam, "Watches")) continue;
-  if (cn->f[j]->e.y > lowest_editor)
-   lowest_editor = cn->f[j]->e.y;
- }
-
- if (lowest_editor > 0 && lowest_editor <= default_split)
-  split_y = lowest_editor;
+ if (msg)
+  e_place_strip_pair(msg, ai, split_y);
  else
-  split_y = default_split;
- if (split_y > MAXSLNS - 5) split_y = MAXSLNS - 5;
- if (split_y < 4) split_y = 4;
- if (split_y > MAXSLNS - 3) split_y = MAXSLNS - 3;
-
- if (msg)                                  /* share the bottom strip, left|right */
- {
-  int mid = MAXSCOL / 2;
-  msg->a = e_set_pnt(0, split_y + 1);
-  msg->e = e_set_pnt(mid - 1, MAXSLNS - 2);
-  ai->a  = e_set_pnt(mid, split_y + 1);
-  ai->e  = e_set_pnt(MAXSCOL - 1, MAXSLNS - 2);
- }
- else
- {
-  ai->a = e_set_pnt(0, split_y + 1);
-  ai->e = e_set_pnt(MAXSCOL - 1, MAXSLNS - 2);
- }
-
- for (j = 1; j <= cn->mxedt; j++)
- {
-  if (cn->f[j] == ai) continue;
-  if (!strcmp(cn->f[j]->datnam, "Messages")) continue;
-  if (!strcmp(cn->f[j]->datnam, "Watches")) continue;
-  if (!strcmp(cn->f[j]->datnam, "AI")) continue;
-  if (cn->f[j]->e.y > split_y)
-   cn->f[j]->e.y = split_y;
- }
+  e_place_strip_full(ai, split_y);
+ e_strip_clamp_editors(cn, ai, split_y);
 }
 
 /**
@@ -1335,19 +1451,152 @@ int e_ed_zoom(FENSTER *f)
  return(WPE_ESC);
 }
 
-/*   cascade windows   */
+/* The lowest row a docked pane may start at for Tile and Cascade to still
+   arrange the file windows above it: a title row and three text rows. */
+#define ARRANGE_MIN_STRIP_TOP 5
+/* The last row Cascade may use when nothing is docked: above the status line. */
+#define CASCADE_DEFAULT_BOTTOM_ROW (MAXSLNS - 2)
+/* The last row Tile may use when nothing is docked: the lower third stays
+   free for the Messages window a build will open. */
+#define TILE_DEFAULT_BOTTOM_ROW (MAXSLNS - 2 - (MAXSLNS / 3 - 1))
+/* Tile's "maxlines" is the screen height whose last window row is the tiles'
+   bottom row; the tiles end two rows above it. */
+#define TILE_LINES_BELOW_BOTTOM 2
+
+/**
+ * e_arrange_leaves_docked - Must Tile and Cascade leave this window where it is?
+ * @cn: the desktop.
+ * @f: the window.
+ *
+ * In the programming mode with the modern layout, Messages, Watches and the AI
+ * pane keep their place at the bottom while the file windows are arranged, so
+ * the compiler's output and the conversation stay readable after the command.
+ * The "old style" tile option restores the original arrangement of every
+ * window.
+ * Return: 1 to leave the window alone, 0 to arrange it.
+ */
+static int e_arrange_leaves_docked(ECNT *cn, const FENSTER *f)
+{
+ if (cn->edopt & ED_OLD_TILE_METHOD)
+  return 0;
+ if (!WpeIsProg())
+  return 0;
+ return e_win_is_bottom_docked(f);
+}
+
+/**
+ * e_tile_leaves_window - Must Tile leave this window where it is?
+ * @cn: the desktop.
+ * @f: the window.
+ *
+ * Besides the docked panes, the modern layout leaves the non-text windows
+ * (the file manager, the data windows) alone, as they are not editors.
+ * Return: 1 to leave the window alone, 0 to tile it.
+ */
+static int e_tile_leaves_window(ECNT *cn, const FENSTER *f)
+{
+ if (cn->edopt & ED_OLD_TILE_METHOD)
+  return 0;
+ if (!DTMD_ISTEXT(f->dtmd))
+  return 1;
+ return e_arrange_leaves_docked(cn, f);
+}
+
+/**
+ * e_docked_strip_top - The first row a docked pane occupies.
+ * @cn: the desktop.
+ *
+ * Return: the highest top row among the docked panes Tile and Cascade leave
+ * alone, or MAXSLNS - 1 (the status line) when none is open.
+ */
+static int e_docked_strip_top(ECNT *cn)
+{
+ int i, top = MAXSLNS - 1;
+
+ for (i = 1; i <= cn->mxedt; i++)
+ {
+  if (!e_arrange_leaves_docked(cn, cn->f[i])) continue;
+  if (cn->f[i]->a.y < top)
+   top = cn->f[i]->a.y;
+ }
+ return top;
+}
+
+/**
+ * e_arranged_bottom_row - The last row Tile or Cascade may fill.
+ * @cn: the desktop.
+ * @default_bottom: the row used when nothing is docked.
+ *
+ * With a pane docked, the arranged file windows end on the row above it, so
+ * the command never pushes a window under the compiler's output or the chat.
+ * A pane that leaves no usable room above it (a tiny terminal) does not
+ * shrink the arrangement.
+ */
+static int e_arranged_bottom_row(ECNT *cn, int default_bottom)
+{
+ int strip_top = e_docked_strip_top(cn);
+
+ if (strip_top >= MAXSLNS - 1)
+  return default_bottom;
+ if (strip_top < ARRANGE_MIN_STRIP_TOP)
+  return default_bottom;
+ return strip_top - 1;
+}
+
+/**
+ * e_count_cascaded - How many windows Cascade arranges.
+ * @cn: the desktop.
+ */
+static int e_count_cascaded(ECNT *cn)
+{
+ int i, n = 0;
+
+ for (i = 1; i <= cn->mxedt; i++)
+  if (!e_arrange_leaves_docked(cn, cn->f[i]))
+   n++;
+ return n;
+}
+
+/**
+ * e_cascade_place - Put one window on its step of the staircase.
+ * @f: the window.
+ * @step: its step, 1 for the window at the back of the stack.
+ * @steps: the number of cascaded windows.
+ * @bottom: the last row the staircase may use.
+ *
+ * Each step is one row down and one column right of the previous, so every
+ * title stays visible and the active window (the last step) is on top.
+ */
+static void e_cascade_place(FENSTER *f, int step, int steps, int bottom)
+{
+ f->a = e_set_pnt(step - 1, step);
+ f->e = e_set_pnt(MAXSCOL - 1 - steps + step, bottom - steps + step);
+}
+
+/**
+ * e_ed_cascade - Window > Cascade: stack the file windows as a staircase.
+ * @f: the window the command came from.
+ *
+ * A docked pane (Messages, Watches, the AI pane) keeps its place and the
+ * staircase ends above it, so a build's output or a conversation stays where
+ * the user left it.
+ */
 int e_ed_cascade(FENSTER *f)
 {
  ECNT *cn = f->ed;
- int i;
+ int i, step = 0;
+ int steps = e_count_cascaded(cn);
+ int bottom = e_arranged_bottom_row(cn, CASCADE_DEFAULT_BOTTOM_ROW);
 
  if (cn->mxedt < 1)
   return 0; /* no windows open */
- for (i = cn->mxedt; i >= 1; i--)
+ for (i = 1; i <= cn->mxedt; i++)
  {
   e_free_view(&cn->f[i]->pic);
-  cn->f[i]->a = e_set_pnt(i-1, i);
-  cn->f[i]->e = e_set_pnt(MAXSCOL-1-cn->mxedt+i, MAXSLNS-2-cn->mxedt+i);
+  if (e_arrange_leaves_docked(cn, cn->f[i]))
+   continue;
+  step++;
+  e_cascade_place(cn->f[i], step, steps, bottom);
  }
  ini_repaint(cn);
  for ( i = 1; i < cn->mxedt; i++)
@@ -1375,9 +1624,7 @@ int e_ed_tile(FENSTER *f)
 
  for (i = cn->mxedt; i >= 1; i--)
  {
-  if ((!(cn->edopt & ED_OLD_TILE_METHOD)) && (!DTMD_ISTEXT(cn->f[i]->dtmd) ||
-    ((WpeIsProg()) && ((strcmp(cn->f[i]->datnam, "Messages") == 0) ||
-    (strcmp(cn->f[i]->datnam, "Watches") == 0)))))
+  if (e_tile_leaves_window(cn, cn->f[i]))
   {
    editorwin[i] = 0;
   }
@@ -1391,7 +1638,10 @@ int e_ed_tile(FENSTER *f)
   return(0);
  if ((!(cn->edopt & ED_OLD_TILE_METHOD)) && (WpeIsProg()))
  {
-  maxlines -= MAXSLNS / 3 - 1;
+  /* The tiles end above the docked strip: on the row over an open pane, else
+     over the lower third kept free for Messages as before. */
+  maxlines = e_arranged_bottom_row(cn, TILE_DEFAULT_BOTTOM_ROW)
+             + TILE_LINES_BELOW_BOTTOM;
  }
  for (i = cn->mxedt; i >= 1; i--)
  {

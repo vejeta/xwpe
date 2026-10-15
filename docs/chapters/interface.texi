@@ -260,9 +260,13 @@ Resize or move the current window.
 @item Z -- Zoom
 Maximise the current window.
 @item T -- Tile
-Tile all open windows.
+Tile the file windows.  In the programming mode the @samp{Messages} and
+@samp{Watches} windows and the AI pane keep their place at the bottom of the
+screen and the tiles end above them (the ``Old Style'' option in
+Options > Editor tiles every window).
 @item A -- Cascade
-Cascade all open windows.
+Cascade the file windows; the windows docked at the bottom stay where they
+are, as under Tile.
 @item X -- Next
 Cycle to the next window (@kbd{F6} or @kbd{Alt-N}).  To jump straight to a
 particular window instead of cycling, press @kbd{Alt-1}@dots{}@kbd{Alt-9}:

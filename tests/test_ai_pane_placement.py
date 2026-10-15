@@ -1,11 +1,9 @@
 """The AI pane shares the bottom strip with Messages and stays docked under Tile.
 
-Messages opened after the pane should split the strip with it (Messages on
-the left), and Window > Tile should tile the file windows above the docked
-pane instead of moving it.  Neither is implemented yet: the window placement
-rewrite that tried regressed the compile and window-view suites and was
-withdrawn.  The tests are kept here, skipped as a whole, so the contracts stay
-visible without counting as green.
+Messages opened after the pane splits the strip with it (Messages on the
+left, the pane on the right, both from the same row), and Window > Tile
+tiles the file windows above the docked pane instead of moving it.  Both
+tests read the title rows from the screen, before and after the command.
 
 Scenarios: SC-ai-chat-04, SC-ai-chat-07.
 """
@@ -26,7 +24,6 @@ def _ai_build():
 
 
 pytestmark = [
-    pytest.mark.skip(reason="SC-ai-chat-04/07 not implemented yet; see the manifest"),
     pytest.mark.skipif(not _ai_build(), reason="wpe built without --enable-ai"),
 ]
 

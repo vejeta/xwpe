@@ -34,6 +34,11 @@ the model works):
 
 - **Ask** (`Alt-G a`) -- a **chat** pane docked at the bottom. It can read files
   in the workspace to answer, and keeps context across the conversation.
+  The pane takes the bottom half under the file windows; when the Messages
+  window is open too (a build, a changeset review) the two share the bottom
+  strip from the same row, Messages on the left and the pane on the right,
+  whichever opened first. Window > Tile and Cascade arrange the file windows
+  above the strip and leave the pane docked, as they leave Messages.
 - **Edit** (`Alt-G e`) -- rewrite code from an instruction. It sends a marked
   block when one is active, the whole file when it fits the context limit, or a
   consecutive window around the cursor when the file is larger. For that large

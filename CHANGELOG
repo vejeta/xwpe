@@ -233,6 +233,18 @@ Changes
 
 1.7.0 (AI assistant -- experimental, opt-in)
 
+* The AI pane and the Messages window share the bottom of the screen.  A
+  build (F9) or a changeset review started while the chat was open put the
+  Messages window across the whole width, over the pane; now the two share
+  the bottom strip from the same row, Messages on the left half and the pane
+  on the right, exactly as when the chat is opened during a build.
+  Window > Tile and Window > Cascade tiled or cascaded the pane as if it were
+  a file and only a resize re-docked it; now they arrange the file windows
+  above the bottom strip and leave the pane docked, as they leave Messages
+  (Cascade too now leaves Messages and Watches at the bottom; the "Old
+  Style" tile option arranges every window as before).
+  Tests: tests/test_ai_pane_placement.py.
+
 * The AI pane tells who wrote a line by its colour.  Every transcript line
   painted in the editor text colour, and the lines that wait for a key were
   red on the Options-text background, drawn one column too far left over the

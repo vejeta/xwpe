@@ -688,8 +688,6 @@ void e_repaint_desk_nopic(FENSTER *f);
 void e_relayout_windows(ECNT *cn, int old_scol, int old_slns);
 void e_position_messages_window(FENSTER *msg, ECNT *cn);
 void e_position_ai_window(FENSTER *ai, ECNT *cn);
-void e_position_bottom_strip(ECNT *cn);
-int e_win_is_bottom_docked(FENSTER *f);
 int e_ai_chat_key(FENSTER *f, int c);
 int e_ai_options(FENSTER *f);
 int e_repaint_desk(FENSTER *f);
