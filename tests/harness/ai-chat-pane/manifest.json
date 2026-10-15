@@ -1,72 +1,524 @@
 {
   "capability": "ai-chat-pane",
   "scenarios": [
-    {"id": "SC-ai-chat-01", "requirement": "Opening and placing the pane", "layer": "ncurses", "test": "tests/test_ai_chat_pane_contracts.py::test_alt_g_a_opens_input_row_with_no_popup_and_ctrl_j_inserts_newline", "status": "new"},
-    {"id": "SC-ai-chat-02", "requirement": "Opening and placing the pane", "layer": "ncurses", "test": "tests/test_ai_pane_dock.py::test_ai_pane_docks_below_editor", "status": "covered"},
-    {"id": "SC-ai-chat-03", "requirement": "Opening and placing the pane", "layer": "ncurses", "test": "tests/test_ai_chat_pane_contracts.py::test_messages_already_open_shares_the_strip_with_the_pane", "status": "new"},
-    {"id": "SC-ai-chat-04", "requirement": "Opening and placing the pane", "layer": "ncurses", "test": "tests/test_ai_pane_placement.py::test_messages_opened_after_the_pane_shares_the_strip", "status": "covered"},
-    {"id": "SC-ai-chat-04", "requirement": "Opening and placing the pane", "layer": "ncurses", "test": "tests/test_ai_pane_reflow.py::test_reply_written_at_full_width_is_whole_after_messages_opens", "status": "covered"},
-    {"id": "SC-ai-chat-05", "requirement": "Opening and placing the pane", "layer": "ncurses", "test": "tests/test_ai_chat_input_contracts.py::test_second_alt_g_a_refocuses_without_appending", "status": "covered"},
-    {"id": "SC-ai-chat-06", "requirement": "Opening and placing the pane", "layer": "ncurses", "test": "tests/test_ai_pane_reflow.py::test_resize_rewraps_the_reply_and_the_row_count_follows_the_width", "status": "covered"},
-    {"id": "SC-ai-chat-07", "requirement": "Opening and placing the pane", "layer": "ncurses", "test": "tests/test_ai_pane_placement.py::test_tile_leaves_the_pane_docked", "status": "covered"},
-    {"id": "SC-ai-chat-08", "requirement": "Opening and placing the pane", "layer": "ncurses", "test": "tests/test_ai_chat_turn_contracts.py::test_closing_the_pane_ends_the_stream", "status": "covered"},
-    {"id": "SC-ai-chat-09", "requirement": "Opening and placing the pane", "layer": "ncurses", "test": "tests/test_ai_pane_quit.py::test_ai_pane_is_a_tool_pane", "status": "covered"},
-    {"id": "SC-ai-chat-10", "requirement": "What a turn looks like", "layer": "ncurses", "test": "tests/test_ai_chat_turn_contracts.py::test_header_and_hints_appear_after_an_edit_opened_the_pane", "status": "covered"},
-    {"id": "SC-ai-chat-10b", "requirement": "What a turn looks like", "layer": "ncurses", "test": "tests/test_ai_chat_turn_contracts.py::test_header_follows_the_dial", "status": "covered"},
-    {"id": "SC-ai-chat-11", "requirement": "What a turn looks like", "layer": "ncurses", "test": "tests/test_ai_scroll.py::test_pgup_reveals_scrolled_off_history", "status": "covered"},
-    {"id": "SC-ai-chat-11b", "requirement": "What a turn looks like", "layer": "ncurses", "test": "tests/test_ai_pane_roles.py::test_chat_context_is_the_file_not_the_transcript", "status": "covered"},
-    {"id": "SC-ai-chat-12", "requirement": "What a turn looks like", "layer": "ncurses", "test": "tests/test_ai_chat_turn_contracts.py::test_waiting_line_spins_and_counts_seconds", "status": "covered"},
-    {"id": "SC-ai-chat-13", "requirement": "What a turn looks like", "layer": "ncurses", "test": "tests/test_ai_chat.py::test_ai_reply_shares_the_AI_line", "status": "covered"},
-    {"id": "SC-ai-chat-13", "requirement": "What a turn looks like", "layer": "ncurses", "test": "tests/test_ai_chat_tool_preamble.py::test_chat_tool_after_preamble", "status": "covered"},
-    {"id": "SC-ai-chat-14", "requirement": "What a turn looks like", "layer": "ncurses", "test": "tests/test_ai_chat_short_reply.py::test_chat_reply_under_five_bytes_paints", "status": "covered"},
-    {"id": "SC-ai-chat-15", "requirement": "What a turn looks like", "layer": "ncurses", "test": "tests/test_ai_pane_wrap.py::test_long_reply_is_wrapped_across_lines", "status": "covered"},
-    {"id": "SC-ai-chat-16", "requirement": "What a turn looks like", "layer": "ncurses", "test": "tests/test_ai_chat_pane_contracts.py::test_blank_lines_and_fences_are_shown_verbatim", "status": "new"},
-    {"id": "SC-ai-chat-17", "requirement": "What a turn looks like", "layer": "ncurses", "test": "tests/test_ai_chat_pane_contracts.py::test_caret_parks_in_the_input_row_after_a_focused_reply", "status": "new"},
-    {"id": "SC-ai-chat-18", "requirement": "What a turn looks like", "layer": "ncurses", "test": "tests/test_ai_pane_roles.py::test_attention_line_stays_inside_the_pane", "status": "covered"},
-    {"id": "SC-ai-chat-19", "requirement": "The input", "layer": "ncurses", "test": "tests/test_ai_chat_input_contracts.py::test_enter_on_empty_input_row_sends_nothing", "status": "covered"},
-    {"id": "SC-ai-chat-20", "requirement": "The input", "layer": "ncurses", "test": "tests/test_ai_chat_pane_contracts.py::test_esc_returns_the_caret_to_the_home_window", "status": "new"},
-    {"id": "SC-ai-chat-21", "requirement": "The input", "layer": "ncurses", "test": "tests/test_ai_chat_turn_contracts.py::test_esc_cancels_a_streaming_chat_turn", "status": "covered"},
-    {"id": "SC-ai-chat-22", "requirement": "The input", "layer": "ncurses", "test": "tests/test_ai_chat.py::test_ai_multiline_input_row", "status": "covered"},
-    {"id": "SC-ai-chat-23", "requirement": "The input", "layer": "ncurses", "test": "tests/test_ai_chat_input_contracts.py::test_backspace_at_start_of_row_is_a_noop", "status": "covered"},
-    {"id": "SC-ai-chat-24", "requirement": "The input", "layer": "ncurses", "test": "tests/test_ai_chat_ctrl_ae.py::test_ctrl_a_and_e_move_insertion_point", "status": "covered"},
-    {"id": "SC-ai-chat-24", "requirement": "The input", "layer": "ncurses", "test": "tests/test_ai_inputbar.py::test_input_row_cursor_editing", "status": "covered"},
-    {"id": "SC-ai-chat-25", "requirement": "The input", "layer": "ncurses", "test": "tests/test_ai_input_utf8.py::test_input_caret_after_accented_char", "status": "covered"},
-    {"id": "SC-ai-chat-25", "requirement": "The input", "layer": "ncurses", "test": "tests/test_ai_input_utf8.py::test_input_wide_char_types_and_renders", "status": "covered"},
-    {"id": "SC-ai-chat-26", "requirement": "The input", "layer": "ncurses", "test": "tests/test_ai_chat_input_paste_limit.py::test_input_at_the_limit_is_announced", "status": "covered"},
-    {"id": "SC-ai-chat-26", "requirement": "The input", "layer": "ncurses", "test": "tests/test_ai_chat_input_paste_limit.py::test_paste_crossing_the_limit_keeps_what_fits", "status": "covered"},
-    {"id": "SC-ai-chat-27", "requirement": "The input", "layer": "ncurses", "test": "tests/test_ai_chat_input_paste_limit.py::test_bracketed_paste_with_newlines_is_literal", "status": "covered"},
-    {"id": "SC-ai-chat-28", "requirement": "The input", "layer": "ncurses", "test": "tests/test_ai_slash.py::test_slash_explain_expands", "status": "covered"},
-    {"id": "SC-ai-chat-29", "requirement": "The input", "layer": "ncurses", "test": "tests/test_ai_chat_turn_contracts.py::test_second_question_is_queued_and_runs_after_the_turn", "status": "covered"},
-    {"id": "SC-ai-chat-30", "requirement": "Scrolling and copying", "layer": "ncurses", "test": "tests/test_ai_scroll.py::test_pgup_reveals_scrolled_off_history", "status": "covered"},
-    {"id": "SC-ai-chat-30", "requirement": "Scrolling and copying", "layer": "ncurses", "test": "tests/test_ai_scroll.py::test_arrow_scrolls_transcript_one_line", "status": "covered"},
-    {"id": "SC-ai-chat-31", "requirement": "Scrolling and copying", "layer": "ncurses", "test": "tests/test_ai_scroll.py::test_typing_snaps_back_to_input", "status": "covered"},
-    {"id": "SC-ai-chat-32", "requirement": "Scrolling and copying", "layer": "ncurses", "test": "tests/test_ai_pane_scroll_lock.py::test_reply_arriving_while_browsing_keeps_the_view_focused", "status": "covered"},
-    {"id": "SC-ai-chat-32", "requirement": "Scrolling and copying", "layer": "ncurses", "test": "tests/test_ai_pane_scroll_lock.py::test_reply_arriving_while_browsing_keeps_the_view_unfocused", "status": "covered"},
-    {"id": "SC-ai-chat-33", "requirement": "Scrolling and copying", "layer": "ncurses", "test": "tests/test_ai_pane_scroll_lock.py::test_wheel_scrolls_three_lines_and_locks", "status": "covered"},
-    {"id": "SC-ai-chat-34", "requirement": "Scrolling and copying", "layer": "ncurses", "test": "tests/test_ai_pane_copy.py::test_copy_ai_reply_to_clipboard", "status": "covered"},
-    {"id": "SC-ai-chat-35", "requirement": "Scrolling and copying", "layer": "ncurses", "test": "tests/test_ai_pane_reflow.py::test_wrapped_reply_copies_as_one_line", "status": "covered"},
-    {"id": "SC-ai-chat-36", "requirement": "Colour and role", "layer": "ncurses", "test": "tests/test_ai_pane_roles.py::test_roles_paint_from_the_default_scheme", "status": "covered"},
-    {"id": "SC-ai-chat-36", "requirement": "Colour and role", "layer": "ncurses", "test": "tests/test_ai_pane_roles.py::test_error_line_is_light_red", "status": "covered"},
-    {"id": "SC-ai-chat-36", "requirement": "Colour and role", "layer": "ncurses", "test": "tests/test_ai_attention.py::test_attention_prompt_is_highlighted", "status": "covered"},
-    {"id": "SC-ai-chat-37", "requirement": "Colour and role", "layer": "ncurses", "test": "tests/test_ai_pane_roles.py::test_scheme_keys_in_xwperc_recolour_the_roles", "status": "covered"},
-    {"id": "SC-ai-chat-37", "requirement": "Colour and role", "layer": "ncurses", "test": "tests/test_ai_pane_roles.py::test_error_key_in_xwperc_recolours_the_error_line", "status": "covered"},
-    {"id": "SC-ai-chat-39", "requirement": "Errors and edge cases", "layer": "ncurses", "test": "tests/test_ai_chat_error.py::test_chat_shows_backend_error", "status": "covered"},
-    {"id": "SC-ai-chat-39", "requirement": "Errors and edge cases", "layer": "ncurses", "test": "tests/test_ai_chat.py::test_ai_chat_empty_reply_clears_placeholder", "status": "covered"},
-    {"id": "SC-ai-chat-40", "requirement": "Errors and edge cases", "layer": "ncurses", "test": "tests/test_ai_chat_error.py::test_chat_shows_in_stream_error", "status": "covered"},
-    {"id": "SC-ai-chat-41", "requirement": "Errors and edge cases", "layer": "ncurses", "test": "tests/test_ai_chat_turn_contracts.py::test_transport_error_replaces_the_waiting_line", "status": "covered"},
-    {"id": "SC-ai-chat-42", "requirement": "Errors and edge cases", "layer": "ncurses", "test": "tests/test_ai_endpoint_down.py::test_openai_endpoint_down_message", "status": "covered"},
-    {"id": "SC-ai-chat-42", "requirement": "Errors and edge cases", "layer": "ncurses", "test": "tests/test_ai_ollama_down.py::test_ollama_not_running_message", "status": "covered"},
-    {"id": "SC-ai-chat-42", "requirement": "Errors and edge cases", "layer": "ncurses", "test": "tests/test_ai_ollama_down.py::test_ollama_no_models_message", "status": "covered"},
-    {"id": "SC-ai-chat-43", "requirement": "Errors and edge cases", "layer": "ncurses", "test": "tests/test_ai_pane_roles.py::test_assistant_off_line_names_options_ai", "status": "covered"},
-    {"id": "SC-ai-chat-44", "requirement": "Errors and edge cases", "layer": "ncurses", "test": "tests/test_ai_consent.py::test_first_use_prompt_and_decline", "status": "covered"},
-    {"id": "SC-ai-chat-44", "requirement": "Errors and edge cases", "layer": "ncurses", "test": "tests/test_ai_consent.py::test_first_use_accept_proceeds", "status": "covered"},
-    {"id": "SC-ai-chat-44", "requirement": "Errors and edge cases", "layer": "ncurses", "test": "tests/test_ai_consent.py::test_first_use_shortcut_runs_action", "status": "covered"},
-    {"id": "SC-ai-chat-45", "requirement": "Errors and edge cases", "layer": "ncurses", "test": "tests/test_bottom_bar_after_dialog.py::test_pane_keeps_one_bar_after_dialogs_and_menus", "status": "covered"},
-    {"id": "SC-ai-chat-45", "requirement": "Errors and edge cases", "layer": "ncurses", "test": "tests/test_ai_menu_repaint.py::test_spinner_does_not_repaint_over_menu", "status": "covered"},
-    {"id": "SC-ai-chat-46", "requirement": "Errors and edge cases", "layer": "ncurses", "test": "tests/test_ai_menu.py::test_clear_conversation_flashes_without_opening_pane", "status": "covered"},
-    {"id": "SC-ai-chat-48", "requirement": "Errors and edge cases", "layer": "ncurses", "test": "tests/test_ai_chat_pane_contracts.py::test_three_hundred_turns_keep_every_line", "status": "blocked", "reason": "95-second run, gated behind XWPE_TEST_LONG; passes when run"},
-    {"id": "SC-ai-chat-49", "requirement": "Errors and edge cases", "layer": "x11", "test": "tests/x11/test_ai_pane.py::test_ai_pane_paints_under_x11", "status": "covered"},
-    {"id": "SC-ai-chat-49", "requirement": "Errors and edge cases", "layer": "wayland", "test": "tests/wayland/test_ai_pane.py::test_ai_pane_paints_under_wayland", "status": "covered"},
-    {"id": "SC-ai-chat-50", "requirement": "Documentation agrees with the pane", "layer": "doc", "test": "-- doc: docs/chapters/ai.texi (Chat and the enabling section) and docs/AI.md read against the pane by a person; the seven disagreements the inventory listed are fixed, the supervisor's reading of 2026-10-15 agrees", "status": "blocked"}
+    {
+      "id": "SC-ai-chat-01",
+      "requirement": "Opening and placing the pane",
+      "layer": "ncurses",
+      "test": "tests/test_ai_chat_pane_contracts.py::test_alt_g_a_opens_input_row_with_no_popup_and_ctrl_j_inserts_newline",
+      "status": "new"
+    },
+    {
+      "id": "SC-ai-chat-02",
+      "requirement": "Opening and placing the pane",
+      "layer": "ncurses",
+      "test": "tests/test_ai_pane_dock.py::test_ai_pane_docks_below_editor",
+      "status": "covered"
+    },
+    {
+      "id": "SC-ai-chat-03",
+      "requirement": "Opening and placing the pane",
+      "layer": "ncurses",
+      "test": "tests/test_ai_chat_pane_contracts.py::test_messages_already_open_shares_the_strip_with_the_pane",
+      "status": "new"
+    },
+    {
+      "id": "SC-ai-chat-04",
+      "requirement": "Opening and placing the pane",
+      "layer": "ncurses",
+      "test": "tests/test_ai_pane_placement.py::test_messages_opened_after_the_pane_shares_the_strip",
+      "status": "covered"
+    },
+    {
+      "id": "SC-ai-chat-04",
+      "requirement": "Opening and placing the pane",
+      "layer": "ncurses",
+      "test": "tests/test_ai_pane_reflow.py::test_reply_written_at_full_width_is_whole_after_messages_opens",
+      "status": "covered"
+    },
+    {
+      "id": "SC-ai-chat-05",
+      "requirement": "Opening and placing the pane",
+      "layer": "ncurses",
+      "test": "tests/test_ai_chat_input_contracts.py::test_second_alt_g_a_refocuses_without_appending",
+      "status": "covered"
+    },
+    {
+      "id": "SC-ai-chat-06",
+      "requirement": "Opening and placing the pane",
+      "layer": "ncurses",
+      "test": "tests/test_ai_pane_reflow.py::test_resize_rewraps_the_reply_and_the_row_count_follows_the_width",
+      "status": "covered"
+    },
+    {
+      "id": "SC-ai-chat-07",
+      "requirement": "Opening and placing the pane",
+      "layer": "ncurses",
+      "test": "tests/test_ai_pane_placement.py::test_tile_leaves_the_pane_docked",
+      "status": "covered"
+    },
+    {
+      "id": "SC-ai-chat-08",
+      "requirement": "Opening and placing the pane",
+      "layer": "ncurses",
+      "test": "tests/test_ai_chat_turn_contracts.py::test_closing_the_pane_ends_the_stream",
+      "status": "covered"
+    },
+    {
+      "id": "SC-ai-chat-09",
+      "requirement": "Opening and placing the pane",
+      "layer": "ncurses",
+      "test": "tests/test_ai_pane_quit.py::test_ai_pane_is_a_tool_pane",
+      "status": "covered"
+    },
+    {
+      "id": "SC-ai-chat-10",
+      "requirement": "What a turn looks like",
+      "layer": "ncurses",
+      "test": "tests/test_ai_chat_turn_contracts.py::test_header_and_hints_appear_after_an_edit_opened_the_pane",
+      "status": "covered"
+    },
+    {
+      "id": "SC-ai-chat-10b",
+      "requirement": "What a turn looks like",
+      "layer": "ncurses",
+      "test": "tests/test_ai_chat_turn_contracts.py::test_header_follows_the_dial",
+      "status": "covered"
+    },
+    {
+      "id": "SC-ai-chat-11",
+      "requirement": "What a turn looks like",
+      "layer": "ncurses",
+      "test": "tests/test_ai_scroll.py::test_pgup_reveals_scrolled_off_history",
+      "status": "covered"
+    },
+    {
+      "id": "SC-ai-chat-11b",
+      "requirement": "What a turn looks like",
+      "layer": "ncurses",
+      "test": "tests/test_ai_pane_roles.py::test_chat_context_is_the_file_not_the_transcript",
+      "status": "covered"
+    },
+    {
+      "id": "SC-ai-chat-12",
+      "requirement": "What a turn looks like",
+      "layer": "ncurses",
+      "test": "tests/test_ai_chat_turn_contracts.py::test_waiting_line_spins_and_counts_seconds",
+      "status": "covered"
+    },
+    {
+      "id": "SC-ai-chat-13",
+      "requirement": "What a turn looks like",
+      "layer": "ncurses",
+      "test": "tests/test_ai_chat.py::test_ai_reply_shares_the_AI_line",
+      "status": "covered"
+    },
+    {
+      "id": "SC-ai-chat-13",
+      "requirement": "What a turn looks like",
+      "layer": "ncurses",
+      "test": "tests/test_ai_chat_tool_preamble.py::test_chat_tool_after_preamble",
+      "status": "covered"
+    },
+    {
+      "id": "SC-ai-chat-14",
+      "requirement": "What a turn looks like",
+      "layer": "ncurses",
+      "test": "tests/test_ai_chat_short_reply.py::test_chat_reply_under_five_bytes_paints",
+      "status": "covered"
+    },
+    {
+      "id": "SC-ai-chat-15",
+      "requirement": "What a turn looks like",
+      "layer": "ncurses",
+      "test": "tests/test_ai_pane_wrap.py::test_long_reply_is_wrapped_across_lines",
+      "status": "covered"
+    },
+    {
+      "id": "SC-ai-chat-16",
+      "requirement": "What a turn looks like",
+      "layer": "ncurses",
+      "test": "tests/test_ai_chat_pane_contracts.py::test_blank_lines_and_fences_are_shown_verbatim",
+      "status": "new"
+    },
+    {
+      "id": "SC-ai-chat-17",
+      "requirement": "What a turn looks like",
+      "layer": "ncurses",
+      "test": "tests/test_ai_chat_pane_contracts.py::test_caret_parks_in_the_input_row_after_a_focused_reply",
+      "status": "new"
+    },
+    {
+      "id": "SC-ai-chat-18",
+      "requirement": "What a turn looks like",
+      "layer": "ncurses",
+      "test": "tests/test_ai_pane_roles.py::test_attention_line_stays_inside_the_pane",
+      "status": "covered"
+    },
+    {
+      "id": "SC-ai-chat-19",
+      "requirement": "The input",
+      "layer": "ncurses",
+      "test": "tests/test_ai_chat_input_contracts.py::test_enter_on_empty_input_row_sends_nothing",
+      "status": "covered"
+    },
+    {
+      "id": "SC-ai-chat-20",
+      "requirement": "The input",
+      "layer": "ncurses",
+      "test": "tests/test_ai_chat_pane_contracts.py::test_esc_returns_the_caret_to_the_home_window",
+      "status": "new"
+    },
+    {
+      "id": "SC-ai-chat-21",
+      "requirement": "The input",
+      "layer": "ncurses",
+      "test": "tests/test_ai_chat_turn_contracts.py::test_esc_cancels_a_streaming_chat_turn",
+      "status": "covered"
+    },
+    {
+      "id": "SC-ai-chat-22",
+      "requirement": "The input",
+      "layer": "ncurses",
+      "test": "tests/test_ai_chat.py::test_ai_multiline_input_row",
+      "status": "covered"
+    },
+    {
+      "id": "SC-ai-chat-23",
+      "requirement": "The input",
+      "layer": "ncurses",
+      "test": "tests/test_ai_chat_input_contracts.py::test_backspace_at_start_of_row_is_a_noop",
+      "status": "covered"
+    },
+    {
+      "id": "SC-ai-chat-24",
+      "requirement": "The input",
+      "layer": "ncurses",
+      "test": "tests/test_ai_chat_ctrl_ae.py::test_ctrl_a_and_e_move_insertion_point",
+      "status": "covered"
+    },
+    {
+      "id": "SC-ai-chat-24",
+      "requirement": "The input",
+      "layer": "ncurses",
+      "test": "tests/test_ai_inputbar.py::test_input_row_cursor_editing",
+      "status": "covered"
+    },
+    {
+      "id": "SC-ai-chat-25",
+      "requirement": "The input",
+      "layer": "ncurses",
+      "test": "tests/test_ai_input_utf8.py::test_input_caret_after_accented_char",
+      "status": "covered"
+    },
+    {
+      "id": "SC-ai-chat-25",
+      "requirement": "The input",
+      "layer": "ncurses",
+      "test": "tests/test_ai_input_utf8.py::test_input_wide_char_types_and_renders",
+      "status": "covered"
+    },
+    {
+      "id": "SC-ai-chat-26",
+      "requirement": "The input",
+      "layer": "ncurses",
+      "test": "tests/test_ai_chat_input_paste_limit.py::test_input_at_the_limit_is_announced",
+      "status": "covered"
+    },
+    {
+      "id": "SC-ai-chat-26",
+      "requirement": "The input",
+      "layer": "ncurses",
+      "test": "tests/test_ai_chat_input_paste_limit.py::test_paste_crossing_the_limit_keeps_what_fits",
+      "status": "covered"
+    },
+    {
+      "id": "SC-ai-chat-27",
+      "requirement": "The input",
+      "layer": "ncurses",
+      "test": "tests/test_ai_chat_input_paste_limit.py::test_bracketed_paste_with_newlines_is_literal",
+      "status": "covered"
+    },
+    {
+      "id": "SC-ai-chat-28",
+      "requirement": "The input",
+      "layer": "ncurses",
+      "test": "tests/test_ai_slash.py::test_slash_explain_expands",
+      "status": "covered"
+    },
+    {
+      "id": "SC-ai-chat-29",
+      "requirement": "The input",
+      "layer": "ncurses",
+      "test": "tests/test_ai_chat_turn_contracts.py::test_second_question_is_queued_and_runs_after_the_turn",
+      "status": "covered"
+    },
+    {
+      "id": "SC-ai-chat-30",
+      "requirement": "Scrolling and copying",
+      "layer": "ncurses",
+      "test": "tests/test_ai_scroll.py::test_pgup_reveals_scrolled_off_history",
+      "status": "covered"
+    },
+    {
+      "id": "SC-ai-chat-30",
+      "requirement": "Scrolling and copying",
+      "layer": "ncurses",
+      "test": "tests/test_ai_scroll.py::test_arrow_scrolls_transcript_one_line",
+      "status": "covered"
+    },
+    {
+      "id": "SC-ai-chat-31",
+      "requirement": "Scrolling and copying",
+      "layer": "ncurses",
+      "test": "tests/test_ai_scroll.py::test_typing_snaps_back_to_input",
+      "status": "covered"
+    },
+    {
+      "id": "SC-ai-chat-32",
+      "requirement": "Scrolling and copying",
+      "layer": "ncurses",
+      "test": "tests/test_ai_pane_scroll_lock.py::test_reply_arriving_while_browsing_keeps_the_view_focused",
+      "status": "covered"
+    },
+    {
+      "id": "SC-ai-chat-32",
+      "requirement": "Scrolling and copying",
+      "layer": "ncurses",
+      "test": "tests/test_ai_pane_scroll_lock.py::test_reply_arriving_while_browsing_keeps_the_view_unfocused",
+      "status": "covered"
+    },
+    {
+      "id": "SC-ai-chat-33",
+      "requirement": "Scrolling and copying",
+      "layer": "ncurses",
+      "test": "tests/test_ai_pane_scroll_lock.py::test_wheel_scrolls_three_lines_and_locks",
+      "status": "covered"
+    },
+    {
+      "id": "SC-ai-chat-34",
+      "requirement": "Scrolling and copying",
+      "layer": "ncurses",
+      "test": "tests/test_ai_pane_copy.py::test_copy_ai_reply_to_clipboard",
+      "status": "covered"
+    },
+    {
+      "id": "SC-ai-chat-35",
+      "requirement": "Scrolling and copying",
+      "layer": "ncurses",
+      "test": "tests/test_ai_pane_reflow.py::test_wrapped_reply_copies_as_one_line",
+      "status": "covered"
+    },
+    {
+      "id": "SC-ai-chat-36",
+      "requirement": "Colour and role",
+      "layer": "ncurses",
+      "test": "tests/test_ai_pane_roles.py::test_roles_paint_from_the_default_scheme",
+      "status": "covered"
+    },
+    {
+      "id": "SC-ai-chat-36",
+      "requirement": "Colour and role",
+      "layer": "ncurses",
+      "test": "tests/test_ai_pane_roles.py::test_error_line_is_light_red",
+      "status": "covered"
+    },
+    {
+      "id": "SC-ai-chat-36",
+      "requirement": "Colour and role",
+      "layer": "ncurses",
+      "test": "tests/test_ai_attention.py::test_attention_prompt_is_highlighted",
+      "status": "covered"
+    },
+    {
+      "id": "SC-ai-chat-37",
+      "requirement": "Colour and role",
+      "layer": "ncurses",
+      "test": "tests/test_ai_pane_roles.py::test_scheme_keys_in_xwperc_recolour_the_roles",
+      "status": "covered"
+    },
+    {
+      "id": "SC-ai-chat-37",
+      "requirement": "Colour and role",
+      "layer": "ncurses",
+      "test": "tests/test_ai_pane_roles.py::test_error_key_in_xwperc_recolours_the_error_line",
+      "status": "covered"
+    },
+    {
+      "id": "SC-ai-chat-39",
+      "requirement": "Errors and edge cases",
+      "layer": "ncurses",
+      "test": "tests/test_ai_chat_error.py::test_chat_shows_backend_error",
+      "status": "covered"
+    },
+    {
+      "id": "SC-ai-chat-39",
+      "requirement": "Errors and edge cases",
+      "layer": "ncurses",
+      "test": "tests/test_ai_chat.py::test_ai_chat_empty_reply_clears_placeholder",
+      "status": "covered"
+    },
+    {
+      "id": "SC-ai-chat-40",
+      "requirement": "Errors and edge cases",
+      "layer": "ncurses",
+      "test": "tests/test_ai_chat_error.py::test_chat_shows_in_stream_error",
+      "status": "covered"
+    },
+    {
+      "id": "SC-ai-chat-41",
+      "requirement": "Errors and edge cases",
+      "layer": "ncurses",
+      "test": "tests/test_ai_chat_turn_contracts.py::test_transport_error_replaces_the_waiting_line",
+      "status": "covered"
+    },
+    {
+      "id": "SC-ai-chat-42",
+      "requirement": "Errors and edge cases",
+      "layer": "ncurses",
+      "test": "tests/test_ai_endpoint_down.py::test_openai_endpoint_down_message",
+      "status": "covered"
+    },
+    {
+      "id": "SC-ai-chat-42",
+      "requirement": "Errors and edge cases",
+      "layer": "ncurses",
+      "test": "tests/test_ai_ollama_down.py::test_ollama_not_running_message",
+      "status": "covered"
+    },
+    {
+      "id": "SC-ai-chat-42",
+      "requirement": "Errors and edge cases",
+      "layer": "ncurses",
+      "test": "tests/test_ai_ollama_down.py::test_ollama_no_models_message",
+      "status": "covered"
+    },
+    {
+      "id": "SC-ai-chat-43",
+      "requirement": "Errors and edge cases",
+      "layer": "ncurses",
+      "test": "tests/test_ai_pane_roles.py::test_assistant_off_line_names_options_ai",
+      "status": "covered"
+    },
+    {
+      "id": "SC-ai-chat-44",
+      "requirement": "Errors and edge cases",
+      "layer": "ncurses",
+      "test": "tests/test_ai_consent.py::test_first_use_prompt_and_decline",
+      "status": "covered"
+    },
+    {
+      "id": "SC-ai-chat-44",
+      "requirement": "Errors and edge cases",
+      "layer": "ncurses",
+      "test": "tests/test_ai_consent.py::test_first_use_accept_proceeds",
+      "status": "covered"
+    },
+    {
+      "id": "SC-ai-chat-44",
+      "requirement": "Errors and edge cases",
+      "layer": "ncurses",
+      "test": "tests/test_ai_consent.py::test_first_use_shortcut_runs_action",
+      "status": "covered"
+    },
+    {
+      "id": "SC-ai-chat-45",
+      "requirement": "Errors and edge cases",
+      "layer": "ncurses",
+      "test": "tests/test_bottom_bar_after_dialog.py::test_pane_keeps_one_bar_after_dialogs_and_menus",
+      "status": "covered"
+    },
+    {
+      "id": "SC-ai-chat-45",
+      "requirement": "Errors and edge cases",
+      "layer": "ncurses",
+      "test": "tests/test_ai_menu_repaint.py::test_spinner_does_not_repaint_over_menu",
+      "status": "covered"
+    },
+    {
+      "id": "SC-ai-chat-46",
+      "requirement": "Errors and edge cases",
+      "layer": "ncurses",
+      "test": "tests/test_ai_menu.py::test_clear_conversation_flashes_without_opening_pane",
+      "status": "covered"
+    },
+    {
+      "id": "SC-ai-chat-48",
+      "requirement": "Errors and edge cases",
+      "layer": "ncurses",
+      "test": "tests/test_ai_chat_pane_contracts.py::test_three_hundred_turns_keep_every_line",
+      "status": "blocked",
+      "reason": "95-second run, gated behind XWPE_TEST_LONG; passes when run"
+    },
+    {
+      "id": "SC-ai-chat-49",
+      "requirement": "Errors and edge cases",
+      "layer": "x11",
+      "test": "tests/x11/test_ai_pane.py::test_ai_pane_paints_under_x11",
+      "status": "covered"
+    },
+    {
+      "id": "SC-ai-chat-49",
+      "requirement": "Errors and edge cases",
+      "layer": "wayland",
+      "test": "tests/wayland/test_ai_pane.py::test_ai_pane_paints_under_wayland",
+      "status": "covered"
+    },
+    {
+      "id": "SC-ai-chat-50",
+      "requirement": "Documentation agrees with the pane",
+      "layer": "doc",
+      "test": "-- doc: docs/chapters/ai.texi (Chat and the enabling section) and docs/AI.md read against the pane by a person; the seven disagreements the inventory listed are fixed, the supervisor's reading of 2026-10-15 agrees",
+      "status": "blocked"
+    },
+    {
+      "id": "SC-ai-chat-51",
+      "requirement": "Every tool line is answered",
+      "layer": "ncurses",
+      "test": "tests/test_ai_chat_web.py::test_unavailable_tool_is_answered_never_silent",
+      "status": "new"
+    },
+    {
+      "id": "SC-ai-chat-53",
+      "requirement": "Every tool line is answered",
+      "layer": "ncurses",
+      "test": "tests/test_ai_chat_web.py::test_with_the_web_off_the_model_is_not_offered_it",
+      "status": "new"
+    },
+    {
+      "id": "SC-ai-chat-52",
+      "requirement": "Reaching the web",
+      "layer": "ncurses",
+      "test": "tests/test_ai_chat_web.py::test_first_need_asks_once_and_the_answer_is_remembered",
+      "status": "new"
+    },
+    {
+      "id": "SC-ai-chat-54",
+      "requirement": "Reaching the web",
+      "layer": "ncurses",
+      "test": "tests/test_ai_chat_web.py::test_each_web_call_is_gated_by_the_dial",
+      "status": "new"
+    },
+    {
+      "id": "SC-ai-chat-54",
+      "requirement": "Reaching the web",
+      "layer": "ncurses",
+      "test": "tests/test_ai_chat_web.py::test_agent_web_tools_refuse_while_the_switch_is_off",
+      "status": "new"
+    },
+    {
+      "id": "SC-ai-chat-55",
+      "requirement": "Reaching the web",
+      "layer": "ncurses",
+      "test": "tests/test_ai_chat_web.py::test_every_query_and_page_is_visible_and_the_answer_names_its_sources",
+      "status": "new"
+    },
+    {
+      "id": "SC-ai-chat-56",
+      "requirement": "Reaching the web",
+      "layer": "ncurses",
+      "test": "tests/test_ai_chat_web.py::test_header_names_the_web_when_it_is_on",
+      "status": "new"
+    }
   ]
 }

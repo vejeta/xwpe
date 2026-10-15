@@ -14,7 +14,6 @@ tests/test_ai_bottombar_click.py
 tests/test_ai_cancel.py
 tests/test_ai_capabilities_prompt.py
 tests/test_ai_chat_investigate_live.py
-tests/test_ai_chat_web.py
 tests/test_ai_claudecli_live.py
 tests/test_ai_claudecli_web.py
 tests/test_ai_compose.py
@@ -31,7 +30,6 @@ tests/test_ai_model_autopick.py
 tests/test_ai_model_fallback.py
 tests/test_ai_ollama_live.py
 tests/test_ai_ollama_thinking.py
-tests/test_ai_options_web.py
 tests/test_ai_overlay_repaint.py
 tests/test_ai_plan_live.py
 tests/test_ai_plan_multiline.py
