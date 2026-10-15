@@ -9667,9 +9667,9 @@ static void ai_agent_announce_task(FENSTER *f, const char *goal)
 /**
  * ai_agent_op_new - The task record for a run on window @f.
  *
- * Remembers the window's desktop slot, so the run can find its window again
- * after the user switches windows, and names the loop's two callbacks and
- * its turn limit.
+ * Remembers the window's id (the desktop's entry for its slot), so the run
+ * can find its window again after the user switches windows, and names the
+ * loop's two callbacks and its turn limit.
  * Return: the calloc'd task, NULL out of memory.
  */
 static ai_async_op *ai_agent_op_new(FENSTER *f)
