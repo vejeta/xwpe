@@ -67,6 +67,6 @@
     {"id": "SC-ai-chat-48", "requirement": "Errors and edge cases", "layer": "ncurses", "test": "tests/test_ai_chat_pane_contracts.py::test_three_hundred_turns_keep_every_line", "status": "blocked", "reason": "95-second run, gated behind XWPE_TEST_LONG; passes when run"},
     {"id": "SC-ai-chat-49", "requirement": "Errors and edge cases", "layer": "x11", "test": "tests/x11/test_ai_pane.py::test_ai_pane_paints_under_x11", "status": "covered"},
     {"id": "SC-ai-chat-49", "requirement": "Errors and edge cases", "layer": "wayland", "test": "tests/wayland/test_ai_pane.py::test_ai_pane_paints_under_wayland", "status": "covered"},
-    {"id": "SC-ai-chat-50", "requirement": "Documentation agrees with the pane", "layer": "doc", "test": "-- doc: docs/chapters/ai.texi Chat section and docs/AI.md read against the pane (GAPS G-12 lists the sentences still wrong)", "status": "blocked"}
+    {"id": "SC-ai-chat-50", "requirement": "Documentation agrees with the pane", "layer": "doc", "test": "-- doc: docs/chapters/ai.texi (Chat and the enabling section) and docs/AI.md read against the pane by a person; the seven disagreements the inventory listed are fixed, the supervisor's reading of 2026-10-15 agrees", "status": "blocked"}
   ]
 }
