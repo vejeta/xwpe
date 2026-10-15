@@ -233,6 +233,22 @@ Changes
 
 1.7.0 (AI assistant -- experimental, opt-in)
 
+* A server's error message is shown again when it arrives inside the stream.
+  Some servers answer HTTP 200 and then send one error event in the stream
+  ("Internal server error", as a failing Proton Lumo bridge does) and close
+  without an end marker.  Since this release started reporting a dead
+  connection as an error, that close was taken for a hang-up: the chat said
+  "[AI: transport error]" under a "(gathering the answer...)" line that never
+  cleared, and the Edit and the agent showed their transport line too, the
+  server's words lost.  An error event received in full now ends the turn as
+  a backend error: the chat shows "AI: error: <message>" in place of the
+  waiting line, the Edit shows "[AI edit] backend error: <message>" (it used
+  to say the backend did not return a result even when the server had given
+  a reason), the agent shows "[agent] working: backend error: <message>", and
+  nothing is applied.  A peer that hangs up without having said anything is
+  still a transport error.  Tests: tests/test_ai_chat_error.py,
+  tests/test_ai_agent_gaps.py.
+
 * File > Shell gives the shell a usable terminal and the editor comes back
   repainted (console).  The shell opened by File > Shell (and the full-screen
   run of a shell script, which waits for Return) looked as if it needed a

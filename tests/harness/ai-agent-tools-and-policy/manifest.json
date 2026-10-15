@@ -109,6 +109,7 @@
     {"id": "SC-ai-agent-53b", "requirement": "The hosted engine", "layer": "ncurses", "test": "tests/test_ai_host_dial_and_interrupt.py::test_host_esc_interrupts_turn_and_session_continues", "status": "new"},
     {"id": "SC-ai-agent-53b", "requirement": "The hosted engine", "layer": "ncurses", "test": "tests/test_ai_host_dial_and_interrupt.py::test_host_esc_ignored_ends_session_at_tool_timeout", "status": "new"},
     {"id": "SC-ai-agent-54", "requirement": "Errors mid-run", "layer": "ncurses", "test": "tests/test_ai_agent_gaps.py::test_backend_error_mid_loop_shows_the_servers_message", "status": "new"},
+    {"id": "SC-ai-agent-54", "requirement": "Errors mid-run", "layer": "ncurses", "test": "tests/test_ai_agent_gaps.py::test_in_stream_error_event_mid_loop_shows_the_servers_message", "status": "new", "note": "the error arrives as an SSE event inside a 200 stream with no end marker; it is a backend error answered in full, not a hang-up"},
     {"id": "SC-ai-agent-55", "requirement": "Errors mid-run", "layer": "ncurses", "test": "tests/test_ai_agent_gaps.py::test_connection_closed_with_no_bytes_is_a_transport_error", "status": "new"},
     {"id": "SC-ai-agent-55", "requirement": "Errors mid-run", "layer": "ncurses", "test": "tests/test_ai_agent_gaps.py::test_non_http_answer_is_a_transport_error", "status": "new"},
     {"id": "SC-ai-agent-56", "requirement": "Documentation agrees with the run", "layer": "doc", "test": null, "status": "blocked", "reason": "a documentation row, checked by reading the manual against the run, not by an automated test"},

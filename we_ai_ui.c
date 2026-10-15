@@ -3773,6 +3773,26 @@ static void ai_op_capture_failure(ai_async_op *op)
  op->err_msg = wpe_ai_stream_error_message(op->st);
 }
 
+/**
+ * ai_op_backend_error_text - The words the pane shows for a failed turn.
+ * @op: the task whose turn the backend answered with an error.
+ * @none: what to say when the server left no message and streamed no text.
+ *
+ * The server's own message first ("model m is on fire", "Internal server
+ * error", "The model `x` does not exist"), then whatever text the turn
+ * streamed (the claude CLI's "not logged in"), and @none only when there is
+ * nothing else to say.  Shared by Edit and the multi-turn driver so an
+ * error the server sent, by status or by an event inside the stream, reads
+ * the same whichever action asked for it.
+ * Return: a string owned by the op (or @none), valid until its next turn.
+ */
+static const char *ai_op_backend_error_text(const ai_async_op *op, const char *none)
+{
+ if (op->err_msg && op->err_msg[0]) return op->err_msg;
+ if (op->acc && op->acc[0]) return op->acc;
+ return none;
+}
+
 /* Detach the op from the fd-loop and free it.  Must run BEFORE any modal review
  * so no AI callbacks (this stream, the heartbeat) fire underneath it. */
 static void ai_op_detach(ai_async_op *op)
@@ -4204,7 +4224,7 @@ static void ai_edit_done(ai_async_op *op)
  if (op->had_error) {
   char l[360];
   snprintf(l, sizeof l, "[AI edit] backend error: %.320s",
-           op->acc_len ? op->acc : "the backend did not return a result");
+           ai_op_backend_error_text(op, "the backend did not return a result"));
   ai_pane(f, l, 1);
   wpe_ai_trace("edit error (not applied)");
   ai_op_free(op);
@@ -4351,22 +4371,6 @@ static void ai_conv_next_turn(ai_async_op *op)
 }
 
 /**
- * ai_conv_backend_error_text - The words the pane shows for a failed turn.
- * @op: the task whose turn the backend answered with an error.
- *
- * The server's own message first ("model m is on fire", "The model `x` does
- * not exist"), then whatever text the turn streamed (the claude CLI's "not
- * logged in"), and "no result" only when there is nothing else to say.
- * Return: a string owned by the op, valid until its next turn.
- */
-static const char *ai_conv_backend_error_text(const ai_async_op *op)
-{
- if (op->err_msg && op->err_msg[0]) return op->err_msg;
- if (op->acc && op->acc[0]) return op->acc;
- return "no result";
-}
-
-/**
  * ai_conv_report_backend_error - Tell the user a turn failed, with the reason.
  * @op: the task whose turn the backend answered with an error.
  *
@@ -4379,7 +4383,7 @@ static void ai_conv_report_backend_error(ai_async_op *op)
  char l[360];
  if (!ai_window_alive(op->cn, op->f)) return;
  snprintf(l, sizeof l, "%s: backend error: %.300s", op->label,
-          ai_conv_backend_error_text(op));
+          ai_op_backend_error_text(op, "no result"));
  ai_pane(op->f, l, 0);
 }
 

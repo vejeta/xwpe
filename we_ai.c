@@ -1943,14 +1943,39 @@ static void ai_stream_note_error_status(struct wpe_ai_stream *st)
 }
 
 /**
+ * ai_stream_error_event_received - Did the server end this turn with an error event?
+ * @st: the stream after its latest bytes were parsed.
+ *
+ * A server can answer HTTP 200 and then say inside the stream that it failed:
+ * one {"error":{"message":...}} event (OpenAI shape, what a failing bridge
+ * such as Proton Lumo sends) or {"error":"..."} (Ollama), usually followed by
+ * the connection closing with no end marker.  That event is the server's last
+ * word on the turn, and its message is what the user needs to read; the
+ * parser kept it in err_msg, so a kept message means the error was received
+ * in full and the turn is over.
+ * Return: 1 when an in-stream error event with a message has been parsed.
+ */
+static int ai_stream_error_event_received(const struct wpe_ai_stream *st)
+{
+ if (!st->err_msg) return 0;
+ if (!st->err_msg[0]) return 0;
+ return 1;
+}
+
+/**
  * ai_stream_turn_complete - Did the protocol end this turn?
  * @st: the stream after its latest bytes were parsed.
  *
  * A turn is finished when the backend said so (its end marker: [DONE], a final
  * finish_reason, "done":true, message_stop), when the HTTP framing closed the
- * body (Content-Length reached or the final chunk read), or when an error
- * status has been answered in full.  A peer that merely hung up has finished
- * nothing: the user is told of a transport error, not of a completed task.
+ * body (Content-Length reached or the final chunk read), when an error
+ * status has been answered in full, or when the server sent an error event
+ * inside the stream.  The last case matters to the user because such a
+ * server closes without an end marker: without it the turn read as a
+ * hang-up, the pane said "transport error" under a waiting line that never
+ * cleared, and the server's own message ("Internal server error") was lost.
+ * A peer that merely hung up without saying anything has finished nothing:
+ * the user is told of a transport error, not of a completed task.
  * Return: 1 when the turn is complete, 0 otherwise.
  */
 static int ai_stream_turn_complete(const struct wpe_ai_stream *st)
@@ -1958,6 +1983,7 @@ static int ai_stream_turn_complete(const struct wpe_ai_stream *st)
  if (st->done) return 1;
  if (wpe_http_stream_framed(&st->hs)) return 1;
  if (wpe_http_stream_status(&st->hs) >= AI_HTTP_ERROR_STATUS && st->eof) return 1;
+ if (ai_stream_error_event_received(st)) return 1;
  return 0;
 }
 
@@ -1968,7 +1994,9 @@ static int ai_stream_turn_complete(const struct wpe_ai_stream *st)
  * True for a connection closed with no bytes, an answer that is not HTTP (no
  * status line), and a reply cut before its end marker or its framed end.  The
  * pump then fails the turn, so Chat, Edit, Complete and the agent all show
- * their transport-error line, stop, and apply nothing.
+ * their transport-error line, stop, and apply nothing.  Not true for a
+ * server that closed after an error event it sent in full: that turn ended
+ * as a backend error, and the user reads the server's message instead.
  * Return: 1 when the peer hung up on an unfinished turn, 0 otherwise.
  */
 static int ai_stream_hung_up_early(const struct wpe_ai_stream *st)

@@ -11,6 +11,15 @@ bottom-bar "Alt-G AI" entry to open the action menu (that click opens the menu
 even while busy), then wait past a spinner tick and assert the menu items are
 still on screen.
 
+Since the pending-window lock, an Edit announces itself on the bottom row the
+moment it starts: "The assistant is working on this window (Esc cancels)"
+takes the place of the key hints, so the "Alt-G AI" entry is not on screen to
+click.  That status-row text is one-shot -- the next keystroke restores the
+hints -- so the test first sends a cursor move, a key the lock does not
+refuse, and then clicks the entry as before.  The lock's own text is pinned by
+tests/test_ai_pending_lock.py; this test is about the menu surviving the
+spinner, and its assertion is unchanged.
+
 Red/green: without the guard the spinner tick repaints the pane over the menu and
 the items vanish within a second; with it they persist.
 """
@@ -51,6 +60,9 @@ def test_spinner_does_not_repaint_over_menu(tmp_path):
     with WpeSession(str(tmp_path), "hello\nworld\n", env_extra=env, filename="t.txt") as s:
         s.key(ALT.AI); s.key("e"); s._drain(0.4)
         s.key("do something"); s.key("\r", delay=0.8)     # Edit starts -> spinner live
+        # The Edit's start put the lock's notice on the bottom row in place of
+        # the key hints; a cursor move (allowed while locked) brings them back.
+        s.key("\033[B", delay=0.6)
         pos = _find_ai_entry(s.display())
         assert pos, "'Alt-G AI' bottom-bar entry not found:\n" + "\n".join(s.display())
         col, row = pos

@@ -166,7 +166,9 @@ def _fault_server(captured, replies, status_for_turn=None, fault_for_turn=None):
     repeats).  `status_for_turn(n)` may return an HTTP status other than 200
     for request n; the body is then a JSON error carrying SERVER_MESSAGE.
     `fault_for_turn(n)` may return "close" (accept the request, answer with no
-    bytes, close) or "garbage" (bytes that are not HTTP) for request n."""
+    bytes, close), "garbage" (bytes that are not HTTP) or "error_event" (HTTP
+    200, then one SSE error event carrying SERVER_MESSAGE and no end marker,
+    the shape a failing bridge sends) for request n."""
     turn = {"n": 0}
 
     class H(BaseHTTPRequestHandler):
@@ -195,6 +197,15 @@ def _fault_server(captured, replies, status_for_turn=None, fault_for_turn=None):
                 return
             if fault == "garbage":
                 self.wfile.write(b"\x00\xff this is not http at all\r\n\r\n")
+                self.close_connection = True
+                return
+            if fault == "error_event":
+                event = json.dumps({"error": {"message": "%s (turn %d)" % (SERVER_MESSAGE, i),
+                                              "type": "server_error"}})
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream")
+                self.end_headers()
+                self.wfile.write(("data: %s\n\n" % event).encode())
                 self.close_connection = True
                 return
             status = status_for_turn(i) if status_for_turn else 200
@@ -313,6 +324,29 @@ def test_backend_error_mid_loop_shows_the_servers_message(tmp_path):
     assert "session save" in txt, "the session was not saved after the error:\n" + txt
     assert review is not None, "no review although a.txt was written under auto:\n" + text
     assert (tmp_path / "a.txt").exists()
+    assert "agent done" not in txt, txt
+
+
+# @scenario SC-ai-agent-54
+def test_in_stream_error_event_mid_loop_shows_the_servers_message(tmp_path):
+    """The server said what went wrong inside the stream: HTTP 200, one SSE
+    error event with its message, then the connection closed with no end
+    marker.  That is a backend error answered in full, not a dead connection:
+    the pane shows the server's words, not the transport line, and the run
+    stops without acting on the turn."""
+    captured, rows, review, txt = _run_openai(
+        tmp_path, ["TOOL write_file a.txt\nAAA\n@@END", "DONE never"], "auto", 2,
+        fault_for_turn=lambda n: "error_event" if n == 1 else None)
+    text = "\n".join(rows) + "\n" + "\n".join(review or [])
+    assert len(captured) >= 2, "the second turn was never requested:\n" + txt
+    assert TRANSPORT_LINE not in text, \
+        "an error event the server sent in full was shown as a transport error:\n" + text
+    assert BACKEND_ERROR_LINE in text, text
+    assert SERVER_MESSAGE in text, \
+        "the pane does not show the server's own message:\n" + text
+    assert "conv error (stopped)" in txt, txt
+    assert "conv transport error" not in txt, txt
+    assert review is not None, "no review although a.txt was written under auto:\n" + text
     assert "agent done" not in txt, txt
 
 
