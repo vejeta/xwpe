@@ -176,7 +176,12 @@ window is open as well (a build with @kbd{F9}, a changeset review) the two
 share the bottom strip from the same row, @samp{Messages} on the left half
 and the pane on the right, whichever of them opened first.  Window > Tile
 and Window > Cascade arrange the file windows above the strip and leave the
-pane where it is, as they leave @samp{Messages}.
+pane where it is, as they leave @samp{Messages}.  Whatever width the pane
+has, the whole transcript is wrapped again to it before it is painted (when
+@samp{Messages} opens beside the pane or closes, when the terminal or the
+window is resized), so a long reply reads whole over more rows in a narrow
+pane instead of ending cut at the border, and a reply that wraps over
+several rows is copied as the one line it is.
 
 The pane opens with a header line, @samp{[AI: <backend> | model: <model> |
 policy: <dial>]}, and two hint lines naming the input keys and the slash

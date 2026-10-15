@@ -1089,6 +1089,9 @@ int e_schirm(FENSTER *f, int sw)
  else if (f->dtmd == DTMD_FILEDROPDOWN)
   return(e_pr_file_window((FLWND*)f->b, 1, sw, f->fb->er.fb, f->fb->ez.fb,
     f->fb->frft.fb));
+#ifdef WPE_AI
+ wpe_ai_pane_before_paint(f);   /* the AI pane's rows at its present width */
+#endif
  if (NUM_LINES_OFF_SCREEN_TOP < 0)
   NUM_LINES_OFF_SCREEN_TOP = 0;
 

@@ -92,9 +92,27 @@ enum ai_role {
  AI_ROLE_ERROR           /* "AI: error: ...", transport and backend errors   */
 };
 
+/* One byte per pane row: the writer's role in the low bits and, above them,
+ * whether the row CONTINUES the previous row's logical line.  The transcript
+ * is the list of logical lines; the buffer rows are its rendering at the
+ * pane's current width, so a row split off by the wrapper is marked here and
+ * can be joined back when the width changes (see ai_pane_reflow). */
+#define AI_ROW_ROLE_MASK  0x0F
+#define AI_ROW_CONTINUES  0x10
 static unsigned char *g_ai_roles = NULL;   /* one role per pane line          */
 static int g_ai_roles_n = 0;               /* lines the table covers          */
 static int g_ai_roles_cap = 0;
+/* The width the transcript rows were last laid out at; the paint re-wraps
+ * them when the pane's width differs (a build opened Messages beside the
+ * pane, a resize, Messages closed again). */
+#define AI_ROWS_WIDTH_UNKNOWN 0
+static int g_ai_rows_width = AI_ROWS_WIDTH_UNKNOWN;
+/* The stream line was left at the old width because a task was rewriting it
+ * in place; it is re-wrapped at the first paint after the task ends. */
+static int g_ai_rows_live_stale = 0;
+/* A row longer than the width was written whole (a final status on the
+ * stream row, a header): the next paint with no task running wraps it. */
+static int g_ai_rows_unwrapped = 0;
 
 /**
  * ai_roles_reserve - Make room for `n` roles.  Return: 1 on success.
@@ -159,7 +177,52 @@ static void ai_roles_set(BUFFER *b, int y, int role)
 {
  ai_roles_sync(b);
  if (y >= 0 && y < g_ai_roles_n)
-  g_ai_roles[y] = (unsigned char)role;
+  g_ai_roles[y] = (unsigned char)((g_ai_roles[y] & ~AI_ROW_ROLE_MASK) | role);
+}
+
+/**
+ * ai_row_continues - Does row `y` continue the previous row's logical line?
+ *
+ * A row the wrapper split off a long line says so here, so a narrowed or
+ * widened pane can join the line back and wrap it again, and a copy of the
+ * rows yields the one line the model wrote.
+ */
+static int ai_row_continues(int y)
+{
+ if (y <= 0 || y >= g_ai_roles_n) return 0;
+ return (g_ai_roles[y] & AI_ROW_CONTINUES) != 0;
+}
+
+/**
+ * ai_pane_row_continues_below - Row `y` goes on in the row under it.
+ * @b: the pane buffer.
+ * @y: the row that was cut by the wrapper.
+ *
+ * The row loses its line-end marker, the way the editor stores its own
+ * soft-wrapped long lines, so the block copy and the OS clipboard join it
+ * with the next row instead of handing the user two lines for one.
+ */
+static void ai_pane_row_continues_below(BUFFER *b, int y)
+{
+ if (y < 0 || y >= b->mxlines || !b->bf[y].s) return;
+ b->bf[y].s[b->bf[y].len] = '\0';
+ b->bf[y].nrc = b->bf[y].len;
+}
+
+/**
+ * ai_pane_mark_continuation - Row `y` continues the row above it.
+ * @b: the pane buffer.
+ * @y: the row the wrapper split off.
+ *
+ * Both halves of the record are set together: the flag the reflow reads and
+ * the missing line-end marker the copy path reads, so the two never disagree.
+ */
+static void ai_pane_mark_continuation(BUFFER *b, int y)
+{
+ ai_roles_sync(b);
+ if (y <= 0 || y >= g_ai_roles_n) return;
+ g_ai_roles[y] |= AI_ROW_CONTINUES;
+ ai_pane_row_continues_below(b, y - 1);
 }
 
 /**
@@ -180,6 +243,25 @@ static void ai_roles_set_appended(BUFFER *b, int from, int role)
 static void ai_roles_forget(void)
 {
  g_ai_roles_n = 0;
+ g_ai_rows_width = AI_ROWS_WIDTH_UNKNOWN;
+ g_ai_rows_live_stale = 0;
+ g_ai_rows_unwrapped = 0;
+}
+
+/**
+ * ai_pane_note_unwrapped - A row was written whole, without the wrapper.
+ * @text: the row's text.
+ *
+ * The stream row's final texts (a tool status, "reply ready", an error) and
+ * the lines written straight into the transcript do not pass the wrapper.
+ * When such a row is wider than the pane it is noted here, so the next paint
+ * with no task rewriting the row wraps it like every other line, and the
+ * user reads it whole.
+ */
+static void ai_pane_note_unwrapped(const char *text)
+{
+ if ((int)strlen(text) > g_ai_rows_width)
+  g_ai_rows_unwrapped = 1;
 }
 
 /**
@@ -188,7 +270,7 @@ static void ai_roles_forget(void)
 static int ai_role_of(int y)
 {
  if (y < 0 || y >= g_ai_roles_n) return AI_ROLE_ASSISTANT;
- return g_ai_roles[y];
+ return g_ai_roles[y] & AI_ROW_ROLE_MASK;
 }
 
 /**
@@ -288,6 +370,11 @@ static void  ai_tr_line(FENSTER *wf, const char *str, int role);
 static void  ai_pane_paint(FENSTER *wf);
 
 static int ai_pane_width(FENSTER *wf);          /* defined below */
+static void ai_pane_reflow(FENSTER *wf);        /* defined below */
+/* Columns the pane wraps reply text to, at most: a readable prose measure even
+ * when the pane is much wider (long unbroken lines of prose are hard to read --
+ * editors and chat UIs cap the measure rather than fill the whole width). */
+#define AI_PANE_MAX_COLS 80
 
 /* The chat turn as a background task (defined with the task machinery below,
    which its functions need the shape of): registration, the waiting line the
@@ -346,6 +433,73 @@ static void ai_pane_put1(FENSTER *f, const char *line, int role, int surface)
 }
 
 /**
+ * ai_pane_last_transcript_row - The row the last transcript write landed on.
+ * @wf: the pane.
+ *
+ * The last row above the input region in chat-focus, the last row of the
+ * buffer otherwise: where ai_pane_put1 has just written.
+ */
+static int ai_pane_last_transcript_row(FENSTER *wf)
+{
+ int y = wf->b->mxlines - 1;
+ if (g_ai_chat_focus) y -= g_ai_input_rows;
+ if (y < 0) y = 0;
+ return y;
+}
+
+/**
+ * ai_pane_put_continuation - Append the rest of a wrapped line as `role`.
+ * @f: the window the pane belongs to.
+ * @seg: the next row of the line.
+ * @role: who wrote it (enum ai_role).
+ *
+ * The row is recorded as continuing the row above it, so a width change can
+ * join the line back together and a copy of the rows yields one line.
+ */
+static void ai_pane_put_continuation(FENSTER *f, const char *seg, int role)
+{
+ FENSTER *wf;
+ ai_pane_put1(f, seg, role, 0);
+ wf = ai_pane_win(f);
+ if (!wf) return;
+ ai_pane_mark_continuation(wf->b, ai_pane_last_transcript_row(wf));
+}
+
+/* The largest row the wrapper hands the pane: the width is capped well below
+   this, the cap only bounds the copy. */
+#define AI_WRAP_SEG_MAX 1200
+
+/**
+ * ai_wrap_cut - Where the next row of `p` ends when wrapped at `width` columns.
+ * @p: the text still to be placed.
+ * @width: the columns a row may use.
+ * @cut: out, bytes of `p` that make the next row.
+ *
+ * Return: 0 when all of `p` fits on one row (`cut` is then its length), else
+ * 1 and `cut` is the row: up to and including the last space that fits (the
+ * space stays on the row, so the rows joined again read exactly as written),
+ * or a hard cut at the width inside a word longer than the row.  Column
+ * counting skips UTF-8 continuation bytes so multibyte text wraps by
+ * character.  Every row of the pane goes through here, the first write and
+ * every re-wrap, so a line always breaks the same way at a given width.
+ */
+static int ai_wrap_cut(const char *p, int width, int *cut)
+{
+ int col = 0, i = 0, lastspace = -1;
+ while (p[i] && col < width) {                  /* consume up to `width` columns */
+  if (p[i] == ' ') lastspace = i;
+  if (((unsigned char)p[i] & 0xC0) != 0x80) col++;
+  i++;
+ }
+ while (p[i] && ((unsigned char)p[i] & 0xC0) == 0x80) i++;   /* trailing cont bytes */
+ if (!p[i]) { *cut = i; return 0; }             /* the rest fits */
+ if (p[i] == ' ') { *cut = i + 1; return 1; }   /* the break space hangs past the margin */
+ if (lastspace > 0) { *cut = lastspace + 1; return 1; }   /* break after a space */
+ *cut = i;                                      /* a hard cut inside a long word */
+ return 1;
+}
+
+/**
  * ai_pane - Append `line` to the pane as `role`, word-wrapped to the pane's
  * current width.
  * @f: the window the pane belongs to.
@@ -356,33 +510,34 @@ static void ai_pane_put1(FENSTER *f, const char *line, int role, int surface)
  * A long answer or summary reads DOWN the window instead of running off to the
  * right -- the same width the streamed chat reply wraps to, applied to every
  * pane message.  Display-only wrapping of our own transcript window; it never
- * touches a source file.  Column counting skips UTF-8 continuation bytes so
- * multibyte text wraps by character.
+ * touches a source file.  The rows after the first are recorded as the
+ * line's continuations, so the line survives a later change of width whole.
  */
 static void ai_pane(FENSTER *f, const char *line, int role, int surface)
 {
  FENSTER *wf = ai_pane_win(f);
- int width = wf ? ai_pane_width(wf) : 76;
+ int width = AI_PANE_MAX_COLS;
  const char *p = line;
  int first = 1;
 
+ if (wf) {
+  ai_pane_reflow(wf);          /* the rows above at the width this line gets */
+  width = ai_pane_width(wf);
+ }
  if (!line || !*line) { ai_pane_put1(f, "", role, surface); return; }
  while (*p) {
-  int col = 0, i = 0, lastspace = -1, cut;
-  char seg[1200];
-  while (p[i] && col < width) {                  /* consume up to `width` columns */
-   if (p[i] == ' ') lastspace = i;
-   if (((unsigned char)p[i] & 0xC0) != 0x80) col++;
-   i++;
+  int cut;
+  char seg[AI_WRAP_SEG_MAX];
+  if (!ai_wrap_cut(p, width, &cut)) {
+   if (first) ai_pane_put1(f, p, role, surface);
+   else       ai_pane_put_continuation(f, p, role);
+   break;
   }
-  while (p[i] && ((unsigned char)p[i] & 0xC0) == 0x80) i++;   /* trailing cont bytes */
-  if (!p[i]) { ai_pane_put1(f, p, role, first ? surface : 0); break; }  /* the rest fits */
-  cut = (lastspace > 0) ? lastspace : i;         /* break at a space, else hard */
   if (cut >= (int)sizeof seg) cut = (int)sizeof seg - 1;
   memcpy(seg, p, (size_t)cut); seg[cut] = '\0';
-  ai_pane_put1(f, seg, role, first ? surface : 0);
+  if (first) ai_pane_put1(f, seg, role, surface);
+  else       ai_pane_put_continuation(f, seg, role);
   p += cut;
-  while (*p == ' ') p++;                          /* drop the break space */
   first = 0;
  }
 }
@@ -802,26 +957,31 @@ static void ai_pane_hold_browsed_view(FENSTER *wf, int pane_focused)
   e_cursor(wf, 0);
 }
 
-/* Repaint the pane window and keep the caret in view.  The pane is an ordinary
- * window, so the caret belongs to whichever window is FOCUSED: it sits in the
- * chat input row only while the pane itself is focused; when the user has
- * switched to their file (or an async op runs), the pane repaints in the
- * background and the caret stays in the focused/user window. */
-static void ai_pane_paint(FENSTER *wf)
+/**
+ * ai_pane_is_focused - Does the caret belong to the pane right now?
+ * @wf: the pane.
+ *
+ * Only while the pane is the focused window and no background task holds
+ * the caret in the user's own window.
+ */
+static int ai_pane_is_focused(FENSTER *wf)
 {
- extern int wpe_modal_active;                    /* a dropdown/dialog box is open */
  FENSTER *act = wf->ed->f[wf->ed->mxedt];       /* the focused window */
- FENSTER *caret = g_ai_bg_win ? g_ai_bg_win : act;
- int pane_focused = (act == wf && !g_ai_bg_win);
+ return act == wf && !g_ai_bg_win;
+}
 
- /* A menu or dialog is up on top of us (its whole lifetime sets this flag): do
-    NOT repaint under it, or a streaming token / the working spinner draws over
-    the box and corrupts it -- the same guard the async language-server painter
-    uses.  The buffer already holds the new text; the next paint once the box
-    closes shows it. */
- if (wpe_modal_active)
-  return;
-
+/**
+ * ai_pane_place_view - Put the caret and the view where the user expects them.
+ * @wf: the pane.
+ * @pane_focused: the pane is the focused window.
+ *
+ * The browsed view holds where the user scrolled it; otherwise the input row
+ * (or the last line) is pinned to the bottom, so a new line always shows.
+ * Shared by the pane's own paint and the repaint after a width change, so
+ * the view is placed the same way whichever repainted the pane.
+ */
+static void ai_pane_place_view(FENSTER *wf, int pane_focused)
+{
  if (ai_pane_keeps_browsed_view()) {
   /* Browsing the transcript, focused or not: the caret rests on a history
      line and the view follows it.  Do NOT move the caret back to the input or
@@ -848,6 +1008,30 @@ static void ai_pane_paint(FENSTER *wf)
    e_messages_scroll_to_bottom(wf);
   }
  }
+}
+
+/* Repaint the pane window and keep the caret in view.  The pane is an ordinary
+ * window, so the caret belongs to whichever window is FOCUSED: it sits in the
+ * chat input row only while the pane itself is focused; when the user has
+ * switched to their file (or an async op runs), the pane repaints in the
+ * background and the caret stays in the focused/user window. */
+static void ai_pane_paint(FENSTER *wf)
+{
+ extern int wpe_modal_active;                    /* a dropdown/dialog box is open */
+ FENSTER *act = wf->ed->f[wf->ed->mxedt];       /* the focused window */
+ FENSTER *caret = g_ai_bg_win ? g_ai_bg_win : act;
+ int pane_focused = ai_pane_is_focused(wf);
+
+ /* A menu or dialog is up on top of us (its whole lifetime sets this flag): do
+    NOT repaint under it, or a streaming token / the working spinner draws over
+    the box and corrupts it -- the same guard the async language-server painter
+    uses.  The buffer already holds the new text; the next paint once the box
+    closes shows it. */
+ if (wpe_modal_active)
+  return;
+
+ ai_pane_reflow(wf);                  /* the rows at the pane's present width */
+ ai_pane_place_view(wf, pane_focused);
  e_schirm(wf, 0);
  e_cursor(caret, 0);
  e_refresh();
@@ -886,23 +1070,32 @@ static void ai_pane_scroll(FENSTER *wf, int delta)
  ai_pane_paint(wf);
 }
 
+/**
+ * ai_pane_set_row_bytes - Overwrite pane row `y` with the first `n` bytes of
+ * `text`, as a whole line (no new row added).
+ * @b: the pane buffer, holding row `y`.
+ */
+static void ai_pane_set_row_bytes(BUFFER *b, int y, const char *text, size_t n)
+{
+ b->bf[y].s = REALLOC(b->bf[y].s, n + 2);
+ memcpy(b->bf[y].s, text, n);
+ b->bf[y].s[n] = '\n';
+ b->bf[y].s[n + 1] = '\0';
+ b->bf[y].len = (int)n;
+ b->bf[y].nrc = (int)n + 1;
+}
+
 /* Overwrite pane line `y` with `text` in place (no new line added). */
 static void ai_pane_set_line(FENSTER *wf, int y, const char *text)
 {
  BUFFER *b = wf->b;
- size_t L = strlen(text);
  if (b->mxlines == 0) {
   e_new_line(0, b);
   ai_roles_sync(b);
  }
  if (y < 0) y = 0;
  if (y >= b->mxlines) y = b->mxlines - 1;
- b->bf[y].s = REALLOC(b->bf[y].s, L + 2);
- memcpy(b->bf[y].s, text, L);
- b->bf[y].s[L] = '\n';
- b->bf[y].s[L + 1] = '\0';
- b->bf[y].len = (int)L;
- b->bf[y].nrc = (int)L + 1;
+ ai_pane_set_row_bytes(b, y, text, strlen(text));
 }
 
 /* Replace the text of the pane's current stream line in place (the last line, or
@@ -912,6 +1105,7 @@ static void ai_pane_set_line(FENSTER *wf, int y, const char *text)
 static void ai_pane_set_last(FENSTER *wf, const char *text)
 {
  ai_pane_set_line(wf, ai_stream_y(wf), text);
+ ai_pane_note_unwrapped(text);
  ai_pane_paint(wf);
 }
 
@@ -935,6 +1129,7 @@ static void ai_pane_set_last_as(FENSTER *wf, const char *text, int role)
 {
  ai_pane_set_line(wf, ai_stream_y(wf), text);
  ai_pane_set_last_role(wf, role);
+ ai_pane_note_unwrapped(text);
  ai_pane_paint(wf);
 }
 
@@ -1001,6 +1196,7 @@ static void ai_tr_line(FENSTER *wf, const char *str, int role)
 {
  BUFFER *b = wf->b;
  int at;
+ ai_pane_note_unwrapped(str);
  if (!g_ai_chat_focus) {
   at = b->mxlines;
   print_to_end_of_buffer(b, (char *)str, b->mx.x);
@@ -1015,17 +1211,16 @@ static void ai_tr_line(FENSTER *wf, const char *str, int role)
 }
 
 /* Columns the pane wraps reply text to: inside its two borders, never wider than
- * the line buffer, capped at a readable prose measure even when the pane is much
- * wider (long unbroken lines of prose are hard to read -- editors and chat UIs
- * cap the measure rather than fill the whole width), and never absurdly small.
- * Chat streaming and every pane message share this, so wrapping is consistent. */
-#define AI_PANE_MAX_COLS 80
+ * the line buffer, capped at the readable prose measure AI_PANE_MAX_COLS, and
+ * never absurdly small.  Chat streaming, every pane message and the re-wrap
+ * after a width change share this, so wrapping is consistent. */
+#define AI_PANE_MIN_COLS 16
 static int ai_pane_width(FENSTER *wf)
 {
  int w = wf->e.x - wf->a.x - 2;
  if (w > wf->b->mx.x - 1) w = wf->b->mx.x - 1;
  if (w > AI_PANE_MAX_COLS) w = AI_PANE_MAX_COLS;
- if (w < 16) w = 16;
+ if (w < AI_PANE_MIN_COLS) w = AI_PANE_MIN_COLS;
  return w;
 }
 
@@ -1036,23 +1231,319 @@ static int ai_pane_width(FENSTER *wf)
 static void ai_stream_wrap(ai_chat_session *s, FENSTER *wf)
 {
  int brk = (int)s->plen;                 /* default: hard break at the end */
- int k, start, rem, col, m;
+ int k, rem, col, m;
  for (k = (int)s->plen - 1; k > 0; k--)
-  if (s->pending[k] == ' ') { brk = k; break; }
+  if (s->pending[k] == ' ') { brk = k + 1; break; }   /* the space stays on the row */
  { char saved = s->pending[brk];         /* emit pending[0..brk) as one line */
    s->pending[brk] = '\0';
    ai_pane_set_last(wf, s->pending);
    ai_pane_commit(wf);
    s->pending[brk] = saved; }
- start = (brk < (int)s->plen && s->pending[brk] == ' ') ? brk + 1 : brk;
- rem = (int)s->plen - start;
+ /* The fresh row goes on with the same line: recorded so a later change of
+    width joins the reply back and wraps it again whole. */
+ ai_pane_mark_continuation(wf->b, ai_stream_y(wf));
+ rem = (int)s->plen - brk;
  if (rem < 0) rem = 0;
- memmove(s->pending, s->pending + start, (size_t)rem);
+ memmove(s->pending, s->pending + brk, (size_t)rem);
  s->pending[rem] = '\0';
  s->plen = rem;
  for (col = 0, m = 0; m < rem; m++)
   if (((unsigned char)s->pending[m] & 0xC0) != 0x80) col++;
  s->pcols = col;
+}
+
+/* ----- the transcript follows the pane's width ------------------------------
+ * The rows were wrapped at the width of the moment they were written.  When
+ * Messages opens beside the pane (a build, a changeset review), the terminal
+ * is resized or Messages closes again, the pane's width changes and every
+ * earlier row would be cut at the new border or leave the new room unused.
+ * The functions below join each wrapped line back together from its
+ * continuation rows and wrap it again at the present width, before the pane
+ * is painted, so the user reads the whole transcript at any width. */
+
+/**
+ * ai_pane_transcript_rows - Rows that hold the transcript (not the input).
+ * @wf: the pane.
+ */
+static int ai_pane_transcript_rows(FENSTER *wf)
+{
+ int n = wf->b->mxlines;
+ if (g_ai_chat_focus) n -= g_ai_input_rows;
+ if (n < 0) n = 0;
+ return n;
+}
+
+/**
+ * ai_pane_line_start - The first row of the logical line row `y` belongs to.
+ */
+static int ai_pane_line_start(int y)
+{
+ while (y > 0 && ai_row_continues(y)) y--;
+ return y;
+}
+
+/**
+ * ai_pane_stream_line_is_live - May a task still rewrite the stream row in place?
+ *
+ * The spinner, the waiting line and the tool status are written whole onto
+ * the stream row by writers that do not wrap.  While one of them may still
+ * come, the stream row's line is left as it is: a split row would be half
+ * overwritten by the next tick.  It is re-wrapped at the first paint after
+ * the task ends (see g_ai_rows_live_stale).
+ */
+static int ai_pane_stream_line_is_live(void)
+{
+ if (wpe_ai_busy()) return 1;
+ if (g_ai_chat && g_ai_chat->active) return 1;
+ return 0;
+}
+
+/**
+ * ai_pane_logical_line_at - Which logical line row `y` belongs to (0-based).
+ *
+ * Counted so the line the user was reading can be found again after the
+ * rows under it have changed.
+ */
+static int ai_pane_logical_line_at(int y)
+{
+ int r, n = 0;
+ for (r = 1; r <= y && r < g_ai_roles_n; r++)
+  if (!ai_row_continues(r)) n++;
+ return n;
+}
+
+/**
+ * ai_pane_row_of_logical_line - The first row of logical line `n`.
+ * @b: the pane buffer.
+ *
+ * The last line's first row when the transcript is shorter than that.
+ */
+static int ai_pane_row_of_logical_line(BUFFER *b, int n)
+{
+ int r, seen = -1, start = 0;
+ for (r = 0; r < b->mxlines; r++) {
+  if (r > 0 && ai_row_continues(r)) continue;
+  seen++;
+  start = r;
+  if (seen == n) return r;
+ }
+ return start;
+}
+
+/**
+ * ai_pane_join_line - The logical line that starts at row `y0`, as one string.
+ * @b: the pane buffer.
+ * @y0: the first row of the line.
+ * @limit: rows beyond this are not part of the transcript being laid out.
+ * @rows: out, the rows the line spans.
+ *
+ * The rows are concatenated as they are: the wrapper left the break space on
+ * the row it cut after, and a hard cut inside a word left none, so the join
+ * reads exactly as the line was written.  Return: malloc'd text, or NULL.
+ */
+static char *ai_pane_join_line(BUFFER *b, int y0, int limit, int *rows)
+{
+ size_t total = 0;
+ int y;
+ char *t;
+ for (y = y0; y < limit; y++) {
+  int l;
+  if (y > y0 && !ai_row_continues(y)) break;
+  l = b->bf[y].s ? b->bf[y].len : 0;
+  if (l > 0) total += (size_t)l;
+ }
+ *rows = y - y0;
+ t = malloc(total + 1);
+ if (!t) return NULL;
+ total = 0;
+ for (y = y0; y < y0 + *rows; y++) {
+  int l = b->bf[y].s ? b->bf[y].len : 0;
+  if (l > 0) { memcpy(t + total, b->bf[y].s, (size_t)l); total += (size_t)l; }
+ }
+ t[total] = '\0';
+ return t;
+}
+
+/**
+ * ai_wrap_rows - How many rows `text` takes when wrapped at `width`.
+ */
+static int ai_wrap_rows(const char *text, int width)
+{
+ const char *p = text;
+ int n = 0, cut;
+ if (!*p) return 1;
+ while (*p) {
+  n++;
+  if (!ai_wrap_cut(p, width, &cut)) break;
+  p += cut;
+ }
+ return n;
+}
+
+/**
+ * ai_pane_drop_row - Remove row `y` from the pane and from the role table.
+ * @b: the pane buffer.
+ */
+static void ai_pane_drop_row(BUFFER *b, int y)
+{
+ int after = b->mxlines - y - 1;
+ if (y < 0 || y >= b->mxlines) return;
+ FREE(b->bf[y].s);
+ if (after > 0)
+  memmove(b->bf + y, b->bf + y + 1, (size_t)after * sizeof(STRING));
+ b->mxlines--;
+ if (y < g_ai_roles_n) {
+  if (g_ai_roles_n - y - 1 > 0)
+   memmove(g_ai_roles + y, g_ai_roles + y + 1, (size_t)(g_ai_roles_n - y - 1));
+  g_ai_roles_n--;
+ }
+ ai_roles_sync(b);
+}
+
+/**
+ * ai_pane_rewrap_line - Lay the logical line at row `y0` out again at `width`.
+ * @wf: the pane.
+ * @y0: the first row of the line.
+ * @limit: the end of the rows being laid out.
+ * @width: the columns a row may use.
+ *
+ * The line keeps its writer's role on every row; rows are added or dropped
+ * at its end as the new width needs.  Return: the rows the line now spans.
+ */
+static int ai_pane_rewrap_line(FENSTER *wf, int y0, int limit, int width)
+{
+ BUFFER *b = wf->b;
+ int old_rows, new_rows, role, y;
+ const char *p;
+ char *text = ai_pane_join_line(b, y0, limit, &old_rows);
+ if (!text) return old_rows;
+ role = ai_role_of(y0);
+ new_rows = ai_wrap_rows(text, width);
+ while (old_rows < new_rows) {
+  e_new_line(y0 + old_rows, b);
+  ai_roles_insert(b, y0 + old_rows, role);
+  old_rows++;
+ }
+ while (old_rows > new_rows) {
+  ai_pane_drop_row(b, y0 + old_rows - 1);
+  old_rows--;
+ }
+ p = text;
+ for (y = y0; y < y0 + new_rows; y++) {
+  int cut;
+  int more = ai_wrap_cut(p, width, &cut);
+  ai_pane_set_row_bytes(b, y, p, (size_t)cut);
+  ai_roles_set(b, y, role);
+  if (y > y0) ai_pane_mark_continuation(b, y);
+  p += cut;
+  if (!more) break;
+ }
+ free(text);
+ return new_rows;
+}
+
+/**
+ * ai_pane_view_after_reflow - Put the view back where the user was reading.
+ * @wf: the pane.
+ * @held: the user had scrolled the transcript (the view is held).
+ * @top_line: the logical line that was at the top of the held view.
+ * @rows_changed: the row count differs from before the re-wrap.
+ *
+ * A held view shows the same logical line at its top as before, now over
+ * its new rows; otherwise the input row (or the last line) is pinned to the
+ * bottom as every paint does.  A block mark made on rows that no longer
+ * exist as marked is dropped rather than left on other text.
+ */
+static void ai_pane_view_after_reflow(FENSTER *wf, int held, int top_line,
+                                      int rows_changed)
+{
+ BUFFER *b = wf->b;
+ SCHIRM *s = wf->s;
+ if (rows_changed) {
+  s->mark_begin = e_set_pnt(0, 0);
+  s->mark_end = e_set_pnt(0, 0);
+ }
+ s->c.x = 0;                 /* every row fits the width: no sideways scroll */
+ if (held) {
+  s->c.y = ai_pane_row_of_logical_line(b, top_line);
+ } else {
+  b->b.y = b->mxlines - 1;
+  b->b.x = 0;
+ }
+ ai_pane_place_view(wf, ai_pane_is_focused(wf));
+}
+
+/**
+ * ai_pane_reflow_is_owed - Is a pass owed at the present width?
+ * @live: a task may still rewrite the stream row.
+ *
+ * Yes when a line was left at an old width because a task was rewriting
+ * it, or a row was written whole and wider than the pane, and no task is
+ * rewriting the stream row now.
+ */
+static int ai_pane_reflow_is_owed(int live)
+{
+ if (live) return 0;
+ return g_ai_rows_live_stale || g_ai_rows_unwrapped;
+}
+
+/**
+ * ai_pane_reflow - Lay the transcript out again when the pane's width changed.
+ * @wf: the pane.
+ *
+ * Nothing to do while the rows are already at the pane's width.  Otherwise
+ * every logical line above the input region is joined from its rows and
+ * wrapped again at the present width: a narrowed pane shows every word of
+ * every line over more rows, a widened pane uses its room.  The stream
+ * row's line is skipped while a task may still rewrite it and caught up at
+ * the first paint after that.  Runs before every paint of the pane, so the
+ * user never sees a clipped transcript.
+ */
+static void ai_pane_reflow(FENSTER *wf)
+{
+ BUFFER *b = wf->b;
+ int width = ai_pane_width(wf);
+ int live = ai_pane_stream_line_is_live();
+ int held = ai_pane_keeps_browsed_view();
+ int top_line = 0, limit, y, rows_before;
+
+ if (width == g_ai_rows_width && !ai_pane_reflow_is_owed(live))
+  return;
+ wpe_ai_trace("pane reflow: width %d -> %d, %d rows, live %d, held %d",
+              g_ai_rows_width, width, b->mxlines, live, held);
+ ai_roles_sync(b);
+ rows_before = b->mxlines;
+ limit = ai_pane_transcript_rows(wf);
+ if (live && limit > 0)
+  limit = ai_pane_line_start(limit - 1);        /* leave the stream line alone */
+ if (held)
+  top_line = ai_pane_logical_line_at(wf->s->c.y);
+ for (y = 0; y < limit; ) {
+  int before = b->mxlines;
+  int rows = ai_pane_rewrap_line(wf, y, limit, width);
+  limit += b->mxlines - before;
+  y += rows;
+ }
+ g_ai_rows_width = width;
+ g_ai_rows_live_stale = live;
+ g_ai_rows_unwrapped = 0;
+ ai_pane_view_after_reflow(wf, held, top_line, b->mxlines != rows_before);
+}
+
+/**
+ * wpe_ai_pane_before_paint - The window painter is about to paint `f`.
+ * @f: the window being painted.
+ *
+ * Called from the shared painter for every window, so the pane's rows are
+ * laid out at its present width on every repaint under the terminal, X11 and
+ * Wayland alike -- after a build opened Messages beside it, a resize, or a
+ * window the pane shared the strip with closed; any other window is left
+ * alone.
+ */
+void wpe_ai_pane_before_paint(FENSTER *f)
+{
+ if (!ai_is_pane(f)) return;
+ ai_pane_reflow(f);
 }
 
 /* A "working" indicator for the blocking Edit/Plan/Agent waits: a rotating
@@ -1451,7 +1942,7 @@ static void ai_chat_emit_header_if_due(FENSTER *wf)
  if (!ai_chat_header_due())
   return;
  ai_header_text_shown(st, sizeof st);
- ai_tr_line(wf, st, AI_ROLE_MACHINERY);
+ ai_pane(wf, st, AI_ROLE_MACHINERY, 0);     /* wrapped to the pane's width */
 }
 
 /**
@@ -1468,9 +1959,11 @@ static void ai_chat_emit_hints_once(FENSTER *wf)
  if (g_ai_hints_shown)
   return;
  g_ai_hints_shown = 1;
- ai_tr_line(wf, "[Enter=send  Ctrl-J=newline  arrows move  PgUp/PgDn scroll  Esc leaves]",
-            AI_ROLE_MACHINERY);
- ai_tr_line(wf, "[Shortcuts: /explain  /fix  /test  /doc  /review]", AI_ROLE_MACHINERY);
+ /* Through the wrapper, so a pane that shares the strip with Messages shows
+    the whole hint over two rows instead of a hint cut at the border. */
+ ai_pane(wf, "[Enter=send  Ctrl-J=newline  arrows move  PgUp/PgDn scroll  Esc leaves]",
+         AI_ROLE_MACHINERY, 0);
+ ai_pane(wf, "[Shortcuts: /explain  /fix  /test  /doc  /review]", AI_ROLE_MACHINERY, 0);
 }
 
 /**

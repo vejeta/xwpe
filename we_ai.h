@@ -328,6 +328,12 @@ void wpe_ai_window_closing(struct FNST *closing);
  * machinery, attention, error), so the pane tells who said what on every
  * repaint, under every backend; any other window gets `base` back. */
 int  wpe_ai_pane_line_attr(struct FNST *f, int y, int base);
+/* The window painter calls this before it paints the rows of window `f`: in
+ * the AI pane the transcript is laid out again at the pane's present width
+ * when that width changed (Messages opened beside it, a resize), so the user
+ * never reads a transcript cut at the new border; any other window is left
+ * alone. */
+void wpe_ai_pane_before_paint(struct FNST *f);
 /* The editor key loop calls this just before it waits for a key: a reply that
  * finished while a dialog, prompt, picker or the file manager was open is held
  * until then, and this runs its review or apply now, before the next key. */

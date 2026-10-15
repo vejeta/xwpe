@@ -233,6 +233,19 @@ Changes
 
 1.7.0 (AI assistant -- experimental, opt-in)
 
+* The AI pane wraps its transcript again to whatever width it has.  A
+  build (F9) or a changeset review opens Messages beside the pane and
+  halves it; every line written before that stayed cut at the new border
+  with its right half gone, and a terminal resize did the same.  Each row
+  now remembers whether it continues the row above, so the pane joins
+  every wrapped line back together and wraps it again at its present
+  width before it is painted: a narrowed pane shows every word over more
+  rows, a widened pane uses its room, and the place you were reading
+  stays.  Marking a reply that wraps over several rows and copying it now
+  puts the one line the assistant wrote on the clipboard, not one line
+  per row.
+  Tests: tests/test_ai_pane_reflow.py.
+
 * The AI pane keeps the place you are reading while a reply lands, also
   after you have clicked into the file window.  Paging two pages up the
   transcript and then working in the file snapped the pane back to the
