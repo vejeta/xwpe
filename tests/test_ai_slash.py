@@ -55,6 +55,7 @@ def _server(captured):
     return srv, srv.server_address[1]
 
 
+# @scenario SC-ai-chat-28
 def test_slash_explain_expands(tmp_path):
     captured = []
     srv, port = _server(captured)

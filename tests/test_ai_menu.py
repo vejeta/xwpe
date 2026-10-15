@@ -124,6 +124,7 @@ def test_menu_settings_entry_opens_options(tmp_path):
         "the settings entry did not open Options > AI:\n" + disp
 
 
+# @scenario SC-ai-chat-46
 def test_clear_conversation_flashes_without_opening_pane(tmp_path):
     # "Clear conversation" (Alt-G n) confirms with a status-line flash and must
     # not open the AI pane just to report it.

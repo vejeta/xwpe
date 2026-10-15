@@ -25,6 +25,7 @@ pytestmark = pytest.mark.skipif(not _ai_build(), reason="wpe built without --ena
 PARA = " ".join("word%02d" % i for i in range(40))
 
 
+# @scenario SC-ai-chat-15
 def test_long_reply_is_wrapped_across_lines(tmp_path):
     env = {
         "XWPE_AI_ENABLE": "1",

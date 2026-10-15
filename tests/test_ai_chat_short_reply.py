@@ -68,7 +68,7 @@ def _chat_screen_after(tmp_path, reply):
         return s.display()
 
 
-# @scenario SC-ai-chat-short-reply
+# @scenario SC-ai-chat-14
 @pytest.mark.parametrize("reply", ["ok", "42"])
 def test_chat_reply_under_five_bytes_paints(tmp_path, reply):
     rows = _chat_screen_after(tmp_path, reply)

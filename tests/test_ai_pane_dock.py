@@ -23,6 +23,7 @@ def _ai_build():
 pytestmark = pytest.mark.skipif(not _ai_build(), reason="wpe built without --enable-ai")
 
 
+# @scenario SC-ai-chat-02
 def test_ai_pane_docks_below_editor(tmp_path):
     src = "int UNIQUE_EDITOR_MARKER(void){\n  return 12345;\n}\n"
     env = {

@@ -33,6 +33,10 @@ FOLLOWUP_LINE = "type a follow-up"
 REVIEW_PROMPT = "a = keep all"
 TIP_LINE = "[tip] For full autonomy"
 TURN_POLL_S = 20
+# The hosted session's end-of-run review names the file by its full path in
+# the Messages window; see _host_run.
+WIDE_COLS = 160
+WIDE_ROWS = 30
 
 PROCFACTS = (
     'echo "pid=$$ sid=$(ps -o sid= -p $$ | tr -d \' \') ppid=$PPID" >> "%(out)s"\n'
@@ -344,6 +348,11 @@ def _host_run(tmp_path, policy, end_session=False):
             s.key(ALT.AI); s.key("g"); s._drain(0.5)
             s.key(chr(27), delay=1.0)      # Esc at the prompt ends the session
             if _seen_within(s, REVIEW_PROMPT, 8):
+                # The review lists the written file by its full path in the
+                # Messages window, an ordinary editor window cut at its border
+                # once it shares the strip with the pane: read it with the
+                # terminal widened, as a user with a long path would widen it.
+                s.resize(WIDE_COLS, WIDE_ROWS)
                 review = s.display()
                 s.key("a", delay=1.0)
             _seen_within(s, "session ended", 8)

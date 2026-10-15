@@ -29,6 +29,7 @@ def _ai_build():
 pytestmark = pytest.mark.skipif(not _ai_build(), reason="wpe built without --enable-ai")
 
 
+# @scenario SC-ai-chat-25
 def test_input_caret_after_accented_char(tmp_path):
     env = {"XWPE_AI_ENABLE": "1", "XWPE_AI_BACKEND": "mock",
            "XWPE_AI_MOCK_REPLY": "ok"}
@@ -54,6 +55,7 @@ CJK = "\u65e5"          # 26085, 3-byte, wcwidth 2
 EMOJI = "\U0001F600"    # 128512, 4-byte, wcwidth 2
 
 
+# @scenario SC-ai-chat-25
 @pytest.mark.parametrize("ch", [CJK, EMOJI], ids=["cjk", "emoji"])
 def test_input_wide_char_types_and_renders(tmp_path, ch):
     # A wide (2-column) character -- CJK / emoji, codepoint >= U+0100 -- must

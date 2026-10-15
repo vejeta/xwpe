@@ -25,6 +25,7 @@ def _ai_build():
 pytestmark = pytest.mark.skipif(not _ai_build(), reason="wpe built without --enable-ai")
 
 
+# @scenario SC-ai-chat-42
 def test_openai_endpoint_down_message(tmp_path):
     # Port 1 (tcpmux) is virtually never listening -> connect() is refused.
     env = {"XWPE_AI_ENABLE": "1", "XWPE_AI_BACKEND": "openai",

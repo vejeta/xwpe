@@ -27,6 +27,7 @@ AI_ENV = {
 }
 
 
+# @scenario SC-ai-chat-49
 @pytest.mark.skipif(not _has_ai(), reason="xwpe built without --enable-ai")
 @pytest.mark.parametrize("xwpe", [AI_ENV], indirect=True)
 def test_ai_pane_paints_under_wayland(xwpe):

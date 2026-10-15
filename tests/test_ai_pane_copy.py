@@ -31,6 +31,7 @@ pytestmark = pytest.mark.skipif(not _ai_build(), reason="wpe built without --ena
 # read-only pane now also copies to the clipboard instead of doing nothing.
 @pytest.mark.parametrize("copy_keys", [("\x03",), ("\x0b", "c")],
                          ids=["ctrl-c", "ctrl-k-c"])
+# @scenario SC-ai-chat-34
 def test_copy_ai_reply_to_clipboard(tmp_path, copy_keys):
     env = {"XWPE_AI_ENABLE": "1", "XWPE_AI_BACKEND": "mock",
            "XWPE_AI_MOCK_REPLY": "COPYME123"}

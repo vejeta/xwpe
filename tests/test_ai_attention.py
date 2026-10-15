@@ -43,6 +43,7 @@ def _cell_of(s, needle):
     return None
 
 
+# @scenario SC-ai-chat-36
 def test_attention_prompt_is_highlighted(tmp_path):
     # an agent run finishes and offers a follow-up -- an attention line -- among
     # its ordinary "[agent] ..." output lines.

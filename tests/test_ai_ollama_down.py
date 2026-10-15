@@ -27,6 +27,7 @@ def _ai_build():
 pytestmark = pytest.mark.skipif(not _ai_build(), reason="wpe built without --enable-ai")
 
 
+# @scenario SC-ai-chat-42
 def test_ollama_not_running_message(tmp_path):
     # point at a port nothing listens on -> the preflight must explain it
     env = {"XWPE_AI_ENABLE": "1", "XWPE_AI_BACKEND": "ollama",
@@ -73,6 +74,7 @@ class _EmptyOllama(threading.Thread):
         self._srv.server_close()
 
 
+# @scenario SC-ai-chat-42
 def test_ollama_no_models_message(tmp_path):
     srv = _EmptyOllama()
     srv.start()

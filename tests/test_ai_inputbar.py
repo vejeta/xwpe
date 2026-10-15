@@ -115,6 +115,7 @@ def test_fixed_input_row_and_followups(tmp_path):
     assert any("second question" in l for l in prompts), "follow-up not sent:\n" + txt
 
 
+# @scenario SC-ai-chat-24
 def test_input_row_cursor_editing(tmp_path):
     # The input row is a small line editor: type "abc", move the caret left twice,
     # insert "X" -> the sent prompt is "aXbc" (inserted at the caret, not the end).

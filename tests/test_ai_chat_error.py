@@ -64,6 +64,7 @@ def _erroring_openai_server():
     return srv, srv.server_address[1]
 
 
+# @scenario SC-ai-chat-39
 def test_chat_shows_backend_error(tmp_path):
     import time
     srv, port = _erroring_openai_server()
@@ -120,6 +121,7 @@ def _instream_error_server():
     return srv, srv.server_address[1]
 
 
+# @scenario SC-ai-chat-40
 def test_chat_shows_in_stream_error(tmp_path):
     # An error the server sends as an EVENT inside a 200 SSE stream (as a failing
     # Proton Lumo bridge does) must also surface, not read as an empty answer.

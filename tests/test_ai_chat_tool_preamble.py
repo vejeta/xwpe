@@ -26,6 +26,7 @@ def _ai_build():
 pytestmark = pytest.mark.skipif(not _ai_build(), reason="wpe built without --enable-ai")
 
 
+# @scenario SC-ai-chat-13
 def test_chat_tool_after_preamble(tmp_path):
     src = os.path.join(str(tmp_path), "t.c")
     seed = "int meaning(void){return 42;}\n"

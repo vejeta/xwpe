@@ -45,6 +45,8 @@ def _fill_chat(s, n=9):
     s._drain(0.5)
 
 
+# @scenario SC-ai-chat-11
+# @scenario SC-ai-chat-30
 def test_pgup_reveals_scrolled_off_history(tmp_path):
     env = {"XWPE_AI_ENABLE": "1", "XWPE_AI_BACKEND": "mock",
            "XWPE_AI_MOCK_REPLY": "reply"}
@@ -66,6 +68,7 @@ def test_pgup_reveals_scrolled_off_history(tmp_path):
             + "\n".join(s.display())
 
 
+# @scenario SC-ai-chat-30
 def test_arrow_scrolls_transcript_one_line(tmp_path):
     env = {"XWPE_AI_ENABLE": "1", "XWPE_AI_BACKEND": "mock",
            "XWPE_AI_MOCK_REPLY": "reply"}
@@ -87,6 +90,7 @@ def test_arrow_scrolls_transcript_one_line(tmp_path):
             "Up arrow did not scroll the transcript (top line unchanged: %r)" % before
 
 
+# @scenario SC-ai-chat-31
 def test_typing_snaps_back_to_input(tmp_path):
     env = {"XWPE_AI_ENABLE": "1", "XWPE_AI_BACKEND": "mock",
            "XWPE_AI_MOCK_REPLY": "reply"}

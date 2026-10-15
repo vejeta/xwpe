@@ -28,6 +28,7 @@ ENV = {"XWPE_AI_ENABLE": "1", "XWPE_AI_BACKEND": "mock",
        "XWPE_AI_MOCK_REPLY": "ok", "XWPE_AI_CONSENTED": "0"}  # force the prompt
 
 
+# @scenario SC-ai-chat-44
 def test_first_use_prompt_and_decline(tmp_path):
     with WpeSession(str(tmp_path), "int main(void){return 0;}\n",
                     env_extra=dict(ENV)) as s:
@@ -42,6 +43,7 @@ def test_first_use_prompt_and_decline(tmp_path):
         "the AI menu opened even though consent was declined:\n" + after
 
 
+# @scenario SC-ai-chat-44
 def test_first_use_accept_proceeds(tmp_path):
     with WpeSession(str(tmp_path), "int main(void){return 0;}\n",
                     env_extra=dict(ENV)) as s:
@@ -52,6 +54,7 @@ def test_first_use_accept_proceeds(tmp_path):
         "accepting consent did not open the AI menu:\n" + after
 
 
+# @scenario SC-ai-chat-44
 def test_first_use_shortcut_runs_action(tmp_path):
     # A habitual "Alt-G a" on the very first use must not appear to hang: the
     # letter both accepts the notice AND runs Ask, straight into the chat input

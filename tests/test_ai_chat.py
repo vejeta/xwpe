@@ -47,6 +47,7 @@ def test_ai_chat_mock(tmp_path):
     assert "chat done" in txt, txt
 
 
+# @scenario SC-ai-chat-39
 def test_ai_chat_empty_reply_clears_placeholder(tmp_path):
     # A reply that streams nothing must not leave the "gathering..." liveness
     # placeholder on screen -- it becomes "(no answer)".
@@ -67,6 +68,7 @@ def test_ai_chat_empty_reply_clears_placeholder(tmp_path):
     assert "(no answer)" in disp, "empty reply not handled:\n" + disp
 
 
+# @scenario SC-ai-chat-13
 def test_ai_reply_shares_the_AI_line(tmp_path):
     # The "AI:" speaker label and the answer must be on the SAME line
     # ("AI: <text>"), not the label alone on one line with the reply below it.
@@ -91,6 +93,7 @@ def test_ai_reply_shares_the_AI_line(tmp_path):
         "reply is not on the 'AI:' line (label split from answer):\n" + joined
 
 
+# @scenario SC-ai-chat-22
 def test_ai_multiline_input_row(tmp_path):
     # The input row is multi-line: Ctrl-J (\n) adds a line, Enter sends the whole
     # thing.  Both lines must reach the model and show as a grown input region.
