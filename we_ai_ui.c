@@ -2945,7 +2945,7 @@ static const char *ai_scan_tool_line(const char *reply)
 {
  const char *scan;
  for (scan = reply; scan; ) {
-  if (!strncmp(scan, "TOOL ", 5)) return scan;
+  if (!strncmp(scan, AI_TOOL_PREFIX, AI_TOOL_PREFIX_LEN)) return scan;
   scan = strchr(scan, '\n');
   if (scan) scan++;
  }
@@ -2963,7 +2963,7 @@ static const char *ai_scan_tool_line(const char *reply)
  */
 static void ai_split_tool(char *action, char **tool, char **arg)
 {
- char *nm = action + 5, *sp = strchr(nm, ' ');
+ char *nm = action + AI_TOOL_PREFIX_LEN, *sp = strchr(nm, ' ');
  size_t l;
  if (sp) { *sp = '\0'; *arg = sp + 1; } else *arg = (char *)"";
  l = strlen(nm);
@@ -2991,8 +2991,19 @@ static void ai_split_tool(char *action, char **tool, char **arg)
 #define AI_TOOL_WEB_SEARCH  "web_search"
 #define AI_TOOL_WRITE_FILE  "write_file"
 #define AI_TOOL_APPLY_PATCH "apply_patch"
+/* The tools that ask nothing: a bounded file read, and the agent's own
+   checklist (laid out, then ticked step by step). */
+#define AI_TOOL_READ_FILE   "read_file"
+#define AI_TOOL_PLAN        "plan"
+#define AI_TOOL_STEP_DONE   "step_done"
 /* What the model reads when the user refused a tool, whichever tool it was. */
 #define AI_TOOL_DENIED_RESULT "(denied by user)"
+/* What the model reads for a tool name it made up. */
+#define AI_TOOL_UNKNOWN_RESULT "(unknown tool)"
+/* The line that closes a tool body (a write, a patch, a plan), and the same
+   marker at the body's start. */
+#define AI_TOOL_BODY_END_LINE "\n@@END"
+#define AI_TOOL_BODY_END_WORD "@@END"
 
 /**
  * ai_tool_is_shell_readonly - Is this tool one of the read-only shell tools?
@@ -3008,6 +3019,26 @@ static int ai_tool_is_shell_readonly(const char *tool)
  if (!strcmp(tool, AI_TOOL_GREP)) return 1;
  if (!strcmp(tool, AI_TOOL_GLOB)) return 1;
  return 0;
+}
+
+/* What list_dir and glob stand for when the model gives no argument: the
+   current directory, and every name. */
+#define AI_TOOL_LIST_DIR_DEFAULT "."
+#define AI_TOOL_GLOB_DEFAULT     "*"
+
+/**
+ * ai_tool_quote_or - Quote the model's argument for the shell, or a default when it gave none.
+ * @quoted/@n: receives the one shell word; @arg: the argument as the model
+ * wrote it; @dflt: what an empty argument means for this tool.
+ *
+ * The quoting itself is wpe_ai_shell_quote's, unchanged: this only chooses
+ * which text it quotes, so "TOOL list_dir" with nothing after it lists the
+ * current directory as it always did.
+ */
+static void ai_tool_quote_or(char *quoted, size_t n, const char *arg, const char *dflt)
+{
+ if (arg[0]) wpe_ai_shell_quote(quoted, n, arg);
+ else wpe_ai_shell_quote(quoted, n, dflt);
 }
 
 /**
@@ -3030,7 +3061,7 @@ static int ai_tool_shell_command(const char *tool, const char *arg, char *cmd, s
 {
  char quoted[AI_TOOL_ARG_QUOTED_MAX];
  if (!strcmp(tool, AI_TOOL_LIST_DIR)) {
-  wpe_ai_shell_quote(quoted, sizeof quoted, arg[0] ? arg : ".");
+  ai_tool_quote_or(quoted, sizeof quoted, arg, AI_TOOL_LIST_DIR_DEFAULT);
   snprintf(cmd, sz, "ls -la -- %s", quoted);   /* "--": a name that starts with "-" is a name, not an option */
   return 1;
  }
@@ -3040,7 +3071,7 @@ static int ai_tool_shell_command(const char *tool, const char *arg, char *cmd, s
   return 1;
  }
  if (!strcmp(tool, AI_TOOL_GLOB)) {
-  wpe_ai_shell_quote(quoted, sizeof quoted, arg[0] ? arg : "*");
+  ai_tool_quote_or(quoted, sizeof quoted, arg, AI_TOOL_GLOB_DEFAULT);
   snprintf(cmd, sz, "find . -name %s -not -path '*/.*' 2>/dev/null | head -200", quoted);
   return 1;
  }
@@ -7930,6 +7961,28 @@ int e_ai_ui_key(FENSTER *f)
    on its size and on its time (AIToolTimeout) is the capture function's. */
 static char *ai_run_capture(const char *cmd) { return wpe_ai_run_capture(cmd); }
 
+/* What the model reads for a read_file of a path that is not there. */
+#define AI_TOOL_NO_FILE_RESULT "(file not found)"
+/* The first size of a read's buffer; it doubles when it fills.  A byte is
+   stored only when the byte and the NUL after it both fit. */
+#define AI_READ_FIRST_CAP 4096
+#define AI_READ_TAIL_ROOM 2
+
+/**
+ * ai_buf_grow - Double a growing buffer.
+ * @buf: the buffer, replaced on success; @cap: its size, doubled on success.
+ * Return: 1 when there is room, 0 when the memory was refused and the old
+ * buffer stands as it was.
+ */
+static int ai_buf_grow(char **buf, size_t *cap)
+{
+ char *nb = realloc(*buf, *cap * 2);
+ if (!nb) return 0;
+ *buf = nb;
+ *cap *= 2;
+ return 1;
+}
+
 /**
  * ai_read_file_bounded - The first WPE_AI_TOOL_OUT_MAX bytes of a file, for the model.
  * @path: the file, as the model named it.
@@ -7944,13 +7997,13 @@ static char *ai_read_file_bounded(const char *path)
 {
  FILE *fp = fopen(path, "rb");
  char *out;
- size_t cap = 4096, len = 0;
+ size_t cap = AI_READ_FIRST_CAP, len = 0;
  int ch;
- if (!fp) return strdup("(file not found)");
+ if (!fp) return strdup(AI_TOOL_NO_FILE_RESULT);
  out = malloc(cap);
  if (!out) { fclose(fp); return NULL; }
  while ((ch = fgetc(fp)) != EOF && len < WPE_AI_TOOL_OUT_MAX) {
-  if (len + 2 > cap) { char *nb; cap *= 2; nb = realloc(out, cap); if (!nb) break; out = nb; }
+  if (len + AI_READ_TAIL_ROOM > cap && !ai_buf_grow(&out, &cap)) break;
   out[len++] = (char)ch;
  }
  out[len] = '\0';
@@ -7959,29 +8012,81 @@ static char *ai_read_file_bounded(const char *path)
  return out;
 }
 
-/* Approve a mutating tool call (write_file / run_command) according to the
- * permission dial: auto passes everything, edits passes writes but asks for
- * commands, ask prompts every time.  1 = approved. */
+/* Room for a pane line that names a tool and its argument. */
+#define AI_AGENT_PANE_LINE_MAX 640
+
+/**
+ * ai_dial_passes - Does the permission dial let this tool run without asking?
+ * @is_run: 1 for a command or a web tool, 0 for a write.
+ *
+ * auto passes everything, edits passes writes but asks for commands, ask
+ * passes nothing.  The dial is read live, so Alt-G y during a run changes the
+ * answer for the next tool.
+ * Return: 1 when the tool runs unasked.
+ */
+static int ai_dial_passes(int is_run)
+{
+ if (e_ai_policy == WPE_AI_POLICY_AUTO) return 1;
+ if (e_ai_policy == WPE_AI_POLICY_EDITS && !is_run) return 1;
+ return 0;
+}
+
+/**
+ * ai_agent_note_auto_approved - Say in the pane that the dial passed a tool.
+ * @f: the window the pane belongs to; @what: the tool and its argument.
+ *
+ * Names the dial position, so a user who sees a command run without a
+ * question knows which setting allowed it.
+ */
+static void ai_agent_note_auto_approved(FENSTER *f, const char *what)
+{
+ char line[AI_AGENT_PANE_LINE_MAX];
+ snprintf(line, sizeof line, "[agent] auto-approved (%s): %s",
+          wpe_ai_policy_name(e_ai_policy), what);
+ ai_pane(f, line, AI_ROLE_MACHINERY, 0);
+ wpe_ai_trace("agent auto-approve %s", what);
+}
+
+/**
+ * ai_agent_read_yes_no - Wait for the user's answer to an approval question.
+ *
+ * y or Enter allows; n or Esc denies; any other key is ignored, so a stray
+ * keystroke cannot approve a command by accident.
+ * Return: 1 to allow, 0 to deny.
+ */
+static int ai_agent_read_yes_no(void)
+{
+ for (;;) {
+  int c = e_getch();
+  if (c == WPE_ESC || e_toupper(c) == 'N') return 0;
+  if (e_toupper(c) == 'Y' || c == WPE_CR || c == WPE_WR) return 1;
+ }
+}
+
+/**
+ * ai_agent_approve - Let the dial or the user decide a command or a write.
+ * @f: the window the pane belongs to; @what: the tool and its argument, for
+ * the pane; @is_run: 1 for a command or a web tool, 0 for a write.
+ *
+ * A tool the dial passes is noted and runs; otherwise the pane asks, with the
+ * keys spelled out, and the editor waits for the answer.
+ * Return: 1 when approved.
+ */
 static int ai_agent_approve(FENSTER *f, const char *what, int is_run)
 {
- char line[640];
- if (e_ai_policy == WPE_AI_POLICY_AUTO ||
-     (e_ai_policy == WPE_AI_POLICY_EDITS && !is_run)) {
-  snprintf(line, sizeof line, "[agent] auto-approved (%s): %s",
-           wpe_ai_policy_name(e_ai_policy), what);
-  ai_pane(f, line, AI_ROLE_MACHINERY, 0);
-  wpe_ai_trace("agent auto-approve %s", what);
+ char line[AI_AGENT_PANE_LINE_MAX];
+ if (ai_dial_passes(is_run)) {
+  ai_agent_note_auto_approved(f, what);
   return 1;
  }
  snprintf(line, sizeof line, "APPROVE?  %s", what);
  ai_pane_attn(f, line);
  ai_pane_attn(f, "y = allow    n / Esc = deny");
- for (;;) {
-  int c = e_getch();
-  if (c == WPE_ESC || e_toupper(c) == 'N') return 0;
-  if (e_toupper(c) == 'Y' || c == 13 || c == '\r' || c == '\n') return 1;
- }
+ return ai_agent_read_yes_no();
 }
+
+/* Room for a pane line that quotes a whole tool argument after its words. */
+#define AI_AGENT_ARG_LINE_MAX (AI_TOOL_LINE_MAX + 32)
 
 /**
  * ai_agent_deny - Record a refused tool everywhere it is read: model, pane, trace.
@@ -7997,7 +8102,7 @@ static int ai_agent_approve(FENSTER *f, const char *what, int is_run)
  */
 static char *ai_agent_deny(FENSTER *f, const char *tool, const char *arg)
 {
- char line[AI_TOOL_LINE_MAX + 32];
+ char line[AI_AGENT_ARG_LINE_MAX];
  snprintf(line, sizeof line, "[agent] denied: %s %s", tool, arg);
  ai_pane(f, line, AI_ROLE_MACHINERY, 0);
  wpe_ai_trace("agent deny %s %s", tool, arg);
@@ -8020,7 +8125,7 @@ static char *ai_agent_deny(FENSTER *f, const char *tool, const char *arg)
  */
 static char *ai_agent_report_write_failed(FENSTER *f, const char *path)
 {
- char line[AI_TOOL_LINE_MAX + 32];
+ char line[AI_AGENT_ARG_LINE_MAX];
  snprintf(line, sizeof line, "[agent] write failed: %s", path);
  ai_pane(f, line, AI_ROLE_ERROR, 0);
  wpe_ai_trace("agent write failed %s", path);
@@ -8071,20 +8176,39 @@ static void ai_persist_settings(FENSTER *f) { e_save_opt(f); }
  * quick confirmation that opens neither the pane nor a modal box. */
 static int g_ai_flash_active = 0;
 
+/* The bar's first column and the room a flash leaves at the right edge. */
+#define AI_FLASH_COL    1
+#define AI_FLASH_MARGIN 2
+
+/**
+ * wpe_ai_flash - Show a one-line confirmation on the bar, until the next key.
+ * @f: the window whose colours the bar takes; @msg: the words.
+ *
+ * The user gets a quick acknowledgement (a setting changed, a step taken)
+ * without a box to dismiss: the next keystroke brings the key hints back.
+ */
 void wpe_ai_flash(FENSTER *f, const char *msg)
 {
  char buf[MAXSCOL + 1];
  int n;
  if (!f || !f->fb) return;
  n = (int)strlen(msg);
- if (n > MAXSCOL - 2) n = MAXSCOL - 2;
+ if (n > MAXSCOL - AI_FLASH_MARGIN) n = MAXSCOL - AI_FLASH_MARGIN;
  memcpy(buf, msg, (size_t)n); buf[n] = '\0';
  e_blk(MAXSCOL, 0, MAXSLNS - 1, f->fb->mt.fb);                 /* clear the bar row */
- e_pr_str(1, MAXSLNS - 1, buf, f->fb->ms.fb, -1, -1, f->fb->ms.fb, f->fb->mt.fb);
+ e_pr_str(AI_FLASH_COL, MAXSLNS - 1, buf, f->fb->ms.fb, -1, -1, f->fb->ms.fb, f->fb->mt.fb);
  e_refresh();
  g_ai_flash_active = 1;
 }
 
+/**
+ * wpe_ai_flash_clear - Put the key hints back after a flash.
+ * @f: the window whose bar was flashed.
+ *
+ * Called on the next keystroke, so the confirmation never outstays the
+ * moment it was for.
+ * Return: 1 when a flash was showing and the bar was redrawn, 0 otherwise.
+ */
 int wpe_ai_flash_clear(FENSTER *f)
 {
  if (!g_ai_flash_active) return 0;
@@ -8098,72 +8222,205 @@ int wpe_ai_flash_clear(FENSTER *f)
  * plain wpe_ai_flash would. */
 static void wpe_ai_flash_mark(void) { g_ai_flash_active = 1; }
 
-/* Alt-G y: cycle the permission level ask -> edits -> auto.  Confirmed with a
- * one-shot status-line flash that shows all three levels with the ACTIVE one
- * highlighted (so you see which is selected, and the highlight moves as you
- * cycle) plus a short description of what it does.  Persisted automatically. */
-static void e_ai_cycle_policy(FENSTER *f)
-{
- static const char *word[3] = { "ask", "edits", "auto" };
- static const char *desc[3] = {
-   "ask before each edit and command",
-   "auto-accept edits, ask before commands",
-   "run edits and commands unattended"
- };
- int col, i, act, base, hi;
- char seg[64];
- if (!f || !f->fb) return;
- e_ai_policy = (e_ai_policy + 1) % 3;
- act  = e_ai_policy;
- base = f->fb->mt.fb;                                   /* bar normal            */
- hi   = f->fb->ms.fb;                                   /* bar shortcut highlight */
+/* The dial's three positions in cycling order, each with the words the bar
+   shows for it; ask follows auto. */
+#define AI_POLICY_COUNT 3
+static const char *ai_policy_word[AI_POLICY_COUNT] = { "ask", "edits", "auto" };
+static const char *ai_policy_desc[AI_POLICY_COUNT] = {
+  "ask before each edit and command",
+  "auto-accept edits, ask before commands",
+  "run edits and commands unattended"
+};
+/* The bar's layout: the label, one blank after it, two blanks between the
+   positions, one before the description. */
+#define AI_POLICY_BAR_LABEL "Permissions:"
+#define AI_POLICY_LABEL_GAP 1
+#define AI_POLICY_WORD_GAP  2
+#define AI_POLICY_DESC_GAP  1
+#define AI_POLICY_SEG_MAX   64
 
- e_blk(MAXSCOL, 0, MAXSLNS - 1, base);                  /* take the whole bar row */
- col = 1;
- e_pr_str(col, MAXSLNS - 1, "Permissions:", base, -1, -1, base, base);
- col += 13;
- for (i = 0; i < 3; i++) {                              /* ask  edits  auto       */
-  int c = (i == act) ? hi : base;
-  snprintf(seg, sizeof seg, "%s", word[i]);
+/**
+ * ai_policy_advance - Turn the dial one position: ask -> edits -> auto -> ask.
+ */
+static void ai_policy_advance(void)
+{
+ e_ai_policy = (e_ai_policy + 1) % AI_POLICY_COUNT;
+}
+
+/**
+ * ai_policy_bar_words - Paint the three positions on the bar, the active one highlighted.
+ * @col: where the first word goes; @act: the active position; @base/@hi:
+ * the bar's normal and highlight colours.
+ *
+ * All three are shown so the user sees where the dial stands among its
+ * positions and watches the highlight move as Alt-G y cycles.
+ * Return: the column after the last word.
+ */
+static int ai_policy_bar_words(int col, int act, int base, int hi)
+{
+ char seg[AI_POLICY_SEG_MAX];
+ int i, c;
+ for (i = 0; i < AI_POLICY_COUNT; i++) {
+  if (i == act) c = hi;
+  else c = base;
+  snprintf(seg, sizeof seg, "%s", ai_policy_word[i]);
   e_pr_str(col, MAXSLNS - 1, seg, c, -1, -1, c, base);
-  col += (int)strlen(word[i]) + 2;
+  col += (int)strlen(ai_policy_word[i]) + AI_POLICY_WORD_GAP;
  }
- snprintf(seg, sizeof seg, "-- %s", desc[act]);
- e_pr_str(col + 1, MAXSLNS - 1, seg, base, -1, -1, base, base);
+ return col;
+}
+
+/**
+ * ai_policy_flash_bar - Show the dial's new position on the bar until the next key.
+ * @f: the window whose colours the bar takes.
+ *
+ * The whole bar row is taken for "Permissions: ask  edits  auto -- <what the
+ * active one does>", a confirmation that opens neither the pane nor a box.
+ */
+static void ai_policy_flash_bar(FENSTER *f)
+{
+ char seg[AI_POLICY_SEG_MAX];
+ int col, act = e_ai_policy;
+ int base = f->fb->mt.fb;                               /* bar normal             */
+ int hi   = f->fb->ms.fb;                               /* bar shortcut highlight */
+ e_blk(MAXSCOL, 0, MAXSLNS - 1, base);                  /* take the whole bar row */
+ col = AI_FLASH_COL;
+ e_pr_str(col, MAXSLNS - 1, AI_POLICY_BAR_LABEL, base, -1, -1, base, base);
+ col += (int)strlen(AI_POLICY_BAR_LABEL) + AI_POLICY_LABEL_GAP;
+ col = ai_policy_bar_words(col, act, base, hi);
+ snprintf(seg, sizeof seg, "-- %s", ai_policy_desc[act]);
+ e_pr_str(col + AI_POLICY_DESC_GAP, MAXSLNS - 1, seg, base, -1, -1, base, base);
  e_refresh();
  wpe_ai_flash_mark();                                   /* next key restores the bar */
+}
 
+/**
+ * e_ai_cycle_policy - Alt-G y: turn the permission dial and confirm it on the bar.
+ * @f: the window the key was pressed in.
+ *
+ * The new position is shown at once with what it means, and saved, so the
+ * choice holds for the next session without a visit to the options.
+ */
+static void e_ai_cycle_policy(FENSTER *f)
+{
+ if (!f || !f->fb) return;
+ ai_policy_advance();
+ ai_policy_flash_bar(f);
  ai_persist_settings(f);
  wpe_ai_trace("policy set %s", wpe_ai_policy_name(e_ai_policy));
 }
 
 /* ---------------- agent plan / live TODO list (Messages window) ------------ */
 
-#define AI_PLAN_MAX 32
-static char g_ai_plan[AI_PLAN_MAX][200];  /* the tasks the agent laid out */
-static int  g_ai_plan_done[AI_PLAN_MAX];  /* per-task: completed?         */
+/* The checklist: at most this many steps, each cut to this many bytes. */
+#define AI_PLAN_MAX      32
+#define AI_PLAN_TASK_MAX 200
+static char g_ai_plan[AI_PLAN_MAX][AI_PLAN_TASK_MAX];  /* the tasks the agent laid out */
+static int  g_ai_plan_done[AI_PLAN_MAX];              /* per-task: completed?         */
 static int  g_ai_plan_n;
+/* Room for a checklist row and for the pane's progress line. */
+#define AI_PLAN_ROW_MAX  260
+#define AI_PLAN_NOTE_MAX 280
+/* e_d_p_message's last argument: start the Messages window over, or add a row. */
+#define AI_PLAN_RESTART 1
+#define AI_PLAN_APPEND  0
+/* The word for a step the agent reported without naming it. */
+#define AI_PLAN_STEP_WORD "(step)"
+
+/**
+ * ai_plan_done_count - How many of the plan's steps are ticked.
+ * Return: the count, for the "n/m done" the user watches.
+ */
+static int ai_plan_done_count(void)
+{
+ int i, ndone = 0;
+ for (i = 0; i < g_ai_plan_n; i++) if (g_ai_plan_done[i]) ndone++;
+ return ndone;
+}
+
+/**
+ * ai_plan_tick - The mark a step shows in the checklist.
+ * @done: whether the step is finished.
+ * Return: 'x' for a finished step, a blank for a pending one.
+ */
+static char ai_plan_tick(int done)
+{
+ if (done) return 'x';
+ return ' ';
+}
 
 /**
  * ai_plan_show - Draw the plan as a live checklist in the Messages window.
  *
  * A long agent run is far more legible with a dockable to-do list than a
  * scrolling pane log: the plan sits in the Messages window and is REDRAWN IN
- * PLACE (sw=1 clears and restarts) each time a step completes, so its status --
+ * PLACE (the window is restarted) each time a step completes, so its status --
  * "3/7 done", "[x]" per finished task -- updates live instead of scrolling away.
  */
 static void ai_plan_show(FENSTER *f)
 {
- char line[260];
- int i, ndone = 0;
- for (i = 0; i < g_ai_plan_n; i++) if (g_ai_plan_done[i]) ndone++;
- snprintf(line, sizeof line, "=== Agent plan: %d/%d done ===", ndone, g_ai_plan_n);
- e_d_p_message(line, f, 1);
+ char line[AI_PLAN_ROW_MAX];
+ int i;
+ snprintf(line, sizeof line, "=== Agent plan: %d/%d done ===", ai_plan_done_count(), g_ai_plan_n);
+ e_d_p_message(line, f, AI_PLAN_RESTART);
  for (i = 0; i < g_ai_plan_n; i++) {
-  snprintf(line, sizeof line, "  [%c] %s", g_ai_plan_done[i] ? 'x' : ' ', g_ai_plan[i]);
-  e_d_p_message(line, f, 0);
+  snprintf(line, sizeof line, "  [%c] %s", ai_plan_tick(g_ai_plan_done[i]), g_ai_plan[i]);
+  e_d_p_message(line, f, AI_PLAN_APPEND);
  }
- if (g_ai_plan_n == 0) e_d_p_message("  (no steps given)", f, 0);
+ if (g_ai_plan_n == 0) e_d_p_message("  (no steps given)", f, AI_PLAN_APPEND);
+}
+
+/**
+ * ai_todo_line_len - How much of a plan line is the task: up to its newline or the end marker.
+ * @p: the line's start; @nl: its newline, NULL on the last line; @stop: the
+ * "@@END" line, NULL when the body has none.
+ * Return: the task's length in bytes.
+ */
+static int ai_todo_line_len(const char *p, const char *nl, const char *stop)
+{
+ int len;
+ if (nl) len = (int)(nl - p);
+ else len = (int)strlen(p);
+ if (stop && (!nl || nl > stop)) len = (int)(stop - p);
+ return len;
+}
+
+/**
+ * ai_todo_is_bullet - Is this byte list decoration rather than the task's words?
+ * @c: a byte at the start of a plan line.
+ * Return: 1 for a blank, a tab, a dash or a star.
+ */
+static int ai_todo_is_bullet(char c)
+{
+ return c == ' ' || c == '\t' || c == '-' || c == '*';
+}
+
+/**
+ * ai_todo_strip_bullet - Skip a plan line's bullet and indentation.
+ * @p: the line's start; @len: its length, reduced by what was skipped.
+ *
+ * "- build it" and "  * build it" both become "build it", so the checklist
+ * reads as the user would write it whatever list style the model chose.
+ * Return: where the task's words start.
+ */
+static const char *ai_todo_strip_bullet(const char *p, int *len)
+{
+ while (*len && ai_todo_is_bullet(*p)) { p++; (*len)--; }
+ return p;
+}
+
+/**
+ * ai_todo_add - Append one pending step to the checklist, cut to the step's room.
+ * @p: the task's words; @len: how many bytes of them.
+ */
+static void ai_todo_add(const char *p, int len)
+{
+ int k = len;
+ if (k > AI_PLAN_TASK_MAX - 1) k = AI_PLAN_TASK_MAX - 1;
+ memcpy(g_ai_plan[g_ai_plan_n], p, (size_t)k);
+ g_ai_plan[g_ai_plan_n][k] = '\0';
+ g_ai_plan_done[g_ai_plan_n] = 0;
+ g_ai_plan_n++;
 }
 
 /**
@@ -8173,20 +8430,13 @@ static void ai_plan_show(FENSTER *f)
  */
 static void ai_todo_load(FENSTER *f, const char *body)
 {
- const char *p = body, *stop = strstr(body, "\n@@END");
+ const char *p = body, *stop = strstr(body, AI_TOOL_BODY_END_LINE);
  g_ai_plan_n = 0;
  while (p && *p && (!stop || p < stop) && g_ai_plan_n < AI_PLAN_MAX) {
   const char *nl = strchr(p, '\n');
-  int len = nl ? (int)(nl - p) : (int)strlen(p);
-  if (stop && (!nl || nl > stop)) len = (int)(stop - p);
-  while (len && (*p == ' ' || *p == '\t' || *p == '-' || *p == '*')) { p++; len--; }
-  if (len > 0) {
-   int k = len < (int)sizeof g_ai_plan[0] - 1 ? len : (int)sizeof g_ai_plan[0] - 1;
-   memcpy(g_ai_plan[g_ai_plan_n], p, (size_t)k);
-   g_ai_plan[g_ai_plan_n][k] = '\0';
-   g_ai_plan_done[g_ai_plan_n] = 0;
-   g_ai_plan_n++;
-  }
+  int len = ai_todo_line_len(p, nl, stop);
+  p = ai_todo_strip_bullet(p, &len);
+  if (len > 0) ai_todo_add(p, len);
   if (!nl) break;
   p = nl + 1;
  }
@@ -8194,20 +8444,27 @@ static void ai_todo_load(FENSTER *f, const char *body)
 }
 
 /**
+ * ai_plan_progress - Note a finished step in the pane, with the running count.
+ * @f: the window the pane belongs to; @task: the step's words, may be empty.
+ *
+ * The Messages window may be hidden behind the file, so the pane carries a
+ * compact "[plan] 3/7 done  ok: <step>" the user sees during the run.
+ */
+static void ai_plan_progress(FENSTER *f, const char *task)
+{
+ char line[AI_PLAN_NOTE_MAX];
+ const char *shown = AI_PLAN_STEP_WORD;
+ if (task && *task) shown = task;
+ snprintf(line, sizeof line, "[plan] %d/%d done  ok: %.200s",
+          ai_plan_done_count(), g_ai_plan_n, shown);
+ ai_pane(f, line, AI_ROLE_MACHINERY, 0);            /* visible progress in the pane during the run */
+}
+
+/**
  * ai_plan_mark_done - Tick off a finished step and redraw the checklist.
  * Match the reported text to a pending task (substring either way); fall back to
  * the earliest pending task, since an agent usually finishes them in order.
  */
-static void ai_plan_progress(FENSTER *f, const char *task)
-{
- char line[280];
- int i, ndone = 0;
- for (i = 0; i < g_ai_plan_n; i++) if (g_ai_plan_done[i]) ndone++;
- snprintf(line, sizeof line, "[plan] %d/%d done  ok: %.200s",
-          ndone, g_ai_plan_n, task && *task ? task : "(step)");
- ai_pane(f, line, AI_ROLE_MACHINERY, 0);            /* visible progress in the pane during the run */
-}
-
 static void ai_plan_mark_done(FENSTER *f, const char *arg)
 {
  int i, first_pending = -1;
@@ -8406,10 +8663,6 @@ static char *ai_agent_commit_write(ai_async_op *op, const char *tool, const char
  return strdup("(written)");
 }
 
-/* The line that closes a tool body, and the same marker at the body's start. */
-#define AI_TOOL_BODY_END_LINE "\n@@END"
-#define AI_TOOL_BODY_END_WORD "@@END"
-
 /**
  * ai_tool_body_content - The file content a write_file body carries.
  * @firstnl: the newline that ends the "TOOL write_file <path>" line.
@@ -8444,6 +8697,197 @@ static char *ai_tool_body_content(const char *firstnl)
  return content;
 }
 
+/* The three marker lines of a SEARCH/REPLACE block. */
+#define AI_SR_SEARCH  "<<<<<<< SEARCH"
+#define AI_SR_DIVIDER "======="
+#define AI_SR_REPLACE ">>>>>>> REPLACE"
+/* How much of a SEARCH text the file does not hold the error quotes. */
+#define AI_SR_SNIP_MAX 80
+/* The reason when a copy of a block's text could not be made. */
+#define AI_SR_NO_MEMORY "out of memory"
+
+/* What ai_sr_parse_block found at the point it was given. */
+enum ai_sr_parse { AI_SR_NO_MORE = 0, AI_SR_BLOCK = 1, AI_SR_MALFORMED = -1 };
+
+/* One parsed block: its two texts as spans of the patch body, and where the
+   next block may start. */
+struct ai_sr_block {
+ const char *search;
+ size_t      sl;
+ const char *replace;
+ size_t      rl;
+ const char *next;
+};
+
+/**
+ * ai_sr_after_marker - The text that follows a marker line.
+ * @marker: where the marker was found; @word: the marker's text.
+ * Return: the byte after the marker and its newline, when it has one.
+ */
+static const char *ai_sr_after_marker(const char *marker, const char *word)
+{
+ const char *p = marker + strlen(word);
+ if (*p == '\n') p++;
+ return p;
+}
+
+/**
+ * ai_sr_span_end - Where a block's text ends before the marker that closes it.
+ * @start: the text's start; @marker: the closing marker.
+ * Return: the marker, or the newline before it when the text has one, so the
+ * line break that ends the block is not part of what is matched.
+ */
+static const char *ai_sr_span_end(const char *start, const char *marker)
+{
+ if (marker > start && marker[-1] == '\n') return marker - 1;
+ return marker;
+}
+
+/**
+ * ai_sr_malformed - Record why a block could not be read.
+ * @err/@errn: where the reason goes; @why: the reason.
+ * Return: AI_SR_MALFORMED, so the caller hands it back in one line.
+ */
+static enum ai_sr_parse ai_sr_malformed(char *err, size_t errn, const char *why)
+{
+ snprintf(err, errn, "%s", why);
+ return AI_SR_MALFORMED;
+}
+
+/**
+ * ai_sr_parse_block - Read the next SEARCH/REPLACE block of a patch body.
+ * @p: where to look from; @stop: the "@@END" line, NULL when the body has
+ * none; @b: receives the block; @err/@errn: the reason when it is malformed.
+ *
+ * A block cut short (no divider, no REPLACE line) is named for what it lacks,
+ * so the model's retry can fix the block instead of guessing.
+ * Return: AI_SR_BLOCK with @b filled, AI_SR_NO_MORE past the last block,
+ * AI_SR_MALFORMED with @err set.
+ */
+static enum ai_sr_parse ai_sr_parse_block(const char *p, const char *stop,
+                                          struct ai_sr_block *b, char *err, size_t errn)
+{
+ const char *sb = strstr(p, AI_SR_SEARCH), *mid, *re, *rend;
+ if (!sb || (stop && sb >= stop)) return AI_SR_NO_MORE;
+ sb = ai_sr_after_marker(sb, AI_SR_SEARCH);
+ mid = strstr(sb, AI_SR_DIVIDER);
+ if (!mid) return ai_sr_malformed(err, errn, "block missing the ======= divider");
+ re = ai_sr_after_marker(mid, AI_SR_DIVIDER);
+ rend = strstr(re, AI_SR_REPLACE);
+ if (!rend) return ai_sr_malformed(err, errn, "block missing >>>>>>> REPLACE");
+ b->search  = sb;
+ b->sl      = (size_t)(ai_sr_span_end(sb, mid) - sb);
+ b->replace = re;
+ b->rl      = (size_t)(ai_sr_span_end(re, rend) - re);
+ b->next    = rend + strlen(AI_SR_REPLACE);
+ return AI_SR_BLOCK;
+}
+
+/**
+ * ai_span_dup - A NUL-terminated copy of @len bytes of @s.
+ * Return: the malloc'd copy, NULL out of memory.
+ */
+static char *ai_span_dup(const char *s, size_t len)
+{
+ char *out = malloc(len + 1);
+ if (!out) return NULL;
+ memcpy(out, s, len);
+ out[len] = '\0';
+ return out;
+}
+
+/**
+ * ai_sr_missing - Record that the file does not hold a block's SEARCH text.
+ * @search: the text; @sl: its length; @err/@errn: where the reason goes.
+ *
+ * The reason quotes the text's first line, cut short, so the model sees which
+ * block missed and the user reading the pane sees what it looked for.
+ * Return: NULL, so the caller hands back "no new text" in one line.
+ */
+static char *ai_sr_missing(const char *search, size_t sl, char *err, size_t errn)
+{
+ char snip[AI_SR_SNIP_MAX], *nlp;
+ size_t k = sl;
+ if (k > sizeof snip - 1) k = sizeof snip - 1;
+ memcpy(snip, search, k);
+ snip[k] = '\0';
+ nlp = strchr(snip, '\n');
+ if (nlp) *nlp = '\0';
+ snprintf(err, errn, "SEARCH text not found: \"%s\"", snip);
+ return NULL;
+}
+
+/**
+ * ai_sr_splice - The file's text with one hit replaced.
+ * @cur: the text; @hit: where the SEARCH text stands in it; @sl: its length;
+ * @replace/@rl: the new text and its length.
+ * Return: the malloc'd new text, NULL out of memory.
+ */
+static char *ai_sr_splice(const char *cur, const char *hit, size_t sl,
+                          const char *replace, size_t rl)
+{
+ size_t pre = (size_t)(hit - cur), post = strlen(hit + sl);
+ char *nc = malloc(pre + rl + post + 1);
+ if (!nc) return NULL;
+ memcpy(nc, cur, pre);
+ memcpy(nc + pre, replace, rl);
+ memcpy(nc + pre + rl, hit + sl, post);
+ nc[pre + rl + post] = '\0';
+ return nc;
+}
+
+/**
+ * ai_sr_replace_first - Replace the first occurrence of a block's SEARCH text.
+ * @cur: the file's text; @search/@replace: the block's texts, NUL-terminated;
+ * @b: the block, for the lengths; @err/@errn: the reason on failure.
+ *
+ * An empty SEARCH text matches nothing, so a block that forgot its text is
+ * an error and not an insertion at the file's start.
+ * Return: the malloc'd new text, NULL with @err set.
+ */
+static char *ai_sr_replace_first(const char *cur, const char *search, const char *replace,
+                                 const struct ai_sr_block *b, char *err, size_t errn)
+{
+ const char *hit = NULL;
+ char *nc;
+ if (b->sl) hit = strstr(cur, search);
+ if (!hit) return ai_sr_missing(search, b->sl, err, errn);
+ nc = ai_sr_splice(cur, hit, b->sl, replace, b->rl);
+ if (!nc) snprintf(err, errn, "%s", AI_SR_NO_MEMORY);
+ return nc;
+}
+
+/**
+ * ai_sr_apply_block - Apply one parsed block to the file's text.
+ * @cur: the text; @b: the block; @err/@errn: the reason on failure.
+ * Return: the malloc'd new text, NULL with @err set.
+ */
+static char *ai_sr_apply_block(const char *cur, const struct ai_sr_block *b,
+                               char *err, size_t errn)
+{
+ char *search = ai_span_dup(b->search, b->sl);
+ char *replace = ai_span_dup(b->replace, b->rl);
+ char *nc = NULL;
+ if (search && replace) nc = ai_sr_replace_first(cur, search, replace, b, err, errn);
+ else snprintf(err, errn, "%s", AI_SR_NO_MEMORY);
+ free(search);
+ free(replace);
+ return nc;
+}
+
+/**
+ * ai_sr_fail - Give up on a patch: drop the text so far and record the reason.
+ * @cur: the text built so far, freed; @err/@errn: where the reason goes;
+ * @why: the reason, or NULL when a helper already wrote it.
+ * Return: 0, the patch's failure, so the caller hands it back in one line.
+ */
+static int ai_sr_fail(char *cur, char *err, size_t errn, const char *why)
+{
+ if (why) snprintf(err, errn, "%s", why);
+ free(cur);
+ return 0;
+}
+
 /**
  * ai_apply_search_replace - Apply SEARCH/REPLACE blocks to a file's text.
  * @old:  the current file content.
@@ -8466,136 +8910,237 @@ static char *ai_tool_body_content(const char *firstnl)
 static int ai_apply_search_replace(const char *old, const char *body,
                                    char **out, char *err, size_t errn)
 {
- static const char *S = "<<<<<<< SEARCH";
- static const char *M = "=======";
- static const char *R = ">>>>>>> REPLACE";
- char *cur = strdup(old ? old : "");
+ const char *base = "";
  const char *p = body;
- const char *stop = strstr(body, "\n@@END");
+ const char *stop = strstr(body, AI_TOOL_BODY_END_LINE);
+ struct ai_sr_block b;
+ enum ai_sr_parse got;
+ char *cur, *nc;
  int blocks = 0;
 
- if (!cur) { snprintf(err, errn, "out of memory"); return 0; }
+ if (old) base = old;
+ cur = strdup(base);
+ if (!cur) return ai_sr_fail(cur, err, errn, AI_SR_NO_MEMORY);
  for (;;) {
-  const char *sb = strstr(p, S), *mid, *re, *send, *rend;
-  char *search, *replace, *hit, *nc;
-  size_t sl, rl, pre, post;
-
-  if (!sb || (stop && sb >= stop)) break;          /* no more blocks */
-  sb += strlen(S);
-  if (*sb == '\n') sb++;                            /* to the line after the marker */
-  mid = strstr(sb, M);
-  if (!mid) { snprintf(err, errn, "block missing the ======= divider"); free(cur); return 0; }
-  send = mid;
-  if (send > sb && send[-1] == '\n') send--;        /* drop the newline before ======= */
-  sl = (size_t)(send - sb);
-  re = mid + strlen(M);
-  if (*re == '\n') re++;
-  rend = strstr(re, R);
-  if (!rend) { snprintf(err, errn, "block missing >>>>>>> REPLACE"); free(cur); return 0; }
-  { const char *e = rend; if (e > re && e[-1] == '\n') e--; rl = (size_t)(e - re); }
-
-  search = malloc(sl + 1);
-  replace = malloc(rl + 1);
-  if (!search || !replace) { free(search); free(replace); free(cur);
-    snprintf(err, errn, "out of memory"); return 0; }
-  memcpy(search, sb, sl);  search[sl] = '\0';
-  memcpy(replace, re, rl);  replace[rl] = '\0';
-
-  hit = sl ? strstr(cur, search) : NULL;
-  if (!hit) {
-   char snip[80];
-   size_t k = sl < sizeof snip - 1 ? sl : sizeof snip - 1;
-   char *nlp;
-   memcpy(snip, search, k); snip[k] = '\0';
-   if ((nlp = strchr(snip, '\n'))) *nlp = '\0';
-   snprintf(err, errn, "SEARCH text not found: \"%s\"", snip);
-   free(search); free(replace); free(cur); return 0;
-  }
-  pre = (size_t)(hit - cur);
-  post = strlen(hit + sl);
-  nc = malloc(pre + rl + post + 1);
-  if (!nc) { free(search); free(replace); free(cur);
-    snprintf(err, errn, "out of memory"); return 0; }
-  memcpy(nc, cur, pre);
-  memcpy(nc + pre, replace, rl);
-  memcpy(nc + pre + rl, hit + sl, post);
-  nc[pre + rl + post] = '\0';
-
-  free(cur); cur = nc;
-  free(search); free(replace);
-  p = rend + strlen(R);
+  got = ai_sr_parse_block(p, stop, &b, err, errn);
+  if (got == AI_SR_NO_MORE) break;
+  if (got == AI_SR_MALFORMED) return ai_sr_fail(cur, err, errn, NULL);
+  nc = ai_sr_apply_block(cur, &b, err, errn);
+  if (!nc) return ai_sr_fail(cur, err, errn, NULL);
+  free(cur);
+  cur = nc;
+  p = b.next;
   blocks++;
  }
- if (!blocks) { snprintf(err, errn, "no SEARCH/REPLACE block found"); free(cur); return 0; }
+ if (!blocks) return ai_sr_fail(cur, err, errn, "no SEARCH/REPLACE block found");
  *out = cur;
  return 1;
 }
 
-/* Reduce fetched HTML to readable text for the model: drop <script>/<style>
- * bodies and every tag, decode the few common entities, and cap the length.
- * Not a real parser -- just enough that a page reads as text, not markup, and
- * does not flood the context.  Returns a malloc'd string (caller frees). */
+/* The most text a fetched page becomes: enough to summarise, not enough to
+   flood a model's window; the note that ends a page cut there. */
+#define AI_HTML_TEXT_CAP 12000
+#define AI_HTML_CUT_MARK "\n...(truncated)"
+/* The opening tags whose whole body is dropped, and how far into either the
+   scan for its closing tag starts (past "<style", the shorter). */
+#define AI_HTML_SCRIPT_OPEN     "<script"
+#define AI_HTML_SCRIPT_OPEN_LEN (sizeof AI_HTML_SCRIPT_OPEN - 1)
+#define AI_HTML_STYLE_OPEN      "<style"
+#define AI_HTML_STYLE_OPEN_LEN  (sizeof AI_HTML_STYLE_OPEN - 1)
+#define AI_HTML_SCRIPT_CLOSE    "</script"
+#define AI_HTML_STYLE_CLOSE     "</style"
+/* The offsets, after '<', of the letters that tell script from style. */
+#define AI_HTML_TAG_LETTER_1 1
+#define AI_HTML_TAG_LETTER_3 3
+
+/**
+ * ai_html_skip_tag - Step past one tag.
+ * @html: the page; @i: at the tag's '<'.
+ * Return: the index after its '>', or the page's end.
+ */
+static size_t ai_html_skip_tag(const char *html, size_t i)
+{
+ while (html[i] && html[i] != '>') i++;
+ if (html[i]) i++;
+ return i;
+}
+
+/**
+ * ai_html_is_script_or_style - Does a <script> or <style> element open here?
+ * @html: the page; @i: at a '<'.
+ * Return: 1 when it does, whatever the letters' case.
+ */
+static int ai_html_is_script_or_style(const char *html, size_t i)
+{
+ if (!strncasecmp(html + i, AI_HTML_SCRIPT_OPEN, AI_HTML_SCRIPT_OPEN_LEN)) return 1;
+ if (!strncasecmp(html + i, AI_HTML_STYLE_OPEN, AI_HTML_STYLE_OPEN_LEN)) return 1;
+ return 0;
+}
+
+/**
+ * ai_html_close_tag - The closing tag of the element opening here.
+ * @html: the page; @i: at the '<' of a script or style tag.
+ * Return: "</script" when the letters after '<' spell script, "</style" otherwise.
+ */
+static const char *ai_html_close_tag(const char *html, size_t i)
+{
+ int s = html[i + AI_HTML_TAG_LETTER_1] == 's' || html[i + AI_HTML_TAG_LETTER_1] == 'S';
+ int r = html[i + AI_HTML_TAG_LETTER_3] == 'r' || html[i + AI_HTML_TAG_LETTER_3] == 'R';
+ if (s && r) return AI_HTML_SCRIPT_CLOSE;
+ return AI_HTML_STYLE_CLOSE;
+}
+
+/**
+ * ai_html_skip_element - Step past a <script> or <style> element, body and all.
+ * @html: the page; @i: at its '<'.
+ *
+ * Code and style sheets are not what the model asked to read: dropping only
+ * their tags would hand it the page's scripts as text.
+ * Return: the index after the closing tag's '>', or the page's end.
+ */
+static size_t ai_html_skip_element(const char *html, size_t i)
+{
+ const char *close = ai_html_close_tag(html, i);
+ size_t cl = strlen(close);
+ i += AI_HTML_STYLE_OPEN_LEN;
+ while (html[i] && strncasecmp(html + i, close, cl)) i++;
+ return ai_html_skip_tag(html, i);
+}
+
+/**
+ * ai_html_add_space - Keep the words of two neighbouring tags apart.
+ * @out: the text so far; @o: its length, advanced when a blank is added.
+ *
+ * "<td>a</td><td>b</td>" reads "a b", not "ab"; no blank is added after a
+ * line break or another blank, so the text does not fill with them.
+ */
+static void ai_html_add_space(char *out, size_t *o)
+{
+ if (*o == 0) return;
+ if (out[*o - 1] == '\n' || out[*o - 1] == ' ') return;
+ out[(*o)++] = ' ';
+}
+
+/**
+ * ai_html_skip_markup - Drop the tag or element at @i, keeping the words apart.
+ * @html: the page; @i: at a '<'; @out/@o: the text so far.
+ * Return: the index of the next byte to read.
+ */
+static size_t ai_html_skip_markup(const char *html, size_t i, char *out, size_t *o)
+{
+ if (ai_html_is_script_or_style(html, i)) return ai_html_skip_element(html, i);
+ i = ai_html_skip_tag(html, i);
+ ai_html_add_space(out, o);
+ return i;
+}
+
+/**
+ * ai_html_decode_entity - Turn one of the common entities into its character.
+ * @html: the page; @i: the index read next, advanced past the entity when
+ * one is decoded; @out/@o: the text, extended by the character.
+ *
+ * The seven entities a page of prose uses most are decoded so the model
+ * reads "&" and "<" rather than their encodings; any other entity, and any
+ * other byte, is left to be copied as it is.
+ * Return: 1 when an entity was decoded, 0 when the byte at @i is not one.
+ */
+static int ai_html_decode_entity(const char *html, size_t *i, char *out, size_t *o)
+{
+ static const struct { const char *e; char c; } ent[] = {
+  {"&amp;", '&'}, {"&lt;", '<'}, {"&gt;", '>'}, {"&quot;", '"'},
+  {"&#39;", '\''}, {"&apos;", '\''}, {"&nbsp;", ' '}
+ };
+ int k;
+ if (html[*i] != '&') return 0;
+ for (k = 0; k < (int)(sizeof ent / sizeof ent[0]); k++) {
+  size_t el = strlen(ent[k].e);
+  if (strncmp(html + *i, ent[k].e, el)) continue;
+  out[(*o)++] = ent[k].c;
+  *i += el;
+  return 1;
+ }
+ return 0;
+}
+
+/**
+ * ai_html_mark_cut - End a page's text with the note that it was cut.
+ * @out: the text; @o: its length; @room: the buffer's size.
+ *
+ * The model reads that the page went on, so it asks for the part it needs
+ * instead of taking the first part for the whole.
+ * Return: the text's new length (unchanged when the note does not fit).
+ */
+static size_t ai_html_mark_cut(char *out, size_t o, size_t room)
+{
+ size_t ml = strlen(AI_HTML_CUT_MARK);
+ if (o + ml >= room) return o;
+ memcpy(out + o, AI_HTML_CUT_MARK, ml);
+ return o + ml;
+}
+
+/**
+ * ai_html_to_text - Reduce a fetched page to readable text for the model.
+ * @html: the page's bytes.
+ *
+ * Drops script and style bodies and every tag, decodes the common entities
+ * and caps the length, so a page reads as text, not markup, and does not
+ * flood the model's window.  Not a real parser: just enough for prose.
+ * Return: the malloc'd text (the caller frees), NULL out of memory.
+ */
 static char *ai_html_to_text(const char *html)
 {
  size_t n = html ? strlen(html) : 0, o = 0, i = 0;
- const size_t CAP = 12000;            /* keep a page down to a summarisable size */
  char *out = malloc(n + 1);
  if (!out) return NULL;
- while (html[i] && o < CAP) {
-  if (html[i] == '<') {
-   /* Skip the entire body of <script>/<style>, not just the tag. */
-   if (!strncasecmp(html + i, "<script", 7) || !strncasecmp(html + i, "<style", 6)) {
-    const char *close = (html[i + 1] == 's' || html[i + 1] == 'S') &&
-                        (html[i + 3] == 'r' || html[i + 3] == 'R')
-                        ? "</script" : "</style";
-    size_t cl = strlen(close);
-    i += 6;
-    while (html[i] && strncasecmp(html + i, close, cl)) i++;
-    while (html[i] && html[i] != '>') i++;
-    if (html[i]) i++;
-    continue;
-   }
-   while (html[i] && html[i] != '>') i++;   /* drop the tag */
-   if (html[i]) i++;
-   if (o && out[o - 1] != '\n' && out[o - 1] != ' ') out[o++] = ' ';
-   continue;
-  }
-  if (html[i] == '&') {                      /* decode a handful of entities */
-   static const struct { const char *e; char c; } ent[] = {
-    {"&amp;", '&'}, {"&lt;", '<'}, {"&gt;", '>'}, {"&quot;", '"'},
-    {"&#39;", '\''}, {"&apos;", '\''}, {"&nbsp;", ' '}
-   };
-   int k, matched = 0;
-   for (k = 0; k < (int)(sizeof ent / sizeof ent[0]); k++) {
-    size_t el = strlen(ent[k].e);
-    if (!strncmp(html + i, ent[k].e, el)) { out[o++] = ent[k].c; i += el; matched = 1; break; }
-   }
-   if (matched) continue;
-  }
-  out[o++] = html[i++];
+ while (html[i] && o < AI_HTML_TEXT_CAP) {
+  if (html[i] == '<') i = ai_html_skip_markup(html, i, out, &o);
+  else if (!ai_html_decode_entity(html, &i, out, &o)) out[o++] = html[i++];
  }
- if (o >= CAP) {                             /* mark that the page was clipped */
-  const char *mark = "\n...(truncated)";
-  size_t ml = strlen(mark);
-  if (o + ml < n + 1) { memcpy(out + o, mark, ml); o += ml; }
- }
+ if (o >= AI_HTML_TEXT_CAP) o = ai_html_mark_cut(out, o, n + 1);
  out[o] = '\0';
  return out;
 }
 
-/* Percent-encode a query for a URL, leaving RFC 3986 unreserved bytes as-is. */
+/* A percent-escape is three bytes; a byte is written only when it and the
+   NUL after it fit. */
+#define AI_URL_ESCAPE_LEN 3
+#define AI_URL_HEX_SHIFT  4
+#define AI_URL_HEX_MASK   15
+
+/**
+ * ai_url_unreserved - May this byte stand in a URL as it is?
+ * @c: the byte.
+ * Return: 1 for the RFC 3986 unreserved set: letters, digits, "-", "_", ".", "~".
+ */
+static int ai_url_unreserved(unsigned char c)
+{
+ if (c >= 'A' && c <= 'Z') return 1;
+ if (c >= 'a' && c <= 'z') return 1;
+ if (c >= '0' && c <= '9') return 1;
+ return c == '-' || c == '_' || c == '.' || c == '~';
+}
+
+/**
+ * ai_url_encode - Percent-encode a query for a URL.
+ * @s: the query as the model wrote it; @out/@outsz: receives the encoding.
+ *
+ * Every byte outside the unreserved set is escaped, so a query with blanks,
+ * quotes or an ampersand reaches the search engine as the query and not as
+ * extra parameters.  A query too long for the room is cut at a whole escape.
+ */
 static void ai_url_encode(const char *s, char *out, size_t outsz)
 {
  static const char hex[] = "0123456789ABCDEF";
  size_t o = 0;
- for (; s && *s && o + 4 < outsz; s++) {
+ for (; s && *s && o + AI_URL_ESCAPE_LEN + 1 < outsz; s++) {
   unsigned char c = (unsigned char)*s;
-  if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
-      (c >= '0' && c <= '9') || c == '-' || c == '_' || c == '.' || c == '~')
+  if (ai_url_unreserved(c)) {
    out[o++] = (char)c;
-  else {
-   out[o++] = '%'; out[o++] = hex[c >> 4]; out[o++] = hex[c & 15];
+   continue;
   }
+  out[o++] = '%';
+  out[o++] = hex[c >> AI_URL_HEX_SHIFT];
+  out[o++] = hex[c & AI_URL_HEX_MASK];
  }
  out[o] = '\0';
 }
@@ -8614,6 +9159,30 @@ static void ai_search_url_build(const char *tmpl, const char *q, char *out, size
 
 /* The most of a page the web tools read before reducing it to text. */
 #define AI_WEB_FETCH_MAX 65536
+/* How the model reads a tool that could not do what it asked. */
+#define AI_TOOL_ERROR_HEAD "TOOL ERROR: "
+/* Room a fetch's error line adds to the fetcher's reason for the head. */
+#define AI_FETCH_ERROR_ROOM 20
+/* Room for the fetcher's reason, and for the encoded query and the URL
+   built around it. */
+#define AI_FETCH_REASON_MAX 200
+#define AI_URL_QUERY_MAX    1024
+#define AI_URL_MAX          1400
+/* Where a search goes when AISearchURL is not set: a keyless engine. */
+#define AI_SEARCH_URL_DEFAULT "https://lite.duckduckgo.com/lite/?q=%s"
+
+/**
+ * ai_tool_error_alloc - The "TOOL ERROR: <reason>" result the model reads.
+ * @reason: why the tool could not do what was asked.
+ * Return: the malloc'd result, NULL out of memory.
+ */
+static char *ai_tool_error_alloc(const char *reason)
+{
+ size_t n = sizeof AI_TOOL_ERROR_HEAD + strlen(reason);
+ char *out = malloc(n);
+ if (out) snprintf(out, n, AI_TOOL_ERROR_HEAD "%s", reason);
+ return out;
+}
 
 /**
  * ai_agent_tool_run_command - Run the model's command, bounded in size and time.
@@ -8647,7 +9216,8 @@ static char *ai_agent_tool_run_command(FENSTER *f, const char *arg)
  */
 static char *ai_agent_fetch_as_text(const char *url, const char *failed)
 {
- char *raw = NULL, *result, werr[200];
+ char *raw = NULL, *result, werr[AI_FETCH_REASON_MAX];
+ const char *reason = failed;
  size_t n;
  werr[0] = '\0';
  if (wpe_ai_web_fetch(url, AI_WEB_FETCH_MAX, &raw, werr, sizeof werr) == 0 && raw) {
@@ -8655,10 +9225,21 @@ static char *ai_agent_fetch_as_text(const char *url, const char *failed)
   free(raw);
   return result;
  }
- n = strlen(werr) + 20;
+ if (werr[0]) reason = werr;
+ n = strlen(werr) + AI_FETCH_ERROR_ROOM;
  result = malloc(n);
- if (result) snprintf(result, n, "TOOL ERROR: %s", werr[0] ? werr : failed);
+ if (result) snprintf(result, n, AI_TOOL_ERROR_HEAD "%s", reason);
  return result;
+}
+
+/**
+ * ai_search_url_template - The search URL the user configured, or the default.
+ * Return: the template, with "%s" where the query goes.
+ */
+static const char *ai_search_url_template(void)
+{
+ if (e_ai_search_url && *e_ai_search_url) return e_ai_search_url;
+ return AI_SEARCH_URL_DEFAULT;
 }
 
 /**
@@ -8689,124 +9270,278 @@ static char *ai_agent_tool_web_fetch(FENSTER *f, const char *arg)
  */
 static char *ai_agent_tool_web_search(FENSTER *f, const char *arg)
 {
- char enc[1024], surl[1400];
- const char *tmpl = (e_ai_search_url && *e_ai_search_url) ? e_ai_search_url
-                    : "https://lite.duckduckgo.com/lite/?q=%s";
+ char enc[AI_URL_QUERY_MAX], surl[AI_URL_MAX];
  if (!ai_agent_approve(f, arg, 1)) return ai_agent_deny(f, AI_TOOL_WEB_SEARCH, arg);
  ai_agent_show_running(f, AI_TOOL_WEB_SEARCH);
  ai_url_encode(arg, enc, sizeof enc);
- ai_search_url_build(tmpl, enc, surl, sizeof surl);
+ ai_search_url_build(ai_search_url_template(), enc, surl, sizeof surl);
  return ai_agent_fetch_as_text(surl, "search failed");
 }
 
-/* One agent turn: parse the action, run the tool (write/run ask for approval),
- * feed the result back.  Returns 1 when the agent is done, 0 to keep going.
- * Runs from the conversation driver with the spinner paused, so its approval
- * prompt (ai_agent_approve -> e_getch) is safe. */
-static int ai_agent_process(ai_async_op *op, char *reply)
+/* The line that ends a run: the model's answer or summary follows it. */
+#define AI_DONE_MARKER     "DONE"
+#define AI_DONE_MARKER_LEN (sizeof AI_DONE_MARKER - 1)
+/* The pane line for a run that ended with nothing to say. */
+#define AI_AGENT_DONE_LINE "[agent] done"
+/* The most of a reasoning preamble the pane shows before a tool line. */
+#define AI_AGENT_PREAMBLE_MAX 1024
+/* Room for the reason a patch could not be applied. */
+#define AI_PATCH_ERR_MAX 300
+/* What the model reads for a patch it cannot make: no such file, no blocks. */
+#define AI_PATCH_NO_FILE_RESULT   "TOOL ERROR: file not found (use write_file to create it)"
+#define AI_PATCH_NO_BLOCKS_RESULT "TOOL ERROR: apply_patch needs SEARCH/REPLACE blocks"
+/* What the user and the model read once the checklist is laid out, and what
+   the model reads for a ticked step. */
+#define AI_PLAN_LAID_OUT_LINE \
+  "[plan] laid out - the checklist is in the Messages window (updates as steps finish)"
+#define AI_PLAN_LAID_OUT_RESULT \
+  "(plan shown -- now do the steps, one tool per turn, reporting each with TOOL step_done <task>)"
+#define AI_PLAN_STEP_RESULT "(recorded)"
+
+/* What the scan of a reply found: no protocol line, the DONE line, a TOOL line. */
+enum ai_agent_marker { AI_MARK_NONE = 0, AI_MARK_DONE, AI_MARK_TOOL };
+
+/**
+ * ai_agent_marker_at - Which protocol line, if any, starts at @line.
+ * @line: the start of a line of the reply.
+ * Return: AI_MARK_TOOL, AI_MARK_DONE, or AI_MARK_NONE for prose.
+ */
+static enum ai_agent_marker ai_agent_marker_at(const char *line)
 {
- FENSTER *f = op->f;
- char *firstnl, *act = NULL, *scan, action[AI_TOOL_LINE_MAX];
+ if (!strncmp(line, AI_TOOL_PREFIX, AI_TOOL_PREFIX_LEN)) return AI_MARK_TOOL;
+ if (!strncmp(line, AI_DONE_MARKER, AI_DONE_MARKER_LEN)) return AI_MARK_DONE;
+ return AI_MARK_NONE;
+}
 
- if (!ai_window_alive(op->cn, f)) return 1;
-
- /* Locate the protocol action: the first line that begins with "TOOL " or
-    "DONE".  A tool-using model -- a local one especially -- often prefaces that
-    line with a sentence of reasoning ("let me read the files first..."); judging
-    only the reply's first line then mistakes the preamble for the final answer
-    and the tool call is never run.  Scan the line starts instead. */
+/**
+ * ai_agent_find_marker - Find the reply's protocol line, past any reasoning preamble.
+ * @reply: the model's reply; @kind: receives what was found.
+ *
+ * A tool-using model -- a local one especially -- often prefaces its action
+ * with a sentence of reasoning ("let me read the files first..."); judging
+ * only the reply's first line then mistakes the preamble for the final answer
+ * and the tool call is never run.  The line starts are scanned instead.
+ * Return: the start of the marker line, NULL (with @kind AI_MARK_NONE) when
+ * the reply has none.
+ */
+static char *ai_agent_find_marker(char *reply, enum ai_agent_marker *kind)
+{
+ char *scan;
  for (scan = reply; scan; ) {
-  if (!strncmp(scan, "TOOL ", 5) || !strncmp(scan, "DONE", 4)) { act = scan; break; }
+  *kind = ai_agent_marker_at(scan);
+  if (*kind != AI_MARK_NONE) return scan;
   scan = strchr(scan, '\n');
   if (scan) scan++;
  }
+ *kind = AI_MARK_NONE;
+ return NULL;
+}
 
- if (!act) {                                   /* no marker: the whole reply is the answer */
-  ai_pane_multiline(f, reply[0] ? reply : "[agent] done", AI_ROLE_ASSISTANT, 0);
-  wpe_ai_trace("agent answer (no marker)");
-  return 1;
- }
- if (!strncmp(act, "DONE", 4)) {
-  /* Show the whole DONE reply, not just its first line: for a question task the
-     model's answer follows the DONE marker, and dropping it left the user with
-     only "DONE - answering directly" and no answer. */
-  ai_pane_multiline(f, reply[0] ? reply : "[agent] done", AI_ROLE_ASSISTANT, 0);
-  wpe_ai_trace("agent done");
-  return 1;
- }
- /* A TOOL line, possibly after a preamble: show the preamble as the agent's
-    thought so its reasoning is not lost, then act on the tool line. */
- if (act > reply) {
-  char pre[1024];
-  size_t pl = (size_t)(act - reply);
-  while (pl && (reply[pl-1] == '\n' || reply[pl-1] == ' ' || reply[pl-1] == '\t')) pl--;
-  if (pl) {
-   if (pl >= sizeof pre) pl = sizeof pre - 1;
-   memcpy(pre, reply, pl); pre[pl] = '\0';
-   ai_pane_multiline(f, pre, AI_ROLE_ASSISTANT, 0);
-  }
- }
+/**
+ * ai_agent_end_with_answer - Show the reply as the agent's answer: the run is over.
+ * @f: the window the pane belongs to; @reply: the whole reply; @kind: whether
+ * the model said DONE or simply wrote no marker.
+ *
+ * The whole reply is shown, not its first line: for a question task the
+ * answer follows the DONE marker, and dropping it once left the user with
+ * "DONE" and no answer.  An empty reply reads "[agent] done".
+ * Return: 1, the loop's "finished".
+ */
+static int ai_agent_end_with_answer(FENSTER *f, const char *reply, enum ai_agent_marker kind)
+{
+ if (reply[0]) ai_pane_multiline(f, reply, AI_ROLE_ASSISTANT, 0);
+ else ai_pane_multiline(f, AI_AGENT_DONE_LINE, AI_ROLE_ASSISTANT, 0);
+ if (kind == AI_MARK_DONE) wpe_ai_trace("agent done");
+ else wpe_ai_trace("agent answer (no marker)");
+ return 1;
+}
+
+/**
+ * ai_copy_bounded - Copy @len bytes into a buffer, cut to its room, NUL-terminated.
+ * @dst/@cap: the buffer and its size; @src/@len: the bytes.
+ */
+static void ai_copy_bounded(char *dst, size_t cap, const char *src, size_t len)
+{
+ if (len >= cap) len = cap - 1;
+ memcpy(dst, src, len);
+ dst[len] = '\0';
+}
+
+/**
+ * ai_agent_show_preamble - Show the reasoning the model wrote before its tool line.
+ * @f: the window the pane belongs to; @reply: the reply; @act: where the
+ * tool line starts in it.
+ *
+ * The thought is shown as the agent's own words, so the user reads why the
+ * tool is being called and not only that it is; blank lines before the tool
+ * line are not shown, and a thought longer than the room is cut.
+ */
+static void ai_agent_show_preamble(FENSTER *f, const char *reply, const char *act)
+{
+ char pre[AI_AGENT_PREAMBLE_MAX];
+ size_t pl = (size_t)(act - reply);
+ while (pl && (reply[pl-1] == '\n' || reply[pl-1] == ' ' || reply[pl-1] == '\t')) pl--;
+ if (!pl) return;
+ ai_copy_bounded(pre, sizeof pre, reply, pl);
+ ai_pane_multiline(f, pre, AI_ROLE_ASSISTANT, 0);
+}
+
+/**
+ * ai_agent_show_tool - Record the tool the model asked for: pane and trace.
+ * @f: the window the pane belongs to; @tool/@arg: the request.
+ *
+ * Shown before any approval or run, so the pane carries the request even
+ * when the user then denies it or the tool is unknown.
+ */
+static void ai_agent_show_tool(FENSTER *f, const char *tool, const char *arg)
+{
+ char line[AI_AGENT_PANE_LINE_MAX];
+ snprintf(line, sizeof line, "[agent] %s %s", tool, arg);
+ ai_pane(f, line, AI_ROLE_MACHINERY, 0);
+ wpe_ai_trace("agent tool=%s arg=%s", tool, arg);
+}
+
+/**
+ * ai_agent_tool_write_file - Put the body of a write_file request through the write review.
+ * @op: the running agent task; @path: the file; @firstnl: the newline that
+ * ends the TOOL line, NULL when the request has no body.
+ * Return: the malloc'd result the model reads.
+ */
+static char *ai_agent_tool_write_file(ai_async_op *op, const char *path, const char *firstnl)
+{
+ char *content = NULL, *result;
+ if (firstnl) content = ai_tool_body_content(firstnl);   /* final newline included */
+ result = ai_agent_commit_write(op, AI_TOOL_WRITE_FILE, path, content);
+ free(content);
+ return result;
+}
+
+/**
+ * ai_agent_apply_patch - Apply the model's SEARCH/REPLACE blocks to a file, through the write review.
+ * @op: the running agent task; @path: the file; @firstnl: the newline that
+ * ends the TOOL line, NULL when the request has no body.
+ *
+ * A precise edit: the blocks are applied to the file as it is now and the
+ * result goes through the same review as write_file, so the user sees a diff
+ * of only what changed.  A missing file, a missing body or an unmatched
+ * SEARCH text is a TOOL ERROR the model reads and retries from, so a wrong
+ * guess at the file's text never rewrites the wrong place.
+ * Return: the malloc'd result the model reads.
+ */
+static char *ai_agent_apply_patch(ai_async_op *op, const char *path, const char *firstnl)
+{
+ char *old = ai_slurp_file(path);
+ char *newc = NULL, *result, perr[AI_PATCH_ERR_MAX];
+ if (!old) return strdup(AI_PATCH_NO_FILE_RESULT);
+ if (!firstnl) result = strdup(AI_PATCH_NO_BLOCKS_RESULT);
+ else if (!ai_apply_search_replace(old, firstnl + 1, &newc, perr, sizeof perr)) result = ai_tool_error_alloc(perr);
+ else result = ai_agent_commit_write(op, AI_TOOL_APPLY_PATCH, path, newc);
+ free(old);
+ free(newc);
+ return result;
+}
+
+/**
+ * ai_agent_tool_plan - Lay out the model's checklist and tell both sides where it is.
+ * @f: the window the pane belongs to; @firstnl: the newline that ends the
+ * TOOL line, NULL when the request has no body (an empty plan).
+ * Return: the malloc'd result that tells the model how to report each step.
+ */
+static char *ai_agent_tool_plan(FENSTER *f, const char *firstnl)
+{
+ if (firstnl) ai_todo_load(f, firstnl + 1);
+ else ai_todo_load(f, "");
+ ai_pane(f, AI_PLAN_LAID_OUT_LINE, AI_ROLE_MACHINERY, 0);
+ return strdup(AI_PLAN_LAID_OUT_RESULT);
+}
+
+/**
+ * ai_agent_tool_step_done - Tick a step of the checklist.
+ * @f: the window the pane belongs to; @arg: the step's words.
+ * Return: the malloc'd result the model reads.
+ */
+static char *ai_agent_tool_step_done(FENSTER *f, const char *arg)
+{
+ ai_plan_mark_done(f, arg);
+ return strdup(AI_PLAN_STEP_RESULT);
+}
+
+/**
+ * ai_agent_run_tool - Run the tool the model named, under the dial.
+ * @op: the running agent task; @tool/@arg: the request; @firstnl: the
+ * newline that ends the TOOL line, NULL when the request has no body.
+ *
+ * One place lists every tool the built-in agent has, so a reader finds in a
+ * glance what the model may do and which of it asks: the read-only tools and
+ * the checklist run unasked, the command and the web tools are gated as
+ * commands, the two writes as writes.
+ * Return: the malloc'd result the model reads, NULL out of memory.
+ */
+static char *ai_agent_run_tool(ai_async_op *op, const char *tool, const char *arg,
+                               const char *firstnl)
+{
+ FENSTER *f = op->f;
+ if (ai_tool_is_shell_readonly(tool)) return ai_tool_run_readonly(tool, arg);
+ if (!strcmp(tool, AI_TOOL_READ_FILE)) return ai_read_file_bounded(arg);
+ if (!strcmp(tool, AI_TOOL_RUN_COMMAND)) return ai_agent_tool_run_command(f, arg);
+ if (!strcmp(tool, AI_TOOL_WEB_FETCH)) return ai_agent_tool_web_fetch(f, arg);
+ if (!strcmp(tool, AI_TOOL_WEB_SEARCH)) return ai_agent_tool_web_search(f, arg);
+ if (!strcmp(tool, AI_TOOL_WRITE_FILE)) return ai_agent_tool_write_file(op, arg, firstnl);
+ if (!strcmp(tool, AI_TOOL_APPLY_PATCH)) return ai_agent_apply_patch(op, arg, firstnl);
+ if (!strcmp(tool, AI_TOOL_PLAN)) return ai_agent_tool_plan(f, firstnl);
+ if (!strcmp(tool, AI_TOOL_STEP_DONE)) return ai_agent_tool_step_done(f, arg);
+ return strdup(AI_TOOL_UNKNOWN_RESULT);
+}
+
+/**
+ * ai_agent_feed_result - Hand a tool's result to the model as the next turn's input.
+ * @op: the running agent task; @result: the malloc'd result, taken over.
+ *
+ * An empty result becomes an explicit note, so the model learns that
+ * nothing matched instead of reading a broken tool and stalling.
+ */
+static void ai_agent_feed_result(ai_async_op *op, char *result)
+{
+ size_t n;
+ char *tr;
+ result = ai_tool_result_nonempty(result);
+ n = strlen(result) + sizeof AI_TOOL_RESULT_HEAD;
+ tr = malloc(n);
+ if (tr) snprintf(tr, n, AI_TOOL_RESULT_HEAD "%s", result);
+ if (tr) ai_ml_add(&op->ml, "user", tr);
+ free(tr);
+ free(result);
+}
+
+/**
+ * ai_agent_process - One agent turn: read the reply, run its tool, feed the result back.
+ * @op: the running agent task; @reply: the model's reply, writable.
+ *
+ * The reply is the agent's answer when it carries no tool line; otherwise
+ * the reasoning before the tool line is shown, the tool is run under the
+ * dial and its result becomes the next turn.  Runs from the conversation
+ * driver with the spinner paused, so an approval question can wait for keys.
+ * Return: 1 when the agent is done, 0 to keep going.
+ */
+static int ai_agent_process(ai_async_op *op, char *reply)
+{
+ FENSTER *f = op->f;
+ enum ai_agent_marker kind;
+ char *act, *firstnl, *tool, *arg, *result, action[AI_TOOL_LINE_MAX];
+ size_t len;
+
+ if (!ai_window_alive(op->cn, f)) return 1;
+ act = ai_agent_find_marker(reply, &kind);
+ if (kind != AI_MARK_TOOL) return ai_agent_end_with_answer(f, reply, kind);
+ if (act > reply) ai_agent_show_preamble(f, reply, act);
  firstnl = strchr(act, '\n');
- { size_t l = firstnl ? (size_t)(firstnl - act) : strlen(act);
-   if (l >= sizeof action) l = sizeof action - 1;
-   memcpy(action, act, l); action[l] = '\0'; }
- {
-  char *tool, *arg, *result = NULL, paneln[640];
-  ai_split_tool(action, &tool, &arg);   /* shared parse: tolerates "read_file:" */
-  snprintf(paneln, sizeof paneln, "[agent] %s %s", tool, arg);
-  ai_pane(f, paneln, AI_ROLE_MACHINERY, 0);
-  wpe_ai_trace("agent tool=%s arg=%s", tool, arg);
-
-  if (ai_tool_is_shell_readonly(tool)) {
-   result = ai_tool_run_readonly(tool, arg);   /* the argument is one shell word */
-  } else if (!strcmp(tool, "read_file")) {
-   result = ai_read_file_bounded(arg);
-  } else if (!strcmp(tool, AI_TOOL_RUN_COMMAND)) {
-   result = ai_agent_tool_run_command(f, arg);   /* gated, announced, bounded */
-  } else if (!strcmp(tool, AI_TOOL_WEB_FETCH)) {
-   result = ai_agent_tool_web_fetch(f, arg);
-  } else if (!strcmp(tool, AI_TOOL_WEB_SEARCH)) {
-   result = ai_agent_tool_web_search(f, arg);
-  } else if (!strcmp(tool, AI_TOOL_WRITE_FILE)) {
-   char *content = NULL;
-   if (firstnl) content = ai_tool_body_content(firstnl);   /* final newline included */
-   result = ai_agent_commit_write(op, AI_TOOL_WRITE_FILE, arg, content);   /* shared review + write */
-   free(content);
-  } else if (!strcmp(tool, AI_TOOL_APPLY_PATCH)) {
-   /* Precise edit: apply SEARCH/REPLACE blocks against the current file, then
-      write the result through the same review as write_file.  An unmatched
-      SEARCH becomes a TOOL ERROR so the model retries with better context. */
-   char *old = ai_slurp_file(arg);
-   char *newc = NULL, perr[300];
-   if (!old) {
-    result = strdup("TOOL ERROR: file not found (use write_file to create it)");
-   } else if (!firstnl) {
-    result = strdup("TOOL ERROR: apply_patch needs SEARCH/REPLACE blocks");
-   } else if (!ai_apply_search_replace(old, firstnl + 1, &newc, perr, sizeof perr)) {
-    char *r = malloc(strlen(perr) + 16);
-    if (r) { snprintf(r, strlen(perr) + 16, "TOOL ERROR: %s", perr); result = r; }
-   } else {
-    result = ai_agent_commit_write(op, AI_TOOL_APPLY_PATCH, arg, newc);
-   }
-   free(old);
-   free(newc);
-  } else if (!strcmp(tool, "plan")) {
-   ai_todo_load(f, firstnl ? firstnl + 1 : "");
-   ai_pane(f, "[plan] laid out - the checklist is in the Messages window "
-              "(updates as steps finish)", AI_ROLE_MACHINERY, 0);
-   result = strdup("(plan shown -- now do the steps, one tool per turn, "
-                   "reporting each with TOOL step_done <task>)");
-  } else if (!strcmp(tool, "step_done")) {
-   ai_plan_mark_done(f, arg);
-   result = strdup("(recorded)");
-  } else {
-   result = strdup("(unknown tool)");
-  }
-  result = ai_tool_result_nonempty(result);   /* empty output -> explicit note */
-  { size_t n = strlen(result) + 32; char *tr = malloc(n);
-    if (tr) { snprintf(tr, n, "TOOL RESULT:\n%s", result); ai_ml_add(&op->ml, "user", tr); free(tr); } }
-  free(result);
- }
+ if (firstnl) len = (size_t)(firstnl - act);
+ else len = strlen(act);
+ ai_copy_bounded(action, sizeof action, act, len);
+ ai_split_tool(action, &tool, &arg);   /* shared parse: tolerates "read_file:" */
+ ai_agent_show_tool(f, tool, arg);
+ result = ai_agent_run_tool(op, tool, arg, firstnl);
+ ai_agent_feed_result(op, result);
  return 0;                                      /* keep going */
 }
 
@@ -8843,17 +9578,9 @@ static void ai_agent_finish(ai_async_op *op)
  ai_agent_offer_follow_up(op);
 }
 
-/* Launch the autonomous agent on an already-formed `goal` (no prompt).  `extra`
-   is an optional extra system message appended after the agent's identity (NULL
-   for none) -- the build-fix loop uses it to state the exact build command.
-   Shared by Alt-G g (prompted) and e_ai_fix_build. */
-static int ai_agent_launch(FENSTER *f, const char *goal, const char *extra)
-{
- char err[320];
- ECNT *cn = f->ed;
- ai_async_op *op;
- int save_id = -1, wi;
- const char *sys =
+/* The agent's standing instructions: its tools, one action per turn, and how
+   a run ends.  The tool names here are the ones ai_agent_run_tool answers to. */
+static const char ai_agent_system_prompt[] =
    "You are an autonomous coding agent working in the current directory of the "
    "xwpe editor. Reply with EXACTLY ONE action per turn as a single first line:\n"
    "  TOOL plan          (for a multi-step task: follow with one task per line, "
@@ -8887,54 +9614,140 @@ static int ai_agent_launch(FENSTER *f, const char *goal, const char *extra)
    "short summary of what you changed. Output nothing else; wait for each tool "
    "result before continuing.";
 
+/* Room for a preflight reason and for the pane's task line; how many turns
+   of the workspace session a run carries forward. */
+#define AI_AGENT_ERR_MAX       320
+#define AI_AGENT_TASK_LINE_MAX 1100
+#define AI_AGENT_PRIOR_MAX     12
+/* The pane line when no model is set and the check gave no words. */
+#define AI_AGENT_NO_MODEL_LINE "no model set"
+
+/**
+ * ai_agent_ready - Can a run start: is the backend reachable and a model set?
+ * @f: the window the pane belongs to.
+ *
+ * The reason is shown in the pane before anything is sent, so the user
+ * fixes the setting instead of watching a run that cannot begin.
+ * Return: 1 when the run may start.
+ */
+static int ai_agent_ready(FENSTER *f)
+{
+ char err[AI_AGENT_ERR_MAX];
  err[0] = '\0';
- if (wpe_ai_preflight(e_ai_backend, err, sizeof err)) { ai_pane(f, err, AI_ROLE_ERROR, 1); return 0; }
- err[0] = '\0';
- if (wpe_ai_ensure_model(err, sizeof err)) {
-  ai_pane(f, err[0] ? err : "no model set", AI_ROLE_ERROR, 1);
+ if (wpe_ai_preflight(e_ai_backend, err, sizeof err)) {
+  ai_pane(f, err, AI_ROLE_ERROR, 1);
   return 0;
  }
+ err[0] = '\0';
+ if (!wpe_ai_ensure_model(err, sizeof err)) return 1;
+ if (err[0]) ai_pane(f, err, AI_ROLE_ERROR, 1);
+ else ai_pane(f, AI_AGENT_NO_MODEL_LINE, AI_ROLE_ERROR, 1);
+ return 0;
+}
 
- { char st[AI_HEADER_MAX]; ai_header_text_shown(st, sizeof st); ai_pane(f, st, AI_ROLE_MACHINERY, 0); }
- { char line[1100]; snprintf(line, sizeof line, "[agent] task: %s", goal); ai_pane(f, line, AI_ROLE_MACHINERY, 1); }
+/**
+ * ai_agent_announce_task - Open the run in the pane: the header, then the task.
+ * @f: the window the pane belongs to; @goal: the task as the user typed it.
+ *
+ * The header names the backend and model the run uses and the task line
+ * repeats the goal, so the transcript reads on its own later; the trace
+ * records the task and the dial the run started under.
+ */
+static void ai_agent_announce_task(FENSTER *f, const char *goal)
+{
+ char st[AI_HEADER_MAX], line[AI_AGENT_TASK_LINE_MAX];
+ ai_header_text_shown(st, sizeof st);
+ ai_pane(f, st, AI_ROLE_MACHINERY, 0);
+ snprintf(line, sizeof line, "[agent] task: %s", goal);
+ ai_pane(f, line, AI_ROLE_MACHINERY, 1);
  wpe_ai_trace("agent task=%s", goal);
-
  wpe_ai_trace("agent policy=%s", wpe_ai_policy_name(e_ai_policy));
- wpe_ai_session_load(f);
- /* claudecli MUST stay text-only for the agent: our agent drives its OWN tool
-    protocol -- the model replies "TOOL read_file x" etc. and WE run each tool
-    under the permission dial.  The auto/edits dial used to let the CLI use its
-    own Write/Edit/Bash tools (--dangerously-skip-permissions / acceptEdits),
-    which bypasses that protocol entirely (the model would edit files itself and
-    reply with a summary, not the TOOL lines the agent parses).  Keep it text-
-    only; the xwpe policy still gates whether WE run each parsed tool
-    (ai_agent_approve), independent of the CLI's own permission mode. */
- e_ai_cli_mode = WPE_AI_CLI_TEXTONLY;
+}
 
- for (wi = 1; wi <= cn->mxedt; wi++)
-  if (cn->f[wi] == f) { save_id = cn->edt[wi]; break; }
- op = calloc(1, sizeof *op);
- if (!op) return 0;
- op->f = f; op->cn = cn; op->save_id = save_id;
+/**
+ * ai_agent_op_new - The task record for a run on window @f.
+ *
+ * Remembers the window's desktop slot, so the run can find its window again
+ * after the user switches windows, and names the loop's two callbacks and
+ * its turn limit.
+ * Return: the calloc'd task, NULL out of memory.
+ */
+static ai_async_op *ai_agent_op_new(FENSTER *f)
+{
+ ai_async_op *op = calloc(1, sizeof *op);
+ int wi;
+ if (!op) return NULL;
+ op->f = f;
+ op->cn = f->ed;
+ wi = ai_window_slot(f, f);
+ if (wi) op->save_id = f->ed->edt[wi];
+ else op->save_id = -1;
  op->kind = AI_KIND_AGENT;
  op->max_iter = AI_AGENT_MAX_ITERS;
  op->process = ai_agent_process;
  op->finish = ai_agent_finish;
- /* The prompt's order: the tool list, who answers, the open files, then the
-    project instructions (which end by saying the tool list stands).  The pane
-    follows the same order: the task line, the project instructions, then the
-    checkpoint a raised dial calls for -- never unattended without one. */
- ai_ml_add(&op->ml, "system", sys);
+ return op;
+}
+
+/**
+ * ai_agent_add_prior_turns - Carry the workspace session's last turns into the run.
+ * @m: the run's message list.
+ *
+ * A follow-up typed after a run ("now do the same for the tests") reads as
+ * one conversation: the model sees what it was asked and answered before.
+ */
+static void ai_agent_add_prior_turns(struct ai_mlist *m)
+{
+ wpe_ai_msg prior[AI_AGENT_PRIOR_MAX];
+ int np = wpe_ai_session_messages(prior, AI_AGENT_PRIOR_MAX), i;
+ for (i = 0; i < np; i++) ai_ml_add(m, prior[i].role, prior[i].content);
+}
+
+/**
+ * ai_agent_compose - Fill the run's message list and take its checkpoint.
+ * @op: the task; @goal: the task's words; @extra: an optional system message
+ * after the identity (the build-fix loop states its build command), NULL for none.
+ *
+ * The prompt's order: the tool list, who answers, the open files, then the
+ * project instructions (which end by saying the tool list stands).  The pane
+ * follows the same order: the task line, the project instructions, then the
+ * checkpoint a raised dial calls for -- never unattended without one.
+ */
+static void ai_agent_compose(ai_async_op *op, const char *goal, const char *extra)
+{
+ ai_ml_add(&op->ml, "system", ai_agent_system_prompt);
  ai_ml_add_identity(&op->ml);
- ai_ml_add_open_files(&op->ml, f);
- ai_ml_add_project_memory(&op->ml, f);
+ ai_ml_add_open_files(&op->ml, op->f);
+ ai_ml_add_project_memory(&op->ml, op->f);
  ai_agent_ensure_checkpoint(op);
  if (extra && extra[0]) ai_ml_add(&op->ml, "system", extra);
  ai_ml_add_diagnostics(&op->ml);
- { wpe_ai_msg prior[12]; int np = wpe_ai_session_messages(prior, 12), i;
-   for (i = 0; i < np; i++) ai_ml_add(&op->ml, prior[i].role, prior[i].content); }
+ ai_agent_add_prior_turns(&op->ml);
  ai_ml_add(&op->ml, "user", goal);
  wpe_ai_session_append("user", goal);
+}
+
+/**
+ * ai_agent_launch - Start the built-in agent on an already-formed goal.
+ * @f: the window the run belongs to; @goal: the task; @extra: an optional
+ * system message after the identity, NULL for none.
+ *
+ * Shared by Alt-G g (prompted) and Build & fix, so both runs open, prompt
+ * and checkpoint the same way.  The external CLI is held to text only: the
+ * agent drives its own tool protocol and runs each tool under the dial, so
+ * the CLI's own tools, which would bypass that review, are never enabled.
+ * Return: 0 always (the run goes on in the background).
+ */
+static int ai_agent_launch(FENSTER *f, const char *goal, const char *extra)
+{
+ ai_async_op *op;
+ if (!ai_agent_ready(f)) return 0;
+ ai_agent_announce_task(f, goal);
+ wpe_ai_session_load(f);
+ e_ai_cli_mode = WPE_AI_CLI_TEXTONLY;
+ op = ai_agent_op_new(f);
+ if (!op) return 0;
+ ai_agent_compose(op, goal, extra);
  ai_conv_start(op, "[agent] working");
  return 0;
 }
