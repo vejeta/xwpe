@@ -254,17 +254,21 @@ Changes
   as off there.  The switch is also a "Web access" box on the first row
   of Options > AI (Alt-W), beside "Enable AI assistant"; the box shows
   the state in force and Ok saves it, but a one-session XWPE_AI_WEB is
-  never turned into a saved setting.  A backend that reaches the web
-  itself is told on its command line, where before it was handed the web
-  whatever the switch said: the Claude CLI gets WebSearch and WebFetch
-  pre-approved while the web is on and denied while it is off, since it
-  cannot be asked anything once running; the hosted claude-code engine
-  is denied them while the web is off and asks the editor per tool while
-  it is on.  Its auto dial is the exception, telling that CLI to bypass
-  its own permission checks and asking the editor nothing, so leave auto
-  if the web must be demonstrably shut.  A hosted web approval now shows
-  the URL or the query it is about, instead of just the tool's name.
-  XWPE_AI_WEB=0|1 overrides the switch for one session.
+  never turned into a saved setting.  A backend that browses for itself
+  is reached two ways, where before it was handed the web whatever the
+  switch said: the deny list on the command line the editor builds, and
+  the per-tool question that CLI sends back.  The Claude CLI gets the
+  list only, since it cannot be asked anything once running; the hosted
+  claude-code engine gets both, so with the web on a fetch still raises
+  a box at the ask and edits dials.  The auto dial sends no question, so
+  there the list is all that holds; move off that dial if the web must
+  be demonstrably shut.  A hosted engine named in Options runs through
+  the shell as written and takes no flags from the editor, so the switch
+  holds there only if that CLI asks; the pane says so when such a
+  session opens at the auto dial with the web off.  A hosted web
+  approval now shows the URL or the query it is about, instead of just
+  the tool's name.  XWPE_AI_WEB=0|1 overrides the switch for one
+  session.
   Tests: tests/test_ai_chat_web.py, tests/test_ai_options_web.py.
 
 * The waiting line of an Edit, a Complete or an agent run ends with the

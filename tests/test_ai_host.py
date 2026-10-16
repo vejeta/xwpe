@@ -16,7 +16,7 @@ import time
 import subprocess
 import textwrap
 import pytest
-from wpe_driver import WpeSession, ALT, WPE_BIN
+from wpe_driver import WpeSession, ALT, WPE_BIN, pane_text_with_history
 
 MARK = "HOSTWROTETHIS"
 
@@ -208,3 +208,50 @@ def test_host_second_turn_continues_same_session(tmp_path):
     assert txt.count("host start") == 1, "a new session was spawned per turn:\n" + txt
     assert txt.count("host send") == 2 and txt.count("host result") == 2, \
         "the second turn did not continue the session:\n" + txt
+
+
+def _session_opening_lines(tmp_path, policy, web):
+    """Open one hosted session with a command of the user's own and return what
+    the pane said.  @web is XWPE_AI_WEB, or None to leave the switch
+    unanswered."""
+    mock = tmp_path / "mock_host.py"
+    mock.write_text(MOCK)
+    env = {"XWPE_AI_ENABLE": "1", "XWPE_AI_AGENT_ENGINE": "claude-code",
+           "XWPE_AI_HOST_CMD": "python3 %s" % mock,
+           "XWPE_AI_POLICY": policy,
+           "XWPE_AI_TRACE": str(tmp_path / "h.trace")}
+    if web is not None:
+        env["XWPE_AI_WEB"] = web
+    with WpeSession(str(tmp_path), "int main(void){return 0;}\n",
+                    env_extra=env, filename="t.c") as s:
+        s._drain(0.5)
+        s.key(ALT.AI); s.key("g"); s._drain(0.5)
+        s.key("hello"); s.key("\r", delay=1.5)
+        s._drain(1.5)
+        # The note is written when the session opens, so the turn's own lines
+        # push it off the pane: read the transcript, not the visible rows.
+        return "\n".join(pane_text_with_history(s, ["cannot hold it back"]))
+
+
+# @scenario SC-ai-agent-51
+def test_host_says_when_the_web_switch_cannot_hold_a_command_of_your_own(tmp_path):
+    """A hosted engine named in Options runs through the shell as written, so
+    the editor adds no deny list to it, and the auto dial sends it no per-tool
+    question either.  The switch cannot hold it, and the user is told when the
+    session opens rather than by a search nobody expected."""
+    disp = _session_opening_lines(tmp_path, "auto", None)
+    assert "cannot hold it back" in disp, \
+        "no word that the switch does not reach this engine:\n" + disp
+
+
+# @scenario SC-ai-agent-51
+def test_host_says_nothing_about_the_web_when_the_switch_can_hold(tmp_path):
+    """The note is for the one case that needs it.  At a dial that asks per
+    tool the switch does hold, so saying otherwise would be noise and would
+    teach the user to ignore the line that matters."""
+    asks = _session_opening_lines(tmp_path, "edits", None)
+    assert "cannot hold it back" not in asks, \
+        "the note appeared at a dial that asks per tool:\n" + asks
+    allowed = _session_opening_lines(tmp_path, "auto", "1")
+    assert "cannot hold it back" not in allowed, \
+        "the note appeared with the web switched on:\n" + allowed

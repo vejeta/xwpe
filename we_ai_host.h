@@ -39,6 +39,13 @@ typedef struct {
 wpe_host   *wpe_host_start(const char *model, const char *resume, int policy,
                            char *err, size_t errsz);
 
+/* The CLI the next spawn will host: XWPE_AI_HOST_CMD, else the persisted
+   AIHostCommand, else NULL for the built-in `claude` argv.  A command of the
+   user's own runs through the shell as written, so the editor adds no flags to
+   it; a caller that needs to know whether it can constrain the CLI asks here
+   rather than reading the setting, which the environment may be shadowing. */
+const char *wpe_host_command(void);
+
 /* The child's stdout fd, to register with wpe_fd_add. */
 int         wpe_host_fd(wpe_host *h);
 

@@ -110,6 +110,26 @@ static int host_is_edit_tool(const char *tool)
 
 /* ------------------------------------------------------------------ spawn */
 
+/**
+ * wpe_host_command - The agent CLI to host, as the spawn will resolve it.
+ *
+ * XWPE_AI_HOST_CMD (a test, a one-off) wins over the persisted AIHostCommand
+ * from Options; NULL means the built-in `claude` argv the editor builds
+ * itself.  A configured command runs through the shell, so `aider`,
+ * `opencode` and the rest need no code change, only a different setting --
+ * and, because the editor cannot add flags to a line someone else wrote, the
+ * caller has to know which of the two it is about to run.  One resolver, so a
+ * caller cannot answer that differently from the spawn.
+ * Return: the command, or NULL for the built-in one.
+ */
+const char *wpe_host_command(void)
+{
+ const char *cmd = getenv("XWPE_AI_HOST_CMD");
+ if (cmd && *cmd) return cmd;
+ if (e_ai_host_command && *e_ai_host_command) return e_ai_host_command;
+ return NULL;
+}
+
 wpe_host *wpe_host_start(const char *model, const char *resume, int policy,
                          char *err, size_t errsz)
 {
@@ -117,11 +137,8 @@ wpe_host *wpe_host_start(const char *model, const char *resume, int policy,
  pid_t pid;
  wpe_host *h;
  /* Which agent CLI to host: XWPE_AI_HOST_CMD (tests / one-off) wins, else the
-    persisted AIHostCommand (Options), else NULL -> the built-in `claude` argv.
-    A configured command runs via the shell, so `aider`/`opencode`/... need no
-    code change -- just a different AIHostCommand. */
- const char *hostcmd = getenv("XWPE_AI_HOST_CMD");
- if (!hostcmd || !*hostcmd) hostcmd = e_ai_host_command;
+    persisted AIHostCommand (Options), else NULL -> the built-in `claude` argv. */
+ const char *hostcmd = wpe_host_command();
 
  if (err && errsz) err[0] = '\0';
  /* The "text" adapter renders a plain prompt-in/text-out CLI, so it needs a

@@ -731,6 +731,20 @@
    "status": "new"
   },
   {
+   "id": "SC-ai-agent-51",
+   "requirement": "The hosted engine",
+   "layer": "ncurses",
+   "test": "tests/test_ai_host.py::test_host_says_when_the_web_switch_cannot_hold_a_command_of_your_own",
+   "status": "new"
+  },
+  {
+   "id": "SC-ai-agent-51",
+   "requirement": "The hosted engine",
+   "layer": "ncurses",
+   "test": "tests/test_ai_host.py::test_host_says_nothing_about_the_web_when_the_switch_can_hold",
+   "status": "new"
+  },
+  {
    "id": "SC-ai-agent-52",
    "requirement": "The hosted engine",
    "layer": "ncurses",

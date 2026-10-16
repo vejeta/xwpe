@@ -201,23 +201,32 @@ shows the state in force, so it tells you what the assistant will do; Ok saves
 what the box says, except that a one-session `XWPE_AI_WEB` is not turned into
 a saved setting by opening the dialog, and clearing a box you were never asked
 about leaves the question still to be asked. With the web on, every search and page goes through the
-permission dial like the agent's (`APPROVE?  <query>` under *ask* and *edits*,
-unasked under *auto*), the transcript shows the query, `[agent] search engine:
+permission dial like the agent's (`APPROVE?  <query>` for a search and
+`APPROVE?  <url>` for a page under *ask* and *edits*, unasked under *auto*;
+the hosted engine's own request reads `APPROVE?  WebFetch <url>`), the
+transcript shows the query, `[agent] search engine:
 <host>` and every URL read, the answer ends with a `sources:` line, and until
 the switch says on the chat offers no web tool, names them as the Agent's, and
 the agent's web tools refuse with a line naming the switch. The chat can ask
 its notice because a question is waiting for an answer; an agent task runs on
 its own, so there an unanswered switch counts as off rather than prompting
-mid-task. A backend that reaches the web itself is told on its command line,
-since the editor's gate only covers the tools it runs. The Claude CLI is
-launched with `WebSearch` and `WebFetch` pre-approved while the web is on and
-denied while it is off, because `claude -p` cannot be asked anything once it
-runs. The hosted `claude-code` engine is denied the two tools while the web is
-off and simply not denied them while it is on, since there the editor is asked
-per tool and the dial decides. The *auto* dial is the exception: it tells that
-CLI to bypass its own permission checks and asks the editor nothing, so the
-deny list is all that holds and the editor cannot promise the CLI honours it.
-Leave *auto* if you need the web demonstrably shut.
+mid-task. A backend that browses for itself is reached two ways, because the
+editor does not dispatch its tools: a deny list on the command line the editor
+builds, and the per-tool question that CLI sends back. The Claude CLI backend
+gets the list only, since `claude -p` cannot be asked anything once it runs:
+`WebSearch` and `WebFetch` are pre-approved while the web is on and denied
+while it is off. The hosted `claude-code` engine (`AIAgentEngine : claude-code`,
+Alt-G g) gets both: the list while the web is off, and the question at the
+*ask* and *edits* dials, so with the web on you still see a box for a fetch.
+The *auto* dial sends no question, so there the list is all that holds and the
+editor cannot promise the CLI honours it. Move off the *auto* dial if you need
+the web demonstrably shut.
+
+One case the switch cannot reach: a hosted engine named in Options
+(`AIHostCommand`, for instance `aider`) is run through the shell as you wrote
+it, so the editor adds no flags to it. The switch then holds only through the
+per-tool question, which arrives only if that CLI asks. At the *auto* dial it
+usually does not, and the pane says so when the session opens.
 A tool line the chat
 cannot run (a web tool with the switch off, an invented name) is answered, not
 dropped: the pane says which tool was not run and why, and the answer follows.
@@ -360,7 +369,7 @@ fixed setup:
 | `XWPE_AI_MODEL` | model name/alias |
 | `XWPE_AI_KEY` | API key for the OpenAI/Claude HTTP backends |
 | `XWPE_AI_POLICY` | `ask` / `edits` / `auto` |
-| `XWPE_AI_WEB` | `1` / `0`: web access for the chat and the agent's web tools, for one session (`AIWeb`, asked once at first need, off by default) |
+| `XWPE_AI_WEB` | `1` / `0`: web access for one session (`AIWeb`, asked once at first need, off by default). Governs the chat's and the agent's web tools, and what the browsing backends are launched with (see "Web access" above) |
 | `XWPE_AI_TOOL_TIMEOUT` | seconds a tool command may run before it is ended (`AIToolTimeout`, default 60) |
 | `XWPE_AI_PROJECT_INSTRUCTIONS` | where the project instructions file is folded in: `agent` (default), `all` or `off` (`AIProjectInstructions`) |
 | `XWPE_AI_PROJECT_INSTRUCTIONS_MAX` | bytes of the project instructions file the prompt carries (`AIProjectInstructionsMax`, default 4095, at most 65536) |

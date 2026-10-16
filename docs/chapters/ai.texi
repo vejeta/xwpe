@@ -195,7 +195,9 @@ just because the dialog was opened.  Clearing a box you were never asked about
 changes nothing, so the notice still gets its one chance.  With the
 web on, each search and each page goes through the permission dial exactly as
 the agent's web calls do (@code{ask} and @code{edits} ask @samp{APPROVE?
-<query>}, @code{auto} runs it), the transcript shows the query, the engine
+<query>} for a search and @samp{APPROVE?  <url>} for a page, @code{auto} runs
+it; the hosted engine's own request reads @samp{APPROVE?  WebFetch <url>}),
+the transcript shows the query, the engine
 (@samp{[agent] search engine: <host>}) and every URL read, the answer ends
 with a @samp{sources:} line listing them, and the pane header gains
 @samp{| web}.  Until the switch says on the chat's prompt offers no web tool
@@ -205,18 +207,24 @@ its notice because a question is waiting for an answer; an agent task runs on
 its own and at the @code{auto} dial nothing would ask, so an unanswered switch
 counts as off there rather than interrupting a running task.
 
-A backend that reaches the web itself is told on its command line, since the
-editor's own gate only covers the tools it runs.  The @code{claudecli} backend
-is launched with @code{WebSearch} and @code{WebFetch} pre-approved while the
-web is on and denied while it is off: it cannot be asked anything once it is
-running (@command{claude -p} has no prompt), so the switch has to be decided
-up front.  The hosted @code{claude-code} engine is denied the two tools while
-the web is off and simply not denied them while it is on, because there the
-editor is asked per tool and the dial decides; the @code{auto} dial is the
-exception, since it tells that CLI to bypass its own permission checks and
-asks the editor nothing, so the deny list is all that holds and the editor
-cannot promise the CLI honours it.  Leave @code{auto} if you need the web
-demonstrably shut.  A tool line the chat
+A backend that browses for itself is reached two ways, because the editor does
+not dispatch its tools: a deny list on the command line the editor builds, and
+the per-tool question that CLI sends back.  The @code{claudecli} backend gets
+the list only, since it cannot be asked anything once it is running
+(@command{claude -p} has no prompt): @code{WebSearch} and @code{WebFetch} are
+pre-approved while the web is on and denied while it is off.  The hosted
+@code{claude-code} engine gets both, the list while the web is off and the
+question at the @code{ask} and @code{edits} dials, so with the web on a fetch
+still raises a box.  The @code{auto} dial sends no question, so there the list
+is all that holds and the editor cannot promise the CLI honours it: move off
+that dial if you need the web demonstrably shut.
+
+One case the switch cannot reach.  A hosted engine named in Options
+(@code{AIHostCommand}, see @emph{The hosted engine}) is run through the shell
+exactly as you wrote it, so the editor adds no flags to it; the switch then
+holds only through the per-tool question, which arrives only if that CLI asks.
+At the @code{auto} dial it usually does not, and the pane says so when the
+session opens.  A tool line the chat
 cannot run
 -- a web tool with the switch off, a name the model invented -- is never left
 unanswered: the pane says which tool was not run and why, the model is told
@@ -470,11 +478,14 @@ the model, it applies to the next tool, and the first write that follows takes
 the checkpoint the launch would have taken, with the same @samp{[agent]
 checkpoint taken} line, so the review at the end covers a run that started
 under @code{ask}.  With the @code{claudecli} backend the built-in agent runs the
-CLI text-only: the model answers with the editor's own tool protocol and the
-CLI's tools stay off, apart from its two web tools when web access is on (see
-@ref{Web access}), so the dial governs the editor's tools exactly as with any
-other backend and the CLI's own @option{--permission-mode} is not involved (the
-hosted engine, below, is where the dial maps onto it).  Under @code{auto} the
+CLI text-only: the model answers with the editor's own tool protocol, and the
+CLI is told not to use its own writing or shell tools (@code{Write},
+@code{Edit}, @code{MultiEdit}, @code{NotebookEdit}, @code{Bash}), with its two
+web tools added to that list while web access is off and pre-approved while it
+is on (see @ref{Web access}).  Its read-only tools are left unnamed, so the
+dial governs the editor's tools exactly as with any other backend and the
+CLI's own @option{--permission-mode} is not involved (the hosted engine,
+below, is where the dial maps onto it).  Under @code{auto} the
 pane adds a tip pointing to that engine.
 
 @cindex AI, tool argument

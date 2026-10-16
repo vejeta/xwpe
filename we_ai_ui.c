@@ -10822,8 +10822,30 @@ enum host_tool_class {
    command, else "Claude Code" (the built-in default). */
 static const char *host_engine_name(void)
 {
- if (e_ai_host_command && *e_ai_host_command) return e_ai_host_command;
- return "Claude Code";
+ const char *cmd = wpe_host_command();   /* what the spawn will actually run */
+ return cmd ? cmd : "Claude Code";
+}
+
+/**
+ * host_note_web_unenforceable - Say when the web switch cannot reach this CLI.
+ * @f: the window the pane belongs to.
+ *
+ * The switch reaches a hosted CLI two ways: the deny list on the command line,
+ * which the editor can only build for the `claude` it launches itself, and the
+ * per-tool question, which only arrives if that CLI asks.  A CLI named in
+ * Options gets neither flag, and the `auto` dial is where a CLI is least
+ * likely to ask, so there the switch may not hold at all.  The user is told
+ * once, when the session opens, rather than finding out from a search they
+ * did not expect.
+ */
+static void host_note_web_unenforceable(FENSTER *f)
+{
+ if (!wpe_host_command()) return;                          /* our own claude: the flag holds */
+ if (!ai_web_is_off()) return;
+ if (e_ai_policy != WPE_AI_POLICY_AUTO) return;            /* it is asked per tool instead */
+ ai_pane(f, "[agent] web access is off, but this engine is a command of your own at the"
+            " auto dial: it is not asked per tool, so the switch cannot hold it back.",
+         AI_ROLE_MACHINERY, 1);
 }
 
 /**
@@ -11246,6 +11268,7 @@ int e_ai_host(FENSTER *f)
     snprintf(l, sizeof l, "[agent] engine: %.80s - session started (Esc at the prompt ends it)",
              host_engine_name());
     ai_pane(f, l, AI_ROLE_MACHINERY, 1); }
+  host_note_web_unenforceable(f);
   wpe_ai_trace("host start policy=%s adapter=%d", wpe_ai_policy_name(e_ai_policy), e_ai_host_adapter);
  }
  { char l[1100]; snprintf(l, sizeof l, "[agent] you: %.1000s", task); ai_pane(f, l, AI_ROLE_USER, 0); }
