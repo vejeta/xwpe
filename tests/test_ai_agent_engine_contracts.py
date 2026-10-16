@@ -334,12 +334,29 @@ def test_hook_and_git_checkpoint_spawns_are_their_own_session(tmp_path):
     assert not _command_facts_ok(gf, "/dev/null"), _command_facts_ok(gf, "/dev/null")
 
 
-def _host_run(tmp_path, policy, end_session=False):
+def _assert_web_denied(argv):
+    """The hosted CLI must be told not to use its web tools while the web
+    switch is not on.  Its permission callback cannot carry the switch at every
+    dial -- the auto dial asks the CLI to run unattended and routes no prompt
+    back to the editor -- so this list is the lever that holds everywhere.
+    @argv is one argument per element, as the stub recorded them."""
+    shown = " ".join(argv)
+    assert "--disallowedTools" in argv, \
+        "no web denial with the switch unanswered:\n" + shown
+    after = argv[argv.index("--disallowedTools") + 1:]
+    assert "WebSearch" in after and "WebFetch" in after, shown
+
+
+def _host_run(tmp_path, policy, end_session=False, web=None):
     bindir = _stub_claude_as_host(tmp_path)
     facts = str(tmp_path / "host.facts")
     env = {"XWPE_AI_ENABLE": "1", "XWPE_AI_AGENT_ENGINE": "claude-code",
            "XWPE_AI_POLICY": policy, "XWPE_AI_TRACE": str(tmp_path / "ai.trace"),
            "PATH": bindir + ":" + os.environ.get("PATH", ""), "HOST_FACTS": facts}
+    # No XWPE_AI_WEB unless a case asks for one, so the default run has the
+    # switch unanswered, which is what a user meets on a first launch.
+    if web is not None:
+        env["XWPE_AI_WEB"] = web
     with WpeSession(str(tmp_path), SEED, env_extra=env) as s:
         s._drain(0.5)
         s.key(ALT.AI); s.key("g"); s._drain(0.5)
@@ -384,6 +401,7 @@ def test_hosted_engine_argv_under_ask(tmp_path):
     assert "--permission-prompts" in argv and "host" in argv, argv
     assert "--permission-prompt-tool" in argv and "stdio" in argv, argv
     assert "--dangerously-skip-permissions" not in argv, argv
+    _assert_web_denied(argv)
 
 
 # @scenario SC-ai-agent-50
@@ -394,6 +412,7 @@ def test_hosted_engine_argv_under_edits(tmp_path):
     assert "--permission-mode" in argv and "acceptEdits" in argv, argv
     assert "--permission-prompts" in argv and "--permission-prompt-tool" in argv, argv
     assert "--dangerously-skip-permissions" not in argv
+    _assert_web_denied(argv)
 
 
 # @scenario SC-ai-agent-50
@@ -403,6 +422,21 @@ def test_hosted_engine_argv_under_auto(tmp_path):
     rows, argv, hf, _, _ = _host_run(tmp_path, "auto")
     assert "--dangerously-skip-permissions" in argv, argv
     assert "--permission-mode" not in argv, argv
+    # This dial routes no prompt back to the editor, so the deny list is the
+    # only place the web switch can speak here.
+    _assert_web_denied(argv)
+
+
+# @scenario SC-ai-agent-50
+def test_hosted_engine_argv_opens_the_web_once_the_switch_is_on(tmp_path):
+    """The other side of the switch: with it answered on, the hosted CLI is
+    launched with no web denial, and the dial alone decides whether the editor
+    is asked first."""
+    if not _host_build():
+        pytest.skip("built without --enable-ai-agent-host")
+    rows, argv, hf, _, _ = _host_run(tmp_path, "auto", web="1")
+    assert "--disallowedTools" not in argv and "WebFetch" not in argv, \
+        "the web stayed denied with the switch on:\n" + " ".join(argv)
 
 
 # @scenario SC-ai-agent-53

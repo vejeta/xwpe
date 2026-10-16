@@ -89,6 +89,15 @@ static const char *host_tool_arg(const char *tool, struct json_object *input)
  if (!strcmp(tool, "Grep") || !strcmp(tool, "Glob")) {
   if (json_object_object_get_ex(input, "pattern", &p)) return json_object_get_string(p);
  }
+ /* The web tools carry what would leave the machine, and the approval box is
+    where the user decides: without the URL or the query it reads "APPROVE?
+    WebFetch" and there is nothing to judge. */
+ if (!strcmp(tool, "WebFetch")) {
+  if (json_object_object_get_ex(input, "url", &p)) return json_object_get_string(p);
+ }
+ if (!strcmp(tool, "WebSearch")) {
+  if (json_object_object_get_ex(input, "query", &p)) return json_object_get_string(p);
+ }
  { const char *fp = host_tool_path(input); if (fp) return fp; }
  return "";
 }

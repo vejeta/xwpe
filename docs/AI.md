@@ -208,13 +208,16 @@ the switch says on the chat offers no web tool, names them as the Agent's, and
 the agent's web tools refuse with a line naming the switch. The chat can ask
 its notice because a question is waiting for an answer; an agent task runs on
 its own, so there an unanswered switch counts as off rather than prompting
-mid-task. Where a backend runs its own tools the editor passes the switch on
-its command line instead: the Claude CLI and the hosted `claude-code` engine
-get `WebSearch` and `WebFetch` pre-approved while the web is on and on their
-deny list while it is off. For the hosted engine the *auto* dial also tells
-the CLI to bypass its own permission checks, which the editor cannot undo, so
-the deny list is what it can state there and not a promise it can keep; leave
-*auto* if you need the web demonstrably shut.
+mid-task. A backend that reaches the web itself is told on its command line,
+since the editor's gate only covers the tools it runs. The Claude CLI is
+launched with `WebSearch` and `WebFetch` pre-approved while the web is on and
+denied while it is off, because `claude -p` cannot be asked anything once it
+runs. The hosted `claude-code` engine is denied the two tools while the web is
+off and simply not denied them while it is on, since there the editor is asked
+per tool and the dial decides. The *auto* dial is the exception: it tells that
+CLI to bypass its own permission checks and asks the editor nothing, so the
+deny list is all that holds and the editor cannot promise the CLI honours it.
+Leave *auto* if you need the web demonstrably shut.
 A tool line the chat
 cannot run (a web tool with the switch off, an invented name) is answered, not
 dropped: the pane says which tool was not run and why, and the answer follows.

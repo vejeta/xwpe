@@ -108,6 +108,10 @@ def test_host_edits_webfetch_asks_and_denial_is_visible(tmp_path):
         "the CLI did not receive the deny response:\n" + resp
     assert "DENIEDPATH" in disp, "deny was not sent to the agent:\n" + disp
     assert "denied: WebFetch" in disp, "no denied line in the pane:\n" + disp
+    # The box has to say what would leave the machine.  It read "APPROVE?
+    # WebFetch" with nothing after it, so the answer was a guess, and the
+    # denied line ended in a dangling colon.
+    assert WEB_URL in disp, "the box did not say which page it would fetch:\n" + disp
 
 
 # @scenario SC-ai-agent-51

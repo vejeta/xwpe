@@ -205,14 +205,18 @@ its notice because a question is waiting for an answer; an agent task runs on
 its own and at the @code{auto} dial nothing would ask, so an unanswered switch
 counts as off there rather than interrupting a running task.
 
-A backend that runs its own tools gets the switch on its command line, since
-there is no dispatcher of ours to gate: the Claude CLI and the hosted
-@code{claude-code} engine are launched with @code{WebSearch} and
-@code{WebFetch} pre-approved while the web is on and on their deny list while
-it is off.  For the hosted engine the @code{auto} dial also tells the CLI to
-bypass its own permission checks, which the editor cannot undo, so there the
-deny list is what it can state and not a promise it can keep.  Leave
-@code{auto} if you need the web demonstrably shut.  A tool line the chat
+A backend that reaches the web itself is told on its command line, since the
+editor's own gate only covers the tools it runs.  The @code{claudecli} backend
+is launched with @code{WebSearch} and @code{WebFetch} pre-approved while the
+web is on and denied while it is off: it cannot be asked anything once it is
+running (@command{claude -p} has no prompt), so the switch has to be decided
+up front.  The hosted @code{claude-code} engine is denied the two tools while
+the web is off and simply not denied them while it is on, because there the
+editor is asked per tool and the dial decides; the @code{auto} dial is the
+exception, since it tells that CLI to bypass its own permission checks and
+asks the editor nothing, so the deny list is all that holds and the editor
+cannot promise the CLI honours it.  Leave @code{auto} if you need the web
+demonstrably shut.  A tool line the chat
 cannot run
 -- a web tool with the switch off, a name the model invented -- is never left
 unanswered: the pane says which tool was not run and why, the model is told
@@ -467,7 +471,8 @@ the checkpoint the launch would have taken, with the same @samp{[agent]
 checkpoint taken} line, so the review at the end covers a run that started
 under @code{ask}.  With the @code{claudecli} backend the built-in agent runs the
 CLI text-only: the model answers with the editor's own tool protocol and the
-CLI's tools stay off, so the dial governs the editor's tools exactly as with any
+CLI's tools stay off, apart from its two web tools when web access is on (see
+@ref{Web access}), so the dial governs the editor's tools exactly as with any
 other backend and the CLI's own @option{--permission-mode} is not involved (the
 hosted engine, below, is where the dial maps onto it).  Under @code{auto} the
 pane adds a tip pointing to that engine.

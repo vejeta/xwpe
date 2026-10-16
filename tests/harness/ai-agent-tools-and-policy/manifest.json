@@ -1,119 +1,815 @@
 {
-  "capability": "ai-agent-tools-and-policy",
-  "scenarios": [
-    {"id": "SC-ai-agent-01", "requirement": "Starting a run", "layer": "ncurses", "test": "tests/test_ai_agent_run_contracts.py::test_header_and_task_line_are_adjacent", "status": "new"},
-    {"id": "SC-ai-agent-02", "requirement": "Starting a run", "layer": "ncurses", "test": "tests/test_ai_agent_run_contracts.py::test_esc_and_empty_prompt_send_nothing", "status": "new"},
-    {"id": "SC-ai-agent-03", "requirement": "Starting a run", "layer": "ncurses", "test": "tests/test_ai_policy.py::test_ai_policy_auto_no_prompt", "status": "covered"},
-    {"id": "SC-ai-agent-03", "requirement": "Starting a run", "layer": "ncurses", "test": "tests/test_ai_policy.py::test_ai_policy_ask_prompts", "status": "covered"},
-    {"id": "SC-ai-agent-03", "requirement": "Starting a run", "layer": "ncurses", "test": "tests/test_ai_agent_run_contracts.py::test_launch_checkpoint_shown_before_the_first_tool_line_under_auto", "status": "new"},
-    {"id": "SC-ai-agent-03", "requirement": "Starting a run", "layer": "ncurses", "test": "tests/test_ai_agent_run_contracts.py::test_launch_takes_no_checkpoint_under_ask", "status": "new"},
-    {"id": "SC-ai-agent-04", "requirement": "Starting a run", "layer": "ncurses", "test": "tests/test_ai_agent_engine_contracts.py::test_preflight_ollama_unreachable_refuses_to_start", "status": "new"},
-    {"id": "SC-ai-agent-04", "requirement": "Starting a run", "layer": "ncurses", "test": "tests/test_ai_agent_engine_contracts.py::test_preflight_claudecli_missing_refuses_to_start", "status": "new"},
-    {"id": "SC-ai-agent-05", "requirement": "The tool protocol", "layer": "ncurses", "test": "tests/test_ai_agent.py::test_ai_agent_tool_after_preamble", "status": "covered"},
-    {"id": "SC-ai-agent-06", "requirement": "The tool protocol", "layer": "ncurses", "test": "tests/test_ai_agent_answer.py::test_agent_done_shows_full_answer", "status": "covered"},
-    {"id": "SC-ai-agent-07", "requirement": "The tool protocol", "layer": "ncurses", "test": "tests/test_ai_agent_run_contracts.py::test_no_marker_reply_is_shown_as_the_answer", "status": "new"},
-    {"id": "SC-ai-agent-08", "requirement": "The tool protocol", "layer": "ncurses", "test": "tests/test_ai_agent_tool_contracts.py::test_tool_result_and_a_blank_result_are_both_fed_back", "status": "new"},
-    {"id": "SC-ai-agent-09", "requirement": "The tool protocol", "layer": "ncurses", "test": "tests/test_ai_agent_tool_contracts.py::test_unknown_tool_is_reported_and_the_loop_continues", "status": "new"},
-    {"id": "SC-ai-agent-10", "requirement": "The tool protocol", "layer": "ncurses", "test": "tests/test_ai_agent_run_contracts.py::test_step_limit_stops_after_24_tool_turns", "status": "new"},
-    {"id": "SC-ai-agent-11", "requirement": "The tool protocol", "layer": "ncurses", "test": "tests/test_ai_plan.py::test_agent_plan_and_step_done", "status": "covered"},
-    {"id": "SC-ai-agent-12", "requirement": "Read-only tools run safely", "layer": "ncurses", "test": "tests/test_ai_agent_tool_safety.py::test_agent_list_dir_argument_is_one_word", "status": "new"},
-    {"id": "SC-ai-agent-12", "requirement": "Read-only tools run safely", "layer": "ncurses", "test": "tests/test_ai_agent_tool_safety.py::test_agent_grep_argument_is_one_word", "status": "new"},
-    {"id": "SC-ai-agent-12", "requirement": "Read-only tools run safely", "layer": "ncurses", "test": "tests/test_ai_agent_tool_safety.py::test_agent_glob_argument_is_one_word", "status": "new"},
-    {"id": "SC-ai-agent-13", "requirement": "Read-only tools run safely", "layer": "ncurses", "test": "tests/test_ai_agent_tool_safety.py::test_agent_grep_pattern_with_a_space_is_one_pattern", "status": "new"},
-    {"id": "SC-ai-agent-14", "requirement": "Read-only tools run safely", "layer": "ncurses", "test": "tests/test_ai_agent_run_visibility.py::test_agent_cut_file_ends_with_the_cut_line", "status": "new"},
-    {"id": "SC-ai-agent-15", "requirement": "Read-only tools run safely", "layer": "ncurses", "test": "tests/test_ai_agent_run_visibility.py::test_agent_cut_command_output_ends_with_the_cut_line", "status": "new"},
-    {"id": "SC-ai-agent-16", "requirement": "The permission dial", "layer": "ncurses", "test": "tests/test_ai_agent_run_contracts.py::test_bogus_policy_env_reads_ask", "status": "new"},
-    {"id": "SC-ai-agent-16", "requirement": "The permission dial", "layer": "config-file", "test": "tests/test_ai_agent_run_contracts.py::test_bogus_policy_xwperc_reads_ask", "status": "new"},
-    {"id": "SC-ai-agent-17", "requirement": "The permission dial", "layer": "ncurses", "test": "tests/test_ai_agent_dial_contracts.py::test_edits_auto_approves_writes_and_asks_for_commands_and_web", "status": "new"},
-    {"id": "SC-ai-agent-17", "requirement": "The permission dial", "layer": "ncurses", "test": "tests/test_ai_agent_dial_contracts.py::test_auto_web_search_is_auto_approved_and_reaches_the_server", "status": "new"},
-    {"id": "SC-ai-agent-18", "requirement": "The permission dial", "layer": "ncurses", "test": "tests/test_ai_agent_run_contracts.py::test_esc_on_the_command_box_denies", "status": "new"},
-    {"id": "SC-ai-agent-19", "requirement": "The permission dial", "layer": "ncurses", "test": "tests/test_ai_agent_preview.py::test_agent_write_shows_colored_diff_then_applies", "status": "covered"},
-    {"id": "SC-ai-agent-20", "requirement": "The permission dial", "layer": "ncurses", "test": "tests/test_ai_agent_run_visibility.py::test_agent_denied_command_is_visible_and_nothing_ran", "status": "new"},
-    {"id": "SC-ai-agent-20", "requirement": "The permission dial", "layer": "ncurses", "test": "tests/test_ai_agent_run_visibility.py::test_agent_denied_web_search_is_visible_and_nothing_fetched", "status": "new"},
-    {"id": "SC-ai-agent-20", "requirement": "The permission dial", "layer": "ncurses", "test": "tests/test_ai_apply_patch.py::test_apply_patch_ask_denies_on_escape_and_keeps_disk_unchanged", "status": "covered"},
-    {"id": "SC-ai-agent-20", "requirement": "The permission dial", "layer": "ncurses", "test": "tests/test_ai_agent_run_visibility.py::test_agent_denied_write_is_visible_and_nothing_written", "status": "new"},
-    {"id": "SC-ai-agent-21", "requirement": "The permission dial", "layer": "ncurses", "test": "tests/test_ai_agent_dial_contracts.py::test_altg_y_flashes_persists_to_xwperc_and_shows_in_next_header", "status": "new"},
-    {"id": "SC-ai-agent-22", "requirement": "The permission dial", "layer": "ncurses", "test": "tests/test_ai_agent_dial_contracts.py::test_dial_lowered_mid_run_asks_for_the_next_write_and_still_reviews", "status": "new"},
-    {"id": "SC-ai-agent-22", "requirement": "The permission dial", "layer": "ncurses", "test": "tests/test_ai_agent_project_instructions.py::test_dial_raised_mid_run_takes_checkpoint_before_the_write", "status": "new"},
-    {"id": "SC-ai-agent-22", "requirement": "The permission dial", "layer": "ncurses", "test": "tests/test_ai_agent_project_instructions.py::test_dial_raised_mid_run_shows_the_new_header_only_after_the_done_line", "status": "new"},
-    {"id": "SC-ai-agent-23", "requirement": "The permission dial", "layer": "ncurses", "test": "tests/test_ai_agent_engine_contracts.py::test_claudecli_text_only_under_auto_with_tip", "status": "new"},
-    {"id": "SC-ai-agent-23", "requirement": "The permission dial", "layer": "ncurses", "test": "tests/test_ai_agent_engine_contracts.py::test_claudecli_text_only_under_ask_no_tip", "status": "new"},
-    {"id": "SC-ai-agent-23", "requirement": "The permission dial", "layer": "ncurses", "test": "tests/test_ai_host_nudge.py::test_agent_nudges_to_host_engine", "status": "covered"},
-    {"id": "SC-ai-agent-24", "requirement": "Web tools", "layer": "ncurses", "test": "tests/test_ai_agent_tool_contracts.py::test_web_fetch_bounds_the_get_and_the_text_handed_to_the_model", "status": "new"},
-    {"id": "SC-ai-agent-24", "requirement": "Web tools", "layer": "ncurses", "test": "tests/test_ai_web_fetch.py::test_agent_web_fetch_hits_server", "status": "covered"},
-    {"id": "SC-ai-agent-25", "requirement": "Web tools", "layer": "ncurses", "test": "tests/test_ai_agent_tool_contracts.py::test_web_fetch_http_404_is_a_result_not_a_crash", "status": "new"},
-    {"id": "SC-ai-agent-25", "requirement": "Web tools", "layer": "ncurses", "test": "tests/test_ai_agent_tool_contracts.py::test_web_fetch_gives_up_after_20s_and_reports_a_timeout", "status": "new"},
-    {"id": "SC-ai-agent-26", "requirement": "Web tools", "layer": "ncurses", "test": "tests/test_ai_web_search.py::test_agent_web_search_encodes_and_fetches", "status": "covered"},
-    {"id": "SC-ai-agent-27", "requirement": "Web tools", "layer": "ncurses", "test": "tests/test_ai_agent_run_visibility.py::test_agent_denied_web_search_is_visible_and_nothing_fetched", "status": "new", "note": "under ask the command box names the search, n denies, the pane shows the denied line and the search server receives nothing"},
-    {"id": "SC-ai-agent-28", "requirement": "Writes", "layer": "ncurses", "test": "tests/test_ai_agent.py::test_ai_agent_write_file_approved", "status": "covered"},
-    {"id": "SC-ai-agent-28", "requirement": "Writes", "layer": "ncurses", "test": "tests/test_ai_agent_gaps.py::test_write_file_keeps_the_final_newline", "status": "new"},
-    {"id": "SC-ai-agent-28", "requirement": "Writes", "layer": "ncurses", "test": "tests/test_ai_agent_gaps.py::test_write_file_keeps_crlf_lines_and_the_final_newline", "status": "new"},
-    {"id": "SC-ai-agent-28", "requirement": "Writes", "layer": "ncurses", "test": "tests/test_ai_agent_gaps.py::test_apply_patch_inherits_the_final_newline", "status": "new"},
-    {"id": "SC-ai-agent-29", "requirement": "Writes", "layer": "ncurses", "test": "tests/test_ai_apply_patch.py::test_agent_apply_patch_edits_in_place", "status": "covered"},
-    {"id": "SC-ai-agent-29", "requirement": "Writes", "layer": "ncurses", "test": "tests/test_ai_apply_patch.py::test_apply_patch_unmatched_search_is_tool_error", "status": "covered"},
-    {"id": "SC-ai-agent-29", "requirement": "Writes", "layer": "ncurses", "test": "tests/test_ai_agent_tool_contracts.py::test_apply_patch_tool_errors_are_fed_back_distinctly", "status": "new"},
-    {"id": "SC-ai-agent-30", "requirement": "Writes", "layer": "config-file", "test": "tests/test_ai_edit_hook.py::test_edit_hook_runs_after_write", "status": "covered"},
-    {"id": "SC-ai-agent-30", "requirement": "Writes", "layer": "ncurses", "test": "tests/test_ai_agent_write.py::test_agent_write_refreshes_open_file_and_lists_once", "status": "covered"},
-    {"id": "SC-ai-agent-30", "requirement": "Writes", "layer": "ncurses", "test": "tests/test_ai_edit_hook_contracts.py::test_agent_write_with_hook_is_one_undo_step_and_disk_keeps_the_write", "status": "covered"},
-    {"id": "SC-ai-agent-30", "requirement": "Writes", "layer": "ncurses", "test": "tests/test_ai_edit_hook_contracts.py::test_agent_write_pane_says_the_undo_is_buffer_only", "status": "covered"},
-    {"id": "SC-ai-agent-30", "requirement": "Writes", "layer": "ncurses", "test": "tests/test_ai_edit_hook_contracts.py::test_hook_receives_a_path_with_spaces_intact", "status": "covered"},
-    {"id": "SC-ai-agent-31", "requirement": "Writes", "layer": "ncurses", "test": "tests/test_ai_agent_gaps.py::test_failed_write_is_told_to_the_user", "status": "new"},
-    {"id": "SC-ai-agent-32", "requirement": "Writes", "layer": "ncurses", "test": "tests/test_ai_agent_tool_safety.py::test_agent_write_outside_workspace_asks_under_auto_and_deny", "status": "new"},
-    {"id": "SC-ai-agent-32", "requirement": "Writes", "layer": "ncurses", "test": "tests/test_ai_agent_tool_safety.py::test_agent_write_outside_workspace_asks_under_auto_and_approve", "status": "new"},
-    {"id": "SC-ai-agent-33", "requirement": "Checkpoint and review", "layer": "ncurses", "test": "tests/test_ai_agent_dial_contracts.py::test_review_file_by_file_keeps_one_and_reverts_the_other", "status": "new"},
-    {"id": "SC-ai-agent-33", "requirement": "Checkpoint and review", "layer": "ncurses", "test": "tests/test_ai_agent_dial_contracts.py::test_review_commit_in_a_git_tree_makes_a_commit", "status": "new"},
-    {"id": "SC-ai-agent-33", "requirement": "Checkpoint and review", "layer": "ncurses", "test": "tests/test_ai_agent_write.py::test_agent_write_refreshes_open_file_and_lists_once", "status": "covered"},
-    {"id": "SC-ai-agent-33", "requirement": "Checkpoint and review", "layer": "ncurses", "test": "tests/test_ai_changeset.py::test_ai_changeset_keep_all", "status": "covered"},
-    {"id": "SC-ai-agent-34", "requirement": "Checkpoint and review", "layer": "ncurses", "test": "tests/test_ai_policy.py::test_ai_policy_auto_revert_new_file", "status": "covered"},
-    {"id": "SC-ai-agent-34", "requirement": "Checkpoint and review", "layer": "ncurses", "test": "tests/test_ai_changeset.py::test_ai_changeset_revert_all", "status": "covered"},
-    {"id": "SC-ai-agent-35", "requirement": "Checkpoint and review", "layer": "ncurses", "test": "tests/test_ai_agent_run_contracts.py::test_no_review_opens_under_ask", "status": "new"},
-    {"id": "SC-ai-agent-36", "requirement": "Project instructions", "layer": "ncurses", "test": "tests/test_ai_agent_project_instructions.py::test_prompt_states_the_tool_list_stands_after_the_project_block", "status": "new"},
-    {"id": "SC-ai-agent-37", "requirement": "Project instructions", "layer": "ncurses", "test": "tests/test_ai_agent_project_instructions.py::test_project_instructions_announced_with_name_and_size", "status": "new"},
-    {"id": "SC-ai-agent-37", "requirement": "Project instructions", "layer": "ncurses", "test": "tests/test_ai_agent_project_instructions.py::test_project_instructions_announce_the_cut", "status": "new"},
-    {"id": "SC-ai-agent-37", "requirement": "Project instructions", "layer": "ncurses", "test": "tests/test_ai_agent_project_instructions.py::test_chat_announces_project_instructions_once_per_session", "status": "new"},
-    {"id": "SC-ai-agent-38", "requirement": "Project instructions", "layer": "ncurses", "test": "tests/test_ai_agent_project_instructions.py::test_prompt_states_the_tool_list_stands_after_the_project_block", "status": "new"},
-    {"id": "SC-ai-agent-38b", "requirement": "Project instructions", "layer": "ncurses", "test": "tests/test_ai_agent_project_instructions.py::test_ask_plain_turn_carries_no_project_instructions", "status": "new"},
-    {"id": "SC-ai-agent-38b", "requirement": "Project instructions", "layer": "ncurses", "test": "tests/test_ai_agent_project_instructions.py::test_agent_carries_project_instructions_under_the_default", "status": "new"},
-    {"id": "SC-ai-agent-38b", "requirement": "Project instructions", "layer": "ncurses", "test": "tests/test_ai_agent_project_instructions.py::test_chat_carries_project_instructions_from_its_first_tool_turn", "status": "new"},
-    {"id": "SC-ai-agent-38b", "requirement": "Project instructions", "layer": "ncurses", "test": "tests/test_ai_agent_project_instructions.py::test_scope_all_folds_project_instructions_into_a_plain_ask", "status": "new"},
-    {"id": "SC-ai-agent-38b", "requirement": "Project instructions", "layer": "ncurses", "test": "tests/test_ai_agent_project_instructions.py::test_scope_off_keeps_project_instructions_out_of_the_agent", "status": "new"},
-    {"id": "SC-ai-agent-38c", "requirement": "Project instructions", "layer": "ncurses", "test": "tests/test_ai_agent_project_instructions.py::test_specific_file_wins_over_agents_md", "status": "new"},
-    {"id": "SC-ai-agent-38d", "requirement": "Project instructions", "layer": "ncurses", "test": "tests/test_ai_agent_project_instructions.py::test_bound_key_cuts_the_file_and_names_itself", "status": "new"},
-    {"id": "SC-ai-agent-39", "requirement": "What the user sees during a run", "layer": "ncurses", "test": "tests/test_ai_agent_run_contracts.py::test_spinner_glyph_and_seconds_advance", "status": "new"},
-    {"id": "SC-ai-agent-40", "requirement": "What the user sees during a run", "layer": "ncurses", "test": "tests/test_ai_agent_run_visibility.py::test_agent_slow_command_shows_running_line_and_times_out", "status": "new"},
-    {"id": "SC-ai-agent-40", "requirement": "What the user sees during a run", "layer": "ncurses", "test": "tests/test_ai_agent_run_visibility.py::test_agent_quick_command_shows_running_line_and_completes", "status": "new"},
-    {"id": "SC-ai-agent-41", "requirement": "What the user sees during a run", "layer": "ncurses", "test": "tests/test_ai_agent.py::test_agent_offers_followup_when_done", "status": "covered"},
-    {"id": "SC-ai-agent-42", "requirement": "What the user sees during a run", "layer": "ncurses", "test": "tests/test_ai_queue.py::test_esc_cancels_running_task", "status": "covered"},
-    {"id": "SC-ai-agent-42", "requirement": "What the user sees during a run", "layer": "ncurses", "test": "tests/test_ai_queue.py::test_esc_clears_the_queue", "status": "covered"},
-    {"id": "SC-ai-agent-43", "requirement": "What the user sees during a run", "layer": "ncurses", "test": "tests/test_ai_agent_reply_modal.py::test_reply_behind_task_prompt_waits_for_it", "status": "new"},
-    {"id": "SC-ai-agent-44", "requirement": "What the user sees during a run", "layer": "ncurses", "test": "tests/test_ai_agent_gaps.py::test_window_closed_during_run_repaints_at_once", "status": "new"},
-    {"id": "SC-ai-agent-44", "requirement": "What the user sees during a run", "layer": "ncurses", "test": "tests/test_ai_agent_gaps.py::test_window_closed_during_run_applies_nothing", "status": "new"},
-    {"id": "SC-ai-agent-45", "requirement": "What the user sees during a run", "layer": "ncurses", "test": "tests/test_ai_pane_wrap_agent.py::test_long_answer_wraps_to_readable_measure", "status": "covered"},
-    {"id": "SC-ai-agent-46", "requirement": "Processes never touch the terminal", "layer": "ncurses", "test": "tests/test_ai_tool_tty.py::test_tool_command_cannot_write_to_the_editor_terminal", "status": "covered"},
-    {"id": "SC-ai-agent-47", "requirement": "Processes never touch the terminal", "layer": "ncurses", "test": "tests/test_ai_agent_engine_contracts.py::test_claudecli_spawn_is_its_own_session_with_no_terminal", "status": "new"},
-    {"id": "SC-ai-agent-47", "requirement": "Processes never touch the terminal", "layer": "config-file", "test": "tests/test_ai_agent_engine_contracts.py::test_hook_and_git_checkpoint_spawns_are_their_own_session", "status": "new"},
-    {"id": "SC-ai-agent-47", "requirement": "Processes never touch the terminal", "layer": "ncurses", "test": "tests/test_ai_agent_engine_contracts.py::test_hosted_engine_spawn_is_its_own_session_with_no_terminal", "status": "new"},
-    {"id": "SC-ai-agent-48", "requirement": "Processes never touch the terminal", "layer": "ncurses", "test": "tests/test_ai_agent_screen_oracle.py::test_invariant_holds_under_ask_with_boxes_reload_denial_and_flash", "status": "new"},
-    {"id": "SC-ai-agent-48", "requirement": "Processes never touch the terminal", "layer": "ncurses", "test": "tests/test_ai_agent_screen_oracle.py::test_invariant_holds_under_auto_with_a_plan_and_full_review", "status": "new"},
-    {"id": "SC-ai-agent-49", "requirement": "The hosted engine", "layer": "ncurses", "test": "tests/test_ai_agent_gaps.py::test_hosted_session_announces_its_checkpoint", "status": "new"},
-    {"id": "SC-ai-agent-50", "requirement": "The hosted engine", "layer": "ncurses", "test": "tests/test_ai_agent_engine_contracts.py::test_hosted_engine_argv_under_ask", "status": "new"},
-    {"id": "SC-ai-agent-50", "requirement": "The hosted engine", "layer": "ncurses", "test": "tests/test_ai_agent_engine_contracts.py::test_hosted_engine_argv_under_edits", "status": "new"},
-    {"id": "SC-ai-agent-50", "requirement": "The hosted engine", "layer": "ncurses", "test": "tests/test_ai_agent_engine_contracts.py::test_hosted_engine_argv_under_auto", "status": "new"},
-    {"id": "SC-ai-agent-51", "requirement": "The hosted engine", "layer": "ncurses", "test": "tests/test_ai_host.py::test_host_permission_allow", "status": "covered"},
-    {"id": "SC-ai-agent-51", "requirement": "The hosted engine", "layer": "ncurses", "test": "tests/test_ai_host.py::test_host_permission_deny", "status": "covered"},
-    {"id": "SC-ai-agent-51", "requirement": "The hosted engine", "layer": "ncurses", "test": "tests/test_ai_host_dial_and_interrupt.py::test_host_edits_webfetch_asks_and_denial_is_visible", "status": "new"},
-    {"id": "SC-ai-agent-51", "requirement": "The hosted engine", "layer": "ncurses", "test": "tests/test_ai_host_dial_and_interrupt.py::test_host_edits_write_is_auto_approved_without_a_box", "status": "new"},
-    {"id": "SC-ai-agent-51", "requirement": "The hosted engine", "layer": "ncurses", "test": "tests/test_ai_host_dial_and_interrupt.py::test_host_edits_read_asks", "status": "new"},
-    {"id": "SC-ai-agent-52", "requirement": "The hosted engine", "layer": "ncurses", "test": "tests/test_ai_host.py::test_host_streams_and_reloads_edited_buffer", "status": "covered"},
-    {"id": "SC-ai-agent-53", "requirement": "The hosted engine", "layer": "ncurses", "test": "tests/test_ai_agent_engine_contracts.py::test_hosted_session_end_at_the_prompt_reviews_then_says_so", "status": "new"},
-    {"id": "SC-ai-agent-53", "requirement": "The hosted engine", "layer": "ncurses", "test": null, "status": "blocked", "reason": "the fork/pipe \"could not start\" branch (we_ai_ui.c:7450) is not provokable headlessly: an unexecutable XWPE_AI_HOST_CMD (verified, tests/test_ai_agent_engine_contracts.py::test_hosted_unexecutable_command_reports_send_failed) reaches wpe_host_start() successfully (fork/pipe succeed) and only fails at the first send, so it is reported as \"[agent] send failed - session ended\", not \"could not start\"; forcing fork() or pipe() itself to fail needs a fault-injection point the engine does not have"},
-    {"id": "SC-ai-agent-53b", "requirement": "The hosted engine", "layer": "ncurses", "test": "tests/test_ai_host_dial_and_interrupt.py::test_host_esc_interrupts_turn_and_session_continues", "status": "new"},
-    {"id": "SC-ai-agent-53b", "requirement": "The hosted engine", "layer": "ncurses", "test": "tests/test_ai_host_dial_and_interrupt.py::test_host_esc_ignored_ends_session_at_tool_timeout", "status": "new"},
-    {"id": "SC-ai-agent-54", "requirement": "Errors mid-run", "layer": "ncurses", "test": "tests/test_ai_agent_gaps.py::test_backend_error_mid_loop_shows_the_servers_message", "status": "new"},
-    {"id": "SC-ai-agent-54", "requirement": "Errors mid-run", "layer": "ncurses", "test": "tests/test_ai_agent_gaps.py::test_in_stream_error_event_mid_loop_shows_the_servers_message", "status": "new", "note": "the error arrives as an SSE event inside a 200 stream with no end marker; it is a backend error answered in full, not a hang-up"},
-    {"id": "SC-ai-agent-55", "requirement": "Errors mid-run", "layer": "ncurses", "test": "tests/test_ai_agent_gaps.py::test_connection_closed_with_no_bytes_is_a_transport_error", "status": "new"},
-    {"id": "SC-ai-agent-55", "requirement": "Errors mid-run", "layer": "ncurses", "test": "tests/test_ai_agent_gaps.py::test_non_http_answer_is_a_transport_error", "status": "new"},
-    {"id": "SC-ai-agent-56", "requirement": "Documentation agrees with the run", "layer": "doc", "test": null, "status": "blocked", "reason": "a documentation row, checked by reading the manual against the run, not by an automated test"},
-    {"id": "SC-ai-agent-57", "requirement": "Documentation agrees with the run", "layer": "doc", "test": null, "status": "blocked", "reason": "a documentation row, checked by reading the manual against the run, not by an automated test"}
-  ]
+ "capability": "ai-agent-tools-and-policy",
+ "scenarios": [
+  {
+   "id": "SC-ai-agent-01",
+   "requirement": "Starting a run",
+   "layer": "ncurses",
+   "test": "tests/test_ai_agent_run_contracts.py::test_header_and_task_line_are_adjacent",
+   "status": "new"
+  },
+  {
+   "id": "SC-ai-agent-02",
+   "requirement": "Starting a run",
+   "layer": "ncurses",
+   "test": "tests/test_ai_agent_run_contracts.py::test_esc_and_empty_prompt_send_nothing",
+   "status": "new"
+  },
+  {
+   "id": "SC-ai-agent-03",
+   "requirement": "Starting a run",
+   "layer": "ncurses",
+   "test": "tests/test_ai_policy.py::test_ai_policy_auto_no_prompt",
+   "status": "covered"
+  },
+  {
+   "id": "SC-ai-agent-03",
+   "requirement": "Starting a run",
+   "layer": "ncurses",
+   "test": "tests/test_ai_policy.py::test_ai_policy_ask_prompts",
+   "status": "covered"
+  },
+  {
+   "id": "SC-ai-agent-03",
+   "requirement": "Starting a run",
+   "layer": "ncurses",
+   "test": "tests/test_ai_agent_run_contracts.py::test_launch_checkpoint_shown_before_the_first_tool_line_under_auto",
+   "status": "new"
+  },
+  {
+   "id": "SC-ai-agent-03",
+   "requirement": "Starting a run",
+   "layer": "ncurses",
+   "test": "tests/test_ai_agent_run_contracts.py::test_launch_takes_no_checkpoint_under_ask",
+   "status": "new"
+  },
+  {
+   "id": "SC-ai-agent-04",
+   "requirement": "Starting a run",
+   "layer": "ncurses",
+   "test": "tests/test_ai_agent_engine_contracts.py::test_preflight_ollama_unreachable_refuses_to_start",
+   "status": "new"
+  },
+  {
+   "id": "SC-ai-agent-04",
+   "requirement": "Starting a run",
+   "layer": "ncurses",
+   "test": "tests/test_ai_agent_engine_contracts.py::test_preflight_claudecli_missing_refuses_to_start",
+   "status": "new"
+  },
+  {
+   "id": "SC-ai-agent-05",
+   "requirement": "The tool protocol",
+   "layer": "ncurses",
+   "test": "tests/test_ai_agent.py::test_ai_agent_tool_after_preamble",
+   "status": "covered"
+  },
+  {
+   "id": "SC-ai-agent-06",
+   "requirement": "The tool protocol",
+   "layer": "ncurses",
+   "test": "tests/test_ai_agent_answer.py::test_agent_done_shows_full_answer",
+   "status": "covered"
+  },
+  {
+   "id": "SC-ai-agent-07",
+   "requirement": "The tool protocol",
+   "layer": "ncurses",
+   "test": "tests/test_ai_agent_run_contracts.py::test_no_marker_reply_is_shown_as_the_answer",
+   "status": "new"
+  },
+  {
+   "id": "SC-ai-agent-08",
+   "requirement": "The tool protocol",
+   "layer": "ncurses",
+   "test": "tests/test_ai_agent_tool_contracts.py::test_tool_result_and_a_blank_result_are_both_fed_back",
+   "status": "new"
+  },
+  {
+   "id": "SC-ai-agent-09",
+   "requirement": "The tool protocol",
+   "layer": "ncurses",
+   "test": "tests/test_ai_agent_tool_contracts.py::test_unknown_tool_is_reported_and_the_loop_continues",
+   "status": "new"
+  },
+  {
+   "id": "SC-ai-agent-10",
+   "requirement": "The tool protocol",
+   "layer": "ncurses",
+   "test": "tests/test_ai_agent_run_contracts.py::test_step_limit_stops_after_24_tool_turns",
+   "status": "new"
+  },
+  {
+   "id": "SC-ai-agent-11",
+   "requirement": "The tool protocol",
+   "layer": "ncurses",
+   "test": "tests/test_ai_plan.py::test_agent_plan_and_step_done",
+   "status": "covered"
+  },
+  {
+   "id": "SC-ai-agent-12",
+   "requirement": "Read-only tools run safely",
+   "layer": "ncurses",
+   "test": "tests/test_ai_agent_tool_safety.py::test_agent_list_dir_argument_is_one_word",
+   "status": "new"
+  },
+  {
+   "id": "SC-ai-agent-12",
+   "requirement": "Read-only tools run safely",
+   "layer": "ncurses",
+   "test": "tests/test_ai_agent_tool_safety.py::test_agent_grep_argument_is_one_word",
+   "status": "new"
+  },
+  {
+   "id": "SC-ai-agent-12",
+   "requirement": "Read-only tools run safely",
+   "layer": "ncurses",
+   "test": "tests/test_ai_agent_tool_safety.py::test_agent_glob_argument_is_one_word",
+   "status": "new"
+  },
+  {
+   "id": "SC-ai-agent-13",
+   "requirement": "Read-only tools run safely",
+   "layer": "ncurses",
+   "test": "tests/test_ai_agent_tool_safety.py::test_agent_grep_pattern_with_a_space_is_one_pattern",
+   "status": "new"
+  },
+  {
+   "id": "SC-ai-agent-14",
+   "requirement": "Read-only tools run safely",
+   "layer": "ncurses",
+   "test": "tests/test_ai_agent_run_visibility.py::test_agent_cut_file_ends_with_the_cut_line",
+   "status": "new"
+  },
+  {
+   "id": "SC-ai-agent-15",
+   "requirement": "Read-only tools run safely",
+   "layer": "ncurses",
+   "test": "tests/test_ai_agent_run_visibility.py::test_agent_cut_command_output_ends_with_the_cut_line",
+   "status": "new"
+  },
+  {
+   "id": "SC-ai-agent-16",
+   "requirement": "The permission dial",
+   "layer": "ncurses",
+   "test": "tests/test_ai_agent_run_contracts.py::test_bogus_policy_env_reads_ask",
+   "status": "new"
+  },
+  {
+   "id": "SC-ai-agent-16",
+   "requirement": "The permission dial",
+   "layer": "config-file",
+   "test": "tests/test_ai_agent_run_contracts.py::test_bogus_policy_xwperc_reads_ask",
+   "status": "new"
+  },
+  {
+   "id": "SC-ai-agent-17",
+   "requirement": "The permission dial",
+   "layer": "ncurses",
+   "test": "tests/test_ai_agent_dial_contracts.py::test_edits_auto_approves_writes_and_asks_for_commands_and_web",
+   "status": "new"
+  },
+  {
+   "id": "SC-ai-agent-17",
+   "requirement": "The permission dial",
+   "layer": "ncurses",
+   "test": "tests/test_ai_agent_dial_contracts.py::test_auto_web_search_is_auto_approved_and_reaches_the_server",
+   "status": "new"
+  },
+  {
+   "id": "SC-ai-agent-18",
+   "requirement": "The permission dial",
+   "layer": "ncurses",
+   "test": "tests/test_ai_agent_run_contracts.py::test_esc_on_the_command_box_denies",
+   "status": "new"
+  },
+  {
+   "id": "SC-ai-agent-19",
+   "requirement": "The permission dial",
+   "layer": "ncurses",
+   "test": "tests/test_ai_agent_preview.py::test_agent_write_shows_colored_diff_then_applies",
+   "status": "covered"
+  },
+  {
+   "id": "SC-ai-agent-20",
+   "requirement": "The permission dial",
+   "layer": "ncurses",
+   "test": "tests/test_ai_agent_run_visibility.py::test_agent_denied_command_is_visible_and_nothing_ran",
+   "status": "new"
+  },
+  {
+   "id": "SC-ai-agent-20",
+   "requirement": "The permission dial",
+   "layer": "ncurses",
+   "test": "tests/test_ai_agent_run_visibility.py::test_agent_denied_web_search_is_visible_and_nothing_fetched",
+   "status": "new"
+  },
+  {
+   "id": "SC-ai-agent-20",
+   "requirement": "The permission dial",
+   "layer": "ncurses",
+   "test": "tests/test_ai_apply_patch.py::test_apply_patch_ask_denies_on_escape_and_keeps_disk_unchanged",
+   "status": "covered"
+  },
+  {
+   "id": "SC-ai-agent-20",
+   "requirement": "The permission dial",
+   "layer": "ncurses",
+   "test": "tests/test_ai_agent_run_visibility.py::test_agent_denied_write_is_visible_and_nothing_written",
+   "status": "new"
+  },
+  {
+   "id": "SC-ai-agent-21",
+   "requirement": "The permission dial",
+   "layer": "ncurses",
+   "test": "tests/test_ai_agent_dial_contracts.py::test_altg_y_flashes_persists_to_xwperc_and_shows_in_next_header",
+   "status": "new"
+  },
+  {
+   "id": "SC-ai-agent-22",
+   "requirement": "The permission dial",
+   "layer": "ncurses",
+   "test": "tests/test_ai_agent_dial_contracts.py::test_dial_lowered_mid_run_asks_for_the_next_write_and_still_reviews",
+   "status": "new"
+  },
+  {
+   "id": "SC-ai-agent-22",
+   "requirement": "The permission dial",
+   "layer": "ncurses",
+   "test": "tests/test_ai_agent_project_instructions.py::test_dial_raised_mid_run_takes_checkpoint_before_the_write",
+   "status": "new"
+  },
+  {
+   "id": "SC-ai-agent-22",
+   "requirement": "The permission dial",
+   "layer": "ncurses",
+   "test": "tests/test_ai_agent_project_instructions.py::test_dial_raised_mid_run_shows_the_new_header_only_after_the_done_line",
+   "status": "new"
+  },
+  {
+   "id": "SC-ai-agent-23",
+   "requirement": "The permission dial",
+   "layer": "ncurses",
+   "test": "tests/test_ai_agent_engine_contracts.py::test_claudecli_text_only_under_auto_with_tip",
+   "status": "new"
+  },
+  {
+   "id": "SC-ai-agent-23",
+   "requirement": "The permission dial",
+   "layer": "ncurses",
+   "test": "tests/test_ai_agent_engine_contracts.py::test_claudecli_text_only_under_ask_no_tip",
+   "status": "new"
+  },
+  {
+   "id": "SC-ai-agent-23",
+   "requirement": "The permission dial",
+   "layer": "ncurses",
+   "test": "tests/test_ai_host_nudge.py::test_agent_nudges_to_host_engine",
+   "status": "covered"
+  },
+  {
+   "id": "SC-ai-agent-24",
+   "requirement": "Web tools",
+   "layer": "ncurses",
+   "test": "tests/test_ai_agent_tool_contracts.py::test_web_fetch_bounds_the_get_and_the_text_handed_to_the_model",
+   "status": "new"
+  },
+  {
+   "id": "SC-ai-agent-24",
+   "requirement": "Web tools",
+   "layer": "ncurses",
+   "test": "tests/test_ai_web_fetch.py::test_agent_web_fetch_hits_server",
+   "status": "covered"
+  },
+  {
+   "id": "SC-ai-agent-25",
+   "requirement": "Web tools",
+   "layer": "ncurses",
+   "test": "tests/test_ai_agent_tool_contracts.py::test_web_fetch_http_404_is_a_result_not_a_crash",
+   "status": "new"
+  },
+  {
+   "id": "SC-ai-agent-25",
+   "requirement": "Web tools",
+   "layer": "ncurses",
+   "test": "tests/test_ai_agent_tool_contracts.py::test_web_fetch_gives_up_after_20s_and_reports_a_timeout",
+   "status": "new"
+  },
+  {
+   "id": "SC-ai-agent-26",
+   "requirement": "Web tools",
+   "layer": "ncurses",
+   "test": "tests/test_ai_web_search.py::test_agent_web_search_encodes_and_fetches",
+   "status": "covered"
+  },
+  {
+   "id": "SC-ai-agent-27",
+   "requirement": "Web tools",
+   "layer": "ncurses",
+   "test": "tests/test_ai_agent_run_visibility.py::test_agent_denied_web_search_is_visible_and_nothing_fetched",
+   "status": "new",
+   "note": "under ask the command box names the search, n denies, the pane shows the denied line and the search server receives nothing"
+  },
+  {
+   "id": "SC-ai-agent-28",
+   "requirement": "Writes",
+   "layer": "ncurses",
+   "test": "tests/test_ai_agent.py::test_ai_agent_write_file_approved",
+   "status": "covered"
+  },
+  {
+   "id": "SC-ai-agent-28",
+   "requirement": "Writes",
+   "layer": "ncurses",
+   "test": "tests/test_ai_agent_gaps.py::test_write_file_keeps_the_final_newline",
+   "status": "new"
+  },
+  {
+   "id": "SC-ai-agent-28",
+   "requirement": "Writes",
+   "layer": "ncurses",
+   "test": "tests/test_ai_agent_gaps.py::test_write_file_keeps_crlf_lines_and_the_final_newline",
+   "status": "new"
+  },
+  {
+   "id": "SC-ai-agent-28",
+   "requirement": "Writes",
+   "layer": "ncurses",
+   "test": "tests/test_ai_agent_gaps.py::test_apply_patch_inherits_the_final_newline",
+   "status": "new"
+  },
+  {
+   "id": "SC-ai-agent-29",
+   "requirement": "Writes",
+   "layer": "ncurses",
+   "test": "tests/test_ai_apply_patch.py::test_agent_apply_patch_edits_in_place",
+   "status": "covered"
+  },
+  {
+   "id": "SC-ai-agent-29",
+   "requirement": "Writes",
+   "layer": "ncurses",
+   "test": "tests/test_ai_apply_patch.py::test_apply_patch_unmatched_search_is_tool_error",
+   "status": "covered"
+  },
+  {
+   "id": "SC-ai-agent-29",
+   "requirement": "Writes",
+   "layer": "ncurses",
+   "test": "tests/test_ai_agent_tool_contracts.py::test_apply_patch_tool_errors_are_fed_back_distinctly",
+   "status": "new"
+  },
+  {
+   "id": "SC-ai-agent-30",
+   "requirement": "Writes",
+   "layer": "config-file",
+   "test": "tests/test_ai_edit_hook.py::test_edit_hook_runs_after_write",
+   "status": "covered"
+  },
+  {
+   "id": "SC-ai-agent-30",
+   "requirement": "Writes",
+   "layer": "ncurses",
+   "test": "tests/test_ai_agent_write.py::test_agent_write_refreshes_open_file_and_lists_once",
+   "status": "covered"
+  },
+  {
+   "id": "SC-ai-agent-30",
+   "requirement": "Writes",
+   "layer": "ncurses",
+   "test": "tests/test_ai_edit_hook_contracts.py::test_agent_write_with_hook_is_one_undo_step_and_disk_keeps_the_write",
+   "status": "covered"
+  },
+  {
+   "id": "SC-ai-agent-30",
+   "requirement": "Writes",
+   "layer": "ncurses",
+   "test": "tests/test_ai_edit_hook_contracts.py::test_agent_write_pane_says_the_undo_is_buffer_only",
+   "status": "covered"
+  },
+  {
+   "id": "SC-ai-agent-30",
+   "requirement": "Writes",
+   "layer": "ncurses",
+   "test": "tests/test_ai_edit_hook_contracts.py::test_hook_receives_a_path_with_spaces_intact",
+   "status": "covered"
+  },
+  {
+   "id": "SC-ai-agent-31",
+   "requirement": "Writes",
+   "layer": "ncurses",
+   "test": "tests/test_ai_agent_gaps.py::test_failed_write_is_told_to_the_user",
+   "status": "new"
+  },
+  {
+   "id": "SC-ai-agent-32",
+   "requirement": "Writes",
+   "layer": "ncurses",
+   "test": "tests/test_ai_agent_tool_safety.py::test_agent_write_outside_workspace_asks_under_auto_and_deny",
+   "status": "new"
+  },
+  {
+   "id": "SC-ai-agent-32",
+   "requirement": "Writes",
+   "layer": "ncurses",
+   "test": "tests/test_ai_agent_tool_safety.py::test_agent_write_outside_workspace_asks_under_auto_and_approve",
+   "status": "new"
+  },
+  {
+   "id": "SC-ai-agent-33",
+   "requirement": "Checkpoint and review",
+   "layer": "ncurses",
+   "test": "tests/test_ai_agent_dial_contracts.py::test_review_file_by_file_keeps_one_and_reverts_the_other",
+   "status": "new"
+  },
+  {
+   "id": "SC-ai-agent-33",
+   "requirement": "Checkpoint and review",
+   "layer": "ncurses",
+   "test": "tests/test_ai_agent_dial_contracts.py::test_review_commit_in_a_git_tree_makes_a_commit",
+   "status": "new"
+  },
+  {
+   "id": "SC-ai-agent-33",
+   "requirement": "Checkpoint and review",
+   "layer": "ncurses",
+   "test": "tests/test_ai_agent_write.py::test_agent_write_refreshes_open_file_and_lists_once",
+   "status": "covered"
+  },
+  {
+   "id": "SC-ai-agent-33",
+   "requirement": "Checkpoint and review",
+   "layer": "ncurses",
+   "test": "tests/test_ai_changeset.py::test_ai_changeset_keep_all",
+   "status": "covered"
+  },
+  {
+   "id": "SC-ai-agent-34",
+   "requirement": "Checkpoint and review",
+   "layer": "ncurses",
+   "test": "tests/test_ai_policy.py::test_ai_policy_auto_revert_new_file",
+   "status": "covered"
+  },
+  {
+   "id": "SC-ai-agent-34",
+   "requirement": "Checkpoint and review",
+   "layer": "ncurses",
+   "test": "tests/test_ai_changeset.py::test_ai_changeset_revert_all",
+   "status": "covered"
+  },
+  {
+   "id": "SC-ai-agent-35",
+   "requirement": "Checkpoint and review",
+   "layer": "ncurses",
+   "test": "tests/test_ai_agent_run_contracts.py::test_no_review_opens_under_ask",
+   "status": "new"
+  },
+  {
+   "id": "SC-ai-agent-36",
+   "requirement": "Project instructions",
+   "layer": "ncurses",
+   "test": "tests/test_ai_agent_project_instructions.py::test_prompt_states_the_tool_list_stands_after_the_project_block",
+   "status": "new"
+  },
+  {
+   "id": "SC-ai-agent-37",
+   "requirement": "Project instructions",
+   "layer": "ncurses",
+   "test": "tests/test_ai_agent_project_instructions.py::test_project_instructions_announced_with_name_and_size",
+   "status": "new"
+  },
+  {
+   "id": "SC-ai-agent-37",
+   "requirement": "Project instructions",
+   "layer": "ncurses",
+   "test": "tests/test_ai_agent_project_instructions.py::test_project_instructions_announce_the_cut",
+   "status": "new"
+  },
+  {
+   "id": "SC-ai-agent-37",
+   "requirement": "Project instructions",
+   "layer": "ncurses",
+   "test": "tests/test_ai_agent_project_instructions.py::test_chat_announces_project_instructions_once_per_session",
+   "status": "new"
+  },
+  {
+   "id": "SC-ai-agent-38",
+   "requirement": "Project instructions",
+   "layer": "ncurses",
+   "test": "tests/test_ai_agent_project_instructions.py::test_prompt_states_the_tool_list_stands_after_the_project_block",
+   "status": "new"
+  },
+  {
+   "id": "SC-ai-agent-38b",
+   "requirement": "Project instructions",
+   "layer": "ncurses",
+   "test": "tests/test_ai_agent_project_instructions.py::test_ask_plain_turn_carries_no_project_instructions",
+   "status": "new"
+  },
+  {
+   "id": "SC-ai-agent-38b",
+   "requirement": "Project instructions",
+   "layer": "ncurses",
+   "test": "tests/test_ai_agent_project_instructions.py::test_agent_carries_project_instructions_under_the_default",
+   "status": "new"
+  },
+  {
+   "id": "SC-ai-agent-38b",
+   "requirement": "Project instructions",
+   "layer": "ncurses",
+   "test": "tests/test_ai_agent_project_instructions.py::test_chat_carries_project_instructions_from_its_first_tool_turn",
+   "status": "new"
+  },
+  {
+   "id": "SC-ai-agent-38b",
+   "requirement": "Project instructions",
+   "layer": "ncurses",
+   "test": "tests/test_ai_agent_project_instructions.py::test_scope_all_folds_project_instructions_into_a_plain_ask",
+   "status": "new"
+  },
+  {
+   "id": "SC-ai-agent-38b",
+   "requirement": "Project instructions",
+   "layer": "ncurses",
+   "test": "tests/test_ai_agent_project_instructions.py::test_scope_off_keeps_project_instructions_out_of_the_agent",
+   "status": "new"
+  },
+  {
+   "id": "SC-ai-agent-38c",
+   "requirement": "Project instructions",
+   "layer": "ncurses",
+   "test": "tests/test_ai_agent_project_instructions.py::test_specific_file_wins_over_agents_md",
+   "status": "new"
+  },
+  {
+   "id": "SC-ai-agent-38d",
+   "requirement": "Project instructions",
+   "layer": "ncurses",
+   "test": "tests/test_ai_agent_project_instructions.py::test_bound_key_cuts_the_file_and_names_itself",
+   "status": "new"
+  },
+  {
+   "id": "SC-ai-agent-39",
+   "requirement": "What the user sees during a run",
+   "layer": "ncurses",
+   "test": "tests/test_ai_agent_run_contracts.py::test_spinner_glyph_and_seconds_advance",
+   "status": "new"
+  },
+  {
+   "id": "SC-ai-agent-40",
+   "requirement": "What the user sees during a run",
+   "layer": "ncurses",
+   "test": "tests/test_ai_agent_run_visibility.py::test_agent_slow_command_shows_running_line_and_times_out",
+   "status": "new"
+  },
+  {
+   "id": "SC-ai-agent-40",
+   "requirement": "What the user sees during a run",
+   "layer": "ncurses",
+   "test": "tests/test_ai_agent_run_visibility.py::test_agent_quick_command_shows_running_line_and_completes",
+   "status": "new"
+  },
+  {
+   "id": "SC-ai-agent-41",
+   "requirement": "What the user sees during a run",
+   "layer": "ncurses",
+   "test": "tests/test_ai_agent.py::test_agent_offers_followup_when_done",
+   "status": "covered"
+  },
+  {
+   "id": "SC-ai-agent-42",
+   "requirement": "What the user sees during a run",
+   "layer": "ncurses",
+   "test": "tests/test_ai_queue.py::test_esc_cancels_running_task",
+   "status": "covered"
+  },
+  {
+   "id": "SC-ai-agent-42",
+   "requirement": "What the user sees during a run",
+   "layer": "ncurses",
+   "test": "tests/test_ai_queue.py::test_esc_clears_the_queue",
+   "status": "covered"
+  },
+  {
+   "id": "SC-ai-agent-43",
+   "requirement": "What the user sees during a run",
+   "layer": "ncurses",
+   "test": "tests/test_ai_agent_reply_modal.py::test_reply_behind_task_prompt_waits_for_it",
+   "status": "new"
+  },
+  {
+   "id": "SC-ai-agent-44",
+   "requirement": "What the user sees during a run",
+   "layer": "ncurses",
+   "test": "tests/test_ai_agent_gaps.py::test_window_closed_during_run_repaints_at_once",
+   "status": "new"
+  },
+  {
+   "id": "SC-ai-agent-44",
+   "requirement": "What the user sees during a run",
+   "layer": "ncurses",
+   "test": "tests/test_ai_agent_gaps.py::test_window_closed_during_run_applies_nothing",
+   "status": "new"
+  },
+  {
+   "id": "SC-ai-agent-45",
+   "requirement": "What the user sees during a run",
+   "layer": "ncurses",
+   "test": "tests/test_ai_pane_wrap_agent.py::test_long_answer_wraps_to_readable_measure",
+   "status": "covered"
+  },
+  {
+   "id": "SC-ai-agent-46",
+   "requirement": "Processes never touch the terminal",
+   "layer": "ncurses",
+   "test": "tests/test_ai_tool_tty.py::test_tool_command_cannot_write_to_the_editor_terminal",
+   "status": "covered"
+  },
+  {
+   "id": "SC-ai-agent-47",
+   "requirement": "Processes never touch the terminal",
+   "layer": "ncurses",
+   "test": "tests/test_ai_agent_engine_contracts.py::test_claudecli_spawn_is_its_own_session_with_no_terminal",
+   "status": "new"
+  },
+  {
+   "id": "SC-ai-agent-47",
+   "requirement": "Processes never touch the terminal",
+   "layer": "config-file",
+   "test": "tests/test_ai_agent_engine_contracts.py::test_hook_and_git_checkpoint_spawns_are_their_own_session",
+   "status": "new"
+  },
+  {
+   "id": "SC-ai-agent-47",
+   "requirement": "Processes never touch the terminal",
+   "layer": "ncurses",
+   "test": "tests/test_ai_agent_engine_contracts.py::test_hosted_engine_spawn_is_its_own_session_with_no_terminal",
+   "status": "new"
+  },
+  {
+   "id": "SC-ai-agent-48",
+   "requirement": "Processes never touch the terminal",
+   "layer": "ncurses",
+   "test": "tests/test_ai_agent_screen_oracle.py::test_invariant_holds_under_ask_with_boxes_reload_denial_and_flash",
+   "status": "new"
+  },
+  {
+   "id": "SC-ai-agent-48",
+   "requirement": "Processes never touch the terminal",
+   "layer": "ncurses",
+   "test": "tests/test_ai_agent_screen_oracle.py::test_invariant_holds_under_auto_with_a_plan_and_full_review",
+   "status": "new"
+  },
+  {
+   "id": "SC-ai-agent-49",
+   "requirement": "The hosted engine",
+   "layer": "ncurses",
+   "test": "tests/test_ai_agent_gaps.py::test_hosted_session_announces_its_checkpoint",
+   "status": "new"
+  },
+  {
+   "id": "SC-ai-agent-50",
+   "requirement": "The hosted engine",
+   "layer": "ncurses",
+   "test": "tests/test_ai_agent_engine_contracts.py::test_hosted_engine_argv_under_ask",
+   "status": "new"
+  },
+  {
+   "id": "SC-ai-agent-50",
+   "requirement": "The hosted engine",
+   "layer": "ncurses",
+   "test": "tests/test_ai_agent_engine_contracts.py::test_hosted_engine_argv_under_edits",
+   "status": "new"
+  },
+  {
+   "id": "SC-ai-agent-50",
+   "requirement": "The hosted engine",
+   "layer": "ncurses",
+   "test": "tests/test_ai_agent_engine_contracts.py::test_hosted_engine_argv_under_auto",
+   "status": "new"
+  },
+  {
+   "id": "SC-ai-agent-50",
+   "requirement": "The hosted engine",
+   "layer": "ncurses",
+   "test": "tests/test_ai_agent_engine_contracts.py::test_hosted_engine_argv_opens_the_web_once_the_switch_is_on",
+   "status": "new"
+  },
+  {
+   "id": "SC-ai-agent-51",
+   "requirement": "The hosted engine",
+   "layer": "ncurses",
+   "test": "tests/test_ai_host.py::test_host_permission_allow",
+   "status": "covered"
+  },
+  {
+   "id": "SC-ai-agent-51",
+   "requirement": "The hosted engine",
+   "layer": "ncurses",
+   "test": "tests/test_ai_host.py::test_host_permission_deny",
+   "status": "covered"
+  },
+  {
+   "id": "SC-ai-agent-51",
+   "requirement": "The hosted engine",
+   "layer": "ncurses",
+   "test": "tests/test_ai_host_dial_and_interrupt.py::test_host_edits_webfetch_asks_and_denial_is_visible",
+   "status": "new"
+  },
+  {
+   "id": "SC-ai-agent-51",
+   "requirement": "The hosted engine",
+   "layer": "ncurses",
+   "test": "tests/test_ai_host_dial_and_interrupt.py::test_host_edits_write_is_auto_approved_without_a_box",
+   "status": "new"
+  },
+  {
+   "id": "SC-ai-agent-51",
+   "requirement": "The hosted engine",
+   "layer": "ncurses",
+   "test": "tests/test_ai_host_dial_and_interrupt.py::test_host_edits_read_asks",
+   "status": "new"
+  },
+  {
+   "id": "SC-ai-agent-52",
+   "requirement": "The hosted engine",
+   "layer": "ncurses",
+   "test": "tests/test_ai_host.py::test_host_streams_and_reloads_edited_buffer",
+   "status": "covered"
+  },
+  {
+   "id": "SC-ai-agent-53",
+   "requirement": "The hosted engine",
+   "layer": "ncurses",
+   "test": "tests/test_ai_agent_engine_contracts.py::test_hosted_session_end_at_the_prompt_reviews_then_says_so",
+   "status": "new"
+  },
+  {
+   "id": "SC-ai-agent-53",
+   "requirement": "The hosted engine",
+   "layer": "ncurses",
+   "test": null,
+   "status": "blocked",
+   "reason": "the fork/pipe \"could not start\" branch (we_ai_ui.c:7450) is not provokable headlessly: an unexecutable XWPE_AI_HOST_CMD (verified, tests/test_ai_agent_engine_contracts.py::test_hosted_unexecutable_command_reports_send_failed) reaches wpe_host_start() successfully (fork/pipe succeed) and only fails at the first send, so it is reported as \"[agent] send failed - session ended\", not \"could not start\"; forcing fork() or pipe() itself to fail needs a fault-injection point the engine does not have"
+  },
+  {
+   "id": "SC-ai-agent-53b",
+   "requirement": "The hosted engine",
+   "layer": "ncurses",
+   "test": "tests/test_ai_host_dial_and_interrupt.py::test_host_esc_interrupts_turn_and_session_continues",
+   "status": "new"
+  },
+  {
+   "id": "SC-ai-agent-53b",
+   "requirement": "The hosted engine",
+   "layer": "ncurses",
+   "test": "tests/test_ai_host_dial_and_interrupt.py::test_host_esc_ignored_ends_session_at_tool_timeout",
+   "status": "new"
+  },
+  {
+   "id": "SC-ai-agent-54",
+   "requirement": "Errors mid-run",
+   "layer": "ncurses",
+   "test": "tests/test_ai_agent_gaps.py::test_backend_error_mid_loop_shows_the_servers_message",
+   "status": "new"
+  },
+  {
+   "id": "SC-ai-agent-54",
+   "requirement": "Errors mid-run",
+   "layer": "ncurses",
+   "test": "tests/test_ai_agent_gaps.py::test_in_stream_error_event_mid_loop_shows_the_servers_message",
+   "status": "new",
+   "note": "the error arrives as an SSE event inside a 200 stream with no end marker; it is a backend error answered in full, not a hang-up"
+  },
+  {
+   "id": "SC-ai-agent-55",
+   "requirement": "Errors mid-run",
+   "layer": "ncurses",
+   "test": "tests/test_ai_agent_gaps.py::test_connection_closed_with_no_bytes_is_a_transport_error",
+   "status": "new"
+  },
+  {
+   "id": "SC-ai-agent-55",
+   "requirement": "Errors mid-run",
+   "layer": "ncurses",
+   "test": "tests/test_ai_agent_gaps.py::test_non_http_answer_is_a_transport_error",
+   "status": "new"
+  },
+  {
+   "id": "SC-ai-agent-56",
+   "requirement": "Documentation agrees with the run",
+   "layer": "doc",
+   "test": null,
+   "status": "blocked",
+   "reason": "a documentation row, checked by reading the manual against the run, not by an automated test"
+  },
+  {
+   "id": "SC-ai-agent-57",
+   "requirement": "Documentation agrees with the run",
+   "layer": "doc",
+   "test": null,
+   "status": "blocked",
+   "reason": "a documentation row, checked by reading the manual against the run, not by an automated test"
+  }
+ ]
 }
