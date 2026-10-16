@@ -404,6 +404,34 @@ def test_agent_web_tools_refuse_while_the_switch_is_off(tmp_path):
         srv.server_close()
 
 
+# @scenario SC-ai-chat-54
+def test_agent_web_tools_refuse_while_the_switch_is_unanswered(tmp_path):
+    """An agent task runs with nobody to ask: the chat can show its notice
+    because a question is waiting for an answer, but at the auto dial a task
+    would reach the network with nothing on screen.  So an unanswered switch
+    counts as off here, and the file is still left unanswered for the notice."""
+    requests = []
+    srv, port = _web_server(requests)
+    page = "http://127.0.0.1:%d/page" % port
+    try:
+        _seed_xwperc(tmp_path, ["AISearchURL : " + _search_url(port)])
+        env = _mock_env(tmp_path, "TOOL web_fetch %s@@TURN@@DONE ok" % page, policy="auto")
+        with WpeSession(str(tmp_path), SEED, env_extra=env) as s:
+            s.key(ALT.AI); s.key("g", delay=0.6)
+            s.key("do it", delay=0.1); s.key("\r", delay=1.0)
+            assert _traced_within(tmp_path, "agent done", TURN_POLL_S), _trace(tmp_path)
+            s._drain(0.8)
+            rows = pane_text_with_history(s, ["refused"])
+        text = "\n".join(rows)
+        assert "[agent] web_fetch refused: web access is off (Options > AI turns it on)" in text, text
+        assert requests == [], "the agent fetched with the switch unanswered: %r" % requests
+        assert "AIWeb" not in _xwperc(tmp_path), \
+            "the refusal answered the switch: %r" % _xwperc(tmp_path)
+    finally:
+        srv.shutdown()
+        srv.server_close()
+
+
 # @scenario SC-ai-chat-55
 def test_every_query_and_page_is_visible_and_the_answer_names_its_sources(tmp_path):
     """THEN the transcript shows the query, the engine it went to and every

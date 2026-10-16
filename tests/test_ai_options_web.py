@@ -93,17 +93,64 @@ def test_checkbox_shows_the_saved_state_and_ok_writes_it(tmp_path):
 
 # @scenario SC-ai-options-56
 def test_esc_leaves_the_switch_as_it_was(tmp_path):
-    """Toggling the box and leaving with Esc changes nothing on disk."""
+    """Toggling the box and leaving with Esc changes nothing on disk, and the
+    next open shows the saved state again, not the box that was abandoned."""
     _seed_rc(tmp_path, ["AIWeb : on"])
     before = _rc_path(tmp_path).read_bytes()
     with WpeSession(str(tmp_path), SEED, env_extra=ENV) as s:
         _open_dialog(s)
+        first = _box_row(s)
         s.key(TOGGLE, delay=0.4)
         s._drain(0.3)
+        cleared = _box_row(s)
         s.key(ESC, delay=1.0)
         s._drain(0.8)
+        _open_dialog(s)
+        again = _box_row(s)
+        s.key(ESC, delay=0.8)
+        s._drain(0.5)
+    assert BOX_ON in first, "the box does not show the saved AIWeb : on: %r" % first
+    assert BOX_OFF in cleared, "Alt-W did not clear the box: %r" % cleared
+    assert BOX_ON in again, "the abandoned box came back instead of the saved state: %r" % again
     assert _rc_path(tmp_path).read_bytes() == before, \
         "Esc wrote to xwperc: %r" % _rc_path(tmp_path).read_text()
+
+
+# @scenario SC-ai-options-55
+def test_a_one_session_override_is_never_saved(tmp_path):
+    """XWPE_AI_WEB holds for one session only.  The box shows the effective
+    state, like every other field, so it never contradicts what the assistant
+    will do; what Ok writes comes from the config layer, which keeps the file's
+    own value for a key the environment is shadowing.  Otherwise a user would
+    find the web permanently on after one run with the variable set."""
+    _seed_rc(tmp_path, ["AIPolicy : ask"])
+    env = dict(ENV, XWPE_AI_WEB="1")
+    with WpeSession(str(tmp_path), SEED, env_extra=env) as s:
+        _open_dialog(s)
+        shown = _box_row(s)
+        s.key(OK, delay=1.2)
+        s._drain(1.0)
+    assert BOX_ON in shown, \
+        "the box hides that the web is on this session: %r" % shown
+    assert _rc_web(tmp_path) == [], \
+        "Ok persisted the XWPE_AI_WEB override: %r" % _rc_web(tmp_path)
+
+
+# @scenario SC-ai-options-55
+def test_an_override_does_not_erase_the_saved_answer(tmp_path):
+    """The other direction: XWPE_AI_WEB=0 over a saved `on` shows the box clear
+    for the session, and Ok leaves the saved `on` alone, so the web is back on
+    the next plain launch instead of being silently turned off for good."""
+    _seed_rc(tmp_path, ["AIWeb : on"])
+    env = dict(ENV, XWPE_AI_WEB="0")
+    with WpeSession(str(tmp_path), SEED, env_extra=env) as s:
+        _open_dialog(s)
+        shown = _box_row(s)
+        s.key(OK, delay=1.2)
+        s._drain(1.0)
+    assert BOX_OFF in shown, "the box hides that the web is off this session: %r" % shown
+    assert _rc_web(tmp_path) == ["AIWeb : on"], \
+        "Ok let a one-session off overwrite the saved answer: %r" % _rc_web(tmp_path)
 
 
 # @scenario SC-ai-options-55

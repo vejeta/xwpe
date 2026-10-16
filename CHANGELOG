@@ -247,10 +247,19 @@ Changes
   time.  With the web on each search and page goes through the permission
   dial like the agent's, the transcript shows the query, the engine and
   every URL read, the answer ends with a "sources:" line, and the pane
-  header reads "... | web".  With AIWeb off the agent's web tools refuse
-  too, naming the switch.  The switch is also a "Web access" box on the
-  first row of Options > AI (Alt-W), beside "Enable AI assistant".
-  XWPE_AI_WEB=0|1 overrides it for one session.
+  header reads "... | web".  Until AIWeb says on the agent's web tools
+  refuse too, naming the switch: the chat can ask its notice because a
+  question is waiting for an answer, while an agent task runs on its own
+  and at the auto dial nothing would ask, so an unanswered switch counts
+  as off there.  The switch is also a "Web access" box on the first row
+  of Options > AI (Alt-W), beside "Enable AI assistant"; the box shows
+  and saves the stored value, never a one-session XWPE_AI_WEB override.
+  With the Claude CLI backend the switch now reaches the CLI as well
+  (WebSearch and WebFetch pre-approved while on, denied while off);
+  before, that backend was handed the web whatever the switch said.  The
+  auto dial tells that CLI to bypass its own permission checks, so leave
+  auto if the web must be demonstrably shut.  XWPE_AI_WEB=0|1 overrides
+  the switch for one session.
   Tests: tests/test_ai_chat_web.py, tests/test_ai_options_web.py.
 
 * The waiting line of an Edit, a Complete or an agent run ends with the

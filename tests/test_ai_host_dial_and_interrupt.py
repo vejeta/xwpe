@@ -66,8 +66,12 @@ def _wait(s, needle, tmo=12):
 
 
 def _perm_env(tmp_path, mock, trace, policy="edits"):
+    # The dial is the subject, so the web switch is answered: the switch is
+    # checked before the dial, and an unanswered one would refuse the hosted
+    # engine's WebFetch before the permission box could appear.
     return {"XWPE_AI_ENABLE": "1", "XWPE_AI_AGENT_ENGINE": "claude-code",
             "XWPE_AI_POLICY": policy, "XWPE_AI_HOST_CMD": "python3 %s" % mock,
+            "XWPE_AI_WEB": "1",
             "XWPE_AI_TRACE": str(trace)}
 
 

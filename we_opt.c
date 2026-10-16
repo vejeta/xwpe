@@ -1135,10 +1135,12 @@ int WpeWriteProgramming(ECNT *cn, char *section, FILE *opt_file)
  fprintf(opt_file, "AIPolicy : %s\n",
          wpe_ai_policy_name(wpe_ai_cfg_int_to_save(WPE_AI_CFG_POLICY)));
  /* The web switch is written only once it has been answered (the notice's y,
-    or Options > AI), so an xwperc that never named it keeps asking; and the
-    saved state goes to the file, never a one-session XWPE_AI_WEB override. */
- if (e_ai_web != WPE_AI_WEB_UNSET)
-  fprintf(opt_file, "AIWeb : %s\n", wpe_ai_web_name(e_ai_web));
+    or Options > AI), so an xwperc that never named it keeps asking; and it
+    goes through the config layer like every other overridable key, so a
+    one-session XWPE_AI_WEB never becomes configuration on its own. */
+ if (wpe_ai_cfg_int_to_save(WPE_AI_CFG_WEB) != WPE_AI_WEB_UNSET)
+  fprintf(opt_file, "AIWeb : %s\n",
+          wpe_ai_web_name(wpe_ai_cfg_int_to_save(WPE_AI_CFG_WEB)));
 #ifdef WPE_AI_AGENT_HOST
  fprintf(opt_file, "AIAgentEngine : %s\n",
          wpe_ai_cfg_int_to_save(WPE_AI_CFG_AGENT_ENGINE) == WPE_AI_ENGINE_CLAUDE_HOST

@@ -201,9 +201,16 @@ saves what the box says, and clearing a box you were never asked about leaves
 the question still to be asked. With the web on, every search and page goes through the
 permission dial like the agent's (`APPROVE?  <query>` under *ask* and *edits*,
 unasked under *auto*), the transcript shows the query, `[agent] search engine:
-<host>` and every URL read, the answer ends with a `sources:` line, and with
-the web off the chat offers no web tool, names them as the Agent's, and the
-agent's web tools refuse with a line naming the switch. A tool line the chat
+<host>` and every URL read, the answer ends with a `sources:` line, and until
+the switch says on the chat offers no web tool, names them as the Agent's, and
+the agent's web tools refuse with a line naming the switch. The chat can ask
+its notice because a question is waiting for an answer; an agent task runs on
+its own, so there an unanswered switch counts as off rather than prompting
+mid-task. One backend is outside this: with the Claude CLI the editor passes
+the switch on to the CLI (the web tools are pre-approved when it is on and
+denied when it is off), but the *auto* dial tells that CLI to bypass its own
+permission checks, so leave *auto* if you need the web demonstrably shut.
+A tool line the chat
 cannot run (a web tool with the switch off, an invented name) is answered, not
 dropped: the pane says which tool was not run and why, and the answer follows.
 `XWPE_AI_WEB=0|1` overrides the switch for one session.

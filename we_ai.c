@@ -242,14 +242,14 @@ const char *wpe_ai_web_name(int state)
  *
  * XWPE_AI_WEB=1 or 0 in the environment wins for the session (a test, or a
  * user who wants the web off today without touching the file); otherwise
- * the saved AIWeb, which may still be unanswered.
+ * the saved AIWeb, which may still be unanswered.  The variable is applied
+ * once at startup, like every other XWPE_AI_* override, so the file's own
+ * value stays with the config layer and Save Options cannot turn a
+ * one-session override into configuration.
  * Return: WPE_AI_WEB_ON, WPE_AI_WEB_OFF or WPE_AI_WEB_UNSET.
  */
 int wpe_ai_web_state(void)
 {
- const char *e = getenv("XWPE_AI_WEB");
- if (e && *e == '1') return WPE_AI_WEB_ON;
- if (e && *e == '0') return WPE_AI_WEB_OFF;
  return e_ai_web;
 }
 
@@ -721,6 +721,7 @@ static const struct ai_cfg_binding g_ai_cfg_bind[WPE_AI_CFG_KEYS] = {
  { &e_ai_tool_timeout, NULL },              /* WPE_AI_CFG_TOOL_TIMEOUT */
  { &e_ai_project_scope, NULL },             /* WPE_AI_CFG_PROJECT_SCOPE */
  { &e_ai_project_max,  NULL },              /* WPE_AI_CFG_PROJECT_MAX   */
+ { &e_ai_web,          NULL },              /* WPE_AI_CFG_WEB           */
 };
 
 /**
@@ -808,6 +809,10 @@ static void ai_config_apply_env(void)
  if ((e = getenv("XWPE_AI_POLICY"))) {
   e_ai_policy = wpe_ai_policy_from_name(e);
   ai_file_shadow(WPE_AI_CFG_POLICY);
+ }
+ if ((e = getenv("XWPE_AI_WEB")) && (*e == '0' || *e == '1')) {
+  e_ai_web = (*e == '1') ? WPE_AI_WEB_ON : WPE_AI_WEB_OFF;
+  ai_file_shadow(WPE_AI_CFG_WEB);
  }
  if ((e = getenv("XWPE_AI_AGENT_ENGINE"))) {
   e_ai_agent_engine = (!strcmp(e, "claude-code") || !strcmp(e, "host"))
@@ -1612,6 +1617,34 @@ static char *ai_flatten_prompt(const wpe_ai_req *req)
  return p;
 }
 
+/**
+ * ai_cli_web_names - Add the CLI's two web tools to an argument list.
+ * @argv: the argument vector being built; @a: the next free slot.
+ *
+ * Used where a --disallowedTools list is already open, so the names join it
+ * rather than opening a second one the CLI would take instead of the first.
+ * Return: the next free slot.
+ */
+static int ai_cli_web_names(char **argv, int a)
+{
+ argv[a++] = "WebSearch";
+ argv[a++] = "WebFetch";
+ return a;
+}
+
+/**
+ * ai_cli_deny_web - Tell the CLI not to use its web tools.
+ * @argv: the argument vector being built; @a: the next free slot.
+ *
+ * For the dial positions whose own flags carry no tool list of their own.
+ * Return: the next free slot.
+ */
+static int ai_cli_deny_web(char **argv, int a)
+{
+ argv[a++] = "--disallowedTools";
+ return ai_cli_web_names(argv, a);
+}
+
 /* Spawn `claude -p --output-format json`, feeding the prompt on stdin and
  * reading the single JSON result off the child's stdout.  Uses the user's own
  * Claude Code login -- no API key, no extra dependency. */
@@ -1633,7 +1666,7 @@ static int ai_claudecli_open(struct wpe_ai_stream *st, const wpe_ai_req *req)
  }
  if (pid == 0) {                      /* child */
   char *argv[24];
-  int a = 0, dn;
+  int a = 0, dn, web_on;
   wpe_ai_child_new_session();         /* no controlling terminal to paint on */
   dup2(in[0], 0);
   dup2(out[1], 1);
@@ -1655,24 +1688,36 @@ static int ai_claudecli_open(struct wpe_ai_stream *st, const wpe_ai_req *req)
   if (e_ai_resume_session && *e_ai_resume_session) {
    argv[a++] = "--resume"; argv[a++] = e_ai_resume_session;
   }
-  /* Pre-approve the read-only web tools so the model can look things up.
-     `claude -p` cannot prompt, so any tool that is not pre-allowed is denied --
-     that is why Claude used to answer "give me permission to the web tool".
-     WebSearch/WebFetch only read the network (they never touch the workspace),
-     so allowing them in every mode is safe and does NOT disturb the agent's own
-     tool protocol (the file/shell tools stay governed by the dial below).
-     Placed before the dial block; --allowedTools stops at the next --flag. */
-  argv[a++] = "--allowedTools"; argv[a++] = "WebSearch"; argv[a++] = "WebFetch";
+  /* The web tools follow the same switch as the editor's own: pre-approved
+     while web access is on, denied while it is off.  `claude -p` cannot
+     prompt, so a tool that is neither allowed nor denied is refused anyway --
+     that is why Claude used to answer "give me permission to the web tool" --
+     but the deny is passed explicitly so the switch reads the same whichever
+     dial the backend runs at.  They only read the network and never touch the
+     workspace, so they do not disturb the agent's tool protocol (the file and
+     shell tools stay governed by the dial below).  Placed before the dial
+     block; --allowedTools stops at the next --flag. */
+  web_on = wpe_ai_web_state() == WPE_AI_WEB_ON;
+  if (web_on) {
+   argv[a++] = "--allowedTools"; argv[a++] = "WebSearch"; argv[a++] = "WebFetch";
+  }
   /* The permission dial, pre-granted (claude -p cannot prompt).  Placed last:
      --disallowedTools is variadic and swallows following bare arguments. */
   if (e_ai_cli_mode == WPE_AI_CLI_AUTO) {
    argv[a++] = "--dangerously-skip-permissions";
+   /* This dial tells the CLI to bypass its own permission checks, so a deny
+      list is the most the editor can say here; it cannot promise the CLI will
+      honour it.  A user who needs the web demonstrably shut must leave this
+      dial, which the manual says beside the switch. */
+   if (!web_on) a = ai_cli_deny_web(argv, a);
   } else if (e_ai_cli_mode == WPE_AI_CLI_EDITS) {
    argv[a++] = "--permission-mode"; argv[a++] = "acceptEdits";
+   if (!web_on) a = ai_cli_deny_web(argv, a);
   } else {                            /* text-only: xwpe owns every edit */
    argv[a++] = "--disallowedTools";
    argv[a++] = "Write"; argv[a++] = "Edit"; argv[a++] = "MultiEdit";
    argv[a++] = "NotebookEdit"; argv[a++] = "Bash";
+   if (!web_on) a = ai_cli_web_names(argv, a);
   }
   argv[a] = NULL;
   execvp("claude", argv);

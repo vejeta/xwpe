@@ -143,7 +143,10 @@ def test_edits_auto_approves_writes_and_asks_for_commands_and_web(tmp_path):
         "TOOL web_search x",
         "TOOL apply_patch a.txt\n<<<<<<< SEARCH\nalpha\n=======\nbeta\n>>>>>>> REPLACE\n@@END",
         "DONE all done"])
-    env = _env(tmp_path, turns, "edits",
+    # The web switch is answered on because the dial is what this asserts; an
+    # unanswered switch counts as off for an agent task, which has nobody to
+    # ask, and the search would be refused before the dial saw it.
+    env = _env(tmp_path, turns, "edits", XWPE_AI_WEB="1",
                XWPE_AI_SEARCH_URL="http://127.0.0.1:%d/find?q=%%s" % port)
     try:
         with WpeSession(str(tmp_path), SEED, env_extra=env) as s:
@@ -182,6 +185,7 @@ def test_edits_auto_approves_writes_and_asks_for_commands_and_web(tmp_path):
 def test_auto_web_search_is_auto_approved_and_reaches_the_server(tmp_path):
     srv, port, paths = _search_server()
     env = _env(tmp_path, "TOOL web_search x y@@TURN@@DONE found", "auto",
+               XWPE_AI_WEB="1",   # the dial is the subject; the switch must be open
                XWPE_AI_SEARCH_URL="http://127.0.0.1:%d/find?q=%%s" % port)
     try:
         with WpeSession(str(tmp_path), SEED, env_extra=env) as s:

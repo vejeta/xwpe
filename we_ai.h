@@ -202,6 +202,7 @@ enum wpe_ai_cfg_key {
   WPE_AI_CFG_TOOL_TIMEOUT,    /* AIToolTimeout <- XWPE_AI_TOOL_TIMEOUT (int)    */
   WPE_AI_CFG_PROJECT_SCOPE,   /* AIProjectInstructions <- XWPE_AI_PROJECT_INSTRUCTIONS (int) */
   WPE_AI_CFG_PROJECT_MAX,     /* AIProjectInstructionsMax <- XWPE_AI_PROJECT_INSTRUCTIONS_MAX (int) */
+  WPE_AI_CFG_WEB,             /* AIWeb         <- XWPE_AI_WEB          (int)    */
   WPE_AI_CFG_KEYS
 };
 /* The value Save Options writes for a key (int keys / string keys; a string

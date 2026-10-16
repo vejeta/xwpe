@@ -7883,7 +7883,9 @@ int e_ai_options(FENSTER *f)
     first: it decides whether anything leaves this machine, which is not a
     setting to hide behind the Advanced button.  Ticked = the saved AIWeb is
     on; see the Ok read below for why clearing an unanswered box leaves it
-    unanswered. */
+    unanswered.  The box shows the EFFECTIVE state, as every other field does,
+    so it never contradicts what the assistant will actually do; whether Ok
+    writes it is the config layer's business, not the box's. */
  e_add_sswstr(36, 2, 0, AltW,
               wpe_ai_web_state() == WPE_AI_WEB_ON ? 1 : 0, "Web access", o);
 
@@ -7950,10 +7952,14 @@ int e_ai_options(FENSTER *f)
     it turns the web off only when it was on: a user who opens the dialog and
     presses Ok without touching an unanswered box has not refused the web, so
     the first-use notice still gets its one chance to ask. */
- if (o->sstr[1]->num)
+ if (o->sstr[1]->num) {
+  if (wpe_ai_web_state() != WPE_AI_WEB_ON)
+   wpe_ai_cfg_user_changed(WPE_AI_CFG_WEB);  /* the user chose it; it is config now */
   e_ai_web = WPE_AI_WEB_ON;
- else if (wpe_ai_web_state() == WPE_AI_WEB_ON)
+ } else if (wpe_ai_web_state() == WPE_AI_WEB_ON) {
+  wpe_ai_cfg_user_changed(WPE_AI_CFG_WEB);
   e_ai_web = WPE_AI_WEB_OFF;
+ }
  e_ai_policy  = (o->pstr[1]->num >= 0 && o->pstr[1]->num < 3) ? o->pstr[1]->num : 0;
  new_be = bk[(o->pstr[0]->num >= 0 && o->pstr[0]->num < 4) ? o->pstr[0]->num : 0];
  if (ai_opt_commit_connection_fields(o))
@@ -9537,15 +9543,19 @@ static void ai_agent_note_search_engine(FENSTER *f, const char *surl)
 }
 
 /**
- * ai_web_is_off - Has the user switched the web off (saved or for this session)?
+ * ai_web_is_off - May the agent's web tools NOT run?
  *
- * Unanswered is not off: the agent runs its web tools under the dial as it
- * always did, and the chat asks its notice.
- * Return: 1 when AIWeb is off.
+ * Only an answered "on" opens the web.  The chat can ask its notice because a
+ * question is waiting for an answer; an agent task runs on its own, and at the
+ * `auto` dial nothing would ask, so an unanswered switch there would have let
+ * the first task a user ever ran reach the network unasked.  Unanswered is
+ * therefore treated as off, which is also what the manual promises, and the
+ * refusal names Options > AI so the user knows where to say yes.
+ * Return: 1 unless AIWeb is on.
  */
 static int ai_web_is_off(void)
 {
- return wpe_ai_web_state() == WPE_AI_WEB_OFF;
+ return wpe_ai_web_state() != WPE_AI_WEB_ON;
 }
 
 /**
@@ -9637,6 +9647,9 @@ static int ai_web_notice(FENSTER *f)
   }
   if (e_toupper(c) == 'Y' || c == WPE_CR || c == WPE_WR) {
    e_ai_web = WPE_AI_WEB_ON;
+   /* The user answered the question, so this is configuration from now on,
+      even if XWPE_AI_WEB was what raised it this session. */
+   wpe_ai_cfg_user_changed(WPE_AI_CFG_WEB);
    ai_persist_settings(f);
    wpe_ai_trace("chat web access enabled");
    return 1;
@@ -10995,6 +11008,21 @@ static enum host_tool_class ai_host_tool_class(const char *name)
 }
 
 /**
+ * ai_host_tool_is_web - Is this one of the host engine's two network tools?
+ * @name: the tool the CLI named.
+ *
+ * The web switch has to recognise them by name here, because the host engine
+ * runs its own tools and only reports them: there is no dispatcher of ours to
+ * gate.
+ * Return: 1 for WebSearch and WebFetch.
+ */
+static int ai_host_tool_is_web(const char *name)
+{
+ if (!name) return 0;
+ return !strcmp(name, HOST_TOOL_WEBFETCH) || !strcmp(name, HOST_TOOL_WEBSEARCH);
+}
+
+/**
  * ai_host_tool_asks_under_edits - Does this class need the box under "edits"?
  * @cls: the tool's class.
  *
@@ -11027,6 +11055,14 @@ static int host_ev_permission(const char *tool, const char *arg, void *ud)
  const char *shown = arg ? arg : "";
  enum host_tool_class cls = ai_host_tool_class(tool);
  int ok;
+ /* The web switch decides before the dial does.  The dial asks at two of its
+    three positions, so at `auto` a host task would have reached the network
+    with the switch off and nothing on screen; refusing here makes the switch
+    mean the same thing for the host engine as for the editor's own tools. */
+ if (ai_host_tool_is_web(tool) && ai_web_is_off()) {
+  free(ai_agent_refuse_web(f, name, shown));
+  return 0;
+ }
  snprintf(what, sizeof what, "%s %.640s", name, shown);
  g_host_in_prompt = 1;
  ok = ai_agent_approve(f, what, ai_host_tool_asks_under_edits(cls));

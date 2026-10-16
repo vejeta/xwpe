@@ -252,8 +252,12 @@ def _claudecli_agent(tmp_path, policy):
     capture = str(tmp_path / "request.txt")
     facts = str(tmp_path / "claude.facts")
     bindir = _stub_claude(str(tmp_path), capture, "DONE ok", facts=facts)
+    # The web switch is answered on: these cases assert what the dial puts on
+    # the CLI's command line, and the web tools are pre-approved only while the
+    # switch is on (tests/test_ai_claudecli_web.py owns both of its states).
     env = {"XWPE_AI_ENABLE": "1", "XWPE_AI_BACKEND": "claudecli", "XWPE_AI_MODEL": "sonnet",
            "XWPE_AI_POLICY": policy, "PATH": bindir + ":" + os.environ.get("PATH", ""),
+           "XWPE_AI_WEB": "1",
            "XWPE_AI_TRACE": str(tmp_path / "ai.trace")}
     with WpeSession(str(tmp_path), SEED, env_extra=env) as s:
         _start_agent(s, "look", delay=1.0)

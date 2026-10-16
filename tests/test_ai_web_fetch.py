@@ -63,6 +63,9 @@ def test_agent_web_fetch_hits_server(tmp_path):
             "XWPE_AI_ENABLE": "1",
             "XWPE_AI_BACKEND": "mock",
             "XWPE_AI_POLICY": "auto",     # auto-approve the tool (no prompt)
+            # The web switch has to be on: unanswered counts as off for an
+            # agent task, which runs with nobody to ask.
+            "XWPE_AI_WEB": "1",
             "XWPE_AI_MOCK_REPLY": "TOOL web_fetch " + url + "@@TURN@@Done.",
         }
         with WpeSession(tempfile.mkdtemp(), "int main(void){return 0;}\n",

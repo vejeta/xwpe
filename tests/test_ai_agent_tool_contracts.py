@@ -103,9 +103,14 @@ def _multi_turn_server(captured, replies):
 
 
 def _seed_openai_xwperc(tmp_path, port, policy):
+    # AIWeb is answered here because these cases are about what the web tools
+    # return (bounds, a 404, a timeout), not about the switch that opens them:
+    # an unanswered switch counts as off for an agent task, which has nobody to
+    # ask.  tests/test_ai_chat_web.py owns the switch itself.
     _seed_xwperc(tmp_path, ["AIBackend : 1",
                             "AIEndpoint : http://127.0.0.1:%d/v1" % port,
                             "AIModel : m",
+                            "AIWeb : on",
                             "AIPolicy : %s" % policy])
 
 

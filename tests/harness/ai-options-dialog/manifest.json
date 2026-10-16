@@ -523,6 +523,20 @@
       "status": "new"
     },
     {
+      "id": "SC-ai-options-55",
+      "requirement": "The web access switch is in the main dialog",
+      "layer": "config-file",
+      "test": "tests/test_ai_options_web.py::test_a_one_session_override_is_never_saved",
+      "status": "new"
+    },
+    {
+      "id": "SC-ai-options-55",
+      "requirement": "The web access switch is in the main dialog",
+      "layer": "config-file",
+      "test": "tests/test_ai_options_web.py::test_an_override_does_not_erase_the_saved_answer",
+      "status": "new"
+    },
+    {
       "id": "SC-ai-options-56",
       "requirement": "The web access switch is in the main dialog",
       "layer": "ncurses",

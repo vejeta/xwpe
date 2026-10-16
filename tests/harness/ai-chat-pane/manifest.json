@@ -507,6 +507,27 @@
       "status": "new"
     },
     {
+      "id": "SC-ai-chat-54",
+      "requirement": "Reaching the web",
+      "layer": "ncurses",
+      "test": "tests/test_ai_chat_web.py::test_agent_web_tools_refuse_while_the_switch_is_unanswered",
+      "status": "new"
+    },
+    {
+      "id": "SC-ai-chat-52",
+      "requirement": "Reaching the web",
+      "layer": "ncurses",
+      "test": "tests/test_ai_claudecli_web.py::test_claudecli_allows_web_tools_when_the_switch_is_on",
+      "status": "new"
+    },
+    {
+      "id": "SC-ai-chat-52",
+      "requirement": "Reaching the web",
+      "layer": "ncurses",
+      "test": "tests/test_ai_claudecli_web.py::test_claudecli_denies_web_tools_when_the_switch_is_off",
+      "status": "new"
+    },
+    {
       "id": "SC-ai-chat-55",
       "requirement": "Reaching the web",
       "layer": "ncurses",

@@ -38,6 +38,12 @@ Sub-commands (all stdlib, no third-party imports, so CI can run it bare):
 Verdicts are PASS, FAIL, BLOCKED (manifest says so) or MISSING (the test did
 not run).  A skipped test counts as FAIL unless its scenario is ``blocked`` or
 its layer is ``live``: a silent skip must never read as coverage.
+
+``check`` collects with ``sys.executable``, so run it with the interpreter the
+suite itself uses -- ``tests/.venv/bin/python tests/harness/harness.py check``.
+Under a bare ``python3`` that has no pyte, nothing collects and every row is
+reported as a problem, which reads like total drift and is only a missing
+import.
 """
 import json
 import os

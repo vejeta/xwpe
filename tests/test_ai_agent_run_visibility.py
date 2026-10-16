@@ -71,6 +71,10 @@ def _env(tmp_path, reply, policy):
         "XWPE_AI_BACKEND": "mock",
         "XWPE_AI_MOCK_REPLY": reply,
         "XWPE_AI_POLICY": policy,
+        # What a denial looks like on screen is the subject here, so the web
+        # switch is answered: unanswered counts as off for an agent task, and
+        # the refusal line would stand in for the denial box.
+        "XWPE_AI_WEB": "1",
         "XWPE_AI_TRACE": str(tmp_path / "ai.trace"),
     }
 

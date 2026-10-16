@@ -15,7 +15,6 @@ tests/test_ai_cancel.py
 tests/test_ai_capabilities_prompt.py
 tests/test_ai_chat_investigate_live.py
 tests/test_ai_claudecli_live.py
-tests/test_ai_claudecli_web.py
 tests/test_ai_compose.py
 tests/test_ai_context.py
 tests/test_ai_diagnostics.py

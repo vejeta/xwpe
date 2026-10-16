@@ -196,9 +196,19 @@ the agent's web calls do (@code{ask} and @code{edits} ask @samp{APPROVE?
 <query>}, @code{auto} runs it), the transcript shows the query, the engine
 (@samp{[agent] search engine: <host>}) and every URL read, the answer ends
 with a @samp{sources:} line listing them, and the pane header gains
-@samp{| web}.  With the web off the chat's prompt offers no web tool and names
-@code{web_search} and @code{web_fetch} as the Agent's, and the agent's own web
-tools refuse with a line naming the switch.  A tool line the chat cannot run
+@samp{| web}.  Until the switch says on the chat's prompt offers no web tool
+and names @code{web_search} and @code{web_fetch} as the Agent's, and the
+agent's own web tools refuse with a line naming the switch.  The chat can ask
+its notice because a question is waiting for an answer; an agent task runs on
+its own and at the @code{auto} dial nothing would ask, so an unanswered switch
+counts as off there rather than interrupting a running task.
+
+One backend sits partly outside this.  With the Claude CLI the editor passes
+the switch on to the CLI, pre-approving @code{WebSearch} and @code{WebFetch}
+while the web is on and denying them while it is off; the @code{auto} dial,
+however, tells that CLI to bypass its own permission checks, so a deny list is
+the most the editor can state there.  Leave @code{auto} if you need the web
+demonstrably shut.  A tool line the chat cannot run
 -- a web tool with the switch off, a name the model invented -- is never left
 unanswered: the pane says which tool was not run and why, the model is told
 which tools it may use, and the answer follows.  @env{XWPE_AI_WEB=0} or
