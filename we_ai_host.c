@@ -166,6 +166,18 @@ wpe_host *wpe_host_start(const char *model, const char *resume, int policy,
    argv[a++] = "--permission-prompts"; argv[a++] = "host";
    argv[a++] = "--permission-prompt-tool"; argv[a++] = "stdio";
   }
+  /* The web switch, on the command line rather than through the editor's
+     permission callback.  The callback only runs where the dial routes prompts
+     back to us, and the auto dial does not: it asks the CLI to run unattended,
+     so a task would otherwise reach the network with the switch unanswered and
+     nothing on the pane.  Naming the two tools here is the lever that is left
+     at every dial.  The auto dial also tells the CLI to bypass its own checks,
+     which the editor cannot undo, so this is what it can state, not a promise
+     it can keep; the manual says so beside the switch. */
+  if (wpe_ai_web_state() != WPE_AI_WEB_ON) {
+   argv[a++] = "--disallowedTools";
+   argv[a++] = "WebSearch"; argv[a++] = "WebFetch";
+  }
   argv[a] = NULL;
   execvp("claude", argv);
   _exit(127);

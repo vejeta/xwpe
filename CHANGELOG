@@ -253,13 +253,16 @@ Changes
   and at the auto dial nothing would ask, so an unanswered switch counts
   as off there.  The switch is also a "Web access" box on the first row
   of Options > AI (Alt-W), beside "Enable AI assistant"; the box shows
-  and saves the stored value, never a one-session XWPE_AI_WEB override.
-  With the Claude CLI backend the switch now reaches the CLI as well
-  (WebSearch and WebFetch pre-approved while on, denied while off);
-  before, that backend was handed the web whatever the switch said.  The
-  auto dial tells that CLI to bypass its own permission checks, so leave
-  auto if the web must be demonstrably shut.  XWPE_AI_WEB=0|1 overrides
-  the switch for one session.
+  the state in force and Ok saves it, but a one-session XWPE_AI_WEB is
+  never turned into a saved setting.  A backend that runs its own tools
+  gets the switch on its command line: the Claude CLI and the hosted
+  claude-code engine are launched with WebSearch and WebFetch
+  pre-approved while the web is on and denied while it is off, where
+  before they were handed the web whatever the switch said.  The hosted
+  engine's auto dial also tells the CLI to bypass its own permission
+  checks, which the editor cannot undo, so leave auto if the web must be
+  demonstrably shut.  XWPE_AI_WEB=0|1 overrides the switch for one
+  session.
   Tests: tests/test_ai_chat_web.py, tests/test_ai_options_web.py.
 
 * The waiting line of an Edit, a Complete or an agent run ends with the

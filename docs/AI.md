@@ -196,9 +196,11 @@ leaves the machine, the model stays where it is -- and the line
 `Enter / y = enable web access      n / Esc = not now`. `y` writes
 `AIWeb : on` to xwperc at once and the turn goes on; `n` answers without the
 web and asks again next time. The permanent off is the **Web access** box on
-the first row of Options > AI (`Alt-W`, beside *Enable AI assistant*); Ok
-saves what the box says, and clearing a box you were never asked about leaves
-the question still to be asked. With the web on, every search and page goes through the
+the first row of Options > AI (`Alt-W`, beside *Enable AI assistant*). The box
+shows the state in force, so it tells you what the assistant will do; Ok saves
+what the box says, except that a one-session `XWPE_AI_WEB` is not turned into
+a saved setting by opening the dialog, and clearing a box you were never asked
+about leaves the question still to be asked. With the web on, every search and page goes through the
 permission dial like the agent's (`APPROVE?  <query>` under *ask* and *edits*,
 unasked under *auto*), the transcript shows the query, `[agent] search engine:
 <host>` and every URL read, the answer ends with a `sources:` line, and until
@@ -206,10 +208,13 @@ the switch says on the chat offers no web tool, names them as the Agent's, and
 the agent's web tools refuse with a line naming the switch. The chat can ask
 its notice because a question is waiting for an answer; an agent task runs on
 its own, so there an unanswered switch counts as off rather than prompting
-mid-task. One backend is outside this: with the Claude CLI the editor passes
-the switch on to the CLI (the web tools are pre-approved when it is on and
-denied when it is off), but the *auto* dial tells that CLI to bypass its own
-permission checks, so leave *auto* if you need the web demonstrably shut.
+mid-task. Where a backend runs its own tools the editor passes the switch on
+its command line instead: the Claude CLI and the hosted `claude-code` engine
+get `WebSearch` and `WebFetch` pre-approved while the web is on and on their
+deny list while it is off. For the hosted engine the *auto* dial also tells
+the CLI to bypass its own permission checks, which the editor cannot undo, so
+the deny list is what it can state there and not a promise it can keep; leave
+*auto* if you need the web demonstrably shut.
 A tool line the chat
 cannot run (a web tool with the switch off, an invented name) is answered, not
 dropped: the pane says which tool was not run and why, and the answer follows.

@@ -7881,11 +7881,11 @@ int e_ai_options(FENSTER *f)
  e_add_sswstr(3, 2, 0, AltE, wpe_ai_enabled() ? 1 : 0, "Enable AI assistant", o);
  /* The web switch sits beside the assistant's own, on the row a user reads
     first: it decides whether anything leaves this machine, which is not a
-    setting to hide behind the Advanced button.  Ticked = the saved AIWeb is
-    on; see the Ok read below for why clearing an unanswered box leaves it
-    unanswered.  The box shows the EFFECTIVE state, as every other field does,
-    so it never contradicts what the assistant will actually do; whether Ok
-    writes it is the config layer's business, not the box's. */
+    setting to hide behind the Advanced button.  Ticked = the web is on for
+    this session, the effective state every other field shows, so the box
+    never contradicts what the assistant will actually do; whether Ok writes
+    it is the config layer's business, not the box's, and the Ok read below
+    says why clearing an unanswered box leaves it unanswered. */
  e_add_sswstr(36, 2, 0, AltW,
               wpe_ai_web_state() == WPE_AI_WEB_ON ? 1 : 0, "Web access", o);
 

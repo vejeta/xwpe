@@ -188,9 +188,11 @@ answers the question without the web and asks again the next time it is
 needed.  The permanent off is Options > AI (@samp{AIWeb : off}), where turning
 things off belongs, so there is no ``never'' key to hit by accident: the
 @samp{Web access} box sits on the first row of Options > AI (@kbd{Alt-W}),
-beside @samp{Enable AI assistant}, and Ok saves what it says.  Clearing a box
-you were never asked about changes nothing, so the notice still gets its one
-chance.  With the
+beside @samp{Enable AI assistant}.  The box shows the state in force, so it
+tells you what the assistant will do, and Ok saves what it says, with one
+exception: a one-session @env{XWPE_AI_WEB} does not become a saved setting
+just because the dialog was opened.  Clearing a box you were never asked about
+changes nothing, so the notice still gets its one chance.  With the
 web on, each search and each page goes through the permission dial exactly as
 the agent's web calls do (@code{ask} and @code{edits} ask @samp{APPROVE?
 <query>}, @code{auto} runs it), the transcript shows the query, the engine
@@ -203,12 +205,15 @@ its notice because a question is waiting for an answer; an agent task runs on
 its own and at the @code{auto} dial nothing would ask, so an unanswered switch
 counts as off there rather than interrupting a running task.
 
-One backend sits partly outside this.  With the Claude CLI the editor passes
-the switch on to the CLI, pre-approving @code{WebSearch} and @code{WebFetch}
-while the web is on and denying them while it is off; the @code{auto} dial,
-however, tells that CLI to bypass its own permission checks, so a deny list is
-the most the editor can state there.  Leave @code{auto} if you need the web
-demonstrably shut.  A tool line the chat cannot run
+A backend that runs its own tools gets the switch on its command line, since
+there is no dispatcher of ours to gate: the Claude CLI and the hosted
+@code{claude-code} engine are launched with @code{WebSearch} and
+@code{WebFetch} pre-approved while the web is on and on their deny list while
+it is off.  For the hosted engine the @code{auto} dial also tells the CLI to
+bypass its own permission checks, which the editor cannot undo, so there the
+deny list is what it can state and not a promise it can keep.  Leave
+@code{auto} if you need the web demonstrably shut.  A tool line the chat
+cannot run
 -- a web tool with the switch off, a name the model invented -- is never left
 unanswered: the pane says which tool was not run and why, the model is told
 which tools it may use, and the answer follows.  @env{XWPE_AI_WEB=0} or

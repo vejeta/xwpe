@@ -514,6 +514,20 @@
       "status": "new"
     },
     {
+      "id": "SC-ai-chat-54",
+      "requirement": "Reaching the web",
+      "layer": "ncurses",
+      "test": "tests/test_ai_host.py::test_host_web_tools_are_denied_at_every_dial_while_the_switch_is_off",
+      "status": "new"
+    },
+    {
+      "id": "SC-ai-chat-54",
+      "requirement": "Reaching the web",
+      "layer": "ncurses",
+      "test": "tests/test_ai_host.py::test_host_web_tools_are_allowed_once_the_switch_is_on",
+      "status": "new"
+    },
+    {
       "id": "SC-ai-chat-52",
       "requirement": "Reaching the web",
       "layer": "ncurses",
