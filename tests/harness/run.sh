@@ -75,6 +75,12 @@ case "$layer" in
   x11|wayland)
     run_pytest "XWPE_BIN=${XWPE_BIN:-$top/xwpe}" $files
     ;;
+  console)
+    # A real Linux VT, via the micro-VM that tests/console/conftest.py boots.
+    # No editor binary takes part: the layer runs the shipped console predicate
+    # inside the VM and asserts on what it prints to the serial port.
+    run_pytest "WPE_BIN=${WPE_BIN:-$top/wpe}" $files
+    ;;
   c-unit)
     make check TESTS="$(echo "$files" | tr '\n' ' ')"
     ;;

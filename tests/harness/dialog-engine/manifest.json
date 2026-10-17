@@ -56,6 +56,19 @@
     {"id": "SC-dialog-engine-43", "requirement": "Only button 1 acts", "layer": "ncurses", "test": "tests/test_opt_dialog_buttons.py::test_other_buttons_over_checkbox_do_not_toggle", "status": "new"},
     {"id": "SC-dialog-engine-43c", "requirement": "Only button 1 acts", "layer": "ncurses", "test": "tests/test_opt_dialog_buttons.py::test_other_buttons_on_close_box_do_not_close", "status": "new"},
     {"id": "SC-dialog-engine-43t", "requirement": "Only button 1 acts", "layer": "ncurses", "test": "tests/test_opt_dialog_buttons.py::test_button2_on_title_row_does_not_drag", "status": "new"},
-    {"id": "SC-dialog-engine-44", "requirement": "Terminal resize", "layer": "ncurses", "test": "tests/test_opt_dialog_place.py::test_resize_does_not_toggle_first_checkbox", "status": "new"}
+    {"id": "SC-dialog-engine-44", "requirement": "Terminal resize", "layer": "ncurses", "test": "tests/test_opt_dialog_place.py::test_resize_does_not_toggle_first_checkbox", "status": "new"},
+    {"id": "SC-dialog-engine-45", "requirement": "Mouse works without GPM", "layer": "ncurses", "test": "tests/test_menu_console_mouse.py::test_the_ai_dialog_opens_on_a_pty_under_a_console_term[screen-256color]", "status": "new"},
+    {"id": "SC-dialog-engine-45", "requirement": "Mouse works without GPM", "layer": "ncurses", "test": "tests/test_menu_console_mouse.py::test_the_ai_dialog_opens_on_a_pty_under_a_console_term[tmux-256color]", "status": "new"},
+    {"id": "SC-dialog-engine-45", "requirement": "Mouse works without GPM", "layer": "ncurses", "test": "tests/test_menu_console_mouse.py::test_the_ai_dialog_opens_under_xterm_as_the_control", "status": "new"},
+    {"id": "SC-dialog-engine-45", "requirement": "Mouse works without GPM", "layer": "console", "test": "tests/console/test_console_tty_predicate.py::test_a_real_virtual_console_keeps_the_gpm_path[vt0]", "status": "new"},
+    {"id": "SC-dialog-engine-45", "requirement": "Mouse works without GPM", "layer": "console", "test": "tests/console/test_console_tty_predicate.py::test_a_real_virtual_console_keeps_the_gpm_path[vt1]", "status": "new"},
+    {"id": "SC-dialog-engine-45", "requirement": "Mouse works without GPM", "layer": "console", "test": "tests/console/test_console_tty_predicate.py::test_a_real_virtual_console_keeps_the_gpm_path[vt63]", "status": "new"},
+    {"id": "SC-dialog-engine-45", "requirement": "Mouse works without GPM", "layer": "console", "test": "tests/console/test_console_tty_predicate.py::test_neither_end_of_a_pty_is_a_console[pty_slave]", "status": "new"},
+    {"id": "SC-dialog-engine-45", "requirement": "Mouse works without GPM", "layer": "console", "test": "tests/console/test_console_tty_predicate.py::test_neither_end_of_a_pty_is_a_console[pty_master]", "status": "new"},
+    {"id": "SC-dialog-engine-45", "requirement": "Mouse works without GPM", "layer": "console", "test": "tests/console/test_console_tty_predicate.py::test_the_console_test_never_reads_term", "status": "new"},
+    {"id": "SC-dialog-engine-45", "requirement": "Mouse works without GPM", "layer": "console", "test": "tests/console/test_console_tty_predicate.py::test_a_serial_console_is_left_as_it_was[console]", "status": "new"},
+    {"id": "SC-dialog-engine-45", "requirement": "Mouse works without GPM", "layer": "console", "test": "tests/console/test_console_tty_predicate.py::test_a_serial_console_is_left_as_it_was[serial]", "status": "new"},
+    {"id": "SC-dialog-engine-46", "requirement": "Mouse works without GPM", "layer": "ncurses", "test": "tests/test_menu_console_mouse.py::test_esc_closes_the_submenu_while_no_console_event_arrives[screen-256color]", "status": "new"},
+    {"id": "SC-dialog-engine-46", "requirement": "Mouse works without GPM", "layer": "ncurses", "test": "tests/test_menu_console_mouse.py::test_esc_closes_the_submenu_while_no_console_event_arrives[tmux-256color]", "status": "new"}
   ]
 }

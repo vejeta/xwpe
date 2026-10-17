@@ -184,17 +184,24 @@ The in-app help file (@file{help.xwpe_eng}) covers the core interface
 but not the v1.6.x features in detail.  For comprehensive
 documentation, use this Texinfo manual (@command{info xwpe}).
 
-@item GNU @command{screen} drops the mouse -- use @command{tmux}
-xwpe uses the modern SGR mouse protocol (@code{ESC[<...M}).
-@command{tmux} forwards it, so the mouse (pointer, click, window
-drag/resize) works inside a tmux session.  GNU @command{screen}
-(depending on its version and @env{TERM}) does @emph{not} pass SGR
-mouse through, so clicks and drags arrive as raw bytes that get typed
-into the editor instead of moving the cursor.  This is a
-@command{screen} limitation, not an xwpe bug: the same xwpe works with
-the mouse in the same terminal @emph{outside} @command{screen}.  Use
-@command{tmux}, or run xwpe directly with no multiplexer.  Keyboard-only
-use is unaffected in either.
+@item Mouse under GNU @command{screen} and @command{tmux}
+xwpe used to choose its mouse backend by asking whether a GPM daemon existed
+on the machine.  On a machine where GPM serves the physical console that is
+true inside @command{screen}, @command{tmux} and an SSH session too, so the
+editor took the console-mouse path on a pseudo-terminal and waited there for a
+console event that could never arrive: a menu stayed painted on screen and
+read no key at all.  It looked like a multiplexer limitation because
+@env{TERM=xterm*} escaped it by accident, and this entry used to say so.  xwpe
+now asks the kernel whether the terminal is a real console, so a
+pseudo-terminal always uses the terminal's own mouse reports and a bare
+console keeps using GPM.
+
+What is still the multiplexer's business is forwarding.  xwpe uses the modern
+SGR mouse protocol (@code{ESC[<...M}); @command{tmux} passes it through, while
+some versions of GNU @command{screen} do not, so clicks and drags may arrive
+as raw bytes that get typed into the buffer instead of moving the cursor.
+Menus and keys work either way, and running xwpe with no multiplexer always
+gives the full mouse.
 
 @item macOS captures the function keys (@key{F8}/@key{F9}@dots{})
 On macOS the top-row keys default to Mission Control, brightness and
