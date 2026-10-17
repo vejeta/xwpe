@@ -68,6 +68,9 @@
     {"id": "SC-dialog-engine-45", "requirement": "Mouse works without GPM", "layer": "console", "test": "tests/console/test_console_tty_predicate.py::test_the_console_test_never_reads_term", "status": "new"},
     {"id": "SC-dialog-engine-45", "requirement": "Mouse works without GPM", "layer": "console", "test": "tests/console/test_console_tty_predicate.py::test_a_serial_console_is_left_as_it_was[console]", "status": "new"},
     {"id": "SC-dialog-engine-45", "requirement": "Mouse works without GPM", "layer": "console", "test": "tests/console/test_console_tty_predicate.py::test_a_serial_console_is_left_as_it_was[serial]", "status": "new"},
+    {"id": "SC-dialog-engine-45", "requirement": "Mouse works without GPM", "layer": "console", "test": "tests/console/test_console_tty_predicate.py::test_nothing_in_the_gpm_backend_reads_the_environment", "status": "new"},
+    {"id": "SC-dialog-engine-45", "requirement": "Mouse works without GPM", "layer": "console", "test": "tests/console/test_console_tty_predicate.py::test_the_chooser_follows_stdin_when_stdin_is_a_terminal", "status": "new"},
+    {"id": "SC-dialog-engine-45", "requirement": "Mouse works without GPM", "layer": "console", "test": "tests/console/test_console_tty_predicate.py::test_the_chooser_falls_back_to_the_controlling_terminal", "status": "new"},
     {"id": "SC-dialog-engine-46", "requirement": "Mouse works without GPM", "layer": "ncurses", "test": "tests/test_menu_console_mouse.py::test_esc_closes_the_submenu_while_no_console_event_arrives[screen-256color]", "status": "new"},
     {"id": "SC-dialog-engine-46", "requirement": "Mouse works without GPM", "layer": "ncurses", "test": "tests/test_menu_console_mouse.py::test_esc_closes_the_submenu_while_no_console_event_arrives[tmux-256color]", "status": "new"}
   ]
