@@ -30,7 +30,9 @@ import pytest
 HERE = os.path.dirname(os.path.abspath(__file__))
 TOP = os.path.normpath(os.path.join(HERE, "..", ".."))
 SRC = os.path.join(TOP, "we_gpm.c")
-PREDICATE = "WpeGpmIsConsoleTty"
+# Both halves of the decision, in dependency order: the pure per-descriptor
+# test, then the chooser that decides which descriptor to ask about.
+PREDICATES = ["WpeGpmTtyIsConsole", "WpeGpmIsConsoleTty"]
 BOOT_TIMEOUT = 180
 
 REQUIRED = ["qemu-system-x86_64", "gcc", "cpio"]
@@ -72,20 +74,30 @@ def pytest_collection_modifyitems(config, items):
             item.add_marker(pytest.mark.skip(reason=reason))
 
 
-def extract_predicate():
-    """The shipped predicate's text, verbatim, from we_gpm.c.
+def _slice_function(text, name):
+    """One static function's text, from its signature to its closing brace."""
+    for sig in ("static int %s(int fd)" % name, "static int %s(void)" % name):
+        start = text.find(sig)
+        if start >= 0:
+            return text[start:text.index("\n}\n", start) + 3]
+    raise ValueError(
+        "no static function %s in %s: the console layer would otherwise compile "
+        "an empty predicate and quietly test nothing" % (name, SRC))
 
-    Fails loudly when it is not there: a renamed or removed predicate must
+
+def extract_predicate():
+    """The shipped console test, verbatim, both functions, dependency order.
+
+    Fails loudly when either is not there: a renamed or removed function must
     break this layer, not quietly leave it testing nothing.
     """
     with open(SRC) as fh:
         text = fh.read()
-    start = text.index("static int %s(void)" % PREDICATE)
-    end = text.index("\n}\n", start) + 3
-    body = text[start:end]
-    assert "KDGETMODE" in body and "/dev/pts/" in body, (
-        "the extracted %s does not look like the console test: %r" % (PREDICATE, body))
-    return body
+    joined = "\n\n".join(_slice_function(text, n) for n in PREDICATES)
+    assert "KDGETMODE" in joined and "/dev/pts/" in joined, (
+        "the extracted console test does not look like the real one: %r"
+        % joined[:400])
+    return joined
 
 
 def _build(workdir):
@@ -159,5 +171,13 @@ def vt_cases(tmp_path_factory):
 
 @pytest.fixture(scope="session")
 def predicate_source():
-    """The text of the shipped predicate that the VM ran."""
+    """The text of the shipped console test that the VM ran."""
     return extract_predicate()
+
+
+@pytest.fixture(scope="session")
+def gpm_source():
+    """The whole shipped GPM backend, for claims about the file rather than
+    about one function inside it."""
+    with open(SRC) as fh:
+        return fh.read()

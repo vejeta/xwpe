@@ -84,7 +84,8 @@ flags, source file lists, and build targets.
 Browse man pages and GNU info nodes from the @samp{Help} menu.
 
 @item
-Mouse support in both terminal (via GPM) and X11 modes.
+Mouse support in terminal mode (the terminal's own mouse reports, or GPM on a
+bare Linux console) and in X11 mode.
 @end itemize
 
 @section Who is xwpe for?

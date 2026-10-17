@@ -31,13 +31,10 @@
 
 static FILE *out;
 
-/* The shipped predicate, with its stdin replaced by the fd under test. */
-#undef STDIN_FILENO
-static int test_fd = -1;
-#define STDIN_FILENO test_fd
+/* The shipped console test: the pure per-descriptor predicate and the chooser
+   that picks which descriptor to ask about.  Extracted verbatim from we_gpm.c
+   at build time, so neither can drift from the editor. */
 #include "pred.inc"
-#undef STDIN_FILENO
-#define STDIN_FILENO 0
 
 static void node(const char *path, int maj, int min)
 {
@@ -63,8 +60,7 @@ static void probe(const char *label, int fd)
 	vt = (ioctl(fd, VT_GETSTATE, &vts) == 0);
 	if (isatty(fd) && ttyname(fd))
 		name = ttyname(fd);
-	test_fd = fd;
-	pred = WpeGpmIsConsoleTty();
+	pred = WpeGpmTtyIsConsole(fd);
 	fprintf(out, "CASE label=%s isatty=%d ttyname=%s kdgetmode=%s "
 		     "vtgetstate=%s predicate=%d\n",
 		label, isatty(fd), name, kd ? "ok" : "enotty",
@@ -108,6 +104,39 @@ int main(void)
 			strerror(errno));
 	}
 	probe("not_a_tty", open("/dev/null", O_RDWR));
+
+	/* The chooser the editor actually calls.  It prefers stdin and falls back
+	   to the controlling terminal when stdin is not one, which is what keeps
+	   the mouse on a console session started as `wpe < notes`.  Both halves
+	   are reported so the host asserts the relationship instead of guessing
+	   which branch ran. */
+	fprintf(out, "CASE label=selector isatty0=%d stdin_console=%d selector=%d\n",
+		isatty(STDIN_FILENO), WpeGpmTtyIsConsole(STDIN_FILENO),
+		WpeGpmIsConsoleTty());
+	fflush(out);
+	{
+		int saved = dup(STDIN_FILENO);
+		int nullfd = open("/dev/null", O_RDWR);
+		int ttyfd = open("/dev/tty", O_RDONLY | O_NOCTTY);
+		int sel;
+
+		if (saved >= 0 && nullfd >= 0)
+			dup2(nullfd, STDIN_FILENO);
+		sel = WpeGpmIsConsoleTty();
+		fprintf(out, "CASE label=selector_redirected selector=%d devtty=%s "
+			"devtty_console=%d\n",
+			sel, ttyfd >= 0 ? "ok" : "unavailable",
+			ttyfd >= 0 ? WpeGpmTtyIsConsole(ttyfd) : 0);
+		fflush(out);
+		if (saved >= 0) {
+			dup2(saved, STDIN_FILENO);
+			close(saved);
+		}
+		if (nullfd >= 0)
+			close(nullfd);
+		if (ttyfd >= 0)
+			close(ttyfd);
+	}
 
 	fprintf(out, "VTPROBE DONE\n");
 	fflush(out);

@@ -93,9 +93,52 @@ def test_the_console_test_never_reads_term(predicate_source):
     Gpm_Open refuses xterm-like TERM values, so xterm escaped and screen, tmux
     and linux did not.  The replacement asks the kernel.  Reading TERM here
     would reintroduce the accident, so the source is asserted, not just the
-    behaviour.
+    behaviour.  This covers both halves of the decision: the per-descriptor
+    predicate and the chooser that picks the descriptor.
     """
     assert "TERM" not in predicate_source, (
         "the console test consults TERM again:\n%s" % predicate_source)
     assert "KDGETMODE" in predicate_source and "VT_GETSTATE" in predicate_source, (
         "the console test no longer asks the kernel:\n%s" % predicate_source)
+
+
+def test_nothing_in_the_gpm_backend_reads_the_environment(gpm_source):
+    """Wider than the predicate, and the gap a review found: the function that
+    INSTALLS the backend is WpeGpmMouseInit, so a getenv("TERM") there would put
+    the accident back while every assertion on the predicate kept passing.  The
+    backend as a whole decides nothing from the environment.
+    """
+    assert "getenv" not in gpm_source, (
+        "the GPM backend reads the environment again; the console decision must "
+        "come from the kernel and the device, never from a variable the user "
+        "sets for other reasons")
+
+
+def test_the_chooser_follows_stdin_when_stdin_is_a_terminal(vt_cases):
+    """The chooser the editor calls prefers stdin, and a stdin that IS a
+    terminal decides on its own: a pty there means a pty, and opening /dev/tty
+    afterwards would only find the same one.
+    """
+    s = _case(vt_cases, "selector")
+    if s["isatty0"] != "1":
+        pytest.skip("the VM's init had no terminal on stdin; the redirected "
+                    "case below is what covers the fallback")
+    assert s["selector"] == s["stdin_console"], (
+        "the chooser disagrees with its own per-descriptor test on stdin: %s" % s)
+
+
+def test_the_chooser_falls_back_to_the_controlling_terminal(vt_cases):
+    """A console session started with its input redirected (`wpe < notes`) must
+    not lose the mouse: curses reads the controlling terminal then, so the
+    chooser asks about that one.  Which answer is right depends on what the VM
+    has, so the contract is the relationship, not a fixed value.
+    """
+    c = _case(vt_cases, "selector_redirected")
+    if c["devtty"] == "ok":
+        assert c["selector"] == c["devtty_console"], (
+            "with stdin redirected the chooser disagrees with the "
+            "per-descriptor test on /dev/tty: %s" % c)
+    else:
+        assert c["selector"] == "0", (
+            "with no controlling terminal the chooser must not claim a console: "
+            "%s" % c)

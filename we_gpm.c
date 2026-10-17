@@ -7,6 +7,7 @@
 
 #include "edit.h"
 #include <gpm.h>
+#include <fcntl.h>
 #include <poll.h>
 #include <string.h>
 #include <time.h>
@@ -30,7 +31,8 @@
 int WpeGpmHandler(Gpm_Event *ep, void *data);
 
 /**
- * WpeGpmIsConsoleTty - Whether this terminal can be served by GPM.
+ * WpeGpmTtyIsConsole - Whether one descriptor is a terminal GPM can serve.
+ * @fd: the descriptor to classify.
  *
  * GPM serves the physical screen.  A pseudo-terminal -- ssh, tmux, screen, any
  * terminal emulator -- gets its mouse from the terminal's own reports, and
@@ -42,18 +44,17 @@ int WpeGpmHandler(Gpm_Event *ep, void *data);
  * is /dev/pts/N and the master is /dev/ptmx.  Any other tty -- a serial
  * console, for one -- is left exactly as it was, because gpm may well be what
  * serves it and this test has no business taking a working mouse away.
- * Return: 1 when the console path applies, else 0.
+ * Return: 1 when the console path applies to @fd, else 0.
  */
-static int WpeGpmIsConsoleTty(void)
+static int WpeGpmTtyIsConsole(int fd)
 {
- int fd = STDIN_FILENO;
 #ifdef __linux__
  int mode = 0;
  struct vt_stat vts;
 #endif
  const char *name;
 
- if (!isatty(fd))
+ if (fd < 0 || !isatty(fd))
   return(0);
 #ifdef __linux__
  if (ioctl(fd, KDGETMODE, &mode) == 0)
@@ -68,6 +69,33 @@ static int WpeGpmIsConsoleTty(void)
  if (strcmp(name, "/dev/ptmx") == 0)
   return(0);
  return (strncmp(name, "/dev/pts/", 9) != 0);
+}
+
+/**
+ * WpeGpmIsConsoleTty - Whether this session sits on a terminal GPM serves.
+ *
+ * The editor's keys come from stdin when stdin is a terminal and from the
+ * controlling terminal when it is not -- that is what curses does -- so a
+ * console session started with its input redirected (`wpe < notes`) is still a
+ * console session and must not lose the mouse it was proved to have.  A stdin
+ * that IS a terminal decides on its own: a pty there means a pty, and opening
+ * /dev/tty would only find the same one.
+ * Return: 1 when the console path applies, else 0.
+ */
+static int WpeGpmIsConsoleTty(void)
+{
+ int fd, ret;
+
+ if (WpeGpmTtyIsConsole(STDIN_FILENO))
+  return(1);
+ if (isatty(STDIN_FILENO))
+  return(0);
+ fd = open("/dev/tty", O_RDONLY | O_NOCTTY);
+ if (fd < 0)
+  return(0);
+ ret = WpeGpmTtyIsConsole(fd);
+ close(fd);
+ return(ret);
 }
 
 int WpeGpmMouseInit(void)
@@ -216,34 +244,37 @@ int WpeGpmMouse(int *g)
  static Gpm_Event s_last;         /* the last state the console reported */
  static int s_have_last = 0;
  Gpm_Event e;
+ struct pollfd pf;
  long deadline;
- int got = 0;
+ int got = 0, n, left;
 
  memset(&e, 0, sizeof e);
- deadline = WpeGpmNowMs() + GPM_POLL_MS;
- while (!got)
+ /* ONE snapshot attempt per poll, never one per turn of a loop.  A console that
+    cannot answer makes libgpm report through syslog on every attempt, and no
+    time bound can cover a send() that blocks inside that report -- capping the
+    number of attempts is what caps the rate, to the poll's own cadence. */
+ n = Gpm_GetSnapshot(&e);
+ if (n > 0)
+  got = 1;
+ else if (n == 0)
  {
-  struct pollfd pf;
-  int left, n = Gpm_GetSnapshot(&e);
-
-  if (n > 0)
+  deadline = WpeGpmNowMs() + GPM_POLL_MS;
+  while (!got)
   {
-   got = 1;
-   break;
+   left = (int)(deadline - WpeGpmNowMs());
+   if (left <= 0)
+    break;
+   pf.fd = gpm_fd;
+   pf.events = POLLIN;
+   pf.revents = 0;
+   if (poll(&pf, 1, left) <= 0)
+    break;
+   if (Gpm_GetEvent(&e) > 0)
+    got = 1;
   }
-  if (n < 0)
-   break;                        /* the console cannot answer: stop asking */
-  left = (int)(deadline - WpeGpmNowMs());
-  if (left <= 0)
-   break;
-  pf.fd = gpm_fd;
-  pf.events = POLLIN;
-  pf.revents = 0;
-  if (poll(&pf, 1, left) <= 0)
-   break;
-  if (Gpm_GetEvent(&e) > 0)
-   got = 1;
  }
+ /* n < 0: the console could not answer this turn.  Fall through to the last
+    state it did report, which is what keeps a drag alive. */
 
  if (got)
  {

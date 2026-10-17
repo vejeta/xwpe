@@ -313,8 +313,12 @@ Go to the previous help page.
 @cindex mouse
 @cindex GPM
 
-In terminal mode, xwpe supports mouse input via the GPM library (Linux
-console) or xterm mouse reporting.  In X11 mode, the mouse works
+In terminal mode, xwpe reads the mouse from the terminal's own reports (the
+SGR protocol) whenever this terminal is not the console that GPM serves: any
+terminal emulator, and any SSH, @command{tmux} or @command{screen} session.  On
+a bare Linux virtual console it uses the GPM library instead, which is what
+draws the pointer there.  Which of the two applies is decided by asking the
+kernel about the terminal, never by @env{TERM}.  In X11 mode, the mouse works
 natively.
 
 @itemize @bullet

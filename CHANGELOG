@@ -1979,6 +1979,26 @@ BSD portability (FreeBSD, OpenBSD, NetBSD):
   any key to return to the editor.  Console (wpe) only for now; the xwpe
   (X11) integrated terminal panel is the 1.6.4 path.  Demo: tests/inputs/
   paint.c (F9, Ctrl-F9, Alt-F5).
+* The console mouse is chosen by the terminal now, not by the machine.  wpe used
+  to take the GPM console-mouse path whenever a gpm daemon existed anywhere on
+  the box, so on a machine where gpm serves the physical console every SSH,
+  tmux and screen session took it too.  On a pseudo-terminal that path waits
+  for a console event that can never arrive, so a menu stayed painted on screen
+  and read no key at all -- Esc included -- while the editor sat in a blocking
+  send() to the system log.  Gpm_Open refuses only xterm-like TERM values,
+  which is why TERM=xterm* escaped this by accident while screen*, tmux* and
+  linux did not.  WpeGpmMouseInit now asks the kernel whether this terminal is
+  a console (KDGETMODE, then VT_GETSTATE, then a device-name fallback that
+  excludes both ends of a pty) and never reads TERM; a stdin that is not a
+  terminal falls back to the controlling terminal, so `wpe < notes` on a
+  console does not lose the mouse.  WpeGpmMouse makes one snapshot attempt per
+  poll within a 50 ms bound, polling GPM's fd before the blocking read, and
+  repeating the last reported state when the bound expires so a drag on a bare
+  console is never mistaken for a button release.  A bare Linux VT keeps GPM
+  exactly as it was.  Tests: tests/test_menu_console_mouse.py, and the new
+  console layer tests/console/, which boots a KVM micro-VM and runs the shipped
+  predicate against real VTs, both ends of a pty, a serial line and a
+  descriptor that is not a terminal.
 * Console mouse (GPM) restored in wpe.  On a bare Linux VT the mouse pointer
   stopped moving and clicks stopped registering: wpe opens the GPM connection
   itself (so ncurses does not), but the event-driven input rewrite left GPM's
