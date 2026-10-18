@@ -92,6 +92,60 @@ jobs:
             --ignore=tests/x11 --ignore=tests/wayland \
             -k "not (clangd or gopls or rust or scala or metals or python_lsp or go_dap or dap or algol68 or ga68 or truecolor_console or compile or make_output or build_cwd or user_screen or debugger_watchdog or ctrl_f9 or alt_f5)"
 
+      - name: Capability drift guard (BLOCKING)
+        # Cheap, deterministic and nothing to do with a terminal: every manifest
+        # id must resolve to a test that collects, and every tests/**/test_ai_*.py
+        # must be mapped or listed in tests/harness/UNMAPPED.txt.  This is what
+        # catches a test renamed or deleted out from under a scenario, which is
+        # how a capability quietly stops being covered while its harness still
+        # reports green.  Run with the suite's own interpreter: under a bare
+        # python3 with no pyte nothing collects and every row reads as drift.
+        if: always()
+        run: /tmp/ptenv/bin/python tests/harness/harness.py check
+
+      - name: Capability harness gates (BLOCKING)
+        # The scenario harness for the capabilities whose tests do not touch the
+        # function keys, measured 2026-10-18: ai-chat-pane (31 files),
+        # ai-options-dialog (11) and ai-agent-tools-and-policy (28) contain no
+        # SS3 function-key sequence at all, so the runner's keypad/pty quirk --
+        # the reason the broad ncurses suite above is non-blocking -- cannot
+        # reach them.  They gate hard, wrapped in --reruns so a timing wobble
+        # retries while a real fault, which fails every rerun, fails the job.
+        # A scenario that is FAIL or MISSING makes run.sh exit non-zero.
+        if: always()
+        env:
+          TERM: "xterm-256color"
+          PYTEST_ADDOPTS: "--reruns 2 --reruns-delay 3"
+        run: |
+          export XWPE_LIB="$PWD"
+          export PY=/tmp/ptenv/bin/python
+          for cap in ai-chat-pane ai-options-dialog ai-agent-tools-and-policy; do
+            echo "::group::harness $cap (ncurses)"
+            tests/harness/run.sh "$cap" ncurses
+            echo "::endgroup::"
+          done
+
+      - name: Capability harness -- the two that drive function keys (visible, not gating)
+        # ai-edit-and-patch (3 of 24 files) and dialog-engine (4 of 14) do send
+        # SS3 function-key sequences, which is exactly what does not arrive on
+        # this runner, so a hard gate here would fail for the runner's reason
+        # rather than the code's.  Kept visible so the verdicts are in the log
+        # and the artefact; it becomes blocking once those scenarios either move
+        # off the function keys or the pty quirk is understood.
+        continue-on-error: true
+        if: always()
+        env:
+          TERM: "xterm-256color"
+          PYTEST_ADDOPTS: "--reruns 2 --reruns-delay 3"
+        run: |
+          export XWPE_LIB="$PWD"
+          export PY=/tmp/ptenv/bin/python
+          for cap in ai-edit-and-patch dialog-engine; do
+            echo "::group::harness $cap (ncurses)"
+            tests/harness/run.sh "$cap" ncurses || true
+            echo "::endgroup::"
+          done
+
       - name: X11/Xft GUI suite (Xvfb + matchbox)
         # The conftest starts its own Xvfb + window manager; it skips cleanly if
         # a tool is missing.  always(): run even if the ncurses gate above failed,
@@ -154,4 +208,5 @@ jobs:
           path: |
             *.log
             wl-logs/
+            tests/harness/out/
           if-no-files-found: ignore
