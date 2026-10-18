@@ -126,7 +126,14 @@ int WpeHandleMainmenu(int n, FENSTER *f)
     mainmenu[3].menuitems[1] = WpeFillSubmenuItem("Replace   Alt F4 / ^O A", 0, 'R', e_replace);
     mainmenu[3].menuitems[2] = WpeFillSubmenuItem("Search again         ^L", 0, 'S', e_rep_search);
   }
-  mainmenu[3].menuitems[3] = WpeFillSubmenuItem("Go to Line        Alt G", 0, 'G', e_goto_line);
+  /* The programming editor gives Alt-G to the assistant, so the item must not
+     offer a key that does nothing there: the accelerator is advertised only in
+     the mode that honours it.  The letter still reaches this item with the menu
+     open, in both modes. */
+  if(WpeIsProg())
+    mainmenu[3].menuitems[3] = WpeFillSubmenuItem("Go to Line", 0, 'G', e_goto_line);
+  else
+    mainmenu[3].menuitems[3] = WpeFillSubmenuItem("Go to Line        Alt G", 0, 'G', e_goto_line);
   mainmenu[4].position = -3;
   mainmenu[4].width = 25;
   mainmenu[4].no_of_items = 15;

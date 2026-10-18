@@ -287,8 +287,12 @@ Quit from xwpe.  If files have unsaved changes, xwpe prompts for each:
 @item @key{F4} @tab Find (search) @tab @kbd{Ctrl-O F}
 @item @kbd{Alt-F4} @tab Replace @tab @kbd{Ctrl-O A}
 @item @kbd{Ctrl-F4} @tab Repeat last search/replace @tab @kbd{Ctrl-L}
-@item @kbd{Alt-G} @tab Go to line number @tab
+@item @kbd{Alt-G} @tab Go to line number (plain editor only) @tab Search menu
 @end multitable
+
+In the programming editor @kbd{Alt-G} opens the assistant instead, so Go to
+Line is reached from the Search menu there, and the menu does not offer the
+key it cannot honour.
 
 @subsection Marker commands
 

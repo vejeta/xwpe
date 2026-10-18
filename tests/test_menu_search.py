@@ -71,17 +71,41 @@ GOTO = "\033g"           # Alt-G -> Go to Line
 SEARCH_AGAIN = "\x0c"    # ^L   -> Search again
 
 
-def test_goto_line_via_alt_g(tmp_path):
-    """Alt-G (advertised) opens Go to Line; line N then typing edits line N."""
+def test_goto_line_does_not_advertise_alt_g_in_programming_mode(tmp_path):
+    """The programming editor gives Alt-G to the assistant, so the Search menu
+    must not offer it for Go to Line here.
+
+    The whole defect was that it did: the item read "Go to Line        Alt G"
+    in both modes, and under `wpe` the key reached the assistant instead, so
+    the editor answered an advertised shortcut with nothing at all.  The item
+    is still reachable by its letter with the menu open, which the test above
+    drives.  The plain editor keeps the accelerator and still honours it; this
+    module cannot assert that, because the driver takes one binary for the
+    whole file and that binary is `wpe`.
+    """
     with WpeSession(str(tmp_path), "L1\nL2\nL3\nL4\nL5\n") as w:
-        w.key(GOTO)                          # Alt-G
-        w.key("3", "\r")                     # line 3
-        w.key("X")                           # marker at the cursor
+        w.key(ALT.SEARCH)                    # open the menu, do not pick
+        rows = [r for r in w.display() if "Go to Line" in r]
+        assert w.alive(), "wpe died opening the Search menu"
+        assert rows, "the Search menu has no Go to Line item:\n%s" % "\n".join(w.display())
+        assert "Alt G" not in rows[0], \
+            "the item still offers a key this mode cannot honour: %r" % rows[0]
+
+
+def test_alt_g_leaves_the_buffer_alone_in_programming_mode(tmp_path):
+    """Alt-G belongs to the assistant here, so it must not reach the file.
+
+    A swallowed accelerator is one failure; a swallowed accelerator that types
+    its letter into the buffer is a worse one, and that is what the old
+    per-mode confusion risked.
+    """
+    with WpeSession(str(tmp_path), "L1\nL2\nL3\nL4\nL5\n") as w:
+        w.key(GOTO)                          # Alt-G: the assistant's prefix
+        w.key("\033")                        # leave whatever it opened
         w.save()
         assert w.alive(), "wpe died on Alt-G"
-        lines = w.text().splitlines()
-        assert len(lines) >= 3 and lines[2].startswith("X"), \
-            "Alt-G then 3 should put the cursor on line 3, got %r" % w.text()
+        assert w.text().splitlines()[:5] == ["L1", "L2", "L3", "L4", "L5"], \
+            "Alt-G changed the buffer: %r" % w.text()
 
 
 def test_find_via_f4(tmp_path):
