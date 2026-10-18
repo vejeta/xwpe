@@ -787,11 +787,69 @@ static void e_compile_announce_uptodate(FENSTER *f)
  e_message(0, "Already compiled (object file is up to date).", f);
 }
 
+/* A source or object path handed to a build command.  The 128 bytes this
+   replaces cut the path mid-word at 127 characters and handed the compiler the
+   piece that was left, which then reported a linker input file it could not
+   find: the message blamed the linker for a name the editor had truncated.
+   A build path is a path, so it is sized like one. */
+#ifndef PATH_MAX
+#define PATH_MAX 4096
+#endif
+#define WPE_BUILD_PATH_MAX PATH_MAX
+
+/**
+ * e_build_path - Join a directory and a file name into a build command's path.
+ * @out: where the path goes; @n: its size.
+ * @dir: the directory, with or without a trailing separator.
+ * @name: the file name.
+ *
+ * Both the source handed to the compiler and the object file it writes are
+ * built this way, and both used to be formatted inline with the separator
+ * decided twice.  A path that does not fit is refused here rather than cut,
+ * because a cut path reaches the compiler as a different file and the error it
+ * produces then points at the wrong thing.
+ *
+ * Return: 0, or -1 when the result would not fit, which the caller reports.
+ */
+static int e_build_path(char *out, size_t n, const char *dir, const char *name)
+{
+ size_t len = dir ? strlen(dir) : 0;
+ int wrote;
+
+ if (!out || !n || !dir || !name)
+  return (-1);
+ if (len > 0 && dir[len - 1] == DIRC)
+  wrote = snprintf(out, n, "%s%s", dir, name);
+ else
+  wrote = snprintf(out, n, "%s%c%s", dir, DIRC, name);
+ if (wrote < 0 || (size_t)wrote >= n)
+  return (-1);
+ return (0);
+}
+
+/**
+ * e_build_path_too_long - Say which path did not fit, instead of cutting it.
+ * @f: the window the message box belongs to; @what: "source" or "object".
+ *
+ * The user can act on this: shorten the path, or work nearer the root.  A
+ * silent truncation cannot be acted on at all, because the name in the
+ * compiler's complaint is not a name the user ever typed.
+ */
+static void e_build_path_too_long(FENSTER *f, const char *what)
+{
+ char msg[160];
+
+ snprintf(msg, sizeof msg,
+          "The %s path is longer than %d characters.\nCompile from a shorter path.",
+          what, WPE_BUILD_PATH_MAX - 1);
+ e_message(0, msg, f);
+}
+
 int e_comp(FENSTER *f, int announce)
 {
  ECNT *cn = f->ed;
  PIC *pic = NULL;
- char **arg = NULL, fstr[128], ostr[128];
+ char **arg = NULL, fstr[WPE_BUILD_PATH_MAX], ostr[WPE_BUILD_PATH_MAX];
  char cwd_saved[1024];
  int i, file = -1, len, argc, cwd_chg = 0;
  { const char *tp = getenv("XWPE_UI_TRACE");
@@ -848,18 +906,22 @@ int e_comp(FENSTER *f, int announce)
    arg[k] = arg[k + 1];
   argc--;
  }
- len = strlen(f->dirct) - 1;
- if (!strcmp(f->ed->dirct, f->dirct))
-  strcpy(fstr, f->datnam);
- if (f->dirct[len] == DIRC)
-  snprintf(fstr, sizeof(fstr), "%s%s", f->dirct, f->datnam);
- else
-  snprintf(fstr, sizeof(fstr), "%s%c%s", f->dirct, DIRC, f->datnam);
+ /* The unconditional strcpy that stood here wrote f->datnam into fstr and was
+    then overwritten by the join below, so it did nothing except risk its own
+    overflow on a long name. */
+ if (e_build_path(fstr, sizeof(fstr), f->dirct, f->datnam))
+ {
+  e_build_path_too_long(f, "source");
+  if (arg) FREE(arg);
+  return (-1);
+ }
  argc = e_add_arg(&arg, fstr, argc, argc);
- if (e_prog.exedir[strlen(e_prog.exedir)-1] == DIRC)
-  snprintf(ostr, sizeof(ostr), "%s%s", e_prog.exedir, f->datnam);
- else
-  snprintf(ostr, sizeof(ostr), "%s%c%s", e_prog.exedir, DIRC, f->datnam);
+ if (e_build_path(ostr, sizeof(ostr), e_prog.exedir, f->datnam))
+ {
+  e_build_path_too_long(f, "object");
+  if (arg) FREE(arg);
+  return (-1);
+ }
  WpeStringCutChar(ostr, '.');
  /* javac produces .class files, not .o -- check the right extension
     so the up-to-date test works and we don't recompile every time */
