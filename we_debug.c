@@ -12,6 +12,7 @@
 #include "we_dap.h"
 #include "we_bsp.h"
 #include "we_lsp.h"
+#include "we_debprompt.h"
 
 #ifndef NO_XWINDOWS
 #include "WeXterm.h"
@@ -1033,10 +1034,54 @@ int e_e_line_read(int n, signed char *s, int max)
  return(2);
 }
 
+/**
+ * e_d_prompt_text - The word prompt the current debugger emits, or NULL.
+ *
+ * sdb, xdb and jdb are recognised by their trailing characters instead, and the
+ * DAP client speaks a framed protocol of its own, so neither has a prompt string
+ * here.  Keeping the mapping beside the reader is what lets the four backends
+ * that do have one share a single recognition path, instead of four copies of
+ * the same arithmetic -- which is how a 7-byte prompt came to be matched with
+ * offsets written for a 6-byte one.
+ * Return: a prompt literal, or NULL when this backend has none.
+ */
+static const char *e_d_prompt_text(void)
+{
+ switch (e_deb_type)
+ {
+  case DEB_GDB:  return("(gdb) ");
+  case DEB_DBX:  return("(dbx) ");
+  case DEB_PDB:  return("(Pdb) ");
+  case DEB_A68G: return("(a68g) ");
+  default:       return(NULL);
+ }
+}
+
+/**
+ * e_d_prompt_check - Feed one read to the prompt window and say whether the
+ * debugger has just finished asking for a command.
+ * @s: the bytes this read produced.
+ * @i: how many of them; may be 0.
+ *
+ * Called on every read, complete line or not, because the window carries a
+ * prompt that arrives split across reads: feeding only the incomplete ones
+ * would leave it holding bytes from before a finished line, and a later fragment
+ * could then complete a prompt that was never sent.
+ * Return: 1 when this backend's prompt has just been completed, else 0.
+ */
+static int e_d_prompt_check(const signed char *s, int i)
+{
+ const char *prompt = e_d_prompt_text();
+
+ if (!prompt)
+  return(0);
+ return(e_deb_prompt_feed(prompt, (const char *)s, i));
+}
+
 int e_d_line_read(int n, signed char *s, int max, int sw, int esw)
 {
- static char wt = 0, esc_sv = 0, str[12];
- int i, j, ret = 0, kbdflgs;
+ static char wt = 0, esc_sv = 0;
+ int i, ret = 0, kbdflgs;
 
  /* Runaway debugger: far more output than any real command reply means the
     debugger is streaming uncontrollably (e.g. a68g's abend recursion).  Give
@@ -1104,71 +1149,43 @@ int e_d_line_read(int n, signed char *s, int max, int sw, int esw)
   }
   jdb_trace(")\n");
   if(e_deb_type == DEB_SDB && i > 0 && s[i-1] == '*')
-  {  str[0] = 0;  wt = 0;   return(1);  }
+  {  e_deb_prompt_reset();  wt = 0;   return(1);  }
   else if(e_deb_type == DEB_XDB && i > 0 && s[i-1] == '>')
-  {  str[0] = 0;  wt = 0;   return(1);  }
+  {  e_deb_prompt_reset();  wt = 0;   return(1);  }
   else if(e_deb_type == DEB_JDB && i > 1 &&
     ((s[i-1] == ' ' && s[i-2] == ']') ||
      (s[i-1] == ' ' && s[i-2] == '>')))
   {  jdb_trace("e_d_line_read: jdb prompt DETECTED\n");
-     str[0] = 0;  wt = 0;   return(1);  }
+     e_deb_prompt_reset();  wt = 0;   return(1);  }
   else if(e_deb_type == DEB_JDB)
   {  jdb_trace("e_d_line_read: jdb prompt NOT detected (i=%d, s[i-1]=%02x s[i-2]=%02x)\n",
                i, i>0?(unsigned char)s[i-1]:0, i>1?(unsigned char)s[i-2]:0);
   }
-  if(e_deb_type == DEB_GDB)
+  /* One recognition path for every backend with a word prompt.  The window
+     holds the last plen bytes seen across reads, so a prompt arriving split is
+     recognisable at all -- the four per-backend copies this replaces never
+     managed that, and the a68g one wrote two bytes past a 12-byte scratch
+     while trying (F95). */
+  if (e_d_prompt_check(s, i))
   {
-   if(i > 5 && !strncmp(s+i-6, "(gdb) ", 6))
-   {  str[0] = 0;  wt = 0;   return(1);  }
-   else if(i < 6)
-   {
-    for (j = 0; j <= i; j++) str[6+j] = s[j];
-    if (!strncmp(str+i-6, "(gdb) ", 6))
-    {  str[0] = '\0';  wt = 0;  return(1);  }
-   }
-  }
-  else if (e_deb_type == DEB_DBX)
-  {
-   if(i > 5 && !strncmp(s+i-6, "(dbx) ", 6))
-   {  str[0] = 0;  wt = 0;   return(1);  }
-   else if(i < 6)
-   {
-    for(j = 0; j <= i; j++) str[6+j] = s[j];
-    if(!strncmp(str+i-6, "(dbx) ", 6))
-    {  str[0] = '\0';  wt = 0;  return(1);  }
-   }
-  }
-  else if (e_deb_type == DEB_PDB)
-  {
-   if(i > 5 && !strncmp(s+i-6, "(Pdb) ", 6))
-   {  str[0] = 0;  wt = 0;   return(1);  }
-   else if(i < 6)
-   {
-    for(j = 0; j <= i; j++) str[6+j] = s[j];
-    if(!strncmp(str+i-6, "(Pdb) ", 6))
-    {  str[0] = '\0';  wt = 0;  return(1);  }
-   }
-  }
-  else if (e_deb_type == DEB_A68G)
-  {
-   if(i > 6 && !strncmp(s+i-7, "(a68g) ", 7))
-   {  str[0] = 0;  wt = 0;   return(1);  }
-   else if(i < 7)
-   {
-    for(j = 0; j <= i; j++) str[7+j] = s[j];
-    if(!strncmp(str+i-7, "(a68g) ", 7))
-    {  str[0] = '\0';  wt = 0;  return(1);  }
-   }
+   jdb_trace("e_d_line_read: prompt DETECTED (i=%d)\n", i);
+   wt = 0;
+   return(1);
   }
  }
  else
  {
   s[i+1] = '\0';
   jdb_trace("e_d_line_read: normal line, i=%d s='%s'\n", i, (char*)s);
+  /* Fed here as well, so the window never carries bytes from before a finished
+     line into the next fragment and completes a prompt that was never sent.
+     The result is deliberately unused: a complete line is output, not the
+     debugger waiting, and these four backends never terminate a prompt with a
+     newline -- which is why the incomplete-line branch above exists. */
+  e_d_prompt_check(s, i);
  }
  if (i != 0) wt = 0;
  else wt++;
- if(i > 4) for(j = 0; j < 6; j++) str[j] = s[j+i-5];
  return(0);
 }
 

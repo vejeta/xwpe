@@ -66,6 +66,7 @@ we_SOURCES = \
   we_prog.c \
   we_progn.c \
   we_debug.c \
+  we_debprompt.c \
   WeString.c \
   WeSyntax.c \
   WeExpArr.c \
@@ -176,6 +177,7 @@ noinst_HEADERS = \
   WeXterm.h \
   WeProg.h \
   WeExpArr.h \
+  we_debprompt.h \
   we_render.h \
   we_render_glyphs.h \
   we_wayland.h \
@@ -283,10 +285,18 @@ metainfodir = $(datadir)/metainfo
 metainfo_DATA = io.codeberg.mendezr.xwpe.metainfo.xml
 
 # --- Unit tests ---
-check_PROGRAMS = test_checkheader test_fl_sel_len test_syntax_def test_fdloop test_clipboard test_lsp_buffer test_lsp_doctor test_lsp_semantic test_lsp_truecolor test_dap test_dap_dlv test_dap_gdb test_dap_lldb test_dap_scala test_lsp_scala test_lsp_clangd test_lsp_python test_lsp_gopls test_lsp_rust
+check_PROGRAMS = test_checkheader test_fl_sel_len test_syntax_def test_fdloop test_clipboard test_lsp_buffer test_lsp_doctor test_lsp_semantic test_lsp_truecolor test_dap test_dap_dlv test_dap_gdb test_dap_lldb test_dap_scala test_lsp_scala test_lsp_clangd test_lsp_python test_lsp_gopls test_lsp_rust test_debprompt
 
 test_fdloop_SOURCES = tests/test_fdloop.c we_fdloop.c
 test_fdloop_CFLAGS = $(XWPE_STDFLAG)
+
+# Debugger prompt window unit test: we_debprompt.c only, no editor, always runs.
+# This is the test F95 should have had -- a prompt split across two reads, and
+# the 7-byte a68g prompt driven at every split length, which is what wrote two
+# bytes past a 12-byte scratch in e_d_line_read.  Worth building under asan as
+# well: the overflow is only visible there.
+test_debprompt_SOURCES = tests/test_debprompt.c we_debprompt.c
+test_debprompt_CFLAGS = $(XWPE_STDFLAG)
 
 # Clipboard helpers unit test: RFC 4648 base64 + OSC 52 framing (we_clip.c
 # only, no editor/X11). Always runs (no skip).
@@ -388,7 +398,7 @@ test_lsp_rust_CFLAGS = $(XWPE_STDFLAG) $(JSONC_CFLAGS)
 test_lsp_rust_LDADD = $(JSONC_LIBS)
 
 TESTS = test_checkheader test_fl_sel_len test_syntax_def test_fdloop test_clipboard test_lsp_buffer test_lsp_doctor test_lsp_semantic test_lsp_truecolor test_dap test_dap_dlv \
-  test_dap_gdb test_dap_lldb test_dap_scala test_lsp_scala test_lsp_clangd test_lsp_python test_lsp_gopls test_lsp_rust
+  test_dap_gdb test_dap_lldb test_dap_scala test_lsp_scala test_lsp_clangd test_lsp_python test_lsp_gopls test_lsp_rust test_debprompt
 
 # --- AI assistant unit tests (only when --enable-ai) ---
 # WPE_AI comes from config.h (the build is configured --enable-ai here).  The
