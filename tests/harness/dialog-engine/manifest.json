@@ -1,77 +1,512 @@
 {
-  "capability": "dialog-engine",
-  "scenarios": [
-    {"id": "SC-dialog-engine-01", "requirement": "Opens centred", "layer": "ncurses", "test": "tests/test_opt_dialog_engine.py::test_dialog_opens_centred_on_editor_window", "status": "new"},
-    {"id": "SC-dialog-engine-02", "requirement": "Opens centred", "layer": "ncurses", "test": "tests/test_opt_dialog_place.py::test_dialog_over_docked_pane_centres_on_screen", "status": "new"},
-    {"id": "SC-dialog-engine-03", "requirement": "Opens centred", "layer": "ncurses", "test": "tests/test_opt_dialog_place.py::test_degenerate_geometry_falls_back_to_corner", "status": "new"},
-    {"id": "SC-dialog-engine-04", "requirement": "Title-bar drag", "layer": "ncurses", "test": "tests/test_opt_dialog_keeppos.py::test_dialog_keeps_dragged_position_after_model_picker", "status": "covered"},
-    {"id": "SC-dialog-engine-05", "requirement": "Title-bar drag", "layer": "ncurses", "test": "tests/test_opt_dialog_drag.py::test_ai_dialog_title_drag_does_not_crash", "status": "covered"},
-    {"id": "SC-dialog-engine-06", "requirement": "Title-bar drag", "layer": "asan", "test": "tests/test_opt_dialog_drag.py::test_ai_dialog_title_drag_does_not_crash", "status": "covered"},
-    {"id": "SC-dialog-engine-07", "requirement": "Title-bar drag", "layer": "ncurses", "test": "tests/test_opt_dialog_buttons.py::test_title_grab_near_left_corner_drags_not_closes", "status": "new"},
-    {"id": "SC-dialog-engine-08", "requirement": "Keyboard move", "layer": "ncurses", "test": "tests/test_opt_dialog_move.py::test_keyboard_move_moves_and_restores_focus", "status": "new"},
-    {"id": "SC-dialog-engine-08b", "requirement": "Keyboard move", "layer": "ncurses", "test": "tests/test_opt_dialog_move.py::test_keyboard_move_does_not_toggle_focused_widget", "status": "new"},
-    {"id": "SC-dialog-engine-09", "requirement": "Keyboard move", "layer": "ncurses", "test": "tests/test_opt_dialog_move.py::test_keyboard_move_clamps_to_screen", "status": "new"},
-    {"id": "SC-dialog-engine-10", "requirement": "Keyboard move", "layer": "asan", "test": "tests/test_opt_dialog_move.py::test_keyboard_move_moves_and_restores_focus", "status": "new"},
-    {"id": "SC-dialog-engine-11", "requirement": "Position survives repaint", "layer": "ncurses", "test": "tests/test_opt_dialog_keeppos.py::test_dialog_keeps_dragged_position_after_model_picker", "status": "covered"},
-    {"id": "SC-dialog-engine-12", "requirement": "Position survives repaint", "layer": "ncurses", "test": "tests/test_opt_dialog_engine.py::test_picker_refocus_keeps_checkbox_and_one_esc_closes", "status": "new"},
-    {"id": "SC-dialog-engine-13", "requirement": "Mouse hit areas", "layer": "ncurses", "test": "tests/test_opt_label_click.py::test_checkbox_label_click_toggles", "status": "covered"},
-    {"id": "SC-dialog-engine-14", "requirement": "Mouse hit areas", "layer": "ncurses", "test": "tests/test_opt_label_click.py::test_radio_label_click_selects", "status": "covered"},
-    {"id": "SC-dialog-engine-15", "requirement": "Mouse hit areas", "layer": "ncurses", "test": "tests/test_opt_dialog_click.py::test_ok_label_click_applies_and_closes", "status": "new"},
-    {"id": "SC-dialog-engine-16", "requirement": "Mouse hit areas", "layer": "ncurses", "test": "tests/test_opt_dialog_click.py::test_clicks_outside_frame_are_inert", "status": "new"},
-    {"id": "SC-dialog-engine-17", "requirement": "Mouse hit areas", "layer": "x11", "test": "tests/x11/test_popup_close_button.py::test_clicking_close_box_dismisses_dialog", "status": "covered"},
-    {"id": "SC-dialog-engine-17n", "requirement": "Mouse hit areas", "layer": "ncurses", "test": "tests/test_opt_dialog_click.py::test_close_box_click_dismisses_like_esc", "status": "new"},
-    {"id": "SC-dialog-engine-17f", "requirement": "Mouse hit areas", "layer": "ncurses", "test": "tests/test_opt_dialog_click.py::test_close_box_click_from_a_field_dismisses_like_esc", "status": "new"},
-    {"id": "SC-dialog-engine-17r", "requirement": "Mouse hit areas", "layer": "ncurses", "test": "tests/test_opt_dialog_click.py::test_close_box_click_from_a_radio_does_not_apply", "status": "new"},
-    {"id": "SC-dialog-engine-17e", "requirement": "Mouse hit areas / Esc cancels", "layer": "ncurses", "test": "tests/test_opt_dialog_engine.py::test_one_esc_from_checkbox_cancels", "status": "new"},
-    {"id": "SC-dialog-engine-17er", "requirement": "Mouse hit areas / Esc cancels", "layer": "ncurses", "test": "tests/test_opt_dialog_engine.py::test_one_esc_from_radio_does_not_apply", "status": "new"},
-    {"id": "SC-dialog-engine-18", "requirement": "Buttons and default", "layer": "ncurses", "test": "tests/test_ai_options.py::test_ai_options_model_picker_scrolls_and_selects", "status": "covered"},
-    {"id": "SC-dialog-engine-19", "requirement": "Buttons and default", "layer": "ncurses", "test": "tests/test_opt_dialog_engine.py::test_enter_on_checkbox_fires_default_button", "status": "new"},
-    {"id": "SC-dialog-engine-20", "requirement": "Buttons and default", "layer": "ncurses", "test": "tests/test_opt_dialog_click.py::test_enter_on_focused_cancel_cancels", "status": "new"},
-    {"id": "SC-dialog-engine-21", "requirement": "Esc cancels", "layer": "ncurses", "test": "tests/test_opt_dialog_engine.py::test_esc_after_editing_field_applies_nothing", "status": "new"},
-    {"id": "SC-dialog-engine-22", "requirement": "Keyboard focus and selection", "layer": "ncurses", "test": "tests/test_ai_options.py::test_ai_options_keyboard_navigation", "status": "covered"},
-    {"id": "SC-dialog-engine-23", "requirement": "Keyboard focus and selection", "layer": "ncurses", "test": "tests/test_opt_dialog_engine.py::test_tab_wraps_and_shift_tab_reverses", "status": "new"},
-    {"id": "SC-dialog-engine-24", "requirement": "Keyboard focus and selection", "layer": "ncurses", "test": "tests/test_ai_options.py::test_ai_options_keyboard_navigation", "status": "covered"},
-    {"id": "SC-dialog-engine-25", "requirement": "Keyboard focus and selection", "layer": "ncurses", "test": "tests/test_ai_options.py::test_ai_options_keyboard_navigation", "status": "covered"},
-    {"id": "SC-dialog-engine-26", "requirement": "Accelerators", "layer": "x11", "test": "tests/x11/test_editor_options.py::test_checkbox_toggle_renders_mark", "status": "covered"},
-    {"id": "SC-dialog-engine-26n", "requirement": "Accelerators", "layer": "ncurses", "test": "tests/test_opt_dialog_engine.py::test_alt_accelerator_activates_widget_ncurses", "status": "new"},
-    {"id": "SC-dialog-engine-27", "requirement": "Accelerators", "layer": "ncurses", "test": null, "status": "blocked", "reason": "UNKNOWN/CONFLICT: underlined letter differs from the accelerator in we_block.c:1013, we_debug.c:5000-5001, we_ai_ui.c '  Ok  '; decision pending (tasks 3.2)"},
-    {"id": "SC-dialog-engine-28", "requirement": "Terminal resize", "layer": "ncurses", "test": "tests/test_dialog_resize.py::TestDialogResizeSurvival::test_goto_line_resize_multiple", "status": "covered"},
-    {"id": "SC-dialog-engine-29", "requirement": "Terminal resize", "layer": "ncurses", "test": "tests/test_opt_dialog_place.py::test_screen_too_small_swallows_keys_until_esc", "status": "new"},
-    {"id": "SC-dialog-engine-30", "requirement": "Terminal resize", "layer": "ncurses", "test": "tests/test_opt_dialog_place.py::test_clipped_widgets_are_not_drawn", "status": "new"},
-    {"id": "SC-dialog-engine-30b", "requirement": "Terminal resize", "layer": "ncurses", "test": "tests/test_opt_dialog_place.py::test_clipped_widgets_do_not_bleed_through_the_border", "status": "new"},
-    {"id": "SC-dialog-engine-30c", "requirement": "Terminal resize", "layer": "ncurses", "test": "tests/test_dialog_resize.py::TestDialogResizeSurvival::test_resize_leaves_no_stale_focused_widget", "status": "new"},
-    {"id": "SC-dialog-engine-31", "requirement": "Marks visible in every backend", "layer": "x11", "test": "tests/x11/test_editor_options.py::test_checkbox_toggle_renders_mark", "status": "covered"},
-    {"id": "SC-dialog-engine-32", "requirement": "Marks visible in every backend", "layer": "wayland", "test": "tests/wayland/test_editor_options.py::test_checkbox_toggle_renders_mark", "status": "covered"},
-    {"id": "SC-dialog-engine-33", "requirement": "Title-row buttons", "layer": "ncurses", "test": "tests/test_popup_close_button.py::test_message_popup_has_close_but_no_maximize", "status": "covered"},
-    {"id": "SC-dialog-engine-34", "requirement": "Title-row buttons", "layer": "ncurses", "test": "tests/test_window_close_button.py::test_close_box_click_closes_window", "status": "covered"},
-    {"id": "SC-dialog-engine-35", "requirement": "Modal not painted over", "layer": "ncurses", "test": "tests/test_opt_dialog_place.py::test_async_update_does_not_paint_over_dialog", "status": "new"},
-    {"id": "SC-dialog-engine-36", "requirement": "Mouse without GPM", "layer": "ncurses", "test": "tests/test_opt_label_click.py::test_checkbox_label_click_toggles", "status": "covered"},
-    {"id": "SC-dialog-engine-37", "requirement": "Bounded widget tables", "layer": "c-unit", "test": null, "status": "blocked", "reason": "the focus-order table is a static in we_opt.c with no guard and no linkable unit; needs a decision on a guard + c-unit (tasks 2.13)"},
-    {"id": "SC-dialog-engine-38", "requirement": "Documentation", "layer": "doc", "test": null, "status": "blocked", "reason": "UNKNOWN/CONFLICT: interface.texi '[z]' zoom text; dialog drag / close box / keyboard move undocumented (tasks 3.3)"},
-    {"id": "SC-dialog-engine-39", "requirement": "A paste never drives the dialog", "layer": "ncurses", "test": "tests/test_opt_dialog_paste.py::test_pasted_accelerator_letter_does_not_press_widget", "status": "new"},
-    {"id": "SC-dialog-engine-40", "requirement": "A paste never drives the dialog", "layer": "ncurses", "test": "tests/test_opt_dialog_paste.py::test_pasted_newline_outside_a_field_does_not_submit", "status": "new"},
-    {"id": "SC-dialog-engine-41", "requirement": "A paste never drives the dialog", "layer": "ncurses", "test": "tests/test_opt_dialog_paste.py::test_paste_into_numeric_field_keeps_digits_drops_newline", "status": "new"},
-    {"id": "SC-dialog-engine-42", "requirement": "Only button 1 acts", "layer": "ncurses", "test": "tests/test_opt_dialog_buttons.py::test_wheel_over_checkbox_does_not_toggle", "status": "new"},
-    {"id": "SC-dialog-engine-42r", "requirement": "Only button 1 acts", "layer": "ncurses", "test": "tests/test_opt_dialog_buttons.py::test_wheel_over_radio_does_not_select", "status": "new"},
-    {"id": "SC-dialog-engine-43", "requirement": "Only button 1 acts", "layer": "ncurses", "test": "tests/test_opt_dialog_buttons.py::test_other_buttons_over_checkbox_do_not_toggle", "status": "new"},
-    {"id": "SC-dialog-engine-43c", "requirement": "Only button 1 acts", "layer": "ncurses", "test": "tests/test_opt_dialog_buttons.py::test_other_buttons_on_close_box_do_not_close", "status": "new"},
-    {"id": "SC-dialog-engine-43t", "requirement": "Only button 1 acts", "layer": "ncurses", "test": "tests/test_opt_dialog_buttons.py::test_button2_on_title_row_does_not_drag", "status": "new"},
-    {"id": "SC-dialog-engine-44", "requirement": "Terminal resize", "layer": "ncurses", "test": "tests/test_opt_dialog_place.py::test_resize_does_not_toggle_first_checkbox", "status": "new"},
-    {"id": "SC-dialog-engine-45", "requirement": "Mouse works without GPM", "layer": "ncurses", "test": "tests/test_menu_console_mouse.py::test_the_ai_dialog_opens_on_a_pty_under_a_console_term[screen-256color]", "status": "new"},
-    {"id": "SC-dialog-engine-45", "requirement": "Mouse works without GPM", "layer": "ncurses", "test": "tests/test_menu_console_mouse.py::test_the_ai_dialog_opens_on_a_pty_under_a_console_term[tmux-256color]", "status": "new"},
-    {"id": "SC-dialog-engine-45", "requirement": "Mouse works without GPM", "layer": "ncurses", "test": "tests/test_menu_console_mouse.py::test_the_ai_dialog_opens_under_xterm_as_the_control", "status": "new"},
-    {"id": "SC-dialog-engine-45", "requirement": "Mouse works without GPM", "layer": "console", "test": "tests/console/test_console_tty_predicate.py::test_a_real_virtual_console_keeps_the_gpm_path[vt0]", "status": "new"},
-    {"id": "SC-dialog-engine-45", "requirement": "Mouse works without GPM", "layer": "console", "test": "tests/console/test_console_tty_predicate.py::test_a_real_virtual_console_keeps_the_gpm_path[vt1]", "status": "new"},
-    {"id": "SC-dialog-engine-45", "requirement": "Mouse works without GPM", "layer": "console", "test": "tests/console/test_console_tty_predicate.py::test_a_real_virtual_console_keeps_the_gpm_path[vt63]", "status": "new"},
-    {"id": "SC-dialog-engine-45", "requirement": "Mouse works without GPM", "layer": "console", "test": "tests/console/test_console_tty_predicate.py::test_neither_end_of_a_pty_is_a_console[pty_slave]", "status": "new"},
-    {"id": "SC-dialog-engine-45", "requirement": "Mouse works without GPM", "layer": "console", "test": "tests/console/test_console_tty_predicate.py::test_neither_end_of_a_pty_is_a_console[pty_master]", "status": "new"},
-    {"id": "SC-dialog-engine-45", "requirement": "Mouse works without GPM", "layer": "console", "test": "tests/console/test_console_tty_predicate.py::test_the_console_test_never_reads_term", "status": "new"},
-    {"id": "SC-dialog-engine-45", "requirement": "Mouse works without GPM", "layer": "console", "test": "tests/console/test_console_tty_predicate.py::test_a_serial_console_is_left_as_it_was[console]", "status": "new"},
-    {"id": "SC-dialog-engine-45", "requirement": "Mouse works without GPM", "layer": "console", "test": "tests/console/test_console_tty_predicate.py::test_a_serial_console_is_left_as_it_was[serial]", "status": "new"},
-    {"id": "SC-dialog-engine-45", "requirement": "Mouse works without GPM", "layer": "console", "test": "tests/console/test_console_tty_predicate.py::test_nothing_in_the_gpm_backend_reads_the_environment", "status": "new"},
-    {"id": "SC-dialog-engine-45", "requirement": "Mouse works without GPM", "layer": "console", "test": "tests/console/test_console_tty_predicate.py::test_the_chooser_follows_stdin_when_stdin_is_a_terminal", "status": "new"},
-    {"id": "SC-dialog-engine-45", "requirement": "Mouse works without GPM", "layer": "console", "test": "tests/console/test_console_tty_predicate.py::test_the_chooser_falls_back_to_the_controlling_terminal", "status": "new"},
-    {"id": "SC-dialog-engine-46", "requirement": "Mouse works without GPM", "layer": "ncurses", "test": "tests/test_menu_console_mouse.py::test_esc_closes_the_submenu_while_no_console_event_arrives[screen-256color]", "status": "new"},
-    {"id": "SC-dialog-engine-46", "requirement": "Mouse works without GPM", "layer": "ncurses", "test": "tests/test_menu_console_mouse.py::test_esc_closes_the_submenu_while_no_console_event_arrives[tmux-256color]", "status": "new"}
-  ]
+ "capability": "dialog-engine",
+ "scenarios": [
+  {
+   "id": "SC-dialog-engine-01",
+   "requirement": "Opens centred",
+   "layer": "ncurses",
+   "test": "tests/test_opt_dialog_engine.py::test_dialog_opens_centred_on_editor_window",
+   "status": "new"
+  },
+  {
+   "id": "SC-dialog-engine-02",
+   "requirement": "Opens centred",
+   "layer": "ncurses",
+   "test": "tests/test_opt_dialog_place.py::test_dialog_over_docked_pane_centres_on_screen",
+   "status": "new"
+  },
+  {
+   "id": "SC-dialog-engine-03",
+   "requirement": "Opens centred",
+   "layer": "ncurses",
+   "test": "tests/test_opt_dialog_place.py::test_degenerate_geometry_falls_back_to_corner",
+   "status": "new"
+  },
+  {
+   "id": "SC-dialog-engine-04",
+   "requirement": "Title-bar drag",
+   "layer": "ncurses",
+   "test": "tests/test_opt_dialog_keeppos.py::test_dialog_keeps_dragged_position_after_model_picker",
+   "status": "covered"
+  },
+  {
+   "id": "SC-dialog-engine-05",
+   "requirement": "Title-bar drag",
+   "layer": "ncurses",
+   "test": "tests/test_opt_dialog_drag.py::test_ai_dialog_title_drag_does_not_crash",
+   "status": "covered"
+  },
+  {
+   "id": "SC-dialog-engine-06",
+   "requirement": "Title-bar drag",
+   "layer": "asan",
+   "test": "tests/test_opt_dialog_drag.py::test_ai_dialog_title_drag_does_not_crash",
+   "status": "covered"
+  },
+  {
+   "id": "SC-dialog-engine-07",
+   "requirement": "Title-bar drag",
+   "layer": "ncurses",
+   "test": "tests/test_opt_dialog_buttons.py::test_title_grab_near_left_corner_drags_not_closes",
+   "status": "new"
+  },
+  {
+   "id": "SC-dialog-engine-08",
+   "requirement": "Keyboard move",
+   "layer": "ncurses",
+   "test": "tests/test_opt_dialog_move.py::test_keyboard_move_moves_and_restores_focus",
+   "status": "new"
+  },
+  {
+   "id": "SC-dialog-engine-08b",
+   "requirement": "Keyboard move",
+   "layer": "ncurses",
+   "test": "tests/test_opt_dialog_move.py::test_keyboard_move_does_not_toggle_focused_widget",
+   "status": "new"
+  },
+  {
+   "id": "SC-dialog-engine-09",
+   "requirement": "Keyboard move",
+   "layer": "ncurses",
+   "test": "tests/test_opt_dialog_move.py::test_keyboard_move_clamps_to_screen",
+   "status": "new"
+  },
+  {
+   "id": "SC-dialog-engine-10",
+   "requirement": "Keyboard move",
+   "layer": "asan",
+   "test": "tests/test_opt_dialog_move.py::test_keyboard_move_moves_and_restores_focus",
+   "status": "new"
+  },
+  {
+   "id": "SC-dialog-engine-11",
+   "requirement": "Position survives repaint",
+   "layer": "ncurses",
+   "test": "tests/test_opt_dialog_keeppos.py::test_dialog_keeps_dragged_position_after_model_picker",
+   "status": "covered"
+  },
+  {
+   "id": "SC-dialog-engine-12",
+   "requirement": "Position survives repaint",
+   "layer": "ncurses",
+   "test": "tests/test_opt_dialog_engine.py::test_picker_refocus_keeps_checkbox_and_one_esc_closes",
+   "status": "new"
+  },
+  {
+   "id": "SC-dialog-engine-13",
+   "requirement": "Mouse hit areas",
+   "layer": "ncurses",
+   "test": "tests/test_opt_label_click.py::test_checkbox_label_click_toggles",
+   "status": "covered"
+  },
+  {
+   "id": "SC-dialog-engine-14",
+   "requirement": "Mouse hit areas",
+   "layer": "ncurses",
+   "test": "tests/test_opt_label_click.py::test_radio_label_click_selects",
+   "status": "covered"
+  },
+  {
+   "id": "SC-dialog-engine-15",
+   "requirement": "Mouse hit areas",
+   "layer": "ncurses",
+   "test": "tests/test_opt_dialog_click.py::test_ok_label_click_applies_and_closes",
+   "status": "new"
+  },
+  {
+   "id": "SC-dialog-engine-16",
+   "requirement": "Mouse hit areas",
+   "layer": "ncurses",
+   "test": "tests/test_opt_dialog_click.py::test_clicks_outside_frame_are_inert",
+   "status": "new"
+  },
+  {
+   "id": "SC-dialog-engine-17",
+   "requirement": "Mouse hit areas",
+   "layer": "x11",
+   "test": "tests/x11/test_popup_close_button.py::test_clicking_close_box_dismisses_dialog",
+   "status": "covered"
+  },
+  {
+   "id": "SC-dialog-engine-17n",
+   "requirement": "Mouse hit areas",
+   "layer": "ncurses",
+   "test": "tests/test_opt_dialog_click.py::test_close_box_click_dismisses_like_esc",
+   "status": "new"
+  },
+  {
+   "id": "SC-dialog-engine-17",
+   "requirement": "Mouse hit areas",
+   "layer": "ncurses",
+   "test": "tests/test_opt_dialog_click.py::test_close_box_click_from_a_field_dismisses_like_esc",
+   "status": "new"
+  },
+  {
+   "id": "SC-dialog-engine-17",
+   "requirement": "Mouse hit areas",
+   "layer": "ncurses",
+   "test": "tests/test_opt_dialog_click.py::test_close_box_click_from_a_radio_does_not_apply",
+   "status": "new"
+  },
+  {
+   "id": "SC-dialog-engine-17",
+   "requirement": "Mouse hit areas / Esc cancels",
+   "layer": "ncurses",
+   "test": "tests/test_opt_dialog_engine.py::test_one_esc_from_checkbox_cancels",
+   "status": "new"
+  },
+  {
+   "id": "SC-dialog-engine-17",
+   "requirement": "Mouse hit areas / Esc cancels",
+   "layer": "ncurses",
+   "test": "tests/test_opt_dialog_engine.py::test_one_esc_from_radio_does_not_apply",
+   "status": "new"
+  },
+  {
+   "id": "SC-dialog-engine-18",
+   "requirement": "Buttons and default",
+   "layer": "ncurses",
+   "test": "tests/test_ai_options.py::test_ai_options_model_picker_scrolls_and_selects",
+   "status": "covered"
+  },
+  {
+   "id": "SC-dialog-engine-19",
+   "requirement": "Buttons and default",
+   "layer": "ncurses",
+   "test": "tests/test_opt_dialog_engine.py::test_enter_on_checkbox_fires_default_button",
+   "status": "new"
+  },
+  {
+   "id": "SC-dialog-engine-20",
+   "requirement": "Buttons and default",
+   "layer": "ncurses",
+   "test": "tests/test_opt_dialog_click.py::test_enter_on_focused_cancel_cancels",
+   "status": "new"
+  },
+  {
+   "id": "SC-dialog-engine-21",
+   "requirement": "Esc cancels",
+   "layer": "ncurses",
+   "test": "tests/test_opt_dialog_engine.py::test_esc_after_editing_field_applies_nothing",
+   "status": "new"
+  },
+  {
+   "id": "SC-dialog-engine-22",
+   "requirement": "Keyboard focus and selection",
+   "layer": "ncurses",
+   "test": "tests/test_ai_options.py::test_ai_options_keyboard_navigation",
+   "status": "covered"
+  },
+  {
+   "id": "SC-dialog-engine-23",
+   "requirement": "Keyboard focus and selection",
+   "layer": "ncurses",
+   "test": "tests/test_opt_dialog_engine.py::test_tab_wraps_and_shift_tab_reverses",
+   "status": "new"
+  },
+  {
+   "id": "SC-dialog-engine-24",
+   "requirement": "Keyboard focus and selection",
+   "layer": "ncurses",
+   "test": "tests/test_ai_options.py::test_ai_options_keyboard_navigation",
+   "status": "covered"
+  },
+  {
+   "id": "SC-dialog-engine-25",
+   "requirement": "Keyboard focus and selection",
+   "layer": "ncurses",
+   "test": "tests/test_ai_options.py::test_ai_options_keyboard_navigation",
+   "status": "covered"
+  },
+  {
+   "id": "SC-dialog-engine-26",
+   "requirement": "Accelerators",
+   "layer": "x11",
+   "test": "tests/x11/test_editor_options.py::test_checkbox_toggle_renders_mark",
+   "status": "covered"
+  },
+  {
+   "id": "SC-dialog-engine-26",
+   "requirement": "Accelerators",
+   "layer": "ncurses",
+   "test": "tests/test_opt_dialog_engine.py::test_alt_accelerator_activates_widget_ncurses",
+   "status": "new"
+  },
+  {
+   "id": "SC-dialog-engine-27",
+   "requirement": "Accelerators",
+   "layer": "ncurses",
+   "test": null,
+   "status": "blocked",
+   "reason": "UNKNOWN/CONFLICT: underlined letter differs from the accelerator in we_block.c:1013, we_debug.c:5000-5001, we_ai_ui.c '  Ok  '; decision pending (tasks 3.2)"
+  },
+  {
+   "id": "SC-dialog-engine-28",
+   "requirement": "Terminal resize",
+   "layer": "ncurses",
+   "test": "tests/test_dialog_resize.py::TestDialogResizeSurvival::test_goto_line_resize_multiple",
+   "status": "covered"
+  },
+  {
+   "id": "SC-dialog-engine-29",
+   "requirement": "Terminal resize",
+   "layer": "ncurses",
+   "test": "tests/test_opt_dialog_place.py::test_screen_too_small_swallows_keys_until_esc",
+   "status": "new"
+  },
+  {
+   "id": "SC-dialog-engine-30",
+   "requirement": "Terminal resize",
+   "layer": "ncurses",
+   "test": "tests/test_opt_dialog_place.py::test_clipped_widgets_are_not_drawn",
+   "status": "new"
+  },
+  {
+   "id": "SC-dialog-engine-30b",
+   "requirement": "Terminal resize",
+   "layer": "ncurses",
+   "test": "tests/test_opt_dialog_place.py::test_clipped_widgets_do_not_bleed_through_the_border",
+   "status": "new"
+  },
+  {
+   "id": "SC-dialog-engine-30c",
+   "requirement": "Terminal resize",
+   "layer": "ncurses",
+   "test": "tests/test_dialog_resize.py::TestDialogResizeSurvival::test_resize_leaves_no_stale_focused_widget",
+   "status": "new"
+  },
+  {
+   "id": "SC-dialog-engine-31",
+   "requirement": "Marks visible in every backend",
+   "layer": "x11",
+   "test": "tests/x11/test_editor_options.py::test_checkbox_toggle_renders_mark",
+   "status": "covered"
+  },
+  {
+   "id": "SC-dialog-engine-32",
+   "requirement": "Marks visible in every backend",
+   "layer": "wayland",
+   "test": "tests/wayland/test_editor_options.py::test_checkbox_toggle_renders_mark",
+   "status": "covered"
+  },
+  {
+   "id": "SC-dialog-engine-33",
+   "requirement": "Title-row buttons",
+   "layer": "ncurses",
+   "test": "tests/test_popup_close_button.py::test_message_popup_has_close_but_no_maximize",
+   "status": "covered"
+  },
+  {
+   "id": "SC-dialog-engine-34",
+   "requirement": "Title-row buttons",
+   "layer": "ncurses",
+   "test": "tests/test_window_close_button.py::test_close_box_click_closes_window",
+   "status": "covered"
+  },
+  {
+   "id": "SC-dialog-engine-35",
+   "requirement": "Modal not painted over",
+   "layer": "ncurses",
+   "test": "tests/test_opt_dialog_place.py::test_async_update_does_not_paint_over_dialog",
+   "status": "new"
+  },
+  {
+   "id": "SC-dialog-engine-36",
+   "requirement": "Mouse without GPM",
+   "layer": "ncurses",
+   "test": "tests/test_opt_label_click.py::test_checkbox_label_click_toggles",
+   "status": "covered"
+  },
+  {
+   "id": "SC-dialog-engine-37",
+   "requirement": "Bounded widget tables",
+   "layer": "c-unit",
+   "test": null,
+   "status": "blocked",
+   "reason": "the focus-order table is a static in we_opt.c with no guard and no linkable unit; needs a decision on a guard + c-unit (tasks 2.13)"
+  },
+  {
+   "id": "SC-dialog-engine-38",
+   "requirement": "Documentation",
+   "layer": "doc",
+   "test": null,
+   "status": "blocked",
+   "reason": "UNKNOWN/CONFLICT: interface.texi '[z]' zoom text; dialog drag / close box / keyboard move undocumented (tasks 3.3)"
+  },
+  {
+   "id": "SC-dialog-engine-39",
+   "requirement": "A paste never drives the dialog",
+   "layer": "ncurses",
+   "test": "tests/test_opt_dialog_paste.py::test_pasted_accelerator_letter_does_not_press_widget",
+   "status": "new"
+  },
+  {
+   "id": "SC-dialog-engine-40",
+   "requirement": "A paste never drives the dialog",
+   "layer": "ncurses",
+   "test": "tests/test_opt_dialog_paste.py::test_pasted_newline_outside_a_field_does_not_submit",
+   "status": "new"
+  },
+  {
+   "id": "SC-dialog-engine-41",
+   "requirement": "A paste never drives the dialog",
+   "layer": "ncurses",
+   "test": "tests/test_opt_dialog_paste.py::test_paste_into_numeric_field_keeps_digits_drops_newline",
+   "status": "new"
+  },
+  {
+   "id": "SC-dialog-engine-42",
+   "requirement": "Only button 1 acts",
+   "layer": "ncurses",
+   "test": "tests/test_opt_dialog_buttons.py::test_wheel_over_checkbox_does_not_toggle",
+   "status": "new"
+  },
+  {
+   "id": "SC-dialog-engine-42",
+   "requirement": "Only button 1 acts",
+   "layer": "ncurses",
+   "test": "tests/test_opt_dialog_buttons.py::test_wheel_over_radio_does_not_select",
+   "status": "new"
+  },
+  {
+   "id": "SC-dialog-engine-43",
+   "requirement": "Only button 1 acts",
+   "layer": "ncurses",
+   "test": "tests/test_opt_dialog_buttons.py::test_other_buttons_over_checkbox_do_not_toggle",
+   "status": "new"
+  },
+  {
+   "id": "SC-dialog-engine-43",
+   "requirement": "Only button 1 acts",
+   "layer": "ncurses",
+   "test": "tests/test_opt_dialog_buttons.py::test_other_buttons_on_close_box_do_not_close",
+   "status": "new"
+  },
+  {
+   "id": "SC-dialog-engine-43",
+   "requirement": "Only button 1 acts",
+   "layer": "ncurses",
+   "test": "tests/test_opt_dialog_buttons.py::test_button2_on_title_row_does_not_drag",
+   "status": "new"
+  },
+  {
+   "id": "SC-dialog-engine-44",
+   "requirement": "Terminal resize",
+   "layer": "ncurses",
+   "test": "tests/test_opt_dialog_place.py::test_resize_does_not_toggle_first_checkbox",
+   "status": "new"
+  },
+  {
+   "id": "SC-dialog-engine-45",
+   "requirement": "Mouse works without GPM",
+   "layer": "ncurses",
+   "test": "tests/test_menu_console_mouse.py::test_the_ai_dialog_opens_on_a_pty_under_a_console_term[screen-256color]",
+   "status": "new"
+  },
+  {
+   "id": "SC-dialog-engine-45",
+   "requirement": "Mouse works without GPM",
+   "layer": "ncurses",
+   "test": "tests/test_menu_console_mouse.py::test_the_ai_dialog_opens_on_a_pty_under_a_console_term[tmux-256color]",
+   "status": "new"
+  },
+  {
+   "id": "SC-dialog-engine-45",
+   "requirement": "Mouse works without GPM",
+   "layer": "ncurses",
+   "test": "tests/test_menu_console_mouse.py::test_the_ai_dialog_opens_under_xterm_as_the_control",
+   "status": "new"
+  },
+  {
+   "id": "SC-dialog-engine-45",
+   "requirement": "Mouse works without GPM",
+   "layer": "console",
+   "test": "tests/console/test_console_tty_predicate.py::test_a_real_virtual_console_keeps_the_gpm_path[vt0]",
+   "status": "new"
+  },
+  {
+   "id": "SC-dialog-engine-45",
+   "requirement": "Mouse works without GPM",
+   "layer": "console",
+   "test": "tests/console/test_console_tty_predicate.py::test_a_real_virtual_console_keeps_the_gpm_path[vt1]",
+   "status": "new"
+  },
+  {
+   "id": "SC-dialog-engine-45",
+   "requirement": "Mouse works without GPM",
+   "layer": "console",
+   "test": "tests/console/test_console_tty_predicate.py::test_a_real_virtual_console_keeps_the_gpm_path[vt63]",
+   "status": "new"
+  },
+  {
+   "id": "SC-dialog-engine-45",
+   "requirement": "Mouse works without GPM",
+   "layer": "console",
+   "test": "tests/console/test_console_tty_predicate.py::test_neither_end_of_a_pty_is_a_console[pty_slave]",
+   "status": "new"
+  },
+  {
+   "id": "SC-dialog-engine-45",
+   "requirement": "Mouse works without GPM",
+   "layer": "console",
+   "test": "tests/console/test_console_tty_predicate.py::test_neither_end_of_a_pty_is_a_console[pty_master]",
+   "status": "new"
+  },
+  {
+   "id": "SC-dialog-engine-45",
+   "requirement": "Mouse works without GPM",
+   "layer": "console",
+   "test": "tests/console/test_console_tty_predicate.py::test_the_console_test_never_reads_term",
+   "status": "new"
+  },
+  {
+   "id": "SC-dialog-engine-45",
+   "requirement": "Mouse works without GPM",
+   "layer": "console",
+   "test": "tests/console/test_console_tty_predicate.py::test_a_serial_console_is_left_as_it_was[console]",
+   "status": "new"
+  },
+  {
+   "id": "SC-dialog-engine-45",
+   "requirement": "Mouse works without GPM",
+   "layer": "console",
+   "test": "tests/console/test_console_tty_predicate.py::test_a_serial_console_is_left_as_it_was[serial]",
+   "status": "new"
+  },
+  {
+   "id": "SC-dialog-engine-45",
+   "requirement": "Mouse works without GPM",
+   "layer": "console",
+   "test": "tests/console/test_console_tty_predicate.py::test_nothing_in_the_gpm_backend_reads_the_environment",
+   "status": "new"
+  },
+  {
+   "id": "SC-dialog-engine-45",
+   "requirement": "Mouse works without GPM",
+   "layer": "console",
+   "test": "tests/console/test_console_tty_predicate.py::test_the_chooser_follows_stdin_when_stdin_is_a_terminal",
+   "status": "new"
+  },
+  {
+   "id": "SC-dialog-engine-45",
+   "requirement": "Mouse works without GPM",
+   "layer": "console",
+   "test": "tests/console/test_console_tty_predicate.py::test_the_chooser_falls_back_to_the_controlling_terminal",
+   "status": "new"
+  },
+  {
+   "id": "SC-dialog-engine-46",
+   "requirement": "Mouse works without GPM",
+   "layer": "ncurses",
+   "test": "tests/test_menu_console_mouse.py::test_esc_closes_the_submenu_while_no_console_event_arrives[screen-256color]",
+   "status": "new"
+  },
+  {
+   "id": "SC-dialog-engine-46",
+   "requirement": "Mouse works without GPM",
+   "layer": "ncurses",
+   "test": "tests/test_menu_console_mouse.py::test_esc_closes_the_submenu_while_no_console_event_arrives[tmux-256color]",
+   "status": "new"
+  }
+ ]
 }
