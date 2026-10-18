@@ -18,6 +18,12 @@ from wpe_driver import WpeSession, ALT, WPE_BIN
 ORIG = "int a = 1;\n"
 BOX = "Proposed change"
 
+# A waiting sign lives only while the backend is working, so the poll below has
+# to be finer than the sign is short, and the backend has to be held for longer
+# on a loaded machine, the way test_ai_edit_waiting_line.py holds it.
+WAIT_SCALE = float(os.environ.get("XWPE_TEST_WAIT_SCALE", "1"))
+SPIN_DELAY_MS = int(1500 * WAIT_SCALE)
+
 
 def _ai_build():
     try:
@@ -48,10 +54,18 @@ def _trace(tmp_path):
 
 
 def _wait_screen(s, needle, tmo=12):
+    """Poll the screen for `needle` until `tmo` runs out.
+
+    `display(drain=0)` reads the screen as it stands instead of draining for
+    another 0.6 s first, which makes one turn of this loop cost 0.4 s rather
+    than 1.0 s.  A reply box stays up and is found either way; a waiting line
+    that lives as long as the backend takes is not, and the coarse grid cannot
+    look until the sign is already gone.
+    """
     end = time.time() + tmo
     while time.time() < end:
         s._drain(0.4)
-        if needle in "\n".join(s.display()):
+        if needle in "\n".join(s.display(drain=0)):
             return True
     return False
 
@@ -234,7 +248,7 @@ def test_edit_prompt_selection_title(tmp_path):
 # test_ai_edit_blocked_contracts.py.
 # ===========================================================================
 def test_complete_spinner_in_text_window(tmp_path):
-    env = _env(tmp_path, XWPE_AI_MOCK_DELAY_MS="1500")
+    env = _env(tmp_path, XWPE_AI_MOCK_DELAY_MS=str(SPIN_DELAY_MS))
     with WpeSession(str(tmp_path), ORIG, env_extra=env, filename="t.c") as s:
         s.key(ALT.AI); s.key("c", delay=0.6)
         assert _wait_screen(s, "[AI] completing"), \
