@@ -540,6 +540,20 @@
    "layer": "ncurses",
    "test": "tests/test_ai_chat_web.py::test_header_names_the_web_when_it_is_on",
    "status": "new"
+  },
+  {
+   "id": "SC-ai-chat-57",
+   "requirement": "The pane opens on its first line",
+   "layer": "ncurses",
+   "test": "tests/test_ai_pane_first_row.py::test_chat_pane_opens_with_the_header_on_its_first_row",
+   "status": "new"
+  },
+  {
+   "id": "SC-ai-chat-58",
+   "requirement": "The pane opens on its first line",
+   "layer": "ncurses",
+   "test": "tests/test_ai_pane_first_row.py::test_edit_pane_opens_with_its_first_line_on_the_first_row",
+   "status": "new"
   }
  ]
 }

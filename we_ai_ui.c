@@ -449,6 +449,7 @@ static void ai_chat_show_sources(ai_chat_session *s);
 static FENSTER *ai_pane_win(FENSTER *f);
 static void  ai_tr_line(FENSTER *wf, const char *str, int role);
 static void  ai_pane_paint(FENSTER *wf);
+static void  ai_pane_set_line(FENSTER *wf, int y, const char *text);
 
 static int ai_pane_width(FENSTER *wf);          /* defined below */
 static void ai_pane_reflow(FENSTER *wf);        /* defined below */
@@ -482,6 +483,42 @@ static void ai_pane_show(FENSTER *wf)
 }
 
 /**
+ * ai_pane_row_is_free - Is row @y the pane's untouched opening row?
+ * @b: the pane buffer; @y: the row.
+ *
+ * A fresh window's buffer holds one empty line.  The first line the pane
+ * writes takes it, so the pane never opens with a blank row above its first
+ * line; every later line is appended as before.
+ */
+static int ai_pane_row_is_free(BUFFER *b, int y)
+{
+ return b->mxlines == 1 && y == 0 && b->bf[0].len == 0;
+}
+
+/**
+ * ai_pane_take_first_row - Let the first line written take the pane's one
+ * empty row instead of landing below it.
+ * @wf: the pane.
+ *
+ * A fresh window's buffer holds one empty line, and every writer appended
+ * AFTER it, so the pane opened with a blank row above its first line: the
+ * header in a chat, the "[AI edit] working" line in an edit.  In a pane that
+ * shares the bottom strip with Messages and has ten rows, that row is a tenth
+ * of what the user can read.  When the buffer still holds exactly that one
+ * empty line, the line is written onto it instead of after it, so the pane's
+ * first row is the first line written into it.
+ */
+static int ai_pane_take_first_row(FENSTER *wf, const char *line, int role)
+{
+ BUFFER *b = wf->b;
+ if (!ai_pane_row_is_free(b, 0))
+  return 0;
+ ai_pane_set_line(wf, 0, line);
+ ai_roles_set(b, 0, role);
+ return 1;
+}
+
+/**
  * ai_pane_put1 - Append ONE ready line (no wrapping) to the pane as `role`.
  * @f: the window the pane belongs to.
  * @line: the text.
@@ -490,26 +527,32 @@ static void ai_pane_show(FENSTER *wf)
  *
  * Into the transcript above the input row in chat-focus, otherwise to the end
  * of the docked pane; either way the line is recorded with its writer so it
- * paints in that writer's colour from the first paint on.
+ * paints in that writer's colour from the first paint on.  The pane's one
+ * empty opening row is taken by the first line instead of staying blank above
+ * it.
  */
 static void ai_pane_put1(FENSTER *f, const char *line, int role, int surface)
 {
  FENSTER *wf;
  int before;
 
+ wf = ai_pane_win(f);
+ if (!wf) return;
+
  if (g_ai_chat_focus) {                 /* keep the "> " input row at the bottom */
-  wf = ai_pane_win(f);
-  if (wf) { ai_tr_line(wf, line, role); ai_pane_paint(wf); }
+  if (!ai_pane_take_first_row(wf, line, role))
+   ai_tr_line(wf, line, role);
+  ai_pane_paint(wf);
   return;
  }
  /* Ensure the AI pane is created AND docked at the bottom (beside Messages)
     before appending -- the same placement as the chat pane.  Without this the
     Edit/Plan/Agent output opened as a full window over the file being edited. */
- wf = ai_pane_win(f);
- if (!wf) return;
- before = wf->b->mxlines;
- e_d_p_named(AI_PANE_NAME, (char *)line, f, surface ? 1 : 0);
- ai_roles_set_appended(wf->b, before, role);
+ if (!ai_pane_take_first_row(wf, line, role)) {
+  before = wf->b->mxlines;
+  e_d_p_named(AI_PANE_NAME, (char *)line, f, surface ? 1 : 0);
+  ai_roles_set_appended(wf->b, before, role);
+ }
  ai_pane_show(wf);
 }
 
@@ -1467,6 +1510,11 @@ static void ai_pane_commit(FENSTER *wf)
 {
  BUFFER *b = wf->b;
  int at;
+ /* The pane's own opening row: a task that writes its first line through the
+    stream line (a spinner, an edit's status) takes that row rather than
+    opening a second one under it, so the pane does not start with a blank. */
+ if (ai_pane_row_is_free(b, 0))
+  return;
  if (g_ai_chat_focus && b->mxlines > g_ai_input_rows)
   at = b->mxlines - g_ai_input_rows;
  else
