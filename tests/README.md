@@ -225,6 +225,41 @@ is how the X11-repaint use-after-free and the Ctrl-K V block-move overflow
 were found.  `tests/run-tests.sh --asan` does it for you; see HACKING.md
 ("Debugging crashes and memory bugs") for valgrind and the `we-asan` recipe.
 
+## The scenario harness (`tests/harness/`)
+
+Some areas of the editor are covered scenario by scenario instead of file by
+file. Each area has a manifest, `tests/harness/<capability>/manifest.json`,
+which names the test for every scenario id and the layer that test runs in. A
+comment line above the test repeats the id, so `grep -rn '@scenario SC-' tests/`
+finds them.
+
+Run one area's scenarios and get a verdict per id:
+
+```bash
+PY=tests/.venv/bin/python tests/harness/run.sh dialog-engine ncurses
+```
+
+The verdicts land in `tests/harness/out/<capability>-<layer>-<timestamp>.json`
+as `PASS`, `FAIL`, `BLOCKED` or `MISSING`. A test that did not run is `MISSING`,
+and a skipped test counts as `FAIL` unless the manifest marks the scenario
+blocked. The exit status is non-zero if any scenario is not `PASS` or
+`BLOCKED`, so the script can gate a build.
+
+Layers: `ncurses`, `ncurses-fkey`, `asan`, `x11`, `wayland`, `c-unit` and
+`config-file`. The two ncurses layers split one set of scenarios. A test that
+presses a terminal function key belongs to `ncurses-fkey`, and
+`tests/harness/FKEY.txt` lists those tests and says why they are apart: a
+hosted CI runner's pseudo-terminal does not deliver function-key sequences, so
+those tests fail there for the terminal's reason. The split is per test, not
+per file, so everything else in the same file still gates.
+
+`tests/.venv/bin/python tests/harness/harness.py check` is the drift guard. It
+reports a manifest id whose test no longer collects, a line in `FKEY.txt` that
+no longer resolves, and a `tests/**/test_ai_*.py` file that is in no manifest
+and not listed in `tests/harness/UNMAPPED.txt`. Run it with the interpreter the
+suite uses, because a `python3` without pyte collects nothing and every row then
+reads as drift.
+
 ## Test files
 
 Coverage is being organised **one module per menu section** (`test_menu_<x>.py`

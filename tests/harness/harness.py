@@ -26,9 +26,18 @@ why).  ``layer`` is one of ncurses, x11, wayland, asan, config-file, c-unit,
 live.  The test id uses pytest's node-id form for Python tests and the automake
 test program name for C tests.
 
+One layer is not written in a manifest: ``ncurses-fkey``.  A scenario belongs
+to it when its test presses a terminal function key, which ``tests/harness/
+FKEY.txt`` lists and explains, and it then leaves the ``ncurses`` layer.  That
+keeps a hosted runner's pseudo-terminal, which does not deliver those keys,
+from failing a gate for a reason outside the code, without excluding the rest
+of the file.  A local ``asan`` run keeps them, because the keys arrive here.
+
 Sub-commands (all stdlib, no third-party imports, so CI can run it bare):
 
     files  <capability> <layer>      print the test files/node ids to run
+    deselect <capability>            print the node ids a gating ncurses run
+                                     must skip (see tests/harness/FKEY.txt)
     report <capability> <layer> <junit.xml|logdir>
                                      print a JSON object {scenario_id: verdict}
     check                            drift guard: every manifest id resolves,
@@ -53,7 +62,18 @@ import xml.etree.ElementTree as ET
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 TOP = os.path.dirname(os.path.dirname(HERE))
-PYTHON_LAYERS = ("ncurses", "x11", "wayland", "asan", "config-file", "live")
+PYTHON_LAYERS = ("ncurses", "ncurses-fkey", "x11", "wayland", "asan",
+                 "config-file", "live")
+
+
+def fkey_tests():
+    """Node ids that press a function key, from tests/harness/FKEY.txt."""
+    path = os.path.join(HERE, "FKEY.txt")
+    if not os.path.exists(path):
+        return set()
+    with open(path, encoding="utf-8") as fh:
+        return {line.strip() for line in fh
+                if line.strip() and not line.startswith("#")}
 
 
 def manifest_path(capability):
@@ -66,14 +86,27 @@ def load_manifest(capability):
 
 
 def scenarios_for_layer(manifest, layer):
-    """The scenarios a run of this layer is responsible for."""
+    """The scenarios a run of this layer is responsible for.
+
+    ``ncurses`` and ``ncurses-fkey`` split one set of manifest rows between
+    them: a row whose test is in FKEY.txt is the function-key layer's, the rest
+    are the plain one's.  ``asan`` runs both, because the keys work locally.
+    """
     wanted = {layer}
-    if layer in ("ncurses", "asan"):
+    if layer in ("ncurses", "ncurses-fkey", "asan"):
         # config-file scenarios are pyte tests that seed xwperc before launch;
         # they run with the ncurses binary.  The sanitizer run re-executes the
         # same scenarios under we-asan.
         wanted.update(("ncurses", "config-file"))
-    return [s for s in manifest["scenarios"] if s["layer"] in wanted]
+    rows = [s for s in manifest["scenarios"] if s["layer"] in wanted]
+    if layer == "asan":
+        return rows
+    needs_fkey = fkey_tests()
+    if layer == "ncurses-fkey":
+        return [s for s in rows if s.get("test") in needs_fkey]
+    if layer == "ncurses":
+        return [s for s in rows if s.get("test") not in needs_fkey]
+    return rows
 
 
 def test_file(test_id):
@@ -82,15 +115,33 @@ def test_file(test_id):
 
 
 def cmd_files(capability, layer):
+    """The pytest arguments for this layer: whole files, or exact node ids.
+
+    The function-key layer names its tests one by one, because each of them
+    shares a file with tests that gate and must not be dragged along.
+    """
     manifest = load_manifest(capability)
     seen = []
     for scenario in scenarios_for_layer(manifest, layer):
         if not scenario.get("test"):
             continue
-        path = test_file(scenario["test"])
-        if path not in seen:
-            seen.append(path)
+        item = scenario["test"] if layer == "ncurses-fkey" else test_file(scenario["test"])
+        if item not in seen:
+            seen.append(item)
     print("\n".join(seen))
+
+
+def cmd_deselect(capability):
+    """Node ids a gating ncurses run must skip.
+
+    Every function-key test whose file the run picks up, whether a scenario
+    maps it or not: an unmapped one in the same file would otherwise fail the
+    gate for the terminal's reason, which is the whole point of the list.
+    """
+    manifest = load_manifest(capability)
+    files = {test_file(s["test"]) for s in scenarios_for_layer(manifest, "ncurses")
+             if s.get("test")}
+    print("\n".join(sorted(t for t in fkey_tests() if test_file(t) in files)))
 
 
 def junit_results(xml_path):
@@ -247,6 +298,10 @@ def cmd_check():
                 base = test_id.split("[", 1)[0]
                 if not any(n == test_id or n.startswith(base) for n in node_ids):
                     problems.append("%s: %s -> %s does not collect" % (entry, scenario["id"], test_id))
+    for test_id in sorted(fkey_tests()):
+        base = test_id.split("[", 1)[0]
+        if not any(n == test_id or n.startswith(base) for n in node_ids):
+            problems.append("FKEY.txt: %s does not collect" % test_id)
     allowed = unmapped_allowed()
     for path in ai_test_files():
         if path not in mapped_files and path not in allowed:
@@ -260,6 +315,8 @@ def cmd_check():
 def main(argv):
     if len(argv) >= 3 and argv[0] == "files":
         return cmd_files(argv[1], argv[2]) or 0
+    if len(argv) >= 2 and argv[0] == "deselect":
+        return cmd_deselect(argv[1]) or 0
     if len(argv) >= 4 and argv[0] == "report":
         return cmd_report(argv[1], argv[2], argv[3])
     if argv and argv[0] == "check":

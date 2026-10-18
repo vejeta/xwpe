@@ -104,14 +104,19 @@ jobs:
         run: /tmp/ptenv/bin/python tests/harness/harness.py check
 
       - name: Capability harness gates (BLOCKING)
-        # The scenario harness for the capabilities whose tests do not touch the
-        # function keys, measured 2026-10-18: ai-chat-pane (31 files),
-        # ai-options-dialog (11) and ai-agent-tools-and-policy (28) contain no
-        # SS3 function-key sequence at all, so the runner's keypad/pty quirk --
-        # the reason the broad ncurses suite above is non-blocking -- cannot
-        # reach them.  They gate hard, wrapped in --reruns so a timing wobble
-        # retries while a real fault, which fails every rerun, fails the job.
-        # A scenario that is FAIL or MISSING makes run.sh exit non-zero.
+        # All five capabilities gate, on the layer that sends no function key.
+        # The runner's pseudo-terminal does not deliver those sequences, which
+        # is why the broad ncurses suite above is non-blocking, so the harness
+        # splits them off: tests/harness/FKEY.txt lists the thirteen tests that
+        # press one, measured 2026-10-19 by reading every mapped test body and
+        # helper, and run.sh deselects exactly those while the other fifty-one
+        # tests in the same files gate normally.  Earlier this step gated three
+        # capabilities and excluded two whole ones, which also left eleven
+        # ai-chat-pane scenarios gating on tests that press F9 -- a CSI
+        # sequence, not SS3, so the old "no SS3 anywhere" measurement missed
+        # them.  Wrapped in --reruns so a timing wobble retries while a real
+        # fault, which fails every rerun, fails the job.  A scenario that is
+        # FAIL or MISSING makes run.sh exit non-zero.
         if: always()
         env:
           TERM: "xterm-256color"
@@ -119,19 +124,20 @@ jobs:
         run: |
           export XWPE_LIB="$PWD"
           export PY=/tmp/ptenv/bin/python
-          for cap in ai-chat-pane ai-options-dialog ai-agent-tools-and-policy; do
+          for cap in ai-chat-pane ai-options-dialog ai-agent-tools-and-policy \
+                     ai-edit-and-patch dialog-engine; do
             echo "::group::harness $cap (ncurses)"
             tests/harness/run.sh "$cap" ncurses
             echo "::endgroup::"
           done
 
-      - name: Capability harness -- the two that drive function keys (visible, not gating)
-        # ai-edit-and-patch (3 of 24 files) and dialog-engine (4 of 14) do send
-        # SS3 function-key sequences, which is exactly what does not arrive on
-        # this runner, so a hard gate here would fail for the runner's reason
-        # rather than the code's.  Kept visible so the verdicts are in the log
-        # and the artefact; it becomes blocking once those scenarios either move
-        # off the function keys or the pty quirk is understood.
+      - name: Capability harness -- the function-key scenarios (visible, not gating)
+        # The thirteen tests FKEY.txt names, run on their own so their verdicts
+        # reach the log and the artefact.  They fail here for the terminal's
+        # reason and not the code's, so they do not gate; the Debian
+        # autopkgtest and the macOS suite are their authoritative runs.  This
+        # step becomes blocking once the runner's pty is understood or those
+        # scenarios move onto the menu routes the macOS suite already uses.
         continue-on-error: true
         if: always()
         env:
@@ -140,9 +146,9 @@ jobs:
         run: |
           export XWPE_LIB="$PWD"
           export PY=/tmp/ptenv/bin/python
-          for cap in ai-edit-and-patch dialog-engine; do
-            echo "::group::harness $cap (ncurses)"
-            tests/harness/run.sh "$cap" ncurses || true
+          for cap in ai-chat-pane ai-edit-and-patch dialog-engine; do
+            echo "::group::harness $cap (ncurses-fkey)"
+            tests/harness/run.sh "$cap" ncurses-fkey || true
             echo "::endgroup::"
           done
 
