@@ -3,12 +3,19 @@
 claudecli: the session_id from the CLI's JSON is persisted and passed back as
 `--resume <id>` on the next run (a fake `claude` on PATH records its argv);
 Alt-G n forgets it.  mock: the transcript (user/assistant turns) is persisted.
-HOME is the test workdir, so the session file lives under <workdir>/.xwpe/ai/.
+
+With no project open the session goes to the runtime state directory, the way
+ws_session_path() builds it: $XDG_STATE_HOME/xwpe/ai/<hash>.session, or
+$HOME/.local/state/xwpe/ai/<hash>.session when XDG_STATE_HOME is unset or
+empty.  HOME is the test workdir and XDG_STATE_HOME is forced empty, so the
+file lands inside the workdir.  <hash> comes from the directory of the file
+being edited, so the tests glob the directory instead of naming the file.
 """
 import os
 import glob
 import stat
 import subprocess
+from pathlib import Path
 import pytest
 from wpe_driver import WpeSession, ALT, WPE_BIN
 
@@ -40,11 +47,26 @@ def _fake_claude(tmp_path):
     return bindir, log
 
 
+# Force the XDG state default regardless of the runner's environment, the way
+# test_xdg.py does: an empty value makes the editor fall back to
+# $HOME/.local/state/xwpe, and HOME is the workdir, so the session stays
+# inside this test's own directory.
+_NO_XDG = {"XDG_STATE_HOME": ""}
+
+
+def _run_env(env, trace):
+    """Environment for one editor run.  The XDG default comes first, so a
+    caller can still point XDG_STATE_HOME somewhere else on purpose."""
+    run = dict(_NO_XDG)
+    run.update(env)
+    run.update(XWPE_AI_ENABLE="1", XWPE_AI_TRACE=str(trace))
+    return run
+
+
 def _chat(tmp_path, env, prompt, wait=3.0):
     trace = tmp_path / "ai.trace"
-    env = dict(env, XWPE_AI_ENABLE="1", XWPE_AI_TRACE=str(trace))
     with WpeSession(str(tmp_path), "int main(void){return 0;}\n",
-                    env_extra=env) as s:
+                    env_extra=_run_env(env, trace)) as s:
         s.key(ALT.AI)
         s.key("a")
         s.key(prompt)
@@ -53,8 +75,21 @@ def _chat(tmp_path, env, prompt, wait=3.0):
     return trace.read_text() if trace.exists() else ""
 
 
-def _session_files(tmp_path):
-    return glob.glob(str(tmp_path / ".xwpe" / "ai" / "*.session"))
+def _state_dir(tmp_path, env=None):
+    """The runtime state directory, following ws_state_dir():
+    $XDG_STATE_HOME/xwpe, or $HOME/.local/state/xwpe when that variable is
+    unset or empty.  HOME is the workdir."""
+    state = (env or {}).get("XDG_STATE_HOME", "")
+    if state:
+        return Path(state) / "xwpe"
+    return tmp_path / ".local" / "state" / "xwpe"
+
+
+def _session_files(tmp_path, env=None):
+    """Session files belonging to this workdir.  ws_session_path() names the
+    file after a hash of the edited file's directory, so the name is not
+    spelled out here."""
+    return sorted(glob.glob(str(_state_dir(tmp_path, env) / "ai" / "*.session")))
 
 
 def test_ai_session_claudecli_resume(tmp_path):
@@ -75,7 +110,7 @@ def test_ai_session_claudecli_resume(tmp_path):
     # Alt-G n forgets the workspace session
     trace = tmp_path / "ai.trace"
     with WpeSession(str(tmp_path), "int main(void){return 0;}\n",
-                    env_extra=dict(env, XWPE_AI_ENABLE="1", XWPE_AI_TRACE=str(trace))) as s:
+                    env_extra=_run_env(env, trace)) as s:
         s.key(ALT.AI)
         s.key("n")
         s._drain(0.8)
