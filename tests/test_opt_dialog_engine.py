@@ -12,7 +12,9 @@ build, 64x20 without the Agent row).  The oracle for "applied" is the AI trace
 file: Ok writes an "options backend=..." line, Cancel writes nothing.
 """
 import os
+import re
 import subprocess
+from pathlib import Path
 
 import pytest
 
@@ -51,15 +53,24 @@ NEW_ENDPOINT = "http://edited.test:1"
 # (bottom-right); x is a vertical border cell.
 CORNER_TL, CORNER_TR, CORNER_BL, CORNER_BR = "l", "k", "m", "j"
 CENTRE_TOLERANCE = 2.0       # cells; integer division and clamping shift by one
-# Tab stops of the AI settings dialog in the engine's column-major order
-# (left column top to bottom, then the right column, then the button row); a
-# radio group is one stop.  The Agent group exists only in the agent-host
-# build, so it is counted from the screen.
-TAB_STOPS_LEFT = ["Enable", "Backend", "Model", "Provider", "Endpoint",
-                  "CA file", "API key", "Advanced"]
-TAB_STOPS_RIGHT = ["Permission"]
-TAB_STOPS_BUTTONS = ["Ok", "Cancel"]
-AGENT_ROW_LABEL = "Built-in"
+# How many Tab stops the AI settings dialog has is read from the dialog's own
+# definition in the sources, never from a list kept here: a list of widget
+# names went one short the day the dialog grew a field, and the Tab test then
+# pressed Tab one time too few and blamed the engine.  The engine builds the
+# cycle in e_get_opt_sw_tab (we_opt.c) out of the text fields, the number
+# fields, the switches, ONE entry per radio group, and the buttons; a static
+# label is not a stop.  The count below follows that list, and fails loudly on
+# a widget kind it does not know rather than quietly dropping it.
+DIALOG_SOURCE = Path(__file__).resolve().parent.parent / "we_ai_ui.c"
+DIALOG_OPENER = "int e_ai_options(FENSTER *f)"
+DIALOG_RUNS_ENGINE = "e_opt_kst(o)"   # the call after the last widget is added
+AGENT_HOST_GUARD = "WPE_AI_AGENT_HOST"
+ONE_STOP_EACH = ("e_add_wrstr", "e_add_numstr", "e_add_sswstr", "e_add_bttstr")
+ONE_STOP_PER_GROUP = "e_add_pswstr"   # first argument: the group the radio joins
+NO_STOP = ("e_add_txtstr", "e_add_spswstr")
+WIDGET_CALL = re.compile(r"\b(e_add_\w+)\s*\(\s*([^,\s]*)")
+LOOP_HEADER = re.compile(r"\b(for|while)\s*\(")
+AGENT_ROW_LABEL = "Built-in"          # the Agent radio: only in the host build
 
 
 def _open_ai_settings(tmp_path, trace, env_overrides=None, **session_kw):
@@ -146,11 +157,84 @@ def _enable_mark_or_none(s):
     return checkbox_mark(s, ENABLE_LABEL)
 
 
+def _blanked_comments(text):
+    """`text` with every C comment turned into spaces, lines and columns kept.
+
+    A comment that names a widget call (they are named in the dialog's own
+    notes) must not be counted as one, and blanking keeps the surrounding
+    code on the lines it was on."""
+    return re.sub(r"/\*.*?\*/|//[^\n]*",
+                  lambda m: re.sub(r"[^\n]", " ", m.group(0)), text, flags=re.S)
+
+
+def _dialog_definition(agent_host):
+    """The code lines that build the AI settings dialog, from the start of
+    e_ai_options to the call that runs the engine, with the agent-host branch
+    resolved for the build under test.
+
+    This is where the dialog is defined, so reading the Tab cycle from here
+    cannot disagree with the dialog the user sees.  An unexpected conditional
+    raises instead of being guessed at: a wrong count fails the Tab test with
+    a colour mismatch, which reads as an engine bug and is not one."""
+    lines = _blanked_comments(DIALOG_SOURCE.read_text()).splitlines()
+    start = next((i for i, l in enumerate(lines) if l.startswith(DIALOG_OPENER)), None)
+    assert start is not None, "%s is not in %s any more" % (DIALOG_OPENER, DIALOG_SOURCE)
+    end = next(i for i in range(start, len(lines)) if DIALOG_RUNS_ENGINE in lines[i])
+    body, guarded, keep = [], False, True
+    for line in lines[start:end]:
+        directive = line.strip()
+        if not directive.startswith("#"):
+            if keep:
+                body.append(line)
+            continue
+        if directive.startswith("#ifdef " + AGENT_HOST_GUARD):
+            guarded, keep = True, agent_host
+        elif guarded and directive.startswith("#else"):
+            keep = not agent_host
+        elif guarded and directive.startswith("#endif"):
+            guarded, keep = False, True
+        else:
+            raise AssertionError(
+                "the dialog definition has a conditional this count does not "
+                "understand, so the number of Tab stops cannot be read from "
+                "it: %r" % line)
+    return body
+
+
+def _focus_stop_count(agent_host):
+    """The number of Tab stops of the AI settings dialog, counted from its
+    definition the way the engine counts them."""
+    singles, groups, previous = 0, set(), ""
+    for line in _dialog_definition(agent_host):
+        match = WIDGET_CALL.search(line)
+        if not match:
+            if line.strip():
+                previous = line
+            continue
+        call, first_argument = match.group(1), match.group(2)
+        if call == ONE_STOP_PER_GROUP:
+            groups.add(first_argument)      # a whole radio group is one stop
+        elif call in ONE_STOP_EACH:
+            assert not LOOP_HEADER.search(line) and not LOOP_HEADER.search(previous), \
+                "%s is added in a loop, so one line is no longer one stop: %r" \
+                % (call, line)
+            singles += 1
+        else:
+            assert call in NO_STOP, \
+                "%s is a widget kind this count does not know; read " \
+                "e_get_opt_sw_tab in we_opt.c and say whether it is a Tab " \
+                "stop: %r" % (call, line)
+        previous = line
+    assert singles and groups, \
+        "no widgets found in the dialog definition in %s" % DIALOG_SOURCE
+    return singles + len(groups)
+
+
 def _tab_stop_count(s):
-    stops = len(TAB_STOPS_LEFT) + len(TAB_STOPS_RIGHT) + len(TAB_STOPS_BUTTONS)
-    if AGENT_ROW_LABEL in row_with(s, AGENT_ROW_LABEL):
-        stops += 1
-    return stops
+    """The Tab stops of the dialog now on screen.  The Agent radio group is
+    built only in the agent-host build, which the screen tells."""
+    agent_host = AGENT_ROW_LABEL in row_with(s, AGENT_ROW_LABEL)
+    return _focus_stop_count(agent_host)
 
 
 # @scenario SC-dialog-engine-01
