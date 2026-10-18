@@ -5468,6 +5468,83 @@ static void ai_diff_add_outside_row(char **rt, int *ra, int *nrows,
  (*nrows)++;
 }
 
+/* The rows of the preview box as they are built: the text, the colour of each
+   row, how many there are and how many there is room for.  Carried as one
+   thing so the emitters below take the sink and the segment they are rendering
+   rather than four parallel arguments that must be kept in step by hand. */
+typedef struct {
+ char **text;
+ int   *attr;
+ int    n;
+ int    cap;
+} ai_diff_rows;
+
+/**
+ * ai_diff_row_add - Put one finished row in the box, if there is room.
+ * @rows: the sink; @text: a malloc'd row, which the sink takes; @attr: its colour.
+ *
+ * The cap is an upper bound computed before any row exists, so a row that
+ * would not fit is dropped here rather than at each call site; a dropped row
+ * means the bound was wrong, which is a defect in the bound, not in the
+ * rendering.
+ */
+static void ai_diff_row_add(ai_diff_rows *rows, char *text, int attr)
+{
+ if (!text) return;
+ if (rows->n >= rows->cap) { free(text); return; }
+ rows->text[rows->n] = text;
+ rows->attr[rows->n] = attr;
+ rows->n++;
+}
+
+/**
+ * ai_diff_emit_change - Render one changed segment: the old lines, then the new.
+ * @rows: the sink; @seg: the segment; @nl: the running new-file line number,
+ * advanced past every line this adds to the new file; @red/@green: the colours.
+ *
+ * A deleted line carries no new-file number, because it is not in the new file
+ * to be numbered; an added line takes the next one.  That is why the counter is
+ * passed by pointer and only the additions move it.
+ */
+static void ai_diff_emit_change(ai_diff_rows *rows, const wpe_ai_seg *seg,
+                                int *nl, int red, int green)
+{
+ int k;
+ for (k = 0; k < seg->an; k++)
+  ai_diff_row_add(rows, ai_diff_fmt_n(0, '-', seg->a[k]), red);
+ for (k = 0; k < seg->bn; k++)
+  ai_diff_row_add(rows, ai_diff_fmt_n((*nl)++, '+', seg->b[k]), green);
+}
+
+/**
+ * ai_diff_emit_context - Render one unchanged segment, collapsing a long run.
+ * @rows: the sink; @seg: the segment; @head: context lines to keep after a
+ * change; @tail: lines to keep before the next one; @nl: the running new-file
+ * line number; @ctx: the colour.
+ *
+ * A long unchanged run is what makes a preview unreadable, so only the lines
+ * next to a change are kept and the rest become one "..." row.  The hidden
+ * lines still advance the line number, so every number the user reads is the
+ * line that text really has in the new file.
+ */
+static void ai_diff_emit_context(ai_diff_rows *rows, const wpe_ai_seg *seg,
+                                 int head, int tail, int *nl, int ctx)
+{
+ int an = seg->an, k;
+
+ if (an <= head + tail) {
+  for (k = 0; k < an; k++)
+   ai_diff_row_add(rows, ai_diff_fmt_n((*nl)++, ' ', seg->a[k]), ctx);
+  return;
+ }
+ for (k = 0; k < head; k++)
+  ai_diff_row_add(rows, ai_diff_fmt_n((*nl)++, ' ', seg->a[k]), ctx);
+ ai_diff_row_add(rows, ai_diff_fmt_n(0, ' ', "..."), ctx);
+ *nl += an - head - tail;
+ for (k = an - tail; k < an; k++)
+  ai_diff_row_add(rows, ai_diff_fmt_n((*nl)++, ' ', seg->a[k]), ctx);
+}
+
 /* ai_diff_confirm_write - Preview what the agent's write_file would do to `path`
    as a colored diff (new file: all-green additions; overwrite: a real diff with
    context) and ask a single allow/deny.  So the user SEES the change before it
@@ -5483,8 +5560,10 @@ static int ai_diff_confirm_write(FENSTER *f, const char *path,
  wpe_ai_seg *segs;
  int nseg = wpe_ai_diff_segments(oldtext ? oldtext : "", newtext ? newtext : "", &segs);
  int i, k, cap = 0, nrows = 0, key, allow;
+ int nl, head, tail;
  char **rt = NULL;
  int   *ra = NULL;
+ ai_diff_rows rows;
  char   title[80], hint[64];
 
  for (i = 0; i < nseg; i++)            /* upper bound on the rows we may emit */
@@ -5496,31 +5575,20 @@ static int ai_diff_confirm_write(FENSTER *f, const char *path,
  if (!rt || !ra) { free(rt); free(ra); wpe_ai_segs_free(segs, nseg); return 1; }
  if (outside) ai_diff_add_outside_row(rt, ra, &nrows, path, red);
 
- { int nl = 1;                                   /* running new-file line number */
+ rows.text = rt; rows.attr = ra; rows.n = nrows; rows.cap = cap;
+ nl = 1;                                         /* running new-file line number */
  for (i = 0; i < nseg; i++) {
   if (segs[i].is_change) {
-   for (k = 0; k < segs[i].an && nrows < cap; k++)      /* deleted: no new number */
-    { rt[nrows] = ai_diff_fmt_n(0, '-', segs[i].a[k]); ra[nrows++] = red; }
-   for (k = 0; k < segs[i].bn && nrows < cap; k++)
-    { rt[nrows] = ai_diff_fmt_n(nl++, '+', segs[i].b[k]); ra[nrows++] = green; }
-  } else {
-   int an = segs[i].an;
-   int head = (i > 0) ? AI_DIFF_CTX : 0;          /* context after a change */
-   int tail = (i + 1 < nseg) ? AI_DIFF_CTX : 0;   /* context before the next */
-   if (an <= head + tail) {
-    for (k = 0; k < an && nrows < cap; k++)
-     { rt[nrows] = ai_diff_fmt_n(nl++, ' ', segs[i].a[k]); ra[nrows++] = ctx; }
-   } else {
-    for (k = 0; k < head && nrows < cap; k++)
-     { rt[nrows] = ai_diff_fmt_n(nl++, ' ', segs[i].a[k]); ra[nrows++] = ctx; }
-    if (nrows < cap) { rt[nrows] = ai_diff_fmt_n(0, ' ', "..."); ra[nrows++] = ctx; }
-    nl += an - head - tail;                       /* the hidden lines still count */
-    for (k = an - tail; k < an && nrows < cap; k++)
-     { rt[nrows] = ai_diff_fmt_n(nl++, ' ', segs[i].a[k]); ra[nrows++] = ctx; }
-   }
+   ai_diff_emit_change(&rows, &segs[i], &nl, red, green);
+   continue;
   }
+  /* Context lines are kept next to a change and collapsed in between, so the
+     head is there only after a change and the tail only before the next. */
+  head = (i > 0) ? AI_DIFF_CTX : 0;
+  tail = (i + 1 < nseg) ? AI_DIFF_CTX : 0;
+  ai_diff_emit_context(&rows, &segs[i], head, tail, &nl, ctx);
  }
- }
+ nrows = rows.n;
  snprintf(title, sizeof title, " Write %.48s ? ", path ? path : "file");
  snprintf(hint, sizeof hint, " y allow  n / Esc deny  PgUp/PgDn ");
  key = ai_diff_box_show(f, rt, ra, nrows, title, hint, "YN", -1);
@@ -5554,20 +5622,40 @@ static void ai_cursor_to_first_accepted(FENSTER *f, const wpe_ai_seg *segs, int 
  ai_scroll_line_into_view(f, line);
 }
 
-static char *ai_hunk_apply(FENSTER *f, wpe_ai_seg *segs, int nseg,
-                           const ai_review_caption *caption,
-                           int *naccepted, int *ntotal)
+/**
+ * ai_hunk_count_changes - How many hunks the review will offer.
+ * @segs/@nseg: the diff's segments.
+ *
+ * The user is told "hunk 2 of 5", so the total has to be known before the
+ * first one is shown.
+ * Return: the number of changed segments.
+ */
+static int ai_hunk_count_changes(const wpe_ai_seg *segs, int nseg)
 {
- int i, total = 0, hunk = 0, any = 0, all = 0, cancel = 0, k, nacc = 0;
- int *acc = calloc(nseg > 0 ? nseg : 1, sizeof *acc);
- size_t cap = 1024, len = 0;
- char *out;
- if (naccepted) *naccepted = 0;
- if (ntotal) *ntotal = 0;
- if (!acc) return NULL;
- for (i = 0; i < nseg; i++) if (segs[i].is_change) total++;
+ int i, total = 0;
+ for (i = 0; i < nseg; i++)
+  if (segs[i].is_change) total++;
+ return total;
+}
 
- for (i = 0; i < nseg && !cancel; i++) {
+/**
+ * ai_hunk_collect_decisions - Ask about each hunk and record what was accepted.
+ * @f: the window; @segs/@nseg: the segments; @caption: the review's wording;
+ * @acc: one flag per segment, written here; @naccepted: how many were taken.
+ *
+ * One job: the conversation with the user. Leaving the text building to its
+ * own function is what lets each be read on its own, and the two were the
+ * reason this was the longest function in the review path.
+ * Return: 1 when the user cancelled the whole review, else 0.
+ */
+static int ai_hunk_collect_decisions(FENSTER *f, wpe_ai_seg *segs, int nseg,
+                                     const ai_review_caption *caption,
+                                     int *acc, int *naccepted)
+{
+ int i, hunk = 0, all = 0, nacc = 0;
+ int total = ai_hunk_count_changes(segs, nseg);
+
+ for (i = 0; i < nseg; i++) {
   int decision;
   if (!segs[i].is_change) continue;
   hunk++;
@@ -5575,34 +5663,78 @@ static char *ai_hunk_apply(FENSTER *f, wpe_ai_seg *segs, int nseg,
      it adds ends the blanket accept and is shown for its own decision. */
   if (all && ai_hunk_deletes_more_than_it_adds(&segs[i]))
    all = 0;
-  if (all) { acc[i] = 1; any = 1; nacc++; continue; }
+  if (all) { acc[i] = 1; nacc++; continue; }
   decision = ai_diff_review_hunk(f, segs, nseg, i, hunk, total, caption);
-  if (decision == 'Y')      { acc[i] = 1; any = 1; nacc++; }
-  else if (decision == 'A') { acc[i] = 1; any = 1; all = 1; nacc++; }
+  if (decision == 'Y')      { acc[i] = 1; nacc++; }
+  else if (decision == 'A') { acc[i] = 1; nacc++; all = 1; }
   else if (decision == 'N') { acc[i] = 0; }
-  else                      { cancel = 1; }        /* 'Q' / Esc */
+  else {
+   if (naccepted) *naccepted = nacc;
+   return (1);                                     /* 'Q' / Esc */
+  }
  }
- if (ntotal) *ntotal = total;
  if (naccepted) *naccepted = nacc;
- if (cancel || !any) { free(acc); return NULL; }
- ai_cursor_to_first_accepted(f, segs, nseg, acc);
+ return (0);
+}
 
- out = malloc(cap);
- if (!out) { free(acc); return NULL; }
+/**
+ * ai_segs_join_chosen - Build the file's new text from the accepted hunks.
+ * @segs/@nseg: the segments; @acc: which changed segments were accepted.
+ *
+ * An unchanged segment contributes its lines; a changed one contributes the
+ * new lines when it was accepted and the old lines when it was not, which is
+ * what makes a partial accept produce a file rather than a patch.
+ * Return: the malloc'd text, or NULL when it could not be built.
+ */
+static char *ai_segs_join_chosen(const wpe_ai_seg *segs, int nseg, const int *acc)
+{
+ size_t cap = 1024, len = 0;
+ char *out = malloc(cap);
+ int i, k;
+
+ if (!out) return NULL;
  out[0] = '\0';
  for (i = 0; i < nseg; i++) {
-  char **lines;
-  int n2;
-  if (!segs[i].is_change) { lines = segs[i].a; n2 = segs[i].an; }
-  else if (acc[i])        { lines = segs[i].b; n2 = segs[i].bn; }
-  else                    { lines = segs[i].a; n2 = segs[i].an; }
+  char **lines = segs[i].a;
+  int n2 = segs[i].an;
+  if (segs[i].is_change && acc[i]) { lines = segs[i].b; n2 = segs[i].bn; }
   for (k = 0; k < n2; k++) {
    size_t ll = strlen(lines[k]);
-   if (len + ll + 2 > cap) { while (len + ll + 2 > cap) cap *= 2; out = realloc(out, cap); }
-   memcpy(out + len, lines[k], ll); len += ll; out[len++] = '\n';
+   if (len + ll + 2 > cap) {
+    char *bigger;
+    while (len + ll + 2 > cap) cap *= 2;
+    bigger = realloc(out, cap);
+    if (!bigger) { free(out); return NULL; }   /* the old pointer was the only one */
+    out = bigger;
+   }
+   memcpy(out + len, lines[k], ll);
+   len += ll;
+   out[len++] = '\n';
   }
  }
  out[len] = '\0';
+ return out;
+}
+
+static char *ai_hunk_apply(FENSTER *f, wpe_ai_seg *segs, int nseg,
+                           const ai_review_caption *caption,
+                           int *naccepted, int *ntotal)
+{
+ int *acc = calloc(nseg > 0 ? nseg : 1, sizeof *acc);
+ int nacc = 0, cancel;
+ char *out;
+
+ if (naccepted) *naccepted = 0;
+ if (ntotal) *ntotal = 0;
+ if (!acc) return NULL;
+ if (ntotal) *ntotal = ai_hunk_count_changes(segs, nseg);
+
+ cancel = ai_hunk_collect_decisions(f, segs, nseg, caption, acc, &nacc);
+ if (naccepted) *naccepted = nacc;
+ if (cancel || nacc == 0) { free(acc); return NULL; }
+
+ ai_cursor_to_first_accepted(f, segs, nseg, acc);
+ out = ai_segs_join_chosen(segs, nseg, acc);
  free(acc);
  return out;
 }
@@ -7257,17 +7389,94 @@ static void ai_complete_fd_cb(int fd, void *data)
  */
 static void ai_launch_complete(FENSTER *f, const char *goal);
 
+/* How much of the text before and after the cursor the prompt carries.  The
+   whole file is split for the splice, but a completion only needs the code
+   around the cursor, and the rest is prompt the user pays for. */
+#define AI_COMPLETE_BEFORE_MAX 2000
+#define AI_COMPLETE_AFTER_MAX   800
+
+/**
+ * ai_cursor_byte_offset - Where the cursor is in the file's text, in bytes.
+ * @b: the buffer.
+ *
+ * The completion is spliced back as before + suggestion + after, so the split
+ * has to land exactly where the caret is, counting one byte per line for the
+ * newline the buffer does not store. Every index is clamped, because a caret
+ * past the end of its line or a line past the end of the buffer are both
+ * states the editor allows and neither may read outside the text.
+ * Return: the offset, never past the end of @b's text.
+ */
+static size_t ai_cursor_byte_offset(BUFFER *b)
+{
+ size_t off = 0;
+ int y = b->b.y, x = b->b.x, i, ll;
+
+ if (y < 0) y = 0;
+ if (y > b->mxlines - 1) y = b->mxlines - 1;
+ for (i = 0; i < y && i < b->mxlines; i++)
+  off += (size_t)(b->bf[i].len < 0 ? 0 : b->bf[i].len) + 1;
+ ll = b->bf[y].len < 0 ? 0 : b->bf[y].len;
+ if (x > ll) x = ll;
+ if (x < 0) x = 0;
+ return (off + (size_t)x);
+}
+
+/**
+ * ai_split_text_at - Cut @text in two at @off.
+ * @text: the file's text; @off: where to cut, clamped to the text's length;
+ * @before/@after: the two halves, both malloc'd, on success.
+ *
+ * Return: 0, or -1 with nothing allocated when the memory was not there.
+ */
+static int ai_split_text_at(const char *text, size_t off, char **before, char **after)
+{
+ size_t len = strlen(text);
+
+ if (off > len) off = len;
+ *before = malloc(off + 1);
+ *after = strdup(text + off);
+ if (!*before || !*after) {
+  free(*before); free(*after);
+  *before = *after = NULL;
+  return (-1);
+ }
+ memcpy(*before, text, off);
+ (*before)[off] = '\0';
+ return (0);
+}
+
+/**
+ * ai_complete_prompt - The user message a completion asks the model.
+ * @before/@after: the file's text either side of the caret.
+ *
+ * The caret is marked rather than described, and only the code around it is
+ * sent: a whole file would cost the user tokens for text the completion does
+ * not read.
+ * Return: the malloc'd message, or NULL.
+ */
+static char *ai_complete_prompt(const char *before, const char *after)
+{
+ size_t bl = strlen(before);
+ const char *tail = bl > AI_COMPLETE_BEFORE_MAX
+                      ? before + (bl - AI_COMPLETE_BEFORE_MAX) : before;
+ size_t n = strlen(tail) + AI_COMPLETE_AFTER_MAX + 100;
+ char *user = malloc(n);
+
+ if (!user) return NULL;
+ snprintf(user, n, "%s<CURSOR>%.*s", tail, AI_COMPLETE_AFTER_MAX, after);
+ return user;
+}
+
 static int e_ai_complete(FENSTER *f)
 {
  char err[320], line[360];
  char *text, *before, *after, *user = NULL;
- const char *pbz;
  ai_complete_ud *ud;
  ai_async_op *op;
  BUFFER *b = f->b;
  ECNT *cn = f->ed;
- int save_id = -1, wi, y, i, x, ll;
- size_t off = 0, bl;
+ int save_id = -1, wi;
+ size_t off;
  static const char sys[] =
    "You are a code completion engine. Complete the code at the <CURSOR> marker. "
    "Return ONLY the text to insert at the cursor -- no markdown fences, no "
@@ -7287,24 +7496,14 @@ static int e_ai_complete(FENSTER *f)
     Only the prompt below is trimmed to the context around the cursor. */
  text = ai_full_file_text(f);
  if (!text) return 0;
- y = b->b.y; if (y < 0) y = 0; if (y > b->mxlines - 1) y = b->mxlines - 1;
- for (i = 0; i < y && i < b->mxlines; i++)
-  off += (size_t)(b->bf[i].len < 0 ? 0 : b->bf[i].len) + 1;
- x = b->b.x; ll = b->bf[y].len < 0 ? 0 : b->bf[y].len;
- if (x > ll) x = ll; if (x < 0) x = 0;
- off += (size_t)x;
- if (off > strlen(text)) off = strlen(text);
- before = malloc(off + 1);
- after = strdup(text + off);
- if (!before || !after) { free(before); free(after); free(text); return 0; }
- memcpy(before, text, off); before[off] = '\0';
+ off = ai_cursor_byte_offset(b);
+ if (ai_split_text_at(text, off, &before, &after)) {
+  free(text);
+  return 0;
+ }
  free(text);
 
- bl = strlen(before);
- pbz = bl > 2000 ? before + (bl - 2000) : before;      /* last ~2000 chars of context */
- { size_t n = strlen(pbz) + 900;
-   user = malloc(n);
-   if (user) snprintf(user, n, "%s<CURSOR>%.800s", pbz, after); }
+ user = ai_complete_prompt(before, after);
  if (!user) { free(before); free(after); return 0; }
 
  msgs[0].role = "system"; msgs[0].content = sys;
