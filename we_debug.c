@@ -2194,6 +2194,40 @@ int e_remove_breakpoints(FENSTER *f)
  return(0);
 }
 
+/* The entry symbol ga68 gives an Algol 68 program.  Named here because this is
+   the one place that has to know about it: the symbol is emitted BEFORE the
+   first line record of the source, so a breakpoint on it stops four bytes
+   early, in the prologue, where gdb has no file, no line and no locals to
+   offer.  The editor could then not show the source, F8 could not follow
+   source lines, and a watch had nothing to evaluate. */
+#define GA68_ENTRY_SYMBOL "__algol68_main"
+
+/**
+ * e_d_gdb_start_break - The gdb command that stops a run at the program's start.
+ * @out: where the command goes; @n: its size.
+ *
+ * Normally this breaks on the configured start symbol, which is what the user
+ * sees and can change in Options.  For ga68 it breaks on the source file's
+ * first line instead, and gdb moves that to the first line that has code: the
+ * same function, a few bytes later, but inside the line table, so the editor
+ * gets the file and line it needs to show the source and the user gets locals
+ * and working watches.  A Borland-school editor stops on the first statement of
+ * your program, not on a symbol belonging to the runtime.
+ *
+ * A user who types their own symbol keeps a symbol breakpoint: the special case
+ * is recognised by the value, not by the language, so the setting still means
+ * what it says.
+ */
+static void e_d_gdb_start_break(char *out, size_t n)
+{
+ const char *sym = e_get_start_symbol();
+
+ if (sym && !strcmp(sym, GA68_ENTRY_SYMBOL) && e_d_file[0])
+  snprintf(out, n, "b %s:1\n", e_d_file);
+ else
+  snprintf(out, n, "b %s\n", sym);
+}
+
 /* Grow the three parallel breakpoint arrays (source file name, source line,
    debugger-assigned id) by one entry.  The caller then fills in element
    e_d_nbrpts - 1 of each.  Used wherever a breakpoint is recorded
@@ -2273,7 +2307,7 @@ int e_mk_brk_main(FENSTER *f, int sw)
   {
    if (e_deb_type == DEB_GDB)
    {
-    sprintf(eing, "b %s\n", e_get_start_symbol());
+    e_d_gdb_start_break(eing, sizeof eing);
     e_d_send_cmd(eing);
     while ((ret = e_d_line_read(wfildes[0], str, 256, 0, 0)) == 0 &&
       strncmp(str, "Breakpoint", 10))
