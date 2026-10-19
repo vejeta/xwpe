@@ -1069,6 +1069,20 @@
    "layer": "ncurses",
    "test": "tests/test_ai_changeset.py::test_a_refused_commit_says_the_files_stay_staged",
    "status": "new"
+  },
+  {
+   "id": "SC-ai-agent-59",
+   "requirement": "Checkpoint and review",
+   "layer": "ncurses",
+   "test": "tests/test_ai_changeset_bounds.py::test_a_file_created_in_a_deeper_directory_is_listed_and_removed",
+   "status": "new"
+  },
+  {
+   "id": "SC-ai-agent-59",
+   "requirement": "Checkpoint and review",
+   "layer": "ncurses",
+   "test": "tests/test_ai_changeset_bounds.py::test_a_workspace_beyond_the_watch_bound_is_said_in_the_pane",
+   "status": "new"
   }
  ]
 }

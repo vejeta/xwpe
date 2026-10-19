@@ -188,6 +188,70 @@ def _run_created_file(tmp_path, reply, cols=80, rows=30):
 
 
 # @scenario SC-ai-agent-59
+def test_a_file_created_in_a_deeper_directory_is_listed_and_removed(tmp_path):
+    """Snapshot mode: the run creates `src/deep/x.c` through a command.
+
+    The snapshot used to watch the root and each open file's directory only,
+    so a file created two directories down was neither listed nor removed and
+    the summary still read "ALL changes reverted".  The snapshot now walks the
+    workspace root as deep as it goes, the set the git mode has always seen,
+    so the file is listed as `src/deep/x.c:1: [AI] new file` and `r` removes
+    it.  The file is created through `run_command`, which the auto dial
+    passes, because `write_file` makes no directories on purpose.
+    """
+    deep = tmp_path / "src" / "deep" / "x.c"
+    reply = ("TOOL run_command mkdir -p src/deep && "
+             "echo 'int deep(void){return 1;}' > src/deep/x.c"
+             "@@TURN@@DONE created it")
+    review, after, txt, waiting, alive = _run_created_file(tmp_path, reply)
+
+    assert waiting, "the review never asked for a key:\n" + _evidence(review, txt)
+    row = _row_for(review, "src/deep/x.c")
+    assert row == "src/deep/x.c:1: " + NEW_FILE, \
+        "Messages shows %r for a file the run created two directories down:\n%s" % (
+            row, _evidence(review, txt))
+    assert not deep.exists(), \
+        "`r` left the created file on disk:\n%s" % _evidence(after, txt)
+    assert alive, "reverting a deep created file ended the editor"
+
+
+WATCH_BOUND = 2000
+WATCH_BOUND_WORDS = "is unseen"
+
+
+# @scenario SC-ai-agent-59
+def test_a_workspace_beyond_the_watch_bound_is_said_in_the_pane(tmp_path):
+    """When the workspace holds more files than the snapshot watches, the pane
+    says so, with the count, instead of leaving later new files unseen.
+
+    The review lists a new file by comparing what exists now with what existed
+    at the checkpoint; a file beyond the bound is in neither list, so it would
+    be kept without ever being shown.  A workspace that fits is told nothing.
+    """
+    many = tmp_path / "many"
+    many.mkdir()
+    for i in range(WATCH_BOUND + 50):
+        (many / ("f%04d.txt" % i)).write_text("x\n")
+    trace = _trace_path(tmp_path)
+    reply = "TOOL write_file new.c\nint new(void){return 1;}\n@@END@@TURN@@DONE created it"
+    env = _env(tmp_path, reply)
+    with WpeSession(str(tmp_path), ORIG, env_extra=env) as s:
+        _start_agent(s, "create a file")
+        assert _wait_trace(trace, "changeset n=", 90), \
+            "the review never opened:\n" + _trace_text(trace)
+        s.key("a", delay=0.8)                # the review's loop eats PgUp: answer first
+        pane = pane_text_with_history(s, ["the snapshot watches", WATCH_BOUND_WORDS])
+        alive = s.alive()
+
+    text = " ".join(" ".join(pane).split())   # the pane wraps the line over rows
+    assert "the snapshot watches %d files under %s" % (WATCH_BOUND, tmp_path) in text, \
+        "the pane does not say the snapshot's bound was reached, or how many it watches:\n" + text
+    assert "a file the run creates beyond them %s" % WATCH_BOUND_WORDS in text, \
+        "the pane does not say what the bound costs:\n" + text
+    assert alive, "a workspace beyond the bound ended the editor"
+
+
+# @scenario SC-ai-agent-59
 def test_a_file_created_beside_the_open_file_is_listed_and_removed(tmp_path):
     """Snapshot mode: the run creates `new.c` beside the open file.
 

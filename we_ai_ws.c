@@ -464,27 +464,81 @@ static void ck_clear(void)
  ck_mode = 0; ck_ref[0] = '\0';
 }
 
-/* Regular, non-hidden files directly inside dir (full paths), bounded. */
-static void ws_list_dir_files(const char *dir, char ***l, int *n, int *cap)
+/* The most files the snapshot watches for new ones, over every watched
+   directory together.  When the walk stops here the pane says so, so a run that
+   creates a file beyond the bound is never silently unreviewed. */
+#define WS_WATCH_MAX 2000
+
+/**
+ * ws_walk_files - List the regular files under a directory, as far down as it goes.
+ * @dir: where to start; @l/@n/@cap: the list the paths are added to.
+ *
+ * What the user gains: a file the run creates in a deeper directory of the
+ * workspace, through a command or a tool, is listed by the review and removed
+ * by r, the same as one created beside the open file; the git mode sees the
+ * whole tree, and the snapshot mode now watches the same set.  Hidden entries
+ * are skipped, which keeps `.git` and the editor's own folders out, and the
+ * walk stops at WS_WATCH_MAX files in all, so a workspace holding a built tree
+ * does not stall the checkpoint.
+ * Return: 1 when the bound stopped the walk, 0 when everything was seen.
+ */
+static int ws_walk_files(const char *dir, char ***l, int *n, int *cap)
 {
  DIR *d = opendir(dir);
  struct dirent *de;
- int added = 0;
- while (d && (de = readdir(d)) && added < 2000) {
+ int stopped = 0;
+ while (d && (de = readdir(d))) {
   char *p;
   size_t L;
   struct stat st;
+  if (*n >= WS_WATCH_MAX) { stopped = 1; break; }
   if (de->d_name[0] == '.') continue;
   L = strlen(dir) + strlen(de->d_name) + 2;
   p = malloc(L);
   if (!p) continue;
   snprintf(p, L, "%s/%s", dir, de->d_name);
-  if (stat(p, &st) == 0 && S_ISREG(st.st_mode) && !ws_list_has(*l, *n, p)) {
+  if (stat(p, &st) != 0) { free(p); continue; }
+  if (S_ISDIR(st.st_mode)) {
+   if (ws_walk_files(p, l, n, cap)) stopped = 1;
+   free(p);
+  } else if (S_ISREG(st.st_mode) && !ws_list_has(*l, *n, p)) {
    ws_list_push(l, n, cap, p);
-   added++;
   } else free(p);
  }
  if (d) closedir(d);
+ return stopped;
+}
+
+/**
+ * ws_list_watched_files - The files under every watched directory, now.
+ * @l/@n: receives the list.
+ * Return: 1 when the bound stopped the walk before every file was seen.
+ */
+static int ws_list_watched_files(char ***l, int *n)
+{
+ int cap = 0, k, stopped = 0;
+ *l = NULL; *n = 0;
+ for (k = 0; k < ck_dirs_n; k++)
+  if (ws_walk_files(ck_dirs[k], l, n, &cap)) stopped = 1;
+ return stopped;
+}
+
+/**
+ * ws_say_watch_bound - Tell the user the snapshot could not watch the whole workspace.
+ * @f: any window of the editor; @seen: how many files it watches.
+ *
+ * The review lists new files by comparing what exists now with what existed at
+ * the checkpoint; a file beyond the bound is in neither list, so it would be
+ * kept without ever being shown.  Saying the bound is what keeps "ALL changes
+ * reverted" honest in a workspace too large to walk.
+ */
+static void ws_say_watch_bound(FENSTER *f, int seen)
+{
+ char line[1300];
+ snprintf(line, sizeof line,
+          "the snapshot watches %d files under %s; a file the run creates beyond them is unseen",
+          seen, ck_dir);
+ wpe_ai_pane_error(f, line);
 }
 
 /* Drop trailing slashes so the same directory always has ONE spelling (the
@@ -495,7 +549,16 @@ static void ws_strip_slash(char *d)
  while (l > 1 && d[l - 1] == '/') d[--l] = '\0';
 }
 
-/* The directories to watch for NEW files: the root plus every scope file's dir. */
+/* Is `dir` the root or somewhere below it? */
+static int ws_dir_under_root(const char *dir)
+{
+ size_t l = strlen(ck_dir);
+ if (strncmp(dir, ck_dir, l) != 0) return 0;
+ return dir[l] == '\0' || dir[l] == '/';
+}
+
+/* The directories to watch for NEW files: the root, walked as deep as it goes,
+   plus the directory of every scope file that lives outside it. */
 static void ws_watch_dirs(char **scope, int nscope)
 {
  int i, cap = 0;
@@ -510,7 +573,8 @@ static void ws_watch_dirs(char **scope, int nscope)
   d[sl - scope[i]] = '\0';
   if (!d[0]) { free(d); d = ws_strdup("/"); }
   ws_strip_slash(d);
-  if (!ws_list_has(ck_dirs, ck_dirs_n, d)) ws_list_push(&ck_dirs, &ck_dirs_n, &cap, d);
+  if (!ws_dir_under_root(d) && !ws_list_has(ck_dirs, ck_dirs_n, d))
+   ws_list_push(&ck_dirs, &ck_dirs_n, &cap, d);
   else free(d);
  }
 }
@@ -575,12 +639,9 @@ int wpe_ai_checkpoint_create(FENSTER *f, char **scope, int nscope)
   } else failed = nscope;
   /* remember what exists now, so files the run CREATES are detected too */
   ws_watch_dirs(scope, nscope);
-  {
-   int cap = 0, k;
-   wpe_ai_free_list(ck_before, ck_before_n);
-   ck_before = NULL; ck_before_n = 0;
-   for (k = 0; k < ck_dirs_n; k++) ws_list_dir_files(ck_dirs[k], &ck_before, &ck_before_n, &cap);
-  }
+  wpe_ai_free_list(ck_before, ck_before_n);
+  if (ws_list_watched_files(&ck_before, &ck_before_n))
+   ws_say_watch_bound(f, ck_before_n);
   /* A checkpoint with no before image in it can put nothing back, so it is not
      taken: leaving it active would open a review that offers a revert over
      files it could only restore nothing from, and the review's word is what
@@ -756,9 +817,9 @@ static int ws_collect_changes(ws_change **c, int *n)
   }
   /* files that did not exist at checkpoint time = new files */
   {
-   char **nowl = NULL;
-   int nn = 0, ncap = 0, k;
-   for (k = 0; k < ck_dirs_n; k++) ws_list_dir_files(ck_dirs[k], &nowl, &nn, &ncap);
+   char **nowl;
+   int nn, k;
+   ws_list_watched_files(&nowl, &nn);
    for (k = 0; k < nn; k++)
     if (!ws_list_has(ck_before, ck_before_n, nowl[k]))
      ws_add_change(c, n, &cap, nowl[k], 1, "[AI] new file", 1);

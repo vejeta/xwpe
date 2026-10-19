@@ -673,7 +673,11 @@ build without @option{--enable-ai-agent-host} contains none of it, and the
 Before an @code{edits} or @code{auto} run, xwpe takes a @dfn{checkpoint}: a
 @command{git} reference when the workspace is a git tree, otherwise a private
 snapshot of the files under @file{$XDG_STATE_HOME/xwpe/checkpoints/} (default
-@file{~/.local/state/xwpe/checkpoints/}).  Afterwards it writes
+@file{~/.local/state/xwpe/checkpoints/}).  The snapshot watches the files under
+the workspace root as deep as they go, hidden folders skipped, so a file the
+run creates in any directory of the workspace is listed and can be removed;
+in a workspace too large to walk whole the pane says how many files it
+watches and that a file created beyond them is unseen.  Afterwards it writes
 the @dfn{changeset} into the @samp{Messages} window, one line per changed hunk in
 the compiler's @code{file:line:} format -- so you step through the AI's changes
 with the very same @kbd{Alt-T} (Next) and @kbd{Alt-V} (Previous) keys you use for
