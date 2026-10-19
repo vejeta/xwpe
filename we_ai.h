@@ -382,7 +382,10 @@ int   wpe_ai_window_is_editable_file(struct FNST *w);
 char *wpe_ai_read_scope_file(struct FNST *f, const char *path);
 int   wpe_ai_path_outside_workspace(struct FNST *f, const char *path);
 /* Checkpoint before an edits/auto run: a git ref (stash create / HEAD) when
- * the workspace is a git tree, else snapshot copies of the scope files. */
+ * the workspace is a git tree, else snapshot copies of the scope files.
+ * Returns 0 when the checkpoint is active, -1 when it was not taken because it
+ * could hold no before image at all (the pane says why).  A caller must not
+ * promise the user a revert on a -1: there would be nothing to revert to. */
 int   wpe_ai_checkpoint_create(struct FNST *f, char **scope, int nscope);
 int   wpe_ai_checkpoint_active(void);
 /* After the run: compute what changed on disk, write it to Messages as

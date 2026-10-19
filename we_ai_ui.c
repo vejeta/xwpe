@@ -9060,6 +9060,12 @@ static void ai_agent_report_outside(FENSTER *f, const char *path)
  * asks the same question again and takes the checkpoint before the first write
  * that follows.  Under ask every write is approved in its own box and nothing
  * is taken; a run never takes two.
+ *
+ * The pane promises the revert only when the checkpoint is there to keep it,
+ * read through the same wpe_ai_checkpoint_active() the review at the end is
+ * gated on: a checkpoint that could not save a before image is not taken, and
+ * announcing a revert that could restore nothing is the lie the failure report
+ * in the pane exists to prevent.
  */
 static void ai_agent_ensure_checkpoint(ai_async_op *op)
 {
@@ -9070,8 +9076,9 @@ static void ai_agent_ensure_checkpoint(ai_async_op *op)
  nsc = wpe_ai_scope_files(op->f, e_project_is_open(), 1, &scope);
  wpe_ai_checkpoint_create(op->f, scope, nsc);
  wpe_ai_free_list(scope, nsc);
- op->checkpointed = 1;
- ai_pane(op->f, AI_AGENT_CHECKPOINT_LINE, AI_ROLE_MACHINERY, 0);
+ op->checkpointed = 1;              /* settled, taken or not: a run tries once */
+ if (wpe_ai_checkpoint_active())
+  ai_pane(op->f, AI_AGENT_CHECKPOINT_LINE, AI_ROLE_MACHINERY, 0);
 }
 
 /**
@@ -11186,7 +11193,9 @@ static void host_end_session_notice(void)
  * reviewable and revertible when it ends (Alt-G g, then Esc).  It used to be
  * taken silently; the pane now shows the same "[agent] checkpoint taken" line
  * the built-in loop shows, so the user knows the safety net is there before
- * the first turn goes out.
+ * the first turn goes out.  It is shown only when the checkpoint is real, so a
+ * session whose before images could not be saved does not promise a revert the
+ * session could not keep; the pane says that failure in its own words.
  */
 static void host_take_checkpoint(FENSTER *f)
 {
@@ -11194,7 +11203,8 @@ static void host_take_checkpoint(FENSTER *f)
  int nsc = wpe_ai_scope_files(f, e_project_is_open(), 1, &scope);
  wpe_ai_checkpoint_create(f, scope, nsc);
  wpe_ai_free_list(scope, nsc);
- ai_pane(f, AI_AGENT_CHECKPOINT_LINE, AI_ROLE_MACHINERY, 0);
+ if (wpe_ai_checkpoint_active())
+  ai_pane(f, AI_AGENT_CHECKPOINT_LINE, AI_ROLE_MACHINERY, 0);
 }
 
 /* Non-host code (e.g. Options > Disable) asks whether a host is up. */

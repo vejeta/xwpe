@@ -139,22 +139,68 @@ static int ws_write_file(const char *path, const char *text)
 }
 
 /**
+ * ws_say_failed - Tell the user one file this layer could not do what it promised.
+ * @f: any window of the editor; @what: the job as a verb phrase ("restore",
+ * "save the conversation to"); @path: the file it was about; @reason: why it
+ * did not happen, in the words of whoever refused.
+ *
+ * A conversation, a before image or a restored file that never reached the disk
+ * looks exactly like one that did, and the next thing the user does depends on
+ * which it was.  So the pane says it in the error colour, naming the path
+ * (where to look) and the reason (what to fix: a full disk, a folder that is
+ * not one, a file left read-only, a workspace that refused).  Every failure
+ * this layer reports comes through here, so one shape covers whatever refused:
+ * the kernel, a command the workspace owns, or a checkpoint holding nothing.
+ */
+static void ws_say_failed(FENSTER *f, const char *what, const char *path, const char *reason)
+{
+ char line[1700];
+ snprintf(line, sizeof line, "could not %s %s: %s", what, path, reason);
+ wpe_ai_pane_error(f, line);
+}
+
+/**
  * ws_write_failed - Tell the user one file this layer could not write.
  * @f: any window of the editor; @what: the file's job as a verb phrase
  * ("save the conversation to"); @path: where it was to go; @err: the errno the
  * failed call left.
  *
- * A conversation, a before image or a restored file that never reached the
- * disk looks exactly like one that did, and the next thing the user does
- * depends on which it was.  So the pane says it in the error colour, naming
- * the path (where to look) and the reason the system gave (what to fix: a
- * full disk, a folder that is not one, a file left read-only).
+ * A write is refused by the kernel, so its reason is the errno's own words.
  */
 static void ws_write_failed(FENSTER *f, const char *what, const char *path, int err)
 {
- char line[1700];
- snprintf(line, sizeof line, "could not %s %s: %s", what, path, strerror(err));
- wpe_ai_pane_error(f, line);
+ ws_say_failed(f, what, path, strerror(err));
+}
+
+/**
+ * ws_output_reason - The first non-empty line of a command's output.
+ * @out: what the command printed, NULL when it printed nothing; @status: its
+ * exit status; @buf/@sz: where the reason goes.
+ *
+ * A restore the workspace refused is refused by the workspace's own tool, so
+ * the reason is that tool's sentence and not an errno: git says why it would
+ * not put the file back ("error: unable to unlink old 't.c': Permission
+ * denied"), and that is the line the user can act on.  One line is enough
+ * because the pane is where the user reads it, and the review's summary counts
+ * the files that kept the change.
+ */
+static void ws_output_reason(const char *out, int status, char *buf, size_t sz)
+{
+ const char *p = out;
+ while (p && *p) {
+  const char *e = strchr(p, '\n');
+  size_t l = e ? (size_t)(e - p) : strlen(p);
+  while (l && (p[l - 1] == '\r' || p[l - 1] == ' ')) l--;
+  if (l) {
+   if (l >= sz) l = sz - 1;
+   memcpy(buf, p, l);
+   buf[l] = '\0';
+   return;
+  }
+  if (!e) break;
+  p = e + 1;
+ }
+ snprintf(buf, sz, "the command failed (status %d)", status);
 }
 
 /**
@@ -499,15 +545,17 @@ int wpe_ai_checkpoint_create(FENSTER *f, char **scope, int nscope)
  {
   char sdir[1024];
   time_t now = time(NULL);
-  int failed = 0, told = 0;
+  int failed = 0, told = 0, readable = 0, have_dir;
   ws_state_dir(sdir, sizeof sdir);
   snprintf(ck_snapdir, sizeof ck_snapdir, "%s/checkpoints/%ld", sdir, (long)now);
   /* without the folder no copy can exist, and the folder's own failure has
      just been reported: the loop stays out rather than repeat it per file */
-  if (ws_make_dir(f, ck_snapdir) == 0) {
+  have_dir = ws_make_dir(f, ck_snapdir) == 0;
+  if (have_dir) {
    for (i = 0; i < nscope; i++) {
     char *text = ws_read_file(scope[i], 4000000), dst[1200];
     if (!text) continue;
+    readable++;
     snprintf(dst, sizeof dst, "%s/%d", ck_snapdir, ck_n);
     if (ws_write_file(dst, text) == 0) {
      int cap = ck_n;
@@ -529,6 +577,18 @@ int wpe_ai_checkpoint_create(FENSTER *f, char **scope, int nscope)
    wpe_ai_free_list(ck_before, ck_before_n);
    ck_before = NULL; ck_before_n = 0;
    for (k = 0; k < ck_dirs_n; k++) ws_list_dir_files(ck_dirs[k], &ck_before, &ck_before_n, &cap);
+  }
+  /* A checkpoint with no before image in it can put nothing back, so it is not
+     taken: leaving it active would open a review that offers a revert over
+     files it could only restore nothing from, and the review's word is what
+     the user believes about the workspace.  The reason is already in the pane,
+     from the folder or from the first copy that failed, so this says it to the
+     record only.  Files that were never readable are not counted as wanted:
+     there was nothing of theirs to save, and a run that only CREATES files
+     still gets a working revert, which needs no before image. */
+  if (!have_dir || (readable && ck_n == 0)) {
+   wpe_ai_trace("checkpoint refused n=%d failed=%d dir=%s", ck_n, failed, ck_snapdir);
+   return -1;
   }
   wpe_ai_trace("checkpoint snapshot n=%d failed=%d dir=%s", ck_n, failed, ck_snapdir);
  }
@@ -940,48 +1000,82 @@ int wpe_ai_window_hook_copy(FENSTER *w, char *tmp, size_t sz)
  return 1;
 }
 
+/* What a revert says for a file the checkpoint holds no copy of: there is no
+ * errno and no command to quote, since nothing was attempted that could fail.
+ * The lookup that misses compares the changeset's normalized spelling against
+ * ck_files' own, so a scope path carrying "//" lands here too; saying the copy
+ * is missing is still the truth the user acts on, since nothing was restored. */
+#define WS_NO_BEFORE_IMAGE "the checkpoint holds no before image of it"
+
+/**
+ * ws_revert_failed - Say one file the revert could not put back, and fail.
+ * @f: any window of the editor; @what: "restore" or "remove"; @path: the file;
+ * @reason: why it kept the change, in the words of whoever refused.
+ *
+ * Undoing a change is the promise the whole review stands on, so the user hears
+ * at once which file kept the change and why, and the trace says the revert
+ * failed instead of claiming one that did not happen.  The window is left
+ * alone, since reloading it would show text the disk does not hold.
+ * Return: -1, so the caller's count of files that kept the change stays honest.
+ */
+static int ws_revert_failed(FENSTER *f, const char *what, const char *path, const char *reason)
+{
+ ws_say_failed(f, what, path, reason);
+ wpe_ai_trace("changeset revert failed %s: %s", path, reason);
+ return -1;
+}
+
 /**
  * ws_revert_path - Put one file back the way the checkpoint found it.
  * @f: any window of the editor; @path: the file to put back;
  * @is_new: the run created it, so putting it back means taking it away.
  *
- * Undoing a change is the promise the whole review stands on, so a file that
- * could not be put back is said in the pane at once, naming the file and the
- * reason: the user then knows the change is still there instead of finding out
- * later from the file itself.  The window is left alone in that case, since
- * reloading it would show text the disk does not hold.
+ * Every way this can fail is said, because a revert that reports success over a
+ * file that kept the change leaves the user believing the workspace is clean:
+ * the workspace's own tool refusing the restore (git's sentence is the reason,
+ * not an errno), a directory that will not let a created file go, a copy that
+ * could not be written back, and a checkpoint that holds no before image of the
+ * file at all.
  * Return: 0 when the file is back, -1 when it kept the change.
  */
 static int ws_revert_path(FENSTER *f, const char *path, int is_new)
 {
  if (ck_mode == 1) {
-  char q[1100], qf[1100], cmd[1400], *out;
+  char q[1100], qf[1100], cmd[1400], *out, reason[600];
+  int status = 0;
   const char *rel = path;
   size_t dl = strlen(ck_dir);
   if (!strncmp(path, ck_dir, dl) && path[dl] == '/') rel = path + dl + 1;
   wpe_ai_shell_quote(q, sizeof q, ck_dir);
   wpe_ai_shell_quote(qf, sizeof qf, rel);
-  if (is_new) snprintf(cmd, sizeof cmd, "cd %s && rm -f -- %s", q, qf);
+  if (is_new) snprintf(cmd, sizeof cmd, "cd %s && rm -f -- %s 2>&1", q, qf);
   else        snprintf(cmd, sizeof cmd, "cd %s && git checkout %s -- %s 2>&1", q, ck_ref, qf);
-  out = wpe_ai_run_capture(cmd); free(out);
- } else if (ck_mode == 2) {
-  int i;
-  if (is_new) { unlink(path); wpe_ai_trace("changeset revert %s", path); return 0; }
-  for (i = 0; i < ck_n; i++) if (!strcmp(ck_files[i], path)) {
-   char snap[1200], *text;
-   snprintf(snap, sizeof snap, "%s/%d", ck_snapdir, i);
-   text = ws_read_file(snap, 4000000);
-   if (text) {
-    int err = ws_write_file(path, text) == 0 ? 0 : errno;
-    free(text);
-    if (err) {
-     ws_write_failed(f, "restore", path, err);
-     wpe_ai_trace("changeset revert failed %s: %s", path, strerror(err));
-     return -1;
-    }
-   }
-   break;
+  out = wpe_ai_run_capture_status(cmd, &status);
+  if (status != 0) {
+   ws_output_reason(out, status, reason, sizeof reason);
+   free(out);
+   return ws_revert_failed(f, is_new ? "remove" : "restore", path, reason);
   }
+  free(out);
+ } else if (ck_mode == 2) {
+  char snap[1200], *text;
+  int i;
+  if (is_new) {
+   if (unlink(path) != 0) return ws_revert_failed(f, "remove", path, strerror(errno));
+   wpe_ai_trace("changeset revert %s", path);
+   return 0;
+  }
+  for (i = 0; i < ck_n; i++) if (!strcmp(ck_files[i], path)) break;
+  if (i == ck_n) return ws_revert_failed(f, "restore", path, WS_NO_BEFORE_IMAGE);
+  snprintf(snap, sizeof snap, "%s/%d", ck_snapdir, i);
+  text = ws_read_file(snap, 4000000);
+  if (!text) return ws_revert_failed(f, "restore", path, WS_NO_BEFORE_IMAGE);
+  if (ws_write_file(path, text) != 0) {
+   int err = errno;
+   free(text);
+   return ws_revert_failed(f, "restore", path, strerror(err));
+  }
+  free(text);
  }
  if (!is_new) ws_reload_window(f, path);
  wpe_ai_trace("changeset revert %s", path);
