@@ -12,7 +12,12 @@ switches to "provb", and asserts the key was written to prova's file.
 import os
 import tempfile
 
-from wpe_driver import WpeSession
+import pytest
+
+from wpe_driver import WpeSession, assistant_build
+
+pytestmark = pytest.mark.skipif(not assistant_build(),
+                                reason="wpe built without --enable-ai")
 
 
 def _read_key_file(cfg, provider):

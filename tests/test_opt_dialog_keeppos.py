@@ -8,7 +8,14 @@ where it was moved.
 import os
 import tempfile
 
-from wpe_driver import WpeSession, title_pos
+import pytest
+
+from wpe_driver import WpeSession, title_pos, assistant_build
+
+# The child picker this drags over is the assistant's model list, so a build
+# without the assistant cannot reach the scenario and the test skips.
+pytestmark = pytest.mark.skipif(not assistant_build(),
+                                reason="wpe built without --enable-ai")
 
 TITLE = "AI settings"
 

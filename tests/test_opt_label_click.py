@@ -8,7 +8,14 @@ label.  Driven on the AI settings dialog, which has both.
 import os
 import tempfile
 
-from wpe_driver import WpeSession
+import pytest
+
+from wpe_driver import WpeSession, assistant_build
+
+# Both cases click a label in the assistant's page of Options, so a build
+# without the assistant has no such page and the test must skip, not fail.
+pytestmark = pytest.mark.skipif(not assistant_build(),
+                                reason="wpe built without --enable-ai")
 
 
 def _click(s, col, row):

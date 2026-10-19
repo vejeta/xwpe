@@ -46,6 +46,13 @@ def _ai_build():
         return False
 
 
+# Both cases here open the assistant's page of Options, so the guard belongs to
+# the file: it used to sit on the second test only, and the first then failed
+# on a build without the assistant instead of skipping.
+pytestmark = pytest.mark.skipif(not _ai_build(),
+                                reason="wpe built without --enable-ai")
+
+
 def dump(s):
     """The screen with row numbers, for an assertion message."""
     rows = s.display(drain=0)
@@ -118,7 +125,6 @@ def test_file_window_at_the_bottom_keeps_one_bar_after_options_dialog(tmp_path):
 
 
 # @scenario SC-ai-chat-45
-@pytest.mark.skipif(not _ai_build(), reason="wpe built without --enable-ai")
 def test_pane_keeps_one_bar_after_dialogs_and_menus(tmp_path):
     with WpeSession(str(tmp_path), SEED, env_extra=AI_ENV) as s:
         arm_pane(s)

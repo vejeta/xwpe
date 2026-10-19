@@ -181,6 +181,29 @@ def incoherence(reason):
     return pytest.mark.xfail(reason="INCOHERENCE: " + reason, strict=False)
 
 
+def assistant_build(bin_path=None):
+    """True when the binary under test has the assistant compiled in.
+
+    The assistant is off by default at configure time, so a distribution build
+    usually does not have it, and a test that drives it must skip rather than
+    fail there.  The marker is a sentence from the assistant's own prompt,
+    which no other part of the editor contains: measured on a build configured
+    without it, the string is absent while strings a test might pick instead,
+    such as a menu label, are still there because they sit in conditional
+    blocks of files that always compile.
+
+    Use it as `pytestmark = pytest.mark.skipif(not assistant_build(),
+    reason="wpe built without --enable-ai")` whenever a test opens the
+    assistant's pane, its menu or its page in Options.
+    """
+    try:
+        out = subprocess.run(["strings", os.path.abspath(bin_path or WPE_BIN)],
+                             stdout=subprocess.PIPE, timeout=30).stdout
+        return b"xwpe console editor" in out
+    except Exception:
+        return False
+
+
 def row_with(session, needle):
     """The first screen row containing ``needle``, or "" if none does.  For
     reading one widget's row (a field, a radio line) without pinning where
