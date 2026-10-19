@@ -79,6 +79,16 @@ def macos_key_route(k):
 # autopkgtest sets it to 3). All waits funnel through _drain(), so scaling there
 # scales the startup wait AND every per-key delay.
 WAIT_SCALE = float(os.environ.get("XWPE_TEST_WAIT_SCALE", "1") or 1)
+
+# Waiting for the screen to settle instead of sleeping the whole delay.  With
+# XWPE_TEST_SETTLE_MS set (milliseconds), a drain returns once the editor has
+# written something and then stayed silent for that long; the delay a test
+# passes stays the ceiling.  A key that makes the editor write nothing still
+# waits the whole delay, so a test that waits on purpose for something late
+# (a mock reply, a timer) keeps its wait unless the editor paints in between.
+# Unset or 0: the old behaviour, every drain sleeps its full delay.
+SETTLE_S = float(os.environ.get("XWPE_TEST_SETTLE_MS", "0") or 0) / 1000.0
+DRAIN_POLL_S = 0.1
 COLS, ROWS = 80, 30
 
 # How the editor learns its screen size, and why the harness must not get in
@@ -564,9 +574,24 @@ class WpeSession:
 
     # -- internals -----------------------------------------------------------
     def _drain(self, timeout):
+        """Read what the editor writes for up to ``timeout`` seconds (scaled).
+
+        With SETTLE_S set, return early once output has arrived and the
+        editor has then been silent for SETTLE_S: the screen has settled.
+        """
         deadline = time.time() + timeout * WAIT_SCALE
+        # A slower machine pauses longer between two paints, so the quiet
+        # window stretches with the same factor as every other wait.
+        settle = SETTLE_S * WAIT_SCALE
+        last_output = None
         while time.time() < deadline:
-            r, _, _ = select.select([self.master_fd], [], [], 0.1)
+            poll = DRAIN_POLL_S
+            if settle and last_output is not None:
+                quiet_left = last_output + settle - time.time()
+                if quiet_left <= 0:
+                    return
+                poll = min(poll, quiet_left)
+            r, _, _ = select.select([self.master_fd], [], [], poll)
             if r:
                 try:
                     data = os.read(self.master_fd, 65536)
@@ -576,6 +601,7 @@ class WpeSession:
                     break
                 self.raw.extend(data)
                 self.stream.feed(data.decode("utf-8", "replace"))
+                last_output = time.time()
 
     def osc52_payload(self):
         """Decode the most recent OSC 52 "set clipboard" sequence wpe emitted

@@ -95,9 +95,15 @@ jobs:
         # six-hour job limit.  The junit written here is what the gate reads.
         # --reruns gives a timing wobble under load two more tries; a real
         # fault fails all three.
+        #
+        # XWPE_TEST_SETTLE_MS: a key's wait ends once the editor has painted
+        # and stayed silent this long, instead of sleeping the whole delay.
+        # Locally at 250 ms it cut the suite's test time by a third with no
+        # failure and no rerun; the runner is slower, so it gets a wider window.
         continue-on-error: true
         env:
           TERM: "xterm-256color"
+          XWPE_TEST_SETTLE_MS: "400"
         run: |
           export XWPE_LIB="$PWD"
           WPE_BIN="$PWD/wpe" /tmp/ptenv/bin/python -m pytest -q tests \
@@ -130,6 +136,7 @@ jobs:
         if: always()
         env:
           TERM: "xterm-256color"
+          XWPE_TEST_SETTLE_MS: "400"
           XWPE_UI_TRACE: ${{ github.workspace }}/harness-ui-trace.log
         run: |
           export XWPE_LIB="$PWD"
