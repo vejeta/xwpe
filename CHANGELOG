@@ -233,6 +233,16 @@ Changes
 
 1.7.0 (AI assistant -- experimental, opt-in)
 
+* The agent's plan checklist is redrawn in place, as the manual always
+  said.  Each step the agent reported appended a fresh copy of the
+  checklist to the Messages window, so after three steps the window read
+  "0/3 done", "1/3 done" and "2/3 done" at once and the compile output
+  above it was gone from the screen; a second plan in the same run left
+  the first above it.  The rows of the previous drawing are now taken out
+  before the checklist is drawn again, and only those rows, so anything
+  written above or below it stays.  A plan whose body is only the end
+  marker no longer shows one step named "@@END".
+
 * The changeset review says what it did and points where it should.  In a
   git workspace a row named the line three above the change and Alt-T
   landed there, because the diff was read with its context lines; the row

@@ -577,6 +577,97 @@
    "status": "covered"
   },
   {
+   "id": "SC-ai-agent-33",
+   "requirement": "Checkpoint and review",
+   "layer": "ncurses",
+   "test": "tests/test_ai_changeset_bounds.py::test_the_review_names_the_changed_file_whatever_window_is_active",
+   "status": "new"
+  },
+  {
+   "id": "SC-ai-agent-34",
+   "requirement": "Checkpoint and review",
+   "layer": "ncurses",
+   "test": "tests/test_ai_changeset_bounds.py::test_a_revert_leaves_the_cursor_and_the_viewport_where_they_were",
+   "status": "new"
+  },
+  {
+   "id": "SC-ai-agent-35",
+   "requirement": "Checkpoint and review",
+   "layer": "ncurses",
+   "test": "tests/test_ai_changeset_bounds.py::test_an_approved_write_under_ask_leaves_no_changeset",
+   "status": "new"
+  },
+  {
+   "id": "SC-ai-agent-59",
+   "requirement": "Checkpoint and review",
+   "layer": "ncurses",
+   "test": "tests/test_ai_changeset_bounds.py::test_a_file_created_beside_the_open_file_is_listed_and_removed",
+   "status": "new"
+  },
+  {
+   "id": "SC-ai-agent-65",
+   "requirement": "Checkpoint and review",
+   "layer": "ncurses",
+   "test": "tests/test_ai_changeset_bounds.py::test_a_refused_checkpoint_says_the_folder_and_promises_no_revert",
+   "status": "new"
+  },
+  {
+   "id": "SC-ai-agent-66",
+   "requirement": "The plan checklist",
+   "layer": "ncurses",
+   "test": "tests/test_ai_plan_checklist.py::test_bullets_blank_lines_and_plain_lines_all_become_steps",
+   "status": "new"
+  },
+  {
+   "id": "SC-ai-agent-67",
+   "requirement": "The plan checklist",
+   "layer": "ncurses",
+   "test": "tests/test_ai_plan_checklist.py::test_a_plan_with_no_body_shows_an_empty_checklist",
+   "status": "new"
+  },
+  {
+   "id": "SC-ai-agent-68",
+   "requirement": "The plan checklist",
+   "layer": "ncurses",
+   "test": "tests/test_ai_plan_checklist.py::test_a_step_done_that_matches_nothing_ticks_the_earliest_pending",
+   "status": "new"
+  },
+  {
+   "id": "SC-ai-agent-68",
+   "requirement": "The plan checklist",
+   "layer": "ncurses",
+   "test": "tests/test_ai_plan_checklist.py::test_a_step_done_with_every_step_ticked_changes_nothing",
+   "status": "new"
+  },
+  {
+   "id": "SC-ai-agent-68",
+   "requirement": "The plan checklist",
+   "layer": "ncurses",
+   "test": "tests/test_ai_plan_checklist.py::test_a_tick_redraws_the_checklist_in_place",
+   "status": "new"
+  },
+  {
+   "id": "SC-ai-agent-69",
+   "requirement": "The plan checklist",
+   "layer": "ncurses",
+   "test": "tests/test_ai_plan_checklist.py::test_the_checklist_stops_at_thirty_two_steps",
+   "status": "new"
+  },
+  {
+   "id": "SC-ai-agent-69",
+   "requirement": "The plan checklist",
+   "layer": "ncurses",
+   "test": "tests/test_ai_plan_checklist.py::test_a_step_longer_than_its_room_is_cut",
+   "status": "new"
+  },
+  {
+   "id": "SC-ai-agent-69",
+   "requirement": "The plan checklist",
+   "layer": "ncurses",
+   "test": "tests/test_ai_plan_checklist.py::test_a_second_plan_replaces_the_checklist",
+   "status": "new"
+  },
+  {
    "id": "SC-ai-agent-36",
    "requirement": "Project instructions",
    "layer": "ncurses",

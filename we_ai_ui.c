@@ -8765,9 +8765,14 @@ static int  g_ai_plan_n;
 /* Room for a checklist row and for the pane's progress line. */
 #define AI_PLAN_ROW_MAX  260
 #define AI_PLAN_NOTE_MAX 280
-/* e_d_p_message's last argument: start the Messages window over, or add a row. */
-#define AI_PLAN_RESTART 1
-#define AI_PLAN_APPEND  0
+/* e_d_p_message's last argument: repaint every window after the row, or only
+   the Messages window.  Neither empties the window; the checklist takes its
+   own previous drawing out before it draws again (ai_plan_erase_drawn). */
+#define AI_PLAN_REPAINT_ALL 1
+#define AI_PLAN_APPEND      0
+/* The Messages row the drawn checklist's header sits on; -1 when none is drawn. */
+static int g_ai_plan_row = -1;
+#define AI_PLAN_HEADER "=== Agent plan:"
 /* The word for a step the agent reported without naming it. */
 #define AI_PLAN_STEP_WORD "(step)"
 
@@ -8794,19 +8799,70 @@ static char ai_plan_tick(int done)
 }
 
 /**
+ * ai_messages_open_buffer - The Messages window's text, when the window is open.
+ * @f: any window of the editor.
+ *
+ * The checklist lives in that window, and redrawing it in place means taking
+ * rows out of that text rather than adding to it, so the drawing code needs
+ * the buffer and not only a way to append a row.  Opening the window is left
+ * to e_d_p_message, which is what has always opened it, so the layout the
+ * user sees does not depend on who wrote the first row.
+ * Return: the buffer, NULL when no Messages window is open.
+ */
+static BUFFER *ai_messages_open_buffer(FENSTER *f)
+{
+ ECNT *cn = f->ed;
+ int i;
+ for (i = cn->mxedt; i > 0; i--)
+  if (!strcmp(cn->f[i]->datnam, "Messages")) return cn->f[i]->b;
+ return NULL;
+}
+
+/**
+ * ai_plan_erase_drawn - Take the checklist drawn last time out of the Messages window.
+ * @b: the Messages window's text.
+ *
+ * What the user gains: one checklist that changes as steps finish, instead of
+ * a new copy under the old one at every tick, which left the window reading
+ * "0/3", "1/3" and "2/3" at once and pushed anything above it off the screen.
+ * Only the rows from the header down are removed, and only while the header
+ * is still on the row it was drawn on, so output a compiler or the review
+ * wrote after the checklist stays, and the checklist is then drawn again
+ * below it.
+ */
+static void ai_plan_erase_drawn(BUFFER *b)
+{
+ int i;
+ if (g_ai_plan_row < 0 || g_ai_plan_row >= b->mxlines) return;
+ if (!b->bf[g_ai_plan_row].s) return;
+ if (strncmp(b->bf[g_ai_plan_row].s, AI_PLAN_HEADER, strlen(AI_PLAN_HEADER))) return;
+ for (i = g_ai_plan_row; i < b->mxlines; i++)
+  if (b->bf[i].s) { FREE(b->bf[i].s); b->bf[i].s = NULL; }
+ b->mxlines = g_ai_plan_row;
+ if (b->mxlines == 0) e_new_line(0, b);        /* a buffer always holds one line */
+ if (b->b.y >= b->mxlines) b->b.y = b->mxlines - 1;
+}
+
+/**
  * ai_plan_show - Draw the plan as a live checklist in the Messages window.
  *
  * A long agent run is far more legible with a dockable to-do list than a
- * scrolling pane log: the plan sits in the Messages window and is REDRAWN IN
- * PLACE (the window is restarted) each time a step completes, so its status --
- * "3/7 done", "[x]" per finished task -- updates live instead of scrolling away.
+ * scrolling pane log: the plan sits in the Messages window and is redrawn in
+ * place each time a step completes, so its status -- "3/7 done", "[x]" per
+ * finished task -- updates live instead of scrolling away.  A new plan in the
+ * same run replaces the checklist the same way.
  */
 static void ai_plan_show(FENSTER *f)
 {
  char line[AI_PLAN_ROW_MAX];
+ BUFFER *b = ai_messages_open_buffer(f);
  int i;
- snprintf(line, sizeof line, "=== Agent plan: %d/%d done ===", ai_plan_done_count(), g_ai_plan_n);
- e_d_p_message(line, f, AI_PLAN_RESTART);
+ if (b) ai_plan_erase_drawn(b);
+ snprintf(line, sizeof line, "%s %d/%d done ===", AI_PLAN_HEADER, ai_plan_done_count(), g_ai_plan_n);
+ e_d_p_message(line, f, AI_PLAN_REPAINT_ALL);
+ b = ai_messages_open_buffer(f);        /* opened by that first row if it was closed */
+ if (b) g_ai_plan_row = b->mxlines - 1;  /* the header is the last row written  */
+ else g_ai_plan_row = -1;
  for (i = 0; i < g_ai_plan_n; i++) {
   snprintf(line, sizeof line, "  [%c] %s", ai_plan_tick(g_ai_plan_done[i]), g_ai_plan[i]);
   e_d_p_message(line, f, AI_PLAN_APPEND);
@@ -8868,13 +8924,29 @@ static void ai_todo_add(const char *p, int len)
 }
 
 /**
+ * ai_tool_body_end - Where a tool body's "@@END" line starts.
+ * @body: the text after the TOOL line.
+ *
+ * The marker may open the body, which is how a model says the body is empty,
+ * or follow a newline further down.  One reader for both, so an empty plan is
+ * an empty checklist and not a step that reads "@@END".
+ * Return: @body itself when the body opens with the marker, the newline
+ * before the marker line otherwise, NULL when the body has no marker.
+ */
+static const char *ai_tool_body_end(const char *body)
+{
+ if (!strncmp(body, AI_TOOL_BODY_END_WORD, strlen(AI_TOOL_BODY_END_WORD))) return body;
+ return strstr(body, AI_TOOL_BODY_END_LINE);
+}
+
+/**
  * ai_todo_load - Load the agent's plan body (task lines up to @@END) into the
  * checklist, all pending, and show it before the agent acts so the user can
  * course-correct.
  */
 static void ai_todo_load(FENSTER *f, const char *body)
 {
- const char *p = body, *stop = strstr(body, AI_TOOL_BODY_END_LINE);
+ const char *p = body, *stop = ai_tool_body_end(body);
  g_ai_plan_n = 0;
  while (p && *p && (!stop || p < stop) && g_ai_plan_n < AI_PLAN_MAX) {
   const char *nl = strchr(p, '\n');
