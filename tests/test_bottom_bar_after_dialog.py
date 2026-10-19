@@ -125,6 +125,7 @@ def test_file_window_at_the_bottom_keeps_one_bar_after_options_dialog(tmp_path):
 
 
 # @scenario SC-ai-chat-45
+# @scenario SC-ai-menu-49
 def test_pane_keeps_one_bar_after_dialogs_and_menus(tmp_path):
     with WpeSession(str(tmp_path), SEED, env_extra=AI_ENV) as s:
         arm_pane(s)

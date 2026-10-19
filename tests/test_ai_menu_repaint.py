@@ -54,6 +54,9 @@ def _find_ai_entry(disp):
 
 
 # @scenario SC-ai-chat-45
+# @scenario SC-ai-menu-51
+# @scenario SC-ai-menu-52
+# @scenario SC-ai-menu-53
 def test_spinner_does_not_repaint_over_menu(tmp_path):
     # a long mock delay keeps the op in-flight (spinner ticking) for the whole test
     env = {"XWPE_AI_ENABLE": "1", "XWPE_AI_BACKEND": "mock", "XWPE_AI_MOCK_REPLY": "x",

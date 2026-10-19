@@ -28,6 +28,8 @@ pytestmark = pytest.mark.skipif(not _ai_build(), reason="wpe built without --ena
 SEED = "hello world\n"
 
 
+# @scenario SC-ai-menu-26
+# @scenario SC-ai-menu-47
 def test_ai_bar_entry_shown_when_enabled(tmp_path):
     env = {"XWPE_AI_ENABLE": "1", "XWPE_AI_BACKEND": "mock"}
     with WpeSession(str(tmp_path), SEED, filename="notes.txt",
@@ -37,6 +39,7 @@ def test_ai_bar_entry_shown_when_enabled(tmp_path):
     assert "Alt-G AI" in disp, "AI bar entry not shown when enabled:\n" + disp
 
 
+# @scenario SC-ai-menu-24
 def test_ai_bar_entry_absent_when_disabled(tmp_path):
     # No XWPE_AI_ENABLE -> classic bar; the entry must not appear.
     env = {"XWPE_AI_BACKEND": "mock"}
@@ -47,6 +50,7 @@ def test_ai_bar_entry_absent_when_disabled(tmp_path):
     assert "Alt-G AI" not in disp, "AI bar entry leaked while disabled:\n" + disp
 
 
+# @scenario SC-ai-menu-48
 def test_ai_bar_entry_on_code_file(tmp_path):
     # On a .c file (which gets the contextual LSP bar) enabling AI shows the
     # COMBINED bar: the "Alt-Q ? <server>" LSP hint stays AND the "Alt-G AI"
@@ -60,6 +64,9 @@ def test_ai_bar_entry_on_code_file(tmp_path):
     assert "Alt-Q" in disp, "LSP hint lost on a code file when AI is on:\n" + disp
 
 
+# @scenario SC-ai-menu-05
+# @scenario SC-ai-menu-24
+# @scenario SC-ai-menu-25
 def test_ai_bar_refreshes_when_toggled_in_options(tmp_path):
     # Start disabled -> no entry; enable via Options>AI (where the toggle now
     # lives) -> the bar must gain the entry WITHOUT reopening the file.
@@ -77,6 +84,8 @@ def test_ai_bar_refreshes_when_toggled_in_options(tmp_path):
     assert "Alt-G AI" in after, "bar did not refresh after enabling:\n" + after
 
 
+# @scenario SC-ai-menu-01
+# @scenario SC-ai-menu-09
 def test_ai_menu_opens_and_lists_actions(tmp_path):
     trace = tmp_path / "ai.trace"
     env = {
@@ -94,6 +103,8 @@ def test_ai_menu_opens_and_lists_actions(tmp_path):
     assert "Ask" in disp and "Multi-file" in disp, "menu actions not listed:\n" + disp
 
 
+# @scenario SC-ai-menu-09
+# @scenario SC-ai-menu-11
 def test_menu_shows_clear_labels_and_state(tmp_path):
     # the menu uses clear labels, surfaces the active permission level, has a
     # divider between the actions and the settings, and points to Options>AI for
@@ -125,6 +136,7 @@ def test_menu_settings_entry_opens_options(tmp_path):
 
 
 # @scenario SC-ai-chat-46
+# @scenario SC-ai-menu-44
 def test_clear_conversation_flashes_without_opening_pane(tmp_path):
     # "Clear conversation" (Alt-G n) confirms with a status-line flash and must
     # not open the AI pane just to report it.

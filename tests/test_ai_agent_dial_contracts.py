@@ -201,6 +201,7 @@ def test_auto_web_search_is_auto_approved_and_reaches_the_server(tmp_path):
 
 
 # @scenario SC-ai-agent-21
+# @scenario SC-ai-menu-42
 def test_altg_y_flashes_persists_to_xwperc_and_shows_in_next_header(tmp_path):
     env = _env(tmp_path, "DONE ok", "ask")
     del env["XWPE_AI_POLICY"]

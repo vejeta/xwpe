@@ -46,6 +46,7 @@ def _find_ai_entry(disp):
     return None
 
 
+# @scenario SC-ai-menu-04
 def test_bottombar_click_opens_ai_menu(tmp_path):
     with WpeSession(str(tmp_path), SRC, env_extra=AI_ENV) as w:
         disp = w.display()

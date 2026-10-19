@@ -57,6 +57,7 @@ def _capturing_server(captured):
     return srv, srv.server_address[1]
 
 
+# @scenario SC-ai-menu-54
 def test_manifest_in_system_prompt(tmp_path):
     captured = []
     srv, port = _capturing_server(captured)

@@ -71,6 +71,7 @@ GOTO = "\033g"           # Alt-G -> Go to Line
 SEARCH_AGAIN = "\x0c"    # ^L   -> Search again
 
 
+# @scenario SC-ai-menu-02
 def test_goto_line_does_not_advertise_alt_g_in_programming_mode(tmp_path):
     """The programming editor gives Alt-G to the assistant, so the Search menu
     must not offer it for Go to Line here.
@@ -92,6 +93,7 @@ def test_goto_line_does_not_advertise_alt_g_in_programming_mode(tmp_path):
             "the item still offers a key this mode cannot honour: %r" % rows[0]
 
 
+# @scenario SC-ai-menu-02
 def test_alt_g_leaves_the_buffer_alone_in_programming_mode(tmp_path):
     """Alt-G belongs to the assistant here, so it must not reach the file.
 

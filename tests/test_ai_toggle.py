@@ -23,6 +23,7 @@ def _ai_build():
 pytestmark = pytest.mark.skipif(not _ai_build(), reason="wpe built without --enable-ai")
 
 
+# @scenario SC-ai-menu-22
 def test_ai_disabled_shows_hint(tmp_path):
     # No XWPE_AI_ENABLE -> the assistant is OFF.  Alt-G explains how to enable it.
     env = {"XWPE_AI_BACKEND": "mock"}
@@ -34,6 +35,7 @@ def test_ai_disabled_shows_hint(tmp_path):
     assert "is off" in disp, "disabled hint not shown:\n" + disp
 
 
+# @scenario SC-ai-menu-03
 def test_altb_is_still_the_block_menu(tmp_path):
     # The assistant lives on Alt-G, so Alt-B must remain the Block menu whether
     # the assistant is on or off -- it is never shadowed.
@@ -47,6 +49,8 @@ def test_altb_is_still_the_block_menu(tmp_path):
     assert "Mark" in disp, "Alt-B did not open the Block menu:\n" + disp
 
 
+# @scenario SC-ai-menu-01
+# @scenario SC-ai-menu-26
 def test_ai_prefix_opens_menu(tmp_path):
     # Alt-G opens the action menu straight away (like Alt-F opens File).
     env = {"XWPE_AI_ENABLE": "1", "XWPE_AI_BACKEND": "mock"}

@@ -37,6 +37,7 @@ def _bottom(tmp_path, ai_on, ext):
         return s.display()[-1]
 
 
+# @scenario SC-ai-menu-48
 def test_lsp_file_with_ai_shows_both_hints(tmp_path):
     # A C file (clangd configured) with AI on: the LSP hint is NOT lost.
     bar = _bottom(tmp_path, ai_on=True, ext="c")

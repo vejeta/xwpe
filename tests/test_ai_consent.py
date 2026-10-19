@@ -29,6 +29,8 @@ ENV = {"XWPE_AI_ENABLE": "1", "XWPE_AI_BACKEND": "mock",
 
 
 # @scenario SC-ai-chat-44
+# @scenario SC-ai-menu-27
+# @scenario SC-ai-menu-29
 def test_first_use_prompt_and_decline(tmp_path):
     with WpeSession(str(tmp_path), "int main(void){return 0;}\n",
                     env_extra=dict(ENV)) as s:
@@ -44,6 +46,7 @@ def test_first_use_prompt_and_decline(tmp_path):
 
 
 # @scenario SC-ai-chat-44
+# @scenario SC-ai-menu-28
 def test_first_use_accept_proceeds(tmp_path):
     with WpeSession(str(tmp_path), "int main(void){return 0;}\n",
                     env_extra=dict(ENV)) as s:
@@ -55,6 +58,7 @@ def test_first_use_accept_proceeds(tmp_path):
 
 
 # @scenario SC-ai-chat-44
+# @scenario SC-ai-menu-30
 def test_first_use_shortcut_runs_action(tmp_path):
     # A habitual "Alt-G a" on the very first use must not appear to hang: the
     # letter both accepts the notice AND runs Ask, straight into the chat input

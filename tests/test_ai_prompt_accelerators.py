@@ -35,6 +35,8 @@ def _open_agent_prompt(s):
     s.key("g", delay=0.7)
 
 
+# @scenario SC-ai-menu-34
+# @scenario SC-ai-menu-39
 def test_altm_opens_multiline_composer(tmp_path):
     env = {"XWPE_AI_ENABLE": "1", "XWPE_AI_BACKEND": "mock",
            "XWPE_AI_MOCK_REPLY": "ok"}
@@ -52,6 +54,8 @@ def test_altm_opens_multiline_composer(tmp_path):
         "Alt-M did not open the multi-line composer:\n" + disp
 
 
+# @scenario SC-ai-menu-32
+# @scenario SC-ai-menu-34
 def test_altc_cancels_prompt(tmp_path):
     env = {"XWPE_AI_ENABLE": "1", "XWPE_AI_BACKEND": "mock",
            "XWPE_AI_MOCK_REPLY": "ok"}
