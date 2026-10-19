@@ -23,7 +23,13 @@ def _ai_build():
         return False
 
 
-@pytest.mark.skipif(not _ai_build(), reason="wpe built without --enable-ai")
+# The whole file drives the assistant, so the guard covers the whole file: it
+# used to sit on one test of the six, and the other five then ran on a build
+# without --enable-ai and failed for the build's reason rather than the code's.
+pytestmark = pytest.mark.skipif(not _ai_build(),
+                                reason="wpe built without --enable-ai")
+
+
 def test_ai_chat_mock(tmp_path):
     trace = tmp_path / "ai.trace"
     env = {

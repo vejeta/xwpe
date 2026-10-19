@@ -40,29 +40,40 @@ jobs:
             build-essential autoconf automake autopoint pkg-config \
             libncursesw5-dev ncurses-term libx11-dev libxext-dev libxft-dev \
             libfontconfig1-dev libcairo2-dev libpango1.0-dev libfreetype-dev \
-            libvterm-dev libjson-c-dev zlib1g-dev libgpm-dev \
+            libvterm-dev libjson-c-dev zlib1g-dev libgpm-dev libssl-dev \
             libwayland-dev wayland-protocols libwayland-bin libxkbcommon-dev \
             xvfb x11-utils x11-xserver-utils xauth xdotool \
             matchbox-window-manager imagemagick weston wl-clipboard \
             python3 python3-pip python3-venv python3-pil
 
-      - name: Build (--with-wayland)
+      - name: Build (--with-wayland --enable-ai)
+        # The assistant is off by default at configure time, so a build without
+        # --enable-ai leaves its sources out and every assistant test either
+        # skips or, where a file's build guard is incomplete, fails for the
+        # build's reason.  The capability gates below are about the assistant,
+        # so this job builds it; the agent host goes in too, because some
+        # scenarios drive the host engine.
         run: |
           autoreconf -fi
-          ./configure --with-wayland
+          ./configure --with-wayland --enable-ai --enable-ai-agent-host
           make -j"$(nproc)"
-          # Confirm the native Wayland backend was actually compiled in.
+          # Confirm what was actually compiled in, rather than trusting flags.
           grep -q '#define HAVE_WAYLAND 1' config.h
+          grep -q '#define WPE_AI 1' config.h
+          grep -q '#define WPE_AI_AGENT_HOST 1' config.h
           ldd ./we | grep -Eiq 'wayland-client|xkbcommon'
 
       - name: make check (C unit tests)
         # The deterministic, server-free unit tests (the LSP/DAP server-driven
         # ones are toolchain-bound; covered separately where the servers exist).
+        # The two assistant programs are here because libssl-dev is installed
+        # above: they link the HTTP layer, which only this job builds with TLS,
+        # and that link broke once without any build noticing.
         run: >-
           make check
           TESTS="test_checkheader test_syntax_def test_fdloop test_clipboard
           test_lsp_buffer test_lsp_doctor test_lsp_semantic test_lsp_truecolor
-          test_dap"
+          test_dap test_ai_http test_ai_diff"
 
       - name: Set up a pytest venv + a private XDG_RUNTIME_DIR
         run: |
