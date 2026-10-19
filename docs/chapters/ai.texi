@@ -578,7 +578,10 @@ instead of a bad write.  For a multi-step task the agent can first lay out a
 @emph{before} it acts, so you see the intended steps, and redraws it in place --
 @samp{3/7 done}, @samp{[x]} per finished task -- as it reports each step, a live
 to-do list you can bring up alongside the run; compact progress also shows in the
-@samp{AI} pane so you see it advance without switching windows.
+@samp{AI} pane so you see it advance without switching windows.  The review's
+rows follow the checklist in the same window at the end of the run, so
+@samp{Messages} holds that run's record; a new run empties the window first,
+as @key{F9} does for a compile.
 
 @section Build & fix
 

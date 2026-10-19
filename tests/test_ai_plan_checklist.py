@@ -433,16 +433,23 @@ def _wait_agent_done(trace, count, tmo):
     return False
 
 
+def _row_index(messages, lead):
+    """The index of the first Messages row that starts with `lead`, -1 if none."""
+    return next((i for i, r in enumerate(messages) if r.startswith(lead)), -1)
+
+
 # @scenario SC-ai-agent-69
-def test_a_second_plan_leaves_the_rows_written_below_the_checklist(tmp_path):
-    """Rows the review wrote under the checklist survive the next plan.
+def test_a_run_keeps_its_checklist_and_review_together_and_the_next_run_starts_clean(tmp_path):
+    """Within a run the checklist and the review share the Messages window;
+    a new run empties it first, the way a compile does.
 
     Under auto a first run lays out a plan, ticks a step and writes a file, so
-    the review's rows land below the checklist in the Messages window.  A
-    second run lays out a new plan.  The old checklist goes, the review's
-    rows stay where they were, and the new checklist is drawn after them: the
-    redraw takes out exactly the rows it drew, not everything below its header,
-    which is what it did at first.
+    the review's rows land below the checklist: one record of that run, and
+    the rows Alt-T steps.  A second run (Alt-G g) lays out a new plan.  The
+    first run's checklist and review are gone and the second run's checklist
+    is the window's first content, as the Messages window after F9 holds the
+    last compile only.  Runs used to pile up: the first review's rows stayed
+    above the second checklist.
     """
     t = tmp_path / "t.c"
     reply = "@@TURN@@".join([
@@ -457,27 +464,35 @@ def test_a_second_plan_leaves_the_rows_written_below_the_checklist(tmp_path):
         _start_agent(s, "lay out a plan")
         assert _wait_trace(trace, "changeset n=", 90), \
             "the first run's review never opened:\n" + _trace_text(trace)
-        s.key("a", delay=1.0)                   # keep: the review's rows stay
+        first = _messages_rows(_screen(s))      # the review is waiting
+        s.key("a", delay=1.0)                   # keep
         _start_agent(s, "lay out another plan")  # a second run, Alt-G g
         assert _wait_agent_done(trace, 2, 90), \
             "the second run never finished:\n" + _trace_text(trace)
         s._drain(1.5)
-        messages = _messages_rows(_screen(s))
+        second = _messages_rows(_screen(s))
         alive = s.alive()
 
-    shown = "\n".join(messages)
-    lists = _checklists(messages)
+    shown_1 = "\n".join(first)
+    plan_at = _row_index(first, "=== Agent plan")
+    review_at = _row_index(first, "=== AI changeset")
+    assert plan_at >= 0 and review_at > plan_at, \
+        "within the first run the review should follow its checklist:\n" + shown_1
+    assert _checklists(first)[0][0] == HEADER % (1, 3), \
+        "the first run's checklist should read 1/3 done:\n" + shown_1
+
+    shown_2 = "\n".join(second)
+    lists = _checklists(second)
     assert len(lists) == 1 and lists[0][1] == [(" ", "second plan only")], \
-        "Messages should hold the second plan's checklist alone:\n" + shown
-    assert "alpha step" not in shown, "the old checklist is still there:\n" + shown
-    review_at = next((i for i, r in enumerate(messages)
-                      if r.startswith("=== AI changeset")), -1)
-    plan_at = next((i for i, r in enumerate(messages)
-                    if r.startswith("=== Agent plan")), -1)
-    assert review_at >= 0, \
-        "the review's rows below the checklist were taken out with it:\n" + shown
-    assert "[AI] changes kept" in shown, \
-        "the review's last row below the checklist was taken out:\n" + shown
-    assert plan_at > review_at, \
-        "the new checklist should follow the review's rows:\n" + shown
-    assert alive, "a second plan over the review's rows ended the editor"
+        "Messages should hold the second plan's checklist alone:\n" + shown_2
+    assert "alpha step" not in shown_2, "the old checklist is still there:\n" + shown_2
+    # the second run's own review ("no files changed") may follow its
+    # checklist; the first run's review, its row and its summary may not
+    assert "=== AI changeset: 1 change" not in shown_2 \
+        and "t.c:1:" not in shown_2 \
+        and "[AI] changes kept" not in shown_2, \
+        "the first run's review is still in the window:\n" + shown_2
+    content = [r for r in second if r.strip()]
+    assert content and content[0].startswith("=== Agent plan"), \
+        "the second run's checklist should be the window's first content:\n" + shown_2
+    assert alive, "a second run ended the editor"

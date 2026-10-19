@@ -671,7 +671,7 @@
    "id": "SC-ai-agent-69",
    "requirement": "The plan checklist",
    "layer": "ncurses",
-   "test": "tests/test_ai_plan_checklist.py::test_a_second_plan_leaves_the_rows_written_below_the_checklist",
+   "test": "tests/test_ai_plan_checklist.py::test_a_run_keeps_its_checklist_and_review_together_and_the_next_run_starts_clean",
    "status": "new"
   },
   {

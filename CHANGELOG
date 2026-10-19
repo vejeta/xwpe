@@ -241,7 +241,9 @@ Changes
   the first above it.  The rows of the previous drawing are now taken out
   before the checklist is drawn again, and only those rows, so anything
   written above or below it stays.  A plan whose body is only the end
-  marker no longer shows one step named "@@END".
+  marker no longer shows one step named "@@END".  A new agent run empties
+  the Messages window first, as F9 does for a compile, so the window
+  holds one run's checklist and review instead of every run's.
 
 * The changeset review says what it did and points where it should.  In a
   git workspace a row named the line three above the change and Alt-T

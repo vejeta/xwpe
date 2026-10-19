@@ -8813,13 +8813,45 @@ static char ai_plan_tick(int done)
  * user sees does not depend on who wrote the first row.
  * Return: the buffer, NULL when no Messages window is open.
  */
-static BUFFER *ai_messages_open_buffer(FENSTER *f)
+static FENSTER *ai_messages_window(FENSTER *f)
 {
  ECNT *cn = f->ed;
  int i;
  for (i = cn->mxedt; i > 0; i--)
-  if (!strcmp(cn->f[i]->datnam, "Messages")) return cn->f[i]->b;
+  if (!strcmp(cn->f[i]->datnam, "Messages")) return cn->f[i];
  return NULL;
+}
+
+static BUFFER *ai_messages_open_buffer(FENSTER *f)
+{
+ FENSTER *m = ai_messages_window(f);
+ return m ? m->b : NULL;
+}
+
+/**
+ * ai_messages_start_run - Empty the Messages window for a new run, as a compile does.
+ * @f: any window of the editor.
+ *
+ * What the user gains: the Messages window holds one run, its checklist and
+ * then its review, the way it holds the last compile after F9.  Runs used to
+ * pile up, the previous review's rows sitting above the new checklist, and
+ * the list Alt-T steps is the last run's anyway.  Emptied with the call the
+ * compile uses, so the window reads the same after either; nothing is done
+ * when the window is not open, since the first row written will open it.  The
+ * checklist's bookkeeping is reset with it, so nothing is "erased" from a
+ * window that holds nothing of the previous drawing.
+ */
+static void ai_messages_start_run(FENSTER *f)
+{
+ FENSTER *m = ai_messages_window(f);
+ if (!m) return;
+ e_p_red_buffer(m->b);
+ m->b->b.x = 0;
+ m->b->b.y = 0;
+ e_messages_scroll_to_bottom(m);
+ g_ai_plan_row = -1;
+ g_ai_plan_rows = 0;
+ e_rep_win_tree(f->ed);
 }
 
 /**
@@ -10633,6 +10665,7 @@ static int ai_agent_launch(FENSTER *f, const char *goal, const char *extra)
 {
  ai_async_op *op;
  if (!ai_agent_ready(f)) return 0;
+ ai_messages_start_run(f);          /* one run per Messages window, as F9 does */
  ai_agent_announce_task(f, goal);
  wpe_ai_session_load(f);
  e_ai_cli_mode = WPE_AI_CLI_TEXTONLY;
@@ -11658,6 +11691,7 @@ int e_ai_host(FENSTER *f)
   g_host_win = f; g_host_cn = f->ed;
   g_host_fd = wpe_host_fd(g_host);
   wpe_fd_add(g_host_fd, POLLIN, host_fd_cb, NULL);
+  ai_messages_start_run(f);         /* the session is the hosted engine's run */
   host_take_checkpoint(f);
   { char l[160];
     snprintf(l, sizeof l, "[agent] engine: %.80s - session started (Esc at the prompt ends it)",
