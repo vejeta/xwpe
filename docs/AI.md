@@ -29,6 +29,17 @@ just works. Point it elsewhere with `XWPE_AI_BACKEND` / `XWPE_AI_ENDPOINT` /
 mode is handed the files you have open as context, so you never have to tell it
 what you are working on.
 
+`Alt-G` and the `Alt-G AI` entry on the bottom bar belong to programming mode
+(`wpe`, `xwpe`): under `we` Alt-G is Go to Line and the bar keeps its classic
+slot. Options > AI exists in both modes. The first time you open the menu, by
+key or by a click on the bar entry, a one-time notice states the trust model;
+Enter or `y` accepts, `n` or Esc declines, and a menu letter both accepts and
+runs that action. The acceptance is kept in `$XDG_CONFIG_HOME/xwpe/ai_consented`
+(else `~/.config/xwpe/ai_consented`); `XWPE_AI_ENABLE` or `XWPE_AI_CONSENTED=1`
+skips the notice. With the menu open, a second `Alt-G` changes nothing, a main
+menu's own letter (`Alt-F`, `Alt-E`, ...) opens that menu, and the arrow keys
+step over the divider.
+
 It has six main actions, all streaming and non-blocking (the editor stays live while
 the model works):
 
@@ -99,7 +110,8 @@ the model works):
   current file) and, if it fails, loops -- read the errors, edit the sources,
   re-build -- until it passes. Same tools and permission level as the agent.
 
-- **Complete at cursor** (`Alt-G c`) -- fills in code where the cursor is. It
+- **Complete at cursor** (`Alt-G c`) -- fills in code where the cursor is, at
+  once: it opens no prompt. It
   sends the nearby context, the last 2000 characters before the cursor and the
   first 800 after it. The reply is shown first, in a one-hunk **Proposed
   completion** box with the same colours and keys as the Edit review: `y` or
@@ -135,8 +147,13 @@ the same line.
 
 The `Alt-G` menu groups the **actions** above and, below a divider, the quick
 **settings**: *Permissions* (shows and cycles ask/edits/auto), *Clear
-conversation*, and *AI settings...* which opens **Options > AI** (the model, the
-enable toggle and the full configuration live there).
+conversation* (refused while a reply streams or a task runs: the bar says to
+press Esc first), and *AI settings...* which opens **Options > AI** (the model,
+the enable toggle and the full configuration live there). Edit, Multi-file and
+the Agent ask for their instruction in a prompt box whose key hint sits above
+the field: Enter or `Alt-S` sends, `Alt-M` opens the multi-line composer (a
+scratch window titled with the task and `Esc = done, then Y sends, N cancels`),
+`Alt-C` or Esc cancels, `Alt-P` brings the focus back to the field.
 The **Agent** can run on one of two **engines** (choose in Options > AI, only in
 a `--enable-ai-agent-host` build): *Built-in* (the editor's own tool loop, works
 with any backend) or *Claude Code* (runs the real `claude` CLI as a persistent
@@ -288,11 +305,13 @@ The model list is queried live where possible (Ollama `/api/tags`, OpenAI
 
 ## Permission policy
 
-The dial governs what the assistant may do without asking:
+The dial governs what the assistant may do without asking. Its levels are
+**ask**, **edits** and **auto** (the radio buttons of Options > AI spell them
+out as "Ask each action", "Auto-accept edits" and "Auto (skip asks)"):
 
-- **Ask each action** -- every file write and every command needs a `y`/`n`.
-- **Auto-accept edits** -- writes apply automatically; commands still ask.
-- **Auto** -- runs unattended; a checkpoint is taken first and every change is
+- **ask** -- every file write and every command needs a `y`/`n`.
+- **edits** -- writes apply automatically; commands still ask.
+- **auto** -- runs unattended; a checkpoint is taken first and every change is
   listed in the end-of-run changeset (keep all / revert all / file-by-file /
   commit). Each row names the file by its path under the workspace root and
   the first line the hunk changed, where `Alt-T` / `Alt-V` then jump; `Esc`

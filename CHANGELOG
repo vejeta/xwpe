@@ -233,6 +233,28 @@ Changes
 
 1.7.0 (AI assistant -- experimental, opt-in)
 
+* The Alt-G menu and its popups keep to what they show.  A second Alt-G
+  with the menu open used to run the Agent row, because the menu engine
+  took the Alt form of every row letter as a shortcut; the rows advertise
+  "Alt-G <letter>", so now the Alt form of a row letter does nothing
+  there and the menu stays as it was.  A main menu's own letter (Alt-F,
+  Alt-E, ...) pressed with the menu open now opens that menu instead of
+  closing everything.  The arrow keys, Home and End step over the divider
+  between the actions and the settings, and the mouse cannot pick it.
+  The prompt popup of Edit, Multi-file and Agent paints its key hint
+  above the field (it was too wide for the box and the row came out
+  blank), and Alt-P brings the focus back to the field, as the underlined
+  P says.  The multi-line composer's window is titled with the task and
+  "Esc = done, then Y sends, N cancels"; the title used to be read as a
+  path, so the frame showed the working directory and lost the hint.  A
+  click on the bar's "Alt-G AI" entry goes through the same first-use
+  notice as Alt-G, once.  Clear conversation is refused while a reply
+  streams or a task runs, with a bar line saying Esc cancels the turn
+  first; it used to drop the conversation and then save the arriving
+  reply as a conversation with no question.  Under we the bottom bar
+  keeps its classic Search Again slot instead of "Alt-G AI", since Alt-G
+  is Go to Line there.
+
 * The agent's plan checklist is redrawn in place, as the manual always
   said.  Each step the agent reported appended a fresh copy of the
   checklist to the Messages window, so after three steps the window read

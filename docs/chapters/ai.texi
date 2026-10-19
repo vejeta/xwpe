@@ -65,30 +65,43 @@ Configure and build with the feature on:
 make
 @end example
 
-Edit, Complete, Multi-file and the agent ask for their instruction in a wide
-prompt box that holds a long, detailed request; @key{Enter} sends, @key{Esc}
-cancels.  For a real multi-line prompt, press the @samp{Multi-line} button
-(@key{Alt-M}): it opens a scratch editor window as a text area, so you compose
-with the full editor (several lines, cut and paste, the arrow keys), finish
-with @key{Esc}, and confirm Send.  Ask has no box: the question is typed in
-the pane's own input row (see the Chat section below).
+Edit, Multi-file and the agent ask for their instruction in a wide prompt box
+that holds a long, detailed request.  A key hint above the field names its
+keys: @key{Enter} or @kbd{Alt-S} sends, @kbd{Alt-M} opens the multi-line
+composer, @kbd{Alt-C} or @key{Esc} cancels, and @kbd{Alt-P} brings the focus
+back to the field from a button.  For a real multi-line prompt, press the
+@samp{Multi-line} button (@kbd{Alt-M}): it opens a scratch editor window as a
+text area, so you compose with the full editor (several lines, cut and paste,
+the arrow keys), finish with @key{Esc}, and confirm Send; the window's title
+repeats that two-step exit.  Complete asks nothing: it runs at once on the
+cursor.  Ask has no box: the question is typed in the pane's own input row
+(see the Chat section below).
 
 Then turn it on at run time in one of two ways: tick @samp{Enable AI assistant}
-under @samp{Options}, @samp{AI}, or start with @env{XWPE_AI_ENABLE=1}.  Pressing
-@key{Alt-G} while it is off writes a line in the @samp{AI} pane that names that
-dialog.  With it on
+under @samp{Options}, @samp{AI}, or start with @env{XWPE_AI_ENABLE=1}.  That
+dialog exists in both modes of the editor.  @key{Alt-G} and the bar entry
+belong to programming mode (run as @command{wpe} or @command{xwpe}): under
+@command{we} @key{Alt-G} is Go to Line and the bottom bar keeps its classic
+Search Again slot.  Pressing
+@key{Alt-G} while the assistant is off writes a line in the @samp{AI} pane that
+names that dialog.  With it on
 a clickable @samp{Alt-G AI} entry appears on the bottom status bar and
 @key{Alt-G} opens the assistant's action menu -- the same way @key{Alt-F} opens
 the @samp{File} menu.  Pick an entry with the arrow keys and @key{Enter}, or
 press its letter; the letter also works as type-ahead, so @kbd{Alt-G a} jumps
-straight to Ask (programming mode only, i.e.@: run as @command{wpe} or
-@command{xwpe}):
+straight to Ask.  While the menu is open a second @key{Alt-G} changes nothing
+(the rows' letters are plain letters, not @kbd{Alt} shortcuts), a main menu's
+own letter such as @kbd{Alt-F} opens that menu instead, and the arrow keys
+step over the divider:
 
 @table @kbd
 @item Alt-G a
 Ask -- chat.
 @item Alt-G e
 Edit the current file (or a marked block).
+@item Alt-G c
+Complete at cursor -- fills in code where the cursor is, at once, with no
+prompt.
 @item Alt-G f
 Multi-file edit -- change several files together.
 @item Alt-G g
@@ -103,7 +116,8 @@ is selected and what it does; the next keystroke restores the key hints.  The
 choice is remembered automatically across sessions.
 @item Alt-G n
 Clear conversation -- forget the workspace's history.  Also a status-bar flash,
-not a window.
+not a window.  While a reply streams or a task runs it is refused, and the
+flash says so: press @key{Esc} to cancel the turn first, then clear.
 @item Alt-G s
 AI settings -- open @samp{Options}, @samp{AI} (backend, model, permission level,
 enable toggle).
@@ -114,12 +128,16 @@ The same actions are on the @samp{AI} menu, which groups the four modes and
 @samp{Clear conversation} and @samp{AI settings@dots{}}.  The backend, model and
 enable toggle live in @samp{Options}, @samp{AI}, reached with @kbd{Alt-G s}.
 
-The very first time you invoke an action, a one-time notice states the trust
-model (local by default, opt-in, every edit previewed and revertible with
-@kbd{Ctrl-U}) and asks you to confirm with @key{Enter} or @kbd{y} (or decline
-with @kbd{n} or @key{Esc}).  Answering it with an action letter counts as the
-confirmation and runs that action, so a habitual @kbd{Alt-G a} still lands
-straight in Ask on the first use.
+The very first time you open the menu, with @key{Alt-G} or with a click on the
+@samp{Alt-G AI} bar entry, a one-time notice states the trust model (local by
+default, opt-in, every edit previewed and revertible with @kbd{Ctrl-U}) and
+asks you to confirm with @key{Enter} or @kbd{y} (or decline with @kbd{n} or
+@key{Esc}).  Answering it with a menu letter both accepts and runs that action,
+so a habitual @kbd{Alt-G a} still lands straight in Ask on the first use.  The
+acceptance is remembered in a marker file,
+@file{$XDG_CONFIG_HOME/xwpe/ai_consented} or, with that variable unset,
+@file{~/.config/xwpe/ai_consented}; starting with @env{XWPE_AI_ENABLE} set or
+with @env{XWPE_AI_CONSENTED=1} skips the notice.
 
 @section Backends
 
@@ -460,7 +478,10 @@ by name) run on their own, while @code{web_search}, @code{web_fetch},
 @dfn{permission dial}.  @code{web_fetch} reads a web page over the built-in TLS
 client and @code{web_search} looks one up (its query engine is set by
 @code{AISearchURL}), so a backend with no web tool of its own can still use
-external information; both are network access, so they are gated like a command:
+external information; both are network access, so they are gated like a command.
+The three levels are @code{ask}, @code{edits} and @code{auto} (the radio
+buttons of @samp{Options}, @samp{AI} spell them out as @samp{Ask each action},
+@samp{Auto-accept edits} and @samp{Auto (skip asks)}):
 
 @table @asis
 @item @code{ask} (default)
