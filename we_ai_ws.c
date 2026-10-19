@@ -1174,6 +1174,23 @@ static const char *ws_path_under_root(const char *path, const char *root)
 #define WS_PATHSPEC_WHAT "write the path list"
 
 /**
+ * ws_close_written - Close a file the editor wrote and say whether all of it landed.
+ * @fp: the open stream.
+ *
+ * A write error noted on the stream and a failed close are the same thing to
+ * the user: the file on disk is not the one meant.  The stream is closed in
+ * both cases so no descriptor is left open.
+ * Return: 0 when every byte landed, -1 otherwise.
+ */
+static int ws_close_written(FILE *fp)
+{
+ int short_write = ferror(fp);
+ if (fclose(fp) != 0) return -1;
+ if (short_write) return -1;
+ return 0;
+}
+
+/**
  * ws_write_pathspec - Write the changeset's paths, one per file, for git to read.
  * @f: any window of the editor; @c/@n: the changeset on screen; @buf/@sz:
  * receives the list file's path.
@@ -1184,7 +1201,8 @@ static const char *ws_path_under_root(const char *path, const char *root)
  * hold anything a file name may.  The list lives under the editor's state
  * directory, named for this process, and is removed once git has read it.
  * Return: 0 with @buf filled, -1 when the list could not be written, said in
- * the pane like any other write the editor could not make.
+ * the pane like any other write the editor could not make; a list written
+ * only in part is removed, so nothing of it waits under the state directory.
  */
 static int ws_write_pathspec(FENSTER *f, ws_change *c, int n, char *buf, size_t sz)
 {
@@ -1204,8 +1222,9 @@ static int ws_write_pathspec(FENSTER *f, ws_change *c, int n, char *buf, size_t 
   fwrite(rel, 1, strlen(rel) + 1, fp);                    /* the NUL included */
  }
  wpe_ai_free_list(done, nd);
- if (ferror(fp) || fclose(fp) != 0) {
+ if (ws_close_written(fp) != 0) {
   ws_write_failed(f, WS_PATHSPEC_WHAT, buf, errno);
+  unlink(buf);                                            /* no half list left behind */
   return -1;
  }
  return 0;
