@@ -1113,6 +1113,13 @@
    "status": "new"
   },
   {
+   "id": "SC-ai-agent-59",
+   "requirement": "Checkpoint and review",
+   "layer": "ncurses",
+   "test": "tests/test_ai_changeset_bounds.py::test_a_link_the_run_creates_is_listed_and_removed",
+   "status": "new"
+  },
+  {
    "id": "SC-ai-agent-69",
    "requirement": "The plan checklist",
    "layer": "ncurses",

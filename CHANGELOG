@@ -270,8 +270,9 @@ Changes
   without git the snapshot watched the top folder and each open file's
   folder only, so a file the run created deeper down was neither listed
   nor removed while the summary read "ALL changes reverted"; it now
-  watches the whole workspace, hidden folders skipped and symbolic links
-  not followed, and says in the pane when a workspace is too large to
+  watches the whole workspace, hidden folders skipped and a symbolic link
+  counted as one entry that is never followed, so a link the run makes
+  is listed and removable like a file, and says in the pane when a workspace is too large to
   watch whole; its own state folder, when it sits inside the workspace,
   is left out however the environment spells it, so the editor's session
   and checkpoint files never show as the run's.  A

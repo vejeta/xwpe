@@ -675,9 +675,9 @@ Before an @code{edits} or @code{auto} run, xwpe takes a @dfn{checkpoint}: a
 @command{git} reference when the workspace is a git tree, otherwise a private
 snapshot of the files under @file{$XDG_STATE_HOME/xwpe/checkpoints/} (default
 @file{~/.local/state/xwpe/checkpoints/}).  The snapshot watches the files under
-the workspace root as deep as they go, hidden folders skipped and symbolic
-links not followed, so a file the run creates in any directory of the
-workspace is listed and can be removed;
+the workspace root as deep as they go, hidden folders skipped and a symbolic
+link counted as one entry that is never followed, so a file or a link the
+run creates in any directory of the workspace is listed and can be removed;
 in a workspace too large to walk whole the pane says how many files it
 watches and that a file created beyond them is unseen.  Afterwards it writes
 the @dfn{changeset} into the @samp{Messages} window, one line per changed hunk in

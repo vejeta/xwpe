@@ -480,11 +480,13 @@ static void ws_strip_slash(char *d);
  * workspace, through a command or a tool, is listed by the review and removed
  * by r, the same as one created beside the open file; the git mode sees the
  * whole tree, and the snapshot mode now watches the same set.  Hidden entries
- * are skipped, which keeps `.git` and the editor's own folders out; symbolic
- * links are not followed, as git does not follow them, so a link to a tree
- * outside the workspace does not spend the bound on files the review could
- * not revert; and the walk stops at WS_WATCH_MAX files in all, so a workspace
- * holding a built tree does not stall the checkpoint.
+ * are skipped, which keeps `.git` and the editor's own folders out; a symbolic
+ * link is listed as one entry and never followed, as git lists an untracked
+ * link without descending into it, so a link the run makes is reviewed and
+ * removable while a link to a tree outside the workspace does not spend the
+ * bound on files the review could not revert; and the walk stops at
+ * WS_WATCH_MAX entries in all, so a workspace holding a built tree does not
+ * stall the checkpoint.
  * @skip: one directory left out of the walk, the editor's own state directory
  * in its resolved spelling: the session files and the checkpoint's copies it
  * writes there are the editor's bookkeeping, never the run's changes, and a
@@ -508,7 +510,14 @@ static int ws_walk_files(const char *dir, const char *skip, char ***l, int *n, i
   p = malloc(L);
   if (!p) continue;
   snprintf(p, L, "%s/%s", dir, de->d_name);
-  if (lstat(p, &st) != 0 || S_ISLNK(st.st_mode)) { free(p); continue; }
+  if (lstat(p, &st) != 0) { free(p); continue; }
+  if (S_ISLNK(st.st_mode)) {
+   /* one entry, whatever it points at: the run may have made it, and r
+      removes the link itself, never what it points at */
+   if (!ws_list_has(*l, *n, p)) ws_list_push(l, n, cap, p);
+   else free(p);
+   continue;
+  }
   if (S_ISDIR(st.st_mode)) {
    if (skip && realpath(p, real) && !strcmp(real, skip)) { free(p); continue; }
    if (ws_walk_files(p, skip, l, n, cap)) stopped = 1;

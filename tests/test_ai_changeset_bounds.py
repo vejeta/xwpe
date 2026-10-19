@@ -263,9 +263,11 @@ def test_a_symbolic_link_to_a_tree_outside_the_workspace_is_not_followed(tmp_pat
 
     Git never follows a symbolic link to a directory; the snapshot walk used
     to, so a workspace of two entries, a file and a link to a tree of 2100
-    files, hit the bound behind the link and the file the run created was
-    unseen while the pane spoke of a workspace too large to watch.  Links are
-    skipped now, and the two modes watch the same set again.
+    files, hit the bound behind the link and the pane spoke of a workspace
+    too large to watch; whether the file the run created was seen depended
+    on the order the directory listed the two entries, so the pane line is
+    the assertion that holds either way.  Links are not followed now, and the
+    two modes watch the same set again.
     """
     outside = tmp_path.parent / (tmp_path.name + ".outside")
     outside.mkdir()
@@ -299,6 +301,33 @@ def test_a_symbolic_link_to_a_tree_outside_the_workspace_is_not_followed(tmp_pat
         "the bound was spent behind the link:\n" + "\n".join(pane)
     assert new.exists()
     assert alive, "a linked tree outside the workspace ended the editor"
+
+
+# @scenario SC-ai-agent-59
+def test_a_link_the_run_creates_is_listed_and_removed(tmp_path):
+    """A symbolic link the run makes is a new entry: listed, and `r` removes it.
+
+    Git lists an untracked link as a new path without descending into it.  The
+    snapshot walk skipped links altogether for a while, so a run that did
+    `ln -s t.c alias.c` ended with "no files changed" and no review, and the
+    link stayed.  A link is one entry now: the row names it, `r` unlinks the
+    link itself, and the file it points at is untouched.
+    """
+    t = tmp_path / "t.c"
+    alias = tmp_path / "alias.c"
+    reply = ("TOOL run_command ln -s t.c alias.c"
+             "@@TURN@@DONE linked it")
+    review, after, txt, waiting, alive = _run_created_file(tmp_path, reply)
+
+    assert waiting, "the review never asked for a key:\n" + _evidence(review, txt)
+    row = _row_for(review, "alias.c")
+    assert row == "alias.c:1: " + NEW_FILE, \
+        "Messages shows %r for the link the run made:\n%s" % (
+            row, _evidence(review, txt))
+    assert not alias.is_symlink() and not alias.exists(), \
+        "`r` left the link in place:\n%s" % _evidence(after, txt)
+    assert t.read_text() == ORIG, "removing the link touched its target"
+    assert alive, "reverting a created link ended the editor"
 
 
 # @scenario SC-ai-agent-59
