@@ -18,6 +18,7 @@
 #include <string.h>
 #include <strings.h>
 #include <stdio.h>
+#include <errno.h>
 #include <unistd.h>
 #include <dirent.h>
 #include <time.h>
@@ -108,13 +109,87 @@ static char *ws_read_file(const char *path, size_t maxlen)
  return buf;
 }
 
+/**
+ * ws_write_file - Write @text to @path, replacing what was there.
+ *
+ * Every file this layer writes is one the user relies on later: the
+ * conversation to resume, the before image a revert restores, the copy a
+ * post-edit command formats.  A disk that filled up or a device that went
+ * away reports itself at the flush, not at the write, so the close is part of
+ * the answer: the text is on disk only when all of it was written and the
+ * close agreed.
+ * Return: 0 when the file holds @text, -1 with errno saying why it does not.
+ */
 static int ws_write_file(const char *path, const char *text)
 {
  FILE *fp = fopen(path, "wb");
+ size_t want, got;
+ int err;
  if (!fp) return -1;
- fwrite(text, 1, strlen(text), fp);
- fclose(fp);
+ want = strlen(text);
+ got = fwrite(text, 1, want, fp);
+ if (got != want) {
+  err = errno ? errno : ENOSPC;      /* a short write is a full device until told otherwise */
+  fclose(fp);
+  errno = err;
+  return -1;
+ }
+ if (fclose(fp) != 0) return -1;    /* the buffered tail never reached the disk */
  return 0;
+}
+
+/**
+ * ws_write_failed - Tell the user one file this layer could not write.
+ * @f: any window of the editor; @what: the file's job as a verb phrase
+ * ("save the conversation to"); @path: where it was to go; @err: the errno the
+ * failed call left.
+ *
+ * A conversation, a before image or a restored file that never reached the
+ * disk looks exactly like one that did, and the next thing the user does
+ * depends on which it was.  So the pane says it in the error colour, naming
+ * the path (where to look) and the reason the system gave (what to fix: a
+ * full disk, a folder that is not one, a file left read-only).
+ */
+static void ws_write_failed(FENSTER *f, const char *what, const char *path, int err)
+{
+ char line[1700];
+ snprintf(line, sizeof line, "could not %s %s: %s", what, path, strerror(err));
+ wpe_ai_pane_error(f, line);
+}
+
+/**
+ * ws_make_dir - Create a directory this layer is about to write into.
+ * @f: any window of the editor; @path: the directory to create.
+ *
+ * The directory is made by handing `mkdir -p` to a shell, and the result used
+ * to be dropped: every write below it then failed too, and the user was told
+ * nothing about either.  Checking turns that into one pane line naming the
+ * directory and the reason, before the writes that need it are attempted, so a
+ * folder that is missing is reported once and not once per file that would
+ * have gone into it.
+ *
+ * The check asks the filesystem, not the shell's exit code.  What the writes
+ * need is a directory at @path, however it came to be there, so a status that
+ * disagrees with the filesystem would report a failure that is not one, and
+ * name a reason errno never held.
+ * Return: 0 when @path is a directory afterwards.
+ */
+static int ws_make_dir(FENSTER *f, const char *path)
+{
+ char q[1100], cmd[1400], *out;
+ struct stat st;
+
+ wpe_ai_shell_quote(q, sizeof q, path);
+ snprintf(cmd, sizeof cmd, "mkdir -p %s", q);
+ out = wpe_ai_run_capture(cmd);
+ free(out);
+ errno = 0;
+ if (stat(path, &st) == 0) {
+  if (S_ISDIR(st.st_mode)) return 0;
+  errno = ENOTDIR;               /* a file is in the way, which stat does not call an error */
+ }
+ ws_write_failed(f, "create the folder", path, errno);
+ return -1;
 }
 
 /* The workspace root: the project dir when a .prj is open, else the file's. */
@@ -424,21 +499,29 @@ int wpe_ai_checkpoint_create(FENSTER *f, char **scope, int nscope)
  {
   char sdir[1024];
   time_t now = time(NULL);
+  int failed = 0, told = 0;
   ws_state_dir(sdir, sizeof sdir);
   snprintf(ck_snapdir, sizeof ck_snapdir, "%s/checkpoints/%ld", sdir, (long)now);
-  wpe_ai_shell_quote(q, sizeof q, ck_snapdir);
-  snprintf(cmd, sizeof cmd, "mkdir -p %s", q);
-  out = wpe_ai_run_capture(cmd); free(out);
-  for (i = 0; i < nscope; i++) {
-   char *text = ws_read_file(scope[i], 4000000), dst[1200];
-   if (!text) continue;
-   snprintf(dst, sizeof dst, "%s/%d", ck_snapdir, ck_n);
-   if (ws_write_file(dst, text) == 0) {
-    int cap = ck_n;
-    ws_list_push(&ck_files, &ck_n, &cap, ws_strdup(scope[i]));
+  /* without the folder no copy can exist, and the folder's own failure has
+     just been reported: the loop stays out rather than repeat it per file */
+  if (ws_make_dir(f, ck_snapdir) == 0) {
+   for (i = 0; i < nscope; i++) {
+    char *text = ws_read_file(scope[i], 4000000), dst[1200];
+    if (!text) continue;
+    snprintf(dst, sizeof dst, "%s/%d", ck_snapdir, ck_n);
+    if (ws_write_file(dst, text) == 0) {
+     int cap = ck_n;
+     ws_list_push(&ck_files, &ck_n, &cap, ws_strdup(scope[i]));
+    } else {
+     int err = errno;
+     failed++;
+     /* one line for the whole loop: a full disk fails every copy alike, and
+        the first path plus the reason is all the user can act on */
+     if (!told) { ws_write_failed(f, "save the before image of", scope[i], err); told = 1; }
+    }
+    free(text);
    }
-   free(text);
-  }
+  } else failed = nscope;
   /* remember what exists now, so files the run CREATES are detected too */
   ws_watch_dirs(scope, nscope);
   {
@@ -447,9 +530,9 @@ int wpe_ai_checkpoint_create(FENSTER *f, char **scope, int nscope)
    ck_before = NULL; ck_before_n = 0;
    for (k = 0; k < ck_dirs_n; k++) ws_list_dir_files(ck_dirs[k], &ck_before, &ck_before_n, &cap);
   }
+  wpe_ai_trace("checkpoint snapshot n=%d failed=%d dir=%s", ck_n, failed, ck_snapdir);
  }
  ck_mode = 2;
- wpe_ai_trace("checkpoint snapshot n=%d dir=%s", ck_n, ck_snapdir);
  return 0;
 }
 
@@ -829,25 +912,47 @@ int wpe_ai_refresh_open_window(FENSTER *f, const char *path)
  * not break that promise by touching the file, so it works on a copy.  The
  * copy is a dot-file beside the real file that keeps its name and extension
  * (".ai-hook-<pid>-t.c"), so a formatter still sees the language and finds the
- * configuration file of that directory.  Return: 1 when the copy was written.
+ * configuration file of that directory.  A copy that could not be written is
+ * said in the pane: without it the command silently does not run, and the user
+ * is left wondering why the text was not reformatted.
+ * Return: 1 when the copy was written.
  */
 int wpe_ai_window_hook_copy(FENSTER *w, char *tmp, size_t sz)
 {
  char name[600], *full, *text;
- int ok;
  if (!ws_is_real_file_window(w)) return 0;
  snprintf(name, sizeof name, ".ai-hook-%ld-%s", (long)getpid(), w->datnam);
  full = e_mkfilename(w->dirct, name);
  if (!full) return 0;
  text = ws_window_text(w);
- ok = text && strlen(full) < sz && ws_write_file(full, text) == 0;
- if (ok) strcpy(tmp, full);
+ if (!text || strlen(full) >= sz) { free(text); free(full); return 0; }
+ if (ws_write_file(full, text) != 0) {
+  int err = errno;
+  ws_write_failed(w, "write the post-edit copy of", full, err);
+  wpe_ai_trace("post-edit copy failed %s: %s", full, strerror(err));
+  free(text);
+  free(full);
+  return 0;
+ }
+ strcpy(tmp, full);
  free(text);
  free(full);
- return ok;
+ return 1;
 }
 
-static void ws_revert_path(FENSTER *f, const char *path, int is_new)
+/**
+ * ws_revert_path - Put one file back the way the checkpoint found it.
+ * @f: any window of the editor; @path: the file to put back;
+ * @is_new: the run created it, so putting it back means taking it away.
+ *
+ * Undoing a change is the promise the whole review stands on, so a file that
+ * could not be put back is said in the pane at once, naming the file and the
+ * reason: the user then knows the change is still there instead of finding out
+ * later from the file itself.  The window is left alone in that case, since
+ * reloading it would show text the disk does not hold.
+ * Return: 0 when the file is back, -1 when it kept the change.
+ */
+static int ws_revert_path(FENSTER *f, const char *path, int is_new)
 {
  if (ck_mode == 1) {
   char q[1100], qf[1100], cmd[1400], *out;
@@ -861,17 +966,45 @@ static void ws_revert_path(FENSTER *f, const char *path, int is_new)
   out = wpe_ai_run_capture(cmd); free(out);
  } else if (ck_mode == 2) {
   int i;
-  if (is_new) { unlink(path); wpe_ai_trace("changeset revert %s", path); return; }
+  if (is_new) { unlink(path); wpe_ai_trace("changeset revert %s", path); return 0; }
   for (i = 0; i < ck_n; i++) if (!strcmp(ck_files[i], path)) {
    char snap[1200], *text;
    snprintf(snap, sizeof snap, "%s/%d", ck_snapdir, i);
    text = ws_read_file(snap, 4000000);
-   if (text) { ws_write_file(path, text); free(text); }
+   if (text) {
+    int err = ws_write_file(path, text) == 0 ? 0 : errno;
+    free(text);
+    if (err) {
+     ws_write_failed(f, "restore", path, err);
+     wpe_ai_trace("changeset revert failed %s: %s", path, strerror(err));
+     return -1;
+    }
+   }
    break;
   }
  }
  if (!is_new) ws_reload_window(f, path);
  wpe_ai_trace("changeset revert %s", path);
+ return 0;
+}
+
+/**
+ * ws_say_kept_changes - Say how many files a revert left changed.
+ * @f: any window of the editor; @failed: how many files kept the change.
+ *
+ * The review's last line is what the user believes about the workspace, so a
+ * revert that could not write a file is counted here, in the window the review
+ * has been speaking through; the pane holds each file's name and the reason.
+ * Nothing is printed when every file went back, which the caller says in its
+ * own words.
+ */
+static void ws_say_kept_changes(FENSTER *f, int failed)
+{
+ char line[200];
+ if (failed <= 0) return;
+ snprintf(line, sizeof line, "[AI] %d file%s kept the change (the pane says why)",
+          failed, failed == 1 ? "" : "s");
+ e_d_p_message(line, f, 0);
 }
 
 int wpe_ai_changeset_review(FENSTER *f)
@@ -914,13 +1047,18 @@ int wpe_ai_changeset_review(FENSTER *f)
    break;
   }
   if (k == 'R') {
-   for (i = 0; i < n; i++) ws_revert_path(f, c[i].path, c[i].is_new);
-   e_d_p_message("[AI] ALL changes reverted to the checkpoint", f, 0);
-   wpe_ai_trace("changeset revert all");
+   char **bad = NULL; int nb = 0, bc = 0;
+   for (i = 0; i < n; i++)
+    if (ws_revert_path(f, c[i].path, c[i].is_new) != 0 && !ws_list_has(bad, nb, c[i].path))
+     ws_list_push(&bad, &nb, &bc, ws_strdup(c[i].path));   /* one file, one count */
+   if (nb) ws_say_kept_changes(f, nb);
+   else    e_d_p_message("[AI] ALL changes reverted to the checkpoint", f, 0);
+   wpe_ai_free_list(bad, nb);
+   wpe_ai_trace("changeset revert all failed=%d", nb);
    break;
   }
   if (k == 'F') {
-   char **seen = NULL; int ns = 0, sc = 0;
+   char **seen = NULL; int ns = 0, sc = 0, bad = 0;
    for (i = 0; i < n; i++) {
     if (ws_list_has(seen, ns, c[i].path)) continue;
     ws_list_push(&seen, &ns, &sc, ws_strdup(c[i].path));
@@ -929,11 +1067,16 @@ int wpe_ai_changeset_review(FENSTER *f)
     for (;;) {
      int kk = e_toupper(e_getch());
      if (kk == 'Y' || kk == 13 || kk == '\r' || kk == '\n') { kept++; break; }
-     if (kk == 'N') { ws_revert_path(f, c[i].path, c[i].is_new); break; }
+     if (kk == 'N') {
+      if (ws_revert_path(f, c[i].path, c[i].is_new) != 0) bad++;
+      break;
+     }
     }
    }
    wpe_ai_free_list(seen, ns);
+   ws_say_kept_changes(f, bad);
    e_d_p_message("[AI] file-by-file review done", f, 0);
+   wpe_ai_trace("changeset file-by-file failed=%d", bad);
    break;
   }
   if (k == 'C' && ck_mode == 1) {
@@ -1027,12 +1170,10 @@ static void ws_session_path(FENSTER *f, char *buf, size_t sz)
   snprintf(buf, sz, "%s/.xwpe-ai-session", root);
   free(root);
  } else {
-  char sdir[1024], q[1100], cmd[1300], *out;
+  char sdir[1024];
   ws_state_dir(sdir, sizeof sdir);
   snprintf(buf, sz, "%s/ai", sdir);
-  wpe_ai_shell_quote(q, sizeof q, buf);
-  snprintf(cmd, sizeof cmd, "mkdir -p %s", q);
-  out = wpe_ai_run_capture(cmd); free(out);
+  ws_make_dir(f, buf);        /* the write that follows says so if this failed */
   snprintf(buf, sz, "%s/ai/%lu.session", sdir, ws_hash(f->dirct ? f->dirct : "."));
  }
 }
@@ -1104,7 +1245,16 @@ void wpe_ai_session_save(FENSTER *f)
  }
  json_object_object_add(o, "messages", arr);
  ws_session_path(f, path, sizeof path);
- ws_write_file(path, json_object_to_json_string_ext(o, JSON_C_TO_STRING_PLAIN));
+ /* The conversation on screen stays usable when this fails, so the turn is not
+    abandoned: the user is told the exchange was not persisted, and the trace
+    says so instead of naming a file that is not there. */
+ if (ws_write_file(path, json_object_to_json_string_ext(o, JSON_C_TO_STRING_PLAIN)) != 0) {
+  int err = errno;
+  json_object_put(o);
+  ws_write_failed(f, "save the conversation to", path, err);
+  wpe_ai_trace("session save failed %s: %s", path, strerror(err));
+  return;
+ }
  json_object_put(o);
  wpe_ai_trace("session save %s cli=%s n=%d", path, sess.cli ? sess.cli : "-", sess.n);
 }

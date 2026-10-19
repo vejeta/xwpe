@@ -346,6 +346,10 @@ int  wpe_ai_pane_line_attr(struct FNST *f, int y, int base);
  * never reads a transcript cut at the new border; any other window is left
  * alone. */
 void wpe_ai_pane_before_paint(struct FNST *f);
+/* The one way a failure reaches the user: a line in the pane's error colour,
+ * with the pane raised so it is seen, and no dialog in the way.  Code outside
+ * the pane's own file reports through it, so every failure reads the same way. */
+void wpe_ai_pane_error(struct FNST *f, const char *line);
 /* The editor key loop calls this just before it waits for a key: a reply that
  * finished while a dialog, prompt, picker or the file manager was open is held
  * until then, and this runs its review or apply now, before the next key. */

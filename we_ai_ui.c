@@ -704,6 +704,21 @@ static void ai_pane_multiline(FENSTER *f, const char *text, int role, int surfac
  }
 }
 
+/**
+ * wpe_ai_pane_error - Tell the user in the pane that something failed.
+ * @f: any window of the editor; @line: one sentence naming what failed and why.
+ *
+ * A failure the pane reports is one the user can act on: it is painted in the
+ * error colour, the pane is raised so the line is seen at once, and no dialog
+ * or mode change stands between it and the work in progress.  The layers
+ * outside this file report through it, so a file that was not written reads
+ * the same way as a backend that did not answer.
+ */
+void wpe_ai_pane_error(FENSTER *f, const char *line)
+{
+ ai_pane(f, line, AI_ROLE_ERROR, 1);
+}
+
 /* Join the current file's lines into a single (bounded) text block. */
 static char *ai_current_file_text(FENSTER *f)
 {
