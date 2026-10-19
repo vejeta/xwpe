@@ -123,8 +123,8 @@ AI settings -- open @samp{Options}, @samp{AI} (backend, model, permission level,
 enable toggle).
 @end table
 
-The same actions are on the @samp{AI} menu, which groups the four modes and
-@samp{Build & fix} above a divider, then the quick permission toggle,
+The same actions are on the @samp{AI} menu, which groups the six actions
+above a divider, then the quick permission toggle,
 @samp{Clear conversation} and @samp{AI settings@dots{}}.  The backend, model and
 enable toggle live in @samp{Options}, @samp{AI}, reached with @kbd{Alt-G s}.
 

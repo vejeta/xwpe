@@ -586,3 +586,34 @@ def test_definition_into_library_source(tmp_path):
         assert w.alive(), "wpe died navigating into a library source"
     finally:
         w.close()
+
+
+def test_prefix_and_bar_letters_inside_the_action_dropdown(tmp_path):
+    """The Alt-Q dropdown hangs from no bar menu: its rows advertise "Alt-Q
+    <letter>", a prefix and a letter, so the Alt form of a row letter is no
+    shortcut there.  A second Alt-Q, or Alt-G (the letter of an action row),
+    leaves the one dropdown as it is instead of running that row; Alt-F opens
+    the File menu, as it does from the Alt-G menu; Esc closes the dropdown
+    and the editor is alive."""
+    w = _Wpe(str(tmp_path), [("Demo.scala", "object Demo\n")])
+    try:
+        pos = w.find("Metals")
+        assert pos, "no 'Metals' entry on the bar\n%s" % w.text()
+        w.click(pos[0] + 1, pos[1])
+        assert "Outgoing calls" in w.text(), "the dropdown did not open\n%s" % w.text()
+        w.key("\033g", delay=0.6)                 # Alt-G: the letter of "Outgoing calls"
+        after_alt_g = w.text()
+        w.key("\033q", delay=0.6)                 # Alt-Q: the prefix itself
+        after_alt_q = w.text()
+        w.key("\033f", delay=0.6)                 # Alt-F: a bar menu's letter
+        after_alt_f = w.text()
+        w.key(ESC, delay=0.4)
+        assert "Outgoing calls" in after_alt_g, \
+            "Alt-G inside the dropdown ran a row or closed it\n%s" % after_alt_g
+        assert "Outgoing calls" in after_alt_q, \
+            "a second Alt-Q did not leave the dropdown as it was\n%s" % after_alt_q
+        assert "File-Manager" in after_alt_f, \
+            "Alt-F from the dropdown did not open the File menu\n%s" % after_alt_f
+        assert w.alive(), "wpe died in the dropdown"
+    finally:
+        w.close()

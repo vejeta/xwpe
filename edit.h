@@ -645,6 +645,8 @@ int e_pr_uul(FARBE *fb);
 int WpeHandleMainmenu(int n, FENSTER *f);
 int WpeHandleSubmenu(int xa, int ya, int xe, int ye,
                      int nm, OPTK *fopt, FENSTER *f);
+int WpeHandleSubmenuFromPrefix(int xa, int ya, int xe, int ye,
+                               int prefix, OPTK *fopt, FENSTER *f);
 OPTK WpeFillSubmenuItem(char *t, int x, char o, int (*fkt)());
 
 /*   we_mouse.c   */

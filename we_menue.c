@@ -603,24 +603,29 @@ static int WpeSubmenuKeyIsRowAltForm(OPTK *fopt, int count, int c)
 
 /**
  * WpeSubmenuKeyIsIgnored - Should the dropdown stay as it is on key @c?
- * @nm: the bar index the dropdown was opened with; @fopt, @count: the rows;
- * @c: the key read.
+ * @nm: the bar index the dropdown was opened with; @prefix: the key that
+ * opened it (0 when none); @fopt, @count: the rows; @c: the key read.
  *
  * True for a click on a divider (it carries no key), and, in a dropdown with
- * no bar menu, for the Alt form of a row letter.  The user sees the dropdown
+ * no bar menu, for the prefix pressed again (Alt-Q with the Alt-Q menu open)
+ * and for the Alt form of a row letter.  The user sees the dropdown
  * unchanged, the highlight where it was.
  */
-static int WpeSubmenuKeyIsIgnored(int nm, OPTK *fopt, int count, int c)
+static int WpeSubmenuKeyIsIgnored(int nm, int prefix, OPTK *fopt, int count, int c)
 {
   if(c == WPE_SUBMENU_NO_KEY)
     return 1;
   if(WpeSubmenuHangsFromBar(nm))
     return 0;
+  if(prefix && c == prefix)
+    return 1;                   /* the prefix that opened this dropdown, again */
   return WpeSubmenuKeyIsRowAltForm(fopt, count, c);
 }
 
-/* sub menu box */
-static int WpeHandleSubmenu_run(int xa, int ya, int xe, int ye, int nm, OPTK * fopt, FENSTER * f)
+/* sub menu box; @prefix is the key that opened a dropdown hanging from no
+   bar menu (0 for the bar menus) */
+static int WpeHandleSubmenu_run(int xa, int ya, int xe, int ye, int nm, int prefix,
+                                OPTK * fopt, FENSTER * f)
 {
 #if MOUSE
   extern struct mouse e_mouse;
@@ -800,7 +805,7 @@ static int WpeHandleSubmenu_run(int xa, int ya, int xe, int ye, int nm, OPTK * f
       n = WpeSubmenuFirstRow(fopt, count);
     else if(c == ENDE || c == CtrlE)    /* to the bottom in the submenu */
       n = WpeSubmenuLastRow(fopt, count);
-    else if(WpeSubmenuKeyIsIgnored(nm, fopt, count, c))
+    else if(WpeSubmenuKeyIsIgnored(nm, prefix, fopt, count, c))
       continue;                         /* the dropdown stays as it is */
     else
     {
@@ -848,7 +853,34 @@ int WpeHandleSubmenu(int xa, int ya, int xe, int ye, int nm, OPTK * fopt, FENSTE
 #ifdef DEBUGGER
   e_lsp_modal_enter();
 #endif
-  ret = WpeHandleSubmenu_run(xa, ya, xe, ye, nm, fopt, f);
+  ret = WpeHandleSubmenu_run(xa, ya, xe, ye, nm, 0, fopt, f);
+#ifdef DEBUGGER
+  e_lsp_modal_leave();
+#endif
+  return(ret);
+}
+
+/**
+ * WpeHandleSubmenuFromPrefix - Run a dropdown opened by a key prefix.
+ * @xa, @ya, @xe, @ye: the box; @prefix: the key that opened it (AltG, AltQ);
+ * @fopt: the rows; @f: the current window.
+ * Return: a menu-bar index when the user pressed that menu's Alt letter
+ * (the caller then opens that menu), anything else when a row ran or the
+ * box was dismissed.
+ *
+ * Used by the assistant's Alt-G menu and the language server's Alt-Q menu.
+ * Their rows advertise "<prefix> <letter>", so pressing the prefix again,
+ * or the Alt form of a row letter, leaves the dropdown as it is, and Left
+ * and Right have no neighbouring menu to move to.
+ */
+int WpeHandleSubmenuFromPrefix(int xa, int ya, int xe, int ye, int prefix,
+                               OPTK * fopt, FENSTER * f)
+{
+  int ret;
+#ifdef DEBUGGER
+  e_lsp_modal_enter();
+#endif
+  ret = WpeHandleSubmenu_run(xa, ya, xe, ye, WPE_SUBMENU_NO_BAR_MENU, prefix, fopt, f);
 #ifdef DEBUGGER
   e_lsp_modal_leave();
 #endif

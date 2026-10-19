@@ -7632,8 +7632,8 @@ void e_lsp_open_eager(FENSTER *f)
 /* The top-menu dropdown engine (we_menue.c): draws a bordered, arrow-navigable
    list and runs the chosen item's function -- the same widget the File/Edit menus
    use, so the language-server menu looks and behaves identically. */
-extern int WpeHandleSubmenu(int xa, int ya, int xe, int ye, int nm,
-                            OPTK *fopt, FENSTER *f);
+extern int WpeHandleSubmenuFromPrefix(int xa, int ya, int xe, int ye, int prefix,
+                                      OPTK *fopt, FENSTER *f);
 extern OPTK WpeFillSubmenuItem(char *t, int x, char o, int (*fkt)());
 
 /* Inner text width of the dropdown rows: the action name is left-justified and
@@ -7719,7 +7719,7 @@ static int e_lsp_bar_entry_x(FENSTER *f)
 int e_lsp_ui_menu(FENSTER *f)
 {
  OPTK items[26];
- int n, xa, xe, ya, ye, w, mx;
+ int n, xa, xe, ya, ye, w, mx, verdict;
 
  if (!e_lsp_server_label(f))
  {  e_error("Language server: unsupported file type.", 0, f->fb);  return(0);  }
@@ -7736,7 +7736,14 @@ int e_lsp_ui_menu(FENSTER *f)
  ya = ye - (n + 1);                       /* ...so the list opens upward         */
  if (ya < 1)
   ya = 1;
- WpeHandleSubmenu(xa, ya, xe, ye, 0, items, f);
+ /* The dropdown hangs from no menu-bar entry and its rows advertise
+    "Alt-Q <letter>", a prefix and a letter: the engine is told so, which keeps
+    a second Alt-Q (or the Alt form of a row letter) from running a row and
+    leaves Left and Right without effect.  A bar menu's own Alt letter still
+    comes back as that menu's index, and that menu then opens. */
+ verdict = WpeHandleSubmenuFromPrefix(xa, ya, xe, ye, AltQ, items, f);
+ if (verdict >= 0 && verdict < MENOPT)
+  WpeHandleMainmenu(verdict, f);
  return(0);
 }
 

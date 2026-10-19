@@ -11932,7 +11932,7 @@ static int ai_menu_run_dropdown(OPTK *items, int xa, int ya, int xe, int ye, FEN
  extern int wpe_modal_active;
  int saved = wpe_modal_active, verdict;
  wpe_modal_active = 1;
- verdict = WpeHandleSubmenu(xa, ya, xe, ye, WPE_SUBMENU_NO_BAR_MENU, items, f);
+ verdict = WpeHandleSubmenuFromPrefix(xa, ya, xe, ye, AltG, items, f);
  wpe_modal_active = saved;
  return verdict;
 }
