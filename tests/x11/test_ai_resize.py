@@ -1,7 +1,7 @@
 """Resizing with the AI pane open re-lays-out and never crashes (X11).
 
-Backend parity (rules 20/21): the AI pane is a docked FENSTER, and resize is the
-exact class of bug rule 20 warns about (a docked window's relayout regressed
+Backend parity: the AI pane is a docked FENSTER, and resize is the
+exact class of bug a new backend brings (a docked window's relayout regressed
 unnoticed because no suite resized with it open).  This opens the AI chat pane,
 then sweeps the window through a deep shrink/grow -- including sizes where the
 bottom bar no longer fits -- and asserts xwpe survives with the pane present.

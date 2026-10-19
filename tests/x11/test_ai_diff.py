@@ -1,6 +1,6 @@
 """AI Edit diff overlay paints, in colour, under the X11/Xft backend.
 
-Backend parity (rules 20/21): the review overlay's red (deleted) / green (added)
+Backend parity: the review overlay's red (deleted) / green (added)
 lines come from a DIFFERENT colour path per backend -- ncurses colour pairs
 (covered by the pyte tests) versus Xlib colours here.  This drives a real xwpe
 under the headless X server, runs an AI edit whose mock reply rewrites the file,

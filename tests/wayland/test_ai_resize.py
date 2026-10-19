@@ -1,7 +1,7 @@
 """Resizing with the AI pane open re-lays-out and never crashes (native Wayland).
 
-Backend parity (rules 20/21): the AI pane is a docked FENSTER, and resize is the
-class of bug rule 20 warns about (a docked window's relayout regressed unnoticed
+Backend parity: the AI pane is a docked FENSTER, and resize is the
+class of bug a new backend brings (a docked window's relayout regressed unnoticed
 because no suite resized with it open -- and Wayland reallocates the cell planes
 to the exact size on every resize, so an off-grid write corrupts the heap).  This
 opens the AI chat pane, then sweeps the surface through a deep shrink/grow and

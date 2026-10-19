@@ -1,6 +1,6 @@
 """AI assistant -- the AI pane paints under the X11/Xft backend.
 
-Backend parity (rules 20/21): the AI pane is an ordinary FENSTER, so it must
+Backend parity: the AI pane is an ordinary FENSTER, so it must
 render under xwpe's real Xft path too, not just ncurses.  This drives a real
 xwpe under the headless X server, opens the AI chat (deterministic mock reply),
 and asserts the screen changed -- i.e. the pane painted.  Self-skips if the X11

@@ -1,6 +1,6 @@
 """AI assistant -- the AI pane paints under the native Wayland backend.
 
-Backend parity (rules 20/21): the AI pane is an ordinary FENSTER, so it must
+Backend parity: the AI pane is an ordinary FENSTER, so it must
 render in every backend, not just ncurses.  This drives a real xwpe as a native
 Wayland client, opens the AI chat (deterministic mock reply), and asserts the
 frame changed -- i.e. the pane painted.  Self-skips if the graphical harness or

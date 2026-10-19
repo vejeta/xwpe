@@ -1,6 +1,6 @@
 """AI Edit diff overlay paints, in colour, under the native Wayland backend.
 
-Backend parity (rules 20/21): the review overlay's red (deleted) / green (added)
+Backend parity: the review overlay's red (deleted) / green (added)
 lines come from a DIFFERENT colour path per backend -- ncurses colour pairs
 (pyte tests) versus the Wayland/Cairo path here.  This drives a real xwpe as a
 native Wayland client, runs an AI edit whose mock reply rewrites the file, and

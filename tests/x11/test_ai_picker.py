@@ -1,6 +1,6 @@
 """AI model picker paints under the x11 backend.
 
-Backend parity (rules 20/21): the scrollable model picker is a boxed overlay
+Backend parity: the scrollable model picker is a boxed overlay
 drawn through each backend's paint path.  This opens Options > AI and presses the
 Model button (Alt-M) to raise the picker, asserting the screen changed -- i.e.
 the picker painted -- over the still-shown settings dialog.  claudecli's model
