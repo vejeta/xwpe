@@ -204,6 +204,29 @@ def assistant_build(bin_path=None):
         return False
 
 
+def wait_screen(session, needle, tmo=12):
+    """Poll the screen for ``needle`` until ``tmo`` seconds run out.
+
+    One turn of this loop costs 0.4 s, because `display(drain=0)` reads the
+    screen as it stands instead of draining for another 0.6 s first.  That
+    matters for anything that is on screen only while work is in flight: a
+    waiting line lives exactly as long as the backend takes, and a loop that
+    costs a full second per turn cannot look until it has gone.  A box that
+    stays up is found either way.
+
+    Fourteen test files grew their own copy of this, ten of them with the
+    coarse grid, and one of those missed a 1.5 s spinner for a whole release.
+    New tests use this one; a copy is only kept where its file needs a
+    different needle shape.
+    """
+    end = time.time() + tmo
+    while time.time() < end:
+        session._drain(0.4)
+        if needle in "\n".join(session.display(drain=0)):
+            return True
+    return False
+
+
 def row_with(session, needle):
     """The first screen row containing ``needle``, or "" if none does.  For
     reading one widget's row (a field, a radio line) without pinning where
