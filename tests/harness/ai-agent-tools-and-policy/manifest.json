@@ -1041,6 +1041,34 @@
    "test": null,
    "status": "blocked",
    "reason": "a documentation row, checked by reading the manual against the run, not by an automated test"
+  },
+  {
+   "id": "SC-ai-agent-70",
+   "requirement": "Checkpoint and review",
+   "layer": "ncurses",
+   "test": "tests/test_ai_changeset.py::test_the_review_keys_fit_the_messages_window[git]",
+   "status": "new"
+  },
+  {
+   "id": "SC-ai-agent-70",
+   "requirement": "Checkpoint and review",
+   "layer": "ncurses",
+   "test": "tests/test_ai_changeset.py::test_the_review_keys_fit_the_messages_window[snapshot]",
+   "status": "new"
+  },
+  {
+   "id": "SC-ai-agent-65",
+   "requirement": "Checkpoint and review",
+   "layer": "ncurses",
+   "test": "tests/test_ai_changeset.py::test_a_run_without_a_checkpoint_says_it_cannot_be_reverted",
+   "status": "new"
+  },
+  {
+   "id": "SC-ai-agent-63",
+   "requirement": "Checkpoint and review",
+   "layer": "ncurses",
+   "test": "tests/test_ai_changeset.py::test_a_refused_commit_says_the_files_stay_staged",
+   "status": "new"
   }
  ]
 }

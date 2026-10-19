@@ -298,7 +298,9 @@ The dial governs what the assistant may do without asking:
   the first line the hunk changed, where `Alt-T` / `Alt-V` then jump; `Esc`
   keeps, at the top of the review and inside the file-by-file questions,
   where it keeps the files not yet asked about; `c` commits the listed files
-  and nothing else, and a file that could not be put back is named in the
+  and nothing else (the keys are two Messages rows, and `c` is shown only in a
+  git workspace), a commit a hook refuses leaves the files staged and the pane
+  says so, and a file that could not be put back is named in the
   pane with the reason. An Edit, a completion or a Multi-file change is always previewed
   before it lands. An agent write under *edits* or *auto* is written first and
   reviewed after, in that changeset, and stays one `Ctrl-U` away from undone in
@@ -308,7 +310,9 @@ The dial is read live. Raising it with `Alt-G y` while a run waits for the
 model applies to the next tool, and the first write that follows takes the
 checkpoint the launch would have taken (the pane shows the same
 `[agent] checkpoint taken` line), so a run started under *ask* and raised to
-*auto* still ends in the review.
+*auto* still ends in the review. A checkpoint that could hold no copy of your
+files is not taken; the pane says what failed and then `[AI] no checkpoint:
+this run cannot be reverted from the review`.
 
 Whatever the dial, the argument of `list_dir`, `grep` and `glob` is passed to
 the shell as a single word: a pattern with spaces is one pattern, and no

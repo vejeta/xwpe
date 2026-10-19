@@ -258,7 +258,13 @@ Changes
   commits the listed files only, through a path list git reads itself, so
   an edit of yours stays out of that commit whether you had staged it or
   not.  The file-by-file question names the file the way its row does, so
-  it fits the Messages window too.  A revert that could not put a file back (the
+  it fits the Messages window too, and the review's keys are two Messages
+  rows instead of one cut at the window's border, with c shown only in a
+  git workspace.  When a hook refuses the commit after the files were
+  staged, the pane says they stay staged.  A checkpoint that could hold
+  no copy of your files is refused, and the pane now says what that
+  costs: this run cannot be reverted from the review.  A revert that
+  could not put a file back (the
   workspace refused, a created file could not be removed, the checkpoint
   held no copy) used to report "ALL changes reverted" and reload the
   window anyway; the pane now names the file and the reason, the summary

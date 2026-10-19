@@ -9147,6 +9147,30 @@ static void ai_agent_report_outside(FENSTER *f, const char *path)
 /* The pane line for a checkpoint, at launch and before a write that needs one. */
 #define AI_AGENT_CHECKPOINT_LINE \
   "[agent] checkpoint taken - changes are reviewable/revertible at the end"
+/* The pane line when the checkpoint was refused: the cost, under the cause. */
+#define AI_AGENT_NO_CHECKPOINT_LINE \
+  "[AI] no checkpoint: this run cannot be reverted from the review"
+
+/**
+ * ai_say_checkpoint_state - Tell the user whether this run has a safety net.
+ * @f: the window whose pane shows the line.
+ *
+ * Called right after the checkpoint was asked for.  When it holds, the pane
+ * promises the review and the revert; when it was refused, the layer that
+ * refused has already said why (a folder that could not be made, a copy that
+ * could not be saved), and this adds what that costs, in the error colour: the
+ * edits this run makes cannot be undone through the review.  The user can
+ * still stop the run or lower the dial before the first write.  Both the
+ * built-in loop and the hosted session say it through here, so the two read
+ * the same.
+ */
+static void ai_say_checkpoint_state(FENSTER *f)
+{
+ if (wpe_ai_checkpoint_active())
+  ai_pane(f, AI_AGENT_CHECKPOINT_LINE, AI_ROLE_MACHINERY, 0);
+ else
+  wpe_ai_pane_error(f, AI_AGENT_NO_CHECKPOINT_LINE);
+}
 
 /**
  * ai_agent_ensure_checkpoint - Take this run's checkpoint if the dial now calls for one.
@@ -9164,7 +9188,8 @@ static void ai_agent_report_outside(FENSTER *f, const char *path)
  * read through the same wpe_ai_checkpoint_active() the review at the end is
  * gated on: a checkpoint that could not save a before image is not taken, and
  * announcing a revert that could restore nothing is the lie the failure report
- * in the pane exists to prevent.
+ * in the pane exists to prevent.  When it was refused the pane says what that
+ * costs (ai_say_checkpoint_state).
  */
 static void ai_agent_ensure_checkpoint(ai_async_op *op)
 {
@@ -9176,8 +9201,7 @@ static void ai_agent_ensure_checkpoint(ai_async_op *op)
  wpe_ai_checkpoint_create(op->f, scope, nsc);
  wpe_ai_free_list(scope, nsc);
  op->checkpointed = 1;              /* settled, taken or not: a run tries once */
- if (wpe_ai_checkpoint_active())
-  ai_pane(op->f, AI_AGENT_CHECKPOINT_LINE, AI_ROLE_MACHINERY, 0);
+ ai_say_checkpoint_state(op->f);
 }
 
 /**
@@ -11294,7 +11318,8 @@ static void host_end_session_notice(void)
  * the built-in loop shows, so the user knows the safety net is there before
  * the first turn goes out.  It is shown only when the checkpoint is real, so a
  * session whose before images could not be saved does not promise a revert the
- * session could not keep; the pane says that failure in its own words.
+ * session could not keep; the pane says that failure in its own words and then
+ * what it costs (ai_say_checkpoint_state).
  */
 static void host_take_checkpoint(FENSTER *f)
 {
@@ -11302,8 +11327,7 @@ static void host_take_checkpoint(FENSTER *f)
  int nsc = wpe_ai_scope_files(f, e_project_is_open(), 1, &scope);
  wpe_ai_checkpoint_create(f, scope, nsc);
  wpe_ai_free_list(scope, nsc);
- if (wpe_ai_checkpoint_active())
-  ai_pane(f, AI_AGENT_CHECKPOINT_LINE, AI_ROLE_MACHINERY, 0);
+ ai_say_checkpoint_state(f);
 }
 
 /* Non-host code (e.g. Options > Disable) asks whether a host is up. */

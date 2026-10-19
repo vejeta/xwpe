@@ -477,7 +477,11 @@ first.  The dial is read live: raised with @kbd{Alt-G y} while a run waits for
 the model, it applies to the next tool, and the first write that follows takes
 the checkpoint the launch would have taken, with the same @samp{[agent]
 checkpoint taken} line, so the review at the end covers a run that started
-under @code{ask}.  With the @code{claudecli} backend the built-in agent runs the
+under @code{ask}.  A checkpoint that could hold no copy of your files is not
+taken: the pane says what failed (the folder that could not be made, the copy
+that could not be saved) and then @samp{[AI] no checkpoint: this run cannot
+be reverted from the review}, so you can stop the run or lower the dial
+before anything is written.  With the @code{claudecli} backend the built-in agent runs the
 CLI text-only: the model answers with the editor's own tool protocol, and the
 CLI is told not to use its own writing or shell tools (@code{Write},
 @code{Edit}, @code{MultiEdit}, @code{NotebookEdit}, @code{Bash}), with its two
@@ -678,13 +682,18 @@ run created reads @samp{new file}.
 
 A review prompt then offers @kbd{a} keep all, @kbd{r} revert everything back to
 the checkpoint, @kbd{f} decide file by file, and (in a git tree) @kbd{c} commit
-the change as one auditable commit.  @key{Esc} or @key{Enter} at that prompt
-keeps everything, as @kbd{a} does: the files are already written, so leaving
-them is keeping them.  Under @kbd{f} each file asks @kbd{y} keep or @kbd{n}
-revert; @key{Esc} there keeps the files not yet asked about and ends the
-review, and @samp{Messages} says how many were kept unseen.  The commit holds
-the files the review listed and nothing else, so an edit of yours made before
-the run stays uncommitted where you left it.  Reverting a file the agent
+the change as one auditable commit.  The keys are spelled on two
+@samp{Messages} rows, so they are whole in the narrow window the docked pane
+leaves; @kbd{c} is shown only where a commit can be made.  @key{Esc} or
+@key{Enter} at that prompt keeps everything, as @kbd{a} does: the files are
+already written, so leaving them is keeping them.  Under @kbd{f} each file
+asks @kbd{y} keep or @kbd{n} revert; @key{Esc} there keeps the files not yet
+asked about and ends the review, and @samp{Messages} says how many were kept
+unseen.  The commit holds the files the review listed and nothing else, so an
+edit of yours made before the run stays uncommitted where you left it.  When
+git refuses the commit after the files were staged (a hook, for instance), the
+pane gives git's reason and says the listed files stay staged, so you can fix
+what the hook asked for and commit them yourself.  Reverting a file the agent
 created deletes it.  When a file cannot be put back (the workspace refuses,
 the created file cannot be removed, the checkpoint holds no copy of it) the
 pane says which file and why, the review's summary counts it as kept, and its

@@ -363,16 +363,16 @@ def test_ai_changeset_revert_reports_a_created_file_it_could_not_remove(tmp_path
     assert alive, "a delete the directory refused ended the editor"
 
 
-def test_ai_checkpoint_without_a_before_image_offers_no_revert(tmp_path):
-    """No checkpoint is better than one that cannot put anything back.
+NO_CHECKPOINT_LINE = "[AI] no checkpoint: this run cannot be reverted from the review"
 
-    XDG_STATE_HOME points below a regular file, so the folder the snapshot
-    copies would go into cannot be created.  The checkpoint used to activate
-    anyway, with no before image in it: the review then opened over a file the
-    run had changed and offered a revert that could only restore nothing, and
-    the pane had already promised the changes were revertible.  Now the
-    checkpoint stays off, the pane says the folder could not be created, and
-    nothing on screen offers or claims a revert.
+
+def _run_without_a_before_image(tmp_path):
+    """Run a rewrite with XDG_STATE_HOME below a regular file.
+
+    The folder the snapshot copies would go into cannot be created, so the
+    checkpoint is refused.  Returns (the pane's lines, the screen, whether the
+    editor is alive, the trace text) and leaves the written file and the
+    blocked state path for the caller to read.
     """
     blocker = tmp_path / "blocker"
     blocker.write_text("a regular file, where a directory was needed\n")
@@ -398,9 +398,27 @@ def test_ai_checkpoint_without_a_before_image_offers_no_revert(tmp_path):
         assert _wait_trace(trace, "agent done", 60), \
             "the run never finished:\n" + _trace_text(trace)
         pane = pane_text_with_history(s, ["could not create the folder",
-                                          "Not a directory", "revertible"])
+                                          "Not a directory", "revertible",
+                                          "no checkpoint"])
         disp = "\n".join(s.display(drain=0))
         alive = s.alive()
+    return pane, disp, alive, _trace_text(trace)
+
+
+def test_ai_checkpoint_without_a_before_image_offers_no_revert(tmp_path):
+    """No checkpoint is better than one that cannot put anything back.
+
+    XDG_STATE_HOME points below a regular file, so the folder the snapshot
+    copies would go into cannot be created.  The checkpoint used to activate
+    anyway, with no before image in it: the review then opened over a file the
+    run had changed and offered a revert that could only restore nothing, and
+    the pane had already promised the changes were revertible.  Now the
+    checkpoint stays off, the pane says the folder could not be created, and
+    nothing on screen offers or claims a revert.
+    """
+    pane, disp, alive, txt = _run_without_a_before_image(tmp_path)
+    t = tmp_path / "t.c"
+    state = tmp_path / "blocker" / "state"
 
     # ground truth: the change is on disk and no before image exists anywhere
     assert "return 99" in t.read_text(), t.read_text()
@@ -416,12 +434,35 @@ def test_ai_checkpoint_without_a_before_image_offers_no_revert(tmp_path):
     assert "ALL changes reverted" not in disp, \
         "the screen claims a revert that cannot happen:\n" + disp
 
-    txt = _trace_text(trace)
     assert "changeset" not in txt, \
         "a review opened over a checkpoint that holds no before image:\n" + txt
     assert not _lying_revert_lines(txt), \
         "the trace claims a revert that did not happen:\n" + txt
     assert alive, "a checkpoint that could not be saved ended the editor"
+
+
+# @scenario SC-ai-agent-65
+def test_a_run_without_a_checkpoint_says_it_cannot_be_reverted(tmp_path):
+    """The pane says what a refused checkpoint costs, not only why it failed.
+
+    The folder error told the user what to fix; nothing connected it to the
+    consequence, that the edits this run makes cannot be undone through the
+    review.  The pane now says so in its own line, after the folder error and
+    before the first write, so the user can still stop the run or lower the
+    dial.
+    """
+    pane, disp, alive, txt = _run_without_a_before_image(tmp_path)
+    text = "\n".join(pane)
+    assert "could not create the folder" in text, \
+        "the pane does not say the checkpoint folder is missing:\n" + text
+    assert NO_CHECKPOINT_LINE in text, \
+        "the pane does not say the run cannot be reverted:\n" + text
+    assert text.index("could not create the folder") < text.index(NO_CHECKPOINT_LINE), \
+        "the consequence came before its cause:\n" + text
+    assert "checkpoint taken" not in text, \
+        "the pane promises a checkpoint it refused:\n" + text
+    assert "checkpoint refused" in txt, txt
+    assert alive, "a refused checkpoint ended the editor"
 
 
 # ---- where a row points, and where its jump lands ---------------------------
@@ -844,3 +885,120 @@ def test_ai_changeset_commit_leaves_the_users_staged_edit_in_the_index(tmp_path)
         "the user's staged edit is no longer staged and uncommitted:\n" + status
     assert hand.read_text() == HAND_EDIT
     assert alive, "committing beside a staged edit ended the editor"
+
+
+# ---- the keys the review offers ---------------------------------------------
+#
+# The review's key line is read as Messages rows, because that window is where
+# the user reads it, and at 80 columns with the pane docked it is 38 columns
+# wide and cuts a row at its border.
+
+KEYS_ROW_1 = "   a = keep all   r = REVERT all"
+KEYS_ROW_2_GIT = "   f = file by file   c = commit"
+KEYS_ROW_2_SNAPSHOT = "   f = file by file"
+
+
+def _key_rows(review):
+    """The Messages rows after the changeset rows: the review's key rows, as the
+    window shows them, cursor block and frame edge removed."""
+    messages = _messages_rows(review)
+    rows = []
+    for i, r in enumerate(messages):
+        if r.startswith("=== AI changeset"):
+            rows = [_row_text(x) for x in messages[i + 1:]]
+            break
+    return [r for r in rows if r.strip().startswith(("a = ", "f = "))]
+
+
+# @scenario SC-ai-agent-70
+@pytest.mark.parametrize("git", [True, False], ids=["git", "snapshot"])
+def test_the_review_keys_fit_the_messages_window(tmp_path, git):
+    """The review's keys are two rows the narrowest Messages window shows whole,
+    and `c = commit` is offered only where a commit can be made.
+
+    One 72-character row was cut at 38 columns before `c = commit (git)`, so
+    the one key the manual presents as the point of a git workspace was
+    invisible in the default layout.  Two rows of the same words fit; and in a
+    snapshot workspace, where `c` does nothing, the second row ends at
+    `f = file by file`, so no key that does nothing is shown.  The git case is
+    read at 80 columns with the pane docked, the snapshot case at 200, where a
+    stray `c = commit` would have room to appear.
+    """
+    if git:
+        review, _, txt, alive = _run_changed_line(tmp_path, git=True,
+                                                  cols=80, rows=30)
+        want = [KEYS_ROW_1, KEYS_ROW_2_GIT]
+    else:
+        review, _, txt, alive = _run_changed_line(tmp_path, git=False)
+        want = [KEYS_ROW_1, KEYS_ROW_2_SNAPSHOT]
+    rows = _key_rows(review)
+    assert rows == want, \
+        "the review's key rows read %r, expected %r:\n%s" % (
+            rows, want, "\n".join(_messages_rows(review)))
+    assert "changeset n=1" in txt, txt
+    assert alive, "the review ended the editor"
+
+
+# ---- a commit git refused after the add -------------------------------------
+
+HOOK_SAYS_NO = "#!/bin/sh\necho 'pre-commit hook says no' >&2\nexit 1\n"
+STAY_STAGED_LINE = "the listed files stay staged"
+
+
+# @scenario SC-ai-agent-63
+def test_a_refused_commit_says_the_files_stay_staged(tmp_path):
+    """When a hook refuses the commit, the staged files stay and the pane says so.
+
+    The add had succeeded, so the listed files sat in the index with no
+    commit; the pane gave git's line and Messages said no commit was made,
+    but nothing said where the files were left, and the user's next commit
+    would have carried them.  The pane now says the files stay staged, which
+    is also what a retry after fixing the hook's complaint needs, and the
+    index is not touched further.
+    """
+    t = tmp_path / "t.c"
+    _git_repo(tmp_path)                       # commits t.c holding ORIG
+    hook = tmp_path / ".git" / "hooks" / "pre-commit"
+    hook.write_text(HOOK_SAYS_NO)
+    hook.chmod(0o755)
+    trace = tmp_path.parent / (tmp_path.name + ".trace")
+    state = tmp_path.parent / (tmp_path.name + ".state")
+    reply = "TOOL write_file %s\n%s@@END@@TURN@@DONE rewrote it" % (t, T_NEW)
+    env = {
+        "XWPE_AI_ENABLE": "1",
+        "XWPE_AI_BACKEND": "mock",
+        "XWPE_AI_MOCK_REPLY": reply,
+        "XWPE_AI_POLICY": "auto",
+        "XWPE_AI_TRACE": str(trace),
+        "XDG_STATE_HOME": str(state),
+        "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
+        "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t",
+    }
+    with WpeSession(str(tmp_path), ORIG, env_extra=env) as s:
+        s.key(ALT.AI)
+        s.key("g")
+        s.key("rewrite it")
+        s.key("\r", delay=1.0)
+        assert _wait_trace(trace, "changeset n=", 60), \
+            "the review never opened:\n" + _trace_text(trace)
+        s.key("c", delay=0.8)
+        s.key("\r", delay=1.0)
+        refused = _wait_trace(trace, "changeset not committed", 30)
+        pane = pane_text_with_history(s, ["could not commit", "stay staged"])
+        messages = _messages_rows(s.display(drain=0))
+        alive = s.alive()
+
+    assert refused, "the refusal never reached the trace:\n" + _trace_text(trace)
+    text = "\n".join(pane)
+    assert "could not commit the changeset: pre-commit hook says no" in text, \
+        "the pane does not give git's reason:\n" + text
+    assert STAY_STAGED_LINE in text, \
+        "the pane does not say where the files were left:\n" + text
+    assert any("[AI] not committed" in r for r in messages), \
+        "Messages does not say the commit was not made:\n" + "\n".join(messages)
+    assert _git_out(tmp_path, "log", "--oneline").count("\n") == 1, \
+        "a commit was made after all:\n" + _git_out(tmp_path, "log", "--oneline")
+    assert "M  t.c" in _git_out(tmp_path, "status", "--porcelain"), \
+        "the listed file is not staged:\n" + _git_out(tmp_path, "status",
+                                                      "--porcelain")
+    assert alive, "a refused commit ended the editor"

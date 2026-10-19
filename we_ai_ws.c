@@ -440,6 +440,9 @@ char *wpe_ai_read_scope_file(FENSTER *f, const char *path)
 /* ===================== checkpoint ======================================== */
 
 static int    ck_mode;                 /* 0 none, 1 git ref, 2 snapshot copies */
+#define WS_CK_NONE     0
+#define WS_CK_GIT      1
+#define WS_CK_SNAPSHOT 2
 static char   ck_ref[160];
 static char   ck_dir[1024];
 static char   ck_snapdir[1024];
@@ -1266,6 +1269,21 @@ static int ws_git_on_changeset(FENSTER *f, const char *what, const char *verb,
 }
 
 /**
+ * ws_say_left_staged - Tell the user where a refused commit left the files.
+ * @f: any window of the editor.
+ *
+ * git refused the commit after the listed files were staged (a hook, most
+ * often), so they sit in the index with no commit.  A hook's refusal usually
+ * means "fix it and commit again", and the staged files are what that retry
+ * needs, so they are left there; a `git commit` the user runs next would carry
+ * them, which is why the pane says so under git's own reason.
+ */
+static void ws_say_left_staged(FENSTER *f)
+{
+ wpe_ai_pane_error(f, "the listed files stay staged");
+}
+
+/**
  * ws_commit_changeset_steps - Stage the listed files, then commit those files only.
  * @f: any window of the editor; @c/@n: the changeset on screen; @msg: the
  * commit message the user gave; @out: receives git's answer to the commit.
@@ -1286,9 +1304,26 @@ static int ws_commit_changeset_steps(FENSTER *f, ws_change *c, int n,
   wpe_ai_shell_quote(qm, sizeof qm, msg);
   snprintf(verb, sizeof verb, "commit -q -m %s", qm);
   rc = ws_git_on_changeset(f, "commit", verb, list, out);
+  if (rc != 0) ws_say_left_staged(f);
  }
  unlink(list);
  return rc;
+}
+
+/**
+ * ws_show_review_keys - Print the keys the changeset review answers to.
+ * @f: any window of the editor.
+ *
+ * Two Messages rows, so each is whole in the 38-column Messages window the
+ * docked pane leaves at 80 columns; one row of them was cut before the commit
+ * key.  The commit key is printed only in a git workspace, where it does
+ * something: a key that does nothing is not offered.
+ */
+static void ws_show_review_keys(FENSTER *f)
+{
+ e_d_p_message("   a = keep all   r = REVERT all", f, 0);
+ if (ck_mode == WS_CK_GIT) e_d_p_message("   f = file by file   c = commit", f, 0);
+ else                      e_d_p_message("   f = file by file", f, 0);
 }
 
 /**
@@ -1348,7 +1383,7 @@ int wpe_ai_changeset_review(FENSTER *f)
  free(files); free(lines); free(texts);
  wpe_ai_trace("changeset n=%d", n);
 
- e_d_p_message("   a = keep all   r = REVERT all   f = file by file   c = commit (git)", f, 0);
+ ws_show_review_keys(f);
  for (;;) {
   int k = e_toupper(e_getch());
   if (k == 'A' || k == WPE_ESC || k == 13 || k == '\r' || k == '\n') {
@@ -1399,7 +1434,7 @@ int wpe_ai_changeset_review(FENSTER *f)
    wpe_ai_trace("changeset file-by-file failed=%d", bad);
    break;
   }
-  if (k == 'C' && ck_mode == 1) {
+  if (k == 'C' && ck_mode == WS_CK_GIT) {
    static char msg[256];
    strcpy(msg, "AI-assisted change");
    if (e_add_arguments(msg, "Commit message", f, 0, AltB, NULL) && msg[0])
