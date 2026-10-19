@@ -245,7 +245,10 @@ and a skipped test counts as `FAIL` unless the manifest marks the scenario
 blocked. The exit status is non-zero if any scenario is not `PASS` or
 `BLOCKED`, so the script can gate a build.
 
-Layers: `ncurses`, `asan`, `x11`, `wayland`, `c-unit` and `config-file`. Tests
+Layers `run.sh` runs: `ncurses`, `asan`, `x11`, `wayland`, `console` and
+`c-unit`. A manifest row may also say `config-file` (a pyte test that seeds
+`xwperc` before launch) or `live` (a real provider, never a gate); the
+`config-file` rows run with the `ncurses` and `asan` layers. Tests
 that press a terminal function key run in `ncurses` with the rest: the hosted
 CI runner's pseudo-terminal delivers both the SS3 and the CSI sequences
 (measured 2026-10-19, twelve of thirteen such tests passed there and the

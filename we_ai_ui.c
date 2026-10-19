@@ -8828,8 +8828,13 @@ static BUFFER *ai_messages_open_buffer(FENSTER *f)
  return m ? m->b : NULL;
 }
 
+/* A run has started and has not yet written to Messages: its first row empties
+   the window first.  Set by ai_messages_start_run, spent by
+   wpe_ai_messages_run_output_begins. */
+static int g_ai_messages_run_fresh = 0;
+
 /**
- * ai_messages_start_run - Empty the Messages window for a new run, as a compile does.
+ * ai_messages_empty_for_run - Empty the Messages window for the run's own rows.
  * @f: any window of the editor.
  *
  * What the user gains: the Messages window holds one run, its checklist and
@@ -8841,17 +8846,49 @@ static BUFFER *ai_messages_open_buffer(FENSTER *f)
  * checklist's bookkeeping is reset with it, so nothing is "erased" from a
  * window that holds nothing of the previous drawing.
  */
-static void ai_messages_start_run(FENSTER *f)
+static void ai_messages_empty_for_run(FENSTER *f)
 {
  FENSTER *m = ai_messages_window(f);
+ g_ai_plan_row = -1;
+ g_ai_plan_rows = 0;
  if (!m) return;
  e_p_red_buffer(m->b);
  m->b->b.x = 0;
  m->b->b.y = 0;
  e_messages_scroll_to_bottom(m);
- g_ai_plan_row = -1;
- g_ai_plan_rows = 0;
  e_rep_win_tree(f->ed);
+}
+
+/**
+ * ai_messages_start_run - Mark a new run, so its first Messages row starts the window afresh.
+ * @f: any window of the editor (unused today; the mark is per editor).
+ *
+ * The window is not emptied here but at the run's first row (a plan, the
+ * review), because a compile always writes into the window it empties and a
+ * run may write nothing: under ask, with no plan and no review, emptying at
+ * the start would take the last compile's rows away and put nothing in their
+ * place.  A run that writes nothing leaves Messages as it found it.
+ */
+static void ai_messages_start_run(FENSTER *f)
+{
+ (void)f;
+ g_ai_messages_run_fresh = 1;
+}
+
+/**
+ * wpe_ai_messages_run_output_begins - The run is about to write its first Messages row.
+ * @f: any window of the editor.
+ *
+ * Called by whoever writes the run's rows (the plan checklist, the changeset
+ * review) before the first of them; empties the window once per run, the
+ * first time only, so the checklist's redraws and the review that follows it
+ * stay in the same window.
+ */
+void wpe_ai_messages_run_output_begins(FENSTER *f)
+{
+ if (!g_ai_messages_run_fresh) return;
+ g_ai_messages_run_fresh = 0;
+ ai_messages_empty_for_run(f);
 }
 
 /**
@@ -8912,8 +8949,10 @@ static void ai_plan_erase_drawn(BUFFER *b)
 static void ai_plan_show(FENSTER *f)
 {
  char line[AI_PLAN_ROW_MAX];
- BUFFER *b = ai_messages_open_buffer(f);
+ BUFFER *b;
  int i;
+ wpe_ai_messages_run_output_begins(f);  /* the run's first Messages rows */
+ b = ai_messages_open_buffer(f);
  if (b) ai_plan_erase_drawn(b);
  snprintf(line, sizeof line, "%s %d/%d done ===", AI_PLAN_HEADER, ai_plan_done_count(), g_ai_plan_n);
  e_d_p_message(line, f, AI_PLAN_REPAINT_ALL);

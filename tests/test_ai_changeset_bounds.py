@@ -216,19 +216,24 @@ def test_a_file_created_in_a_deeper_directory_is_listed_and_removed(tmp_path):
 
 
 # @scenario SC-ai-agent-59
-def test_the_editors_own_state_directory_inside_the_workspace_is_not_a_change(tmp_path):
+@pytest.mark.parametrize("spelling", ["state", "state/", "state//./"],
+                         ids=["plain", "trailing-slash", "dot-segment"])
+def test_the_editors_own_state_directory_inside_the_workspace_is_not_a_change(tmp_path, spelling):
     """The editor's own files under the workspace are not the run's changes.
 
     With the state directory placed inside the workspace, the snapshot's walk
     would meet its own checkpoint copies and the session file and list them
     as files the run created.  They are the editor's bookkeeping: the review
-    lists the one file the run rewrote and nothing under the state directory.
+    lists the one file the run rewrote and nothing under the state directory,
+    however the environment spells the directory: the comparison is on the
+    resolved path, so a trailing slash or a dot segment does not bring the
+    editor's files back into the list.
     """
     t = tmp_path / "t.c"
     trace = _trace_path(tmp_path)
     reply = "TOOL write_file %s\n%s@@END@@TURN@@DONE rewrote it" % (t, TEN_CHANGED)
     env = _env(tmp_path, reply)
-    env["XDG_STATE_HOME"] = str(tmp_path / "state")     # inside the workspace
+    env["XDG_STATE_HOME"] = str(tmp_path) + "/" + spelling   # inside the workspace
     with WpeSession(str(tmp_path), TWENTY, env_extra=env, cols=160, rows=40) as s:
         _start_agent(s, "rewrite it")
         assert _wait_trace(trace, "changeset n=", 90), \
@@ -249,6 +254,51 @@ def test_the_editors_own_state_directory_inside_the_workspace_is_not_a_change(tm
 
 WATCH_BOUND = 2000
 WATCH_BOUND_WORDS = "is unseen"
+
+
+# @scenario SC-ai-agent-59
+def test_a_symbolic_link_to_a_tree_outside_the_workspace_is_not_followed(tmp_path):
+    """A link in the workspace to a large tree outside it does not spend the
+    snapshot's bound, so a file the run creates at the root is still listed.
+
+    Git never follows a symbolic link to a directory; the snapshot walk used
+    to, so a workspace of two entries, a file and a link to a tree of 2100
+    files, hit the bound behind the link and the file the run created was
+    unseen while the pane spoke of a workspace too large to watch.  Links are
+    skipped now, and the two modes watch the same set again.
+    """
+    outside = tmp_path.parent / (tmp_path.name + ".outside")
+    outside.mkdir()
+    for i in range(WATCH_BOUND + 100):
+        (outside / ("f%04d.txt" % i)).write_text("x\n")
+    (tmp_path / "link").symlink_to(outside, target_is_directory=True)
+    new = tmp_path / "new.c"
+    trace = _trace_path(tmp_path)
+    reply = "TOOL write_file new.c\nint new(void){return 1;}\n@@END@@TURN@@DONE created it"
+    env = _env(tmp_path, reply)
+    with WpeSession(str(tmp_path), ORIG, env_extra=env) as s:
+        _start_agent(s, "create a file")
+        assert _wait_trace(trace, "agent done", 90), \
+            "the run never finished:\n" + _trace_text(trace)
+        _wait_trace(trace, "changeset", 15)
+        s._drain(1.0)
+        review = _screen(s)
+        waiting = any(PROMPT_LINE in r for r in review)
+        if waiting:
+            s.key("a", delay=0.8)
+        pane = pane_text_with_history(s, ["the snapshot watches"])
+        alive = s.alive()
+
+    txt = _trace_text(trace)
+    assert waiting, "the review never asked for a key:\n" + _evidence(review, txt)
+    row = _row_for(review, "new.c")
+    assert row == "new.c:1: " + NEW_FILE, \
+        "Messages shows %r for the file the run created:\n%s" % (
+            row, _evidence(review, txt))
+    assert "the snapshot watches" not in " ".join(pane), \
+        "the bound was spent behind the link:\n" + "\n".join(pane)
+    assert new.exists()
+    assert alive, "a linked tree outside the workspace ended the editor"
 
 
 # @scenario SC-ai-agent-59

@@ -21,6 +21,7 @@
 #include <errno.h>
 #include <unistd.h>
 #include <dirent.h>
+#include <limits.h>
 #include <time.h>
 #include <sys/stat.h>
 #include <sys/types.h>
@@ -479,13 +480,17 @@ static void ws_strip_slash(char *d);
  * workspace, through a command or a tool, is listed by the review and removed
  * by r, the same as one created beside the open file; the git mode sees the
  * whole tree, and the snapshot mode now watches the same set.  Hidden entries
- * are skipped, which keeps `.git` and the editor's own folders out, and the
- * walk stops at WS_WATCH_MAX files in all, so a workspace holding a built tree
- * does not stall the checkpoint.
- * @skip: one directory left out of the walk, the editor's own state directory:
- * the session files and the checkpoint's copies it writes there are the
- * editor's bookkeeping, never the run's changes, and a workspace that holds
- * that directory would otherwise see them listed as new files.
+ * are skipped, which keeps `.git` and the editor's own folders out; symbolic
+ * links are not followed, as git does not follow them, so a link to a tree
+ * outside the workspace does not spend the bound on files the review could
+ * not revert; and the walk stops at WS_WATCH_MAX files in all, so a workspace
+ * holding a built tree does not stall the checkpoint.
+ * @skip: one directory left out of the walk, the editor's own state directory
+ * in its resolved spelling: the session files and the checkpoint's copies it
+ * writes there are the editor's bookkeeping, never the run's changes, and a
+ * workspace that holds that directory would otherwise see them listed as new
+ * files.  Each directory met is resolved the same way before the comparison,
+ * so the spelling of the environment variable does not decide the match.
  * Return: 1 when the bound stopped the walk, 0 when everything was seen.
  */
 static int ws_walk_files(const char *dir, const char *skip, char ***l, int *n, int *cap)
@@ -494,7 +499,7 @@ static int ws_walk_files(const char *dir, const char *skip, char ***l, int *n, i
  struct dirent *de;
  int stopped = 0;
  while (d && (de = readdir(d))) {
-  char *p;
+  char *p, real[PATH_MAX];
   size_t L;
   struct stat st;
   if (*n >= WS_WATCH_MAX) { stopped = 1; break; }
@@ -503,9 +508,9 @@ static int ws_walk_files(const char *dir, const char *skip, char ***l, int *n, i
   p = malloc(L);
   if (!p) continue;
   snprintf(p, L, "%s/%s", dir, de->d_name);
-  if (skip && !strcmp(p, skip)) { free(p); continue; }
-  if (stat(p, &st) != 0) { free(p); continue; }
+  if (lstat(p, &st) != 0 || S_ISLNK(st.st_mode)) { free(p); continue; }
   if (S_ISDIR(st.st_mode)) {
+   if (skip && realpath(p, real) && !strcmp(real, skip)) { free(p); continue; }
    if (ws_walk_files(p, skip, l, n, cap)) stopped = 1;
    free(p);
   } else if (S_ISREG(st.st_mode) && !ws_list_has(*l, *n, p)) {
@@ -523,13 +528,17 @@ static int ws_walk_files(const char *dir, const char *skip, char ***l, int *n, i
  */
 static int ws_list_watched_files(char ***l, int *n)
 {
- char own[1024];
+ char own[1024], real[PATH_MAX];
+ const char *skip;
  int cap = 0, k, stopped = 0;
  ws_state_dir(own, sizeof own);
- ws_strip_slash(own);
+ /* resolved, so "state/", "state//" and a path through a link all name the
+    one directory the walk compares against; unresolvable means not there,
+    and a directory that is not there cannot be met by the walk */
+ skip = realpath(own, real) ? real : NULL;
  *l = NULL; *n = 0;
  for (k = 0; k < ck_dirs_n; k++)
-  if (ws_walk_files(ck_dirs[k], own, l, n, &cap)) stopped = 1;
+  if (ws_walk_files(ck_dirs[k], skip, l, n, &cap)) stopped = 1;
  return stopped;
 }
 
@@ -1428,6 +1437,7 @@ int wpe_ai_changeset_review(FENSTER *f)
  char line[1400];
  char **files; int *lines; char **texts;
 
+ wpe_ai_messages_run_output_begins(f);   /* the run's first Messages rows */
  if (!ck_mode) { e_d_p_message("[AI] no checkpoint - nothing to review", f, 1); return 0; }
  ws_collect_changes(&c, &n);
  if (n == 0) {

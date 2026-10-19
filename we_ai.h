@@ -392,6 +392,10 @@ int   wpe_ai_checkpoint_active(void);
  * `path:line: [AI] ...` lines registered for Alt-T / Alt-V, and run the
  * review loop (a = keep all, r = revert all, f = file by file, c = commit). */
 int   wpe_ai_changeset_review(struct FNST *f);
+/* Before a run's first Messages row (the plan checklist, the review): empties
+ * the window once per run, so Messages holds one run the way it holds one
+ * compile, while a run that writes nothing leaves it as it was. */
+void  wpe_ai_messages_run_output_begins(struct FNST *f);
 /* Reload an open window from disk after a tool wrote its file, so the agent's
  * change is visible immediately, as one undo step.  Returns 1 when a window
  * showed the file, 0 when the path is not open (nothing happens). */

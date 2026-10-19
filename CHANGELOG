@@ -241,9 +241,10 @@ Changes
   the first above it.  The rows of the previous drawing are now taken out
   before the checklist is drawn again, and only those rows, so anything
   written above or below it stays.  A plan whose body is only the end
-  marker no longer shows one step named "@@END".  A new agent run empties
-  the Messages window first, as F9 does for a compile, so the window
-  holds one run's checklist and review instead of every run's.
+  marker no longer shows one step named "@@END".  An agent run empties
+  the Messages window with its first row there, as F9 does for a
+  compile, so the window holds one run's checklist and review instead of
+  every run's; a run that writes no row leaves the window as it was.
 
 * The changeset review says what it did and points where it should.  In a
   git workspace a row named the line three above the change and Alt-T
@@ -269,10 +270,11 @@ Changes
   without git the snapshot watched the top folder and each open file's
   folder only, so a file the run created deeper down was neither listed
   nor removed while the summary read "ALL changes reverted"; it now
-  watches the whole workspace, hidden folders skipped, and says in the
-  pane when a workspace is too large to watch whole; its own state
-  folder, when it sits inside the workspace, is left out, so the
-  editor's session and checkpoint files never show as the run's.  A
+  watches the whole workspace, hidden folders skipped and symbolic links
+  not followed, and says in the pane when a workspace is too large to
+  watch whole; its own state folder, when it sits inside the workspace,
+  is left out however the environment spells it, so the editor's session
+  and checkpoint files never show as the run's.  A
   revert that
   could not put a file back (the
   workspace refused, a created file could not be removed, the checkpoint

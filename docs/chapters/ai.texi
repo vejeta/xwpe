@@ -580,8 +580,9 @@ instead of a bad write.  For a multi-step task the agent can first lay out a
 to-do list you can bring up alongside the run; compact progress also shows in the
 @samp{AI} pane so you see it advance without switching windows.  The review's
 rows follow the checklist in the same window at the end of the run, so
-@samp{Messages} holds that run's record; a new run empties the window first,
-as @key{F9} does for a compile.
+@samp{Messages} holds that run's record; a run empties the window with its
+first row there, as @key{F9} does for a compile, and a run that writes no row
+leaves the window as it found it.
 
 @section Build & fix
 
@@ -674,8 +675,9 @@ Before an @code{edits} or @code{auto} run, xwpe takes a @dfn{checkpoint}: a
 @command{git} reference when the workspace is a git tree, otherwise a private
 snapshot of the files under @file{$XDG_STATE_HOME/xwpe/checkpoints/} (default
 @file{~/.local/state/xwpe/checkpoints/}).  The snapshot watches the files under
-the workspace root as deep as they go, hidden folders skipped, so a file the
-run creates in any directory of the workspace is listed and can be removed;
+the workspace root as deep as they go, hidden folders skipped and symbolic
+links not followed, so a file the run creates in any directory of the
+workspace is listed and can be removed;
 in a workspace too large to walk whole the pane says how many files it
 watches and that a file created beyond them is unseen.  Afterwards it writes
 the @dfn{changeset} into the @samp{Messages} window, one line per changed hunk in

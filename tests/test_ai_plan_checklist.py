@@ -433,6 +433,49 @@ def _wait_agent_done(trace, count, tmo):
     return False
 
 
+KEY_F9 = "\033[20~"                 # Make (compile + link): opens Messages
+
+
+# @scenario SC-ai-agent-69
+def test_a_run_that_writes_nothing_to_messages_leaves_the_compile_output(tmp_path):
+    """A run that writes no Messages row leaves the window as it found it.
+
+    A compile always writes into the window it empties.  A run under ask with
+    no plan and no review writes nothing there, so emptying the window at its
+    start took the last compile's rows away and put nothing in their place:
+    an open, empty Messages window for nothing.  The window is emptied by the
+    run's first row instead, so this run leaves the compiler's rows alone.
+    """
+    if not shutil.which("gcc"):
+        pytest.skip("gcc not installed")
+    trace = _trace_path(tmp_path)
+    env = _env(tmp_path, "DONE nothing to say", policy="ask")
+    with WpeSession(str(tmp_path), SEED, env_extra=env, cols=CHECK_COLS,
+                    rows=CHECK_ROWS, filename="t.c") as s:
+        s.key(KEY_F9, delay=3.0)
+        s._drain(1.0)
+        compiled = _messages_rows(_screen(s))
+        _start_agent(s, "say nothing")
+        assert _wait_trace(trace, "agent done", 90), \
+            "the run never finished:\n" + _trace_text(trace)
+        s._drain(1.5)
+        after = _messages_rows(_screen(s))
+        alive = s.alive()
+
+    compiler_rows = [r for r in compiled if r.strip()]
+    after_rows = [r for r in after if r.strip()]
+    assert compiler_rows, "F9 wrote nothing to Messages:\n" + "\n".join(compiled)
+    # the pane docks beside Messages when the run starts and narrows it, so a
+    # row is read as the prefix the narrower window still shows
+    same = len(after_rows) == len(compiler_rows) and all(
+        b.startswith(a[:len(b)]) and len(b) >= min(len(a), 20)
+        for a, b in zip(compiler_rows, after_rows))
+    assert same, \
+        "a run that wrote nothing changed the Messages window:\nbefore:\n%s\nafter:\n%s" % (
+            "\n".join(compiled), "\n".join(after))
+    assert alive, "a silent run ended the editor"
+
+
 def _row_index(messages, lead):
     """The index of the first Messages row that starts with `lead`, -1 if none."""
     return next((i for i, r in enumerate(messages) if r.startswith(lead)), -1)
