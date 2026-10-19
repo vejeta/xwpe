@@ -254,8 +254,11 @@ Changes
   file-by-file questions used to be swallowed; it now keeps the files not
   yet asked about and ends the review, and Messages says how many were
   kept unseen.  c staged the whole workspace with git add -A, so an edit
-  you made before the run went into the agent's commit; it now stages the
-  listed files only.  A revert that could not put a file back (the
+  you made before the run went into the agent's commit; it now stages and
+  commits the listed files only, through a path list git reads itself, so
+  an edit of yours stays out of that commit whether you had staged it or
+  not.  The file-by-file question names the file the way its row does, so
+  it fits the Messages window too.  A revert that could not put a file back (the
   workspace refused, a created file could not be removed, the checkpoint
   held no copy) used to report "ALL changes reverted" and reload the
   window anyway; the pane now names the file and the reason, the summary

@@ -1170,68 +1170,130 @@ static const char *ws_path_under_root(const char *path, const char *root)
  return path;
 }
 
+/* The words in the pane when the changeset's path list could not be written. */
+#define WS_PATHSPEC_WHAT "write the path list"
+
 /**
- * ws_run_add - Hand one batch of paths to `git add`, and say it when git refuses.
- * @f: any window of the editor; @quoted_root: the workspace root, quoted for a
- * shell; @args: the batch's paths, each quoted, space separated.
+ * ws_write_pathspec - Write the changeset's paths, one per file, for git to read.
+ * @f: any window of the editor; @c/@n: the changeset on screen; @buf/@sz:
+ * receives the list file's path.
  *
- * A commit that quietly holds less than the review listed is the same lie the
- * pane may not tell about a revert, so git's own first line goes to the pane
- * naming the batch it refused, and the commit does not follow: half a changeset
- * in one commit reads as the whole of it.
- * Return: 0 when the batch was staged, -1 when git refused it.
+ * git reads the list through --pathspec-from-file, so the paths never meet a
+ * shell and a changeset of any length is one command.  Each file is written
+ * once, by its path under the workspace root, NUL-terminated so a name may
+ * hold anything a file name may.  The list lives under the editor's state
+ * directory, named for this process, and is removed once git has read it.
+ * Return: 0 with @buf filled, -1 when the list could not be written, said in
+ * the pane like any other write the editor could not make.
  */
-static int ws_run_add(FENSTER *f, const char *quoted_root, const char *args)
+static int ws_write_pathspec(FENSTER *f, ws_change *c, int n, char *buf, size_t sz)
 {
- char cmd[3600], reason[600], *out;
- int status = 0;
- snprintf(cmd, sizeof cmd, "cd %s && git add -- %s 2>&1", quoted_root, args);
- out = wpe_ai_run_capture_status(cmd, &status);
- if (status != 0) {
-  ws_output_reason(out, status, reason, sizeof reason);
-  free(out);
-  ws_say_failed(f, "stage", args, reason);
+ char dir[1024];
+ char **done = NULL; int nd = 0, cap = 0, i;
+ FILE *fp;
+ ws_state_dir(dir, sizeof dir);
+ if (ws_make_dir(f, dir) != 0) return -1;
+ snprintf(buf, sz, "%s/changeset-%ld.pathspec", dir, (long)getpid());
+ fp = fopen(buf, "w");
+ if (!fp) { ws_write_failed(f, WS_PATHSPEC_WHAT, buf, errno); return -1; }
+ for (i = 0; i < n; i++) {
+  const char *rel;
+  if (ws_list_has(done, nd, c[i].path)) continue;        /* one file, one entry */
+  ws_list_push(&done, &nd, &cap, ws_strdup(c[i].path));
+  rel = ws_path_under_root(c[i].path, ck_dir);
+  fwrite(rel, 1, strlen(rel) + 1, fp);                    /* the NUL included */
+ }
+ wpe_ai_free_list(done, nd);
+ if (ferror(fp) || fclose(fp) != 0) {
+  ws_write_failed(f, WS_PATHSPEC_WHAT, buf, errno);
   return -1;
  }
- free(out);
  return 0;
 }
 
 /**
- * ws_stage_changeset - Stage the files the review listed, and nothing else.
- * @f: any window of the editor; @c/@n: the changeset on screen.
+ * ws_git_on_changeset - Run one git command over the changeset's path list.
+ * @f: any window of the editor; @what: the verb for the pane when git refuses
+ * ("stage", "commit"); @verb: the git words before the pathspec option;
+ * @list: the path list file; @out: receives git's output to free, or NULL.
+ *
+ * `git add` and `git commit` both take --pathspec-from-file, so staging the
+ * listed files and committing exactly those files are one command shape.  When
+ * git refuses, its own first line goes to the pane: a commit that quietly held
+ * less than the review listed would be the same lie the pane may not tell about
+ * a revert.
+ * Return: 0 when git accepted the command, -1 when it refused.
+ */
+static int ws_git_on_changeset(FENSTER *f, const char *what, const char *verb,
+                               const char *list, char **out)
+{
+ char q[1100], ql[1100], cmd[3600], reason[600], *o;
+ int status = 0;
+ wpe_ai_shell_quote(q, sizeof q, ck_dir);
+ wpe_ai_shell_quote(ql, sizeof ql, list);
+ snprintf(cmd, sizeof cmd,
+          "cd %s && git %s --pathspec-from-file=%s --pathspec-file-nul 2>&1",
+          q, verb, ql);
+ o = wpe_ai_run_capture_status(cmd, &status);
+ if (status != 0) {
+  ws_output_reason(o, status, reason, sizeof reason);
+  free(o);
+  ws_say_failed(f, what, "the changeset", reason);
+  return -1;
+ }
+ if (out) *out = o;
+ else free(o);
+ return 0;
+}
+
+/**
+ * ws_commit_changeset_steps - Stage the listed files, then commit those files only.
+ * @f: any window of the editor; @c/@n: the changeset on screen; @msg: the
+ * commit message the user gave; @out: receives git's answer to the commit.
+ *
+ * A file the run created has to be staged before a commit can take it; the
+ * commit then names the same paths, so whatever the user had staged for other
+ * files before the run stays in the index and out of this commit.
+ * Return: 0 when the commit was made, -1 when a step was refused.
+ */
+static int ws_commit_changeset_steps(FENSTER *f, ws_change *c, int n,
+                                     const char *msg, char **out)
+{
+ char list[1100], qm[600], verb[800];
+ int rc;
+ if (ws_write_pathspec(f, c, n, list, sizeof list) != 0) return -1;
+ rc = ws_git_on_changeset(f, "stage", "add", list, NULL);
+ if (rc == 0) {
+  wpe_ai_shell_quote(qm, sizeof qm, msg);
+  snprintf(verb, sizeof verb, "commit -q -m %s", qm);
+  rc = ws_git_on_changeset(f, "commit", verb, list, out);
+ }
+ unlink(list);
+ return rc;
+}
+
+/**
+ * ws_commit_changeset - Commit the files the review listed, and nothing else.
+ * @f: any window of the editor; @c/@n: the changeset on screen; @msg: the
+ * commit message the user gave.
  *
  * What the user gains: the commit `c` makes is the change the review just
- * listed, so an edit they made before the run stays uncommitted where they left
- * it, and `git show` on the commit reads as one run's work.  A file the run
- * created is staged too, which is what puts it in the commit instead of leaving
- * it untracked beside it.  The paths go in as many commands as they need: a
- * changeset has no bound on how many files it lists, one command line does.
- * Return: 0 when every file was staged, -1 when one could not be.
+ * listed, so an edit they made before the run stays where they left it,
+ * unstaged or staged, and `git show` on the commit reads as one run's work.
+ * Messages shows git's answer or "[AI] committed"; when a step was refused the
+ * pane has said why and Messages says no commit was made.
  */
-static int ws_stage_changeset(FENSTER *f, ws_change *c, int n)
+static void ws_commit_changeset(FENSTER *f, ws_change *c, int n, const char *msg)
 {
- char q[1100], qf[1100], args[2400];
- char **staged = NULL; int ns = 0, sc = 0, i, bad = 0;
- size_t used = 0;
-
- wpe_ai_shell_quote(q, sizeof q, ck_dir);
- args[0] = '\0';
- for (i = 0; i < n; i++) {
-  size_t len;
-  if (ws_list_has(staged, ns, c[i].path)) continue;    /* one file, one stage */
-  wpe_ai_shell_quote(qf, sizeof qf, ws_path_under_root(c[i].path, ck_dir));
-  len = strlen(qf);
-  if (used && used + 1 + len >= sizeof args) {         /* this path needs the next batch */
-   if (ws_run_add(f, q, args) != 0) bad = 1;
-   args[0] = '\0'; used = 0;
-  }
-  used += (size_t)snprintf(args + used, sizeof args - used, "%s%s", used ? " " : "", qf);
-  ws_list_push(&staged, &ns, &sc, ws_strdup(c[i].path));
+ char *out = NULL;
+ if (ws_commit_changeset_steps(f, c, n, msg, &out) != 0) {
+  e_d_p_message("[AI] not committed (the pane says why)", f, 0);
+  wpe_ai_trace("changeset not committed");
+  return;
  }
- if (used && ws_run_add(f, q, args) != 0) bad = 1;
- wpe_ai_free_list(staged, ns);
- return bad ? -1 : 0;
+ e_d_p_message(out && *out ? out : "[AI] committed", f, 0);
+ free(out);
+ wpe_ai_trace("changeset commit");
 }
 
 int wpe_ai_changeset_review(FENSTER *f)
@@ -1292,7 +1354,10 @@ int wpe_ai_changeset_review(FENSTER *f)
    for (i = 0; i < n; i++) {
     if (ws_list_has(seen, ns, c[i].path)) continue;
     ws_list_push(&seen, &ns, &sc, ws_strdup(c[i].path));
-    snprintf(line, sizeof line, "keep %s ?  y = keep  n = revert", c[i].path);
+    /* the question names the file the way its row does, so it fits the
+       Messages window at its narrowest and the y/n hint stays visible */
+    snprintf(line, sizeof line, "keep %s ?  y = keep  n = revert",
+             ws_path_under_root(c[i].path, ck_dir));
     e_d_p_message(line, f, 0);
     for (;;) {
      int kk = e_toupper(e_getch());
@@ -1317,24 +1382,9 @@ int wpe_ai_changeset_review(FENSTER *f)
   }
   if (k == 'C' && ck_mode == 1) {
    static char msg[256];
-   char q[1100], qm[600], cmd[1900], *out;
    strcpy(msg, "AI-assisted change");
-   if (e_add_arguments(msg, "Commit message", f, 0, AltB, NULL) && msg[0]) {
-    if (ws_stage_changeset(f, c, n) != 0) {
-     /* the pane named the file git refused; a commit now would hold part of
-        the changeset and read as all of it */
-     e_d_p_message("[AI] not committed (the pane says why)", f, 0);
-     wpe_ai_trace("changeset commit refused: a file could not be staged");
-    } else {
-     wpe_ai_shell_quote(q, sizeof q, ck_dir);
-     wpe_ai_shell_quote(qm, sizeof qm, msg);
-     snprintf(cmd, sizeof cmd, "cd %s && git commit -q -m %s 2>&1", q, qm);
-     out = wpe_ai_run_capture(cmd);
-     e_d_p_message(out && *out ? out : "[AI] committed", f, 0);
-     free(out);
-     wpe_ai_trace("changeset commit");
-    }
-   }
+   if (e_add_arguments(msg, "Commit message", f, 0, AltB, NULL) && msg[0])
+    ws_commit_changeset(f, c, n, msg);
    kept = n;
    break;
   }

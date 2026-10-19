@@ -262,11 +262,10 @@ def test_review_file_by_file_keeps_one_and_reverts_the_other(tmp_path):
         assert _seen_within(s, FOLLOWUP_LINE, TURN_POLL_S), _screen(s)
     txt = _trace(tmp_path)
     import re
-    # The question's "?  y = keep  n = revert" tail can be cut at the
-    # window's border when tmp_path is long, so only the "keep <path>"
-    # prefix is matched.
-    asked1 = re.findall(r"keep \S*/(\w\.txt)", q1)
-    asked2 = re.findall(r"keep \S*/(\w\.txt)", q2)
+    # The question names the file by its path under the workspace root, the
+    # way its changeset row does, so it fits the Messages window whole.
+    asked1 = re.findall(r"keep (\w\.txt) \?", q1)
+    asked2 = re.findall(r"keep (\w\.txt) \?", q2)
     assert len(asked1) == 1, "no per-file question after f:\n" + q1
     assert len(asked2) == 2, "the second question did not appear:\n" + q2
     kept, reverted = asked2[0], asked2[1]

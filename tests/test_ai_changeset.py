@@ -584,8 +584,14 @@ def _changeset_row(rows):
     messages = _messages_rows(rows)
     for i, r in enumerate(messages):
         if r.startswith("=== AI changeset") and i + 1 < len(messages):
-            return messages[i + 1]
+            return _row_text(messages[i + 1])
     return ""
+
+
+def _row_text(row):
+    """A Messages row without the cursor block and frame edge the window may
+    paint after its text when it is the active window."""
+    return re.sub(r"(\s|▮)+x?$", "", row)
 
 
 # @scenario SC-ai-agent-60
@@ -697,6 +703,10 @@ def test_ai_changeset_esc_in_file_by_file_keeps_the_files_it_never_asked_about(t
 
     assert "[AI] Esc: 2 files kept unseen" in shown, \
         "Messages does not say how many files were left unreviewed:\n" + shown
+    # the question names the file the way its row does: at 80 columns the
+    # Messages window is 38 wide, and an absolute path there hid the y/n hint
+    assert "keep t.c ?  y = keep  n = revert" in shown, \
+        "the file-by-file question does not fit the Messages window:\n" + shown
     assert alive, "backing out of a per-file question ended the editor"
 
 
@@ -780,3 +790,57 @@ def test_ai_changeset_commit_covers_the_reviewed_files_only(tmp_path):
         "the user's edit did not survive the commit:\n" + hand.read_text()
     assert (tmp_path / "a.txt").read_text() == A_TXT
     assert alive, "committing the changeset ended the editor"
+
+
+# @scenario SC-ai-agent-63
+def test_ai_changeset_commit_leaves_the_users_staged_edit_in_the_index(tmp_path):
+    """`c` commits the listed files even when the user had staged other work.
+
+    Staging the listed files and then committing the whole index carried
+    whatever the user had already staged into the agent's commit.  The commit
+    now names the same paths it staged, so the user's staged edit stays in the
+    index, uncommitted, exactly as they left it.
+    """
+    t = tmp_path / "t.c"
+    hand = tmp_path / "hand.c"
+    _git_repo(tmp_path)                       # commits t.c holding ORIG
+    hand.write_text(HAND_ORIG)
+    _git_commit(tmp_path, "two files")
+    hand.write_text(HAND_EDIT)
+    _git(tmp_path, "add", "hand.c")           # the user's own edit, staged
+    trace = tmp_path.parent / (tmp_path.name + ".trace")
+    state = tmp_path.parent / (tmp_path.name + ".state")
+    reply = "TOOL write_file %s\n%s@@END@@TURN@@DONE rewrote it" % (t, T_NEW)
+    env = {
+        "XWPE_AI_ENABLE": "1",
+        "XWPE_AI_BACKEND": "mock",
+        "XWPE_AI_MOCK_REPLY": reply,
+        "XWPE_AI_POLICY": "auto",
+        "XWPE_AI_TRACE": str(trace),
+        "XDG_STATE_HOME": str(state),
+        "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
+        "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t",
+    }
+    with WpeSession(str(tmp_path), ORIG, env_extra=env) as s:
+        s.key(ALT.AI)
+        s.key("g")
+        s.key("rewrite it")
+        s.key("\r", delay=1.0)
+        assert _wait_trace(trace, "changeset n=", 60), \
+            "the review never opened:\n" + _trace_text(trace)
+        s.key("c", delay=0.8)
+        s.key("\r", delay=1.0)
+        made = _wait_trace(trace, "changeset commit", 30)
+        messages = _messages_rows(s.display(drain=0))
+        alive = s.alive()
+
+    assert made, "the commit never ran:\n%s\ntrace:\n%s" % (
+        "\n".join(messages), _trace_text(trace))
+    assert _committed_paths(tmp_path) == ["t.c"], \
+        "the commit holds the wrong files:\n%s" % _git_out(tmp_path, "show",
+                                                           "--stat", "HEAD")
+    status = _git_out(tmp_path, "status", "--porcelain")
+    assert "M  hand.c" in status, \
+        "the user's staged edit is no longer staged and uncommitted:\n" + status
+    assert hand.read_text() == HAND_EDIT
+    assert alive, "committing beside a staged edit ended the editor"

@@ -8770,9 +8770,13 @@ static int  g_ai_plan_n;
    own previous drawing out before it draws again (ai_plan_erase_drawn). */
 #define AI_PLAN_REPAINT_ALL 1
 #define AI_PLAN_APPEND      0
-/* The Messages row the drawn checklist's header sits on; -1 when none is drawn. */
+/* The Messages row the drawn checklist's header sits on, -1 when none is
+   drawn, and how many rows that drawing took (the header and its steps). */
 static int g_ai_plan_row = -1;
+static int g_ai_plan_rows = 0;
 #define AI_PLAN_HEADER "=== Agent plan:"
+#define AI_PLAN_STEP_LEAD "  ["
+#define AI_PLAN_NO_STEPS "  (no steps given)"
 /* The word for a step the agent reported without naming it. */
 #define AI_PLAN_STEP_WORD "(step)"
 
@@ -8819,27 +8823,48 @@ static BUFFER *ai_messages_open_buffer(FENSTER *f)
 }
 
 /**
+ * ai_plan_row_is_ours - Is this Messages row one the checklist drew?
+ * @b: the Messages window's text; @row: the row to look at; @first: whether it
+ * is the first row of the drawing, the header.
+ * Return: 1 when the row reads as the header, a step or the no-steps line.
+ */
+static int ai_plan_row_is_ours(BUFFER *b, int row, int first)
+{
+ const char *s;
+ if (row < 0 || row >= b->mxlines || !b->bf[row].s) return 0;
+ s = b->bf[row].s;
+ if (first) return !strncmp(s, AI_PLAN_HEADER, strlen(AI_PLAN_HEADER));
+ return !strncmp(s, AI_PLAN_STEP_LEAD, strlen(AI_PLAN_STEP_LEAD))
+     || !strncmp(s, AI_PLAN_NO_STEPS, strlen(AI_PLAN_NO_STEPS));
+}
+
+/**
  * ai_plan_erase_drawn - Take the checklist drawn last time out of the Messages window.
  * @b: the Messages window's text.
  *
  * What the user gains: one checklist that changes as steps finish, instead of
  * a new copy under the old one at every tick, which left the window reading
  * "0/3", "1/3" and "2/3" at once and pushed anything above it off the screen.
- * Only the rows from the header down are removed, and only while the header
- * is still on the row it was drawn on, so output a compiler or the review
- * wrote after the checklist stays, and the checklist is then drawn again
- * below it.
+ * Exactly the rows of the previous drawing are removed, and only while each of
+ * them still reads as the checklist's own, so what a compiler or the review
+ * wrote above or below the checklist stays where it is; when the window was
+ * emptied or rewritten in between, nothing is removed and the checklist is
+ * drawn again at the end.
  */
 static void ai_plan_erase_drawn(BUFFER *b)
 {
- int i;
- if (g_ai_plan_row < 0 || g_ai_plan_row >= b->mxlines) return;
- if (!b->bf[g_ai_plan_row].s) return;
- if (strncmp(b->bf[g_ai_plan_row].s, AI_PLAN_HEADER, strlen(AI_PLAN_HEADER))) return;
- for (i = g_ai_plan_row; i < b->mxlines; i++)
+ int i, end = g_ai_plan_row + g_ai_plan_rows;
+ if (g_ai_plan_row < 0 || g_ai_plan_rows <= 0 || end > b->mxlines) return;
+ for (i = g_ai_plan_row; i < end; i++)
+  if (!ai_plan_row_is_ours(b, i, i == g_ai_plan_row)) return;
+ for (i = g_ai_plan_row; i < end; i++)
   if (b->bf[i].s) { FREE(b->bf[i].s); b->bf[i].s = NULL; }
- b->mxlines = g_ai_plan_row;
- if (b->mxlines == 0) e_new_line(0, b);        /* a buffer always holds one line */
+ for (i = g_ai_plan_row; i + g_ai_plan_rows < b->mxlines; i++)
+  b->bf[i] = b->bf[i + g_ai_plan_rows];          /* the rows below move up */
+ for (i = b->mxlines - g_ai_plan_rows; i < b->mxlines; i++)
+  b->bf[i].s = NULL;                             /* no second owner of a moved row */
+ b->mxlines -= g_ai_plan_rows;
+ if (b->mxlines == 0) e_new_line(0, b);         /* a buffer always holds one line */
  if (b->b.y >= b->mxlines) b->b.y = b->mxlines - 1;
 }
 
@@ -8863,6 +8888,8 @@ static void ai_plan_show(FENSTER *f)
  b = ai_messages_open_buffer(f);        /* opened by that first row if it was closed */
  if (b) g_ai_plan_row = b->mxlines - 1;  /* the header is the last row written  */
  else g_ai_plan_row = -1;
+ if (g_ai_plan_n > 0) g_ai_plan_rows = 1 + g_ai_plan_n;
+ else g_ai_plan_rows = 2;                /* the header and the no-steps line    */
  for (i = 0; i < g_ai_plan_n; i++) {
   snprintf(line, sizeof line, "  [%c] %s", ai_plan_tick(g_ai_plan_done[i]), g_ai_plan[i]);
   e_d_p_message(line, f, AI_PLAN_APPEND);

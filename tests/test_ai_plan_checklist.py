@@ -422,3 +422,62 @@ def test_a_second_plan_replaces_the_checklist(tmp_path):
         "the old checklist is still in the Messages window:\n%s" % _evidence(
             messages, pane, txt)
     assert alive, "a second plan ended the editor"
+
+
+def _wait_agent_done(trace, count, tmo):
+    """Wait until the trace holds `count` finished runs."""
+    for _ in range(int(tmo * 10)):
+        if _trace_text(trace).count("agent done") >= count:
+            return True
+        time.sleep(0.1)
+    return False
+
+
+# @scenario SC-ai-agent-69
+def test_a_second_plan_leaves_the_rows_written_below_the_checklist(tmp_path):
+    """Rows the review wrote under the checklist survive the next plan.
+
+    Under auto a first run lays out a plan, ticks a step and writes a file, so
+    the review's rows land below the checklist in the Messages window.  A
+    second run lays out a new plan.  The old checklist goes, the review's
+    rows stay where they were, and the new checklist is drawn after them: the
+    redraw takes out exactly the rows it drew, not everything below its header,
+    which is what it did at first.
+    """
+    t = tmp_path / "t.c"
+    reply = "@@TURN@@".join([
+        PLAN_THREE, "TOOL step_done alpha step",
+        "TOOL write_file %s\nint main(void){return 7;}\n@@END" % t,
+        "DONE first run",
+        "TOOL plan\n- second plan only\n@@END", "DONE second run"])
+    trace = _trace_path(tmp_path)
+    env = _env(tmp_path, reply, policy="auto")
+    with WpeSession(str(tmp_path), SEED, env_extra=env,
+                    cols=CHECK_COLS, rows=CHECK_ROWS) as s:
+        _start_agent(s, "lay out a plan")
+        assert _wait_trace(trace, "changeset n=", 90), \
+            "the first run's review never opened:\n" + _trace_text(trace)
+        s.key("a", delay=1.0)                   # keep: the review's rows stay
+        _start_agent(s, "lay out another plan")  # a second run, Alt-G g
+        assert _wait_agent_done(trace, 2, 90), \
+            "the second run never finished:\n" + _trace_text(trace)
+        s._drain(1.5)
+        messages = _messages_rows(_screen(s))
+        alive = s.alive()
+
+    shown = "\n".join(messages)
+    lists = _checklists(messages)
+    assert len(lists) == 1 and lists[0][1] == [(" ", "second plan only")], \
+        "Messages should hold the second plan's checklist alone:\n" + shown
+    assert "alpha step" not in shown, "the old checklist is still there:\n" + shown
+    review_at = next((i for i, r in enumerate(messages)
+                      if r.startswith("=== AI changeset")), -1)
+    plan_at = next((i for i, r in enumerate(messages)
+                    if r.startswith("=== Agent plan")), -1)
+    assert review_at >= 0, \
+        "the review's rows below the checklist were taken out with it:\n" + shown
+    assert "[AI] changes kept" in shown, \
+        "the review's last row below the checklist was taken out:\n" + shown
+    assert plan_at > review_at, \
+        "the new checklist should follow the review's rows:\n" + shown
+    assert alive, "a second plan over the review's rows ended the editor"

@@ -668,6 +668,20 @@
    "status": "new"
   },
   {
+   "id": "SC-ai-agent-69",
+   "requirement": "The plan checklist",
+   "layer": "ncurses",
+   "test": "tests/test_ai_plan_checklist.py::test_a_second_plan_leaves_the_rows_written_below_the_checklist",
+   "status": "new"
+  },
+  {
+   "id": "SC-ai-agent-63",
+   "requirement": "Checkpoint and review",
+   "layer": "ncurses",
+   "test": "tests/test_ai_changeset.py::test_ai_changeset_commit_leaves_the_users_staged_edit_in_the_index",
+   "status": "new"
+  },
+  {
    "id": "SC-ai-agent-36",
    "requirement": "Project instructions",
    "layer": "ncurses",
