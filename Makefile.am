@@ -60,6 +60,7 @@ we_SOURCES = \
   we_fl_unix.c \
   we_hfkt.c \
   we_menue.c \
+  we_menurows.c \
   we_mouse.c \
   we_opt.c \
   we_wind.c \
@@ -285,7 +286,7 @@ metainfodir = $(datadir)/metainfo
 metainfo_DATA = io.codeberg.mendezr.xwpe.metainfo.xml
 
 # --- Unit tests ---
-check_PROGRAMS = test_checkheader test_fl_sel_len test_syntax_def test_fdloop test_clipboard test_lsp_buffer test_lsp_doctor test_lsp_semantic test_lsp_truecolor test_dap test_dap_dlv test_dap_gdb test_dap_lldb test_dap_scala test_lsp_scala test_lsp_clangd test_lsp_python test_lsp_gopls test_lsp_rust test_debprompt
+check_PROGRAMS = test_checkheader test_fl_sel_len test_syntax_def test_fdloop test_clipboard test_lsp_buffer test_lsp_doctor test_lsp_semantic test_lsp_truecolor test_dap test_dap_dlv test_dap_gdb test_dap_lldb test_dap_scala test_lsp_scala test_lsp_clangd test_lsp_python test_lsp_gopls test_lsp_rust test_debprompt test_menurows
 
 test_fdloop_SOURCES = tests/test_fdloop.c we_fdloop.c
 test_fdloop_CFLAGS = $(XWPE_STDFLAG)
@@ -297,6 +298,13 @@ test_fdloop_CFLAGS = $(XWPE_STDFLAG)
 # well: the overflow is only visible there.
 test_debprompt_SOURCES = tests/test_debprompt.c we_debprompt.c
 test_debprompt_CFLAGS = $(XWPE_STDFLAG)
+
+# Dropdown highlight unit test: we_menurows.c only, no editor, always runs.
+# Wrap at both ends, step over dividers, the open/Home/End rows, the edge
+# menus no editor menu has today -- in microseconds, where the pyte suite
+# needs an editor and a pseudo-terminal per case.
+test_menurows_SOURCES = tests/test_menurows.c we_menurows.c
+test_menurows_CFLAGS = $(XWPE_STDFLAG)
 
 # Clipboard helpers unit test: RFC 4648 base64 + OSC 52 framing (we_clip.c
 # only, no editor/X11). Always runs (no skip).
@@ -398,7 +406,7 @@ test_lsp_rust_CFLAGS = $(XWPE_STDFLAG) $(JSONC_CFLAGS)
 test_lsp_rust_LDADD = $(JSONC_LIBS)
 
 TESTS = test_checkheader test_fl_sel_len test_syntax_def test_fdloop test_clipboard test_lsp_buffer test_lsp_doctor test_lsp_semantic test_lsp_truecolor test_dap test_dap_dlv \
-  test_dap_gdb test_dap_lldb test_dap_scala test_lsp_scala test_lsp_clangd test_lsp_python test_lsp_gopls test_lsp_rust test_debprompt
+  test_dap_gdb test_dap_lldb test_dap_scala test_lsp_scala test_lsp_clangd test_lsp_python test_lsp_gopls test_lsp_rust test_debprompt test_menurows
 
 # --- AI assistant unit tests (only when --enable-ai) ---
 # WPE_AI comes from config.h (the build is configured --enable-ai here).  The

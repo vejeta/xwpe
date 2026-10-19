@@ -7,6 +7,7 @@
 
 #include "messages.h"
 #include "edit.h"
+#include "we_menurows.h"
 
 int             e_p_show_messages(FENSTER *f);
 int             e_p_show_watches(FENSTER *f);
@@ -512,28 +513,23 @@ static int WpeSubmenuRowSelectable(OPTK *fopt, int i)
   return fopt[i].o != WPE_SUBMENU_NO_HOTKEY;
 }
 
+/* The stepping rule itself lives in we_menurows.c, where it is unit tested;
+   this adapter answers its question from the engine's own rows. */
+static int WpeSubmenuPick(const void *rows, int i)
+{
+  return WpeSubmenuRowSelectable((OPTK *)rows, i);
+}
+
 /**
  * WpeSubmenuStepRow - The next selectable row from @from in direction @step.
  * @fopt: the rows; @count: how many; @from: the current row; @step: +1 or -1.
  *
- * Wraps at both ends, so Down from the last row reaches the first and Up from
- * the first reaches the last; a divider met on the way is skipped.  With no
+ * Wraps at both ends and steps over a divider (wpe_menu_step_row).  With no
  * selectable row at all the highlight stays where it is.
  */
 static int WpeSubmenuStepRow(OPTK *fopt, int count, int from, int step)
 {
-  int i, n = from;
-  for(i = 0; i < count; i++)
-  {
-    n += step;
-    if(n < 0)
-      n = count - 1;
-    else if(n >= count)
-      n = 0;
-    if(WpeSubmenuRowSelectable(fopt, n))
-      return n;
-  }
-  return from;
+  return wpe_menu_step_row(fopt, count, from, step, WpeSubmenuPick);
 }
 
 /**
@@ -542,7 +538,7 @@ static int WpeSubmenuStepRow(OPTK *fopt, int count, int from, int step)
  */
 static int WpeSubmenuFirstRow(OPTK *fopt, int count)
 {
-  return WpeSubmenuStepRow(fopt, count, count - 1, 1);
+  return wpe_menu_first_row(fopt, count, WpeSubmenuPick);
 }
 
 /**
@@ -551,7 +547,7 @@ static int WpeSubmenuFirstRow(OPTK *fopt, int count)
  */
 static int WpeSubmenuLastRow(OPTK *fopt, int count)
 {
-  return WpeSubmenuStepRow(fopt, count, 0, -1);
+  return wpe_menu_last_row(fopt, count, WpeSubmenuPick);
 }
 
 /**
