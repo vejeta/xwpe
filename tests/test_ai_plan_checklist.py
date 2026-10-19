@@ -25,8 +25,8 @@ import subprocess
 import time
 
 import pytest
-from wpe_driver import (ALT, WPE_BIN, WpeSession, pane_rows,
-                        pane_text_with_history, title_row)
+from wpe_driver import (ALT, WAIT_SCALE, WPE_BIN, WpeSession, pane_rows,
+                        pane_text_with_history, title_row, wait_screen)
 from test_ai_changeset import _messages_rows, _trace_text, _wait_trace
 
 
@@ -436,6 +436,24 @@ def _wait_agent_done(trace, count, tmo):
 KEY_F9 = "\033[20~"                 # Make (compile + link): opens Messages
 
 
+def _settled_messages(s, tmo=20):
+    """The Messages rows once two reads a second apart agree.
+
+    A compile writes its rows as each step ends, so a single read can land
+    between the link's command row and its answer; the window is read until it
+    stops changing, within `tmo` seconds scaled like every other wait.
+    """
+    end = time.time() + tmo * WAIT_SCALE
+    last = None
+    while time.time() < end:
+        s._drain(1.0)
+        rows = _messages_rows(_screen(s))
+        if rows and rows == last:
+            return rows
+        last = rows
+    return last or []
+
+
 # @scenario SC-ai-agent-69
 def test_a_run_that_writes_nothing_to_messages_leaves_the_compile_output(tmp_path):
     """A run that writes no Messages row leaves the window as it found it.
@@ -452,9 +470,12 @@ def test_a_run_that_writes_nothing_to_messages_leaves_the_compile_output(tmp_pat
     env = _env(tmp_path, "DONE nothing to say", policy="ask")
     with WpeSession(str(tmp_path), SEED, env_extra=env, cols=CHECK_COLS,
                     rows=CHECK_ROWS, filename="t.c") as s:
-        s.key(KEY_F9, delay=3.0)
-        s._drain(1.0)
-        compiled = _messages_rows(_screen(s))
+        s.key(KEY_F9, delay=1.0)
+        # the compile paints Messages while gcc runs: wait for the link step's
+        # answer, so the window is read whole and not mid-paint under load
+        assert wait_screen(s, "gcc -o", 30 * WAIT_SCALE), \
+            "F9 never reached the link step:\n" + "\n".join(_screen(s))
+        compiled = _settled_messages(s)
         _start_agent(s, "say nothing")
         assert _wait_trace(trace, "agent done", 90), \
             "the run never finished:\n" + _trace_text(trace)
