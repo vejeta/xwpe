@@ -245,17 +245,16 @@ and a skipped test counts as `FAIL` unless the manifest marks the scenario
 blocked. The exit status is non-zero if any scenario is not `PASS` or
 `BLOCKED`, so the script can gate a build.
 
-Layers: `ncurses`, `ncurses-fkey`, `asan`, `x11`, `wayland`, `c-unit` and
-`config-file`. The two ncurses layers split one set of scenarios. A test that
-presses a terminal function key belongs to `ncurses-fkey`, and
-`tests/harness/FKEY.txt` lists those tests and says why they are apart: a
-hosted CI runner's pseudo-terminal does not deliver function-key sequences, so
-those tests fail there for the terminal's reason. The split is per test, not
-per file, so everything else in the same file still gates.
+Layers: `ncurses`, `asan`, `x11`, `wayland`, `c-unit` and `config-file`. Tests
+that press a terminal function key run in `ncurses` with the rest: the hosted
+CI runner's pseudo-terminal delivers both the SS3 and the CSI sequences
+(measured 2026-10-19, twelve of thirteen such tests passed there and the
+thirteenth fails for another reason), so the separate layer that once kept
+them out of the gate is gone.
 
 `tests/.venv/bin/python tests/harness/harness.py check` is the drift guard. It
-reports a manifest id whose test no longer collects, a line in `FKEY.txt` that
-no longer resolves, and a `tests/**/test_ai_*.py` file that is in no manifest
+reports a manifest id whose test no longer collects
+and a `tests/**/test_ai_*.py` file that is in no manifest
 and not listed in `tests/harness/UNMAPPED.txt`. Run it with the interpreter the
 suite uses, because a `python3` without pyte collects nothing and every row then
 reads as drift.

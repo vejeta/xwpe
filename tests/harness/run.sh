@@ -4,12 +4,7 @@
 #
 # Usage:
 #   tests/harness/run.sh <capability> [layer]
-#     layer: ncurses (default) | ncurses-fkey | asan | x11 | wayland | c-unit
-#
-# The ncurses layer leaves out the tests that press a terminal function key and
-# the ncurses-fkey layer is exactly those; tests/harness/FKEY.txt lists them and
-# says why.  A hosted runner's pseudo-terminal does not deliver those keys, so
-# the plain layer can gate a job while the function-key one stays visible.
+#     layer: ncurses (default) | asan | x11 | wayland | c-unit
 #
 # The capability's manifest (tests/harness/<capability>/manifest.json) names
 # the test for every scenario; harness.py turns the manifest into the file list
@@ -66,14 +61,6 @@ run_pytest() {
 
 case "$layer" in
   ncurses)
-    # Skip the function-key tests that share a file with gating ones.
-    deselect=""
-    for t in $("$PY" "$here/harness.py" deselect "$cap"); do
-      deselect="$deselect --deselect $t"
-    done
-    run_pytest "WPE_BIN=${WPE_BIN:-$top/wpe}" $files $deselect
-    ;;
-  ncurses-fkey)
     run_pytest "WPE_BIN=${WPE_BIN:-$top/wpe}" $files
     ;;
   asan)

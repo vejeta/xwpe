@@ -85,22 +85,21 @@ jobs:
         # The deterministic key / menu / editing / rendering scenarios; the
         # toolchain-bound LSP/DAP/compile pipelines are excluded to stay fast.
         #
-        # NON-BLOCKING on this runner: the F-key / ESC-meta scenarios fail here
-        # in the ncurses pty path specifically -- the xterm-256color terminfo is
-        # present (the smoke check passes) yet the SS3 function-key sequences
-        # don't reach wpe, a GitHub-runner keypad/pty quirk that does not affect
-        # the X11 or Wayland gates (their F-keys go via xdotool keycodes and
-        # pass).  The authoritative ncurses gate is the Debian autopkgtest; the
-        # macOS CI exercises the same suite via menu routes.  Kept visible (it
-        # runs and its failures show in the log) but does not gate this job,
-        # pending a separate look at the runner's pty function-key handling.
+        # NON-BLOCKING on this runner.  The function keys were once blamed: the
+        # run of 2026-10-19 showed both the SS3 and the CSI sequences reach the
+        # editor here (twelve of thirteen such tests passed).  What fails is of
+        # the "never happened within N seconds" kind across the AI files, and
+        # the step took three hours where the suite takes well under one
+        # locally, so the per-test durations are recorded for the split of this
+        # step into matrix jobs.  The authoritative ncurses gate is the Debian
+        # autopkgtest; the capability harness below gates this job.
         continue-on-error: true
         env:
           TERM: "xterm-256color"
         run: |
           export XWPE_LIB="$PWD"
           WPE_BIN="$PWD/wpe" /tmp/ptenv/bin/python -m pytest -q tests \
-            --ignore=tests/x11 --ignore=tests/wayland \
+            --ignore=tests/x11 --ignore=tests/wayland --durations=40 \
             -k "not (clangd or gopls or rust or scala or metals or python_lsp or go_dap or dap or algol68 or ga68 or truecolor_console or compile or make_output or build_cwd or user_screen or debugger_watchdog or ctrl_f9 or alt_f5)"
 
       - name: Capability drift guard (BLOCKING)
@@ -115,53 +114,38 @@ jobs:
         run: /tmp/ptenv/bin/python tests/harness/harness.py check
 
       - name: Capability harness gates (BLOCKING)
-        # All five capabilities gate, on the layer that sends no function key.
-        # The runner's pseudo-terminal does not deliver those sequences, which
-        # is why the broad ncurses suite above is non-blocking, so the harness
-        # splits them off: tests/harness/FKEY.txt lists the thirteen tests that
-        # press one, measured 2026-10-19 by reading every mapped test body and
-        # helper, and run.sh deselects exactly those while the other fifty-one
-        # tests in the same files gate normally.  Earlier this step gated three
-        # capabilities and excluded two whole ones, which also left eleven
-        # ai-chat-pane scenarios gating on tests that press F9 -- a CSI
-        # sequence, not SS3, so the old "no SS3 anywhere" measurement missed
-        # them.  Wrapped in --reruns so a timing wobble retries while a real
-        # fault, which fails every rerun, fails the job.  A scenario that is
-        # FAIL or MISSING makes run.sh exit non-zero.
+        # All five capabilities gate, function-key tests included: the run of
+        # 2026-10-19 showed the runner's pseudo-terminal delivers both the SS3
+        # and the CSI sequences, so the layer that kept them out is gone.
+        # Every capability runs even when an earlier one failed, and the step
+        # fails at the end naming each capability that did; a loop that stopped
+        # at the first failure hid four capabilities' results in that run.
+        # Wrapped in --reruns so a timing wobble retries while a real fault,
+        # which fails every rerun, fails the job.  The failures of 2026-10-19
+        # failed all three attempts under a tripled wait, so they are not
+        # timing: the keystroke trace of every test and the per-scenario
+        # verdicts are uploaded with the logs, to be read before the gate or
+        # the waits are touched again.  A scenario that is FAIL or MISSING
+        # makes run.sh exit non-zero.
         if: always()
         env:
           TERM: "xterm-256color"
-          PYTEST_ADDOPTS: "--reruns 2 --reruns-delay 3"
+          PYTEST_ADDOPTS: "--reruns 2 --reruns-delay 3 -rf"
+          XWPE_UI_TRACE: ${{ github.workspace }}/harness-ui-trace.log
         run: |
           export XWPE_LIB="$PWD"
           export PY=/tmp/ptenv/bin/python
+          failed=""
           for cap in ai-chat-pane ai-options-dialog ai-agent-tools-and-policy \
                      ai-edit-and-patch dialog-engine; do
             echo "::group::harness $cap (ncurses)"
-            tests/harness/run.sh "$cap" ncurses
+            tests/harness/run.sh "$cap" ncurses || failed="$failed $cap"
             echo "::endgroup::"
           done
-
-      - name: Capability harness -- the function-key scenarios (visible, not gating)
-        # The thirteen tests FKEY.txt names, run on their own so their verdicts
-        # reach the log and the artefact.  They fail here for the terminal's
-        # reason and not the code's, so they do not gate; the Debian
-        # autopkgtest and the macOS suite are their authoritative runs.  This
-        # step becomes blocking once the runner's pty is understood or those
-        # scenarios move onto the menu routes the macOS suite already uses.
-        continue-on-error: true
-        if: always()
-        env:
-          TERM: "xterm-256color"
-          PYTEST_ADDOPTS: "--reruns 2 --reruns-delay 3"
-        run: |
-          export XWPE_LIB="$PWD"
-          export PY=/tmp/ptenv/bin/python
-          for cap in ai-chat-pane ai-edit-and-patch dialog-engine; do
-            echo "::group::harness $cap (ncurses-fkey)"
-            tests/harness/run.sh "$cap" ncurses-fkey || true
-            echo "::endgroup::"
-          done
+          if [ -n "$failed" ]; then
+            echo "harness gate failed for:$failed"
+            exit 1
+          fi
 
       - name: X11/Xft GUI suite (Xvfb + matchbox)
         # The conftest starts its own Xvfb + window manager; it skips cleanly if
@@ -224,6 +208,7 @@ jobs:
           name: linux-test-logs
           path: |
             *.log
+            harness-ui-trace.log
             wl-logs/
             tests/harness/out/
           if-no-files-found: ignore
