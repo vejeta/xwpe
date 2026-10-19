@@ -13,6 +13,7 @@ build-aux/ar-lib
 build-aux/test-driver
 config.cache
 config.log
+test-suite.log
 config.status
 config.h
 config.h.in
