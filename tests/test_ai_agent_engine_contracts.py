@@ -445,7 +445,9 @@ def test_hosted_session_end_at_the_prompt_reviews_then_says_so(tmp_path):
         pytest.skip("built without --enable-ai-agent-host")
     rows, argv, hf, review, ended = _host_run(tmp_path, "ask", end_session=True)
     assert review is not None, "no review although the engine wrote t.c"
-    assert "AI changeset:" in "\n".join(review) and "/t.c:1:" in "\n".join(review), "\n".join(review)
+    # the row names the file by its path under the workspace root, so a
+    # changeset written from the root reads "t.c:1:", not the absolute path
+    assert "AI changeset:" in "\n".join(review) and "t.c:1: [AI]" in "\n".join(review), "\n".join(review)
     assert "[agent] Claude Code session ended" in "\n".join(ended), "\n".join(ended)
 
 

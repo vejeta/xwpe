@@ -77,7 +77,17 @@ case "$layer" in
     run_pytest "WPE_BIN=${WPE_BIN:-$top/wpe}" $files
     ;;
   asan)
-    [ -x "$top/we-asan" ] || tests/run-tests.sh --asan >/dev/null
+    # Build the sanitizer binary when it is missing or older than a source
+    # file: a stale we-asan tests the tree as it was, not as it is, and its
+    # verdicts then contradict the ncurses layer's for no real reason.
+    stale=""
+    if [ -x "$top/we-asan" ]; then
+      stale=$(find "$top" -maxdepth 1 \( -name '*.c' -o -name '*.h' \) \
+                -newer "$top/we-asan" | head -n 1)
+    fi
+    if [ ! -x "$top/we-asan" ] || [ -n "$stale" ]; then
+      tests/run-tests.sh --asan-build >/dev/null
+    fi
     # The name decides the mode (see the header): expose the sanitizer binary
     # as wpe-asan and start it under that name.
     ln -sfn we-asan "$top/wpe-asan"

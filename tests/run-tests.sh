@@ -40,16 +40,35 @@ here=$(cd "$(dirname "$0")" && pwd)
 top=$(cd "$here/.." && pwd)
 cd "$top"
 
+# build_asan_binary - build ./we-asan from the current sources, then put the
+# normal ./we back.  The sanitizer binary is a copy of a full rebuild, so a
+# tree that changed since the last copy needs this again: a stale we-asan
+# tests the editor as it was, and the scenario harness calls this whenever a
+# source file is newer than the binary.
+build_asan_binary() {
+  echo "== building we-asan =="
+  make clean >/dev/null
+  make CFLAGS="-fsanitize=address -g -O1 -fno-omit-frame-pointer" \
+       LDFLAGS="-fsanitize=address" >/dev/null
+  cp we we-asan
+  ln -sfn we-asan wpe-asan        # the name turns programming mode on (see above)
+  echo "== restoring the normal binary =="
+  make clean >/dev/null
+  make >/dev/null
+}
+
 mode=functional
 case "${1:-}" in
   ""|--functional) mode=functional ;;
   --asan)          mode=asan ;;
+  --asan-build)    mode=asan-build ;;
   --x11)           mode=x11 ;;
   --wayland)       mode=wayland ;;
   -h|--help)
     echo "Usage: tests/run-tests.sh [--asan|--x11|--wayland]"
     echo "  (no arg)  C unit (make check) + pyte suite (./wpe) + X11 GUI (./xwpe)"
     echo "  --asan    build we-asan and run the pyte suite under AddressSanitizer"
+    echo "  --asan-build  only build we-asan (and restore ./we), for the scenario harness"
     echo "  --x11     ONLY the headless X11 GUI suite (./xwpe under Xvfb+matchbox)"
     echo "  --wayland ONLY the native Wayland GUI suite (./xwpe under Xvfb+weston)"
     echo "The pyte tests honour \$WPE_BIN (default ../wpe); X11/Wayland honour \$XWPE_BIN."
@@ -89,21 +108,17 @@ functional)
     || { rc=$?; [ "$rc" = 5 ] && echo "(X11 suite skipped)" || exit "$rc"; }
   ;;
 
+asan-build)
+  build_asan_binary
+  ;;
+
 asan)
   # The AddressSanitizer build catches the silent memory bugs (heap overflow,
   # use-after-free) that the functional run cannot see on a normal build.
   # ASan is ~2x slower, which the existing pyte timeouts tolerate (valgrind's
   # ~20-50x does not -- valgrind stays a targeted, custom-timeout tool; see
   # HACKING.md and the autopkgtest plan).
-  echo "== building we-asan =="
-  make clean >/dev/null
-  make CFLAGS="-fsanitize=address -g -O1 -fno-omit-frame-pointer" \
-       LDFLAGS="-fsanitize=address" >/dev/null
-  cp we we-asan
-  ln -sfn we-asan wpe-asan        # the name turns programming mode on (see above)
-  echo "== restoring the normal binary =="
-  make clean >/dev/null
-  make >/dev/null
+  build_asan_binary
   echo "== pyte suite under AddressSanitizer (WPE_BIN=./wpe-asan) =="
   # ASan runs about twice as slow, so stretch every wait unless the caller
   # already chose a scale.
