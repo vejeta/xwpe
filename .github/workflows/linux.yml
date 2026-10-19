@@ -78,21 +78,23 @@ jobs:
       - name: Set up a pytest venv + a private XDG_RUNTIME_DIR
         run: |
           python3 -m venv /tmp/ptenv
-          /tmp/ptenv/bin/pip install --quiet pyte==0.8.1 pytest pytest-rerunfailures pillow
+          /tmp/ptenv/bin/pip install --quiet pyte==0.8.1 pytest pytest-rerunfailures pytest-xdist pillow
           mkdir -p /tmp/xdg && chmod 700 /tmp/xdg
 
       - name: ncurses UI suite (pyte, pseudo-terminal)
         # The deterministic key / menu / editing / rendering scenarios; the
         # toolchain-bound LSP/DAP/compile pipelines are excluded to stay fast.
         #
-        # NON-BLOCKING on this runner.  The function keys were once blamed: the
-        # run of 2026-10-19 showed both the SS3 and the CSI sequences reach the
-        # editor here (twelve of thirteen such tests passed).  What fails is of
-        # the "never happened within N seconds" kind across the AI files, and
-        # the step took three hours where the suite takes well under one
-        # locally, so the per-test durations are recorded for the split of this
-        # step into matrix jobs.  The authoritative ncurses gate is the Debian
-        # autopkgtest; the capability harness below gates this job.
+        # NON-BLOCKING by itself: the capability gate below reads this step's
+        # junit, so the scenarios that matter fail the job from there.
+        #
+        # The tests run once, in four workers.  A test spends nearly all its
+        # time waiting for the editor to paint, so workers overlap almost
+        # perfectly; one run of 2026-10-19 took three hours serially and the
+        # gate then ran the mapped tests a second time, which hit the
+        # six-hour job limit.  The junit written here is what the gate reads.
+        # --reruns gives a timing wobble under load two more tries; a real
+        # fault fails all three.
         continue-on-error: true
         env:
           TERM: "xterm-256color"
@@ -100,7 +102,9 @@ jobs:
           export XWPE_LIB="$PWD"
           WPE_BIN="$PWD/wpe" /tmp/ptenv/bin/python -m pytest -q tests \
             --ignore=tests/x11 --ignore=tests/wayland --durations=40 \
-            -k "not (clangd or gopls or rust or scala or metals or python_lsp or go_dap or dap or algol68 or ga68 or truecolor_console or compile or make_output or build_cwd or user_screen or debugger_watchdog or ctrl_f9 or alt_f5)"
+            -n 4 --reruns 2 --reruns-delay 3 -rf \
+            --junitxml="$PWD/suite-junit.xml" \
+            -k "not (_live or clangd or gopls or rust or scala or metals or python_lsp or go_dap or dap or algol68 or ga68 or truecolor_console or compile or make_output or build_cwd or user_screen or debugger_watchdog or ctrl_f9 or alt_f5)"
 
       - name: Capability drift guard (BLOCKING)
         # Cheap, deterministic and nothing to do with a terminal: every manifest
@@ -114,32 +118,38 @@ jobs:
         run: /tmp/ptenv/bin/python tests/harness/harness.py check
 
       - name: Capability harness gates (BLOCKING)
-        # All five capabilities gate, function-key tests included: the run of
-        # 2026-10-19 showed the runner's pseudo-terminal delivers both the SS3
-        # and the CSI sequences, so the layer that kept them out is gone.
-        # Every capability runs even when an earlier one failed, and the step
-        # fails at the end naming each capability that did; a loop that stopped
-        # at the first failure hid four capabilities' results in that run.
-        # Wrapped in --reruns so a timing wobble retries while a real fault,
-        # which fails every rerun, fails the job.  The failures of 2026-10-19
-        # failed all three attempts under a tripled wait, so they are not
-        # timing: the keystroke trace of every test and the per-scenario
-        # verdicts are uploaded with the logs, to be read before the gate or
-        # the waits are touched again.  A scenario that is FAIL or MISSING
-        # makes run.sh exit non-zero.
+        # Every capability with a manifest gates, found by listing the
+        # manifests, so a new capability cannot be left out of the loop.  The
+        # verdicts are read from the suite's junit above: the gate runs only
+        # the mapped tests the suite did not select (its -k leaves out a few),
+        # in a second, small junit, and never runs a test twice.  If the suite
+        # died before writing its junit, every mapped test runs here.  Every
+        # capability is judged even when an earlier one failed, and the step
+        # fails at the end naming each that did.  A scenario that is FAIL or
+        # MISSING fails it.
         if: always()
         env:
           TERM: "xterm-256color"
-          PYTEST_ADDOPTS: "--reruns 2 --reruns-delay 3 -rf"
           XWPE_UI_TRACE: ${{ github.workspace }}/harness-ui-trace.log
         run: |
           export XWPE_LIB="$PWD"
-          export PY=/tmp/ptenv/bin/python
+          PY=/tmp/ptenv/bin/python
+          mkdir -p tests/harness/out
           failed=""
-          for cap in ai-chat-pane ai-options-dialog ai-agent-tools-and-policy \
-                     ai-edit-and-patch dialog-engine; do
+          for manifest in tests/harness/*/manifest.json; do
+            cap=$(basename "$(dirname "$manifest")")
             echo "::group::harness $cap (ncurses)"
-            tests/harness/run.sh "$cap" ncurses || failed="$failed $cap"
+            sources="$PWD/suite-junit.xml"
+            missing=$("$PY" tests/harness/harness.py missing "$cap" ncurses "$sources")
+            if [ -n "$missing" ]; then
+              topup="$PWD/tests/harness/out/$cap-topup.xml"
+              WPE_BIN="$PWD/wpe" "$PY" -m pytest -q $missing \
+                --reruns 2 --reruns-delay 3 -rf --junitxml="$topup" || true
+              sources="$sources,$topup"
+            fi
+            "$PY" tests/harness/harness.py report "$cap" ncurses "$sources" \
+              > "tests/harness/out/$cap-ncurses.json" || failed="$failed $cap"
+            cat "tests/harness/out/$cap-ncurses.json"
             echo "::endgroup::"
           done
           if [ -n "$failed" ]; then
@@ -208,6 +218,7 @@ jobs:
           name: linux-test-logs
           path: |
             *.log
+            suite-junit.xml
             harness-ui-trace.log
             wl-logs/
             tests/harness/out/

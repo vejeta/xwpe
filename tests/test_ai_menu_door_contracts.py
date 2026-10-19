@@ -210,7 +210,10 @@ def test_the_bar_click_shows_the_first_use_notice_and_y_then_opens_the_dropdown(
 
 
 def _deep_workdir(tmp_path):
-    deep = tmp_path
+    # Always one level below tmp_path, which holds the trace file: a parallel
+    # runner's tmp_path can already be longer than DEEP_WORKDIR_LEN, and the
+    # trace must never land in the directory the test lists for stray files.
+    deep = tmp_path / "workspace"
     while len(str(deep)) < DEEP_WORKDIR_LEN:
         deep = deep / "deeper_directory_level"
     deep.mkdir(parents=True, exist_ok=True)

@@ -34,8 +34,11 @@ kept them out of the gate is gone.
 Sub-commands (all stdlib, no third-party imports, so CI can run it bare):
 
     files  <capability> <layer>      print the test files to run
-    report <capability> <layer> <junit.xml|logdir>
+    report <capability> <layer> <junit.xml[,more.xml]|logdir>
                                      print a JSON object {scenario_id: verdict}
+    missing <capability> <layer> <junit.xml[,more.xml]>
+                                     print the mapped test ids the junit file(s)
+                                     never ran (what a gate still has to run)
     check                            drift guard: every manifest id resolves,
                                      every tests/**/test_ai_*.py is mapped or
                                      listed in tests/harness/UNMAPPED.txt
@@ -176,13 +179,47 @@ def junit_lookup(raw, test_id):
     return fold_results(cases)
 
 
+def junit_results_of(sources):
+    """Merged results of one or more junit files, given comma-separated.
+
+    The CI suite writes one junit for the whole run, and the gate tops it up
+    with a second one for the few manifest tests the suite does not select;
+    the verdicts are read from both together.
+    """
+    raw = {}
+    for path in sources.split(","):
+        # A suite that died before writing its junit leaves no file: read it
+        # as "nothing ran", so the gate falls back to running every test.
+        if path and os.path.exists(path):
+            raw.update(junit_results(path))
+    return raw
+
+
+def cmd_missing(capability, layer, sources):
+    """Print the mapped test ids that the given junit file(s) never ran.
+
+    Lets a gate run only what is left after a suite run, instead of running
+    every mapped test a second time.  A blocked row has nothing to run.
+    """
+    raw = junit_results_of(sources)
+    seen = set()
+    for scenario in scenarios_for_layer(load_manifest(capability), layer):
+        test_id = scenario.get("test")
+        if scenario["status"] == "blocked" or not test_id or test_id in seen:
+            continue
+        seen.add(test_id)
+        if junit_lookup(raw, test_id) is None:
+            print(test_id)
+    return 0
+
+
 def cmd_report(capability, layer, source):
     manifest = load_manifest(capability)
     if layer == "c-unit":
         raw = automake_results(source)
         lookup = lambda test_id: raw.get(test_id)
     else:
-        raw = junit_results(source)
+        raw = junit_results_of(source)
         lookup = lambda test_id: junit_lookup(raw, test_id)
     # A scenario may be pinned by several tests (several rows with one id);
     # the scenario's verdict is the worst of them, never the last one listed.
@@ -268,6 +305,8 @@ def main(argv):
         return cmd_files(argv[1], argv[2]) or 0
     if len(argv) >= 4 and argv[0] == "report":
         return cmd_report(argv[1], argv[2], argv[3])
+    if len(argv) >= 4 and argv[0] == "missing":
+        return cmd_missing(argv[1], argv[2], argv[3])
     if argv and argv[0] == "check":
         return cmd_check()
     sys.stderr.write(__doc__)
