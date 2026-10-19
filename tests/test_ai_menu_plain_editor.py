@@ -53,6 +53,24 @@ def test_we_alt_g_is_go_to_line_and_the_search_row_advertises_it(tmp_path, monke
     assert "Alt G" not in wpe_row, "wpe: the Search row still advertises Alt G: %r" % wpe_row
 
 
+# @scenario SC-ai-menu-06
+def test_we_bar_keeps_the_classic_slot_and_wpe_shows_the_ai_entry(tmp_path, monkeypatch):
+    """Under `we` with the assistant on, the bottom bar reads the classic
+    Search Again slot and never "Alt-G AI"; under `wpe` the same file shows
+    "Alt-G AI"."""
+    with WpeSession(str(tmp_path), "hello world\n", filename="p.txt", env_extra=dict(ENV)) as s:
+        s._drain(0.6)
+        wpe_bar = s.display()[-1]
+    monkeypatch.setattr(wpe_driver, "WPE_BIN", _plain_editor_binary())
+    with WpeSession(str(tmp_path), "hello world\n", filename="q.txt", env_extra=dict(ENV)) as s:
+        s._drain(0.6)
+        we_bar = s.display()[-1]
+    assert "Alt-G AI" in wpe_bar, "wpe: the bar does not show the AI entry: %r" % wpe_bar
+    assert "Alt-G AI" not in we_bar, "we: the bar shows the AI entry: %r" % we_bar
+    assert "S.Again" in we_bar or "S.Ag." in we_bar, \
+        "we: the classic Search Again slot is missing: %r" % we_bar
+
+
 # @scenario SC-ai-menu-05
 def test_we_options_menu_ends_with_the_ai_row_and_i_opens_the_dialog(tmp_path, monkeypatch):
     """Under `we`, with the assistant off, the last Options row is AI and the

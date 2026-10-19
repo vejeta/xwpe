@@ -174,8 +174,10 @@ int e_prog_switch(FENSTER *f, int c)
                    never shadows an existing key).  The bar entry reads "Alt-G AI". */
    e_ai_ui_key(f);
    break;
-  case WPE_AI_MENU:   /*  click on the "Alt-G AI" bottom-bar entry -> menu */
-   e_ai_menu(f);
+  case WPE_AI_MENU:   /*  click on the "Alt-G AI" bottom-bar entry: the same door as
+                          Alt-G, so the first-use notice is shown once, whichever
+                          way the user came in */
+   e_ai_ui_key(f);
    break;
 #endif
   case AltT:   /*  Alt T  NexT Error */

@@ -479,6 +479,146 @@ int WpeHandleMainmenu(int n, FENSTER *f)
   return(c);
 }
 
+/* A row whose hotkey is this is a divider: a blank or dashed line that
+   separates two groups of rows and runs nothing. */
+#define WPE_SUBMENU_NO_HOTKEY 0
+
+/* What e_m2_mouse returns for a click on a divider row (that row's hotkey). */
+#define WPE_SUBMENU_NO_KEY 0
+
+/**
+ * WpeSubmenuHangsFromBar - Does this dropdown belong to a menu-bar entry?
+ * @nm: the bar index the dropdown was opened with.
+ *
+ * The top File/Edit/... menus do: Left and Right move to the neighbouring
+ * menu and the Alt form of a row letter is the row's advertised shortcut
+ * ("Go to Line  Alt G").  The assistant's Alt-G dropdown does not, and the
+ * engine must not borrow either behaviour for it.
+ */
+static int WpeSubmenuHangsFromBar(int nm)
+{
+  return nm != WPE_SUBMENU_NO_BAR_MENU;
+}
+
+/**
+ * WpeSubmenuRowSelectable - Can the highlight rest on row @i?
+ * @fopt: the rows; @i: a row index.
+ *
+ * A divider is drawn like a row but is not one the user can pick, so the
+ * arrow keys step over it and Enter and the mouse never run it.
+ */
+static int WpeSubmenuRowSelectable(OPTK *fopt, int i)
+{
+  return fopt[i].o != WPE_SUBMENU_NO_HOTKEY;
+}
+
+/**
+ * WpeSubmenuStepRow - The next selectable row from @from in direction @step.
+ * @fopt: the rows; @count: how many; @from: the current row; @step: +1 or -1.
+ *
+ * Wraps at both ends, so Down from the last row reaches the first and Up from
+ * the first reaches the last; a divider met on the way is skipped.  With no
+ * selectable row at all the highlight stays where it is.
+ */
+static int WpeSubmenuStepRow(OPTK *fopt, int count, int from, int step)
+{
+  int i, n = from;
+  for(i = 0; i < count; i++)
+  {
+    n += step;
+    if(n < 0)
+      n = count - 1;
+    else if(n >= count)
+      n = 0;
+    if(WpeSubmenuRowSelectable(fopt, n))
+      return n;
+  }
+  return from;
+}
+
+/**
+ * WpeSubmenuFirstRow - The first selectable row (where Home and the open go).
+ * @fopt: the rows; @count: how many.
+ */
+static int WpeSubmenuFirstRow(OPTK *fopt, int count)
+{
+  return WpeSubmenuStepRow(fopt, count, count - 1, 1);
+}
+
+/**
+ * WpeSubmenuLastRow - The last selectable row (where End goes).
+ * @fopt: the rows; @count: how many.
+ */
+static int WpeSubmenuLastRow(OPTK *fopt, int count)
+{
+  return WpeSubmenuStepRow(fopt, count, 0, -1);
+}
+
+/**
+ * WpeSubmenuAltFormOf - The Alt-letter key a row's hotkey stands for.
+ * @hk: the row's hotkey letter.
+ * Return: the Alt code (AltG for 'g' or 'G'), or 0 when the hotkey is not a letter.
+ */
+static int WpeSubmenuAltFormOf(int hk)
+{
+  if(hk >= 'A' && hk <= 'Z')
+    return e_tast_sim(hk - 'A' + 'a');
+  if(hk >= 'a' && hk <= 'z')
+    return e_tast_sim(hk);
+  return 0;
+}
+
+/**
+ * WpeSubmenuRowAltShortcut - The Alt form of a row letter, when it is a shortcut here.
+ * @nm: the bar index the dropdown was opened with; @hk: the row's hotkey.
+ *
+ * A bar menu's row advertises its Alt form ("Go to Line  Alt G"), so Alt-G
+ * runs it with the menu open.  A dropdown with no bar menu advertises a
+ * prefix and a letter ("Alt-G g"), so its Alt form is no shortcut: 0 here.
+ */
+static int WpeSubmenuRowAltShortcut(int nm, int hk)
+{
+  if(WpeSubmenuHangsFromBar(nm))
+    return WpeSubmenuAltFormOf(hk);
+  return 0;
+}
+
+/**
+ * WpeSubmenuKeyIsRowAltForm - Is @c the Alt form of one of this dropdown's letters?
+ * @fopt: the rows; @count: how many; @c: the key read.
+ *
+ * Used for a dropdown with no bar menu: such a key (Alt-G while the Alt-G
+ * menu is open, Alt-A, Alt-C, ...) is neither a row's shortcut nor an
+ * editor command the user meant, so the dropdown keeps the keyboard and
+ * stays as it is instead of running the prefix handler a second time.
+ */
+static int WpeSubmenuKeyIsRowAltForm(OPTK *fopt, int count, int c)
+{
+  int i;
+  for(i = 0; i < count; i++)
+    if(WpeSubmenuRowSelectable(fopt, i) && c == WpeSubmenuAltFormOf(fopt[i].o))
+      return 1;
+  return 0;
+}
+
+/**
+ * WpeSubmenuKeyIsIgnored - Should the dropdown stay as it is on key @c?
+ * @nm: the bar index the dropdown was opened with; @fopt, @count: the rows;
+ * @c: the key read.
+ *
+ * True for a click on a divider (it carries no key), and, in a dropdown with
+ * no bar menu, for the Alt form of a row letter.  The user sees the dropdown
+ * unchanged, the highlight where it was.
+ */
+static int WpeSubmenuKeyIsIgnored(int nm, OPTK *fopt, int count, int c)
+{
+  if(c == WPE_SUBMENU_NO_KEY)
+    return 1;
+  if(WpeSubmenuHangsFromBar(nm))
+    return 0;
+  return WpeSubmenuKeyIsRowAltForm(fopt, count, c);
+}
+
 /* sub menu box */
 static int WpeHandleSubmenu_run(int xa, int ya, int xe, int ye, int nm, OPTK * fopt, FENSTER * f)
 {
@@ -487,8 +627,14 @@ static int WpeHandleSubmenu_run(int xa, int ya, int xe, int ye, int nm, OPTK * f
   extern int      e_mn_men;
 #endif
   PIC            *pic;
-  int             i, n = 0, nold = 1, c = 0;
+  int             count = ye - ya - 1;      /* rows in the box, dividers included */
+  int             i, n, nold = 1, c = 0;
   extern OPT      opt[];
+
+  /* the highlight opens on the first row the user can pick */
+  n = WpeSubmenuFirstRow(fopt, count);
+  if(nold == n)
+    nold = n + 1;
 
   /* save whatever will be behind the submenu */
 #ifdef NEWSTYLE
@@ -522,7 +668,11 @@ static int WpeHandleSubmenu_run(int xa, int ya, int xe, int ye, int nm, OPTK * f
     /* mouse is in the range of the submenu */
     if(e_mouse.y > ya && e_mouse.y < ye)
     {
-      n = e_mouse.y - ya - 1;
+      i = e_mouse.y - ya - 1;
+      /* a divider under the pointer is not a row: the highlight stays where
+         it is (nold may still be the open's "nothing drawn yet" marker) */
+      if(WpeSubmenuRowSelectable(fopt, i))
+        n = i;
       /* if a new item is selected */
       if(nold != n)
       {
@@ -596,16 +746,17 @@ static int WpeHandleSubmenu_run(int xa, int ya, int xe, int ye, int nm, OPTK * f
       }
 
     /* check submenu items' shortcut keys.  Match the plain hotkey letter
-       (e.g. 'g' for "Go to Line") AND its Alt-<letter> form, so the shortcut
-       the item advertises (e.g. "Go to Line  Alt G") works with the menu open,
-       not only the bare letter -- Alt+letter is decoded to AltG etc., which
-       e_tast_sim() reproduces from the hotkey character. */
-    for(i = 0; i < ye - ya - 1; i++)
+       (e.g. 'g' for "Go to Line") and, in a bar menu, its Alt-<letter> form,
+       so the shortcut the item advertises (e.g. "Go to Line  Alt G") works
+       with the menu open, not only the bare letter.  A dropdown with no bar
+       menu advertises a prefix and a letter instead, so there the Alt form
+       is no shortcut (WpeSubmenuRowAltShortcut returns 0 for it). */
+    for(i = 0; i < count; i++)
     {
       int hk = fopt[i].o;
-      int alt = (hk >= 'A' && hk <= 'Z') ? e_tast_sim(hk - 'A' + 'a')
-              : (hk >= 'a' && hk <= 'z') ? e_tast_sim(hk)
-              : 0;
+      int alt = WpeSubmenuRowAltShortcut(nm, hk);
+      if(!WpeSubmenuRowSelectable(fopt, i))
+        continue;
       if(c == hk || (alt && c == alt))
       {
         e_close_view(pic, 1);
@@ -621,28 +772,36 @@ static int WpeHandleSubmenu_run(int xa, int ya, int xe, int ye, int nm, OPTK * f
       c = WPE_ESC;
     else if(c == WPE_CR)     /* submenu item accepted */
     {
+      if(!WpeSubmenuRowSelectable(fopt, n))
+        continue;                       /* a divider runs nothing */
       e_close_view(pic, 1);
       fopt[n].fkt(f);
       return(WPE_ESC);
     }
     else if(c == CUP || c == CtrlP)     /* going up in the submenu */
-      n = n > 0 ? n - 1 : ye - ya - 2;
+      n = WpeSubmenuStepRow(fopt, count, n, -1);
     else if(c == CDO || c == CtrlN)     /* going down in the submenu */
-      n = n < ye - ya - 2 ? n + 1 : 0;
+      n = WpeSubmenuStepRow(fopt, count, n, 1);
     else if(c == CLE || c == CtrlB)     /* going left in the main menu */
     {
+      if(!WpeSubmenuHangsFromBar(nm))
+        continue;                       /* no neighbouring menu: stay */
       c = nm > 0 ? nm - 1 : MENOPT - 1;
       break;
     }
     else if(c == CRI || c == CtrlF)     /* going right in the main menu */
     {
+      if(!WpeSubmenuHangsFromBar(nm))
+        continue;                       /* no neighbouring menu: stay */
       c = nm < MENOPT - 1 ? nm + 1 : 0;
       break;
     }
     else if(c == POS1 || c == CtrlA)    /* to the top in the submenu */
-      n = 0;
+      n = WpeSubmenuFirstRow(fopt, count);
     else if(c == ENDE || c == CtrlE)    /* to the bottom in the submenu */
-      n = ye - ya - 2;
+      n = WpeSubmenuLastRow(fopt, count);
+    else if(WpeSubmenuKeyIsIgnored(nm, fopt, count, c))
+      continue;                         /* the dropdown stays as it is */
     else
     {
       /* this is the anything else case, ESC, keys which are not listed in

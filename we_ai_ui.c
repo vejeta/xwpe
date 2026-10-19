@@ -3369,6 +3369,16 @@ static int e_ai_compose(char *out, size_t outsz, const char *title,
  return 1;
 }
 
+/* The prompt popup's field label.  The box spans screen columns 6..73 and the
+ * label starts AI_PROMPT_LABEL_X cells in, so the dialog engine paints it (and
+ * the field under it) only while it ends before the right border: the text
+ * below is 63 columns, the most that fits.  A longer label would leave the
+ * user a bare field with no key hint.  The P of "Prompt" is underlined: Alt-P
+ * moves the focus back to the field. */
+#define AI_PROMPT_LABEL "Prompt (Enter/Alt-S Send, Alt-M Multi-line, Alt-C/Esc Cancel):"
+#define AI_PROMPT_LABEL_X 3
+#define AI_PROMPT_LABEL_UNDERLINE 0
+
 /* A roomier prompt than e_add_arguments, which caps input at 128 characters.
  * xwpe's dialog widgets are single-line, so the field holds up to AI_PROMPT_MAX
  * and scrolls; a @samp{Multi-line} button opens the full editor composer for a
@@ -3386,11 +3396,15 @@ static int e_ai_prompt(char *out, const char *title, FENSTER *f)
  o->name = head;
  o->crsw = AltS;   /* Enter confirms via the Send button (sw=AltS), same as Alt-S */
  out[0] = '\0';
- e_add_wrstr(3, 2, 3, 3, 62, AI_PROMPT_MAX - 1, 0, AltT, "Prompt (Enter or Alt-S=Send, Alt-M=Multi-line, Alt-C/Esc=Cancel):", out, NULL, o);
+ /* The label must end before the frame's right border (the dialog engine
+    paints a field only when its label fits whole); its underlined P is the
+    key that brings the focus back to the field from a button, Alt-P. */
+ e_add_wrstr(AI_PROMPT_LABEL_X, 2, AI_PROMPT_LABEL_X, 3, 62, AI_PROMPT_MAX - 1,
+             AI_PROMPT_LABEL_UNDERLINE, AltP, AI_PROMPT_LABEL, out, NULL, o);
  /* Each button's underlined letter (nc) must match the key that fires it (sw)
     so the accelerator shown is the accelerator that works: Alt-S sends, Alt-M
     opens the multi-line composer, Alt-C cancels.  Enter still sends via crsw
-    (AltO) and Esc still cancels via the engine, so both plain keys keep working
+    (AltS) and Esc still cancels via the engine, so both plain keys keep working
     alongside the Alt accelerators. */
  e_add_bttstr(18, 6, 1, AltS, " Send ", NULL, o);
  e_add_bttstr(32, 6, 0, AltM, "Multi-line", NULL, o);
@@ -3407,7 +3421,7 @@ static int e_ai_prompt(char *out, const char *title, FENSTER *f)
  freeostr(o);
  if (ret == WPE_ESC || ret == AltC) return 0; /* cancel (Esc or the Cancel button) */
  if (ret == AltM)    return 2;                /* Multi-line: caller decides where */
- return 1;                                    /* Send (Enter/crsw=AltO, or Alt-S)  */
+ return 1;                                    /* Send (Enter/crsw=AltS, or Alt-S)  */
 }
 
 /* One-shot prompt for Edit/Plan/Agent, which have no persistent input row: the
@@ -3421,8 +3435,11 @@ static int e_ai_prompt1(char *out, const char *title, FENSTER *f)
   strncpy(seed, out, sizeof seed - 1);
   seed[sizeof seed - 1] = '\0';
   /* Spell out the two-step exit: in a full editor Esc reads as "cancel", but
-     here it FINISHES the prompt and a Send? Y/N confirm follows -- say so. */
-  snprintf(ct, sizeof ct, "%.40s  [Esc = done, then Y sends / N cancels]", title);
+     here it FINISHES the prompt and a Send? Y/N confirm follows -- say so.
+     The name is the scratch window's file name, so it holds no slash: e_edit
+     would split it at the slash into a directory and a file, and the frame
+     would then show the resolved directory path with the hint cut off. */
+  snprintf(ct, sizeof ct, "%.40s  [Esc = done, then Y sends, N cancels]", title);
   return e_ai_compose(out, AI_PROMPT_MAX, ct, seed, f);
  }
  return r;
@@ -7640,9 +7657,9 @@ static int e_ai_pick(FENSTER *f, const char *title, const char *const *labels,
 }
 
 /* Choose a model for the current backend from the scrollable picker.  When
-   `announce` is set the choice is echoed into the pane (the Alt-G menu path);
-   the Options dialog passes 0 and refreshes its own Model button instead, so it
-   is not disturbed. */
+   `announce` is set the choice is echoed into the pane; the Options dialog, its
+   only caller (no Alt-G menu row lists models), passes 0 and refreshes its own
+   Model button instead, so it is not disturbed. */
 static int e_ai_pick_model_apply(FENSTER *f, int announce)
 {
  char *names[32];
@@ -11770,10 +11787,33 @@ static int e_ai_menu_policy(FENSTER *f)
  return 0;
 }
 
+/* What the bar says when Clear conversation is asked for while a turn runs. */
+#define AI_CLEAR_REFUSED_LINE " AI: a turn is running. Esc cancels it first, then Clear conversation"
+
+/**
+ * ai_turn_running - Is the assistant in the middle of a turn?
+ *
+ * True while a reply streams into the pane or an Edit, Complete, Multi-file or
+ * Agent task runs.  Clearing the conversation then would lose the question the
+ * reply answers, and the reply would be saved as a conversation of its own.
+ */
+static int ai_turn_running(void)
+{
+ if (wpe_ai_busy()) return 1;
+ if (g_ai_chat && g_ai_chat->active) return 1;
+ return 0;
+}
+
 /* Forget the workspace conversation so the next request starts fresh.  Confirmed
- * with a status-line flash, so it never opens the pane just to report it. */
+ * with a status-line flash, so it never opens the pane just to report it.  While
+ * a turn runs the request is refused with a flash of its own: nothing changes on
+ * disk or in memory, and the line tells the user Esc cancels the turn first. */
 static int e_ai_menu_new_session(FENSTER *f)
 {
+ if (ai_turn_running()) {
+  wpe_ai_flash(f, AI_CLEAR_REFUSED_LINE);
+  return 0;
+ }
  wpe_ai_session_reset(f);
  wpe_ai_flash(f, " AI conversation cleared for this workspace");
  return 0;
@@ -11875,10 +11915,45 @@ static int e_ai_menu_items(OPTK *it)
  return n;
 }
 
+/**
+ * ai_menu_run_dropdown - Hand the keyboard to the dropdown engine until it closes.
+ * @items: the rows; @xa, @ya, @xe, @ye: the box; @f: the current window.
+ * Return: the engine's verdict: a menu-bar index when the user pressed that
+ * menu's Alt letter, anything else when a row ran or the box was dismissed.
+ *
+ * The dropdown hangs from no menu-bar entry, and the engine is told so, which
+ * keeps a second Alt-G (and Alt-A, Alt-C, ...) from running a row and leaves
+ * Left and Right without effect.  The AI heartbeat's repaint is suppressed
+ * while the menu owns the input (a task may be running underneath): otherwise
+ * it steals the caret and drops keystrokes.
+ */
+static int ai_menu_run_dropdown(OPTK *items, int xa, int ya, int xe, int ye, FENSTER *f)
+{
+ extern int wpe_modal_active;
+ int saved = wpe_modal_active, verdict;
+ wpe_modal_active = 1;
+ verdict = WpeHandleSubmenu(xa, ya, xe, ye, WPE_SUBMENU_NO_BAR_MENU, items, f);
+ wpe_modal_active = saved;
+ return verdict;
+}
+
+/**
+ * ai_menu_names_bar_menu - Did the dropdown close on a menu-bar letter?
+ * @verdict: what ai_menu_run_dropdown returned.
+ *
+ * The engine answers with the bar index when the user pressed, say, Alt-F
+ * with the dropdown open; the File menu should then open, as it would have
+ * from the editor.
+ */
+static int ai_menu_names_bar_menu(int verdict)
+{
+ return verdict >= 0 && verdict < MENOPT;
+}
+
 int e_ai_menu(FENSTER *f)
 {
  OPTK items[12];
- int n, xa, xe, ya, ye, w;
+ int n, xa, xe, ya, ye, w, verdict;
 
  if (!wpe_ai_enabled())
  {
@@ -11898,10 +11973,9 @@ int e_ai_menu(FENSTER *f)
  ya = ye - (n + 1);                       /* ...so the list opens upward         */
  if (ya < 1)
   ya = 1;
- /* Suppress the AI heartbeat's repaint while the menu owns the input (a task may
-    be running underneath): otherwise it steals the caret and drops keystrokes. */
- { extern int wpe_modal_active; int sv = wpe_modal_active; wpe_modal_active = 1;
-   WpeHandleSubmenu(xa, ya, xe, ye, 0, items, f); wpe_modal_active = sv; }
+ verdict = ai_menu_run_dropdown(items, xa, ya, xe, ye, f);
+ if (ai_menu_names_bar_menu(verdict))
+  WpeHandleMainmenu(verdict, f);
  /* A menu action (Ask, or a host follow-up) may have armed the chat input while
     the menu was still up -- ai_pane_paint suppresses painting under an open
     dropdown, so the prompt/hint would not appear until the next keystroke.  The

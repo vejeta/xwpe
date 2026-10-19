@@ -637,8 +637,13 @@ POINT e_set_pnt(int x, int y);
 int e_pr_uul(FARBE *fb);
 
 /*   we_menue.c   */
+/* The `nm` of a dropdown that hangs from no menu-bar entry (the Alt-G
+   assistant menu).  Such a dropdown has no neighbours for Left and Right to
+   move to, and its rows advertise a prefix plus a letter rather than an
+   Alt-letter, so the Alt form of a row letter is not one of its shortcuts. */
+#define WPE_SUBMENU_NO_BAR_MENU (-1)
 int WpeHandleMainmenu(int n, FENSTER *f);
-int WpeHandleSubmenu(int xa, int ya, int xe, int ye, 
+int WpeHandleSubmenu(int xa, int ya, int xe, int ye,
                      int nm, OPTK *fopt, FENSTER *f);
 OPTK WpeFillSubmenuItem(char *t, int x, char o, int (*fkt)());
 

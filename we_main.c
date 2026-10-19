@@ -702,18 +702,36 @@ int e_switch_blst(ECNT *cn)
 
 #ifdef WPE_AI
 extern const char *e_lsp_server_label(FENSTER *);  /* non-NULL => file has a server */
+extern int wpe_ai_enabled(void);                   /* runtime AI toggle (ED_AI_ENABLE bit) */
+
+/**
+ * e_ai_bar_wanted - Should an editor file window show the "Alt-G AI" bar entry?
+ *
+ * Only when the assistant is enabled AND the editor runs in programming mode
+ * (wpe, xwpe).  Under we Alt-G is Go to Line and a click on the entry would
+ * open nothing, so the plain editor keeps its classic bar and the user is not
+ * shown a key that does something else.
+ */
+int e_ai_bar_wanted(void)
+{
+ if (!wpe_ai_enabled()) return 0;
+ if (!WpeIsProg()) return 0;
+ return 1;
+}
 
 /**
  * e_ai_refresh_bars - Re-pick each editor window's bottom bar after the AI
- * runtime toggle flips.  Used when the user ticks/unticks "Ai assistant" in
- * Options > Editor: without this the open windows keep the bar chosen when they
+ * runtime toggle flips.  Used when the user ticks/unticks "Enable AI assistant"
+ * in Options > AI: without this the open windows keep the bar chosen when they
  * were opened, so the "Alt-G AI" entry would not appear until a file was
  * reopened.  Only the swappable editor-file bars (plain / LSP / AI) are touched;
- * Help/Messages/Watch windows keep their own bars.
+ * Help/Messages/Watch windows keep their own bars.  The AI bars belong to
+ * programming mode (wpe, xwpe): under we Alt-G is Go to Line and the bar entry
+ * would open nothing, so the plain editor keeps its classic bar.
  */
 void e_ai_refresh_bars(ECNT *cn)
 {
- int i, on = wpe_ai_enabled(), cua = (cn->edopt & ED_CUA_STYLE) ? 1 : 0;
+ int i, on = e_ai_bar_wanted(), cua = (cn->edopt & ED_CUA_STYLE) ? 1 : 0;
 
  for (i = 0; i <= cn->mxedt; i++)
  {

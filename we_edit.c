@@ -112,7 +112,7 @@ int e_edit(ECNT *cn, char *filename)
 #ifdef WPE_AI
  extern WOPT *eblst_ai;                  /* editor bar variant while AI is enabled */
  extern WOPT *eblst_lspai;               /* combined bar: LSP server + AI both on   */
- extern int wpe_ai_enabled(void);        /* runtime AI toggle (ED_AI_ENABLE bit)   */
+ extern int e_ai_bar_wanted(void);       /* AI enabled AND programming mode        */
 #endif
  FILE *fp = NULL;
  FENSTER *f, *fo;
@@ -387,8 +387,10 @@ int e_edit(ECNT *cn, char *filename)
     are shown -- LSP and AI are usable at the same time and neither loses its
     on-screen hint (Alt-Q keeps working regardless).  The bar is re-selected here
     on every open AND refreshed live by e_ai_refresh_bars when the runtime toggle
-    flips in Options > Editor. */
- if (ftype == 0 && wpe_ai_enabled()) {
+    flips in Options > AI.  Programming mode only (wpe, xwpe): under we Alt-G is
+    Go to Line and a click on the entry would open nothing, so the plain editor
+    keeps its classic bar. */
+ if (ftype == 0 && e_ai_bar_wanted()) {
 #ifdef DEBUGGER
   if (e_lsp_server_label(f))
    f->blst = eblst_lspai;               /* LSP + AI: show both hints */
