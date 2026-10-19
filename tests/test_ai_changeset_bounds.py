@@ -215,6 +215,38 @@ def test_a_file_created_in_a_deeper_directory_is_listed_and_removed(tmp_path):
     assert alive, "reverting a deep created file ended the editor"
 
 
+# @scenario SC-ai-agent-59
+def test_the_editors_own_state_directory_inside_the_workspace_is_not_a_change(tmp_path):
+    """The editor's own files under the workspace are not the run's changes.
+
+    With the state directory placed inside the workspace, the snapshot's walk
+    would meet its own checkpoint copies and the session file and list them
+    as files the run created.  They are the editor's bookkeeping: the review
+    lists the one file the run rewrote and nothing under the state directory.
+    """
+    t = tmp_path / "t.c"
+    trace = _trace_path(tmp_path)
+    reply = "TOOL write_file %s\n%s@@END@@TURN@@DONE rewrote it" % (t, TEN_CHANGED)
+    env = _env(tmp_path, reply)
+    env["XDG_STATE_HOME"] = str(tmp_path / "state")     # inside the workspace
+    with WpeSession(str(tmp_path), TWENTY, env_extra=env, cols=160, rows=40) as s:
+        _start_agent(s, "rewrite it")
+        assert _wait_trace(trace, "changeset n=", 90), \
+            "the review never opened:\n" + _trace_text(trace)
+        s._drain(1.0)
+        review = _screen(s)
+        s.key("a", delay=0.8)
+        alive = s.alive()
+
+    txt = _trace_text(trace)
+    rows = [r for r in _messages(review) if ": [AI]" in r]
+    assert "changeset n=1" in txt, \
+        "the editor's own files were counted as the run's:\n" + _evidence(review, txt)
+    assert rows and all(r.startswith("t.c:") for r in rows), \
+        "a row names something other than the rewritten file:\n" + _evidence(review, txt)
+    assert alive, "a state directory inside the workspace ended the editor"
+
+
 WATCH_BOUND = 2000
 WATCH_BOUND_WORDS = "is unseen"
 

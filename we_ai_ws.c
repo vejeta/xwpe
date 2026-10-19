@@ -464,6 +464,8 @@ static void ck_clear(void)
  ck_mode = 0; ck_ref[0] = '\0';
 }
 
+static void ws_strip_slash(char *d);
+
 /* The most files the snapshot watches for new ones, over every watched
    directory together.  When the walk stops here the pane says so, so a run that
    creates a file beyond the bound is never silently unreviewed. */
@@ -480,9 +482,13 @@ static void ck_clear(void)
  * are skipped, which keeps `.git` and the editor's own folders out, and the
  * walk stops at WS_WATCH_MAX files in all, so a workspace holding a built tree
  * does not stall the checkpoint.
+ * @skip: one directory left out of the walk, the editor's own state directory:
+ * the session files and the checkpoint's copies it writes there are the
+ * editor's bookkeeping, never the run's changes, and a workspace that holds
+ * that directory would otherwise see them listed as new files.
  * Return: 1 when the bound stopped the walk, 0 when everything was seen.
  */
-static int ws_walk_files(const char *dir, char ***l, int *n, int *cap)
+static int ws_walk_files(const char *dir, const char *skip, char ***l, int *n, int *cap)
 {
  DIR *d = opendir(dir);
  struct dirent *de;
@@ -497,9 +503,10 @@ static int ws_walk_files(const char *dir, char ***l, int *n, int *cap)
   p = malloc(L);
   if (!p) continue;
   snprintf(p, L, "%s/%s", dir, de->d_name);
+  if (skip && !strcmp(p, skip)) { free(p); continue; }
   if (stat(p, &st) != 0) { free(p); continue; }
   if (S_ISDIR(st.st_mode)) {
-   if (ws_walk_files(p, l, n, cap)) stopped = 1;
+   if (ws_walk_files(p, skip, l, n, cap)) stopped = 1;
    free(p);
   } else if (S_ISREG(st.st_mode) && !ws_list_has(*l, *n, p)) {
    ws_list_push(l, n, cap, p);
@@ -516,10 +523,13 @@ static int ws_walk_files(const char *dir, char ***l, int *n, int *cap)
  */
 static int ws_list_watched_files(char ***l, int *n)
 {
+ char own[1024];
  int cap = 0, k, stopped = 0;
+ ws_state_dir(own, sizeof own);
+ ws_strip_slash(own);
  *l = NULL; *n = 0;
  for (k = 0; k < ck_dirs_n; k++)
-  if (ws_walk_files(ck_dirs[k], l, n, &cap)) stopped = 1;
+  if (ws_walk_files(ck_dirs[k], own, l, n, &cap)) stopped = 1;
  return stopped;
 }
 

@@ -270,7 +270,10 @@ Changes
   folder only, so a file the run created deeper down was neither listed
   nor removed while the summary read "ALL changes reverted"; it now
   watches the whole workspace, hidden folders skipped, and says in the
-  pane when a workspace is too large to watch whole.  A revert that
+  pane when a workspace is too large to watch whole; its own state
+  folder, when it sits inside the workspace, is left out, so the
+  editor's session and checkpoint files never show as the run's.  A
+  revert that
   could not put a file back (the
   workspace refused, a created file could not be removed, the checkpoint
   held no copy) used to report "ALL changes reverted" and reload the

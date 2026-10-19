@@ -1083,6 +1083,13 @@
    "layer": "ncurses",
    "test": "tests/test_ai_changeset_bounds.py::test_a_workspace_beyond_the_watch_bound_is_said_in_the_pane",
    "status": "new"
+  },
+  {
+   "id": "SC-ai-agent-59",
+   "requirement": "Checkpoint and review",
+   "layer": "ncurses",
+   "test": "tests/test_ai_changeset_bounds.py::test_the_editors_own_state_directory_inside_the_workspace_is_not_a_change",
+   "status": "new"
   }
  ]
 }
