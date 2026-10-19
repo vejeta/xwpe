@@ -294,7 +294,12 @@ The dial governs what the assistant may do without asking:
 - **Auto-accept edits** -- writes apply automatically; commands still ask.
 - **Auto** -- runs unattended; a checkpoint is taken first and every change is
   listed in the end-of-run changeset (keep all / revert all / file-by-file /
-  commit). An Edit, a completion or a Multi-file change is always previewed
+  commit). Each row names the file by its path under the workspace root and
+  the first line the hunk changed, where `Alt-T` / `Alt-V` then jump; `Esc`
+  keeps, at the top of the review and inside the file-by-file questions,
+  where it keeps the files not yet asked about; `c` commits the listed files
+  and nothing else, and a file that could not be put back is named in the
+  pane with the reason. An Edit, a completion or a Multi-file change is always previewed
   before it lands. An agent write under *edits* or *auto* is written first and
   reviewed after, in that changeset, and stays one `Ctrl-U` away from undone in
   the window that shows the file.

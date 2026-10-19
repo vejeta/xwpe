@@ -670,13 +670,27 @@ snapshot of the files under @file{$XDG_STATE_HOME/xwpe/checkpoints/} (default
 the @dfn{changeset} into the @samp{Messages} window, one line per changed hunk in
 the compiler's @code{file:line:} format -- so you step through the AI's changes
 with the very same @kbd{Alt-T} (Next) and @kbd{Alt-V} (Previous) keys you use for
-compile errors, each jump opening the file at the change.
+compile errors, each jump opening the file at the first line the hunk changed.
+The file is named by its path under the workspace root, as a compiler run from
+the root names it, so a row still shows its line and its @samp{+added -removed}
+counts in the narrow @samp{Messages} window the docked pane leaves; a file the
+run created reads @samp{new file}.
 
 A review prompt then offers @kbd{a} keep all, @kbd{r} revert everything back to
 the checkpoint, @kbd{f} decide file by file, and (in a git tree) @kbd{c} commit
-the change as one auditable commit.  Reverting a file the agent created deletes
-it.  This makes trying a weaker local model in @code{auto} safe: if it makes a
-mess, one @kbd{r} puts you back.
+the change as one auditable commit.  @key{Esc} or @key{Enter} at that prompt
+keeps everything, as @kbd{a} does: the files are already written, so leaving
+them is keeping them.  Under @kbd{f} each file asks @kbd{y} keep or @kbd{n}
+revert; @key{Esc} there keeps the files not yet asked about and ends the
+review, and @samp{Messages} says how many were kept unseen.  The commit holds
+the files the review listed and nothing else, so an edit of yours made before
+the run stays uncommitted where you left it.  Reverting a file the agent
+created deletes it.  When a file cannot be put back (the workspace refuses,
+the created file cannot be removed, the checkpoint holds no copy of it) the
+pane says which file and why, the review's summary counts it as kept, and its
+window is left as it is; nothing claims a revert that did not happen.  This
+makes trying a weaker local model in @code{auto} safe: if it makes a mess,
+one @kbd{r} puts you back.
 
 @section Sessions
 

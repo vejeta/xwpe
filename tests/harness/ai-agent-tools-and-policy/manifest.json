@@ -465,6 +465,118 @@
    "status": "new"
   },
   {
+   "id": "SC-ai-agent-58",
+   "requirement": "Checkpoint and review",
+   "layer": "ncurses",
+   "test": "tests/test_ai_changeset.py::test_ai_changeset_row_points_at_the_first_changed_line[git]",
+   "status": "new"
+  },
+  {
+   "id": "SC-ai-agent-58",
+   "requirement": "Checkpoint and review",
+   "layer": "ncurses",
+   "test": "tests/test_ai_changeset.py::test_ai_changeset_row_points_at_the_first_changed_line[snapshot]",
+   "status": "new"
+  },
+  {
+   "id": "SC-ai-agent-59",
+   "requirement": "Checkpoint and review",
+   "layer": "ncurses",
+   "test": "tests/test_ai_policy.py::test_ai_policy_auto_revert_new_file",
+   "status": "covered"
+  },
+  {
+   "id": "SC-ai-agent-59",
+   "requirement": "Checkpoint and review",
+   "layer": "ncurses",
+   "test": "tests/test_ai_changeset.py::test_ai_changeset_commit_covers_the_reviewed_files_only",
+   "status": "new"
+  },
+  {
+   "id": "SC-ai-agent-60",
+   "requirement": "Checkpoint and review",
+   "layer": "ncurses",
+   "test": "tests/test_ai_changeset.py::test_ai_changeset_row_fits_the_messages_window_at_80_columns",
+   "status": "new"
+  },
+  {
+   "id": "SC-ai-agent-61",
+   "requirement": "Checkpoint and review",
+   "layer": "ncurses",
+   "test": "tests/test_ai_changeset.py::test_ai_changeset_esc_at_the_top_keeps_all",
+   "status": "new"
+  },
+  {
+   "id": "SC-ai-agent-62",
+   "requirement": "Checkpoint and review",
+   "layer": "ncurses",
+   "test": "tests/test_ai_agent_dial_contracts.py::test_review_file_by_file_keeps_one_and_reverts_the_other",
+   "status": "covered"
+  },
+  {
+   "id": "SC-ai-agent-62",
+   "requirement": "Checkpoint and review",
+   "layer": "ncurses",
+   "test": "tests/test_ai_changeset.py::test_ai_changeset_esc_in_file_by_file_keeps_the_files_it_never_asked_about",
+   "status": "new"
+  },
+  {
+   "id": "SC-ai-agent-63",
+   "requirement": "Checkpoint and review",
+   "layer": "ncurses",
+   "test": "tests/test_ai_agent_dial_contracts.py::test_review_commit_in_a_git_tree_makes_a_commit",
+   "status": "covered"
+  },
+  {
+   "id": "SC-ai-agent-63",
+   "requirement": "Checkpoint and review",
+   "layer": "ncurses",
+   "test": "tests/test_ai_changeset.py::test_ai_changeset_commit_covers_the_reviewed_files_only",
+   "status": "new"
+  },
+  {
+   "id": "SC-ai-agent-64",
+   "requirement": "Checkpoint and review",
+   "layer": "ncurses",
+   "test": "tests/test_ai_changeset.py::test_ai_changeset_revert_reports_a_file_it_could_not_restore",
+   "status": "covered"
+  },
+  {
+   "id": "SC-ai-agent-64",
+   "requirement": "Checkpoint and review",
+   "layer": "ncurses",
+   "test": "tests/test_ai_changeset.py::test_ai_changeset_revert_reports_a_git_restore_the_workspace_refused",
+   "status": "covered"
+  },
+  {
+   "id": "SC-ai-agent-64",
+   "requirement": "Checkpoint and review",
+   "layer": "ncurses",
+   "test": "tests/test_ai_changeset.py::test_ai_changeset_revert_reports_a_created_file_it_could_not_remove",
+   "status": "covered"
+  },
+  {
+   "id": "SC-ai-agent-65",
+   "requirement": "Checkpoint and review",
+   "layer": "ncurses",
+   "test": "tests/test_ai_changeset.py::test_ai_checkpoint_without_a_before_image_offers_no_revert",
+   "status": "covered"
+  },
+  {
+   "id": "SC-ai-agent-66",
+   "requirement": "The plan checklist",
+   "layer": "ncurses",
+   "test": "tests/test_ai_plan.py::test_agent_plan_and_step_done",
+   "status": "covered"
+  },
+  {
+   "id": "SC-ai-agent-68",
+   "requirement": "The plan checklist",
+   "layer": "ncurses",
+   "test": "tests/test_ai_plan.py::test_agent_plan_and_step_done",
+   "status": "covered"
+  },
+  {
    "id": "SC-ai-agent-36",
    "requirement": "Project instructions",
    "layer": "ncurses",

@@ -84,6 +84,7 @@
     {"id": "SC-ai-edit-43", "requirement": "Multi-file edit", "layer": "ncurses", "test": "tests/test_ai_plan_approval.py::test_plan_counts_follow_the_unsaved_buffer_and_apply_all_replaces_it", "status": "new"},
     {"id": "SC-ai-edit-44", "requirement": "Multi-file edit", "layer": "ncurses", "test": "tests/test_ai_plan_approval.py::test_plan_apply_all_opens_files_without_writing_disk_and_refuses_directories", "status": "new"},
     {"id": "SC-ai-edit-44", "requirement": "Multi-file edit", "layer": "ncurses", "test": "tests/test_ai_plan_approval.py::test_plan_review_file_by_file_uses_the_same_hunk_review_box", "status": "new"},
+    {"id": "SC-ai-edit-44", "requirement": "Multi-file edit", "layer": "ncurses", "test": "tests/test_ai_plan_multiline.py::test_ai_plan_multiline_preserved", "status": "covered"},
     {"id": "SC-ai-edit-45", "requirement": "Multi-file edit", "layer": "ncurses", "test": "tests/test_ai_plan_approval.py::test_plan_path_outside_the_workspace_is_marked_in_the_box_and_named_on_apply", "status": "new"},
     {"id": "SC-ai-edit-46", "requirement": "Agent patches reach the buffer", "layer": "ncurses", "test": "tests/test_ai_apply_patch.py::test_apply_patch_unmatched_search_is_tool_error", "status": "covered"},
     {"id": "SC-ai-edit-47", "requirement": "Agent patches reach the buffer", "layer": "ncurses", "test": "tests/test_ai_apply_patch.py::test_agent_apply_patch_edits_in_place", "status": "covered"},

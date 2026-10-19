@@ -633,7 +633,9 @@ static void ws_add_change(ws_change **c, int *n, int *cap, const char *path,
  (*n)++;
 }
 
-/* Parse `git diff` output: one change per hunk, at the new-file start line. */
+/* Parse `git diff` output: one change per hunk, at the new-file start line.
+   The caller asks git for no context lines (-U0), so that start line is the
+   first line the run changed and the '+'/'-' counts are the hunk's own. */
 static void ws_changes_from_gitdiff(const char *diff, const char *path,
                                     ws_change **c, int *n, int *cap)
 {
@@ -696,7 +698,11 @@ static int ws_collect_changes(ws_change **c, int *n)
    if (*line && !ws_hidden_path(line)) {
     snprintf(full, sizeof full, "%s/%s", ck_dir, line);
     wpe_ai_shell_quote(qf, sizeof qf, line);
-    snprintf(cmd, sizeof cmd, "cd %s && git diff %s -- %s 2>/dev/null", q, ck_ref, qf);
+    /* -U0: no context, so a hunk starts at the first line the run changed.
+       With git's default three context lines the hunk starts three lines above
+       it, and both the row and the jump it registers then point at a line the
+       run never touched. */
+    snprintf(cmd, sizeof cmd, "cd %s && git diff -U0 %s -- %s 2>/dev/null", q, ck_ref, qf);
     d = wpe_ai_run_capture(cmd);
     ws_changes_from_gitdiff(d ? d : "", full, c, n, &cap);
     free(d);
@@ -1101,6 +1107,133 @@ static void ws_say_kept_changes(FENSTER *f, int failed)
  e_d_p_message(line, f, 0);
 }
 
+/**
+ * ws_say_kept_unseen - Say how many files a review stopped asking about.
+ * @f: any window of the editor; @left: how many files were never answered.
+ *
+ * Backing out of a per-file question leaves the files as the run wrote them,
+ * which is the right outcome but not a visible one: without a count the user
+ * cannot tell afterwards how much of the changeset went unreviewed.  The line
+ * names the count and no path, so it fits the Messages window the review speaks
+ * through at its narrowest.
+ */
+static void ws_say_kept_unseen(FENSTER *f, int left)
+{
+ char line[200];
+ if (left <= 0) return;
+ snprintf(line, sizeof line, "[AI] Esc: %d file%s kept unseen",
+          left, left == 1 ? "" : "s");
+ e_d_p_message(line, f, 0);
+}
+
+/**
+ * ws_files_left - How many files a review backed out of never had their answer.
+ * @c/@n: the changeset; @from: the entry the review stopped at, included;
+ * @seen/@ns: the files the review had already asked about, the current one
+ * among them.
+ *
+ * One file can carry several rows (a row per hunk), and the count the user is
+ * told is a count of files, not of rows.  The file the review was asking about
+ * is part of it, since a question backed out of was never answered; a file
+ * answered earlier whose later hunk still lies ahead is not, since its answer
+ * covered the whole file.
+ */
+static int ws_files_left(ws_change *c, int n, int from, char **seen, int ns)
+{
+ char **l = NULL; int nl = 0, cap = 0, i;
+ ws_list_push(&l, &nl, &cap, ws_strdup(c[from].path));
+ for (i = from + 1; i < n; i++)
+  if (!ws_list_has(seen, ns, c[i].path) && !ws_list_has(l, nl, c[i].path))
+   ws_list_push(&l, &nl, &cap, ws_strdup(c[i].path));
+ wpe_ai_free_list(l, nl);
+ return nl;
+}
+
+/**
+ * ws_path_under_root - The spelling a Messages row names a file by.
+ * @path: the file, absolute as the changeset holds it; @root: the workspace root.
+ *
+ * A row is read in a window that is 38 columns wide in the default layout, and
+ * an absolute path fills it on its own: the user sees a fragment of a temporary
+ * directory where the line and the counts should be.  Naming the file the way a
+ * compiler run from the root names it leaves room for both, and matches the
+ * spelling the rest of the editor's output uses.  Only the row is spelled this
+ * way; the list the Next/Prev-Error keys walk keeps the absolute path, so a jump
+ * opens the file it always opened.  A file outside the root has no shorter
+ * spelling and keeps its absolute one.
+ * Return: @path's tail under @root, or @path itself when it is not under it.
+ */
+static const char *ws_path_under_root(const char *path, const char *root)
+{
+ size_t rl = strlen(root);
+ if (rl && !strncmp(path, root, rl) && path[rl] == '/') return path + rl + 1;
+ return path;
+}
+
+/**
+ * ws_run_add - Hand one batch of paths to `git add`, and say it when git refuses.
+ * @f: any window of the editor; @quoted_root: the workspace root, quoted for a
+ * shell; @args: the batch's paths, each quoted, space separated.
+ *
+ * A commit that quietly holds less than the review listed is the same lie the
+ * pane may not tell about a revert, so git's own first line goes to the pane
+ * naming the batch it refused, and the commit does not follow: half a changeset
+ * in one commit reads as the whole of it.
+ * Return: 0 when the batch was staged, -1 when git refused it.
+ */
+static int ws_run_add(FENSTER *f, const char *quoted_root, const char *args)
+{
+ char cmd[3600], reason[600], *out;
+ int status = 0;
+ snprintf(cmd, sizeof cmd, "cd %s && git add -- %s 2>&1", quoted_root, args);
+ out = wpe_ai_run_capture_status(cmd, &status);
+ if (status != 0) {
+  ws_output_reason(out, status, reason, sizeof reason);
+  free(out);
+  ws_say_failed(f, "stage", args, reason);
+  return -1;
+ }
+ free(out);
+ return 0;
+}
+
+/**
+ * ws_stage_changeset - Stage the files the review listed, and nothing else.
+ * @f: any window of the editor; @c/@n: the changeset on screen.
+ *
+ * What the user gains: the commit `c` makes is the change the review just
+ * listed, so an edit they made before the run stays uncommitted where they left
+ * it, and `git show` on the commit reads as one run's work.  A file the run
+ * created is staged too, which is what puts it in the commit instead of leaving
+ * it untracked beside it.  The paths go in as many commands as they need: a
+ * changeset has no bound on how many files it lists, one command line does.
+ * Return: 0 when every file was staged, -1 when one could not be.
+ */
+static int ws_stage_changeset(FENSTER *f, ws_change *c, int n)
+{
+ char q[1100], qf[1100], args[2400];
+ char **staged = NULL; int ns = 0, sc = 0, i, bad = 0;
+ size_t used = 0;
+
+ wpe_ai_shell_quote(q, sizeof q, ck_dir);
+ args[0] = '\0';
+ for (i = 0; i < n; i++) {
+  size_t len;
+  if (ws_list_has(staged, ns, c[i].path)) continue;    /* one file, one stage */
+  wpe_ai_shell_quote(qf, sizeof qf, ws_path_under_root(c[i].path, ck_dir));
+  len = strlen(qf);
+  if (used && used + 1 + len >= sizeof args) {         /* this path needs the next batch */
+   if (ws_run_add(f, q, args) != 0) bad = 1;
+   args[0] = '\0'; used = 0;
+  }
+  used += (size_t)snprintf(args + used, sizeof args - used, "%s%s", used ? " " : "", qf);
+  ws_list_push(&staged, &ns, &sc, ws_strdup(c[i].path));
+ }
+ if (used && ws_run_add(f, q, args) != 0) bad = 1;
+ wpe_ai_free_list(staged, ns);
+ return bad ? -1 : 0;
+}
+
 int wpe_ai_changeset_review(FENSTER *f)
 {
  ws_change *c = NULL;
@@ -1123,7 +1256,10 @@ int wpe_ai_changeset_review(FENSTER *f)
  lines = malloc((size_t)n * sizeof *lines);
  texts = malloc((size_t)n * sizeof *texts);
  for (i = 0; i < n; i++) {
-  snprintf(line, sizeof line, "%s:%d: %s", c[i].path, c[i].line, c[i].text);
+  /* the row is spelled from the root so its line and counts survive a narrow
+     Messages window; files[i] is what Alt-T opens, so it stays absolute */
+  snprintf(line, sizeof line, "%s:%d: %s",
+           ws_path_under_root(c[i].path, ck_dir), c[i].line, c[i].text);
   e_d_p_message(line, f, 0);
   files[i] = c[i].path; lines[i] = c[i].line; texts[i] = c[i].text;
  }
@@ -1152,7 +1288,7 @@ int wpe_ai_changeset_review(FENSTER *f)
    break;
   }
   if (k == 'F') {
-   char **seen = NULL; int ns = 0, sc = 0, bad = 0;
+   char **seen = NULL; int ns = 0, sc = 0, bad = 0, left = 0;
    for (i = 0; i < n; i++) {
     if (ws_list_has(seen, ns, c[i].path)) continue;
     ws_list_push(&seen, &ns, &sc, ws_strdup(c[i].path));
@@ -1165,11 +1301,17 @@ int wpe_ai_changeset_review(FENSTER *f)
       if (ws_revert_path(f, c[i].path, c[i].is_new) != 0) bad++;
       break;
      }
+     /* Esc backs out of the question the way it backs out of the review: the
+        files stay as the run wrote them, and no further file is asked about. */
+     if (kk == WPE_ESC) { left = ws_files_left(c, n, i, seen, ns); break; }
     }
+    if (left) break;
    }
    wpe_ai_free_list(seen, ns);
+   if (left) ws_say_kept_unseen(f, left);
    ws_say_kept_changes(f, bad);
    e_d_p_message("[AI] file-by-file review done", f, 0);
+   kept += left;
    wpe_ai_trace("changeset file-by-file failed=%d", bad);
    break;
   }
@@ -1178,13 +1320,20 @@ int wpe_ai_changeset_review(FENSTER *f)
    char q[1100], qm[600], cmd[1900], *out;
    strcpy(msg, "AI-assisted change");
    if (e_add_arguments(msg, "Commit message", f, 0, AltB, NULL) && msg[0]) {
-    wpe_ai_shell_quote(q, sizeof q, ck_dir);
-    wpe_ai_shell_quote(qm, sizeof qm, msg);
-    snprintf(cmd, sizeof cmd, "cd %s && git add -A && git commit -q -m %s 2>&1", q, qm);
-    out = wpe_ai_run_capture(cmd);
-    e_d_p_message(out && *out ? out : "[AI] committed", f, 0);
-    free(out);
-    wpe_ai_trace("changeset commit");
+    if (ws_stage_changeset(f, c, n) != 0) {
+     /* the pane named the file git refused; a commit now would hold part of
+        the changeset and read as all of it */
+     e_d_p_message("[AI] not committed (the pane says why)", f, 0);
+     wpe_ai_trace("changeset commit refused: a file could not be staged");
+    } else {
+     wpe_ai_shell_quote(q, sizeof q, ck_dir);
+     wpe_ai_shell_quote(qm, sizeof qm, msg);
+     snprintf(cmd, sizeof cmd, "cd %s && git commit -q -m %s 2>&1", q, qm);
+     out = wpe_ai_run_capture(cmd);
+     e_d_p_message(out && *out ? out : "[AI] committed", f, 0);
+     free(out);
+     wpe_ai_trace("changeset commit");
+    }
    }
    kept = n;
    break;
