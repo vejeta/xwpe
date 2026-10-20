@@ -246,6 +246,7 @@ def test_enable_sets_options2_bit(tmp_path):
 
 
 # @scenario SC-ai-options-12
+# @scenario SC-ai-runtime-09
 def test_env_force_enable_overrides_file(tmp_path):
     # Options2 bit clear in the file, XWPE_AI_ENABLE=1 in the environment: the
     # assistant answers Alt-G (no "is off" refusal) and the dialog shows [X].
@@ -468,6 +469,7 @@ def test_cancel_leaves_xwperc_byte_identical(tmp_path):
 
 
 # @scenario SC-ai-options-51
+# @scenario SC-ai-runtime-09
 def test_env_endpoint_policy_cafile_override_file(tmp_path):
     # XWPE_AI_ENDPOINT / _POLICY / _CAFILE beat the file for the session: the
     # dialog shows the environment's values.  They are a temporary override, so
@@ -497,6 +499,7 @@ def test_env_endpoint_policy_cafile_override_file(tmp_path):
         "an environment override was written into xwperc:\n" + saved
 
 
+# @scenario SC-ai-runtime-09
 def test_env_backend_and_model_not_persisted_by_edit_free_ok(tmp_path):
     # XWPE_AI_BACKEND / _MODEL pick the session's backend and model (the dialog
     # marks Claude CLI and shows the env model) but an Ok without edits keeps

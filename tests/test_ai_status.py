@@ -22,6 +22,7 @@ def _ai_build():
 pytestmark = pytest.mark.skipif(not _ai_build(), reason="wpe built without --enable-ai")
 
 
+# @scenario SC-ai-runtime-17
 def test_chat_header_shows_backend_and_policy(tmp_path):
     env = {"XWPE_AI_ENABLE": "1", "XWPE_AI_BACKEND": "mock",
            "XWPE_AI_MOCK_REPLY": "ok", "XWPE_AI_POLICY": "edits"}

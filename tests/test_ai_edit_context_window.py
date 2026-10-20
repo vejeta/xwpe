@@ -93,6 +93,7 @@ def context_window(lines, cur, cap=AI_CTX_MAX):
 
 
 # @scenario SC-ai-edit-33
+# @scenario SC-ai-runtime-14
 def test_whole_file_edit_over_cap_keeps_the_tail(tmp_path):
     """Edit with no block on a 1200-line file: the reply for the window is
     spliced over the window; the file keeps its 1200 lines."""

@@ -234,6 +234,7 @@ def test_preflight_ollama_unreachable_refuses_to_start(tmp_path):
 
 
 # @scenario SC-ai-agent-04
+# @scenario SC-ai-runtime-06
 def test_preflight_claudecli_missing_refuses_to_start(tmp_path):
     empty = tmp_path / "emptybin"
     empty.mkdir()

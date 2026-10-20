@@ -80,6 +80,7 @@ def _run(tmp_path, keys):
         srv.stop()
 
 
+# @scenario SC-ai-runtime-14
 def test_chat_sends_open_files(tmp_path):
     body = _run(tmp_path, [(ALT.AI, 0.4), ("a", 0.4), ("hi", 0.3), ("\r", 1.2)])
     assert "FILES OPEN IN THE EDITOR" in body, \

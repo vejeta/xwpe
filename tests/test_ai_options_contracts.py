@@ -369,6 +369,7 @@ def test_key_field_prefilled_with_stored_key(tmp_path):
 
 
 # @scenario SC-ai-options-33
+# @scenario SC-ai-runtime-11
 def test_key_file_written_with_mode_0600(tmp_path):
     # The key file a typed key lands in is private to the user: mode 0600.
     home = str(tmp_path / "home")

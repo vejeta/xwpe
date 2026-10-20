@@ -30,6 +30,7 @@ pytestmark = [
 ]
 
 
+# @scenario SC-ai-runtime-17
 def test_chat_prompt_includes_diagnostics(tmp_path):
     (tmp_path / "bad.c").write_text("int main(void){ int x = ; return 0 }\n")
     ai = tmp_path / "ai.trace"

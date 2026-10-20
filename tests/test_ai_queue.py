@@ -42,6 +42,7 @@ def _start_agent(s, task):
     s.key("\r", delay=0.8); s._drain(0.5)
 
 
+# @scenario SC-ai-runtime-15
 def test_second_request_queues_and_runs(tmp_path):
     with WpeSession(str(tmp_path), "int main(void){return 0;}\n",
                     env_extra=dict(SLOW), filename="t.c") as s:
@@ -69,6 +70,7 @@ def test_esc_cancels_running_task(tmp_path):
     assert "cancelled" in disp, "Esc did not cancel the running task:\n" + disp
 
 
+# @scenario SC-ai-runtime-15
 def test_esc_clears_the_queue(tmp_path):
     # task one must still be running when Esc is pressed, so it runs long enough
     # that the enqueue + Esc happen well within its window.

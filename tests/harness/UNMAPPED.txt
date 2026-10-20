@@ -30,6 +30,7 @@ tests/test_ai_overlay_repaint.py
 tests/test_ai_plan_live.py
 tests/test_ai_project_memory.py
 tests/test_ai_prompt.py
+tests/test_ai_runtime.py
 tests/test_ai_session.py
 tests/test_ai_status.py
 tests/test_ai_tls.py

@@ -94,6 +94,7 @@ def _ask_capture(tmp_path, write_agents, scope_all=False):
     return "\n".join(captured)
 
 
+# @scenario SC-ai-runtime-14
 def test_agents_md_injected(tmp_path):
     """With AIProjectInstructions : all seeded in xwperc, a plain chat turn
     carries the AGENTS.md block (under the default scope it would not)."""

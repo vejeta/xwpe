@@ -122,6 +122,7 @@ def _instream_error_server():
 
 
 # @scenario SC-ai-chat-40
+# @scenario SC-ai-runtime-04
 def test_chat_shows_in_stream_error(tmp_path):
     # An error the server sends as an EVENT inside a 200 SSE stream (as a failing
     # Proton Lumo bridge does) must also surface, not read as an empty answer.

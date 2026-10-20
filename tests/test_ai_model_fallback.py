@@ -66,6 +66,7 @@ def _server(models_seen):
     return srv, srv.server_address[1]
 
 
+# @scenario SC-ai-runtime-08
 def test_primary_failure_falls_back(tmp_path):
     seen = []
     srv, port = _server(seen)

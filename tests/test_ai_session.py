@@ -92,6 +92,7 @@ def _session_files(tmp_path, env=None):
     return sorted(glob.glob(str(_state_dir(tmp_path, env) / "ai" / "*.session")))
 
 
+# @scenario SC-ai-runtime-13
 def test_ai_session_claudecli_resume(tmp_path):
     bindir, log = _fake_claude(tmp_path)
     env = {"XWPE_AI_BACKEND": "claudecli",

@@ -39,6 +39,7 @@ def _ai_build():
 pytestmark = pytest.mark.skipif(not _ai_build(), reason="wpe built without --enable-ai")
 
 
+# @scenario SC-ai-runtime-18
 def test_fix_build_loop(tmp_path):
     (tmp_path / "Makefile").write_text(MAKEFILE)
     trace = tmp_path / "b.trace"

@@ -28,6 +28,7 @@ pytestmark = pytest.mark.skipif(not _ai_build(), reason="wpe built without --ena
 
 
 # @scenario SC-ai-chat-42
+# @scenario SC-ai-runtime-01
 def test_ollama_not_running_message(tmp_path):
     # point at a port nothing listens on -> the preflight must explain it
     env = {"XWPE_AI_ENABLE": "1", "XWPE_AI_BACKEND": "ollama",

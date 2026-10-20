@@ -96,6 +96,7 @@ def _autopick(tmp_path, model_names):
         srv.stop()
 
 
+# @scenario SC-ai-runtime-08
 def test_autopick_prefers_a_code_model(tmp_path):
     # a code model wins over a general one even when the general one is listed
     # first and is larger -- code-tuning matters more for an editor.
