@@ -11,10 +11,9 @@ So these tests drive block Copy/Move with pyte and assert that the ASan
 build produces NO report -- pyte supplies the input, ASan watches the heap.
 They require the sanitizer binary `we-asan`; build it with:
 
-    make clean
-    make CFLAGS="-fsanitize=address -g -O1 -fno-omit-frame-pointer" \\
-         LDFLAGS="-fsanitize=address"
-    cp we we-asan && make clean && make
+    tests/run-tests.sh --asan-build
+
+which builds it in `.asan-build/` and leaves the tree's own `./we` alone.
 
 If `we-asan` is absent the tests skip.  See HACKING.md ("Debugging crashes
 and memory bugs") and the v1.6.3 autopkgtest plan (tasks #111/#112) for

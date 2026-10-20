@@ -47,6 +47,9 @@ xwpe
 # Test artifacts
 tests/.venv/
 tests/harness/out/
+# Out-of-tree AddressSanitizer build (tests/run-tests.sh --asan-build), kept
+# between runs so the rebuild is incremental.
+/.asan-build/
 __pycache__/
 *.pyc
 tests/.pytest_cache/

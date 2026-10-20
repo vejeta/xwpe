@@ -36,6 +36,11 @@ absent **skips** rather than fails, so you only need what you want to cover.
 - compilers/debuggers the F9 / Ctrl-F10 tests drive: `gcc`, `g++`,
   `gfortran`, `fp-compiler` (Pascal), `gdb`
 
+**sanitizer runs** (`--asan`, `--asan-build`):
+- `rsync`, plus the autotools this tree was bootstrapped with -- the sanitizer
+  binary is built in `.asan-build/` from a copy of the sources, so `./we` stays
+  the normal binary and the tree keeps working while the build runs
+
 **X11 GUI layer** (`./xwpe`, Xft -- see the table below):
 - `xvfb`, `matchbox-window-manager`, `xdotool`, `x11-utils`, `imagemagick`,
   `python3-pil`

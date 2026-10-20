@@ -40,21 +40,102 @@ here=$(cd "$(dirname "$0")" && pwd)
 top=$(cd "$here/.." && pwd)
 cd "$top"
 
-# build_asan_binary - build ./we-asan from the current sources, then put the
-# normal ./we back.  The sanitizer binary is a copy of a full rebuild, so a
-# tree that changed since the last copy needs this again: a stale we-asan
-# tests the editor as it was, and the scenario harness calls this whenever a
-# source file is newer than the binary.
+# --- sanitizer build directory -----------------------------------------------
+# The sanitizer binary is built in a directory of its own and copied back as
+# ./we-asan.  Building it here would need a make clean and two full makes in
+# this tree, and for the minutes that takes ./we and its links ./wpe and ./xwpe
+# are missing or hold a sanitizer build: a test run, a make or a second harness
+# sharing the tree then fails for a reason that has nothing to do with the code
+# under test.
+asan_src="$top/.asan-build"
+
+# asan_tree_configure_args - the configure options this tree was configured
+# with.  The sanitizer binary carries the same features as the tree it tests,
+# or a scenario fails because a feature was configured out of it.
+asan_tree_configure_args() {
+  "$top/config.status" --config
+}
+
+# asan_dir_configure_args - the options the build directory was configured with,
+# empty when it has not been configured yet.
+asan_dir_configure_args() {
+  if [ -x "$asan_src/config.status" ]; then
+    "$asan_src/config.status" --config
+  fi
+}
+
+# asan_source_list - the files configure and make read: every tracked file plus
+# the untracked ones git does not ignore, minus the test suite and the recorded
+# demos.  git already tells a source from a build product, so this list keeps
+# working when a source file is added or a new artifact starts being generated,
+# which a hand-written list of things to leave out does not.
+asan_source_list() {
+  if git -C "$top" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    git -C "$top" ls-files -c -o --exclude-standard |
+      grep -v -E '^(tests/|docs/demos/)'
+    return
+  fi
+  # An unpacked release tarball has no git: list what configure and make read
+  # by name, leaving out the build products this tree may already hold.
+  (cd "$top" && find . -path ./.asan-build -prune -o -path ./tests -prune \
+     -o -path ./docs/demos -prune -o -type f \
+     ! -name '*.o' ! -name 'we' ! -name 'we-asan' ! -name 'config.status' \
+     ! -name 'config.log' ! -name 'Makefile' -print | sed -n 's|^\./||p')
+}
+
+# asan_copy_sources - refresh the build directory with the sources as they are
+# now, uncommitted edits included: the sanitizer tests this tree, not the last
+# commit.  rsync rewrites only the files whose size or mtime changed, so make
+# sees a new timestamp exactly where an edit happened and rebuilds that much.
+asan_copy_sources() {
+  mkdir -p "$asan_src"
+  asan_source_list | rsync -a --files-from=- "$top/" "$asan_src/"
+}
+
+# asan_bootstrap - generate the build system in the build directory the first
+# time it is used.  A later change to configure.ac or Makefile.am is picked up
+# by make's own rules, which re-run the tools there and keep the options that
+# asan_configure recorded.
+asan_bootstrap() {
+  if [ -x "$asan_src/configure" ]; then
+    return 0
+  fi
+  (cd "$asan_src" && autoreconf -fi >/dev/null)
+}
+
+# asan_configure - configure the build directory with this tree's options.
+# Skipped when it already carries them: running the checks again costs more
+# than the incremental compile that follows.
+asan_configure() {
+  tree_args=$(asan_tree_configure_args)
+  if [ "$tree_args" = "$(asan_dir_configure_args)" ]; then
+    return 0
+  fi
+  (cd "$asan_src" && eval "set -- $tree_args" && ./configure "$@" >/dev/null)
+}
+
+# build_asan_binary - build ./we-asan from the current sources and expose it as
+# ./wpe-asan, the name that turns programming mode on (see the header).  The
+# build happens in .asan-build and only ./we-asan is written back here, so this
+# tree stays usable, ./we included, for the whole of it.  The build directory is
+# kept between runs, so a tree that changed since the last copy costs a partial
+# rebuild and not a full one: a stale we-asan tests the editor as it was, and
+# the scenario harness calls this whenever a source file is newer than it.
 build_asan_binary() {
   echo "== building we-asan =="
-  make clean >/dev/null
-  make CFLAGS="-fsanitize=address -g -O1 -fno-omit-frame-pointer" \
-       LDFLAGS="-fsanitize=address" >/dev/null
-  cp we we-asan
-  ln -sfn we-asan wpe-asan        # the name turns programming mode on (see above)
-  echo "== restoring the normal binary =="
-  make clean >/dev/null
-  make >/dev/null
+  if [ ! -x "$top/config.status" ]; then
+    echo "run-tests.sh: this tree is not configured, so its options are unknown;" \
+         "run ./configure here first" >&2
+    return 1
+  fi
+  asan_copy_sources
+  asan_bootstrap
+  asan_configure
+  (cd "$asan_src" &&
+   make CFLAGS="-fsanitize=address -g -O1 -fno-omit-frame-pointer" \
+        LDFLAGS="-fsanitize=address" >/dev/null)
+  cp "$asan_src/we" "$top/we-asan"
+  ln -sfn we-asan "$top/wpe-asan"  # the name turns programming mode on (see above)
 }
 
 mode=functional
@@ -68,7 +149,7 @@ case "${1:-}" in
     echo "Usage: tests/run-tests.sh [--asan|--x11|--wayland]"
     echo "  (no arg)  C unit (make check) + pyte suite (./wpe) + X11 GUI (./xwpe)"
     echo "  --asan    build we-asan and run the pyte suite under AddressSanitizer"
-    echo "  --asan-build  only build we-asan (and restore ./we), for the scenario harness"
+    echo "  --asan-build  only build we-asan (in .asan-build, ./we untouched), for the harness"
     echo "  --x11     ONLY the headless X11 GUI suite (./xwpe under Xvfb+matchbox)"
     echo "  --wayland ONLY the native Wayland GUI suite (./xwpe under Xvfb+weston)"
     echo "The pyte tests honour \$WPE_BIN (default ../wpe); X11/Wayland honour \$XWPE_BIN."

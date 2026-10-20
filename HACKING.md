@@ -635,14 +635,17 @@ moment of the bug, before it degrades into a confusing garbage-coordinate
 crash.  ~2x slowdown -- fine interactively.
 
 ```sh
-make clean
-make CFLAGS="-fsanitize=address -g -O1 -fno-omit-frame-pointer" \
-     LDFLAGS="-fsanitize=address"
-cp we we-asan
-make clean && make          # restore the normal binary
-ln -sf we-asan wpe-asan     # terminal mode  (basename not starting with 'x')
-ln -sf we-asan xwpe-asan    # X11 mode       (basename starting with 'x')
+tests/run-tests.sh --asan-build   # builds in .asan-build/, copies we-asan here
+ln -sf we-asan xwpe-asan          # X11 mode (basename starting with 'x')
 ```
+
+The build runs in `.asan-build/`, a copy of the sources configured with this
+tree's own options, and only `we-asan` is written back, so `./we` stays the
+normal binary and the tree keeps working while the sanitizer build runs.  The
+script links `wpe-asan` (terminal mode) itself, and repeats are incremental.
+Building by hand instead needs a copy of the tree: `make clean` plus a
+sanitizer `make` in the working tree leave `./we` missing, or holding a
+sanitizer build, for the minutes that takes.
 
 The mode is chosen from argv[0] (we_unix.c): a basename starting with `x`
 selects X11.  Run with leak detection off (X11/pango/glib leak at exit,
