@@ -401,21 +401,24 @@
    "requirement": "Mouse works without GPM",
    "layer": "ncurses",
    "test": "tests/test_menu_console_mouse.py::test_the_ai_dialog_opens_on_a_pty_under_a_console_term[screen-256color]",
-   "status": "new"
+   "status": "new",
+   "needs": ["GPM daemon"]
   },
   {
    "id": "SC-dialog-engine-45",
    "requirement": "Mouse works without GPM",
    "layer": "ncurses",
    "test": "tests/test_menu_console_mouse.py::test_the_ai_dialog_opens_on_a_pty_under_a_console_term[tmux-256color]",
-   "status": "new"
+   "status": "new",
+   "needs": ["GPM daemon"]
   },
   {
    "id": "SC-dialog-engine-45",
    "requirement": "Mouse works without GPM",
    "layer": "ncurses",
    "test": "tests/test_menu_console_mouse.py::test_the_ai_dialog_opens_under_xterm_as_the_control",
-   "status": "new"
+   "status": "new",
+   "needs": ["GPM daemon"]
   },
   {
    "id": "SC-dialog-engine-45",
@@ -499,14 +502,16 @@
    "requirement": "Mouse works without GPM",
    "layer": "ncurses",
    "test": "tests/test_menu_console_mouse.py::test_esc_closes_the_submenu_while_no_console_event_arrives[screen-256color]",
-   "status": "new"
+   "status": "new",
+   "needs": ["GPM daemon"]
   },
   {
    "id": "SC-dialog-engine-46",
    "requirement": "Mouse works without GPM",
    "layer": "ncurses",
    "test": "tests/test_menu_console_mouse.py::test_esc_closes_the_submenu_while_no_console_event_arrives[tmux-256color]",
-   "status": "new"
+   "status": "new",
+   "needs": ["GPM daemon"]
   }
  ]
 }

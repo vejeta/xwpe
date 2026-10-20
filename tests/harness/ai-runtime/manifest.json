@@ -41,7 +41,7 @@
   {"id": "SC-ai-runtime-16", "requirement": "The task, the queue and the status", "layer": "ncurses", "test": "tests/test_ai_runtime.py::test_waiting_line_counts_seconds_and_is_replaced", "status": "covered"},
   {"id": "SC-ai-runtime-16", "requirement": "The task, the queue and the status", "layer": "ncurses", "test": "tests/test_ai_async.py::test_editor_interactive_and_spinner_during_generation", "status": "covered"},
   {"id": "SC-ai-runtime-17", "requirement": "The task, the queue and the status", "layer": "ncurses", "test": "tests/test_ai_status.py::test_chat_header_shows_backend_and_policy", "status": "covered"},
-  {"id": "SC-ai-runtime-17", "requirement": "The task, the queue and the status", "layer": "ncurses", "test": "tests/test_ai_diagnostics.py::test_chat_prompt_includes_diagnostics", "status": "covered"},
+  {"id": "SC-ai-runtime-17", "requirement": "The task, the queue and the status", "layer": "ncurses", "test": "tests/test_ai_diagnostics.py::test_chat_prompt_includes_diagnostics", "status": "covered", "needs": ["clangd"]},
   {"id": "SC-ai-runtime-18", "requirement": "Build and fix knows what it builds", "layer": "ncurses", "test": "tests/test_ai_runtime.py::test_build_and_fix_checks_a_lone_c_file_with_the_compiler", "status": "covered"},
   {"id": "SC-ai-runtime-18", "requirement": "Build and fix knows what it builds", "layer": "ncurses", "test": "tests/test_ai_fix_build.py::test_fix_build_loop", "status": "covered"},
   {"id": "SC-ai-runtime-18", "requirement": "Build and fix knows what it builds", "layer": "ncurses", "test": "tests/test_ai_runtime.py::test_build_and_fix_with_no_build_command_runs_nothing", "status": "new"}

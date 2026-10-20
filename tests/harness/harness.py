@@ -44,8 +44,17 @@ Sub-commands (all stdlib, no third-party imports, so CI can run it bare):
                                      listed in tests/harness/UNMAPPED.txt
 
 Verdicts are PASS, FAIL, BLOCKED (manifest says so) or MISSING (the test did
-not run).  A skipped test counts as FAIL unless its scenario is ``blocked`` or
-its layer is ``live``: a silent skip must never read as coverage.
+not run).  A skipped test counts as FAIL unless its scenario is ``blocked``,
+its layer is ``live``, or the row declares what the test needs and the skip
+says that is what was missing: a silent skip must never read as coverage.
+
+A row may carry ``"needs": ["clangd"]``: the host tools the test cannot run
+without (a language server, a GPM daemon).  Where the tool is installed the
+test runs and must pass.  Where it is not, the test skips itself, and the
+skip reads as BLOCKED only when every skip message of that row names one of
+the declared needs (case-insensitive); a skip for any other reason is still
+a FAIL.  So a declared absence is reported as such, and an undeclared one
+still turns the gate red.
 
 ``check`` collects with ``sys.executable``, so run it with the interpreter the
 suite itself uses -- ``tests/.venv/bin/python tests/harness/harness.py check``.
@@ -102,15 +111,22 @@ def cmd_files(capability, layer):
     print("\n".join(seen))
 
 
-def junit_results(xml_path):
-    """{(classname, name): 'PASS'|'FAIL'|'SKIP'} from a pytest junit file."""
+def junit_results(xml_path, skip_reasons=None):
+    """{(classname, name): 'PASS'|'FAIL'|'SKIP'} from a pytest junit file.
+
+    When ``skip_reasons`` is a dict it also receives, per skipped case, the
+    skip message, so a row's declared needs can be matched against it.
+    """
     results = {}
     for case in ET.parse(xml_path).iter("testcase"):
         key = (case.get("classname", ""), case.get("name", ""))
+        skipped = case.find("skipped")
         if case.find("failure") is not None or case.find("error") is not None:
             results[key] = "FAIL"
-        elif case.find("skipped") is not None:
+        elif skipped is not None:
             results[key] = "SKIP"
+            if skip_reasons is not None:
+                skip_reasons[key] = (skipped.get("message") or "") + " " + (skipped.text or "")
         else:
             results[key] = "PASS"
     return results
@@ -141,7 +157,19 @@ def automake_results(logdir):
     return results
 
 
-def verdict(scenario, raw):
+def skip_names_a_need(scenario, reasons):
+    """Did the test skip because a tool the row declares it needs is absent?
+
+    True only when the row has ``needs`` and every skip message of the row's
+    cases names one of them; an empty or unrelated message is not enough.
+    """
+    needs = [n.lower() for n in scenario.get("needs") or []]
+    if not needs or not reasons:
+        return False
+    return all(any(n in r.lower() for n in needs) for r in reasons)
+
+
+def verdict(scenario, raw, reasons=None):
     """Fold a raw test result into the scenario's verdict."""
     if scenario["status"] == "blocked":
         return "BLOCKED"
@@ -150,6 +178,8 @@ def verdict(scenario, raw):
     if raw == "PASS":
         return "PASS"
     if raw == "SKIP" and scenario["layer"] == "live":
+        return "BLOCKED"
+    if raw == "SKIP" and skip_names_a_need(scenario, reasons):
         return "BLOCKED"
     return "FAIL"
 
@@ -179,7 +209,17 @@ def junit_lookup(raw, test_id):
     return fold_results(cases)
 
 
-def junit_results_of(sources):
+def junit_skip_reasons(skip_reasons, test_id):
+    """The skip messages of a node id's cases, folded like junit_lookup."""
+    classname, name = junit_key(test_id)
+    if "[" in name:
+        reason = skip_reasons.get((classname, name))
+        return [reason] if reason is not None else []
+    return [r for (c, n), r in skip_reasons.items()
+            if c == classname and (n == name or n.startswith(name + "["))]
+
+
+def junit_results_of(sources, skip_reasons=None):
     """Merged results of one or more junit files, given comma-separated.
 
     The CI suite writes one junit for the whole run, and the gate tops it up
@@ -191,7 +231,7 @@ def junit_results_of(sources):
         # A suite that died before writing its junit leaves no file: read it
         # as "nothing ran", so the gate falls back to running every test.
         if path and os.path.exists(path):
-            raw.update(junit_results(path))
+            raw.update(junit_results(path, skip_reasons))
     return raw
 
 
@@ -215,11 +255,12 @@ def cmd_missing(capability, layer, sources):
 
 def cmd_report(capability, layer, source):
     manifest = load_manifest(capability)
+    skip_reasons = {}
     if layer == "c-unit":
         raw = automake_results(source)
         lookup = lambda test_id: raw.get(test_id)
     else:
-        raw = junit_results_of(source)
+        raw = junit_results_of(source, skip_reasons)
         lookup = lambda test_id: junit_lookup(raw, test_id)
     # A scenario may be pinned by several tests (several rows with one id);
     # the scenario's verdict is the worst of them, never the last one listed.
@@ -227,7 +268,8 @@ def cmd_report(capability, layer, source):
     report = {}
     for scenario in scenarios_for_layer(manifest, layer):
         result = lookup(scenario["test"]) if scenario.get("test") else None
-        this = verdict(scenario, result)
+        reasons = junit_skip_reasons(skip_reasons, scenario["test"]) if scenario.get("test") else []
+        this = verdict(scenario, result, reasons)
         seen = report.get(scenario["id"])
         if seen is None or severity[this] < severity[seen]:
             report[scenario["id"]] = this
