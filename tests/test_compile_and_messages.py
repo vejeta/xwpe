@@ -920,6 +920,9 @@ def test_makes_own_error_line_is_not_counted_and_the_count_is_on_the_status_row(
     assert title == "Makefile", "Alt-T did not reach make's own row: %s" % title
 
 
+A68_ONE_ERROR = "BEGIN\n  INT x := 1;\n  print((x, yy))\nEND\n"     # line 3
+
+
 # @scenario SC-compile-13
 def test_algol68_error_row_jumps_to_its_line(tmp_path):
     """a68g prints the source line with its number and, under it,
