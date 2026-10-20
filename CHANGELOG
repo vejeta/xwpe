@@ -233,6 +233,13 @@ Changes
 
 1.7.0 (AI assistant -- experimental, opt-in)
 
+* Alt-T and Alt-V walk a list that spans several files in order.  They
+  used to pick the next row by line number alone, whatever file it named,
+  so with compiler errors, an agent changeset or a Multi-file accept
+  across files, a file whose line was lower than the current one was
+  skipped for good.  The step now stays within the current file first
+  and then moves to the next file's rows, wrapping at the ends.
+
 * An accepted change leaves the buffer exactly as the accepted text.
   Every accepted Edit, completion, language-server code action, format
   and whole-buffer undo used to leave one empty line after the text that

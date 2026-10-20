@@ -52,6 +52,11 @@ const char *e_get_start_symbol(void)
 
 struct ERR_LI  {  char *file, *text, *srch;  int x, y, line;  } *err_li = NULL;
 int err_no, err_num;
+/* Whether a row of the current error list has been shown yet.  A new list
+   (a compile, an agent changeset, a Multi-file accept) starts unwalked: the
+   first Alt-T then shows its first row and the first Alt-V its last, in the
+   list's order, wherever the cursor happens to be. */
+static int err_walked;
 
 int e__project = 0, e_argc, e_p_l_comp;
 int e_prj_select_pending = 0;
@@ -1270,6 +1275,7 @@ int e_show_error(int n, FENSTER *f)
 
  if (!err_li || n >= err_num || n < 0)
   return(1);
+ err_walked = 1;
  f = cn->f[cn->mxedt];
  if (err_li[n].file[0] == '.' && err_li[n].file[1] == DIRC)
   bg = 2;
@@ -1396,6 +1402,7 @@ int e_make_error_list(FENSTER *f)
  }
  err_li = MALLOC(sizeof(struct ERR_LI) * b->mxlines);
  err_num = 0;
+ err_walked = 0;
  for (i = 0; i < b->mxlines; i++)
  {
   if (!strncmp((char *)b->bf[i].s, "Error at Command:", 17)) 
@@ -1489,6 +1496,7 @@ int e_set_error_list(int n, char **files, int *lines, int *ys, char **texts)
  }
  err_num = 0;
  err_no = 0;
+ err_walked = 0;
  if (n <= 0) return(0);
  err_li = MALLOC(sizeof(struct ERR_LI) * n);
  if (!err_li) return(-1);
@@ -1505,35 +1513,105 @@ int e_set_error_list(int n, char **files, int *lines, int *ys, char **texts)
  return(0);
 }
 
+/**
+ * e_err_row_in_window - Does row @n of the error list name the file in @f?
+ * @n: a row of the list; @f: a window.
+ *
+ * The same rule e_show_error applies when it opens a row: a row written as
+ * "name" or "./name" is compared to the window's file name, a row written
+ * with a directory to the window's full name.  Lets Alt-T and Alt-V step
+ * within the file the user is in before moving to the next file's rows.
+ *
+ * Return: 1 when the row belongs to the window's file, else 0.
+ */
+static int e_err_row_in_window(int n, FENSTER *f)
+{
+ int bg = 0, same;
+ char *filename;
+
+ if (err_li[n].file[0] == '.' && err_li[n].file[1] == DIRC)
+  bg = 2;
+ if (err_li[n].file[0] == DIRC)
+ {
+  filename = e_mkfilename(f->dirct, f->datnam);
+  same = !strcmp(err_li[n].file + bg, filename);
+  FREE(filename);
+ }
+ else
+  same = !strcmp(err_li[n].file + bg, f->datnam);
+ return(same);
+}
+
+/**
+ * e_previous_error - Alt-V: the row before the cursor, in the list's order.
+ * @f: the window the user is in.
+ *
+ * On a list nothing has been shown from yet, the last row.  Otherwise,
+ * within the current file the previous row is the nearest one above the
+ * cursor.  Above the file's first row the step goes to the row that
+ * precedes this file's rows in the list, so a list that spans several files
+ * (compiler errors, the agent's changeset, a Multi-file edit) is walked
+ * whole and in order, whatever the line numbers of the other files.  From a
+ * window the list does not name, the last row.
+ */
 int e_previous_error(FENSTER *f)
 {
- int i, cur_line;
+ int i, cur_line, first_here = -1;
 
  if (err_num <= 0)
  {
   e_pr_uul(f->fb);
   return(0);
  }
+ if (!err_walked)
+  return(e_show_error(err_no = err_num - 1, f));
  cur_line = f->b->b.y + 1;
  for (i = err_num - 1; i >= 0; i--)
+ {
+  if (!e_err_row_in_window(i, f))
+   continue;
+  first_here = i;
   if (err_li[i].line < cur_line)
    return(e_show_error(err_no = i, f));
+ }
+ if (first_here >= 0)
+  return(e_show_error(err_no = (first_here + err_num - 1) % err_num, f));
  return(e_show_error(err_no = err_num - 1, f));
 }
 
+/**
+ * e_next_error - Alt-T: the row after the cursor, in the list's order.
+ * @f: the window the user is in.
+ *
+ * On a list nothing has been shown from yet, the first row.  Otherwise,
+ * within the current file the next row is the nearest one below the cursor.
+ * Past the file's last row the step goes to the row that follows this
+ * file's rows in the list, wrapping to the first: a row whose line number
+ * is lower than the cursor's but sits in another file is never skipped.
+ * From a window the list does not name, the first row.
+ */
 int e_next_error(FENSTER *f)
 {
- int i, cur_line;
+ int i, cur_line, last_here = -1;
 
  if (err_num <= 0)
  {
   e_pr_uul(f->fb);
   return(0);
  }
+ if (!err_walked)
+  return(e_show_error(err_no = 0, f));
  cur_line = f->b->b.y + 1;
  for (i = 0; i < err_num; i++)
+ {
+  if (!e_err_row_in_window(i, f))
+   continue;
+  last_here = i;
   if (err_li[i].line > cur_line)
    return(e_show_error(err_no = i, f));
+ }
+ if (last_here >= 0)
+  return(e_show_error(err_no = (last_here + 1) % err_num, f));
  return(e_show_error(err_no = 0, f));
 }
 

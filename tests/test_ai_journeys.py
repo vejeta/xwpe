@@ -53,6 +53,7 @@ TURN_POLL_S = 20
 # The status row of the active file window: its bottom border carries the
 # modified mark two cells after the corner(s), then line:column.
 STATUS_RE = re.compile(r"^m+q.(.)q\s+(\d+):(\d+)\s")
+STATUS_ANYWHERE_RE = re.compile(r"mq.(.)q\s+(\d+):(\d+)\s")
 # A deleted row of the review box over the file window: the window border,
 # blanks, then the '-' mark (an empty deleted line is the mark alone).
 DELETED_ROW_RE = re.compile(r"^x\s+-")
@@ -97,9 +98,12 @@ def _disk(path):
 
 def _status(s):
     """(modified mark, line, column) of the active file window's status row,
-    or None when no file window is active."""
+    or None when no file window is active.  Only the active window's bottom
+    border carries line:column, so the row is found by that, wherever the
+    border starts: with several windows open the borders nest ("xmq*q 3:1")
+    and the status row no longer begins at the screen's left edge."""
     for row in s.display():
-        m = STATUS_RE.match(row)
+        m = STATUS_ANYWHERE_RE.search(row)
         if m:
             return m.group(1), int(m.group(2)), int(m.group(3))
     return None
@@ -680,3 +684,47 @@ def test_edit_on_a_marked_block_changes_only_the_block(tmp_path):
         s.key(CTRL_U, delay=0.8)
         s.save()
         assert _disk(s.path) == seed, "one Ctrl-U did not take the block edit back"
+
+
+def _lines(prefix, n):
+    return "".join("%s%d;\n" % (prefix, i) for i in range(1, n + 1))
+
+
+# @scenario SC-ai-journey-05
+def test_alt_t_walks_the_rows_in_order_when_a_later_file_has_a_lower_line(tmp_path):
+    """Three changed files at lines 5, 2 and 9: Alt-T steps t.c:5, u.c:2,
+    v.c:9 and wraps to t.c:5; Alt-V steps back to v.c:9.  Stepping by bare
+    line number would skip u.c, whose line is lower than t.c's."""
+    t_old, u_old, v_old = _lines("int t", 6), _lines("int u", 3), _lines("int v", 10)
+    t_new = t_old.replace("int t5;", "int t5 = 5;")
+    u_new = u_old.replace("int u2;", "int u2 = 2;")
+    v_new = v_old.replace("int v9;", "int v9 = 9;")
+    (tmp_path / "u.c").write_text(u_old)
+    (tmp_path / "v.c").write_text(v_old)
+    trace = tmp_path.parent / (tmp_path.name + ".trace")
+    plan = ("PROPOSE t.c\n" + t_new + "@@END\n"
+            "PROPOSE u.c\n" + u_new + "@@END\n"
+            "PROPOSE v.c\n" + v_new + "@@END\n@@PLAN-DONE three files\n")
+    with WpeSession(str(tmp_path), t_old, env_extra=_env(trace, plan)) as s:
+        s.key(ALT.AI)
+        s.key("f")
+        s._drain(0.5)
+        s.key("set them")
+        s.key("\r", delay=0.8)
+        assert wait_screen(s, "Multi-file edit - 3 files"), _screen(s)
+        s.key("a", delay=1.0)
+        assert _wait_trace(s, trace, "plan done applied=3"), _trace(trace)
+        s._drain(0.6)
+        shown = _screen(s)
+        for row in ("t.c:5:", "u.c:2:", "v.c:9:"):
+            assert row in shown, "no Messages row %s:\n%s" % (row, shown)
+        walk = []
+        for _ in range(4):
+            s.key(ALT_T, delay=0.8)
+            walk.append((_active_title(s).strip(" q"), _status(s)[1]))
+        s.key(ALT_V, delay=0.8)
+        back = (_active_title(s).strip(" q"), _status(s)[1])
+    assert [w[1] for w in walk] == [5, 2, 9, 5], "Alt-T did not step the rows in order: %r" % walk
+    assert [n in w[0] for w, n in zip(walk, ("t.c", "u.c", "v.c", "t.c"))] == [True] * 4, \
+        "Alt-T landed in the wrong files: %r" % walk
+    assert "v.c" in back[0] and back[1] == 9, "Alt-V did not step back to v.c:9: %r" % (back,)
