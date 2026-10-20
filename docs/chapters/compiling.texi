@@ -93,8 +93,8 @@ status row says the same, where Turbo C showed its count, so a short
 Messages window never hides it.  The count is of the compiler's rows: a
 linker's row counts as an error, while make's own line about a failed
 recipe is a stop of the walk but not an error of your code.  A build that
-failed with no row at all (a command that could not run) adds its exit
-status to the count row.  Each warning row starts
+failed and counted no error (a command that could not run, a recipe that
+failed with only make's own line) adds its exit status to the count row.  Each warning row starts
 with a warning sign (U+26A0), so the rows that only advise stand apart
 from the ones that stopped the build.  A failed build puts the cursor on
 its first error; a successful one gives the keys back to the window you

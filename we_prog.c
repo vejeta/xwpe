@@ -1473,7 +1473,6 @@ typedef struct {
  int wait_row;          /* the waiting line is Messages' last row          */
  time_t start;
  int hb_fd;             /* the heartbeat timer                             */
- sigset_t old_mask;     /* the signal mask before SIGCHLD was blocked      */
  ECNT *cn;
  PIC *pic;
  char dir[WPE_BUILD_PATH_MAX];   /* where the child runs; its paths resolve there */
@@ -2294,9 +2293,10 @@ static char g_build_count_line[160];
  * e_build_print_count - End Messages with "N errors, M warnings".
  * @b: the Messages buffer; @result: the build's result.
  *
- * The count Borland showed when a build ended.  A failed build that left
- * no row to walk (a linker error, a command that could not run) says so
- * with its exit status, so "0 errors" never reads as a success.
+ * The count Borland showed when a build ended.  A failed build that
+ * counted no error (a command that could not run, a recipe that failed
+ * with only make's own row) says so with its exit status, so "0 errors"
+ * never reads as a success.
  */
 static void e_build_print_count(BUFFER *b, int result)
 {
