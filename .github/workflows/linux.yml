@@ -26,6 +26,13 @@ jobs:
     runs-on: ubuntu-latest
     env:
       DEBIAN_FRONTEND: noninteractive
+      # The runner exports XDG_CONFIG_HOME.  The editor reads it before HOME,
+      # so every test session would share one xwperc, one key file and one
+      # session store across workers and reruns, and fail on what an earlier
+      # test saved (the 81 runner-only failures of 2026-10-20).  Empty means
+      # "unset" to the editor: each session falls back under its own HOME.
+      XDG_CONFIG_HOME: ""
+      XDG_STATE_HOME: ""
       # CI runners are slower and more loaded than a dev box; stretch every
       # harness settle (keystroke -> screenshot) so timing flakes don't masquerade
       # as failures -- same knob the Debian autopkgtest uses.

@@ -510,6 +510,14 @@ class WpeSession:
         set_pty_size(self.master_fd, cols, rows)    # the child inherits it
         env = strip_size_env(os.environ.copy())
         env.update(TERM="xterm-256color", LC_ALL="en_US.UTF-8", HOME=workdir)
+        # The editor reads $XDG_CONFIG_HOME and $XDG_STATE_HOME before $HOME,
+        # so a value inherited from the machine (GitHub's runner exports
+        # XDG_CONFIG_HOME) would make every session share one xwperc, one
+        # key file and one session store, and tests would fail on what an
+        # earlier test saved.  An empty value is "unset" to the editor, so
+        # both fall back under this session's HOME; a test that passes its
+        # own value in env_extra still wins.
+        env.update(XDG_CONFIG_HOME="", XDG_STATE_HOME="")
         # Load help/data from the checkout (hermetic), not a system-installed
         # copy; an explicit caller-set XWPE_LIB still wins.
         env.setdefault("XWPE_LIB", XWPE_LIB_DIR)
