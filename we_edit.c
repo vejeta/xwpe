@@ -377,7 +377,7 @@ int e_edit(ECNT *cn, char *filename)
     language server understands gets the LSP bottom bar -- the contextual "LSP
     Menu" entry -- so the IDE actions are discoverable.  Per-window: switching to
     a non-LSP file shows its normal bar, exactly the desired contextual behaviour. */
- if (ftype == 0 && e_lsp_server_label(f))
+ if (ftype == 0 && e_lsp_bar_wanted(f))
   f->blst = eblst_lsp;
 #endif
 #ifdef WPE_AI
@@ -392,13 +392,17 @@ int e_edit(ECNT *cn, char *filename)
     keeps its classic bar. */
  if (ftype == 0 && e_ai_bar_wanted()) {
 #ifdef DEBUGGER
-  if (e_lsp_server_label(f))
+  if (e_lsp_bar_wanted(f))
    f->blst = eblst_lspai;               /* LSP + AI: show both hints */
   else
 #endif
    f->blst = eblst_ai;                  /* AI only */
  }
 #endif
+ /* An editor bar of the programming modes names F9 and has one entry more;
+    the window paints and takes clicks on as many entries as its bar has. */
+ if (ftype == 0)
+  e_use_editor_bar(f, f->blst);
  if (ftype != 1)
   fp = fopen(complete_fname, "rb");
  if (fp != NULL && access(complete_fname, 2) != 0)

@@ -163,13 +163,16 @@ int WpeHandleMainmenu(int n, FENSTER *f)
     mainmenu[5].no_of_items = 12;
     if((mainmenu[5].menuitems = MALLOC(mainmenu[5].no_of_items * sizeof(OPTK))) == NULL)
       e_error(e_msg[ERR_LOWMEM], 1, f->fb);
-    mainmenu[5].menuitems[0] = WpeFillSubmenuItem("Compile         Alt F9 / Alt C", 0, 'C', e_compile);
+    /* Only keys a terminal delivers are shown.  Alt-F9, Alt-F8 and Alt-F7
+       still compile and walk where they arrive (X11, Wayland, the Linux
+       console) but terminal emulators keep them for themselves. */
+    mainmenu[5].menuitems[0] = WpeFillSubmenuItem("Compile                  Alt C", 0, 'C', e_compile);
     mainmenu[5].menuitems[1] = WpeFillSubmenuItem("Make                F9 / Alt M", 0, 'M', e_p_make);
     mainmenu[5].menuitems[2] = WpeFillSubmenuItem("Run                ^F9 / Alt U", 0, 'R', e_run);
     mainmenu[5].menuitems[3] = WpeFillSubmenuItem("Install                  Alt L", 0, 'I', e_install);
     mainmenu[5].menuitems[4] = WpeFillSubmenuItem("Execute Make             Alt A", 0, 'E', e_exec_make);
-    mainmenu[5].menuitems[5] = WpeFillSubmenuItem("Next Error      Alt F8 / Alt T", 0, 'N', e_next_error);
-    mainmenu[5].menuitems[6] = WpeFillSubmenuItem("Previous Error  Alt F7 / Alt V", 0, 'P', e_previous_error);
+    mainmenu[5].menuitems[5] = WpeFillSubmenuItem("Next Error               Alt T", 0, 'N', e_next_error);
+    mainmenu[5].menuitems[6] = WpeFillSubmenuItem("Previous Error           Alt V", 0, 'P', e_previous_error);
     mainmenu[5].menuitems[7] = WpeFillSubmenuItem("Show Definition           ^O S", 0, 'S', e_sh_def);
     mainmenu[5].menuitems[8] = WpeFillSubmenuItem("Show NeXt Definition      ^O N", 7, 'X', e_sh_nxt_def);
     mainmenu[5].menuitems[9] = WpeFillSubmenuItem("Matching BracKet          ^O K", 13, 'K', e_nxt_brk);

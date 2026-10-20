@@ -18,22 +18,23 @@ Perl 5.40, and pdflatex (TeX Live 2025).
 @section The build cycle
 
 @cindex build cycle
-@cindex Alt-F9
+@cindex Alt-C
 @cindex Ctrl-F9
 
 The build cycle uses three commands, each building on the previous:
 
 @table @kbd
-@item Alt-F9 (Compile)
+@item Alt-C (Compile)
 Compile the current file only.  For GNU compilers (gcc, g++, gfortran),
 xwpe invokes the compiler with @code{-c -o @var{file}.o @var{file}.c}.
 For non-GNU compilers (fpc, javac), the @code{-c} and @code{-o} flags
 are omitted.  Only files modified since the last compilation are
 recompiled.
 
-@item F9 (Make)
+@item F9 or Alt-M (Make)
 Recompile all modified files and link the executable.  This is the
-most common command.
+most common command, and the bottom row of a source window names it
+(@samp{F9 Build}).
 
 @item Ctrl-F9 (Run)
 Build the executable and then run it.  Program arguments can be set
@@ -46,12 +47,21 @@ In X11 mode, output is captured to the Messages buffer via
 @end table
 
 After compilation, errors appear in the Message Window.  Use
-@kbd{Alt-T} or @kbd{Alt-F8} (Next Error) and @kbd{Alt-V} or
-@kbd{Alt-F7} (Previous Error) to navigate between errors.  The cursor
-jumps to the error location in the source code, on the line and the
-column the compiler names.  These commands are
-also available from the @samp{Run} menu as @samp{Next Error} and
+@kbd{Alt-T} (Next Error) and @kbd{Alt-V} (Previous Error) to navigate
+between errors.  The cursor jumps to the error location in the source
+code, on the line and the column the compiler names.  These commands
+are also available from the @samp{Run} menu as @samp{Next Error} and
 @samp{Previous Error}.
+
+@cindex Alt-F9
+@cindex Alt-F8
+@cindex Alt-F7
+The Run menu shows only keys a terminal delivers.  Turbo C's
+@kbd{Alt-F9} (Compile), @kbd{Alt-F8} (Next Error) and @kbd{Alt-F7}
+(Previous Error) are kept as legacy aliases: they work where they reach
+the editor (the X11 and Wayland windows, the Linux console), but
+terminal emulators keep them for themselves, so the menu does not offer
+them.
 
 @subsection The build runs in the background
 
@@ -86,6 +96,13 @@ from the ones that stopped the build.  A failed build puts the cursor on
 its first error; a successful one gives the keys back to the window you
 were in.
 
+@cindex nothing to build
+@cindex up to date
+When there is nothing to do, because the program (for @kbd{F9}) or the
+object file (for @kbd{Alt-C}) is newer than its sources, Messages starts
+afresh with one line, for example @samp{nothing to build: t.e is up to
+date}, and the keys stay in the source window.
+
 @subsection Walking the errors
 
 @cindex Alt-T, order
@@ -103,6 +120,24 @@ In the Messages window, @kbd{Enter} or a double click on a row jumps to
 the place it names; a single click only moves the Messages cursor to the
 row.  @kbd{Esc} leaves Messages for the window you came from, its cursor
 where you left it.
+
+@cindex no messages to walk
+Before any build, or after one that left no row, @kbd{Alt-T} and
+@kbd{Alt-V} say @samp{no messages to walk} on the status row.
+
+@cindex file name, with blanks
+@cindex long path
+A row's file name is the whole name the compiler printed, blanks
+included, so an error in @file{my file.c} jumps into that file, and a
+path of any length makes a row.  When a pattern lets the name take a
+lead-in with it (Python's @samp{File "t.py"}, a Scala 3 heading, make's
+@samp{[Makefile}), the longest part after a blank or a bracket that
+names a real file is used.  A relative name is looked for in the editor's
+own directory and then in the directory the build ran in, so @kbd{Alt-T}
+to the second file of a make started from another directory opens it.  A
+row naming a file that exists in neither place says @samp{cannot find
+@var{name}} on the status row; no window is opened and nothing is written
+to disk.
 
 @subsection Compared with Turbo C
 
@@ -165,7 +200,12 @@ Settings per language:
 @cindex language support
 
 xwpe selects the compiler automatically based on the file extension.
-Ten languages are configured by default.
+The table lists the default entries; Go and Rust have entries too (see
+the note below).
+
+@cindex no compiler entry
+@kbd{F9} on a file whose extension has no entry says, for example,
+@samp{no compiler entry for .xyz; add one in Options > Compiler}.
 
 @subsection Default compilers (v1.6.3)
 
@@ -193,6 +233,10 @@ Ten languages are configured by default.
   Two source-incompatible toolchains; xwpe picks one per file from its
   dialect (see below).  ga68 (GCC front-end) compiles a native binary;
   a68g (Algol 68 Genie) interprets, with @code{--norun} for the F9 check.
+@item Scala @tab scalac @tab .scala @tab @code{file:line:} @tab
+  Uses @code{-deprecation}.  scalac writes the class files itself, so
+  there is no link step.  Scala 3's @samp{-- [E007] @dots{}: t.scala:3:17}
+  heading makes a row too.
 @end multitable
 
 @subsection Other GNU-compatible compilers
@@ -526,29 +570,32 @@ At a glance:
 @item Make (@key{F9}) @tab compiles + links a binary @tab @code{a68g --norun} (check only)
 @item Debug @tab gdb on the binary; breaks at @code{__algol68_main}
   @tab @code{a68g --monitor} on the source
-@item Diagnostics @tab GCC @code{file:line:column:} @tab @code{@dots{} in line N} (no file name)
+@item Diagnostics @tab GCC @code{file:line:column:} @tab the source line, numbered (no file name)
 @end multitable
 
 @subsubsection a68g error format
 
-Algol 68 Genie reports type and syntax errors like:
+Algol 68 Genie 3 reports type and syntax errors like:
 
 @example
-3        INT a := "not an integer";
-             1
-a68g: error: 1: [] CHAR cannot be coerced to INT in a strong-unit,
-in closed-clause starting at "BEGIN" in line 1.
+3       print((x, yy))
+                  1
+a68g: error: 1: tag "yy" has not been declared properly, in
+collateral-clause starting at "(" in this line.
 @end example
 
 Pattern (configured by default):
 
 @example
-*in line $@{LINE@}*
+$@{LINE@} *
 @end example
 
 @noindent
-a68g names no file and reports the enclosing clause's line, so the
-cursor jump is best-effort -- read the full diagnostic in Messages.
+The row is the echoed source line, which starts with its line number;
+@kbd{Enter} on it, or on the message under it, jumps to that line.
+a68g names no file: a pattern without @code{$@{FILE@}} names the file
+being compiled.  A line that starts with @samp{a68g:} is the compiler's
+own message, not a linker's, so the rows above it are still walked.
 
 @subsubsection ga68 error format
 
@@ -614,7 +661,8 @@ blank lines).
   line, not the exact position.
 @item @strong{Multi-file errors}: error navigation assumes each error
   references a single file.  If the error file is not currently open,
-  xwpe opens it automatically.
+  xwpe opens it automatically; if it does not exist, the status row says
+  @samp{cannot find @var{name}}.
 @end itemize
 
 @noindent

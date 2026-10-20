@@ -155,7 +155,7 @@ Shift the block left (unindent).
 @cindex F9
 
 @table @kbd
-@item C -- Compile (@kbd{Alt-F9})
+@item C -- Compile (@kbd{Alt-C})
 Compile the current file.
 @item M -- Make (@key{F9})
 Build the executable from all project modules.

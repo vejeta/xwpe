@@ -56,7 +56,7 @@ minimum 80x25; e.g.@: @option{-g 80x20+4+4}).
 @item @key{F8} @tab @tab Step (step over)
 @item @key{F9} @tab Make (build) @tab
 @item @key{F10} @tab Activate menu @tab
-@item @kbd{Alt-F9} @tab Compile current file @tab
+@item @kbd{Alt-F9} @tab Compile current file (legacy alias of @kbd{Alt-C}; terminal emulators keep it) @tab
 @item @kbd{Ctrl-F2} @tab @tab Quit debugger
 @item @kbd{Ctrl-F6} @tab @tab Show stack
 @item @kbd{Ctrl-F7} @tab @tab Make watch
@@ -77,7 +77,7 @@ command also has a non-function-key binding, so xwpe is fully usable as shipped.
 @headitem Action @tab Function key @tab Without F-keys
 @item Open a menu @tab @key{F10} @tab @kbd{Alt-@var{letter}} (@kbd{Alt-F} File, @kbd{Alt-S} Search, @kbd{Alt-R} Run, ...)
 @item Make (build) @tab @key{F9} @tab @kbd{Alt-M}
-@item Compile file @tab @kbd{Alt-F9} @tab @kbd{Alt-C}
+@item Compile file @tab @kbd{Alt-F9} (legacy alias) @tab @kbd{Alt-C}
 @item Run program @tab @kbd{Ctrl-F9} @tab @kbd{Alt-U}
 @item Find / Replace @tab @key{F4} / @kbd{Alt-F4} @tab @kbd{Ctrl-O F} / @kbd{Ctrl-O A}
 @item Save @tab @key{F2} @tab File menu (@kbd{Alt-F}, then @kbd{S})
@@ -248,15 +248,20 @@ These commands operate on the clipboard (kill-buffer).  (Documented since v1.4.)
 
 @multitable @columnfractions .20 .40 .40
 @headitem Key @tab Action @tab Alternative
-@item @kbd{Alt-F9} @tab Compile @tab @kbd{Alt-C}
+@item @kbd{Alt-C} @tab Compile @tab @kbd{Alt-F9} (legacy alias)
 @item @key{F9} @tab Build executable (Make) @tab @kbd{Alt-M}
-@item @kbd{Ctrl-F9} @tab Build and run @tab @kbd{Alt-R}
+@item @kbd{Ctrl-F9} @tab Build and run @tab @kbd{Alt-U}
 @item @kbd{Alt-L} @tab Install project @tab
 @item @kbd{Alt-A} @tab Execute @command{make(1)}.  Errors are displayed
 and interpreted in the Message window.  (Detail from German manpage.) @tab
-@item @kbd{Alt-V} @tab Jump to previous error @tab
-@item @kbd{Alt-T} @tab Jump to next error @tab
+@item @kbd{Alt-V} @tab Jump to previous error @tab @kbd{Alt-F7} (legacy alias)
+@item @kbd{Alt-T} @tab Jump to next error @tab @kbd{Alt-F8} (legacy alias)
 @end multitable
+
+The legacy aliases @kbd{Alt-F9}, @kbd{Alt-F8} and @kbd{Alt-F7} work
+where they reach the editor (the X11 and Wayland windows, the Linux
+console); terminal emulators keep them, so the Run menu shows only the
+@kbd{Alt}-letter keys.
 
 @subsection Help shortcuts
 

@@ -34,7 +34,15 @@
 # include <sys/timerfd.h>  /* the waiting line's heartbeat while a build runs */
 #endif
 
+/* A path handed to a build command, or a directory a build runs in. */
+#ifndef PATH_MAX
+#define PATH_MAX 4096
+#endif
+#define WPE_BUILD_PATH_MAX PATH_MAX
+
 int e_run_sh(FENSTER *f);
+char *e_prj_dir(void);
+static void e_prj_anchor_path(void);
 int e_make_library(char *library, char *ofile, FENSTER *f,
                    e_build_cont done, void *data);
 int e_p_exec(FENSTER *f, PIC *pic, e_build_cont done, void *data);
@@ -105,6 +113,8 @@ extern void e_d_prog_output_reset(void);
 /********************************************************/   
 
 char *gnu_intstr = "${?*:warning:}${FILE}:${LINE}:${COLUMN}:*";
+/* a68g's row: the echoed source line, which starts with its number. */
+#define A68G_INTSTR "${LINE} *"
 char *cc_intstr = "${?*:warning:}\"${FILE}\", line ${LINE}:* at or near * \"${COLUMN=AFTER}\"";
 char *pc_intstr = "${?0:e}${?0:w}${?0:s}*:*:* * ${FILE}:\n\n* ${LINE}  ${CMPTEXT}\n*-------\
 ${COLUMN=PREVIOUS?^+14}\n[EWew] * line*";
@@ -145,7 +155,7 @@ char *e_p_msg[] = {
  "Error in Pipe\n Pipe Nr.: %d\n",
  "Error at Command: ",
  "Return-Code: %d",      /*   Number 5   */
- "%s is not a C - File",
+ "no compiler entry for %s; add one in Options > Compiler",
  "No Compiler specified",
  "No Files to compile",
  "No Project-Window",
@@ -228,28 +238,79 @@ int e_prog_switch(FENSTER *f, int c)
      - project mode (.prj open): the directory holding the .prj, so the project's
        Makefile and project-relative flags resolve;
      - otherwise:                the active file's own directory (f->dirct).
-   Returns NULL when no absolute target can be derived (no file dir, or a .prj
-   path that is not absolute) -- the caller then leaves the CWD untouched,
-   exactly the pre-1.6.5 behaviour, so there is never a regression.
+   A relative .prj path is taken from the current directory (e_prj_dir).
+   Returns NULL when no target can be derived (no file dir) -- the caller then
+   leaves the CWD untouched, exactly the pre-1.6.5 behaviour.
    Exposed (non-static) so the debugger launcher in we_debug.c shares the same
    directory policy. */
 char *e_build_dir(FENSTER *f)
 {
- if (e_project_is_open() && e_prog.project[0] == DIRC)
+ if (e_project_is_open())
  {
-  char *slash = strrchr(e_prog.project, DIRC);
-  if (slash && slash != e_prog.project)
-  {
-   int n = (int)(slash - e_prog.project);
-   char *d = MALLOC(n + 1);
-   memcpy(d, e_prog.project, n);
-   d[n] = '\0';
+  char *d = e_prj_dir();
+
+  if (d)
    return(d);
-  }
  }
  if (f && f->dirct && f->dirct[0])
   return(WpeStrdup(f->dirct));
  return(NULL);
+}
+
+/**
+ * e_prj_dir - The directory that holds the open project's .prj file.
+ *
+ * A project builds there whatever directory the editor was started from:
+ * "wpe proj/p.prj" from the parent finds the project's sources, because a
+ * relative .prj path is taken from the current directory.
+ * Return: a new absolute path the caller frees, or NULL.
+ */
+char *e_prj_dir(void)
+{
+ char cwd[WPE_BUILD_PATH_MAX], *path, *slash, *dir;
+
+ if (!e_prog.project || !e_prog.project[0])
+  return(NULL);
+ if (e_prog.project[0] == DIRC)
+  path = WpeStrdup(e_prog.project);
+ else if (!getcwd(cwd, sizeof cwd))
+  return(NULL);
+ else
+  path = e_mkfilename(cwd, e_prog.project);
+ slash = strrchr(path, DIRC);
+ if (!slash)
+ {
+  FREE(path);
+  return(NULL);
+ }
+ if (slash == path)
+  slash++;                      /* a project in the root directory */
+ *slash = '\0';
+ dir = WpeStrdup(path);
+ FREE(path);
+ return(dir);
+}
+
+/**
+ * e_prj_anchor_path - Make the open project's path absolute.
+ *
+ * A project build changes into the project's directory before it reads
+ * the .prj file; a path relative to the directory the editor was started
+ * in would no longer lead to it there.
+ */
+static void e_prj_anchor_path(void)
+{
+ char cwd[WPE_BUILD_PATH_MAX], *path;
+
+ if (!e_prog.project || !e_prog.project[0] || e_prog.project[0] == DIRC)
+  return;
+ if (!getcwd(cwd, sizeof cwd))
+  return;
+ path = e_mkfilename(cwd, e_prog.project);
+ if (!path)
+  return;
+ FREE(e_prog.project);
+ e_prog.project = path;
 }
 
 /* e_build_pushd - switch the process CWD to e_build_dir(f) before forking a
@@ -285,6 +346,7 @@ static void e_build_popd(char *saved)
 }
 
 static void e_make_multifile_hint(FENSTER *f);
+static void e_p_set_compiled_source(const char *name);
 static int e_build_chain_begin(FENSTER *f, e_build_cont done, void *data);
 static void e_build_chain_end(FENSTER *f, int result, void *data);
 
@@ -321,7 +383,7 @@ int e_compile(FENSTER *f)
  WpeMouseChangeShape(WpeWorkingShape);
  efildes[0] = efildes[1] = -1;
  wfildes[0] = wfildes[1] = -1;
- e_comp(f, 1, e_build_chain_end, NULL);
+ e_comp(f, e_build_chain_end, NULL);
  WpeMouseRestoreShape();
  return(0);
 }
@@ -379,7 +441,7 @@ int e_p_make_then(FENSTER *f, e_build_cont done, void *data)
  WpeMouseChangeShape(WpeWorkingShape);
  efildes[0] = efildes[1] = -1;
  wfildes[0] = wfildes[1] = -1;
- e_comp(f, 0, e_p_make_after_compile, NULL);
+ e_comp(f, e_p_make_after_compile, NULL);
  WpeMouseRestoreShape();
  return(0);
 }
@@ -390,6 +452,26 @@ int e_p_make_then(FENSTER *f, e_build_cont done, void *data)
 int e_p_make(FENSTER *f)
 {
  return(e_p_make_then(f, NULL, NULL));
+}
+
+static void e_build_note_up_to_date(const char *target);
+
+/**
+ * e_p_make_note_program_current - The link found the program current.
+ * @estr: the program of a single-file build.
+ *
+ * A compiler that writes no separate program (javac, fpc, scalac) has no
+ * link step: what it found current is its own output, noted by the
+ * compile.
+ */
+static void e_p_make_note_program_current(const char *estr)
+{
+ if (e_s_prog.comp_sw & 1)
+  return;
+ if (e__project)
+  e_build_note_up_to_date(e_s_prog.exe_name);
+ else
+  e_build_note_up_to_date(estr);
 }
 
 /**
@@ -479,6 +561,7 @@ static void e_p_make_link(ECNT *cn)
   return;
  }
  /* Executable is up to date -- no linking needed */
+ e_p_make_note_program_current(estr);
  if (!e__project)
   e_free_arg(e_arg, e_argc);
  if (cwd_chg)
@@ -894,33 +977,49 @@ int e_check_c_file_w(FENSTER *fw)
 }
 
 /**
- * e_compile_announce_uptodate - Tell the user that a lone Compile (Alt-C) had
- * nothing to do because the object file is already current.
+ * e_p_file_type - The extension that picks a file's compiler entry.
+ * @name: the file name.
  *
- * Alt-C compiles the active source to a .o without linking.  When that .o is
- * newer than the source, xwpe skips the compiler and produces no Messages
- * output -- which is indistinguishable from "Alt-C did nothing" and reads as a
- * bug (e.g. right after a debug/Make has already built the .o).  This pops a
- * short confirmation so the user knows the build is up to date, not broken.
- * Only the single-file Compile path calls it; Make (Alt-M) stays silent and
- * goes on to link.
- *
- * @param f  the active editor window (used to place the message box).
+ * Named when F9 finds no entry, so the user knows which suffix to add in
+ * Options > Compiler.  A name with no extension is named whole.
+ * Return: a pointer into @name.
  */
-static void e_compile_announce_uptodate(FENSTER *f)
+static const char *e_p_file_type(const char *name)
 {
- e_message(0, "Already compiled (object file is up to date).", f);
+ const char *dot = strrchr(name, '.');
+
+ if (dot)
+  return(dot);
+ return(name);
+}
+
+/* The last thing a build found already current: the object of a compile,
+   or the program of a link.  Empty while every step had work to do. */
+static char g_build_up_to_date[WPE_BUILD_PATH_MAX];
+
+/**
+ * e_build_note_up_to_date - A step of the build found @target current and
+ * ran nothing.
+ * @target: the object or program, as the build names it.
+ *
+ * When no step of the build ran a command, Messages ends the build with
+ * "nothing to build: <target> is up to date", for F9, Alt-M and Alt-C
+ * alike, so a key that had nothing to do never looks like a key that did
+ * nothing.
+ */
+static void e_build_note_up_to_date(const char *target)
+{
+ if (!strncmp(target, "./", 2))
+  target += 2;
+ snprintf(g_build_up_to_date, sizeof g_build_up_to_date, "%s", target);
 }
 
 /* A source or object path handed to a build command.  The 128 bytes this
    replaces cut the path mid-word at 127 characters and handed the compiler the
    piece that was left, which then reported a linker input file it could not
    find: the message blamed the linker for a name the editor had truncated.
-   A build path is a path, so it is sized like one. */
-#ifndef PATH_MAX
-#define PATH_MAX 4096
-#endif
-#define WPE_BUILD_PATH_MAX PATH_MAX
+   A build path is a path, so it is sized like one (WPE_BUILD_PATH_MAX, at
+   the top of this file). */
 
 /**
  * e_build_path - Join a directory and a file name into a build command's path.
@@ -972,13 +1071,15 @@ static void e_build_path_too_long(FENSTER *f, const char *what)
 
 /**
  * e_comp_start - Start the compile of the current file (or the project).
- * @f: the window the key was pressed in; @announce: say when nothing needs
- * compiling; @done, @data: what runs when the compile has ended.
+ * @f: the window the key was pressed in; @done, @data: what runs when the
+ * compile has ended.
  * @handed: set to 1 when @done now belongs to a running step.
  *
+ * An object that is already current is noted, and the end of the build
+ * says "nothing to build" when no step ran.
  * Return: the result, when @done was not handed on.
  */
-static int e_comp_start(FENSTER *f, int announce, e_build_cont done, void *data,
+static int e_comp_start(FENSTER *f, e_build_cont done, void *data,
                         int *handed)
 {
  ECNT *cn = f->ed;
@@ -1020,7 +1121,7 @@ static int e_comp_start(FENSTER *f, int announce, e_build_cont done, void *data,
  }
  if (i == 0)
  {
-  snprintf(ostr, sizeof(ostr), e_p_msg[ERR_S_NO_CFILE], f->datnam);
+  snprintf(ostr, sizeof(ostr), e_p_msg[ERR_S_NO_CFILE], e_p_file_type(f->datnam));
   e_error(ostr, 0, f->fb);
   return(WPE_ESC);
  }
@@ -1053,6 +1154,7 @@ static int e_comp_start(FENSTER *f, int announce, e_build_cont done, void *data,
   return (-1);
  }
  argc = e_add_arg(&arg, fstr, argc, argc);
+ e_p_set_compiled_source(fstr);
  if (e_build_path(ostr, sizeof(ostr), e_prog.exedir, f->datnam))
  {
   e_build_path_too_long(f, "object");
@@ -1117,8 +1219,7 @@ static int e_comp_start(FENSTER *f, int announce, e_build_cont done, void *data,
  e_free_arg(arg, argc);
  if (cwd_chg)
   e_build_popd(cwd_saved);
- if (announce)
-  e_compile_announce_uptodate(f);
+ e_build_note_up_to_date(ostr);
  return(0);
 }
 
@@ -1127,16 +1228,15 @@ static void e_build_continue(e_build_cont cont, FENSTER *f, int result, void *da
 /**
  * e_comp - Compile the current file, or build the open project, as a step
  * of a build.
- * @f: the window the key was pressed in; @announce: say when the object is
- * already current (Alt-C); @done: what runs when the compile has ended,
- * exactly once, also when nothing needed compiling or the compile could not
- * start; @data: handed to @done.
+ * @f: the window the key was pressed in; @done: what runs when the compile
+ * has ended, exactly once, also when nothing needed compiling or the
+ * compile could not start; @data: handed to @done.
  * Return: 0.
  */
-int e_comp(FENSTER *f, int announce, e_build_cont done, void *data)
+int e_comp(FENSTER *f, e_build_cont done, void *data)
 {
  int handed = 0;
- int ret = e_comp_start(f, announce, done, data, &handed);
+ int ret = e_comp_start(f, done, data, &handed);
 
  if (!handed)
   e_build_continue(done, f, ret, data);
@@ -1351,6 +1451,8 @@ static int e_p_pump_fd(int fd, char **acc, int *acclen, BUFFER *b)
 /* e_make_error_list's verdict for output that is not a compiler's (a linker
    or a command that could not start): no row to jump to. */
 #define E_LIST_NO_JUMP (-2)
+/* Its verdict for a failed build whose rows may still be walked. */
+#define E_LIST_COMPILER_FAILED (-1)
 
 /* The one build step that may run at a time. */
 typedef struct {
@@ -1416,12 +1518,46 @@ int e_build_busy(void)
  */
 void e_build_refuse(FENSTER *f)
 {
- if (!f || !f->fb)
+ e_status_say(f, E_BUILD_BUSY_LINE);
+}
+
+/* What a status line that does not fit the screen starts with: it keeps
+   its end, where the part of a long file name the user knows is. */
+#define E_STATUS_CUT_MARK "..."
+/* Columns the bottom row keeps free: the one it is drawn from, and the
+   last one. */
+#define E_STATUS_MARGIN 2
+
+/**
+ * e_status_say - Answer a key on the bottom row.
+ * @f: the window the key was pressed in; @text: what to say.
+ *
+ * For a key that cannot do what it says right now (a second build, a walk
+ * with no messages, a row naming a file that is not there): the user reads
+ * why at once, where Borland's status line said it, instead of seeing
+ * nothing happen.  The next repaint of the hint row puts the key hints
+ * back.
+ */
+void e_status_say(FENSTER *f, const char *text)
+{
+ int room = MAXSCOL - E_STATUS_MARGIN, len = (int)strlen(text);
+ char *shown;
+
+ if (!f || !f->fb || room <= (int)strlen(E_STATUS_CUT_MARK))
   return;
+ shown = MALLOC(room + 1);
+ if (len <= room)
+  strcpy(shown, text);
+ else
+ {
+  strcpy(shown, E_STATUS_CUT_MARK);
+  strcat(shown, text + len - (room - (int)strlen(E_STATUS_CUT_MARK)));
+ }
  e_blk(MAXSCOL, 0, MAXSLNS - 1, f->fb->mt.fb);
- e_pr_str(1, MAXSLNS - 1, E_BUILD_BUSY_LINE, f->fb->ms.fb, -1, -1,
+ e_pr_str(1, MAXSLNS - 1, shown, f->fb->ms.fb, -1, -1,
           f->fb->ms.fb, f->fb->mt.fb);
  e_refresh();
+ FREE(shown);
 }
 
 /**
@@ -2096,6 +2232,7 @@ static int e_build_chain_begin(FENSTER *f, e_build_cont done, void *data)
  g_build_chain_cancelled = 0;
  g_build_chain_list = 0;
  g_build_chain_exit = 0;
+ g_build_up_to_date[0] = '\0';
  g_build_final = done;
  g_build_final_data = data;
  return(0);
@@ -2237,6 +2374,39 @@ static void e_build_settle_top(ECNT *cn)
  e_refresh();
 }
 
+/* What Messages says when a build found everything current. */
+#define E_BUILD_UP_TO_DATE_FMT "nothing to build: %s is up to date"
+
+/**
+ * e_build_report_up_to_date - A build that ran no command says so.
+ * @cn: the desktop; @result: the build's result.
+ *
+ * Messages is started afresh with one line naming what is current, the
+ * same words for F9 and Alt-C, and the keys go back to the source window:
+ * the old run's lines no longer stand there as if the key had redone them.
+ */
+static void e_build_report_up_to_date(ECNT *cn, int result)
+{
+ FENSTER *mf;
+ size_t n;
+ char *line;
+
+ if (result || !g_build_up_to_date[0])
+  return;
+ if (e_new_message(e_p_source_window(cn)))
+  return;
+ e_set_error_list(0, NULL, NULL, NULL, NULL);
+ mf = e_build_raise_messages(cn);
+ n = strlen(E_BUILD_UP_TO_DATE_FMT) + strlen(g_build_up_to_date) + 1;
+ line = MALLOC(n);
+ snprintf(line, n, E_BUILD_UP_TO_DATE_FMT, g_build_up_to_date);
+ print_to_end_of_buffer(mf->b, line, 0);
+ FREE(line);
+ e_messages_scroll_to_bottom(mf);
+ e_build_return_to_source(cn);
+ e_build_settle_top(cn);
+}
+
 /**
  * e_build_chain_report - What the user reads when a build has ended.
  * @cn: the desktop; @result: the build's result.
@@ -2250,7 +2420,10 @@ static void e_build_chain_report(ECNT *cn, int result)
  FENSTER *mf;
 
  if (!g_build_chain_ran)
+ {
+  e_build_report_up_to_date(cn, result);
   return;
+ }
  if (g_build_chain_cancelled)
  {
   e_build_paint();
@@ -2338,6 +2511,65 @@ static void e_err_show_row_in_messages(ECNT *cn, int n)
  e_schirm(mf, 0);
 }
 
+static int e_p_file_exists(const char *name);
+
+/* What the status row says for a row naming a file that is not there. */
+#define E_ERR_MISSING_FMT "cannot find %s"
+
+/**
+ * e_err_say_missing - A row names a file the editor cannot find.
+ * @f: the window on top; @name: the name the row gives.
+ *
+ * The status row says so and nothing is opened: a jump used to open a new,
+ * empty window under that name, which a later save would have written to
+ * disk as a file nobody asked for.
+ * Return: 1, the answer of a jump that did not happen.
+ */
+static int e_err_say_missing(FENSTER *f, const char *name)
+{
+ size_t n = strlen(E_ERR_MISSING_FMT) + strlen(name) + 1;
+ char *text = MALLOC(n);
+
+ snprintf(text, n, E_ERR_MISSING_FMT, name);
+ e_status_say(f, text);
+ FREE(text);
+ return(1);
+}
+
+static FENSTER *e_p_source_window(ECNT *cn);
+
+/**
+ * e_err_locate_file - Where the file an error row names is to be found.
+ * @cn: the desktop; @name: the name as the compiler printed it.
+ *
+ * A compiler names a file relative to the directory it ran in, and the
+ * first jump happens there; a later Alt-T or Enter runs from the key loop
+ * in the directory the editor was started in, which may be another one
+ * ("wpe sub/t.c" from the parent, a make that failed in two files).  The
+ * name is tried as it stands, then from the directory the build runs in,
+ * so the second file of such a build still opens where the compiler said.
+ * Return: a new path the caller frees, or NULL when neither place has it.
+ */
+static char *e_err_locate_file(ECNT *cn, const char *name)
+{
+ char *dir, *path;
+
+ if (e_p_file_exists(name))
+  return(WpeStrdup(name));
+ if (name[0] == DIRC)
+  return(NULL);
+ dir = e_build_dir(e_p_source_window(cn));
+ if (!dir)
+  return(NULL);
+ path = e_mkfilename(dir, (char *)name);
+ FREE(dir);
+ if (path && e_p_file_exists(path))
+  return(path);
+ if (path)
+  FREE(path);
+ return(NULL);
+}
+
 /* show source-position of error number "n" from actual errorlist */
 int e_show_error(int n, FENSTER *f)
 {
@@ -2399,8 +2631,16 @@ int e_show_error(int n, FENSTER *f)
    {
     if (filename != cn->f[1]->datnam)
      FREE(filename);
-    if (e_edit(cn, err_li[n].file))
+    char *where = e_err_locate_file(cn, err_li[n].file);
+
+    if (!where)
+     return(e_err_say_missing(f, err_li[n].file));
+    if (e_edit(cn, where))
+    {
+     FREE(where);
      return(WPE_ESC);
+    }
+    FREE(where);
    }
   }
  }
@@ -2515,12 +2755,56 @@ static void e_p_attach_context(int k_before, int k, int *ctx_y)
  *ctx_y = -1;
 }
 
+static size_t e_p_longest_row(BUFFER *b);
+
+/**
+ * e_p_row_starts_with - Does @row start, after a directory, with @word
+ * and a colon?
+ * @row: a Messages row; @word: a program name such as "ld" or "a68g".
+ */
+static int e_p_row_starts_with(const char *row, const char *word)
+{
+ size_t n = strlen(word);
+ int at = e_pure_bin((char *)row, ':');
+
+ if (!n)
+  return(0);
+ return(!strncmp(row + at, word, n) && row[at + n] == ':');
+}
+
+/**
+ * e_p_unmatched_row_verdict - What a row the compiler's pattern did not
+ * take says about the build.
+ * @row: the Messages row.
+ *
+ * A row that starts with the compiler's own name ("a68g: error: ...",
+ * "gcc: error: ...") is the compiler talking: the build failed and the
+ * rows the pattern did make are still walked, starting with the first.
+ * A row from the assembler or the linker names no source line, so the
+ * build failed with nothing to jump to.
+ * Return: 0 for an ordinary row, E_LIST_COMPILER_FAILED or E_LIST_NO_JUMP.
+ */
+static int e_p_unmatched_row_verdict(const char *row)
+{
+ int ip = e_pure_bin(e_s_prog.compiler, ' ');
+ char *name = WpeStrdup(e_s_prog.compiler + ip);
+ int verdict = 0;
+
+ name[strcspn(name, " \t")] = '\0';
+ if (e_p_row_starts_with(row, name))
+  verdict = E_LIST_COMPILER_FAILED;
+ else if (e_p_row_starts_with(row, "ld") || e_p_row_starts_with(row, "as"))
+  verdict = E_LIST_NO_JUMP;
+ FREE(name);
+ return(verdict);
+}
+
 int e_make_error_list(FENSTER *f)
 {
- char file[256];
  ECNT *cn = f->ed;
  BUFFER *b = cn->f[cn->mxedt]->b;
  int i, j, k = 0, ret = 0, ctx_y = -1;
+ size_t row_max = e_p_longest_row(b);
  char *spt;
 
  if (err_li)
@@ -2597,21 +2881,10 @@ int e_make_error_list(FENSTER *f)
    char *tststr = e_s_prog.comp_sw ? e_s_prog.intstr : gnu_intstr;
    int k_before = k;
 
-   ret = e_p_cmp_mess(tststr, b, &i, &k, ret);
+   ret = e_p_cmp_mess(tststr, b, &i, &k, ret, row_max);
    e_p_attach_context(k_before, k, &ctx_y);
    if (!ret)
-   {
-    int ip, in;
-    ip = e_pure_bin(e_s_prog.compiler, ' ');
-    in = e_pure_bin(b->bf[i].s, ':');
-    sprintf(file, "%s:", e_s_prog.compiler+ip);
-    if (!strncmp(file, b->bf[i].s+in, strlen(file)))
-     ret = -2;
-    else if (!strncmp("ld:", b->bf[i].s+in, 3))
-     ret = -2;
-    else if (!strncmp("as:", b->bf[i].s+in, 3))
-     ret = -2;
-   }
+    ret = e_p_unmatched_row_verdict((char *)b->bf[i].s);
   }
  }
  if (!(f->ed->edopt & (ED_ERRORS_STOP_AT | ED_MESSAGES_STOP_AT)) &&
@@ -2723,6 +2996,24 @@ static int e_err_walk_restarts(FENSTER *f)
  return(!e_err_list_names_window(f));
 }
 
+/* What the status row says for Alt-T or Alt-V with no list to walk. */
+#define E_ERR_NOTHING_TO_WALK "no messages to walk"
+
+/**
+ * e_err_say_nothing_to_walk - Alt-T or Alt-V before any build, or after
+ * one that left no row.
+ * @f: the window the user is in.
+ *
+ * The status row says there is nothing to walk; the keys used to repaint
+ * the hint row and nothing else, which read as a key that did not work.
+ * Return: 0.
+ */
+static int e_err_say_nothing_to_walk(FENSTER *f)
+{
+ e_status_say(f, E_ERR_NOTHING_TO_WALK);
+ return(0);
+}
+
 /**
  * e_previous_error - Alt-V: the row before the last one shown, in the
  * order the compiler printed them.
@@ -2735,10 +3026,7 @@ static int e_err_walk_restarts(FENSTER *f)
 int e_previous_error(FENSTER *f)
 {
  if (err_num <= 0)
- {
-  e_pr_uul(f->fb);
-  return(0);
- }
+  return(e_err_say_nothing_to_walk(f));
  if (e_err_walk_restarts(f))
   return(e_show_error(err_no = err_num - 1, f));
  return(e_show_error(err_no = (err_no + err_num - 1) % err_num, f));
@@ -2755,10 +3043,7 @@ int e_previous_error(FENSTER *f)
 int e_next_error(FENSTER *f)
 {
  if (err_num <= 0)
- {
-  e_pr_uul(f->fb);
-  return(0);
- }
+  return(e_err_say_nothing_to_walk(f));
  if (e_err_walk_restarts(f))
   return(e_show_error(err_no = 0, f));
  return(e_show_error(err_no = (err_no + 1) % err_num, f));
@@ -3135,7 +3420,10 @@ static void e_algol68_apply(struct e_s_prog *cp, int use_ga68)
  {
   cp->compiler     = WpeStrdup("a68g");
   cp->comp_str     = WpeStrdup("--norun");
-  cp->intstr       = WpeStrdup("*in line ${LINE}*");
+  /* a68g 3 echoes the offending source line with its number ("3       print
+     ((x, yy))"), marks the spot below it and then says "a68g: error: 1: ...
+     in this line."; the file is the one being compiled. */
+  cp->intstr       = WpeStrdup(A68G_INTSTR);
   cp->start_symbol = NULL;
   cp->comp_sw      = 1;
  }
@@ -3203,7 +3491,7 @@ int e_ini_prog(ECNT *cn)
 {
  int i;
 
- e_prog.num = 12;
+ e_prog.num = 13;
  if (e_prog.arguments) FREE(e_prog.arguments);
  e_prog.arguments = WpeStrdup("");
  if (e_prog.project) FREE(e_prog.project);
@@ -3327,12 +3615,24 @@ int e_ini_prog(ECNT *cn)
  e_prog.comp[11]->key = 'R';
  e_prog.comp[11]->x = 0;
  e_prog.comp[11]->intstr = WpeStrdup("*--> ${FILE}:${LINE}:${COLUMN}*");
+ /* Scala: scalac writes the class files itself, like javac, so there is no
+    link step.  Scala 2 prints "t.scala:3: error: type mismatch;"; Scala 3
+    heads its message "-- [E007] Type Mismatch Error: t.scala:3:17", whose
+    file name the row lookup finds after the heading's last blank. */
+ e_prog.comp[12]->compiler = WpeStrdup("scalac");
+ e_prog.comp[12]->language = WpeStrdup("Scala");
+ e_prog.comp[12]->filepostfix = (char **)WpeExpArrayCreate(1, sizeof(char *), 1);
+ e_prog.comp[12]->filepostfix[0] = WpeStrdup(".scala");
+ e_prog.comp[12]->key = 'S';
+ e_prog.comp[12]->x = 0;
+ e_prog.comp[12]->intstr = WpeStrdup("${?*:warning:}${FILE}:${LINE}:*");
  for (i = 0; i < e_prog.num; i++)
  {
   if (i == 5) e_prog.comp[i]->comp_str = WpeStrdup("-m py_compile");
   else if (i == 6) e_prog.comp[i]->comp_str = WpeStrdup("-interaction=nonstopmode -file-line-error");
   else if (i == 7) e_prog.comp[i]->comp_str = WpeStrdup("-c");
   else if (i == 10) e_prog.comp[i]->comp_str = WpeStrdup("build");
+  else if (i == 12) e_prog.comp[i]->comp_str = WpeStrdup("-deprecation");
   else e_prog.comp[i]->comp_str = WpeStrdup("-g");   /* comp[9] (Algol 68) overwritten by e_algol68_apply */
   e_prog.comp[i]->libraries = WpeStrdup("");
   e_prog.comp[i]->exe_name = WpeStrdup("");
@@ -3502,7 +3802,10 @@ int e_run_c_options(FENSTER *f)
  o->bgsw = 0;
  o->name = "Compiler-Options";
  o->crsw = AltO;
- e_add_txtstr(4, 14, "Compiler-Style:", o);
+ /* The radios' caption has its own row, right above them and beside the
+    Message-String caption: on the Start sYmbol row that field painted
+    over it. */
+ e_add_txtstr(4, 15, "Compiler-Style:", o);
  e_add_wrstr(4, 2, 22, 2, 36, 128, 1, AltA, "LAnguage:", e_s_prog.language, NULL, o);
  e_add_wrstr(4, 4, 22, 4, 36, 128, 0, AltC, "Compiler:", e_s_prog.compiler, NULL, o);
  e_add_wrstr(4, 6, 22, 6, 36, 128, 3, AltP, "ComPiler-Options:", e_s_prog.comp_str, NULL, o);
@@ -3958,11 +4261,7 @@ int e_make_library(char *library, char *ofile, FENSTER *f,
   ar_arg[1] = "-r";
  ar_arg[2] = library;
  ar_arg[3] = ofile;
- if (e_p_mess_win("Insert into Archive", 4, ar_arg, &pic, f))
- {
-  e_build_continue(done, f, -1, data);
-  return(-1);
- }
+ /* The child prints its command line itself (e_exec_inf). */
  e_sys_ini();
  file = e_exec_inf(f, ar_arg, 4);
  e_sys_end();
@@ -4357,6 +4656,7 @@ int e_exec_make(FENSTER *f)
  }
  f = cn->f[cn->mxedt];
  e_sys_ini();
+ e_p_set_compiled_source(NULL);
  if (e_s_prog.compiler)
   FREE(e_s_prog.compiler);
  e_s_prog.compiler = MALLOC(5*sizeof(char));
@@ -5071,7 +5371,7 @@ static int e_prj_compile_file(int k)
 {
  FENSTER *f = e_prj_top();
  PIC *pic = NULL;
- int j, file = 0;
+ int file = 0;
 
  g_prj.argc = e_add_arg(&g_prj.arg, g_prj.df->name[k], g_prj.argc, g_prj.argc);
 #ifndef NO_MINUS_C_MINUS_O
@@ -5081,10 +5381,12 @@ static int e_prj_compile_file(int k)
  g_prj.arg[g_prj.argc] = NULL;
  remove(g_prj.ofile);
  g_prj.sccs = 1;
- j = e_p_mess_win("Compiling", g_prj.argc, g_prj.arg, &pic, f);
+ e_p_set_compiled_source(g_prj.df->name[k]);
+ /* The child prints its own command line first (e_exec_inf), as every
+    single-file build does; writing it here as well showed each command
+    twice. */
  e_sys_ini();
- if (j == 0)
-  file = e_exec_inf(f, g_prj.arg, g_prj.argc);
+ file = e_exec_inf(f, g_prj.arg, g_prj.argc);
  e_sys_end();
  if (!file)
  {
@@ -5234,12 +5536,10 @@ static int e_prj_ranlib(void)
   ar_arg[0] = "ranlib";
   ar_arg[1] = library;
   ar_arg[2] = NULL;
-  if (!e_p_mess_win("Convert Archive", 2, ar_arg, &pic, f))
-  {
-   e_sys_ini();
-   file = e_exec_inf(f, ar_arg, 2);
-   e_sys_end();
-  }
+  /* The child prints its command line itself (e_exec_inf). */
+  e_sys_ini();
+  file = e_exec_inf(f, ar_arg, 2);
+  e_sys_end();
   if (!file)
   {
    e_prj_end(-1);
@@ -5328,10 +5628,18 @@ static void e_prj_run(void)
  */
 int e_c_project(FENSTER *f, e_build_cont done, void *data)
 {
- int ret = e_prj_setup(f);
+ char cwd_saved[WPE_BUILD_PATH_MAX];
+ int ret, cwd_chg;
 
+ /* The project builds in its own directory, whichever one the editor was
+    started from; every later step runs where the first one did. */
+ e_prj_anchor_path();
+ cwd_chg = e_build_pushd(f, cwd_saved, sizeof cwd_saved);
+ ret = e_prj_setup(f);
  if (ret)
  {
+  if (cwd_chg)
+   e_build_popd(cwd_saved);
   e_build_continue(done, f, ret, data);
   return(0);
  }
@@ -5340,6 +5648,8 @@ int e_c_project(FENSTER *f, e_build_cont done, void *data)
  g_prj.k = 0;
  g_prj.phase = PRJ_FILE;
  e_prj_run();
+ if (cwd_chg)
+  e_build_popd(cwd_saved);
  return(0);
 }
 
@@ -5937,6 +6247,30 @@ static void e_strip_quotes(char *s)
  }
 }
 
+/**
+ * e_p_take_file_token - Copy the text a pattern's ${FILE} delimits.
+ * @file: where the name goes, at least as long as @str plus one;
+ * @str: the text between the pattern's delimiters.
+ *
+ * The whole token is kept, blanks included, so a row naming "my file.c"
+ * jumps into that file instead of a new, empty "file.c".  Only the blanks
+ * around the token and the quotes some compilers put around a name are
+ * taken off.  e_p_row_file decides later which part names a real file.
+ */
+static void e_p_take_file_token(char *file, const char *str)
+{
+ size_t len;
+
+ while (isspace((unsigned char)*str))
+  str++;
+ len = strlen(str);
+ while (len > 0 && isspace((unsigned char)str[len - 1]))
+  len--;
+ memcpy(file, str, len);
+ file[len] = '\0';
+ e_strip_quotes(file);
+}
+
 int e_p_konv_mess(char *var, char *str, char *txt, char *file, char *cmp,
   int *y, int *x)
 {
@@ -5944,12 +6278,7 @@ int e_p_konv_mess(char *var, char *str, char *txt, char *file, char *cmp,
  char *cp;
 
  if (!strncmp(var, "FILE", 4) && !isalnum(var[4]))
- {
-  for (i = strlen(str) - 1; i >= 0 && !isspace(str[i]); i--)
-   ;
-  strcpy(file, str+i+1);
-  e_strip_quotes(file);
- }
+  e_p_take_file_token(file, str);
  else if (!strncmp(var, "CMPTEXT", 7) && !isalnum(var[7]))
   strcpy(cmp, str);
  else if (!strncmp(var, "LINE", 4) && !isalnum(var[4]))
@@ -6200,16 +6529,139 @@ static int e_p_row_kind(char *row, char **wtxt, int *wn, int wnum)
  return(E_ROW_ERROR);
 }
 
-int e_p_cmp_mess(char *srch, BUFFER *b, int *ii, int *kk, int ret)
+/**
+ * e_p_file_exists - Is there a file by this name where the build ran?
+ * @name: a name as a compiler printed it.
+ */
+static int e_p_file_exists(const char *name)
 {
- char *cp, cmp[128], file[128], search[80], tmp[4][128], **wtxt = NULL;
+ struct stat st;
+
+ if (!name || !name[0])
+  return(0);
+ return(stat(name, &st) == 0);
+}
+
+/**
+ * e_p_unquoted_copy - A copy of @s without the blanks around it and the
+ * quotes a compiler may put around a file name.
+ * Return: a new string the caller frees.
+ */
+static char *e_p_unquoted_copy(const char *s)
+{
+ char *copy = MALLOC(strlen(s) + 1);
+
+ e_p_take_file_token(copy, s);
+ return(copy);
+}
+
+/* make writes the makefile of a failed recipe inside brackets. */
+#define E_P_NAME_OPENER '['
+
+/**
+ * e_p_row_file - The file name an error row is filed under.
+ * @token: the whole text the pattern's ${FILE} delimited.
+ *
+ * The whole token wins when it names a file, so "my file.c" and a path of
+ * any length jump where the compiler said.  A pattern that lets ${FILE}
+ * swallow a lead-in, as Python's "  File "t.py"", a Scala 3 heading or
+ * make's "make: *** [Makefile:3: all]" do, still finds the file: the token
+ * is tried from each blank or opening bracket onwards, longest first.
+ * When nothing exists the whole token is kept, so the jump can say which
+ * name it could not find.
+ * Return: a new string the caller frees.
+ */
+static char *e_p_row_file(const char *token)
+{
+ const char *p;
+ char *candidate;
+
+ if (e_p_file_exists(token))
+  return(WpeStrdup(token));
+ for (p = token; *p; p++)
+ {
+  if (!isspace((unsigned char)*p) && *p != E_P_NAME_OPENER)
+   continue;
+  candidate = e_p_unquoted_copy(p + 1);
+  if (e_p_file_exists(candidate))
+   return(candidate);
+  FREE(candidate);
+ }
+ return(WpeStrdup(token));
+}
+
+/* The file a pattern without ${FILE} names: the source being compiled.  A
+   compiler that checks one file at a time (a68g) prints only the line. */
+static char *e_p_compiled_source = NULL;
+
+/**
+ * e_p_set_compiled_source - Remember which source the next rows are about.
+ * @name: the file handed to the compiler, or NULL when a step compiles no
+ * single file (a link, a make).
+ *
+ * Lets an error row of a compiler that never repeats the file name still
+ * take the user to the right file.
+ */
+static void e_p_set_compiled_source(const char *name)
+{
+ if (e_p_compiled_source)
+  FREE(e_p_compiled_source);
+ e_p_compiled_source = NULL;
+ if (name && name[0])
+  e_p_compiled_source = WpeStrdup(name);
+}
+
+/**
+ * e_p_pattern_names_file - Does the message pattern carry ${FILE}?
+ * @srch: the pattern.
+ */
+static int e_p_pattern_names_file(const char *srch)
+{
+ return(strstr(srch, "${FILE}") != NULL);
+}
+
+/**
+ * e_p_longest_row - The length of the longest row of @b.
+ *
+ * Every name, column text and compiler text a pattern takes from a row is
+ * a piece of that row, so a buffer of this size (plus the pattern's own
+ * length) holds any of them, however long the path a compiler printed.
+ */
+static size_t e_p_longest_row(BUFFER *b)
+{
+ size_t longest = 0;
+ int i;
+
+ for (i = 0; i < b->mxlines; i++)
+  if ((size_t)b->bf[i].len > longest)
+   longest = b->bf[i].len;
+ return(longest);
+}
+
+/* A pattern is cut into at most this many rows, one per line of output. */
+#define E_P_PATTERN_ROWS 4
+
+int e_p_cmp_mess(char *srch, BUFFER *b, int *ii, int *kk, int ret,
+                 size_t row_max)
+{
+ char *cp, *cmp, *file, *search, *tmp[E_P_PATTERN_ROWS], **wtxt = NULL;
  int j, l, m, n, iy, iorig, i = *ii, k = *kk, x = 0, y = -1, wnum = 0;
  int *wn = NULL;
+ size_t cap = row_max + strlen(srch) + 2;
 
+ if (e_p_compiled_source)
+  cap += strlen(e_p_compiled_source);
+ cmp = MALLOC(cap);
+ file = MALLOC(cap);
+ search = MALLOC(cap);
+ for (n = 0; n < E_P_PATTERN_ROWS; n++)
+  tmp[n] = MALLOC(strlen(srch) + 2);
  cmp[0] = search[0] = file[0] = '\0';
+ if (!e_p_pattern_names_file(srch) && e_p_compiled_source)
+  strcpy(file, e_p_compiled_source);
  wtxt = MALLOC(1);
  wn = MALLOC(1);
- for (j = 0, n = 0; n < 4 && srch[j]; n++)
+ for (j = 0, n = 0; n < E_P_PATTERN_ROWS && srch[j]; n++)
  {
   for (l = 0; (tmp[n][l] = srch[j]); j++, l++)
   {
@@ -6278,8 +6730,7 @@ int e_p_cmp_mess(char *srch, BUFFER *b, int *ii, int *kk, int ret)
     l = 1;
    if (file[0] && y >= 0 && l != 0)
    {
-    err_li[k].file = MALLOC((strlen(file)+1)*sizeof(char));
-    strcpy(err_li[k].file, file);
+    err_li[k].file = e_p_row_file(file);
     err_li[k].line = y;
     if (search[0] == 'P')
     {
@@ -6339,6 +6790,11 @@ int e_p_cmp_mess(char *srch, BUFFER *b, int *ii, int *kk, int ret)
   FREE(wtxt[m]);
  FREE(wn);
  FREE(wtxt);
+ for (m = 0; m < E_P_PATTERN_ROWS; m++)
+  FREE(tmp[m]);
+ FREE(cmp);
+ FREE(file);
+ FREE(search);
  return(ret);
 }
 

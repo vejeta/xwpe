@@ -244,6 +244,9 @@ typedef struct WOPTION {
 
 /* Lay out a status-bar button list left-to-right (see we_main.c). */
 void e_pack_button_bar(WOPT *bar, int n, int x0, int gap);
+/* The entries of an editor-window bar (see we_main.c). */
+int e_editor_bar_size(WOPT *bar);
+WOPT *e_plain_editor_bar(int cua);
 
 typedef struct OPTKAST {
  char *t;
@@ -405,6 +408,8 @@ void e_show_empty_desk(ECNT *cn);
 void FARBE_Init(FARBE *fb);
 FARBE *e_ini_farbe();
 int e_switch_blst(ECNT *cn);
+void e_use_editor_bar(FENSTER *f, WOPT *bar);
+int e_lsp_bar_wanted(FENSTER *f);
 void e_free_find(FIND *fd);
 
 /*   we_block.c   */

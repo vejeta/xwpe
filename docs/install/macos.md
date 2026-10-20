@@ -141,7 +141,7 @@ as standard function keys"* (then press the **fn** key for the media actions),
 or just use the equivalents that do not rely on the top row. Every function-key
 action has one (the Borland heritage), so the top row is never required:
 
-- **Build/debug:** `Alt-M` (Make = F9), `Alt-C` (Compile = Alt-F9), and the
+- **Build/debug:** `Alt-M` (Make = F9), `Alt-C` (Compile), and the
   `Ctrl-G` debug prefix -- `Ctrl-G S` steps (= F8), `Ctrl-G T` traces (= F7),
   `Ctrl-G R` runs/continues, `Ctrl-G P` shows program output.
 - **Menus / windows / help:** `Alt-Space` or `Esc` opens the menu bar (= F10)

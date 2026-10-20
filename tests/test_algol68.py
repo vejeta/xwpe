@@ -12,7 +12,8 @@ import time
 
 import pytest
 
-from wpe_driver import WpeSession
+from wpe_driver import WpeSession, wait_screen
+from test_compile_and_messages import active_position, active_title
 
 HELLO = 'BEGIN\n  print(("Hello, Algol 68!", new line))\nEND\n'
 
@@ -41,21 +42,23 @@ def test_algol68_run_shows_output(tmp_path):
 def test_algol68_syntax_check_reports_error(tmp_path):
     """Make (F9) runs a68g --norun; a syntax error is detected, not executed.
 
-    a68g's diagnostic carries no file name and the line number sits mid-message
-    ("... in line N"), so xwpe's error jump is best-effort -- but the failure
-    IS recognised: Make enters error-navigation mode (the status bar gains
-    Prev./Next Error), which only happens when the compiler reported errors.
+    a68g echoes the offending source line with its number and names no file,
+    so the row is filed under the file being compiled: the build ends with
+    the count row, the cursor lands on the offending line of bad.a68, and no
+    run is reported.
     """
-    bad = 'BEGIN\n  print(("oops", new line)\nEND\n'   # missing ')'
+    bad = 'BEGIN\n  print(("oops", new line)\nEND\n'   # missing ')' on line 2
     with WpeSession(str(tmp_path), bad, filename="bad.a68", wait=2.0) as w:
         w.key("\033[20~", delay=1.0)     # F9 = Make (syntax check)
-        time.sleep(2.0)
-        w._drain(1.0)
+        assert wait_screen(w, "1 error, 0 warnings", tmo=20), \
+            "a68g's syntax error did not end the build with its count:\n%s" \
+            % _screen_text(w)
         text = _screen_text(w).lower()
         assert w.alive(), "wpe died checking the Algol 68 program"
-        assert "err." in text, \
-            "a68g syntax error should put Make into error-navigation mode:\n%s" \
-            % _screen_text(w)
+        assert active_title(w) == "bad.a68", \
+            "the jump did not land in bad.a68:\n%s" % _screen_text(w)
+        line, _ = active_position(w)
+        assert line == 2, "the jump went to line %d, not 2:\n%s" % (line, _screen_text(w))
         assert "return-code: 0" not in text, \
             "a syntax-checked file with an error must not report success:\n%s" \
             % _screen_text(w)

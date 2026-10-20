@@ -307,6 +307,44 @@ Changes
   click on a row jumps to it like Enter; a single click moves the
   Messages cursor.
 
+* An error in "my file.c" jumps into that file.  The row used to name
+  only the last word, so the jump opened a new, empty "file.c".  A path
+  longer than 127 characters makes a row too; it used to overflow a
+  fixed buffer and make none.  A relative name is looked for where the
+  build ran as well as in the editor's own directory, so Alt-T to the
+  second file of a make started from another directory opens it.  A row
+  naming a file that exists in neither place says "cannot find <name>"
+  on the status row instead of opening an empty window.
+
+* A project builds in the directory of its .prj file: "wpe proj/p.prj"
+  started from the parent used to fail with "a.c: No such file or
+  directory".  Each command of a project build is shown once in
+  Messages, not twice.
+
+* Algol 68 Genie errors make a row again: Enter on it, or on a68g's
+  message under it, jumps to the line.  The old pattern no longer
+  matched a68g 3, and the "a68g:" line was taken for a linker message.
+
+* Scala has a default compiler entry (scalac).  F9 on a file type with
+  no entry says "no compiler entry for .<ext>; add one in Options >
+  Compiler" instead of "is not a C - File".
+
+* The bottom row of a source window names F9 ("F9 Build").  The Run
+  menu shows only keys a terminal delivers (Alt-C, Alt-T, Alt-V);
+  Alt-F9, Alt-F8 and Alt-F7 still work where they arrive, as legacy
+  aliases.
+
+* F9 with nothing to rebuild says "nothing to build: <program> is up to
+  date" in Messages; it used to say nothing and leave the old run on
+  screen.  Alt-C says the same of the object file, in place of the
+  "Already compiled" box.
+
+* Alt-T or Alt-V with no list says "no messages to walk" on the status
+  row; it used to do nothing visible.
+
+* Options > Compiler: the "Compiler-Style" caption of the GNU / Other
+  radios has its own row again; the Start sYmbol field painted over it.
+
 * An accepted change leaves the buffer exactly as the accepted text.
   Every accepted Edit, completion, language-server code action, format
   and whole-buffer undo used to leave one empty line after the text that

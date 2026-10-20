@@ -7607,14 +7607,15 @@ extern WOPT eblst_lspai_o[], eblst_lspai_u[]; /* combined LSP+AI bars (we_main.c
    default ("_o") one.  e_pack_button_bar updates both draw and click positions. */
 static void e_lsp_pack_bar(WOPT *bar)
 {
- int i, sum = 0;
- for (i = 0; i < 7; i++)
+ int i, sum = 0, n = e_editor_bar_size(bar);
+ for (i = 0; i < n; i++)
   sum += (int)strlen(bar[i].t);
  /* The buttons are drawn one column in, and the last one must END at or before
     MAXSCOL-2 to render whole (e_pr_uul stops at MAXSCOL-1, exclusive).  The last
-    button's end column at gap g (x0=0) is sum + 6*g, so use the wider 2-column
-    gap only when it still clears that limit; otherwise tighten to 1. */
- e_pack_button_bar(bar, 7, 0, (sum + 6 * 2 <= MAXSCOL - 2) ? 2 : 1);
+    button's end column at gap g (x0=0) is sum + (n-1)*g, so use the wider
+    2-column gap only when it still clears that limit; otherwise tighten to 1.
+    The bars of the programming modes have one entry more (F9). */
+ e_pack_button_bar(bar, n, 0, (sum + (n - 1) * 2 <= MAXSCOL - 2) ? 2 : 1);
 }
 
 /* e_lsp_bar_label - Keep the LSP bottom-bar hint naming the *active* server.

@@ -11,6 +11,7 @@ binary when it is not installed.
 """
 import os
 import re
+import subprocess
 import time
 
 import pytest
@@ -718,4 +719,401 @@ def test_one_click_on_a_messages_row_only_moves_its_cursor(tmp_path):
     assert second == "Messages", "two separate clicks jumped like a double click"
     assert (title, line) == ("t.c", 6), \
         "the click did not put the Messages cursor on the row: Enter went to %s:%d" % (title, line)
+
+
+# ---------------------------------------------------------------------------
+# The rows a compiler prints, the project, the keys and the dialog.
+# ---------------------------------------------------------------------------
+
+UNDEF_AT_3_C = "int main(void)\n{\n    int a = undef_q;\n    return a;\n}\n"   # line 3
+LONG_PATH_LENGTH = 200
+
+
+def hint_row(w):
+    """The bottom row of the screen: the key hints, or a status answer."""
+    return w.display()[-1]
+
+
+# @scenario SC-compile-24
+def test_a_file_name_with_a_blank_jumps_into_that_file(tmp_path):
+    """gcc names "/.../my file.c:3:13": the build's jump goes into "my file.c"
+    on line 3, and no empty "file.c" is opened or written."""
+    need("gcc")
+    with session(tmp_path, UNDEF_AT_3_C, "my file.c") as w:
+        w.key(F9, delay=BUILD_WAIT)
+        assert wait_screen(w, "1 error, 0 warnings", tmo=scaled(FIND_TIMEOUT)), screen_text(w)
+        title = active_title(w)
+        line, _ = active_position(w)
+        assert w.alive()
+    assert (title, line) == ("my file.c", 3), \
+        "the row of 'my file.c' went to %s:%d" % (title, line)
+    assert not (tmp_path / "file.c").exists(), "an empty file.c was written"
+
+
+# @scenario SC-compile-24
+def test_a_path_of_200_characters_makes_a_row_and_jumps(tmp_path):
+    """The source lives under a path longer than 200 characters: its error
+    row is made, the count says so, and the jump lands on line 3."""
+    need("gcc")
+    deep = tmp_path
+    while len(str(deep / "t.c")) <= LONG_PATH_LENGTH:
+        deep = deep / "a_directory_name_of_some_length"
+    deep.mkdir(parents=True)
+    with session(deep, UNDEF_AT_3_C, "t.c") as w:
+        w.key(F9, delay=BUILD_WAIT)
+        assert wait_screen(w, "1 error, 0 warnings", tmo=scaled(FIND_TIMEOUT)), \
+            "no row from a long path:\n" + screen_text(w)
+        title = active_title(w)
+        line, _ = active_position(w)
+        assert w.alive()
+    assert (title, line) == ("t.c", 3), "the jump went to %s:%d" % (title, line)
+
+
+MISSING_FILE_MAKEFILE = "all:\n\t@echo 'gone.c:3:1: error: boom'\n"
+
+
+# @scenario SC-compile-24
+def test_a_row_naming_a_missing_file_says_so_and_creates_nothing(tmp_path):
+    """make prints a row for gone.c, which does not exist: the jump says
+    "cannot find gone.c" on the status row, opens no window for it, and
+    nothing named gone.c appears on disk."""
+    (tmp_path / "Makefile").write_text(MISSING_FILE_MAKEFILE)
+    with session(tmp_path, "int main(void){return 0;}\n", "t.c") as w:
+        w.key(ALT_A, delay=BUILD_WAIT)
+        assert wait_screen(w, "cannot find gone.c", tmo=scaled(FIND_TIMEOUT)), \
+            "the missing file was not named:\n" + screen_text(w)
+        status = hint_row(w)
+        title = active_title(w)
+        assert w.alive()
+    assert "cannot find gone.c" in status, status
+    assert title != "gone.c", "a window was opened for the missing file"
+    assert not (tmp_path / "gone.c").exists(), "gone.c was created"
+
+
+TWO_FILES_MAKEFILE = "all:\n\tgcc -c t.c u.c\n"
+U_UNDEF_AT_2_C = "int f(void)\n{\n    return undef_u;\n}\n"      # error on line 3
+
+
+# @scenario SC-compile-24
+def test_alt_t_opens_the_second_file_of_a_build_run_in_another_directory(tmp_path):
+    """wpe sub/t.c from the parent; make in sub/ compiles t.c and u.c and both
+    fail.  The first jump opens t.c while the build's directory is current;
+    Alt-T from the key loop, back in the parent directory, still opens
+    sub/u.c on its line, because the row's relative name is looked for where
+    the compiler ran."""
+    need("gcc")
+    sub = tmp_path / "sub"
+    sub.mkdir()
+    (sub / "Makefile").write_text(TWO_FILES_MAKEFILE)
+    (sub / "u.c").write_text(U_UNDEF_AT_2_C)
+    with WpeSession(str(tmp_path), UNDEF_AT_3_C, filename="sub/t.c", cols=WIDE) as w:
+        w.key(ALT_A, delay=BUILD_WAIT)
+        # Messages scrolls to the first error row, so that row is what is on
+        # screen when the build has ended (the count row may sit below the view).
+        assert wait_screen(w, "t.c:3:13: error", tmo=scaled(FIND_TIMEOUT)), screen_text(w)
+        # A file opened by a path keeps that path as its title.
+        assert active_title(w).endswith("t.c"), screen_text(w)
+        w.key(ALT_T, delay=1.5)
+        title = active_title(w)
+        line, _ = active_position(w)
+        status = hint_row(w)
+        assert w.alive()
+    assert "cannot find" not in status, status
+    assert title.endswith("u.c") and line == 3, \
+        "Alt-T went to %s:%d instead of sub/u.c:3" % (title, line)
+
+
+PROJECT_A = "int helper(void);\nint main(void)\n{\n    return helper();\n}\n"
+PROJECT_B = "int helper(void)\n{\n    return 0;\n}\n"
+PROJECT_PRJ = ("CMP=\tgcc\nCMPFLAGS=\t-g\nLDFLAGS=\t\nEXENAME=\tp\n"
+               "CMPSWTCH=\tgnu\n\nFILES=\ta.c b.c\n")
+
+
+def project_dir(parent):
+    """proj/ under ``parent`` with the project's two sources."""
+    proj = parent / "proj"
+    proj.mkdir()
+    (proj / "a.c").write_text(PROJECT_A)
+    (proj / "b.c").write_text(PROJECT_B)
+    return proj
+
+
+# @scenario SC-compile-20
+def test_a_project_opened_from_its_parent_builds_in_its_own_directory(tmp_path):
+    """wpe proj/p.prj, started in the parent: F9 compiles a.c and b.c and
+    links p, all inside proj/, and no source is reported missing."""
+    need("gcc")
+    proj = project_dir(tmp_path)
+    with WpeSession(str(tmp_path), PROJECT_PRJ, filename="proj/p.prj",
+                    rows=40, cols=WIDE) as w:
+        w.key(F9, delay=BUILD_WAIT)
+        assert wait_screen(w, "0 errors, 0 warnings", tmo=scaled(FIND_TIMEOUT)), \
+            screen_text(w)
+        screen = screen_text(w)
+        assert w.alive()
+    assert "No such file or directory" not in screen, screen
+    for built in ("a.o", "b.o", "p"):
+        assert (proj / built).exists(), "%s was not built in proj/:\n%s" % (built, screen)
+
+
+# @scenario SC-compile-20
+def test_each_project_command_is_shown_once(tmp_path):
+    """Messages shows each compile and the link once: the child's own
+    command line, not a second copy written before it."""
+    need("gcc")
+    proj = project_dir(tmp_path)
+    with WpeSession(str(proj), PROJECT_PRJ, filename="p.prj",
+                    rows=40, cols=WIDE) as w:
+        w.key(F9, delay=BUILD_WAIT)
+        assert wait_screen(w, "0 errors, 0 warnings", tmo=scaled(FIND_TIMEOUT)), \
+            screen_text(w)
+        rows = messages_rows(w)
+        assert w.alive()
+    for command in ("gcc -c -g a.c -o ./a.o", "gcc -c -g b.c -o ./b.o"):
+        shown = [r for r in rows if command in r]
+        assert len(shown) == 1, "%r shown %d times: %r" % (command, len(shown), rows)
+
+
+A68_ONE_ERROR = "BEGIN\n  INT x := 1;\n  print((x, yy))\nEND\n"     # line 3
+
+
+# @scenario SC-compile-13
+def test_algol68_error_row_jumps_to_its_line(tmp_path):
+    """a68g prints the source line with its number and, under it,
+    "a68g: error: 1: tag "yy" has not been declared properly ...": the
+    message reaches Messages with no key pressed, a row is made, and Enter
+    on it lands on line 3."""
+    need("a68g", "--version")
+    with session(tmp_path, A68_ONE_ERROR, "t.a68") as w:
+        build(w)
+        assert wait_screen(w, "has not been declared", tmo=scaled(FIND_TIMEOUT)), \
+            "the last a68g line was not painted:\n" + screen_text(w)
+        assert_enter_jumps(w, "1 error", "t.a68", 3)
+
+
+SCALA_ONE_ERROR = ("object T {\n  def main(a: Array[String]): Unit = {\n"
+                   "    val x: Int = \"s\"\n  }\n}\n")              # line 3
+
+
+def need_scalac(tmp_path):
+    """Skip, naming scalac, unless it compiles a one-line object: a scalac
+    whose libraries are incomplete prints its version and then fails every
+    compile."""
+    need("scalac", "-version")
+    probe = tmp_path / "probe"
+    probe.mkdir()
+    (probe / "P.scala").write_text("object P\n")
+    ran = subprocess.run(["scalac", "-d", str(probe), str(probe / "P.scala")],
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                         timeout=scaled(SLOW_FIND_TIMEOUT))
+    if ran.returncode != 0:
+        pytest.skip("no scalac: the installed one cannot compile")
+
+
+# @scenario SC-compile-15
+def test_scala_error_row_jumps_to_its_line(tmp_path):
+    """F9 on t.scala runs scalac from the default Scala entry; Enter on its
+    error row lands on line 3."""
+    need_scalac(tmp_path)
+    with session(tmp_path, SCALA_ONE_ERROR, "t.scala") as w:
+        build(w, slow=True)
+        assert wait_screen(w, "scalac", tmo=scaled(SLOW_FIND_TIMEOUT)), screen_text(w)
+        assert_enter_jumps(w, "1 error", "t.scala", 3, slow=True)
+
+
+NO_ENTRY_LINE = "no compiler entry for .xyz; add one in Options > Compiler"
+
+
+# @scenario SC-compile-15
+def test_a_file_type_with_no_compiler_entry_says_how_to_add_one(tmp_path):
+    """F9 on t.xyz names the extension and where to add an entry; it does
+    not call the file "not a C - File"."""
+    with session(tmp_path, "plain text\n", "t.xyz") as w:
+        w.key(F9, delay=1.0)
+        screen = screen_text(w)
+        assert w.alive()
+    assert NO_ENTRY_LINE in screen, screen
+    assert "not a C - File" not in screen, screen
+
+
+ALT_R = "\033r"            # the Run menu
+ALT_M = "\033m"            # Make
+ALT_U = "\033u"            # Run the program
+ALT_C_KEY = "\033c"        # Compile
+F9_HINT = "F9 Build"
+LEGACY_ALIASES = ("Alt F9", "Alt F8", "Alt F7")
+
+
+# @scenario SC-compile-22
+@pytest.mark.parametrize("filename", ["t.c", "notes.txt"])
+def test_the_source_hint_row_names_f9_on_80_columns(tmp_path, filename):
+    """At 80 columns the bottom row of a source window names "F9 Build", and
+    still shows every hint from F1 Help to Alt-X Quit whole: with a
+    language server (t.c) and without one (notes.txt)."""
+    with WpeSession(str(tmp_path), "int main(void){return 0;}\n",
+                    filename=filename, cols=80, rows=24) as w:
+        hint = hint_row(w)
+        assert w.alive()
+    assert F9_HINT in hint, "hint row: %r" % hint
+    assert "F1 Help" in hint and "Alt-X Quit" in hint, "hint row: %r" % hint
+
+
+def run_menu_rows(w):
+    """The rows of the Run menu, opened with Alt-R and closed with Esc."""
+    w.key(ALT_R, delay=0.8)
+    rows = [r for r in w.display() if "Execute Make" in r or "Error" in r
+            or "Compile" in r or "Make" in r or "Run" in r]
+    w.key(ESC, delay=0.5)
+    return rows
+
+
+# @scenario SC-compile-22
+def test_the_run_menu_shows_no_key_a_terminal_swallows(tmp_path):
+    """The Run menu names Alt C, F9, Alt M, ^F9, Alt U, Alt A, Alt T and
+    Alt V; Alt-F9, Alt-F8 and Alt-F7, which terminal emulators keep for
+    themselves, are not shown."""
+    with session(tmp_path, "int main(void){return 0;}\n", "t.c") as w:
+        rows = run_menu_rows(w)
+        assert w.alive()
+    menu = "\n".join(rows)
+    assert "Execute Make" in menu, menu
+    for legacy in LEGACY_ALIASES:
+        assert legacy not in menu, "the Run menu still shows %s:\n%s" % (legacy, menu)
+    for key in ("Alt C", "F9", "Alt M", "^F9", "Alt U", "Alt A", "Alt T", "Alt V"):
+        assert key in menu, "the Run menu does not show %s:\n%s" % (key, menu)
+
+
+# @scenario SC-compile-22
+def test_every_build_key_the_run_menu_shows_does_what_it_says(tmp_path):
+    """Alt C compiles (t.o), Alt M and F9 make (t.e), ^F9 and Alt U run the
+    program (its output and return code in Messages), Alt A runs make."""
+    need("gcc")
+    src = "#include <stdio.h>\nint main(void){printf(\"RANOK\\n\"); return 0;}\n"
+    (tmp_path / "Makefile").write_text("all:\n\t@echo MAKE_RAN\n")
+    with session(tmp_path, src, "t.c") as w:
+        w.key(ALT_C_KEY, delay=BUILD_WAIT)
+        assert wait_screen(w, "0 errors", tmo=scaled(FIND_TIMEOUT)), screen_text(w)
+        compiled = (tmp_path / "t.o").exists()
+        linked_early = (tmp_path / "t.e").exists()
+        w.key(ALT_M, delay=BUILD_WAIT)
+        assert wait_screen(w, "Success", tmo=scaled(FIND_TIMEOUT)), screen_text(w)
+        made_by_alt_m = (tmp_path / "t.e").exists()
+        (tmp_path / "t.e").unlink()
+        w.key(F9, delay=BUILD_WAIT)
+        assert wait_screen(w, "0 errors", tmo=scaled(FIND_TIMEOUT)), screen_text(w)
+        made_by_f9 = (tmp_path / "t.e").exists()
+        w.key(CTRL_F9, delay=BUILD_WAIT)
+        ran_by_ctrl_f9 = wait_screen(w, "RANOK", tmo=scaled(FIND_TIMEOUT))
+        w.key(F6, delay=0.5)
+        w.key(ALT_U, delay=BUILD_WAIT)
+        ran_by_alt_u = wait_screen(w, "Return-Code: 0", tmo=scaled(FIND_TIMEOUT))
+        w.key(F6, delay=0.5)
+        w.key(ALT_A, delay=BUILD_WAIT)
+        made_by_alt_a = wait_screen(w, "MAKE_RAN", tmo=scaled(FIND_TIMEOUT))
+        assert w.alive()
+    assert compiled and not linked_early, "Alt C did not compile without linking"
+    assert made_by_alt_m, "Alt M did not make the program"
+    assert made_by_f9, "F9 did not make the program"
+    assert ran_by_ctrl_f9, "^F9 did not run the program"
+    assert ran_by_alt_u, "Alt U did not run the program"
+    assert made_by_alt_a, "Alt A did not run make"
+
+
+# @scenario SC-compile-25
+def test_a_second_f9_says_nothing_to_build(tmp_path):
+    """After a build, F9 with nothing changed starts Messages afresh with
+    "nothing to build: t.e is up to date"; Alt-C says the same of t.o, and
+    no "Already compiled" box opens."""
+    need("gcc")
+    with session(tmp_path, "int main(void){return 0;}\n", "t.c") as w:
+        w.key(F9, delay=BUILD_WAIT)
+        assert wait_screen(w, "0 errors, 0 warnings", tmo=scaled(FIND_TIMEOUT)), screen_text(w)
+        w.key(F9, delay=1.5)
+        assert wait_screen(w, "nothing to build: t.e is up to date",
+                           tmo=scaled(FIND_TIMEOUT)), screen_text(w)
+        after_f9 = screen_text(w)
+        w.key(ALT_C_KEY, delay=1.5)
+        assert wait_screen(w, "nothing to build: t.o is up to date",
+                           tmo=scaled(FIND_TIMEOUT)), screen_text(w)
+        after_alt_c = screen_text(w)
+        title = active_title(w)
+        assert w.alive()
+    assert "0 errors, 0 warnings" not in after_f9, \
+        "the old run still stands in Messages:\n" + after_f9
+    assert "Already compiled" not in after_alt_c, after_alt_c
+    assert title == "t.c", "the keys did not go back to the source: %r" % title
+
+
+NOTHING_TO_WALK = "no messages to walk"
+
+
+# @scenario SC-compile-26
+def test_alt_t_and_alt_v_with_no_list_say_no_messages_to_walk(tmp_path):
+    """Before any build, Alt-T and Alt-V each answer on the status row; the
+    cursor stays where it was."""
+    with session(tmp_path, "int main(void){return 0;}\n", "t.c") as w:
+        before = active_position(w)
+        w.key(ALT_T, delay=0.8)
+        after_t = hint_row(w)
+        w.key("x", delay=0.5)                   # any key puts the hints back
+        w.key(ALT_V, delay=0.8)
+        after_v = hint_row(w)
+        position = active_position(w)
+        assert w.alive()
+    assert NOTHING_TO_WALK in after_t, "Alt-T: %r" % after_t
+    assert NOTHING_TO_WALK in after_v, "Alt-V: %r" % after_v
+    assert position[0] == before[0], "the walk moved the cursor"
+
+
+# @scenario SC-compile-27
+def test_the_compiler_style_caption_has_its_own_row(tmp_path):
+    """At 80x24 Options > Compiler shows "Compiler-Style:" on the row right
+    above its GNU radio, the Start sYmbol row holds only its caption and
+    its value, and the dialog fits the screen."""
+    with WpeSession(str(tmp_path), "int main(void){return 0;}\n",
+                    filename="t.c", cols=80, rows=24) as w:
+        open_c_compiler_options(w)
+        rows = w.display()
+        assert w.alive()
+    screen = "\n".join(rows)
+    caption = next((i for i, r in enumerate(rows) if "Compiler-Style:" in r), None)
+    gnu = next(i for i, r in enumerate(rows) if "GNU" in r)
+    symbol = next(r for r in rows if "Start sYmbol" in r)
+    assert caption is not None, "the caption is painted over:\n" + screen
+    assert caption == gnu - 1, "the caption is not right above GNU:\n" + screen
+    assert "Start sYmbol: :" not in screen and "main" in symbol, symbol
+    buttons = next(i for i, r in enumerate(rows) if "Ok" in r and "Cancel" in r)
+    assert buttons <= len(rows) - 3, "the dialog does not fit 80x24:\n" + screen
+
+
+CPP_TWO_WARNINGS = ("#include <cstdio>\n"
+                    "\n"
+                    "int main()\n"
+                    "{\n"
+                    "    int a = 1 / 0;\n"                 # line 5: warning
+                    "    int b = 2 / 0;\n"                 # line 6: warning
+                    "    std::printf(\"%d\\n\", a + b);\n"
+                    "    return 0;\n"
+                    "}\n")
+
+
+# @scenario SC-compile-04
+def test_a_cpp_warning_only_build_counts_and_marks_its_warnings(tmp_path):
+    """The same count and marks in a second language: g++ with two
+    warnings ends with "0 errors, 2 warnings", each warning row marked, and
+    the program linked."""
+    need("g++")
+    with tall_session(tmp_path, CPP_TWO_WARNINGS, "t.cpp") as w:
+        w.key(F9, delay=BUILD_WAIT)
+        assert wait_screen(w, "0 errors, 2 warnings", tmo=scaled(FIND_TIMEOUT)), \
+            "no count row after a g++ warning-only build:\n" + screen_text(w)
+        rows = messages_rows(w)
+        last = last_messages_row(w)
+        assert w.alive()
+    warning_rows = [r for r in rows if "warning:" in r]
+    assert len(warning_rows) == 2, "Messages rows: %r" % rows
+    for r in warning_rows:
+        assert r.startswith(WARNING_MARK), "a warning row is not marked: %r" % r
+    assert last == "0 errors, 2 warnings", "the count is not the last row: %r" % last
+    assert (tmp_path / "t.e").exists(), "a warning-only build did not link"
 

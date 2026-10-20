@@ -130,7 +130,7 @@ Edit project options (compiler, flags, etc.).
 With a project open, the build cycle works as follows:
 
 @table @kbd
-@item Alt-F9 (Compile)
+@item Alt-C (Compile)
 Compile the current file only.
 @item F9 (Make)
 Recompile all modified files and link the executable.
@@ -139,6 +139,13 @@ Build and then execute the program.
 @item Alt-R E (Execute make)
 Run the system @command{make(1)} command instead of xwpe's built-in build.
 @end table
+
+@cindex project directory
+A project builds in the directory that holds its @file{.prj} file,
+whichever directory xwpe was started from: @samp{wpe proj/p.prj} run
+from the parent compiles @file{proj/a.c} as @file{a.c} inside
+@file{proj/}.  Messages shows each command once, and the build stops at
+the first file with errors.
 
 After compilation, errors appear in the Message Window.  Press
 @kbd{Alt-R N} (Next Error) and @kbd{Alt-R P} (Previous Error) to

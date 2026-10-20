@@ -128,6 +128,20 @@ WOPT eblst_u[] = {  {"F1 Help",  0, 0, 2, F1},
 		    {"F3 S.Ag.", 57, 0, 2, F3},
 		    {"Alt-F4 Quit",  67, 0, 6, AF4}  };
 
+/* The editor bar of the programming modes (wpe, xwpe): F9 builds, as Turbo
+   C's bar said, so the bar names it.  "Close" and "Again" are shortened to
+   keep every key on an 80-column row; the plain editor (we) has no F9 and
+   keeps the bar above.  The CUA bars have no room for one more entry.  The
+   Messages bar is the one that offers Compile and Make by name. */
+WOPT eblst_prog_o[] = {  {"F1 Help",  0, 0, 2, F1},
+			 {"F2 Save",  9, 0, 2, F2},
+			 {"F3 Files", 18, 0, 2,  F3},
+			 {"^W Close", 28, 0, 2, CtrlW},
+			 {"F4 Search", 37, 0, 2, F4},
+			 {"^L Again", 48, 0, 2, CF4},
+			 {"F9 Build", 58, 0, 2, F9},
+			 {"Alt-X Quit",  68, 0, 5, AltX}  };
+
 /* Editor bottom bar shown ONLY while an LSP-supported file is the active window
    (chosen per-window in e_edit) -- it swaps the "Search Again" hint for an
    "Alt-Q ? Metals" entry.  The highlighted "Alt-Q ?" (n=7) tells the user how to
@@ -141,11 +155,12 @@ WOPT eblst_u[] = {  {"F1 Help",  0, 0, 2, F1},
    free Alt-letter (K) has no tie to a language server.  Positions are packed a
    little tighter than the plain editor bar to fit the longer entry. */
 WOPT eblst_lsp_o[] = {  {"F1 Help",  0, 0, 2, F1},
-			{"F2 Save",  9, 0, 2, F2},
-			{"F3 Files", 18, 0, 2,  F3},
-			{"^W Close W.", 28, 0, 2, CtrlW},
-			{"F4 Search", 41, 0, 2, F4},
-			{"Alt-Q ? Metals", 52, 0, 7, WPE_LSP_MENU},
+			{"F2 Save",  8, 0, 2, F2},
+			{"F3 Files", 16, 0, 2,  F3},
+			{"^W Close", 25, 0, 2, CtrlW},
+			{"F4 Search", 34, 0, 2, F4},
+			{"Alt-Q ? Metals", 44, 0, 7, WPE_LSP_MENU},
+			{"F9 Build", 59, 0, 2, F9},
 			{"Alt-X Quit",  68, 0, 5, AltX}  };
 
 WOPT eblst_lsp_u[] = {  {"F1 Help",  0, 0, 2, F1},
@@ -161,16 +176,17 @@ WOPT eblst_lsp_u[] = {  {"F1 Help",  0, 0, 2, F1},
    window holds a plain file that did NOT already get the contextual LSP bar.
    It swaps the "Search Again" hint for an "Alt-G AI" entry: the highlighted
    "Alt-G" (n=5) shows the keyboard prefix, and a click on the entry opens the
-   AI action menu (handled as WPE_AI_MENU in e_prog_switch).  Positions match the
-   plain editor bar -- "Alt-G AI" is no wider than the "Search Again" slot it
-   replaces, so nothing else needs repacking. */
+   AI action menu (handled as WPE_AI_MENU in e_prog_switch).  "Alt-G AI" keeps
+   the column of the "Search Again" slot it replaces in the plain editor bar;
+   "F9 Build" sits right before it. */
 WOPT eblst_ai_o[] = {  {"F1 Help",  0, 0, 2, F1},
 		       {"F2 Save",  9, 0, 2, F2},
 		       {"F3 Files", 18, 0, 2,  F3},
-		       {"^W Close W.", 28, 0, 2, CtrlW},
-		       {"F4 Search", 45, 0, 2, F4},
+		       {"^W Close", 28, 0, 2, CtrlW},
+		       {"F4 Search", 37, 0, 2, F4},
+		       {"F9 Build", 47, 0, 2, F9},
 		       {"Alt-G AI", 56, 0, 5, WPE_AI_MENU},
-		       {"Alt-X Quit",  68, 0, 5, AltX}  };
+		       {"Alt-X Quit",  66, 0, 5, AltX}  };
 
 WOPT eblst_ai_u[] = {  {"F1 Help",  0, 0, 2, F1},
 		       {"Alt-F2 Save",  9, 0, 6, AF2},
@@ -189,12 +205,13 @@ WOPT eblst_ai_u[] = {  {"F1 Help",  0, 0, 2, F1},
    slot is shared.  Alt-Q and Alt-G both keep working regardless -- this only
    restores their on-screen hints. */
 WOPT eblst_lspai_o[] = {  {"F1 Help",  0, 0, 2, F1},
-			  {"F2 Save",  9, 0, 2, F2},
-			  {"F3 Files", 18, 0, 2,  F3},
-			  {"^W Close", 28, 0, 2, CtrlW},
-			  {"Alt-Q ? LSP", 40, 0, 7, WPE_LSP_MENU},
-			  {"Alt-G AI", 54, 0, 5, WPE_AI_MENU},
-			  {"Alt-X Quit",  68, 0, 5, AltX}  };
+			  {"F2 Save",  8, 0, 2, F2},
+			  {"F3 Files", 16, 0, 2,  F3},
+			  {"^W Close", 25, 0, 2, CtrlW},
+			  {"Alt-Q ? LSP", 34, 0, 7, WPE_LSP_MENU},
+			  {"Alt-G AI", 46, 0, 5, WPE_AI_MENU},
+			  {"F9 Build", 55, 0, 2, F9},
+			  {"Alt-X Quit",  64, 0, 5, AltX}  };
 
 WOPT eblst_lspai_u[] = {  {"F1 Help",  0, 0, 2, F1},
 			  {"Alt-F2 Save",  8, 0, 6, AF2},
@@ -594,7 +611,7 @@ int main(int argc, char **argv)
  if (cn->edopt & ED_CUA_STYLE) blst = eblst_u;
  else blst = eblst_o;
  e_ini_desk(cn);
- cn->f[0]->blst = eblst;
+ e_use_editor_bar(cn->f[0], eblst);
 #if MOUSE
  g[0] = 4; g[2] = 0; g[3] = 0;
  fk_mouse(g);
@@ -644,22 +661,120 @@ int main(int argc, char **argv)
  return 0;
 }
 
+#define E_BAR_LEN(bar) ((int)(sizeof(bar) / sizeof((bar)[0])))
+
+/* The editor-window bars and their number of entries: the ones that name
+   F9 have one more. */
+static const struct {
+ WOPT *bar;
+ int n;
+} e_editor_bars[] = {
+ {  eblst_o, E_BAR_LEN(eblst_o)  },
+ {  eblst_u, E_BAR_LEN(eblst_u)  },
+ {  eblst_prog_o, E_BAR_LEN(eblst_prog_o)  },
+ {  eblst_lsp_o, E_BAR_LEN(eblst_lsp_o)  },
+ {  eblst_lsp_u, E_BAR_LEN(eblst_lsp_u)  },
+#ifdef WPE_AI
+ {  eblst_ai_o, E_BAR_LEN(eblst_ai_o)  },
+ {  eblst_ai_u, E_BAR_LEN(eblst_ai_u)  },
+ {  eblst_lspai_o, E_BAR_LEN(eblst_lspai_o)  },
+ {  eblst_lspai_u, E_BAR_LEN(eblst_lspai_u)  },
+#endif
+};
+
+/**
+ * e_editor_bar_size - How many entries an editor-window bar has.
+ * @bar: one of the editor bars.
+ *
+ * The bars of the programming modes name F9 and have one entry more than
+ * the plain editor's, so the count travels with the bar: a window that
+ * changes bar (the AI switch, the CUA keys) paints and takes clicks on
+ * exactly the entries its new bar has.
+ * Return: the number of entries, 0 for a bar that is not an editor bar.
+ */
+int e_editor_bar_size(WOPT *bar)
+{
+ int i;
+
+ for (i = 0; i < E_BAR_LEN(e_editor_bars); i++)
+  if (e_editor_bars[i].bar == bar)
+   return(e_editor_bars[i].n);
+ return(0);
+}
+
+/**
+ * e_is_editor_bar - Is @bar one of the editor-window bars?
+ */
+static int e_is_editor_bar(WOPT *bar)
+{
+ return(e_editor_bar_size(bar) > 0);
+}
+
+/**
+ * e_use_editor_bar - Give an editor window @bar, with its entry count.
+ * @f: the window; @bar: one of the editor bars.
+ */
+void e_use_editor_bar(FENSTER *f, WOPT *bar)
+{
+ f->blst = bar;
+ f->nblst = e_editor_bar_size(bar);
+}
+
+/**
+ * e_plain_editor_bar - The bar of an editor window with no language
+ * server and no assistant.
+ * @cua: the CUA key style is on.
+ *
+ * wpe and xwpe show F9, which builds there; we does not build and keeps
+ * the classic bar.
+ */
+WOPT *e_plain_editor_bar(int cua)
+{
+ if (cua)
+  return(eblst_u);
+ if (WpeIsProg())
+  return(eblst_prog_o);
+ return(eblst_o);
+}
+
+/**
+ * e_editor_bar_in_style - The same editor bar in the other key style.
+ * @bar: an editor bar; @cua: the style to change to.
+ * Return: the bar to use, @bar itself when it is already in that style.
+ */
+static WOPT *e_editor_bar_in_style(WOPT *bar, int cua)
+{
+ if (bar == eblst_o || bar == eblst_u || bar == eblst_prog_o)
+  return(e_plain_editor_bar(cua));
+ if (bar == eblst_lsp_o || bar == eblst_lsp_u)
+  return(cua ? eblst_lsp_u : eblst_lsp_o);
+#ifdef WPE_AI
+ if (bar == eblst_ai_o || bar == eblst_ai_u)
+  return(cua ? eblst_ai_u : eblst_ai_o);
+ if (bar == eblst_lspai_o || bar == eblst_lspai_u)
+  return(cua ? eblst_lspai_u : eblst_lspai_o);
+#endif
+ return(bar);
+}
+
 int e_switch_blst(ECNT *cn)
 {
  int i;
  FENSTER *f;
 
+ for (i = 0; i <= cn->mxedt; i++)
+ {
+  f = cn->f[i];
+  if (e_is_editor_bar(f->blst))
+   e_use_editor_bar(f, e_editor_bar_in_style(f->blst,
+                                            (cn->edopt & ED_CUA_STYLE) != 0));
+ }
  if (cn->edopt & ED_CUA_STYLE)
  {
   for (i = 0; i <= cn->mxedt; i++)
   {
    f = cn->f[i];
-   if (f->blst == eblst_o) f->blst = eblst_u;
-   else if (f->blst == eblst_lsp_o) f->blst = eblst_lsp_u;
-#ifdef WPE_AI
-   else if (f->blst == eblst_ai_o) f->blst = eblst_ai_u;
-   else if (f->blst == eblst_lspai_o) f->blst = eblst_lspai_u;
-#endif
+   if (e_is_editor_bar(f->blst)) continue;
    else if (f->blst == fblst_o) f->blst= fblst_u;
    else if (f->blst == mblst_o) f->blst= mblst_u;
    else if (f->blst == dblst_o) f->blst= dblst_u;
@@ -678,12 +793,7 @@ int e_switch_blst(ECNT *cn)
   for(i = 0; i <= cn->mxedt; i++)
   {
    f = cn->f[i];
-   if (f->blst == eblst_u) f->blst= eblst_o;
-   else if (f->blst == eblst_lsp_u) f->blst= eblst_lsp_o;
-#ifdef WPE_AI
-   else if (f->blst == eblst_ai_u) f->blst= eblst_ai_o;
-   else if (f->blst == eblst_lspai_u) f->blst= eblst_lspai_o;
-#endif
+   if (e_is_editor_bar(f->blst)) continue;
    else if (f->blst == fblst_u) f->blst= fblst_o;
    else if (f->blst == mblst_u) f->blst= mblst_o;
    else if (f->blst == dblst_u) f->blst= dblst_o;
@@ -736,30 +846,45 @@ void e_ai_refresh_bars(ECNT *cn)
  for (i = 0; i <= cn->mxedt; i++)
  {
   FENSTER *f = cn->f[i];
-  WOPT *b = f->blst;
-  if (b != eblst_o && b != eblst_u &&
-      b != eblst_lsp_o && b != eblst_lsp_u &&
-      b != eblst_ai_o && b != eblst_ai_u &&
-      b != eblst_lspai_o && b != eblst_lspai_u)
+  if (!e_is_editor_bar(f->blst))
    continue;                            /* not an editor-file bar -- leave it   */
 #ifdef DEBUGGER
   /* When a file has a language server AND AI is on, show the COMBINED bar so the
      "Alt-Q ? LSP" hint is never lost -- LSP and AI are usable at the same time. */
-  if (on && e_lsp_server_label(f))
-   f->blst = cua ? eblst_lspai_u : eblst_lspai_o;
+  if (on && e_lsp_bar_wanted(f))
+   e_use_editor_bar(f, cua ? eblst_lspai_u : eblst_lspai_o);
   else if (on)
-   f->blst = cua ? eblst_ai_u : eblst_ai_o;
-  else if (e_lsp_server_label(f))
-   f->blst = cua ? eblst_lsp_u : eblst_lsp_o;
+   e_use_editor_bar(f, cua ? eblst_ai_u : eblst_ai_o);
+  else if (e_lsp_bar_wanted(f))
+   e_use_editor_bar(f, cua ? eblst_lsp_u : eblst_lsp_o);
   else
-   f->blst = cua ? eblst_u : eblst_o;
+   e_use_editor_bar(f, e_plain_editor_bar(cua));
 #else
   if (on)
-   f->blst = cua ? eblst_ai_u : eblst_ai_o;
+   e_use_editor_bar(f, cua ? eblst_ai_u : eblst_ai_o);
   else
-   f->blst = cua ? eblst_u : eblst_o;
+   e_use_editor_bar(f, e_plain_editor_bar(cua));
 #endif
  }
+}
+#endif
+
+#ifdef DEBUGGER
+extern const char *e_lsp_server_label(FENSTER *);  /* non-NULL => file has a server */
+
+/**
+ * e_lsp_bar_wanted - Should an editor window show the language-server bar?
+ * @f: the window.
+ *
+ * Only in the programming modes, where Alt-Q reaches the server: under we
+ * the whole programming layer is off, and the bar would offer a key and
+ * an F9 that do nothing there.
+ */
+int e_lsp_bar_wanted(FENSTER *f)
+{
+ if (!WpeIsProg())
+  return(0);
+ return(e_lsp_server_label(f) != NULL);
 }
 #endif
 
@@ -824,7 +949,7 @@ void e_ini_desk(ECNT *cn)
  }
  else
  {
-  eblst = eblst_o; fblst = fblst_o; mblst = mblst_o; dblst = dblst_o;
+  eblst = e_plain_editor_bar(0); fblst = fblst_o; mblst = mblst_o; dblst = dblst_o;
   xblst = xblst_o; wblst = wblst_o; rblst = rblst_o; ablst = ablst_o;
   sblst = sblst_o; hblst = hblst_o; gblst = gblst_o; oblst = oblst_o;
   eblst_lsp = eblst_lsp_o;
