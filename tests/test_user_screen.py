@@ -85,6 +85,7 @@ def _run_keys(workdir, keys, settle=0.6):
     return text, alive
 
 
+# @scenario SC-compile-03
 def test_alt_f5_shows_program_user_screen(tmp_path):
     """Ctrl-F9 Run then Alt-F5 replays the program's computed output full-screen
     with a return prompt."""
@@ -96,6 +97,7 @@ def test_alt_f5_shows_program_user_screen(tmp_path):
         "Alt-F5 User Screen should show a 'press any key to return' prompt:\n%s" % text
 
 
+# @scenario SC-compile-03
 def test_alt_f5_key_returns_to_editor(tmp_path):
     """A keypress on the User Screen returns to the editor (prompt gone, the
     menu bar / source is back)."""
