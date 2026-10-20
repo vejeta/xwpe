@@ -3442,6 +3442,74 @@ static int e_d_dap_watches(FENSTER *f, int sw)
  return(0);
 }
 
+/* The debugger builds the program first, in the background like F9; the
+   command that asked for the debugger (Run, Step, Go to cursor) is kept and
+   run again once the build has succeeded. */
+typedef int (*e_d_resume_fn)(FENSTER *f, int arg);
+static e_d_resume_fn e_d_resume_cmd = NULL;
+static int e_d_resume_arg = 0;
+static int e_d_build_done = 0;     /* the build for this start has succeeded */
+/* e_start_debug's answer while the build it needs is running: the command
+   that asked returns quietly and is run again when the build has ended. */
+#define E_D_BUILDING (-3)
+
+int e_d_goto_func(FENSTER *f, int flag);
+
+/**
+ * e_deb_run_again - Run (Ctrl-G R) again once the build has succeeded.
+ * @f: the top window; @arg: unused.
+ */
+static int e_deb_run_again(FENSTER *f, int arg)
+{
+ (void)arg;
+ return(e_deb_run(f));
+}
+
+/**
+ * e_d_after_build - The debugger's build has ended: on success, run the
+ * debugger command the user pressed, as if pressed again now.
+ * @f: the top window; @result: the build's result; @data: unused.
+ *
+ * A failed build has already put the cursor on its first error, and the
+ * debugger does not start on a program that did not build.
+ */
+static void e_d_after_build(FENSTER *f, int result, void *data)
+{
+ e_d_resume_fn cmd = e_d_resume_cmd;
+
+ (void)data;
+ e_d_resume_cmd = NULL;
+ if (result || !cmd)
+  return;
+ e_d_build_done = 1;
+ cmd(f->ed->f[f->ed->mxedt], e_d_resume_arg);
+ e_d_build_done = 0;
+}
+
+/**
+ * e_d_build_first - Start the build the debugger needs, and wait for it.
+ * @f: the source window.
+ * Return: E_D_BUILDING; the debugger starts from e_d_after_build.
+ */
+static int e_d_build_first(FENSTER *f)
+{
+ e_p_make_then(f, e_d_after_build, NULL);
+ return(E_D_BUILDING);
+}
+
+/**
+ * e_d_resume_after_build - Name the command to run again once the build the
+ * debugger starts with has succeeded.
+ * @cmd: the command; @arg: its argument.
+ */
+static void e_d_resume_after_build(e_d_resume_fn cmd, int arg)
+{
+ if (e_d_swtch || e_build_busy())
+  return;                 /* already debugging, or a build owns the resume */
+ e_d_resume_cmd = cmd;
+ e_d_resume_arg = arg;
+}
+
 int e_start_debug(FENSTER *f)
 {
  ECNT *cn = f->ed;
@@ -3473,8 +3541,9 @@ int e_start_debug(FENSTER *f)
  for (i = cn->mxedt; i > 0; i--)
   if (e_d_dap_lang_for(cn->f[i]))
    return(e_d_dap_start(cn->f[i]));
- if (e_p_make(f))
-  return(-1);
+ if (!e_d_build_done)
+  return(e_d_build_first(f));
+ e_d_build_done = 0;
  /* Full path (e_check_c_file_w), not bare datnam: the dialect sniff must open
     the source so e_s_prog matches what e_p_make just built.  With a bare name
     for a file outside the cwd the sniff fails, e_s_prog falls back to a68g
@@ -3697,7 +3766,13 @@ int e_deb_run(FENSTER *f)
 
  jdb_trace("e_deb_run: entry, e_d_swtch=%d, e_deb_type=%d\n",
            e_d_swtch, e_deb_type);
- if (e_d_swtch < 2 && (ret = e_run_debug(f)) < 0)
+ e_d_resume_after_build(e_deb_run_again, 0);
+ ret = 0;
+ if (e_d_swtch < 2)
+  ret = e_run_debug(f);
+ if (ret == E_D_BUILDING)
+  return(0);
+ if (ret < 0)
  {
   jdb_trace("e_deb_run: e_run_debug failed ret=%d, quitting\n", ret);
   e_d_quit(f);
@@ -4273,7 +4348,13 @@ int e_d_step_next(FENSTER *f, int sw)
 
  jdb_trace("e_d_step_next: entry, sw=%d, e_d_swtch=%d, e_deb_type=%d, "
            "e_d_nbrpts=%d\n", sw, e_d_swtch, e_deb_type, e_d_nbrpts);
- if (e_d_swtch < 2 && (ret = e_run_debug(f)) < 0)
+ e_d_resume_after_build(e_d_step_next, sw);
+ ret = 0;
+ if (e_d_swtch < 2)
+  ret = e_run_debug(f);
+ if (ret == E_D_BUILDING)
+  return(0);
+ if (ret < 0)
  {
   jdb_trace("e_d_step_next: e_run_debug failed ret=%d\n", ret);
   e_d_quit(f);
@@ -4332,7 +4413,12 @@ int e_d_goto_func(FENSTER *f, int flag)
 
  if (e_deb_type != DEB_GDB)/* if gdb */
   return 0;
- if (e_d_swtch < 2 && (ret = e_run_debug(f)) < 0)
+ e_d_resume_after_build(e_d_goto_func, flag);
+ if (e_d_swtch < 2)
+  ret = e_run_debug(f);
+ if (ret == E_D_BUILDING)
+  return(0);
+ if (ret < 0)
  {
   e_d_quit(f);
   if (ret == -1)

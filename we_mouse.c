@@ -1052,6 +1052,10 @@ int e_edt_mouse(int c, FENSTER *f)
    if (e_mouse.x >= cn->f[i]->a.x && e_mouse.x <= cn->f[i]->e.x &&
      e_mouse.y >= cn->f[i]->a.y && e_mouse.y <= cn->f[i]->e.y)
    {
+#ifdef PROG
+    if (WpeIsProg())
+     e_d_note_messages_focus_click(cn->f[i]);
+#endif
     ret = cn->edt[i] < 10 ? Alt1-1+cn->edt[i] : 1014+cn->edt[i];
     break;
    }

@@ -280,8 +280,32 @@ Changes
   used to pick the next row by line number alone, whatever file it named,
   so with compiler errors, an agent changeset or a Multi-file accept
   across files, a file whose line was lower than the current one was
-  skipped for good.  The step now stays within the current file first
-  and then moves to the next file's rows, wrapping at the ends.
+  skipped for good.  The step now goes to the next row in the order the
+  list was printed, crossing files, wrapping at the ends.  An error in an
+  included header printed between two errors of the main file is visited
+  in its turn; the "In file included from" rows and gcc's notes are no
+  longer stops of their own.
+
+* A build no longer holds the editor.  F9, Alt-C, Ctrl-F9, Execute Make
+  and the debugger's build run in the background: Messages fills as the
+  compiler prints, its last row reads "building ... Ns (Esc cancels)",
+  and the editor keeps taking keys.  Esc stops the build and everything
+  it started, says "build cancelled", and runs no later step.  Keys typed
+  during a build used to be replayed into the file when it ended.
+
+* Every line a build prints reaches Messages.  Output larger than one
+  read lost the next read whole (302 of 1000 lines), and the error line
+  of fpc, which writes in 256-byte pieces, could vanish.
+
+* The jump to an error lands on the column the compiler names.  It used
+  to land one character to the right, out of sight at the end of a line.
+
+* A build ends with a row that counts what it found: "1 error,
+  0 warnings".  Warning rows start with a warning sign.
+
+* In Messages, Esc goes back to the window you came from, and a double
+  click on a row jumps to it like Enter; a single click moves the
+  Messages cursor.
 
 * An accepted change leaves the buffer exactly as the accepted text.
   Every accepted Edit, completion, language-server code action, format

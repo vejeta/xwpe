@@ -48,9 +48,71 @@ In X11 mode, output is captured to the Messages buffer via
 After compilation, errors appear in the Message Window.  Use
 @kbd{Alt-T} or @kbd{Alt-F8} (Next Error) and @kbd{Alt-V} or
 @kbd{Alt-F7} (Previous Error) to navigate between errors.  The cursor
-jumps to the error location in the source code.  These commands are
+jumps to the error location in the source code, on the line and the
+column the compiler names.  These commands are
 also available from the @samp{Run} menu as @samp{Next Error} and
 @samp{Previous Error}.
+
+@subsection The build runs in the background
+
+@cindex build, background
+@cindex build, cancelling
+@cindex Esc, during a build
+
+A build does not hold the editor.  While the compiler, the linker or
+@command{make} runs, every line it prints lands in Messages as it comes,
+and the last row of Messages reads @samp{building ... 3s  (Esc cancels)},
+counting the seconds.  The editor keeps taking keys: you can move to
+another window, scroll, or read the output as it grows.
+
+@kbd{Esc} cancels the build.  The compiler and everything it started
+are stopped, Messages ends with @samp{build cancelled}, and no later
+step runs: a cancelled @kbd{F9} links nothing, and a cancelled
+@kbd{Ctrl-F9} runs nothing.  A second build key pressed while one runs
+is refused with a line on the status row that says @kbd{Esc} cancels the
+running build.
+
+@subsection The end of a build
+
+@cindex error count
+@cindex warning count
+
+When a build ends, the last row of Messages counts what it found, for
+example @samp{1 error, 0 warnings} or @samp{0 errors, 2 warnings}.  A
+build that failed without a row to walk (a linker error, a command that
+could not run) adds its exit status to that row.  Each warning row starts
+with a warning sign (U+26A0), so the rows that only advise stand apart
+from the ones that stopped the build.  A failed build puts the cursor on
+its first error; a successful one gives the keys back to the window you
+were in.
+
+@subsection Walking the errors
+
+@cindex Alt-T, order
+@cindex Messages, Esc
+@cindex Messages, double click
+
+@kbd{Alt-T} and @kbd{Alt-V} visit the rows in the order the compiler
+printed them, crossing from file to file: an error in an included header
+that the compiler printed between two errors of the main file is visited
+in its turn.  The rows of an include chain (@samp{In file included from
+a.c:2:}) belong to the error after them and are never a stop of their
+own; neither are the notes gcc adds under an error.
+
+In the Messages window, @kbd{Enter} or a double click on a row jumps to
+the place it names; a single click only moves the Messages cursor to the
+row.  @kbd{Esc} leaves Messages for the window you came from, its cursor
+where you left it.
+
+@subsection Compared with Turbo C
+
+@cindex Turbo C, compile box
+
+Turbo C held the whole IDE while it compiled, behind a box that counted
+lines, warnings and errors until the compiler was done.  xwpe keeps the
+editor live and shows the waiting line in Messages instead, and @kbd{Esc}
+cancels the build, because a build of a large project runs for minutes
+and nothing about it needs the editor to wait.
 
 @subsection Header dependencies
 
@@ -202,7 +264,8 @@ These capture parts of the error message:
 @item @code{$@{LINE@}} @tab Line number of the error (must be a digit).
 @item @code{$@{LINE+N@}} or @code{$@{LINE-N@}} @tab Line number with
   offset adjustment.
-@item @code{$@{COLUMN@}} @tab Column number (numeric).
+@item @code{$@{COLUMN@}} @tab Column number (numeric), counted from 1
+  as compilers print it.
 @item @code{$@{COLUMN+N@}} or @code{$@{COLUMN-N@}} @tab Column with
   offset.
 @item @code{$@{COLUMN=BEFORE@}} @tab Column is determined by searching
@@ -219,9 +282,10 @@ These capture parts of the error message:
 @multitable @columnfractions .40 .60
 @headitem Placeholder @tab Meaning
 @item @code{$@{?*:STRING@}} @tab If @code{STRING} appears anywhere in
-  the line, treat this as a warning rather than an error.  Warnings
-  are skipped when navigating with Alt-T/Alt-V unless
-  @code{ED_MESSAGES_STOP_AT} is set.
+  the line, treat this as a warning rather than an error.  A warning
+  row is counted as a warning and marked with the warning sign; a
+  build with warnings only succeeds.  Alt-T/Alt-V visit warning rows
+  as they visit errors.
 @item @code{$@{?N:STRING@}} @tab Like the above, but @code{STRING}
   must appear at column @var{N} (0-based).
 @end multitable

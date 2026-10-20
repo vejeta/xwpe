@@ -29,10 +29,15 @@
 # include <libutil.h>      /* some BSDs */
 #endif
 #include "we_fdloop.h"
+#include <stdint.h>
+#ifdef __linux__
+# include <sys/timerfd.h>  /* the waiting line's heartbeat while a build runs */
+#endif
 
 int e_run_sh(FENSTER *f);
-int e_make_library(char *library, char *ofile, FENSTER *f);
-int e_p_exec(int file, FENSTER *f, PIC *pic);
+int e_make_library(char *library, char *ofile, FENSTER *f,
+                   e_build_cont done, void *data);
+int e_p_exec(FENSTER *f, PIC *pic, e_build_cont done, void *data);
 struct dirfile **e_make_prj_opt(FENSTER *f);
 int print_to_end_of_buffer(BUFFER * b,char * str,int wrap_limit);
 
@@ -50,7 +55,14 @@ const char *e_get_start_symbol(void)
  return "main";
 }
 
-struct ERR_LI  {  char *file, *text, *srch;  int x, y, line;  } *err_li = NULL;
+/* One row of the error list.  x is the compiler's 1-based column (0 when it
+   names none), y the Messages row Enter on which selects the entry (the
+   first row of an include chain that leads to it), row the Messages row the
+   entry was read from, kind what the compiler called it. */
+struct ERR_LI  {  char *file, *text, *srch;  int x, y, line, row, kind;  } *err_li = NULL;
+/* What a row of the error list is; both are counted when a build ends. */
+#define E_ROW_ERROR   0
+#define E_ROW_WARNING 1
 int err_no, err_num;
 /* Whether a row of the current error list has been shown yet.  A new list
    (a compile, an agent changeset, a Multi-file accept) starts unwalked: the
@@ -273,46 +285,130 @@ static void e_build_popd(char *saved)
 }
 
 static void e_make_multifile_hint(FENSTER *f);
+static int e_build_chain_begin(FENSTER *f, e_build_cont done, void *data);
+static void e_build_chain_end(FENSTER *f, int result, void *data);
 
-int e_compile(FENSTER *f)
+/**
+ * e_p_source_window - The window a build is about: the topmost one that is
+ * not Messages.
+ * @cn: the desktop.
+ *
+ * A build step ends with Messages on top, and the user may have moved
+ * between windows while it ran, so each step finds the source again rather
+ * than keeping a window that may have been closed meanwhile.
+ * Return: the window.
+ */
+static FENSTER *e_p_source_window(ECNT *cn)
 {
- int ret;
+ int i;
 
- WpeMouseChangeShape(WpeWorkingShape);
- efildes[0] = efildes[1] = -1;
- wfildes[0] = wfildes[1] = -1;
- ret = e_comp(f, 1);
- WpeMouseRestoreShape();
- return(ret);
-}
-
-int e_p_make(FENSTER *f)
-{
- ECNT *cn = f->ed;
- char ostr[128], estr[128], mstr[80];
- char cwd_saved[1024];
- int len, i, file = -1, cwd_chg = 0;
- struct stat cbuf[1], obuf[1];
- { const char *tp = getenv("XWPE_UI_TRACE");
-   if (tp) { FILE *tf = fopen(tp, "a");
-     if (tf) { fprintf(tf, "e_p_make ENTER\n"); fclose(tf); } } }
- PIC *pic = NULL;
- int linkRequest = 1; /* assume linking has to be done */
-
- WpeMouseChangeShape(WpeWorkingShape);
- efildes[0] = efildes[1] = -1;
- wfildes[0] = wfildes[1] = -1;
- if (e_comp(f, 0))
- {
-  WpeMouseRestoreShape();
-  return(-1);
- }
- /* Find the source file, skipping Messages which e_comp may have
-    placed at mxedt or mxedt-1 */
  for (i = cn->mxedt; i > 0; i--)
   if (strcmp(cn->f[i]->datnam, "Messages"))
    break;
- f = (i > 0) ? cn->f[i] : cn->f[cn->mxedt-1];
+ if (i > 0)
+  return(cn->f[i]);
+ return(cn->f[cn->mxedt-1]);
+}
+
+/**
+ * e_compile - Alt-C: compile the current file without linking, in the
+ * background.
+ */
+int e_compile(FENSTER *f)
+{
+ if (e_build_chain_begin(f, NULL, NULL))
+  return(-1);
+ WpeMouseChangeShape(WpeWorkingShape);
+ efildes[0] = efildes[1] = -1;
+ wfildes[0] = wfildes[1] = -1;
+ e_comp(f, 1, e_build_chain_end, NULL);
+ WpeMouseRestoreShape();
+ return(0);
+}
+
+static void e_p_make_link(ECNT *cn);
+
+/**
+ * e_p_make_after_compile - The compile of F9 has ended: link, or stop.
+ * @f: the top window; @result: the compile's result; @data: unused.
+ */
+static void e_p_make_after_compile(FENSTER *f, int result, void *data)
+{
+ (void)data;
+ if (result)
+ {
+  e_build_chain_end(f, result, NULL);
+  return;
+ }
+ e_p_make_link(f->ed);
+}
+
+/**
+ * e_p_make_after_link - The link of F9 has ended: end the build.
+ * @f: the top window; @result: the link's result; @data: unused.
+ *
+ * A link that fails on a lone file of a program with a makefile also says
+ * how to build the whole program, after the jump to the error.
+ */
+static void e_p_make_after_link(FENSTER *f, int result, void *data)
+{
+ ECNT *cn = f->ed;
+
+ (void)data;
+ e_build_chain_end(f, result, NULL);
+ if (result)
+  e_make_multifile_hint(e_p_source_window(cn));
+}
+
+/**
+ * e_p_make_then - F9: compile and link in the background, then run @done.
+ * @f: the window F9 was pressed in.
+ * @done: what runs once the build has ended (Ctrl-F9 runs the program, the
+ * debugger starts), or NULL; it gets 0 for a success.
+ * @data: handed to @done.
+ *
+ * Return: 0 when the build started, -1 when another build is running.
+ */
+int e_p_make_then(FENSTER *f, e_build_cont done, void *data)
+{
+ { const char *tp = getenv("XWPE_UI_TRACE");
+   if (tp) { FILE *tf = fopen(tp, "a");
+     if (tf) { fprintf(tf, "e_p_make ENTER\n"); fclose(tf); } } }
+ if (e_build_chain_begin(f, done, data))
+  return(-1);
+ WpeMouseChangeShape(WpeWorkingShape);
+ efildes[0] = efildes[1] = -1;
+ wfildes[0] = wfildes[1] = -1;
+ e_comp(f, 0, e_p_make_after_compile, NULL);
+ WpeMouseRestoreShape();
+ return(0);
+}
+
+/**
+ * e_p_make - F9 and Alt-M: build the current file or project.
+ */
+int e_p_make(FENSTER *f)
+{
+ return(e_p_make_then(f, NULL, NULL));
+}
+
+/**
+ * e_p_make_link - The link step of F9, once the compile succeeded.
+ * @cn: the desktop.
+ *
+ * Skipped when the program is newer than its objects; otherwise the linker
+ * runs as the next step of the same build.
+ */
+static void e_p_make_link(ECNT *cn)
+{
+ FENSTER *f;
+ char ostr[128], estr[128], mstr[80];
+ char cwd_saved[1024];
+ int len, file = -1, cwd_chg = 0;
+ struct stat cbuf[1], obuf[1];
+ int linkRequest = 1; /* assume linking has to be done */
+
+ f = e_p_source_window(cn);
  /* Link/up-to-date checks below use exedir="." and bare exe/object names; run
     them and the linker in the build directory so they resolve next to the
     code, not in wpe's launch directory. */
@@ -375,27 +471,19 @@ int e_p_make(FENSTER *f)
   if (!e__project)
    e_free_arg(e_arg, e_argc);
   if (file != 0)
-   i = e_p_exec(file, f, pic);
+   e_p_exec(f, NULL, e_p_make_after_link, NULL);
   else
-  {
-   i = WPE_ESC;
-   if (pic)
-    e_close_view(pic, 1);
-  }
-  if (i)
-   e_make_multifile_hint(f);
+   e_p_make_after_link(f, WPE_ESC, NULL);
   if (cwd_chg)
    e_build_popd(cwd_saved);
-  WpeMouseRestoreShape();
-  return(i);
+  return;
  }
  /* Executable is up to date -- no linking needed */
  if (!e__project)
   e_free_arg(e_arg, e_argc);
  if (cwd_chg)
   e_build_popd(cwd_saved);
- WpeMouseRestoreShape();
- return(0);
+ e_build_chain_end(f, 0, NULL);
 }
 
 /* Fold one raw output byte from the running program into the Messages buffer:
@@ -622,36 +710,66 @@ static void e_strlcat(char *dst, const char *src, size_t cap)
  snprintf(dst + dl, cap - dl, "%s", src);
 }
 
+/* The source Ctrl-F9 was pressed on, kept by value: the program runs after
+   the build, and the window may have been closed while it built. */
+static char e_run_src_dirct[256], e_run_src_datnam[256];
+
+static int e_run_program(ECNT *cn);
+
+/**
+ * e_run_after_make - The build of Ctrl-F9 has ended: run the program if it
+ * succeeded.
+ * @f: the top window; @result: the build's result; @data: unused.
+ */
+static void e_run_after_make(FENSTER *f, int result, void *data)
+{
+ (void)data;
+ if (result)
+  return;
+ e_run_program(f->ed);
+}
+
+/**
+ * e_run - Ctrl-F9: build in the background, then run the program.
+ */
 int e_run(FENSTER *f)
 {
- ECNT *cn = f->ed;
- BUFFER *b;
- FENSTER *mf;
- char estr[256];
- char src_dirct[256], src_datnam[256];
- char cwd_saved[1024];
- int len, ret, i, cwd_chg = 0;
-
  { const char *tp = getenv("XWPE_UI_TRACE");
    if (tp) { FILE *tf = fopen(tp, "a");
      if (tf) { fprintf(tf, "e_run ENTER datnam=%s\n",
               f && f->datnam ? f->datnam : "?"); fclose(tf); } } }
+ if (e_build_busy())
+ {
+  e_build_refuse(f);
+  return(-1);
+ }
  efildes[0] = efildes[1] = -1;
  wfildes[0] = wfildes[1] = -1;
  if (!e_run_sh(f))
   return(0);
- strncpy(src_dirct, f->dirct, sizeof(src_dirct) - 1);
- src_dirct[sizeof(src_dirct) - 1] = '\0';
- strncpy(src_datnam, f->datnam, sizeof(src_datnam) - 1);
- src_datnam[sizeof(src_datnam) - 1] = '\0';
- if (e_p_make(f))
-  return(-1);
+ strncpy(e_run_src_dirct, f->dirct, sizeof(e_run_src_dirct) - 1);
+ e_run_src_dirct[sizeof(e_run_src_dirct) - 1] = '\0';
+ strncpy(e_run_src_datnam, f->datnam, sizeof(e_run_src_datnam) - 1);
+ e_run_src_datnam[sizeof(e_run_src_datnam) - 1] = '\0';
+ return(e_p_make_then(f, e_run_after_make, NULL));
+}
+
+/**
+ * e_run_program - Run the program that was just built, with its output in
+ * Messages and on the user screen (Alt-F5).
+ * @cn: the desktop.
+ */
+static int e_run_program(ECNT *cn)
+{
+ BUFFER *b;
+ FENSTER *mf, *f;
+ char estr[256];
+ char *src_dirct = e_run_src_dirct, *src_datnam = e_run_src_datnam;
+ char cwd_saved[1024];
+ int len, ret, i, cwd_chg = 0;
+
  WpeMouseChangeShape(WpeWorkingShape);
- /* Find source file, skipping Messages */
- for (i = cn->mxedt; i > 0; i--)
-  if (strcmp(cn->f[i]->datnam, "Messages"))
-   break;
- f = (i > 0) ? cn->f[i] : cn->f[cn->mxedt-1];
+ f = e_p_source_window(cn);
 #ifdef DEBUGGER
  if (e_d_swtch > 0)
   e_d_quit(f);
@@ -852,7 +970,16 @@ static void e_build_path_too_long(FENSTER *f, const char *what)
  e_message(0, msg, f);
 }
 
-int e_comp(FENSTER *f, int announce)
+/**
+ * e_comp_start - Start the compile of the current file (or the project).
+ * @f: the window the key was pressed in; @announce: say when nothing needs
+ * compiling; @done, @data: what runs when the compile has ended.
+ * @handed: set to 1 when @done now belongs to a running step.
+ *
+ * Return: the result, when @done was not handed on.
+ */
+static int e_comp_start(FENSTER *f, int announce, e_build_cont done, void *data,
+                        int *handed)
 {
  ECNT *cn = f->ed;
  PIC *pic = NULL;
@@ -882,7 +1009,10 @@ int e_comp(FENSTER *f, int announce)
 #endif
  e__project = e_project_is_open();
  if (e__project)
-  return(e_c_project(f));
+ {
+  *handed = 1;
+  return(e_c_project(f, done, data));
+ }
  for (i = cn->mxedt; i > 0; i--)
  {
   if (e_check_c_file_w(cn->f[i]))
@@ -976,10 +1106,11 @@ int e_comp(FENSTER *f, int announce)
   }
   e_sys_end();
   e_free_arg(arg, argc);
-  i = e_p_exec(file, f, pic);
+  *handed = 1;
+  e_p_exec(f, pic, done, data);
   if (cwd_chg)
    e_build_popd(cwd_saved);
-  return(i);
+  return(0);
  }
  /* Object file is up to date -- no recompilation needed */
  e_sys_end();
@@ -988,6 +1119,27 @@ int e_comp(FENSTER *f, int announce)
   e_build_popd(cwd_saved);
  if (announce)
   e_compile_announce_uptodate(f);
+ return(0);
+}
+
+static void e_build_continue(e_build_cont cont, FENSTER *f, int result, void *data);
+
+/**
+ * e_comp - Compile the current file, or build the open project, as a step
+ * of a build.
+ * @f: the window the key was pressed in; @announce: say when the object is
+ * already current (Alt-C); @done: what runs when the compile has ended,
+ * exactly once, also when nothing needed compiling or the compile could not
+ * start; @data: handed to @done.
+ * Return: 0.
+ */
+int e_comp(FENSTER *f, int announce, e_build_cont done, void *data)
+{
+ int handed = 0;
+ int ret = e_comp_start(f, announce, done, data, &handed);
+
+ if (!handed)
+  e_build_continue(done, f, ret, data);
  return(0);
 }
 
@@ -1012,6 +1164,10 @@ int e_exec_inf(FENSTER *f, char **argv, int n)
 
  if ((e_save_pid = pid = fork()) > 0)
  {
+  /* The build leads its own process group, so Esc can end make together
+     with the compiler it started.  Set on both sides of the fork: whichever
+     runs first, the group exists before the parent may signal it. */
+  setpgid(pid, pid);
   /* Parent: keep the read ends; close the write ends so read() sees EOF when
      the child exits, and CLOEXEC so a later child does not inherit them. */
   close(efildes[1]);
@@ -1034,6 +1190,7 @@ int e_exec_inf(FENSTER *f, char **argv, int n)
     -> /dev/null so the command can never grab the controlling tty and corrupt
     the parent's curses screen.  Then close every pipe fd (the dup2'd copies on
     0/1/2 survive). */
+ setpgid(0, 0);
  dup2(efildes[1], 2);
  dup2(wfildes[1], 1);
  if ((nul = open("/dev/null", O_RDONLY)) >= 0)
@@ -1103,6 +1260,32 @@ static void e_make_multifile_hint(FENSTER *f)
    "Run -> Execute Make (Alt-A) to build with the Makefile.", f);
 }
 
+/**
+ * e_p_pump_complete_lines - Hand the complete lines of an accumulator to
+ * Messages and keep the partial line that follows them intact.
+ * @acc: the accumulator, NUL-terminated at *@acclen.
+ * @acclen: its length; on return, the length of the partial line kept.
+ * @last: the index of the last '\n' in @acc.
+ * @b: the Messages buffer.
+ *
+ * A build writes in pieces of any size, so a read usually ends inside a
+ * line.  The first byte of that partial line is saved before the complete
+ * lines are cut off with a NUL and restored after, so the next read appends
+ * to the whole line: every line the build prints reaches Messages, in order,
+ * however the compiler chops its output.
+ */
+static void e_p_pump_complete_lines(char *acc, int *acclen, int last, BUFFER *b)
+{
+ int keep = *acclen - (last + 1);
+ char first_kept = acc[last + 1];
+
+ acc[last + 1] = '\0';
+ print_to_end_of_buffer(b, acc, 0);
+ acc[last + 1] = first_kept;
+ memmove(acc, acc + last + 1, keep + 1);
+ *acclen = keep;
+}
+
 /* e_p_pump_fd - read whatever is available on fd into the per-fd line
    accumulator (*acc / *acclen), append every COMPLETE line (through its '\n')
    to the Messages buffer b, and keep the trailing partial for next time.
@@ -1111,157 +1294,1048 @@ static void e_make_multifile_hint(FENSTER *f)
    e_p_exec so a flooding child cannot pin xwpe at 100% CPU forever.
    Replaces the byte-at-a-time e_line_read, which also dropped the final
    fragment that had no trailing '\n'. */
+/* e_p_pump_fd's answer when the pipe has nothing to read right now. */
+#define E_PUMP_AGAIN (-1)
+
 static int e_p_pump_fd(int fd, char **acc, int *acclen, BUFFER *b)
 {
  char rbuf[4096];
  int r, last;
 
- if ((r = read(fd, rbuf, sizeof(rbuf))) <= 0)
+ r = read(fd, rbuf, sizeof(rbuf));
+ if (r < 0 && (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR))
+  return(E_PUMP_AGAIN);                 /* nothing yet: the loop wakes us again */
+ if (r <= 0)
   return(0);                            /* 0 = EOF, <0 = error */
  *acc = REALLOC(*acc, *acclen + r + 1);
  memcpy(*acc + *acclen, rbuf, r);
  *acclen += r;
  (*acc)[*acclen] = '\0';
+ if (!b)                                /* Messages is closed: keep it all */
+  return(r);
  for (last = *acclen - 1; last >= 0 && (*acc)[last] != '\n'; last--)
   ;
  if (last >= 0)                         /* at least one complete line */
- {
-  (*acc)[last + 1] = '\0';
-  print_to_end_of_buffer(b, *acc, 0);
-  *acclen -= (last + 1);
-  memmove(*acc, *acc + last + 1, *acclen + 1);
- }
+  e_p_pump_complete_lines(*acc, acclen, last, b);
  return(r);
 }
 
-int e_p_exec(int file, FENSTER *f, PIC *pic)
+/* ======================= the build on the editor's fd loop ===================
+ * The compiler, the linker and make run as a background task, the way the
+ * assistant's requests do: the child's stdout and stderr are registered with
+ * the fd loop the editor already waits on for keys, each line lands in
+ * Messages from that loop's callback, a heartbeat timer turns the waiting line
+ * at the foot of Messages, and Esc ends the child.  The editor keeps taking
+ * keys the whole time.  When the child is gone, what the old blocking reader
+ * ran after its loop runs here, and then the step's continuation: the next
+ * step of the build (the link after the compile, the next file of a project),
+ * the program after a build (Ctrl-F9), the debugger after a build, or the end
+ * of the build (the count row and the jump to the first error).
+ */
+
+/* The waiting line turns this often: the assistant's heartbeat cadence. */
+#define E_BUILD_TICK_NS 120000000L
+/* After Esc sends SIGTERM, this many ticks (about two seconds) pass before
+   SIGKILL: a build that traps or ignores SIGTERM still ends. */
+#define E_BUILD_KILL_TICKS 17
+/* A child that prints more than this in one step is malfunctioning (a68g's
+   abend recursion pinned the editor at 100% CPU draining it); it is killed
+   at the source. */
+#define E_BUILD_RUNAWAY_MAX (16UL * 1024 * 1024)
+#define E_BUILD_WAIT_FMT "building ... %lds  (Esc cancels)"
+#define E_BUILD_CANCELLED_LINE "build cancelled"
+#define E_BUILD_RUNAWAY_LINE "xwpe: child output exceeded runaway cap, killed."
+#define E_BUILD_SUCCESS_LINE "Success"
+#define E_BUILD_BUSY_LINE " A build is running: Esc cancels it"
+#define E_BUILD_NO_FD (-1)
+/* e_make_error_list's verdict for output that is not a compiler's (a linker
+   or a command that could not start): no row to jump to. */
+#define E_LIST_NO_JUMP (-2)
+
+/* The one build step that may run at a time. */
+typedef struct {
+ int active;            /* a step owns a child (or is finishing)           */
+ int pid;               /* the child, leader of its own process group      */
+ int efd, wfd;          /* read ends of its stderr and stdout              */
+ char *eacc, *wacc;     /* the partial line kept from each stream          */
+ int eacclen, wacclen;
+ unsigned long drained; /* bytes read in this step (the runaway cap)       */
+ int runaway;
+ int cancelled;         /* Esc was pressed                                 */
+ int term_ticks;        /* heartbeat ticks since SIGTERM                   */
+ int reaped;            /* the child has been waited for                   */
+ int status;            /* its wait status                                 */
+ int held;              /* it ended while a box was up                     */
+ int is;                /* rows Messages had when the step began           */
+ int wait_row;          /* the waiting line is Messages' last row          */
+ time_t start;
+ int hb_fd;             /* the heartbeat timer                             */
+ sigset_t old_mask;     /* the signal mask before SIGCHLD was blocked      */
+ ECNT *cn;
+ PIC *pic;
+ char dir[WPE_BUILD_PATH_MAX];   /* where the child runs; its paths resolve there */
+ e_build_cont cont;
+ void *data;
+} e_build_step;
+
+static e_build_step g_build;
+
+/* The build as a whole: open from F9 (or Alt-C, Ctrl-F9, Execute Make, the
+   debugger's build) until its last step has ended. */
+static int g_build_chain_open;
+static int g_build_chain_ran;          /* at least one step ran a child      */
+static int g_build_chain_cancelled;
+static int g_build_chain_list;         /* the last step's list verdict       */
+static int g_build_chain_exit;         /* the last step's exit status        */
+static e_build_cont g_build_final;
+static void *g_build_final_data;
+
+static void e_build_step_end(void);
+
+/**
+ * e_build_busy - Is a build running, or between two of its steps?
+ *
+ * F9, Alt-C, Ctrl-F9, Execute Make and the debugger's build ask this first,
+ * so a second build never resets Messages under the first one; the user is
+ * told on the status row that Esc cancels the running build instead.
+ * Return: 1 while a build owns Messages.
+ */
+int e_build_busy(void)
+{
+ if (g_build.active)
+  return(1);
+ return(g_build_chain_open);
+}
+
+/**
+ * e_build_refuse - Say why a second build did not start.
+ * @f: the window the key was pressed in.
+ *
+ * The bottom row names the running build and the key that ends it; the
+ * next repaint of the hint row puts the key hints back.
+ */
+void e_build_refuse(FENSTER *f)
+{
+ if (!f || !f->fb)
+  return;
+ e_blk(MAXSCOL, 0, MAXSLNS - 1, f->fb->mt.fb);
+ e_pr_str(1, MAXSLNS - 1, E_BUILD_BUSY_LINE, f->fb->ms.fb, -1, -1,
+          f->fb->ms.fb, f->fb->mt.fb);
+ e_refresh();
+}
+
+/**
+ * e_build_messages - The Messages window, if it is open.
+ * @cn: the desktop.
+ *
+ * Looked up afresh on every use: the user may close Messages while the
+ * build runs, and its output is then kept until the window is back.
+ * Return: the window, or NULL.
+ */
+static FENSTER *e_build_messages(ECNT *cn)
+{
+ int i;
+
+ if (!cn)
+  return(NULL);
+ for (i = cn->mxedt; i > 0; i--)
+  if (cn->f[i] && cn->f[i]->datnam && !strcmp(cn->f[i]->datnam, "Messages"))
+   return(cn->f[i]);
+ return(NULL);
+}
+
+/**
+ * e_build_ui_idle - May the build paint, or end, right now?
+ * @cn: the desktop.
+ *
+ * True when no dialog, menu or picker owns the screen and a text window is
+ * on top: the same test the assistant applies before it shows a reply.  A
+ * build that ends while a dialog is open waits for the dialog to close, so
+ * the jump to the first error never lands under it.
+ */
+static int e_build_ui_idle(ECNT *cn)
+{
+ extern int wpe_modal_active;
+ FENSTER *top;
+
+ if (wpe_modal_active || !cn || cn->mxedt < 1)
+  return(0);
+ top = cn->f[cn->mxedt];
+ if (!top)
+  return(0);
+ return(DTMD_ISTEXT(top->dtmd));
+}
+
+/**
+ * e_build_drop_last_row - Take the last row out of the Messages buffer.
+ * @b: the Messages buffer.
+ */
+static void e_build_drop_last_row(BUFFER *b)
+{
+ int last = b->mxlines - 1;
+
+ if (last < 0)
+  return;
+ if (last == 0)
+ {
+  b->bf[0].s[0] = '\0';
+  b->bf[0].len = b->bf[0].nrc = 0;
+  return;
+ }
+ FREE(b->bf[last].s);
+ b->mxlines--;
+}
+
+/**
+ * e_build_wait_line_drop - Remove the waiting line before output is added.
+ *
+ * The line always sits below the build's own output, so it is taken out
+ * before new lines land and written again after them.
+ */
+static void e_build_wait_line_drop(void)
+{
+ FENSTER *mf = e_build_messages(g_build.cn);
+
+ if (!g_build.wait_row)
+  return;
+ g_build.wait_row = 0;
+ if (mf)
+  e_build_drop_last_row(mf->b);
+ else if (e_p_m_buffer)
+  e_build_drop_last_row(e_p_m_buffer);   /* Messages closed: its buffer stays */
+}
+
+/**
+ * e_build_wait_line_put - Write "building ... Ns (Esc cancels)" at the foot
+ * of Messages.
+ *
+ * What the user sees while a build runs: that it runs, for how long, and
+ * that Esc ends it -- where the assistant shows its own waiting line.
+ */
+static void e_build_wait_line_put(void)
+{
+ FENSTER *mf = e_build_messages(g_build.cn);
+ char line[80];
+
+ if (!mf || g_build.wait_row)
+  return;
+ snprintf(line, sizeof line, E_BUILD_WAIT_FMT, (long)(time(NULL) - g_build.start));
+ print_to_end_of_buffer(mf->b, line, 0);
+ g_build.wait_row = 1;
+}
+
+/**
+ * e_build_paint - Show the latest Messages rows, when nothing is in the way.
+ *
+ * Messages follows the output to its last row; the cursor goes back to the
+ * window the user is typing in, so typing during a build is undisturbed.
+ */
+static void e_build_paint(void)
+{
+ ECNT *cn = g_build.cn;
+ FENSTER *mf = e_build_messages(cn);
+
+ if (!mf || !e_build_ui_idle(cn))
+  return;
+ mf->b->b.y = mf->b->mxlines - 1;
+ mf->b->b.x = 0;
+ e_messages_scroll_to_bottom(mf);
+ e_schirm(mf, 0);
+ if (mf != cn->f[cn->mxedt])
+  e_cursor(cn->f[cn->mxedt], 0);
+ else
+  e_cursor(mf, 0);
+ e_refresh();
+}
+
+/**
+ * e_build_signal - Send @sig to the build and every process it started.
+ * @sig: SIGTERM on Esc, SIGKILL when that was not enough or on a runaway.
+ *
+ * make runs the compiler as its own child; ending make alone would leave
+ * the compiler writing into the pipe, so the whole process group is hit.
+ */
+static void e_build_signal(int sig)
+{
+ if (g_build.pid <= 0)
+  return;
+ if (kill(-g_build.pid, sig) < 0)
+  kill(g_build.pid, sig);
+}
+
+/**
+ * e_build_try_reap - Collect the child's exit status if it has exited.
+ * Return: 1 once it is reaped.
+ */
+static int e_build_try_reap(void)
+{
+ int r;
+
+ if (g_build.reaped)
+  return(1);
+ if (g_build.pid <= 0)
+ {
+  g_build.reaped = 1;
+  return(1);
+ }
+ r = waitpid(g_build.pid, &g_build.status, WNOHANG);
+ if (r == g_build.pid || (r < 0 && errno == ECHILD))
+  g_build.reaped = 1;
+ if (r < 0)
+  g_build.status = 0;      /* reaped elsewhere: judge by the parsed rows */
+ return(g_build.reaped);
+}
+
+/**
+ * e_build_streams_open - Is either output pipe of the child still open?
+ */
+static int e_build_streams_open(void)
+{
+ if (g_build.efd != E_BUILD_NO_FD)
+  return(1);
+ return(g_build.wfd != E_BUILD_NO_FD);
+}
+
+/**
+ * e_build_close_stream - Stop watching one output pipe and close it.
+ * @fd: the pipe's read end.
+ */
+static void e_build_close_stream(int fd)
+{
+ if (fd == E_BUILD_NO_FD)
+  return;
+ wpe_fd_del(fd);
+ close(fd);
+ if (fd == g_build.efd)
+  g_build.efd = E_BUILD_NO_FD;
+ if (fd == g_build.wfd)
+  g_build.wfd = E_BUILD_NO_FD;
+}
+
+/**
+ * e_build_finish_or_hold - The child is gone: end the step now, or as soon
+ * as the dialog on screen closes.
+ */
+static void e_build_finish_or_hold(void)
+{
+ if (e_build_ui_idle(g_build.cn))
+ {
+  e_build_step_end();
+  return;
+ }
+ g_build.held = 1;
+}
+
+/**
+ * e_build_after_streams_closed - Both pipes are at EOF: reap the child.
+ *
+ * A child closes its pipes just before it exits, so it is normally reaped
+ * at once; otherwise the heartbeat looks again on its next tick.  Without a
+ * heartbeat timer the wait is the short one between the close and the exit.
+ */
+static void e_build_after_streams_closed(void)
+{
+ if (!e_build_try_reap() && g_build.hb_fd == E_BUILD_NO_FD)
+ {
+  while (waitpid(g_build.pid, &g_build.status, 0) < 0 && errno == EINTR)
+   ;
+  g_build.reaped = 1;
+ }
+ if (g_build.reaped)
+  e_build_finish_or_hold();
+}
+
+/**
+ * e_build_stop_runaway - Kill a build that floods Messages.
+ */
+static void e_build_stop_runaway(void)
+{
+ g_build.runaway = 1;
+ e_build_signal(SIGKILL);
+ e_build_close_stream(g_build.efd);
+ e_build_close_stream(g_build.wfd);
+}
+
+/**
+ * e_build_pump_stream - Read what one pipe has into Messages.
+ * @fd: the pipe that woke.
+ * Return: the bytes read, 0 at EOF, E_PUMP_AGAIN when there was nothing.
+ */
+static int e_build_pump_stream(int fd)
+{
+ FENSTER *mf = e_build_messages(g_build.cn);
+ BUFFER *b = NULL;
+
+ if (mf)
+  b = mf->b;
+ if (fd == g_build.efd)
+  return(e_p_pump_fd(fd, &g_build.eacc, &g_build.eacclen, b));
+ return(e_p_pump_fd(fd, &g_build.wacc, &g_build.wacclen, b));
+}
+
+/**
+ * e_build_on_output - The fd loop's callback for the child's stdout and
+ * stderr: every line lands in Messages as it arrives.
+ * @fd: the pipe that woke; @data: unused.
+ */
+static void e_build_on_output(int fd, void *data)
+{
+ int n;
+
+ (void)data;
+ if (!g_build.active)
+  return;
+ e_build_wait_line_drop();
+ n = e_build_pump_stream(fd);
+ if (n == 0)
+  e_build_close_stream(fd);
+ if (n > 0)
+  g_build.drained += (unsigned long)n;
+ if (g_build.drained >= E_BUILD_RUNAWAY_MAX)
+  e_build_stop_runaway();
+ if (e_build_streams_open())
+ {
+  e_build_wait_line_put();
+  e_build_paint();
+  return;
+ }
+ e_build_after_streams_closed();
+}
+
+/**
+ * e_build_escalate - A cancelled build that is still alive after the grace
+ * ticks is killed outright.
+ */
+static void e_build_escalate(void)
+{
+ if (!g_build.cancelled || g_build.reaped)
+  return;
+ g_build.term_ticks++;
+ if (g_build.term_ticks == E_BUILD_KILL_TICKS)
+  e_build_signal(SIGKILL);
+}
+
+/**
+ * e_build_on_tick - The heartbeat: turn the waiting line, finish a child
+ * that has closed its pipes, and escalate a cancel.
+ * @fd: the timer; @data: unused.
+ */
+static void e_build_on_tick(int fd, void *data)
+{
+ uint64_t expirations;
+
+ (void)data;
+ if (read(fd, &expirations, sizeof expirations) != (ssize_t)sizeof expirations)
+  return;
+ if (!g_build.active || g_build.held)
+  return;
+ e_build_escalate();
+ if (!e_build_streams_open())
+ {
+  if (e_build_try_reap())
+   e_build_finish_or_hold();
+  return;
+ }
+ e_build_wait_line_drop();
+ e_build_wait_line_put();
+ e_build_paint();
+}
+
+/**
+ * e_build_heartbeat_start - Start the timer that turns the waiting line.
+ *
+ * Present only while a build runs, so the idle editor still sleeps until a
+ * key.  Without timerfd the line still moves whenever output arrives.
+ */
+static void e_build_heartbeat_start(void)
+{
+ g_build.hb_fd = E_BUILD_NO_FD;
+#ifdef __linux__
+ g_build.hb_fd = timerfd_create(CLOCK_MONOTONIC, TFD_CLOEXEC | TFD_NONBLOCK);
+ if (g_build.hb_fd >= 0)
+ {
+  struct itimerspec its;
+
+  its.it_value.tv_sec = 0;
+  its.it_value.tv_nsec = E_BUILD_TICK_NS;
+  its.it_interval = its.it_value;
+  timerfd_settime(g_build.hb_fd, 0, &its, NULL);
+  wpe_fd_add(g_build.hb_fd, POLLIN, e_build_on_tick, NULL);
+ }
+ else
+  g_build.hb_fd = E_BUILD_NO_FD;
+#endif
+}
+
+/**
+ * e_build_heartbeat_stop - Stop the waiting line's timer.
+ */
+static void e_build_heartbeat_stop(void)
+{
+ if (g_build.hb_fd == E_BUILD_NO_FD)
+  return;
+ wpe_fd_del(g_build.hb_fd);
+ close(g_build.hb_fd);
+ g_build.hb_fd = E_BUILD_NO_FD;
+}
+
+/**
+ * e_build_cancel - Esc while a build runs: end it.
+ *
+ * The child and everything it started get SIGTERM; if they are still there
+ * about two seconds later, SIGKILL.  The step then ends with "build
+ * cancelled" in Messages and no later step runs, so no program is linked or
+ * started from a build the user stopped.
+ */
+void e_build_cancel(void)
+{
+ if (g_build.held)
+ {
+  e_build_deliver_held();
+  return;
+ }
+ if (!g_build.active || g_build.cancelled)
+  return;
+ g_build.cancelled = 1;
+ g_build.term_ticks = 0;
+ e_build_signal(SIGTERM);
+ if (g_build.hb_fd == E_BUILD_NO_FD)
+  e_build_signal(SIGKILL);       /* no timer to wait on: end it now */
+}
+
+/**
+ * e_build_deliver_held - End a build step that finished behind a dialog.
+ *
+ * The editor's key loop calls this before it waits for a key, the point
+ * that is certainly outside every dialog: the jump to the first error and
+ * the next step of the build happen there, never under an open box.
+ */
+void e_build_deliver_held(void)
+{
+ if (!g_build.held)
+  return;
+ if (!e_build_ui_idle(g_build.cn))
+  return;
+ g_build.held = 0;
+ e_build_step_end();
+}
+
+/**
+ * e_build_watch_child - Hand the running child's pipes to the fd loop.
+ *
+ * From here the function returns to the editor at once; the build goes on
+ * in e_build_on_output and e_build_on_tick.
+ */
+static void e_build_watch_child(void)
+{
+ int flags;
+
+ g_build.efd = efildes[0];
+ g_build.wfd = wfildes[0];
+ efildes[0] = wfildes[0] = E_BUILD_NO_FD;
+ if (g_build.efd != E_BUILD_NO_FD)
+ {
+  flags = fcntl(g_build.efd, F_GETFL, 0);
+  fcntl(g_build.efd, F_SETFL, flags | O_NONBLOCK);
+  wpe_fd_add(g_build.efd, POLLIN, e_build_on_output, NULL);
+ }
+ if (g_build.wfd != E_BUILD_NO_FD)
+ {
+  flags = fcntl(g_build.wfd, F_GETFL, 0);
+  fcntl(g_build.wfd, F_SETFL, flags | O_NONBLOCK);
+  wpe_fd_add(g_build.wfd, POLLIN, e_build_on_output, NULL);
+ }
+ e_build_heartbeat_start();
+ e_build_wait_line_put();
+ e_build_paint();
+}
+
+/**
+ * e_build_flush_fragments - The last bytes of each stream, with no final
+ * newline, still go to Messages.
+ * @b: the Messages buffer.
+ */
+static void e_build_flush_fragments(BUFFER *b)
+{
+ if (g_build.eacclen > 0)
+  print_to_end_of_buffer(b, g_build.eacc, 0);
+ if (g_build.wacclen > 0)
+  print_to_end_of_buffer(b, g_build.wacc, 0);
+ if (g_build.eacc)
+  FREE(g_build.eacc);
+ if (g_build.wacc)
+  FREE(g_build.wacc);
+ g_build.eacc = g_build.wacc = NULL;
+ g_build.eacclen = g_build.wacclen = 0;
+}
+
+/**
+ * e_build_exit_code - The child's exit code, 0 when it cannot be known.
+ *
+ * A child reaped by the editor's SIGCHLD handler first has no status left;
+ * the parsed rows then decide success or failure, as they always did.
+ */
+static int e_build_exit_code(void)
+{
+ if (g_build.pid > 0 && WIFEXITED(g_build.status))
+  return(WEXITSTATUS(g_build.status));
+ return(0);
+}
+
+/**
+ * e_build_raise_messages - Bring Messages to the top for the step's end.
+ * @cn: the desktop.
+ *
+ * The error list is read from the top window and the jump to an error
+ * starts from it; the user may have moved to another window, or closed
+ * Messages, while the build ran.
+ * Return: the Messages window.
+ */
+static FENSTER *e_build_raise_messages(ECNT *cn)
+{
+ FENSTER *mf = e_build_messages(cn);
+ int i;
+
+ if (!mf)
+  return(e_find_or_create_messages(cn));
+ for (i = cn->mxedt; i > 0; i--)
+  if (cn->f[i] == mf)
+   break;
+ if (i > 0 && i != cn->mxedt)
+  e_switch_window(cn->edt[i], cn->f[cn->mxedt]);
+ return(cn->f[cn->mxedt]);
+}
+
+/**
+ * e_build_step_end_window - The Messages window a finished step reports in.
+ * @cn: the desktop.
+ *
+ * A cancelled build leaves the user in the window they moved to; any other
+ * step raises Messages, because its rows are read from the top window.
+ * Return: the Messages window.
+ */
+static FENSTER *e_build_step_end_window(ECNT *cn)
+{
+ FENSTER *mf = e_build_messages(cn);
+
+ if (g_build.cancelled && mf)
+  return(mf);
+ return(e_build_raise_messages(cn));
+}
+
+/**
+ * e_build_enter_dir - Work in the directory the child ran in.
+ * @saved: where the editor's own directory is kept; @n: its size.
+ *
+ * The rows a compiler prints name files relative to where it ran, so the
+ * error list and the jump read them from there, as they did when the
+ * build held the editor in that directory.
+ * Return: 1 when the directory was changed (pair with e_build_popd).
+ */
+static int e_build_enter_dir(char *saved, size_t n)
+{
+ if (!g_build.dir[0] || !getcwd(saved, n))
+  return(0);
+ return(chdir(g_build.dir) == 0);
+}
+
+/**
+ * e_build_step_verdict - Read the finished step's rows and say how it went.
+ * @mf: the Messages window, on top.
+ * @ret: the child's exit code.
+ * Return: 0 for a success, -1 for a failure, WPE_ESC when cancelled.
+ */
+static int e_build_step_verdict(FENSTER *mf, int ret)
+{
+ BUFFER *b = mf->b;
+ int list = 0;
+
+ if (g_build.cancelled)
+ {
+  print_to_end_of_buffer(b, E_BUILD_CANCELLED_LINE, 0);
+  g_build_chain_cancelled = 1;
+  g_build_chain_list = E_LIST_NO_JUMP;
+  return(WPE_ESC);
+ }
+ if (g_build.runaway)
+  print_to_end_of_buffer(b, E_BUILD_RUNAWAY_LINE, 0);
+ if (b->mxlines - g_build.is > 2)
+  list = e_make_error_list(mf);
+ g_build_chain_list = list;
+ g_build_chain_exit = ret;
+ if (ret || list)
+  return(-1);
+ print_to_end_of_buffer(b, E_BUILD_SUCCESS_LINE, b->mx.x);
+ return(0);
+}
+
+/**
+ * e_build_continue - Run what follows a step: the next step, or the end.
+ * @cont: the continuation (may be NULL); @f: the top window;
+ * @result: the step's result; @data: the continuation's own data.
+ */
+static void e_build_continue(e_build_cont cont, FENSTER *f, int result, void *data)
+{
+ if (cont)
+  cont(f, result, data);
+}
+
+/**
+ * e_build_step_end - The child is gone: what the old blocking reader ran
+ * after its loop, then the continuation.
+ */
+static void e_build_step_end(void)
+{
+ ECNT *cn = g_build.cn;
+ e_build_cont cont = g_build.cont;
+ void *data = g_build.data;
+ char cwd_saved[WPE_BUILD_PATH_MAX];
+ FENSTER *mf;
+ int result, cwd_chg;
+
+ e_build_heartbeat_stop();
+ e_build_close_stream(g_build.efd);
+ e_build_close_stream(g_build.wfd);
+ sigprocmask(SIG_SETMASK, &g_build.old_mask, NULL);
+ e_build_wait_line_drop();
+ mf = e_build_step_end_window(cn);
+ e_build_flush_fragments(mf->b);
+ if (g_build.pic)
+  e_close_view(g_build.pic, 1);
+ cwd_chg = e_build_enter_dir(cwd_saved, sizeof cwd_saved);
+ if (g_build.pid > 0)
+  g_build_chain_ran = 1;
+ result = e_build_step_verdict(mf, e_build_exit_code());
+ mf->b->b.y = mf->b->mxlines - 1;
+ g_build.active = 0;
+ e_build_continue(cont, cn->f[cn->mxedt], result, data);
+ if (cwd_chg)
+  e_build_popd(cwd_saved);
+}
+
+/**
+ * e_build_step_begin - Set up the state of a new step.
+ * @cn: the desktop; @mf: Messages; @pic: the old status box, if any;
+ * @cont, @data: what runs when the step ends.
+ */
+static void e_build_step_begin(ECNT *cn, FENSTER *mf, PIC *pic,
+                               e_build_cont cont, void *data)
+{
+ sigset_t chld_mask;
+
+ memset(&g_build, 0, sizeof g_build);
+ g_build.active = 1;
+ g_build.pid = e_save_pid;
+ g_build.efd = g_build.wfd = g_build.hb_fd = E_BUILD_NO_FD;
+ g_build.cn = cn;
+ g_build.pic = pic;
+ g_build.cont = cont;
+ g_build.data = data;
+ g_build.start = time(NULL);
+ g_build.is = mf->b->mxlines - 1;
+ if (!getcwd(g_build.dir, sizeof g_build.dir))
+  g_build.dir[0] = '\0';
+ /* xwpe's SIGCHLD handler reaps every child and throws the status away;
+    blocking it while the build runs keeps the real exit code ours. */
+ sigemptyset(&chld_mask);
+ sigaddset(&chld_mask, SIGCHLD);
+ sigprocmask(SIG_BLOCK, &chld_mask, &g_build.old_mask);
+}
+
+/**
+ * e_p_exec - Run the child e_exec_inf started as one step of a build.
+ * @f: the window the build belongs to; @pic: an old status box, or NULL;
+ * @cont: what runs when the step has ended (NULL for nothing);
+ * @data: handed to @cont.
+ *
+ * Returns to the editor at once: the step goes on in the background and
+ * @cont is called exactly once, with 0 for a success, -1 for a failure and
+ * WPE_ESC for a cancelled build.  With no child to run (a project whose
+ * objects are all current) the step ends at once, as the old reader did.
+ * Return: 0.
+ */
+int e_p_exec(FENSTER *f, PIC *pic, e_build_cont cont, void *data)
 {
  ECNT *cn = f->ed;
  FENSTER *mf = e_find_or_create_messages(cn);
- BUFFER *b = mf->b;
- int ret = 0, i = 0, is, stat_loc = 0;
- sigset_t chld_mask, old_mask;
 
- f = mf;
- /* Block SIGCHLD across the drain + reap.  xwpe's WpeSignalChild handler reaps
-    EVERY child with waitpid(-1, WNOHANG) and discards the status; if it reaps
-    our compiler/make child first, the waitpid() below fails and we would read
-    a bogus "exit 1" -- breaking every Make link step and Run.  Blocking keeps
-    the child reapable here so we get its real exit code; the previous mask is
-    restored after reaping. */
- sigemptyset(&chld_mask);
- sigaddset(&chld_mask, SIGCHLD);
- sigprocmask(SIG_BLOCK, &chld_mask, &old_mask);
-
- /* Drain stderr (efildes) AND stdout (wfildes) with poll() WHILE the child
-    runs -- no more wait-then-read, so block-buffered stdout (make's real
-    output) is never lost.  Each complete line lands in Messages and the window
-    repaints live; e_schirm recomputes the scrollbar as the buffer grows.
-    Lines from the two streams interleave in arrival order (chronological). */
+ e_build_step_begin(cn, mf, pic, cont, data);
+ if (efildes[0] < 0 && wfildes[0] < 0)
  {
-  char *eacc = MALLOC(1), *wacc = MALLOC(1);
-  int eacclen = 0, wacclen = 0;
-  /* Runaway compiler/interpreter cap: a child that prints more than this in
-     one invocation is malfunctioning (e.g. a68g's abend->io_write_string
-     recursion, observed on macOS as wpe pinned at 100% CPU forever while it
-     drained the flood into Messages and repainted per chunk).  16 MiB is far
-     above any sane build's diagnostics, and SIGKILL stops the flood at the
-     source so the parent stops draining. */
-  unsigned long total_drained = 0;
-  const unsigned long E_P_EXEC_RUNAWAY_MAX = 16UL * 1024 * 1024;
-  int runaway = 0;
-
-  eacc[0] = wacc[0] = '\0';
-  is = b->mxlines - 1;
-  while (efildes[0] >= 0 || wfildes[0] >= 0)
-  {
-   struct pollfd pfd[2];
-   int nfd = 0, ei = -1, wi = -1, before;
-   int ne = 0, nw = 0;
-
-   if (efildes[0] >= 0) { pfd[nfd].fd = efildes[0]; pfd[nfd].events = POLLIN; ei = nfd++; }
-   if (wfildes[0] >= 0) { pfd[nfd].fd = wfildes[0]; pfd[nfd].events = POLLIN; wi = nfd++; }
-   if (poll(pfd, nfd, -1) < 0)
-   {
-    if (errno == EINTR)
-     continue;
-    break;
-   }
-   before = b->mxlines;
-   if (ei >= 0 && (pfd[ei].revents & (POLLIN | POLLHUP | POLLERR)) &&
-       !(ne = e_p_pump_fd(efildes[0], &eacc, &eacclen, b)))
-   {  close(efildes[0]);  efildes[0] = -1;  }
-   if (wi >= 0 && (pfd[wi].revents & (POLLIN | POLLHUP | POLLERR)) &&
-       !(nw = e_p_pump_fd(wfildes[0], &wacc, &wacclen, b)))
-   {  close(wfildes[0]);  wfildes[0] = -1;  }
-   if (b->mxlines != before)            /* new lines -> repaint Messages live */
-   {
-    b->b.y = b->mxlines - 1;
-    e_schirm(mf, 1);
-    e_refresh();
-   }
-   total_drained += (unsigned long)(ne > 0 ? ne : 0) +
-                    (unsigned long)(nw > 0 ? nw : 0);
-   if (total_drained >= E_P_EXEC_RUNAWAY_MAX)
-   {
-    runaway = 1;
-    if (e_save_pid > 0)
-     kill(e_save_pid, SIGKILL);
-    if (efildes[0] >= 0) { close(efildes[0]); efildes[0] = -1; }
-    if (wfildes[0] >= 0) { close(wfildes[0]); wfildes[0] = -1; }
-    break;
-   }
-  }
-  /* The trailing fragment with no final '\n' -- the old reader dropped it. */
-  if (eacclen > 0) print_to_end_of_buffer(b, eacc, 0);
-  if (wacclen > 0) print_to_end_of_buffer(b, wacc, 0);
-  if (runaway)
-   print_to_end_of_buffer(b,
-    "xwpe: child output exceeded runaway cap, killed.", 0);
-  FREE(eacc);
-  FREE(wacc);
+  g_build.pid = 0;
+  g_build.reaped = 1;
+  e_build_step_end();
+  return(0);
  }
- b->b.y = b->mxlines - 1;
- /* Reap the child we just drained (both pipes are at EOF). */
- while ((ret = waitpid(e_save_pid, &stat_loc, 0)) < 0 && errno == EINTR)
-  ;
- if (ret == e_save_pid && WIFEXITED(stat_loc))
-  ret = WEXITSTATUS(stat_loc);     /* we reaped it: the real exit code */
- else
-  ret = 0;  /* the SIGCHLD handler reaped it first (rare race); fall back to the
-               parsed error list (i) for success/failure, as the code did before
-               the poll() rewrite -- never report a bogus failure. */
- sigprocmask(SIG_SETMASK, &old_mask, NULL);
  if (efildes[1] >= 0) close(efildes[1]);
  if (wfildes[1] >= 0) close(wfildes[1]);
- efildes[0] = efildes[1] = -1;
- wfildes[0] = wfildes[1] = -1;
- if (pic)
-  e_close_view(pic, 1);
- if (b->mxlines - is > 2)
-  i = e_make_error_list(f);
- if (ret || i)
+ efildes[1] = wfildes[1] = E_BUILD_NO_FD;
+ e_build_watch_child();
+ return(0);
+}
+
+/**
+ * e_build_chain_begin - Open a build: F9, Alt-C, Ctrl-F9, Execute Make or
+ * the debugger's build.
+ * @f: the window the key was pressed in.
+ * @done: what runs once the whole build has ended, or NULL; @data: its data.
+ *
+ * Only one build runs at a time; a second one is refused with a line that
+ * says Esc cancels the first.
+ * Return: 0 when the build may start, -1 when another one runs.
+ */
+static int e_build_chain_begin(FENSTER *f, e_build_cont done, void *data)
+{
+ if (e_build_busy())
  {
-  if (i != -2)
-   e_show_error(err_no = 0, f);
+  e_build_refuse(f);
   return(-1);
  }
+ g_build_chain_open = 1;
+ g_build_chain_ran = 0;
+ g_build_chain_cancelled = 0;
+ g_build_chain_list = 0;
+ g_build_chain_exit = 0;
+ g_build_final = done;
+ g_build_final_data = data;
+ return(0);
+}
 
- print_to_end_of_buffer(b, "Success", b->mx.x);
+/* What a warning row of Messages starts with: U+26A0 WARNING SIGN and a
+   blank, from the same symbol block as the window's other glyphs. */
+#define E_BUILD_WARNING_MARK "\342\232\240 "
 
- /* Switch back to the source file instead of staying on Messages */
+/**
+ * e_build_mark_row - Put the warning mark in front of one Messages row.
+ * @b: the Messages buffer; @y: the row.
+ */
+static void e_build_mark_row(BUFFER *b, int y)
+{
+ size_t m = strlen(E_BUILD_WARNING_MARK), total;
+ char *s;
+
+ if (y < 0 || y >= b->mxlines)
+  return;
+ s = (char *)b->bf[y].s;
+ if (!strncmp(s, E_BUILD_WARNING_MARK, m))
+  return;                                 /* marked by an earlier step */
+ total = strlen(s) + 1;
+ s = REALLOC(s, total + m);
+ memmove(s + m, s, total);
+ memcpy(s, E_BUILD_WARNING_MARK, m);
+ b->bf[y].s = (void *)s;
+ b->bf[y].len += m;
+ b->bf[y].nrc += m;
+}
+
+/**
+ * e_build_mark_warnings - Mark every warning row of the error list.
+ * @b: the Messages buffer.
+ *
+ * The user tells at a glance which rows only advise and which stopped the
+ * build; Alt-T and Alt-V still walk both.
+ */
+static void e_build_mark_warnings(BUFFER *b)
+{
+ int i;
+
+ for (i = 0; i < err_num; i++)
+  if (err_li[i].kind == E_ROW_WARNING)
+   e_build_mark_row(b, err_li[i].row);
+}
+
+/**
+ * e_build_plural - The "s" of "2 errors", none for "1 error".
+ * @n: the count.
+ */
+static const char *e_build_plural(int n)
+{
+ if (n == 1)
+  return("");
+ return("s");
+}
+
+/**
+ * e_build_print_count - End Messages with "N errors, M warnings".
+ * @b: the Messages buffer; @result: the build's result.
+ *
+ * The count Borland showed when a build ended.  A failed build that left
+ * no row to walk (a linker error, a command that could not run) says so
+ * with its exit status, so "0 errors" never reads as a success.
+ */
+static void e_build_print_count(BUFFER *b, int result)
+{
+ char line[160];
+ int i, errors = 0, warnings = 0;
+
+ for (i = 0; i < err_num; i++)
+ {
+  if (err_li[i].kind == E_ROW_WARNING)
+   warnings++;
+  if (err_li[i].kind == E_ROW_ERROR)
+   errors++;
+ }
+ snprintf(line, sizeof line, "%d error%s, %d warning%s",
+          errors, e_build_plural(errors), warnings, e_build_plural(warnings));
+ if (result && errors == 0)
+  snprintf(line + strlen(line), sizeof line - strlen(line),
+           "; the build failed (exit status %d)", g_build_chain_exit);
+ print_to_end_of_buffer(b, line, 0);
+}
+
+/**
+ * e_build_tally - Read the whole build's rows again and end Messages with
+ * their count, every warning row marked.
+ * @mf: the Messages window, on top; @result: the build's result.
+ */
+static void e_build_tally(FENSTER *mf, int result)
+{
+ e_make_error_list(mf);
+ e_build_mark_warnings(mf->b);
+ e_build_print_count(mf->b, result);
+ mf->b->b.y = mf->b->mxlines - 1;
+ e_messages_scroll_to_bottom(mf);
+}
+
+/**
+ * e_build_return_to_source - After a build that succeeded, give the keys
+ * back to the window the user was in instead of leaving them in Messages.
+ * @cn: the desktop, Messages on top.
+ */
+static void e_build_return_to_source(ECNT *cn)
+{
+ FENSTER *mf = cn->f[cn->mxedt];
+ int i;
+
  for (i = cn->mxedt; i > 0; i--)
   if (strcmp(cn->f[i]->datnam, "Messages"))
    break;
  if (i > 0 && i != cn->mxedt)
-  e_switch_window(cn->edt[i], cn->f[cn->mxedt]);
+ {
+  e_switch_window(cn->edt[i], mf);
+  return;
+ }
+ e_cursor(mf, 1);
+ e_schirm(mf, 1);
+}
+
+/**
+ * e_build_settle_top - Paint the cursor and the line:column of the window
+ * now on top.
+ * @cn: the desktop.
+ *
+ * A build ends from the fd loop, not from a key, so the key loop's own
+ * repaint of the status row does not follow it: without this the window
+ * the jump landed in still showed the old line and column.
+ */
+static void e_build_settle_top(ECNT *cn)
+{
+ FENSTER *top = cn->f[cn->mxedt];
+
+ e_cursor(top, 1);
+ e_zlsplt(top);
+ e_refresh();
+}
+
+/**
+ * e_build_chain_report - What the user reads when a build has ended.
+ * @cn: the desktop; @result: the build's result.
+ *
+ * A failed build puts the cursor on its first error, a successful one
+ * gives the keys back to the source; a cancelled one stays where it was,
+ * with "build cancelled" as the last row of Messages.
+ */
+static void e_build_chain_report(ECNT *cn, int result)
+{
+ FENSTER *mf;
+
+ if (!g_build_chain_ran)
+  return;
+ if (g_build_chain_cancelled)
+ {
+  e_build_paint();
+  return;
+ }
+ mf = e_build_raise_messages(cn);
+ e_build_tally(mf, result);
+ if (result && g_build_chain_list != E_LIST_NO_JUMP)
+  e_show_error(err_no = 0, mf);
+ else if (!result)
+  e_build_return_to_source(cn);
  else
  {
-  e_cursor(f, 1);
-  e_schirm(f, 1);
+  e_cursor(mf, 1);
+  e_schirm(mf, 1);
  }
- e_refresh();
- return(0);
+ e_build_settle_top(cn);
+}
+
+/**
+ * e_build_chain_end - The last step of a build has ended: report it, then
+ * run what was waiting for the build.
+ * @f: the top window; @result: the build's result; @data: unused.
+ */
+static void e_build_chain_end(FENSTER *f, int result, void *data)
+{
+ e_build_cont done = g_build_final;
+ void *done_data = g_build_final_data;
+ ECNT *cn = f->ed;
+
+ (void)data;
+ g_build_chain_open = 0;
+ g_build_final = NULL;
+ g_build_final_data = NULL;
+ e_build_chain_report(cn, result);
+ e_build_continue(done, cn->f[cn->mxedt], result, done_data);
+}
+
+/**
+ * e_err_column_index - The 0-based screen column of row @n's column.
+ * @n: a row of the error list.
+ *
+ * Compilers count columns from 1 ("t.c:3:5" is the fifth character); the
+ * cursor counts from 0.  Without this the jump landed one character to the
+ * right of the one the compiler names, which at the end of a line was not
+ * even visible.  A row with no column lands on the start of the line.
+ * Return: the column to put the cursor on.
+ */
+static int e_err_column_index(int n)
+{
+ if (err_li[n].x <= 0)
+  return(0);
+ return(err_li[n].x - 1);
+}
+
+/* Rows of context kept above the current error row when Messages scrolls
+   to it. */
+#define E_ERR_ROW_CONTEXT 1
+
+/**
+ * e_err_show_row_in_messages - Put the Messages cursor on row @n's line
+ * and scroll Messages so it can be read.
+ * @cn: the desktop; @n: a row of the error list.
+ *
+ * The jump moves the source cursor; the message that sent it there stays
+ * on screen beside it, as Borland's Messages window highlighted the
+ * message of the current error.  Messages scrolls only when the row is
+ * out of sight, so the rows around it (and the count at the end of a
+ * build) stay where the user saw them.
+ */
+static void e_err_show_row_in_messages(ECNT *cn, int n)
+{
+ FENSTER *mf = e_build_messages(cn);
+ int row = err_li[n].row, visible_h;
+
+ if (!mf || row < 0 || row >= mf->b->mxlines)
+  return;
+ visible_h = mf->e.y - mf->a.y - 1;
+ mf->b->b.y = row;
+ mf->b->b.x = 0;
+ if (row < mf->s->c.y || row >= mf->s->c.y + visible_h)
+  mf->s->c.y = row - E_ERR_ROW_CONTEXT;
+ if (mf->s->c.y < 0)
+  mf->s->c.y = 0;
+ e_schirm(mf, 0);
 }
 
 /* show source-position of error number "n" from actual errorlist */
@@ -1276,6 +2350,7 @@ int e_show_error(int n, FENSTER *f)
  if (!err_li || n >= err_num || n < 0)
   return(1);
  err_walked = 1;
+ e_err_show_row_in_messages(cn, n);
  f = cn->f[cn->mxedt];
  if (err_li[n].file[0] == '.' && err_li[n].file[1] == DIRC)
   bg = 2;
@@ -1335,7 +2410,9 @@ int e_show_error(int n, FENSTER *f)
  b->b.y = err_li[n].line > b->mxlines ? b->mxlines - 1 : err_li[n].line - 1;
  if (!err_li[n].srch)
  {
-  for(i = j = 0; i + j < err_li[n].x && i < b->bf[b->b.y].len; i++)
+  int col = e_err_column_index(n);
+
+  for(i = j = 0; i + j < col && i < b->bf[b->b.y].len; i++)
   {
    if (*(b->bf[b->b.y].s + i) == WPE_TAB)
     j += (f->ed->tabn - ((j + i) % f->ed->tabn) - 1);
@@ -1382,12 +2459,68 @@ int e_pure_bin(char *str, int ch)
  return(i+1);
 }
 
+/* How gcc and clang print the chain of includes that leads to an error in a
+   header: "In file included from a.c:2:", then "                 from b.c:7,"
+   for each further level.  Such a row names a place but is not an error. */
+#define E_P_INCLUDED_FROM "In file included from "
+#define E_P_INCLUDED_MORE "from "
+/* How they print a note that belongs to the error above it. */
+#define E_P_NOTE_TAG ": note:"
+
+/**
+ * e_p_is_context_row - Is this row part of an include chain?
+ * @row: a Messages row.
+ *
+ * The walk with Alt-T and Alt-V stops on errors and warnings only; the
+ * chain that leads to an error in a header belongs to that error, so Enter
+ * on any of its rows goes to the error after it.
+ */
+static int e_p_is_context_row(const char *row)
+{
+ const char *p = row;
+
+ if (!strncmp(row, E_P_INCLUDED_FROM, strlen(E_P_INCLUDED_FROM)))
+  return(1);
+ if (*p != ' ')
+  return(0);
+ while (*p == ' ')
+  p++;
+ return(!strncmp(p, E_P_INCLUDED_MORE, strlen(E_P_INCLUDED_MORE)));
+}
+
+/**
+ * e_p_is_note_row - Is this row a note on the error above it?
+ * @row: a Messages row.
+ *
+ * gcc repeats the error's own place in its notes ("each undeclared
+ * identifier is reported only once"); as a stop of its own it would make
+ * Alt-T stay on the same line, and it is not an error to count.
+ */
+static int e_p_is_note_row(const char *row)
+{
+ return(strstr(row, E_P_NOTE_TAG) != NULL);
+}
+
+/**
+ * e_p_attach_context - Give the include chain before a new row to that row.
+ * @k_before: the list's size before the row was read; @k: after.
+ * @ctx_y: the first Messages row of a pending include chain, or -1; reset
+ * once it is attached.
+ */
+static void e_p_attach_context(int k_before, int k, int *ctx_y)
+{
+ if (k <= k_before || *ctx_y < 0)
+  return;
+ err_li[k_before].y = *ctx_y;
+ *ctx_y = -1;
+}
+
 int e_make_error_list(FENSTER *f)
 {
  char file[256];
  ECNT *cn = f->ed;
  BUFFER *b = cn->f[cn->mxedt]->b;
- int i, j, k = 0, ret = 0;
+ int i, j, k = 0, ret = 0, ctx_y = -1;
  char *spt;
 
  if (err_li)
@@ -1405,8 +2538,16 @@ int e_make_error_list(FENSTER *f)
  err_walked = 0;
  for (i = 0; i < b->mxlines; i++)
  {
-  if (!strncmp((char *)b->bf[i].s, "Error at Command:", 17)) 
+  if (!strncmp((char *)b->bf[i].s, "Error at Command:", 17))
    return(!ret ? -2 : ret);
+  if (e_p_is_context_row((char *)b->bf[i].s))
+  {
+   if (ctx_y < 0)
+    ctx_y = i;
+   continue;
+  }
+  if (e_p_is_note_row((char *)b->bf[i].s))
+   continue;
   if ((!strncmp((char *)b->bf[i].s, "ld", 2) &&
     (b->bf[i].s[2] == ' '  || b->bf[i].s[2] == ':')) ||
     !strncmp((char *)b->bf[i].s, "collect:", 8))
@@ -1419,7 +2560,8 @@ int e_make_error_list(FENSTER *f)
     err_li[k].file[j] = b->bf[i].s[j];
    err_li[k].file[8] = '\0';
    err_li[k].line = atoi((char *)b->bf[i].s+9);
-   err_li[k].y = i;
+   err_li[k].y = err_li[k].row = i;
+   err_li[k].kind = E_ROW_ERROR;
    err_li[k].x = 0;
    err_li[k].srch = NULL;
    err_li[k].text = MALLOC(strlen((char *)b->bf[i].s) + 1);
@@ -1439,7 +2581,8 @@ int e_make_error_list(FENSTER *f)
    for (j = 0; j < 8; j++)
     err_li[k].file[j] = spt[j];
    err_li[k].file[8] = '\0';
-   err_li[k].y = i;
+   err_li[k].y = err_li[k].row = i;
+   err_li[k].kind = E_ROW_ERROR;
    err_li[k].x = 0;
    err_li[k].srch = NULL;
    err_li[k].text = MALLOC(strlen((char *)b->bf[i].s) + 1);
@@ -1452,7 +2595,11 @@ int e_make_error_list(FENSTER *f)
   else
   {
    char *tststr = e_s_prog.comp_sw ? e_s_prog.intstr : gnu_intstr;
-   if (!(ret = e_p_cmp_mess(tststr, b, &i, &k, ret)))
+   int k_before = k;
+
+   ret = e_p_cmp_mess(tststr, b, &i, &k, ret);
+   e_p_attach_context(k_before, k, &ctx_y);
+   if (!ret)
    {
     int ip, in;
     ip = e_pure_bin(e_s_prog.compiler, ' ');
@@ -1507,6 +2654,8 @@ int e_set_error_list(int n, char **files, int *lines, int *ys, char **texts)
   err_li[i].srch = NULL;
   err_li[i].x = 0;
   err_li[i].y = ys ? ys[i] : 0;
+  err_li[i].row = err_li[i].y;
+  err_li[i].kind = E_ROW_ERROR;
   err_li[i].line = lines ? lines[i] : 1;
  }
  err_num = n;
@@ -1543,76 +2692,76 @@ static int e_err_row_in_window(int n, FENSTER *f)
 }
 
 /**
- * e_previous_error - Alt-V: the row before the cursor, in the list's order.
- * @f: the window the user is in.
- *
- * On a list nothing has been shown from yet, the last row.  Otherwise,
- * within the current file the previous row is the nearest one above the
- * cursor.  Above the file's first row the step goes to the row that
- * precedes this file's rows in the list, so a list that spans several files
- * (compiler errors, the agent's changeset, a Multi-file edit) is walked
- * whole and in order, whatever the line numbers of the other files.  From a
- * window the list does not name, the last row.
+ * e_err_list_names_window - Does any row of the list name @f's file?
+ * @f: a window.
  */
-int e_previous_error(FENSTER *f)
+static int e_err_list_names_window(FENSTER *f)
 {
- int i, cur_line, first_here = -1;
+ int i;
 
- if (err_num <= 0)
- {
-  e_pr_uul(f->fb);
-  return(0);
- }
- if (!err_walked)
-  return(e_show_error(err_no = err_num - 1, f));
- cur_line = f->b->b.y + 1;
- for (i = err_num - 1; i >= 0; i--)
- {
-  if (!e_err_row_in_window(i, f))
-   continue;
-  first_here = i;
-  if (err_li[i].line < cur_line)
-   return(e_show_error(err_no = i, f));
- }
- if (first_here >= 0)
-  return(e_show_error(err_no = (first_here + err_num - 1) % err_num, f));
- return(e_show_error(err_no = err_num - 1, f));
+ for (i = 0; i < err_num; i++)
+  if (e_err_row_in_window(i, f))
+   return(1);
+ return(0);
 }
 
 /**
- * e_next_error - Alt-T: the row after the cursor, in the list's order.
+ * e_err_walk_restarts - Does Alt-T or Alt-V start the walk again from an
+ * end of the list?
  * @f: the window the user is in.
  *
- * On a list nothing has been shown from yet, the first row.  Otherwise,
- * within the current file the next row is the nearest one below the cursor.
- * Past the file's last row the step goes to the row that follows this
- * file's rows in the list, wrapping to the first: a row whose line number
- * is lower than the cursor's but sits in another file is never skipped.
- * From a window the list does not name, the first row.
+ * On a list nothing has been shown from yet, and from a window the list
+ * does not name, the walk starts at the first row (Alt-T) or the last
+ * (Alt-V).
  */
-int e_next_error(FENSTER *f)
+static int e_err_walk_restarts(FENSTER *f)
 {
- int i, cur_line, last_here = -1;
+ if (!err_walked)
+  return(1);
+ if (err_no < 0 || err_no >= err_num)
+  return(1);
+ return(!e_err_list_names_window(f));
+}
 
+/**
+ * e_previous_error - Alt-V: the row before the last one shown, in the
+ * order the compiler printed them.
+ * @f: the window the user is in.
+ *
+ * The walk goes through the list as it stands in Messages, crossing from
+ * file to file: compiler errors, the agent's changeset or a Multi-file edit
+ * are visited whole, wrapping at the ends, whatever the line numbers.
+ */
+int e_previous_error(FENSTER *f)
+{
  if (err_num <= 0)
  {
   e_pr_uul(f->fb);
   return(0);
  }
- if (!err_walked)
-  return(e_show_error(err_no = 0, f));
- cur_line = f->b->b.y + 1;
- for (i = 0; i < err_num; i++)
+ if (e_err_walk_restarts(f))
+  return(e_show_error(err_no = err_num - 1, f));
+ return(e_show_error(err_no = (err_no + err_num - 1) % err_num, f));
+}
+
+/**
+ * e_next_error - Alt-T: the row after the last one shown, in the order the
+ * compiler printed them.
+ * @f: the window the user is in.
+ *
+ * A row in another file that the compiler printed between two rows of
+ * this one is visited in its turn, never skipped.
+ */
+int e_next_error(FENSTER *f)
+{
+ if (err_num <= 0)
  {
-  if (!e_err_row_in_window(i, f))
-   continue;
-  last_here = i;
-  if (err_li[i].line > cur_line)
-   return(e_show_error(err_no = i, f));
+  e_pr_uul(f->fb);
+  return(0);
  }
- if (last_here >= 0)
-  return(e_show_error(err_no = (last_here + 1) % err_num, f));
- return(e_show_error(err_no = 0, f));
+ if (e_err_walk_restarts(f))
+  return(e_show_error(err_no = 0, f));
+ return(e_show_error(err_no = (err_no + 1) % err_num, f));
 }
 
 int e_cur_error(int y, FENSTER *f)
@@ -2787,10 +3936,19 @@ int e_p_del_item(FENSTER *f)
  return 0;
 }
 
-int e_make_library(char *library, char *ofile, FENSTER *f)
+/**
+ * e_make_library - Insert an object into the project's library, as a step
+ * of the build.
+ * @library: the archive; @ofile: the object; @f: a window of the desktop.
+ * @done: what runs when ar has ended, exactly once (0 for a success);
+ * @data: handed to @done.
+ * Return: 0 when ar started, -1 when it could not.
+ */
+int e_make_library(char *library, char *ofile, FENSTER *f,
+                   e_build_cont done, void *data)
 {
  char *ar_arg[5] = {  NULL, NULL, NULL, NULL, NULL  };
- int ret = 0, file = -1;
+ int file;
  PIC *pic = NULL;
 
  ar_arg[0] = "ar";
@@ -2800,29 +3958,21 @@ int e_make_library(char *library, char *ofile, FENSTER *f)
   ar_arg[1] = "-r";
  ar_arg[2] = library;
  ar_arg[3] = ofile;
- if ((ret = e_p_mess_win("Insert into Archive", 4, ar_arg, &pic, f)) == 0)
+ if (e_p_mess_win("Insert into Archive", 4, ar_arg, &pic, f))
  {
-  e_sys_ini();
-  file = e_exec_inf(f, ar_arg, 4);
-  e_sys_end();
-  if ((file) && ((ret = e_p_exec(file, f, pic)) == 0))
-  {
-   pic = NULL;
-/*
-#ifdef RANLIB
-    ar_arg[0] = "ranlib";
-    ar_arg[1] = library;
-    ar_arg[2] = NULL;
-    if(ret = e_p_mess_win("Convert Archive", 2, ar_arg, &pic, f)) goto m_l_ende;
-    e_sys_ini();
-    file = e_exec_inf(f, ar_arg, 2);
-    e_sys_end();
-    if(file) ret = e_p_exec(file, f, pic);
-#endif
-*/
-  }
+  e_build_continue(done, f, -1, data);
+  return(-1);
  }
- return((!ret && file) ? 0 : -1);
+ e_sys_ini();
+ file = e_exec_inf(f, ar_arg, 4);
+ e_sys_end();
+ if (!file)
+ {
+  e_build_continue(done, f, -1, data);
+  return(-1);
+ }
+ e_p_exec(f, pic, done, data);
+ return(0);
 }
 
 int e_system(char *estr, ECNT *cn)
@@ -3033,12 +4183,109 @@ int e_d_p_named(char *winname, char *str, FENSTER *f, int sw)
 }
 
 #if MOUSE
+/* Two presses on the same Messages row closer together than this are one
+   double click, the usual desktop interval. */
+#define E_MSG_DCLICK_MS 500L
+
+/* The last press on a Messages row: which window, which row, and when. */
+static struct {
+ FENSTER *f;
+ int row;
+ long ms;
+} g_msg_press;
+
+/**
+ * e_msg_now_ms - A monotonic clock in milliseconds, for the double click.
+ */
+static long e_msg_now_ms(void)
+{
+ struct timespec ts;
+
+ clock_gettime(CLOCK_MONOTONIC, &ts);
+ return((long)ts.tv_sec * 1000L + ts.tv_nsec / 1000000L);
+}
+
+/**
+ * e_msg_row_at_mouse - The Messages row under the pointer.
+ * @f: the Messages window.
+ * Return: the row, clamped to the rows the buffer has.
+ */
+static int e_msg_row_at_mouse(FENSTER *f)
+{
+ extern struct mouse e_mouse;
+ int row = e_mouse.y - f->a.y + f->s->c.y - 1;
+
+ if (row >= f->b->mxlines)
+  row = f->b->mxlines - 1;
+ if (row < 0)
+  row = 0;
+ return(row);
+}
+
+/**
+ * e_msg_press - Note a press on a Messages row; is it the second of a
+ * double click?
+ * @f: the Messages window; @row: the row pressed.
+ *
+ * Called for the press that brings Messages to the front as well, so a
+ * double click from the source window jumps like one inside Messages.
+ * Return: 1 for the second press of a double click on the same row.
+ */
+static int e_msg_press(FENSTER *f, int row)
+{
+ long now = e_msg_now_ms();
+ int second = (g_msg_press.f == f && g_msg_press.row == row &&
+               now - g_msg_press.ms <= E_MSG_DCLICK_MS);
+
+ g_msg_press.f = f;
+ g_msg_press.row = row;
+ g_msg_press.ms = now;
+ if (second)
+  g_msg_press.f = NULL;     /* a third press starts a new click */
+ return(second);
+}
+
+/**
+ * e_d_note_messages_focus_click - The press that brings Messages to the
+ * front counts as the first click of a double click on its row.
+ * @f: the window that was clicked.
+ */
+void e_d_note_messages_focus_click(FENSTER *f)
+{
+ if (!f || !f->datnam || strcmp(f->datnam, "Messages"))
+  return;
+ e_msg_press(f, e_msg_row_at_mouse(f));
+}
+
+/**
+ * e_msg_car_mouse - A click in Messages: one click puts its cursor on the
+ * row, a double click jumps to the place the row names, like Enter.
+ * @f: the Messages window, on top.
+ * Return: WPE_CR for a double click, else 0.
+ */
+static int e_msg_car_mouse(FENSTER *f)
+{
+ extern struct mouse e_mouse;
+ BUFFER *b = f->b;
+ int row = e_msg_row_at_mouse(f);
+
+ b->b.y = row;
+ b->b.x = e_mouse.x - f->a.x + f->s->c.x - 1;
+ if (b->b.x < 0)
+  b->b.x = 0;
+ if (e_msg_press(f, row))
+  return(WPE_CR);
+ return(0);
+}
+
 int e_d_car_mouse(FENSTER *f)
 {
  extern struct mouse e_mouse;
  BUFFER *b = f->ed->f[f->ed->mxedt]->b;
  SCHIRM *s = f->ed->f[f->ed->mxedt]->s;
 
+ if (!strcmp(f->datnam, "Messages"))
+  return(e_msg_car_mouse(f));
  if (e_mouse.y-f->a.y+s->c.y-1 == b->b.y)
   return(WPE_CR);
  else
@@ -3050,6 +4297,32 @@ int e_d_car_mouse(FENSTER *f)
 }
 #endif
 
+/**
+ * e_messages_return - Esc in Messages: back to the window the user came
+ * from, its cursor where it was left.
+ * @f: the window on top.
+ *
+ * Borland's Messages window let go the same way; before this Esc did
+ * nothing there and the user had to find the source window with F6.
+ * Return: 1 when Esc was taken, 0 when @f is not Messages or no other
+ * window is open.
+ */
+int e_messages_return(FENSTER *f)
+{
+ ECNT *cn = f->ed;
+ int i;
+
+ if (!f->datnam || strcmp(f->datnam, "Messages") || f != cn->f[cn->mxedt])
+  return(0);
+ for (i = cn->mxedt - 1; i > 0; i--)
+  if (DTMD_ISTEXT(cn->f[i]->dtmd) && strcmp(cn->f[i]->datnam, "Messages"))
+   break;
+ if (i <= 0)
+  return(0);
+ e_switch_window(cn->edt[i], f);
+ return(1);
+}
+
 int e_exec_make(FENSTER *f)
 {
  ECNT *cn = f->ed;
@@ -3057,6 +4330,8 @@ int e_exec_make(FENSTER *f)
  char saved_cwd[1024];
  int i, file, argc, cwd_changed;
 
+ if (e_build_chain_begin(f, NULL, NULL))
+  return(-1);
  WpeMouseChangeShape(WpeWorkingShape);
  efildes[0] = efildes[1] = -1;
  wfildes[0] = wfildes[1] = -1;
@@ -3076,6 +4351,8 @@ int e_exec_make(FENSTER *f)
  {
   if (cwd_changed)
    e_build_popd(saved_cwd);
+  WpeMouseRestoreShape();
+  e_build_chain_end(f, WPE_ESC, NULL);
   return(WPE_ESC);
  }
  f = cn->f[cn->mxedt];
@@ -3101,15 +4378,16 @@ int e_exec_make(FENSTER *f)
   if (cwd_changed)
    e_build_popd(saved_cwd);
   WpeMouseRestoreShape();
+  e_build_chain_end(f, WPE_ESC, NULL);
   return(WPE_ESC);
  }
  e_sys_end();
  e_free_arg(arg, argc - 1);
- i = e_p_exec(file, f, NULL);
+ e_p_exec(f, NULL, e_build_chain_end, NULL);
  if (cwd_changed)
   e_build_popd(saved_cwd);
  WpeMouseRestoreShape();
- return(i);
+ return(0);
 }
 
 int e_run_sh(FENSTER *f)
@@ -3338,13 +4616,39 @@ int e_read_var(FENSTER *f)
  return(0);
 }
 
+static int e_install_run(FENSTER *f);
+
+/**
+ * e_install_after_make - The build of Install has ended: run the project's
+ * install commands if it succeeded.
+ * @f: the top window; @result: the build's result; @data: unused.
+ */
+static void e_install_after_make(FENSTER *f, int result, void *data)
+{
+ (void)data;
+ if (result)
+  return;
+ e_install_run(f);
+}
+
+/**
+ * e_install - Alt-L: build in the background, then install the project.
+ */
 int e_install(FENSTER *f)
+{
+ return(e_p_make_then(f, e_install_after_make, NULL));
+}
+
+/**
+ * e_install_run - Run the "install:" commands of the open project.
+ * @f: a window of the desktop.
+ */
+static int e_install_run(FENSTER *f)
 {
  char *tp, *sp, *string, *tmp, text[256];
  FILE *fp;
  int i, j;
 
- if (e_p_make(f)) return(-1);
  if (!e__project) return(0);
  if ((fp = fopen(e_prog.project, "r")) == NULL)
  {
@@ -3471,19 +4775,52 @@ struct dirfile *e_p_get_var(char *string)
  return(NULL);
 }
 
-int e_c_project(FENSTER *f)
+/* The project build runs one compile (or ar, or ranlib) at a time in the
+   background, so its loop over the project's files is kept here between
+   steps, as phases of a small state machine. */
+enum e_prj_phase {
+ PRJ_FILE,          /* look at file k: current, or compile it            */
+ PRJ_COMPILED,      /* file k compiled: into the library at once?         */
+ PRJ_INSERTED,      /* take file k off the compile command                */
+ PRJ_LINK_ARG,      /* file k's object onto the link line, or the library */
+ PRJ_NEXT,          /* on to file k + 1                                   */
+ PRJ_RANLIB,        /* every file built: index the library                */
+ PRJ_FINISH,        /* hand the link command to F9's link step            */
+ PRJ_DONE
+};
+/* A phase's answer: go on with the next phase, or wait for a step. */
+#define E_PRJ_GO_ON 0
+#define E_PRJ_WAIT  1
+
+static struct {
+ ECNT *cn;
+ char **arg;               /* the compile command                       */
+ int argc;
+ struct dirfile *df;       /* the project's FILES                        */
+ int k;                    /* the file being built                       */
+ int libsw, exlib, sccs;
+ char ofile[128];
+ struct stat lbuf, obuf;
+ enum e_prj_phase phase;
+ e_build_cont done;
+ void *data;
+} g_prj;
+
+static void e_prj_run(void);
+
+/**
+ * e_prj_setup - Read the project and prepare its compile command.
+ * @f: the window the key was pressed in.
+ * Return: 0, or the result of a project that cannot be built (said in a box).
+ */
+static int e_prj_setup(FENSTER *f)
 {
  ECNT *cn = f->ed;
  struct dirfile *df = NULL;
  char **arg;
- int i, j, k, file= -1, len, elen, argc, libsw = 0, exlib = 0, sccs = 0;
+ int i, j, k, elen, argc, exlib = 0;
  char ofile[128];
-#ifdef CHECKHEADER
- struct stat lbuf[1], obuf[1];
-#else
- struct stat lbuf[1], cbuf[1], obuf[1];
-#endif
- PIC *pic = NULL;
+ struct stat lbuf[1];
 
  last_time = (M_TIME) 0;
  e_p_l_comp = 0;
@@ -3614,123 +4951,321 @@ int e_c_project(FENSTER *f)
   return(-1);
  }
  arg[argc] = NULL;
- elen = strlen(e_prog.exedir)-1;
- for (k = 0; k < df->anz; k++)
+ memset(&g_prj, 0, sizeof g_prj);
+ g_prj.cn = cn;
+ g_prj.arg = arg;
+ g_prj.argc = argc;
+ g_prj.df = df;
+ g_prj.exlib = exlib;
+ g_prj.lbuf = lbuf[0];
+ return(0);
+}
+
+/**
+ * e_prj_top - The window the project build's steps report to.
+ *
+ * Looked up for each step: the user may move between windows while the
+ * build runs.
+ */
+static FENSTER *e_prj_top(void)
+{
+ return(g_prj.cn->f[g_prj.cn->mxedt]);
+}
+
+/**
+ * e_prj_end - The project build is over: free its state, run what waits.
+ * @result: 0 when every file was built, else the failing step's result.
+ */
+static void e_prj_end(int result)
+{
+ e_build_cont done = g_prj.done;
+ void *data = g_prj.data;
+
+ if (g_prj.arg)
+  e_free_arg(g_prj.arg, g_prj.argc);
+ g_prj.arg = NULL;
+ if (g_prj.df)
+  freedf(g_prj.df);
+ g_prj.df = NULL;
+ if (result)
+  e_free_arg(e_arg, e_argc);
+ e_build_continue(done, e_prj_top(), result, data);
+}
+
+/**
+ * e_prj_step_done - A compile, ar or ranlib of the project has ended: go on
+ * with the next file, or stop at the first file with errors.
+ * @f: the top window; @result: the step's result; @data: unused.
+ */
+static void e_prj_step_done(FENSTER *f, int result, void *data)
+{
+ (void)f;
+ (void)data;
+ if (result)
  {
-  for (j = cn->mxedt; j > 0; j--)
-   if (!strcmp(cn->f[j]->datnam, df->name[k]) && cn->f[j]->save)
-    e_save(cn->f[j]);
-  for (j = strlen(df->name[k])-1; j >= 0 && df->name[k][j] != DIRC; j--)
-   ;
-  if (e_prog.exedir[elen] == '/')
-   sprintf(ofile, "%s%s ", e_prog.exedir, df->name[k]+j+1);
-  else sprintf(ofile, "%s/%s ", e_prog.exedir, df->name[k]+j+1);
-  for (j = strlen(ofile); j > 0 && ofile[j] != '.'; j--)
-   ;
-  ofile[j+1] = 'o';
-  ofile[j+2] = '\0';
-  if (!stat(ofile, obuf))
-  {
-   if (obuf->st_mtime > last_time) last_time = obuf->st_mtime;
-#ifdef CHECKHEADER
-   if (!e_check_header(df->name[k], obuf->st_mtime, cn, 0)) goto gt_library;
-#else
-   stat(df->name[k], cbuf);
-   if (obuf->st_mtime >= cbuf->st_mtime) goto gt_library;
-#endif
-  }
-  argc = e_add_arg(&arg, df->name[k], argc, argc);
-#ifndef NO_MINUS_C_MINUS_O
-  argc = e_add_arg(&arg, "-o", argc, argc);
-  argc = e_add_arg(&arg, ofile, argc, argc);
-#endif
-  arg[argc] = NULL;
-  remove(ofile);
-  sccs = 1;
-  j = e_p_mess_win("Compiling", argc, arg, &pic, f);
-  e_sys_ini();
-  if (j != 0 || (file = e_exec_inf(f, arg, argc)) == 0)
-  {
-   e_sys_end();
-   e_free_arg(arg, argc);
-   freedf(df);
-   e_free_arg(e_arg, e_argc);
-   if (pic) e_close_view(pic, 1);
-   return(WPE_ESC);
-  }
-  e_sys_end();
-  e_p_l_comp = 1;
-  if (e_p_exec(file, f, pic))
-  {
-   e_free_arg(arg, argc);
-   e_free_arg(e_arg, e_argc);
-   freedf(df);
-   return(-1);
-  }
-  pic = NULL;
-  for (j = strlen(ofile); j >= 0 && ofile[j] != '/'; j--)
-   ;
-  if (!exlib && library[0] != '\0' && strcmp(ofile+j+1, "main.o") &&
-    (strncmp(e_s_prog.exe_name, ofile+j+1,(len = strlen(e_s_prog.exe_name))) ||
-    ofile[len] == '.'))
-  {
-   if(e_make_library(library, ofile, f))
-   {
-    e_free_arg(arg, argc);
-    e_free_arg(e_arg, e_argc);
-    freedf(df);
-    return(-1);  
-   }
-   else libsw = 1;
-  }
-  for (j = 0; j < 3; j++) FREE(arg[argc-j-1])
-   ;
-  argc -= 3;
-gt_library:
-  for (j = strlen(ofile); j >= 0 && ofile[j] != '/'; j--)
-   ;
-  if (library[0] == '\0' || !strcmp(ofile+j+1, "main.o") ||
-    (!strncmp(e_s_prog.exe_name, ofile+j+1,(len = strlen(e_s_prog.exe_name))) &&
-    ofile[len] == '.'))
-   e_argc = e_add_arg(&e_arg, ofile, e_argc, e_argc);
-  else if (exlib || obuf->st_mtime >= lbuf->st_mtime)
-  {
-   if (e_make_library(library, ofile, f))
-   {
-    e_free_arg(arg, argc);
-    e_free_arg(e_arg, e_argc);
-    freedf(df);
-    return(-1);
-   }
-   else libsw = 1;
-  }
+  e_prj_end(result);
+  return;
  }
-#ifdef RANLIB
- if (libsw && library[0] != '\0')
+ e_prj_run();
+}
+
+/**
+ * e_prj_object_name - The object file of project file @k, into g_prj.ofile.
+ */
+static void e_prj_object_name(int k)
+{
+ struct dirfile *df = g_prj.df;
+ int j, elen = strlen(e_prog.exedir)-1;
+
+ for (j = strlen(df->name[k])-1; j >= 0 && df->name[k][j] != DIRC; j--)
+  ;
+ if (e_prog.exedir[elen] == '/')
+  sprintf(g_prj.ofile, "%s%s ", e_prog.exedir, df->name[k]+j+1);
+ else sprintf(g_prj.ofile, "%s/%s ", e_prog.exedir, df->name[k]+j+1);
+ for (j = strlen(g_prj.ofile); j > 0 && g_prj.ofile[j] != '.'; j--)
+  ;
+ g_prj.ofile[j+1] = 'o';
+ g_prj.ofile[j+2] = '\0';
+}
+
+/**
+ * e_prj_object_current - Is the object of project file @k newer than its
+ * source?  Current objects are not compiled again.
+ */
+static int e_prj_object_current(int k)
+{
+#ifndef CHECKHEADER
+ struct stat cbuf;
+#endif
+
+ if (stat(g_prj.ofile, &g_prj.obuf))
+  return(0);
+ if (g_prj.obuf.st_mtime > last_time) last_time = g_prj.obuf.st_mtime;
+#ifdef CHECKHEADER
+ return(!e_check_header(g_prj.df->name[k], g_prj.obuf.st_mtime, g_prj.cn, 0));
+#else
+ stat(g_prj.df->name[k], &cbuf);
+ return(g_prj.obuf.st_mtime >= cbuf.st_mtime);
+#endif
+}
+
+/**
+ * e_prj_save_file - Save the window of project file @k when it has edits,
+ * so the compile sees what the user typed.
+ */
+static void e_prj_save_file(int k)
+{
+ ECNT *cn = g_prj.cn;
+ int j;
+
+ for (j = cn->mxedt; j > 0; j--)
+  if (!strcmp(cn->f[j]->datnam, g_prj.df->name[k]) && cn->f[j]->save)
+   e_save(cn->f[j]);
+}
+
+/**
+ * e_prj_compile_file - Start the compile of project file @k.
+ * Return: E_PRJ_WAIT: the machine goes on when the compile has ended.
+ */
+static int e_prj_compile_file(int k)
+{
+ FENSTER *f = e_prj_top();
+ PIC *pic = NULL;
+ int j, file = 0;
+
+ g_prj.argc = e_add_arg(&g_prj.arg, g_prj.df->name[k], g_prj.argc, g_prj.argc);
+#ifndef NO_MINUS_C_MINUS_O
+ g_prj.argc = e_add_arg(&g_prj.arg, "-o", g_prj.argc, g_prj.argc);
+ g_prj.argc = e_add_arg(&g_prj.arg, g_prj.ofile, g_prj.argc, g_prj.argc);
+#endif
+ g_prj.arg[g_prj.argc] = NULL;
+ remove(g_prj.ofile);
+ g_prj.sccs = 1;
+ j = e_p_mess_win("Compiling", g_prj.argc, g_prj.arg, &pic, f);
+ e_sys_ini();
+ if (j == 0)
+  file = e_exec_inf(f, g_prj.arg, g_prj.argc);
+ e_sys_end();
+ if (!file)
  {
+  if (pic) e_close_view(pic, 1);
+  e_prj_end(WPE_ESC);
+  return(E_PRJ_WAIT);
+ }
+ e_p_l_comp = 1;
+ g_prj.phase = PRJ_COMPILED;
+ e_p_exec(f, pic, e_prj_step_done, NULL);
+ return(E_PRJ_WAIT);
+}
+
+/**
+ * e_prj_object_base - The object's file name without its directory.
+ */
+static char *e_prj_object_base(void)
+{
+ int j;
+
+ for (j = strlen(g_prj.ofile); j >= 0 && g_prj.ofile[j] != '/'; j--)
+  ;
+ return(g_prj.ofile + j + 1);
+}
+
+/**
+ * e_prj_is_program_object - Does the object go on the link line itself
+ * (main.o, or one named after the program) rather than into the library?
+ */
+static int e_prj_is_program_object(void)
+{
+ char *base = e_prj_object_base();
+ int len = strlen(e_s_prog.exe_name);
+
+ if (!strcmp(base, "main.o"))
+  return(1);
+ return(!strncmp(e_s_prog.exe_name, base, len) && g_prj.ofile[len] == '.');
+}
+
+/**
+ * e_prj_inserted_after_compile - Is a freshly compiled object put into the
+ * library at once?  The test the project build has always made.
+ */
+static int e_prj_inserted_after_compile(void)
+{
+ char *base = e_prj_object_base();
+ int len = strlen(e_s_prog.exe_name);
+
+ if (g_prj.exlib || library[0] == '\0' || !strcmp(base, "main.o"))
+  return(0);
+ return(strncmp(e_s_prog.exe_name, base, len) || g_prj.ofile[len] == '.');
+}
+
+/**
+ * e_prj_insert - Put the object into the project's library as a step of
+ * the build.
+ * @next: the phase after the insert.
+ */
+static int e_prj_insert(enum e_prj_phase next)
+{
+ g_prj.phase = next;
+ g_prj.libsw = 1;
+ e_make_library(library, g_prj.ofile, e_prj_top(), e_prj_step_done, NULL);
+ return(E_PRJ_WAIT);
+}
+
+/**
+ * e_prj_after_compile - File k compiled: insert it into the library when it
+ * is a library object that the archive does not already take.
+ */
+static int e_prj_after_compile(void)
+{
+ g_prj.phase = PRJ_INSERTED;
+ if (e_prj_inserted_after_compile())
+  return(e_prj_insert(PRJ_INSERTED));
+ return(E_PRJ_GO_ON);
+}
+
+/**
+ * e_prj_drop_compile_args - Take file k's source and object off the
+ * compile command, ready for the next file.
+ */
+static int e_prj_drop_compile_args(void)
+{
+ int j;
+
+ for (j = 0; j < 3; j++) FREE(g_prj.arg[g_prj.argc-j-1])
+  ;
+ g_prj.argc -= 3;
+ g_prj.phase = PRJ_LINK_ARG;
+ return(E_PRJ_GO_ON);
+}
+
+/**
+ * e_prj_link_arg - Add file k's object to the link, or to the library.
+ */
+static int e_prj_link_arg(void)
+{
+ g_prj.phase = PRJ_NEXT;
+ if (library[0] == '\0' || e_prj_is_program_object())
+ {
+  e_argc = e_add_arg(&e_arg, g_prj.ofile, e_argc, e_argc);
+  return(E_PRJ_GO_ON);
+ }
+ if (g_prj.exlib || g_prj.obuf.st_mtime >= g_prj.lbuf.st_mtime)
+  return(e_prj_insert(PRJ_NEXT));
+ return(E_PRJ_GO_ON);
+}
+
+/**
+ * e_prj_look_at_file - The next project file: compile it, or skip to its
+ * place in the link when its object is current.
+ */
+static int e_prj_look_at_file(void)
+{
+ int k = g_prj.k;
+
+ if (k >= g_prj.df->anz)
+ {
+  g_prj.phase = PRJ_RANLIB;
+  return(E_PRJ_GO_ON);
+ }
+ e_prj_save_file(k);
+ e_prj_object_name(k);
+ if (e_prj_object_current(k))
+ {
+  g_prj.phase = PRJ_LINK_ARG;
+  return(E_PRJ_GO_ON);
+ }
+ return(e_prj_compile_file(k));
+}
+
+/**
+ * e_prj_ranlib - Every file is built: index the library if it changed.
+ */
+static int e_prj_ranlib(void)
+{
+ g_prj.phase = PRJ_FINISH;
+#ifdef RANLIB
+ if (g_prj.libsw && library[0] != '\0')
+ {
+  FENSTER *f = e_prj_top();
+  PIC *pic = NULL;
   char *ar_arg[3];
+  int file = 0;
+
   ar_arg[0] = "ranlib";
   ar_arg[1] = library;
   ar_arg[2] = NULL;
-  if (!(j = e_p_mess_win("Convert Archive", 2, ar_arg, &pic, f)))
+  if (!e_p_mess_win("Convert Archive", 2, ar_arg, &pic, f))
   {
    e_sys_ini();
    file = e_exec_inf(f, ar_arg, 2);
    e_sys_end();
-   if (file) j = e_p_exec(file, f, pic);
   }
-  if (j || !file)
+  if (!file)
   {
-   e_free_arg(arg, argc);
-   e_free_arg(e_arg, e_argc);
-   freedf(df);
-   return(-1);
+   e_prj_end(-1);
+   return(E_PRJ_WAIT);
   }
+  e_p_exec(f, pic, e_prj_step_done, NULL);
+  return(E_PRJ_WAIT);
  }
 #endif
+ return(E_PRJ_GO_ON);
+}
+
+/**
+ * e_prj_finish - Hand the link command to F9's link step.
+ */
+static int e_prj_finish(void)
+{
+ struct dirfile *df;
+ e_build_cont done = g_prj.done;
+ void *data = g_prj.data;
+ int k;
+
  if (library[0] != '\0')
   e_argc = e_add_arg(&e_arg, library, e_argc, e_argc);
- freedf(df);
+ freedf(g_prj.df);
+ g_prj.df = NULL;
  df = e_p_get_var("LDFLAGS");
  if (df)
  {
@@ -3746,8 +5281,65 @@ gt_library:
   freedf(df);
  }
  e_arg[e_argc] = NULL;
- e_free_arg(arg, argc);
- if (!sccs) e_p_exec(file, f, pic);
+ e_free_arg(g_prj.arg, g_prj.argc);
+ g_prj.arg = NULL;
+ g_prj.phase = PRJ_DONE;
+ if (!g_prj.sccs)
+ {
+  e_p_exec(e_prj_top(), NULL, done, data);   /* nothing compiled: "Success" */
+  return(E_PRJ_WAIT);
+ }
+ e_build_continue(done, e_prj_top(), 0, data);
+ return(E_PRJ_WAIT);
+}
+
+/**
+ * e_prj_run - Drive the project build until it waits for a step or ends.
+ *
+ * Each compile, ar and ranlib runs in the background; its end calls
+ * e_prj_step_done, which comes back here for the next phase.
+ */
+static void e_prj_run(void)
+{
+ int wait = E_PRJ_GO_ON;
+
+ while (wait == E_PRJ_GO_ON)
+ {
+  switch (g_prj.phase)
+  {
+   case PRJ_FILE:     wait = e_prj_look_at_file();       break;
+   case PRJ_COMPILED: wait = e_prj_after_compile();      break;
+   case PRJ_INSERTED: wait = e_prj_drop_compile_args();  break;
+   case PRJ_LINK_ARG: wait = e_prj_link_arg();           break;
+   case PRJ_NEXT:     g_prj.k++;  g_prj.phase = PRJ_FILE; break;
+   case PRJ_RANLIB:   wait = e_prj_ranlib();             break;
+   case PRJ_FINISH:   wait = e_prj_finish();             break;
+   default:           wait = E_PRJ_WAIT;                 break;
+  }
+ }
+}
+
+/**
+ * e_c_project - Build the open project's files, one compile at a time, in
+ * the background.
+ * @f: the window the key was pressed in; @done: what runs when every file
+ * is built or the first one fails, exactly once; @data: handed to @done.
+ * Return: 0.
+ */
+int e_c_project(FENSTER *f, e_build_cont done, void *data)
+{
+ int ret = e_prj_setup(f);
+
+ if (ret)
+ {
+  e_build_continue(done, f, ret, data);
+  return(0);
+ }
+ g_prj.done = done;
+ g_prj.data = data;
+ g_prj.k = 0;
+ g_prj.phase = PRJ_FILE;
+ e_prj_run();
  return(0);
 }
 
@@ -4557,6 +6149,57 @@ int e_p_comp_mess(char *a, char *b, char *c, char *txt, char *file, char *cmp,
  return(e_p_comp_mess(a+n, b+n, c+n, txt, file, cmp, y, x));
 }
 
+/* The word a compiler's row says when the compiler's own pattern carries no
+   warning marker. */
+#define E_P_WARNING_WORD "warning"
+
+/**
+ * e_p_row_is_warning - Did the compiler call this row a warning?
+ * @row: the Messages row; @wtxt, @wn, @wnum: the warning markers of the
+ * compiler's pattern (the text, and the column it must start at, -1 for
+ * anywhere).
+ *
+ * The count at the end of a build and the mark on each warning row come
+ * from this, so the user sees at once which rows stop the build and which
+ * only advise.  A pattern with no marker falls back to the word itself, in
+ * any case.
+ * Return: 1 for a warning row.
+ */
+static int e_p_row_is_warning(char *row, char **wtxt, int *wn, int wnum)
+{
+ int m;
+ size_t n = strlen(E_P_WARNING_WORD);
+ char *p;
+
+ for (m = 0; m < wnum; m++)
+ {
+  if (wn[m] == -1 && strstr(row, wtxt[m]))
+   return(1);
+  if (wn[m] > -1 && (int)strlen(row) > wn[m] &&
+      !strncmp(row + wn[m], wtxt[m], strlen(wtxt[m])))
+   return(1);
+ }
+ if (wnum > 0)
+  return(0);
+ for (p = row; *p; p++)
+  if (!strncasecmp(p, E_P_WARNING_WORD, n))
+   return(1);
+ return(0);
+}
+
+/**
+ * e_p_row_kind - Is this row an error or a warning?
+ * @row: the Messages row; @wtxt, @wn, @wnum: the warning markers of the
+ * compiler's pattern.
+ * Return: E_ROW_ERROR or E_ROW_WARNING.
+ */
+static int e_p_row_kind(char *row, char **wtxt, int *wn, int wnum)
+{
+ if (e_p_row_is_warning(row, wtxt, wn, wnum))
+  return(E_ROW_WARNING);
+ return(E_ROW_ERROR);
+}
+
 int e_p_cmp_mess(char *srch, BUFFER *b, int *ii, int *kk, int ret)
 {
  char *cp, cmp[128], file[128], search[80], tmp[4][128], **wtxt = NULL;
@@ -4660,7 +6303,8 @@ int e_p_cmp_mess(char *srch, BUFFER *b, int *ii, int *kk, int ret)
     else
      err_li[k].srch = NULL;
     err_li[k].x = x;
-    err_li[k].y = iorig;
+    err_li[k].y = err_li[k].row = iorig;
+    err_li[k].kind = e_p_row_kind((char *)b->bf[i].s, wtxt, wn, wnum);
     err_li[k].text = MALLOC(strlen((char *)b->bf[i].s) + 1);
     strcpy(err_li[k].text, (char *)b->bf[i].s);
     err_li[k].text[b->bf[i].len] = '\0';

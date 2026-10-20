@@ -530,12 +530,22 @@ int e_eingabe(ECNT *e)
 #ifdef WPE_AI
    wpe_ai_deliver_held_reply();   /* a reply that landed behind a dialog: review it now */
 #endif
+#ifdef PROG
+   e_build_deliver_held();        /* a build that ended behind a dialog: report it now */
+#endif
    if (f->save > f->ed->maxchg) e_autosave(f);
+   c = e_getch();
+   /* A build ending while the editor waited for this key may have put
+      another window on top (the jump to its first error): the key belongs
+      to the window the user now sees. */
+   f = e->f[e->mxedt];
+   b = f->b;
+   s = f->s;
 #if  MOUSE
-   if ((c = e_getch()) < 0) cc = c = e_edt_mouse(c, f);
+   if (c < 0) cc = c = e_edt_mouse(c, f);
    else cc = c;
 #else
-   cc = c = e_getch();
+   cc = c;
 #endif
   }
 #ifdef WPE_AI
@@ -568,6 +578,10 @@ int e_eingabe(ECNT *e)
    extern void e_lsp_on_edit(FENSTER *f, int c);  /* in we_debug.c */
    e_lsp_on_edit(f, c);          /* live LSP diagnostics + didChange */
   }
+#endif
+#ifdef PROG
+  /* A build is running: Esc cancels it, as the waiting line in Messages says. */
+  if (c == WPE_ESC && e_build_busy()) { e_build_cancel(); c = 0; continue; }
 #endif
 #ifdef WPE_AI
   /* A background AI task is running: Esc cancels it (what the spinner promises)
@@ -1337,7 +1351,12 @@ int e_tst_dfkt(FENSTER *f, int c)
       Alt-Space) enter the menu; Esc only CANCELS an already-open dialog or
       menu, and those have their own input loops that consume it -- so here,
       with the editor on top and nothing open, Esc is a no-op.  (It must not
-      fall through to the default branch, which would insert it as text.) */
+      fall through to the default branch, which would insert it as text.)
+      In Messages it lets go of the list, back to the source window. */
+#if defined(PROG)
+   if (WpeIsProg())
+    e_messages_return(f);
+#endif
    break;
   case F10:
   case AltBl:
