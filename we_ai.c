@@ -23,6 +23,7 @@
 #include <errno.h>
 #include <time.h>
 #include <sys/types.h>
+#include <sys/stat.h>
 #include <sys/wait.h>
 #include <signal.h>
 #include <json-c/json.h>
@@ -44,6 +45,8 @@ char *e_ai_host_command = NULL;        /* agent-host CLI to run (default: claude
 int   e_ai_host_adapter = 0;           /* 0 = claude-code (stream-json), 1 = text  */
 char *e_ai_search_url = NULL;          /* web_search URL template ("%s" = query);
                                           NULL => the built-in keyless default      */
+int   e_ai_answer_timeout = WPE_AI_ANSWER_TIMEOUT_DEFAULT;  /* seconds a request
+                                         waits for the server's first byte */
 int   e_ai_tool_timeout = WPE_AI_TOOL_TIMEOUT_DEFAULT;  /* seconds a tool command
                                           may run before the editor ends it         */
 int   e_ai_project_scope = WPE_AI_PROJECT_AGENT;  /* where the project instructions
@@ -171,6 +174,9 @@ int wpe_ai_model_is_claude(const char *m)
         !strcmp(m, "haiku") || !strncmp(m, "claude", 6);
 }
 
+/* The model wpe_ai_normalize_model set aside, until the pane has named it. */
+static char *g_ai_model_dropped = NULL;
+
 /* Drop a model that cannot belong to the active backend, so a stale value from
    a previous backend does not break it: only the Claude backends can validate
    (their model set is fixed); Ollama / OpenAI-compatible take any name the
@@ -181,9 +187,17 @@ void wpe_ai_normalize_model(void)
 {
  if ((e_ai_backend == WPE_AI_CLAUDECLI || e_ai_backend == WPE_AI_CLAUDE) &&
      e_ai_model && *e_ai_model && !wpe_ai_model_is_claude(e_ai_model)) {
-  free(e_ai_model);
+  free(g_ai_model_dropped);
+  g_ai_model_dropped = e_ai_model;      /* kept to be named in the pane once */
   e_ai_model = ai_strdup("");
  }
+}
+
+char *wpe_ai_take_dropped_model(void)
+{
+ char *m = g_ai_model_dropped;
+ g_ai_model_dropped = NULL;
+ return m;
 }
 
 /* ----- permission dial + claudecli control globals ----------------------- */
@@ -848,6 +862,8 @@ static void ai_config_apply_env(void)
   e_ai_tool_timeout = wpe_ai_tool_timeout_from_text(e);
   ai_file_shadow(WPE_AI_CFG_TOOL_TIMEOUT);
  }
+ if ((e = getenv("XWPE_AI_TIMEOUT")))
+  e_ai_answer_timeout = wpe_ai_answer_timeout_from_text(e);
  if ((e = getenv("XWPE_AI_PROJECT_INSTRUCTIONS"))) {
   e_ai_project_scope = wpe_ai_project_scope_from_name(e);
   ai_file_shadow(WPE_AI_CFG_PROJECT_SCOPE);
@@ -862,6 +878,21 @@ int wpe_ai_tool_timeout_from_text(const char *text)
 {
  int seconds = text ? atoi(text) : 0;
  if (seconds <= 0) return WPE_AI_TOOL_TIMEOUT_DEFAULT;
+ return seconds;
+}
+
+/**
+ * wpe_ai_answer_timeout_from_text - The seconds an XWPE_AI_TIMEOUT value names.
+ * @text: the variable's value.
+ *
+ * A value that is not a positive number keeps the default, so a mistyped
+ * variable never removes the bound and a request can never wait forever.
+ * Return: the seconds a request waits for the server's first byte.
+ */
+int wpe_ai_answer_timeout_from_text(const char *text)
+{
+ int seconds = text ? atoi(text) : 0;
+ if (seconds <= 0) return WPE_AI_ANSWER_TIMEOUT_DEFAULT;
  return seconds;
 }
 
@@ -993,6 +1024,9 @@ const char *wpe_ai_ollama_endpoint_fixup(const char *url)
  return l ? "http://localhost:11434" : NULL;
 }
 
+/* Owner read and write only: nobody else on the machine reads a key file. */
+#define AI_KEY_FILE_MODE 0600
+
 /* Write the OpenAI API key for a provider (NULL/"" => the generic file) to
  * $XDG_CONFIG_HOME/xwpe/openai-api-key[-<provider>] with 0600 perms, so a key
  * typed in the settings dialog persists.  Returns 0 on success. */
@@ -1010,8 +1044,12 @@ int wpe_ai_write_openai_key(const char *provider, const char *key)
   snprintf(path, sizeof path, "%s/openai-api-key-%s", dir, provider);
  else
   snprintf(path, sizeof path, "%s/openai-api-key", dir);
- fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+ fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, AI_KEY_FILE_MODE);
  if (fd < 0) return -1;
+ /* The open's mode applies only to a new file: a key file that already
+    existed (made by hand, or by an older version) keeps its wider mode unless
+    it is set here, before the new key is written into it. */
+ if (fchmod(fd, AI_KEY_FILE_MODE) != 0) { close(fd); return -1; }
  fp = fdopen(fd, "w");
  if (!fp) { close(fd); return -1; }
  fprintf(fp, "%s\n", key);
@@ -1250,34 +1288,49 @@ static void ai_parse_line(int backend, const char *line, size_t len,
 
 /* ===================== blocking fetch (for model lists) ================== */
 
+/*
+ * ai_fetch - One whole request and its reply, for the model listing.
+ * @timeout_ms: one deadline for the connect, the handshake and the reply.
+ * @watch: what tells that the user abandoned the wait (Esc), or NULL.
+ * @phrase, @phrasesz: receive the status line's reason phrase (may be NULL).
+ *
+ * The listing runs from a dialog, so it waits here rather than on the
+ * editor's loop; the deadline and the watch are what keep that wait short
+ * and in the user's hands.  A wait that runs out says "no answer from
+ * host:port within N s"; an abandoned one says "cancelled".
+ */
 static int ai_fetch(const char *method, const char *path, char *hdrs[],
-                    const char *body, int timeout_ms, char **resp_out,
-                    int *status_out, char *errbuf, size_t errsz)
+                    const char *body, int timeout_ms, const wpe_http_watch *watch,
+                    char **resp_out, int *status_out, char *phrase, size_t phrasesz,
+                    char *errbuf, size_t errsz)
 {
  wpe_http_conn conn;
  wpe_http_stream hs;
  char buf[4096];
- long deadline;
+ long deadline = wpe_http_now_ms() + timeout_ms;
  int rc = -1;
 
  if (resp_out) *resp_out = NULL;
- if (wpe_http_open(e_ai_endpoint, &conn, errbuf, errsz)) return -1;
+ if (wpe_http_open(e_ai_endpoint, &conn, timeout_ms, watch, errbuf, errsz)) return -1;
  if (wpe_http_request(&conn, method, path, (const char *const *)hdrs, body)) {
   if (errbuf) snprintf(errbuf, errsz, "request failed");
   wpe_http_close(&conn);
   return -1;
  }
  wpe_http_stream_init(&hs);
- deadline = ai_now_ms() + timeout_ms;
  while (!wpe_http_stream_done(&hs)) {
-  struct pollfd pf;
-  int pr;
-  long left = deadline - ai_now_ms();
-  if (left <= 0) { if (errbuf) snprintf(errbuf, errsz, "timed out"); break; }
-  pf.fd = conn.fd; pf.events = POLLIN; pf.revents = 0;
-  pr = poll(&pf, 1, (int)(left > 1000 ? 1000 : left));
-  if (pr < 0) { if (errno == EINTR) continue; break; }
-  if (pr == 0) continue;
+  int seen = wpe_http_wait(conn.fd, POLLIN, deadline, watch);
+  if (seen == WPE_HTTP_WAIT_TIMEOUT) {
+   wpe_http_describe_timeout(&conn, timeout_ms, errbuf, errsz);
+   break;
+  }
+  if (seen == WPE_HTTP_WAIT_CANCELLED) {
+   if (errbuf) snprintf(errbuf, errsz, "cancelled");
+   wpe_http_stream_free(&hs);
+   wpe_http_close(&conn);
+   return -1;
+  }
+  if (seen == WPE_HTTP_WAIT_IDLE) continue;
   {
    ssize_t r = wpe_http_read(&conn, buf, sizeof buf);
    if (r > 0) { if (wpe_http_stream_push(&hs, buf, (size_t)r) < 0) break; }
@@ -1286,6 +1339,7 @@ static int ai_fetch(const char *method, const char *path, char *hdrs[],
  }
  if (wpe_http_stream_done(&hs) || hs.body_len > 0) {
   if (status_out) *status_out = wpe_http_stream_status(&hs);
+  wpe_http_stream_status_reason(&hs, phrase, phrasesz);
   if (resp_out) {
    *resp_out = malloc(hs.body_len + 1);
    if (*resp_out) {
@@ -1325,14 +1379,14 @@ int wpe_ai_web_fetch(const char *url, size_t maxbytes, char **out,
   if (errbuf) snprintf(errbuf, errsz, "malformed URL (use http:// or https://)");
   return -1;
  }
- if (wpe_http_open(url, &conn, errbuf, errsz)) return -1;
+ deadline = ai_now_ms() + WPE_AI_WEB_DEADLINE_MS;
+ if (wpe_http_open(url, &conn, WPE_AI_WEB_DEADLINE_MS, NULL, errbuf, errsz)) return -1;
  if (wpe_http_request(&conn, "GET", path, NULL, NULL)) {
   if (errbuf) snprintf(errbuf, errsz, "request failed");
   wpe_http_close(&conn);
   return -1;
  }
  wpe_http_stream_init(&hs);
- deadline = ai_now_ms() + 20000;
  while (!wpe_http_stream_done(&hs)) {
   struct pollfd pf;
   int pr;
@@ -1375,9 +1429,16 @@ int wpe_ai_web_fetch(const char *url, size_t maxbytes, char **out,
 
 /* ===================== reachability / models ============================= */
 
+/*
+ * wpe_ai_preflight - Is the backend there at all, before a request starts?
+ *
+ * For the HTTP backends this is a bounded TCP connect only: a server that is
+ * down is named at once with what to do, and the TLS handshake is left to
+ * the request itself, which runs on the editor's loop, so a server that
+ * accepts and then stalls the handshake never holds the editor here.
+ */
 int wpe_ai_preflight(int backend, char *errbuf, size_t errsz)
 {
- wpe_http_conn conn;
  if (backend == WPE_AI_MOCK) return 0;
  if (backend == WPE_AI_CLAUDECLI) {
   if (wpe_ai_claude_cli_available()) return 0;
@@ -1385,7 +1446,7 @@ int wpe_ai_preflight(int backend, char *errbuf, size_t errsz)
     "Claude Code CLI not found - install `claude` and log in (claude auth)");
   return -1;
  }
- if (wpe_http_open(e_ai_endpoint, &conn, errbuf, errsz) != 0) {
+ if (wpe_http_reach(e_ai_endpoint, WPE_AI_REACH_DEADLINE_MS, errbuf, errsz) != 0) {
   if (backend == WPE_AI_OLLAMA && errbuf)
    snprintf(errbuf, errsz,
             "Ollama not reachable at %s - is it running? (try `ollama serve`)",
@@ -1403,13 +1464,109 @@ int wpe_ai_preflight(int backend, char *errbuf, size_t errsz)
   }
   return -1;
  }
- wpe_http_close(&conn);
  return 0;
 }
 
 int wpe_ai_list_models(int backend, char **names, int max,
                        char *errbuf, size_t errsz)
 {
+ return wpe_ai_list_models_watch(backend, names, max, NULL, errbuf, errsz);
+}
+
+/* The first HTTP status that is a refusal rather than an answer. */
+#define AI_HTTP_STATUS_ERROR_MIN 400
+/* Room for a status line's reason phrase ("Unauthorized"). */
+#define AI_STATUS_PHRASE_MAX     96
+
+/*
+ * ai_json_error_reason - The reason a JSON error body gives, if any.
+ * @body: the response body (may be NULL); @out: destination; @sz: its size.
+ *
+ * Reads {"error":{"message":...}} (OpenAI), {"error":"..."} (Ollama) and a
+ * top-level {"message":...}.  Return: 1 when a reason was found.
+ */
+static int ai_json_error_reason(const char *body, char *out, size_t sz)
+{
+ struct json_object *o, *err, *msg;
+ int found = 0;
+ if (!body || !*body) return 0;
+ o = json_tokener_parse(body);
+ if (!o) return 0;
+ if (json_object_object_get_ex(o, "error", &err)) {
+  if (json_object_get_type(err) == json_type_object &&
+      json_object_object_get_ex(err, "message", &msg)) {
+   snprintf(out, sz, "%s", json_object_get_string(msg));
+   found = 1;
+  } else if (json_object_get_type(err) == json_type_string) {
+   snprintf(out, sz, "%s", json_object_get_string(err));
+   found = 1;
+  }
+ } else if (json_object_object_get_ex(o, "message", &msg)) {
+  snprintf(out, sz, "%s", json_object_get_string(msg));
+  found = 1;
+ }
+ json_object_put(o);
+ return found;
+}
+
+/*
+ * ai_endpoint_hostport - "host:port" of the configured endpoint.
+ * @out: destination; @sz: its size.
+ */
+static void ai_endpoint_hostport(char *out, size_t sz)
+{
+ char host[256], path[512];
+ int port = 0, https = 0;
+ if (wpe_http_parse_url(e_ai_endpoint ? e_ai_endpoint : "", host, sizeof host,
+                        &port, &https, path, sizeof path) != 0) {
+  snprintf(out, sz, "%s", e_ai_endpoint ? e_ai_endpoint : "?");
+  return;
+ }
+ snprintf(out, sz, "%s:%d", host, port);
+}
+
+/*
+ * ai_listing_http_error - Say why the server refused the model listing.
+ * @status: the HTTP status; @body: the reply; @phrase: the status line's words;
+ * @errbuf, @errsz: destination.
+ *
+ * A refused listing read "no models found", which sent the user looking for
+ * models instead of fixing the key: the line now reads "HTTP 401 from
+ * host:port: <the server's reason>".
+ */
+static void ai_listing_http_error(int status, const char *body, const char *phrase,
+                                  char *errbuf, size_t errsz)
+{
+ char where[300], reason[300];
+ if (!errbuf || !errsz) return;
+ ai_endpoint_hostport(where, sizeof where);
+ if (!ai_json_error_reason(body, reason, sizeof reason)) {
+  if (phrase && *phrase)
+   snprintf(reason, sizeof reason, "%s", phrase);
+  else
+   snprintf(reason, sizeof reason, "no reason given");
+ }
+ snprintf(errbuf, errsz, "HTTP %d from %s: %s", status, where, reason);
+}
+
+/*
+ * ai_listing_note_cancel - Name an abandoned listing for what it is.
+ * @errbuf: the reason the fetch gave; @errsz: its size.
+ *
+ * The fetch says "cancelled"; the user reads "listing cancelled", so the line
+ * says which wait their Esc ended.
+ */
+static void ai_listing_note_cancel(char *errbuf, size_t errsz)
+{
+ if (errbuf && !strcmp(errbuf, "cancelled"))
+  snprintf(errbuf, errsz, "listing cancelled");
+}
+
+int wpe_ai_list_models_watch(int backend, char **names, int max,
+                             const wpe_http_watch *watch,
+                             char *errbuf, size_t errsz)
+{
+ char phrase[AI_STATUS_PHRASE_MAX] = "";
  char *hdrs[8];
  char *resp = NULL;
  char path[600];
@@ -1437,12 +1594,16 @@ int wpe_ai_list_models(int backend, char **names, int max,
  ai_make_path(backend, (backend == WPE_AI_OPENAI) ? "/models" : "/api/tags",
               path, sizeof path);
  nh = ai_headers(backend, hdrs, 8);
- rc = ai_fetch("GET", path, hdrs, NULL, 5000, &resp, &st, errbuf, errsz);
+ rc = ai_fetch("GET", path, hdrs, NULL, WPE_AI_LIST_DEADLINE_MS, watch,
+               &resp, &st, phrase, sizeof phrase, errbuf, errsz);
  for (i = 0; i < nh; i++) free(hdrs[i]);
+ if (rc < 0) ai_listing_note_cancel(errbuf, errsz);
+ if (rc == 0 && st >= AI_HTTP_STATUS_ERROR_MIN)
+  ai_listing_http_error(st, resp, phrase, errbuf, errsz);
  wpe_ai_trace("MODELS path=%s rc=%d status=%d nhdr=%d err=%s resp=%.160s",
               path, rc, st, nh, errbuf && errbuf[0] ? errbuf : "-",
               resp ? resp : "(null)");
- if (rc < 0 || !resp) { free(resp); return -1; }
+ if (rc < 0 || !resp || st >= AI_HTTP_STATUS_ERROR_MIN) { free(resp); return -1; }
 
  o = json_tokener_parse(resp);
  free(resp);
@@ -1563,6 +1724,21 @@ int wpe_ai_ensure_model(char *errbuf, size_t errsz)
 
 /* ===================== streaming chat session ============================ */
 
+/* The most headers a backend request carries (ai_headers fills up to this). */
+#define AI_STREAM_MAX_HEADERS 8
+/* Room for the line that says why a request failed (host:port and reason). */
+#define AI_STREAM_WHY_MAX     400
+#define AI_MS_PER_S           1000L
+
+struct wpe_ai_stream;
+static int  ai_stream_open_http(struct wpe_ai_stream *st, const wpe_ai_req *req,
+                                char *errbuf, size_t errsz);
+static void ai_stream_drop_request(struct wpe_ai_stream *st);
+static int  ai_stream_advance_open(struct wpe_ai_stream *st);
+static int  ai_stream_overdue(const struct wpe_ai_stream *st);
+static int  ai_stream_fail_overdue(struct wpe_ai_stream *st);
+static void ai_stream_arm_deadline(struct wpe_ai_stream *st);
+
 struct wpe_ai_stream {
  int             backend;
  wpe_http_conn   conn;
@@ -1584,6 +1760,16 @@ struct wpe_ai_stream {
  size_t          think_len, think_cap;
  int             got_content;  /* the turn emitted at least one content delta   */
  int             think_used;   /* the thinking fallback was already handed over  */
+ /* The open runs on the editor's loop: until it is done the request waits
+    here, and one deadline covers the connect, the handshake and the first
+    byte of the answer. */
+ int             opening;      /* the connect / TLS handshake is not done yet   */
+ char           *req_path;     /* the request sent once the open is done        */
+ char           *req_body;
+ char           *req_hdrs[AI_STREAM_MAX_HEADERS + 1];   /* NULL-terminated */
+ int             req_nh;
+ long            deadline;     /* wpe_http_now_ms() by which a byte must come   */
+ char           *transport_err; /* why the open or the wait failed, or NULL     */
 };
 
 /* Flatten the request into a single prompt for the `claude` CLI (one -p call).
@@ -1902,6 +2088,7 @@ wpe_ai_stream *wpe_ai_stream_start(const wpe_ai_req *req, char *errbuf, size_t e
    free(st);
    return NULL;
   }
+  ai_stream_arm_deadline(st);
   wpe_ai_trace("stream start backend=mock");
   return st;
  }
@@ -1916,38 +2103,174 @@ wpe_ai_stream *wpe_ai_stream_start(const wpe_ai_req *req, char *errbuf, size_t e
   return st;
  }
 
- {
-  char *hdrs[8];
-  char *body;
-  char path[600];
-  int nh, i, rc;
-  nh = ai_headers(st->backend, hdrs, 8);
-  body = ai_build_body(st->backend, req);
-  if (wpe_http_open(e_ai_endpoint, &st->conn, errbuf, errsz) != 0) {
-   for (i = 0; i < nh; i++) free(hdrs[i]);
-   free(body); free(st);
-   return NULL;
-  }
-  ai_chat_path(st->backend, path, sizeof path);
-  rc = wpe_http_request(&st->conn, "POST", path,
-                        (const char *const *)hdrs, body);
-  for (i = 0; i < nh; i++) free(hdrs[i]);
-  free(body);
-  if (rc != 0) {
-   if (errbuf) snprintf(errbuf, errsz, "request failed");
-   wpe_http_close(&st->conn);
-   free(st);
-   return NULL;
-  }
-  wpe_http_stream_init(&st->hs);
-  wpe_ai_trace("stream start backend=%s model=%s",
-               wpe_ai_backend_name(st->backend), e_ai_model ? e_ai_model : "");
+ if (ai_stream_open_http(st, req, errbuf, errsz) != 0) {
+  ai_stream_drop_request(st);
+  wpe_http_close(&st->conn);
+  free(st);
+  return NULL;
  }
+ wpe_ai_trace("stream start backend=%s model=%s",
+              wpe_ai_backend_name(st->backend), e_ai_model ? e_ai_model : "");
  return st;
 }
 
 int wpe_ai_stream_fd(wpe_ai_stream *st)
 { return st ? (st->is_subproc ? st->out_fd : st->conn.fd) : -1; }
+
+int wpe_ai_stream_events(wpe_ai_stream *st)
+{
+ if (st && !st->is_subproc && st->opening)
+  return wpe_http_open_events(&st->conn);
+ return POLLIN;
+}
+
+/**
+ * ai_stream_overdue - Has the server let the deadline pass without a byte?
+ * @st: an HTTP stream.
+ *
+ * Only the wait before the first byte is bounded: once the answer streams, a
+ * slow model may take its time between tokens, and Esc is the user's say.
+ * Return: 1 when the request must end now.
+ */
+static int ai_stream_overdue(const struct wpe_ai_stream *st)
+{
+ if (st->is_subproc || st->eof || st->hs.raw_len > 0)
+  return 0;
+ return wpe_http_now_ms() >= st->deadline;
+}
+
+int wpe_ai_stream_overdue(wpe_ai_stream *st)
+{
+ return st ? ai_stream_overdue(st) : 0;
+}
+
+const char *wpe_ai_stream_transport_error(wpe_ai_stream *st)
+{
+ return st ? st->transport_err : NULL;
+}
+
+/**
+ * ai_stream_fail - Keep why the stream cannot go on, for the line the user reads.
+ * @st: the stream; @why: the reason (host:port and what went wrong).
+ *
+ * Return: -1, the pump's transport-error value.
+ */
+static int ai_stream_fail(struct wpe_ai_stream *st, const char *why)
+{
+ free(st->transport_err);
+ st->transport_err = ai_strdup(why);
+ wpe_ai_trace("stream failed: %s", why);
+ return -1;
+}
+
+/**
+ * ai_stream_drop_request - Free the request a stream kept for after its open.
+ * @st: the stream.
+ */
+static void ai_stream_drop_request(struct wpe_ai_stream *st)
+{
+ int i;
+ for (i = 0; i < st->req_nh; i++) free(st->req_hdrs[i]);
+ st->req_nh = 0;
+ free(st->req_body); st->req_body = NULL;
+ free(st->req_path); st->req_path = NULL;
+}
+
+/**
+ * ai_stream_send_request - The connection stands: send the request it was for.
+ * @st: the stream.
+ *
+ * Return: 0, or -1 when the request could not be written.
+ */
+static int ai_stream_send_request(struct wpe_ai_stream *st)
+{
+ int rc = wpe_http_request(&st->conn, "POST", st->req_path,
+                           (const char *const *)st->req_hdrs, st->req_body);
+ ai_stream_drop_request(st);
+ st->opening = 0;
+ return rc;
+}
+
+/**
+ * ai_stream_arm_deadline - Start the clock for the server's first byte.
+ * @st: a stream read from a socket or the test backend's pipe.
+ *
+ * The test backend's delayed reply counts against the same deadline as a
+ * real server, so the deadline is exercised the way users meet it.
+ */
+static void ai_stream_arm_deadline(struct wpe_ai_stream *st)
+{
+ st->deadline = wpe_http_now_ms() + (long)e_ai_answer_timeout * AI_MS_PER_S;
+}
+
+/**
+ * ai_stream_open_http - Start the connection of an HTTP backend's request.
+ * @st: the new stream; @req: the request; @errbuf, @errsz: the reason.
+ *
+ * Only the connect is started here; the handshake and the request follow
+ * from the editor's loop (wpe_ai_stream_pump), so a server that accepts and
+ * then stalls never holds the editor.  A connect that fails at once (nothing
+ * listens on a local port) is reported here, as before.
+ *
+ * Return: 0, or -1 with the reason in errbuf.
+ */
+static int ai_stream_open_http(struct wpe_ai_stream *st, const wpe_ai_req *req,
+                               char *errbuf, size_t errsz)
+{
+ char path[600];
+ int rc;
+ st->req_nh = ai_headers(st->backend, st->req_hdrs, AI_STREAM_MAX_HEADERS);
+ st->req_body = ai_build_body(st->backend, req);
+ ai_chat_path(st->backend, path, sizeof path);
+ st->req_path = ai_strdup(path);
+ ai_stream_arm_deadline(st);
+ wpe_http_stream_init(&st->hs);
+ st->opening = 1;
+ rc = wpe_http_open_begin(e_ai_endpoint, &st->conn, errbuf, errsz);
+ if (rc == WPE_HTTP_OPEN_FAILED)
+  return -1;
+ if (rc == WPE_HTTP_OPEN_READY && ai_stream_send_request(st) != 0) {
+  if (errbuf) snprintf(errbuf, errsz, "request failed");
+  return -1;
+ }
+ return 0;
+}
+
+/**
+ * ai_stream_advance_open - Take the open one step further on a wake-up.
+ * @st: a stream still opening.
+ *
+ * Return: 0 (still opening, or open and the request sent), -1 on failure
+ * with the reason kept for the user.
+ */
+static int ai_stream_advance_open(struct wpe_ai_stream *st)
+{
+ char why[AI_STREAM_WHY_MAX];
+ int rc;
+ why[0] = '\0';
+ rc = wpe_http_open_step(&st->conn, why, sizeof why);
+ if (rc == WPE_HTTP_OPEN_FAILED)
+  return ai_stream_fail(st, why[0] ? why : "connection failed");
+ if (rc == WPE_HTTP_OPEN_READY && ai_stream_send_request(st) != 0)
+  return ai_stream_fail(st, "request failed");
+ return 0;
+}
+
+/**
+ * ai_stream_fail_overdue - End a request whose server sent nothing in time.
+ * @st: the stream.
+ *
+ * The user reads "no answer from host:port within N s" in place of a waiting
+ * line that would otherwise stand until Esc.
+ * Return: -1.
+ */
+static int ai_stream_fail_overdue(struct wpe_ai_stream *st)
+{
+ char why[AI_STREAM_WHY_MAX];
+ wpe_http_describe_timeout(&st->conn, e_ai_answer_timeout * (int)AI_MS_PER_S,
+                           why, sizeof why);
+ return ai_stream_fail(st, why);
+}
 /* True once the completed stream carried a backend failure (e.g. the claude CLI
    not logged in) rather than a genuine reply.  Callers that ACT on the reply
    must check this before applying, so an error message is never written to a
@@ -2138,6 +2461,14 @@ int wpe_ai_stream_pump(wpe_ai_stream *st,
   return 0;
  }
 
+ if (ai_stream_overdue(st))
+  return ai_stream_fail_overdue(st);
+ if (st->opening && ai_stream_advance_open(st) < 0)
+  return -1;
+ if (st->opening) {                           /* connect / handshake goes on */
+  *done = 0;
+  return 0;
+ }
  for (;;) {
   ssize_t r = wpe_http_read(&st->conn, buf, sizeof buf);
   if (r > 0) { if (wpe_http_stream_push(&st->hs, buf, (size_t)r) < 0) return -1; }
@@ -2216,6 +2547,8 @@ void wpe_ai_stream_free(wpe_ai_stream *st)
   wpe_http_close(&st->conn);
  }
  wpe_http_stream_free(&st->hs);
+ ai_stream_drop_request(st);
+ free(st->transport_err);
  free(st->think);
  free(st->err_msg);
  free(st);
@@ -2263,7 +2596,7 @@ char *wpe_ai_complete(const wpe_ai_req *req, int timeout_ms,
   int pr;
   long left = deadline - ai_now_ms();
   if (left <= 0) { if (errbuf) snprintf(errbuf, errsz, "timed out"); break; }
-  pf[0].fd = fd;            pf[0].events = POLLIN; pf[0].revents = 0;
+  pf[0].fd = fd;            pf[0].events = (short)wpe_ai_stream_events(st); pf[0].revents = 0;
   /* Also watch the terminal so an Edit/Plan/Agent wait is not a dead freeze:
      Esc aborts it instead of forcing the user to wait out a slow local model. */
   pf[1].fd = STDIN_FILENO;  pf[1].events = POLLIN; pf[1].revents = 0;
@@ -2285,7 +2618,7 @@ char *wpe_ai_complete(const wpe_ai_req *req, int timeout_ms,
    }
    /* any other key: swallow it and keep waiting */
   }
-  if ((pf[0].revents & POLLIN) &&
+  if (pf[0].revents &&
       wpe_ai_stream_pump(st, ai_collect_cb, &c, &done) < 0) {
    if (errbuf) snprintf(errbuf, errsz, "transport error");
    break;

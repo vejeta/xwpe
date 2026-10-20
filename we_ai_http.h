@@ -17,16 +17,42 @@
 #ifdef WPE_AI
 
 #include <stddef.h>
+#include <poll.h>        /* POLLIN / POLLOUT, the events an open waits for */
 #include <sys/types.h>   /* ssize_t */
 
 /* ----- connection -------------------------------------------------------- */
+/* Where an open stands: the TCP connect, the TLS handshake, or done. */
+enum { WPE_HTTP_PHASE_CONNECT = 0, WPE_HTTP_PHASE_TLS, WPE_HTTP_PHASE_READY };
+
+/* What one step of an open returns. */
+enum { WPE_HTTP_OPEN_FAILED = -1, WPE_HTTP_OPEN_PENDING = 0, WPE_HTTP_OPEN_READY = 1 };
+
 typedef struct {
  int   fd;          /* underlying socket, or -1                              */
  int   is_tls;      /* 1 when the connection is wrapped in TLS               */
- void *tls;         /* struct tls* (libtls) when is_tls, else NULL           */
+ void *tls;         /* SSL* / struct tls* once the handshake began, else NULL */
  char  host[256];   /* parsed host (for the Host: header / SNI)              */
  int   port;
+ int   phase;       /* WPE_HTTP_PHASE_*: how far an open has come            */
+ int   want;        /* the poll() events the open waits for next             */
+ int   use_tls;     /* the open wraps the socket in TLS once connected       */
+ void *addrs;       /* struct addrinfo list of the host, while connecting    */
+ void *addr_next;   /* the next address to try when one refuses              */
+ int   last_errno;  /* the last connect() failure, for the message           */
 } wpe_http_conn;
+
+/* What a bounded wait watches besides the socket, so the user can abandon it:
+ * fd is polled for input (-1 for none) and cancelled(ud) is asked on every
+ * wake; a 1 from it ends the wait with "cancelled". */
+typedef struct {
+ int   fd;
+ int (*cancelled)(void *ud);
+ void *ud;
+} wpe_http_watch;
+
+/* What one bounded wait (wpe_http_wait) saw. */
+enum { WPE_HTTP_WAIT_IDLE = 0, WPE_HTTP_WAIT_READY, WPE_HTTP_WAIT_TIMEOUT,
+       WPE_HTTP_WAIT_CANCELLED };
 
 /* Parse "http://host[:port][/...]" or "https://..." into host/port and the
  * leading path (usually "").  Returns 0 on success, -1 on a malformed URL.
@@ -34,10 +60,37 @@ typedef struct {
 int wpe_http_parse_url(const char *url, char *host, size_t hostsz,
                        int *port, int *is_https, char *path, size_t pathsz);
 
-/* Connect (and, for https, TLS-handshake) to the endpoint base URL.  Leaves the
- * socket non-blocking.  Returns 0 on success (c is filled), -1 on failure with a
- * short reason in errbuf (may be NULL). */
-int  wpe_http_open(const char *url, wpe_http_conn *c, char *errbuf, size_t errsz);
+/* Connect (and, for https, TLS-handshake) to the endpoint base URL, giving up
+ * after deadline_ms with "no answer from host:port within N s", or when the
+ * watch (may be NULL) says the user cancelled.  The socket is non-blocking
+ * throughout.  Returns 0 on success (c is filled), -1 on failure with a short
+ * reason naming host:port in errbuf (may be NULL). */
+int  wpe_http_open(const char *url, wpe_http_conn *c, int deadline_ms,
+                   const wpe_http_watch *watch, char *errbuf, size_t errsz);
+
+/* The same open in steps, for a caller whose own event loop waits: begin
+ * starts the connect, step advances it when the socket shows the events
+ * wpe_http_open_events names.  Both return WPE_HTTP_OPEN_*; on FAILED errbuf
+ * holds the reason and the caller closes c. */
+int  wpe_http_open_begin(const char *url, wpe_http_conn *c, char *errbuf, size_t errsz);
+int  wpe_http_open_step(wpe_http_conn *c, char *errbuf, size_t errsz);
+int  wpe_http_open_events(const wpe_http_conn *c);
+
+/* Is anything listening at the URL's host:port?  A TCP connect only, no TLS,
+ * bounded by deadline_ms.  0 when it is, -1 with the reason in errbuf. */
+int  wpe_http_reach(const char *url, int deadline_ms, char *errbuf, size_t errsz);
+
+/* One poll() of fd for events, no later than the absolute deadline (in
+ * wpe_http_now_ms time), also watching the user through watch (may be NULL).
+ * Returns WPE_HTTP_WAIT_*. */
+int  wpe_http_wait(int fd, int events, long deadline, const wpe_http_watch *watch);
+long wpe_http_now_ms(void);
+
+/* The line a request that ran past its deadline ends with:
+ * "no answer from host:port within N s". */
+void wpe_http_describe_timeout(const wpe_http_conn *c, int deadline_ms,
+                               char *errbuf, size_t errsz);
+
 void wpe_http_close(wpe_http_conn *c);
 int  wpe_http_fd(const wpe_http_conn *c);
 
@@ -85,6 +138,9 @@ int  wpe_http_stream_next_line(wpe_http_stream *s, char **line, size_t *len);
 void wpe_http_stream_eof(wpe_http_stream *s);
 
 int  wpe_http_stream_status(const wpe_http_stream *s);
+/* The reason phrase of the status line ("Unauthorized" in "HTTP/1.1 401
+ * Unauthorized"), or "" when there is none. */
+void wpe_http_stream_status_reason(const wpe_http_stream *s, char *out, size_t sz);
 int  wpe_http_stream_done(const wpe_http_stream *s);
 
 /* True once the HTTP framing itself ended the body (Content-Length reached or

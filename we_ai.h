@@ -11,6 +11,7 @@
 #ifdef WPE_AI
 
 #include <stddef.h>   /* size_t */
+#include "we_ai_http.h"   /* wpe_http_watch: what a bounded wait listens to */
 
 /* ----- backend selection ------------------------------------------------- */
 enum {
@@ -69,6 +70,20 @@ extern char *e_ai_last_session_id;     /* session_id from the last CLI reply   *
  * (the agent's run_command, the read tools, the post-edit hook) shares it. */
 #define WPE_AI_TOOL_TIMEOUT_DEFAULT 60
 extern int e_ai_tool_timeout;
+
+/* How long a chat, Edit, Complete or agent turn may wait for the server, in
+ * seconds: one deadline that covers the connect, the TLS handshake and the
+ * first byte of the answer.  XWPE_AI_TIMEOUT overrides it.  Long enough for a
+ * local model that loads before it answers. */
+#define WPE_AI_ANSWER_TIMEOUT_DEFAULT 120
+extern int e_ai_answer_timeout;
+/* The model listing's own deadline (connect, handshake and the whole reply). */
+#define WPE_AI_LIST_DEADLINE_MS   5000
+/* The reachability check before a request: a TCP connect only, no TLS. */
+#define WPE_AI_REACH_DEADLINE_MS  3000
+/* A web page fetched for the agent: connect, handshake and the whole page. */
+#define WPE_AI_WEB_DEADLINE_MS    20000
+int   wpe_ai_answer_timeout_from_text(const char *text);
 /* The seconds a configuration value names; a value that is not a positive
  * number gives the default, so a mistyped key never removes the bound. */
 int   wpe_ai_tool_timeout_from_text(const char *text);
@@ -219,6 +234,9 @@ void        wpe_ai_cfg_user_changed(enum wpe_ai_cfg_key key);
  * OpenAI take any name), resetting it to the backend default. */
 int  wpe_ai_model_is_claude(const char *m);
 void wpe_ai_normalize_model(void);
+/* The model the last normalize set aside (malloc'd, the caller frees), once;
+ * NULL when none was.  The chat names it in the pane. */
+char *wpe_ai_take_dropped_model(void);
 
 /* ----- observability ----------------------------------------------------- */
 /* Append one line to $XWPE_AI_TRACE, if set (same idiom as XWPE_UI_TRACE).    */
@@ -247,6 +265,11 @@ int  wpe_ai_web_fetch(const char *url, size_t maxbytes, char **out,
  * Fills names[0..max) with malloc'd strings; returns the count or -1. */
 int  wpe_ai_list_models(int backend, char **names, int max,
                         char *errbuf, size_t errsz);
+/* The same, bounded by WPE_AI_LIST_DEADLINE_MS and abandoned with "listing
+ * cancelled" when the watch (may be NULL) says the user pressed Esc. */
+int  wpe_ai_list_models_watch(int backend, char **names, int max,
+                              const wpe_http_watch *watch,
+                              char *errbuf, size_t errsz);
 
 /* If e_ai_model is empty, fill it with the first available model.  0 on success
  * (or already set); -1 if none could be determined (errbuf set). */
@@ -259,6 +282,15 @@ typedef struct wpe_ai_stream wpe_ai_stream;
  * NULL with a reason in errbuf. */
 wpe_ai_stream *wpe_ai_stream_start(const wpe_ai_req *req, char *errbuf, size_t errsz);
 int   wpe_ai_stream_fd(wpe_ai_stream *st);
+/* The poll() events to watch the fd for now: POLLOUT while the connect or the
+ * TLS handshake waits to write, else POLLIN.  Re-read after every pump. */
+int   wpe_ai_stream_events(wpe_ai_stream *st);
+/* True once the server let the deadline (connect, handshake, first byte) pass
+ * without a byte: the next pump fails with "no answer from host:port ...". */
+int   wpe_ai_stream_overdue(wpe_ai_stream *st);
+/* Why the open or the wait failed (host:port and the reason), or NULL when
+ * the stream failed some other way (the peer hung up mid-answer). */
+const char *wpe_ai_stream_transport_error(wpe_ai_stream *st);
 
 /* Drain what is readable now (non-blocking).  For every new assistant text
  * delta, calls cb(delta, ud).  Sets *done=1 when the reply is complete.

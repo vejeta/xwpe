@@ -18,6 +18,7 @@
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <netdb.h>
+#include <time.h>
 
 #ifdef WPE_AI_TLS
 # ifdef WPE_AI_TLS_OPENSSL
@@ -107,121 +108,524 @@ static void ai_http_seterr(char *buf, size_t sz, const char *msg)
  if (buf && sz) { strncpy(buf, msg, sz - 1); buf[sz - 1] = '\0'; }
 }
 
-int wpe_http_open(const char *url, wpe_http_conn *c, char *errbuf, size_t errsz)
+/* ----- the bounded, non-blocking open ------------------------------------
+ * The editor never waits inside connect() or the TLS handshake: the socket is
+ * non-blocking from its creation, every wait is a poll() with a deadline, and
+ * a caller with its own event loop (the chat, the Edit) drives the open one
+ * step per wake-up with wpe_http_open_begin / wpe_http_open_step.  Name
+ * resolution is the one step outside the deadline: a numeric host or
+ * "localhost" resolves at once from the hosts file, and a name is bounded by
+ * the system resolver's own timeout. */
+
+/* The words every handshake failure starts with (the TLS tests find the
+   OpenSSL branch in the binary by them). */
+#define AI_HTTP_TLS_FAILED      "TLS handshake/verify failed"
+/* The reason given when the peer hangs up before the handshake ends. */
+#define AI_HTTP_TLS_CLOSED      "the server closed the connection during the handshake"
+/* Said only when the reason is a certificate the editor could not verify. */
+#define AI_HTTP_TLS_CA_ADVICE   " -- if the server uses its own certificate, set its CA file in Options > AI (Alt-C)"
+/* How long one stalled write of a request waits for the socket to drain. */
+#define AI_HTTP_SEND_STALL_MS   10000
+/* How often a watched wait wakes to ask whether the user cancelled, for a
+   keyboard whose keys are not readable on the watched descriptor (X11). */
+#define AI_HTTP_WATCH_SLICE_MS  100
+#define AI_HTTP_MS_PER_S        1000L
+#define AI_HTTP_NS_PER_MS       1000000L
+/* Whether an open goes on to the TLS handshake of an https URL. */
+#define AI_HTTP_WITH_TLS        1
+#define AI_HTTP_WITHOUT_TLS     0
+
+long wpe_http_now_ms(void)
 {
- int https = 0, port = 0, fd = -1;
+ struct timespec ts;
+ clock_gettime(CLOCK_MONOTONIC, &ts);
+ return (long)ts.tv_sec * AI_HTTP_MS_PER_S + ts.tv_nsec / AI_HTTP_NS_PER_MS;
+}
+
+void wpe_http_describe_timeout(const wpe_http_conn *c, int deadline_ms,
+                               char *errbuf, size_t errsz)
+{
+ if (errbuf && errsz)
+  snprintf(errbuf, errsz, "no answer from %s:%d within %ld s",
+           c->host, c->port, (long)deadline_ms / AI_HTTP_MS_PER_S);
+}
+
+/**
+ * ai_http_set_nonblocking - Make a socket return at once instead of waiting.
+ * @fd: the socket.
+ *
+ * Every socket of the assistant is non-blocking from birth, so no connect,
+ * handshake or read can hold the editor; the waits happen in poll().
+ */
+static void ai_http_set_nonblocking(int fd)
+{
+ int fl = fcntl(fd, F_GETFL, 0);
+ if (fl != -1) fcntl(fd, F_SETFL, fl | O_NONBLOCK);
+}
+
+/**
+ * ai_http_free_addrs - Let go of the addresses an open still had to try.
+ * @c: the connection.
+ */
+static void ai_http_free_addrs(wpe_http_conn *c)
+{
+ if (c->addrs) freeaddrinfo((struct addrinfo *)c->addrs);
+ c->addrs = NULL;
+ c->addr_next = NULL;
+}
+
+/**
+ * ai_http_resolve - Turn the endpoint's host into the addresses to try.
+ * @c: the connection, host and port filled in.
+ * @errbuf: the reason on failure; @errsz: its size.
+ *
+ * A numeric host or "localhost" resolves at once; a name waits for the system
+ * resolver, which has its own timeout.  The user reads which host could not
+ * be found.
+ *
+ * Return: 0, or -1 when the host does not resolve.
+ */
+static int ai_http_resolve(wpe_http_conn *c, char *errbuf, size_t errsz)
+{
+ struct addrinfo hints, *res = NULL;
+ char portstr[16];
+ memset(&hints, 0, sizeof hints);
+ hints.ai_family   = AF_UNSPEC;
+ hints.ai_socktype = SOCK_STREAM;
+ snprintf(portstr, sizeof portstr, "%d", c->port);
+ if (getaddrinfo(c->host, portstr, &hints, &res) != 0) {
+  if (errbuf && errsz)
+   snprintf(errbuf, errsz, "cannot resolve host %s", c->host);
+  return -1;
+ }
+ c->addrs = res;
+ c->addr_next = res;
+ return 0;
+}
+
+/**
+ * ai_http_unreachable - Say that no address of the endpoint took the connection.
+ * @c: the connection; @errbuf: destination; @errsz: its size.
+ *
+ * The real reason and where: "Connection refused" means nothing listens on
+ * host:port (the local server or bridge is down); other reasons (no route,
+ * timed out) point elsewhere.  The address makes it obvious which endpoint.
+ */
+static void ai_http_unreachable(const wpe_http_conn *c, char *errbuf, size_t errsz)
+{
+ if (errbuf && errsz)
+  snprintf(errbuf, errsz, "cannot connect to %s:%d (%s)",
+           c->host, c->port, strerror(c->last_errno));
+}
+
+/**
+ * ai_http_place_socket - Put a new socket on the descriptor number of the old one.
+ * @c: the connection; @fd: the new socket.
+ *
+ * When the first address of a name refuses (localhost's ::1 while the server
+ * listens on 127.0.0.1 only), the next address gets a fresh socket.  The
+ * editor's event loop already watches the first descriptor number, so the
+ * new socket takes that number and the loop keeps watching the right thing.
+ *
+ * Return: 0, or -1 when the descriptor could not be placed.
+ */
+static int ai_http_place_socket(wpe_http_conn *c, int fd)
+{
+ if (c->fd < 0) {
+  c->fd = fd;
+  return 0;
+ }
+ if (dup2(fd, c->fd) < 0) {
+  close(fd);
+  return -1;
+ }
+ close(fd);
+ return 0;
+}
+
+static int ai_http_connected(wpe_http_conn *c, char *errbuf, size_t errsz);
+
+/**
+ * ai_http_connect_next - Start the connection to the next address of the endpoint.
+ * @c: the connection; @errbuf: the reason on failure; @errsz: its size.
+ *
+ * Return: WPE_HTTP_OPEN_READY or PENDING as the connect went, FAILED when no
+ * address is left to try.
+ */
+static int ai_http_connect_next(wpe_http_conn *c, char *errbuf, size_t errsz)
+{
+ while (c->addr_next) {
+  struct addrinfo *ai = c->addr_next;
+  int fd;
+  c->addr_next = ai->ai_next;
+  fd = socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
+  if (fd < 0) { c->last_errno = errno; continue; }
+  ai_http_set_nonblocking(fd);
+  if (ai_http_place_socket(c, fd) < 0) { c->last_errno = errno; continue; }
+  if (connect(c->fd, ai->ai_addr, ai->ai_addrlen) == 0)
+   return ai_http_connected(c, errbuf, errsz);
+  if (errno == EINPROGRESS) {
+   c->phase = WPE_HTTP_PHASE_CONNECT;
+   c->want = POLLOUT;
+   return WPE_HTTP_OPEN_PENDING;
+  }
+  c->last_errno = errno;
+ }
+ ai_http_unreachable(c, errbuf, errsz);
+ return WPE_HTTP_OPEN_FAILED;
+}
+
+/**
+ * ai_http_connect_check - The socket woke while connecting: did it connect?
+ * @c: the connection; @errbuf: the reason on failure; @errsz: its size.
+ *
+ * A refused address moves on to the next one; a wake-up before the connect
+ * has settled keeps waiting.
+ *
+ * Return: WPE_HTTP_OPEN_*.
+ */
+static int ai_http_connect_check(wpe_http_conn *c, char *errbuf, size_t errsz)
+{
+ int soerr = 0;
+ socklen_t len = sizeof soerr;
+ struct sockaddr_storage peer;
+ socklen_t plen = sizeof peer;
+ if (getsockopt(c->fd, SOL_SOCKET, SO_ERROR, &soerr, &len) < 0)
+  soerr = errno;
+ if (soerr != 0) {
+  c->last_errno = soerr;
+  return ai_http_connect_next(c, errbuf, errsz);
+ }
+ if (getpeername(c->fd, (struct sockaddr *)&peer, &plen) < 0)
+  return WPE_HTTP_OPEN_PENDING;            /* not settled yet: keep waiting */
+ return ai_http_connected(c, errbuf, errsz);
+}
+
+#if defined(WPE_AI_TLS) && defined(WPE_AI_TLS_OPENSSL)
+/**
+ * ai_http_tls_failure - Say why the handshake failed, and with whom.
+ * @c: the connection; @errbuf: destination; @errsz: its size.
+ *
+ * The user reads host:port and the library's reason; only a certificate the
+ * editor could not verify adds where to give it the server's CA file, since
+ * that advice is wrong for a server that hung up or speaks no TLS.
+ */
+static void ai_http_tls_failure(wpe_http_conn *c, char *errbuf, size_t errsz)
+{
+ unsigned long top = ERR_peek_error();
+ const char *reason = top ? ERR_reason_error_string(top) : NULL;
+ long vr = SSL_get_verify_result((SSL *)c->tls);
+ int verify = top && ERR_GET_REASON(top) == SSL_R_CERTIFICATE_VERIFY_FAILED;
+ if (!reason)
+  reason = AI_HTTP_TLS_CLOSED;
+ if (!errbuf || !errsz) {
+  ERR_clear_error();
+  return;
+ }
+ if (verify && vr != X509_V_OK)
+  snprintf(errbuf, errsz, "%s with %s:%d: %s (%s)%s", AI_HTTP_TLS_FAILED,
+           c->host, c->port, reason, X509_verify_cert_error_string(vr),
+           AI_HTTP_TLS_CA_ADVICE);
+ else if (verify)
+  snprintf(errbuf, errsz, "%s with %s:%d: %s%s", AI_HTTP_TLS_FAILED,
+           c->host, c->port, reason, AI_HTTP_TLS_CA_ADVICE);
+ else
+  snprintf(errbuf, errsz, "%s with %s:%d: %s", AI_HTTP_TLS_FAILED,
+           c->host, c->port, reason);
+ ERR_clear_error();
+}
+
+/**
+ * ai_http_tls_begin - Wrap the connected socket for the handshake.
+ * @c: the connection; @errbuf: the reason on failure; @errsz: its size.
+ *
+ * Return: 0, or -1 when the library could not set up.
+ */
+static int ai_http_tls_begin(wpe_http_conn *c, char *errbuf, size_t errsz)
+{
+ SSL_CTX *ctx = ai_ssl_ctx();
+ SSL *ssl;
+ if (!ctx) { ai_http_seterr(errbuf, errsz, "TLS init failed"); return -1; }
+ ssl = SSL_new(ctx);
+ if (!ssl) { ai_http_seterr(errbuf, errsz, "TLS alloc failed"); return -1; }
+ SSL_set_fd(ssl, c->fd);
+ SSL_set_tlsext_host_name(ssl, c->host);   /* SNI */
+ SSL_set1_host(ssl, c->host);              /* verify the cert matches the host */
+ ERR_clear_error();
+ c->tls = ssl;
+ c->phase = WPE_HTTP_PHASE_TLS;
+ return 0;
+}
+
+/**
+ * ai_http_tls_step - Advance the handshake as far as the socket allows now.
+ * @c: the connection; @errbuf: the reason on failure; @errsz: its size.
+ *
+ * Return: WPE_HTTP_OPEN_*; on PENDING c->want says what to wait for.
+ */
+static int ai_http_tls_step(wpe_http_conn *c, char *errbuf, size_t errsz)
+{
+ int r = SSL_connect((SSL *)c->tls), e;
+ if (r == 1) {
+  c->is_tls = 1;
+  c->phase = WPE_HTTP_PHASE_READY;
+  c->want = POLLIN;
+  return WPE_HTTP_OPEN_READY;
+ }
+ e = SSL_get_error((SSL *)c->tls, r);
+ if (e == SSL_ERROR_WANT_READ) { c->want = POLLIN; return WPE_HTTP_OPEN_PENDING; }
+ if (e == SSL_ERROR_WANT_WRITE) { c->want = POLLOUT; return WPE_HTTP_OPEN_PENDING; }
+ ai_http_tls_failure(c, errbuf, errsz);
+ return WPE_HTTP_OPEN_FAILED;
+}
+#elif defined(WPE_AI_TLS)
+/**
+ * ai_http_tls_failure - Say why the handshake failed, and with whom.
+ * @c: the connection; @errbuf: destination; @errsz: its size.
+ *
+ * As the OpenSSL branch: host:port, the library's reason, and the CA advice
+ * only for a certificate that could not be verified.
+ */
+static void ai_http_tls_failure(wpe_http_conn *c, char *errbuf, size_t errsz)
+{
+ const char *reason = c->tls ? tls_error(c->tls) : NULL;
+ int verify;
+ if (!reason) reason = AI_HTTP_TLS_CLOSED;
+ verify = strstr(reason, "verify") != NULL || strstr(reason, "certificate") != NULL;
+ if (!errbuf || !errsz) return;
+ if (verify)
+  snprintf(errbuf, errsz, "%s with %s:%d: %s%s", AI_HTTP_TLS_FAILED,
+           c->host, c->port, reason, AI_HTTP_TLS_CA_ADVICE);
+ else
+  snprintf(errbuf, errsz, "%s with %s:%d: %s", AI_HTTP_TLS_FAILED,
+           c->host, c->port, reason);
+}
+
+/**
+ * ai_http_tls_begin - Wrap the connected socket for the handshake.
+ * @c: the connection; @errbuf: the reason on failure; @errsz: its size.
+ *
+ * Trusts an extra CA / self-signed cert (a local HTTPS bridge) in addition to
+ * the system store; verification, hostname included, still runs.
+ *
+ * Return: 0, or -1 when the library could not set up.
+ */
+static int ai_http_tls_begin(wpe_http_conn *c, char *errbuf, size_t errsz)
+{
+ struct tls_config *cfg = tls_config_new();
+ if (cfg && e_ai_cafile && *e_ai_cafile)
+  tls_config_set_ca_file(cfg, e_ai_cafile);
+ c->tls = tls_client();
+ if (!c->tls || !cfg || tls_configure(c->tls, cfg) < 0 ||
+     tls_connect_socket(c->tls, c->fd, c->host) < 0) {
+  ai_http_seterr(errbuf, errsz, "TLS setup failed");
+  if (cfg) tls_config_free(cfg);
+  return -1;
+ }
+ tls_config_free(cfg);
+ c->phase = WPE_HTTP_PHASE_TLS;
+ return 0;
+}
+
+/**
+ * ai_http_tls_step - Advance the handshake as far as the socket allows now.
+ * @c: the connection; @errbuf: the reason on failure; @errsz: its size.
+ *
+ * Return: WPE_HTTP_OPEN_*; on PENDING c->want says what to wait for.
+ */
+static int ai_http_tls_step(wpe_http_conn *c, char *errbuf, size_t errsz)
+{
+ int r = tls_handshake(c->tls);
+ if (r == 0) {
+  c->is_tls = 1;
+  c->phase = WPE_HTTP_PHASE_READY;
+  c->want = POLLIN;
+  return WPE_HTTP_OPEN_READY;
+ }
+ if (r == TLS_WANT_POLLIN) { c->want = POLLIN; return WPE_HTTP_OPEN_PENDING; }
+ if (r == TLS_WANT_POLLOUT) { c->want = POLLOUT; return WPE_HTTP_OPEN_PENDING; }
+ ai_http_tls_failure(c, errbuf, errsz);
+ return WPE_HTTP_OPEN_FAILED;
+}
+#else
+static int ai_http_tls_begin(wpe_http_conn *c, char *errbuf, size_t errsz)
+{
+ (void)c;
+ ai_http_seterr(errbuf, errsz, "https needs --enable-ai-tls");
+ return -1;
+}
+
+static int ai_http_tls_step(wpe_http_conn *c, char *errbuf, size_t errsz)
+{
+ (void)c;
+ ai_http_seterr(errbuf, errsz, "https needs --enable-ai-tls");
+ return WPE_HTTP_OPEN_FAILED;
+}
+#endif
+
+/**
+ * ai_http_connected - The TCP connection stands: start TLS or be done.
+ * @c: the connection; @errbuf: the reason on failure; @errsz: its size.
+ *
+ * Return: WPE_HTTP_OPEN_*.
+ */
+static int ai_http_connected(wpe_http_conn *c, char *errbuf, size_t errsz)
+{
+ ai_http_free_addrs(c);
+ if (!c->use_tls) {
+  c->phase = WPE_HTTP_PHASE_READY;
+  c->want = POLLIN;
+  return WPE_HTTP_OPEN_READY;
+ }
+ if (ai_http_tls_begin(c, errbuf, errsz) < 0)
+  return WPE_HTTP_OPEN_FAILED;
+ return ai_http_tls_step(c, errbuf, errsz);
+}
+
+/**
+ * ai_http_begin - Parse the URL, resolve the host and start the connect.
+ * @url: the endpoint; @c: the connection to fill; @tls: AI_HTTP_WITH_TLS to
+ * go on to the handshake of an https URL; @errbuf, @errsz: the reason.
+ *
+ * Return: WPE_HTTP_OPEN_*.
+ */
+static int ai_http_begin(const char *url, wpe_http_conn *c, int tls,
+                         char *errbuf, size_t errsz)
+{
+ int https = 0, port = 0;
  char host[256], path[512];   /* the endpoint path is not used for the connection
                                  (only host/port are), but it must be big enough
                                  to hold a prefixed base URL, e.g. /openai/v1,
                                  or the parse rejects the endpoint as malformed */
- struct addrinfo hints, *res = NULL, *ai;
- char portstr[16];
-
  memset(c, 0, sizeof *c);
  c->fd = -1;
-
+ c->last_errno = ECONNREFUSED;
  if (wpe_http_parse_url(url, host, sizeof host, &port, &https, path, sizeof path)) {
   ai_http_seterr(errbuf, errsz, "malformed endpoint URL");
-  return -1;
+  return WPE_HTTP_OPEN_FAILED;
  }
  strncpy(c->host, host, sizeof c->host - 1);
  c->port = port;
+ c->use_tls = https && tls == AI_HTTP_WITH_TLS;
+ if (ai_http_resolve(c, errbuf, errsz) < 0)
+  return WPE_HTTP_OPEN_FAILED;
+ return ai_http_connect_next(c, errbuf, errsz);
+}
 
- memset(&hints, 0, sizeof hints);
- hints.ai_family   = AF_UNSPEC;
- hints.ai_socktype = SOCK_STREAM;
- snprintf(portstr, sizeof portstr, "%d", port);
- if (getaddrinfo(host, portstr, &hints, &res) != 0) {
-  ai_http_seterr(errbuf, errsz, "cannot resolve host");
-  return -1;
- }
- {
-  int cerr = ECONNREFUSED;   /* the last connect()/socket() failure's errno */
-  for (ai = res; ai; ai = ai->ai_next) {
-   fd = socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
-   if (fd < 0) { cerr = errno; continue; }
-   if (connect(fd, ai->ai_addr, ai->ai_addrlen) == 0) break;
-   cerr = errno;
-   close(fd);
-   fd = -1;
-  }
-  freeaddrinfo(res);
-  if (fd < 0) {
-   /* Report the real reason and where, not a bare "connection refused":
-      "Connection refused" means nothing is listening on host:port (the local
-      server or bridge is down); other errno values (timed out, no route) point
-      elsewhere.  The address makes it obvious which endpoint is unreachable. */
-   if (errbuf && errsz)
-    snprintf(errbuf, errsz, "cannot connect to %s:%d (%s)",
-             host, port, strerror(cerr));
-   return -1;
-  }
- }
- c->fd = fd;
+int wpe_http_open_begin(const char *url, wpe_http_conn *c, char *errbuf, size_t errsz)
+{
+ return ai_http_begin(url, c, AI_HTTP_WITH_TLS, errbuf, errsz);
+}
 
- if (https) {
-#if defined(WPE_AI_TLS) && defined(WPE_AI_TLS_OPENSSL)
-  {
-   SSL_CTX *ctx = ai_ssl_ctx();
-   SSL *ssl;
-   if (!ctx) { ai_http_seterr(errbuf, errsz, "TLS init failed"); wpe_http_close(c); return -1; }
-   ssl = SSL_new(ctx);
-   if (!ssl) { ai_http_seterr(errbuf, errsz, "TLS alloc failed"); wpe_http_close(c); return -1; }
-   SSL_set_fd(ssl, fd);
-   SSL_set_tlsext_host_name(ssl, host);   /* SNI */
-   SSL_set1_host(ssl, host);              /* verify the cert matches the host */
-   if (SSL_connect(ssl) != 1) {
-    ai_http_seterr(errbuf, errsz, "TLS handshake/verify failed");
-    SSL_free(ssl);
-    wpe_http_close(c);
-    return -1;
-   }
-   c->tls = ssl;
-   c->is_tls = 1;
+int wpe_http_open_step(wpe_http_conn *c, char *errbuf, size_t errsz)
+{
+ if (c->phase == WPE_HTTP_PHASE_CONNECT)
+  return ai_http_connect_check(c, errbuf, errsz);
+ if (c->phase == WPE_HTTP_PHASE_TLS)
+  return ai_http_tls_step(c, errbuf, errsz);
+ return WPE_HTTP_OPEN_READY;
+}
+
+int wpe_http_open_events(const wpe_http_conn *c)
+{
+ return c->want;
+}
+
+/**
+ * ai_http_watch_slice - How long one poll may sleep before asking the watch.
+ * @w: the watch, or NULL; @left: the milliseconds to the deadline.
+ *
+ * Return: @left, cut to AI_HTTP_WATCH_SLICE_MS when someone must be asked.
+ */
+static long ai_http_watch_slice(const wpe_http_watch *w, long left)
+{
+ if (w && w->cancelled && left > AI_HTTP_WATCH_SLICE_MS)
+  return AI_HTTP_WATCH_SLICE_MS;
+ return left;
+}
+
+int wpe_http_wait(int fd, int events, long deadline, const wpe_http_watch *w)
+{
+ struct pollfd pf[2];
+ int n = 1, pr;
+ long left = deadline - wpe_http_now_ms();
+ if (left <= 0) return WPE_HTTP_WAIT_TIMEOUT;
+ pf[0].fd = fd; pf[0].events = (short)events; pf[0].revents = 0;
+ if (w && w->fd >= 0) {
+  pf[1].fd = w->fd; pf[1].events = POLLIN; pf[1].revents = 0;
+  n = 2;
+ }
+ pr = poll(pf, (nfds_t)n, (int)ai_http_watch_slice(w, left));
+ if (w && w->cancelled && w->cancelled(w->ud))
+  return WPE_HTTP_WAIT_CANCELLED;
+ if (pr < 0 && errno != EINTR)
+  return WPE_HTTP_WAIT_READY;              /* let the caller's step see the error */
+ if (pr > 0 && pf[0].revents)
+  return WPE_HTTP_WAIT_READY;
+ return WPE_HTTP_WAIT_IDLE;
+}
+
+/**
+ * ai_http_wait_open - Drive an open to its end, no later than the deadline.
+ * @c: the connection; @rc: what the begin returned; @deadline: absolute ms;
+ * @deadline_ms: the same as a length, for the message; @w: the watch, or NULL;
+ * @errbuf, @errsz: the reason on failure.
+ *
+ * Return: WPE_HTTP_OPEN_READY or WPE_HTTP_OPEN_FAILED.
+ */
+static int ai_http_wait_open(wpe_http_conn *c, int rc, long deadline, int deadline_ms,
+                             const wpe_http_watch *w, char *errbuf, size_t errsz)
+{
+ while (rc == WPE_HTTP_OPEN_PENDING) {
+  int seen = wpe_http_wait(c->fd, c->want, deadline, w);
+  if (seen == WPE_HTTP_WAIT_TIMEOUT) {
+   wpe_http_describe_timeout(c, deadline_ms, errbuf, errsz);
+   return WPE_HTTP_OPEN_FAILED;
   }
-#elif defined(WPE_AI_TLS)
-  {
-   struct tls_config *cfg = tls_config_new();
-   /* Trust an extra CA / self-signed cert (a local HTTPS bridge) in addition to
-      the system store; verification (including the hostname) still runs. */
-   if (cfg && e_ai_cafile && *e_ai_cafile)
-    tls_config_set_ca_file(cfg, e_ai_cafile);
-   c->tls = tls_client();
-   if (!c->tls || !cfg || tls_configure(c->tls, cfg) < 0 ||
-       tls_connect_socket(c->tls, fd, host) < 0) {
-    ai_http_seterr(errbuf, errsz, "TLS setup failed");
-    if (cfg) tls_config_free(cfg);
-    wpe_http_close(c);
-    return -1;
-   }
-   tls_config_free(cfg);
-   for (;;) {
-    int r = tls_handshake(c->tls);
-    if (r == 0) break;
-    if (r == TLS_WANT_POLLIN || r == TLS_WANT_POLLOUT) continue;
-    ai_http_seterr(errbuf, errsz, "TLS handshake failed");
-    wpe_http_close(c);
-    return -1;
-   }
-   c->is_tls = 1;
+  if (seen == WPE_HTTP_WAIT_CANCELLED) {
+   ai_http_seterr(errbuf, errsz, "cancelled");
+   return WPE_HTTP_OPEN_FAILED;
   }
-#else
-  ai_http_seterr(errbuf, errsz, "https needs --enable-ai-tls");
+  if (seen == WPE_HTTP_WAIT_READY)
+   rc = wpe_http_open_step(c, errbuf, errsz);
+ }
+ return rc;
+}
+
+int wpe_http_open(const char *url, wpe_http_conn *c, int deadline_ms,
+                  const wpe_http_watch *watch, char *errbuf, size_t errsz)
+{
+ long deadline = wpe_http_now_ms() + deadline_ms;
+ int rc = ai_http_begin(url, c, AI_HTTP_WITH_TLS, errbuf, errsz);
+ rc = ai_http_wait_open(c, rc, deadline, deadline_ms, watch, errbuf, errsz);
+ if (rc != WPE_HTTP_OPEN_READY) {
   wpe_http_close(c);
   return -1;
-#endif
  }
  return 0;
+}
+
+int wpe_http_reach(const char *url, int deadline_ms, char *errbuf, size_t errsz)
+{
+ wpe_http_conn c;
+ long deadline = wpe_http_now_ms() + deadline_ms;
+ int rc = ai_http_begin(url, &c, AI_HTTP_WITHOUT_TLS, errbuf, errsz);
+ rc = ai_http_wait_open(&c, rc, deadline, deadline_ms, NULL, errbuf, errsz);
+ wpe_http_close(&c);
+ return rc == WPE_HTTP_OPEN_READY ? 0 : -1;
 }
 
 void wpe_http_close(wpe_http_conn *c)
 {
  if (!c) return;
+ ai_http_free_addrs(c);
 #ifdef WPE_AI_TLS
  if (c->tls) {
 # ifdef WPE_AI_TLS_OPENSSL
-  SSL_shutdown((SSL *)c->tls);
+  if (c->is_tls)                           /* only a finished handshake says goodbye */
+   SSL_shutdown((SSL *)c->tls);
   SSL_free((SSL *)c->tls);
+  ERR_clear_error();
 # else
   tls_close(c->tls);
   tls_free(c->tls);
@@ -263,6 +667,27 @@ ssize_t wpe_http_read(wpe_http_conn *c, void *buf, size_t n)
  return -1;
 }
 
+/**
+ * ai_http_await - Wait for a stalled socket to take or give bytes again.
+ * @fd: the socket; @events: POLLOUT for a full send buffer, POLLIN when TLS
+ * must read before it can write.
+ *
+ * A request is small and the server reads it at once, so this is normally
+ * never reached; a server that stops reading ends the send after
+ * AI_HTTP_SEND_STALL_MS instead of holding the editor.
+ *
+ * Return: 1 when the socket is ready, 0 when it stayed stalled.
+ */
+static int ai_http_await(int fd, int events)
+{
+ long deadline = wpe_http_now_ms() + AI_HTTP_SEND_STALL_MS;
+ int seen;
+ do
+  seen = wpe_http_wait(fd, events, deadline, NULL);
+ while (seen == WPE_HTTP_WAIT_IDLE);
+ return seen == WPE_HTTP_WAIT_READY;
+}
+
 ssize_t wpe_http_write_all(wpe_http_conn *c, const void *buf, size_t n)
 {
  size_t off = 0;
@@ -275,12 +700,14 @@ ssize_t wpe_http_write_all(wpe_http_conn *c, const void *buf, size_t n)
    if (w > 0) { off += (size_t)w; continue; }
    {
     int e = SSL_get_error((SSL *)c->tls, w);
-    if (e == SSL_ERROR_WANT_READ || e == SSL_ERROR_WANT_WRITE) continue;
+    if (e == SSL_ERROR_WANT_WRITE && ai_http_await(c->fd, POLLOUT)) continue;
+    if (e == SSL_ERROR_WANT_READ && ai_http_await(c->fd, POLLIN)) continue;
     return -1;
    }
 # else
    ssize_t w = tls_write(c->tls, p + off, n - off);
-   if (w == TLS_WANT_POLLIN || w == TLS_WANT_POLLOUT) continue;
+   if (w == TLS_WANT_POLLOUT && ai_http_await(c->fd, POLLOUT)) continue;
+   if (w == TLS_WANT_POLLIN && ai_http_await(c->fd, POLLIN)) continue;
    if (w < 0) return -1;
    off += (size_t)w;
    continue;
@@ -289,8 +716,11 @@ ssize_t wpe_http_write_all(wpe_http_conn *c, const void *buf, size_t n)
 #endif
   {
    ssize_t w = write(c->fd, p + off, n - off);
-   if (w < 0) { if (errno == EINTR) continue; return -1; }
-   off += (size_t)w;
+   if (w >= 0) { off += (size_t)w; continue; }
+   if (errno == EINTR) continue;
+   if ((errno == EAGAIN || errno == EWOULDBLOCK) && ai_http_await(c->fd, POLLOUT))
+    continue;
+   return -1;
   }
  }
  return (ssize_t)off;
@@ -301,7 +731,7 @@ int wpe_http_request(wpe_http_conn *c, const char *method, const char *path,
 {
  char hdr[8192];
  size_t off = 0, blen = body ? strlen(body) : 0;
- int i, fl;
+ int i;
 
  off += snprintf(hdr + off, sizeof hdr - off, "%s %s HTTP/1.1\r\n",
                  method, (path && *path) ? path : "/");
@@ -319,10 +749,8 @@ int wpe_http_request(wpe_http_conn *c, const char *method, const char *path,
 
  if (wpe_http_write_all(c, hdr, off) < 0) return -1;
  if (body && blen && wpe_http_write_all(c, body, blen) < 0) return -1;
-
- /* Switch to non-blocking so the streaming reads fit the editor's fd-loop. */
- fl = fcntl(c->fd, F_GETFL, 0);
- if (fl != -1) fcntl(c->fd, F_SETFL, fl | O_NONBLOCK);
+ /* The socket has been non-blocking since the open, so the streaming reads
+    already fit the editor's fd-loop. */
  return 0;
 }
 
@@ -520,6 +948,34 @@ int wpe_http_stream_next_line(wpe_http_stream *s, char **line, size_t *len)
 
 void wpe_http_stream_eof(wpe_http_stream *s) { s->body_complete = 1; }
 int  wpe_http_stream_status(const wpe_http_stream *s) { return s->status; }
+
+/**
+ * wpe_http_stream_status_reason - The words after the code on the status line.
+ * @s: the response; @out: destination; @sz: its size.
+ *
+ * When a server refuses with no JSON reason, the user still reads what its
+ * status line said ("Unauthorized"), not only a number.
+ */
+void wpe_http_stream_status_reason(const wpe_http_stream *s, char *out, size_t sz)
+{
+ const char *p, *end, *lim;
+ size_t n;
+ if (!out || !sz) return;
+ out[0] = '\0';
+ if (!s->header_done || !s->raw) return;
+ lim = s->raw + s->raw_len;
+ end = memchr(s->raw, '\n', s->raw_len);
+ if (!end) end = lim;
+ p = memchr(s->raw, ' ', (size_t)(end - s->raw));          /* after "HTTP/1.1" */
+ if (p) p = memchr(p + 1, ' ', (size_t)(end - p - 1));     /* after the code   */
+ if (!p) return;
+ p++;
+ while (end > p && (end[-1] == '\r' || end[-1] == '\n')) end--;
+ n = (size_t)(end - p);
+ if (n >= sz) n = sz - 1;
+ memcpy(out, p, n);
+ out[n] = '\0';
+}
 int  wpe_http_stream_done(const wpe_http_stream *s) { return s->body_complete; }
 int  wpe_http_stream_framed(const wpe_http_stream *s) { return s->framed_end; }
 

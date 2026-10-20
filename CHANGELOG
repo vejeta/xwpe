@@ -233,6 +233,49 @@ Changes
 
 1.7.0 (AI assistant -- experimental, opt-in)
 
+* A server that accepts the connection and then says nothing no longer
+  freezes the editor.  The model list (Alt-M in Options > AI) froze it
+  for 5 seconds, and a chat over https froze it until the server hung
+  up, because the TLS handshake had no limit.  The connect, the
+  handshake and the first byte now wait on the editor's loop under one
+  deadline (120 s, XWPE_AI_TIMEOUT), the editor takes keys meanwhile,
+  and a request that runs past it ends with "no answer from host:port
+  within N s".  The model list shows "listing models from host:port"
+  while it waits, and Esc abandons it.
+
+* A refused model list says why.  A 401 from the server read "no models
+  found"; it now reads "HTTP 401 from host:port: <the server's reason>".
+  Any listing error raised with Options > AI open is shown in a message
+  box over the dialog, where it used to be painted into the pane under
+  the dialog and hidden.
+
+* An error the server sends after part of a reply is shown.  The partial
+  text stays and the error follows it in the error colour; the session
+  keeps the partial text with a note that an error cut it, where it used
+  to save it as a finished answer.
+
+* A TLS failure names the endpoint and the reason: "TLS handshake/verify
+  failed with host:port: <reason>".  The advice to set a CA file appears
+  only when the certificate could not be verified, and the advice to
+  start a local server no longer follows a certificate problem.
+
+* Saving an API key in Options > AI makes the key file private (mode
+  0600) on every write.  A key file that already existed kept its old,
+  wider mode.
+
+* A chat says when the current file was cut to fit the prompt: the
+  prompt marks the cut, and the pane says "<file>: N of M lines sent".
+  A long file used to lose its end with no word.
+
+* A saved model that belongs to another backend is named when it is set
+  aside: "[AI] model <x> is not claude's; using <y>".  It used to vanish
+  without a word.
+
+* Build & fix on a file with no makefile and no compiler check for its
+  type says "no build command for <file>: no makefile here, and only C
+  and C++ have a syntax check" and runs nothing.  It used to announce "make" and send the agent after
+  a build that could not work.
+
 * Alt-T and Alt-V walk a list that spans several files in order.  They
   used to pick the next row by line number alone, whatever file it named,
   so with compiler errors, an agent changeset or a Multi-file accept

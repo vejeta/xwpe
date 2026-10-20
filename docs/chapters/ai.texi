@@ -175,6 +175,45 @@ subscription rather than per-token API billing.  Offered only when
 A deterministic in-process backend used by the test suite; no network.
 @end table
 
+@cindex AI, deadline
+@cindex AI, waiting for a server
+The editor never waits inside a connection.  A chat, an Edit, a completion or
+an agent turn opens its connection on the editor's own loop: the connect, the
+TLS handshake and the wait for the first byte of the answer share one deadline,
+120 seconds by default (@env{XWPE_AI_TIMEOUT} sets it for a session), long
+enough for a local model that loads before it answers.  Meanwhile the pane
+shows its waiting line, the editor takes keys and @key{Esc} cancels.  A server
+that lets the deadline pass ends the request with @samp{no answer from
+@var{host}:@var{port} within @var{N} s}.  The model list (@key{Alt-M}) has its
+own deadline of 5 seconds; while it waits, a box over the dialog says
+@samp{listing models from @var{host}:@var{port} @dots{} (Esc cancels)}, and
+@key{Esc} abandons it with @samp{listing cancelled}.  The host name itself is
+looked up before the deadline starts: a numeric address or @code{localhost}
+resolves at once, and any other name is bounded by the system resolver.
+
+@cindex AI, error lines
+Every failure names where it happened and why:
+@itemize @bullet
+@item @samp{cannot connect to @var{host}:@var{port} (Connection refused)}
+when nothing listens there.
+@item @samp{TLS handshake/verify failed with @var{host}:@var{port}:
+@var{reason}}, the TLS library's own reason.  Only when the reason is a
+certificate the editor could not verify does the line add where to give it the
+server's CA file (@samp{Options}, @samp{AI}, @key{Alt-C}).
+@item @samp{HTTP @var{code} from @var{host}:@var{port}: @var{reason}} when the
+model list is refused, with the reason from the server's JSON body or its
+status line.  A listing error raised while @samp{Options}, @samp{AI} is open
+is shown in a message box over the dialog; @key{Esc} closes it and leaves the
+dialog as it was.
+@item An error the server sends after part of a reply leaves the text already
+shown and follows it with @samp{AI: error: @var{reason}} in the error colour.
+The session keeps the partial text with a note that an error cut it, never as
+a finished answer.
+@item A model saved for another backend (an Ollama name left in the file after
+switching to Claude) is not sent; one line says @samp{[AI] model @var{x} is not
+@var{backend}'s; using @var{y}}.
+@end itemize
+
 @section Chat
 
 @cindex AI, chat
@@ -623,11 +662,13 @@ leaves the window as it found it.
 @kbd{Alt-G b}, @samp{Build & fix (agent)}, is a canned agent for the commonest
 loop.  It picks the build
 command -- @command{make} when a makefile is present, otherwise a syntax-only
-compile of the current file by its language -- shows it, and if the build fails
+compile of the current file by its language (C and C++) -- shows it, and if the build fails
 hands the agent a loop: run the build, read the compiler errors, edit the
 sources, build again, repeat until it passes.  It uses the same tools and
 permission dial as @kbd{Alt-G g}, so you approve edits and commands exactly as in
-a normal agent run.
+a normal agent run.  With no makefile and no such check for the file's type, the
+pane says @samp{[fix-build] no build command for @var{file}: no makefile here,
+and only C and C++ have a syntax check} and nothing runs.
 
 @section Complete at cursor
 
@@ -915,4 +956,16 @@ of @samp{Options}, @samp{AI} (@key{Alt-K}): it is used at once (so @key{Alt-M}
 lists an authenticated endpoint's models) and written to the active provider's
 key file.  The field shows the key stored for the current provider, so you can
 see one is set (it comes from the key file, not from any @env{OPENAI_API_KEY}
-override).
+override).  Every write leaves the key file readable by you alone (mode 0600),
+also when the file already existed with a wider mode.
+
+@env{XWPE_AI_TIMEOUT} sets, in seconds, how long a request waits for the
+server: the connect, the TLS handshake and the first byte of the answer
+(default 120; a value that is not a positive number keeps the default).
+
+@cindex AI, current file in the prompt
+A chat sends the current file with the question.  When the file is longer than
+the room the prompt has for it, it is cut at a whole line: the prompt ends the
+copy with @samp{(current file cut at line @var{N} of @var{M})}, so the model
+knows it read only the start, and the pane says @samp{[AI] @var{file}: @var{N}
+of @var{M} lines sent}.

@@ -89,6 +89,22 @@ typedef struct {
 #define AI_CHAT_WAIT_LABEL AI_REPLY_PREFIX "(gathering the answer...)"
 /* The chat's own word for a peer that hung up without saying anything. */
 #define AI_CHAT_TRANSPORT_LINE "[AI: transport error]"
+#define AI_OP_FAILURE_LINE_MAX 480      /* a task's failure line: label, host:port, reason */
+#define AI_LISTING_LINE_MAX    400      /* the model listing's waiting line or its reason   */
+/* What the session keeps after a reply an error cut short: the partial text,
+   then this note with the server's reason. */
+#define AI_CHAT_CUT_NOTE_FMT   "\n[the answer was cut by an error: %s]"
+/* The line that names a saved model the backend cannot use. */
+#define AI_DROPPED_MODEL_FMT     "[AI] model %s is not %s's; using %s"
+#define AI_DROPPED_MODEL_DEFAULT "the backend's default"
+/* Build & fix with no makefile and no syntax check for the file's type.  The
+   line states both facts; the compiler table may well list the language (it
+   does for Python), so it does not send the user to Options > Compiler. */
+#define AI_FIX_BUILD_NONE_FMT \
+  "[fix-build] no build command for %s: no makefile here, and only C and C++ have a syntax check"
+#define AI_LISTING_BOX_ROWS    3        /* the waiting box: frame, one line, frame          */
+#define AI_LISTING_BOX_FRAME   2        /* the waiting box's left and right frame columns   */
+#define AI_LISTING_BOX_MARGIN  6        /* columns the message box keeps around its text    */
 
 /* What the painter has made of this turn's reply so far. */
 enum ai_reply_kind {
@@ -2281,11 +2297,68 @@ static int ai_chat_waiting_line_stands(const ai_chat_session *s)
 static void ai_chat_report_transport_error(ai_chat_session *s)
 {
  FENSTER *wf = ai_pane_win(s->ref);
+ const char *line = wpe_ai_stream_transport_error(s->st);
+ /* A connection that never opened, or a server silent past the deadline,
+    says host:port and why instead of the bare transport line. */
+ if (!line)
+  line = AI_CHAT_TRANSPORT_LINE;
  if (wf && ai_chat_waiting_line_stands(s)) {
-  ai_pane_set_last_as(wf, AI_CHAT_TRANSPORT_LINE, AI_ROLE_ERROR);
+  ai_pane_set_last_as(wf, line, AI_ROLE_ERROR);
   return;
  }
- ai_pane(s->ref, AI_CHAT_TRANSPORT_LINE, AI_ROLE_ERROR, 0);
+ ai_pane(s->ref, line, AI_ROLE_ERROR, 0);
+}
+
+/**
+ * ai_chat_end_on_transport_error - End the turn whose connection failed.
+ * @s: the chat.
+ *
+ * The failure line replaces the waiting line while the turn still owns it;
+ * once the turn is over the pane is painted again, so a line naming
+ * host:port and a long reason is wrapped and read whole, not cut at the
+ * pane's border.
+ */
+static void ai_chat_end_on_transport_error(ai_chat_session *s)
+{
+ FENSTER *wf = ai_pane_win(s->ref);
+ ai_chat_report_transport_error(s);
+ wpe_ai_trace("chat transport error");
+ ai_chat_turn_over(s);
+ if (wf)
+  ai_pane_paint(wf);
+}
+
+/**
+ * ai_stream_watch - Let the editor's loop wake for what the stream waits on.
+ * @fd: the stream's descriptor; @st: the stream; @cb, @data: its callback.
+ *
+ * While the connection opens the stream waits to write (the connect, a TLS
+ * handshake record), afterwards to read.  Registered again after every pump,
+ * the loop wakes for the right event and never spins on a writable socket,
+ * so the editor keeps taking keys while a slow server is reached.
+ */
+static void ai_stream_watch(int fd, wpe_ai_stream *st, wpe_fd_callback cb, void *data)
+{
+ wpe_fd_add(fd, wpe_ai_stream_events(st), cb, data);
+}
+
+/**
+ * ai_op_failure_line - The pane line for a task whose stream failed.
+ * @st: the failed stream; @prefix: the task's label ("[AI edit]");
+ * @line: destination; @sz: its size.
+ *
+ * The user reads host:port and the reason when the connection never opened
+ * or the server stayed silent past the deadline, and the plain transport
+ * line when the peer hung up mid-answer.
+ */
+static void ai_op_failure_line(wpe_ai_stream *st, const char *prefix,
+                               char *line, size_t sz)
+{
+ const char *why = wpe_ai_stream_transport_error(st);
+ if (why)
+  snprintf(line, sz, "%s %s", prefix, why);
+ else
+  snprintf(line, sz, "%s transport error", prefix);
 }
 
 /**
@@ -2427,6 +2500,52 @@ static int ai_chat_end_empty_reply(ai_chat_session *s)
 }
 
 /**
+ * ai_chat_save_cut_reply - Keep a reply an error cut short, marked as cut.
+ * @s: the chat; @emsg: the server's error.
+ *
+ * The next turn and a resumed session read the partial text with the note
+ * that an error ended it, never as an answer the model finished.
+ */
+static void ai_chat_save_cut_reply(ai_chat_session *s, const char *emsg)
+{
+ size_t n = s->flen + strlen(emsg) + sizeof AI_CHAT_CUT_NOTE_FMT;
+ char *kept = malloc(n);
+ if (!kept)
+  return;
+ snprintf(kept, n, "%s" AI_CHAT_CUT_NOTE_FMT, s->full, emsg);
+ wpe_ai_session_append("assistant", kept);
+ free(kept);
+}
+
+/**
+ * ai_chat_end_cut_reply - End a turn whose stream sent text and then an error.
+ * @s: the chat, its stream complete.
+ *
+ * The text already shown stays; the error follows it on its own line in the
+ * error colour, so the user sees the answer was cut instead of reading it as
+ * complete.  The session keeps the partial text with the error note.
+ * Return: 1 when the turn ended this way, 0 when the stream carried no error.
+ */
+static int ai_chat_end_cut_reply(ai_chat_session *s)
+{
+ char line[AI_CHAT_NOTE_MAX];
+ char *emsg;
+ if (!wpe_ai_stream_had_error(s->st))
+  return 0;
+ emsg = wpe_ai_stream_error_message(s->st);
+ if (!emsg)
+  return 0;
+ snprintf(line, sizeof line, AI_REPLY_PREFIX "error: %s", emsg);
+ ai_pane(s->ref, line, AI_ROLE_ERROR, 0);
+ ai_chat_save_cut_reply(s, emsg);
+ free(emsg);
+ wpe_ai_session_save(s->ref);
+ wpe_ai_trace("chat cut by an error");
+ ai_chat_turn_over(s);
+ return 1;
+}
+
+/**
  * ai_chat_reply_done - The stream has ended: close the turn or take the next.
  * @s: the chat.
  *
@@ -2439,6 +2558,8 @@ static void ai_chat_reply_done(ai_chat_session *s)
  int has_text;
  ai_chat_paint_held(s);
  has_text = (s->full != NULL && s->flen > 0);
+ if (has_text && ai_chat_end_cut_reply(s))
+  return;
  if (has_text && ai_chat_take_tool_turn(s))
   return;
  if (!has_text && ai_chat_end_empty_reply(s))
@@ -2463,13 +2584,14 @@ static void ai_fd_cb(int fd, void *data)
  (void)fd;
  if (!s || !s->active) return;
  if (wpe_ai_stream_pump(s->st, ai_delta_cb, s, &done) < 0) {
-  ai_chat_report_transport_error(s);
-  wpe_ai_trace("chat transport error");
-  ai_chat_turn_over(s);
+  ai_chat_end_on_transport_error(s);
   return;
  }
- if (done)
+ if (done) {
   ai_chat_reply_done(s);
+  return;
+ }
+ ai_stream_watch(s->fd, s->st, ai_fd_cb, s);
 }
 
 /* Tell the model which backend and model are actually serving THIS turn, so an
@@ -2553,6 +2675,31 @@ static int ai_chat_header_due(void)
 }
 
 /**
+ * ai_announce_dropped_model - Say once that the saved model was set aside.
+ * @wf: the pane window.
+ *
+ * A model saved for another backend (an Ollama name left in the file after
+ * switching to Claude) cannot be sent, and dropping it with no word left the
+ * user wondering why their model was not used: one line names it, the
+ * backend, and what is used instead.
+ */
+static void ai_announce_dropped_model(FENSTER *wf)
+{
+ char line[AI_CHAT_NOTE_MAX];
+ char *dropped = wpe_ai_take_dropped_model();
+ if (!dropped)
+  return;
+ if (e_ai_model && *e_ai_model)
+  snprintf(line, sizeof line, AI_DROPPED_MODEL_FMT, dropped,
+           wpe_ai_backend_name(e_ai_backend), e_ai_model);
+ else
+  snprintf(line, sizeof line, AI_DROPPED_MODEL_FMT, dropped,
+           wpe_ai_backend_name(e_ai_backend), AI_DROPPED_MODEL_DEFAULT);
+ ai_pane(wf, line, AI_ROLE_MACHINERY, 0);
+ free(dropped);
+}
+
+/**
  * ai_chat_emit_header_if_due - Write a header line when the setup changed.
  * @wf: the pane window.
  *
@@ -2562,6 +2709,7 @@ static int ai_chat_header_due(void)
 static void ai_chat_emit_header_if_due(FENSTER *wf)
 {
  char st[AI_HEADER_MAX];
+ ai_announce_dropped_model(wf);
  if (!ai_chat_header_due())
   return;
  ai_header_text_shown(st, sizeof st);
@@ -3006,6 +3154,111 @@ static const char *ai_agent_capability_sentence(void)
  return AI_CAPS_AGENT_WEB_OFF;
 }
 
+/* The current file in the chat's prompt: the mark that ends a cut copy, the
+   pane line that says how much went, and the room they need. */
+#define AI_FILE_CUT_MARK_FMT  "\n(current file cut at line %d of %d)\n"
+#define AI_FILE_CUT_LINE_FMT  "[AI] %s: %d of %d lines sent"
+#define AI_FILE_CUT_MARK_ROOM 64
+#define AI_FILE_MIN_ROOM      512        /* less room than this: the file is left out */
+
+/**
+ * ai_text_lines - The number of whole lines in the first @n bytes of @t.
+ */
+static int ai_text_lines(const char *t, size_t n)
+{
+ int lines = 0;
+ size_t i;
+ for (i = 0; i < n; i++)
+  if (t[i] == '\n') lines++;
+ return lines;
+}
+
+/**
+ * ai_file_line_count - The lines the user sees in a window's file.
+ * @w: the file window.
+ *
+ * The buffer keeps an empty line after a final newline; it is not a line of
+ * the file, so "N of M lines" counts what the user would count.
+ */
+static int ai_file_line_count(FENSTER *w)
+{
+ BUFFER *b = w->b;
+ int n = b->mxlines;
+ if (n > 1 && b->bf[n - 1].len == 0)
+  n--;
+ return n;
+}
+
+/**
+ * ai_whole_lines - How many bytes of @t, at most @room, end on a line break.
+ */
+static size_t ai_whole_lines(const char *t, size_t room)
+{
+ while (room > 0 && t[room - 1] != '\n')
+  room--;
+ return room;
+}
+
+/* The last cut line the pane was given, so a rebuilt prompt does not repeat it. */
+static char g_ai_file_cut_said[AI_CHAT_NOTE_MAX];
+
+/**
+ * ai_say_file_cut - Tell the user how much of the current file went.
+ * @f: the pane's window; @name: the file; @sent, @total: its lines sent and had.
+ *
+ * The prompt is built again on every turn of a chat, the follow-ups the
+ * model asks for included, so the same cut would be announced several times
+ * over one question.  The line is said when the cut changes (another file,
+ * more or fewer lines), not on every rebuild.
+ */
+static void ai_say_file_cut(FENSTER *f, const char *name, int sent, int total)
+{
+ char line[AI_CHAT_NOTE_MAX];
+ snprintf(line, sizeof line, AI_FILE_CUT_LINE_FMT, name, sent, total);
+ if (!strcmp(line, g_ai_file_cut_said))
+  return;
+ snprintf(g_ai_file_cut_said, sizeof g_ai_file_cut_said, "%s", line);
+ ai_pane(f, line, AI_ROLE_MACHINERY, 0);
+}
+
+/**
+ * ai_append_current_file - Put the current file into the chat's prompt.
+ * @sys: the prompt; @cap: its size; @len: bytes written so far;
+ * @f: the pane's window; @ctx: the file window; @text: the file's text.
+ *
+ * A file longer than the room left is cut at a whole line, and the cut is
+ * said twice: a mark in the prompt, so the model knows it read only the
+ * start, and a pane line "<file>: N of M lines sent", so the user knows why
+ * the model does not see the end of the file.
+ * Return: the new length.
+ */
+static size_t ai_append_current_file(char *sys, size_t cap, size_t len,
+                                     FENSTER *f, FENSTER *ctx, const char *text)
+{
+ size_t tl = strlen(text), room, keep;
+ int total = ai_file_line_count(ctx), sent;
+ if (len + AI_FILE_MIN_ROOM >= cap)
+  return len;
+ len += (size_t)snprintf(sys + len, cap - len, "\n--- current file ---\n");
+ room = cap - len - AI_FILE_CUT_MARK_ROOM;
+ if (tl <= room && ai_text_lines(text, tl) >= total) {
+  memcpy(sys + len, text, tl + 1);
+  return len + tl;
+ }
+ if (tl < room)
+  room = tl;
+ keep = ai_whole_lines(text, room);
+ memcpy(sys + len, text, keep);
+ len += keep;
+ sent = ai_text_lines(text, keep);
+ len += (size_t)snprintf(sys + len, cap - len, AI_FILE_CUT_MARK_FMT, sent, total);
+ if (ctx->datnam && ctx->datnam[0])
+  ai_say_file_cut(f, ctx->datnam, sent, total);
+ else
+  ai_say_file_cut(f, "current file", sent, total);
+ return len;
+}
+
 /**
  * ai_build_system - The chat's system prompt.
  * @f: the window the pane belongs to (project memory, identity).
@@ -3064,9 +3317,8 @@ static char *ai_build_system(FENSTER *f, FENSTER *ctx)
    if (ai_diag_block(diag, sizeof diag)[0] && len < cap - 1800)
     len += (size_t)snprintf(sys + len, cap - len, "%s", diag); }
  len = ai_append_selection(sys, cap, len, ctx);
- if (ctx_text && len < cap - 512)
-  snprintf(sys + len, cap - len, "\n--- current file ---\n%.*s",
-           (int)(cap - len - 32), ctx_text);
+ if (ctx_text)
+  ai_append_current_file(sys, cap, len, f, ctx, ctx_text);
  free(ctx_text);
  return sys;
 }
@@ -3328,7 +3580,7 @@ static void ai_chat_next_turn(ai_chat_session *s)
  s->flen = 0; if (s->full) s->full[0] = '\0';
  ai_chat_set_pending(s, AI_REPLY_PREFIX);     /* reply streams after "AI: " */
  ai_chat_wait_begin(s);                       /* the waiting line, spun by the heartbeat */
- wpe_fd_add(s->fd, POLLIN, ai_fd_cb, s);
+ ai_stream_watch(s->fd, s->st, ai_fd_cb, s);
  wpe_ai_trace("chat stream fd=%d turn=%d", s->fd, s->turns);
 }
 
@@ -6076,12 +6328,48 @@ static void ai_op_collect(const char *delta, void *ud)
  op->acc[op->acc_len] = '\0';
 }
 
+/**
+ * ai_op_stream - The stream a running task waits on: its own, or its chat's.
+ * @op: the task.
+ *
+ * Return: the stream, or NULL when the task has none in flight.
+ */
+static wpe_ai_stream *ai_op_stream(ai_async_op *op)
+{
+ ai_chat_session *s;
+ if (!op->kind || strcmp(op->kind, AI_KIND_CHAT))
+  return op->st;
+ s = op->ud;
+ if (!s || !s->active)
+  return NULL;
+ return s->st;
+}
+
+/**
+ * ai_op_end_if_overdue - End the task whose server let its deadline pass.
+ * @op: the running task.
+ *
+ * While a server stays silent nothing but the heartbeat wakes, so the
+ * heartbeat is what notices; the stream's own callback then ends the task
+ * with "no answer from host:port within N s", the way it ends any failed
+ * stream, and the waiting line does not stand until the user presses Esc.
+ */
+static void ai_op_end_if_overdue(ai_async_op *op)
+{
+ wpe_ai_stream *st = ai_op_stream(op);
+ if (st && wpe_ai_stream_overdue(st))
+  wpe_fd_dispatch(wpe_ai_stream_fd(st));
+}
+
 /* animate the in-flight op's spinner (called from the heartbeat) -- but not
- * while it is paused (a modal approval / review is on the pane). */
+ * while it is paused (a modal approval / review is on the pane) -- and end
+ * the task when its server let the deadline pass. */
 static void ai_op_tick(void)
 {
- if (g_ai_op && !g_ai_op->paused)
-  ai_spin_cb(&g_ai_op->spin, (int)(time(NULL) - g_ai_op->start));
+ if (!g_ai_op || g_ai_op->paused)
+  return;
+ ai_spin_cb(&g_ai_op->spin, (int)(time(NULL) - g_ai_op->start));
+ ai_op_end_if_overdue(g_ai_op);
 }
 
 /* Close just the stream fd (between turns of a multi-turn op the heartbeat and
@@ -6829,8 +7117,10 @@ static void ai_edit_fd_cb(int fd, void *data)
  if (wpe_ai_stream_pump(op->st, ai_op_collect, op, &done) < 0) {
   FENSTER *f = op->f;
   ECNT *cn = op->cn;
+  char line[AI_OP_FAILURE_LINE_MAX];
+  ai_op_failure_line(op->st, "[AI edit]", line, sizeof line);
   ai_op_detach(op);
-  if (ai_window_alive(cn, f)) ai_pane(f, "[AI edit] transport error", AI_ROLE_ERROR, 0);
+  if (ai_window_alive(cn, f)) ai_pane(f, line, AI_ROLE_ERROR, 0);
   ai_op_free(op);
   ai_queue_run();
   return;
@@ -6838,7 +7128,9 @@ static void ai_edit_fd_cb(int fd, void *data)
  if (done) {
   ai_op_capture_failure(op);                /* before the stream goes */
   ai_op_reply_complete(op, ai_edit_deliver);
+  return;
  }
+ ai_stream_watch(op->fd, op->st, ai_edit_fd_cb, op);
 }
 
 /* ---- generic multi-turn driver (Agent, Plan) -------------------------------
@@ -6880,7 +7172,7 @@ static void ai_conv_next_turn(ai_async_op *op)
  free(op->err_msg);
  op->err_msg = NULL;
  op->spin = ai_spin_begin(op->f, op->label);
- wpe_fd_add(op->fd, POLLIN, ai_conv_fd_cb, op);
+ ai_stream_watch(op->fd, op->st, ai_conv_fd_cb, op);
 }
 
 /**
@@ -6937,9 +7229,11 @@ static void ai_conv_fd_cb(int fd, void *data)
  if (wpe_ai_stream_pump(op->st, ai_op_collect, op, &done) < 0) {
   FENSTER *f = op->f;
   ECNT *cn = op->cn;
+  char line[AI_OP_FAILURE_LINE_MAX];
+  ai_op_failure_line(op->st, "[AI]", line, sizeof line);
   ai_op_stream_close(op);
   ai_spin_end(&op->spin, cn);       /* the error line takes the waiting line's place */
-  if (ai_window_alive(cn, f)) ai_pane(f, "[AI] transport error", AI_ROLE_ERROR, 0);
+  if (ai_window_alive(cn, f)) ai_pane(f, line, AI_ROLE_ERROR, 0);
   op->transport_failed = 1;         /* the run stops on this line, no follow-up */
   wpe_ai_trace("conv transport error (stopped)");
   ai_conv_finish(op);
@@ -6948,7 +7242,9 @@ static void ai_conv_fd_cb(int fd, void *data)
  if (done) {
   ai_op_capture_failure(op);        /* before stream_close */
   ai_op_reply_complete(op, ai_conv_on_reply);
+  return;
  }
+ ai_stream_watch(op->fd, op->st, ai_conv_fd_cb, op);
 }
 
 static void ai_conv_finish(ai_async_op *op)
@@ -7071,7 +7367,7 @@ static void ai_edit_launch(FENSTER *f, const char *instr)
  g_ai_op = op;
  g_ai_bg_win = f;
  ai_hb_acquire(ai_op_tick);
- wpe_fd_add(op->fd, POLLIN, ai_edit_fd_cb, op);
+ ai_stream_watch(op->fd, op->st, ai_edit_fd_cb, op);
  /* Hand focus back to the file so the user watches the change land there and
     can cancel with Esc; the pane spins in the background (its paints leave the
     caret here).  Its text is held until the reply is spliced in. */
@@ -7420,14 +7716,18 @@ static void ai_complete_fd_cb(int fd, void *data)
  (void)fd;
  if (wpe_ai_stream_pump(op->st, ai_op_collect, op, &done) < 0) {
   FENSTER *f = op->f; ECNT *cn = op->cn;
+  char line[AI_OP_FAILURE_LINE_MAX];
+  ai_op_failure_line(op->st, "[AI complete]", line, sizeof line);
   ai_op_detach(op);
-  if (ai_window_alive(cn, f)) ai_pane(f, "[AI complete] transport error", AI_ROLE_ERROR, 0);
+  if (ai_window_alive(cn, f)) ai_pane(f, line, AI_ROLE_ERROR, 0);
   ai_op_free(op); ai_queue_run(); return;
  }
  if (done) {
   ai_op_capture_failure(op);
   ai_op_reply_complete(op, ai_complete_deliver);
+  return;
  }
+ ai_stream_watch(op->fd, op->st, ai_complete_fd_cb, op);
 }
 
 /**
@@ -7585,7 +7885,7 @@ static int e_ai_complete(FENSTER *f)
  g_ai_op = op;
  g_ai_bg_win = f;
  ai_hb_acquire(ai_op_tick);
- wpe_fd_add(op->fd, POLLIN, ai_complete_fd_cb, op);
+ ai_stream_watch(op->fd, op->st, ai_complete_fd_cb, op);
  if (save_id >= 0) e_switch_window(save_id, cn->f[cn->mxedt]);
  wpe_ai_report_window_locked(f);
  wpe_ai_trace("complete stream fd=%d off=%zu", op->fd, off);
@@ -7679,15 +7979,131 @@ static int e_ai_pick(FENSTER *f, const char *title, const char *const *labels,
    `announce` is set the choice is echoed into the pane; the Options dialog, its
    only caller (no Alt-G menu row lists models), passes 0 and refreshes its own
    Model button instead, so it is not disturbed. */
+/**
+ * ai_listing_cancelled - Did the user press Esc while the models list?
+ * @ud: unused.
+ *
+ * Asked by the listing on every wake-up while it waits for the server, so a
+ * slow or silent endpoint never keeps the user in front of a frozen dialog.
+ * Return: 1 when the key read was Esc.
+ */
+static int ai_listing_cancelled(void *ud)
+{
+ (void)ud;
+ return e_u_kbhit() == WPE_ESC;
+}
+
+/**
+ * ai_listing_watch - What the model listing listens to while it waits.
+ * @w: filled in.
+ *
+ * The terminal's keys arrive on standard input, so the listing wakes the
+ * moment one is typed; the graphical backends queue their keys elsewhere,
+ * and the listing asks them on its short wake-ups instead.
+ */
+static void ai_listing_watch(wpe_http_watch *w)
+{
+ w->fd = -1;
+ if (!WpeIsXwin())
+  w->fd = STDIN_FILENO;
+ w->cancelled = ai_listing_cancelled;
+ w->ud = NULL;
+}
+
+/**
+ * ai_listing_goes_online - Does listing this backend's models ask a server?
+ * @backend: a WPE_AI_* backend.
+ *
+ * Return: 1 for Ollama and OpenAI-compatible, whose lists come from the endpoint.
+ */
+static int ai_listing_goes_online(int backend)
+{
+ return backend == WPE_AI_OLLAMA || backend == WPE_AI_OPENAI;
+}
+
+/**
+ * ai_listing_wait_open - Show where the models are being listed from.
+ * @f: the window whose colours the box takes.
+ *
+ * The listing waits for the server, so the user sees which host:port it asks
+ * and that Esc abandons it, instead of a dialog that does not react.
+ * Return: the box's saved background, closed with e_close_view when the
+ * listing ends, or NULL when no box could be opened.
+ */
+static PIC *ai_listing_wait_open(FENSTER *f)
+{
+ char host[256], path[512], line[AI_LISTING_LINE_MAX];
+ int port = 0, https = 0, w, xa, ya;
+ PIC *pic;
+ const char *url = e_ai_endpoint ? e_ai_endpoint : "";
+ if (wpe_http_parse_url(url, host, sizeof host, &port, &https, path, sizeof path))
+  snprintf(line, sizeof line, " listing models ... (Esc cancels) ");
+ else
+  snprintf(line, sizeof line, " listing models from %.40s:%d ... (Esc cancels) ",
+           host, port);
+ w = (int)strlen(line) + AI_LISTING_BOX_FRAME;
+ xa = (MAXSCOL - w) / 2;
+ ya = MAXSLNS / 2 - 1;
+ pic = e_std_kst(xa, ya, xa + w - 1, ya + AI_LISTING_BOX_ROWS - 1, "Model", 1,
+                 f->fb->nr.fb, f->fb->nt.fb, f->fb->ne.fb);
+ if (!pic)
+  return NULL;
+ e_pr_str(xa + 1, ya + 1, line, f->fb->nt.fb, 0, 0, 0, 0);
+ e_refresh();
+ return pic;
+}
+
+/**
+ * ai_listing_report - Show why the listing produced no model, over the dialog.
+ * @f: the window whose colours the box takes; @why: the reason.
+ *
+ * The Options dialog covers the pane, so a reason written there was hidden
+ * under it; a message box over the dialog is read at once and closes back
+ * to the intact dialog.
+ */
+static void ai_listing_report(FENSTER *f, const char *why)
+{
+ static char msg[AI_LISTING_LINE_MAX];
+ snprintf(msg, sizeof msg, "%.*s", MAXSCOL - AI_LISTING_BOX_MARGIN, why);
+ e_error(msg, 0, f->fb);
+}
+
+/**
+ * ai_listing_fetch - List the backend's models, with a waiting line for a server.
+ * @f: the window; @names, @max: the list to fill; @why, @whysz: the reason.
+ *
+ * Return: the number of models, or <= 0 with the reason in @why.
+ */
+static int ai_listing_fetch(FENSTER *f, char **names, int max, char *why, size_t whysz)
+{
+ wpe_http_watch watch;
+ PIC *pic;
+ int n;
+ if (!ai_listing_goes_online(e_ai_backend))
+  return wpe_ai_list_models(e_ai_backend, names, max, why, whysz);
+ ai_listing_watch(&watch);
+ pic = ai_listing_wait_open(f);
+ n = wpe_ai_list_models_watch(e_ai_backend, names, max, &watch, why, whysz);
+ if (pic)
+  e_close_view(pic, 1);
+ return n;
+}
+
 static int e_ai_pick_model_apply(FENSTER *f, int announce)
 {
  char *names[32];
- char title[80], line[220];
+ char title[AI_LISTING_LINE_MAX], line[220];
  int n, i, sel;
 
  title[0] = '\0';
- n = wpe_ai_list_models(e_ai_backend, names, 32, title, sizeof title);
- if (n <= 0) { ai_pane(f, title[0] ? title : "no models found", AI_ROLE_ERROR, 1); return 0; }
+ n = ai_listing_fetch(f, names, 32, title, sizeof title);
+ if (n <= 0) {
+  if (title[0])
+   ai_listing_report(f, title);
+  else
+   ai_listing_report(f, "no models found");
+  return 0;
+ }
  for (i = 0; i < n; i++)                 /* pre-mark the model in use */
   if (e_ai_model && !strcmp(e_ai_model, names[i])) break;
  /* Name the source for the HTTP backends: both read the single AIEndpoint, so
@@ -10831,9 +11247,11 @@ int e_ai_agent(FENSTER *f)
 /* ai_build_command - the command that builds the current work, written into
    `out`.  Prefers `make` when a makefile is present (the usual project build);
    otherwise a syntax-only compile of the current file by its language, so a lone
-   source file can still be checked.  Falls back to `make`.  The command is shown
-   to the user and handed to the agent verbatim -- nothing is hidden. */
-static void ai_build_command(FENSTER *f, char *out, size_t sz)
+   source file can still be checked.  With neither, there is nothing to run: a
+   `make` with no makefile cannot build anything, so none is offered.  The
+   command is shown to the user and handed to the agent verbatim -- nothing is
+   hidden.  Returns 1 when a command was written, 0 when there is none. */
+static int ai_build_command(FENSTER *f, char *out, size_t sz)
 {
  const char *dir = (f->dirct && f->dirct[0]) ? f->dirct : ".";
  const char *mk[] = { "GNUmakefile", "makefile", "Makefile", NULL };
@@ -10842,7 +11260,7 @@ static void ai_build_command(FENSTER *f, char *out, size_t sz)
  struct stat st;
  for (i = 0; mk[i]; i++) {
   snprintf(path, sizeof path, "%s%c%s", dir, DIRC, mk[i]);
-  if (!stat(path, &st)) { snprintf(out, sz, "make"); return; }
+  if (!stat(path, &st)) { snprintf(out, sz, "make"); return 1; }
  }
  if (f->datnam && f->datnam[0]) {
   char *full = e_mkfilename(f->dirct, f->datnam);
@@ -10856,11 +11274,30 @@ static void ai_build_command(FENSTER *f, char *out, size_t sz)
   if (cc && full) {
    snprintf(out, sz, "%s -fsyntax-only -Wall '%s'", cc, full);
    free(full);
-   return;
+   return 1;
   }
   free(full);
  }
- snprintf(out, sz, "make");
+ out[0] = '\0';
+ return 0;
+}
+
+/**
+ * ai_fix_build_refuse - Say that Build & fix has nothing to run for this file.
+ * @f: the window it was asked from.
+ *
+ * With no makefile and no compiler check for the file's type, a build
+ * command would only fail, and the agent would chase that failure; the user
+ * reads which file has no build command and where to set one, and nothing
+ * runs.
+ */
+static void ai_fix_build_refuse(FENSTER *f)
+{
+ char line[AI_CHAT_NOTE_MAX];
+ const char *name = (f->datnam && f->datnam[0]) ? f->datnam : "this window";
+ snprintf(line, sizeof line, AI_FIX_BUILD_NONE_FMT, name);
+ wpe_ai_trace("fix-build none for %s", name);
+ ai_pane(f, line, AI_ROLE_MACHINERY, 1);
 }
 
 /* e_ai_fix_build - run the build, and if it fails let the agent fix it in a loop:
@@ -10877,7 +11314,10 @@ static int e_ai_fix_build(FENSTER *f)
   ai_enqueue(f, ai_launch_fix_build, "");
   return 0;
  }
- ai_build_command(f, cmd, sizeof cmd);
+ if (!ai_build_command(f, cmd, sizeof cmd)) {
+  ai_fix_build_refuse(f);
+  return 0;
+ }
  wpe_ai_trace("fix-build cmd=%s", cmd);
  { char line[1200]; snprintf(line, sizeof line, "[fix-build] build command: %s", cmd);
    ai_pane(f, line, AI_ROLE_MACHINERY, 1); }

@@ -313,6 +313,33 @@ The model list is queried live where possible (Ollama `/api/tags`, OpenAI
 `/v1/models`) and shown in the picker; the Claude CLI offers its aliases
 (default/sonnet/opus/haiku).
 
+**Waiting for a server.** The editor never waits inside a connection. A
+chat, Edit, completion or agent turn opens its connection on the editor's
+loop: the connect, the TLS handshake and the first byte of the answer share
+one deadline, 120 s by default (`XWPE_AI_TIMEOUT`). Meanwhile the waiting line
+shows, the editor takes keys and Esc cancels. A server that lets the deadline
+pass ends the request with `no answer from host:port within N s`. The model
+list (Alt-M) has its own 5 s deadline; a box over the dialog says
+`listing models from host:port ... (Esc cancels)`, and Esc abandons it with
+`listing cancelled`. Host names are looked up before the deadline starts: a
+numeric address or `localhost` resolves at once, other names are bounded by
+the system resolver.
+
+**How errors read.** Every failure names host:port and the reason:
+
+- `cannot connect to host:port (Connection refused)`: nothing listens there.
+- `TLS handshake/verify failed with host:port: <reason>`: the TLS library's
+  reason. Only a certificate that could not be verified adds the advice to set
+  the server's CA file (Options > AI, Alt-C).
+- `HTTP 401 from host:port: <reason>`: a refused model list, with the reason
+  from the JSON body or the status line. With Options > AI open it shows in a
+  message box over the dialog; Esc closes it and the dialog stays as it was.
+- An error sent after part of a reply keeps the text and adds
+  `AI: error: <reason>` in the error colour; the session keeps the partial
+  text with a note that an error cut it.
+- A model saved for another backend is not sent; one line says
+  `[AI] model <x> is not <backend>'s; using <y>`.
+
 ## Permission policy
 
 The dial governs what the assistant may do without asking. Its levels are
@@ -409,6 +436,7 @@ fixed setup:
 | `XWPE_AI_POLICY` | `ask` / `edits` / `auto` |
 | `XWPE_AI_WEB` | `1` / `0`: web access for one session (`AIWeb`, asked once at first need, off by default). Governs the chat's and the agent's web tools, and what the browsing backends are launched with (see "Web access" above) |
 | `XWPE_AI_TOOL_TIMEOUT` | seconds a tool command may run before it is ended (`AIToolTimeout`, default 60) |
+| `XWPE_AI_TIMEOUT` | seconds a request waits for the server: connect, TLS handshake and first byte (default 120) |
 | `XWPE_AI_PROJECT_INSTRUCTIONS` | where the project instructions file is folded in: `agent` (default), `all` or `off` (`AIProjectInstructions`) |
 | `XWPE_AI_PROJECT_INSTRUCTIONS_MAX` | bytes of the project instructions file the prompt carries (`AIProjectInstructionsMax`, default 4095, at most 65536) |
 | `XWPE_AI_TRACE=path` | append a diagnostic trace (prompt built, tool run, ...) |
@@ -423,6 +451,20 @@ the change and the reformatting together. A hook that exits non-zero is
 reported in the pane with its exit status, and the buffer is left as the
 assistant left it. The hook shares the tool time limit (`AIToolTimeout`): one
 that hangs is ended after that many seconds and reported as failed.
+
+**Key file.** Every write of a key typed in Options > AI leaves the key file
+readable by you alone (mode 0600), also when it already existed with a wider
+mode.
+
+**The current file.** A chat sends the current file with the question. A file
+longer than the room the prompt has for it is cut at a whole line: the prompt
+ends with `(current file cut at line N of M)` and the pane says
+`[AI] <file>: N of M lines sent`.
+
+**Build & fix without a build command.** With no makefile and no syntax check
+for the file's type (C and C++ have one), Alt-G b says
+`[fix-build] no build command for <file>: no makefile here, and only C and C++
+have a syntax check` and runs nothing.
 
 **Project instructions.** A `.xwpe-ai.md` (or, when it is absent, an
 `AGENTS.md`) in the working directory is folded into the prompt under a

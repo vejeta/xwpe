@@ -22,6 +22,7 @@ typedef void (*wpe_fd_callback)(int fd, void *data);
 
 int  wpe_fd_add(int fd, int events, wpe_fd_callback cb, void *data);
 void wpe_fd_del(int fd);
+void wpe_fd_dispatch(int fd);
 int  wpe_fd_poll(int timeout_ms);
 
 #endif

@@ -13,6 +13,9 @@
  * this test does not link; left empty, the system trust store is used. */
 char *e_ai_cafile = NULL;
 
+/* How long the connect and the handshake to the live host may take. */
+#define LIVE_OPEN_DEADLINE_MS 15000
+
 int main(int argc, char **argv)
 {
 #ifndef WPE_AI_TLS
@@ -28,7 +31,7 @@ int main(int argc, char **argv)
  char err[160] = "", buf[4096];
  int i, st, ok;
 
- if (wpe_http_open(url, &c, err, sizeof err)) {
+ if (wpe_http_open(url, &c, LIVE_OPEN_DEADLINE_MS, NULL, err, sizeof err)) {
   printf("open FAIL: %s\n", err);
   return 1;
  }

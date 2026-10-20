@@ -71,6 +71,21 @@ void wpe_fd_del(int fd)
  }
 }
 
+/**
+ * wpe_fd_dispatch - Run the callback registered for fd as if it had woken.
+ * @fd: a registered descriptor.
+ *
+ * Used by a timer that finds a source overdue (a server that never answered):
+ * its own callback ends it the same way a hang-up would, so there is one
+ * path to the line the user reads, not two.
+ */
+void wpe_fd_dispatch(int fd)
+{
+ wpe_fd_entry *e = wpe_fd_find(fd);
+ if (e && e->callback)
+  e->callback(e->fd, e->data);
+}
+
 int wpe_fd_poll(int timeout_ms)
 {
  struct pollfd pfd[WPE_FD_MAX];
@@ -112,7 +127,10 @@ int wpe_fd_poll(int timeout_ms)
      spins at 100% CPU.  The per-callback "detect dead server" guard only fires
      when it is actually called, i.e. on POLLIN; this makes it fire on hang-up
      too, on every platform regardless of how the EOF is delivered. */
-  if (re & (POLLIN | POLLPRI | POLLHUP | POLLERR))
+  /* POLLOUT is dispatched for an fd that asked for it: a connect or a TLS
+     handshake in progress waits to write, and only fds registered with
+     POLLOUT can report it, so read-only fds are not woken by it. */
+  if (re & (POLLIN | POLLPRI | POLLHUP | POLLERR | POLLOUT))
   {
    if (e->callback)
     e->callback(e->fd, e->data);
