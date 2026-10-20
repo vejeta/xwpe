@@ -19,11 +19,13 @@ import os
 import subprocess
 import time
 import pytest
-from wpe_driver import WpeSession, ALT, WPE_BIN
+from wpe_driver import WpeSession, ALT, WPE_BIN, WAIT_SCALE
 
 ORIG = "int a = 1;\nint b = 2;\nint c = 3;\nint d = 4;\nint e = 5;\n"
 NEW = "int a = 1;\nint b = 2;\nint c = 3;\nint d = 4;\nint e = 55;\n"
-MOCK_DELAY_MS = 3000          # the reply lands long after the window is closed
+# The reply lands long after the window is closed.  Scaled like every wait of
+# the driver, or on a slow runner the reply beats the close it must follow.
+MOCK_DELAY_MS = int(3000 * WAIT_SCALE)
 CTRL_W = "\x17"
 
 

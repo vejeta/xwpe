@@ -42,6 +42,8 @@ def _start_edit(s):
     s.key("\r", delay=1.5)                     # submit -> async edit (delayed reply)
 
 
+# @scenario SC-ai-runtime-15
+# @scenario SC-ai-runtime-16
 def test_editor_interactive_and_spinner_during_generation(tmp_path):
     env = {"XWPE_AI_ENABLE": "1", "XWPE_AI_BACKEND": "mock",
            "XWPE_AI_MOCK_REPLY": "int main(void){return 1;}",
@@ -75,7 +77,8 @@ def test_editor_interactive_and_spinner_during_generation(tmp_path):
 def test_esc_cancels_a_running_task(tmp_path):
     env = {"XWPE_AI_ENABLE": "1", "XWPE_AI_BACKEND": "mock",
            "XWPE_AI_MOCK_REPLY": "int main(void){return 1;}",
-           "XWPE_AI_MOCK_DELAY_MS": "4000"}
+           # scaled, or on a slow runner the reply arrives before the Esc
+           "XWPE_AI_MOCK_DELAY_MS": str(int(4000 * WAIT_SCALE))}
     with WpeSession(str(tmp_path), "AAA\n", filename="stack.c",
                     env_extra=env) as s:
         _start_edit(s)

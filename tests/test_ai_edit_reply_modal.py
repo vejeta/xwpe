@@ -23,11 +23,13 @@ import os
 import subprocess
 import time
 import pytest
-from wpe_driver import WpeSession, ALT, WPE_BIN
+from wpe_driver import WpeSession, ALT, WPE_BIN, WAIT_SCALE
 
 ORIG = "int a = 1;\nint b = 2;\nint c = 3;\nint d = 4;\nint e = 5;\n"
 NEW = "int a = 1;\nint b = 2;\nint c = 3;\nint d = 4;\nint e = 55;\n"
-MOCK_DELAY_MS = 3000          # the reply lands while the dialog is still open
+# The reply lands while the dialog is still open.  Scaled like every wait of
+# the driver, or on a slow runner the reply beats the dialog it must wait for.
+MOCK_DELAY_MS = int(3000 * WAIT_SCALE)
 F3 = "\033OR"                 # File -> File-Manager
 BOX = "Proposed change"       # the hunk review box title
 PROMPT = "AI agent task"      # the Alt-G g task prompt title

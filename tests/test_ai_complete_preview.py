@@ -23,13 +23,15 @@ import os
 import subprocess
 import time
 import pytest
-from wpe_driver import WpeSession, ALT, WPE_BIN
+from wpe_driver import WpeSession, ALT, WPE_BIN, WAIT_SCALE
 
 BOX = "Proposed completion"       # the completion review box title
 PROMPT = "AI agent task"          # the Alt-G g task prompt title
 DISCARDED = "[AI complete] discarded"
 LANDED = "completed at cursor"
-MOCK_DELAY_MS = 3000              # the reply lands while the dialog is still open
+# The reply lands while the dialog is still open.  Scaled like every wait of
+# the driver, or on a slow runner the reply beats the dialog it must wait for.
+MOCK_DELAY_MS = int(3000 * WAIT_SCALE)
 RIGHT = "\033[C"
 CTRL_U = "\x15"
 ESC = "\033"

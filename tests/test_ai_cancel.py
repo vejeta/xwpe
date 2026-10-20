@@ -9,10 +9,13 @@ Pressing Alt-G while a task runs cancels it (a one-key escape).  After that:
 import os
 import subprocess
 import pytest
-from wpe_driver import WpeSession, ALT, WPE_BIN
+from wpe_driver import WpeSession, ALT, WPE_BIN, WAIT_SCALE
 
+# The reply is late on purpose, so the task is still running when Esc comes.
+# Scaled like every wait of the driver, or on a slow runner it arrives first.
 SLOW = {"XWPE_AI_ENABLE": "1", "XWPE_AI_BACKEND": "mock",
-        "XWPE_AI_MOCK_REPLY": "a reply here", "XWPE_AI_MOCK_DELAY_MS": "4000"}
+        "XWPE_AI_MOCK_REPLY": "a reply here",
+        "XWPE_AI_MOCK_DELAY_MS": str(int(4000 * WAIT_SCALE))}
 
 
 def _ai_build():

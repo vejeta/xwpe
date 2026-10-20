@@ -26,7 +26,7 @@ the items vanish within a second; with it they persist.
 import os
 import subprocess
 import pytest
-from wpe_driver import WpeSession, ALT, WPE_BIN
+from wpe_driver import WpeSession, ALT, WPE_BIN, WAIT_SCALE
 
 
 def _ai_build():
@@ -60,7 +60,8 @@ def _find_ai_entry(disp):
 def test_spinner_does_not_repaint_over_menu(tmp_path):
     # a long mock delay keeps the op in-flight (spinner ticking) for the whole test
     env = {"XWPE_AI_ENABLE": "1", "XWPE_AI_BACKEND": "mock", "XWPE_AI_MOCK_REPLY": "x",
-           "XWPE_AI_MOCK_DELAY_MS": "6000", "XWPE_AI_TRACE": str(tmp_path / "a.trace")}
+           "XWPE_AI_MOCK_DELAY_MS": str(int(6000 * WAIT_SCALE)),   # outlasts the test's own scaled waits
+           "XWPE_AI_TRACE": str(tmp_path / "a.trace")}
     with WpeSession(str(tmp_path), "hello\nworld\n", env_extra=env, filename="t.txt") as s:
         s.key(ALT.AI); s.key("e"); s._drain(0.4)
         s.key("do something"); s.key("\r", delay=0.8)     # Edit starts -> spinner live
