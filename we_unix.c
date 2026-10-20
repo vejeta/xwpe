@@ -449,15 +449,56 @@ void WpeSignalUnknown(int sig)
  raise(sig);
 }
 
+/* The exit statuses the SIGCHLD handler collected, for the caller that still
+   wants one (the build's child, whose exit code says whether the build
+   failed).  The handler reaps every child, so the status would otherwise be
+   thrown away; blocking SIGCHLD during a build instead left the mask blocked
+   in every program the editor started meanwhile (a language server).  A
+   small ring written in the handler and read from the main loop, with the
+   types a handler may touch. */
+#define WPE_REAPED_RING 8
+static volatile sig_atomic_t wpe_reaped_pid[WPE_REAPED_RING];
+static volatile sig_atomic_t wpe_reaped_status[WPE_REAPED_RING];
+static volatile sig_atomic_t wpe_reaped_next;
+
 void WpeSignalChild(int sig)
 {
- int statloc;
+ int statloc, slot;
+ pid_t pid;
 
  /* Use WNOHANG to avoid blocking, and loop to reap all zombies.
     The old wait() call would steal children from pclose/waitpid,
     causing the debugger's popen("tty") to hang on pclose. */
- while (waitpid(-1, &statloc, WNOHANG) > 0)
-  ;
+ while ((pid = waitpid(-1, &statloc, WNOHANG)) > 0)
+ {
+  slot = wpe_reaped_next;
+  wpe_reaped_pid[slot] = pid;
+  wpe_reaped_status[slot] = statloc;
+  wpe_reaped_next = (slot + 1) % WPE_REAPED_RING;
+ }
+}
+
+/**
+ * WpeReapedStatus - The exit status the SIGCHLD handler collected for @pid.
+ * @pid: a child the caller started; @status: receives its wait status.
+ *
+ * Lets a build read its child's exit code although the handler got to the
+ * child first, so a failed build is reported as failed.  The entry is
+ * cleared once read.
+ * Return: 1 with *status set when the handler reaped that child, else 0.
+ */
+int WpeReapedStatus(int pid, int *status)
+{
+ int i;
+
+ for (i = 0; i < WPE_REAPED_RING; i++)
+  if (wpe_reaped_pid[i] == pid)
+  {
+   *status = wpe_reaped_status[i];
+   wpe_reaped_pid[i] = 0;
+   return(1);
+  }
+ return(0);
 }
 
 void WpeSignalTerm(int sig)

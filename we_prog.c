@@ -71,6 +71,10 @@ struct ERR_LI  {  char *file, *text, *srch;  int x, y, line, row, kind;  } *err_
 /* What a row of the error list is; both are counted when a build ends. */
 #define E_ROW_ERROR   0
 #define E_ROW_WARNING 1
+/* A row make wrote about its own recipe ("make: *** [Makefile:3: all] Error
+   1"): a stop of the walk, since it names the recipe's line, but not an
+   error of the user's code, so the count leaves it out. */
+#define E_ROW_MAKE    2
 int err_no, err_num;
 /* Whether a row of the current error list has been shown yet.  A new list
    (a compile, an agent changeset, a Multi-file accept) starts unwalked: the
@@ -1251,16 +1255,17 @@ int e_exec_inf(FENSTER *f, char **argv, int n)
   e_d_quit(f);
 #endif
  fflush(stdout);
- /* Real pipes instead of $TMPDIR/we_111+we_112 temp files: efildes captures the
-    child's stderr, wfildes its stdout.  The old temp-file + wait-then-read lost
-    block-buffered stdout (the Make-only bug, where compilers write only to
-    stderr so it stayed hidden).  We now drain both fds with poll() while the
-    child runs (see e_p_exec). */
- if (pipe(efildes) < 0 || pipe(wfildes) < 0)
+ /* One pipe for the child's stdout and stderr together: the lines reach
+    Messages in the order the build wrote them (a make's echoed command
+    before the compiler's errors).  Two pipes kept the two streams apart and
+    the loop could read the later one first.  efildes carries the pipe;
+    wfildes stays unused and closed, as the callers expect. */
+ if (pipe(efildes) < 0)
  {
   e_error(e_p_msg[ERR_PIPEOPEN], 0, f->fb);
   return(0);
  }
+ wfildes[0] = wfildes[1] = -1;
 
  if ((e_save_pid = pid = fork()) > 0)
  {
@@ -1271,28 +1276,25 @@ int e_exec_inf(FENSTER *f, char **argv, int n)
   /* Parent: keep the read ends; close the write ends so read() sees EOF when
      the child exits, and CLOEXEC so a later child does not inherit them. */
   close(efildes[1]);
-  close(wfildes[1]);
-  efildes[1] = wfildes[1] = -1;
+  efildes[1] = -1;
   fcntl(efildes[0], F_SETFD, FD_CLOEXEC);
-  fcntl(wfildes[0], F_SETFD, FD_CLOEXEC);
   return(1);
  }
  if (pid < 0)
  {
   e_error(e_p_msg[ERR_PROCESS], 0, f->fb);
   close(efildes[0]); close(efildes[1]);
-  close(wfildes[0]); close(wfildes[1]);
-  efildes[0] = efildes[1] = wfildes[0] = wfildes[1] = -1;
+  efildes[0] = efildes[1] = -1;
   return(0);
  }
 
- /* Child: stderr -> efildes write end, stdout -> wfildes write end, and stdin
-    -> /dev/null so the command can never grab the controlling tty and corrupt
-    the parent's curses screen.  Then close every pipe fd (the dup2'd copies on
+ /* Child: stdout and stderr -> the pipe's write end, and stdin -> /dev/null
+    so the command can never grab the controlling tty and corrupt the
+    parent's curses screen.  Then close every pipe fd (the dup2'd copies on
     0/1/2 survive). */
  setpgid(0, 0);
  dup2(efildes[1], 2);
- dup2(wfildes[1], 1);
+ dup2(efildes[1], 1);
  if ((nul = open("/dev/null", O_RDONLY)) >= 0)
  {
   dup2(nul, 0);
@@ -1300,7 +1302,6 @@ int e_exec_inf(FENSTER *f, char **argv, int n)
    close(nul);
  }
  close(efildes[0]); close(efildes[1]);
- close(wfildes[0]); close(wfildes[1]);
  e_print_arg(stderr, "", argv, n);
  execvp(argv[0], argv);
  e_print_arg(stderr, e_p_msg[ERR_IN_COMMAND], argv, n);
@@ -1717,8 +1718,8 @@ static int e_build_try_reap(void)
  r = waitpid(g_build.pid, &g_build.status, WNOHANG);
  if (r == g_build.pid || (r < 0 && errno == ECHILD))
   g_build.reaped = 1;
- if (r < 0)
-  g_build.status = 0;      /* reaped elsewhere: judge by the parsed rows */
+ if (r < 0 && !WpeReapedStatus(g_build.pid, &g_build.status))
+  g_build.status = 0;      /* reaped and not kept: judge by the parsed rows */
  return(g_build.reaped);
 }
 
@@ -2008,8 +2009,9 @@ static void e_build_flush_fragments(BUFFER *b)
 /**
  * e_build_exit_code - The child's exit code, 0 when it cannot be known.
  *
- * A child reaped by the editor's SIGCHLD handler first has no status left;
- * the parsed rows then decide success or failure, as they always did.
+ * The editor's SIGCHLD handler may reap the child first; it keeps the status
+ * for us (WpeReapedStatus).  Only a status lost to a full ring leaves the
+ * parsed rows to decide success or failure, as they always did.
  */
 static int e_build_exit_code(void)
 {
@@ -2132,7 +2134,6 @@ static void e_build_step_end(void)
  e_build_heartbeat_stop();
  e_build_close_stream(g_build.efd);
  e_build_close_stream(g_build.wfd);
- sigprocmask(SIG_SETMASK, &g_build.old_mask, NULL);
  e_build_wait_line_drop();
  mf = e_build_step_end_window(cn);
  e_build_flush_fragments(mf->b);
@@ -2157,8 +2158,6 @@ static void e_build_step_end(void)
 static void e_build_step_begin(ECNT *cn, FENSTER *mf, PIC *pic,
                                e_build_cont cont, void *data)
 {
- sigset_t chld_mask;
-
  memset(&g_build, 0, sizeof g_build);
  g_build.active = 1;
  g_build.pid = e_save_pid;
@@ -2171,11 +2170,6 @@ static void e_build_step_begin(ECNT *cn, FENSTER *mf, PIC *pic,
  g_build.is = mf->b->mxlines - 1;
  if (!getcwd(g_build.dir, sizeof g_build.dir))
   g_build.dir[0] = '\0';
- /* xwpe's SIGCHLD handler reaps every child and throws the status away;
-    blocking it while the build runs keeps the real exit code ours. */
- sigemptyset(&chld_mask);
- sigaddset(&chld_mask, SIGCHLD);
- sigprocmask(SIG_BLOCK, &chld_mask, &g_build.old_mask);
 }
 
 /**
@@ -2292,6 +2286,10 @@ static const char *e_build_plural(int n)
  return("s");
 }
 
+/* The count line of the last build, said again on the status row: a short
+   Messages window scrolls to the error row and may not show its last row. */
+static char g_build_count_line[160];
+
 /**
  * e_build_print_count - End Messages with "N errors, M warnings".
  * @b: the Messages buffer; @result: the build's result.
@@ -2318,6 +2316,7 @@ static void e_build_print_count(BUFFER *b, int result)
   snprintf(line + strlen(line), sizeof line - strlen(line),
            "; the build failed (exit status %d)", g_build_chain_exit);
  print_to_end_of_buffer(b, line, 0);
+ snprintf(g_build_count_line, sizeof g_build_count_line, "%s", line);
 }
 
 /**
@@ -2418,6 +2417,7 @@ static void e_build_report_up_to_date(ECNT *cn, int result)
 static void e_build_chain_report(ECNT *cn, int result)
 {
  FENSTER *mf;
+ int jumped = 0;                 /* e_show_error's answer: 0 when it landed */
 
  if (!g_build_chain_ran)
  {
@@ -2432,7 +2432,7 @@ static void e_build_chain_report(ECNT *cn, int result)
  mf = e_build_raise_messages(cn);
  e_build_tally(mf, result);
  if (result && g_build_chain_list != E_LIST_NO_JUMP)
-  e_show_error(err_no = 0, mf);
+  jumped = e_show_error(err_no = 0, mf);
  else if (!result)
   e_build_return_to_source(cn);
  else
@@ -2441,6 +2441,12 @@ static void e_build_chain_report(ECNT *cn, int result)
   e_schirm(mf, 1);
  }
  e_build_settle_top(cn);
+ /* Where Borland showed "Errors: N" when a build ended: the user reads the
+    count whatever the height of Messages.  A jump that could not happen
+    has already said why on that row ("cannot find <name>"), and that word
+    matters more than the count, so it stays. */
+ if (jumped == 0)
+  e_status_say(cn->f[cn->mxedt], g_build_count_line);
 }
 
 /**
@@ -2845,7 +2851,7 @@ int e_make_error_list(FENSTER *f)
    err_li[k].file[8] = '\0';
    err_li[k].line = atoi((char *)b->bf[i].s+9);
    err_li[k].y = err_li[k].row = i;
-   err_li[k].kind = E_ROW_ERROR;
+   err_li[k].kind = E_ROW_MAKE;
    err_li[k].x = 0;
    err_li[k].srch = NULL;
    err_li[k].text = MALLOC(strlen((char *)b->bf[i].s) + 1);
@@ -2856,17 +2862,21 @@ int e_make_error_list(FENSTER *f)
    ret = -1;
    continue;
   }
-  else if (!strncmp((char *)b->bf[i].s, "make:", 5) &&
-    ((spt = strstr((char *)b->bf[i].s, "makefile")) ||
-    (spt = strstr((char *)b->bf[i].s, "Makefile")) ) &&
-    (err_li[k].line = atoi(spt+14)) > 0 )
+  /* make's own line about a failed recipe, "make: *** [Makefile:2: all]
+     Error 1": the makefile's line follows "Makefile:".  An offset written
+     for an older format read 0 here, and the row then fell through to the
+     compiler's pattern and was counted as an error of the user's code. */
+  else if (!strncmp((char *)b->bf[i].s, "make", 4) &&
+    ((spt = strstr((char *)b->bf[i].s, "makefile:")) ||
+    (spt = strstr((char *)b->bf[i].s, "Makefile:")) ) &&
+    (err_li[k].line = atoi(spt + 9)) > 0 )
   {
    err_li[k].file = MALLOC(9);
    for (j = 0; j < 8; j++)
     err_li[k].file[j] = spt[j];
    err_li[k].file[8] = '\0';
    err_li[k].y = err_li[k].row = i;
-   err_li[k].kind = E_ROW_ERROR;
+   err_li[k].kind = E_ROW_MAKE;
    err_li[k].x = 0;
    err_li[k].srch = NULL;
    err_li[k].text = MALLOC(strlen((char *)b->bf[i].s) + 1);
@@ -6145,23 +6155,34 @@ int e_p_red_buffer(BUFFER *b)
  return(0);
 }
 
+/**
+ * e_new_message - Start Messages afresh for a new build.
+ * @f: the window the build was asked from; it may be Messages itself (F6 to
+ * Messages, then Alt-A).
+ *
+ * The old Messages window is closed and a new one opened.  The desktop is
+ * taken before the close: when @f is the Messages window, closing it frees
+ * @f, and reading the desktop through it afterwards was a use after free.
+ * Return: 0, or WPE_ESC when the new window could not be opened.
+ */
 int e_new_message(FENSTER *f)
 {
+ ECNT *cn = f->ed;
  int i;
 
  if (e_p_m_buffer)
   e_p_red_buffer(e_p_m_buffer);
- for (i = f->ed->mxedt; i > 0; i--)
-  if (f->ed->f[i] && f->ed->f[i]->datnam &&
-      !strcmp(f->ed->f[i]->datnam, "Messages"))
+ for (i = cn->mxedt; i > 0; i--)
+  if (cn->f[i] && cn->f[i]->datnam &&
+      !strcmp(cn->f[i]->datnam, "Messages"))
   {
-   e_switch_window(f->ed->edt[i], f->ed->f[f->ed->mxedt]);
-   e_close_window(f->ed->f[f->ed->mxedt]);
+   e_switch_window(cn->edt[i], cn->f[cn->mxedt]);
+   e_close_window(cn->f[cn->mxedt]);
    break;
   }
  if (access("Messages", 0) == 0)
   remove("Messages");
- if (e_edit(f->ed, "Messages"))
+ if (e_edit(cn, "Messages"))
   return(WPE_ESC);
  return(0);
 }

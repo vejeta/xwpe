@@ -51,6 +51,8 @@ void e_build_cancel(void);
 void e_build_deliver_held(void);
 void e_build_refuse(FENSTER *f);
 void e_status_say(FENSTER *f, const char *text);
+/* we_unix.c: the exit status the SIGCHLD handler kept for a child. */
+int WpeReapedStatus(int pid, int *status);
 int e_c_project(FENSTER *f, e_build_cont done, void *data);
 int e_free_arg(char **arg, int argc);
 int e_rel_brkwtch(FENSTER *f);

@@ -874,7 +874,50 @@ def test_each_project_command_is_shown_once(tmp_path):
         assert len(shown) == 1, "%r shown %d times: %r" % (command, len(shown), rows)
 
 
-A68_ONE_ERROR = "BEGIN\n  INT x := 1;\n  print((x, yy))\nEND\n"     # line 3
+PROJECT_A_BROKEN = "int helper(void);\nint main(void)\n{\n    return helpr();\n}\n"   # line 4
+
+
+# @scenario SC-compile-20
+def test_a_project_build_stops_at_the_first_file_with_errors(tmp_path):
+    """a.c fails: the build stops there, as Turbo C's did, so b.c is not
+    compiled; the count names a.c's one error and the jump lands on it."""
+    need("gcc")
+    proj = project_dir(tmp_path)
+    (proj / "a.c").write_text(PROJECT_A_BROKEN)
+    with WpeSession(str(proj), PROJECT_PRJ, filename="p.prj", rows=40, cols=WIDE) as w:
+        w.key(F9, delay=BUILD_WAIT)
+        assert wait_screen(w, "1 error, 0 warnings", tmo=scaled(FIND_TIMEOUT)), screen_text(w)
+        title = active_title(w)
+        line, _ = active_position(w)
+        assert w.alive()
+    assert (title, line) == ("a.c", 4), "the jump went to %s:%d" % (title, line)
+    assert not (proj / "b.o").exists(), "b.c was compiled after a.c failed"
+    assert not (proj / "p").exists(), "the program was linked after a failed compile"
+
+
+MAKE_ONE_ERROR = "all:\n\tgcc -c t.c\n"
+
+
+# @scenario SC-compile-01
+def test_makes_own_error_line_is_not_counted_and_the_count_is_on_the_status_row(tmp_path):
+    """make prints the compiler's error and then its own "*** [Makefile:2:
+    all] Error 1" line.  The count says 1 error, not 2; make's line stays a
+    stop of the walk (Alt-T reaches the Makefile row); and the count is on
+    the status row as well, where a short Messages window cannot hide it."""
+    need("gcc")
+    (tmp_path / "Makefile").write_text(MAKE_ONE_ERROR)
+    with WpeSession(str(tmp_path), UNDEF_AT_3_C, filename="t.c", cols=WIDE, rows=24) as w:
+        w.key(ALT_A, delay=BUILD_WAIT)
+        # Messages is four rows high here and scrolled to the error row: make's
+        # own line and the count row sit below the view, which is why the count
+        # is on the status row.
+        assert wait_screen(w, "1 error, 0 warnings", tmo=scaled(FIND_TIMEOUT)), screen_text(w)
+        status = hint_row(w)
+        w.key(ALT_T, delay=1.0)
+        title = active_title(w)
+        assert w.alive()
+    assert "1 error, 0 warnings" in status, "the count is not on the status row: %r" % status
+    assert title == "Makefile", "Alt-T did not reach make's own row: %s" % title
 
 
 # @scenario SC-compile-13

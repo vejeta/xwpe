@@ -345,6 +345,25 @@ Changes
 * Options > Compiler: the "Compiler-Style" caption of the GNU / Other
   radios has its own row again; the Start sYmbol field painted over it.
 
+* The count of a build is also said on the status row, where Turbo C
+  showed it, so a short Messages window that scrolled to the error row
+  never hides it.  make's own line about a failed recipe is a stop of
+  the walk but no longer counted as an error: one compiler error reads
+  "1 error", not "2 errors".
+
+* A build's stdout and stderr reach Messages in the order written: the
+  two streams used to be read through two pipes, and make's echoed
+  command could land after the errors it caused.
+
+* Starting Execute Make from the Messages window (F6, then Alt-A) read
+  freed memory: Messages was closed and reopened through the window
+  being closed.  Found by the sanitizer layer of the test suite.
+
+* A program the editor starts while a build runs (a language server, a
+  shell command) no longer inherits a blocked SIGCHLD: the build's exit
+  code is kept by the editor's own child handler instead of blocking the
+  signal for the build's duration.
+
 * An accepted change leaves the buffer exactly as the accepted text.
   Every accepted Edit, completion, language-server code action, format
   and whole-buffer undo used to leave one empty line after the text that
