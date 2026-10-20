@@ -3,7 +3,7 @@ import os
 import time
 import subprocess
 import pytest
-from wpe_driver import WpeSession, ALT, WPE_BIN
+from wpe_driver import WpeSession, ALT, WPE_BIN, pane_rows
 
 ORIG = "int a = 1;\nint b = 2;\nint c = 3;\n"
 NEW = "int a = 1;\nint b = 22;\nint c = 3;\n"
@@ -39,6 +39,26 @@ def _wait_screen(s, needle, tmo=12):
     while time.time() < end:
         s._drain(0.4)
         if needle in "\n".join(s.display()):
+            return True
+    return False
+
+
+def _screen_words(s):
+    """The pane's text as one line of single-spaced words.
+
+    After a Multi-file accept the Messages window docks beside the pane and
+    halves its width, so a pane line wraps at a word boundary; a phrase is
+    then read across the wrapped rows, inside the pane's frame, not on one
+    screen row.
+    """
+    return " ".join(" ".join(pane_rows(s.display())).split())
+
+
+def _wait_words(s, needle, tmo=12):
+    end = time.time() + tmo
+    while time.time() < end:
+        s._drain(0.4)
+        if needle in _screen_words(s):
             return True
     return False
 
@@ -121,10 +141,10 @@ def test_plan_apply_all_opens_files_without_writing_disk_and_refuses_directories
         _start_plan(s, "apply all file updates")
         assert _wait_screen(s, BOX_TITLE), "approval box did not open"
         s.key("a", delay=0.9)
-        assert _wait_screen(s, PREFIX + " applied 2 of 3 files"), \
+        assert _wait_words(s, PREFIX + " applied 2 of 3 files"), \
             "applied/total count did not report the directory as not-applied"
+        assert "could not open sub" in _screen_words(s), "directory path refusal message missing"
         disp = "\n".join(s.display())
-        assert "could not open sub" in disp, "directory path refusal message missing"
         assert " other.c " in disp, "a new window for unopened other.c was not shown"
 
         with open(s.path, "rb") as fh:
@@ -226,7 +246,7 @@ def test_plan_path_outside_the_workspace_is_marked_in_the_box_and_named_on_apply
         assert "[new file]" in row[0], "a file that does not exist is not marked new:\n" + row[0]
         s.key("a", delay=0.9)
         assert _wait_trace(s, tmp_path, "plan done applied=1"), "apply all did not finish:\n" + _trace(tmp_path)
-        pane = "\n".join(r for r in s.display() if PREFIX in r)
+        pane = _screen_words(s)
         assert "outside.c" in pane and "outside the workspace" in pane, \
             "the pane did not name the file that went outside:\n" + pane
         assert not os.path.exists(tmp_path / "outside.c"), "the new file was written before Save"

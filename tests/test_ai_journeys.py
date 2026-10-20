@@ -8,7 +8,9 @@ what the user has: the screen, the buffer (saved and read back from disk),
 the file on disk before any save, and the behaviour trace.  A step that is
 right only at the end would hide a wrong state the user saw on the way.
 
-All of them run against the deterministic mock backend.
+All of them run against the deterministic mock backend, except the backend
+error, which needs a server that fails on purpose: a local OpenAI-compatible
+one on the loopback interface.
 """
 import os
 import re
@@ -19,6 +21,8 @@ import pytest
 
 from wpe_driver import (WpeSession, ALT, WPE_BIN, WAIT_SCALE, wait_screen,
                         pane_text_with_history)
+from test_ai_agent_gaps import (_fault_server, _seed_openai_xwperc, _openai_env,
+                                SERVER_MESSAGE)
 
 
 def _ai_build():
@@ -39,12 +43,19 @@ CTRL_U = "\x15"
 F3 = "\033OR"
 DOWN = "\033[B"
 RIGHT = "\033[C"
+ALT_T = "\033t"
+ALT_V = "\033v"
+ALT_M = "\033m"
+ACTIVE_BUTTONS = "□ ✕"
 MODIFIED_MARK = "*"
 TRACE_POLL_S = 12
 TURN_POLL_S = 20
 # The status row of the active file window: its bottom border carries the
 # modified mark two cells after the corner(s), then line:column.
 STATUS_RE = re.compile(r"^m+q.(.)q\s+(\d+):(\d+)\s")
+# A deleted row of the review box over the file window: the window border,
+# blanks, then the '-' mark (an empty deleted line is the mark alone).
+DELETED_ROW_RE = re.compile(r"^x\s+-")
 # A shell path that cannot reach a real assistant program, so no step of a
 # journey can leave the machine whatever the session's backend becomes.
 SAFE_PATH = "/usr/bin:/bin"
@@ -246,6 +257,47 @@ def test_complete_at_cursor_accept_then_one_undo(tmp_path):
         assert _disk(s.path) == seed, "the undone buffer is not the original file"
 
 
+def _active_title(s):
+    """The title row of the active window: the one carrying its buttons."""
+    return next((r for r in s.display() if ACTIVE_BUTTONS in r), "")
+
+
+# @scenario SC-ai-journey-05
+def test_multifile_accept_lists_rows_and_alt_t_walks_them(tmp_path):
+    other = "int u = 1;\nint v = 2;\nint w = 3;\n"
+    other_new = "int u = 1;\nint v = 2;\nint w = 33;\n"
+    (tmp_path / "u.c").write_text(other)
+    trace = tmp_path.parent / (tmp_path.name + ".trace")
+    plan = ("PROPOSE t.c\n" + THREE_B + "@@END\n"
+            "PROPOSE u.c\n" + other_new + "@@END\n@@PLAN-DONE two files\n")
+    with WpeSession(str(tmp_path), THREE, env_extra=_env(trace, plan)) as s:
+        s.key(ALT.AI)
+        s.key("f")
+        s._drain(0.5)
+        s.key("bump both")
+        s.key("\r", delay=0.8)
+        assert wait_screen(s, "Multi-file edit - 2 files"), _screen(s)
+        s.key("a", delay=1.0)
+        assert _wait_trace(s, trace, "plan done applied=2"), _trace(trace)
+        s._drain(0.6)
+        shown = _screen(s)
+        assert _disk(s.path) == THREE and _disk(tmp_path / "u.c") == other, \
+            "the disk changed before Save"
+        assert "t.c:2: [Multi-file edit] changed" in shown, "no Messages row for t.c:\n" + shown
+        assert "u.c:3: [Multi-file edit] changed" in shown, "no Messages row for u.c:\n" + shown
+
+        s.key(ALT_T, delay=0.8)
+        assert " t.c " in _active_title(s) and _status(s)[1] == 2, \
+            "Alt-T did not land on t.c line 2:\n" + _screen(s)
+        s.key(ALT_T, delay=0.8)
+        assert " u.c " in _active_title(s) and _status(s)[1] == 3, \
+            "Alt-T again did not land on u.c line 3:\n" + _screen(s)
+        s.key(ALT_V, delay=0.8)
+        assert " t.c " in _active_title(s) and _status(s)[1] == 2, \
+            "Alt-V did not step back to t.c line 2:\n" + _screen(s)
+        assert s.alive(), "wpe died"
+
+
 # @scenario SC-ai-journey-06
 def test_agent_under_edits_writes_then_the_review_reverts_all(tmp_path):
     ws = tmp_path / "ws"
@@ -316,7 +368,87 @@ def test_agent_under_ask_write_is_denied_and_the_run_goes_on(tmp_path):
         assert s.alive(), "wpe died"
 
 
+# @scenario SC-ai-journey-08
 # @scenario SC-ai-journey-09
+def test_queued_second_edit_diffs_only_what_the_file_has(tmp_path):
+    first = THREE_B
+    second = "int a = 1;\nint b = 22;\nint c = 33;\n"
+    delay_ms = int(5000 * WAIT_SCALE)
+    trace = tmp_path.parent / (tmp_path.name + ".trace")
+    env = _env(trace, first + "@@TURN@@" + second, XWPE_AI_MOCK_DELAY_MS=str(delay_ms))
+    with WpeSession(str(tmp_path), THREE, env_extra=env) as s:
+        _start_edit(s, "FIRST")
+        _start_edit(s, "SECOND")
+        assert wait_screen(s, 'queued "SECOND"', 3), "the second Edit was not queued:\n" + _screen(s)
+        assert wait_screen(s, BOX + " 1/1", TURN_POLL_S), _screen(s)
+        s.key("y", delay=0.8)
+        assert _wait_trace(s, trace, "edit applied 1/1"), _trace(trace)
+        assert _wait_trace(s, trace, "edit instr=SECOND", TURN_POLL_S), \
+            "the queued Edit did not run:\n" + _trace(trace)
+
+        assert wait_screen(s, BOX + " 1/1", TURN_POLL_S), _screen(s)
+        shown = _screen(s)
+        deleted = [r for r in s.display() if DELETED_ROW_RE.match(r)]
+        assert "-int c = 3;" in shown and "+int c = 33;" in shown, shown
+        assert len(deleted) == 1 and "deletes 2" not in shown, \
+            "the review deletes a line the file does not have:\n" + shown
+        s.key("y", delay=0.8)
+        assert _wait_trace(s, trace, "edit applied 1/1", TURN_POLL_S) \
+            and _trace(trace).count("edit applied") == 2, _trace(trace)
+        s.save()
+        assert _disk(s.path) == second, "the buffer is not exactly the accepted text"
+
+        s.key(CTRL_U, delay=0.8)
+        s.save()
+        assert _disk(s.path) == first, "one Ctrl-U did not leave the first edit's file byte for byte"
+        s.key(CTRL_U, delay=0.8)
+        s.save()
+        assert _disk(s.path) == THREE, "two Ctrl-U did not give the original file byte for byte"
+        assert s.alive(), "wpe died"
+
+
+# @scenario SC-ai-journey-10
+def test_backend_error_mid_edit_then_the_next_edit_works(tmp_path):
+    captured = []
+    srv, port = _fault_server(captured, ["unused", THREE_B],
+                              fault_for_turn=lambda n: "error_event" if n == 0 else None)
+    try:
+        _seed_openai_xwperc(tmp_path, port, "ask")
+        trace = tmp_path / "ai.trace"
+        env = dict(_openai_env(tmp_path), PATH=SAFE_PATH)
+        with WpeSession(str(tmp_path), THREE, env_extra=env) as s:
+            _start_edit(s, "FIRST")
+            assert _wait_trace(s, trace, "edit instr=FIRST", TURN_POLL_S), _trace(trace)
+            assert wait_screen(s, SERVER_MESSAGE, TURN_POLL_S), \
+                "the pane does not name the cause:\n" + _screen(s)
+            s._drain(1.0)
+            shown = _screen(s)
+            assert BOX not in shown, "a review opened on a failed stream:\n" + shown
+            assert "int b = 2;" in shown, shown
+            assert "edit applied" not in _trace(trace), _trace(trace)
+            assert _disk(s.path) == THREE, "the disk changed"
+
+            s.key(ESC, delay=0.8)                   # leave the pane
+            s.key("Z", delay=0.6)
+            assert wait_screen(s, "Zint a = 1;", 4), "the editor is not usable:\n" + _screen(s)
+            s.key("\x7f", delay=0.6)                # Backspace takes the Z back
+            assert wait_screen(s, "xint a = 1;", 4), _screen(s)
+
+            _start_edit(s, "SECOND")
+            assert _wait_trace(s, trace, "edit instr=SECOND", TURN_POLL_S), _trace(trace)
+            assert wait_screen(s, BOX + " 1/1", TURN_POLL_S), \
+                "the next Edit did not open a review:\n" + _screen(s)
+            s.key("y", delay=0.8)
+            assert _wait_trace(s, trace, "edit applied 1/1"), _trace(trace)
+            s.save()
+            assert _disk(s.path) == THREE_B, "the next Edit did not land"
+            assert s.alive(), "wpe died"
+    finally:
+        srv.shutdown()
+        srv.server_close()
+
+
+# @scenario SC-ai-journey-11
 def test_esc_while_an_edit_streams_then_the_next_edit_works(tmp_path):
     delay_ms = int(4000 * WAIT_SCALE)
     trace = tmp_path.parent / (tmp_path.name + ".trace")
@@ -348,7 +480,7 @@ def test_esc_while_an_edit_streams_then_the_next_edit_works(tmp_path):
         assert _disk(s.path) == THREE_B, "the next Edit did not land"
 
 
-# @scenario SC-ai-journey-12
+# @scenario SC-ai-journey-15
 def test_altg_y_mid_chat_keeps_the_transcript_and_shows_in_the_next_header(tmp_path):
     trace = tmp_path.parent / (tmp_path.name + ".trace")
     env = _env(trace, "ONE@@TURN@@TWO", XWPE_AI_POLICY="ask")
@@ -384,7 +516,76 @@ def test_altg_y_mid_chat_keeps_the_transcript_and_shows_in_the_next_header(tmp_p
             _trace(trace)
 
 
-# @scenario SC-ai-journey-13
+def _click(s, col, row):
+    s.key("\033[<0;%d;%dM" % (col + 1, row + 1), delay=0.2)
+    s.key("\033[<0;%d;%dm" % (col + 1, row + 1), delay=0.6)
+
+
+# @scenario SC-ai-journey-16
+def test_options_ok_changes_only_the_permission_mid_chat(tmp_path):
+    trace = tmp_path.parent / (tmp_path.name + ".trace")
+    env = _env(trace, "ONE@@TURN@@TWO", XWPE_AI_POLICY="ask")
+    with WpeSession(str(tmp_path), "int main(void){return 0;}\n", env_extra=env) as s:
+        s.key(ALT.AI)
+        s.key("a", delay=0.6)
+        _ask(s, "first")
+        assert wait_screen(s, "AI: ONE"), _screen(s)
+        assert "[AI: mock | model: mock-model | policy: ask]" in _screen(s), _screen(s)
+        s.key("draft", delay=0.4)
+
+        s.key(ALT.OPTIONS, delay=0.5)
+        s.key("i", delay=0.8)
+        rows = s.display()
+        y = next((i for i, r in enumerate(rows) if "Auto-accept edits" in r), -1)
+        assert y >= 0, "Options > AI did not open:\n" + "\n".join(rows)
+        _click(s, rows[y].index("Auto-accept edits") - 3, y)
+        assert any("(*) Auto-accept edits" in r for r in s.display()), _screen(s)
+        s.key(ALT.OPTIONS, delay=1.0)               # Alt-O: Ok
+        options = [l for l in _trace(trace).splitlines() if l.startswith("options ")]
+        assert options and "backend=mock model=mock-model policy=edits" in options[-1], \
+            "Ok changed more than the permission: %s" % options
+        shown = _screen(s)
+        assert "You: first" in shown and "AI: ONE" in shown and "> draft" in shown, \
+            "the transcript or the typed input was lost:\n" + shown
+
+        s.key("\r", delay=1.0)
+        assert wait_screen(s, "AI: TWO"), _screen(s)
+        assert "[AI: mock | model: mock-model | policy: edits]" in _screen(s), \
+            "the next header does not show the same backend and model:\n" + _screen(s)
+
+
+# @scenario SC-ai-journey-17
+def test_composer_over_the_pane_shows_its_text_at_open_and_lands_in_the_file(tmp_path):
+    trace = tmp_path.parent / (tmp_path.name + ".trace")
+    with WpeSession(str(tmp_path), THREE, env_extra=_env(trace, "CHATREPLY@@TURN@@" + THREE_B)) as s:
+        s.key(ALT.AI)
+        s.key("a", delay=0.6)
+        _ask(s, "hello")
+        assert wait_screen(s, "AI: CHATREPLY"), "the pane is not docked:\n" + _screen(s)
+        s.key(ESC, delay=0.5)
+        s.key(ALT.AI, delay=0.5)
+        s.key("e", delay=0.8)
+        assert wait_screen(s, "AI edit instruction", 3), _screen(s)
+        s.key("bump b", delay=0.3)
+
+        s.key(ALT_M, delay=2.0)                     # the composer; no key after it
+        rows = s.display()
+        shown = "\n".join(rows)
+        assert any("Esc = done" in r for r in rows), "the composer did not open:\n" + shown
+        assert "bump b" in shown, "the composer opened without the typed text:\n" + shown
+        assert "nt b = 2;" not in shown, "the file shows through the composer:\n" + shown
+
+        s.key(ESC, delay=0.8)
+        s.key("y", delay=0.8)
+        assert _wait_trace(s, trace, "edit instr=bump b", TURN_POLL_S), _trace(trace)
+        assert wait_screen(s, BOX + " 1/1", TURN_POLL_S), _screen(s)
+        s.key("y", delay=0.8)
+        assert _wait_trace(s, trace, "edit applied 1/1"), _trace(trace)
+        s.save()
+        assert _disk(s.path) == THREE_B, "the reply did not land in the window the user started from"
+
+
+# @scenario SC-ai-journey-12
 def test_resize_with_the_review_open_then_y_applies(tmp_path):
     seed = "".join("int v%02d = %d;\n" % (i, i) for i in range(5))
     reply = seed.replace("int v02 = 2;", "int v02 = 200;")
@@ -414,7 +615,7 @@ def test_resize_with_the_review_open_then_y_applies(tmp_path):
         assert _disk(s.path) == reply
 
 
-# @scenario SC-ai-journey-14
+# @scenario SC-ai-journey-13
 def test_edit_in_the_second_window_changes_only_that_window(tmp_path):
     other = "int u = 1;\nint v = 2;\n"
     other_new = "int u = 1;\nint v = 22;\n"
@@ -448,7 +649,7 @@ def test_edit_in_the_second_window_changes_only_that_window(tmp_path):
         assert _disk(s.path) == THREE, "the first file changed"
 
 
-# @scenario SC-ai-journey-15
+# @scenario SC-ai-journey-14
 def test_edit_on_a_marked_block_changes_only_the_block(tmp_path):
     seed = "int a = 1;\nint b = 2;\nint c = 3;\nint d = 4;\n"
     region = "int b = 20;\nint c = 30;\n"

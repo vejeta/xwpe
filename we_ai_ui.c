@@ -3332,6 +3332,29 @@ static void ai_chat_next_turn(ai_chat_session *s)
  wpe_ai_trace("chat stream fd=%d turn=%d", s->fd, s->turns);
 }
 
+/**
+ * ai_compose_show_seed - Put the text already typed into the composer and paint it.
+ * @w: the composer's scratch window, just opened; @seed: the text.
+ *
+ * What the user gains: the composer opens showing the prompt they typed in
+ * the popup, with the caret after it, instead of a blank window with the file
+ * underneath showing through until the first key.  The window is painted the
+ * way the editor paints a window it has just opened.
+ */
+static void ai_compose_show_seed(FENSTER *w, const char *seed)
+{
+ BUFFER *b = w->b;
+ e_buffer_set_text(b, seed);
+ b->b.y = b->mxlines - 1;                    /* caret after the text */
+ b->b.x = b->bf[b->b.y].len;
+ e_firstl(w, 1);
+ e_zlsplt(w);
+ e_brk_schirm(w);
+ e_schirm(w, 1);
+ e_cursor(w, 1);
+ e_refresh();
+}
+
 /* Alt-G: prompt for a question and start an asynchronous streaming reply. */
 /* Multi-line composer: open a scratch editor window so the user writes the
  * prompt with the FULL editor (many lines, cut/paste, arrows, ...), finish with
@@ -3347,12 +3370,8 @@ static int e_ai_compose(char *out, size_t outsz, const char *title,
 
  if (e_edit(cn, (char *)title)) return 0;    /* scratch window, empty buffer   */
  w = cn->f[cn->mxedt];
- if (seed && *seed) {                        /* carry over what was already typed */
-  e_buffer_set_text(w->b, seed);
-  w->b->b.y = w->b->mxlines ? w->b->mxlines - 1 : 0;   /* caret after the text */
-  w->b->b.x = w->b->bf[w->b->b.y].len;
-  e_firstl(w, 1);
- }
+ if (seed && *seed)                          /* carry over what was already typed */
+  ai_compose_show_seed(w, seed);
  e_eingabe(cn);                              /* the real editor, until Esc     */
  text = ai_current_file_text(w);             /* join the typed lines           */
  w->save = 0;                                /* skip the "save changes?" prompt */
@@ -7706,6 +7725,43 @@ static W_OPTSTR  *g_ai_opt_dlg;
    backend currently SELECTED in the radio, before Ok has applied it. */
 static const int  g_ai_bk_order[4] =
  { WPE_AI_CLAUDECLI, WPE_AI_OLLAMA, WPE_AI_OPENAI, WPE_AI_CLAUDE };
+#define AI_OPT_BACKEND_ROWS   4     /* rows of the Backend radio, g_ai_bk_order */
+#define AI_OPT_NO_BACKEND_ROW (-1)  /* the radio marks no row: the session's backend has none */
+
+/**
+ * ai_opt_backend_row - The Backend radio row of @backend.
+ * @backend: a WPE_AI_* backend.
+ *
+ * A session can run on a backend the radio does not list (the test backend,
+ * one set by the environment).  The dialog then marks no row, so the user
+ * sees that none of the listed backends is in use, and nothing is picked for
+ * them.
+ *
+ * Return: the row, or AI_OPT_NO_BACKEND_ROW when the radio has none for it.
+ */
+static int ai_opt_backend_row(int backend)
+{
+ int i;
+ for (i = 0; i < AI_OPT_BACKEND_ROWS; i++)
+  if (g_ai_bk_order[i] == backend) return i;
+ return AI_OPT_NO_BACKEND_ROW;
+}
+
+/**
+ * ai_opt_backend_from_radio - The backend Ok applies, from the radio's mark.
+ * @row: the row the Backend radio marks.
+ *
+ * What the user gains: Ok changes the backend only when the user marked a
+ * row.  A user who opens the dialog to change the permission level keeps the
+ * backend and the model the conversation was using.
+ *
+ * Return: the marked row's backend, or the session's backend when no row is marked.
+ */
+static int ai_opt_backend_from_radio(int row)
+{
+ if (row >= 0 && row < AI_OPT_BACKEND_ROWS) return g_ai_bk_order[row];
+ return e_ai_backend;
+}
 
 static void ai_opt_mlabel(void)
 {
@@ -7814,8 +7870,7 @@ static int e_ai_opt_pick_model(FENSTER *f)
     Ollama).  Sync the global from the live radio first (resetting the model, as
     a backend switch does), so one Alt-M shows the right list. */
  if (g_ai_opt_dlg && g_ai_opt_dlg->pn > 0) {
-  int idx = g_ai_opt_dlg->pstr[0]->num;
-  int be = (idx >= 0 && idx < 4) ? g_ai_bk_order[idx] : e_ai_backend;
+  int be = ai_opt_backend_from_radio(g_ai_opt_dlg->pstr[0]->num);
   if (be != e_ai_backend) {
    e_ai_backend = be;
    free(e_ai_model);
@@ -8114,7 +8169,6 @@ static void ai_opt_report_user_changes(const struct ai_opt_opened *was)
  * models on the next open. */
 int e_ai_options(FENSTER *f)
 {
- const int *bk = g_ai_bk_order;
  static const char *bklab[4] = { "Claude CLI (login)", "Ollama (local)   ",
                                  "OpenAI-compatible", "Claude API (key) " };
  static const char *pol[3] = { "Ask each action ", "Auto-accept edits", "Auto (skip asks)" };
@@ -8132,8 +8186,7 @@ int e_ai_options(FENSTER *f)
  if (!o) return 0;
  g_ai_opt_dlg = o;                              /* the Model button's fkt refreshes it */
  ai_opt_opened_take(&opened);
- bcur = 0;
- for (i = 0; i < 4; i++) if (bk[i] == e_ai_backend) bcur = i;
+ bcur = ai_opt_backend_row(e_ai_backend);
  ai_opt_mlabel();
  ai_opt_plabel();
 
@@ -8240,7 +8293,7 @@ int e_ai_options(FENSTER *f)
   e_ai_web = WPE_AI_WEB_OFF;
  }
  e_ai_policy  = (o->pstr[1]->num >= 0 && o->pstr[1]->num < 3) ? o->pstr[1]->num : 0;
- new_be = bk[(o->pstr[0]->num >= 0 && o->pstr[0]->num < 4) ? o->pstr[0]->num : 0];
+ new_be = ai_opt_backend_from_radio(o->pstr[0]->num);
  if (ai_opt_commit_connection_fields(o))
   /* Persist a newly typed key to the active provider's file (or the generic
      one), so it survives the session; e_ai_key holds it meanwhile. */
@@ -11100,12 +11153,123 @@ static int ai_plan_review_file(FENSTER *w, const ai_proposal *p)
  return applied;
 }
 
+/* The text a Multi-file row carries in Messages and in the Alt-T list. */
+#define AI_PLAN_ROW_TEXT AI_MULTIFILE_PREFIX " changed"
+
+/* The files a Multi-file accept changed, one row each, for Messages and Alt-T. */
+typedef struct {
+ char *file[AI_PLAN_MAX];       /* the window's full file name: what Alt-T opens */
+ char *shown[AI_PLAN_MAX];      /* the path as the plan named it: what the row reads */
+ int   line[AI_PLAN_MAX];       /* the first changed line, 1-based */
+ int   n;
+} ai_plan_rows;
+
+/**
+ * ai_first_changed_line - The first line of @after that differs from @before.
+ * @before: the window's text before the change; @after: the text after it.
+ *
+ * Used to point a Multi-file row at the spot the user wants to read first,
+ * the way the Agent's review points at its first hunk.
+ *
+ * Return: the 1-based line in @after, 1 when the texts do not differ.
+ */
+static int ai_first_changed_line(const char *before, const char *after)
+{
+ wpe_ai_seg *segs;
+ int ns, k, line = 1;
+ ns = wpe_ai_diff_segments(before ? before : "", after ? after : "", &segs);
+ for (k = 0; k < ns && !segs[k].is_change; k++)
+  line += segs[k].an;
+ if (k == ns) line = 1;
+ wpe_ai_segs_free(segs, ns);
+ return line;
+}
+
+/**
+ * ai_plan_rows_add - Remember one file a Multi-file accept changed.
+ * @rows: the list; @w: the window holding the file; @shown: the path as the
+ * plan named it; @line: its first changed line.
+ *
+ * Collected while the plan is applied, so the rows are written once, after
+ * every window is open, and Alt-T steps them in the order the plan gave.
+ */
+static void ai_plan_rows_add(ai_plan_rows *rows, FENSTER *w, const char *shown, int line)
+{
+ if (rows->n >= AI_PLAN_MAX) return;
+ rows->file[rows->n] = e_mkfilename(w->dirct, w->datnam);
+ rows->shown[rows->n] = strdup(shown);
+ rows->line[rows->n] = line;
+ rows->n++;
+}
+
+/**
+ * ai_plan_rows_free - Release the rows once Messages and Alt-T have their copies.
+ * @rows: the list.
+ */
+static void ai_plan_rows_free(ai_plan_rows *rows)
+{
+ int i;
+ for (i = 0; i < rows->n; i++) {
+  FREE(rows->file[i]);
+  free(rows->shown[i]);
+ }
+ rows->n = 0;
+}
+
+/**
+ * ai_plan_back_to_window - Put @w back on top after Messages took the focus.
+ * @cn: the editor; @w: the file window the user was in.
+ *
+ * Writing the first Messages row opens that window on top.  The user stays in
+ * the file the accept left them in, so Alt-T steps from that file's line, as
+ * it does from a file window after a compile, and not from the line the
+ * cursor happens to have in Messages.
+ */
+static void ai_plan_back_to_window(ECNT *cn, FENSTER *w)
+{
+ int wi;
+ if (cn->f[cn->mxedt] == w) return;
+ for (wi = 1; wi <= cn->mxedt; wi++)
+  if (cn->f[wi] == w) { e_switch_window(cn->edt[wi], cn->f[cn->mxedt]); return; }
+}
+
+/**
+ * ai_plan_register_rows - List the changed files in Messages and hand them to Alt-T / Alt-V.
+ * @f: the window the plan was asked from; @rows: the files the accept changed.
+ *
+ * What the user gains: after accepting a Multi-file edit, Messages names each
+ * changed file and its first changed line, and Alt-T / Alt-V step through
+ * them the way they step through compiler errors, so every change can be
+ * read before it is saved.  There is no keep or revert step: the edits live
+ * in the open buffers, and Ctrl-U in a window takes that window's edit back.
+ * The Messages window holds this run only, as it holds the last compile.
+ */
+static void ai_plan_register_rows(FENSTER *f, ai_plan_rows *rows)
+{
+ FENSTER *was = f->ed->f[f->ed->mxedt];
+ char line[1400];
+ char *texts[AI_PLAN_MAX];
+ int i;
+ if (rows->n == 0) return;
+ ai_messages_start_run(f);
+ wpe_ai_messages_run_output_begins(f);
+ for (i = 0; i < rows->n; i++) {
+  snprintf(line, sizeof line, "%s:%d: %s", rows->shown[i], rows->line[i], AI_PLAN_ROW_TEXT);
+  e_d_p_message(line, f, 0);
+  texts[i] = AI_PLAN_ROW_TEXT;
+ }
+ e_set_error_list(rows->n, rows->file, rows->line, NULL, texts);
+ ai_plan_back_to_window(f->ed, was);
+ wpe_ai_trace("plan rows n=%d", rows->n);
+}
+
 /* Plan wrap-up: persist, then the permission moment -- list the proposed files
  * with +/- counts and apply-all / file-by-file / cancel. */
 static void ai_plan_finish(ai_async_op *op)
 {
  ai_plan_data *pd = op->ud;
  FENSTER *f = op->f;
+ ai_plan_rows rows;
  char line[1400], title[80];
  int i, np = pd->np, mode, applied = 0;
 
@@ -11129,10 +11293,12 @@ static void ai_plan_finish(ai_async_op *op)
   wpe_ai_trace("plan cancelled");
   return;
  }
+ rows.n = 0;
  for (i = 0; i < np; i++) {
   ECNT *cn = f->ed;
   FENSTER *w;
   const char *path = pd->props[i].path;
+  char *before, *after;
   int done;
   if (e_edit(cn, pd->props[i].path) != 0) {
    snprintf(line, sizeof line, AI_MULTIFILE_PREFIX " could not open %s", path);
@@ -11140,6 +11306,7 @@ static void ai_plan_finish(ai_async_op *op)
    continue;
   }
   w = cn->f[cn->mxedt];
+  before = ai_full_file_text(w);
   if (mode == AI_PLAN_APPLY_ALL) {
    e_ai_apply_text(w, pd->props[i].text);
    done = 1;
@@ -11147,15 +11314,22 @@ static void ai_plan_finish(ai_async_op *op)
    done = ai_plan_review_file(w, &pd->props[i]);
   }
   if (!done) {
+   free(before);
    wpe_ai_trace("plan skipped %s", path);
    continue;
   }
+  after = ai_full_file_text(w);
+  ai_plan_rows_add(&rows, w, path, ai_first_changed_line(before, after));
+  free(before);
+  free(after);
   applied++;
   wpe_ai_trace("plan applied %s", path);
   ai_plan_report_outside(f, path);
  }
  snprintf(line, sizeof line, AI_MULTIFILE_PREFIX " applied %d of %d file%s - each is open (Ctrl-U undoes per window)", applied, np, np == 1 ? "" : "s");
  ai_pane(f, line, AI_ROLE_MACHINERY, 0);
+ ai_plan_register_rows(f, &rows);
+ ai_plan_rows_free(&rows);
  wpe_ai_trace("plan done applied=%d", applied);
 }
 

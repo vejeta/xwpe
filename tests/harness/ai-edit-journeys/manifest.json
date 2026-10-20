@@ -1,0 +1,22 @@
+{
+ "capability": "ai-edit-journeys",
+ "scenarios": [
+  {"id": "SC-ai-journey-01", "requirement": "One change, from request to outcome", "layer": "ncurses", "test": "tests/test_ai_journeys.py::test_edit_accept_all_save_then_one_undo", "status": "new"},
+  {"id": "SC-ai-journey-02", "requirement": "One change, from request to outcome", "layer": "ncurses", "test": "tests/test_ai_journeys.py::test_edit_accept_first_hunk_reject_second", "status": "new"},
+  {"id": "SC-ai-journey-03", "requirement": "One change, from request to outcome", "layer": "ncurses", "test": "tests/test_ai_journeys.py::test_edit_esc_in_the_review_drops_the_accepted_hunk", "status": "new"},
+  {"id": "SC-ai-journey-04", "requirement": "One change, from request to outcome", "layer": "ncurses", "test": "tests/test_ai_journeys.py::test_complete_at_cursor_accept_then_one_undo", "status": "new"},
+  {"id": "SC-ai-journey-05", "requirement": "One change, from request to outcome", "layer": "ncurses", "test": "tests/test_ai_journeys.py::test_multifile_accept_lists_rows_and_alt_t_walks_them", "status": "new"},
+  {"id": "SC-ai-journey-06", "requirement": "One change, from request to outcome", "layer": "ncurses", "test": "tests/test_ai_journeys.py::test_agent_under_edits_writes_then_the_review_reverts_all", "status": "new"},
+  {"id": "SC-ai-journey-07", "requirement": "One change, from request to outcome", "layer": "ncurses", "test": "tests/test_ai_journeys.py::test_agent_under_ask_write_is_denied_and_the_run_goes_on", "status": "new"},
+  {"id": "SC-ai-journey-08", "requirement": "One change, from request to outcome", "layer": "ncurses", "test": "tests/test_ai_journeys.py::test_queued_second_edit_diffs_only_what_the_file_has", "status": "new"},
+  {"id": "SC-ai-journey-09", "requirement": "Several things at once", "layer": "ncurses", "test": "tests/test_ai_journeys.py::test_queued_second_edit_diffs_only_what_the_file_has", "status": "new"},
+  {"id": "SC-ai-journey-10", "requirement": "Several things at once", "layer": "ncurses", "test": "tests/test_ai_journeys.py::test_backend_error_mid_edit_then_the_next_edit_works", "status": "new"},
+  {"id": "SC-ai-journey-11", "requirement": "Several things at once", "layer": "ncurses", "test": "tests/test_ai_journeys.py::test_esc_while_an_edit_streams_then_the_next_edit_works", "status": "new"},
+  {"id": "SC-ai-journey-12", "requirement": "Several things at once", "layer": "ncurses", "test": "tests/test_ai_journeys.py::test_resize_with_the_review_open_then_y_applies", "status": "new"},
+  {"id": "SC-ai-journey-13", "requirement": "Several things at once", "layer": "ncurses", "test": "tests/test_ai_journeys.py::test_edit_in_the_second_window_changes_only_that_window", "status": "new"},
+  {"id": "SC-ai-journey-14", "requirement": "Several things at once", "layer": "ncurses", "test": "tests/test_ai_journeys.py::test_edit_on_a_marked_block_changes_only_the_block", "status": "new"},
+  {"id": "SC-ai-journey-15", "requirement": "The setup changes under a conversation", "layer": "ncurses", "test": "tests/test_ai_journeys.py::test_altg_y_mid_chat_keeps_the_transcript_and_shows_in_the_next_header", "status": "new"},
+  {"id": "SC-ai-journey-16", "requirement": "The setup changes under a conversation", "layer": "ncurses", "test": "tests/test_ai_journeys.py::test_options_ok_changes_only_the_permission_mid_chat", "status": "new"},
+  {"id": "SC-ai-journey-17", "requirement": "The setup changes under a conversation", "layer": "ncurses", "test": "tests/test_ai_journeys.py::test_composer_over_the_pane_shows_its_text_at_open_and_lands_in_the_file", "status": "new"}
+ ]
+}

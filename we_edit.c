@@ -2687,7 +2687,11 @@ static void e_buffer_append_line(BUFFER *b, const char *str)
    on '\n').  Does NOT touch the cursor, the view, or the undo stack -- the caller
    owns those.  The inverse of e_buffer_to_text; used by whole-buffer Undo and by
    the LSP edit-apply path (e_lsp_replace_buffer).  Each split line is appended
-   verbatim via e_buffer_append_line, so empty lines survive the round trip. */
+   verbatim via e_buffer_append_line, so empty lines survive the round trip.
+   The result has the shape the file reader (e_readin) gives the same bytes:
+   "a\nb\n" is two lines, with no empty line after them.  An extra empty last
+   line would be sent to the next Edit as a line the file does not have, and
+   would become a real blank line once Undo rebuilt the buffer from it. */
 void e_buffer_set_text(BUFFER *b, const char *text)
 {
  char *copy = strdup(text ? text : ""), *p, *nl;
@@ -2710,7 +2714,8 @@ void e_buffer_set_text(BUFFER *b, const char *text)
   if (!*p)
    break;                 /* a trailing '\n' just terminates the last line */
  }
- e_new_line(b->mxlines, b);
+ if (b->mxlines == 0)
+  e_new_line(0, b);       /* a buffer always holds one line */
  free(copy);
 }
 
