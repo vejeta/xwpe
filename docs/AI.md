@@ -107,7 +107,7 @@ the model works):
   step-by-step, reading and acting as it goes.)
 - **Build & fix (agent)** (`Alt-G b`) -- a specialized agent: runs the build
   (`make` when a makefile is present, otherwise a syntax-only compile of the
-  current file) and, if it fails, loops -- read the errors, edit the sources,
+  current C or C++ file) and, if it fails, loops -- read the errors, edit the sources,
   re-build -- until it passes. Same tools and permission level as the agent.
 
 - **Complete at cursor** (`Alt-G c`) -- fills in code where the cursor is, at
@@ -313,8 +313,11 @@ The model list is queried live where possible (Ollama `/api/tags`, OpenAI
 `/v1/models`) and shown in the picker; the Claude CLI offers its aliases
 (default/sonnet/opus/haiku).
 
-**Waiting for a server.** The editor never waits inside a connection. A
-chat, Edit, completion or agent turn opens its connection on the editor's
+**Waiting for a server.** Before a request the editor checks that something
+listens at the endpoint: a TCP connect bounded at 3 s, the one wait it still
+sits through (a server that drops the connection attempt holds it that long;
+one that refuses answers at once). From there on it never waits inside a
+connection. A chat, Edit, completion or agent turn opens its connection on the editor's
 loop: the connect, the TLS handshake and the first byte of the answer share
 one deadline, 120 s by default (`XWPE_AI_TIMEOUT`). Meanwhile the waiting line
 shows, the editor takes keys and Esc cancels. A server that lets the deadline

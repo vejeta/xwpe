@@ -177,7 +177,11 @@ A deterministic in-process backend used by the test suite; no network.
 
 @cindex AI, deadline
 @cindex AI, waiting for a server
-The editor never waits inside a connection.  A chat, an Edit, a completion or
+Before a request the editor checks that something listens at the endpoint: a
+TCP connect bounded at 3 seconds, the one wait it still sits through (a server
+that drops the connection attempt holds it that long; one that refuses answers
+at once).  From there on the editor never waits inside a connection.  A chat,
+an Edit, a completion or
 an agent turn opens its connection on the editor's own loop: the connect, the
 TLS handshake and the wait for the first byte of the answer share one deadline,
 120 seconds by default (@env{XWPE_AI_TIMEOUT} sets it for a session), long

@@ -273,8 +273,8 @@ Changes
 
 * Build & fix on a file with no makefile and no compiler check for its
   type says "no build command for <file>: no makefile here, and only C
-  and C++ have a syntax check" and runs nothing.  It used to announce "make" and send the agent after
-  a build that could not work.
+  and C++ have a syntax check" and runs nothing.  It used to announce
+  "make" and send the agent after a build that could not work.
 
 * Alt-T and Alt-V walk a list that spans several files in order.  They
   used to pick the next row by line number alone, whatever file it named,
