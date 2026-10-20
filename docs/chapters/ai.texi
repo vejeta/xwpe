@@ -72,7 +72,8 @@ composer, @kbd{Alt-C} or @key{Esc} cancels, and @kbd{Alt-P} brings the focus
 back to the field from a button.  For a real multi-line prompt, press the
 @samp{Multi-line} button (@kbd{Alt-M}): it opens a scratch editor window as a
 text area, so you compose with the full editor (several lines, cut and paste,
-the arrow keys), finish with @key{Esc}, and confirm Send; the window's title
+the arrow keys), finish with @key{Esc}, and confirm Send.  It opens showing
+what you had already typed in the field, with the caret after it; the window's title
 repeats that two-step exit.  Complete asks nothing: it runs at once on the
 cursor.  Ask has no box: the question is typed in the pane's own input row
 (see the Chat section below).
@@ -272,6 +273,9 @@ when another action had already written to the pane.  When the backend, the
 model or the permission dial change while the chat is open (Options > AI
 closed with Ok, @kbd{Alt-G y}, a provider switch), a new header line with
 the current values precedes the next turn; the transcript above it is kept.
+Ok changes only what you touched: when the session runs on a backend the
+Backend radio does not list (one set by @env{XWPE_AI_BACKEND}), the radio marks
+no row, and Ok keeps that backend and its model unless you pick a row.
 
 @cindex AI, browsing the transcript
 The pane keeps its @samp{> } input row docked at the bottom while you type.
@@ -465,7 +469,15 @@ file-by-file review below, is the preview of a Multi-file change.
 it hunk by hunk (in the same diff box as Edit); @kbd{q} or @key{Esc} cancels.
 Each changed file is @strong{opened in its own window and left open}, so you can
 read it, step between them with @kbd{Alt-1}@dots{}, and undo any one with
-@kbd{Ctrl-U}.
+@kbd{Ctrl-U}.  Nothing reaches the disk until you save each window.
+
+@cindex AI, multi-file rows in Messages
+After the accept, the @samp{Messages} window lists one row per changed file,
+with its first changed line, such as @samp{src/parser.c:12: [Multi-file edit]
+changed}.  @kbd{Alt-T} and @kbd{Alt-V} step through these rows the way they
+step through compiler errors, opening each file at that line.  There is no keep
+or revert step as after an agent run: the edits live in the open buffers, and
+@kbd{Ctrl-U} in a window is that file's revert.
 
 @section Agent and the permission dial
 

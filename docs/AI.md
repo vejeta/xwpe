@@ -152,7 +152,8 @@ press Esc first), and *AI settings...* which opens **Options > AI** (the model,
 the enable toggle and the full configuration live there). Edit, Multi-file and
 the Agent ask for their instruction in a prompt box whose key hint sits above
 the field: Enter or `Alt-S` sends, `Alt-M` opens the multi-line composer (a
-scratch window titled with the task and `Esc = done, then Y sends, N cancels`),
+scratch window titled with the task and `Esc = done, then Y sends, N cancels`,
+which opens showing what you had already typed in the field),
 `Alt-C` or Esc cancels, `Alt-P` brings the focus back to the field.
 The **Agent** can run on one of two **engines** (choose in Options > AI, only in
 a `--enable-ai-agent-host` build): *Built-in* (the editor's own tool loop, works
@@ -188,6 +189,12 @@ see it before approving and the pane names it when it is applied. **Enter/A**
 applies all, **F** reviews file-by-file (each in the diff box), and **Q/Esc**
 cancels. Nothing is written until you approve. (This
 is what some tools call a "workspace edit"; it is *not* an agent plan mode.)
+After the accept each changed file is open in its own window, and the
+`Messages` window lists one row per file with its first changed line
+(`src/parser.c:12: [Multi-file edit] changed`). **Alt-T** / **Alt-V** step
+through those rows as they step through compiler errors. There is no keep or
+revert step: the edits live in the buffers until you save each window, and
+**Ctrl-U** in a window takes that file's edit back.
 `Alt-G m` opens the scrollable **model picker**.
 
 The pane keeps its `> ` prompt docked at the bottom while you type. To read back a
@@ -200,7 +207,10 @@ first lines are a header,
 `[AI: <backend> | model: <model> | policy: <dial>]` (`| web` is appended
 while web access is on), and two hint lines; when
 the backend, the model or the permission dial change while the chat is open, a
-new header line with the current values precedes the next turn. A question
+new header line with the current values precedes the next turn. Ok in
+Options > AI changes only what you touched: on a backend the Backend radio does
+not list (one set by `XWPE_AI_BACKEND`), the radio marks no row and Ok keeps
+that backend and its model. A question
 sent while a reply is still streaming is queued, the pane says so, and it
 starts when the running turn ends.
 
