@@ -38,6 +38,11 @@
 #include <stdarg.h>
 #include <sys/wait.h>
 #include <glob.h>
+#include <stdint.h>
+#include <time.h>
+#ifdef __linux__
+# include <sys/timerfd.h>  /* the waiting line's heartbeat while a debugger starts */
+#endif
 
 /* jdb protocol tracing now routes through the unified WPE_TRACE facility
    (build with ./configure --enable-trace); records are line-tagged "[jdb]".
@@ -127,6 +132,8 @@ static int  e_d_prog_output_reserve(int extra);
 static void e_d_prog_output_append(char *data, int len);
 static void e_d_prog_output_append_line(char *data, int len);
 static int  e_d_a68g_step_complete(FENSTER *f);   /* a68g: read step/continue response */
+static int  e_d_start_forget(void);       /* the start watcher (see e_run_debug) */
+static int  e_d_start_refused(FENSTER *f);
 static int  e_d_a68g_cur_line = 0;   /* source line a68g is currently stopped on */
 
 int e_d_pty_verase(void)
@@ -1346,9 +1353,11 @@ int e_d_quit_basic(FENSTER *f)
     already exited and closed its end, causing write() to SIGPIPE. */
  signal(SIGPIPE, SIG_IGN);
 
+ e_d_start_forget();
  if (!e_d_swtch)
   return 0;
- if (rfildes[1] >= 0)
+ /* A debugger that never answered is not spoken to: it is ended below. */
+ if (rfildes[1] >= 0 && e_d_swtch >= 2)
  {
   if (e_deb_type == DEB_GDB || e_deb_type == DEB_XDB)
    e_d_send_cmd("q\ny\n");
@@ -1593,6 +1602,8 @@ int e_d_p_watches(FENSTER *f, int sw)
 
  if (e_d_dap_active())
   return(e_d_dap_watches(f, sw));   /* DAP: values via evaluate(context=watch) */
+ if (e_d_start_refused(f))
+  return(0);
  e_d_switch_out(0);
  if ((e_d_swtch > 2) && (e_d_p_stack(f, 0) == -1))
   return(-1);
@@ -2156,6 +2167,8 @@ int e_remove_breakpoints(FENSTER *f)
  ECNT *cn = f->ed;
  int i;
 
+ if (e_d_start_refused(f))
+  return(0);
  if (e_d_swtch)
  {
   if (e_deb_type == DEB_GDB)
@@ -2386,6 +2399,8 @@ int e_make_breakpoint(FENSTER *f, int sw)
  int ret, i;
  char eing[128], str[256];
 
+ if (e_d_start_refused(f))
+  return(0);
  if (!sw)
  {
   if (!e_check_c_file(f->datnam) && !e_d_dap_source_ext(f->datnam))
@@ -3497,6 +3512,572 @@ static int e_d_build_first(FENSTER *f)
  return(E_D_BUILDING);
 }
 
+/* ---- Starting a pipe debugger (gdb, jdb, pdb, a68g) ---------------------
+ *
+ * A started debugger answers with a banner and its prompt.  Until it has, the
+ * editor never waits for it: the debugger's output is watched on the fd loop,
+ * as a build's is, a waiting line in Messages counts the seconds, Esc ends the
+ * debugger, and a deadline ends one that never answers.  When the prompt
+ * arrives the session goes on from there, and the command the user pressed
+ * (Run, Step, Go to cursor) runs as if pressed again.
+ */
+
+/* How long (seconds) a started debugger may stay silent before the start is
+   given up; the environment variable overrides it. */
+#define E_D_START_TIMEOUT 30
+#define E_D_START_TIMEOUT_ENV "XWPE_DEBUG_START_TIMEOUT"
+/* The waiting line turns at the build's cadence. */
+#define E_D_START_TICK_NS 120000000L
+/* After SIGTERM, this many ticks (about two seconds) pass before SIGKILL. */
+#define E_D_START_KILL_TICKS 17
+#define E_D_START_WAIT_FMT "starting %s ... %lds  (Esc cancels)"
+#define E_D_START_CANCELLED_FMT "%s start cancelled"
+#define E_D_START_TIMED_OUT_FMT "%s did not answer within %d s"
+#define E_D_START_BUSY_LINE " The debugger is starting: Esc cancels it"
+#define E_D_START_LINE_MAX 128
+#define E_D_START_NO_FD (-1)
+/* e_run_debug's answer while the debugger it started has not answered: the
+   command that asked returns quietly and is run again on the answer. */
+#define E_D_STARTING (-4)
+
+/* Why a start that got no answer is being ended. */
+#define E_D_START_WAITING   0
+#define E_D_START_CANCELLED 1
+#define E_D_START_TIMED_OUT 2
+
+/* The one debugger start that may be waiting. */
+static struct {
+ int active;        /* a debugger was started and has not answered yet      */
+ int ending;        /* E_D_START_WAITING, or why the debugger is being ended */
+ int term_ticks;    /* heartbeat ticks since SIGTERM                        */
+ int held;          /* it answered while a box was up                       */
+ int wait_row;      /* the waiting line is Messages' last row               */
+ int timeout;       /* the deadline, in seconds                             */
+ time_t start;
+ int hb_fd;         /* the heartbeat timer                                  */
+ int out_fd;        /* the debugger's output, while it is watched           */
+ ECNT *cn;
+} e_d_start = { 0, E_D_START_WAITING, 0, 0, 0, E_D_START_TIMEOUT, 0,
+                E_D_START_NO_FD, E_D_START_NO_FD, NULL };
+
+/* The command to run once the debugger has answered. */
+static e_d_resume_fn e_d_start_cmd = NULL;
+static int e_d_start_arg = 0;
+
+static int e_d_start_after_banner(FENSTER *f);
+
+/**
+ * e_d_start_busy - Is a started debugger still waiting to answer?
+ *
+ * The editor's key loop asks this so Esc ends the start, as the waiting line
+ * in Messages says.
+ * Return: 1 while the start waits.
+ */
+int e_d_start_busy(void)
+{
+ return(e_d_start.active);
+}
+
+/**
+ * e_d_start_refused - Refuse a debugger command while the debugger starts.
+ * @f: the window the key was pressed in.
+ *
+ * Nothing may be sent to a debugger that has not answered: the command
+ * would only be read after the banner, or never.  The status row says why
+ * the key did nothing and that Esc ends the start.
+ * Return: 1 when the command must not run.
+ */
+static int e_d_start_refused(FENSTER *f)
+{
+ if (!e_d_start.active)
+  return(0);
+ e_status_say(f, E_D_START_BUSY_LINE);
+ return(1);
+}
+
+/**
+ * e_d_start_timeout - The start's deadline in seconds.
+ *
+ * E_D_START_TIMEOUT, or a positive whole number of seconds from the
+ * environment, for a debugger known to start slowly (a large program, a
+ * slow machine) or for a test that should not wait half a minute.
+ */
+static int e_d_start_timeout(void)
+{
+ const char *env = getenv(E_D_START_TIMEOUT_ENV);
+ long secs;
+ char *end;
+
+ if (!env || !*env)
+  return(E_D_START_TIMEOUT);
+ secs = strtol(env, &end, 10);
+ if (*end || secs <= 0 || secs > INT_MAX)
+  return(E_D_START_TIMEOUT);
+ return((int)secs);
+}
+
+/**
+ * e_d_start_label - The debugger's name as the user knows it.
+ *
+ * pdb runs as python3, but the user picked Python debugging, so the lines
+ * say "pdb".
+ */
+static const char *e_d_start_label(void)
+{
+ if (e_deb_type == DEB_PDB)
+  return("pdb");
+ if (e_debugger)
+  return(e_debugger);
+ return("debugger");
+}
+
+/**
+ * e_d_start_wait_line_drop - Take the waiting line out of Messages.
+ */
+static void e_d_start_wait_line_drop(void)
+{
+ FENSTER *mf = e_build_messages(e_d_start.cn);
+
+ if (!e_d_start.wait_row)
+  return;
+ e_d_start.wait_row = 0;
+ if (mf)
+  e_build_drop_last_row(mf->b);
+}
+
+/**
+ * e_d_start_wait_line_put - Write "starting <debugger> ... Ns (Esc cancels)"
+ * at the foot of Messages.
+ *
+ * What the user sees while the debugger starts: that it starts, for how
+ * long, and that Esc ends it, where a build shows its own waiting line.
+ */
+static void e_d_start_wait_line_put(void)
+{
+ FENSTER *mf = e_build_messages(e_d_start.cn);
+ char line[E_D_START_LINE_MAX];
+
+ if (!mf || e_d_start.wait_row)
+  return;
+ snprintf(line, sizeof line, E_D_START_WAIT_FMT, e_d_start_label(),
+          (long)(time(NULL) - e_d_start.start));
+ print_to_end_of_buffer(mf->b, line, 0);
+ e_d_start.wait_row = 1;
+}
+
+/**
+ * e_d_start_wait_line_turn - Show the waiting line with the seconds so far.
+ */
+static void e_d_start_wait_line_turn(void)
+{
+ e_d_start_wait_line_drop();
+ e_d_start_wait_line_put();
+ e_messages_show_tail(e_d_start.cn);
+}
+
+/**
+ * e_d_start_signal - Send @sig to the starting debugger.
+ * @sig: SIGTERM first, SIGKILL when that was not enough.
+ *
+ * The debugger is the editor's own child, addressed by its exact PID; it has
+ * started no program yet.
+ */
+static void e_d_start_signal(int sig)
+{
+ if (e_d_pid > 0)
+  kill(e_d_pid, sig);
+}
+
+/**
+ * e_d_start_reaped - Has the starting debugger exited?
+ *
+ * The editor's SIGCHLD handler may have collected it first, which is why
+ * ECHILD also means gone.  Once gone its PID is forgotten, so nothing is
+ * ever sent to a process that reused the number.
+ * Return: 1 once the debugger is gone.
+ */
+static int e_d_start_reaped(void)
+{
+ int st, r;
+
+ if (e_d_pid <= 0)
+  return(1);
+ r = waitpid(e_d_pid, &st, WNOHANG);
+ if (r == e_d_pid || (r < 0 && errno == ECHILD))
+ {
+  e_d_pid = 0;
+  return(1);
+ }
+ return(0);
+}
+
+/**
+ * e_d_start_unwatch_output - Stop reading the debugger's output.
+ */
+static void e_d_start_unwatch_output(void)
+{
+ if (e_d_start.out_fd == E_D_START_NO_FD)
+  return;
+ wpe_fd_del(e_d_start.out_fd);
+ e_d_start.out_fd = E_D_START_NO_FD;
+}
+
+/**
+ * e_d_start_heartbeat_stop - Stop the waiting line's timer.
+ */
+static void e_d_start_heartbeat_stop(void)
+{
+ if (e_d_start.hb_fd == E_D_START_NO_FD)
+  return;
+ wpe_fd_del(e_d_start.hb_fd);
+ close(e_d_start.hb_fd);
+ e_d_start.hb_fd = E_D_START_NO_FD;
+}
+
+/**
+ * e_d_start_forget - Drop everything the start watches.
+ *
+ * Called when the start has ended, one way or another, and by the session's
+ * own teardown, so a quit during the start leaves nothing registered.
+ * Return: 1 when a start was waiting.
+ */
+static int e_d_start_forget(void)
+{
+ if (!e_d_start.active)
+  return(0);
+ e_d_start_unwatch_output();
+ e_d_start_heartbeat_stop();
+ e_d_start_wait_line_drop();
+ e_d_start.active = 0;
+ e_d_start.held = 0;
+ e_d_start.ending = E_D_START_WAITING;
+ return(1);
+}
+
+/**
+ * e_d_start_say_end - Write why the start ended in Messages.
+ * @why: E_D_START_CANCELLED or E_D_START_TIMED_OUT.
+ * @label: the debugger's name; @timeout: the deadline that passed.
+ * @f: the window on top.
+ */
+static void e_d_start_say_end(int why, const char *label, int timeout, FENSTER *f)
+{
+ char line[E_D_START_LINE_MAX];
+
+ if (why == E_D_START_CANCELLED)
+  snprintf(line, sizeof line, E_D_START_CANCELLED_FMT, label);
+ else
+  snprintf(line, sizeof line, E_D_START_TIMED_OUT_FMT, label, timeout);
+ e_d_p_message(line, f, 1);
+}
+
+/**
+ * e_d_start_end - The debugger is gone, or must go: end the session.
+ *
+ * A start the user cancelled, or that passed its deadline, ends with a line
+ * that says so; a debugger that ended by itself before answering is
+ * reported as before, by the session's end.  Either way the editor is left
+ * as it was before Ctrl-G R.
+ */
+static void e_d_start_end(void)
+{
+ ECNT *cn = e_d_start.cn;
+ FENSTER *f = cn->f[cn->mxedt];
+ int why = e_d_start.ending, timeout = e_d_start.timeout;
+ char label[E_D_START_LINE_MAX];
+
+ strncpy(label, e_d_start_label(), sizeof label - 1);
+ label[sizeof label - 1] = '\0';
+ e_d_start_forget();
+ e_d_quit(f);
+ f = cn->f[cn->mxedt];
+ if (why == E_D_START_WAITING)
+  e_show_error(0, f);
+ else
+  e_d_start_say_end(why, label, timeout, f);
+}
+
+/**
+ * e_d_start_stop - End a debugger that has not answered.
+ * @why: E_D_START_CANCELLED (Esc) or E_D_START_TIMED_OUT (the deadline).
+ *
+ * The debugger gets SIGTERM; the heartbeat sends SIGKILL if it is still
+ * there about two seconds later, and ends the session once it is gone.
+ * Without a heartbeat it is killed at once.
+ */
+static void e_d_start_stop(int why)
+{
+ if (e_d_start.ending != E_D_START_WAITING)
+  return;
+ e_d_start.ending = why;
+ e_d_start.term_ticks = 0;
+ e_d_start_unwatch_output();
+ if (e_d_start.hb_fd != E_D_START_NO_FD)
+ {
+  e_d_start_signal(SIGTERM);
+  return;
+ }
+ e_d_start_signal(SIGKILL);
+ e_d_start_end();               /* the session's end reaps the killed child */
+}
+
+/**
+ * e_d_start_check_deadline - End the start once its deadline has passed.
+ */
+static void e_d_start_check_deadline(void)
+{
+ if (e_d_start.ending != E_D_START_WAITING)
+  return;
+ if (time(NULL) - e_d_start.start >= e_d_start.timeout)
+  e_d_start_stop(E_D_START_TIMED_OUT);
+}
+
+/**
+ * e_d_start_escalate - A debugger that outlives SIGTERM gets SIGKILL.
+ */
+static void e_d_start_escalate(void)
+{
+ e_d_start.term_ticks++;
+ if (e_d_start.term_ticks == E_D_START_KILL_TICKS)
+  e_d_start_signal(SIGKILL);
+}
+
+/**
+ * e_d_start_continue - The debugger answered: go on with the session.
+ *
+ * What followed the banner before (the settings sent to gdb, the
+ * breakpoints) runs now, and then the command the user pressed.
+ */
+static void e_d_start_continue(void)
+{
+ ECNT *cn = e_d_start.cn;
+ e_d_resume_fn cmd = e_d_start_cmd;
+ int arg = e_d_start_arg;
+ FENSTER *f;
+
+ e_d_start_forget();
+ e_messages_show_tail(cn);       /* Messages without the waiting line */
+ e_d_start_cmd = NULL;
+ e_deb_prompt_reset();
+ f = cn->f[cn->mxedt];
+ if (e_d_start_after_banner(f) < 0)
+ {
+  e_d_quit(f);
+  e_show_error(0, cn->f[cn->mxedt]);
+  return;
+ }
+ if (cmd)
+  cmd(cn->f[cn->mxedt], arg);
+}
+
+/**
+ * e_d_start_answered - The prompt arrived.
+ *
+ * The session goes on at once, or, when a dialog is open, as soon as the
+ * editor is back in its key loop, so nothing is painted under the dialog.
+ */
+static void e_d_start_answered(void)
+{
+ e_d_start_unwatch_output();
+ if (e_build_ui_idle(e_d_start.cn))
+ {
+  e_d_start_continue();
+  return;
+ }
+ e_d_start_heartbeat_stop();
+ e_d_start.held = 1;
+}
+
+/**
+ * e_d_start_deliver_held - Go on with a session whose debugger answered
+ * behind a dialog.
+ *
+ * The editor's key loop calls this before it waits for a key, the point
+ * that is outside every dialog.
+ */
+void e_d_start_deliver_held(void)
+{
+ if (!e_d_start.active || !e_d_start.held)
+  return;
+ if (!e_build_ui_idle(e_d_start.cn))
+  return;
+ e_d_start_continue();
+}
+
+/**
+ * e_d_start_on_output - The debugger wrote: read its banner up to the prompt.
+ * @fd: its output; @data: unused.
+ *
+ * The banner itself is not shown, as before.  End of file before the prompt
+ * means the debugger ended by itself.  Without a heartbeat the deadline is
+ * checked here, whenever output arrives.
+ */
+static void e_d_start_on_output(int fd, void *data)
+{
+ signed char buf[256];
+ int ret;
+
+ (void)data;
+ if (!e_d_start.active || e_d_start.ending != E_D_START_WAITING)
+  return;
+ for (;;)
+ {
+  ret = e_d_line_read_nb(fd, buf, sizeof buf);
+  if (ret == -2)
+   break;
+  if (ret == -1)
+  {
+   e_d_start_end();
+   return;
+  }
+  if (ret == 1)
+  {
+   e_d_start_answered();
+   return;
+  }
+ }
+ /* A last fragment with no newline stays buffered after end of file, so the
+    hang-up would wake this callback again and again: a debugger that is gone
+    ends the start here. */
+ if (e_d_start_reaped())
+ {
+  e_d_start_end();
+  return;
+ }
+ e_d_start_check_deadline();
+}
+
+/**
+ * e_d_start_on_tick - The heartbeat: turn the waiting line, apply the
+ * deadline, and finish a debugger that is being ended.
+ * @fd: the timer; @data: unused.
+ */
+static void e_d_start_on_tick(int fd, void *data)
+{
+ uint64_t expirations;
+
+ (void)data;
+ if (read(fd, &expirations, sizeof expirations) != (ssize_t)sizeof expirations)
+  return;
+ if (!e_d_start.active || e_d_start.held)
+  return;
+ if (e_d_start_reaped())
+ {
+  e_d_start_end();
+  return;
+ }
+ if (e_d_start.ending != E_D_START_WAITING)
+ {
+  e_d_start_escalate();
+  return;
+ }
+ e_d_start_check_deadline();
+ if (e_d_start.ending == E_D_START_WAITING)
+  e_d_start_wait_line_turn();
+}
+
+/**
+ * e_d_start_heartbeat_start - Start the timer that turns the waiting line.
+ *
+ * Present only while a debugger starts, so the idle editor still sleeps until
+ * a key.  Without timerfd the line moves, and the deadline is checked, when
+ * the debugger writes.
+ */
+static void e_d_start_heartbeat_start(void)
+{
+ e_d_start.hb_fd = E_D_START_NO_FD;
+#ifdef __linux__
+ e_d_start.hb_fd = timerfd_create(CLOCK_MONOTONIC, TFD_CLOEXEC | TFD_NONBLOCK);
+ if (e_d_start.hb_fd >= 0)
+ {
+  struct itimerspec its;
+
+  its.it_value.tv_sec = 0;
+  its.it_value.tv_nsec = E_D_START_TICK_NS;
+  its.it_interval = its.it_value;
+  timerfd_settime(e_d_start.hb_fd, 0, &its, NULL);
+  wpe_fd_add(e_d_start.hb_fd, POLLIN, e_d_start_on_tick, NULL);
+ }
+ else
+  e_d_start.hb_fd = E_D_START_NO_FD;
+#endif
+}
+
+/**
+ * e_d_start_cancel - Esc while the debugger starts: end it.
+ *
+ * The debugger gets SIGTERM, then SIGKILL if it is still there about two
+ * seconds later, and Messages says "<debugger> start cancelled".  A
+ * debugger that already answered behind a dialog is not cancelled: the
+ * session goes on.
+ */
+void e_d_start_cancel(void)
+{
+ if (!e_d_start.active)
+  return;
+ if (e_d_start.held)
+ {
+  e_d_start_deliver_held();
+  return;
+ }
+ e_d_start_stop(E_D_START_CANCELLED);
+}
+
+/**
+ * e_d_start_watch - Wait for the debugger's answer without holding the editor.
+ * @f: the source window.
+ *
+ * From here the start goes on in e_d_start_on_output and e_d_start_on_tick;
+ * the editor takes keys at once.
+ */
+static void e_d_start_watch(FENSTER *f)
+{
+ e_d_start.active = 1;
+ e_d_start.ending = E_D_START_WAITING;
+ e_d_start.held = 0;
+ e_d_start.term_ticks = 0;
+ e_d_start.wait_row = 0;
+ e_d_start.timeout = e_d_start_timeout();
+ e_d_start.start = time(NULL);
+ e_d_start.cn = f->ed;
+ e_d_async_reset();
+ e_d_start.out_fd = wfildes[0];
+ wpe_fd_add(e_d_start.out_fd, POLLIN, e_d_start_on_output, NULL);
+ e_d_start_heartbeat_start();
+ e_d_start_wait_line_put();
+ e_messages_show_tail(e_d_start.cn);
+}
+
+/**
+ * e_d_resume_after_start - Name the command to run once the debugger has
+ * answered.
+ * @cmd: the command; @arg: its argument.
+ *
+ * A key refused during the start does not replace the command that started
+ * it.
+ */
+static void e_d_resume_after_start(e_d_resume_fn cmd, int arg)
+{
+ if (e_d_start.active)
+  return;
+ e_d_start_cmd = cmd;
+ e_d_start_arg = arg;
+}
+
+/**
+ * e_d_deferred - Did e_run_debug leave the command to run later?
+ * @ret: e_run_debug's answer.
+ *
+ * True while the build the debugger needs runs, and while the debugger it
+ * started has not answered: the command runs again when they are done.
+ */
+static int e_d_deferred(int ret)
+{
+ if (ret == E_D_BUILDING)
+  return(1);
+ return(ret == E_D_STARTING);
+}
+
 /**
  * e_d_resume_after_build - Name the command to run again once the build the
  * debugger starts with has succeeded.
@@ -3504,6 +4085,7 @@ static int e_d_build_first(FENSTER *f)
  */
 static void e_d_resume_after_build(e_d_resume_fn cmd, int arg)
 {
+ e_d_resume_after_start(cmd, arg);
  if (e_d_swtch || e_build_busy())
   return;                 /* already debugging, or a build owns the resume */
  e_d_resume_cmd = cmd;
@@ -3691,68 +4273,95 @@ static void e_d_a68g_rearm_breakpoints(FENSTER *f)
  }
 }
 
-int e_run_debug(FENSTER *f)
+/**
+ * e_d_set_nonblock - Make one of the debugger's pipes non-blocking.
+ * @fd: the pipe's read end, or -1.
+ */
+static void e_d_set_nonblock(int fd)
+{
+ int flags = fcntl(fd, F_GETFL, 0);
+
+ fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+}
+
+/**
+ * e_d_start_after_banner - Set the debugger up once it has answered.
+ * @f: the window on top.
+ *
+ * Turns off gdb's confirmations and points its program at the editor's
+ * pty, then sends the breakpoints; from here the session is running.
+ * Return: 0, or -1 when the debugger stopped answering.
+ */
+static int e_d_start_after_banner(FENSTER *f)
 {
  ECNT *cn = f->ed;
- int kbdflgs, ret;
+
+ jdb_trace("e_run_debug: banner read OK\n");
+ /* Disable gdb's confirmation prompts ("Start it from the beginning?",
+    "Kill the program being debugged?", etc.) to prevent busy loops
+    when xwpe sends commands that gdb would otherwise block on. */
+ if (e_deb_type == DEB_GDB)
+ {
+  e_d_send_cmd("set confirm off\n");
+  if (e_d_dum_read() == -1) return(-1);
+  if (e_d_pty_master >= 0)
+  {
+   char _tty_cmd[160];
+   sprintf(_tty_cmd, "set inferior-tty %s\n", e_d_pty_slave_name);
+   e_d_send_cmd(_tty_cmd);
+   if (e_d_dum_read() == -1) return(-1);
+  }
+ }
+ if (e_deb_type == DEB_XDB)
+ {
+  e_d_send_cmd("sm\n");
+  if (e_d_dum_read() == -1) return(-1);
+ }
+ /* a68g: a finished program tore down the session and cleared e_d_nbrpts;
+    rebuild it from the surviving markers so a re-run re-arms the breakpoints. */
+ if (e_deb_type == DEB_A68G)
+  e_d_a68g_rearm_breakpoints(cn->f[cn->mxedt]);
+ jdb_trace("e_run_debug: setting breakpoints (nbrpts=%d)...\n", e_d_nbrpts);
+ if (e_make_breakpoint(cn->f[cn->mxedt], 1) == -1) return(-1);
+ jdb_trace("e_run_debug: breakpoints set OK, e_d_swtch -> 2\n");
+ e_d_swtch = 2;
+#ifndef NO_XWINDOWS
+ if (WpeIsXwin())
+ {
+  XSetInputFocus(WpeXInfo.display, WpeXInfo.window,
+    RevertToParent, CurrentTime);
+  XFlush(WpeXInfo.display);
+ }
+#endif
+ return(0);
+}
+
+/**
+ * e_run_debug - Make sure a debugger session is running.
+ * @f: the window the debugger command was pressed in.
+ *
+ * Builds first when needed and starts the debugger; the editor does not wait
+ * for its banner (see e_d_start_watch).  While a start waits, a second
+ * debugger command is refused on the status row.
+ * Return: 0 when the session runs, E_D_BUILDING or E_D_STARTING when the
+ * command will be run again later, or a negative error.
+ */
+int e_run_debug(FENSTER *f)
+{
+ int ret;
 
  jdb_trace("e_run_debug: entry, e_d_swtch=%d, e_deb_type=%d\n",
            e_d_swtch, e_deb_type);
+ if (e_d_start_refused(f))
+  return(E_D_STARTING);
  if (e_d_swtch < 1 && (ret = e_start_debug(f)) < 0) return(ret);
  if (e_d_swtch < 2)
  {
-  kbdflgs = fcntl(efildes[0], F_GETFL, 0);
-  fcntl( efildes[0], F_SETFL, kbdflgs | O_NONBLOCK);
-  kbdflgs = fcntl(wfildes[0], F_GETFL, 0);
-  fcntl( wfildes[0], F_SETFL, kbdflgs | O_NONBLOCK);
-
-  jdb_trace("e_run_debug: reading banner...\n");
-  /* pdb (and other interpreted debuggers) need time to start before
-     their banner is available on stdout.  Wait for data with poll().
-     a68g --monitor compiles the source first, so it needs the same grace. */
-  if (e_deb_type == DEB_PDB || e_deb_type == DEB_A68G)
-  {
-   struct pollfd _pfd = { .fd = wfildes[0], .events = POLLIN };
-   poll(&_pfd, 1, 3000);  /* wait up to 3s for the debugger to write its banner */
-  }
-  if (e_d_dum_read() == -1) return(-1);
-  jdb_trace("e_run_debug: banner read OK\n");
-  /* Disable gdb's confirmation prompts ("Start it from the beginning?",
-     "Kill the program being debugged?", etc.) to prevent busy loops
-     when xwpe sends commands that gdb would otherwise block on. */
-  if (e_deb_type == DEB_GDB)
-  {
-   e_d_send_cmd("set confirm off\n");
-   if (e_d_dum_read() == -1) return(-1);
-   if (e_d_pty_master >= 0)
-   {
-    char _tty_cmd[160];
-    sprintf(_tty_cmd, "set inferior-tty %s\n", e_d_pty_slave_name);
-    e_d_send_cmd(_tty_cmd);
-    if (e_d_dum_read() == -1) return(-1);
-   }
-  }
-  if (e_deb_type == DEB_XDB)
-  {
-   e_d_send_cmd("sm\n");
-   if (e_d_dum_read() == -1) return(-1);
-  }
-  /* a68g: a finished program tore down the session and cleared e_d_nbrpts;
-     rebuild it from the surviving markers so a re-run re-arms the breakpoints. */
-  if (e_deb_type == DEB_A68G)
-   e_d_a68g_rearm_breakpoints(cn->f[cn->mxedt]);
-  jdb_trace("e_run_debug: setting breakpoints (nbrpts=%d)...\n", e_d_nbrpts);
-  if (e_make_breakpoint(cn->f[cn->mxedt], 1) == -1) return(-1);
-  jdb_trace("e_run_debug: breakpoints set OK, e_d_swtch -> 2\n");
-  e_d_swtch = 2;
-#ifndef NO_XWINDOWS
-  if (WpeIsXwin())
-  {
-   XSetInputFocus(WpeXInfo.display, WpeXInfo.window,
-     RevertToParent, CurrentTime);
-   XFlush(WpeXInfo.display);
-  }
-#endif
+  e_d_set_nonblock(efildes[0]);
+  e_d_set_nonblock(wfildes[0]);
+  jdb_trace("e_run_debug: waiting for the banner on the fd loop\n");
+  e_d_start_watch(f);
+  return(E_D_STARTING);
  }
  return(0);
 }
@@ -3770,7 +4379,7 @@ int e_deb_run(FENSTER *f)
  ret = 0;
  if (e_d_swtch < 2)
   ret = e_run_debug(f);
- if (ret == E_D_BUILDING)
+ if (e_d_deferred(ret))
   return(0);
  if (ret < 0)
  {
@@ -4352,7 +4961,7 @@ int e_d_step_next(FENSTER *f, int sw)
  ret = 0;
  if (e_d_swtch < 2)
   ret = e_run_debug(f);
- if (ret == E_D_BUILDING)
+ if (e_d_deferred(ret))
   return(0);
  if (ret < 0)
  {
@@ -4416,7 +5025,7 @@ int e_d_goto_func(FENSTER *f, int flag)
  e_d_resume_after_build(e_d_goto_func, flag);
  if (e_d_swtch < 2)
   ret = e_run_debug(f);
- if (ret == E_D_BUILDING)
+ if (e_d_deferred(ret))
   return(0);
  if (ret < 0)
  {

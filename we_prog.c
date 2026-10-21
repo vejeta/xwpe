@@ -1568,7 +1568,7 @@ void e_status_say(FENSTER *f, const char *text)
  * build runs, and its output is then kept until the window is back.
  * Return: the window, or NULL.
  */
-static FENSTER *e_build_messages(ECNT *cn)
+FENSTER *e_build_messages(ECNT *cn)
 {
  int i;
 
@@ -1589,7 +1589,7 @@ static FENSTER *e_build_messages(ECNT *cn)
  * build that ends while a dialog is open waits for the dialog to close, so
  * the jump to the first error never lands under it.
  */
-static int e_build_ui_idle(ECNT *cn)
+int e_build_ui_idle(ECNT *cn)
 {
  extern int wpe_modal_active;
  FENSTER *top;
@@ -1606,7 +1606,7 @@ static int e_build_ui_idle(ECNT *cn)
  * e_build_drop_last_row - Take the last row out of the Messages buffer.
  * @b: the Messages buffer.
  */
-static void e_build_drop_last_row(BUFFER *b)
+void e_build_drop_last_row(BUFFER *b)
 {
  int last = b->mxlines - 1;
 
@@ -1661,14 +1661,16 @@ static void e_build_wait_line_put(void)
 }
 
 /**
- * e_build_paint - Show the latest Messages rows, when nothing is in the way.
+ * e_messages_show_tail - Show the latest Messages rows, when nothing is in
+ * the way.
+ * @cn: the desktop.
  *
- * Messages follows the output to its last row; the cursor goes back to the
- * window the user is typing in, so typing during a build is undisturbed.
+ * Messages follows a background task's output (a build, a starting
+ * debugger) to its last row; the cursor goes back to the window the user
+ * is typing in, so typing while the task runs is undisturbed.
  */
-static void e_build_paint(void)
+void e_messages_show_tail(ECNT *cn)
 {
- ECNT *cn = g_build.cn;
  FENSTER *mf = e_build_messages(cn);
 
  if (!mf || !e_build_ui_idle(cn))
@@ -1682,6 +1684,14 @@ static void e_build_paint(void)
  else
   e_cursor(mf, 0);
  e_refresh();
+}
+
+/**
+ * e_build_paint - Show the build's latest Messages rows.
+ */
+static void e_build_paint(void)
+{
+ e_messages_show_tail(g_build.cn);
 }
 
 /**

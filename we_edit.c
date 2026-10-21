@@ -575,6 +575,9 @@ int e_eingabe(ECNT *e)
 #ifdef PROG
    e_build_deliver_held();        /* a build that ended behind a dialog: report it now */
 #endif
+#ifdef DEBUGGER
+   e_d_start_deliver_held();      /* a debugger that answered behind a dialog: go on */
+#endif
    if (f->save > f->ed->maxchg) e_autosave(f);
    c = e_getch();
    /* A build ending while the editor waited for this key may have put
@@ -624,6 +627,11 @@ int e_eingabe(ECNT *e)
 #ifdef PROG
   /* A build is running: Esc cancels it, as the waiting line in Messages says. */
   if (c == WPE_ESC && e_build_busy()) { e_build_cancel(); c = 0; continue; }
+#endif
+#ifdef DEBUGGER
+  /* A debugger is starting and has not answered: Esc ends it, as the waiting
+     line in Messages says. */
+  if (c == WPE_ESC && e_d_start_busy()) { e_d_start_cancel(); c = 0; continue; }
 #endif
 #ifdef WPE_AI
   /* A background AI task is running: Esc cancels it (what the spinner promises)

@@ -80,6 +80,34 @@ Alternative keys (when function keys are available):
 Ctrl-F8 = Toggle Breakpoint, Ctrl-F7 = Make Watch, Ctrl-F6 = Stack,
 F7 = Trace, F8 = Step, Ctrl-F10 = Run, Ctrl-F2 = Quit.
 
+@section Starting a session
+
+@cindex debugger, starting
+@cindex XWPE_DEBUG_START_TIMEOUT
+The first Run, Step or Go to cursor builds the program and starts the
+debugger (gdb, jdb, pdb or a68g).  The editor does not wait for it.
+Until the debugger answers with its prompt, the last row of Messages
+reads:
+
+@example
+starting gdb ... 3s  (Esc cancels)
+@end example
+
+@noindent
+The editor keeps taking keys.  When the debugger answers, the command
+you pressed runs.  Another debugger command pressed meanwhile does
+nothing, and the status row says that the debugger is starting.
+
+Press @key{Esc} to end a debugger that is slow to answer.  Messages
+then says @samp{gdb start cancelled}.  A debugger that is silent for
+30 seconds is ended in the same way, and Messages says @samp{gdb did
+not answer within 30 s}.  To give a slow debugger more time, set the
+environment variable @env{XWPE_DEBUG_START_TIMEOUT} to a number of
+seconds before you start xwpe.
+
+Go, Rust and Scala sessions start through a debug adapter instead, and
+the editor still waits for the adapter while it starts.
+
 @section Compiling for debugging
 
 Compile with debug symbols (@code{-g}) and no optimisation

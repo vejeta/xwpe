@@ -51,6 +51,11 @@ void e_build_cancel(void);
 void e_build_deliver_held(void);
 void e_build_refuse(FENSTER *f);
 void e_status_say(FENSTER *f, const char *text);
+/* Messages as a background task (a build, a starting debugger) uses it. */
+FENSTER *e_build_messages(ECNT *cn);
+int e_build_ui_idle(ECNT *cn);
+void e_build_drop_last_row(BUFFER *b);
+void e_messages_show_tail(ECNT *cn);
 /* we_unix.c: the exit status the SIGCHLD handler kept for a child. */
 int WpeReapedStatus(int pid, int *status);
 int e_c_project(FENSTER *f, e_build_cont done, void *data);

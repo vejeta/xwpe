@@ -370,6 +370,105 @@ def test_a_debugger_not_installed_is_named_and_nothing_hangs(tmp_path):
         assert not _children(w, "sdb")
 
 
+ALT_1 = "\0331"            # window 1, the source
+SILENT_DEBUGGER_LOG = "debugger-stdin.log"
+LONG_START_TIMEOUT_S = 600   # far past any test: only Esc may end the start
+# Long enough to see the waiting line first, also on a slow machine.
+SHORT_START_TIMEOUT_S = int(4 * WAIT_SCALE)
+
+
+def _silent_gdb_env(tmp_path, timeout_s):
+    """A `gdb` first on PATH that reads its input into a log and never
+    writes, so the start never gets an answer; plus the start deadline."""
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    fake = bindir / "gdb"
+    fake.write_text("#!/bin/sh\nexec cat > %s\n"
+                    % (tmp_path / SILENT_DEBUGGER_LOG))
+    fake.chmod(0o755)
+    return {"PATH": str(bindir) + ":" + os.environ.get("PATH", ""),
+            "XWPE_DEBUG_START_TIMEOUT": str(timeout_s)}
+
+
+def _start_silent_session(w):
+    """Breakpoint, Ctrl-G R, and wait for the waiting line; return the PID
+    of the silent debugger (its program is `cat`)."""
+    _move_down(w, C_BREAK_LINE - 1)
+    w.key(CTRL_G, "b", delay=0.4)
+    w.key(CTRL_G, "r", delay=1.0)
+    assert _wait_for(w, lambda: "starting gdb" in _screen(w), START_TIMEOUT_S), \
+        "a waiting line should say the debugger is starting:\n%s" % _screen(w)
+    # The script becomes `cat` only once its shell has run the exec.
+    _wait_for(w, lambda: _children(w, "cat"), STEP_TIMEOUT_S)
+    pids = _children(w, "cat")
+    assert len(pids) == 1, "expected one silent debugger, saw %s" % pids
+    return pids[0]
+
+
+def _process_gone(pid):
+    """True once `pid` is no longer in the process table (a zombie that was
+    not reaped is still listed)."""
+    return subprocess.run(["ps", "-p", str(pid)],
+                          capture_output=True).returncode != 0
+
+
+# @scenario SC-debug-17
+def test_esc_ends_a_debugger_that_never_answers(tmp_path):
+    """A debugger that never answers does not hold the editor: the waiting
+    line counts, the editor is idle and takes keys, a debugger key is
+    refused on the status line, Esc ends the debugger and Messages says the
+    start was cancelled; no key reached the debugger."""
+    _need("gcc")
+    env = _silent_gdb_env(tmp_path, LONG_START_TIMEOUT_S)
+    with _c_session(tmp_path, env_extra=env) as w:
+        pid = _start_silent_session(w)
+        assert _wait_for(w, lambda: re.search(r"starting gdb \.\.\. [1-9]\d*s",
+                                              _screen(w)), STEP_TIMEOUT_S), \
+            "the waiting line should count the seconds:\n%s" % _screen(w)
+        before = _cpu_ticks(w.proc.pid)
+        w._drain(1.0)
+        after = _cpu_ticks(w.proc.pid)
+        if before is not None and after is not None:
+            assert after - before < IDLE_CPU_TICKS * WAIT_SCALE, \
+                "the editor should be idle while it waits, used %d ticks in 1s" \
+                % (after - before)
+        w.key(F8, delay=0.5)
+        assert "debugger is starting" in w.display(drain=0)[-1], \
+            "F8 during the start should be refused on the status line:\n%s" \
+            % _screen(w)
+        w.key(ALT_1, delay=0.4)         # Messages is on top: back to p.c
+        w.key("Q", delay=0.3)
+        w.key(ESC, delay=0.5)
+        assert _wait_for(w, lambda: "gdb start cancelled" in _screen(w),
+                         STEP_TIMEOUT_S), \
+            "Esc should end the start and say so:\n%s" % _screen(w)
+        assert _wait_for(w, lambda: _process_gone(pid), STEP_TIMEOUT_S), \
+            "the silent debugger (pid %d) should be gone" % pid
+        w.save()
+        assert "Q  int x = 3;" in w.text(), \
+            "a key typed during the start should edit the source"
+        assert (tmp_path / SILENT_DEBUGGER_LOG).read_text() == "", \
+            "no key may be written to a debugger that has not answered"
+
+
+# @scenario SC-debug-17
+def test_a_debugger_that_never_answers_ends_at_the_deadline(tmp_path):
+    """Left alone, a start that gets no answer ends at the deadline with a
+    line that names the debugger and the time; the editor takes keys."""
+    _need("gcc")
+    env = _silent_gdb_env(tmp_path, SHORT_START_TIMEOUT_S)
+    with _c_session(tmp_path, env_extra=env) as w:
+        pid = _start_silent_session(w)
+        expected = "gdb did not answer within %d s" % SHORT_START_TIMEOUT_S
+        assert _wait_for(w, lambda: expected in _screen(w), STEP_TIMEOUT_S), \
+            "the start should end at the deadline:\n%s" % _screen(w)
+        assert _wait_for(w, lambda: _process_gone(pid), STEP_TIMEOUT_S), \
+            "the silent debugger (pid %d) should be gone" % pid
+        w.key("Q", delay=0.3)
+        w.save()
+        assert "Q  int x = 3;" in w.text(), "the editor should take keys again"
+
+
 # @scenario SC-debug-29
 def test_a_session_runs_and_steps_on_an_80x24_screen(tmp_path):
     """The whole Ctrl-G R / F8 cycle works on the smallest supported screen."""

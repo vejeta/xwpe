@@ -329,6 +329,14 @@ Changes
   it started, says "build cancelled", and runs no later step.  Keys typed
   during a build used to be replayed into the file when it ended.
 
+* Starting the debugger no longer holds the editor.  Until gdb, jdb, pdb
+  or a68g answers, Messages reads "starting gdb ... Ns (Esc cancels)" and
+  the editor keeps taking keys.  Esc ends the debugger and says "gdb start
+  cancelled"; a debugger silent for 30 seconds is ended with "gdb did not
+  answer within 30 s" (XWPE_DEBUG_START_TIMEOUT sets the seconds).  A
+  debugger that never answered used to freeze the editor at "Start
+  Debugger", and every key, Esc included, was written to it.
+
 * Every line a build prints reaches Messages.  Output larger than one
   read lost the next read whole (302 of 1000 lines), and the error line
   of fpc, which writes in 256-byte pieces, could vanish.
