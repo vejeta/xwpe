@@ -337,6 +337,24 @@ Changes
   debugger that never answered used to freeze the editor at "Start
   Debugger", and every key, Esc included, was written to it.
 
+* The first stop after Ctrl-G R is marked at once under pdb and a68g.
+  The green bar on the breakpoint line used to appear only after the
+  next key.
+
+* Watches work under pdb and jdb: Ctrl-G W shows the value (pdb's "p",
+  jdb's "print") and every stop refreshes it.  Adding a watch under
+  either used to freeze the editor at full CPU.  A debugger without a
+  watch command now says "watches are not available with <debugger>".
+
+* Under jdb the current line is marked in the Java file the stop names.
+  The green bar used to land in Messages, or in whatever window was on
+  top.  pdb's steps now find their file the same way, so a step no
+  longer marks the Watches window.
+
+* A Rust breakpoint on a line that runs only once stops the program,
+  under gdb's DAP and lldb-dap alike.  The first stop used to be taken
+  for the program's start and continued, so the program ran to its end.
+
 * Every line a build prints reaches Messages.  Output larger than one
   read lost the next read whole (302 of 1000 lines), and the error line
   of fpc, which writes in 256-byte pieces, could vanish.

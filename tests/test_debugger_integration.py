@@ -503,3 +503,190 @@ def test_pdb_f8_steps_over_and_f7_steps_into(tmp_path):
             "F8 should move the mark to line %d:\n%s" % (PY_NEXT_LINE, _screen(w))
         assert _step(w, F7, PY_CALLEE_LINE), \
             "F7 should stop in sq() on line %d:\n%s" % (PY_CALLEE_LINE, _screen(w))
+
+
+# @scenario SC-debug-30
+def test_pdb_first_stop_on_the_breakpoint_is_marked(tmp_path):
+    """Ctrl-G R on a Python file stops on the breakpoint with the line
+    marked at once, as every later step is, without a key being pressed."""
+    _need("python3")
+    with WpeSession(str(tmp_path), PY_PROG, filename="p.py", wait=1.5) as w:
+        _start_py_session(w)
+        assert _wait_for(w, lambda: _mark_line(w) == PY_BREAK_LINE,
+                         STEP_TIMEOUT_S), \
+            "the first stop (line %d) should carry the current-line mark; " \
+            "mark is on %s:\n%s" % (PY_BREAK_LINE, _mark_line(w), _screen(w))
+
+
+def _watch_row(w, name):
+    """The Watches window's text after "name: ", or None while it shows none."""
+    pat = re.compile(r"(?:^|\s)%s: (\S.*)$" % re.escape(name))
+    for row in w.display(drain=0):
+        m = pat.search(row[1:].rstrip(" x^av"))
+        if m:
+            return m.group(1)
+    return None
+
+
+def _add_watch(w, expr):
+    w.key(CTRL_G, "w", delay=0.8)
+    for ch in expr:
+        w.key(ch, delay=0.05)
+    w.key("\r", delay=0.5)
+
+
+# @scenario SC-debug-28
+def test_pdb_watch_shows_its_value_and_refreshes_at_the_next_stop(tmp_path):
+    """Under pdb a watch opens the Watches window with pdb's answer, the
+    editor stays responsive, and F8 refreshes it to the new value."""
+    _need("python3")
+    with WpeSession(str(tmp_path), PY_PROG, filename="p.py", wait=1.5) as w:
+        _start_py_session(w)
+        assert _wait_for(w, lambda: _mark_line(w) == PY_BREAK_LINE,
+                         STEP_TIMEOUT_S), _screen(w)
+        _add_watch(w, "x")          # x = 3 has not run yet
+        assert _wait_for(w, lambda: _watch_row(w, "x") is not None,
+                         STEP_TIMEOUT_S), \
+            "the Watches window should show a row for x:\n%s" % _screen(w)
+        assert _watch_value(w, "x") is None, \
+            "x is not assigned yet, so no number should show:\n%s" % _screen(w)
+        w.key(F8, delay=0.3)
+        assert _wait_for(w, lambda: _watch_value(w, "x") == 3, STEP_TIMEOUT_S), \
+            "after x = 3 ran, the watch should read 3:\n%s" % _screen(w)
+        assert _wait_for(w, lambda: _mark_line(w) == PY_NEXT_LINE,
+                         STEP_TIMEOUT_S), \
+            "the mark should be on line %d of p.py, not in Watches:\n%s" \
+            % (PY_NEXT_LINE, _screen(w))
+
+
+# Line numbers below are 1-based source lines of JAVA_PROG.
+JAVA_PROG = (
+    "public class P {\n"
+    "    static int sq(int v) {\n"
+    "        return v * v;\n"
+    "    }\n"
+    "    public static void main(String[] a) {\n"
+    "        int x = 3;\n"
+    "        int y = sq(x);\n"
+    "        System.out.println(\"OUTMARK \" + y);\n"
+    "        x = y + 1;\n"
+    "    }\n"
+    "}\n"
+)
+JAVA_BREAK_LINE = 6       # int x = 3;
+JAVA_NEXT_LINE = 7        # int y = sq(x);
+JAVA_AFTER_SQ_LINE = 8    # System.out.println(...)
+JDB_START_TIMEOUT_S = 25  # javac + the JVM under jdb, before scaling
+
+
+def _messages_rows(w):
+    """Text and backgrounds of the Messages window's rows, for comparing
+    before and after a stop; empty when Messages is not on screen."""
+    disp = w.display(drain=0)
+    rows = []
+    inside = False
+    for y, line in enumerate(disp):
+        if " Messages " in line:
+            inside = True
+            continue
+        if inside and line.startswith("m"):
+            break
+        if inside:
+            bgs = tuple(w.screen.buffer[y][x].bg
+                        for x in range(1, w.screen.columns - 1))
+            rows.append((line, bgs))
+    return rows
+
+
+def _start_java_session(w):
+    """Breakpoint on JAVA_BREAK_LINE, Ctrl-G R, dismiss the one-time notice
+    that the Java file switches the backend to jdb, wait for the stop."""
+    _move_down(w, JAVA_BREAK_LINE - 1)
+    w.key(CTRL_G, "b", delay=0.4)
+    w.key(CTRL_G, "r", delay=1.0)
+    assert _wait_for(w, lambda: "switching to jdb" in _screen(w), STEP_TIMEOUT_S)
+    w.key("\r", delay=0.5)
+    assert _wait_for(w, lambda: _children(w, "jdb"), START_TIMEOUT_S), \
+        "jdb should be running:\n%s" % _screen(w)
+    assert _wait_for(w, lambda: _mark_line(w) == JAVA_BREAK_LINE,
+                     JDB_START_TIMEOUT_S), \
+        "jdb stopped; line %d of P.java should be marked:\n%s" \
+        % (JAVA_BREAK_LINE, _screen(w))
+
+
+# @scenario SC-debug-20
+def test_jdb_stop_marks_the_source_window_never_messages(tmp_path):
+    """jdb's breakpoint stop and the next F8 put the green bar in P.java;
+    the Messages window below keeps its text and colours."""
+    _need("jdb", "javac")
+    with WpeSession(str(tmp_path), JAVA_PROG, filename="P.java", wait=1.5) as w:
+        _start_java_session(w)
+        messages = _messages_rows(w)
+        assert messages, "Messages should be on screen:\n%s" % _screen(w)
+        assert _step(w, F8, JAVA_NEXT_LINE), \
+            "F8 should move the mark to line %d of P.java:\n%s" \
+            % (JAVA_NEXT_LINE, _screen(w))
+        assert _messages_rows(w) == messages, \
+            "the stop changed Messages (a mark painted there?):\n%s" % _screen(w)
+
+
+# @scenario SC-debug-28
+def test_jdb_watch_shows_its_value_and_refreshes_at_the_next_stop(tmp_path):
+    """Under jdb a watch shows jdb's print answer and F8 refreshes it."""
+    _need("jdb", "javac")
+    with WpeSession(str(tmp_path), JAVA_PROG, filename="P.java", wait=1.5) as w:
+        _start_java_session(w)
+        assert _step(w, F8, JAVA_NEXT_LINE), _screen(w)
+        _add_watch(w, "x")
+        assert _wait_for(w, lambda: _watch_value(w, "x") == 3, STEP_TIMEOUT_S), \
+            "the Watches window should show x: 3:\n%s" % _screen(w)
+        _add_watch(w, "y")          # int y = sq(x) has not run yet
+        assert _wait_for(w, lambda: _watch_row(w, "y") is not None,
+                         STEP_TIMEOUT_S), \
+            "the Watches window should show a row for y:\n%s" % _screen(w)
+        w.key(F8, delay=0.3)
+        assert _wait_for(w, lambda: _watch_value(w, "y") == 9, STEP_TIMEOUT_S), \
+            "after y = sq(x) ran, the watch should read 9:\n%s" % _screen(w)
+        assert _wait_for(w, lambda: _mark_line(w) == JAVA_AFTER_SQ_LINE,
+                         STEP_TIMEOUT_S), \
+            "the mark should be on line %d of P.java:\n%s" \
+            % (JAVA_AFTER_SQ_LINE, _screen(w))
+
+
+# Line numbers below are 1-based source lines of RUST_PROG.
+RUST_PROG = (
+    "fn sq(v: i32) -> i32 {\n"
+    "    v * v\n"
+    "}\n"
+    "fn main() {\n"
+    "    let mut x = 3;\n"
+    "    let y = sq(x);\n"
+    "    println!(\"OUTMARK {}\", y);\n"
+    "    x = y + 1;\n"
+    "    println!(\"DONE {}\", x);\n"
+    "}\n"
+)
+RUST_ONCE_LINE = 5          # let mut x = 3;  runs exactly once
+RUST_LAST_OUTPUT = "DONE 10"  # what the program prints last, x = 3*3 + 1
+RUST_START_TIMEOUT_S = 30   # rustc + the adapter, before scaling
+
+
+# @scenario SC-debug-23
+@pytest.mark.parametrize("adapter,binary", [("gdb", "gdb"), ("lldb", "lldb-dap")])
+def test_rust_dap_stops_on_a_breakpoint_on_a_line_that_runs_once(
+        tmp_path, adapter, binary):
+    """Under either DAP adapter, Ctrl-G R stops on a breakpoint whose line
+    runs only once: the editor never continues a stop the user asked for."""
+    _need("rustc", binary)
+    with WpeSession(str(tmp_path), RUST_PROG, filename="main.rs", wait=2.0,
+                    env_extra={"XWPE_DAP_ADAPTER": adapter}) as w:
+        _move_down(w, RUST_ONCE_LINE - 1)
+        w.key(CTRL_G, "b", delay=0.8)
+        assert RUST_ONCE_LINE in _breakpoint_lines(w), _screen(w)
+        w.key(CTRL_G, "r", delay=1.0)
+        assert _wait_for(w, lambda: _mark_line(w) == RUST_ONCE_LINE,
+                         RUST_START_TIMEOUT_S), \
+            "Ctrl-G R should stop on line %d (%s):\n%s" \
+            % (RUST_ONCE_LINE, binary, _screen(w))
+        assert RUST_LAST_OUTPUT not in _screen(w), \
+            "the program ran to its end past the breakpoint:\n%s" % _screen(w)

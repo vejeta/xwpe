@@ -134,6 +134,11 @@ static void e_d_prog_output_append_line(char *data, int len);
 static int  e_d_a68g_step_complete(FENSTER *f);   /* a68g: read step/continue response */
 static int  e_d_start_forget(void);       /* the start watcher (see e_run_debug) */
 static int  e_d_start_refused(FENSTER *f);
+static int  e_d_watch_refused(FENSTER *f);   /* a debugger without watches */
+static const char *e_d_start_label(void);
+/* Room for one status line and for one watch's print command. */
+#define E_D_WATCH_CMD_MAX 256
+#define E_D_WATCH_REFUSED_FMT "watches are not available with %s"
 static int  e_d_a68g_cur_line = 0;   /* source line a68g is currently stopped on */
 
 int e_d_pty_verase(void)
@@ -1518,6 +1523,8 @@ int e_make_watches(FENSTER *f)
  char str[128];
  int i, y;
 
+ if (e_d_watch_refused(f))
+  return(0);
  if ((f->ed->mxedt > 0) && (strcmp(f->datnam, "Watches") == 0))
  { /* sets y=number of watch we're inserting */
   for(y = 0; y < e_d_nwtchs && e_d_nrwtchs[y] < f->b->b.y; y++)
@@ -1587,8 +1594,82 @@ int e_edit_watches(FENSTER *f)
  return(-1);
 }
 
+/**
+ * e_d_watch_command - The command that makes the current debugger print one
+ * watch expression.
+ * @out: where the command goes, newline included; @n: its size;
+ * @expr: the watch expression as the user typed it.
+ *
+ * One table for every line-oriented backend, so a debugger added later
+ * either gets its print command here or is refused by name, instead of
+ * being sent whatever the buffer held.  pdb prints with "p" and jdb with
+ * "print", as gdb and dbx do.
+ * Return: 1 when @out holds a command, 0 when this debugger has none.
+ */
+static int e_d_watch_command(char *out, size_t n, const char *expr)
+{
+ switch (e_deb_type)
+ {
+  case DEB_GDB:
+  case DEB_XDB:
+  case DEB_PDB:
+   snprintf(out, n, "p %s\n", expr);
+   return(1);
+  case DEB_SDB:
+   snprintf(out, n, "%s/\n", expr);
+   return(1);
+  case DEB_DBX:
+  case DEB_JDB:
+   snprintf(out, n, "print %s\n", expr);
+   return(1);
+  case DEB_A68G:
+   /* a68g: "evaluate EXPR" -- the expression is taken literally, so it
+      must NOT be quoted ("n" would be the CHAR denotation, not variable n). */
+   snprintf(out, n, "evaluate %s\n", expr);
+   return(1);
+  default:
+   return(0);
+ }
+}
+
+/**
+ * e_d_watch_has_command - Can the current debugger print a watch at all?
+ *
+ * DAP evaluates watches through the adapter, the line-oriented backends
+ * through their print command.
+ * Return: 1 when a watch can be shown, else 0.
+ */
+static int e_d_watch_has_command(void)
+{
+ char probe[E_D_WATCH_CMD_MAX];
+
+ if (e_deb_type == DEB_DAP)
+  return(1);
+ return(e_d_watch_command(probe, sizeof probe, ""));
+}
+
+/**
+ * e_d_watch_refused - Say on the status row that this debugger has no
+ * watches, when it has none.
+ * @f: the window the user is in.
+ *
+ * The user learns at once why no Watches window opens, and the editor never
+ * sends the debugger a command it did not build, nor waits for its answer.
+ * Return: 1 when the watch is refused, else 0.
+ */
+static int e_d_watch_refused(FENSTER *f)
+{
+ char line[E_D_WATCH_CMD_MAX];
+
+ if (e_d_watch_has_command())
+  return(0);
+ snprintf(line, sizeof line, E_D_WATCH_REFUSED_FMT, e_d_start_label());
+ e_status_say(f, line);
+ return(1);
+}
+
 /* Among other things, e_d_p_watches() must recompute e_d_nrwtchs when
-   called from e_edit_watches(), 
+   called from e_edit_watches(),
    but has code paths that don't do this ==> possible BUG
 */
 int e_d_p_watches(FENSTER *f, int sw)
@@ -1603,6 +1684,8 @@ int e_d_p_watches(FENSTER *f, int sw)
  if (e_d_dap_active())
   return(e_d_dap_watches(f, sw));   /* DAP: values via evaluate(context=watch) */
  if (e_d_start_refused(f))
+  return(0);
+ if (e_d_watch_refused(f))
   return(0);
  e_d_switch_out(0);
  if ((e_d_swtch > 2) && (e_d_p_stack(f, 0) == -1))
@@ -1637,26 +1720,10 @@ int e_d_p_watches(FENSTER *f, int sw)
  for (i = 0, l = 0; l < e_d_nwtchs; l++)
  {
   str = str1;
-  
-  /* Create appropriate command for the debugger */
-  if (e_deb_type == DEB_GDB || e_deb_type == DEB_XDB)
-  {
-   sprintf(str1, "p %s\n", e_d_swtchs[l]);
-  }
-  else if (e_deb_type == DEB_SDB)
-  {
-   sprintf(str1, "%s/\n", e_d_swtchs[l]);
-  }
-  else if (e_deb_type == DEB_DBX)
-  {
-   sprintf(str1, "print %s\n", e_d_swtchs[l]);
-  }
-  else if (e_deb_type == DEB_A68G)
-  {
-   /* a68g: "evaluate EXPR" -- the expression is taken literally, so it
-      must NOT be quoted ("n" would be the CHAR denotation, not variable n). */
-   sprintf(str1, "evaluate %s\n", e_d_swtchs[l]);
-  }
+
+  /* Create appropriate command for the debugger (e_d_watch_refused above
+     has already turned away a debugger that has none) */
+  e_d_watch_command(str1, sizeof str1, e_d_swtchs[l]);
 
   /* Send command to debugger */
   if(e_d_swtch)
@@ -1689,7 +1756,8 @@ int e_d_p_watches(FENSTER *f, int sw)
 
    /* Find the beginning of the information (depends on debugger output
      format) */
-   if (e_deb_type == DEB_GDB || e_deb_type == DEB_DBX || e_deb_type == DEB_XDB)
+   if (e_deb_type == DEB_GDB || e_deb_type == DEB_DBX || e_deb_type == DEB_XDB ||
+       e_deb_type == DEB_JDB)    /* jdb answers " x = 3", as gdb "$1 = 3" */
    {
     if (e_deb_type == DEB_XDB && str[0] == '0')
     {
@@ -1858,6 +1926,8 @@ int e_d_p_stack(FENSTER *f, int sw)
   e_d_send_cmd("where\n");
  else if (e_deb_type == DEB_A68G)
   e_d_send_cmd("calls\n");
+ else
+  return(0);   /* no stack command here: never wait for an answer to nothing */
  while ((ret = e_d_line_read(wfildes[0], str, 256, 0, 0)) == 2)
   e_d_error(str);
  if (ret == -1)
@@ -2987,6 +3057,14 @@ static e_dap_host     g_dap_host;
 static char           g_dap_progdir[1024] = "";  /* the user's program directory */
 static char           g_dap_stop_file[1024] = "";/* full path of the current stop */
 static int            g_dap_stop_line = -1;      /* line of the current stop      */
+static char           g_dap_stop_reason[32] = "";/* the adapter's reason for it  */
+static int            g_dap_entry_func = 0;      /* the editor set an entry
+                                                    function breakpoint      */
+/* The stop reasons that mean "the program has just started": the adapter's
+   own entry stop, and the entry-function breakpoint the editor sets itself
+   (Go's main.main).  Any other reason is a stop the user asked for. */
+#define E_D_DAP_REASON_ENTRY    "entry"
+#define E_D_DAP_REASON_FUNCTION "function breakpoint"
 
 /* True while a DAP session is open. */
 static int e_d_dap_active(void)
@@ -3112,8 +3190,11 @@ static const e_d_dap_lang *e_d_dap_lang_for(FENSTER *f)
 static void e_d_dap_on_stopped(const char *file, int line, const char *reason,
                                void *ud)
 {
- (void)reason; (void)ud;
+ (void)ud;
  g_dap_stop_line = line;
+ g_dap_stop_reason[0] = '\0';
+ if (reason)
+  snprintf(g_dap_stop_reason, sizeof(g_dap_stop_reason), "%s", reason);
  g_dap_stop_file[0] = '\0';
  if (file)
  {
@@ -3260,6 +3341,8 @@ static int e_d_dap_start(FENSTER *f)
  g_dap_progdir[sizeof(g_dap_progdir) - 1] = '\0';
  g_dap_stop_file[0] = '\0';
  g_dap_stop_line = -1;
+ g_dap_stop_reason[0] = '\0';
+ g_dap_entry_func = (lang->entry_func != NULL);
  /* Compile-first (Rust): build the binary now and debug it.  Adapter-builds
     (Go): the directory itself is the "program" dlv compiles. */
  if (lang->compile)
@@ -3343,9 +3426,30 @@ static int e_d_dap_in_user_code(void)
         (g_dap_stop_file[n] == DIRC || g_dap_stop_file[n] == '\0'));
 }
 
-/* Ctrl-G R: run, or continue from the current stop.  The very first Run is
-   the entry stop already reported by e_d_dap_start -- stay there when the user
-   has no breakpoints (matching gdb's temp-break-at-main), continue otherwise. */
+/**
+ * e_d_dap_stopped_at_entry - Is the current stop the program's start, rather
+ * than a stop the user asked for?
+ *
+ * Told by the reason the adapter gives, never by the stop being the first:
+ * Rust and Scala have no entry function, so their first stop is already the
+ * user's breakpoint, and continuing it would run past a line that executes
+ * only once.
+ * Return: 1 for the adapter's entry stop or the editor's own entry-function
+ * breakpoint, 0 for a breakpoint, a step or anything else.
+ */
+static int e_d_dap_stopped_at_entry(void)
+{
+ if (!strcmp(g_dap_stop_reason, E_D_DAP_REASON_ENTRY))
+  return(1);
+ if (g_dap_entry_func && !strcmp(g_dap_stop_reason, E_D_DAP_REASON_FUNCTION))
+  return(1);
+ return(0);
+}
+
+/* Ctrl-G R: run, or continue from the current stop.  The very first Run shows
+   the stop e_d_dap_start already reached.  An entry stop is continued when the
+   user has breakpoints (matching gdb's temp-break-at-main) and kept when there
+   are none; a breakpoint stop is always kept, the user asked for it. */
 static int e_d_dap_run(FENSTER *f)
 {
  if (!g_dap && e_d_dap_start(f) < 0)
@@ -3353,9 +3457,10 @@ static int e_d_dap_run(FENSTER *f)
  if (g_dap_just_started)
  {
   g_dap_just_started = 0;
-  if (e_d_nbrpts <= 0)
+  if (!e_dap_ended(g_dap) &&
+      (!e_d_dap_stopped_at_entry() || e_d_nbrpts <= 0))
   {
-   e_d_dap_paint_stop(f);             /* no breakpoints: rest at the entry */
+   e_d_dap_paint_stop(f);
    return(0);
   }
  }
@@ -3843,6 +3948,24 @@ static void e_d_start_escalate(void)
 }
 
 /**
+ * e_d_start_run_pressed - Run the command the user pressed once the debugger
+ * has answered, and show its result.
+ * @cmd: the command (Run, Step, Go to cursor, ...); @f: the top window;
+ * @arg: its argument.
+ *
+ * A command pressed at the keyboard is painted by the key loop's refresh
+ * after it returns.  This one runs from the descriptor loop when the
+ * debugger's prompt arrives, where no such refresh follows, so the first
+ * stop (pdb's breakpoint, for one) would stay painted off screen, unmarked,
+ * until the next key.  The asynchronous gdb stop ends with the same refresh.
+ */
+static void e_d_start_run_pressed(e_d_resume_fn cmd, FENSTER *f, int arg)
+{
+ cmd(f, arg);
+ e_refresh();
+}
+
+/**
  * e_d_start_continue - The debugger answered: go on with the session.
  *
  * What followed the banner before (the settings sent to gdb, the
@@ -3867,7 +3990,7 @@ static void e_d_start_continue(void)
   return;
  }
  if (cmd)
-  cmd(cn->f[cn->mxedt], arg);
+  e_d_start_run_pressed(cmd, cn->f[cn->mxedt], arg);
 }
 
 /**
@@ -4366,6 +4489,191 @@ int e_run_debug(FENSTER *f)
  return(0);
 }
 
+/* jdb reports a stop as  Breakpoint hit: "thread=main", P.main(), line=6 bci=0
+   or  Step completed: "thread=main", P.sq(), line=3 bci=0 : the class and
+   method come before the line, and the class names the source file. */
+#define E_D_JDB_LINE_MARK   "line="
+#define E_D_JDB_SOURCE_EXT  ".java"
+#define E_D_JDB_NESTED_SEP  '$'      /* P$Inner lives in P.java */
+#define E_D_STOP_PATH_MAX   512
+
+/**
+ * e_d_refresh_watches_at_stop - Re-read every watch at a new stop.
+ * @f: the window the stop came from.
+ *
+ * The user sees each watch's current value as soon as the program stops,
+ * whichever debugger runs it.  Called before the stop is marked, in the
+ * order gdb's stop handlers use, so the source window ends on top.
+ */
+static void e_d_refresh_watches_at_stop(FENSTER *f)
+{
+ e_d_p_watches(f, 0);
+}
+
+/**
+ * e_d_window_path_of - The full path of the open window that shows @name.
+ * @cn: the editor; @name: a file name without directory;
+ * @out, @n: receives the directory and the name.
+ *
+ * Lets a stop that names only a file find that file's window wherever it
+ * was opened from, not only in the current directory.
+ * Return: 1 when such a window is open, else 0.
+ */
+static int e_d_window_path_of(ECNT *cn, const char *name, char *out, size_t n)
+{
+ int i, len;
+
+ for (i = cn->mxedt; i > 0; i--)
+ {
+  if (strcmp(cn->f[i]->datnam, name))
+   continue;
+  len = strlen(cn->f[i]->dirct);
+  if (len > 0 && cn->f[i]->dirct[len - 1] == DIRC)
+   snprintf(out, n, "%s%s", cn->f[i]->dirct, name);
+  else
+   snprintf(out, n, "%s%c%s", cn->f[i]->dirct, DIRC, name);
+  return(1);
+ }
+ return(0);
+}
+
+/**
+ * e_d_jdb_stop_line - The source line of a jdb stop, or 0.
+ * @stop: what jdb printed for the stop.
+ */
+static int e_d_jdb_stop_line(const char *stop)
+{
+ const char *lp = strstr(stop, E_D_JDB_LINE_MARK);
+
+ if (!lp)
+  return(0);
+ return(atoi(lp + strlen(E_D_JDB_LINE_MARK)));
+}
+
+/**
+ * e_d_jdb_class_file - The source file of the class a jdb stop names.
+ * @stop: what jdb printed; @out, @n: receives "<Class>.java".
+ *
+ * "pkg.P.main()" before "line=" gives P.java; a nested class P$Inner is
+ * written in P.java too.
+ * Return: 1 when the stop names a class, else 0.
+ */
+static int e_d_jdb_class_file(const char *stop, char *out, size_t n)
+{
+ const char *lp = strstr(stop, E_D_JDB_LINE_MARK);
+ const char *paren, *start, *method_dot, *cls;
+ char name[E_D_STOP_PATH_MAX];
+ char *nested;
+ size_t len;
+
+ if (!lp)
+  return(0);
+ for (paren = lp; paren > stop && *paren != '('; paren--)
+  ;
+ for (start = paren; start > stop && !isspace((unsigned char)start[-1]); start--)
+  ;
+ for (method_dot = paren; method_dot > start && *method_dot != '.'; method_dot--)
+  ;
+ if (*paren != '(' || method_dot == start)
+  return(0);
+ for (cls = method_dot; cls > start && cls[-1] != '.'; cls--)
+  ;
+ len = method_dot - cls;
+ if (len == 0 || len >= sizeof name)
+  return(0);
+ memcpy(name, cls, len);
+ name[len] = '\0';
+ nested = strchr(name, E_D_JDB_NESTED_SEP);
+ if (nested)
+  *nested = '\0';
+ snprintf(out, n, "%s%s", name, E_D_JDB_SOURCE_EXT);
+ return(1);
+}
+
+/**
+ * e_d_jdb_mark_stop - Mark the line jdb stopped on in its source window.
+ * @f: the window the command came from; @stop: what jdb printed.
+ *
+ * The user sees the green bar in the Java file jdb names, found by name as
+ * the gdb stop finds its file, never in whichever window is on top
+ * (Messages after the build, Watches after a watch was added).  jdb names a
+ * class where gdb names a file: that is the one difference, resolved here.
+ * Return: e_d_goto_break's answer, or 0 when the stop names no line.
+ */
+static int e_d_jdb_mark_stop(FENSTER *f, const char *stop)
+{
+ char name[E_D_STOP_PATH_MAX], path[E_D_STOP_PATH_MAX];
+ int line = e_d_jdb_stop_line(stop);
+
+ if (line <= 0)
+  return(0);
+ if (!e_d_jdb_class_file(stop, name, sizeof name))
+  snprintf(name, sizeof name, "%s", e_d_file);
+ if (!e_d_window_path_of(f->ed, name, path, sizeof path))
+  snprintf(path, sizeof path, "%s", name);
+ e_d_refresh_watches_at_stop(f);
+ return(e_d_goto_break(path, line, f));
+}
+
+/**
+ * e_d_pdb_stop_place - Read where pdb stopped from its "> file(line)func()"
+ * line.
+ * @text: pdb's answer; @file, @n: receives the file; @line: the line.
+ * Return: 1 when the answer names a place, else 0.
+ */
+static int e_d_pdb_stop_place(const char *text, char *file, size_t n, int *line)
+{
+ const char *gt = strstr(text, "> ");
+ const char *op;
+ size_t len;
+
+ if (!gt)
+  return(0);
+ op = strchr(gt + 2, '(');
+ if (!op)
+  return(0);
+ len = op - (gt + 2);
+ *line = atoi(op + 1);
+ if (len == 0 || len >= n || *line <= 0)
+  return(0);
+ memcpy(file, gt + 2, len);
+ file[len] = '\0';
+ return(1);
+}
+
+/**
+ * e_d_pdb_mark_stop - Refresh the watches and mark the line pdb stopped on.
+ * @f: the window the command came from; @file, @line: where pdb stopped.
+ *
+ * The user sees the green bar in the Python file pdb names, found by name
+ * as the gdb stop does, and each watch's value at that stop.
+ * Return: e_d_goto_break's answer.
+ */
+static int e_d_pdb_mark_stop(FENSTER *f, char *file, int line)
+{
+ e_d_refresh_watches_at_stop(f);
+ return(e_d_goto_break(file, line, f));
+}
+
+/**
+ * e_d_pdb_mark_step - Mark where a pdb step or continue stopped.
+ * @f: the window the command came from; @text: pdb's whole answer.
+ *
+ * After F7 or F8 the green bar moves in the file pdb names, not in the
+ * window on top (Watches, once a watch was added), and the watches show
+ * their values at the new line.
+ */
+static void e_d_pdb_mark_step(FENSTER *f, const char *text)
+{
+ char file[E_D_STOP_PATH_MAX];
+ int line;
+
+ if (!e_d_pdb_stop_place(text, file, sizeof file, &line))
+  return;
+ e_d_swtch = 3;
+ e_d_pdb_mark_stop(f, file, line);
+}
+
 /*  Run  */
 int e_deb_run(FENSTER *f)
 {
@@ -4526,24 +4834,9 @@ int e_deb_run(FENSTER *f)
       e_d_quit(f); return(-1);  }
   }
   jdb_trace("e_deb_run: Phase 2 done, _found=%d\n", _found);
-  /* Parse jdb breakpoint output to position cursor.
-     jdb format: "Breakpoint hit: ..., line=N bci=0\nN    code\nmain[1] "
-     Extract line number and navigate to it. */
-  { char *_lp = strstr(_jbuf, "line=");
-    if (_lp)
-    { int _line = atoi(_lp + 5);
-      BUFFER *_b = cn->f[cn->mxedt]->b;
-      SCHIRM *_s = cn->f[cn->mxedt]->s;
-      if (_line > 0 && _line <= _b->mxlines)
-      { _s->da.y = _b->b.y = _line - 1;
-        _s->da.x = _b->b.x = 0;
-        _s->de.x = MAXSCOL;
-        e_schirm(cn->f[cn->mxedt], 1);
-        e_cursor(cn->f[cn->mxedt], 1);
-      }
-    }
-  }
+  /* jdb format: "Breakpoint hit: ..., line=N bci=0\nN    code\nmain[1] " */
   e_d_swtch = 3;
+  e_d_jdb_mark_stop(f, _jbuf);
   e_d_switch_out(0);
   return(0);  /* skip e_read_output -- jdb output already parsed */
  }
@@ -4627,40 +4920,6 @@ static int e_d_jdb_step_complete(FENSTER *f)
   {  e_error("Program exited. Debugger stopped.", 0, f->fb);
      return(e_d_quit(f));  }
  }
- if (_found)
- {
-  char *_lp = strstr(_jbuf, "line=");
-  if (_lp)
-  { int _line = atoi(_lp + 5);
-    BUFFER *_b = f->ed->f[f->ed->mxedt]->b;
-    SCHIRM *_s = f->ed->f[f->ed->mxedt]->s;
-    if (_line > 0 && _line <= _b->mxlines)
-    { _s->da.y = _b->b.y = _line - 1;
-      _s->da.x = _b->b.x = 0;
-      _s->de.x = MAXSCOL;
-      e_schirm(f->ed->f[f->ed->mxedt], 1);
-      e_cursor(f->ed->f[f->ed->mxedt], 1);
-    }
-  }
-  /* jdb step response: "Step completed: ..., line=N\nN    code\nmain[1] "
-     Extract line from the last numbered line */
-  if (!_lp)
-  { char *_nl = strrchr(_jbuf, '\n');
-    if (_nl) { int _line = atoi(_nl + 1);
-      if (_line > 0) {
-       BUFFER *_b = f->ed->f[f->ed->mxedt]->b;
-       SCHIRM *_s = f->ed->f[f->ed->mxedt]->s;
-       if (_line <= _b->mxlines)
-       { _s->da.y = _b->b.y = _line - 1;
-         _s->da.x = _b->b.x = 0;
-         _s->de.x = MAXSCOL;
-         e_schirm(f->ed->f[f->ed->mxedt], 1);
-         e_cursor(f->ed->f[f->ed->mxedt], 1);
-       }
-      }
-    }
-  }
- }
  /* Extract program output from jdb response buffer.
     Program output is text between "> " prompt and "Step completed:"
     or "Breakpoint hit:" -- anything that's not a jdb protocol line. */
@@ -4681,6 +4940,8 @@ static int e_d_jdb_step_complete(FENSTER *f)
        e_d_prog_output_append_line(_p, _olen);
    }
  }
+ if (_found)
+  e_d_jdb_mark_stop(f, _jbuf);
  e_d_switch_out(0);
  return(0);
 }
@@ -4754,21 +5015,7 @@ static int e_d_pdb_step_complete(FENSTER *f)
      continue;
     }
     if (_gt)
-    {
-     char *_op = strchr(_gt + 2, '(');
-     if (_op)
-     {
-      int _line = atoi(_op + 1);
-      if (_line > 0)
-      {
-       SCHIRM *_s = f->ed->f[f->ed->mxedt]->s;
-       _s->da.y = _line - 1;
-       e_d_swtch = 3;
-       e_cursor(f, 1);
-       e_schirm(f, 1);
-      }
-     }
-    }
+     e_d_pdb_mark_step(f, _buf);
   }
  }
  e_d_switch_out(0);
@@ -5389,25 +5636,14 @@ int e_read_output(FENSTER *f)
   }
   for (i = 0; i < SVLINES && !_found; i++)
   {
-   char *_gt = strstr(e_d_sp[i], "> ");
-   if (_gt)
-   {
-    char *_op = strchr(_gt + 2, '(');
-    if (_op)
-    {
-     int _line = atoi(_op + 1);
-     char _file[128];
-     int _flen = _op - (_gt + 2);
-     if (_flen > 0 && _flen < 127 && _line > 0)
-     {
-      strncpy(_file, _gt + 2, _flen);
-      _file[_flen] = '\0';
-      e_d_goto_break(_file, _line, f);
-      e_d_swtch = 3;
-      _found = 1;
-     }
-    }
-   }
+   char _file[E_D_STOP_PATH_MAX];
+   int _line;
+
+   if (!e_d_pdb_stop_place(e_d_sp[i], _file, sizeof _file, &_line))
+    continue;
+   e_d_swtch = 3;
+   e_d_pdb_mark_stop(f, _file, _line);
+   _found = 1;
   }
   if (_found) return(0);
   /* Fall through to gdb checks as fallback */

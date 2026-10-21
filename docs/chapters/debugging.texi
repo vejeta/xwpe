@@ -38,7 +38,12 @@ function calls.  The cursor follows execution in the source code.
 
 @item
 Press @kbd{Ctrl-G W}, type a variable name, press @key{Return}.
-The Watch Window shows its value, updated after each step.
+The Watch Window shows its value, updated after each step.  Watches
+work with every debugger: gdb and pdb print them with @code{p}, jdb and
+dbx with @code{print}, a68g with @code{evaluate}, a DAP adapter with
+its @code{evaluate} request.  A debugger with no such command shows
+``watches are not available with @var{debugger}'' on the status line
+instead.
 
 @item
 Press @kbd{Ctrl-G K} to see the call stack.
@@ -245,7 +250,10 @@ xwpe repoints @env{JAVA_HOME} at it for Bloop before starting the build server
 @end itemize
 Run/Continue (@kbd{Ctrl-G R}), Step Over (@kbd{F8}), Step Into (@kbd{F7}),
 watches (@kbd{Ctrl-G W}, evaluated with the DAP @code{evaluate} request) and
-Quit (@kbd{Ctrl-G Q}) all work as with gdb.
+Quit (@kbd{Ctrl-G Q}) all work as with gdb.  The first @kbd{Ctrl-G R} stops
+on your first breakpoint, even one on a line that runs only once; xwpe runs
+on only past the adapter's own entry stop (Go's @code{main.main}), told
+apart by the reason the adapter gives for the stop.
 
 The engine carries three transports behind one API, because each adapter
 dictates its own: @emph{reverse-TCP} (Delve is a server; the debuggee runs on
@@ -325,6 +333,15 @@ gdb).  View with @kbd{Ctrl-G P}.
 @item
 @strong{No redirect}: jdb does not support @code{> /dev/pts/N}
 redirection.  xwpe handles this transparently.
+
+@item
+@strong{The current line}: jdb names the class it stopped in, not a
+file.  xwpe marks the line in that class's source window (@file{P.java}
+for class @code{P} or @code{P$Inner}), whichever window is on top.
+
+@item
+@strong{Watches}: @kbd{Ctrl-G W} sends @code{print @var{expr}} and
+shows the value after the @samp{=}.  Every stop refreshes them.
 @end itemize
 
 Requires @command{default-jdk} (Debian/Ubuntu) or equivalent JDK
@@ -357,6 +374,11 @@ your first line of code.
 @item
 @strong{Breakpoints}: set with @kbd{Ctrl-G B} before starting pdb.
 xwpe sends @code{break file:line} commands to pdb.
+
+@item
+@strong{Watches}: @kbd{Ctrl-G W} sends @code{p @var{expr}} and shows
+pdb's answer as it is, an error included while the name is not yet
+defined.  Every stop refreshes them.
 @end itemize
 
 Requires @command{python3} (Debian/Ubuntu).
