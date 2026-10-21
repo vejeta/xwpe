@@ -346,10 +346,11 @@ test_lsp_truecolor_SOURCES = tests/test_lsp_truecolor.c we_lsp.c we_dap_proto.c
 test_lsp_truecolor_CFLAGS = $(XWPE_STDFLAG) $(JSONC_CFLAGS)
 test_lsp_truecolor_LDADD = $(JSONC_LIBS)
 
-# DAP transport unit test: links the pure transport core + json-c, no xwpe.
-test_dap_SOURCES = tests/test_dap.c we_dap_proto.c
+# DAP transport and start-machine unit test: the engine + json-c, no xwpe,
+# no adapter (the test plays one on a loopback socket).
+test_dap_SOURCES = tests/test_dap.c we_dap.c we_dap_proto.c
 test_dap_CFLAGS = $(XWPE_STDFLAG) $(JSONC_CFLAGS)
-test_dap_LDADD = $(JSONC_LIBS)
+test_dap_LDADD = $(JSONC_LIBS) $(UTIL_LIBS)
 
 # DAP engine integration test: drives a real `dlv dap` (SKIPs without dlv+go).
 test_dap_dlv_SOURCES = tests/test_dap_dlv.c we_dap.c we_dap_proto.c

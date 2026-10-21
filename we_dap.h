@@ -15,6 +15,8 @@
 #ifndef WE_DAP_H
 #define WE_DAP_H
 
+#include <sys/types.h>
+
 /* Side-effects the session asks the host to perform. */
 typedef struct {
  void (*on_stopped)(const char *file, int line, const char *reason, void *ud);
@@ -53,6 +55,47 @@ e_dap_session *e_dap_open_stdio(char *const argv[], const char *program,
  * output arrives as DAP "output" events.  Returns a session or NULL. */
 e_dap_session *e_dap_open_tcp(const char *host, int port, const char *program,
                               const char *entry_func, const e_dap_host *host_cb);
+
+/* The same three transports, started without waiting for the adapter.  Each
+ * spawns or connects and returns at once (NULL when that failed); the whole
+ * handshake (initialize, launch, breakpoints, configurationDone) then runs as
+ * the host feeds it: the host adds its breakpoints, watches e_dap_start_fd()
+ * (and e_dap_output_fd(), the debuggee's pty, when >= 0) on its event loop,
+ * calls e_dap_start_pump() whenever the first is readable and
+ * e_dap_drain_output() for the second, and once the pump answers
+ * E_DAP_START_READY calls e_dap_run_to_first_stop().  The start descriptor
+ * changes once, when a reverse-TCP adapter dials in: re-read it after each
+ * pump.  An adapter that never answers is ended with e_dap_signal() and
+ * reaped with e_dap_adapter_gone(); e_dap_close() then frees the session. */
+#define E_DAP_START_WAITING 0
+#define E_DAP_START_READY   1
+#define E_DAP_START_FAILED  (-1)
+e_dap_session *e_dap_start(char *const argv[], const char *program,
+                           const char *entry_func, const char *cwd,
+                           const e_dap_host *host);
+e_dap_session *e_dap_start_stdio(char *const argv[], const char *program,
+                                 const char *entry_func, const char *cwd,
+                                 const e_dap_host *host);
+e_dap_session *e_dap_start_tcp(const char *host, int port, const char *program,
+                               const char *entry_func, const e_dap_host *host_cb);
+int  e_dap_start_fd(const e_dap_session *s);
+int  e_dap_output_fd(const e_dap_session *s);
+int  e_dap_start_pump(e_dap_session *s);
+void e_dap_drain_output(e_dap_session *s);
+int  e_dap_run_to_first_stop(e_dap_session *s);
+/* Once the adapter has answered initialize it is alive, and a host stops
+ * counting a start deadline.  e_dap_start_waits_for() names the step for the
+ * waiting line ("starting", "building", "launching", "configuring").  A
+ * refused request ends the start with E_DAP_START_FAILED, and
+ * e_dap_start_error() gives the adapter's words (dlv's build error). */
+int  e_dap_start_answered(const e_dap_session *s);
+const char *e_dap_start_waits_for(const e_dap_session *s);
+const char *e_dap_start_error(const e_dap_session *s);
+/* The adapter's PID when it is this process's child, else 0 (Scala: the
+ * build server hosts it). */
+pid_t e_dap_adapter_pid(const e_dap_session *s);
+void e_dap_signal(e_dap_session *s, int sig);
+int  e_dap_adapter_gone(e_dap_session *s);
 
 /* Record a source breakpoint to install on Run (DAP sets breakpoints per file
  * just before the program starts). */

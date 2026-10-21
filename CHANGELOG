@@ -337,6 +337,15 @@ Changes
   debugger that never answered used to freeze the editor at "Start
   Debugger", and every key, Esc included, was written to it.
 
+* Go, Rust and Scala debugging start the same way.  Messages reads
+  "starting dlv ... Ns (Esc cancels)" until the debug adapter answers,
+  then what it is doing, such as "dlv building ... Ns", and the editor
+  takes keys throughout.  Esc ends the adapter.  The 30 second limit
+  applies only to an adapter that has not answered, so a long build is
+  not cut short.  When dlv cannot build the package, its error is shown
+  in Messages.  A silent adapter, or dlv building a large package, used
+  to freeze the editor with no way out.
+
 * The first stop after Ctrl-G R is marked at once under pdb and a68g.
   The green bar on the breakpoint line used to appear only after the
   next key.

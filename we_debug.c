@@ -557,6 +557,9 @@ static int  e_d_dap_run(FENSTER *f);
 static int  e_d_dap_step(FENSTER *f, int sw);
 static int  e_d_dap_watches(FENSTER *f, int sw);
 static void e_d_dap_quit(FENSTER *f);
+static int  e_d_dap_start_watch(FENSTER *f);   /* the adapter's start (below) */
+static int  e_d_dap_start_finish(FENSTER *f);
+static void e_d_dap_start_close_messages(ECNT *cn);
 static void e_scala_pin_jdk(FENSTER *f, const char *who);  /* pin Scala JVM (below) */
 
 typedef struct {
@@ -1675,6 +1678,7 @@ int e_d_quit(FENSTER *f)
            e_d_swtch, e_deb_type);
  if (!e_d_died_line(died, sizeof died))
   died[0] = '\0';
+ e_d_start_forget();  /* an adapter start stops being watched before it closes */
  if (e_d_dap_active())
   e_d_dap_quit(f);   /* disconnect the adapter; common cleanup runs below */
  e_d_quit_basic(f);
@@ -1917,10 +1921,10 @@ int e_d_p_watches(FENSTER *f, int sw)
  char str1[256], *str; /* is 256 always large enough? */
  char *str2;
 
- if (e_d_dap_active())
-  return(e_d_dap_watches(f, sw));   /* DAP: values via evaluate(context=watch) */
  if (e_d_start_refused(f))
   return(0);
+ if (e_d_dap_active())
+  return(e_d_dap_watches(f, sw));   /* DAP: values via evaluate(context=watch) */
  if (e_d_watch_refused(f))
   return(0);
  e_d_switch_out(0);
@@ -3297,6 +3301,13 @@ static int            g_dap_stop_line = -1;      /* line of the current stop    
 static char           g_dap_stop_reason[32] = "";/* the adapter's reason for it  */
 static int            g_dap_entry_func = 0;      /* the editor set an entry
                                                     function breakpoint      */
+static char           g_dap_adapter_name[64] = "";/* "dlv", "gdb", ...: what
+                                                    the start's lines name   */
+#define E_D_DAP_START_FAILED_LINE "Could not start the debug adapter."
+#define E_D_DAP_ERROR_MAX 2048
+static char g_dap_start_error[E_D_DAP_ERROR_MAX] = ""; /* why the adapter
+                                                    refused the start      */
+#define E_D_DAP_RUN_FAILED_LINE   "Program failed to start under the debugger."
 /* The stop reasons that mean "the program has just started": the adapter's
    own entry stop, and the entry-function breakpoint the editor sets itself
    (Go's main.main).  Any other reason is a stop the user asked for. */
@@ -3640,15 +3651,15 @@ static int e_d_dap_start(FENSTER *f)
    g_dap_fenster = NULL;
    return(-1);
   }
-  g_dap = e_dap_open_tcp(bhost, bport, program, lang->entry_func, &g_dap_host);
+  g_dap = e_dap_start_tcp(bhost, bport, program, lang->entry_func, &g_dap_host);
  }
  else if (lang->stdio)
-  g_dap = e_dap_open_stdio(adapter, program, lang->entry_func, dir, &g_dap_host);
+  g_dap = e_dap_start_stdio(adapter, program, lang->entry_func, dir, &g_dap_host);
  else
-  g_dap = e_dap_open(adapter, program, lang->entry_func, dir, &g_dap_host);
+  g_dap = e_dap_start(adapter, program, lang->entry_func, dir, &g_dap_host);
  if (!g_dap)
  {
-  e_error("Could not start the debug adapter.", 0, f->fb);
+  e_error(E_D_DAP_START_FAILED_LINE, 0, f->fb);
   if (g_bsp)
   {  e_bsp_close(g_bsp);  g_bsp = NULL;  }
   g_dap_fenster = NULL;
@@ -3667,10 +3678,26 @@ static int e_d_dap_start(FENSTER *f)
    FREE(full);
  }
  e_deb_type = DEB_DAP;
- if (e_dap_run(g_dap) != 0)           /* launch + configure + run to first stop */
+ snprintf(g_dap_adapter_name, sizeof(g_dap_adapter_name), "%s", adapter[0]);
+ return(e_d_dap_start_watch(f));      /* the handshake runs on the fd loop */
+}
+
+/**
+ * e_d_dap_start_finish - The adapter has answered the whole handshake: run
+ * to the program's first stop.
+ * @f: the window on top.
+ *
+ * From here the session is the one the user knows: the first Run or Step
+ * shows the stop reached here.
+ * Return: 0, or -1 when the program did not start (said in a box, the
+ * session ended).
+ */
+static int e_d_dap_start_finish(FENSTER *f)
+{
+ if (e_dap_run_to_first_stop(g_dap) != 0)
  {
-  e_error("Program failed to start under the debugger.", 0, f->fb);
-  e_d_dap_quit(f);
+  e_error(E_D_DAP_RUN_FAILED_LINE, 0, f->fb);
+  e_d_quit(f);
   return(-1);
  }
  e_d_swtch = 3;
@@ -3905,6 +3932,7 @@ static int e_d_build_first(FENSTER *f)
 /* After SIGTERM, this many ticks (about two seconds) pass before SIGKILL. */
 #define E_D_START_KILL_TICKS 17
 #define E_D_START_WAIT_FMT "starting %s ... %lds  (Esc cancels)"
+#define E_D_START_PHASE_FMT "%s %s ... %lds  (Esc cancels)"
 #define E_D_START_CANCELLED_FMT "%s start cancelled"
 #define E_D_START_TIMED_OUT_FMT "%s did not answer within %d s"
 #define E_D_START_BUSY_LINE " The debugger is starting: Esc cancels it"
@@ -3930,9 +3958,12 @@ static struct {
  time_t start;
  int hb_fd;         /* the heartbeat timer                                  */
  int out_fd;        /* the debugger's output, while it is watched           */
+ int dap;           /* a debug adapter starts, not a pipe debugger          */
+ int pty_fd;        /* an adapter's debuggee pty, while it is watched       */
+ int opened_messages; /* Messages was opened for the waiting line alone      */
  ECNT *cn;
 } e_d_start = { 0, E_D_START_WAITING, 0, 0, 0, E_D_START_TIMEOUT, 0,
-                E_D_START_NO_FD, E_D_START_NO_FD, NULL };
+                E_D_START_NO_FD, E_D_START_NO_FD, 0, E_D_START_NO_FD, 0, NULL };
 
 /* The command to run once the debugger has answered. */
 static e_d_resume_fn e_d_start_cmd = NULL;
@@ -3994,10 +4025,12 @@ static int e_d_start_timeout(void)
  * e_d_start_label - The debugger's name as the user knows it.
  *
  * pdb runs as python3, but the user picked Python debugging, so the lines
- * say "pdb".
+ * say "pdb"; a debug adapter is named by its command ("dlv", "gdb").
  */
 static const char *e_d_start_label(void)
 {
+ if (e_deb_type == DEB_DAP && g_dap_adapter_name[0])
+  return(g_dap_adapter_name);
  if (e_deb_type == DEB_PDB)
   return("pdb");
  if (e_debugger)
@@ -4020,6 +4053,38 @@ static void e_d_start_wait_line_drop(void)
 }
 
 /**
+ * e_d_start_adapter_alive - Has the starting debug adapter answered?
+ *
+ * An adapter that answered initialize is alive; what it does next (dlv
+ * building a large package on a cold cache) may take as long as it needs,
+ * so the deadline, meant for an adapter that never answers, stops applying
+ * and only Esc ends the start.
+ */
+static int e_d_start_adapter_alive(void)
+{
+ return(e_d_start.dap && e_dap_start_answered(g_dap));
+}
+
+/**
+ * e_d_start_wait_text - The waiting line's text.
+ * @line: where it goes; @n: its size; @secs: the seconds so far.
+ *
+ * "starting dlv ... 3s  (Esc cancels)" until the debugger has answered;
+ * then, for an adapter, what it is doing: "dlv building ... 40s  (Esc
+ * cancels)".
+ */
+static void e_d_start_wait_text(char *line, size_t n, long secs)
+{
+ if (e_d_start_adapter_alive())
+ {
+  snprintf(line, n, E_D_START_PHASE_FMT, e_d_start_label(),
+           e_dap_start_waits_for(g_dap), secs);
+  return;
+ }
+ snprintf(line, n, E_D_START_WAIT_FMT, e_d_start_label(), secs);
+}
+
+/**
  * e_d_start_wait_line_put - Write "starting <debugger> ... Ns (Esc cancels)"
  * at the foot of Messages.
  *
@@ -4033,8 +4098,7 @@ static void e_d_start_wait_line_put(void)
 
  if (!mf || e_d_start.wait_row)
   return;
- snprintf(line, sizeof line, E_D_START_WAIT_FMT, e_d_start_label(),
-          (long)(time(NULL) - e_d_start.start));
+ e_d_start_wait_text(line, sizeof line, (long)(time(NULL) - e_d_start.start));
  print_to_end_of_buffer(mf->b, line, 0);
  e_d_start.wait_row = 1;
 }
@@ -4053,13 +4117,31 @@ static void e_d_start_wait_line_turn(void)
  * e_d_start_signal - Send @sig to the starting debugger.
  * @sig: SIGTERM first, SIGKILL when that was not enough.
  *
- * The debugger is the editor's own child, addressed by its exact PID; it has
- * started no program yet.
+ * The debugger, or the debug adapter, is the editor's own child, addressed by
+ * its exact PID; it has started no program yet.
  */
 static void e_d_start_signal(int sig)
 {
+ if (e_d_start.dap)
+ {
+  e_dap_signal(g_dap, sig);
+  return;
+ }
  if (e_d_pid > 0)
   kill(e_d_pid, sig);
+}
+
+/**
+ * e_d_start_has_child - Is there a process of the editor's own to end?
+ *
+ * The Scala adapter is hosted by the build server, not started by the
+ * editor: a start of it that is cancelled ends at once, with the session.
+ */
+static int e_d_start_has_child(void)
+{
+ if (e_d_start.dap)
+  return(e_dap_adapter_pid(g_dap) > 0);
+ return(e_d_pid > 0);
 }
 
 /**
@@ -4074,6 +4156,8 @@ static int e_d_start_reaped(void)
 {
  int st, r;
 
+ if (e_d_start.dap)
+  return(e_dap_adapter_gone(g_dap));
  if (e_d_pid <= 0)
   return(1);
  r = waitpid(e_d_pid, &st, WNOHANG);
@@ -4090,6 +4174,11 @@ static int e_d_start_reaped(void)
  */
 static void e_d_start_unwatch_output(void)
 {
+ if (e_d_start.pty_fd != E_D_START_NO_FD)
+ {
+  wpe_fd_del(e_d_start.pty_fd);
+  e_d_start.pty_fd = E_D_START_NO_FD;
+ }
  if (e_d_start.out_fd == E_D_START_NO_FD)
   return;
  wpe_fd_del(e_d_start.out_fd);
@@ -4146,6 +4235,65 @@ static void e_d_start_say_end(int why, const char *label, int timeout, FENSTER *
 }
 
 /**
+ * e_d_dap_keep_start_error - Keep the adapter's reason for refusing the
+ * start, before the session that holds it is closed.
+ */
+static void e_d_dap_keep_start_error(void)
+{
+ const char *why = e_dap_start_error(g_dap);
+
+ g_dap_start_error[0] = '\0';
+ if (why)
+  snprintf(g_dap_start_error, sizeof g_dap_start_error, "%s", why);
+}
+
+/**
+ * e_d_dap_say_start_error - Show the adapter's refusal in Messages, one
+ * line per line of it.
+ * @f: the window on top.
+ *
+ * When dlv cannot build the package, the user reads the compiler's error
+ * where build errors always appear, and goes on editing: no box to dismiss.
+ */
+static void e_d_dap_say_start_error(FENSTER *f)
+{
+ char *line = g_dap_start_error, *nl;
+
+ while (line && *line)
+ {
+  nl = strchr(line, '\n');
+  if (nl)
+   *nl = '\0';
+  e_d_p_message(line, f, 1);
+  line = nl ? nl + 1 : NULL;
+ }
+ g_dap_start_error[0] = '\0';
+}
+
+/**
+ * e_d_start_say_died - Say that the debugger ended by itself before it
+ * answered.
+ * @dap: a debug adapter was starting; @f: the window on top.
+ *
+ * A pipe debugger is reported as before, by the session's end; an adapter
+ * that hung up says so in a box, as when it could not be started at all.
+ */
+static void e_d_start_say_died(int dap, FENSTER *f)
+{
+ if (dap && g_dap_start_error[0])
+ {
+  e_d_dap_say_start_error(f);
+  return;
+ }
+ if (dap)
+ {
+  e_error(E_D_DAP_START_FAILED_LINE, 0, f->fb);
+  return;
+ }
+ e_show_error(0, f);
+}
+
+/**
  * e_d_start_end - The debugger is gone, or must go: end the session.
  *
  * A start the user cancelled, or that passed its deadline, ends with a line
@@ -4158,6 +4306,7 @@ static void e_d_start_end(void)
  ECNT *cn = e_d_start.cn;
  FENSTER *f = cn->f[cn->mxedt];
  int why = e_d_start.ending, timeout = e_d_start.timeout;
+ int dap = e_d_start.dap;
  char label[E_D_START_LINE_MAX];
 
  strncpy(label, e_d_start_label(), sizeof label - 1);
@@ -4166,7 +4315,7 @@ static void e_d_start_end(void)
  e_d_quit(f);
  f = cn->f[cn->mxedt];
  if (why == E_D_START_WAITING)
-  e_show_error(0, f);
+  e_d_start_say_died(dap, f);
  else
   e_d_start_say_end(why, label, timeout, f);
 }
@@ -4177,7 +4326,8 @@ static void e_d_start_end(void)
  *
  * The debugger gets SIGTERM; the heartbeat sends SIGKILL if it is still
  * there about two seconds later, and ends the session once it is gone.
- * Without a heartbeat it is killed at once.
+ * Without a heartbeat, or without a child of the editor's own to wait for,
+ * the session ends at once.
  */
 static void e_d_start_stop(int why)
 {
@@ -4186,7 +4336,7 @@ static void e_d_start_stop(int why)
  e_d_start.ending = why;
  e_d_start.term_ticks = 0;
  e_d_start_unwatch_output();
- if (e_d_start.hb_fd != E_D_START_NO_FD)
+ if (e_d_start.hb_fd != E_D_START_NO_FD && e_d_start_has_child())
  {
   e_d_start_signal(SIGTERM);
   return;
@@ -4201,6 +4351,8 @@ static void e_d_start_stop(int why)
 static void e_d_start_check_deadline(void)
 {
  if (e_d_start.ending != E_D_START_WAITING)
+  return;
+ if (e_d_start_adapter_alive())
   return;
  if (time(NULL) - e_d_start.start >= e_d_start.timeout)
   e_d_start_stop(E_D_START_TIMED_OUT);
@@ -4235,6 +4387,32 @@ static void e_d_start_run_pressed(e_d_resume_fn cmd, FENSTER *f, int arg)
 }
 
 /**
+ * e_d_start_after_answer - Set the session up now that the debugger has
+ * answered.
+ * @f: the window on top.
+ *
+ * A pipe debugger gets its settings and breakpoints; a debug adapter, whose
+ * handshake already carried the breakpoints, runs to the first stop.
+ * Return: 0, or -1 when the session ended instead (and said why).
+ */
+static int e_d_start_after_answer(FENSTER *f)
+{
+ ECNT *cn = f->ed;
+
+ if (e_d_start.dap)
+ {
+  e_d_dap_start_close_messages(cn);
+  return(e_d_dap_start_finish(cn->f[cn->mxedt]));
+ }
+ e_deb_prompt_reset();
+ if (e_d_start_after_banner(f) == 0)
+  return(0);
+ e_d_quit(f);
+ e_show_error(0, cn->f[cn->mxedt]);
+ return(-1);
+}
+
+/**
  * e_d_start_continue - The debugger answered: go on with the session.
  *
  * What followed the banner before (the settings sent to gdb, the
@@ -4250,14 +4428,9 @@ static void e_d_start_continue(void)
  e_d_start_forget();
  e_messages_show_tail(cn);       /* Messages without the waiting line */
  e_d_start_cmd = NULL;
- e_deb_prompt_reset();
  f = cn->f[cn->mxedt];
- if (e_d_start_after_banner(f) < 0)
- {
-  e_d_quit(f);
-  e_show_error(0, cn->f[cn->mxedt]);
+ if (e_d_start_after_answer(f) < 0)
   return;
- }
  if (cmd)
   e_d_start_run_pressed(cmd, cn->f[cn->mxedt], arg);
 }
@@ -4416,6 +4589,35 @@ void e_d_start_cancel(void)
 }
 
 /**
+ * e_d_start_begin - Note that a debugger start waits from now on.
+ * @f: a window of the desktop; @dap: 1 for a debug adapter.
+ */
+static void e_d_start_begin(FENSTER *f, int dap)
+{
+ e_d_start.active = 1;
+ e_d_start.dap = dap;
+ e_d_start.opened_messages = 0;
+ e_d_start.ending = E_D_START_WAITING;
+ e_d_start.held = 0;
+ e_d_start.term_ticks = 0;
+ e_d_start.wait_row = 0;
+ e_d_start.timeout = e_d_start_timeout();
+ e_d_start.start = time(NULL);
+ e_d_start.cn = f->ed;
+}
+
+/**
+ * e_d_start_show - Start the heartbeat and show the waiting line, so the
+ * user sees at once that the debugger starts and that Esc ends it.
+ */
+static void e_d_start_show(void)
+{
+ e_d_start_heartbeat_start();
+ e_d_start_wait_line_put();
+ e_messages_show_tail(e_d_start.cn);
+}
+
+/**
  * e_d_start_watch - Wait for the debugger's answer without holding the editor.
  * @f: the source window.
  *
@@ -4424,20 +4626,192 @@ void e_d_start_cancel(void)
  */
 static void e_d_start_watch(FENSTER *f)
 {
- e_d_start.active = 1;
- e_d_start.ending = E_D_START_WAITING;
- e_d_start.held = 0;
- e_d_start.term_ticks = 0;
- e_d_start.wait_row = 0;
- e_d_start.timeout = e_d_start_timeout();
- e_d_start.start = time(NULL);
- e_d_start.cn = f->ed;
+ e_d_start_begin(f, 0);
  e_d_async_reset();
  e_d_start.out_fd = wfildes[0];
  wpe_fd_add(e_d_start.out_fd, POLLIN, e_d_start_on_output, NULL);
- e_d_start_heartbeat_start();
- e_d_start_wait_line_put();
- e_messages_show_tail(e_d_start.cn);
+ e_d_start_show();
+}
+
+/* ---- Starting a debug adapter (Go, Rust, Scala) -------------------------
+ *
+ * The same start as a pipe debugger's, with the same waiting line, Esc,
+ * deadline and refused keys; what is awaited is the adapter's whole
+ * handshake (initialize, launch, breakpoints, configurationDone), which the
+ * engine runs one answer at a time as its descriptor becomes readable.
+ * Each transport gives one descriptor to watch: the pipe a stdio adapter
+ * (gdb, lldb-dap) writes to; the socket of the Scala adapter the build
+ * server hosts; and for dlv, which dials back in, the listening socket
+ * until it has, then the connection.  dlv's pty, where its build and the
+ * program write, is read meanwhile so neither stalls on it.
+ */
+
+static void e_d_dap_start_on_readable(int fd, void *data);
+
+/**
+ * e_d_dap_start_follow_fd - Watch the descriptor the adapter's start waits
+ * on now.
+ *
+ * It changes once, when dlv dials in and the listening socket gives way to
+ * the connection.
+ */
+static void e_d_dap_start_follow_fd(void)
+{
+ int fd = e_dap_start_fd(g_dap);
+
+ if (fd == e_d_start.out_fd)
+  return;
+ if (e_d_start.out_fd != E_D_START_NO_FD)
+  wpe_fd_del(e_d_start.out_fd);
+ e_d_start.out_fd = fd;
+ if (fd != E_D_START_NO_FD)
+  wpe_fd_add(fd, POLLIN, e_d_dap_start_on_readable, NULL);
+}
+
+/**
+ * e_d_dap_start_on_readable - The adapter dialled in or wrote: take its
+ * answers.
+ * @fd: the start's descriptor; @data: unused.
+ *
+ * The handshake moves on with every answer; when it is done the session
+ * goes on.  An adapter that hung up, or refused a step (dlv's launch when
+ * the package does not build), ends the start; the adapter is then ended by
+ * its PID with the session.
+ */
+static void e_d_dap_start_on_readable(int fd, void *data)
+{
+ int st;
+
+ (void)fd;
+ (void)data;
+ if (!e_d_start.active || e_d_start.ending != E_D_START_WAITING || !g_dap)
+  return;
+ st = e_dap_start_pump(g_dap);
+ if (st == E_DAP_START_FAILED)
+ {
+  e_d_dap_keep_start_error();     /* a refusal is shown; a hang-up is boxed */
+  e_d_start_end();
+  return;
+ }
+ if (st == E_DAP_START_READY)
+ {
+  e_d_start_answered();
+  return;
+ }
+ e_d_dap_start_follow_fd();
+ e_d_start_check_deadline();
+}
+
+/**
+ * e_d_dap_start_on_program_output - dlv's pty has output: show it in
+ * Messages, above the waiting line.
+ * @fd: the pty; @data: unused.
+ */
+static void e_d_dap_start_on_program_output(int fd, void *data)
+{
+ (void)data;
+ if (!e_d_start.active || !g_dap)
+  return;
+ e_d_start_wait_line_drop();
+ e_dap_drain_output(g_dap);
+ if (e_dap_output_fd(g_dap) != fd)
+ {
+  wpe_fd_del(fd);                      /* the pty is closed: the adapter ended */
+  e_d_start.pty_fd = E_D_START_NO_FD;
+ }
+ if (e_d_start.ending == E_D_START_WAITING)
+  e_d_start_wait_line_turn();
+}
+
+/**
+ * e_d_dap_start_messages - Make sure Messages is open for the waiting line.
+ * @f: the source window.
+ *
+ * Go and Scala build nothing in the editor first, so Messages may not be
+ * open yet; the waiting line, and Esc's promise, must be seen.
+ */
+static int e_d_dap_start_messages(FENSTER *f)
+{
+ if (e_build_messages(f->ed))
+  return(0);
+ e_edit(f->ed, "Messages");
+ return(e_build_messages(f->ed) != NULL);
+}
+
+/**
+ * e_d_messages_empty - Does Messages hold nothing at all?
+ * @b: its buffer.
+ */
+static int e_d_messages_empty(BUFFER *b)
+{
+ return(b->mxlines <= 1 && b->bf[0].len == 0);
+}
+
+/**
+ * e_d_window_index - The desktop slot that holds @w, or 0.
+ * @cn: the desktop; @w: a window.
+ */
+static int e_d_window_index(ECNT *cn, FENSTER *w)
+{
+ int i;
+
+ for (i = cn->mxedt; i > 0; i--)
+  if (cn->f[i] == w)
+   return(i);
+ return(0);
+}
+
+/**
+ * e_d_dap_start_close_messages - Close the Messages window the start opened
+ * only for its waiting line.
+ * @cn: the desktop.
+ *
+ * Messages and Watches share the bottom strip: an empty Messages left open
+ * would hide the Watches a user added before Run, which the first stop
+ * fills.  A Messages that received any output stays open.
+ */
+static void e_d_dap_start_close_messages(ECNT *cn)
+{
+ FENSTER *mf = e_build_messages(cn);
+ FENSTER *top = cn->f[cn->mxedt];
+ int i;
+
+ if (!e_d_start.opened_messages || !mf || !e_d_messages_empty(mf->b))
+  return;
+ e_d_start.opened_messages = 0;
+ i = e_d_window_index(cn, mf);
+ e_switch_window(cn->edt[i], cn->f[cn->mxedt]);
+ e_close_window(cn->f[cn->mxedt]);
+ if (top == mf)
+  return;
+ i = e_d_window_index(cn, top);
+ if (i > 0 && i != cn->mxedt)
+  e_switch_window(cn->edt[i], cn->f[cn->mxedt]);
+}
+
+/**
+ * e_d_dap_start_watch - Wait for the adapter's handshake without holding the
+ * editor.
+ * @f: the source window.
+ *
+ * From here the start goes on in e_d_dap_start_on_readable and
+ * e_d_start_on_tick; the editor takes keys at once.
+ * Return: E_D_STARTING; the command pressed runs again once the adapter has
+ * answered.
+ */
+static int e_d_dap_start_watch(FENSTER *f)
+{
+ ECNT *cn = f->ed;
+ int opened = e_d_dap_start_messages(f);
+
+ e_d_start_begin(cn->f[cn->mxedt], 1);
+ e_d_start.opened_messages = opened;
+ e_d_dap_start_follow_fd();
+ e_d_start.pty_fd = e_dap_output_fd(g_dap);
+ if (e_d_start.pty_fd != E_D_START_NO_FD)
+  wpe_fd_add(e_d_start.pty_fd, POLLIN, e_d_dap_start_on_program_output, NULL);
+ e_d_start_show();
+ return(E_D_STARTING);
 }
 
 /**

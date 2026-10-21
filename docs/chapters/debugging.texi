@@ -110,8 +110,17 @@ not answer within 30 s}.  To give a slow debugger more time, set the
 environment variable @env{XWPE_DEBUG_START_TIMEOUT} to a number of
 seconds before you start xwpe.
 
-Go, Rust and Scala sessions start through a debug adapter instead, and
-the editor still waits for the adapter while it starts.
+Go, Rust and Scala sessions start through a debug adapter (dlv, gdb or
+lldb-dap, or the Scala build server) and start the same way.  The line
+names the adapter, @samp{starting dlv ... 3s  (Esc cancels)}, and the 30
+second limit applies until the adapter first answers.  After that the
+adapter is known to be alive, so the limit no longer applies.  The line
+then says what the adapter is doing, for example @samp{dlv building
+... 40s  (Esc cancels)} while dlv builds the package, and Esc still ends
+it.  If dlv cannot build the package, its error appears in Messages and
+the session ends.  Rust is compiled before the adapter starts, and the
+Scala build server is started before it; those two steps still hold the
+editor.
 
 @section How a session ends
 

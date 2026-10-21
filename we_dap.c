@@ -30,6 +30,24 @@
 
 #define DAP_MAX_BP   64
 #define DAP_ACCEPT_MS 10000
+#define DAP_READ_CHUNK 4096
+#define DAP_NO_FD    (-1)
+#define DAP_NO_SEQ   (-1)
+#define DAP_POLL_FOREVER (-1)
+
+/* The start of a session, one step per answer it waits for.  The order is
+   the handshake's: initialize, then launch, setBreakpoints,
+   setFunctionBreakpoints and configurationDone; the session is ready when
+   configurationDone has been answered. */
+#define DAP_STEP_ACCEPT      0   /* reverse TCP: the adapter has not dialled in */
+#define DAP_STEP_INITIALIZE  1   /* initialize sent                             */
+#define DAP_STEP_OPENED      2   /* initialize answered; nothing else sent yet  */
+#define DAP_STEP_LAUNCH      3   /* launch sent; dlv answers once it has built  */
+#define DAP_STEP_INITIALIZED 4   /* launch sent; the `initialized` event awaited */
+#define DAP_STEP_BREAKPOINTS 5   /* setBreakpoints sent                         */
+#define DAP_STEP_ENTRY       6   /* setFunctionBreakpoints sent                 */
+#define DAP_STEP_CONFIGURED  7   /* configurationDone sent                      */
+#define DAP_STEP_READY       8   /* configurationDone answered                  */
 
 /* Two transports.  Reverse-TCP (Delve): DAP on a socket, the debuggee's output
    on a separate pty we read.  Stdio (gdb/lldb -dap): DAP flows over the adapter's
@@ -51,6 +69,16 @@ struct e_dap_session {
                                  build server already bound the main class).      */
  int           wait_init;      /* BSP/Bloop: wait the `initialized` event after
                                  launch, before setBreakpoints (strict DAP order).*/
+ int           listen_fd;     /* reverse TCP: waiting for the adapter to dial
+                                 in, else -1                                    */
+ const char   *adapter_id;    /* the initialize request's adapterID              */
+ int           step;          /* DAP_STEP_*: what the start waits for next       */
+ int           goal;          /* the step at which the start is done             */
+ int           await_seq;     /* the request whose response the step waits for   */
+ int           start_failed;  /* the adapter hung up, never dialled in, or
+                                 refused a request                              */
+ char         *start_error;   /* why the adapter refused, or NULL                */
+ int           spawned;       /* the adapter is this process's own child         */
  pid_t         pid;           /* adapter process                    */
  int           seq;           /* request sequence counter           */
  e_dap_reader  rd;            /* incoming frame reassembly          */
@@ -104,6 +132,35 @@ static int dap_send(e_dap_session *s, const char *command, struct json_object *a
  return seq;
 }
 
+/**
+ * e_dap_drain_output - Read what the debuggee wrote to the adapter's pty.
+ * @s: the session.
+ *
+ * Reads once and hands the text to the host, so the program's output lands
+ * in Messages and the program never stalls on a full pty.  When the pty is
+ * gone (the adapter ended) it is closed and e_dap_output_fd answers -1.
+ */
+void e_dap_drain_output(e_dap_session *s)
+{
+ char buf[DAP_READ_CHUNK];
+ ssize_t n;
+
+ if (!s || s->pty_master < 0)
+  return;
+ n = read(s->pty_master, buf, sizeof(buf) - 1);
+ if (n > 0)
+ {
+  buf[n] = '\0';
+  if (s->host.on_output)
+   s->host.on_output(buf, s->host.ud);
+  return;
+ }
+ if (n < 0 && errno == EINTR)
+  return;
+ close(s->pty_master);                /* slave gone (EIO/EOF) */
+ s->pty_master = -1;
+}
+
 /* Block until one complete message arrives; NULL on EOF/error. */
 static struct json_object *dap_read_message(e_dap_session *s)
 {
@@ -134,15 +191,7 @@ static struct json_object *dap_read_message(e_dap_session *s)
   }
   if (pty_i >= 0 && (p[pty_i].revents & (POLLIN | POLLHUP | POLLERR)))
   {
-   n = read(s->pty_master, buf, sizeof(buf) - 1);
-   if (n > 0)
-   {
-    buf[n] = '\0';
-    if (s->host.on_output)
-     s->host.on_output(buf, s->host.ud);
-   }
-   else
-   {  close(s->pty_master);  s->pty_master = -1;  }  /* slave gone (EIO/EOF) */
+   e_dap_drain_output(s);
    continue;
   }
   if (!(p[sock_i].revents & (POLLIN | POLLHUP | POLLERR)))
@@ -238,38 +287,6 @@ static struct json_object *dap_wait_response(e_dap_session *s, int seq)
    return m;
   if (type && !strcmp(type, "event"))
    dap_handle_event(s, m);
-  json_object_put(m);
- }
-}
-
-/* Pump messages until the named event arrives, dispatching the others (and
- * dropping any responses, e.g. a launch reply the adapter defers).  Used to
- * wait for the spec's `initialized` event before sending breakpoints on the
- * BSP/Bloop transport.  Returns 1 on the event, 0 on EOF. */
-static int dap_wait_event(e_dap_session *s, const char *name)
-{
- for (;;)
- {
-  struct json_object *m = dap_read_message(s);
-  const char *type;
-  if (!m)
-   return 0;
-  type = obj_str(m, "type");
-  if (type && !strcmp(type, "event"))
-  {
-   const char *ev = obj_str(m, "event");
-   if (ev && !strcmp(ev, name))
-   {
-    json_object_put(m);
-    return 1;
-   }
-   dap_handle_event(s, m);
-   if (s->ended)
-   {
-    json_object_put(m);
-    return 0;
-   }
-  }
   json_object_put(m);
  }
 }
@@ -418,17 +435,6 @@ static pid_t dap_spawn(char *const argv[], int port, const char *cwd,
  return pid;
 }
 
-/* Wait up to DAP_ACCEPT_MS for the adapter to dial in; return the conn fd. */
-static int dap_accept(int listen_fd)
-{
- struct pollfd p;
- p.fd = listen_fd;
- p.events = POLLIN;
- if (poll(&p, 1, DAP_ACCEPT_MS) <= 0)
-  return -1;
- return accept(listen_fd, NULL, NULL);
-}
-
 /* Fork+exec a stdio adapter (gdb/lldb --interpreter=dap): DAP flows over the
    adapter's own stdin/stdout, which we wire to two pipes.  *in_fd receives the
    write end of the child's stdin; *out_fd the read end of the child's stdout.
@@ -466,23 +472,535 @@ static pid_t dap_spawn_stdio(char *const argv[], const char *cwd,
  return pid;
 }
 
-/* The DAP `initialize` handshake (shared by both transports). */
-static int dap_initialize(e_dap_session *s, const char *adapter_id)
-{
- struct json_object *args, *resp;
- int iseq;
+/* ---- the start: the handshake, one answer at a time ------------------- *
+ *
+ * Each step sends one request and waits for its answer; the answer sends the
+ * next request.  The same steps run in both shapes the engine offers: driven
+ * here with poll() until done (e_dap_open*, e_dap_run), or fed by the host's
+ * event loop one readable descriptor at a time (e_dap_start*), so an editor
+ * never waits on an adapter that does not answer.
+ */
 
- args = json_object_new_object();
+static void dap_send_configuration(e_dap_session *s);
+
+/**
+ * dap_send_initialize - Send the initialize request, the adapter's first.
+ * @s: the session, connected.
+ */
+static void dap_send_initialize(e_dap_session *s)
+{
+ struct json_object *args = json_object_new_object();
+
  json_object_object_add(args, "clientID", json_object_new_string("xwpe"));
- json_object_object_add(args, "adapterID", json_object_new_string(adapter_id));
+ json_object_object_add(args, "adapterID", json_object_new_string(s->adapter_id));
  json_object_object_add(args, "linesStartAt1", json_object_new_boolean(1));
  json_object_object_add(args, "columnsStartAt1", json_object_new_boolean(1));
  json_object_object_add(args, "pathFormat", json_object_new_string("path"));
- iseq = dap_send(s, "initialize", args);
- resp = dap_wait_response(s, iseq);
- if (!resp)
-  return -1;
- json_object_put(resp);
+ s->await_seq = dap_send(s, "initialize", args);
+ s->step = DAP_STEP_INITIALIZE;
+}
+
+/**
+ * dap_send_configuration_done - Tell the adapter the breakpoints are set.
+ * @s: the session.
+ *
+ * gdb and lldb-dap start the program here.
+ */
+static void dap_send_configuration_done(e_dap_session *s)
+{
+ s->await_seq = dap_send(s, "configurationDone", NULL);
+ s->step = DAP_STEP_CONFIGURED;
+}
+
+/**
+ * dap_send_entry_breakpoint - Set the stop at the entry function (Go's
+ * main.main, like gdb's "break main"), or go straight to configurationDone.
+ * @s: the session.
+ */
+static void dap_send_entry_breakpoint(e_dap_session *s)
+{
+ struct json_object *args, *bps, *b;
+
+ if (!s->entry_func)
+ {
+  dap_send_configuration_done(s);
+  return;
+ }
+ args = json_object_new_object();
+ bps = json_object_new_array();
+ b = json_object_new_object();
+ json_object_object_add(b, "name", json_object_new_string(s->entry_func));
+ json_object_array_add(bps, b);
+ json_object_object_add(args, "breakpoints", bps);
+ s->await_seq = dap_send(s, "setFunctionBreakpoints", args);
+ s->step = DAP_STEP_ENTRY;
+}
+
+/**
+ * dap_send_source_breakpoints - Send the user's breakpoints.
+ * @s: the session.
+ */
+static void dap_send_source_breakpoints(e_dap_session *s)
+{
+ struct json_object *args, *bps, *src;
+
+ args = json_object_new_object();
+ src = json_object_new_object();
+ json_object_object_add(src, "path", json_object_new_string(s->bp_file));
+ json_object_object_add(args, "source", src);
+ bps = json_object_new_array();
+ for (int i = 0; i < s->bp_n; i++)
+ {
+  struct json_object *b = json_object_new_object();
+  json_object_object_add(b, "line", json_object_new_int(s->bp_lines[i]));
+  json_object_array_add(bps, b);
+ }
+ json_object_object_add(args, "breakpoints", bps);
+ s->await_seq = dap_send(s, "setBreakpoints", args);
+ s->step = DAP_STEP_BREAKPOINTS;
+}
+
+/**
+ * dap_send_configuration - Configure the launched program: its breakpoints,
+ * then the entry stop, then configurationDone.
+ * @s: the session.
+ */
+static void dap_send_configuration(e_dap_session *s)
+{
+ if (s->bp_n > 0)
+ {
+  dap_send_source_breakpoints(s);
+  return;
+ }
+ dap_send_entry_breakpoint(s);
+}
+
+/**
+ * dap_send_launch - Ask the adapter to launch the program.
+ * @s: the session, its initialize answered.
+ *
+ * Run, not stop on entry: the stop comes from the breakpoints.  dlv adds
+ * "mode":"debug" so it builds the package, and answers once it has built: the
+ * breakpoints wait for that answer so they bind to the fresh binary.  gdb and
+ * lldb-dap follow the specification and answer the launch only after
+ * configurationDone, so the configuration goes out at once and their late
+ * answer is dropped.  The Scala adapter (through Bloop) refuses breakpoints
+ * until it has sent the `initialized` event, which is awaited first; its
+ * launch names no program, the build server already chose the main class.
+ */
+static void dap_send_launch(e_dap_session *s)
+{
+ struct json_object *args = json_object_new_object();
+ int seq;
+
+ json_object_object_add(args, "request", json_object_new_string("launch"));
+ if (!s->minimal_launch)
+ {
+  if (s->launch_mode_debug)
+   json_object_object_add(args, "mode", json_object_new_string("debug"));
+  json_object_object_add(args, "program", json_object_new_string(s->program));
+  json_object_object_add(args, "stopOnEntry", json_object_new_boolean(0));
+ }
+ seq = dap_send(s, "launch", args);
+ if (s->launch_mode_debug)
+ {
+  s->await_seq = seq;
+  s->step = DAP_STEP_LAUNCH;
+  return;
+ }
+ if (s->wait_init)
+ {
+  s->await_seq = DAP_NO_SEQ;
+  s->step = DAP_STEP_INITIALIZED;
+  return;
+ }
+ dap_send_configuration(s);
+}
+
+/**
+ * dap_start_advance - The answer the current step waited for has come: send
+ * the next request, or stop where the start's goal is.
+ * @s: the session.
+ */
+static void dap_start_advance(e_dap_session *s)
+{
+ switch (s->step)
+ {
+  case DAP_STEP_INITIALIZE:
+   s->step = DAP_STEP_OPENED;
+   if (s->goal > DAP_STEP_OPENED)
+    dap_send_launch(s);
+   break;
+  case DAP_STEP_LAUNCH:
+  case DAP_STEP_INITIALIZED:
+   dap_send_configuration(s);
+   break;
+  case DAP_STEP_BREAKPOINTS:
+   dap_send_entry_breakpoint(s);
+   break;
+  case DAP_STEP_ENTRY:
+   dap_send_configuration_done(s);
+   break;
+  case DAP_STEP_CONFIGURED:
+   s->step = DAP_STEP_READY;
+   break;
+  default:
+   break;
+ }
+}
+
+/**
+ * dap_start_is_awaited - Is @m the answer the current step waits for?
+ * @s: the session; @m: a message from the adapter.
+ *
+ * An event that ends the program while the Scala adapter's `initialized` is
+ * awaited also lets the start go on, as the configuration is then moot.
+ */
+static int dap_start_is_awaited(e_dap_session *s, struct json_object *m)
+{
+ const char *type = obj_str(m, "type");
+ const char *ev;
+
+ if (!type)
+  return 0;
+ if (!strcmp(type, "response"))
+  return s->await_seq != DAP_NO_SEQ &&
+         obj_int(m, "request_seq", DAP_NO_SEQ) == s->await_seq;
+ if (strcmp(type, "event") || s->step != DAP_STEP_INITIALIZED)
+  return 0;
+ ev = obj_str(m, "event");
+ return ev && !strcmp(ev, "initialized");
+}
+
+/**
+ * dap_response_refused - Is @m a response with "success": false?
+ * @m: a message from the adapter.
+ */
+static int dap_response_refused(struct json_object *m)
+{
+ struct json_object *v = NULL;
+ const char *type = obj_str(m, "type");
+
+ if (!type || strcmp(type, "response"))
+  return 0;
+ if (!json_object_object_get_ex(m, "success", &v))
+  return 0;
+ return !json_object_get_boolean(v);
+}
+
+/**
+ * dap_start_refused - The adapter refused a step of the start: end it.
+ * @s: the session; @m: the refusing response.
+ *
+ * Keeps the adapter's own words (dlv's build error, in body.error.format,
+ * or the short "message") for the user, who sees why the program did not
+ * start instead of a session that waits for a stop that never comes.
+ */
+static void dap_start_refused(e_dap_session *s, struct json_object *m)
+{
+ const char *why = obj_str(obj_obj(obj_obj(m, "body"), "error"), "format");
+
+ if (!why || !*why)
+  why = obj_str(m, "message");
+ if (!why || !*why)
+  why = "the debug adapter refused the request";
+ free(s->start_error);
+ s->start_error = strdup(why);
+ s->start_failed = 1;
+}
+
+/**
+ * dap_start_feed - Take one message during the start.
+ * @s: the session; @m: the message (not freed here).
+ *
+ * The awaited answer moves the start on, unless it is a refusal, which ends
+ * the start; an event is handled as at any other time; any other response
+ * (gdb's late launch answer) is dropped.
+ */
+static void dap_start_feed(e_dap_session *s, struct json_object *m)
+{
+ const char *type = obj_str(m, "type");
+ int ended_before = s->ended;
+
+ if (dap_start_is_awaited(s, m) && dap_response_refused(m))
+ {
+  dap_start_refused(s, m);
+  return;
+ }
+ if (dap_start_is_awaited(s, m))
+ {
+  dap_start_advance(s);
+  return;
+ }
+ if (type && !strcmp(type, "event"))
+  dap_handle_event(s, m);
+ if (!ended_before && s->ended && s->step == DAP_STEP_INITIALIZED)
+  dap_start_advance(s);
+}
+
+/**
+ * dap_start_status - Where the start stands.
+ * @s: the session.
+ * Return: E_DAP_START_READY at its goal, E_DAP_START_FAILED when the adapter
+ * hung up or never dialled in, E_DAP_START_WAITING otherwise.
+ */
+static int dap_start_status(const e_dap_session *s)
+{
+ if (s->start_failed)
+  return E_DAP_START_FAILED;
+ if (s->step >= s->goal)
+  return E_DAP_START_READY;
+ return E_DAP_START_WAITING;
+}
+
+/**
+ * dap_start_consume - Take the messages already read, up to the start's goal.
+ * @s: the session.
+ *
+ * Messages past the goal stay queued: the first stop, for one, is read by
+ * e_dap_run_to_first_stop.
+ * Return: dap_start_status.
+ */
+static int dap_start_consume(e_dap_session *s)
+{
+ while (dap_start_status(s) == E_DAP_START_WAITING &&
+        s->step != DAP_STEP_ACCEPT)
+ {
+  int err = 0;
+  struct json_object *m = e_dap_reader_pop(&s->rd, &err);
+
+  if (!m)
+   break;
+  dap_start_feed(s, m);
+  json_object_put(m);
+ }
+ return dap_start_status(s);
+}
+
+/**
+ * dap_start_fail - The adapter hung up, or never dialled in.
+ * @s: the session.
+ * Return: E_DAP_START_FAILED.
+ */
+static int dap_start_fail(e_dap_session *s)
+{
+ s->start_failed = 1;
+ s->ended = 1;
+ return E_DAP_START_FAILED;
+}
+
+/**
+ * dap_start_accept - The reverse-TCP adapter dialled in: take the connection
+ * and send it the initialize request.
+ * @s: the session, waiting on its listening socket.
+ * Return: dap_start_status.
+ */
+static int dap_start_accept(e_dap_session *s)
+{
+ s->sock = accept(s->listen_fd, NULL, NULL);
+ close(s->listen_fd);
+ s->listen_fd = DAP_NO_FD;
+ if (s->sock < 0)
+  return dap_start_fail(s);
+ dap_send_initialize(s);
+ return dap_start_status(s);
+}
+
+/**
+ * dap_start_wait - Wait, with poll(), until the start's descriptor is
+ * readable, passing on the program's output meanwhile.
+ * @s: the session.
+ *
+ * Used where the caller has nothing else to do (a test, the synchronous
+ * API).  The adapter gets DAP_ACCEPT_MS to dial in, as before.
+ * Return: 0 when readable, -1 when the adapter did not dial in or poll failed.
+ */
+static int dap_start_wait(e_dap_session *s)
+{
+ for (;;)
+ {
+  struct pollfd p[2];
+  int np = 0, pty_i = -1, pret;
+  int timeout = DAP_POLL_FOREVER;
+
+  if (s->step == DAP_STEP_ACCEPT)
+   timeout = DAP_ACCEPT_MS;
+  p[np].fd = e_dap_start_fd(s); p[np].events = POLLIN; np++;
+  if (s->pty_master >= 0)
+  {  pty_i = np; p[np].fd = s->pty_master; p[np].events = POLLIN; np++;  }
+  pret = poll(p, np, timeout);
+  if (pret < 0 && errno == EINTR)
+   continue;
+  if (pret <= 0)
+   return -1;
+  if (pty_i >= 0 && (p[pty_i].revents & (POLLIN | POLLHUP | POLLERR)))
+   e_dap_drain_output(s);
+  if (p[0].revents & (POLLIN | POLLHUP | POLLERR))
+   return 0;
+ }
+}
+
+/**
+ * dap_start_drive - Run the start to its goal, waiting with poll().
+ * @s: the session.
+ * Return: E_DAP_START_READY or E_DAP_START_FAILED.
+ */
+static int dap_start_drive(e_dap_session *s)
+{
+ int st = dap_start_consume(s);
+
+ while (st == E_DAP_START_WAITING)
+ {
+  if (dap_start_wait(s) < 0)
+   return dap_start_fail(s);
+  st = e_dap_start_pump(s);
+ }
+ return st;
+}
+
+/**
+ * e_dap_start_pump - Go on with the start: the start's descriptor is readable.
+ * @s: the session.
+ *
+ * Reads once, so it never blocks when called on readiness; the host calls it
+ * from its event loop each time e_dap_start_fd(s) wakes it.
+ * Return: E_DAP_START_WAITING, E_DAP_START_READY or E_DAP_START_FAILED.
+ */
+int e_dap_start_pump(e_dap_session *s)
+{
+ char buf[DAP_READ_CHUNK];
+ ssize_t n;
+
+ if (!s)
+  return E_DAP_START_FAILED;
+ if (dap_start_status(s) != E_DAP_START_WAITING)
+  return dap_start_status(s);
+ if (s->step == DAP_STEP_ACCEPT)
+  return dap_start_accept(s);
+ n = read(dap_rfd(s), buf, sizeof(buf));
+ if (n < 0 && (errno == EINTR || errno == EAGAIN))
+  return dap_start_consume(s);
+ if (n <= 0)
+  return dap_start_fail(s);
+ e_dap_reader_push(&s->rd, buf, (size_t)n);
+ return dap_start_consume(s);
+}
+
+/**
+ * e_dap_start_fd - The descriptor the start waits on.
+ * @s: the session.
+ *
+ * The listening socket until a reverse-TCP adapter has dialled in, then the
+ * DAP transport; the host watches it and calls e_dap_start_pump.
+ */
+int e_dap_start_fd(const e_dap_session *s)
+{
+ if (!s)
+  return DAP_NO_FD;
+ if (s->step == DAP_STEP_ACCEPT)
+  return s->listen_fd;
+ return s->sock >= 0 ? s->sock : s->out_fd;
+}
+
+/**
+ * e_dap_output_fd - The pty the debuggee writes to (reverse TCP), or -1.
+ * @s: the session.
+ */
+int e_dap_output_fd(const e_dap_session *s)
+{
+ return s ? s->pty_master : DAP_NO_FD;
+}
+
+/**
+ * e_dap_start_answered - Has the adapter answered initialize?
+ * @s: the session.
+ *
+ * An adapter that has answered is alive: what it does next (dlv building
+ * the package) may take as long as it needs, so a host stops counting a
+ * deadline from here and leaves the end to the user.
+ */
+int e_dap_start_answered(const e_dap_session *s)
+{
+ return s && s->step >= DAP_STEP_OPENED;
+}
+
+/**
+ * e_dap_start_waits_for - What the start waits for, in a word for the user.
+ * @s: the session.
+ *
+ * "starting" until the adapter has answered, then "building" while dlv
+ * builds the package, "launching" while the program is launched, and
+ * "configuring" while the breakpoints are set.
+ */
+const char *e_dap_start_waits_for(const e_dap_session *s)
+{
+ if (!e_dap_start_answered(s))
+  return "starting";
+ if (s->step == DAP_STEP_LAUNCH && s->launch_mode_debug)
+  return "building";
+ if (s->step <= DAP_STEP_INITIALIZED)
+  return "launching";
+ return "configuring";
+}
+
+/**
+ * e_dap_start_error - Why the adapter refused the start, in its own words,
+ * or NULL when it did not refuse.
+ * @s: the session.
+ */
+const char *e_dap_start_error(const e_dap_session *s)
+{
+ return s ? s->start_error : NULL;
+}
+
+/**
+ * e_dap_adapter_pid - The adapter's process, when it is this process's own
+ * child; 0 for an adapter hosted by a build server.
+ * @s: the session.
+ */
+pid_t e_dap_adapter_pid(const e_dap_session *s)
+{
+ if (!s || !s->spawned)
+  return 0;
+ return s->pid;
+}
+
+/**
+ * e_dap_signal - Send @sig to the adapter, by its exact PID.
+ * @s: the session; @sig: SIGTERM, then SIGKILL.
+ *
+ * Nothing is sent once the adapter has been reaped, so a PID the system gave
+ * to another process is never signalled.
+ */
+void e_dap_signal(e_dap_session *s, int sig)
+{
+ if (e_dap_adapter_pid(s) > 0)
+  kill(s->pid, sig);
+}
+
+/**
+ * e_dap_adapter_gone - Has the adapter exited?
+ * @s: the session.
+ *
+ * Reaps it without waiting; a host whose SIGCHLD handler reaped it first
+ * sees ECHILD, which also means gone.  Its PID is then forgotten.  An adapter
+ * that is not this process's child is never "gone" here.
+ * Return: 1 once the adapter is gone.
+ */
+int e_dap_adapter_gone(e_dap_session *s)
+{
+ int st, r;
+
+ if (!s || !s->spawned)
+  return 0;
+ if (s->pid <= 0)
+  return 1;
+ r = waitpid(s->pid, &st, WNOHANG);
+ if (r == s->pid || (r < 0 && errno == ECHILD))
+ {
+  s->pid = 0;
+  return 1;
+ }
  return 0;
 }
 
@@ -503,25 +1021,58 @@ static e_dap_session *dap_session_new(const char *program, const char *entry_fun
  s->in_fd = -1;
  s->out_fd = -1;
  s->pty_master = -1;
+ s->listen_fd = DAP_NO_FD;
+ s->step = DAP_STEP_ACCEPT;
+ s->goal = DAP_STEP_READY;
+ s->await_seq = DAP_NO_SEQ;
+ return s;
+}
+
+/**
+ * dap_open_finish - Drive a session the synchronous API opened to the
+ * initialize answer.
+ * @s: the session, its start begun (or NULL).
+ * Return: the session, or NULL (and closed) when the adapter did not answer.
+ */
+static e_dap_session *dap_open_finish(e_dap_session *s)
+{
+ if (!s)
+  return NULL;
+ s->goal = DAP_STEP_OPENED;
+ if (dap_start_drive(s) != E_DAP_START_READY)
+ {
+  e_dap_close(s);
+  return NULL;
+ }
  return s;
 }
 
 /* ---- public API -------------------------------------------------------- */
 
-e_dap_session *e_dap_open(char *const argv[], const char *program,
-                          const char *entry_func, const char *cwd,
-                          const e_dap_host *host)
+/**
+ * e_dap_start - Spawn a reverse-TCP adapter (dlv) and begin its start,
+ * without waiting for it.
+ *
+ * The host adds its breakpoints, watches e_dap_start_fd and calls
+ * e_dap_start_pump until it answers E_DAP_START_READY, then
+ * e_dap_run_to_first_stop.  Returns the session, or NULL when the adapter
+ * could not be spawned.
+ */
+e_dap_session *e_dap_start(char *const argv[], const char *program,
+                           const char *entry_func, const char *cwd,
+                           const e_dap_host *host)
 {
  e_dap_session *s;
- int listen_fd, port;
+ int port;
 
  s = dap_session_new(program, entry_func, host);
  if (!s)
   return NULL;
  s->launch_mode_debug = 1;        /* dlv launch arg "mode":"debug" (builds pkg) */
+ s->adapter_id = "dap";
 
- listen_fd = dap_listen_ephemeral(&port);
- if (listen_fd < 0)
+ s->listen_fd = dap_listen_ephemeral(&port);
+ if (s->listen_fd < 0)
  {
   e_dap_close(s);
   return NULL;
@@ -545,51 +1096,74 @@ e_dap_session *e_dap_open(char *const argv[], const char *program,
     tcsetattr(s->pty_master, TCSANOW, &tio);
    }
   }
-  s->pid = dap_spawn(argv, port, cwd, listen_fd, slave);
+  s->pid = dap_spawn(argv, port, cwd, s->listen_fd, slave);
   if (slave >= 0)
    close(slave);                /* the child holds its own copy */
  }
  if (s->pid <= 0)
  {
-  close(listen_fd);
   e_dap_close(s);
   return NULL;
  }
- s->sock = dap_accept(listen_fd);
- close(listen_fd);
- if (s->sock < 0 || dap_initialize(s, "dap") != 0)
- {
-  e_dap_close(s);
-  return NULL;
- }
+ s->spawned = 1;
  return s;
 }
 
-/* Stdio transport: spawn `argv` (e.g. {"gdb","--interpreter=dap"}), talk DAP
-   over its pipes, run the initialize handshake.  `program` is a PREBUILT binary
-   (the adapter launches it; it does not build), `entry_func` may be NULL. */
-e_dap_session *e_dap_open_stdio(char *const argv[], const char *program,
-                                const char *entry_func, const char *cwd,
-                                const e_dap_host *host)
+e_dap_session *e_dap_open(char *const argv[], const char *program,
+                          const char *entry_func, const char *cwd,
+                          const e_dap_host *host)
+{
+ return dap_open_finish(e_dap_start(argv, program, entry_func, cwd, host));
+}
+
+/**
+ * e_dap_start_stdio - Spawn a stdio adapter (gdb or lldb-dap speaking DAP)
+ * and send it the initialize request, without waiting for the answer.
+ *
+ * `program` is a PREBUILT binary (the adapter launches it; it does not
+ * build), `entry_func` may be NULL.  The host goes on as for e_dap_start.
+ */
+e_dap_session *e_dap_start_stdio(char *const argv[], const char *program,
+                                 const char *entry_func, const char *cwd,
+                                 const e_dap_host *host)
 {
  e_dap_session *s = dap_session_new(program, entry_func, host);
  if (!s)
   return NULL;
  s->launch_mode_debug = 0;        /* program is a prebuilt binary, not a package */
+ s->adapter_id = "gdb";
  s->pid = dap_spawn_stdio(argv, cwd, &s->in_fd, &s->out_fd);
- if (s->pid <= 0 || dap_initialize(s, "gdb") != 0)
+ if (s->pid <= 0)
  {
   e_dap_close(s);
   return NULL;
  }
+ s->spawned = 1;
+ dap_send_initialize(s);
  return s;
 }
 
-/* Forward TCP client to an already-running DAP server (Bloop's scala-debug-
-   adapter, address from BSP debugSession/start).  No spawn, no pty: the build
-   server owns the debuggee, and its output reaches us as DAP "output" events. */
-e_dap_session *e_dap_open_tcp(const char *host, int port, const char *program,
-                              const char *entry_func, const e_dap_host *host_cb)
+/* Stdio transport: spawn `argv` (e.g. {"gdb","--interpreter=dap"}), talk DAP
+   over its pipes, run the initialize handshake. */
+e_dap_session *e_dap_open_stdio(char *const argv[], const char *program,
+                                const char *entry_func, const char *cwd,
+                                const e_dap_host *host)
+{
+ return dap_open_finish(e_dap_start_stdio(argv, program, entry_func, cwd, host));
+}
+
+/**
+ * e_dap_start_tcp - Connect to a running DAP server (the Scala adapter that
+ * Bloop hosts) and send it the initialize request, without waiting for the
+ * answer.
+ *
+ * The connection is to a local endpoint the build server has just opened,
+ * so connect() returns at once.  No spawn and no pty: the build server owns
+ * the debuggee, and its output arrives as DAP "output" events.  The host
+ * goes on as for e_dap_start.
+ */
+e_dap_session *e_dap_start_tcp(const char *host, int port, const char *program,
+                               const char *entry_func, const e_dap_host *host_cb)
 {
  e_dap_session *s = dap_session_new(program, entry_func, host_cb);
  struct sockaddr_in a;
@@ -600,6 +1174,7 @@ e_dap_session *e_dap_open_tcp(const char *host, int port, const char *program,
  s->launch_mode_debug = 0;        /* build server already bound the main class */
  s->minimal_launch = 1;           /* launch carries no program/mode            */
  s->wait_init = 1;                /* strict order: wait `initialized` event     */
+ s->adapter_id = "scala";
 
  fd = socket(AF_INET, SOCK_STREAM, 0);
  if (fd < 0)
@@ -612,9 +1187,16 @@ e_dap_session *e_dap_open_tcp(const char *host, int port, const char *program,
  if (connect(fd, (struct sockaddr *)&a, sizeof(a)) < 0)
  {  close(fd);  e_dap_close(s);  return NULL;  }
  s->sock = fd;
- if (dap_initialize(s, "scala") != 0)
- {  e_dap_close(s);  return NULL;  }
+ dap_send_initialize(s);
  return s;
+}
+
+/* Forward TCP client to an already-running DAP server (Bloop's scala-debug-
+   adapter, address from BSP debugSession/start), initialize answered. */
+e_dap_session *e_dap_open_tcp(const char *host, int port, const char *program,
+                              const char *entry_func, const e_dap_host *host_cb)
+{
+ return dap_open_finish(e_dap_start_tcp(host, port, program, entry_func, host_cb));
 }
 
 int e_dap_add_breakpoint(e_dap_session *s, const char *file, int line)
@@ -637,92 +1219,39 @@ int e_dap_add_breakpoint(e_dap_session *s, const char *file, int line)
 
 int e_dap_run(e_dap_session *s)
 {
- struct json_object *args, *bps, *src, *resp;
+ if (!s)
+  return -1;
+ s->goal = DAP_STEP_READY;
+ if (s->step == DAP_STEP_OPENED)
+  dap_send_launch(s);
+ if (dap_start_drive(s) != E_DAP_START_READY)
+ {
+  s->forward_output = 1;
+  return s->ended ? 0 : -1;
+ }
+ return e_dap_run_to_first_stop(s);
+}
+
+/**
+ * e_dap_run_to_first_stop - The handshake is done: wait for the program's
+ * first stop and report it.
+ * @s: the session, its start at E_DAP_START_READY.
+ *
+ * Fires host->on_stopped with the source line, or on_terminated when the
+ * program ended first.
+ * Return: 0, or -1 when the adapter hung up without either.
+ */
+int e_dap_run_to_first_stop(e_dap_session *s)
+{
  char reason[32];
- int seq;
 
  if (!s)
   return -1;
-
- /* launch (run; stop is driven by breakpoints, not stopOnEntry).  TCP/dlv adds
-    "mode":"debug" so the adapter builds the package; stdio/gdb launches the
-    prebuilt binary directly.  For the TCP transport the debuggee stays on the
-    adapter's controlling pty (read in dap_read_message); for stdio the program's
-    output arrives as "output" events, enabled below. */
- args = json_object_new_object();
- json_object_object_add(args, "request", json_object_new_string("launch"));
- if (!s->minimal_launch)
+ if (s->ended)
  {
-  /* dlv/gdb launch: name the program (and, for dlv, the build mode).  The
-     BSP/Bloop path omits these -- the build server already bound the main
-     class via debugSession/start, and naming a program confuses it. */
-  if (s->launch_mode_debug)
-   json_object_object_add(args, "mode", json_object_new_string("debug"));
-  json_object_object_add(args, "program", json_object_new_string(s->program));
-  json_object_object_add(args, "stopOnEntry", json_object_new_boolean(0));
+  s->forward_output = 1;
+  return 0;
  }
- seq = dap_send(s, "launch", args);
- if (s->launch_mode_debug)
- {
-  /* dlv builds the package at launch and replies BEFORE configurationDone, so
-     wait here -- breakpoints set afterwards bind to the freshly built binary. */
-  resp = dap_wait_response(s, seq);
-  if (resp)
-   json_object_put(resp);
- }
- /* gdb/lldb -dap follow the DAP spec and defer the launch response until AFTER
-    configurationDone, so we must NOT block on it here (that would deadlock); the
-    binary's symbols are already loaded, so breakpoints set now still bind, and
-    the late launch response is consumed by dap_wait_stop below. */
- if (s->wait_init)
-  /* scala-debug-adapter (via Bloop) is strict: it rejects setBreakpoints until
-     it has emitted the `initialized` event after launch ("Empty debug session"
-     otherwise).  Wait for it before configuring breakpoints. */
-  dap_wait_event(s, "initialized");
-
- /* source breakpoints */
- if (s->bp_n > 0)
- {
-  args = json_object_new_object();
-  src = json_object_new_object();
-  json_object_object_add(src, "path", json_object_new_string(s->bp_file));
-  json_object_object_add(args, "source", src);
-  bps = json_object_new_array();
-  for (int i = 0; i < s->bp_n; i++)
-  {
-   struct json_object *b = json_object_new_object();
-   json_object_object_add(b, "line", json_object_new_int(s->bp_lines[i]));
-   json_object_array_add(bps, b);
-  }
-  json_object_object_add(args, "breakpoints", bps);
-  seq = dap_send(s, "setBreakpoints", args);
-  resp = dap_wait_response(s, seq);
-  if (resp)
-   json_object_put(resp);
- }
-
- /* a function breakpoint at the entry (like gdb "break main") */
- if (s->entry_func)
- {
-  args = json_object_new_object();
-  bps = json_object_new_array();
-  {
-   struct json_object *b = json_object_new_object();
-   json_object_object_add(b, "name", json_object_new_string(s->entry_func));
-   json_object_array_add(bps, b);
-  }
-  json_object_object_add(args, "breakpoints", bps);
-  seq = dap_send(s, "setFunctionBreakpoints", args);
-  resp = dap_wait_response(s, seq);
-  if (resp)
-   json_object_put(resp);
- }
-
- seq = dap_send(s, "configurationDone", NULL);
- resp = dap_wait_response(s, seq);
- if (resp)
-  json_object_put(resp);
-
  if (dap_wait_stop(s, reason, sizeof(reason)))
  {
   dap_report_stop(s, reason);
@@ -792,24 +1321,40 @@ int e_dap_ended(const e_dap_session *s)
  return s ? s->ended : 1;
 }
 
+/**
+ * dap_send_disconnect - Ask the adapter to stop the program and exit.
+ * @s: the session.
+ *
+ * Best effort.  An adapter that never answered initialize is not spoken to:
+ * it is ended by signal, and a request it would never read is not left in
+ * its input.
+ */
+static void dap_send_disconnect(e_dap_session *s)
+{
+ struct json_object *args;
+
+ if (s->step < DAP_STEP_OPENED)
+  return;
+ args = json_object_new_object();
+ json_object_object_add(args, "terminateDebuggee", json_object_new_boolean(1));
+ dap_send(s, "disconnect", args);
+}
+
 void e_dap_close(e_dap_session *s)
 {
  if (!s)
   return;
+ if (s->listen_fd >= 0)
+  close(s->listen_fd);
  if (s->sock >= 0)
  {
-  /* best-effort disconnect */
-  struct json_object *args = json_object_new_object();
-  json_object_object_add(args, "terminateDebuggee", json_object_new_boolean(1));
-  dap_send(s, "disconnect", args);
+  dap_send_disconnect(s);
   close(s->sock);
  }
  if (s->in_fd >= 0 || s->out_fd >= 0)
  {
   /* stdio transport: ask the adapter to quit, then close the pipes */
-  struct json_object *args = json_object_new_object();
-  json_object_object_add(args, "terminateDebuggee", json_object_new_boolean(1));
-  dap_send(s, "disconnect", args);
+  dap_send_disconnect(s);
   if (s->in_fd >= 0)
    close(s->in_fd);
   if (s->out_fd >= 0)
@@ -839,6 +1384,7 @@ void e_dap_close(e_dap_session *s)
   }
  }
  e_dap_reader_free(&s->rd);
+ free(s->start_error);
  free(s->program);
  free(s->entry_func);
  free(s);

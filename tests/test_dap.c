@@ -1,13 +1,20 @@
-/* test_dap.c -- unit tests for the DAP transport core (we_dap_proto.c).
+/* test_dap.c -- unit tests for the DAP transport core (we_dap_proto.c) and
+ * the session start machine (we_dap.c).
  *
- * Pure, offline: no adapter, no network, no xwpe UI.  Exercises the frame
- * builder and the streaming reader (whole frame, split frame, back-to-back
- * frames, and a malformed frame that must resync). */
+ * Offline: no adapter and no xwpe UI.  Exercises the frame builder and the
+ * streaming reader (whole frame, split frame, back-to-back frames, and a
+ * malformed frame that must resync), then plays an adapter on a loopback
+ * socket to drive the start one read at a time. */
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
+#include <unistd.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
 
 #include "../we_dap_proto.h"
+#include "../we_dap.h"
 
 static int failures = 0;
 
@@ -167,6 +174,178 @@ static void test_malformed_resyncs(void)
  e_dap_reader_free(&r);
 }
 
+/* ---- the start machine (we_dap.c), fed one read at a time ---------------
+ *
+ * The test plays the adapter on a local socket: the engine connects with
+ * e_dap_start_tcp, the test answers each request and calls e_dap_start_pump
+ * once per write, as an editor's event loop would.
+ */
+
+#define ADAPTER_BUF 4096
+#define SPLIT_AT    10          /* bytes of the first half of a split frame */
+
+/* Listen on 127.0.0.1 at a free port. */
+static int listen_local(int *port)
+{
+ struct sockaddr_in a;
+ socklen_t al = sizeof(a);
+ int fd = socket(AF_INET, SOCK_STREAM, 0);
+
+ memset(&a, 0, sizeof(a));
+ a.sin_family = AF_INET;
+ a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+ if (fd < 0 || bind(fd, (struct sockaddr *)&a, sizeof(a)) < 0 ||
+     listen(fd, 1) < 0 || getsockname(fd, (struct sockaddr *)&a, &al) < 0)
+  return -1;
+ *port = ntohs(a.sin_port);
+ return fd;
+}
+
+/* Read the engine's next request; NULL on end of file. */
+static struct json_object *next_request(int fd, e_dap_reader *rd)
+{
+ char buf[ADAPTER_BUF];
+ int err = 0;
+
+ for (;;)
+ {
+  struct json_object *m = e_dap_reader_pop(rd, &err);
+  ssize_t n;
+
+  if (m)
+   return m;
+  n = read(fd, buf, sizeof buf);
+  if (n <= 0)
+   return NULL;
+  e_dap_reader_push(rd, buf, (size_t)n);
+ }
+}
+
+/* Read the next request, check its command, and return its seq (or -1). */
+static int expect_request(int fd, e_dap_reader *rd, const char *command)
+{
+ struct json_object *m = next_request(fd, rd), *v = NULL;
+ int seq = -1;
+
+ CHECK(m != NULL, "the engine sent no request");
+ if (!m)
+  return -1;
+ CHECK(str_field(m, "command") && !strcmp(str_field(m, "command"), command),
+       command);
+ if (json_object_object_get_ex(m, "seq", &v))
+  seq = json_object_get_int(v);
+ json_object_put(m);
+ return seq;
+}
+
+/* Frame a response to request @seq into @dst; return its length. */
+static size_t response(char *dst, int seq, const char *command, int success,
+                       const char *message)
+{
+ char body[512];
+
+ snprintf(body, sizeof body,
+          "{\"seq\":1,\"type\":\"response\",\"request_seq\":%d,"
+          "\"command\":\"%s\",\"success\":%s,\"message\":\"%s\"}",
+          seq, command, success ? "true" : "false", message);
+ return frame(dst, body);
+}
+
+static void put(int fd, const char *buf, size_t n)
+{
+ CHECK(write(fd, buf, n) == (ssize_t)n, "short write to the engine");
+}
+
+/* Connect a Scala-style session (launch, then wait `initialized`). */
+static e_dap_session *start_session(int *conn, int *lfd)
+{
+ int port = 0;
+ e_dap_session *s;
+
+ *lfd = listen_local(&port);
+ CHECK(*lfd >= 0, "cannot listen on 127.0.0.1");
+ if (*lfd < 0)
+  return NULL;
+ s = e_dap_start_tcp("127.0.0.1", port, "/tmp/p", NULL, NULL);
+ CHECK(s != NULL, "e_dap_start_tcp returned NULL");
+ *conn = accept(*lfd, NULL, NULL);
+ CHECK(*conn >= 0, "accept failed");
+ return s;
+}
+
+static void test_start_machine(void)
+{
+ char buf[ADAPTER_BUF];
+ e_dap_reader rd;
+ e_dap_session *s;
+ int conn = -1, lfd = -1, seq;
+ size_t n, m;
+
+ e_dap_reader_init(&rd);
+ s = start_session(&conn, &lfd);
+ if (!s || conn < 0)
+  return;
+ e_dap_add_breakpoint(s, "/tmp/p/Main.scala", 6);
+
+ /* initialize answered in two reads */
+ seq = expect_request(conn, &rd, "initialize");
+ n = response(buf, seq, "initialize", 1, "");
+ put(conn, buf, SPLIT_AT);
+ CHECK(e_dap_start_pump(s) == E_DAP_START_WAITING, "half a frame finished the start");
+ CHECK(!e_dap_start_answered(s), "half a frame counted as the answer");
+ put(conn, buf + SPLIT_AT, n - SPLIT_AT);
+ CHECK(e_dap_start_pump(s) == E_DAP_START_WAITING, "start should wait for launch");
+ CHECK(e_dap_start_answered(s), "the split initialize answer was not taken");
+ CHECK(!strcmp(e_dap_start_waits_for(s), "launching"), "should wait on launch");
+
+ /* the launch answer and, after it, `initialized`, in one read */
+ seq = expect_request(conn, &rd, "launch");
+ n = response(buf, seq, "launch", 1, "");
+ m = frame(buf + n, "{\"seq\":2,\"type\":\"event\",\"event\":\"initialized\"}");
+ put(conn, buf, n + m);
+ CHECK(e_dap_start_pump(s) == E_DAP_START_WAITING, "start should wait for breakpoints");
+ CHECK(!strcmp(e_dap_start_waits_for(s), "configuring"), "two frames: initialized lost");
+
+ seq = expect_request(conn, &rd, "setBreakpoints");
+ n = response(buf, seq, "setBreakpoints", 1, "");
+ put(conn, buf, n);
+ CHECK(e_dap_start_pump(s) == E_DAP_START_WAITING, "start should wait for configurationDone");
+
+ seq = expect_request(conn, &rd, "configurationDone");
+ n = response(buf, seq, "configurationDone", 1, "");
+ put(conn, buf, n);
+ CHECK(e_dap_start_pump(s) == E_DAP_START_READY, "configurationDone did not finish the start");
+
+ e_dap_close(s);
+ close(conn);
+ close(lfd);
+ e_dap_reader_free(&rd);
+}
+
+static void test_start_refused(void)
+{
+ char buf[ADAPTER_BUF];
+ e_dap_reader rd;
+ e_dap_session *s;
+ int conn = -1, lfd = -1, seq;
+ size_t n;
+
+ e_dap_reader_init(&rd);
+ s = start_session(&conn, &lfd);
+ if (!s || conn < 0)
+  return;
+ seq = expect_request(conn, &rd, "initialize");
+ n = response(buf, seq, "initialize", 0, "adapter says no");
+ put(conn, buf, n);
+ CHECK(e_dap_start_pump(s) == E_DAP_START_FAILED, "a refusal did not end the start");
+ CHECK(e_dap_start_error(s) && !strcmp(e_dap_start_error(s), "adapter says no"),
+       "the adapter's reason was not kept");
+ e_dap_close(s);
+ close(conn);
+ close(lfd);
+ e_dap_reader_free(&rd);
+}
+
 int main(void)
 {
  test_build();
@@ -174,11 +353,14 @@ int main(void)
  test_split_frame();
  test_two_frames();
  test_malformed_resyncs();
+ test_start_machine();
+ test_start_refused();
  if (failures)
  {
   printf("test_dap: %d FAILURE(S)\n", failures);
   return 1;
  }
- printf("PASS: DAP transport (build + whole/split/two/malformed frames)\n");
+ printf("PASS: DAP transport (build + whole/split/two/malformed frames) "
+        "and start machine (split, two frames, initialized after launch, refusal)\n");
  return 0;
 }

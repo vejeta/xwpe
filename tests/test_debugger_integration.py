@@ -16,6 +16,7 @@ import re
 import shutil
 import signal
 import subprocess
+import sys
 import time
 
 import pytest
@@ -467,6 +468,275 @@ def test_a_debugger_that_never_answers_ends_at_the_deadline(tmp_path):
         w.key("Q", delay=0.3)
         w.save()
         assert "Q  int x = 3;" in w.text(), "the editor should take keys again"
+
+
+# A debug adapter that never answers, on each transport a fake can stand in
+# for: Rust's gdb speaks DAP on its stdin/stdout (the editor writes the
+# initialize request and waits for the answer), Go's dlv is told a port and
+# must dial back in (the editor waits for the connection).  Each fake is the
+# adapter's name first on PATH, running `cat` into a log and never writing.
+DAP_RUST_PROG = (
+    "fn main() {\n"
+    "    let x = 3;\n"
+    "    println!(\"{}\", x);\n"
+    "}\n"
+)
+DAP_GO_PROG = (
+    "package main\n"
+    "\n"
+    "func main() {\n"
+    "    x := 3\n"
+    "    _ = x\n"
+    "}\n"
+)
+# Rust is compiled by the editor before gdb starts: a stand-in rustc writes
+# the binary the -o option names, so no toolchain is needed.
+FAKE_RUSTC = (
+    "#!/bin/sh\n"
+    "while [ $# -gt 0 ]; do\n"
+    "  if [ \"$1\" = -o ]; then : > \"$2\"; fi\n"
+    "  shift\n"
+    "done\n"
+)
+# "line" is where the cursor goes before Run, "typed" that line after a Q.
+SILENT_ADAPTERS = {
+    "stdio": {"adapter": "gdb", "file": "main.rs", "prog": DAP_RUST_PROG,
+              "line": 2, "typed": "Q    let x = 3;"},
+    "reverse-tcp": {"adapter": "dlv", "file": "main.go", "prog": DAP_GO_PROG,
+                    "line": 4, "typed": "Q    x := 3"},
+}
+
+
+def _write_script(path, text):
+    path.write_text(text)
+    path.chmod(0o755)
+
+
+def _silent_adapter_env(tmp_path, adapter, timeout_s):
+    """The adapter's name first on PATH as a program that reads its input
+    into a log and never writes, a stand-in rustc, and the start deadline.
+    The adapter's own output stays open on descriptor 3, so the editor sees
+    an adapter that is silent, not one that has hung up."""
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    _write_script(bindir / adapter, "#!/bin/sh\nexec 3>&1\nexec cat > %s\n"
+                  % (tmp_path / SILENT_DEBUGGER_LOG))
+    _write_script(bindir / "rustc", FAKE_RUSTC)
+    return {"PATH": str(bindir) + ":" + os.environ.get("PATH", ""),
+            "XWPE_DEBUG_START_TIMEOUT": str(timeout_s)}
+
+
+def _dap_session(tmp_path, transport, timeout_s):
+    spec = SILENT_ADAPTERS[transport]
+    env = _silent_adapter_env(tmp_path, spec["adapter"], timeout_s)
+    return WpeSession(str(tmp_path), spec["prog"], filename=spec["file"],
+                      wait=1.5, env_extra=env)
+
+
+def _start_silent_adapter(w, transport):
+    """Ctrl-G R on the source, and wait for the waiting line; return the PID
+    of the silent adapter (its program is `cat`)."""
+    adapter = SILENT_ADAPTERS[transport]["adapter"]
+    _move_down(w, SILENT_ADAPTERS[transport]["line"] - 1)
+    w.key(CTRL_G, "r", delay=1.0)
+    assert _wait_for(w, lambda: "starting %s" % adapter in _screen(w),
+                     START_TIMEOUT_S), \
+        "a waiting line should say the adapter is starting:\n%s" % _screen(w)
+    _wait_for(w, lambda: _children(w, "cat"), STEP_TIMEOUT_S)
+    pids = _children(w, "cat")
+    assert len(pids) == 1, "expected one silent adapter, saw %s" % pids
+    return pids[0]
+
+
+def _adapter_log(tmp_path):
+    return (tmp_path / SILENT_DEBUGGER_LOG).read_text()
+
+
+# @scenario SC-debug-17
+@pytest.mark.parametrize("transport", sorted(SILENT_ADAPTERS))
+def test_esc_ends_a_debug_adapter_that_never_answers(tmp_path, transport):
+    """A debug adapter that never answers does not hold the editor: the
+    waiting line counts, the editor takes keys, a debugger key is refused on
+    the status line, Esc ends the adapter and Messages says the start was
+    cancelled; nothing past the initialize request reached the adapter."""
+    adapter = SILENT_ADAPTERS[transport]["adapter"]
+    with _dap_session(tmp_path, transport, LONG_START_TIMEOUT_S) as w:
+        pid = _start_silent_adapter(w, transport)
+        assert _wait_for(w, lambda: re.search(r"starting %s \.\.\. [1-9]\d*s"
+                                              % adapter, _screen(w)),
+                         STEP_TIMEOUT_S), \
+            "the waiting line should count the seconds:\n%s" % _screen(w)
+        w.key(F8, delay=0.5)
+        assert "debugger is starting" in w.display(drain=0)[-1], \
+            "F8 during the start should be refused on the status line:\n%s" \
+            % _screen(w)
+        w.key(ALT_1, delay=0.4)         # back to the source window
+        w.key("Q", delay=0.3)
+        w.key(ESC, delay=0.5)
+        assert _wait_for(w, lambda: "%s start cancelled" % adapter
+                         in _screen(w), STEP_TIMEOUT_S), \
+            "Esc should end the start and say so:\n%s" % _screen(w)
+        assert _wait_for(w, lambda: _process_gone(pid), STEP_TIMEOUT_S), \
+            "the silent adapter (pid %d) should be gone" % pid
+        w.save()
+        assert SILENT_ADAPTERS[transport]["typed"] in w.text(), \
+            "a key typed during the start should edit the source"
+        assert '"launch"' not in _adapter_log(tmp_path), \
+            "nothing past initialize may be sent to an adapter that has " \
+            "not answered"
+
+
+# @scenario SC-debug-17
+@pytest.mark.parametrize("transport", sorted(SILENT_ADAPTERS))
+def test_a_debug_adapter_that_never_answers_ends_at_the_deadline(tmp_path,
+                                                                 transport):
+    """Left alone, an adapter start that gets no answer ends at the deadline
+    with a line that names the adapter and the time; the editor takes keys."""
+    adapter = SILENT_ADAPTERS[transport]["adapter"]
+    with _dap_session(tmp_path, transport, SHORT_START_TIMEOUT_S) as w:
+        pid = _start_silent_adapter(w, transport)
+        expected = "%s did not answer within %d s" % (adapter,
+                                                      SHORT_START_TIMEOUT_S)
+        assert _wait_for(w, lambda: expected in _screen(w), STEP_TIMEOUT_S), \
+            "the start should end at the deadline:\n%s" % _screen(w)
+        assert _wait_for(w, lambda: _process_gone(pid), STEP_TIMEOUT_S), \
+            "the silent adapter (pid %d) should be gone" % pid
+        w.key(ALT_1, delay=0.4)
+        w.key("Q", delay=0.3)
+        w.save()
+        assert SILENT_ADAPTERS[transport]["typed"] in w.text(), \
+            "the editor should take keys again"
+
+
+# A dlv stand-in that dials back in and answers initialize, then either says
+# nothing more ("silent", a long build) or refuses the launch the way dlv
+# does when the package does not build ("fail").  It writes its PID to a file
+# so the test can check that exact process.
+FAKE_DLV = r'''#!%(python)s -I
+import json, os, socket, sys
+MODE = %(mode)r
+BUILD_ERROR = %(error)r
+with open(%(pidfile)r, "w") as f:
+    f.write(str(os.getpid()))
+addr = [a for a in sys.argv if a.startswith("--client-addr=")][0]
+host, port = addr.split("=", 1)[1].rsplit(":", 1)
+conn = socket.create_connection((host, int(port)))
+pending = b""
+
+def read_message():
+    global pending
+    while True:
+        if b"\r\n\r\n" in pending:
+            head, rest = pending.split(b"\r\n\r\n", 1)
+            size = int(head.split(b":")[1])
+            if len(rest) >= size:
+                pending = rest[size:]
+                return json.loads(rest[:size])
+        chunk = conn.recv(4096)
+        if not chunk:
+            return None
+        pending += chunk
+
+def answer(request, success, **extra):
+    body = dict(seq=0, type="response", request_seq=request["seq"],
+                command=request["command"], success=success, **extra)
+    data = json.dumps(body).encode()
+    conn.sendall(b"Content-Length: %%d\r\n\r\n" %% len(data) + data)
+
+while True:
+    request = read_message()
+    if request is None:
+        break
+    if request.get("command") == "initialize":
+        answer(request, True, body={})
+    elif request.get("command") == "launch" and MODE == "fail":
+        answer(request, False, message="Failed to launch",
+               body={"error": {"id": 3000, "format": BUILD_ERROR}})
+'''
+DLV_BUILD_ERROR = "main.go:4:5: undefined: nosuchname"
+DLV_PIDFILE = "dlv.pid"
+
+
+def _answering_dlv_env(tmp_path, mode, timeout_s):
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    _write_script(bindir / "dlv", FAKE_DLV % {
+        "python": sys.executable, "mode": mode, "error": DLV_BUILD_ERROR,
+        "pidfile": str(tmp_path / DLV_PIDFILE)})
+    return {"PATH": str(bindir) + ":" + os.environ.get("PATH", ""),
+            "XWPE_DEBUG_START_TIMEOUT": str(timeout_s)}
+
+
+def _answering_dlv_session(tmp_path, mode, timeout_s):
+    env = _answering_dlv_env(tmp_path, mode, timeout_s)
+    return WpeSession(str(tmp_path), DAP_GO_PROG, filename="main.go",
+                      wait=1.5, env_extra=env)
+
+
+def _run_go(w):
+    _move_down(w, SILENT_ADAPTERS["reverse-tcp"]["line"] - 1)
+    w.key(CTRL_G, "r", delay=1.0)
+
+
+def _dlv_pid(w, tmp_path):
+    pidfile = tmp_path / DLV_PIDFILE
+    assert _wait_for(w, pidfile.exists, STEP_TIMEOUT_S), \
+        "the dlv stand-in never ran:\n%s" % _screen(w)
+    _wait_for(w, lambda: pidfile.read_text().strip() != "", STEP_TIMEOUT_S)
+    return int(pidfile.read_text())
+
+
+def _type_in_source(w):
+    w.key(ALT_1, delay=0.4)
+    w.key("Q", delay=0.3)
+    w.save()
+    assert SILENT_ADAPTERS["reverse-tcp"]["typed"] in w.text(), \
+        "the editor should take keys"
+
+
+# @scenario SC-debug-17
+def test_dlv_that_answered_is_not_ended_at_the_deadline(tmp_path):
+    """Once dlv has answered initialize it is alive: a long build runs past
+    the start deadline, the waiting line says it is building, and Esc still
+    ends it."""
+    with _answering_dlv_session(tmp_path, "silent",
+                                SHORT_START_TIMEOUT_S) as w:
+        _run_go(w)
+        assert _wait_for(w, lambda: "dlv building" in _screen(w),
+                         START_TIMEOUT_S), \
+            "the waiting line should say dlv is building:\n%s" % _screen(w)
+        pid = _dlv_pid(w, tmp_path)
+        w._drain(SHORT_START_TIMEOUT_S + 2 * WAIT_SCALE)
+        assert "did not answer" not in _screen(w), \
+            "a dlv that answered must not be ended at the deadline:\n%s" \
+            % _screen(w)
+        assert "dlv building" in _screen(w), \
+            "the waiting line should still say dlv is building:\n%s" \
+            % _screen(w)
+        assert not _process_gone(pid), "dlv (pid %d) should still run" % pid
+        w.key(ALT_1, delay=0.4)
+        w.key(ESC, delay=0.5)
+        assert _wait_for(w, lambda: "dlv start cancelled" in _screen(w),
+                         STEP_TIMEOUT_S), \
+            "Esc should end the build and say so:\n%s" % _screen(w)
+        assert _wait_for(w, lambda: _process_gone(pid), STEP_TIMEOUT_S), \
+            "dlv (pid %d) should be gone" % pid
+        _type_in_source(w)
+
+
+# @scenario SC-debug-17
+def test_a_failed_dlv_launch_is_reported_and_ended(tmp_path):
+    """dlv refusing the launch (the package does not build) ends the start:
+    its error is shown in Messages, dlv is ended, and the editor takes keys."""
+    with _answering_dlv_session(tmp_path, "fail", LONG_START_TIMEOUT_S) as w:
+        _run_go(w)
+        pid = _dlv_pid(w, tmp_path)
+        assert _wait_for(w, lambda: DLV_BUILD_ERROR in _screen(w),
+                         START_TIMEOUT_S), \
+            "the build error should be shown in Messages:\n%s" % _screen(w)
+        assert _wait_for(w, lambda: _process_gone(pid), STEP_TIMEOUT_S), \
+            "dlv (pid %d) should be gone" % pid
+        _type_in_source(w)
 
 
 # @scenario SC-debug-29
