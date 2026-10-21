@@ -425,8 +425,36 @@ int e_tast_sim(int c)
  }
 }
 
+/* The process group of the build that runs, or 0.  A build leads a group of
+   its own, so a signal that ends the editor does not reach it; the signal
+   handlers below kill the group, which kill() can do from a handler. */
+static volatile sig_atomic_t wpe_build_pgid = 0;
+
+/**
+ * WpeBuildGroupSet - Name the process group of the build that runs.
+ * @pgid: the build child's PID, which leads its group, or 0 once reaped.
+ *
+ * Lets a SIGTERM, a SIGHUP (the terminal closed) or a crash end the build
+ * with the editor, where it used to run on unseen.
+ */
+void WpeBuildGroupSet(int pgid)
+{
+ wpe_build_pgid = pgid;
+}
+
+/**
+ * WpeKillBuildGroup - From a signal handler: end the build that runs.
+ * Async-signal-safe: one kill(), no wait.
+ */
+static void WpeKillBuildGroup(void)
+{
+ if (wpe_build_pgid > 0)
+  kill(-wpe_build_pgid, SIGKILL);
+}
+
 void WpeSignalUnknown(int sig)
 {
+ WpeKillBuildGroup();
  int fd = open("/tmp/xwpe-crash.txt", O_WRONLY|O_CREAT|O_TRUNC, 0644);
  if (fd >= 0)
  {
@@ -510,7 +538,10 @@ void WpeSignalTerm(int sig)
     SIGTERM" exit status.  We do NOT attempt to save buffers from here --
     none of the file I/O on that path is async-signal-safe. */
  const char *mouse_off = "\033[?1002l\033[?1006l\033[?1000l";
- ssize_t n = write(STDERR_FILENO, mouse_off, 24);
+ ssize_t n;
+
+ WpeKillBuildGroup();
+ n = write(STDERR_FILENO, mouse_off, 24);
  (void)n;
  tcsetattr(0, TCSANOW, &otermio);
  signal(sig, SIG_DFL);
@@ -566,6 +597,10 @@ void e_exit(int n)
     after xwpe quits: shutdown request -> exit notification -> SIGTERM, then
     SIGKILL if it ignores us.  Without this the server is orphaned on exit. */
  e_lsp_ui_shutdown();
+#endif
+#ifdef PROG
+ /* A build in its own process group would outlive the editor. */
+ e_build_end_at_exit();
 #endif
  (*WpeDisplayEnd)();
  e_switch_screen(0);

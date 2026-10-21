@@ -1713,6 +1713,18 @@ static void e_build_signal(int sig)
  * e_build_try_reap - Collect the child's exit status if it has exited.
  * Return: 1 once it is reaped.
  */
+/**
+ * e_build_mark_reaped - The build's child has been waited for.
+ *
+ * From here on a signal that ends the editor has no build group to kill,
+ * so a later process that reuses the number is never hit.
+ */
+static void e_build_mark_reaped(void)
+{
+ g_build.reaped = 1;
+ WpeBuildGroupSet(0);
+}
+
 static int e_build_try_reap(void)
 {
  int r;
@@ -1721,12 +1733,12 @@ static int e_build_try_reap(void)
   return(1);
  if (g_build.pid <= 0)
  {
-  g_build.reaped = 1;
+  e_build_mark_reaped();
   return(1);
  }
  r = waitpid(g_build.pid, &g_build.status, WNOHANG);
  if (r == g_build.pid || (r < 0 && errno == ECHILD))
-  g_build.reaped = 1;
+  e_build_mark_reaped();
  if (r < 0 && !WpeReapedStatus(g_build.pid, &g_build.status))
   g_build.status = 0;      /* reaped and not kept: judge by the parsed rows */
  return(g_build.reaped);
@@ -1785,7 +1797,7 @@ static void e_build_after_streams_closed(void)
  {
   while (waitpid(g_build.pid, &g_build.status, 0) < 0 && errno == EINTR)
    ;
-  g_build.reaped = 1;
+  e_build_mark_reaped();
  }
  if (g_build.reaped)
   e_build_finish_or_hold();
@@ -1947,6 +1959,23 @@ void e_build_cancel(void)
  e_build_signal(SIGTERM);
  if (g_build.hb_fd == E_BUILD_NO_FD)
   e_build_signal(SIGKILL);       /* no timer to wait on: end it now */
+}
+
+/**
+ * e_build_end_at_exit - The editor is leaving: end a build that still runs.
+ *
+ * The build runs in its own process group, so nothing else ends it when the
+ * editor goes; a compiler or an interpreter that loops would be left
+ * running, unseen, for good.  It and everything it started are killed and
+ * nothing waits for it: the editor is ending, and the killed child is then
+ * reaped by init, so a wait could only delay the exit.
+ */
+void e_build_end_at_exit(void)
+{
+ if (!g_build.active || g_build.reaped || g_build.pid <= 0)
+  return;
+ e_build_signal(SIGKILL);
+ WpeBuildGroupSet(0);
 }
 
 /**
@@ -2170,6 +2199,7 @@ static void e_build_step_begin(ECNT *cn, FENSTER *mf, PIC *pic,
  memset(&g_build, 0, sizeof g_build);
  g_build.active = 1;
  g_build.pid = e_save_pid;
+ WpeBuildGroupSet(e_save_pid);   /* the child leads its own process group */
  g_build.efd = g_build.wfd = g_build.hb_fd = E_BUILD_NO_FD;
  g_build.cn = cn;
  g_build.pic = pic;
@@ -2202,7 +2232,7 @@ int e_p_exec(FENSTER *f, PIC *pic, e_build_cont cont, void *data)
  if (efildes[0] < 0 && wfildes[0] < 0)
  {
   g_build.pid = 0;
-  g_build.reaped = 1;
+  e_build_mark_reaped();
   e_build_step_end();
   return(0);
  }

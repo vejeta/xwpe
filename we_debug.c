@@ -136,6 +136,11 @@ static int  e_d_start_forget(void);       /* the start watcher (see e_run_debug)
 static int  e_d_start_refused(FENSTER *f);
 static int  e_d_watch_refused(FENSTER *f);   /* a debugger without watches */
 static const char *e_d_start_label(void);
+static void e_d_show_stop_position(FENSTER *f);  /* line:column after a stop */
+static void e_d_note_output_closed(void);        /* the debugger's pipe ended */
+static void e_d_note_reaped(int status);         /* its exit status, once reaped */
+static void e_d_jdb_missing_forget(void);        /* classes without source */
+static void e_d_end_forget(void);                /* how the last debugger ended */
 /* Room for one status line and for one watch's print command. */
 #define E_D_WATCH_CMD_MAX 256
 #define E_D_WATCH_REFUSED_FMT "watches are not available with %s"
@@ -323,8 +328,13 @@ int e_d_line_read_nb(int n, signed char *s, int max)
  fcntl(n, F_SETFL, flags | O_NONBLOCK);
  nread = read(n, e_d_async.nb_buf + e_d_async.nb_len, sizeof(e_d_async.nb_buf) - e_d_async.nb_len - 1);
  fcntl(n, F_SETFL, flags & ~O_NONBLOCK);
- if (nread <= 0 && e_d_async.nb_len == 0)
-  return (nread == 0) ? -1 : -2;
+ if (nread == 0 && e_d_async.nb_len == 0)
+ {
+  e_d_note_output_closed();
+  return -1;
+ }
+ if (nread < 0 && e_d_async.nb_len == 0)
+  return -2;
  if (nread > 0)
   e_d_async.nb_len += nread;
  e_d_async.nb_buf[e_d_async.nb_len] = '\0';
@@ -570,6 +580,71 @@ static void e_d_flush_inferior_stdout(void)
   ;
 }
 
+/* What gdb prints when the program ends: "[Inferior 1 (process N) exited
+   normally]" or "... exited with code NN]", where NN is octal. */
+#define E_D_GDB_EXIT_NORMAL "exited normally"
+#define E_D_GDB_EXIT_CODE   "exited with code "
+#define E_D_GDB_EXIT_BASE   8
+/* What pdb prints when the script calls sys.exit(N). */
+#define E_D_PDB_EXIT_STATUS "Exit status: "
+#define E_D_EXIT_PLAIN      "Program exited."
+#define E_D_EXIT_CODE_FMT   "Program exited with code %ld"
+#define E_D_EXIT_LINE_MAX   64
+
+/**
+ * e_d_exit_code_of - Read the program's exit code from the debugger's line.
+ * @line: a line the debugger printed when the program ended; @code: the code.
+ *
+ * gdb's "exited normally" is 0 and its "exited with code 03" is octal;
+ * pdb's "Exit status: 3" (after sys.exit) is decimal.
+ * Return: 1 when the line names a code, else 0.
+ */
+static int e_d_exit_code_of(const char *line, long *code)
+{
+ const char *p;
+ char *end;
+
+ if (strstr(line, E_D_GDB_EXIT_NORMAL))
+ {
+  *code = 0;
+  return(1);
+ }
+ if ((p = strstr(line, E_D_GDB_EXIT_CODE)) != NULL)
+ {
+  *code = strtol(p + strlen(E_D_GDB_EXIT_CODE), &end, E_D_GDB_EXIT_BASE);
+  return(end != p + strlen(E_D_GDB_EXIT_CODE));
+ }
+ if ((p = strstr(line, E_D_PDB_EXIT_STATUS)) != NULL)
+ {
+  *code = strtol(p + strlen(E_D_PDB_EXIT_STATUS), &end, 10);
+  return(end != p + strlen(E_D_PDB_EXIT_STATUS));
+ }
+ return(0);
+}
+
+/**
+ * e_d_say_program_exited - Write in Messages that the program ended.
+ * @line: the debugger's line that said so; @f: the window on top.
+ *
+ * The user reads "Program exited with code N", as Turbo Debugger's
+ * "Terminated, exit code N", so a failing program is told apart from one
+ * that succeeded without a second run.  A debugger that names no code
+ * keeps the plain "Program exited.".
+ */
+static void e_d_say_program_exited(const char *line, FENSTER *f)
+{
+ char msg[E_D_EXIT_LINE_MAX];
+ long code;
+
+ if (e_d_exit_code_of(line, &code))
+ {
+  snprintf(msg, sizeof msg, E_D_EXIT_CODE_FMT, code);
+  e_d_p_message(msg, f, 0);
+ }
+ else
+  e_d_p_message(E_D_EXIT_PLAIN, f, 0);
+}
+
 static void e_d_accum_complete(void)
 {
  FENSTER *f = e_d_accum.f;
@@ -590,7 +665,7 @@ static void e_d_accum_complete(void)
  {
   if (strstr(e_d_sp[i], "exited"))
   {
-   e_d_p_message("Program exited.", f, 0);
+   e_d_say_program_exited(e_d_sp[i], f);
    e_d_quit(f);
    return;
   }
@@ -1000,13 +1075,25 @@ int e_debug_switch(FENSTER *f, int c)
    waiting for output that will never come. */
 static int e_d_debugger_gone(void)
 {
- int st;
+ int st, r;
 
  if (e_d_pid <= 0)
   return 1;
- if (waitpid(e_d_pid, &st, WNOHANG) == e_d_pid)
+ r = waitpid(e_d_pid, &st, WNOHANG);
+ if (r == e_d_pid)
  {
   e_d_pid = 0;
+  e_d_note_reaped(st);
+  e_d_note_output_closed();
+  return 1;
+ }
+ /* The editor's SIGCHLD handler reaps every child and keeps the status. */
+ if (r < 0 && errno == ECHILD)
+ {
+  if (WpeReapedStatus(e_d_pid, &st))
+   e_d_note_reaped(st);
+  e_d_pid = 0;
+  e_d_note_output_closed();
   return 1;
  }
  return 0;
@@ -1132,6 +1219,7 @@ int e_d_line_read(int n, signed char *s, int max, int sw, int esw)
    {
     jdb_trace("e_d_line_read: EOF on pipe (debugger exited)\n");
     fcntl(n, F_SETFL, kbdflgs & ~O_NONBLOCK);
+    e_d_note_output_closed();
     return(-1);
    }
    /* read() returned EAGAIN: if the debugger process has died but its pipe
@@ -1359,6 +1447,8 @@ int e_d_quit_basic(FENSTER *f)
  signal(SIGPIPE, SIG_IGN);
 
  e_d_start_forget();
+ e_d_end_forget();
+ e_d_jdb_missing_forget();
  if (!e_d_swtch)
   return 0;
  /* A debugger that never answered is not spoken to: it is ended below. */
@@ -1436,16 +1526,159 @@ int e_d_quit_basic(FENSTER *f)
  return 0;
 }
 
+/* How a debugger that ended by itself is reported; a signal is given as the
+   shell gives it, 128 + the signal number. */
+#define E_D_DIED_FMT         "%s ended unexpectedly (exit status %d)"
+#define E_D_DIED_NO_STATUS   "%s ended unexpectedly"
+#define E_D_SIGNAL_STATUS_BASE 128
+#define E_D_DIED_LINE_MAX    128
+
+/* The debugger's output pipe reached its end, and its exit status if it was
+   collected on the way.  Reset when the session ends. */
+static int e_d_output_closed = 0;
+static int e_d_reaped_known = 0;
+static int e_d_reaped_status = 0;
+
+/**
+ * e_d_note_output_closed - Record that the debugger's output ended.
+ *
+ * Every reader that meets end of file on the debugger's pipe calls this, so
+ * the session's end can tell a debugger that died from one that was asked
+ * to quit.
+ */
+static void e_d_note_output_closed(void)
+{
+ e_d_output_closed = 1;
+}
+
+/**
+ * e_d_note_reaped - Keep the exit status of a debugger a reader reaped.
+ * @status: the wait status.
+ */
+static void e_d_note_reaped(int status)
+{
+ e_d_reaped_known = 1;
+ e_d_reaped_status = status;
+}
+
+/**
+ * e_d_end_forget - Forget how the last debugger ended, for the next session.
+ */
+static void e_d_end_forget(void)
+{
+ e_d_output_closed = 0;
+ e_d_reaped_known = 0;
+ e_d_reaped_status = 0;
+}
+
+/**
+ * e_d_wait_exact - Wait for the debugger child @pid to end, through signals.
+ * @pid: the debugger's PID; @status: receives its wait status.
+ * Return: waitpid's answer.
+ */
+static int e_d_wait_exact(int pid, int *status)
+{
+ int r;
+
+ while ((r = waitpid(pid, status, 0)) < 0 && errno == EINTR)
+  ;
+ return(r);
+}
+
+/**
+ * e_d_collect_end_status - The wait status of a debugger whose output ended.
+ * @status: receives it.
+ *
+ * The editor's SIGCHLD handler usually reaps the debugger first and keeps
+ * its status; otherwise it is reaped here.  A debugger that closed its
+ * output but still runs is ended, as the session's end would end it.
+ * Return: 1 when the status is known, else 0.
+ */
+static int e_d_collect_end_status(int *status)
+{
+ int pid = e_d_pid, r;
+
+ if (e_d_reaped_known)
+ {
+  *status = e_d_reaped_status;
+  return(1);
+ }
+ if (pid <= 0)
+  return(0);
+ e_d_pid = 0;
+ r = waitpid(pid, status, WNOHANG);
+ if (r == 0)
+ {
+  kill(pid, SIGKILL);
+  r = e_d_wait_exact(pid, status);
+ }
+ if (r == pid)
+  return(1);
+ return(WpeReapedStatus(pid, status));
+}
+
+/**
+ * e_d_exit_status_number - The number a user reads for a wait status.
+ * @status: the wait status.
+ * Return: the exit code, or 128 + the signal for a debugger killed by one.
+ */
+static int e_d_exit_status_number(int status)
+{
+ if (WIFSIGNALED(status))
+  return(E_D_SIGNAL_STATUS_BASE + WTERMSIG(status));
+ return(WEXITSTATUS(status));
+}
+
+/**
+ * e_d_died_line - The line that says the debugger ended without being asked.
+ * @out, @n: receives it.
+ * Return: 1 when the debugger died, 0 when the session ends normally.
+ */
+static int e_d_died_line(char *out, size_t n)
+{
+ int status;
+
+ if (!e_d_output_closed)
+  return(0);
+ if (e_d_collect_end_status(&status))
+  snprintf(out, n, E_D_DIED_FMT, e_d_start_label(),
+           e_d_exit_status_number(status));
+ else
+  snprintf(out, n, E_D_DIED_NO_STATUS, e_d_start_label());
+ return(1);
+}
+
+/**
+ * e_d_say_session_end - Write in Messages how the session ended.
+ * @died: the line for a debugger that died, or "" for a normal end.
+ * @f: the window on top.
+ *
+ * A debugger that crashed or was killed is named as such, with its exit
+ * status, instead of the "End of Debugging" a quit the user asked for
+ * shows, so the user knows to look at the debugger rather than the program.
+ */
+static void e_d_say_session_end(const char *died, FENSTER *f)
+{
+ if (died[0])
+  e_d_p_message((char *)died, f, 1);
+ else
+  e_d_p_message(e_d_msg[ERR_ENDDEBUG], f, 1);
+}
+
 int e_d_quit(FENSTER *f)
 {
  ECNT *cn = f->ed;
  int i;
+ char died[E_D_DIED_LINE_MAX];
+
  jdb_trace("e_d_quit: CALLED, e_d_swtch=%d, e_deb_type=%d\n",
            e_d_swtch, e_deb_type);
+ if (!e_d_died_line(died, sizeof died))
+  died[0] = '\0';
  if (e_d_dap_active())
   e_d_dap_quit(f);   /* disconnect the adapter; common cleanup runs below */
  e_d_quit_basic(f);
- e_d_p_message(e_d_msg[ERR_ENDDEBUG], f, 1);
+ e_d_say_session_end(died, f);
  WpeMouseChangeShape(WpeEditingShape);
  e_d_delbreak(f);
  /* Switch back to the source file, not Messages.
@@ -1454,8 +1687,10 @@ int e_d_quit(FENSTER *f)
   if (e_check_c_file(cn->f[i]->datnam) || e_d_dap_source_ext(cn->f[i]->datnam))
   {
    e_switch_window(cn->edt[i], cn->f[cn->mxedt]);
-   return(0);
+   break;
   }
+ if (died[0])
+  e_status_say(cn->f[cn->mxedt], died);
  return(0);
 }
 
@@ -1678,6 +1913,7 @@ int e_d_p_watches(FENSTER *f, int sw)
  BUFFER *b;
  SCHIRM *s;
  int iw, i, k = 0, l, ret;
+ size_t len;
  char str1[256], *str; /* is 256 always large enough? */
  char *str2;
 
@@ -1720,6 +1956,7 @@ int e_d_p_watches(FENSTER *f, int sw)
  for (i = 0, l = 0; l < e_d_nwtchs; l++)
  {
   str = str1;
+  k = 0;   /* each answer is read from its own start (pdb and a68g set no k) */
 
   /* Create appropriate command for the debugger (e_d_watch_refused above
      has already turned away a debugger that has none) */
@@ -1749,8 +1986,8 @@ int e_d_p_watches(FENSTER *f, int sw)
    {
     if (ret == -1) return(ret); /* BUG? e_d_nrwtchs not initialized if this return is taken */
     if (ret == 2) e_d_error(str1);
-    str = REALLOC(str, (k = strlen(str)) + strlen(str1) + 1);
-    if (str[k-1] == '\n') str[k-1] = ' ';
+    str = REALLOC(str, (len = strlen(str)) + strlen(str1) + 1);
+    if (len > 0 && str[len-1] == '\n') str[len-1] = ' ';
     strcat(str, str1);
    }
 
@@ -3215,12 +3452,44 @@ static void e_d_dap_paint_stop(FENSTER *f)
  e_d_goto_break(g_dap_stop_file, g_dap_stop_line, f);
 }
 
+/**
+ * e_d_dap_drop_line_cr - Copy @text without the CR a pty puts before LF.
+ * @text: the adapter's output event; @out: receives the copy, as long as
+ * @text plus its NUL.
+ *
+ * A program run on a pty ends its lines with CR LF; the CR would show as
+ * "^M" at the end of every line in Messages.  A CR that ends the text is the
+ * first half of a CR LF split across two events, and goes too.  Any other
+ * CR is the program's own and is kept.
+ */
+static void e_d_dap_drop_line_cr(const char *text, char *out)
+{
+ const char *p;
+ char *o = out;
+
+ for (p = text; *p; p++)
+ {
+  if (*p == '\r' && (p[1] == '\n' || p[1] == '\0'))
+   continue;
+  *o++ = *p;
+ }
+ *o = '\0';
+}
+
 /* on_output: adapter/program output -> Messages window. */
 static void e_d_dap_on_output(const char *text, void *ud)
 {
+ char *clean;
+
  (void)ud;
- if (g_dap_fenster && text)
-  e_d_p_message((char *)text, g_dap_fenster, 1);
+ if (!g_dap_fenster || !text)
+  return;
+ clean = MALLOC(strlen(text) + 1);
+ if (!clean)
+  return;
+ e_d_dap_drop_line_cr(text, clean);
+ e_d_p_message(clean, g_dap_fenster, 1);
+ FREE(clean);
 }
 
 /* on_terminated: the debuggee exited. */
@@ -4551,18 +4820,17 @@ static int e_d_jdb_stop_line(const char *stop)
 }
 
 /**
- * e_d_jdb_class_file - The source file of the class a jdb stop names.
- * @stop: what jdb printed; @out, @n: receives "<Class>.java".
+ * e_d_jdb_stop_class - The class a jdb stop names, with its package.
+ * @stop: what jdb printed; @out, @n: receives "com.x.P".
  *
- * "pkg.P.main()" before "line=" gives P.java; a nested class P$Inner is
- * written in P.java too.
+ * "com.x.P.main()" before "line=" gives com.x.P; a nested class P$Inner is
+ * written in P's file, so it gives P.
  * Return: 1 when the stop names a class, else 0.
  */
-static int e_d_jdb_class_file(const char *stop, char *out, size_t n)
+static int e_d_jdb_stop_class(const char *stop, char *out, size_t n)
 {
  const char *lp = strstr(stop, E_D_JDB_LINE_MARK);
- const char *paren, *start, *method_dot, *cls;
- char name[E_D_STOP_PATH_MAX];
+ const char *paren, *start, *method_dot;
  char *nested;
  size_t len;
 
@@ -4576,18 +4844,165 @@ static int e_d_jdb_class_file(const char *stop, char *out, size_t n)
   ;
  if (*paren != '(' || method_dot == start)
   return(0);
- for (cls = method_dot; cls > start && cls[-1] != '.'; cls--)
-  ;
- len = method_dot - cls;
- if (len == 0 || len >= sizeof name)
+ len = method_dot - start;
+ if (len >= n)
   return(0);
- memcpy(name, cls, len);
- name[len] = '\0';
- nested = strchr(name, E_D_JDB_NESTED_SEP);
+ memcpy(out, start, len);
+ out[len] = '\0';
+ nested = strchr(out, E_D_JDB_NESTED_SEP);
  if (nested)
   *nested = '\0';
- snprintf(out, n, "%s%s", name, E_D_JDB_SOURCE_EXT);
  return(1);
+}
+
+/**
+ * e_d_jdb_class_file - The source file name of a class: com.x.P -> P.java.
+ * @cls: the class with its package; @out, @n: receives the file name.
+ */
+static void e_d_jdb_class_file(const char *cls, char *out, size_t n)
+{
+ const char *simple = strrchr(cls, '.');
+
+ if (simple)
+  simple++;
+ else
+  simple = cls;
+ snprintf(out, n, "%s%s", simple, E_D_JDB_SOURCE_EXT);
+}
+
+/**
+ * e_d_jdb_package_file - The source path of a class below its source root:
+ * com.x.P -> com/x/P.java.
+ * @cls: the class with its package; @out, @n: receives the path.
+ */
+static void e_d_jdb_package_file(const char *cls, char *out, size_t n)
+{
+ size_t i, len;
+
+ snprintf(out, n, "%s", cls);
+ for (i = 0; out[i]; i++)
+  if (out[i] == '.')
+   out[i] = DIRC;
+ len = strlen(out);
+ snprintf(out + len, n - len, "%s", E_D_JDB_SOURCE_EXT);
+}
+
+/**
+ * e_d_jdb_session_dir - The directory of the Java file the session debugs.
+ * @cn: the editor; @out, @n: receives the directory, or "" when that file
+ * is not open.
+ */
+static void e_d_jdb_session_dir(ECNT *cn, char *out, size_t n)
+{
+ char *slash;
+
+ out[0] = '\0';
+ if (!e_d_window_path_of(cn, e_d_file, out, n))
+  return;
+ slash = strrchr(out, DIRC);
+ if (slash)
+  slash[1] = '\0';
+ else
+  out[0] = '\0';
+}
+
+/**
+ * e_d_jdb_try_source - Is @rel readable under @dir?  ("" is the current
+ * directory.)
+ * @dir: a source root; @rel: a path below it; @out, @n: receives the path.
+ * Return: 1 when the file is there.
+ */
+static int e_d_jdb_try_source(const char *dir, const char *rel,
+                              char *out, size_t n)
+{
+ snprintf(out, n, "%s%s", dir, rel);
+ return(access(out, R_OK) == 0);
+}
+
+/**
+ * e_d_jdb_find_source - Where the source of the class a jdb stop names is.
+ * @cn: the editor; @cls: the class with its package; @out, @n: the path.
+ *
+ * An open window showing the file wins; otherwise the file is looked for
+ * below the session's source roots, the directory of the Java file being
+ * debugged and the current directory, first in its package's directories
+ * (com/x/P.java), then directly.  javac finds a package's sources the same
+ * way, so a class it compiled is found here too.
+ * Return: 1 when the source was found, else 0.
+ */
+static int e_d_jdb_find_source(ECNT *cn, const char *cls, char *out, size_t n)
+{
+ char name[E_D_STOP_PATH_MAX], rel[E_D_STOP_PATH_MAX], dir[E_D_STOP_PATH_MAX];
+
+ /* A Java class name never holds these; a stop line that does is not
+    turned into a path outside the source roots. */
+ if (strchr(cls, DIRC) || strstr(cls, ".."))
+  return(0);
+ e_d_jdb_class_file(cls, name, sizeof name);
+ if (e_d_window_path_of(cn, name, out, n))
+  return(1);
+ e_d_jdb_package_file(cls, rel, sizeof rel);
+ e_d_jdb_session_dir(cn, dir, sizeof dir);
+ if (dir[0] && e_d_jdb_try_source(dir, rel, out, n))
+  return(1);
+ if (e_d_jdb_try_source("", rel, out, n))
+  return(1);
+ if (dir[0] && e_d_jdb_try_source(dir, name, out, n))
+  return(1);
+ return(e_d_jdb_try_source("", name, out, n));
+}
+
+/* Classes whose source was not found, each said once per session. */
+#define E_D_JDB_MISSING_MAX 16
+#define E_D_JDB_NO_SOURCE_FMT "%s: source not found"
+static char e_d_jdb_missing[E_D_JDB_MISSING_MAX][E_D_STOP_PATH_MAX];
+static int e_d_jdb_nmissing = 0;
+
+/**
+ * e_d_jdb_missing_forget - Forget which classes had no source, for the
+ * next session.
+ */
+static void e_d_jdb_missing_forget(void)
+{
+ e_d_jdb_nmissing = 0;
+}
+
+/**
+ * e_d_jdb_missing_seen - Was this class already said to have no source?
+ * @cls: the class; it is remembered when it was not.
+ * Return: 1 when it was already said (or no room is left to remember it).
+ */
+static int e_d_jdb_missing_seen(const char *cls)
+{
+ int i;
+
+ for (i = 0; i < e_d_jdb_nmissing; i++)
+  if (!strcmp(e_d_jdb_missing[i], cls))
+   return(1);
+ if (e_d_jdb_nmissing >= E_D_JDB_MISSING_MAX)
+  return(1);
+ snprintf(e_d_jdb_missing[e_d_jdb_nmissing++], E_D_STOP_PATH_MAX, "%s", cls);
+ return(0);
+}
+
+/**
+ * e_d_jdb_say_no_source - Say once that a class has no source to mark.
+ * @f: the window on top; @cls: the class jdb stopped in.
+ *
+ * A stop in a class whose file cannot be found (a library, a second class
+ * written in another class's file) leaves the session running: the status
+ * row says so the first time, and later stops in it stay quiet, where every
+ * stop used to raise a dialog.
+ */
+static void e_d_jdb_say_no_source(FENSTER *f, const char *cls)
+{
+ char line[E_D_STOP_PATH_MAX + sizeof E_D_JDB_NO_SOURCE_FMT];
+
+ e_d_switch_out(0);
+ if (e_d_jdb_missing_seen(cls))
+  return;
+ snprintf(line, sizeof line, E_D_JDB_NO_SOURCE_FMT, cls);
+ e_status_say(f, line);
 }
 
 /**
@@ -4598,20 +5013,28 @@ static int e_d_jdb_class_file(const char *stop, char *out, size_t n)
  * the gdb stop finds its file, never in whichever window is on top
  * (Messages after the build, Watches after a watch was added).  jdb names a
  * class where gdb names a file: that is the one difference, resolved here.
- * Return: e_d_goto_break's answer, or 0 when the stop names no line.
+ * A class in a package is opened from its package's directory.
+ * Return: e_d_goto_break's answer, or 0 when the stop names no line or its
+ * source is not found.
  */
 static int e_d_jdb_mark_stop(FENSTER *f, const char *stop)
 {
- char name[E_D_STOP_PATH_MAX], path[E_D_STOP_PATH_MAX];
+ char cls[E_D_STOP_PATH_MAX], path[E_D_STOP_PATH_MAX];
  int line = e_d_jdb_stop_line(stop);
 
  if (line <= 0)
   return(0);
- if (!e_d_jdb_class_file(stop, name, sizeof name))
-  snprintf(name, sizeof name, "%s", e_d_file);
- if (!e_d_window_path_of(f->ed, name, path, sizeof path))
-  snprintf(path, sizeof path, "%s", name);
+ if (!e_d_jdb_stop_class(stop, cls, sizeof cls))
+ {
+  snprintf(cls, sizeof cls, "%s", e_d_file);
+  WpeStringCutChar(cls, '.');
+ }
  e_d_refresh_watches_at_stop(f);
+ if (!e_d_jdb_find_source(f->ed, cls, path, sizeof path))
+ {
+  e_d_jdb_say_no_source(f, cls);
+  return(0);
+ }
  return(e_d_goto_break(path, line, f));
 }
 
@@ -4821,6 +5244,7 @@ int e_deb_run(FENSTER *f)
    if (_n == 0)
    {  /* EOF: jdb process exited */
       jdb_trace("e_deb_run: EOF on pipe (jdb exited)\n");
+      e_d_note_output_closed();
       e_d_quit(f); return(-1);  }
    if (_n < 0) continue;
    _jlen += _n;
@@ -4908,7 +5332,10 @@ static int e_d_jdb_step_complete(FENSTER *f)
   if (poll(&_pfd, 1, DEB_STEP_POLL_MS) <= 0) break;
   _n = read(wfildes[0], _jbuf + _jlen, sizeof(_jbuf) - _jlen - 1);
   if (_n == 0)
-   return(e_d_quit(f));   /* EOF: jdb exited cleanly -- quit like gdb does */
+  {  /* EOF before jdb said the application exited: jdb itself ended */
+   e_d_note_output_closed();
+   return(e_d_quit(f));
+  }
   if (_n < 0) continue;
   _jlen += _n;
   _jbuf[_jlen] = '\0';
@@ -4965,7 +5392,11 @@ static int e_d_pdb_step_complete(FENSTER *f)
   {
    if (poll(&_pfd, 1, DEB_STEP_POLL_MS) <= 0) break;
    _n = read(wfildes[0], _buf + _len, sizeof(_buf) - _len - 1);
-   if (_n == 0) return(e_d_quit(f));  /* EOF: pdb exited */
+   if (_n == 0)
+   {  /* EOF: pdb restarts a finished script, so it never ends by itself */
+    e_d_note_output_closed();
+    return(e_d_quit(f));
+   }
    if (_n < 0) continue;
    _len += _n;
    _buf[_len] = '\0';
@@ -4996,6 +5427,13 @@ static int e_d_pdb_step_complete(FENSTER *f)
      /* Program output -- save for Ctrl-G P */
      e_d_prog_output_append_line(_line, _li);
     }
+  }
+  /* sys.exit(N): pdb names the exit status, then restarts the script */
+  if (strstr(_buf, E_D_PDB_EXIT_STATUS))
+  {
+   e_d_switch_out(0);
+   e_d_say_program_exited(strstr(_buf, E_D_PDB_EXIT_STATUS), f);
+   return(e_d_quit(f));
   }
   /* Check for program exit -- pdb auto-restarts after finish */
   if (strstr(_buf, "The program finished"))
@@ -5130,6 +5568,7 @@ static void e_d_a68g_goto(FENSTER *f, int line)
  e_d_swtch = 3;
  e_schirm(f, 1);
  e_cursor(f, 1);
+ e_d_show_stop_position(f);
 }
 
 /* Read and apply an a68g step/next/continue response: poll for the "(a68g) "
@@ -5588,7 +6027,7 @@ int e_read_output(FENSTER *f)
   if (strstr(e_d_sp[i], "exited"))
   {
    e_d_pty_flush_to_messages(f);
-   e_d_p_message("Program exited.", f, 0);
+   e_d_say_program_exited(e_d_sp[i], f);
    e_d_quit(f);
    return(0);
   }
@@ -5827,6 +6266,22 @@ int e_make_line_num2(char *str, char *file)
  return(atoi(sp+i));
 }
 
+/**
+ * e_d_show_stop_position - Repaint the line:column field of the window a
+ * stop was marked in.
+ * @f: the source window that now carries the current-line mark.
+ *
+ * A stop can arrive after the editor has painted its status for the key
+ * that started the step, so without this the field kept the previous stop's
+ * line until the next key.  The user reads the same line in the field as
+ * under the green bar after every stop, whatever the backend.
+ */
+static void e_d_show_stop_position(FENSTER *f)
+{
+ e_zlsplt(f);
+ e_refresh();
+}
+
 int e_d_goto_break(char *file, int line, FENSTER *f)
 {
  ECNT *cn = f->ed;
@@ -5888,6 +6343,7 @@ int e_d_goto_break(char *file, int line, FENSTER *f)
  s->de.x = MAXSCOL;
  e_schirm(f, 1);
  e_cursor(f, 1);
+ e_d_show_stop_position(f);
  e_d_pty_flush_to_messages(f);
 #ifndef NO_XWINDOWS
  if (WpeIsXwin())

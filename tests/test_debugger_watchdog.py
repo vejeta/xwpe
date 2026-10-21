@@ -13,6 +13,7 @@ stays responsive (low CPU / not in the run state) instead of spinning.  No real
 debugger is needed, so it always runs.
 """
 import os
+import signal
 import subprocess
 import time
 
@@ -72,22 +73,123 @@ def _run_state(pid):
         return "gone"
 
 
-# @scenario SC-debug-15
-def test_wpe_survives_a_flooding_debugger(tmp_path):
-    """A debugger that floods output forever must not make xwpe busy-loop."""
-    # Fake a68g: a short banner, then an endless flood with no prompt -- the
-    # shape of a runaway abend.  Auto-selected because the file is .a68.
+FAKE_PIDS = "fake-a68g.pids"
+ALT_X = "\033x"                 # quit the editor
+QUIT_TIMEOUT_S = 10
+
+
+def _flooding_a68g(tmp_path):
+    """Put a fake a68g first on PATH that records its PID, prints a short
+    banner, then floods its output forever with no prompt: the shape of a
+    runaway abend.  Auto-selected because the file is .a68.  Return the
+    environment that puts it on PATH."""
     bindir = tmp_path / "bin"
     bindir.mkdir()
     fake = bindir / "a68g"
     fake.write_text(
         "#!/bin/sh\n"
+        "echo $$ >> %s\n"
         'echo "Algol 68 Genie (fake flood)"\n'
         'while : ; do echo "abend: runaway error $RANDOM"; done\n'
+        % (tmp_path / FAKE_PIDS)
     )
     fake.chmod(0o755)
+    return {"PATH": str(bindir) + ":" + os.environ.get("PATH", "")}
 
-    env_extra = {"PATH": str(bindir) + ":" + os.environ.get("PATH", "")}
+
+def _live_fakes(tmp_path):
+    """PIDs of the fake a68g runs of this test that are still running (and
+    still that fake: the command line names this test's directory)."""
+    try:
+        pids = [int(p) for p in (tmp_path / FAKE_PIDS).read_text().split()]
+    except OSError:
+        return []
+    live = []
+    for pid in pids:
+        try:
+            cmdline = open("/proc/%d/cmdline" % pid, "rb").read()
+        except OSError:
+            continue
+        if str(tmp_path).encode() in cmdline and _run_state(pid) != "Z":
+            live.append(pid)
+    return live
+
+
+def _end_fakes(tmp_path):
+    """End every fake a68g this test started that is still running, by its
+    exact PID: the editor is killed with its process group at the end of a
+    session, but a build runs in a group of its own."""
+    for pid in _live_fakes(tmp_path):
+        try:
+            os.kill(pid, 9)
+        except OSError:
+            pass
+
+
+# @scenario SC-debug-15
+def test_wpe_survives_a_flooding_debugger(tmp_path):
+    """A debugger that floods output forever must not make xwpe busy-loop."""
+    env_extra = _flooding_a68g(tmp_path)
+    try:
+        _drive_the_flood(tmp_path, env_extra)
+    finally:
+        _end_fakes(tmp_path)
+
+
+# @scenario SC-debug-15
+def test_quitting_the_editor_ends_a_running_build(tmp_path):
+    """Alt-X while the fake a68g's check still floods: the editor quits and
+    the check, which runs in a process group of its own, is gone too
+    instead of being left spinning with no editor to show it."""
+    env_extra = _flooding_a68g(tmp_path)
+    try:
+        with WpeSession(str(tmp_path), A68, filename="factorial.a68",
+                        wait=2.0, env_extra=env_extra) as w:
+            w.key(CTRL_G, "r", delay=1.0)
+            deadline = time.time() + QUIT_TIMEOUT_S
+            while not _live_fakes(tmp_path) and time.time() < deadline:
+                w._drain(0.2)
+            assert _live_fakes(tmp_path), "the fake a68g should be running"
+            w.key(ALT_X, delay=0.5)
+            deadline = time.time() + QUIT_TIMEOUT_S
+            while w.proc.poll() is None and time.time() < deadline:
+                w._drain(0.2)
+            assert w.proc.poll() is not None, "Alt-X should quit the editor"
+            assert not _live_fakes(tmp_path), \
+                "the build the editor started outlived it"
+    finally:
+        _end_fakes(tmp_path)
+
+
+# @scenario SC-debug-15
+def test_sigterm_to_the_editor_ends_a_running_build(tmp_path):
+    """SIGTERM to the editor, by its PID, while the fake a68g's check still
+    floods: the editor ends and the check, in a process group of its own,
+    ends with it."""
+    env_extra = _flooding_a68g(tmp_path)
+    try:
+        with WpeSession(str(tmp_path), A68, filename="factorial.a68",
+                        wait=2.0, env_extra=env_extra) as w:
+            w.key(CTRL_G, "r", delay=1.0)
+            deadline = time.time() + QUIT_TIMEOUT_S
+            while not _live_fakes(tmp_path) and time.time() < deadline:
+                w._drain(0.2)
+            assert _live_fakes(tmp_path), "the fake a68g should be running"
+            os.kill(w.proc.pid, signal.SIGTERM)
+            deadline = time.time() + QUIT_TIMEOUT_S
+            while w.proc.poll() is None and time.time() < deadline:
+                w._drain(0.2)
+            assert w.proc.poll() is not None, "SIGTERM should end the editor"
+            deadline = time.time() + QUIT_TIMEOUT_S
+            while _live_fakes(tmp_path) and time.time() < deadline:
+                time.sleep(0.2)
+            assert not _live_fakes(tmp_path), \
+                "the build the editor started outlived its SIGTERM"
+    finally:
+        _end_fakes(tmp_path)
+
+
+def _drive_the_flood(tmp_path, env_extra):
     with WpeSession(str(tmp_path), A68, filename="factorial.a68",
                     wait=2.0, env_extra=env_extra) as w:
         pid = w.proc.pid

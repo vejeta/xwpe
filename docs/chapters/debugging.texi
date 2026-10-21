@@ -113,6 +113,38 @@ seconds before you start xwpe.
 Go, Rust and Scala sessions start through a debug adapter instead, and
 the editor still waits for the adapter while it starts.
 
+@section How a session ends
+
+@cindex debugger, end of session
+@cindex exit code
+When the program ends, Messages names its exit code, as Turbo
+Debugger's ``Terminated, exit code N'' did:
+
+@example
+Program exited with code 3
+@end example
+
+@noindent
+gdb gives the code for every program; pdb gives it when the script
+calls @code{sys.exit}.  jdb, a68g and the debug adapters do not report
+one, and Messages says @samp{Program exited.}.  Debug > Quit ends the
+session with @samp{End of Debugging}.
+
+A debugger that ends without being asked (it crashed, or was killed)
+is named in Messages and on the status row, with its exit status; a
+signal counts as 128 plus its number, as in the shell:
+
+@example
+gdb ended unexpectedly (exit status 137)
+@end example
+
+@noindent
+The session is then over, as after Debug > Quit, and the editor takes
+keys again.
+
+After every stop, the line:column field of the window shows the line
+the green bar is on.
+
 @section Compiling for debugging
 
 Compile with debug symbols (@code{-g}) and no optimisation
@@ -338,6 +370,12 @@ redirection.  xwpe handles this transparently.
 @strong{The current line}: jdb names the class it stopped in, not a
 file.  xwpe marks the line in that class's source window (@file{P.java}
 for class @code{P} or @code{P$Inner}), whichever window is on top.
+A class in a package whose file is not open is opened from its
+package's directory, below the directory of the file you debug or the
+current directory (@file{com/x/Q.java} for @code{com.x.Q}).  When no
+source is found (a library class, or a second class written in another
+class's file), the status row says @samp{R: source not found} the first
+time and the session goes on.
 
 @item
 @strong{Watches}: @kbd{Ctrl-G W} sends @code{print @var{expr}} and

@@ -20,7 +20,7 @@ import time
 
 import pytest
 
-from wpe_driver import WpeSession, ALT, WAIT_SCALE
+from wpe_driver import WpeSession, ALT, WAIT_SCALE, tool_usable
 
 CTRL_G = "\x07"         # debugger command prefix
 DOWN = "\033OB"
@@ -690,3 +690,281 @@ def test_rust_dap_stops_on_a_breakpoint_on_a_line_that_runs_once(
             % (RUST_ONCE_LINE, binary, _screen(w))
         assert RUST_LAST_OUTPUT not in _screen(w), \
             "the program ran to its end past the breakpoint:\n%s" % _screen(w)
+
+
+def _status_field_line(w):
+    """The line number in the topmost source window's line:column field."""
+    for row in w.display(drain=0)[2:]:
+        if row.startswith("m"):
+            m = re.search(r"\s(\d+):\d+\s", row)
+            return int(m.group(1)) if m else None
+    return None
+
+
+# @scenario SC-debug-04
+def test_the_line_column_field_follows_every_stop(tmp_path):
+    """After F8 and F7 the window's line:column field names the line the
+    green bar is on, without a key being pressed after the stop."""
+    _need("gcc", "gdb")
+    with _c_session(tmp_path) as w:
+        _start_c_session(w)
+        for key, line in ((F8, C_NEXT_LINE), (F7, C_CALLEE_LINE)):
+            assert _step(w, key, line), _screen(w)
+            assert _wait_for(w, lambda: _status_field_line(w) == line,
+                             STEP_TIMEOUT_S), \
+                "the mark is on line %d, the field says %s:\n%s" \
+                % (line, _status_field_line(w), _screen(w))
+
+
+# @scenario SC-debug-14
+def test_the_end_of_the_program_names_its_exit_code(tmp_path):
+    """A C program that returns 3, run to its end: Messages says "Program
+    exited with code 3" (gdb prints the code in octal)."""
+    _need("gcc", "gdb")
+    prog = C_PROG.replace("return 0;", "return 11;")
+    with WpeSession(str(tmp_path), prog, filename="p.c", wait=1.5) as w:
+        _start_c_session(w)
+        w.key(CTRL_G, "r", delay=0.3)
+        assert _wait_for(w, lambda: "Program exited" in _screen(w),
+                         STEP_TIMEOUT_S), _screen(w)
+        assert "Program exited with code 11" in _screen(w), \
+            "Messages should name the exit code 11 (gdb says 013):\n%s" \
+            % _screen(w)
+
+
+# @scenario SC-debug-13
+def test_a_normal_end_says_exit_code_zero(tmp_path):
+    """gdb's "exited normally" is read as exit code 0."""
+    _need("gcc", "gdb")
+    with _c_session(tmp_path) as w:
+        _start_c_session(w)
+        w.key(CTRL_G, "r", delay=0.3)
+        assert _wait_for(w, lambda: "Program exited with code 0" in _screen(w),
+                         STEP_TIMEOUT_S), _screen(w)
+
+
+PY_EXIT_PROG = (
+    "import sys\n"
+    "x = 3\n"
+    "sys.exit(x)\n"
+)
+PY_EXIT_BREAK_LINE = 2
+
+
+# @scenario SC-debug-14
+def test_pdb_names_the_code_of_sys_exit(tmp_path):
+    """A Python script that ends with sys.exit(3), continued from a
+    breakpoint: Messages says "Program exited with code 3"."""
+    _need("python3")
+    with WpeSession(str(tmp_path), PY_EXIT_PROG, filename="p.py",
+                    wait=1.5) as w:
+        _move_down(w, PY_EXIT_BREAK_LINE - 1)
+        w.key(CTRL_G, "b", delay=0.4)
+        w.key(CTRL_G, "r", delay=1.0)
+        assert _wait_for(w, lambda: "switching to pdb" in _screen(w),
+                         STEP_TIMEOUT_S)
+        w.key("\r", delay=0.5)
+        assert _wait_for(w, lambda: _mark_line(w) == PY_EXIT_BREAK_LINE,
+                         START_TIMEOUT_S), _screen(w)
+        w.key(CTRL_G, "r", delay=0.3)
+        assert _wait_for(w, lambda: "Program exited with code 3" in _screen(w),
+                         STEP_TIMEOUT_S), \
+            "Messages should name the exit code 3:\n%s" % _screen(w)
+
+
+# @scenario SC-debug-16
+def test_a_debugger_that_dies_is_named_with_its_exit_status(tmp_path):
+    """gdb killed (SIGKILL) while stopped, then F8: Messages and the status
+    row say "gdb ended unexpectedly (exit status 137)", never "End of
+    Debugging", and the session is gone."""
+    _need("gcc", "gdb")
+    with _c_session(tmp_path) as w:
+        _start_c_session(w)
+        pids = _children(w, "gdb")
+        assert len(pids) == 1, "expected one gdb child, saw %s" % pids
+        os.kill(pids[0], signal.SIGKILL)
+        w.key(F8, delay=0.5)
+        expected = "gdb ended unexpectedly (exit status %d)" \
+            % (128 + signal.SIGKILL)
+        assert _wait_for(w, lambda: expected in _screen(w), STEP_TIMEOUT_S), \
+            "Messages should say the debugger died:\n%s" % _screen(w)
+        assert expected in w.display(drain=0)[-1], \
+            "the status row should say it too:\n%s" % _screen(w)
+        assert "End of Debugging" not in _screen(w), _screen(w)
+        assert _mark_line(w) is None, _screen(w)
+        assert not _children(w, "gdb")
+
+
+# @scenario SC-debug-12
+def test_dap_program_output_has_no_carriage_return_mark(tmp_path):
+    """Under lldb-dap the program's lines reach Messages without the "^M"
+    the pty's CR LF used to leave at their end."""
+    if not tool_usable("rustc"):
+        pytest.skip("no rustc")
+    _need("lldb-dap")
+    with WpeSession(str(tmp_path), RUST_PROG, filename="main.rs", wait=2.0,
+                    env_extra={"XWPE_DAP_ADAPTER": "lldb"}) as w:
+        _move_down(w, RUST_ONCE_LINE - 1)
+        w.key(CTRL_G, "b", delay=0.8)
+        w.key(CTRL_G, "r", delay=1.0)
+        assert _wait_for(w, lambda: _mark_line(w) == RUST_ONCE_LINE,
+                         RUST_START_TIMEOUT_S), _screen(w)
+        w.key(CTRL_G, "r", delay=1.0)       # on to the end
+        assert _wait_for(w, lambda: RUST_LAST_OUTPUT in _screen(w),
+                         RUST_START_TIMEOUT_S), _screen(w)
+        rows = [r for r in w.display(drain=0) if "OUTMARK 9" in r or
+                RUST_LAST_OUTPUT in r]
+        assert rows and not any("^M" in r for r in rows), \
+            "program output shows a literal ^M:\n%s" % _screen(w)
+
+
+# Line numbers below are 1-based source lines of the files they name.
+JAVA_PKG_MAIN = (
+    "import com.x.Q;\n"
+    "public class P {\n"
+    "    public static void main(String[] a) {\n"
+    "        int x = 3;\n"
+    "        int y = Q.sq(x);\n"
+    "        int z = R.one();\n"
+    "        System.out.println(\"OUTMARK \" + (y + z));\n"
+    "    }\n"
+    "}\n"
+    "class R {\n"
+    "    static int one() {\n"
+    "        return 1;\n"
+    "    }\n"
+    "}\n"
+)
+JAVA_PKG_CLASS = (
+    "package com.x;\n"
+    "public class Q {\n"
+    "    public static int sq(int v) {\n"
+    "        return v * v;\n"
+    "    }\n"
+    "}\n"
+)
+JAVA_PKG_CALL_LINE = 5      # int y = Q.sq(x);
+JAVA_PKG_CALLEE_TEXT = "return v * v;"   # line 4 of com/x/Q.java
+JAVA_SECOND_CALL_LINE = 6   # int z = R.one();
+JAVA_SECOND_CLASS_NOTE = "R: source not found"
+
+
+def _marked_text(w):
+    """The screen text of the row carrying the current-line mark, wherever
+    the marked window sits (a file the debugger opens is not at the top
+    left), or "" when no row is marked."""
+    for y in range(1, w.screen.lines - 1):
+        row = w.screen.buffer[y]
+        if any(row[x].bg == CURRENT_LINE_BG
+               for x in range(1, w.screen.columns - 1)):
+            return w.display(drain=0)[y]
+    return ""
+
+
+def _java_package_session(tmp_path, break_line):
+    """P.java in the work directory calling com.x.Q from com/x/Q.java (and
+    R, a second class written in P.java); stopped on break_line."""
+    pkg = tmp_path / "com" / "x"
+    pkg.mkdir(parents=True)
+    (pkg / "Q.java").write_text(JAVA_PKG_CLASS)
+    w = WpeSession(str(tmp_path), JAVA_PKG_MAIN, filename="P.java", wait=1.5)
+    try:
+        _move_down(w, break_line - 1)
+        w.key(CTRL_G, "b", delay=0.4)
+        w.key(CTRL_G, "r", delay=1.0)
+        assert _wait_for(w, lambda: "switching to jdb" in _screen(w),
+                         STEP_TIMEOUT_S)
+        w.key("\r", delay=0.5)
+        assert _wait_for(w, lambda: _mark_line(w) == break_line,
+                         JDB_START_TIMEOUT_S), _screen(w)
+    except BaseException:
+        w.close()
+        raise
+    return w
+
+
+# @scenario SC-debug-20
+def test_jdb_stop_in_a_package_class_opens_its_source(tmp_path):
+    """F7 into com.x.Q.sq() opens com/x/Q.java, which is neither open nor
+    in the work directory, and marks the line; no "Can't find file"."""
+    _need("jdb", "javac")
+    with _java_package_session(tmp_path, JAVA_PKG_CALL_LINE) as w:
+        w.key(F7, delay=0.3)
+        assert _wait_for(w, lambda: JAVA_PKG_CALLEE_TEXT in _marked_text(w),
+                         STEP_TIMEOUT_S), \
+            "F7 should mark \"%s\" in com/x/Q.java:\n%s" \
+            % (JAVA_PKG_CALLEE_TEXT, _screen(w))
+        assert "package com.x;" in _screen(w), _screen(w)
+        assert "Can't find" not in _screen(w), _screen(w)
+
+
+# @scenario SC-debug-20
+def test_jdb_stop_without_source_says_so_once_and_runs_on(tmp_path):
+    """F7 into R, a second class written in P.java: the status row says
+    "R: source not found", no dialog opens at this or the next stop, and
+    the session goes on."""
+    _need("jdb", "javac")
+    with _java_package_session(tmp_path, JAVA_SECOND_CALL_LINE) as w:
+        w.key(F7, delay=0.3)
+        assert _wait_for(w, lambda: JAVA_SECOND_CLASS_NOTE in
+                         w.display(drain=0)[-1], STEP_TIMEOUT_S), \
+            "the status row should say the source is missing:\n%s" % _screen(w)
+        assert "Can't find" not in _screen(w), _screen(w)
+        w.key(F8, delay=0.3)
+        w._drain(2.0)
+        assert "Can't find" not in _screen(w), \
+            "the next stop in R raised a dialog:\n%s" % _screen(w)
+        assert _children(w, "jdb"), "the session should still run"
+
+
+PY_WATCH_PROG = (
+    "class M:\n"
+    "    def __repr__(self):\n"
+    "        return 'M(\\n  first,\\n  second)'\n"
+    "m = M()\n"
+    "x = 3\n"
+    "y = 4\n"
+)
+PY_WATCH_BREAK_LINE = 6
+
+
+# @scenario SC-debug-28
+def test_pdb_one_line_watch_after_a_multi_line_one(tmp_path):
+    """Two watches under pdb, the first answered over three lines, the
+    second over one: both rows show their whole answer."""
+    _need("python3")
+    with WpeSession(str(tmp_path), PY_WATCH_PROG, filename="p.py",
+                    wait=1.5) as w:
+        _move_down(w, PY_WATCH_BREAK_LINE - 1)
+        w.key(CTRL_G, "b", delay=0.4)
+        w.key(CTRL_G, "r", delay=1.0)
+        assert _wait_for(w, lambda: "switching to pdb" in _screen(w),
+                         STEP_TIMEOUT_S)
+        w.key("\r", delay=0.5)
+        assert _wait_for(w, lambda: _mark_line(w) == PY_WATCH_BREAK_LINE,
+                         START_TIMEOUT_S), _screen(w)
+        _add_watch(w, "m")
+        _add_watch(w, "x")
+        assert _wait_for(w, lambda: _watch_value(w, "x") == 3,
+                         STEP_TIMEOUT_S), \
+            "the one-line watch should read x: 3:\n%s" % _screen(w)
+        row = _watch_row(w, "m") or ""
+        assert row.startswith("M(") and "second)" in row, \
+            "the multi-line watch should show its whole answer:\n%s" \
+            % _screen(w)
+
+
+# @scenario SC-debug-28
+def test_a_debugger_without_watches_says_so(tmp_path):
+    """An xwperc naming a debugger type the editor does not know: Ctrl-G W
+    says on the status row that watches are not available, and no Watches
+    window opens."""
+    cfg = tmp_path / ".config" / "xwpe"
+    cfg.mkdir(parents=True)
+    (cfg / "xwperc").write_text("[Programming]\nDebugger : 99\n")
+    with _c_session(tmp_path) as w:
+        _add_watch(w, "x")
+        assert _wait_for(w, lambda: "watches are not available with"
+                         in w.display(drain=0)[-1], STEP_TIMEOUT_S), \
+            _screen(w)
+        assert "Watches" not in w.display(drain=0)[1], _screen(w)

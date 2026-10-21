@@ -351,6 +351,34 @@ Changes
   top.  pdb's steps now find their file the same way, so a step no
   longer marks the Watches window.
 
+* The end of the program names its exit code: "Program exited with code
+  3".  gdb gives it always, pdb after sys.exit; jdb, a68g and the debug
+  adapters give none and keep "Program exited.".  The code used to be
+  dropped.
+
+* A debugger that crashes or is killed is named: Messages and the status
+  row say "gdb ended unexpectedly (exit status 137)".  It used to read
+  "End of Debugging", like a quit you asked for.
+
+* After every stop the window's line:column field shows the marked line.
+  After a step it used to show the previous stop's line until a key.
+
+* Under jdb a stop in a package's class opens its file from the package's
+  directory (com/x/Q.java).  A class with no source found says
+  "<class>: source not found" on the status row once and the session goes
+  on, where every stop in it raised a "Can't find file" dialog.
+
+* Program output under lldb-dap reaches Messages without a "^M" at the
+  end of every line.
+
+* A pdb watch answered on one line, after one answered over several, shows
+  its value; the multi-line one shows its whole answer, not its last line.
+
+* A build or syntax check that is still running ends with the editor,
+  whether it quits, gets SIGTERM, loses its terminal (SIGHUP) or crashes.
+  A check that never ended (an interpreter in a loop) used to outlive the
+  editor.
+
 * A Rust breakpoint on a line that runs only once stops the program,
   under gdb's DAP and lldb-dap alike.  The first stop used to be taken
   for the program's start and continued, so the program ran to its end.
