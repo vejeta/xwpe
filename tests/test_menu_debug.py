@@ -23,6 +23,7 @@ def _has_red_line(session):
     return False
 
 
+# @scenario SC-debug-07
 def test_toggle_breakpoint_marks_the_line(tmp_path):
     """Debug -> Toggle Breakpoint paints the current line red (and back)."""
     seed = "int main(){\n  int x=1;\n  return 0;\n}\n"
@@ -50,6 +51,7 @@ def test_toggle_breakpoint_marks_the_line(tmp_path):
 CTRL_G = "\x07"          # debugger command prefix
 
 
+# @scenario SC-debug-07
 def test_toggle_breakpoint_via_ctrl_g_b(tmp_path):
     """^G B (debugger prefix) toggles the breakpoint marker on the line."""
     seed = "int main(){\n  int x=1;\n  return 0;\n}\n"

@@ -57,6 +57,7 @@ def _watch_val(w, name):
     return None
 
 
+# @scenario SC-debug-24
 def test_scala_dap_run_step_watch(tmp_path):
     """scala-cli/Bloop starts via BSP, scala-debug-adapter stops at the
     breakpoint over DAP, and a watch on `f` updates as the loop runs."""

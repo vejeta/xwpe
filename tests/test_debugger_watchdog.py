@@ -72,6 +72,7 @@ def _run_state(pid):
         return "gone"
 
 
+# @scenario SC-debug-15
 def test_wpe_survives_a_flooding_debugger(tmp_path):
     """A debugger that floods output forever must not make xwpe busy-loop."""
     # Fake a68g: a short banner, then an endless flood with no prompt -- the

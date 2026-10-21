@@ -69,6 +69,7 @@ def _write_go_module(tmp_path):
     (tmp_path / "go.mod").write_text("module dapdemo\n\ngo 1.21\n")
 
 
+# @scenario SC-debug-22
 def test_go_dap_run_and_step(tmp_path):
     """Ctrl-G R starts dlv on the Go package; F8 advances the source line."""
     _write_go_module(tmp_path)

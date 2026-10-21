@@ -69,6 +69,7 @@ def _status(w):
     return w.display()[20]
 
 
+# @scenario SC-debug-21
 def test_a68g_breakpoint_run_watch(tmp_path):
     """Set a breakpoint inside factorial, run to it, and inspect n (= 5).
 
