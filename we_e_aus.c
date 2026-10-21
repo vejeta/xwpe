@@ -6,6 +6,7 @@
 /* GNU General Public License, see the file COPYING.      */
 
 #include "edit.h"
+#include "progr.h"
 
 extern int e_utf8_charlen(unsigned char c);
 extern int e_utf8_to_codepoint(unsigned char *buf, int len);
@@ -252,6 +253,82 @@ static int e_pasted_control_byte(int c)
          c == WPE_ESC || c == CtrlP || c == CtrlN);
 }
 
+/**
+ * e_input_limit_words - The words that say a text input is full.
+ * @buf: where to write them; @n: its size; @limit: the input's size in bytes.
+ *
+ * Every input that refuses a character for want of room says it with these
+ * same words and its real size, so the user recognises the situation in a
+ * dialog field, the assistant's input row and its composer alike.
+ * Return: what snprintf returned.
+ */
+int e_input_limit_words(char *buf, size_t n, int limit)
+{
+ return snprintf(buf, n, " Input at its limit (%d bytes)", limit);
+}
+
+/* Room for the limit words and the largest number they carry. */
+#define E_INPUT_LIMIT_WORDS_MAX 64
+
+/**
+ * e_input_limit_say - Say on the status row that a text input is full.
+ * @limit: the input's size in bytes.
+ *
+ * A character typed or pasted past a field's room is dropped; without a word
+ * the field just stops growing and the user wonders whether the keyboard or
+ * the paste failed.
+ */
+void e_input_limit_say(int limit)
+{
+ char words[E_INPUT_LIMIT_WORDS_MAX];
+
+ if (!WpeEditor || WpeEditor->mxedt < 0)
+  return;
+ e_input_limit_words(words, sizeof words, limit);
+ e_status_say(WpeEditor->f[WpeEditor->mxedt], words);
+}
+
+/**
+ * e_field_is_pasted_break - Is @c a line break arriving inside a terminal paste?
+ */
+static int e_field_is_pasted_break(int c)
+{
+ extern int g_bracketed_paste;
+ return g_bracketed_paste && (c == WPE_CR || c == '\n');
+}
+
+/**
+ * e_field_insert - Put the @u8len bytes of @u8 into field text @tmp at @jc.
+ * @l: the text's length, updated; @jc: the caret, updated; @max: the room.
+ *
+ * Return: 1 when the bytes went in, 0 when the field is full; then the user
+ * is told on the status row instead of the character vanishing.
+ */
+/* Whether the field being edited has already said it is full: a paste of
+   thousands of bytes into a full field would otherwise say and repaint it once
+   per byte.  Cleared when a character goes in and when a field starts. */
+static int e_field_limit_said = 0;
+
+static int e_field_insert(unsigned char *tmp, int *l, int *jc,
+                          const unsigned char *u8, int u8len, int max)
+{
+ int i;
+
+ if (*l + u8len > max)
+ {
+  if (!e_field_limit_said)
+   e_input_limit_say(max);
+  e_field_limit_said = 1;
+  return(0);
+ }
+ e_field_limit_said = 0;
+ for (i = *l; i >= *jc; i--) tmp[i+u8len] = tmp[i];
+ for (i = 0; i < u8len; i++) tmp[*jc+i] = u8[i];
+ *l += u8len;
+ *jc += u8len;
+ return(1);
+}
+
 int e_schreib_zif(int *num, int x, int y, int max, int ft, int fs)
 {
 #if  MOUSE
@@ -363,15 +440,52 @@ int e_schreib_zif(int *num, int x, int y, int max, int ft, int fs)
    write chars in text line */
 int e_schreib_leiste(char *s, int x, int y, int n, int max, int ft, int fs)
 {
+ return(e_schreib_leiste_lines(s, x, y, n, max, ft, fs, 0));
+}
+
+/**
+ * e_field_take_pasted_break - Keep a pasted line break in a field that hands
+ * multi-line pastes over.
+ * @tmp, @l, @jc, @max: the field's text, length, caret and room.
+ *
+ * The break goes into the text as '\n', so the text keeps its lines, and the
+ * terminal is asked to report the end of the paste as a key: the field then
+ * gives the whole paste to whatever can hold lines.  Return: 1 when kept.
+ */
+static int e_field_take_pasted_break(unsigned char *tmp, int *l, int *jc,
+                                     int max)
+{
+ static const unsigned char lf = '\n';
+
+ if (!e_field_insert(tmp, l, jc, &lf, 1, max))
+  return(0);
+ g_paste_end_wanted = 1;
+ return(1);
+}
+
+/**
+ * e_schreib_leiste_lines - Edit a one-line text field.
+ * @lines_key: the key to return when a terminal paste brought line breaks,
+ *     0 to drop them as a one-line field always did.
+ *
+ * A one-line field cannot show lines, so a pasted text with line breaks used
+ * to run its lines together.  A field with a @lines_key keeps the breaks and,
+ * when the paste ends, returns @lines_key with the whole text, so its dialog
+ * can open an editor that holds lines (the assistant's composer).
+ */
+int e_schreib_leiste_lines(char *s, int x, int y, int n, int max, int ft,
+                           int fs, int lines_key)
+{
 #if  MOUSE
  extern struct mouse e_mouse;
 #endif
  extern int g_bracketed_paste;      /* set while a terminal paste streams */
  int c, i, ja = 0, jc, l = strlen(s);
- int sond = 0, first = 1;
+ int sond = 0, first = 1, pasted_lines = 0;
  unsigned char *tmp = MALLOC(max+1);
  int vcur;
 
+ e_field_limit_said = 0;
  fk_cursor(1);
  strcpy(tmp, s);
  jc = l;
@@ -391,6 +505,20 @@ int e_schreib_leiste(char *s, int x, int y, int n, int max, int ft, int fs)
     characters without confirming, cancelling or navigating the dialog. */
  while ((c = e_getch()) != WPE_ESC || g_bracketed_paste)
  {
+  if (c == WPE_PASTE_END && pasted_lines)
+  {
+   strcpy(s, tmp);       /* the paste had lines: hand the whole text over */
+   FREE(tmp);
+   fk_cursor(0);
+   return(lines_key);
+  }
+  if (lines_key && e_field_is_pasted_break(c))
+  {
+   if (e_field_take_pasted_break(tmp, &l, &jc, max))
+    pasted_lines = 1;
+   first = 0;
+   continue;
+  }
   if (g_bracketed_paste && e_pasted_control_byte(c))
    continue;             /* a single-line field drops pasted line breaks/tabs */
   if (c == WPE_RESIZE)
@@ -523,12 +651,7 @@ int e_schreib_leiste(char *s, int x, int y, int n, int max, int ft, int fs)
   {
    unsigned char u8[4];
    int u8len = e_dialog_encode_char(c, u8);
-   if (l + u8len <= max)
-   {
-    for (i = l; i >= jc; i--) tmp[i+u8len] = tmp[i];
-    for (i = 0; i < u8len; i++) tmp[jc+i] = u8[i];
-    l += u8len; jc += u8len;
-   }
+   e_field_insert(tmp, &l, &jc, u8, u8len, max);
   }
   else if (c > 0)	
   { 

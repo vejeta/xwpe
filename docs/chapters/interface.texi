@@ -18,6 +18,12 @@ and @key{ESC} to cancel.
 Each menu item has a highlighted letter.  Press @kbd{Alt-@var{letter}}
 from anywhere to open that menu directly.
 
+@cindex dialog text fields, full
+A text field in a dialog holds a fixed number of bytes.  A character typed or
+pasted past that is refused, and the status row reads @samp{Input at its limit
+(@var{N} bytes)} with the field's size, where the original editor dropped the
+character without a word.
+
 @section The menu system
 
 @cindex System menu

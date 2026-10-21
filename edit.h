@@ -345,7 +345,8 @@ typedef struct {
 } W_O_TXTSTR;
 
 typedef struct {
- int xt, yt, xw, yw, nw, wmx, nc, sw; 
+ int xt, yt, xw, yw, nw, wmx, nc, sw;
+ int lines_key;   /* key returned when a paste brings line breaks, 0: drop them */
  char *header;
  char *txt;
  struct dirfile **df;
@@ -519,6 +520,8 @@ int e_schr_nchar(char *s, int x, int y, int n, int max, int frb);
 void e_pr_nstr(int x, int y, int n, char *str, int col, int col2);
 int e_schreib_zif(int *num, int x, int y, int max, int ft, int fs);
 int e_schreib_leiste(char *s, int x, int y, int n, int max, int ft, int fs);
+int e_schreib_leiste_lines(char *s, int x, int y, int n, int max, int ft, int fs,
+                           int lines_key);
 int e_schr_nzif(int num, int x, int y, int max, int col);
 int e_pr_str_wsd(int x, int y, char *str, int col, int b2, int n2, int col2,
   int bg, int nd);
@@ -532,6 +535,13 @@ int WpeDrawFileManager(FENSTER *f);
 int WpeManagerFirst(FENSTER *f);
 int WpeManager(FENSTER *f);
 int WpeSaveAsManager(FENSTER *f);
+int WpeSaveAsManagerTitled(FENSTER *f, char *title);
+/* we_term.c: the end of a terminal paste (see e_t_paste_ended) */
+extern void (*e_paste_end_hook)(void);
+extern int g_paste_end_wanted;
+/* we_e_aus.c: the one wording of "this input is full" */
+int e_input_limit_words(char *buf, size_t n, int limit);
+void e_input_limit_say(int limit);
 int WpeExecuteManager(FENSTER *f);
 
 int WpeHandleFileManager(ECNT *cn);
@@ -702,6 +712,7 @@ void e_position_messages_window(FENSTER *msg, ECNT *cn);
 void e_position_ai_window(FENSTER *ai, ECNT *cn);
 int e_ai_chat_key(FENSTER *f, int c);
 int e_ai_chat_wheel(FENSTER *f, int c);
+int e_ai_window_full(FENSTER *f, int n);
 int e_ai_options(FENSTER *f);
 int e_repaint_desk(FENSTER *f);
 int e_sys_info(FENSTER *f);

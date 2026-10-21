@@ -2076,6 +2076,52 @@ static int ai_mock_open(struct wpe_ai_stream *st)
  return 0;
 }
 
+/**
+ * ai_trace_one_line - @text with its backslashes and line breaks escaped.
+ *
+ * Return: a malloc'd copy that fits on one trace line ("\\" and "\n"), so a
+ * reader of the trace never takes a line of the text for an event.
+ */
+static char *ai_trace_one_line(const char *text)
+{
+ char *out = malloc(2 * strlen(text) + 1), *o = out;
+ if (!out)
+  return NULL;
+ for (; *text; text++)
+ {
+  if (*text == '\\' || *text == '\n')
+   *o++ = '\\';
+  *o++ = (*text == '\n') ? 'n' : *text;
+ }
+ *o = '\0';
+ return out;
+}
+
+/**
+ * ai_mock_trace_request - Record what the deterministic backend was asked.
+ * @req: the request.
+ *
+ * The last user message lands in the trace, whole and on one line, so a
+ * test can see that a long question or task reached the backend in full and
+ * not only the part the pane had room to show.
+ */
+static void ai_mock_trace_request(const wpe_ai_req *req)
+{
+ int i;
+ char *line;
+ if (!req || !req->msgs)
+  return;
+ for (i = req->nmsgs - 1; i >= 0; i--)
+  if (req->msgs[i].role && !strcmp(req->msgs[i].role, "user") && req->msgs[i].content)
+  {
+   line = ai_trace_one_line(req->msgs[i].content);
+   if (line)
+    wpe_ai_trace("mock request bytes=%zu last=%s", strlen(req->msgs[i].content), line);
+   free(line);
+   return;
+  }
+}
+
 wpe_ai_stream *wpe_ai_stream_start(const wpe_ai_req *req, char *errbuf, size_t errsz)
 {
  struct wpe_ai_stream *st = calloc(1, sizeof *st);
@@ -2090,6 +2136,7 @@ wpe_ai_stream *wpe_ai_stream_start(const wpe_ai_req *req, char *errbuf, size_t e
   }
   ai_stream_arm_deadline(st);
   wpe_ai_trace("stream start backend=mock");
+  ai_mock_trace_request(req);
   return st;
  }
 

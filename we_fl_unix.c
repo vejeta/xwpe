@@ -7,6 +7,7 @@
 
 #include "messages.h"
 #include "edit.h"
+#include "we_ai.h"
 
 #ifdef UNIX
 
@@ -88,6 +89,10 @@ static void e_fm_centered_geometry(FENSTER *f)
   f->e = e_set_pnt(ax + w, ay + h);
 }
 
+/* The frame title of the next Save As dialog, set by WpeSaveAsManagerTitled
+   and taken (then cleared) by WpeCreateFileManager; NULL: "File-Manager". */
+static char *WpeSaveAsTitleNext = NULL;
+
 int WpeCreateFileManager(int sw, ECNT *cn, char *dirct)
 {
   extern char    *e_hlp_str[];
@@ -154,6 +159,10 @@ int WpeCreateFileManager(int sw, ECNT *cn, char *dirct)
     f->datnam = "Add Files to Project";  /* add-to-project mode */
   else
     f->datnam = "File-Manager";  /* window header text */
+  /* a Save As for something that is not a file says what it saves */
+  if(sw == 4 && WpeSaveAsTitleNext)
+    f->datnam = WpeSaveAsTitleNext;
+  WpeSaveAsTitleNext = NULL;
 
   /* status line text for different mode */
   if(sw == 0)
@@ -538,9 +547,101 @@ int WpeExecuteManager(FENSTER * f)
 /* try to find a "save as" style file manager or create one */
 int WpeSaveAsManager(FENSTER * f)
 {
+#ifdef WPE_AI
+  /* the AI pane saves its transcript: the same dialog, under its own title */
+  if(wpe_ai_is_pane(f))
+    return(wpe_ai_pane_save_as(f));
+#endif
   return(WpeCreateFileManager(4, f->ed, ""));
 }
 
+/**
+ * WpeSaveAsManagerTitled - Open the Save As dialog under the frame title @title.
+ * @f: the window whose content is to be saved; @title: a string that outlives
+ *     the dialog (a literal).
+ *
+ * A window that is not a plain file (the assistant's transcript) is saved
+ * through the same dialog the user knows, and the title says what is being
+ * saved.  Return: what WpeCreateFileManager returned.
+ */
+int WpeSaveAsManagerTitled(FENSTER * f, char *title)
+{
+  WpeSaveAsTitleNext = title;
+  return(WpeCreateFileManager(4, f->ed, ""));
+}
+
+/**
+ * WpeSaveAsIsTranscript - Is this Save As confirmation for the AI pane?
+ * @b: the file manager's state; @fe: the window being saved.
+ *
+ * The pane is read-only and backs no file, so the dialog writes its
+ * transcript instead of refusing the name in silence.  Always 0 in a build
+ * without the assistant.
+ */
+static int WpeSaveAsIsTranscript(FLBFFR *b, FENSTER *fe)
+{
+#ifdef WPE_AI
+  return(b->sw == 4 && fe && wpe_ai_is_pane(fe));
+#else
+  return(0);
+#endif
+}
+
+/**
+ * WpeFileManagerReturnHome - Put the editor back in the directory it was in.
+ * @cn: the desktop; @svmode: the file-list options to restore, or -1;
+ * @svdir: the saved directory (freed and cleared), or NULL.
+ *
+ * The file manager walks the directory tree with chdir; once it closes, the
+ * user's relative paths must mean what they meant before it opened.
+ */
+static void WpeFileManagerReturnHome(ECNT *cn, int svmode, char **svdir)
+{
+  char *dirtmp;
+
+  if(svmode >= 0)
+    cn->flopt = svmode;
+  if(*svdir == NULL)
+    return;
+  if(chdir(*svdir))
+  {
+    e_error(e_msg[ERR_WORKDIRACCESS], 0, cn->fb);
+    /* we cannot determine where we are, try the home */
+    if((dirtmp = getenv("HOME")) == NULL)
+      e_error(e_msg[ERR_HOMEDIRACCESS], 1, cn->fb);
+    if(chdir(dirtmp))
+      e_error(e_msg[ERR_HOMEDIRACCESS], 1, cn->fb);
+  }
+  dirtmp = WpeGetCurrentDir(cn);
+  FREE(cn->dirct);
+  cn->dirct = dirtmp;
+  FREE(*svdir);
+  *svdir = NULL;
+}
+
+/**
+ * WpeSaveAsTranscript - Write the AI pane's transcript under @filen and close.
+ * @f: the file manager; @fe: the pane; @svmode, @svdir: what to restore.
+ *
+ * The transcript is written while the dialog's directory is still the
+ * current one, so a relative name lands where the user was looking; the
+ * dialog then closes and the status row says how the save went.
+ */
+static int WpeSaveAsTranscript(FENSTER *f, FENSTER *fe, char *filen,
+                               int svmode, char **svdir)
+{
+  ECNT *cn = f->ed;
+
+#ifdef WPE_AI
+  wpe_ai_pane_write_transcript(fe, filen);
+#endif
+  WpeFileManagerReturnHome(cn, svmode, svdir);
+  e_close_window(f);
+#ifdef WPE_AI
+  wpe_ai_pane_report_save(fe);
+#endif
+  return(0);
+}
 
 int e_prj_add_file_unique(FLWND *fw, char *ftmp, FENSTER *f)
 {
@@ -1282,7 +1383,7 @@ int WpeHandleFileManager(ECNT * cn)
         if(   (c == AltW && b->sw != 2) 
            || (c == AltS && b->sw != 4)
            || !fe
-           || fe->ins == 8 )
+           || (fe->ins == 8 && !WpeSaveAsIsTranscript(b, fe)) )
         {
           c = cold;
           break;
@@ -1314,6 +1415,8 @@ int WpeHandleFileManager(ECNT * cn)
             break;
           }
         }
+        if(WpeSaveAsIsTranscript(b, fe))
+          return(WpeSaveAsTranscript(f, fe, filen, svmode, &svdir));
         if(b->sw != 4)
         {
           dtp = fe->dirct;

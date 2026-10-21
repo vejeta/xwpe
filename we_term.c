@@ -83,6 +83,13 @@ int g_mouse_buttons = 0;
    The dialog line editor consults it to drop pasted line breaks/tabs so pasted
    text cannot confirm/cancel a dialog. */
 int g_bracketed_paste = 0;
+/* Run once when a paste ends, then cleared: a reader that put off its repaint
+   while the pasted bytes streamed in paints the result here, once. */
+void (*e_paste_end_hook)(void) = NULL;
+/* Set by a reader that must act when the paste ends (a one-line field handing
+   a multi-line paste over): the end marker is then returned once as the key
+   WPE_PASTE_END instead of being swallowed, and the flag clears. */
+int g_paste_end_wanted = 0;
 /* The last key delivered from the running paste was a raw CR: the LF that may
    follow it is the second half of a CR LF line ending, not a line of its own. */
 static int s_t_paste_after_cr = 0;
@@ -103,6 +110,31 @@ static int e_t_paste_swallows_lf(int c)
  int after_cr = s_t_paste_after_cr;
  s_t_paste_after_cr = (c == WPE_CR);
  return (c == '\n' && after_cr);
+}
+
+/**
+ * e_t_paste_ended - The terminal's end-of-paste marker arrived.
+ *
+ * The paste is over: a reader that deferred its repaint paints once now, so
+ * a long paste shows up whole at its end instead of being redrawn after
+ * every byte.  A reader that asked for it gets the end as the key
+ * WPE_PASTE_END; everyone else gets the next real key, as before.
+ * Return: the key for the caller of e_t_getch.
+ */
+static int e_t_paste_ended(void)
+{
+ void (*hook)(void) = e_paste_end_hook;
+
+ g_bracketed_paste = 0;
+ e_paste_end_hook = NULL;
+ if (hook)
+  hook();
+ if (g_paste_end_wanted)
+ {
+  g_paste_end_wanted = 0;
+  return(WPE_PASTE_END);
+ }
+ return(e_t_getch());
 }
 /* CLICKED events carry no following RELEASED; the press bit accumulated into
    g_mouse_buttons would stay set and any while(e_mshit()) spin-loop in
@@ -1597,7 +1629,7 @@ int e_t_getch()
     time the pasted bytes stream, and consumers that care (the dialog line editor)
     check that flag.  Fetch the next real key so callers never see the marker. */
  if (c == WPE_PASTE_BEG) { g_bracketed_paste = 1; s_t_paste_after_cr = 0; return e_t_getch(); }
- if (c == WPE_PASTE_END) { g_bracketed_paste = 0; return e_t_getch(); }
+ if (c == WPE_PASTE_END) return e_t_paste_ended();
  /* A paste carries verbatim LF newlines; map them to CR so the editor inserts
     real line breaks (a non-bracketed paste used to arrive as CR).  A single-line
     dialog field drops the CR itself while g_bracketed_paste is set.  The LF of

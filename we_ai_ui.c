@@ -24,6 +24,7 @@
 #include <sys/stat.h>
 #include <stdint.h>
 #include <time.h>
+#include <errno.h>
 #ifdef __linux__
 #include <sys/timerfd.h>
 #endif
@@ -33,7 +34,11 @@ int e_d_p_named(char *winname, char *str, FENSTER *f, int sw);
 
 #define AI_PANE_NAME  "AI"
 #define AI_CTX_MAX    16000     /* cap the current-file context we send        */
-#define AI_PROMPT_MAX 2000      /* room for a real instruction, not 128 chars   */
+/* The bytes one request may hold, in the input row, the composer and the
+   prompt field alike: room for a pasted function or a log excerpt.  A buffer
+   that holds a request is AI_PROMPT_BUF, the limit plus its terminator. */
+#define AI_PROMPT_MAX 32768
+#define AI_PROMPT_BUF (AI_PROMPT_MAX + 1)
 
 /* A UTF-8 continuation byte is 10xxxxxx: it adds to the character before it
    and takes no column of its own. */
@@ -378,7 +383,7 @@ int wpe_ai_pane_line_attr(FENSTER *f, int y, int base)
  * focus mode is on, the whole-line and streaming pane writers target the line
  * ABOVE the input row instead of the last line. */
 static int  g_ai_chat_focus = 0;
-static char g_ai_input[AI_PROMPT_MAX];  /* may hold '\n' -- a multi-line prompt   */
+static char g_ai_input[AI_PROMPT_BUF];  /* may hold '\n' -- a multi-line prompt   */
 static int  g_ai_input_len = 0;
 static int  g_ai_input_rows = 0;        /* pane lines the input region occupies    */
 static int  g_ai_input_pos = 0;         /* caret byte offset within g_ai_input     */
@@ -637,6 +642,30 @@ static int ai_wrap_cut(const char *p, int width, int *cut)
  if (lastspace > 0) { *cut = lastspace + 1; return 1; }   /* break after a space */
  *cut = i;                                      /* a hard cut inside a long word */
  return 1;
+}
+
+/* The end of a pane line that was cut to the room its painter allows. */
+#define AI_DISPLAY_CUT_MARK "..."
+
+/**
+ * ai_mark_display_cut - End a pane line that snprintf cut with "...".
+ * @line: the line as snprintf left it; @cap: its buffer's size;
+ * @wanted: what snprintf returned (the length the whole line needed).
+ *
+ * A task or a question longer than the room its pane line has is shown cut,
+ * and the user must see that it was: the mark says the rest exists, and the
+ * request itself still carries the whole text.  The cut never splits a
+ * UTF-8 character.  A line that fitted is left alone.
+ */
+static void ai_mark_display_cut(char *line, size_t cap, int wanted)
+{
+ size_t mark = strlen(AI_DISPLAY_CUT_MARK), keep;
+ if (wanted < 0 || (size_t)wanted < cap || cap <= mark)
+  return;
+ keep = cap - 1 - mark;
+ while (keep > 0 && ai_utf8_continues(line[keep]))
+  keep--;
+ memcpy(line + keep, AI_DISPLAY_CUT_MARK, mark + 1);
 }
 
 /**
@@ -1470,10 +1499,9 @@ static void ai_input_fit_rows(BUFFER *b, int want)
  ai_roles_sync(b);
 }
 
-/* Room in a rendered input row beyond the prompt text, and the part of it
-   kept free of text: the prefix, the terminator and a margin. */
+/* Room in a rendered input row beyond the prompt text: the prefix, the
+   terminator and a margin. */
 #define AI_INPUT_ROW_PAD     8
-#define AI_INPUT_ROW_RESERVE 4
 
 /**
  * ai_input_put_row - Paint one line of the input text as pane row @y.
@@ -1487,16 +1515,18 @@ static void ai_input_fit_rows(BUFFER *b, int want)
 static void ai_input_put_row(FENSTER *wf, int y, int first,
                              const char *text, int len)
 {
- char row[AI_PROMPT_MAX + AI_INPUT_ROW_PAD];
+ size_t cap = (size_t)len + AI_INPUT_ROW_PAD;
+ char *row = malloc(cap);
  const char *prefix;
+ if (!row)
+  return;
  if (first)
   prefix = AI_INPUT_PROMPT;
  else
   prefix = AI_INPUT_INDENT;
- if (len > (int)sizeof row - AI_INPUT_ROW_RESERVE)
-  len = (int)sizeof row - AI_INPUT_ROW_RESERVE;
- snprintf(row, sizeof row, "%s%.*s", prefix, len, text);
+ snprintf(row, cap, "%s%.*s", prefix, len, text);
  ai_pane_set_line(wf, y, row);
+ free(row);
 }
 
 /**
@@ -1925,6 +1955,203 @@ void wpe_ai_pane_before_paint(FENSTER *f)
 {
  if (!ai_is_pane(f)) return;
  ai_pane_reflow(f);
+}
+
+/* ----- saving the transcript ---------------------------------------------
+ * The pane is read-only and backs no file, so the editor's own save refuses
+ * it.  F2, File > Save and File > Save As write the transcript instead: its
+ * logical lines as the pane shows them, one per line, unwrapped.  The first
+ * save asks a name in the editor's Save As dialog under its own title, and
+ * the pane keeps that name until it is closed. */
+#define AI_TRANSCRIPT_DIALOG_TITLE "Save transcript"
+#define AI_TRANSCRIPT_PATH_MAX     4096     /* the directory the dialog was in */
+#define AI_TRANSCRIPT_SAY_MAX      (AI_TRANSCRIPT_PATH_MAX + 64)
+
+/* The file the transcript was last saved to (absolute), NULL before the first save. */
+static char *g_ai_transcript_path = NULL;
+/* The outcome of the last write: 0 saved, else the errno it failed with. */
+static int g_ai_transcript_errno = 0;
+
+/**
+ * ai_transcript_forget - The pane closed: its next transcript asks a name again.
+ *
+ * A new pane starts a new conversation; F2 there must not overwrite the file
+ * the previous one was saved to without asking.
+ */
+static void ai_transcript_forget(void)
+{
+ free(g_ai_transcript_path);
+ g_ai_transcript_path = NULL;
+}
+
+/**
+ * ai_transcript_absolute - @name as an absolute path, malloc'd.
+ *
+ * The Save As dialog answers with a name relative to the directory it was
+ * showing; the pane keeps the absolute path, so a later F2 writes to the same
+ * file whatever directory the editor is in by then.
+ */
+static char *ai_transcript_absolute(const char *name)
+{
+ char cwd[AI_TRANSCRIPT_PATH_MAX];
+ size_t n;
+ char *p;
+ if (name[0] == DIRC || !getcwd(cwd, sizeof cwd))
+  return strdup(name);
+ n = strlen(cwd) + strlen(name) + 2;
+ p = malloc(n);
+ if (p)
+  snprintf(p, n, "%s/%s", cwd, name);
+ return p;
+}
+
+/**
+ * ai_transcript_put_lines - Write the transcript's logical lines to @fp.
+ * @wf: the pane.
+ *
+ * Each logical line is joined back from the rows the wrapper cut it into, so
+ * the file reads at any width as the conversation was written; the input
+ * rows under the transcript are not part of it.
+ * Return: 0, or -1 when a write failed (errno says why).
+ */
+static int ai_transcript_put_lines(FENSTER *wf, FILE *fp)
+{
+ BUFFER *b = wf->b;
+ int limit, y = 0;
+ ai_roles_sync(b);
+ limit = ai_pane_transcript_rows(wf);
+ while (y < limit) {
+  int rows = 1;
+  char *line = ai_pane_join_line(b, y, limit, &rows);
+  if (!line)
+   return -1;
+  if (fputs(line, fp) == EOF || fputc('\n', fp) == EOF) {
+   free(line);
+   return -1;
+  }
+  free(line);
+  if (rows < 1)
+   rows = 1;
+  y += rows;
+ }
+ return 0;
+}
+
+/**
+ * ai_transcript_write - Write the pane's transcript to @path.
+ * @wf: the pane.
+ *
+ * The pane itself is left as it is: read-only, never marked modified.
+ * Return: 0 on success, else the errno of the failure.
+ */
+static int ai_transcript_write(FENSTER *wf, const char *path)
+{
+ FILE *fp = fopen(path, "wb");
+ int err = 0;
+ if (!fp)
+  return errno ? errno : EIO;
+ if (ai_transcript_put_lines(wf, fp))
+  err = errno ? errno : EIO;
+ if (fclose(fp) && !err)
+  err = errno ? errno : EIO;
+ wpe_ai_trace("transcript save path=%s err=%d", path, err);
+ return err;
+}
+
+/**
+ * ai_transcript_base_name - The file name the status row shows for @path.
+ */
+static const char *ai_transcript_base_name(const char *path)
+{
+ const char *slash = strrchr(path, DIRC);
+ if (slash)
+  return slash + 1;
+ return path;
+}
+
+/**
+ * wpe_ai_pane_report_save - Say on the status row how the last save went.
+ * @f: any window of the desktop (the bar takes its colours).
+ *
+ * "saved <name>" tells the user the transcript is on disk and where; a
+ * failure names the file and the reason, so nothing fails in silence.
+ */
+void wpe_ai_pane_report_save(FENSTER *f)
+{
+ char say[AI_TRANSCRIPT_SAY_MAX];
+ const char *name;
+ if (!g_ai_transcript_path)
+  return;
+ name = ai_transcript_base_name(g_ai_transcript_path);
+ if (g_ai_transcript_errno)
+  snprintf(say, sizeof say, "could not save %s: %s", name,
+           strerror(g_ai_transcript_errno));
+ else
+  snprintf(say, sizeof say, "saved %s", name);
+ e_status_say(f, say);
+}
+
+/**
+ * wpe_ai_pane_write_transcript - Save the transcript under the name the user chose.
+ * @wf: the pane; @name: the name typed in the Save As dialog.
+ *
+ * Called by the Save As dialog when it is confirmed for the pane.  The name
+ * is kept, so the next F2 saves there without asking.  The caller reports
+ * the outcome with wpe_ai_pane_report_save once its dialog is gone.
+ * Return: 0 on success, -1 when the file could not be written.
+ */
+int wpe_ai_pane_write_transcript(FENSTER *wf, const char *name)
+{
+ char *path = ai_transcript_absolute(name);
+ if (!path)
+  return -1;
+ ai_transcript_forget();
+ g_ai_transcript_path = path;
+ g_ai_transcript_errno = ai_transcript_write(wf, path);
+ if (g_ai_transcript_errno)
+  return -1;
+ return 0;
+}
+
+/**
+ * wpe_ai_is_pane - Is window @f the AI pane?
+ *
+ * The file commands ask this before they treat a window as a file: the pane
+ * saves its transcript instead of refusing the key.
+ */
+int wpe_ai_is_pane(FENSTER *f)
+{
+ return ai_is_pane(f);
+}
+
+/**
+ * wpe_ai_pane_save_as - File > Save As on the pane: ask a name, then save.
+ * @f: the pane.
+ *
+ * Opens the editor's Save As dialog under the title "Save transcript"; the
+ * dialog writes the transcript when the user confirms a name, and Esc
+ * leaves everything as it was.  Return: what the dialog's creation returned.
+ */
+int wpe_ai_pane_save_as(FENSTER *f)
+{
+ return WpeSaveAsManagerTitled(f, AI_TRANSCRIPT_DIALOG_TITLE);
+}
+
+/**
+ * wpe_ai_pane_save - F2 or File > Save on the pane.
+ * @f: the pane.
+ *
+ * The first time it asks a name, as Save As does; once the transcript has a
+ * name, it is written there again without a question, and the status row
+ * says so.  Return: 0.
+ */
+int wpe_ai_pane_save(FENSTER *f)
+{
+ if (!g_ai_transcript_path)
+  return wpe_ai_pane_save_as(f);
+ g_ai_transcript_errno = ai_transcript_write(f, g_ai_transcript_path);
+ wpe_ai_pane_report_save(f);
+ return 0;
 }
 
 /* A "working" indicator for the blocking Edit/Plan/Agent waits: a rotating
@@ -3607,10 +3834,170 @@ static void ai_compose_show_seed(FENSTER *w, const char *seed)
  e_refresh();
 }
 
+/* The composer's scratch window while it is open, NULL otherwise: the editor
+   asks e_ai_window_full before it puts a typed or pasted byte into it. */
+static FENSTER *g_ai_compose_win = NULL;
+
+static void ai_say_input_limit(FENSTER *f);   /* defined with the input row */
+
+/**
+ * ai_compose_row_ends_line - Does row @y of the composer end a line?
+ * @b: the composer's buffer.
+ *
+ * The editor folds a line longer than its row width over several rows and
+ * marks only the last of them with a line end; the rows before it carry on
+ * the same line.  The composer sends the lines as typed, so only a real line
+ * end becomes a line break in the request.
+ */
+static int ai_compose_row_ends_line(BUFFER *b, int y)
+{
+ if (y >= b->mxlines - 1 || !b->bf[y].s)
+  return 0;
+ return b->bf[y].s[b->bf[y].len] == WPE_WR;
+}
+
+/**
+ * ai_compose_bytes - The bytes the composer's text takes as it would be sent.
+ * @w: the composer window.
+ *
+ * Its lines and the line breaks between them: what the limit is checked
+ * against, so a refused key and the text sent always agree.
+ */
+static long ai_compose_bytes(FENSTER *w)
+{
+ BUFFER *b = w->b;
+ long n = 0;
+ int y;
+ for (y = 0; y < b->mxlines; y++) {
+  if (b->bf[y].len > 0)
+   n += b->bf[y].len;
+  if (ai_compose_row_ends_line(b, y))
+   n++;
+ }
+ return n;
+}
+
+/**
+ * e_ai_window_full - Would @n more bytes take window @f past its limit?
+ * @f: the window a key is about to change.
+ *
+ * Only the composer has a limit: a request holds AI_PROMPT_MAX bytes, and a
+ * byte past that is refused at the key, with the words the input row uses,
+ * instead of being shown and then left out of what is sent.  A refused
+ * key never splits a UTF-8 character: @n is the whole character.
+ * Return: 1 when the key must be refused.
+ */
+int e_ai_window_full(FENSTER *f, int n)
+{
+ if (!f || f != g_ai_compose_win)
+  return 0;
+ if (ai_compose_bytes(f) + n <= AI_PROMPT_MAX)
+  return 0;
+ ai_say_input_limit(f);
+ return 1;
+}
+
+/**
+ * ai_compose_text - The composer's text joined into one string, malloc'd.
+ * @w: the composer window.
+ *
+ * Every line is taken, with no context cap: the composer holds a request,
+ * not a file sent as context, so what the user wrote is what is sent.
+ */
+static char *ai_compose_text(FENSTER *w)
+{
+ BUFFER *b = w->b;
+ char *t = malloc((size_t)ai_compose_bytes(w) + 1);
+ size_t len = 0;
+ int y;
+ if (!t)
+  return NULL;
+ for (y = 0; y < b->mxlines; y++) {
+  int ll = b->bf[y].len;
+  if (b->bf[y].s && ll > 0) {
+   memcpy(t + len, b->bf[y].s, (size_t)ll);
+   len += (size_t)ll;
+  }
+  if (ai_compose_row_ends_line(b, y))
+   t[len++] = '\n';
+ }
+ t[len] = '\0';
+ return t;
+}
+
+/**
+ * ai_compose_trim_end - Drop the line breaks and blanks after the last word.
+ */
+static void ai_compose_trim_end(char *text)
+{
+ size_t l = strlen(text);
+ while (l && (text[l-1] == '\n' || text[l-1] == '\r' ||
+              text[l-1] == ' '  || text[l-1] == '\t'))
+  text[--l] = '\0';
+}
+
+/**
+ * ai_compose_run - Let the user write in the composer until Esc.
+ * @cn: the desktop; @w: the composer window.
+ * Return: the text written, malloc'd, or NULL.
+ */
+/* Room for the question asked when the composer's text is over the limit. */
+#define AI_COMPOSE_OVER_MAX 160
+
+/**
+ * ai_compose_over_limit - The text is longer than a request may be: ask
+ * whether to go back and shorten it.
+ * @w: the composer window; @bytes: what its text takes.
+ *
+ * A key past the limit is refused as it is typed, but a block pasted whole
+ * (Ctrl-V, Ctrl-K C) arrives in one piece and can take the text past it.
+ * The text is never sent cut and never thrown away unasked: the user reads
+ * by how much it is over and chooses, with the composer still open, to go
+ * back and shorten it (Y) or to give it up (N).
+ * Return: 1 to go back to editing, 0 to cancel.
+ */
+static int ai_compose_over_limit(FENSTER *w, long bytes)
+{
+ char ask[AI_COMPOSE_OVER_MAX];
+ snprintf(ask, sizeof ask,
+          "%ld bytes over the limit (%d). Go back and shorten it? (N gives it up)",
+          bytes - AI_PROMPT_MAX, AI_PROMPT_MAX);
+ return e_message(1, ask, w) == 'Y';
+}
+
+/**
+ * ai_compose_run - Let the user write in the composer until Esc.
+ * @cn: the desktop; @w: the composer window.
+ *
+ * Esc on a text over the limit asks before anything is lost; the composer
+ * closes only with a text that can be sent whole, or on the user's word.
+ * Return: the text written, malloc'd, or NULL when given up.
+ */
+static char *ai_compose_run(ECNT *cn, FENSTER *w)
+{
+ char *text = NULL;
+ int editing = 1;
+ g_ai_compose_win = w;
+ while (editing) {
+  e_eingabe(cn);                             /* the real editor, until Esc     */
+  if (ai_compose_bytes(w) <= AI_PROMPT_MAX) {
+   text = ai_compose_text(w);
+   editing = 0;
+  } else if (!ai_compose_over_limit(w, ai_compose_bytes(w)))
+   editing = 0;
+ }
+ g_ai_compose_win = NULL;
+ w->save = 0;                                /* skip the "save changes?" prompt */
+ e_close_window(w);
+ return text;
+}
+
 /* Alt-G: prompt for a question and start an asynchronous streaming reply. */
 /* Multi-line composer: open a scratch editor window so the user writes the
  * prompt with the FULL editor (many lines, cut/paste, arrows, ...), finish with
  * @key{Esc}, and confirm Send.  Reuses the editor itself as the text area.
+ * The text sent is exactly the text shown; a text over the limit (a block
+ * pasted in whole) is not sent cut, it is refused with the limit words.
  * Returns 1 and fills `out` on Send, 0 otherwise. */
 static int e_ai_compose(char *out, size_t outsz, const char *title,
                         const char *seed, FENSTER *f)
@@ -3618,24 +4005,22 @@ static int e_ai_compose(char *out, size_t outsz, const char *title,
  ECNT *cn = f->ed;
  FENSTER *w;
  char *text;
- size_t l;
 
  if (e_edit(cn, (char *)title)) return 0;    /* scratch window, empty buffer   */
  w = cn->f[cn->mxedt];
  if (seed && *seed)                          /* carry over what was already typed */
   ai_compose_show_seed(w, seed);
- e_eingabe(cn);                              /* the real editor, until Esc     */
- text = ai_current_file_text(w);             /* join the typed lines           */
- w->save = 0;                                /* skip the "save changes?" prompt */
- e_close_window(w);
+ text = ai_compose_run(cn, w);
  if (!text) return 0;
- l = strlen(text);
- while (l && (text[l-1] == '\n' || text[l-1] == '\r' ||
-              text[l-1] == ' '  || text[l-1] == '\t')) text[--l] = '\0';
+ ai_compose_trim_end(text);
  if (!text[0]) { free(text); return 0; }     /* empty -> cancel                */
+ if (strlen(text) >= outsz) {                /* cannot happen: the composer kept it under */
+  ai_say_input_limit(f);
+  free(text);
+  return 0;
+ }
  if (e_message(1, "Send this prompt to the AI?", f) != 'Y') { free(text); return 0; }
- strncpy(out, text, outsz - 1);
- out[outsz - 1] = '\0';
+ strcpy(out, text);
  free(text);
  return 1;
 }
@@ -3670,8 +4055,11 @@ static int e_ai_prompt(char *out, const char *title, FENSTER *f)
  /* The label must end before the frame's right border (the dialog engine
     paints a field only when its label fits whole); its underlined P is the
     key that brings the focus back to the field from a button, Alt-P. */
- e_add_wrstr(AI_PROMPT_LABEL_X, 2, AI_PROMPT_LABEL_X, 3, 62, AI_PROMPT_MAX - 1,
+ e_add_wrstr(AI_PROMPT_LABEL_X, 2, AI_PROMPT_LABEL_X, 3, 62, AI_PROMPT_MAX,
              AI_PROMPT_LABEL_UNDERLINE, AltP, AI_PROMPT_LABEL, out, NULL, o);
+ /* The field holds one line; a paste with line breaks goes to the composer
+    whole, as if Multi-line had been pressed, instead of running together. */
+ o->wstr[0]->lines_key = AltM;
  /* Each button's underlined letter (nc) must match the key that fires it (sw)
     so the accelerator shown is the accelerator that works: Alt-S sends, Alt-M
     opens the multi-line composer, Alt-C cancels.  Enter still sends via crsw
@@ -3686,8 +4074,8 @@ static int e_ai_prompt(char *out, const char *title, FENSTER *f)
  { extern int wpe_modal_active; int sv = wpe_modal_active; wpe_modal_active = 1;
    ret = e_opt_kst(o); wpe_modal_active = sv; }
  if (ret != WPE_ESC) {                        /* keep what was typed either way */
-  strncpy(out, o->wstr[0]->txt, AI_PROMPT_MAX - 1);
-  out[AI_PROMPT_MAX - 1] = '\0';
+  strncpy(out, o->wstr[0]->txt, AI_PROMPT_MAX);
+  out[AI_PROMPT_MAX] = '\0';
  }
  freeostr(o);
  if (ret == WPE_ESC || ret == AltC) return 0; /* cancel (Esc or the Cancel button) */
@@ -3702,16 +4090,18 @@ static int e_ai_prompt1(char *out, const char *title, FENSTER *f)
 {
  int r = e_ai_prompt(out, title, f);
  if (r == 2) {
-  char seed[AI_PROMPT_MAX], ct[96];
-  strncpy(seed, out, sizeof seed - 1);
-  seed[sizeof seed - 1] = '\0';
+  char ct[96];
+  char *seed = strdup(out);
+  if (!seed)
+   return 0;
   /* Spell out the two-step exit: in a full editor Esc reads as "cancel", but
      here it FINISHES the prompt and a Send? Y/N confirm follows -- say so.
      The name is the scratch window's file name, so it holds no slash: e_edit
      would split it at the slash into a directory and a file, and the frame
      would then show the resolved directory path with the hint cut off. */
   snprintf(ct, sizeof ct, "%.40s  [Esc = done, then Y sends, N cancels]", title);
-  return e_ai_compose(out, AI_PROMPT_MAX, ct, seed, f);
+  r = e_ai_compose(out, AI_PROMPT_BUF, ct, seed, f);
+  free(seed);
  }
  return r;
 }
@@ -3728,6 +4118,10 @@ static int e_ai_prompt1(char *out, const char *title, FENSTER *f)
  * The transcript still echoes what the user typed; only the model sees the
  * expansion.
  */
+/* Room a slash command's expansion adds to the typed text: the longest
+   template and its "  (focus: ...)" frame. */
+#define AI_SLASH_TEMPLATE_ROOM 160
+
 static int ai_slash_expand(const char *text, char *out, size_t n)
 {
  static const struct { const char *cmd, *tmpl; } t[] = {
@@ -3767,6 +4161,9 @@ static void ai_chat_refresh_header(FENSTER *f)
   ai_chat_emit_header_if_due(wf);
 }
 
+/* Room beside a question for the "You: " prefix (or its indent) and the end. */
+#define AI_ECHO_PREFIX_ROOM 8
+
 /**
  * ai_chat_echo_question - Show the user's own line in the transcript.
  * @f: the window the pane belongs to; @text: the question as typed.
@@ -3777,18 +4174,22 @@ static void ai_chat_refresh_header(FENSTER *f)
  */
 static void ai_chat_echo_question(FENSTER *f, const char *text)
 {
- char line[AI_PROMPT_MAX + 8];
+ size_t cap = strlen(text) + AI_ECHO_PREFIX_ROOM;
+ char *line = malloc(cap);
  const char *p = text;
  int first = 1;
+ if (!line)
+  return;
  while (first || *p) {
   const char *nl = strchr(p, '\n');
   int seg = nl ? (int)(nl - p) : (int)strlen(p);
-  snprintf(line, sizeof line, "%s%.*s", first ? "You: " : "     ", seg, p);
+  snprintf(line, cap, "%s%.*s", first ? "You: " : "     ", seg, p);
   ai_pane(f, line, AI_ROLE_USER, 0);           /* inserts above the input region */
   first = 0;
   if (!nl) break;
   p = nl + 1;
  }
+ free(line);
 }
 
 /**
@@ -3804,15 +4205,17 @@ static void ai_chat_echo_question(FENSTER *f, const char *text)
 static void ai_chat_launch(FENSTER *f, const char *text)
 {
  ai_chat_session *s;
- char expanded[AI_PROMPT_MAX];
+ size_t room = strlen(text) + AI_SLASH_TEMPLATE_ROOM;
+ char *expanded = malloc(room);
  const char *tosend = text;
 
- if (ai_slash_expand(text, expanded, sizeof expanded))
+ if (expanded && ai_slash_expand(text, expanded, room))
   tosend = expanded;              /* echo what was typed; send the expansion */
  wpe_ai_trace("chat prompt=%s", tosend);
  ai_chat_refresh_header(f);
  ai_chat_echo_question(f, text);
  wpe_ai_session_append("user", tosend);
+ free(expanded);
  s = calloc(1, sizeof *s);
  if (!s) return;
  s->ref = f;
@@ -3896,7 +4299,7 @@ static int ai_in_eol(int p)
  */
 static int ai_in_fits(int n)
 {
- return g_ai_input_len + n < (int)sizeof g_ai_input;
+ return g_ai_input_len + n <= AI_PROMPT_MAX;
 }
 
 /**
@@ -3921,6 +4324,26 @@ static int ai_in_insert(const char *bytes, int n)
  return 1;
 }
 
+extern int g_bracketed_paste;           /* we_term.c: set while a paste streams */
+
+/* Room for the words that say an input is full. */
+#define AI_LIMIT_WORDS_MAX 64
+
+/**
+ * ai_say_input_limit - Say on the status row that a request is at its limit.
+ * @f: the window whose screen the bar belongs to.
+ *
+ * The one place the assistant says it, for the input row and the composer
+ * alike, in the words every text field uses; the next key restores the key
+ * hints.
+ */
+static void ai_say_input_limit(FENSTER *f)
+{
+ char msg[AI_LIMIT_WORDS_MAX];
+ e_input_limit_words(msg, sizeof msg, AI_PROMPT_MAX);
+ wpe_ai_flash(f, msg);
+}
+
 /**
  * ai_in_refuse_at_limit - Say on the status row that the input is full.
  * @wf: the chat pane (the bar row belongs to its screen).
@@ -3933,9 +4356,44 @@ static int ai_in_insert(const char *bytes, int n)
  */
 static void ai_in_refuse_at_limit(FENSTER *wf)
 {
- char msg[80];
- snprintf(msg, sizeof msg, " Input at its limit (%d bytes)", AI_PROMPT_MAX);
- wpe_ai_flash(wf, msg);
+ ai_say_input_limit(wf);
+}
+
+/* The window that put off its input-row repaint while a paste streamed in,
+   and the desktop it belongs to; NULL when no repaint is owed. */
+static FENSTER *g_ai_paste_owed = NULL;
+static ECNT    *g_ai_paste_owed_cn = NULL;
+static int      g_ai_paste_bytes = 0;
+
+/**
+ * ai_in_paste_ended - The paste is over: paint the input row once.
+ *
+ * Runs from the terminal reader when the paste's end marker arrives, so a
+ * paste of thousands of bytes shows up whole at its end instead of the row
+ * being repainted after every byte.  Nothing is painted when the pane was
+ * closed meanwhile.
+ */
+static void ai_in_paste_ended(void)
+{
+ FENSTER *wf = g_ai_paste_owed;
+ g_ai_paste_owed = NULL;
+ if (!wf || ai_pane_existing(g_ai_paste_owed_cn) != wf)
+  return;
+ wpe_ai_trace("input paste painted once bytes=%d", g_ai_paste_bytes);
+ g_ai_paste_bytes = 0;
+ ai_input_render(wf);
+}
+
+/**
+ * ai_in_render_after_paste - Owe the input row one repaint at the paste's end.
+ * @wf: the chat pane; @n: the bytes just taken.
+ */
+static void ai_in_render_after_paste(FENSTER *wf, int n)
+{
+ g_ai_paste_owed = wf;
+ g_ai_paste_owed_cn = wf->ed;
+ g_ai_paste_bytes += n;
+ e_paste_end_hook = ai_in_paste_ended;
 }
 
 /**
@@ -3952,6 +4410,10 @@ static void ai_in_type(FENSTER *wf, const char *bytes, int n)
   ai_in_refuse_at_limit(wf);
   return;
  }
+ if (g_bracketed_paste) {
+  ai_in_render_after_paste(wf, n);
+  return;
+ }
  ai_input_render(wf);
 }
 
@@ -3966,8 +4428,6 @@ static void ai_in_newline(FENSTER *wf)
 {
  ai_in_type(wf, "\n", 1);
 }
-
-extern int g_bracketed_paste;           /* we_term.c: set while a paste streams */
 
 /**
  * ai_in_paste_break - Is key @c a line break arriving inside a terminal paste?
@@ -4327,14 +4787,16 @@ static enum ai_chat_key_action ai_chat_key_action(int c)
  */
 static void ai_chat_send_input(FENSTER *wf)
 {
- char sb[AI_PROMPT_MAX];
+ char *sb;
  if (g_ai_input_len <= 0)
   return;
- strncpy(sb, g_ai_input, sizeof sb - 1);
- sb[sizeof sb - 1] = '\0';
+ sb = strdup(g_ai_input);
+ if (!sb)
+  return;
  ai_input_clear();
  ai_input_render(wf);
  e_ai_chat_send(wf, sb);
+ free(sb);
 }
 
 /**
@@ -6611,10 +7073,13 @@ void wpe_ai_deliver_held_reply(void)
 static struct {
  int      pending;
  void   (*launch)(FENSTER *f, const char *goal);
- char     goal[AI_PROMPT_MAX];
+ char     goal[AI_PROMPT_BUF];
  FENSTER *f;
  ECNT    *cn;
 } g_ai_queue;
+
+/* Room the queued line adds around the request's text. */
+#define AI_QUEUE_LINE_ROOM 64
 
 /** ai_queue_clear - Drop any queued request (e.g. on cancel). */
 static void ai_queue_clear(void) { g_ai_queue.pending = 0; }
@@ -6643,7 +7108,8 @@ static void ai_pane_open_spinner_line(FENSTER *f)
 static void ai_enqueue(FENSTER *f, void (*launch)(FENSTER *, const char *),
                        const char *goal)
 {
- char line[AI_PROMPT_MAX + 64];
+ size_t cap = strlen(goal) + AI_QUEUE_LINE_ROOM;
+ char *line = malloc(cap);
  if (g_ai_queue.pending)
   ai_pane(f, "[AI] replaced the queued request", AI_ROLE_MACHINERY, 0);
  g_ai_queue.pending = 1;
@@ -6652,12 +7118,15 @@ static void ai_enqueue(FENSTER *f, void (*launch)(FENSTER *, const char *),
  g_ai_queue.cn      = f->ed;
  strncpy(g_ai_queue.goal, goal, sizeof g_ai_queue.goal - 1);
  g_ai_queue.goal[sizeof g_ai_queue.goal - 1] = '\0';
+ if (!line)
+  return;
  if (goal[0])
-  snprintf(line, sizeof line,
+  snprintf(line, cap,
            "[AI] queued \"%s\" - it starts when the running one ends", goal);
  else
-  snprintf(line, sizeof line, "[AI] queued - it starts when the running one ends");
+  snprintf(line, cap, "[AI] queued - it starts when the running one ends");
  ai_pane(f, line, AI_ROLE_MACHINERY, 1);
+ free(line);
  ai_pane_open_spinner_line(f);
 }
 
@@ -7417,7 +7886,7 @@ static int ai_refuse_non_file_window(FENSTER *f)
  */
 static int e_ai_edit(FENSTER *f)
 {
- static char instr[AI_PROMPT_MAX];
+ static char instr[AI_PROMPT_BUF];
  int sy0 = -1, sy1 = -1;
  int have_sel;
 
@@ -11104,9 +11573,11 @@ static int ai_agent_ready(FENSTER *f)
 static void ai_agent_announce_task(FENSTER *f, const char *goal)
 {
  char st[AI_HEADER_MAX], line[AI_AGENT_TASK_LINE_MAX];
+ int wanted;
  ai_header_text_shown(st, sizeof st);
  ai_pane(f, st, AI_ROLE_MACHINERY, 0);
- snprintf(line, sizeof line, "[agent] task: %s", goal);
+ wanted = snprintf(line, sizeof line, "[agent] task: %s", goal);
+ ai_mark_display_cut(line, sizeof line, wanted);
  ai_pane(f, line, AI_ROLE_MACHINERY, 1);
  wpe_ai_trace("agent task=%s", goal);
  wpe_ai_trace("agent policy=%s", wpe_ai_policy_name(e_ai_policy));
@@ -11209,7 +11680,7 @@ static void ai_launch_agent(FENSTER *f, const char *goal)
 
 int e_ai_agent(FENSTER *f)
 {
- static char goal[AI_PROMPT_MAX];
+ static char goal[AI_PROMPT_BUF];
 #ifdef WPE_AI_AGENT_HOST
  /* When the Agent engine is set to Claude Code (Options > AI), Alt-G g runs the
     hosted CLI with its own tools instead of the built-in tool loop. */
@@ -11786,7 +12257,7 @@ static void ai_plan_launch(FENSTER *f, const char *task)
  ECNT *cn = f->ed;
  ai_async_op *op;
  ai_plan_data *pd;
- int save_id = -1, wi, i;
+ int save_id = -1, wi, i, wanted;
  const char *sys =
    "You are a coding agent working on a multi-file workspace inside the xwpe "
    "editor. First STUDY: reply with EXACTLY ONE read-only action per turn as a "
@@ -11808,7 +12279,9 @@ static void ai_plan_launch(FENSTER *f, const char *task)
  pd = calloc(1, sizeof *pd);
  if (!pd) return;
  pd->nsc = wpe_ai_scope_files(f, e_project_is_open(), 1, &pd->scope);
- snprintf(line, sizeof line, AI_MULTIFILE_PREFIX " task: %s  (scope: %d files)", task, pd->nsc);
+ wanted = snprintf(line, sizeof line, AI_MULTIFILE_PREFIX " task: %s  (scope: %d files)",
+                   task, pd->nsc);
+ ai_mark_display_cut(line, sizeof line, wanted);
  ai_pane(f, line, AI_ROLE_MACHINERY, 1);
  wpe_ai_trace("plan task=%s scope=%d", task, pd->nsc);
 
@@ -11863,7 +12336,7 @@ static void ai_plan_launch(FENSTER *f, const char *task)
  */
 static int e_ai_plan(FENSTER *f)
 {
- static char task[AI_PROMPT_MAX];
+ static char task[AI_PROMPT_BUF];
 
  if (ai_refuse_non_file_window(f))
   return 0;
@@ -12315,9 +12788,27 @@ void wpe_ai_host_interrupt(void)
  host_deadline_arm();
 }
 
+/* Room for the hosted engine's echo of the user's task in the pane. */
+#define HOST_ECHO_LINE_MAX 1100
+
+/**
+ * host_echo_task - Show the task the user sent to the hosted engine.
+ * @f: the window the pane belongs to; @task: the whole task.
+ *
+ * The pane line has a room of its own; a longer task is shown cut and ends
+ * with "...", while the engine is sent the whole task.
+ */
+static void host_echo_task(FENSTER *f, const char *task)
+{
+ char l[HOST_ECHO_LINE_MAX];
+ int wanted = snprintf(l, sizeof l, "[agent] you: %s", task);
+ ai_mark_display_cut(l, sizeof l, wanted);
+ ai_pane(f, l, AI_ROLE_USER, 0);
+}
+
 int e_ai_host(FENSTER *f)
 {
- static char task[AI_PROMPT_MAX];
+ static char task[AI_PROMPT_BUF];
  char err[320];
 
  if (!wpe_ai_enabled()) {
@@ -12370,7 +12861,7 @@ int e_ai_host(FENSTER *f)
   host_note_web_unenforceable(f);
   wpe_ai_trace("host start policy=%s adapter=%d", wpe_ai_policy_name(e_ai_policy), e_ai_host_adapter);
  }
- { char l[1100]; snprintf(l, sizeof l, "[agent] you: %.1000s", task); ai_pane(f, l, AI_ROLE_USER, 0); }
+ host_echo_task(f, task);
  if (wpe_host_send(g_host, task) != 0) {
   e_ai_host_end("[agent] send failed - session ended");
   return 0;
@@ -12772,8 +13263,10 @@ void wpe_ai_window_closing(FENSTER *closing)
  ai_op_drop_for_window(closing);
  ai_chat_drop_for_window(closing);
  ai_chat_input_drop_for_window(closing);
- if (ai_is_pane(closing))
+ if (ai_is_pane(closing)) {
   ai_roles_forget();
+  ai_transcript_forget();
+ }
 #ifdef WPE_AI_AGENT_HOST
  ai_host_drop_for_window(closing);
 #endif

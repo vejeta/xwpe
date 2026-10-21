@@ -140,10 +140,23 @@ send nothing and the pane says
 **Pasting into the chat** is literal: a terminal paste of several lines goes
 into the input row as it was copied, every line break a line break (a CR LF
 ending counts as one), and nothing is sent until you press Enter after the
-paste; `Ctrl-J` breaks the line by hand. The input holds 2000 bytes. A key past
-that is refused and the status row reads `Input at its limit (2000 bytes)`
+paste; `Ctrl-J` breaks the line by hand. The input holds 32768 bytes. A key
+past that is refused and the status row reads `Input at its limit (32768 bytes)`
 until the next key; a paste that crosses the limit keeps what fits and shows
-the same line.
+the same line. A long paste is painted once, when it ends.
+
+**Saving the transcript**: the pane is read-only, but `F2` or *File > Save*
+with the pane focused saves its transcript. The first time it asks a file name
+in the Save As dialog, titled `Save transcript`; the file is UTF-8 text, each
+line as the pane shows it (`You: `, `AI: `, the bracketed machinery lines), one
+per line and not wrapped. The status row says `saved <name>`, and a later `F2`
+saves there again without asking until the pane is closed. *File > Save As*
+asks every time; Esc in the dialog writes nothing. In the CUA key set the same
+save is `Alt-F2`; in the default key set `Alt-F2` stays Window > Size/Move.
+
+A pane line with less room than its text (the agent's or a Multi-file run's
+task line, the echo of a task sent to the hosted engine) ends with `...`; the
+request carries the whole text.
 
 The `Alt-G` menu groups the **actions** above and, below a divider, the quick
 **settings**: *Permissions* (shows and cycles ask/edits/auto), *Clear
@@ -155,6 +168,12 @@ the field: Enter or `Alt-S` sends, `Alt-M` opens the multi-line composer (a
 scratch window titled with the task and `Esc = done, then Y sends, N cancels`,
 which opens showing what you had already typed in the field),
 `Alt-C` or Esc cancels, `Alt-P` brings the focus back to the field.
+The field holds one line: a paste with line breaks opens the composer with the
+pasted text in it. The field and the composer hold 32768 bytes, like the chat
+input; the byte past that is refused with `Input at its limit (32768 bytes)`,
+and the composer sends exactly the text it shows. A block pasted whole (Ctrl-V,
+Ctrl-K C) can take the composer past the limit; Esc then asks, with the
+composer still open, whether to go back and shorten it, and nothing is sent cut.
 The **Agent** can run on one of two **engines** (choose in Options > AI, only in
 a `--enable-ai-agent-host` build): *Built-in* (the editor's own tool loop, works
 with any backend) or *Claude Code* (runs the real `claude` CLI as a persistent

@@ -28,7 +28,7 @@ SEED = "int main(void){return 0;}\n"
 REPLY = "REPLYONE"
 PASTE_BEG = "\033[200~"
 PASTE_END = "\033[201~"
-PROMPT_MAX = 2000                       # AI_PROMPT_MAX in we_ai_ui.c
+PROMPT_MAX = 32768                      # AI_PROMPT_MAX in we_ai_ui.c
 LIMIT_WORDS = "Input at its limit (%d bytes)" % PROMPT_MAX
 
 
@@ -158,7 +158,7 @@ def test_input_at_the_limit_is_announced(tmp_path):
     """The key that would pass the limit is refused and the status row says so.
 
     With the row full, one more character does not appear in the pane and
-    the bottom row reads "Input at its limit (2000 bytes)".  The next key
+    the bottom row reads "Input at its limit (32768 bytes)".  The next key
     restores the key hints, and Enter sends what fitted.
     """
     with WpeSession(str(tmp_path), SEED, env_extra=_env(tmp_path)) as s:

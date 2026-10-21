@@ -515,6 +515,44 @@ int e_edit(ECNT *cn, char *filename)
  return(0);
 }
 
+/* The bytes Enter and Tab add to a window, as far as a size limit counts
+   them: the line break is one byte, and Tab is counted as one character. */
+#define E_LINE_BREAK_BYTES 1
+#define E_TAB_KEY_BYTES    1
+/* The most bytes one character takes in UTF-8. */
+#define E_UTF8_CHAR_MAX    4
+
+/**
+ * e_key_text_bytes - The bytes character key @c puts into a buffer.
+ *
+ * A character past ASCII goes in as its UTF-8 bytes, so a size limit is
+ * checked against the whole character and never splits one.
+ */
+static int e_key_text_bytes(int c)
+{
+ unsigned char u8[E_UTF8_CHAR_MAX];
+
+ if (c < 0x80)
+  return(1);
+ return(e_codepoint_to_utf8(c, u8));
+}
+
+/**
+ * e_window_full - Would @n more bytes take window @f past its size limit?
+ *
+ * Only the assistant's composer has one (a request is at most so many
+ * bytes); there the key is refused and the status row says so, instead of
+ * the text growing past what will be sent.  Every other window takes it.
+ */
+static int e_window_full(FENSTER *f, int n)
+{
+#ifdef WPE_AI
+ return(e_ai_window_full(f, n));
+#else
+ return(0);
+#endif
+}
+
 /*   keyboard output routine */
 int e_eingabe(ECNT *e)
 {
@@ -609,6 +647,7 @@ int e_eingabe(ECNT *e)
     (f->ins > 1 && f->ins != WPE_INS_READONLY)) && (c < 255 || e_input_was_char))
   {
    if (e_window_text_locked(f)) continue;
+   if (e_window_full(f, e_key_text_bytes(c))) continue;
    if (c >= 0x80)
    {
     unsigned char u8[4];
@@ -706,12 +745,14 @@ int e_eingabe(ECNT *e)
 #else
    if (e_window_text_locked(f)) continue;
 #endif
+   if (e_window_full(f, E_LINE_BREAK_BYTES)) continue;
    e_car_ret(b, s);
    e_schirm(f, 1);
   }
   else if (c == WPE_TAB)
   {
    if (e_window_text_locked(f)) continue;
+   if (e_window_full(f, E_TAB_KEY_BYTES)) continue;
    e_tab_a_ind(b, s);
    e_schirm(f, 1);
   }

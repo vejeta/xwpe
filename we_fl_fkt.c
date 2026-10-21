@@ -8,6 +8,7 @@
 #include "messages.h"
 #include "edit.h"
 #include "makro.h"
+#include "we_ai.h"
 #ifdef UNIX
 #include <sys/types.h>
 #include <sys/stat.h>
@@ -164,7 +165,14 @@ int e_new(FENSTER *f)
 
 int e_m_save(FENSTER *f)
 {
- int ret = e_save(f);
+ int ret;
+
+#ifdef WPE_AI
+ /* The AI pane backs no file: F2 and File > Save write its transcript. */
+ if (wpe_ai_is_pane(f))
+  return(wpe_ai_pane_save(f));
+#endif
+ ret = e_save(f);
 
  if (ret == WPE_ESC)
   e_message(0, e_msg[ERR_MSG_SAVE], f);

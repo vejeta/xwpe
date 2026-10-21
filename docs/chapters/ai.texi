@@ -74,7 +74,16 @@ back to the field from a button.  For a real multi-line prompt, press the
 text area, so you compose with the full editor (several lines, cut and paste,
 the arrow keys), finish with @key{Esc}, and confirm Send.  It opens showing
 what you had already typed in the field, with the caret after it; the window's title
-repeats that two-step exit.  Complete asks nothing: it runs at once on the
+repeats that two-step exit.  The field holds one line: a paste that contains
+line breaks opens the composer by itself, with the pasted text in it, so the
+lines do not run together.  The field, the composer and the chat's input row
+each hold a request of up to 32768 bytes; the byte past that is refused and the
+status row reads @samp{Input at its limit (32768 bytes)}.  The composer sends
+exactly the text it shows, every line of it, with no cut at the context size
+of a file.  A block pasted whole (@kbd{Ctrl-V}, @kbd{Ctrl-K C}) can take the
+composer past the limit; @key{Esc} then asks, with the composer still open,
+whether to go back and shorten it, and nothing is sent cut or given up
+unasked.  Complete asks nothing: it runs at once on the
 cursor.  Ask has no box: the question is typed in the pane's own input row
 (see the Chat section below).
 
@@ -360,10 +369,28 @@ Text pasted into the input row (a terminal paste; the editor keeps bracketed
 paste on) enters the row as it was copied: every line break in the pasted text
 is a line break in the input, a CR LF line ending counts as one, and nothing is
 sent until you press @key{Enter} after the paste.  @kbd{Ctrl-J} breaks the
-line the same way by hand.  The input holds 2000 bytes.  A key that would take
+line the same way by hand.  The input holds 32768 bytes.  A key that would take
 it past that is refused and the status row reads @samp{Input at its limit
-(2000 bytes)} until the next key; a paste that crosses the limit keeps what
-fits and shows the same line.
+(32768 bytes)} until the next key; a paste that crosses the limit keeps what
+fits and shows the same line.  A long paste is painted once, when it ends.
+
+@cindex AI, saving the transcript
+@cindex AI, pane, saving
+The pane is read-only, but its transcript can be saved.  @key{F2} or
+@samp{File}, @samp{Save} with the pane focused asks a file name the first
+time, in the editor's Save As dialog under the title @samp{Save transcript},
+and writes the transcript there as UTF-8 text: each line as the pane shows it
+(@samp{You: } your questions, @samp{AI: } the replies, @samp{[AI]} and the
+other bracketed lines the machinery), one per line and not wrapped at the
+pane's width.  The status row says @samp{saved @var{name}}.  The pane keeps the
+name until it is closed, so a later @key{F2} saves there again without asking.
+@samp{File}, @samp{Save As} asks every time; @key{Esc} in the dialog writes
+nothing.  In the CUA key set the same save is @kbd{Alt-F2}; in the default key
+set @kbd{Alt-F2} stays the Window menu's Size/Move.
+
+A pane line that has less room than its text (the agent's or a Multi-file
+run's task line, the echo of a task sent to a hosted engine) is shown cut and
+ends with @samp{...}; the request itself carries the whole text.
 
 @cindex AI, slash commands
 A leading @dfn{slash command} expands to a full, file-scoped instruction, so a

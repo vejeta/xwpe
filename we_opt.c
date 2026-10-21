@@ -1471,6 +1471,7 @@ W_O_WRSTR **e_add_wrstr(int xt, int yt, int xw, int yw, int nw, int wmx,
  o->wstr[o->wn-1]->wmx = wmx;
  o->wstr[o->wn-1]->nc = nc;
  o->wstr[o->wn-1]->sw = sw;
+ o->wstr[o->wn-1]->lines_key = 0;
  o->wstr[o->wn-1]->df = df;
  strcpy(o->wstr[o->wn-1]->header, header);
  strcpy(o->wstr[o->wn-1]->txt, txt);
@@ -2412,7 +2413,8 @@ static void e_opt_run_text_field(W_OPTSTR *o, struct opt_run *r, int i)
  r->cold = r->c;
  strcpy(tmp, w->txt);
  if (!w->df)
-  c = e_schreib_leiste(tmp, x, y, w->nw, w->wmx, o->fwt, o->fws);
+  c = e_schreib_leiste_lines(tmp, x, y, w->nw, w->wmx, o->fwt, o->fws,
+                             w->lines_key);
  else
   c = e_schr_lst_wsv(tmp, x, y, w->nw, w->wmx, o->fwt, o->fws, w->df, o->f);
 #if MOUSE

@@ -554,6 +554,111 @@
    "layer": "ncurses",
    "test": "tests/test_ai_pane_first_row.py::test_edit_pane_opens_with_its_first_line_on_the_first_row",
    "status": "new"
+  },
+  {
+   "id": "SC-ai-chat-59",
+   "requirement": "Alt-F2 with the pane focused is Window Size/Move",
+   "layer": "ncurses",
+   "test": "tests/test_ai_pane_save_and_limit.py::test_alt_f2_moves_the_focused_pane_and_enter_ends_the_move",
+   "status": "new"
+  },
+  {
+   "id": "SC-ai-chat-60",
+   "requirement": "F2 saves the transcript",
+   "layer": "ncurses",
+   "test": "tests/test_ai_pane_save_and_limit.py::test_f2_saves_the_transcript_and_a_second_f2_asks_nothing[docked]",
+   "status": "new"
+  },
+  {
+   "id": "SC-ai-chat-60",
+   "requirement": "F2 saves the transcript",
+   "layer": "ncurses",
+   "test": "tests/test_ai_pane_save_and_limit.py::test_f2_saves_the_transcript_and_a_second_f2_asks_nothing[zoomed]",
+   "status": "new"
+  },
+  {
+   "id": "SC-ai-chat-61",
+   "requirement": "Save As asks every time",
+   "layer": "ncurses",
+   "test": "tests/test_ai_pane_save_and_limit.py::test_save_as_writes_the_named_file_every_time[docked]",
+   "status": "new"
+  },
+  {
+   "id": "SC-ai-chat-61",
+   "requirement": "Save As asks every time",
+   "layer": "ncurses",
+   "test": "tests/test_ai_pane_save_and_limit.py::test_save_as_writes_the_named_file_every_time[zoomed]",
+   "status": "new"
+  },
+  {
+   "id": "SC-ai-chat-61",
+   "requirement": "Save As asks every time",
+   "layer": "ncurses",
+   "test": "tests/test_ai_pane_save_and_limit.py::test_esc_in_the_save_dialog_writes_nothing",
+   "status": "new"
+  },
+  {
+   "id": "SC-ai-chat-62",
+   "requirement": "A request of 32 KiB",
+   "layer": "ncurses",
+   "test": "tests/test_ai_pane_save_and_limit.py::test_a_30000_byte_paste_into_the_input_row_is_sent_whole",
+   "status": "new"
+  },
+  {
+   "id": "SC-ai-chat-62",
+   "requirement": "A request of 32 KiB",
+   "layer": "ncurses",
+   "test": "tests/test_ai_pane_save_and_limit.py::test_the_byte_past_32768_is_refused_with_the_limit_words",
+   "status": "new"
+  },
+  {
+   "id": "SC-ai-chat-63",
+   "requirement": "The composer never sends less than it shows",
+   "layer": "ncurses",
+   "test": "tests/test_ai_pane_save_and_limit.py::test_the_composer_sends_a_5000_byte_paste_whole",
+   "status": "new"
+  },
+  {
+   "id": "SC-ai-chat-63",
+   "requirement": "The composer never sends less than it shows",
+   "layer": "ncurses",
+   "test": "tests/test_ai_pane_save_and_limit.py::test_the_composer_refuses_the_byte_past_the_limit",
+   "status": "new"
+  },
+  {
+   "id": "SC-ai-chat-63",
+   "requirement": "The composer never sends less than it shows",
+   "layer": "ncurses",
+   "test": "tests/test_ai_pane_save_and_limit.py::test_a_composer_seed_over_16000_bytes_is_sent_whole",
+   "status": "new"
+  },
+  {
+   "id": "SC-ai-chat-63",
+   "requirement": "The composer never sends less than it shows",
+   "layer": "ncurses",
+   "test": "tests/test_ai_pane_save_and_limit.py::test_a_block_pasted_whole_past_the_limit_is_caught_before_the_composer_closes",
+   "status": "new"
+  },
+  {
+   "id": "SC-ai-chat-64",
+   "requirement": "A one-line prompt field at its limit",
+   "layer": "ncurses",
+   "test": "tests/test_ai_pane_save_and_limit.py::test_a_multi_line_paste_into_the_prompt_field_opens_the_composer",
+   "status": "new"
+  },
+  {
+   "id": "SC-ai-chat-64",
+   "requirement": "A one-line prompt field at its limit",
+   "layer": "ncurses",
+   "test": "tests/test_ai_pane_save_and_limit.py::test_a_one_line_paste_past_the_field_cap_says_the_limit",
+   "status": "new"
+  },
+  {
+   "id": "SC-ai-chat-65",
+   "requirement": "A line cut for display is marked",
+   "layer": "ncurses",
+   "test": "tests/test_ai_pane_save_and_limit.py::test_a_long_agent_task_is_marked_cut_and_sent_whole",
+   "status": "new"
   }
  ]
 }

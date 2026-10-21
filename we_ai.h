@@ -378,6 +378,18 @@ int  wpe_ai_pane_line_attr(struct FNST *f, int y, int base);
  * never reads a transcript cut at the new border; any other window is left
  * alone. */
 void wpe_ai_pane_before_paint(struct FNST *f);
+/* Saving the pane.  The pane backs no file, so F2, File > Save and File >
+ * Save As write its transcript instead: wpe_ai_is_pane says whether a window
+ * is the pane; wpe_ai_pane_save is F2 and File > Save (asks a name the first
+ * time, then writes there); wpe_ai_pane_save_as opens the Save As dialog
+ * under the title "Save transcript"; the dialog calls
+ * wpe_ai_pane_write_transcript with the confirmed name and, once it is
+ * closed, wpe_ai_pane_report_save to put "saved <name>" on the status row. */
+int  wpe_ai_is_pane(struct FNST *f);
+int  wpe_ai_pane_save(struct FNST *f);
+int  wpe_ai_pane_save_as(struct FNST *f);
+int  wpe_ai_pane_write_transcript(struct FNST *pane, const char *name);
+void wpe_ai_pane_report_save(struct FNST *f);
 /* The one way a failure reaches the user: a line in the pane's error colour,
  * with the pane raised so it is seen, and no dialog in the way.  Code outside
  * the pane's own file reports through it, so every failure reads the same way. */

@@ -233,6 +233,35 @@ Changes
 
 1.7.0 (AI assistant -- experimental, opt-in)
 
+* F2 and File > Save save the AI pane's transcript.  The first save asks
+  a name in the Save As dialog, titled "Save transcript", and writes each
+  line as the pane shows it, unwrapped, as UTF-8 text; the status row
+  says "saved <name>" and a later F2 saves there without asking.  File >
+  Save As asks every time.  F2 used to answer "File failed to save", and
+  Save As did nothing at all.
+
+* A request may be 32768 bytes long, up from 2000, in the chat's input
+  row, the prompt box and the multi-line composer.  The byte past it is
+  refused and the status row says "Input at its limit (32768 bytes)".  A
+  long paste into the input row is painted once, at its end.
+
+* The multi-line composer sends exactly what it shows.  It used to keep
+  showing a long text and send only its first 1999 bytes, without a word.
+  A block pasted whole that takes the text past the limit is caught when
+  Esc is pressed, with the composer still open: a question says by how
+  many bytes and offers to go back and shorten it.
+
+* A paste with line breaks into the prompt box (Alt-G e, the agent's task)
+  opens the multi-line composer with the pasted text, where its lines
+  used to run together and be cut at 1999 bytes without a word.
+
+* Any dialog text field that refuses a character for want of room says
+  "Input at its limit (N bytes)" on the status row.
+
+* A task line cut to fit the pane (the agent's, a Multi-file run's, the
+  echo of a task sent to the hosted engine) ends with "...".  The request
+  always carried the whole task.
+
 * A server that accepts the connection and then says nothing no longer
   freezes the editor.  The model list (Alt-M in Options > AI) froze it
   for 5 seconds, and a chat over https froze it until the server hung
