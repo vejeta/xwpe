@@ -3953,7 +3953,9 @@ static void ai_compose_trim_end(char *text)
  * (Ctrl-V, Ctrl-K C) arrives in one piece and can take the text past it.
  * The text is never sent cut and never thrown away unasked: the user reads
  * by how much it is over and chooses, with the composer still open, to go
- * back and shorten it (Y) or to give it up (N).
+ * back and shorten it (Y) or to give it up (N).  Esc and Cancel back out of
+ * the question only, as Esc does everywhere, and so return to the text: a
+ * long text is given up on an explicit N, never on a reflex key.
  * Return: 1 to go back to editing, 0 to cancel.
  */
 static int ai_compose_over_limit(FENSTER *w, long bytes)
@@ -3962,7 +3964,7 @@ static int ai_compose_over_limit(FENSTER *w, long bytes)
  snprintf(ask, sizeof ask,
           "%ld bytes over the limit (%d). Go back and shorten it? (N gives it up)",
           bytes - AI_PROMPT_MAX, AI_PROMPT_MAX);
- return e_message(1, ask, w) == 'Y';
+ return e_message(1, ask, w) != 'N';
 }
 
 /**

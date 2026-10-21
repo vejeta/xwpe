@@ -492,6 +492,34 @@ def test_a_block_pasted_whole_past_the_limit_is_caught_before_the_composer_close
     assert sent is None, "a text over the limit was sent (%d bytes)" % len(sent)
 
 
+# @scenario SC-ai-chat-63
+def test_esc_on_the_over_limit_question_goes_back_to_the_text(tmp_path):
+    """Esc on the over-limit question backs out of the question only, as Esc
+    does everywhere: the composer is still open with the whole text, nothing
+    is sent, and the text is given up only on an explicit N."""
+    text = "b" * 20000
+    with WpeSession(str(tmp_path), SEED, env_extra=_env(tmp_path)) as s:
+        _open_edit_prompt(s)
+        s.key(ALT_MULTILINE, delay=1.2)
+        _paste(s, text, settle=3.0)
+        s.key(CTRL_K, "x", delay=0.8)
+        s.key(CTRL_PGDN, delay=0.5)
+        s.key("\r", delay=0.5)
+        s.key(CTRL_K, "c", delay=2.5)        # about 40000 bytes
+        s.key("\033", delay=2.0)             # Esc: done, the question appears
+        s.key("\033", delay=2.0)             # Esc on the question: back to the text
+        back = "\n".join(s.display())
+        s.key("\033", delay=2.0)             # done again: the question again
+        asked_again = "\n".join(s.display())
+        s.key("n", delay=2.0)                # now give it up on purpose
+        sent = _traced_value(tmp_path, "edit instr=")
+        assert s.alive()
+    assert "over the limit" not in back and "bbbb" in back, \
+        "Esc on the question did not go back to the composer's text:\n" + back
+    assert "over the limit (32768)" in asked_again, asked_again
+    assert sent is None, "a text over the limit was sent (%d bytes)" % len(sent)
+
+
 # @scenario SC-ai-chat-64
 def test_a_multi_line_paste_into_the_prompt_field_opens_the_composer(tmp_path):
     """A paste with line breaks into Alt-G e lands in the composer whole.

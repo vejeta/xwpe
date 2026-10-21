@@ -640,6 +640,13 @@
    "status": "new"
   },
   {
+   "id": "SC-ai-chat-63",
+   "requirement": "The composer never sends less than it shows",
+   "layer": "ncurses",
+   "test": "tests/test_ai_pane_save_and_limit.py::test_esc_on_the_over_limit_question_goes_back_to_the_text",
+   "status": "new"
+  },
+  {
    "id": "SC-ai-chat-64",
    "requirement": "A one-line prompt field at its limit",
    "layer": "ncurses",

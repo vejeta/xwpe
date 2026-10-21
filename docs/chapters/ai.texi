@@ -82,8 +82,9 @@ status row reads @samp{Input at its limit (32768 bytes)}.  The composer sends
 exactly the text it shows, every line of it, with no cut at the context size
 of a file.  A block pasted whole (@kbd{Ctrl-V}, @kbd{Ctrl-K C}) can take the
 composer past the limit; @key{Esc} then asks, with the composer still open,
-whether to go back and shorten it, and nothing is sent cut or given up
-unasked.  Complete asks nothing: it runs at once on the
+whether to go back and shorten it.  @kbd{Y}, @key{Esc} and Cancel go back to
+the text; only @kbd{N} gives it up.  Nothing is sent cut.  Complete asks
+nothing: it runs at once on the
 cursor.  Ask has no box: the question is typed in the pane's own input row
 (see the Chat section below).
 

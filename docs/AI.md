@@ -173,7 +173,8 @@ pasted text in it. The field and the composer hold 32768 bytes, like the chat
 input; the byte past that is refused with `Input at its limit (32768 bytes)`,
 and the composer sends exactly the text it shows. A block pasted whole (Ctrl-V,
 Ctrl-K C) can take the composer past the limit; Esc then asks, with the
-composer still open, whether to go back and shorten it, and nothing is sent cut.
+composer still open, whether to go back and shorten it. Y, Esc and Cancel go back
+to the text; only N gives it up. Nothing is sent cut.
 The **Agent** can run on one of two **engines** (choose in Options > AI, only in
 a `--enable-ai-agent-host` build): *Built-in* (the editor's own tool loop, works
 with any backend) or *Claude Code* (runs the real `claude` CLI as a persistent

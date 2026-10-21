@@ -576,11 +576,12 @@ Changes
   line after every pasted line.
   Tests: tests/test_ai_chat_input_paste_limit.py, tests/test_paste_crlf.py.
 
-* The AI chat's input row says when it is full.  The row holds 2000
-  bytes; a key past that was dropped without a word, so the row simply
-  stopped growing.  The key is still refused, and the status row now
-  reads "Input at its limit (2000 bytes)" until the next key.  A paste
-  that crosses the limit keeps what fits and shows the same line.
+* The AI chat's input row says when it is full.  A key past the limit
+  was dropped without a word, so the row simply stopped growing.  The
+  key is still refused, and the status row now reads "Input at its limit
+  (N bytes)" until the next key (32768 bytes, see the entry on the size
+  of a request).  A paste that crosses the limit keeps what fits and
+  shows the same line.
   Tests: tests/test_ai_chat_input_paste_limit.py.
 
 * The bottom shortcut bar no longer appears twice in the terminal after a
