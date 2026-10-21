@@ -3771,28 +3771,154 @@ static char *ai_chat_tool_result(ai_chat_session *s, const char *reply)
                             AI_CHAT_REFUSED_WHY_UNKNOWN);
 }
 
+/* The bytes of stored conversation a turn sends (message contents summed),
+   and the same in the unit the pane line names. */
+#define AI_HISTORY_BUDGET     65536
+#define AI_HISTORY_BUDGET_KIB (AI_HISTORY_BUDGET / 1024)
+/* How much of each sent message the trace shows, so a log reads which
+   messages a turn carried without holding them whole. */
+#define AI_HISTORY_TRACE_HEAD 40
+
+/* The last line about unsent history the pane was given, empty while a
+   turn sends everything: said when the count changes, not on every turn. */
+static char g_ai_history_cut_said[AI_CHAT_NOTE_MAX];
+
+/**
+ * ai_history_noun - "message" or "messages" for a count.
+ */
+static const char *ai_history_noun(int n)
+{
+ if (n == 1)
+  return "message";
+ return "messages";
+}
+
+/**
+ * ai_history_cut_line - The pane line for a window that left messages out.
+ * @w: the window; @line, @sz: where the line goes.
+ *
+ * Names the reason: stored but over the budget, or dropped from the saved
+ * session, or both with their counts, so the user knows whether starting a
+ * new session or a shorter question would bring them back.
+ */
+static void ai_history_cut_line(const wpe_ai_history_window *w, char *line, size_t sz)
+{
+ int n = w->over_budget + w->dropped;
+ if (w->dropped == 0)
+  snprintf(line, sz, "[AI] %d earlier %s not sent (history over %d KiB)",
+           n, ai_history_noun(n), AI_HISTORY_BUDGET_KIB);
+ else if (w->over_budget == 0)
+  snprintf(line, sz, "[AI] %d earlier %s not sent (older than the saved session)",
+           n, ai_history_noun(n));
+ else
+  snprintf(line, sz, "[AI] %d earlier %s not sent (%d: history over %d KiB, "
+           "%d: older than the saved session)", n, ai_history_noun(n),
+           w->over_budget, AI_HISTORY_BUDGET_KIB, w->dropped);
+}
+
+/**
+ * ai_say_history_cut - Tell the user a turn did not send the whole conversation.
+ * @f: the pane's window; @w: the window the turn sends.
+ *
+ * Without this line a long conversation silently forgets its start and the
+ * model's answers stop making sense.  It is said when the count changes,
+ * not on every turn, the way the file-cut line is.  The command-line
+ * backend resumes its own session and keeps its own history, so it gets no
+ * such line.
+ */
+static void ai_say_history_cut(FENSTER *f, const wpe_ai_history_window *w)
+{
+ char line[AI_CHAT_NOTE_MAX];
+ wpe_ai_trace("ai history window sent=%d over=%d dropped=%d",
+              w->count, w->over_budget, w->dropped);
+ if (e_ai_backend == WPE_AI_CLAUDECLI)
+  return;
+ if (w->over_budget + w->dropped == 0) {
+  g_ai_history_cut_said[0] = '\0';
+  return;
+ }
+ ai_history_cut_line(w, line, sizeof line);
+ if (!strcmp(line, g_ai_history_cut_said))
+  return;
+ snprintf(g_ai_history_cut_said, sizeof g_ai_history_cut_said, "%s", line);
+ wpe_ai_trace("ai history cut said: %s", line);
+ ai_pane(f, line, AI_ROLE_MACHINERY, 0);
+}
+
+/**
+ * ai_trace_history_heads - Record the start of each message a turn sends.
+ * @msgs: the request's messages; @n: how many.
+ *
+ * A log then shows which earlier questions a turn carried and which it
+ * left out, without copying a long conversation into it.
+ */
+static void ai_trace_history_heads(const wpe_ai_msg *msgs, int n)
+{
+ char head[AI_HISTORY_TRACE_HEAD + 1];
+ size_t k;
+ int i;
+ for (i = 0; i < n; i++) {
+  for (k = 0; k < AI_HISTORY_TRACE_HEAD && msgs[i].content[k]; k++)
+   head[k] = (msgs[i].content[k] == '\n') ? ' ' : msgs[i].content[k];
+  head[k] = '\0';
+  wpe_ai_trace("ai history msg %d role=%s bytes=%zu head=%s", i, msgs[i].role,
+               strlen(msgs[i].content), head);
+ }
+}
+
+/**
+ * ai_history_take - The stored messages a turn sends, said in the pane when cut.
+ * @f: the pane's window; @lead: free slots wanted before the history;
+ * @n: set to the number of history messages.
+ *
+ * The one place both the chat and the agent read the conversation from, so
+ * the two send the same window and tell the user the same thing about it.
+ * Return: a malloc'd array of @lead + *@n messages with the history from
+ * index @lead on (the caller fills the first @lead and frees the array),
+ * NULL out of memory.
+ */
+static wpe_ai_msg *ai_history_take(FENSTER *f, int lead, int *n)
+{
+ wpe_ai_history_window w;
+ wpe_ai_msg *msgs;
+ wpe_ai_session_window(AI_HISTORY_BUDGET, &w);
+ msgs = malloc((size_t)(lead + w.count + 1) * sizeof *msgs);
+ if (!msgs)
+  return NULL;
+ *n = wpe_ai_session_messages(msgs + lead, w.count);
+ ai_say_history_cut(f, &w);
+ ai_trace_history_heads(msgs + lead, *n);
+ return msgs;
+}
+
 /* Start (or continue) a chat turn: rebuild the request from the workspace
  * conversation and stream the reply into the pane.  Reused for the first turn
  * and for each read-only investigation turn. */
 static void ai_chat_next_turn(ai_chat_session *s)
 {
  FENSTER *f = s->ref;
- wpe_ai_msg msgs[16];
+ wpe_ai_msg *msgs;
  wpe_ai_req req;
  char *sys, err[320];
- int nm = 0, np, i;
+ int np = 0;
 
  sys = ai_build_system(f, ai_chat_home_window(f->ed));
- msgs[nm].role = "system"; msgs[nm].content = sys ? sys : ""; nm++;
- np = wpe_ai_session_messages(msgs + nm, 12);
- for (i = 0; i < np; i++) nm++;
+ msgs = ai_history_take(f, 1, &np);
+ if (!msgs) {
+  free(sys);
+  ai_pane(f, "[AI error] out of memory", AI_ROLE_ERROR, 0);
+  ai_chat_turn_over(s);
+  return;
+ }
+ msgs[0].role = "system"; msgs[0].content = sys ? sys : "";
  /* After a primary-model failure this turn runs on the configured fallback
     model (req.model overrides e_ai_model for this request only). */
  req.model = s->fell_back ? e_ai_model_fallback : NULL;
- req.msgs = msgs; req.nmsgs = nm;
+ req.msgs = msgs; req.nmsgs = 1 + np;
  err[0] = '\0';
  s->st = wpe_ai_stream_start(&req, err, sizeof err);
  free(sys);
+ free(msgs);
  if (!s->st) {
   ai_pane(f, err[0] ? err : "[AI error] could not start", AI_ROLE_ERROR, 0);
   ai_chat_turn_over(s);
@@ -11533,11 +11659,9 @@ static const char ai_agent_system_prompt[] =
    "short summary of what you changed. Output nothing else; wait for each tool "
    "result before continuing.";
 
-/* Room for a preflight reason and for the pane's task line; how many turns
-   of the workspace session a run carries forward. */
+/* Room for a preflight reason and for the pane's task line. */
 #define AI_AGENT_ERR_MAX       320
 #define AI_AGENT_TASK_LINE_MAX 1100
-#define AI_AGENT_PRIOR_MAX     12
 /* The pane line when no model is set and the check gave no words. */
 #define AI_AGENT_NO_MODEL_LINE "no model set"
 
@@ -11612,16 +11736,21 @@ static ai_async_op *ai_agent_op_new(FENSTER *f)
 
 /**
  * ai_agent_add_prior_turns - Carry the workspace session's last turns into the run.
- * @m: the run's message list.
+ * @m: the run's message list; @f: the window the pane belongs to.
  *
  * A follow-up typed after a run ("now do the same for the tests") reads as
- * one conversation: the model sees what it was asked and answered before.
+ * one conversation: the model sees what it was asked and answered before,
+ * within the same byte budget the chat uses, and the pane says so when the
+ * start of a long conversation no longer fits.
  */
-static void ai_agent_add_prior_turns(struct ai_mlist *m)
+static void ai_agent_add_prior_turns(struct ai_mlist *m, FENSTER *f)
 {
- wpe_ai_msg prior[AI_AGENT_PRIOR_MAX];
- int np = wpe_ai_session_messages(prior, AI_AGENT_PRIOR_MAX), i;
+ int np = 0, i;
+ wpe_ai_msg *prior = ai_history_take(f, 0, &np);
+ if (!prior)
+  return;
  for (i = 0; i < np; i++) ai_ml_add(m, prior[i].role, prior[i].content);
+ free(prior);
 }
 
 /**
@@ -11643,7 +11772,7 @@ static void ai_agent_compose(ai_async_op *op, const char *goal, const char *extr
  ai_agent_ensure_checkpoint(op);
  if (extra && extra[0]) ai_ml_add(&op->ml, "system", extra);
  ai_ml_add_diagnostics(&op->ml);
- ai_agent_add_prior_turns(&op->ml);
+ ai_agent_add_prior_turns(&op->ml, op->f);
  ai_ml_add(&op->ml, "user", goal);
  wpe_ai_session_append("user", goal);
 }

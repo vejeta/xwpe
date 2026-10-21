@@ -1547,9 +1547,13 @@ static struct {
                                 this session folds in; cleared with the session */
  int    tool_turn_opened;    /* a chat turn of this session answered with a tool
                                 line: the chat now acts on the repository       */
+ int    dropped;             /* messages dropped from the front of the store
+                                since the session was cleared or loaded         */
 } sess;
 
-#define WS_SESS_MAX 40
+/* How many messages the saved session keeps; what a turn sends of them is
+   bounded by bytes (wpe_ai_session_window), not by this count. */
+#define WS_SESS_MAX 200
 
 static void sess_free(void)
 {
@@ -1558,6 +1562,7 @@ static void sess_free(void)
  for (i = 0; i < sess.n; i++) { free(sess.role[i]); free(sess.content[i]); }
  free(sess.role); free(sess.content);
  sess.role = sess.content = NULL; sess.n = 0;
+ sess.dropped = 0;
  sess.project_announced = 0;
  sess.tool_turn_opened = 0;
 }
@@ -1622,6 +1627,7 @@ void wpe_ai_session_append(const char *role, const char *content)
   memmove(sess.role, sess.role + 1, (size_t)(sess.n - 1) * sizeof *sess.role);
   memmove(sess.content, sess.content + 1, (size_t)(sess.n - 1) * sizeof *sess.content);
   sess.n--;
+  sess.dropped++;
  }
  sess.role = realloc(sess.role, (size_t)(sess.n + 1) * sizeof *sess.role);
  sess.content = realloc(sess.content, (size_t)(sess.n + 1) * sizeof *sess.content);
@@ -1635,6 +1641,63 @@ int wpe_ai_session_messages(wpe_ai_msg *buf, int max)
  int start = sess.n > max ? sess.n - max : 0, i, k = 0;
  for (i = start; i < sess.n; i++) { buf[k].role = sess.role[i]; buf[k].content = sess.content[i]; k++; }
  return k;
+}
+
+/**
+ * wpe_ai_session_dropped - How many messages the store has dropped this session.
+ *
+ * The store keeps WS_SESS_MAX messages and drops the oldest past that; a
+ * turn that cannot send them says so in the pane, so the user knows the
+ * model no longer sees the start of a very long conversation.  Cleared
+ * with the session and when a saved session is loaded.
+ * Return: the count.
+ */
+int wpe_ai_session_dropped(void) { return sess.dropped; }
+
+/**
+ * ws_window_takes - Does the next older message join the window?
+ * @taken: messages already in the window; @used: their bytes;
+ * @len: this message's bytes; @budget: the window's bytes.
+ *
+ * The newest message is always sent, however long, so a question is never
+ * sent without itself; the others join while they fit whole.
+ * Return: 1 when the message is sent.
+ */
+static int ws_window_takes(int taken, size_t used, size_t len, size_t budget)
+{
+ if (taken == 0)
+  return 1;
+ return used + len <= budget;
+}
+
+/**
+ * wpe_ai_session_window - Which stored messages a turn sends.
+ * @budget: the bytes of message content a turn may carry;
+ * @w: filled with the window.
+ *
+ * Counted from the newest message backwards, whole messages only, so a
+ * long conversation keeps its latest exchanges and the model never reads a
+ * message cut in half.  The chat and the agent both take their history
+ * from here, so one conversation reads the same to the model whichever of
+ * the two the user typed into; the counts it leaves are what the pane line
+ * about unsent messages says.  wpe_ai_session_messages(buf, w->count)
+ * then hands out exactly these messages.
+ */
+void wpe_ai_session_window(size_t budget, wpe_ai_history_window *w)
+{
+ size_t used = 0, len;
+ int i = sess.n;
+ while (i > 0) {
+  len = strlen(sess.content[i - 1]);
+  if (!ws_window_takes(sess.n - i, used, len, budget))
+   break;
+  used += len;
+  i--;
+ }
+ w->start = i;
+ w->count = sess.n - i;
+ w->over_budget = i;
+ w->dropped = sess.dropped;
 }
 
 void wpe_ai_session_load(FENSTER *f)

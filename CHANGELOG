@@ -233,6 +233,13 @@ Changes
 
 1.7.0 (AI assistant -- experimental, opt-in)
 
+* A chat turn sends the newest messages of the conversation that fit
+  64 KiB, where it used to send the last 12 whatever their size, and the
+  saved session keeps 200 messages instead of 40.  When earlier messages
+  are not sent, the pane says how many and why ("[AI] N earlier messages
+  not sent (history over 64 KiB)"), once per change.  The agent's prior
+  turns follow the same rule.
+
 * F2 and File > Save save the AI pane's transcript.  The first save asks
   a name in the Save As dialog, titled "Save transcript", and writes each
   line as the pane shows it, unwrapped, as UTF-8 text; the status row

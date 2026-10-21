@@ -158,6 +158,16 @@ A pane line with less room than its text (the agent's or a Multi-file run's
 task line, the echo of a task sent to the hosted engine) ends with `...`; the
 request carries the whole text.
 
+**What a turn sends of the conversation**: the saved session keeps the last
+200 messages. Each chat turn, and each agent run's prior turns, sends the
+newest of them that fit 64 KiB of text, whole messages only and always at
+least the newest one. When earlier messages stay behind, the pane says
+`[AI] N earlier messages not sent (history over 64 KiB)`, or
+`(older than the saved session)` when the store has already dropped them, or
+both counts when both happen. The line comes back only when N changes. The
+`claudecli` backend resumes its own session and keeps its own history, so it
+shows no such line.
+
 The `Alt-G` menu groups the **actions** above and, below a divider, the quick
 **settings**: *Permissions* (shows and cycles ask/edits/auto), *Clear
 conversation* (refused while a reply streams or a task runs: the bar says to

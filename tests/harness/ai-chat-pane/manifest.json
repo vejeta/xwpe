@@ -666,6 +666,27 @@
    "layer": "ncurses",
    "test": "tests/test_ai_pane_save_and_limit.py::test_a_long_agent_task_is_marked_cut_and_sent_whole",
    "status": "new"
+  },
+  {
+   "id": "SC-ai-chat-66",
+   "requirement": "The history a turn sends",
+   "layer": "ncurses",
+   "test": "tests/test_ai_chat_history_window.py::test_a_long_conversation_sends_the_newest_and_says_so_once",
+   "status": "new"
+  },
+  {
+   "id": "SC-ai-chat-66",
+   "requirement": "The history a turn sends",
+   "layer": "ncurses",
+   "test": "tests/test_ai_chat_history_window.py::test_a_short_conversation_says_nothing",
+   "status": "new"
+  },
+  {
+   "id": "SC-ai-chat-66",
+   "requirement": "The history a turn sends",
+   "layer": "ncurses",
+   "test": "tests/test_ai_chat_history_window.py::test_messages_dropped_from_the_store_are_said",
+   "status": "new"
   }
  ]
 }

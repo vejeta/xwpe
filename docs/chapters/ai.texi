@@ -821,7 +821,18 @@ one @kbd{r} puts you back.
 @cindex AI, sessions
 The conversation is tied to the workspace and resumes automatically.  For
 @code{claudecli} xwpe keeps the CLI's own session id and passes @option{--resume};
-for the other backends it keeps a short transcript that seeds the next prompt.
+for the other backends it keeps a transcript of the last 200 messages that
+seeds the next prompt.
+
+Each chat turn, and each agent run's prior turns, sends the newest stored
+messages that fit 64 KiB of text, counted from the newest backwards, whole
+messages only and always at least the newest one.  When earlier messages
+stay behind, the pane says so in one line:
+@samp{[AI] N earlier messages not sent (history over 64 KiB)} when they are
+stored but past the budget, @samp{(older than the saved session)} when the
+transcript has already dropped them, and both counts when both happen.  The
+line comes back only when N changes, not on every turn.  @code{claudecli}
+resumes its own session and keeps its own history, so it shows no such line.
 It is stored beside the project file (as @file{.xwpe-ai-session}) when a project
 is open, otherwise under @file{$XDG_STATE_HOME/xwpe/ai/} (default
 @file{~/.local/state/xwpe/ai/}).  @kbd{Alt-G n}, @samp{Clear conversation},

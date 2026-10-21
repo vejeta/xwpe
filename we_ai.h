@@ -460,6 +460,18 @@ void  wpe_ai_session_save(struct FNST *f);
 void  wpe_ai_session_reset(struct FNST *f);
 void  wpe_ai_session_append(const char *role, const char *content);
 int   wpe_ai_session_messages(wpe_ai_msg *buf, int max);
+/* The stored messages a turn sends: the newest that fit a byte budget, whole,
+   always at least the newest one, and what was left out and why. */
+typedef struct {
+ int start;        /* index of the oldest stored message sent             */
+ int count;        /* stored messages sent (the newest `count`)           */
+ int over_budget;  /* stored messages left out by the budget              */
+ int dropped;      /* messages the store dropped in this session          */
+} wpe_ai_history_window;
+void  wpe_ai_session_window(size_t budget, wpe_ai_history_window *w);
+/* Messages the store dropped, oldest first, since the session was last
+   cleared or loaded. */
+int   wpe_ai_session_dropped(void);
 /* Whether the pane has named this session's project instructions (.xwpe-ai.md,
    else AGENTS.md) yet; the chat says it once per session.  Cleared with the
    session. */
