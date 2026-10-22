@@ -33,6 +33,7 @@ PROG = (
 
 CTRL_G = "\x07"
 CTRL_N = "\x0e"     # Emacs "down a line" -- pyte delivers it reliably
+F8 = "\033[19~"     # Step (over)
 
 pytestmark = pytest.mark.skipif(
     shutil.which("scala-cli") is None,
@@ -46,6 +47,11 @@ def _text(w):
 def _status_line_no(w):
     m = re.search(r"(\d+):", w.display()[20])
     return int(m.group(1)) if m else -1
+
+
+def _mark_line(w):
+    """The source line carrying the current-line mark, or None."""
+    return w.mark_line()
 
 
 def _watch_val(w, name):
@@ -65,14 +71,32 @@ def test_scala_dap_run_step_watch(tmp_path):
         for _ in range(5):                 # move the cursor to line 6
             w.key(CTRL_N, delay=0.12)
         w.key(CTRL_G, "b", delay=1.0)      # breakpoint on line 6
+        # Park the cursor on line 8, away from the breakpoint: only the
+        # adapter can bring the stop back to line 6, so the mark asserted
+        # below is the stop's and not where the cursor already was.
+        for _ in range(2):
+            w.key(CTRL_N, delay=0.12)
         # First Run boots a JVM build server (+ cold-cache coursier resolve):
-        # give it plenty of time; wpe's UI blocks until the BSP bootstrap ends.
+        # give it plenty of time.  That bootstrap is synchronous, but the
+        # adapter's handshake after it runs on the descriptor loop, so the
+        # editor takes keys, Messages counts the seconds and Esc ends it.
         w.key(CTRL_G, "r", delay=60.0)
         time.sleep(3.0)
         w._drain(3.0)
         assert w.alive(), "wpe died starting the Scala BSP/DAP session"
         assert _status_line_no(w) == 6, \
             "DAP should stop at the breakpoint on line 6 (status:\n%s)" % _text(w)
+        assert _mark_line(w) == 6, \
+            "the current-line mark should sit on the breakpoint line 6, not " \
+            "on line 8 where the cursor was parked:\n%s" % _text(w)
+
+        w.key(F8, delay=3.0)               # Step (over) one source line
+        w._drain(1.5)
+        assert w.alive(), "wpe died stepping the Scala program"
+        stepped = _mark_line(w)
+        assert stepped is not None and stepped != 6, \
+            "F8 should move the mark off the breakpoint line 6 (now %s):\n%s" \
+            % (stepped, _text(w))
 
         w.key(CTRL_G, "w", delay=1.5)      # Make Watch dialog
         w.key("f", delay=0.1)

@@ -71,6 +71,8 @@
   {"id": "SC-debug-29", "requirement": "The bars and the menu tell the truth", "layer": "ncurses", "test": "tests/test_debugger_integration.py::test_a_session_runs_and_steps_on_an_80x24_screen", "status": "covered", "needs": ["gcc", "gdb"]},
   {"id": "SC-debug-30", "requirement": "Stepping and the mark", "layer": "ncurses", "test": "tests/test_debugger_integration.py::test_pdb_first_stop_on_the_breakpoint_is_marked", "status": "covered", "needs": ["python3"]},
   {"id": "SC-debug-31", "requirement": "The bars and the menu tell the truth", "layer": "ncurses", "test": "tests/test_debugger_integration.py::test_a_backend_switch_is_a_status_line_not_a_box", "status": "new", "needs": ["python3"]},
-  {"id": "SC-debug-32", "requirement": "Starting and ending a session", "layer": "ncurses", "test": "tests/test_debugger_integration.py::test_a_debugger_that_never_started_prints_no_end_line", "status": "new", "needs": ["gcc"]}
+  {"id": "SC-debug-32", "requirement": "Starting and ending a session", "layer": "ncurses", "test": "tests/test_debugger_integration.py::test_a_debugger_that_never_started_prints_no_end_line", "status": "new", "needs": ["gcc"]},
+  {"id": "SC-debug-32", "requirement": "Starting and ending a session", "layer": "ncurses", "test": "tests/test_debugger_integration.py::test_a_cancelled_start_prints_no_end_line", "status": "new", "needs": ["gcc"]},
+  {"id": "SC-debug-32", "requirement": "Starting and ending a session", "layer": "ncurses", "test": "tests/test_debugger_integration.py::test_a_start_that_timed_out_prints_no_end_line", "status": "new", "needs": ["gcc"]}
  ]
 }

@@ -1707,6 +1707,26 @@ static int e_d_died_line(char *out, size_t n)
  return(1);
 }
 
+/* Set only while a start that never became a session is being torn down; see
+   e_d_start_quit. */
+static int e_d_start_never_ran = 0;
+
+/**
+ * e_d_session_opened - Did a debugging session the user saw ever open?
+ *
+ * A debugger that answered is a session, so quitting it says "End of
+ * Debugging".  A start the user cancelled with Esc, or that passed its
+ * deadline, launched a debugger that never answered: no session opened, and
+ * saying one ended would contradict the line that names the real reason.
+ * Return: 1 when a session opened and its end is worth reporting.
+ */
+static int e_d_session_opened(void)
+{
+ if (e_d_start_never_ran)
+  return(0);
+ return(e_d_session_runs());
+}
+
 /**
  * e_d_say_session_end - Write in Messages how the session ended.
  * @died: the line for a debugger that died, or "" for a normal end.
@@ -1727,7 +1747,7 @@ static void e_d_say_session_end(const char *died, FENSTER *f)
 int e_d_quit(FENSTER *f)
 {
  ECNT *cn = f->ed;
- int i, ran = e_d_session_runs();
+ int i, ran = e_d_session_opened();
  char died[E_D_DIED_LINE_MAX];
 
  jdb_trace("e_d_quit: CALLED, e_d_swtch=%d, e_deb_type=%d\n",
@@ -4312,6 +4332,24 @@ static void e_d_start_say_died(int dap, FENSTER *f)
 }
 
 /**
+ * e_d_start_quit - Tear the session of an ended start down.
+ * @why: why the start ended; @f: the window on top.
+ *
+ * A start the user cancelled, and one that passed its deadline, are both a
+ * debugger that was launched and never answered: the user saw no session, so
+ * Messages keeps the one line that says why the start ended instead of also
+ * reporting the end of a session that never began.  A debugger that ended by
+ * itself before answering is torn down as a session, as before.
+ */
+static void e_d_start_quit(int why, FENSTER *f)
+{
+ if (why == E_D_START_CANCELLED || why == E_D_START_TIMED_OUT)
+  e_d_start_never_ran = 1;
+ e_d_quit(f);
+ e_d_start_never_ran = 0;
+}
+
+/**
  * e_d_start_end - The debugger is gone, or must go: end the session.
  *
  * A start the user cancelled, or that passed its deadline, ends with a line
@@ -4330,7 +4368,7 @@ static void e_d_start_end(void)
  strncpy(label, e_d_start_label(), sizeof label - 1);
  label[sizeof label - 1] = '\0';
  e_d_start_forget();
- e_d_quit(f);
+ e_d_start_quit(why, f);
  f = cn->f[cn->mxedt];
  if (why == E_D_START_WAITING)
   e_d_start_say_died(dap, f);

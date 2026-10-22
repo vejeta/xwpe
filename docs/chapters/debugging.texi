@@ -183,9 +183,11 @@ Program exited with code 3
 gdb gives the code for every program; pdb gives it when the script
 calls @code{sys.exit}.  jdb, a68g and the debug adapters do not report
 one, and Messages says @samp{Program exited.}.  Debug > Quit ends the
-session with @samp{End of Debugging}.  A debugger that cannot start,
-because it is not installed, is named with the reason only: no session
-ran, so none ends.
+session with @samp{End of Debugging}.  A start that never became a
+session names its reason only, and no end line follows it: a debugger
+that cannot start because it is not installed, one you end with
+@key{Esc} while it starts, and one that passes its deadline.  None of
+them ran a session, so none ends one.
 
 A debugger that ends without being asked (it crashed, or was killed)
 is named in Messages and on the status row, with its exit status; a

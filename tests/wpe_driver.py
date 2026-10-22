@@ -307,6 +307,14 @@ FRAME_HLINE_RUN = "qqq"
 FRAME_TOP_LEFT = "l"
 FRAME_TOP_RIGHT = "k"
 FRAME_BOTTOM_LEFT = "m"
+
+# The debugger's own background colours, named here once.  Four test files
+# used to carry a private copy of the mark search and three of them matched any
+# greenish background instead of this exact colour, which can paint a green
+# where the debugger never stopped.
+CURRENT_LINE_BG = "brightgreen"
+BREAKPOINT_BG = "red"
+
 PANE_NAME = "AI"
 # ai_pane_width() wraps one column short of the interior (e.x - a.x - 2: the
 # caret's column after the input text) and never wider than AI_PANE_MAX_COLS.
@@ -692,6 +700,44 @@ class WpeSession:
         an inline mark without pinning the exact column."""
         row = self.screen.buffer[y]
         return any(row[x].bg == bg for x in range(self.screen.columns))
+
+    def source_rows(self, drain=0.0):
+        """Screen rows of the topmost source window's text area: between its
+        top border (row 1) and the first bottom border below it, so Messages
+        and Watches are left out."""
+        disp = self.display(drain=drain)
+        last = len(disp) - 1
+        for y in range(2, len(disp)):
+            if disp[y].startswith(FRAME_BOTTOM_LEFT):
+                last = y
+                break
+        return range(2, last)
+
+    def rows_with_bg(self, bg, drain=0.0):
+        """Screen rows of the source window carrying background colour `bg`.
+
+        The border columns are skipped: they hold the box drawing, not text."""
+        rows = []
+        for y in self.source_rows(drain=drain):
+            row = self.screen.buffer[y]
+            if any(row[x].bg == bg for x in range(1, self.screen.columns - 1)):
+                rows.append(y)
+        return rows
+
+    def mark_line(self, drain=0.0):
+        """The source line carrying the debugger's current-line mark, or None.
+
+        This is where a stop is visible to the user.  The status row cannot
+        answer that on its own, because it also shows the line the cursor was
+        already on before Run."""
+        rows = self.rows_with_bg(CURRENT_LINE_BG, drain=drain)
+        if not rows:
+            return None
+        return rows[0] - 1
+
+    def breakpoint_lines(self, drain=0.0):
+        """The source lines the margin marks as breakpoints."""
+        return [y - 1 for y in self.rows_with_bg(BREAKPOINT_BG, drain=drain)]
 
     def alive(self):
         """True while wpe is still running healthily."""

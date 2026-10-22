@@ -54,6 +54,11 @@ def _status_line_no(w):
     return int(m.group(1)) if m else -1
 
 
+def _mark_line(w):
+    """The source line carrying the current-line mark, or None."""
+    return w.mark_line()
+
+
 def _watch_val(w, name):
     """Current value shown for the named watch in the Watches window, or None."""
     pat = re.compile(re.escape(name) + r":\s*(-?\d+)")
@@ -79,8 +84,14 @@ def test_go_dap_run_and_step(tmp_path):
         w._drain(1.5)
         assert w.alive(), "wpe died starting dlv dap on the Go package"
         start = _status_line_no(w)
-        assert start > 0, \
-            "DAP should stop on a source line (status:\n%s)" % _text(w)
+        # The cursor was still on line 1 when Run was pressed, so a stop
+        # inside main is a line the editor did not already have.
+        assert start > 1, \
+            "DAP should stop inside main, past the cursor's line 1 " \
+            "(status:\n%s)" % _text(w)
+        assert _mark_line(w) == start, \
+            "the current-line mark should sit on the line dlv stopped at " \
+            "(%d):\n%s" % (start, _text(w))
 
         w.key(F8, delay=2.5)                 # step over one source line
         w._drain(1.0)
@@ -88,6 +99,9 @@ def test_go_dap_run_and_step(tmp_path):
         stepped = _status_line_no(w)
         assert stepped > start, \
             "F8 should advance to a later source line (%d -> %d):\n%s" \
+            % (start, stepped, _text(w))
+        assert _mark_line(w) == stepped, \
+            "the mark should move with the step (%d -> %d):\n%s" \
             % (start, stepped, _text(w))
         # Adapter chatter (dlv's "Type 'dlv help' ..." banner, DAP "console"
         # category) must NOT leak into Messages -- only the debuggee's own

@@ -411,6 +411,11 @@ Changes
 * A debugger that cannot start, because it is not installed, shows only
   the reason.  "End of Debugging" no longer follows it: no session ran.
 
+* A debugger start you end with Esc, or one that passes its deadline,
+  shows only its own line ("gdb start cancelled", "gdb did not answer
+  within 30 s").  "End of Debugging" no longer follows it: the start
+  never became a session, so none ended.
+
 * Under jdb, Ctrl-G R that runs the program to its end says "Program
   exited." in Messages and ends the session.  It used to raise "No
   Source-Code".

@@ -21,7 +21,8 @@ import time
 
 import pytest
 
-from wpe_driver import WpeSession, ALT, WAIT_SCALE, tool_usable
+from wpe_driver import (WpeSession, ALT, WAIT_SCALE, tool_usable,
+                        CURRENT_LINE_BG, BREAKPOINT_BG)
 
 CTRL_G = "\x07"         # debugger command prefix
 DOWN = "\033OB"
@@ -30,8 +31,6 @@ F8 = "\033[19~"         # Step (step over)
 ALT_F5 = "\033[15;3~"   # User Screen
 ESC = "\033"
 
-CURRENT_LINE_BG = "brightgreen"
-BREAKPOINT_BG = "red"
 POLL_S = 0.2
 START_TIMEOUT_S = 20    # build + debugger start, before scaling
 STEP_TIMEOUT_S = 8
@@ -80,36 +79,21 @@ def _need(*tools):
 
 
 def _source_rows(w):
-    """Screen rows of the topmost source window's text area: between its top
-    border (row 1) and the first bottom border below it."""
-    disp = w.display(drain=0)
-    last = len(disp) - 1
-    for y in range(2, len(disp)):
-        if disp[y].startswith("m"):
-            last = y
-            break
-    return range(2, last)
+    """Screen rows of the topmost source window's text area."""
+    return w.source_rows()
 
 
 def _rows_with_bg(w, bg):
-    rows = []
-    for y in _source_rows(w):
-        row = w.screen.buffer[y]
-        if any(row[x].bg == bg for x in range(1, w.screen.columns - 1)):
-            rows.append(y)
-    return rows
+    return w.rows_with_bg(bg)
 
 
 def _mark_line(w):
     """The source line carrying the current-line mark, or None."""
-    rows = _rows_with_bg(w, CURRENT_LINE_BG)
-    if not rows:
-        return None
-    return rows[0] - 1
+    return w.mark_line()
 
 
 def _breakpoint_lines(w):
-    return [y - 1 for y in _rows_with_bg(w, BREAKPOINT_BG)]
+    return w.breakpoint_lines()
 
 
 def _wait_for(w, predicate, timeout):
@@ -1446,6 +1430,41 @@ def test_a_debugger_that_never_started_prints_no_end_line(tmp_path):
         w._drain(1.0)
         assert "End of Debugging" not in _screen(w), \
             "nothing started, so no session ended:\n%s" % _screen(w)
+
+
+# @scenario SC-debug-32
+def test_a_cancelled_start_prints_no_end_line(tmp_path):
+    """Esc while the debugger is starting: only the cancel line is printed,
+    never "End of Debugging", because the start never became a session."""
+    _need("gcc")
+    env = _silent_gdb_env(tmp_path, LONG_START_TIMEOUT_S)
+    with _c_session(tmp_path, env_extra=env) as w:
+        _start_silent_session(w)
+        w.key(ALT_1, delay=0.4)         # Messages is on top: back to p.c
+        w.key(ESC, delay=0.5)
+        assert _wait_for(w, lambda: "gdb start cancelled" in _screen(w),
+                         STEP_TIMEOUT_S), \
+            "Esc should end the start and say so:\n%s" % _screen(w)
+        w._drain(1.0)
+        assert "End of Debugging" not in _screen(w), \
+            "a cancelled start ran no session, so none ended:\n%s" % _screen(w)
+
+
+# @scenario SC-debug-32
+def test_a_start_that_timed_out_prints_no_end_line(tmp_path):
+    """A start that passed its deadline: only the deadline line is printed,
+    never "End of Debugging", because the start never became a session."""
+    _need("gcc")
+    env = _silent_gdb_env(tmp_path, SHORT_START_TIMEOUT_S)
+    with _c_session(tmp_path, env_extra=env) as w:
+        _start_silent_session(w)
+        expected = "gdb did not answer within %d s" % SHORT_START_TIMEOUT_S
+        assert _wait_for(w, lambda: expected in _screen(w), STEP_TIMEOUT_S), \
+            "the start should end at the deadline:\n%s" % _screen(w)
+        w._drain(1.0)
+        assert "End of Debugging" not in _screen(w), \
+            "a start that timed out ran no session, so none ended:\n%s" \
+            % _screen(w)
 
 
 # @scenario SC-debug-13

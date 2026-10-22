@@ -69,6 +69,11 @@ def _status(w):
     return w.display()[20]
 
 
+def _mark_line(w):
+    """The source line carrying the current-line mark, or None."""
+    return w.mark_line(drain=0.6)
+
+
 # @scenario SC-debug-21
 def test_a68g_breakpoint_run_watch(tmp_path):
     """Set a breakpoint inside factorial, run to it, and inspect n (= 5).
@@ -94,10 +99,22 @@ def test_a68g_breakpoint_run_watch(tmp_path):
         w.key(DOWN, delay=0.4)
         w.key(DOWN, delay=0.4)            # cursor on line 3 (recursive body)
         w.key(CTRL_G, "b", delay=0.5)     # Ctrl-G B: toggle breakpoint
+        # Park the cursor on line 6, away from the breakpoint: only the
+        # debugger can bring the stop back to line 3, so the mark asserted
+        # below is the monitor's stop and not where the cursor already was.
+        w.key(DOWN, delay=0.4)
+        w.key(DOWN, delay=0.4)
+        w.key(DOWN, delay=0.4)            # cursor on line 6
+        assert _mark_line(w) is None, \
+            "with no session there is no current-line mark to be had:\n%s" \
+            % _text(w)
         w.key(CTRL_G, "r", delay=2.0)     # Ctrl-G R: run (no popup to dismiss)
         w._drain(5.0)                     # wait for compile + monitor + stop
-        # Cursor must have jumped to the breakpoint line (line 3).
+        # The stop must be marked on the breakpoint line (line 3).
         assert w.alive(), "wpe died starting the a68g monitor"
+        assert _mark_line(w) == 3, \
+            "the current-line mark should sit on the breakpoint line 3, not " \
+            "on line 6 where the cursor was parked:\n%s" % _text(w)
         assert "3:" in _status(w), \
             "debugger should stop on line 3 (status shows L:C):\n%s" % _status(w)
         # Watch n -- a68g reports "(INT) +5".
@@ -279,12 +296,9 @@ def test_current_line_is_a_readable_green_bar(tmp_path):
         w.key(CTRL_G, "r", delay=2.0)      # run -> stop at line 3
         w._drain(4.0)
         assert w.alive(), "wpe died starting the debugger"
-        # Find a green-background editor row (the current execution line).
-        green = False
-        for y in range(2, 12):
-            row = w.screen.buffer[y]
-            if any("green" in str(row[x].bg) for x in range(1, 40)):
-                green = True
-                break
-        assert green, "current execution line is not highlighted green:\n%s" \
+        # The executing line carries the current-line mark.  This used to scan
+        # rows 2..11 for any background containing "green", which any greenish
+        # row satisfied; the mark's exact colour is what makes the bar readable.
+        assert _mark_line(w) is not None, \
+            "current execution line is not highlighted with the mark:\n%s" \
             % _text(w)
