@@ -262,17 +262,32 @@ WOPT dblst_o[] = {  {"F1 Help",  0, 0, 2, F1},
 		    {"^F7 Make Watch",  9, 0, 3, CF7},
 		    {"F7 Trace", 25, 0, 2,  F7},
                     {"F8 Step", 34, 0, 2, F8},
-		    {"^F10 Run", 43, 0, 4, F10},
+		    {"^F10 Run", 43, 0, 4, CF10},
 		    {"^W Close", 53, 0, 2, CtrlW},
 		    {"Alt-X Quit",  67, 0, 5, AltX}  };
 
 WOPT dblst_u[] = {  {"F1 Help",  0, 0, 2, F1},
-		    {"^F5 Make Watch",  9, 0, 3, CF7},
+		    {"^F5 Make Watch",  9, 0, 3, CF5},
 		    {"F7 Trace", 25, 0, 2,  F7},
 		    {"F8 Step", 34, 0, 2, F8},
-		    {"^F10 Run", 43, 0, 4, F10},
+		    {"^F10 Run", 43, 0, 4, CF10},
 		    {"^F4 Close", 53, 0, 3, CF4},
                     {"Alt-F4 Quit",  64, 0, 6, AF4}  };
+
+/* The bar a source window shows while a debug session runs: the keys that
+   drive the session, the way Turbo C's bar named them, so the user does not
+   have to remember them.  A click sends the key the label names, so "^F10
+   Run" would continue and "^F2 Quit" ends the debugger; "F4 Go to cursor" is
+   the Borland style's, which is the only style that has one.  The CUA style
+   keeps its editing bar: its debugger keys are not decided yet, and a bar
+   that names a key doing nothing is worse than one that names none. */
+WOPT dblst_src_o[] = {  {"F1 Help",  0, 0, 2, F1},
+		    {"F7 Trace", 8, 0, 2, F7},
+		    {"F8 Step", 17, 0, 2, F8},
+		    {"F4 Go to cursor", 25, 0, 2, F4},
+		    {"^F7 Make Watch", 41, 0, 3, CF7},
+		    {"^F2 Quit", 56, 0, 3, CF2},
+		    {"Alt-X Quit", 66, 0, 5, AltX}  };
 
 WOPT xblst_o[] = {  {"F1 Help",  0, 0, 2, F1},
 		    {"Execute",  19, 0, 1, AltE},
@@ -664,7 +679,8 @@ int main(int argc, char **argv)
 #define E_BAR_LEN(bar) ((int)(sizeof(bar) / sizeof((bar)[0])))
 
 /* The editor-window bars and their number of entries: the ones that name
-   F9 have one more. */
+   F9 have one more.  The debug bar belongs here too, so a window that gets
+   it paints and takes clicks on exactly its own entries. */
 static const struct {
  WOPT *bar;
  int n;
@@ -674,6 +690,7 @@ static const struct {
  {  eblst_prog_o, E_BAR_LEN(eblst_prog_o)  },
  {  eblst_lsp_o, E_BAR_LEN(eblst_lsp_o)  },
  {  eblst_lsp_u, E_BAR_LEN(eblst_lsp_u)  },
+ {  dblst_src_o, E_BAR_LEN(dblst_src_o)  },
 #ifdef WPE_AI
  {  eblst_ai_o, E_BAR_LEN(eblst_ai_o)  },
  {  eblst_ai_u, E_BAR_LEN(eblst_ai_u)  },
@@ -807,6 +824,9 @@ int e_switch_blst(ECNT *cn)
    else if (f->blst == oblst_u) f->blst= oblst_o;
   }
  }
+ /* The debugger's bar belongs to the Borland style alone, and an editor bar
+    has to be the one this style offers: re-pick them all after the swap. */
+ e_refresh_editor_bars(cn);
  return(0);
 }
 
@@ -828,45 +848,6 @@ int e_ai_bar_wanted(void)
  if (!WpeIsProg()) return 0;
  return 1;
 }
-
-/**
- * e_ai_refresh_bars - Re-pick each editor window's bottom bar after the AI
- * runtime toggle flips.  Used when the user ticks/unticks "Enable AI assistant"
- * in Options > AI: without this the open windows keep the bar chosen when they
- * were opened, so the "Alt-G AI" entry would not appear until a file was
- * reopened.  Only the swappable editor-file bars (plain / LSP / AI) are touched;
- * Help/Messages/Watch windows keep their own bars.  The AI bars belong to
- * programming mode (wpe, xwpe): under we Alt-G is Go to Line and the bar entry
- * would open nothing, so the plain editor keeps its classic bar.
- */
-void e_ai_refresh_bars(ECNT *cn)
-{
- int i, on = e_ai_bar_wanted(), cua = (cn->edopt & ED_CUA_STYLE) ? 1 : 0;
-
- for (i = 0; i <= cn->mxedt; i++)
- {
-  FENSTER *f = cn->f[i];
-  if (!e_is_editor_bar(f->blst))
-   continue;                            /* not an editor-file bar -- leave it   */
-#ifdef DEBUGGER
-  /* When a file has a language server AND AI is on, show the COMBINED bar so the
-     "Alt-Q ? LSP" hint is never lost -- LSP and AI are usable at the same time. */
-  if (on && e_lsp_bar_wanted(f))
-   e_use_editor_bar(f, cua ? eblst_lspai_u : eblst_lspai_o);
-  else if (on)
-   e_use_editor_bar(f, cua ? eblst_ai_u : eblst_ai_o);
-  else if (e_lsp_bar_wanted(f))
-   e_use_editor_bar(f, cua ? eblst_lsp_u : eblst_lsp_o);
-  else
-   e_use_editor_bar(f, e_plain_editor_bar(cua));
-#else
-  if (on)
-   e_use_editor_bar(f, cua ? eblst_ai_u : eblst_ai_o);
-  else
-   e_use_editor_bar(f, e_plain_editor_bar(cua));
-#endif
- }
-}
 #endif
 
 #ifdef DEBUGGER
@@ -887,6 +868,133 @@ int e_lsp_bar_wanted(FENSTER *f)
  return(e_lsp_server_label(f) != NULL);
 }
 #endif
+
+/**
+ * e_editor_bar_for - The editing bar a file window shows right now.
+ * @f: the window; @cua: the CUA key style is on.
+ *
+ * One place decides which editing keys a file window offers, so a window
+ * never keeps a bar that a change made wrong: the assistant switched off, a
+ * language server that answered for a different file.  A file with both a
+ * server and the assistant gets the combined bar, so neither hint is lost.
+ * Return: the bar to give the window.
+ */
+static WOPT *e_editor_bar_for(FENSTER *f, int cua)
+{
+#ifdef WPE_AI
+#ifdef DEBUGGER
+ if (e_ai_bar_wanted() && e_lsp_bar_wanted(f))
+  return(cua ? eblst_lspai_u : eblst_lspai_o);
+#endif
+ if (e_ai_bar_wanted())
+  return(cua ? eblst_ai_u : eblst_ai_o);
+#endif
+#ifdef DEBUGGER
+ if (e_lsp_bar_wanted(f))
+  return(cua ? eblst_lsp_u : eblst_lsp_o);
+#endif
+ return(e_plain_editor_bar(cua));
+}
+
+/**
+ * e_debug_bar_wanted - Should the editor windows show the debugger's bar?
+ * @cn: the editor.
+ *
+ * Only while a session runs and only in the Borland style: the CUA style has
+ * no decided debugger keys yet, and a bar that names a key doing nothing
+ * sends the user to a dead end.
+ * Return: 1 when the debugger's bar is the one to show.
+ */
+static int e_debug_bar_wanted(ECNT *cn)
+{
+#ifndef DEBUGGER
+ return(0);
+#else
+ if (cn->edopt & ED_CUA_STYLE)
+  return(0);
+ return(e_d_session_runs());
+#endif
+}
+
+/**
+ * e_bottom_bar_repaint - Draw the bottom row again from the active window.
+ * @cn: the editor.
+ *
+ * A bar chosen after the window was drawn (a session that started, the
+ * assistant switched off) reaches the screen at once, so the user reads the
+ * keys that work now instead of the ones the last repaint happened to show.
+ */
+static void e_bottom_bar_repaint(ECNT *cn)
+{
+ FENSTER *f = cn->f[cn->mxedt];
+
+ if (!f || !f->fb)
+  return;
+ blst = f->blst;
+ nblst = f->nblst;
+ e_pr_uul(cn->fb);
+ e_refresh();
+}
+
+/**
+ * e_refresh_editor_bars - Re-pick every editor window's bottom bar.
+ * @cn: the editor.
+ *
+ * Called when a debug session starts or ends, when the assistant's runtime
+ * toggle flips in Options > AI, and when the key style changes: without it an
+ * open window keeps the bar it was given when it was opened, so the user is
+ * shown keys that no longer do what they say.  Only the swappable file bars
+ * are touched; Help, Messages, Watches and Stack keep their own.
+ */
+void e_refresh_editor_bars(ECNT *cn)
+{
+ int i, cua = (cn->edopt & ED_CUA_STYLE) ? 1 : 0;
+ int debugging = e_debug_bar_wanted(cn);
+
+ for (i = 0; i <= cn->mxedt; i++)
+ {
+  FENSTER *f = cn->f[i];
+
+  if (!e_is_editor_bar(f->blst))
+   continue;                            /* not an editor-file bar -- leave it   */
+  if (!debugging || !e_give_debug_bar(f))
+   e_use_editor_bar(f, e_editor_bar_for(f, cua));
+ }
+ e_bottom_bar_repaint(cn);
+}
+
+/**
+ * e_give_debug_bar - Give a source window the debugger's bar while a
+ * session runs.
+ * @f: a file window.
+ *
+ * Used for every source window, the ones open when the session starts and
+ * the ones it opens later (a step into another file, a stop in a file not
+ * yet open, F3 in the middle of a session), so F4 is Go to cursor in each
+ * of them and none shows the editing keys until the session ends.
+ * Return: 1 when the window got the debugger's bar.
+ */
+int e_give_debug_bar(FENSTER *f)
+{
+ if (!f || !e_debug_bar_wanted(f->ed))
+  return(0);
+ e_use_editor_bar(f, dblst_src_o);
+ return(1);
+}
+
+/**
+ * e_bar_offers_goto_cursor - Does this window's bar offer F4 Go to cursor?
+ * @f: the window F4 was pressed in.
+ *
+ * F4 runs to the cursor only where the bottom row says it does: a source
+ * window during a session.  In Messages, Watches or Stack, and in the CUA
+ * style, F4 keeps doing what it did before.
+ * Return: 1 when F4 is Go to cursor in @f.
+ */
+int e_bar_offers_goto_cursor(FENSTER *f)
+{
+ return(f && f->blst == dblst_src_o);
+}
 
 /**
  * e_pack_button_bar - Arrange a status-bar's clickable shortcuts compactly.

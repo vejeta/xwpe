@@ -411,6 +411,8 @@ FARBE *e_ini_farbe();
 int e_switch_blst(ECNT *cn);
 void e_use_editor_bar(FENSTER *f, WOPT *bar);
 int e_lsp_bar_wanted(FENSTER *f);
+void e_refresh_editor_bars(ECNT *cn);
+int e_give_debug_bar(FENSTER *f);
 void e_free_find(FIND *fd);
 
 /*   we_block.c   */
@@ -650,6 +652,10 @@ COLOR e_n_t_clr(int fb);
 #endif
 POINT e_set_pnt(int x, int y);
 int e_pr_uul(FARBE *fb);
+void e_status_paint(FARBE *fb, const char *text);
+void e_status_hold(const char *text);
+int e_status_drop_held(void);
+void e_status_key_pressed(FENSTER *f);
 
 /*   we_menue.c   */
 /* The `nm` of a dropdown that hangs from no menu-bar entry (the Alt-G
@@ -918,6 +924,8 @@ int e_make_line_num(char *str, char *file);
 int e_make_line_num2(char *str, char *file);
 int e_d_goto_break(char *file, int line, FENSTER *f);
 int e_d_is_watch(int c, FENSTER *f);
+int e_d_session_runs(void);
+int e_bar_offers_goto_cursor(FENSTER *f);
 int e_debug_switch(FENSTER *f, int c);
 int e_d_putchar(int c);
 int e_g_sys_ini(void);

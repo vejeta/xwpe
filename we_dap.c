@@ -1217,6 +1217,49 @@ int e_dap_add_breakpoint(e_dap_session *s, const char *file, int line)
  return 0;
 }
 
+/**
+ * e_dap_set_file_breakpoints - Replace one file's breakpoints while the
+ * program is stopped.
+ * @s: the session; @file: the source file; @lines: its breakpoint lines;
+ * @n: how many.
+ *
+ * DAP has no run-to-cursor request, so Go to cursor adds the cursor's line
+ * to the file's breakpoints, continues, and sends the list again without it
+ * at the next stop.  setBreakpoints replaces every breakpoint of the file,
+ * which is why the whole list is sent each time.
+ * Return: 0 when the adapter answered, -1 otherwise.
+ */
+int e_dap_set_file_breakpoints(e_dap_session *s, const char *file,
+                               const int *lines, int n)
+{
+ struct json_object *args, *bps, *src, *resp;
+ char abspath[PATH_MAX];
+ int i, seq;
+
+ if (!s || s->ended)
+  return -1;
+ if (!realpath(file, abspath))
+  snprintf(abspath, sizeof(abspath), "%s", file);
+ args = json_object_new_object();
+ src = json_object_new_object();
+ json_object_object_add(src, "path", json_object_new_string(abspath));
+ json_object_object_add(args, "source", src);
+ bps = json_object_new_array();
+ for (i = 0; i < n; i++)
+ {
+  struct json_object *b = json_object_new_object();
+  json_object_object_add(b, "line", json_object_new_int(lines[i]));
+  json_object_array_add(bps, b);
+ }
+ json_object_object_add(args, "breakpoints", bps);
+ seq = dap_send(s, "setBreakpoints", args);
+ resp = dap_wait_response(s, seq);
+ if (!resp)
+  return -1;
+ json_object_put(resp);
+ return 0;
+}
+
 int e_dap_run(e_dap_session *s)
 {
  if (!s)

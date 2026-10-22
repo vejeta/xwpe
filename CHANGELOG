@@ -369,6 +369,46 @@ Changes
   row say "gdb ended unexpectedly (exit status 137)".  It used to read
   "End of Debugging", like a quit you asked for.
 
+* While a debug session runs, under every debugger and debug adapter, the
+  source window's bottom row names the debugger's keys, as Turbo C's did:
+  "F7 Trace", "F8 Step", "F4 Go to cursor", "^F7 Make Watch", "^F2 Quit".
+  The editing keys come back when the session ends.  The CUA key style
+  keeps its editing bar.
+
+* In the Borland key style F4 in a source window is Go to cursor while a
+  debug session runs (the same as Ctrl-G U).  With no session, and in
+  Messages, Watches or Stack, it is still Search.
+
+* Go to cursor works with every debugger: gdb, pdb, jdb, a68g, and the
+  debug adapters for Go, Rust and Scala.  It used to do nothing except
+  under gdb.  Where the debugger has no such command, the line gets a
+  breakpoint of its own that is removed at the next stop; a breakpoint
+  of yours on that line stays.
+
+* Under a68g a breakpoint removed with Ctrl-G B during a session stops the
+  program no more.  It used to keep stopping there.
+
+* A click on a debugger bar entry sends the key its label names: "^F10
+  Run" on the Watches and Stack bars continues the program, and the CUA
+  "^F5 Make Watch" makes a watch.  They used to send F10 and Ctrl-F7.
+
+* Ctrl-G R on a .java or .py file names the debugger it picks on the
+  status row ("Python file: switching to pdb debugger."), and the line
+  stays until the next key.  It used to be a box to dismiss before the
+  session went on.
+
+* A debugger that cannot start, because it is not installed, shows only
+  the reason.  "End of Debugging" no longer follows it: no session ran.
+
+* Under jdb, Ctrl-G R that runs the program to its end says "Program
+  exited." in Messages and ends the session.  It used to raise "No
+  Source-Code".
+
+* A breakpoint set or removed while a project is open is written to the
+  project file when the project closes or the editor quits, and is back
+  in the margin when the project is opened again.  It used to be saved
+  only when something else in the project had changed.
+
 * After every stop the window's line:column field shows the marked line.
   After a step it used to show the previous stop's line until a key.
 

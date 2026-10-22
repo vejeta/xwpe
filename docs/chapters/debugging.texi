@@ -83,7 +83,38 @@ and via @kbd{Ctrl-G} prefix shortcuts:
 @noindent
 Alternative keys (when function keys are available):
 Ctrl-F8 = Toggle Breakpoint, Ctrl-F7 = Make Watch, Ctrl-F6 = Stack,
-F7 = Trace, F8 = Step, Ctrl-F10 = Run, Ctrl-F2 = Quit.
+F7 = Trace, F8 = Step, Ctrl-F10 = Run, Ctrl-F2 = Quit.  In the Borland
+key style, F4 in a source window is Go to cursor while a session runs,
+as in Turbo C; with no session, and in Messages, Watches or Stack, it is
+Search.
+
+@cindex Go to cursor
+Go to cursor works with every debugger.  gdb runs @code{until} the
+line.  pdb, jdb, a68g and the debug adapters get a breakpoint on the
+line that is removed at the next stop, wherever the program stops; a
+breakpoint of your own on that line stays.
+
+@cindex breakpoints, in a project
+With a project open, the breakpoints are saved in the project file
+(@code{BREAKPOINTS=}) when the project closes or the editor quits.
+Opening the project again puts them back in the margin.
+
+@section The bottom row during a session
+
+@cindex debugger bar
+While a session runs, with any debugger or debug adapter, the bottom row
+of a source window names the keys that drive it, as Turbo C's status
+line did:
+
+@example
+F1 Help F7 Trace F8 Step F4 Go to cursor ^F7 Make Watch ^F2 Quit  Alt-X Quit
+@end example
+
+@noindent
+A click on an entry sends the key it names.  When the session ends,
+the editing keys come back.  In the CUA key style the source window
+keeps its editing bar.  The Watches and Stack windows have their own
+bar, where @samp{^F10 Run} continues the program.
 
 @section Starting a session
 
@@ -102,6 +133,12 @@ starting gdb ... 3s  (Esc cancels)
 The editor keeps taking keys.  When the debugger answers, the command
 you pressed runs.  Another debugger command pressed meanwhile does
 nothing, and the status row says that the debugger is starting.
+
+The debugger follows the file's language.  When a @file{.java} or
+@file{.py} file needs another debugger than the one selected, the
+status row says which one starts, for example @samp{Python file:
+switching to pdb debugger.}, and the line stays there until you press
+a key.  Nothing has to be dismissed.
 
 Press @key{Esc} to end a debugger that is slow to answer.  Messages
 then says @samp{gdb start cancelled}.  A debugger that is silent for
@@ -137,7 +174,9 @@ Program exited with code 3
 gdb gives the code for every program; pdb gives it when the script
 calls @code{sys.exit}.  jdb, a68g and the debug adapters do not report
 one, and Messages says @samp{Program exited.}.  Debug > Quit ends the
-session with @samp{End of Debugging}.
+session with @samp{End of Debugging}.  A debugger that cannot start,
+because it is not installed, is named with the reason only: no session
+ran, so none ends.
 
 A debugger that ends without being asked (it crashed, or was killed)
 is named in Messages and on the status row, with its exit status; a
@@ -352,7 +391,7 @@ inspection may be limited for Pascal-specific types (strings, sets).
 
 xwpe auto-selects jdb when opening a @file{.java} file.  No manual
 configuration is needed.  If gdb was previously selected, xwpe
-switches to jdb automatically with an informational message.
+switches to jdb automatically and says so on the status row.
 
 jdb differences from gdb:
 
@@ -389,6 +428,11 @@ time and the session goes on.
 @item
 @strong{Watches}: @kbd{Ctrl-G W} sends @code{print @var{expr}} and
 shows the value after the @samp{=}.  Every stop refreshes them.
+
+@item
+@strong{The end of the program}: jdb's ``The application exited'' is
+read as the end, so Messages says @samp{Program exited.} and the
+session ends.
 @end itemize
 
 Requires @command{default-jdk} (Debian/Ubuntu) or equivalent JDK
@@ -400,7 +444,8 @@ package that provides @command{javac} and @command{jdb}.
 @cindex pdb
 
 xwpe auto-selects pdb when opening a @file{.py} file.  No manual
-configuration is needed.
+configuration is needed.  When another debugger was selected, the
+status row says that pdb starts.
 
 pdb differences from gdb:
 

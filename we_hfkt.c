@@ -269,6 +269,110 @@ POINT e_set_pnt(int x, int y)
  return(p);
 }
 
+/* What a status line that does not fit the screen starts with: it keeps
+   its end, where the part of a long file name the user knows is. */
+#define E_STATUS_CUT_MARK "..."
+/* Columns the bottom row keeps free: the one it is drawn from, and the
+   last one. */
+#define E_STATUS_MARGIN 2
+
+/* A status line that stays on the bottom row until the next key, or NULL. */
+static char *e_status_held_line;
+
+/**
+ * e_status_paint - Write one line of text over the bottom row.
+ * @fb: the colours; @text: the line.
+ *
+ * The bottom row is where the user reads why a key did nothing or what the
+ * editor just decided for him; a line too long for the screen keeps its end.
+ * The caller refreshes the screen.
+ */
+void e_status_paint(FARBE *fb, const char *text)
+{
+ int room = MAXSCOL - E_STATUS_MARGIN, len = (int)strlen(text);
+ char *shown;
+
+ if (!fb || room <= (int)strlen(E_STATUS_CUT_MARK))
+  return;
+ shown = MALLOC(room + 1);
+ if (len <= room)
+  strcpy(shown, text);
+ else
+ {
+  strcpy(shown, E_STATUS_CUT_MARK);
+  strcat(shown, text + len - (room - (int)strlen(E_STATUS_CUT_MARK)));
+ }
+ e_blk(MAXSCOL, 0, MAXSLNS - 1, fb->mt.fb);
+ e_pr_str(1, MAXSLNS - 1, shown, fb->ms.fb, -1, -1, fb->ms.fb, fb->mt.fb);
+ FREE(shown);
+}
+
+/**
+ * e_status_hold - Keep a status line on the bottom row until the next key.
+ * @text: the line.
+ *
+ * For a line the editor says while it goes on working by itself (a debugger
+ * chosen for the file's language, then started): the windows that work
+ * repaints next would put the key hints back at once and the user would
+ * never read it.  Every repaint of the bar paints this line instead until
+ * the user presses a key.
+ */
+void e_status_hold(const char *text)
+{
+ e_status_drop_held();
+ e_status_held_line = WpeStrdup(text);
+}
+
+/**
+ * e_status_drop_held - Forget the status line kept until the next key.
+ *
+ * A newer status line takes the row, so an older one must not come back
+ * with the next repaint.
+ * Return: 1 when a line was being kept.
+ */
+int e_status_drop_held(void)
+{
+ if (!e_status_held_line)
+  return(0);
+ WpeFree(e_status_held_line);
+ e_status_held_line = NULL;
+ return(1);
+}
+
+/**
+ * e_status_key_pressed - The user pressed a key: put the key hints back.
+ * @f: the window on top.
+ *
+ * The kept status line has been read once the user acts, so the bottom row
+ * names the keys again, as it does after any other status line.
+ */
+void e_status_key_pressed(FENSTER *f)
+{
+ if (!e_status_drop_held() || !f || !f->fb)
+  return;
+ e_pr_uul(f->fb);
+ e_refresh();
+}
+
+/**
+ * e_status_bar_row_sync - Make the next refresh copy the whole bottom row.
+ *
+ * The incremental Xft refresh copies only the bounding box of cells whose
+ * char/attr differ from altschirm[].  When the bar is repainted after a
+ * window that overlapped this row closes (e.g. the File-Manager), cells
+ * whose glyph happens to be unchanged are skipped, so stale pixels survive
+ * in the backbuf.  Breaking the altschirm sync for the whole row makes the
+ * next e_refresh re-render and copy row MAXSLNS-1 in full.
+ */
+static void e_status_bar_row_sync(void)
+{
+ extern SCREENCELL *altschirm;
+ int j;
+
+ for (j = 0; j < MAXSCOL; ++j)
+  altschirm[(MAXSLNS - 1) * MAXSCOL + j].ch = -1;
+}
+
 int e_pr_uul(FARBE *fb)
 {
  extern WOPT *blst;
@@ -277,6 +381,12 @@ int e_pr_uul(FARBE *fb)
  int i, rlim;
  const char *prj;
 
+ if (e_status_held_line)
+ {
+  e_status_paint(fb, e_status_held_line);
+  e_status_bar_row_sync();
+  return(0);
+ }
  /* Reserve the right edge for the project label so the last button never
     draws into it, regardless of bar contents or label length. */
  prj = e_prj_status_label();
@@ -289,18 +399,7 @@ int e_pr_uul(FARBE *fb)
  if (prj)
   e_pr_str(MAXSCOL - 2 - strlen(prj), MAXSLNS - 1,
            prj, fb->ms.fb, -1, -1, fb->ms.fb, fb->mt.fb);
- /* The incremental Xft refresh copies only the bounding box of cells whose
-    char/attr differ from altschirm[].  When the bar is repainted after a
-    window that overlapped this row closes (e.g. the File-Manager), cells
-    whose glyph happens to be unchanged are skipped, so stale pixels survive
-    in the backbuf.  Break the altschirm sync for the whole bar row so the
-    next e_refresh re-renders and copies row MAXSLNS-1 in full. */
- {
-  extern SCREENCELL *altschirm;
-  int _j;
-  for (_j = 0; _j < MAXSCOL; ++_j)
-   altschirm[(MAXSLNS - 1) * MAXSCOL + _j].ch = -1;
- }
+ e_status_bar_row_sync();
  return(i);
 }
 

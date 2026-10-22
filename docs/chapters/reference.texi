@@ -52,6 +52,7 @@ minimum 80x25; e.g.@: @option{-g 80x20+4+4}).
 
 @multitable @columnfractions .20 .40 .40
 @headitem Key @tab In editor @tab In debugger
+@item @key{F4} @tab Search @tab Go to cursor (Borland key style)
 @item @key{F7} @tab @tab Trace (step into)
 @item @key{F8} @tab @tab Step (step over)
 @item @key{F9} @tab Make (build) @tab

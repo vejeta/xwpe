@@ -1521,13 +1521,6 @@ void e_build_refuse(FENSTER *f)
  e_status_say(f, E_BUILD_BUSY_LINE);
 }
 
-/* What a status line that does not fit the screen starts with: it keeps
-   its end, where the part of a long file name the user knows is. */
-#define E_STATUS_CUT_MARK "..."
-/* Columns the bottom row keeps free: the one it is drawn from, and the
-   last one. */
-#define E_STATUS_MARGIN 2
-
 /**
  * e_status_say - Answer a key on the bottom row.
  * @f: the window the key was pressed in; @text: what to say.
@@ -1536,28 +1529,34 @@ void e_build_refuse(FENSTER *f)
  * with no messages, a row naming a file that is not there): the user reads
  * why at once, where Borland's status line said it, instead of seeing
  * nothing happen.  The next repaint of the hint row puts the key hints
- * back.
+ * back.  A line kept until the next key gives way to this newer one.
  */
 void e_status_say(FENSTER *f, const char *text)
 {
- int room = MAXSCOL - E_STATUS_MARGIN, len = (int)strlen(text);
- char *shown;
-
- if (!f || !f->fb || room <= (int)strlen(E_STATUS_CUT_MARK))
+ if (!f || !f->fb)
   return;
- shown = MALLOC(room + 1);
- if (len <= room)
-  strcpy(shown, text);
- else
- {
-  strcpy(shown, E_STATUS_CUT_MARK);
-  strcat(shown, text + len - (room - (int)strlen(E_STATUS_CUT_MARK)));
- }
- e_blk(MAXSCOL, 0, MAXSLNS - 1, f->fb->mt.fb);
- e_pr_str(1, MAXSLNS - 1, shown, f->fb->ms.fb, -1, -1,
-          f->fb->ms.fb, f->fb->mt.fb);
+ e_status_drop_held();
+ e_status_paint(f->fb, text);
  e_refresh();
- FREE(shown);
+}
+
+/**
+ * e_status_say_until_key - Say a line on the bottom row and keep it there
+ * until the user presses a key.
+ * @f: the window on top; @text: what to say.
+ *
+ * For a line said while the editor goes on working by itself, such as the
+ * debugger it picked for the file's language before that debugger starts:
+ * the windows the start repaints would otherwise put the key hints back
+ * before the user could read it.
+ */
+void e_status_say_until_key(FENSTER *f, const char *text)
+{
+ if (!f || !f->fb)
+  return;
+ e_status_hold(text);
+ e_status_paint(f->fb, text);
+ e_refresh();
 }
 
 /**

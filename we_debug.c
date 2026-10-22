@@ -593,6 +593,17 @@ static void e_d_flush_inferior_stdout(void)
 #define E_D_EXIT_PLAIN      "Program exited."
 #define E_D_EXIT_CODE_FMT   "Program exited with code %ld"
 #define E_D_EXIT_LINE_MAX   64
+/* What jdb prints when the program it ran reaches its end.  Its wording has
+   no "exited" in it, so the shorter word every other backend says misses it. */
+#define E_D_JDB_EXIT        "The application exited"
+/* What jdb prints to name a stop.  Its prompt alone is not one: jdb echoes
+   the prompt before the program's output, so reading the prompt as a stop
+   lands the mark on whatever line the editor was already on. */
+#define E_D_JDB_STOP_MARK   "Breakpoint hit:"
+#define E_D_JDB_STEP_MARK   "Step completed:"
+/* Said on the status row when the file's language picks another debugger. */
+#define E_D_SWITCH_JDB_LINE "Java file: switching to jdb debugger."
+#define E_D_SWITCH_PDB_LINE "Python file: switching to pdb debugger."
 
 /**
  * e_d_exit_code_of - Read the program's exit code from the debugger's line.
@@ -648,6 +659,23 @@ static void e_d_say_program_exited(const char *line, FENSTER *f)
   e_d_p_message(E_D_EXIT_PLAIN, f, 0);
 }
 
+/**
+ * e_d_line_says_program_exited - Does this line say the program ended?
+ * @line: one line the debugger printed.
+ *
+ * gdb, pdb and a68g say "exited"; jdb says "The application exited", which
+ * that word misses, so a Java program that ran to its end was reported as
+ * missing source instead of as a program that finished.  Every backend now
+ * gets its end line.
+ * Return: 1 when the line says the program ended.
+ */
+static int e_d_line_says_program_exited(const char *line)
+{
+ if (strstr(line, "exited"))
+  return(1);
+ return(strstr(line, E_D_JDB_EXIT) != NULL);
+}
+
 static void e_d_accum_complete(void)
 {
  FENSTER *f = e_d_accum.f;
@@ -666,7 +694,7 @@ static void e_d_accum_complete(void)
 
  for (i = 0; i < SVLINES; i++)
  {
-  if (strstr(e_d_sp[i], "exited"))
+  if (e_d_line_says_program_exited(e_d_sp[i]))
   {
    e_d_say_program_exited(e_d_sp[i], f);
    e_d_quit(f);
@@ -1016,6 +1044,19 @@ int e_d_q_quit(FENSTER *f)
  return(0);
 }
 
+/**
+ * e_d_session_runs - Is a debugger session open?
+ *
+ * The debugger's keys and its bar are offered only while a session runs, so
+ * F4 stays Search and a source window keeps its editing keys the rest of the
+ * time: the user is never shown a key that does something else.
+ * Return: 1 while a session is starting, stopped or running.
+ */
+int e_d_session_runs(void)
+{
+ return(e_d_swtch > 0);
+}
+
 int e_debug_switch(FENSTER *f, int c)
 {
  switch (c)
@@ -1054,6 +1095,15 @@ int e_debug_switch(FENSTER *f, int c)
    {
     switch (c)
     {
+     case F4:
+      /* Borland's F4 is Go to cursor while a program is stopped and Search
+         the rest of the time, so the key does what the bar under it says:
+         only a source window whose bar offers it runs to the cursor, never
+         Messages or a backend that cannot. */
+      if (!e_bar_offers_goto_cursor(f))
+       return(c);
+      e_d_goto_cursor(f);
+      break;
      case CF8:
       e_breakpoint(f);
       break;
@@ -1671,7 +1721,7 @@ static void e_d_say_session_end(const char *died, FENSTER *f)
 int e_d_quit(FENSTER *f)
 {
  ECNT *cn = f->ed;
- int i;
+ int i, ran = e_d_session_runs();
  char died[E_D_DIED_LINE_MAX];
 
  jdb_trace("e_d_quit: CALLED, e_d_swtch=%d, e_deb_type=%d\n",
@@ -1682,7 +1732,10 @@ int e_d_quit(FENSTER *f)
  if (e_d_dap_active())
   e_d_dap_quit(f);   /* disconnect the adapter; common cleanup runs below */
  e_d_quit_basic(f);
- e_d_say_session_end(died, f);
+ /* A start that failed opened no session, so there is none to end: the user
+    reads only the reason it failed, not an end that never began. */
+ if (ran)
+  e_d_say_session_end(died, f);
  WpeMouseChangeShape(WpeEditingShape);
  e_d_delbreak(f);
  /* Switch back to the source file, not Messages.
@@ -1693,6 +1746,9 @@ int e_d_quit(FENSTER *f)
    e_switch_window(cn->edt[i], cn->f[cn->mxedt]);
    break;
   }
+ /* The editing keys come back on the bottom row; painted before the line
+    below so a debugger that died still has the last word. */
+ e_refresh_editor_bars(cn);
  if (died[0])
   e_status_say(cn->f[cn->mxedt], died);
  return(0);
@@ -2467,6 +2523,25 @@ int e_brk_recalc(FENSTER *f, int start, int len)
 }
 /*****************************************/
 
+/**
+ * e_d_breakpoints_changed - Have the open project keep the new breakpoints.
+ * @cn: the editor.
+ *
+ * The project file stores the breakpoints, but it is written only when the
+ * project window has changes.  Marking it here is what makes a breakpoint
+ * set or removed with a project open still be so when the editor is started
+ * on that project again.
+ */
+static void e_d_breakpoints_changed(ECNT *cn)
+{
+ int i = e_find_project_window(cn);
+
+ if (i > 0)
+  cn->f[i]->save = 1;
+}
+
+static int e_d_a68g_reset_breakpoints(void);
+
 /*  Breakpoints   */
 int e_breakpoint(FENSTER *f)
 {
@@ -2493,6 +2568,10 @@ int e_remove_breakpoints(FENSTER *f)
   else if (e_deb_type == DEB_A68G)
    e_d_send_cmd("breakpoint clear breakpoints\n");
  }
+ /* Opening a project clears the list before it reads the project's own, so
+    only a list that had breakpoints is a change the project has to keep. */
+ if (e_d_nbrpts > 0)
+  e_d_breakpoints_changed(cn);
  for (i = 0; i < e_d_nbrpts; i++)
   FREE(e_d_sbrpts[i]);
  for (i = cn->mxedt; i >= 0; i--)
@@ -2716,6 +2795,7 @@ int e_make_breakpoint(FENSTER *f, int sw)
  {
   if (!e_check_c_file(f->datnam) && !e_d_dap_source_ext(f->datnam))
    return(e_error(e_p_msg[ERR_NO_CFILE], 0, f->fb));
+  e_d_breakpoints_changed(cn);      /* the line's breakpoint goes or comes */
   for(i = 0; i < s->brp[0] && s->brp[i+1] != b->b.y; i++)
    ;
   if (i < s->brp[0])
@@ -2747,10 +2827,13 @@ int e_make_breakpoint(FENSTER *f, int sw)
      if (e_d_dum_read() == -1) return(-1);
      sprintf(eing, "%d d\n", e_d_ybrpts[i]);
     }
-    else if (e_deb_type == DEB_A68G)
-     sprintf(eing, "breakpoint %d clear\n", e_d_ybrpts[i]);
-    e_d_send_cmd(eing);
-    if (e_d_dum_read() == -1) return(-1);
+    /* a68g is told once the list is updated, below: its per-line clear
+       does not clear. */
+    if (e_deb_type != DEB_A68G)
+    {
+     e_d_send_cmd(eing);
+     if (e_d_dum_read() == -1) return(-1);
+    }
    }
    FREE(e_d_sbrpts[i]);
    for (; i < e_d_nbrpts - 1; i++)
@@ -2768,6 +2851,11 @@ int e_make_breakpoint(FENSTER *f, int sw)
     e_d_ybrpts = NULL;
     FREE(e_d_nrbrpts);
     e_d_nrbrpts = NULL;
+   }
+   if (e_d_swtch && e_deb_type == DEB_A68G)
+   {
+    if (e_d_a68g_reset_breakpoints() == -1)
+     return(-1);
    }
   }
   else
@@ -4431,6 +4519,10 @@ static void e_d_start_continue(void)
  f = cn->f[cn->mxedt];
  if (e_d_start_after_answer(f) < 0)
   return;
+ /* A debug adapter's start returned before any bar was chosen, and the
+    selected debugger may differ from the one the start began with: name
+    the keys of the session that now runs. */
+ e_refresh_editor_bars(cn);
  if (cmd)
   e_d_start_run_pressed(cmd, cn->f[cn->mxedt], arg);
 }
@@ -4858,12 +4950,33 @@ static void e_d_resume_after_build(e_d_resume_fn cmd, int arg)
  e_d_resume_arg = arg;
 }
 
+/* A line the status row owes the user once the debugger's bar is up. */
+static const char *e_d_pending_status;
+
+/**
+ * e_d_say_pending_status - Name the debugger picked for the file's language.
+ * @f: the window on top.
+ *
+ * Said once the debugger's bar is up and kept on the row until the next
+ * key: the start goes on by itself (breakpoints, Watches, the first stop)
+ * and each of those repaints would put the key hints back before the user
+ * could read which debugger runs.
+ */
+static void e_d_say_pending_status(FENSTER *f)
+{
+ if (!e_d_pending_status)
+  return;
+ e_status_say_until_key(f, e_d_pending_status);
+ e_d_pending_status = NULL;
+}
+
 int e_start_debug(FENSTER *f)
 {
  ECNT *cn = f->ed;
  int i, file;
  char estr[128];
 
+ e_d_pending_status = NULL;
  efildes[0] = efildes[1] = -1;
  wfildes[0] = wfildes[1] = -1;
  rfildes[0] = rfildes[1] = -1;
@@ -4913,18 +5026,20 @@ int e_start_debug(FENSTER *f)
  for (i = 0; i < SVLINES; i++)
  {  e_d_sp[i] = e_d_out_str[i];  e_d_out_str[i][0] = '\0';  }
  /* Auto-select debugger by file extension.
-    gdb cannot debug Java bytecode or Python scripts. */
+    gdb cannot debug Java bytecode or Python scripts.  The switch is said on
+    the status row, not in a box: the user asked to run, and a box would make
+    him dismiss it before the very command he pressed does anything. */
  { int _l = strlen(e_d_file);
    if (_l > 5 && !strcmp(e_d_file + _l - 5, ".java"))
    {
     if (e_deb_type != DEB_JDB)
-     e_error("Java file: switching to jdb debugger.", -1, f->fb);
+     e_d_pending_status = E_D_SWITCH_JDB_LINE;
     e_deb_type = DEB_JDB;
    }
    else if (_l > 3 && !strcmp(e_d_file + _l - 3, ".py"))
    {
     if (e_deb_type != DEB_PDB)
-     e_error("Python file: switching to pdb debugger.", -1, f->fb);
+     e_d_pending_status = E_D_SWITCH_PDB_LINE;
     e_deb_type = DEB_PDB;
    }
    else if ((_l > 4 && !strcmp(e_d_file + _l - 4, ".a68")) ||
@@ -5121,6 +5236,10 @@ int e_run_debug(FENSTER *f)
  if (e_d_start_refused(f))
   return(E_D_STARTING);
  if (e_d_swtch < 1 && (ret = e_start_debug(f)) < 0) return(ret);
+ /* From here a session is open, so the source window's bottom row names the
+    debugger's keys instead of the editing ones. */
+ e_refresh_editor_bars(f->ed);
+ e_d_say_pending_status(f);
  if (e_d_swtch < 2)
  {
   e_d_set_nonblock(efildes[0]);
@@ -5471,6 +5590,8 @@ static void e_d_pdb_mark_step(FENSTER *f, const char *text)
  e_d_pdb_mark_stop(f, file, line);
 }
 
+static int e_d_jdb_read_stop(FENSTER *f);
+
 /*  Run  */
 int e_deb_run(FENSTER *f)
 {
@@ -5666,6 +5787,14 @@ int e_deb_run(FENSTER *f)
   e_d_accum_init(f, main_brk);
   return(0);
  }
+ if (e_deb_type == DEB_JDB)
+ {
+  /* jdb closes its pipe when the program ends and echoes its prompt before
+     the program's output, so only the poll reader that knows its wording
+     tells a stop from an end; e_read_output's prompt loop reads that echo as
+     a stop and then reports source it cannot find. */
+  return(e_d_jdb_read_stop(f));
+ }
  if (e_deb_type == DEB_A68G)
  {
   /* a68g shares one stream and exits on completion (EOF); the poll-based
@@ -5691,11 +5820,14 @@ int e_deb_next(FENSTER *f)
  return(e_d_step_next(f, 1));
 }
 
-/* Read and apply a jdb step/next response: poll for the "] " prompt, jump the
-   editor cursor to the reported source line, and capture any program output
-   (between the "> " prompt and the next jdb protocol line) for Ctrl-G P.
+/* Read and apply what jdb answers to a step or a continue: poll for the stop
+   jdb names, jump the editor cursor to the reported source line, and capture
+   any program output (between the "> " prompt and the next jdb protocol line)
+   for Ctrl-G P.  jdb closes its pipe when the program reaches its end, so the
+   end of the stream is the program's end and gets its own line in Messages,
+   the way every other backend prints one.
    Returns 0, or e_d_quit(f) if the program or jdb exited. */
-static int e_d_jdb_step_complete(FENSTER *f)
+static int e_d_jdb_read_stop(FENSTER *f)
 {
  struct pollfd _pfd = { .fd = wfildes[0], .events = POLLIN };
  char _jbuf[DEB_STEP_BUF];
@@ -5715,11 +5847,16 @@ static int e_d_jdb_step_complete(FENSTER *f)
   _jbuf[_jlen] = '\0';
   jdb_trace("e_d_step_next: poll read %d bytes total=%d: [%s]\n",
             _n, _jlen, _jbuf);
-  if (strstr(_jbuf, "] "))
+  if (e_d_line_says_program_exited(_jbuf))
+  {  /* The program ended: say so where the other backends say it, and let
+        the session end.  A prompt alone is no stop, so it is not read as one. */
+   e_d_say_program_exited(_jbuf, f);
+   return(e_d_quit(f));  }
+  /* jdb echoes its prompt before the program's output arrives, so the prompt
+     alone says nothing: only a stop jdb names is one. */
+  if (strstr(_jbuf, "] ") &&
+      (strstr(_jbuf, E_D_JDB_STOP_MARK) || strstr(_jbuf, E_D_JDB_STEP_MARK)))
    _found = 1;
-  if (strstr(_jbuf, "exited"))
-  {  e_error("Program exited. Debugger stopped.", 0, f->fb);
-     return(e_d_quit(f));  }
  }
  /* Extract program output from jdb response buffer.
     Program output is text between "> " prompt and "Step completed:"
@@ -6062,7 +6199,7 @@ int e_d_step_next(FENSTER *f, int sw)
  else e_d_send_cmd("s\n");
  e_d_nstack = 0;
  if (e_deb_type == DEB_JDB)
-  return e_d_jdb_step_complete(f);
+  return e_d_jdb_read_stop(f);
  if (e_deb_type == DEB_PDB)
   return e_d_pdb_step_complete(f);
  if (e_d_pty_master >= 0 && e_deb_type == DEB_GDB)
@@ -6073,6 +6210,215 @@ int e_d_step_next(FENSTER *f, int sw)
  return(e_read_output(f));
 }
 
+/* The debugger commands Go to cursor and Finish function pass on. */
+#define E_D_GOTO_CURSOR 'U'
+#define E_D_GOTO_FINISH 'F'
+
+/* Room for the debugger command that sets or clears the cursor's breakpoint. */
+#define E_D_CURSOR_CMD_MAX (PATH_MAX + 64)
+
+/* The breakpoint Go to cursor sets for itself, removed at the next stop. */
+static struct {
+ int set;                      /* 1 while it is in the debugger            */
+ int line;                     /* its 1-based line                         */
+ char file[PATH_MAX];          /* the window's file name, as breakpoints   */
+ char path[PATH_MAX];          /* the full path the debugger is given      */
+} e_d_cursor_brk;
+
+/**
+ * e_d_goto_supported - Does the selected debugger do this command?
+ * @flag: E_D_GOTO_CURSOR or E_D_GOTO_FINISH.
+ *
+ * Go to cursor works with every debugger: gdb has "until", the others get
+ * a breakpoint of their own on the line.  Finish function is gdb's alone.
+ * Return: 1 when it does.
+ */
+static int e_d_goto_supported(int flag)
+{
+ if (flag == E_D_GOTO_CURSOR)
+  return(1);
+ return(e_deb_type == DEB_GDB);
+}
+
+/**
+ * e_d_user_brk_on - Has the user a breakpoint of his own on this line?
+ * @file: the window's file name; @line: 1-based.
+ *
+ * The program stops there anyway, so Go to cursor only continues, and the
+ * user's breakpoint is never the one removed at the stop.
+ * Return: 1 when he has.
+ */
+static int e_d_user_brk_on(const char *file, int line)
+{
+ int i;
+
+ for (i = 0; i < e_d_nbrpts; i++)
+  if (e_d_ybrpts[i] == line && !strcmp(e_d_sbrpts[i], file))
+   return(1);
+ return(0);
+}
+
+/**
+ * e_d_cursor_brk_class - The class jdb names a breakpoint by: the file name
+ * without ".java".
+ * @out: where to put it; @size: its size.
+ */
+static void e_d_cursor_brk_class(char *out, size_t size)
+{
+ snprintf(out, size, "%s", e_d_cursor_brk.file);
+ WpeStringCutChar(out, '.');
+}
+
+/**
+ * e_d_cursor_brk_line_cmd - Write the pipe debugger's command that sets
+ * (@set 1) or clears (@set 0) the cursor's breakpoint.
+ * @out: the command; @size: its room.
+ * Return: 1 when the selected debugger has such a command.
+ */
+static int e_d_cursor_brk_line_cmd(int set, char *out, size_t size)
+{
+ char cls[PATH_MAX];
+ int line = e_d_cursor_brk.line;
+
+ if (e_deb_type == DEB_PDB && set)
+  snprintf(out, size, "b %s:%d\n", e_d_cursor_brk.path, line);
+ else if (e_deb_type == DEB_PDB)
+  snprintf(out, size, "clear %s:%d\n", e_d_cursor_brk.path, line);
+ else if (e_deb_type == DEB_JDB)
+ {
+  e_d_cursor_brk_class(cls, sizeof(cls));
+  if (set)
+   snprintf(out, size, "stop at %s:%d\n", cls, line);
+  else
+   snprintf(out, size, "clear %s:%d\n", cls, line);
+ }
+ else if (e_deb_type == DEB_A68G && set)
+  snprintf(out, size, "breakpoint %d\n", line);
+ else
+  return(0);
+ return(1);
+}
+
+/**
+ * e_d_cursor_brk_dap_lines - Send the adapter the file's breakpoints: the
+ * user's, and the cursor's line while @with_cursor.
+ * Return: 0, or -1 when the adapter did not answer.
+ */
+static int e_d_cursor_brk_dap_lines(int with_cursor)
+{
+ int *brk_lines = MALLOC(sizeof(int) * (e_d_nbrpts + 1));
+ int i, n = 0, ret;
+
+ for (i = 0; i < e_d_nbrpts; i++)
+  if (!strcmp(e_d_sbrpts[i], e_d_cursor_brk.file))
+   brk_lines[n++] = e_d_ybrpts[i];
+ if (with_cursor)
+  brk_lines[n++] = e_d_cursor_brk.line;
+ ret = e_dap_set_file_breakpoints(g_dap, e_d_cursor_brk.path, brk_lines, n);
+ FREE(brk_lines);
+ return(ret);
+}
+
+/**
+ * e_d_a68g_reset_breakpoints - Make a68g's breakpoints the user's list.
+ *
+ * a68g's monitor accepts "breakpoint N clear" but keeps stopping on line N,
+ * while "breakpoint clear breakpoints" works: so every breakpoint goes and
+ * the ones in the list are set again.  A breakpoint the user toggled off,
+ * or the one Go to cursor set, then stops the program no more.
+ * Return: 0, or -1 when a68g could not be told.
+ */
+static int e_d_a68g_reset_breakpoints(void)
+{
+ char cmd[E_D_CURSOR_CMD_MAX];
+ int i;
+
+ e_d_send_cmd("breakpoint clear breakpoints\n");
+ if (e_d_dum_read() == -1)
+  return(-1);
+ for (i = 0; i < e_d_nbrpts; i++)
+ {
+  snprintf(cmd, sizeof(cmd), "breakpoint %d\n", e_d_ybrpts[i]);
+  e_d_send_cmd(cmd);
+  if (e_d_dum_read() == -1)
+   return(-1);
+ }
+ return(0);
+}
+
+/**
+ * e_d_cursor_brk_send - Set or clear the cursor's breakpoint in the debugger.
+ * @set: 1 to set it, 0 to clear it.
+ * Return: 0, or -1 when the debugger could not be told.
+ */
+static int e_d_cursor_brk_send(int set)
+{
+ char cmd[E_D_CURSOR_CMD_MAX];
+
+ if (e_deb_type == DEB_DAP)
+  return(e_d_cursor_brk_dap_lines(set));
+ if (e_deb_type == DEB_A68G && !set)
+  return(e_d_a68g_reset_breakpoints());
+ if (!e_d_cursor_brk_line_cmd(set, cmd, sizeof(cmd)))
+  return(-1);
+ e_d_send_cmd(cmd);
+ if (e_d_dum_read() == -1)
+  return(-1);
+ return(0);
+}
+
+/**
+ * e_d_cursor_brk_clear - Remove Go to cursor's breakpoint at the stop.
+ *
+ * Whichever stop comes first (the cursor's line, a breakpoint of the
+ * user's on the way, the end of a function), the line must not stop the
+ * program again on a later run.  A session that ended took it along.
+ */
+static void e_d_cursor_brk_clear(void)
+{
+ if (!e_d_cursor_brk.set)
+  return;
+ e_d_cursor_brk.set = 0;
+ if (e_d_swtch < 3)
+  return;
+ if (e_deb_type == DEB_DAP && !e_d_dap_active())
+  return;
+ e_d_cursor_brk_send(0);
+}
+
+/**
+ * e_d_run_to_cursor_line - Go to cursor for a debugger without "until":
+ * a breakpoint of its own on the line, continue, and the breakpoint gone
+ * again at the next stop.
+ * @f: the source window; @line: the cursor's 1-based line.
+ *
+ * Borland's Go to cursor, on jdb, pdb, a68g and every debug adapter.  pdb's
+ * "until" would stop when the current function returns and never reach a
+ * line in another one, which is why pdb takes this way too.
+ * Return: what the continue returned.
+ */
+static int e_d_run_to_cursor_line(FENSTER *f, int line)
+{
+ char *full;
+ int ret;
+
+ if (e_d_user_brk_on(f->datnam, line))
+  return(e_deb_run(f));
+ snprintf(e_d_cursor_brk.file, sizeof(e_d_cursor_brk.file), "%s", f->datnam);
+ full = e_mkfilename(f->dirct, f->datnam);
+ snprintf(e_d_cursor_brk.path, sizeof(e_d_cursor_brk.path), "%s",
+          full ? full : f->datnam);
+ if (full)
+  FREE(full);
+ e_d_cursor_brk.line = line;
+ if (e_d_cursor_brk_send(1) < 0)
+  return(-1);
+ e_d_cursor_brk.set = 1;
+ ret = e_deb_run(f);
+ e_d_cursor_brk_clear();
+ return(ret);
+}
+
 int e_d_goto_func(FENSTER *f, int flag)
 {
  ECNT *cn = f->ed;
@@ -6080,7 +6426,7 @@ int e_d_goto_func(FENSTER *f, int flag)
  int ret = 0, main_brk = 0;
  char str[128];
 
- if (e_deb_type != DEB_GDB)/* if gdb */
+ if (!e_d_goto_supported(flag))
   return 0;
  e_d_resume_after_build(e_d_goto_func, flag);
  if (e_d_swtch < 2)
@@ -6102,14 +6448,16 @@ int e_d_goto_func(FENSTER *f, int flag)
   e_mk_brk_main(f, main_brk);
   return(ret);
  }
+ if (flag == E_D_GOTO_CURSOR && e_deb_type != DEB_GDB)
+  return(e_d_run_to_cursor_line(cn->f[cn->mxedt], b->b.y + 1));
  e_d_delbreak(f);
  e_d_switch_out(1);
  switch(flag)
  {
-  case 'U':
+  case E_D_GOTO_CURSOR:
    sprintf(str,"until %d\n",b->b.y+1);
    break;
-  case 'F':
+  case E_D_GOTO_FINISH:
    sprintf(str,"finish\n");
    break;
   default:
@@ -6128,12 +6476,12 @@ int e_d_goto_func(FENSTER *f, int flag)
 
 int e_d_goto_cursor(FENSTER *f)
 {
- return e_d_goto_func(f,'U');
+ return e_d_goto_func(f, E_D_GOTO_CURSOR);
 }
 
 int e_d_finish_func(FENSTER *f)
 {
- return e_d_goto_func(f,'F');
+ return e_d_goto_func(f, E_D_GOTO_FINISH);
 }
 
 int e_d_fst_check(FENSTER *f)
@@ -6398,7 +6746,7 @@ int e_read_output(FENSTER *f)
  }
  for (i = 0; i < SVLINES; i++)
  {
-  if (strstr(e_d_sp[i], "exited"))
+  if (e_d_line_says_program_exited(e_d_sp[i]))
   {
    e_d_pty_flush_to_messages(f);
    e_d_say_program_exited(e_d_sp[i], f);
@@ -7419,6 +7767,9 @@ static void e_lsp_modal_sync_chrome(void)
 }
 void e_lsp_modal_enter(void)
 {
+ /* A dialog is the user's next thing to read: a status line kept until the
+    next key would otherwise come back on the dialog's bottom row. */
+ e_status_drop_held();
  g_lsp_modal_depth++;
  e_lsp_modal_sync_chrome();
  e_lsp_ui_trace("lsp modal enter depth=%d", g_lsp_modal_depth);

@@ -750,13 +750,12 @@ def test_a_session_runs_and_steps_on_an_80x24_screen(tmp_path):
 
 
 def _start_py_session(w):
-    """Breakpoint on PY_BREAK_LINE, Ctrl-G R, dismiss the one-time notice
-    that the Python file switches the backend to pdb."""
+    """Breakpoint on PY_BREAK_LINE, Ctrl-G R; the Python file switches the
+    backend to pdb and says so on the status row, with nothing to dismiss."""
     _move_down(w, PY_BREAK_LINE - 1)
     w.key(CTRL_G, "b", delay=0.4)
     w.key(CTRL_G, "r", delay=1.0)
-    assert _wait_for(w, lambda: "switching to pdb" in _screen(w), STEP_TIMEOUT_S)
-    w.key("\r", delay=0.5)
+    assert _status_row_says(w, "switching to pdb", STEP_TIMEOUT_S)
     assert _wait_for(w, lambda: _children(w, "python3"), START_TIMEOUT_S), \
         "pdb should be running:\n%s" % _screen(w)
 
@@ -869,13 +868,12 @@ def _messages_rows(w):
 
 
 def _start_java_session(w):
-    """Breakpoint on JAVA_BREAK_LINE, Ctrl-G R, dismiss the one-time notice
-    that the Java file switches the backend to jdb, wait for the stop."""
+    """Breakpoint on JAVA_BREAK_LINE, Ctrl-G R; the Java file switches the
+    backend to jdb and says so on the status row, then wait for the stop."""
     _move_down(w, JAVA_BREAK_LINE - 1)
     w.key(CTRL_G, "b", delay=0.4)
     w.key(CTRL_G, "r", delay=1.0)
-    assert _wait_for(w, lambda: "switching to jdb" in _screen(w), STEP_TIMEOUT_S)
-    w.key("\r", delay=0.5)
+    assert _status_row_says(w, "switching to jdb", STEP_TIMEOUT_S)
     assert _wait_for(w, lambda: _children(w, "jdb"), START_TIMEOUT_S), \
         "jdb should be running:\n%s" % _screen(w)
     assert _wait_for(w, lambda: _mark_line(w) == JAVA_BREAK_LINE,
@@ -1031,9 +1029,7 @@ def test_pdb_names_the_code_of_sys_exit(tmp_path):
         _move_down(w, PY_EXIT_BREAK_LINE - 1)
         w.key(CTRL_G, "b", delay=0.4)
         w.key(CTRL_G, "r", delay=1.0)
-        assert _wait_for(w, lambda: "switching to pdb" in _screen(w),
-                         STEP_TIMEOUT_S)
-        w.key("\r", delay=0.5)
+        assert _status_row_says(w, "switching to pdb", STEP_TIMEOUT_S)
         assert _wait_for(w, lambda: _mark_line(w) == PY_EXIT_BREAK_LINE,
                          START_TIMEOUT_S), _screen(w)
         w.key(CTRL_G, "r", delay=0.3)
@@ -1142,9 +1138,7 @@ def _java_package_session(tmp_path, break_line):
         _move_down(w, break_line - 1)
         w.key(CTRL_G, "b", delay=0.4)
         w.key(CTRL_G, "r", delay=1.0)
-        assert _wait_for(w, lambda: "switching to jdb" in _screen(w),
-                         STEP_TIMEOUT_S)
-        w.key("\r", delay=0.5)
+        assert _status_row_says(w, "switching to jdb", STEP_TIMEOUT_S)
         assert _wait_for(w, lambda: _mark_line(w) == break_line,
                          JDB_START_TIMEOUT_S), _screen(w)
     except BaseException:
@@ -1208,9 +1202,7 @@ def test_pdb_one_line_watch_after_a_multi_line_one(tmp_path):
         _move_down(w, PY_WATCH_BREAK_LINE - 1)
         w.key(CTRL_G, "b", delay=0.4)
         w.key(CTRL_G, "r", delay=1.0)
-        assert _wait_for(w, lambda: "switching to pdb" in _screen(w),
-                         STEP_TIMEOUT_S)
-        w.key("\r", delay=0.5)
+        assert _status_row_says(w, "switching to pdb", STEP_TIMEOUT_S)
         assert _wait_for(w, lambda: _mark_line(w) == PY_WATCH_BREAK_LINE,
                          START_TIMEOUT_S), _screen(w)
         _add_watch(w, "m")
@@ -1238,3 +1230,617 @@ def test_a_debugger_without_watches_says_so(tmp_path):
                          in w.display(drain=0)[-1], STEP_TIMEOUT_S), \
             _screen(w)
         assert "Watches" not in w.display(drain=0)[1], _screen(w)
+
+
+F4 = "\033OS"         # Search; Go to cursor while a debug session runs
+ALT_2 = "\0332"       # window 2
+ALT_C = "\033c"       # in Options > Editor: the CUA-Style entry
+# What the source window's bottom row names while a session runs.
+DEBUG_BAR_LABELS = ("F7 Trace", "F8 Step", "F4 Go to cursor",
+                    "^F7 Make Watch", "^F2 Quit", "Alt-X Quit")
+
+
+def _bottom_bar(w):
+    """The screen's bottom row: the active window's key hints, or the line a
+    status message put there."""
+    return w.display(drain=0)[-1]
+
+
+def _status_row_says(w, text, timeout):
+    """Wait until the bottom row carries @text.  A line the editor says while
+    it goes on working stays there until the next key, so the ordinary wait
+    sees it."""
+    return _wait_for(w, lambda: text in _bottom_bar(w), timeout)
+
+
+def _sgr(button, col, row, press=True):
+    """An SGR 1006 mouse report at 1-based screen (col, row)."""
+    return "\x1b[<%d;%d;%d%s" % (button, col, row, "M" if press else "m")
+
+
+def _click_bottom_bar(w, label):
+    """Click the bottom-row entry whose label is @label."""
+    bar = _bottom_bar(w)
+    assert label in bar, "the bottom row should name %r:\n%s" % (label, _screen(w))
+    col = bar.index(label) + 1
+    row = w.screen.lines
+    w.key(_sgr(0, col, row, True), _sgr(0, col, row, False), delay=0.6)
+
+
+def _switch_to_cua(w):
+    """Options > Editor > CUA-Style, Ok."""
+    w.key(ALT.OPTIONS, delay=0.7)
+    w.key("e", delay=0.9)
+    w.key(ALT_C, delay=0.5)
+    w.key("\r", delay=1.0)
+
+
+def _select_sdb(w):
+    """Debug > Options: pick Sdb, a debugger that is not installed here."""
+    w.key(CTRL_G, "o", delay=0.6)
+    w.key(DOWN, delay=0.3)          # focus moves to Sdb
+    w.key(" ", delay=0.3)           # select it
+    w.key("\033o", delay=0.5)       # Ok
+
+
+def _source_window_on_top(w):
+    """Make the source window the active one, so the bottom row is its bar."""
+    w.key(ALT_1, delay=0.4)
+
+
+# @scenario SC-debug-02
+def test_the_source_bar_names_the_debugger_keys_while_a_session_runs(tmp_path):
+    """While a session runs the source window's bottom row names the keys that
+    drive it, as Turbo C's did; when the session ends the editing keys come
+    back."""
+    _need("gcc", "gdb")
+    with _c_session(tmp_path) as w:
+        _source_window_on_top(w)
+        assert "F4 Search" in _bottom_bar(w), \
+            "with no session the bar should name the editing keys:\n%s" \
+            % _screen(w)
+        _start_c_session(w)
+        _source_window_on_top(w)
+        bar = _bottom_bar(w)
+        for label in DEBUG_BAR_LABELS:
+            assert label in bar, \
+                "stopped in the debugger, the bottom row should name %r; " \
+                "it reads:\n%r\n%s" % (label, bar, _screen(w))
+        w.menu(ALT.DEBUG, "q", delay=0.5)
+        assert _wait_for(w, lambda: not _children(w, "gdb"), STEP_TIMEOUT_S), \
+            "Debug > Quit should end gdb"
+        _source_window_on_top(w)
+        assert "F4 Search" in _bottom_bar(w), \
+            "the editing keys should come back when the session ends:\n%s" \
+            % _screen(w)
+
+
+# @scenario SC-debug-02
+def test_the_cua_bar_is_left_alone_by_a_session(tmp_path):
+    """The CUA style keeps its editing bar while a session runs: its debugger
+    keys are not decided yet, so the bar must not name keys that do nothing."""
+    _need("gcc", "gdb")
+    with _c_session(tmp_path) as w:
+        _switch_to_cua(w)
+        assert "Alt-F2" in _bottom_bar(w), \
+            "the CUA bar did not take effect:\n%s" % _screen(w)
+        _start_c_session(w)
+        _source_window_on_top(w)
+        bar = _bottom_bar(w)
+        assert "Alt-F2" in bar, \
+            "the CUA style should keep its editing bar in a session:\n%s" \
+            % _screen(w)
+        assert "F7 Trace" not in bar, \
+            "the CUA bar named a debugger key that is not decided:\n%s" \
+            % _screen(w)
+
+
+# @scenario SC-debug-06
+def test_f4_runs_to_the_cursor_while_a_session_runs(tmp_path):
+    """F4 while stopped runs the program to the line under the cursor, the
+    same command as Debug > Goto cursor, and the bar names it."""
+    _need("gcc", "gdb")
+    with _c_session(tmp_path) as w:
+        _start_c_session(w)
+        _source_window_on_top(w)
+        assert "F4 Go to cursor" in _bottom_bar(w), \
+            "the bar should name F4 as Go to cursor:\n%s" % _screen(w)
+        _move_down(w, C_AFTER_PRINT_LINE - C_BREAK_LINE)
+        w.key(F4, delay=0.3)
+        assert _wait_for(w, lambda: _mark_line(w) == C_AFTER_PRINT_LINE,
+                         STEP_TIMEOUT_S), \
+            "F4 should run to line %d:\n%s" % (C_AFTER_PRINT_LINE, _screen(w))
+
+
+# @scenario SC-debug-06
+def test_f4_stays_search_with_no_session(tmp_path):
+    """With no debug session F4 still opens Find, as the editor's bar says."""
+    _need("gcc")
+    with _c_session(tmp_path) as w:
+        w.key(F4, delay=0.6)
+        assert "Find" in _screen(w), \
+            "F4 with no session should open Find:\n%s" % _screen(w)
+
+
+# @scenario SC-debug-27
+def test_a_click_on_the_run_entry_of_the_watches_bar_runs(tmp_path):
+    """Clicking "^F10 Run" on the Watches window's bar runs the program: the
+    entry sends the key its label names, not the plain F10 that opens the
+    menu."""
+    _need("gcc", "gdb")
+    with _c_session(tmp_path) as w:
+        _start_c_session(w)
+        _add_watch(w, "x")
+        assert _wait_for(w, lambda: "Watches" in _screen(w), STEP_TIMEOUT_S), \
+            "the Watches window should be open:\n%s" % _screen(w)
+        _click_bottom_bar(w, "^F10 Run")
+        assert _wait_for(w, lambda: not _children(w, "gdb"), STEP_TIMEOUT_S), \
+            "the click should run the program to its end and end gdb:\n%s" \
+            % _screen(w)
+        assert _wait_for(w, lambda: _mark_line(w) is None, STEP_TIMEOUT_S), \
+            "the current-line mark should go once the program ran:\n%s" \
+            % _screen(w)
+
+
+# @scenario SC-debug-27
+def test_a_click_on_the_cua_make_watch_entry_makes_a_watch(tmp_path):
+    """In the CUA style, clicking "^F5 Make Watch" opens the Add Watch dialog:
+    the entry sends ^F5, the key its label names."""
+    _need("gcc", "gdb")
+    with _c_session(tmp_path) as w:
+        _switch_to_cua(w)
+        _start_c_session(w)
+        _add_watch(w, "x")
+        assert _wait_for(w, lambda: "Watches" in _screen(w), STEP_TIMEOUT_S), \
+            "the Watches window should be open:\n%s" % _screen(w)
+        _click_bottom_bar(w, "^F5 Make Watch")
+        assert _wait_for(w, lambda: "Add Watch" in _screen(w),
+                         STEP_TIMEOUT_S), \
+            "the click should open the Add Watch dialog:\n%s" % _screen(w)
+
+
+# @scenario SC-debug-31
+def test_a_backend_switch_is_a_status_line_not_a_box(tmp_path):
+    """Ctrl-G R on a Python file says on the status row which debugger starts;
+    no modal has to be dismissed and the session goes on by itself."""
+    _need("python3")
+    with WpeSession(str(tmp_path), PY_PROG, filename="p.py", wait=1.5) as w:
+        _move_down(w, PY_BREAK_LINE - 1)
+        w.key(CTRL_G, "b", delay=0.4)
+        w.key(CTRL_G, "r", delay=1.0)
+        assert _status_row_says(w, "switching to pdb", STEP_TIMEOUT_S), \
+            "the status row should name the debugger that starts:\n%s" \
+            % _screen(w)
+        assert _wait_for(w, lambda: _children(w, "python3"), START_TIMEOUT_S), \
+            "pdb should start with no box to dismiss:\n%s" % _screen(w)
+        assert _wait_for(w, lambda: _mark_line(w) == PY_BREAK_LINE,
+                         START_TIMEOUT_S), \
+            "the session should go on to the breakpoint:\n%s" % _screen(w)
+        w._drain(1.0)
+        assert "switching to pdb" in _bottom_bar(w), \
+            "the start's repaints should not erase the line before a key " \
+            "is pressed:\n%s" % _screen(w)
+        w.key(DOWN, delay=0.5)
+        assert _wait_for(w, lambda: "F7 Trace" in _bottom_bar(w),
+                         STEP_TIMEOUT_S), \
+            "the next key should bring the debugger's keys back:\n%s" \
+            % _screen(w)
+
+
+# @scenario SC-debug-32
+def test_a_debugger_that_never_started_prints_no_end_line(tmp_path):
+    """A debugger that is not on PATH: only the reason is printed, never
+    "End of Debugging", because no session ever ran."""
+    _need("gcc")
+    if shutil.which("sdb") is not None:
+        pytest.skip("sdb is installed here")
+    with _c_session(tmp_path) as w:
+        _select_sdb(w)
+        _move_down(w, C_BREAK_LINE - 1)
+        w.key(CTRL_G, "b", delay=0.4)
+        w.key(CTRL_G, "r", delay=1.0)
+        assert _wait_for(w, lambda: "'sdb' not in Path" in _screen(w),
+                         START_TIMEOUT_S), \
+            "the missing debugger should be named:\n%s" % _screen(w)
+        w.key("\r", delay=0.5)
+        w._drain(1.0)
+        assert "End of Debugging" not in _screen(w), \
+            "nothing started, so no session ended:\n%s" % _screen(w)
+
+
+# @scenario SC-debug-13
+def test_jdb_run_to_the_end_says_the_program_exited(tmp_path):
+    """Under jdb, Ctrl-G R that runs the program to its end says so, as every
+    other backend does."""
+    _need("jdb", "javac")
+    with WpeSession(str(tmp_path), JAVA_PROG, filename="P.java", wait=1.5) as w:
+        _start_java_session(w)
+        w.key(CTRL_G, "r", delay=0.3)
+        assert _wait_for(w, lambda: "Program exited" in _screen(w),
+                         JDB_START_TIMEOUT_S), \
+            "Messages should say the program exited:\n%s" % _screen(w)
+        assert _wait_for(w, lambda: not _children(w, "jdb"),
+                         JDB_START_TIMEOUT_S), \
+            "jdb should be gone after the program ended"
+
+
+PRJ_TEXT = ("#\n"
+            "# xwpe - project-file: p.prj\n"
+            "CMP=\tgcc\n"
+            "EXENAME=\tp\n"
+            "FILES=\tp.c\n")
+
+
+def _open_the_project(w):
+    """The editor started on p.prj shows the project's file list; Enter opens
+    its only file, p.c.  A second Enter would land in p.c as a new line and
+    move every line below it."""
+    assert _wait_for(w, lambda: "Project: p.prj" in _screen(w), STEP_TIMEOUT_S), \
+        "the editor should open p.prj as a project:\n%s" % _screen(w)
+    w.key("\r", delay=0.8)          # p.c
+
+
+# @scenario SC-debug-09
+def test_breakpoints_survive_an_editor_restart_through_the_project(tmp_path):
+    """A breakpoint set with a project open is written to the project file and
+    is back in the margin when the editor is started on that project again."""
+    _need("gcc")
+    (tmp_path / "p.c").write_text(C_PROG)
+    (tmp_path / "p.prj").write_text(PRJ_TEXT)
+    with WpeSession(str(tmp_path), PRJ_TEXT, filename="p.prj", wait=1.5) as w:
+        _open_the_project(w)
+        assert _wait_for(w, lambda: "p.c" in _screen(w), STEP_TIMEOUT_S), \
+            "the project should open p.c:\n%s" % _screen(w)
+        w.key(ALT_2, delay=0.5)      # the project window is 1, p.c is 2
+        _move_down(w, C_BREAK_LINE - 1)
+        w.key(CTRL_G, "b", delay=0.5)
+        assert C_BREAK_LINE in _breakpoint_lines(w), \
+            "the breakpoint should be in the margin:\n%s" % _screen(w)
+        w.key("\033x", delay=1.0)    # Alt-X: quit, writing the project
+        assert _wait_for(w, lambda: not w.alive(), STEP_TIMEOUT_S), \
+            "Alt-X should end the editor:\n%s" % _screen(w)
+    saved = (tmp_path / "p.prj").read_text()
+    assert "BREAKPOINTS" in saved, \
+        "the project file should hold the breakpoint:\n%s" % saved
+    # The session writes its seed to p.prj, so seed it with what was saved.
+    with WpeSession(str(tmp_path), saved, filename="p.prj", wait=1.5) as w:
+        _open_the_project(w)
+        assert _wait_for(w, lambda: C_BREAK_LINE in _breakpoint_lines(w),
+                         STEP_TIMEOUT_S), \
+            "the breakpoint should be back in the margin:\n%s" % _screen(w)
+
+
+# Go to cursor on every debugger.  Each program calls one function twice; the
+# user's breakpoint is on main's first statement and the cursor goes to a line
+# of the function's body, in another frame than the stop.  F4 must stop there,
+# and a later Ctrl-G R must run to the end without stopping there again.
+GOTO_TIMEOUT_S = 25         # a JVM, a build or an adapter, before scaling
+SCALA_START_TIMEOUT_S = 150 # a build server, cold, before scaling
+
+GOTO_PY = (
+    "def sq(v):\n"
+    "    r = v * v\n"
+    "    return r\n"
+    "\n"
+    "x = 3\n"
+    "y = sq(x)\n"
+    "z = sq(y)\n"
+    "print('END', z)\n"
+)
+GOTO_JAVA = (
+    "public class P {\n"
+    "    static int sq(int v) {\n"
+    "        int r = v * v;\n"
+    "        return r;\n"
+    "    }\n"
+    "    public static void main(String[] a) {\n"
+    "        int x = 3;\n"
+    "        int y = sq(x);\n"
+    "        int z = sq(y);\n"
+    "        System.out.println(\"END \" + z);\n"
+    "    }\n"
+    "}\n"
+)
+GOTO_A68 = (
+    "PROC sq = (INT v) INT:\n"
+    "BEGIN\n"
+    "   INT r = v * v;\n"
+    "   r\n"
+    "END;\n"
+    "INT x := 3;\n"
+    "INT y := sq (x);\n"
+    "INT z := sq (y);\n"
+    "print ((z, new line))\n"
+)
+GOTO_GO = (
+    "package main\n"
+    "\n"
+    "import \"fmt\"\n"
+    "\n"
+    "func sq(v int) int {\n"
+    "\tr := v * v\n"
+    "\treturn r\n"
+    "}\n"
+    "\n"
+    "func main() {\n"
+    "\tx := 3\n"
+    "\ty := sq(x)\n"
+    "\tz := sq(y)\n"
+    "\tfmt.Println(\"END\", z)\n"
+    "}\n"
+)
+GOTO_RUST = (
+    "fn sq(v: i32) -> i32 {\n"
+    "    let r = v * v;\n"
+    "    r\n"
+    "}\n"
+    "fn main() {\n"
+    "    let x = 3;\n"
+    "    let y = sq(x);\n"
+    "    let z = sq(y);\n"
+    "    println!(\"END {}\", z);\n"
+    "}\n"
+)
+GOTO_SCALA = (
+    "object P:\n"
+    "  def sq(v: Int): Int =\n"
+    "    val r = v * v\n"
+    "    r\n"
+    "  def main(args: Array[String]): Unit =\n"
+    "    val x = 3\n"
+    "    val y = sq(x)\n"
+    "    val z = sq(y)\n"
+    "    println(s\"END $z\")\n"
+)
+
+
+def _go_to_line(w, line):
+    """Search > Go to Line: put the cursor on @line of the window on top."""
+    w.key(ALT.SEARCH, delay=0.5)
+    w.key("g", delay=0.6)
+    w.key(str(line))
+    w.key("\r", delay=0.6)
+
+
+def _go_to_cursor_and_run_on(w, break_line, cursor_line, ended, start_timeout):
+    """Stop on the user's breakpoint, F4 to @cursor_line, then Ctrl-G R to the
+    end: the mark lands on the cursor's line once and never again."""
+    _go_to_line(w, break_line)
+    w.key(CTRL_G, "b", delay=0.5)
+    w.key(CTRL_G, "r", delay=1.0)
+    assert _wait_for(w, lambda: _mark_line(w) == break_line, start_timeout), \
+        "Ctrl-G R should stop on line %d:\n%s" % (break_line, _screen(w))
+    _go_to_line(w, cursor_line)
+    assert _wait_for(w, lambda: "F4 Go to cursor" in _bottom_bar(w),
+                     STEP_TIMEOUT_S), \
+        "the bar should offer F4 Go to cursor:\n%s" % _screen(w)
+    w.key(F4, delay=0.5)
+    assert _wait_for(w, lambda: _mark_line(w) == cursor_line, GOTO_TIMEOUT_S), \
+        "F4 should stop on line %d:\n%s" % (cursor_line, _screen(w))
+    assert break_line in _breakpoint_lines(w), \
+        "the user's breakpoint should still be there:\n%s" % _screen(w)
+    assert cursor_line not in _breakpoint_lines(w), \
+        "Go to cursor's breakpoint should be gone at the stop:\n%s" % _screen(w)
+    w.key(CTRL_G, "r", delay=0.5)
+    assert _wait_for(w, ended, GOTO_TIMEOUT_S), \
+        "Ctrl-G R should run to the end without stopping on line %d again " \
+        "(mark on %s):\n%s" % (cursor_line, _mark_line(w), _screen(w))
+
+
+def _pdb_ended(w):
+    """pdb's end of program: its box says so before pdb is let go."""
+    return "End of code" in _screen(w) or not _children(w, "python3")
+
+
+# @scenario SC-debug-06
+def test_f4_runs_to_the_cursor_under_pdb(tmp_path):
+    _need("python3")
+    with WpeSession(str(tmp_path), GOTO_PY, filename="p.py", wait=1.5) as w:
+        _go_to_cursor_and_run_on(w, 5, 2, lambda: _pdb_ended(w),
+                                 START_TIMEOUT_S)
+
+
+# @scenario SC-debug-06
+def test_f4_keeps_the_users_breakpoint_on_the_cursor_line_under_pdb(tmp_path):
+    """The user's own breakpoint on the cursor's line survives Go to cursor:
+    the second call stops there again."""
+    _need("python3")
+    with WpeSession(str(tmp_path), GOTO_PY, filename="p.py", wait=1.5) as w:
+        _go_to_line(w, 2)
+        w.key(CTRL_G, "b", delay=0.5)
+        _go_to_line(w, 5)
+        w.key(CTRL_G, "b", delay=0.5)
+        w.key(CTRL_G, "r", delay=1.0)
+        assert _wait_for(w, lambda: _mark_line(w) == 5, START_TIMEOUT_S), \
+            _screen(w)
+        _go_to_line(w, 2)
+        w.key(F4, delay=0.5)
+        assert _wait_for(w, lambda: _mark_line(w) == 2, STEP_TIMEOUT_S), \
+            _screen(w)
+        w.key(F8, delay=0.5)
+        assert _wait_for(w, lambda: _mark_line(w) == 3, STEP_TIMEOUT_S), \
+            _screen(w)
+        w.key(CTRL_G, "r", delay=0.5)
+        assert _wait_for(w, lambda: _mark_line(w) == 2, STEP_TIMEOUT_S), \
+            "the user's breakpoint on line 2 should stop the second call:\n%s" \
+            % _screen(w)
+
+
+# @scenario SC-debug-06
+def test_f4_runs_to_the_cursor_under_jdb(tmp_path):
+    _need("jdb", "javac")
+    with WpeSession(str(tmp_path), GOTO_JAVA, filename="P.java", wait=1.5) as w:
+        _go_to_cursor_and_run_on(w, 7, 3, lambda: not _children(w, "jdb"),
+                                 JDB_START_TIMEOUT_S)
+
+
+# @scenario SC-debug-06
+def test_f4_runs_to_the_cursor_under_a68g(tmp_path):
+    _need("a68g")
+    with WpeSession(str(tmp_path), GOTO_A68, filename="p.a68", wait=1.5) as w:
+        _go_to_cursor_and_run_on(w, 6, 3, lambda: not _children(w, "a68g"),
+                                 START_TIMEOUT_S)
+
+
+TWO_FILE_MAIN = (
+    "import m\n"
+    "x = 3\n"
+    "y = m.f(x)\n"
+    "print('END', y)\n"
+)
+TWO_FILE_MODULE = (
+    "def f(v):\n"
+    "    r = v + 1\n"
+    "    s = r * 2\n"
+    "    return s\n"
+)
+
+
+def _window_mark_line(w, name):
+    """The marked source line of the window titled @name, wherever it sits
+    on screen (a window opened later is cascaded below the first)."""
+    disp = w.display(drain=0)
+    top = next((y for y, row in enumerate(disp) if " %s " % name in row), None)
+    if top is None:
+        return None
+    for y in range(top + 1, len(disp)):
+        row = w.screen.buffer[y]
+        if disp[y].lstrip("x").startswith("m"):
+            return None
+        if any(row[x].bg == CURRENT_LINE_BG
+               for x in range(2, w.screen.columns - 1)):
+            return y - top
+    return None
+
+
+# @scenario SC-debug-02
+def test_a_file_opened_during_a_session_gets_the_debugger_bar(tmp_path):
+    """F7 into a function of another file opens that file with the
+    debugger's keys on its bottom row, and F4 there runs to the cursor; when
+    the session ends both files show their editing keys again."""
+    _need("python3")
+    (tmp_path / "m.py").write_text(TWO_FILE_MODULE)
+    with WpeSession(str(tmp_path), TWO_FILE_MAIN, filename="p.py",
+                    wait=1.5) as w:
+        _go_to_line(w, 2)
+        w.key(CTRL_G, "b", delay=0.5)
+        w.key(CTRL_G, "r", delay=1.0)
+        assert _wait_for(w, lambda: _mark_line(w) == 2, START_TIMEOUT_S), \
+            _screen(w)
+        assert _step(w, F8, 3), _screen(w)
+        w.key(F7, delay=0.5)
+        assert _wait_for(w, lambda: " m.py " in _screen(w), STEP_TIMEOUT_S), \
+            "F7 should open m.py:\n%s" % _screen(w)
+        assert _wait_for(w, lambda: "F4 Go to cursor" in _bottom_bar(w),
+                         STEP_TIMEOUT_S), \
+            "m.py should show the debugger's keys:\n%s" % _screen(w)
+        _go_to_line(w, 3)
+        w.key(F4, delay=0.5)
+        assert _wait_for(w, lambda: _window_mark_line(w, "m.py") == 3,
+                         STEP_TIMEOUT_S), \
+            "F4 in m.py should run to line 3:\n%s" % _screen(w)
+        w.menu(ALT.DEBUG, "q", delay=0.5)
+        assert _wait_for(w, lambda: not _children(w, "python3"),
+                         STEP_TIMEOUT_S), _screen(w)
+        assert _wait_for(w, lambda: "F4 Search" in _bottom_bar(w),
+                         STEP_TIMEOUT_S), \
+            "m.py should show the editing keys after the session:\n%s" \
+            % _screen(w)
+        _source_window_on_top(w)
+        assert _wait_for(w, lambda: "F4 Search" in _bottom_bar(w),
+                         STEP_TIMEOUT_S), \
+            "p.py should show the editing keys after the session:\n%s" \
+            % _screen(w)
+
+
+# @scenario SC-debug-07
+def test_a_breakpoint_toggled_off_under_a68g_no_longer_stops(tmp_path):
+    """Under a68g a breakpoint removed with Ctrl-G B while the session runs
+    stops the program no more: Ctrl-G R goes on to the breakpoint that is
+    left."""
+    _need("a68g")
+    with WpeSession(str(tmp_path), GOTO_A68, filename="p.a68", wait=1.5) as w:
+        for line in (6, 3, 8):
+            _go_to_line(w, line)
+            w.key(CTRL_G, "b", delay=0.5)
+        w.key(CTRL_G, "r", delay=1.0)
+        assert _wait_for(w, lambda: _mark_line(w) == 6, START_TIMEOUT_S), \
+            _screen(w)
+        _go_to_line(w, 3)
+        w.key(CTRL_G, "b", delay=0.5)           # toggle line 3 off
+        assert 3 not in _breakpoint_lines(w), _screen(w)
+        w.key(CTRL_G, "r", delay=0.5)
+        assert _wait_for(w, lambda: _mark_line(w) in (3, 8), STEP_TIMEOUT_S), \
+            _screen(w)
+        assert _mark_line(w) == 8, \
+            "the program should stop only on line 8, not on the removed " \
+            "breakpoint on line 3:\n%s" % _screen(w)
+
+
+# @scenario SC-debug-06
+def test_f4_runs_to_the_cursor_under_dlv(tmp_path):
+    _need("dlv", "go")
+    (tmp_path / "go.mod").write_text("module dapdemo\n\ngo 1.21\n")
+    with WpeSession(str(tmp_path), GOTO_GO, filename="main.go", wait=2.0) as w:
+        _go_to_cursor_and_run_on(w, 11, 6, lambda: not _children(w, "dlv"),
+                                 GOTO_TIMEOUT_S)
+
+
+# @scenario SC-debug-06
+@pytest.mark.parametrize("adapter,binary", [("gdb", "gdb"), ("lldb", "lldb-dap")])
+def test_f4_runs_to_the_cursor_under_a_rust_adapter(tmp_path, adapter, binary):
+    _need("rustc", binary)
+    with WpeSession(str(tmp_path), GOTO_RUST, filename="main.rs", wait=2.0,
+                    env_extra={"XWPE_DAP_ADAPTER": adapter}) as w:
+        _go_to_cursor_and_run_on(w, 6, 2, lambda: not _children(w, binary),
+                                 RUST_START_TIMEOUT_S)
+
+
+# @scenario SC-debug-06
+def test_f4_runs_to_the_cursor_under_scala(tmp_path):
+    _need("scala-cli")
+    with WpeSession(str(tmp_path), GOTO_SCALA, filename="p.scala",
+                    wait=2.0) as w:
+        _go_to_cursor_and_run_on(w, 6, 3,
+                                 lambda: "Program exited" in _screen(w),
+                                 SCALA_START_TIMEOUT_S)
+
+
+# @scenario SC-debug-02
+def test_a_debug_adapter_session_shows_the_debugger_bar(tmp_path):
+    """A Go session started through dlv names the debugger's keys on the
+    source window's bottom row once it stops, as every other session does."""
+    _need("dlv", "go")
+    (tmp_path / "go.mod").write_text("module dapdemo\n\ngo 1.21\n")
+    with WpeSession(str(tmp_path), GOTO_GO, filename="main.go", wait=2.0) as w:
+        _go_to_line(w, 11)
+        w.key(CTRL_G, "b", delay=0.5)
+        w.key(CTRL_G, "r", delay=1.0)
+        assert _wait_for(w, lambda: _mark_line(w) == 11, GOTO_TIMEOUT_S), \
+            _screen(w)
+        _source_window_on_top(w)
+        assert _wait_for(w, lambda: "F7 Trace" in _bottom_bar(w),
+                         STEP_TIMEOUT_S), \
+            "the source window should show the debugger's keys:\n%s" \
+            % _screen(w)
+
+
+# @scenario SC-debug-06
+def test_f4_in_messages_does_not_run_the_program(tmp_path):
+    """F4 with Messages on top during a session is not Go to cursor: the
+    program stays stopped where it was."""
+    _need("gcc", "gdb")
+    with _c_session(tmp_path) as w:
+        _start_c_session(w)
+        w.key(ALT_2, delay=0.5)                 # Messages on top
+        assert "F4 Go to cursor" not in _bottom_bar(w), _screen(w)
+        w.key(F4, delay=1.0)
+        w.key("\033", delay=0.5)                # close Find if it opened
+        w._drain(1.0)
+        assert _children(w, "gdb"), \
+            "the program should not have run to its end:\n%s" % _screen(w)
+        _source_window_on_top(w)
+        assert _wait_for(w, lambda: _mark_line(w) == C_BREAK_LINE,
+                         STEP_TIMEOUT_S), \
+            "the stop should still be on line %d:\n%s" \
+            % (C_BREAK_LINE, _screen(w))

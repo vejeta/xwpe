@@ -9316,7 +9316,7 @@ int e_ai_options(FENSTER *f)
                                             : WPE_AI_ENGINE_BUILTIN;
 #endif
  if (f->ed->edopt != edopt_before) {
-  e_switch_blst(f->ed); e_ai_refresh_bars(f->ed); e_repaint_desk(f);
+  e_switch_blst(f->ed); e_refresh_editor_bars(f->ed); e_repaint_desk(f);
  }
  if (new_be != e_ai_backend) {
   /* Model names are backend-specific, so a backend switch drops the old model;

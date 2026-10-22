@@ -101,6 +101,11 @@ int  e_dap_adapter_gone(e_dap_session *s);
  * just before the program starts). */
 int e_dap_add_breakpoint(e_dap_session *s, const char *file, int line);
 
+/* Replace one file's breakpoints while stopped (setBreakpoints, waited for):
+ * Go to cursor's temporary breakpoint is added and removed this way. */
+int e_dap_set_file_breakpoints(e_dap_session *s, const char *file,
+                               const int *lines, int n);
+
 /* launch + setBreakpoints + setFunctionBreakpoints(entry_func) +
  * configurationDone, then run to the first stop (fires host->on_stopped with
  * the source line, or on_terminated if the program ended). */

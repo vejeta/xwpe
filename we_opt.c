@@ -2846,7 +2846,7 @@ int e_edt_options(FENSTER *f)
   {
    e_switch_blst(f->ed);
 #ifdef WPE_AI
-   e_ai_refresh_bars(f->ed);   /* show/hide the "Alt-B AI" bar entry live */
+   e_refresh_editor_bars(f->ed);   /* show/hide the "Alt-B AI" bar entry live */
 #endif
    for (i = 0; i <= f->ed->mxedt; i++)
     if ((f->ed->edopt & ED_ALWAYS_AUTO_INDENT) ||

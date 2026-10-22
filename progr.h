@@ -52,6 +52,7 @@ void e_build_end_at_exit(void);
 void e_build_deliver_held(void);
 void e_build_refuse(FENSTER *f);
 void e_status_say(FENSTER *f, const char *text);
+void e_status_say_until_key(FENSTER *f, const char *text);
 /* Messages as a background task (a build, a starting debugger) uses it. */
 FENSTER *e_build_messages(ECNT *cn);
 int e_build_ui_idle(ECNT *cn);

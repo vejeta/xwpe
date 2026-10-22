@@ -401,7 +401,7 @@ int e_edit(ECNT *cn, char *filename)
 #endif
  /* An editor bar of the programming modes names F9 and has one entry more;
     the window paints and takes clicks on as many entries as its bar has. */
- if (ftype == 0)
+ if (ftype == 0 && !e_give_debug_bar(f))
   e_use_editor_bar(f, f->blst);
  if (ftype != 1)
   fp = fopen(complete_fname, "rb");
@@ -586,6 +586,7 @@ int e_eingabe(ECNT *e)
    f = e->f[e->mxedt];
    b = f->b;
    s = f->s;
+   e_status_key_pressed(f);       /* a line kept until a key has been read */
 #if  MOUSE
    if (c < 0) cc = c = e_edt_mouse(c, f);
    else cc = c;

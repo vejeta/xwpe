@@ -404,7 +404,7 @@ void wpe_ai_deliver_held_reply(void);
 void wpe_ai_flash(struct FNST *f, const char *msg);
 int  wpe_ai_flash_clear(struct FNST *f);
 struct CNT;                         /* desktop (ECNT, edit.h)                  */
-void e_ai_refresh_bars(struct CNT *cn); /* re-pick editor bars after the toggle */
+void e_refresh_editor_bars(struct CNT *cn); /* re-pick editor bars after a change */
 
 /* ----- workspace layer (we_ai_ws.c, editor-side) ------------------------ */
 /* Scope: the full paths the agent may study -- the open text windows, plus
