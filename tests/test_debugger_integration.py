@@ -1541,6 +1541,8 @@ GOTO_JAVA = (
     "    }\n"
     "}\n"
 )
+JAVA_RESTART_LINE = 8       # int y = sq(x); -- "stop in P.main" stops on 7
+JAVA_SQ_LINE = 3            # int r = v * v;
 GOTO_A68 = (
     "PROC sq = (INT v) INT:\n"
     "BEGIN\n"
@@ -1569,6 +1571,7 @@ GOTO_GO = (
     "\tfmt.Println(\"END\", z)\n"
     "}\n"
 )
+GO_SQ_LINE = 6              # r := v * v
 GOTO_RUST = (
     "fn sq(v: i32) -> i32 {\n"
     "    let r = v * v;\n"
@@ -1844,3 +1847,246 @@ def test_f4_in_messages_does_not_run_the_program(tmp_path):
                          STEP_TIMEOUT_S), \
             "the stop should still be on line %d:\n%s" \
             % (C_BREAK_LINE, _screen(w))
+
+
+# Breakpoints changed while a session runs, on every debugger.  The same
+# programs as Go to cursor.  The line a restarted session must stop on is
+# never main's first statement: a debugger the user gave no breakpoint gets
+# one of the editor's own there, so a test waiting on that line would also
+# pass when the user's breakpoints were lost across the restart.  Each pair
+# below is a line main reaches only after its first statement, and a line
+# inside the function main calls there.
+GOTO_C = (
+    "#include <stdio.h>\n"
+    "int sq(int v)\n"
+    "{\n"
+    "  int r = v * v;\n"
+    "  return r;\n"
+    "}\n"
+    "int main(void)\n"
+    "{\n"
+    "  int x = 3;\n"
+    "  int y = sq(x);\n"
+    "  int z = sq(y);\n"
+    "  printf(\"END %d\\n\", z);\n"
+    "  return 0;\n"
+    "}\n"
+)
+C_RESTART_LINE = 10         # int y = sq(x); -- "b main" stops on 9, never here
+C_SQ_LINE = 4               # int r = v * v;
+HEALTH_LINE = 1             # where the cursor goes to prove the editor answers
+
+
+def _takes_keys(w):
+    """The editor still answers: Go to Line moves the cursor, and the
+    line:column field follows."""
+    _go_to_line(w, HEALTH_LINE)
+    return _wait_for(w, lambda: _status_field_line(w) == HEALTH_LINE,
+                     STEP_TIMEOUT_S)
+
+
+END_BOXES = ("End of code", "Debugger stopped")
+
+
+def _dismiss_the_end_box(w):
+    """Some debuggers' end of program is said in a box: Enter closes it, so
+    the next Ctrl-G R reaches the editor."""
+    w._drain(1.0)
+    if any(text in _screen(w) for text in END_BOXES):
+        w.key("\r", delay=0.5)
+
+
+def _runs_to_the_end_past(w, line, ended, timeout):
+    """Wait for @ended; False as soon as the mark lands on @line instead."""
+    deadline = time.time() + timeout * WAIT_SCALE
+    while time.time() < deadline:
+        w._drain(POLL_S)
+        if _mark_line(w) == line:
+            return False
+        if ended():
+            return True
+    return False
+
+
+def _toggle_and_remove_in_a_session(w, first, second, ended, start_timeout):
+    """Stopped on @first: (a) Ctrl-G B on @second arms it and Ctrl-G R stops
+    there; (b) after a restart, Ctrl-G B on @second disarms it and Ctrl-G R
+    runs to the end; (c) after another start, @second set again and Ctrl-G M
+    removes every breakpoint, so Ctrl-G R runs to the end.  @ended is a
+    factory: called before a run, it returns the test for that run's end."""
+    _go_to_line(w, first)
+    w.key(CTRL_G, "b", delay=0.5)
+    w.key(CTRL_G, "r", delay=1.0)
+    assert _wait_for(w, lambda: _mark_line(w) == first, start_timeout), \
+        "Ctrl-G R should stop on line %d:\n%s" % (first, _screen(w))
+    # (a) a breakpoint set while the session runs stops the program
+    _go_to_line(w, second)
+    w.key(CTRL_G, "b", delay=0.5)
+    assert second in _breakpoint_lines(w), _screen(w)
+    w.key(CTRL_G, "r", delay=0.5)
+    assert _wait_for(w, lambda: _mark_line(w) == second, GOTO_TIMEOUT_S), \
+        "the breakpoint set during the session should stop the program on " \
+        "line %d:\n%s" % (second, _screen(w))
+    # (b) the same breakpoint toggled off stops it no more
+    done = ended()
+    w.key(CTRL_G, "q", delay=0.5)
+    assert _wait_for(w, done, GOTO_TIMEOUT_S), \
+        "Ctrl-G Q should end the session:\n%s" % _screen(w)
+    _dismiss_the_end_box(w)
+    w.key(CTRL_G, "r", delay=1.0)
+    assert _wait_for(w, lambda: _mark_line(w) == first, start_timeout), \
+        "the restarted session should stop on line %d:\n%s" \
+        % (first, _screen(w))
+    _go_to_line(w, second)
+    w.key(CTRL_G, "b", delay=0.5)
+    assert second not in _breakpoint_lines(w), _screen(w)
+    assert _takes_keys(w), \
+        "the editor should take keys after the breakpoint went:\n%s" \
+        % _screen(w)
+    done = ended()
+    w.key(CTRL_G, "r", delay=0.5)
+    assert _runs_to_the_end_past(w, second, done, GOTO_TIMEOUT_S), \
+        "Ctrl-G R should run to the end, not stop on the removed breakpoint " \
+        "on line %d (mark on %s):\n%s" % (second, _mark_line(w), _screen(w))
+    # (c) Remove all breakpoints, the one set during the session included.
+    # A session some adapters keep open after the end is ended first, so the
+    # mark the next stop puts is not one left from this run.
+    _dismiss_the_end_box(w)
+    w.key(CTRL_G, "q", delay=0.5)
+    assert _wait_for(w, lambda: _mark_line(w) is None, GOTO_TIMEOUT_S), \
+        "no line should be marked once the session ended:\n%s" % _screen(w)
+    w.key(CTRL_G, "r", delay=1.0)
+    assert _wait_for(w, lambda: _mark_line(w) == first, start_timeout), \
+        "the third session should stop on line %d:\n%s" % (first, _screen(w))
+    _go_to_line(w, second)
+    w.key(CTRL_G, "b", delay=0.5)
+    assert second in _breakpoint_lines(w), _screen(w)
+    w.key(CTRL_G, "m", delay=0.5)
+    assert _breakpoint_lines(w) == [], \
+        "Ctrl-G M should clear the margin:\n%s" % _screen(w)
+    assert _takes_keys(w), \
+        "the editor should take keys after Remove all:\n%s" % _screen(w)
+    done = ended()
+    w.key(CTRL_G, "r", delay=0.5)
+    assert _runs_to_the_end_past(w, second, done, GOTO_TIMEOUT_S), \
+        "after Remove all, Ctrl-G R should run to the end (mark on %s):\n%s" \
+        % (_mark_line(w), _screen(w))
+
+
+def _process_ended(w, name):
+    """The end of a session whose debugger is the editor's child @name."""
+    return lambda: (lambda: not _children(w, name))
+
+
+def _last_message(w):
+    """The last line of text in the Messages window, or "" when it has none."""
+    lines = [row[1:-1].strip() for row, _ in _messages_rows(w)]
+    lines = [line for line in lines if line]
+    return lines[-1] if lines else ""
+
+
+def _says_last(w, *texts):
+    """The end of a run told by Messages: its last line becomes one of
+    @texts, where it was another line before the run."""
+    def says_end():
+        return any(text in _last_message(w) for text in texts)
+
+    def factory():
+        before = _last_message(w)
+        return lambda: says_end() and _last_message(w) != before
+    return factory
+
+
+# @scenario SC-debug-07
+def test_breakpoints_changed_in_a_session_under_gdb(tmp_path):
+    _need("gcc", "gdb")
+    with WpeSession(str(tmp_path), GOTO_C, filename="p.c", wait=1.5) as w:
+        _toggle_and_remove_in_a_session(w, C_RESTART_LINE, C_SQ_LINE,
+                                        _process_ended(w, "gdb"),
+                                        START_TIMEOUT_S)
+
+
+# @scenario SC-debug-07
+def test_breakpoints_changed_in_a_session_under_pdb(tmp_path):
+    _need("python3")
+    with WpeSession(str(tmp_path), GOTO_PY, filename="p.py", wait=1.5) as w:
+        _toggle_and_remove_in_a_session(w, 5, 2,
+                                        lambda: (lambda: _pdb_ended(w)),
+                                        START_TIMEOUT_S)
+
+
+# @scenario SC-debug-07
+def test_breakpoints_changed_in_a_session_under_jdb(tmp_path):
+    _need("jdb", "javac")
+    with WpeSession(str(tmp_path), GOTO_JAVA, filename="P.java", wait=1.5) as w:
+        _toggle_and_remove_in_a_session(w, JAVA_RESTART_LINE, JAVA_SQ_LINE,
+                                        _process_ended(w, "jdb"),
+                                        JDB_START_TIMEOUT_S)
+
+
+# @scenario SC-debug-07
+def test_breakpoints_changed_in_a_session_under_a68g(tmp_path):
+    _need("a68g")
+    with WpeSession(str(tmp_path), GOTO_A68, filename="p.a68", wait=1.5) as w:
+        _toggle_and_remove_in_a_session(w, 6, 3, _process_ended(w, "a68g"),
+                                        START_TIMEOUT_S)
+
+
+# @scenario SC-debug-07
+def test_breakpoints_changed_in_a_session_under_dlv(tmp_path):
+    _need("dlv", "go")
+    (tmp_path / "go.mod").write_text("module dapdemo\n\ngo 1.21\n")
+    with WpeSession(str(tmp_path), GOTO_GO, filename="main.go", wait=2.0) as w:
+        _toggle_and_remove_in_a_session(w, 11, 6, _process_ended(w, "dlv"),
+                                        GOTO_TIMEOUT_S)
+
+
+# @scenario SC-debug-07
+def test_remove_all_under_an_adapter_after_a_start_with_no_breakpoint(tmp_path):
+    """Remove all in an adapter session that stopped at the program's start
+    because the user had marked nothing: the one line he then marks goes, the
+    margin clears, the program runs to its end and the editor still takes
+    keys.  The session's first stop is the adapter's own, not a line of the
+    user's, which is the case the other adapter tests do not reach."""
+    _need("dlv", "go")
+    (tmp_path / "go.mod").write_text("module dapdemo\n\ngo 1.21\n")
+    with WpeSession(str(tmp_path), GOTO_GO, filename="main.go", wait=2.0) as w:
+        w.key(CTRL_G, "r", delay=1.0)
+        assert _wait_for(w, lambda: _mark_line(w) is not None, GOTO_TIMEOUT_S), \
+            "the adapter should stop at the program's start:\n%s" % _screen(w)
+        _go_to_line(w, GO_SQ_LINE)
+        w.key(CTRL_G, "b", delay=0.5)
+        assert GO_SQ_LINE in _breakpoint_lines(w), _screen(w)
+        w.key(CTRL_G, "m", delay=0.5)
+        assert _breakpoint_lines(w) == [], \
+            "Ctrl-G M should clear the margin:\n%s" % _screen(w)
+        assert _takes_keys(w), \
+            "the editor should take keys after Remove all:\n%s" % _screen(w)
+        done = _process_ended(w, "dlv")()
+        w.key(CTRL_G, "r", delay=0.5)
+        assert _runs_to_the_end_past(w, GO_SQ_LINE, done, GOTO_TIMEOUT_S), \
+            "after Remove all, Ctrl-G R should run to the end, not stop on " \
+            "line %d (mark on %s):\n%s" \
+            % (GO_SQ_LINE, _mark_line(w), _screen(w))
+
+
+# @scenario SC-debug-07
+@pytest.mark.parametrize("adapter,binary", [("gdb", "gdb"), ("lldb", "lldb-dap")])
+def test_breakpoints_changed_in_a_session_under_a_rust_adapter(
+        tmp_path, adapter, binary):
+    _need("rustc", binary)
+    with WpeSession(str(tmp_path), GOTO_RUST, filename="main.rs", wait=2.0,
+                    env_extra={"XWPE_DAP_ADAPTER": adapter}) as w:
+        _toggle_and_remove_in_a_session(w, 6, 2, _process_ended(w, binary),
+                                        RUST_START_TIMEOUT_S)
+
+
+# @scenario SC-debug-07
+def test_breakpoints_changed_in_a_session_under_scala(tmp_path):
+    _need("scala-cli")
+    with WpeSession(str(tmp_path), GOTO_SCALA, filename="p.scala",
+                    wait=2.0) as w:
+        _toggle_and_remove_in_a_session(w, 6, 3,
+                                        _says_last(w, "End of Debugging",
+                                                   "Program exited"),
+                                        SCALA_START_TIMEOUT_S)

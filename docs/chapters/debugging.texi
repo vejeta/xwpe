@@ -94,6 +94,15 @@ line.  pdb, jdb, a68g and the debug adapters get a breakpoint on the
 line that is removed at the next stop, wherever the program stops; a
 breakpoint of your own on that line stays.
 
+@cindex breakpoints, in a running session
+Breakpoints can be set and removed while a session runs, with every
+debugger: gdb, pdb, jdb, a68g and the debug adapters.  A breakpoint set
+with @kbd{Ctrl-G B} stops the program the next time it gets there; one
+removed stops it no more; @kbd{Ctrl-G M} removes them all, and the
+program then runs to its end.  Your breakpoints outlive the session:
+after @kbd{Ctrl-G Q}, or a program that ran to its end, the next
+@kbd{Ctrl-G R} stops on them again.
+
 @cindex breakpoints, in a project
 With a project open, the breakpoints are saved in the project file
 (@code{BREAKPOINTS=}) when the project closes or the editor quits.
@@ -464,8 +473,9 @@ your first line of code.
 @kbd{Ctrl-G P} (same as gdb and jdb).
 
 @item
-@strong{Breakpoints}: set with @kbd{Ctrl-G B} before starting pdb.
-xwpe sends @code{break file:line} commands to pdb.
+@strong{Breakpoints}: set with @kbd{Ctrl-G B}, before starting pdb or
+while it runs.  xwpe sends @code{break file:line} to set one and
+@code{clear file:line} to remove one.
 
 @item
 @strong{Watches}: @kbd{Ctrl-G W} sends @code{p @var{expr}} and shows
@@ -519,8 +529,10 @@ first breakpoint (or to the end of the program).
 
 @item
 @strong{Breakpoints}: set with @kbd{Ctrl-G B}.  xwpe sends
-@code{breakpoint @var{line}} (and @code{breakpoint @var{line} clear} to
-remove one).  Because Algol 68 is recursive, a breakpoint inside a
+@code{breakpoint @var{line}}.  To remove one it sends
+@code{breakpoint clear breakpoints} and sets the others again, because
+the monitor's @code{breakpoint @var{line} clear} leaves the line armed.
+Because Algol 68 is recursive, a breakpoint inside a
 procedure is re-hit on every recursive call.
 
 @item

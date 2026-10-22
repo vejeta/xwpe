@@ -561,6 +561,8 @@ static int  e_d_dap_start_watch(FENSTER *f);   /* the adapter's start (below) */
 static int  e_d_dap_start_finish(FENSTER *f);
 static void e_d_dap_start_close_messages(ECNT *cn);
 static void e_scala_pin_jdk(FENSTER *f, const char *who);  /* pin Scala JVM (below) */
+static void e_d_brk_forget_start_entries(void);   /* breakpoints (below) */
+static void e_d_cursor_brk_clear(void);           /* Go to cursor's (below) */
 
 typedef struct {
  char buf[SVLINES][256];
@@ -1552,7 +1554,11 @@ int e_d_quit_basic(FENSTER *f)
  e_d_async_pending = 0;
  e_d_accum.active = 0;
  e_d_accum.f = NULL;
- e_d_nbrpts = 0;
+ e_d_brk_forget_start_entries();
+ /* The session is over: drop the editor's memory of Go to cursor's temporary
+    breakpoint.  e_d_swtch is already 0, so nothing is sent to a debugger that
+    no longer exists. */
+ e_d_cursor_brk_clear();
  if (WpeIsXwin())
  {
   remove(npipe[0]);
@@ -2540,43 +2546,53 @@ static void e_d_breakpoints_changed(ECNT *cn)
   cn->f[i]->save = 1;
 }
 
-static int e_d_a68g_reset_breakpoints(void);
+/* Room for a breakpoint command that names a file, and for its answer. */
+#define E_D_BRK_CMD_MAX     (PATH_MAX + 64)
+#define E_D_BRK_ANSWER_MAX  256
+/* gdb's answer to a breakpoint set: "Breakpoint 2 at ...", its number next. */
+#define E_D_GDB_BRK_ANSWER  "Breakpoint "
+/* No line to add to a debug adapter's list. */
+#define E_D_BRK_NO_LINE     0
 
-/*  Breakpoints   */
-int e_breakpoint(FENSTER *f)
+static int e_d_a68g_reset_breakpoints(void);
+static int e_d_brk_arm(ECNT *cn, int i);
+static int e_d_brk_disarm(ECNT *cn, const char *file, int line, int id);
+static void e_d_brk_disarm_all(ECNT *cn);
+
+/**
+ * e_d_send_and_read - Send the debugger @cmd and read its answer up to the
+ * prompt, so the next command's answer is not mistaken for this one's.
+ * Return: e_d_dum_read's answer, -1 when the debugger stopped answering.
+ */
+static int e_d_send_and_read(const char *cmd)
 {
- return(e_make_breakpoint(f, 0));
+ e_d_send_cmd(cmd);
+ return(e_d_dum_read());
 }
 
-int e_remove_breakpoints(FENSTER *f)
+/**
+ * e_d_brk_is_start_entry - Is list entry @i the breakpoint the editor sets
+ * on the program's start symbol for itself, not one of the user's?
+ *
+ * Such an entry has no file name.  Remove all and the end of a session
+ * leave it out: it is no line the user marked.
+ */
+static int e_d_brk_is_start_entry(int i)
 {
- ECNT *cn = f->ed;
+ return(e_d_sbrpts[i][0] == '\0');
+}
+
+/**
+ * e_d_brk_list_free - Empty the breakpoint list.
+ *
+ * The margin marks are left as they are; the caller says whether they go.
+ */
+static void e_d_brk_list_free(void)
+{
  int i;
 
- if (e_d_start_refused(f))
-  return(0);
- if (e_d_swtch)
- {
-  if (e_deb_type == DEB_GDB)
-   e_d_send_cmd("d\ny\n");
-  else if (e_deb_type == DEB_SDB)
-   e_d_send_cmd("D\n");
-  else if (e_deb_type == DEB_DBX)
-   e_d_send_cmd("delete all\n");
-  else if (e_deb_type == DEB_XDB)
-   e_d_send_cmd("db *\n");
-  else if (e_deb_type == DEB_A68G)
-   e_d_send_cmd("breakpoint clear breakpoints\n");
- }
- /* Opening a project clears the list before it reads the project's own, so
-    only a list that had breakpoints is a change the project has to keep. */
- if (e_d_nbrpts > 0)
-  e_d_breakpoints_changed(cn);
  for (i = 0; i < e_d_nbrpts; i++)
   FREE(e_d_sbrpts[i]);
- for (i = cn->mxedt; i >= 0; i--)
-  if (DTMD_ISTEXT(cn->f[i]->dtmd))
-   cn->f[i]->s->brp[0] = 0;
  e_d_nbrpts = 0;
  if (e_d_sbrpts)
  {
@@ -2593,6 +2609,87 @@ int e_remove_breakpoints(FENSTER *f)
   FREE(e_d_nrbrpts);
   e_d_nrbrpts = NULL;
  }
+}
+
+/**
+ * e_d_brk_list_drop - Take entry @i out of the breakpoint list.
+ *
+ * Used when the user removes a breakpoint and when the editor's own start
+ * breakpoint is no longer needed.
+ */
+static void e_d_brk_list_drop(int i)
+{
+ FREE(e_d_sbrpts[i]);
+ for (; i < e_d_nbrpts - 1; i++)
+ {
+  e_d_sbrpts[i] = e_d_sbrpts[i+1];
+  e_d_ybrpts[i] = e_d_ybrpts[i+1];
+  e_d_nrbrpts[i] = e_d_nrbrpts[i+1];
+ }
+ e_d_nbrpts--;
+ if (e_d_nbrpts == 0)
+  e_d_brk_list_free();
+}
+
+/**
+ * e_d_brk_forget_start_entries - At the end of a session, keep only the
+ * user's breakpoints in the list.
+ *
+ * The user's breakpoints outlive the session: the next Ctrl-G R, F7 or F8
+ * stops on them again with any debugger.  The start breakpoint the editor
+ * set for itself does not, or the next session would think the user had
+ * breakpoints and never stop at the start.
+ */
+static void e_d_brk_forget_start_entries(void)
+{
+ int i = 0;
+
+ while (i < e_d_nbrpts)
+ {
+  if (e_d_brk_is_start_entry(i))
+   e_d_brk_list_drop(i);
+  else
+   i++;
+ }
+}
+
+/**
+ * e_d_brk_index_of - Where the list keeps the breakpoint on @line of @file.
+ * Return: its index, or -1 when the list has none there.
+ */
+static int e_d_brk_index_of(const char *file, int line)
+{
+ int i;
+
+ for (i = 0; i < e_d_nbrpts; i++)
+  if (e_d_ybrpts[i] == line && !strcmp(e_d_sbrpts[i], file))
+   return(i);
+ return(-1);
+}
+
+/*  Breakpoints   */
+int e_breakpoint(FENSTER *f)
+{
+ return(e_make_breakpoint(f, 0));
+}
+
+int e_remove_breakpoints(FENSTER *f)
+{
+ ECNT *cn = f->ed;
+ int i;
+
+ if (e_d_start_refused(f))
+  return(0);
+ if (e_d_swtch)
+  e_d_brk_disarm_all(cn);
+ /* Opening a project clears the list before it reads the project's own, so
+    only a list that had breakpoints is a change the project has to keep. */
+ if (e_d_nbrpts > 0)
+  e_d_breakpoints_changed(cn);
+ for (i = cn->mxedt; i >= 0; i--)
+  if (DTMD_ISTEXT(cn->f[i]->dtmd))
+   cn->f[i]->s->brp[0] = 0;
+ e_d_brk_list_free();
  e_rep_win_tree(cn);
  return(0);
 }
@@ -2634,7 +2731,7 @@ static void e_d_gdb_start_break(char *out, size_t n)
 /* Grow the three parallel breakpoint arrays (source file name, source line,
    debugger-assigned id) by one entry.  The caller then fills in element
    e_d_nbrpts - 1 of each.  Used wherever a breakpoint is recorded
-   (e_mk_brk_main, e_make_breakpoint, e_d_a68g_rearm_breakpoints). */
+   (e_mk_brk_main, e_make_breakpoint). */
 static void e_d_brk_grow(void)
 {
  e_d_nbrpts++;
@@ -2652,6 +2749,20 @@ static void e_d_brk_grow(void)
  }
 }
 
+/**
+ * e_d_start_brk_has_command - Does the selected debugger set the editor's
+ * start breakpoint with a command, so that removing it needs one too?
+ *
+ * pdb, a68g and the debug adapters stop at the start by themselves and are
+ * sent nothing, so nothing is sent, nor waited for, when it goes.
+ */
+static int e_d_start_brk_has_command(void)
+{
+ return(e_deb_type == DEB_GDB || e_deb_type == DEB_DBX ||
+        e_deb_type == DEB_XDB || e_deb_type == DEB_JDB ||
+        e_deb_type == DEB_SDB);
+}
+
 int e_mk_brk_main(FENSTER *f, int sw)
 {
  int i, ret;
@@ -2659,7 +2770,10 @@ int e_mk_brk_main(FENSTER *f, int sw)
 
  if (sw)
  {
-  if (e_d_swtch)
+  /* Remove all may already have taken the entry out of the list. */
+  if (sw > e_d_nbrpts || !e_d_brk_is_start_entry(sw-1))
+   return(0);
+  if (e_d_swtch && e_d_start_brk_has_command())
   {
    if (e_deb_type == DEB_GDB) sprintf(eing, "d %d\n", e_d_nrbrpts[sw-1]);
    else if (e_deb_type == DEB_DBX)
@@ -2684,28 +2798,13 @@ int e_mk_brk_main(FENSTER *f, int sw)
    e_d_send_cmd(eing);
    if (e_d_dum_read() == -1) return(-1);
   }
-  FREE(e_d_sbrpts[sw-1]);
-  for (i = sw-1; i < e_d_nbrpts - 1; i++)
-  {
-   e_d_sbrpts[i] = e_d_sbrpts[i+1];
-   e_d_ybrpts[i] = e_d_ybrpts[i+1];
-   e_d_nrbrpts[i] = e_d_nrbrpts[i+1];
-  }
-  e_d_nbrpts--;
-  if (e_d_nbrpts == 0)
-  {
-   FREE(e_d_sbrpts);
-   e_d_sbrpts = NULL;
-   FREE(e_d_ybrpts);
-   e_d_ybrpts = NULL;
-   FREE(e_d_nrbrpts);
-   e_d_nrbrpts = NULL;
-  }
+  e_d_brk_list_drop(sw-1);
  }
  else
  {
   e_d_brk_grow();
   e_d_sbrpts[e_d_nbrpts - 1] = MALLOC(1);
+  e_d_sbrpts[e_d_nbrpts - 1][0] = '\0';   /* no file: the start symbol */
   if (e_d_swtch)
   {
    if (e_deb_type == DEB_GDB)
@@ -2781,13 +2880,73 @@ int e_mk_brk_main(FENSTER *f, int sw)
  return(sw ? 0 : e_d_nbrpts);
 }
 
+/**
+ * e_d_brk_toggle_off - The user removed the breakpoint on @line of window
+ * @f's file: take it out of the list and, while a session runs, out of the
+ * debugger.
+ *
+ * The next run then goes past that line with every debugger, and nothing is
+ * waited for that was not asked.
+ * Return: 0, or -1 when the debugger could not be told.
+ */
+static int e_d_brk_toggle_off(FENSTER *f, int line)
+{
+ int i = e_d_brk_index_of(f->datnam, line);
+ int id;
+
+ if (i < 0)
+  return(0);                   /* only the margin had it */
+ id = e_d_nrbrpts[i];
+ e_d_brk_list_drop(i);
+ if (!e_d_swtch)
+  return(0);
+ return(e_d_brk_disarm(f->ed, f->datnam, line, id));
+}
+
+/**
+ * e_d_brk_toggle_on - The user set a breakpoint on @line of window @f's
+ * file: add it to the list and, while a session runs, to the debugger.
+ *
+ * The next run stops there with every debugger, the one already running
+ * included.
+ * Return: 0, or -1 when the debugger could not be told.
+ */
+static int e_d_brk_toggle_on(FENSTER *f, int line)
+{
+ e_d_brk_grow();
+ e_d_sbrpts[e_d_nbrpts - 1] = MALLOC(strlen(f->datnam) + 1);
+ strcpy(e_d_sbrpts[e_d_nbrpts - 1], f->datnam);
+ e_d_ybrpts[e_d_nbrpts - 1] = line;
+ e_d_nrbrpts[e_d_nbrpts - 1] = 0;
+ if (!e_d_swtch)
+  return(0);
+ return(e_d_brk_arm(f->ed, e_d_nbrpts - 1));
+}
+
+/**
+ * e_d_brk_arm_all - Set every breakpoint of the user's in a debugger that
+ * has just started.
+ * @cn: the editor.
+ *
+ * A session started after the margin was marked stops on each mark.
+ * Return: 0, or -1 when the debugger stopped answering.
+ */
+static int e_d_brk_arm_all(ECNT *cn)
+{
+ int i;
+
+ for (i = 0; i < e_d_nbrpts; i++)
+  if (!e_d_brk_is_start_entry(i) && e_d_brk_arm(cn, i) == -1)
+   return(-1);
+ return(0);
+}
+
 int e_make_breakpoint(FENSTER *f, int sw)
 {
  ECNT *cn = f->ed;
  SCHIRM *s = cn->f[cn->mxedt]->s;
  BUFFER *b = cn->f[cn->mxedt]->b;
- int ret, i;
- char eing[128], str[256];
+ int i;
 
  if (e_d_start_refused(f))
   return(0);
@@ -2802,249 +2961,20 @@ int e_make_breakpoint(FENSTER *f, int sw)
   {
    for (i++; i < s->brp[0]; i++) s->brp[i] = s->brp[i+1];
    (s->brp[0])--;
-   for (i = 0; i < e_d_nbrpts && (strcmp(e_d_sbrpts[i], f->datnam) ||
-     e_d_ybrpts[i] != b->b.y+1); i++)
-    ;
-   if (e_d_swtch)
-   {
-    if (e_deb_type == DEB_GDB) sprintf(eing, "d %d\n", e_d_nrbrpts[i]);
-    else if (e_deb_type == DEB_DBX)
-     sprintf(eing, "delete %d\n", e_d_nrbrpts[i]);
-    else if (e_deb_type == DEB_XDB)
-     sprintf(eing, "db %d\n", e_d_nrbrpts[i]);
-    else if (e_deb_type == DEB_JDB)
-    {
-     /* jdb: "clear Class:line" */
-     char cls[128];
-     strcpy(cls, e_d_sbrpts[i]);
-     WpeStringCutChar(cls, '.');
-     sprintf(eing, "clear %s:%d\n", cls, e_d_ybrpts[i]);
-    }
-    else if (e_deb_type == DEB_SDB)
-    {
-     sprintf(eing, "e %s\n", e_d_sbrpts[i]);
-     e_d_send_cmd(eing);
-     if (e_d_dum_read() == -1) return(-1);
-     sprintf(eing, "%d d\n", e_d_ybrpts[i]);
-    }
-    /* a68g is told once the list is updated, below: its per-line clear
-       does not clear. */
-    if (e_deb_type != DEB_A68G)
-    {
-     e_d_send_cmd(eing);
-     if (e_d_dum_read() == -1) return(-1);
-    }
-   }
-   FREE(e_d_sbrpts[i]);
-   for (; i < e_d_nbrpts - 1; i++)
-   {
-    e_d_sbrpts[i] = e_d_sbrpts[i+1];
-    e_d_ybrpts[i] = e_d_ybrpts[i+1];
-    e_d_nrbrpts[i] = e_d_nrbrpts[i+1];
-   }
-   e_d_nbrpts--;
-   if (e_d_nbrpts == 0)
-   {
-    FREE(e_d_sbrpts);
-    e_d_sbrpts = NULL;
-    FREE(e_d_ybrpts);
-    e_d_ybrpts = NULL;
-    FREE(e_d_nrbrpts);
-    e_d_nrbrpts = NULL;
-   }
-   if (e_d_swtch && e_deb_type == DEB_A68G)
-   {
-    if (e_d_a68g_reset_breakpoints() == -1)
-     return(-1);
-   }
+   if (e_d_brk_toggle_off(f, b->b.y + 1) == -1)
+    return(-1);
   }
   else
   {
-   e_d_brk_grow();
-   e_d_sbrpts[e_d_nbrpts - 1] = MALLOC(strlen(f->datnam) + 1);
-   strcpy(e_d_sbrpts[e_d_nbrpts - 1], f->datnam);
-   e_d_ybrpts[e_d_nbrpts - 1] = b->b.y + 1;
-   if (e_d_swtch)
-   {
-    if (e_deb_type == DEB_GDB)
-    {
-     snprintf(eing, sizeof(eing), "b %s:%d\n", f->datnam, b->b.y + 1);
-     e_d_send_cmd(eing);
-     while ((ret = e_d_line_read(wfildes[0], str, 256, 0, 0)) == 0 &&
-       strncmp(str, "Breakpoint", 10))
-      ;
-     if (ret == -1) return(ret);
-     if (ret == 2) e_d_error(str);
-     e_d_nrbrpts[e_d_nbrpts - 1] = atoi(str+11);
-     if (ret != 1 && e_d_dum_read() == -1) return(-1);
-    }
-    else if (e_deb_type == DEB_DBX)
-    {
-     snprintf(eing, sizeof(eing), "stop at \"%s\":%d\n", f->datnam, b->b.y + 1);
-     e_d_send_cmd(eing);
-     while ((ret = e_d_line_read(wfildes[0], str, 256, 0, 0)) == 0 &&
-       str[0] != '(')
-      ;
-     if (ret == -1) return(ret);
-     if (ret == 2) e_d_error(str);
-     e_d_nrbrpts[e_d_nbrpts - 1] = atoi(str+1);
-     if (ret != 1 && e_d_dum_read() == -1) return(-1);
-    }
-    else if (e_deb_type == DEB_XDB)
-    {
-     snprintf(eing, sizeof(eing), "b %s:%d\n", f->datnam, b->b.y + 1);
-     e_d_send_cmd(eing);
-     while ((ret = e_d_line_read(wfildes[0], str, 256, 0, 0)) == 0 &&
-       strncmp(str, "Added:", 6))
-      ;
-     ret = e_d_line_read(wfildes[0], str, 256, 0, 0);
-     if (ret == -1) return(ret);
-     if (ret == 2) e_d_error(str);
-     e_d_nrbrpts[e_d_nbrpts - 1] = atoi(str+1);
-     if (ret != 1 && e_d_dum_read() == -1) return(-1);
-    }
-    else if (e_deb_type == DEB_SDB)
-    {
-     snprintf(eing, sizeof(eing), "e %s\n", f->datnam);
-     e_d_send_cmd(eing);
-     if (e_d_dum_read() == -1) return(-1);
-     sprintf(eing, "%d b\n", b->b.y + 1);
-     e_d_send_cmd(eing);
-     if (e_d_dum_read() == -1) return(-1);
-    }
-    else if (e_deb_type == DEB_JDB)
-    {
-     /* jdb: "stop at Class:line" -- use filename without extension as class */
-     { char cls[128];
-       strcpy(cls, f->datnam);
-       WpeStringCutChar(cls, '.');
-       sprintf(eing, "stop at %s:%d\n", cls, b->b.y + 1);
-     }
-     e_d_send_cmd(eing);
-     if (e_d_dum_read() == -1) return(-1);
-     e_d_nrbrpts[e_d_nbrpts - 1] = e_d_nbrpts;
-    }
-    else if (e_deb_type == DEB_PDB)
-    {
-     /* pdb: "b line" for current file, "b file:line" for others */
-     sprintf(eing, "b %d\n", b->b.y + 1);
-     e_d_send_cmd(eing);
-     if (e_d_dum_read() == -1) return(-1);
-     e_d_nrbrpts[e_d_nbrpts - 1] = e_d_nbrpts;
-    }
-    else if (e_deb_type == DEB_A68G)
-    {
-     /* a68g: "breakpoint line" (single source file) */
-     sprintf(eing, "breakpoint %d\n", b->b.y + 1);
-     e_d_send_cmd(eing);
-     if (e_d_dum_read() == -1) return(-1);
-     e_d_nrbrpts[e_d_nbrpts - 1] = e_d_nbrpts;
-    }
-   }
+   if (e_d_brk_toggle_on(f, b->b.y + 1) == -1)
+    return(-1);
    (s->brp[0])++;
    s->brp = REALLOC(s->brp, (s->brp[0]+1) * sizeof(int));
    s->brp[s->brp[0]] = b->b.y;
   }
  }
- else
- {
-  if(e_deb_type == DEB_GDB)
-  {
-   for (i = 0; i < e_d_nbrpts; i++)
-   {
-    sprintf(eing, "b %s:%d\n", e_d_sbrpts[i], e_d_ybrpts[i]);
-    e_d_send_cmd(eing);
-    while ((ret = e_d_line_read(wfildes[0], str, 256, 0, 0)) == 0 &&
-      strncmp(str, "Breakpoint", 10))
-     ;
-    if (ret == -1) return(ret);
-    if (ret == 2) e_d_error(str);
-    e_d_nrbrpts[e_d_nbrpts - 1] = atoi(str+11);
-    if (ret != 1 && e_d_dum_read() == -1) return(-1);
-   }
-  }
-  else if (e_deb_type == DEB_DBX)
-  {
-   for (i = 0; i < e_d_nbrpts; i++)
-   {
-    sprintf(eing, "stop at \"%s\":%d\n", e_d_sbrpts[i], e_d_ybrpts[i]);
-    e_d_send_cmd(eing);
-    while ((ret = e_d_line_read(wfildes[0], str, 256, 0, 0)) == 0 &&
-      str[0] != '(')
-     ;
-    if (ret == -1) return(ret);
-    if (ret == 2) e_d_error(str);
-    e_d_nrbrpts[e_d_nbrpts - 1] = atoi(str+1);
-    if (ret != 1 && e_d_dum_read() == -1) return(-1);
-   }
-  }
-  else if (e_deb_type == DEB_XDB)
-  {
-   for (i = 0; i < e_d_nbrpts; i++)
-   {
-    snprintf(eing, sizeof(eing), "b %s:%d\n", f->datnam, b->b.y + 1);
-    e_d_send_cmd(eing);
-    while ((ret = e_d_line_read(wfildes[0], str, 256, 0, 0)) == 0 &&
-      strncmp(str, "Added:", 6))
-     ;
-    ret = e_d_line_read(wfildes[0], str, 256, 0, 0);
-    if (ret == -1) return(ret);
-    if (ret == 2) e_d_error(str);
-    e_d_nrbrpts[e_d_nbrpts - 1] = atoi(str+1);
-    if (ret != 1 && e_d_dum_read() == -1) return(-1);
-   }
-  }
-  else if (e_deb_type == DEB_JDB)
-  {
-   for (i = 0; i < e_d_nbrpts; i++)
-   {
-    /* jdb: "stop at Class:line" -- strip .java extension from filename */
-    { char cls[128];
-      strcpy(cls, e_d_sbrpts[i]);
-      WpeStringCutChar(cls, '.');
-      sprintf(eing, "stop at %s:%d\n", cls, e_d_ybrpts[i]);
-    }
-    jdb_trace("e_make_breakpoint(sw=1): sending '%s'\n", eing);
-    e_d_send_cmd(eing);
-    if (e_d_dum_read() == -1) return(-1);
-    e_d_nrbrpts[i] = i + 1;
-   }
-  }
-  else if (e_deb_type == DEB_PDB)
-  {
-   for (i = 0; i < e_d_nbrpts; i++)
-   {
-    /* pdb: "b file:line" */
-    sprintf(eing, "b %s:%d\n", e_d_sbrpts[i], e_d_ybrpts[i]);
-    e_d_send_cmd(eing);
-    if (e_d_dum_read() == -1) return(-1);
-    e_d_nrbrpts[i] = i + 1;
-   }
-  }
-  else if (e_deb_type == DEB_A68G)
-  {
-   for (i = 0; i < e_d_nbrpts; i++)
-   {
-    /* a68g: "breakpoint line" (single source file) */
-    sprintf(eing, "breakpoint %d\n", e_d_ybrpts[i]);
-    e_d_send_cmd(eing);
-    if (e_d_dum_read() == -1) return(-1);
-    e_d_nrbrpts[i] = i + 1;
-   }
-  }
-  else
-  {
-   for (i = 0; i < e_d_nbrpts; i++)
-   {
-    sprintf(eing, "e %s\n", e_d_sbrpts[i]);
-    e_d_send_cmd(eing);
-    if (e_d_dum_read() == -1) return(-1);
-    sprintf(eing, "%d b\n", e_d_ybrpts[i]);
-    e_d_send_cmd(eing);
-    if (e_d_dum_read() == -1) return(-1);
-   }
-  }
- }
+ else if (e_d_brk_arm_all(cn) == -1)
+  return(-1);
  e_schirm(f, 1);
  return(1);
 }
@@ -5125,35 +5055,6 @@ int e_start_debug(FENSTER *f)
  return(0);
 }
 
-/* Rebuild the runtime breakpoint list from the surviving editor markers.
-   When an a68g program finishes it EOFs and the whole session is torn down,
-   which clears e_d_nbrpts -- but the breakpoint markers (s->brp) stay on the
-   source windows.  Without this, a re-run (Ctrl-G R) would re-arm nothing and
-   sail past the breakpoints.  gdb never needs this because program exit does
-   not quit gdb.  No-op when the runtime list is already populated (the normal
-   first run, where Ctrl-G B filled both). */
-static void e_d_a68g_rearm_breakpoints(FENSTER *f)
-{
- ECNT *cn = f->ed;
- int i, k;
-
- if (e_d_nbrpts > 0)
-  return;
- for (i = cn->mxedt; i > 0; i--)
- {
-  SCHIRM *s = cn->f[i]->s;
-  if (!DTMD_ISTEXT(cn->f[i]->dtmd) || !s->brp || s->brp[0] <= 0)
-   continue;
-  for (k = 1; k <= s->brp[0]; k++)
-  {
-   e_d_brk_grow();
-   e_d_sbrpts[e_d_nbrpts - 1] = MALLOC(strlen(cn->f[i]->datnam) + 1);
-   strcpy(e_d_sbrpts[e_d_nbrpts - 1], cn->f[i]->datnam);
-   e_d_ybrpts[e_d_nbrpts - 1] = s->brp[k] + 1;   /* s->brp is 0-based */
-  }
- }
-}
-
 /**
  * e_d_set_nonblock - Make one of the debugger's pipes non-blocking.
  * @fd: the pipe's read end, or -1.
@@ -5198,10 +5099,6 @@ static int e_d_start_after_banner(FENSTER *f)
   e_d_send_cmd("sm\n");
   if (e_d_dum_read() == -1) return(-1);
  }
- /* a68g: a finished program tore down the session and cleared e_d_nbrpts;
-    rebuild it from the surviving markers so a re-run re-arms the breakpoints. */
- if (e_deb_type == DEB_A68G)
-  e_d_a68g_rearm_breakpoints(cn->f[cn->mxedt]);
  jdb_trace("e_run_debug: setting breakpoints (nbrpts=%d)...\n", e_d_nbrpts);
  if (e_make_breakpoint(cn->f[cn->mxedt], 1) == -1) return(-1);
  jdb_trace("e_run_debug: breakpoints set OK, e_d_swtch -> 2\n");
@@ -6214,8 +6111,6 @@ int e_d_step_next(FENSTER *f, int sw)
 #define E_D_GOTO_CURSOR 'U'
 #define E_D_GOTO_FINISH 'F'
 
-/* Room for the debugger command that sets or clears the cursor's breakpoint. */
-#define E_D_CURSOR_CMD_MAX (PATH_MAX + 64)
 
 /* The breakpoint Go to cursor sets for itself, removed at the next stop. */
 static struct {
@@ -6259,34 +6154,38 @@ static int e_d_user_brk_on(const char *file, int line)
 }
 
 /**
- * e_d_cursor_brk_class - The class jdb names a breakpoint by: the file name
+ * e_d_brk_jdb_class - The class jdb names a breakpoint by: the file name
  * without ".java".
- * @out: where to put it; @size: its size.
+ * @file: the breakpoint's file name; @out: where to put it; @size: its size.
  */
-static void e_d_cursor_brk_class(char *out, size_t size)
+static void e_d_brk_jdb_class(const char *file, char *out, size_t size)
 {
- snprintf(out, size, "%s", e_d_cursor_brk.file);
+ snprintf(out, size, "%s", file);
  WpeStringCutChar(out, '.');
 }
 
 /**
- * e_d_cursor_brk_line_cmd - Write the pipe debugger's command that sets
- * (@set 1) or clears (@set 0) the cursor's breakpoint.
- * @out: the command; @size: its room.
+ * e_d_brk_line_cmd - Write the command that sets (@set 1) or clears (@set 0)
+ * the breakpoint on @line of @file, for a debugger that names a breakpoint
+ * by its line: pdb, jdb and a68g.
+ * @path: the file's full path, which pdb is given; @out, @size: the command.
+ *
+ * a68g's clear of one line does not clear (see e_d_a68g_reset_breakpoints),
+ * so only its set is written here.
  * Return: 1 when the selected debugger has such a command.
  */
-static int e_d_cursor_brk_line_cmd(int set, char *out, size_t size)
+static int e_d_brk_line_cmd(int set, const char *file, const char *path,
+                            int line, char *out, size_t size)
 {
  char cls[PATH_MAX];
- int line = e_d_cursor_brk.line;
 
  if (e_deb_type == DEB_PDB && set)
-  snprintf(out, size, "b %s:%d\n", e_d_cursor_brk.path, line);
+  snprintf(out, size, "b %s:%d\n", path, line);
  else if (e_deb_type == DEB_PDB)
-  snprintf(out, size, "clear %s:%d\n", e_d_cursor_brk.path, line);
+  snprintf(out, size, "clear %s:%d\n", path, line);
  else if (e_deb_type == DEB_JDB)
  {
-  e_d_cursor_brk_class(cls, sizeof(cls));
+  e_d_brk_jdb_class(file, cls, sizeof(cls));
   if (set)
    snprintf(out, size, "stop at %s:%d\n", cls, line);
   else
@@ -6300,21 +6199,28 @@ static int e_d_cursor_brk_line_cmd(int set, char *out, size_t size)
 }
 
 /**
- * e_d_cursor_brk_dap_lines - Send the adapter the file's breakpoints: the
- * user's, and the cursor's line while @with_cursor.
+ * e_d_dap_send_file_breakpoints - Give the adapter @file's breakpoints as
+ * the user's list has them, with @extra_line too when it is not 0.
+ * @path: the file's full path.
+ *
+ * DAP's setBreakpoints replaces every breakpoint of a source, so a line set
+ * or removed while the program is stopped reaches the adapter as the whole
+ * list again: the next run then stops exactly where the margin says.  Go to
+ * cursor passes its own line as @extra_line.
  * Return: 0, or -1 when the adapter did not answer.
  */
-static int e_d_cursor_brk_dap_lines(int with_cursor)
+static int e_d_dap_send_file_breakpoints(const char *file, const char *path,
+                                         int extra_line)
 {
  int *brk_lines = MALLOC(sizeof(int) * (e_d_nbrpts + 1));
  int i, n = 0, ret;
 
  for (i = 0; i < e_d_nbrpts; i++)
-  if (!strcmp(e_d_sbrpts[i], e_d_cursor_brk.file))
+  if (!strcmp(e_d_sbrpts[i], file))
    brk_lines[n++] = e_d_ybrpts[i];
- if (with_cursor)
-  brk_lines[n++] = e_d_cursor_brk.line;
- ret = e_dap_set_file_breakpoints(g_dap, e_d_cursor_brk.path, brk_lines, n);
+ if (extra_line > 0 && !e_d_user_brk_on(file, extra_line))
+  brk_lines[n++] = extra_line;
+ ret = e_dap_set_file_breakpoints(g_dap, path, brk_lines, n);
  FREE(brk_lines);
  return(ret);
 }
@@ -6330,7 +6236,7 @@ static int e_d_cursor_brk_dap_lines(int with_cursor)
  */
 static int e_d_a68g_reset_breakpoints(void)
 {
- char cmd[E_D_CURSOR_CMD_MAX];
+ char cmd[E_D_BRK_CMD_MAX];
  int i;
 
  e_d_send_cmd("breakpoint clear breakpoints\n");
@@ -6347,24 +6253,279 @@ static int e_d_a68g_reset_breakpoints(void)
 }
 
 /**
+ * e_d_brk_line_send - Arm (@set 1) or disarm (@set 0) the breakpoint on
+ * @line of @file in pdb, jdb, a68g or a debug adapter.
+ * @path: the file's full path.
+ *
+ * A breakpoint set or removed while a session runs, Remove all, and Go to
+ * cursor's own breakpoint all come through here, so the next run stops
+ * where the margin says whichever debugger runs it.  A debug adapter, and
+ * a68g when a breakpoint goes, are given the user's list again, so the list
+ * must already say what the user wants.
+ * Return: 0, or -1 when the debugger could not be told.
+ */
+static int e_d_brk_line_send(int set, const char *file, const char *path,
+                             int line)
+{
+ char cmd[E_D_BRK_CMD_MAX];
+
+ if (e_deb_type == DEB_DAP && !e_d_dap_active())
+  return(0);
+ if (e_deb_type == DEB_DAP && set)
+  return(e_d_dap_send_file_breakpoints(file, path, line));
+ if (e_deb_type == DEB_DAP)
+  return(e_d_dap_send_file_breakpoints(file, path, E_D_BRK_NO_LINE));
+ if (e_deb_type == DEB_A68G && !set)
+  return(e_d_a68g_reset_breakpoints());
+ if (!e_d_brk_line_cmd(set, file, path, line, cmd, sizeof(cmd)))
+  return(-1);
+ e_d_send_cmd(cmd);
+ if (e_d_dum_read() == -1)
+  return(-1);
+ return(0);
+}
+
+/**
+ * e_d_brk_path_of - The full path of a breakpoint's file, as pdb and the
+ * debug adapters are given it.
+ * @cn: the editor; @file: the name the breakpoint list keeps;
+ * @out, @size: receives the path.
+ *
+ * The window that shows the file gives its directory, so a breakpoint in a
+ * file opened from elsewhere is set in that file; a file no window shows is
+ * named as the list has it.
+ */
+static void e_d_brk_path_of(ECNT *cn, const char *file, char *out, size_t size)
+{
+ if (!e_d_window_path_of(cn, file, out, size))
+  snprintf(out, size, "%s", file);
+}
+
+/**
+ * e_d_brk_read_number_line - Read gdb's, dbx's or xdb's answer to a
+ * breakpoint just set, up to the line that carries its number.
+ * @str: the line read, E_D_BRK_ANSWER_MAX bytes.
+ * Return: e_d_line_read's code for that line.
+ */
+static int e_d_brk_read_number_line(char *str)
+{
+ int ret;
+
+ if (e_deb_type == DEB_GDB)
+ {
+  while ((ret = e_d_line_read(wfildes[0], str, E_D_BRK_ANSWER_MAX, 0, 0)) == 0
+    && strncmp(str, E_D_GDB_BRK_ANSWER, strlen(E_D_GDB_BRK_ANSWER)))
+   ;
+  return(ret);
+ }
+ if (e_deb_type == DEB_DBX)
+ {
+  while ((ret = e_d_line_read(wfildes[0], str, E_D_BRK_ANSWER_MAX, 0, 0)) == 0
+    && str[0] != '(')
+   ;
+  return(ret);
+ }
+ /* xdb says "Added:" and gives the number on the line after it */
+ while ((ret = e_d_line_read(wfildes[0], str, E_D_BRK_ANSWER_MAX, 0, 0)) == 0
+   && strncmp(str, "Added:", 6))
+  ;
+ return(e_d_line_read(wfildes[0], str, E_D_BRK_ANSWER_MAX, 0, 0));
+}
+
+/**
+ * e_d_brk_arm_numbered - Set list entry @i in gdb, dbx or xdb.
+ *
+ * Keeps the number the debugger gives the breakpoint: removing it while the
+ * session runs names it by that number.
+ * Return: 0, or -1 when the debugger stopped answering.
+ */
+static int e_d_brk_arm_numbered(int i)
+{
+ char cmd[E_D_BRK_CMD_MAX], str[E_D_BRK_ANSWER_MAX];
+ int ret;
+
+ if (e_deb_type == DEB_DBX)
+  snprintf(cmd, sizeof(cmd), "stop at \"%s\":%d\n", e_d_sbrpts[i],
+           e_d_ybrpts[i]);
+ else
+  snprintf(cmd, sizeof(cmd), "b %s:%d\n", e_d_sbrpts[i], e_d_ybrpts[i]);
+ e_d_send_cmd(cmd);
+ ret = e_d_brk_read_number_line(str);
+ if (ret == -1)
+  return(-1);
+ if (ret == 2)
+  e_d_error(str);
+ if (e_deb_type == DEB_GDB)
+  e_d_nrbrpts[i] = atoi(str + strlen(E_D_GDB_BRK_ANSWER));
+ else
+  e_d_nrbrpts[i] = atoi(str + 1);
+ if (ret != 1 && e_d_dum_read() == -1)
+  return(-1);
+ return(0);
+}
+
+/**
+ * e_d_brk_sdb_line - Send sdb a command on @line of @file: sdb takes the
+ * file first, then the line with @verb ("b" sets, "d" deletes).
+ * Return: 0, or -1 when sdb stopped answering.
+ */
+static int e_d_brk_sdb_line(const char *file, int line, const char *verb)
+{
+ char cmd[E_D_BRK_CMD_MAX];
+
+ snprintf(cmd, sizeof(cmd), "e %s\n", file);
+ e_d_send_cmd(cmd);
+ if (e_d_dum_read() == -1)
+  return(-1);
+ snprintf(cmd, sizeof(cmd), "%d %s\n", line, verb);
+ e_d_send_cmd(cmd);
+ if (e_d_dum_read() == -1)
+  return(-1);
+ return(0);
+}
+
+/**
+ * e_d_brk_arm - Set list entry @i in the running debugger.
+ * @cn: the editor.
+ *
+ * Used for a breakpoint the user sets while a session runs and for every
+ * breakpoint when a session starts, so the program stops on each line the
+ * margin marks, whichever debugger runs it.
+ * Return: 0, or -1 when the debugger could not be told.
+ */
+static int e_d_brk_arm(ECNT *cn, int i)
+{
+ char path[PATH_MAX];
+
+ if (e_deb_type == DEB_GDB || e_deb_type == DEB_DBX || e_deb_type == DEB_XDB)
+  return(e_d_brk_arm_numbered(i));
+ if (e_deb_type == DEB_SDB)
+  return(e_d_brk_sdb_line(e_d_sbrpts[i], e_d_ybrpts[i], "b"));
+ e_d_nrbrpts[i] = i + 1;
+ e_d_brk_path_of(cn, e_d_sbrpts[i], path, sizeof(path));
+ return(e_d_brk_line_send(1, e_d_sbrpts[i], path, e_d_ybrpts[i]));
+}
+
+/**
+ * e_d_brk_disarm_line - Take the breakpoint on @line of @file out of pdb,
+ * jdb, a68g or a debug adapter.
+ * @cn: the editor.
+ * Return: 0, or -1 when the debugger could not be told.
+ */
+static int e_d_brk_disarm_line(ECNT *cn, const char *file, int line)
+{
+ char path[PATH_MAX];
+
+ e_d_brk_path_of(cn, file, path, sizeof(path));
+ return(e_d_brk_line_send(0, file, path, line));
+}
+
+/**
+ * e_d_brk_disarm - Take a breakpoint the user removed out of the running
+ * debugger.
+ * @cn: the editor; @file, @line: the breakpoint, already gone from the
+ * list; @id: the number gdb, dbx or xdb gave it.
+ *
+ * The next run goes past that line, whichever debugger runs it.
+ * Return: 0, or -1 when the debugger could not be told.
+ */
+static int e_d_brk_disarm(ECNT *cn, const char *file, int line, int id)
+{
+ char cmd[E_D_BRK_CMD_MAX];
+
+ if (e_deb_type == DEB_GDB)
+  snprintf(cmd, sizeof(cmd), "d %d\n", id);
+ else if (e_deb_type == DEB_DBX)
+  snprintf(cmd, sizeof(cmd), "delete %d\n", id);
+ else if (e_deb_type == DEB_XDB)
+  snprintf(cmd, sizeof(cmd), "db %d\n", id);
+ else if (e_deb_type == DEB_SDB)
+  return(e_d_brk_sdb_line(file, line, "d"));
+ else
+  return(e_d_brk_disarm_line(cn, file, line));
+ e_d_send_cmd(cmd);
+ if (e_d_dum_read() == -1)
+  return(-1);
+ return(0);
+}
+
+/**
+ * e_d_dap_clear_every_file - Give the adapter an empty breakpoint list for
+ * each file the user's list names.
+ * @cn: the editor.
+ *
+ * Remove all breakpoints under a debug adapter: the program then stops on
+ * none of them on its way to the end.  The entry the editor set for itself
+ * names no file, so there is no source to clear and the adapter is not asked
+ * about one.
+ */
+static void e_d_dap_clear_every_file(ECNT *cn)
+{
+ char path[PATH_MAX];
+ int i;
+
+ if (!e_d_dap_active())
+  return;
+ for (i = 0; i < e_d_nbrpts; i++)
+  if (!e_d_brk_is_start_entry(i))
+  {
+   e_d_brk_path_of(cn, e_d_sbrpts[i], path, sizeof(path));
+   e_dap_set_file_breakpoints(g_dap, path, NULL, 0);
+  }
+}
+
+/**
+ * e_d_brk_disarm_each_line - Take the user's breakpoints out of pdb or jdb
+ * one by one, these having no command that clears them all at once.
+ * @cn: the editor.
+ */
+static void e_d_brk_disarm_each_line(ECNT *cn)
+{
+ int i;
+
+ for (i = 0; i < e_d_nbrpts; i++)
+  if (!e_d_brk_is_start_entry(i))
+   e_d_brk_disarm_line(cn, e_d_sbrpts[i], e_d_ybrpts[i]);
+}
+
+/**
+ * e_d_brk_disarm_all - Take every breakpoint of the list out of the running
+ * debugger, before the list is emptied.
+ * @cn: the editor.
+ *
+ * After Remove all breakpoints the next run goes to the end of the program
+ * whichever debugger runs it.  gdb, a68g, sdb, dbx and xdb clear them with
+ * the one command they have, and its answer is read so the next command does
+ * not mistake it for its own; pdb and jdb are told breakpoint by breakpoint,
+ * and a debug adapter is given an empty list for each file.
+ */
+static void e_d_brk_disarm_all(ECNT *cn)
+{
+ if (e_deb_type == DEB_GDB)
+  e_d_send_and_read("delete\n");
+ else if (e_deb_type == DEB_A68G)
+  e_d_send_and_read("breakpoint clear breakpoints\n");
+ else if (e_deb_type == DEB_SDB)
+  e_d_send_and_read("D\n");
+ else if (e_deb_type == DEB_DBX)
+  e_d_send_and_read("delete all\n");
+ else if (e_deb_type == DEB_XDB)
+  e_d_send_and_read("db *\n");
+ else if (e_deb_type == DEB_DAP)
+  e_d_dap_clear_every_file(cn);
+ else
+  e_d_brk_disarm_each_line(cn);
+}
+
+/**
  * e_d_cursor_brk_send - Set or clear the cursor's breakpoint in the debugger.
  * @set: 1 to set it, 0 to clear it.
  * Return: 0, or -1 when the debugger could not be told.
  */
 static int e_d_cursor_brk_send(int set)
 {
- char cmd[E_D_CURSOR_CMD_MAX];
-
- if (e_deb_type == DEB_DAP)
-  return(e_d_cursor_brk_dap_lines(set));
- if (e_deb_type == DEB_A68G && !set)
-  return(e_d_a68g_reset_breakpoints());
- if (!e_d_cursor_brk_line_cmd(set, cmd, sizeof(cmd)))
-  return(-1);
- e_d_send_cmd(cmd);
- if (e_d_dum_read() == -1)
-  return(-1);
- return(0);
+ return(e_d_brk_line_send(set, e_d_cursor_brk.file, e_d_cursor_brk.path,
+                          e_d_cursor_brk.line));
 }
 
 /**

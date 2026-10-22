@@ -388,6 +388,17 @@ Changes
 * Under a68g a breakpoint removed with Ctrl-G B during a session stops the
   program no more.  It used to keep stopping there.
 
+* Breakpoints changed while a session runs take effect with every
+  debugger: gdb, pdb, jdb, a68g and the debug adapters for Go, Rust and
+  Scala.  One set with Ctrl-G B stops the next run there, one removed
+  stops it no more, and Ctrl-G M (Remove all) lets it run to the end.
+  Under pdb removing a breakpoint froze the editor; under jdb it could
+  too; a debug adapter never heard of a breakpoint set after the start;
+  and Remove all left pdb, jdb and the adapters stopping where the
+  margin showed nothing.  After Ctrl-G Q, or a program that ran to its
+  end, the next session stops on your breakpoints again under every
+  debugger; under pdb, jdb and the adapters it used to run past them.
+
 * A click on a debugger bar entry sends the key its label names: "^F10
   Run" on the Watches and Stack bars continues the program, and the CUA
   "^F5 Make Watch" makes a watch.  They used to send F10 and Ctrl-F7.
