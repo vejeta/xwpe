@@ -391,20 +391,20 @@ Changes
   debug session runs (the same as Ctrl-G U).  With no session, and in
   Messages, Watches or Stack, it is still Search.
 
-* Go to cursor works with every debugger: gdb, pdb, jdb, a68g, and the
-  debug adapters for Go, Rust and Scala.  It used to do nothing except
-  under gdb.  Where the debugger has no such command, the line gets a
-  breakpoint of its own that is removed at the next stop; a breakpoint
-  of yours on that line stays.
+* Go to cursor works with every debugger: gdb, sdb, dbx, xdb, pdb, jdb,
+  a68g, and the debug adapters for Go, Rust and Scala.  It used to do
+  nothing except under gdb.  Where the debugger has no such command, the
+  line gets a breakpoint of its own that is removed at the next stop; a
+  breakpoint of yours on that line stays.
 
 * Under a68g a breakpoint removed with Ctrl-G B during a session stops the
   program no more.  It used to keep stopping there.
 
 * Breakpoints changed while a session runs take effect with every
-  debugger: gdb, pdb, jdb, a68g and the debug adapters for Go, Rust and
-  Scala.  One set with Ctrl-G B stops the next run there, one removed
-  stops it no more, and Ctrl-G M (Remove all) lets it run to the end.
-  Under pdb removing a breakpoint froze the editor; under jdb it could
+  debugger: gdb, sdb, dbx, xdb, pdb, jdb, a68g and the debug adapters for
+  Go, Rust and Scala.  One set with Ctrl-G B stops the next run there, one
+  removed stops it no more, and Ctrl-G M (Remove all) lets it run to the
+  end.  Under pdb removing a breakpoint froze the editor; under jdb it could
   too; a debug adapter never heard of a breakpoint set after the start;
   and Remove all left pdb, jdb and the adapters stopping where the
   margin showed nothing.  After Ctrl-G Q, or a program that ran to its
@@ -427,6 +427,13 @@ Changes
   shows only its own line ("gdb start cancelled", "gdb did not answer
   within 30 s").  "End of Debugging" no longer follows it: the start
   never became a session, so none ended.
+
+* HP-UX's xdb can be built as a debugger backend again, with ./configure
+  --with-xdb.  No configure option defined it, so the debugger dialog gave
+  its row to dbx and the xdb code could not be reached at all.  With the
+  option the dialog offers both, as Gdb, Sdb, Dbx, Xdb, Jdb, Pdb, A68g;
+  without it the six rows are as they were.  xdb itself is still HP-UX's
+  and runs nowhere else.
 
 * Under jdb, Ctrl-G R that runs the program to its end says "Program
   exited." in Messages and ends the session.  It used to raise "No

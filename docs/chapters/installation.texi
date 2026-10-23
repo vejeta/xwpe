@@ -145,6 +145,12 @@ graphical binaries.  The default is @emph{auto}: it is built when
 skipped otherwise.  @option{--with-wayland} requires it (configure fails
 if a dependency is missing); @option{--without-wayland} skips it.
 
+@item --with-xdb
+Offer HP-UX's xdb as a debugger backend.  The default is no: xdb ships with
+HP-UX and runs nowhere else, so the row it would take in the debugger dialog
+names a backend no user of this build can reach.  With it, xdb gets a row of
+its own and dbx keeps the one above it.
+
 @item --prefix=@var{dir}
 Install to @var{dir} instead of @file{/usr/local}.
 @end table

@@ -372,7 +372,10 @@ Legacy UNIX debugger.  Not available on modern Linux.
 Berkeley UNIX debugger.  Available on some BSD systems.
 
 @item xdb
-HP-UX debugger.  Historical compatibility only.
+HP-UX debugger.  Historical compatibility only.  Built only with
+@option{--with-xdb}, which gives it a row of its own in the debugger
+dialog beside dbx.  Without it the dialog offers six backends and dbx
+keeps the row xdb would take.
 @end table
 
 @section Debugging C++ programs
@@ -618,7 +621,13 @@ Debugging leaks memory.  The exact source is unknown (present since
 the Payne era).
 
 @item
-The sdb and dbx backends are untested on modern systems.
+The sdb, dbx and xdb backends cannot be driven against the real debuggers:
+all three are proprietary, none is packaged for Linux and none has a free
+implementation.  They are tested against a stub of each protocol
+(@file{tests/test_legacy_debuggers.py}), which shows that xwpe sends the
+commands the debugger documents and reads the answers it expects.  It says
+nothing about how the real debugger behaves.  xdb is built only with
+@option{--with-xdb}.
 
 @item
 Use @command{wpe} (not @command{we}) for debugging.  The editor-only

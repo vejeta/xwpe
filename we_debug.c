@@ -6154,6 +6154,7 @@ int e_d_step_next(FENSTER *f, int sw)
 static struct {
  int set;                      /* 1 while it is in the debugger            */
  int line;                     /* its 1-based line                         */
+ int id;                       /* the number dbx or xdb gave it            */
  char file[PATH_MAX];          /* the window's file name, as breakpoints   */
  char path[PATH_MAX];          /* the full path the debugger is given      */
 } e_d_cursor_brk;
@@ -6371,6 +6372,40 @@ static int e_d_brk_read_number_line(char *str)
 }
 
 /**
+ * e_d_brk_arm_numbered_at - Set a breakpoint on @line of @file in a debugger
+ * that numbers its breakpoints, and say which number it gave.
+ * @file: the breakpoint's file name; @line: 1-based; @id: receives the number.
+ *
+ * gdb, dbx and xdb name a breakpoint only by the number they gave it, so
+ * anything that has to take one out again, including the one Go to cursor
+ * sets for itself, has to keep that number.
+ * Return: 0, or -1 when the debugger stopped answering.
+ */
+static int e_d_brk_arm_numbered_at(const char *file, int line, int *id)
+{
+ char cmd[E_D_BRK_CMD_MAX], str[E_D_BRK_ANSWER_MAX];
+ int ret;
+
+ if (e_deb_type == DEB_DBX)
+  snprintf(cmd, sizeof(cmd), "stop at \"%s\":%d\n", file, line);
+ else
+  snprintf(cmd, sizeof(cmd), "b %s:%d\n", file, line);
+ e_d_send_cmd(cmd);
+ ret = e_d_brk_read_number_line(str);
+ if (ret == -1)
+  return(-1);
+ if (ret == 2)
+  e_d_error(str);
+ if (e_deb_type == DEB_GDB)
+  *id = atoi(str + strlen(E_D_GDB_BRK_ANSWER));
+ else
+  *id = atoi(str + 1);
+ if (ret != 1 && e_d_dum_read() == -1)
+  return(-1);
+ return(0);
+}
+
+/**
  * e_d_brk_arm_numbered - Set list entry @i in gdb, dbx or xdb.
  *
  * Keeps the number the debugger gives the breakpoint: removing it while the
@@ -6379,27 +6414,8 @@ static int e_d_brk_read_number_line(char *str)
  */
 static int e_d_brk_arm_numbered(int i)
 {
- char cmd[E_D_BRK_CMD_MAX], str[E_D_BRK_ANSWER_MAX];
- int ret;
-
- if (e_deb_type == DEB_DBX)
-  snprintf(cmd, sizeof(cmd), "stop at \"%s\":%d\n", e_d_sbrpts[i],
-           e_d_ybrpts[i]);
- else
-  snprintf(cmd, sizeof(cmd), "b %s:%d\n", e_d_sbrpts[i], e_d_ybrpts[i]);
- e_d_send_cmd(cmd);
- ret = e_d_brk_read_number_line(str);
- if (ret == -1)
-  return(-1);
- if (ret == 2)
-  e_d_error(str);
- if (e_deb_type == DEB_GDB)
-  e_d_nrbrpts[i] = atoi(str + strlen(E_D_GDB_BRK_ANSWER));
- else
-  e_d_nrbrpts[i] = atoi(str + 1);
- if (ret != 1 && e_d_dum_read() == -1)
-  return(-1);
- return(0);
+ return(e_d_brk_arm_numbered_at(e_d_sbrpts[i], e_d_ybrpts[i],
+                                &e_d_nrbrpts[i]));
 }
 
 /**
@@ -6459,6 +6475,33 @@ static int e_d_brk_disarm_line(ECNT *cn, const char *file, int line)
 }
 
 /**
+ * e_d_brk_disarm_by_id - Take the breakpoint gdb, dbx or xdb numbered @id out
+ * of the running debugger.
+ *
+ * These three name a breakpoint only by the number they gave it, so this is
+ * the one way a breakpoint of the user's, or the one Go to cursor set for
+ * itself, stops the program again.
+ * Return: 0, or -1 when the debugger could not be told.
+ */
+static int e_d_brk_disarm_by_id(int id)
+{
+ char cmd[E_D_BRK_CMD_MAX];
+
+ if (e_deb_type == DEB_GDB)
+  snprintf(cmd, sizeof(cmd), "d %d\n", id);
+ else if (e_deb_type == DEB_DBX)
+  snprintf(cmd, sizeof(cmd), "delete %d\n", id);
+ else if (e_deb_type == DEB_XDB)
+  snprintf(cmd, sizeof(cmd), "db %d\n", id);
+ else
+  return(-1);
+ e_d_send_cmd(cmd);
+ if (e_d_dum_read() == -1)
+  return(-1);
+ return(0);
+}
+
+/**
  * e_d_brk_disarm - Take a breakpoint the user removed out of the running
  * debugger.
  * @cn: the editor; @file, @line: the breakpoint, already gone from the
@@ -6469,22 +6512,11 @@ static int e_d_brk_disarm_line(ECNT *cn, const char *file, int line)
  */
 static int e_d_brk_disarm(ECNT *cn, const char *file, int line, int id)
 {
- char cmd[E_D_BRK_CMD_MAX];
-
- if (e_deb_type == DEB_GDB)
-  snprintf(cmd, sizeof(cmd), "d %d\n", id);
- else if (e_deb_type == DEB_DBX)
-  snprintf(cmd, sizeof(cmd), "delete %d\n", id);
- else if (e_deb_type == DEB_XDB)
-  snprintf(cmd, sizeof(cmd), "db %d\n", id);
- else if (e_deb_type == DEB_SDB)
+ if (e_deb_type == DEB_GDB || e_deb_type == DEB_DBX || e_deb_type == DEB_XDB)
+  return(e_d_brk_disarm_by_id(id));
+ if (e_deb_type == DEB_SDB)
   return(e_d_brk_sdb_line(file, line, "d"));
- else
-  return(e_d_brk_disarm_line(cn, file, line));
- e_d_send_cmd(cmd);
- if (e_d_dum_read() == -1)
-  return(-1);
- return(0);
+ return(e_d_brk_disarm_line(cn, file, line));
 }
 
 /**
@@ -6558,10 +6590,28 @@ static void e_d_brk_disarm_all(ECNT *cn)
 /**
  * e_d_cursor_brk_send - Set or clear the cursor's breakpoint in the debugger.
  * @set: 1 to set it, 0 to clear it.
+ *
+ * Go to cursor has to reach every backend, so each is spoken to in its own
+ * terms: sdb names a breakpoint by its line, dbx and xdb by a number they
+ * hand back, and the rest by file and line.  A backend left out here is one
+ * where Go to cursor silently does nothing at all.
  * Return: 0, or -1 when the debugger could not be told.
  */
 static int e_d_cursor_brk_send(int set)
 {
+ if (e_deb_type == DEB_SDB)
+ {
+  if (set)
+   return(e_d_brk_sdb_line(e_d_cursor_brk.file, e_d_cursor_brk.line, "b"));
+  return(e_d_brk_sdb_line(e_d_cursor_brk.file, e_d_cursor_brk.line, "d"));
+ }
+ if (e_deb_type == DEB_DBX || e_deb_type == DEB_XDB)
+ {
+  if (set)
+   return(e_d_brk_arm_numbered_at(e_d_cursor_brk.file, e_d_cursor_brk.line,
+                                  &e_d_cursor_brk.id));
+  return(e_d_brk_disarm_by_id(e_d_cursor_brk.id));
+ }
  return(e_d_brk_line_send(set, e_d_cursor_brk.file, e_d_cursor_brk.path,
                           e_d_cursor_brk.line));
 }
@@ -6610,6 +6660,7 @@ static int e_d_run_to_cursor_line(FENSTER *f, int line)
  if (full)
   FREE(full);
  e_d_cursor_brk.line = line;
+ e_d_cursor_brk.id = 0;
  if (e_d_cursor_brk_send(1) < 0)
   return(-1);
  e_d_cursor_brk.set = 1;
@@ -7307,6 +7358,79 @@ int e_d_putchar(int c)
  return(c);
 }
 
+/* The debugger dialog's radio rows, in the order they are drawn.  A build
+   that offers xdb gives it a row of its own, so every backend after dbx sits
+   one row lower there than in a build that does not. */
+#define E_D_RADIO_GDB   0
+#define E_D_RADIO_SDB   1
+#define E_D_RADIO_DBX   2
+#ifdef XDB
+#define E_D_RADIO_XDB   3
+#define E_D_RADIO_JDB   4
+#define E_D_RADIO_PDB   5
+#define E_D_RADIO_A68G  6
+#else
+#define E_D_RADIO_JDB   3
+#define E_D_RADIO_PDB   4
+#define E_D_RADIO_A68G  5
+#endif
+
+/**
+ * e_d_dialog_radio_of - The dialog row that names the selected backend.
+ *
+ * Opening Debug > debugger Options shows the mark on the backend that is
+ * already chosen, so the user reads which debugger the next run starts
+ * instead of having to remember what the options file said.
+ * Return: that row's index in the dialog's radio group.
+ */
+static int e_d_dialog_radio_of(void)
+{
+ if (e_deb_type == DEB_A68G)
+  return(E_D_RADIO_A68G);
+ if (e_deb_type == DEB_PDB)
+  return(E_D_RADIO_PDB);
+ if (e_deb_type == DEB_JDB)
+  return(E_D_RADIO_JDB);
+#ifdef XDB
+ if (e_deb_type == DEB_XDB)
+  return(E_D_RADIO_XDB);
+#else
+ /* This build offers xdb no row, yet the options file can still name one:
+    "Debugger : 3" is taken as it stands and e_start_debug runs "xdb -L"
+    whether or not XDB is defined.  dbx holds the row xdb would take, so the
+    mark lands there, as it did before xdb had a row of its own, instead of on
+    an unrelated backend. */
+ if (e_deb_type == DEB_XDB)
+  return(E_D_RADIO_DBX);
+#endif
+ /* gdb, sdb and dbx number their own rows. */
+ return(e_deb_type);
+}
+
+/**
+ * e_d_dialog_type_of - The backend the dialog row @sel names.
+ *
+ * Picking a row decides which debugger the next Ctrl-G R starts, so the row
+ * and the backend have to agree whether or not this build offers xdb: a row
+ * that named the wrong backend would start one the user did not choose.
+ * Return: the e_deb_type value for that row.
+ */
+static int e_d_dialog_type_of(int sel)
+{
+ if (sel == E_D_RADIO_A68G)
+  return(DEB_A68G);
+ if (sel == E_D_RADIO_PDB)
+  return(DEB_PDB);
+ if (sel == E_D_RADIO_JDB)
+  return(DEB_JDB);
+#ifdef XDB
+ if (sel == E_D_RADIO_XDB)
+  return(DEB_XDB);
+#endif
+ /* gdb, sdb and dbx number their own rows. */
+ return(sel);
+}
+
 int e_deb_options(FENSTER *f)
 {
  int ret;
@@ -7332,23 +7456,23 @@ int e_deb_options(FENSTER *f)
     /* full path (dir + name) so a source outside the current dir is detected */
     e_deb_type = e_algol68_use_ga68_in(cn2->f[cn2->mxedt]->dirct, _fn)
                  ? DEB_GDB : DEB_A68G;
-   /* Map e_deb_type to radio button index:
-      0=Gdb, 1=Sdb, 2=Dbx, 3=Jdb, 4=Pdb, 5=A68g (radio index)
-      e_deb_type: 0=gdb, 1=sdb, 2=dbx, 3=xdb, 4=jdb, 5=pdb, 6=a68g */
-   int _sel = (e_deb_type == DEB_A68G) ? 5 :
-              (e_deb_type == DEB_PDB) ? 4 :
-              (e_deb_type == DEB_JDB) ? 3 :
-              (e_deb_type == DEB_XDB) ? 2 : e_deb_type;
+   int _sel = e_d_dialog_radio_of();
  e_add_pswstr(0, 5, 3, 0, AltG, 0, "Gdb    ", o);
  e_add_pswstr(0, 5, 4, 0, AltS, 0, "Sdb    ", o);
-#ifdef XDB
- e_add_pswstr(0, 5, 5, 0, AltX, 0, "Xdb    ", o);
-#else
  e_add_pswstr(0, 5, 5, 0, AltD, 0, "Dbx    ", o);
-#endif
+#ifdef XDB
+ /* xdb takes a row of its own here, so dbx keeps the one above it and both
+    are selectable; y=9 is the last row the group has room for, Ok and
+    Cancel being at y=11. */
+ e_add_pswstr(0, 5, 6, 0, AltX, 0, "Xdb    ", o);
+ e_add_pswstr(0, 5, 7, 0, AltJ, 0, "Jdb    ", o);
+ e_add_pswstr(0, 5, 8, 0, AltP, 0, "Pdb    ", o);
+ e_add_pswstr(0, 5, 9, 0, AltA, _sel, "A68g   ", o);
+#else
  e_add_pswstr(0, 5, 6, 0, AltJ, 0, "Jdb    ", o);
  e_add_pswstr(0, 5, 7, 0, AltP, 0, "Pdb    ", o);
  e_add_pswstr(0, 5, 8, 0, AltA, _sel, "A68g   ", o);
+#endif
  }
  e_add_pswstr(1, 21, 3, 0, AltN, 0, "Normal     ", o);
  e_add_pswstr(1, 21, 4, 0, AltF, e_deb_mode, "Full Screen", o);
@@ -7364,20 +7488,7 @@ int e_deb_options(FENSTER *f)
  ret = e_opt_kst(o);
  if (ret != WPE_ESC)
  {
-  { int sel = o->pstr[0]->num;
-#ifdef XDB
-    if (sel == 2) e_deb_type = DEB_XDB;
-    else if (sel == 3) e_deb_type = DEB_JDB;
-    else if (sel == 4) e_deb_type = DEB_PDB;
-    else if (sel == 5) e_deb_type = DEB_A68G;
-    else e_deb_type = sel;
-#else
-    if (sel == 3) e_deb_type = DEB_JDB;
-    else if (sel == 4) e_deb_type = DEB_PDB;
-    else if (sel == 5) e_deb_type = DEB_A68G;
-    else e_deb_type = sel;
-#endif
-  }
+  e_deb_type = e_d_dialog_type_of(o->pstr[0]->num);
   e_deb_mode = o->pstr[1]->num;
   e_dap_adapter = o->pstr[2]->num;    /* 0=Auto, 1=gdb, 2=lldb-dap */
  }

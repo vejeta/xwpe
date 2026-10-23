@@ -341,6 +341,18 @@ AS_IF([test "x$enable_ai" = "xyes"], [
 ])
 AM_CONDITIONAL([WPE_AI_AGENT_HOST], [test "x$have_ai_agent_host" = "xyes"])
 
+# --- Optional: the xdb debugger backend (off by default) ---
+# xdb ships with HP-UX and runs nowhere else: it is not in Debian and there is
+# no free implementation, so the row it would take in the debugger dialog names
+# a backend no user of this build can reach.  Off by default it leaves that row
+# to dbx; --with-xdb builds the backend and gives both a row of their own.
+AC_ARG_WITH([xdb],
+  [AS_HELP_STRING([--with-xdb],
+     [offer HP-UX's xdb as a debugger backend (default: no -- xdb is HP-UX's and unavailable elsewhere)])],
+  [], [with_xdb=no])
+AS_IF([test "x$with_xdb" = "xyes"],
+  [AC_DEFINE([XDB], [1], [Offer HP-UX's xdb as a debugger backend])])
+
 # --- Unconditional defines ---
 AC_DEFINE([UNIX], [1], [Building on a Unix system])
 AC_DEFINE([NCURSES], [1], [Using ncurses library])
