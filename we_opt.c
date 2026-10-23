@@ -1064,6 +1064,8 @@ int WpeReadProgramming(ECNT *cn, char *section, char *option, char *value)
   e_ai_search_url = (value && *value) ? WpeStrdup(value) : NULL;
  } else if (WpeStrccmp("AIToolTimeout", option) == 0) {
   e_ai_tool_timeout = wpe_ai_tool_timeout_from_text(value);
+ } else if (WpeStrccmp("AIAnswerTimeout", option) == 0) {
+  e_ai_answer_timeout = wpe_ai_answer_timeout_from_text(value);
  } else if (WpeStrccmp("AIProjectInstructions", option) == 0) {
   e_ai_project_scope = wpe_ai_project_scope_from_name(value);
  } else if (WpeStrccmp("AIProjectInstructionsMax", option) == 0) {
@@ -1116,6 +1118,12 @@ int WpeWriteProgramming(ECNT *cn, char *section, FILE *opt_file)
     that never named it stays as it was. */
  if (wpe_ai_cfg_int_to_save(WPE_AI_CFG_TOOL_TIMEOUT) != WPE_AI_TOOL_TIMEOUT_DEFAULT)
   fprintf(opt_file, "AIToolTimeout : %d\n", wpe_ai_cfg_int_to_save(WPE_AI_CFG_TOOL_TIMEOUT));
+ /* The wait for a model's first byte follows the same rule: written only when
+    the user moved it off the default, so an xwperc that never named it stays
+    as it was. */
+ if (wpe_ai_cfg_int_to_save(WPE_AI_CFG_ANSWER_TIMEOUT) != WPE_AI_ANSWER_TIMEOUT_DEFAULT)
+  fprintf(opt_file, "AIAnswerTimeout : %d\n",
+          wpe_ai_cfg_int_to_save(WPE_AI_CFG_ANSWER_TIMEOUT));
  /* The same for where the project instructions go and how much of the file the
     prompt carries: written only when the user moved them off the defaults. */
  if (wpe_ai_cfg_int_to_save(WPE_AI_CFG_PROJECT_SCOPE) != WPE_AI_PROJECT_AGENT)

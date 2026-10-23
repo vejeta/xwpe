@@ -274,10 +274,22 @@ Changes
   for 5 seconds, and a chat over https froze it until the server hung
   up, because the TLS handshake had no limit.  The connect, the
   handshake and the first byte now wait on the editor's loop under one
-  deadline (120 s, XWPE_AI_TIMEOUT), the editor takes keys meanwhile,
+  deadline (600 s, AIAnswerTimeout), the editor takes keys meanwhile,
   and a request that runs past it ends with "no answer from host:port
-  within N s".  The model list shows "listing models from host:port"
-  while it waits, and Esc abandons it.
+  within N s (AIAnswerTimeout)".  The model list shows "listing models
+  from host:port" while it waits, and Esc abandons it.
+
+* A local model gets the time it needs.  The wait for a server's first
+  byte was 120 s whatever the backend, so a local model that loads its
+  weights and reads a seeded prompt before its first token ran past it:
+  the request ended with "no answer from localhost:11434 within 120 s"
+  while the model was still working.  The default is now 600 s, and the
+  wait is a setting like its siblings: AIAnswerTimeout in the
+  [Programming] section of xwperc, or XWPE_AI_TIMEOUT for one session.
+  Only the first byte is bounded; once the answer streams there is no
+  deadline at all and Esc is the user's say.  The line that ends a
+  request names the key, so the message itself says how to lengthen the
+  wait.  Tests: tests/test_ai_runtime.py.
 
 * A refused model list says why.  A 401 from the server read "no models
   found"; it now reads "HTTP 401 from host:port: <the server's reason>".

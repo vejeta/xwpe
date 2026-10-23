@@ -8,6 +8,7 @@
   {"id": "SC-ai-runtime-02", "requirement": "Backends and their errors", "layer": "ncurses", "test": "tests/test_ai_runtime.py::test_listing_on_silent_endpoint_says_it_waits_and_ends_at_its_deadline", "status": "new"},
   {"id": "SC-ai-runtime-02", "requirement": "Backends and their errors", "layer": "ncurses", "test": "tests/test_ai_runtime.py::test_listing_on_silent_endpoint_is_abandoned_by_esc", "status": "new"},
   {"id": "SC-ai-runtime-02", "requirement": "Backends and their errors", "layer": "ncurses", "test": "tests/test_ai_runtime.py::test_chat_over_https_on_silent_endpoint_stays_live_and_ends_at_deadline", "status": "new"},
+  {"id": "SC-ai-runtime-02", "requirement": "Backends and their errors", "layer": "ncurses", "test": "tests/test_ai_runtime.py::test_answer_timeout_comes_from_xwperc_and_names_the_key", "status": "new"},
   {"id": "SC-ai-runtime-03", "requirement": "Backends and their errors", "layer": "ncurses", "test": "tests/test_ai_runtime.py::test_chat_http_401_shows_the_server_reason", "status": "covered"},
   {"id": "SC-ai-runtime-03", "requirement": "Backends and their errors", "layer": "ncurses", "test": "tests/test_ai_runtime.py::test_listing_http_401_shows_the_reason_over_the_dialog", "status": "new"},
   {"id": "SC-ai-runtime-04", "requirement": "Backends and their errors", "layer": "ncurses", "test": "tests/test_ai_runtime.py::test_chat_http_500_shows_the_server_reason", "status": "covered"},

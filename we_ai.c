@@ -733,6 +733,7 @@ static const struct ai_cfg_binding g_ai_cfg_bind[WPE_AI_CFG_KEYS] = {
  { &e_ai_host_adapter, NULL },              /* WPE_AI_CFG_HOST_ADAPTER */
  { NULL,               &e_ai_search_url },  /* WPE_AI_CFG_SEARCH_URL   */
  { &e_ai_tool_timeout, NULL },              /* WPE_AI_CFG_TOOL_TIMEOUT */
+ { &e_ai_answer_timeout, NULL },            /* WPE_AI_CFG_ANSWER_TIMEOUT */
  { &e_ai_project_scope, NULL },             /* WPE_AI_CFG_PROJECT_SCOPE */
  { &e_ai_project_max,  NULL },              /* WPE_AI_CFG_PROJECT_MAX   */
  { &e_ai_web,          NULL },              /* WPE_AI_CFG_WEB           */
@@ -862,8 +863,10 @@ static void ai_config_apply_env(void)
   e_ai_tool_timeout = wpe_ai_tool_timeout_from_text(e);
   ai_file_shadow(WPE_AI_CFG_TOOL_TIMEOUT);
  }
- if ((e = getenv("XWPE_AI_TIMEOUT")))
+ if ((e = getenv("XWPE_AI_TIMEOUT"))) {
   e_ai_answer_timeout = wpe_ai_answer_timeout_from_text(e);
+  ai_file_shadow(WPE_AI_CFG_ANSWER_TIMEOUT);
+ }
  if ((e = getenv("XWPE_AI_PROJECT_INSTRUCTIONS"))) {
   e_ai_project_scope = wpe_ai_project_scope_from_name(e);
   ai_file_shadow(WPE_AI_CFG_PROJECT_SCOPE);
@@ -2307,15 +2310,22 @@ static int ai_stream_advance_open(struct wpe_ai_stream *st)
  * ai_stream_fail_overdue - End a request whose server sent nothing in time.
  * @st: the stream.
  *
- * The user reads "no answer from host:port within N s" in place of a waiting
- * line that would otherwise stand until Esc.
+ * The user reads "no answer from host:port within N s (AIAnswerTimeout)" in
+ * place of a waiting line that would otherwise stand until Esc.  The line names
+ * the key that sets the wait, the way the agent's tool-timeout line names
+ * AIToolTimeout, so the message itself says how to lengthen it: a local model
+ * that is still thinking is the common reason to want that.
  * Return: -1.
  */
 static int ai_stream_fail_overdue(struct wpe_ai_stream *st)
 {
  char why[AI_STREAM_WHY_MAX];
+ int n;
  wpe_http_describe_timeout(&st->conn, e_ai_answer_timeout * (int)AI_MS_PER_S,
                            why, sizeof why);
+ n = (int)strlen(why);
+ if (n > 0 && n < (int)sizeof why - 1)
+  snprintf(why + n, sizeof why - (size_t)n, " (AIAnswerTimeout)");
  return ai_stream_fail(st, why);
 }
 /* True once the completed stream carried a backend failure (e.g. the claude CLI

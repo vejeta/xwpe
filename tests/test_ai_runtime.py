@@ -162,6 +162,7 @@ WAIT_SECONDS = re.compile(r"\(gathering the answer\.\.\.\) (\S)\s+(\d+)s")
 FROZEN_LIMIT_S = 1.5         # longer than this without a painted byte reads as a frozen editor
 LISTING_DEADLINE_S = 5       # the model listing's deadline: connect, handshake and first byte
 ANSWER_DEADLINE_S = 3        # XWPE_AI_TIMEOUT given to a chat that must end by itself
+ANSWER_KEY_S = 3             # the same wait, set by AIAnswerTimeout in xwperc
 
 
 def first_paint_after(s, keys, limit=20.0):
@@ -550,6 +551,40 @@ def test_chat_over_https_on_silent_endpoint_stays_live_and_ends_at_deadline(tmp_
     assert ended, "the chat did not end at its deadline naming the endpoint:\n" + disp
     assert "gathering the answer" not in disp, "the waiting line outlived the deadline:\n" + disp
     assert elapsed < ANSWER_DEADLINE_S + 4, "the chat ran %.1fs" % elapsed
+
+
+# @scenario SC-ai-runtime-02
+def test_answer_timeout_comes_from_xwperc_and_names_the_key(tmp_path):
+    """AIAnswerTimeout in xwperc sets how long a request waits for the server's
+    first byte, and the line that ends it names the key, so a user whose local
+    model is still thinking learns from the message itself what to raise."""
+    cfg = tmp_path / ".config" / "xwpe"
+    cfg.mkdir(parents=True)
+    (cfg / "xwperc").write_text("[Programming]\nAIAnswerTimeout : %d\n"
+                                % ANSWER_KEY_S)
+    srv = SilentServer()
+    host = "127.0.0.1:%d" % srv.port
+    try:
+        env = openai_env("http://%s/v1" % host)
+        with WpeSession(str(tmp_path), SEED, env_extra=env, cols=160) as s:
+            open_chat_and_send(s, "hi")
+            ended = wait_screen(s, "within %d s" % ANSWER_KEY_S,
+                                ANSWER_KEY_S + 10)
+            disp = screen(s)
+    finally:
+        srv.stop()
+    # A narrow pane wraps this line, so compare it with the whitespace taken out
+    # rather than assuming it lands on one unbroken row.
+    flat = "".join(disp.split())
+    want = "".join(("no answer from %s within %d s (AIAnswerTimeout)"
+                    % (host, ANSWER_KEY_S)).split())
+    assert ended, \
+        "the chat did not end at the deadline xwperc gave it:\n" + disp
+    assert want in flat, \
+        "the line that ended the request does not name the endpoint, the wait " \
+        "and the key that sets it:\n" + disp
+    assert "gathering the answer" not in disp, \
+        "the waiting line outlived the deadline:\n" + disp
 
 
 class ListingServer:

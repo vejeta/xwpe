@@ -71,11 +71,17 @@ extern char *e_ai_last_session_id;     /* session_id from the last CLI reply   *
 #define WPE_AI_TOOL_TIMEOUT_DEFAULT 60
 extern int e_ai_tool_timeout;
 
-/* How long a chat, Edit, Complete or agent turn may wait for the server, in
- * seconds: one deadline that covers the connect, the TLS handshake and the
- * first byte of the answer.  XWPE_AI_TIMEOUT overrides it.  Long enough for a
- * local model that loads before it answers. */
-#define WPE_AI_ANSWER_TIMEOUT_DEFAULT 120
+/* How long a chat, Edit, Complete or agent turn may wait for the server's
+ * FIRST byte, in seconds; the connect and the TLS handshake share that one
+ * deadline.  Once a byte arrives there is no bound at all, so a slow model may
+ * take its time between tokens and Esc is the user's say.  AIAnswerTimeout in
+ * the options file sets it; XWPE_AI_TIMEOUT overrides that for one session.
+ * The default is sized for a local model, which loads its weights and reads
+ * the whole prompt before it emits anything: 120 s ended requests a 27b model
+ * on a seeded context was still working on.  A server that is really dead is
+ * caught far sooner anyway -- nothing listening refuses the connect at once,
+ * and the reachability probe allows 3 s. */
+#define WPE_AI_ANSWER_TIMEOUT_DEFAULT 600
 extern int e_ai_answer_timeout;
 /* The model listing's own deadline (connect, handshake and the whole reply). */
 #define WPE_AI_LIST_DEADLINE_MS   5000
@@ -215,6 +221,7 @@ enum wpe_ai_cfg_key {
   WPE_AI_CFG_HOST_ADAPTER,    /* AIHostAdapter <- XWPE_AI_HOST_ADAPTER (int)    */
   WPE_AI_CFG_SEARCH_URL,      /* AISearchURL   <- XWPE_AI_SEARCH_URL   (string) */
   WPE_AI_CFG_TOOL_TIMEOUT,    /* AIToolTimeout <- XWPE_AI_TOOL_TIMEOUT (int)    */
+  WPE_AI_CFG_ANSWER_TIMEOUT,  /* AIAnswerTimeout <- XWPE_AI_TIMEOUT    (int)    */
   WPE_AI_CFG_PROJECT_SCOPE,   /* AIProjectInstructions <- XWPE_AI_PROJECT_INSTRUCTIONS (int) */
   WPE_AI_CFG_PROJECT_MAX,     /* AIProjectInstructionsMax <- XWPE_AI_PROJECT_INSTRUCTIONS_MAX (int) */
   WPE_AI_CFG_WEB,             /* AIWeb         <- XWPE_AI_WEB          (int)    */

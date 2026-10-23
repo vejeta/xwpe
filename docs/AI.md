@@ -349,9 +349,15 @@ sits through (a server that drops the connection attempt holds it that long;
 one that refuses answers at once). From there on it never waits inside a
 connection. A chat, Edit, completion or agent turn opens its connection on the editor's
 loop: the connect, the TLS handshake and the first byte of the answer share
-one deadline, 120 s by default (`XWPE_AI_TIMEOUT`). Meanwhile the waiting line
-shows, the editor takes keys and Esc cancels. A server that lets the deadline
-pass ends the request with `no answer from host:port within N s`. The model
+one deadline, 600 s by default (`AIAnswerTimeout` in `xwperc`, or
+`XWPE_AI_TIMEOUT` for one session). Only that first byte is bounded: once the
+answer streams there is no deadline at all, so a slow model may take its time
+between tokens and Esc is the user's say. The default is sized for a local
+model, which loads its weights and reads the whole prompt before it emits
+anything. Meanwhile the waiting line shows with the seconds elapsed, the editor
+takes keys and Esc cancels. A server that lets the deadline pass ends the
+request with `no answer from host:port within N s (AIAnswerTimeout)`, naming the
+key that sets the wait. The model
 list (Alt-M) has its own 5 s deadline; a box over the dialog says
 `listing models from host:port ... (Esc cancels)`, and Esc abandons it with
 `listing cancelled`. Host names are looked up before the deadline starts: a
@@ -469,7 +475,7 @@ fixed setup:
 | `XWPE_AI_POLICY` | `ask` / `edits` / `auto` |
 | `XWPE_AI_WEB` | `1` / `0`: web access for one session (`AIWeb`, asked once at first need, off by default). Governs the chat's and the agent's web tools, and what the browsing backends are launched with (see "Web access" above) |
 | `XWPE_AI_TOOL_TIMEOUT` | seconds a tool command may run before it is ended (`AIToolTimeout`, default 60) |
-| `XWPE_AI_TIMEOUT` | seconds a request waits for the server: connect, TLS handshake and first byte (default 120) |
+| `XWPE_AI_TIMEOUT` | seconds a request waits for the server's first byte: connect, TLS handshake and that byte (`AIAnswerTimeout`, default 600). Once the answer streams there is no deadline; Esc ends it |
 | `XWPE_AI_PROJECT_INSTRUCTIONS` | where the project instructions file is folded in: `agent` (default), `all` or `off` (`AIProjectInstructions`) |
 | `XWPE_AI_PROJECT_INSTRUCTIONS_MAX` | bytes of the project instructions file the prompt carries (`AIProjectInstructionsMax`, default 4095, at most 65536) |
 | `XWPE_AI_TRACE=path` | append a diagnostic trace (prompt built, tool run, ...) |
