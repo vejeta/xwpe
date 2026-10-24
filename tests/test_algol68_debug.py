@@ -142,15 +142,15 @@ def test_a68g_run_to_completion_captures_output(tmp_path):
 
     With no breakpoint, a68g auto-breaks at line 1 and Ctrl-G R continues to the
     end: the program's output ("factorial(5) = +120") is captured into the
-    Messages window (Ctrl-G P), the end is detected ("End of code"), and the
-    session quits cleanly without hanging.
+    Messages window (Ctrl-G P), the end is said there in one line ("Program
+    exited."), and the session quits cleanly without hanging.
     """
     with WpeSession(str(tmp_path), FACTORIAL, filename="factorial.a68",
                     wait=2.0) as w:
         w.key(CTRL_G, "r", delay=2.0)     # Ctrl-G R: run (no popup to dismiss)
         w._drain(6.0)                     # run to completion
-        # The "End of code. Ctrl-G P for output." dialog is modal; dismiss it.
-        w.key("\r", delay=1.0)
+        # The end is a line in Messages, not a box: no key to dismiss it, and
+        # an Enter here would edit the source.
         w.key(CTRL_G, "p", delay=1.5)     # Ctrl-G P: program output -> Messages
         text = _text(w)
         assert w.alive(), "wpe died running the a68g program to completion"
@@ -179,9 +179,8 @@ def test_a68g_restart_after_finish_no_crash(tmp_path):
         # Continue until the program finishes (recursion depth 5 + tail).
         for _ in range(8):
             w.key(CTRL_G, "r", delay=2.0)
-            if "End of code" in _text(w) or "120" in _text(w):
+            if "Program exited." in _text(w) or "120" in _text(w):
                 break
-        w.key("\r", delay=1.0)            # dismiss "End of code" dialog
         # Re-run twice: the original crash struck on the second Ctrl-G R.
         w.key(CTRL_G, "r", delay=2.0)
         w._drain(3.0)

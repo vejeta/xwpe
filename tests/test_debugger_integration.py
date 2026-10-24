@@ -2098,3 +2098,384 @@ def test_breakpoints_changed_in_a_session_under_scala(tmp_path):
                                         _says_last(w, "End of Debugging",
                                                    "Program exited"),
                                         SCALA_START_TIMEOUT_S)
+
+
+# Show stack, Finish function and the program's end on every debugger, with
+# the programs of Go to cursor: the program stops in the body of sq, which
+# main calls on CALL_LINE.  gdb is the reference: its Stack window lists
+# "#0  sq (v=3) at p.c:4" over "#1  main () at p.c:10", Enter on a row marks
+# that frame's line, Finish function marks the caller's line, and a program
+# that ends says so in Messages.  The others must do the same.
+FINISH_OUTERMOST_LINE = "Finish function: not meaningful in the outermost frame."
+OUTPUT_HINT = " Program output: Ctrl-G P"
+MODAL_MARKS = (" OK ", "End of code", "Debugger stopped")
+FRAME_ROW = re.compile(r"#\d+  \S+(?: \S+)*")
+
+
+def _stack_frames(w):
+    """The Stack window's frame rows, top to bottom ("#0  sq at p.py:2")."""
+    frames = []
+    inside = False
+    for line in w.display(drain=0):
+        if " Stack " in line:
+            inside = True
+            continue
+        if not inside:
+            continue
+        found = FRAME_ROW.search(line)
+        if found:
+            frames.append(found.group(0))
+        elif frames:
+            break
+    return frames
+
+
+def _messages_lines(w):
+    """Every line of text in the Messages window."""
+    return [row[1:-1].strip() for row, _ in _messages_rows(w)]
+
+
+def _no_modal(w):
+    """No box waits for a key: no OK button, no end-of-program box."""
+    screen = _screen(w)
+    return not any(mark in screen for mark in MODAL_MARKS)
+
+
+def _stop_in_the_function(w, body_line, start_timeout):
+    """Breakpoint on @body_line, Ctrl-G R, wait for the stop there."""
+    _go_to_line(w, body_line)
+    w.key(CTRL_G, "b", delay=0.5)
+    w.key(CTRL_G, "r", delay=1.0)
+    assert _wait_for(w, lambda: _mark_line(w) == body_line, start_timeout), \
+        "Ctrl-G R should stop on line %d:\n%s" % (body_line, _screen(w))
+
+
+def _shows_the_stack(w, body_line, inner, outer, call_line, start_timeout):
+    """Stopped in sq: Ctrl-G K lists sq over its caller, each with its
+    function and its file:line (@inner, @outer: texts each row holds), and
+    Enter on the caller's row marks @call_line (None: the caller's row names
+    no line to mark)."""
+    _stop_in_the_function(w, body_line, start_timeout)
+    w.key(CTRL_G, "k", delay=0.5)
+    assert _wait_for(w, lambda: len(_stack_frames(w)) >= 2, STEP_TIMEOUT_S), \
+        "Ctrl-G K should list at least two frames:\n%s" % _screen(w)
+    frames = _stack_frames(w)
+    assert frames[0].startswith("#0") and \
+        all(text in frames[0] for text in inner), \
+        "the innermost frame should come first, %s:\n%s" % (inner, _screen(w))
+    assert frames[1].startswith("#1") and \
+        all(text in frames[1] for text in outer), \
+        "its caller should come next, %s:\n%s" % (outer, _screen(w))
+    assert _no_modal(w), "Show stack should open no box:\n%s" % _screen(w)
+    if call_line is None:
+        return
+    w.key(DOWN, delay=0.4)
+    w.key("\r", delay=0.8)
+    assert _wait_for(w, lambda: _mark_line(w) == call_line, STEP_TIMEOUT_S), \
+        "Enter on the caller's row should mark line %d (mark on %s):\n%s" \
+        % (call_line, _mark_line(w), _screen(w))
+
+
+def _finishes_to_the_caller(w, body_line, caller_line, running, start_timeout):
+    """Stopped in sq, the cursor moved away: Ctrl-G F marks @caller_line in
+    the caller.  Ctrl-G F there, in the outermost frame, says so in one line
+    and leaves the session where it was (@running: the session is alive)."""
+    _stop_in_the_function(w, body_line, start_timeout)
+    _go_to_line(w, HEALTH_LINE)
+    w.key(CTRL_G, "f", delay=0.5)
+    assert _wait_for(w, lambda: _mark_line(w) == caller_line, GOTO_TIMEOUT_S), \
+        "Ctrl-G F should mark line %d of the caller (mark on %s):\n%s" \
+        % (caller_line, _mark_line(w), _screen(w))
+    assert _no_modal(w), "Finish function should open no box:\n%s" % _screen(w)
+    w.key(CTRL_G, "f", delay=0.5)
+    assert _wait_for(w, lambda: FINISH_OUTERMOST_LINE in _messages_lines(w),
+                     STEP_TIMEOUT_S), \
+        "Ctrl-G F in the outermost frame should say so in Messages:\n%s" \
+        % _screen(w)
+    assert _no_modal(w), \
+        "the outermost frame should be said without a box:\n%s" % _screen(w)
+    assert _mark_line(w) == caller_line and running(), \
+        "the session should stay stopped on line %d (mark on %s):\n%s" \
+        % (caller_line, _mark_line(w), _screen(w))
+
+
+def _ends_with_one_line(w, body_line, end_line, ended, start_timeout):
+    """Stopped in sq: Ctrl-G R runs to the end; Messages holds @end_line,
+    no box waits for a key, the mark goes and the editor takes keys."""
+    _stop_in_the_function(w, body_line, start_timeout)
+    _go_to_line(w, body_line)
+    w.key(CTRL_G, "b", delay=0.5)
+    w.key(CTRL_G, "r", delay=0.5)
+    assert _wait_for(w, lambda: end_line in _messages_lines(w),
+                     GOTO_TIMEOUT_S), \
+        "Messages should say %r:\n%s" % (end_line, _screen(w))
+    assert _no_modal(w), "the end should open no box:\n%s" % _screen(w)
+    assert _wait_for(w, ended, GOTO_TIMEOUT_S), \
+        "the session should end with the program:\n%s" % _screen(w)
+    assert _wait_for(w, lambda: _mark_line(w) is None, STEP_TIMEOUT_S), \
+        "no line should stay marked:\n%s" % _screen(w)
+    assert _takes_keys(w), "the editor should take keys:\n%s" % _screen(w)
+
+
+STACK_COLS = 160   # the Stack window takes a third: room for a whole row
+
+
+def _go_session(tmp_path, cols=80):
+    (tmp_path / "go.mod").write_text("module dapdemo\n\ngo 1.21\n")
+    return WpeSession(str(tmp_path), GOTO_GO, filename="main.go", wait=2.0,
+                      cols=cols)
+
+
+def _rust_session(tmp_path, adapter, cols=80):
+    return WpeSession(str(tmp_path), GOTO_RUST, filename="main.rs", wait=2.0,
+                      cols=cols, env_extra={"XWPE_DAP_ADAPTER": adapter})
+
+
+def _scala_session(tmp_path, cols=80):
+    return WpeSession(str(tmp_path), GOTO_SCALA, filename="p.scala", wait=2.0,
+                      cols=cols)
+
+
+def _alive(w, name):
+    return lambda: bool(_children(w, name))
+
+
+# @scenario SC-debug-33
+def test_show_stack_under_pdb(tmp_path):
+    _need("python3")
+    with WpeSession(str(tmp_path), GOTO_PY, filename="p.py", wait=1.5,
+                    cols=STACK_COLS) as w:
+        _shows_the_stack(w, 2, ("sq", "p.py:2"), ("<module>", "p.py:6"), 6,
+                         START_TIMEOUT_S)
+
+
+# @scenario SC-debug-33
+def test_show_stack_under_jdb(tmp_path):
+    _need("jdb", "javac")
+    with WpeSession(str(tmp_path), GOTO_JAVA, filename="P.java", wait=1.5,
+                    cols=STACK_COLS) as w:
+        _shows_the_stack(w, JAVA_SQ_LINE, ("P.sq", "P.java:3"),
+                         ("P.main", "P.java:8"), JAVA_RESTART_LINE,
+                         JDB_START_TIMEOUT_S)
+
+
+# @scenario SC-debug-33
+def test_show_stack_under_a68g(tmp_path):
+    """a68g names no call sites: the main program's row has no line."""
+    _need("a68g")
+    with WpeSession(str(tmp_path), GOTO_A68, filename="p.a68", wait=1.5,
+                    cols=STACK_COLS) as w:
+        _shows_the_stack(w, 3, ("sq", "p.a68:3"), ("(main program) in p.a68",),
+                         None, START_TIMEOUT_S)
+
+
+# @scenario SC-debug-33
+def test_show_stack_under_dlv(tmp_path):
+    _need("dlv", "go")
+    with _go_session(tmp_path, STACK_COLS) as w:
+        _shows_the_stack(w, GO_SQ_LINE, ("main.sq", "main.go:6"),
+                         ("main.main", "main.go:12"), 12, GOTO_TIMEOUT_S)
+
+
+# @scenario SC-debug-33
+@pytest.mark.parametrize("adapter,binary", [("gdb", "gdb"), ("lldb", "lldb-dap")])
+def test_show_stack_under_a_rust_adapter(tmp_path, adapter, binary):
+    _need("rustc", binary)
+    with _rust_session(tmp_path, adapter, STACK_COLS) as w:
+        _shows_the_stack(w, 2, ("sq", "main.rs:2"), ("main", "main.rs:7"), 7,
+                         RUST_START_TIMEOUT_S)
+
+
+# @scenario SC-debug-33
+def test_show_stack_under_scala(tmp_path):
+    _need("scala-cli")
+    with _scala_session(tmp_path, STACK_COLS) as w:
+        _shows_the_stack(w, 3, ("sq", "p.scala:3"), ("main", "p.scala:7"), 7,
+                         SCALA_START_TIMEOUT_S)
+
+
+# @scenario SC-debug-34
+def test_finish_function_under_pdb(tmp_path):
+    """pdb's "return" stops at the end of sq; the caller's line is marked."""
+    _need("python3")
+    with WpeSession(str(tmp_path), GOTO_PY, filename="p.py", wait=1.5) as w:
+        _finishes_to_the_caller(w, 2, 6, _alive(w, "python3"),
+                                START_TIMEOUT_S)
+
+
+# @scenario SC-debug-34
+def test_finish_function_under_jdb(tmp_path):
+    _need("jdb", "javac")
+    with WpeSession(str(tmp_path), GOTO_JAVA, filename="P.java", wait=1.5) as w:
+        _finishes_to_the_caller(w, JAVA_SQ_LINE, JAVA_RESTART_LINE,
+                                _alive(w, "jdb"), JDB_START_TIMEOUT_S)
+
+
+# @scenario SC-debug-34
+def test_finish_function_under_a68g(tmp_path):
+    """a68g stops at the caller's next unit, the line after the call."""
+    _need("a68g")
+    with WpeSession(str(tmp_path), GOTO_A68, filename="p.a68", wait=1.5) as w:
+        _finishes_to_the_caller(w, 3, 8, _alive(w, "a68g"), START_TIMEOUT_S)
+
+
+# @scenario SC-debug-34
+def test_finish_function_under_dlv(tmp_path):
+    _need("dlv", "go")
+    with _go_session(tmp_path) as w:
+        _finishes_to_the_caller(w, GO_SQ_LINE, 12, _alive(w, "dlv"),
+                                GOTO_TIMEOUT_S)
+
+
+# @scenario SC-debug-34
+@pytest.mark.parametrize("adapter,binary", [("gdb", "gdb"), ("lldb", "lldb-dap")])
+def test_finish_function_under_a_rust_adapter(tmp_path, adapter, binary):
+    _need("rustc", binary)
+    with _rust_session(tmp_path, adapter) as w:
+        _finishes_to_the_caller(w, 2, 7, _alive(w, binary),
+                                RUST_START_TIMEOUT_S)
+
+
+# @scenario SC-debug-34
+def test_finish_function_under_scala(tmp_path):
+    _need("scala-cli")
+    with _scala_session(tmp_path) as w:
+        _finishes_to_the_caller(
+            w, 3, 7, lambda: "End of Debugging" not in _messages_lines(w),
+            SCALA_START_TIMEOUT_S)
+
+
+# @scenario SC-debug-13
+def test_pdb_end_is_one_line_with_the_exit_code(tmp_path):
+    """A script that runs off its end exits with 0; its output is under
+    Ctrl-G P, and the line says so."""
+    _need("python3")
+    with WpeSession(str(tmp_path), GOTO_PY, filename="p.py", wait=1.5) as w:
+        _ends_with_one_line(w, 2, "Program exited with code 0." + OUTPUT_HINT,
+                            lambda: not _children(w, "python3"),
+                            START_TIMEOUT_S)
+
+
+# @scenario SC-debug-14
+def test_pdb_sys_exit_is_one_line_with_its_code(tmp_path):
+    _need("python3")
+    with WpeSession(str(tmp_path), PY_EXIT_PROG, filename="p.py",
+                    wait=1.5) as w:
+        _ends_with_one_line(w, PY_EXIT_BREAK_LINE,
+                            "Program exited with code 3." + OUTPUT_HINT,
+                            lambda: not _children(w, "python3"),
+                            START_TIMEOUT_S)
+
+
+# @scenario SC-debug-13
+def test_jdb_end_is_one_line(tmp_path):
+    """jdb names no exit code: the plain line, and where the output is."""
+    _need("jdb", "javac")
+    with WpeSession(str(tmp_path), GOTO_JAVA, filename="P.java", wait=1.5) as w:
+        _ends_with_one_line(w, JAVA_SQ_LINE, "Program exited." + OUTPUT_HINT,
+                            lambda: not _children(w, "jdb"),
+                            JDB_START_TIMEOUT_S)
+
+
+# @scenario SC-debug-13
+def test_a68g_end_is_one_line(tmp_path):
+    """a68g names no exit code; its output is in Messages already."""
+    _need("a68g")
+    with WpeSession(str(tmp_path), GOTO_A68, filename="p.a68", wait=1.5) as w:
+        _ends_with_one_line(w, 3, "Program exited.",
+                            lambda: not _children(w, "a68g"),
+                            START_TIMEOUT_S)
+
+
+# @scenario SC-debug-14
+def test_dlv_end_is_one_line_with_the_exit_code(tmp_path):
+    _need("dlv", "go")
+    with _go_session(tmp_path) as w:
+        _ends_with_one_line(w, GO_SQ_LINE, "Program exited with code 0",
+                            lambda: not _children(w, "dlv"), GOTO_TIMEOUT_S)
+
+
+# @scenario SC-debug-14
+@pytest.mark.parametrize("adapter,binary", [("gdb", "gdb"), ("lldb", "lldb-dap")])
+def test_rust_adapter_end_is_one_line_with_the_exit_code(tmp_path, adapter,
+                                                         binary):
+    _need("rustc", binary)
+    with _rust_session(tmp_path, adapter) as w:
+        _ends_with_one_line(w, 2, "Program exited with code 0",
+                            lambda: not _children(w, binary),
+                            RUST_START_TIMEOUT_S)
+
+
+# @scenario SC-debug-14
+def test_scala_end_is_one_line_with_the_exit_code(tmp_path):
+    _need("scala-cli")
+    with _scala_session(tmp_path) as w:
+        _ends_with_one_line(w, 3, "Program exited with code 0",
+                            lambda: "End of Debugging" in _messages_lines(w),
+                            SCALA_START_TIMEOUT_S)
+
+
+GO_EXIT_3 = GOTO_GO.replace("import \"fmt\"", "import (\n\t\"fmt\"\n\t\"os\"\n)") \
+    .replace("\tfmt.Println(\"END\", z)\n", "\tfmt.Println(\"END\", z)\n\tos.Exit(3)\n")
+GO_EXIT_3_SQ_LINE = GO_SQ_LINE + 3   # the import block took three more lines
+
+
+# @scenario SC-debug-14
+def test_dlv_end_names_a_nonzero_exit_code(tmp_path):
+    """A Go program that ends with os.Exit(3): the line names code 3."""
+    _need("dlv", "go")
+    (tmp_path / "go.mod").write_text("module dapdemo\n\ngo 1.21\n")
+    with WpeSession(str(tmp_path), GO_EXIT_3, filename="main.go",
+                    wait=2.0) as w:
+        _ends_with_one_line(w, GO_EXIT_3_SQ_LINE, "Program exited with code 3",
+                            lambda: not _children(w, "dlv"), GOTO_TIMEOUT_S)
+
+
+# A program whose only breakpoint is in a function it never calls: it ends
+# while the adapter starts, before any stop.
+RUST_NEVER_STOPS = (
+    "fn never() -> i32 {\n"
+    "    let r = 7;\n"
+    "    r\n"
+    "}\n"
+    "fn main() {\n"
+    "    let x = 3;\n"
+    "    println!(\"END {}\", x);\n"
+    "}\n"
+)
+RUST_NEVER_LINE = 2
+
+
+def _first_command_ends_the_session(w, letter, binary):
+    """Breakpoint on a line that never runs, then Ctrl-G @letter as the
+    session's first command: the program ends during the start, and that
+    command ends the session with the end line, no box and no mark left."""
+    _go_to_line(w, RUST_NEVER_LINE)
+    w.key(CTRL_G, "b", delay=0.5)
+    w.key(CTRL_G, letter, delay=1.0)
+    assert _wait_for(w, lambda: "Program exited with code 0"
+                     in _messages_lines(w), RUST_START_TIMEOUT_S), \
+        "Messages should say the program exited with code 0:\n%s" % _screen(w)
+    assert _no_modal(w), "the end should open no box:\n%s" % _screen(w)
+    assert _wait_for(w, lambda: not _children(w, binary), STEP_TIMEOUT_S), \
+        "the session should end with the program:\n%s" % _screen(w)
+    assert _mark_line(w) is None, "no line should be marked:\n%s" % _screen(w)
+    assert _takes_keys(w), "the editor should take keys:\n%s" % _screen(w)
+
+
+# @scenario SC-debug-13
+def test_an_adapter_program_that_ends_at_the_start_ends_at_the_first_step(
+        tmp_path):
+    _need("rustc", "lldb-dap")
+    with WpeSession(str(tmp_path), RUST_NEVER_STOPS, filename="main.rs",
+                    wait=2.0, env_extra={"XWPE_DAP_ADAPTER": "lldb"}) as w:
+        _first_command_ends_the_session(w, "s", "lldb-dap")
+
+
+# @scenario SC-debug-13
+def test_an_adapter_program_that_ends_at_the_start_ends_at_the_first_finish(
+        tmp_path):
+    _need("rustc", "lldb-dap")
+    with WpeSession(str(tmp_path), RUST_NEVER_STOPS, filename="main.rs",
+                    wait=2.0, env_extra={"XWPE_DAP_ADAPTER": "lldb"}) as w:
+        _first_command_ends_the_session(w, "f", "lldb-dap")

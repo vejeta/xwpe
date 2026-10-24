@@ -557,6 +557,10 @@ static int  e_d_dap_run(FENSTER *f);
 static int  e_d_dap_step(FENSTER *f, int sw);
 static int  e_d_dap_watches(FENSTER *f, int sw);
 static void e_d_dap_quit(FENSTER *f);
+static int  e_d_dap_exit_code(long *code);      /* the `exited` event's code */
+static int  e_d_p_frames(ECNT *cn, int is, int sw); /* the call stack (below) */
+static int  e_d_frame_show(FENSTER *f);
+static int  e_d_frames_backend(void);
 static int  e_d_dap_start_watch(FENSTER *f);   /* the adapter's start (below) */
 static int  e_d_dap_start_finish(FENSTER *f);
 static void e_d_dap_start_close_messages(ECNT *cn);
@@ -592,9 +596,17 @@ static void e_d_flush_inferior_stdout(void)
 #define E_D_GDB_EXIT_BASE   8
 /* What pdb prints when the script calls sys.exit(N). */
 #define E_D_PDB_EXIT_STATUS "Exit status: "
+/* What pdb prints when the script runs off its end: a normal end, code 0,
+   as gdb's "exited normally" is. */
+#define E_D_PDB_FINISHED    "The program finished"
+/* What pdb prints when it stops at the end of a function ("return"). */
+#define E_D_PDB_RETURN      "--Return--"
 #define E_D_EXIT_PLAIN      "Program exited."
 #define E_D_EXIT_CODE_FMT   "Program exited with code %ld"
-#define E_D_EXIT_LINE_MAX   64
+/* Said after the end line by a backend that keeps the program's output out
+   of Messages (pdb and jdb hand it to Ctrl-G P only). */
+#define E_D_EXIT_OUTPUT_HINT " Program output: Ctrl-G P"
+#define E_D_EXIT_LINE_MAX   96
 /* What jdb prints when the program it ran reaches its end.  Its wording has
    no "exited" in it, so the shorter word every other backend says misses it. */
 #define E_D_JDB_EXIT        "The application exited"
@@ -608,18 +620,31 @@ static void e_d_flush_inferior_stdout(void)
 #define E_D_SWITCH_PDB_LINE "Python file: switching to pdb debugger."
 
 /**
- * e_d_exit_code_of - Read the program's exit code from the debugger's line.
- * @line: a line the debugger printed when the program ended; @code: the code.
+ * e_d_exit_code_of - Read the program's exit code from what the debugger
+ * reported at its end.
+ * @line: a line the debugger printed when the program ended, or NULL;
+ * @code: the code.
  *
  * gdb's "exited normally" is 0 and its "exited with code 03" is octal;
- * pdb's "Exit status: 3" (after sys.exit) is decimal.
- * Return: 1 when the line names a code, else 0.
+ * pdb's "Exit status: 3" (after sys.exit) is decimal and its "The program
+ * finished" is a normal end, 0.  A debug adapter prints no line: its code
+ * comes with the `exited` event.  jdb and a68g name none.
+ * Return: 1 when a code is known, else 0.
  */
 static int e_d_exit_code_of(const char *line, long *code)
 {
  const char *p;
  char *end;
 
+ if (e_deb_type == DEB_DAP)
+  return(e_d_dap_exit_code(code));
+ if (!line)
+  return(0);
+ if (strstr(line, E_D_PDB_FINISHED))
+ {
+  *code = 0;
+  return(1);
+ }
  if (strstr(line, E_D_GDB_EXIT_NORMAL))
  {
   *code = 0;
@@ -639,13 +664,45 @@ static int e_d_exit_code_of(const char *line, long *code)
 }
 
 /**
+ * e_d_output_only_on_user_screen - Does this backend keep the program's
+ * output out of Messages?
+ *
+ * pdb and jdb share one stream with the program, and its output is kept for
+ * Ctrl-G P only; gdb, a68g and the debug adapters write it to Messages too.
+ * Return: 1 for pdb and jdb.
+ */
+static int e_d_output_only_on_user_screen(void)
+{
+ return(e_deb_type == DEB_PDB || e_deb_type == DEB_JDB);
+}
+
+/**
+ * e_d_exit_line_add_hint - End the exit line with where the output is.
+ * @msg, @n: the line, completed in place.
+ *
+ * Under pdb and jdb the program's output is not in Messages, so the end
+ * line says where it is, where a box used to say it and wait for a key.
+ */
+static void e_d_exit_line_add_hint(char *msg, size_t n)
+{
+ size_t len = strlen(msg);
+
+ if (len > 0 && msg[len - 1] != '.')
+  snprintf(msg + len, n - len, ".");
+ len = strlen(msg);
+ snprintf(msg + len, n - len, "%s", E_D_EXIT_OUTPUT_HINT);
+}
+
+/**
  * e_d_say_program_exited - Write in Messages that the program ended.
- * @line: the debugger's line that said so; @f: the window on top.
+ * @line: the debugger's line that said so, or NULL for a debug adapter
+ * (its code comes with an event); @f: the window on top.
  *
  * The user reads "Program exited with code N", as Turbo Debugger's
  * "Terminated, exit code N", so a failing program is told apart from one
  * that succeeded without a second run.  A debugger that names no code
- * keeps the plain "Program exited.".
+ * keeps the plain "Program exited.".  Every backend's end goes through
+ * here: one line in Messages, never a box to dismiss.
  */
 static void e_d_say_program_exited(const char *line, FENSTER *f)
 {
@@ -653,12 +710,12 @@ static void e_d_say_program_exited(const char *line, FENSTER *f)
  long code;
 
  if (e_d_exit_code_of(line, &code))
- {
   snprintf(msg, sizeof msg, E_D_EXIT_CODE_FMT, code);
-  e_d_p_message(msg, f, 0);
- }
  else
-  e_d_p_message(E_D_EXIT_PLAIN, f, 0);
+  snprintf(msg, sizeof msg, "%s", E_D_EXIT_PLAIN);
+ if (e_d_output_only_on_user_screen())
+  e_d_exit_line_add_hint(msg, sizeof msg);
+ e_d_p_message(msg, f, 0);
 }
 
 /**
@@ -710,7 +767,7 @@ static void e_d_accum_complete(void)
    if (_i < 0)
    {
     e_d_switch_out(0);
-    e_error("Program exited. Debugger stopped.", 0, f->fb);
+    e_d_say_program_exited(NULL, f);
     e_d_quit(f);
     return;
    }
@@ -2241,14 +2298,14 @@ int e_d_p_stack(FENSTER *f, int sw)
  s = cn->f[is]->s;
  if (!e_d_swtch)
   return(0);
+ if (e_d_frames_backend())
+  return(e_d_p_frames(cn, is, sw));
  if (e_deb_type == DEB_GDB)
   e_d_send_cmd("bt\n");
  else if (e_deb_type == DEB_SDB || e_deb_type == DEB_XDB)
   e_d_send_cmd("t\n");
  else if (e_deb_type == DEB_DBX)
   e_d_send_cmd("where\n");
- else if (e_deb_type == DEB_A68G)
-  e_d_send_cmd("calls\n");
  else
   return(0);   /* no stack command here: never wait for an answer to nothing */
  while ((ret = e_d_line_read(wfildes[0], str, 256, 0, 0)) == 2)
@@ -2329,9 +2386,12 @@ int e_d_p_stack(FENSTER *f, int sw)
 
 int e_make_stack(FENSTER *f)
 {
-   char file[128], str[128], *tmpstr = MALLOC(1);
+   char file[128], str[128], *tmpstr;
    int i, ret, line = 0, dif;
    BUFFER *b = f->ed->f[f->ed->mxedt]->b;
+   if (e_d_frames_backend())
+      return(e_d_frame_show(f));
+   tmpstr = MALLOC(1);
    e_d_switch_out(0);
    if(e_deb_type != DEB_SDB)
    {  tmpstr[0] = '\0';
@@ -3495,6 +3555,7 @@ static void e_d_dap_paint_stop(FENSTER *f)
 {
  if (!f || g_dap_stop_line < 0 || !g_dap_stop_file[0])
   return;
+ e_d_nstack = 0;                      /* a stop selects the top frame again */
  strncpy(e_d_file, e_d_dap_basename(g_dap_stop_file), sizeof(e_d_file) - 1);
  e_d_file[sizeof(e_d_file) - 1] = '\0';
  e_d_p_watches(f, 0);                 /* -> e_d_dap_watches (evaluate) */
@@ -3541,12 +3602,47 @@ static void e_d_dap_on_output(const char *text, void *ud)
  FREE(clean);
 }
 
-/* on_terminated: the debuggee exited. */
-static void e_d_dap_on_terminated(void *ud)
+/**
+ * e_d_dap_exit_code - The exit code the adapter reported for the program.
+ * @code: receives it.
+ * Return: 1 when the adapter's `exited` event named one, else 0.
+ */
+static int e_d_dap_exit_code(long *code)
 {
- (void)ud;
- if (g_dap_fenster)
-  e_d_p_message("Program exited.", g_dap_fenster, 1);
+ int c;
+
+ if (!g_dap || !e_dap_exit_code(g_dap, &c))
+  return(0);
+ *code = c;
+ return(1);
+}
+
+/**
+ * e_d_dap_end_session - The program ran to its end under a debug adapter.
+ * @f: the window on top.
+ *
+ * The user reads "Program exited with code N" in Messages, the mark goes
+ * and the editor takes keys again, exactly as at the end of a gdb session;
+ * an adapter session used to stay half-open with the mark still painted.
+ * Return: 0.
+ */
+static int e_d_dap_end_session(FENSTER *f)
+{
+ e_d_say_program_exited(NULL, f);
+ return(e_d_quit(f));
+}
+
+/**
+ * e_d_dap_program_ended - Has the adapter's program already ended?
+ *
+ * A program that never reaches a breakpoint ends while the adapter starts;
+ * whichever command comes first (Run, Step, Finish function) then ends the
+ * session with its end line instead of waiting for a stop that never comes.
+ * Return: 1 when the adapter reported the end.
+ */
+static int e_d_dap_program_ended(void)
+{
+ return(g_dap && e_dap_ended(g_dap));
 }
 
 /* Disconnect the adapter and reset bridge state.  Called from e_d_quit before
@@ -3646,7 +3742,9 @@ static int e_d_dap_start(FENSTER *f)
  }
  g_dap_host.on_stopped = e_d_dap_on_stopped;
  g_dap_host.on_output = e_d_dap_on_output;
- g_dap_host.on_terminated = e_d_dap_on_terminated;
+ /* The end is not said from inside the adapter's event: the run or step
+    that reached it ends the session through e_d_dap_end_session. */
+ g_dap_host.on_terminated = NULL;
  g_dap_host.ud = NULL;
  g_dap_fenster = f;
  /* Program directory without the trailing slash: the adapter's working dir, and
@@ -3743,6 +3841,27 @@ static int e_d_dap_start_finish(FENSTER *f)
  return(0);
 }
 
+/**
+ * e_d_dap_path_in_user_code - Is @path a file of the user's own program?
+ * @path: a source path the adapter named.
+ *
+ * Tells the user's frames from the language runtime's (Go's runtime under
+ * GOROOT, Rust's std): stepping never wanders into the runtime, and Finish
+ * function knows main has no caller of the user's to return to.  Unknown
+ * paths count as the user's, so nothing is skipped when it cannot be told.
+ * Return: 1 for the user's code.
+ */
+static int e_d_dap_path_in_user_code(const char *path)
+{
+ size_t n;
+
+ if (!g_dap_progdir[0] || !path || !path[0])
+  return(1);
+ n = strlen(g_dap_progdir);
+ return(!strncmp(path, g_dap_progdir, n) &&
+        (path[n] == DIRC || path[n] == '\0'));
+}
+
 /* True when the current stop is inside the user's program source tree.  After
    main() returns, a "step over" steps UP into the Go runtime (runtime/proc.go
    under GOROOT) -- legitimately, but it drops the user into unfamiliar code that
@@ -3751,13 +3870,7 @@ static int e_d_dap_start_finish(FENSTER *f)
    "user code" so we never skip when we cannot tell. */
 static int e_d_dap_in_user_code(void)
 {
- size_t n;
-
- if (!g_dap_progdir[0] || !g_dap_stop_file[0])
-  return(1);
- n = strlen(g_dap_progdir);
- return(!strncmp(g_dap_stop_file, g_dap_progdir, n) &&
-        (g_dap_stop_file[n] == DIRC || g_dap_stop_file[n] == '\0'));
+ return(e_d_dap_path_in_user_code(g_dap_stop_file));
 }
 
 /**
@@ -3791,7 +3904,7 @@ static int e_d_dap_run(FENSTER *f)
  if (g_dap_just_started)
  {
   g_dap_just_started = 0;
-  if (!e_dap_ended(g_dap) &&
+  if (!e_d_dap_program_ended() &&
       (!e_d_dap_stopped_at_entry() || e_d_nbrpts <= 0))
   {
    e_d_dap_paint_stop(f);
@@ -3800,10 +3913,7 @@ static int e_d_dap_run(FENSTER *f)
  }
  e_dap_step(g_dap, "continue");
  if (e_dap_ended(g_dap))
- {
-  e_d_dap_quit(f);
-  return(0);
- }
+  return(e_d_dap_end_session(f));
  e_d_dap_paint_stop(f);
  return(0);
 }
@@ -3820,6 +3930,8 @@ static int e_d_dap_step(FENSTER *f, int sw)
  if (g_dap_just_started)
  {
   g_dap_just_started = 0;
+  if (e_d_dap_program_ended())
+   return(e_d_dap_end_session(f));
   e_d_dap_paint_stop(f);              /* the entry stop, painted once */
   return(0);
  }
@@ -3836,10 +3948,26 @@ static int e_d_dap_step(FENSTER *f, int sw)
   while (!e_dap_ended(g_dap) && !e_d_dap_in_user_code() && guard++ < 100)
    e_dap_step(g_dap, "continue");
  if (e_dap_ended(g_dap))
- {
-  e_d_dap_quit(f);
-  return(0);
- }
+  return(e_d_dap_end_session(f));
+ e_d_dap_paint_stop(f);
+ return(0);
+}
+
+/**
+ * e_d_dap_finish - Finish function under a debug adapter: stepOut.
+ * @f: the source window.
+ *
+ * The program runs until the current function returns, and the mark lands
+ * on the caller's line, as gdb's "finish" puts it; a program that ends on
+ * the way ends the session with its end line.
+ * Return: 0.
+ */
+static int e_d_dap_finish(FENSTER *f)
+{
+ g_dap_just_started = 0;             /* the entry stop is left, not repainted */
+ e_dap_step(g_dap, "stepOut");
+ if (e_dap_ended(g_dap))
+  return(e_d_dap_end_session(f));
  e_d_dap_paint_stop(f);
  return(0);
 }
@@ -3855,6 +3983,8 @@ static int e_d_dap_watches(FENSTER *f, int sw)
  char *val, *line;
 
  e_d_switch_out(0);
+ if ((e_d_swtch > 2) && (e_d_p_stack(f, 0) == -1))
+  return(-1);
  for (iw = cn->mxedt; iw > 0 && strcmp(cn->f[iw]->datnam, "Watches"); iw--)
   ;
  if (iw == 0 && !e_d_nwtchs)
@@ -5823,13 +5953,17 @@ static int e_d_jdb_read_stop(FENSTER *f)
    capture program output for Ctrl-G P, and jump the cursor to the reported
    source line.  When pdb stops in an internal Python frame (<string>,
    <frozen ...>) it steps again automatically until it reaches user code or the
-   program exits.  Returns 0, or e_d_quit(f) on program exit. */
-static int e_d_pdb_step_complete(FENSTER *f)
+   program exits.  *returned (when not NULL) says whether the stop is pdb's
+   "--Return--", the end of a function, which Finish function goes on from.
+   Returns 0, or e_d_quit(f) on program exit. */
+static int e_d_pdb_read_stop(FENSTER *f, int *returned)
 {
  struct pollfd _pfd = { .fd = wfildes[0], .events = POLLIN };
  char _buf[DEB_STEP_BUF];
  int internal_frame = 1;
 
+ if (returned)
+  *returned = 0;
  while (internal_frame)
  {
   int _len = 0, _n, _found = 0;
@@ -5850,6 +5984,8 @@ static int e_d_pdb_step_complete(FENSTER *f)
   }
   if (!_found)
    break;
+  if (returned && strstr(_buf, E_D_PDB_RETURN))
+   *returned = 1;
   /* Capture program output from EVERY step response.
      Any line that isn't pdb metadata (prompt, active line, debugger
      messages) is program output (e.g. print() results). */
@@ -5882,10 +6018,10 @@ static int e_d_pdb_step_complete(FENSTER *f)
    return(e_d_quit(f));
   }
   /* Check for program exit -- pdb auto-restarts after finish */
-  if (strstr(_buf, "The program finished"))
+  if (strstr(_buf, E_D_PDB_FINISHED))
   {
    e_d_switch_out(0);
-   e_error("End of code. Ctrl-G P for output.", 0, f->fb);
+   e_d_say_program_exited(strstr(_buf, E_D_PDB_FINISHED), f);
    return(e_d_quit(f));
   }
   /* Parse "> file(line)func()" to extract file and line number.
@@ -5904,6 +6040,12 @@ static int e_d_pdb_step_complete(FENSTER *f)
  }
  e_d_switch_out(0);
  return(0);
+}
+
+/* Read and apply a pdb step or next: see e_d_pdb_read_stop. */
+static int e_d_pdb_step_complete(FENSTER *f)
+{
+ return(e_d_pdb_read_stop(f, NULL));
 }
 
 /* Return the source line a68g reports for the current stop, or -1.
@@ -5978,6 +6120,28 @@ static int e_d_a68g_scan(FENSTER *f, const char *buf)
  return(_line);
 }
 
+/**
+ * e_d_a68g_window - Find the window holding the Algol 68 program.
+ * @cn: the editor.
+ *
+ * a68g never names its source file, so the stop marker and the Stack window
+ * both go to the open .a68 / .alg window, whatever its directory.
+ * Return: the window index, or 0 when no such window is open.
+ */
+static int e_d_a68g_window(ECNT *cn)
+{
+ int i, l;
+
+ for (i = cn->mxedt; i > 0; i--)
+ {
+  char *nm = cn->f[i]->datnam;
+  l = (int)strlen(nm);
+  if (l > 4 && (!strcmp(nm + l - 4, ".a68") || !strcmp(nm + l - 4, ".alg")))
+   return(i);
+ }
+ return(0);
+}
+
 /* Move the editor cursor to LINE in the Algol 68 source window.  a68g debugs a
    single source file but does NOT name it in its stop output, so -- unlike gdb
    -- there is no filename to match an open window against.  Locate the .a68 /
@@ -5989,15 +6153,8 @@ static void e_d_a68g_goto(FENSTER *f, int line)
  ECNT *cn = f->ed;
  BUFFER *b;
  SCHIRM *s;
- int i, l;
+ int i = e_d_a68g_window(cn);
 
- for (i = cn->mxedt; i > 0; i--)
- {
-  char *nm = cn->f[i]->datnam;
-  l = (int)strlen(nm);
-  if (l > 4 && (!strcmp(nm + l - 4, ".a68") || !strcmp(nm + l - 4, ".alg")))
-   break;
- }
  if (i <= 0)
  {  e_d_switch_out(0);  return;  }
  if (i != cn->mxedt)
@@ -6044,7 +6201,7 @@ static int e_d_a68g_step_complete(FENSTER *f)
  if (_eof || strstr(_buf, "Genie finished"))
  {
   e_d_switch_out(0);
-  e_error("End of code. Ctrl-G P for output.", 0, f->fb);
+  e_d_say_program_exited(_buf, f);
   return(e_d_quit(f));
  }
  if (!_found)
@@ -6081,6 +6238,883 @@ static int e_d_a68g_do_step(FENSTER *f, int sw)
  while (sw && e_d_swtch >= 3 && e_d_a68g_cur_line > 0 &&
         e_d_a68g_cur_line == from && ++guard < 256);
  return(ret);
+}
+
+/* The call stack under pdb, jdb, a68g and the debug adapters.  Each prints
+   its stack its own way, so it is read into one list of frames, innermost
+   first: the Stack window shows it in one format, Enter on a row marks that
+   frame's line, and Finish function knows whether the function stopped in
+   has a caller to return to. */
+#define E_D_FRAMES_MAX       64
+#define E_D_FRAME_NAME_MAX   128
+#define E_D_FRAME_ROW_MAX    (E_D_FRAME_NAME_MAX + E_D_STOP_PATH_MAX + 32)
+#define E_D_FRAME_NO_LINE    0
+#define E_D_FRAME_ROW_MARK   '#'      /* every frame row starts "#N  "        */
+#define E_D_FRAMES_REPLY_MAX 65536    /* one stack answer; the rest is read
+                                         to the prompt but not kept          */
+#define E_D_FRAMES_CHUNK     1024
+#define E_D_FRAMES_TAIL      16       /* longer than any prompt              */
+#define E_D_FRAME_SELECT_MAX 32       /* "down 63\n"                         */
+#define E_D_FRAME_UP_FMT     "up %d\n"   /* pdb and jdb: N frames outwards    */
+#define E_D_FRAME_DOWN_FMT   "down %d\n" /* pdb and jdb: N frames inwards     */
+#define E_D_PDB_WHERE        "where\n"
+#define E_D_PDB_FRAME_LEAD   2        /* "> " (selected) or "  " per frame   */
+#define E_D_PDB_UP           "up\n"
+#define E_D_PDB_FINISH       "return\n"
+#define E_D_PDB_OWN_FILE     '<'      /* "<string>": pdb running the script  */
+#define E_D_JDB_WHERE        "where\n"
+#define E_D_JDB_FINISH       "step up\n"
+#define E_D_A68G_CALLS_FMT   "calls %d\n"
+#define E_D_A68G_CALLS_MAX   (sizeof E_D_A68G_CALLS_FMT + 8)
+#define E_D_A68G_FINISH      "finish\n"
+#define E_D_A68G_PROC_WORD   "PROC "
+#define E_D_A68G_MAIN_FRAME  "(main program)"
+#define E_D_FINISH_OUTERMOST "Finish function: not meaningful in the outermost frame."
+
+typedef struct
+{
+ char func[E_D_FRAME_NAME_MAX];   /* the function, as the debugger names it  */
+ char file[E_D_STOP_PATH_MAX];    /* its source, a path the editor opens;
+                                     "" when the debugger names none        */
+ int line;                        /* 1-based, or E_D_FRAME_NO_LINE           */
+ int user;                        /* 1 for the user's own code               */
+ int dap_id;                      /* a debug adapter's frameId               */
+} e_d_frame;
+
+static e_d_frame e_d_frames[E_D_FRAMES_MAX];
+static int e_d_nframes = 0;
+static char e_d_frames_reply[E_D_FRAMES_REPLY_MAX];
+
+/**
+ * e_d_frames_backend - Is the stack of the running debugger read into frames?
+ *
+ * pdb, jdb, a68g and the debug adapters; gdb and the legacy debuggers keep
+ * their own Stack window, filled with the debugger's text as it prints it.
+ * Return: 1 for a frames debugger.
+ */
+static int e_d_frames_backend(void)
+{
+ return(e_deb_type == DEB_PDB || e_deb_type == DEB_JDB ||
+        e_deb_type == DEB_A68G || e_deb_type == DEB_DAP);
+}
+
+/**
+ * e_d_frame_add - Append one frame, the next one out, to the list.
+ * @func: its function; @file: its source path or ""; @line: its line or
+ * E_D_FRAME_NO_LINE; @user: 1 for the user's own code.
+ *
+ * Frames past E_D_FRAMES_MAX are dropped: a runaway recursion still shows
+ * its innermost frames, the ones the user is looking at.
+ * Return: the frame's index, or -1 when the list is full.
+ */
+static int e_d_frame_add(const char *func, const char *file, int line, int user)
+{
+ e_d_frame *fr;
+
+ if (e_d_nframes >= E_D_FRAMES_MAX)
+  return(-1);
+ fr = &e_d_frames[e_d_nframes];
+ snprintf(fr->func, sizeof fr->func, "%s", func);
+ snprintf(fr->file, sizeof fr->file, "%s", file);
+ fr->line = line;
+ fr->user = user;
+ fr->dap_id = 0;
+ return(e_d_nframes++);
+}
+
+/**
+ * e_d_frames_drop_outer - Forget the frames from @first outwards.
+ * @first: index of the first frame to drop.
+ *
+ * pdb lists its own machinery outside the script; the user never wrote it,
+ * so it is not offered as a frame to look at or to finish into.
+ */
+static void e_d_frames_drop_outer(int first)
+{
+ if (first < e_d_nframes)
+  e_d_nframes = first;
+}
+
+/**
+ * e_d_frames_reverse - Turn an outermost-first list innermost first.
+ *
+ * pdb prints its stack from the outside in; the Stack window lists every
+ * debugger's frames innermost first, as gdb's backtrace does.
+ */
+static void e_d_frames_reverse(void)
+{
+ e_d_frame tmp;
+ int i, j;
+
+ for (i = 0, j = e_d_nframes - 1; i < j; i++, j--)
+ {
+  tmp = e_d_frames[i];
+  e_d_frames[i] = e_d_frames[j];
+  e_d_frames[j] = tmp;
+ }
+}
+
+/**
+ * e_d_frames_reply_done - Has the debugger finished answering?
+ * @tail: the last bytes it sent.
+ *
+ * pdb and a68g end an answer with their word prompt; jdb with
+ * "thread[frame] " or "> ", the ends e_d_line_read recognises it by.
+ * Return: 1 when @tail ends with the prompt.
+ */
+static int e_d_frames_reply_done(const char *tail)
+{
+ const char *prompt = e_d_prompt_text();
+ size_t len = strlen(tail), plen;
+
+ if (e_deb_type == DEB_JDB)
+  return(len >= 2 && tail[len - 1] == ' ' &&
+         (tail[len - 2] == ']' || tail[len - 2] == '>'));
+ if (!prompt)
+  return(0);
+ plen = strlen(prompt);
+ return(len >= plen && !strcmp(tail + len - plen, prompt));
+}
+
+/**
+ * e_d_frames_tail_update - Keep the last bytes the debugger sent.
+ * @tail: E_D_FRAMES_TAIL bytes holding the previous end of the answer;
+ * @chunk, @n: what the last read brought.
+ *
+ * The prompt is still seen when an answer outgrows the kept reply, so the
+ * rest of a very deep stack is read off the pipe and never mistaken for the
+ * answer to the next command.
+ */
+static void e_d_frames_tail_update(char *tail, const char *chunk, int n)
+{
+ char both[E_D_FRAMES_TAIL + E_D_FRAMES_CHUNK];
+ size_t len;
+
+ len = strlen(tail);
+ memcpy(both, tail, len);
+ memcpy(both + len, chunk, n);
+ len += n;
+ if (len >= E_D_FRAMES_TAIL)
+ {
+  memcpy(tail, both + len - (E_D_FRAMES_TAIL - 1), E_D_FRAMES_TAIL - 1);
+  tail[E_D_FRAMES_TAIL - 1] = '\0';
+ }
+ else
+ {
+  memcpy(tail, both, len);
+  tail[len] = '\0';
+ }
+}
+
+/**
+ * e_d_frames_discard_pending - Read off what the debugger already sent.
+ *
+ * Some debuggers print their prompt twice at a stop (a68g after a temporary
+ * breakpoint, jdb after the program's output), and the stop readers take
+ * the first; the left-over prompt would end the next answer before it came.
+ * The program is stopped, so nothing of its output can be lost here.
+ */
+static void e_d_frames_discard_pending(void)
+{
+ struct pollfd pfd = { .fd = wfildes[0], .events = POLLIN };
+ char chunk[E_D_FRAMES_CHUNK];
+
+ while (poll(&pfd, 1, 0) > 0 && read(wfildes[0], chunk, sizeof chunk) > 0)
+  ;
+}
+
+/**
+ * e_d_read_may_retry - Was the failed read() only interrupted or early?
+ *
+ * A signal or a pipe with nothing yet is worth another try; any other error
+ * will fail again at once, and retrying it would leave the editor spinning.
+ * Return: 1 for EINTR, EAGAIN and EWOULDBLOCK.
+ */
+static int e_d_read_may_retry(void)
+{
+ return(errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK);
+}
+
+/**
+ * e_d_frames_ask - Send the debugger @cmd and read its answer to the prompt.
+ * @cmd: a stack or frame command.
+ *
+ * Waits with poll(), never spinning, and gives up after DEB_STEP_POLL_MS of
+ * silence, so a debugger that does not answer leaves the editor usable.
+ * Return: 0 with the answer in e_d_frames_reply, -1 when the debugger's
+ * output ended or cannot be read.
+ */
+static int e_d_frames_ask(const char *cmd)
+{
+ struct pollfd pfd = { .fd = wfildes[0], .events = POLLIN };
+ char chunk[E_D_FRAMES_CHUNK], tail[E_D_FRAMES_TAIL];
+ int len = 0, n, keep;
+
+ tail[0] = '\0';
+ e_d_frames_reply[0] = '\0';
+ e_d_frames_discard_pending();
+ e_d_send_cmd((char *)cmd);
+ while (!e_d_frames_reply_done(tail))
+ {
+  if (poll(&pfd, 1, DEB_STEP_POLL_MS) <= 0)
+   break;
+  n = read(wfildes[0], chunk, sizeof chunk);
+  if (n < 0 && e_d_read_may_retry())
+   continue;
+  if (n <= 0)
+  {
+   e_d_note_output_closed();
+   return(-1);
+  }
+  keep = (int)sizeof e_d_frames_reply - 1 - len;
+  if (keep > n)
+   keep = n;
+  memcpy(e_d_frames_reply + len, chunk, keep);
+  len += keep;
+  e_d_frames_reply[len] = '\0';
+  e_d_frames_tail_update(tail, chunk, n);
+ }
+ return(0);
+}
+
+/**
+ * e_d_frames_next_row - Cut the next line out of the debugger's answer.
+ * @p: in: where the line starts; out: where the next one starts.
+ * @row, @n: receives the line without its end.
+ * Return: 1 while there was a line, else 0.
+ */
+static int e_d_frames_next_row(const char **p, char *row, size_t n)
+{
+ size_t len;
+ const char *end;
+
+ if (!**p)
+  return(0);
+ end = strchr(*p, '\n');
+ if (!end)
+  end = *p + strlen(*p);
+ len = end - *p;
+ if (len >= n)
+  len = n - 1;
+ memcpy(row, *p, len);
+ row[len] = '\0';
+ if (len > 0 && row[len - 1] == '\r')
+  row[len - 1] = '\0';
+ *p = *end ? end + 1 : end;
+ return(1);
+}
+
+/**
+ * e_d_frames_skip_prompt - Step over prompts at the start of a line.
+ * @row: one line of an answer.
+ *
+ * a68g prints an answer right after its prompt, on the prompt's line.
+ * Return: where the line's own text starts.
+ */
+static const char *e_d_frames_skip_prompt(const char *row)
+{
+ const char *prompt = e_d_prompt_text();
+ size_t plen;
+
+ if (!prompt)
+  return(row);
+ plen = strlen(prompt);
+ while (!strncmp(row, prompt, plen))
+  row += plen;
+ return(row);
+}
+
+/**
+ * e_d_pdb_frame_parse - Read one frame of pdb's "where".
+ * @row: "> /dir/p.py(2)sq()->9" (the selected frame) or "  /dir/p.py(6)
+ * <module>()"; the "-> source" lines under each frame are no frames.
+ * @fr: receives the function, file and line.
+ * Return: 1 when @row is a frame.
+ */
+static int e_d_pdb_frame_parse(const char *row, e_d_frame *fr)
+{
+ const char *text, *open, *close, *call;
+ size_t len;
+
+ if (strlen(row) <= E_D_PDB_FRAME_LEAD ||
+     (strncmp(row, "> ", E_D_PDB_FRAME_LEAD) &&
+      strncmp(row, "  ", E_D_PDB_FRAME_LEAD)))
+  return(0);
+ text = row + E_D_PDB_FRAME_LEAD;
+ open = strchr(text, '(');
+ close = open ? strchr(open, ')') : NULL;
+ if (!close || open == text || atoi(open + 1) <= 0)
+  return(0);
+ len = open - text;
+ if (len >= sizeof fr->file)
+  return(0);
+ memcpy(fr->file, text, len);
+ fr->file[len] = '\0';
+ fr->line = atoi(open + 1);
+ call = strchr(close + 1, '(');
+ len = call ? (size_t)(call - (close + 1)) : strlen(close + 1);
+ if (len >= sizeof fr->func)
+  len = sizeof fr->func - 1;
+ memcpy(fr->func, close + 1, len);
+ fr->func[len] = '\0';
+ return(1);
+}
+
+/**
+ * e_d_pdb_frames - Read pdb's stack.
+ *
+ * pdb lists outermost first and starts with its own frames (bdb.py, then
+ * "<string>", the exec of the script); those are dropped and the rest is
+ * turned innermost first.
+ * Return: 0, or -1 when pdb's output ended.
+ */
+static int e_d_pdb_frames(void)
+{
+ char row[E_D_FRAME_ROW_MAX];
+ const char *p = e_d_frames_reply;
+ e_d_frame fr;
+ int own = -1;
+
+ if (e_d_frames_ask(E_D_PDB_WHERE) == -1)
+  return(-1);
+ while (e_d_frames_next_row(&p, row, sizeof row))
+ {
+  if (!e_d_pdb_frame_parse(e_d_frames_skip_prompt(row), &fr))
+   continue;
+  if (own < 0 && fr.file[0] == E_D_PDB_OWN_FILE)
+   own = e_d_nframes;
+  e_d_frame_add(fr.func, fr.file, fr.line, 1);
+ }
+ e_d_frames_reverse();
+ if (own >= 0)
+  e_d_frames_drop_outer(e_d_nframes - own - 1);
+ return(0);
+}
+
+/**
+ * e_d_jdb_frame_line - A line number as jdb writes it, "1,620" included.
+ * @s: the digits.
+ * Return: the number.
+ */
+static int e_d_jdb_frame_line(const char *s)
+{
+ int n = 0;
+
+ for (; isdigit((unsigned char)*s) || *s == ','; s++)
+  if (*s != ',')
+   n = n * 10 + (*s - '0');
+ return(n);
+}
+
+/**
+ * e_d_jdb_frame_parse - Read one frame of jdb's "where".
+ * @row: "  [1] P.sq (P.java:3)", possibly after a prompt "main[1] ", or
+ * "  [3] java.lang.Thread.run (native method)".
+ * @fr: receives the method (class and name), the file name and the line;
+ * a frame without a file line gets E_D_FRAME_NO_LINE and file "".
+ * Return: 1 when @row is a frame.
+ */
+static int e_d_jdb_frame_parse(const char *row, e_d_frame *fr)
+{
+ const char *p, *open, *close, *colon;
+ size_t len;
+
+ for (p = strchr(row, '['); p; p = strchr(p + 1, '['))
+  if ((p == row || isspace((unsigned char)p[-1])) && isdigit((unsigned char)p[1]))
+   break;
+ if (!p || !(p = strstr(p, "] ")))
+  return(0);
+ p += 2;
+ open = strstr(p, " (");
+ close = open ? strchr(open, ')') : NULL;
+ if (!close)
+  return(0);
+ len = open - p;
+ if (len == 0 || len >= sizeof fr->func)
+  return(0);
+ memcpy(fr->func, p, len);
+ fr->func[len] = '\0';
+ colon = strchr(open, ':');
+ fr->file[0] = '\0';
+ fr->line = E_D_FRAME_NO_LINE;
+ if (!colon || colon > close)
+  return(1);
+ len = colon - (open + 2);
+ if (len < sizeof fr->file)
+ {
+  memcpy(fr->file, open + 2, len);
+  fr->file[len] = '\0';
+ }
+ fr->line = e_d_jdb_frame_line(colon + 1);
+ return(1);
+}
+
+/**
+ * e_d_jdb_frame_source - Find the source of a jdb frame's class.
+ * @cn: the editor; @fr: the frame, its func "com.x.P.sq"; @out, @n: the path.
+ *
+ * Found the way a stop's source is found, so the frames of the user's
+ * classes open in the window the stop marker uses.
+ * Return: 1 when found.
+ */
+static int e_d_jdb_frame_source(ECNT *cn, const e_d_frame *fr, char *out, size_t n)
+{
+ char cls[E_D_FRAME_NAME_MAX];
+ char *method_dot, *nested;
+
+ snprintf(cls, sizeof cls, "%s", fr->func);
+ method_dot = strrchr(cls, '.');
+ if (!method_dot)
+  return(0);
+ *method_dot = '\0';
+ nested = strchr(cls, E_D_JDB_NESTED_SEP);
+ if (nested)
+  *nested = '\0';
+ return(e_d_jdb_find_source(cn, cls, out, n));
+}
+
+/**
+ * e_d_jdb_frames - Read jdb's stack.
+ * @cn: the editor.
+ *
+ * jdb's "where" starts at the selected frame, so with an outer frame
+ * selected it would miss the inner ones.  The stack does not change while
+ * the program stays stopped, and every stop selects the innermost frame
+ * again, so the list read at the stop is kept while a frame is selected.
+ * A frame counts as the user's when its class's source is found.
+ * Return: 0, or -1 when jdb's output ended.
+ */
+static int e_d_jdb_frames(ECNT *cn)
+{
+ char row[E_D_FRAME_ROW_MAX], path[E_D_STOP_PATH_MAX];
+ const char *p = e_d_frames_reply;
+ e_d_frame fr;
+ int user;
+
+ if (e_d_nstack > 0 && e_d_nframes > 0)
+  return(0);
+ e_d_nframes = 0;
+ if (e_d_frames_ask(E_D_JDB_WHERE) == -1)
+  return(-1);
+ while (e_d_frames_next_row(&p, row, sizeof row))
+ {
+  if (!e_d_jdb_frame_parse(row, &fr))
+   continue;
+  user = e_d_jdb_frame_source(cn, &fr, path, sizeof path);
+  if (user)
+   e_d_frame_add(fr.func, path, fr.line, user);
+  else
+   e_d_frame_add(fr.func, fr.file, fr.line, user);
+ }
+ return(0);
+}
+
+/**
+ * e_d_a68g_proc_name - The name of the procedure a68g's "calls" shows.
+ * @text: the declaration a68g prints, "PROC sq = (INT v) INT:";
+ * @out, @n: receives "sq", or the text itself when it is no PROC.
+ */
+static void e_d_a68g_proc_name(const char *text, char *out, size_t n)
+{
+ size_t len;
+
+ while (isspace((unsigned char)*text))
+  text++;
+ if (!strncmp(text, E_D_A68G_PROC_WORD, strlen(E_D_A68G_PROC_WORD)))
+  text += strlen(E_D_A68G_PROC_WORD);
+ for (len = 0; text[len] && !isspace((unsigned char)text[len]) &&
+      text[len] != '=' && text[len] != '('; len++)
+  ;
+ if (len >= n)
+  len = n - 1;
+ memcpy(out, text, len);
+ out[len] = '\0';
+}
+
+/**
+ * e_d_a68g_frames - Read a68g's stack.
+ * @cn: the editor.
+ *
+ * a68g's "calls" lists the procedures being run, innermost first, each by
+ * the line of its declaration; it names no call sites.  So the innermost
+ * frame gets the line the program is stopped on, an outer procedure its
+ * declaration line, and the main program, which calls them all, ends the
+ * list without a line.  Stopped in the main program, it is the only frame.
+ * Return: 0, or -1 when a68g's output ended.
+ */
+static int e_d_a68g_frames(ECNT *cn)
+{
+ char row[E_D_FRAME_ROW_MAX], name[E_D_FRAME_NAME_MAX], path[E_D_STOP_PATH_MAX];
+ char cmd[E_D_A68G_CALLS_MAX];
+ const char *p = e_d_frames_reply, *text;
+ int iw = e_d_a68g_window(cn), line;
+
+ path[0] = '\0';
+ if (iw > 0)
+  e_d_window_path_of(cn, cn->f[iw]->datnam, path, sizeof path);
+ snprintf(cmd, sizeof cmd, E_D_A68G_CALLS_FMT, E_D_FRAMES_MAX);
+ if (e_d_frames_ask(cmd) == -1)
+  return(-1);
+ while (e_d_frames_next_row(&p, row, sizeof row))
+ {
+  text = e_d_frames_skip_prompt(row);
+  line = e_d_a68g_parse_line(text);
+  if (line <= 0)
+   continue;
+  while (isdigit((unsigned char)*text))
+   text++;
+  e_d_a68g_proc_name(text, name, sizeof name);
+  if (e_d_nframes == 0)
+   line = e_d_a68g_cur_line;
+  e_d_frame_add(name, path, line, 1);
+ }
+ if (e_d_nframes == 0)
+  e_d_frame_add(E_D_A68G_MAIN_FRAME, path, e_d_a68g_cur_line, 1);
+ else
+  e_d_frame_add(E_D_A68G_MAIN_FRAME, path, E_D_FRAME_NO_LINE, 1);
+ return(0);
+}
+
+/**
+ * e_d_dap_frames - Read a debug adapter's stack (DAP stackTrace).
+ *
+ * The adapter lists innermost first and goes on into the language runtime
+ * (Go's runtime.main, Rust's std, a C start routine without source); those
+ * frames are listed too, but are not the user's, so Finish function never
+ * returns into them.
+ * Return: 0, or -1 when there is no session to ask.
+ */
+static int e_d_dap_frames(void)
+{
+ static e_dap_frame got[E_D_FRAMES_MAX];
+ int i, n, k, user;
+
+ if (!g_dap)
+  return(-1);
+ n = e_dap_stack_trace(g_dap, got, E_D_FRAMES_MAX);
+ if (n < 0)
+  return(-1);
+ for (i = 0; i < n; i++)
+ {
+  user = got[i].path[0] && e_d_dap_path_in_user_code(got[i].path);
+  k = e_d_frame_add(got[i].name, got[i].path, got[i].line, user);
+  if (k >= 0)
+   e_d_frames[k].dap_id = got[i].id;
+ }
+ return(0);
+}
+
+/**
+ * e_d_collect_frames - Read the running debugger's stack into the list.
+ * @cn: the editor.
+ * Return: 0, or -1 when the debugger cannot be asked any more.
+ */
+static int e_d_collect_frames(ECNT *cn)
+{
+ if (e_deb_type == DEB_JDB)
+  return(e_d_jdb_frames(cn));
+ e_d_nframes = 0;
+ if (e_deb_type == DEB_PDB)
+  return(e_d_pdb_frames());
+ if (e_deb_type == DEB_A68G)
+  return(e_d_a68g_frames(cn));
+ return(e_d_dap_frames());
+}
+
+/**
+ * e_d_frame_row - The Stack window's row for one frame.
+ * @fr: the frame; @index: its place, 0 innermost; @row, @n: the text.
+ *
+ * "#0  sq at p.py:2", like gdb's backtrace: the user reads which function
+ * runs where, and Enter on the row finds the frame by its number.
+ */
+static void e_d_frame_row(const e_d_frame *fr, int index, char *row, size_t n)
+{
+ const char *base = strrchr(fr->file, DIRC);
+
+ if (base)
+  base++;
+ else
+  base = fr->file;
+ if (!base[0])
+  snprintf(row, n, "%c%d  %s", E_D_FRAME_ROW_MARK, index, fr->func);
+ else if (fr->line == E_D_FRAME_NO_LINE)
+  snprintf(row, n, "%c%d  %s in %s", E_D_FRAME_ROW_MARK, index, fr->func, base);
+ else
+  snprintf(row, n, "%c%d  %s at %s:%d", E_D_FRAME_ROW_MARK, index, fr->func,
+           base, fr->line);
+}
+
+/**
+ * e_d_stack_window_fill - Write the frames into the Stack window's buffer.
+ * @b: the Stack window's buffer.
+ */
+static void e_d_stack_window_fill(BUFFER *b)
+{
+ char row[E_D_FRAME_ROW_MAX];
+ int i;
+
+ e_p_red_buffer(b);
+ FREE(b->bf[0].s);
+ b->mxlines = 0;
+ for (i = 0; i < e_d_nframes; i++)
+ {
+  e_d_frame_row(&e_d_frames[i], i, row, sizeof row);
+  print_to_end_of_buffer(b, row, b->mx.x);
+ }
+ e_new_line(b->mxlines, b);
+}
+
+/**
+ * e_d_p_frames - Show the stack in the Stack window (Ctrl-G K) and keep it
+ * current at every stop.
+ * @cn: the editor; @is: the Stack window; @sw: 1 to bring it to the top.
+ *
+ * The user sees every frame, innermost first, with its function, file and
+ * line, whichever debugger runs the program.
+ * Return: 0, or -1 when the debugger's output ended.
+ */
+static int e_d_p_frames(ECNT *cn, int is, int sw)
+{
+ if (e_d_collect_frames(cn) == -1)
+  return(-1);
+ e_d_stack_window_fill(cn->f[is]->b);
+ fk_cursor(1);
+ if (sw && is != cn->mxedt)
+  e_switch_window(cn->edt[is], cn->f[cn->mxedt]);
+ else
+  e_rep_win_tree(cn);
+ return(0);
+}
+
+/**
+ * e_d_stack_row_frame - The frame the cursor's row in the Stack window shows.
+ * @b: the Stack window's buffer.
+ * Return: the frame's number, or -1 above the first frame.
+ */
+static int e_d_stack_row_frame(BUFFER *b)
+{
+ int i;
+
+ for (i = b->b.y; i >= 0 && i < b->mxlines; i--)
+  if (b->bf[i].s[0] == E_D_FRAME_ROW_MARK)
+   return(atoi((char *)b->bf[i].s + 1));
+ return(-1);
+}
+
+/**
+ * e_d_frame_move - Make frame @index the debugger's selected one (pdb, jdb).
+ * @index: the frame, 0 innermost.
+ *
+ * Its variables are then the ones the Watches window shows, as after gdb's
+ * "up" and "down".
+ * Return: 0, or -1 when the debugger's output ended.
+ */
+static int e_d_frame_move(int index)
+{
+ char cmd[E_D_FRAME_SELECT_MAX];
+
+ if (index > e_d_nstack)
+  snprintf(cmd, sizeof cmd, E_D_FRAME_UP_FMT, index - e_d_nstack);
+ else
+  snprintf(cmd, sizeof cmd, E_D_FRAME_DOWN_FMT, e_d_nstack - index);
+ return(e_d_frames_ask(cmd));
+}
+
+/**
+ * e_d_frame_select - Select frame @index for the watches.
+ * @index: the frame, 0 innermost.
+ *
+ * a68g's monitor selects no frame of its own, so there only the line is
+ * shown and the watches stay those of the stop.
+ * Return: 0, or -1 when the debugger's output ended.
+ */
+static int e_d_frame_select(int index)
+{
+ if (index == e_d_nstack || e_deb_type == DEB_A68G)
+  return(0);
+ if (e_deb_type == DEB_DAP)
+  e_dap_select_frame(g_dap, e_d_frames[index].dap_id);
+ else if (e_d_frame_move(index) == -1)
+  return(-1);
+ e_d_nstack = index;
+ return(0);
+}
+
+/**
+ * e_d_frame_goto - Mark the line of a frame the user picked in the Stack
+ * window, the way a stop is marked.
+ * @f: the Stack window; @fr: the frame.
+ * Return: e_d_goto_break's answer, or the error a frame without a source
+ * line gets (a library frame), as under gdb.
+ */
+static int e_d_frame_goto(FENSTER *f, const e_d_frame *fr)
+{
+ char file[E_D_STOP_PATH_MAX];
+
+ if (!fr->file[0] || fr->line == E_D_FRAME_NO_LINE)
+  return(e_error(e_d_msg[ERR_NOSOURCE], 0, f->fb));
+ snprintf(file, sizeof file, "%s", fr->file);
+ return(e_d_goto_break(file, fr->line, f));
+}
+
+/**
+ * e_d_frame_show - Enter in the Stack window: go to the frame under the
+ * cursor.
+ * @f: the Stack window.
+ *
+ * The frame becomes the selected one, the watches show its variables, and
+ * the source window shows its line with the stop marker, as under gdb.
+ * Return: 0, 1 when the cursor is on no frame, -1 when the debugger ended.
+ */
+static int e_d_frame_show(FENSTER *f)
+{
+ BUFFER *b = f->ed->f[f->ed->mxedt]->b;
+ int index = e_d_stack_row_frame(b);
+ e_d_frame fr;
+
+ e_d_switch_out(0);
+ if (index < 0 || index >= e_d_nframes)
+  return(1);
+ fr = e_d_frames[index];
+ if (e_d_frame_select(index) == -1)
+  return(-1);
+ if (e_d_p_watches(f, 0) == -1)
+  return(-1);
+ return(e_d_frame_goto(f, &fr));
+}
+
+/**
+ * e_d_finish_frame - The frame Finish function returns from.
+ *
+ * pdb's "return" acts on the selected frame; jdb's "step up", a68g's
+ * "finish" and DAP's stepOut on the innermost one.
+ * Return: the frame's index.
+ */
+static int e_d_finish_frame(void)
+{
+ if (e_deb_type == DEB_PDB)
+  return(e_d_nstack);
+ return(0);
+}
+
+/**
+ * e_d_frame_is_outermost - Has frame @index no caller of the user's?
+ * @index: the frame, 0 innermost.
+ *
+ * main has nothing to return to: the language runtime that called it is
+ * not the user's code.
+ * Return: 1 when the frame is the outermost one.
+ */
+static int e_d_frame_is_outermost(int index)
+{
+ return(index + 1 >= e_d_nframes || !e_d_frames[index + 1].user);
+}
+
+/**
+ * e_d_say_finish_outermost - Tell the user Finish function has nowhere to go.
+ * @f: the source window.
+ *
+ * One line in Messages instead of letting the program run on to its end;
+ * the session stays stopped where it was.
+ */
+static void e_d_say_finish_outermost(FENSTER *f)
+{
+ char msg[] = E_D_FINISH_OUTERMOST;
+
+ e_d_p_message(msg, f, 0);
+}
+
+/**
+ * e_d_pdb_finish - Finish function under pdb.
+ * @f: the source window.
+ *
+ * pdb's "return" stops at the end of the function, still inside it; "up"
+ * then shows the caller's line, the call the user finishes into, as gdb's
+ * "finish" does.  Stepping on goes from the end of the function.
+ * Return: 0, or e_d_quit(f) when the program ended.
+ */
+static int e_d_pdb_finish(FENSTER *f)
+{
+ int returned, ret;
+
+ e_d_send_cmd(E_D_PDB_FINISH);
+ ret = e_d_pdb_read_stop(f, &returned);
+ if (e_d_swtch < 3 || !returned)
+  return(ret);
+ e_d_switch_out(1);
+ e_d_send_cmd(E_D_PDB_UP);
+ e_d_nstack = 1;
+ return(e_d_pdb_step_complete(f));
+}
+
+/**
+ * e_d_jdb_finish - Finish function under jdb: "step up".
+ * @f: the source window.
+ * Return: e_d_jdb_read_stop's answer.
+ */
+static int e_d_jdb_finish(FENSTER *f)
+{
+ e_d_send_cmd(E_D_JDB_FINISH);
+ return(e_d_jdb_read_stop(f));
+}
+
+/**
+ * e_d_a68g_finish - Finish function under a68g: "finish".
+ * @f: the source window.
+ *
+ * a68g stops at the next unit of the caller after the procedure returns.
+ * Return: e_d_a68g_step_complete's answer.
+ */
+static int e_d_a68g_finish(FENSTER *f)
+{
+ e_d_send_cmd(E_D_A68G_FINISH);
+ return(e_d_a68g_step_complete(f));
+}
+
+/**
+ * e_d_finish_send - Run the selected debugger's own finish command.
+ * @f: the source window.
+ * Return: the command's answer.
+ */
+static int e_d_finish_send(FENSTER *f)
+{
+ if (e_deb_type == DEB_DAP)
+  return(e_d_dap_finish(f));
+ if (e_deb_type == DEB_PDB)
+  return(e_d_pdb_finish(f));
+ if (e_deb_type == DEB_JDB)
+  return(e_d_jdb_finish(f));
+ return(e_d_a68g_finish(f));
+}
+
+/**
+ * e_d_finish_to_caller - Finish function (Ctrl-G F) under pdb, jdb, a68g and
+ * the debug adapters.
+ * @f: the source window.
+ *
+ * The program runs until the current function returns and the marker lands
+ * on the caller's line.  In the outermost frame there is no caller: the user
+ * gets one line saying so and the session stays where it was.
+ * Return: 0, or the end of the session.
+ */
+static int e_d_finish_to_caller(FENSTER *f)
+{
+ int from = e_d_finish_frame();
+
+ if (e_deb_type == DEB_DAP && e_d_dap_program_ended())
+  return(e_d_dap_end_session(f));
+ if (e_d_collect_frames(f->ed) == -1)
+  return(e_d_quit(f));
+ if (e_d_frame_is_outermost(from))
+ {
+  e_d_say_finish_outermost(f);
+  return(0);
+ }
+ e_d_delbreak(f);
+ e_d_switch_out(1);
+ e_d_nstack = 0;
+ return(e_d_finish_send(f));
 }
 
 int e_d_step_next(FENSTER *f, int sw)
@@ -6164,14 +7198,17 @@ static struct {
  * @flag: E_D_GOTO_CURSOR or E_D_GOTO_FINISH.
  *
  * Go to cursor works with every debugger: gdb has "until", the others get
- * a breakpoint of their own on the line.  Finish function is gdb's alone.
+ * a breakpoint of their own on the line.  Finish function works with gdb
+ * ("finish"), pdb ("return", then "up" to the caller), jdb ("step up"),
+ * a68g ("finish") and the debug adapters (stepOut); sdb, dbx and xdb keep
+ * their old behaviour.
  * Return: 1 when it does.
  */
 static int e_d_goto_supported(int flag)
 {
  if (flag == E_D_GOTO_CURSOR)
   return(1);
- return(e_deb_type == DEB_GDB);
+ return(e_deb_type == DEB_GDB || e_d_frames_backend());
 }
 
 /**
@@ -6700,6 +7737,8 @@ int e_d_goto_func(FENSTER *f, int flag)
  }
  if (flag == E_D_GOTO_CURSOR && e_deb_type != DEB_GDB)
   return(e_d_run_to_cursor_line(cn->f[cn->mxedt], b->b.y + 1));
+ if (flag == E_D_GOTO_FINISH && e_deb_type != DEB_GDB)
+  return(e_d_finish_to_caller(cn->f[cn->mxedt]));
  e_d_delbreak(f);
  e_d_switch_out(1);
  switch(flag)
@@ -7025,7 +8064,7 @@ int e_read_output(FENSTER *f)
      navigating to the restart position. */
   for (i = 0; i < SVLINES; i++)
   {
-   if (strstr(e_d_sp[i], "The program finished"))
+   if (strstr(e_d_sp[i], E_D_PDB_FINISHED))
    {
     /* Capture program output from the buffer before quitting */
     int _j;
@@ -7041,7 +8080,7 @@ int e_read_output(FENSTER *f)
        e_d_prog_output_append_line(_s, _olen);
      }
     }
-    e_error("End of code. Ctrl-G P for output.", 0, f->fb);
+    e_d_say_program_exited(e_d_sp[i], f);
     return(e_d_quit(f));
    }
   }
@@ -7068,7 +8107,7 @@ int e_read_output(FENSTER *f)
      happens when the program exited or gdb entered system code.
      Quit the debugger cleanly instead of showing multiple popups. */
   e_d_switch_out(0);
-  e_error("Program exited. Debugger stopped.", 0, f->fb);
+  e_d_say_program_exited(NULL, f);
   return(e_d_quit(f));
  }
  return(0);

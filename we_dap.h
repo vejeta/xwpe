@@ -119,6 +119,30 @@ int e_dap_step(e_dap_session *s, const char *verb);
  * value string (caller frees), or NULL if it cannot be evaluated. */
 char *e_dap_evaluate(e_dap_session *s, const char *expr);
 
+/* One frame of the stopped thread's call stack, as stackTrace reports it. */
+#define E_DAP_FRAME_NAME_MAX 128
+#define E_DAP_FRAME_PATH_MAX 1024
+typedef struct {
+ int  id;                           /* the adapter's frameId, for evaluate  */
+ int  line;                         /* 1-based, 0 when the frame has none   */
+ char name[E_DAP_FRAME_NAME_MAX];   /* the function                         */
+ char path[E_DAP_FRAME_PATH_MAX];   /* its source file, "" when it has none */
+} e_dap_frame;
+
+/* Every frame of the stopped thread, innermost first, in one stackTrace
+ * request; at most `max` are written.  Returns how many, or -1 when the
+ * session has ended or the adapter did not answer.  The Stack window and
+ * Finish function read it. */
+int e_dap_stack_trace(e_dap_session *s, e_dap_frame *frames, int max);
+
+/* Evaluate later watches in frame `frame_id` (an id e_dap_stack_trace gave)
+ * instead of the top one, until the next stop selects the top again. */
+void e_dap_select_frame(e_dap_session *s, int frame_id);
+
+/* The exit code the debuggee's `exited` event carried: 1 with *code set
+ * when the adapter reported one, else 0 (`terminated` carries none). */
+int e_dap_exit_code(const e_dap_session *s, int *code);
+
 /* True once the debuggee has terminated/exited. */
 int e_dap_ended(const e_dap_session *s);
 

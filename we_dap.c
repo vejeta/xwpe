@@ -88,6 +88,8 @@ struct e_dap_session {
  int           thread_id;     /* current stopped thread             */
  int           frame_id;      /* current top frame (for evaluate)   */
  int           ended;
+ int           exit_known;    /* the `exited` event named a code      */
+ int           exit_code;     /* that code                           */
  char          bp_file[512];
  int           bp_lines[DAP_MAX_BP];
  int           bp_n;
@@ -238,6 +240,24 @@ static struct json_object *obj_obj(struct json_object *o, const char *k)
  return NULL;
 }
 
+/**
+ * dap_note_exit_code - Keep the exit code an `exited` event carries.
+ * @s: the session; @body: the event's body.
+ *
+ * The user reads "Program exited with code N" at the end of an adapter
+ * session as under gdb, so a failing program is told apart from one that
+ * succeeded.  Only `exited` has the code; `terminated` never does.
+ */
+static void dap_note_exit_code(e_dap_session *s, struct json_object *body)
+{
+ struct json_object *v = NULL;
+
+ if (!body || !json_object_object_get_ex(body, "exitCode", &v))
+  return;
+ s->exit_code = json_object_get_int(v);
+ s->exit_known = 1;
+}
+
 /* Handle an unsolicited event (output / stopped / terminated / exited). */
 static void dap_handle_event(e_dap_session *s, struct json_object *m)
 {
@@ -266,6 +286,8 @@ static void dap_handle_event(e_dap_session *s, struct json_object *m)
  }
  else if (!strcmp(ev, "terminated") || !strcmp(ev, "exited"))
  {
+  if (!strcmp(ev, "exited"))
+   dap_note_exit_code(s, body);
   s->ended = 1;
   if (s->host.on_terminated)
    s->host.on_terminated(s->host.ud);
@@ -354,6 +376,68 @@ static void dap_report_stop(e_dap_session *s, const char *reason)
   s->host.on_stopped(NULL, 0, reason, s->host.ud);
  if (resp)
   json_object_put(resp);
+}
+
+/**
+ * dap_frame_from_json - Copy one stackTrace frame into @out.
+ * @fr: the frame as the adapter sent it; @out: receives it.
+ *
+ * A frame without source (runtime code, a native function) keeps an empty
+ * path and line 0, so the Stack window still names its function.
+ */
+static void dap_frame_from_json(struct json_object *fr, e_dap_frame *out)
+{
+ struct json_object *src = obj_obj(fr, "source");
+ const char *name = obj_str(fr, "name");
+ const char *path = obj_str(src, "path");
+
+ out->id = obj_int(fr, "id", 0);
+ out->line = obj_int(fr, "line", 0);
+ snprintf(out->name, sizeof(out->name), "%s", name ? name : "??");
+ snprintf(out->path, sizeof(out->path), "%s", path ? path : "");
+}
+
+int e_dap_stack_trace(e_dap_session *s, e_dap_frame *frames, int max)
+{
+ struct json_object *args, *resp, *body, *list;
+ int seq, i, n = 0;
+
+ if (!s || s->ended || max <= 0)
+  return -1;
+ args = json_object_new_object();
+ json_object_object_add(args, "threadId", json_object_new_int(s->thread_id));
+ json_object_object_add(args, "startFrame", json_object_new_int(0));
+ json_object_object_add(args, "levels", json_object_new_int(max));
+ seq = dap_send(s, "stackTrace", args);
+ resp = dap_wait_response(s, seq);
+ if (!resp)
+  return -1;
+ body = obj_obj(resp, "body");
+ list = body ? obj_obj(body, "stackFrames") : NULL;
+ if (list && json_object_is_type(list, json_type_array))
+ {
+  n = (int)json_object_array_length(list);
+  if (n > max)
+   n = max;
+  for (i = 0; i < n; i++)
+   dap_frame_from_json(json_object_array_get_idx(list, i), &frames[i]);
+ }
+ json_object_put(resp);
+ return n;
+}
+
+void e_dap_select_frame(e_dap_session *s, int frame_id)
+{
+ if (s)
+  s->frame_id = frame_id;
+}
+
+int e_dap_exit_code(const e_dap_session *s, int *code)
+{
+ if (!s || !s->exit_known)
+  return 0;
+ *code = s->exit_code;
+ return 1;
 }
 
 /* ---- adapter spawn (reverse-connect TCP) ------------------------------ */

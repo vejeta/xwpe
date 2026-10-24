@@ -373,9 +373,19 @@ Changes
   longer marks the Watches window.
 
 * The end of the program names its exit code: "Program exited with code
-  3".  gdb gives it always, pdb after sys.exit; jdb, a68g and the debug
-  adapters give none and keep "Program exited.".  The code used to be
-  dropped.
+  3".  gdb gives it always, pdb after sys.exit (0 for a script that runs
+  off its end), the debug adapters with their exited event; jdb and a68g
+  give none and keep "Program exited.".  The code used to be dropped.
+  The end is that one line in Messages with every debugger.  pdb and a68g
+  used to open an "End of code" box that waited for a key; so did gdb, with
+  "Program exited. Debugger stopped.", when the editor could not tell where
+  it stopped, and the same box ended sdb, dbx and xdb sessions in that
+  case.  An adapter program that ends before its first stop now ends the
+  session with its line at the first Run, Step or Finish function; a Step
+  used to leave the session open, and Finish function ended it without a
+  word.  Under pdb and jdb, whose program
+  output goes to Ctrl-G P only, the line ends with "Program output:
+  Ctrl-G P".
 
 * A debugger that crashes or is killed is named: Messages and the status
   row say "gdb ended unexpectedly (exit status 137)".  It used to read
@@ -396,6 +406,22 @@ Changes
   nothing except under gdb.  Where the debugger has no such command, the
   line gets a breakpoint of its own that is removed at the next stop; a
   breakpoint of yours on that line stays.
+
+* Show stack (Ctrl-G K) works with pdb, jdb, a68g and the debug adapters
+  for Go, Rust and Scala, as it does with gdb: the Stack window lists the
+  frames innermost first, "#0  sq at p.py:2" over its caller, and Enter
+  on a frame marks that frame's line.  Under pdb, jdb and the adapters the
+  window used to stay empty; under a68g it showed the monitor's raw
+  output.  a68g names no call sites, so its main program has no line.
+
+* Finish function (Ctrl-G F) works with pdb, jdb, a68g and the debug
+  adapters for Go, Rust and Scala.  It used to do nothing except under
+  gdb.  The program runs until the current function returns and the mark
+  lands in the caller: on the line of the call (pdb's "return" then "up",
+  jdb's "step up", the adapters' stepOut), or under a68g on the caller's
+  next line ("finish").  In the outermost frame Messages says "Finish
+  function: not meaningful in the outermost frame." and the session stays
+  where it was.
 
 * Under a68g a breakpoint removed with Ctrl-G B during a session stops the
   program no more.  It used to keep stopping there.

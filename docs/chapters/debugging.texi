@@ -94,6 +94,40 @@ line.  pdb, jdb, a68g and the debug adapters get a breakpoint on the
 line that is removed at the next stop, wherever the program stops; a
 breakpoint of your own on that line stays.
 
+@cindex Show stack
+@cindex Stack window
+Show stack works with every debugger.  The Stack window lists the
+frames innermost first, each with its function, file and line:
+
+@example
+#0  sq at p.py:2
+#1  <module> at p.py:6
+@end example
+
+@noindent
+@key{Return} on a frame marks that frame's line in its source window,
+and the Watches window shows the variables of that frame.  gdb lists
+its own @code{bt}.  pdb's @code{where}, jdb's @code{where}, a68g's
+@code{calls} and the debug adapters' @code{stackTrace} are read into
+the list above.  pdb's own frames before your script are left out.  A
+debug adapter also lists the language's runtime (@code{runtime.main}
+for Go, the standard library for Rust) and a frame without source says
+@samp{in} its file instead of @samp{at} a line.  a68g names the
+procedure being run and the line of its declaration, not the line that
+called it, so its outer frames show their declaration line and the main
+program shows no line.
+
+@cindex Finish function
+Finish function works with every debugger.  The program runs until the
+current function returns and the green bar lands in the caller.  gdb
+runs @code{finish}; pdb runs @code{return} and then @code{up}, so the
+bar is on the line of the call; jdb runs @code{step up}; a debug
+adapter runs @code{stepOut}; a68g runs @code{finish}, which stops on
+the caller's next line, the one after the call.  In the outermost frame,
+@code{main} or a script's top level, there is no caller to return to:
+Messages says @samp{Finish function: not meaningful in the outermost
+frame.} and the session stays where it was.
+
 @cindex breakpoints, in a running session
 Breakpoints can be set and removed while a session runs, with every
 debugger: gdb, pdb, jdb, a68g and the debug adapters.  A breakpoint set
@@ -181,8 +215,17 @@ Program exited with code 3
 
 @noindent
 gdb gives the code for every program; pdb gives it when the script
-calls @code{sys.exit}.  jdb, a68g and the debug adapters do not report
-one, and Messages says @samp{Program exited.}.  Debug > Quit ends the
+calls @code{sys.exit}, and 0 when the script runs off its end; a debug
+adapter gives the code it reports when the program exits.  jdb and a68g
+do not report one, and Messages says @samp{Program exited.}.  Under pdb
+and jdb the program's output is not in Messages, so the line says where
+it is: @samp{Program exited. Program output: Ctrl-G P}.  That one line
+is all, with every debugger, gdb, sdb, dbx and xdb included: no box
+waits for a key, not even when the editor cannot tell where the
+debugger stopped, and the session ends: the green bar goes and the
+editor takes keys.  A Go, Rust or Scala program that ends before it
+reaches a breakpoint ends the session with its line at the first Run,
+Step or Finish function.  Debug > Quit ends the
 session with @samp{End of Debugging}.  A start that never became a
 session names its reason only, and no end line follows it: a debugger
 that cannot start because it is not installed, one you end with
@@ -340,8 +383,10 @@ xwpe repoints @env{JAVA_HOME} at it for Bloop before starting the build server
 @code{//> using jvm} pin.  Set @env{JAVA_HOME} yourself to override.
 @end itemize
 Run/Continue (@kbd{Ctrl-G R}), Step Over (@kbd{F8}), Step Into (@kbd{F7}),
-watches (@kbd{Ctrl-G W}, evaluated with the DAP @code{evaluate} request) and
-Quit (@kbd{Ctrl-G Q}) all work as with gdb.  The first @kbd{Ctrl-G R} stops
+watches (@kbd{Ctrl-G W}, evaluated with the DAP @code{evaluate} request),
+Show stack (@kbd{Ctrl-G K}, the @code{stackTrace} request), Finish function
+(@kbd{Ctrl-G F}, @code{stepOut}) and Quit (@kbd{Ctrl-G Q}) all work as with
+gdb.  The first @kbd{Ctrl-G R} stops
 on your first breakpoint, even one on a line that runs only once; xwpe runs
 on only past the adapter's own entry stop (Go's @code{main.main}), told
 apart by the reason the adapter gives for the stop.
@@ -445,8 +490,11 @@ shows the value after the @samp{=}.  Every stop refreshes them.
 
 @item
 @strong{The end of the program}: jdb's ``The application exited'' is
-read as the end, so Messages says @samp{Program exited.} and the
-session ends.
+read as the end, so Messages says @samp{Program exited. Program output:
+Ctrl-G P} and the session ends.
+
+@item
+@strong{Finish function}: @kbd{Ctrl-G F} sends @code{step up}.
 @end itemize
 
 Requires @command{default-jdk} (Debian/Ubuntu) or equivalent JDK
@@ -486,6 +534,16 @@ while it runs.  xwpe sends @code{break file:line} to set one and
 @strong{Watches}: @kbd{Ctrl-G W} sends @code{p @var{expr}} and shows
 pdb's answer as it is, an error included while the name is not yet
 defined.  Every stop refreshes them.
+
+@item
+@strong{Finish function}: @kbd{Ctrl-G F} sends @code{return}, which
+stops at the end of the function, and then @code{up}, so the green bar
+is on the caller's line.  A step goes on from the end of the function.
+
+@item
+@strong{The end of the program}: a script that runs off its end says
+@samp{Program exited with code 0. Program output: Ctrl-G P}; one that
+calls @code{sys.exit(3)} says code 3.
 @end itemize
 
 Requires @command{python3} (Debian/Ubuntu).
@@ -546,7 +604,14 @@ shows a68g's typed value, e.g.@: @code{(INT) +5}.  The expression is
 @emph{not} quoted -- type @code{n}, not @code{"n"}.
 
 @item
-@strong{Call stack}: @kbd{Ctrl-G K} sends @code{calls}.
+@strong{Call stack}: @kbd{Ctrl-G K} sends @code{calls}.  The procedures
+it names are listed innermost first, the innermost at the line the
+program stopped on and the outer ones at their declaration; the main
+program ends the list.
+
+@item
+@strong{Finish function}: @kbd{Ctrl-G F} sends @code{finish}.  a68g
+stops on the caller's next unit, usually the line after the call.
 
 @item
 @strong{Program output}: captured from a68g's single stream and shown
@@ -555,7 +620,8 @@ as gdb.
 
 @item
 @strong{Program end}: a68g prints @samp{Genie finished} and exits when
-the program completes; xwpe detects this and ends the session cleanly.
+the program completes; Messages says @samp{Program exited.} and the
+session ends.
 @end itemize
 
 Requires @command{algol68g} (Debian/Ubuntu).
