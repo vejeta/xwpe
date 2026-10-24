@@ -17,6 +17,7 @@
   {"id": "SC-compile-07", "requirement": "Compile and see the result", "layer": "ncurses", "test": "tests/test_compile_and_messages.py::test_a_missing_compiler_is_named_and_nothing_hangs", "status": "covered"},
   {"id": "SC-compile-08", "requirement": "A build never holds the editor", "layer": "ncurses", "test": "tests/test_compile_and_messages.py::test_a_long_build_keeps_the_editor_and_esc_cancels_it", "status": "new"},
   {"id": "SC-compile-08", "requirement": "A build never holds the editor", "layer": "ncurses", "test": "tests/test_compile_and_messages.py::test_a_long_build_left_alone_ends_with_the_count_row", "status": "new"},
+  {"id": "SC-compile-08", "requirement": "A build never holds the editor", "layer": "ncurses", "test": "tests/test_compile_and_messages.py::test_the_waiting_line_counts_seconds_while_the_build_is_silent", "status": "new"},
   {"id": "SC-compile-09", "requirement": "A build never holds the editor", "layer": "ncurses", "test": "tests/test_compile_and_messages.py::test_every_line_of_a_large_build_output_reaches_messages_in_order", "status": "new"},
   {"id": "SC-compile-10", "requirement": "Walk the errors", "layer": "ncurses", "test": "tests/test_compile_and_messages.py::test_cpp_error_row_jumps_to_its_line", "status": "covered", "needs": ["g++"]},
   {"id": "SC-compile-11", "requirement": "Walk the errors", "layer": "ncurses", "test": "tests/test_compile_and_messages.py::test_fortran_error_row_jumps_to_its_line", "status": "covered", "needs": ["gfortran"]},

@@ -502,6 +502,46 @@ def test_a_long_build_left_alone_ends_with_the_count_row(tmp_path):
     assert (tmp_path / "prog").exists(), "the build did not produce its program"
 
 
+WAITING_SECONDS_RE = re.compile(re.escape(WAITING_LINE) + r" (\d+)s")
+# Seconds the silent build must be seen counting, and how long to watch.
+WAITING_ADVANCE_S = 2
+WAITING_WATCH_S = 4.0
+# Long enough that the watch and the Esc after it land while make still sleeps.
+SILENT_BUILD_SECONDS = 20
+
+
+def waiting_seconds(w):
+    """The seconds the build's waiting line shows, or None when it is not on screen."""
+    m = WAITING_SECONDS_RE.search(screen_text(w))
+    if m:
+        return int(m.group(1))
+    return None
+
+
+# @scenario SC-compile-08
+def test_the_waiting_line_counts_seconds_while_the_build_is_silent(tmp_path):
+    """The make prints its first line and then sleeps without a word: the
+    waiting line keeps counting the seconds all the same, so the user sees a
+    build that is alive, not a line frozen at the moment the output stopped."""
+    (tmp_path / "Makefile").write_text(SLOW_MAKEFILE % ("%g" % scaled(SILENT_BUILD_SECONDS)))
+    seen = []
+    with WpeSession(str(tmp_path), "int main(void){return 0;}\n",
+                    filename="t.c", cols=WIDE) as w:
+        w.key(ALT_A, delay=0.8)
+        assert wait_screen(w, "BUILD_START", tmo=scaled(FIND_TIMEOUT)), screen_text(w)
+        end = time.time() + scaled(WAITING_WATCH_S)
+        while time.time() < end:
+            w._drain(0.3)
+            secs = waiting_seconds(w)
+            if secs is not None:
+                seen.append(secs)
+        w.key(ESC, delay=0.5)
+        assert wait_screen(w, "build cancelled", tmo=scaled(FIND_TIMEOUT)), screen_text(w)
+    assert seen, "no waiting line while the build was silent"
+    assert max(seen) - min(seen) >= WAITING_ADVANCE_S, \
+        "the waiting line did not count while the build was silent: %r" % sorted(set(seen))
+
+
 # The mark a warning row of Messages starts with.
 WARNING_MARK = "⚠ "
 

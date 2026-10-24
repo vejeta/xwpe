@@ -40,9 +40,6 @@
 #include <glob.h>
 #include <stdint.h>
 #include <time.h>
-#ifdef __linux__
-# include <sys/timerfd.h>  /* the waiting line's heartbeat while a debugger starts */
-#endif
 
 /* jdb protocol tracing now routes through the unified WPE_TRACE facility
    (build with ./configure --enable-trace); records are line-tagged "[jdb]".
@@ -4124,14 +4121,14 @@ static struct {
  int wait_row;      /* the waiting line is Messages' last row               */
  int timeout;       /* the deadline, in seconds                             */
  time_t start;
- int hb_fd;         /* the heartbeat timer                                  */
+ int hb_timer;      /* the heartbeat timer, or WPE_TIMER_NONE               */
  int out_fd;        /* the debugger's output, while it is watched           */
  int dap;           /* a debug adapter starts, not a pipe debugger          */
  int pty_fd;        /* an adapter's debuggee pty, while it is watched       */
  int opened_messages; /* Messages was opened for the waiting line alone      */
  ECNT *cn;
 } e_d_start = { 0, E_D_START_WAITING, 0, 0, 0, E_D_START_TIMEOUT, 0,
-                E_D_START_NO_FD, E_D_START_NO_FD, 0, E_D_START_NO_FD, 0, NULL };
+                WPE_TIMER_NONE, E_D_START_NO_FD, 0, E_D_START_NO_FD, 0, NULL };
 
 /* The command to run once the debugger has answered. */
 static e_d_resume_fn e_d_start_cmd = NULL;
@@ -4358,11 +4355,8 @@ static void e_d_start_unwatch_output(void)
  */
 static void e_d_start_heartbeat_stop(void)
 {
- if (e_d_start.hb_fd == E_D_START_NO_FD)
-  return;
- wpe_fd_del(e_d_start.hb_fd);
- close(e_d_start.hb_fd);
- e_d_start.hb_fd = E_D_START_NO_FD;
+ wpe_timer_del(e_d_start.hb_timer);
+ e_d_start.hb_timer = WPE_TIMER_NONE;
 }
 
 /**
@@ -4512,8 +4506,8 @@ static void e_d_start_end(void)
  *
  * The debugger gets SIGTERM; the heartbeat sends SIGKILL if it is still
  * there about two seconds later, and ends the session once it is gone.
- * Without a heartbeat, or without a child of the editor's own to wait for,
- * the session ends at once.
+ * Without a child of the editor's own to wait for, or when the timer table
+ * had no room for the heartbeat, the session ends at once.
  */
 static void e_d_start_stop(int why)
 {
@@ -4522,7 +4516,7 @@ static void e_d_start_stop(int why)
  e_d_start.ending = why;
  e_d_start.term_ticks = 0;
  e_d_start_unwatch_output();
- if (e_d_start.hb_fd != E_D_START_NO_FD && e_d_start_has_child())
+ if (e_d_start.hb_timer != WPE_TIMER_NONE && e_d_start_has_child())
  {
   e_d_start_signal(SIGTERM);
   return;
@@ -4664,8 +4658,7 @@ void e_d_start_deliver_held(void)
  * @fd: its output; @data: unused.
  *
  * The banner itself is not shown, as before.  End of file before the prompt
- * means the debugger ended by itself.  Without a heartbeat the deadline is
- * checked here, whenever output arrives.
+ * means the debugger ended by itself.  The deadline is the heartbeat's.
  */
 static void e_d_start_on_output(int fd, void *data)
 {
@@ -4695,25 +4688,21 @@ static void e_d_start_on_output(int fd, void *data)
     hang-up would wake this callback again and again: a debugger that is gone
     ends the start here. */
  if (e_d_start_reaped())
- {
   e_d_start_end();
-  return;
- }
- e_d_start_check_deadline();
 }
 
 /**
  * e_d_start_on_tick - The heartbeat: turn the waiting line, apply the
  * deadline, and finish a debugger that is being ended.
- * @fd: the timer; @data: unused.
+ * @data: unused.
+ *
+ * It runs while the debugger is silent too, so the seconds on the waiting
+ * line keep counting and a debugger that never answers is ended at its
+ * deadline.
  */
-static void e_d_start_on_tick(int fd, void *data)
+static void e_d_start_on_tick(void *data)
 {
- uint64_t expirations;
-
  (void)data;
- if (read(fd, &expirations, sizeof expirations) != (ssize_t)sizeof expirations)
-  return;
  if (!e_d_start.active || e_d_start.held)
   return;
  if (e_d_start_reaped())
@@ -4735,27 +4724,14 @@ static void e_d_start_on_tick(int fd, void *data)
  * e_d_start_heartbeat_start - Start the timer that turns the waiting line.
  *
  * Present only while a debugger starts, so the idle editor still sleeps until
- * a key.  Without timerfd the line moves, and the deadline is checked, when
- * the debugger writes.
+ * a key.
  */
 static void e_d_start_heartbeat_start(void)
 {
- e_d_start.hb_fd = E_D_START_NO_FD;
-#ifdef __linux__
- e_d_start.hb_fd = timerfd_create(CLOCK_MONOTONIC, TFD_CLOEXEC | TFD_NONBLOCK);
- if (e_d_start.hb_fd >= 0)
- {
-  struct itimerspec its;
-
-  its.it_value.tv_sec = 0;
-  its.it_value.tv_nsec = E_D_START_TICK_NS;
-  its.it_interval = its.it_value;
-  timerfd_settime(e_d_start.hb_fd, 0, &its, NULL);
-  wpe_fd_add(e_d_start.hb_fd, POLLIN, e_d_start_on_tick, NULL);
- }
- else
-  e_d_start.hb_fd = E_D_START_NO_FD;
-#endif
+ e_d_start.hb_timer = wpe_timer_add(E_D_START_TICK_NS / WPE_TIMER_NS_PER_MS, 1,
+                                    e_d_start_on_tick, NULL);
+ if (e_d_start.hb_timer < 0)
+  e_d_start.hb_timer = WPE_TIMER_NONE;
 }
 
 /**

@@ -25,9 +25,6 @@
 #include <stdint.h>
 #include <time.h>
 #include <errno.h>
-#ifdef __linux__
-#include <sys/timerfd.h>
-#endif
 
 /* e_d_p_named is defined in we_prog.c; declared here in case progr.h predates it. */
 int e_d_p_named(char *winname, char *str, FENSTER *f, int sw);
@@ -6636,59 +6633,59 @@ static char *ai_hunk_apply(FENSTER *f, wpe_ai_seg *segs, int nseg,
  * Edit/Plan/Agent used to block the editor in a nested poll loop while the model
  * generated.  Instead they now run on the shared fd-loop like chat: start the
  * stream, return control to the editor at once, and finish (show the diff, run
- * the next agent turn) from the fd callback.  A periodic timerfd "heartbeat"
- * animates the spinner during model silence -- the editor stays fully live.
+ * the next agent turn) from the fd callback.  A periodic "heartbeat" timer of
+ * the fd-loop animates the spinner during model silence -- the editor stays
+ * fully live.
  */
 
-/* --- heartbeat: a ~120ms periodic timer, present only while AI work is in
- * flight, so the idle wpe_fd_poll(-1) gets the wakeups it needs to spin.
- * Mirrors the Wayland key-repeat timerfd idiom. */
-static int  g_ai_hb_fd = -1;
+/* --- heartbeat: a periodic timer, present only while AI work is in flight,
+ * so the idle wpe_fd_poll(-1) gets the wakeups it needs to spin. */
+#define AI_HB_TICK_NS 120000000L
+static int  g_ai_hb_timer = WPE_TIMER_NONE;
 static int  g_ai_hb_refs = 0;
 static void (*g_ai_hb_tick)(void) = NULL;   /* animates the active spinner */
 
-static void ai_hb_fire(int fd, void *data)
+/**
+ * ai_hb_fire - The heartbeat ticked: turn the active spinner.
+ * @data: unused.
+ *
+ * Runs while the model is silent too, so the spinner and its seconds keep
+ * moving and the user sees the task is alive.
+ */
+static void ai_hb_fire(void *data)
 {
- uint64_t exp;
  (void)data;
- if (read(fd, &exp, sizeof exp) != (ssize_t)sizeof exp)
-  return;
  if (g_ai_hb_tick)
   g_ai_hb_tick();
 }
 
+/**
+ * ai_hb_acquire - Start (or share) the heartbeat for an operation in flight.
+ * @tick: what turns that operation's spinner.
+ */
 static void ai_hb_acquire(void (*tick)(void))
 {
  g_ai_hb_tick = tick;
  if (g_ai_hb_refs++ > 0)
   return;
-#ifdef __linux__
- g_ai_hb_fd = timerfd_create(CLOCK_MONOTONIC, TFD_CLOEXEC | TFD_NONBLOCK);
- if (g_ai_hb_fd >= 0) {
-  struct itimerspec its;
-  its.it_value.tv_sec = 0;    its.it_value.tv_nsec = 120000000L;
-  its.it_interval.tv_sec = 0; its.it_interval.tv_nsec = 120000000L;
-  timerfd_settime(g_ai_hb_fd, 0, &its, NULL);
-  wpe_fd_add(g_ai_hb_fd, POLLIN, ai_hb_fire, NULL);
- }
-#endif
- /* Without timerfd the spinner still ticks when tokens arrive; only the silent
-    gaps go unanimated.  Async operation itself does not depend on the timer. */
+ g_ai_hb_timer = wpe_timer_add(AI_HB_TICK_NS / WPE_TIMER_NS_PER_MS, 1, ai_hb_fire, NULL);
+ if (g_ai_hb_timer < 0)
+  g_ai_hb_timer = WPE_TIMER_NONE;
 }
 
+/**
+ * ai_hb_release - The operation ended: stop the heartbeat once nobody shares it.
+ *
+ * The idle editor then sleeps until a key again.
+ */
 static void ai_hb_release(void)
 {
  if (--g_ai_hb_refs > 0)
   return;
  g_ai_hb_refs = 0;
  g_ai_hb_tick = NULL;
-#ifdef __linux__
- if (g_ai_hb_fd >= 0) {
-  wpe_fd_del(g_ai_hb_fd);
-  close(g_ai_hb_fd);
-  g_ai_hb_fd = -1;
- }
-#endif
+ wpe_timer_del(g_ai_hb_timer);
+ g_ai_hb_timer = WPE_TIMER_NONE;
 }
 
 /* growable conversation (message list) -- shared by the multi-turn ops */
@@ -12498,8 +12495,8 @@ static int       g_host_fd = -1;        /* child stdout on the fd-loop */
 static int       g_host_turn;           /* a turn is streaming */
 static int       g_host_in_prompt;      /* a permission y/n modal is up */
 static int       g_host_interrupting;   /* Esc asked the engine to stop its turn */
-static int       g_host_deadline_fd = -1; /* one-shot timer: the engine's time to comply */
-static time_t    g_host_deadline_at;    /* the same bound, for a build without timerfd */
+static int       g_host_deadline = WPE_TIMER_NONE; /* one-shot timer: the engine's time to comply */
+static int       g_host_deadline_due;   /* it ran out while a permission modal was up */
 
 /* The CLI's tool names, as it sends them in can_use_tool requests. */
 #define HOST_TOOL_BASH          "Bash"
@@ -12555,14 +12552,9 @@ static void host_note_web_unenforceable(FENSTER *f)
  */
 static void host_deadline_disarm(void)
 {
-#ifdef __linux__
- if (g_host_deadline_fd >= 0) {
-  wpe_fd_del(g_host_deadline_fd);
-  close(g_host_deadline_fd);
-  g_host_deadline_fd = -1;
- }
-#endif
- g_host_deadline_at = 0;
+ wpe_timer_del(g_host_deadline);
+ g_host_deadline = WPE_TIMER_NONE;
+ g_host_deadline_due = 0;
 }
 
 /**
@@ -12822,54 +12814,52 @@ static void host_end_interrupt_overdue(void)
 
 /**
  * host_deadline_fire - The one-shot timer of an interrupted turn ran out.
- * @fd: the timer; @data: unused.
+ * @data: unused.
  *
  * Runs on the fd-loop like the heartbeat, so the editor never blocks waiting
- * for the engine: it keeps taking keys and the bound still holds.
+ * for the engine: it keeps taking keys, and the bound holds whether the
+ * engine has gone silent or keeps streaming.  When it falls due while the
+ * user is answering a permission question, the session is still inside the
+ * engine's event pump; ending it there would free the session under the
+ * pump, so the end is left to host_deadline_run_due once the pump returns.
  */
-static void host_deadline_fire(int fd, void *data)
+static void host_deadline_fire(void *data)
 {
- uint64_t exp;
  (void)data;
- if (read(fd, &exp, sizeof exp) != (ssize_t)sizeof exp) return;
+ g_host_deadline = WPE_TIMER_NONE;     /* a one-shot is gone once it has run */
+ if (g_host_in_prompt) {
+  g_host_deadline_due = 1;
+  return;
+ }
  host_end_interrupt_overdue();
 }
 
 /**
- * host_deadline_check - The bound for a build without timerfd.
+ * host_deadline_run_due - End the turn whose deadline passed under a modal.
  *
- * Checked whenever the engine's stdout wakes the fd callback; an engine that
- * keeps streaming past the bound is ended there.  On Linux the one-shot timer
- * fires first, also during the engine's silence.
+ * Called after the engine's event pump returns, the one point where the
+ * session can be freed safely, so an engine that ignored Esc is still given
+ * up even when its time ran out while the user was answering it.
  */
-static void host_deadline_check(void)
+static void host_deadline_run_due(void)
 {
- if (!g_host_interrupting || !g_host_deadline_at) return;
- if (time(NULL) < g_host_deadline_at) return;
+ if (!g_host_deadline_due) return;
+ g_host_deadline_due = 0;
  host_end_interrupt_overdue();
 }
 
 /**
  * host_deadline_arm - Give the engine AIToolTimeout seconds to end the turn.
  *
- * Mirrors the heartbeat's timerfd idiom (a one-shot here) so the wait is an
- * fd-loop event, not a loop; the wall-clock copy serves host_deadline_check
- * where timerfd does not exist.
+ * A one-shot timer of the fd-loop, so the wait is an event, not a loop.
  */
 static void host_deadline_arm(void)
 {
  host_deadline_disarm();
- g_host_deadline_at = time(NULL) + e_ai_tool_timeout;
-#ifdef __linux__
- g_host_deadline_fd = timerfd_create(CLOCK_MONOTONIC, TFD_CLOEXEC | TFD_NONBLOCK);
- if (g_host_deadline_fd >= 0) {
-  struct itimerspec its;
-  memset(&its, 0, sizeof its);
-  its.it_value.tv_sec = e_ai_tool_timeout;
-  timerfd_settime(g_host_deadline_fd, 0, &its, NULL);
-  wpe_fd_add(g_host_deadline_fd, POLLIN, host_deadline_fire, NULL);
- }
-#endif
+ g_host_deadline = wpe_timer_add((long)e_ai_tool_timeout * WPE_TIMER_MS_PER_S, 0,
+                                 host_deadline_fire, NULL);
+ if (g_host_deadline < 0)
+  g_host_deadline = WPE_TIMER_NONE;
 }
 
 /* fd-loop callback: drain and render the session's stream-json events. */
@@ -12880,8 +12870,8 @@ static void host_fd_cb(int fd, void *data)
  if (!g_host || g_host_in_prompt) return;   /* not while a permission modal is up */
  if (!ai_window_alive(g_host_cn, g_host_win)) { e_ai_host_end(NULL); return; }
  wpe_host_pump(g_host, &g_host_ev, g_host_win, &turn_done, &hup);
- if (hup) { host_end_session_notice(); return; }
- host_deadline_check();
+ if (hup) host_end_session_notice();
+ host_deadline_run_due();
 }
 
 /**

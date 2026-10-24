@@ -30,9 +30,6 @@
 #endif
 #include "we_fdloop.h"
 #include <stdint.h>
-#ifdef __linux__
-# include <sys/timerfd.h>  /* the waiting line's heartbeat while a build runs */
-#endif
 
 /* A path handed to a build command, or a directory a build runs in. */
 #ifndef PATH_MAX
@@ -1472,7 +1469,7 @@ typedef struct {
  int is;                /* rows Messages had when the step began           */
  int wait_row;          /* the waiting line is Messages' last row          */
  time_t start;
- int hb_fd;             /* the heartbeat timer                             */
+ int hb_timer;          /* the heartbeat timer, or WPE_TIMER_NONE          */
  ECNT *cn;
  PIC *pic;
  char dir[WPE_BUILD_PATH_MAX];   /* where the child runs; its paths resolve there */
@@ -1787,12 +1784,13 @@ static void e_build_finish_or_hold(void)
  * e_build_after_streams_closed - Both pipes are at EOF: reap the child.
  *
  * A child closes its pipes just before it exits, so it is normally reaped
- * at once; otherwise the heartbeat looks again on its next tick.  Without a
- * heartbeat timer the wait is the short one between the close and the exit.
+ * at once; otherwise the heartbeat looks again on its next tick.  When the
+ * timer table had no room for the heartbeat, the wait is the short one
+ * between the close and the exit.
  */
 static void e_build_after_streams_closed(void)
 {
- if (!e_build_try_reap() && g_build.hb_fd == E_BUILD_NO_FD)
+ if (!e_build_try_reap() && g_build.hb_timer == WPE_TIMER_NONE)
  {
   while (waitpid(g_build.pid, &g_build.status, 0) < 0 && errno == EINTR)
    ;
@@ -1875,15 +1873,14 @@ static void e_build_escalate(void)
 /**
  * e_build_on_tick - The heartbeat: turn the waiting line, finish a child
  * that has closed its pipes, and escalate a cancel.
- * @fd: the timer; @data: unused.
+ * @data: unused.
+ *
+ * It runs while the build is silent too, so the seconds on the waiting line
+ * keep counting during a long compile or link that prints nothing.
  */
-static void e_build_on_tick(int fd, void *data)
+static void e_build_on_tick(void *data)
 {
- uint64_t expirations;
-
  (void)data;
- if (read(fd, &expirations, sizeof expirations) != (ssize_t)sizeof expirations)
-  return;
  if (!g_build.active || g_build.held)
   return;
  e_build_escalate();
@@ -1902,26 +1899,14 @@ static void e_build_on_tick(int fd, void *data)
  * e_build_heartbeat_start - Start the timer that turns the waiting line.
  *
  * Present only while a build runs, so the idle editor still sleeps until a
- * key.  Without timerfd the line still moves whenever output arrives.
+ * key.
  */
 static void e_build_heartbeat_start(void)
 {
- g_build.hb_fd = E_BUILD_NO_FD;
-#ifdef __linux__
- g_build.hb_fd = timerfd_create(CLOCK_MONOTONIC, TFD_CLOEXEC | TFD_NONBLOCK);
- if (g_build.hb_fd >= 0)
- {
-  struct itimerspec its;
-
-  its.it_value.tv_sec = 0;
-  its.it_value.tv_nsec = E_BUILD_TICK_NS;
-  its.it_interval = its.it_value;
-  timerfd_settime(g_build.hb_fd, 0, &its, NULL);
-  wpe_fd_add(g_build.hb_fd, POLLIN, e_build_on_tick, NULL);
- }
- else
-  g_build.hb_fd = E_BUILD_NO_FD;
-#endif
+ g_build.hb_timer = wpe_timer_add(E_BUILD_TICK_NS / WPE_TIMER_NS_PER_MS, 1,
+                                  e_build_on_tick, NULL);
+ if (g_build.hb_timer < 0)
+  g_build.hb_timer = WPE_TIMER_NONE;
 }
 
 /**
@@ -1929,11 +1914,8 @@ static void e_build_heartbeat_start(void)
  */
 static void e_build_heartbeat_stop(void)
 {
- if (g_build.hb_fd == E_BUILD_NO_FD)
-  return;
- wpe_fd_del(g_build.hb_fd);
- close(g_build.hb_fd);
- g_build.hb_fd = E_BUILD_NO_FD;
+ wpe_timer_del(g_build.hb_timer);
+ g_build.hb_timer = WPE_TIMER_NONE;
 }
 
 /**
@@ -1956,7 +1938,7 @@ void e_build_cancel(void)
  g_build.cancelled = 1;
  g_build.term_ticks = 0;
  e_build_signal(SIGTERM);
- if (g_build.hb_fd == E_BUILD_NO_FD)
+ if (g_build.hb_timer == WPE_TIMER_NONE)
   e_build_signal(SIGKILL);       /* no timer to wait on: end it now */
 }
 
@@ -2199,7 +2181,8 @@ static void e_build_step_begin(ECNT *cn, FENSTER *mf, PIC *pic,
  g_build.active = 1;
  g_build.pid = e_save_pid;
  WpeBuildGroupSet(e_save_pid);   /* the child leads its own process group */
- g_build.efd = g_build.wfd = g_build.hb_fd = E_BUILD_NO_FD;
+ g_build.efd = g_build.wfd = E_BUILD_NO_FD;
+ g_build.hb_timer = WPE_TIMER_NONE;
  g_build.cn = cn;
  g_build.pic = pic;
  g_build.cont = cont;

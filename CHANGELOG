@@ -233,6 +233,17 @@ Changes
 
 1.7.0 (AI assistant -- experimental, opt-in)
 
+* On macOS and the BSDs, the waiting lines count their seconds while
+  nothing is printed ("building ... 3s", "starting gdb ... 3s", the
+  assistant's spinner), and a debugger or debug adapter that never answers
+  is ended at its deadline ("gdb did not answer within 30 s").  They used
+  to stay at "0s", and a silent debugger was never given up; nor was a
+  hosted agent that ignored Esc and then went silent.  A hosted agent's
+  deadline that runs out while a permission question is on screen now
+  ends the session once the question is answered, instead of under it.  These timers now run in the editor's own
+  wait for input, the same on every system, where they used to need a
+  Linux-only kernel timer.
+
 * A chat turn sends the newest messages of the conversation that fit
   64 KiB, where it used to send the last 12 whatever their size, and the
   saved session keeps 200 messages instead of 40.  When earlier messages
