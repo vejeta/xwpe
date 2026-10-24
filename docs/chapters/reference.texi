@@ -66,13 +66,72 @@ minimum 80x25; e.g.@: @option{-g 80x20+4+4}).
 @item @kbd{Ctrl-F10} @tab @tab Start/continue debugger
 @end multitable
 
-@subsection Without function keys (macOS)
+@subsection Whether a key reaches xwpe
+@cindex function keys, macOS
+@cindex function keys, GNOME Terminal
+@cindex Option key as Meta
 
-macOS reserves @key{F1}--@key{F12} for system actions (brightness, volume,
-Mission Control), so they never reach a terminal app unless you tick
-@emph{System Settings -> Keyboard -> ``Use F1, F2, etc. keys as standard
-function keys''} (or hold @key{fn}).  You do not have to: every essential
-command also has a non-function-key binding, so xwpe is fully usable as shipped.
+A key does the same thing in xwpe on Linux and on macOS: the terminal
+sends the same bytes for it on both, and xwpe reads them the same way.
+@key{F1} is Help, @key{F2} Save, @key{F3} Open (the file manager) and
+@key{F4} Search, or Go to cursor while a debug session runs.  What can
+differ is whether the key press reaches the terminal at all, and that is
+decided by the keyboard and the system before xwpe sees anything.
+
+@table @asis
+@item Linux (xterm, Konsole, the console)
+@key{F1}--@key{F4} always arrive.  One known exception: GNOME Terminal
+keeps @key{F1} for its own help (and @key{F10} for its menu, @key{F11}
+for full screen) by default; turn those off in its preferences, under
+Shortcuts.
+
+@item macOS, as shipped
+The physical @key{F1} lowers the screen brightness, @key{F2} raises it,
+@key{F3} opens Mission Control and @key{F4} opens Spotlight or Launchpad,
+depending on the keyboard.  xwpe receives nothing.
+
+@item macOS, holding @key{fn}, or with the standard function keys turned on
+With @key{fn} held, or with @emph{System Settings -> Keyboard -> ``Use F1,
+F2, etc. keys as standard function keys''} ticked, Terminal.app and iTerm2
+send the same bytes as a Linux terminal and xwpe behaves exactly the same:
+@key{F4} searches, or runs to the cursor inside a session.
+@end table
+
+Three more things macOS keeps for itself by default, each with its way out:
+
+@itemize @bullet
+@item
+@kbd{Ctrl-F2} to @kbd{Ctrl-F8} are documented by Apple as keyboard-focus
+shortcuts (menu bar, Dock, window, toolbar@dots{}).  When they are on, the
+debugger's @kbd{Ctrl-F2} (quit), @kbd{Ctrl-F7} (watch) and @kbd{Ctrl-F8}
+(breakpoint) never arrive.  Turn them off in @emph{System Settings ->
+Keyboard -> Keyboard Shortcuts -> Keyboard}, or use the @kbd{Ctrl-G}
+letters below.
+
+@item
+@kbd{Ctrl-Left} and @kbd{Ctrl-Right} switch desktops (Spaces), and
+@key{F11} shows the desktop.
+
+@item
+The Option key types special characters instead of acting as @kbd{Alt},
+so @kbd{Alt-F}, @kbd{Alt-X} and the other menu keys do nothing until it is
+set to act as Meta: in Terminal.app, @emph{Settings -> Profiles ->
+Keyboard -> ``Use Option as Meta key''}; in iTerm2, @emph{Settings ->
+Profiles -> Keys -> Left Option key: Esc+}.  Pressing @key{Esc} and then
+the letter by hand is not the same: xwpe joins the two only when they
+arrive within a few milliseconds, as a terminal sends them for
+@kbd{Alt-}@var{letter}.  Until Option acts as Meta, open the menus with
+the mouse, or with @key{F10} while holding @key{fn}.
+@end itemize
+
+Terminal.app and iTerm2, as shipped, do not pass the Command key to a
+program running in them.
+
+@subsection Without function keys
+
+Every essential command also has a key that is not a function key.  The
+@kbd{Ctrl-} chords work in any terminal on both systems as shipped; the
+@kbd{Alt-} keys need Option set to act as Meta on macOS (see above).
 
 @multitable @columnfractions .34 .33 .33
 @headitem Action @tab Function key @tab Without F-keys

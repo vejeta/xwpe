@@ -205,7 +205,9 @@ gives the full mouse.
 
 @item macOS captures the function keys (@key{F8}/@key{F9}@dots{})
 On macOS the top-row keys default to Mission Control, brightness and
-volume, so @key{F9} (Make) and @key{F8} (step) never reach xwpe.  Either
+volume, so @key{F9} (Make) and @key{F8} (step) never reach xwpe, and
+@kbd{Ctrl-F2}--@kbd{Ctrl-F8} can be taken by the system's keyboard-focus
+shortcuts (@pxref{Reference}, ``Whether a key reaches xwpe'').  Either
 enable @samp{Use F1, F2, etc.@: keys as standard function keys} in
 @samp{System Settings @result{} Keyboard}, or use the equivalents that
 do not rely on the top row: @kbd{Alt-M} (Make), @kbd{Alt-C} (Compile),
