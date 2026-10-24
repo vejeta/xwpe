@@ -14,9 +14,9 @@ debugger is needed, so it always runs.
 """
 import os
 import signal
-import subprocess
 import time
 
+import procinfo
 from wpe_driver import WpeSession
 
 A68 = (
@@ -33,44 +33,16 @@ DOWN = "\033OB"
 
 
 def _cpu_ticks(pid):
-    """utime+stime in clock ticks for pid, or -1 if gone.
-
-    Linux uses /proc/<pid>/stat; macOS (no procfs) falls back to ps(1)'s
-    cumulative CPU time, converted to centi-seconds to roughly match the
-    ratio the caller compares against (< 20 ticks per wall-second)."""
-    try:
-        return int(open("/proc/%d/stat" % pid).read().split()[13]) + \
-               int(open("/proc/%d/stat" % pid).read().split()[14])
-    except Exception:
-        pass
-    try:
-        out = subprocess.check_output(["ps", "-p", str(pid), "-o", "time="],
-                                      text=True).strip()
-        parts = out.replace("-", ":").split(":")
-        if len(parts) == 4:
-            h, m, sf = int(parts[1]), int(parts[2]), float(parts[3])
-            h += int(parts[0]) * 24
-        elif len(parts) == 3:
-            h, m, sf = int(parts[0]), int(parts[1]), float(parts[2])
-        else:
-            h, m, sf = 0, int(parts[0]), float(parts[1])
-        return int(((h * 3600 + m * 60) * 100) + sf * 100)
-    except Exception:
+    """utime+stime in clock ticks for pid, or -1 if gone."""
+    ticks = procinfo.cpu_ticks(pid)
+    if ticks is None:
         return -1
+    return ticks
 
 
 def _run_state(pid):
     """Single-letter run state (R/S/D/Z/T) for pid, or 'gone'."""
-    try:
-        return open("/proc/%d/stat" % pid).read().split()[2]
-    except Exception:
-        pass
-    try:
-        out = subprocess.check_output(["ps", "-p", str(pid), "-o", "state="],
-                                      text=True).strip()
-        return out[:1] if out else "gone"
-    except Exception:
-        return "gone"
+    return procinfo.run_state(pid)
 
 
 FAKE_PIDS = "fake-a68g.pids"
@@ -106,11 +78,10 @@ def _live_fakes(tmp_path):
         return []
     live = []
     for pid in pids:
-        try:
-            cmdline = open("/proc/%d/cmdline" % pid, "rb").read()
-        except OSError:
+        cmdline = procinfo.command_line(pid)
+        if cmdline is None:
             continue
-        if str(tmp_path).encode() in cmdline and _run_state(pid) != "Z":
+        if str(tmp_path) in cmdline and _run_state(pid) != procinfo.ZOMBIE:
             live.append(pid)
     return live
 
@@ -210,7 +181,7 @@ def _drive_the_flood(tmp_path, env_extra):
             # < ~0.2s of CPU per wall second and sleeping == back in the input
             # loop, i.e. the watchdog tripped instead of busy-looping.  macOS
             # ps reports state 'S'/'Ss'/'I'/... -- treat any non-R as sleeping.
-            if _run_state(pid) != "R" and (c1 - c0) < 20:
+            if _run_state(pid) != procinfo.RUNNING and (c1 - c0) < 20:
                 responsive = True
                 break
         assert responsive, \

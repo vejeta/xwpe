@@ -21,6 +21,7 @@ import time
 
 import pytest
 
+import procinfo
 from wpe_driver import (WpeSession, ALT, WAIT_SCALE, tool_usable,
                         CURRENT_LINE_BG, BREAKPOINT_BG)
 
@@ -112,24 +113,12 @@ def _screen(w):
 
 def _children(w, name):
     """PIDs of the editor's direct children whose command is `name`."""
-    out = subprocess.run(["ps", "-A", "-o", "pid=,ppid=,comm="],
-                         capture_output=True, text=True).stdout
-    pids = []
-    for line in out.splitlines():
-        parts = line.split(None, 2)
-        if len(parts) == 3 and int(parts[1]) == w.proc.pid and \
-                os.path.basename(parts[2].strip()) == name:
-            pids.append(int(parts[0]))
-    return pids
+    return procinfo.children_named(w.proc.pid, name)
 
 
 def _cpu_ticks(pid):
-    """utime + stime in clock ticks, from /proc; None where there is none."""
-    try:
-        fields = open("/proc/%d/stat" % pid).read().split()
-    except OSError:
-        return None
-    return int(fields[13]) + int(fields[14])
+    """utime + stime in clock ticks; None once the process is gone."""
+    return procinfo.cpu_ticks(pid)
 
 
 def _move_down(w, lines):
