@@ -226,10 +226,12 @@ def assert_enter_jumps(w, needle, filename, line, slow=False):
 # @scenario SC-compile-10
 def test_cpp_error_row_jumps_to_its_line(tmp_path):
     need("g++")
-    src = "int main()\n{\n    int x = 1\n    return x;\n}\n"      # error on line 4
+    # An undeclared name is reported on its own line by gcc and clang alike
+    # (a missing semicolon is not: gcc blames the next line, clang this one).
+    src = "int main()\n{\n    int x = undefinedThing;\n    return x;\n}\n"
     with session(tmp_path, src, "t.cpp") as w:
         build(w)
-        assert_enter_jumps(w, "error:", "t.cpp", 4)
+        assert_enter_jumps(w, "error:", "t.cpp", 3)
 
 
 # @scenario SC-compile-11
