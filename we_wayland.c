@@ -884,6 +884,24 @@ static const struct wl_pointer_listener ptr_listener = {
  ptr_frame, ptr_axis_source, ptr_axis_stop, ptr_axis_discrete
 };
 
+/**
+ * wl_repeat_open - Make the timer that repeats a held key.
+ *
+ * When the editor's loop cannot watch it (every stream slot taken), the
+ * bottom row says so and the timer is closed: a held key then types once,
+ * as with repeat turned off, instead of arming a timer nobody reads.
+ */
+static void wl_repeat_open(void)
+{
+ g_repeat_fd = timerfd_create(CLOCK_MONOTONIC, TFD_CLOEXEC | TFD_NONBLOCK);
+ if (g_repeat_fd < 0)
+  return;
+ if (e_fd_watch(g_repeat_fd, POLLIN, wl_repeat_fire, NULL, "key repeat") == 0)
+  return;
+ close(g_repeat_fd);
+ g_repeat_fd = -1;
+}
+
 static void seat_caps(void *data, struct wl_seat *seat, uint32_t caps)
 {
  (void)data;
@@ -892,11 +910,7 @@ static void seat_caps(void *data, struct wl_seat *seat, uint32_t caps)
   WpeWl.keyboard = wl_seat_get_keyboard(seat);
   wl_keyboard_add_listener(WpeWl.keyboard, &kbd_listener, NULL);
   if (g_repeat_fd < 0)   /* one key-repeat timer, driven by the shared fd-loop */
-  {
-   g_repeat_fd = timerfd_create(CLOCK_MONOTONIC, TFD_CLOEXEC | TFD_NONBLOCK);
-   if (g_repeat_fd >= 0)
-    wpe_fd_add(g_repeat_fd, POLLIN, wl_repeat_fire, NULL);
-  }
+   wl_repeat_open();
  }
  else if (!(caps & WL_SEAT_CAPABILITY_KEYBOARD) && WpeWl.keyboard)
  {
@@ -1575,6 +1589,22 @@ static int e_w_kbhit(void)
  return (WpeWl.key_head != WpeWl.key_tail) || g_mouse_pending != 0;
 }
 
+/* Does the shared loop watch the compositor connection (keys, pointer)? */
+static int g_wl_keyboard_watched = 0;
+
+/**
+ * wl_watch_display - Let the shared loop wake for the compositor's events.
+ *
+ * Asked again on every key read, as the X11 backend does, so the keyboard
+ * comes back as soon as a stream closes if every slot was taken; meanwhile
+ * the waits are cut short and keys are still read.
+ */
+static void wl_watch_display(void)
+{
+ g_wl_keyboard_watched = (e_fd_watch(wl_display_get_fd(WpeWl.display), POLLIN, NULL, NULL,
+                                     "the keyboard") == 0);
+}
+
 /* Blocking key read: pump the Wayland fd through xwpe's shared poll loop (so
    LSP/DAP fds keep being serviced) until a translated key is queued.  A 0-ms
    poll on just the wl fd after wpe_fd_poll() tells us whether to read+dispatch
@@ -1602,7 +1632,7 @@ static int e_w_getch(void)
   _exit(0);
  }
 
- wpe_fd_add(wl_display_get_fd(WpeWl.display), POLLIN, NULL, NULL);
+ wl_watch_display();
 
  for (;;)
  {
@@ -1697,7 +1727,7 @@ static void wl_pump_once(int block)
 
  wl_display_flush(WpeWl.display);
  if (block)
-  wpe_fd_poll(-1);
+  e_fd_key_wait(g_wl_keyboard_watched);
  p.fd = wl_display_get_fd(WpeWl.display);
  p.events = POLLIN;
  p.revents = 0;

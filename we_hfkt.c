@@ -6,6 +6,7 @@
 /* GNU General Public License, see the file COPYING.      */
 
 #include "edit.h"
+#include "we_fdloop.h"
 #include <regex.h>
 
 /*        find string in text line    */
@@ -352,6 +353,68 @@ void e_status_key_pressed(FENSTER *f)
   return;
  e_pr_uul(f->fb);
  e_refresh();
+}
+
+/* Room for "could not watch <what>: too many open streams". */
+#define E_FD_REFUSAL_LINE_MAX 160
+
+/**
+ * e_status_say_anywhere - Keep a line on the bottom row until the next key,
+ * from any part of the editor.
+ * @text: the line.
+ *
+ * For a line said from code that has no window at hand (a stream's
+ * callback): it is painted at once when the screen is up, and every repaint
+ * of the bar keeps it until the user presses a key.
+ */
+static void e_status_say_anywhere(const char *text)
+{
+ e_status_hold(text);
+ if (!WpeEditor || !WpeEditor->fb)
+  return;
+ e_status_paint(WpeEditor->fb, text);
+ e_refresh();
+}
+
+/**
+ * e_fd_watch - Let the editor's loop wake for @fd, or say why it cannot.
+ * @fd, @events, @cb, @data: as wpe_fd_add; @what: what the user would miss,
+ * in his words ("the AI reply", "the build output").
+ *
+ * The loop watches a fixed number of streams.  When they are all taken, an
+ * AI reply, a build's output, a debugger's answer or a language server's
+ * updates would otherwise never arrive and the user would wait for them;
+ * instead he reads "could not watch <what>: too many open streams" on the
+ * bottom row, and the caller ends what it started (closes the stream, ends
+ * the session) so nothing is left waiting.
+ * Return: 0 when the fd is watched, -1 when the caller must give it up.
+ */
+int e_fd_watch(int fd, int events, wpe_fd_callback cb, void *data, const char *what)
+{
+ char line[E_FD_REFUSAL_LINE_MAX];
+
+ if (wpe_fd_add(fd, events, cb, data) == 0)
+  return(0);
+ wpe_fd_refusal(what, fd, line, sizeof line);
+ e_status_say_anywhere(line);
+ return(-1);
+}
+
+/**
+ * e_fd_key_wait - Sleep in the editor's loop until a key, a stream or a
+ * timer wakes it.
+ * @keyboard_watched: whether the loop watches the keyboard's descriptor.
+ *
+ * With the keyboard watched the editor sleeps until something happens; when
+ * it could not be watched, the sleep is cut short so a key is still read
+ * within a moment and the editor never stops answering the user.
+ */
+void e_fd_key_wait(int keyboard_watched)
+{
+ if (keyboard_watched)
+  wpe_fd_poll(-1);
+ else
+  wpe_fd_poll(WPE_FD_POLL_MS);
 }
 
 /**

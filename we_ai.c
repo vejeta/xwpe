@@ -1773,6 +1773,7 @@ struct wpe_ai_stream {
  int             req_nh;
  long            deadline;     /* wpe_http_now_ms() by which a byte must come   */
  char           *transport_err; /* why the open or the wait failed, or NULL     */
+ int             abandoned;    /* the editor could not watch it: pump fails    */
 };
 
 /* Flatten the request into a single prompt for the `claude` CLI (one -p call).
@@ -2214,6 +2215,22 @@ static int ai_stream_fail(struct wpe_ai_stream *st, const char *why)
 }
 
 /**
+ * wpe_ai_stream_abandon - Give up a stream the editor cannot watch.
+ * @st: the stream; @why: the line the user reads.
+ *
+ * Its reply would never be read and the waiting line would stand until Esc;
+ * instead the next pump fails with @why, so the task ends through the same
+ * path, and with the same kind of line, as a connection that broke.
+ */
+void wpe_ai_stream_abandon(wpe_ai_stream *st, const char *why)
+{
+ if (!st)
+  return;
+ st->abandoned = 1;
+ ai_stream_fail(st, why);
+}
+
+/**
  * ai_stream_drop_request - Free the request a stream kept for after its open.
  * @st: the stream.
  */
@@ -2498,6 +2515,8 @@ int wpe_ai_stream_pump(wpe_ai_stream *st,
  size_t llen;
  int complete;
 
+ if (st->abandoned)
+  return -1;
  if (st->is_subproc) {                        /* claudecli: read the child pipe */
   for (;;) {
    ssize_t r = read(st->out_fd, buf, sizeof buf);

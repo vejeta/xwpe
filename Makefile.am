@@ -290,7 +290,9 @@ metainfo_DATA = io.codeberg.mendezr.xwpe.metainfo.xml
 # --- Unit tests ---
 check_PROGRAMS = test_checkheader test_fl_sel_len test_syntax_def test_fdloop test_clipboard test_lsp_buffer test_lsp_doctor test_lsp_semantic test_lsp_truecolor test_dap test_dap_dlv test_dap_gdb test_dap_lldb test_dap_scala test_lsp_scala test_lsp_clangd test_lsp_python test_lsp_gopls test_lsp_rust test_debprompt test_debpath test_menurows
 
-test_fdloop_SOURCES = tests/test_fdloop.c we_fdloop.c
+# The test includes we_fdloop.c itself (the id counter is private to it), so
+# the file is not listed here again: it would be defined twice.
+test_fdloop_SOURCES = tests/test_fdloop.c
 test_fdloop_CFLAGS = $(XWPE_STDFLAG)
 
 # Debugger prompt window unit test: we_debprompt.c only, no editor, always runs.

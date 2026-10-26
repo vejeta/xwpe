@@ -791,11 +791,14 @@ static void e_d_messages_redraw(FENSTER *mf)
  e_refresh();
 }
 
+/* The caller reads the debugger again after every wait, and the wait is
+   bounded by WPE_FD_POLL_MS, so an fd the loop cannot watch only makes its
+   answer come at the end of that wait instead of at once. */
 static void e_d_wait_for_input(int gdb_fd)
 {
- wpe_fd_add(gdb_fd, POLLIN, NULL, NULL);
+ e_fd_watch(gdb_fd, POLLIN, NULL, NULL, "the debugger's answer");
  if (e_d_pty_master >= 0)
-  wpe_fd_add(e_d_pty_master, POLLIN, NULL, NULL);
+  e_fd_watch(e_d_pty_master, POLLIN, NULL, NULL, "the program's output");
  wpe_fd_poll(WPE_FD_POLL_MS);
  wpe_fd_del(gdb_fd);
  if (e_d_pty_master >= 0)
@@ -1129,18 +1132,31 @@ static void e_d_accum_line(char *line, int ret)
  e_d_out_keep(line);
 }
 
-static void e_d_accum_init(FENSTER *f, int main_brk)
+/**
+ * e_d_accum_init - Read gdb's answer to a run or a step on the fd loop.
+ * @f: the source window; @main_brk: the run stops at main.
+ *
+ * The editor takes keys while the program runs.  When the loop cannot watch
+ * gdb, its answer would never be read and the session would wait for ever:
+ * the bottom row says why and the caller ends the session.  The program's
+ * own output, if it cannot be watched, is still shown when the program
+ * stops, from the pty drained then.
+ * Return: 0, or -1 when gdb cannot be watched.
+ */
+static int e_d_accum_init(FENSTER *f, int main_brk)
 {
  e_d_cut_forget_output();
  e_d_out_clear();
+ if (e_fd_watch(wfildes[0], POLLIN, e_d_on_gdb_readable, f, "the debugger's answer") < 0)
+  return(-1);
  e_d_accum.active = 1;
  e_d_accum.main_brk = main_brk;
  e_d_accum.f = f;
  e_d_async_pending = 1;
  e_d_async_reset();
- wpe_fd_add(wfildes[0], POLLIN, e_d_on_gdb_readable, f);
  if (e_d_pty_master >= 0)
-  wpe_fd_add(e_d_pty_master, POLLIN, e_d_on_pty_readable, f);
+  e_fd_watch(e_d_pty_master, POLLIN, e_d_on_pty_readable, f, "the program's output");
+ return(0);
 }
 
 void e_d_place_cursor_in_messages(void)
@@ -5098,6 +5114,7 @@ static int e_d_build_first(FENSTER *f)
 #define E_D_START_PHASE_FMT "%s %s ... %lds  (Esc cancels)"
 #define E_D_START_CANCELLED_FMT "%s start cancelled"
 #define E_D_START_TIMED_OUT_FMT "%s did not answer within %d s"
+#define E_D_START_UNWATCHED_FMT "%s start given up: could not watch its output (too many open streams)"
 #define E_D_START_BUSY_LINE " The debugger is starting: Esc cancels it"
 #define E_D_START_LINE_MAX 128
 #define E_D_START_NO_FD (-1)
@@ -5109,6 +5126,7 @@ static int e_d_build_first(FENSTER *f)
 #define E_D_START_WAITING   0
 #define E_D_START_CANCELLED 1
 #define E_D_START_TIMED_OUT 2
+#define E_D_START_UNWATCHED 3   /* the loop had no room to read its answer */
 
 /* The one debugger start that may be waiting. */
 static struct {
@@ -5379,16 +5397,18 @@ static int e_d_start_forget(void)
 
 /**
  * e_d_start_say_end - Write why the start ended in Messages.
- * @why: E_D_START_CANCELLED or E_D_START_TIMED_OUT.
+ * @why: E_D_START_CANCELLED, E_D_START_TIMED_OUT or E_D_START_UNWATCHED.
  * @label: the debugger's name; @timeout: the deadline that passed.
  * @f: the window on top.
  */
 static void e_d_start_say_end(int why, const char *label, int timeout, FENSTER *f)
 {
- char line[E_D_START_LINE_MAX];
+ char line[E_D_START_LINE_MAX + E_D_START_LINE_MAX];
 
  if (why == E_D_START_CANCELLED)
   snprintf(line, sizeof line, E_D_START_CANCELLED_FMT, label);
+ else if (why == E_D_START_UNWATCHED)
+  snprintf(line, sizeof line, E_D_START_UNWATCHED_FMT, label);
  else
   snprintf(line, sizeof line, E_D_START_TIMED_OUT_FMT, label, timeout);
  e_d_p_message(line, f, 1);
@@ -5457,15 +5477,16 @@ static void e_d_start_say_died(int dap, FENSTER *f)
  * e_d_start_quit - Tear the session of an ended start down.
  * @why: why the start ended; @f: the window on top.
  *
- * A start the user cancelled, and one that passed its deadline, are both a
- * debugger that was launched and never answered: the user saw no session, so
+ * A start the user cancelled, one that passed its deadline, and one whose
+ * output the loop could not watch, are all a debugger that was launched and
+ * never answered: the user saw no session, so
  * Messages keeps the one line that says why the start ended instead of also
  * reporting the end of a session that never began.  A debugger that ended by
  * itself before answering is torn down as a session, as before.
  */
 static void e_d_start_quit(int why, FENSTER *f)
 {
- if (why == E_D_START_CANCELLED || why == E_D_START_TIMED_OUT)
+ if (why != E_D_START_WAITING)
   e_d_start_never_ran = 1;
  e_d_quit(f);
  e_d_start_never_ran = 0;
@@ -5782,6 +5803,25 @@ static void e_d_start_show(void)
 }
 
 /**
+ * e_d_start_watch_fd - Read a starting debugger's descriptor on the fd loop.
+ * @fd: its output, the adapter's connection, or its program's pty;
+ * @cb: what reads it.
+ *
+ * When the loop has no room for it the debugger's answer would never be
+ * read and the waiting line would stand until the deadline: the bottom row
+ * says why, the start is ended at once, and Messages says it was given up.
+ * Called once the heartbeat runs, so the end goes the way Esc's does.
+ * Return: 0, or -1 when the start is being ended.
+ */
+static int e_d_start_watch_fd(int fd, wpe_fd_callback cb)
+{
+ if (e_fd_watch(fd, POLLIN, cb, NULL, "the debugger's output") == 0)
+  return(0);
+ e_d_start_stop(E_D_START_UNWATCHED);
+ return(-1);
+}
+
+/**
  * e_d_start_watch - Wait for the debugger's answer without holding the editor.
  * @f: the source window.
  *
@@ -5792,9 +5832,9 @@ static void e_d_start_watch(FENSTER *f)
 {
  e_d_start_begin(f, 0);
  e_d_async_reset();
- e_d_start.out_fd = wfildes[0];
- wpe_fd_add(e_d_start.out_fd, POLLIN, e_d_start_on_output, NULL);
  e_d_start_show();
+ e_d_start.out_fd = wfildes[0];
+ e_d_start_watch_fd(e_d_start.out_fd, e_d_start_on_output);
 }
 
 /* ---- Starting a debug adapter (Go, Rust, Scala) -------------------------
@@ -5818,18 +5858,21 @@ static void e_d_dap_start_on_readable(int fd, void *data);
  *
  * It changes once, when dlv dials in and the listening socket gives way to
  * the connection.
+ * Return: 0, or -1 when the loop could not watch it and the start is being
+ * ended (the session may be gone already: the caller stops there).
  */
-static void e_d_dap_start_follow_fd(void)
+static int e_d_dap_start_follow_fd(void)
 {
  int fd = e_dap_start_fd(g_dap);
 
  if (fd == e_d_start.out_fd)
-  return;
+  return(0);
  if (e_d_start.out_fd != E_D_START_NO_FD)
   wpe_fd_del(e_d_start.out_fd);
  e_d_start.out_fd = fd;
- if (fd != E_D_START_NO_FD)
-  wpe_fd_add(fd, POLLIN, e_d_dap_start_on_readable, NULL);
+ if (fd == E_D_START_NO_FD)
+  return(0);
+ return(e_d_start_watch_fd(fd, e_d_dap_start_on_readable));
 }
 
 /**
@@ -5862,7 +5905,8 @@ static void e_d_dap_start_on_readable(int fd, void *data)
   e_d_start_answered();
   return;
  }
- e_d_dap_start_follow_fd();
+ if (e_d_dap_start_follow_fd() < 0)
+  return;
  e_d_start_check_deadline();
 }
 
@@ -5970,11 +6014,12 @@ static int e_d_dap_start_watch(FENSTER *f)
 
  e_d_start_begin(cn->f[cn->mxedt], 1);
  e_d_start.opened_messages = opened;
- e_d_dap_start_follow_fd();
+ e_d_start_show();                    /* the heartbeat first: a refused fd ends the start */
+ if (e_d_dap_start_follow_fd() < 0)
+  return(E_D_STARTING);
  e_d_start.pty_fd = e_dap_output_fd(g_dap);
  if (e_d_start.pty_fd != E_D_START_NO_FD)
-  wpe_fd_add(e_d_start.pty_fd, POLLIN, e_d_dap_start_on_program_output, NULL);
- e_d_start_show();
+  e_d_start_watch_fd(e_d_start.pty_fd, e_d_dap_start_on_program_output);
  return(E_D_STARTING);
 }
 
@@ -7223,7 +7268,8 @@ int e_deb_run(FENSTER *f)
  e_d_swtch = 3;
  if (e_d_pty_master >= 0 && e_deb_type == DEB_GDB)
  {
-  e_d_accum_init(f, main_brk);
+  if (e_d_accum_init(f, main_brk) < 0)
+   return(e_d_quit(f));
   return(0);
  }
  if (e_deb_type == DEB_JDB)
@@ -8739,7 +8785,8 @@ int e_d_step_next(FENSTER *f, int sw)
   return e_d_pdb_step_complete(f);
  if (e_d_pty_master >= 0 && e_deb_type == DEB_GDB)
  {
-  e_d_accum_init(f, 0);
+  if (e_d_accum_init(f, 0) < 0)
+   return(e_d_quit(f));
   return(0);
  }
  return(e_read_output(f));
@@ -11226,13 +11273,38 @@ static void e_lsp_on_fd_readable(int fd, void *data)
   e_lsp_sem_refresh_pending(g_lsp_fenster);
 }
 
-static void e_lsp_fd_register(void)
+/**
+ * e_lsp_fd_register - Let the editor's loop read the language server.
+ *
+ * Its answers, diagnostics and overlay updates arrive while the user edits.
+ * When the loop has no room for it, the bottom row says so and the server is
+ * left unwatched; the next request asks again, so it comes back as soon as
+ * a stream closes.
+ * Return: 0 when the server is watched (or there is none), -1 when refused.
+ */
+static int e_lsp_fd_register(void)
 {
- if (g_lsp && g_lsp_fd_num < 0 && e_lsp_fd(g_lsp) >= 0)
- {
-  g_lsp_fd_num = e_lsp_fd(g_lsp);
-  wpe_fd_add(g_lsp_fd_num, POLLIN, e_lsp_on_fd_readable, NULL);
- }
+ if (!g_lsp || g_lsp_fd_num >= 0 || e_lsp_fd(g_lsp) < 0)
+  return(0);
+ if (e_fd_watch(e_lsp_fd(g_lsp), POLLIN, e_lsp_on_fd_readable, NULL,
+                "the language server") < 0)
+  return(-1);
+ g_lsp_fd_num = e_lsp_fd(g_lsp);
+ return(0);
+}
+
+/**
+ * e_lsp_give_up_unwatched - Stop a language server the loop cannot read.
+ *
+ * Its handshake would never be read and the bar would say "starting" for
+ * ever; the bottom row already says why, and the next Alt-Q starts it again.
+ * Return: -1, the start's "not ready" answer.
+ */
+static int e_lsp_give_up_unwatched(void)
+{
+ e_lsp_ui_shutdown();
+ g_lsp_file[0] = '\0';
+ return(-1);
 }
 
 static void e_lsp_fd_unregister(void)
@@ -11349,7 +11421,8 @@ static int e_lsp_ensure(FENSTER *f)
   return(-1);
  }
  e_lsp_synced_set(NULL);                   /* not opened yet; on-ready will didOpen */
- e_lsp_fd_register();
+ if (e_lsp_fd_register() < 0)
+  return(e_lsp_give_up_unwatched());
  e_d_p_message("Starting language server (the editor stays responsive)...", f, 1);
  e_lsp_raise_source(f);   /* the sw=1 message surfaced Messages -- put the code
                              back on top so the user keeps editing, not stranded */

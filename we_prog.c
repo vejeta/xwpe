@@ -744,7 +744,9 @@ static int e_run_with_pty(char *cmd, BUFFER *b, FENSTER *mf)
  e_schirm(mf, 1);
  e_refresh();
 
- wpe_fd_add(pty_master, POLLIN, NULL, NULL);
+ /* Each pass reads the pty and waits at most WPE_FD_POLL_MS, so a program
+    whose output cannot be watched still shows it, within that wait. */
+ e_fd_watch(pty_master, POLLIN, NULL, NULL, "the program's output");
 
  for (;;)
  {
@@ -1977,6 +1979,42 @@ void e_build_deliver_held(void)
 }
 
 /**
+ * e_build_watch_stream - Hand one output pipe of the child to the fd loop.
+ * @fd: the pipe's read end, or E_BUILD_NO_FD.
+ *
+ * A pipe the loop cannot watch is closed at once: its lines would never
+ * reach Messages, and the child would block on it once it filled.
+ * Return: 1 when the pipe was refused, else 0.
+ */
+static int e_build_watch_stream(int fd)
+{
+ int flags;
+
+ if (fd == E_BUILD_NO_FD)
+  return(0);
+ flags = fcntl(fd, F_GETFL, 0);
+ fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+ if (e_fd_watch(fd, POLLIN, e_build_on_output, NULL, "the build output") == 0)
+  return(0);
+ e_build_close_stream(fd);
+ return(1);
+}
+
+/**
+ * e_build_give_up_unwatched - End a build whose output cannot be read.
+ *
+ * The bottom row already says why; the build is then cancelled as Esc would
+ * cancel it, so the user is not left with a waiting line that never ends,
+ * and no later step links or runs a program from a build nobody saw.
+ */
+static void e_build_give_up_unwatched(void)
+{
+ e_build_cancel();
+ if (!e_build_streams_open() && g_build.hb_timer == WPE_TIMER_NONE)
+  e_build_after_streams_closed();   /* nothing else would reap the child */
+}
+
+/**
  * e_build_watch_child - Hand the running child's pipes to the fd loop.
  *
  * From here the function returns to the editor at once; the build goes on
@@ -1984,26 +2022,18 @@ void e_build_deliver_held(void)
  */
 static void e_build_watch_child(void)
 {
- int flags;
+ int refused;
 
  g_build.efd = efildes[0];
  g_build.wfd = wfildes[0];
  efildes[0] = wfildes[0] = E_BUILD_NO_FD;
- if (g_build.efd != E_BUILD_NO_FD)
- {
-  flags = fcntl(g_build.efd, F_GETFL, 0);
-  fcntl(g_build.efd, F_SETFL, flags | O_NONBLOCK);
-  wpe_fd_add(g_build.efd, POLLIN, e_build_on_output, NULL);
- }
- if (g_build.wfd != E_BUILD_NO_FD)
- {
-  flags = fcntl(g_build.wfd, F_GETFL, 0);
-  fcntl(g_build.wfd, F_SETFL, flags | O_NONBLOCK);
-  wpe_fd_add(g_build.wfd, POLLIN, e_build_on_output, NULL);
- }
  e_build_heartbeat_start();
+ refused = e_build_watch_stream(g_build.efd);
+ refused |= e_build_watch_stream(g_build.wfd);
  e_build_wait_line_put();
  e_build_paint();
+ if (refused)
+  e_build_give_up_unwatched();
 }
 
 /**

@@ -281,3 +281,74 @@ def test_host_esc_ignored_ends_session_at_tool_timeout(tmp_path):
     assert "host interrupt deadline" in txt, "the bound did not end the session:\n" + txt
     assert ignored.exists() and "interrupt" in ignored.read_text(), \
         "the fake never received the interrupt request"
+
+
+# The fake streams a first text block and waits.  On the interrupt request it
+# does not end the turn: it asks for a tool, so the editor's permission box is
+# up when the bound falls due, then records the answer and goes silent.
+MOCK_ASK_AFTER_INTERRUPT = textwrap.dedent('''\
+    import sys, json
+    def emit(o):
+        sys.stdout.write(json.dumps(o) + "\\n"); sys.stdout.flush()
+    sys.stdin.readline()                         # the user turn
+    emit({"type": "system", "subtype": "init", "session_id": "mock-modal"})
+    emit({"type": "assistant", "message": {"content": [
+        {"type": "text", "text": "FIRSTBLOCK streamed before the wait"}]}})
+    sys.stdin.readline()                         # the interrupt request
+    emit({"type": "control_request", "request_id": "r9", "request": {
+        "subtype": "can_use_tool", "tool_name": "Read",
+        "input": {"file_path": "t.c"}}})
+    resp = sys.stdin.readline()                  # the editor's answer
+    with open(%(record)r, "a") as fh:
+        fh.write(resp)
+    while sys.stdin.readline():
+        pass
+''')
+
+
+# @scenario SC-ai-agent-53b
+def test_host_deadline_under_permission_modal_waits_for_the_answer(tmp_path):
+    mock = tmp_path / "mock_modal.py"
+    record = tmp_path.parent / (tmp_path.name + ".modal.txt")      # beside, not inside
+    mock.write_text(MOCK_ASK_AFTER_INTERRUPT % {"record": str(record)})
+    trace = tmp_path / "h.trace"
+    _seed_xwperc(tmp_path, ["AIToolTimeout : %d" % TOOL_TIMEOUT_S])
+    env = _host_env(mock, trace)
+    env["XWPE_AI_POLICY"] = "edits"
+    with WpeSession(str(tmp_path), "int main(void){return 0;}\n",
+                    env_extra=env, filename="t.c") as s:
+        s._drain(0.5)
+        s.key(ALT.AI); s.key("g"); s._drain(0.5)
+        s.key("think for a while"); s.key("\r", delay=0.8)
+        assert _wait(s, "FIRSTBLOCK", tmo=8), "the first text block never streamed"
+        s.key("\033"); s._drain(0.3)                              # Esc interrupts
+        assert _wait(s, "APPROVE", tmo=6), \
+            "the permission box did not appear after the interrupt:\n" + \
+            "\n".join(s.display())
+        # Let the bound fall due (AIToolTimeout) while the box is up, and then
+        # some: the turn must neither end nor re-enter, and the box stays.
+        s._drain(TOOL_TIMEOUT_S + 2)
+        disp = "\n".join(s.display())
+        mid = trace.read_text()
+        assert "APPROVE" in disp, "the box went away before it was answered:\n" + disp
+        assert "session ended" not in disp, \
+            "the session ended under the permission box:\n" + disp
+        assert "host interrupt deadline" not in mid, \
+            "the turn ended while the box was up:\n" + mid
+        assert "host permission" not in mid, "the box was answered by itself:\n" + mid
+        assert not record.exists(), "the engine got an answer nobody gave"
+        # The box still reads its key, and the answer ends the turn once.
+        s.key("y", delay=0.8)
+        assert _wait(s, "session ended", tmo=TOOL_TIMEOUT_S + 6), \
+            "the turn did not end once the box was answered:\n" + "\n".join(s.display())
+        s._drain(1.0)
+    txt = trace.read_text()
+    assert "host permission tool=Read allow=1" in txt, \
+        "the box did not take its key:\n" + txt
+    assert txt.count("host interrupt deadline") == 1, \
+        "the bound did not end the turn exactly once:\n" + txt
+    assert txt.index("host permission tool=Read allow=1") < \
+        txt.index("host interrupt deadline"), "the turn ended before the answer:\n" + txt
+    assert txt.count("host end notice") == 1,"the session ended more than once:\n" + txt
+    assert record.exists() and '"behavior":"allow"' in record.read_text().replace(" ", ""), \
+        "the engine did not receive the answer"

@@ -203,6 +203,15 @@ as raw bytes that get typed into the buffer instead of moving the cursor.
 Menus and keys work either way, and running xwpe with no multiplexer always
 gives the full mouse.
 
+@item At most 16 streams are followed at once
+The editor reads everything that runs beside it (the keyboard, a build, a
+debugger and its program, the language server, assistant replies, a hosted
+agent) on one loop with room for 16 streams.  A stream that does not fit is
+not left waiting: the bottom row says @samp{could not watch @dots{}: too
+many open streams} and the task that needed it ends (the build is
+cancelled, the debugger start is given up, the assistant reply ends with
+that line).  Closing something gives its room back at once.
+
 @item macOS captures the function keys (@key{F8}/@key{F9}@dots{})
 On macOS the top-row keys default to Mission Control, brightness and
 volume, so @key{F9} (Make) and @key{F8} (step) never reach xwpe, and

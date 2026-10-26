@@ -2560,10 +2560,25 @@ static void ai_chat_end_on_transport_error(ai_chat_session *s)
  * handshake record), afterwards to read.  Registered again after every pump,
  * the loop wakes for the right event and never spins on a writable socket,
  * so the editor keeps taking keys while a slow server is reached.
+ *
+ * When every stream slot is taken the reply would never be read and the
+ * waiting line would stand until Esc.  The bottom row says why, the stream
+ * is given up, and @cb runs once at once: its pump fails, and the task ends
+ * with "could not watch the reply: too many open streams" in the pane, the
+ * way a broken connection ends it.  The task may be freed by then, so the
+ * caller does not touch it after -1.
+ * Return: 0, or -1 when the task has been ended.
  */
-static void ai_stream_watch(int fd, wpe_ai_stream *st, wpe_fd_callback cb, void *data)
+static int ai_stream_watch(int fd, wpe_ai_stream *st, wpe_fd_callback cb, void *data)
 {
- wpe_fd_add(fd, wpe_ai_stream_events(st), cb, data);
+ char why[AI_OP_FAILURE_LINE_MAX];
+
+ if (e_fd_watch(fd, wpe_ai_stream_events(st), cb, data, "the AI reply") == 0)
+  return 0;
+ wpe_fd_refusal("the reply", fd, why, sizeof why);
+ wpe_ai_stream_abandon(st, why);
+ cb(fd, data);
+ return -1;
 }
 
 /**
@@ -3930,7 +3945,8 @@ static void ai_chat_next_turn(ai_chat_session *s)
  s->flen = 0; if (s->full) s->full[0] = '\0';
  ai_chat_set_pending(s, AI_REPLY_PREFIX);     /* reply streams after "AI: " */
  ai_chat_wait_begin(s);                       /* the waiting line, spun by the heartbeat */
- ai_stream_watch(s->fd, s->st, ai_fd_cb, s);
+ if (ai_stream_watch(s->fd, s->st, ai_fd_cb, s) < 0)
+  return;
  wpe_ai_trace("chat stream fd=%d turn=%d", s->fd, s->turns);
 }
 
@@ -7961,7 +7977,8 @@ static void ai_edit_launch(FENSTER *f, const char *instr)
  g_ai_op = op;
  g_ai_bg_win = f;
  ai_hb_acquire(ai_op_tick);
- ai_stream_watch(op->fd, op->st, ai_edit_fd_cb, op);
+ if (ai_stream_watch(op->fd, op->st, ai_edit_fd_cb, op) < 0)
+  return;
  /* Hand focus back to the file so the user watches the change land there and
     can cancel with Esc; the pane spins in the background (its paints leave the
     caret here).  Its text is held until the reply is spliced in. */
@@ -8479,7 +8496,8 @@ static int e_ai_complete(FENSTER *f)
  g_ai_op = op;
  g_ai_bg_win = f;
  ai_hb_acquire(ai_op_tick);
- ai_stream_watch(op->fd, op->st, ai_complete_fd_cb, op);
+ if (ai_stream_watch(op->fd, op->st, ai_complete_fd_cb, op) < 0)
+  return 0;
  if (save_id >= 0) e_switch_window(save_id, cn->f[cn->mxedt]);
  wpe_ai_report_window_locked(f);
  wpe_ai_trace("complete stream fd=%d off=%zu", op->fd, off);
@@ -12911,6 +12929,10 @@ void wpe_ai_host_interrupt(void)
 
 /* Room for the hosted engine's echo of the user's task in the pane. */
 #define HOST_ECHO_LINE_MAX 1100
+/* The pane line when the editor's loop has no room to read the agent: its
+   output would never arrive, so the session ends before the task is sent. */
+#define HOST_UNWATCHED_LINE \
+ "[agent] could not watch the agent: too many open streams - session ended"
 
 /**
  * host_echo_task - Show the task the user sent to the hosted engine.
@@ -12972,8 +12994,11 @@ int e_ai_host(FENSTER *f)
   }
   g_host_win = f; g_host_cn = f->ed;
   g_host_fd = wpe_host_fd(g_host);
-  wpe_fd_add(g_host_fd, POLLIN, host_fd_cb, NULL);
-  ai_messages_start_run(f);         /* the session is the hosted engine's run */
+  if (e_fd_watch(g_host_fd, POLLIN, host_fd_cb, NULL, "the agent") < 0) {
+   e_ai_host_end(HOST_UNWATCHED_LINE);
+   return 0;
+  }
+  ai_messages_start_run(f);        /* the session is the hosted engine's run */
   host_take_checkpoint(f);
   { char l[160];
     snprintf(l, sizeof l, "[agent] engine: %.80s - session started (Esc at the prompt ends it)",

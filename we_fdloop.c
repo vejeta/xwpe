@@ -7,6 +7,7 @@
 #include <limits.h>
 #include <poll.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <time.h>
 #include "we_fdloop.h"
@@ -31,12 +32,26 @@ typedef struct {
 static wpe_timer_entry timer_table[WPE_TIMER_MAX];
 static int timer_last_id = WPE_TIMER_NONE;
 
+/* The events a ready fd is served for: data, urgent data, a hang-up or an
+   error (the callback reads the EOF and unregisters), and POLLOUT for an fd
+   that asked for it (a connect or a TLS handshake waiting to write). */
+#define WPE_FD_SERVED_EVENTS (POLLIN | POLLPRI | POLLHUP | POLLERR | POLLOUT)
+
+/* One registration.  Readiness is served the way timers fire: what poll()
+   reported is kept in the entry (pending) and taken off it before the
+   callback runs, as a timer's in_pass is, so a nested poll that served it
+   already leaves nothing for the outer pass, and a registration made after
+   the poll starts with nothing.  While its callback runs the entry is busy
+   and a nested poll does not watch it, as a firing timer is re-armed before
+   its callback so a nested poll cannot fire it again. */
 typedef struct {
  int fd;
  int events;
  wpe_fd_callback callback;
  void *data;
  int active;
+ short pending;          /* revents poll() reported, not served yet           */
+ int busy;               /* its callback is running                           */
 } wpe_fd_entry;
 
 static wpe_fd_entry fd_table[WPE_FD_MAX];
@@ -51,6 +66,40 @@ static wpe_fd_entry *wpe_fd_find(int fd)
  return NULL;
 }
 
+/**
+ * wpe_fd_free_slot - A slot no fd uses.
+ *
+ * A debugger, a language server or the assistant that closes an older stream
+ * must not stop the editor from opening a new one once the table has been
+ * full: a slot freed anywhere in the table is reused before the table grows.
+ * fd_count is the high-water mark the loops walk, so it moves only when the
+ * slot is taken past its end.
+ * Return: the slot, or NULL when every slot is taken.
+ */
+static wpe_fd_entry *wpe_fd_free_slot(void)
+{
+ int i;
+
+ for (i = 0; i < fd_count; i++)
+  if (!fd_table[i].active)
+   return &fd_table[i];
+ if (fd_count < WPE_FD_MAX)
+  return &fd_table[fd_count];
+ return NULL;
+}
+
+/**
+ * wpe_fd_add - Watch @fd, or change what an fd already watched waits for.
+ * @fd: the descriptor; @events: the poll() events; @cb: what runs when it
+ * wakes, or NULL for an fd that only wakes the loop (the keyboard).
+ *
+ * A new registration starts with no readiness: an fd opened by a callback
+ * and given the number of one it just closed is not served by what poll()
+ * said about the old one, so its reader never blocks on data that is not
+ * there.
+ * Return: 0, or -1 when @fd is negative or every slot is taken (the caller
+ * then says so and ends what it started, see e_fd_watch).
+ */
 int wpe_fd_add(int fd, int events, wpe_fd_callback cb, void *data)
 {
  wpe_fd_entry *e;
@@ -65,14 +114,18 @@ int wpe_fd_add(int fd, int events, wpe_fd_callback cb, void *data)
   e->data = data;
   return 0;
  }
- if (fd_count >= WPE_FD_MAX)
+ e = wpe_fd_free_slot();
+ if (!e)
   return -1;
- fd_table[fd_count].fd = fd;
- fd_table[fd_count].events = events;
- fd_table[fd_count].callback = cb;
- fd_table[fd_count].data = data;
- fd_table[fd_count].active = 1;
- fd_count++;
+ e->fd = fd;
+ e->events = events;
+ e->callback = cb;
+ e->data = data;
+ e->active = 1;
+ e->pending = 0;
+ e->busy = 0;
+ if (e == &fd_table[fd_count])
+  fd_count++;
  return 0;
 }
 
@@ -85,6 +138,7 @@ void wpe_fd_del(int fd)
   if (fd_table[i].active && fd_table[i].fd == fd)
   {
    fd_table[i].active = 0;
+   fd_table[i].pending = 0;
    while (fd_count > 0 && !fd_table[fd_count - 1].active)
     fd_count--;
    return;
@@ -93,18 +147,60 @@ void wpe_fd_del(int fd)
 }
 
 /**
+ * wpe_fd_refusal - The line that says a stream cannot be watched.
+ * @what: what the user would have seen ("the AI reply", "the build output");
+ * @fd: the descriptor wpe_fd_add refused; @line, @sz: where to write it.
+ *
+ * Without it a reply, a build's output or a debugger's answer that the loop
+ * cannot watch simply never arrives, and the user waits for it.
+ */
+void wpe_fd_refusal(const char *what, int fd, char *line, size_t sz)
+{
+ if (fd < 0)
+  snprintf(line, sz, "could not watch %s: it is not open", what);
+ else
+  snprintf(line, sz, "could not watch %s: too many open streams", what);
+}
+
+/**
+ * wpe_fd_run_callback - Serve one registration.
+ * @e: an active entry with a callback.
+ *
+ * Its readiness is taken before the callback runs, so neither an outer pass
+ * nor a later dispatch serves it a second time; it is busy meanwhile, so a
+ * dialog the callback opens does not call it again on data it has not read
+ * yet.  A blocking read in a callback therefore never waits on readiness that
+ * was already used, which would freeze the editor.
+ *
+ * Busy belongs to the slot, not to the callback: a callback that deletes its
+ * own fd, adds it again and then polls can be entered again on fresh data.
+ * No caller does that; one that needs it must return right after the add.
+ */
+static void wpe_fd_run_callback(wpe_fd_entry *e)
+{
+ e->pending = 0;
+ e->busy = 1;
+ e->callback(e->fd, e->data);
+ /* The slot may hold another registration now; it is not running (its
+    callback could only have run inside this one, and has returned). */
+ e->busy = 0;
+}
+
+/**
  * wpe_fd_dispatch - Run the callback registered for fd as if it had woken.
  * @fd: a registered descriptor.
  *
  * Used by a timer that finds a source overdue (a server that never answered):
  * its own callback ends it the same way a hang-up would, so there is one
- * path to the line the user reads, not two.
+ * path to the line the user reads, not two.  A callback that is already
+ * running (it opened a dialog) is not entered again; the timer finds the
+ * source on a later tick.
  */
 void wpe_fd_dispatch(int fd)
 {
  wpe_fd_entry *e = wpe_fd_find(fd);
- if (e && e->callback)
-  e->callback(e->fd, e->data);
+ if (e && e->callback && !e->busy)
+  wpe_fd_run_callback(e);
 }
 
 /**
@@ -345,6 +441,24 @@ static int wpe_timer_pending(void)
 }
 
 /**
+ * wpe_fd_watched - Does this poll watch the entry?
+ * @e: a row of fd_table.
+ *
+ * Not while its callback runs: a dialog that callback opens polls again, and
+ * the data the callback is about to read would call it once more, or wake
+ * the dialog's loop without end.  An fd the running code turned into a
+ * wake-only watch (to wait on it itself) is watched, since nothing is called.
+ */
+static int wpe_fd_watched(const wpe_fd_entry *e)
+{
+ if (!e->active)
+  return 0;
+ if (e->busy && e->callback)
+  return 0;
+ return 1;
+}
+
+/**
  * wpe_fd_collect - Fill the poll() set from the registered fds.
  * @pfd: the set; @map: for each entry of the set, its row in fd_table.
  * Return: how many entries were filled.
@@ -355,7 +469,7 @@ static int wpe_fd_collect(struct pollfd *pfd, int *map)
 
  for (i = 0; i < fd_count; i++)
  {
-  if (!fd_table[i].active)
+  if (!wpe_fd_watched(&fd_table[i]))
    continue;
   pfd[n].fd = fd_table[i].fd;
   pfd[n].events = fd_table[i].events;
@@ -367,44 +481,71 @@ static int wpe_fd_collect(struct pollfd *pfd, int *map)
 }
 
 /**
- * wpe_fd_run_ready - Run the callbacks of the fds poll() reported.
+ * wpe_fd_note_ready - Keep what poll() reported on each fd it watched.
  * @pfd: the set poll() filled; @map: its rows in fd_table; @n: its size.
+ *
+ * A nested poll replaces the outer one's report with a fresher one, and
+ * serves it, so the outer pass finds nothing left on that fd.
  */
-static void wpe_fd_run_ready(struct pollfd *pfd, int *map, int n)
+static void wpe_fd_note_ready(const struct pollfd *pfd, const int *map, int n)
+{
+ int i;
+
+ for (i = 0; i < n; i++)
+  fd_table[map[i]].pending = pfd[i].revents;
+}
+
+/**
+ * wpe_fd_serve - Act on what poll() reported for one fd.
+ * @e: the entry; @re: its report.
+ */
+static void wpe_fd_serve(wpe_fd_entry *e, short re)
+{
+ e->pending = 0;
+ if (re & POLLNVAL)                     /* fd already closed: cannot be polled    */
+ {
+  wpe_fd_del(e->fd);
+  return;
+ }
+ /* POLLHUP / POLLERR (EOF or error) MUST dispatch too: the read callback drains
+    the last bytes, sees EOF and unregisters the fd.  Without it a dead server
+    fd -- an LSP or debug child that exited -- keeps poll() returning instantly
+    with revents set but NO POLLIN (the case when no buffered data is left, e.g.
+    a server that crashed at start-up), nothing reaps it, and the input loop
+    spins at 100% CPU.  The per-callback "detect dead server" guard only fires
+    when it is actually called, i.e. on POLLIN; this makes it fire on hang-up
+    too, on every platform regardless of how the EOF is delivered.
+    POLLOUT is dispatched for an fd that asked for it; only fds registered
+    with POLLOUT can report it, so read-only fds are not woken by it. */
+ if (!(re & WPE_FD_SERVED_EVENTS))
+  return;
+ if (e->callback)
+  wpe_fd_run_callback(e);
+ else if (re & (POLLHUP | POLLERR))     /* wake-only fd (stdin, X11) hung up:      */
+  wpe_fd_del(e->fd);                    /* drop it -- nobody can reap it, would spin */
+ /* else a wake-only POLLIN just unblocks the poll; the loop reads it itself.  */
+}
+
+/**
+ * wpe_fd_run_ready - Serve every report this poll left unserved.
+ * @map: the rows in fd_table this poll watched; @n: how many.
+ *
+ * Each report is served at most once, however deep the dialogs a callback
+ * opens: a row whose report a nested poll or a dispatch already served, that
+ * a callback removed, or that a callback filled with a new registration, has
+ * none left and waits for the next poll.
+ */
+static void wpe_fd_run_ready(const int *map, int n)
 {
  int i;
 
  for (i = 0; i < n; i++)
  {
-  short re = pfd[i].revents;
   wpe_fd_entry *e = &fd_table[map[i]];
 
-  if (!re || !e->active)               /* (a prior callback may have removed it) */
+  if (!e->active || !e->pending)
    continue;
-  if (re & POLLNVAL)                    /* fd already closed: cannot be polled    */
-  {
-   wpe_fd_del(e->fd);
-   continue;
-  }
-  /* POLLHUP / POLLERR (EOF or error) MUST dispatch too: the read callback drains
-     the last bytes, sees EOF and unregisters the fd.  Without it a dead server
-     fd -- an LSP or debug child that exited -- keeps poll() returning instantly
-     with revents set but NO POLLIN (the case when no buffered data is left, e.g.
-     a server that crashed at start-up), nothing reaps it, and the input loop
-     spins at 100% CPU.  The per-callback "detect dead server" guard only fires
-     when it is actually called, i.e. on POLLIN; this makes it fire on hang-up
-     too, on every platform regardless of how the EOF is delivered. */
-  /* POLLOUT is dispatched for an fd that asked for it: a connect or a TLS
-     handshake in progress waits to write, and only fds registered with
-     POLLOUT can report it, so read-only fds are not woken by it. */
-  if (re & (POLLIN | POLLPRI | POLLHUP | POLLERR | POLLOUT))
-  {
-   if (e->callback)
-    e->callback(e->fd, e->data);
-   else if (re & (POLLHUP | POLLERR))  /* wake-only fd (stdin, X11) hung up:      */
-    wpe_fd_del(e->fd);                 /* drop it -- nobody can reap it, would spin */
-   /* else a wake-only POLLIN just unblocks the poll; the loop reads it itself.  */
-  }
+  wpe_fd_serve(e, e->pending);
  }
 }
 
@@ -430,7 +571,8 @@ int wpe_fd_poll(int timeout_ms)
  ready = poll(pfd, n, wpe_timer_bound_wait(timeout_ms));
  if (ready < 0)
   return ready;
+ wpe_fd_note_ready(pfd, map, n);
  if (ready > 0)
-  wpe_fd_run_ready(pfd, map, n);
+  wpe_fd_run_ready(map, n);
  return ready + wpe_timer_run_due();
 }

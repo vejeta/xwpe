@@ -998,6 +998,13 @@
    "status": "new"
   },
   {
+   "id": "SC-ai-agent-53b",
+   "requirement": "The hosted engine",
+   "layer": "ncurses",
+   "test": "tests/test_ai_host_dial_and_interrupt.py::test_host_deadline_under_permission_modal_waits_for_the_answer",
+   "status": "new"
+  },
+  {
    "id": "SC-ai-agent-54",
    "requirement": "Errors mid-run",
    "layer": "ncurses",

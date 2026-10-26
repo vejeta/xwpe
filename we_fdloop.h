@@ -19,6 +19,8 @@
   This is free software; see the file COPYING.
 \*-------------------------------------------------------------------------*/
 
+#include <stddef.h>
+
 typedef void (*wpe_fd_callback)(int fd, void *data);
 typedef void (*wpe_timer_callback)(void *data);
 
@@ -36,7 +38,14 @@ int  wpe_fd_add(int fd, int events, wpe_fd_callback cb, void *data);
 void wpe_fd_del(int fd);
 void wpe_fd_dispatch(int fd);
 int  wpe_fd_poll(int timeout_ms);
+void wpe_fd_refusal(const char *what, int fd, char *line, size_t sz);
 int  wpe_timer_add(long interval_ms, int repeat, wpe_timer_callback cb, void *data);
 void wpe_timer_del(int id);
+
+/* The editor's side (we_hfkt.c): watch an fd and say so on the bottom row
+   when the loop cannot; wait for a key whether or not the keyboard is
+   watched. */
+int  e_fd_watch(int fd, int events, wpe_fd_callback cb, void *data, const char *what);
+void e_fd_key_wait(int keyboard_watched);
 
 #endif

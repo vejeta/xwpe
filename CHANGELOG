@@ -233,6 +233,13 @@ Changes
 
 1.7.0 (AI assistant -- experimental, opt-in)
 
+* With many things open at once, a debugger, a build and an AI reply
+  started later could be refused without a word: their output never
+  arrived and the waiting line stood until Esc.  The room freed by what
+  was closed is now used again, and if the editor really cannot follow
+  one more, the bottom row says "could not watch ...: too many open
+  streams" and that task ends at once.
+
 * The debugger starts, stops and marks the current line for a source file
   in a deep directory.  The path given to gdb, pdb and a68g used to be cut
   at 127 bytes, so the debugger was started on a file that did not exist

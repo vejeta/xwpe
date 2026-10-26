@@ -298,6 +298,8 @@ int   wpe_ai_stream_overdue(wpe_ai_stream *st);
 /* Why the open or the wait failed (host:port and the reason), or NULL when
  * the stream failed some other way (the peer hung up mid-answer). */
 const char *wpe_ai_stream_transport_error(wpe_ai_stream *st);
+/* The editor cannot watch the stream's fd: the next pump fails with @why. */
+void  wpe_ai_stream_abandon(wpe_ai_stream *st, const char *why);
 
 /* Drain what is readable now (non-blocking).  For every new assistant text
  * delta, calls cb(delta, ud).  Sets *done=1 when the reply is complete.

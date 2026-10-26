@@ -1521,9 +1521,10 @@ int e_x_getch()
  int c, root_x, root_y, x, y;
  unsigned int key_b;
  XSizeHints size_hints;
+ int keyboard_watched;
 
  e_refresh();
- e_input_was_char = 0;               /* default; the UTF-8 decoders set it when a
+ e_input_was_char = 0;              /* default; the UTF-8 decoders set it when a
                                         typed character is returned */
  c = e_x_next_pending_utf8();
  if (c > 0)
@@ -1542,7 +1543,8 @@ int e_x_getch()
   return(-c);
  }
 
- wpe_fd_add(ConnectionNumber(WpeXInfo.display), POLLIN, NULL, NULL);
+ keyboard_watched = (e_fd_watch(ConnectionNumber(WpeXInfo.display), POLLIN, NULL, NULL,
+                                 "the keyboard") == 0);
 
  while (1)
  {
@@ -1553,7 +1555,7 @@ int e_x_getch()
    if (e_d_async_pending)
     e_d_place_cursor_in_messages();
    XFlush(WpeXInfo.display);
-   wpe_fd_poll(-1);
+   e_fd_key_wait(keyboard_watched);
   }
   if (!XPending(WpeXInfo.display))
    continue;

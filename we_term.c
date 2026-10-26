@@ -1240,21 +1240,14 @@ static int e_t_getch_poll(void)
  int WpeGpmFd(void);
 #endif
 
+ /* Not watched yet (or refused while every slot was taken): try again on
+    every key read, so the keyboard and the console mouse come back as soon
+    as a stream closes. */
  if (!stdin_registered)
- {
-  wpe_fd_add(STDIN_FILENO, POLLIN, NULL, NULL);
-  stdin_registered = 1;
- }
+  stdin_registered = (e_fd_watch(STDIN_FILENO, POLLIN, NULL, NULL, "the keyboard") == 0);
 #ifdef HAVE_LIBGPM
- if (!gpm_registered)
- {
-  int gfd = WpeGpmFd();
-  if (gfd >= 0)
-  {
-   wpe_fd_add(gfd, POLLIN, WpeGpmReadable, NULL);
-   gpm_registered = 1;
-  }
- }
+ if (!gpm_registered && WpeGpmFd() >= 0)
+  gpm_registered = (e_fd_watch(WpeGpmFd(), POLLIN, WpeGpmReadable, NULL, "the console mouse") == 0);
 #endif
  for (;;)
  {
@@ -1271,7 +1264,7 @@ static int e_t_getch_poll(void)
   }
   if (e_d_async_pending)
    e_d_place_cursor_in_messages();
-  wpe_fd_poll(-1);
+  e_fd_key_wait(stdin_registered);
 #ifdef HAVE_LIBGPM
   if (g_gpm_click_pending)
   {
