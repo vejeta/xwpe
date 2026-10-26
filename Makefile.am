@@ -68,6 +68,7 @@ we_SOURCES = \
   we_progn.c \
   we_debug.c \
   we_debprompt.c \
+  we_debpath.c \
   WeString.c \
   WeSyntax.c \
   WeExpArr.c \
@@ -179,6 +180,7 @@ noinst_HEADERS = \
   WeProg.h \
   WeExpArr.h \
   we_debprompt.h \
+  we_debpath.h \
   we_render.h \
   we_render_glyphs.h \
   we_wayland.h \
@@ -286,7 +288,7 @@ metainfodir = $(datadir)/metainfo
 metainfo_DATA = io.codeberg.mendezr.xwpe.metainfo.xml
 
 # --- Unit tests ---
-check_PROGRAMS = test_checkheader test_fl_sel_len test_syntax_def test_fdloop test_clipboard test_lsp_buffer test_lsp_doctor test_lsp_semantic test_lsp_truecolor test_dap test_dap_dlv test_dap_gdb test_dap_lldb test_dap_scala test_lsp_scala test_lsp_clangd test_lsp_python test_lsp_gopls test_lsp_rust test_debprompt test_menurows
+check_PROGRAMS = test_checkheader test_fl_sel_len test_syntax_def test_fdloop test_clipboard test_lsp_buffer test_lsp_doctor test_lsp_semantic test_lsp_truecolor test_dap test_dap_dlv test_dap_gdb test_dap_lldb test_dap_scala test_lsp_scala test_lsp_clangd test_lsp_python test_lsp_gopls test_lsp_rust test_debprompt test_debpath test_menurows
 
 test_fdloop_SOURCES = tests/test_fdloop.c we_fdloop.c
 test_fdloop_CFLAGS = $(XWPE_STDFLAG)
@@ -298,6 +300,13 @@ test_fdloop_CFLAGS = $(XWPE_STDFLAG)
 # well: the overflow is only visible there.
 test_debprompt_SOURCES = tests/test_debprompt.c we_debprompt.c
 test_debprompt_CFLAGS = $(XWPE_STDFLAG)
+
+# Debugger start path unit test: we_debpath.c only, no editor, always runs.
+# A source path too long to hand to a debugger is refused whole, never cut;
+# no file system lets the editor be driven into that case, so it is checked
+# here at the exact buffer edge.
+test_debpath_SOURCES = tests/test_debpath.c we_debpath.c
+test_debpath_CFLAGS = $(XWPE_STDFLAG)
 
 # Dropdown highlight unit test: we_menurows.c only, no editor, always runs.
 # Wrap at both ends, step over dividers, the open/Home/End rows, the edge
@@ -407,7 +416,7 @@ test_lsp_rust_CFLAGS = $(XWPE_STDFLAG) $(JSONC_CFLAGS)
 test_lsp_rust_LDADD = $(JSONC_LIBS)
 
 TESTS = test_checkheader test_fl_sel_len test_syntax_def test_fdloop test_clipboard test_lsp_buffer test_lsp_doctor test_lsp_semantic test_lsp_truecolor test_dap test_dap_dlv \
-  test_dap_gdb test_dap_lldb test_dap_scala test_lsp_scala test_lsp_clangd test_lsp_python test_lsp_gopls test_lsp_rust test_debprompt test_menurows
+  test_dap_gdb test_dap_lldb test_dap_scala test_lsp_scala test_lsp_clangd test_lsp_python test_lsp_gopls test_lsp_rust test_debprompt test_debpath test_menurows
 
 # --- AI assistant unit tests (only when --enable-ai) ---
 # WPE_AI comes from config.h (the build is configured --enable-ai here).  The

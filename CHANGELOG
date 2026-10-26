@@ -233,6 +233,20 @@ Changes
 
 1.7.0 (AI assistant -- experimental, opt-in)
 
+* The debugger starts, stops and marks the current line for a source file
+  in a deep directory.  The path given to gdb, pdb and a68g used to be cut
+  at 127 bytes, so the debugger was started on a file that did not exist
+  and ended at once ("a68g ended unexpectedly"); a stop line longer than
+  255 bytes was split in two and its file was not found ("No Source-Code").
+  Paths now work up to the system's limit, and one that still does not fit
+  is refused with "Debugger not started: the file path is too long".  A
+  stop line or Stack row of any length is read whole, so a stop in a
+  function with a very long name (C++ templates with gdb's "set width 0")
+  is marked on its line and Enter on its Stack row reaches it.  A long
+  burst of output under the debugger, from the program or from the
+  debugger itself, no longer hangs the session or ends it as if the
+  program had exited.
+
 * On macOS and the BSDs, the waiting lines count their seconds while
   nothing is printed ("building ... 3s", "starting gdb ... 3s", the
   assistant's spinner), and a debugger or debug adapter that never answers

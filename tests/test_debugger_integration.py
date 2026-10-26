@@ -760,6 +760,193 @@ def test_pdb_first_stop_on_the_breakpoint_is_marked(tmp_path):
             "mark is on %s:\n%s" % (PY_BREAK_LINE, _mark_line(w), _screen(w))
 
 
+# Full path lengths of the source under test: past the 128 bytes the debugger
+# start used to keep, past the 256-byte lines it used to read, and close to
+# PATH_MAX (4096 on Linux) with every directory name well under NAME_MAX.
+LONG_PATH_BYTES = [200, 400, 4000]
+# jdb is checked at the two shorter lengths only: it names classes, not paths.
+JDB_LONG_PATH_BYTES = [200, 400]
+
+
+def _deep_name(tmp_path, leaf, total):
+    """leaf under nested 40-byte directories until the full path is at least
+    `total` bytes; creates the directories and returns the relative name."""
+    dirs = []
+    while len(os.path.join(str(tmp_path), *dirs, leaf)) < total:
+        dirs.append("d" * 40)
+    rel = os.path.join(*dirs, leaf)
+    os.makedirs(os.path.join(str(tmp_path), os.path.dirname(rel)))
+    assert total <= len(os.path.join(str(tmp_path), rel)) < total + 45
+    return rel
+
+
+# @scenario SC-debug-30
+@pytest.mark.parametrize("total", LONG_PATH_BYTES)
+def test_pdb_starts_on_a_source_under_a_very_long_path(tmp_path, total):
+    """A Python file in a very deep directory still starts pdb and stops,
+    marked, on its breakpoint (the path was cut short before)."""
+    _need("python3")
+    name = _deep_name(tmp_path, "p.py", total)
+    with WpeSession(str(tmp_path), PY_PROG, filename=name, wait=1.5) as w:
+        _start_py_session(w)
+        assert _wait_for(w, lambda: _mark_line(w) == PY_BREAK_LINE,
+                         STEP_TIMEOUT_S), \
+            "pdb should stop on line %d of a long-path file; mark is on " \
+            "%s:\n%s" % (PY_BREAK_LINE, _mark_line(w), _screen(w))
+
+
+# @scenario SC-debug-01
+@pytest.mark.parametrize("total", LONG_PATH_BYTES)
+def test_gdb_starts_on_a_source_under_a_very_long_path(tmp_path, total):
+    """A C file in a very deep directory builds, starts gdb and stops,
+    marked, on its breakpoint: gdb's stop line carries the whole path."""
+    _need("gcc", "gdb")
+    name = _deep_name(tmp_path, "p.c", total)
+    with WpeSession(str(tmp_path), C_PROG, filename=name, wait=1.5) as w:
+        _start_c_session(w)
+        assert _children(w, "gdb"), "gdb should be running while stopped"
+
+
+# @scenario SC-debug-20
+@pytest.mark.parametrize("total", JDB_LONG_PATH_BYTES)
+def test_jdb_starts_on_a_source_under_a_very_long_path(tmp_path, total):
+    """A Java file in a very deep directory starts jdb and stops, marked,
+    on its breakpoint.  Coverage only: jdb is given and answers with class
+    names, never the file's path, so this passed before the debugger start
+    took long paths as well and guards no fix of its own."""
+    _need("jdb", "javac")
+    name = _deep_name(tmp_path, "P.java", total)
+    with WpeSession(str(tmp_path), JAVA_PROG, filename=name, wait=1.5) as w:
+        _start_java_session(w)
+
+
+# A step whose program prints more than the debugger reader's buffer holds
+# before pdb's next prompt: a long line and then an ordinary one, or one line
+# with no end at all, so that pdb's stop line is glued to the program's
+# output.  Line numbers are 1-based lines of the program built from each row.
+PY_FLOOD_ROWS = {
+    "long-then-ended": "print('x' * 6000, end=''); print('y' * 6000)",
+    "one-unended-line": "print('x' * 20000, end='')",
+}
+PY_FLOOD_BREAK_LINE = 2
+PY_FLOOD_NEXT_LINE = 3
+PY_FLOOD_LAST_LINE = 4
+
+
+def _py_flood_prog(flood):
+    return ("x = 1\n"
+            "%s\n"
+            "x = 2\n"
+            "print('DONE', x)\n" % flood)
+
+
+def _start_py_session_on(w, line):
+    """Breakpoint on @line, Ctrl-G R, and wait for the marked stop there."""
+    _move_down(w, line - 1)
+    w.key(CTRL_G, "b", delay=0.4)
+    w.key(CTRL_G, "r", delay=1.0)
+    assert _wait_for(w, lambda: _children(w, "python3"), START_TIMEOUT_S), \
+        "pdb should be running:\n%s" % _screen(w)
+    assert _wait_for(w, lambda: _mark_line(w) == line, STEP_TIMEOUT_S), \
+        "pdb should stop on line %d; mark is on %s:\n%s" \
+        % (line, _mark_line(w), _screen(w))
+
+
+# @scenario SC-debug-19
+@pytest.mark.parametrize("flood", sorted(PY_FLOOD_ROWS))
+def test_pdb_steps_over_a_line_that_prints_more_than_the_reader_holds(
+        tmp_path, flood):
+    """F8 over a line that prints thousands of bytes (with or without a line
+    end before pdb's prompt) moves the mark to the next line, the session
+    stays open, and the next F8 still steps."""
+    _need("python3")
+    prog = _py_flood_prog(PY_FLOOD_ROWS[flood])
+    with WpeSession(str(tmp_path), prog, filename="p.py", wait=1.5) as w:
+        _start_py_session_on(w, PY_FLOOD_BREAK_LINE)
+        assert _step(w, F8, PY_FLOOD_NEXT_LINE), \
+            "F8 over the long output should stop on line %d; mark is on " \
+            "%s:\n%s" % (PY_FLOOD_NEXT_LINE, _mark_line(w), _screen(w))
+        assert _children(w, "python3"), \
+            "pdb should still run after the long output:\n%s" % _screen(w)
+        assert _step(w, F8, PY_FLOOD_LAST_LINE), \
+            "the next F8 should stop on line %d:\n%s" \
+            % (PY_FLOOD_LAST_LINE, _screen(w))
+
+
+# A program that makes pdb print a prompt longer than any line the editor
+# reads, with no line end before it: the shape of a program that prints a
+# long line without a newline just before pdb asks for its next command.
+# Every answer pdb gives from line 3 on ends that way.
+PY_LONG_PROMPT_PROG = (
+    "import gc, pdb\n"
+    "[setattr(o, 'prompt', 'x' * 6000 + '(Pdb) ') for o in gc.get_objects()"
+    " if isinstance(o, pdb.Pdb)]\n"
+    "x = 3\n"
+    "y = x * x\n"
+    "print('DONE', y)\n"
+)
+PY_LONG_PROMPT_BREAK_LINE = 4     # y = x * x
+
+
+# @scenario SC-debug-28
+def test_pdb_watch_reads_an_answer_ended_by_a_prompt_after_a_long_line(
+        tmp_path):
+    """A watch is read even when pdb's prompt comes right after a line longer
+    than the reader's buffer, with no line end between them: the Watches
+    window shows the value, the editor stays responsive, and F8 refreshes it
+    (the reader used to wait for a line end that never came)."""
+    _need("python3")
+    with WpeSession(str(tmp_path), PY_LONG_PROMPT_PROG, filename="p.py",
+                    wait=1.5) as w:
+        _start_py_session_on(w, PY_LONG_PROMPT_BREAK_LINE)
+        _add_watch(w, "x")
+        assert _wait_for(w, lambda: _watch_value(w, "x") == 3,
+                         STEP_TIMEOUT_S), \
+            "the Watches window should show x: 3:\n%s" % _screen(w)
+        _add_watch(w, "y")          # y = x * x has not run yet
+        assert _wait_for(w, lambda: _watch_row(w, "y") is not None,
+                         STEP_TIMEOUT_S), \
+            "the Watches window should show a row for y:\n%s" % _screen(w)
+        w.key(F8, delay=0.3)
+        assert _wait_for(w, lambda: _watch_value(w, "y") == 9,
+                         STEP_TIMEOUT_S), \
+            "after y = x * x ran, the watch should read 9:\n%s" % _screen(w)
+        assert _children(w, "python3"), "pdb should still be running"
+
+
+def _deep_dir(tmp_path, total):
+    """A directory under nested 40-byte directories whose path is at least
+    `total` bytes; created, and returned as a string."""
+    path = str(tmp_path)
+    while len(path) < total:
+        path = os.path.join(path, "d" * 40)
+    os.makedirs(path)
+    return path
+
+
+# The error stream line gdb writes when it declines a script that sits next
+# to the program: it names the script's whole path, so in a deep directory it
+# is longer than the buffer the start reads the error stream into.
+GDB_DECLINED_SCRIPT = "p.e-gdb.gdb"
+GDB_STDERR_PATH_BYTES = 400
+
+
+# @scenario SC-debug-01
+def test_gdb_start_reads_an_error_line_longer_than_its_buffer(tmp_path):
+    """gdb warns on its error stream, naming a 400-byte path, while it
+    starts: the session still stops, marked, on the breakpoint (the reader
+    wrote one byte past its buffer on such a line; the sanitizer build is
+    the one that sees it)."""
+    _need("gcc", "gdb")
+    deep = _deep_dir(tmp_path, GDB_STDERR_PATH_BYTES)
+    with open(os.path.join(deep, GDB_DECLINED_SCRIPT), "w") as script:
+        script.write("echo never run\\n\n")
+    with WpeSession(deep, C_PROG, filename="p.c", wait=1.5) as w:
+        _start_c_session(w)
+        assert w.alive(), "the editor died while gdb started"
+        assert _children(w, "gdb"), "gdb should be running while stopped"
+
+
 def _watch_row(w, name):
     """The Watches window's text after "name: ", or None while it shows none."""
     pat = re.compile(r"(?:^|\s)%s: (\S.*)$" % re.escape(name))
@@ -775,6 +962,432 @@ def _add_watch(w, expr):
     for ch in expr:
         w.key(ch, delay=0.05)
     w.key("\r", delay=0.5)
+
+
+# A C program with a function whose name is longer than the debugger
+# readers' buffers (E_D_LINE_MAX, PATH_MAX + 512 bytes, and twice that for
+# the reader of a run or a step): gdb prints a watch on a pointer to it, its
+# frame in "bt" and a stop in it, each as one line of over 12000 bytes.  The
+# name is pasted together by the preprocessor so that no source line is long
+# and the source window never shows a run of z: only the name's end has them.
+LONG_NAME_PROG = (
+    "int leaf(int v)\n"
+    "{\n"
+    "  return v * v;\n"
+    "}\n"
+    "#define CAT_(a, b) a##b\n"
+    "#define CAT(a, b) CAT_(a, b)\n"
+    "#define A1 aa\n"
+    + "".join("#define A%d CAT(A%d, A%d)\n" % (i, i - 1, i - 1)
+              for i in range(2, 14))
+    + "#define Z1 zz\n"
+    + "".join("#define Z%d CAT(Z%d, Z%d)\n" % (i, i - 1, i - 1)
+              for i in range(2, 8))
+    + "#define LONG_NAME CAT(CAT(A13, A12), Z7)\n"
+    "int LONG_NAME(int v)\n"
+    "{\n"
+    "  return leaf(v) + 1;\n"
+    "}\n"
+    "int (*g)(int) = LONG_NAME;\n"
+    "int main(void)\n"
+    "{\n"
+    "  return g(3);\n"
+    "}\n"
+)
+LONG_NAME_BREAK_LINE = 3          # return v * v; in leaf
+LONG_NAME_END = "z" * 10          # the name's end, never on a source line
+PGDN = "\033[6~"
+PGDN_MAX = 400                    # more pages than the longest row fills
+
+
+def _start_long_name_session(w):
+    """Breakpoint in leaf, Ctrl-G R, and wait for the marked stop there."""
+    _move_down(w, LONG_NAME_BREAK_LINE - 1)
+    w.key(CTRL_G, "b", delay=0.4)
+    w.key(CTRL_G, "r", delay=1.0)
+    assert _wait_for(w, lambda: _mark_line(w) == LONG_NAME_BREAK_LINE,
+                     START_TIMEOUT_S), \
+        "Ctrl-G R should stop on line %d:\n%s" \
+        % (LONG_NAME_BREAK_LINE, _screen(w))
+
+
+def _page_down_to(w, text):
+    """Page the active window down until @text is on the screen or the window
+    ends, and say whether it is.  The Watches and Stack windows take PgDn,
+    not Ctrl-PgDn, so the paging stops where the screen stops changing."""
+    before = None
+    for _ in range(PGDN_MAX):
+        screen = _screen(w)
+        if text in screen or screen == before:
+            break
+        before = screen
+        w.key(PGDN, delay=0.1)
+    return text in _screen(w)
+
+
+def _shows_the_long_name_end(w):
+    """Page the active window down to the long name's last characters and
+    say whether they are on the screen."""
+    return _page_down_to(w, LONG_NAME_END)
+
+
+# @scenario SC-debug-10
+def test_gdb_watch_shows_a_value_longer_than_the_reader_holds(tmp_path):
+    """A watch whose value gdb prints as one line of over 12000 bytes shows
+    the whole value in the Watches window, its end included.  A guard on the
+    whole-line read: a reader that cuts long lines fails it; the older
+    reader, which handed such a line out in pieces the watch put back
+    together, passed it too."""
+    _need("gcc", "gdb")
+    with WpeSession(str(tmp_path), LONG_NAME_PROG, filename="p.c",
+                    wait=1.5) as w:
+        _start_long_name_session(w)
+        _add_watch(w, "g")
+        assert _wait_for(w, lambda: _watch_row(w, "g") is not None,
+                         STEP_TIMEOUT_S), \
+            "the Watches window should show a row for g:\n%s" % _screen(w)
+        assert _shows_the_long_name_end(w), \
+            "the end of g's value (the name's run of z) should be in the " \
+            "Watches window:\n%s" % _screen(w)
+        assert _children(w, "gdb"), "gdb should still be running"
+
+
+# @scenario SC-debug-33
+def test_gdb_stack_shows_a_row_longer_than_the_reader_holds(tmp_path):
+    """A "bt" row of over 12000 bytes (a frame of a function with a very long
+    name) is shown in the Stack window to its end, and the frame below it
+    still follows it.  A guard on the whole-line read: a reader that cuts
+    long lines fails it; the older reader, which handed the row out in
+    pieces, passed it too."""
+    _need("gcc", "gdb")
+    with WpeSession(str(tmp_path), LONG_NAME_PROG, filename="p.c",
+                    wait=1.5) as w:
+        _start_long_name_session(w)
+        w.key(CTRL_G, "k", delay=0.8)
+        assert _wait_for(w, lambda: " Stack " in _screen(w), STEP_TIMEOUT_S), \
+            "Ctrl-G K should open the Stack window:\n%s" % _screen(w)
+        assert _shows_the_long_name_end(w), \
+            "the end of the long frame row (the name's run of z) should be " \
+            "in the Stack window:\n%s" % _screen(w)
+        assert _page_down_to(w, "in main ()"), \
+            "main's frame should follow the long row:\n%s" % _screen(w)
+        assert _children(w, "gdb"), "gdb should still be running"
+
+
+# Lines of LONG_NAME_PROG inside the long-named function and in main.  gdb
+# names a stop there with a line longer than the readers' buffers, its
+# "at p.c:N" at the end: "Breakpoint 1, aaa...zzz (v=3) at .../p.c:30".
+# gdb only keeps "at p.c:N" on that line when it does not wrap its output,
+# which is what "set width 0" in ~/.gdbinit, a common setting, asks for.
+LONG_NAME_BODY_LINE = 30          # return leaf(v) + 1;
+LONG_NAME_CALL_LINE = 35          # return g(3); in main
+LONG_NAME_ROWS = 60               # the source window shows every line
+GDBINIT_NO_WRAP = "set width 0\n"
+
+
+def _long_name_session(tmp_path, **kw):
+    """A session on LONG_NAME_PROG whose gdb, like many users', never wraps
+    a line (the test HOME is tmp_path)."""
+    (tmp_path / ".gdbinit").write_text(GDBINIT_NO_WRAP)
+    return WpeSession(str(tmp_path), LONG_NAME_PROG, filename="p.c",
+                      wait=1.5, rows=LONG_NAME_ROWS, **kw)
+
+
+def _stop_on(w, line):
+    """Breakpoint on @line, Ctrl-G R, and wait for the marked stop there."""
+    _move_down(w, line - 1)
+    w.key(CTRL_G, "b", delay=0.4)
+    w.key(CTRL_G, "r", delay=1.0)
+    assert _wait_for(w, lambda: _mark_line(w) == line, START_TIMEOUT_S), \
+        "Ctrl-G R should stop, marked, on line %d (mark on %s):\n%s" \
+        % (line, _mark_line(w), _screen(w))
+
+
+# @scenario SC-debug-01
+def test_gdb_run_marks_a_stop_whose_line_is_longer_than_the_reader_holds(
+        tmp_path):
+    """A breakpoint inside a function whose name makes gdb's stop line over
+    12000 bytes long: Ctrl-G R marks the line, read from the end of the stop
+    line (it was cut, and the stop was not marked)."""
+    _need("gcc", "gdb")
+    with _long_name_session(tmp_path) as w:
+        _stop_on(w, LONG_NAME_BODY_LINE)
+        assert _children(w, "gdb"), "gdb should still be running"
+
+
+# @scenario SC-debug-02
+def test_gdb_step_into_a_function_whose_stop_line_is_longer_than_the_reader(
+        tmp_path):
+    """F7 from main into the long-named function marks its first line: the
+    step's stop line is over 12000 bytes long and names the line at its
+    end."""
+    _need("gcc", "gdb")
+    with _long_name_session(tmp_path) as w:
+        _stop_on(w, LONG_NAME_CALL_LINE)
+        assert _step(w, F7, LONG_NAME_BODY_LINE), \
+            "F7 should step into the long-named function and mark line %d " \
+            "(mark on %s):\n%s" % (LONG_NAME_BODY_LINE, _mark_line(w),
+                                    _screen(w))
+
+
+# A Python function renamed to over 12000 characters: pdb names a stop in it
+# as "> .../p.py(2)aaa...zzz()", the position at the start of the line.
+PY_LONG_NAME_PROG = (
+    "def sq(v):\n"
+    "    return v * v\n"
+    "\n"
+    "sq.__code__ = sq.__code__.replace(co_name='a' * 12000 + 'z' * 256)\n"
+    "y = sq(3)\n"
+    "print('DONE', y)\n"
+)
+PY_LONG_NAME_CALL_LINE = 5        # y = sq(3)
+PY_LONG_NAME_BODY_LINE = 2        # return v * v
+
+
+# @scenario SC-debug-19
+def test_pdb_steps_through_a_function_whose_stop_line_is_longer(tmp_path):
+    """F7 into a function whose name makes pdb's stop line over 12000 bytes
+    long, then F8, marks its lines: pdb names the position at the start of
+    the line, so the reader's head keeps it."""
+    _need("python3")
+    with WpeSession(str(tmp_path), PY_LONG_NAME_PROG, filename="p.py",
+                    wait=1.5) as w:
+        _start_py_session_on(w, PY_LONG_NAME_CALL_LINE)
+        assert _step(w, F7, PY_CALLEE_LINE), \
+            "F7 should stop on the def line (mark on %s):\n%s" \
+            % (_mark_line(w), _screen(w))
+        assert _step(w, F8, PY_LONG_NAME_BODY_LINE), \
+            "F8 should mark line %d (mark on %s):\n%s" \
+            % (PY_LONG_NAME_BODY_LINE, _mark_line(w), _screen(w))
+
+
+def _py_print_then_step(text, end="\\n"):
+    """A program that prints @text on line 3 between two plain lines."""
+    return ("x = 1\n"
+            "y = 2\n"
+            "print(%r, end=\"%s\")\n"
+            "z = 3\n" % (text, end))
+
+
+# Programs whose answers from pdb hold "> name(N" outside its stop line: in
+# the "-> source" line that follows it, in a return value pdb prints on the
+# stop line itself ("> .../p.py(2)f()->'x > g(5)'"), or in the program's
+# output, glued to the stop line or not.  Each row is (program, breakpoint
+# line, then each key with the line it must mark).
+PY_RETURN_ARROW_STEPS = [(F7, 1), (F8, 2), (F8, 2), (F8, 4)]
+PY_ARROW_ROWS = {
+    "comparison-with-a-call": (
+        "def f(n):\n"
+        "    return n\n"
+        "x = 5\n"
+        "if x > f(1):\n"
+        "    print(x)\n",
+        3, [(F8, 4), (F8, 5)]),
+    "printed-arrow-and-call": (
+        _py_print_then_step("> word(3)"), 2, [(F8, 3), (F8, 4)]),
+    "printed-stop-like-text": (
+        _py_print_then_step("> step(3)"), 2, [(F8, 3), (F8, 4)]),
+    "printed-source-like-text": (
+        _py_print_then_step("-> x > g(7)"), 2, [(F8, 3), (F8, 4)]),
+    "output-glued-to-the-stop": (
+        _py_print_then_step("abc > k(2)", end=""), 2, [(F8, 3), (F8, 4)]),
+    "return-value-with-an-arrow-and-a-call": (
+        "def f():\n"
+        "    return \"x > g(5)\"\n"
+        "y = f()\n"
+        "print(y)\n",
+        3, PY_RETURN_ARROW_STEPS),
+    "return-value-with-a-source-arrow": (
+        "def f():\n"
+        "    return \"-> a > h(4)\"\n"
+        "y = f()\n"
+        "print(y)\n",
+        3, PY_RETURN_ARROW_STEPS),
+    # F7 into code run by exec() or eval(): pdb names it "<string>(0)" (3.14)
+    # and the session steps on to the program's next line.
+    "step-into-exec": (
+        "x = 1\n"
+        "exec(\"y = 2\\nz = 3\")\n"
+        "w = 4\n",
+        2, [(F7, 3)]),
+    "step-into-eval": (
+        "x = 1\n"
+        "v = eval(\"x + 1\")\n"
+        "w = 4\n",
+        2, [(F7, 3)]),
+}
+KEY_NAMES = {F7: "F7", F8: "F8"}
+
+
+# @scenario SC-debug-19
+@pytest.mark.parametrize("row", sorted(PY_ARROW_ROWS))
+def test_pdb_step_onto_a_line_holding_an_arrow_and_a_call(tmp_path, row):
+    """Each step marks the line pdb stopped on: a "> f(1" in pdb's "-> source"
+    line, in a return value on the stop line, or in the program's output is
+    not taken for a stop in a file "f"."""
+    _need("python3")
+    prog, break_line, steps = PY_ARROW_ROWS[row]
+    with WpeSession(str(tmp_path), prog, filename="p.py", wait=1.5) as w:
+        _start_py_session_on(w, break_line)
+        for key, line in steps:
+            w.key(key, delay=0.3)
+            assert _wait_for(w, lambda: _mark_line(w) == line,
+                             STEP_TIMEOUT_S), \
+                "%s should mark line %d (mark on %s):\n%s" \
+                % (KEY_NAMES[key], line, _mark_line(w), _screen(w))
+
+
+# A source under a directory whose name holds "(1)": pdb's stop line reads
+# "> .../a b(1)/p.py(3)<module>()", with a "(digits)" before the line's own.
+PY_PAREN_DIR = "a b(1)"
+
+
+# @scenario SC-debug-19
+def test_pdb_steps_in_a_source_under_a_directory_named_with_a_number(
+        tmp_path):
+    """F8 marks the next line of a Python file under "a b(1)/": the "(1)" of
+    the directory is not taken for the line pdb stopped on."""
+    _need("python3")
+    os.makedirs(os.path.join(str(tmp_path), PY_PAREN_DIR))
+    name = os.path.join(PY_PAREN_DIR, "p.py")
+    with WpeSession(str(tmp_path), _py_print_then_step("hello"),
+                    filename=name, wait=1.5) as w:
+        _start_py_session_on(w, 2)
+        assert _step(w, F8, 3), \
+            "F8 should mark line 3 (mark on %s):\n%s" \
+            % (_mark_line(w), _screen(w))
+
+
+# A step over a line that prints 5 MB under pdb, which shares its output
+# pipe with the program: pdb must wait for the editor to read, not fail.
+PY_FLOOD_PROG = (
+    "a = 0\n"
+    "x = 1\n"
+    "print('x' * 5000000)\n"
+    "y = 2\n"
+)
+PY_FLOOD_TIMEOUT_S = 30
+
+
+# @scenario SC-debug-19
+def test_pdb_steps_over_a_line_that_prints_megabytes(tmp_path):
+    """F8 over print('x' * 5000000) marks the next line and pdb still runs
+    (pdb wrote to a non-blocking pipe, failed with BlockingIOError and the
+    session ended as if the program had exited)."""
+    _need("python3")
+    with WpeSession(str(tmp_path), PY_FLOOD_PROG, filename="p.py",
+                    wait=1.5) as w:
+        _start_py_session_on(w, 2)
+        assert _step(w, F8, 3), \
+            "F8 should mark line 3 (mark on %s):\n%s" \
+            % (_mark_line(w), _screen(w))
+        w.key(F8, delay=0.3)
+        assert _wait_for(w, lambda: _mark_line(w) == 4, PY_FLOOD_TIMEOUT_S), \
+            "F8 over the 5 MB print should mark line 4 (mark on %s):\n%s" \
+            % (_mark_line(w), _screen(w))
+        assert _children(w, "python3"), "pdb should still be running"
+
+
+# A breakpoint whose gdb commands print a million-element array, about 8 MB
+# in 100000 lines of 80 columns, in one burst, and go on.
+FLOOD_COMMANDS_LINE = 6           # i = 1;  the printing breakpoint
+FLOOD_STOP_LINE = 8               # i = 3;  the user's breakpoint
+FLOOD_C_PROG = (
+    "int big[1000000];\n"
+    "int main(void)\n"
+    "{\n"
+    "  int i;\n"
+    "  for (i = 0; i < 1000000; i++) big[i] = i;\n"
+    "  i = 1;\n"
+    "  i = 2;\n"
+    "  i = 3;\n"
+    "  return i;\n"
+    "}\n"
+)
+FLOOD_GDBINIT = (
+    "set breakpoint pending on\n"
+    "set print elements unlimited\n"
+    "set print repeats unlimited\n"
+    "set max-value-size unlimited\n"
+    "set width 80\n"
+    "break p.c:%d\n"
+    "commands\n"
+    "silent\n"
+    "print big\n"
+    "continue\n"
+    "end\n" % FLOOD_COMMANDS_LINE
+)
+FLOOD_TIMEOUT_S = 60
+FLOOD_HOLD_S = 6                  # longer than gdb takes to print it all
+
+
+def _hold_the_editor(w, seconds):
+    """Stop the editor's own process for @seconds, as a long redraw or a
+    slow terminal would, so whatever the debugger prints meanwhile has to
+    wait in the pipe."""
+    os.kill(w.proc.pid, signal.SIGSTOP)
+    try:
+        time.sleep(seconds)
+    finally:
+        os.kill(w.proc.pid, signal.SIGCONT)
+
+
+# @scenario SC-debug-01
+def test_gdb_run_through_megabytes_of_breakpoint_output_reaches_the_stop(
+        tmp_path):
+    """A breakpoint's commands print 100000 lines (about 8 MB) and continue
+    while the editor is busy elsewhere: once it reads again, the session
+    reads them all, stops on the next breakpoint, marked, and gdb still runs.
+    The editor is held stopped during the burst so the pipe really fills:
+    gdb wrote to a non-blocking pipe and dropped what did not fit, the stop
+    line among it, and the session waited for ever."""
+    _need("gcc", "gdb")
+    (tmp_path / ".gdbinit").write_text(FLOOD_GDBINIT)
+    with WpeSession(str(tmp_path), FLOOD_C_PROG, filename="p.c",
+                    wait=1.5) as w:
+        _move_down(w, FLOOD_STOP_LINE - 1)
+        w.key(CTRL_G, "b", delay=0.4)
+        w.key(CTRL_G, "r", delay=0.2)
+        assert _wait_for(w, lambda: "Starting program" in _screen(w),
+                         START_TIMEOUT_S), \
+            "gdb should start the program:\n%s" % _screen(w)
+        _hold_the_editor(w, FLOOD_HOLD_S)
+        assert _wait_for(w, lambda: _mark_line(w) == FLOOD_STOP_LINE,
+                         FLOOD_TIMEOUT_S), \
+            "the run should stop, marked, on line %d (mark on %s):\n%s" \
+            % (FLOOD_STOP_LINE, _mark_line(w), _screen(w))
+        assert _children(w, "gdb"), "gdb should still be running"
+
+
+def _cursor_row_text(w):
+    """The screen row the cursor is on."""
+    return w.display(drain=0)[w.screen.cursor.y]
+
+
+# @scenario SC-debug-33
+def test_gdb_stack_enter_follows_a_row_longer_than_the_reader_holds(
+        tmp_path):
+    """Stopped in leaf, Ctrl-G K, Enter on the frame of the long-named
+    function (a row of over 12000 bytes, wrapped over many window lines,
+    its path among them) marks the call in it (the row was refused as having
+    no source)."""
+    _need("gcc", "gdb")
+    with _long_name_session(tmp_path, cols=STACK_COLS) as w:
+        _stop_on(w, LONG_NAME_BREAK_LINE)
+        w.key(CTRL_G, "k", delay=0.8)
+        assert _wait_for(w, lambda: "#1  " in _screen(w), STEP_TIMEOUT_S), \
+            "Ctrl-G K should list the long frame:\n%s" % _screen(w)
+        for _ in range(PGDN_MAX):
+            if "#1  " in _cursor_row_text(w):
+                break
+            w.key(DOWN, delay=0.1)
+        assert "#1  " in _cursor_row_text(w), \
+            "the cursor should reach the long frame's row:\n%s" % _screen(w)
+        w.key("\r", delay=0.8)
+        assert _wait_for(w, lambda: _mark_line(w) == LONG_NAME_BODY_LINE,
+                         STEP_TIMEOUT_S), \
+            "Enter on the long frame should mark line %d (mark on %s):\n%s" \
+            % (LONG_NAME_BODY_LINE, _mark_line(w), _screen(w))
 
 
 # @scenario SC-debug-28

@@ -13,6 +13,7 @@
 #include "we_bsp.h"
 #include "we_lsp.h"
 #include "we_debprompt.h"
+#include "we_debpath.h"
 
 #ifndef NO_XWINDOWS
 #include "WeXterm.h"
@@ -85,8 +86,38 @@ int *e_d_nrwtchs;
 
 char **e_d_swtchs; /* e_d_swtchs[i] is the i-th watch expression (a char*) */
 
+/* The longest line read from a debugger.  A stop, a frame or a breakpoint
+   answer names a source file, and a file may sit under any path up to
+   PATH_MAX; the margin is for what the debugger prints around it (the
+   function and its arguments, "at ", ":line").  A longer line is cut at this
+   size and the rest dropped (see e_d_line_skip_rest), never read as a
+   second line.  Lines whose end matters -- a stop line, a frame, a value --
+   are read whole instead (E_D_LINE): their "at file:line" comes after a
+   function name and arguments of any length. */
+#define E_D_LINE_MARGIN  512
+#define E_D_LINE_MAX     (PATH_MAX + E_D_LINE_MARGIN)
+/* A debugger line of any length, read by e_d_line_read_whole. */
+typedef struct
+{
+ signed char *s;          /* the line, NUL-terminated; NULL before a read */
+ int size;                /* bytes allocated at s */
+} E_D_LINE;
+/* The longest line read whole: far beyond any value, frame or stop line a
+   debugger prints.  A longer one is a runaway; it is kept cut at this size,
+   ends in E_D_LINE_CUT_MARK, and its rest is dropped as a cut line's is. */
+#define E_D_LINE_WHOLE_MAX  (4 * 1024 * 1024)
+#define E_D_LINE_CUT_MARK   " [...]"
+/* The most an E_D_LINE ever holds: a whole line, one more read, the mark. */
+#define E_D_LINE_ROOM_MAX   (E_D_LINE_WHOLE_MAX + 2 * E_D_LINE_MAX)
+static int e_d_line_room(E_D_LINE *ln, int len);
+static void e_d_line_free(E_D_LINE *ln);
+static int e_d_line_drain_errors(signed char *s, int max);
+/* How many of the last bytes dropped from a cut line are kept to recognise a
+   prompt that the debugger printed right after it, split or not: the longest
+   prompt, "(a68g) ", is 7 bytes. */
+#define E_D_PROMPT_TAIL  8
 int e_d_nstack;
-char e_d_file[128], **e_d_sbrpts;
+char e_d_file[E_D_LINE_MAX], **e_d_sbrpts;
 char *e_d_out = NULL;
 /* Which debugger backend e_deb_type selects (see e_run_debug's dispatch).
    The numeric values are persisted in the options file, so keep them stable. */
@@ -108,7 +139,9 @@ int e_deb_type = 0, e_deb_mode = 0;
    0 = auto-detect (first in PATH), 1 = prefer gdb, 2 = prefer lldb-dap. */
 enum { DAP_ADAPTER_AUTO = 0, DAP_ADAPTER_GDB = 1, DAP_ADAPTER_LLDB = 2 };
 int e_dap_adapter = DAP_ADAPTER_AUTO;
-char e_d_out_str[SVLINES][256];
+/* The last SVLINES lines the debugger answered a run or a step with, each
+   whole, oldest first, read by the stop parsers through e_d_sp. */
+static E_D_LINE e_d_out_ln[SVLINES];
 char *e_d_sp[SVLINES];
 char e_d_tty[80];
 
@@ -179,7 +212,7 @@ char *npipe[5] = {  NULL, NULL, NULL, NULL, NULL  };
 
 /* Per-step async read of jdb/pdb output: scratch buffer size, and how long to
    wait for the next chunk before deciding the step has finished printing. */
-#define DEB_STEP_BUF     4096
+#define DEB_STEP_BUF     (PATH_MAX + 4096)
 #define DEB_STEP_POLL_MS 5000
 
 /* Safety bound on the stderr-drain loop at the top of e_d_line_read: a debugger
@@ -278,8 +311,10 @@ void e_d_pty_flush_to_messages(FENSTER *);
    field holds a fragment carried between non-blocking reads.  Grouped so a
    session boundary can clear them all in one call (e_d_async_reset). */
 static struct {
- char nb_buf[512];          /* e_d_line_read_nb: partial gdb line */
- int  nb_len;
+ E_D_LINE nb;               /* e_d_line_read_nb: what has come of gdb's lines */
+ int  nb_len;               /* bytes held in nb */
+ int  nb_scanned;           /* of which are known to hold no line end */
+ int  nb_dropping;          /* the rest of a line handed out cut is dropped */
  char pty_line_buf[1024];   /* pty -> Messages: line being assembled */
  int  pty_line_len;
  int  pty_owns_last_line;   /* pty output left the current line unterminated */
@@ -288,8 +323,48 @@ static struct {
 static void e_d_async_reset(void)
 {
  e_d_async.nb_len = 0;
+ e_d_async.nb_scanned = 0;
+ e_d_async.nb_dropping = 0;
  e_d_async.pty_line_len = 0;
  e_d_async.pty_owns_last_line = 0;
+}
+
+/* The blocking readers' side of a cut line.  e_d_line_read and e_e_line_read
+   keep the start of a line longer than their caller's buffer and drop the
+   rest; the dropping goes on in the next read, so no read ever waits for the
+   end of a line the debugger may not finish before it asks for a command. */
+static struct {
+ int out_discarding;      /* e_d_line_read: the rest of a cut line is pending */
+ int out_at_prompt;       /* the bytes dropped so far end in a word prompt */
+ signed char out_tail[E_D_PROMPT_TAIL]; /* their last bytes */
+ int out_tail_len;
+ int err_discarding;      /* e_e_line_read: the same, on the error stream */
+} e_d_cut;
+
+/**
+ * e_d_cut_reset - Forget a cut line left over from another debugger session.
+ *
+ * A new session starts reading at the start of a line, so nothing the last
+ * debugger printed can make the first answer of this one look cut.
+ */
+static void e_d_cut_reset(void)
+{
+ memset(&e_d_cut, 0, sizeof e_d_cut);
+}
+
+/**
+ * e_d_cut_forget_output - Forget a cut output line when another reader
+ * takes over the debugger's output.
+ *
+ * The fd-loop reader and the step readers of jdb, pdb and a68g read the
+ * rest of that line themselves; left pending, the next blocking read would
+ * drop the first line of its own answer instead (the first row of "where").
+ */
+static void e_d_cut_forget_output(void)
+{
+ e_d_cut.out_discarding = 0;
+ e_d_cut.out_at_prompt = 0;
+ e_d_cut.out_tail_len = 0;
 }
 
 static int e_d_check_prompt(signed char *s, int i)
@@ -312,52 +387,242 @@ static int e_d_check_prompt(signed char *s, int i)
  return 0;
 }
 
-int e_d_line_read_nb(int n, signed char *s, int max)
+/**
+ * e_d_nb_is_line_end - Say whether a byte ends a line for the async reader.
+ *
+ * One definition for the line loop and for the dropping of a cut line, so a
+ * line the loop would end is never dropped past its end.
+ */
+static int e_d_nb_is_line_end(char c)
 {
- int flags, nread, i;
+ return(c == '\n' || c == '\0');
+}
 
- /* Same runaway guard as e_d_line_read's stderr drain: a flooding backend must
-    not pin this async (gdb fd-loop) reader in an unbounded stderr drain. */
- while (e_e_line_read(efildes[0], s, max) >= 0)
-  if (++e_d_read_runaway > E_D_RUNAWAY_MAX)
-  {  e_d_read_runaway = 0;  break;  }
+/**
+ * e_d_nb_consume - Forget the first @n buffered bytes of the async reader.
+ */
+static void e_d_nb_consume(int n)
+{
+ char *held = (char *)e_d_async.nb.s;
+
+ e_d_async.nb_len -= n;
+ memmove(held, held + n, e_d_async.nb_len);
+ held[e_d_async.nb_len] = '\0';
+ e_d_async.nb_scanned = 0;
+}
+
+/**
+ * e_d_nb_ends_in_prompt - Say whether the async reader's buffer ends with
+ * the debugger's prompt.
+ */
+static int e_d_nb_ends_in_prompt(void)
+{
+ return(e_d_async.nb_len > 0 &&
+        e_d_check_prompt(e_d_async.nb.s, e_d_async.nb_len - 1));
+}
+
+/**
+ * e_d_nb_take - Hand out the first @len buffered bytes as one line, and keep
+ * what follows them for the next.
+ * @line: where the line goes, grown as needed; @len: its bytes, its end
+ * included; @used: how many buffered bytes it took.
+ * Return: 0, or -1 when memory ran out.
+ */
+static int e_d_nb_take(E_D_LINE *line, int len, int used)
+{
+ if (e_d_line_room(line, len) < 0)
+  return(-1);
+ memcpy(line->s, e_d_async.nb.s, len);
+ line->s[len] = '\0';
+ e_d_nb_consume(used);
+ return(0);
+}
+
+/**
+ * e_d_nb_holds_line - Say whether a whole line is already buffered.
+ *
+ * Nothing more is read while one is: gdb may print megabytes of short lines
+ * in one run (a breakpoint's commands in a loop), and reading on would hold
+ * them all at once until the buffer's bound ended the session.
+ */
+static int e_d_nb_holds_line(void)
+{
+ const char *held = (const char *)e_d_async.nb.s;
+ int i;
+
+ for (i = e_d_async.nb_scanned; i < e_d_async.nb_len; i++)
+  if (e_d_nb_is_line_end(held[i]))
+   return(1);
+ e_d_async.nb_scanned = e_d_async.nb_len;
+ return(0);
+}
+
+/**
+ * e_d_nb_take_cut - Hand out a line that passed E_D_LINE_WHOLE_MAX cut,
+ * ending in E_D_LINE_CUT_MARK, and drop its rest as it comes.
+ * @line: where the line goes.
+ *
+ * Only a runaway gdb prints such a line; memory stays bounded and the user
+ * sees that the line is not all there.
+ * Return: 2 (a line), or -1 when memory ran out.
+ */
+static int e_d_nb_take_cut(E_D_LINE *line)
+{
+ int len = e_d_async.nb_len;
+
+ if (e_d_nb_take(line, len, len - E_D_PROMPT_TAIL) < 0)
+  return(-1);
+ strcpy((char *)line->s + len, E_D_LINE_CUT_MARK);
+ e_d_async.nb_dropping = 1;
+ return(2);
+}
+
+/**
+ * e_d_nb_still_dropping - Go on dropping the rest of a line handed out cut.
+ *
+ * The dropping ends at the line's end, or at gdb's prompt when gdb asks for
+ * a command right after the line without ending it; the last bytes are kept
+ * meanwhile, in case they begin that prompt.
+ * Return: 1 while nothing but dropped text has come, else 0.
+ */
+static int e_d_nb_still_dropping(void)
+{
+ const char *held = (const char *)e_d_async.nb.s;
+ int i;
+
+ for (i = 0; i < e_d_async.nb_len; i++)
+  if (e_d_nb_is_line_end(held[i]))
+  {
+   e_d_nb_consume(i + 1);
+   e_d_async.nb_dropping = 0;
+   return(0);
+  }
+ if (e_d_nb_ends_in_prompt())
+ {
+  e_d_async.nb_dropping = 0;
+  return(0);
+ }
+ if (e_d_async.nb_len > E_D_PROMPT_TAIL)
+  e_d_nb_consume(e_d_async.nb_len - E_D_PROMPT_TAIL);
+ return(1);
+}
+
+/**
+ * e_d_nb_fill - Add to the async reader's buffer what gdb has written, without
+ * waiting.
+ * @n: gdb's output.
+ *
+ * Each read takes at most E_D_LINE_MAX bytes and counts as one line toward
+ * the runaway bound, as the blocking reader counts a long line, and a line
+ * is never held past E_D_LINE_WHOLE_MAX, so memory stays bounded.
+ * Return: what read() answered, or -3 for a runaway or memory run out.
+ */
+static int e_d_nb_fill(int n)
+{
+ int flags, nread;
+
+ if (e_d_line_room(&e_d_async.nb, e_d_async.nb_len) < 0)
+  return(-3);
  flags = fcntl(n, F_GETFL, 0);
  fcntl(n, F_SETFL, flags | O_NONBLOCK);
- nread = read(n, e_d_async.nb_buf + e_d_async.nb_len, sizeof(e_d_async.nb_buf) - e_d_async.nb_len - 1);
+ nread = read(n, e_d_async.nb.s + e_d_async.nb_len, E_D_LINE_MAX - 1);
  fcntl(n, F_SETFL, flags & ~O_NONBLOCK);
- if (nread == 0 && e_d_async.nb_len == 0)
+ if (nread <= 0)
+  return(nread);
+ e_d_async.nb_len += nread;
+ e_d_async.nb.s[e_d_async.nb_len] = '\0';
+ if (++e_d_read_runaway > E_D_RUNAWAY_MAX)
  {
-  e_d_note_output_closed();
-  return -1;
+  e_d_read_runaway = 0;
+  e_d_async.nb_len = 0;
+  e_d_async.nb_scanned = 0;
+  return(-3);
  }
- if (nread < 0 && e_d_async.nb_len == 0)
-  return -2;
- if (nread > 0)
-  e_d_async.nb_len += nread;
- e_d_async.nb_buf[e_d_async.nb_len] = '\0';
- for (i = 0; i < e_d_async.nb_len; i++)
+ return(nread);
+}
+
+/**
+ * e_d_line_read_nb_whole - Hand out the next whole line gdb wrote, or its
+ * prompt, without waiting.
+ * @n: gdb's output; @line: where the line goes, grown as needed.
+ *
+ * The fd-loop's reader for a run or a step: a stop line names its file and
+ * line at its end, after a function name and arguments of any length (a C++
+ * template frame passes E_D_LINE_MAX easily), so it is handed out whole and
+ * the stop is marked whatever its length.  A line not yet ended stays
+ * buffered until it is.
+ * Return: 2 for a line, 1 for the prompt, -2 while nothing whole has come,
+ * -1 at the end of the output, for a runaway gdb, or when memory ran out.
+ */
+static int e_d_line_read_nb_whole(int n, E_D_LINE *line)
+{
+ signed char err[E_D_LINE_MAX];
+ char *held;
+ int nread, i;
+
+ e_d_line_drain_errors(err, sizeof err);
+ if (!e_d_nb_holds_line())
  {
-  if (e_d_async.nb_buf[i] == '\n' || e_d_async.nb_buf[i] == '\0')
+  nread = e_d_nb_fill(n);
+  if (nread == -3)
+   return(-1);
+  if (nread == 0 && e_d_async.nb_dropping)
+   e_d_async.nb_len = 0;  /* the dropped rest is no prompt to wait for */
+  if (nread == 0 && e_d_async.nb_len == 0)
   {
-   int len = (i < max - 1) ? i : max - 2;
-   memcpy(s, e_d_async.nb_buf, len);
-   s[len] = e_d_async.nb_buf[i];
-   s[len + 1] = '\0';
-   e_d_async.nb_len -= (i + 1);
-   if (e_d_async.nb_len > 0)
-    memmove(e_d_async.nb_buf, e_d_async.nb_buf + i + 1, e_d_async.nb_len);
-   return e_d_check_prompt(s, len) ? 1 : 2;
+   e_d_note_output_closed();
+   return -1;
+  }
+  if (nread < 0 && e_d_async.nb_len == 0)
+   return -2;
+ }
+ if (e_d_async.nb_dropping && e_d_nb_still_dropping())
+  return -2;
+ held = (char *)e_d_async.nb.s;
+ for (i = e_d_async.nb_scanned; i < e_d_async.nb_len; i++)
+ {
+  if (e_d_nb_is_line_end(held[i]))
+  {
+   if (e_d_nb_take(line, i + 1, i + 1) < 0)
+    return(-1);
+   return e_d_check_prompt(line->s, i) ? 1 : 2;
   }
  }
- if (e_d_check_prompt((signed char *)e_d_async.nb_buf, e_d_async.nb_len - 1))
+ e_d_async.nb_scanned = e_d_async.nb_len;
+ if (e_d_nb_ends_in_prompt())
  {
-  int len = (e_d_async.nb_len < max - 1) ? e_d_async.nb_len : max - 2;
-  memcpy(s, e_d_async.nb_buf, len);
-  s[len] = '\0';
-  e_d_async.nb_len = 0;
+  if (e_d_nb_take(line, e_d_async.nb_len, e_d_async.nb_len) < 0)
+   return(-1);
   return 1;
  }
+ if (e_d_async.nb_len >= E_D_LINE_WHOLE_MAX)
+  return(e_d_nb_take_cut(line));
  return -2;
+}
+
+/* What e_d_line_read_nb reads into before it hands out a line's head. */
+static E_D_LINE e_d_nb_line;
+
+/**
+ * e_d_line_read_nb - Hand out the head of the next line gdb wrote, or its
+ * prompt, without waiting.
+ * @n: gdb's output; @s, @max: the caller's buffer.
+ *
+ * For callers that only look at a line's start, such as the debugger's
+ * banner read while it starts; the line is still read whole, so what follows
+ * it is read as the next line.
+ * Return: as e_d_line_read_nb_whole.
+ */
+int e_d_line_read_nb(int n, signed char *s, int max)
+{
+ int ret = e_d_line_read_nb_whole(n, &e_d_nb_line);
+
+ if (ret == 1 || ret == 2)
+ {
+  strncpy((char *)s, (char *)e_d_nb_line.s, max - 1);
+  s[max - 1] = '\0';
+ }
+ return(ret);
 }
 
 static FENSTER *e_d_find_messages_window(void)
@@ -565,9 +830,77 @@ static void e_scala_pin_jdk(FENSTER *f, const char *who);  /* pin Scala JVM (bel
 static void e_d_brk_forget_start_entries(void);   /* breakpoints (below) */
 static void e_d_cursor_brk_clear(void);           /* Go to cursor's (below) */
 
+/* What a slot of the answer lines shows when its memory could not be had. */
+static char e_d_out_none[1];
+
+/**
+ * e_d_out_show - Point the stop parsers (e_d_sp) at the answer lines, oldest
+ * first.
+ */
+static void e_d_out_show(void)
+{
+ int i;
+
+ for (i = 0; i < SVLINES; i++)
+ {
+  if (e_d_out_ln[i].s)
+   e_d_sp[i] = (char *)e_d_out_ln[i].s;
+  else
+   e_d_sp[i] = e_d_out_none;
+ }
+}
+
+/**
+ * e_d_out_clear - Forget the answer lines before a run or a step is read,
+ * so a stop is never parsed out of the last one's answer.
+ */
+static void e_d_out_clear(void)
+{
+ int i;
+
+ for (i = 0; i < SVLINES; i++)
+  if (e_d_line_room(&e_d_out_ln[i], 0) == 0)
+   e_d_out_ln[i].s[0] = '\0';
+ e_d_out_none[0] = '\0';
+ e_d_out_show();
+}
+
+/**
+ * e_d_out_rotate - Make the oldest answer line the newest one, to be read
+ * or copied into.
+ * Return: that line.
+ */
+static E_D_LINE *e_d_out_rotate(void)
+{
+ E_D_LINE oldest = e_d_out_ln[0];
+ int i;
+
+ for (i = 1; i < SVLINES; i++)
+  e_d_out_ln[i-1] = e_d_out_ln[i];
+ e_d_out_ln[SVLINES-1] = oldest;
+ e_d_out_show();
+ return(&e_d_out_ln[SVLINES-1]);
+}
+
+/**
+ * e_d_out_keep - Keep a whole line of gdb's answer as the newest answer line.
+ * @line: the line.
+ *
+ * The line is kept to its end, so the stop parsers find the "at file:line"
+ * that gdb prints after a frame of any length.
+ */
+static void e_d_out_keep(const char *line)
+{
+ E_D_LINE *newest = e_d_out_rotate();
+ int len = (int)strlen(line);
+
+ if (e_d_line_room(newest, len) < 0)
+  return;
+ memcpy(newest->s, line, len + 1);
+ e_d_out_show();
+}
+
 typedef struct {
- char buf[SVLINES][256];
- char *sp[SVLINES];
  int active;
  int main_brk;
  struct FNST *f;
@@ -745,9 +1078,7 @@ static void e_d_accum_complete(void)
  e_d_accum.active = 0;
  e_d_async_pending = 0;
 
- for (i = 0; i < SVLINES; i++)
-  e_d_sp[i] = e_d_accum.sp[i];
-
+ e_d_out_show();
  for (i = 0; i < SVLINES; i++)
  {
   if (e_d_line_says_program_exited(e_d_sp[i]))
@@ -776,9 +1107,6 @@ static void e_d_accum_complete(void)
 
 static void e_d_accum_line(char *line, int ret)
 {
- char *spt;
- int i;
-
  if (!e_d_accum.active)
   return;
  if (ret < 0)
@@ -798,23 +1126,13 @@ static void e_d_accum_line(char *line, int ret)
  }
  if (!line[0])
   return;
- spt = e_d_accum.sp[0];
- for (i = 1; i < SVLINES; i++)
-  e_d_accum.sp[i-1] = e_d_accum.sp[i];
- e_d_accum.sp[SVLINES-1] = spt;
- strncpy(spt, line, 255);
- spt[255] = '\0';
+ e_d_out_keep(line);
 }
 
 static void e_d_accum_init(FENSTER *f, int main_brk)
 {
- int i;
-
- for (i = 0; i < SVLINES; i++)
- {
-  e_d_accum.sp[i] = e_d_accum.buf[i];
-  e_d_accum.buf[i][0] = '\0';
- }
+ e_d_cut_forget_output();
+ e_d_out_clear();
  e_d_accum.active = 1;
  e_d_accum.main_brk = main_brk;
  e_d_accum.f = f;
@@ -879,19 +1197,21 @@ static void e_d_on_pty_readable(int fd, void *data)
  }
 }
 
+/* The line e_d_on_gdb_readable hands to the accumulator, reused per line. */
+static E_D_LINE e_d_accum_read;
+
 static void e_d_on_gdb_readable(int fd, void *data)
 {
- signed char buf[256];
  int ret;
 
  if (!e_d_accum.active)
   return;
  while (e_d_accum.active)
  {
-  ret = e_d_line_read_nb(wfildes[0], buf, 256);
+  ret = e_d_line_read_nb_whole(wfildes[0], &e_d_accum_read);
   if (ret == -2)
    return;
-  e_d_accum_line((char *)buf, ret);
+  e_d_accum_line((char *)e_d_accum_read.s, ret);
  }
 }
 
@@ -1208,37 +1528,86 @@ static int e_d_debugger_gone(void)
  return 0;
 }
 
+/**
+ * e_d_is_line_end - Say whether a byte ends a line of the debugger's output
+ * for the blocking reader.
+ *
+ * One definition for reading a line and for dropping the rest of a cut one,
+ * so the dropping never runs past the end the reader would have stopped at.
+ */
+static int e_d_is_line_end(signed char c)
+{
+ return(c == '\n' || c == WPE_CR || c == '\0' || c == EOF);
+}
+
+/**
+ * e_d_err_is_line_end - The same for the debugger's error stream, whose
+ * reader has never ended a line at a carriage return.
+ */
+static int e_d_err_is_line_end(signed char c)
+{
+ return(c == '\n' || c == '\0' || c == EOF);
+}
+
+/**
+ * e_d_err_skip_rest - Drop what has arrived of the rest of a cut line on the
+ * debugger's error stream.
+ * @n: the error stream, which is never waited on.
+ *
+ * A warning that names a deeply nested file can be longer than the buffer it
+ * is read into; its start is kept and the rest must not come back as a
+ * warning of its own.  At most one line's worth is dropped per call, so a
+ * debugger that floods its error stream without a newline cannot hold the
+ * editor here.
+ * Return: 1 once the line's end was dropped, 0 while more of it may follow.
+ */
+static int e_d_err_skip_rest(int n)
+{
+ signed char c;
+ int k;
+
+ for (k = 0; k < E_D_LINE_MAX; k++)
+ {
+  if (read(n, &c, 1) != 1)
+   return(0);
+  if (e_d_err_is_line_end(c))
+  {
+   e_d_cut.err_discarding = 0;
+   return(1);
+  }
+ }
+ return(0);
+}
+
 /*  Input Routines   */
 int e_e_line_read(int n, signed char *s, int max)
 {
  int i, ret = 0;
 
+ if (e_d_cut.err_discarding && !e_d_err_skip_rest(n))
+  return(-1);
  for (i = 0; i < max - 1; i++)
  {
   ret = read(n, s + i, 1);
-  if (ret != 1 || s[i] == EOF || s[i] == '\n'|| s[i] == '\0')
+  if (ret != 1 || e_d_err_is_line_end(s[i]))
    break;
  }
  if (ret != 1 && i == 0)
   return(-1);
- s[i+1] = '\0';
+ if (i == max - 1)
+ {
+  /* The line filled the buffer: keep its start, drop its end. */
+  s[i] = '\0';
+  e_d_cut.err_discarding = 1;
+  e_d_err_skip_rest(n);
+ }
+ else if (ret == 1)
+  s[i+1] = '\0';          /* the line keeps its end, as it always has */
+ else
+  s[i] = '\0';            /* nothing more yet: the bytes read so far */
  jdb_trace("e_e_line_read: fd=%d i=%d ret=%d s='%s'\n", n, i, ret, (char*)s);
- if (e_deb_type == DEB_SDB && s[i] == '*')
-  return(1);
- if (e_deb_type == DEB_XDB && s[i] == '>')
-  return(1);
- else if (e_deb_type == DEB_DBX && i > 4 && s[i] == ' ' && !strncmp(s+i-5, "(dbx)", 5))
-  return(1);
- else if (e_deb_type == DEB_GDB && i > 4 && s[i] == ' ' && !strncmp(s+i-5, "(gdb)", 5))
-  return(1);
- else if (e_deb_type == DEB_PDB && i > 4 && s[i] == ' ' && !strncmp(s+i-5, "(Pdb)", 5))
-  return(1);
- else if (e_deb_type == DEB_A68G && i > 5 && s[i] == ' ' && !strncmp(s+i-6, "(a68g)", 6))
-  return(1);
- else if (e_deb_type == DEB_JDB && i > 0 &&
-   ((s[i] == ' ' && s[i-1] == ']') ||
-    (s[i] == ' ' && s[i-1] == '>')))
-  return(1);
+ /* Debuggers print their prompt on the output stream: an error line is never
+    one, and taking it for one ends a "where" as if the program had exited. */
  return(2);
 }
 
@@ -1286,10 +1655,252 @@ static int e_d_prompt_check(const signed char *s, int i)
  return(e_deb_prompt_feed(prompt, (const char *)s, i));
 }
 
-int e_d_line_read(int n, signed char *s, int max, int sw, int esw)
+/**
+ * e_d_char_prompt - Say whether text ends in the prompt of a debugger known
+ * by its last characters: sdb's "*", xdb's ">", jdb's "] " or "> ".
+ * @s: the text; @i: how many bytes of it there are.
+ *
+ * The word prompts ("(gdb) " and the like) go through e_d_prompt_check.
+ * Return: 1 when the text ends in such a prompt, else 0.
+ */
+static int e_d_char_prompt(const signed char *s, int i)
+{
+ if (e_deb_type == DEB_SDB && i > 0 && s[i-1] == '*')
+  return(1);
+ if (e_deb_type == DEB_XDB && i > 0 && s[i-1] == '>')
+  return(1);
+ if (e_deb_type == DEB_JDB && i > 1 && s[i-1] == ' ' &&
+     (s[i-2] == ']' || s[i-2] == '>'))
+  return(1);
+ return(0);
+}
+
+/* How the dropping of a cut line ended (e_d_line_skip_rest). */
+enum
+{
+ E_D_SKIP_LINE_END,       /* at the line's end: the next line can be read */
+ E_D_SKIP_PROMPT,         /* at the debugger's prompt, right after the line */
+ E_D_SKIP_GIVE_UP         /* end of output, break key, or a runaway debugger */
+};
+
+/**
+ * e_d_cut_note - Remember the last bytes dropped from a cut line, so a prompt
+ * printed right after the line is recognised however it was split.
+ * @bytes, @len: what was just dropped; @len is at least 1.
+ */
+static void e_d_cut_note(const signed char *bytes, int len)
+{
+ int k;
+
+ e_d_cut.out_at_prompt = e_d_prompt_check(bytes, len);
+ for (k = 0; k < len; k++)
+ {
+  if (e_d_cut.out_tail_len == E_D_PROMPT_TAIL)
+  {
+   memmove(e_d_cut.out_tail, e_d_cut.out_tail + 1, E_D_PROMPT_TAIL - 1);
+   e_d_cut.out_tail_len--;
+  }
+  e_d_cut.out_tail[e_d_cut.out_tail_len++] = bytes[k];
+ }
+}
+
+/**
+ * e_d_cut_ends_in_prompt - Say whether the bytes dropped so far end in the
+ * debugger's prompt.
+ */
+static int e_d_cut_ends_in_prompt(void)
+{
+ return(e_d_cut.out_at_prompt ||
+        e_d_char_prompt(e_d_cut.out_tail, e_d_cut.out_tail_len));
+}
+
+/**
+ * e_d_cut_take_prompt - Hand the caller the prompt that ended a cut line, as
+ * the reader hands out any prompt: the last bytes the debugger sent.
+ * @s, @max: the caller's buffer.
+ */
+static void e_d_cut_take_prompt(signed char *s, int max)
+{
+ int len = e_d_cut.out_tail_len, from = 0;
+
+ if (len > max - 1)
+ {
+  from = len - (max - 1);
+  len = max - 1;
+ }
+ memcpy(s, e_d_cut.out_tail + from, len);
+ s[len] = '\0';
+ e_deb_prompt_reset();   /* the same bytes cannot complete a prompt twice */
+}
+
+/**
+ * e_d_line_cut - Hand out the start of a line that filled the caller's
+ * buffer, and leave the rest of it to be dropped by the next read.
+ * @s: the buffer, full; @len: the bytes in it.
+ *
+ * Without this the tail of a long "stopped at /very/long/path" line would
+ * come back as a line of its own, and the stop parsers would read half a path
+ * as a new answer.  Nothing is waited for here: the debugger may not end the
+ * line before it asks for a command, and the next read knows to stop at that.
+ * Return: 0 (a line).
+ */
+static int e_d_line_cut(signed char *s, int len)
+{
+ s[len] = '\0';
+ e_d_cut.out_discarding = 1;
+ e_d_cut.out_tail_len = 0;
+ e_d_cut_note(s, len);
+ return(0);
+}
+
+/**
+ * e_d_line_wait_or_give_up - Wait for more of a cut line while nothing has
+ * arrived, as the line reader waits for a line.
+ * @n: the debugger's output, non-blocking.
+ *
+ * The break key gives up, and so does a debugger that is gone, so a debugger
+ * that never ends the line cannot hold the editor.
+ * Return: 1 when the dropping must give up, else 0.
+ */
+static int e_d_line_wait_or_give_up(int n)
+{
+ if (e_d_debugger_gone())
+  return(1);
+ e_d_wait_for_input(n);
+ return(e_d_getchar() == D_CBREAK);
+}
+
+/**
+ * e_d_line_skip_byte - Drop one more byte of a cut line.
+ * @c: the byte; @dropped: how many were dropped so far in this read.
+ *
+ * Every E_D_LINE_MAX bytes count as one line toward the runaway bound, as the
+ * lines a debugger streams without end do, so a line that never ends is given
+ * up on like a flood of lines.
+ * Return: E_D_SKIP_LINE_END at the line's end, E_D_SKIP_GIVE_UP for a
+ * runaway, else -1 (keep dropping).
+ */
+static int e_d_line_skip_byte(signed char c, long dropped)
+{
+ if (e_d_is_line_end(c))
+  return(E_D_SKIP_LINE_END);
+ e_d_cut_note(&c, 1);
+ if (dropped % E_D_LINE_MAX == 0 && ++e_d_read_runaway > E_D_RUNAWAY_MAX)
+ {
+  e_d_read_runaway = 0;
+  return(E_D_SKIP_GIVE_UP);
+ }
+ return(-1);
+}
+
+/**
+ * e_d_line_skip_rest - Drop the rest of a line e_d_line_read cut, up to the
+ * line's end or up to the prompt the debugger printed right after it.
+ * @n: the debugger's output; @s, @max: the caller's buffer, which gets the
+ * prompt when the dropping ends at one.
+ *
+ * A program that prints a long line without a newline just before the
+ * debugger asks for its next command leaves no line end to wait for: the
+ * prompt ends the dropping, so the editor goes on instead of waiting until the
+ * debugger exits.  Only a prompt that is the last thing sent counts, as in
+ * the line reader.
+ * Return: E_D_SKIP_LINE_END, E_D_SKIP_PROMPT or E_D_SKIP_GIVE_UP.
+ */
+static int e_d_line_skip_rest(int n, signed char *s, int max)
+{
+ signed char c;
+ long dropped = 0;
+ int r, result = -1, flags = fcntl(n, F_GETFL, 0);
+
+ fcntl(n, F_SETFL, flags | O_NONBLOCK);
+ while (result < 0)
+ {
+  r = read(n, &c, 1);
+  if (r == 1)
+   result = e_d_line_skip_byte(c, ++dropped);
+  else if (r < 0 && errno == EINTR)
+   continue;
+  else if (r < 0 && errno == EAGAIN && e_d_cut_ends_in_prompt())
+   result = E_D_SKIP_PROMPT;
+  else if (r == 0)
+  {
+   e_d_note_output_closed();
+   result = E_D_SKIP_GIVE_UP;
+  }
+  else if (errno != EAGAIN || e_d_line_wait_or_give_up(n))
+   result = E_D_SKIP_GIVE_UP;
+ }
+ fcntl(n, F_SETFL, flags);
+ if (result == E_D_SKIP_PROMPT)
+  e_d_cut_take_prompt(s, max);
+ if (result == E_D_SKIP_GIVE_UP)
+  s[0] = '\0';
+ else
+  e_d_cut.out_discarding = 0;
+ return(result);
+}
+
+/* What one fill of the blocking reader ended with, besides the codes
+   e_d_line_read hands its callers (-1 gone, 0 a line, 1 the prompt, 2 an
+   error-stream line).  Neither leaves e_d_line_fill's two entry points. */
+enum
+{
+ E_D_FILL_FULL = 3,       /* the room filled before the line ended */
+ E_D_FILL_PAUSE           /* the output paused in a line that is no prompt */
+};
+
+/**
+ * e_d_line_drain_errors - Drain what the debugger has written to its error
+ * stream before its output is read, without spinning on a flood of it.
+ * @s, @max: scratch room for one error line.
+ *
+ * Every drained line counts toward the runaway budget too: a backend that
+ * floods stderr (a68g's abend->io_write_string recursion, whose echoes also
+ * bounce back as "echo: I/O error" once its stdout pipe fills) is absorbed
+ * here up to E_D_DRAIN_MAX lines per call without ever bumping the once-per-
+ * call counter of the reader, so the flood would otherwise stay invisible to
+ * the watchdog and keep the editor busy for hours.
+ * Return: -1 for a runaway debugger, else 0.
+ */
+static int e_d_line_drain_errors(signed char *s, int max)
+{
+ int drained = 0;
+
+ while (e_e_line_read(efildes[0], s, max) >= 0)
+ {
+  if (++e_d_read_runaway > E_D_RUNAWAY_MAX)
+  {
+   e_d_read_runaway = 0;
+   s[0] = '\0';
+   return(-1);
+  }
+  if (++drained >= E_D_DRAIN_MAX)
+   break;
+ }
+ return(0);
+}
+
+/**
+ * e_d_line_fill - Read the debugger's output into @s from @from on, up to a
+ * line end, the debugger's prompt, the end of the room or a pause.
+ * @n: the debugger's output; @s, @from, @max: the room, @s[@from] on, of
+ * which @max - 1 bytes in all may be used; @sw, @esw: as e_d_line_read;
+ * @end: set to where the bytes read end, when a line or a pause is read.
+ *
+ * The one place that waits for output, honours the break key, notices a
+ * debugger that is gone, keeps the runaway bound and recognises the prompt,
+ * for both e_d_line_read, which keeps the head of a long line, and
+ * e_d_line_read_whole, which keeps all of it: a stop line and a watch value
+ * are read the same way, so the prompt that ends either is seen the same.
+ * Only the first byte is waited for; a word prompt is looked for in the bytes
+ * read here, a prompt known by its last characters in all of @s.
+ * Return: e_d_line_read's codes, E_D_FILL_FULL or E_D_FILL_PAUSE.
+ */
+static int e_d_line_fill(int n, signed char *s, int from, int max, int sw,
+                         int esw, int *end)
 {
  static char wt = 0, esc_sv = 0;
- int i, ret = 0, kbdflgs;
+ int i, ret = 0, kbdflgs, skip;
 
  /* Runaway debugger: far more output than any real command reply means the
     debugger is streaming uncontrollably (e.g. a68g's abend recursion).  Give
@@ -1297,32 +1908,27 @@ int e_d_line_read(int n, signed char *s, int max, int sw, int esw)
  if (++e_d_read_runaway > E_D_RUNAWAY_MAX)
  {
   e_d_read_runaway = 0;
-  s[0] = '\0';
+  s[from] = '\0';
   return(-1);
  }
  if (esw)
- {  if((ret = e_e_line_read(efildes[0], s, max)) >= 0) return(ret);  }
- else
- {  int _drain = 0;
-    /* Drain buffered stderr, but never spin on a debugger that floods it.
-       Count every drained line toward the runaway budget too: a backend that
-       floods stderr (a68g's abend->io_write_string recursion, whose echoes
-       also bounce back as "echo: I/O error" once its stdout pipe fills) is
-       absorbed here up to E_D_DRAIN_MAX lines per call WITHOUT ever bumping the
-       once-per-call counter at the top of this function, so the flood would
-       otherwise stay invisible to the watchdog and spin for ~hours. */
-    while(e_e_line_read(efildes[0], s, max) >= 0)
-    {  if (++e_d_read_runaway > E_D_RUNAWAY_MAX)
-       {  e_d_read_runaway = 0;  s[0] = '\0';  return(-1);  }
-       if (++_drain >= E_D_DRAIN_MAX) break;
-    }
+ {  if((ret = e_e_line_read(efildes[0], s + from, max - from)) >= 0) return(ret);  }
+ else if (e_d_line_drain_errors(s + from, max - from) < 0)
+  return(-1);
+ if (e_d_cut.out_discarding &&
+     (skip = e_d_line_skip_rest(n, s + from, max - from)) != E_D_SKIP_LINE_END)
+ {
+  wt = 0;
+  if (skip == E_D_SKIP_PROMPT)
+   return(1);
+  return(-1);
  }
- for(i = 0; i < max - 1; i++)
+ for(i = from; i < max - 1; i++)
  {
   if (esc_sv)  {  s[i] = WPE_ESC;  esc_sv = 0;  continue;  }
   kbdflgs = fcntl(n, F_GETFL, 0 );
   fcntl( n, F_SETFL, kbdflgs | O_NONBLOCK);
-  while ((ret = read(n, s + i, 1)) <= 0 && i == 0 && wt >= sw)
+  while ((ret = read(n, s + i, 1)) <= 0 && i == from && wt >= sw)
   {
    if (ret == 0)
    {
@@ -1349,6 +1955,15 @@ int e_d_line_read(int n, signed char *s, int max, int sw, int esw)
   else if(s[i] == WPE_ESC)
   {  s[i] = '\0';  esc_sv = 1;  break;  }
  }
+ if (ret == 1 && i == max - 1)
+ {
+  /* The line filled the room; the entry point decides what to do with the
+     rest of it. */
+  s[i] = '\0';
+  *end = i;
+  wt = 0;
+  return(E_D_FILL_FULL);
+ }
  if (ret != 1)
  {
   s[i] = '\0';
@@ -1357,14 +1972,8 @@ int e_d_line_read(int n, signed char *s, int max, int sw, int esw)
     jdb_trace(" %02x", (unsigned char)s[_k]);
   }
   jdb_trace(")\n");
-  if(e_deb_type == DEB_SDB && i > 0 && s[i-1] == '*')
-  {  e_deb_prompt_reset();  wt = 0;   return(1);  }
-  else if(e_deb_type == DEB_XDB && i > 0 && s[i-1] == '>')
-  {  e_deb_prompt_reset();  wt = 0;   return(1);  }
-  else if(e_deb_type == DEB_JDB && i > 1 &&
-    ((s[i-1] == ' ' && s[i-2] == ']') ||
-     (s[i-1] == ' ' && s[i-2] == '>')))
-  {  jdb_trace("e_d_line_read: jdb prompt DETECTED\n");
+  if (e_d_char_prompt(s, i))
+  {  jdb_trace("e_d_line_read: prompt DETECTED by its last characters\n");
      e_deb_prompt_reset();  wt = 0;   return(1);  }
   else if(e_deb_type == DEB_JDB)
   {  jdb_trace("e_d_line_read: jdb prompt NOT detected (i=%d, s[i-1]=%02x s[i-2]=%02x)\n",
@@ -1375,11 +1984,17 @@ int e_d_line_read(int n, signed char *s, int max, int sw, int esw)
      recognisable at all -- the four per-backend copies this replaces never
      managed that, and the a68g one wrote two bytes past a 12-byte scratch
      while trying (F95). */
-  if (e_d_prompt_check(s, i))
+  if (e_d_prompt_check(s + from, i - from))
   {
    jdb_trace("e_d_line_read: prompt DETECTED (i=%d)\n", i);
    wt = 0;
    return(1);
+  }
+  if (i > from)
+  {
+   *end = i;
+   wt = 0;
+   return(E_D_FILL_PAUSE);
   }
  }
  else
@@ -1391,11 +2006,175 @@ int e_d_line_read(int n, signed char *s, int max, int sw, int esw)
      The result is deliberately unused: a complete line is output, not the
      debugger waiting, and these four backends never terminate a prompt with a
      newline -- which is why the incomplete-line branch above exists. */
-  e_d_prompt_check(s, i);
+  e_d_prompt_check(s + from, i - from);
  }
  if (i != 0) wt = 0;
  else wt++;
  return(0);
+}
+
+/**
+ * e_d_line_read - Read one line of the debugger's output, keeping its head.
+ * @n: the debugger's output; @s, @max: the caller's buffer; @sw: how many
+ * empty reads to allow before waiting; @esw: read the error stream first.
+ *
+ * For the parsers that only need a line's start: a stop line, a breakpoint
+ * answer, a frame's "at file:line", all within E_D_LINE_MAX.  A longer line
+ * is cut at @max and its rest dropped by the next read, so its tail never
+ * comes back as a line of its own.  A value shown to the user is read with
+ * e_d_line_read_whole instead.
+ * Return: -1 when the debugger is gone (or the break key was hit), 0 for a
+ * line, 1 for the prompt, 2 for a line of the error stream.
+ */
+int e_d_line_read(int n, signed char *s, int max, int sw, int esw)
+{
+ int end, ret = e_d_line_fill(n, s, 0, max, sw, esw, &end);
+
+ if (ret == E_D_FILL_FULL)
+  return(e_d_line_cut(s, end));
+ if (ret == E_D_FILL_PAUSE)
+  return(0);
+ return(ret);
+}
+
+/**
+ * e_d_line_room - Make room in a whole line for one more fill.
+ * @ln: the line; @len: the bytes it holds so far.
+ *
+ * The room grows by doubling, so a long value costs a few copies, not one
+ * per fill, and never past E_D_LINE_ROOM_MAX.
+ * Return: 0, or -1 when memory ran out or the room would pass that bound.
+ */
+static int e_d_line_room(E_D_LINE *ln, int len)
+{
+ size_t need = (size_t)len + E_D_LINE_MAX, size = (size_t)ln->size;
+ signed char *grown;
+
+ if (len < 0 || need > E_D_LINE_ROOM_MAX)
+  return(-1);
+ if (size >= need)
+  return(0);
+ if (size < E_D_LINE_MAX)
+  size = E_D_LINE_MAX;
+ while (size < need)
+  size *= 2;
+ if (size > E_D_LINE_ROOM_MAX)
+  size = E_D_LINE_ROOM_MAX;
+ grown = REALLOC(ln->s, size);
+ if (!grown)
+  return(-1);
+ ln->s = grown;
+ ln->size = (int)size;
+ return(0);
+}
+
+/**
+ * e_d_line_output_pending - Say whether more debugger output is ready now.
+ * @n: the debugger's output.
+ *
+ * A prompt only ends a line when it is the last thing the debugger sent, as
+ * in the dropping of a cut line, so text that merely contains one goes on.
+ */
+static int e_d_line_output_pending(int n)
+{
+ struct pollfd pfd;
+
+ pfd.fd = n;
+ pfd.events = POLLIN;
+ return(poll(&pfd, 1, 0) > 0);
+}
+
+/**
+ * e_d_line_full_at_prompt - Say whether a fill that filled its room ended
+ * with the debugger's prompt, so the whole line is complete.
+ * @n: the debugger's output; @ln, @from, @len: the line, where the fill
+ * started and where it ended.
+ *
+ * Without this a long line that ends in the prompt exactly where the room
+ * runs out would wait for output the debugger is not going to send.
+ */
+static int e_d_line_full_at_prompt(int n, E_D_LINE *ln, int from, int len)
+{
+ int at_prompt = e_d_prompt_check(ln->s + from, len - from);
+
+ if (!at_prompt)
+  at_prompt = e_d_char_prompt(ln->s, len);
+ if (!at_prompt || e_d_line_output_pending(n))
+  return(0);
+ e_deb_prompt_reset();   /* the same bytes cannot complete a prompt twice */
+ return(1);
+}
+
+/**
+ * e_d_line_keep_cut - Keep a line that passed E_D_LINE_WHOLE_MAX cut, end it
+ * in E_D_LINE_CUT_MARK, and leave its rest to be dropped by the next read.
+ * @ln: the line; @len: the bytes it holds.
+ *
+ * Only a runaway debugger prints such a line; the mark tells the user that
+ * what is shown is not all of it, and memory stays bounded.
+ * Return: 0 (a line), or -1 when memory ran out.
+ */
+static int e_d_line_keep_cut(E_D_LINE *ln, int len)
+{
+ int tail = (len < E_D_PROMPT_TAIL) ? len : E_D_PROMPT_TAIL;
+
+ if (e_d_line_room(ln, len) < 0)
+  return(-1);
+ e_d_line_cut(ln->s + len - tail, tail);
+ strcpy((char *)ln->s + len, E_D_LINE_CUT_MARK);
+ return(0);
+}
+
+/**
+ * e_d_line_read_whole - Read one line of the debugger's output however long
+ * it is.
+ * @n: the debugger's output; @ln: the line, grown as needed (start with
+ * {NULL, 0} and give it back with e_d_line_free); @sw, @esw: as
+ * e_d_line_read, the error stream being looked at before the line only.
+ *
+ * For what is shown to the user as the debugger printed it, and for what is
+ * parsed from a line's end: a watch value or a Stack row may be a huge struct
+ * or a frame with a long name, and a stop line or a "where" row names its
+ * file and line after such a frame.  Cutting it would leave the user a value
+ * without its end, or a stop that is not marked, and nothing saying so.  It
+ * waits, breaks, gives up on a runaway debugger and recognises the prompt as
+ * e_d_line_read does, and every E_D_LINE_MAX bytes count as one line toward
+ * the runaway bound.  A pause inside a line that is not the prompt is waited
+ * through, so a line the debugger writes in pieces is still one line.  A
+ * line longer than E_D_LINE_WHOLE_MAX is kept cut and marked as such.
+ * Return: as e_d_line_read, with the line in @ln->s; -1 also when memory ran
+ * out.
+ */
+static int e_d_line_read_whole(int n, E_D_LINE *ln, int sw, int esw)
+{
+ int len = 0, from, ret;
+
+ do
+ {
+  if (len >= E_D_LINE_WHOLE_MAX)
+   return(e_d_line_keep_cut(ln, len));
+  if (e_d_line_room(ln, len) < 0)
+   return(-1);
+  from = len;
+  ret = e_d_line_fill(n, ln->s, from, from + E_D_LINE_MAX, sw, esw, &len);
+  esw = 0;                /* the error stream is looked at before a line only */
+  if (ret == E_D_FILL_FULL && e_d_line_full_at_prompt(n, ln, from, len))
+   ret = 1;
+ }
+ while (ret == E_D_FILL_FULL || ret == E_D_FILL_PAUSE);
+ return(ret);
+}
+
+/**
+ * e_d_line_free - Give back the memory of a whole line.
+ * @ln: the line; it can be filled again afterwards.
+ */
+static void e_d_line_free(E_D_LINE *ln)
+{
+ if (ln->s)
+  FREE(ln->s);
+ ln->s = NULL;
+ ln->size = 0;
 }
 
 int e_d_dum_read()
@@ -1404,7 +2183,7 @@ int e_d_dum_read()
  int ret;
 
  jdb_trace("e_d_dum_read: entry\n");
- while ((ret = e_d_line_read(wfildes[0], str, 128, 0, 0)) == 0 || ret == 2)
+ while ((ret = e_d_line_read(wfildes[0], str, sizeof str, 0, 0)) == 0 || ret == 2)
  {
   jdb_trace("e_d_dum_read: line_read ret=%d str='%s'\n", ret, str);
   if (ret == 2)
@@ -1604,6 +2383,7 @@ int e_d_quit_basic(FENSTER *f)
  {  close(wfildes[1]);  wfildes[1] = -1;  }
  e_d_pty_close();
  e_d_async_reset();
+ e_d_cut_reset();
  _messages_activated = 0;
  e_d_async_pending = 0;
  e_d_accum.active = 0;
@@ -1908,7 +2688,7 @@ int e_make_watches(FENSTER *f)
  else
   y = e_d_nwtchs;
  if (f->ed->wdf && f->ed->wdf->anz > 0)
-  strcpy(str, f->ed->wdf->name[0]);
+  snprintf(str, sizeof str, "%s", f->ed->wdf->name[0]);
  else
   str[0] = '\0';
  if (e_d_add_watch(str, f))
@@ -1958,7 +2738,7 @@ int e_edit_watches(FENSTER *f)
   ;
  if (l == e_d_nwtchs && b->bf[b->b.y].len == 0)
   return(e_make_watches(f));
- strcpy(str, e_d_swtchs[l - 1]);
+ snprintf(str, sizeof str, "%s", e_d_swtchs[l - 1]);
  if (e_d_add_watch(str, f))
  {
   e_d_swtchs[l - 1] = REALLOC(e_d_swtchs[l - 1], strlen(str) + 1);
@@ -2054,8 +2834,9 @@ int e_d_p_watches(FENSTER *f, int sw)
  SCHIRM *s;
  int iw, i, k = 0, l, ret;
  size_t len;
- char str1[256], *str; /* is 256 always large enough? */
+ char str1[E_D_LINE_MAX], *str;   /* the command, or a short note */
  char *str2;
+ E_D_LINE value = {  NULL, 0  };  /* the debugger's answer, however long */
 
  if (e_d_start_refused(f))
   return(0);
@@ -2109,7 +2890,7 @@ int e_d_p_watches(FENSTER *f, int sw)
   }
 
   /* If no debugger or no response, give message of no symbol in context */
-  if (!e_d_swtch || (ret = e_d_line_read(wfildes[0], str1, 256, 0, 0)) == 1)
+  if (!e_d_swtch || (ret = e_d_line_read_whole(wfildes[0], &value, 0, 0)) == 1)
   {
    strcpy(str1, e_d_msg[ERR_NOSYMBOL]);
    k = 0;
@@ -2118,17 +2899,17 @@ int e_d_p_watches(FENSTER *f, int sw)
   {
    if (ret == -1)
    {
+    e_d_line_free(&value);
     return(ret); /* BUG? e_d_nrwtchs not initialized if this return is taken */
    }
-   str = MALLOC(strlen(str1) + 1);
-   strcpy(str, str1);
-   while ((ret = e_d_line_read(wfildes[0], str1, 256, 0, 0)) == 0 || ret == 2)
+   str = MALLOC(strlen((char *)value.s) + 1);
+   strcpy(str, (char *)value.s);
+   while ((ret = e_d_line_read_whole(wfildes[0], &value, 0, 0)) == 0 || ret == 2)
    {
-    if (ret == -1) return(ret); /* BUG? e_d_nrwtchs not initialized if this return is taken */
-    if (ret == 2) e_d_error(str1);
-    str = REALLOC(str, (len = strlen(str)) + strlen(str1) + 1);
+    if (ret == 2) e_d_error((char *)value.s);
+    str = REALLOC(str, (len = strlen(str)) + strlen((char *)value.s) + 1);
     if (len > 0 && str[len-1] == '\n') str[len-1] = ' ';
-    strcat(str, str1);
+    strcat(str, (char *)value.s);
    }
 
    /* Find the beginning of the information (depends on debugger output
@@ -2188,6 +2969,7 @@ int e_d_p_watches(FENSTER *f, int sw)
    FREE(str);
   }
  }
+ e_d_line_free(&value);
 
  e_new_line(b->mxlines, b);
  fk_cursor(1);
@@ -2267,18 +3049,127 @@ int e_deb_stack(FENSTER *f)
  return(e_d_p_stack(f, 1));
 }
 
+/**
+ * e_d_stack_row_read - Read the next row of gdb's, sdb's, xdb's or dbx's
+ * stack listing, whole, and report the error lines met on the way.
+ * @row: the row read.
+ *
+ * A frame of a function with a very long name or arguments is shown in the
+ * Stack window to its end, wrapped, instead of losing its "at file:line".
+ * Return: e_d_line_read_whole's code for the row.
+ */
+static int e_d_stack_row_read(E_D_LINE *row)
+{
+ int ret;
+
+ while ((ret = e_d_line_read_whole(wfildes[0], row, 0, 0)) == 2)
+  e_d_error((char *)row->s);
+ return(ret);
+}
+
+/* The rows of the last stack listing, whole, each with the Stack window line
+   it starts on.  The window wraps a long row, sometimes inside a path, so
+   following a frame reads its file and line from here. */
+static struct
+{
+ char **text;
+ int *first;
+ int n, cap;
+} e_d_stack_rows;
+
+/**
+ * e_d_stack_rows_clear - Forget the rows of the previous stack listing.
+ */
+static void e_d_stack_rows_clear(void)
+{
+ int i;
+
+ for (i = 0; i < e_d_stack_rows.n; i++)
+  FREE(e_d_stack_rows.text[i]);
+ e_d_stack_rows.n = 0;
+}
+
+/**
+ * e_d_stack_rows_grow - Make room for one more kept row.
+ * Return: 0, or -1 when memory ran out.
+ */
+static int e_d_stack_rows_grow(void)
+{
+ int cap = e_d_stack_rows.cap ? 2 * e_d_stack_rows.cap : SVLINES;
+ char **text;
+ int *first;
+
+ if (e_d_stack_rows.n < e_d_stack_rows.cap)
+  return(0);
+ text = REALLOC(e_d_stack_rows.text, cap * sizeof(char *));
+ if (!text)
+  return(-1);
+ e_d_stack_rows.text = text;
+ first = REALLOC(e_d_stack_rows.first, cap * sizeof(int));
+ if (!first)
+  return(-1);
+ e_d_stack_rows.first = first;
+ e_d_stack_rows.cap = cap;
+ return(0);
+}
+
+/**
+ * e_d_stack_rows_keep - Keep a row of the stack listing as the debugger
+ * printed it.
+ * @text: the row; @first: the Stack window line it starts on.
+ *
+ * Without memory the row is not kept, and following it falls back on the
+ * window's text.
+ */
+static void e_d_stack_rows_keep(const char *text, int first)
+{
+ char *copy;
+
+ if (e_d_stack_rows_grow() < 0 || !(copy = MALLOC(strlen(text) + 1)))
+  return;
+ strcpy(copy, text);
+ e_d_stack_rows.text[e_d_stack_rows.n] = copy;
+ e_d_stack_rows.first[e_d_stack_rows.n++] = first;
+}
+
+/**
+ * e_d_stack_rows_find - The kept row that starts on Stack window line @first.
+ * Return: its text, or NULL when none was kept there.
+ */
+static const char *e_d_stack_rows_find(int first)
+{
+ int i;
+
+ for (i = 0; i < e_d_stack_rows.n; i++)
+  if (e_d_stack_rows.first[i] == first)
+   return(e_d_stack_rows.text[i]);
+ return(NULL);
+}
+
+/**
+ * e_d_stack_done - Give back the row buffer of the Stack window's listing
+ * and pass the result on.
+ * @row: the row buffer; @ret: what e_d_p_stack answers.
+ * Return: @ret.
+ */
+static int e_d_stack_done(E_D_LINE *row, int ret)
+{
+ e_d_line_free(row);
+ return(ret);
+}
+
 int e_d_p_stack(FENSTER *f, int sw)
 {
  ECNT *cn = f->ed;
  BUFFER *b;
  SCHIRM *s;
  int is, i, j, k, l, ret;
- char str[256];
+ char *str;
+ E_D_LINE row = {  NULL, 0  };   /* one row of the listing, however long */
 
  if (e_d_swtch < 3)
   return(e_error(e_d_msg[ERR_NOTRUNNING], 0, f->fb));
- for (i = 0; i < SVLINES; i++)
-  e_d_out_str[i][0] = '\0';
+ e_d_out_clear();
  for (is = cn->mxedt; is > 0 && strcmp(cn->f[is]->datnam, "Stack"); is--)
   ;
  if (!sw && is == 0)
@@ -2305,18 +3196,20 @@ int e_d_p_stack(FENSTER *f, int sw)
   e_d_send_cmd("where\n");
  else
   return(0);   /* no stack command here: never wait for an answer to nothing */
- while ((ret = e_d_line_read(wfildes[0], str, 256, 0, 0)) == 2)
-  e_d_error(str);
- if (ret == -1)
-  return(-1);
+ e_d_stack_rows_clear();
+ if ((ret = e_d_stack_row_read(&row)) == -1)
+  return(e_d_stack_done(&row, -1));
  i = j = 0;
  if (ret == 1)
  {
+  e_d_line_free(&row);
   e_d_error(e_d_msg[ERR_PROGEXIT]);
   return(e_d_quit(f));
  }
  while(ret != 1)
  {
+  str = (char *)row.s;
+  e_d_stack_rows_keep(str, i);
   k = 0;
   do
   {
@@ -2368,11 +3261,10 @@ int e_d_p_stack(FENSTER *f, int sw)
     j--;
   }
   while (str[k] != '\n' && str[k] != '\0');
-  while ((ret = e_d_line_read(wfildes[0], str, 256, 0, 0)) == 2)
-   e_d_error(str);
-  if (ret == -1)
-   return(-1);
+  if ((ret = e_d_stack_row_read(&row)) == -1)
+   return(e_d_stack_done(&row, -1));
  }
+ e_d_line_free(&row);
  for (; i < b->mxlines; i++)
   e_del_line(i, b, s);
  if (sw && is != cn->mxedt)
@@ -2381,14 +3273,117 @@ int e_d_p_stack(FENSTER *f, int sw)
  return(0);
 }
 
+/**
+ * e_make_stack_done - Free the text of the Stack row being followed and pass
+ * the result on.
+ * @row: the text, or NULL; @ret: what e_make_stack answers.
+ *
+ * Every way out of e_make_stack goes through here, so following a frame in
+ * the Stack window, however often, does not leave memory behind.
+ * Return: @ret.
+ */
+static int e_make_stack_done(char *row, int ret)
+{
+ if (row)
+  FREE(row);
+ return(ret);
+}
+
+/**
+ * e_make_stack_grow - Make room in the Stack row text for one more line of
+ * the Stack window.
+ * @row: the text so far; @len: the length of the line to add.
+ * Return: the larger text, or NULL when memory ran out (@row is then freed).
+ */
+static char *e_make_stack_grow(char *row, int len)
+{
+ char *grown = REALLOC(row, strlen(row) + len + 2);
+
+ if (!grown)
+  FREE(row);
+ return(grown);
+}
+
+/**
+ * e_make_stack_row_ends - Say whether Stack window line @i is the last line
+ * of the row it belongs to.
+ * @b: the Stack window's text.
+ *
+ * gdb's rows start with "#"; the other debuggers' wrapped rows end each line
+ * but their last in a backslash.
+ */
+static int e_make_stack_row_ends(BUFFER *b, int i)
+{
+ if (i == b->mxlines - 1)
+  return(1);
+ if (e_deb_type == DEB_GDB)
+  return(b->bf[i+1].s[0] == '#');
+ return(b->bf[i].s[b->bf[i].len - 1] != '\\');
+}
+
+/**
+ * e_make_stack_join - Put a row back together from the Stack window lines
+ * it was wrapped over.
+ * @b: the Stack window's text; @i: the row's first line; @row: an empty text.
+ *
+ * Used when the listing the row came from is not kept (the window was filled
+ * otherwise); the kept row is exact, this is the window's view of it.
+ * Return: the row, or NULL when memory ran out (@row is then freed).
+ */
+static char *e_make_stack_join(BUFFER *b, int i, char *row)
+{
+ for(; i < b->mxlines; i++)
+ {
+  if(!(row = e_make_stack_grow(row, b->bf[i].len)))
+   return(NULL);
+  strcat(row, (char *) b->bf[i].s);
+  if(e_make_stack_row_ends(b, i))
+   break;
+  else if(row[strlen(row)-2] == '\\')
+   row[strlen(row)-2] = '\0';
+  else if(row[strlen(row)-1] == '\n')
+   row[strlen(row)-1] = '\0';
+ }
+ return(row);
+}
+
+/**
+ * e_make_stack_row - The text of the Stack row that starts on line @i, as
+ * the debugger printed it.
+ * @b: the Stack window's text; @row: an empty text, replaced.
+ *
+ * A row longer than the window is wrapped there, sometimes inside a word or
+ * a path; following the frame reads its file and line from the row as the
+ * debugger printed it, so a frame of any length is followed.
+ * Return: the row, or NULL when memory ran out (@row is then freed).
+ */
+static char *e_make_stack_row(BUFFER *b, int i, char *row)
+{
+ const char *kept = e_d_stack_rows_find(i);
+ char *copy;
+
+ if (!kept)
+  return(e_make_stack_join(b, i, row));
+ copy = REALLOC(row, strlen(kept) + 1);
+ if (!copy)
+ {
+  FREE(row);
+  return(NULL);
+ }
+ strcpy(copy, kept);
+ return(copy);
+}
+
 int e_make_stack(FENSTER *f)
 {
-   char file[128], str[128], *tmpstr;
+   char file[E_D_LINE_MAX], str[E_D_LINE_MAX], *tmpstr;
    int i, ret, line = 0, dif;
    BUFFER *b = f->ed->f[f->ed->mxedt]->b;
    if (e_d_frames_backend())
       return(e_d_frame_show(f));
    tmpstr = MALLOC(1);
+   if(!tmpstr)
+      return(e_error(e_msg[ERR_LOWMEM], 0, f->fb));
    e_d_switch_out(0);
    if(e_deb_type != DEB_SDB)
    {  tmpstr[0] = '\0';
@@ -2396,41 +3391,27 @@ int e_make_stack(FENSTER *f)
       {  for(i = dif = 0; i <= b->b.y; i++)
 	    if(b->bf[i].s[0] == '#') dif = atoi((char *) (b->bf[i].s + 1));
 	 for(i = b->b.y; i >= 0 && b->bf[i].s[0] != '#'; i--);
-	 if(i < 0) return(1);
-	 for(; i < b->mxlines; i++)
-	 {  if(!(tmpstr = REALLOC(tmpstr, strlen(tmpstr) + b->bf[i].len + 2)))
-	    {  e_error(e_msg[ERR_LOWMEM], 0, f->fb);  return(-1);  }
-	    strcat(tmpstr, (char *) b->bf[i].s);
-	    if(i == b->mxlines-1 || b->bf[i+1].s[0] == '#') break;
-	    else if(tmpstr[strlen(tmpstr)-2] == '\\')
-	       tmpstr[strlen(tmpstr)-2] = '\0';
-	    else if(tmpstr[strlen(tmpstr)-1] == '\n')
-	       tmpstr[strlen(tmpstr)-1] = '\0';
-	 }
+	 if(i < 0) return(e_make_stack_done(tmpstr, 1));
       }
       else
       {  for(i = 1, dif = 0; i <= b->b.y; i++)
 	    if(b->bf[i-1].s[b->bf[i-1].len - 1] != '\\') dif++;
 	 for(i = b->b.y; i > 0 && b->bf[i-1].s[b->bf[i-1].len - 1] == '\\';
 	    i--);
-	 if(i == 0 && b->bf[i].len == 0) return(1);
-	 for(; i < b->mxlines; i++)
-	 {  if(!(tmpstr = REALLOC(tmpstr, strlen(tmpstr) + b->bf[i].len + 2)))
-	    {  e_error(e_msg[ERR_LOWMEM], 0, f->fb);  return(-1);  }
-	    strcat(tmpstr, (char *) b->bf[i].s);
-	    if(i == b->mxlines-1 || b->bf[i].s[b->bf[i].len - 1] != '\\')
-	       break;
-	    else if(tmpstr[strlen(tmpstr)-2] == '\\')
-	       tmpstr[strlen(tmpstr)-2] = '\0';
-	    else if(tmpstr[strlen(tmpstr)-1] == '\n')
-	       tmpstr[strlen(tmpstr)-1] = '\0';
-	 }
+	 if(i == 0 && b->bf[i].len == 0) return(e_make_stack_done(tmpstr, 1));
       }
+      if(!(tmpstr = e_make_stack_row(b, i, tmpstr)))
+      {  e_error(e_msg[ERR_LOWMEM], 0, f->fb);  return(-1);  }
 
+      /* A row of any length is followed: e_make_line_num refuses only a
+	 file name longer than any path. */
       if(e_deb_type == DEB_XDB && (line = e_make_line_num2(tmpstr, file)) < 0)
-	 return(e_error(e_d_msg[ERR_NOSOURCE], 0, f->fb));
+	 return(e_make_stack_done(tmpstr,
+				  e_error(e_d_msg[ERR_NOSOURCE], 0, f->fb)));
       else if(e_deb_type != DEB_XDB && (line = e_make_line_num(tmpstr, file)) < 0)
-	 return(e_error(e_d_msg[ERR_NOSOURCE], 0, f->fb));
+	 return(e_make_stack_done(tmpstr,
+				  e_error(e_d_msg[ERR_NOSOURCE], 0, f->fb)));
+      FREE(tmpstr);           /* the file and line are read out of it */
       if(dif > e_d_nstack)
 	 sprintf(str, "%s %d\n",
 	 e_deb_type != DEB_XDB ? "up" : "down", dif - e_d_nstack);
@@ -2439,14 +3420,15 @@ int e_make_stack(FENSTER *f)
 	 e_deb_type != DEB_XDB ? "down" : "up", e_d_nstack - dif);
       if(dif != e_d_nstack)
       {  e_d_send_cmd(str);
-	 while((ret = e_d_line_read(wfildes[0], str, 128, 0, 0)) == 0 || ret == 2)
+	 while((ret = e_d_line_read(wfildes[0], str, sizeof str, 0, 0)) == 0 || ret == 2)
 	    if( ret == 2) e_d_error(str);
 	 if(ret == -1) return(ret);
 	 e_d_nstack = dif;
       }
    }
    else if(e_deb_type == DEB_SDB)
-   {  for(i = b->b.y; i >= 0 && (line =
+   {  FREE(tmpstr);           /* sdb's rows are read in place */
+      for(i = b->b.y; i >= 0 && (line =
 	 e_make_line_num2((char *)b->bf[i].s, file)) < 0; i--);
    }
    if(e_d_p_watches(f, 0) == -1) return(-1);
@@ -2625,7 +3607,7 @@ static void e_d_breakpoints_changed(ECNT *cn)
 
 /* Room for a breakpoint command that names a file, and for its answer. */
 #define E_D_BRK_CMD_MAX     (PATH_MAX + 64)
-#define E_D_BRK_ANSWER_MAX  256
+#define E_D_BRK_ANSWER_MAX  E_D_LINE_MAX
 /* gdb's answer to a breakpoint set: "Breakpoint 2 at ...", its number next. */
 #define E_D_GDB_BRK_ANSWER  "Breakpoint "
 /* No line to add to a debug adapter's list. */
@@ -2843,7 +3825,7 @@ static int e_d_start_brk_has_command(void)
 int e_mk_brk_main(FENSTER *f, int sw)
 {
  int i, ret;
- char eing[128], str[256];
+ char eing[E_D_LINE_MAX + 128], str[E_D_LINE_MAX];
 
  if (sw)
  {
@@ -2859,8 +3841,8 @@ int e_mk_brk_main(FENSTER *f, int sw)
     sprintf(eing, "db %d\n", e_d_nrbrpts[sw-1]);
    else if (e_deb_type == DEB_JDB)
    {
-    char cls[128];
-    strcpy(cls, e_d_file);
+    char cls[E_D_LINE_MAX];
+    snprintf(cls, sizeof cls, "%s", e_d_file);
     WpeStringCutChar(cls, '.');
     sprintf(eing, "clear %s.%s\n", cls, e_get_start_symbol());
    }
@@ -2888,7 +3870,7 @@ int e_mk_brk_main(FENSTER *f, int sw)
    {
     e_d_gdb_start_break(eing, sizeof eing);
     e_d_send_cmd(eing);
-    while ((ret = e_d_line_read(wfildes[0], str, 256, 0, 0)) == 0 &&
+    while ((ret = e_d_line_read(wfildes[0], str, sizeof str, 0, 0)) == 0 &&
       strncmp(str, "Breakpoint", 10))
      ;
     if (ret == -1) return(ret);
@@ -2900,7 +3882,7 @@ int e_mk_brk_main(FENSTER *f, int sw)
    {
     sprintf(eing, "stop in %s\n", e_get_start_symbol());
     e_d_send_cmd(eing);
-    while ((ret = e_d_line_read(wfildes[0], str, 256, 0, 0)) == 0 &&
+    while ((ret = e_d_line_read(wfildes[0], str, sizeof str, 0, 0)) == 0 &&
       str[0] != '(')
      ;
     if (ret == -1) return(ret);
@@ -2912,10 +3894,10 @@ int e_mk_brk_main(FENSTER *f, int sw)
    {
     sprintf(eing, "b %s\n", e_get_start_symbol());
     e_d_send_cmd(eing);
-    while ((ret = e_d_line_read(wfildes[0], str, 256, 0, 0)) == 0 &&
+    while ((ret = e_d_line_read(wfildes[0], str, sizeof str, 0, 0)) == 0 &&
       strncmp(str, "Added:", 6))
      ;
-    ret = e_d_line_read(wfildes[0], str, 256, 0, 0);
+    ret = e_d_line_read(wfildes[0], str, sizeof str, 0, 0);
     if (ret == -1) return(ret);
     if (ret == 2) e_d_error(str);
     e_d_nrbrpts[e_d_nbrpts - 1] = atoi(str+1);
@@ -2923,8 +3905,8 @@ int e_mk_brk_main(FENSTER *f, int sw)
    }
    else if (e_deb_type == DEB_JDB)
    {
-    { char cls[128];
-      strcpy(cls, e_d_file);
+    { char cls[E_D_LINE_MAX];
+      snprintf(cls, sizeof cls, "%s", e_d_file);
       WpeStringCutChar(cls, '.');
       sprintf(eing, "stop in %s.%s\n", cls, e_get_start_symbol());
     }
@@ -2940,7 +3922,7 @@ int e_mk_brk_main(FENSTER *f, int sw)
     if (e_d_dum_read() == -1) return(-1);
     sprintf(eing, "b\n");
     e_d_send_cmd(eing);
-    if ((ret = e_d_line_read(wfildes[0], str, 256, 0, 0)) == -1)
+    if ((ret = e_d_line_read(wfildes[0], str, sizeof str, 0, 0)) == -1)
      return(ret);
     if (ret == 2) e_d_error(str);
     if (ret != 1)
@@ -3085,6 +4067,29 @@ static void e_d_exec_fail(void)
  e_d_swtch = 0;
 }
 
+/**
+ * e_d_child_errors_nonblocking - Say whether the debugger being started
+ * writes its errors without waiting for the editor to read them.
+ *
+ * Its output always waits: a debugger writing to a full non-blocking pipe
+ * drops what does not fit (gdb) or dies of it (pdb's BlockingIOError), and
+ * a long burst of program output then hangs the session or ends it as if
+ * the program had exited.  Its errors do not wait, since the editor reads
+ * them only between output lines; jdb cannot write either way but waiting.
+ */
+static int e_d_child_errors_nonblocking(void)
+{
+ return(e_deb_type != DEB_JDB);
+}
+
+/**
+ * e_d_fd_nonblocking - Make writes to @fd return at once instead of waiting.
+ */
+static void e_d_fd_nonblocking(int fd)
+{
+ fcntl(fd, F_SETFL, fcntl(fd, F_GETFL, 0) | O_NONBLOCK);
+}
+
 int e_exec_deb(FENSTER *f, char *prog)
 {
  int i;
@@ -3092,6 +4097,7 @@ int e_exec_deb(FENSTER *f, char *prog)
  if (e_d_swtch)
   return(1);
  e_d_swtch = 1;
+ e_d_cut_reset();
  /* Mark the pipe fds closed up front so e_d_exec_fail() can tell which ones
     a failed launch actually opened (the opens below set the real values). */
  rfildes[0] = rfildes[1] = -1;
@@ -3104,7 +4110,7 @@ int e_exec_deb(FENSTER *f, char *prog)
   {
    if (npipe[i])
     FREE(npipe[i]);
-   npipe[i] = MALLOC(128);
+   npipe[i] = MALLOC(strlen(e_tmp_dir) + 16);
    sprintf(npipe[i], "%s/we_pipe%d", e_tmp_dir, i);
    remove(npipe[i]);
   }
@@ -3276,9 +4282,9 @@ int e_exec_deb(FENSTER *f, char *prog)
  if (WpeIsXwin())
  {
   FILE *fp;
-  char file[128];
+  char file[PATH_MAX];
 
-  sprintf(file, "%s/we_sys", e_tmp_dir);
+  snprintf(file, sizeof file, "%s/we_sys", e_tmp_dir);
   fp = fopen(file, "w+");
   fprintf(fp, "#!/bin/sh\n");
   if (e_d_pty_master >= 0)
@@ -3350,16 +4356,8 @@ int e_exec_deb(FENSTER *f, char *prog)
    fprintf(stderr, e_p_msg[ERR_PIPEEXEC], efildes[1]);
    exit(1);
   }
-  /* jdb does not handle non-blocking stdout/stderr.
-     pdb works fine with non-blocking (needed for prompt detection). */
-  if (e_deb_type != DEB_JDB)
-  {
-   int _fl;
-   _fl = fcntl(1, F_GETFL, 0 );
-   fcntl(1, F_SETFL, _fl | O_NONBLOCK);
-   _fl = fcntl(2, F_GETFL, 0 );
-   fcntl( 2, F_SETFL, _fl | O_NONBLOCK);
-  }
+  if (e_d_child_errors_nonblocking())
+   e_d_fd_nonblocking(2);
   if (e_deb_type == DEB_PDB)
    execlp(e_debugger, e_debugger, "-m", "pdb", prog, NULL);
   else if (!e_deb_swtch)
@@ -5044,11 +6042,65 @@ static void e_d_say_pending_status(FENSTER *f)
  e_d_pending_status = NULL;
 }
 
+/** Message shown when the source's path is too long to hand to a debugger. */
+#define E_D_PATH_TOO_LONG_LINE "Debugger not started: the file path is too long"
+
+/**
+ * e_d_exe_name_of - Name of the program built from a source file: the name
+ * without its extension, plus ".e" unless the compiler adds none (fpc).
+ *
+ * @out: destination, @n: its size, @datnam: the source file name.
+ * Return: 0 on success, -1 when the result does not fit in @n.
+ */
+static int e_d_exe_name_of(char *out, size_t n, const char *datnam)
+{
+ if (e_d_copy_arg(out, n, datnam))
+  return(-1);
+ WpeStringCutChar(out, '.');
+ /* Non-GNU compilers (fpc) produce executables without .e extension.
+    GNU compilers use the .e convention from xwpe's link step. */
+ if (!(e_s_prog.comp_sw & 1))
+ {
+  if (strlen(out) + 3 > n)
+  {
+   out[0] = '\0';
+   return(-1);
+  }
+  strcat(out, ".e");
+ }
+ return(0);
+}
+
+/**
+ * e_d_pick_start_arg - Choose the argument the debugger is started on when
+ * no project is open: the built program, or for pdb/a68g the source's path.
+ *
+ * @cn: the editor's windows, @f: the file being debugged, @estr/@n: output.
+ * Return: 0 on success, -1 when the path does not fit (nothing is started).
+ */
+static int e_d_pick_start_arg(ECNT *cn, FENSTER *f, char *estr, size_t n)
+{
+ int _fi;
+
+ if (e_s_prog.exe_name && e_s_prog.exe_name[0])
+  return(e_d_copy_arg(estr, n, e_s_prog.exe_name));
+ if (e_deb_type != DEB_PDB && e_deb_type != DEB_A68G)
+  return(e_d_exe_name_of(estr, n, f->datnam));
+ /* pdb/a68g: debug the source file (.py/.a68) with full path.
+    e_d_file has the basename; we need dirct + datnam for the
+    full path so pdb can find it from any working directory. */
+ for (_fi = cn->mxedt; _fi > 0; _fi--)
+  if (e_check_c_file_w(cn->f[_fi])) break;
+ if (_fi > 0)
+  return(e_d_debuggee_path(estr, n, cn->f[_fi]->dirct, cn->f[_fi]->datnam));
+ return(e_d_copy_arg(estr, n, e_d_file));
+}
+
 int e_start_debug(FENSTER *f)
 {
  ECNT *cn = f->ed;
  int i, file;
- char estr[128];
+ char estr[PATH_MAX];
 
  e_d_pending_status = NULL;
  efildes[0] = efildes[1] = -1;
@@ -5089,16 +6141,23 @@ int e_start_debug(FENSTER *f)
    break;
  if (i > 0)
  {
-  strcpy(e_d_file, cn->f[i]->datnam);
+  if (e_d_copy_arg(e_d_file, sizeof(e_d_file), cn->f[i]->datnam))
+  {
+   e_error(E_D_PATH_TOO_LONG_LINE, 0, f->fb);
+   return(-1);
+  }
   f = cn->f[i];
  }
  else if (e__project)
  {
-  strcpy(e_d_file, cn->f[cn->mxedt-1]->datnam);
+  if (e_d_copy_arg(e_d_file, sizeof(e_d_file), cn->f[cn->mxedt-1]->datnam))
+  {
+   e_error(E_D_PATH_TOO_LONG_LINE, 0, f->fb);
+   return(-1);
+  }
   f = cn->f[cn->mxedt-1];
  }
- for (i = 0; i < SVLINES; i++)
- {  e_d_sp[i] = e_d_out_str[i];  e_d_out_str[i][0] = '\0';  }
+ e_d_out_clear();
  /* Auto-select debugger by file extension.
     gdb cannot debug Java bytecode or Python scripts.  The switch is said on
     the status row, not in a box: the user asked to run, and a box would make
@@ -5142,7 +6201,7 @@ int e_start_debug(FENSTER *f)
  e_d_pid = 0;
  if (e_test_command(e_debugger))
  {
-  sprintf(estr, "Debugger \'%s\' not in Path", e_debugger);
+  snprintf(estr, sizeof(estr), "Debugger \'%s\' not in Path", e_debugger);
   e_error(estr, 0, f->fb);
   return(-1);
  }
@@ -5155,34 +6214,10 @@ int e_start_debug(FENSTER *f)
  }
  else if (!e__project)
  {
-  if (e_s_prog.exe_name && e_s_prog.exe_name[0])
+  if (e_d_pick_start_arg(cn, f, estr, sizeof(estr)))
   {
-   strcpy(estr, e_s_prog.exe_name);
-  }
-  else
-  {
-   strcpy(estr, f->datnam);
-   if (e_deb_type == DEB_PDB || e_deb_type == DEB_A68G)
-   {
-    /* pdb/a68g: debug the source file (.py/.a68) with full path.
-       e_d_file has the basename; we need dirct + datnam for the
-       full path so pdb can find it from any working directory. */
-    int _fi;
-    for (_fi = cn->mxedt; _fi > 0; _fi--)
-     if (e_check_c_file_w(cn->f[_fi])) break;
-    if (_fi > 0)
-     snprintf(estr, sizeof(estr), "%s/%s", cn->f[_fi]->dirct, cn->f[_fi]->datnam);
-    else
-     strcpy(estr, e_d_file);
-   }
-   else
-   {
-    WpeStringCutChar(estr, '.');
-    /* Non-GNU compilers (fpc) produce executables without .e extension.
-       GNU compilers use the .e convention from xwpe's link step. */
-    if (!(e_s_prog.comp_sw & 1))
-     strcat(estr, ".e");
-   }
+   e_error(E_D_PATH_TOO_LONG_LINE, 0, f->fb);
+   return(-1);
   }
   jdb_trace("e_start_debug: launching '%s %s'\n", e_debugger, estr);
   if ((file = e_exec_deb(f, estr)) == 0)
@@ -5298,7 +6333,7 @@ int e_run_debug(FENSTER *f)
 #define E_D_JDB_LINE_MARK   "line="
 #define E_D_JDB_SOURCE_EXT  ".java"
 #define E_D_JDB_NESTED_SEP  '$'      /* P$Inner lives in P.java */
-#define E_D_STOP_PATH_MAX   512
+#define E_D_STOP_PATH_MAX   PATH_MAX
 
 /**
  * e_d_refresh_watches_at_stop - Re-read every watch at a new stop.
@@ -5573,6 +6608,210 @@ static int e_d_jdb_mark_stop(FENSTER *f, const char *stop)
 }
 
 /**
+ * e_d_pdb_line_end - Say whether a character ends a line of pdb's answer.
+ */
+static int e_d_pdb_line_end(char c)
+{
+ return(c == '\0' || c == '\n' || c == '\r');
+}
+
+/**
+ * e_d_pdb_stop_number - Find the next "(digits)" of a stop line, one of
+ * which follows its file name as "(LINENO)".
+ * @from: where to look from.
+ * Return: its "(", or NULL when the line has no more.
+ */
+static const char *e_d_pdb_stop_number(const char *from)
+{
+ const char *q, *d;
+
+ for (q = from; !e_d_pdb_line_end(*q); q++)
+ {
+  if (*q != '(' || !isdigit((unsigned char)q[1]))
+   continue;
+  for (d = q + 1; isdigit((unsigned char)*d); d++)
+   ;
+  if (*d == ')')
+   return(q);
+ }
+ return(NULL);
+}
+
+/**
+ * e_d_pdb_stop_tail - Say whether a stop line goes on, after its function
+ * name, as pdb ends one: "()", then the line's end or "->" and a value.
+ */
+static int e_d_pdb_stop_tail(const char *after)
+{
+ if (strncmp(after, "()", 2))
+  return(0);
+ after += 2;
+ return(e_d_pdb_line_end(*after) || !strncmp(after, "->", 2));
+}
+
+static int e_d_pdb_is_file(const char *file);
+
+/**
+ * e_d_pdb_stop_at_number - Read a stop line taking the "(digits)" at @open
+ * for its "(LINENO)": what follows must be FUNCNAME "()" and then the
+ * line's end or "->REPR".
+ * @name: where the file name starts; @open: a "(digits)" after it; @file,
+ * @n: receives the file; @line: the line, which may be 0 (pdb 3.14 names
+ * exec()'d code "<string>(0)").
+ * Return: 1 when the line reads that way, else 0.
+ */
+static int e_d_pdb_stop_at_number(const char *name, const char *open,
+                                  char *file, size_t n, int *line)
+{
+ const char *func = strchr(open, ')') + 1, *after;
+ size_t len = open - name;
+
+ for (after = func; !e_d_pdb_line_end(*after) && *after != '(' &&
+      *after != ' '; after++)
+  ;
+ if (after == func)
+  return(0);
+ /* A part that ends inside the function name is the head of a stop line
+    whose rest comes in the next part (a name longer than the buffer). */
+ if (*after != '\0' && !e_d_pdb_stop_tail(after))
+  return(0);
+ *line = atoi(open + 1);
+ if (len == 0 || len >= n || *line < 0)
+  return(0);
+ memcpy(file, name, len);
+ file[len] = '\0';
+ return(1);
+}
+
+/**
+ * e_d_pdb_stop_parse - Read a stop line in pdb's grammar at @p:
+ * "> FILENAME(LINENO)FUNCNAME()", then the line's end or "->REPR".
+ * @p: a "> " in pdb's answer; @file, @n: receives the file; @line: the line.
+ *
+ * Only what pdb prints as a stop line passes, so a "> name(3)" in a value
+ * or in the program's output is not taken for one.  A file name may hold
+ * "(1)" itself ("a b(1)/p.py"): each "(digits)" is tried as the line
+ * number, and one naming an existing file is preferred.
+ * Return: 1 when @p begins such a line, else 0.
+ */
+static int e_d_pdb_stop_parse(const char *p, char *file, size_t n, int *line)
+{
+ const char *name = p + 2, *open;
+ char first_file[E_D_STOP_PATH_MAX];
+ int first_line = -1;
+
+ if (strncmp(p, "> ", 2))
+  return(0);
+ for (open = e_d_pdb_stop_number(name); open;
+      open = e_d_pdb_stop_number(open + 1))
+ {
+  if (!e_d_pdb_stop_at_number(name, open, file, n, line))
+   continue;
+  if (e_d_pdb_is_file(file))
+   return(1);
+  if (first_line < 0)
+  {
+   snprintf(first_file, sizeof first_file, "%s", file);
+   first_line = *line;
+  }
+ }
+ if (first_line < 0)
+  return(0);
+ snprintf(file, n, "%s", first_file);
+ *line = first_line;
+ return(1);
+}
+
+/**
+ * e_d_pdb_is_file - Say whether a file pdb named exists as a regular file.
+ *
+ * pdb names the program's files by their real path, so a stop that names
+ * one is pdb's own, whatever else on the line looks like a stop.
+ */
+static int e_d_pdb_is_file(const char *file)
+{
+ struct stat st;
+
+ return(stat(file, &st) == 0 && S_ISREG(st.st_mode));
+}
+
+/**
+ * e_d_pdb_best_stop - The stop line that starts between @from and @to in
+ * pdb's answer @text, or NULL.
+ *
+ * The first one that names an existing file wins; then the first one, which
+ * a value pdb prints after the stop ("->'x > g(5)'") can never come before.
+ * A "> " of pdb's "-> source" line is not a stop.
+ */
+static const char *e_d_pdb_best_stop(const char *text, const char *from,
+                                     const char *to)
+{
+ char file[E_D_STOP_PATH_MAX];
+ const char *p = from, *first = NULL;
+ int line;
+
+ while ((p = strstr(p, "> ")) != NULL && p < to)
+ {
+  if ((p == text || p[-1] != '-') &&
+      e_d_pdb_stop_parse(p, file, sizeof file, &line))
+  {
+   if (e_d_pdb_is_file(file))
+    return(p);
+   if (!first)
+    first = p;
+  }
+  p += 2;
+ }
+ return(first);
+}
+
+/**
+ * e_d_pdb_source_line - Where pdb's "-> source" line starts in a part of its
+ * answer: the line it prints right after the stop line.
+ * Return: its start, or NULL when the part holds none.
+ */
+static const char *e_d_pdb_source_line(const char *text)
+{
+ const char *p = text, *found = NULL;
+
+ if (!strncmp(text, "-> ", 3))
+  found = text;
+ while ((p = strstr(p, "\n-> ")) != NULL)
+ {
+  found = p + 1;
+  p += 1;
+ }
+ return(found);
+}
+
+/**
+ * e_d_pdb_find_stop - Find the line pdb names its stop with in a part of its
+ * answer.
+ * @text: the part.
+ *
+ * The stop line is the one before pdb's "-> source" line, where a stop glued
+ * to the program's output without a line end is also found; without a
+ * source line, anywhere before it.  The source line ("-> if x > f(1):") is
+ * never looked at.
+ * Return: where its "> " is, or NULL when the part names no stop.
+ */
+static const char *e_d_pdb_find_stop(const char *text)
+{
+ const char *source = e_d_pdb_source_line(text);
+ const char *limit = source ? source : text + strlen(text);
+ const char *before, *found;
+
+ if (source && source > text)
+ {
+  for (before = source - 1; before > text && before[-1] != '\n'; before--)
+   ;
+  if ((found = e_d_pdb_best_stop(text, before, source)) != NULL)
+   return(found);
+ }
+ return(e_d_pdb_best_stop(text, text, limit));
+}
+
+/**
  * e_d_pdb_stop_place - Read where pdb stopped from its "> file(line)func()"
  * line.
  * @text: pdb's answer; @file, @n: receives the file; @line: the line.
@@ -5580,22 +6819,11 @@ static int e_d_jdb_mark_stop(FENSTER *f, const char *stop)
  */
 static int e_d_pdb_stop_place(const char *text, char *file, size_t n, int *line)
 {
- const char *gt = strstr(text, "> ");
- const char *op;
- size_t len;
+ const char *stop = e_d_pdb_find_stop(text);
 
- if (!gt)
+ if (!stop)
   return(0);
- op = strchr(gt + 2, '(');
- if (!op)
-  return(0);
- len = op - (gt + 2);
- *line = atoi(op + 1);
- if (len == 0 || len >= n || *line <= 0)
-  return(0);
- memcpy(file, gt + 2, len);
- file[len] = '\0';
- return(1);
+ return(e_d_pdb_stop_parse(stop, file, n, line));
 }
 
 /**
@@ -5603,29 +6831,33 @@ static int e_d_pdb_stop_place(const char *text, char *file, size_t n, int *line)
  * @f: the window the command came from; @file, @line: where pdb stopped.
  *
  * The user sees the green bar in the Python file pdb names, found by name
- * as the gdb stop does, and each watch's value at that stop.
- * Return: e_d_goto_break's answer.
+ * as the gdb stop does, and each watch's value at that stop.  Line 0 names
+ * no source line (code run by exec()) and marks nothing.
+ * Return: e_d_goto_break's answer, or 0 for line 0.
  */
 static int e_d_pdb_mark_stop(FENSTER *f, char *file, int line)
 {
+ if (line <= 0)
+  return(0);
  e_d_refresh_watches_at_stop(f);
  return(e_d_goto_break(file, line, f));
 }
 
 /**
  * e_d_pdb_mark_step - Mark where a pdb step or continue stopped.
- * @f: the window the command came from; @text: pdb's whole answer.
+ * @f: the window the command came from; @stop: pdb's stop line, as
+ * e_d_pdb_find_stop found it.
  *
  * After F7 or F8 the green bar moves in the file pdb names, not in the
  * window on top (Watches, once a watch was added), and the watches show
  * their values at the new line.
  */
-static void e_d_pdb_mark_step(FENSTER *f, const char *text)
+static void e_d_pdb_mark_step(FENSTER *f, const char *stop)
 {
  char file[E_D_STOP_PATH_MAX];
  int line;
 
- if (!e_d_pdb_stop_place(text, file, sizeof file, &line))
+ if (!e_d_pdb_stop_parse(stop, file, sizeof file, &line))
   return;
  e_d_swtch = 3;
  e_d_pdb_mark_stop(f, file, line);
@@ -5633,12 +6865,186 @@ static void e_d_pdb_mark_step(FENSTER *f, const char *text)
 
 static int e_d_jdb_read_stop(FENSTER *f);
 
+/* A debugger's answer to one step or continue, gathered by the poll readers
+   of jdb, pdb and a68g until the prompt that ends it.  A program can print
+   more in one step than the buffer holds: the oldest part is then handed on
+   (as program output) and reading goes on, while the newest E_D_STEP_KEEP
+   bytes, where the stop line and the prompt are, always stay. */
+typedef struct {
+ char buf[DEB_STEP_BUF];
+ int  len;
+ int  mid_line;          /* buf starts inside a line whose start was handed on */
+} E_D_STEP_REPLY;
+
+#define E_D_STEP_KEEP  E_D_LINE_MAX
+#if DEB_STEP_BUF - 1 <= E_D_STEP_KEEP
+#error "a step answer must hold more than the part of it that is always kept"
+#endif
+
+/* Receives the part of a step answer that is handed on: @text, a string,
+   ends at a line end or inside a line longer than the kept part; @mid_line
+   says it starts inside a line whose start was handed on before. */
+typedef void (*E_D_STEP_SPILL)(void *ctx, char *text, int mid_line);
+
+/**
+ * e_d_step_reply_init - Start gathering a new step answer.
+ */
+static void e_d_step_reply_init(E_D_STEP_REPLY *r)
+{
+ e_d_cut_forget_output();
+ r->len = 0;
+ r->mid_line = 0;
+ r->buf[0] = '\0';
+}
+
+/**
+ * e_d_step_reply_cut - Where a full step answer is split: after the last line
+ * end before the kept part, or where the kept part starts when one line is
+ * longer than all the rest.
+ */
+static int e_d_step_reply_cut(const E_D_STEP_REPLY *r)
+{
+ int keep_from = r->len - E_D_STEP_KEEP, k;
+
+ for (k = keep_from; k > 0; k--)
+  if (r->buf[k - 1] == '\n')
+   return(k);
+ return(keep_from);
+}
+
+/**
+ * e_d_step_reply_make_room - Hand the oldest part of a full step answer to
+ * @spill and keep the rest, so reading goes on.
+ * @r: the answer; @spill, @ctx: who takes the oldest part (NULL drops it).
+ *
+ * A step whose program prints more than the buffer holds would otherwise
+ * read nothing more, and nothing read looks like the debugger's end: the
+ * session would be ended under the user.
+ */
+static void e_d_step_reply_make_room(E_D_STEP_REPLY *r, E_D_STEP_SPILL spill,
+                                     void *ctx)
+{
+ int cut = e_d_step_reply_cut(r);
+ char at_cut = r->buf[cut];
+
+ r->buf[cut] = '\0';
+ if (spill)
+  spill(ctx, r->buf, r->mid_line);
+ r->buf[cut] = at_cut;
+ r->mid_line = (r->buf[cut - 1] != '\n');
+ r->len -= cut;
+ memmove(r->buf, r->buf + cut, r->len);
+ r->buf[r->len] = '\0';
+}
+
+/**
+ * e_d_step_reply_read - Read what the debugger wrote next into a step answer,
+ * making room first when the answer fills the buffer.
+ * @fd: the debugger's output; @r: the answer; @spill, @ctx: as for
+ * e_d_step_reply_make_room.
+ * Return: what read() returned: the bytes added, 0 at the end of the stream
+ * (and only then), -1 when nothing could be read.
+ */
+static int e_d_step_reply_read(int fd, E_D_STEP_REPLY *r, E_D_STEP_SPILL spill,
+                               void *ctx)
+{
+ int n;
+
+ if (r->len >= (int)sizeof(r->buf) - 1)
+  e_d_step_reply_make_room(r, spill, ctx);
+ n = read(fd, r->buf + r->len, sizeof(r->buf) - r->len - 1);
+ if (n > 0)
+  r->len += n;
+ r->buf[r->len] = '\0';
+ return(n);
+}
+
+/**
+ * e_d_text_next_line - Copy the next line of a debugger's answer, cut to the
+ * size of @line, and step past the whole of it.
+ * @text: the answer; @pos: where the line starts, moved past its end;
+ * @line, @size: where the line goes.
+ *
+ * A line longer than @line loses its end instead of coming back as a line of
+ * its own, which the scanners would misread (half a line of program output
+ * taken for a source line number, for one).
+ * Return: the length copied.
+ */
+static int e_d_text_next_line(const char *text, int *pos, char *line, int size)
+{
+ int len = 0, p = *pos;
+
+ while (text[p] && text[p] != '\n' && len < size - 1)
+  line[len++] = text[p++];
+ while (text[p] && text[p] != '\n')
+  p++;
+ if (text[p] == '\n')
+  p++;
+ line[len] = '\0';
+ *pos = p;
+ return(len);
+}
+
 /*  Run  */
+/* gdb's, dbx's or xdb's answer to run or continue, whole: it is shown in
+   Messages, and a continue is recognised by the end of it. */
+static E_D_LINE e_d_run_answer;
+/* What gdb's answer to continue ends with ("Continuing.\n"). */
+#define E_D_CONTINUE_TAIL 12
+
+/**
+ * e_d_run_answer_awaited - Say whether a line of the answer to run or
+ * continue is not yet the one that says the program runs.
+ * @line: the line; @prsw: the program was already running (continue).
+ */
+static int e_d_run_answer_awaited(const char *line, int prsw)
+{
+ size_t len = strlen(line);
+
+ if (!line[0])
+  return(1);
+ if (e_deb_type == DEB_GDB && prsw &&
+     (len < E_D_CONTINUE_TAIL ||
+      strcmp(line + len - E_D_CONTINUE_TAIL, e_d_msg[ERR_CONTINUE])))
+  return(1);
+ if (e_d_swtch < 3 && e_deb_type == DEB_GDB &&
+     strncmp(e_d_msg[ERR_STARTPROG], line, 17))
+  return(1);
+ if (e_d_swtch < 3 && e_deb_type == DEB_DBX && strncmp("Running:", line, 8))
+  return(1);
+ return(0);
+}
+
+/**
+ * e_d_run_answer_read - Read the debugger's answer to run or continue up to
+ * the line that says the program runs, whole, into e_d_run_answer.
+ * @prsw: the program was already running (continue).
+ *
+ * The line is shown in Messages as the debugger printed it, a long argument
+ * list included, and gdb's continue is recognised by its end.
+ * Return: 0, or -1 when the debugger is gone.
+ */
+static int e_d_run_answer_read(int prsw)
+{
+ int ret;
+
+ while ((ret = e_d_line_read_whole(wfildes[0], &e_d_run_answer, 0, 0)) == 2 ||
+        (ret >= 0 && e_d_run_answer_awaited((char *)e_d_run_answer.s, prsw)))
+ {
+  if (ret == 2)
+   e_d_error((char *)e_d_run_answer.s);
+ }
+ if (ret < 0)
+  return(-1);
+ return(0);
+}
+
 int e_deb_run(FENSTER *f)
 {
  ECNT *cn = f->ed;
- char eing[256];
- int ret, len, prsw = 0, main_brk = 0;
+ char eing[E_D_LINE_MAX + 128];
+ char *said = eing;     /* the line Messages shows: the answer, or the command */
+ int ret, prsw = 0, main_brk = 0;
 
  jdb_trace("e_deb_run: entry, e_d_swtch=%d, e_deb_type=%d\n",
            e_d_swtch, e_deb_type);
@@ -5687,7 +7093,7 @@ int e_deb_run(FENSTER *f)
   if (e_d_swtch < 3)
   {
    if (e_prog.arguments)
-    sprintf(eing, "run %s > %s\n", e_prog.arguments, e_d_tty);
+    snprintf(eing, sizeof eing, "run %s > %s\n", e_prog.arguments, e_d_tty);
    else
     sprintf(eing, "run > %s\n", e_d_tty);
   }
@@ -5727,14 +7133,14 @@ int e_deb_run(FENSTER *f)
    else if (e_d_pty_master >= 0 && e_deb_type == DEB_GDB)
    {
     if (e_prog.arguments)
-     sprintf(eing, "r %s\n", e_prog.arguments);
+     snprintf(eing, sizeof eing, "r %s\n", e_prog.arguments);
     else
      strcpy(eing, "r\n");
    }
    else
    {
     if (e_prog.arguments)
-     sprintf(eing, "r %s > %s\n", e_prog.arguments, e_d_tty);
+     snprintf(eing, sizeof eing, "r %s > %s\n", e_prog.arguments, e_d_tty);
     else
      sprintf(eing, "r > %s\n", e_d_tty);
    }
@@ -5765,9 +7171,10 @@ int e_deb_run(FENSTER *f)
      output and scan for "Breakpoint hit" or the prompt pattern.
      poll() avoids CPU waste during JVM startup (~2-3 seconds). */
   struct pollfd _pfd = { .fd = wfildes[0], .events = POLLIN };
-  char _jbuf[DEB_STEP_BUF];
-  int _jlen = 0, _found = 0, _n;
+  E_D_STEP_REPLY _jr;
+  int _found = 0, _n;
 
+  e_d_step_reply_init(&_jr);
   jdb_trace("e_deb_run: entering Phase 2 poll loop for jdb\n");
   while (!_found)
   {
@@ -5776,48 +7183,39 @@ int e_deb_run(FENSTER *f)
    {  jdb_trace("e_deb_run: poll timeout!\n");
       e_error("jdb: VM startup timeout.", 0, f->fb);
       e_d_quit(f); return(-1);  }
-   _n = read(wfildes[0], _jbuf + _jlen, sizeof(_jbuf) - _jlen - 1);
+   /* What the program prints before its first stop is not kept, as before. */
+   _n = e_d_step_reply_read(wfildes[0], &_jr, NULL, NULL);
    if (_n == 0)
    {  /* EOF: jdb process exited */
       jdb_trace("e_deb_run: EOF on pipe (jdb exited)\n");
       e_d_note_output_closed();
       e_d_quit(f); return(-1);  }
    if (_n < 0) continue;
-   _jlen += _n;
-   _jbuf[_jlen] = '\0';
    jdb_trace("e_deb_run: poll read %d bytes total=%d: [%s]\n",
-             _n, _jlen, _jbuf);
-   if (strstr(_jbuf, "] "))
+             _n, _jr.len, _jr.buf);
+   if (strstr(_jr.buf, "] "))
     _found = 1;
-   if (strstr(_jbuf, "exited") || strstr(_jbuf, "Unable to"))
+   if (strstr(_jr.buf, "exited") || strstr(_jr.buf, "Unable to"))
    {  jdb_trace("e_deb_run: error/exit detected in output, quitting\n");
       e_d_quit(f); return(-1);  }
   }
   jdb_trace("e_deb_run: Phase 2 done, _found=%d\n", _found);
   /* jdb format: "Breakpoint hit: ..., line=N bci=0\nN    code\nmain[1] " */
   e_d_swtch = 3;
-  e_d_jdb_mark_stop(f, _jbuf);
+  e_d_jdb_mark_stop(f, _jr.buf);
   e_d_switch_out(0);
   return(0);  /* skip e_read_output -- jdb output already parsed */
  }
  else if (e_deb_type == DEB_GDB || ((e_deb_type == DEB_DBX  || e_deb_type == DEB_XDB) && !prsw))
  {
-  while((ret = e_d_line_read(wfildes[0], eing, 256, 0, 0)) == 2 ||
-    !eing[0] || (e_deb_type == DEB_GDB && prsw && ((len = (strlen(eing)-12)) < 0 ||
-    strcmp(eing + len, e_d_msg[ERR_CONTINUE]))) ||
-    (e_d_swtch < 3 && ((e_deb_type == DEB_GDB && strncmp(e_d_msg[ERR_STARTPROG],eing, 17)) ||
-    (e_deb_type == DEB_DBX && strncmp("Running:",eing, 8)))))
-  {
-   if (ret == 2)
-    e_d_error(eing);
-   else if (ret < 0)
-    return(e_d_quit(f));
-  }
+  if (e_d_run_answer_read(prsw) < 0)
+   return(e_d_quit(f));
+  said = (char *)e_d_run_answer.s;
  }
  if (!prsw)
-  e_d_p_message(eing, f, 0);
- if (e_d_swtch < 3 && ((e_deb_type == DEB_GDB && strncmp(e_d_msg[ERR_STARTPROG],eing, 17)) ||
-   (e_deb_type == DEB_DBX && strncmp("Running:",eing, 8))))
+  e_d_p_message(said, f, 0);
+ if (e_d_swtch < 3 && ((e_deb_type == DEB_GDB && strncmp(e_d_msg[ERR_STARTPROG],said, 17)) ||
+   (e_deb_type == DEB_DBX && strncmp("Running:",said, 8))))
  {
   e_d_quit(f);
   return(e_error(e_d_msg[ERR_CANTPROG], 0, f->fb));
@@ -5861,6 +7259,77 @@ int e_deb_next(FENSTER *f)
  return(e_d_step_next(f, 1));
 }
 
+/**
+ * e_d_jdb_output_append - Keep a stretch of jdb's answer as program output
+ * for Ctrl-G P, without the line ends around it.
+ * @p, @len: the stretch.
+ */
+static void e_d_jdb_output_append(char *p, int len)
+{
+ while (len > 0 && (p[0] == '\n' || p[0] == '\r'))
+ {
+  p++;
+  len--;
+ }
+ while (len > 0 && (p[len-1] == '\n' || p[len-1] == '\r'))
+  len--;
+ if (len > 0)
+  e_d_prog_output_append_line(p, len);
+}
+
+/**
+ * e_d_jdb_output_start - Where the program's output starts in jdb's answer:
+ * after the "> " prompt jdb echoes before it.
+ * @text: the answer, or what is left of it; @echo_seen: the start of the
+ * answer, with that prompt, was already handed on.
+ */
+static char *e_d_jdb_output_start(char *text, int echo_seen)
+{
+ char *p;
+
+ if (echo_seen)
+  return(text);
+ p = strstr(text, "> ");
+ if (p)
+  return(p + 2);
+ return(text);
+}
+
+/**
+ * e_d_jdb_spill - Keep as program output the oldest part of a jdb answer too
+ * long for the buffer, so a step that prints a lot shows all of it.
+ * @ctx: the reader's "prompt echo already handed on" flag.
+ */
+static void e_d_jdb_spill(void *ctx, char *text, int mid_line)
+{
+ int *echo_seen = ctx;
+ char *p = e_d_jdb_output_start(text, *echo_seen);
+
+ (void)mid_line;
+ *echo_seen = 1;
+ e_d_jdb_output_append(p, (int)strlen(p));
+}
+
+/**
+ * e_d_jdb_capture_output - Keep what the program printed during a step, the
+ * text between jdb's echoed prompt and the stop line, for Ctrl-G P.
+ * @text: jdb's answer, or what is left of it; @echo_seen: as for
+ * e_d_jdb_output_start.
+ */
+static void e_d_jdb_capture_output(char *text, int echo_seen)
+{
+ char *p = e_d_jdb_output_start(text, echo_seen), *end;
+
+ /* Find where jdb protocol resumes */
+ end = strstr(p, "Step completed:");
+ if (!end)
+  end = strstr(p, "Breakpoint hit:");
+ if (!end)
+  end = strstr(p, "main[");
+ if (end && end > p)
+  e_d_jdb_output_append(p, (int)(end - p));
+}
+
 /* Read and apply what jdb answers to a step or a continue: poll for the stop
    jdb names, jump the editor cursor to the reported source line, and capture
    any program output (between the "> " prompt and the next jdb protocol line)
@@ -5871,58 +7340,175 @@ int e_deb_next(FENSTER *f)
 static int e_d_jdb_read_stop(FENSTER *f)
 {
  struct pollfd _pfd = { .fd = wfildes[0], .events = POLLIN };
- char _jbuf[DEB_STEP_BUF];
- int _jlen = 0, _n, _found = 0;
+ E_D_STEP_REPLY _jr;
+ int _n, _found = 0, echo_seen = 0;
 
+ e_d_step_reply_init(&_jr);
  while (!_found)
  {
   if (poll(&_pfd, 1, DEB_STEP_POLL_MS) <= 0) break;
-  _n = read(wfildes[0], _jbuf + _jlen, sizeof(_jbuf) - _jlen - 1);
+  _n = e_d_step_reply_read(wfildes[0], &_jr, e_d_jdb_spill, &echo_seen);
   if (_n == 0)
   {  /* EOF before jdb said the application exited: jdb itself ended */
    e_d_note_output_closed();
    return(e_d_quit(f));
   }
   if (_n < 0) continue;
-  _jlen += _n;
-  _jbuf[_jlen] = '\0';
   jdb_trace("e_d_step_next: poll read %d bytes total=%d: [%s]\n",
-            _n, _jlen, _jbuf);
-  if (e_d_line_says_program_exited(_jbuf))
+            _n, _jr.len, _jr.buf);
+  if (e_d_line_says_program_exited(_jr.buf))
   {  /* The program ended: say so where the other backends say it, and let
         the session end.  A prompt alone is no stop, so it is not read as one. */
-   e_d_say_program_exited(_jbuf, f);
+   e_d_say_program_exited(_jr.buf, f);
    return(e_d_quit(f));  }
   /* jdb echoes its prompt before the program's output arrives, so the prompt
      alone says nothing: only a stop jdb names is one. */
-  if (strstr(_jbuf, "] ") &&
-      (strstr(_jbuf, E_D_JDB_STOP_MARK) || strstr(_jbuf, E_D_JDB_STEP_MARK)))
+  if (strstr(_jr.buf, "] ") &&
+      (strstr(_jr.buf, E_D_JDB_STOP_MARK) || strstr(_jr.buf, E_D_JDB_STEP_MARK)))
    _found = 1;
  }
- /* Extract program output from jdb response buffer.
-    Program output is text between "> " prompt and "Step completed:"
-    or "Breakpoint hit:" -- anything that's not a jdb protocol line. */
- { char *_p = _jbuf, *_end;
-   /* Skip past initial "> " prompt */
-   if ((_p = strstr(_jbuf, "> ")) != NULL) _p += 2;
-   else _p = _jbuf;
-   /* Find where jdb protocol resumes */
-   _end = strstr(_p, "Step completed:");
-   if (!_end) _end = strstr(_p, "Breakpoint hit:");
-   if (!_end) _end = strstr(_p, "main[");
-   if (_end && _end > _p)
-   { int _olen = _end - _p;
-     /* Strip leading/trailing whitespace */
-     while (_olen > 0 && (_p[0] == '\n' || _p[0] == '\r')) { _p++; _olen--; }
-     while (_olen > 0 && (_p[_olen-1] == '\n' || _p[_olen-1] == '\r')) _olen--;
-     if (_olen > 0)
-       e_d_prog_output_append_line(_p, _olen);
-   }
- }
+ e_d_jdb_capture_output(_jr.buf, echo_seen);
  if (_found)
-  e_d_jdb_mark_stop(f, _jbuf);
+  e_d_jdb_mark_stop(f, _jr.buf);
  e_d_switch_out(0);
  return(0);
+}
+
+/**
+ * e_d_pdb_is_metadata - Say whether a line of pdb's answer is pdb's own (the
+ * prompt, the stop and source lines, its banners), not the program's output.
+ */
+static int e_d_pdb_is_metadata(const char *line)
+{
+ return(line[0] == '>' || !strncmp(line, "-> ", 3) ||
+        !strncmp(line, "(Pdb)", 5) ||
+        !strncmp(line, "--Return--", 10) ||
+        !strncmp(line, "--Call--", 8) ||
+        strstr(line, "The program") != NULL);
+}
+
+/**
+ * e_d_pdb_capture_output - Keep every line of pdb's answer that the program
+ * printed (print() results and the like) for Ctrl-G P.
+ * @text: the answer, or a part of it.
+ */
+static void e_d_pdb_capture_output(const char *text, int skip_first)
+{
+ char line[E_D_LINE_MAX];
+ int pos = 0, len;
+
+ if (skip_first)
+  e_d_text_next_line(text, &pos, line, sizeof line);
+ while (text[pos])
+ {
+  len = e_d_text_next_line(text, &pos, line, sizeof line);
+  if (len > 0 && !e_d_pdb_is_metadata(line))
+   e_d_prog_output_append_line(line, len);
+ }
+}
+
+
+/* What the pdb step reader carries across the parts of a long answer. */
+typedef struct {
+ int returned;                  /* a "--Return--" was handed on */
+ int stopped;                   /* a stop line was handed on: */
+ char file[E_D_STOP_PATH_MAX];  /* the file it names */
+ int line;                      /* and the line */
+ int open_is_pdb;               /* the part ends inside one of pdb's lines */
+} E_D_PDB_SPILL;
+
+/**
+ * e_d_pdb_part_ends_in_own_line - Say whether a part of pdb's answer ends
+ * inside a line of pdb's own, whose rest comes in the next part.
+ * @text: the part; @starts_in_own: it starts inside such a line.
+ */
+static int e_d_pdb_part_ends_in_own_line(const char *text, int starts_in_own)
+{
+ const char *last = strrchr(text, '\n');
+
+ if (!last)
+  return(starts_in_own);
+ if (last[1] == '\0')
+  return(0);
+ return(e_d_pdb_is_metadata(last + 1));
+}
+
+/**
+ * e_d_pdb_spill - Keep as program output the oldest part of a pdb answer too
+ * long for the buffer, and note a "--Return--" or a stop line in it.
+ * @ctx: an E_D_PDB_SPILL.
+ *
+ * A step whose program prints a lot goes on to its stop, with every line the
+ * program printed kept, instead of ending the session.  A stop in a function
+ * whose name is longer than the buffer is still marked: its "> file(line)"
+ * comes first and is handed on here, and the rest of the line is pdb's, not
+ * the program's output.
+ */
+static void e_d_pdb_spill(void *ctx, char *text, int mid_line)
+{
+ E_D_PDB_SPILL *sp = ctx;
+ int continues_own = mid_line && sp->open_is_pdb;
+ const char *stop = e_d_pdb_find_stop(text);
+
+ if (strstr(text, E_D_PDB_RETURN))
+  sp->returned = 1;
+ if (stop &&
+     e_d_pdb_stop_parse(stop, sp->file, sizeof sp->file, &sp->line))
+  sp->stopped = 1;
+ e_d_pdb_capture_output(text, continues_own);
+ sp->open_is_pdb = e_d_pdb_part_ends_in_own_line(text, continues_own);
+}
+
+/**
+ * e_d_pdb_internal_place - Say whether pdb stopped in Python's own code
+ * (<string>, <frozen ...>), which the user has no source of.
+ * @file: the file pdb named.
+ */
+static int e_d_pdb_internal_place(const char *file)
+{
+ return(file[0] == '<');
+}
+
+/**
+ * e_d_pdb_stop_is_internal - Say whether pdb's answer stops in Python's own
+ * code, so the reader steps on to the user's.
+ * @kept: the part of the answer still held; @sp: what was handed on.
+ *
+ * A stop in the part still held is the newest; one handed on counts only
+ * when the held part names none.
+ */
+static int e_d_pdb_stop_is_internal(const char *kept, const E_D_PDB_SPILL *sp)
+{
+ const char *stop = e_d_pdb_find_stop(kept);
+
+ if (stop)
+  return(stop[2] == '<');
+ return(sp->stopped && e_d_pdb_internal_place(sp->file));
+}
+
+/**
+ * e_d_pdb_mark_answer - Mark where pdb's answer to a step or continue says
+ * it stopped.
+ * @f: the window the command came from; @kept: the part of the answer still
+ * held; @sp: what was handed on.
+ *
+ * A stop in a function whose name is longer than the buffer is marked from
+ * its "> file(line)", which was handed on before the rest of the line came.
+ */
+static void e_d_pdb_mark_answer(FENSTER *f, const char *kept,
+                                E_D_PDB_SPILL *sp)
+{
+ const char *stop = e_d_pdb_find_stop(kept);
+
+ if (stop)
+ {
+  e_d_pdb_mark_step(f, stop);
+  return;
+ }
+ if (!sp->stopped)
+  return;
+ e_d_swtch = 3;
+ e_d_pdb_mark_stop(f, sp->file, sp->line);
 }
 
 /* Read and apply a pdb step/next response: poll for the "(Pdb) " prompt,
@@ -5935,84 +7521,60 @@ static int e_d_jdb_read_stop(FENSTER *f)
 static int e_d_pdb_read_stop(FENSTER *f, int *returned)
 {
  struct pollfd _pfd = { .fd = wfildes[0], .events = POLLIN };
- char _buf[DEB_STEP_BUF];
+ E_D_STEP_REPLY _r;
+ E_D_PDB_SPILL _sp;
  int internal_frame = 1;
 
  if (returned)
   *returned = 0;
  while (internal_frame)
  {
-  int _len = 0, _n, _found = 0;
+  int _n, _found = 0;
   internal_frame = 0;
+  memset(&_sp, 0, sizeof _sp);
+  e_d_step_reply_init(&_r);
   while (!_found)
   {
    if (poll(&_pfd, 1, DEB_STEP_POLL_MS) <= 0) break;
-   _n = read(wfildes[0], _buf + _len, sizeof(_buf) - _len - 1);
+   _n = e_d_step_reply_read(wfildes[0], &_r, e_d_pdb_spill, &_sp);
    if (_n == 0)
    {  /* EOF: pdb restarts a finished script, so it never ends by itself */
     e_d_note_output_closed();
     return(e_d_quit(f));
    }
    if (_n < 0) continue;
-   _len += _n;
-   _buf[_len] = '\0';
-   if (strstr(_buf, "(Pdb) ")) _found = 1;
+   if (strstr(_r.buf, "(Pdb) ")) _found = 1;
   }
   if (!_found)
    break;
-  if (returned && strstr(_buf, E_D_PDB_RETURN))
+  if (returned && (_sp.returned || strstr(_r.buf, E_D_PDB_RETURN)))
    *returned = 1;
-  /* Capture program output from EVERY step response.
-     Any line that isn't pdb metadata (prompt, active line, debugger
-     messages) is program output (e.g. print() results). */
-  { char _line[256];
-    int _bi = 0;
-    while (_buf[_bi])
-    {
-     int _li = 0;
-     while (_buf[_bi] && _buf[_bi] != '\n' && _li < 255)
-      _line[_li++] = _buf[_bi++];
-     _line[_li] = '\0';
-     if (_buf[_bi] == '\n') _bi++;
-     if (_li == 0) continue;
-     /* Skip pdb metadata */
-     if (_line[0] == '>' || !strncmp(_line, "-> ", 3) ||
-         !strncmp(_line, "(Pdb)", 5) ||
-         !strncmp(_line, "--Return--", 10) ||
-         !strncmp(_line, "--Call--", 8) ||
-         strstr(_line, "The program"))
-      continue;
-     /* Program output -- save for Ctrl-G P */
-     e_d_prog_output_append_line(_line, _li);
-    }
-  }
+  /* Capture program output from EVERY step response. */
+  e_d_pdb_capture_output(_r.buf, _r.mid_line && _sp.open_is_pdb);
   /* sys.exit(N): pdb names the exit status, then restarts the script */
-  if (strstr(_buf, E_D_PDB_EXIT_STATUS))
+  if (strstr(_r.buf, E_D_PDB_EXIT_STATUS))
   {
    e_d_switch_out(0);
-   e_d_say_program_exited(strstr(_buf, E_D_PDB_EXIT_STATUS), f);
+   e_d_say_program_exited(strstr(_r.buf, E_D_PDB_EXIT_STATUS), f);
    return(e_d_quit(f));
   }
   /* Check for program exit -- pdb auto-restarts after finish */
-  if (strstr(_buf, E_D_PDB_FINISHED))
+  if (strstr(_r.buf, E_D_PDB_FINISHED))
   {
    e_d_switch_out(0);
-   e_d_say_program_exited(strstr(_buf, E_D_PDB_FINISHED), f);
+   e_d_say_program_exited(strstr(_r.buf, E_D_PDB_FINISHED), f);
    return(e_d_quit(f));
   }
   /* Parse "> file(line)func()" to extract file and line number.
      If stopped in an internal Python frame (<string>, <frozen ...>),
      step again automatically until we reach user code or program exit. */
-  { char *_gt = strstr(_buf, "> ");
-    if (_gt && _gt[2] == '<')
-    {
-     e_d_send_cmd("n\n");
-     internal_frame = 1;   /* re-poll instead of the old goto */
-     continue;
-    }
-    if (_gt)
-     e_d_pdb_mark_step(f, _buf);
+  if (e_d_pdb_stop_is_internal(_r.buf, &_sp))
+  {
+   e_d_send_cmd("n\n");
+   internal_frame = 1;   /* re-poll instead of the old goto */
+   continue;
   }
+  e_d_pdb_mark_answer(f, _r.buf, &_sp);
  }
  e_d_switch_out(0);
  return(0);
@@ -6071,20 +7633,22 @@ static int e_d_a68g_is_metadata(const char *s)
    path gdb reaches via its pty) and in the User-Screen buffer (Alt-F5) -- and
    return the last reported source line number (or -1).  Shared by the step and
    continue paths so program output is never lost, including the final exit
-   chunk that a68g emits just before EOF. */
-static int e_d_a68g_scan(FENSTER *f, const char *buf)
+   chunk that a68g emits just before EOF.  When mid_line is set, buf starts
+   inside a line whose start was scanned before: that first piece is output,
+   never a source line number. */
+static int e_d_a68g_scan(FENSTER *f, const char *buf, int mid_line)
 {
- char _ln[256];
+ char _ln[E_D_LINE_MAX];
  int _bi = 0, _line = -1;
 
  while (buf[_bi])
  {
-  int _li = 0, _pl;
-  while (buf[_bi] && buf[_bi] != '\n' && _li < 255)
-   _ln[_li++] = buf[_bi++];
-  _ln[_li] = '\0';
-  if (buf[_bi] == '\n') _bi++;
-  _pl = e_d_a68g_parse_line(_ln);
+  int _pl, _li, _piece = (mid_line && _bi == 0);
+
+  _li = e_d_text_next_line(buf, &_bi, _ln, sizeof _ln);
+  _pl = -1;
+  if (!_piece)
+   _pl = e_d_a68g_parse_line(_ln);
   if (_pl > 0)
    _line = _pl;                          /* last numbered line wins */
   else if (!e_d_a68g_is_metadata(_ln))
@@ -6150,6 +7714,29 @@ static void e_d_a68g_goto(FENSTER *f, int line)
  e_d_show_stop_position(f);
 }
 
+/* What the a68g step reader carries across the parts of a long answer. */
+typedef struct {
+ FENSTER *f;
+ int line;               /* the last source line a handed-on part reported */
+} E_D_A68G_SPILL;
+
+/**
+ * e_d_a68g_spill - Show as program output the oldest part of an a68g answer
+ * too long for the buffer, and remember a source line it reports.
+ * @ctx: an E_D_A68G_SPILL.
+ *
+ * A step whose program prints a lot goes on to its stop, with all its output
+ * shown, instead of being taken for the end of the program.
+ */
+static void e_d_a68g_spill(void *ctx, char *text, int mid_line)
+{
+ E_D_A68G_SPILL *sp = ctx;
+ int line = e_d_a68g_scan(sp->f, text, mid_line);
+
+ if (line > 0)
+  sp->line = line;
+}
+
 /* Read and apply an a68g step/next/continue response: poll for the "(a68g) "
    prompt, jump the editor cursor to the reported source line, and capture any
    program output for Ctrl-G P.  a68g prints "Genie finished" and then exits
@@ -6158,26 +7745,29 @@ static void e_d_a68g_goto(FENSTER *f, int line)
 static int e_d_a68g_step_complete(FENSTER *f)
 {
  struct pollfd _pfd = { .fd = wfildes[0], .events = POLLIN };
- char _buf[DEB_STEP_BUF];
- int _len = 0, _n, _found = 0, _eof = 0, _line;
+ E_D_STEP_REPLY _r;
+ E_D_A68G_SPILL _sp;
+ int _n, _found = 0, _eof = 0, _line;
 
+ _sp.f = f;
+ _sp.line = -1;
+ e_d_step_reply_init(&_r);
  while (!_found)
  {
   if (poll(&_pfd, 1, DEB_STEP_POLL_MS) <= 0) break;
-  _n = read(wfildes[0], _buf + _len, sizeof(_buf) - _len - 1);
+  _n = e_d_step_reply_read(wfildes[0], &_r, e_d_a68g_spill, &_sp);
   if (_n == 0) {  _eof = 1;  break;  }   /* EOF: a68g exited */
   if (_n < 0) continue;
-  _len += _n;
-  _buf[_len] = '\0';
-  if (strstr(_buf, "(a68g) ")) _found = 1;
+  if (strstr(_r.buf, "(a68g) ")) _found = 1;
  }
- _buf[_len] = '\0';
- _line = e_d_a68g_scan(f, _buf);
+ _line = e_d_a68g_scan(f, _r.buf, _r.mid_line);
+ if (_line <= 0)
+  _line = _sp.line;
  e_d_a68g_cur_line = _line;   /* drives line-granular stepping in e_d_step_next */
- if (_eof || strstr(_buf, "Genie finished"))
+ if (_eof || strstr(_r.buf, "Genie finished"))
  {
   e_d_switch_out(0);
-  e_d_say_program_exited(_buf, f);
+  e_d_say_program_exited(_r.buf, f);
   return(e_d_quit(f));
  }
  if (!_found)
@@ -7687,7 +9277,7 @@ int e_d_goto_func(FENSTER *f, int flag)
  ECNT *cn = f->ed;
  BUFFER *b = cn->f[cn->mxedt]->b;
  int ret = 0, main_brk = 0;
- char str[128];
+ char str[E_D_LINE_MAX];
 
  if (!e_d_goto_supported(flag))
   return 0;
@@ -7747,6 +9337,25 @@ int e_d_goto_cursor(FENSTER *f)
 int e_d_finish_func(FENSTER *f)
 {
  return e_d_goto_func(f, E_D_GOTO_FINISH);
+}
+
+/**
+ * e_d_stop_file_line - Read the file and line out of a stop line and make
+ * that file the one the stop is shown in.
+ * @line: a line that names them ("... at file:line" for gdb).
+ *
+ * The file goes through a buffer of its own, never a line of the answer
+ * still to be parsed, and a file name longer than any path is refused.
+ * Return: the line number, or -1 when the line names none.
+ */
+static int e_d_stop_file_line(char *line)
+{
+ char file[E_D_LINE_MAX];
+ int num = e_make_line_num(line, file);
+
+ if (num >= 0)
+  strcpy(e_d_file, file);
+ return(num);
 }
 
 int e_d_fst_check(FENSTER *f)
@@ -7814,10 +9423,7 @@ int e_d_fst_check(FENSTER *f)
      for (k = strlen(e_d_sp[j-1]); k >= 0 && e_d_sp[j-1][k] != ':'; k--)
       ;
      if (k >= 0 && atoi(e_d_sp[j-1]+k+1) == ret)
-     {
-      if (e_make_line_num(e_d_sp[j-1], e_d_sp[SVLINES-1]) >= 0)
-       strcpy(e_d_file, e_d_sp[SVLINES-1]);
-     }
+      e_d_stop_file_line(e_d_sp[j-1]);
      if (e_d_p_watches(f, 0) == -1)
       return(-1);
      e_d_goto_break(e_d_file, ret, f);
@@ -7827,9 +9433,8 @@ int e_d_fst_check(FENSTER *f)
    else if (e_deb_type == DEB_SDB)	      /*  Breakpoint   */
    {
     if(!strncmp(e_d_sp[i]+10, " at", 3) &&
-      (ret = e_make_line_num(e_d_sp[i+1], e_d_sp[SVLINES-1])) >= 0)
+      (ret = e_d_stop_file_line(e_d_sp[i+1])) >= 0)
     {
-     strcpy(e_d_file, e_d_sp[SVLINES-1]);
      if (e_d_p_watches(f, 0) == -1)
       return(-1);
      e_d_goto_break(e_d_file, ret, f);
@@ -7853,8 +9458,8 @@ int e_d_fst_check(FENSTER *f)
       ;
      if (k >= 0)
      {
-      for(k++, l = 0; e_d_sp[j-1][k] != '\0' && e_d_sp[j-1][k] != '\"';
-        k++, l++)
+      for(k++, l = 0; e_d_sp[j-1][k] != '\0' && e_d_sp[j-1][k] != '\"' &&
+        l < (int)sizeof e_d_file - 1; k++, l++)
        e_d_file[l] = e_d_sp[j-1][k];
       e_d_file[l] = '\0';
      }
@@ -7889,8 +9494,7 @@ int e_d_snd_check(FENSTER *f)
     if (k >= 0 && atoi(e_d_sp[i-1]+k+1) == ret)
     {
      i--;
-     if (e_make_line_num(e_d_sp[i], e_d_sp[SVLINES-1]) >= 0)
-      strcpy(e_d_file, e_d_sp[SVLINES-1]);
+     e_d_stop_file_line(e_d_sp[i]);
      do
      {
       for (; k >= 0 && e_d_sp[i][k] != ')'; k--)
@@ -7945,9 +9549,7 @@ int e_d_snd_check(FENSTER *f)
      ;
     if (!strncmp(e_d_sp[i-1]+j+1, "in ", 3))
     {
-     strcpy(e_d_file, e_d_sp[i-1]+j+4);
-     for (k = i+2; !e_d_file[0]; k++)
-      strcpy(e_d_file, e_d_sp[i-1]+j+4);
+     snprintf(e_d_file, sizeof e_d_file, "%s", e_d_sp[i-1]+j+4);
      for (k = strlen(e_d_file)-1; k >= 0 && isspace(e_d_file[k]); k--)
       ;
      e_d_file[k+1] = '\0';
@@ -7960,9 +9562,8 @@ int e_d_snd_check(FENSTER *f)
    return(-2);
   }
   else if (e_deb_type == DEB_XDB && i == SVLINES-2 &&
-    (ret = e_make_line_num(e_d_sp[i], e_d_sp[SVLINES-1])) >= 0)
+    (ret = e_d_stop_file_line(e_d_sp[i])) >= 0)
   {
-   strcpy(e_d_file, e_d_sp[SVLINES-1]);
    if (e_d_p_watches(f, 0) == -1)
     return(-1);
    e_d_goto_break(e_d_file, ret, f);
@@ -7975,7 +9576,7 @@ int e_d_snd_check(FENSTER *f)
 int e_d_trd_check(FENSTER *f)
 {
  int ret;
- char str[256];
+ char str[E_D_LINE_MAX];
 
  str[0] = '\0';
  e_d_switch_out(0);
@@ -7984,29 +9585,40 @@ int e_d_trd_check(FENSTER *f)
  return(0);
 }
 
+/**
+ * e_d_out_read_newest - Read the next line of the debugger's answer to a run
+ * or a step, whole, into the newest answer line.
+ *
+ * A stop line names its file and line at its end, after a frame of any
+ * length, so it is read to that end and the stop is marked.  Error-stream
+ * lines met on the way are shown, as they always were.
+ * Return: e_d_line_read_whole's code for the line.
+ */
+static int e_d_out_read_newest(void)
+{
+ E_D_LINE *newest = &e_d_out_ln[SVLINES-1];
+ int ret;
+
+ while ((ret = e_d_line_read_whole(wfildes[0], newest, 0, 0)) == 2)
+  e_d_error((char *)newest->s);
+ e_d_out_show();
+ return(ret);
+}
+
 int e_read_output(FENSTER *f)
 {
- char *spt;
  int i, ret;
 
  jdb_trace("e_read_output: CALLED, e_deb_type=%d\n", e_deb_type);
- for (i = 0; i < SVLINES; i++)
- {  e_d_sp[i] = e_d_out_str[i];  e_d_out_str[i][0] = '\0';  }
- while ((ret = e_d_line_read(wfildes[0], e_d_sp[SVLINES-1], 256, 0, 0)) == 2)
-  e_d_error(e_d_sp[SVLINES-1]);
- if (ret < 0) return(-1);
+ e_d_out_clear();
+ if ((ret = e_d_out_read_newest()) < 0) return(-1);
  e_d_switch_out(0);
  while(ret != 1)
  {
-  spt = e_d_sp[0];
-  for (i = 1; i < SVLINES; i++)
-   e_d_sp[i-1] = e_d_sp[i];
-  e_d_sp[SVLINES-1] = spt;
+  e_d_out_rotate();
   do
   {
-   while((ret = e_d_line_read(wfildes[0], e_d_sp[SVLINES-1], 256, 0, 0)) == 2)
-    e_d_error(e_d_sp[SVLINES-1]);
-   if (ret < 0) return(-1);
+   if ((ret = e_d_out_read_newest()) < 0) return(-1);
   } while(!ret && !*e_d_sp[SVLINES-1]);
  }
  for (i = 0; i < SVLINES; i++)
@@ -8089,26 +9701,50 @@ int e_read_output(FENSTER *f)
  return(0);
 }
 
+/* A row of the "where" or "t" listing e_d_pr_sig finds the stop in. */
+static E_D_LINE e_d_where_row;
+
+/**
+ * e_d_where_row_read - Read the next row of the stack listing that says
+ * where the program stopped, whole, error-stream lines first.
+ * @row: set to the row's text.
+ *
+ * The innermost frame of a function with a long name or long arguments ends
+ * in the "at file:line" the stop is marked from, so the row is read to its
+ * end.
+ * Return: e_d_line_read_whole's code for the row.
+ */
+static int e_d_where_row_read(char **row)
+{
+ int ret = e_d_line_read_whole(wfildes[0], &e_d_where_row, 0, 1);
+
+ if (e_d_where_row.s)
+  *row = (char *)e_d_where_row.s;
+ else
+  *row = e_d_out_none;
+ return(ret);
+}
+
 int e_d_pr_sig(char *str, FENSTER *f)
 {
  int i, line = -1, ret = 0;
- char file[128], str2[256];
+ char file[E_D_LINE_MAX], str2[E_D_LINE_MAX];
 
  if (str && str[0])
   e_d_error(str);
- for (i = 0; i < SVLINES; i++)
-  e_d_out_str[i][0] = '\0';
+ e_d_out_clear();
+ str = e_d_out_none;
  if (e_deb_type != DEB_SDB && e_deb_type != DEB_XDB)
  {
   e_d_send_cmd("where\n");
-  for (i = 0; ((ret = e_d_line_read(wfildes[0], str, 256, 0, 1)) == 0 &&
+  for (i = 0; ((ret = e_d_where_row_read(&str)) == 0 &&
     (line = e_make_line_num(str, file)) < 0) || ret == 2; i++)
   {
    if (!strncmp(str, e_d_msg[ERR_NOSTACK], 9))
    {
     e_error(e_d_msg[ERR_PROGEXIT], 0, f->fb);
     while (ret == 0 || ret == 2)
-     if ((ret = e_d_line_read(wfildes[0], str2, 256, 0, 0)) == 2)
+     if ((ret = e_d_line_read(wfildes[0], str2, sizeof str2, 0, 0)) == 2)
       e_d_error(str2);
     e_d_quit(f);
     return(0);
@@ -8120,14 +9756,14 @@ int e_d_pr_sig(char *str, FENSTER *f)
  else
  {
   e_d_send_cmd("t\n");
-  for (i = 0; ((ret = e_d_line_read(wfildes[0], str, 256, 0, 1)) == 0 &&
+  for (i = 0; ((ret = e_d_where_row_read(&str)) == 0 &&
     (line = e_make_line_num2(str, file)) < 0) || ret == 2; i++)
   {
    if (!strncmp(str, e_d_msg[ERR_NOPROCESS], 10))
    {
     e_error(e_d_msg[ERR_PROGEXIT], 0, f->fb);
     while (ret == 0 || ret == 2)
-     if ((ret = e_d_line_read(wfildes[0], str2, 256, 0, 0)) == 2)
+     if ((ret = e_d_line_read(wfildes[0], str2, sizeof str2, 0, 0)) == 2)
       e_d_error(str2);
     e_d_quit(f);
     return(0);
@@ -8142,7 +9778,7 @@ int e_d_pr_sig(char *str, FENSTER *f)
   return(e_d_quit(f));
  }
  while (ret == 0 || ret == 2)
-  if ((ret = e_d_line_read(wfildes[0], str2, 256, 0, 0)) == 2)
+  if ((ret = e_d_line_read(wfildes[0], str2, sizeof str2, 0, 0)) == 2)
    e_d_error(str2);
  if (ret == -1)
   return(ret);
@@ -8162,9 +9798,41 @@ int e_d_pr_sig(char *str, FENSTER *f)
   return(-2);
 }
 
+/**
+ * e_make_line_num_copy - Copy a file name out of a debugger line, up to a
+ * stop character.
+ * @from: where the name starts; @stop: the character that ends it (the end
+ * of the line ends it too); @file: E_D_LINE_MAX bytes.
+ *
+ * The line may be of any length, since frames are read whole; a "name"
+ * longer than any path is no file, and is refused rather than copied.
+ * Return: the name's length, or -1 when it does not end before @stop.
+ */
+static int e_make_line_num_copy(const char *from, char stop, char *file)
+{
+ int i;
+
+ for (i = 0; from[i] != '\0' && from[i] != stop; i++)
+ {
+  if (i >= E_D_LINE_MAX - 1)
+  {
+   file[i] = '\0';
+   return(-1);
+  }
+  file[i] = from[i];
+ }
+ file[i] = '\0';
+ if (from[i] != stop)
+  return(-1);
+ return(i);
+}
+
+/* Reads the line number and, into @file (E_D_LINE_MAX bytes), the file out
+   of a debugger line that names a source position. */
 int e_make_line_num(char *str, char *file)
 {
  char *sp;
+ char answer[E_D_LINE_MAX];
  int i, n, num;
 
  if (e_deb_type == DEB_GDB)
@@ -8175,10 +9843,9 @@ int e_make_line_num(char *str, char *file)
    return(-1);
   for (i = n-1; i >= 0 && !isspace(str[i]); i--)
    ;
-  for (n = i+1; str[n] != ':'; n++)
-   file[n-i-1] = str[n];
-  file[n-i-1] = '\0';
-  return(atoi(str+n+1));
+  if ((n = e_make_line_num_copy(str + i + 1, ':', file)) < 0)
+   return(-1);
+  return(atoi(str + i + 1 + n + 1));
  }
  else if (e_deb_type == DEB_DBX)
  {
@@ -8189,20 +9856,15 @@ int e_make_line_num(char *str, char *file)
   for (i = 6;  sp[i] != '\"'; i++)
    ;
   sp += (i+1);
-  for (i = 0; (file[i] = sp[i]) != '\"' && file[i] != '\0'; i++)
-   ;
-  if (file[i] == '\0')
+  if (e_make_line_num_copy(sp, '\"', file) < 0)
    return(-1);
-  file[i] = '\0';
   return(num);
  }
  else if (e_deb_type == DEB_XDB)
  {
-  for (sp = str, i = 0; (file[i] = sp[i]) && sp[i] != ':'; i++)
-   ;
-  if (!sp[i])
+  sp = str;
+  if ((i = e_make_line_num_copy(sp, ':', file)) < 0)
    return(-1);
-  file[i] = '\0';
   for (i++; sp[i] && sp[i] != ':'; i++)
    ;
   if (!sp[i])
@@ -8221,15 +9883,17 @@ int e_make_line_num(char *str, char *file)
   if ((!str[i]) || (num = atoi(str+i+1)) < 0)
    return(-1);
   e_d_send_cmd("e\n");
-  while ((i = e_d_line_read(wfildes[0], str, 256, 0, 0)) ==  2)
-   e_d_error(str);
+  while ((i = e_d_line_read(wfildes[0], answer, sizeof answer, 0, 0)) ==  2)
+   e_d_error(answer);
   if (i < 0)
    return(-1);
-  for (i = 0; str[i] != '\0' && str[i] != '\"'; i++)
+  for (i = 0; answer[i] != '\0' && answer[i] != '\"'; i++)
    ;
-  for (sp = str + i + 1, i = 0; (file[i] = sp[i]) && file[i] != '\"'; i++)
-   ;
-  file[i] = '\0';
+  /* sdb's answer has always been taken up to its closing quote or its end */
+  if (answer[i] == '\"')
+   e_make_line_num_copy(answer + i + 1, '\"', file);
+  else
+   file[0] = '\0';
   if (e_d_dum_read() == -1)
    return(-1);
   return(num);
@@ -8244,10 +9908,8 @@ int e_make_line_num2(char *str, char *file)
  for (i = 0; str[i] != '[' && str[i] != '\0'; i++)
   ;
  if (!str[i]) return(-1);
- for (sp = str+i+1, i = 0; (file[i] = sp[i]) != ':' && file[i] != '\0'; i++)
-  ;
- if (file[i] == '\0') return(-1);
- file[i] = '\0';
+ sp = str + i + 1;
+ if ((i = e_make_line_num_copy(sp, ':', file)) < 0) return(-1);
  for (i++; isspace(sp[i]); i++)
   ;
  return(atoi(sp+i));
@@ -8276,15 +9938,14 @@ int e_d_goto_break(char *file, int line, FENSTER *f)
  SCHIRM *s;
  FENSTER ftmp;
  int i;
- char str[120];
+ char str[PATH_MAX + 64];
 
 /*   if(schirm != e_d_save_schirm) e_d_switch_out(0);  */
  e_d_switch_out(0);
  ftmp.ed = cn;
  ftmp.fb = f->fb;
  WpeFilenameToPathFile(file, &ftmp.dirct, &ftmp.datnam);
- for (i = 0; i < SVLINES; i++)
-  e_d_out_str[i][0] = '\0';
+ e_d_out_clear();
  for (i = cn->mxedt; i > 0; i--)
   if (!strcmp(cn->f[i]->datnam, ftmp.datnam) &&
     !strcmp(cn->f[i]->dirct, ftmp.dirct))
@@ -8314,7 +9975,7 @@ int e_d_goto_break(char *file, int line, FENSTER *f)
     e_d_send_cmd("c\n");
     return(e_read_output(f));
    }
-   sprintf(str, e_d_msg[ERR_CANTFILE], file);
+   snprintf(str, sizeof(str), e_d_msg[ERR_CANTFILE], file);
    return(e_error(str, 0, f->fb));
   }
   if (e_edit(cn, file))

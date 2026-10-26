@@ -137,6 +137,31 @@ def test_a68g_breakpoint_run_watch(tmp_path):
             "factorial(n - 1):\n%s" % text
 
 
+# @scenario SC-debug-21
+@pytest.mark.parametrize("total", [200, 400, 4000])
+def test_a68g_starts_on_a_source_under_a_very_long_path(tmp_path, total):
+    """A .a68 file in a very deep directory (past 128 and past 256 bytes,
+    and close to PATH_MAX) still starts the monitor and stops, marked, on its
+    breakpoint (the path was cut short before, and a68g ended at once)."""
+    import os
+    dirs = []
+    while len(os.path.join(str(tmp_path), *dirs, "factorial.a68")) < total:
+        dirs.append("d" * 40)
+    rel = os.path.join(*dirs, "factorial.a68")
+    os.makedirs(os.path.join(str(tmp_path), os.path.dirname(rel)))
+    assert total <= len(os.path.join(str(tmp_path), rel)) < total + 45
+    with WpeSession(str(tmp_path), FACTORIAL, filename=rel, wait=2.0) as w:
+        w.key(DOWN, delay=0.4)
+        w.key(DOWN, delay=0.4)            # cursor on line 3
+        w.key(CTRL_G, "b", delay=0.5)     # Ctrl-G B: toggle breakpoint
+        w.key(CTRL_G, "r", delay=2.0)     # Ctrl-G R: run
+        w._drain(5.0)
+        assert w.alive(), "wpe died starting the a68g monitor"
+        assert _mark_line(w) == 3, \
+            "a68g should stop on the breakpoint line 3 of a long-path " \
+            "file:\n%s" % _text(w)
+
+
 def test_a68g_run_to_completion_captures_output(tmp_path):
     """Run a .a68 program under the debugger to completion.
 
