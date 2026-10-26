@@ -384,7 +384,12 @@ def xwpe(xserver, tmp_path, request):
            # otherwise connect to the real compositor instead of this headless
            # Xvfb -- and no X window would ever appear here.
            "XWPE_BACKEND": "x11"}
-    env.update(getattr(request, "param", None) or {})   # optional per-test env (e.g. AI)
+    param = dict(getattr(request, "param", None) or {})
+    # XWPE_TEST_SOURCE: a test that needs its own program in t.c, not env.
+    source = param.pop("XWPE_TEST_SOURCE", None)
+    if source is not None:
+        src.write_text(source)
+    env.update(param)   # optional per-test env (e.g. AI)
     proc = _spawn([XWPE_BIN, str(src)], env=env, cwd=str(tmp_path))
     win = _find_xwpe_window()
     assert win, "xwpe window did not appear"

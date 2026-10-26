@@ -23,7 +23,7 @@ import pytest
 
 import procinfo
 from wpe_driver import (WpeSession, ALT, WAIT_SCALE, tool_usable,
-                        CURRENT_LINE_BG, BREAKPOINT_BG)
+                        CURRENT_LINE_BG, BREAKPOINT_BG, incoherence)
 
 CTRL_G = "\x07"         # debugger command prefix
 DOWN = "\033OB"
@@ -1357,6 +1357,328 @@ def test_gdb_run_through_megabytes_of_breakpoint_output_reaches_the_stop(
             "the run should stop, marked, on line %d (mark on %s):\n%s" \
             % (FLOOD_STOP_LINE, _mark_line(w), _screen(w))
         assert _children(w, "gdb"), "gdb should still be running"
+
+
+# A program that is running, not stopped: it waits for a line on its stdin.
+BLOCKED_C_PROG = (
+    "#include <stdio.h>\n"
+    "int main(void)\n"
+    "{\n"
+    "  char line[100];\n"
+    "  printf(\"READY\\n\");\n"
+    "  if (fgets(line, sizeof line, stdin))\n"
+    "    printf(\"GOT:%s\", line);\n"
+    "  return 0;\n"
+    "}\n"
+)
+
+
+BLOCKED_BREAK_LINE = 8            # return 0;  after the line is read
+
+
+def _start_blocked_run(w):
+    """A breakpoint after the read, then Ctrl-G R: gdb runs the program,
+    which waits on its stdin; return once it printed READY, so it is
+    running, not stopped."""
+    _move_down(w, BLOCKED_BREAK_LINE - 1)
+    w.key(CTRL_G, "b", delay=0.4)
+    w.key(CTRL_G, "r", delay=0.2)
+    assert _wait_for(w, lambda: "READY" in _screen(w), START_TIMEOUT_S), \
+        "the program should be running and print READY:\n%s" % _screen(w)
+
+
+# @scenario SC-debug-18
+def test_debug_quit_from_the_menu_while_the_program_runs_ends_the_session(
+        tmp_path):
+    """Debug > Quit (Alt-D, Q) while the program is running ends gdb and
+    leaves the editor usable. The menu key was typed into the program's
+    console as a character (Alt-D arrived as a g with a breve), so gdb ran
+    on and Messages showed that character."""
+    _need("gcc", "gdb")
+    with WpeSession(str(tmp_path), BLOCKED_C_PROG, filename="p.c",
+                    wait=1.5) as w:
+        _start_blocked_run(w)
+        assert _children(w, "gdb"), "gdb should be running"
+        w.menu(ALT.DEBUG, "q", delay=0.5)
+        assert _wait_for(w, lambda: not _children(w, "gdb"), STEP_TIMEOUT_S), \
+            "Debug > Quit should end gdb while the program runs:\n%s" \
+            % _screen(w)
+        assert "ğ" not in _screen(w), \
+            "the menu key must not be typed into the program:\n%s" % _screen(w)
+        w.key("Q", delay=0.3)
+        w.save()
+        assert "Q" in w.text(), \
+            "typing after the session should edit the source"
+
+
+# @scenario SC-debug-18
+def test_ctrl_g_q_while_the_program_runs_ends_the_session(tmp_path):
+    """Ctrl-G Q (Quit) ends a running session too."""
+    _need("gcc", "gdb")
+    with WpeSession(str(tmp_path), BLOCKED_C_PROG, filename="p.c",
+                    wait=1.5) as w:
+        _start_blocked_run(w)
+        w.key(CTRL_G, "q", delay=0.5)
+        assert _wait_for(w, lambda: not _children(w, "gdb"), STEP_TIMEOUT_S), \
+            "Ctrl-G Q should end gdb while the program runs:\n%s" \
+            % _screen(w)
+
+
+# @scenario SC-debug-35
+def test_text_typed_while_the_program_runs_reaches_the_program(tmp_path):
+    """The user types a line, including a character above Latin-1, and
+    Enter while the program waits for input: the program reads and prints
+    it back. Only the editor's own keys stay with the editor."""
+    _need("gcc", "gdb")
+    with WpeSession(str(tmp_path), BLOCKED_C_PROG, filename="p.c",
+                    wait=1.5) as w:
+        _start_blocked_run(w)
+        w.key("h", "i", "ğ", delay=0.15)
+        w.key("\r", delay=0.3)
+        assert _wait_for(w, lambda: "GOT:hiğ" in _screen(w),
+                         STEP_TIMEOUT_S), \
+            "the program should read what was typed:\n%s" % _screen(w)
+
+
+RUNNING_REFUSAL = "The program is running"
+BLOCKED_AFTER_LINE = 9            # }  the line after BLOCKED_BREAK_LINE
+
+
+def _answer_the_blocked_program(w):
+    """Type the line the blocked program waits for and wait for its stop."""
+    w.key("x", delay=0.15)
+    w.key("\r", delay=0.3)
+    assert _wait_for(w, lambda: _mark_line(w) == BLOCKED_BREAK_LINE,
+                     STEP_TIMEOUT_S), \
+        "the run should stop on line %d (mark on %s):\n%s" \
+        % (BLOCKED_BREAK_LINE, _mark_line(w), _screen(w))
+
+
+# @scenario SC-debug-36
+def test_a_step_while_the_program_runs_is_refused_and_the_session_keeps_its_place(
+        tmp_path):
+    """F8 while the program waits for input says so on the status row and
+    sends gdb nothing: after the program is answered and stops, the next F8
+    marks the following line (the step used to go to gdb mid-run, and the
+    next F8 then ended the session)."""
+    _need("gcc", "gdb")
+    with WpeSession(str(tmp_path), BLOCKED_C_PROG, filename="p.c",
+                    wait=1.5) as w:
+        _start_blocked_run(w)
+        w.key(F8, delay=0.5)
+        assert RUNNING_REFUSAL in _screen(w), \
+            "F8 should be refused with a line on the status row:\n%s" \
+            % _screen(w)
+        _answer_the_blocked_program(w)
+        assert _step(w, F8, BLOCKED_AFTER_LINE), \
+            "the next F8 should mark line %d (mark on %s):\n%s" \
+            % (BLOCKED_AFTER_LINE, _mark_line(w), _screen(w))
+
+
+# @scenario SC-debug-36
+def test_show_stack_while_the_program_runs_is_refused(tmp_path):
+    """Ctrl-G K while the program runs says so on the status row and opens
+    no Stack window; gdb is asked nothing until the program stops."""
+    _need("gcc", "gdb")
+    with WpeSession(str(tmp_path), BLOCKED_C_PROG, filename="p.c",
+                    wait=1.5) as w:
+        _start_blocked_run(w)
+        w.key(CTRL_G, "k", delay=0.8)
+        assert RUNNING_REFUSAL in _screen(w), \
+            "Ctrl-G K should be refused with a line on the status row:\n%s" \
+            % _screen(w)
+        assert " Stack " not in _screen(w), \
+            "no Stack window should open:\n%s" % _screen(w)
+        _answer_the_blocked_program(w)
+
+
+# The build keys of the Run menu. Each one asks whether to end the debug
+# session first, as Turbo C asked to reset the program before a rebuild.
+F9 = "\033[20~"                   # Make
+ALT_C = "\033c"                   # Compile
+ALT_U = "\033u"                   # Run (Ctrl-F9)
+ALT_A = "\033a"                   # Execute Make
+QUIT_DEBUGGING_QUESTION = "Quit Debugging"
+
+
+def _ask_to_build_and_answer(w, key, answer):
+    """Press a build key during a session, wait for the question whether to
+    end the session, and answer it."""
+    w.key(key, delay=0.5)
+    assert _wait_for(w, lambda: QUIT_DEBUGGING_QUESTION in _screen(w),
+                     STEP_TIMEOUT_S), \
+        "the build key should ask whether to quit debugging:\n%s" % _screen(w)
+    w.key(answer, delay=0.6)
+
+
+# @scenario SC-debug-37
+def test_a_build_declined_while_the_program_runs_keeps_the_session(tmp_path):
+    """F9 while the program waits for input, answered No: the session goes
+    on as if F9 had not been pressed. The program, once answered, stops on
+    the breakpoint with the line marked, and F8 steps (the build used to
+    drop gdb's answers before asking, so the stop was never seen and every
+    debugger key said the program was running until Debug > Quit)."""
+    _need("gcc", "gdb")
+    with WpeSession(str(tmp_path), BLOCKED_C_PROG, filename="p.c",
+                    wait=1.5) as w:
+        _start_blocked_run(w)
+        _ask_to_build_and_answer(w, F9, "n")
+        assert _children(w, "gdb"), \
+            "No should leave gdb running:\n%s" % _screen(w)
+        _answer_the_blocked_program(w)
+        assert _step(w, F8, BLOCKED_AFTER_LINE), \
+            "F8 should mark line %d (mark on %s):\n%s" \
+            % (BLOCKED_AFTER_LINE, _mark_line(w), _screen(w))
+
+
+# @scenario SC-debug-37
+@pytest.mark.parametrize("key,answer", [
+    (F9, "n"), (F9, ESC), (ALT_C, "n"), (ALT_U, "n"), (ALT_A, "n"),
+], ids=["f9-no", "f9-esc", "alt-c-no", "alt-u-no", "alt-a-no"])
+def test_a_build_declined_at_a_stop_keeps_the_session(tmp_path, key, answer):
+    """A build key at a stop, answered No or Esc: the mark stays and F8
+    steps to the next line (the build used to drop gdb's answers before
+    asking, and F8 then said it could not watch the debugger's answer)."""
+    _need("gcc", "gdb")
+    with _c_session(tmp_path) as w:
+        _start_c_session(w)
+        _ask_to_build_and_answer(w, key, answer)
+        assert _mark_line(w) == C_BREAK_LINE and _children(w, "gdb"), \
+            "declining should leave the session at its stop:\n%s" % _screen(w)
+        assert _step(w, F8, C_NEXT_LINE), \
+            "F8 should mark line %d (mark on %s):\n%s" \
+            % (C_NEXT_LINE, _mark_line(w), _screen(w))
+
+
+# @scenario SC-debug-37
+def test_a_build_accepted_at_a_stop_ends_the_session_and_builds(tmp_path):
+    """F9 at a stop, answered Yes: gdb ends, the mark goes and the build
+    runs (the program was just built, so it says there is nothing to
+    build)."""
+    _need("gcc", "gdb")
+    with _c_session(tmp_path) as w:
+        _start_c_session(w)
+        _ask_to_build_and_answer(w, F9, "y")
+        assert _wait_for(w, lambda: not _children(w, "gdb"), STEP_TIMEOUT_S), \
+            "Yes should end gdb:\n%s" % _screen(w)
+        assert _wait_for(w, lambda: "nothing to build" in _screen(w),
+                         STEP_TIMEOUT_S), \
+            "the build should run after the session ends:\n%s" % _screen(w)
+        assert _mark_line(w) is None, \
+            "the current-line mark should go:\n%s" % _screen(w)
+
+
+# @scenario SC-debug-37
+def test_a_build_declined_at_a_pdb_stop_keeps_the_session(tmp_path):
+    """Parity with gdb: F9 at a pdb stop, answered No, leaves pdb at its
+    stop and F8 steps to the next line."""
+    _need("python3")
+    with WpeSession(str(tmp_path), PY_PROG, filename="p.py", wait=1.5) as w:
+        _start_py_session(w)
+        assert _wait_for(w, lambda: _mark_line(w) == PY_BREAK_LINE,
+                         START_TIMEOUT_S), \
+            "pdb should stop on line %d:\n%s" % (PY_BREAK_LINE, _screen(w))
+        _ask_to_build_and_answer(w, F9, "n")
+        assert _children(w, "python3"), \
+            "No should leave pdb running:\n%s" % _screen(w)
+        assert _step(w, F8, PY_NEXT_LINE), \
+            "F8 should mark line %d (mark on %s):\n%s" \
+            % (PY_NEXT_LINE, _mark_line(w), _screen(w))
+
+
+# Programs that print, then sleep for ten minutes. The breakpoint is on the
+# print: after the stop there, Ctrl-G R leaves the program running (not
+# stopped) for as long as the test needs.
+SLEEPING_PROGS = {
+    "pdb": {"file": "p.py", "line": 2, "child": "python3", "env": {},
+            "need": ("python3",), "start_s": 15,
+            "prog": "import time\nprint('ready', flush=True)\n"
+                    "time.sleep(600)\nx = 1\n"},
+    "jdb": {"file": "P.java", "line": 3, "child": "jdb", "env": {},
+            "need": ("jdb", "javac"), "start_s": 30,
+            "prog": "public class P {\n"
+                    "    public static void main(String[] a) throws Exception {\n"
+                    "        System.out.println(\"ready\");\n"
+                    "        Thread.sleep(600000);\n"
+                    "        int x = 3;\n"
+                    "    }\n}\n"},
+    "dlv": {"file": "main.go", "line": 9, "child": "dlv", "env": {},
+            "need": ("dlv", "go"), "start_s": 40,
+            "prog": "package main\n\nimport (\n\t\"fmt\"\n\t\"time\"\n)\n\n"
+                    "func main() {\n\tfmt.Println(\"ready\")\n"
+                    "\ttime.Sleep(600 * time.Second)\n\tx := 3\n"
+                    "\tfmt.Println(x)\n}\n"},
+    "lldb-dap": {"file": "main.rs", "line": 2, "child": "lldb-dap",
+                 "env": {"XWPE_DAP_ADAPTER": "lldb"},
+                 "need": ("rustc", "lldb-dap"), "start_s": 60,
+                 "prog": "fn main() {\n    println!(\"ready\");\n"
+                         "    std::thread::sleep("
+                         "std::time::Duration::from_secs(600));\n"
+                         "    let x = 3;\n    println!(\"{}\", x);\n}\n"},
+}
+RUNNING_SETTLE_S = 10   # the program is asleep, past any start-up output
+
+
+# @scenario SC-debug-18
+def test_debug_quit_while_the_program_runs_under_a68g(tmp_path):
+    """a68g reads the keyboard while the program runs: Debug > Quit ends it.
+    (A busy loop stands in for the sleep, which a68g has no call for.)"""
+    _need("a68g")
+    prog = ("print ((\"rea\" + \"dy\", new line));\nINT n := 0;\n"
+            "WHILE n < 2000000000 DO n +:= 1 OD;\nINT x := 3;\n"
+            "print ((x, new line))\n")
+    with WpeSession(str(tmp_path), prog, filename="p.a68", wait=2.0) as w:
+        _move_down(w, 3)
+        w.key(CTRL_G, "b", delay=0.5)
+        w.key(CTRL_G, "r", delay=1.0)
+        assert _wait_for(w, lambda: _children(w, "a68g"), START_TIMEOUT_S), \
+            "a68g should be running:\n%s" % _screen(w)
+        assert _wait_for(w, lambda: "ready" in _screen(w), START_TIMEOUT_S), \
+            "the program should have started and printed:\n%s" % _screen(w)
+        w.menu(ALT.DEBUG, "q", delay=0.5)
+        assert _wait_for(w, lambda: not _children(w, "a68g"), STEP_TIMEOUT_S), \
+            "Debug > Quit should end a68g while the program runs:\n%s" \
+            % _screen(w)
+
+
+# @scenario SC-debug-18
+@pytest.mark.parametrize("debugger", [
+    "jdb",
+    pytest.param("pdb", marks=incoherence(
+        "pdb's continue is read by e_read_output, whose key reader "
+        "(e_d_getchar) only knows Ctrl-C and writes every other byte to "
+        "pdb's stdin, so Alt-D q reaches pdb as ESC d q")),
+    pytest.param("dlv", marks=incoherence(
+        "the adapter's run waits in poll() on the adapter's descriptors "
+        "only, so no editor key is read while the program runs")),
+    pytest.param("lldb-dap", marks=incoherence(
+        "the adapter's run waits in poll() on the adapter's descriptors "
+        "only, so no editor key is read while the program runs")),
+])
+def test_debug_quit_while_the_program_runs_under_every_debugger(
+        tmp_path, debugger):
+    """Parity with gdb: Debug > Quit (Alt-D, Q) ends the session while the
+    program is running, whichever debugger runs it."""
+    spec = SLEEPING_PROGS[debugger]
+    _need(*spec["need"])
+    if debugger == "dlv":
+        (tmp_path / "go.mod").write_text("module dapdemo\n\ngo 1.21\n")
+    with WpeSession(str(tmp_path), spec["prog"], filename=spec["file"],
+                    wait=2.0, env_extra=spec["env"] or None) as w:
+        _move_down(w, spec["line"] - 1)
+        w.key(CTRL_G, "b", delay=0.5)
+        w.key(CTRL_G, "r", delay=1.0)
+        assert _wait_for(w, lambda: _mark_line(w) == spec["line"],
+                         spec["start_s"]), \
+            "%s should stop on line %d:\n%s" \
+            % (spec["child"], spec["line"], _screen(w))
+        w.key(CTRL_G, "r", delay=0.5)
+        w._drain(RUNNING_SETTLE_S)   # asleep for ten minutes (drain scales)
+        w.menu(ALT.DEBUG, "q", delay=0.5)
+        assert _wait_for(w, lambda: not _children(w, spec["child"]),
+                         STEP_TIMEOUT_S), \
+            "Debug > Quit should end %s while the program runs:\n%s" \
+            % (spec["child"], _screen(w))
 
 
 def _cursor_row_text(w):

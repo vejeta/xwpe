@@ -430,7 +430,8 @@ static void e_p_make_after_link(FENSTER *f, int result, void *data)
  * debugger starts), or NULL; it gets 0 for a success.
  * @data: handed to @done.
  *
- * Return: 0 when the build started, -1 when another build is running.
+ * Return: 0 when the build started, -1 when another build is running or
+ * the user kept the debug session.
  */
 int e_p_make_then(FENSTER *f, e_build_cont done, void *data)
 {
@@ -829,8 +830,8 @@ int e_run(FENSTER *f)
   e_build_refuse(f);
   return(-1);
  }
- efildes[0] = efildes[1] = -1;
- wfildes[0] = wfildes[1] = -1;
+ /* The pipes are reset by e_p_make_then once it may build: a debug session
+    the user keeps still answers on them. */
  if (!e_run_sh(f))
   return(0);
  strncpy(e_run_src_dirct, f->dirct, sizeof(e_run_src_dirct) - 1);
@@ -1100,17 +1101,6 @@ static int e_comp_start(FENSTER *f, e_build_cont done, void *data,
  struct stat cbuf[1], obuf[1];
 #endif
 
-#ifdef DEBUGGER
- if (e_d_swtch > 0)
- {
-  i = e_message(1, "The Debugger is Running\nDo You want to Quit Debugging ?",f);
-  if (i == 'Y')
-   e_d_quit(f);
-  else
-   return(-1);
-  WpeMouseChangeShape(WpeWorkingShape);
- }
-#endif
  e__project = e_project_is_open();
  if (e__project)
  {
@@ -2255,6 +2245,42 @@ int e_p_exec(FENSTER *f, PIC *pic, e_build_cont cont, void *data)
  return(0);
 }
 
+#ifdef DEBUGGER
+#define E_BUILD_QUIT_DEBUG_QUESTION \
+ "The Debugger is Running\nDo You want to Quit Debugging ?"
+#define E_BUILD_ANSWER_YES 'Y'
+
+/**
+ * e_build_ends_debug_session - Ask whether a build may end the debug session.
+ * @f: the window the build key was pressed in.
+ *
+ * A build replaces the program being debugged, so, as Turbo C asked to
+ * reset the program before a rebuild, F9, Alt-C, Ctrl-F9, Install and
+ * Execute Make first ask whether to quit debugging.  Yes ends the session
+ * and the build goes on.  No or Esc leaves the session exactly as it was,
+ * stopped or running: the question comes before the build claims Messages
+ * or the pipes the debugger answers on, so the next stop is still marked
+ * and the debugger keys keep working.
+ * Return: 0 when the build may go on, -1 when the user kept the session.
+ */
+static int e_build_ends_debug_session(FENSTER *f)
+{
+ if (e_d_swtch <= 0)
+  return(0);
+ if (e_message(1, E_BUILD_QUIT_DEBUG_QUESTION, f) != E_BUILD_ANSWER_YES)
+  return(-1);
+ e_d_quit(f);
+ return(0);
+}
+#else
+/* Without the debugger there is no session for a build to end. */
+static int e_build_ends_debug_session(FENSTER *f)
+{
+ (void)f;
+ return(0);
+}
+#endif
+
 /**
  * e_build_chain_begin - Open a build: F9, Alt-C, Ctrl-F9, Execute Make or
  * the debugger's build.
@@ -2262,8 +2288,10 @@ int e_p_exec(FENSTER *f, PIC *pic, e_build_cont cont, void *data)
  * @done: what runs once the whole build has ended, or NULL; @data: its data.
  *
  * Only one build runs at a time; a second one is refused with a line that
- * says Esc cancels the first.
- * Return: 0 when the build may start, -1 when another one runs.
+ * says Esc cancels the first.  During a debug session the user is asked
+ * first whether to end it, before anything of the build is set up.
+ * Return: 0 when the build may start, -1 when another one runs or the user
+ * kept the debug session.
  */
 static int e_build_chain_begin(FENSTER *f, e_build_cont done, void *data)
 {
@@ -2272,6 +2300,8 @@ static int e_build_chain_begin(FENSTER *f, e_build_cont done, void *data)
   e_build_refuse(f);
   return(-1);
  }
+ if (e_build_ends_debug_session(f))
+  return(-1);
  g_build_chain_open = 1;
  g_build_chain_ran = 0;
  g_build_chain_cancelled = 0;

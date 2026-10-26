@@ -32,14 +32,43 @@ void e_pty_send_key(int fd, int key)
   e_pty_write_utf8(fd, key);
 }
 
+/* Key codes below this are always text; from here up a key is text only when
+   the backend flagged it as a decoded character, because xwpe's own key codes
+   (Alt-letters, F-keys) live in the same numeric range as Unicode.  One bound
+   for the editor's character insertion and for the debugger's console. */
+#define E_KEY_TEXT_LIMIT 255
+/* The first key code that is a printable character, not a control key. */
+#define E_KEY_FIRST_PRINTABLE 32
+
 #ifdef DEBUGGER
+/** e_key_is_program_text - Is this key text the user typed for the program?
+ *
+ * While a debugged program runs, what the user types belongs to the program
+ * but the editor's own keys (Alt-letter menus, F-keys, Ctrl-F2, ...) must
+ * still reach the editor, so Debug > Quit and the other menus keep working.
+ * Same rule as character insertion in the edit loop: a code below 255 is
+ * text, a larger one only when the backend flagged it as a decoded
+ * character (typed Unicode); otherwise it is an xwpe key code.
+ *
+ * @c: key as returned by the backend reader.
+ * Return: non-zero for Enter, Backspace and typed characters.
+ */
+static int e_key_is_program_text(int c)
+{
+ if (c == WPE_CR || c == WPE_DC)
+  return 1;
+ if (c < E_KEY_FIRST_PRINTABLE)
+  return 0;
+ return (c < E_KEY_TEXT_LIMIT || e_input_was_char);
+}
+
 static int e_debug_console_input(int c, FENSTER *f)
 {
  extern int e_d_pty_master, e_d_async_pending;
 
  if (!e_d_async_pending || e_d_pty_master < 0)
   return 0;
- if (c == WPE_CR || c == WPE_DC || c >= 32)
+ if (e_key_is_program_text(c))
  {
   if (c == WPE_DC)
   {
@@ -653,7 +682,7 @@ int e_eingabe(ECNT *e)
      leaves e_input_was_char 0 and falls through to its handler below.  ASCII and
      Latin-1 (< 255) are always text. */
   if ((c > 31 || (c == WPE_TAB && !(f->flg & 1)) ||
-    (f->ins > 1 && f->ins != WPE_INS_READONLY)) && (c < 255 || e_input_was_char))
+    (f->ins > 1 && f->ins != WPE_INS_READONLY)) && (c < E_KEY_TEXT_LIMIT || e_input_was_char))
   {
    if (e_window_text_locked(f)) continue;
    if (e_window_full(f, e_key_text_bytes(c))) continue;

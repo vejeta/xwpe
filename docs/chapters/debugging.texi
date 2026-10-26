@@ -244,6 +244,12 @@ gdb ended unexpectedly (exit status 137)
 The session is then over, as after Debug > Quit, and the editor takes
 keys again.
 
+A build during a session (Compile, Make, Run, Install or Execute Make)
+first asks @samp{Do You want to Quit Debugging ?}, as Turbo C asked to
+reset the program before a rebuild.  Yes ends the session and builds.
+No or @key{Esc} leaves the session as it was, stopped or running: the
+next stop is marked and the debugger keys go on working.
+
 After every stop, the line:column field of the window shows the line
 the green bar is on.
 
@@ -319,7 +325,14 @@ A program that reads from standard input (@code{fgets}, @code{scanf},
 type the answer directly in the Messages window and press @key{Enter}.
 xwpe forwards your keystrokes to the program through the same
 pseudoterminal it uses to capture output, so the program sees a real
-terminal on stdin.
+terminal on stdin.  Under gdb, only text goes to the program (characters,
+@key{Enter} and @key{Backspace}) while it runs; the menus, the function
+keys and @kbd{Ctrl-F2} stay with the editor, so @samp{Debug @result{} Quit}
+still works while the program waits.  A program that is running cannot be
+stepped, continued or asked about, so Step, Trace, Run, Goto cursor, Finish,
+Show stack and the breakpoint and watch commands say ``The program is
+running'' on the status row and do nothing until it stops.  @key{Enter} is
+text for the program from any window, the Stack window included.
 
 The example @file{docs/examples/interactive_test.c} prompts for a name
 and blocks on @code{fgets()}.  Press @kbd{Ctrl-F9} (Run): the prompt

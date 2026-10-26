@@ -164,6 +164,7 @@ static void e_d_prog_output_append_line(char *data, int len);
 static int  e_d_a68g_step_complete(FENSTER *f);   /* a68g: read step/continue response */
 static int  e_d_start_forget(void);       /* the start watcher (see e_run_debug) */
 static int  e_d_start_refused(FENSTER *f);
+static int  e_d_refuse_while_running(FENSTER *f);   /* the program runs */
 static int  e_d_watch_refused(FENSTER *f);   /* a debugger without watches */
 static const char *e_d_start_label(void);
 static void e_d_show_stop_position(FENSTER *f);  /* line:column after a stop */
@@ -2675,7 +2676,8 @@ int e_delete_watches(FENSTER *f)
  int n;
 
  f = cn->f[cn->mxedt];
- if (e_d_nwtchs < 1 || strcmp(f->datnam, "Watches"))
+ if (e_d_nwtchs < 1 || strcmp(f->datnam, "Watches") ||
+   e_d_refuse_while_running(f))
   return(0);
  for (n = 0; n < e_d_nwtchs && e_d_nrwtchs[n] <= b->b.y; n++)
   ;
@@ -2694,7 +2696,7 @@ int e_make_watches(FENSTER *f)
  char str[128];
  int i, y;
 
- if (e_d_watch_refused(f))
+ if (e_d_refuse_while_running(f) || e_d_watch_refused(f))
   return(0);
  if ((f->ed->mxedt > 0) && (strcmp(f->datnam, "Watches") == 0))
  { /* sets y=number of watch we're inserting */
@@ -2748,7 +2750,7 @@ int e_edit_watches(FENSTER *f)
  char str[128];
  int l;
 
- if (strcmp(f->datnam, "Watches"))
+ if (strcmp(f->datnam, "Watches") || e_d_refuse_while_running(f))
   return(0);
  for (l = 0; l < e_d_nwtchs && e_d_nrwtchs[l] <= b->b.y; l++)
   ;
@@ -3061,6 +3063,8 @@ int e_d_reinit_watches(FENSTER * f,char * prj)
 /*  stack   */
 int e_deb_stack(FENSTER *f)
 {
+ if (e_d_refuse_while_running(f))
+  return(0);
  e_d_switch_out(0);
  return(e_d_p_stack(f, 1));
 }
@@ -3395,6 +3399,8 @@ int e_make_stack(FENSTER *f)
    char file[E_D_LINE_MAX], str[E_D_LINE_MAX], *tmpstr;
    int i, ret, line = 0, dif;
    BUFFER *b = f->ed->f[f->ed->mxedt]->b;
+   if (e_d_refuse_while_running(f))
+      return(0);
    if (e_d_frames_backend())
       return(e_d_frame_show(f));
    tmpstr = MALLOC(1);
@@ -3753,7 +3759,7 @@ int e_remove_breakpoints(FENSTER *f)
  ECNT *cn = f->ed;
  int i;
 
- if (e_d_start_refused(f))
+ if (e_d_start_refused(f) || e_d_refuse_while_running(f))
   return(0);
  if (e_d_swtch)
   e_d_brk_disarm_all(cn);
@@ -4023,7 +4029,7 @@ int e_make_breakpoint(FENSTER *f, int sw)
  BUFFER *b = cn->f[cn->mxedt]->b;
  int i;
 
- if (e_d_start_refused(f))
+ if (e_d_start_refused(f) || e_d_refuse_while_running(f))
   return(0);
  if (!sw)
  {
@@ -5178,6 +5184,28 @@ static int e_d_start_refused(FENSTER *f)
  if (!e_d_start.active)
   return(0);
  e_status_say(f, E_D_START_BUSY_LINE);
+ return(1);
+}
+
+#define E_D_RUNNING_LINE \
+ " The program is running: type its input in Messages, or Debug > Quit"
+
+/**
+ * e_d_refuse_while_running - Refuse a debugger command while gdb's program
+ * is running.
+ * @f: the window the key was pressed in.
+ *
+ * A program that runs cannot be stepped, continued or asked about: gdb reads
+ * the command only at the next stop, so it would be answered out of turn and
+ * the session would lose its place.  The status row says what to do instead:
+ * type the program's input, or end the session with Debug > Quit.
+ * Return: 1 when the command must not run.
+ */
+static int e_d_refuse_while_running(FENSTER *f)
+{
+ if (!e_d_async_pending)
+  return(0);
+ e_status_say(f, E_D_RUNNING_LINE);
  return(1);
 }
 
@@ -7091,6 +7119,8 @@ int e_deb_run(FENSTER *f)
  char *said = eing;     /* the line Messages shows: the answer, or the command */
  int ret, prsw = 0, main_brk = 0;
 
+ if (e_d_refuse_while_running(f))
+  return(0);
  jdb_trace("e_deb_run: entry, e_d_swtch=%d, e_deb_type=%d\n",
            e_d_swtch, e_deb_type);
  e_d_resume_after_build(e_deb_run_again, 0);
@@ -8733,6 +8763,8 @@ int e_d_step_next(FENSTER *f, int sw)
 {
  int ret, main_brk = 0;
 
+ if (e_d_refuse_while_running(f))
+  return(0);
  jdb_trace("e_d_step_next: entry, sw=%d, e_d_swtch=%d, e_deb_type=%d, "
            "e_d_nbrpts=%d\n", sw, e_d_swtch, e_deb_type, e_d_nbrpts);
  e_d_resume_after_build(e_d_step_next, sw);
@@ -9328,6 +9360,8 @@ int e_d_goto_func(FENSTER *f, int flag)
 
  if (!e_d_goto_supported(flag))
   return 0;
+ if (e_d_refuse_while_running(f))
+  return(0);
  e_d_resume_after_build(e_d_goto_func, flag);
  if (e_d_swtch < 2)
   ret = e_run_debug(f);

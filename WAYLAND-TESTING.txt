@@ -74,3 +74,8 @@ things the emulated pipeline does not cover:
       menus.
   [ ] Pointer: scrollbar drag, mouse-wheel scroll (both axes), and window
       drag/resize via the title bar behave like the X11 build.
+  [ ] Debugger: while gdb runs a program that waits for input, Debug > Quit
+      (Alt-D, Q) from the menu ends gdb, F8 says the program is running, and
+      a typed line reaches the program.  A headless run cannot drive a debug
+      session (the editor cannot create /dev/tty); the X11 twin is
+      tests/x11/test_menu_debug.py.

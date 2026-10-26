@@ -233,6 +233,22 @@ Changes
 
 1.7.0 (AI assistant -- experimental, opt-in)
 
+* While gdb runs a program, the menus, the F-keys and Ctrl-F2 now reach
+  the editor instead of being typed into the program.  Debug > Quit from
+  the menu bar used to leave gdb running and print a stray character in
+  Messages; only text (characters, Enter, Backspace) goes to the program.
+  Step, Run, Goto cursor, Finish, Show stack and the breakpoint and watch
+  commands pressed meanwhile are refused with "The program is running"
+  on the status row; they used to be sent to gdb and put the session out
+  of step.  Enter is text for the program from any window.
+
+* Compile, Make, Run, Install or Execute Make during a debug session,
+  answered No or Esc to "Do You want to Quit Debugging ?", leave the
+  session as it was.  The editor used to stop listening to the debugger
+  before asking: the next stop was never marked and the debugger keys
+  failed until Debug > Quit.  Execute Make now asks too, instead of
+  ending the session without a word.
+
 * With many things open at once, a debugger, a build and an AI reply
   started later could be refused without a word: their output never
   arrived and the waiting line stood until Esc.  The room freed by what
