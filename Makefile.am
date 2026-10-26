@@ -181,6 +181,7 @@ noinst_HEADERS = \
   WeExpArr.h \
   we_debprompt.h \
   we_debpath.h \
+  we_menurows.h \
   we_render.h \
   we_render_glyphs.h \
   we_wayland.h \

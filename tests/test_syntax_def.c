@@ -100,14 +100,33 @@ static int parse_syntax_file(const char *path)
     return 0;
 }
 
+/*
+ * shipped_syntax_def - Path of the syntax_def that ships with the sources.
+ *
+ * make check runs tests in the build directory, which is not the source
+ * directory when building out of tree (make distcheck, packagers' VPATH
+ * builds).  The test harness exports srcdir for this; without it, the
+ * current directory is assumed.
+ */
+static const char *shipped_syntax_def(char *buf, size_t size)
+{
+    const char *srcdir = getenv("srcdir");
+
+    if (srcdir == NULL || srcdir[0] == '\0')
+        return "syntax_def";
+    snprintf(buf, size, "%s/syntax_def", srcdir);
+    return buf;
+}
+
 int main(int argc, char *argv[])
 {
+    char buf[4096];
     const char *path;
 
     if (argc > 1) {
         path = argv[1];
     } else {
-        path = "syntax_def";
+        path = shipped_syntax_def(buf, sizeof buf);
     }
 
     return parse_syntax_file(path);
