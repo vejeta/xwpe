@@ -170,3 +170,18 @@ def test_list_all_via_alt_0(tmp_path):
     assert code is None, 'wpe died on Alt-0 (exit=%r)' % code
     blob = '\n'.join(screen.display)
     assert 'Windows' in blob, 'Alt-0 should open the "Windows" chooser'
+
+
+def test_esc_closes_the_window_chooser_and_editing_goes_on(tmp_path):
+    """Esc closes the "Windows" chooser and the next key edits c.c.
+
+    Closing the chooser freed its window and then read it again.  A plain
+    build usually survives that; the sanitizer build (wpe-asan) aborts with
+    a heap-use-after-free, so run this row there to see it fail.
+    """
+    screen, code = run_windows(str(tmp_path), [ALT_0, KEY_ESC, 'Z'],
+                               key_delay=1.0)
+    assert code is None, 'wpe died after Esc in the chooser (exit=%r)' % code
+    blob = '\n'.join(screen.display)
+    assert 'Windows' not in blob, 'Esc should close the "Windows" chooser'
+    assert 'Zint c;' in blob, 'the key after Esc should be typed into c.c'

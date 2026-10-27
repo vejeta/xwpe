@@ -4145,7 +4145,10 @@ int e_data_eingabe(ECNT * cn)
         c = (f->ed->edopt & ED_CUA_STYLE) ? CF4 : AF3;
       if(f->ins == 7 && ((!(f->ed->edopt & ED_CUA_STYLE) && c == AF3)
                          || ((f->ed->edopt & ED_CUA_STYLE) && c == CF4)))
-        e_close_window(f);
+      {
+        e_close_window(f);   /* frees f: the Window list is gone */
+        return(0);
+      }
       if(f->ins == 4 && ((!(f->ed->edopt & ED_CUA_STYLE) && c == AF3)
                          || ((f->ed->edopt & ED_CUA_STYLE) && c == CF4)))
       {

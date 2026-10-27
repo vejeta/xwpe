@@ -233,6 +233,9 @@ Changes
 
 1.7.0 (AI assistant -- experimental, opt-in)
 
+* Closing the Window list (Alt-0) with Esc no longer reads the window
+  it has just freed, which could crash the editor.
+
 * Under gdb, Go to cursor stops on a line inside a function the program
   calls, and on a line of another source file.  It used to run past the
   first, to the end of the program, and to stop on the same line number
