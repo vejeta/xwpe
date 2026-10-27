@@ -256,6 +256,13 @@ Changes
   sdb, dbx or xdb no longer crashes the editor at the next stop.  The
   stop is marked in the file, opened again.
 
+* A debugger stop that arrives while a dialog, a menu, the File Manager,
+  the Window list or another window that is not a source window is in
+  front no longer draws the source over it while it keeps reading your
+  keys.  The stop waits and is shown as soon as you are back in a source
+  window, whichever way you get there, opening a file from the File
+  Manager included, and the next key goes to that window.
+
 * Go to cursor (Ctrl-G U, F4) as the first debugger command, with no
   breakpoint set, starts the session under gdb and runs on to the
   cursor's line, where F8 and the other keys work.  It used to wait

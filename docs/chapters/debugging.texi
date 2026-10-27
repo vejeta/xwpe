@@ -344,7 +344,12 @@ Quit} ends their session too.  A program that is running cannot be
 stepped, continued or asked about, so Step, Trace, Run, Goto cursor, Finish,
 Show stack and the breakpoint and watch commands say ``The program is
 running'' on the status row and do nothing until it stops.  @key{Enter} is
-text for the program from any window, the Stack window included.
+text for the program from any window, the Stack window included.  If the
+program stops while a dialog, a menu, the File Manager, the Window list
+or another window that is not a source window is in front, the stop
+waits.  It is shown, marked in the source, as soon as you are back in a
+source window, whichever way you get there: closing the box, switching
+windows, or opening a file from the File Manager.
 
 The example @file{docs/examples/interactive_test.c} prompts for a name
 and blocks on @code{fgets()}.  Press @kbd{Ctrl-F9} (Run): the prompt

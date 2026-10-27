@@ -962,6 +962,9 @@ typedef struct
                                 to take out at the stop, or 0 */
  int goto_line;             /* the cursor line Go to cursor still has to run
                                 on to once this run stops, or 0 */
+ int stop_held;             /* a stop arrived while a box or a non-text
+                                window was in front; shown by
+                                e_d_run_deliver_held_stop */
 } E_D_RUN;
 
 static E_D_RUN e_d_run;
@@ -1322,6 +1325,17 @@ static int e_d_run_going(void)
 }
 
 /**
+ * e_d_run_release_hold - Forget a held stop.
+ *
+ * Called when the stop is finally shown and when the session ends, so a
+ * stop of a finished run is never shown later.
+ */
+static void e_d_run_release_hold(void)
+{
+ e_d_run.stop_held = 0;
+}
+
+/**
  * e_d_run_unwatch - Stop watching the debugger and the program, and give
  * the debugger keys back to the editor.
  *
@@ -1334,6 +1348,7 @@ static void e_d_run_unwatch(void)
 
  if (!e_d_run_going())
   return;
+ e_d_run_release_hold();
  wpe_fd_del(e_d_run.ops->answer_fd());
  out = e_d_run.ops->output_fd();
  if (out >= 0)
@@ -1457,6 +1472,44 @@ static void e_d_run_on_gone(void)
 }
 
 /**
+ * e_d_run_hold_stop - The program stopped while a box or a non-text window
+ * is in front: keep the stop for the editor's key loop.
+ *
+ * Showing it now would switch to the source over a menu, a dialog, the File
+ * Manager or the Window list, whose own key loop would then go on reading
+ * the user's keys underneath.  The answer is read already, so the
+ * debugger's descriptor is no longer watched (it would report readable for
+ * ever); the run stays going, so debugger keys still say the program runs
+ * until the stop is shown by e_d_run_deliver_held_stop.
+ */
+static void e_d_run_hold_stop(void)
+{
+ wpe_fd_del(e_d_run.ops->answer_fd());
+ e_d_run.stop_held = 1;
+}
+
+/**
+ * e_d_run_deliver_held_stop - Show a stop that arrived while a box or a
+ * non-text window was in front.
+ *
+ * The editor's key loop calls this before it waits for a key, the point
+ * that is outside every dialog, menu and non-text window, however the user
+ * got back to a source window: closing the box, opening a file from the
+ * File Manager, picking a window from the Window list.  The user then sees
+ * the mark at the stop and the debugger keys work again.  A stop of a run
+ * that has ended since is not held any more (e_d_run_unwatch drops it).
+ */
+void e_d_run_deliver_held_stop(void)
+{
+ if (!e_d_run.stop_held || !e_d_run_going())
+  return;
+ if (!e_build_ui_idle(e_d_run.cn))
+  return;
+ e_d_run_release_hold();
+ e_d_run_on_stop();
+}
+
+/**
  * e_d_run_on_answer - The debugger wrote while the program runs.
  * @fd: its answer; @data: unused.
  *
@@ -1470,7 +1523,9 @@ static void e_d_run_on_answer(int fd, void *data)
  if (!e_d_run_going())
   return;
  fed = e_d_run.ops->feed(e_d_run_window(e_d_run.cn));
- if (fed == E_D_FEED_STOPPED)
+ if (fed == E_D_FEED_STOPPED && !e_build_ui_idle(e_d_run.cn))
+  e_d_run_hold_stop();
+ else if (fed == E_D_FEED_STOPPED)
   e_d_run_on_stop();
  else if (fed == E_D_FEED_GONE)
   e_d_run_on_gone();

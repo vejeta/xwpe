@@ -606,6 +606,7 @@ int e_eingabe(ECNT *e)
 #endif
 #ifdef DEBUGGER
    e_d_start_deliver_held();      /* a debugger that answered behind a dialog: go on */
+   e_d_run_deliver_held_stop();   /* a stop held behind a box: show it */
 #endif
    if (f->save > f->ed->maxchg) e_autosave(f);
    c = e_getch();

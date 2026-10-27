@@ -911,6 +911,7 @@ int e_run_debug(FENSTER *f);
 int e_d_start_busy(void);
 void e_d_start_cancel(void);
 void e_d_start_deliver_held(void);
+void e_d_run_deliver_held_stop(void);
 int e_deb_run(FENSTER *f);
 int e_deb_trace(FENSTER *f);
 int e_deb_next(FENSTER *f);

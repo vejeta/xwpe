@@ -32,6 +32,8 @@ F7 = "\033[18~"         # Trace (step into)
 F8 = "\033[19~"         # Step (step over)
 ALT_F5 = "\033[15;3~"   # User Screen
 ESC = "\033"
+F3 = "\033OR"             # the File Manager
+F6 = "\033[17~"           # next window
 
 POLL_S = 0.2
 START_TIMEOUT_S = 20    # build + debugger start, before scaling
@@ -1731,6 +1733,209 @@ def test_closing_the_window_while_the_program_runs_keeps_the_editor(
         assert _children(w, "gdb"), "gdb should still run the session"
 
 
+SLEEPY_NEXT_LINE = 8     # printf(...);  one F8 after the second stop
+FILE_MANAGER_FIELD = "Name"
+ALT_O = "\033o"           # the Options menu
+OPTIONS_MENU_ROWS = ("Adjust Colors", "Save Options", "Compiler",
+                     "Debugger")
+ALT_0 = "\0330"           # the Window list
+WINDOW_LIST_TITLE = "Windows"
+OPENED_FILE = "q.c"       # a second file, opened from the File Manager
+OPENED_FILE_TEXT = "/* opened from the file manager */\nint q;\n"
+
+
+def _run_on_towards_the_second_stop(w):
+    """Stop gdb on SLEEPY_FIRST_LINE, then continue: the program sleeps
+    SLEEPY_RUN_S seconds before it stops on SLEEPY_AFTER_LINE, and the
+    editor takes keys meanwhile."""
+    _move_down(w, SLEEPY_FIRST_LINE - 1)
+    w.key(CTRL_G, "b", delay=0.4)
+    _move_down(w, SLEEPY_AFTER_LINE - SLEEPY_FIRST_LINE)
+    w.key(CTRL_G, "b", delay=0.4)
+    w.key(CTRL_G, "r", delay=1.0)
+    assert _wait_for(w, lambda: _mark_line(w) == SLEEPY_FIRST_LINE,
+                     START_TIMEOUT_S), \
+        "gdb should stop on line %d:\n%s" % (SLEEPY_FIRST_LINE, _screen(w))
+    w.key(CTRL_G, "r", delay=0.5)
+
+
+def _let_the_program_stop(w):
+    """Wait past the program's sleep, so its stop has arrived."""
+    w._drain(SLEEPY_RUN_S + 2)
+
+
+def _assert_the_stop_is_shown_and_f8_steps(w, how):
+    """The source is on top marked on the stop, and F8 steps from it."""
+    assert _wait_for(w, lambda: _mark_line(w) == SLEEPY_AFTER_LINE,
+                     STEP_TIMEOUT_S), \
+        "%s should show the stop, mark on line %d (mark on %s):\n%s" \
+        % (how, SLEEPY_AFTER_LINE, _mark_line(w), _screen(w))
+    assert _step(w, F8, SLEEPY_NEXT_LINE), \
+        "F8 should mark line %d (mark on %s):\n%s" \
+        % (SLEEPY_NEXT_LINE, _mark_line(w), _screen(w))
+
+
+def _open_the_file_manager(w):
+    w.key(F3, delay=0.5)
+    assert FILE_MANAGER_FIELD in _screen(w), \
+        "the File Manager should be open:\n%s" % _screen(w)
+
+
+# @scenario SC-debug-18
+def test_a_stop_while_the_file_manager_is_open_waits_for_it(tmp_path):
+    """The File Manager is opened while gdb's program sleeps on its way to
+    the next breakpoint.  The stop arrives under it: it must not draw the
+    source over the File Manager or leave it open.  After Esc the source
+    is on top with the mark on the stop, and F8 steps instead of typing
+    into the File Manager's Name field."""
+    _need("gcc", "gdb")
+    with WpeSession(str(tmp_path), SLEEPY_C_PROG, filename="p.c",
+                    wait=1.5) as w:
+        _run_on_towards_the_second_stop(w)
+        _open_the_file_manager(w)
+        _let_the_program_stop(w)
+        w.key(ESC, delay=0.6)
+        assert FILE_MANAGER_FIELD not in _screen(w), \
+            "Esc should close the File Manager the stop arrived under:\n%s" \
+            % _screen(w)
+        _assert_the_stop_is_shown_and_f8_steps(w, "Esc")
+
+
+# @scenario SC-debug-18
+def test_a_stop_while_the_file_manager_is_open_shows_in_a_file_opened(
+        tmp_path):
+    """The File Manager is opened while gdb's program sleeps on its way to
+    the next breakpoint, and the user opens another file from it, its
+    commonest way out.  The File Manager stays drawn whole after the stop
+    arrives (the stop used to paint the source over it, the name then
+    typed into the hidden box).  Once the file is open the stop is shown
+    and F8 steps, instead of 'The program is running' for ever."""
+    _need("gcc", "gdb")
+    (tmp_path / OPENED_FILE).write_text(OPENED_FILE_TEXT)
+    with WpeSession(str(tmp_path), SLEEPY_C_PROG, filename="p.c",
+                    wait=1.5) as w:
+        _run_on_towards_the_second_stop(w)
+        _open_the_file_manager(w)
+        _let_the_program_stop(w)
+        assert FILE_MANAGER_FIELD in _screen(w), \
+            "the File Manager should still be drawn after the stop " \
+            "(mark on %s):\n%s" % (_mark_line(w), _screen(w))
+        w.key(OPENED_FILE, delay=0.6)
+        w.key("\r", delay=1.2)
+        _assert_the_stop_is_shown_and_f8_steps(w, "Opening %s" % OPENED_FILE)
+        w.key(ALT_0, delay=0.8)
+        assert OPENED_FILE in _screen(w), \
+            "%s should be open, listed in the Window list:\n%s" \
+            % (OPENED_FILE, _screen(w))
+
+
+# @scenario SC-debug-18
+def test_a_stop_while_the_file_manager_is_open_shows_when_switching_away(
+        tmp_path):
+    """The File Manager is opened while gdb's program sleeps on its way to
+    the next breakpoint, and left with F6 instead of Esc.  The stop that
+    arrived under it is shown then: the source is marked on the stop and
+    F8 steps, instead of 'The program is running' for ever.  This row
+    guards the hold itself: without the hold the stop shows at once and
+    the row passes too."""
+    _need("gcc", "gdb")
+    with WpeSession(str(tmp_path), SLEEPY_C_PROG, filename="p.c",
+                    wait=1.5) as w:
+        _run_on_towards_the_second_stop(w)
+        _open_the_file_manager(w)
+        _let_the_program_stop(w)
+        w.key(F6, delay=1.0)
+        _assert_the_stop_is_shown_and_f8_steps(w, "F6")
+
+
+# @scenario SC-debug-18
+def test_a_stop_while_a_menu_is_open_waits_for_it(tmp_path):
+    """The Options menu is opened while gdb's program sleeps on its way to
+    the next breakpoint.  The stop arrives under the menu: the menu box
+    stays drawn whole until Esc (the stop used to switch windows and
+    paint the source over it), then the source is on top marked on the
+    stop, and F8 steps."""
+    _need("gcc", "gdb")
+    with WpeSession(str(tmp_path), SLEEPY_C_PROG, filename="p.c",
+                    wait=1.5) as w:
+        _run_on_towards_the_second_stop(w)
+        w.key(ALT_O, delay=0.5)
+        _let_the_program_stop(w)
+        shown = _screen(w)
+        for row in OPTIONS_MENU_ROWS:
+            assert row in shown, \
+                "the Options menu should still be drawn whole after the " \
+                "stop time (missing %r):\n%s" % (row, shown)
+        w.key(ESC, delay=0.6)
+        _assert_the_stop_is_shown_and_f8_steps(w, "Esc")
+
+
+# @scenario SC-debug-18
+def test_a_stop_while_the_window_list_is_open_waits_for_it(tmp_path):
+    """The Window list (Alt-0) is opened while gdb's program sleeps on its
+    way to the next breakpoint.  The list has its own key loop: the stop
+    used to paint the source over it, and the next keys went to the hidden
+    list.  The list stays drawn whole until Esc, then the source is on top
+    marked on the stop, and F8 steps."""
+    _need("gcc", "gdb")
+    with WpeSession(str(tmp_path), SLEEPY_C_PROG, filename="p.c",
+                    wait=1.5) as w:
+        _run_on_towards_the_second_stop(w)
+        w.key(ALT_0, delay=0.8)
+        assert WINDOW_LIST_TITLE in _screen(w), \
+            "the Window list should be open:\n%s" % _screen(w)
+        _let_the_program_stop(w)
+        assert WINDOW_LIST_TITLE in _screen(w), \
+            "the Window list should still be drawn after the stop " \
+            "(mark on %s):\n%s" % (_mark_line(w), _screen(w))
+        w.key(ESC, delay=1.0)
+        _assert_the_stop_is_shown_and_f8_steps(w, "Esc")
+
+
+ALT_P = "\033p"           # the Project menu
+PROJECT_FILE = "demo.prj"
+PROJECT_TEXT = "CMP=\tgcc\nEXENAME=\tdemo\nFILES=\tp.c\n"
+PROJECT_WINDOW_TITLE = "Project: " + PROJECT_FILE
+
+
+def _open_the_project_window(w):
+    """Project > Open Project, then Enter twice: the picker's Files list,
+    then the only project in it."""
+    w.key(ALT_P, delay=0.6)
+    w.key("p", delay=0.8)
+    w.key("\r", delay=0.6)
+    w.key("\r", delay=1.0)
+    assert PROJECT_WINDOW_TITLE in _above_the_status_row(w), \
+        "the Project window should be open:\n%s" % _screen(w)
+
+
+def _above_the_status_row(w):
+    """The screen without its status row, which names the open project
+    whichever window is on top."""
+    return "\n".join(w.display(drain=0)[:-1])
+
+
+# @scenario SC-debug-18
+def test_a_stop_while_the_project_window_is_open_waits_for_it(tmp_path):
+    """The Project window is opened while gdb's program sleeps on its way
+    to the next breakpoint.  It has its own key loop, like the Window
+    list: the stop used to paint the source over it, and F8 then went to
+    the hidden window.  It stays drawn until Esc, then the source is on
+    top marked on the stop, and F8 steps."""
+    _need("gcc", "gdb")
+    (tmp_path / PROJECT_FILE).write_text(PROJECT_TEXT)
+    with WpeSession(str(tmp_path), SLEEPY_C_PROG, filename="p.c",
+                    wait=1.5) as w:
+        _run_on_towards_the_second_stop(w)
+        _open_the_project_window(w)
+        _let_the_program_stop(w)
+        assert PROJECT_WINDOW_TITLE in _above_the_status_row(w), \
+            "the Project window should still be drawn after the stop " \
+            "(mark on %s):\n%s" % (_mark_line(w), _screen(w))
+        w.key(ESC, delay=1.0)
+        _assert_the_stop_is_shown_and_f8_steps(w, "Esc")
+
+
 C_CURSOR_FIRST_LINE = 11  # x = y + 1;  the cursor for Go to cursor
 C_CURSOR_NEXT_LINE = 12   # return 0;  the line after the cursor's
 
@@ -1836,7 +2041,6 @@ TWO_FILE_SECOND_C = (
 TWO_FILE_BREAK_LINE = 5    # int x = 3;  in p.c
 TWO_FILE_TARGET_LINE = 5   # r = r * 2;  in b.c
 TWO_FILE_TARGET_TEXT = "r = r * 2;"
-F3 = "\033OR"              # File Manager
 
 
 def _marked_text(w):
