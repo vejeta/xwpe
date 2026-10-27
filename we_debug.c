@@ -67,14 +67,12 @@ int print_to_end_of_buffer(BUFFER * b,char * str,int wrap_limit);
 char *e_debugger, *e_deb_swtch = NULL, *e_d_save_schirm;
 int e_d_swtch = 0, rfildes[2], ofildes, e_d_pid = 0;
 
-/* Async debugger state for event-driven step/run.
-   When e_d_async_pending is set, the debugger is waiting for gdb
-   to respond.  The main event loop processes keyboard and pty
-   events normally.  When gdb responds, the callback processes
-   the response and clears the flag. */
+/* Set while the program runs under the run controller (e_d_run_begin) and
+   cleared at its stop or at the end of the session.  The key router, the
+   cursor hooks of the terminal and X11 backends and the refusal of debugger
+   commands read it: the main event loop goes on processing keys and the
+   program's output while the debugger has the program. */
 int e_d_async_pending = 0;
-static int e_d_async_main_brk = 0;
-static FENSTER *e_d_async_f = NULL;
 int e_d_nbrpts = 0, e_d_zwtchs = 0, *e_d_ybrpts, *e_d_nrbrpts;
 
 /* number of watch expressions in Watches window */
@@ -458,6 +456,14 @@ static int e_d_nb_holds_line(void)
  return(0);
 }
 
+/* What the async reader (e_d_line_read_nb_whole) hands out. */
+#define E_D_NB_LINE         2      /* a whole line of the answer */
+#define E_D_NB_PROMPT       1      /* the debugger's prompt: it waits */
+#define E_D_NB_END          (-1)   /* output ended, ran away, or no memory */
+#define E_D_NB_NOTHING_YET  (-2)   /* no whole line has come yet */
+/* What e_d_nb_fill answers for a runaway debugger or memory run out. */
+#define E_D_NB_FILL_FAILED  (-3)
+
 /**
  * e_d_nb_take_cut - Hand out a line that passed E_D_LINE_WHOLE_MAX cut,
  * ending in E_D_LINE_CUT_MARK, and drop its rest as it comes.
@@ -465,17 +471,17 @@ static int e_d_nb_holds_line(void)
  *
  * Only a runaway gdb prints such a line; memory stays bounded and the user
  * sees that the line is not all there.
- * Return: 2 (a line), or -1 when memory ran out.
+ * Return: E_D_NB_LINE, or E_D_NB_END when memory ran out.
  */
 static int e_d_nb_take_cut(E_D_LINE *line)
 {
  int len = e_d_async.nb_len;
 
  if (e_d_nb_take(line, len, len - E_D_PROMPT_TAIL) < 0)
-  return(-1);
+  return(E_D_NB_END);
  strcpy((char *)line->s + len, E_D_LINE_CUT_MARK);
  e_d_async.nb_dropping = 1;
- return(2);
+ return(E_D_NB_LINE);
 }
 
 /**
@@ -516,14 +522,15 @@ static int e_d_nb_still_dropping(void)
  * Each read takes at most E_D_LINE_MAX bytes and counts as one line toward
  * the runaway bound, as the blocking reader counts a long line, and a line
  * is never held past E_D_LINE_WHOLE_MAX, so memory stays bounded.
- * Return: what read() answered, or -3 for a runaway or memory run out.
+ * Return: what read() answered, or E_D_NB_FILL_FAILED for a runaway or
+ * memory run out.
  */
 static int e_d_nb_fill(int n)
 {
  int flags, nread;
 
  if (e_d_line_room(&e_d_async.nb, e_d_async.nb_len) < 0)
-  return(-3);
+  return(E_D_NB_FILL_FAILED);
  flags = fcntl(n, F_GETFL, 0);
  fcntl(n, F_SETFL, flags | O_NONBLOCK);
  nread = read(n, e_d_async.nb.s + e_d_async.nb_len, E_D_LINE_MAX - 1);
@@ -537,7 +544,7 @@ static int e_d_nb_fill(int n)
   e_d_read_runaway = 0;
   e_d_async.nb_len = 0;
   e_d_async.nb_scanned = 0;
-  return(-3);
+  return(E_D_NB_FILL_FAILED);
  }
  return(nread);
 }
@@ -552,8 +559,9 @@ static int e_d_nb_fill(int n)
  * template frame passes E_D_LINE_MAX easily), so it is handed out whole and
  * the stop is marked whatever its length.  A line not yet ended stays
  * buffered until it is.
- * Return: 2 for a line, 1 for the prompt, -2 while nothing whole has come,
- * -1 at the end of the output, for a runaway gdb, or when memory ran out.
+ * Return: E_D_NB_LINE, E_D_NB_PROMPT, E_D_NB_NOTHING_YET while nothing
+ * whole has come, or E_D_NB_END at the end of the output, for a runaway
+ * gdb, or when memory ran out.
  */
 static int e_d_line_read_nb_whole(int n, E_D_LINE *line)
 {
@@ -565,40 +573,42 @@ static int e_d_line_read_nb_whole(int n, E_D_LINE *line)
  if (!e_d_nb_holds_line())
  {
   nread = e_d_nb_fill(n);
-  if (nread == -3)
-   return(-1);
+  if (nread == E_D_NB_FILL_FAILED)
+   return(E_D_NB_END);
   if (nread == 0 && e_d_async.nb_dropping)
    e_d_async.nb_len = 0;  /* the dropped rest is no prompt to wait for */
   if (nread == 0 && e_d_async.nb_len == 0)
   {
    e_d_note_output_closed();
-   return -1;
+   return(E_D_NB_END);
   }
   if (nread < 0 && e_d_async.nb_len == 0)
-   return -2;
+   return(E_D_NB_NOTHING_YET);
  }
  if (e_d_async.nb_dropping && e_d_nb_still_dropping())
-  return -2;
+  return(E_D_NB_NOTHING_YET);
  held = (char *)e_d_async.nb.s;
  for (i = e_d_async.nb_scanned; i < e_d_async.nb_len; i++)
  {
   if (e_d_nb_is_line_end(held[i]))
   {
    if (e_d_nb_take(line, i + 1, i + 1) < 0)
-    return(-1);
-   return e_d_check_prompt(line->s, i) ? 1 : 2;
+    return(E_D_NB_END);
+   if (e_d_check_prompt(line->s, i))
+    return(E_D_NB_PROMPT);
+   return(E_D_NB_LINE);
   }
  }
  e_d_async.nb_scanned = e_d_async.nb_len;
  if (e_d_nb_ends_in_prompt())
  {
   if (e_d_nb_take(line, e_d_async.nb_len, e_d_async.nb_len) < 0)
-   return(-1);
-  return 1;
+   return(E_D_NB_END);
+  return(E_D_NB_PROMPT);
  }
  if (e_d_async.nb_len >= E_D_LINE_WHOLE_MAX)
   return(e_d_nb_take_cut(line));
- return -2;
+ return(E_D_NB_NOTHING_YET);
 }
 
 /* What e_d_line_read_nb reads into before it hands out a line's head. */
@@ -618,7 +628,7 @@ int e_d_line_read_nb(int n, signed char *s, int max)
 {
  int ret = e_d_line_read_nb_whole(n, &e_d_nb_line);
 
- if (ret == 1 || ret == 2)
+ if (ret == E_D_NB_PROMPT || ret == E_D_NB_LINE)
  {
   strncpy((char *)s, (char *)e_d_nb_line.s, max - 1);
   s[max - 1] = '\0';
@@ -806,7 +816,6 @@ static void e_d_wait_for_input(int gdb_fd)
   wpe_fd_del(e_d_pty_master);
 }
 
-static void e_d_on_gdb_readable(int fd, void *data);
 static void e_d_on_pty_readable(int fd, void *data);
 
 /* DAP debug bridge (Go/dlv and other Debug Adapter Protocol backends).  The
@@ -904,13 +913,50 @@ static void e_d_out_keep(const char *line)
  e_d_out_show();
 }
 
-typedef struct {
- int active;
- int main_brk;
- struct FNST *f;
-} e_d_accum_t;
+/* The run controller: one way for every debugger to let the program run
+   while the editor keeps its keys.  A run, a continue or a step is handed to
+   it once the debugger has been told; it watches the debugger's answer and
+   the program's output on the fd loop and comes back to the backend when the
+   debugger stops the program or goes away.  A run has no deadline: the
+   program may take an hour, and the user keeps Debug > Quit meanwhile. */
 
-static e_d_accum_t e_d_accum;
+/* What a backend's reader found in what the debugger has written so far. */
+#define E_D_FEED_GOING    0   /* nothing yet that ends the run */
+#define E_D_FEED_STOPPED  1   /* the debugger asks for a command: a stop */
+#define E_D_FEED_GONE     2   /* its output ended: the debugger is gone */
+
+/* Whether a run is in the debugger's hands. */
+#define E_D_RUN_IDLE      0
+#define E_D_RUN_GOING     1
+
+/* What the controller asks of the backend that runs the program. */
+typedef struct
+{
+ const char *name;                    /* the backend, as the user knows it */
+ int  (*answer_fd)(void);             /* the debugger's answer, waited on */
+ int  (*output_fd)(void);             /* the program's own output, or -1 */
+ int  (*feed)(FENSTER *f);            /* read what has come: E_D_FEED_* */
+ void (*stopped)(FENSTER *f);         /* mark the stop, or say the end */
+ /* Not used yet, NULL in every table: pausing a running program, and
+    telling the debugger of breakpoints changed while it runs or once it
+    stops.  The controller calls none of them. */
+ int  (*interrupt)(void);
+ int  (*sync_live)(ECNT *cn);
+ int  (*sync_at_stop)(ECNT *cn);
+} E_D_RUN_OPS;
+
+/* The run in progress. */
+typedef struct
+{
+ int state;                  /* E_D_RUN_IDLE or E_D_RUN_GOING */
+ const E_D_RUN_OPS *ops;     /* the backend that runs it */
+ ECNT *cn;                   /* the editor; never a window, which the user
+                                may close while the program runs */
+ int start_brk;             /* the editor's start breakpoint (list entry + 1)
+                                to take out at the stop, or 0 */
+} E_D_RUN;
+
+static E_D_RUN e_d_run;
 
 static void e_d_flush_inferior_stdout(void)
 {
@@ -1069,19 +1115,39 @@ static int e_d_line_says_program_exited(const char *line)
  return(strstr(line, E_D_JDB_EXIT) != NULL);
 }
 
-static void e_d_accum_complete(void)
+/**
+ * e_d_line_says_where_it_stopped - Mark the stop the debugger described, by
+ * the checks of gdb, sdb, dbx and xdb.
+ * @f: the source window.
+ *
+ * Return: 0 when the stop was found and marked; below 0 when no check
+ * recognised it, which after a run means the program is no longer there.
+ */
+static int e_d_line_says_where_it_stopped(FENSTER *f)
 {
- FENSTER *f = e_d_accum.f;
+ int found = e_d_fst_check(f);
+
+ if (found < 0)
+  found = e_d_snd_check(f);
+ if (found < 0)
+  found = e_d_trd_check(f);
+ return(found);
+}
+
+/**
+ * e_d_line_stopped - What gdb, sdb, dbx and xdb do when the program stops.
+ * @f: the window the run was started from.
+ *
+ * The user sees the program's last output in Messages, then either the
+ * stop marked on its source line or one line saying the program ended,
+ * after which the session closes.
+ */
+static void e_d_line_stopped(FENSTER *f)
+{
  int i;
 
  e_d_flush_inferior_stdout();
  e_d_drain_pty_to_messages();
- wpe_fd_del(wfildes[0]);
- if (e_d_pty_master >= 0)
-  wpe_fd_del(e_d_pty_master);
- e_d_accum.active = 0;
- e_d_async_pending = 0;
-
  e_d_out_show();
  for (i = 0; i < SVLINES; i++)
  {
@@ -1092,71 +1158,341 @@ static void e_d_accum_complete(void)
    return;
   }
  }
- { int _i;
-   _i = e_d_fst_check(f);
-   if (_i < 0) _i = e_d_snd_check(f);
-   if (_i < 0) _i = e_d_trd_check(f);
-   if (_i < 0)
-   {
-    e_d_switch_out(0);
-    e_d_say_program_exited(NULL, f);
-    e_d_quit(f);
-    return;
-   }
+ if (e_d_line_says_where_it_stopped(f) < 0)
+ {
+  e_d_switch_out(0);
+  e_d_say_program_exited(NULL, f);
+  e_d_quit(f);
+  return;
  }
- e_d_accum.f = NULL;
  _messages_activated = 0;
  e_refresh();
 }
 
-static void e_d_accum_line(char *line, int ret)
+/* Whether the prompt that ends a run is kept as the newest answer line. */
+#define E_D_PROMPT_DROPPED  0   /* gdb: its stop checks never saw it */
+#define E_D_PROMPT_KEPT     1   /* sdb, dbx, xdb: their checks expect it */
+
+/* The line the run's reader hands to the answer, reused per line. */
+static E_D_LINE e_d_run_line;
+
+/**
+ * e_d_line_feed_stop - The prompt came: the program stopped.
+ * @prompt: E_D_PROMPT_KEPT to keep the prompt as the newest answer line,
+ * where the stop checks of sdb, dbx and xdb expect it.
+ * Return: E_D_FEED_STOPPED.
+ */
+static int e_d_line_feed_stop(int prompt)
 {
- if (!e_d_accum.active)
-  return;
- if (ret < 0)
- {
-  e_d_accum.active = 0;
-  e_d_async_pending = 0;
-  wpe_fd_del(wfildes[0]);
-  if (e_d_pty_master >= 0)
-   wpe_fd_del(e_d_pty_master);
-  e_d_quit(e_d_accum.f);
-  return;
- }
- if (ret == 1)
- {
-  e_d_accum_complete();
-  return;
- }
- if (!line[0])
-  return;
- e_d_out_keep(line);
+ if (prompt == E_D_PROMPT_KEPT)
+  e_d_out_keep((char *)e_d_run_line.s);
+ return(E_D_FEED_STOPPED);
 }
 
 /**
- * e_d_accum_init - Read gdb's answer to a run or a step on the fd loop.
- * @f: the source window; @main_brk: the run stops at main.
+ * e_d_line_feed_answer - Read what gdb, sdb, dbx or xdb has answered so far.
+ * @prompt: E_D_PROMPT_KEPT or E_D_PROMPT_DROPPED.
  *
- * The editor takes keys while the program runs.  When the loop cannot watch
- * gdb, its answer would never be read and the session would wait for ever:
- * the bottom row says why and the caller ends the session.  The program's
- * own output, if it cannot be watched, is still shown when the program
- * stops, from the pty drained then.
- * Return: 0, or -1 when gdb cannot be watched.
+ * Every whole line is kept as an answer line for the stop's checks, so a
+ * stop line of any length is marked; the prompt says the program stopped.
+ * The checks of sdb, dbx and xdb look at every answer line but the newest,
+ * which their blocking reader always filled with the prompt: kept here too,
+ * their stop and end lines are read where they always were.
+ * Return: E_D_FEED_GOING, E_D_FEED_STOPPED or E_D_FEED_GONE.
  */
-static int e_d_accum_init(FENSTER *f, int main_brk)
+static int e_d_line_feed_answer(int prompt)
 {
+ int ret;
+
+ for (;;)
+ {
+  ret = e_d_line_read_nb_whole(wfildes[0], &e_d_run_line);
+  if (ret == E_D_NB_NOTHING_YET)
+   return(E_D_FEED_GOING);
+  if (ret == E_D_NB_END)
+   return(E_D_FEED_GONE);
+  if (ret == E_D_NB_PROMPT)
+   return(e_d_line_feed_stop(prompt));
+  if (e_d_run_line.s[0])
+   e_d_out_keep((char *)e_d_run_line.s);
+ }
+}
+
+/**
+ * e_d_gdb_feed - Read what gdb has answered to a run or a step so far.
+ * @f: the window the run was started from (unused).
+ * Return: as e_d_line_feed_answer.
+ */
+static int e_d_gdb_feed(FENSTER *f)
+{
+ return(e_d_line_feed_answer(E_D_PROMPT_DROPPED));
+}
+
+/**
+ * e_d_legacy_feed - Read what sdb, dbx or xdb has answered to a run or a
+ * step so far.
+ * @f: the window the run was started from (unused).
+ * Return: as e_d_line_feed_answer.
+ */
+static int e_d_legacy_feed(FENSTER *f)
+{
+ return(e_d_line_feed_answer(E_D_PROMPT_KEPT));
+}
+
+/**
+ * e_d_line_answer_fd - Where gdb, sdb, dbx and xdb answer: their output pipe.
+ */
+static int e_d_line_answer_fd(void)
+{
+ return(wfildes[0]);
+}
+
+/**
+ * e_d_line_output_fd - Where the program's own output arrives: the pty it
+ * was given, or -1 when none could be opened.
+ */
+static int e_d_line_output_fd(void)
+{
+ return(e_d_pty_master);
+}
+
+/* gdb: a line protocol answered on one pipe, a prompt at each stop. */
+static const E_D_RUN_OPS e_d_gdb_run_ops =
+{
+ "gdb",
+ e_d_line_answer_fd,
+ e_d_line_output_fd,
+ e_d_gdb_feed,
+ e_d_line_stopped,
+ NULL,
+ NULL,
+ NULL
+};
+
+/* sdb, dbx and xdb: gdb's line protocol, with their own stop wording. */
+static const E_D_RUN_OPS e_d_legacy_run_ops =
+{
+ "sdb, dbx or xdb",
+ e_d_line_answer_fd,
+ e_d_line_output_fd,
+ e_d_legacy_feed,
+ e_d_line_stopped,
+ NULL,
+ NULL,
+ NULL
+};
+
+/**
+ * e_d_run_ops_of_backend - The run controller's table for the selected
+ * debugger, or NULL when its run is still read by its own reader.
+ *
+ * gdb goes through the controller when it gave the program a pty, as it
+ * always has; sdb, dbx and xdb always do.  pdb, jdb, a68g and the debug
+ * adapters keep their own readers for now.
+ */
+static const E_D_RUN_OPS *e_d_run_ops_of_backend(void)
+{
+ if (e_deb_type == DEB_GDB && e_d_pty_master >= 0)
+  return(&e_d_gdb_run_ops);
+ if (e_deb_type == DEB_SDB || e_deb_type == DEB_DBX || e_deb_type == DEB_XDB)
+  return(&e_d_legacy_run_ops);
+ return(NULL);
+}
+
+/**
+ * e_d_run_going - Is a run in the debugger's hands?
+ *
+ * While it is, the debugger reads no command: anything that would talk to
+ * it waits for the stop.
+ * Return: 1 while the program runs under the controller.
+ */
+static int e_d_run_going(void)
+{
+ return(e_d_run.state == E_D_RUN_GOING);
+}
+
+/**
+ * e_d_run_unwatch - Stop watching the debugger and the program, and give
+ * the debugger keys back to the editor.
+ *
+ * Called at the stop, when the debugger went away, and when the session
+ * ends, so a descriptor closed afterwards is never left on the loop.
+ */
+static void e_d_run_unwatch(void)
+{
+ int out;
+
+ if (!e_d_run_going())
+  return;
+ wpe_fd_del(e_d_run.ops->answer_fd());
+ out = e_d_run.ops->output_fd();
+ if (out >= 0)
+  wpe_fd_del(out);
+ e_d_run.state = E_D_RUN_IDLE;
+ e_d_async_pending = 0;
+}
+
+/**
+ * e_d_run_forget - Forget the run in progress, because the session ends.
+ *
+ * Quit while the program runs ends the session at once: nothing is left
+ * watching a debugger that is about to be closed.
+ */
+static void e_d_run_forget(void)
+{
+ e_d_run_unwatch();
+ e_d_run.ops = NULL;
+ e_d_run.cn = NULL;
+ e_d_run.start_brk = 0;
+}
+
+/**
+ * e_d_run_drop_start_brk_at_stop - Take the editor's start breakpoint out
+ * once the program stops, not while it runs.
+ * @sw: the breakpoint's list entry + 1, as e_mk_brk_main gave it.
+ *
+ * The debugger reads no command while the program runs, and the answer read
+ * for one sent then would be the stop itself, lost to the user.
+ */
+static void e_d_run_drop_start_brk_at_stop(int sw)
+{
+ e_d_run.start_brk = sw;
+}
+
+/**
+ * e_d_run_stop_chores - Take out the breakpoints the editor set for this run
+ * only, now that the debugger reads commands again.
+ * @f: the window the run was started from.
+ *
+ * Go to cursor's breakpoint and the start breakpoint stop the program once;
+ * a later run goes past their lines.  A session that ended took them along.
+ */
+static void e_d_run_stop_chores(FENSTER *f)
+{
+ int start_brk = e_d_run.start_brk;
+
+ e_d_run.start_brk = 0;
+ if (e_d_swtch < 3)
+  return;
+ e_d_cursor_brk_clear();
+ if (start_brk)
+  e_mk_brk_main(f, start_brk);
+}
+
+/**
+ * e_d_run_window - The window a run's stop or end is reported through: the
+ * one on top now, as for a debugger key pressed at that moment.
+ *
+ * The window the run was started from may be gone: the user can close it
+ * (Ctrl-W) or switch away while the program runs, and the stop would then
+ * be shown through freed memory.  Nothing a stop does needs that window:
+ * the stop finds the source it names by file, switching to it or opening
+ * it again, and the end is written to Messages.  The editor always has a
+ * window on top, its clipboard window at the bottom of the stack, which is
+ * never closed.  Asked again at each use: the stop itself switches windows,
+ * and a stop that ends the session forgets the run.
+ * @cn: the editor.
+ * Return: the window on top.
+ */
+static FENSTER *e_d_run_window(ECNT *cn)
+{
+ return(cn->f[cn->mxedt]);
+}
+
+/**
+ * e_d_run_on_stop - The debugger stopped the program: mark where, then
+ * tidy up after the run.
+ */
+static void e_d_run_on_stop(void)
+{
+ const E_D_RUN_OPS *ops = e_d_run.ops;
+ ECNT *cn = e_d_run.cn;
+
+ e_d_run_unwatch();
+ ops->stopped(e_d_run_window(cn));
+ e_d_run_stop_chores(e_d_run_window(cn));
+}
+
+/**
+ * e_d_run_on_gone - The debugger went away while the program ran: the
+ * session ends, and the user reads why.
+ */
+static void e_d_run_on_gone(void)
+{
+ ECNT *cn = e_d_run.cn;
+
+ e_d_run_unwatch();
+ e_d_quit(e_d_run_window(cn));
+}
+
+/**
+ * e_d_run_on_answer - The debugger wrote while the program runs.
+ * @fd: its answer; @data: unused.
+ *
+ * Runs on the fd loop, between the user's keys: the editor never waits for
+ * the program.
+ */
+static void e_d_run_on_answer(int fd, void *data)
+{
+ int fed;
+
+ if (!e_d_run_going())
+  return;
+ fed = e_d_run.ops->feed(e_d_run_window(e_d_run.cn));
+ if (fed == E_D_FEED_STOPPED)
+  e_d_run_on_stop();
+ else if (fed == E_D_FEED_GONE)
+  e_d_run_on_gone();
+}
+
+/**
+ * e_d_run_begin - Hand a run, a continue or a step the debugger was just
+ * told about to the fd loop, and give the editor back its keys.
+ * @f: the source window; @ops: the backend's table;
+ * @start_brk: the editor's start breakpoint to take out at the stop, or 0.
+ *
+ * Until the stop the user can type the program's input, use the menus,
+ * close windows and quit the session; debugger commands are refused with a
+ * line that says the program is running.  Only the editor is kept, not
+ * @f, so a window closed meanwhile is never used (see e_d_run_window).
+ * When the loop cannot watch the debugger, its answer would never be read
+ * and the session would wait for ever: the bottom row says why and the
+ * caller ends the session.  The program's own output, if it cannot be
+ * watched, is still shown at the stop.
+ * Return: 0, or -1 when the debugger cannot be watched.
+ */
+static int e_d_run_begin(FENSTER *f, const E_D_RUN_OPS *ops, int start_brk)
+{
+ int out = ops->output_fd();
+
  e_d_cut_forget_output();
  e_d_out_clear();
- if (e_fd_watch(wfildes[0], POLLIN, e_d_on_gdb_readable, f, "the debugger's answer") < 0)
+ if (e_fd_watch(ops->answer_fd(), POLLIN, e_d_run_on_answer, NULL,
+                "the debugger's answer") < 0)
   return(-1);
- e_d_accum.active = 1;
- e_d_accum.main_brk = main_brk;
- e_d_accum.f = f;
+ e_d_run.state = E_D_RUN_GOING;
+ e_d_run.ops = ops;
+ e_d_run.cn = f->ed;
+ e_d_run.start_brk = start_brk;
+ jdb_trace("e_d_run_begin: the program runs under %s\n", ops->name);
  e_d_async_pending = 1;
  e_d_async_reset();
- if (e_d_pty_master >= 0)
-  e_fd_watch(e_d_pty_master, POLLIN, e_d_on_pty_readable, f, "the program's output");
+ if (out >= 0)
+  e_fd_watch(out, POLLIN, e_d_on_pty_readable, NULL, "the program's output");
+ return(0);
+}
+
+/**
+ * e_d_run_hand_over - Let the program run under the controller, or end the
+ * session when the debugger cannot be watched.
+ * @f: the source window; @ops: the backend's table;
+ * @start_brk: the editor's start breakpoint to take out at the stop, or 0.
+ * Return: 0, or the end of the session.
+ */
+static int e_d_run_hand_over(FENSTER *f, const E_D_RUN_OPS *ops, int start_brk)
+{
+ if (e_d_run_begin(f, ops, start_brk) < 0)
+  return(e_d_quit(f));
  return(0);
 }
 
@@ -1211,24 +1547,6 @@ static void e_d_on_pty_readable(int fd, void *data)
  {
   e_d_messages_redraw(mf);
   e_d_messages_place_cursor(mf);
- }
-}
-
-/* The line e_d_on_gdb_readable hands to the accumulator, reused per line. */
-static E_D_LINE e_d_accum_read;
-
-static void e_d_on_gdb_readable(int fd, void *data)
-{
- int ret;
-
- if (!e_d_accum.active)
-  return;
- while (e_d_accum.active)
- {
-  ret = e_d_line_read_nb_whole(wfildes[0], &e_d_accum_read);
-  if (ret == -2)
-   return;
-  e_d_accum_line((char *)e_d_accum_read.s, ret);
  }
 }
 
@@ -2354,6 +2672,7 @@ int e_d_quit_basic(FENSTER *f)
  e_d_start_forget();
  e_d_end_forget();
  e_d_jdb_missing_forget();
+ e_d_run_forget();
  if (!e_d_swtch)
   return 0;
  /* A debugger that never answered is not spoken to: it is ended below. */
@@ -2402,9 +2721,6 @@ int e_d_quit_basic(FENSTER *f)
  e_d_async_reset();
  e_d_cut_reset();
  _messages_activated = 0;
- e_d_async_pending = 0;
- e_d_accum.active = 0;
- e_d_accum.f = NULL;
  e_d_brk_forget_start_entries();
  /* The session is over: drop the editor's memory of Go to cursor's temporary
     breakpoint.  e_d_swtch is already 0, so nothing is sent to a debugger that
@@ -3854,6 +4170,11 @@ int e_mk_brk_main(FENSTER *f, int sw)
   /* Remove all may already have taken the entry out of the list. */
   if (sw > e_d_nbrpts || !e_d_brk_is_start_entry(sw-1))
    return(0);
+  if (e_d_run_going())
+  {
+   e_d_run_drop_start_brk_at_stop(sw);
+   return(0);
+  }
   if (e_d_swtch && e_d_start_brk_has_command())
   {
    if (e_deb_type == DEB_GDB) sprintf(eing, "d %d\n", e_d_nrbrpts[sw-1]);
@@ -5191,13 +5512,14 @@ static int e_d_start_refused(FENSTER *f)
  " The program is running: type its input in Messages, or Debug > Quit"
 
 /**
- * e_d_refuse_while_running - Refuse a debugger command while gdb's program
- * is running.
+ * e_d_refuse_while_running - Refuse a debugger command while the program
+ * runs under the run controller (gdb, sdb, dbx, xdb).
  * @f: the window the key was pressed in.
  *
- * A program that runs cannot be stepped, continued or asked about: gdb reads
- * the command only at the next stop, so it would be answered out of turn and
- * the session would lose its place.  The status row says what to do instead:
+ * A program that runs cannot be stepped, continued or asked about: the
+ * debugger reads the command only at the next stop, so it would be answered
+ * out of turn and the session would lose its place.  The status row says
+ * what to do instead:
  * type the program's input, or end the session with Debug > Quit.
  * Return: 1 when the command must not run.
  */
@@ -7118,6 +7440,7 @@ int e_deb_run(FENSTER *f)
  char eing[E_D_LINE_MAX + 128];
  char *said = eing;     /* the line Messages shows: the answer, or the command */
  int ret, prsw = 0, main_brk = 0;
+ const E_D_RUN_OPS *run_ops;
 
  if (e_d_refuse_while_running(f))
   return(0);
@@ -7296,12 +7619,9 @@ int e_deb_run(FENSTER *f)
   return(e_error(e_d_msg[ERR_CANTPROG], 0, f->fb));
  }
  e_d_swtch = 3;
- if (e_d_pty_master >= 0 && e_deb_type == DEB_GDB)
- {
-  if (e_d_accum_init(f, main_brk) < 0)
-   return(e_d_quit(f));
-  return(0);
- }
+ run_ops = e_d_run_ops_of_backend();
+ if (run_ops)
+  return(e_d_run_hand_over(f, run_ops, main_brk));
  if (e_deb_type == DEB_JDB)
  {
   /* jdb closes its pipe when the program ends and echoes its prompt before
@@ -8762,6 +9082,7 @@ static int e_d_finish_to_caller(FENSTER *f)
 int e_d_step_next(FENSTER *f, int sw)
 {
  int ret, main_brk = 0;
+ const E_D_RUN_OPS *run_ops;
 
  if (e_d_refuse_while_running(f))
   return(0);
@@ -8815,12 +9136,9 @@ int e_d_step_next(FENSTER *f, int sw)
   return e_d_jdb_read_stop(f);
  if (e_deb_type == DEB_PDB)
   return e_d_pdb_step_complete(f);
- if (e_d_pty_master >= 0 && e_deb_type == DEB_GDB)
- {
-  if (e_d_accum_init(f, 0) < 0)
-   return(e_d_quit(f));
-  return(0);
- }
+ run_ops = e_d_run_ops_of_backend();
+ if (run_ops)
+  return(e_d_run_hand_over(f, run_ops, 0));
  return(e_read_output(f));
 }
 
@@ -9304,10 +9622,12 @@ static int e_d_cursor_brk_send(int set)
  * Whichever stop comes first (the cursor's line, a breakpoint of the
  * user's on the way, the end of a function), the line must not stop the
  * program again on a later run.  A session that ended took it along.
+ * While the program still runs under the run controller the debugger reads
+ * no command, so the controller clears it at the stop instead.
  */
 static void e_d_cursor_brk_clear(void)
 {
- if (!e_d_cursor_brk.set)
+ if (!e_d_cursor_brk.set || e_d_run_going())
   return;
  e_d_cursor_brk.set = 0;
  if (e_d_swtch < 3)

@@ -31,7 +31,8 @@ import time
 
 import pytest
 
-from wpe_driver import WpeSession, WAIT_SCALE
+import procinfo
+from wpe_driver import WpeSession, ALT, WAIT_SCALE
 
 CTRL_G = "\x07"         # debugger command prefix
 DOWN = "\033OB"
@@ -102,11 +103,19 @@ END_LINE = {
 STUB_SOURCE = r'''
 import os
 import sys
+import time
 
 BACKEND = os.path.basename(sys.argv[0])
 PROMPT = {"sdb": "*", "dbx": "(dbx) ", "xdb": ">"}[BACKEND]
 LOG = os.environ.get("XWPE_STUB_LOG", "")
 SOURCE = os.environ.get("XWPE_STUB_SOURCE", "p.c")
+# Set to model a program that runs on after a continue: the debugger answers
+# nothing and asks for no command, as a real one does until the program stops.
+CONTINUE_RUNS_ON = os.environ.get("XWPE_STUB_CONTINUE_RUNS_ON", "") == "1"
+RUNNING_NAP_S = 3600
+# Seconds a continue runs before it answers, to model a program that takes
+# a while to reach its next stop; 0 answers at once.
+CONTINUE_DELAY_S = float(os.environ.get("XWPE_STUB_CONTINUE_DELAY_S", "0"))
 
 armed = []          # breakpoint lines, in the order they were armed
 current = [0]       # line the program stands at; 0 before the first run
@@ -173,8 +182,18 @@ def next_stop():
     return min(ahead)
 
 
+def run_on():
+    """The program runs and never stops: nothing is printed, no prompt."""
+    while True:
+        time.sleep(RUNNING_NAP_S)
+
+
 def run(first):
     """Answer a run or a continue: the next stop, or the program's end."""
+    if not first and CONTINUE_RUNS_ON:
+        run_on()
+    if not first:
+        time.sleep(CONTINUE_DELAY_S)
     if first and BACKEND in ("dbx", "xdb"):
         line("Running: p.e")
     stop = next_stop()
@@ -323,24 +342,32 @@ def _need(*tools):
             pytest.skip("no %s" % tool)
 
 
-def _stub_env(tmp_path, backend):
+def _stub_env(tmp_path, backend, continue_runs_on=False, continue_delay_s=0):
     """Write the stub for @backend and return the environment that runs it.
 
     The stub is one script under the debugger's own name, so the backend is
-    the name xwpe exec's, exactly as the real one would be."""
+    the name xwpe exec's, exactly as the real one would be.  With
+    @continue_runs_on, a continue after the first stop never comes back: the
+    program runs on and the debugger says nothing.  With @continue_delay_s,
+    a continue answers only after that many seconds."""
     bindir = tmp_path / "bin"
     bindir.mkdir(exist_ok=True)
     stub = bindir / backend
     stub.write_text("#!%s\n%s" % (sys.executable, STUB_SOURCE))
     stub.chmod(0o755)
-    return {
+    env = {
         "PATH": str(bindir) + ":" + os.environ.get("PATH", ""),
         "XWPE_STUB_LOG": str(tmp_path / (backend + ".log")),
         "XWPE_STUB_SOURCE": C_SOURCE,
     }
+    if continue_runs_on:
+        env["XWPE_STUB_CONTINUE_RUNS_ON"] = "1"
+    if continue_delay_s:
+        env["XWPE_STUB_CONTINUE_DELAY_S"] = str(continue_delay_s)
+    return env
 
 
-def _session(tmp_path, backend):
+def _session(tmp_path, backend, continue_runs_on=False, continue_delay_s=0):
     """A session on p.c with @backend forced through the options file.
 
     The options file is how a user picks a backend the dialog of this build
@@ -350,7 +377,9 @@ def _session(tmp_path, backend):
     (cfg / "xwperc").write_text(
         "[Programming]\nDebugger : %d\n" % DEBUGGER_TYPE[backend])
     return WpeSession(str(tmp_path), C_PROG, filename=C_SOURCE, wait=1.5,
-                      env_extra=_stub_env(tmp_path, backend))
+                      env_extra=_stub_env(tmp_path, backend,
+                                          continue_runs_on,
+                                          continue_delay_s))
 
 
 def _commands(tmp_path, backend):
@@ -571,3 +600,95 @@ def test_the_programs_end_is_named_where_the_editor_says(tmp_path, backend):
             "the current-line mark should go once the program ran:\n%s" \
             % _screen(w)
         w.key(ALT_X, delay=0.5)
+
+
+def _stub_running(w, backend):
+    """PIDs of the editor's children running the stub for @backend."""
+    return procinfo.children_named(w.proc.pid, backend)
+
+
+def _quit_while_the_program_runs(tmp_path, backend):
+    """Stop on line 8, continue into a program that never stops again, then
+    Debug > Quit (Alt-D, Q): the debugger ends and the editor edits again."""
+    with _session(tmp_path, backend, continue_runs_on=True) as w:
+        _start_session(w, tmp_path, backend)
+        before = len(_commands(tmp_path, backend))
+        w.key(CTRL_G, "r", delay=0.5)
+        assert _wait_for(w, lambda: CONTINUE_COMMAND[backend]
+                         in _sent(tmp_path, backend)[before:],
+                         STEP_TIMEOUT_S), \
+            "Ctrl-G R should have told %s to go on; it sent %r" \
+            % (backend, _sent(tmp_path, backend)[before:])
+        assert _stub_running(w, backend), \
+            "%s should be running the program:\n%s" % (backend, _screen(w))
+        w.menu(ALT.DEBUG, "q", delay=0.5)
+        assert _wait_for(w, lambda: not _stub_running(w, backend),
+                         STEP_TIMEOUT_S), \
+            "Debug > Quit should end %s while the program runs; it was " \
+            "sent %r and the screen reads:\n%s" \
+            % (backend, _sent(tmp_path, backend), _screen(w))
+        w.key("Q", delay=0.3)
+        w.save()
+        assert "Q" in w.text(), \
+            "typing after the session should edit the source:\n%s" \
+            % _screen(w)
+
+
+# @scenario SC-debug-18
+def test_debug_quit_while_the_program_runs_under_sdb(tmp_path):
+    """Parity with gdb: Debug > Quit ends an sdb session while the program
+    runs.  The run was read by a loop that sent every key but Ctrl-C to the
+    debugger, so the menu never opened.
+
+    Limit: the stub proves xwpe's half of the protocol, not a real sdb."""
+    _quit_while_the_program_runs(tmp_path, "sdb")
+
+
+# @scenario SC-debug-18
+def test_debug_quit_while_the_program_runs_under_dbx(tmp_path):
+    """Parity with gdb: Debug > Quit ends a dbx session while the program
+    runs.
+
+    Limit: the stub proves xwpe's half of the protocol, not a real dbx."""
+    _quit_while_the_program_runs(tmp_path, "dbx")
+
+
+# @scenario SC-debug-18
+def test_debug_quit_while_the_program_runs_under_xdb(tmp_path):
+    """Parity with gdb: Debug > Quit ends an xdb session while the program
+    runs.
+
+    Limit: the stub proves xwpe's half of the protocol, not a real xdb."""
+    _quit_while_the_program_runs(tmp_path, "xdb")
+
+
+CTRL_W = "\x17"           # close the window on top
+CLOSE_DELAY_S = 4         # how long the continue runs before its stop
+
+
+# @scenario SC-debug-18
+@pytest.mark.parametrize("backend", BACKENDS)
+def test_closing_the_window_while_the_program_runs_keeps_the_editor(
+        tmp_path, backend):
+    """Ctrl-W closes the source window while the program runs to its next
+    breakpoint: when it stops, the stop is marked in the file opened again
+    and the editor and the debugger are still there.  The stop used to be
+    shown through the window that was closed, freed memory.
+
+    Limit: the stub proves xwpe's half of the protocol, not a real %s.""" \
+        % backend
+    with _session(tmp_path, backend, continue_delay_s=CLOSE_DELAY_S) as w:
+        _start_session(w, tmp_path, backend)
+        _move_down(w, C_CURSOR_LINE - C_BREAK_LINE)
+        w.key(CTRL_G, "b", delay=0.6)
+        w.key(CTRL_G, "r", delay=0.5)
+        w.key(CTRL_W, delay=0.5)
+        assert _wait_for(w, lambda: _mark_line(w) == C_CURSOR_LINE,
+                         STEP_TIMEOUT_S + CLOSE_DELAY_S), \
+            "the stop on line %d should be marked after the window closed " \
+            "(editor alive: %s); %s was sent %r:\n%s" \
+            % (C_CURSOR_LINE, w.alive(), backend, _sent(tmp_path, backend),
+               _screen(w))
+        assert w.alive(), "the editor should still run"
+        assert _stub_running(w, backend), \
+            "%s should still run the session:\n%s" % (backend, _screen(w))

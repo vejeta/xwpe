@@ -1681,6 +1681,100 @@ def test_debug_quit_while_the_program_runs_under_every_debugger(
             % (spec["child"], _screen(w))
 
 
+# A program that sleeps between two breakpoints, so it is running, not
+# stopped, for a few seconds after a continue.
+SLEEPY_C_PROG = (
+    "#include <stdio.h>\n"
+    "#include <unistd.h>\n"
+    "int main(void)\n"
+    "{\n"
+    "  int x = 3;\n"
+    "  sleep(4);\n"
+    "  x = x + 1;\n"
+    "  printf(\"%d\\n\", x);\n"
+    "  return 0;\n"
+    "}\n"
+)
+SLEEPY_FIRST_LINE = 5     # int x = 3;
+SLEEPY_AFTER_LINE = 7     # x = x + 1;  after the sleep
+SLEEPY_RUN_S = 4
+CTRL_W = "\x17"           # close the window on top
+
+
+# @scenario SC-debug-18
+def test_closing_the_window_while_the_program_runs_keeps_the_editor(
+        tmp_path):
+    """Ctrl-W closes the source window while gdb's program sleeps on its
+    way to the next breakpoint: when it stops, the stop is marked in the
+    file opened again, and the editor and gdb are still there.  The stop
+    used to be shown through the window that was closed, freed memory."""
+    _need("gcc", "gdb")
+    with WpeSession(str(tmp_path), SLEEPY_C_PROG, filename="p.c",
+                    wait=1.5) as w:
+        _move_down(w, SLEEPY_FIRST_LINE - 1)
+        w.key(CTRL_G, "b", delay=0.4)
+        _move_down(w, SLEEPY_AFTER_LINE - SLEEPY_FIRST_LINE)
+        w.key(CTRL_G, "b", delay=0.4)
+        w.key(CTRL_G, "r", delay=1.0)
+        assert _wait_for(w, lambda: _mark_line(w) == SLEEPY_FIRST_LINE,
+                         START_TIMEOUT_S), \
+            "gdb should stop on line %d:\n%s" % (SLEEPY_FIRST_LINE, _screen(w))
+        w.key(CTRL_G, "r", delay=0.5)
+        w.key(CTRL_W, delay=0.5)
+        assert _wait_for(w, lambda: _mark_line(w) == SLEEPY_AFTER_LINE,
+                         STEP_TIMEOUT_S + SLEEPY_RUN_S), \
+            "the stop on line %d should be marked after the window closed " \
+            "(editor alive: %s):\n%s" \
+            % (SLEEPY_AFTER_LINE, w.alive(), _screen(w))
+        assert w.alive(), "the editor should still run"
+        assert _children(w, "gdb"), "gdb should still run the session"
+
+
+C_CURSOR_FIRST_LINE = 11  # x = y + 1;  the cursor for Go to cursor
+C_MAIN_LINE = 8           # the first line of main, where the start stops
+
+
+def _go_to_cursor_as_the_first_command(w):
+    """No breakpoint, cursor on line 11, Ctrl-G U before any session."""
+    _move_down(w, C_CURSOR_FIRST_LINE - 1)
+    w.key(CTRL_G, "u", delay=1.0)
+
+
+# @scenario SC-debug-05
+def test_go_to_cursor_as_the_first_command_starts_a_session_that_works(
+        tmp_path):
+    """Go to cursor before any session starts gdb and stops at main, and
+    the session goes on: F8 marks the next line.  The session used to wait
+    for ever: the start breakpoint's removal was sent while the program
+    ran, and its answer swallowed the stop."""
+    _need("gcc", "gdb")
+    with _c_session(tmp_path) as w:
+        _go_to_cursor_as_the_first_command(w)
+        assert _wait_for(w, lambda: _mark_line(w) == C_MAIN_LINE,
+                         START_TIMEOUT_S), \
+            "Go to cursor should start the session and stop on line %d " \
+            "(mark on %s):\n%s" % (C_MAIN_LINE, _mark_line(w), _screen(w))
+        assert _children(w, "gdb"), "gdb should still run the session"
+        assert _step(w, F8, C_NEXT_LINE), \
+            "F8 should mark line %d (mark on %s):\n%s" \
+            % (C_NEXT_LINE, _mark_line(w), _screen(w))
+
+
+# @scenario SC-debug-05
+@incoherence("Go to cursor as the first command runs to main and stops "
+             "there, as the start of any session does; reaching the cursor "
+             "needs gdb's until on the run controller")
+def test_go_to_cursor_as_the_first_command_stops_at_the_cursor(tmp_path):
+    """Borland's F4 before any session runs to the cursor's line."""
+    _need("gcc", "gdb")
+    with _c_session(tmp_path) as w:
+        _go_to_cursor_as_the_first_command(w)
+        assert _wait_for(w, lambda: _mark_line(w) == C_CURSOR_FIRST_LINE,
+                         START_TIMEOUT_S), \
+            "Go to cursor should stop on line %d (mark on %s):\n%s" \
+            % (C_CURSOR_FIRST_LINE, _mark_line(w), _screen(w))
+
+
 def _cursor_row_text(w):
     """The screen row the cursor is on."""
     return w.display(drain=0)[w.screen.cursor.y]

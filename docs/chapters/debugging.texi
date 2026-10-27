@@ -92,7 +92,9 @@ Search.
 Go to cursor works with every debugger.  gdb runs @code{until} the
 line.  pdb, jdb, a68g and the debug adapters get a breakpoint on the
 line that is removed at the next stop, wherever the program stops; a
-breakpoint of your own on that line stays.
+breakpoint of your own on that line stays.  Pressed before a session
+runs, with no breakpoint set, Go to cursor starts the session and stops
+at the start of @code{main}, as Run does.
 
 @cindex Show stack
 @cindex Stack window
@@ -328,7 +330,9 @@ pseudoterminal it uses to capture output, so the program sees a real
 terminal on stdin.  Under gdb, only text goes to the program (characters,
 @key{Enter} and @key{Backspace}) while it runs; the menus, the function
 keys and @kbd{Ctrl-F2} stay with the editor, so @samp{Debug @result{} Quit}
-still works while the program waits.  A program that is running cannot be
+still works while the program waits.  sdb, dbx and xdb leave the editor
+its keys in the same way while the program runs, so @samp{Debug @result{}
+Quit} ends their session too.  A program that is running cannot be
 stepped, continued or asked about, so Step, Trace, Run, Goto cursor, Finish,
 Show stack and the breakpoint and watch commands say ``The program is
 running'' on the status row and do nothing until it stops.  @key{Enter} is

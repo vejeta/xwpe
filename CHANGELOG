@@ -233,6 +233,22 @@ Changes
 
 1.7.0 (AI assistant -- experimental, opt-in)
 
+* Under sdb, dbx and xdb, Debug > Quit now ends the session while the
+  program runs, as it does under gdb.  Every key but Ctrl-C used to be
+  sent to the debugger until the program stopped, so the menu never
+  opened.  Step, Run and the other debugger commands pressed meanwhile
+  say "The program is running" on the status row, as under gdb.
+
+* Closing the source window (Ctrl-W) while the program runs under gdb,
+  sdb, dbx or xdb no longer crashes the editor at the next stop.  The
+  stop is marked in the file, opened again.
+
+* Go to cursor (Ctrl-G U, F4) as the first debugger command, with no
+  breakpoint set, starts the session under gdb and stops at the start
+  of main, where F8 and the other keys work.  It used to wait for ever
+  after "Starting program".  Running on to the cursor's line from there
+  is still to come.
+
 * While gdb runs a program, the menus, the F-keys and Ctrl-F2 now reach
   the editor instead of being typed into the program.  Debug > Quit from
   the menu bar used to leave gdb running and print a stray character in
