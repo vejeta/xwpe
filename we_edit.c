@@ -64,9 +64,9 @@ static int e_key_is_program_text(int c)
 
 static int e_debug_console_input(int c, FENSTER *f)
 {
- extern int e_d_pty_master, e_d_async_pending;
+ extern int e_d_pty_master;
 
- if (!e_d_async_pending || e_d_pty_master < 0)
+ if (!e_d_run_takes_typed_text())
   return 0;
  if (e_key_is_program_text(c))
  {

@@ -233,6 +233,21 @@ Changes
 
 1.7.0 (AI assistant -- experimental, opt-in)
 
+* Under pdb, a step or Finish function that takes more than five
+  seconds is marked when it stops.  Both gave up after five seconds and
+  never marked the stop.
+
+* Under pdb, Debug > Quit now ends the session while the program runs,
+  and Step, Run and the other debugger commands pressed meanwhile say
+  "The program is running: Debug > Quit ends the session".  During Run
+  and Go to cursor every key but Ctrl-C used to be sent to pdb, and
+  during a step no key was read at all.  Text typed while the program
+  runs goes into the file, since pdb's program cannot read it.
+
+* Under pdb, a step into code without source, such as the string of an
+  exec(), goes on to the next line of the script and gives up after 100
+  steps, where it could go on for ever.
+
 * Closing the Window list (Alt-0) with Esc no longer reads the window
   it has just freed, which could crash the editor.
 

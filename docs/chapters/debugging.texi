@@ -100,7 +100,7 @@ of your own on that line stays.  Pressed before a session runs, with no breakpoi
 cursor starts the session under gdb and runs on to the cursor's line;
 if the program never reaches it, the program runs to its end, as Go to
 cursor does at a stop.  The other debuggers stop at the start of
-@code{main}, as Run does.  Under gdb, Go to cursor and Finish function
+@code{main}, as Run does.  Under gdb and pdb, Go to cursor and Finish function
 leave the editor its keys while the program runs, so @samp{Debug
 @result{} Quit} ends the session.
 
@@ -340,8 +340,11 @@ terminal on stdin.  Under gdb, only text goes to the program (characters,
 keys and @kbd{Ctrl-F2} stay with the editor, so @samp{Debug @result{} Quit}
 still works while the program waits.  sdb, dbx and xdb leave the editor
 its keys in the same way while the program runs, so @samp{Debug @result{}
-Quit} ends their session too.  A program that is running cannot be
-stepped, continued or asked about, so Step, Trace, Run, Goto cursor, Finish,
+Quit} ends their session too.  So does pdb, which gives the program no
+terminal of its own: text typed while it runs goes into the file you
+edit, and the status row offers only @samp{Debug @result{} Quit}.  A
+program that is running cannot be stepped, continued or asked about, so
+Step, Trace, Run, Goto cursor, Finish,
 Show stack and the breakpoint and watch commands say ``The program is
 running'' on the status row and do nothing until it stops.  @key{Enter} is
 text for the program from any window, the Stack window included.  If the
@@ -569,6 +572,14 @@ defined.  Every stop refreshes them.
 @strong{Finish function}: @kbd{Ctrl-G F} sends @code{return}, which
 stops at the end of the function, and then @code{up}, so the green bar
 is on the caller's line.  A step goes on from the end of the function.
+
+@item
+@strong{A program that runs long}: Run, Step, Trace, Go to cursor and
+Finish function wait for pdb as long as the program takes, and mark the
+stop whenever it comes.  The editor keeps its keys meanwhile, and
+@samp{Debug @result{} Quit} ends the session.  A step that lands in
+Python's own code, such as the string of an @code{exec()}, goes on by
+itself, at most 100 times, to the next line of your script.
 
 @item
 @strong{The end of the program}: a script that runs off its end says

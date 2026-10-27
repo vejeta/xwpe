@@ -144,6 +144,12 @@
   {"id": "SC-debug-37", "requirement": "Starting and ending a session", "layer": "ncurses", "test": "tests/test_debugger_integration.py::test_a_build_declined_while_the_program_runs_keeps_the_session", "status": "new", "needs": ["gcc", "gdb"]},
   {"id": "SC-debug-37", "requirement": "Starting and ending a session", "layer": "ncurses", "test": "tests/test_debugger_integration.py::test_a_build_declined_at_a_stop_keeps_the_session", "status": "new", "needs": ["gcc", "gdb"]},
   {"id": "SC-debug-37", "requirement": "Starting and ending a session", "layer": "ncurses", "test": "tests/test_debugger_integration.py::test_a_build_accepted_at_a_stop_ends_the_session_and_builds", "status": "new", "needs": ["gcc", "gdb"]},
-  {"id": "SC-debug-37", "requirement": "Starting and ending a session", "layer": "ncurses", "test": "tests/test_debugger_integration.py::test_a_build_declined_at_a_pdb_stop_keeps_the_session", "status": "new", "needs": ["python3"]}
+  {"id": "SC-debug-37", "requirement": "Starting and ending a session", "layer": "ncurses", "test": "tests/test_debugger_integration.py::test_a_build_declined_at_a_pdb_stop_keeps_the_session", "status": "new", "needs": ["python3"]},
+  {"id": "SC-debug-05", "requirement": "Stepping and the mark", "layer": "ncurses", "test": "tests/test_debugger_integration.py::test_pdb_f8_over_a_line_that_runs_long_marks_the_next_line", "status": "new", "needs": ["python3"]},
+  {"id": "SC-debug-36", "requirement": "Stepping and the mark", "layer": "ncurses", "test": "tests/test_debugger_integration.py::test_pdb_keys_reach_the_editor_while_the_program_runs", "status": "new", "needs": ["python3"]},
+  {"id": "SC-debug-35", "requirement": "Starting and ending a session", "layer": "ncurses", "test": "tests/test_debugger_integration.py::test_pdb_text_typed_while_the_program_runs_goes_into_the_file", "status": "new", "needs": ["python3"]},
+  {"id": "SC-debug-34", "requirement": "Stepping and the mark", "layer": "ncurses", "test": "tests/test_debugger_integration.py::test_pdb_finish_over_a_long_call_marks_the_caller", "status": "new", "needs": ["python3"]},
+  {"id": "SC-debug-06", "requirement": "Stepping and the mark", "layer": "ncurses", "test": "tests/test_debugger_integration.py::test_pdb_go_to_cursor_over_a_long_line_keeps_the_editors_keys", "status": "new", "needs": ["python3"]},
+  {"id": "SC-debug-05", "requirement": "Stepping and the mark", "layer": "ncurses", "test": "tests/test_debugger_integration.py::test_pdb_f7_into_code_without_source_steps_on_to_the_next_line", "status": "new", "needs": ["python3"]}
  ]
 }

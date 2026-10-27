@@ -1291,6 +1291,202 @@ def test_pdb_steps_over_a_line_that_prints_megabytes(tmp_path):
         assert _children(w, "python3"), "pdb should still be running"
 
 
+# A step over a line that takes longer than the editor's wait for a debugger
+# answer (five seconds): the line sleeps eight.
+PY_LONG_LINE_PROG = (
+    "import time\n"
+    "a = 0\n"
+    "time.sleep(8)\n"
+    "y = 2\n"
+)
+PY_LONG_LINE = 3
+PY_LONG_LINE_RUN_S = 20
+
+
+# @scenario SC-debug-05
+def test_pdb_f8_over_a_line_that_runs_long_marks_the_next_line(tmp_path):
+    """F8 over time.sleep(8) marks the line after it once the sleep is done:
+    a step is not abandoned because the line takes a while."""
+    _need("python3")
+    with WpeSession(str(tmp_path), PY_LONG_LINE_PROG, filename="p.py",
+                    wait=1.5) as w:
+        _start_py_session_on(w, PY_LONG_LINE)
+        w.key(F8, delay=0.3)
+        assert _wait_for(w, lambda: _mark_line(w) == PY_LONG_LINE + 1,
+                         PY_LONG_LINE_RUN_S), \
+            "F8 over the long line should mark line %d (mark on %s):\n%s" \
+            % (PY_LONG_LINE + 1, _mark_line(w), _screen(w))
+
+
+def _says_the_program_is_running(w):
+    """Ctrl-G K while the program runs is refused with a line on the status
+    row and opens no Stack window: the key belongs to the editor."""
+    w.key(CTRL_G, "k", delay=0.8)
+    assert RUNNING_REFUSAL in _screen(w), \
+        "Ctrl-G K should be refused with a line on the status row:\n%s" \
+        % _screen(w)
+    assert " Stack " not in _screen(w), \
+        "no Stack window should open:\n%s" % _screen(w)
+
+
+# A function that takes longer than the editor used to wait for pdb.
+PY_SLOW_CALL_PROG = (
+    "import time\n"
+    "def slow(v):\n"
+    "    time.sleep(8)\n"
+    "    return v * v\n"
+    "y = slow(3)\n"
+    "print(y)\n"
+)
+PY_SLOW_BODY_LINE = 3         # time.sleep(8)
+PY_SLOW_CALLER_LINE = 5       # y = slow(3)
+PY_SLOW_AFTER_LINE = 6
+
+
+# @scenario SC-debug-34
+def test_pdb_finish_over_a_long_call_marks_the_caller(tmp_path):
+    """Ctrl-G F from inside a function that runs eight seconds more marks the
+    caller's line when it returns, and the editor keeps its keys meanwhile:
+    neither "return" nor "up" is abandoned because the call takes a while."""
+    _need("python3")
+    with WpeSession(str(tmp_path), PY_SLOW_CALL_PROG, filename="p.py",
+                    wait=1.5) as w:
+        _start_py_session_on(w, PY_SLOW_BODY_LINE)
+        _go_to_line(w, PY_SLOW_AFTER_LINE)
+        w.key(CTRL_G, "f", delay=0.5)
+        _says_the_program_is_running(w)
+        assert _wait_for(w, lambda: _mark_line(w) == PY_SLOW_CALLER_LINE,
+                         PY_LONG_LINE_RUN_S), \
+            "Ctrl-G F should mark line %d (mark on %s):\n%s" \
+            % (PY_SLOW_CALLER_LINE, _mark_line(w), _screen(w))
+
+
+# A line that takes eight seconds, between the breakpoint and the cursor.
+PY_GOTO_LONG_PROG = (
+    "import time\n"
+    "a = 0\n"
+    "time.sleep(8)\n"
+    "y = 2\n"
+    "z = 3\n"
+)
+PY_GOTO_LONG_BREAK_LINE = 2
+PY_GOTO_LONG_CURSOR_LINE = 5
+
+
+# @scenario SC-debug-06
+def test_pdb_go_to_cursor_over_a_long_line_keeps_the_editors_keys(tmp_path):
+    """F4 to a line past an eight second line: the editor refuses debugger
+    keys with the running line meanwhile, then the cursor's line is marked
+    and Go to cursor's own breakpoint is gone."""
+    _need("python3")
+    with WpeSession(str(tmp_path), PY_GOTO_LONG_PROG, filename="p.py",
+                    wait=1.5) as w:
+        _start_py_session_on(w, PY_GOTO_LONG_BREAK_LINE)
+        _go_to_line(w, PY_GOTO_LONG_CURSOR_LINE)
+        assert _wait_for(w, lambda: "F4 Go to cursor" in _bottom_bar(w),
+                         STEP_TIMEOUT_S), \
+            "the bar should offer F4 Go to cursor:\n%s" % _screen(w)
+        w.key(F4, delay=0.5)
+        _says_the_program_is_running(w)
+        assert _wait_for(w, lambda: _mark_line(w) == PY_GOTO_LONG_CURSOR_LINE,
+                         PY_LONG_LINE_RUN_S), \
+            "F4 should mark line %d (mark on %s):\n%s" \
+            % (PY_GOTO_LONG_CURSOR_LINE, _mark_line(w), _screen(w))
+        assert PY_GOTO_LONG_CURSOR_LINE not in _breakpoint_lines(w), \
+            "Go to cursor's breakpoint should be gone at the stop:\n%s" \
+            % _screen(w)
+
+
+# F7 into code run by exec(): pdb stops in <string>, which has no source, and
+# the editor steps on to the script's next line; the exec'd code takes seven
+# seconds.
+PY_INTERNAL_PROG = (
+    "a = 0\n"
+    "exec(\"import time\\ntime.sleep(7)\\nz = 2\")\n"
+    "y = 2\n"
+)
+PY_INTERNAL_CALL_LINE = 2
+PY_INTERNAL_NEXT_LINE = 3
+
+
+# @scenario SC-debug-05
+def test_pdb_f7_into_code_without_source_steps_on_to_the_next_line(tmp_path):
+    """F7 on a line that runs exec() stops in Python's own <string>: the
+    editor steps on, with the keys free, and marks the next line of the
+    script once the exec'd code is done."""
+    _need("python3")
+    with WpeSession(str(tmp_path), PY_INTERNAL_PROG, filename="p.py",
+                    wait=1.5) as w:
+        _start_py_session_on(w, PY_INTERNAL_CALL_LINE)
+        w.key(F7, delay=0.5)
+        _says_the_program_is_running(w)
+        assert _wait_for(w, lambda: _mark_line(w) == PY_INTERNAL_NEXT_LINE,
+                         PY_LONG_LINE_RUN_S), \
+            "F7 should end on line %d (mark on %s):\n%s" \
+            % (PY_INTERNAL_NEXT_LINE, _mark_line(w), _screen(w))
+
+
+# @scenario SC-debug-36
+def test_pdb_keys_reach_the_editor_while_the_program_runs(tmp_path):
+    """While the Python program runs, Ctrl-G K says on the status row that
+    the program is running and opens no Stack window, as under gdb: the key
+    belongs to the editor, and pdb is asked nothing until the program
+    stops."""
+    _need("python3")
+    spec = SLEEPING_PROGS["pdb"]
+    with WpeSession(str(tmp_path), spec["prog"], filename=spec["file"],
+                    wait=2.0) as w:
+        _move_down(w, spec["line"] - 1)
+        w.key(CTRL_G, "b", delay=0.5)
+        w.key(CTRL_G, "r", delay=1.0)
+        assert _wait_for(w, lambda: _mark_line(w) == spec["line"],
+                         spec["start_s"]), \
+            "pdb should stop on line %d:\n%s" % (spec["line"], _screen(w))
+        w.key(CTRL_G, "r", delay=0.5)
+        w._drain(RUNNING_SETTLE_S)   # asleep for ten minutes (drain scales)
+        w.key(CTRL_G, "k", delay=0.8)
+        assert RUNNING_REFUSAL in _screen(w), \
+            "Ctrl-G K should be refused with a line on the status row:\n%s" \
+            % _screen(w)
+        assert " Stack " not in _screen(w), \
+            "no Stack window should open:\n%s" % _screen(w)
+
+
+# pdb shares its stdin with the program, so nothing typed in the editor can
+# reach the program: the status row offers only Quit.
+PDB_RUNNING_LINE = "The program is running: Debug > Quit ends the session"
+PDB_TYPED_WHILE_RUNNING = "QZQ"
+
+
+# @scenario SC-debug-35
+def test_pdb_text_typed_while_the_program_runs_goes_into_the_file(tmp_path):
+    """While the Python program runs, letters typed in the source window are
+    inserted in the file, and Ctrl-G K's status row offers only Debug > Quit:
+    the program cannot read them, so they must not vanish into a terminal
+    nobody reads."""
+    _need("python3")
+    spec = SLEEPING_PROGS["pdb"]
+    with WpeSession(str(tmp_path), spec["prog"], filename=spec["file"],
+                    wait=2.0) as w:
+        _move_down(w, spec["line"] - 1)
+        w.key(CTRL_G, "b", delay=0.5)
+        w.key(CTRL_G, "r", delay=1.0)
+        assert _wait_for(w, lambda: _mark_line(w) == spec["line"],
+                         spec["start_s"]), \
+            "pdb should stop on line %d:\n%s" % (spec["line"], _screen(w))
+        w.key(CTRL_G, "r", delay=0.5)
+        w._drain(RUNNING_SETTLE_S)   # asleep for ten minutes (drain scales)
+        w.key(CTRL_G, "k", delay=0.8)
+        assert PDB_RUNNING_LINE in _screen(w), \
+            "Ctrl-G K should say %r under pdb:\n%s" \
+            % (PDB_RUNNING_LINE, _screen(w))
+        w.key(PDB_TYPED_WHILE_RUNNING, delay=0.8)
+        w.save()
+        assert PDB_TYPED_WHILE_RUNNING in w.text(), \
+            "the letters typed while pdb's program runs should be in the " \
+            "file:\n%s" % w.text()
+
+
 # A breakpoint whose gdb commands print a million-element array, about 8 MB
 # in 100000 lines of 80 columns, in one burst, and go on.
 FLOOD_COMMANDS_LINE = 6           # i = 1;  the printing breakpoint
@@ -1647,10 +1843,7 @@ def test_debug_quit_while_the_program_runs_under_a68g(tmp_path):
 # @scenario SC-debug-18
 @pytest.mark.parametrize("debugger", [
     "jdb",
-    pytest.param("pdb", marks=incoherence(
-        "pdb's continue is read by e_read_output, whose key reader "
-        "(e_d_getchar) only knows Ctrl-C and writes every other byte to "
-        "pdb's stdin, so Alt-D q reaches pdb as ESC d q")),
+    "pdb",
     pytest.param("dlv", marks=incoherence(
         "the adapter's run waits in poll() on the adapter's descriptors "
         "only, so no editor key is read while the program runs")),

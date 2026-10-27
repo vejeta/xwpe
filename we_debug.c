@@ -209,8 +209,9 @@ char *npipe[5] = {  NULL, NULL, NULL, NULL, NULL  };
    only ever wait this long when the pty has briefly gone quiet. */
 #define DEB_PTY_DRAIN_MS 100
 
-/* Per-step async read of jdb/pdb output: scratch buffer size, and how long to
-   wait for the next chunk before deciding the step has finished printing. */
+/* Per-step read of jdb, pdb and a68g output: scratch buffer size, and how long
+   jdb, a68g and the stack listing wait for the next chunk before deciding the
+   step has finished printing (pdb's run waits as long as the program takes). */
 #define DEB_STEP_BUF     (PATH_MAX + 4096)
 #define DEB_STEP_POLL_MS 5000
 
@@ -949,7 +950,12 @@ typedef struct
     controller again.  Go to cursor as the first command uses it once the
     start has stopped; NULL for a backend that does not run on yet. */
  int  (*run_to_line)(FENSTER *f, int line);
+ /* A run was handed to the controller: forget the answer of the run before,
+    for a backend whose reader keeps one across reads.  NULL for the rest. */
+ void (*begin)(void);
 } E_D_RUN_OPS;
+
+static const E_D_RUN_OPS *e_d_pdb_run_ops(void);   /* pdb's table (below) */
 
 /* The run in progress. */
 typedef struct
@@ -1018,7 +1024,8 @@ static void e_d_flush_inferior_stdout(void)
  *
  * gdb's "exited normally" is 0 and its "exited with code 03" is octal;
  * pdb's "Exit status: 3" (after sys.exit) is decimal and its "The program
- * finished" is a normal end, 0.  A debug adapter prints no line: its code
+ * finished" is a normal end, 0; pdb prints both after sys.exit, the status
+ * first, so the status is read first.  A debug adapter prints no line: its code
  * comes with the `exited` event.  jdb and a68g name none.
  * Return: 1 when a code is known, else 0.
  */
@@ -1031,6 +1038,11 @@ static int e_d_exit_code_of(const char *line, long *code)
   return(e_d_dap_exit_code(code));
  if (!line)
   return(0);
+ if ((p = strstr(line, E_D_PDB_EXIT_STATUS)) != NULL)
+ {
+  *code = strtol(p + strlen(E_D_PDB_EXIT_STATUS), &end, 10);
+  return(end != p + strlen(E_D_PDB_EXIT_STATUS));
+ }
  if (strstr(line, E_D_PDB_FINISHED))
  {
   *code = 0;
@@ -1045,11 +1057,6 @@ static int e_d_exit_code_of(const char *line, long *code)
  {
   *code = strtol(p + strlen(E_D_GDB_EXIT_CODE), &end, E_D_GDB_EXIT_BASE);
   return(end != p + strlen(E_D_GDB_EXIT_CODE));
- }
- if ((p = strstr(line, E_D_PDB_EXIT_STATUS)) != NULL)
- {
-  *code = strtol(p + strlen(E_D_PDB_EXIT_STATUS), &end, 10);
-  return(end != p + strlen(E_D_PDB_EXIT_STATUS));
  }
  return(0);
 }
@@ -1278,7 +1285,8 @@ static const E_D_RUN_OPS e_d_gdb_run_ops =
  NULL,
  NULL,
  NULL,
- e_d_gdb_run_to_line
+ e_d_gdb_run_to_line,
+ NULL
 };
 
 /* sdb, dbx and xdb: gdb's line protocol, with their own stop wording. */
@@ -1292,6 +1300,7 @@ static const E_D_RUN_OPS e_d_legacy_run_ops =
  NULL,
  NULL,
  NULL,
+ NULL,
  NULL
 };
 
@@ -1300,13 +1309,15 @@ static const E_D_RUN_OPS e_d_legacy_run_ops =
  * debugger, or NULL when its run is still read by its own reader.
  *
  * gdb goes through the controller when it gave the program a pty, as it
- * always has; sdb, dbx and xdb always do.  pdb, jdb, a68g and the debug
+ * always has; sdb, dbx, xdb and pdb always do.  jdb, a68g and the debug
  * adapters keep their own readers for now.
  */
 static const E_D_RUN_OPS *e_d_run_ops_of_backend(void)
 {
  if (e_deb_type == DEB_GDB && e_d_pty_master >= 0)
   return(&e_d_gdb_run_ops);
+ if (e_deb_type == DEB_PDB)
+  return(e_d_pdb_run_ops());
  if (e_deb_type == DEB_SDB || e_deb_type == DEB_DBX || e_deb_type == DEB_XDB)
   return(&e_d_legacy_run_ops);
  return(NULL);
@@ -1322,6 +1333,22 @@ static const E_D_RUN_OPS *e_d_run_ops_of_backend(void)
 static int e_d_run_going(void)
 {
  return(e_d_run.state == E_D_RUN_GOING);
+}
+
+/**
+ * e_d_run_takes_typed_text - Does the running program read what the user
+ * types in the editor?
+ *
+ * Under gdb and the legacy debuggers the program has a terminal of its own,
+ * so a line typed while it runs is its input.  pdb's program shares pdb's
+ * stdin and has none: there the letters belong in the file being edited.
+ * Return: 1 while a run is going and the program has its own terminal.
+ */
+int e_d_run_takes_typed_text(void)
+{
+ if (!e_d_run_going())
+  return(0);
+ return(e_d_run.ops->output_fd() >= 0);
 }
 
 /**
@@ -1447,6 +1474,10 @@ static void e_d_run_goto_after_start(ECNT *cn, const E_D_RUN_OPS *ops)
 /**
  * e_d_run_on_stop - The debugger stopped the program: mark where, then
  * tidy up after the run, and go on to the cursor if Go to cursor asked.
+ *
+ * A backend whose stop is not the user's yet (pdb stopped in Python's own
+ * code) sends its next command and keeps the run going from @stopped: the
+ * tidying then waits for the stop the user is shown.
  */
 static void e_d_run_on_stop(void)
 {
@@ -1455,6 +1486,8 @@ static void e_d_run_on_stop(void)
 
  e_d_run_unwatch();
  ops->stopped(e_d_run_window(cn));
+ if (e_d_run_going())
+  return;
  e_d_run_stop_chores(e_d_run_window(cn));
  e_d_run_goto_after_start(cn, ops);
 }
@@ -1532,6 +1565,26 @@ static void e_d_run_on_answer(int fd, void *data)
 }
 
 /**
+ * e_d_run_watch - Watch the debugger's answer and the program's output on
+ * the fd loop, and keep the editor's debugger keys refused until the stop.
+ * @ops: the backend's table.
+ * Return: 0, or -1 when the debugger cannot be watched.
+ */
+static int e_d_run_watch(const E_D_RUN_OPS *ops)
+{
+ int out = ops->output_fd();
+
+ if (e_fd_watch(ops->answer_fd(), POLLIN, e_d_run_on_answer, NULL,
+                "the debugger's answer") < 0)
+  return(-1);
+ e_d_run.state = E_D_RUN_GOING;
+ e_d_async_pending = 1;
+ if (out >= 0)
+  e_fd_watch(out, POLLIN, e_d_on_pty_readable, NULL, "the program's output");
+ return(0);
+}
+
+/**
  * e_d_run_begin - Hand a run, a continue or a step the debugger was just
  * told about to the fd loop, and give the editor back its keys.
  * @f: the source window; @ops: the backend's table;
@@ -1549,24 +1602,39 @@ static void e_d_run_on_answer(int fd, void *data)
  */
 static int e_d_run_begin(FENSTER *f, const E_D_RUN_OPS *ops, int start_brk)
 {
- int out = ops->output_fd();
-
  e_d_cut_forget_output();
  e_d_out_clear();
- if (e_fd_watch(ops->answer_fd(), POLLIN, e_d_run_on_answer, NULL,
-                "the debugger's answer") < 0)
+ if (ops->begin)
+  ops->begin();
+ if (e_d_run_watch(ops) < 0)
   return(-1);
- e_d_run.state = E_D_RUN_GOING;
  e_d_run.ops = ops;
  e_d_run.cn = f->ed;
  e_d_run.start_brk = start_brk;
  e_d_run.goto_line = 0;
  jdb_trace("e_d_run_begin: the program runs under %s\n", ops->name);
- e_d_async_pending = 1;
  e_d_async_reset();
- if (out >= 0)
-  e_fd_watch(out, POLLIN, e_d_on_pty_readable, NULL, "the program's output");
  return(0);
+}
+
+/**
+ * e_d_run_resume - Keep the run going after its stop was handled, because
+ * the backend sent the debugger one more command from it.
+ *
+ * Called from a backend's @stopped, so the answer to that command is read
+ * on the fd loop like the run's own and the editor keeps its keys.  What
+ * the run was given (start breakpoint, Go to cursor's line) is kept.  When
+ * the debugger cannot be watched the session ends, as at the start.
+ * Return: 0, or -1 when the session ended.
+ */
+static int e_d_run_resume(void)
+{
+ ECNT *cn = e_d_run.cn;
+
+ if (e_d_run_watch(e_d_run.ops) == 0)
+  return(0);
+ e_d_quit(e_d_run_window(cn));
+ return(-1);
 }
 
 /**
@@ -5597,6 +5665,24 @@ static int e_d_start_refused(FENSTER *f)
 
 #define E_D_RUNNING_LINE \
  " The program is running: type its input in Messages, or Debug > Quit"
+/* A debugger that gave the program no terminal of its own (pdb) takes no
+   input typed in the editor. */
+#define E_D_RUNNING_NO_INPUT_LINE \
+ " The program is running: Debug > Quit ends the session"
+
+/**
+ * e_d_running_line - The line that says the program runs, and what the user
+ * can do meanwhile.
+ *
+ * Typed text reaches the program only when it has a terminal of its own,
+ * so the line offers typing its input only then.
+ */
+static const char *e_d_running_line(void)
+{
+ if (e_d_run_takes_typed_text())
+  return(E_D_RUNNING_LINE);
+ return(E_D_RUNNING_NO_INPUT_LINE);
+}
 
 /**
  * e_d_refuse_while_running - Refuse a debugger command while the program
@@ -5614,7 +5700,7 @@ static int e_d_refuse_while_running(FENSTER *f)
 {
  if (!e_d_async_pending)
   return(0);
- e_status_say(f, E_D_RUNNING_LINE);
+ e_status_say(f, e_d_running_line());
  return(1);
 }
 
@@ -7647,7 +7733,7 @@ int e_deb_run(FENSTER *f)
  e_d_switch_out(1);
  jdb_trace("e_deb_run: sending '%s' (prsw=%d)\n", eing, prsw);
  e_d_send_cmd(eing);
- if ((e_deb_type == DEB_JDB || e_deb_type == DEB_PDB) && !prsw)
+ if (e_deb_type == DEB_JDB && !prsw)
  {
   /* jdb: "run" returns "> " immediately but the VM starts
      asynchronously. Use poll() with timeout to wait for the
@@ -7994,79 +8080,248 @@ static void e_d_pdb_mark_answer(FENSTER *f, const char *kept,
  e_d_pdb_mark_stop(f, sp->file, sp->line);
 }
 
-/* Read and apply a pdb step/next response: poll for the "(Pdb) " prompt,
-   capture program output for Ctrl-G P, and jump the cursor to the reported
-   source line.  When pdb stops in an internal Python frame (<string>,
-   <frozen ...>) it steps again automatically until it reaches user code or the
-   program exits.  *returned (when not NULL) says whether the stop is pdb's
-   "--Return--", the end of a function, which Finish function goes on from.
-   Returns 0, or e_d_quit(f) on program exit. */
-static int e_d_pdb_read_stop(FENSTER *f, int *returned)
-{
- struct pollfd _pfd = { .fd = wfildes[0], .events = POLLIN };
- E_D_STEP_REPLY _r;
- E_D_PDB_SPILL _sp;
- int internal_frame = 1;
+/* The prompt pdb ends every answer with: the program stopped. */
+#define E_D_PDB_PROMPT "(Pdb) "
+/* How many times a stop in Python's own code is stepped past, looking for
+   the script's own lines, before the run is left where it is. */
+#define E_D_PDB_INTERNAL_STEPS_MAX 100
+/* How many reads one wake of the fd loop takes from pdb: a program that
+   prints without end must not keep the editor from its keys. */
+#define E_D_PDB_FEED_READS_MAX 64
+#define E_D_PDB_STEP_ON "n\n"
+#define E_D_PDB_UP      "up\n"      /* the caller's line, after a "return" */
+#define E_D_PDB_FINISH  "return\n"  /* run to the end of the function */
+#define E_D_PDB_INTERNAL_LINE \
+ " pdb stayed in Python's own code: step with F7 or F8, or run on"
 
- if (returned)
-  *returned = 0;
- while (internal_frame)
- {
-  int _n, _found = 0;
-  internal_frame = 0;
-  memset(&_sp, 0, sizeof _sp);
-  e_d_step_reply_init(&_r);
-  while (!_found)
-  {
-   if (poll(&_pfd, 1, DEB_STEP_POLL_MS) <= 0) break;
-   _n = e_d_step_reply_read(wfildes[0], &_r, e_d_pdb_spill, &_sp);
-   if (_n == 0)
-   {  /* EOF: pdb restarts a finished script, so it never ends by itself */
-    e_d_note_output_closed();
-    return(e_d_quit(f));
-   }
-   if (_n < 0) continue;
-   if (strstr(_r.buf, "(Pdb) ")) _found = 1;
-  }
-  if (!_found)
-   break;
-  if (returned && (_sp.returned || strstr(_r.buf, E_D_PDB_RETURN)))
-   *returned = 1;
-  /* Capture program output from EVERY step response. */
-  e_d_pdb_capture_output(_r.buf, _r.mid_line && _sp.open_is_pdb);
-  /* sys.exit(N): pdb names the exit status, then restarts the script */
-  if (strstr(_r.buf, E_D_PDB_EXIT_STATUS))
-  {
-   e_d_switch_out(0);
-   e_d_say_program_exited(strstr(_r.buf, E_D_PDB_EXIT_STATUS), f);
-   return(e_d_quit(f));
-  }
-  /* Check for program exit -- pdb auto-restarts after finish */
-  if (strstr(_r.buf, E_D_PDB_FINISHED))
-  {
-   e_d_switch_out(0);
-   e_d_say_program_exited(strstr(_r.buf, E_D_PDB_FINISHED), f);
-   return(e_d_quit(f));
-  }
-  /* Parse "> file(line)func()" to extract file and line number.
-     If stopped in an internal Python frame (<string>, <frozen ...>),
-     step again automatically until we reach user code or program exit. */
-  if (e_d_pdb_stop_is_internal(_r.buf, &_sp))
-  {
-   e_d_send_cmd("n\n");
-   internal_frame = 1;   /* re-poll instead of the old goto */
-   continue;
-  }
-  e_d_pdb_mark_answer(f, _r.buf, &_sp);
- }
- e_d_switch_out(0);
- return(0);
+/* pdb's run: what its answer holds so far, and what the stops that are not
+   the user's yet still have to do.  pdb has no pty and shares its stdin and
+   stdout with the program, so the run reads one pipe and sends a command
+   only at a stop, never while the program runs. */
+typedef struct {
+ E_D_STEP_REPLY reply;          /* the answer to the command sent */
+ E_D_PDB_SPILL spill;           /* what was handed on of a long answer */
+ int returned;                  /* the answer was a "--Return--" */
+ int finish_up;                 /* Finish: "up" follows the "--Return--" */
+ int internal_steps;            /* stops in Python's own code stepped past */
+} E_D_PDB_RUN;
+
+static E_D_PDB_RUN e_d_pdb_run;
+
+/**
+ * e_d_pdb_answer_reset - Start reading a new answer from pdb.
+ *
+ * Called for each command a run sends, so the answer of the one before is
+ * not mistaken for this one's prompt.
+ */
+static void e_d_pdb_answer_reset(void)
+{
+ memset(&e_d_pdb_run.spill, 0, sizeof e_d_pdb_run.spill);
+ e_d_step_reply_init(&e_d_pdb_run.reply);
+ e_d_pdb_run.returned = 0;
 }
 
-/* Read and apply a pdb step or next: see e_d_pdb_read_stop. */
-static int e_d_pdb_step_complete(FENSTER *f)
+/**
+ * e_d_pdb_begin - Forget everything of the run before when a run starts.
+ */
+static void e_d_pdb_begin(void)
 {
- return(e_d_pdb_read_stop(f, NULL));
+ e_d_pdb_answer_reset();
+ e_d_pdb_run.finish_up = 0;
+ e_d_pdb_run.internal_steps = 0;
+}
+
+/**
+ * e_d_pdb_answer_fd - Where pdb answers: its output pipe, which the program
+ * writes to as well.
+ */
+static int e_d_pdb_answer_fd(void)
+{
+ return(wfildes[0]);
+}
+
+/**
+ * e_d_pdb_no_output_fd - pdb gives the program no pty of its own.
+ */
+static int e_d_pdb_no_output_fd(void)
+{
+ return(-1);
+}
+
+/**
+ * e_d_pdb_feed - Read what pdb or the program has written so far.
+ * @f: the window the run was started from (unused).
+ *
+ * The program's text and pdb's prompt arrive on one pipe, the prompt
+ * without a line end, so the answer is kept as it comes and the run stops
+ * when the prompt is in it.  A program that prints a lot is read as it
+ * prints, a bounded amount at a time so the editor keeps its keys.
+ * Return: E_D_FEED_GOING, E_D_FEED_STOPPED or E_D_FEED_GONE.
+ */
+static int e_d_pdb_feed(FENSTER *f)
+{
+ E_D_PDB_RUN *r = &e_d_pdb_run;
+ int flags = fcntl(wfildes[0], F_GETFL, 0);
+ int reads, n, fed = E_D_FEED_GOING;
+
+ fcntl(wfildes[0], F_SETFL, flags | O_NONBLOCK);
+ for (reads = 0; reads < E_D_PDB_FEED_READS_MAX && fed == E_D_FEED_GOING;
+      reads++)
+ {
+  n = e_d_step_reply_read(wfildes[0], &r->reply, e_d_pdb_spill, &r->spill);
+  if (n < 0)
+   break;                 /* nothing more for now */
+  if (n == 0)
+  {  /* EOF: pdb restarts a finished script, so it never ends by itself */
+   e_d_note_output_closed();
+   fed = E_D_FEED_GONE;
+  }
+  else if (strstr(r->reply.buf, E_D_PDB_PROMPT))
+   fed = E_D_FEED_STOPPED;
+ }
+ fcntl(wfildes[0], F_SETFL, flags);
+ return(fed);
+}
+
+/**
+ * e_d_pdb_send_on - Send pdb a command from a stop and read its answer on
+ * the fd loop.
+ * @cmd: the command.
+ *
+ * Used for the commands a stop calls for (step on out of Python's own
+ * code, "up" after a Finish), which pdb must read now and not while the
+ * program runs.
+ */
+static void e_d_pdb_send_on(const char *cmd)
+{
+ e_d_pdb_answer_reset();
+ e_d_send_cmd(cmd);
+ e_d_run_resume();
+}
+
+/**
+ * e_d_pdb_say_end - Say that the program ended and close the session, when
+ * pdb's answer is its end.
+ * @f: the window on top; @text: pdb's answer.
+ *
+ * pdb names an exit status after sys.exit(N) and says "The program
+ * finished" when the script runs off its end; it then restarts the script,
+ * so the editor ends the session itself.
+ * Return: 1 when the program ended.
+ */
+static int e_d_pdb_say_end(FENSTER *f, const char *text)
+{
+ const char *end = strstr(text, E_D_PDB_EXIT_STATUS);
+
+ if (!end)
+  end = strstr(text, E_D_PDB_FINISHED);
+ if (!end)
+  return(0);
+ e_d_switch_out(0);
+ e_d_say_program_exited(end, f);
+ e_d_quit(f);
+ return(1);
+}
+
+/**
+ * e_d_pdb_step_out_of_internal - pdb stopped in Python's own code, where
+ * the user has no source: step on, up to a bound.
+ * @f: the window on top.
+ *
+ * The user gets the next stop in the script, or one line saying pdb stayed
+ * in Python's own code when the bound is reached.
+ */
+static void e_d_pdb_step_out_of_internal(FENSTER *f)
+{
+ if (++e_d_pdb_run.internal_steps > E_D_PDB_INTERNAL_STEPS_MAX)
+ {
+  e_d_switch_out(0);
+  e_status_say(f, E_D_PDB_INTERNAL_LINE);
+  return;
+ }
+ e_d_pdb_send_on(E_D_PDB_STEP_ON);
+}
+
+/**
+ * e_d_pdb_finish_up - Finish function reached the end of the function:
+ * ask pdb for the caller's line.
+ *
+ * pdb's "return" stops at the end of the function, still inside it; "up"
+ * shows the call the user finishes into, as gdb's "finish" does.
+ */
+static void e_d_pdb_finish_up(void)
+{
+ e_d_pdb_run.finish_up = 0;
+ e_d_switch_out(1);
+ e_d_nstack = 1;
+ e_d_pdb_send_on(E_D_PDB_UP);
+}
+
+/**
+ * e_d_pdb_note_return - Remember that pdb's answer was a "--Return--".
+ * @r: the run.
+ */
+static void e_d_pdb_note_return(E_D_PDB_RUN *r)
+{
+ if (r->spill.returned || strstr(r->reply.buf, E_D_PDB_RETURN))
+  r->returned = 1;
+}
+
+/**
+ * e_d_pdb_stopped - What pdb does when its prompt comes: keep the program's
+ * output for Ctrl-G P, then mark the stop, say the end, or go on.
+ * @f: the window on top.
+ *
+ * The user sees the green bar on the line pdb stopped on, or one line in
+ * Messages saying the program ended.  A stop in Python's own code is
+ * stepped past, and Finish's "--Return--" is followed by "up", both sent
+ * from here, at the stop.
+ */
+static void e_d_pdb_stopped(FENSTER *f)
+{
+ E_D_PDB_RUN *r = &e_d_pdb_run;
+
+ e_d_pdb_note_return(r);
+ e_d_pdb_capture_output(r->reply.buf, r->reply.mid_line &&
+                        r->spill.open_is_pdb);
+ if (e_d_pdb_say_end(f, r->reply.buf))
+  return;
+ if (e_d_pdb_stop_is_internal(r->reply.buf, &r->spill))
+ {
+  e_d_pdb_step_out_of_internal(f);
+  return;
+ }
+ if (r->finish_up && r->returned)
+ {
+  e_d_pdb_finish_up();
+  return;
+ }
+ r->finish_up = 0;
+ e_d_pdb_mark_answer(f, r->reply.buf, &r->spill);
+ e_d_switch_out(0);
+}
+
+/* pdb: one pipe for the debugger and the program, a prompt at each stop. */
+static const E_D_RUN_OPS e_d_pdb_ops =
+{
+ "pdb",
+ e_d_pdb_answer_fd,
+ e_d_pdb_no_output_fd,
+ e_d_pdb_feed,
+ e_d_pdb_stopped,
+ NULL,
+ NULL,
+ NULL,
+ NULL,
+ e_d_pdb_begin
+};
+
+/**
+ * e_d_pdb_run_ops - The run controller's table for pdb.
+ */
+static const E_D_RUN_OPS *e_d_pdb_run_ops(void)
+{
+ return(&e_d_pdb_ops);
 }
 
 /* Return the source line a68g reports for the current stop, or -1.
@@ -8308,8 +8563,6 @@ static int e_d_a68g_do_step(FENSTER *f, int sw)
 #define E_D_FRAME_DOWN_FMT   "down %d\n" /* pdb and jdb: N frames inwards     */
 #define E_D_PDB_WHERE        "where\n"
 #define E_D_PDB_FRAME_LEAD   2        /* "> " (selected) or "  " per frame   */
-#define E_D_PDB_UP           "up\n"
-#define E_D_PDB_FINISH       "return\n"
 #define E_D_PDB_OWN_FILE     '<'      /* "<string>": pdb running the script  */
 #define E_D_JDB_WHERE        "where\n"
 #define E_D_JDB_FINISH       "step up\n"
@@ -9080,21 +9333,20 @@ static void e_d_say_finish_outermost(FENSTER *f)
  *
  * pdb's "return" stops at the end of the function, still inside it; "up"
  * then shows the caller's line, the call the user finishes into, as gdb's
- * "finish" does.  Stepping on goes from the end of the function.
- * Return: 0, or e_d_quit(f) when the program ended.
+ * "finish" does.  Stepping on goes from the end of the function.  The
+ * program runs under the run controller: the editor keeps its keys, and the
+ * "up" is sent when pdb stops at the end of the function.
+ * Return: 0, or the end of the session.
  */
 static int e_d_pdb_finish(FENSTER *f)
 {
- int returned, ret;
+ int ret;
 
  e_d_send_cmd(E_D_PDB_FINISH);
- ret = e_d_pdb_read_stop(f, &returned);
- if (e_d_swtch < 3 || !returned)
-  return(ret);
- e_d_switch_out(1);
- e_d_send_cmd(E_D_PDB_UP);
- e_d_nstack = 1;
- return(e_d_pdb_step_complete(f));
+ ret = e_d_run_hand_over(f, e_d_pdb_run_ops(), 0);
+ if (e_d_run_going())
+  e_d_pdb_run.finish_up = 1;
+ return(ret);
 }
 
 /**
@@ -9221,8 +9473,6 @@ int e_d_step_next(FENSTER *f, int sw)
  e_d_nstack = 0;
  if (e_deb_type == DEB_JDB)
   return e_d_jdb_read_stop(f);
- if (e_deb_type == DEB_PDB)
-  return e_d_pdb_step_complete(f);
  run_ops = e_d_run_ops_of_backend();
  if (run_ops)
   return(e_d_run_hand_over(f, run_ops, 0));
