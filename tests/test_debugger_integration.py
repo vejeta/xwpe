@@ -27,6 +27,7 @@ from wpe_driver import (WpeSession, ALT, WAIT_SCALE, tool_usable,
 
 CTRL_G = "\x07"         # debugger command prefix
 DOWN = "\033OB"
+UP = "\033OA"
 F7 = "\033[18~"         # Trace (step into)
 F8 = "\033[19~"         # Step (step over)
 ALT_F5 = "\033[15;3~"   # User Screen
@@ -1731,7 +1732,7 @@ def test_closing_the_window_while_the_program_runs_keeps_the_editor(
 
 
 C_CURSOR_FIRST_LINE = 11  # x = y + 1;  the cursor for Go to cursor
-C_MAIN_LINE = 8           # the first line of main, where the start stops
+C_CURSOR_NEXT_LINE = 12   # return 0;  the line after the cursor's
 
 
 def _go_to_cursor_as_the_first_command(w):
@@ -1743,27 +1744,26 @@ def _go_to_cursor_as_the_first_command(w):
 # @scenario SC-debug-05
 def test_go_to_cursor_as_the_first_command_starts_a_session_that_works(
         tmp_path):
-    """Go to cursor before any session starts gdb and stops at main, and
-    the session goes on: F8 marks the next line.  The session used to wait
-    for ever: the start breakpoint's removal was sent while the program
-    ran, and its answer swallowed the stop."""
+    """Go to cursor before any session starts gdb and runs on to the
+    cursor's line, and the session goes on: F8 marks the next line.  The
+    session used to wait for ever: the start breakpoint's removal was sent
+    while the program ran, and its answer swallowed the stop.  It then
+    stopped at main and never reached the cursor."""
     _need("gcc", "gdb")
     with _c_session(tmp_path) as w:
         _go_to_cursor_as_the_first_command(w)
-        assert _wait_for(w, lambda: _mark_line(w) == C_MAIN_LINE,
+        assert _wait_for(w, lambda: _mark_line(w) == C_CURSOR_FIRST_LINE,
                          START_TIMEOUT_S), \
             "Go to cursor should start the session and stop on line %d " \
-            "(mark on %s):\n%s" % (C_MAIN_LINE, _mark_line(w), _screen(w))
+            "(mark on %s):\n%s" \
+            % (C_CURSOR_FIRST_LINE, _mark_line(w), _screen(w))
         assert _children(w, "gdb"), "gdb should still run the session"
-        assert _step(w, F8, C_NEXT_LINE), \
+        assert _step(w, F8, C_CURSOR_NEXT_LINE), \
             "F8 should mark line %d (mark on %s):\n%s" \
-            % (C_NEXT_LINE, _mark_line(w), _screen(w))
+            % (C_CURSOR_NEXT_LINE, _mark_line(w), _screen(w))
 
 
 # @scenario SC-debug-05
-@incoherence("Go to cursor as the first command runs to main and stops "
-             "there, as the start of any session does; reaching the cursor "
-             "needs gdb's until on the run controller")
 def test_go_to_cursor_as_the_first_command_stops_at_the_cursor(tmp_path):
     """Borland's F4 before any session runs to the cursor's line."""
     _need("gcc", "gdb")
@@ -1773,6 +1773,183 @@ def test_go_to_cursor_as_the_first_command_stops_at_the_cursor(tmp_path):
                          START_TIMEOUT_S), \
             "Go to cursor should stop on line %d (mark on %s):\n%s" \
             % (C_CURSOR_FIRST_LINE, _mark_line(w), _screen(w))
+
+
+# @scenario SC-debug-05
+def test_go_to_cursor_as_the_first_command_into_a_called_function(tmp_path):
+    """The cursor is inside sq, which main calls: Go to cursor before any
+    session runs on and stops on that line, the session alive.  It ran the
+    program to its end, because gdb's until stops only in the frame that
+    runs or an outer one."""
+    _need("gcc", "gdb")
+    with _c_session(tmp_path) as w:
+        _move_down(w, C_CALLEE_LINE - 1)
+        w.key(CTRL_G, "u", delay=1.0)
+        assert _wait_for(w, lambda: _mark_line(w) == C_CALLEE_LINE,
+                         START_TIMEOUT_S), \
+            "Go to cursor should stop on line %d in sq (mark on %s):\n%s" \
+            % (C_CALLEE_LINE, _mark_line(w), _screen(w))
+        assert _children(w, "gdb"), "gdb should still run the session"
+
+
+# @scenario SC-debug-05
+def test_go_to_cursor_at_a_stop_into_a_called_function(tmp_path):
+    """Stopped in main before the call, the cursor moved up into sq: Go to
+    cursor stops on that line.  until ran past it, to the end."""
+    _need("gcc", "gdb")
+    with _c_session(tmp_path) as w:
+        _start_c_session(w)
+        for _ in range(C_BREAK_LINE - C_CALLEE_LINE):
+            w.key(UP, delay=0.1)
+        w.key(CTRL_G, "u", delay=0.3)
+        assert _wait_for(w, lambda: _mark_line(w) == C_CALLEE_LINE,
+                         STEP_TIMEOUT_S), \
+            "Go to cursor should stop on line %d in sq (mark on %s):\n%s" \
+            % (C_CALLEE_LINE, _mark_line(w), _screen(w))
+        assert _children(w, "gdb"), "gdb should still run the session"
+
+
+# A program in two source files: main in p.c calls bb, which p.c takes in
+# from b.c.  Line 5 of b.c is inside bb; line 5 of p.c is main's first line,
+# where the session stops, so a line number read in the wrong file runs on
+# to the end of the program.
+TWO_FILE_MAIN_C = (
+    "#include <stdio.h>\n"
+    "#include \"b.c\"\n"
+    "int main(void)\n"
+    "{\n"
+    "  int x = 3;\n"
+    "  int y = bb(x);\n"
+    "  printf(\"OUTMARK %d\\n\", y);\n"
+    "  return 0;\n"
+    "}\n"
+)
+TWO_FILE_SECOND_C = (
+    "int bb(int v)\n"
+    "{\n"
+    "  int r = v;\n"
+    "  r = r + 1;\n"
+    "  r = r * 2;\n"
+    "  return r;\n"
+    "}\n"
+)
+TWO_FILE_BREAK_LINE = 5    # int x = 3;  in p.c
+TWO_FILE_TARGET_LINE = 5   # r = r * 2;  in b.c
+TWO_FILE_TARGET_TEXT = "r = r * 2;"
+F3 = "\033OR"              # File Manager
+
+
+def _marked_text(w):
+    """The text of the screen row carrying the current-line mark, or None.
+
+    A window opened over the first one sits a row lower, so its marked
+    line number cannot be read from the screen row; its text can."""
+    rows = w.rows_with_bg(CURRENT_LINE_BG)
+    if not rows:
+        return None
+    return w.display(drain=0)[rows[0]]
+
+
+# @scenario SC-debug-05
+def test_go_to_cursor_in_another_source_file_stops_there(tmp_path):
+    """Stopped in p.c, the user opens b.c and puts the cursor inside bb:
+    Go to cursor stops on that line of b.c.  The bare line number was read
+    in p.c, the file the program was stopped in."""
+    _need("gcc", "gdb")
+    (tmp_path / "b.c").write_text(TWO_FILE_SECOND_C)
+    with WpeSession(str(tmp_path), TWO_FILE_MAIN_C, filename="p.c",
+                    wait=1.5) as w:
+        _move_down(w, TWO_FILE_BREAK_LINE - 1)
+        w.key(CTRL_G, "b", delay=0.4)
+        w.key(CTRL_G, "r", delay=1.0)
+        assert _wait_for(w, lambda: _mark_line(w) == TWO_FILE_BREAK_LINE,
+                         START_TIMEOUT_S), \
+            "Ctrl-G R should stop on line %d of p.c:\n%s" \
+            % (TWO_FILE_BREAK_LINE, _screen(w))
+        w.key(F3, delay=1.2)
+        w.key("b.c", delay=0.6)
+        w.key("\r", delay=1.2)
+        _move_down(w, TWO_FILE_TARGET_LINE - 1)
+        w.key(CTRL_G, "u", delay=0.3)
+        assert _wait_for(w, lambda: TWO_FILE_TARGET_TEXT
+                         in (_marked_text(w) or ""), STEP_TIMEOUT_S), \
+            "Go to cursor should stop on line %d of b.c (mark on %r):\n%s" \
+            % (TWO_FILE_TARGET_LINE, _marked_text(w), _screen(w))
+        assert _children(w, "gdb"), "gdb should still run the session"
+
+
+# A function that sleeps for ten minutes before it returns, so Finish and
+# Go to cursor leave the program running, not stopped.
+LONG_LEAF_C_PROG = (
+    "#include <stdio.h>\n"
+    "#include <unistd.h>\n"
+    "static int leaf(int v)\n"
+    "{\n"
+    "  int r = v * 2;\n"
+    "  sleep(600);\n"
+    "  return r;\n"
+    "}\n"
+    "int main(void)\n"
+    "{\n"
+    "  int x = leaf(2);\n"
+    "  printf(\"%d\\n\", x);\n"
+    "  return 0;\n"
+    "}\n"
+)
+LONG_LEAF_FIRST_LINE = 5   # int r = v * 2;  inside leaf
+LONG_LEAF_AFTER_LINE = 7   # return r;  past the sleep
+
+
+# @scenario SC-debug-18
+def test_debug_quit_during_a_long_finish_under_gdb(tmp_path):
+    """Stopped inside a function that sleeps, Finish (Ctrl-G F) lets the
+    program run; Debug > Quit from the menu then ends gdb and the editor
+    stays.  Finish used to wait for the stop in a loop that read no key."""
+    _need("gcc", "gdb")
+    with WpeSession(str(tmp_path), LONG_LEAF_C_PROG, filename="p.c",
+                    wait=1.5) as w:
+        _stop_on(w, LONG_LEAF_FIRST_LINE)
+        w.key(CTRL_G, "f", delay=0.5)
+        w._drain(RUNNING_SETTLE_S)   # asleep for ten minutes (drain scales)
+        w.menu(ALT.DEBUG, "q", delay=0.5)
+        assert _wait_for(w, lambda: not _children(w, "gdb"), STEP_TIMEOUT_S), \
+            "Debug > Quit should end gdb during Finish:\n%s" % _screen(w)
+        assert w.alive(), "the editor should still run"
+
+
+# @scenario SC-debug-18
+def test_keys_are_refused_during_a_long_finish_under_gdb(tmp_path):
+    """While Finish runs the program, F8 is refused with the line that says
+    the program is running, and gdb keeps the session."""
+    _need("gcc", "gdb")
+    with WpeSession(str(tmp_path), LONG_LEAF_C_PROG, filename="p.c",
+                    wait=1.5) as w:
+        _stop_on(w, LONG_LEAF_FIRST_LINE)
+        w.key(CTRL_G, "f", delay=0.5)
+        w._drain(RUNNING_SETTLE_S)
+        w.key(F8, delay=0.5)
+        assert "The program is running" in _screen(w), \
+            "F8 should say the program is running:\n%s" % _screen(w)
+        assert _children(w, "gdb"), "gdb should still run the session"
+
+
+# @scenario SC-debug-05
+def test_debug_quit_during_a_long_go_to_cursor_under_gdb(tmp_path):
+    """Go to cursor over a function that sleeps lets the program run;
+    Debug > Quit from the menu ends gdb and the editor stays.  The run
+    used to wait for the stop in a loop that read no key."""
+    _need("gcc", "gdb")
+    with WpeSession(str(tmp_path), LONG_LEAF_C_PROG, filename="p.c",
+                    wait=1.5) as w:
+        _stop_on(w, LONG_LEAF_FIRST_LINE)
+        _move_down(w, LONG_LEAF_AFTER_LINE - LONG_LEAF_FIRST_LINE)
+        w.key(CTRL_G, "u", delay=0.5)
+        w._drain(RUNNING_SETTLE_S)
+        w.menu(ALT.DEBUG, "q", delay=0.5)
+        assert _wait_for(w, lambda: not _children(w, "gdb"), STEP_TIMEOUT_S), \
+            "Debug > Quit should end gdb during Go to cursor:\n%s" \
+            % _screen(w)
+        assert w.alive(), "the editor should still run"
 
 
 def _cursor_row_text(w):

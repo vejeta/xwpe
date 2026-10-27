@@ -174,7 +174,9 @@ void wpe_fd_refusal(const char *what, int fd, char *line, size_t sz)
  *
  * Busy belongs to the slot, not to the callback: a callback that deletes its
  * own fd, adds it again and then polls can be entered again on fresh data.
- * No caller does that; one that needs it must return right after the add.
+ * Only the debugger's run does that (e_d_run_on_answer, when a stop is
+ * followed by the next run, e_d_run_begin); it returns right after the add,
+ * as any other caller that needs it must.
  */
 static void wpe_fd_run_callback(wpe_fd_entry *e)
 {

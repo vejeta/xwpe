@@ -89,12 +89,20 @@ as in Turbo C; with no session, and in Messages, Watches or Stack, it is
 Search.
 
 @cindex Go to cursor
-Go to cursor works with every debugger.  gdb runs @code{until} the
-line.  pdb, jdb, a68g and the debug adapters get a breakpoint on the
-line that is removed at the next stop, wherever the program stops; a
-breakpoint of your own on that line stays.  Pressed before a session
-runs, with no breakpoint set, Go to cursor starts the session and stops
-at the start of @code{main}, as Run does.
+Go to cursor works with every debugger.  gdb runs @code{advance} to
+the line of the file you pressed it in, also when it is in a function
+the program calls or in another source file.  The file is named as
+breakpoints name it, so with two source files of the same name in
+different directories gdb stops in the first one the program reaches.
+pdb, jdb, a68g and the debug adapters get a breakpoint on the line that
+is removed at the next stop, wherever the program stops; a breakpoint
+of your own on that line stays.  Pressed before a session runs, with no breakpoint set, Go to
+cursor starts the session under gdb and runs on to the cursor's line;
+if the program never reaches it, the program runs to its end, as Go to
+cursor does at a stop.  The other debuggers stop at the start of
+@code{main}, as Run does.  Under gdb, Go to cursor and Finish function
+leave the editor its keys while the program runs, so @samp{Debug
+@result{} Quit} ends the session.
 
 @cindex Show stack
 @cindex Stack window

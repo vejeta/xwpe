@@ -842,6 +842,8 @@ static void e_d_dap_start_close_messages(ECNT *cn);
 static void e_scala_pin_jdk(FENSTER *f, const char *who);  /* pin Scala JVM (below) */
 static void e_d_brk_forget_start_entries(void);   /* breakpoints (below) */
 static void e_d_cursor_brk_clear(void);           /* Go to cursor's (below) */
+static int  e_d_gdb_run_to_line(FENSTER *f, int line);   /* gdb's (below) */
+static int  e_d_goto_cursor_line(FENSTER *f, int line);  /* Go to cursor's */
 
 /* What a slot of the answer lines shows when its memory could not be had. */
 static char e_d_out_none[1];
@@ -943,6 +945,10 @@ typedef struct
  int  (*interrupt)(void);
  int  (*sync_live)(ECNT *cn);
  int  (*sync_at_stop)(ECNT *cn);
+ /* Let the program run on to a source line, handing the run to the
+    controller again.  Go to cursor as the first command uses it once the
+    start has stopped; NULL for a backend that does not run on yet. */
+ int  (*run_to_line)(FENSTER *f, int line);
 } E_D_RUN_OPS;
 
 /* The run in progress. */
@@ -954,6 +960,8 @@ typedef struct
                                 may close while the program runs */
  int start_brk;             /* the editor's start breakpoint (list entry + 1)
                                 to take out at the stop, or 0 */
+ int goto_line;             /* the cursor line Go to cursor still has to run
+                                on to once this run stops, or 0 */
 } E_D_RUN;
 
 static E_D_RUN e_d_run;
@@ -1266,7 +1274,8 @@ static const E_D_RUN_OPS e_d_gdb_run_ops =
  e_d_line_stopped,
  NULL,
  NULL,
- NULL
+ NULL,
+ e_d_gdb_run_to_line
 };
 
 /* sdb, dbx and xdb: gdb's line protocol, with their own stop wording. */
@@ -1277,6 +1286,7 @@ static const E_D_RUN_OPS e_d_legacy_run_ops =
  e_d_line_output_fd,
  e_d_legacy_feed,
  e_d_line_stopped,
+ NULL,
  NULL,
  NULL,
  NULL
@@ -1344,6 +1354,7 @@ static void e_d_run_forget(void)
  e_d_run.ops = NULL;
  e_d_run.cn = NULL;
  e_d_run.start_brk = 0;
+ e_d_run.goto_line = 0;
 }
 
 /**
@@ -1400,8 +1411,27 @@ static FENSTER *e_d_run_window(ECNT *cn)
 }
 
 /**
+ * e_d_run_goto_after_start - Run on to the cursor's line once the start of
+ * a session has stopped, when Go to cursor was the command that started it.
+ * @cn: the editor; @ops: the table of the run that stopped.
+ *
+ * Go to cursor pressed before any session first runs to the start of main,
+ * like any first command; the user gets the cursor's line, as in Borland,
+ * not a stop on the way.  A session the stop ended is left alone.
+ */
+static void e_d_run_goto_after_start(ECNT *cn, const E_D_RUN_OPS *ops)
+{
+ int line = e_d_run.goto_line;
+
+ e_d_run.goto_line = 0;
+ if (line <= 0 || e_d_swtch < 3 || !ops->run_to_line)
+  return;
+ ops->run_to_line(e_d_run_window(cn), line);
+}
+
+/**
  * e_d_run_on_stop - The debugger stopped the program: mark where, then
- * tidy up after the run.
+ * tidy up after the run, and go on to the cursor if Go to cursor asked.
  */
 static void e_d_run_on_stop(void)
 {
@@ -1411,6 +1441,7 @@ static void e_d_run_on_stop(void)
  e_d_run_unwatch();
  ops->stopped(e_d_run_window(cn));
  e_d_run_stop_chores(e_d_run_window(cn));
+ e_d_run_goto_after_start(cn, ops);
 }
 
 /**
@@ -1474,6 +1505,7 @@ static int e_d_run_begin(FENSTER *f, const E_D_RUN_OPS *ops, int start_brk)
  e_d_run.ops = ops;
  e_d_run.cn = f->ed;
  e_d_run.start_brk = start_brk;
+ e_d_run.goto_line = 0;
  jdb_trace("e_d_run_begin: the program runs under %s\n", ops->name);
  e_d_async_pending = 1;
  e_d_async_reset();
@@ -9160,7 +9192,7 @@ static struct {
  * e_d_goto_supported - Does the selected debugger do this command?
  * @flag: E_D_GOTO_CURSOR or E_D_GOTO_FINISH.
  *
- * Go to cursor works with every debugger: gdb has "until", the others get
+ * Go to cursor works with every debugger: gdb has "advance", the others get
  * a breakpoint of their own on the line.  Finish function works with gdb
  * ("finish"), pdb ("return", then "up" to the caller), jdb ("step up"),
  * a68g ("finish") and the debug adapters (stepOut); sdb, dbx and xdb keep
@@ -9637,11 +9669,36 @@ static void e_d_cursor_brk_clear(void)
  e_d_cursor_brk_send(0);
 }
 
+/* The file Go to cursor was pressed in, taken with its line at the key: the
+   debugger starts meanwhile, and the window on top may be another by then. */
+static struct {
+ char file[PATH_MAX];          /* the window's file name                   */
+ char dirct[PATH_MAX];         /* the window's directory                   */
+} e_d_goto_target;
+
 /**
- * e_d_run_to_cursor_line - Go to cursor for a debugger without "until":
+ * e_d_goto_take_target - Remember the file of the window Go to cursor was
+ * pressed in.
+ * @f: that window.
+ */
+static void e_d_goto_take_target(FENSTER *f)
+{
+ e_d_goto_target.file[0] = '\0';
+ e_d_goto_target.dirct[0] = '\0';
+ if (f->datnam)
+  snprintf(e_d_goto_target.file, sizeof(e_d_goto_target.file), "%s",
+           f->datnam);
+ if (f->dirct)
+  snprintf(e_d_goto_target.dirct, sizeof(e_d_goto_target.dirct), "%s",
+           f->dirct);
+}
+
+/**
+ * e_d_run_to_cursor_line - Go to cursor for a debugger without "advance":
  * a breakpoint of its own on the line, continue, and the breakpoint gone
  * again at the next stop.
- * @f: the source window; @line: the cursor's 1-based line.
+ * @f: the source window; @line: the cursor's 1-based line, in the file
+ * e_d_goto_take_target took.
  *
  * Borland's Go to cursor, on jdb, pdb, a68g and every debug adapter.  pdb's
  * "until" would stop when the current function returns and never reach a
@@ -9653,12 +9710,13 @@ static int e_d_run_to_cursor_line(FENSTER *f, int line)
  char *full;
  int ret;
 
- if (e_d_user_brk_on(f->datnam, line))
+ if (e_d_user_brk_on(e_d_goto_target.file, line))
   return(e_deb_run(f));
- snprintf(e_d_cursor_brk.file, sizeof(e_d_cursor_brk.file), "%s", f->datnam);
- full = e_mkfilename(f->dirct, f->datnam);
+ snprintf(e_d_cursor_brk.file, sizeof(e_d_cursor_brk.file), "%s",
+          e_d_goto_target.file);
+ full = e_mkfilename(e_d_goto_target.dirct, e_d_goto_target.file);
  snprintf(e_d_cursor_brk.path, sizeof(e_d_cursor_brk.path), "%s",
-          full ? full : f->datnam);
+          full ? full : e_d_goto_target.file);
  if (full)
   FREE(full);
  e_d_cursor_brk.line = line;
@@ -9671,18 +9729,112 @@ static int e_d_run_to_cursor_line(FENSTER *f, int line)
  return(ret);
 }
 
-int e_d_goto_func(FENSTER *f, int flag)
+/**
+ * e_d_gdb_run_command - Send gdb a command that lets the program run to a
+ * stop, and give the editor its keys back until it comes.
+ * @f: the source window; @cmd: an "advance" command or "finish\n".
+ *
+ * Go to cursor and Finish function under gdb.  The user can use the menus
+ * and quit the session while the program runs, as after Run or a step.
+ * Return: 0, or the end of the session.
+ */
+static int e_d_gdb_run_command(FENSTER *f, const char *cmd)
+{
+ const E_D_RUN_OPS *run_ops;
+
+ e_d_delbreak(f);
+ e_d_switch_out(1);
+ e_d_nstack = 0;
+ e_d_send_cmd(cmd);
+ run_ops = e_d_run_ops_of_backend();
+ if (run_ops)
+  return(e_d_run_hand_over(f, run_ops, 0));
+ return(e_read_output(f));
+}
+
+/**
+ * e_d_gdb_run_to_line - Run gdb's program on to a line of the source,
+ * wherever it is: in the function that runs now, in one it calls, or in
+ * the caller if this function returns first.
+ * @f: the source window; @line: the 1-based line.
+ *
+ * "advance" and not "until": until stops only in the current frame or
+ * an outer one, so a cursor inside a called function was run past and the
+ * program ran to its end.  The line goes with the file Go to cursor was
+ * pressed in, named as the breakpoints name it: a bare line number is
+ * read in the file the program is stopped in, so a cursor in a second
+ * source file ran to the same line number of the first one.
+ * Return: 0, or the end of the session.
+ */
+static int e_d_gdb_run_to_line(FENSTER *f, int line)
+{
+ char str[E_D_LINE_MAX + PATH_MAX];
+
+ if (e_d_goto_target.file[0])
+  snprintf(str, sizeof(str), "advance \"%s\":%d\n",
+           e_d_goto_target.file, line);
+ else
+  snprintf(str, sizeof(str), "advance %d\n", line);
+ return(e_d_gdb_run_command(f, str));
+}
+
+/**
+ * e_d_gdb_finish - Run gdb's program until the current function returns.
+ * @f: the source window.
+ * Return: 0, or the end of the session.
+ */
+static int e_d_gdb_finish(FENSTER *f)
+{
+ return(e_d_gdb_run_command(f, "finish\n"));
+}
+
+/**
+ * e_d_goto_first_command - Go to cursor or Finish function pressed before
+ * any session: start it and run to the start of main.
+ * @f: the source window; @flag: E_D_GOTO_CURSOR or E_D_GOTO_FINISH;
+ * @line: the cursor's 1-based line.
+ *
+ * Under gdb, Go to cursor then goes on to the cursor's line when the
+ * start has stopped (see e_d_run_goto_after_start).
+ * Return: what the run returned.
+ */
+static int e_d_goto_first_command(FENSTER *f, int flag, int line)
+{
+ int main_brk, ret;
+
+ if ((main_brk = e_mk_brk_main(f, 0)) < -1)
+  return(main_brk);
+ ret = e_deb_run(f);
+ if (flag == E_D_GOTO_CURSOR && e_d_run_going() && e_d_run.ops->run_to_line)
+  e_d_run.goto_line = line;
+ e_mk_brk_main(f, main_brk);
+ return(ret);
+}
+
+/**
+ * e_d_goto_run - Go to cursor or Finish function, wherever the session
+ * stands: start it, run to the start of main, or let the program run on.
+ * @f: the source window; @flag: E_D_GOTO_CURSOR or E_D_GOTO_FINISH;
+ * @line: the cursor's 1-based line when the key was pressed.
+ *
+ * The line is taken when the key is pressed: the debugger starts and the
+ * program is built meanwhile, and the command runs again when they are
+ * done, with the cursor moved.
+ * Return: what the command returned.
+ */
+static int e_d_goto_run(FENSTER *f, int flag, int line)
 {
  ECNT *cn = f->ed;
- BUFFER *b = cn->f[cn->mxedt]->b;
- int ret = 0, main_brk = 0;
- char str[E_D_LINE_MAX];
+ int ret = 0;
 
  if (!e_d_goto_supported(flag))
   return 0;
  if (e_d_refuse_while_running(f))
   return(0);
- e_d_resume_after_build(e_d_goto_func, flag);
+ if (flag == E_D_GOTO_CURSOR)
+  e_d_resume_after_build(e_d_goto_cursor_line, line);
+ else
+  e_d_resume_after_build(e_d_goto_func, flag);
  if (e_d_swtch < 2)
   ret = e_run_debug(f);
  if (e_d_deferred(ret))
@@ -9695,39 +9847,47 @@ int e_d_goto_func(FENSTER *f, int flag)
   return(e_error(e_d_msg[ERR_CANTDEBUG], 0, f->fb));
  }
  if (e_d_swtch < 3)
- {
-  if ((main_brk = e_mk_brk_main(f, 0)) < -1)
-   return(main_brk);
-  ret = e_deb_run(f);
-  e_mk_brk_main(f, main_brk);
-  return(ret);
- }
+  return(e_d_goto_first_command(f, flag, line));
  if (flag == E_D_GOTO_CURSOR && e_deb_type != DEB_GDB)
-  return(e_d_run_to_cursor_line(cn->f[cn->mxedt], b->b.y + 1));
+  return(e_d_run_to_cursor_line(cn->f[cn->mxedt], line));
  if (flag == E_D_GOTO_FINISH && e_deb_type != DEB_GDB)
   return(e_d_finish_to_caller(cn->f[cn->mxedt]));
- e_d_delbreak(f);
- e_d_switch_out(1);
- switch(flag)
- {
-  case E_D_GOTO_CURSOR:
-   sprintf(str,"until %d\n",b->b.y+1);
-   break;
-  case E_D_GOTO_FINISH:
-   sprintf(str,"finish\n");
-   break;
-  default:
-   *str=0;
-   break;
- }
- e_d_nstack = 0;
- if (*str)
- {
-  e_d_send_cmd(str);
-  ret=e_read_output(f);
-  /* Executing Finish twice may not work properly. */
- }
- return ret;
+ if (flag == E_D_GOTO_CURSOR)
+  return(e_d_gdb_run_to_line(f, line));
+ return(e_d_gdb_finish(f));
+}
+
+/**
+ * e_d_goto_cursor_line - Go to cursor, to a line given.
+ * @f: the source window; @line: the 1-based line.
+ *
+ * What the command runs again as, once the build and the debugger's start
+ * are done.
+ */
+static int e_d_goto_cursor_line(FENSTER *f, int line)
+{
+ return(e_d_goto_run(f, E_D_GOTO_CURSOR, line));
+}
+
+/**
+ * e_d_goto_func - Go to cursor (Ctrl-G U, F4) or Finish function (Ctrl-G F).
+ * @f: the window the key was pressed in; @flag: E_D_GOTO_CURSOR or
+ * E_D_GOTO_FINISH.
+ *
+ * The program runs to the cursor's line, wherever the line is, or until
+ * the function returns, and the stop is marked.  Pressed before any
+ * session, the debugger starts first.  While the program runs the editor
+ * keeps its keys, and Debug > Quit ends the session.
+ * Return: 0, or the end of the session.
+ */
+int e_d_goto_func(FENSTER *f, int flag)
+{
+ ECNT *cn = f->ed;
+ FENSTER *top = cn->f[cn->mxedt];
+
+ if (flag == E_D_GOTO_CURSOR)
+  e_d_goto_take_target(top);
+ return(e_d_goto_run(f, flag, top->b->b.y + 1));
 }
 
 int e_d_goto_cursor(FENSTER *f)

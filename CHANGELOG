@@ -233,6 +233,16 @@ Changes
 
 1.7.0 (AI assistant -- experimental, opt-in)
 
+* Under gdb, Go to cursor stops on a line inside a function the program
+  calls, and on a line of another source file.  It used to run past the
+  first, to the end of the program, and to stop on the same line number
+  of the file the program was stopped in for the second.
+
+* Under gdb, Debug > Quit now ends the session during a long Finish
+  function or Go to cursor, as it does during Run.  Both waited for the
+  stop in a loop that read no key.  Step, Run and the other debugger
+  commands pressed meanwhile say "The program is running".
+
 * Under sdb, dbx and xdb, Debug > Quit now ends the session while the
   program runs, as it does under gdb.  Every key but Ctrl-C used to be
   sent to the debugger until the program stopped, so the menu never
@@ -244,10 +254,9 @@ Changes
   stop is marked in the file, opened again.
 
 * Go to cursor (Ctrl-G U, F4) as the first debugger command, with no
-  breakpoint set, starts the session under gdb and stops at the start
-  of main, where F8 and the other keys work.  It used to wait for ever
-  after "Starting program".  Running on to the cursor's line from there
-  is still to come.
+  breakpoint set, starts the session under gdb and runs on to the
+  cursor's line, where F8 and the other keys work.  It used to wait
+  for ever after "Starting program".
 
 * While gdb runs a program, the menus, the F-keys and Ctrl-F2 now reach
   the editor instead of being typed into the program.  Debug > Quit from
