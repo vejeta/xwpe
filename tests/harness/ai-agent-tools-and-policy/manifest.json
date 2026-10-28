@@ -787,6 +787,14 @@
    "status": "new"
   },
   {
+   "id": "SC-ai-agent-40",
+   "requirement": "What the user sees during a run",
+   "layer": "ncurses",
+   "test": "tests/test_child_signals.py::test_ai_command_starts_with_sigchld_unblocked",
+   "status": "new",
+   "needs": ["/proc"]
+  },
+  {
    "id": "SC-ai-agent-41",
    "requirement": "What the user sees during a run",
    "layer": "ncurses",

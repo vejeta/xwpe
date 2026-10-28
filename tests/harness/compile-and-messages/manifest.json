@@ -46,6 +46,8 @@
   {"id": "SC-compile-24", "requirement": "Walk the errors", "layer": "ncurses", "test": "tests/test_compile_and_messages.py::test_alt_t_opens_the_second_file_of_a_build_run_in_another_directory", "status": "new", "needs": ["gcc"]},
   {"id": "SC-compile-25", "requirement": "Compile and see the result", "layer": "ncurses", "test": "tests/test_compile_and_messages.py::test_a_second_f9_says_nothing_to_build", "status": "new", "needs": ["gcc"]},
   {"id": "SC-compile-26", "requirement": "Walk the errors", "layer": "ncurses", "test": "tests/test_compile_and_messages.py::test_alt_t_and_alt_v_with_no_list_say_no_messages_to_walk", "status": "new"},
-  {"id": "SC-compile-27", "requirement": "The compiler options and the keys", "layer": "ncurses", "test": "tests/test_compile_and_messages.py::test_the_compiler_style_caption_has_its_own_row", "status": "new"}
+  {"id": "SC-compile-27", "requirement": "The compiler options and the keys", "layer": "ncurses", "test": "tests/test_compile_and_messages.py::test_the_compiler_style_caption_has_its_own_row", "status": "new"},
+  {"id": "SC-compile-08", "requirement": "A build never holds the editor", "layer": "ncurses", "test": "tests/test_child_signals.py::test_build_compiler_starts_with_sigchld_unblocked", "status": "new", "needs": ["gcc", "/proc"]},
+  {"id": "SC-compile-03", "requirement": "Run the program", "layer": "ncurses", "test": "tests/test_child_signals.py::test_run_program_starts_with_sigchld_unblocked", "status": "new", "needs": ["gcc", "/proc"]}
  ]
 }

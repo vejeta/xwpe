@@ -260,6 +260,20 @@ AC_SEARCH_LIBS([backtrace], [execinfo],
 LIBS="$ace_save_LIBS"
 AC_SUBST([EXECINFO_LIBS])
 
+# --- Required: pthread_kill() / pthread_sigmask() ---
+# The SIGCHLD handler hands a signal that a library's thread took (Pango's
+# font loader) to the editor's own thread.  Both calls are in libc on glibc
+# 2.34+, macOS and the BSDs (FreeBSD's libc stubs give way to libthr when a
+# library pulls it in), and in libpthread on older glibc.  Routed through
+# PTHREAD_LIBS like UTIL_LIBS.
+ace_save_LIBS="$LIBS"
+AC_SEARCH_LIBS([pthread_kill], [pthread],
+  [AS_IF([test "x$ac_cv_search_pthread_kill" = "xnone required"],
+     [PTHREAD_LIBS=""], [PTHREAD_LIBS="$ac_cv_search_pthread_kill"])],
+  [AC_MSG_ERROR([pthread_kill() is required (libc, or libpthread on older glibc).])])
+LIBS="$ace_save_LIBS"
+AC_SUBST([PTHREAD_LIBS])
+
 # --- Required: zlib ---
 AC_CHECK_LIB([z], [inflate], [],
   [AC_MSG_ERROR([zlib is required. Install zlib1g-dev or zlib-devel.])])

@@ -622,14 +622,16 @@ static int ai_capture_wait(pid_t pid)
  * fail and the command would look as if it had succeeded, so a hook that
  * refused a file would go unreported and its half-done output be taken as
  * the result.  Blocking SIGCHLD from before the fork until the reap keeps the
- * child ours; the same guard protects the compiler run in we_prog.c.
+ * child ours; the same guard protects the compiler run in we_prog.c.  The
+ * block is this thread's; the handler never runs on another one (it hands
+ * a signal a library thread took to this thread, where it waits).
  */
 static void ai_capture_hold_sigchld(sigset_t *old)
 {
  sigset_t chld;
  sigemptyset(&chld);
  sigaddset(&chld, SIGCHLD);
- sigprocmask(SIG_BLOCK, &chld, old);
+ pthread_sigmask(SIG_BLOCK, &chld, old);
 }
 
 /**
@@ -637,7 +639,7 @@ static void ai_capture_hold_sigchld(sigset_t *old)
  */
 static void ai_capture_release_sigchld(const sigset_t *old)
 {
- sigprocmask(SIG_SETMASK, old, NULL);
+ pthread_sigmask(SIG_SETMASK, old, NULL);
 }
 
 /**

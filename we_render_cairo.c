@@ -431,6 +431,20 @@ static void cr_set_render_backend(void)
  WpeRender.cleanup     = cr_cleanup;
 }
 
+/**
+ * wpe_render_cairo_start_threads - Create Pango's font map now, which
+ * starts the thread Pango loads fonts on.
+ *
+ * Called by start-up with SIGCHLD blocked, so that thread keeps it blocked
+ * and the end of a program the editor runs is only ever seen on the
+ * editor's own thread.  Both the X11 and the Wayland window later use this
+ * same font map.
+ */
+void wpe_render_cairo_start_threads(void)
+{
+ (void)pango_cairo_font_map_get_default();
+}
+
 int wpe_render_cairo_init(void)
 {
 #ifndef NO_XWINDOWS

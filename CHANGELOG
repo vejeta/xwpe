@@ -233,6 +233,12 @@ Changes
 
 1.7.0 (AI assistant -- experimental, opt-in)
 
+* In xwpe, a Java program debugged under jdb that ended just as it
+  started could leave the session "running" until Debug > Quit, and on
+  systems that reuse process numbers soon the end line could give the
+  exit code of an older process.  The end of a program is now only ever
+  taken by the editor's own thread, never by the font loader's.
+
 * Under jdb, Run, Step, Finish function and Go to cursor that take more
   than five seconds are marked when they stop.  They gave up after five
   seconds and never marked the stop, and the first Run gave up after ten

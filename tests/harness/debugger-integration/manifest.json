@@ -181,6 +181,10 @@
   {"id": "SC-debug-13", "requirement": "Starting and ending a session", "layer": "ncurses", "test": "tests/test_debugger_integration.py::test_jdb_missing_class_says_why_in_messages", "status": "new", "needs": ["jdb", "javac"]},
   {"id": "SC-debug-20", "requirement": "Stepping and the mark", "layer": "ncurses", "test": "tests/test_debugger_integration.py::test_jdb_breakpoint_beyond_line_999_is_marked", "status": "new", "needs": ["jdb", "javac"]},
   {"id": "SC-debug-20", "requirement": "Stepping and the mark", "layer": "ncurses", "test": "tests/test_debugger_integration.py::test_jdb_works_in_a_german_locale", "status": "new", "needs": ["jdb", "javac"]},
-  {"id": "SC-debug-11", "requirement": "The program's output", "layer": "x11", "test": "tests/x11/test_menu_debug.py::test_jdb_program_output_appears_in_messages", "status": "new", "needs": ["jdb", "javac", "Xvfb", "xdotool"]}
+  {"id": "SC-debug-11", "requirement": "The program's output", "layer": "x11", "test": "tests/x11/test_menu_debug.py::test_jdb_program_output_appears_in_messages", "status": "new", "needs": ["jdb", "javac", "Xvfb", "xdotool"]},
+  {"id": "SC-debug-13", "requirement": "Starting and ending a session", "layer": "ncurses", "test": "tests/test_child_signals.py::test_gdb_starts_with_sigchld_unblocked", "status": "new", "needs": ["gcc", "gdb", "/proc"]},
+  {"id": "SC-debug-13", "requirement": "Starting and ending a session", "layer": "ncurses", "test": "tests/test_child_signals.py::test_jdb_and_its_vm_start_with_sigchld_unblocked", "status": "new", "needs": ["jdb", "javac", "/proc"]},
+  {"id": "SC-debug-13", "requirement": "Starting and ending a session", "layer": "x11", "test": "tests/x11/test_signal_threads.py::test_only_the_editors_thread_takes_sigchld", "status": "new", "needs": ["/proc", "Xvfb", "xdotool", "started no thread"]},
+  {"id": "SC-debug-13", "requirement": "Starting and ending a session", "layer": "wayland", "test": "tests/wayland/test_signal_threads.py::test_only_the_editors_thread_takes_sigchld", "status": "new", "needs": ["/proc", "weston", "started no thread"]}
  ]
 }

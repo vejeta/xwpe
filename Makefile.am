@@ -98,6 +98,7 @@ we_LDADD = \
   $(GPM_LIBS) \
   $(UTIL_LIBS) \
   $(EXECINFO_LIBS) \
+  $(PTHREAD_LIBS) \
   -lz
 
 # --- Native Wayland backend (optional, --with-wayland) ---

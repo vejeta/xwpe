@@ -16,6 +16,9 @@ int WpeTermInit(int *argc, char **argv);
 #ifdef HAVE_WAYLAND
 int WpeWaylandInit(int *argc, char **argv);
 #endif
+#ifdef HAVE_PANGO
+void wpe_render_cairo_start_threads(void);
+#endif
 
 #include <termios.h>
 #include <sys/types.h>
@@ -23,6 +26,7 @@ int WpeWaylandInit(int *argc, char **argv);
 #include <sys/wait.h>
 #include <dirent.h>
 #include <signal.h>
+#include <pthread.h>
 #include <execinfo.h>
 #include <fcntl.h>
 #include <unistd.h>
@@ -192,6 +196,93 @@ static WpeGfxBackend e_pick_gfx_backend(void)
 }
 #endif /* !NO_XWINDOWS */
 
+/* The thread that runs the editor's loop, and the process it belongs to.
+   The graphical libraries start threads of their own (Pango's font loader;
+   SDL's under the macOS X11 shim), and the kernel hands a process-wide
+   signal to any thread that does not block it.  The SIGCHLD handler keeps
+   the end of the programs the editor started in tables that the loop reads
+   with SIGCHLD blocked; that block only holds the signal off the thread
+   that set it, so the handler must never do its work on another thread.
+   wpe_main_pid stays 0 until the editor is set up. */
+static pthread_t wpe_main_thread;
+static pid_t wpe_main_pid;
+
+/**
+ * wpe_signal_main_thread_note - Remember which thread runs the editor.
+ *
+ * Called first thing at start-up, before any signal handler is installed
+ * and before any library can start a thread, so every later signal can be
+ * told apart: on the editor's thread or on a library's.
+ */
+static void wpe_signal_main_thread_note(void)
+{
+ wpe_main_thread = pthread_self();
+ wpe_main_pid = getpid();
+}
+
+/**
+ * wpe_signal_on_main_thread - In a signal handler: is this the editor's own
+ * thread?
+ *
+ * A child forked from the editor (the jdb VM before it runs java) has one
+ * thread and a new PID; the thread remembered above does not exist there,
+ * so in a child the answer is always yes.  getpid and pthread_self are
+ * async-signal-safe; pthread_equal is not on the POSIX list, but every
+ * supported libc implements it as a plain comparison.
+ * Return: 1 on the editor's thread (or before start-up noted it), else 0.
+ */
+static int wpe_signal_on_main_thread(void)
+{
+ if (wpe_main_pid == 0 || getpid() != wpe_main_pid)
+  return(1);
+ return(pthread_equal(pthread_self(), wpe_main_thread) != 0);
+}
+
+/**
+ * wpe_signal_forward_to_main - In a signal handler running on a library's
+ * thread: hand the signal to the editor's thread instead.
+ * @sig: the signal.
+ *
+ * The signal is then delivered on the editor's thread, at once or, while
+ * that thread holds it blocked (the moment a child is forked and put on
+ * the watch list), as soon as it unblocks it.  So a program that ends at
+ * any moment is recorded once, by the editor's thread, and the user still
+ * sees how it ended.
+ *
+ * pthread_kill is async-signal-safe since POSIX.1-2008 TC1.  On macOS and
+ * NetBSD it may take the library's thread-list lock when the target is
+ * another thread, so a library thread interrupted while holding that lock
+ * could stall here; this is why wpe_library_threads_start keeps the known
+ * library threads from taking SIGCHLD at all.
+ */
+static void wpe_signal_forward_to_main(int sig)
+{
+ (void)pthread_kill(wpe_main_thread, sig);
+}
+
+/**
+ * wpe_library_threads_start - Let the graphical libraries start their
+ * threads now, with SIGCHLD blocked, so the threads keep it blocked.
+ *
+ * A thread starts with the signal mask of the thread that created it, so
+ * every thread made here never takes SIGCHLD at all, and the editor's own
+ * thread is the only one the kernel can hand it to.  Done before the
+ * window opens, when no program the editor runs has been forked yet; a
+ * thread a library starts later is covered by wpe_signal_forward_to_main.
+ */
+#ifndef NO_XWINDOWS
+static void wpe_library_threads_start(void)
+{
+#ifdef HAVE_PANGO
+ sigset_t saved;
+
+ WpeChildSignalBlock(&saved);
+ wpe_render_cairo_start_threads();
+ WpeChildSignalRestore(&saved);
+#endif
+}
+#endif
+
 int e_ini_unix(int *argc, char **argv)
 {
  extern OPT opt[];
@@ -199,6 +290,7 @@ int e_ini_unix(int *argc, char **argv)
  struct sigaction act;
  int (*initfunc)(int *argc, char **argv);
 
+ wpe_signal_main_thread_note();
  setlocale(LC_ALL, "");
  tcgetattr(0, &otermio);
  /* Arm the SIGTERM/SIGHUP clean-shutdown handler HERE -- before WpeTermInit()
@@ -268,6 +360,7 @@ int e_ini_unix(int *argc, char **argv)
 #ifndef NO_XWINDOWS
  if (WpeIsXwin())
  {
+  wpe_library_threads_start();
   e_gfx_backend = e_pick_gfx_backend();
 #ifdef HAVE_WAYLAND
   /* Native Wayland first; if no compositor is reachable (or the native
@@ -501,7 +594,10 @@ static volatile sig_atomic_t wpe_reaped_next;
    loop through the pipe below, so whoever waits is called back between the
    user's keys instead of blocking in waitpid or polling for the end.
    pid, ended and status are written by the handler or with SIGCHLD blocked;
-   the callback and its data only from the main loop. */
+   the callback and its data only from the main loop.  The handler does this
+   work only on the editor's own thread (a library thread hands the signal
+   over), so it interrupts the very thread that reads these fields: the
+   reads see its stores in program order, on any CPU, with no fence. */
 #define WPE_CHILD_WATCH_MAX 8
 typedef struct {
  volatile sig_atomic_t pid;      /* the child, or 0 while the slot is free */
@@ -624,7 +720,15 @@ void WpeSignalChild(int sig)
  int statloc, saved_errno = errno;
  pid_t pid;
 
- (void)sig;
+ if (!wpe_signal_on_main_thread())
+ {
+  /* A library's thread took it: the tables below belong to the editor's
+     thread, which may hold SIGCHLD blocked right now to keep a new child
+     out of them until it is watched. */
+  wpe_signal_forward_to_main(sig);
+  errno = saved_errno;
+  return;
+ }
  /* Use WNOHANG to avoid blocking, and loop to reap all zombies.
     The old wait() call would steal children from pclose/waitpid,
     causing the debugger's popen("tty") to hang on pclose.
@@ -668,7 +772,9 @@ int WpeReapedStatus(int pid, int *status)
  * cannot be reaped before it is watched and its status can never land in
  * the ring, where other children ending could overwrite it.  The forked
  * child must clear its mask before it runs a program, or that program
- * would never learn its own children ended.
+ * would never learn its own children ended.  The mask is the calling
+ * thread's: a library thread that takes the signal meanwhile hands it to
+ * this thread (WpeSignalChild), where it waits for WpeChildSignalRestore.
  */
 void WpeChildSignalBlock(sigset_t *saved)
 {
@@ -676,7 +782,7 @@ void WpeChildSignalBlock(sigset_t *saved)
 
  sigemptyset(&chld);
  sigaddset(&chld, SIGCHLD);
- sigprocmask(SIG_BLOCK, &chld, saved);
+ pthread_sigmask(SIG_BLOCK, &chld, saved);
 }
 
 /**
@@ -688,7 +794,41 @@ void WpeChildSignalBlock(sigset_t *saved)
  */
 void WpeChildSignalRestore(const sigset_t *saved)
 {
- sigprocmask(SIG_SETMASK, saved, NULL);
+ pthread_sigmask(SIG_SETMASK, saved, NULL);
+}
+
+/**
+ * wpe_child_signal_was_held - Did the caller already hold SIGCHLD?
+ * @saved: the mask WpeChildSignalBlock kept, i.e. the caller's.
+ *
+ * A child forked while SIGCHLD was held cannot have been reaped yet, so
+ * its end is sure to be seen.  A child forked without it may have ended
+ * and been reaped already, and nothing could tell its status from that of
+ * an earlier process given the same PID.
+ * Return: 1 when SIGCHLD was blocked in @saved.
+ */
+static int wpe_child_signal_was_held(const sigset_t *saved)
+{
+ return(sigismember(saved, SIGCHLD) == 1);
+}
+
+/**
+ * wpe_reaped_ring_forget - Drop what the ring kept for an earlier process
+ * that had the PID of a child just forked.
+ * @pid: the new child, forked with SIGCHLD held, so not reaped yet.
+ *
+ * PIDs are reused (at random on OpenBSD), and an entry left from an
+ * earlier process would otherwise be taken for the new child's end: a
+ * running program would look ended, and Quit would leave it running.
+ * Called with SIGCHLD blocked, so the handler cannot write meanwhile.
+ */
+static void wpe_reaped_ring_forget(int pid)
+{
+ int i;
+
+ for (i = 0; i < WPE_REAPED_RING; i++)
+  if (wpe_reaped_pid[i] == pid)
+   wpe_reaped_pid[i] = 0;
 }
 
 /**
@@ -817,33 +957,39 @@ static void wpe_child_on_wake(int fd, void *data)
  *
  * What lets the editor learn how a program it started ended (its exit code,
  * the signal that killed it) without ever waiting in waitpid: the user keeps
- * every key, Quit included, however long the process lives.  Best called
- * between WpeChildSignalBlock and WpeChildSignalRestore around the fork;
- * a child the handler already put in the ring is still found.
- * Return: 0, or -1 when no wake pipe exists, every slot is taken or the fd
- * loop is full (the caller then does without its status).
+ * every key, Quit included, however long the process lives.  Must be
+ * called between WpeChildSignalBlock and WpeChildSignalRestore around the
+ * fork: the child then cannot have been reaped yet, so its end is always
+ * recorded in its slot.
+ * Return: 0, or -1 when SIGCHLD was not held since the fork, no wake pipe
+ * exists, every slot is taken or the fd loop is full (the caller then does
+ * without its status).
  */
 int WpeChildWatch(int pid, WpeChildEndCallback cb, void *data)
 {
  WpeChildWatchSlot *w;
  sigset_t saved;
- int st, ret = -1;
+ int ret = -1;
 
  if (pid <= 0 || wpe_child_wake_rd == WPE_CHILD_WAKE_NONE)
   return(-1);
  WpeChildSignalBlock(&saved);
+ if (!wpe_child_signal_was_held(&saved))
+ {
+  WpeChildSignalRestore(&saved);
+  return(-1);
+ }
  w = wpe_child_watch_find(pid);
  if (!w)
   w = wpe_child_watch_free_slot();
  if (w && wpe_fd_add(wpe_child_wake_rd, POLLIN, wpe_child_on_wake, NULL) == 0)
  {
+  wpe_reaped_ring_forget(pid);
   w->ended = 0;
   w->status = 0;
   w->callback = cb;
   w->data = data;
   w->pid = pid;
-  if (WpeReapedStatus(pid, &st))
-   wpe_child_watch_note(pid, st);
   ret = 0;
  }
  WpeChildSignalRestore(&saved);
