@@ -116,6 +116,104 @@ def test_text_typed_while_the_program_runs_reaches_the_program(xwpe):
         assert fh.read().strip() == "hiğ"
 
 
+# A Java program that prints, then sleeps; the breakpoint is on the print.
+JDB_SLEEP_PROG = (
+    "public class P {\n"
+    "    public static void main(String[] a) throws Exception {\n"
+    "        System.out.println(\"ready\");\n"
+    "        Thread.sleep(600000);\n"
+    "    }\n"
+    "}\n"
+)
+JDB_SLEEP_LINE = 3
+JDB_START_TIMEOUT_S = 60
+JDB_SETTLE_S = 3.0
+
+
+@pytest.mark.skipif(not __import__("shutil").which("jdb")
+                    or not __import__("shutil").which("javac"),
+                    reason="no jdb or javac")
+@pytest.mark.parametrize("xwpe", [{"XWPE_TEST_SOURCE": JDB_SLEEP_PROG,
+                                   "XWPE_TEST_FILE": "P.java"}],
+                         indirect=True)
+def test_debug_quit_under_jdb_leaves_no_java_process(xwpe):
+    """Alt-D, Q while the Java program sleeps ends the whole tree under the
+    editor, the VM the editor started included: the graphical editor starts
+    the debugger through a helper script, one process further down.
+
+    An end-to-end guard only: here jdb also ends by itself once the script
+    is killed (its input reaches its end), so this row passes with a plain
+    kill of the script as well.  The VM is ended by its PID, as in the
+    terminal editor."""
+    for _ in range(JDB_SLEEP_LINE - 1):
+        xwpe.key("Down", delay=0.1)
+    xwpe.key("ctrl+g", "b")
+    xwpe.key("ctrl+g", "r")
+    assert _wait(lambda: len(procinfo.descendants(xwpe.proc.pid)) >= 3,
+                 JDB_START_TIMEOUT_S), \
+        "jdb and its VM should be running: %s" \
+        % procinfo.descendants(xwpe.proc.pid)
+    _sleep(JDB_SETTLE_S)
+    xwpe.key("ctrl+g", "r")
+    _sleep(JDB_SETTLE_S)
+    tree = procinfo.descendants(xwpe.proc.pid)
+    xwpe.menu("d", "q")
+    assert _wait(lambda: procinfo.all_ended(tree), 10), \
+        "no process of the session should be left (alive: %s)" \
+        % [p for p in tree if not procinfo.all_ended([p])]
+    assert xwpe.proc.poll() is None, "xwpe died ending the session"
+
+
+# A Java program that sleeps, prints a block of text, then sleeps again.
+JDB_PRINT_BLOCK = "#" * 60
+JDB_PRINT_PROG = (
+    "public class P {\n"
+    "    public static void main(String[] a) throws Exception {\n"
+    "        int x = 1;\n"
+    "        Thread.sleep(4000);\n"
+    "        for (int i = 0; i < 6; i++)\n"
+    "            System.out.println(\"%s\");\n"
+    "        Thread.sleep(600000);\n"
+    "    }\n"
+    "}\n" % JDB_PRINT_BLOCK
+)
+JDB_PRINT_LINE = 3
+JDB_PRINT_SETTLE_S = 5.0      # the first stop is reached and painted
+JDB_PRINT_BEFORE_S = 1.0      # the program sleeps, nothing printed yet
+JDB_PRINT_AFTER_S = 6.0       # the sleep ended and the block was printed
+JDB_PRINT_PIXELS = 3000       # six rows of '#' change far more than this
+
+
+@pytest.mark.skipif(not __import__("shutil").which("jdb")
+                    or not __import__("shutil").which("javac"),
+                    reason="no jdb or javac")
+@pytest.mark.parametrize("xwpe", [{"XWPE_TEST_SOURCE": JDB_PRINT_PROG,
+                                   "XWPE_TEST_FILE": "P.java"}],
+                         indirect=True)
+def test_jdb_program_output_appears_in_messages(xwpe):
+    """While the Java program runs, what it prints is painted in Messages
+    as it prints: between two screenshots taken while it runs, only its
+    output changes the screen."""
+    for _ in range(JDB_PRINT_LINE - 1):
+        xwpe.key("Down", delay=0.1)
+    xwpe.key("ctrl+g", "b")
+    xwpe.key("ctrl+g", "r")
+    assert _wait(lambda: len(procinfo.descendants(xwpe.proc.pid)) >= 3,
+                 JDB_START_TIMEOUT_S), \
+        "jdb and its VM should be running: %s" \
+        % procinfo.descendants(xwpe.proc.pid)
+    _sleep(JDB_PRINT_SETTLE_S)
+    xwpe.key("ctrl+g", "r")
+    _sleep(JDB_PRINT_BEFORE_S)
+    before = xwpe.screenshot()
+    _sleep(JDB_PRINT_AFTER_S)
+    after = xwpe.screenshot()
+    assert changed_pixels(before, after) > JDB_PRINT_PIXELS, \
+        "the program's output should be painted in Messages"
+    xwpe.menu("d", "q")
+    assert xwpe.proc.poll() is None, "xwpe died ending the session"
+
+
 def test_toggle_breakpoint_marks_the_line(xwpe):
     """Debug -> Toggle Breakpoint (F5) paints a breakpoint marker on the line."""
     xwpe.key("Down"); xwpe.key("Down")   # move onto an interior code line

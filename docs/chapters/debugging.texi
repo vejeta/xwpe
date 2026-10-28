@@ -96,13 +96,14 @@ breakpoints name it, so with two source files of the same name in
 different directories gdb stops in the first one the program reaches.
 pdb, jdb, a68g and the debug adapters get a breakpoint on the line that
 is removed at the next stop, wherever the program stops; a breakpoint
-of your own on that line stays.  Pressed before a session runs, with no breakpoint set, Go to
-cursor starts the session under gdb and runs on to the cursor's line;
-if the program never reaches it, the program runs to its end, as Go to
-cursor does at a stop.  The other debuggers stop at the start of
-@code{main}, as Run does.  Under gdb and pdb, Go to cursor and Finish function
-leave the editor its keys while the program runs, so @samp{Debug
-@result{} Quit} ends the session.
+of your own on that line stays.  Pressed before a session runs, with no
+breakpoint set, Go to cursor starts the session under gdb or jdb and
+runs on to the cursor's line; if the program never reaches it, the
+program runs to its end, as Go to cursor does at a stop.  The other
+debuggers stop at the start of @code{main}, as Run does.  Under gdb,
+pdb and jdb, Go to cursor and Finish function leave the editor its keys
+while the program runs, so @samp{Debug @result{} Quit} ends the
+session.
 
 @cindex Show stack
 @cindex Stack window
@@ -226,9 +227,13 @@ Program exited with code 3
 @noindent
 gdb gives the code for every program; pdb gives it when the script
 calls @code{sys.exit}, and 0 when the script runs off its end; a debug
-adapter gives the code it reports when the program exits.  jdb and a68g
-do not report one, and Messages says @samp{Program exited.}.  Under pdb
-and jdb the program's output is not in Messages, so the line says where
+adapter gives the code it reports when the program exits.  Under jdb the
+editor reads the code from the Java VM it started: a failure code is
+named as under gdb, a VM killed by a signal gives @samp{Program
+terminated with signal SIGKILL}, and a program that ended normally gives
+@samp{Program exited.}.  a68g reports no code, and Messages says
+@samp{Program exited.}.  Under pdb
+the program's output is not in Messages, so the line says where
 it is: @samp{Program exited. Program output: Ctrl-G P}.  That one line
 is all, with every debugger, gdb, sdb, dbx and xdb included: no box
 waits for a key, not even when the editor cannot tell where the
@@ -299,8 +304,10 @@ Program output (e.g.@: @code{printf}, @code{System.out.println},
 @code{print()}) is appended to the Messages buffer --- no screen
 switching, no flicker.  For gdb, output is captured via a
 pseudoterminal (pty): the program's stdout is redirected to a pty
-slave and xwpe reads the pty master.  For jdb and pdb, output is
-extracted from the debugger's command pipe.
+slave and xwpe reads the pty master.  Under jdb the editor starts the
+Java VM itself on that pty, so the program's output reaches Messages
+the same way, as it prints.  For pdb, output is extracted from the
+debugger's command pipe.
 
 Press @kbd{Ctrl-G P} (or @samp{Debug @result{} Program output}) to
 view the Messages buffer with full scroll.  The output accumulates
@@ -335,19 +342,23 @@ A program that reads from standard input (@code{fgets}, @code{scanf},
 type the answer directly in the Messages window and press @key{Enter}.
 xwpe forwards your keystrokes to the program through the same
 pseudoterminal it uses to capture output, so the program sees a real
-terminal on stdin.  Under gdb, only text goes to the program (characters,
-@key{Enter} and @key{Backspace}) while it runs; the menus, the function
-keys and @kbd{Ctrl-F2} stay with the editor, so @samp{Debug @result{} Quit}
-still works while the program waits.  sdb, dbx and xdb leave the editor
-its keys in the same way while the program runs, so @samp{Debug @result{}
-Quit} ends their session too.  So does pdb, which gives the program no
-terminal of its own: text typed while it runs goes into the file you
-edit, and the status row offers only @samp{Debug @result{} Quit}.  A
+terminal on stdin.  jdb works the same way: the Java program has the
+pty as its terminal.  Under gdb and jdb, only text goes to the program
+(characters, @key{Enter} and @key{Backspace}) while it runs; the menus,
+the function keys and @kbd{Ctrl-F2} stay with the editor, so
+@samp{Debug @result{} Quit} still works while the program waits.  sdb,
+dbx and xdb leave the editor its keys in the same way while the program
+runs, so @samp{Debug @result{} Quit} ends their session too.  So does
+pdb, which gives the program no terminal of its own: text typed while it
+runs goes into the file you edit, and the status row offers only
+@samp{Debug @result{} Quit}.  A
 program that is running cannot be stepped, continued or asked about, so
 Step, Trace, Run, Goto cursor, Finish,
 Show stack and the breakpoint and watch commands say ``The program is
-running'' on the status row and do nothing until it stops.  @key{Enter} is
-text for the program from any window, the Stack window included.  If the
+running'' on the status row and do nothing until it stops.  Under gdb,
+jdb, sdb, dbx and xdb, @key{Enter} is text for the program from any
+window, the Stack window included; under pdb it is text for the file
+like the other keys.  If the
 program stops while a dialog, a menu, the File Manager, the Window list
 or another window that is not a source window is in front, the stop
 waits.  It is shown, marked in the source, as soon as you are back in a
@@ -433,9 +444,11 @@ started, as for Scala/Bloop).  Adding a language is a one-row descriptor;
 @command{lldb-dap} for C/C++ is a planned drop-in.
 
 @item jdb (Java Debugger)
-Backend for Java.  Auto-selected for @file{.java} files.  Uses
-@code{poll()} for async JVM startup.  Breakpoints, stepping,
-program output capture all work.  Tested with OpenJDK 25.
+Backend for Java.  Auto-selected for @file{.java} files.  jdb listens on
+a loopback port and the editor starts the JVM on its own pty, so the
+program's output reaches Messages and it reads what you type, as under
+gdb.  Waits for the JVM and the program on the editor's event loop.
+Tested with OpenJDK 25.
 
 @item pdb (Python Debugger)
 Backend for Python.  Auto-selected for @file{.py} files.
@@ -489,22 +502,47 @@ jdb differences from gdb:
 
 @itemize @bullet
 @item
-@strong{Slower startup}: the JVM takes 2--3 seconds to initialise.
-xwpe uses @code{poll()} with a 10-second timeout to wait without
-consuming CPU.
+@strong{How the program starts}: jdb listens on 127.0.0.1, on a port
+the system picks, and xwpe starts the JVM itself with the program's
+class, telling it to connect to that port.  Nothing listens that another
+user could reach to run code.  The JVM is the @command{java} next to
+@command{jdb}, so a class built by that JDK's @command{javac} runs.
+While jdb waits for it the waiting line in Messages says
+@samp{jdb starting the Java VM}; Esc ends both.  A JVM that cannot
+start says why in Messages (@samp{Could not find or load main class P},
+for one) and the session ends.  Program arguments are not passed.
+
+@item
+@strong{Slower startup}: the JVM takes 2--3 seconds to initialise, and
+longer for a class that works before @code{main}.  The first Run has no
+deadline: the editor keeps its keys until the breakpoint is reached.
+
+@item
+@strong{A program that runs long}: Run, Step, Trace, Go to cursor and
+Finish function wait for jdb as long as the program takes, and mark the
+stop whenever it comes.  The editor keeps its keys meanwhile, and
+@samp{Debug @result{} Quit} ends the session and the Java program at
+once, also at a stop.
+
+@item
+@strong{Uncaught exceptions}: jdb stops on the line that threw, and
+xwpe marks it as it marks a breakpoint.  The status row names the
+exception, also when it was thrown in a library whose source is not
+there to mark.
 
 @item
 @strong{Breakpoints are deferred}: jdb sets breakpoints after the
-class is loaded.  You see ``Deferring breakpoint'' in the Messages
-window -- this is normal.
+class is loaded.
 
 @item
-@strong{Program output}: captured from jdb's pipe (not via pty like
-gdb).  View with @kbd{Ctrl-G P}.
+@strong{Program output and input}: the JVM runs on the editor's pty, as
+gdb's program does.  What the program prints appears in Messages as it
+prints, and what you type while it runs is its input; @key{Enter} sends
+the line.  @kbd{Ctrl-G P} shows the whole output.
 
 @item
-@strong{No redirect}: jdb does not support @code{> /dev/pts/N}
-redirection.  xwpe handles this transparently.
+@strong{Locale}: jdb is run in English whatever your locale, since its
+stop lines are what xwpe reads; the program keeps your locale.
 
 @item
 @strong{The current line}: jdb names the class it stopped in, not a
@@ -523,8 +561,15 @@ shows the value after the @samp{=}.  Every stop refreshes them.
 
 @item
 @strong{The end of the program}: jdb's ``The application exited'' is
-read as the end, so Messages says @samp{Program exited. Program output:
-Ctrl-G P} and the session ends.
+read as the end, so Messages says @samp{Program exited.} (or
+@samp{Program exited with code 3}, or the signal that killed the VM)
+under the program's last output and the session ends.  The line waits
+for the process the editor started to end, normally a moment after jdb's
+words.  When @command{java} is a wrapper script that lives on after the
+VM, the session waits for the wrapper and the line then gives its
+status, as a shell would; meanwhile every key works, the debugger keys
+say the program is running, and @kbd{Debug > Quit} ends the session and
+the wrapper at once.
 
 @item
 @strong{Finish function}: @kbd{Ctrl-G F} sends @code{step up}.

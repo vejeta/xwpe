@@ -35,6 +35,9 @@
 #elif defined(HAVE_LIBUTIL_H)
 # include <libutil.h>      /* some BSDs */
 #endif
+#ifdef HAVE_UTMP_H
+# include <utmp.h>         /* glibc: login_tty */
+#endif
 #include <errno.h>
 #include <stdarg.h>
 #include <sys/wait.h>
@@ -147,6 +150,10 @@ char e_d_tty[80];
 int e_d_pty_master = -1;
 int e_d_pty_slave = -1;
 char e_d_pty_slave_name[128];
+/* The program's side of the pty was closed by everyone who held it: the
+   program and whatever it started have ended.  Set by the readers of the
+   master, cleared when the pty is opened or closed. */
+static int e_d_pty_hung = 0;
 char *e_d_prog_output = NULL;
 int e_d_prog_output_len = 0;
 int e_d_prog_output_cap = 0;
@@ -210,8 +217,9 @@ char *npipe[5] = {  NULL, NULL, NULL, NULL, NULL  };
 #define DEB_PTY_DRAIN_MS 100
 
 /* Per-step read of jdb, pdb and a68g output: scratch buffer size, and how long
-   jdb, a68g and the stack listing wait for the next chunk before deciding the
-   step has finished printing (pdb's run waits as long as the program takes). */
+   a68g and the stack listing wait for the next chunk before deciding the
+   step has finished printing (the run of pdb and jdb waits as long as the
+   program takes). */
 #define DEB_STEP_BUF     (PATH_MAX + 4096)
 #define DEB_STEP_POLL_MS 5000
 
@@ -769,16 +777,51 @@ void e_d_prog_output_add(char *data, int len)
  e_d_prog_output_append(data, len);
 }
 
-static int e_d_pty_read_to_messages(FENSTER *mf)
+/**
+ * e_d_pty_hung_up - Did a read of the pty master find the program's side
+ * closed?
+ * @n: what read() returned; @err: errno after it.
+ *
+ * Once every holder of the slave has closed it, Linux answers EIO and the
+ * BSDs and macOS answer end of file; the master then stays readable for
+ * ever, so a reader that kept watching it would wake the editor without
+ * end.  Under gdb the editor's debugger keeps the slave open and this never
+ * happens; under jdb the program's VM is the only holder.
+ * Return: 1 when the program's side is gone.
+ */
+static int e_d_pty_hung_up(int n, int err)
+{
+ if (n == 0)
+  return(1);
+ return(n < 0 && err == EIO);
+}
+
+/* How many reads of the pty, or of a debugger's pipe, one wake of the fd
+   loop takes: a program or debugger that prints without end must not keep
+   the editor from the user's keys (Debug > Quit among them).  The rest is
+   read at the next wake. */
+#define E_D_READS_PER_WAKE     64
+/* Read until the pty holds nothing more: at a stop the program prints no
+   more, and all it printed belongs in Messages before the mark. */
+#define E_D_PTY_READS_ALL      0
+
+/**
+ * e_d_pty_read_to_messages - Append what the program printed to Messages.
+ * @mf: the Messages window;
+ * @max_reads: at most this many reads, or E_D_PTY_READS_ALL.
+ * Return: the bytes appended.
+ */
+static int e_d_pty_read_to_messages(FENSTER *mf, int max_reads)
 {
  char buf[256];
- int n, total = 0, i, flags;
+ int n = 1, total = 0, i, flags, err, reads = 0;
 
  if (e_d_pty_master < 0)
   return 0;
  flags = fcntl(e_d_pty_master, F_GETFL, 0);
  fcntl(e_d_pty_master, F_SETFL, flags | O_NONBLOCK);
- while ((n = read(e_d_pty_master, buf, sizeof(buf))) > 0)
+ while ((max_reads == E_D_PTY_READS_ALL || reads++ < max_reads) &&
+        (n = read(e_d_pty_master, buf, sizeof(buf))) > 0)
  {
   e_d_pty_ensure_own_line(mf);
   e_d_prog_output_append(buf, n);
@@ -790,6 +833,9 @@ static int e_d_pty_read_to_messages(FENSTER *mf)
   }
   total += n;
  }
+ err = errno;
+ if (e_d_pty_hung_up(n, err))
+  e_d_pty_hung = 1;
  fcntl(e_d_pty_master, F_SETFL, flags & ~O_NONBLOCK);
  return total;
 }
@@ -809,7 +855,7 @@ static void e_d_messages_redraw(FENSTER *mf)
 static void e_d_wait_for_input(int gdb_fd)
 {
  e_fd_watch(gdb_fd, POLLIN, NULL, NULL, "the debugger's answer");
- if (e_d_pty_master >= 0)
+ if (e_d_pty_master >= 0 && !e_d_pty_hung)
   e_fd_watch(e_d_pty_master, POLLIN, NULL, NULL, "the program's output");
  wpe_fd_poll(WPE_FD_POLL_MS);
  wpe_fd_del(gdb_fd);
@@ -956,6 +1002,9 @@ typedef struct
 } E_D_RUN_OPS;
 
 static const E_D_RUN_OPS *e_d_pdb_run_ops(void);   /* pdb's table (below) */
+static const E_D_RUN_OPS *e_d_jdb_run_ops(void);   /* jdb's table (below) */
+static int e_d_run_to_cursor_line(FENSTER *f, int line);   /* Go to cursor */
+static int e_d_jdb_run_started(FENSTER *f, int start_brk);
 
 /* The run in progress. */
 typedef struct
@@ -1000,8 +1049,11 @@ static void e_d_flush_inferior_stdout(void)
 #define E_D_PDB_RETURN      "--Return--"
 #define E_D_EXIT_PLAIN      "Program exited."
 #define E_D_EXIT_CODE_FMT   "Program exited with code %ld"
+/* A program killed by a signal, in gdb's words. */
+#define E_D_EXIT_SIGNAL_FMT "Program terminated with signal %s"
+#define E_D_EXIT_SIGNAL_NUM_FMT "Program terminated with signal %d"
 /* Said after the end line by a backend that keeps the program's output out
-   of Messages (pdb and jdb hand it to Ctrl-G P only). */
+   of Messages (pdb hands it to Ctrl-G P only). */
 #define E_D_EXIT_OUTPUT_HINT " Program output: Ctrl-G P"
 #define E_D_EXIT_LINE_MAX   96
 /* What jdb prints when the program it ran reaches its end.  Its wording has
@@ -1012,6 +1064,12 @@ static void e_d_flush_inferior_stdout(void)
    lands the mark on whatever line the editor was already on. */
 #define E_D_JDB_STOP_MARK   "Breakpoint hit:"
 #define E_D_JDB_STEP_MARK   "Step completed:"
+/* jdb stops on an uncaught exception and names the line that threw. */
+#define E_D_JDB_EXCEPTION_MARK "Exception occurred:"
+/* The end of jdb's prompt when it waits for a command: "main[1] " or
+   "Thread-0[1] ".  The bare "> " it echoes before a command's answer is
+   not one. */
+#define E_D_JDB_PROMPT_TAIL "] "
 /* Said on the status row when the file's language picks another debugger. */
 #define E_D_SWITCH_JDB_LINE "Java file: switching to jdb debugger."
 #define E_D_SWITCH_PDB_LINE "Python file: switching to pdb debugger."
@@ -1065,20 +1123,21 @@ static int e_d_exit_code_of(const char *line, long *code)
  * e_d_output_only_on_user_screen - Does this backend keep the program's
  * output out of Messages?
  *
- * pdb and jdb share one stream with the program, and its output is kept for
- * Ctrl-G P only; gdb, a68g and the debug adapters write it to Messages too.
- * Return: 1 for pdb and jdb.
+ * pdb shares one stream with the program, and its output is kept for
+ * Ctrl-G P only; gdb, jdb, a68g and the debug adapters write it to Messages
+ * too.
+ * Return: 1 for pdb.
  */
 static int e_d_output_only_on_user_screen(void)
 {
- return(e_deb_type == DEB_PDB || e_deb_type == DEB_JDB);
+ return(e_deb_type == DEB_PDB);
 }
 
 /**
  * e_d_exit_line_add_hint - End the exit line with where the output is.
  * @msg, @n: the line, completed in place.
  *
- * Under pdb and jdb the program's output is not in Messages, so the end
+ * Under pdb the program's output is not in Messages, so the end
  * line says where it is, where a box used to say it and wait for a key.
  */
 static void e_d_exit_line_add_hint(char *msg, size_t n)
@@ -1099,8 +1158,9 @@ static void e_d_exit_line_add_hint(char *msg, size_t n)
  * The user reads "Program exited with code N", as Turbo Debugger's
  * "Terminated, exit code N", so a failing program is told apart from one
  * that succeeded without a second run.  A debugger that names no code
- * keeps the plain "Program exited.".  Every backend's end goes through
- * here: one line in Messages, never a box to dismiss.
+ * keeps the plain "Program exited.".  Every backend but jdb ends through
+ * here (jdb words its line from the VM's wait status, in
+ * e_d_jdb_exit_line): one line in Messages, never a box to dismiss.
  */
 static void e_d_say_program_exited(const char *line, FENSTER *f)
 {
@@ -1309,7 +1369,7 @@ static const E_D_RUN_OPS e_d_legacy_run_ops =
  * debugger, or NULL when its run is still read by its own reader.
  *
  * gdb goes through the controller when it gave the program a pty, as it
- * always has; sdb, dbx, xdb and pdb always do.  jdb, a68g and the debug
+ * always has; sdb, dbx, xdb, pdb and jdb always do.  a68g and the debug
  * adapters keep their own readers for now.
  */
 static const E_D_RUN_OPS *e_d_run_ops_of_backend(void)
@@ -1318,6 +1378,8 @@ static const E_D_RUN_OPS *e_d_run_ops_of_backend(void)
   return(&e_d_gdb_run_ops);
  if (e_deb_type == DEB_PDB)
   return(e_d_pdb_run_ops());
+ if (e_deb_type == DEB_JDB)
+  return(e_d_jdb_run_ops());
  if (e_deb_type == DEB_SDB || e_deb_type == DEB_DBX || e_deb_type == DEB_XDB)
   return(&e_d_legacy_run_ops);
  return(NULL);
@@ -1565,6 +1627,21 @@ static void e_d_run_on_answer(int fd, void *data)
 }
 
 /**
+ * e_d_run_mark_going - The program runs: refuse the debugger keys until
+ * the run ends, and show the program's output in Messages meanwhile.
+ * @ops: the backend's table.
+ */
+static void e_d_run_mark_going(const E_D_RUN_OPS *ops)
+{
+ int out = ops->output_fd();
+
+ e_d_run.state = E_D_RUN_GOING;
+ e_d_async_pending = 1;
+ if (out >= 0 && !e_d_pty_hung)
+  e_fd_watch(out, POLLIN, e_d_on_pty_readable, NULL, "the program's output");
+}
+
+/**
  * e_d_run_watch - Watch the debugger's answer and the program's output on
  * the fd loop, and keep the editor's debugger keys refused until the stop.
  * @ops: the backend's table.
@@ -1572,16 +1649,44 @@ static void e_d_run_on_answer(int fd, void *data)
  */
 static int e_d_run_watch(const E_D_RUN_OPS *ops)
 {
- int out = ops->output_fd();
-
  if (e_fd_watch(ops->answer_fd(), POLLIN, e_d_run_on_answer, NULL,
                 "the debugger's answer") < 0)
   return(-1);
- e_d_run.state = E_D_RUN_GOING;
- e_d_async_pending = 1;
- if (out >= 0)
-  e_fd_watch(out, POLLIN, e_d_on_pty_readable, NULL, "the program's output");
+ e_d_run_mark_going(ops);
  return(0);
+}
+
+/**
+ * e_d_run_wait_for_process - Keep the run going after the debugger said
+ * the program ended, until the program's process has ended too.
+ *
+ * Called from a backend's @stopped (jdb, whose end comes before the
+ * process's).  The debugger's answer is no longer read; the program's
+ * output still reaches Messages, the user keeps every key, debugger keys
+ * say the program runs, and Debug > Quit ends it.  The backend calls
+ * e_d_run_process_ended when the process ends.
+ */
+static void e_d_run_wait_for_process(void)
+{
+ e_d_run_mark_going(e_d_run.ops);
+}
+
+/**
+ * e_d_run_process_ended - The process a run waited for has ended: deliver
+ * the end as a stop, so the backend says how the program ended.
+ *
+ * Called from the editor's loop between keys.  With a box or a non-text
+ * window in front the end is held, as a stop is, and shown once the user
+ * is back at a source window.
+ */
+static void e_d_run_process_ended(void)
+{
+ if (!e_d_run_going())
+  return;
+ if (!e_build_ui_idle(e_d_run.cn))
+  e_d_run_hold_stop();
+ else
+  e_d_run_on_stop();
 }
 
 /**
@@ -1691,13 +1796,29 @@ static void e_d_messages_place_cursor(FENSTER *mf)
  e_refresh();
 }
 
+/**
+ * e_d_pty_unwatch_if_hung - Stop watching the pty master once the
+ * program's side of it is gone.
+ * @fd: the master, as the fd loop watches it.
+ *
+ * The master of a pty nobody holds the other side of is readable for ever;
+ * left on the loop it would keep the editor awake, spinning, until the
+ * session ends.
+ */
+static void e_d_pty_unwatch_if_hung(int fd)
+{
+ if (e_d_pty_hung)
+  wpe_fd_del(fd);
+}
+
 static void e_d_on_pty_readable(int fd, void *data)
 {
  FENSTER *mf = e_d_find_messages_window();
  int n;
 
  if (!mf) return;
- n = e_d_pty_read_to_messages(mf);
+ n = e_d_pty_read_to_messages(mf, E_D_READS_PER_WAKE);
+ e_d_pty_unwatch_if_hung(fd);
  if (n > 0)
  {
   e_d_messages_redraw(mf);
@@ -1761,7 +1882,7 @@ static void e_d_drain_pty_to_messages(void)
  mf = e_d_find_messages_window();
  if (!mf)
   return;
- if (e_d_pty_read_to_messages(mf) > 0)
+ if (e_d_pty_read_to_messages(mf, E_D_PTY_READS_ALL) > 0)
  {
   e_d_messages_redraw(mf);
   e_d_messages_place_cursor(mf);
@@ -1786,6 +1907,7 @@ void e_d_pty_close(void)
   e_d_pty_slave = -1;
  }
  e_d_pty_slave_name[0] = '\0';
+ e_d_pty_hung = 0;
  /* Buffer and its length are intentionally kept so Ctrl-G P can still show the
     captured output; e_exec_deb frees it when the next session starts.  We do
     NOT zero the capacity here: the allocation is still live, so cap must keep
@@ -2817,6 +2939,8 @@ int e_d_is_watch(int c, FENSTER *f)
   return(0);
 }
 
+static void e_d_jdb_vm_end(void);   /* the Java program's VM (below) */
+
 int e_d_quit_basic(FENSTER *f)
 {
  int i, kbdflgs;
@@ -2824,6 +2948,9 @@ int e_d_quit_basic(FENSTER *f)
     already exited and closed its end, causing write() to SIGPIPE. */
  signal(SIGPIPE, SIG_IGN);
 
+ /* The Java program goes first, by its PID: jdb's own "quit" would let a
+    VM stopped at a breakpoint run on, and jdb never started it. */
+ e_d_jdb_vm_end();
  e_d_start_forget();
  e_d_end_forget();
  e_d_jdb_missing_forget();
@@ -4588,14 +4715,547 @@ static void e_d_fd_nonblocking(int fd)
  fcntl(fd, F_SETFL, fcntl(fd, F_GETFL, 0) | O_NONBLOCK);
 }
 
+/* Room for the longest command line a debugger is started with (jdb's five
+   words) and the NULL that ends it. */
+#define E_D_ARGV_MAX 8
+
+/* How jdb is started: it waits on loopback, on a port the system picks, for
+   the program's VM to connect to it, and the editor starts that VM itself
+   on the session's pty.  Never a VM that listens: whoever reached its port
+   first could run code as the user.  jdb's words are pinned to English,
+   the only ones the editor reads, whatever the user's locale. */
+#define E_D_JDB_LOCALE_LANG    "-J-Duser.language=en"
+#define E_D_JDB_LOCALE_COUNTRY "-J-Duser.country=US"
+#define E_D_JDB_CONNECT        "-connect"
+#define E_D_JDB_LISTEN_SPEC \
+ "com.sun.jdi.SocketListen:localAddress=127.0.0.1,port=0"
+
+/**
+ * e_d_jdb_argv - jdb's command line: listen on loopback for the VM.
+ * @argv: receives the words, NULL-terminated.
+ *
+ * The program is not on it: the editor starts the VM with the main class
+ * once jdb says where it listens.
+ */
+static void e_d_jdb_argv(char **argv)
+{
+ argv[0] = e_debugger;
+ argv[1] = E_D_JDB_LOCALE_LANG;
+ argv[2] = E_D_JDB_LOCALE_COUNTRY;
+ argv[3] = E_D_JDB_CONNECT;
+ argv[4] = E_D_JDB_LISTEN_SPEC;
+ argv[5] = NULL;
+}
+
+/**
+ * e_d_debugger_argv - The command line the selected debugger is started
+ * with, the same in the terminal and in the graphical editor.
+ * @prog: the program, or the source for pdb and a68g;
+ * @argv: receives the words, NULL-terminated (E_D_ARGV_MAX entries).
+ */
+static void e_d_debugger_argv(char *prog, char **argv)
+{
+ int n = 0;
+
+ if (e_deb_type == DEB_JDB)
+ {
+  e_d_jdb_argv(argv);
+  return;
+ }
+ argv[n++] = e_debugger;
+ if (e_deb_type == DEB_PDB)
+ {
+  argv[n++] = "-m";
+  argv[n++] = "pdb";
+ }
+ else if (e_deb_swtch)
+  argv[n++] = e_deb_swtch;
+ argv[n++] = prog;
+ argv[n] = NULL;
+}
+
+#ifndef NO_XWINDOWS
+/**
+ * e_d_script_word - Write one word of the debugger's command line to the
+ * graphical editor's helper script, quoted for the shell.
+ * @fp: the script; @word: the word.
+ *
+ * A program path with a blank in it stays one word, as it is when the
+ * terminal editor starts the debugger.
+ */
+static void e_d_script_word(FILE *fp, const char *word)
+{
+ fputc('\'', fp);
+ for (; *word; word++)
+ {
+  if (*word == '\'')
+   fputs("'\\''", fp);
+  else
+   fputc(*word, fp);
+ }
+ fputc('\'', fp);
+}
+
+/**
+ * e_d_script_command - Write the debugger's command line to the helper
+ * script.
+ * @fp: the script; @argv: the words, NULL-terminated.
+ */
+static void e_d_script_command(FILE *fp, char **argv)
+{
+ int i;
+
+ for (i = 0; argv[i]; i++)
+ {
+  if (i > 0)
+   fputc(' ', fp);
+  e_d_script_word(fp, argv[i]);
+ }
+}
+#endif
+
+/**
+ * e_d_debugger_keeps_pty_slave - Does the debugger hold the program's pty?
+ *
+ * gdb and the legacy debuggers start the program themselves and hand it the
+ * pty, so the debugger keeps it open and the editor drops its own copy.
+ * Under jdb the editor starts the program's VM itself: jdb never touches
+ * the pty, and the editor keeps its copy until the VM has it.  The VM is
+ * then the only holder, so its end shows on the master as a hang-up.
+ * Return: 0 for jdb, 1 for the others.
+ */
+static int e_d_debugger_keeps_pty_slave(void)
+{
+ return(e_deb_type != DEB_JDB);
+}
+
+/**
+ * e_d_pty_slave_close - Drop this process's copy of the program's side of
+ * the pty.
+ */
+static void e_d_pty_slave_close(void)
+{
+ if (e_d_pty_slave < 0)
+  return;
+ close(e_d_pty_slave);
+ e_d_pty_slave = -1;
+}
+
+/* ---- The Java program's VM, started by the editor ------------------------
+ *
+ * jdb only listens; the editor starts the VM on the session's pty with
+ * server=n, so the VM dials jdb's loopback port and nothing listens that
+ * could run the user's code for someone else.  The program's output never
+ * mixes with what jdb says, and the program reads what the user types.
+ * The editor owns the VM: it ends it by its PID at Quit and at every other
+ * end of the session.
+ */
+
+#define E_D_JDB_JAVA      "java"
+#define E_D_JDB_AGENT_FMT \
+ "-agentlib:jdwp=transport=dt_socket,server=n,suspend=y,address=127.0.0.1:%d"
+#define E_D_JDB_AGENT_MAX 128
+/* The VM's exit code when it could not be run at all, as a shell's. */
+#define E_D_JDB_VM_EXEC_FAILED 127
+#define E_D_JDB_VM_EXEC_FAILED_FMT "cannot run %s: %s\r\n"
+#define E_D_JDB_VM_DIR_FAILED_FMT "cannot enter %s: %s\r\n"
+#define E_D_JDB_VM_TTY_FAILED_FMT "cannot give %s a terminal: %s\r\n"
+#define E_D_JDB_VM_SAY_MAX (PATH_MAX + 128)
+
+/* The VM of the session. */
+typedef struct {
+ int pid;                    /* the VM, or 0 once it is gone */
+ int launched;               /* a VM was started for this session */
+ int status;                 /* its wait status, when status_known */
+ int status_known;
+ int watched;                /* its end wakes the editor (WpeChildWatch) */
+ int awaiting_end;           /* jdb said the program ended; the session
+                                waits for the process the editor started */
+ char main_class[PATH_MAX];  /* the class it runs */
+ char java[PATH_MAX];        /* the java it is started with */
+ char dir[PATH_MAX];         /* where it runs: the build's directory */
+} E_D_JDB_VM;
+
+static E_D_JDB_VM e_d_jdb_vm;
+
+/**
+ * e_d_find_in_path - Where @name is found on PATH, as the shell finds it.
+ * @name: a command; @out, @n: receives its path.
+ * Return: 1 when an executable file of that name is on PATH, else 0.
+ */
+static int e_d_find_in_path(const char *name, char *out, size_t n)
+{
+ const char *path = getenv("PATH"), *dir, *end;
+ int len;
+
+ if (!path)
+  return(0);
+ for (dir = path; ; dir = end + 1)
+ {
+  end = strchr(dir, ':');
+  if (!end)
+   end = dir + strlen(dir);
+  len = (int)(end - dir);
+  if (len == 0)
+   snprintf(out, n, "./%s", name);
+  else
+   snprintf(out, n, "%.*s%c%s", len, dir, DIRC, name);
+  if (access(out, X_OK) == 0)
+   return(1);
+  if (*end == '\0')
+   return(0);
+ }
+}
+
+/**
+ * e_d_jdb_java_path - The java the program's VM is started with.
+ * @out, @n: receives it.
+ *
+ * The java next to jdb, the one jdb itself started the VM with before the
+ * editor did: a class compiled by that JDK's javac runs there, while the
+ * java first on PATH may be another release.  Otherwise java on PATH.
+ */
+static void e_d_jdb_java_path(char *out, size_t n)
+{
+ char jdb[PATH_MAX], real[PATH_MAX], *slash;
+
+ if (e_d_find_in_path(e_debugger, jdb, sizeof jdb) && realpath(jdb, real))
+ {
+  slash = strrchr(real, DIRC);
+  if (slash)
+  {
+   slash[1] = '\0';
+   /* A path that does not fit is no java found: PATH is tried next. */
+   if (snprintf(out, n, "%s%s", real, E_D_JDB_JAVA) < (int)n &&
+       access(out, X_OK) == 0)
+    return;
+  }
+ }
+ if (e_d_find_in_path(E_D_JDB_JAVA, out, n))
+  return;
+ snprintf(out, n, "%s", E_D_JDB_JAVA);
+}
+
+/**
+ * e_d_jdb_vm_prepare - Note what the session's VM will run, and where,
+ * before jdb is started.
+ * @f: the source window; @main_class: the class to run.
+ */
+static void e_d_jdb_vm_prepare(FENSTER *f, const char *main_class)
+{
+ char *dir = e_build_dir(f);
+
+ e_d_jdb_vm.pid = 0;
+ e_d_jdb_vm.launched = 0;
+ e_d_jdb_vm.status_known = 0;
+ e_d_jdb_vm.watched = 0;
+ e_d_jdb_vm.awaiting_end = 0;
+ snprintf(e_d_jdb_vm.main_class, sizeof e_d_jdb_vm.main_class, "%s",
+          main_class);
+ e_d_jdb_java_path(e_d_jdb_vm.java, sizeof e_d_jdb_vm.java);
+ e_d_jdb_vm.dir[0] = '\0';
+ if (!dir)
+  return;
+ snprintf(e_d_jdb_vm.dir, sizeof e_d_jdb_vm.dir, "%s", dir);
+ FREE(dir);
+}
+
+/**
+ * e_d_jdb_vm_forget - Forget the VM's PID and stop waiting for it, so
+ * nothing is ever sent to a process that reused the number.
+ */
+static void e_d_jdb_vm_forget(void)
+{
+ if (e_d_jdb_vm.watched)
+  WpeChildUnwatch(e_d_jdb_vm.pid);
+ e_d_jdb_vm.watched = 0;
+ e_d_jdb_vm.pid = 0;
+}
+
+/**
+ * e_d_jdb_vm_note_end - Keep how the VM ended, for the end line, and
+ * forget its PID.
+ * @status: its wait status.
+ */
+static void e_d_jdb_vm_note_end(int status)
+{
+ e_d_jdb_vm.status = status;
+ e_d_jdb_vm.status_known = 1;
+ e_d_jdb_vm_forget();
+}
+
+/**
+ * e_d_jdb_vm_gone - Has the session's VM ended?
+ *
+ * Asked without waiting: the editor's SIGCHLD handler reaps the VM and keeps
+ * its status in the VM's own watch slot.
+ * Return: 1 when there is no VM running.
+ */
+static int e_d_jdb_vm_gone(void)
+{
+ int st, ended;
+
+ if (e_d_jdb_vm.pid <= 0)
+  return(1);
+ ended = WpeChildEnded(e_d_jdb_vm.pid, &st);
+ if (ended == WPE_CHILD_RUNS)
+  return(0);
+ if (ended == WPE_CHILD_ENDED)
+  e_d_jdb_vm_note_end(st);
+ else
+  e_d_jdb_vm_forget();
+ return(1);
+}
+
+/**
+ * e_d_jdb_vm_end - End the Java program at once.
+ *
+ * Quit, Esc, the start's deadline and every end of the session come here,
+ * so no Java program outlives its session: jdb's own "quit" would let a VM
+ * stopped at a breakpoint run on.  The VM leads a session of its own, so
+ * what it started goes with it, a wrapper script around java included.
+ * The editor does not wait for the killed process: the SIGCHLD handler
+ * reaps it, so Quit returns at once whatever the process does.
+ */
+static void e_d_jdb_vm_end(void)
+{
+ int pid = e_d_jdb_vm.pid;
+
+ e_d_jdb_vm.launched = 0;
+ e_d_jdb_vm.awaiting_end = 0;
+ if (e_d_jdb_vm_gone())
+  return;
+ kill(-pid, SIGKILL);
+ kill(pid, SIGKILL);
+ e_d_jdb_vm_forget();
+}
+
+/**
+ * e_d_jdb_vm_on_end - The editor's loop learned that the VM's process
+ * ended.
+ * @pid: the process; @status: its wait status; @data: unused.
+ *
+ * Its status is kept for the end line.  When jdb has already said the
+ * program ended, the session was waiting for this, and the user now reads
+ * how the program ended.
+ */
+static void e_d_jdb_vm_on_end(int pid, int status, void *data)
+{
+ (void)data;
+ if (pid != e_d_jdb_vm.pid)
+  return;
+ e_d_jdb_vm.watched = 0;      /* the slot is free already */
+ e_d_jdb_vm_note_end(status);
+ if (!e_d_jdb_vm.awaiting_end)
+  return;
+ e_d_jdb_vm.awaiting_end = 0;
+ e_d_run_process_ended();
+}
+
+/**
+ * e_d_jdb_vm_watch - Have the editor called back when the VM's process
+ * ends.
+ * @pid: the process just forked.
+ *
+ * Without the watch (no slot left) the end line says the plain "Program
+ * exited." when the status is not known by the time jdb says the program
+ * ended, rather than make the user wait for it.
+ */
+static void e_d_jdb_vm_watch(int pid)
+{
+ e_d_jdb_vm.watched = (WpeChildWatch(pid, e_d_jdb_vm_on_end, NULL) == 0);
+}
+
+/**
+ * e_d_jdb_vm_await_end - Keep the session until the process the editor
+ * started for the program ends, when jdb said the program ended first.
+ *
+ * jdb sees the end when the VM's socket closes, which is while the process
+ * exits, so the exit code is not known yet.  The session goes on as a
+ * running program (the user keeps every key; debugger keys say the program
+ * runs; Debug > Quit ends it at once) until the editor's SIGCHLD handler
+ * reaps the process, normally a moment later.  A java that is a wrapper
+ * script living on after the VM keeps the session until it ends, and the
+ * end line then gives the wrapper's status, as a shell would.
+ * Return: 1 when the session now waits, 0 when the end line can be said.
+ */
+static int e_d_jdb_vm_await_end(void)
+{
+ if (e_d_jdb_vm_gone() || !e_d_jdb_vm.watched)
+  return(0);
+ e_d_jdb_vm.awaiting_end = 1;
+ e_d_run_wait_for_process();
+ return(1);
+}
+
+/**
+ * e_d_jdb_vm_child_signals - Give the VM the signal handling a program
+ * started from a shell has, not the editor's.
+ */
+static void e_d_jdb_vm_child_signals(void)
+{
+ static const int sigs[] = { SIGINT, SIGQUIT, SIGPIPE, SIGHUP, SIGTERM,
+                             SIGTSTP, SIGTTIN, SIGTTOU, SIGCHLD };
+ sigset_t none;
+ size_t i;
+
+ for (i = 0; i < sizeof sigs / sizeof sigs[0]; i++)
+  signal(sigs[i], SIG_DFL);
+ sigemptyset(&none);
+ sigprocmask(SIG_SETMASK, &none, NULL);
+}
+
+/**
+ * e_d_jdb_vm_child_close - Close, in the VM, the editor's ends of jdb's
+ * pipes and the pty master, so jdb's end and the program's are seen.
+ */
+static void e_d_jdb_vm_child_close(void)
+{
+ int i;
+
+ for (i = 0; i < 2; i++)
+ {
+  if (rfildes[i] >= 0)
+   close(rfildes[i]);
+  if (wfildes[i] >= 0)
+   close(wfildes[i]);
+  if (efildes[i] >= 0)
+   close(efildes[i]);
+ }
+ if (e_d_pty_master >= 0)
+  close(e_d_pty_master);
+}
+
+/**
+ * e_d_jdb_vm_child_own_tty - With no pty, give the VM the terminal the
+ * debugger session runs on, as gdb's program gets it, without making it
+ * the VM's controlling terminal.
+ * Return: 0, or -1 when it cannot be opened.
+ */
+static int e_d_jdb_vm_child_own_tty(void)
+{
+ int fd;
+
+ setsid();
+ fd = open(e_d_tty, O_RDWR | O_NOCTTY);
+ if (fd < 0)
+  return(-1);
+ dup2(fd, 0);
+ dup2(fd, 1);
+ dup2(fd, 2);
+ if (fd > 2)
+  close(fd);
+ return(0);
+}
+
+/**
+ * e_d_jdb_vm_child_terminal - Make the pty the VM's terminal: its input,
+ * its output and its controlling terminal, in a session of its own.
+ * Return: 0, or -1 when that failed.
+ */
+static int e_d_jdb_vm_child_terminal(void)
+{
+ if (e_d_pty_slave >= 0)
+  return(login_tty(e_d_pty_slave));
+ return(e_d_jdb_vm_child_own_tty());
+}
+
+/**
+ * e_d_jdb_vm_child_say_failed - Write why the VM could not be run where
+ * its output goes, so the user reads it in Messages.
+ * @fmt: the sentence, with the subject and the reason as its two %s;
+ * @subject: what could not be done; @err: the errno of the failure.
+ */
+static void e_d_jdb_vm_child_say_failed(const char *fmt, const char *subject,
+                                        int err)
+{
+ char line[E_D_JDB_VM_SAY_MAX];
+ int len;
+
+ len = snprintf(line, sizeof line, fmt, subject, strerror(err));
+ if (len > 0)
+  write(2, line, strlen(line));
+}
+
+/**
+ * e_d_jdb_vm_child - In the forked child: become the Java program's VM.
+ * @agent: the JDWP option that dials jdb's port.
+ *
+ * Never returns.
+ */
+static void e_d_jdb_vm_child(char *agent)
+{
+ char *argv[4];
+
+ e_d_jdb_vm_child_signals();
+ e_d_jdb_vm_child_close();
+ if (e_d_jdb_vm_child_terminal() < 0)
+ {
+  /* Without the terminal this goes to the editor's own stderr. */
+  e_d_jdb_vm_child_say_failed(E_D_JDB_VM_TTY_FAILED_FMT,
+                              e_d_jdb_vm.main_class, errno);
+  _exit(E_D_JDB_VM_EXEC_FAILED);
+ }
+ /* After the terminal, so the reason is read where the VM's words go. */
+ if (e_d_jdb_vm.dir[0] && chdir(e_d_jdb_vm.dir) != 0)
+ {
+  e_d_jdb_vm_child_say_failed(E_D_JDB_VM_DIR_FAILED_FMT,
+                              e_d_jdb_vm.dir, errno);
+  _exit(E_D_JDB_VM_EXEC_FAILED);
+ }
+ argv[0] = e_d_jdb_vm.java;
+ argv[1] = agent;
+ argv[2] = e_d_jdb_vm.main_class;
+ argv[3] = NULL;
+ execvp(argv[0], argv);
+ e_d_jdb_vm_child_say_failed(E_D_JDB_VM_EXEC_FAILED_FMT,
+                             e_d_jdb_vm.java, errno);
+ _exit(E_D_JDB_VM_EXEC_FAILED);
+}
+
+/**
+ * e_d_jdb_vm_fork - Start the Java program's VM, which connects to jdb.
+ * @port: the loopback port jdb listens on.
+ *
+ * The editor's copy of the pty's slave goes once the VM has it, so the
+ * VM's end shows on the master.
+ * Return: 0, or -1 when no process could be made.
+ */
+static int e_d_jdb_vm_fork(int port)
+{
+ char agent[E_D_JDB_AGENT_MAX];
+ sigset_t saved;
+ int pid;
+
+ snprintf(agent, sizeof agent, E_D_JDB_AGENT_FMT, port);
+ /* Not reaped before it is watched: its status never meets the ring. */
+ WpeChildSignalBlock(&saved);
+ pid = fork();
+ if (pid == 0)
+  e_d_jdb_vm_child(agent);    /* clears the mask before java runs */
+ if (pid > 0)
+  e_d_jdb_vm_watch(pid);
+ WpeChildSignalRestore(&saved);
+ if (pid < 0)
+  return(-1);
+ e_d_jdb_vm.pid = pid;
+ e_d_jdb_vm.launched = 1;
+ e_d_pty_slave_close();
+ return(0);
+}
+
 int e_exec_deb(FENSTER *f, char *prog)
 {
  int i;
+ char *argv[E_D_ARGV_MAX];
 
  if (e_d_swtch)
   return(1);
  e_d_swtch = 1;
  e_d_cut_reset();
+ e_d_debugger_argv(prog, argv);
+ if (e_deb_type == DEB_JDB)
+  e_d_jdb_vm_prepare(f, prog);
  /* Mark the pipe fds closed up front so e_d_exec_fail() can tell which ones
     a failed launch actually opened (the opens below set the real values). */
  rfildes[0] = rfildes[1] = -1;
@@ -4655,6 +5315,7 @@ int e_exec_deb(FENSTER *f, char *prog)
   e_d_pty_slave = -1;
   e_d_pty_slave_name[0] = '\0';
  }
+ e_d_pty_hung = 0;
 
  if ((e_d_pid = fork()) > 0)
  {
@@ -4736,11 +5397,9 @@ int e_exec_deb(FENSTER *f, char *prog)
      close(rfildes[0]);  rfildes[0] = -1;
      close(wfildes[1]);  wfildes[1] = -1;
      close(efildes[1]);  efildes[1] = -1;
-     if (e_d_pty_slave >= 0)
-     {
-      close(e_d_pty_slave);
-      e_d_pty_slave = -1;
-     }
+     /* jdb's program gets the slave from the editor, later. */
+     if (e_d_debugger_keeps_pty_slave())
+      e_d_pty_slave_close();
 
      if (!(fpp = popen("tty", "r")))
      {
@@ -4789,24 +5448,16 @@ int e_exec_deb(FENSTER *f, char *prog)
    fprintf(fp, "echo '%s' > %s\n", e_d_pty_slave_name, npipe[1]);
   else
    fprintf(fp, "tty > %s\n", npipe[1]);
-  if (e_deb_type == DEB_PDB)
-   fprintf(fp,
-     "%s -m pdb %s < %s > %s 2> %s\n"
-     "echo 'type <Return> to continue' > /dev/tty\nread i < /dev/tty\n",
-     e_debugger, prog, npipe[0], npipe[1], npipe[2]);
-  else if (!e_deb_swtch)
-   fprintf(fp,
-     "%s %s < %s > %s 2> %s\n"
-     "echo 'type <Return> to continue' > /dev/tty\nread i < /dev/tty\n",
-     e_debugger, prog, npipe[0], npipe[1], npipe[2]);
-  else
-   fprintf(fp,
-     "%s %s %s < %s > %s 2> %s\n"
-     "echo 'type <Return> to continue' > /dev/tty\nread i < /dev/tty\n",
-     e_debugger, e_deb_swtch, prog, npipe[0], npipe[1], npipe[2]);
+  e_d_script_command(fp, argv);
+  fprintf(fp,
+    " < %s > %s 2> %s\n"
+    "echo 'type <Return> to continue' > /dev/tty\nread i < /dev/tty\n",
+    npipe[0], npipe[1], npipe[2]);
   fprintf(fp, "rm -f %s\n", file);
   fclose(fp);
   chmod(file, 0755);
+  if (!e_d_debugger_keeps_pty_slave())
+   e_d_pty_slave_close();
 
   if (e_d_pty_master >= 0)
   {
@@ -4824,9 +5475,12 @@ int e_exec_deb(FENSTER *f, char *prog)
 #endif
  {
   /* Close pty master in child -- only the parent reads from it.
-     Keep the slave open: gdb needs it accessible for "run > /dev/pts/N". */
+     Keep the slave open: gdb needs it accessible for "run > /dev/pts/N".
+     jdb never uses it: its program's VM gets it from the editor. */
   if (e_d_pty_master >= 0)
    close(e_d_pty_master);
+  if (!e_d_debugger_keeps_pty_slave())
+   e_d_pty_slave_close();
 
   /* Close the pipe ends not used by the child.
      The child uses: rfildes[0] (stdin), wfildes[1] (stdout), efildes[1] (stderr).
@@ -4856,12 +5510,7 @@ int e_exec_deb(FENSTER *f, char *prog)
   }
   if (e_d_child_errors_nonblocking())
    e_d_fd_nonblocking(2);
-  if (e_deb_type == DEB_PDB)
-   execlp(e_debugger, e_debugger, "-m", "pdb", prog, NULL);
-  else if (!e_deb_swtch)
-   execlp(e_debugger, e_debugger, prog, NULL);
-  else
-   execlp(e_debugger, e_debugger, e_deb_swtch, prog, NULL);
+  execvp(argv[0], argv);
  }
  fprintf(stderr,"%s %s %s\n", e_p_msg[ERR_IN_COMMAND], e_debugger, prog);
  exit(1);
@@ -5609,6 +6258,15 @@ static int e_d_build_first(FENSTER *f)
 #define E_D_START_CANCELLED 1
 #define E_D_START_TIMED_OUT 2
 #define E_D_START_UNWATCHED 3   /* the loop had no room to read its answer */
+#define E_D_START_NO_PORT   4   /* jdb named no port to listen on */
+#define E_D_START_VM_GONE   5   /* the Java VM ended before it reached jdb */
+
+#define E_D_START_NO_PORT_FMT "%s named no port to listen on"
+#define E_D_START_VM_GONE_FMT \
+ "java ended before %s connected (exit status %d)"
+#define E_D_START_VM_GONE_PLAIN_FMT "java ended before %s connected"
+/* What the waiting line says once jdb listens and the VM was started. */
+#define E_D_JDB_VM_STARTING "starting the Java VM"
 
 /* The one debugger start that may be waiting. */
 static struct {
@@ -5633,6 +6291,9 @@ static e_d_resume_fn e_d_start_cmd = NULL;
 static int e_d_start_arg = 0;
 
 static int e_d_start_after_banner(FENSTER *f);
+static void e_d_jdb_start_begin(void);                    /* jdb's start */
+static void e_d_jdb_start_on_output(int fd, void *data);  /* (below) */
+static int e_d_start_watch_fd(int fd, wpe_fd_callback cb);
 
 /**
  * e_d_start_busy - Is a started debugger still waiting to answer?
@@ -5785,6 +6446,12 @@ static void e_d_start_wait_text(char *line, size_t n, long secs)
            e_dap_start_waits_for(g_dap), secs);
   return;
  }
+ if (e_d_jdb_vm.launched)
+ {
+  snprintf(line, n, E_D_START_PHASE_FMT, e_d_start_label(),
+           E_D_JDB_VM_STARTING, secs);
+  return;
+ }
  snprintf(line, n, E_D_START_WAIT_FMT, e_d_start_label(), secs);
 }
 
@@ -5919,8 +6586,24 @@ static int e_d_start_forget(void)
 }
 
 /**
+ * e_d_jdb_vm_gone_line - The line that says the Java VM ended before it
+ * reached jdb, with its exit status when it is known.
+ * @line, @n: receives it; @label: the debugger's name.
+ *
+ * Under it in Messages the user has already read what the VM said.
+ */
+static void e_d_jdb_vm_gone_line(char *line, size_t n, const char *label)
+{
+ if (e_d_jdb_vm.status_known)
+  snprintf(line, n, E_D_START_VM_GONE_FMT, label,
+           e_d_exit_status_number(e_d_jdb_vm.status));
+ else
+  snprintf(line, n, E_D_START_VM_GONE_PLAIN_FMT, label);
+}
+
+/**
  * e_d_start_say_end - Write why the start ended in Messages.
- * @why: E_D_START_CANCELLED, E_D_START_TIMED_OUT or E_D_START_UNWATCHED.
+ * @why: why it ended (an E_D_START_ reason other than E_D_START_WAITING).
  * @label: the debugger's name; @timeout: the deadline that passed.
  * @f: the window on top.
  */
@@ -5932,6 +6615,10 @@ static void e_d_start_say_end(int why, const char *label, int timeout, FENSTER *
   snprintf(line, sizeof line, E_D_START_CANCELLED_FMT, label);
  else if (why == E_D_START_UNWATCHED)
   snprintf(line, sizeof line, E_D_START_UNWATCHED_FMT, label);
+ else if (why == E_D_START_NO_PORT)
+  snprintf(line, sizeof line, E_D_START_NO_PORT_FMT, label);
+ else if (why == E_D_START_VM_GONE)
+  e_d_jdb_vm_gone_line(line, sizeof line, label);
  else
   snprintf(line, sizeof line, E_D_START_TIMED_OUT_FMT, label, timeout);
  e_d_p_message(line, f, 1);
@@ -6044,9 +6731,11 @@ static void e_d_start_end(void)
 
 /**
  * e_d_start_stop - End a debugger that has not answered.
- * @why: E_D_START_CANCELLED (Esc) or E_D_START_TIMED_OUT (the deadline).
+ * @why: E_D_START_CANCELLED (Esc), E_D_START_TIMED_OUT (the deadline), or
+ * another reason the start cannot go on.
  *
- * The debugger gets SIGTERM; the heartbeat sends SIGKILL if it is still
+ * A Java VM the editor started for jdb is ended first, at once.  The
+ * debugger gets SIGTERM; the heartbeat sends SIGKILL if it is still
  * there about two seconds later, and ends the session once it is gone.
  * Without a child of the editor's own to wait for, or when the timer table
  * had no room for the heartbeat, the session ends at once.
@@ -6055,6 +6744,7 @@ static void e_d_start_stop(int why)
 {
  if (e_d_start.ending != E_D_START_WAITING)
   return;
+ e_d_jdb_vm_end();
  e_d_start.ending = why;
  e_d_start.term_ticks = 0;
  e_d_start_unwatch_output();
@@ -6233,6 +6923,206 @@ static void e_d_start_on_output(int fd, void *data)
   e_d_start_end();
 }
 
+/* ---- jdb's start: the port, then the VM -------------------------------
+ *
+ * jdb says first where it listens; the editor then starts the program's VM,
+ * which connects to it, and the start has answered once jdb says the VM
+ * started and gives its first prompt.  The generic banner reader cannot
+ * serve here: it reads jdb's line "VM Started: > No frames ..." as a prompt
+ * and then every breakpoint's answer one behind.
+ */
+
+/* jdb's first line, which names the port it waits on for the VM. */
+#define E_D_JDB_LISTEN_LINE "Listening at address:"
+/* What jdb says once the VM connected, before its first prompt. */
+#define E_D_JDB_VM_STARTED  "VM Started:"
+#define E_D_JDB_PORT_MAX    65535
+#define E_D_JDB_PORT_DIGITS 5       /* the digits of E_D_JDB_PORT_MAX */
+#define E_D_JDB_PORT_SEP    ':'
+
+/**
+ * e_d_jdb_listen_port - The port jdb's listen line names.
+ * @line: the line, "Listening at address: localhost:40367", up to its '\n'.
+ *
+ * Only the digits after the last ':' up to the end of the line count; the
+ * host jdb prints is not used, the VM always dials 127.0.0.1, which jdb
+ * was told to bind.  Nothing is guessed: a line that names no valid port
+ * ends the start.
+ * Return: the port, or -1.
+ */
+static int e_d_jdb_listen_port(const char *line)
+{
+ const char *end = strchr(line, '\n'), *sep = NULL, *p;
+ long port;
+
+ if (end > line && end[-1] == '\r')
+  end--;                      /* a line that ends "\r\n" */
+ for (p = line; p < end; p++)
+  if (*p == E_D_JDB_PORT_SEP)
+   sep = p;
+ if (!sep || sep + 1 == end || end - sep > E_D_JDB_PORT_DIGITS + 1)
+  return(-1);
+ for (p = sep + 1; p < end; p++)
+  if (!isdigit((unsigned char)*p))
+   return(-1);
+ port = strtol(sep + 1, NULL, 10);
+ if (port < 1 || port > E_D_JDB_PORT_MAX)
+  return(-1);
+ return((int)port);
+}
+
+/**
+ * e_d_jdb_start_show_vm_words - Show in Messages what the Java VM has
+ * written so far, above the waiting line.
+ *
+ * A VM that cannot start says why on its terminal ("Could not find or load
+ * main class", a class compiled for a newer Java): the user reads it where
+ * build errors appear.
+ * @max_reads: E_D_READS_PER_WAKE while it runs, E_D_PTY_READS_ALL once
+ * it ended.
+ */
+static void e_d_jdb_start_show_vm_words(int max_reads)
+{
+ FENSTER *mf = e_build_messages(e_d_start.cn);
+
+ if (!mf)
+  return;
+ e_d_start_wait_line_drop();
+ e_d_pty_read_to_messages(mf, max_reads);
+}
+
+/**
+ * e_d_jdb_start_on_program_output - The VM wrote while jdb starts: show it.
+ * @fd: the pty master; @data: unused.
+ */
+static void e_d_jdb_start_on_program_output(int fd, void *data)
+{
+ (void)data;
+ if (!e_d_start.active)
+  return;
+ e_d_jdb_start_show_vm_words(E_D_READS_PER_WAKE);
+ if (e_d_pty_hung)
+ {
+  wpe_fd_del(fd);
+  e_d_start.pty_fd = E_D_START_NO_FD;
+ }
+ if (e_d_start.ending == E_D_START_WAITING)
+  e_d_start_wait_line_turn();
+}
+
+/**
+ * e_d_jdb_start_launch_vm - jdb listens: start the program's VM on the
+ * session's pty and show what it says while it connects.
+ * @port: the port jdb named.
+ */
+static void e_d_jdb_start_launch_vm(int port)
+{
+ if (e_d_jdb_vm_fork(port) < 0)
+ {
+  e_d_start_stop(E_D_START_VM_GONE);
+  return;
+ }
+ e_d_start_wait_line_turn();          /* "jdb starting the Java VM ..." */
+ if (e_d_pty_master < 0)
+  return;
+ e_d_start.pty_fd = e_d_pty_master;
+ e_d_start_watch_fd(e_d_start.pty_fd, e_d_jdb_start_on_program_output);
+}
+
+/**
+ * e_d_jdb_start_say_line - Write one line of jdb's answer in Messages.
+ * @line: where it starts; it ends at '\n'.
+ */
+static void e_d_jdb_start_say_line(const char *line)
+{
+ char copy[E_D_START_LINE_MAX];
+ const char *end = strchr(line, '\n');
+ int len = (int)(end - line);
+
+ if (len > 0 && line[len - 1] == '\r')
+  len--;
+ if (len >= (int)sizeof copy)
+  len = (int)sizeof copy - 1;
+ memcpy(copy, line, len);
+ copy[len] = '\0';
+ e_d_p_message(copy, e_d_start.cn->f[e_d_start.cn->mxedt], 1);
+}
+
+/**
+ * e_d_jdb_start_on_listen_line - Start the VM once jdb's listen line is
+ * whole.
+ * @text: what jdb has said so far.
+ *
+ * A listen line without a valid port is shown and ends the start.  The
+ * waiting line goes first, so jdb's line stays above the line that says
+ * why the start ended.
+ */
+static void e_d_jdb_start_on_listen_line(const char *text)
+{
+ const char *at = strstr(text, E_D_JDB_LISTEN_LINE);
+ int port;
+
+ if (!at || !strchr(at, '\n'))
+  return;                     /* not said yet, or not whole yet */
+ port = e_d_jdb_listen_port(at);
+ if (port > 0)
+ {
+  e_d_jdb_start_launch_vm(port);
+  return;
+ }
+ e_d_start_wait_line_drop();
+ e_d_jdb_start_say_line(at);
+ e_d_start_stop(E_D_START_NO_PORT);
+}
+
+/**
+ * e_d_jdb_start_vm_connected - Has jdb said that the VM connected and
+ * stopped at its start, and asked for a command?
+ * @text: what jdb has said so far.
+ * Return: 1 when it has.
+ */
+static int e_d_jdb_start_vm_connected(const char *text)
+{
+ size_t len = strlen(text), tail = strlen(E_D_JDB_PROMPT_TAIL);
+
+ if (!strstr(text, E_D_JDB_VM_STARTED))
+  return(0);
+ return(len >= tail && strcmp(text + len - tail, E_D_JDB_PROMPT_TAIL) == 0);
+}
+
+/**
+ * e_d_jdb_start_vm_ended - Did the VM the editor started for jdb end
+ * before it reached jdb?
+ *
+ * The heartbeat asks: the VM's end is seen by reaping it, not by the pty,
+ * which the graphical editor still holds open.
+ * Return: 1 when it did.
+ */
+static int e_d_jdb_start_vm_ended(void)
+{
+ if (!e_d_jdb_vm.launched)
+  return(0);
+ return(e_d_jdb_vm_gone());
+}
+
+/**
+ * e_d_jdb_start_read - jdb's start: read what it said and act on it.
+ * @text: what jdb has said so far.
+ *
+ * Its listen line starts the VM; its first prompt after the VM started
+ * ends the start, and the session goes on.
+ */
+static void e_d_jdb_start_read(const char *text)
+{
+ if (!e_d_jdb_vm.launched)
+ {
+  e_d_jdb_start_on_listen_line(text);
+  return;
+ }
+ if (e_d_jdb_start_vm_connected(text))
+  e_d_start_answered();
+}
+
 /**
  * e_d_start_on_tick - The heartbeat: turn the waiting line, apply the
  * deadline, and finish a debugger that is being ended.
@@ -6255,6 +7145,12 @@ static void e_d_start_on_tick(void *data)
  if (e_d_start.ending != E_D_START_WAITING)
  {
   e_d_start_escalate();
+  return;
+ }
+ if (e_d_jdb_start_vm_ended())
+ {
+  e_d_jdb_start_show_vm_words(E_D_PTY_READS_ALL);
+  e_d_start_stop(E_D_START_VM_GONE);
   return;
  }
  e_d_start_check_deadline();
@@ -6357,6 +7253,12 @@ static void e_d_start_watch(FENSTER *f)
  e_d_async_reset();
  e_d_start_show();
  e_d_start.out_fd = wfildes[0];
+ if (e_deb_type == DEB_JDB)
+ {
+  e_d_jdb_start_begin();
+  e_d_start_watch_fd(e_d_start.out_fd, e_d_jdb_start_on_output);
+  return;
+ }
  e_d_start_watch_fd(e_d_start.out_fd, e_d_start_on_output);
 }
 
@@ -6943,17 +7845,34 @@ static int e_d_window_path_of(ECNT *cn, const char *name, char *out, size_t n)
  return(0);
 }
 
+/* jdb groups the digits of a line number past 999: "line=1,004". */
+#define E_D_JDB_DIGIT_GROUP ','
+#define E_D_JDB_LINE_BASE   10
+
 /**
  * e_d_jdb_stop_line - The source line of a jdb stop, or 0.
  * @stop: what jdb printed for the stop.
+ *
+ * A stop past line 999 is marked on its line, not on line 1: the group
+ * separator between digits is skipped.
  */
 static int e_d_jdb_stop_line(const char *stop)
 {
- const char *lp = strstr(stop, E_D_JDB_LINE_MARK);
+ const char *lp = strstr(stop, E_D_JDB_LINE_MARK), *p;
+ int line = 0;
 
  if (!lp)
   return(0);
- return(atoi(lp + strlen(E_D_JDB_LINE_MARK)));
+ for (p = lp + strlen(E_D_JDB_LINE_MARK); *p; p++)
+ {
+  if (*p == E_D_JDB_DIGIT_GROUP && isdigit((unsigned char)p[1]) &&
+      p > lp + strlen(E_D_JDB_LINE_MARK))
+   continue;
+  if (!isdigit((unsigned char)*p))
+   break;
+  line = line * E_D_JDB_LINE_BASE + (*p - '0');
+ }
+ return(line);
 }
 
 /**
@@ -7431,10 +8350,8 @@ static void e_d_pdb_mark_step(FENSTER *f, const char *stop)
  e_d_pdb_mark_stop(f, file, line);
 }
 
-static int e_d_jdb_read_stop(FENSTER *f);
-
-/* A debugger's answer to one step or continue, gathered by the poll readers
-   of jdb, pdb and a68g until the prompt that ends it.  A program can print
+/* A debugger's answer to one step or continue, gathered by the readers of
+   jdb, pdb and a68g until the prompt that ends it.  A program can print
    more in one step than the buffer holds: the oldest part is then handed on
    (as program output) and reading goes on, while the newest E_D_STEP_KEEP
    bytes, where the stop line and the prompt are, always stay. */
@@ -7684,8 +8601,9 @@ int e_deb_run(FENSTER *f)
       shell-style redirect instead. */
    if (e_deb_type == DEB_JDB)
    {
-    /* jdb: plain "run" -- no redirect, no arguments through run */
-    strcpy(eing, "run\n");
+    /* jdb: the VM the editor started is already connected and held at
+       its start; "cont" lets it run.  No arguments reach the program. */
+    strcpy(eing, "cont\n");
    }
    else if (e_deb_type == DEB_PDB)
    {
@@ -7733,51 +8651,9 @@ int e_deb_run(FENSTER *f)
  e_d_switch_out(1);
  jdb_trace("e_deb_run: sending '%s' (prsw=%d)\n", eing, prsw);
  e_d_send_cmd(eing);
- if (e_deb_type == DEB_JDB && !prsw)
- {
-  /* jdb: "run" returns "> " immediately but the VM starts
-     asynchronously. Use poll() with timeout to wait for the
-     breakpoint prompt "main[1] " without busy-looping.
-     Technique from JDEE (Emacs jdb integration): accumulate
-     output and scan for "Breakpoint hit" or the prompt pattern.
-     poll() avoids CPU waste during JVM startup (~2-3 seconds). */
-  struct pollfd _pfd = { .fd = wfildes[0], .events = POLLIN };
-  E_D_STEP_REPLY _jr;
-  int _found = 0, _n;
-
-  e_d_step_reply_init(&_jr);
-  jdb_trace("e_deb_run: entering Phase 2 poll loop for jdb\n");
-  while (!_found)
-  {
-   int _pret = poll(&_pfd, 1, 10000);
-   if (_pret <= 0)
-   {  jdb_trace("e_deb_run: poll timeout!\n");
-      e_error("jdb: VM startup timeout.", 0, f->fb);
-      e_d_quit(f); return(-1);  }
-   /* What the program prints before its first stop is not kept, as before. */
-   _n = e_d_step_reply_read(wfildes[0], &_jr, NULL, NULL);
-   if (_n == 0)
-   {  /* EOF: jdb process exited */
-      jdb_trace("e_deb_run: EOF on pipe (jdb exited)\n");
-      e_d_note_output_closed();
-      e_d_quit(f); return(-1);  }
-   if (_n < 0) continue;
-   jdb_trace("e_deb_run: poll read %d bytes total=%d: [%s]\n",
-             _n, _jr.len, _jr.buf);
-   if (strstr(_jr.buf, "] "))
-    _found = 1;
-   if (strstr(_jr.buf, "exited") || strstr(_jr.buf, "Unable to"))
-   {  jdb_trace("e_deb_run: error/exit detected in output, quitting\n");
-      e_d_quit(f); return(-1);  }
-  }
-  jdb_trace("e_deb_run: Phase 2 done, _found=%d\n", _found);
-  /* jdb format: "Breakpoint hit: ..., line=N bci=0\nN    code\nmain[1] " */
-  e_d_swtch = 3;
-  e_d_jdb_mark_stop(f, _jr.buf);
-  e_d_switch_out(0);
-  return(0);  /* skip e_read_output -- jdb output already parsed */
- }
- else if (e_deb_type == DEB_GDB || ((e_deb_type == DEB_DBX  || e_deb_type == DEB_XDB) && !prsw))
+ if (e_deb_type == DEB_JDB)
+  return(e_d_jdb_run_started(f, main_brk));
+ if (e_deb_type == DEB_GDB || ((e_deb_type == DEB_DBX  || e_deb_type == DEB_XDB) && !prsw))
  {
   if (e_d_run_answer_read(prsw) < 0)
    return(e_d_quit(f));
@@ -7795,14 +8671,6 @@ int e_deb_run(FENSTER *f)
  run_ops = e_d_run_ops_of_backend();
  if (run_ops)
   return(e_d_run_hand_over(f, run_ops, main_brk));
- if (e_deb_type == DEB_JDB)
- {
-  /* jdb closes its pipe when the program ends and echoes its prompt before
-     the program's output, so only the poll reader that knows its wording
-     tells a stop from an end; e_read_output's prompt loop reads that echo as
-     a stop and then reports source it cannot find. */
-  return(e_d_jdb_read_stop(f));
- }
  if (e_deb_type == DEB_A68G)
  {
   /* a68g shares one stream and exits on completion (EOF); the poll-based
@@ -7828,119 +8696,425 @@ int e_deb_next(FENSTER *f)
  return(e_d_step_next(f, 1));
 }
 
+/* What jdb says when the program reached its end, and when its VM went
+   away (killed, or crashed); jdb closes its pipe after either. */
+#define E_D_JDB_DISCONNECTED "The application has been disconnected"
+/* What jdb echoes before a command's answer, at the start of a line. */
+#define E_D_JDB_ECHO        "> "
+
+/* jdb's answer to the command that runs, continues or steps the program.
+   Only jdb writes to its pipe: the program has the pty. */
+static E_D_STEP_REPLY e_d_jdb_reply;
+/* jdb's answer while it starts: its listen line, then its first prompt. */
+static E_D_STEP_REPLY e_d_jdb_start_reply;
+
 /**
- * e_d_jdb_output_append - Keep a stretch of jdb's answer as program output
- * for Ctrl-G P, without the line ends around it.
- * @p, @len: the stretch.
+ * e_d_jdb_line_starts_with_mark - Does the line at @line start with @mark?
+ * @line: the start of a line of jdb's answer; @mark: a stop or end mark.
+ *
+ * jdb puts the "> " it echoes for the command in front of the first line
+ * of its answer; the mark comes after it.  Nothing else writes to jdb's
+ * pipe, so the program's own text, whatever it says, is never read here.
+ * Return: where the mark starts, or NULL.
  */
-static void e_d_jdb_output_append(char *p, int len)
+static const char *e_d_jdb_line_starts_with_mark(const char *line,
+                                                 const char *mark)
 {
- while (len > 0 && (p[0] == '\n' || p[0] == '\r'))
+ while (strncmp(line, E_D_JDB_ECHO, strlen(E_D_JDB_ECHO)) == 0)
+  line += strlen(E_D_JDB_ECHO);
+ if (strncmp(line, mark, strlen(mark)) == 0)
+  return(line);
+ return(NULL);
+}
+
+/**
+ * e_d_jdb_line_names_stop - The stop mark the line at @line starts with.
+ * @line: the start of a line of jdb's answer.
+ * Return: where the mark starts (a breakpoint, a step or an uncaught
+ * exception), or NULL.
+ */
+static const char *e_d_jdb_line_names_stop(const char *line)
+{
+ const char *at = e_d_jdb_line_starts_with_mark(line, E_D_JDB_STOP_MARK);
+
+ if (!at)
+  at = e_d_jdb_line_starts_with_mark(line, E_D_JDB_STEP_MARK);
+ if (!at)
+  at = e_d_jdb_line_starts_with_mark(line, E_D_JDB_EXCEPTION_MARK);
+ return(at);
+}
+
+/**
+ * e_d_jdb_stop_line_in - The line in jdb's answer that names its stop, or
+ * NULL.
+ * @text: the answer.
+ *
+ * The last one counts: the editor marks the source line it names.
+ */
+static const char *e_d_jdb_stop_line_in(const char *text)
+{
+ const char *line = text, *found = NULL, *at;
+
+ while (line)
  {
-  p++;
-  len--;
+  at = e_d_jdb_line_names_stop(line);
+  if (at)
+   found = at;
+  line = strchr(line, '\n');
+  if (line)
+   line++;
  }
- while (len > 0 && (p[len-1] == '\n' || p[len-1] == '\r'))
-  len--;
- if (len > 0)
-  e_d_prog_output_append_line(p, len);
+ return(found);
 }
 
 /**
- * e_d_jdb_output_start - Where the program's output starts in jdb's answer:
- * after the "> " prompt jdb echoes before it.
- * @text: the answer, or what is left of it; @echo_seen: the start of the
- * answer, with that prompt, was already handed on.
+ * e_d_jdb_says - Does a line of jdb's answer start with @mark?
+ * @text: the answer; @mark: the words to look for at the start of a line.
+ * Return: 1 when one does.
  */
-static char *e_d_jdb_output_start(char *text, int echo_seen)
+static int e_d_jdb_says(const char *text, const char *mark)
 {
- char *p;
+ const char *line = text;
 
- if (echo_seen)
-  return(text);
- p = strstr(text, "> ");
- if (p)
-  return(p + 2);
- return(text);
-}
-
-/**
- * e_d_jdb_spill - Keep as program output the oldest part of a jdb answer too
- * long for the buffer, so a step that prints a lot shows all of it.
- * @ctx: the reader's "prompt echo already handed on" flag.
- */
-static void e_d_jdb_spill(void *ctx, char *text, int mid_line)
-{
- int *echo_seen = ctx;
- char *p = e_d_jdb_output_start(text, *echo_seen);
-
- (void)mid_line;
- *echo_seen = 1;
- e_d_jdb_output_append(p, (int)strlen(p));
-}
-
-/**
- * e_d_jdb_capture_output - Keep what the program printed during a step, the
- * text between jdb's echoed prompt and the stop line, for Ctrl-G P.
- * @text: jdb's answer, or what is left of it; @echo_seen: as for
- * e_d_jdb_output_start.
- */
-static void e_d_jdb_capture_output(char *text, int echo_seen)
-{
- char *p = e_d_jdb_output_start(text, echo_seen), *end;
-
- /* Find where jdb protocol resumes */
- end = strstr(p, "Step completed:");
- if (!end)
-  end = strstr(p, "Breakpoint hit:");
- if (!end)
-  end = strstr(p, "main[");
- if (end && end > p)
-  e_d_jdb_output_append(p, (int)(end - p));
-}
-
-/* Read and apply what jdb answers to a step or a continue: poll for the stop
-   jdb names, jump the editor cursor to the reported source line, and capture
-   any program output (between the "> " prompt and the next jdb protocol line)
-   for Ctrl-G P.  jdb closes its pipe when the program reaches its end, so the
-   end of the stream is the program's end and gets its own line in Messages,
-   the way every other backend prints one.
-   Returns 0, or e_d_quit(f) if the program or jdb exited. */
-static int e_d_jdb_read_stop(FENSTER *f)
-{
- struct pollfd _pfd = { .fd = wfildes[0], .events = POLLIN };
- E_D_STEP_REPLY _jr;
- int _n, _found = 0, echo_seen = 0;
-
- e_d_step_reply_init(&_jr);
- while (!_found)
+ while (line)
  {
-  if (poll(&_pfd, 1, DEB_STEP_POLL_MS) <= 0) break;
-  _n = e_d_step_reply_read(wfildes[0], &_jr, e_d_jdb_spill, &echo_seen);
-  if (_n == 0)
-  {  /* EOF before jdb said the application exited: jdb itself ended */
-   e_d_note_output_closed();
-   return(e_d_quit(f));
-  }
-  if (_n < 0) continue;
-  jdb_trace("e_d_step_next: poll read %d bytes total=%d: [%s]\n",
-            _n, _jr.len, _jr.buf);
-  if (e_d_line_says_program_exited(_jr.buf))
-  {  /* The program ended: say so where the other backends say it, and let
-        the session end.  A prompt alone is no stop, so it is not read as one. */
-   e_d_say_program_exited(_jr.buf, f);
-   return(e_d_quit(f));  }
-  /* jdb echoes its prompt before the program's output arrives, so the prompt
-     alone says nothing: only a stop jdb names is one. */
-  if (strstr(_jr.buf, "] ") &&
-      (strstr(_jr.buf, E_D_JDB_STOP_MARK) || strstr(_jr.buf, E_D_JDB_STEP_MARK)))
-   _found = 1;
+  if (e_d_jdb_line_starts_with_mark(line, mark))
+   return(1);
+  line = strchr(line, '\n');
+  if (line)
+   line++;
  }
- e_d_jdb_capture_output(_jr.buf, echo_seen);
- if (_found)
-  e_d_jdb_mark_stop(f, _jr.buf);
- e_d_switch_out(0);
  return(0);
+}
+
+/**
+ * e_d_jdb_says_end - Does a line of jdb's answer say the program is gone?
+ * @text: the answer.
+ * Return: 1 when a line starts with "The application exited" or "The
+ * application has been disconnected".
+ */
+static int e_d_jdb_says_end(const char *text)
+{
+ return(e_d_jdb_says(text, E_D_JDB_EXIT) ||
+        e_d_jdb_says(text, E_D_JDB_DISCONNECTED));
+}
+
+/**
+ * e_d_jdb_asks_command - Does jdb's answer end with its prompt?
+ * @text: the answer.
+ */
+static int e_d_jdb_asks_command(const char *text)
+{
+ size_t len = strlen(text), tail = strlen(E_D_JDB_PROMPT_TAIL);
+
+ return(len >= tail && strcmp(text + len - tail, E_D_JDB_PROMPT_TAIL) == 0);
+}
+
+/**
+ * e_d_jdb_reply_is_stop - Does jdb's answer so far say the program stopped?
+ * @text: the answer.
+ *
+ * A stop is a line of jdb's that names it (a breakpoint, a step or an
+ * uncaught exception) and jdb's prompt as the last thing it said.
+ * Return: 1 when it does.
+ */
+static int e_d_jdb_reply_is_stop(const char *text)
+{
+ if (!e_d_jdb_asks_command(text))
+  return(0);
+ return(e_d_jdb_stop_line_in(text) != NULL);
+}
+
+/**
+ * e_d_jdb_begin - Forget the answer of the run before when a run starts.
+ */
+static void e_d_jdb_begin(void)
+{
+ e_d_step_reply_init(&e_d_jdb_reply);
+}
+
+/**
+ * e_d_jdb_answer_fd - Where jdb answers: its output pipe.
+ */
+static int e_d_jdb_answer_fd(void)
+{
+ return(wfildes[0]);
+}
+
+/**
+ * e_d_jdb_feed - Read what jdb has said so far.
+ * @f: the window the run was started from (unused).
+ *
+ * The run goes on until jdb names a stop and asks for a command, or says
+ * the program is gone, however long the program runs.  jdb closes its pipe
+ * after it says the program is gone, so the pipe's end alone means jdb
+ * itself is gone.
+ * Return: E_D_FEED_GOING, E_D_FEED_STOPPED or E_D_FEED_GONE.
+ */
+static int e_d_jdb_feed(FENSTER *f)
+{
+ int flags = fcntl(wfildes[0], F_GETFL, 0);
+ int reads, n, fed = E_D_FEED_GOING;
+
+ (void)f;
+ fcntl(wfildes[0], F_SETFL, flags | O_NONBLOCK);
+ for (reads = 0; reads < E_D_READS_PER_WAKE && fed == E_D_FEED_GOING;
+      reads++)
+ {
+  n = e_d_step_reply_read(wfildes[0], &e_d_jdb_reply, NULL, NULL);
+  if (n < 0)
+   break;                 /* nothing more for now */
+  if (n == 0)
+  {
+   e_d_note_output_closed();
+   fed = E_D_FEED_GONE;
+   break;
+  }
+  jdb_trace("e_d_jdb_feed: read %d bytes total=%d: [%s]\n",
+            n, e_d_jdb_reply.len, e_d_jdb_reply.buf);
+  if (e_d_jdb_says_end(e_d_jdb_reply.buf) ||
+      e_d_jdb_reply_is_stop(e_d_jdb_reply.buf))
+   fed = E_D_FEED_STOPPED;
+ }
+ fcntl(wfildes[0], F_SETFL, flags);
+ return(fed);
+}
+
+/**
+ * e_d_jdb_signal_name - The name of a signal as a user knows it.
+ * @sig: the signal number.
+ * Return: "SIGKILL", "SIGSEGV" ..., or NULL for a signal not in the list.
+ */
+static const char *e_d_jdb_signal_name(int sig)
+{
+ static const struct { int sig; const char *name; } names[] = {
+  { SIGHUP, "SIGHUP" }, { SIGINT, "SIGINT" }, { SIGQUIT, "SIGQUIT" },
+  { SIGILL, "SIGILL" }, { SIGABRT, "SIGABRT" }, { SIGFPE, "SIGFPE" },
+  { SIGKILL, "SIGKILL" }, { SIGBUS, "SIGBUS" }, { SIGSEGV, "SIGSEGV" },
+  { SIGPIPE, "SIGPIPE" }, { SIGALRM, "SIGALRM" }, { SIGTERM, "SIGTERM" }
+ };
+ size_t i;
+
+ for (i = 0; i < sizeof names / sizeof names[0]; i++)
+  if (names[i].sig == sig)
+   return(names[i].name);
+ return(NULL);
+}
+
+/**
+ * e_d_jdb_exit_line - The line that says how the Java program ended.
+ * @line, @n: receives it.
+ *
+ * As under gdb: "Program exited with code 3" for a program that exited
+ * with a failure code, "Program terminated with signal SIGKILL" for one
+ * that was killed, and the plain "Program exited." for a program that ran
+ * to its end, or whose end the editor did not see.
+ */
+static void e_d_jdb_exit_line(char *line, size_t n)
+{
+ const char *name;
+ int status = e_d_jdb_vm.status;
+
+ if (e_d_jdb_vm.status_known && WIFSIGNALED(status))
+ {
+  name = e_d_jdb_signal_name(WTERMSIG(status));
+  if (name)
+   snprintf(line, n, E_D_EXIT_SIGNAL_FMT, name);
+  else
+   snprintf(line, n, E_D_EXIT_SIGNAL_NUM_FMT, WTERMSIG(status));
+  return;
+ }
+ if (e_d_jdb_vm.status_known && WIFEXITED(status) && WEXITSTATUS(status) != 0)
+ {
+  snprintf(line, n, E_D_EXIT_CODE_FMT, (long)WEXITSTATUS(status));
+  return;
+ }
+ snprintf(line, n, "%s", E_D_EXIT_PLAIN);
+}
+
+/**
+ * e_d_jdb_end_session - Say how the program ended and close the session.
+ * @f: the window on top.
+ *
+ * The user reads one line in Messages, under the program's last output, as
+ * under every other backend: that the program exited, with its failure
+ * code when it had one, or which signal killed it.  The line comes once
+ * the process the editor started has ended and its status is known; until
+ * then the session waits for it without holding a key
+ * (e_d_jdb_vm_await_end), and this runs again when it ends.
+ */
+static void e_d_jdb_end_session(FENSTER *f)
+{
+ char line[E_D_EXIT_LINE_MAX];
+
+ if (e_d_jdb_vm_await_end())
+  return;
+ e_d_jdb_exit_line(line, sizeof line);
+ e_d_p_message(line, f, 0);
+ e_d_quit(f);
+}
+
+/**
+ * e_d_jdb_start_begin - Forget what the last jdb start said.
+ */
+static void e_d_jdb_start_begin(void)
+{
+ e_d_step_reply_init(&e_d_jdb_start_reply);
+}
+
+/**
+ * e_d_jdb_start_on_output - jdb wrote while it starts: read it all and act
+ * on it.
+ * @fd: jdb's output; @data: unused.
+ *
+ * End of file before jdb asked for a command means jdb ended by itself;
+ * the deadline and the VM's own end are the heartbeat's.
+ */
+static void e_d_jdb_start_on_output(int fd, void *data)
+{
+ int n, reads;
+
+ (void)data;
+ if (!e_d_start.active || e_d_start.ending != E_D_START_WAITING)
+  return;
+ for (reads = 0; reads < E_D_READS_PER_WAKE; reads++)
+ {
+  n = e_d_step_reply_read(fd, &e_d_jdb_start_reply, NULL, NULL);
+  if (n == 0)
+  {
+   e_d_note_output_closed();   /* the end says how jdb ended */
+   e_d_start_end();
+   return;
+  }
+  if (n < 0)
+   break;                 /* nothing more for now */
+ }
+ jdb_trace("e_d_jdb_start_on_output: [%s]\n", e_d_jdb_start_reply.buf);
+ e_d_jdb_start_read(e_d_jdb_start_reply.buf);
+}
+
+/* Said on the status row at a stop on an uncaught exception. */
+#define E_D_JDB_EXCEPTION_FMT "Uncaught exception: %s"
+#define E_D_JDB_EXCEPTION_NAME_MAX 160
+
+/**
+ * e_d_jdb_exception_name - The exception class a stop line of jdb names.
+ * @stop: jdb's stop line; @out, @n: receives "java.lang.ArithmeticException".
+ * Return: 1 when @stop is an exception stop, else 0.
+ */
+static int e_d_jdb_exception_name(const char *stop, char *out, size_t n)
+{
+ const char *name, *end;
+ size_t len;
+
+ if (strncmp(stop, E_D_JDB_EXCEPTION_MARK,
+             strlen(E_D_JDB_EXCEPTION_MARK)) != 0)
+  return(0);
+ name = stop + strlen(E_D_JDB_EXCEPTION_MARK);
+ while (*name == ' ')
+  name++;
+ for (end = name; *end && !isspace((unsigned char)*end); end++)
+  ;
+ len = end - name;
+ if (len == 0 || len >= n)
+  return(0);
+ memcpy(out, name, len);
+ out[len] = '\0';
+ return(1);
+}
+
+/**
+ * e_d_jdb_say_exception - Name the exception on the status row when the
+ * program stopped on one it did not catch.
+ * @f: the window the stop came to; @stop: jdb's stop line.
+ *
+ * The green bar alone looks like a breakpoint: the user reads why the
+ * program stopped, and which exception, also when it threw inside a
+ * library whose source is not there to mark.  The line stays until the
+ * next key.
+ */
+static void e_d_jdb_say_exception(FENSTER *f, const char *stop)
+{
+ char name[E_D_JDB_EXCEPTION_NAME_MAX];
+ char line[E_D_JDB_EXCEPTION_NAME_MAX + sizeof E_D_JDB_EXCEPTION_FMT];
+ ECNT *cn = f->ed;
+
+ if (!e_d_jdb_exception_name(stop, name, sizeof name))
+  return;
+ snprintf(line, sizeof line, E_D_JDB_EXCEPTION_FMT, name);
+ e_status_say_until_key(cn->f[cn->mxedt], line);
+}
+
+/**
+ * e_d_jdb_stopped - What jdb does when its stop comes: show the program's
+ * last output, then mark the line it stopped on, or say the end.
+ * @f: the window on top.
+ *
+ * The user sees what the program printed up to the stop in Messages (a
+ * line it has not ended yet included), then the green bar on the line jdb
+ * stopped on, in the Java file it names, or one line in Messages saying
+ * the program ended.  The same order as under gdb.
+ */
+static void e_d_jdb_stopped(FENSTER *f)
+{
+ const char *stop;
+
+ e_d_drain_pty_to_messages();
+ if (e_d_jdb_says_end(e_d_jdb_reply.buf))
+ {
+  e_d_jdb_end_session(f);
+  return;
+ }
+ stop = e_d_jdb_stop_line_in(e_d_jdb_reply.buf);
+ if (!stop)
+ {
+  e_d_switch_out(0);   /* no stop line of jdb's left to mark */
+  return;
+ }
+ e_d_jdb_mark_stop(f, stop);
+ e_d_switch_out(0);
+ e_d_jdb_say_exception(f, stop);
+}
+
+/* jdb: its answers on its pipe, the program's output on the pty, a prompt
+   at each stop. */
+static const E_D_RUN_OPS e_d_jdb_ops =
+{
+ "jdb",
+ e_d_jdb_answer_fd,
+ e_d_line_output_fd,
+ e_d_jdb_feed,
+ e_d_jdb_stopped,
+ NULL,
+ NULL,
+ NULL,
+ e_d_run_to_cursor_line,
+ e_d_jdb_begin
+};
+
+/**
+ * e_d_jdb_run_ops - The run controller's table for jdb.
+ */
+static const E_D_RUN_OPS *e_d_jdb_run_ops(void)
+{
+ return(&e_d_jdb_ops);
+}
+
+/**
+ * e_d_jdb_run_started - jdb was sent the command that runs, continues or
+ * steps the program: let it run under the controller.
+ * @f: the source window;
+ * @start_brk: the editor's start breakpoint to take out at the stop, or 0.
+ *
+ * The editor keeps its keys until the stop, however long the program takes
+ * to get there; its output shows in Messages meanwhile, and what the user
+ * types is its input.
+ * Return: 0, or the end of the session.
+ */
+static int e_d_jdb_run_started(FENSTER *f, int start_brk)
+{
+ e_d_swtch = 3;
+ return(e_d_run_hand_over(f, e_d_jdb_run_ops(), start_brk));
 }
 
 /**
@@ -9352,12 +10526,15 @@ static int e_d_pdb_finish(FENSTER *f)
 /**
  * e_d_jdb_finish - Finish function under jdb: "step up".
  * @f: the source window.
- * Return: e_d_jdb_read_stop's answer.
+ *
+ * The program runs under the run controller: the editor keeps its keys
+ * until the function returns.
+ * Return: 0, or the end of the session.
  */
 static int e_d_jdb_finish(FENSTER *f)
 {
  e_d_send_cmd(E_D_JDB_FINISH);
- return(e_d_jdb_read_stop(f));
+ return(e_d_jdb_run_started(f, 0));
 }
 
 /**
@@ -9471,8 +10648,6 @@ int e_d_step_next(FENSTER *f, int sw)
  else if (e_deb_type == DEB_DBX || e_deb_type == DEB_JDB) e_d_send_cmd("step\n");
  else e_d_send_cmd("s\n");
  e_d_nstack = 0;
- if (e_deb_type == DEB_JDB)
-  return e_d_jdb_read_stop(f);
  run_ops = e_d_run_ops_of_backend();
  if (run_ops)
   return(e_d_run_hand_over(f, run_ops, 0));

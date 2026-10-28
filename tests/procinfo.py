@@ -255,3 +255,26 @@ def children_named(ppid, name):
     A test needs it to find the debugger the editor started (and only that
     child: not another child, not a grandchild), or to see it has ended."""
     return [pid for pid in _child_pids(ppid) if _live_and_named(pid, name)]
+
+
+def descendants(ppid):
+    """PIDs of every child of ppid, of its children, and so on, that have
+    not ended.
+
+    A test needs it to see a debugger's whole tree (the debugger, the
+    program it launched, what that started) and to check, once a session is
+    over, that none of it is left behind."""
+    found = []
+    pending = [ppid]
+    while pending:
+        for pid in _child_pids(pending.pop()):
+            if run_state(pid) in (GONE, ZOMBIE):
+                continue
+            found.append(pid)
+            pending.append(pid)
+    return found
+
+
+def all_ended(pids):
+    """True when none of pids is still alive: each is gone or a zombie."""
+    return all(run_state(pid) in (GONE, ZOMBIE) for pid in pids)

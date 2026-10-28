@@ -389,6 +389,12 @@ def xwpe(xserver, tmp_path, request):
     source = param.pop("XWPE_TEST_SOURCE", None)
     if source is not None:
         src.write_text(source)
+    # XWPE_TEST_FILE: the name the program is edited under, for a language
+    # whose debugger is chosen by it (P.java for jdb).
+    name = param.pop("XWPE_TEST_FILE", None)
+    if name is not None:
+        src = tmp_path / name
+        src.write_text(source or "")
     env.update(param)   # optional per-test env (e.g. AI)
     proc = _spawn([XWPE_BIN, str(src)], env=env, cwd=str(tmp_path))
     win = _find_xwpe_window()

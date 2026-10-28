@@ -15,6 +15,7 @@ import os
 import re
 import shutil
 import signal
+import socket
 import subprocess
 import sys
 import time
@@ -1455,7 +1456,7 @@ def test_pdb_keys_reach_the_editor_while_the_program_runs(tmp_path):
 # pdb shares its stdin with the program, so nothing typed in the editor can
 # reach the program: the status row offers only Quit.
 PDB_RUNNING_LINE = "The program is running: Debug > Quit ends the session"
-PDB_TYPED_WHILE_RUNNING = "QZQ"
+TYPED_WHILE_RUNNING = "QZQ"
 
 
 # @scenario SC-debug-35
@@ -1480,9 +1481,9 @@ def test_pdb_text_typed_while_the_program_runs_goes_into_the_file(tmp_path):
         assert PDB_RUNNING_LINE in _screen(w), \
             "Ctrl-G K should say %r under pdb:\n%s" \
             % (PDB_RUNNING_LINE, _screen(w))
-        w.key(PDB_TYPED_WHILE_RUNNING, delay=0.8)
+        w.key(TYPED_WHILE_RUNNING, delay=0.8)
         w.save()
-        assert PDB_TYPED_WHILE_RUNNING in w.text(), \
+        assert TYPED_WHILE_RUNNING in w.text(), \
             "the letters typed while pdb's program runs should be in the " \
             "file:\n%s" % w.text()
 
@@ -3972,10 +3973,11 @@ def test_pdb_sys_exit_is_one_line_with_its_code(tmp_path):
 
 # @scenario SC-debug-13
 def test_jdb_end_is_one_line(tmp_path):
-    """jdb names no exit code: the plain line, and where the output is."""
+    """jdb names no exit code: the plain line.  The program's output is in
+    Messages already, so the line names no other place to look."""
     _need("jdb", "javac")
     with WpeSession(str(tmp_path), GOTO_JAVA, filename="P.java", wait=1.5) as w:
-        _ends_with_one_line(w, JAVA_SQ_LINE, "Program exited." + OUTPUT_HINT,
+        _ends_with_one_line(w, JAVA_SQ_LINE, "Program exited.",
                             lambda: not _children(w, "jdb"),
                             JDB_START_TIMEOUT_S)
 
@@ -4082,3 +4084,1118 @@ def test_an_adapter_program_that_ends_at_the_start_ends_at_the_first_finish(
     with WpeSession(str(tmp_path), RUST_NEVER_STOPS, filename="main.rs",
                     wait=2.0, env_extra={"XWPE_DAP_ADAPTER": "lldb"}) as w:
         _first_command_ends_the_session(w, "f", "lldb-dap")
+
+
+# A Java program that sleeps eight seconds between two statements, longer
+# than the five seconds jdb's step commands used to wait for a stop.
+# Line numbers are 1-based source lines of JDB_SLOW_PROG.
+JDB_SLOW_PROG = (
+    "public class P {\n"
+    "    public static void main(String[] a) throws Exception {\n"
+    "        int x = 1;\n"
+    "        Thread.sleep(8000);\n"
+    "        int y = x + 1;\n"
+    "        System.out.println(y);\n"
+    "    }\n"
+    "}\n"
+)
+JDB_SLOW_FIRST_LINE = 3     # int x = 1;
+JDB_SLOW_SLEEP_LINE = 4     # Thread.sleep(8000);
+JDB_SLOW_AFTER_LINE = 5     # int y = x + 1;  after the sleep
+JDB_SLOW_WAIT_S = 25        # the sleep, the stop and the slow machine
+
+
+# @scenario SC-debug-05
+def test_jdb_continue_to_a_breakpoint_far_away_marks_it(tmp_path):
+    """Stopped at the first breakpoint, Ctrl-G R runs the program through
+    an eight-second sleep to the second breakpoint, and the stop there is
+    marked."""
+    _need("jdb", "javac")
+    with WpeSession(str(tmp_path), JDB_SLOW_PROG, filename="P.java",
+                    wait=1.5) as w:
+        _move_down(w, JDB_SLOW_FIRST_LINE - 1)
+        w.key(CTRL_G, "b", delay=0.4)
+        _move_down(w, JDB_SLOW_AFTER_LINE - JDB_SLOW_FIRST_LINE)
+        w.key(CTRL_G, "b", delay=0.4)
+        w.key(CTRL_G, "r", delay=1.0)
+        assert _wait_for(w, lambda: _mark_line(w) == JDB_SLOW_FIRST_LINE,
+                         JDB_START_TIMEOUT_S), \
+            "jdb should stop on line %d:\n%s" \
+            % (JDB_SLOW_FIRST_LINE, _screen(w))
+        w.key(CTRL_G, "r", delay=0.5)
+        assert _wait_for(w, lambda: _mark_line(w) == JDB_SLOW_AFTER_LINE,
+                         JDB_SLOW_WAIT_S), \
+            "the run should stop on line %d (mark on %s):\n%s" \
+            % (JDB_SLOW_AFTER_LINE, _mark_line(w), _screen(w))
+
+
+# @scenario SC-debug-05
+def test_jdb_f8_over_a_line_that_runs_long_marks_the_next_line(tmp_path):
+    """F8 on a line that sleeps eight seconds marks the line after it once
+    the sleep ends."""
+    _need("jdb", "javac")
+    with WpeSession(str(tmp_path), JDB_SLOW_PROG, filename="P.java",
+                    wait=1.5) as w:
+        _move_down(w, JDB_SLOW_SLEEP_LINE - 1)
+        w.key(CTRL_G, "b", delay=0.4)
+        w.key(CTRL_G, "r", delay=1.0)
+        assert _wait_for(w, lambda: _mark_line(w) == JDB_SLOW_SLEEP_LINE,
+                         JDB_START_TIMEOUT_S), \
+            "jdb should stop on line %d:\n%s" \
+            % (JDB_SLOW_SLEEP_LINE, _screen(w))
+        w.key(F8, delay=0.3)
+        assert _wait_for(w, lambda: _mark_line(w) == JDB_SLOW_AFTER_LINE,
+                         JDB_SLOW_WAIT_S), \
+            "F8 should mark line %d (mark on %s):\n%s" \
+            % (JDB_SLOW_AFTER_LINE, _mark_line(w), _screen(w))
+
+
+# @scenario SC-debug-36
+def test_jdb_keys_reach_the_editor_while_the_program_runs(tmp_path):
+    """Ctrl-G K while the Java program sleeps says so on the status row and
+    opens no Stack window; jdb is asked nothing until the program stops."""
+    _need("jdb", "javac")
+    spec = SLEEPING_PROGS["jdb"]
+    with WpeSession(str(tmp_path), spec["prog"], filename=spec["file"],
+                    wait=1.5) as w:
+        _move_down(w, spec["line"] - 1)
+        w.key(CTRL_G, "b", delay=0.5)
+        w.key(CTRL_G, "r", delay=1.0)
+        assert _wait_for(w, lambda: _mark_line(w) == spec["line"],
+                         spec["start_s"]), \
+            "jdb should stop on line %d:\n%s" % (spec["line"], _screen(w))
+        w.key(CTRL_G, "r", delay=0.5)
+        w._drain(RUNNING_SETTLE_S)   # asleep for ten minutes (drain scales)
+        w.key(CTRL_G, "k", delay=0.8)
+        assert RUNNING_REFUSAL in _screen(w), \
+            "Ctrl-G K should be refused with a line on the status row:\n%s" \
+            % _screen(w)
+        assert " Stack " not in _screen(w), \
+            "no Stack window should open:\n%s" % _screen(w)
+
+
+def _start_jdb_session_on(w, line):
+    """A breakpoint on @line, Ctrl-G R, and wait for jdb's first stop
+    there."""
+    _move_down(w, line - 1)
+    w.key(CTRL_G, "b", delay=0.4)
+    w.key(CTRL_G, "r", delay=1.0)
+    assert _wait_for(w, lambda: _mark_line(w) == line,
+                     JDB_START_TIMEOUT_S), \
+        "jdb should stop on line %d (mark on %s):\n%s" \
+        % (line, _mark_line(w), _screen(w))
+
+
+# A method that takes eight seconds, called from main.
+JDB_SLOW_CALL_PROG = (
+    "public class P {\n"
+    "    static int slow(int v) throws Exception {\n"
+    "        Thread.sleep(8000);\n"
+    "        return v * v;\n"
+    "    }\n"
+    "    public static void main(String[] a) throws Exception {\n"
+    "        int y = slow(3);\n"
+    "        System.out.println(y);\n"
+    "    }\n"
+    "}\n"
+)
+JDB_SLOW_BODY_LINE = 3        # Thread.sleep(8000);
+JDB_SLOW_CALLER_LINE = 7      # int y = slow(3);
+
+
+# @scenario SC-debug-34
+def test_jdb_finish_over_a_long_call_marks_the_caller(tmp_path):
+    """Ctrl-G F from inside a method that runs eight seconds more marks the
+    caller's line when it returns, and the editor keeps its keys meanwhile:
+    "step up" is not abandoned because the call takes a while."""
+    _need("jdb", "javac")
+    with WpeSession(str(tmp_path), JDB_SLOW_CALL_PROG, filename="P.java",
+                    wait=1.5) as w:
+        _start_jdb_session_on(w, JDB_SLOW_BODY_LINE)
+        w.key(CTRL_G, "f", delay=0.5)
+        _says_the_program_is_running(w)
+        assert _wait_for(w, lambda: _mark_line(w) == JDB_SLOW_CALLER_LINE,
+                         JDB_SLOW_WAIT_S), \
+            "Ctrl-G F should mark line %d (mark on %s):\n%s" \
+            % (JDB_SLOW_CALLER_LINE, _mark_line(w), _screen(w))
+
+
+JDB_GOTO_CURSOR_LINE = 6      # System.out.println(y);  after the sleep
+
+
+# @scenario SC-debug-06
+def test_jdb_go_to_cursor_over_a_long_line_keeps_the_editors_keys(tmp_path):
+    """F4 to a line past an eight second line: the editor refuses debugger
+    keys with the running line meanwhile, then the cursor's line is marked
+    and Go to cursor's own breakpoint is gone."""
+    _need("jdb", "javac")
+    with WpeSession(str(tmp_path), JDB_SLOW_PROG, filename="P.java",
+                    wait=1.5) as w:
+        _start_jdb_session_on(w, JDB_SLOW_FIRST_LINE)
+        _go_to_line(w, JDB_GOTO_CURSOR_LINE)
+        assert _wait_for(w, lambda: "F4 Go to cursor" in _bottom_bar(w),
+                         STEP_TIMEOUT_S), \
+            "the bar should offer F4 Go to cursor:\n%s" % _screen(w)
+        w.key(F4, delay=0.5)
+        _says_the_program_is_running(w)
+        assert _wait_for(w, lambda: _mark_line(w) == JDB_GOTO_CURSOR_LINE,
+                         JDB_SLOW_WAIT_S), \
+            "F4 should mark line %d (mark on %s):\n%s" \
+            % (JDB_GOTO_CURSOR_LINE, _mark_line(w), _screen(w))
+        assert JDB_GOTO_CURSOR_LINE not in _breakpoint_lines(w), \
+            "Go to cursor's breakpoint should be gone at the stop:\n%s" \
+            % _screen(w)
+
+
+# A class whose static initialiser takes twelve seconds, longer than the ten
+# the editor used to give the VM to reach its first breakpoint.
+JDB_SLOW_START_PROG = (
+    "public class P {\n"
+    "    static {\n"
+    "        try { Thread.sleep(12000); } catch (InterruptedException e) { }\n"
+    "    }\n"
+    "    public static void main(String[] a) {\n"
+    "        int x = 3;\n"
+    "        System.out.println(x);\n"
+    "    }\n"
+    "}\n"
+)
+JDB_SLOW_START_LINE = 6       # int x = 3;
+JDB_SLOW_START_WAIT_S = 45    # javac, twelve seconds, the VM
+
+
+# @scenario SC-debug-05
+def test_jdb_first_run_reaches_a_breakpoint_after_a_slow_start(tmp_path):
+    """The first Run of a program whose VM takes twelve seconds to reach
+    main still stops on the breakpoint there: the start has no deadline,
+    and jdb is still the session's debugger."""
+    _need("jdb", "javac")
+    with WpeSession(str(tmp_path), JDB_SLOW_START_PROG, filename="P.java",
+                    wait=1.5) as w:
+        _move_down(w, JDB_SLOW_START_LINE - 1)
+        w.key(CTRL_G, "b", delay=0.4)
+        w.key(CTRL_G, "r", delay=1.0)
+        assert _wait_for(w, lambda: _mark_line(w) == JDB_SLOW_START_LINE,
+                         JDB_SLOW_START_WAIT_S), \
+            "the run should stop on line %d (mark on %s):\n%s" \
+            % (JDB_SLOW_START_LINE, _mark_line(w), _screen(w))
+        assert _children(w, "jdb"), "jdb should still run the session"
+
+
+JDB_CURSOR_LINE = 8           # System.out.println(...) of JAVA_PROG
+
+
+# @scenario SC-debug-05
+def test_jdb_go_to_cursor_as_the_first_command_stops_at_the_cursor(tmp_path):
+    """Borland's F4 before any session starts jdb and runs on to the
+    cursor's line, as it does under gdb, and the session goes on."""
+    _need("jdb", "javac")
+    with WpeSession(str(tmp_path), JAVA_PROG, filename="P.java",
+                    wait=1.5) as w:
+        _move_down(w, JDB_CURSOR_LINE - 1)
+        w.key(CTRL_G, "u", delay=1.0)
+        assert _wait_for(w, lambda: _mark_line(w) == JDB_CURSOR_LINE,
+                         JDB_START_TIMEOUT_S), \
+            "Go to cursor should start the session and stop on line %d " \
+            "(mark on %s):\n%s" \
+            % (JDB_CURSOR_LINE, _mark_line(w), _screen(w))
+        assert _children(w, "jdb"), "jdb should still run the session"
+        assert not _breakpoint_lines(w), \
+            "no breakpoint should be left in the margin:\n%s" % _screen(w)
+        w.key(CTRL_G, "r", delay=0.5)
+        assert _wait_for(w, lambda: not _children(w, "jdb"), STEP_TIMEOUT_S), \
+            "a continue should run to the program's end, not stop again " \
+            "at main or the cursor:\n%s" % _screen(w)
+
+
+# The Java program has a terminal of its own, so the status row offers
+# typing its input while it runs, as under gdb.
+JDB_RUNNING_LINE = "type its input in Messages"
+# A program that reads one line from its input and prints it back.
+JDB_READ_PROG = (
+    "import java.io.*;\n"
+    "public class P {\n"
+    "    public static void main(String[] a) throws Exception {\n"
+    "        System.out.println(\"READY\");\n"
+    "        BufferedReader in = new BufferedReader(\n"
+    "            new InputStreamReader(System.in));\n"
+    "        System.out.println(\"GOT:\" + in.readLine());\n"
+    "        int x = 3;\n"
+    "    }\n"
+    "}\n"
+)
+JDB_READ_BREAK_LINE = 8       # int x = 3;  after the line is read
+JDB_TYPED_LINE = "hi there"
+
+
+def _messages_hold(w, text):
+    """True when a line of the Messages window on screen holds @text."""
+    return any(text in line for line in _messages_lines(w))
+
+
+def _start_jdb_reading_program(w):
+    """A breakpoint after the read, then Ctrl-G R: return once the Java
+    program printed READY in Messages and waits on its input."""
+    _move_down(w, JDB_READ_BREAK_LINE - 1)
+    w.key(CTRL_G, "b", delay=0.4)
+    w.key(CTRL_G, "r", delay=1.0)
+    assert _wait_for(w, lambda: _messages_hold(w, "READY"),
+                     JDB_START_TIMEOUT_S), \
+        "the program should run and print READY in Messages:\n%s" \
+        % _screen(w)
+
+
+# @scenario SC-debug-35
+def test_jdb_text_typed_while_the_program_runs_reaches_it(tmp_path):
+    """While the Java program waits for a line, Ctrl-G K's status row
+    offers typing its input, the line typed and Enter reach the program,
+    which prints it back in Messages and stops on the next breakpoint."""
+    _need("jdb", "javac")
+    with WpeSession(str(tmp_path), JDB_READ_PROG, filename="P.java",
+                    wait=1.5) as w:
+        _start_jdb_reading_program(w)
+        w.key(CTRL_G, "k", delay=0.8)
+        assert JDB_RUNNING_LINE in _screen(w), \
+            "Ctrl-G K should say %r under jdb:\n%s" \
+            % (JDB_RUNNING_LINE, _screen(w))
+        w.key(JDB_TYPED_LINE, delay=0.4)
+        w.key("\r", delay=0.3)
+        assert _wait_for(w, lambda: _messages_hold(w, "GOT:" + JDB_TYPED_LINE),
+                         STEP_TIMEOUT_S), \
+            "the program should read what was typed:\n%s" % _screen(w)
+        assert _wait_for(w, lambda: _mark_line(w) == JDB_READ_BREAK_LINE,
+                         STEP_TIMEOUT_S), \
+            "the run should stop on line %d (mark on %s):\n%s" \
+            % (JDB_READ_BREAK_LINE, _mark_line(w), _screen(w))
+        w.save()
+        assert JDB_TYPED_LINE not in w.text(), \
+            "the typed line belongs to the program, not the file:\n%s" \
+            % w.text()
+
+
+# @scenario SC-debug-18
+@pytest.mark.parametrize("stage", ["running", "stopped"])
+def test_debug_quit_under_jdb_leaves_no_java_process_behind(tmp_path, stage):
+    """Debug > Quit ends the whole tree jdb started, the VM it launched
+    included, whether the program runs or waits at a stop: no Java process
+    outlives the session."""
+    _need("jdb", "javac")
+    spec = SLEEPING_PROGS["jdb"]
+    with WpeSession(str(tmp_path), spec["prog"], filename=spec["file"],
+                    wait=1.5) as w:
+        _start_jdb_session_on(w, spec["line"])
+        if stage == "running":
+            w.key(CTRL_G, "r", delay=0.5)
+            w._drain(RUNNING_SETTLE_S)
+        tree = procinfo.descendants(w.proc.pid)
+        assert len(tree) >= 2, \
+            "jdb and the VM it launched should be running: %s" % tree
+        w.menu(ALT.DEBUG, "q", delay=0.5)
+        assert _wait_for(w, lambda: procinfo.all_ended(tree),
+                         STEP_TIMEOUT_S), \
+            "no process of the session should be left (alive: %s):\n%s" \
+            % ([p for p in tree if not procinfo.all_ended([p])], _screen(w))
+
+
+# A program that prints without end, so the VM is busy writing to jdb's pipe
+# when Quit comes.
+JDB_FLOOD_PROG = (
+    "public class P {\n"
+    "    public static void main(String[] a) {\n"
+    "        int i = 0;\n"
+    "        while (true) {\n"
+    "            System.out.println(\"flood \" + i++);\n"
+    "        }\n"
+    "    }\n"
+    "}\n"
+)
+JDB_FLOOD_LINE = 3            # int i = 0;
+JDB_FLOOD_SETTLE_S = 2        # let the flood get going
+
+
+# @scenario SC-debug-18
+def test_debug_quit_while_the_java_program_floods_leaves_no_process(tmp_path):
+    """Debug > Quit while the Java program prints without end ends the whole
+    tree jdb started, the VM included: a flood must not keep the VM alive
+    after jdb is gone."""
+    _need("jdb", "javac")
+    with WpeSession(str(tmp_path), JDB_FLOOD_PROG, filename="P.java",
+                    wait=1.5) as w:
+        _start_jdb_session_on(w, JDB_FLOOD_LINE)
+        w.key(CTRL_G, "r", delay=0.5)
+        w._drain(JDB_FLOOD_SETTLE_S)
+        tree = procinfo.descendants(w.proc.pid)
+        assert len(tree) >= 2, \
+            "jdb and the VM it launched should be running: %s" % tree
+        w.menu(ALT.DEBUG, "q", delay=0.5)
+        assert _wait_for(w, lambda: procinfo.all_ended(tree),
+                         STEP_TIMEOUT_S), \
+            "no process of the session should be left (alive: %s):\n%s" \
+            % ([p for p in tree if not procinfo.all_ended([p])], _screen(w))
+
+
+# An uncaught exception in a method main calls: jdb stops on the line that
+# threw, as it does at a breakpoint.
+JDB_THROW_PROG = (
+    "public class P {\n"
+    "    static void boom() {\n"
+    "        throw new IllegalStateException(\"boom\");\n"
+    "    }\n"
+    "    public static void main(String[] a) {\n"
+    "        int x = 1;\n"
+    "        boom();\n"
+    "        System.out.println(x);\n"
+    "    }\n"
+    "}\n"
+)
+JDB_THROW_LINE = 3            # throw new IllegalStateException(...)
+JDB_THROW_BEFORE_LINE = 6     # int x = 1;
+JDB_THROW_CALL_LINE = 7       # boom();
+JDB_THROW_NEVER_LINE = 8      # a breakpoint the exception comes before
+JDB_THROW_SAYS = "Uncaught exception: java.lang.IllegalStateException"
+
+
+# @scenario SC-debug-05
+@pytest.mark.parametrize("how", ["first_run", "continue", "step"])
+def test_jdb_uncaught_exception_marks_the_line_that_threw(tmp_path, how):
+    """An uncaught exception is a stop: the line that threw is marked, from
+    the first Run, from a continue and from F8 over the call, and the
+    editor does not stay "running"."""
+    _need("jdb", "javac")
+    with WpeSession(str(tmp_path), JDB_THROW_PROG, filename="P.java",
+                    wait=1.5) as w:
+        if how == "first_run":
+            _move_down(w, JDB_THROW_NEVER_LINE - 1)
+            w.key(CTRL_G, "b", delay=0.4)
+            w.key(CTRL_G, "r", delay=1.0)
+        elif how == "continue":
+            _start_jdb_session_on(w, JDB_THROW_BEFORE_LINE)
+            w.key(CTRL_G, "r", delay=0.5)
+        else:
+            _start_jdb_session_on(w, JDB_THROW_CALL_LINE)
+            w.key(F8, delay=0.3)
+        assert _wait_for(w, lambda: _mark_line(w) == JDB_THROW_LINE,
+                         JDB_START_TIMEOUT_S), \
+            "the uncaught exception should mark line %d (mark on %s):\n%s" \
+            % (JDB_THROW_LINE, _mark_line(w), _screen(w))
+        assert _status_row_says(w, JDB_THROW_SAYS, STEP_TIMEOUT_S), \
+            "the status row should name the exception:\n%s" % _screen(w)
+        w.key(CTRL_G, "k", delay=0.8)
+        assert RUNNING_REFUSAL not in _screen(w), \
+            "the session should not be 'running' after the stop:\n%s" \
+            % _screen(w)
+
+
+# The program prints jdb's launch-failure words between two breakpoints.
+JDB_UNABLE_PROG = (
+    "public class P {\n"
+    "    public static void main(String[] a) {\n"
+    "        int x = 1;\n"
+    "        System.out.println(\"Unable to open config\");\n"
+    "        int y = x + 1;\n"
+    "    }\n"
+    "}\n"
+)
+JDB_UNABLE_FIRST_LINE = 3
+JDB_UNABLE_SECOND_LINE = 5
+
+
+# @scenario SC-debug-05
+def test_jdb_program_output_saying_unable_does_not_end_the_session(tmp_path):
+    """A line of the program's own output that says "Unable to ..." is
+    output, not a failed start: the next breakpoint is still marked."""
+    _need("jdb", "javac")
+    with WpeSession(str(tmp_path), JDB_UNABLE_PROG, filename="P.java",
+                    wait=1.5) as w:
+        _move_down(w, JDB_UNABLE_FIRST_LINE - 1)
+        w.key(CTRL_G, "b", delay=0.4)
+        _move_down(w, JDB_UNABLE_SECOND_LINE - JDB_UNABLE_FIRST_LINE)
+        w.key(CTRL_G, "b", delay=0.4)
+        w.key(CTRL_G, "r", delay=1.0)
+        assert _wait_for(w, lambda: _mark_line(w) == JDB_UNABLE_FIRST_LINE,
+                         JDB_START_TIMEOUT_S), \
+            "jdb should stop on line %d:\n%s" \
+            % (JDB_UNABLE_FIRST_LINE, _screen(w))
+        w.key(CTRL_G, "r", delay=0.5)
+        assert _wait_for(w, lambda: _mark_line(w) == JDB_UNABLE_SECOND_LINE,
+                         STEP_TIMEOUT_S), \
+            "the second breakpoint should be marked (mark on %s):\n%s" \
+            % (_mark_line(w), _screen(w))
+        assert _children(w, "jdb"), "jdb should still run the session"
+
+
+# The program prints the words of jdb's stop lines and something that looks
+# like its prompt, then waits for a line on its input (which the test gives
+# when it chooses, not after a fixed time) before the next breakpoint.
+JDB_FAKE_STOP_PROG = (
+    "public class P {\n"
+    "    public static void main(String[] a) throws Exception {\n"
+    "        int x = 1;\n"
+    "        System.out.println(\"[app] Exception occurred: handled\");\n"
+    "        System.out.println(\"Breakpoint hit: not jdb's\");\n"
+    "        System.out.print(\"main[1] \");\n"
+    "        System.out.flush();\n"
+    "        new java.io.BufferedReader(new java.io.InputStreamReader("
+    "System.in)).readLine();\n"
+    "        int y = x + 1;\n"
+    "    }\n"
+    "}\n"
+)
+JDB_FAKE_STOP_FIRST_LINE = 3
+JDB_FAKE_STOP_SECOND_LINE = 9     # after the read
+JDB_FAKE_STOP_PRINTED = "Breakpoint hit: not jdb's"
+JDB_FAKE_STOP_ANSWER = "go"       # the line that lets the program on
+
+
+# @scenario SC-debug-05
+def test_jdb_program_output_like_a_stop_is_not_taken_for_one(tmp_path):
+    """Program output with jdb's stop words and a prompt-like "main[1] " is
+    output: while the program waits for its input the session is still running
+    (Ctrl-G K is refused), and the next breakpoint is marked once the
+    program is given its line."""
+    _need("jdb", "javac")
+    with WpeSession(str(tmp_path), JDB_FAKE_STOP_PROG, filename="P.java",
+                    wait=1.5) as w:
+        _move_down(w, JDB_FAKE_STOP_FIRST_LINE - 1)
+        w.key(CTRL_G, "b", delay=0.4)
+        _move_down(w, JDB_FAKE_STOP_SECOND_LINE - JDB_FAKE_STOP_FIRST_LINE)
+        w.key(CTRL_G, "b", delay=0.4)
+        w.key(CTRL_G, "r", delay=1.0)
+        assert _wait_for(w, lambda: _mark_line(w) == JDB_FAKE_STOP_FIRST_LINE,
+                         JDB_START_TIMEOUT_S), \
+            "jdb should stop on line %d:\n%s" \
+            % (JDB_FAKE_STOP_FIRST_LINE, _screen(w))
+        w.key(CTRL_G, "r", delay=0.5)
+        assert _wait_for(w, lambda: _messages_hold(w, JDB_FAKE_STOP_PRINTED),
+                         STEP_TIMEOUT_S), \
+            "the program's stop-like lines should be in Messages:\n%s" \
+            % _screen(w)
+        w.key(CTRL_G, "k", delay=0.8)
+        assert RUNNING_REFUSAL in _screen(w), \
+            "the program still runs: Ctrl-G K should be refused:\n%s" \
+            % _screen(w)
+        w.key(JDB_FAKE_STOP_ANSWER, delay=0.4)
+        w.key("\r", delay=0.3)
+        assert _wait_for(w,
+                         lambda: _mark_line(w) == JDB_FAKE_STOP_SECOND_LINE,
+                         STEP_TIMEOUT_S), \
+            "the breakpoint after the sleep should be marked (mark on %s):" \
+            "\n%s" % (_mark_line(w), _screen(w))
+
+
+# A line the program never reaches.
+JDB_NEVER_PROG = (
+    "public class P {\n"
+    "    public static void main(String[] a) {\n"
+    "        int x = 3;\n"
+    "        if (x > 5) {\n"
+    "            x = 0;\n"
+    "        }\n"
+    "        System.out.println(x);\n"
+    "    }\n"
+    "}\n"
+)
+JDB_NEVER_LINE = 5            # x = 0;
+
+
+# @scenario SC-debug-05
+def test_jdb_go_to_cursor_as_the_first_command_onto_a_line_never_reached(
+        tmp_path):
+    """Go to cursor before any session onto a line the program never
+    reaches runs it to its end: Messages says so, jdb is gone and nothing
+    of the session is left running."""
+    _need("jdb", "javac")
+    with WpeSession(str(tmp_path), JDB_NEVER_PROG, filename="P.java",
+                    wait=1.5) as w:
+        _move_down(w, JDB_NEVER_LINE - 1)
+        w.key(CTRL_G, "u", delay=1.0)
+        assert _wait_for(w, lambda: "Program exited" in _screen(w),
+                         JDB_START_TIMEOUT_S), \
+            "the session should end saying the program exited:\n%s" \
+            % _screen(w)
+        assert _wait_for(w, lambda: not procinfo.descendants(w.proc.pid),
+                         STEP_TIMEOUT_S), \
+            "nothing of the session should be left: %s\n%s" \
+            % (procinfo.descendants(w.proc.pid), _screen(w))
+
+
+# ---- The Java program on a terminal of its own ---------------------------
+#
+# jdb waits for the program's VM on a loopback port and the editor starts
+# the VM itself on the session's terminal, so what the program prints never
+# mixes with what jdb says: it reaches Messages as it prints, and what the
+# user types while it runs reaches the program, as under gdb.
+
+# The program prints a line, then text without a newline, then stops.
+JDB_EARLY_PROG = (
+    "public class P {\n"
+    "    public static void main(String[] a) {\n"
+    "        int x = 1;\n"
+    "        System.out.println(\"EARLY OUT \" + x);\n"
+    "        System.out.print(\"NO NEWLINE\");\n"
+    "        int y = x + 1;\n"
+    "        System.out.println(y);\n"
+    "    }\n"
+    "}\n"
+)
+JDB_EARLY_FIRST_LINE = 3      # int x = 1;  before both prints
+JDB_EARLY_STOP_LINE = 6       # int y = x + 1;  after both prints
+
+
+def _jdb_breakpoints_and_run(w, lines):
+    """A breakpoint on each of @lines (ascending), then Ctrl-G R."""
+    at = 1
+    for line in lines:
+        _move_down(w, line - at)
+        w.key(CTRL_G, "b", delay=0.4)
+        at = line
+    w.key(CTRL_G, "r", delay=1.0)
+
+
+# @scenario SC-debug-11
+@pytest.mark.parametrize("how", ["first_run", "continue"])
+def test_jdb_output_printed_before_a_breakpoint_reaches_messages(tmp_path,
+                                                                 how):
+    """What the Java program printed before it stopped, the text that has no
+    newline yet included, is in Messages at the stop: from the first Run and
+    from a continue."""
+    _need("jdb", "javac")
+    with WpeSession(str(tmp_path), JDB_EARLY_PROG, filename="P.java",
+                    wait=1.5) as w:
+        if how == "continue":
+            _jdb_breakpoints_and_run(w, [JDB_EARLY_FIRST_LINE,
+                                         JDB_EARLY_STOP_LINE])
+            assert _wait_for(w, lambda: _mark_line(w) == JDB_EARLY_FIRST_LINE,
+                             JDB_START_TIMEOUT_S), \
+                "jdb should stop on line %d:\n%s" \
+                % (JDB_EARLY_FIRST_LINE, _screen(w))
+            w.key(CTRL_G, "r", delay=0.5)
+        else:
+            _jdb_breakpoints_and_run(w, [JDB_EARLY_STOP_LINE])
+        assert _wait_for(w, lambda: _mark_line(w) == JDB_EARLY_STOP_LINE,
+                         JDB_START_TIMEOUT_S), \
+            "jdb should stop on line %d (mark on %s):\n%s" \
+            % (JDB_EARLY_STOP_LINE, _mark_line(w), _screen(w))
+        assert _wait_for(w, lambda: _messages_hold(w, "EARLY OUT 1") and
+                         _messages_hold(w, "NO NEWLINE"), STEP_TIMEOUT_S), \
+            "Messages should show what the program printed:\n%s" % _screen(w)
+
+
+# One source line prints two thousand lines.
+JDB_LOOP_PROG = (
+    "public class P {\n"
+    "    public static void main(String[] a) {\n"
+    "        int n = 3;\n"
+    "        for (int i = 0; i < 2000; i++) "
+    "System.out.println(\"LOOP \" + i);\n"
+    "        int y = n + 1;\n"
+    "    }\n"
+    "}\n"
+)
+JDB_LOOP_LINE = 4             # the printing loop
+JDB_LOOP_NEXT_LINE = 5        # int y = n + 1;
+JDB_LOOP_LAST = "LOOP 1999"
+
+
+# @scenario SC-debug-11
+def test_jdb_f8_over_a_println_loop_marks_the_next_line_and_shows_the_output(
+        tmp_path):
+    """F8 over a line that prints two thousand lines marks the next line,
+    and Messages ends with the last line printed."""
+    _need("jdb", "javac")
+    with WpeSession(str(tmp_path), JDB_LOOP_PROG, filename="P.java",
+                    wait=1.5) as w:
+        _start_jdb_session_on(w, JDB_LOOP_LINE)
+        w.key(F8, delay=0.3)
+        assert _wait_for(w, lambda: _mark_line(w) == JDB_LOOP_NEXT_LINE,
+                         JDB_SLOW_WAIT_S), \
+            "F8 should mark line %d (mark on %s):\n%s" \
+            % (JDB_LOOP_NEXT_LINE, _mark_line(w), _screen(w))
+        assert _wait_for(w, lambda: _messages_hold(w, JDB_LOOP_LAST),
+                         STEP_TIMEOUT_S), \
+            "Messages should end with %r:\n%s" % (JDB_LOOP_LAST, _screen(w))
+
+
+# A jdb that runs the real one, in a directory whose java is a stand-in:
+# the editor starts the java it finds next to jdb.
+FAKE_JDB = "#!/bin/sh\nexec '%s' \"$@\"\n"
+FAKE_JAVA_SLEEPS = "#!/bin/sh\nexec sleep 600\n"
+FAKE_JAVA_FAILS = "#!/bin/sh\necho 'stand-in VM refuses to start' >&2\nexit 3\n"
+FAKE_JAVA_FAILS_SAYS = "stand-in VM refuses to start"
+FAKE_JAVA_GONE_LINE = "java ended before jdb connected (exit status 3)"
+WAITING_FOR_JDB = "jdb starting the Java VM"
+
+
+def _fake_jdk_env(tmp_path, java_script):
+    """The environment of a session whose jdb finds @java_script as its
+    java, with a start deadline no test reaches."""
+    bindir = tmp_path / "fakejdk"
+    bindir.mkdir()
+    _write_script(bindir / "jdb",
+                  FAKE_JDB % os.path.realpath(shutil.which("jdb")))
+    _write_script(bindir / "java", java_script)
+    return {"PATH": "%s:%s" % (bindir, os.environ.get("PATH", "")),
+            "XWPE_DEBUG_START_TIMEOUT": str(LONG_START_TIMEOUT_S)}
+
+
+def _quit_while_the_vm_starts(w, key):
+    """The start waits for a VM that never connects: end it with @key."""
+    assert _wait_for(w, lambda: WAITING_FOR_JDB in _screen(w) and
+                     _children(w, "sleep"), JDB_START_TIMEOUT_S), \
+        "the start should wait for the VM:\n%s" % _screen(w)
+    tree = procinfo.descendants(w.proc.pid)
+    if key == "esc":
+        w.key(ESC, delay=0.5)
+    else:
+        w.menu(ALT.DEBUG, "q", delay=0.5)
+    return tree
+
+
+def _quit_while_the_program_reads(w):
+    """The program waits on its input: end the session with Debug > Quit."""
+    _start_jdb_reading_program(w)
+    tree = procinfo.descendants(w.proc.pid)
+    w.menu(ALT.DEBUG, "q", delay=0.5)
+    return tree
+
+
+# @scenario SC-debug-18
+@pytest.mark.parametrize("how", ["starting", "starting_esc",
+                                 "blocked_on_stdin"])
+def test_debug_quit_under_jdb_leaves_nothing(tmp_path, how):
+    """Debug > Quit, or Esc, while jdb waits for the VM, and Debug > Quit
+    while the program waits for its input, end jdb and the VM: no process
+    of the session is left."""
+    _need("jdb", "javac")
+    env = None
+    prog = JDB_READ_PROG
+    if how != "blocked_on_stdin":
+        env = _fake_jdk_env(tmp_path, FAKE_JAVA_SLEEPS)
+        prog = JAVA_PROG
+    with WpeSession(str(tmp_path), prog, filename="P.java", wait=1.5,
+                    env_extra=env) as w:
+        if how == "blocked_on_stdin":
+            tree = _quit_while_the_program_reads(w)
+        elif how == "starting_esc":
+            _jdb_breakpoints_and_run(w, [JAVA_BREAK_LINE])
+            tree = _quit_while_the_vm_starts(w, "esc")
+        else:
+            _jdb_breakpoints_and_run(w, [JAVA_BREAK_LINE])
+            tree = _quit_while_the_vm_starts(w, "quit")
+        assert len(tree) >= 2, "jdb and the VM should be running: %s" % tree
+        assert _wait_for(w, lambda: procinfo.all_ended(tree),
+                         STEP_TIMEOUT_S), \
+            "no process of the session should be left (alive: %s):\n%s" \
+            % ([p for p in tree if not procinfo.all_ended([p])], _screen(w))
+        assert _takes_keys(w), "the editor should take keys:\n%s" % _screen(w)
+
+
+# @scenario SC-debug-17
+def test_jdb_vm_that_ends_before_connecting_says_why(tmp_path):
+    """A VM that ends before it reaches jdb ends the start: Messages shows
+    what it said and its exit status, and jdb is not left listening."""
+    _need("jdb", "javac")
+    with WpeSession(str(tmp_path), JAVA_PROG, filename="P.java", wait=1.5,
+                    env_extra=_fake_jdk_env(tmp_path, FAKE_JAVA_FAILS)) as w:
+        _jdb_breakpoints_and_run(w, [JAVA_BREAK_LINE])
+        assert _wait_for(w, lambda: _messages_hold(w, FAKE_JAVA_GONE_LINE),
+                         JDB_START_TIMEOUT_S), \
+            "Messages should say the VM ended:\n%s" % _screen(w)
+        assert _messages_hold(w, FAKE_JAVA_FAILS_SAYS), \
+            "Messages should show what the VM said:\n%s" % _screen(w)
+        assert _wait_for(w, lambda: not procinfo.descendants(w.proc.pid),
+                         STEP_TIMEOUT_S), \
+            "nothing of the session should be left: %s\n%s" \
+            % (procinfo.descendants(w.proc.pid), _screen(w))
+
+
+# A jdb that is a script: what it prints first, then it waits.
+STAND_IN_JDB_LISTEN = "Listening at address: localhost:%s"
+STAND_IN_JDB_NO_PORT = STAND_IN_JDB_LISTEN % "99999"
+STAND_IN_JDB_NO_PORT_NAMED = "jdb named no port to listen on"
+WAITING_ROW = "(Esc cancels)"
+STAND_IN_JDB_DIED_LINE = "jdb ended unexpectedly (exit status 5)"
+VM_REFUSED_CONNECT = "java ended before jdb connected"
+VM_CANNOT_ENTER = "cannot enter"
+VM_PERMISSION_DENIED = "Permission denied"
+WIDE_COLS = 220           # a whole temporary path fits on one Messages line
+
+
+def _stand_in_jdb_env(tmp_path, body):
+    """The environment of a session whose jdb is the shell script @body."""
+    bindir = tmp_path / "standinjdb"
+    bindir.mkdir()
+    _write_script(bindir / "jdb", "#!/bin/sh\n" + body)
+    return {"PATH": "%s:%s" % (bindir, os.environ.get("PATH", "")),
+            "XWPE_DEBUG_START_TIMEOUT": str(LONG_START_TIMEOUT_S)}
+
+
+def _unused_port():
+    """A loopback port nothing listens on."""
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
+
+def _message_index(w, text):
+    """The index in Messages of the first line holding @text, or -1."""
+    for i, line in enumerate(_messages_lines(w)):
+        if text in line:
+            return i
+    return -1
+
+
+# @scenario SC-debug-17
+def test_jdb_listen_line_with_no_port_keeps_jdbs_line_and_drops_the_wait(
+        tmp_path):
+    """jdb's listen line names port 99999: Messages shows jdb's line and the
+    line that says no port was named, and the waiting row is gone."""
+    _need("javac")
+    env = _stand_in_jdb_env(tmp_path,
+                            "echo '%s'\nsleep 600\n" % STAND_IN_JDB_NO_PORT)
+    with WpeSession(str(tmp_path), JAVA_PROG, filename="P.java", wait=1.5,
+                    env_extra=env) as w:
+        _jdb_breakpoints_and_run(w, [JAVA_BREAK_LINE])
+        assert _wait_for(w, lambda: _messages_hold(w, STAND_IN_JDB_NO_PORT_NAMED),
+                         JDB_START_TIMEOUT_S), \
+            "Messages should say no port was named:\n%s" % _screen(w)
+        assert _messages_hold(w, STAND_IN_JDB_NO_PORT), \
+            "jdb's own line should stay in Messages:\n%s" % _screen(w)
+        assert not _messages_hold(w, WAITING_ROW), \
+            "the waiting row should be gone:\n%s" % _screen(w)
+        assert _message_index(w, STAND_IN_JDB_NO_PORT) < \
+            _message_index(w, STAND_IN_JDB_NO_PORT_NAMED), \
+            "jdb's line comes before the reason:\n%s" % _screen(w)
+
+
+# @scenario SC-debug-17
+def test_jdb_listen_line_ending_in_cr_lf_still_names_its_port(tmp_path):
+    """A listen line that ends "\\r\\n" has a valid port: the VM is started
+    for it (here it finds nothing listening and says so), not refused as a
+    line that names no port."""
+    _need("javac")
+    line = STAND_IN_JDB_LISTEN % _unused_port()
+    env = _stand_in_jdb_env(tmp_path,
+                            "printf '%s\\r\\n'\nsleep 600\n" % line)
+    with WpeSession(str(tmp_path), JAVA_PROG, filename="P.java", wait=1.5,
+                    env_extra=env) as w:
+        _jdb_breakpoints_and_run(w, [JAVA_BREAK_LINE])
+        assert _wait_for(w, lambda: _messages_hold(w, VM_REFUSED_CONNECT),
+                         JDB_START_TIMEOUT_S), \
+            "the VM should have been started for the port:\n%s" % _screen(w)
+        assert not _messages_hold(w, STAND_IN_JDB_NO_PORT_NAMED), \
+            "the port was valid:\n%s" % _screen(w)
+
+
+# @scenario SC-debug-17
+def test_jdb_that_dies_while_it_starts_says_its_exit_status(tmp_path):
+    """jdb ends with status 5 before the VM reaches it: Messages says so, as
+    it does for a jdb that dies while the program runs."""
+    _need("javac")
+    env = _stand_in_jdb_env(tmp_path, "echo 'something odd'\nexit 5\n")
+    with WpeSession(str(tmp_path), JAVA_PROG, filename="P.java", wait=1.5,
+                    env_extra=env) as w:
+        _jdb_breakpoints_and_run(w, [JAVA_BREAK_LINE])
+        assert _wait_for(w, lambda: _messages_hold(w, STAND_IN_JDB_DIED_LINE),
+                         JDB_START_TIMEOUT_S), \
+            "Messages should say how jdb ended:\n%s" % _screen(w)
+
+
+# @scenario SC-debug-17
+def test_jdb_vm_that_cannot_enter_its_directory_says_why(tmp_path):
+    """A VM that cannot change to the build's directory says why in
+    Messages, in the same place as a java that cannot be run."""
+    _need("javac")
+    body = ("D='%s'\n"
+            "trap 'chmod 755 \"$D\"; exit 0' TERM\n"
+            "chmod 000 \"$D\"\n"
+            "echo '%s'\n"
+            "sleep 600 &\nwait\n"
+            % (tmp_path, STAND_IN_JDB_LISTEN % _unused_port()))
+    env = _stand_in_jdb_env(tmp_path, body)
+    try:
+        with WpeSession(str(tmp_path), JAVA_PROG, filename="P.java",
+                        wait=1.5, cols=WIDE_COLS, env_extra=env) as w:
+            _jdb_breakpoints_and_run(w, [JAVA_BREAK_LINE])
+            assert _wait_for(w, lambda: _messages_hold(w, VM_CANNOT_ENTER),
+                             JDB_START_TIMEOUT_S), \
+                "Messages should say the VM cannot enter its directory:\n%s" \
+                % _screen(w)
+            assert _messages_hold(w, VM_PERMISSION_DENIED), \
+                "and why:\n%s" % _screen(w)
+    finally:
+        tmp_path.chmod(0o755)
+
+
+# The program ends with a failure code.
+JDB_EXIT3_PROG = (
+    "public class P {\n"
+    "    public static void main(String[] a) {\n"
+    "        int x = 1;\n"
+    "        System.exit(3);\n"
+    "    }\n"
+    "}\n"
+)
+JDB_EXIT3_LINE = 3
+JDB_EXIT3_END = "Program exited with code 3"
+JDB_KILLED_END = "Program terminated with signal SIGKILL"
+JDB_PLAIN_END = "Program exited."
+
+
+# @scenario SC-debug-13
+def test_jdb_end_names_the_exit_code_of_a_failing_program(tmp_path):
+    """System.exit(3): the end line says the program exited with code 3."""
+    _need("jdb", "javac")
+    with WpeSession(str(tmp_path), JDB_EXIT3_PROG, filename="P.java",
+                    wait=1.5) as w:
+        _start_jdb_session_on(w, JDB_EXIT3_LINE)
+        w.key(CTRL_G, "r", delay=0.5)
+        assert _wait_for(w, lambda: _messages_hold(w, JDB_EXIT3_END),
+                         STEP_TIMEOUT_S), \
+            "Messages should say %r:\n%s" % (JDB_EXIT3_END, _screen(w))
+        assert not _messages_hold(w, JDB_PLAIN_END), \
+            "the plain line would hide the code:\n%s" % _screen(w)
+
+
+# @scenario SC-debug-13
+def test_jdb_end_names_the_signal_that_killed_the_program(tmp_path):
+    """The VM killed by SIGKILL (its exact PID, a child of the editor): the
+    end line names the signal."""
+    _need("jdb", "javac")
+    with WpeSession(str(tmp_path), JDB_READ_PROG, filename="P.java",
+                    wait=1.5) as w:
+        _start_jdb_reading_program(w)
+        vms = _children(w, "java")
+        assert len(vms) == 1, "the editor's one java child: %s" % vms
+        os.kill(vms[0], signal.SIGKILL)
+        assert _wait_for(w, lambda: _messages_hold(w, JDB_KILLED_END),
+                         STEP_TIMEOUT_S), \
+            "Messages should say %r:\n%s" % (JDB_KILLED_END, _screen(w))
+        assert not _messages_hold(w, JDB_PLAIN_END), \
+            "the plain line would hide the signal:\n%s" % _screen(w)
+
+
+# A java that runs the real VM and then lingers, as a wrapper script that
+# cleans up after the VM does: the editor's child outlives the VM.
+FAKE_JAVA_OUTLIVES = "#!/bin/sh\n'%s' \"$@\"\nsleep 600\n"
+
+
+def _jdk_java():
+    """The java next to the real jdb, the one the editor would start."""
+    return os.path.join(os.path.dirname(os.path.realpath(
+        shutil.which("jdb"))), "java")
+
+
+# Time for an end line that should not come yet to show if it were wrong.
+JDB_NO_END_YET_S = 2
+
+
+def _any_end_line(w):
+    """True when Messages holds an end line of the program."""
+    return _messages_hold(w, JDB_PLAIN_END) or \
+        _messages_hold(w, JDB_EXIT3_END)
+
+
+def _run_jdb_to_the_end_of_the_vm(w):
+    """Stop on JDB_EXIT3_LINE, then Ctrl-G R: return the processes of the
+    session once jdb has said the program ended and gone away."""
+    _start_jdb_session_on(w, JDB_EXIT3_LINE)
+    tree = procinfo.descendants(w.proc.pid)
+    w.key(CTRL_G, "r", delay=0.5)
+    assert _wait_for(w, lambda: not _children(w, "jdb"), STEP_TIMEOUT_S), \
+        "jdb should end with the program:\n%s" % _screen(w)
+    return tree
+
+
+# @scenario SC-debug-13
+def test_jdb_keeps_the_keys_while_a_java_wrapper_outlives_the_vm(tmp_path):
+    """The VM ends while the java the editor started lives on: the session
+    waits for that process without holding a key.  No end line yet; the
+    editor answers; Ctrl-G K and Ctrl-G R say the program runs, and start
+    nothing; Debug > Quit ends the session at once and leaves no process
+    behind, the wrapper's sleep included."""
+    _need("jdb", "javac")
+    env = _fake_jdk_env(tmp_path, FAKE_JAVA_OUTLIVES % _jdk_java())
+    with WpeSession(str(tmp_path), JDB_EXIT3_PROG, filename="P.java",
+                    wait=1.5, env_extra=env) as w:
+        tree = _run_jdb_to_the_end_of_the_vm(w)
+        w._drain(JDB_NO_END_YET_S)
+        assert not _any_end_line(w), \
+            "the process the editor started still runs:\n%s" % _screen(w)
+        assert _takes_keys(w), "the editor should take keys:\n%s" % _screen(w)
+        _says_the_program_is_running(w)
+        assert _takes_keys(w), "the editor should take keys:\n%s" % _screen(w)
+        w.key(CTRL_G, "r", delay=0.8)
+        assert RUNNING_REFUSAL in _screen(w), \
+            "Ctrl-G R should say the program runs:\n%s" % _screen(w)
+        assert not _children(w, "jdb"), \
+            "Ctrl-G R should start no new session:\n%s" % _screen(w)
+        w.menu(ALT.DEBUG, "q", delay=0.5)
+        assert _wait_for(w, lambda: procinfo.all_ended(tree) and
+                         not procinfo.descendants(w.proc.pid),
+                         STEP_TIMEOUT_S), \
+            "no process of the session should be left (alive: %s)" \
+            % procinfo.descendants(w.proc.pid)
+        assert _takes_keys(w), "the editor should take keys:\n%s" % _screen(w)
+
+
+# A java wrapper that lives a little after the VM and ends with its own code.
+FAKE_JAVA_ENDS_LATER = "#!/bin/sh\n'%s' \"$@\"\nsleep %d\nexit 7\n"
+JDB_WRAPPER_LINGER_S = 4
+JDB_WRAPPER_END = "Program exited with code 7"
+
+
+# @scenario SC-debug-13
+def test_jdb_end_line_waits_for_a_java_wrapper_and_gives_its_status(tmp_path):
+    """The wrapper ends a few seconds after the VM with code 7: the end
+    line comes then, with the wrapper's code, as a shell would report the
+    command it ran; the editor took keys meanwhile."""
+    _need("jdb", "javac")
+    env = _fake_jdk_env(tmp_path, FAKE_JAVA_ENDS_LATER
+                        % (_jdk_java(), JDB_WRAPPER_LINGER_S))
+    with WpeSession(str(tmp_path), JDB_EXIT3_PROG, filename="P.java",
+                    wait=1.5, env_extra=env) as w:
+        _run_jdb_to_the_end_of_the_vm(w)
+        assert _takes_keys(w), "the editor should take keys:\n%s" % _screen(w)
+        assert _wait_for(w, lambda: _messages_hold(w, JDB_WRAPPER_END),
+                         STEP_TIMEOUT_S + JDB_WRAPPER_LINGER_S), \
+            "Messages should say %r:\n%s" % (JDB_WRAPPER_END, _screen(w))
+        assert _wait_for(w, lambda: not procinfo.descendants(w.proc.pid),
+                         STEP_TIMEOUT_S), \
+            "no process of the session should be left (alive: %s)" \
+            % procinfo.descendants(w.proc.pid)
+
+
+# The program would write a file on the line after its stop.
+JDB_AFTER_QUIT_FILE = "ran-after-quit"
+JDB_AFTER_QUIT_PROG = (
+    "public class P {\n"
+    "    public static void main(String[] a) throws Exception {\n"
+    "        int x = 1;\n"
+    "        new java.io.FileOutputStream(\"%s\").close();\n"
+    "    }\n"
+    "}\n" % JDB_AFTER_QUIT_FILE
+)
+JDB_AFTER_QUIT_LINE = 3
+JDB_AFTER_QUIT_SETTLE_S = 3   # long enough for the program to run on
+
+
+# @scenario SC-debug-18
+def test_debug_quit_at_a_jdb_stop_runs_no_more_of_the_program(tmp_path):
+    """Debug > Quit at a stop ends the Java program there: the line after
+    the stop never runs."""
+    _need("jdb", "javac")
+    with WpeSession(str(tmp_path), JDB_AFTER_QUIT_PROG, filename="P.java",
+                    wait=1.5) as w:
+        _start_jdb_session_on(w, JDB_AFTER_QUIT_LINE)
+        tree = procinfo.descendants(w.proc.pid)
+        w.menu(ALT.DEBUG, "q", delay=0.5)
+        assert _wait_for(w, lambda: procinfo.all_ended(tree),
+                         STEP_TIMEOUT_S), \
+            "no process of the session should be left (alive: %s):\n%s" \
+            % ([p for p in tree if not procinfo.all_ended([p])], _screen(w))
+        w._drain(JDB_AFTER_QUIT_SETTLE_S)
+        assert not (tmp_path / JDB_AFTER_QUIT_FILE).exists(), \
+            "the program ran on after Quit and wrote %s" % JDB_AFTER_QUIT_FILE
+
+
+# P.java holds no class P: javac builds Other only, and the VM cannot find
+# the class it is asked to run.
+JDB_NO_MAIN_PROG = (
+    "class Other {\n"
+    "    public static void main(String[] a) {\n"
+    "        int x = 1;\n"
+    "    }\n"
+    "}\n"
+)
+JDB_NO_MAIN_LINE = 3
+# The VM's last words, still on screen above the end lines.
+JDB_NO_MAIN_SAYS = "ClassNotFoundException: P"
+
+
+# @scenario SC-debug-13
+def test_jdb_missing_class_says_why_in_messages(tmp_path):
+    """A program whose class the VM cannot find says why in Messages, in
+    the VM's own words, the session ends and nothing is left running."""
+    _need("jdb", "javac")
+    with WpeSession(str(tmp_path), JDB_NO_MAIN_PROG, filename="P.java",
+                    wait=1.5) as w:
+        _jdb_breakpoints_and_run(w, [JDB_NO_MAIN_LINE])
+        assert _wait_for(w, lambda: _messages_hold(w, JDB_NO_MAIN_SAYS),
+                         JDB_START_TIMEOUT_S), \
+            "Messages should say why the program did not start:\n%s" \
+            % _screen(w)
+        assert _wait_for(w, lambda: not procinfo.descendants(w.proc.pid),
+                         STEP_TIMEOUT_S), \
+            "nothing of the session should be left: %s\n%s" \
+            % (procinfo.descendants(w.proc.pid), _screen(w))
+
+
+# A method below a thousand lines of comment: jdb writes its line number
+# with a thousands separator, line=1,005.
+JDB_FAR_PAD = 1000
+JDB_FAR_PROG = (
+    "public class P {\n"
+    "    public static void main(String[] a) {\n"
+    "        int y = sq(3);\n"
+    "    }\n"
+    + "    //\n" * JDB_FAR_PAD +
+    "    static int sq(int v) {\n"
+    "        return v * v;\n"
+    "    }\n"
+    "}\n"
+)
+JDB_FAR_LINE = 4 + JDB_FAR_PAD + 2    # return v * v;
+JDB_FAR_TEXT = "return v * v;"
+
+
+# @scenario SC-debug-20
+def test_jdb_breakpoint_beyond_line_999_is_marked(tmp_path):
+    """A stop on line 1006 marks line 1006, not line 1."""
+    _need("jdb", "javac")
+    with WpeSession(str(tmp_path), JDB_FAR_PROG, filename="P.java",
+                    wait=1.5) as w:
+        _go_to_line(w, JDB_FAR_LINE)
+        w.key(CTRL_G, "b", delay=0.5)
+        w.key(CTRL_G, "r", delay=1.0)
+        assert _wait_for(w, lambda: JDB_FAR_TEXT in _marked_text(w),
+                         JDB_START_TIMEOUT_S), \
+            "the stop should mark %r:\n%s" % (JDB_FAR_TEXT, _screen(w))
+        assert _status_field_line(w) == JDB_FAR_LINE, \
+            "the stop should be on line %d, the field says %s:\n%s" \
+            % (JDB_FAR_LINE, _status_field_line(w), _screen(w))
+
+
+GERMAN_LOCALE = "de_DE.UTF-8"
+
+
+def _locale_installed(name):
+    """True when `locale -a` lists @name (spelled utf8 or UTF-8)."""
+    try:
+        out = subprocess.run(["locale", "-a"], capture_output=True,
+                             text=True).stdout
+    except OSError:
+        return False
+    wanted = name.lower().replace("-", "")
+    return any(line.lower().replace("-", "") == wanted
+               for line in out.split())
+
+
+# @scenario SC-debug-20
+def test_jdb_works_in_a_german_locale(tmp_path):
+    """Under a German locale jdb is still understood: the breakpoint and the
+    next F8 are marked, and the end says the program exited."""
+    _need("jdb", "javac")
+    if not _locale_installed(GERMAN_LOCALE):
+        pytest.skip("no %s locale" % GERMAN_LOCALE)
+    with WpeSession(str(tmp_path), JAVA_PROG, filename="P.java", wait=1.5,
+                    env_extra={"LC_ALL": GERMAN_LOCALE,
+                               "LANG": GERMAN_LOCALE}) as w:
+        _start_jdb_session_on(w, JAVA_BREAK_LINE)
+        assert _step(w, F8, JAVA_NEXT_LINE), \
+            "F8 should mark line %d (mark on %s):\n%s" \
+            % (JAVA_NEXT_LINE, _mark_line(w), _screen(w))
+        w.key(CTRL_G, "r", delay=0.5)
+        assert _wait_for(w, lambda: _messages_hold(w, "Program exited"),
+                         JDB_START_TIMEOUT_S), \
+            "Messages should say the program exited:\n%s" % _screen(w)

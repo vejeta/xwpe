@@ -215,7 +215,8 @@ Press @key{F8} to step through the code.  The active line is
 highlighted.  Step past the @code{println} line.
 
 @item
-Press @kbd{Ctrl-G P} to see program output:
+The program's output appears in Messages as it prints.  Press
+@kbd{Ctrl-G P} to see all of it:
 @example
 --- Program output ---
 factorial(5) = 120

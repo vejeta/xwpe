@@ -243,8 +243,11 @@ AC_SUBST([UTIL_LIBS])
 
 # openpty()'s declaration lives in a different header per platform:
 #   <pty.h> on glibc, <util.h> on macOS/BSD, <libutil.h> on some BSDs.
-# The sources pick the right one from these HAVE_*_H defines.
-AC_CHECK_HEADERS([pty.h util.h libutil.h])
+# The sources pick the right one from these HAVE_*_H defines.  <utmp.h> is
+# where glibc declares login_tty(), which the debugger's child uses to take
+# the pty as its terminal; the other platforms declare it in the header
+# above.
+AC_CHECK_HEADERS([pty.h util.h libutil.h utmp.h])
 
 # --- backtrace() for the crash handler ---
 # backtrace()/backtrace_symbols_fd() are in libc on glibc but in libexecinfo

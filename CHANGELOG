@@ -233,6 +233,41 @@ Changes
 
 1.7.0 (AI assistant -- experimental, opt-in)
 
+* Under jdb, Run, Step, Finish function and Go to cursor that take more
+  than five seconds are marked when they stop.  They gave up after five
+  seconds and never marked the stop, and the first Run gave up after ten
+  with "VM startup timeout".
+
+* Under jdb, Debug > Quit now ends the session while the program runs,
+  and Step, Run and the other debugger commands pressed meanwhile say
+  that the program is running.
+
+* Under jdb the program's output appears in Messages as it prints, as
+  under gdb.  It was only shown with Ctrl-G P.
+
+* Under jdb a program that reads its input gets what you type while it
+  runs; Enter sends the line.
+
+* Under jdb, Debug > Quit ends the Java program at once, at a stop too.
+  It killed jdb alone and left the program running.
+
+* Under jdb, a program that cannot start says why in Messages, a jdb that
+  ends while it starts says its exit status, and a listen line with no
+  usable port stays in Messages above the reason.
+
+* jdb works in German, Japanese or Chinese locales and marks stops past
+  line 999.
+
+* Under jdb, an uncaught exception marks the line that threw, and the
+  status row names the exception.
+
+* Under jdb, a program that prints "Breakpoint hit:" or a jdb-like
+  prompt is no longer taken for a stop; the real breakpoint after it is
+  marked.  The program's output and jdb's no longer share one stream.
+
+* Under jdb, Go to cursor pressed before any session starts it and runs
+  on to the cursor's line.  It stopped at the start of main.
+
 * Under pdb, a step or Finish function that takes more than five
   seconds is marked when it stops.  Both gave up after five seconds and
   never marked the stop.
@@ -472,8 +507,12 @@ Changes
 
 * The end of the program names its exit code: "Program exited with code
   3".  gdb gives it always, pdb after sys.exit (0 for a script that runs
-  off its end), the debug adapters with their exited event; jdb and a68g
-  give none and keep "Program exited.".  The code used to be dropped.
+  off its end), the debug adapters with their exited event, jdb from the
+  Java VM it started ("Program terminated with signal SIGKILL" for a VM
+  that was killed); a68g gives none and keeps "Program exited.".  The
+  code used to be dropped.  Under jdb the line waits for the java process
+  to end without holding a key; a java wrapper script that outlives the
+  VM gives its own status when it ends, and Debug > Quit ends it at once.
   The end is that one line in Messages with every debugger.  pdb and a68g
   used to open an "End of code" box that waited for a key; so did gdb, with
   "Program exited. Debugger stopped.", when the editor could not tell where
