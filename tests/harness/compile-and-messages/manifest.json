@@ -29,6 +29,7 @@
   {"id": "SC-compile-16", "requirement": "Walk the errors", "layer": "ncurses", "test": "tests/test_compile_and_messages.py::test_rust_error_row_jumps_to_its_line", "status": "covered", "needs": ["rustc"]},
   {"id": "SC-compile-17", "requirement": "Walk the errors", "layer": "ncurses", "test": "tests/test_compile_and_messages.py::test_go_error_row_jumps_to_its_line", "status": "covered", "needs": ["go"]},
   {"id": "SC-compile-18", "requirement": "Walk the errors", "layer": "ncurses", "test": "tests/test_compile_and_messages.py::test_python_syntax_error_row_jumps_to_its_line", "status": "covered", "needs": ["python3"]},
+  {"id": "SC-compile-18", "requirement": "Walk the errors", "layer": "ncurses", "test": "tests/test_compile_and_messages.py::test_a_last_error_line_with_no_line_end_is_shown_and_the_build_ends", "status": "new", "needs": ["python3"]},
   {"id": "SC-compile-19", "requirement": "Walk the errors", "layer": "ncurses", "test": "tests/test_compile_and_messages.py::test_cobol_error_row_jumps_to_its_line", "status": "covered", "needs": ["cobc"]},
   {"id": "SC-compile-20", "requirement": "Project builds", "layer": "ncurses", "test": "tests/test_compile_and_messages.py::test_a_project_opened_from_its_parent_builds_in_its_own_directory", "status": "new", "needs": ["gcc"]},
   {"id": "SC-compile-20", "requirement": "Project builds", "layer": "ncurses", "test": "tests/test_compile_and_messages.py::test_each_project_command_is_shown_once", "status": "new", "needs": ["gcc"]},

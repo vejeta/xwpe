@@ -2489,6 +2489,23 @@ static void e_build_report_up_to_date(ECNT *cn, int result)
 }
 
 /**
+ * e_build_has_error_to_jump_to - Did the failed build leave a row to go to?
+ * @result: the build's result.
+ *
+ * A build can fail with nothing the error walk understands, such as a
+ * tool's one-line message with no file and line.  The report then shows
+ * Messages itself, with that line and the count, instead of trying a jump
+ * that returns at once and leaves the screen as the waiting line left it.
+ * Return: 1 when the first error row can be jumped to.
+ */
+static int e_build_has_error_to_jump_to(int result)
+{
+ if (!result || g_build_chain_list == E_LIST_NO_JUMP)
+  return(0);
+ return(err_num > 0);
+}
+
+/**
  * e_build_chain_report - What the user reads when a build has ended.
  * @cn: the desktop; @result: the build's result.
  *
@@ -2513,7 +2530,7 @@ static void e_build_chain_report(ECNT *cn, int result)
  }
  mf = e_build_raise_messages(cn);
  e_build_tally(mf, result);
- if (result && g_build_chain_list != E_LIST_NO_JUMP)
+ if (e_build_has_error_to_jump_to(result))
   jumped = e_show_error(err_no = 0, mf);
  else if (!result)
   e_build_return_to_source(cn);

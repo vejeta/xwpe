@@ -281,6 +281,20 @@ def test_python_syntax_error_row_jumps_to_its_line(tmp_path):
         assert_enter_jumps(w, "SyntaxError", "t.py", 3)
 
 
+# @scenario SC-compile-18
+def test_a_last_error_line_with_no_line_end_is_shown_and_the_build_ends(tmp_path):
+    """py_compile cannot write its cache when a plain file called __pycache__
+    is in the way, and says so on one line with no final newline.  That line
+    must reach Messages and the waiting line must go."""
+    need("python3")
+    (tmp_path / "__pycache__").write_text("in the way\n")
+    with session(tmp_path, "x = 1\n", "p.py") as w:
+        build(w)
+        assert wait_screen(w, "__pycache__", tmo=FIND_TIMEOUT), screen_text(w)
+        assert "Esc cancels" not in screen_text(w), screen_text(w)
+        assert w.alive()
+
+
 COBOL_ONE_ERROR = ("       IDENTIFICATION DIVISION.\n"
                    "       PROGRAM-ID. T.\n"
                    "       PROCEDURE DIVISION.\n"

@@ -235,6 +235,8 @@ Changes
 
 * The editor no longer hangs after a dialog closes on OpenBSD.
 
+* A failed build whose last message has no line end now shows it.
+
 * Starting the debugger on BSD systems sometimes failed with "tty
   error".  It no longer runs a separate program to learn the terminal's
   name.
