@@ -233,6 +233,10 @@ Changes
 
 1.7.0 (AI assistant -- experimental, opt-in)
 
+* Starting the debugger on BSD systems sometimes failed with "tty
+  error".  It no longer runs a separate program to learn the terminal's
+  name.
+
 * In xwpe, a Java program debugged under jdb that ended just as it
   started could leave the session "running" until Debug > Quit, and on
   systems that reuse process numbers soon the end line could give the

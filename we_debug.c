@@ -5244,6 +5244,30 @@ static int e_d_jdb_vm_fork(int port)
  return(0);
 }
 
+/**
+ * e_d_own_tty_name - Record the editor's own terminal in e_d_tty.
+ *
+ * The program under gdb and the legacy debuggers writes there when no pty
+ * could be opened, and a session whose terminal is unknown is refused
+ * ("tty error").  Asked of the kernel directly: running a separate program
+ * for the name raced the editor's child-exit handler, which can make the
+ * read of its answer fail, so a debug start failed at random.  When the
+ * editor has no terminal (started from a desktop), the name is the text
+ * "not a tty", and any other failure gives the system's reason, so the
+ * refusal message says why.
+ */
+static void e_d_own_tty_name(void)
+{
+ int err = ttyname_r(STDIN_FILENO, e_d_tty, sizeof e_d_tty);
+
+ if (err == 0)
+  return;
+ if (err == ENOTTY)
+  strcpy(e_d_tty, "not a tty");
+ else
+  snprintf(e_d_tty, sizeof e_d_tty, "%s", strerror(err));
+}
+
 int e_exec_deb(FENSTER *f, char *prog)
 {
  int i;
@@ -5382,8 +5406,6 @@ int e_exec_deb(FENSTER *f, char *prog)
   }
   else
   {
-   FILE *fpp;
-
    /* Close the pipe ends that belong to the child.
       - rfildes[0] is the child's stdin read-end (parent uses rfildes[1])
       - wfildes[1] is the child's stdout write-end (parent uses wfildes[0])
@@ -5401,17 +5423,7 @@ int e_exec_deb(FENSTER *f, char *prog)
      if (e_d_debugger_keeps_pty_slave())
       e_d_pty_slave_close();
 
-     if (!(fpp = popen("tty", "r")))
-     {
-      e_error(e_p_msg[ERR_PIPEOPEN], 0, f->fb);
-      e_d_exec_fail();
-      return(0);
-     }
-     fgets(e_d_tty, 80, fpp);
-     { int _len = strlen(e_d_tty);
-       if (_len > 0 && e_d_tty[_len-1] == '\n') e_d_tty[_len-1] = '\0';
-     }
-     pclose(fpp);
+     e_d_own_tty_name();
      return(_ret_fd);
    }
   }

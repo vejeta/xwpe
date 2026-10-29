@@ -2,6 +2,7 @@
  "capability": "debugger-integration",
  "scenarios": [
   {"id": "SC-debug-01", "requirement": "Starting and ending a session", "layer": "ncurses", "test": "tests/test_debugger_integration.py::test_ctrl_g_r_builds_and_stops_on_the_breakpoint", "status": "covered", "needs": ["gcc", "gdb"]},
+  {"id": "SC-debug-01", "requirement": "Starting and ending a session", "layer": "ncurses", "test": "tests/test_debug_terminal_name.py::test_gdb_starts_where_no_tty_program_can_be_found", "status": "covered", "needs": ["gcc", "gdb"]},
   {"id": "SC-debug-02", "requirement": "The bars and the menu tell the truth", "layer": "ncurses", "test": "tests/test_debugger_integration.py::test_the_source_bar_names_the_debugger_keys_while_a_session_runs", "status": "new", "needs": ["gcc", "gdb"]},
   {"id": "SC-debug-02", "requirement": "The bars and the menu tell the truth", "layer": "ncurses", "test": "tests/test_debugger_integration.py::test_the_cua_bar_is_left_alone_by_a_session", "status": "new", "needs": ["gcc", "gdb"]},
   {"id": "SC-debug-02", "requirement": "The bars and the menu tell the truth", "layer": "ncurses", "test": "tests/test_debugger_integration.py::test_a_debug_adapter_session_shows_the_debugger_bar", "status": "new", "needs": ["dlv", "go"]},

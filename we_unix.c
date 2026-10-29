@@ -731,7 +731,7 @@ void WpeSignalChild(int sig)
  }
  /* Use WNOHANG to avoid blocking, and loop to reap all zombies.
     The old wait() call would steal children from pclose/waitpid,
-    causing the debugger's popen("tty") to hang on pclose.
+    which made a pclose of a popen'ed command hang.
     errno is kept for the code this signal interrupted. */
  while ((pid = waitpid(-1, &statloc, WNOHANG)) > 0)
  {
