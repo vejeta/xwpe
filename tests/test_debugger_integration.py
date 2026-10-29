@@ -794,18 +794,22 @@ JDB_LONG_PATH_BYTES = [200, 400]
 DEEP_NAME_SLACK = 45    # the longest a path may overshoot `total`
 
 
-def _capped_path_bytes(tmp_path, total):
+PDB_CACHE_SLACK = 48    # py_compile writes __pycache__/p.cpython-3NN.pyc.<temp>
+                        # beside the source: about 46 bytes more than p.py
+
+def _capped_path_bytes(tmp_path, total, extra=0):
     """`total`, or the longest path the platform allows (PATH_MAX is 1024 on
     BSD, 4096 on Linux) if that is shorter, so the row tests a path at the
-    limit and not past it."""
+    limit and not past it.  `extra` keeps that many bytes free for files the
+    tool writes beside the source."""
     limit = os.pathconf(str(tmp_path), "PC_PATH_MAX")
-    return min(total, limit - DEEP_NAME_SLACK - 1)
+    return min(total, limit - DEEP_NAME_SLACK - 1 - extra)
 
 
-def _deep_name(tmp_path, leaf, total):
+def _deep_name(tmp_path, leaf, total, extra=0):
     """leaf under nested 40-byte directories until the full path is at least
     `total` bytes; creates the directories and returns the relative name."""
-    total = _capped_path_bytes(tmp_path, total)
+    total = _capped_path_bytes(tmp_path, total, extra)
     dirs = []
     while len(os.path.join(str(tmp_path), *dirs, leaf)) < total:
         dirs.append("d" * 40)
@@ -821,7 +825,7 @@ def test_pdb_starts_on_a_source_under_a_very_long_path(tmp_path, total):
     """A Python file in a very deep directory still starts pdb and stops,
     marked, on its breakpoint (the path was cut short before)."""
     _need("python3")
-    name = _deep_name(tmp_path, "p.py", total)
+    name = _deep_name(tmp_path, "p.py", total, PDB_CACHE_SLACK)
     with WpeSession(str(tmp_path), PY_PROG, filename=name, wait=1.5) as w:
         _start_py_session(w)
         assert _wait_for(w, lambda: _mark_line(w) == PY_BREAK_LINE,
