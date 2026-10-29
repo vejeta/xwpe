@@ -598,6 +598,12 @@ e_error_restart:
 int e_error(char *text, int sw, FARBE *f)
 {
  int ret;
+#ifdef UNIX
+ /* The editor is ending and writing its .ESV files: nobody can answer the
+    box, and its terminal may be gone.  The save reports the failure. */
+ if (e_emergency_save_running())
+  return(sw);
+#endif
 #ifdef DEBUGGER
  e_lsp_modal_enter();
 #endif

@@ -813,6 +813,8 @@ void WpeNullFunction(void);
 int WpeZeroFunction();
 int e_tast_sim(int c);
 void e_err_save(void);
+int e_emergency_save_running(void);
+int wpe_end_requested(void);
 void e_exit(int n);
 char *e_mkfilepath(char *dr, char *fn, char *fl);
 int e_compstr(char *a, char *b);

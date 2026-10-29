@@ -43,6 +43,7 @@ void wpe_render_cairo_start_threads(void);
 #include "attrb.h"
 #include "progr.h"
 #include "we_fdloop.h"
+#include "we_dap.h"
 
 #ifdef NOSYMLINKS
 #define lstat(x,y)  stat(x,y)
@@ -103,6 +104,7 @@ WpeGfxBackend e_gfx_backend = WPE_GFX_X11;
 void WpeSignalUnknown(int sig);
 void WpeSignalChild(int sig);
 void WpeSignalTerm(int sig);
+static void wpe_end_request_open(void);
 
 void (*WpeMouseChangeShape)(WpeMouseShape new_shape);
 void (*WpeMouseRestoreShape)(void);
@@ -293,16 +295,19 @@ int e_ini_unix(int *argc, char **argv)
  wpe_signal_main_thread_note();
  setlocale(LC_ALL, "");
  tcgetattr(0, &otermio);
- /* Arm the SIGTERM/SIGHUP clean-shutdown handler HERE -- before WpeTermInit()
-    below, whose e_t_initscr() ends in tcsetattr(0, TCSADRAIN, ...) and can
-    BLOCK until the pty's output buffer drains.  If the handler were installed
-    only after that (as it used to be), a `kill PID` arriving while init blocks
-    would take the default disposition and leave the controlling terminal in raw
-    mode with mouse tracking still on.  WpeSignalTerm only needs `otermio`,
-    populated just above, so arming it this early is safe.  Standard editor
-    behaviour -- also what supervisors (systemd, launchctl) and test harnesses
-    sending `kill PID` expect.  (Crash signals and SIGCHLD are installed lower
-    down; they have no such ordering dependency.) */
+ /* Arm the SIGTERM/SIGHUP handler HERE -- before WpeTermInit() below, whose
+    e_t_initscr() ends in tcsetattr(0, TCSADRAIN, ...) and can BLOCK until the
+    pty's output buffer drains.  If the handler were installed only after that
+    (as it used to be), a `kill PID` arriving while init blocks would take the
+    default disposition and leave the controlling terminal in raw mode with
+    mouse tracking still on.  Until the editor has opened its windows there is
+    nothing to save, so the handler ends the editor at once, restoring the
+    terminal from `otermio` (read just above); afterwards it asks the editor's
+    loop to save the unsaved windows and end.  (Crash signals and SIGCHLD are
+    installed lower down; they have no such ordering dependency.)  The pipe
+    that carries the request to the loop exists before the handler can write
+    to it. */
+ wpe_end_request_open();
  act.sa_handler = WpeSignalTerm;
  sigfillset(&act.sa_mask);
  act.sa_flags = 0;
@@ -1050,14 +1055,21 @@ int WpeChildEnded(int pid, int *status)
  return(WPE_CHILD_ENDED_UNKNOWN);
 }
 
-void WpeSignalTerm(int sig)
+/**
+ * wpe_end_now - In a signal handler: end the editor at once, keeping nothing.
+ * @sig: the SIGTERM or SIGHUP that asked for the end.
+ *
+ * The way out when the editor cannot take its time: the signal came before
+ * the editor was set up, in a forked child before it ran its program, or a
+ * second time while the first one's save was still running (a save that
+ * hangs must never leave the editor impossible to end).  Only
+ * async-signal-safe work: the build is killed, the mouse tracking turned
+ * off and the terminal modes restored, so the shell is usable again, and
+ * the signal is raised again with its default action, so the parent sees
+ * the usual "killed by SIGTERM".
+ */
+static void wpe_end_now(int sig)
 {
- /* Async-signal-safe shutdown: restore the modes saved by e_ini_unix() and
-    turn off the mouse-tracking sequences we left enabled so the controlling
-    terminal is not left in raw mode with a mouse hook.  Then re-raise with
-    the default handler so the parent sees the conventional "killed by
-    SIGTERM" exit status.  We do NOT attempt to save buffers from here --
-    none of the file I/O on that path is async-signal-safe. */
  const char *mouse_off = "\033[?1002l\033[?1006l\033[?1000l";
  ssize_t n;
 
@@ -1069,49 +1081,268 @@ void WpeSignalTerm(int sig)
  raise(sig);
 }
 
-static int e_bool_exit = 0;
+/* A SIGTERM or SIGHUP asks the editor to end.  The handler only records
+   which signal came and writes one byte to this pipe.  The fd loop watches
+   the read end from start-up to exit; the key read of all three displays, a
+   dialog, the debugger's answer and a running program or build all wait in
+   that loop, so the editor wakes at once there and ends with the emergency
+   save.  The DAP session's own blocking waits watch the same read end
+   (e_dap_set_end_watch) and give up when it fires, so the next fd-loop wait
+   ends the editor; the assistant's synchronous wait asks wpe_end_requested
+   on every slice.  The other waits outside the loop are bounded by a
+   deadline (language server and build-server replies, web fetches, tool
+   commands) or by the user (a program run in the foreground ends the
+   editor once it ends).  The pipe never fires otherwise, so it never wakes
+   an idle editor. */
+#define WPE_END_NONE 0
+static volatile sig_atomic_t wpe_end_signal = WPE_END_NONE;
+static int wpe_end_wake_rd = WPE_CHILD_WAKE_NONE;
+static int wpe_end_wake_wr = WPE_CHILD_WAKE_NONE;
+
+static void wpe_end_on_wake(int fd, void *data);
+
+/**
+ * wpe_end_request_open - Make the pipe a SIGTERM or SIGHUP wakes the editor
+ * through, and put it on the fd loop.
+ *
+ * Called once at start-up, before the handler is installed.  Without a
+ * pipe (none could be made, or the loop is full) the handler ends the
+ * editor at once as it did before, without the save, so the editor still
+ * starts and still ends on the signal.
+ */
+static void wpe_end_request_open(void)
+{
+ int fds[2];
+
+ if (wpe_end_wake_rd != WPE_CHILD_WAKE_NONE || pipe(fds) < 0)
+  return;
+ if (wpe_child_fd_private(fds[0]) < 0 || wpe_child_fd_private(fds[1]) < 0
+   || wpe_fd_add(fds[0], POLLIN, wpe_end_on_wake, NULL) < 0)
+ {
+  close(fds[0]);
+  close(fds[1]);
+  return;
+ }
+ wpe_end_wake_rd = fds[0];
+ wpe_end_wake_wr = fds[1];
+ e_dap_set_end_watch(wpe_end_wake_rd, wpe_end_requested);
+}
+
+/**
+ * wpe_end_requested - Has a SIGTERM or SIGHUP asked the editor to end?
+ *
+ * For a wait outside the fd loop that could otherwise hold the editor (an
+ * assistant reply, a debug adapter that never answers): it gives up when
+ * this says yes, and the next fd-loop wait saves the user's work and ends.
+ * Return: 1 once the end was asked for, else 0.
+ */
+int wpe_end_requested(void)
+{
+ return(wpe_end_signal != WPE_END_NONE);
+}
+
+/**
+ * wpe_end_wake - In the handler: wake the editor's loop for the end request.
+ *
+ * One write() to a non-blocking pipe.  When it fails the pipe is full, so
+ * a wake-up is waiting in it already.
+ */
+static void wpe_end_wake(void)
+{
+ static const char wake = 1;
+
+ if (write(wpe_end_wake_wr, &wake, 1) < 0)
+  return;
+}
+
+/**
+ * wpe_editor_is_up - Has the editor opened its windows yet?
+ *
+ * Before that there is nothing to save, and the editor may be waiting
+ * outside its loop (the terminal set-up, the Wayland window's first
+ * configure), so an end asked for then takes the immediate way out.  Safe
+ * in the handler: two plain reads of values the start-up writes once.
+ */
+static int wpe_editor_is_up(void)
+{
+ return(WpeEditor != NULL && WpeEditor->mxedt >= 0);
+}
+
+/**
+ * wpe_end_can_wait - In the handler: may this signal be left to the loop?
+ *
+ * Not in a child forked from the editor before it runs its program (the
+ * pipe is still open there, and the parent must not end for the child's
+ * signal), not without a pipe, not before the editor is up, and not when
+ * an end was asked for already: the user or the system that sends a second
+ * signal wants the editor gone now, even if the save of the first one
+ * hangs.
+ * Return: 1 when the loop will end the editor, 0 when the handler must.
+ */
+static int wpe_end_can_wait(void)
+{
+ if (wpe_main_pid != 0 && getpid() != wpe_main_pid)
+  return(0);
+ if (wpe_end_wake_wr == WPE_CHILD_WAKE_NONE)
+  return(0);
+ if (!wpe_editor_is_up())
+  return(0);
+ return(wpe_end_signal == WPE_END_NONE);
+}
+
+void WpeSignalTerm(int sig)
+{
+ int saved_errno = errno;
+
+ if (!wpe_signal_on_main_thread())
+ {
+  /* A library's thread took it: the editor's own thread ends the editor. */
+  wpe_signal_forward_to_main(sig);
+  errno = saved_errno;
+  return;
+ }
+ if (!wpe_end_can_wait())
+ {
+  wpe_end_now(sig);
+  return;
+ }
+ wpe_end_signal = sig;
+ wpe_end_wake();
+ errno = saved_errno;
+}
+
+/* The emergency save writes each window with unsaved changes to its .ESV
+   file.  What it did is kept here and told once the terminal is restored,
+   where the user can still read it after the editor is gone. */
+#define E_ESV_SUFFIX ".ESV"
+/* Shortest file-name limit that can hold an .ESV name; below it the file
+   system is a DOS one, where the suffix would replace the extension. */
+#define E_ESV_MIN_NAME_MAX 12
+static struct {
+ const char *name;
+ int saved;
+} e_esv_result[MAXEDT + 1];
+static int e_esv_results = 0;
+static int e_esv_started = 0;
+static int e_esv_running = 0;
+
+/**
+ * e_emergency_save_running - Is the editor writing its .ESV files?
+ *
+ * While it is, nobody is there to answer a box: the editor is ending on an
+ * error or a signal, and the terminal may be gone.  An error box then
+ * neither paints nor waits for a key, so one file that cannot be written
+ * does not stop the others from being saved, nor the editor from ending.
+ * Return: 1 during the save, else 0.
+ */
+int e_emergency_save_running(void)
+{
+ return(e_esv_running);
+}
+
+/**
+ * e_err_save_window - Write one window with unsaved changes to its .ESV
+ * file, beside its own file.
+ * @f: a text window with unsaved changes.
+ *
+ * The user's work survives the end of the editor, and "wpe -r" brings it
+ * back.  No backup is made: the .ESV is not the user's file, and the
+ * backup of an .ESV would be named like the backup of the file itself.
+ * Return: 0 when it was written, -1 when it could not be.
+ */
+static int e_err_save_window(FENSTER *f)
+{
+ long maxname = pathconf(f->dirct, _PC_NAME_MAX);
+ char *esv;
+
+ if (maxname < (long)(strlen(f->datnam) + strlen(E_ESV_SUFFIX)))
+  return(-1);
+ if (maxname <= E_ESV_MIN_NAME_MAX)
+  return(-1);
+ esv = MALLOC(strlen(f->datnam) + strlen(E_ESV_SUFFIX) + 1);
+ if (!esv)
+  return(-1);
+ sprintf(esv, "%s%s", f->datnam, E_ESV_SUFFIX);
+ FREE(f->datnam);
+ f->datnam = esv;
+ if (e_write(0, 0, f->b->mx.x, f->b->mxlines - 1, f, WPE_NOBACKUP) == WPE_ESC)
+  return(-1);
+ return(0);
+}
+
+/**
+ * e_err_save_wanted - Does this window hold work the emergency save keeps?
+ * @f: a window of the editor.
+ * Return: 1 for a text window with unsaved changes and some text, else 0.
+ */
+static int e_err_save_wanted(FENSTER *f)
+{
+ BUFFER *b = f->b;
+
+ if (!DTMD_ISTEXT(f->dtmd) || !f->save)
+  return(0);
+ return(b->mxlines > 1 || b->bf[0].len > 0);
+}
+
+/**
+ * e_err_save_note - Keep what the save did with one window for the report.
+ * @f: the window; @saved: whether its .ESV was written.
+ */
+static void e_err_save_note(FENSTER *f, int saved)
+{
+ if (e_esv_results > MAXEDT)
+  return;
+ e_esv_result[e_esv_results].name = f->datnam;
+ e_esv_result[e_esv_results].saved = saved;
+ e_esv_results++;
+}
 
 void e_err_save()
 {
  ECNT *cn = WpeEditor;
  int i;
- long maxname;
- FENSTER *f;
- BUFFER *b;
 
- /* Quick fix to multiple emergency save problems */
- if (e_bool_exit)
-  return ;
- e_bool_exit = 1;
+ /* Once per run: the error exit and a signal can both reach it. */
+ if (e_esv_started || !cn)
+  return;
+ e_esv_started = 1;
+ e_esv_running = 1;
  for (i = 0; i <= cn->mxedt; i++)
  {
-  if (DTMD_ISTEXT(cn->f[i]->dtmd))
-  {
-   f = cn->f[i];
-   b = cn->f[i]->b;
-   if (f->save && (b->mxlines > 1 || b->bf[0].len > 0))
-   {
-    /* Check if file system could have an autosave or emergency save file
-       >12 check is to eliminate dos file systems.  Only windows with
-       unsaved changes are written: the others are on disk already. */
-    maxname = pathconf(f->dirct, _PC_NAME_MAX);
-    if (maxname >= (long)strlen(f->datnam) + 4 && maxname > 12)
-    {
-     char *esv = MALLOC(strlen(f->datnam) + 5);
+  if (!e_err_save_wanted(cn->f[i]))
+   continue;
+  e_err_save_note(cn->f[i], e_err_save_window(cn->f[i]) == 0);
+ }
+ e_esv_running = 0;
+}
 
-     sprintf(esv, "%s.ESV", f->datnam);
-     FREE(f->datnam);
-     f->datnam = esv;
-     printf("Try to save %s!\n", f->datnam);
-     if (!e_save(f))
-      printf("File %s saved!\n", f->datnam);
-    }
-   }
-  }
+/**
+ * e_err_save_report - Tell the user which .ESV files were written.
+ *
+ * Printed after the terminal is restored, so it stays on the screen the
+ * user returns to; a file that could not be saved is named too.
+ */
+static void e_err_save_report(void)
+{
+ int i;
+
+ for (i = 0; i < e_esv_results; i++)
+ {
+  if (e_esv_result[i].saved)
+   printf("File %s saved!\n", e_esv_result[i].name);
+  else
+   printf("File %s could not be saved!\n", e_esv_result[i].name);
  }
 }
 
-void e_exit(int n)
+/**
+ * e_exit_teardown - Stop what the editor started and give the terminal back.
+ *
+ * The debugger, the language server and a running build are ended, so none
+ * of them outlives the editor, and the display is closed and the terminal
+ * modes restored.
+ */
+static void e_exit_teardown(void)
 {
 #ifdef DEBUGGER
  extern int e_d_pid;
@@ -1132,12 +1363,81 @@ void e_exit(int n)
  e_switch_screen(0);
  tcsetattr(0, TCSADRAIN, &otermio);
  fputs("\033c", stderr);
+}
+
+static int e_exit_started = 0;
+
+/**
+ * e_exit_session - The one way the editor ends.
+ * @keep_work: write the windows with unsaved changes to .ESV files first.
+ *
+ * The save comes before anything that can take time (the language server
+ * gets seconds to stop) or fail (a display that is gone), so the user's
+ * work is on disk even if the end is cut short.
+ */
+static void e_exit_session(int keep_work)
+{
+ e_exit_started = 1;
+ if (keep_work)
+  e_err_save();
+ e_exit_teardown();
+}
+
+void e_exit(int n)
+{
+ e_exit_session(n != 0);
  if (n != 0)
  {
   printf("\nError-Exit!   Code: %d!\n", n);
-  e_err_save();
+  e_err_save_report();
  }
  exit(n);
+}
+
+/**
+ * wpe_end_by_default - Finish ending the editor the way the signal would.
+ * @sig: the SIGTERM or SIGHUP that asked for the end.
+ *
+ * The parent (a shell, a session manager) then sees the editor killed by
+ * that signal, as it did before the editor learned to save on it.
+ */
+static void wpe_end_by_default(int sig)
+{
+ sigset_t one;
+
+ fflush(NULL);
+ signal(sig, SIG_DFL);
+ sigemptyset(&one);
+ sigaddset(&one, sig);
+ pthread_sigmask(SIG_UNBLOCK, &one, NULL);
+ raise(sig);
+ _exit(1);
+}
+
+/**
+ * wpe_end_on_wake - The fd loop's callback for the end request.
+ * @fd: the pipe's read end; @data: unused.
+ *
+ * Runs wherever the editor waits, a dialog or the debugger included, so a
+ * "kill PID", a logout or a closed terminal window ends the editor at once
+ * with the windows that had unsaved changes written to .ESV files, which
+ * "wpe -r" reopens.  An end already under way (an error exit, the input
+ * gone) is left to finish its own save.
+ */
+static void wpe_end_on_wake(int fd, void *data)
+{
+ char buf[WPE_CHILD_WAKE_DRAIN];
+ int sig;
+
+ (void)data;
+ while (read(fd, buf, sizeof buf) > 0)
+  ;
+ sig = wpe_end_signal;
+ if (sig == WPE_END_NONE || e_exit_started)
+  return;
+ e_exit_session(1);
+ e_err_save_report();
+ wpe_end_by_default(sig);
 }
 
 char *e_mkfilepath(char *dr, char *fn, char *fl)

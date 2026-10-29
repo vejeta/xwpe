@@ -163,14 +163,58 @@ void e_dap_drain_output(e_dap_session *s)
  s->pty_master = -1;
 }
 
-/* Block until one complete message arrives; NULL on EOF/error. */
+/* The editor's end request (see e_dap_set_end_watch): a descriptor that
+   becomes readable when it comes, and the question whether it came. */
+static int dap_end_fd = DAP_NO_FD;
+static int (*dap_end_requested)(void) = NULL;
+
+void e_dap_set_end_watch(int fd, int (*requested)(void))
+{
+ dap_end_fd = fd;
+ dap_end_requested = requested;
+}
+
+/**
+ * dap_end_watch_add - Put the end request's descriptor in a wait's poll set.
+ * @p: the set; @np: how many entries it has, raised by one when added.
+ *
+ * With it in the set, a SIGTERM or SIGHUP that lands just before the wait
+ * starts still wakes it, so the user is never left with an editor that
+ * waits for a program that runs for ever.
+ */
+static void dap_end_watch_add(struct pollfd *p, int *np)
+{
+ if (dap_end_fd == DAP_NO_FD)
+  return;
+ p[*np].fd = dap_end_fd;
+ p[*np].events = POLLIN;
+ p[*np].revents = 0;
+ (*np)++;
+}
+
+/**
+ * dap_end_pending - Must a wait give up because the editor is ending?
+ * Return: 1 when the end was asked for, else 0.
+ */
+static int dap_end_pending(void)
+{
+ if (!dap_end_requested)
+  return 0;
+ return dap_end_requested() != 0;
+}
+
+/* Poll set size of a session wait: the transport, the pty, the end request. */
+#define DAP_WAIT_FDS 3
+
+/* Block until one complete message arrives; NULL on EOF/error, or when the
+   editor's end was asked for meanwhile. */
 static struct json_object *dap_read_message(e_dap_session *s)
 {
  for (;;)
  {
   int err = 0;
   struct json_object *m = e_dap_reader_pop(&s->rd, &err);
-  struct pollfd p[2];
+  struct pollfd p[DAP_WAIT_FDS];
   char buf[4096];
   ssize_t n;
   int np = 0, sock_i, pty_i = -1, pret;
@@ -184,7 +228,10 @@ static struct json_object *dap_read_message(e_dap_session *s)
   sock_i = np; p[np].fd = dap_rfd(s); p[np].events = POLLIN; np++;
   if (s->pty_master >= 0)
   {  pty_i = np; p[np].fd = s->pty_master; p[np].events = POLLIN; np++;  }
-  pret = poll(p, np, -1);
+  dap_end_watch_add(p, &np);
+  pret = poll(p, np, DAP_POLL_FOREVER);
+  if (dap_end_pending())
+   return NULL;
   if (pret < 0)
   {
    if (errno == EINTR)
@@ -897,13 +944,14 @@ static int dap_start_accept(e_dap_session *s)
  *
  * Used where the caller has nothing else to do (a test, the synchronous
  * API).  The adapter gets DAP_ACCEPT_MS to dial in, as before.
- * Return: 0 when readable, -1 when the adapter did not dial in or poll failed.
+ * Return: 0 when readable, -1 when the adapter did not dial in, poll failed
+ * or the editor's end was asked for.
  */
 static int dap_start_wait(e_dap_session *s)
 {
  for (;;)
  {
-  struct pollfd p[2];
+  struct pollfd p[DAP_WAIT_FDS];
   int np = 0, pty_i = -1, pret;
   int timeout = DAP_POLL_FOREVER;
 
@@ -912,7 +960,10 @@ static int dap_start_wait(e_dap_session *s)
   p[np].fd = e_dap_start_fd(s); p[np].events = POLLIN; np++;
   if (s->pty_master >= 0)
   {  pty_i = np; p[np].fd = s->pty_master; p[np].events = POLLIN; np++;  }
+  dap_end_watch_add(p, &np);
   pret = poll(p, np, timeout);
+  if (dap_end_pending())
+   return -1;
   if (pret < 0 && errno == EINTR)
    continue;
   if (pret <= 0)

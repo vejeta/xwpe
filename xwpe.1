@@ -103,11 +103,13 @@ read from the option file.
 
 .IP "\fB-r\fP"
 Start \fIxwpe\fP in the \fIrecover mode\fP. When the editor ends
-on an error, or \fIwpe\fP exits because its keyboard input ended,
-every window with unsaved changes is written next to its file
-with the postfix `.ESV' in the name. A signal ends the editor
-without this save. Invoked with the `-r' option, the editor
-reopens the `.ESV' files of the current directory.
+on an error, on SIGTERM or SIGHUP (its terminal was closed), or
+\fIwpe\fP exits because its keyboard input ended, every window
+with unsaved changes is written next to its file with the postfix
+`.ESV' in the name. A second SIGTERM or SIGHUP during the save
+ends the editor at once; a crash or SIGKILL ends it without the
+save. Invoked with the `-r' option, the editor reopens the `.ESV'
+files of the current directory.
 
 .IP "\fB-mb\fP"
 The next file has to be treated as a binary file.

@@ -149,4 +149,10 @@ int e_dap_ended(const e_dap_session *s);
 /* Disconnect and reap the adapter; frees the session. */
 void e_dap_close(e_dap_session *s);
 
+/* Let every blocking wait of every session also watch @fd, and give up as
+ * soon as @requested() answers non-zero: the editor's end was asked for
+ * (SIGTERM, SIGHUP), so a program that never stops cannot hold the editor.
+ * Without it (a test program) the waits are unchanged. */
+void e_dap_set_end_watch(int fd, int (*requested)(void));
+
 #endif /* WE_DAP_H */

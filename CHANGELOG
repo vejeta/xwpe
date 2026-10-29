@@ -241,6 +241,10 @@ Changes
   unsaved changes to .ESV files, which wpe -r reopens, and exits.  The
   same save on an error exit never worked before and now does.
 
+* Closing the terminal, logging out or "kill PID" no longer loses
+  unsaved work: on SIGHUP or SIGTERM the editor writes it to .ESV files,
+  as the original xwpe did, and exits, even from an open dialog.
+
 * Starting the debugger on BSD systems sometimes failed with "tty
   error".  It no longer runs a separate program to learn the terminal's
   name.

@@ -98,10 +98,13 @@ Einstellungen werden der Optionendatei entnommen.
 Statt der Standardoptionendatei (\fI$HOME/.wpe/wperc\fP) wird die Datei 
 '\fIoptionfile\fP' gelesen.
 .IP "\fB-r\fP"
-Endet der Editor mit einem Fehler, oder beendet sich \fIwpe\fP, weil
+Endet der Editor mit einem Fehler, durch SIGTERM oder SIGHUP (sein
+Terminal wurde geschlossen), oder beendet sich \fIwpe\fP, weil
 seine Tastatureingabe endet, wird jedes Fenster mit ungesicherten
 Aenderungen neben seiner Datei mit dem Postfix '.ESV' geschrieben.
-Ein Signal beendet den Editor ohne diese Sicherung. Mit dem Parameter
+Ein zweites SIGTERM oder SIGHUP waehrend der Sicherung beendet den
+Editor sofort; ein Absturz oder SIGKILL beendet ihn ohne diese
+Sicherung. Mit dem Parameter
 \fB-r\fP oeffnet der Editor die '.ESV'-Dateien des aktuellen
 Verzeichnisses wieder.
 .IP "\fB-mb\fP"

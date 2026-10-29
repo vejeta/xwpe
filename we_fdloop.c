@@ -12,6 +12,9 @@
 #include <time.h>
 #include "we_fdloop.h"
 
+/* Descriptors watched at once.  In the editor one slot is always taken from
+   start-up by the pipe a SIGTERM or SIGHUP wakes it through (we_unix.c), so
+   the keyboard, the streams and the debugger share the other 15. */
 #define WPE_FD_MAX 16
 /* Timers live at once: a debugger start, a build, the assistant's spinner and
    the agent host's deadline, with room to spare. */

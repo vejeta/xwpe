@@ -2654,6 +2654,23 @@ static void ai_collect_cb(const char *delta, void *ud)
  c->buf[c->len] = '\0';
 }
 
+/**
+ * ai_complete_end_requested - Must a waiting request give up because the
+ * editor is ending?
+ * @errbuf, @errsz: get "cancelled" when it must.
+ *
+ * A SIGTERM or SIGHUP (a logout, a closed terminal) during a slow reply
+ * would otherwise wait out the whole request timeout before the editor
+ * saves the user's work and ends.
+ * Return: 1 when the request must give up, else 0.
+ */
+static int ai_complete_end_requested(char *errbuf, size_t errsz)
+{
+ if (!wpe_end_requested()) return 0;
+ if (errbuf) snprintf(errbuf, errsz, "cancelled");
+ return 1;
+}
+
 char *wpe_ai_complete(const wpe_ai_req *req, int timeout_ms,
                       wpe_ai_progress_cb progress, void *ud,
                       char *errbuf, size_t errsz)
@@ -2674,6 +2691,7 @@ char *wpe_ai_complete(const wpe_ai_req *req, int timeout_ms,
   int pr;
   long left = deadline - ai_now_ms();
   if (left <= 0) { if (errbuf) snprintf(errbuf, errsz, "timed out"); break; }
+  if (ai_complete_end_requested(errbuf, errsz)) break;
   pf[0].fd = fd;            pf[0].events = (short)wpe_ai_stream_events(st); pf[0].revents = 0;
   /* Also watch the terminal so an Edit/Plan/Agent wait is not a dead freeze:
      Esc aborts it instead of forcing the user to wait out a slow local model. */
