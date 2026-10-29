@@ -519,13 +519,20 @@ Option key reaches xwpe as Alt at all.
 @cindex crash recovery
 @cindex .ESV files
 
-If xwpe receives a signal (except @code{SIGKILL}), it saves all internal
-buffers to files with the @file{.ESV} extension in the current directory.
+When the editor ends on an error, or @command{wpe} exits because its
+keyboard input ended (it was started with input from @file{/dev/null},
+or the pipe that feeds it was closed), every window with unsaved changes
+is written next to its file, with @file{.ESV} added to the name.  The
+original xwpe saved every window; only the modified ones are saved now.
+A signal such as @code{SIGTERM}, @code{SIGHUP} or a crash ends the
+editor without this save.
 
-To recover a crashed session:
+To recover the saved files, start the editor in the directory that holds
+them:
 
 @example
 wpe -r
 @end example
 
-This restores all files that were open when the crash occurred.
+This reopens each @file{.ESV} file of the current directory with its
+unsaved changes.

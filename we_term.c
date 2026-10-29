@@ -1223,6 +1223,50 @@ void e_t_flush_input(void)
    character insertion trusts it for codepoints that collide with xwpe key
    codes. */
 
+/* Exit code of an editor whose terminal input ended (nano and vim also exit
+   non-zero then).  Non-zero is what makes e_exit save the open buffers. */
+#define WPE_EXIT_INPUT_GONE 1
+
+/**
+ * e_t_input_is_gone - Has the keyboard side of the terminal gone away?
+ *
+ * Called after a key read came back empty.  An empty read is normal while
+ * the user is not typing; it is the end of the input when the terminal
+ * hung up, the pipe or file on stdin ran out, or the descriptor is dead.
+ * Without this check the editor reads "nothing" at once, forever, and uses
+ * a whole CPU (`wpe file </dev/null`, or a terminal window closed under a
+ * session the signal never reached).
+ *
+ * Return: 1 when no key can ever arrive again, 0 when the user is just idle.
+ */
+static int e_t_input_is_gone(void)
+{
+ struct pollfd p;
+ int pending = 0;
+
+ p.fd = STDIN_FILENO;
+ p.events = POLLIN;
+ p.revents = 0;
+ if (poll(&p, 1, 0) <= 0)
+  return(0);                    /* nothing to read yet: the user is idle */
+ if (p.revents & POLLNVAL)
+  return(1);
+ if (ioctl(STDIN_FILENO, FIONREAD, &pending) == 0 && pending > 0)
+  return(0);                    /* a key arrived since the read: not gone */
+ return(1);                     /* readable with nothing in it: end of input */
+}
+
+/**
+ * e_t_input_ended - The input is gone: keep the work and leave.
+ *
+ * Does what an error exit does: the terminal is restored and every open
+ * buffer is written to its .ESV file, which "wpe -r" brings back.
+ */
+static void e_t_input_ended(void)
+{
+ e_exit(WPE_EXIT_INPUT_GONE);
+}
+
 static int e_t_getch_poll(void)
 {
  static int stdin_registered = 0;
@@ -1262,6 +1306,8 @@ static int e_t_getch_poll(void)
     e_input_was_char = 0;
    return c;
   }
+  if (e_t_input_is_gone())
+   e_t_input_ended();
   if (e_d_async_pending)
    e_d_place_cursor_in_messages();
   e_fd_key_wait(stdin_registered);

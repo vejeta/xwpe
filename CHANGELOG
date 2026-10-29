@@ -237,6 +237,10 @@ Changes
 
 * A failed build whose last message has no line end now shows it.
 
+* wpe no longer spins when its input ends: it writes the windows with
+  unsaved changes to .ESV files, which wpe -r reopens, and exits.  The
+  same save on an error exit never worked before and now does.
+
 * Starting the debugger on BSD systems sometimes failed with "tty
   error".  It no longer runs a separate program to learn the terminal's
   name.

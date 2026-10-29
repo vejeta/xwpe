@@ -1089,14 +1089,19 @@ void e_err_save()
   {
    f = cn->f[i];
    b = cn->f[i]->b;
-   if (b->mxlines > 1 || b->bf[0].len > 0)
+   if (f->save && (b->mxlines > 1 || b->bf[0].len > 0))
    {
     /* Check if file system could have an autosave or emergency save file
-       >12 check is to eliminate dos file systems */
-    if ((maxname = pathconf(f->dirct, _PC_NAME_MAX) >= strlen(f->datnam) + 4) &&
-      (maxname > 12))
+       >12 check is to eliminate dos file systems.  Only windows with
+       unsaved changes are written: the others are on disk already. */
+    maxname = pathconf(f->dirct, _PC_NAME_MAX);
+    if (maxname >= (long)strlen(f->datnam) + 4 && maxname > 12)
     {
-     strcat(f->datnam, ".ESV");
+     char *esv = MALLOC(strlen(f->datnam) + 5);
+
+     sprintf(esv, "%s.ESV", f->datnam);
+     FREE(f->datnam);
+     f->datnam = esv;
      printf("Try to save %s!\n", f->datnam);
      if (!e_save(f))
       printf("File %s saved!\n", f->datnam);
