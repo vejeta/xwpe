@@ -17,6 +17,7 @@ name is worked out from it.
 """
 import os
 import subprocess
+import sys
 
 PROC_ROOT = "/proc"
 GONE = "gone"            # run state of a process no longer in the table
@@ -37,9 +38,12 @@ HOURS_PER_DAY = 24
 
 
 def has_procfs():
-    """True where /proc describes processes, i.e. on Linux; elsewhere the
-    answers come from ps(1)."""
-    return os.path.exists(os.path.join(PROC_ROOT, "self", "stat"))
+    """True where /proc describes processes the Linux way, i.e. on Linux;
+    elsewhere the answers come from ps(1).  NetBSD mounts a /proc with a
+    Linux-like stat file, but its command name for a "#!" script is the
+    interpreter's and its status file has no signal masks."""
+    return (sys.platform.startswith("linux")
+            and os.path.exists(os.path.join(PROC_ROOT, "self", "stat")))
 
 
 def _proc_stat_fields(pid):
@@ -164,7 +168,7 @@ def _proc_child_pids(ppid):
 
 def _ps_child_pids(ppid):
     """Direct children of ppid, read from ps(1)."""
-    out = subprocess.run(["ps", "-A", "-o", "pid=,ppid="],
+    out = subprocess.run(["ps", "-A", "-o", "pid=", "-o", "ppid="],
                          capture_output=True, text=True).stdout
     pids = []
     for line in out.splitlines():

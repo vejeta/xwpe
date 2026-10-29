@@ -115,9 +115,27 @@ def _screen(w):
     return "\n".join(w.display(drain=0))
 
 
+def _python3_run_name():
+    """The name the `python3` on PATH runs under.  pkgsrc's python3 is a
+    shell wrapper that execs python3.N, so pdb's process is python3.N
+    there; elsewhere it is python3."""
+    python3 = shutil.which("python3")
+    if python3 is None:
+        return "python3"
+    out = subprocess.run([python3, "-c",
+                          "import os, sys; "
+                          "print(os.path.basename(sys.executable))"],
+                         capture_output=True, text=True).stdout.strip()
+    return out or "python3"
+
+
+# The command the editor runs -> the name its process runs under.
+RUN_NAMES = {"python3": _python3_run_name()}
+
+
 def _children(w, name):
-    """PIDs of the editor's direct children whose command is `name`."""
-    return procinfo.children_named(w.proc.pid, name)
+    """PIDs of the editor's direct children started as the command `name`."""
+    return procinfo.children_named(w.proc.pid, RUN_NAMES.get(name, name))
 
 
 def _cpu_ticks(pid):
@@ -493,10 +511,11 @@ def _silent_adapter_env(tmp_path, adapter, timeout_s):
     """The adapter's name first on PATH as a program that reads its input
     into a log and never writes, a stand-in rustc, and the start deadline.
     The adapter's own output stays open on descriptor 3, so the editor sees
-    an adapter that is silent, not one that has hung up."""
+    an adapter that is silent, not one that has hung up.  The second exec
+    redirects descriptor 3 again because NetBSD's sh closes it on exec."""
     bindir = tmp_path / "bin"
     bindir.mkdir()
-    _write_script(bindir / adapter, "#!/bin/sh\nexec 3>&1\nexec cat > %s\n"
+    _write_script(bindir / adapter, "#!/bin/sh\nexec 3>&1\nexec cat 3>&3 > %s\n"
                   % (tmp_path / SILENT_DEBUGGER_LOG))
     _write_script(bindir / "rustc", FAKE_RUSTC)
     return {"PATH": str(bindir) + ":" + os.environ.get("PATH", ""),
@@ -772,15 +791,27 @@ LONG_PATH_BYTES = [200, 400, 4000]
 JDB_LONG_PATH_BYTES = [200, 400]
 
 
+DEEP_NAME_SLACK = 45    # the longest a path may overshoot `total`
+
+
+def _capped_path_bytes(tmp_path, total):
+    """`total`, or the longest path the platform allows (PATH_MAX is 1024 on
+    BSD, 4096 on Linux) if that is shorter, so the row tests a path at the
+    limit and not past it."""
+    limit = os.pathconf(str(tmp_path), "PC_PATH_MAX")
+    return min(total, limit - DEEP_NAME_SLACK - 1)
+
+
 def _deep_name(tmp_path, leaf, total):
     """leaf under nested 40-byte directories until the full path is at least
     `total` bytes; creates the directories and returns the relative name."""
+    total = _capped_path_bytes(tmp_path, total)
     dirs = []
     while len(os.path.join(str(tmp_path), *dirs, leaf)) < total:
         dirs.append("d" * 40)
     rel = os.path.join(*dirs, leaf)
     os.makedirs(os.path.join(str(tmp_path), os.path.dirname(rel)))
-    assert total <= len(os.path.join(str(tmp_path), rel)) < total + 45
+    assert total <= len(os.path.join(str(tmp_path), rel)) < total + DEEP_NAME_SLACK
     return rel
 
 
@@ -4732,7 +4763,7 @@ def _fake_jdk_env(tmp_path, java_script):
     bindir = tmp_path / "fakejdk"
     bindir.mkdir()
     _write_script(bindir / "jdb",
-                  FAKE_JDB % os.path.realpath(shutil.which("jdb")))
+                  FAKE_JDB % shutil.which("jdb"))
     _write_script(bindir / "java", java_script)
     return {"PATH": "%s:%s" % (bindir, os.environ.get("PATH", "")),
             "XWPE_DEBUG_START_TIMEOUT": str(LONG_START_TIMEOUT_S)}

@@ -178,7 +178,8 @@ functional)
   make check
   echo "== pyte functional suite (WPE_BIN=./wpe) =="
   [ -x "$top/wpe" ] || make
-  WPE_BIN="$top/wpe" "$PY" -m pytest -q "$here" --ignore="$here/x11"
+  WPE_BIN="$top/wpe" "$PY" -m pytest -q "$here" --ignore="$here/x11" \
+    --ignore="$here/wayland"
   # X11 GUI suite as part of the default "run everything".  It self-skips when
   # the headless X stack (Xvfb/matchbox/xdotool/xwd/convert) or Pillow is
   # absent, so this stays green on a text-only buildd.  pytest exit 5 = "all
@@ -205,7 +206,8 @@ asan)
   # already chose a scale.
   ASAN_OPTIONS="detect_leaks=0:abort_on_error=1:log_path=$top/asan-run" \
     XWPE_TEST_WAIT_SCALE="${XWPE_TEST_WAIT_SCALE:-2}" \
-    WPE_BIN="$top/wpe-asan" "$PY" -m pytest -q "$here" --ignore="$here/x11"
+    WPE_BIN="$top/wpe-asan" "$PY" -m pytest -q "$here" --ignore="$here/x11" \
+    --ignore="$here/wayland"
   ;;
 
 x11)
