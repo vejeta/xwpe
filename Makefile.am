@@ -61,6 +61,7 @@ we_SOURCES = \
   we_hfkt.c \
   we_menue.c \
   we_menurows.c \
+  we_mousedrain.c \
   we_mouse.c \
   we_opt.c \
   we_wind.c \
@@ -183,6 +184,7 @@ noinst_HEADERS = \
   we_debprompt.h \
   we_debpath.h \
   we_menurows.h \
+  we_mousedrain.h \
   we_render.h \
   we_render_glyphs.h \
   we_wayland.h \
@@ -290,7 +292,7 @@ metainfodir = $(datadir)/metainfo
 metainfo_DATA = io.codeberg.mendezr.xwpe.metainfo.xml
 
 # --- Unit tests ---
-check_PROGRAMS = test_checkheader test_fl_sel_len test_syntax_def test_fdloop test_clipboard test_lsp_buffer test_lsp_doctor test_lsp_semantic test_lsp_truecolor test_dap test_dap_dlv test_dap_gdb test_dap_lldb test_dap_scala test_lsp_scala test_lsp_clangd test_lsp_python test_lsp_gopls test_lsp_rust test_debprompt test_debpath test_menurows
+check_PROGRAMS = test_checkheader test_fl_sel_len test_syntax_def test_fdloop test_clipboard test_lsp_buffer test_lsp_doctor test_lsp_semantic test_lsp_truecolor test_dap test_dap_dlv test_dap_gdb test_dap_lldb test_dap_scala test_lsp_scala test_lsp_clangd test_lsp_python test_lsp_gopls test_lsp_rust test_debprompt test_debpath test_menurows test_mousedrain
 
 # The test includes we_fdloop.c itself (the id counter is private to it), so
 # the file is not listed here again: it would be defined twice.
@@ -318,6 +320,12 @@ test_debpath_CFLAGS = $(XWPE_STDFLAG)
 # needs an editor and a pseudo-terminal per case.
 test_menurows_SOURCES = tests/test_menurows.c we_menurows.c
 test_menurows_CFLAGS = $(XWPE_STDFLAG)
+
+# Mouse queue drain unit test: we_mousedrain.c only, no curses, always runs.
+# A curses whose getmouse() answers "ok, empty event" forever (OpenBSD's) must
+# not leave the drain spinning; the test has its own alarm so a hang is a failure.
+test_mousedrain_SOURCES = tests/test_mousedrain.c we_mousedrain.c
+test_mousedrain_CFLAGS = $(XWPE_STDFLAG)
 
 # Clipboard helpers unit test: RFC 4648 base64 + OSC 52 framing (we_clip.c
 # only, no editor/X11). Always runs (no skip).
@@ -420,7 +428,7 @@ test_lsp_rust_CFLAGS = $(XWPE_STDFLAG) $(JSONC_CFLAGS)
 test_lsp_rust_LDADD = $(JSONC_LIBS)
 
 TESTS = test_checkheader test_fl_sel_len test_syntax_def test_fdloop test_clipboard test_lsp_buffer test_lsp_doctor test_lsp_semantic test_lsp_truecolor test_dap test_dap_dlv \
-  test_dap_gdb test_dap_lldb test_dap_scala test_lsp_scala test_lsp_clangd test_lsp_python test_lsp_gopls test_lsp_rust test_debprompt test_debpath test_menurows
+  test_dap_gdb test_dap_lldb test_dap_scala test_lsp_scala test_lsp_clangd test_lsp_python test_lsp_gopls test_lsp_rust test_debprompt test_debpath test_menurows test_mousedrain
 
 # --- AI assistant unit tests (only when --enable-ai) ---
 # WPE_AI comes from config.h (the build is configured --enable-ai here).  The

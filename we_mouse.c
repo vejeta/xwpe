@@ -8,6 +8,7 @@
 #include "messages.h"
 #include "edit.h"
 #include "we_render.h"
+#include "we_mousedrain.h"
 #ifndef NO_XWINDOWS
 #include "WeXterm.h"
 #endif
@@ -80,13 +81,36 @@ void e_mouse_tracking_disable(void)
 #endif
 }
 
+#if MOUSE
+#ifdef NCURSES
+/**
+ * e_mouse_pull_curses - Read one event from curses' mouse queue.
+ * @arg: unused.
+ *
+ * Lets the bounded drain (wpe_mouse_drain) work on the real queue.  An event
+ * with no button state is reported as empty, which is how OpenBSD's curses
+ * answers once its queue has run dry.
+ *
+ * Return: 1 real event, 0 empty event, -1 queue empty.
+ */
+static int e_mouse_pull_curses(void *arg)
+{
+ MEVENT mev;
+ (void)arg;
+ if (getmouse(&mev) != OK)
+  return -1;
+ if (mev.bstate == 0)
+  return 0;
+ return 1;
+}
+#endif
+#endif
+
 void e_mouse_flush(void)
 {
 #if MOUSE
 #ifdef NCURSES
- MEVENT mev;
- while (getmouse(&mev) == OK)
-  ;
+ wpe_mouse_drain(e_mouse_pull_curses, NULL);
  e_mouse_tracking_enable();
 #endif
  { extern int g_mouse_buttons;
