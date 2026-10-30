@@ -533,6 +533,12 @@ xwpe saved every window; only the modified ones are saved now.  A second
 at once.  A crash, and
 @code{SIGKILL}, end the editor without this save.
 
+During a session under a debug adapter (@command{dlv},
+@command{lldb-dap}, @command{gdb} in DAP mode) the save comes first, and
+then the editor tells the adapter to end the program it debugs and waits
+for it to go, so no program runs on after the editor.  That wait can take
+up to five seconds, with nothing on the screen.
+
 To recover the saved files, start the editor in the directory that holds
 them:
 

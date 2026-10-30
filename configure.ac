@@ -281,6 +281,13 @@ AC_CHECK_LIB([z], [inflate], [],
 # --- Feature checks ---
 AC_CHECK_FUNCS([mkdtemp])
 
+# --- A pollable wait for a child's exit, for Quit under a debug adapter ---
+# Linux has pidfd_open (no check needed: the sources use SYS_pidfd_open when
+# the kernel headers name it).  The BSDs and macOS have kqueue with
+# EVFILT_PROC / NOTE_EXIT, whose descriptor poll() can watch the same way.
+AC_CHECK_HEADERS([sys/event.h])
+AC_CHECK_FUNCS([kqueue])
+
 # --- Optional: WPE_TRACE debug logging (off by default, zero-cost) ---
 AC_ARG_ENABLE([trace],
   [AS_HELP_STRING([--enable-trace],

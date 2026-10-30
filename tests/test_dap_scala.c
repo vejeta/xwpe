@@ -85,6 +85,7 @@ int main(void)
  fputs("//> using jvm temurin:21\n", f); fclose(f);
 
  memset(&rec, 0, sizeof(rec));
+ memset(&hostcb, 0, sizeof(hostcb));
  hostcb.on_stopped = on_stopped;
  hostcb.on_output = on_output;
  hostcb.on_terminated = on_terminated;

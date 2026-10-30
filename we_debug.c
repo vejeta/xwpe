@@ -5877,6 +5877,20 @@ static void e_d_dap_quit(FENSTER *f)
  g_dap_stop_line = -1;
 }
 
+/**
+ * e_d_dap_end_at_exit - The editor is ending: end the debug adapter too.
+ *
+ * Called by the editor's end after the user's work is saved, so a logout
+ * or a "kill PID" during a debug session leaves no adapter and no program
+ * behind (lldb-dap ends a running program only when it is told to).  The
+ * adapter's output is no longer shown: the windows are going.
+ */
+void e_d_dap_end_at_exit(void)
+{
+ g_dap_fenster = NULL;
+ e_d_dap_quit(NULL);
+}
+
 /* Compile-first DAP language (Rust): build the source to a debuggable binary
    with the configured compiler.  dlv builds Go itself; here xwpe drives the
    one-shot compile (compiler + flags from the file's Options entry) so the

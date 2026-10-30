@@ -439,7 +439,10 @@ Run/Continue (@kbd{Ctrl-G R}), Step Over (@kbd{F8}), Step Into (@kbd{F7}),
 watches (@kbd{Ctrl-G W}, evaluated with the DAP @code{evaluate} request),
 Show stack (@kbd{Ctrl-G K}, the @code{stackTrace} request), Finish function
 (@kbd{Ctrl-G F}, @code{stepOut}) and Quit (@kbd{Ctrl-G Q}) all work as with
-gdb.  The first @kbd{Ctrl-G R} stops
+gdb.  Quit asks the adapter to end the program and waits for its answer
+and its exit, up to a few seconds for an adapter that does not answer
+(@command{lldb-dap} takes about a second), so no program is left
+running.  The first @kbd{Ctrl-G R} stops
 on your first breakpoint, even one on a line that runs only once; xwpe runs
 on only past the adapter's own entry stop (Go's @code{main.main}), told
 apart by the reason the adapter gives for the stop.

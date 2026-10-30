@@ -245,6 +245,13 @@ Changes
   unsaved work: on SIGHUP or SIGTERM the editor writes it to .ESV files,
   as the original xwpe did, and exits, even from an open dialog.
 
+* Ending the editor (exit, logout, "kill PID") during a session under a
+  debug adapter (dlv, lldb-dap, gdb's DAP mode) now saves the unsaved
+  work first, then ends the adapter and the program it debugs, which no
+  longer runs on after the editor is gone.  This can take up to five
+  seconds with nothing on the screen.  Debug > Quit likewise waits for
+  the adapter to answer before it ends it.
+
 * Starting the debugger on BSD systems sometimes failed with "tty
   error".  It no longer runs a separate program to learn the terminal's
   name.

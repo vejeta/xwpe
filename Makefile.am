@@ -292,7 +292,7 @@ metainfodir = $(datadir)/metainfo
 metainfo_DATA = io.codeberg.mendezr.xwpe.metainfo.xml
 
 # --- Unit tests ---
-check_PROGRAMS = test_checkheader test_fl_sel_len test_syntax_def test_fdloop test_clipboard test_lsp_buffer test_lsp_doctor test_lsp_semantic test_lsp_truecolor test_dap test_dap_dlv test_dap_gdb test_dap_lldb test_dap_scala test_lsp_scala test_lsp_clangd test_lsp_python test_lsp_gopls test_lsp_rust test_debprompt test_debpath test_menurows test_mousedrain
+check_PROGRAMS = test_checkheader test_fl_sel_len test_syntax_def test_fdloop test_clipboard test_lsp_buffer test_lsp_doctor test_lsp_semantic test_lsp_truecolor test_dap test_dap_nopidfd test_dap_dlv test_dap_gdb test_dap_lldb test_dap_scala test_lsp_scala test_lsp_clangd test_lsp_python test_lsp_gopls test_lsp_rust test_debprompt test_debpath test_menurows test_mousedrain
 
 # The test includes we_fdloop.c itself (the id counter is private to it), so
 # the file is not listed here again: it would be defined twice.
@@ -373,6 +373,13 @@ test_dap_SOURCES = tests/test_dap.c we_dap.c we_dap_proto.c
 test_dap_CFLAGS = $(XWPE_STDFLAG) $(JSONC_CFLAGS)
 test_dap_LDADD = $(JSONC_LIBS) $(UTIL_LIBS)
 
+# The same test with the engine built as on a system without pidfd (the
+# BSDs, macOS), so the wait for an adapter that closed every descriptor is
+# tested on Linux too.
+test_dap_nopidfd_SOURCES = tests/test_dap.c we_dap.c we_dap_proto.c
+test_dap_nopidfd_CFLAGS = $(XWPE_STDFLAG) $(JSONC_CFLAGS) -DDAP_NO_PIDFD
+test_dap_nopidfd_LDADD = $(JSONC_LIBS) $(UTIL_LIBS)
+
 # DAP engine integration test: drives a real `dlv dap` (SKIPs without dlv+go).
 test_dap_dlv_SOURCES = tests/test_dap_dlv.c we_dap.c we_dap_proto.c
 test_dap_dlv_CFLAGS = $(XWPE_STDFLAG) $(JSONC_CFLAGS)
@@ -427,7 +434,7 @@ test_lsp_rust_SOURCES = tests/test_lsp_rust.c we_lsp.c we_dap_proto.c
 test_lsp_rust_CFLAGS = $(XWPE_STDFLAG) $(JSONC_CFLAGS)
 test_lsp_rust_LDADD = $(JSONC_LIBS)
 
-TESTS = test_checkheader test_fl_sel_len test_syntax_def test_fdloop test_clipboard test_lsp_buffer test_lsp_doctor test_lsp_semantic test_lsp_truecolor test_dap test_dap_dlv \
+TESTS = test_checkheader test_fl_sel_len test_syntax_def test_fdloop test_clipboard test_lsp_buffer test_lsp_doctor test_lsp_semantic test_lsp_truecolor test_dap test_dap_nopidfd test_dap_dlv \
   test_dap_gdb test_dap_lldb test_dap_scala test_lsp_scala test_lsp_clangd test_lsp_python test_lsp_gopls test_lsp_rust test_debprompt test_debpath test_menurows test_mousedrain
 
 # --- AI assistant unit tests (only when --enable-ai) ---
