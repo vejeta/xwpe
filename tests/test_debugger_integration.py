@@ -1876,6 +1876,235 @@ def test_debug_quit_while_the_program_runs_under_a68g(tmp_path):
             % _screen(w)
 
 
+# A busy loop that runs until nine seconds of a68g's own clock have passed
+# since t0, longer than the five the editor used to wait for a68g, which has
+# no call to sleep.  It lasts the same on a fast or a slow machine.
+A68_LONG_LOOP = "WHILE seconds - t0 < 9.0 DO SKIP OD;\n"
+A68_LONG_RUN_S = 40
+A68_LONG_PROG = (
+    "INT y := 0;\n"
+    "REAL t0 := seconds;\n"
+    + A68_LONG_LOOP +
+    "y := 2;\n"
+    "print ((y, new line))\n"
+)
+A68_LONG_FIRST_LINE = 2      # REAL t0 := seconds;  the first stop
+A68_LONG_AFTER_LINE = 4      # y := 2;  past the loop
+
+
+def _start_a68_session_on(w, first_line, later_line):
+    """Breakpoints on @first_line and @later_line, Ctrl-G R, and wait for
+    the marked stop on the first."""
+    _go_to_line(w, first_line)
+    w.key(CTRL_G, "b", delay=0.4)
+    _go_to_line(w, later_line)
+    w.key(CTRL_G, "b", delay=0.4)
+    w.key(CTRL_G, "r", delay=1.0)
+    assert _wait_for(w, lambda: _mark_line(w) == first_line, START_TIMEOUT_S), \
+        "a68g should stop on line %d; mark is on %s:\n%s" \
+        % (first_line, _mark_line(w), _screen(w))
+
+
+# @scenario SC-debug-05
+def test_a68g_continue_to_a_breakpoint_far_away_marks_it(tmp_path):
+    """Ctrl-G R to a breakpoint nine seconds of run time away marks it when
+    it is reached: the editor does not give up on a68g after five seconds."""
+    _need("a68g")
+    with WpeSession(str(tmp_path), A68_LONG_PROG, filename="p.a68",
+                    wait=1.5) as w:
+        _start_a68_session_on(w, A68_LONG_FIRST_LINE, A68_LONG_AFTER_LINE)
+        w.key(CTRL_G, "r", delay=0.5)
+        assert _wait_for(w, lambda: _mark_line(w) == A68_LONG_AFTER_LINE,
+                         A68_LONG_RUN_S), \
+            "Ctrl-G R should mark line %d (mark on %s):\n%s" \
+            % (A68_LONG_AFTER_LINE, _mark_line(w), _screen(w))
+
+
+# @scenario SC-debug-36
+def test_a68g_keys_reach_the_editor_while_the_program_runs(tmp_path):
+    """While the Algol 68 program runs, Ctrl-G K says on the status row that
+    the program is running and opens no Stack window: the key belongs to the
+    editor, and a68g is told nothing until the program stops."""
+    _need("a68g")
+    with WpeSession(str(tmp_path), A68_LONG_PROG, filename="p.a68",
+                    wait=1.5) as w:
+        _start_a68_session_on(w, A68_LONG_FIRST_LINE, A68_LONG_AFTER_LINE)
+        w.key(CTRL_G, "r", delay=0.5)
+        _says_the_program_is_running(w)
+        assert _wait_for(w, lambda: _mark_line(w) == A68_LONG_AFTER_LINE,
+                         A68_LONG_RUN_S), \
+            "the stop should be marked once the program gets there " \
+            "(mark on %s):\n%s" % (_mark_line(w), _screen(w))
+
+
+# A procedure whose call takes about nine seconds.
+A68_SLOW_CALL_PROG = (
+    "PROC busy = (INT k) INT:\n"
+    "BEGIN\n"
+    "   REAL t0 := seconds;\n"
+    "   " + A68_LONG_LOOP +
+    "   k\n"
+    "END;\n"
+    "INT a := 1;\n"
+    "INT y := busy (a);\n"
+    "INT z := 2;\n"
+    "print ((y, z, new line))\n"
+)
+A68_SLOW_BODY_LINE = 3       # REAL t0 := seconds;  in busy, before its loop
+A68_SLOW_CALL_LINE = 8       # INT y := busy (a);
+A68_SLOW_AFTER_LINE = 9      # INT z := 2;
+
+
+# @scenario SC-debug-05
+def test_a68g_f8_over_a_call_that_runs_long_marks_the_next_line(tmp_path):
+    """F8 on a call that takes nine seconds marks the line after it once the
+    call returns, and the editor refuses debugger keys meanwhile."""
+    _need("a68g")
+    with WpeSession(str(tmp_path), A68_SLOW_CALL_PROG, filename="p.a68",
+                    wait=1.5) as w:
+        _go_to_line(w, A68_SLOW_CALL_LINE)
+        w.key(CTRL_G, "b", delay=0.4)
+        w.key(CTRL_G, "r", delay=1.0)
+        assert _wait_for(w, lambda: _mark_line(w) == A68_SLOW_CALL_LINE,
+                         START_TIMEOUT_S), \
+            "a68g should stop on line %d; mark is on %s:\n%s" \
+            % (A68_SLOW_CALL_LINE, _mark_line(w), _screen(w))
+        w.key(F8, delay=0.5)
+        _says_the_program_is_running(w)
+        assert _wait_for(w, lambda: _mark_line(w) == A68_SLOW_AFTER_LINE,
+                         A68_LONG_RUN_S), \
+            "F8 should mark line %d (mark on %s):\n%s" \
+            % (A68_SLOW_AFTER_LINE, _mark_line(w), _screen(w))
+
+
+# @scenario SC-debug-34
+def test_a68g_finish_over_a_long_call_marks_the_caller(tmp_path):
+    """Ctrl-G F from inside a procedure that runs nine seconds more marks the
+    line after the call when it returns, and the editor refuses debugger
+    keys meanwhile."""
+    _need("a68g")
+    with WpeSession(str(tmp_path), A68_SLOW_CALL_PROG, filename="p.a68",
+                    wait=1.5) as w:
+        _go_to_line(w, A68_SLOW_BODY_LINE)
+        w.key(CTRL_G, "b", delay=0.4)
+        w.key(CTRL_G, "r", delay=1.0)
+        assert _wait_for(w, lambda: _mark_line(w) == A68_SLOW_BODY_LINE,
+                         START_TIMEOUT_S), \
+            "a68g should stop on line %d; mark is on %s:\n%s" \
+            % (A68_SLOW_BODY_LINE, _mark_line(w), _screen(w))
+        _go_to_line(w, A68_SLOW_AFTER_LINE)
+        w.key(CTRL_G, "f", delay=0.5)
+        _says_the_program_is_running(w)
+        assert _wait_for(w, lambda: _mark_line(w) == A68_SLOW_AFTER_LINE,
+                         A68_LONG_RUN_S), \
+            "Ctrl-G F should mark line %d (mark on %s):\n%s" \
+            % (A68_SLOW_AFTER_LINE, _mark_line(w), _screen(w))
+
+
+# The program prints while the user has closed Messages and opened the File
+# Manager; it runs on to a far breakpoint.  Times are a68g's own clock.
+A68_PRINT_PROG = (
+    "INT y := 0;\n"
+    "REAL t0 := seconds;\n"
+    "WHILE seconds - t0 < 5.0 DO SKIP OD;\n"
+    "print ((\"late\", new line));\n"
+    "WHILE seconds - t0 < 10.0 DO SKIP OD;\n"
+    "y := 2;\n"
+    "print ((y, new line))\n"
+)
+A68_PRINT_FIRST_LINE = 2
+A68_PRINT_STOP_LINE = 6
+A68_PRINT_WAIT_S = 6         # past the print, with the File Manager open
+
+
+# @scenario SC-debug-36
+def test_a68g_output_while_a_box_is_open_opens_no_window_over_it(tmp_path):
+    """Messages closed, the File Manager open, the program prints: no new
+    Messages window opens over the File Manager, Esc closes it, and after
+    the stop Ctrl-G K opens the Stack window."""
+    _need("a68g")
+    with WpeSession(str(tmp_path), A68_PRINT_PROG, filename="p.a68",
+                    wait=1.5) as w:
+        _start_a68_session_on(w, A68_PRINT_FIRST_LINE, A68_PRINT_STOP_LINE)
+        w.key(CTRL_G, "r", delay=0.5)
+        w.key(F6, delay=0.5)             # Messages on top
+        w.key(CTRL_W, delay=0.5)
+        assert " Messages " not in _screen(w), \
+            "Ctrl-W should have closed Messages:\n%s" % _screen(w)
+        w.key(F3, delay=0.8)
+        w._drain(A68_PRINT_WAIT_S)       # the program prints meanwhile
+        assert " Messages " not in _screen(w), \
+            "no Messages window should open over the File Manager:\n%s" \
+            % _screen(w)
+        w.key(ESC, delay=0.8)
+        assert _wait_for(w, lambda: _mark_line(w) == A68_PRINT_STOP_LINE,
+                         A68_LONG_RUN_S), \
+            "the stop should be marked on line %d (mark on %s):\n%s" \
+            % (A68_PRINT_STOP_LINE, _mark_line(w), _screen(w))
+        w.key(CTRL_G, "k", delay=0.8)
+        assert _wait_for(w, lambda: len(_stack_frames(w)) >= 1,
+                         STEP_TIMEOUT_S), \
+            "Ctrl-G K should open the Stack window:\n%s" % _screen(w)
+
+
+# A program whose own text is a68g's prompt, with no line end, as a68g
+# writes it at a stop; then it runs on to a far stop.
+A68_FAKE_TEXT = "print ((\"(a68g) \"));\n"
+# The same, after the line a68g writes just before its prompt.
+A68_FAKE_THREAD_TEXT = ("print ((\"This is the main thread\", new line, "
+                        "\"(a68g) \"));\n")
+A68_FAKE_STOP_LINE = 5
+A68_FAKE_SETTLE_S = 2        # well inside the nine-second loop
+
+
+def _a68g_fake_prog(fake_text):
+    """A program that prints @fake_text, then runs nine seconds to line
+    A68_FAKE_STOP_LINE."""
+    return ("INT y := 0;\n" + fake_text +
+            "REAL t0 := seconds;\n"
+            "WHILE seconds - t0 < 9.0 DO SKIP OD;\n"
+            "y := 2;\n"
+            "print ((y, new line))\n")
+
+
+def _assert_the_fake_prompt_does_not_end_the_run(tmp_path, fake_text):
+    """Run to the far breakpoint past @fake_text: debugger keys are still
+    refused after it, and the real stop is the one marked."""
+    with WpeSession(str(tmp_path), _a68g_fake_prog(fake_text),
+                    filename="p.a68", wait=1.5) as w:
+        _go_to_line(w, A68_FAKE_STOP_LINE)
+        w.key(CTRL_G, "b", delay=0.4)
+        w.key(CTRL_G, "r", delay=1.0)
+        assert _wait_for(w, lambda: _children(w, "a68g"), START_TIMEOUT_S), \
+            "a68g should be running:\n%s" % _screen(w)
+        w._drain(A68_FAKE_SETTLE_S)      # past the start and the fake prompt
+        _says_the_program_is_running(w)
+        assert _wait_for(w, lambda: _mark_line(w) == A68_FAKE_STOP_LINE,
+                         A68_LONG_RUN_S), \
+            "the real stop, line %d, should be marked (mark on %s):\n%s" \
+            % (A68_FAKE_STOP_LINE, _mark_line(w), _screen(w))
+
+
+# @scenario SC-debug-05
+def test_a68g_program_text_with_the_prompt_does_not_end_the_run(tmp_path):
+    """A program that prints "(a68g) " and no line end, exactly what a68g
+    prints when it stops, does not stop the run there: debugger keys are
+    still refused while the program runs on, and the real stop, on the far
+    breakpoint, is the one that is marked."""
+    _need("a68g")
+    _assert_the_fake_prompt_does_not_end_the_run(tmp_path, A68_FAKE_TEXT)
+
+
+# @scenario SC-debug-05
+def test_a68g_program_text_with_the_thread_line_and_prompt_runs_on(tmp_path):
+    """A program that prints a68g's thread line and then its prompt does not
+    stop the run either: a real stop also has the numbered source line and
+    the column marker before them."""
+    _need("a68g")
+    _assert_the_fake_prompt_does_not_end_the_run(tmp_path,
+                                                  A68_FAKE_THREAD_TEXT)
+
+
 # @scenario SC-debug-18
 @pytest.mark.parametrize("debugger", [
     "jdb",
@@ -1960,6 +2189,150 @@ def test_closing_the_window_while_the_program_runs_keeps_the_editor(
             % (SLEEPY_AFTER_LINE, w.alive(), _screen(w))
         assert w.alive(), "the editor should still run"
         assert _children(w, "gdb"), "gdb should still run the session"
+
+
+# A program that prints a line every tenth of a second for six seconds on
+# its way to the next breakpoint.
+TICKING_C_PROG = (
+    "#include <stdio.h>\n"
+    "#include <unistd.h>\n"
+    "int main(void)\n"
+    "{\n"
+    "  int i = 0;\n"
+    "  for (i = 0; i < 60; i++)\n"
+    "  {\n"
+    "    printf(\"TICK %d\\n\", i);\n"
+    "    fflush(stdout);\n"
+    "    usleep(100000);\n"
+    "  }\n"
+    "  i = 99;\n"
+    "  return 0;\n"
+    "}\n"
+)
+TICKING_FIRST_LINE = 5    # int i = 0;
+TICKING_AFTER_LINE = 12   # i = 99;  after the loop
+TICKING_RUN_S = 6
+TICKING_LAST_LINE = "TICK 59"
+CPU_SAMPLE_S = 2.0
+
+
+def _cpu_used_over(w, seconds):
+    """CPU ticks the editor used while it sat @seconds reading the screen,
+    or None when its process is gone."""
+    before = _cpu_ticks(w.proc.pid)
+    w._drain(seconds)
+    after = _cpu_ticks(w.proc.pid)
+    if before is None or after is None:
+        return None
+    return after - before
+
+
+def _assert_idle(w, seconds, what):
+    """The editor used no more CPU over @seconds than an idle one does."""
+    used = _cpu_used_over(w, seconds)
+    if used is None:
+        return
+    assert used < IDLE_CPU_TICKS * seconds * WAIT_SCALE, \
+        "the editor should be idle %s, used %d ticks in %.1fs" \
+        % (what, used, seconds)
+
+
+# @scenario SC-debug-36
+def test_gdb_output_with_messages_closed_leaves_the_editor_idle(tmp_path):
+    """Messages is closed while gdb's program prints on its way to the next
+    breakpoint: the editor stays idle meanwhile, the stop is marked, and
+    everything the program printed is on the User Screen (Alt-F5).  The
+    output nobody read kept the pty readable, so the editor woke without
+    end and used a whole core until the program stopped."""
+    _need("gcc", "gdb")
+    with WpeSession(str(tmp_path), TICKING_C_PROG, filename="p.c",
+                    wait=1.5) as w:
+        _move_down(w, TICKING_FIRST_LINE - 1)
+        w.key(CTRL_G, "b", delay=0.4)
+        _move_down(w, TICKING_AFTER_LINE - TICKING_FIRST_LINE)
+        w.key(CTRL_G, "b", delay=0.4)
+        w.key(CTRL_G, "r", delay=1.0)
+        assert _wait_for(w, lambda: _mark_line(w) == TICKING_FIRST_LINE,
+                         START_TIMEOUT_S), \
+            "gdb should stop on line %d:\n%s" % (TICKING_FIRST_LINE, _screen(w))
+        w.key(CTRL_G, "r", delay=0.3)
+        w.key(F6, delay=0.3)             # Messages on top
+        w.key(CTRL_W, delay=0.3)
+        assert " Messages " not in _screen(w), \
+            "Ctrl-W should have closed Messages:\n%s" % _screen(w)
+        _assert_idle(w, CPU_SAMPLE_S, "while the program prints")
+        assert _wait_for(w, lambda: _mark_line(w) == TICKING_AFTER_LINE,
+                         STEP_TIMEOUT_S + TICKING_RUN_S), \
+            "the stop on line %d should be marked (mark on %s):\n%s" \
+            % (TICKING_AFTER_LINE, _mark_line(w), _screen(w))
+        w.key(ALT_F5, delay=1.0)
+        assert TICKING_LAST_LINE in _screen(w), \
+            "Alt-F5 should show what the program printed:\n%s" % _screen(w)
+        w.key("\r", delay=0.8)
+
+
+# @scenario SC-debug-13
+def test_the_editor_is_idle_after_a_gdb_session_ended(tmp_path):
+    """Once the program ran to its end and gdb is gone, the editor sleeps
+    until a key: no descriptor of the ended session wakes it."""
+    _need("gcc", "gdb")
+    with _c_session(tmp_path) as w:
+        _start_c_session(w)
+        w.key(CTRL_G, "r", delay=0.3)
+        assert _wait_for(w, lambda: not _children(w, "gdb"), STEP_TIMEOUT_S), \
+            "gdb should be gone after the program ended:\n%s" % _screen(w)
+        _assert_idle(w, CPU_SAMPLE_S, "after the session ended")
+        w.key("Q", delay=0.3)
+        w.save()
+        assert "Q  int x = 3;" in w.text(), \
+            "typing after the session should edit the source"
+
+
+# A java launcher that says a lot before it starts the real VM, as a
+# wrapper script that reports its settings would: it waits three seconds,
+# prints a line every tenth of a second for six, then runs the VM.  It
+# prints while jdb starts, before the VM connects.
+FAKE_JAVA_TALKS = ("#!/bin/sh\nsleep 3\ni=0\nwhile [ $i -lt 60 ]; do\n"
+                   "  echo \"VMTICK $i\"\n  i=$((i + 1))\n  sleep 0.1\ndone\n"
+                   "exec '%s' \"$@\"\n")
+JDB_TALK_PROG = (
+    "public class P {\n"
+    "    public static void main(String[] a) {\n"
+    "        int x = 3;\n"
+    "        System.out.println(x);\n"
+    "    }\n"
+    "}\n"
+)
+JDB_TALK_BREAK_LINE = 3       # int x = 3;
+JDB_TALK_QUIET_S = 4          # past the launcher's three-second wait
+JDB_TALK_START_S = 30         # javac, the launcher and the VM
+
+
+# @scenario SC-debug-17
+def test_jdb_start_with_messages_closed_leaves_the_editor_idle(tmp_path):
+    """Messages is closed while jdb starts and the java launcher prints:
+    the editor stays idle, and the start goes on to the stop.  What the
+    launcher printed was left unread with Messages closed, so the pty woke
+    the editor without end until the VM connected."""
+    _need("jdb", "javac")
+    env = _fake_jdk_env(tmp_path, FAKE_JAVA_TALKS % _jdk_java())
+    with WpeSession(str(tmp_path), JDB_TALK_PROG, filename="P.java",
+                    wait=2.0, env_extra=env) as w:
+        _move_down(w, JDB_TALK_BREAK_LINE - 1)
+        w.key(CTRL_G, "b", delay=0.5)
+        w.key(CTRL_G, "r", delay=1.0)
+        assert _wait_for(w, lambda: WAITING_FOR_JDB in _screen(w),
+                         JDB_TALK_START_S), \
+            "the start should wait for the VM:\n%s" % _screen(w)
+        w.key(CTRL_W, delay=0.5)         # Messages is on top while it starts
+        assert " Messages " not in _screen(w), \
+            "Ctrl-W should have closed Messages:\n%s" % _screen(w)
+        w._drain(JDB_TALK_QUIET_S)       # the launcher prints from here on
+        _assert_idle(w, CPU_SAMPLE_S, "while the java launcher prints")
+        assert _wait_for(w, lambda: _mark_line(w) == JDB_TALK_BREAK_LINE,
+                         JDB_TALK_START_S), \
+            "the start should go on to the stop on line %d (mark on %s):" \
+            "\n%s" % (JDB_TALK_BREAK_LINE, _mark_line(w), _screen(w))
 
 
 SLEEPY_NEXT_LINE = 8     # printf(...);  one F8 after the second stop

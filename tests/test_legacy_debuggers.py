@@ -116,6 +116,10 @@ RUNNING_NAP_S = 3600
 # Seconds a continue runs before it answers, to model a program that takes
 # a while to reach its next stop; 0 answers at once.
 CONTINUE_DELAY_S = float(os.environ.get("XWPE_STUB_CONTINUE_DELAY_S", "0"))
+# Set to model a debugger that dies after a continue, half way through a
+# line of its answer: no line end, no prompt, then its end of file.
+CONTINUE_DIES = os.environ.get("XWPE_STUB_CONTINUE_DIES", "") == "1"
+HALF_LINE = "the debugger died half way through"
 
 armed = []          # breakpoint lines, in the order they were armed
 current = [0]       # line the program stands at; 0 before the first run
@@ -192,6 +196,9 @@ def run(first):
     """Answer a run or a continue: the next stop, or the program's end."""
     if not first and CONTINUE_RUNS_ON:
         run_on()
+    if not first and CONTINUE_DIES:
+        say(HALF_LINE)
+        os._exit(0)
     if not first:
         time.sleep(CONTINUE_DELAY_S)
     if first and BACKEND in ("dbx", "xdb"):
@@ -342,14 +349,16 @@ def _need(*tools):
             pytest.skip("no %s" % tool)
 
 
-def _stub_env(tmp_path, backend, continue_runs_on=False, continue_delay_s=0):
+def _stub_env(tmp_path, backend, continue_runs_on=False, continue_delay_s=0,
+              continue_dies=False):
     """Write the stub for @backend and return the environment that runs it.
 
     The stub is one script under the debugger's own name, so the backend is
     the name xwpe exec's, exactly as the real one would be.  With
     @continue_runs_on, a continue after the first stop never comes back: the
     program runs on and the debugger says nothing.  With @continue_delay_s,
-    a continue answers only after that many seconds."""
+    a continue answers only after that many seconds.  With @continue_dies,
+    a continue writes half a line and the debugger exits."""
     bindir = tmp_path / "bin"
     bindir.mkdir(exist_ok=True)
     stub = bindir / backend
@@ -364,10 +373,13 @@ def _stub_env(tmp_path, backend, continue_runs_on=False, continue_delay_s=0):
         env["XWPE_STUB_CONTINUE_RUNS_ON"] = "1"
     if continue_delay_s:
         env["XWPE_STUB_CONTINUE_DELAY_S"] = str(continue_delay_s)
+    if continue_dies:
+        env["XWPE_STUB_CONTINUE_DIES"] = "1"
     return env
 
 
-def _session(tmp_path, backend, continue_runs_on=False, continue_delay_s=0):
+def _session(tmp_path, backend, continue_runs_on=False, continue_delay_s=0,
+             continue_dies=False):
     """A session on p.c with @backend forced through the options file.
 
     The options file is how a user picks a backend the dialog of this build
@@ -379,7 +391,8 @@ def _session(tmp_path, backend, continue_runs_on=False, continue_delay_s=0):
     return WpeSession(str(tmp_path), C_PROG, filename=C_SOURCE, wait=1.5,
                       env_extra=_stub_env(tmp_path, backend,
                                           continue_runs_on,
-                                          continue_delay_s))
+                                          continue_delay_s,
+                                          continue_dies))
 
 
 def _commands(tmp_path, backend):
@@ -692,3 +705,45 @@ def test_closing_the_window_while_the_program_runs_keeps_the_editor(
         assert w.alive(), "the editor should still run"
         assert _stub_running(w, backend), \
             "%s should still run the session:\n%s" % (backend, _screen(w))
+
+
+IDLE_CPU_TICKS = 20       # below this per wall second the editor is idle
+CPU_SAMPLE_S = 2.0
+
+
+def _cpu_used_over(w, seconds):
+    """CPU ticks the editor used while it sat @seconds reading the screen,
+    or None when its process is gone."""
+    before = procinfo.cpu_ticks(w.proc.pid)
+    w._drain(seconds)
+    after = procinfo.cpu_ticks(w.proc.pid)
+    if before is None or after is None:
+        return None
+    return after - before
+
+
+# @scenario SC-debug-15
+@pytest.mark.parametrize("backend", BACKENDS)
+def test_a_debugger_that_dies_mid_line_while_the_program_runs(tmp_path,
+                                                              backend):
+    """The debugger writes half a line after a continue and exits: the
+    editor stays idle, the session ends and Messages names the debugger
+    that ended.  The half line was kept back as a line still to come, so the
+    end of file woke the editor without end, a whole core for ever.
+
+    Limit: the stub proves xwpe's half of the protocol, not a real %s.""" \
+        % backend
+    with _session(tmp_path, backend, continue_dies=True) as w:
+        _start_session(w, tmp_path, backend)
+        w.key(CTRL_G, "r", delay=0.5)
+        used = _cpu_used_over(w, CPU_SAMPLE_S)
+        if used is not None:
+            assert used < IDLE_CPU_TICKS * CPU_SAMPLE_S * WAIT_SCALE, \
+                "the editor should be idle once %s died, used %d ticks in " \
+                "%.1fs" % (backend, used, CPU_SAMPLE_S)
+        gone = "%s ended" % backend
+        assert _wait_for(w, lambda: gone in _screen(w), STEP_TIMEOUT_S), \
+            "Messages should say %r; %s was sent %r:\n%s" \
+            % (gone, backend, _sent(tmp_path, backend), _screen(w))
+        assert _mark_line(w) is None, \
+            "the current-line mark should go:\n%s" % _screen(w)

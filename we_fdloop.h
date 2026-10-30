@@ -44,7 +44,9 @@ void wpe_timer_del(int id);
 
 /* The editor's side (we_hfkt.c): watch an fd and say so on the bottom row
    when the loop cannot; wait for a key whether or not the keyboard is
-   watched. */
+   watched.  Every callback consumes what made its fd ready, or stops
+   watching it: one that returns early and leaves the data there makes the
+   loop spin (see e_fd_watch). */
 int  e_fd_watch(int fd, int events, wpe_fd_callback cb, void *data, const char *what);
 void e_fd_key_wait(int keyboard_watched);
 

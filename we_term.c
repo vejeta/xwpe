@@ -63,6 +63,7 @@ static void e_t_truecolor_detect(void);
 
 /* Input/mouse timing and scaling constants. */
 #define INPUT_POLL_MS     50   /* ncurses getch() wait between input polls */
+#define INPUT_NO_WAIT_MS  0    /* getch() returns at once; poll() waits */
 #define MOUSE_CELL_SUBDIV 8    /* g[] reports mouse pos in 1/8-cell units */
 
 /* xterm private mode 2004, bracketed paste: the terminal wraps pasted text in
@@ -1267,6 +1268,24 @@ static void e_t_input_ended(void)
  e_exit(WPE_EXIT_INPUT_GONE);
 }
 
+/**
+ * e_t_key_read_wait_ms - How long a key read waits before the loop sleeps.
+ * @keyboard_watched: whether the fd loop watches the keyboard.
+ *
+ * With the keyboard watched, the loop sleeps in poll() until a key or any
+ * other stream wakes it, so the read itself must not wait: a wait here
+ * delays every other stream (a debugger's answer, a build's output) by
+ * that long on each wake.  Only when the keyboard cannot be watched does
+ * the read wait, which paces the loop.
+ * Return: the timeout in ms for ncurses' timeout().
+ */
+static int e_t_key_read_wait_ms(int keyboard_watched)
+{
+ if (keyboard_watched)
+  return(INPUT_NO_WAIT_MS);
+ return(INPUT_POLL_MS);
+}
+
 static int e_t_getch_poll(void)
 {
  static int stdin_registered = 0;
@@ -1295,7 +1314,7 @@ static int e_t_getch_poll(void)
 #endif
  for (;;)
  {
-  timeout(INPUT_POLL_MS);
+  timeout(e_t_key_read_wait_ms(stdin_registered));
   c = fk_getch();
   timeout(-1);
   if (c != ERR)

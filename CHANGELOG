@@ -305,6 +305,30 @@ Changes
   exec(), goes on to the next line of the script and gives up after 100
   steps, where it could go on for ever.
 
+* Under a68g, Run, Step, Finish function and Go to cursor that take more
+  than five seconds are marked when they stop.  They gave up after five
+  seconds and never marked the stop.  Meanwhile the editor keeps its
+  keys, Debug > Quit ends the session, and Step, Run and the other
+  debugger commands say "The program is running: Debug > Quit ends the
+  session".  Text typed meanwhile goes into the file.
+
+* In the terminal, the editor no longer waits 50 ms before it reads a
+  debugger's answer or another stream while the keyboard is watched.  A
+  step that sends many commands, such as F8 over a line of a68g with
+  many units, took 50 ms for each.
+
+* Closing Messages while a program prints under gdb, jdb, sdb, dbx or
+  xdb, or while jdb starts, no longer makes the editor use a whole core
+  until the program stops.  The output printed meanwhile is on the User
+  Screen (Alt-F5).
+
+* A debugger that dies half way through a line while the program runs
+  now ends the session with a line that says so.  The session used to
+  wait for ever.
+
+* Under a68g, a program whose output contains a68g's prompt or its stop
+  lines no longer ends the run early.
+
 * Closing the Window list (Alt-0) with Esc no longer reads the window
   it has just freed, which could crash the editor.
 

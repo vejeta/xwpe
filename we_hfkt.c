@@ -387,6 +387,18 @@ static void e_status_say_anywhere(const char *text)
  * instead he reads "could not watch <what>: too many open streams" on the
  * bottom row, and the caller ends what it started (closes the stream, ends
  * the session) so nothing is left waiting.
+ *
+ * The contract for @cb: each time it runs, it either consumes what made
+ * @fd ready (reads the data, reads the end of file and closes or unwatches
+ * the stream) or stops watching @fd (wpe_fd_del, or a new registration
+ * without POLLIN until it can consume again).  An early return that does
+ * neither, because a window is closed, a dialog is open or a session is
+ * ending, leaves @fd ready: the loop's next poll() returns at once and the
+ * editor uses a whole core until something else drains it, since no key
+ * read of any display waits between polls to pace it.  Keep
+ * the data instead (on the User Screen, in a buffer for later), or
+ * unwatch.  A wake-only watch (@cb NULL) belongs to a loop that reads @fd
+ * itself after every poll.
  * Return: 0 when the fd is watched, -1 when the caller must give it up.
  */
 int e_fd_watch(int fd, int events, wpe_fd_callback cb, void *data, const char *what)

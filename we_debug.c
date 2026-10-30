@@ -166,7 +166,6 @@ int e_d_prog_output_cap = 0;
 static int  e_d_prog_output_reserve(int extra);
 static void e_d_prog_output_append(char *data, int len);
 static void e_d_prog_output_append_line(char *data, int len);
-static int  e_d_a68g_step_complete(FENSTER *f);   /* a68g: read step/continue response */
 static int  e_d_start_forget(void);       /* the start watcher (see e_run_debug) */
 static int  e_d_start_refused(FENSTER *f);
 static int  e_d_refuse_while_running(FENSTER *f);   /* the program runs */
@@ -217,9 +216,9 @@ char *npipe[5] = {  NULL, NULL, NULL, NULL, NULL  };
 #define DEB_PTY_DRAIN_MS 100
 
 /* Per-step read of jdb, pdb and a68g output: scratch buffer size, and how long
-   a68g and the stack listing wait for the next chunk before deciding the
-   step has finished printing (the run of pdb and jdb waits as long as the
-   program takes). */
+   the stack listing waits for the next chunk before deciding it has finished
+   printing (the run of pdb, jdb and a68g waits as long as the program
+   takes). */
 #define DEB_STEP_BUF     (PATH_MAX + 4096)
 #define DEB_STEP_POLL_MS 5000
 
@@ -472,6 +471,8 @@ static int e_d_nb_holds_line(void)
 #define E_D_NB_NOTHING_YET  (-2)   /* no whole line has come yet */
 /* What e_d_nb_fill answers for a runaway debugger or memory run out. */
 #define E_D_NB_FILL_FAILED  (-3)
+/* No read was made: a whole line was already held. */
+#define E_D_NB_NOT_READ     (-4)
 
 /**
  * e_d_nb_take_cut - Hand out a line that passed E_D_LINE_WHOLE_MAX cut,
@@ -490,6 +491,27 @@ static int e_d_nb_take_cut(E_D_LINE *line)
   return(E_D_NB_END);
  strcpy((char *)line->s + len, E_D_LINE_CUT_MARK);
  e_d_async.nb_dropping = 1;
+ return(E_D_NB_LINE);
+}
+
+/**
+ * e_d_nb_take_last - Hand out what a debugger that has ended left unended,
+ * as its last line.
+ * @line: where the line goes.
+ *
+ * A debugger that dies in the middle of a line leaves its end of file
+ * readable for ever: kept back as a line still to come, the half line
+ * would wake the editor without end.  Handed out like any other line, it
+ * lets the next read find the end, so the session ends and the user reads
+ * that the debugger is gone.
+ * Return: E_D_NB_LINE, or E_D_NB_END when memory ran out.
+ */
+static int e_d_nb_take_last(E_D_LINE *line)
+{
+ int len = e_d_async.nb_len;
+
+ if (e_d_nb_take(line, len, len) < 0)
+  return(E_D_NB_END);
  return(E_D_NB_LINE);
 }
 
@@ -576,7 +598,7 @@ static int e_d_line_read_nb_whole(int n, E_D_LINE *line)
 {
  signed char err[E_D_LINE_MAX];
  char *held;
- int nread, i;
+ int nread = E_D_NB_NOT_READ, i;
 
  e_d_line_drain_errors(err, sizeof err);
  if (!e_d_nb_holds_line())
@@ -617,6 +639,8 @@ static int e_d_line_read_nb_whole(int n, E_D_LINE *line)
  }
  if (e_d_async.nb_len >= E_D_LINE_WHOLE_MAX)
   return(e_d_nb_take_cut(line));
+ if (nread == 0)
+  return(e_d_nb_take_last(line));
  return(E_D_NB_NOTHING_YET);
 }
 
@@ -806,15 +830,38 @@ static int e_d_pty_hung_up(int n, int err)
 #define E_D_PTY_READS_ALL      0
 
 /**
- * e_d_pty_read_to_messages - Append what the program printed to Messages.
- * @mf: the Messages window;
+ * e_d_pty_append_to_messages - Write a piece the program printed at the end
+ * of Messages.
+ * @mf: the Messages window; @buf, @n: the piece.
+ */
+static void e_d_pty_append_to_messages(FENSTER *mf, const char *buf, int n)
+{
+ int i;
+
+ e_d_pty_ensure_own_line(mf);
+ for (i = 0; i < n; i++)
+ {
+  if (buf[i] == '\n')
+   e_d_async.pty_owns_last_line = 0;
+  e_d_messages_append_char(mf, (unsigned char)buf[i]);
+ }
+}
+
+/**
+ * e_d_pty_read_to_messages - Take what the program printed: into Messages
+ * when it is open, and always onto the User Screen.
+ * @mf: the Messages window, or NULL when the user closed it;
  * @max_reads: at most this many reads, or E_D_PTY_READS_ALL.
- * Return: the bytes appended.
+ *
+ * With Messages closed the output is read all the same: the user finds it
+ * on the User Screen (Alt-F5), and the pty, emptied, no longer wakes the
+ * editor again and again while the program runs.
+ * Return: the bytes read.
  */
 static int e_d_pty_read_to_messages(FENSTER *mf, int max_reads)
 {
  char buf[256];
- int n = 1, total = 0, i, flags, err, reads = 0;
+ int n = 1, total = 0, flags, err, reads = 0;
 
  if (e_d_pty_master < 0)
   return 0;
@@ -823,14 +870,9 @@ static int e_d_pty_read_to_messages(FENSTER *mf, int max_reads)
  while ((max_reads == E_D_PTY_READS_ALL || reads++ < max_reads) &&
         (n = read(e_d_pty_master, buf, sizeof(buf))) > 0)
  {
-  e_d_pty_ensure_own_line(mf);
   e_d_prog_output_append(buf, n);
-  for (i = 0; i < n; i++)
-  {
-   if (buf[i] == '\n')
-    e_d_async.pty_owns_last_line = 0;
-   e_d_messages_append_char(mf, (unsigned char)buf[i]);
-  }
+  if (mf)
+   e_d_pty_append_to_messages(mf, buf, n);
   total += n;
  }
  err = errno;
@@ -1003,6 +1045,7 @@ typedef struct
 
 static const E_D_RUN_OPS *e_d_pdb_run_ops(void);   /* pdb's table (below) */
 static const E_D_RUN_OPS *e_d_jdb_run_ops(void);   /* jdb's table (below) */
+static const E_D_RUN_OPS *e_d_a68g_run_ops(void);  /* a68g's table (below) */
 static int e_d_run_to_cursor_line(FENSTER *f, int line);   /* Go to cursor */
 static int e_d_jdb_run_started(FENSTER *f, int start_brk);
 
@@ -1369,7 +1412,7 @@ static const E_D_RUN_OPS e_d_legacy_run_ops =
  * debugger, or NULL when its run is still read by its own reader.
  *
  * gdb goes through the controller when it gave the program a pty, as it
- * always has; sdb, dbx, xdb, pdb and jdb always do.  a68g and the debug
+ * always has; sdb, dbx, xdb, pdb, jdb and a68g always do.  The debug
  * adapters keep their own readers for now.
  */
 static const E_D_RUN_OPS *e_d_run_ops_of_backend(void)
@@ -1380,6 +1423,8 @@ static const E_D_RUN_OPS *e_d_run_ops_of_backend(void)
   return(e_d_pdb_run_ops());
  if (e_deb_type == DEB_JDB)
   return(e_d_jdb_run_ops());
+ if (e_deb_type == DEB_A68G)
+  return(e_d_a68g_run_ops());
  if (e_deb_type == DEB_SDB || e_deb_type == DEB_DBX || e_deb_type == DEB_XDB)
   return(&e_d_legacy_run_ops);
  return(NULL);
@@ -1811,15 +1856,24 @@ static void e_d_pty_unwatch_if_hung(int fd)
   wpe_fd_del(fd);
 }
 
+/**
+ * e_d_on_pty_readable - The program printed while it runs: show it.
+ * @fd: the pty master; @data: unused.
+ *
+ * The user sees the text in Messages as it comes, or on the User Screen
+ * when Messages is closed.  It is read either way: text left in the pty
+ * would wake the editor again at once, and it would use a whole core until
+ * the program stopped.
+ */
 static void e_d_on_pty_readable(int fd, void *data)
 {
  FENSTER *mf = e_d_find_messages_window();
  int n;
 
- if (!mf) return;
+ (void)data;
  n = e_d_pty_read_to_messages(mf, E_D_READS_PER_WAKE);
  e_d_pty_unwatch_if_hung(fd);
- if (n > 0)
+ if (n > 0 && mf)
  {
   e_d_messages_redraw(mf);
   e_d_messages_place_cursor(mf);
@@ -1865,6 +1919,7 @@ void e_d_pty_flush_to_messages(FENSTER *f)
  while ((n = read(e_d_pty_master, buf, sizeof(buf))) > 0)
  {
   int space = sizeof(e_d_async.pty_line_buf) - e_d_async.pty_line_len - 1;
+  e_d_prog_output_append(buf, n);      /* the User Screen gets all of it */
   if (n > space) n = space;
   memcpy(e_d_async.pty_line_buf + e_d_async.pty_line_len, buf, n);
   e_d_async.pty_line_len += n;
@@ -6338,7 +6393,7 @@ static int e_d_start_refused(FENSTER *f)
 
 #define E_D_RUNNING_LINE \
  " The program is running: type its input in Messages, or Debug > Quit"
-/* A debugger that gave the program no terminal of its own (pdb) takes no
+/* A debugger that gave the program no terminal of its own (pdb, a68g) takes no
    input typed in the editor. */
 #define E_D_RUNNING_NO_INPUT_LINE \
  " The program is running: Debug > Quit ends the session"
@@ -6359,7 +6414,7 @@ static const char *e_d_running_line(void)
 
 /**
  * e_d_refuse_while_running - Refuse a debugger command while the program
- * runs under the run controller (gdb, sdb, dbx, xdb).
+ * runs under the run controller (gdb, sdb, dbx, xdb, pdb, jdb, a68g).
  * @f: the window the key was pressed in.
  *
  * A program that runs cannot be stepped, continued or asked about: the
@@ -6928,9 +6983,9 @@ static void e_d_start_on_output(int fd, void *data)
    return;
   }
  }
- /* A last fragment with no newline stays buffered after end of file, so the
-    hang-up would wake this callback again and again: a debugger that is gone
-    ends the start here. */
+ /* A debugger that is gone and no longer reported by the reader (its end
+    already read) ends the start here, so the hang-up cannot wake this
+    callback again and again. */
  if (e_d_start_reaped())
   e_d_start_end();
 }
@@ -6989,7 +7044,9 @@ static int e_d_jdb_listen_port(const char *line)
  *
  * A VM that cannot start says why on its terminal ("Could not find or load
  * main class", a class compiled for a newer Java): the user reads it where
- * build errors appear.
+ * build errors appear, or on the User Screen when he closed Messages: the
+ * VM's words are read either way, so they never wake the editor again and
+ * again.
  * @max_reads: E_D_READS_PER_WAKE while it runs, E_D_PTY_READS_ALL once
  * it ended.
  */
@@ -6997,8 +7054,6 @@ static void e_d_jdb_start_show_vm_words(int max_reads)
 {
  FENSTER *mf = e_build_messages(e_d_start.cn);
 
- if (!mf)
-  return;
  e_d_start_wait_line_drop();
  e_d_pty_read_to_messages(mf, max_reads);
 }
@@ -8457,6 +8512,33 @@ static int e_d_step_reply_read(int fd, E_D_STEP_REPLY *r, E_D_STEP_SPILL spill,
 }
 
 /**
+ * e_d_step_reply_hand_on_lines - Hand on every whole line of a step answer
+ * read so far, and keep the part after the last line end.
+ * @r: the answer; @spill, @ctx: who takes the lines, as for
+ * e_d_step_reply_make_room.
+ *
+ * A program that prints while it runs shows its text as it prints, while
+ * the stop line and the prompt, which end the answer, stay for the stop.
+ */
+static void e_d_step_reply_hand_on_lines(E_D_STEP_REPLY *r,
+                                         E_D_STEP_SPILL spill, void *ctx)
+{
+ int cut = r->len;
+
+ while (cut > 0 && r->buf[cut - 1] != '\n')
+  cut--;
+ if (cut == 0)
+  return;
+ r->buf[cut - 1] = '\0';
+ spill(ctx, r->buf, r->mid_line);
+ r->buf[cut - 1] = '\n';
+ r->mid_line = 0;
+ r->len -= cut;
+ memmove(r->buf, r->buf + cut, r->len);
+ r->buf[r->len] = '\0';
+}
+
+/**
  * e_d_text_next_line - Copy the next line of a debugger's answer, cut to the
  * size of @line, and step past the whole of it.
  * @text: the answer; @pos: where the line starts, moved past its end;
@@ -8683,14 +8765,6 @@ int e_deb_run(FENSTER *f)
  run_ops = e_d_run_ops_of_backend();
  if (run_ops)
   return(e_d_run_hand_over(f, run_ops, main_brk));
- if (e_deb_type == DEB_A68G)
- {
-  /* a68g shares one stream and exits on completion (EOF); the poll-based
-     reader captures program output and quits cleanly -- e_read_output's
-     prompt loop would return -1 on that EOF before parsing the output.
-     (No e_mk_brk_main for a68g, so main_brk is always 0 here.) */
-  return(e_d_a68g_step_complete(f));
- }
  { int _ro = e_read_output(f);
    if (main_brk)
     e_mk_brk_main(f, main_brk);
@@ -9552,6 +9626,23 @@ static int e_d_a68g_is_metadata(const char *s)
  return(1);   /* only spaces/dashes/carets: the column marker */
 }
 
+/**
+ * e_d_a68g_show_in_messages - Write a line of the program's output in
+ * Messages, unless the run is going and the window is closed.
+ * @line: the line; @f: the window on top.
+ *
+ * While the program runs the fd loop must not open a window: it could land
+ * on top of a box the user has open.  The line is still kept for the User
+ * Screen (Alt-F5) by the caller.  At the stop the window is opened again if
+ * need be, as gdb's output is.
+ */
+static void e_d_a68g_show_in_messages(char *line, FENSTER *f)
+{
+ if (e_d_run_going() && !e_d_find_messages_window())
+  return;
+ e_d_p_message(line, f, 0);
+}
+
 /* Scan a chunk of a68g monitor output line by line: show every non-chatter,
    non-numbered line as program output -- in the Messages window (Ctrl-G P, the
    path gdb reaches via its pty) and in the User-Screen buffer (Alt-F5) -- and
@@ -9577,7 +9668,7 @@ static int e_d_a68g_scan(FENSTER *f, const char *buf, int mid_line)
    _line = _pl;                          /* last numbered line wins */
   else if (!e_d_a68g_is_metadata(_ln))
   {
-   e_d_p_message(_ln, f, 0);             /* Messages window (Ctrl-G P) */
+   e_d_a68g_show_in_messages(_ln, f);    /* Messages window (Ctrl-G P) */
    e_d_prog_output_append_line(_ln, _li); /* User Screen buffer (Alt-F5) */
   }
  }
@@ -9642,7 +9733,11 @@ static void e_d_a68g_goto(FENSTER *f, int line)
 typedef struct {
  FENSTER *f;
  int line;               /* the last source line a handed-on part reported */
+ int finished;           /* a handed-on part said the program finished */
 } E_D_A68G_SPILL;
+
+/* What a68g prints when the program ends; its output closes right after. */
+#define E_D_A68G_FINISHED "Genie finished"
 
 /**
  * e_d_a68g_spill - Show as program output the oldest part of an a68g answer
@@ -9659,74 +9754,469 @@ static void e_d_a68g_spill(void *ctx, char *text, int mid_line)
 
  if (line > 0)
   sp->line = line;
+ if (strstr(text, E_D_A68G_FINISHED))
+  sp->finished = 1;
 }
 
-/* Read and apply an a68g step/next/continue response: poll for the "(a68g) "
-   prompt, jump the editor cursor to the reported source line, and capture any
-   program output for Ctrl-G P.  a68g prints "Genie finished" and then exits
-   (EOF) when the program ends; capture the final output and quit cleanly.
-   Returns 0, or e_d_quit(f) if the program or a68g exited. */
-static int e_d_a68g_step_complete(FENSTER *f)
-{
- struct pollfd _pfd = { .fd = wfildes[0], .events = POLLIN };
- E_D_STEP_REPLY _r;
- E_D_A68G_SPILL _sp;
- int _n, _found = 0, _eof = 0, _line;
+/* The prompt a68g ends every answer with: the program stopped. */
+#define E_D_A68G_PROMPT "(a68g) "
+/* At every stop, a breakpoint, a step, a Finish and an error alike, a68g
+   writes three lines before that prompt: the numbered source line, a line
+   that marks the column under it, and which thread stopped.  A program's
+   own "(a68g) " has none of them before it. */
+#define E_D_A68G_MAIN_THREAD  "This is the main thread"
+#define E_D_A68G_OTHER_THREAD "This is not the main thread"
+#define E_D_A68G_MARK_CHAR    '-'   /* what points at the column */
+/* The kinds of line a stop is made of, and how many come before the prompt. */
+#define E_D_A68G_LINE_OTHER   0
+#define E_D_A68G_LINE_SOURCE  1
+#define E_D_A68G_LINE_MARKER  2
+#define E_D_A68G_LINE_THREAD  3
+#define E_D_A68G_STOP_LINES   3
+#define E_D_A68G_NEXT "next\n"
+#define E_D_A68G_STEP "step\n"
+/* How many "next" Step Over sends for one press while a68g still reports
+   the same line (the first one is the press itself). */
+#define E_D_A68G_SAME_LINE_MAX 256
+/* How many reads one wake of the fd loop takes from a68g: a program that
+   prints without end must not keep the editor from its keys. */
+#define E_D_A68G_FEED_READS_MAX 64
 
- _sp.f = f;
- _sp.line = -1;
- e_d_step_reply_init(&_r);
- while (!_found)
- {
-  if (poll(&_pfd, 1, DEB_STEP_POLL_MS) <= 0) break;
-  _n = e_d_step_reply_read(wfildes[0], &_r, e_d_a68g_spill, &_sp);
-  if (_n == 0) {  _eof = 1;  break;  }   /* EOF: a68g exited */
-  if (_n < 0) continue;
-  if (strstr(_r.buf, "(a68g) ")) _found = 1;
- }
- _line = e_d_a68g_scan(f, _r.buf, _r.mid_line);
- if (_line <= 0)
-  _line = _sp.line;
- e_d_a68g_cur_line = _line;   /* drives line-granular stepping in e_d_step_next */
- if (_eof || strstr(_r.buf, "Genie finished"))
- {
-  e_d_switch_out(0);
-  e_d_say_program_exited(_r.buf, f);
-  return(e_d_quit(f));
- }
- if (!_found)
- {  e_d_switch_out(0);  return(0);  }
- if (_line > 0)
-  e_d_a68g_goto(f, _line);
- else
-  e_d_switch_out(0);
- /* Re-evaluate the Watches window at the new stop, so a stepped variable shows
-    its current value (a68g is idle at the prompt now, ready for `evaluate`).
-    gdb does this from its stop handlers; the a68g step path must do it too. */
- if (e_d_nwtchs > 0)
-  e_d_p_watches(f, 0);
+/* a68g's run: what its answer holds so far, and what Step Over still has to
+   do at a stop.  a68g has no pty and writes the program's text and its own
+   on one pipe, and the program shares a68g's stdin, so the run reads that
+   pipe and sends a command only at a stop, never while the program runs. */
+typedef struct {
+ E_D_STEP_REPLY reply;          /* the answer to the command sent */
+ E_D_A68G_SPILL spill;          /* what was handed on of a long answer */
+ int ended;                     /* a68g's output has closed */
+ int shown[E_D_A68G_STOP_LINES]; /* last lines shown, newest first */
+ int step_over;                 /* Step Over: go on while the line stays */
+ int from_line;                 /* the line Step Over started from */
+ int same_line_steps;           /* "next" sent again for the same line */
+} E_D_A68G_RUN;
+
+static E_D_A68G_RUN e_d_a68g_run;
+
+/**
+ * e_d_a68g_forget_shown - Forget the lines shown of the answer before.
+ * @r: the run.
+ */
+static void e_d_a68g_forget_shown(E_D_A68G_RUN *r)
+{
+ int i;
+
+ for (i = 0; i < E_D_A68G_STOP_LINES; i++)
+  r->shown[i] = E_D_A68G_LINE_OTHER;
+}
+
+/**
+ * e_d_a68g_answer_reset - Start reading a new answer from a68g.
+ *
+ * Called for each command a run sends, so the answer of the one before is
+ * not mistaken for this one's prompt.
+ */
+static void e_d_a68g_answer_reset(void)
+{
+ e_d_step_reply_init(&e_d_a68g_run.reply);
+ e_d_a68g_run.spill.line = -1;
+ e_d_a68g_run.spill.finished = 0;
+ e_d_a68g_run.ended = 0;
+ e_d_a68g_forget_shown(&e_d_a68g_run);
+}
+
+/**
+ * e_d_a68g_begin - Forget everything of the run before when a run starts.
+ */
+static void e_d_a68g_begin(void)
+{
+ e_d_a68g_answer_reset();
+ e_d_a68g_run.step_over = 0;
+ e_d_a68g_run.from_line = 0;
+ e_d_a68g_run.same_line_steps = 0;
+}
+
+/**
+ * e_d_a68g_answer_fd - Where a68g answers: its output pipe, which the
+ * program writes to as well.
+ */
+static int e_d_a68g_answer_fd(void)
+{
+ return(wfildes[0]);
+}
+
+/**
+ * e_d_a68g_no_output_fd - a68g gives the program no pty of its own.
+ */
+static int e_d_a68g_no_output_fd(void)
+{
+ return(-1);
+}
+
+/**
+ * e_d_a68g_is_thread_line - Is this the line a68g writes just before its
+ * prompt at a stop?
+ * @s: the line; @len: its length, without the line end.
+ */
+static int e_d_a68g_is_thread_line(const char *s, int len)
+{
+ if (len == (int)sizeof E_D_A68G_MAIN_THREAD - 1 &&
+     !strncmp(s, E_D_A68G_MAIN_THREAD, len))
+  return(1);
+ if (len == (int)sizeof E_D_A68G_OTHER_THREAD - 1 &&
+     !strncmp(s, E_D_A68G_OTHER_THREAD, len))
+  return(1);
  return(0);
 }
 
-/* a68g steps by "interruptable unit", so one source line (e.g. a print with
-   several arguments) reports the same line number several times in a row.  That
-   forces the user to press F8 many times on the last line before the program
-   ends.  Make Step Over (F8) line-granular like gdb/pdb: keep issuing "next"
-   while a68g reports the same source line, so one keypress advances to the next
-   line -- and one press on the final line runs the program to completion.  Step
-   Into (F7, sw == 0) stays unit-granular so you can still inspect sub-steps. */
+/**
+ * e_d_a68g_is_column_marker - Is this the line a68g writes under a source
+ * line to point at the column it stopped in?
+ * @s: the line; @len: its length, without the line end.
+ */
+static int e_d_a68g_is_column_marker(const char *s, int len)
+{
+ int i, marks = 0;
+
+ for (i = 0; i < len; i++)
+ {
+  if (s[i] == E_D_A68G_MARK_CHAR)
+   marks++;
+  else if (s[i] != ' ')
+   return(0);
+ }
+ return(marks > 0);
+}
+
+/**
+ * e_d_a68g_is_source_line - Is this a numbered source line, as a68g shows
+ * the line it stopped on?
+ * @s: the line; @len: its length, without the line end.
+ */
+static int e_d_a68g_is_source_line(const char *s, int len)
+{
+ char line[E_D_LINE_MAX];
+
+ if (len >= (int)sizeof line)
+  len = sizeof line - 1;
+ memcpy(line, s, len);
+ line[len] = '\0';
+ return(e_d_a68g_parse_line(line) > 0);
+}
+
+/**
+ * e_d_a68g_line_kind - Which part of a stop a line of a68g's answer is.
+ * @s: the line; @len: its length, without the line end.
+ * Return: E_D_A68G_LINE_SOURCE, _MARKER, _THREAD or _OTHER.
+ */
+static int e_d_a68g_line_kind(const char *s, int len)
+{
+ if (e_d_a68g_is_thread_line(s, len))
+  return(E_D_A68G_LINE_THREAD);
+ if (e_d_a68g_is_column_marker(s, len))
+  return(E_D_A68G_LINE_MARKER);
+ if (e_d_a68g_is_source_line(s, len))
+  return(E_D_A68G_LINE_SOURCE);
+ return(E_D_A68G_LINE_OTHER);
+}
+
+/**
+ * e_d_a68g_recent_kinds - The kinds of the last E_D_A68G_STOP_LINES whole
+ * lines before @upto, newest first.
+ * @r: the run; @upto: where the whole lines end in the answer (just past a
+ * line end, or 0); @kinds: filled with E_D_A68G_STOP_LINES kinds.
+ *
+ * Lines already shown, and so dropped from the answer, count too: the
+ * stop's lines may have come, and been shown, before its prompt.  A line
+ * whose start was handed on before is only the end of a line, and stops
+ * the count.
+ */
+static void e_d_a68g_recent_kinds(const E_D_A68G_RUN *r, int upto, int *kinds)
+{
+ const E_D_STEP_REPLY *rep = &r->reply;
+ int n = 0, end = upto, start, i;
+
+ while (n < E_D_A68G_STOP_LINES && end > 0)
+ {
+  start = end - 1;
+  while (start > 0 && rep->buf[start - 1] != '\n')
+   start--;
+  if (start == 0 && rep->mid_line)
+  {
+   kinds[n++] = E_D_A68G_LINE_OTHER;
+   break;
+  }
+  kinds[n++] = e_d_a68g_line_kind(rep->buf + start, end - 1 - start);
+  end = start;
+ }
+ for (i = n; i < E_D_A68G_STOP_LINES; i++)
+  kinds[i] = r->shown[i - n];
+}
+
+/**
+ * e_d_a68g_lines_make_a_stop - Are these, newest first, the lines a68g
+ * writes before its prompt at a stop?
+ * @kinds: E_D_A68G_STOP_LINES kinds, as e_d_a68g_recent_kinds gives them.
+ */
+static int e_d_a68g_lines_make_a_stop(const int *kinds)
+{
+ return(kinds[0] == E_D_A68G_LINE_THREAD &&
+        kinds[1] == E_D_A68G_LINE_MARKER &&
+        kinds[2] == E_D_A68G_LINE_SOURCE);
+}
+
+/**
+ * e_d_a68g_prompt_ends_answer - Has a68g stopped: does the answer read so
+ * far end with its prompt, right after the lines of a stop?
+ * @r: the run.
+ *
+ * a68g writes the program's text unbuffered on the same pipe, so a program
+ * that prints "(a68g) " with no line end looks like a stop on its own, and
+ * so does one that also prints "This is the main thread" before it.  Only
+ * a real stop puts the numbered source line, the column marker and the
+ * thread line before it, so the user's debugger keys stay refused until
+ * the program really stops.
+ * Return: 1 when a68g stopped.
+ */
+static int e_d_a68g_prompt_ends_answer(const E_D_A68G_RUN *r)
+{
+ const E_D_STEP_REPLY *rep = &r->reply;
+ const char *end = strrchr(rep->buf, '\n');
+ int kinds[E_D_A68G_STOP_LINES];
+ int tail = 0;
+
+ if (end)
+  tail = (int)(end - rep->buf) + 1;
+ if (strcmp(rep->buf + tail, E_D_A68G_PROMPT))
+  return(0);
+ if (tail == 0 && rep->mid_line)
+  return(0);
+ e_d_a68g_recent_kinds(r, tail, kinds);
+ return(e_d_a68g_lines_make_a_stop(kinds));
+}
+
+/**
+ * e_d_a68g_note_shown_lines - Remember the kinds of the last whole lines
+ * read so far, before they are shown and dropped from the answer.
+ * @r: the run.
+ */
+static void e_d_a68g_note_shown_lines(E_D_A68G_RUN *r)
+{
+ const char *end = strrchr(r->reply.buf, '\n');
+ int kinds[E_D_A68G_STOP_LINES], i;
+
+ if (!end)
+  return;
+ e_d_a68g_recent_kinds(r, (int)(end - r->reply.buf) + 1, kinds);
+ for (i = 0; i < E_D_A68G_STOP_LINES; i++)
+  r->shown[i] = kinds[i];
+}
+
+/**
+ * e_d_a68g_show_lines_as_they_come - Show the whole lines read so far in
+ * Messages, when the window is open.
+ * @r: the run.
+ *
+ * The user sees what the program prints while it runs.  With Messages
+ * closed the lines wait in the answer, so no window is opened by the fd
+ * loop (it could land on a box); they are shown at the stop.
+ */
+static void e_d_a68g_show_lines_as_they_come(E_D_A68G_RUN *r)
+{
+ if (!e_d_find_messages_window())
+  return;
+ e_d_a68g_note_shown_lines(r);
+ e_d_step_reply_hand_on_lines(&r->reply, e_d_a68g_spill, &r->spill);
+}
+
+/**
+ * e_d_a68g_feed - Read what a68g or the program has written so far.
+ * @f: the window the run was started from.
+ *
+ * The program's text and a68g's prompt arrive on one pipe, the prompt
+ * without a line end, so the run stops when the prompt ends the answer, or
+ * when the pipe closes because the program ended.  Until then every whole
+ * line is shown in Messages as it comes (see
+ * e_d_a68g_show_lines_as_they_come).  A program that prints a lot is read
+ * a bounded amount at a time so the editor keeps its keys.
+ * Return: E_D_FEED_GOING or E_D_FEED_STOPPED.
+ */
+static int e_d_a68g_feed(FENSTER *f)
+{
+ E_D_A68G_RUN *r = &e_d_a68g_run;
+ int flags = fcntl(wfildes[0], F_GETFL, 0);
+ int reads, n, fed = E_D_FEED_GOING;
+
+ r->spill.f = f;
+ fcntl(wfildes[0], F_SETFL, flags | O_NONBLOCK);
+ for (reads = 0; reads < E_D_A68G_FEED_READS_MAX && fed == E_D_FEED_GOING;
+      reads++)
+ {
+  n = e_d_step_reply_read(wfildes[0], &r->reply, e_d_a68g_spill, &r->spill);
+  if (n < 0)
+   break;                 /* nothing more for now */
+  if (n == 0)
+  {  /* a68g exited: its last text is the program's end */
+   r->ended = 1;
+   fed = E_D_FEED_STOPPED;
+  }
+  else if (e_d_a68g_prompt_ends_answer(r))
+   fed = E_D_FEED_STOPPED;
+  else
+   e_d_a68g_show_lines_as_they_come(r);
+ }
+ fcntl(wfildes[0], F_SETFL, flags);
+ return(fed);
+}
+
+/**
+ * e_d_a68g_say_end - The program ended: say how, and close the session.
+ * @f: the window on top.
+ *
+ * The user reads one line in Messages that the program exited, and the
+ * program's last output is in Messages and the User Screen already.
+ */
+static void e_d_a68g_say_end(FENSTER *f)
+{
+ E_D_A68G_RUN *r = &e_d_a68g_run;
+
+ if (r->ended && !r->spill.finished &&
+     !strstr(r->reply.buf, E_D_A68G_FINISHED))
+  e_d_note_output_closed();   /* a68g died: the end says so */
+ e_d_switch_out(0);
+ e_d_say_program_exited(r->reply.buf, f);
+ e_d_quit(f);
+}
+
+/**
+ * e_d_a68g_mark - Show where a68g stopped.
+ * @f: the window on top; @line: the line a68g reported, or 0.
+ *
+ * The user sees the green bar on the line, and the Watches window shows the
+ * values there: a68g is idle at its prompt and can evaluate them now.
+ */
+static void e_d_a68g_mark(FENSTER *f, int line)
+{
+ if (line > 0)
+  e_d_a68g_goto(f, line);
+ else
+  e_d_switch_out(0);
+ if (e_d_nwtchs > 0)
+  e_d_p_watches(f, 0);
+}
+
+/**
+ * e_d_a68g_steps_on - Does Step Over go on from this stop?
+ * @line: the line a68g reported.
+ *
+ * a68g steps by interruptable unit, so one line with several units, such as
+ * a print with several arguments, is reported again and again.  Step Over
+ * goes on until the line changes, so one press of F8 moves to the next line
+ * and one press on the last line runs the program to its end.  Step Into
+ * stays unit by unit.
+ * Return: 1 when Step Over should send "next" again (the caller sends it).
+ */
+static int e_d_a68g_steps_on(int line)
+{
+ E_D_A68G_RUN *r = &e_d_a68g_run;
+
+ if (!r->step_over || e_d_swtch < 3 || line <= 0 || line != r->from_line)
+  return(0);
+ return(r->same_line_steps < E_D_A68G_SAME_LINE_MAX - 1);
+}
+
+/**
+ * e_d_a68g_step_again - Send "next" once more from a stop, and read its
+ * answer on the fd loop, so the editor keeps its keys meanwhile.
+ */
+static void e_d_a68g_step_again(void)
+{
+ e_d_a68g_run.same_line_steps++;
+ e_d_a68g_answer_reset();
+ e_d_nstack = 0;
+ e_d_send_cmd(E_D_A68G_NEXT);
+ e_d_run_resume();
+}
+
+/**
+ * e_d_a68g_stopped - What a68g's run does when its prompt comes: show the
+ * program's output, then say the end, step on, or mark the stop.
+ * @f: the window on top.
+ *
+ * The user sees the program's output in Messages (Ctrl-G P) and the green
+ * bar on the line a68g stopped on, or one line saying the program ended.
+ */
+static void e_d_a68g_stopped(FENSTER *f)
+{
+ E_D_A68G_RUN *r = &e_d_a68g_run;
+ int line;
+
+ line = e_d_a68g_scan(f, r->reply.buf, r->reply.mid_line);
+ if (line <= 0)
+  line = r->spill.line;
+ e_d_a68g_cur_line = line;   /* drives line-granular stepping */
+ if (r->ended || r->spill.finished ||
+     strstr(r->reply.buf, E_D_A68G_FINISHED))
+ {
+  e_d_a68g_say_end(f);
+  return;
+ }
+ if (e_d_a68g_steps_on(line))
+ {
+  e_d_a68g_step_again();
+  return;
+ }
+ e_d_a68g_mark(f, line);
+}
+
+/* a68g: one pipe for the monitor and the program, a prompt at each stop.
+   No run_to_line: a68g has no stop at the start of main to run on from, so
+   Go to cursor as the first command is a case of its own. */
+static const E_D_RUN_OPS e_d_a68g_ops =
+{
+ "a68g",
+ e_d_a68g_answer_fd,
+ e_d_a68g_no_output_fd,
+ e_d_a68g_feed,
+ e_d_a68g_stopped,
+ NULL,
+ NULL,
+ NULL,
+ NULL,
+ e_d_a68g_begin
+};
+
+/**
+ * e_d_a68g_run_ops - The run controller's table for a68g.
+ */
+static const E_D_RUN_OPS *e_d_a68g_run_ops(void)
+{
+ return(&e_d_a68g_ops);
+}
+
+/**
+ * e_d_a68g_do_step - Step Over (@sw 1) or Step Into (@sw 0) under a68g.
+ * @f: the source window.
+ *
+ * The program runs under the run controller: the editor keeps its keys until
+ * the stop.  Step Over is line by line (see e_d_a68g_steps_on).
+ * Return: 0, or the end of the session.
+ */
 static int e_d_a68g_do_step(FENSTER *f, int sw)
 {
- int from = e_d_a68g_cur_line, guard = 0, ret;
+ int from = e_d_a68g_cur_line, ret;
 
- do
+ if (sw)
+  e_d_send_cmd(E_D_A68G_NEXT);
+ else
+  e_d_send_cmd(E_D_A68G_STEP);
+ e_d_nstack = 0;
+ ret = e_d_run_hand_over(f, e_d_a68g_run_ops(), 0);
+ if (sw && e_d_run_going())
  {
-  e_d_send_cmd(sw ? "next\n" : "step\n");
-  e_d_nstack = 0;
-  ret = e_d_a68g_step_complete(f);
+  e_d_a68g_run.step_over = 1;
+  e_d_a68g_run.from_line = from;
  }
- while (sw && e_d_swtch >= 3 && e_d_a68g_cur_line > 0 &&
-        e_d_a68g_cur_line == from && ++guard < 256);
  return(ret);
 }
 
@@ -10554,12 +11044,14 @@ static int e_d_jdb_finish(FENSTER *f)
  * @f: the source window.
  *
  * a68g stops at the next unit of the caller after the procedure returns.
- * Return: e_d_a68g_step_complete's answer.
+ * The program runs under the run controller: the editor keeps its keys
+ * until the procedure returns.
+ * Return: 0, or the end of the session.
  */
 static int e_d_a68g_finish(FENSTER *f)
 {
  e_d_send_cmd(E_D_A68G_FINISH);
- return(e_d_a68g_step_complete(f));
+ return(e_d_run_hand_over(f, e_d_a68g_run_ops(), 0));
 }
 
 /**
