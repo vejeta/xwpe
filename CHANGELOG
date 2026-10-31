@@ -319,6 +319,23 @@ Changes
   debugger commands say "The program is running: Debug > Quit ends the
   session".  Text typed meanwhile goes into the file.
 
+* Under a debug adapter (dlv, lldb-dap, gdb's DAP mode), the editor keeps
+  its keys while the program runs, from the first Run on.  Debug > Quit
+  now ends the session while the program runs, and the adapter's program
+  with it, where no key was read at all.  Run, Step, Finish function and
+  Go to cursor mark the stop whenever it comes, however far away.  Step,
+  Run and the other debugger commands pressed meanwhile say "The program
+  is running: Debug > Quit ends the session".  Text typed meanwhile goes
+  into the file.
+
+* Under a debug adapter, what the program prints while Messages is
+  closed is kept and shown at the next stop, and is on the User Screen
+  (Alt-F5).  The editor does not open a window over a box for it, and
+  does not spin until the program stops.
+
+* Under dlv, Go to cursor (Ctrl-G U, F4) as the first debugger command
+  runs on to the cursor's line.  It stopped at the start of main.
+
 * In the terminal, the editor no longer waits 50 ms before it reads a
   debugger's answer or another stream while the keyboard is watched.  A
   step that sends many commands, such as F8 over a line of a68g with

@@ -24,7 +24,7 @@ import pytest
 
 import procinfo
 from wpe_driver import (WpeSession, ALT, WAIT_SCALE, tool_usable,
-                        CURRENT_LINE_BG, BREAKPOINT_BG, incoherence)
+                        CURRENT_LINE_BG, BREAKPOINT_BG)
 
 CTRL_G = "\x07"         # debugger command prefix
 DOWN = "\033OB"
@@ -1850,6 +1850,13 @@ SLEEPING_PROGS = {
                          "    std::thread::sleep("
                          "std::time::Duration::from_secs(600));\n"
                          "    let x = 3;\n    println!(\"{}\", x);\n}\n"},
+    "gdb-dap": {"file": "main.rs", "line": 2, "child": "gdb",
+                "env": {"XWPE_DAP_ADAPTER": "gdb"},
+                "need": ("rustc", "gdb"), "start_s": 60,
+                "prog": "fn main() {\n    println!(\"ready\");\n"
+                        "    std::thread::sleep("
+                        "std::time::Duration::from_secs(600));\n"
+                        "    let x = 3;\n    println!(\"{}\", x);\n}\n"},
 }
 RUNNING_SETTLE_S = 10   # the program is asleep, past any start-up output
 
@@ -2109,12 +2116,9 @@ def test_a68g_program_text_with_the_thread_line_and_prompt_runs_on(tmp_path):
 @pytest.mark.parametrize("debugger", [
     "jdb",
     "pdb",
-    pytest.param("dlv", marks=incoherence(
-        "the adapter's run waits in poll() on the adapter's descriptors "
-        "only, so no editor key is read while the program runs")),
-    pytest.param("lldb-dap", marks=incoherence(
-        "the adapter's run waits in poll() on the adapter's descriptors "
-        "only, so no editor key is read while the program runs")),
+    "dlv",
+    "lldb-dap",
+    "gdb-dap",
 ])
 def test_debug_quit_while_the_program_runs_under_every_debugger(
         tmp_path, debugger):
@@ -2140,6 +2144,265 @@ def test_debug_quit_while_the_program_runs_under_every_debugger(
                          STEP_TIMEOUT_S), \
             "Debug > Quit should end %s while the program runs:\n%s" \
             % (spec["child"], _screen(w))
+
+
+# ---- the debug adapters on the run controller -----------------------------
+#
+# One program per language, two breakpoints in it: the line that prints
+# "ready" and the line that prints "done".  Between them it sleeps, or prints
+# a tick every tenth of a second, and it writes its own PID to a file first.
+
+DAP_ADAPTERS = ["dlv", "lldb-dap", "gdb-dap"]
+DAP_CASES = {
+    "dlv": {"file": "main.go", "lang": "go", "env": {},
+            "need": ("dlv", "go"), "child": "dlv", "start_s": 40},
+    "lldb-dap": {"file": "main.rs", "lang": "rust",
+                 "env": {"XWPE_DAP_ADAPTER": "lldb"},
+                 "need": ("rustc", "lldb-dap"), "child": "lldb-dap",
+                 "start_s": 60},
+    "gdb-dap": {"file": "main.rs", "lang": "rust",
+                "env": {"XWPE_DAP_ADAPTER": "gdb"},
+                "need": ("rustc", "gdb"), "child": "gdb", "start_s": 60},
+}
+DAP_PIDFILE = "program.pid"
+DAP_LONG_SLEEP_S = 600        # the program is running for as long as a test needs
+DAP_FAR_SLEEP_S = 8           # long enough to press keys while it runs
+DAP_TICKS = 60                # six seconds of one line every tenth of a second
+DAP_FAR_RUN_S = 40
+DAP_TICK_LAST_LINE = "TICK 59"
+
+GO_DAP_HEAD = (
+    "package main\n\nimport (\n\t\"fmt\"\n\t\"os\"\n\t\"strconv\"\n"
+    "\t\"time\"\n)\n\nfunc main() {\n"
+    "\tos.WriteFile(%(pidfile)s, []byte(strconv.Itoa(os.Getpid())), 0644)\n"
+    "\tfmt.Println(\"ready\")\n")
+GO_DAP_SLEEP = "\ttime.Sleep(%d * time.Second)\n"
+GO_DAP_TICKS = (
+    "\tfor i := 0; i < %d; i++ {\n\t\tfmt.Println(\"TICK\", i)\n"
+    "\t\ttime.Sleep(100 * time.Millisecond)\n\t}\n")
+GO_DAP_TAIL = "\tfmt.Println(\"done\")\n}\n"
+RUST_DAP_HEAD = (
+    "fn main() {\n"
+    "    std::fs::write(%(pidfile)s, std::process::id().to_string()).unwrap();\n"
+    "    println!(\"ready\");\n")
+RUST_DAP_SLEEP = "    std::thread::sleep(std::time::Duration::from_secs(%d));\n"
+RUST_DAP_TICKS = (
+    "    for i in 0..%d {\n        println!(\"TICK {}\", i);\n"
+    "        std::thread::sleep(std::time::Duration::from_millis(100));\n    }\n")
+RUST_DAP_TAIL = "    println!(\"done\");\n}\n"
+DAP_PROGRAM_PARTS = {"go": (GO_DAP_HEAD, GO_DAP_SLEEP, GO_DAP_TICKS,
+                            GO_DAP_TAIL),
+                     "rust": (RUST_DAP_HEAD, RUST_DAP_SLEEP, RUST_DAP_TICKS,
+                              RUST_DAP_TAIL)}
+
+
+def _dap_program(case, pidfile, sleep_s=None, ticks=None):
+    """The source text, with the file name of the PID file in it, and the
+    1-based lines of its "ready" and "done" prints."""
+    head, sleep, tick, tail = DAP_PROGRAM_PARTS[case["lang"]]
+    quoted = '"%s"' % pidfile
+    middle = (sleep % sleep_s) if sleep_s is not None else (tick % ticks)
+    text = (head % {"pidfile": quoted}) + middle + tail
+    lines = text.splitlines()
+    ready = [i + 1 for i, l in enumerate(lines) if '"ready"' in l][0]
+    done = [i + 1 for i, l in enumerate(lines) if '"done"' in l][0]
+    return text, ready, done
+
+
+class DapRun:
+    """A session on one adapter's program: its editor, its two lines and the
+    file the program writes its PID to."""
+
+    def __init__(self, tmp_path, adapter, sleep_s=None, ticks=None):
+        self.case = DAP_CASES[adapter]
+        _need(*self.case["need"])
+        if self.case["lang"] == "go":
+            (tmp_path / "go.mod").write_text("module dapdemo\n\ngo 1.21\n")
+        self.pidfile = tmp_path / DAP_PIDFILE
+        self.text, self.ready, self.done = _dap_program(
+            self.case, str(self.pidfile), sleep_s, ticks)
+        self.session = WpeSession(
+            str(tmp_path), self.text, filename=self.case["file"], wait=2.0,
+            env_extra=self.case["env"] or None)
+
+    def pid(self):
+        """The program's own PID, from the file it wrote."""
+        return int(self.pidfile.read_text())
+
+    def stop_on_ready(self, w, also_done=False):
+        """A breakpoint on the "ready" line (and the "done" line), Ctrl-G R,
+        and wait for the mark on the first."""
+        _go_to_line(w, self.ready)
+        w.key(CTRL_G, "b", delay=0.5)
+        if also_done:
+            _go_to_line(w, self.done)
+            w.key(CTRL_G, "b", delay=0.5)
+        w.key(CTRL_G, "r", delay=1.0)
+        assert _wait_for(w, lambda: _mark_line(w) == self.ready,
+                         self.case["start_s"]), \
+            "the adapter should stop on line %d:\n%s" \
+            % (self.ready, _screen(w))
+
+
+def _run_on_towards_done(run, w):
+    """Both breakpoints, stop on the first, then Ctrl-G R: the program runs
+    on towards the second."""
+    run.stop_on_ready(w, also_done=True)
+    w.key(CTRL_G, "r", delay=0.5)
+
+
+def _kill_program_if_left(run):
+    """After a failed row: end the program the adapter left behind, by the
+    PID it wrote itself."""
+    try:
+        pid = run.pid()
+    except (OSError, ValueError):
+        return
+    if not _process_gone(pid):
+        os.kill(pid, signal.SIGKILL)
+
+
+# @scenario SC-debug-47
+@pytest.mark.parametrize("adapter", DAP_ADAPTERS)
+def test_quit_while_running_leaves_no_program_under_every_adapter(
+        tmp_path, adapter):
+    """Debug > Quit while the program sleeps ends the adapter and the
+    program itself: its PID is gone, not left running under init."""
+    run = DapRun(tmp_path, adapter, sleep_s=DAP_LONG_SLEEP_S)
+    try:
+        with run.session as w:
+            run.stop_on_ready(w)
+            w.key(CTRL_G, "r", delay=0.5)
+            w._drain(RUNNING_SETTLE_S)
+            pid = run.pid()
+            assert not _process_gone(pid), "the program should be running"
+            w.menu(ALT.DEBUG, "q", delay=0.5)
+            assert _wait_for(w, lambda: not _children(w, run.case["child"]),
+                             STEP_TIMEOUT_S), \
+                "Debug > Quit should end the adapter:\n%s" % _screen(w)
+            assert _wait_for(w, lambda: _process_gone(pid), STEP_TIMEOUT_S), \
+                "the program (pid %d) should be gone after Quit:\n%s" \
+                % (pid, _screen(w))
+    finally:
+        _kill_program_if_left(run)
+
+
+# @scenario SC-debug-38
+@pytest.mark.parametrize("adapter", DAP_ADAPTERS)
+def test_continue_to_a_breakpoint_far_away_is_marked_under_every_adapter(
+        tmp_path, adapter):
+    """Ctrl-G R to a breakpoint eight seconds of run time away: the editor
+    takes keys meanwhile, and the stop is marked when it is reached.  The
+    editor's keys are what this row guards; the late mark already worked
+    with the blocking wait, so it is kept here as a guard."""
+    run = DapRun(tmp_path, adapter, sleep_s=DAP_FAR_SLEEP_S)
+    with run.session as w:
+        _run_on_towards_done(run, w)
+        _says_the_program_is_running(w)
+        assert _wait_for(w, lambda: _mark_line(w) == run.done, DAP_FAR_RUN_S), \
+            "the stop on line %d should be marked (mark on %s):\n%s" \
+            % (run.done, _mark_line(w), _screen(w))
+        w.key(CTRL_G, "r", delay=0.5)    # the session goes on: to the end
+        assert _wait_for(w, lambda: not _children(w, run.case["child"]),
+                         STEP_TIMEOUT_S + DAP_FAR_SLEEP_S), \
+            "Ctrl-G R after the late stop should run the program out:\n%s" \
+            % _screen(w)
+
+
+# @scenario SC-debug-36
+@pytest.mark.parametrize("adapter", DAP_ADAPTERS)
+def test_keys_reach_the_editor_while_the_program_runs_under_every_adapter(
+        tmp_path, adapter):
+    """While the program sleeps, Ctrl-G K is refused on the status row with
+    the line that offers only Debug > Quit, no Stack window opens, and the
+    letters the user types go into the file."""
+    run = DapRun(tmp_path, adapter, sleep_s=DAP_LONG_SLEEP_S)
+    try:
+        with run.session as w:
+            run.stop_on_ready(w)
+            w.key(CTRL_G, "r", delay=0.5)
+            w._drain(RUNNING_SETTLE_S)
+            w.key(CTRL_G, "k", delay=0.8)
+            assert PDB_RUNNING_LINE in _screen(w), \
+                "Ctrl-G K should be refused with the Quit-only line:\n%s" \
+                % _screen(w)
+            assert " Stack " not in _screen(w), \
+                "no Stack window should open:\n%s" % _screen(w)
+            w.key(*TYPED_WHILE_RUNNING, delay=0.15)
+            w.save()
+            assert TYPED_WHILE_RUNNING in w.text(), \
+                "typing while the program runs should edit the source"
+    finally:
+        _kill_program_if_left(run)
+
+
+# @scenario SC-debug-18
+@pytest.mark.parametrize("adapter", DAP_ADAPTERS)
+def test_a_stop_while_the_file_manager_is_open_waits_for_it_under_an_adapter(
+        tmp_path, adapter):
+    """The File Manager is opened while the program runs on towards its
+    second breakpoint: the stop arrives under it, is held, and is shown
+    with the mark once Esc closes the File Manager."""
+    run = DapRun(tmp_path, adapter, sleep_s=DAP_FAR_SLEEP_S)
+    with run.session as w:
+        _run_on_towards_done(run, w)
+        _open_the_file_manager(w)
+        w._drain(DAP_FAR_SLEEP_S + 2)
+        assert FILE_MANAGER_FIELD in _screen(w), \
+            "the File Manager should still be drawn after the stop " \
+            "(mark on %s):\n%s" % (_mark_line(w), _screen(w))
+        w.key(ESC, delay=0.6)
+        assert FILE_MANAGER_FIELD not in _screen(w), \
+            "Esc should close the File Manager:\n%s" % _screen(w)
+        assert _wait_for(w, lambda: _mark_line(w) == run.done, STEP_TIMEOUT_S), \
+            "Esc should show the stop, mark on line %d (mark on %s):\n%s" \
+            % (run.done, _mark_line(w), _screen(w))
+
+
+# @scenario SC-debug-36
+@pytest.mark.parametrize("adapter", DAP_ADAPTERS)
+def test_output_with_messages_closed_leaves_the_editor_idle_under_an_adapter(
+        tmp_path, adapter):
+    """Messages is closed while the program prints a line every tenth of a
+    second on its way to the second breakpoint: no window opens, the editor
+    stays idle, the stop is marked, and everything the program printed is
+    on the User Screen (Alt-F5)."""
+    run = DapRun(tmp_path, adapter, ticks=DAP_TICKS)
+    with run.session as w:
+        _run_on_towards_done(run, w)
+        w.key(F6, delay=0.3)             # Messages on top, when it is open
+        if " Messages " in _screen(w):
+            w.key(CTRL_W, delay=0.3)
+        assert " Messages " not in _screen(w), \
+            "Messages should be closed:\n%s" % _screen(w)
+        _assert_idle(w, CPU_SAMPLE_S, "while the program prints")
+        assert " Messages " not in _screen(w), \
+            "no Messages window should open while the program runs:\n%s" \
+            % _screen(w)
+        assert _wait_for(w, lambda: _mark_line(w) == run.done, DAP_FAR_RUN_S), \
+            "the stop on line %d should be marked (mark on %s):\n%s" \
+            % (run.done, _mark_line(w), _screen(w))
+        w.key(ALT_F5, delay=1.0)
+        assert DAP_TICK_LAST_LINE in _screen(w), \
+            "Alt-F5 should show what the program printed:\n%s" % _screen(w)
+        w.key("\r", delay=0.8)
+
+
+# @scenario SC-debug-05
+def test_go_to_cursor_as_the_first_command_stops_at_the_cursor_under_dlv(
+        tmp_path):
+    """Go to cursor before any session starts dlv and runs on to the
+    cursor's line, with no breakpoint set.  It stopped at the start of main,
+    the adapter's own entry stop."""
+    run = DapRun(tmp_path, "dlv", sleep_s=2)
+    with run.session as w:
+        _go_to_line(w, run.done)
+        w.key(CTRL_G, "u", delay=1.0)
+        assert _wait_for(w, lambda: _mark_line(w) == run.done,
+                         run.case["start_s"]), \
+            "Go to cursor should stop on line %d (mark on %s):\n%s" \
+            % (run.done, _mark_line(w), _screen(w))
+        assert _children(w, "dlv"), "dlv should still run the session"
 
 
 # A program that sleeps between two breakpoints, so it is running, not

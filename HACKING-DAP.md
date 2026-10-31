@@ -91,6 +91,16 @@ is (or should be) active:
 The six text backends are untouched: every hook is `if (DAP) return …;` at the
 top of the function.
 
+Run, the steps, Finish function and Go to cursor do not wait for the adapter.
+They send `continue`/`next`/`stepIn`/`stepOut` (`e_dap_resume`) and hand the run
+to the editor's run controller through `e_d_dap_ops`, like gdb, pdb, jdb and
+a68g: the controller watches `e_dap_fd()` (and dlv's pty) on the fd loop and
+calls `e_dap_run_pump()` when it is readable, and `e_d_dap_stopped` marks the
+stop.  The start does the same for the program's first stop: after the
+handshake the program is already running, and the command that asked for the
+session takes the run over (`e_d_dap_take_first_run`).  A run has no deadline;
+the keys stay with the editor and Quit ends it.
+
 ## Three transports — and when each
 
 DAP standardises the *messages*, **not** how you connect.  Each adapter dictates

@@ -81,7 +81,9 @@ e_dap_session *e_dap_open_tcp(const char *host, int port, const char *program,
  * (and e_dap_output_fd(), the debuggee's pty, when >= 0) on its event loop,
  * calls e_dap_start_pump() whenever the first is readable and
  * e_dap_drain_output() for the second, and once the pump answers
- * E_DAP_START_READY calls e_dap_run_to_first_stop().  The start descriptor
+ * E_DAP_START_READY calls e_dap_run_pump() once and then watches
+ * e_dap_fd() (a caller with no event loop may still use
+ * e_dap_run_to_first_stop()).  The start descriptor
  * changes once, when a reverse-TCP adapter dials in: re-read it after each
  * pump.  An adapter that never answers is ended with e_dap_signal() and
  * reaped with e_dap_adapter_gone(); e_dap_close() then frees the session. */

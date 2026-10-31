@@ -1041,12 +1041,20 @@ typedef struct
  /* A run was handed to the controller: forget the answer of the run before,
     for a backend whose reader keeps one across reads.  NULL for the rest. */
  void (*begin)(void);
+ /* The program's own output arrived on output_fd().  NULL for a backend
+    whose output is the editor's pty (gdb, jdb, sdb, dbx, xdb). */
+ void (*on_output)(int fd, void *data);
+ /* Nonzero when the editor has no way to give the running program the
+    text the user types, although it has an output descriptor. */
+ int no_input;
 } E_D_RUN_OPS;
 
 static const E_D_RUN_OPS *e_d_pdb_run_ops(void);   /* pdb's table (below) */
 static const E_D_RUN_OPS *e_d_jdb_run_ops(void);   /* jdb's table (below) */
 static const E_D_RUN_OPS *e_d_a68g_run_ops(void);  /* a68g's table (below) */
+static const E_D_RUN_OPS *e_d_dap_run_ops(void);   /* the adapters' (below) */
 static int e_d_run_to_cursor_line(FENSTER *f, int line);   /* Go to cursor */
+static int e_d_cursor_brk_pending(void);
 static int e_d_jdb_run_started(FENSTER *f, int start_brk);
 
 /* The run in progress. */
@@ -1412,13 +1420,15 @@ static const E_D_RUN_OPS e_d_legacy_run_ops =
  * debugger, or NULL when its run is still read by its own reader.
  *
  * gdb goes through the controller when it gave the program a pty, as it
- * always has; sdb, dbx, xdb, pdb, jdb and a68g always do.  The debug
- * adapters keep their own readers for now.
+ * always has; sdb, dbx, xdb, pdb, jdb, a68g and the debug adapters always
+ * do.
  */
 static const E_D_RUN_OPS *e_d_run_ops_of_backend(void)
 {
  if (e_deb_type == DEB_GDB && e_d_pty_master >= 0)
   return(&e_d_gdb_run_ops);
+ if (e_deb_type == DEB_DAP)
+  return(e_d_dap_run_ops());
  if (e_deb_type == DEB_PDB)
   return(e_d_pdb_run_ops());
  if (e_deb_type == DEB_JDB)
@@ -1449,11 +1459,15 @@ static int e_d_run_going(void)
  * Under gdb and the legacy debuggers the program has a terminal of its own,
  * so a line typed while it runs is its input.  pdb's program shares pdb's
  * stdin and has none: there the letters belong in the file being edited.
+ * A debug adapter's program has a terminal of the adapter's, which the
+ * editor does not write to: its letters belong in the file as well.
  * Return: 1 while a run is going and the program has its own terminal.
  */
 int e_d_run_takes_typed_text(void)
 {
  if (!e_d_run_going())
+  return(0);
+ if (e_d_run.ops->no_input)
   return(0);
  return(e_d_run.ops->output_fd() >= 0);
 }
@@ -1682,7 +1696,11 @@ static void e_d_run_mark_going(const E_D_RUN_OPS *ops)
 
  e_d_run.state = E_D_RUN_GOING;
  e_d_async_pending = 1;
- if (out >= 0 && !e_d_pty_hung)
+ if (out < 0)
+  return;
+ if (ops->on_output)
+  e_fd_watch(out, POLLIN, ops->on_output, NULL, "the program's output");
+ else if (!e_d_pty_hung)
   e_fd_watch(out, POLLIN, e_d_on_pty_readable, NULL, "the program's output");
 }
 
@@ -5599,8 +5617,13 @@ static e_dap_session *g_dap = NULL;       /* the live adapter session, or NULL *
 static e_bsp_session *g_bsp = NULL;       /* JVM/Scala: the build server hosting
                                              the DAP adapter, kept alive for the
                                              whole session (NULL otherwise)     */
-static FENSTER       *g_dap_fenster = NULL;/* window used for UI side-effects   */
-static int            g_dap_just_started = 0;/* first Run/Step is the entry stop */
+static int            g_dap_first = 0;   /* the program still runs to its first
+                                            stop, which no command has taken */
+static int            g_dap_run_fd = -1; /* the adapter's descriptor, as the
+                                            run watches it                   */
+static int            g_dap_closing = 0; /* the session is being closed     */
+static int            g_dap_shown = 0;   /* how much of the program's output
+                                            (e_d_prog_output) Messages has  */
 static e_dap_host     g_dap_host;
 static char           g_dap_progdir[1024] = "";  /* the user's program directory */
 static char           g_dap_stop_file[1024] = "";/* full path of the current stop */
@@ -5795,20 +5818,62 @@ static void e_d_dap_drop_line_cr(const char *text, char *out)
  *o = '\0';
 }
 
-/* on_output: adapter/program output -> Messages window. */
-static void e_d_dap_on_output(const char *text, void *ud)
+/**
+ * e_d_dap_show_new_output - Write in Messages what the program printed and
+ * Messages does not have yet.
+ * @force: show it even if Messages is closed and the program runs.
+ *
+ * The program's output is kept whole for the User Screen (Alt-F5) as it
+ * comes; Messages gets the part after g_dap_shown.  While the program runs
+ * and Messages is closed nothing is written unless @force, so no window
+ * opens over a box the user has open; the stop shows the rest, as under
+ * gdb.  The adapter's lines end in CR LF on a pty, and the CR is dropped.
+ */
+static void e_d_dap_show_new_output(int force)
 {
- char *clean;
+ FENSTER *top = e_d_run_window(WpeEditor);
+ char *clean, *text;
+ int new_len;
 
- (void)ud;
- if (!g_dap_fenster || !text)
+ if (g_dap_shown > e_d_prog_output_len)
+  g_dap_shown = e_d_prog_output_len;      /* another run reset the buffer */
+ new_len = e_d_prog_output_len - g_dap_shown;
+ if (new_len <= 0)
   return;
- clean = MALLOC(strlen(text) + 1);
+ if (!force && e_d_run_going() && !e_d_find_messages_window())
+  return;
+ clean = MALLOC(new_len + 1);
  if (!clean)
   return;
- e_d_dap_drop_line_cr(text, clean);
- e_d_p_message(clean, g_dap_fenster, 1);
+ memcpy(clean, e_d_prog_output + g_dap_shown, new_len);
+ clean[new_len] = '\0';
+ g_dap_shown = e_d_prog_output_len;
+ e_d_dap_drop_line_cr(clean, clean);
+ text = clean;
+ while (*text == '\n')
+  text++;                       /* e_d_p_message ignores text led by one */
+ if (e_d_run_going())
+  e_d_p_message(text, top, 0);
+ else
+  e_d_p_message(text, top, 1);
  FREE(clean);
+}
+
+/**
+ * e_d_dap_on_output - The program printed, or the adapter spoke for it.
+ * @text: the piece; @ud: unused.
+ *
+ * It goes on the User Screen at once and into Messages when Messages is
+ * open (see e_d_dap_show_new_output).  Once Quit has begun nothing is
+ * shown: the windows are being put back.
+ */
+static void e_d_dap_on_output(const char *text, void *ud)
+{
+ (void)ud;
+ if (!text || g_dap_closing)
+  return;
+ e_d_prog_output_append((char *)text, strlen(text));
+ e_d_dap_show_new_output(0);
 }
 
 /**
@@ -5837,6 +5902,7 @@ static int e_d_dap_exit_code(long *code)
  */
 static int e_d_dap_end_session(FENSTER *f)
 {
+ e_d_dap_show_new_output(1);        /* what it printed, before its end line */
  e_d_say_program_exited(NULL, f);
  return(e_d_quit(f));
 }
@@ -5854,13 +5920,40 @@ static int e_d_dap_program_ended(void)
  return(g_dap && e_dap_ended(g_dap));
 }
 
-/* Disconnect the adapter and reset bridge state.  Called from e_d_quit before
-   the common e_d_quit_basic cleanup, and on any start/run failure. */
+#define E_D_DAP_ENDING_LINE " Ending the program and the debug adapter..."
+
+/**
+ * e_d_dap_say_ending - Tell the user Quit is waiting for the adapter.
+ * @f: the window on top, or NULL when the editor itself is ending.
+ *
+ * The adapter ends a running program only when it has answered Quit, which
+ * takes a moment (lldb-dap about a second); the bottom row says so.
+ */
+static void e_d_dap_say_ending(FENSTER *f)
+{
+ if (f && e_dap_running(g_dap))
+  e_status_say(f, E_D_DAP_ENDING_LINE);
+}
+
+/**
+ * e_d_dap_quit - End the debug adapter and its program, and reset the
+ * bridge.
+ * @f: the window on top, or NULL.
+ *
+ * Called from e_d_quit before the common cleanup, on any start or run
+ * failure, and when the editor ends.  Nothing watches the adapter once
+ * this begins, a program that runs is ended with it, and the bottom row
+ * says Quit is waiting: the engine disconnects, waits for the adapter's
+ * answer and exit within its bounds (which hold when the editor is ending,
+ * so no program is left behind) and reaps it.
+ */
 static void e_d_dap_quit(FENSTER *f)
 {
- (void)f;
+ e_d_run_forget();
+ g_dap_closing = 1;
  if (g_dap)
  {
+  e_d_dap_say_ending(f);
   e_dap_close(g_dap);
   g_dap = NULL;
  }
@@ -5871,8 +5964,9 @@ static void e_d_dap_quit(FENSTER *f)
   e_bsp_close(g_bsp);
   g_bsp = NULL;
  }
- g_dap_fenster = NULL;
- g_dap_just_started = 0;
+ g_dap_closing = 0;
+ g_dap_first = 0;
+ g_dap_run_fd = -1;
  g_dap_stop_file[0] = '\0';
  g_dap_stop_line = -1;
 }
@@ -5887,7 +5981,6 @@ static void e_d_dap_quit(FENSTER *f)
  */
 void e_d_dap_end_at_exit(void)
 {
- g_dap_fenster = NULL;
  e_d_dap_quit(NULL);
 }
 
@@ -5969,7 +6062,9 @@ static int e_d_dap_start(FENSTER *f)
     that reached it ends the session through e_d_dap_end_session. */
  g_dap_host.on_terminated = NULL;
  g_dap_host.ud = NULL;
- g_dap_fenster = f;
+ g_dap_first = 0;
+ e_d_prog_output_reset();             /* a fresh User Screen for this session */
+ g_dap_shown = 0;
  /* Program directory without the trailing slash: the adapter's working dir, and
     the root that tells the user's own code from library/runtime stops.  (dlv's
     package resolution also rejects a trailing "DIR/".) */
@@ -5987,7 +6082,7 @@ static int e_d_dap_start(FENSTER *f)
  if (lang->compile)
  {
   if (e_d_dap_compile(f, binary, sizeof(binary)) != 0)
-  {  g_dap_fenster = NULL;  return(-1);  }
+   return(-1);
   program = binary;
  }
  else
@@ -6007,7 +6102,6 @@ static int e_d_dap_start(FENSTER *f)
   if (!g_bsp)
   {
    e_error(berr[0] ? berr : "Could not start the Scala debug server.", 0, f->fb);
-   g_dap_fenster = NULL;
    return(-1);
   }
   g_dap = e_dap_start_tcp(bhost, bport, program, lang->entry_func, &g_dap_host);
@@ -6021,7 +6115,6 @@ static int e_d_dap_start(FENSTER *f)
   e_error(E_D_DAP_START_FAILED_LINE, 0, f->fb);
   if (g_bsp)
   {  e_bsp_close(g_bsp);  g_bsp = NULL;  }
-  g_dap_fenster = NULL;
   return(-1);
  }
  strncpy(e_d_file, f->datnam, sizeof(e_d_file) - 1);
@@ -6042,25 +6135,22 @@ static int e_d_dap_start(FENSTER *f)
 }
 
 /**
- * e_d_dap_start_finish - The adapter has answered the whole handshake: run
- * to the program's first stop.
+ * e_d_dap_start_finish - The adapter has answered the whole handshake: the
+ * program runs on to its first stop.
  * @f: the window on top.
  *
- * From here the session is the one the user knows: the first Run or Step
- * shows the stop reached here.
- * Return: 0, or -1 when the program did not start (said in a box, the
- * session ended).
+ * Nothing waits for that stop, however far away it is.  The command that
+ * asked for the session runs again right after this and takes the run over
+ * (see e_d_dap_take_first_run): the first Run or Step shows the stop, as
+ * it always has.
+ * Return: 0.
  */
 static int e_d_dap_start_finish(FENSTER *f)
 {
- if (e_dap_run_to_first_stop(g_dap) != 0)
- {
-  e_error(E_D_DAP_RUN_FAILED_LINE, 0, f->fb);
-  e_d_quit(f);
-  return(-1);
- }
+ (void)f;
  e_d_swtch = 3;
- g_dap_just_started = 1;              /* the first stop counts as the 1st Run */
+ g_dap_first = 1;
+ g_dap_run_fd = e_dap_fd(g_dap);
  return(0);
 }
 
@@ -6116,64 +6206,302 @@ static int e_d_dap_stopped_at_entry(void)
  return(0);
 }
 
-/* Ctrl-G R: run, or continue from the current stop.  The very first Run shows
-   the stop e_d_dap_start already reached.  An entry stop is continued when the
-   user has breakpoints (matching gdb's temp-break-at-main) and kept when there
-   are none; a breakpoint stop is always kept, the user asked for it. */
+/* What a debug adapter's run does when the program stops: the command that
+   began it, E_D_DAP_ON_STOP_*. */
+#define E_D_DAP_ON_STOP_CONTINUE 0   /* Run: go past the start's entry stop
+                                        when breakpoints wait further on */
+#define E_D_DAP_ON_STOP_INTO     1   /* F7: show the stop */
+#define E_D_DAP_ON_STOP_OVER     2   /* F8: show the stop, past the runtime */
+#define E_D_DAP_ON_STOP_OUT      3   /* Finish function: show the stop */
+#define E_D_DAP_ON_STOP_SHOW     4   /* a first command that needs a stopped
+                                        program: show the start's stop */
+/* F8 runs on at most this many runtime stops before showing one. */
+#define E_D_DAP_RUNTIME_STEPS_MAX 100
+
+static struct {
+ int kind;                 /* E_D_DAP_ON_STOP_*                          */
+ int first;                /* the run is the start's: its stop is the
+                              program's start                          */
+ int runtime_steps;        /* runtime stops F8 has run past so far       */
+} g_dap_run;
+
+/**
+ * e_d_dap_answer_fd - The adapter's descriptor, as the run watches it.
+ *
+ * Kept from the start of the run: after the adapter hangs up the engine
+ * no longer names it, but the loop still has it to unwatch.
+ */
+static int e_d_dap_answer_fd(void)
+{
+ return(g_dap_run_fd);
+}
+
+/**
+ * e_d_dap_output_fd - dlv's pty, where the program and the build write; -1
+ * for an adapter that carries the program's output in its messages.
+ */
+static int e_d_dap_output_fd(void)
+{
+ if (!g_dap)
+  return(-1);
+ return(e_dap_output_fd(g_dap));
+}
+
+/**
+ * e_d_dap_begin - A run was handed to the controller: note the descriptor
+ * it will watch.
+ */
+static void e_d_dap_begin(void)
+{
+ g_dap_run_fd = e_dap_fd(g_dap);
+}
+
+/**
+ * e_d_dap_on_program_output - dlv's pty has output while the program runs.
+ * @fd: the pty; @data: unused.
+ *
+ * Read and passed on, so the program never stalls on a full pty and the
+ * editor never wakes for text nobody took.  When the engine has closed the
+ * pty (the adapter ended) it is no longer watched.
+ */
+static void e_d_dap_on_program_output(int fd, void *data)
+{
+ (void)data;
+ if (!g_dap)
+ {
+  wpe_fd_del(fd);
+  return;
+ }
+ e_dap_drain_output(g_dap);
+ if (e_dap_output_fd(g_dap) != fd)
+  wpe_fd_del(fd);
+}
+
+/**
+ * e_d_dap_feed - Read what the adapter sent while the program runs.
+ * @f: the window on top.
+ *
+ * The program's stop, and the end of the program, both end the run for
+ * the backend's stopped function to tell; an adapter that went away
+ * without the program ending ends the session.  One that went before the
+ * program's first stop did not start it: a box says so.
+ * Return: E_D_FEED_*.
+ */
+static int e_d_dap_feed(FENSTER *f)
+{
+ int st = e_dap_run_pump(g_dap);
+
+ if (st == E_DAP_RUN_STOPPED)
+  return(E_D_FEED_STOPPED);
+ if (st != E_DAP_RUN_ENDED)
+  return(E_D_FEED_GOING);
+ if (e_dap_ended(g_dap))
+  return(E_D_FEED_STOPPED);
+ if (g_dap_run.first)
+  e_error(E_D_DAP_RUN_FAILED_LINE, 0, f->fb);
+ return(E_D_FEED_GONE);
+}
+
+/**
+ * e_d_dap_run_on - Let the program run on from a stop it was shown or held
+ * at, and keep the run with the controller.
+ * @f: the window on top; @verb: the DAP request that resumes it.
+ *
+ * Used when the stop is not the one the user asked for: the start's entry
+ * stop, and the runtime code F8 steps out of.
+ */
+static void e_d_dap_run_on(FENSTER *f, const char *verb)
+{
+ if (e_dap_resume(g_dap, verb) != 0)
+ {
+  e_d_quit(f);
+  return;
+ }
+ e_d_run_resume();
+}
+
+/**
+ * e_d_dap_runs_on_from_start - Does Run go on from the start's stop?
+ *
+ * An entry stop is passed when the user has breakpoints, or Go to cursor
+ * its own, further on (gdb's temporary breakpoint at main does the same);
+ * without them it is the stop the user is shown.  Any other first stop is
+ * a breakpoint the user asked for.
+ * Return: 1 to continue.
+ */
+static int e_d_dap_runs_on_from_start(void)
+{
+ if (g_dap_run.kind != E_D_DAP_ON_STOP_CONTINUE)
+  return(0);
+ if (!e_d_dap_stopped_at_entry())
+  return(0);
+ return(e_d_nbrpts > 0 || e_d_cursor_brk_pending());
+}
+
+/**
+ * e_d_dap_runs_out_of_runtime - Does F8 go on from a stop in the language
+ * runtime?
+ *
+ * Step-over must never wander into the language runtime: once main()
+ * returns there is no user line left to step to, so "next" lands in
+ * runtime/proc.go under GOROOT.  The program then runs on to the next user
+ * line or to its end instead of showing runtime internals.  Step-into (F7)
+ * is left alone: the user asked to descend.  The count bounds it, so an
+ * adapter that never reaches user code cannot keep it for ever.
+ * Return: 1 to continue.
+ */
+static int e_d_dap_runs_out_of_runtime(void)
+{
+ if (g_dap_run.kind != E_D_DAP_ON_STOP_OVER)
+  return(0);
+ if (e_d_dap_in_user_code())
+  return(0);
+ return(g_dap_run.runtime_steps++ < E_D_DAP_RUNTIME_STEPS_MAX);
+}
+
+/**
+ * e_d_dap_stopped - The program stopped or ended: what the user sees.
+ * @f: the window on top.
+ *
+ * What the program printed meanwhile shows in Messages first.  An end says
+ * how the program ended and closes the session.  A stop is marked and the
+ * watches filled, unless it is only the start's entry stop or runtime code
+ * the command runs on from, which the user is never shown.
+ */
+static void e_d_dap_stopped(FENSTER *f)
+{
+ int first = g_dap_run.first;
+
+ g_dap_run.first = 0;
+ e_d_dap_show_new_output(1);
+ if (e_dap_ended(g_dap))
+ {
+  e_d_dap_end_session(f);
+  return;
+ }
+ if (first && e_d_dap_runs_on_from_start())
+ {
+  e_d_dap_run_on(f, "continue");
+  return;
+ }
+ if (!first && e_d_dap_runs_out_of_runtime())
+ {
+  e_d_dap_run_on(f, "continue");
+  return;
+ }
+ e_d_dap_paint_stop(f);
+}
+
+/* A debug adapter: its messages on one descriptor, the program's output on
+   the same or on a pty of the adapter's own, a stop told by a message.
+   Typed text goes nowhere yet, so the running line offers only Quit. */
+static const E_D_RUN_OPS e_d_dap_ops =
+{
+ "debug adapter",
+ e_d_dap_answer_fd,
+ e_d_dap_output_fd,
+ e_d_dap_feed,
+ e_d_dap_stopped,
+ NULL,
+ NULL,
+ NULL,
+ NULL,
+ e_d_dap_begin,
+ e_d_dap_on_program_output,
+ 1
+};
+
+/**
+ * e_d_dap_run_ops - The run controller's table for the debug adapters.
+ */
+static const E_D_RUN_OPS *e_d_dap_run_ops(void)
+{
+ return(&e_d_dap_ops);
+}
+
+/**
+ * e_d_dap_take_first_run - Hand the program that runs to its first stop to
+ * the controller, for the first command of the session.
+ * @f: the source window;
+ * @kind: what the command does at that stop, E_D_DAP_ON_STOP_*.
+ *
+ * The adapter was started without waiting for the stop, so the program
+ * is on its way to it; the editor keeps its keys until it gets there,
+ * however long that is.  The adapter may have written the stop with its
+ * last answer to the start, so it is read once at once.
+ * Return: 0, or the end of the session.
+ */
+static int e_d_dap_take_first_run(FENSTER *f, int kind)
+{
+ int ret;
+
+ g_dap_first = 0;
+ g_dap_run.kind = kind;
+ g_dap_run.first = 1;
+ g_dap_run.runtime_steps = 0;
+ ret = e_d_run_hand_over(f, e_d_dap_run_ops(), 0);
+ if (e_d_run_going())
+  e_d_run_on_answer(g_dap_run_fd, NULL);
+ return(ret);
+}
+
+/**
+ * e_d_dap_resume_run - Let the stopped program go on, and give the editor
+ * its keys until it stops again.
+ * @f: the source window; @verb: "continue", "next", "stepIn" or "stepOut";
+ * @kind: what the command does at the next stop, E_D_DAP_ON_STOP_*.
+ * Return: 0, or the end of the session.
+ */
+static int e_d_dap_resume_run(FENSTER *f, const char *verb, int kind)
+{
+ if (e_dap_ended(g_dap))
+  return(e_d_dap_end_session(f));
+ g_dap_run.kind = kind;
+ g_dap_run.first = 0;
+ g_dap_run.runtime_steps = 0;
+ if (e_dap_resume(g_dap, verb) != 0)
+  return(e_d_quit(f));
+ return(e_d_run_hand_over(f, e_d_dap_run_ops(), 0));
+}
+
+/**
+ * e_d_dap_run - Ctrl-G R: run the program, or let it go on from its stop.
+ * @f: the source window.
+ *
+ * The very first Run shows the stop the session starts at, or goes past it
+ * to the user's breakpoints (see e_d_dap_runs_on_from_start).  The program
+ * runs under the controller: the editor keeps its keys until it stops.
+ * Return: 0, or the end of the session.
+ */
 static int e_d_dap_run(FENSTER *f)
 {
  if (!g_dap && e_d_dap_start(f) < 0)
   return(-1);
- if (g_dap_just_started)
- {
-  g_dap_just_started = 0;
-  if (!e_d_dap_program_ended() &&
-      (!e_d_dap_stopped_at_entry() || e_d_nbrpts <= 0))
-  {
-   e_d_dap_paint_stop(f);
-   return(0);
-  }
- }
- e_dap_step(g_dap, "continue");
- if (e_dap_ended(g_dap))
-  return(e_d_dap_end_session(f));
- e_d_dap_paint_stop(f);
- return(0);
+ if (g_dap_first)
+  return(e_d_dap_take_first_run(f, E_D_DAP_ON_STOP_CONTINUE));
+ e_d_nstack = 0;
+ e_d_delbreak(f);
+ e_d_switch_out(1);
+ return(e_d_dap_resume_run(f, "continue", E_D_DAP_ON_STOP_CONTINUE));
 }
 
-/* F8 (sw!=0 -> step over) / F7 (sw==0 -> step into).  The first step after a
-   fresh start lands on the entry stop without advancing, like the text
-   backends; subsequent steps issue the DAP verb. */
+/**
+ * e_d_dap_step - F8 (@sw nonzero, step over) and F7 (@sw zero, step into).
+ * @f: the source window.
+ *
+ * The first step of a session shows the stop it starts at without
+ * advancing, like the text backends; later steps run under the controller.
+ * Return: 0, or the end of the session.
+ */
 static int e_d_dap_step(FENSTER *f, int sw)
 {
- int guard = 0;
-
  if (!g_dap)
   return(-1);
- if (g_dap_just_started)
- {
-  g_dap_just_started = 0;
-  if (e_d_dap_program_ended())
-   return(e_d_dap_end_session(f));
-  e_d_dap_paint_stop(f);              /* the entry stop, painted once */
-  return(0);
- }
- e_dap_step(g_dap, sw ? "next" : "stepIn");
- /* Step-over (F8) must never wander into the language runtime: once main()
-    returns there is no user line left to step to, so "next" lands in
-    runtime/proc.go under GOROOT.  When that happens, run on to the next user
-    line or to program exit instead of showing runtime internals.  Step-into
-    (F7) is left alone -- the user explicitly asked to descend.  The guard
-    bounds it so a pathological adapter cannot spin forever.  Because the paint
-    is deferred (see e_d_dap_on_stopped), the intermediate runtime stop never
-    reaches the screen. */
+ if (g_dap_first)
+  return(e_d_dap_take_first_run(f, E_D_DAP_ON_STOP_SHOW));
  if (sw)
-  while (!e_dap_ended(g_dap) && !e_d_dap_in_user_code() && guard++ < 100)
-   e_dap_step(g_dap, "continue");
- if (e_dap_ended(g_dap))
-  return(e_d_dap_end_session(f));
- e_d_dap_paint_stop(f);
- return(0);
+  return(e_d_dap_resume_run(f, "next", E_D_DAP_ON_STOP_OVER));
+ return(e_d_dap_resume_run(f, "stepIn", E_D_DAP_ON_STOP_INTO));
 }
 
 /**
@@ -6182,17 +6510,15 @@ static int e_d_dap_step(FENSTER *f, int sw)
  *
  * The program runs until the current function returns, and the mark lands
  * on the caller's line, as gdb's "finish" puts it; a program that ends on
- * the way ends the session with its end line.
- * Return: 0.
+ * the way ends the session with its end line.  As the session's first
+ * command there is nothing to finish: it shows the stop it starts at.
+ * Return: 0, or the end of the session.
  */
 static int e_d_dap_finish(FENSTER *f)
 {
- g_dap_just_started = 0;             /* the entry stop is left, not repainted */
- e_dap_step(g_dap, "stepOut");
- if (e_dap_ended(g_dap))
-  return(e_d_dap_end_session(f));
- e_d_dap_paint_stop(f);
- return(0);
+ if (g_dap_first)
+  return(e_d_dap_take_first_run(f, E_D_DAP_ON_STOP_SHOW));
+ return(e_d_dap_resume_run(f, "stepOut", E_D_DAP_ON_STOP_OUT));
 }
 
 /* Rebuild the Watches window with current values via evaluate(context=watch).
@@ -11096,8 +11422,11 @@ static int e_d_finish_send(FENSTER *f)
  */
 static int e_d_finish_to_caller(FENSTER *f)
 {
- int from = e_d_finish_frame();
+ int from;
 
+ if (e_deb_type == DEB_DAP && g_dap_first)
+  return(e_d_dap_finish(f));      /* the program is not stopped yet */
+ from = e_d_finish_frame();
  if (e_deb_type == DEB_DAP && e_d_dap_program_ended())
   return(e_d_dap_end_session(f));
  if (e_d_collect_frames(f->ed) == -1)
@@ -11185,6 +11514,19 @@ static struct {
  char file[PATH_MAX];          /* the window's file name, as breakpoints   */
  char path[PATH_MAX];          /* the full path the debugger is given      */
 } e_d_cursor_brk;
+
+/**
+ * e_d_cursor_brk_pending - Is Go to cursor's own breakpoint in the debugger?
+ *
+ * A debug adapter's first stop is the program's start; Go to cursor as the
+ * first command must run on from it to the cursor, like a breakpoint of the
+ * user's would.
+ * Return: 1 between Go to cursor setting the breakpoint and the stop.
+ */
+static int e_d_cursor_brk_pending(void)
+{
+ return(e_d_cursor_brk.set);
+}
 
 /**
  * e_d_goto_supported - Does the selected debugger do this command?

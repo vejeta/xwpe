@@ -97,14 +97,17 @@ different directories gdb stops in the first one the program reaches.
 pdb, jdb, a68g and the debug adapters get a breakpoint on the line that
 is removed at the next stop, wherever the program stops; a breakpoint
 of your own on that line stays.  Pressed before a session runs, with no
-breakpoint set, Go to cursor starts the session under gdb or jdb and
-runs on to the cursor's line; if the program never reaches it, the
+breakpoint set, Go to cursor starts the session under gdb, jdb or dlv
+and runs on to the cursor's line; if the program never reaches it, the
 program runs to its end, as Go to cursor does at a stop.  Under a68g
 it runs as Run does, to the first breakpoint or to the end of the
-program.  The other debuggers stop at the start of @code{main}, as Run
-does.  Under gdb, pdb, jdb and a68g, Go to cursor and Finish function
-leave the editor its keys while the program runs, so
-@samp{Debug @result{} Quit} ends the session.
+program.  Under lldb-dap and gdb's DAP mode the cursor's breakpoint is
+set while the program already runs, so a line the program reaches at
+once can be passed and the program runs on.  The other debuggers stop
+at the start of @code{main}, as Run does.  Under gdb, pdb, jdb, a68g and
+the debug adapters, Go to cursor and Finish function leave the editor its
+keys while the program runs, so @samp{Debug @result{} Quit} ends the
+session.
 
 @cindex Show stack
 @cindex Stack window
@@ -316,10 +319,10 @@ across steps, so you can see the complete program output at any time.
 
 If you close Messages while the program runs, its output is still read:
 under gdb, jdb, sdb, dbx and xdb what it prints while Messages is closed
-goes to the User Screen (@kbd{Alt-F5}) only.  Under a68g it is kept and
-shown in Messages at the next stop; of a long output (past about 8 KB)
-only the last part reaches Messages, and all of it is on the User
-Screen.
+goes to the User Screen (@kbd{Alt-F5}) only.  Under a68g and the debug
+adapters it is kept and shown in Messages at the next stop, and all of
+it is on the User Screen; of a long a68g output (past about 8 KB) only
+the last part reaches Messages.
 
 @cindex Alt-F5
 A line-oriented panel cannot show a program that @emph{paints} (ANSI
@@ -446,6 +449,17 @@ running.  The first @kbd{Ctrl-G R} stops
 on your first breakpoint, even one on a line that runs only once; xwpe runs
 on only past the adapter's own entry stop (Go's @code{main.main}), told
 apart by the reason the adapter gives for the stop.
+
+Run, Step, Trace, Go to cursor and Finish function wait for the adapter
+as long as the program takes, the first one included, and mark the stop
+whenever it comes.  The editor keeps its keys meanwhile; the debugger
+keys say @samp{The program is running: Debug > Quit ends the session}, and
+text typed goes into the file, since the editor gives an adapter's program
+no input.  @samp{Debug @result{} Quit} ends the adapter and the program,
+and the bottom row says it is waiting for them.  What the program prints
+shows in Messages as it comes when Messages is open; with Messages closed it
+is kept and shown at the next stop, and is on the User Screen
+(@kbd{Alt-F5}).
 
 The engine carries three transports behind one API, because each adapter
 dictates its own: @emph{reverse-TCP} (Delve is a server; the debuggee runs on
