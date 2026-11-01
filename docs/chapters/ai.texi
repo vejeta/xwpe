@@ -994,7 +994,13 @@ host), @env{XWPE_AI_HOST_ADAPTER} (@code{claude-code}/@code{text}), and
 (@env{ANTHROPIC_API_KEY}, @env{OPENAI_API_KEY}), then from @code{@var{NAME}_FILE},
 then from @file{~/.config/xwpe/anthropic-api-key} (or @file{openai-api-key}, or a
 provider's own @file{openai-api-key-@var{name}}); the @code{claudecli} backend
-needs none of this.  An OpenAI key can also be typed into the @samp{API key} field
+needs none of this.  A Claude key that belongs to your organization rather than
+to one workspace also needs the workspace's ID, found the same way:
+@env{ANTHROPIC_WORKSPACE_ID}, then @env{ANTHROPIC_WORKSPACE_ID_FILE}, then
+@file{~/.config/xwpe/anthropic-workspace-id}.  It is sent as the
+@code{anthropic-workspace-id} header; with none set nothing is sent, which is
+right for a workspace key.  A value that holds a line break or another control
+character is not sent either (the trace says so).  An OpenAI key can also be typed into the @samp{API key} field
 of @samp{Options}, @samp{AI} (@key{Alt-K}): it is used at once (so @key{Alt-M}
 lists an authenticated endpoint's models) and written to the active provider's
 key file.  The field shows the key stored for the current provider, so you can

@@ -233,6 +233,13 @@ Changes
 
 1.7.0 (AI assistant -- experimental, opt-in)
 
+* Claude keys that belong to an organization, not to one workspace, now
+  work.  Every request used to be refused with "This API key is not scoped
+  to a workspace".  Put the workspace ID in ANTHROPIC_WORKSPACE_ID (or in
+  the file named by ANTHROPIC_WORKSPACE_ID_FILE, or in
+  ~/.config/xwpe/anthropic-workspace-id) and the editor sends it with each
+  request.  A workspace key needs nothing and sends nothing extra.
+
 * New Debug > Interrupt (pause), Ctrl-Break in xwpe, Ctrl-G I anywhere:
   it stops the program that runs under gdb, sdb, dbx, xdb, pdb or a68g
   where it is, marks the line, and the status row says "Paused".  Under

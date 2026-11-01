@@ -6,18 +6,16 @@ real model, and an AI Edit actually FIXES a broken C file (verified by compiling
 the result).  Slow -- a real 30B model generates for tens of seconds.
 
 Run:  WPE_BIN=../wpe python -m pytest tests/test_ai_ollama_live.py -v -s
+More time for a slow model:  XWPE_TEST_WAIT_SCALE=3 (multiplies every wait).
+Against Claude instead of Ollama:
+  XWPE_LIVE_AI=claude ANTHROPIC_API_KEY=... CLAUDE_MODEL=... WPE_BIN=$PWD/wpe tests/.venv/bin/python -m pytest -q tests/test_ai_ollama_live.py
+Provider choice and budgets live in tests/live_ai.py.
 """
 import os
-import json
-import shutil
 import subprocess
-import urllib.request
 import pytest
+import live_ai
 from wpe_driver import WpeSession, ALT, WPE_BIN
-
-OLLAMA = "http://localhost:11434"
-PREFERRED = ["qwen2.5-coder:32b", "deepseek-coder:33b", "codellama:34b",
-             "qwen3.8:27b", "gemma4:31b"]
 
 
 def _ai_build():
@@ -29,43 +27,22 @@ def _ai_build():
         return False
 
 
-def _ollama_model():
-    try:
-        with urllib.request.urlopen(OLLAMA + "/api/tags", timeout=5) as r:
-            names = [m["name"] for m in json.load(r).get("models", [])]
-        for want in PREFERRED:
-            if want in names:
-                return want
-        return names[0] if names else None
-    except Exception:
-        return None
-
-
-MODEL = _ollama_model()
 pytestmark = [
     pytest.mark.skipif(not _ai_build(), reason="wpe built without --enable-ai"),
-    pytest.mark.skipif(MODEL is None, reason="no local Ollama/model"),
+    live_ai.SKIP_MARK,
 ]
 
 
 def _env(trace):
-    return {
-        "XWPE_AI_ENABLE": "1",
-        "XWPE_AI_BACKEND": "ollama",
-        "XWPE_AI_ENDPOINT": OLLAMA,
-        "XWPE_AI_MODEL": MODEL,
-        "XWPE_AI_TRACE": str(trace),
-    }
+    return live_ai.session_env(trace)
 
 
 def _wait_for(trace, needle, session, budget=180):
-    waited = 0.0
-    while waited < budget:
-        session._drain(2.0)
-        waited += 2.0
-        if trace.exists() and needle in trace.read_text():
-            return True
-    return False
+    return live_ai.wait_for_trace(trace, needle, session, budget)
+
+
+CHAT_PROMPT = live_ai.CHAT_PROMPT
+_reply_shows_answer = live_ai.reply_shows_answer
 
 
 def test_ai_ollama_chat(tmp_path):
@@ -74,13 +51,16 @@ def test_ai_ollama_chat(tmp_path):
                     env_extra=_env(trace)) as s:
         s.key(ALT.AI)
         s.key("a")
-        s.key("In one short sentence, what is a semicolon in C?")
+        s.key(CHAT_PROMPT)
         s.key("\r", delay=2.0)
         assert _wait_for(trace, "chat done", s), "chat never completed:\n" + \
             (trace.read_text() if trace.exists() else "")
         disp = "\n".join(s.display())
-    # A real reply put SOMETHING under the "AI:" line in the pane.
-    assert len(disp.strip()) > 0
+    # A backend error leaves a non-empty screen too, so it fails the test.
+    assert not live_ai.has_backend_error(disp, trace), \
+        "the provider returned an error:\n" + disp
+    # The expected word is not in the prompt: only a real reply can show it.
+    assert _reply_shows_answer(disp), "no answer under the AI: line:\n" + disp
 
 
 def test_ai_ollama_edit_fixes_bug(tmp_path):
@@ -108,10 +88,15 @@ def test_ai_ollama_edit_fixes_bug(tmp_path):
         s.key("e")                       # Edit
         s.key("Fix the compile error. Return ONLY the corrected C file.")
         s.key("\r", delay=1.0)           # submit -> generation starts
-        # 'a' (accept all hunks) is buffered by the pty until the per-hunk
-        # preview's getch runs, so it is applied once generation finishes.
+        # The Edit runs in the background and the file window refuses keys
+        # until the reply lands, so "a" (accept all) is typed only once the
+        # review box is up.
+        assert _wait_for(trace, "edit review", s, budget=220), \
+            "the review never opened:\n" + (trace.read_text() if trace.exists() else "")
+        assert not live_ai.has_backend_error("\n".join(s.display()), trace), \
+            "the provider returned an error:\n" + "\n".join(s.display())
         s.key("a", delay=1.0)
-        assert _wait_for(trace, "edit applied", s, budget=220), \
+        assert _wait_for(trace, "edit applied", s, budget=20), \
             "edit never applied:\n" + (trace.read_text() if trace.exists() else "")
         s._drain(1.0)
         s.save()

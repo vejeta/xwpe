@@ -7682,7 +7682,12 @@ static void ai_edit_done(ai_async_op *op)
   wpe_ai_trace("edit no-change");
  } else {
   int nacc = 0, ntot = 0;
-  char *result = ai_hunk_apply(f, segs, nseg, NULL, &nacc, &ntot);
+  char *result;
+  /* The reply is complete and the box now waits for the user: say so, or a
+     trace stops at "edit stream" and a review left open reads as a hang. */
+  wpe_ai_trace("edit review %d change(s), reply %zu bytes",
+               ai_hunk_count_changes(segs, nseg), op->acc_len);
+  result = ai_hunk_apply(f, segs, nseg, NULL, &nacc, &ntot);
   if (result) {
    char msg[80];
    e_ai_apply_text(f, result);

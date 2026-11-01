@@ -1,20 +1,19 @@
 """AI assistant -- Edit runs in the BACKGROUND (needs a real, slow-ish model).
 
 Proves the anti-clunky contract: while the model generates an Edit reply the
-editor is NOT blocked -- the spinner animates, typing lands in the file, and
-Alt-G cancels the running task.  Self-skips unless Ollama is reachable.
+editor is NOT blocked and the edit applies.  Self-skips unless the chosen provider is
+usable (Ollama reachable by default).
+
+More time for a slow model:  XWPE_TEST_WAIT_SCALE=3 (multiplies every wait).
+Against Claude instead of Ollama:
+  XWPE_LIVE_AI=claude ANTHROPIC_API_KEY=... CLAUDE_MODEL=... WPE_BIN=$PWD/wpe tests/.venv/bin/python -m pytest -q tests/test_ai_async_live.py
+Provider choice and budgets live in tests/live_ai.py.
 """
 import os
-import re
-import json
 import subprocess
-import urllib.request
 import pytest
+import live_ai
 from wpe_driver import WpeSession, ALT, WPE_BIN
-
-OLLAMA = "http://localhost:11434"
-PREFERRED = ["qwen2.5-coder:32b", "deepseek-coder:33b", "codellama:34b",
-             "qwen3.8:27b", "gemma4:31b"]
 
 
 def _ai_build():
@@ -26,47 +25,55 @@ def _ai_build():
         return False
 
 
-def _ollama_model():
-    try:
-        with urllib.request.urlopen(OLLAMA + "/api/tags", timeout=5) as r:
-            names = [m["name"] for m in json.load(r).get("models", [])]
-        for want in PREFERRED:
-            if want in names:
-                return want
-        return names[0] if names else None
-    except Exception:
-        return None
-
-
-MODEL = _ollama_model()
 pytestmark = [
     pytest.mark.skipif(not _ai_build(), reason="wpe built without --enable-ai"),
-    pytest.mark.skipif(MODEL is None, reason="no local Ollama/model"),
+    live_ai.SKIP_MARK,
 ]
 
 
-def _spin_secs(disp):
-    m = re.search(r"working .  (\d+)s", disp)
-    return int(m.group(1)) if m else -1
+REVIEW_MARK = "Proposed change"      # title of the hunk review box
+BUSY_MARK = "working on this window"  # status row while the edit runs
+
+
+def _review_up(disp):
+    return REVIEW_MARK in disp
 
 
 def test_ai_edit_is_background(tmp_path):
-    env = {"XWPE_AI_ENABLE": "1", "XWPE_AI_BACKEND": "ollama",
-           "XWPE_AI_ENDPOINT": OLLAMA, "XWPE_AI_MODEL": MODEL}
+    """A real edit streams while the editor stays usable, and applies.
+
+    A live model's speed is not under the test's control (a fast one has the
+    review box up before the first look), so no timing is asserted here: the
+    spinner advancing, the refusal of typing into the waiting window and Esc
+    cancelling are proved deterministically by tests/test_ai_async.py with a
+    delayed mock.  What only a real provider can show is that the edit
+    completes with the editor responsive: while the operation runs a typed key
+    is answered on the status row (or the review box is already up), the
+    provider returns no error, and after accepting, the trace says the edit
+    was applied.
+    """
+    trace = tmp_path / "ai.trace"
+    env = live_ai.session_env(trace)
     with WpeSession(str(tmp_path), "AAA\n", filename="stack.c",
                     env_extra=env) as s:
         s.key(ALT.AI); s.key("e", delay=0.8)
         s.key("append a trailing comment line")
-        s.key("\r", delay=2.0)                 # async edit starts; model warming
-        sp0 = _spin_secs("\n".join(s.display()))
-        # the editor must accept keystrokes while the model generates
-        s.key("Z"); s.key("Z"); s.key("Z")
-        s._drain(2.0)
+        s.key("\r", delay=1.0)                 # async edit starts
         disp = "\n".join(s.display())
-        sp1 = _spin_secs(disp)
-        assert sp1 > sp0 >= 0, "spinner did not advance (editor loop stalled):\n" + disp
-        assert "ZZZ" in disp.replace(" ", ""), \
-            "typing did not land while the AI generated (editor was blocked):\n" + disp
-        # one-key cancel, no waiting out the whole 32B generation
-        s.key(ALT.AI); s._drain(1.0)
-        assert "cancelled" in "\n".join(s.display())
+        if not _review_up(disp):
+            s.key("Z"); s.key("Z"); s.key("Z")
+            s._drain(1.0)
+            disp = "\n".join(s.display())
+            assert _review_up(disp) or BUSY_MARK in disp, \
+                "the editor neither answered the key nor showed the review:\n" + disp
+        assert not live_ai.has_backend_error(disp, trace), \
+            "the provider refused the request:\n" + disp
+        # The window refuses keys until the review box is up, so "a" typed
+        # earlier would be lost: wait for the review before accepting.
+        assert live_ai.wait_for_trace(trace, "edit review", s, 180), \
+            "the review never opened:\n" + (trace.read_text() if trace.exists() else "")
+        assert not live_ai.has_backend_error("\n".join(s.display()), trace), \
+            "the provider refused the request:\n" + "\n".join(s.display())
+        s.key("a", delay=1.0)                  # accept all, now the box is up
+        assert live_ai.wait_for_trace(trace, "edit applied", s, 180), \
+            "edit never applied:\n" + (trace.read_text() if trace.exists() else "")

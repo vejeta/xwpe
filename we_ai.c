@@ -1138,6 +1138,58 @@ static char *ai_get_api_key(const char *env_name, const char *file_base)
  return ai_read_first_line(path);
 }
 
+#define AI_HEADER_CHAR_MIN 0x20   /* below: control characters, CR and LF */
+#define AI_HEADER_CHAR_DEL 0x7f
+
+/**
+ * ai_header_value_safe - Whether a configured value may go on a header line.
+ * @v: the value, as read from the environment or a file.
+ *
+ * A value pasted with a line break would end its header line and start
+ * another, so the server would receive a request the user never configured.
+ * Refusing it leaves the request well formed, and the server's own refusal
+ * then tells the user the value is wrong.
+ * Return: 1 when no byte is a control character, 0 otherwise.
+ */
+static int ai_header_value_safe(const char *v)
+{
+ const unsigned char *p;
+ for (p = (const unsigned char *)v; *p; p++)
+  if (*p < AI_HEADER_CHAR_MIN || *p == AI_HEADER_CHAR_DEL)
+   return 0;
+ return 1;
+}
+
+/**
+ * ai_add_workspace_header - Name the Claude workspace on each request.
+ * @hdrs: the header array being filled; @n: headers already in it;
+ * @max: capacity, not counting the trailing NULL.
+ *
+ * The ID is looked up like the API key: ANTHROPIC_WORKSPACE_ID, then the
+ * file named by ANTHROPIC_WORKSPACE_ID_FILE, then
+ * ~/.config/xwpe/anthropic-workspace-id.  Someone whose Console key belongs
+ * to the organization rather than to one workspace needs it, or every
+ * request is refused; a workspace-scoped key needs nothing and then no
+ * header is sent.  A value with a control character is not sent.
+ * Return: the new header count.
+ */
+static int ai_add_workspace_header(char *hdrs[], int n, int max)
+{
+ char b[600];
+ char *w = ai_get_api_key("ANTHROPIC_WORKSPACE_ID", "anthropic-workspace-id");
+ if (w && !ai_header_value_safe(w)) {
+  wpe_ai_trace("workspace id ignored: it holds a control character");
+  free(w);
+  return n;
+ }
+ if (w && n < max) {
+  snprintf(b, sizeof b, "anthropic-workspace-id: %s", w);
+  hdrs[n++] = ai_strdup(b);
+ }
+ free(w);
+ return n;
+}
+
 /* Fill hdrs[] (NULL-terminated) with malloc'd "Key: Value" strings; count. */
 static int ai_headers(int backend, char *hdrs[], int max)
 {
@@ -1171,6 +1223,7 @@ static int ai_headers(int backend, char *hdrs[], int max)
   }
   free(k);
   if (n < max) hdrs[n++] = ai_strdup("anthropic-version: 2023-06-01");
+  n = ai_add_workspace_header(hdrs, n, max);
  }
  hdrs[n] = NULL;
  return n;

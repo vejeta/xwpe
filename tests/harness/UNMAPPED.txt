@@ -9,10 +9,12 @@
 # maps from this list.  A file that stays here is a file whose behaviour is
 # still undocumented.
 tests/test_ai_async_live.py
+tests/test_ai_claude_workspace_header.py
 tests/test_ai_cancel.py
 tests/test_ai_chat_investigate_live.py
 tests/test_ai_claudecli_live.py
 tests/test_ai_compose.py
+tests/test_ai_edit_ollama_stream_end.py
 tests/test_ai_edit_waiting_line.py
 tests/test_ai_glob.py
 tests/test_ai_host_text.py
