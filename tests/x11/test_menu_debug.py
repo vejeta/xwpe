@@ -116,6 +116,78 @@ def test_text_typed_while_the_program_runs_reaches_the_program(xwpe):
         assert fh.read().strip() == "hiğ"
 
 
+# A program that writes a counter to a file ten times a second.  The file
+# changes while the program runs and stops changing while gdb holds it, which
+# is how the test sees a pause from outside the editor.
+TICK_PROG = (
+    "#include <stdio.h>\n"
+    "#include <unistd.h>\n"
+    "int main(void)\n"
+    "{\n"
+    "  int n;\n"
+    "  for (n = 0; ; n++)\n"
+    "  {\n"
+    "    FILE *o = fopen(\"tick.txt\", \"w\");\n"
+    "    fprintf(o, \"%d\", n);\n"
+    "    fclose(o);\n"
+    "    usleep(100000);\n"
+    "  }\n"
+    "  return 0;\n"
+    "}\n"
+)
+TICK_SETTLE_S = 1.5       # long enough for a dozen ticks, or for none
+TICK_PAUSE_WAIT_S = 10
+
+
+def _tick(xwpe):
+    """The counter the program last wrote, or None before it wrote one."""
+    path = os.path.join(os.path.dirname(xwpe.srcfile), "tick.txt")
+    try:
+        with open(path) as fh:
+            text = fh.read().strip()
+    except OSError:
+        return None
+    return int(text) if text.isdigit() else None
+
+
+def _ticks_move(xwpe):
+    """True when the counter changes within a moment: the program runs."""
+    before = _tick(xwpe)
+    _sleep(TICK_SETTLE_S)
+    after = _tick(xwpe)
+    return before is not None and after is not None and after != before
+
+
+@pytest.mark.skipif(not __import__("shutil").which("gdb")
+                    or not __import__("shutil").which("gcc"),
+                    reason="no gdb or gcc")
+@pytest.mark.parametrize("xwpe", [{"XWPE_TEST_SOURCE": TICK_PROG}],
+                         indirect=True)
+@pytest.mark.parametrize("keystroke", ["ctrl+Pause", "Break"])
+def test_ctrl_break_pauses(xwpe, keystroke):
+    """Ctrl-Break (the key a PC keyboard sends as Break) stops the program
+    gdb runs: its counter stops changing, and Ctrl-G R makes it run again.
+    The graphical key reader must hand the editor the key as Ctrl-Break,
+    which no menu or terminal test reaches.
+
+    The Wayland twin skips: the headless compositor harness cannot start a
+    debug session.  Its key decoder is covered by the keysym selftest
+    (tests/test_wayland_keysym.py) and by WAYLAND-TESTING.txt."""
+    if not getattr(xwpe, "can_debug", True):
+        pytest.skip("no debug session under the headless compositor harness")
+    xwpe.key("ctrl+g", "r", delay=2.0)          # to the start of main
+    xwpe.key("ctrl+g", "r", delay=1.0)          # run on
+    assert _wait(lambda: _ticks_move(xwpe), RUN_TIMEOUT_S), \
+        "the program should run under gdb and write its counter"
+    xwpe.key(keystroke, delay=1.0)
+    assert _wait(lambda: not _ticks_move(xwpe), TICK_PAUSE_WAIT_S), \
+        "%s should stop the program: its counter still changes" % keystroke
+    xwpe.key("ctrl+g", "r", delay=1.0)
+    assert _wait(lambda: _ticks_move(xwpe), RUN_TIMEOUT_S), \
+        "Ctrl-G R should run the program on from the pause"
+    assert xwpe.proc.poll() is None, "xwpe died pausing the program"
+
+
 # A Java program that prints, then sleeps; the breakpoint is on the print.
 JDB_SLEEP_PROG = (
     "public class P {\n"

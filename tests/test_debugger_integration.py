@@ -5870,3 +5870,651 @@ def test_jdb_works_in_a_german_locale(tmp_path):
         assert _wait_for(w, lambda: _messages_hold(w, "Program exited"),
                          JDB_START_TIMEOUT_S), \
             "Messages should say the program exited:\n%s" % _screen(w)
+
+
+# ---- Pause: Ctrl-Break, Ctrl-G I, Debug > Interrupt, the bar's entry -------
+#
+# The program prints "ready" and then sleeps (or loops, where the debugger has
+# no sleep call).  The breakpoint is on the print; after the stop there,
+# Ctrl-G R leaves the program running.  Pause then marks the line the program
+# is on: for a sleeping program that is the line of the sleep call, in the
+# user's code, not the library function underneath it.
+
+CTRL_G_I = (CTRL_G, "i")          # Debug > Interrupt (pause)
+PAUSED_LINE = "Paused"
+PAUSE_TIMEOUT_S = 10
+
+GDB_SLEEP_PROG = (
+    "#include <stdio.h>\n"
+    "#include <unistd.h>\n"
+    "int main(void)\n"
+    "{\n"
+    "  printf(\"READY\\n\");\n"
+    "  fflush(stdout);\n"
+    "  sleep(600);\n"
+    "  return 0;\n"
+    "}\n"
+)
+GDB_SLEEP_BREAK_LINE = 5          # printf("READY\n")
+GDB_SLEEP_LINE = 7                # sleep(600)
+
+PY_SLEEP_PROG = SLEEPING_PROGS["pdb"]["prog"]
+PY_SLEEP_BREAK_LINE = 2           # print('ready')
+PY_SLEEP_LINE = 3                 # time.sleep(600)
+
+A68_PAUSE_PROG = (
+    "print ((\"rea\" + \"dy\", new line));\nINT n := 0;\n"
+    "WHILE n < 2000000000 DO n +:= 1 OD;\nINT x := 3;\n"
+    "print ((x, new line))\n"
+)
+A68_PAUSE_BREAK_LINE = 2          # INT n := 0;
+A68_PAUSE_LINE = 3                # WHILE n < ... DO n +:= 1 OD;
+
+
+PAUSE_SETTLE_S = 3            # the program has printed and gone to sleep
+
+
+def _stop_then_run_on(w, break_line, start_s, in_messages=True):
+    """Breakpoint on @break_line, Ctrl-G R to the stop, Ctrl-G R to run on;
+    return once the program runs and has printed "ready".  Under gdb and
+    a68g the word reaches Messages while it runs (the source holds it too,
+    so only Messages is looked at); pdb shows its program's text at the
+    next stop, so there the program is given time to print and sleep."""
+    _go_to_line(w, break_line)
+    w.key(CTRL_G, "b", delay=0.4)
+    w.key(CTRL_G, "r", delay=1.0)
+    assert _wait_for(w, lambda: _mark_line(w) == break_line, start_s), \
+        "the session should stop on line %d (mark on %s):\n%s" \
+        % (break_line, _mark_line(w), _screen(w))
+    w.key(CTRL_G, "r", delay=0.5)
+    if not in_messages:
+        assert _wait_for(w, lambda: "^Brk Pause" in _bottom_bar(w),
+                         STEP_TIMEOUT_S), \
+            "the program should run:\n%s" % _screen(w)
+        w._drain(PAUSE_SETTLE_S)
+        return
+    assert _wait_for(w, lambda: _messages_hold(w, "ready")
+                     or _messages_hold(w, "READY"), start_s), \
+        "the program should run and print ready in Messages:\n%s" \
+        % _screen(w)
+
+
+def _bottom_row(w):
+    return w.display(drain=0)[-1]
+
+
+def _assert_paused_at(w, line, what):
+    """The line is marked and the status row says Paused."""
+    assert _wait_for(w, lambda: _mark_line(w) == line, PAUSE_TIMEOUT_S), \
+        "%s should mark line %d (mark on %s):\n%s" \
+        % (what, line, _mark_line(w), _screen(w))
+    assert _wait_for(w, lambda: PAUSED_LINE in _bottom_row(w),
+                     PAUSE_TIMEOUT_S), \
+        "%s should say %r on the status row:\n%s" \
+        % (what, PAUSED_LINE, _screen(w))
+
+
+def _assert_debugger_takes_commands(w):
+    """The pause is a real stop: Ctrl-G K opens the Stack window instead of
+    being refused because the program is running."""
+    w.key(CTRL_G, "k", delay=0.8)
+    assert _wait_for(w, lambda: " Stack " in _screen(w), STEP_TIMEOUT_S), \
+        "Stack should open at the pause:\n%s" % _screen(w)
+    assert RUNNING_REFUSAL not in _screen(w), \
+        "the program is stopped, not running:\n%s" % _screen(w)
+
+
+# @scenario SC-debug-45
+def test_pause_marks_where_the_program_is_under_gdb(tmp_path):
+    """Ctrl-G I while the program sleeps stops it and marks the sleep call in
+    main, not the library function gdb stopped in, and shows no error box
+    for the interrupt."""
+    _need("gcc", "gdb")
+    with WpeSession(str(tmp_path), GDB_SLEEP_PROG, filename="p.c",
+                    wait=1.5) as w:
+        _stop_then_run_on(w, GDB_SLEEP_BREAK_LINE, START_TIMEOUT_S)
+        w.key(*CTRL_G_I, delay=0.5)
+        _assert_paused_at(w, GDB_SLEEP_LINE, "Ctrl-G I")
+        assert "SIGINT" not in _screen(w), \
+            "the interrupt is not an error to show:\n%s" % _screen(w)
+        _assert_debugger_takes_commands(w)
+
+
+GDB_LOCAL_PROG = (
+    "#include <stdio.h>\n"
+    "#include <unistd.h>\n"
+    "int main(void)\n"
+    "{\n"
+    "  int counter = 41;\n"
+    "  printf(\"READY\\n\");\n"
+    "  fflush(stdout);\n"
+    "  counter++;\n"
+    "  sleep(600);\n"
+    "  return counter;\n"
+    "}\n"
+)
+GDB_LOCAL_BREAK_LINE = 6          # printf("READY\n")
+GDB_LOCAL_SLEEP_LINE = 9          # sleep(600)
+
+
+# @scenario SC-debug-45
+def test_pause_under_gdb_leaves_watches_on_locals_working(tmp_path):
+    """A watch on a local of main shows its value after Pause, as at a
+    breakpoint: gdb stopped in the library function, so the frame of the
+    marked line has to be the one the watch is evaluated in."""
+    _need("gcc", "gdb")
+    with WpeSession(str(tmp_path), GDB_LOCAL_PROG, filename="p.c",
+                    wait=1.5) as w:
+        _go_to_line(w, GDB_LOCAL_BREAK_LINE)
+        w.key(CTRL_G, "b", delay=0.4)
+        w.key(CTRL_G, "r", delay=1.0)
+        assert _wait_for(w, lambda: _mark_line(w) == GDB_LOCAL_BREAK_LINE,
+                         START_TIMEOUT_S), _screen(w)
+        _add_watch(w, "counter")
+        w.key(CTRL_G, "r", delay=0.5)
+        assert _wait_for(w, lambda: _messages_hold(w, "READY"),
+                         START_TIMEOUT_S), _screen(w)
+        w._drain(PAUSE_SETTLE_S)
+        w.key(*CTRL_G_I, delay=0.5)
+        _assert_paused_at(w, GDB_LOCAL_SLEEP_LINE, "Ctrl-G I")
+        assert _wait_for(w, lambda: "42" in (_watch_row(w, "counter") or ""),
+                         STEP_TIMEOUT_S), \
+            "the watch should read 42 after Pause (row %r):\n%s" \
+            % (_watch_row(w, "counter"), _screen(w))
+
+
+GDB_LOOP_PROG = (
+    "#include <stdio.h>\n"
+    "#include <unistd.h>\n"
+    "int main(void)\n"
+    "{\n"
+    "  int i;\n"
+    "  printf(\"READY\\n\");\n"
+    "  fflush(stdout);\n"
+    "  for (i = 0; i < 100; i++)\n"
+    "    sleep(3);\n"
+    "  return 0;\n"
+    "}\n"
+)
+GDB_LOOP_BREAK_LINE = 6           # printf("READY\n")
+GDB_LOOP_SLEEP_LINE = 9           # sleep(3)
+GDB_LOOP_MID_PROG = (
+    "#include <stdio.h>\n"
+    "#include <unistd.h>\n"
+    "int main(void)\n"
+    "{\n"
+    "  int i;\n"
+    "  printf(\"READY\\n\");\n"
+    "  fflush(stdout);\n"
+    "  for (i = 0; i < 100; i++) {\n"
+    "    i += sleep(3);\n"
+    "    puts(\"tick\");\n"
+    "  }\n"
+    "  return 0;\n"
+    "}\n"
+)
+# program, the line Pause marks, the line F8 must mark next
+GDB_F8_AFTER_PAUSE = {
+    "returns-to-a-line-start": (GDB_LOOP_PROG, GDB_LOOP_SLEEP_LINE,
+                                GDB_LOOP_SLEEP_LINE - 1),
+    "returns-mid-line": (GDB_LOOP_MID_PROG, 9, 10),
+}
+
+
+# @scenario SC-debug-45
+@pytest.mark.parametrize("which", ["returns-to-a-line-start",
+                                   "returns-mid-line"])
+def test_f8_after_a_pause_in_a_blocking_call_marks_the_next_user_line(
+        tmp_path, which):
+    """F8 after Pause finishes the paused line, the rest of the blocking
+    call, and stops in the user's code: the next line of the loop, not
+    library code or a frame without source.  The call returns either to the
+    start of a line or into the middle of the paused one."""
+    _need("gcc", "gdb")
+    prog, sleep_line, want = GDB_F8_AFTER_PAUSE[which]
+    with WpeSession(str(tmp_path), prog, filename="p.c", wait=1.5) as w:
+        _stop_then_run_on(w, GDB_LOOP_BREAK_LINE, START_TIMEOUT_S)
+        w._drain(1.0)
+        w.key(*CTRL_G_I, delay=0.5)
+        _assert_paused_at(w, sleep_line, "Ctrl-G I")
+        w.key(F8, delay=0.5)
+        assert _wait_for(w, lambda: _mark_line(w) == want, PAUSE_TIMEOUT_S), \
+            "F8 should mark line %d (mark on %s):\n%s" \
+            % (want, _mark_line(w), _screen(w))
+
+
+# @scenario SC-debug-45
+def test_debug_interrupt_in_the_menu_pauses_the_program(tmp_path):
+    """Debug > Interrupt (pause), Alt-D then I, does what the keys do: the
+    menu is the pause a mouse user always has."""
+    _need("gcc", "gdb")
+    with WpeSession(str(tmp_path), GDB_SLEEP_PROG, filename="p.c",
+                    wait=1.5) as w:
+        _stop_then_run_on(w, GDB_SLEEP_BREAK_LINE, START_TIMEOUT_S)
+        w.menu(ALT.DEBUG, "i", delay=0.5)
+        _assert_paused_at(w, GDB_SLEEP_LINE, "Debug > Interrupt (pause)")
+
+
+# @scenario SC-debug-45
+def test_pause_marks_where_the_program_is_under_pdb(tmp_path):
+    """Ctrl-G I while the script sleeps stops it on the sleep line."""
+    _need("python3")
+    with WpeSession(str(tmp_path), PY_SLEEP_PROG, filename="p.py",
+                    wait=1.5) as w:
+        _stop_then_run_on(w, PY_SLEEP_BREAK_LINE, START_TIMEOUT_S,
+                          in_messages=False)
+        w.key(*CTRL_G_I, delay=0.5)
+        _assert_paused_at(w, PY_SLEEP_LINE, "Ctrl-G I")
+        _assert_debugger_takes_commands(w)
+
+
+# A script that handles SIGINT itself: the interrupt reaches its handler, not
+# pdb, so the script goes on and the pause is only its next stop.  pdb puts
+# its own handler in while it continues and takes it out at the stop, so the
+# script installs its handler after the run has begun.
+PY_OWN_HANDLER_PROG = (
+    "import signal, time\n"
+    "got = []\n"
+    "print('ready', flush=True)\n"
+    "time.sleep(1)\n"
+    "signal.signal(signal.SIGINT, lambda s, f: got.append(1))\n"
+    "while not got:\n"
+    "    time.sleep(0.1)\n"
+    "x = 1\n"
+)
+PY_OWN_HANDLER_FIRST_LINE = 3     # print('ready')
+PY_OWN_HANDLER_NEXT_LINE = 8      # x = 1, the next breakpoint
+
+
+# @scenario SC-debug-45
+def test_pause_under_pdb_with_the_scripts_own_sigint_handler_waits_for_the_next_stop(
+        tmp_path):
+    """The script handles SIGINT itself, so the interrupt does not stop it:
+    the pause becomes the next stop, the breakpoint on line 8, and the
+    status row says that the interrupt did not stop the program."""
+    _need("python3")
+    with WpeSession(str(tmp_path), PY_OWN_HANDLER_PROG, filename="p.py",
+                    wait=1.5) as w:
+        _go_to_line(w, PY_OWN_HANDLER_FIRST_LINE)
+        w.key(CTRL_G, "b", delay=0.4)
+        _go_to_line(w, PY_OWN_HANDLER_NEXT_LINE)
+        w.key(CTRL_G, "b", delay=0.4)
+        w.key(CTRL_G, "r", delay=1.0)
+        assert _wait_for(w, lambda: _mark_line(w) == PY_OWN_HANDLER_FIRST_LINE,
+                         START_TIMEOUT_S), \
+            "pdb should stop on line %d:\n%s" \
+            % (PY_OWN_HANDLER_FIRST_LINE, _screen(w))
+        w.key(CTRL_G, "r", delay=0.5)
+        assert _wait_for(w, lambda: "^Brk Pause" in _bottom_bar(w),
+                         STEP_TIMEOUT_S), \
+            "the program should run:\n%s" % _screen(w)
+        w._drain(PAUSE_SETTLE_S)
+        w.key(*CTRL_G_I, delay=0.5)
+        assert _wait_for(w, lambda: _mark_line(w) == PY_OWN_HANDLER_NEXT_LINE,
+                         PAUSE_TIMEOUT_S), \
+            "the script should go on to line %d (mark on %s):\n%s" \
+            % (PY_OWN_HANDLER_NEXT_LINE, _mark_line(w), _screen(w))
+        assert _wait_for(w, lambda: "did not stop the program"
+                         in _bottom_row(w), PAUSE_TIMEOUT_S), \
+            "the status row should say the interrupt missed:\n%s" \
+            % _screen(w)
+
+
+# @scenario SC-debug-45
+def test_pause_marks_where_the_program_is_under_a68g(tmp_path):
+    """Ctrl-G I while the Algol 68 loop runs stops it on the loop's line:
+    a68g asks whether to terminate, and the editor answers no."""
+    _need("a68g")
+    with WpeSession(str(tmp_path), A68_PAUSE_PROG, filename="p.a68",
+                    wait=2.0) as w:
+        _stop_then_run_on(w, A68_PAUSE_BREAK_LINE, START_TIMEOUT_S)
+        w.key(*CTRL_G_I, delay=0.5)
+        _assert_paused_at(w, A68_PAUSE_LINE, "Ctrl-G I")
+        assert _children(w, "a68g"), \
+            "a68g should still run, paused:\n%s" % _screen(w)
+        assert "Terminate" not in _screen(w), \
+            "the terminate question is the editor's to answer:\n%s" \
+            % _screen(w)
+
+
+GDB_SEGV_PROG = (
+    "#include <stdio.h>\n"
+    "int main(void)\n"
+    "{\n"
+    "  int *p = 0;\n"
+    "  printf(\"READY\\n\");\n"
+    "  fflush(stdout);\n"
+    "  *p = 1;\n"
+    "  return 0;\n"
+    "}\n"
+)
+GDB_SEGV_BREAK_LINE = 5           # printf("READY\n")
+
+
+# @scenario SC-debug-46
+def test_a_signal_box_leaves_the_bottom_row_as_it_was(tmp_path):
+    """A program that dies of a signal shows its box; while the box is up the
+    bottom row is not redrawn with the stepping keys, as it was not before
+    the bar followed the run (the row changes once the box is gone)."""
+    _need("gcc", "gdb")
+    with WpeSession(str(tmp_path), GDB_SEGV_PROG, filename="p.c",
+                    wait=1.5) as w:
+        _go_to_line(w, GDB_SEGV_BREAK_LINE)
+        w.key(CTRL_G, "b", delay=0.4)
+        w.key(CTRL_G, "r", delay=1.0)
+        assert _wait_for(w, lambda: _mark_line(w) == GDB_SEGV_BREAK_LINE,
+                         START_TIMEOUT_S), _screen(w)
+        w.key(CTRL_G, "r", delay=0.5)
+        assert _wait_for(w, lambda: "SIGSEGV" in _screen(w),
+                         START_TIMEOUT_S), \
+            "the signal's box should appear:\n%s" % _screen(w)
+        assert "F8 Step" not in _bottom_bar(w), \
+            "under the box the row must not name the stepping keys:\n%r" \
+            % _bottom_bar(w)
+        w.key("\r", delay=1.0)
+        assert _wait_for(w, lambda: "F8 Step" in _bottom_bar(w),
+                         STEP_TIMEOUT_S), \
+            "once the box is gone the stepping bar is back:\n%s" % _screen(w)
+
+
+# @scenario SC-debug-46
+def test_the_running_bar_names_pause_and_its_click_pauses(tmp_path):
+    """While the program runs the source window's bottom row names Pause and
+    not the stepping keys; a click on "^Brk Pause" pauses the program (a
+    terminal that never sends Ctrl-Break can still pause), and at the stop the
+    stepping bar is back."""
+    _need("gcc", "gdb")
+    with WpeSession(str(tmp_path), GDB_SLEEP_PROG, filename="p.c",
+                    wait=1.5) as w:
+        _stop_then_run_on(w, GDB_SLEEP_BREAK_LINE, START_TIMEOUT_S)
+        # The program's output made Messages the window the user types in,
+        # so the bar of the window on top is the one that must name Pause.
+        bar = _bottom_bar(w)
+        assert "^Brk Pause" in bar, \
+            "while it runs the bar should name Pause:\n%r\n%s" \
+            % (bar, _screen(w))
+        for refused in ("F8 Step", "F4 Go to cursor", "^F8 Breakpoint",
+                        "^F7 Watch"):
+            assert refused not in bar, \
+                "%r is refused while it runs, so the bar must not offer " \
+                "it:\n%r" % (refused, bar)
+        _click_bottom_bar(w, "^Brk Pause")
+        _assert_paused_at(w, GDB_SLEEP_LINE, "a click on ^Brk Pause")
+        _source_window_on_top(w)
+        assert "F4 Go to cursor" in _bottom_bar(w), \
+            "at the stop the stepping bar should be back:\n%s" % _screen(w)
+
+
+# @scenario SC-debug-45
+def test_pause_at_a_stop_or_without_a_session_only_says_so(tmp_path):
+    """With no session, and at a stop, Pause names the reason on the status
+    row and sends the debugger nothing: the mark stays, and F8 steps on."""
+    _need("gcc", "gdb")
+    with _c_session(tmp_path) as w:
+        w.key(*CTRL_G_I, delay=0.5)
+        assert _wait_for(w, lambda: "no debugger session" in _bottom_row(w),
+                         STEP_TIMEOUT_S), \
+            "with no session Pause should say so:\n%s" % _screen(w)
+        assert not _children(w, "gdb"), "Pause must not start a debugger"
+        _start_c_session(w)
+        w.key(*CTRL_G_I, delay=0.5)
+        assert _wait_for(w, lambda: "stopped" in _bottom_row(w),
+                         STEP_TIMEOUT_S), \
+            "at a stop Pause should say so:\n%s" % _screen(w)
+        assert _mark_line(w) == C_BREAK_LINE, \
+            "the mark must stay on line %d:\n%s" % (C_BREAK_LINE, _screen(w))
+        assert _step(w, F8, C_NEXT_LINE), \
+            "F8 should still step on from the stop:\n%s" % _screen(w)
+
+
+# Prints which of SIGINT and SIGPIPE its signal mask says are ignored, then
+# sleeps.  A program started from a shell ignores neither.
+SIGMASK_C_PROG = (
+    "#include <stdio.h>\n"
+    "#include <stdlib.h>\n"
+    "#include <string.h>\n"
+    "#include <unistd.h>\n"
+    "int main(void)\n"
+    "{\n"
+    "  char row[256];\n"
+    "  unsigned long ign = 0;\n"
+    "  FILE *f = fopen(\"/proc/self/status\", \"r\");\n"
+    "  while (f && fgets(row, sizeof row, f))\n"
+    "    if (!strncmp(row, \"SigIgn:\", 7))\n"
+    "      ign = strtoul(row + 7, NULL, 16);\n"
+    "  printf(\"SIGINT_IGNORED=%d\\n\", (int)((ign >> 1) & 1));\n"
+    "  printf(\"SIGPIPE_IGNORED=%d\\n\", (int)((ign >> 12) & 1));\n"
+    "  fflush(stdout);\n"
+    "  sleep(600);\n"
+    "  return 0;\n"
+    "}\n"
+)
+
+
+# @scenario SC-debug-45
+def test_the_program_under_gdb_does_not_inherit_ignored_signals(tmp_path):
+    """The editor ignores SIGINT and SIGPIPE; the program under gdb must not
+    inherit that, or Pause's SIGINT cannot reach it and a program relying on
+    SIGPIPE behaves differently than outside the editor."""
+    _need("gcc", "gdb")
+    with WpeSession(str(tmp_path), SIGMASK_C_PROG, filename="p.c",
+                    wait=1.5) as w:
+        w.key(CTRL_G, "r", delay=1.0)          # to the start of main
+        assert _wait_for(w, lambda: _mark_line(w) is not None,
+                         START_TIMEOUT_S), \
+            "the session should stop at main:\n%s" % _screen(w)
+        w.key(CTRL_G, "r", delay=0.5)          # run on
+        assert _wait_for(w, lambda: _messages_hold(w, "SIGPIPE_IGNORED="),
+                         START_TIMEOUT_S), \
+            "the program should print its signal mask:\n%s" % _screen(w)
+        assert _messages_hold(w, "SIGINT_IGNORED=0"), \
+            "the program must not inherit an ignored SIGINT:\n%s" \
+            % _screen(w)
+        assert _messages_hold(w, "SIGPIPE_IGNORED=0"), \
+            "the program must not inherit an ignored SIGPIPE:\n%s" \
+            % _screen(w)
+
+
+# The script runs a shell and prints the shell's ignored-signal mask: Python
+# gives its children SIGPIPE back, but a SIGINT the script was started with as
+# ignored stays ignored in them.
+PY_SIGMASK_PROG = (
+    "import subprocess\n"
+    "out = subprocess.run(['sh', '-c', 'grep SigIgn /proc/self/status'], "
+    "capture_output=True, text=True).stdout\n"
+    "mask = int(out.split()[1], 16)\n"
+    "open('sigmask.txt', 'w').write('SIGINT_IGNORED=%d' % ((mask >> 1) & 1))\n"
+    "x = 1\n"
+)
+PY_SIGMASK_RUN_LINE = 2           # the line that runs the shell
+PY_SIGMASK_PRINT_LINE = 4         # the line that writes the mask
+
+
+# @scenario SC-debug-45
+def test_the_script_under_pdb_does_not_inherit_ignored_sigint(tmp_path):
+    """The script's children start with SIGINT as the shell would give it:
+    not ignored."""
+    _need("python3")
+    with WpeSession(str(tmp_path), PY_SIGMASK_PROG, filename="p.py",
+                    wait=1.5) as w:
+        _go_to_line(w, PY_SIGMASK_RUN_LINE)
+        w.key(CTRL_G, "b", delay=0.4)
+        w.key(CTRL_G, "r", delay=1.0)
+        assert _wait_for(w, lambda: _mark_line(w) == PY_SIGMASK_RUN_LINE,
+                         START_TIMEOUT_S), \
+            "pdb should stop on line %d:\n%s" \
+            % (PY_SIGMASK_RUN_LINE, _screen(w))
+        # Stepped, not continued: pdb takes SIGINT itself while it continues.
+        assert _step(w, F8, PY_SIGMASK_PRINT_LINE - 1), \
+            "F8 over the shell should mark line %d:\n%s" \
+            % (PY_SIGMASK_PRINT_LINE - 1, _screen(w))
+        assert _step(w, F8, PY_SIGMASK_PRINT_LINE), \
+            "F8 should mark line %d:\n%s" \
+            % (PY_SIGMASK_PRINT_LINE, _screen(w))
+        w.key(F8, delay=0.5)
+        mask_file = tmp_path / "sigmask.txt"
+        assert _wait_for(w, mask_file.exists, STEP_TIMEOUT_S), \
+            "the script should write its children's mask:\n%s" % _screen(w)
+        assert mask_file.read_text() == "SIGINT_IGNORED=0", \
+            "the script must not inherit an ignored SIGINT (%s):\n%s" \
+            % (mask_file.read_text(), _screen(w))
+
+
+# The programs under a debug adapter write which of SIGINT and SIGPIPE their
+# signal mask says are ignored, to a file, and then wait a while.  Go and Rust
+# leave SIGINT alone unless it was ignored when they started; Rust's runtime
+# ignores SIGPIPE itself, so that signal is only asked of the Go program.
+GO_SIGMASK_PROG = (
+    "package main\n\n"
+    "import (\"os\"; \"strconv\"; \"strings\"; \"time\")\n\n"
+    "func main() {\n"
+    "\td, _ := os.ReadFile(\"/proc/self/status\")\n"
+    "\tm := uint64(0)\n"
+    "\tfor _, r := range strings.Split(string(d), \"\\n\") {\n"
+    "\t\tif strings.HasPrefix(r, \"SigIgn:\") {\n"
+    "\t\t\tm, _ = strconv.ParseUint(strings.TrimSpace(r[7:]), 16, 64)\n"
+    "\t\t}\n"
+    "\t}\n"
+    "\ttext := \"SIGINT_IGNORED=\" + strconv.Itoa(int(m>>1&1)) +\n"
+    "\t\t\" SIGPIPE_IGNORED=\" + strconv.Itoa(int(m>>12&1))\n"
+    "\tos.WriteFile(%(path)s, []byte(text), 0644)\n"
+    "\ttime.Sleep(20 * time.Second)\n"
+    "}\n"
+)
+RUST_SIGMASK_PROG = (
+    "fn main() {\n"
+    "    let status = std::fs::read_to_string(\"/proc/self/status\").unwrap();\n"
+    "    let row = status.lines().find(|l| l.starts_with(\"SigIgn:\")).unwrap();\n"
+    "    let mask = u64::from_str_radix(row[7..].trim(), 16).unwrap();\n"
+    "    let text = format!(\"SIGINT_IGNORED={}\", (mask >> 1) & 1);\n"
+    "    std::fs::write(%(path)s, text).unwrap();\n"
+    "    std::thread::sleep(std::time::Duration::from_secs(20));\n"
+    "}\n"
+)
+SIGMASK_ADAPTER_PROGS = {"go": GO_SIGMASK_PROG, "rust": RUST_SIGMASK_PROG}
+
+
+# @scenario SC-debug-45
+@pytest.mark.parametrize("adapter", DAP_ADAPTERS)
+def test_the_program_under_an_adapter_does_not_inherit_ignored_signals(
+        tmp_path, adapter):
+    """The adapter and the program it starts get the signals a shell gives
+    them: SIGINT (and SIGPIPE, for the Go program) is not ignored, or Pause's
+    interrupt could not reach the program."""
+    case = DAP_CASES[adapter]
+    _need(*case["need"])
+    if case["lang"] == "go":
+        (tmp_path / "go.mod").write_text("module dapdemo\n\ngo 1.21\n")
+    mask_file = tmp_path / "sigmask.txt"
+    text = SIGMASK_ADAPTER_PROGS[case["lang"]] % {"path": '"%s"' % mask_file}
+    sleep_line = [i + 1 for i, row in enumerate(text.splitlines())
+                  if "Sleep" in row or "sleep(" in row][0]
+    with WpeSession(str(tmp_path), text, filename=case["file"], wait=2.0,
+                    env_extra=case["env"] or None) as w:
+        _go_to_line(w, sleep_line)
+        w.key(CTRL_G, "b", delay=0.5)
+        w.key(CTRL_G, "r", delay=1.0)
+        assert _wait_for(w, lambda: _mark_line(w) == sleep_line,
+                         case["start_s"]), \
+            "the adapter should stop on line %d:\n%s" % (sleep_line, _screen(w))
+        got = mask_file.read_text()
+        assert "SIGINT_IGNORED=0" in got, \
+            "the program must not inherit an ignored SIGINT (%s)" % got
+        if case["lang"] == "go":
+            assert "SIGPIPE_IGNORED=0" in got, \
+                "the program must not inherit an ignored SIGPIPE (%s)" % got
+
+
+# ---- Ctrl-C typed in the terminal editor during a debug session ------------
+#
+# The terminal sends SIGINT for Ctrl-C to the processes of its foreground
+# group.  The editor ignores it; the debugger and its program no longer do
+# (they get the signals a shell gives them, so Pause can reach them), so they
+# must not be in that group: a Ctrl-C typed by habit must leave the session
+# as it was.
+
+CTRL_C = "\x03"                   # the terminal's interrupt character
+CTRL_C_SETTLE_S = 1.5             # the signal, had it been sent, has landed
+STDIO_ADAPTERS = ["lldb-dap", "gdb-dap"]
+PY_PRINT_LINE = 6                 # print('OUTMARK', y), after PY_NEXT_LINE
+
+
+# @scenario SC-debug-45
+def test_ctrl_c_at_a_gdb_stop_leaves_the_session_working(tmp_path):
+    """Ctrl-C at a breakpoint under gdb does nothing: F8 then marks the
+    next line, the program has not ended."""
+    _need("gcc", "gdb")
+    with _c_session(tmp_path) as w:
+        _start_c_session(w)
+        w.key(CTRL_C, delay=0.3)
+        w._drain(CTRL_C_SETTLE_S)
+        assert _step(w, F8, C_NEXT_LINE), \
+            "F8 after Ctrl-C should mark line %d (mark on %s):\n%s" \
+            % (C_NEXT_LINE, _mark_line(w), _screen(w))
+
+
+# @scenario SC-debug-45
+def test_ctrl_c_at_a_pdb_stop_leaves_the_session_working(tmp_path):
+    """Ctrl-C at a breakpoint under pdb does nothing: F8 then marks the
+    next line instead of leaving the session hung."""
+    _need("python3")
+    with WpeSession(str(tmp_path), PY_PROG, filename="p.py", wait=1.5) as w:
+        _start_py_session(w)
+        assert _wait_for(w, lambda: _mark_line(w) == PY_BREAK_LINE,
+                         STEP_TIMEOUT_S), \
+            "pdb should stop on line %d:\n%s" % (PY_BREAK_LINE, _screen(w))
+        w.key(CTRL_C, delay=0.3)
+        w._drain(CTRL_C_SETTLE_S)
+        assert _step(w, F8, PY_NEXT_LINE), \
+            "F8 after Ctrl-C should mark line %d (mark on %s):\n%s" \
+            % (PY_NEXT_LINE, _mark_line(w), _screen(w))
+        assert _step(w, F8, PY_PRINT_LINE), \
+            "the next F8 should mark line %d (mark on %s):\n%s" \
+            % (PY_PRINT_LINE, _mark_line(w), _screen(w))
+
+
+# @scenario SC-debug-45
+@pytest.mark.parametrize("adapter", STDIO_ADAPTERS)
+def test_ctrl_c_while_a_stdio_adapter_runs_leaves_the_session_working(
+        tmp_path, adapter):
+    """Ctrl-C while the program runs under an adapter on the editor's pipes
+    does nothing: the adapter is still there and the breakpoint ahead is
+    marked when the program reaches it."""
+    run = DapRun(tmp_path, adapter, sleep_s=DAP_FAR_SLEEP_S)
+    try:
+        with run.session as w:
+            _run_on_towards_done(run, w)
+            _says_the_program_is_running(w)
+            w.key(CTRL_C, delay=0.3)
+            w._drain(CTRL_C_SETTLE_S)
+            assert _children(w, run.case["child"]), \
+                "Ctrl-C should leave the adapter running:\n%s" % _screen(w)
+            assert _wait_for(w, lambda: _mark_line(w) == run.done,
+                             DAP_FAR_RUN_S), \
+                "the stop on line %d should be marked (mark on %s):\n%s" \
+                % (run.done, _mark_line(w), _screen(w))
+    finally:
+        _kill_program_if_left(run)
+
+
+# @scenario SC-debug-17
+@pytest.mark.parametrize("transport", sorted(SILENT_ADAPTERS))
+def test_ctrl_c_while_an_adapter_starts_leaves_it_running(tmp_path,
+                                                          transport):
+    """Ctrl-C while the editor waits for an adapter that has not answered
+    yet leaves the adapter running and the waiting line in place; lldb-dap
+    and gdb catch the signal themselves, an adapter that does not would
+    otherwise die of it."""
+    adapter = SILENT_ADAPTERS[transport]["adapter"]
+    with _dap_session(tmp_path, transport, LONG_START_TIMEOUT_S) as w:
+        pid = _start_silent_adapter(w, transport)
+        w.key(CTRL_C, delay=0.3)
+        w._drain(CTRL_C_SETTLE_S)
+        assert not _process_gone(pid), \
+            "Ctrl-C should leave the adapter (pid %d) running:\n%s" \
+            % (pid, _screen(w))
+        assert "starting %s" % adapter in _screen(w), \
+            "the start should still be waiting:\n%s" % _screen(w)
+        w.key(ESC, delay=0.5)
+        assert _wait_for(w, lambda: _process_gone(pid), STEP_TIMEOUT_S), \
+            "Esc should end the silent adapter (pid %d)" % pid

@@ -14,6 +14,7 @@
 #include "we_lsp.h"
 #include "we_debprompt.h"
 #include "we_debpath.h"
+#include "we_childsig.h"
 
 #ifndef NO_XWINDOWS
 #include "WeXterm.h"
@@ -1020,6 +1021,11 @@ static void e_d_out_keep(const char *line)
 #define E_D_RUN_IDLE      0
 #define E_D_RUN_GOING     1
 
+/* Where a Pause stands during a run. */
+#define E_D_PAUSE_NONE    0   /* the user has not asked */
+#define E_D_PAUSE_ASKED   1   /* the interrupt is sent; the next stop answers */
+#define E_D_PAUSE_TAKEN   2   /* the stop that came was the interrupt's */
+
 /* What the controller asks of the backend that runs the program. */
 typedef struct
 {
@@ -1028,10 +1034,12 @@ typedef struct
  int  (*output_fd)(void);             /* the program's own output, or -1 */
  int  (*feed)(FENSTER *f);            /* read what has come: E_D_FEED_* */
  void (*stopped)(FENSTER *f);         /* mark the stop, or say the end */
- /* Not used yet, NULL in every table: pausing a running program, and
-    telling the debugger of breakpoints changed while it runs or once it
-    stops.  The controller calls none of them. */
+ /* Pause: make the running program stop, so the stop that follows is the
+    user's.  Returns 0 when the interrupt was sent.  NULL for a backend
+    that cannot pause yet (e_d_pause says so). */
  int  (*interrupt)(void);
+ /* Not used yet, NULL in every table: telling the debugger of breakpoints
+    changed while it runs or once it stops.  The controller calls neither. */
  int  (*sync_live)(ECNT *cn);
  int  (*sync_at_stop)(ECNT *cn);
  /* Let the program run on to a source line, handing the run to the
@@ -1071,9 +1079,27 @@ typedef struct
  int stop_held;             /* a stop arrived while a box or a non-text
                                 window was in front; shown by
                                 e_d_run_deliver_held_stop */
+ int pause;                 /* E_D_PAUSE_*: Pause during this run */
 } E_D_RUN;
 
 static E_D_RUN e_d_run;
+
+/* After a gdb Pause that marked a frame above the innermost one: the frame
+   just below the marked one, or E_D_NO_FRAME; and the step command that
+   follows the "finish" out of that call (see e_d_gdb_step_from_pause). */
+#define E_D_NO_FRAME (-1)
+/* gdb's commands for it, and the room "frame N" needs. */
+#define E_D_GDB_FRAME_FMT    "frame %d\n"
+#define E_D_GDB_FINISH       "finish\n"
+#define E_D_GDB_NEXT         "n\n"
+#define E_D_GDB_STEP         "s\n"
+#define E_D_GDB_ADDRESS_LEAD "0x"   /* a frame gdb prints in mid-line */
+#define E_D_FRAME_CMD_MAX    24
+static int e_d_pause_below = E_D_NO_FRAME;
+static const char *e_d_pause_follow = NULL;
+static int e_d_run_resume(void);   /* keep the run going (below) */
+static void e_d_gdb_select_frame(int frame);   /* gdb's "frame N" (below) */
+extern char *e_d_msg[];                        /* the debugger's words */
 
 static void e_d_flush_inferior_stdout(void)
 {
@@ -1098,6 +1124,8 @@ static void e_d_flush_inferior_stdout(void)
 #define E_D_PDB_FINISHED    "The program finished"
 /* What pdb prints when it stops at the end of a function ("return"). */
 #define E_D_PDB_RETURN      "--Return--"
+/* What pdb prints when SIGINT interrupts the running script. */
+#define E_D_PDB_INTERRUPTED "Program interrupted"
 #define E_D_EXIT_PLAIN      "Program exited."
 #define E_D_EXIT_CODE_FMT   "Program exited with code %ld"
 /* A program killed by a signal, in gdb's words. */
@@ -1264,6 +1292,45 @@ static int e_d_line_says_where_it_stopped(FENSTER *f)
 }
 
 /**
+ * e_d_gdb_follow_up_after_finish - A step pressed after Pause first ran out
+ * of the library call; now send the step itself.
+ *
+ * Called at each gdb stop.  When the stop is the end of the finish (not a
+ * breakpoint, a signal or the program's end, which are the user's) and it
+ * is in the middle of a line (gdb prints the address then), the step
+ * command waiting in e_d_pause_follow goes out and the run goes on from
+ * here, so the user gets one stop, on the next line of the code.  A finish
+ * that returns to the start of a line is already that stop.
+ * Return: 1 when the step was sent and the run goes on.
+ */
+static int e_d_gdb_follow_up_after_finish(void)
+{
+ const char *cmd = e_d_pause_follow;
+ int i, mid_line = 0;
+
+ if (!cmd)
+  return(0);
+ e_d_pause_follow = NULL;
+ for (i = 0; i < SVLINES; i++)
+ {
+  if (e_d_line_says_program_exited(e_d_sp[i]) ||
+      !strncmp(e_d_sp[i], e_d_msg[ERR_BREAKPOINT],
+               strlen(e_d_msg[ERR_BREAKPOINT])) ||
+      !strncmp(e_d_sp[i], e_d_msg[ERR_PROGSIGNAL],
+               strlen(e_d_msg[ERR_PROGSIGNAL])))
+   return(0);
+  if (!strncmp(e_d_sp[i], E_D_GDB_ADDRESS_LEAD,
+               sizeof E_D_GDB_ADDRESS_LEAD - 1))
+   mid_line = 1;
+ }
+ if (!mid_line)
+  return(0);
+ e_d_out_clear();
+ e_d_send_cmd((char *)cmd);
+ return(e_d_run_resume() == 0);
+}
+
+/**
  * e_d_line_stopped - What gdb, sdb, dbx and xdb do when the program stops.
  * @f: the window the run was started from.
  *
@@ -1275,6 +1342,8 @@ static void e_d_line_stopped(FENSTER *f)
 {
  int i;
 
+ if (e_d_gdb_follow_up_after_finish())
+  return;
  e_d_flush_inferior_stdout();
  e_d_drain_pty_to_messages();
  e_d_out_show();
@@ -1385,6 +1454,93 @@ static int e_d_line_output_fd(void)
  return(e_d_pty_master);
 }
 
+/* Where the graphical editors' helper script records the PID of the
+   debugger it starts: the script, not the debugger, is the editor's child
+   there. */
+#define E_D_DEBUGGER_PID_FILE "we_dbg_pid"
+
+/**
+ * e_d_debugger_pid_path - The file the debugger's PID is recorded in under
+ * the graphical editors.
+ * @path: PATH_MAX bytes for the answer.
+ */
+static void e_d_debugger_pid_path(char *path)
+{
+ snprintf(path, PATH_MAX, "%s/%s", e_tmp_dir, E_D_DEBUGGER_PID_FILE);
+}
+
+/**
+ * e_d_debugger_pid_forget - Remove the recorded PID, so a number the
+ * system hands to another process later is never signalled.
+ */
+static void e_d_debugger_pid_forget(void)
+{
+ char path[PATH_MAX];
+
+ if (!WpeIsXwin())
+  return;
+ e_d_debugger_pid_path(path);
+ unlink(path);
+}
+
+/**
+ * e_d_debugger_pid_read - The PID the helper script recorded for the
+ * debugger.
+ * Return: the PID, or 0 when the script has not recorded one.
+ */
+static pid_t e_d_debugger_pid_read(void)
+{
+ char path[PATH_MAX];
+ FILE *fp;
+ long pid = 0;
+
+ e_d_debugger_pid_path(path);
+ fp = fopen(path, "r");
+ if (!fp)
+  return(0);
+ if (fscanf(fp, "%ld", &pid) != 1)
+  pid = 0;
+ fclose(fp);
+ return((pid_t)pid);
+}
+
+/**
+ * e_d_debugger_pid - The process Pause signals: the debugger itself.
+ *
+ * In the terminal editor the debugger is the editor's own child.  In the
+ * graphical editors the child is the helper script and the debugger is
+ * what the script recorded, started by exec so that it is one process.
+ * Return: the PID, or 0 when there is no debugger to signal.
+ */
+static pid_t e_d_debugger_pid(void)
+{
+ if (e_d_pid <= 0)
+  return(0);
+ if (!WpeIsXwin())
+  return((pid_t)e_d_pid);
+ return(e_d_debugger_pid_read());
+}
+
+/**
+ * e_d_interrupt_debugger - Pause the running program by sending SIGINT to
+ * the debugger, as Ctrl-C does in a shell.
+ *
+ * gdb stops its program and reports "Program received signal SIGINT", pdb
+ * reports "Program interrupted" at the line the program is on, a68g asks
+ * whether to terminate (answered by e_d_a68g_keep_running_after_interrupt),
+ * and sdb, dbx and xdb report the interrupt in their own words.  The user
+ * gets the stop marked on the line the program was running.
+ * Return: 0 when the signal was sent, -1 when there is no debugger.
+ */
+static int e_d_interrupt_debugger(void)
+{
+ pid_t pid = e_d_debugger_pid();
+
+ if (pid <= 0)
+  return(-1);
+ return(kill(pid, SIGINT));
+}
+
 /* gdb: a line protocol answered on one pipe, a prompt at each stop. */
 static const E_D_RUN_OPS e_d_gdb_run_ops =
 {
@@ -1393,7 +1549,7 @@ static const E_D_RUN_OPS e_d_gdb_run_ops =
  e_d_line_output_fd,
  e_d_gdb_feed,
  e_d_line_stopped,
- NULL,
+ e_d_interrupt_debugger,
  NULL,
  NULL,
  e_d_gdb_run_to_line,
@@ -1408,7 +1564,7 @@ static const E_D_RUN_OPS e_d_legacy_run_ops =
  e_d_line_output_fd,
  e_d_legacy_feed,
  e_d_line_stopped,
- NULL,
+ e_d_interrupt_debugger,
  NULL,
  NULL,
  NULL,
@@ -1503,6 +1659,7 @@ static void e_d_run_unwatch(void)
   wpe_fd_del(out);
  e_d_run.state = E_D_RUN_IDLE;
  e_d_async_pending = 0;
+ e_pick_editor_bars(WpeEditor);   /* drawn at the end of the stop */
 }
 
 /**
@@ -1518,6 +1675,9 @@ static void e_d_run_forget(void)
  e_d_run.cn = NULL;
  e_d_run.start_brk = 0;
  e_d_run.goto_line = 0;
+ e_d_run.pause = E_D_PAUSE_NONE;
+ e_d_pause_below = E_D_NO_FRAME;
+ e_d_pause_follow = NULL;
 }
 
 /**
@@ -1592,6 +1752,125 @@ static void e_d_run_goto_after_start(ECNT *cn, const E_D_RUN_OPS *ops)
  ops->run_to_line(e_d_run_window(cn), line);
 }
 
+#define E_D_PAUSE_NO_SESSION_LINE \
+ " Nothing to pause: no debugger session is running"
+#define E_D_PAUSE_STOPPED_LINE \
+ " Nothing to pause: the program is stopped"
+#define E_D_PAUSE_NO_WAY_LINE \
+ " Pause is not available under this debugger yet"
+#define E_D_PAUSE_FAILED_LINE \
+ " The program could not be interrupted"
+#define E_D_PAUSING_LINE \
+ " Pausing the program"
+#define E_D_PAUSED_LINE \
+ " Paused"
+#define E_D_PAUSE_MISSED_LINE \
+ " The interrupt did not stop the program: this is its next stop"
+
+/** What a signal report says when SIGINT stopped the program: gdb names
+    it, dbx says "interrupt", sdb gives the signal's number. */
+#define E_D_SIGINT_NAME     "SIGINT"
+#define E_D_INTERRUPT_WORD  "nterrupt"
+#define E_D_SDB_SIGINT      "(sig 2)"
+
+/* A signal report that is not shown: Pause's own stop is not an error. */
+static char e_d_pause_no_report[] = "";
+
+/**
+ * e_d_program_runs - Is the program running under the debugger right now?
+ *
+ * The source windows' bottom row names Pause while this holds and the
+ * stepping keys when it does not.
+ * Return: 1 while a run is in the debugger's hands.
+ */
+int e_d_program_runs(void)
+{
+ return(e_d_run_going());
+}
+
+/**
+ * e_d_pause_taken - The stop that arrived is the interrupt Pause sent.
+ *
+ * Called by a backend that recognised its own interrupt report, so the
+ * status row says "Paused" and not that the interrupt missed.
+ */
+static void e_d_pause_taken(void)
+{
+ if (e_d_run.pause == E_D_PAUSE_ASKED)
+  e_d_run.pause = E_D_PAUSE_TAKEN;
+}
+
+/**
+ * e_d_line_says_sigint - Does this signal report name SIGINT?
+ * @line: the debugger's report.
+ * Return: 1 when it does, in gdb's, dbx's or sdb's words.
+ */
+static int e_d_line_says_sigint(const char *line)
+{
+ if (strstr(line, E_D_SIGINT_NAME))
+  return(1);
+ if (strstr(line, E_D_INTERRUPT_WORD))
+  return(1);
+ return(strstr(line, E_D_SDB_SIGINT) != NULL);
+}
+
+/**
+ * e_d_pause_asked_for - Is this line the report of the interrupt Pause sent?
+ * @line: a line of the debugger's answer.
+ *
+ * xdb has no fixed form for the report, so it is recognised by naming SIGINT
+ * or the interrupt, and only while a Pause waits for its stop: the same
+ * words in the program's own output at another stop are not taken for it.
+ * Return: 1 for Pause's report.
+ */
+static int e_d_pause_asked_for(const char *line)
+{
+ return(e_d_run.pause == E_D_PAUSE_ASKED && e_d_line_says_sigint(line));
+}
+
+/**
+ * e_d_pause_signal_line - The text to show for a signal the debugger
+ * reported at a stop.
+ * @line: the debugger's report ("Program received signal SIGINT, ...").
+ *
+ * The SIGINT the user asked for with Pause is not an error: nothing is
+ * shown for it and the stop is marked as a pause.  Any other signal, and a
+ * SIGINT nobody asked for, is shown as before.
+ * Return: @line, or an empty text when it is Pause's own stop.
+ */
+static char *e_d_pause_signal_line(char *line)
+{
+ if (e_d_run.pause != E_D_PAUSE_ASKED)
+  return(line);
+ if (!e_d_line_says_sigint(line))
+  return(line);
+ e_d_pause_taken();
+ return(e_d_pause_no_report);
+}
+
+/**
+ * e_d_pause_report - Say on the status row how Pause ended, once the
+ * program has stopped.
+ * @cn: the editor.
+ *
+ * The user reads "Paused" when the interrupt stopped the program, and that
+ * the interrupt missed when the stop was another one (the program handles
+ * SIGINT itself, or a breakpoint came first).  A session the stop ended
+ * says nothing.
+ */
+static void e_d_pause_report(ECNT *cn)
+{
+ int pause = e_d_run.pause;
+
+ e_d_run.pause = E_D_PAUSE_NONE;
+ if (pause == E_D_PAUSE_NONE || !e_d_session_runs())
+  return;
+ if (pause == E_D_PAUSE_TAKEN)
+  e_status_say_until_key(e_d_run_window(cn), E_D_PAUSED_LINE);
+ else
+  e_status_say_until_key(e_d_run_window(cn), E_D_PAUSE_MISSED_LINE);
+}
+
 /**
  * e_d_run_on_stop - The debugger stopped the program: mark where, then
  * tidy up after the run, and go on to the cursor if Go to cursor asked.
@@ -1611,6 +1890,9 @@ static void e_d_run_on_stop(void)
   return;
  e_d_run_stop_chores(e_d_run_window(cn));
  e_d_run_goto_after_start(cn, ops);
+ if (e_d_run_going())
+  return;
+ e_d_pause_report(cn);
 }
 
 /**
@@ -1693,9 +1975,12 @@ static void e_d_run_on_answer(int fd, void *data)
 static void e_d_run_mark_going(const E_D_RUN_OPS *ops)
 {
  int out = ops->output_fd();
+ int was_going = e_d_run_going();
 
  e_d_run.state = E_D_RUN_GOING;
  e_d_async_pending = 1;
+ if (!was_going)
+  e_refresh_editor_bars(WpeEditor);   /* the bar names Pause while it runs */
  if (out < 0)
   return;
  if (ops->on_output)
@@ -1780,6 +2065,9 @@ static int e_d_run_begin(FENSTER *f, const E_D_RUN_OPS *ops, int start_brk)
  e_d_run.cn = f->ed;
  e_d_run.start_brk = start_brk;
  e_d_run.goto_line = 0;
+ e_d_run.pause = E_D_PAUSE_NONE;
+ e_d_pause_below = E_D_NO_FRAME;
+ e_d_pause_follow = NULL;
  jdb_trace("e_d_run_begin: the program runs under %s\n", ops->name);
  e_d_async_reset();
  return(0);
@@ -2090,6 +2378,10 @@ int e_deb_inp(FENSTER *f)
   case ('f'-'a'+1):
    e_d_finish_func(f);
    break;
+  case 'i':
+  case ('i'-'a'+1):
+   e_d_pause(f);
+   break;
   default:
    return(c);
  }
@@ -2133,6 +2425,9 @@ int e_debug_switch(FENSTER *f, int c)
    break;
   case CF2:
    e_d_q_quit(f);
+   break;
+  case CtrlBrk:
+   e_d_pause(f);
    break;
   default:
    if (f->ed->edopt & ED_CUA_STYLE)
@@ -3056,6 +3351,7 @@ int e_d_quit_basic(FENSTER *f)
   waitpid(e_d_pid, NULL, 0);  /* reap zombie */
   e_d_pid = 0;
  }
+ e_d_debugger_pid_forget();
  if (!WpeIsXwin())
  {
   if (e_d_out)
@@ -4788,6 +5084,24 @@ static void e_d_fd_nonblocking(int fd)
  fcntl(fd, F_SETFL, fcntl(fd, F_GETFL, 0) | O_NONBLOCK);
 }
 
+/**
+ * e_d_child_leave_terminal - In the terminal editor's debugger child,
+ * before exec: leave the editor's session and its terminal.
+ *
+ * The debugger and its program take SIGINT as a shell gives it, so Pause
+ * can stop them; left in the editor's foreground process group they would
+ * also get the SIGINT the terminal sends for a Ctrl-C typed by habit, and
+ * the session would end or hang.  In a session of its own the debugger
+ * hears only what the editor sends it (Pause signals it by its PID), and
+ * Ctrl-C stays a key of the editor's.  The debugger talks to the editor
+ * through pipes and gives its program the pty or the terminal by name, so
+ * it needs no controlling terminal.
+ */
+static void e_d_child_leave_terminal(void)
+{
+ setsid();
+}
+
 /* Room for the longest command line a debugger is started with (jdb's five
    words) and the NULL that ends it. */
 #define E_D_ARGV_MAX 8
@@ -4873,11 +5187,20 @@ static void e_d_script_word(FILE *fp, const char *word)
  * e_d_script_command - Write the debugger's command line to the helper
  * script.
  * @fp: the script; @argv: the words, NULL-terminated.
+ *
+ * The line starts a shell that records its PID and then becomes the
+ * debugger (exec), so the recorded PID is the debugger's own: Pause sends
+ * it SIGINT, which the script that hosts the debugger could not pass on.
  */
 static void e_d_script_command(FILE *fp, char **argv)
 {
+ char pidfile[PATH_MAX];
  int i;
 
+ e_d_debugger_pid_path(pidfile);
+ fputs("sh -c 'echo $$ > \"$1\"; shift; exec \"$@\"' sh ", fp);
+ e_d_script_word(fp, pidfile);
+ fputc(' ', fp);
  for (i = 0; argv[i]; i++)
  {
   if (i > 0)
@@ -5162,23 +5485,6 @@ static int e_d_jdb_vm_await_end(void)
 }
 
 /**
- * e_d_jdb_vm_child_signals - Give the VM the signal handling a program
- * started from a shell has, not the editor's.
- */
-static void e_d_jdb_vm_child_signals(void)
-{
- static const int sigs[] = { SIGINT, SIGQUIT, SIGPIPE, SIGHUP, SIGTERM,
-                             SIGTSTP, SIGTTIN, SIGTTOU, SIGCHLD };
- sigset_t none;
- size_t i;
-
- for (i = 0; i < sizeof sigs / sizeof sigs[0]; i++)
-  signal(sigs[i], SIG_DFL);
- sigemptyset(&none);
- sigprocmask(SIG_SETMASK, &none, NULL);
-}
-
-/**
  * e_d_jdb_vm_child_close - Close, in the VM, the editor's ends of jdb's
  * pipes and the pty master, so jdb's end and the program's are seen.
  */
@@ -5260,7 +5566,7 @@ static void e_d_jdb_vm_child(char *agent)
 {
  char *argv[4];
 
- e_d_jdb_vm_child_signals();
+ wpe_child_default_signals();
  e_d_jdb_vm_child_close();
  if (e_d_jdb_vm_child_terminal() < 0)
  {
@@ -5414,6 +5720,7 @@ int e_exec_deb(FENSTER *f, char *prog)
  }
  e_d_pty_hung = 0;
 
+ e_d_debugger_pid_forget();
  if ((e_d_pid = fork()) > 0)
  {
   if (WpeIsXwin())
@@ -5517,6 +5824,7 @@ int e_exec_deb(FENSTER *f, char *prog)
     below (the script and the FIFOs use absolute /tmp paths, so the chdir does
     not disturb them).  pdb/a68g already pass an absolute program path, so this
     is harmless there. */
+ wpe_child_default_signals();   /* the program under it inherits these */
  { char *_dd = e_build_dir(f);
    if (_dd) { if (chdir(_dd) != 0) _exit(127); FREE(_dd); } }
 
@@ -5595,6 +5903,7 @@ int e_exec_deb(FENSTER *f, char *prog)
   }
   if (e_d_child_errors_nonblocking())
    e_d_fd_nonblocking(2);
+  e_d_child_leave_terminal();
   execvp(argv[0], argv);
  }
  fprintf(stderr,"%s %s %s\n", e_p_msg[ERR_IN_COMMAND], e_debugger, prog);
@@ -6770,6 +7079,60 @@ static int e_d_refuse_while_running(FENSTER *f)
   return(0);
  e_status_say(f, e_d_running_line());
  return(1);
+}
+
+/**
+ * e_d_pause_refused - Say why Pause has nothing to do, when it has not.
+ * @f: the window the key was pressed in.
+ *
+ * Pause only means something while the program runs: with no session, or
+ * at a stop (or a stop waiting behind a box), the status row says so and
+ * nothing is sent to the debugger.  A backend that cannot interrupt yet
+ * says that.
+ * Return: 1 when Pause must not go on.
+ */
+static int e_d_pause_refused(FENSTER *f)
+{
+ if (!e_d_session_runs())
+  e_status_say(f, E_D_PAUSE_NO_SESSION_LINE);
+ else if (!e_d_run_going() || e_d_run.stop_held)
+  e_status_say(f, E_D_PAUSE_STOPPED_LINE);
+ else if (!e_d_run.ops->interrupt)
+  e_status_say(f, E_D_PAUSE_NO_WAY_LINE);
+ else
+  return(0);
+ return(1);
+}
+
+/**
+ * e_d_pause - Debug > Interrupt (pause), Ctrl-Break, Ctrl-G I: stop the
+ * program that runs under the debugger where it is.
+ * @f: the window the key was pressed in.
+ *
+ * The user sees the line the program was on marked, the Watches refreshed
+ * and "Paused" on the status row, and can then step, inspect or continue.
+ * A program that handles SIGINT itself is not stopped by it: the status
+ * row says so at the next stop.  At a stop, or with no session, the status
+ * row says there is nothing to pause.
+ * Return: 0.
+ */
+int e_d_pause(FENSTER *f)
+{
+ if (e_d_start_refused(f) || e_d_pause_refused(f))
+  return(0);
+ if (e_d_run.pause == E_D_PAUSE_ASKED)
+ {
+  e_status_say(f, E_D_PAUSING_LINE);
+  return(0);
+ }
+ if (e_d_run.ops->interrupt() < 0)
+ {
+  e_status_say(f, E_D_PAUSE_FAILED_LINE);
+  return(0);
+ }
+ e_d_run.pause = E_D_PAUSE_ASKED;
+ e_status_say(f, E_D_PAUSING_LINE);
+ return(0);
 }
 
 /**
@@ -9690,6 +10053,8 @@ static void e_d_pdb_mark_answer(FENSTER *f, const char *kept,
 #define E_D_PDB_FEED_READS_MAX 64
 #define E_D_PDB_STEP_ON "n\n"
 #define E_D_PDB_UP      "up\n"      /* the caller's line, after a "return" */
+#define E_D_PDB_UP_FMT  "up %d\n"   /* Pause: out to the script's frame */
+#define E_D_PDB_UP_MAX  16
 #define E_D_PDB_FINISH  "return\n"  /* run to the end of the function */
 #define E_D_PDB_INTERNAL_LINE \
  " pdb stayed in Python's own code: step with F7 or F8, or run on"
@@ -9867,6 +10232,8 @@ static void e_d_pdb_note_return(E_D_PDB_RUN *r)
   r->returned = 1;
 }
 
+static int e_d_pdb_mark_interrupted_frame(FENSTER *f);   /* (frames, below) */
+
 /**
  * e_d_pdb_stopped - What pdb does when its prompt comes: keep the program's
  * output for Ctrl-G P, then mark the stop, say the end, or go on.
@@ -9882,10 +10249,18 @@ static void e_d_pdb_stopped(FENSTER *f)
  E_D_PDB_RUN *r = &e_d_pdb_run;
 
  e_d_pdb_note_return(r);
+ if (strstr(r->reply.buf, E_D_PDB_INTERRUPTED))
+  e_d_pause_taken();
  e_d_pdb_capture_output(r->reply.buf, r->reply.mid_line &&
                         r->spill.open_is_pdb);
  if (e_d_pdb_say_end(f, r->reply.buf))
   return;
+ if (e_d_run.pause == E_D_PAUSE_TAKEN && e_d_pdb_mark_interrupted_frame(f))
+ {
+  r->finish_up = 0;
+  e_d_switch_out(0);
+  return;
+ }
  if (e_d_pdb_stop_is_internal(r->reply.buf, &r->spill))
  {
   e_d_pdb_step_out_of_internal(f);
@@ -9909,7 +10284,7 @@ static const E_D_RUN_OPS e_d_pdb_ops =
  e_d_pdb_no_output_fd,
  e_d_pdb_feed,
  e_d_pdb_stopped,
- NULL,
+ e_d_interrupt_debugger,
  NULL,
  NULL,
  NULL,
@@ -10112,7 +10487,13 @@ static void e_d_a68g_spill(void *ctx, char *text, int mid_line)
 #define E_D_A68G_LINE_SOURCE  1
 #define E_D_A68G_LINE_MARKER  2
 #define E_D_A68G_LINE_THREAD  3
+#define E_D_A68G_LINE_QUESTION 4   /* not part of a stop: see below */
 #define E_D_A68G_STOP_LINES   3
+/* When SIGINT interrupts the program, a68g writes the stop's source line and
+   column marker, then asks this with no line end.  Answered "no" it goes on
+   to the thread line and its prompt, so the stop reads as any other. */
+#define E_D_A68G_TERMINATE    "Terminate a68g (yes|no):"
+#define E_D_A68G_KEEP         "no\n"
 #define E_D_A68G_NEXT "next\n"
 #define E_D_A68G_STEP "step\n"
 /* How many "next" Step Over sends for one press while a68g still reports
@@ -10134,6 +10515,7 @@ typedef struct {
  int step_over;                 /* Step Over: go on while the line stays */
  int from_line;                 /* the line Step Over started from */
  int same_line_steps;           /* "next" sent again for the same line */
+ int kept_running;              /* the terminate question was answered "no" */
 } E_D_A68G_RUN;
 
 static E_D_A68G_RUN e_d_a68g_run;
@@ -10162,6 +10544,7 @@ static void e_d_a68g_answer_reset(void)
  e_d_a68g_run.spill.line = -1;
  e_d_a68g_run.spill.finished = 0;
  e_d_a68g_run.ended = 0;
+ e_d_a68g_run.kept_running = 0;
  e_d_a68g_forget_shown(&e_d_a68g_run);
 }
 
@@ -10247,10 +10630,13 @@ static int e_d_a68g_is_source_line(const char *s, int len)
 /**
  * e_d_a68g_line_kind - Which part of a stop a line of a68g's answer is.
  * @s: the line; @len: its length, without the line end.
- * Return: E_D_A68G_LINE_SOURCE, _MARKER, _THREAD or _OTHER.
+ * Return: E_D_A68G_LINE_SOURCE, _MARKER, _THREAD, _QUESTION or _OTHER.
  */
 static int e_d_a68g_line_kind(const char *s, int len)
 {
+ if (len >= (int)sizeof E_D_A68G_TERMINATE - 1 &&
+     !strncmp(s, E_D_A68G_TERMINATE, sizeof E_D_A68G_TERMINATE - 1))
+  return(E_D_A68G_LINE_QUESTION);
  if (e_d_a68g_is_thread_line(s, len))
   return(E_D_A68G_LINE_THREAD);
  if (e_d_a68g_is_column_marker(s, len))
@@ -10274,7 +10660,7 @@ static int e_d_a68g_line_kind(const char *s, int len)
 static void e_d_a68g_recent_kinds(const E_D_A68G_RUN *r, int upto, int *kinds)
 {
  const E_D_STEP_REPLY *rep = &r->reply;
- int n = 0, end = upto, start, i;
+ int n = 0, end = upto, start, i, kind;
 
  while (n < E_D_A68G_STOP_LINES && end > 0)
  {
@@ -10286,8 +10672,10 @@ static void e_d_a68g_recent_kinds(const E_D_A68G_RUN *r, int upto, int *kinds)
    kinds[n++] = E_D_A68G_LINE_OTHER;
    break;
   }
-  kinds[n++] = e_d_a68g_line_kind(rep->buf + start, end - 1 - start);
+  kind = e_d_a68g_line_kind(rep->buf + start, end - 1 - start);
   end = start;
+  if (kind != E_D_A68G_LINE_QUESTION)   /* the question is not in a stop */
+   kinds[n++] = kind;
  }
  for (i = n; i < E_D_A68G_STOP_LINES; i++)
   kinds[i] = r->shown[i - n];
@@ -10370,6 +10758,39 @@ static void e_d_a68g_show_lines_as_they_come(E_D_A68G_RUN *r)
 }
 
 /**
+ * e_d_a68g_asks_to_terminate - Does the answer read so far end with a68g's
+ * question whether to terminate, which an interrupt makes it ask?
+ * @r: the run.
+ * Return: 1 when a68g waits for yes or no.
+ */
+static int e_d_a68g_asks_to_terminate(const E_D_A68G_RUN *r)
+{
+ const char *end = strrchr(r->reply.buf, '\n');
+ const char *tail = end ? end + 1 : r->reply.buf;
+
+ return(!strncmp(tail, E_D_A68G_TERMINATE, sizeof E_D_A68G_TERMINATE - 1));
+}
+
+/**
+ * e_d_a68g_keep_running_after_interrupt - Answer a68g's terminate question
+ * with "no", once, so the interrupt only stops the program.
+ * @r: the run.
+ *
+ * Pause sends a68g SIGINT; a68g prints where it is and asks whether to
+ * terminate.  "no" leaves it at its prompt on that line, which is the stop
+ * the user asked for.  a68g reads this answer from the stdin the program
+ * shares, but it is waiting for it, so nothing else is sent meanwhile.
+ */
+static void e_d_a68g_keep_running_after_interrupt(E_D_A68G_RUN *r)
+{
+ if (r->kept_running)
+  return;
+ r->kept_running = 1;
+ e_d_pause_taken();
+ e_d_send_cmd(E_D_A68G_KEEP);
+}
+
+/**
  * e_d_a68g_feed - Read what a68g or the program has written so far.
  * @f: the window the run was started from.
  *
@@ -10400,6 +10821,8 @@ static int e_d_a68g_feed(FENSTER *f)
    r->ended = 1;
    fed = E_D_FEED_STOPPED;
   }
+  else if (e_d_a68g_asks_to_terminate(r))
+   e_d_a68g_keep_running_after_interrupt(r);
   else if (e_d_a68g_prompt_ends_answer(r))
    fed = E_D_FEED_STOPPED;
   else
@@ -10519,7 +10942,7 @@ static const E_D_RUN_OPS e_d_a68g_ops =
  e_d_a68g_no_output_fd,
  e_d_a68g_feed,
  e_d_a68g_stopped,
- NULL,
+ e_d_interrupt_debugger,
  NULL,
  NULL,
  NULL,
@@ -10907,6 +11330,47 @@ static int e_d_pdb_frames(void)
  if (own >= 0)
   e_d_frames_drop_outer(e_d_nframes - own - 1);
  return(0);
+}
+
+/* The function of pdb's own SIGINT handler: the frame under the script's. */
+#define E_D_PDB_SIGINT_HANDLER "sigint_handler"
+
+/**
+ * e_d_pdb_mark_interrupted_frame - After Pause, mark the script's line and
+ * make that frame pdb's current one.
+ * @f: the window on top.
+ *
+ * pdb stops inside its own SIGINT handler, in bdb.py, a few frames inside
+ * the line the script was running.  The user wants the script's line: the
+ * frame under the handler is found in pdb's stack, pdb is told to go up to
+ * it (so the Stack window and the next step start there), and its line is
+ * marked.
+ * Return: 1 when the script's frame was marked, 0 when the stack does not
+ * show the handler (the stop is then marked as any other).
+ */
+static int e_d_pdb_mark_interrupted_frame(FENSTER *f)
+{
+ char up[E_D_PDB_UP_MAX];
+ e_d_frame *fr;
+ int i;
+
+ e_d_nframes = 0;
+ if (e_d_pdb_frames() == -1)
+  return(0);
+ for (i = 0; i < e_d_nframes; i++)
+  if (!strcmp(e_d_frames[i].func, E_D_PDB_SIGINT_HANDLER))
+   break;
+ if (i + 1 >= e_d_nframes)
+  return(0);
+ i++;
+ fr = &e_d_frames[i];
+ snprintf(up, sizeof up, E_D_PDB_UP_FMT, i);
+ if (e_d_frames_ask(up) == -1)
+  return(0);
+ e_d_nstack = i;
+ e_d_swtch = 3;
+ e_d_pdb_mark_stop(f, fr->file, fr->line);
+ return(1);
 }
 
 /**
@@ -11442,6 +11906,33 @@ static int e_d_finish_to_caller(FENSTER *f)
  return(e_d_finish_send(f));
 }
 
+/**
+ * e_d_gdb_step_from_pause - Step Over or Step Into right after a Pause that
+ * stopped in library code.
+ * @f: the source window; @sw: 1 for Step Over, 0 for Step Into.
+ *
+ * gdb steps the innermost frame, which after Pause is the library call the
+ * program sleeps in, line by line through code the user has no source for.
+ * The paused line is finished first, as in any debugger: the call is run
+ * out of with "finish" from the frame below the marked one, and the step
+ * is sent when that stops (e_d_gdb_follow_up_after_finish), so the next
+ * stop is on a line of the user's code.
+ * Return: 0, or the end of the session.
+ */
+static int e_d_gdb_step_from_pause(FENSTER *f, int sw)
+{
+ int below = e_d_pause_below;
+ int ret;
+
+ e_d_gdb_select_frame(below);
+ e_d_send_cmd(E_D_GDB_FINISH);
+ e_d_nstack = 0;
+ ret = e_d_run_hand_over(f, e_d_run_ops_of_backend(), 0);
+ if (e_d_run_going())
+  e_d_pause_follow = sw ? E_D_GDB_NEXT : E_D_GDB_STEP;
+ return(ret);
+}
+
 int e_d_step_next(FENSTER *f, int sw)
 {
  int ret, main_brk = 0;
@@ -11489,6 +11980,8 @@ int e_d_step_next(FENSTER *f, int sw)
   return e_d_dap_step(f, sw);        /* sw -> "next" (over), else "stepIn" */
  if (e_deb_type == DEB_A68G)
   return e_d_a68g_do_step(f, sw);   /* line-granular Step Over */
+ if (e_deb_type == DEB_GDB && e_d_pause_below != E_D_NO_FRAME)
+  return(e_d_gdb_step_from_pause(f, sw));
  if (sw && (e_deb_type == DEB_GDB || e_deb_type == DEB_PDB)) e_d_send_cmd("n\n");
  else if (sw && (e_deb_type == DEB_SDB || e_deb_type == DEB_XDB)) e_d_send_cmd("S\n");
  else if (sw && (e_deb_type == DEB_DBX || e_deb_type == DEB_JDB)) e_d_send_cmd("next\n");
@@ -12282,7 +12775,12 @@ int e_d_fst_check(FENSTER *f)
   }
   else if (e_deb_type == DEB_GDB && !strncmp(e_d_sp[i], e_d_msg[ERR_PROGSIGNAL], 23))
   {
-   e_d_pr_sig(e_d_sp[i], f);
+   e_d_pr_sig(e_d_pause_signal_line(e_d_sp[i]), f);
+   return(i);
+  }
+  else if (e_deb_type == DEB_XDB && e_d_pause_asked_for(e_d_sp[i]))
+  {
+   e_d_pr_sig(e_d_pause_signal_line(e_d_sp[i]), f);
    return(i);
   }
   else if (e_deb_type == DEB_XDB && !strncmp(e_d_sp[i], e_d_msg[ERR_SOFTTERM], strlen(e_d_msg[ERR_SOFTTERM])))
@@ -12293,12 +12791,12 @@ int e_d_fst_check(FENSTER *f)
   else if (e_deb_type == DEB_DBX && (!strncmp(e_d_sp[i], e_d_msg[ERR_SIGNAL], 6) ||
     !strncmp(e_d_sp[i], e_d_msg[ERR_INTERRUPT], 9)))
   {
-   e_d_pr_sig(e_d_sp[i], f);
+   e_d_pr_sig(e_d_pause_signal_line(e_d_sp[i]), f);
    return(i);
   }
   else if (e_deb_type == DEB_SDB && strstr(e_d_sp[i], e_d_msg[ERR_SIGNAL]))
   {
-   e_d_pr_sig(e_d_sp[i], f);
+   e_d_pr_sig(e_d_pause_signal_line(e_d_sp[i]), f);
    return(i);
   }
   else if (e_deb_type == DEB_XDB && i == SVLINES-2 && strstr(e_d_sp[i], ": "))
@@ -12626,6 +13124,72 @@ static int e_d_where_row_read(char **row)
  return(ret);
 }
 
+static int e_d_where_frame;   /* number of the last "#N" row of the walk */
+
+/**
+ * e_d_gdb_select_frame - Make a frame gdb's selected one, and read its
+ * answer.
+ * @frame: its number in "where" (0 is the innermost).
+ *
+ * Watches on locals are evaluated in the selected frame.  Used at a stop,
+ * where gdb answers at once.
+ */
+static void e_d_gdb_select_frame(int frame)
+{
+ char cmd[E_D_FRAME_CMD_MAX], row[E_D_LINE_MAX];
+ int ret;
+
+ snprintf(cmd, sizeof cmd, E_D_GDB_FRAME_FMT, frame);
+ e_d_send_cmd(cmd);
+ do
+ {
+  ret = e_d_line_read(wfildes[0], row, sizeof row, 0, 0);
+ } while (ret == 0 || ret == 2);
+}
+
+/**
+ * e_d_select_paused_frame - After Pause, make the marked frame gdb's
+ * selected one, and remember how to get out to it.
+ * @frame: its number in "where" (0 is the innermost).
+ *
+ * gdb stops in the innermost frame, often library code, while the bar is
+ * on the user's frame a few levels out.  The watches then read the user's
+ * locals, and the next F8 or F7 first runs out of the library call (see
+ * e_d_gdb_step_from_pause), since gdb's own next and step would walk
+ * through the library's lines.
+ */
+static void e_d_select_paused_frame(int frame)
+{
+ e_d_gdb_select_frame(frame);
+ e_d_nstack = frame;
+ e_d_pause_below = frame - 1;
+}
+
+/**
+ * e_d_where_row_line - The source line a row of the stack listing names,
+ * for the frame to mark.
+ * @row: one row of "where"; @file: E_D_LINE_MAX bytes for the file's name.
+ *
+ * Normally the first row that names a line is the stop.  After Pause the
+ * program stands wherever it happened to be, often in library code that
+ * has debug information but no source here (a sleep call, a lock): a row
+ * whose file cannot be read is passed over, so the frame marked is the
+ * innermost one in the user's code, as the Stack window would show it.
+ * Return: the line, or -1 when the row names none to mark.
+ */
+static int e_d_where_row_line(char *row, char *file)
+{
+ int line = e_make_line_num(row, file);
+
+ if (row[0] == '#' && isdigit((unsigned char)row[1]))
+  e_d_where_frame = atoi(row + 1);       /* the frame this row belongs to */
+ if (line < 0 || e_d_run.pause == E_D_PAUSE_NONE)
+  return(line);
+ if (access(file, R_OK) != 0)
+  return(-1);
+ return(line);
+}
+
 int e_d_pr_sig(char *str, FENSTER *f)
 {
  int i, line = -1, ret = 0;
@@ -12635,11 +13199,12 @@ int e_d_pr_sig(char *str, FENSTER *f)
   e_d_error(str);
  e_d_out_clear();
  str = e_d_out_none;
+ e_d_where_frame = 0;
  if (e_deb_type != DEB_SDB && e_deb_type != DEB_XDB)
  {
   e_d_send_cmd("where\n");
   for (i = 0; ((ret = e_d_where_row_read(&str)) == 0 &&
-    (line = e_make_line_num(str, file)) < 0) || ret == 2; i++)
+    (line = e_d_where_row_line(str, file)) < 0) || ret == 2; i++)
   {
    if (!strncmp(str, e_d_msg[ERR_NOSTACK], 9))
    {
@@ -12686,6 +13251,9 @@ int e_d_pr_sig(char *str, FENSTER *f)
  if (line >= 0)
  {
   strcpy(e_d_file, file);
+  if (e_d_run.pause != E_D_PAUSE_NONE && e_deb_type == DEB_GDB &&
+      e_d_where_frame > 0)
+   e_d_select_paused_frame(e_d_where_frame);
   /* Refresh the Watches window here too: a plain Step lands in this "find
      where we stopped via 'where'" path (e_d_trd_check -> e_d_pr_sig), not in
      the breakpoint branches, so without this the watch values would stay

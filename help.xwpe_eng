@@ -420,6 +420,8 @@
           Step                S    Execute next programme line
                                    (step over any function).
           Run/Continue        R    Start/continue debugging.
+          Interrupt (pause)   I    Stop the running programme
+                                   (Ctrl-Break, Ctrl-G I).
           Program output      P    Show program output.
           debugger Options    O    Select debugger backend.
           Quit                Q    Exit the debugger.

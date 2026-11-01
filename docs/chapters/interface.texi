@@ -217,6 +217,8 @@ Execute the next line, stepping into functions.
 Execute the next line, stepping over functions.
 @item R -- Run/Continue (@kbd{Ctrl-F10})
 Start or continue the debugger.
+@item I -- Interrupt (pause) (@kbd{Ctrl-Break}, @kbd{Ctrl-G I})
+Stop the program that is running, where it is.
 @item Q -- Quit (@kbd{Ctrl-F2})
 Exit the debugger.
 @end table

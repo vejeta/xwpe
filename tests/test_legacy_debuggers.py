@@ -102,6 +102,7 @@ END_LINE = {
 
 STUB_SOURCE = r'''
 import os
+import signal
 import sys
 import time
 
@@ -120,6 +121,17 @@ CONTINUE_DELAY_S = float(os.environ.get("XWPE_STUB_CONTINUE_DELAY_S", "0"))
 # line of its answer: no line end, no prompt, then its end of file.
 CONTINUE_DIES = os.environ.get("XWPE_STUB_CONTINUE_DIES", "") == "1"
 HALF_LINE = "the debugger died half way through"
+# The line the running program is on when SIGINT interrupts it; 0 keeps the
+# line of the last stop.
+INTERRUPT_AT = int(os.environ.get("XWPE_STUB_INTERRUPT_AT", "0"))
+
+
+class Interrupted(Exception):
+    """SIGINT reached the debugger while the program ran."""
+
+
+def on_sigint(signum, frame):
+    raise Interrupted()
 
 armed = []          # breakpoint lines, in the order they were armed
 current = [0]       # line the program stands at; 0 before the first run
@@ -186,16 +198,35 @@ def next_stop():
     return min(ahead)
 
 
+def interrupt_report():
+    """What each backend prints when SIGINT stops the running program."""
+    if INTERRUPT_AT:
+        current[0] = INTERRUPT_AT
+    n = current[0]
+    if BACKEND == "sdb":
+        line("stopped (sig 2) in main")
+    elif BACKEND == "dbx":
+        line('interrupt in main at line %d in file "%s"' % (n, SOURCE))
+    else:
+        line("Interrupt (SIGINT) in main")
+
+
 def run_on():
-    """The program runs and never stops: nothing is printed, no prompt."""
-    while True:
-        time.sleep(RUNNING_NAP_S)
+    """The program runs and never stops, unless SIGINT interrupts it:
+    nothing is printed, no prompt, until then."""
+    signal.signal(signal.SIGINT, on_sigint)
+    try:
+        while True:
+            time.sleep(RUNNING_NAP_S)
+    except Interrupted:
+        interrupt_report()
 
 
 def run(first):
     """Answer a run or a continue: the next stop, or the program's end."""
     if not first and CONTINUE_RUNS_ON:
         run_on()
+        return
     if not first and CONTINUE_DIES:
         say(HALF_LINE)
         os._exit(0)
@@ -280,7 +311,7 @@ def answer_dbx(cmd):
         step()
         return
     if cmd == "where":
-        line('>  main  [line %d in file "%s"]' % (current[0], SOURCE))
+        line('main(), line %d in "%s"' % (current[0], SOURCE))
         return
     if cmd.startswith("print "):
         line("%s = 3" % cmd.split(None, 1)[1])
@@ -350,7 +381,7 @@ def _need(*tools):
 
 
 def _stub_env(tmp_path, backend, continue_runs_on=False, continue_delay_s=0,
-              continue_dies=False):
+              continue_dies=False, interrupt_at=0):
     """Write the stub for @backend and return the environment that runs it.
 
     The stub is one script under the debugger's own name, so the backend is
@@ -358,7 +389,8 @@ def _stub_env(tmp_path, backend, continue_runs_on=False, continue_delay_s=0,
     @continue_runs_on, a continue after the first stop never comes back: the
     program runs on and the debugger says nothing.  With @continue_delay_s,
     a continue answers only after that many seconds.  With @continue_dies,
-    a continue writes half a line and the debugger exits."""
+    a continue writes half a line and the debugger exits.  With
+    @interrupt_at, a program that runs on is stopped by SIGINT on that line."""
     bindir = tmp_path / "bin"
     bindir.mkdir(exist_ok=True)
     stub = bindir / backend
@@ -375,11 +407,13 @@ def _stub_env(tmp_path, backend, continue_runs_on=False, continue_delay_s=0,
         env["XWPE_STUB_CONTINUE_DELAY_S"] = str(continue_delay_s)
     if continue_dies:
         env["XWPE_STUB_CONTINUE_DIES"] = "1"
+    if interrupt_at:
+        env["XWPE_STUB_INTERRUPT_AT"] = str(interrupt_at)
     return env
 
 
 def _session(tmp_path, backend, continue_runs_on=False, continue_delay_s=0,
-             continue_dies=False):
+             continue_dies=False, interrupt_at=0):
     """A session on p.c with @backend forced through the options file.
 
     The options file is how a user picks a backend the dialog of this build
@@ -392,7 +426,8 @@ def _session(tmp_path, backend, continue_runs_on=False, continue_delay_s=0,
                       env_extra=_stub_env(tmp_path, backend,
                                           continue_runs_on,
                                           continue_delay_s,
-                                          continue_dies))
+                                          continue_dies,
+                                          interrupt_at))
 
 
 def _commands(tmp_path, backend):
@@ -747,3 +782,66 @@ def test_a_debugger_that_dies_mid_line_while_the_program_runs(tmp_path,
             % (gone, backend, _sent(tmp_path, backend), _screen(w))
         assert _mark_line(w) is None, \
             "the current-line mark should go:\n%s" % _screen(w)
+
+
+PAUSED_LINE = "Paused"
+
+
+def _bottom_row(w):
+    """The screen's last row: the status line or the window's key hints."""
+    return w.display(drain=0)[-1]
+
+
+def _pause_marks_where_the_program_is(tmp_path, backend):
+    """Stop on line 8, continue into a program that runs on, then press
+    Ctrl-G I: the backend is sent SIGINT, reports where the program was
+    (line 11), and the editor marks that line, says "Paused" and shows no
+    error box for the interrupt."""
+    with _session(tmp_path, backend, continue_runs_on=True,
+                  interrupt_at=C_CURSOR_LINE) as w:
+        _start_session(w, tmp_path, backend)
+        w.key(CTRL_G, "r", delay=0.5)
+        assert _wait_for(w, lambda: _stub_running(w, backend)
+                         and CONTINUE_COMMAND[backend]
+                         in _sent(tmp_path, backend), STEP_TIMEOUT_S), \
+            "%s should be running the program:\n%s" % (backend, _screen(w))
+        w.key(CTRL_G, "i", delay=0.5)
+        assert _wait_for(w, lambda: _mark_line(w) == C_CURSOR_LINE,
+                         STEP_TIMEOUT_S), \
+            "Ctrl-G I should mark line %d (mark on %s); %s was sent %r:\n%s" \
+            % (C_CURSOR_LINE, _mark_line(w), backend,
+               _sent(tmp_path, backend), _screen(w))
+        assert _wait_for(w, lambda: PAUSED_LINE in _bottom_row(w),
+                         STEP_TIMEOUT_S), \
+            "the status row should say %r:\n%s" % (PAUSED_LINE, _screen(w))
+        assert "interrupt in main" not in _screen(w), \
+            "the interrupt is not an error to show:\n%s" % _screen(w)
+        w.key(ALT_X, delay=0.5)
+
+
+# @scenario SC-debug-45
+def test_pause_marks_where_the_program_is_under_sdb(tmp_path):
+    """Ctrl-G I under sdb: SIGINT reaches sdb, which says where the program
+    stands, and the editor marks that line.
+
+    Limit: the stub proves xwpe's half of the protocol, not a real sdb."""
+    _pause_marks_where_the_program_is(tmp_path, "sdb")
+
+
+# @scenario SC-debug-45
+def test_pause_marks_where_the_program_is_under_dbx(tmp_path):
+    """Ctrl-G I under dbx: SIGINT reaches dbx, which says where the program
+    stands, and the editor marks that line.
+
+    Limit: the stub proves xwpe's half of the protocol, not a real dbx."""
+    _pause_marks_where_the_program_is(tmp_path, "dbx")
+
+
+# @scenario SC-debug-45
+def test_pause_marks_where_the_program_is_under_xdb(tmp_path):
+    """Ctrl-G I under xdb: SIGINT reaches xdb, whose report of the interrupt
+    is recognised while Pause waits, and the editor marks that line.
+
+    Limit: the stub proves xwpe's half of the protocol, not a real xdb, whose
+    wording for the interrupt is not known; the stub's names SIGINT."""
+    _pause_marks_where_the_program_is(tmp_path, "xdb")

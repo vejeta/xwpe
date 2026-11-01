@@ -29,6 +29,7 @@
 # include <libutil.h>      /* some BSDs */
 #endif
 #include "we_fdloop.h"
+#include "we_childsig.h"
 #include <stdint.h>
 
 /* A path handed to a build command, or a directory a build runs in. */
@@ -702,11 +703,88 @@ static int e_run_read_user_key(void)
  return c;
 }
 
+/* Set by the editor's SIGINT handler while a program runs: with the terminal
+   in cbreak mode Ctrl-C arrives as the signal, not as the key. */
+static volatile sig_atomic_t e_run_interrupted;
+
+/**
+ * e_run_on_sigint - The editor's SIGINT handler while a program runs.
+ * @sig: SIGINT.
+ *
+ * Only notes that Ctrl-C came; the run's loop then stops the program
+ * (e_run_interrupt_program), so a Ctrl-C typed where the terminal sends a
+ * signal ends the program as one that arrives as a key does.
+ */
+static void e_run_on_sigint(int sig)
+{
+ (void)sig;
+ e_run_interrupted = 1;
+}
+
+/**
+ * e_run_catch_sigint - For the length of a run: take SIGINT as a request
+ * to stop the program.
+ * @old: where the editor's own disposition is kept, for
+ * e_run_release_sigint.
+ *
+ * Outside a run the editor ignores SIGINT; during one, the user's Ctrl-C
+ * must stop the program instead of being lost.
+ */
+static void e_run_catch_sigint(struct sigaction *old)
+{
+ struct sigaction on_int;
+
+ e_run_interrupted = 0;
+ memset(&on_int, 0, sizeof on_int);
+ on_int.sa_handler = e_run_on_sigint;
+ sigemptyset(&on_int.sa_mask);
+ sigaction(SIGINT, &on_int, old);
+}
+
+/**
+ * e_run_release_sigint - After a run: give SIGINT back the disposition it
+ * had before, so a Ctrl-C while editing does nothing again.
+ * @old: what e_run_catch_sigint kept.
+ */
+static void e_run_release_sigint(const struct sigaction *old)
+{
+ sigaction(SIGINT, old, NULL);
+}
+
+/**
+ * e_run_interrupt_program - Ctrl-C while a program runs: stop it.
+ * @child: the shell that runs it, which leads the program's session.
+ *
+ * The whole group is signalled, as the terminal's Ctrl-C would: the shell
+ * may be waiting for the program, which a signal to the shell alone would
+ * not reach.  The program, which got SIGINT as the shell gives it (see
+ * wpe_child_default_signals), ends unless it handles the signal itself.
+ */
+static void e_run_interrupt_program(pid_t child)
+{
+ killpg(child, SIGINT);
+}
+
+/**
+ * e_run_status_code - The code Run reports for a program's end.
+ * @ws: the status waitpid gave.
+ *
+ * A program killed by a signal reports 128 plus the signal, as a shell
+ * does; a negative code would make the caller run it again another way.
+ */
+static int e_run_status_code(int ws)
+{
+ if (WIFEXITED(ws))
+  return(WEXITSTATUS(ws));
+ return(128 + WTERMSIG(ws));
+}
+
 static int e_run_with_pty(char *cmd, BUFFER *b, FENSTER *mf)
 {
  int pty_master, pty_slave, status, ret = -1;
  char slave_name[80];
  pid_t child;
+ struct sigaction old_int;
 
  if (openpty(&pty_master, &pty_slave, slave_name, NULL, NULL) < 0)
   return -1;
@@ -723,6 +801,7 @@ static int e_run_with_pty(char *cmd, BUFFER *b, FENSTER *mf)
  }
  if (child == 0)
  {
+  wpe_child_default_signals();   /* so Ctrl-C reaches the program */
   close(pty_master);
   setsid();
   ioctl(pty_slave, TIOCSCTTY, 0);
@@ -749,6 +828,7 @@ static int e_run_with_pty(char *cmd, BUFFER *b, FENSTER *mf)
     whose output cannot be watched still shows it, within that wait. */
  e_fd_watch(pty_master, POLLIN, NULL, NULL, "the program's output");
 
+ e_run_catch_sigint(&old_int);
  for (;;)
  {
   int ws;
@@ -756,15 +836,19 @@ static int e_run_with_pty(char *cmd, BUFFER *b, FENSTER *mf)
   if (wp > 0)
   {
    e_run_drain_pty(pty_master, b, mf);
-   ret = WIFEXITED(ws) ? WEXITSTATUS(ws) : -1;
+   ret = e_run_status_code(ws);
    break;
   }
   e_run_drain_pty(pty_master, b, mf);
   wpe_fd_poll(WPE_FD_POLL_MS);
   {
    int c = e_run_read_user_key();
-    if (c == CtrlC)
-    { kill(child, SIGINT); continue; }
+   if (c == CtrlC || e_run_interrupted)
+   {
+    e_run_interrupted = 0;
+    e_run_interrupt_program(child);
+    continue;
+   }
 #ifdef NCURSES
     if (c == KEY_BACKSPACE || c == 127 || c == 8)
      c = WPE_DC;
@@ -778,6 +862,7 @@ static int e_run_with_pty(char *cmd, BUFFER *b, FENSTER *mf)
   }
  }
 
+ e_run_release_sigint(&old_int);
  wpe_fd_del(pty_master);
  close(pty_master);
  if (!WpeIsXwin())
@@ -1282,6 +1367,7 @@ int e_exec_inf(FENSTER *f, char **argv, int n)
     parent's curses screen.  Then close every pipe fd (the dup2'd copies on
     0/1/2 survive). */
  setpgid(0, 0);
+ wpe_child_default_signals();    /* so Esc and Ctrl-C reach the compiler */
  dup2(efildes[1], 2);
  dup2(efildes[1], 1);
  if ((nul = open("/dev/null", O_RDONLY)) >= 0)

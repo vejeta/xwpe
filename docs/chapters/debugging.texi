@@ -75,6 +75,7 @@ and via @kbd{Ctrl-G} prefix shortcuts:
 @item Trace (step into) @tab T @tab Ctrl-G T @tab Execute one line, enter functions
 @item Step (step over) @tab S @tab Ctrl-G S @tab Execute one line, skip functions
 @item Run/Continue @tab R @tab Ctrl-G R @tab Start or continue execution
+@item Interrupt (pause) @tab I @tab Ctrl-G I, Ctrl-Break @tab Stop the program that runs
 @item Program output @tab P @tab Ctrl-G P @tab Show program's stdout
 @item debugger Options @tab O @tab Ctrl-G O @tab Select debugger backend
 @item Quit @tab Q @tab Ctrl-G Q @tab Stop debugger
@@ -108,6 +109,37 @@ at the start of @code{main}, as Run does.  Under gdb, pdb, jdb, a68g and
 the debug adapters, Go to cursor and Finish function leave the editor its
 keys while the program runs, so @samp{Debug @result{} Quit} ends the
 session.
+
+@cindex Pause
+@cindex Interrupt (pause)
+@cindex Ctrl-Break
+Pause stops a program that is running, where it is.  Press
+@kbd{Ctrl-Break} (@kbd{Ctrl-Pause} on a PC keyboard) in xwpe, or
+@kbd{Ctrl-G I}, or choose @samp{Debug @result{} Interrupt (pause)}, or
+click @samp{^Brk Pause} in the bottom row.  The line the program was on
+is marked, the Watches are refreshed, and the status row says
+@samp{Paused}.  The program has no error to show for the interrupt.  A
+terminal sends no Ctrl-Break that curses can read, so there use
+@kbd{Ctrl-G I}, the menu or the bar.  With no session, or with the
+program stopped, Pause only says so on the status row.  It works under
+gdb, sdb, dbx, xdb, pdb and a68g; the other debuggers say that Pause is
+not available yet.
+
+The debugger is sent SIGINT, as Ctrl-C does in a shell.  gdb reports
+where the program was, and the green bar goes to the innermost frame
+whose source you have, not to the library code the program sleeps in.
+That frame is gdb's selected one, so watches on its locals show their
+values, and the next F8 or F7 finishes the interrupted call and stops on
+the next line of your code.
+pdb stops inside its own signal handler, so the bar goes to the frame
+below it, which is made pdb's current frame.  a68g prints the line and
+asks whether to terminate; xwpe answers no, and the bar goes to that
+line.  A program that handles SIGINT itself is not stopped by it: the
+status row says so at its next stop.  xwpe starts the debugger, and the
+programs under it, with SIGINT and SIGPIPE as a shell gives them,
+not ignored.  In wpe the debugger and the debug adapters run apart from
+the editor's terminal, so a Ctrl-C typed during a session reaches
+neither them nor the program; use Pause to stop it.
 
 @cindex Show stack
 @cindex Stack window
@@ -169,10 +201,22 @@ F1 Help F7 Trace F8 Step F4 Go to cursor ^F7 Make Watch ^F2 Quit  Alt-X Quit
 @end example
 
 @noindent
-A click on an entry sends the key it names.  When the session ends,
-the editing keys come back.  In the CUA key style the source window
-keeps its editing bar.  The Watches and Stack windows have their own
-bar, where @samp{^F10 Run} continues the program.
+While the program runs, the bar names only the keys that work then.
+F7, F8, F4 and the breakpoint and watch keys are refused until the
+program stops:
+
+@example
+F1 Help  ^Brk Pause  ^F2 Quit
+@end example
+
+@noindent
+Under gdb the program's output makes Messages the window you type in,
+so Messages shows this bar too while the program runs.  A click on an
+entry sends the key it names; a click on @samp{^Brk Pause} pauses the
+program, also in a terminal that sends no Ctrl-Break.  When the session
+ends, the editing keys come back.  In the CUA key style the source
+window keeps its editing bar.  The Watches and Stack windows have their
+own bar, where @samp{^F10 Run} continues the program.
 
 @section Starting a session
 

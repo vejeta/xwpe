@@ -79,3 +79,9 @@ things the emulated pipeline does not cover:
       a typed line reaches the program.  A headless run cannot drive a debug
       session (the editor cannot create /dev/tty); the X11 twin is
       tests/x11/test_menu_debug.py.
+  [ ] Debugger Pause: while gdb runs a program that does not stop (a loop,
+      a sleep), Ctrl-Break (Ctrl+Pause on a PC keyboard) stops it, the line
+      it was on is marked and the status row says "Paused".  The key
+      translation is asserted by tests/test_wayland_keysym.py; the session
+      itself needs a real compositor (the X11 twin is test_ctrl_break_pauses
+      in tests/x11/test_menu_debug.py).

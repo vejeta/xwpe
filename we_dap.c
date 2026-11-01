@@ -31,6 +31,7 @@
 #include <termios.h>
 #include <sys/ioctl.h>
 
+#include "we_childsig.h"
 #include "we_dap.h"
 #include "we_dap_proto.h"
 
@@ -1486,6 +1487,7 @@ static pid_t dap_spawn(char *const argv[], int port, const char *cwd,
    if (chdir(cwd) != 0)
     _exit(127);
   close(listen_fd);
+  wpe_child_default_signals();
   setsid();                       /* drop xwpe's controlling terminal */
   if (slave_fd >= 0)
   {
@@ -1528,6 +1530,11 @@ static pid_t dap_spawn_stdio(char *const argv[], const char *cwd,
   dup2(from_child[1], 1);          /* child stdout -> from_child write end */
   close(to_child[0]); close(to_child[1]);
   close(from_child[0]); close(from_child[1]);
+  wpe_child_default_signals();
+  /* Out of the terminal editor's foreground process group, as the
+     reverse-TCP adapter above: with SIGINT at its default, a Ctrl-C typed
+     in the editor would otherwise end an adapter that does not catch it. */
+  setsid();
   execvp(argv[0], argv);
   _exit(127);
  }

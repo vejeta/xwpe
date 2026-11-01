@@ -233,6 +233,27 @@ Changes
 
 1.7.0 (AI assistant -- experimental, opt-in)
 
+* New Debug > Interrupt (pause), Ctrl-Break in xwpe, Ctrl-G I anywhere:
+  it stops the program that runs under gdb, sdb, dbx, xdb, pdb or a68g
+  where it is, marks the line, and the status row says "Paused".  Under
+  gdb the bar goes to your code, not the library function the program
+  sleeps in.  While the program runs the bottom row names Pause, and a
+  click on "^Brk Pause" pauses it.  With no session, or at a stop, Pause
+  only says so.  Under gdb, watches on locals work after a pause, and
+  F8 or F7 then stops on the next line of your code.
+
+* The debugger, and the program under it, no longer start with SIGINT and
+  SIGPIPE ignored, which the editor's own setting passed on.  A program
+  that relies on SIGPIPE behaves as it does in a shell, and Ctrl-C style
+  interrupts reach it.  The same holds for the program Run (Ctrl-F9)
+  starts and for the build commands.  In wpe the debugger and the debug
+  adapters run apart from the editor's terminal, so a Ctrl-C typed during
+  a session leaves it as it was; Pause is the key that stops the program.
+
+* Ctrl-C now stops the program Run (Ctrl-F9) started, as its first line
+  says.  The key was lost (the editor ignored the signal the terminal made
+  of it) and the program ignored it.
+
 * The editor no longer hangs after a dialog closes on OpenBSD.
 
 * A failed build whose last message has no line end now shows it.

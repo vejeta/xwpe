@@ -289,6 +289,16 @@ WOPT dblst_src_o[] = {  {"F1 Help",  0, 0, 2, F1},
 		    {"^F2 Quit", 56, 0, 3, CF2},
 		    {"Alt-X Quit", 66, 0, 5, AltX}  };
 
+/* The bar a source window shows while the program runs under the debugger:
+   only keys that work then.  F7, F8, F4 and the breakpoint and watch keys are
+   refused until the program stops, so they are not named (they come back
+   here when breakpoints and watches can change during a run); a click on
+   "^Brk Pause" sends Ctrl-Break, so a terminal that never sends that key can
+   still pause the program. */
+WOPT dblst_run_o[] = {  {"F1 Help",  0, 0, 2, F1},
+		    {"^Brk Pause", 9, 0, 4, CtrlBrk},
+		    {"^F2 Quit", 21, 0, 3, CF2}  };
+
 WOPT xblst_o[] = {  {"F1 Help",  0, 0, 2, F1},
 		    {"Execute",  19, 0, 1, AltE},
 		    {"^W Close W.", 38, 0, 2, CtrlW},
@@ -691,6 +701,7 @@ static const struct {
  {  eblst_lsp_o, E_BAR_LEN(eblst_lsp_o)  },
  {  eblst_lsp_u, E_BAR_LEN(eblst_lsp_u)  },
  {  dblst_src_o, E_BAR_LEN(dblst_src_o)  },
+ {  dblst_run_o, E_BAR_LEN(dblst_run_o)  },
 #ifdef WPE_AI
  {  eblst_ai_o, E_BAR_LEN(eblst_ai_o)  },
  {  eblst_ai_u, E_BAR_LEN(eblst_ai_u)  },
@@ -924,7 +935,7 @@ static int e_debug_bar_wanted(ECNT *cn)
  * assistant switched off) reaches the screen at once, so the user reads the
  * keys that work now instead of the ones the last repaint happened to show.
  */
-static void e_bottom_bar_repaint(ECNT *cn)
+void e_bottom_bar_repaint(ECNT *cn)
 {
  FENSTER *f = cn->f[cn->mxedt];
 
@@ -937,6 +948,52 @@ static void e_bottom_bar_repaint(ECNT *cn)
 }
 
 /**
+ * e_debug_program_runs - Does the debugger's bar say the program runs?
+ * @cn: the editor.
+ * Return: 1 while the program runs under the debugger in the Borland style.
+ */
+static int e_debug_program_runs(ECNT *cn)
+{
+#ifndef DEBUGGER
+ return(0);
+#else
+ return(e_debug_bar_wanted(cn) && e_d_program_runs());
+#endif
+}
+
+/**
+ * e_is_messages_window - Is @f the Messages window?
+ */
+static int e_is_messages_window(FENSTER *f)
+{
+ return(f && f->datnam && !strcmp(f->datnam, "Messages"));
+}
+
+/**
+ * e_use_messages_bar - Pick the bottom bar of the Messages window for a
+ * debug session that runs the program.
+ * @f: Messages; @running: whether the program runs under the debugger.
+ *
+ * The program's output makes Messages the window the user types in, so it
+ * is the window on top for most of a run under gdb: its bar must name Pause
+ * too, or a terminal user whose Ctrl-Break never arrives would have nothing
+ * to click.  Once the program stops, Messages has its own bar again.
+ */
+static void e_use_messages_bar(FENSTER *f, int running)
+{
+ if (running)
+ {
+  f->blst = dblst_run_o;
+  f->nblst = E_BAR_LEN(dblst_run_o);
+ }
+ else if (f->blst == dblst_run_o)
+ {
+  f->blst = mblst;
+  f->nblst = E_BAR_LEN(mblst_o);   /* mblst_u has as many entries */
+ }
+}
+
+/**
  * e_refresh_editor_bars - Re-pick every editor window's bottom bar.
  * @cn: the editor.
  *
@@ -944,9 +1001,25 @@ static void e_bottom_bar_repaint(ECNT *cn)
  * toggle flips in Options > AI, and when the key style changes: without it an
  * open window keeps the bar it was given when it was opened, so the user is
  * shown keys that no longer do what they say.  Only the swappable file bars
- * are touched; Help, Messages, Watches and Stack keep their own.
+ * are touched; Help, Watches and Stack keep their own, and Messages keeps
+ * its own except while the program runs (see e_use_messages_bar).
  */
 void e_refresh_editor_bars(ECNT *cn)
+{
+ e_pick_editor_bars(cn);
+ e_bottom_bar_repaint(cn);
+}
+
+/**
+ * e_pick_editor_bars - Choose every editor window's bottom bar, without
+ * drawing the bottom row.
+ * @cn: the editor.
+ *
+ * For a change that happens while a box may be in front: the bars are set
+ * now and the row is drawn (e_bottom_bar_repaint) once the box is gone,
+ * so the row under a box keeps showing the bar that box's window had.
+ */
+void e_pick_editor_bars(ECNT *cn)
 {
  int i, cua = (cn->edopt & ED_CUA_STYLE) ? 1 : 0;
  int debugging = e_debug_bar_wanted(cn);
@@ -955,12 +1028,16 @@ void e_refresh_editor_bars(ECNT *cn)
  {
   FENSTER *f = cn->f[i];
 
+  if (e_is_messages_window(f))
+  {
+   e_use_messages_bar(f, e_debug_program_runs(cn));
+   continue;
+  }
   if (!e_is_editor_bar(f->blst))
    continue;                            /* not an editor-file bar -- leave it   */
   if (!debugging || !e_give_debug_bar(f))
    e_use_editor_bar(f, e_editor_bar_for(f, cua));
  }
- e_bottom_bar_repaint(cn);
 }
 
 /**
@@ -971,14 +1048,21 @@ void e_refresh_editor_bars(ECNT *cn)
  * Used for every source window, the ones open when the session starts and
  * the ones it opens later (a step into another file, a stop in a file not
  * yet open, F3 in the middle of a session), so F4 is Go to cursor in each
- * of them and none shows the editing keys until the session ends.
+ * of them and none shows the editing keys until the session ends.  While
+ * the program runs the bar names Pause and the keys that work then; at a
+ * stop it names the stepping keys.
  * Return: 1 when the window got the debugger's bar.
  */
 int e_give_debug_bar(FENSTER *f)
 {
  if (!f || !e_debug_bar_wanted(f->ed))
   return(0);
- e_use_editor_bar(f, dblst_src_o);
+#ifdef DEBUGGER
+ if (e_d_program_runs())
+  e_use_editor_bar(f, dblst_run_o);
+ else
+  e_use_editor_bar(f, dblst_src_o);
+#endif
  return(1);
 }
 

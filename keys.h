@@ -143,6 +143,13 @@
 #define CF8 357
 #define CF9 358
 #define CF10 951
+/* Ctrl-Break: the key that pauses a program running under the debugger.
+   Not named CBRK: <sys/ttydefaults.h> already defines that, as 0xff.
+   X11 and Wayland send it as the keysym Break (or Ctrl+Pause); the terminal
+   reader maps curses' KEY_BREAK to it, which no stock terminfo produces;
+   Ctrl-G I and the running bar's "^Brk Pause" entry reach the same code
+   everywhere. */
+#define CtrlBrk 952
 
 
 #define HBG CtrlA	/*  Button start  */

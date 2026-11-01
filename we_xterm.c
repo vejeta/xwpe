@@ -1386,6 +1386,22 @@ static int e_x_next_pending_utf8(void)
  return cp;
 }
 
+/**
+ * e_x_is_break_key - Is this keystroke Ctrl-Break?
+ * @keysym: the key's symbol; @state: the modifiers held.
+ *
+ * A PC keyboard's Ctrl+Pause reaches X as the symbol Break, so that is
+ * pause for the program under the debugger; a layout that delivers Pause
+ * with Control held is taken the same way.  A plain Pause key is not.
+ * Return: 1 for Ctrl-Break.
+ */
+static int e_x_is_break_key(KeySym keysym, unsigned int state)
+{
+ if (keysym == XK_Break)
+  return(1);
+ return(keysym == XK_Pause && (state & ControlMask));
+}
+
 static int e_x_first_utf8_codepoint(unsigned char *buf, int len)
 {
  int first_len = e_utf8_charlen(buf[0]);
@@ -1694,6 +1710,8 @@ int e_x_getch()
        for backward field navigation in option dialogs. */
     if (keysym == XK_ISO_Left_Tab)
      return(WPE_BTAB);
+    if (e_x_is_break_key(keysym, key_b))
+     return(CtrlBrk);
     if (charcount == 1)
     {
      if (*buffer == 127)

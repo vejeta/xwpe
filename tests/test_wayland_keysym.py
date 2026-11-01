@@ -49,3 +49,23 @@ def test_wayland_keysym_selftest():
     for needle in ("U+0130 (=Alt-N)", "CJK U+65E5", "Alt+n is not a char"):
         assert needle in out and "FAIL" not in out, \
             "selftest missing/failed case %r:\n%s" % (needle, out)
+
+
+# @scenario SC-debug-45
+def test_wayland_break_and_ctrl_pause_are_ctrl_break():
+    """The keysym Break, with or without Control, and Ctrl+Pause translate
+    to the editor's Ctrl-Break key (CtrlBrk in keys.h); a plain Pause key
+    does not.  The compositor-free peer of the X11 Ctrl-Break row."""
+    env = dict(os.environ, XWPE_BACKEND="wayland", XWPE_WL_KEYTEST="1")
+    env.pop("WAYLAND_DISPLAY", None)
+    r = subprocess.run([XWPE_BIN], env=env,
+                       stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                       timeout=30)
+    out = r.stdout.decode("utf-8", "replace")
+    assert r.returncode == 0, "keysym selftest failed:\n" + out
+    for name in ("Break", "Ctrl+Break", "Ctrl+Pause", "Pause alone"):
+        rows = [line for line in out.splitlines()
+                if line.strip().startswith(name + " ")]
+        assert rows, "selftest has no %r case:\n%s" % (name, out)
+        assert rows[0].rstrip().endswith("OK"), \
+            "selftest case %r failed: %r" % (name, rows[0])

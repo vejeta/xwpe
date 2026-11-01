@@ -64,6 +64,7 @@ minimum 80x25; e.g.@: @option{-g 80x20+4+4}).
 @item @kbd{Ctrl-F8} @tab @tab Toggle breakpoint
 @item @kbd{Ctrl-F9} @tab Run program @tab
 @item @kbd{Ctrl-F10} @tab @tab Start/continue debugger
+@item @kbd{Ctrl-Break} @tab @tab Interrupt (pause) the running program (xwpe on X11 and Wayland; @kbd{Ctrl-G I} everywhere)
 @end multitable
 
 @subsection Whether a key reaches xwpe
@@ -199,6 +200,7 @@ keys are bound to something else.
 @item @kbd{Ctrl-G K} @tab Show stack.
 @item @kbd{Ctrl-G U} @tab Goto cursor (run until cursor line).
 @item @kbd{Ctrl-G F} @tab Finish function (run until return).
+@item @kbd{Ctrl-G I} @tab Interrupt (pause) the program that runs.
 @item @kbd{Ctrl-G A} @tab Remove all watches.
 @item @kbd{Ctrl-G P} @tab Program output: focus the Messages panel with the
 program's captured output (both backends).

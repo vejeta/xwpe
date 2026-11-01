@@ -239,6 +239,12 @@ class WaylandSession:
     helper API as the X11 suite's XwpeSession (key/click/type/menu/save/
     screenshot/saved_text), so test bodies can be shared."""
 
+    # A debug session needs the editor to name its terminal (ttyname of
+    # stdin), and the headless harness gives it none: a test body that needs
+    # a running debugger skips here and is a manual check in
+    # WAYLAND-TESTING.txt.  The X11 session leaves this attribute unset.
+    can_debug = False
+
     def __init__(self, proc, env, wid, dump):
         self.proc = proc
         self.env = env

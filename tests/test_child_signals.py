@@ -193,3 +193,86 @@ def test_ai_command_starts_with_sigchld_unblocked(tmp_path):
         ran = _wait_for_file(w, str(masks), FILE_TIMEOUT_S)
     assert ran, "the assistant never ran the command"
     _assert_sigchld_clear("the assistant's command", masks.read_text())
+
+
+SIGINT_BIT = 1 << (signal.SIGINT - 1)
+SIGPIPE_BIT = 1 << (signal.SIGPIPE - 1)
+
+
+def _assert_interrupt_signals_default(what, status_text):
+    """Neither SIGINT nor SIGPIPE is ignored: the editor ignores both, and a
+    program started from a shell ignores neither."""
+    ignored = _mask_words(status_text)["SigIgn"]
+    assert not ignored & SIGINT_BIT, \
+        "%s runs with SIGINT ignored, so Ctrl-C cannot stop it" % what
+    assert not ignored & SIGPIPE_BIT, \
+        "%s runs with SIGPIPE ignored" % what
+
+
+# A compiler that writes down which signals it starts with ignored.  A shell
+# script here, not the Python one above: Python ignores SIGPIPE by itself,
+# and dash keeps an ignored signal ignored but clears nothing about it.
+FAKE_GCC_SH = ("#!/bin/sh\n"
+               "grep -E '^Sig(Blk|Ign):' /proc/self/status > %s\n"
+               "exec %s \"$@\"\n")
+
+
+# @scenario SC-compile-08
+def test_build_compiler_starts_with_sigint_and_sigpipe_default(tmp_path):
+    """The compiler F9 runs inherits neither SIGINT nor SIGPIPE as ignored."""
+    _need("gcc")
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    masks = tmp_path / "gcc-masks.txt"
+    gcc = bindir / "gcc"
+    real_gcc = shutil.which("gcc")
+    gcc.write_text(FAKE_GCC_SH % (str(masks), real_gcc))
+    gcc.chmod(0o755)
+    env = {"PATH": "%s:%s" % (bindir, os.environ.get("PATH", ""))}
+    with WpeSession(str(tmp_path), "int main(void){return 0;}\n",
+                    filename="t.c", wait=1.5, env_extra=env) as w:
+        w.key(F9, delay=0.5)
+        built = _wait_for_file(w, str(masks), FILE_TIMEOUT_S)
+    assert built, "the build never ran the compiler"
+    _assert_interrupt_signals_default("the compiler", masks.read_text())
+
+
+# @scenario SC-compile-03
+def test_run_program_starts_with_sigint_and_sigpipe_default(tmp_path):
+    """The program Ctrl-F9 runs inherits neither SIGINT nor SIGPIPE as
+    ignored."""
+    _need("gcc")
+    masks = tmp_path / "run-masks.txt"
+    with WpeSession(str(tmp_path), RUN_PROG, filename="r.c", wait=1.5) as w:
+        w.key(CTRL_F9, delay=0.5)
+        ran = _wait_for_file(w, str(masks), FILE_TIMEOUT_S)
+    assert ran, "Run never started the program"
+    _assert_interrupt_signals_default("the program Run started",
+                                      masks.read_text())
+
+
+# A program that writes its PID and then loops until it is stopped.
+LOOP_PROG = ('#include <stdio.h>\n#include <unistd.h>\n'
+             'int main(void){FILE*o=fopen("loop.pid","w");'
+             'fprintf(o,"%d",(int)getpid());fclose(o);'
+             'for(;;)usleep(100000);return 0;}\n')
+
+
+# @scenario SC-compile-03
+def test_ctrl_c_stops_the_program_ctrl_f9_runs(tmp_path):
+    """The run says "Ctrl-C to stop": Ctrl-C ends a program that loops."""
+    _need("gcc")
+    pidfile = tmp_path / "loop.pid"
+    with WpeSession(str(tmp_path), LOOP_PROG, filename="l.c", wait=1.5) as w:
+        w.key(CTRL_F9, delay=0.5)
+        assert _wait_for_file(w, str(pidfile), FILE_TIMEOUT_S), \
+            "Run never started the program"
+        pid = int(pidfile.read_text())
+        w.key("\x03", delay=0.5)
+        deadline = time.time() + FILE_TIMEOUT_S * WAIT_SCALE
+        while time.time() < deadline and os.path.exists("/proc/%d" % pid):
+            w._drain(POLL_S)
+        alive = os.path.exists("/proc/%d" % pid)
+        if alive:
+            os.kill(pid, signal.SIGKILL)
+    assert not alive, "Ctrl-C did not stop the program (pid %d)" % pid

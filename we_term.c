@@ -1572,6 +1572,9 @@ int e_t_getch()
    }
 #endif
    case KEY_HELP:  c = HELP; break;
+#ifdef KEY_BREAK
+   case KEY_BREAK:  c = CtrlBrk; break;  /* where a terminal sends it */
+#endif
    case KEY_LL:  c = ENDE; break;
    case KEY_F(17):  c = SF1; break;
    case KEY_F(18):  c = SF2; break;

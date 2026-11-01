@@ -187,6 +187,7 @@ noinst_HEADERS = \
   we_mousedrain.h \
   we_render.h \
   we_render_glyphs.h \
+  we_childsig.h \
   we_wayland.h \
   we_fdloop.h \
   we_trace.h \

@@ -412,6 +412,8 @@ int e_switch_blst(ECNT *cn);
 void e_use_editor_bar(FENSTER *f, WOPT *bar);
 int e_lsp_bar_wanted(FENSTER *f);
 void e_refresh_editor_bars(ECNT *cn);
+void e_pick_editor_bars(ECNT *cn);
+void e_bottom_bar_repaint(ECNT *cn);
 int e_give_debug_bar(FENSTER *f);
 void e_free_find(FIND *fd);
 
@@ -920,6 +922,8 @@ int e_deb_trace(FENSTER *f);
 int e_deb_next(FENSTER *f);
 int e_d_goto_cursor(FENSTER *f);
 int e_d_finish_func(FENSTER *f);
+int e_d_pause(FENSTER *f);
+int e_d_program_runs(void);
 int e_deb_options(FENSTER *f);
 int e_d_step_next(FENSTER *f, int sw);
 int e_read_output(FENSTER *f);

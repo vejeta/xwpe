@@ -498,6 +498,23 @@ static int wl_key_pop(int *is_char)
  return code;
 }
 
+/**
+ * wl_is_break_key - Is this keystroke Ctrl-Break?
+ * @sym: the key's symbol; @ctrl: whether Control is held.
+ *
+ * Same rule as the X11 reader: a PC keyboard's Ctrl+Pause arrives as the
+ * symbol Break, and a layout that sends Pause with Control held means the
+ * same, so the user pauses the program under the debugger either way.  A
+ * plain Pause key is not.
+ * Return: 1 for Ctrl-Break.
+ */
+static int wl_is_break_key(xkb_keysym_t sym, int ctrl)
+{
+ if (sym == XKB_KEY_Break)
+  return 1;
+ return sym == XKB_KEY_Pause && ctrl;
+}
+
 /* keysym_to_xwpe - map an xkbcommon keysym (plus the UTF-8 text it produced and
    the active modifiers) to an internal xwpe key code.  This mirrors the X11
    translation in e_x_getch one-for-one: xkbcommon's XKB_KEY_* values are the
@@ -514,6 +531,8 @@ int keysym_to_xwpe(xkb_keysym_t sym, const char *utf8, int u8len,
 
  if (sym == XKB_KEY_ISO_Left_Tab)
   return WPE_BTAB;
+ if (wl_is_break_key(sym, ctrl))
+  return CtrlBrk;
 
  if (u8len == 1)
  {
@@ -1829,7 +1848,11 @@ static void wl_keytest(void)
   { XKB_KEY_Delete,      "\177", 1, 0,0,1, AltDel,   "Alt+Delete" },
   { XKB_KEY_BackSpace,   "\010", 1, 0,0,0, CtrlH,    "BackSpace"  },
   { XKB_KEY_ISO_Left_Tab,"",     0, 0,1,0, WPE_BTAB, "Shift+Tab"  },
-  { XKB_KEY_Help,        "",     0, 0,0,0, HELP,     "Help"       }
+  { XKB_KEY_Help,        "",     0, 0,0,0, HELP,     "Help"       },
+  { XKB_KEY_Break,       "",     0, 0,0,0, CtrlBrk,  "Break"      },
+  { XKB_KEY_Break,       "",     0, 1,0,0, CtrlBrk,  "Ctrl+Break" },
+  { XKB_KEY_Pause,       "",     0, 1,0,0, CtrlBrk,  "Ctrl+Pause" },
+  { XKB_KEY_Pause,       "",     0, 0,0,0, 0,        "Pause alone" }
  };
  int n = (int)(sizeof t / sizeof t[0]), i, fails = 0;
 
