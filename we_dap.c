@@ -1462,12 +1462,13 @@ static int dap_listen_ephemeral(int *port)
    inherits that pty, so its stdout/stderr land on the master the caller reads
    (xwpe's Messages window), exactly like the gdb backend's inferior pty. */
 static pid_t dap_spawn(char *const argv[], int port, const char *cwd,
-                       int listen_fd, int slave_fd)
+                       int listen_fd, int master_fd, int slave_fd)
 {
  int argc = 0;
  char addr[64];
  char **av;
  pid_t pid;
+ const pid_t editor = getpid();
 
  while (argv[argc])
   argc++;
@@ -1487,8 +1488,16 @@ static pid_t dap_spawn(char *const argv[], int port, const char *cwd,
    if (chdir(cwd) != 0)
     _exit(127);
   close(listen_fd);
+  /* The adapter must not hold the master of its own terminal: the hangup
+     that ends it when the editor dies comes only when every master is
+     closed. */
+  if (master_fd >= 0)
+   close(master_fd);
   wpe_child_default_signals();
   setsid();                       /* drop xwpe's controlling terminal */
+  /* Not left running if the editor is killed outright. */
+  if (wpe_child_die_with_editor(editor) != 0)
+   _exit(127);
   if (slave_fd >= 0)
   {
    ioctl(slave_fd, TIOCSCTTY, 0); /* the pty becomes our controlling tty */
@@ -1514,6 +1523,7 @@ static pid_t dap_spawn_stdio(char *const argv[], const char *cwd,
 {
  int to_child[2], from_child[2];
  pid_t pid;
+ const pid_t editor = getpid();
 
  if (pipe(to_child) != 0)
   return -1;
@@ -1535,6 +1545,9 @@ static pid_t dap_spawn_stdio(char *const argv[], const char *cwd,
      reverse-TCP adapter above: with SIGINT at its default, a Ctrl-C typed
      in the editor would otherwise end an adapter that does not catch it. */
   setsid();
+  /* Not left running if the editor is killed outright. */
+  if (wpe_child_die_with_editor(editor) != 0)
+   _exit(127);
   execvp(argv[0], argv);
   _exit(127);
  }
@@ -2168,7 +2181,8 @@ e_dap_session *e_dap_start(char *const argv[], const char *program,
     tcsetattr(s->pty_master, TCSANOW, &tio);
    }
   }
-  s->pid = dap_spawn(argv, port, cwd, s->listen_fd, slave);
+  s->pid = dap_spawn(argv, port, cwd, s->listen_fd, s->pty_master,
+                   slave);
   if (slave >= 0)
    close(slave);                /* the child holds its own copy */
  }

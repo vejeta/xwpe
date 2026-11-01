@@ -231,6 +231,10 @@
   {"id": "SC-debug-45", "requirement": "Stepping and the mark", "layer": "ncurses", "test": "tests/test_debugger_integration.py::test_ctrl_c_at_a_gdb_stop_leaves_the_session_working", "status": "new", "needs": ["gcc", "gdb"]},
   {"id": "SC-debug-45", "requirement": "Stepping and the mark", "layer": "ncurses", "test": "tests/test_debugger_integration.py::test_ctrl_c_at_a_pdb_stop_leaves_the_session_working", "status": "new", "needs": ["python3"]},
   {"id": "SC-debug-45", "requirement": "Stepping and the mark", "layer": "ncurses", "test": "tests/test_debugger_integration.py::test_ctrl_c_while_a_stdio_adapter_runs_leaves_the_session_working", "status": "new", "needs": ["rustc", "lldb-dap", "gdb"]},
-  {"id": "SC-debug-17", "requirement": "Starting and ending a session", "layer": "ncurses", "test": "tests/test_debugger_integration.py::test_ctrl_c_while_an_adapter_starts_leaves_it_running", "status": "new", "needs": []}
+  {"id": "SC-debug-17", "requirement": "Starting and ending a session", "layer": "ncurses", "test": "tests/test_debugger_integration.py::test_ctrl_c_while_an_adapter_starts_leaves_it_running", "status": "new", "needs": []},
+  {"id": "SC-debug-17", "requirement": "Starting and ending a session", "layer": "ncurses", "test": "tests/test_terminal_modes.py::test_modes_stay_clear_after_a_debug_session", "status": "new", "needs": ["gcc", "gdb"]},
+  {"id": "SC-debug-17", "requirement": "Starting and ending a session", "layer": "ncurses", "test": "tests/test_debugger_dies_with_editor.py::test_pdb_does_not_outlive_a_killed_editor", "status": "new", "needs": ["python3"]},
+  {"id": "SC-debug-17", "requirement": "Starting and ending a session", "layer": "ncurses", "test": "tests/test_debugger_dies_with_editor.py::test_a68g_does_not_outlive_a_killed_editor", "status": "new", "needs": ["a68g"]},
+  {"id": "SC-debug-17", "requirement": "Starting and ending a session", "layer": "ncurses", "test": "tests/test_debugger_dies_with_editor.py::test_a_reverse_tcp_adapter_does_not_outlive_a_killed_editor", "status": "new", "needs": []}
  ]
 }

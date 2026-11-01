@@ -242,6 +242,21 @@ Changes
   only says so.  Under gdb, watches on locals work after a pause, and
   F8 or F7 then stops on the next line of your code.
 
+* wpe keeps its keys after a tool has run.  After one compile (F9), run
+  (Ctrl-F9) or debug session, the terminal went back to sending signals for
+  Ctrl-\, Ctrl-Z and Ctrl-C and to stopping its output on Ctrl-S: Ctrl-\
+  ended the editor with no save, Ctrl-Z stopped it, and Ctrl-S froze the
+  screen.  They are keys of the editor from start to end, as before the
+  first tool.  The same holds on the Alt-F5 User Screen, where Ctrl-\
+  also ended the editor, and after the editor is stopped and continued.
+
+* In wpe, a pdb, a68g, Go or other debugger no longer keeps running when
+  the editor is killed outright (kill -9, the out-of-memory killer).  A
+  program in a loop under the debugger used to go on using a core.  Linux
+  and FreeBSD end the debugger with the editor; on the other systems it
+  ends when it reads the end of its input, which pdb does at its prompt
+  and a68g does not.  Closing the terminal already ended it.
+
 * The debugger, and the program under it, no longer start with SIGINT and
   SIGPIPE ignored, which the editor's own setting passed on.  A program
   that relies on SIGPIPE behaves as it does in a shell, and Ctrl-C style

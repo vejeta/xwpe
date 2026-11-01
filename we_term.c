@@ -603,6 +603,29 @@ int init_cursor()
    return(0);
 }
 
+/**
+ * e_t_adopt_tty_modes - Tell ncurses which terminal modes the editor runs in.
+ *
+ * The editor sets its own keyboard modes with tcsetattr (every key arrives as
+ * a byte: no signals for Ctrl-C, Ctrl-Z or Ctrl-\, no flow control on Ctrl-S
+ * and Ctrl-Q), and ncurses does not see that.  Its saved "program mode" is
+ * still the one cbreak() made, with the signal and flow keys on, and every
+ * return from a compile, a run, a shell or a debugger restores that one.
+ * Calling this right after the editor's own tcsetattr makes ncurses save the
+ * modes as they are now, so a Ctrl-\ after F9 is still a key and not a quit
+ * without saving.  The same saved modes come back when the editor is stopped
+ * and continued (Ctrl-Z from outside, kill -TSTP / -CONT).
+ *
+ * Called once, after initscr: the modes the editor puts back after a tool are
+ * read from the terminal at the moment it leaves, so they are these same ones.
+ */
+static void e_t_adopt_tty_modes(void)
+{
+#ifdef NCURSES
+ def_prog_mode();
+#endif
+}
+
 int e_t_initscr()
 {
  int ret, i, k;
@@ -685,6 +708,7 @@ int e_t_initscr()
  ntermio.c_cc[VSWTCH] = 0;
 #endif
  tcsetattr(0, TCSADRAIN, &ntermio);
+ e_t_adopt_tty_modes();
  if (spc_in) e_putp(spc_in);
  return(0);
 }
@@ -2073,6 +2097,31 @@ int e_t_deb_out(FENSTER *f)
 }
 
 /**
+ * e_t_wait_for_any_key - Block until one key is typed on the bare terminal.
+ *
+ * Used while the editor has stepped aside (User Screen), where the terminal
+ * has the shell's cooked modes.  The key is read raw, with no echo, and with
+ * the signal keys and flow control off too: otherwise the user's Ctrl-\ to
+ * leave the screen would end the editor with no save, Ctrl-Z would stop it
+ * and Ctrl-S would freeze the screen.  The modes found are put back.
+ */
+static void e_t_wait_for_any_key(void)
+{
+ struct termios old, raw;
+ char c;
+
+ tcgetattr(0, &old);
+ raw = old;
+ raw.c_lflag &= ~(ICANON | ECHO | ISIG | IEXTEN);
+ raw.c_iflag &= ~IXON;
+ raw.c_cc[VMIN] = 1;
+ raw.c_cc[VTIME] = 0;
+ tcsetattr(0, TCSANOW, &raw);
+ (void)read(0, &c, 1);
+ tcsetattr(0, TCSANOW, &old);
+}
+
+/**
  * e_t_user_screen - Switch the console to the program's raw full-screen output.
  *
  * Terminal-only.  Drops out of ncurses (endwin), clears the screen and
@@ -2114,16 +2163,7 @@ int e_t_user_screen(FENSTER *f)
  fputs("\033[0m\r\n\033[7m xwpe: press any key to return to the editor \033[0m",
    stderr);
  fflush(stderr);
- { struct termios _old, _raw; char _c;
-   tcgetattr(0, &_old);
-   _raw = _old;
-   _raw.c_lflag &= ~(ICANON | ECHO);
-   _raw.c_cc[VMIN] = 1;
-   _raw.c_cc[VTIME] = 0;
-   tcsetattr(0, TCSANOW, &_raw);
-   read(0, &_c, 1);
-   tcsetattr(0, TCSANOW, &_old);
- }
+ e_t_wait_for_any_key();
  e_t_take_terminal_back();
  return(0);
 }

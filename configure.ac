@@ -288,6 +288,12 @@ AC_CHECK_FUNCS([mkdtemp])
 AC_CHECK_HEADERS([sys/event.h])
 AC_CHECK_FUNCS([kqueue])
 
+# --- A debugger that dies with the editor ---
+# Linux has prctl(PR_SET_PDEATHSIG) and FreeBSD procctl(PROC_PDEATHSIG_CTL):
+# the system sends the child a signal when its parent is killed.  The other
+# systems have no such call; the sources check the macro each header gives.
+AC_CHECK_HEADERS([sys/prctl.h sys/procctl.h])
+
 # --- Optional: WPE_TRACE debug logging (off by default, zero-cost) ---
 AC_ARG_ENABLE([trace],
   [AS_HELP_STRING([--enable-trace],

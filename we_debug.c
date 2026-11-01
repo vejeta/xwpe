@@ -5087,6 +5087,7 @@ static void e_d_fd_nonblocking(int fd)
 /**
  * e_d_child_leave_terminal - In the terminal editor's debugger child,
  * before exec: leave the editor's session and its terminal.
+ * @editor: the editor's process ID, read before the fork.
  *
  * The debugger and its program take SIGINT as a shell gives it, so Pause
  * can stop them; left in the editor's foreground process group they would
@@ -5096,10 +5097,16 @@ static void e_d_fd_nonblocking(int fd)
  * Ctrl-C stays a key of the editor's.  The debugger talks to the editor
  * through pipes and gives its program the pty or the terminal by name, so
  * it needs no controlling terminal.
+ *
+ * The hangup that ends a debugger when the editor's terminal closes no
+ * longer reaches it either, so the system is asked to end it when the editor
+ * dies by SIGKILL; otherwise a program stuck in a loop would go on running.
  */
-static void e_d_child_leave_terminal(void)
+static void e_d_child_leave_terminal(pid_t editor)
 {
  setsid();
+ if (wpe_child_die_with_editor(editor) != 0)
+  _exit(127);
 }
 
 /* Room for the longest command line a debugger is started with (jdb's five
@@ -5651,6 +5658,7 @@ int e_exec_deb(FENSTER *f, char *prog)
 {
  int i;
  char *argv[E_D_ARGV_MAX];
+ const pid_t editor = getpid();   /* the debugger child outlives no editor */
 
  if (e_d_swtch)
   return(1);
@@ -5903,7 +5911,7 @@ int e_exec_deb(FENSTER *f, char *prog)
   }
   if (e_d_child_errors_nonblocking())
    e_d_fd_nonblocking(2);
-  e_d_child_leave_terminal();
+  e_d_child_leave_terminal(editor);
   execvp(argv[0], argv);
  }
  fprintf(stderr,"%s %s %s\n", e_p_msg[ERR_IN_COMMAND], e_debugger, prog);
