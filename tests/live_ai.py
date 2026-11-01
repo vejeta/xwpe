@@ -62,6 +62,32 @@ def _resolve():
     return "ollama", OLLAMA_ENDPOINT, model, reason
 
 
+def openai_compatible():
+    """Return (endpoint, model, skip_reason) for the OpenAI-compatible test.
+
+    The endpoint comes from OPENAI_BASE_URL and the model from OPENAI_MODEL,
+    the convention for pointing OpenAI clients at a local server such as
+    Ollama (OPENAI_BASE_URL=http://localhost:11434).  There is no default
+    endpoint: when either variable is unset the reason says so, so the test
+    can never send a request to a host the user did not name.  A base with or
+    without a trailing /v1 is passed on unchanged; the editor builds
+    <base>/chat/completions from a base that carries a path, and
+    /v1/chat/completions from a bare host.
+    """
+    base = (os.environ.get("OPENAI_BASE_URL") or "").strip()
+    model = (os.environ.get("OPENAI_MODEL") or "").strip()
+    if not base:
+        return None, model, "OPENAI_BASE_URL not set (no default endpoint)"
+    if not model:
+        return base, None, "OPENAI_MODEL not set"
+    return base, model, None
+
+
+def endpoint_needs_tls(endpoint):
+    """True when the endpoint is https, so the build must have TLS."""
+    return bool(endpoint) and endpoint.lower().startswith("https:")
+
+
 BACKEND, ENDPOINT, MODEL, SKIP_REASON = _resolve()
 
 # Apply as a module-level mark: pytestmark = [..., live_ai.SKIP_MARK]
