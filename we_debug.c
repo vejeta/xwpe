@@ -296,12 +296,22 @@ void e_d_pty_drain(void)
 static long e_d_read_runaway = 0;
 #define E_D_RUNAWAY_MAX  100000L
 
+/* Room for the command a run was started with, sent again when an interrupt
+   left over from a race stops the program before it moved.  It holds the
+   longest command the editor builds for a run: gdb's advance "file":line
+   (e_d_gdb_run_to_line), a path and a line number. */
+#define E_D_RUN_AGAIN_MAX (E_D_LINE_MAX + PATH_MAX)
+/* The last command sent to the debugger: the run controller keeps it as the
+   command of the run it is handed. */
+static char e_d_last_cmd[E_D_RUN_AGAIN_MAX];
+
 static void e_d_send_cmd(const char *cmd)
 {
  size_t len = strlen(cmd);
  size_t off = 0;
 
  e_d_read_runaway = 0;
+ snprintf(e_d_last_cmd, sizeof e_d_last_cmd, "%s", cmd);
  while (off < len)
  {
   ssize_t w = write(rfildes[1], cmd + off, len - off);
@@ -440,6 +450,34 @@ static int e_d_nb_ends_in_prompt(void)
 {
  return(e_d_async.nb_len > 0 &&
         e_d_check_prompt(e_d_async.nb.s, e_d_async.nb_len - 1));
+}
+
+/**
+ * e_d_nb_prompts_held - How many prompts the async reader holds unread,
+ * after the stop it handed out.
+ *
+ * gdb answers an interrupt that reached it at its prompt with one more
+ * prompt; when it came in the same read as the stop it waits here.
+ */
+static int e_d_nb_prompts_held(void)
+{
+ int i, n = 0;
+
+ for (i = 0; i < e_d_async.nb_len; i++)
+  if (e_d_check_prompt(e_d_async.nb.s, i))
+   n++;
+ return(n);
+}
+
+/**
+ * e_d_nb_forget - Drop what the async reader holds unread, once it has been
+ * accounted for, so the next run does not read it as its own answer.
+ */
+static void e_d_nb_forget(void)
+{
+ e_d_async.nb_len = 0;
+ e_d_async.nb_scanned = 0;
+ e_d_async.nb_dropping = 0;
 }
 
 /**
@@ -948,6 +986,15 @@ static void e_d_brk_state_reserve(int n);         /* their state (below) */
 static void e_d_brk_forget_session(void);
 static int  e_d_brk_sync_at_stop(ECNT *cn);       /* applied at a stop */
 static int  e_d_brk_changed_while_running(void);  /* anything to apply? */
+static int  e_d_jdb_sync_live(ECNT *cn);          /* applied at once (below) */
+static int  e_d_dap_sync_live(ECNT *cn);
+static void e_d_brk_words(char *out, size_t size, const char *line);
+/* Set when the debugger's word on a breakpoint arrived while the program
+   runs (jdb, the adapters), so the windows are drawn again with its mark. */
+static int  e_d_brk_live_changed;
+/* The offset in jdb's run answer up to which its words on breakpoints sent
+   while the program runs are read, so each is acted on once. */
+static int  e_d_jdb_live_scanned;
 static void e_d_dap_on_breakpoints(const char *file, const int *line,
                                    const int *verified,
                                    const char *const *message, int n,
@@ -1047,6 +1094,16 @@ static void e_d_out_keep(const char *line)
 #define E_D_PAUSE_ASKED   1   /* the interrupt is sent; the next stop answers */
 #define E_D_PAUSE_TAKEN   2   /* the stop that came was the interrupt's */
 
+/* What the one interrupt in flight during a run is for. */
+#define E_D_INT_NONE      0   /* none is in flight */
+#define E_D_INT_PAUSE     1   /* the user's Pause: the stop is shown */
+#define E_D_INT_SYNC      2   /* breakpoints changed: apply them, run on */
+
+/* What a backend's sync_stop made of the interrupt's stop. */
+#define E_D_SYNC_READY    0   /* the debugger takes commands; run on after */
+#define E_D_SYNC_LEAVING  1   /* still in the debugger's own code: a command
+                                 to leave it was sent and the run goes on */
+
 /* What the controller asks of the backend that runs the program. */
 typedef struct
 {
@@ -1060,7 +1117,9 @@ typedef struct
     that cannot pause yet (e_d_pause says so). */
  int  (*interrupt)(void);
  /* Telling the debugger of breakpoints changed while the program runs.
-    sync_live (send them at once) is NULL in every table, for a later pass;
+    sync_live sends them at once, for a debugger that reads commands while
+    the program runs (jdb, the adapters); NULL for the rest, which the
+    controller interrupts (interrupt_stop) or leaves to the next stop.
     sync_at_stop sends them once the program has stopped, and every backend
     plugs the same list-driven function in. */
  int  (*sync_live)(ECNT *cn);
@@ -1078,6 +1137,28 @@ typedef struct
  /* Nonzero when the editor has no way to give the running program the
     text the user types, although it has an output descriptor. */
  int no_input;
+ /* For a debugger interrupted to take breakpoint changes (gdb, pdb, a68g):
+    is the stop just read the one an interrupt made?  @taken: the
+    interrupt's stop was seen already and the backend is leaving its own
+    code.  Reads nothing.  NULL for a backend that is never interrupted for
+    a change, which then waits for the next stop. */
+ int  (*interrupt_stop)(int taken);
+ /* At that stop, before the changes are sent: say what the program
+    printed, and leave the debugger's own code if the stop is in it.
+    Return: E_D_SYNC_READY or E_D_SYNC_LEAVING.  NULL: always ready. */
+ int  (*sync_stop)(FENSTER *f);
+ /* At a stop of the program's own while interrupts are still on their
+    way (@owed of them, sent for @why, an E_D_INT_*): take back what the
+    debugger did with them.  Return: how many are still pending in the
+    program, to come back at its next resume.  NULL: none is counted. */
+ int  (*settle)(ECNT *cn, int owed, int why);
+ /* Start reading a new answer before a command sent from a stop; NULL
+    for a backend whose reader keeps no answer across reads. */
+ void (*answer_reset)(void);
+ /* Nonzero when the program shares the debugger's process and can take
+    the interrupt for itself with a SIGINT handler of its own (pdb); gdb's
+    and a68g's programs never see it. */
+ int program_takes_sigint;
 } E_D_RUN_OPS;
 
 static const E_D_RUN_OPS *e_d_pdb_run_ops(void);   /* pdb's table (below) */
@@ -1104,6 +1185,21 @@ typedef struct
                                 window was in front; shown by
                                 e_d_run_deliver_held_stop */
  int pause;                 /* E_D_PAUSE_*: Pause during this run */
+ int interrupt_for;         /* E_D_INT_*: the interrupt in flight */
+ int int_taken;             /* its stop was seen; the backend is still
+                               leaving its own code (pdb) */
+ int int_owed;              /* interrupts sent whose stop has not been seen
+                               yet; kept across runs, since gdb and a68g
+                               may hand one back at the next resume */
+ int int_refused;           /* the program handles SIGINT itself: changes
+                               wait for its next stop for this session */
+ int int_quiet;             /* the debugger had written nothing unread when
+                               the interrupt for a change was sent */
+ int say_own_sigint;        /* that was found at this stop: say so */
+ const char *cont;          /* the command that runs on after the
+                               interrupt's stop, for a Run or a Continue;
+                               NULL for a step, Finish or Go to cursor */
+ char again[E_D_RUN_AGAIN_MAX];   /* the command this run was sent */
 } E_D_RUN;
 
 static E_D_RUN e_d_run;
@@ -1122,6 +1218,8 @@ static E_D_RUN e_d_run;
 static int e_d_pause_below = E_D_NO_FRAME;
 static const char *e_d_pause_follow = NULL;
 static int e_d_run_resume(void);   /* keep the run going (below) */
+static void e_d_run_new_command(void);         /* (below) */
+static int e_d_run_interrupt(int why);         /* (below) */
 static void e_d_gdb_select_frame(int frame);   /* gdb's "frame N" (below) */
 extern char *e_d_msg[];                        /* the debugger's words */
 
@@ -1577,7 +1675,11 @@ static int e_d_interrupt_debugger(void)
  return(kill(pid, SIGINT));
 }
 
-/* gdb: a line protocol answered on one pipe, a prompt at each stop. */
+static int e_d_gdb_interrupt_stop(int taken);              /* (below) */
+static int e_d_gdb_settle(ECNT *cn, int owed, int why);     /* (below) */
+
+/* gdb: a line protocol answered on one pipe, a prompt at each stop.  A
+   breakpoint changed while the program runs is applied by interrupting it. */
 static const E_D_RUN_OPS e_d_gdb_run_ops =
 {
  "gdb",
@@ -1589,6 +1691,12 @@ static const E_D_RUN_OPS e_d_gdb_run_ops =
  NULL,
  e_d_brk_sync_at_stop,
  e_d_gdb_run_to_line,
+ NULL,
+ NULL,
+ 0,
+ e_d_gdb_interrupt_stop,
+ NULL,
+ e_d_gdb_settle,
  NULL
 };
 
@@ -1712,6 +1820,9 @@ static void e_d_run_forget(void)
  e_d_run.start_brk = 0;
  e_d_run.goto_line = 0;
  e_d_run.pause = E_D_PAUSE_NONE;
+ e_d_run_new_command();
+ e_d_run.int_owed = 0;
+ e_d_run.int_refused = 0;
  e_d_pause_below = E_D_NO_FRAME;
  e_d_pause_follow = NULL;
 }
@@ -1730,14 +1841,39 @@ static void e_d_run_drop_start_brk_at_stop(int sw)
 }
 
 /**
+ * e_d_run_repaint_margin - Draw the text window on top again so a breakpoint
+ * mark that changed shows, and nothing else on the screen is redrawn.
+ * @cn: the editor.
+ *
+ * Clearing the desktop and drawing every window, as a window switch does,
+ * rewrites the whole screen at each hidden sync; the user would see the
+ * screen flash for a mark that went from hollow to solid.  Drawing the one
+ * window the way a toggle does leaves the terminal writing only the cells
+ * that differ.  A mark in a window below is drawn when it is next raised.
+ */
+static void e_d_run_repaint_margin(ECNT *cn)
+{
+ FENSTER *f;
+
+ if (cn->mxedt <= 0)
+  return;
+ f = cn->f[cn->mxedt];
+ if (!DTMD_ISTEXT(f->dtmd))
+  return;
+ e_schirm(f, 1);
+ e_cursor(f, 1);
+ e_refresh();
+}
+
+/**
  * e_d_run_sync_breakpoints - Tell the debugger the breakpoints the user set
  * and removed while the program ran, now that it reads commands again.
  * @f: the window on top.
  *
  * The marks the user made while it ran turn solid on the debugger's word, or
  * stay hollow with its reason on the status row, and a removed line no
- * longer stops the next run.  The windows are painted again so the margin
- * shows it.
+ * longer stops the next run.  The window on top is painted again so the
+ * margin shows it.
  */
 static void e_d_run_sync_breakpoints(FENSTER *f)
 {
@@ -1746,8 +1882,7 @@ static void e_d_run_sync_breakpoints(FENSTER *f)
  if (!ops || !ops->sync_at_stop || !e_d_brk_changed_while_running())
   return;
  ops->sync_at_stop(f->ed);
- e_rep_win_tree(f->ed);
- e_refresh();
+ e_d_run_repaint_margin(f->ed);
 }
 
 /**
@@ -1939,6 +2074,313 @@ static void e_d_pause_report(ECNT *cn)
   e_status_say_until_key(e_d_run_window(cn), E_D_PAUSE_MISSED_LINE);
 }
 
+#define E_D_OWN_SIGINT_LINE \
+ " The program handles Ctrl-C itself: breakpoint changes wait for its stops"
+
+/**
+ * e_d_run_counts_interrupts - Does the backend that runs the program keep
+ * count of the interrupts it is sent?
+ *
+ * gdb, pdb and a68g can be left holding one after a race with a stop of
+ * the program's own; the count is how the editor keeps their answers in
+ * step with its commands.
+ */
+static int e_d_run_counts_interrupts(void)
+{
+ return(e_d_run.ops && e_d_run.ops->interrupt_stop != NULL);
+}
+
+/**
+ * e_d_run_answer_waiting - Has the debugger written something the run has
+ * not read yet?
+ *
+ * Looked at, without waiting, as an interrupt is sent: a debugger that has
+ * stopped by itself has already written its stop, so an interrupt that
+ * then stops nothing met that stop, and was not taken by the program.
+ * Return: 1 when its answer is readable now.
+ */
+static int e_d_run_answer_waiting(void)
+{
+ struct pollfd pfd;
+
+ pfd.fd = e_d_run.ops->answer_fd();
+ pfd.events = POLLIN;
+ pfd.revents = 0;
+ return(poll(&pfd, 1, 0) > 0);
+}
+
+/**
+ * e_d_run_interrupt - Send the backend's interrupt as the one interrupt in
+ * flight during this run.
+ * @why: E_D_INT_PAUSE for the user's Pause, E_D_INT_SYNC to apply a
+ * breakpoint change.
+ * Return: 0, or -1 when it could not be sent.
+ */
+static int e_d_run_interrupt(int why)
+{
+ e_d_run.int_quiet = !e_d_run_answer_waiting();
+ if (e_d_run.ops->interrupt() < 0)
+  return(-1);
+ e_d_run.interrupt_for = why;
+ e_d_run.int_taken = 0;
+ if (e_d_run_counts_interrupts())
+  e_d_run.int_owed++;
+ return(0);
+}
+
+/**
+ * e_d_run_may_interrupt_for_sync - Can a breakpoint change be applied now
+ * by stopping the program for it?
+ *
+ * Only a Run or a Continue is interrupted for it, since it runs on with the
+ * same command afterwards.  A step, Finish or Go to cursor would be cut
+ * short and turned into a Continue, so a change made during one waits for
+ * its stop, which comes soon.  One interrupt is in flight at a time: a
+ * change made meanwhile is applied at its stop with the others.  A program
+ * found to handle SIGINT itself is not interrupted again.
+ * Return: 1 when the interrupt may be sent.
+ */
+static int e_d_run_may_interrupt_for_sync(void)
+{
+ const E_D_RUN_OPS *ops = e_d_run.ops;
+
+ if (!ops->interrupt_stop || !ops->interrupt || !e_d_run.cont)
+  return(0);
+ if (e_d_run.interrupt_for != E_D_INT_NONE || e_d_run.int_refused)
+  return(0);
+ return(1);
+}
+
+/**
+ * e_d_run_breakpoints_changed - The user set or removed a breakpoint while
+ * the program runs: get it to the debugger as soon as it can take it.
+ * @cn: the editor.
+ *
+ * jdb and the debug adapters are told at once.  gdb, pdb and a68g are
+ * interrupted, told, and let run on, with nothing of that stop shown.
+ * sdb, dbx and xdb, a step in progress, and a program that handles SIGINT
+ * itself keep the change for the next stop.  The user sees the mark turn
+ * solid while the program runs, and the program stops on it the next time
+ * it gets there.  A stop already read but held behind a box applies it.
+ */
+static void e_d_run_breakpoints_changed(ECNT *cn)
+{
+ if (!e_d_run_going() || e_d_run.stop_held)
+  return;
+ if (!e_d_brk_changed_while_running())
+  return;
+ if (e_d_run.ops->sync_live)
+ {
+  e_d_run.ops->sync_live(cn);
+  return;
+ }
+ if (!e_d_run_may_interrupt_for_sync())
+  return;
+ e_d_run_interrupt(E_D_INT_SYNC);
+}
+
+/**
+ * e_d_run_continues_with - The run just handed over is a Run or a Continue,
+ * which @cmd lets go on after a stop the editor made for a breakpoint
+ * change.
+ * @cmd: the debugger's continue command, ending in a newline.
+ */
+static void e_d_run_continues_with(const char *cmd)
+{
+ if (e_d_run_going())
+  e_d_run.cont = cmd;
+}
+
+/**
+ * e_d_run_stop_was_interrupt - Is the stop just read the one an interrupt
+ * made?
+ *
+ * Asked only while an interrupt is on its way or its stop is being left,
+ * so a SIGINT the program raises for itself is shown as it always was.
+ * The first sight of the stop pays the interrupt off.  A Pause waiting for
+ * it is answered by the backend, which knows its own report of it, except
+ * on the way out of pdb's own code, where that report is already behind.
+ * Return: 1 for the interrupt's stop.
+ */
+static int e_d_run_stop_was_interrupt(void)
+{
+ const E_D_RUN_OPS *ops = e_d_run.ops;
+
+ if (!ops->interrupt_stop)
+  return(0);
+ if (e_d_run.int_owed <= 0 && !e_d_run.int_taken)
+  return(0);
+ if (!ops->interrupt_stop(e_d_run.int_taken))
+  return(0);
+ if (!e_d_run.int_taken && e_d_run.int_owed > 0)
+  e_d_run.int_owed--;
+ if (e_d_run.interrupt_for == E_D_INT_PAUSE && e_d_run.int_taken)
+  e_d_pause_taken();
+ return(1);
+}
+
+/**
+ * e_d_run_settle - A stop came that no interrupt made while interrupts were
+ * on their way: let the backend take back what the debugger did with them.
+ * @cn: the editor.
+ *
+ * Done before any command of the stop's, so every answer the user is shown
+ * belongs to its own command.
+ */
+static void e_d_run_settle(ECNT *cn)
+{
+ const E_D_RUN_OPS *ops = e_d_run.ops;
+
+ if (e_d_run.int_owed <= 0)
+  return;
+ if (!ops->settle)
+ {
+  e_d_run.int_owed = 0;
+  return;
+ }
+ e_d_run.int_owed = ops->settle(cn, e_d_run.int_owed, e_d_run.interrupt_for);
+}
+
+/**
+ * e_d_run_go_on - Send the debugger @cmd from a stop the user is not shown,
+ * and keep the run going.
+ * @cmd: the command, ending in a newline.
+ *
+ * The program runs on as if it had not stopped; the editor keeps its keys.
+ */
+static void e_d_run_go_on(const char *cmd)
+{
+ if (e_d_run.ops->answer_reset)
+  e_d_run.ops->answer_reset();
+ e_d_cut_forget_output();
+ e_d_out_clear();
+ e_d_nb_forget();
+ e_d_send_cmd(cmd);
+ e_d_run_resume();
+}
+
+/**
+ * e_d_run_sync_and_go_on - The interrupt sent for a breakpoint change has
+ * stopped the program: tell the debugger, then let the program run on.
+ * @cn: the editor.
+ *
+ * Nothing of this stop is shown: no mark, no watches, no "Paused".  Only
+ * the margin changes: the marks the user made turn solid, or stay hollow
+ * with the debugger's words on the status row.  A backend whose stop is in
+ * its own code first leaves it (pdb), the run going on meanwhile.  Another
+ * interrupt still on its way is settled first, so the debugger's answers
+ * stay in step with the commands.
+ * Return: 1, the stop is dealt with.
+ */
+static int e_d_run_sync_and_go_on(ECNT *cn)
+{
+ const E_D_RUN_OPS *ops = e_d_run.ops;
+
+ if (ops->sync_stop &&
+     ops->sync_stop(e_d_run_window(cn)) == E_D_SYNC_LEAVING)
+ {
+  e_d_run.int_taken = 1;
+  return(1);
+ }
+ e_d_run.interrupt_for = E_D_INT_NONE;
+ e_d_run.int_taken = 0;
+ e_d_run_settle(cn);
+ e_d_run_sync_breakpoints(e_d_run_window(cn));
+ e_d_run_go_on(e_d_run.cont);
+ return(1);
+}
+
+/**
+ * e_d_run_send_again - An interrupt a race left in the program stopped it
+ * at its next resume, before it moved: send the run's command again.
+ *
+ * The user asked for a Continue or a step, not for this stop, and does not
+ * see it.
+ * Return: 1 when the command went out again, 0 when there is none (the
+ * stop is then shown).
+ */
+static int e_d_run_send_again(void)
+{
+ e_d_run.interrupt_for = E_D_INT_NONE;
+ e_d_run.int_taken = 0;
+ if (!e_d_run.again[0])
+  return(0);
+ e_d_run_go_on(e_d_run.again);
+ return(1);
+}
+
+/**
+ * e_d_run_check_own_sigint - The interrupt sent for a breakpoint change did
+ * not stop the program, and this stop is its own: did the program take the
+ * interrupt with a SIGINT handler of its own?
+ *
+ * Such a program (a pdb script that sets a handler while it runs) is never
+ * stopped by the interrupt, and would run its handler at every change.
+ * The changes then wait for its stops for the rest of the session, and the
+ * status row says so once.  A race with a stop of the program's own is
+ * told apart by what was waiting to be read when the interrupt went: pdb
+ * drops an interrupt that finds it at its prompt, and that prompt was
+ * written already.  When the debugger had written something, the case is
+ * left open and nothing is said; the change is applied at this stop
+ * either way.
+ */
+static void e_d_run_check_own_sigint(void)
+{
+ if (!e_d_run.ops->program_takes_sigint || !e_d_run.int_quiet)
+  return;
+ e_d_run.int_refused = 1;
+ e_d_run.say_own_sigint = 1;
+}
+
+/**
+ * e_d_run_interrupt_handled - Deal with a stop an interrupt may have made,
+ * before the backend shows it.
+ * @cn: the editor.
+ *
+ * The stop of an interrupt sent for a breakpoint change is never shown:
+ * the change is applied and the program runs on.  A stop of the program's
+ * own that comes while that interrupt is on its way (a breakpoint, the
+ * end) is the user's: it is shown, the change is applied there, and
+ * nothing runs on behind the user's back.  A Pause pressed meanwhile has
+ * turned the interrupt into the Pause.  An interrupt a race left in the
+ * program is answered by sending the run's command again.
+ * Return: 1 when the stop is dealt with and nothing is to be shown.
+ */
+static int e_d_run_interrupt_handled(ECNT *cn)
+{
+ int intr = e_d_run_stop_was_interrupt();
+
+ if (intr && e_d_run.interrupt_for == E_D_INT_SYNC)
+  return(e_d_run_sync_and_go_on(cn));
+ if (intr && e_d_run.interrupt_for == E_D_INT_NONE)
+  return(e_d_run_send_again());
+ if (!intr && e_d_run.interrupt_for == E_D_INT_SYNC)
+  e_d_run_check_own_sigint();
+ if (!intr)
+  e_d_run_settle(cn);
+ e_d_run.interrupt_for = E_D_INT_NONE;
+ e_d_run.int_taken = 0;
+ return(0);
+}
+
+/**
+ * e_d_run_say_own_sigint - Say, once, that the program handles Ctrl-C
+ * itself, when this stop found it out.
+ * @cn: the editor.
+ *
+ * The user then knows why a breakpoint set while it ran took effect only
+ * now, and that later ones will wait for a stop too.  The words stay over
+ * "Paused", as a refusal's do.
+ */
+static void e_d_run_say_own_sigint(ECNT *cn)
+{
+ if (!e_d_run.say_own_sigint || !e_d_session_runs())
+  return;
+ e_d_run.say_own_sigint = 0;
+ e_d_refusal_said = 1;
+ e_status_say_until_key(e_d_run_window(cn), E_D_OWN_SIGINT_LINE);
+}
+
 /**
  * e_d_run_on_stop - The debugger stopped the program: mark where, then
  * tidy up after the run, and go on to the cursor if Go to cursor asked.
@@ -1954,6 +2396,8 @@ static void e_d_run_on_stop(void)
 
  e_d_run_unwatch();
  e_d_refusal_said = 0;
+ if (e_d_run_interrupt_handled(cn))
+  return;
  ops->stopped(e_d_run_window(cn));
  if (e_d_run_going())
   return;
@@ -1961,6 +2405,7 @@ static void e_d_run_on_stop(void)
  e_d_run_goto_after_start(cn, ops);
  if (e_d_run_going())
   return;
+ e_d_run_say_own_sigint(cn);
  e_d_pause_report(cn);
 }
 
@@ -2015,6 +2460,22 @@ void e_d_run_deliver_held_stop(void)
 }
 
 /**
+ * e_d_run_show_live_answers - Draw the windows again when the debugger's
+ * word on a breakpoint set or removed while the program runs has come.
+ *
+ * The user sees the hollow mark turn solid while the program goes on.
+ * With a box or a non-text window in front the drawing waits for a later
+ * answer or the stop, so nothing is drawn over the box.
+ */
+static void e_d_run_show_live_answers(void)
+{
+ if (!e_d_brk_live_changed || !e_build_ui_idle(e_d_run.cn))
+  return;
+ e_d_brk_live_changed = 0;
+ e_d_run_repaint_margin(e_d_run.cn);
+}
+
+/**
  * e_d_run_on_answer - The debugger wrote while the program runs.
  * @fd: its answer; @data: unused.
  *
@@ -2028,6 +2489,8 @@ static void e_d_run_on_answer(int fd, void *data)
  if (!e_d_run_going())
   return;
  fed = e_d_run.ops->feed(e_d_run_window(e_d_run.cn));
+ if (fed == E_D_FEED_GOING)
+  e_d_run_show_live_answers();
  if (fed == E_D_FEED_STOPPED && !e_build_ui_idle(e_d_run.cn))
   e_d_run_hold_stop();
  else if (fed == E_D_FEED_STOPPED)
@@ -2107,6 +2570,42 @@ static void e_d_run_process_ended(void)
 }
 
 /**
+ * e_d_run_keep_command - Keep the command the debugger was last sent as the
+ * command of the run, the one sent again when an interrupt left over from a
+ * race stops the program before it moved.
+ *
+ * A command that filled the buffer may have been cut, and a cut command
+ * sent again would run something else (a step to another line): none is
+ * kept then, and the stop is shown instead of a wrong command going out.
+ */
+static void e_d_run_keep_command(void)
+{
+ if (strlen(e_d_last_cmd) + 1 >= sizeof e_d_last_cmd)
+ {
+  e_d_run.again[0] = '\0';
+  return;
+ }
+ snprintf(e_d_run.again, sizeof e_d_run.again, "%s", e_d_last_cmd);
+}
+
+/**
+ * e_d_run_new_command - A new run, continue or step was handed over: no
+ * interrupt of this run is in flight yet, and until the caller says it is a
+ * Run or a Continue, a breakpoint change waits for its stop.
+ *
+ * The interrupts still owed by the run before are kept: gdb and a68g hand
+ * one back at this resume.
+ */
+static void e_d_run_new_command(void)
+{
+ e_d_run.interrupt_for = E_D_INT_NONE;
+ e_d_run.int_taken = 0;
+ e_d_run.say_own_sigint = 0;
+ e_d_run.cont = NULL;
+ e_d_run_keep_command();
+}
+
+/**
  * e_d_run_begin - Hand a run, a continue or a step the debugger was just
  * told about to the fd loop, and give the editor back its keys.
  * @f: the source window; @ops: the backend's table;
@@ -2135,6 +2634,7 @@ static int e_d_run_begin(FENSTER *f, const E_D_RUN_OPS *ops, int start_brk)
  e_d_run.start_brk = start_brk;
  e_d_run.goto_line = 0;
  e_d_run.pause = E_D_PAUSE_NONE;
+ e_d_run_new_command();
  e_d_pause_below = E_D_NO_FRAME;
  e_d_pause_follow = NULL;
  jdb_trace("e_d_run_begin: the program runs under %s\n", ops->name);
@@ -2156,6 +2656,7 @@ static int e_d_run_resume(void)
 {
  ECNT *cn = e_d_run.cn;
 
+ e_d_run_keep_command();
  if (e_d_run_watch(e_d_run.ops) == 0)
   return(0);
  e_d_quit(e_d_run_window(cn));
@@ -3240,6 +3741,159 @@ int e_d_dum_read()
  }
  jdb_trace("e_d_dum_read: exit ret=%d str='%s'\n", ret, str);
  return(ret);
+}
+
+/* The line gdb is asked to echo after interrupts it may have answered at
+   its prompt: what comes before it are those answers. */
+#define E_D_GDB_SETTLE_MARK "xwpe-interrupts-settled"
+#define E_D_GDB_SETTLE_CMD  "echo " E_D_GDB_SETTLE_MARK "\\n\n"
+
+/**
+ * e_d_gdb_interrupt_stop - Is gdb's stop the one an interrupt made?
+ * @taken: unused: gdb's stop is whole at once.
+ *
+ * gdb names it "Program received signal SIGINT".  A breakpoint the user set
+ * while the program ran is set at this stop and the program runs on, so the
+ * user never sees a stop he did not ask for.
+ * Return: 1 for the interrupt's stop.
+ */
+static int e_d_gdb_interrupt_stop(int taken)
+{
+ size_t lead = strlen(e_d_msg[ERR_PROGSIGNAL]);
+ int i;
+
+ (void)taken;
+ for (i = 0; i < SVLINES; i++)
+  if (!strncmp(e_d_sp[i], e_d_msg[ERR_PROGSIGNAL], lead) &&
+      strstr(e_d_sp[i], E_D_SIGINT_NAME))
+   return(1);
+ return(0);
+}
+
+/**
+ * e_d_prompts_in - How many of the debugger's prompts @text holds.
+ * @text: what the debugger wrote; @len: its length.
+ */
+static int e_d_prompts_in(const char *text, size_t len)
+{
+ const char *prompt = e_d_prompt_text();
+ const char *end = text + len, *at;
+ size_t plen;
+ int n = 0;
+
+ if (!prompt)
+  return(0);
+ plen = strlen(prompt);
+ while (text + plen <= end && (at = strstr(text, prompt)) != NULL &&
+        at + plen <= end)
+ {
+  n++;
+  text = at + plen;
+ }
+ return(n);
+}
+
+/**
+ * e_d_gdb_settle_answers - Read gdb's answers up to the echo of
+ * E_D_GDB_SETTLE_MARK and its prompt, counting the prompts before it.
+ * Return: those prompts, or -1 when gdb stopped answering.
+ */
+static int e_d_gdb_settle_answers(void)
+{
+ char str[E_D_LINE_MAX];
+ const char *mark;
+ int ret, extra = 0, seen = 0;
+
+ for (;;)
+ {
+  ret = e_d_line_read(wfildes[0], str, sizeof str, 0, 0);
+  if (ret == -1)
+   return(-1);
+  if (ret == 1 && seen)
+   return(extra);
+  if (ret == 1)
+   extra++;
+  else if (ret == 0 && (mark = strstr(str, E_D_GDB_SETTLE_MARK)) != NULL)
+  {
+   seen = 1;
+   extra += e_d_prompts_in(str, (size_t)(mark - str));
+  }
+ }
+}
+
+/**
+ * e_d_gdb_drop_quit_lines - Read away what gdb wrote on its error stream
+ * when it answered an interrupt at its prompt ("Quit").
+ *
+ * Left there, it would be read as gdb's refusal of the next breakpoint the
+ * editor sets.
+ */
+static void e_d_gdb_drop_quit_lines(void)
+{
+ char str[E_D_LINE_MAX];
+ int drained = 0;
+
+ while (drained++ < E_D_DRAIN_MAX &&
+        e_e_line_read(efildes[0], (signed char *)str, sizeof str) >= 0)
+  ;
+}
+
+/**
+ * e_d_gdb_prompts_with_the_stop - How many prompts beyond its own came in
+ * the line that ended the stop just read.
+ *
+ * gdb answers an interrupt that met it at its prompt with one more prompt.
+ * Written before the editor read the stop, it arrives glued to the stop's
+ * own prompt and is read with it as one line; counted here, that interrupt
+ * is paid off, and a SIGINT the program later raises by itself is shown to
+ * the user instead of being taken for it and run past.
+ */
+static int e_d_gdb_prompts_with_the_stop(void)
+{
+ int n;
+
+ if (!e_d_run_line.s)
+  return(0);
+ n = e_d_prompts_in((const char *)e_d_run_line.s,
+                    strlen((const char *)e_d_run_line.s));
+ if (n <= 1)
+  return(0);
+ return(n - 1);
+}
+
+/**
+ * e_d_gdb_settle - Take back gdb's answers to interrupts that reached it
+ * after the program had stopped by itself.
+ * @cn: unused; @owed: the interrupts sent whose stop never came; @why:
+ * unused.
+ *
+ * Such an interrupt is answered with "Quit" and one more prompt.  Left
+ * unread, that prompt would be taken for the answer to the next command and
+ * every answer after it would come one command late: the watches, the Stack
+ * window and the next stop would all be wrong.  gdb takes a signal before it
+ * reads the next command, so the prompts that come before the echo's line
+ * are those answers.  An interrupt with no such answer reached the program
+ * instead, which gdb reports as a SIGINT stop at its next resume.
+ * Return: the interrupts still pending in the program.
+ */
+static int e_d_gdb_settle(ECNT *cn, int owed, int why)
+{
+ int extra;
+
+ (void)cn;
+ (void)why;
+ extra = e_d_nb_prompts_held() + e_d_gdb_prompts_with_the_stop();
+ e_d_nb_forget();
+ e_d_send_cmd(E_D_GDB_SETTLE_CMD);
+ owed -= extra;
+ extra = e_d_gdb_settle_answers();
+ e_d_gdb_drop_quit_lines();
+ if (extra < 0)
+  return(0);
+ owed -= extra;
+ if (owed < 0)
+  return(0);
+ return(owed);
 }
 
 /* Output Routines */
@@ -4935,6 +5589,24 @@ static int e_d_brk_must_wait(void)
  return(e_d_async_pending);
 }
 
+static int e_d_brk_unsent(int i);   /* (below) */
+
+/**
+ * e_d_brk_debugger_has - Has the debugger been given list entry @i?
+ *
+ * gdb, dbx and xdb number what they set, and the other line debuggers are
+ * marked when told.  A debug adapter is given the breakpoints of a file as
+ * a whole, at its launch too, so it has every entry the editor is not
+ * still holding back; a removal while the program runs then reaches it.
+ * Return: 1 when it has.
+ */
+static int e_d_brk_debugger_has(int i)
+{
+ if (e_deb_type == DEB_DAP)
+  return(!e_d_brk_unsent(i));
+ return(e_d_nrbrpts[i] != 0);
+}
+
 /**
  * e_d_brk_gone_add - Remember that the debugger still has the breakpoint
  * list entry @i, which the user has just removed while the program runs.
@@ -4946,7 +5618,7 @@ static void e_d_brk_gone_add(int i)
 {
  E_D_BRK_GONE *rec;
 
- if (e_d_nrbrpts[i] == 0)
+ if (!e_d_brk_debugger_has(i))
   return;
  e_d_brk_gone = REALLOC(e_d_brk_gone,
                         sizeof(E_D_BRK_GONE) * (e_d_brk_ngone + 1));
@@ -5377,8 +6049,9 @@ int e_mk_brk_main(FENSTER *f, int sw)
  * debugger.
  *
  * The next run then goes past that line with every debugger, and nothing is
- * waited for that was not asked.  While the program runs the debugger reads
- * no command, so the removal is kept and told at the next stop.
+ * waited for that was not asked.  While the program runs the removal is
+ * kept and handed to the run controller, which tells the debugger as soon
+ * as it can take it (e_d_run_breakpoints_changed).
  * Return: 0, or -1 when the debugger could not be told.
  */
 static int e_d_brk_toggle_off(FENSTER *f, int line)
@@ -5392,8 +6065,13 @@ static int e_d_brk_toggle_off(FENSTER *f, int line)
   e_d_brk_gone_add(i);
  id = e_d_nrbrpts[i];
  e_d_brk_list_drop(i);
- if (!e_d_swtch || e_d_brk_must_wait())
+ if (!e_d_swtch)
   return(0);
+ if (e_d_brk_must_wait())
+ {
+  e_d_run_breakpoints_changed(f->ed);
+  return(0);
+ }
  return(e_d_brk_disarm(f->ed, f->datnam, line, id));
 }
 
@@ -5402,8 +6080,9 @@ static int e_d_brk_toggle_off(FENSTER *f, int line)
  * file: add it to the list and, while a session runs, to the debugger.
  *
  * The next run stops there with every debugger, the one already running
- * included.  While the program runs the entry waits, drawn hollow, and is
- * told to the debugger at the next stop.
+ * included.  While the program runs the entry is drawn hollow and handed to
+ * the run controller, which tells the debugger as soon as it can take it
+ * (e_d_run_breakpoints_changed); it turns solid on the debugger's word.
  * Return: 0, or -1 when the debugger could not be told.
  */
 static int e_d_brk_toggle_on(FENSTER *f, int line)
@@ -5418,6 +6097,7 @@ static int e_d_brk_toggle_on(FENSTER *f, int line)
  if (e_d_brk_must_wait())
  {
   e_d_brk_gone_revive(e_d_nbrpts - 1);
+  e_d_run_breakpoints_changed(f->ed);
   return(0);
  }
  if (e_d_brk_arm(f->ed, e_d_nbrpts - 1) == -1)
@@ -7267,7 +7947,8 @@ static void e_d_dap_stopped(FENSTER *f)
 
 /* A debug adapter: its messages on one descriptor, the program's output on
    the same or on a pty of the adapter's own, a stop told by a message.
-   Typed text goes nowhere yet, so the running line offers only Quit. */
+   Typed text goes nowhere yet, so the running line offers only Quit.  The
+   adapter takes breakpoint changes while the program runs. */
 static const E_D_RUN_OPS e_d_dap_ops =
 {
  "debug adapter",
@@ -7276,7 +7957,7 @@ static const E_D_RUN_OPS e_d_dap_ops =
  e_d_dap_feed,
  e_d_dap_stopped,
  e_d_dap_interrupt,
- NULL,
+ e_d_dap_sync_live,
  e_d_brk_sync_at_stop,
  NULL,
  e_d_dap_begin,
@@ -7669,6 +8350,19 @@ static int e_d_pause_refused(FENSTER *f)
 }
 
 /**
+ * e_d_pause_takes_over_sync - Pause was pressed while an interrupt sent for
+ * a breakpoint change is on its way: that interrupt becomes the Pause.
+ *
+ * No second interrupt is sent, which the debugger could answer out of
+ * turn; the stop that comes is shown as the user's Pause, and the change is
+ * applied at it.
+ */
+static void e_d_pause_takes_over_sync(void)
+{
+ e_d_run.interrupt_for = E_D_INT_PAUSE;
+}
+
+/**
  * e_d_pause - Debug > Interrupt (pause), Ctrl-Break, Ctrl-G I: stop the
  * program that runs under the debugger where it is.
  * @f: the window the key was pressed in.
@@ -7689,7 +8383,9 @@ int e_d_pause(FENSTER *f)
   e_status_say(f, E_D_PAUSING_LINE);
   return(0);
  }
- if (e_d_run.ops->interrupt() < 0)
+ if (e_d_run.interrupt_for == E_D_INT_SYNC)
+  e_d_pause_takes_over_sync();
+ else if (e_d_run_interrupt(E_D_INT_PAUSE) < 0)
  {
   e_status_say(f, E_D_PAUSE_FAILED_LINE);
   return(0);
@@ -9885,6 +10581,41 @@ static int e_d_run_answer_read(int prsw)
  return(0);
 }
 
+/**
+ * e_d_run_continue_command - The command that lets the program run on after
+ * a stop the editor made to apply a breakpoint change.
+ *
+ * gdb, pdb and a68g are the debuggers interrupted for one; the first run
+ * of a session goes on with it too, never with "run" again.
+ * Return: the command, or NULL for a debugger never interrupted for it.
+ */
+static const char *e_d_run_continue_command(void)
+{
+ if (e_deb_type == DEB_GDB || e_deb_type == DEB_PDB)
+  return("c\n");
+ if (e_deb_type == DEB_A68G)
+  return("continue\n");
+ return(NULL);
+}
+
+/**
+ * e_d_run_hand_over_continue - Hand a Run or a Continue to the controller.
+ * @f: the source window; @ops: the backend's table;
+ * @start_brk: the editor's start breakpoint to take out at the stop, or 0.
+ *
+ * A breakpoint the user sets while it runs can then be applied at once:
+ * the program is interrupted, told, and runs on with the continue command.
+ * Return: as e_d_run_hand_over.
+ */
+static int e_d_run_hand_over_continue(FENSTER *f, const E_D_RUN_OPS *ops,
+                                      int start_brk)
+{
+ int ret = e_d_run_hand_over(f, ops, start_brk);
+
+ e_d_run_continues_with(e_d_run_continue_command());
+ return(ret);
+}
+
 int e_deb_run(FENSTER *f)
 {
  ECNT *cn = f->ed;
@@ -10031,7 +10762,7 @@ int e_deb_run(FENSTER *f)
  e_d_swtch = 3;
  run_ops = e_d_run_ops_of_backend();
  if (run_ops)
-  return(e_d_run_hand_over(f, run_ops, main_brk));
+  return(e_d_run_hand_over_continue(f, run_ops, main_brk));
  { int _ro = e_read_output(f);
    if (main_brk)
     e_mk_brk_main(f, main_brk);
@@ -10264,6 +10995,7 @@ static int e_d_jdb_pause_stop(void)
 static void e_d_jdb_begin(void)
 {
  e_d_step_reply_init(&e_d_jdb_reply);
+ e_d_jdb_live_scanned = 0;
 }
 
 /**
@@ -10305,9 +11037,125 @@ static void e_d_jdb_confirm_deferred(const char *spec)
   if (e_d_brk_is_start_entry(i) || e_d_ybrpts[i] != line)
    continue;
   e_d_brk_jdb_class(e_d_sbrpts[i], entry, sizeof(entry));
-  if (!strcmp(entry, cls))
-   e_d_brk_set_state(i, E_D_BRK_VERIFIED, NULL);
+  if (strcmp(entry, cls) || e_d_brk_state[i] == E_D_BRK_VERIFIED)
+   continue;
+  e_d_brk_set_state(i, E_D_BRK_VERIFIED, NULL);
+  e_d_brk_live_changed = 1;
  }
+}
+
+/* jdb's answers to a breakpoint command sent while the program runs: they
+   come in the run's output, in any order with the program's events. */
+#define E_D_JDB_SET_NOW   "Set breakpoint "
+#define E_D_JDB_DEFERS    "Deferring breakpoint "
+#define E_D_JDB_UNABLE    "Unable to set breakpoint "
+#define E_D_JDB_SPEC_MAX  PATH_MAX
+
+/**
+ * e_d_jdb_spec_of - Cut "P:7" out of jdb's answer after one of its words.
+ * @after: the text that follows the words; @spec, @n: receives it, without
+ * the full stop jdb ends "Deferring breakpoint P:7." with.
+ */
+static void e_d_jdb_spec_of(const char *after, char *spec, size_t n)
+{
+ size_t len = strcspn(after, " \t\r\n");
+
+ if (len >= n)
+  len = n - 1;
+ memcpy(spec, after, len);
+ spec[len] = '\0';
+ if (len > 0 && spec[len - 1] == '.')
+  spec[len - 1] = '\0';
+}
+
+/**
+ * e_d_jdb_take_live_word - jdb answered a breakpoint command sent while the
+ * program runs: record what it said of the user's breakpoint @spec names.
+ * @spec: "P:7"; @state: E_D_BRK_*; @line: jdb's line, for its words.
+ *
+ * A breakpoint jdb set turns solid; one it defers (its class is not loaded)
+ * or refuses stays hollow with jdb's words on the status row, said once.
+ */
+static void e_d_jdb_take_live_word(const char *spec, int state,
+                                   const char *line)
+{
+ char cls[E_D_JDB_SPEC_MAX], entry[E_D_JDB_SPEC_MAX], words[E_D_BRK_MSG_MAX];
+ const char *colon = strchr(spec, ':');
+ ECNT *cn = WpeEditor;
+ int i, num;
+
+ if (!colon || (size_t)(colon - spec) >= sizeof(cls))
+  return;
+ memcpy(cls, spec, colon - spec);
+ cls[colon - spec] = '\0';
+ num = atoi(colon + 1);
+ e_d_brk_words(words, sizeof(words), line);
+ for (i = 0; i < e_d_nbrpts; i++)
+ {
+  if (e_d_brk_is_start_entry(i) || e_d_ybrpts[i] != num)
+   continue;
+  e_d_brk_jdb_class(e_d_sbrpts[i], entry, sizeof(entry));
+  if (strcmp(entry, cls))
+   continue;
+  if (state == E_D_BRK_VERIFIED)
+   e_d_brk_set_state(i, state, NULL);
+  else
+   e_d_brk_set_state(i, state, words);
+  e_d_brk_live_changed = 1;
+  e_d_brk_say_refusal(cn->f[cn->mxedt], i);
+ }
+}
+
+/**
+ * e_d_jdb_live_word_in - Act on one line of jdb's answer, if it is jdb's
+ * word on a breakpoint command sent while the program runs.
+ * @line: the line.
+ */
+static void e_d_jdb_live_word_in(const char *line)
+{
+ char spec[E_D_JDB_SPEC_MAX];
+ const char *at;
+
+ if ((at = strstr(line, E_D_JDB_SET_NOW)) != NULL)
+ {
+  e_d_jdb_spec_of(at + strlen(E_D_JDB_SET_NOW), spec, sizeof(spec));
+  e_d_jdb_take_live_word(spec, E_D_BRK_VERIFIED, at);
+ }
+ else if ((at = strstr(line, E_D_JDB_DEFERS)) != NULL)
+ {
+  e_d_jdb_spec_of(at + strlen(E_D_JDB_DEFERS), spec, sizeof(spec));
+  e_d_jdb_take_live_word(spec, E_D_BRK_PENDING, at);
+ }
+ else if ((at = strstr(line, E_D_JDB_UNABLE)) != NULL)
+ {
+  e_d_jdb_spec_of(at + strlen(E_D_JDB_UNABLE), spec, sizeof(spec));
+  e_d_jdb_take_live_word(spec, E_D_BRK_REFUSED, at);
+ }
+}
+
+/**
+ * e_d_jdb_note_live_answers - Read jdb's words on the breakpoints the user
+ * set while the program runs, from the whole lines of the run's answer not
+ * read yet.
+ * @text: what jdb has said in this run so far.
+ *
+ * The user sees each mark turn solid as soon as jdb has it, while the
+ * program goes on, or the reason it stays hollow.
+ */
+static void e_d_jdb_note_live_answers(const char *text)
+{
+ char line[E_D_LINE_MAX];
+ int len = (int)strlen(text), pos;
+
+ if (e_d_jdb_live_scanned > len)
+  e_d_jdb_live_scanned = 0;
+ pos = e_d_jdb_live_scanned;
+ while (pos < len && strchr(text + pos, '\n'))
+ {
+  e_d_text_next_line(text, &pos, line, sizeof line);
+  e_d_jdb_live_word_in(line);
+ }
+ e_d_jdb_live_scanned = pos;
 }
 
 /**
@@ -10360,6 +11208,7 @@ static int e_d_jdb_feed(FENSTER *f)
   }
   jdb_trace("e_d_jdb_feed: read %d bytes total=%d: [%s]\n",
             n, e_d_jdb_reply.len, e_d_jdb_reply.buf);
+  e_d_jdb_note_live_answers(e_d_jdb_reply.buf);
   e_d_jdb_note_deferred_sets(e_d_jdb_reply.buf);
   if (e_d_jdb_says_end(e_d_jdb_reply.buf) ||
       e_d_jdb_reply_is_stop(e_d_jdb_reply.buf))
@@ -10576,7 +11425,7 @@ static void e_d_jdb_stopped(FENSTER *f)
 }
 
 /* jdb: its answers on its pipe, the program's output on the pty, a prompt
-   at each stop. */
+   at each stop.  jdb takes breakpoint commands while the program runs. */
 static const E_D_RUN_OPS e_d_jdb_ops =
 {
  "jdb",
@@ -10585,7 +11434,7 @@ static const E_D_RUN_OPS e_d_jdb_ops =
  e_d_jdb_feed,
  e_d_jdb_stopped,
  e_d_jdb_interrupt,
- NULL,
+ e_d_jdb_sync_live,
  e_d_brk_sync_at_stop,
  e_d_run_to_cursor_line,
  e_d_jdb_begin
@@ -11017,7 +11866,13 @@ static void e_d_pdb_stopped(FENSTER *f)
  e_d_switch_out(0);
 }
 
-/* pdb: one pipe for the debugger and the program, a prompt at each stop. */
+static int e_d_pdb_interrupt_stop(int taken);            /* (below) */
+static int e_d_pdb_sync_stop(FENSTER *f);                /* (below) */
+
+/* pdb: one pipe for the debugger and the program, a prompt at each stop.  A
+   breakpoint changed while the script runs is applied by interrupting it;
+   an interrupt that reaches pdb at its prompt is dropped by pdb, so none is
+   left to settle. */
 static const E_D_RUN_OPS e_d_pdb_ops =
 {
  "pdb",
@@ -11029,7 +11884,14 @@ static const E_D_RUN_OPS e_d_pdb_ops =
  NULL,
  e_d_brk_sync_at_stop,
  NULL,
- e_d_pdb_begin
+ e_d_pdb_begin,
+ NULL,
+ 0,
+ e_d_pdb_interrupt_stop,
+ e_d_pdb_sync_stop,
+ NULL,
+ e_d_pdb_answer_reset,
+ 1
 };
 
 /**
@@ -11673,9 +12535,60 @@ static void e_d_a68g_stopped(FENSTER *f)
  e_d_a68g_mark(f, line);
 }
 
+/**
+ * e_d_a68g_interrupt_stop - Is a68g's stop the one an interrupt made?
+ * @taken: unused: a68g's stop is whole at once.
+ *
+ * An interrupt makes a68g ask whether to terminate, which the run's reader
+ * answers "no" (e_d_a68g_keep_running_after_interrupt).  A breakpoint the
+ * user set while the program ran is set at this stop, which the user does
+ * not see, and the program runs on.
+ * Return: 1 for the interrupt's stop.
+ */
+static int e_d_a68g_interrupt_stop(int taken)
+{
+ (void)taken;
+ return(e_d_a68g_run.kept_running && !e_d_a68g_run.ended);
+}
+
+/**
+ * e_d_a68g_sync_stop - a68g stopped on the interrupt sent for a breakpoint
+ * change: show what the program printed up to it.
+ * @f: the window on top.
+ *
+ * The program's output reaches Messages as at any stop; the line a68g
+ * stopped on is not marked.
+ * Return: E_D_SYNC_READY: the monitor takes commands.
+ */
+static int e_d_a68g_sync_stop(FENSTER *f)
+{
+ E_D_A68G_RUN *r = &e_d_a68g_run;
+
+ e_d_a68g_scan(f, r->reply.buf, r->reply.mid_line);
+ return(E_D_SYNC_READY);
+}
+
+/**
+ * e_d_a68g_settle - Account for interrupts a68g got after the program had
+ * stopped by itself.
+ * @cn: unused; @owed: the interrupts not accounted for; @why: unused.
+ *
+ * a68g keeps such an interrupt and asks whether to terminate at the next
+ * continue or step, before the program moves; the run's reader answers
+ * "no" and the controller sends the command again.
+ * Return: @owed, all still pending.
+ */
+static int e_d_a68g_settle(ECNT *cn, int owed, int why)
+{
+ (void)cn;
+ (void)why;
+ return(owed);
+}
+
 /* a68g: one pipe for the monitor and the program, a prompt at each stop.
    No run_to_line: a68g has no stop at the start of main to run on from, so
-   Go to cursor as the first command is a case of its own. */
+   Go to cursor as the first command is a case of its own.  A breakpoint
+   changed while the program runs is applied by interrupting it. */
 static const E_D_RUN_OPS e_d_a68g_ops =
 {
  "a68g",
@@ -11687,7 +12600,14 @@ static const E_D_RUN_OPS e_d_a68g_ops =
  NULL,
  e_d_brk_sync_at_stop,
  NULL,
- e_d_a68g_begin
+ e_d_a68g_begin,
+ NULL,
+ 0,
+ e_d_a68g_interrupt_stop,
+ e_d_a68g_sync_stop,
+ e_d_a68g_settle,
+ e_d_a68g_answer_reset,
+ 0
 };
 
 /**
@@ -12339,6 +13259,91 @@ static int e_d_pdb_mark_interrupted_frame(FENSTER *f)
  e_d_swtch = 3;
  e_d_pdb_mark_stop(f, fr->file, fr->line);
  return(E_D_PDB_PAUSE_MARKED);
+}
+
+/**
+ * e_d_pdb_interrupt_stop - Is pdb's stop the one an interrupt made?
+ * @taken: the interrupt's stop was seen already, and pdb is being made to
+ * leave its own code: every stop on that way is still the interrupt's.
+ * Return: 1 for the interrupt's stop.
+ */
+static int e_d_pdb_interrupt_stop(int taken)
+{
+ if (taken)
+  return(1);
+ return(strstr(e_d_pdb_run.reply.buf, E_D_PDB_INTERRUPTED) != NULL);
+}
+
+/**
+ * e_d_pdb_capture_before_interrupt - Keep for Ctrl-G P what the script
+ * printed before pdb's "Program interrupted", and not pdb's own words.
+ * @r: the run.
+ */
+static void e_d_pdb_capture_before_interrupt(E_D_PDB_RUN *r)
+{
+ char *at = strstr(r->reply.buf, E_D_PDB_INTERRUPTED);
+ char held = '\0';
+
+ if (at)
+ {
+  held = *at;
+  *at = '\0';
+ }
+ e_d_pdb_capture_output(r->reply.buf, r->reply.mid_line &&
+                        r->spill.open_is_pdb);
+ if (at)
+  *at = held;
+}
+
+/**
+ * e_d_pdb_sync_must_leave - Must pdb be made to leave its own code before
+ * the breakpoint change is sent and the script continued?
+ * @handler: the index of pdb's SIGINT handler in the stack read.
+ *
+ * With a breakpoint set, pdb's interrupt stops inside bdb.py, where a
+ * continue only ends pdb's own step and leaves the script stopped (F251);
+ * "return" leaves those frames one by one, up to the bound Pause uses.
+ * Return: 1 when "return" is to be sent.
+ */
+static int e_d_pdb_sync_must_leave(int handler)
+{
+ if (!e_d_pdb_pause_needs_return(handler))
+  return(0);
+ return(++e_d_pdb_run.internal_steps <= E_D_PDB_INTERNAL_STEPS_MAX);
+}
+
+/**
+ * e_d_pdb_sync_stop - pdb stopped on the interrupt sent for a breakpoint
+ * change: keep what the script printed, and get out of pdb's own code.
+ * @f: the window on top (unused).
+ *
+ * Nothing is marked.  Once the stop is the script's, the change is sent
+ * with the file's full path (a bare line number would name bdb.py there)
+ * and one continue runs the script on.
+ * Return: E_D_SYNC_LEAVING when "return" was sent, else E_D_SYNC_READY.
+ */
+static int e_d_pdb_sync_stop(FENSTER *f)
+{
+ E_D_PDB_RUN *r = &e_d_pdb_run;
+ int handler;
+
+ (void)f;
+ e_d_pdb_note_return(r);
+ e_d_pdb_capture_before_interrupt(r);
+ e_d_nframes = 0;
+ if (e_d_pdb_read_frames() == -1)
+  return(E_D_SYNC_READY);
+ handler = e_d_pdb_handler_index();
+ if (handler + 1 < e_d_nframes && !r->pause_seen)
+  e_d_pdb_pause_note_script(&e_d_frames[handler + 1]);
+ if (e_d_pdb_sync_must_leave(handler))
+ {
+  e_d_pdb_send_on(E_D_PDB_FINISH);
+  return(E_D_SYNC_LEAVING);
+ }
+ r->pause_seen = 0;
+ r->internal_steps = 0;
+ return(E_D_SYNC_READY);
 }
 
 /**
@@ -13376,6 +14381,7 @@ static void e_d_dap_on_breakpoints(const char *file, const int *line,
     e_d_brk_set_state(i, E_D_BRK_VERIFIED, NULL);
    else
     e_d_brk_set_state(i, E_D_BRK_PENDING, message[k]);
+   e_d_brk_live_changed = 1;
   }
 }
 
@@ -13700,6 +14706,143 @@ static int e_d_brk_disarm(ECNT *cn, const char *file, int line, int id)
  if (e_deb_type == DEB_SDB)
   return(e_d_brk_sdb_line(file, line, "d", NULL));
  return(e_d_brk_disarm_line(cn, file, line));
+}
+
+/**
+ * e_d_jdb_send_live - Send jdb a breakpoint command for @line of @file
+ * while the program runs, without waiting for the answer.
+ * @cn: the editor; @set: 1 for "stop at", 0 for "clear".
+ *
+ * jdb's answer comes in the run's output and is read there
+ * (e_d_jdb_note_live_answers).
+ */
+static void e_d_jdb_send_live(ECNT *cn, int set, const char *file, int line)
+{
+ char path[PATH_MAX], cmd[E_D_BRK_CMD_MAX];
+
+ e_d_brk_path_of(cn, file, path, sizeof(path));
+ if (e_d_brk_line_cmd(set, file, path, line, cmd, sizeof(cmd)))
+  e_d_send_cmd(cmd);
+}
+
+/**
+ * e_d_jdb_sync_live - Tell jdb at once of the breakpoints the user set and
+ * removed while the program runs.
+ * @cn: the editor.
+ *
+ * jdb takes commands while the program runs: the program stops on a new
+ * mark the next time it gets there, and no longer on a removed one,
+ * without a pause.  Each mark turns solid when jdb's "Set breakpoint"
+ * comes.
+ * Return: 0.
+ */
+static int e_d_jdb_sync_live(ECNT *cn)
+{
+ int i;
+
+ for (i = 0; i < e_d_brk_ngone; i++)
+  e_d_jdb_send_live(cn, 0, e_d_brk_gone[i].file, e_d_brk_gone[i].line);
+ e_d_brk_gone_free();
+ for (i = 0; i < e_d_nbrpts; i++)
+ {
+  if (!e_d_brk_unsent(i))
+   continue;
+  e_d_jdb_send_live(cn, 1, e_d_sbrpts[i], e_d_ybrpts[i]);
+  e_d_nrbrpts[i] = i + 1;          /* sent: the answer decides its state */
+ }
+ return(0);
+}
+
+/**
+ * e_d_brk_gone_drop_file - Forget the removals in @file, which the debugger
+ * has just been given the file's whole list for.
+ * @file: the file's name as the list keeps it (not a removal's own copy).
+ */
+static void e_d_brk_gone_drop_file(const char *file)
+{
+ int i, kept = 0;
+
+ for (i = 0; i < e_d_brk_ngone; i++)
+ {
+  if (strcmp(e_d_brk_gone[i].file, file))
+  {
+   e_d_brk_gone[kept++] = e_d_brk_gone[i];
+   continue;
+  }
+  FREE(e_d_brk_gone[i].file);
+ }
+ e_d_brk_ngone = kept;
+}
+
+/**
+ * e_d_brk_mark_file_sent - Every entry of @file in the list has now been
+ * given to the debugger; its answer decides each one's state.
+ */
+static void e_d_brk_mark_file_sent(const char *file)
+{
+ int i;
+
+ for (i = 0; i < e_d_nbrpts; i++)
+  if (!strcmp(e_d_sbrpts[i], file) && e_d_nrbrpts[i] == 0)
+   e_d_nrbrpts[i] = i + 1;
+}
+
+/**
+ * e_d_dap_sync_file_live - Give the adapter @file's breakpoints, as the
+ * list has them now, while the program runs.
+ * @cn: the editor; @file: the name the list keeps.
+ *
+ * DAP replaces a source's breakpoints as a whole, so one request carries
+ * the marks set and the ones removed.  The answer comes through the run's
+ * reader (e_d_dap_on_breakpoints).
+ * Return: 0, or -1 when the adapter cannot take it now (the change then
+ * waits for the next stop).
+ */
+static int e_d_dap_sync_file_live(ECNT *cn, const char *file)
+{
+ char name[PATH_MAX], path[PATH_MAX];
+ int *brk_lines = MALLOC(sizeof(int) * (e_d_nbrpts + 1));
+ int i, n = 0, ret;
+
+ snprintf(name, sizeof(name), "%s", file);
+ for (i = 0; i < e_d_nbrpts; i++)
+  if (!strcmp(e_d_sbrpts[i], name))
+   brk_lines[n++] = e_d_ybrpts[i];
+ e_d_brk_path_of(cn, name, path, sizeof(path));
+ ret = e_dap_set_file_breakpoints_async(g_dap, path, brk_lines, n);
+ FREE(brk_lines);
+ if (ret < 0)
+  return(-1);
+ e_d_brk_mark_file_sent(name);
+ e_d_brk_gone_drop_file(name);
+ return(0);
+}
+
+/**
+ * e_d_dap_sync_live - Tell the debug adapter at once of the breakpoints
+ * the user set and removed while the program runs.
+ * @cn: the editor.
+ *
+ * The adapters take setBreakpoints while the program runs: the program
+ * stops on a new mark the next time it gets there, and no longer on a
+ * removed one, without a pause.  A mark turns solid on the adapter's
+ * "verified", or on a later breakpoint event.
+ * Return: 0, or -1 when the adapter could not take it (the rest waits for
+ * the next stop).
+ */
+static int e_d_dap_sync_live(ECNT *cn)
+{
+ int i;
+
+ if (!e_d_dap_active())
+  return(-1);
+ while (e_d_brk_ngone > 0)
+  if (e_d_dap_sync_file_live(cn, e_d_brk_gone[0].file) < 0)
+   return(-1);
+ for (i = 0; i < e_d_nbrpts; i++)
+  if (e_d_brk_unsent(i) && e_d_dap_sync_file_live(cn, e_d_sbrpts[i]) < 0)
+   return(-1);
+ return(0);
 }
 
 /**

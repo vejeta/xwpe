@@ -920,3 +920,51 @@ def test_a_breakpoint_set_while_running_is_hollow_then_solid_at_the_next_stop(
             "the stop should send %r; %s got %r" \
             % (ARM_LATER_COMMAND[backend], backend, sent)
         w.key(ALT_X, delay=0.5)
+
+
+NOT_INTERRUPTED_S = 4      # longer than an interrupt and its stop take
+
+
+def _never_stopped(w, seconds):
+    """True when no stop is marked for @seconds: the stub reports one only
+    when it is interrupted."""
+    deadline = time.time() + seconds * WAIT_SCALE
+    while time.time() < deadline:
+        w._drain(0.2)
+        if _mark_line(w) is not None:
+            return False
+    return True
+
+
+# @scenario SC-debug-07
+@pytest.mark.parametrize("backend", BACKENDS)
+def test_a_breakpoint_set_while_running_stops_the_program_there(tmp_path,
+                                                                backend):
+    """gdb, pdb and a68g are interrupted to take a breakpoint set while the
+    program runs; sdb, dbx and xdb are not.  Their way of taking one at that
+    moment was never recorded, so the program is left running, nothing is
+    sent, and the line stays hollow until the program's next stop.
+
+    Limit: the stub proves xwpe's half of the protocol, not a real debugger.
+    """
+    with _session(tmp_path, backend, continue_runs_on=True,
+                  interrupt_at=C_CURSOR_LINE) as w:
+        _start_session(w, tmp_path, backend)
+        w.key(CTRL_G, "r", delay=0.5)
+        assert _wait_for(w, lambda: _stub_running(w, backend)
+                         and CONTINUE_COMMAND[backend]
+                         in _sent(tmp_path, backend), STEP_TIMEOUT_S), \
+            "%s should be running the program:\n%s" % (backend, _screen(w))
+        before = len(_commands(tmp_path, backend))
+        _move_down(w, C_LATER_LINE - C_BREAK_LINE)
+        w.key(CTRL_G, "b", delay=0.6)
+        assert _never_stopped(w, NOT_INTERRUPTED_S), \
+            "%s must not be interrupted for a breakpoint:\n%s" \
+            % (backend, _screen(w))
+        assert _sent(tmp_path, backend)[before:] == [], \
+            "nothing should be sent to the busy %s; it got %r" \
+            % (backend, _sent(tmp_path, backend)[before:])
+        assert _breakpoint_drawn(w, C_LATER_LINE, hollow=True), \
+            "line %d should stay hollow until the next stop:\n%s" \
+            % (C_LATER_LINE, _screen(w))
+        w.key(ALT_X, delay=0.5)

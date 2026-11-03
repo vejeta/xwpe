@@ -7022,11 +7022,11 @@ def _quit_and_see_the_session_gone(w):
 
 # @scenario SC-debug-07
 @pytest.mark.parametrize("debugger", sorted(BRK_RUN_CASES))
-def test_a_breakpoint_set_while_running_is_hollow_then_solid_at_the_next_stop(
+def test_a_breakpoint_set_while_running_turns_solid_while_it_runs(
         tmp_path, debugger):
-    """A breakpoint set while the program runs is not refused: its line is
-    drawn hollow, and once the program stops (Pause here) the debugger has
-    been told and the line turns into the solid bar."""
+    """A breakpoint set while the program runs is not refused: the debugger
+    is told at once and the line turns into the solid bar while the program
+    still runs; after a stop (Pause here) it is still the solid bar."""
     case = BRK_RUN_CASES[debugger]
     _need(*case["need"])
     if case["gomod"]:
@@ -7039,7 +7039,9 @@ def test_a_breakpoint_set_while_running_is_hollow_then_solid_at_the_next_stop(
         w.key(CTRL_G, "b", delay=0.6)
         assert RUNNING_REFUSAL not in _screen(w), \
             "a breakpoint is no debugger command to refuse:\n%s" % _screen(w)
-        _assert_hollow(w, case["tail"], "while the program runs")
+        _assert_solid(w, case["tail"], "while the program runs")
+        assert "^Brk Pause" in _bottom_bar(w), \
+            "the program should still run:\n%s" % _screen(w)
         w.key(*CTRL_G_I, delay=0.5)
         assert _wait_for(w, lambda: PAUSED_LINE in _bottom_row(w),
                          PAUSE_TIMEOUT_S), \
@@ -7052,7 +7054,7 @@ def test_a_breakpoint_set_while_running_is_hollow_then_solid_at_the_next_stop(
 # a line unmarked just after a stop there is reached again only if the
 # debugger still has the breakpoint.
 LOOP_SLEEP_S = 5
-GDB_LOOP_PROG = (
+GDB_HOT_LOOP_PROG = (
     "#include <stdio.h>\n"
     "#include <unistd.h>\n"
     "int main(void)\n"
@@ -7066,7 +7068,7 @@ GDB_LOOP_PROG = (
     "  }\n"
     "}\n" % LOOP_SLEEP_S
 )
-GDB_LOOP_BREAK_LINE = 8           # n++, right after the sleep
+GDB_HOT_LOOP_BREAK_LINE = 8       # n++, right after the sleep
 GDB_LOOP_PASSES = 2               # loop passes watched for a wrong stop
 
 
@@ -7086,15 +7088,15 @@ def test_a_breakpoint_removed_while_running_is_gone_at_the_next_stop(tmp_path):
     and from the debugger at the next stop: the loop then passes the line
     again and again without stopping there."""
     _need("gcc", "gdb")
-    with WpeSession(str(tmp_path), GDB_LOOP_PROG, filename="p.c",
+    with WpeSession(str(tmp_path), GDB_HOT_LOOP_PROG, filename="p.c",
                     wait=1.5) as w:
-        _stop_on_a_breakpoint_at(w, GDB_LOOP_BREAK_LINE, START_TIMEOUT_S)
+        _stop_on_a_breakpoint_at(w, GDB_HOT_LOOP_BREAK_LINE, START_TIMEOUT_S)
         w.key(CTRL_G, "r", delay=0.5)    # into the sleep; the cursor stays
         w.key(CTRL_G, "b", delay=0.6)    # on the breakpoint's line
         assert RUNNING_REFUSAL not in _screen(w), \
             "removing a breakpoint is no debugger command to refuse:\n%s" \
             % _screen(w)
-        assert GDB_LOOP_BREAK_LINE not in \
+        assert GDB_HOT_LOOP_BREAK_LINE not in \
             _breakpoint_lines(w) + _unconfirmed_lines(w), \
             "the line should be unmarked at once:\n%s" % _screen(w)
         w.key(*CTRL_G_I, delay=0.5)
@@ -7102,10 +7104,10 @@ def test_a_breakpoint_removed_while_running_is_gone_at_the_next_stop(tmp_path):
                          PAUSE_TIMEOUT_S), \
             "Ctrl-G I should stop the program:\n%s" % _screen(w)
         w.key(CTRL_G, "r", delay=0.5)    # run on from the pause
-        assert _never_marked_at(w, GDB_LOOP_BREAK_LINE,
+        assert _never_marked_at(w, GDB_HOT_LOOP_BREAK_LINE,
                                 GDB_LOOP_PASSES * LOOP_SLEEP_S), \
             "the program must not stop on the removed line %d:\n%s" \
-            % (GDB_LOOP_BREAK_LINE, _screen(w))
+            % (GDB_HOT_LOOP_BREAK_LINE, _screen(w))
         _quit_and_see_the_session_gone(w)
 
 
@@ -7232,11 +7234,11 @@ def _set_the_refused_breakpoint_while_running(w, debugger):
 
 # @scenario SC-debug-07
 @pytest.mark.parametrize("debugger", ["gdb", "a68g"])
-def test_a_breakpoint_refused_while_running_says_why_at_a_pause(
+def test_a_breakpoint_refused_while_running_says_why_at_once(
         tmp_path, debugger):
-    """A breakpoint set while the program runs is sent at the next stop
-    and the debugger refuses it: when that stop is Pause, the status row
-    holds the debugger's words, not only Paused."""
+    """A breakpoint set while the program runs is sent at once and the
+    debugger refuses it: the status row holds the debugger's words while
+    the program goes on running, without a Pause."""
     if debugger == "gdb":
         _need("gcc", "gdb")
         (tmp_path / "q.c").write_text(NOT_IN_THE_PROGRAM_C)
@@ -7249,13 +7251,14 @@ def test_a_breakpoint_refused_while_running_says_why_at_a_pause(
     with WpeSession(str(tmp_path), prog, filename=name, wait=2.0) as w:
         _stop_then_run_on(w, stop_line, start_s)
         text, words = _set_the_refused_breakpoint_while_running(w, debugger)
-        w.key(*CTRL_G_I, delay=1.0)
         if text:
             _assert_says_why_it_is_hollow(w, text, words)
         assert _wait_for(w, lambda: words in _bottom_row(w), HOLLOW_WAIT_S), \
             "the status row should say %r:\n%s" % (words, _screen(w))
         assert "not set" in _bottom_row(w), \
             "the row should say the breakpoint is not set:\n%s" % _screen(w)
+        assert _mark_line(w) is None, \
+            "the program should still run, unmarked:\n%s" % _screen(w)
 
 
 # @scenario SC-debug-07
@@ -7301,6 +7304,825 @@ def test_no_hollow_breakpoint_without_a_session(tmp_path):
             "no line is hollow after the session:\n%s" % _screen(w)
 
 
+# ---- breakpoints applied while the program runs ----
+#
+# gdb, pdb and a68g read no command while the program runs: the editor stops
+# the program with an interrupt, sets or clears the breakpoints and lets it run
+# on, showing nothing of that stop.  jdb and the debug adapters take the change
+# while the program runs.  Either way the program stops on a line marked while
+# it runs, without a Pause first.
+
+LIVE_STOP_TIMEOUT_S = 10          # the interrupt, the change, the next pass
+
+GDB_LIVE_PROG = (
+    "#include <stdio.h>\n"
+    "#include <unistd.h>\n"
+    "int main(void)\n"
+    "{\n"
+    "  long n = 0;\n"
+    "  printf(\"READY\\n\");\n"
+    "  fflush(stdout);\n"
+    "  for (;;) {\n"
+    "    sleep(1);\n"
+    "    n++;\n"
+    "  }\n"
+    "}\n"
+)
+PY_LIVE_PROG = (
+    "import time\n"
+    "print('ready', flush=True)\n"
+    "n = 0\n"
+    "while True:\n"
+    "    time.sleep(1)\n"
+    "    n += 1\n"
+)
+
+# One case per backend: the program (it loops without end), the line of the
+# breakpoint it first stops on, and the line of the loop's body the user marks
+# while it runs.
+BRK_LIVE_CASES = {
+    "gdb": {"file": "p.c", "prog": GDB_LIVE_PROG, "break": 6, "body": 10,
+            "need": ("gcc", "gdb"), "start_s": START_TIMEOUT_S, "env": {},
+            "wait": 1.5, "gomod": False},
+    "pdb": {"file": "p.py", "prog": PY_LIVE_PROG, "break": 2, "body": 6,
+            "need": ("python3",), "start_s": START_TIMEOUT_S, "env": {},
+            "wait": 1.5, "gomod": False},
+    "a68g": {"file": "p.a68", "prog": A68_PAUSE_PROG, "break": 2, "body": 3,
+             "need": ("a68g",), "start_s": START_TIMEOUT_S, "env": {},
+             "wait": 2.0, "gomod": False},
+    "jdb": {"file": "P.java", "prog": JDB_PAUSE_PROG, "break": 4, "body": 6,
+            "need": ("jdb", "javac"), "start_s": JDB_START_TIMEOUT_S,
+            "env": {}, "wait": 1.5, "gomod": False},
+    "dlv": {"file": "main.go", "prog": GO_PAUSE_PROG, "break": 7, "body": 9,
+            "need": ("dlv", "go"), "start_s": GOTO_TIMEOUT_S, "env": {},
+            "wait": 2.0, "gomod": True},
+    "lldb-dap": {"file": "main.rs", "prog": RUST_PAUSE_PROG, "break": 3,
+                 "body": 5, "need": ("rustc", "lldb-dap"),
+                 "start_s": RUST_START_TIMEOUT_S,
+                 "env": {"XWPE_DAP_ADAPTER": "lldb"}, "wait": 2.0,
+                 "gomod": False},
+    "gdb-dap": {"file": "main.rs", "prog": RUST_PAUSE_PROG, "break": 3,
+                "body": 5, "need": ("rustc", "gdb"),
+                "start_s": RUST_START_TIMEOUT_S,
+                "env": {"XWPE_DAP_ADAPTER": "gdb"}, "wait": 2.0,
+                "gomod": False},
+}
+
+
+def _live_session(tmp_path, case):
+    """The editor on @case's program, with what its debugger needs."""
+    _need(*case["need"])
+    if case["gomod"]:
+        (tmp_path / "go.mod").write_text("module dapdemo\n\ngo 1.21\n")
+    return WpeSession(str(tmp_path), case["prog"], filename=case["file"],
+                      wait=case["wait"], env_extra=case["env"] or None)
+
+
+def _assert_stops_on(w, line, what):
+    """The program stops on @line, and the stop is no Pause."""
+    assert _wait_for(w, lambda: _mark_line(w) == line, LIVE_STOP_TIMEOUT_S), \
+        "%s: the program should stop on line %d (mark on %s):\n%s" \
+        % (what, line, _mark_line(w), _screen(w))
+    assert PAUSED_LINE not in _bottom_row(w), \
+        "%s: the stop is the breakpoint's, not a pause:\n%s" \
+        % (what, _screen(w))
+
+
+# @scenario SC-debug-07
+@pytest.mark.parametrize("debugger", sorted(BRK_LIVE_CASES))
+def test_a_breakpoint_set_while_running_stops_the_program_there(tmp_path,
+                                                                debugger):
+    """A breakpoint set on the body of a loop the program is running stops
+    the program there on the next pass: the user does not have to pause
+    first, and the stop the editor made to apply it is never shown."""
+    case = BRK_LIVE_CASES[debugger]
+    with _live_session(tmp_path, case) as w:
+        _run_into_the_program(w, case["break"], case["start_s"])
+        _go_to_line(w, case["body"])
+        w.key(CTRL_G, "b", delay=0.6)
+        assert RUNNING_REFUSAL not in _screen(w), \
+            "a breakpoint is no debugger command to refuse:\n%s" % _screen(w)
+        _assert_stops_on(w, case["body"], "a breakpoint set while running")
+        _quit_and_see_the_session_gone(w)
+
+
+# Loops that pass their body line once every LIVE_SLOW_S seconds: a line
+# unmarked while the program sleeps is reached again only if the debugger
+# still has the breakpoint.
+LIVE_SLOW_S = 2
+LIVE_SLOW_PASSES = 3              # passes watched for a wrong stop
+GDB_SLOW_PROG = (
+    "#include <stdio.h>\n"
+    "#include <unistd.h>\n"
+    "int main(void)\n"
+    "{\n"
+    "  int n = 0;\n"
+    "  for (;;) {\n"
+    "    sleep(%d);\n"
+    "    n++;\n"
+    "    printf(\"N %%d\\n\", n);\n"
+    "    fflush(stdout);\n"
+    "  }\n"
+    "}\n" % LIVE_SLOW_S
+)
+PY_SLOW_PROG = (
+    "import time\n"
+    "n = 0\n"
+    "while True:\n"
+    "    time.sleep(%d)\n"
+    "    n += 1\n"
+    "    print('N', n, flush=True)\n" % LIVE_SLOW_S
+)
+JDB_LIVE_SLOW_PROG = (
+    "public class P {\n"
+    "    public static void main(String[] a) throws Exception {\n"
+    "        int n = 0;\n"
+    "        while (true) {\n"
+    "            Thread.sleep(%d);\n"
+    "            n++;\n"
+    "            System.out.println(n);\n"
+    "        }\n"
+    "    }\n"
+    "}\n" % (LIVE_SLOW_S * 1000)
+)
+GO_SLOW_PROG = (
+    "package main\n"
+    "\n"
+    "import (\n"
+    "\t\"fmt\"\n"
+    "\t\"time\"\n"
+    ")\n"
+    "\n"
+    "func main() {\n"
+    "\tn := 0\n"
+    "\tfor {\n"
+    "\t\ttime.Sleep(%d * time.Second)\n"
+    "\t\tn++\n"
+    "\t\tfmt.Println(n)\n"
+    "\t}\n"
+    "}\n" % LIVE_SLOW_S
+)
+RUST_SLOW_PROG = (
+    "fn main() {\n"
+    "    let mut n: u64 = 0;\n"
+    "    loop {\n"
+    "        std::thread::sleep(std::time::Duration::from_secs(%d));\n"
+    "        n += 1;\n"
+    "        println!(\"{}\", n);\n"
+    "    }\n"
+    "}\n" % LIVE_SLOW_S
+)
+# the program and the body line that follows its sleep, per backend
+BRK_SLOW_CASES = {
+    "gdb": dict(BRK_LIVE_CASES["gdb"], prog=GDB_SLOW_PROG, body=8),
+    "pdb": dict(BRK_LIVE_CASES["pdb"], prog=PY_SLOW_PROG, body=5),
+    "jdb": dict(BRK_LIVE_CASES["jdb"], prog=JDB_LIVE_SLOW_PROG, body=6),
+    "dlv": dict(BRK_LIVE_CASES["dlv"], prog=GO_SLOW_PROG, body=12),
+    "lldb-dap": dict(BRK_LIVE_CASES["lldb-dap"], prog=RUST_SLOW_PROG, body=5),
+    "gdb-dap": dict(BRK_LIVE_CASES["gdb-dap"], prog=RUST_SLOW_PROG, body=5),
+}
+
+
+# @scenario SC-debug-07
+@pytest.mark.parametrize("debugger", sorted(BRK_SLOW_CASES))
+def test_a_breakpoint_removed_while_running_is_not_stopped_at(tmp_path,
+                                                             debugger):
+    """A breakpoint taken off the body of a loop while the program sleeps
+    in it is gone from the debugger before the next pass: the program runs
+    past the line pass after pass, with no stop there and no Pause first."""
+    case = BRK_SLOW_CASES[debugger]
+    with _live_session(tmp_path, case) as w:
+        _stop_on_a_breakpoint_at(w, case["body"], case["start_s"])
+        w.key(CTRL_G, "r", delay=0.3)    # into the sleep; the cursor stays
+        w.key(CTRL_G, "b", delay=0.6)    # on the breakpoint's line
+        assert case["body"] not in \
+            _breakpoint_lines(w) + _unconfirmed_lines(w), \
+            "the line should be unmarked at once:\n%s" % _screen(w)
+        assert _never_marked_at(w, case["body"],
+                                LIVE_SLOW_PASSES * LIVE_SLOW_S), \
+            "the program must not stop on the removed line %d:\n%s" \
+            % (case["body"], _screen(w))
+        _quit_and_see_the_session_gone(w)
+
+
+QUIET_SYNC_WINDOW_S = 2.5
+# A breakpoint toggled with no session writes 55 bytes (its own redraw).
+# The toggle and its sync together measured 110 to 156; the bound is four
+# times the toggle, far below the 4500 to 9300 a full repaint writes.
+QUIET_SYNC_MAX_BYTES = 4 * 55
+QUIET_SYNC_GDB_PROG = (
+    "#include <unistd.h>\n"
+    "int main(void)\n"
+    "{\n"
+    "  long n = 0;\n"
+    "  for (;;) {\n"
+    "    sleep(30);\n"
+    "    n++;\n"
+    "  }\n"
+    "}\n"
+)
+QUIET_SYNC_PY_PROG = (
+    "import time\n"
+    "n = 0\n"
+    "while True:\n"
+    "    time.sleep(30)\n"
+    "    n += 1\n"
+)
+# the breakpoint the program first stops on, the line toggled while it runs
+# (never reached in the window), and whether the sync is seen at once
+QUIET_SYNC_CASES = {
+    "gdb": dict(BRK_LIVE_CASES["gdb"], prog=QUIET_SYNC_GDB_PROG, break_at=6,
+                toggle=7, solid=True),
+    "pdb": dict(BRK_LIVE_CASES["pdb"], prog=QUIET_SYNC_PY_PROG, break_at=4,
+                toggle=5, solid=False),
+    "a68g": dict(BRK_LIVE_CASES["a68g"], break_at=2, toggle=4, solid=True),
+    "jdb": dict(BRK_LIVE_CASES["jdb"], break_at=4, toggle=8, solid=True),
+    "lldb-dap": dict(BRK_LIVE_CASES["lldb-dap"], break_at=3, toggle=7,
+                     solid=True),
+}
+
+
+# @scenario SC-debug-07
+@pytest.mark.parametrize("debugger", sorted(QUIET_SYNC_CASES))
+def test_a_breakpoint_applied_while_running_repaints_only_its_margin(
+        tmp_path, debugger):
+    """The change made while the program runs is told to the debugger
+    without the screen flashing: what the editor writes in the seconds after
+    the toggle stays near the toggle's own redraw, not a whole-screen one."""
+    case = QUIET_SYNC_CASES[debugger]
+    with _live_session(tmp_path, case) as w:
+        _stop_on_a_breakpoint_at(w, case["break_at"], case["start_s"])
+        w.key(CTRL_G, "r", delay=0.5)
+        _go_to_line(w, case["toggle"])
+        w._drain(0.3)
+        start = len(w.raw)
+        w.key(CTRL_G, "b", delay=0.0)
+        w._drain(QUIET_SYNC_WINDOW_S)
+        written = len(w.raw) - start
+        if case["solid"]:
+            assert case["toggle"] in _breakpoint_lines(w), \
+                "the sync should have happened in the window:\n%s" \
+                % _screen(w)
+        assert written <= QUIET_SYNC_MAX_BYTES, \
+            "%d bytes written for one toggle, at most %d:\n%s" \
+            % (written, QUIET_SYNC_MAX_BYTES, _screen(w))
+        _quit_and_see_the_session_gone(w)
+
+
+GDB_LOG_NAME = "gdb-output.log"
+GDB_LOG_INIT = (
+    "set logging file %s\n"
+    "set logging overwrite on\n"
+    "set logging enabled on\n"
+)
+GDB_SIGINT_REPORT = "Program received signal SIGINT"
+GDB_TWO_TOGGLE_LINES = (9, 10)    # sleep(1); and n++; of GDB_LIVE_PROG
+
+
+def _gdb_sigint_reports(tmp_path):
+    """How many times gdb has said the program stopped on SIGINT."""
+    log = tmp_path / GDB_LOG_NAME
+    if not log.exists():
+        return 0
+    return log.read_text(errors="replace").count(GDB_SIGINT_REPORT)
+
+
+# @scenario SC-debug-07
+def test_two_toggles_while_running_interrupt_once(tmp_path):
+    """Two breakpoints set in one breath while the program runs share one
+    interrupt: gdb reports a single SIGINT stop, both lines are set, and the
+    program stops on the loop."""
+    _need("gcc", "gdb")
+    (tmp_path / ".gdbinit").write_text(
+        GDB_LOG_INIT % (tmp_path / GDB_LOG_NAME))
+    first, second = GDB_TWO_TOGGLE_LINES
+    with WpeSession(str(tmp_path), GDB_LIVE_PROG, filename="p.c",
+                    wait=1.5) as w:
+        _run_into_the_program(w, BRK_LIVE_CASES["gdb"]["break"],
+                              START_TIMEOUT_S)
+        _go_to_line(w, first)
+        w.key(CTRL_G + "b" + DOWN + CTRL_G + "b", delay=0.6)
+        assert _wait_for(w, lambda: _mark_line(w) in GDB_TWO_TOGGLE_LINES,
+                         LIVE_STOP_TIMEOUT_S), \
+            "the program should stop on the loop (mark on %s):\n%s" \
+            % (_mark_line(w), _screen(w))
+        w._drain(PAUSE_SETTLE_S)
+        assert _gdb_sigint_reports(tmp_path) == 1, \
+            "two toggles should cost one interrupt, gdb reported %d:\n%s" \
+            % (_gdb_sigint_reports(tmp_path), _screen(w))
+        stop = _mark_line(w)
+        other = second if stop == first else first
+        _assert_solid(w, other, "the other toggled line")
+        _quit_and_see_the_session_gone(w)
+
+
+# A loop whose body holds an armed breakpoint, a few hundredths of a second
+# of spinning apart: every Continue races the interrupt a toggle sends
+# against the breakpoint's own stop.
+GDB_RACE_PROG = (
+    "#include <stdio.h>\n"
+    "int main(void)\n"
+    "{\n"
+    "  long n = 0;\n"
+    "  for (;;) {\n"
+    "    n++;\n"
+    "    for (volatile long k = 0; k < 20000000; k++)\n"
+    "      ;\n"
+    "  }\n"
+    "}\n"
+)
+GDB_RACE_BODY_LINE = 6            # n++;
+# the time between Continue and the toggle, round after round: the toggle
+# lands before, near and after the breakpoint's next stop
+GDB_RACE_DELAYS_S = (0.01, 0.02, 0.03, 0.05, 0.08, 0.01, 0.02, 0.04)
+GDB_RACE_STILL_S = 1.5            # a stopped program does not move meanwhile
+GDB_RACE_RUNS_S = 3               # no stop by then: the program runs on
+
+
+def _watch_number(w, name):
+    """The number the Watches window shows for @name, or None."""
+    row = _watch_row(w, name) or ""
+    m = re.search(r"-?\d+", row)
+    return int(m.group(0)) if m else None
+
+
+def _assert_stays_stopped(w, rnd):
+    """The stop is the user's: nothing runs the program on behind his back,
+    and the interrupt is never shown."""
+    n = _watch_number(w, "n")
+    w._drain(GDB_RACE_STILL_S)
+    assert "^Brk Pause" not in _bottom_bar(w), \
+        "round %d: nothing may run the program on:\n%s" % (rnd, _screen(w))
+    assert _watch_number(w, "n") == n, \
+        "round %d: the program moved on behind the user's back:\n%s" \
+        % (rnd, _screen(w))
+    assert "SIGINT" not in _screen(w), \
+        "round %d: the interrupt is not the user's to see:\n%s" \
+        % (rnd, _screen(w))
+
+
+def _race_round(w, rnd, delay):
+    """Continue, and @delay later take the loop's breakpoint off: the
+    interrupt the toggle sends races the breakpoint's next stop.  Return
+    with the program stopped on the loop's line and its breakpoint set."""
+    line = GDB_RACE_BODY_LINE
+    w.key(CTRL_G + "r", delay=delay)
+    w.key(CTRL_G + "b", delay=0.3)
+    if _wait_for(w, lambda: _mark_line(w) == line, GDB_RACE_RUNS_S):
+        _assert_stays_stopped(w, rnd)          # the breakpoint won
+        assert line not in _breakpoint_lines(w) + _unconfirmed_lines(w), \
+            "round %d: the line was unmarked:\n%s" % (rnd, _screen(w))
+        w.key(CTRL_G, "b", delay=0.6)          # set it again, stopped; the
+        return "stop"                          # next round stops on it
+    assert "^Brk Pause" in _bottom_bar(w), \
+        "round %d: the change won, the program runs:\n%s" % (rnd, _screen(w))
+    w.key(CTRL_G, "b", delay=0.3)              # set it again, running
+    assert _wait_for(w, lambda: _mark_line(w) == line, LIVE_STOP_TIMEOUT_S), \
+        "round %d: the breakpoint set again should stop the program:\n%s" \
+        % (rnd, _screen(w))
+    _assert_stays_stopped(w, rnd)
+    return "run"
+
+
+GDB_RACE_FROZEN_S = 0.5           # the program reaches its breakpoint
+GDB_RACE_FROZEN_ROUNDS = 3
+
+
+def _race_round_frozen(w, rnd):
+    """Continue, then hold the editor still while the program reaches its
+    breakpoint, so gdb's stop and the toggle wait unread together.  The
+    stop is the user's whichever is read first: it is shown, the removal
+    is applied, the program advanced one pass and stays there."""
+    w.key(CTRL_G + "r", delay=0.1)
+    os.kill(w.proc.pid, signal.SIGSTOP)
+    try:
+        time.sleep(GDB_RACE_FROZEN_S)
+        os.write(w.master_fd, (CTRL_G + "b").encode())
+    finally:
+        os.kill(w.proc.pid, signal.SIGCONT)
+    line = GDB_RACE_BODY_LINE
+    assert _wait_for(w, lambda: _mark_line(w) == line, LIVE_STOP_TIMEOUT_S), \
+        "frozen round %d: the breakpoint's stop should be shown:\n%s" \
+        % (rnd, _screen(w))
+    _assert_stays_stopped(w, rnd)
+    assert line not in _breakpoint_lines(w) + _unconfirmed_lines(w), \
+        "frozen round %d: the line was unmarked:\n%s" % (rnd, _screen(w))
+    w.key(CTRL_G, "b", delay=0.6)              # set it again, stopped
+
+
+# @scenario SC-debug-07
+def test_a_toggle_racing_a_breakpoint_stop_leaves_the_stop_to_the_user(
+        tmp_path):
+    """The loop's own breakpoint is taken off just after Continue, so the
+    interrupt the toggle sends races the breakpoint's next stop.  When the
+    stop wins it is the user's: it is shown, the removal is applied there
+    and nothing runs on.  When the interrupt wins the program runs on
+    without the breakpoint.  Round after round gdb's answers stay in step:
+    the watch reads a number and the Stack window answers."""
+    _need("gcc", "gdb")
+    (tmp_path / ".gdbinit").write_text(
+        GDB_LOG_INIT % (tmp_path / GDB_LOG_NAME))
+    with WpeSession(str(tmp_path), GDB_RACE_PROG, filename="p.c",
+                    wait=1.5) as w:
+        _stop_on_a_breakpoint_at(w, GDB_RACE_BODY_LINE, START_TIMEOUT_S)
+        _add_watch(w, "n")
+        _source_window_on_top(w)
+        assert _wait_for(w, lambda: _watch_number(w, "n") is not None,
+                         STEP_TIMEOUT_S), _screen(w)
+        for rnd, delay in enumerate(GDB_RACE_DELAYS_S):
+            _race_round(w, rnd, delay)
+            assert _watch_number(w, "n") is not None, \
+                "round %d: the watch should read a number:\n%s" \
+                % (rnd, _screen(w))
+        for rnd in range(GDB_RACE_FROZEN_ROUNDS):
+            n = _watch_number(w, "n")
+            _race_round_frozen(w, rnd)
+            assert _wait_for(w, lambda: _watch_number(w, "n") == n + 1,
+                             STEP_TIMEOUT_S), \
+                "frozen round %d: one pass, the watch should read %d:\n%s" \
+                % (rnd, n + 1, _screen(w))
+        w.key(CTRL_G, "k", delay=0.8)
+        assert _wait_for(w, lambda: " Stack " in _screen(w), STEP_TIMEOUT_S), \
+            "gdb should still answer the Stack window:\n%s" % _screen(w)
+        assert "main" in _screen(w), \
+            "the Stack window should show main:\n%s" % _screen(w)
+
+
+# ---- an interrupt that lost the race, forced ----
+#
+# Whether the interrupt a toggle sends reaches gdb before or after the
+# program's own stop is a matter of microseconds, and the editor always reads
+# a stop that is waiting before it reads a key, so no timing of keys reaches
+# the two outcomes where the stop won.  A stand-in gdb forces them: it runs
+# the real gdb behind pipes, holds back what gdb writes after one Continue
+# until the editor's SIGINT arrives, and then answers as gdb does when the
+# signal came after the stop (measured on gdb 18): either "Quit" on its error
+# stream and one more prompt, or the SIGINT kept for the program and reported
+# at its next resume, before it moved.
+GDB_STAND_IN_SOURCE = r'''
+import os
+import re
+import select
+import signal
+import subprocess
+import sys
+import time
+
+REAL = os.environ["XWPE_REAL_GDB"]
+MODE = os.environ["XWPE_STAND_IN_MODE"]
+LOG = os.environ["XWPE_STAND_IN_LOG"]
+PROMPT = b"(gdb) "
+QUIT = "\u274c\ufe0f Quit\n".encode()
+RESUME = re.compile(r"^(c|n|s|finish|advance .*)$")
+CONTINUE = "c"
+SEPARATE_S = 0.2           # the extra prompt comes in a read of its own
+
+wake_r, wake_w = os.pipe()
+
+
+def note(text):
+    with open(LOG, "a") as fh:
+        fh.write(text + "\n")
+
+
+def on_interrupt(signum, frame):
+    os.write(wake_w, b"i")
+
+
+def on_end(signum, frame):
+    os.write(wake_w, b"t")
+
+
+signal.signal(signal.SIGINT, on_interrupt)
+signal.signal(signal.SIGTERM, on_end)
+signal.signal(signal.SIGHUP, on_end)
+gdb = subprocess.Popen([REAL] + sys.argv[1:], stdin=subprocess.PIPE,
+                       stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+g_in, g_out, g_err = (gdb.stdin.fileno(), gdb.stdout.fileno(),
+                      gdb.stderr.fileno())
+state = {"resumes": 0, "holding": False, "held": b"", "late": False}
+
+
+def answer_of(cmd):
+    """gdb's whole answer to a command the stand-in sends itself."""
+    os.write(g_in, cmd)
+    got = b""
+    while not got.endswith(PROMPT):
+        b = os.read(g_out, 65536)
+        if not b:
+            break
+        got += b
+    return got
+
+
+def sigint_at_resume(cmd):
+    """gdb's report of a SIGINT kept for the program, at this resume."""
+    lead = b""
+    if cmd == CONTINUE:
+        lead = b"Continuing.\n"
+    frame = re.sub(rb"^#0  ", b"", answer_of(b"frame\n"))
+    return lead + b"\nProgram received signal SIGINT, Interrupt.\n" + frame
+
+
+def took_sigint():
+    note("SIGINT")
+    held = state["held"]
+    if not state["holding"] or not held.endswith(PROMPT):
+        os.kill(gdb.pid, signal.SIGINT)
+        state["holding"] = False
+        os.write(1, held)
+        state["held"] = b""
+        return
+    state["holding"] = False
+    state["held"] = b""
+    if MODE == "quit-same":
+        os.write(2, QUIT)
+        os.write(1, held + PROMPT)
+    elif MODE == "quit":
+        os.write(1, held)
+        time.sleep(SEPARATE_S)
+        os.write(2, QUIT)
+        os.write(1, PROMPT)
+    else:
+        os.write(1, held)
+        state["late"] = True
+    note("stop won: " + MODE)
+
+
+def from_editor(line):
+    cmd = line.decode("utf-8", "replace").rstrip("\n")
+    note("CMD " + cmd)
+    if RESUME.match(cmd) and state["late"]:
+        state["late"] = False
+        note("SIGINT reported at the resume")
+        os.write(1, sigint_at_resume(cmd))
+        return
+    if RESUME.match(cmd):
+        state["resumes"] += 1
+        state["holding"] = state["resumes"] == 1
+    os.write(g_in, line)
+
+
+def from_gdb(data):
+    if state["holding"] and not state["held"] and b"Continuing.\n" in data:
+        head, tail = data.split(b"Continuing.\n", 1)
+        os.write(1, head + b"Continuing.\n")
+        state["held"] = tail
+    elif state["holding"]:
+        state["held"] += data
+    else:
+        os.write(1, data)
+
+
+pending = b""
+fds = [0, g_out, g_err, wake_r]
+while True:
+    try:
+        ready = select.select(fds, [], [])[0]
+    except InterruptedError:
+        continue
+    if wake_r in ready:
+        for c in os.read(wake_r, 64):
+            if c == ord("i"):
+                took_sigint()
+            else:
+                gdb.kill()
+                sys.exit(0)
+    if 0 in ready:
+        data = os.read(0, 65536)
+        if not data:
+            gdb.stdin.close()
+            fds.remove(0)
+        pending += data
+        while b"\n" in pending:
+            line, pending = pending.split(b"\n", 1)
+            from_editor(line + b"\n")
+    if g_err in ready:
+        data = os.read(g_err, 65536)
+        if data:
+            os.write(2, data)
+        else:
+            fds.remove(g_err)
+    if g_out in ready:
+        data = os.read(g_out, 65536)
+        if not data:
+            gdb.wait()
+            sys.exit(0)
+        from_gdb(data)
+'''.lstrip()
+
+# The loop's own breakpoint is on its first line; the program raises SIGINT
+# by itself once, on its sixth pass.
+GDB_HELD_RACE_PROG = (
+    "#include <signal.h>\n"
+    "int main(void)\n"
+    "{\n"
+    "  long n = 0;\n"
+    "  for (;;) {\n"
+    "    n++;\n"
+    "    n += 2;\n"
+    "    n += 3;\n"
+    "    if (n == 36) raise(SIGINT);\n"
+    "  }\n"
+    "}\n"
+)
+HELD_LOOP_LINE = 6               # n++;  the loop's breakpoint
+HELD_NEXT_LINE = 7               # n += 2;
+HELD_SET_LINE = 8                # n += 3;  set while the stop is held
+HELD_PASS = 6                    # what one pass adds to n
+HELD_STILL_S = 1.5               # a stopped program does not move meanwhile
+GDB_SIGNAL_REPORT = "received signal SIGINT"
+
+
+def _gdb_stand_in(tmp_path, mode):
+    """The environment that puts the stand-in gdb, in @mode, first on PATH;
+    it logs the commands it is given in stand-in.log."""
+    bindir = tmp_path / "bin"
+    bindir.mkdir(exist_ok=True)
+    stub = bindir / "gdb"
+    stub.write_text("#!%s\n%s" % (sys.executable, GDB_STAND_IN_SOURCE))
+    stub.chmod(0o755)
+    return {"PATH": str(bindir) + ":" + os.environ.get("PATH", ""),
+            "XWPE_REAL_GDB": shutil.which("gdb"),
+            "XWPE_STAND_IN_MODE": mode,
+            "XWPE_STAND_IN_LOG": str(tmp_path / "stand-in.log")}
+
+
+def _stand_in_log(tmp_path):
+    log = tmp_path / "stand-in.log"
+    return log.read_text() if log.exists() else ""
+
+
+def _assert_held_still(w, n, what):
+    """The program is stopped, the stop shown as a breakpoint's, and it
+    does not move: nothing was run on behind the user's back."""
+    w._drain(HELD_STILL_S)
+    assert "^Brk Pause" not in _bottom_bar(w), \
+        "%s: nothing may run the program on:\n%s" % (what, _screen(w))
+    assert _watch_number(w, "n") == n, \
+        "%s: n should read %d:\n%s" % (what, n, _screen(w))
+    assert GDB_SIGNAL_REPORT not in _screen(w), \
+        "%s: the interrupt is not the user's to see:\n%s" % (what, _screen(w))
+    assert PAUSED_LINE not in _bottom_row(w), \
+        "%s: the stop is no Pause:\n%s" % (what, _screen(w))
+
+
+def _the_stop_wins_the_race(w, tmp_path):
+    """Stop on the loop with a watch on n, Continue (gdb's next stop is
+    held), and set a breakpoint: its interrupt finds gdb stopped.  Return
+    n at the stop the user is shown."""
+    _stop_on_a_breakpoint_at(w, HELD_LOOP_LINE, START_TIMEOUT_S)
+    _add_watch(w, "n")
+    _source_window_on_top(w)
+    assert _wait_for(w, lambda: _watch_number(w, "n") == 0,
+                     STEP_TIMEOUT_S), _screen(w)
+    w.key(CTRL_G, "r", delay=0.8)
+    _go_to_line(w, HELD_SET_LINE)
+    w.key(CTRL_G, "b", delay=0.6)
+    assert _wait_for(w, lambda: _mark_line(w) == HELD_LOOP_LINE,
+                     STEP_TIMEOUT_S), \
+        "the breakpoint's stop should be shown:\n%s\n%s" \
+        % (_screen(w), _stand_in_log(tmp_path))
+    assert "stop won" in _stand_in_log(tmp_path), _stand_in_log(tmp_path)
+    _assert_held_still(w, HELD_PASS, "the stop that won")
+    _assert_solid(w, HELD_SET_LINE, "set at the stop that won")
+    return HELD_PASS
+
+
+def _resumes_once_from(w, tmp_path, key, line, n):
+    """@key from the stop: the program stops on @line with n at @n, and
+    gdb was sent one command for it, or two when the first was answered by
+    a SIGINT kept from the race."""
+    w.key(*key, delay=0.5)
+    assert _wait_for(w, lambda: _mark_line(w) == line and
+                     _watch_number(w, "n") == n, STEP_TIMEOUT_S), \
+        "the program should stop on line %d with n at %d:\n%s\n%s" \
+        % (line, n, _screen(w), _stand_in_log(tmp_path))
+    _assert_held_still(w, n, "on line %d" % line)
+
+
+def _its_own_sigint_is_shown(w, tmp_path):
+    """With every breakpoint off, Continue: the SIGINT the program raises
+    itself is the user's stop, not a left-over interrupt to run past."""
+    for line in (HELD_LOOP_LINE, HELD_SET_LINE):
+        _go_to_line(w, line)
+        w.key(CTRL_G, "b", delay=0.6)
+    assert not _breakpoint_lines(w), _screen(w)
+    before = _stand_in_log(tmp_path)
+    w.key(CTRL_G, "r", delay=1.0)
+    assert _wait_for(w, lambda: GDB_SIGNAL_REPORT in _screen(w),
+                     STEP_TIMEOUT_S), \
+        "the program's own SIGINT should stop it:\n%s\n%s" \
+        % (_screen(w), _stand_in_log(tmp_path))
+    sent = _stand_in_log(tmp_path)[len(before):]
+    assert sent.count("CMD c\n") == 1, \
+        "that stop must not be run past:\n%s" % sent
+    w.key("\r", delay=0.8)
+
+
+# @scenario SC-debug-07
+@pytest.mark.parametrize("mode", ["quit", "quit-same"])
+def test_an_interrupt_answered_at_gdbs_prompt_is_taken_back(tmp_path, mode):
+    """The program reaches its breakpoint just before the interrupt a
+    toggle sends, and gdb answers that interrupt at its prompt with "Quit"
+    and one more prompt, in a read of its own or with the stop.  The stop
+    is the user's and nothing runs on; every later answer belongs to its
+    own command (F8, Continue, the watch); and a SIGINT the program raises
+    itself later is shown, not taken for that interrupt."""
+    _need("gcc", "gdb")
+    with WpeSession(str(tmp_path), GDB_HELD_RACE_PROG, filename="p.c",
+                    wait=1.5, env_extra=_gdb_stand_in(tmp_path, mode)) as w:
+        n = _the_stop_wins_the_race(w, tmp_path)
+        _resumes_once_from(w, tmp_path, (F8,), HELD_NEXT_LINE, n + 1)
+        _resumes_once_from(w, tmp_path, (F8,), HELD_SET_LINE, n + 3)
+        _resumes_once_from(w, tmp_path, (CTRL_G, "r"), HELD_LOOP_LINE,
+                           n + HELD_PASS)
+        _its_own_sigint_is_shown(w, tmp_path)
+
+
+# @scenario SC-debug-07
+@pytest.mark.parametrize("key", ["F8", "Continue"])
+def test_an_interrupt_gdb_reports_at_the_next_resume_is_not_shown(tmp_path,
+                                                                   key):
+    """The program reaches its breakpoint just before the interrupt a
+    toggle sends, and gdb keeps that SIGINT for the program: it reports it
+    at the next F8 or Continue, before the program moved.  The user asked
+    for the step or the Continue, not for that stop: the command is sent
+    again and the program stops where it would have."""
+    _need("gcc", "gdb")
+    with WpeSession(str(tmp_path), GDB_HELD_RACE_PROG, filename="p.c",
+                    wait=1.5, env_extra=_gdb_stand_in(tmp_path, "late")) as w:
+        n = _the_stop_wins_the_race(w, tmp_path)
+        if key == "F8":
+            _resumes_once_from(w, tmp_path, (F8,), HELD_NEXT_LINE, n + 1)
+            sent = "CMD n\n"
+        else:
+            _resumes_once_from(w, tmp_path, (CTRL_G, "r"), HELD_SET_LINE,
+                               n + 3)
+            sent = "CMD c\n"
+        log = _stand_in_log(tmp_path)
+        assert "SIGINT reported at the resume" in log, log
+        assert log.split("stop won")[1].count(sent) == 2, \
+            "the command should have gone out again once:\n%s" % log
+
+
+PY_OWN_SIGINT_SLEEP_S = 6        # room to move the cursor and toggle
+# pdb puts its own SIGINT handler back at every continue, so the script sets
+# its handler while it runs, as a program that installs one late does.
+PY_OWN_SIGINT_PROG = (
+    "import signal, time\n"
+    "def own(sig, frame):\n"
+    "    print('own handler', flush=True)\n"
+    "n = 0\n"
+    "while True:\n"
+    "    signal.signal(signal.SIGINT, own)\n"
+    "    time.sleep(%d)\n"
+    "    n += 1\n"
+    "    m = n\n" % PY_OWN_SIGINT_SLEEP_S
+)
+PY_OWN_SIGINT_START_LINE = 4      # n = 0
+PY_OWN_SIGINT_TOGGLE_LINE = 8     # n += 1, marked while it sleeps
+PY_OWN_SIGINT_STOP_LINE = 9       # m = n, armed: the next stop
+OWN_SIGINT_WORDS = "handles Ctrl-C itself"
+
+
+# @scenario SC-debug-07
+def test_pdb_falls_back_to_the_next_stop_when_the_program_handles_sigint(
+        tmp_path):
+    """A script with its own SIGINT handler is not stopped by the interrupt:
+    the breakpoint set while it runs is applied at its next stop, and the
+    status row says why it did not take effect at once."""
+    _need("python3")
+    with WpeSession(str(tmp_path), PY_OWN_SIGINT_PROG, filename="p.py",
+                    wait=1.5) as w:
+        _go_to_line(w, PY_OWN_SIGINT_STOP_LINE)
+        w.key(CTRL_G, "b", delay=0.4)
+        _stop_on_a_breakpoint_at(w, PY_OWN_SIGINT_START_LINE,
+                                 START_TIMEOUT_S)
+        w.key(CTRL_G, "r", delay=0.5)
+        assert _wait_for(w, lambda: _mark_line(w) == PY_OWN_SIGINT_STOP_LINE,
+                         LIVE_STOP_TIMEOUT_S), _screen(w)
+        w.key(CTRL_G, "r", delay=0.3)    # into the sleep
+        _go_to_line(w, PY_OWN_SIGINT_TOGGLE_LINE)
+        w.key(CTRL_G, "b", delay=0.6)
+        assert _mark_line(w) is None, \
+            "the program should still sleep, unmarked:\n%s" % _screen(w)
+        assert _wait_for(w, lambda: _mark_line(w) == PY_OWN_SIGINT_STOP_LINE,
+                         LIVE_STOP_TIMEOUT_S), \
+            "the program should stop at its next breakpoint (mark on %s):\n%s" \
+            % (_mark_line(w), _screen(w))
+        assert _wait_for(w, lambda: OWN_SIGINT_WORDS in _bottom_row(w),
+                         HOLLOW_WAIT_S), \
+            "the status row should say the program handles Ctrl-C:\n%s" \
+            % _screen(w)
+        _assert_solid(w, PY_OWN_SIGINT_TOGGLE_LINE, "at that stop")
+        w.key(CTRL_G, "r", delay=0.5)
+        assert _wait_for(w, lambda: _mark_line(w) ==
+                         PY_OWN_SIGINT_TOGGLE_LINE, LIVE_STOP_TIMEOUT_S), \
+            "the next pass should stop on line %d (mark on %s):\n%s" \
+            % (PY_OWN_SIGINT_TOGGLE_LINE, _mark_line(w), _screen(w))
+
+
 XWPERC_DEFAULT_SCHEME = "[Color/Term]\net : 11 4\ndb : 0 1\n"
 XWPERC_WITH_DU = "[Color/Term]\net : 11 4\ndb : 0 1\ndu : 13 4\n"
 HOLLOW_DEFAULT = ("red", False, "blue")     # du = 1 on 4
@@ -7324,10 +8146,17 @@ def _hollow_cell(w, line):
 
 
 def _hollow_line_of_a_running_gdb(w, fg=UNCONFIRMED_BREAKPOINT_FG):
-    """Run gdb's program, set a breakpoint on its tail line while it runs,
-    and return that line (hollow, in the text colour @fg)."""
+    """Step over gdb's program's long sleep, set a breakpoint on its tail
+    line while that step runs, and return that line: hollow, in the text
+    colour @fg, since a change made during a step waits for its stop."""
     case = BRK_RUN_CASES["gdb"]
-    _run_into_the_program(w, case["break"], case["start_s"])
+    _stop_on_a_breakpoint_at(w, case["break"], case["start_s"])
+    for line in range(case["break"] + 1, GDB_SLEEP_LINE + 1):
+        assert _step(w, F8, line), \
+            "F8 should mark line %d (mark on %s):\n%s" \
+            % (line, _mark_line(w), _screen(w))
+    w.key(F8, delay=0.5)                     # over sleep(600)
+    _wait_for_the_pause_bar(w)
     _go_to_line(w, case["tail"])
     w.key(CTRL_G, "b", delay=0.6)
     _assert_hollow(w, case["tail"], "while the program runs", fg)
@@ -7366,7 +8195,7 @@ def test_du_in_xwperc_recolours_the_hollow_breakpoint(tmp_path):
 
 
 # @scenario SC-debug-07
-def test_a_breakpoint_set_while_running_is_hollow_then_solid_under_scala(
+def test_a_breakpoint_set_while_running_turns_solid_while_it_runs_under_scala(
         tmp_path):
     """The same under the Scala adapter."""
     _need("scala-cli")
@@ -7378,7 +8207,7 @@ def test_a_breakpoint_set_while_running_is_hollow_then_solid_under_scala(
                                   SCALA_START_TIMEOUT_S)
             _go_to_line(w, SCALA_TAIL_LINE)
             w.key(CTRL_G, "b", delay=0.6)
-            _assert_hollow(w, SCALA_TAIL_LINE, "while the program runs")
+            _assert_solid(w, SCALA_TAIL_LINE, "while the program runs")
             w.key(*CTRL_G_I, delay=0.5)
             assert _wait_for(w, lambda: PAUSED_LINE in _bottom_row(w),
                              PAUSE_TIMEOUT_S), \
@@ -7391,6 +8220,29 @@ def test_a_breakpoint_set_while_running_is_hollow_then_solid_under_scala(
 
 
 SCALA_TAIL_LINE = 7        # println(n), past the loop
+
+
+# @scenario SC-debug-07
+def test_a_breakpoint_set_while_running_stops_the_program_there_under_scala(
+        tmp_path):
+    """The same as the other adapters' row under the Scala adapter: a mark
+    set on the loop's body while the program runs stops it there.  The
+    session ends with Debug > Quit, leaving no program behind."""
+    _need("scala-cli")
+    workdir = str(tmp_path)
+    body = SCALA_PAUSE_LINES[1][1]          # n += 1
+    try:
+        with WpeSession(workdir, SCALA_PAUSE_PROG, filename="p.scala",
+                        wait=2.0) as w:
+            _run_into_the_program(w, SCALA_PAUSE_LINES[0],
+                                  SCALA_START_TIMEOUT_S)
+            _go_to_line(w, body)
+            w.key(CTRL_G, "b", delay=0.6)
+            _assert_stops_on(w, body, "under Scala")
+            _quit_ends_the_scala_program(w, workdir)
+    finally:
+        for pid in procinfo.processes_in(workdir, JVM_COMM):
+            os.kill(pid, signal.SIGKILL)
 
 
 # @scenario SC-debug-07

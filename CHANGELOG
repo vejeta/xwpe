@@ -266,8 +266,19 @@ Changes
 
 * A breakpoint can be set or removed while the program runs.  Ctrl-G B
   used to answer "The program is running"; now the margin changes at once
-  and the debugger is told at the next stop, with every debugger (gdb, sdb,
-  dbx, xdb, pdb, jdb, a68g and the debug adapters).  Until the debugger has
+  and the program stops on a line you mark the next time it gets there,
+  without a Pause first.  gdb, pdb and a68g are interrupted for a moment,
+  told and let run on, with nothing of that stop shown, and several quick
+  changes share one interrupt; jdb and the debug adapters are told
+  straight away; sdb, dbx and xdb are told at the program's next stop, as
+  is a change made during a step (its mark stays hollow until the step
+  ends or you press Pause).  If the program stops on its own while
+  the interrupt is on its way, that stop is yours and nothing runs on.  A
+  Python script that sets its own Ctrl-C handler while it runs gets the
+  change at its next stop, and the status row says so; under pdb a
+  script inside time.sleep gets a change at once, and the sleep runs to
+  its end.  Only the margin mark that changed
+  is drawn again, not the screen.  Until the debugger has
   confirmed a breakpoint its line is drawn hollow, in the breakpoint's red
   as text colour on the editor's background (underlined without colour),
   and turns solid when the debugger has it.  A breakpoint the debugger

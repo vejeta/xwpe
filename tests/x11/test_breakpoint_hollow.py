@@ -105,33 +105,25 @@ def _go_to_line(xwpe, line):
                     reason="no gdb or gcc")
 @pytest.mark.parametrize("xwpe", [{"XWPE_TEST_SOURCE": TICK_PROG}],
                          indirect=True)
-def test_a_breakpoint_set_while_running_is_drawn_hollow_then_solid(xwpe):
-    """A breakpoint set while gdb's program runs is drawn as the outline: red
-    text pixels on the editor's blue, not the solid red bar.  At the next
-    stop (Pause) gdb has been told and the bar is solid, with far more red
-    pixels.  The Wayland twin skips: the headless compositor harness cannot
-    start a debug session."""
+def test_a_breakpoint_set_while_running_stops_the_program_there(xwpe):
+    """A breakpoint set on the loop gdb's program runs is applied at once:
+    gdb is interrupted, told and let run on, and the program stops on the
+    line at its next pass, without a Pause: the counter stops and the stop
+    line's green bar is drawn.  The Wayland twin skips: the headless
+    compositor harness cannot start a debug session."""
     if not getattr(xwpe, "can_debug", True):
         pytest.skip("no debug session under the headless compositor harness")
     xwpe.key("ctrl+g", "r", delay=2.0)          # to the start of main
     xwpe.key("ctrl+g", "r", delay=1.0)          # run on
     assert _wait(lambda: _ticks_move(xwpe), RUN_TIMEOUT_S), \
         "the program should run under gdb and write its counter"
-    red_before = _count(xwpe.screenshot(), RED3)
     _go_to_line(xwpe, CURSOR_LINE)
     xwpe.key("ctrl+g", "b", delay=1.0)
-    hollow = _count(xwpe.screenshot(), RED3) - red_before
-    assert hollow >= MIN_TEXT_PIXELS, \
-        "the breakpoint set while running should show red text, got %d " \
-        "more red pixels" % hollow
-    xwpe.key("ctrl+g", "i", delay=1.0)
     assert _wait(lambda: not _ticks_move(xwpe), TICK_PAUSE_WAIT_S), \
-        "Ctrl-G I should stop the program"
+        "the breakpoint set while running should stop the program"
     _sleep(1.0)
-    solid = _count(xwpe.screenshot(), RED3) - red_before
-    assert solid >= SOLID_OVER_HOLLOW * hollow, \
-        "after the stop the line should be the solid bar (%d red pixels " \
-        "against %d hollow)" % (solid, hollow)
+    assert _count(xwpe.screenshot(), STOP_GREEN) >= MIN_BAR_PIXELS, \
+        "the stop on the line should be drawn as the green bar"
 
 
 def _example_box(img):

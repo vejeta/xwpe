@@ -210,15 +210,46 @@ after @kbd{Ctrl-G Q}, or a program that ran to its end, the next
 @cindex breakpoints, hollow
 @cindex breakpoints, refused
 A breakpoint can be set or removed while the program runs, not only at a
-stop.  The margin and the breakpoint list change at once, but the debugger
-reads no command while the program runs, so it is told at the next stop,
-whatever the reason for it: a breakpoint, @kbd{Ctrl-G I}, the end of a
-step.  Until the debugger has confirmed a breakpoint its line is drawn
+stop.  The margin and the breakpoint list change at once, and the
+debugger is told at once too, so the program stops on a line you mark
+the next time it gets there, and no longer on a line you unmark, without
+a Pause first:
+@itemize @bullet
+@item
+gdb, pdb and a68g read no command while the program runs.  xwpe
+interrupts the program, as Pause does, gives the debugger the change
+and lets the program run on.  Nothing of that stop is shown: no mark,
+no watch refresh, no @samp{Paused}.  Several changes made in quick
+succession share one interrupt, and only the margin mark that changed is
+drawn again, not the screen.
+@item
+jdb and the debug adapters (dlv, lldb-dap, gdb's adapter, Scala) take
+the change while the program runs, and xwpe sends it straight away.
+@item
+sdb, dbx and xdb keep the change for the program's next stop, whatever
+the reason for it: a breakpoint, @kbd{Ctrl-G I}, the end of a step.
+@end itemize
+A change made during a step, Finish or Go to cursor waits for that
+command's own stop: interrupting it would turn the step into a Continue.
+Its mark stays hollow until the step ends or you press Pause, which
+can be long after the change when the step is over a call that takes a
+while to return.  If the program stops by itself (a breakpoint, its end)
+while the interrupt is on its way, that stop is yours: it is shown, the
+change is applied there, and the program does not run on until you say
+so.  Pause pressed meanwhile is a Pause.  A Python script that sets its
+own handler for @kbd{Ctrl-C} while it runs takes the interrupt itself
+and is not stopped by it: the change is then applied at the script's
+next stop, the status row says @samp{The program handles Ctrl-C itself},
+and later changes in that session wait for a stop too.  Under pdb a
+script inside a long call such as @code{time.sleep(6)} gets the change
+at once, and the call then runs to its end.
+
+Until the debugger has confirmed a breakpoint its line is drawn
 @dfn{hollow}: the breakpoint's red as the text colour on the editor's own
 background, instead of the solid red bar (underlined on a display without
 colour).  It turns solid once the debugger has the breakpoint, which is
-at once when you set it at a stop.  A line you unmark while the program
-runs stops the program no more after the next stop.
+at once when you set it at a stop and, under every debugger but sdb, dbx
+and xdb, while the program runs.
 
 A breakpoint the debugger refuses stays in the margin, hollow, and the
 status row gives the debugger's own words, as @samp{Breakpoint at line 2
@@ -466,8 +497,9 @@ program that is running cannot be stepped, continued or asked about, so
 Step, Trace, Run, Goto cursor, Finish,
 Show stack and the watch commands say ``The program is
 running'' on the status row and do nothing until it stops.  Setting or
-removing a breakpoint is not refused: it waits for the stop, its line
-hollow meanwhile.  Under gdb,
+removing a breakpoint is not refused: the debugger is told at once, or
+at the next stop under sdb, dbx and xdb, the line hollow until it
+confirms.  Under gdb,
 jdb, sdb, dbx and xdb, @key{Enter} is text for the program from any
 window, the Stack window included; under pdb and a68g it is text for the file
 like the other keys.  If the
