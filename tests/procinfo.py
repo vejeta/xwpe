@@ -282,3 +282,56 @@ def descendants(ppid):
 def all_ended(pids):
     """True when none of pids is still alive: each is gone or a zombie."""
     return all(run_state(pid) in (GONE, ZOMBIE) for pid in pids)
+
+
+def parent_of(pid):
+    """The parent PID of pid (from /proc), or None once it is gone."""
+    fields = _proc_stat_fields(pid)
+    if fields is None:
+        return None
+    return int(fields[1])
+
+
+def _proc_cwd(pid):
+    """The working directory of pid (from /proc), or None when it is gone
+    or not readable."""
+    try:
+        return os.readlink(os.path.join(PROC_ROOT, str(pid), "cwd"))
+    except OSError:
+        return None
+
+
+def _live_comm_in(pid, comm, workdir):
+    """True when pid has not ended, its kernel command name is comm and its
+    working directory is workdir."""
+    if run_state(pid) in (GONE, ZOMBIE) or _proc_comm(pid) != comm:
+        return False
+    return _proc_cwd(pid) == os.path.realpath(workdir)
+
+
+def processes_in(workdir, comm):
+    """PIDs of live processes named comm (the kernel's command name) whose
+    working directory is workdir; Linux only, [] elsewhere.
+
+    A test needs it to find a program a shared server started for the
+    session, which is not a descendant of the editor: a Scala program runs
+    as a child of the Bloop build server, in the directory of the source.
+    Only the command name and the directory are read, never a command
+    line."""
+    if not has_procfs():
+        return []
+    return [int(e) for e in os.listdir(PROC_ROOT)
+            if e.isdigit() and _live_comm_in(int(e), comm, workdir)]
+
+
+def children_in(ppid, workdir, comm):
+    """PIDs of ppid's live direct children named comm whose working
+    directory is workdir; Linux only, [] elsewhere.
+
+    A test needs it to count what a shared server still runs for one
+    session (its programs), leaving the server itself and the programs of
+    other sessions out."""
+    if not has_procfs():
+        return []
+    return [pid for pid in _proc_child_pids(ppid)
+            if _live_comm_in(pid, comm, workdir)]

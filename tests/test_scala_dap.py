@@ -10,13 +10,16 @@ xwpe compile step.
 Requires `scala-cli`.  Skips otherwise.  Slow: the first Ctrl-G R starts a JVM
 build server and (on a cold coursier cache) resolves the Scala toolchain.
 """
+import os
 import re
 import shutil
+import signal
 import time
 
 import pytest
 
-from wpe_driver import WpeSession
+import procinfo
+from wpe_driver import WpeSession, ALT, WAIT_SCALE
 
 # Iterative factorial; `f` grows 1 -> 2 -> 6 -> 24 -> ...  Breakpoint on line 6
 # (the multiply), reached every loop iteration.
@@ -120,3 +123,100 @@ def test_scala_dap_run_step_watch(tmp_path):
         assert seen, "the watch on f never showed a numeric value:\n%s" % _text(w)
         assert any(v > 1 for v in seen), \
             "watch on `f` never grew past 1 (saw %s)" % sorted(seen)
+
+
+BREAK_LINE = 6
+START_S = 150            # a build server, cold, before scaling
+PROGRAM_ENDS_S = 10      # the program ends within this after Quit
+POLL_S = 0.2
+JAVA = "java"            # the kernel's command name of a JVM
+
+
+def _drain_until(w, predicate, seconds):
+    """Drain the editor until predicate() holds or the scaled time ends."""
+    deadline = time.time() + seconds * WAIT_SCALE
+    while time.time() < deadline:
+        w._drain(POLL_S)
+        if predicate():
+            return True
+    return predicate()
+
+
+def _wait_until(predicate, seconds):
+    """Wait, without the editor, until predicate() holds or the scaled time
+    ends."""
+    deadline = time.time() + seconds * WAIT_SCALE
+    while time.time() < deadline:
+        if predicate():
+            return True
+        time.sleep(POLL_S)
+    return predicate()
+
+
+def _stopped_with_its_program(w, workdir):
+    """Stop the session at the breakpoint; return (program, server): the
+    program's JVM, found by its directory, and the build server whose
+    child it is (Bloop, whether this session started it or it ran
+    already)."""
+    for _ in range(BREAK_LINE - 1):
+        w.key(CTRL_N, delay=0.12)
+    w.key(CTRL_G, "b", delay=1.0)
+    w.key(CTRL_G, "r", delay=1.0)
+    assert _drain_until(w, lambda: _mark_line(w) == BREAK_LINE, START_S), \
+        "the session should stop at line %d:\n%s" % (BREAK_LINE, _text(w))
+    programs = procinfo.processes_in(workdir, JAVA)
+    assert len(programs) == 1, \
+        "one program JVM should run in %s (found %s)" % (workdir, programs)
+    return programs[0], procinfo.parent_of(programs[0])
+
+
+def _end_program_if_left(workdir):
+    """A failed row must not leave its program running under the shared
+    build server: end that JVM, found by its directory, and nothing else."""
+    for pid in procinfo.processes_in(workdir, JAVA):
+        os.kill(pid, signal.SIGKILL)
+
+
+# @scenario SC-debug-47
+@pytest.mark.skipif(not procinfo.has_procfs(),
+                    reason="finds the program by its directory in /proc")
+def test_quit_ends_the_scala_program(tmp_path):
+    """Debug > Quit ends the program, not only the editor's side of the
+    session: the build server runs no JVM of this session's directory any
+    more, and the server itself is left running for others."""
+    workdir = str(tmp_path)
+    try:
+        with WpeSession(workdir, PROG, filename="factorial.scala",
+                        wait=2.0) as w:
+            program, server = _stopped_with_its_program(w, workdir)
+            w.menu(ALT.DEBUG, "q", delay=0.5)
+            assert _drain_until(
+                w, lambda: not procinfo.children_in(server, workdir, JAVA),
+                PROGRAM_ENDS_S), \
+                "the program (pid %d) should end on Quit:\n%s" \
+                % (program, _text(w))
+            assert not procinfo.all_ended([server]), \
+                "the build server (pid %d) is shared and goes on" % server
+    finally:
+        _end_program_if_left(workdir)
+
+
+# @scenario SC-debug-47
+@pytest.mark.skipif(not procinfo.has_procfs(),
+                    reason="finds the program by its directory in /proc")
+def test_sigterm_to_the_editor_ends_the_scala_program(tmp_path):
+    """SIGTERM to the editor (a logout, "kill PID") during a Scala session
+    saves the work and ends the program too: none is left running under
+    the build server."""
+    workdir = str(tmp_path)
+    try:
+        with WpeSession(workdir, PROG, filename="factorial.scala",
+                        wait=2.0) as w:
+            program, server = _stopped_with_its_program(w, workdir)
+            os.kill(w.proc.pid, signal.SIGTERM)
+            assert _wait_until(
+                lambda: not procinfo.children_in(server, workdir, JAVA),
+                PROGRAM_ENDS_S), \
+                "the program (pid %d) should end with the editor" % program
+    finally:
+        _end_program_if_left(workdir)

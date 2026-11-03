@@ -61,6 +61,8 @@
   {"id": "SC-debug-22", "requirement": "Stepping and the mark", "layer": "ncurses", "test": "tests/test_go_dap.py::test_go_dap_run_and_step", "status": "covered", "needs": ["dlv", "go"]},
   {"id": "SC-debug-23", "requirement": "Stepping and the mark", "layer": "ncurses", "test": "tests/test_debugger_integration.py::test_rust_dap_stops_on_a_breakpoint_on_a_line_that_runs_once", "status": "covered", "needs": ["rustc"]},
   {"id": "SC-debug-24", "requirement": "Stepping and the mark", "layer": "ncurses", "test": "tests/test_scala_dap.py::test_scala_dap_run_step_watch", "status": "covered", "needs": ["scala-cli"]},
+  {"id": "SC-debug-47", "requirement": "Starting and ending a session", "layer": "ncurses", "test": "tests/test_scala_dap.py::test_quit_ends_the_scala_program", "status": "new", "needs": ["scala-cli"]},
+  {"id": "SC-debug-47", "requirement": "Starting and ending a session", "layer": "ncurses", "test": "tests/test_scala_dap.py::test_sigterm_to_the_editor_ends_the_scala_program", "status": "new", "needs": ["scala-cli"]},
   {"id": "SC-debug-25", "requirement": "Starting and ending a session", "layer": "ncurses", "test": "tests/test_debugger_integration.py::test_a_debugger_not_installed_is_named_and_nothing_hangs", "status": "covered", "needs": ["gcc"]},
   {"id": "SC-debug-26", "requirement": "The bars and the menu tell the truth", "layer": "ncurses", "test": null, "status": "blocked", "reason": "the Ctrl-F chords the Debug menu shows need the key-decoder fix planned separately"},
   {"id": "SC-debug-27", "requirement": "The bars and the menu tell the truth", "layer": "ncurses", "test": "tests/test_debugger_integration.py::test_a_click_on_the_run_entry_of_the_watches_bar_runs", "status": "new", "needs": ["gcc", "gdb"]},

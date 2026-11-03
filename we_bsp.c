@@ -15,6 +15,12 @@
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
+#if defined(__linux__)
+# include <sys/syscall.h>
+#endif
+#if defined(HAVE_KQUEUE) && defined(HAVE_SYS_EVENT_H)
+# include <sys/event.h>
+#endif
 
 #include "we_bsp.h"
 #include "we_dap_proto.h"        /* e_dap_reader: shared Content-Length framing */
@@ -24,6 +30,19 @@
    spin, and mirrors the synchronous start of the gdb/dlv backends. */
 #define BSP_TMO_QUICK   30000
 #define BSP_TMO_BUILD  240000
+
+/* After SIGTERM, how long the build server's launcher gets to exit before
+   SIGKILL.  scala-cli's launcher was measured to exit within 50 ms. */
+#define BSP_TERM_MS     1000
+#define BSP_NO_FD       (-1)
+
+#if defined(BSP_NO_PIDFD)
+/* The test build of a system with neither pidfd nor kqueue. */
+#elif defined(__linux__) && defined(SYS_pidfd_open)
+# define BSP_EXIT_BY_PIDFD 1
+#elif defined(HAVE_KQUEUE) && defined(HAVE_SYS_EVENT_H)
+# define BSP_EXIT_BY_KQUEUE 1
+#endif
 
 struct e_bsp_session {
  pid_t        pid;            /* the BSP server (scala-cli bsp)            */
@@ -533,6 +552,158 @@ e_bsp_session *e_bsp_start(const char *workdir, const char *srcfile,
  return b;
 }
 
+/* ---- the end of the build server --------------------------------------- */
+
+#if defined(BSP_EXIT_BY_KQUEUE)
+/**
+ * bsp_kqueue_exit_open - The BSD and macOS form of a pidfd: a kqueue that
+ * becomes readable when @pid exits (EVFILT_PROC, NOTE_EXIT).
+ * @pid: the build server's launcher, the editor's own child.
+ *
+ * Lets Quit go on the moment the launcher ends on those systems too.
+ * Return: the descriptor, or -1 (the launcher already exited, or no room).
+ */
+static int bsp_kqueue_exit_open(pid_t pid)
+{
+ struct kevent ev;
+ int kq = kqueue();
+
+ if (kq < 0)
+  return BSP_NO_FD;
+ EV_SET(&ev, pid, EVFILT_PROC, EV_ADD | EV_ONESHOT, NOTE_EXIT, 0, NULL);
+ if (kevent(kq, &ev, 1, NULL, 0, NULL) < 0)
+ {
+  close(kq);
+  return BSP_NO_FD;
+ }
+ return kq;
+}
+#endif
+
+/**
+ * bsp_exit_fd_open - A descriptor that becomes readable when @pid exits:
+ * a pidfd on Linux, a kqueue on the BSDs and macOS, or -1 where the system
+ * has neither.
+ * @pid: the build server's launcher, the editor's own child.
+ *
+ * With it, Quit goes on the moment the launcher has ended, never later.
+ */
+static int bsp_exit_fd_open(pid_t pid)
+{
+#if defined(BSP_EXIT_BY_PIDFD)
+ return (int)syscall(SYS_pidfd_open, pid, 0);
+#elif defined(BSP_EXIT_BY_KQUEUE)
+ return bsp_kqueue_exit_open(pid);
+#else
+ (void)pid;
+ return BSP_NO_FD;
+#endif
+}
+
+/**
+ * bsp_launcher_gone - Has the launcher exited?  Reap it if so.
+ * @b: the session.
+ *
+ * The editor's own child watch may have reaped it already; that counts as
+ * gone too, so Quit never waits for a process that no longer exists.
+ * Return: 1 once it is gone (and reaped), else 0.
+ */
+static int bsp_launcher_gone(e_bsp_session *b)
+{
+ int st;
+ pid_t r;
+
+ if (b->pid <= 0)
+  return 1;
+ r = waitpid(b->pid, &st, WNOHANG);
+ if (r == b->pid || (r < 0 && errno == ECHILD))
+ {
+  b->pid = 0;
+  return 1;
+ }
+ return 0;
+}
+
+/**
+ * bsp_ms_left - What remains of @deadline, as a poll() timeout.
+ * @deadline: a bsp_now_ms() instant.
+ */
+static int bsp_ms_left(long deadline)
+{
+ long left = deadline - bsp_now_ms();
+
+ if (left <= 0)
+  return 0;
+ return (int)left;
+}
+
+/**
+ * bsp_wait_launcher_exit - Give the launcher up to @ms to exit.
+ * @b: the session; @ms: the bound.
+ *
+ * The wait is a poll on the launcher's exit descriptor, so a launcher
+ * that ends at once costs the user nothing, and one that takes a moment to
+ * close its connection to the build server gets that moment instead of
+ * being killed mid-way.  Where the system has no exit descriptor, nothing
+ * signals the exit while the editor waits here, so the bound is waited out
+ * and the launcher looked at once.
+ * Return: 1 once it is gone and reaped, else 0.
+ */
+static int bsp_wait_launcher_exit(e_bsp_session *b, int ms)
+{
+ int exit_fd = bsp_exit_fd_open(b->pid);
+ long deadline = bsp_now_ms() + ms;
+ struct pollfd p;
+ int gone = 0, r;
+
+ for (;;)
+ {
+  gone = bsp_launcher_gone(b);
+  if (gone || bsp_ms_left(deadline) == 0)
+   break;
+  p.fd = exit_fd;
+  p.events = POLLIN;
+  p.revents = 0;
+  r = poll(&p, 1, bsp_ms_left(deadline));
+  if (r < 0 && errno == EINTR)
+   continue;
+  if (r <= 0)
+  {
+   gone = bsp_launcher_gone(b);
+   break;
+  }
+ }
+ if (exit_fd >= 0)
+  close(exit_fd);
+ return gone;
+}
+
+/**
+ * bsp_end_launcher - End the build server's launcher, and reap it.
+ * @b: the session.
+ *
+ * Only the launcher is signalled, never its process group: the shared
+ * build server (Bloop) may be its child, and other editors and the
+ * language server go on using it.  SIGTERM and BSP_TERM_MS let it close
+ * its connection cleanly; SIGKILL after that, so the user is never left
+ * with an editor that does not quit.  The program being debugged is not
+ * the launcher's: the adapter ends it on Quit's `disconnect`, before this.
+ */
+static void bsp_end_launcher(e_bsp_session *b)
+{
+ int st;
+
+ if (bsp_launcher_gone(b))
+  return;
+ kill(b->pid, SIGTERM);
+ if (bsp_wait_launcher_exit(b, BSP_TERM_MS))
+  return;
+ kill(b->pid, SIGKILL);
+ while (waitpid(b->pid, &st, 0) < 0 && errno == EINTR)
+  ;
+ b->pid = 0;
+}
+
 void e_bsp_close(e_bsp_session *b)
 {
  if (!b)
@@ -541,21 +712,7 @@ void e_bsp_close(e_bsp_session *b)
   close(b->in_fd);
  if (b->out_fd >= 0)
   close(b->out_fd);
- if (b->pid > 0)
- {
-  int st;
-  kill(b->pid, SIGTERM);
-  if (waitpid(b->pid, &st, WNOHANG) == 0)
-  {
-   struct timespec ts = { 0, 200 * 1000 * 1000 };
-   nanosleep(&ts, NULL);
-   if (waitpid(b->pid, &st, WNOHANG) == 0)
-   {
-    kill(b->pid, SIGKILL);
-    waitpid(b->pid, &st, 0);
-   }
-  }
- }
+ bsp_end_launcher(b);
  e_dap_reader_free(&b->rd);
  free(b);
 }

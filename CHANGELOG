@@ -256,6 +256,10 @@ Changes
   "signal SIGSTOP", and when it stops inside the language's runtime the bar
   goes to the first frame of your own code.
 
+* Debug > Quit in a Scala session gives scala-cli's launcher up to a second
+  to close its connection, instead of killing it after a fifth of a second;
+  the program ends as before and the shared Bloop server is left running.
+
 * wpe keeps its keys after a tool has run.  After one compile (F9), run
   (Ctrl-F9) or debug session, the terminal went back to sending signals for
   Ctrl-\, Ctrl-Z and Ctrl-C and to stopping its output on Ctrl-S: Ctrl-\

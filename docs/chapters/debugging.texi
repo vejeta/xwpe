@@ -497,6 +497,13 @@ default @code{java} on @env{PATH} is too new and an LTS JDK (17/21) is installed
 xwpe repoints @env{JAVA_HOME} at it for Bloop before starting the build server
 (and likewise for Metals), so debugging works out of the box without a
 @code{//> using jvm} pin.  Set @env{JAVA_HOME} yourself to override.
+@samp{Debug @result{} Quit} ends the program Bloop runs for the session,
+and so does the editor's own end on @code{SIGTERM} or a hangup; Bloop itself
+is shared (Metals uses it too) and is left running.  The editor then gives
+@command{scala-cli}'s launcher up to a second to close its connection
+before ending it.  An editor killed outright (@code{SIGKILL}, a crash)
+cannot tell Bloop to end the program, and Bloop does not end it by itself:
+look for a @command{java} process in the source's directory then.
 @end itemize
 Run/Continue (@kbd{Ctrl-G R}), Step Over (@kbd{F8}), Step Into (@kbd{F7}),
 watches (@kbd{Ctrl-G W}, evaluated with the DAP @code{evaluate} request),

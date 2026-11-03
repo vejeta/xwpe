@@ -6230,6 +6230,7 @@ GO_PAUSE_LINES = (7, (8, 9))
 RUST_PAUSE_LINES = (3, (4, 5))
 SCALA_PAUSE_LINES = (4, (5, 6))
 PAUSE_RUN_BAR_S = 8
+JVM_COMM = "java"       # the kernel's command name of a JVM
 
 
 def _assert_paused_in_loop(w, loop, what):
@@ -6277,10 +6278,9 @@ def _watches_on_top(w):
         w.key(key, delay=0.4)
 
 
-def _pause_in_the_loop_twice_then_quit(w, spec, start_s):
+def _pause_in_the_loop_twice(w, spec, start_s):
     """Pause marks a line of the loop and refreshes the watch; Continue and a
-    second Pause mark the loop again with a newer value; Quit then leaves no
-    process of the session behind."""
+    second Pause mark the loop again with a newer value."""
     break_line, loop = spec
     _run_on_with_a_watch(w, break_line, start_s)
     w.key(*CTRL_G_I, delay=0.5)
@@ -6302,6 +6302,12 @@ def _pause_in_the_loop_twice_then_quit(w, spec, start_s):
                      STEP_TIMEOUT_S), \
         "the watch should read more than %d after the second Pause (%s):\n%s" \
         % (first, _watch_value(w, "n"), _screen(w))
+
+
+def _pause_in_the_loop_twice_then_quit(w, spec, start_s):
+    """The two Pauses of _pause_in_the_loop_twice; Quit then leaves no
+    process of the session behind."""
+    _pause_in_the_loop_twice(w, spec, start_s)
     tree = procinfo.descendants(w.proc.pid)
     assert tree, "the debugger and the program should be running"
     w.menu(ALT.DEBUG, "q", delay=0.5)
@@ -6361,10 +6367,34 @@ def test_pause_marks_where_the_program_is_under_gdb_dap(tmp_path):
 def test_pause_marks_where_the_program_is_under_scala(tmp_path):
     """The same under the Scala adapter."""
     _need("scala-cli")
-    with WpeSession(str(tmp_path), SCALA_PAUSE_PROG, filename="p.scala",
-                    wait=2.0) as w:
-        _pause_in_the_loop_twice_then_quit(w, SCALA_PAUSE_LINES,
-                                           SCALA_START_TIMEOUT_S)
+    workdir = str(tmp_path)
+    try:
+        with WpeSession(workdir, SCALA_PAUSE_PROG, filename="p.scala",
+                        wait=2.0) as w:
+            _pause_in_the_loop_twice(w, SCALA_PAUSE_LINES,
+                                     SCALA_START_TIMEOUT_S)
+            _quit_ends_the_scala_program(w, workdir)
+    finally:
+        for pid in procinfo.processes_in(workdir, JVM_COMM):
+            os.kill(pid, signal.SIGKILL)
+
+
+def _quit_ends_the_scala_program(w, workdir):
+    """Quit ends the program the build server runs for this session.  The
+    program is Bloop's child, not the editor's, and Bloop itself is shared:
+    it may be the editor's descendant (this session's launcher started it)
+    and rightly outlives Quit, so the program is counted, not the editor's
+    tree."""
+    programs = procinfo.processes_in(workdir, JVM_COMM)
+    assert len(programs) == 1, \
+        "one program JVM should run in %s (found %s)" % (workdir, programs)
+    server = procinfo.parent_of(programs[0])
+    w.menu(ALT.DEBUG, "q", delay=0.5)
+    assert _wait_for(
+        w, lambda: not procinfo.children_in(server, workdir, JVM_COMM),
+        STEP_TIMEOUT_S), \
+        "the program (pid %d) should end on Quit:\n%s" \
+        % (programs[0], _screen(w))
 
 
 GDB_SEGV_PROG = (

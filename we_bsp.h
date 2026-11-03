@@ -35,7 +35,10 @@ e_bsp_session *e_bsp_start(const char *workdir, const char *srcfile,
                            char *mainclass, size_t mcsz,
                            char *errbuf, size_t errsz);
 
-/* Shut the BSP server down (which stops the hosted debug adapter) and free. */
+/* End the BSP server's launcher and free the session.  Only the launcher is
+ * signalled (SIGTERM, a bounded wait on its exit, then SIGKILL), never its
+ * process group: the shared build server it may have started goes on.  The
+ * program being debugged is ended by the DAP disconnect, before this. */
 void e_bsp_close(e_bsp_session *b);
 
 #endif /* WE_BSP_H */
