@@ -176,7 +176,8 @@ static void e_d_show_stop_position(FENSTER *f);  /* line:column after a stop */
 static void e_d_note_output_closed(void);        /* the debugger's pipe ended */
 static void e_d_note_reaped(int status);         /* its exit status, once reaped */
 static void e_d_jdb_missing_forget(void);        /* classes without source */
-static void e_d_end_forget(void);                /* how the last debugger ended */
+static void e_d_jdb_pause_forget(void);          /* a Pause still held */
+static void e_d_end_forget(void);               /* how the last debugger ended */
 /* Room for one status line and for one watch's print command. */
 #define E_D_WATCH_CMD_MAX 256
 #define E_D_WATCH_REFUSED_FMT "watches are not available with %s"
@@ -1064,6 +1065,7 @@ static const E_D_RUN_OPS *e_d_dap_run_ops(void);   /* the adapters' (below) */
 static int e_d_run_to_cursor_line(FENSTER *f, int line);   /* Go to cursor */
 static int e_d_cursor_brk_pending(void);
 static int e_d_jdb_run_started(FENSTER *f, int start_brk);
+static const char *e_d_jdb_continue_command(void);   /* cont or resume */
 
 /* The run in progress. */
 typedef struct
@@ -1149,6 +1151,18 @@ static void e_d_flush_inferior_stdout(void)
    "Thread-0[1] ".  The bare "> " it echoes before a command's answer is
    not one. */
 #define E_D_JDB_PROMPT_TAIL "] "
+/* Pause under jdb: "suspend" stops every thread of the VM and answers with
+   the line below and a bare "> " prompt, with no current thread.  "threads"
+   lists them and "thread ID" picks the one to look at.  "resume", not
+   "cont" (which needs a breakpoint event), lets all of them go again. */
+#define E_D_JDB_SUSPEND     "suspend\n"
+#define E_D_JDB_RESUME      "resume\n"
+#define E_D_JDB_THREADS     "threads\n"
+#define E_D_JDB_THREAD_FMT  "thread %s\n"
+#define E_D_JDB_SUSPENDED   "All threads suspended."
+#define E_D_JDB_BARE_PROMPT "> "
+#define E_D_JDB_THREAD_ID_MAX 32
+#define E_D_JDB_THREAD_CMD_MAX (E_D_JDB_THREAD_ID_MAX + 16)
 /* Said on the status row when the file's language picks another debugger. */
 #define E_D_SWITCH_JDB_LINE "Java file: switching to jdb debugger."
 #define E_D_SWITCH_PDB_LINE "Python file: switching to pdb debugger."
@@ -3322,6 +3336,7 @@ int e_d_quit_basic(FENSTER *f)
  e_d_start_forget();
  e_d_end_forget();
  e_d_jdb_missing_forget();
+ e_d_jdb_pause_forget();
  e_d_run_forget();
  if (!e_d_swtch)
   return 0;
@@ -6676,6 +6691,99 @@ static int e_d_dap_runs_out_of_runtime(void)
  return(g_dap_run.runtime_steps++ < E_D_DAP_RUNTIME_STEPS_MAX);
 }
 
+/* The reason the engine gives the stop that follows Pause, whatever the
+   adapter called it (lldb-dap says "exception" for SIGSTOP). */
+#define E_D_DAP_REASON_PAUSE "pause"
+/* How deep into the stack Pause looks for the user's code. */
+#define E_D_DAP_PAUSE_FRAMES_MAX 64
+
+/**
+ * e_d_dap_interrupt - Pause the program an adapter runs: send DAP "pause".
+ *
+ * The adapter's stop follows through the run's reader and is the user's
+ * Pause, whatever reason the adapter gives it.
+ * Return: 0 when the request was sent, -1 when the program is not running.
+ */
+static int e_d_dap_interrupt(void)
+{
+ if (!g_dap)
+  return(-1);
+ return(e_dap_pause(g_dap));
+}
+
+/**
+ * e_d_dap_stop_is_pause - Is the stop that arrived the one Pause asked for?
+ * Return: 1 when it is.
+ */
+static int e_d_dap_stop_is_pause(void)
+{
+ return(!strcmp(g_dap_stop_reason, E_D_DAP_REASON_PAUSE));
+}
+
+/**
+ * e_d_dap_frame_is_users - Is a frame of the stack the user's own code, in
+ * a file the editor can open?
+ * @fr: the frame.
+ * Return: 1 when it is.
+ */
+static int e_d_dap_frame_is_users(const e_dap_frame *fr)
+{
+ if (!fr->path[0] || fr->line <= 0)
+  return(0);
+ if (!e_d_dap_path_in_user_code(fr->path))
+  return(0);
+ return(access(fr->path, R_OK) == 0);
+}
+
+/**
+ * e_d_dap_pick_user_frame - After Pause, move the stop to the user's code.
+ *
+ * The adapter stops the program wherever it is, often inside the language
+ * runtime (dlv in Go's scheduler, a sleep in a library).  The first frame
+ * of the stack that is in the user's program becomes the stop to mark and
+ * the frame the watches are read in, so the user sees the line the program
+ * is working on.  A stop already in the user's code is left alone.
+ * Return: the index of the frame chosen, 0 when the stop stays as it is.
+ */
+static int e_d_dap_pick_user_frame(void)
+{
+ static e_dap_frame got[E_D_DAP_PAUSE_FRAMES_MAX];
+ int i, n;
+
+ if (e_d_dap_in_user_code() && g_dap_stop_file[0])
+  return(0);
+ n = e_dap_stack_trace(g_dap, got, E_D_DAP_PAUSE_FRAMES_MAX);
+ for (i = 0; i < n; i++)
+ {
+  if (!e_d_dap_frame_is_users(&got[i]))
+   continue;
+  snprintf(g_dap_stop_file, sizeof g_dap_stop_file, "%s", got[i].path);
+  g_dap_stop_line = got[i].line;
+  e_dap_select_frame(g_dap, got[i].id);
+  return(i);
+ }
+ return(0);
+}
+
+/**
+ * e_d_dap_stopped_by_pause - The program stopped because the user paused
+ * it: mark where their code is.
+ * @f: the window on top.
+ *
+ * The status row says "Paused" at the end of the stop (e_d_pause_report),
+ * not the adapter's own word for the stop, and the stop is never run on
+ * from as a start's or a runtime's stop is.
+ */
+static void e_d_dap_stopped_by_pause(FENSTER *f)
+{
+ int frame;
+
+ e_d_pause_taken();
+ frame = e_d_dap_pick_user_frame();
+ e_d_dap_paint_stop(f);
+ e_d_nstack = frame;
+}
+
 /**
  * e_d_dap_stopped - The program stopped or ended: what the user sees.
  * @f: the window on top.
@@ -6694,6 +6802,11 @@ static void e_d_dap_stopped(FENSTER *f)
  if (e_dap_ended(g_dap))
  {
   e_d_dap_end_session(f);
+  return;
+ }
+ if (e_d_dap_stop_is_pause())
+ {
+  e_d_dap_stopped_by_pause(f);
   return;
  }
  if (first && e_d_dap_runs_on_from_start())
@@ -6719,7 +6832,7 @@ static const E_D_RUN_OPS e_d_dap_ops =
  e_d_dap_output_fd,
  e_d_dap_feed,
  e_d_dap_stopped,
- NULL,
+ e_d_dap_interrupt,
  NULL,
  NULL,
  NULL,
@@ -9442,7 +9555,7 @@ int e_deb_run(FENSTER *f)
   else
   {
    if (e_deb_type == DEB_JDB)
-    strcpy(eing, "cont\n");
+    strcpy(eing, e_d_jdb_continue_command());
    else if (e_deb_type == DEB_A68G)
     strcpy(eing, "continue\n");
    else
@@ -9623,6 +9736,86 @@ static int e_d_jdb_reply_is_stop(const char *text)
 }
 
 /**
+ * e_d_jdb_says_suspended - Does jdb's answer say Pause's "suspend" took
+ * hold and ask for the next command?
+ * @text: the answer.
+ *
+ * Told by the line jdb answers "suspend" with and its bare prompt as the
+ * last thing it wrote, and only while Pause waits for its stop, so the
+ * same words at another time are not taken for it.
+ * Return: 1 when the pause's stop has come.
+ */
+static int e_d_jdb_says_suspended(const char *text)
+{
+ size_t len = strlen(text), tail = strlen(E_D_JDB_BARE_PROMPT);
+
+ if (e_d_run.pause == E_D_PAUSE_NONE)
+  return(0);
+ if (len < tail || strcmp(text + len - tail, E_D_JDB_BARE_PROMPT) != 0)
+  return(0);
+ return(e_d_jdb_says(text, E_D_JDB_SUSPENDED));
+}
+
+/* Set when jdb's stop was Pause's: the VM is suspended as a whole, and
+   Continue has to resume it (see e_d_jdb_continue_command). */
+static int e_d_jdb_suspended;
+
+/**
+ * e_d_jdb_pause_forget - Forget a Pause when the debug session ends.
+ *
+ * A session quit while paused leaves no VM to resume.  The next
+ * session's first Continue then answers its own stop with "cont", as
+ * every Continue after a breakpoint does, not with a "resume" meant for
+ * the old program.
+ */
+static void e_d_jdb_pause_forget(void)
+{
+ e_d_jdb_suspended = 0;
+}
+
+/**
+ * e_d_jdb_continue_command - The command that lets the program go on.
+ *
+ * "cont" answers a breakpoint event, which a Pause has none of: after one
+ * the VM is let go with "resume", all its threads at once.  The user gets
+ * the program running again after Pause, as after any other stop.
+ * Return: the command, ending in a newline.
+ */
+static const char *e_d_jdb_continue_command(void)
+{
+ if (!e_d_jdb_suspended)
+  return("cont\n");
+ e_d_jdb_suspended = 0;
+ return(E_D_JDB_RESUME);
+}
+
+/**
+ * e_d_jdb_interrupt - Pause the Java program: suspend its VM.
+ *
+ * jdb takes commands while the program runs.  Its answer is read by the
+ * run's reader, which shows it as a stop (e_d_jdb_feed).
+ * Return: 0, the command is sent.
+ */
+static int e_d_jdb_interrupt(void)
+{
+ e_d_send_cmd(E_D_JDB_SUSPEND);
+ return(0);
+}
+
+/**
+ * e_d_jdb_pause_stop - jdb answered Pause's "suspend": the program has
+ * stopped as the user asked.
+ *
+ * Return: E_D_FEED_STOPPED.
+ */
+static int e_d_jdb_pause_stop(void)
+{
+ e_d_pause_taken();
+ e_d_jdb_suspended = 1;
+ return(E_D_FEED_STOPPED);
+}
+
+/**
  * e_d_jdb_begin - Forget the answer of the run before when a run starts.
  */
 static void e_d_jdb_begin(void)
@@ -9672,6 +9865,8 @@ static int e_d_jdb_feed(FENSTER *f)
   if (e_d_jdb_says_end(e_d_jdb_reply.buf) ||
       e_d_jdb_reply_is_stop(e_d_jdb_reply.buf))
    fed = E_D_FEED_STOPPED;
+  else if (e_d_jdb_says_suspended(e_d_jdb_reply.buf))
+   fed = e_d_jdb_pause_stop();
  }
  fcntl(wfildes[0], F_SETFL, flags);
  return(fed);
@@ -9790,6 +9985,8 @@ static void e_d_jdb_start_on_output(int fd, void *data)
  e_d_jdb_start_read(e_d_jdb_start_reply.buf);
 }
 
+static void e_d_jdb_mark_paused_thread(FENSTER *f);   /* (frames, below) */
+
 /* Said on the status row at a stop on an uncaught exception. */
 #define E_D_JDB_EXCEPTION_FMT "Uncaught exception: %s"
 #define E_D_JDB_EXCEPTION_NAME_MAX 160
@@ -9863,6 +10060,12 @@ static void e_d_jdb_stopped(FENSTER *f)
   return;
  }
  stop = e_d_jdb_stop_line_in(e_d_jdb_reply.buf);
+ if (!stop && e_d_jdb_suspended)
+ {
+  e_d_jdb_mark_paused_thread(f);
+  e_d_switch_out(0);
+  return;
+ }
  if (!stop)
  {
   e_d_switch_out(0);   /* no stop line of jdb's left to mark */
@@ -9882,7 +10085,7 @@ static const E_D_RUN_OPS e_d_jdb_ops =
  e_d_line_output_fd,
  e_d_jdb_feed,
  e_d_jdb_stopped,
- NULL,
+ e_d_jdb_interrupt,
  NULL,
  NULL,
  e_d_run_to_cursor_line,
@@ -11729,6 +11932,121 @@ static int e_d_frame_select(int index)
   return(-1);
  e_d_nstack = index;
  return(0);
+}
+
+/**
+ * e_d_jdb_thread_id - The id of the thread a row of jdb's "threads" names.
+ * @row: "  (java.lang.Thread)0x1 main   running", or a "Group main:" row;
+ * @id, @n: receives "0x1".
+ * Return: 1 when @row names a thread.
+ */
+static int e_d_jdb_thread_id(const char *row, char *id, size_t n)
+{
+ const char *p = row;
+ size_t len;
+
+ while (*p == ' ')
+  p++;
+ if (*p != '(' || !(p = strchr(p, ')')))
+  return(0);
+ p++;
+ for (len = 0; p[len] && !isspace((unsigned char)p[len]); len++)
+  ;
+ if (len == 0 || len >= n)
+  return(0);
+ memcpy(id, p, len);
+ id[len] = '\0';
+ return(1);
+}
+
+/**
+ * e_d_jdb_user_frame - The innermost frame of the user's own code in the
+ * frames read.
+ * Return: its index, or -1 when none of them has source and a line.
+ */
+static int e_d_jdb_user_frame(void)
+{
+ int i;
+
+ for (i = 0; i < e_d_nframes; i++)
+  if (e_d_frames[i].user && e_d_frames[i].line != E_D_FRAME_NO_LINE)
+   return(i);
+ return(-1);
+}
+
+/**
+ * e_d_jdb_thread_user_frame - Look at one thread of the paused VM.
+ * @cn: the editor; @id: the thread's id.
+ *
+ * The thread becomes jdb's current one and its stack is read.
+ * Return: the index of its innermost frame of the user's code, or -1 when
+ * it has none (a VM service thread) or jdb's output ended.
+ */
+static int e_d_jdb_thread_user_frame(ECNT *cn, const char *id)
+{
+ char cmd[E_D_JDB_THREAD_CMD_MAX];
+
+ snprintf(cmd, sizeof cmd, E_D_JDB_THREAD_FMT, id);
+ e_d_nstack = 0;
+ e_d_nframes = 0;
+ if (e_d_frames_ask(cmd) == -1 || e_d_jdb_frames(cn) == -1)
+  return(-1);
+ return(e_d_jdb_user_frame());
+}
+
+/**
+ * e_d_jdb_show_user_frame - Mark a frame of the paused thread, with its
+ * watches.
+ * @f: the window on top; @index: the frame, which has source and a line.
+ *
+ * The frame becomes the selected one, so the Stack window and the watches
+ * start from the user's code and not from a library call it is in.
+ */
+static void e_d_jdb_show_user_frame(FENSTER *f, int index)
+{
+ char file[E_D_STOP_PATH_MAX];
+ int line = e_d_frames[index].line;
+
+ snprintf(file, sizeof file, "%s", e_d_frames[index].file);
+ e_d_frame_select(index);
+ e_d_refresh_watches_at_stop(f);
+ e_d_goto_break(file, line, f);
+}
+
+/**
+ * e_d_jdb_mark_paused_thread - After Pause, mark where the user's code is.
+ * @f: the window on top.
+ *
+ * "suspend" leaves jdb with no current thread, so "where" says "No thread
+ * specified".  Each thread is tried in the order "threads" lists them until
+ * one has a frame of the user's code: that thread is made current and its
+ * innermost user frame is marked (the loop, or the call to sleep that
+ * the program is in).  The user sees the line the program was on and the
+ * Watches of that frame.  When no thread runs the user's code nothing is
+ * marked, and "Paused" is all there is to say.
+ */
+static void e_d_jdb_mark_paused_thread(FENSTER *f)
+{
+ static char threads[E_D_FRAMES_REPLY_MAX];
+ char row[E_D_FRAME_ROW_MAX], id[E_D_JDB_THREAD_ID_MAX];
+ const char *p = threads;
+ int index;
+
+ e_d_nframes = 0;
+ if (e_d_frames_ask(E_D_JDB_THREADS) == -1)
+  return;
+ snprintf(threads, sizeof threads, "%s", e_d_frames_reply);
+ while (e_d_frames_next_row(&p, row, sizeof row))
+ {
+  if (!e_d_jdb_thread_id(row, id, sizeof id))
+   continue;
+  index = e_d_jdb_thread_user_frame(f->ed, id);
+  if (index < 0)
+   continue;
+  e_d_jdb_show_user_frame(f, index);
+  return;
+ }
+ e_d_nframes = 0;
 }
 
 /**

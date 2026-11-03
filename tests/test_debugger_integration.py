@@ -6177,6 +6177,196 @@ def test_pause_marks_where_the_program_is_under_a68g(tmp_path):
             % _screen(w)
 
 
+# A Java program whose main loop never ends within the test, with a counter
+# the Watches window can follow; jdb and the adapters pause it in the loop.
+JDB_PAUSE_PROG = (
+    "public class P {\n"
+    "    public static void main(String[] a) {\n"
+    "        long n = 0;\n"
+    "        System.out.println(\"ready\");\n"
+    "        while (n < 4000000000000L) {\n"
+    "            n++;\n"
+    "        }\n"
+    "        System.out.println(n);\n"
+    "    }\n"
+    "}\n"
+)
+GO_PAUSE_PROG = (
+    "package main\n"
+    "\n"
+    "import \"fmt\"\n"
+    "\n"
+    "func main() {\n"
+    "\tn := 0\n"
+    "\tfmt.Println(\"ready\")\n"
+    "\tfor n < 2000000000000 {\n"
+    "\t\tn++\n"
+    "\t}\n"
+    "\tfmt.Println(n)\n"
+    "}\n"
+)
+RUST_PAUSE_PROG = (
+    "fn main() {\n"
+    "    let mut n: u64 = 0;\n"
+    "    println!(\"ready\");\n"
+    "    while std::hint::black_box(n) < 4_000_000_000_000 {\n"
+    "        n += 1;\n"
+    "    }\n"
+    "    println!(\"{}\", n);\n"
+    "}\n"
+)
+SCALA_PAUSE_PROG = (
+    "object P:\n"
+    "  def main(args: Array[String]): Unit =\n"
+    "    var n = 0L\n"
+    "    println(\"ready\")\n"
+    "    while n < 4000000000000L do\n"
+    "      n += 1\n"
+    "    println(n)\n"
+)
+# the line that prints "ready", and the lines of the loop that follows
+JDB_PAUSE_LINES = (4, (5, 6))
+GO_PAUSE_LINES = (7, (8, 9))
+RUST_PAUSE_LINES = (3, (4, 5))
+SCALA_PAUSE_LINES = (4, (5, 6))
+PAUSE_RUN_BAR_S = 8
+
+
+def _assert_paused_in_loop(w, loop, what):
+    """The mark is on a line of the loop and the status row says Paused."""
+    assert _wait_for(w, lambda: _mark_line(w) in loop, PAUSE_TIMEOUT_S), \
+        "%s should mark a line of the loop %s (mark on %s):\n%s" \
+        % (what, loop, _mark_line(w), _screen(w))
+    assert _wait_for(w, lambda: PAUSED_LINE in _bottom_row(w),
+                     PAUSE_TIMEOUT_S), \
+        "%s should say %r on the status row:\n%s" \
+        % (what, PAUSED_LINE, _screen(w))
+
+
+def _wait_for_the_pause_bar(w):
+    """The source window's bottom row names Pause: the program runs."""
+    _source_window_on_top(w)
+    assert _wait_for(w, lambda: "^Brk Pause" in _bottom_bar(w),
+                     PAUSE_RUN_BAR_S), \
+        "the program should run:\n%s" % _screen(w)
+
+
+def _run_on_with_a_watch(w, break_line, start_s):
+    """Breakpoint on @break_line, Ctrl-G R to the stop, a watch on n, then
+    Ctrl-G R to run on into the loop; return once the program runs and has
+    had time to print and loop."""
+    _go_to_line(w, break_line)
+    w.key(CTRL_G, "b", delay=0.4)
+    w.key(CTRL_G, "r", delay=1.0)
+    assert _wait_for(w, lambda: _mark_line(w) == break_line, start_s), \
+        "the session should stop on line %d (mark on %s):\n%s" \
+        % (break_line, _mark_line(w), _screen(w))
+    _add_watch(w, "n")
+    _source_window_on_top(w)
+    w.key(CTRL_G, "r", delay=0.5)
+    _wait_for_the_pause_bar(w)
+    w._drain(PAUSE_SETTLE_S)
+
+
+def _watches_on_top(w):
+    """Bring the Watches window forward: the program's output may have
+    opened Messages over it, whichever number each got."""
+    for key in ("\0332", "\0333", "\0334"):
+        if " Watches " in _screen(w):
+            return
+        w.key(key, delay=0.4)
+
+
+def _pause_in_the_loop_twice_then_quit(w, spec, start_s):
+    """Pause marks a line of the loop and refreshes the watch; Continue and a
+    second Pause mark the loop again with a newer value; Quit then leaves no
+    process of the session behind."""
+    break_line, loop = spec
+    _run_on_with_a_watch(w, break_line, start_s)
+    w.key(*CTRL_G_I, delay=0.5)
+    _assert_paused_in_loop(w, loop, "Ctrl-G I")
+    _watches_on_top(w)
+    assert _wait_for(w, lambda: _watch_value(w, "n") is not None,
+                     STEP_TIMEOUT_S), \
+        "the watch should show n after Pause:\n%s" % _screen(w)
+    first = _watch_value(w, "n")
+    _assert_debugger_takes_commands(w)
+    _source_window_on_top(w)
+    w.key(CTRL_G, "r", delay=0.5)
+    _wait_for_the_pause_bar(w)
+    w._drain(PAUSE_SETTLE_S)
+    w.key(*CTRL_G_I, delay=0.5)
+    _assert_paused_in_loop(w, loop, "the second Ctrl-G I")
+    _watches_on_top(w)
+    assert _wait_for(w, lambda: (_watch_value(w, "n") or 0) > first,
+                     STEP_TIMEOUT_S), \
+        "the watch should read more than %d after the second Pause (%s):\n%s" \
+        % (first, _watch_value(w, "n"), _screen(w))
+    tree = procinfo.descendants(w.proc.pid)
+    assert tree, "the debugger and the program should be running"
+    w.menu(ALT.DEBUG, "q", delay=0.5)
+    assert _wait_for(w, lambda: procinfo.all_ended(tree), STEP_TIMEOUT_S), \
+        "no process of the session should be left after Quit (alive: %s):\n%s" \
+        % ([p for p in tree if not procinfo.all_ended([p])], _screen(w))
+
+
+# @scenario SC-debug-45
+def test_pause_marks_where_the_program_is_under_jdb(tmp_path):
+    """Ctrl-G I while the Java loop runs suspends the VM and marks the loop
+    in P.java, with the watch refreshed; Continue resumes it and a second
+    Pause marks the loop again."""
+    _need("jdb", "javac")
+    with WpeSession(str(tmp_path), JDB_PAUSE_PROG, filename="P.java",
+                    wait=1.5) as w:
+        _pause_in_the_loop_twice_then_quit(w, JDB_PAUSE_LINES,
+                                           JDB_START_TIMEOUT_S)
+
+
+# @scenario SC-debug-45
+def test_pause_marks_where_the_program_is_under_dlv(tmp_path):
+    """The same under dlv, which may stop inside Go's runtime: the mark is
+    the first line of main.go, and the row says Paused, not the stop's
+    reason."""
+    _need("dlv", "go")
+    (tmp_path / "go.mod").write_text("module dapdemo\n\ngo 1.21\n")
+    with WpeSession(str(tmp_path), GO_PAUSE_PROG, filename="main.go",
+                    wait=2.0) as w:
+        _pause_in_the_loop_twice_then_quit(w, GO_PAUSE_LINES, GOTO_TIMEOUT_S)
+
+
+# @scenario SC-debug-45
+def test_pause_marks_where_the_program_is_under_lldb_dap(tmp_path):
+    """The same under lldb-dap, which reports the pause as a SIGSTOP
+    exception: the row says Paused all the same."""
+    _need("rustc", "lldb-dap")
+    with WpeSession(str(tmp_path), RUST_PAUSE_PROG, filename="main.rs",
+                    wait=2.0, env_extra={"XWPE_DAP_ADAPTER": "lldb"}) as w:
+        _pause_in_the_loop_twice_then_quit(w, RUST_PAUSE_LINES,
+                                           RUST_START_TIMEOUT_S)
+        assert "SIGSTOP" not in _screen(w), \
+            "the adapter's word for the stop is not shown:\n%s" % _screen(w)
+
+
+# @scenario SC-debug-45
+def test_pause_marks_where_the_program_is_under_gdb_dap(tmp_path):
+    """The same under gdb's adapter."""
+    _need("rustc", "gdb")
+    with WpeSession(str(tmp_path), RUST_PAUSE_PROG, filename="main.rs",
+                    wait=2.0, env_extra={"XWPE_DAP_ADAPTER": "gdb"}) as w:
+        _pause_in_the_loop_twice_then_quit(w, RUST_PAUSE_LINES,
+                                           RUST_START_TIMEOUT_S)
+
+
+# @scenario SC-debug-45
+def test_pause_marks_where_the_program_is_under_scala(tmp_path):
+    """The same under the Scala adapter."""
+    _need("scala-cli")
+    with WpeSession(str(tmp_path), SCALA_PAUSE_PROG, filename="p.scala",
+                    wait=2.0) as w:
+        _pause_in_the_loop_twice_then_quit(w, SCALA_PAUSE_LINES,
+                                           SCALA_START_TIMEOUT_S)
+
+
 GDB_SEGV_PROG = (
     "#include <stdio.h>\n"
     "int main(void)\n"

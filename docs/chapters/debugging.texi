@@ -122,8 +122,11 @@ is marked, the Watches are refreshed, and the status row says
 terminal sends no Ctrl-Break that curses can read, so there use
 @kbd{Ctrl-G I}, the menu or the bar.  With no session, or with the
 program stopped, Pause only says so on the status row.  It works under
-gdb, sdb, dbx, xdb, pdb and a68g; the other debuggers say that Pause is
-not available yet.
+gdb, sdb, dbx, xdb, pdb, a68g, jdb and the debug adapters (dlv for Go,
+lldb-dap and gdb's adapter for Rust).  The Scala adapter is asked to
+pause like the others; whether it stops the program is up to the
+adapter, and a Pause it does not answer ends at the program's next stop,
+where the status row says the interrupt did not stop the program.
 
 The debugger is sent SIGINT, as Ctrl-C does in a shell.  gdb reports
 where the program was, and the green bar goes to the innermost frame
@@ -135,7 +138,20 @@ pdb stops inside its own signal handler, so the bar goes to the frame
 below it, which is made pdb's current frame.  a68g prints the line and
 asks whether to terminate; xwpe answers no, and the bar goes to that
 line.  A program that handles SIGINT itself is not stopped by it: the
-status row says so at its next stop.  xwpe starts the debugger, and the
+status row says so at its next stop.
+jdb is not sent a signal: it is told @code{suspend}, which stops every
+thread of the Java VM and leaves jdb with no current thread.  xwpe lists
+the threads, makes current the first one that runs your code, and puts
+the bar on that thread's innermost frame of your code (the loop, or the
+call to @code{sleep} it is in), with that frame selected for the
+Watches.  Continue then sends @code{resume}, not @code{cont}, so every
+thread runs again.  The debug adapters are sent the protocol's
+@code{pause} request, and the stop that follows it is the Pause
+whatever reason the adapter gives it (lldb-dap says
+@samp{signal SIGSTOP}, dlv may stop inside Go's runtime): the status
+row says @samp{Paused}, the bar goes to the first frame of the stack that
+is in your program, and that frame is the one the Watches are read in.
+Continue goes on as after any stop.  xwpe starts the debugger, and the
 programs under it, with SIGINT and SIGPIPE as a shell gives them,
 not ignored.  In wpe the debugger and the debug adapters run apart from
 the editor's terminal, so a Ctrl-C typed during a session reaches

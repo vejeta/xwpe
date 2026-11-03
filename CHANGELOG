@@ -249,6 +249,13 @@ Changes
   only says so.  Under gdb, watches on locals work after a pause, and
   F8 or F7 then stops on the next line of your code.
 
+* Pause also works under jdb and the debug adapters (Go's dlv, Rust's
+  lldb-dap and gdb adapter, Scala's if it answers).  jdb suspends the Java
+  VM and the bar goes to the loop in your thread; Continue resumes every
+  thread.  An adapter's pause shows as "Paused", not as "exception" or
+  "signal SIGSTOP", and when it stops inside the language's runtime the bar
+  goes to the first frame of your own code.
+
 * wpe keeps its keys after a tool has run.  After one compile (F9), run
   (Ctrl-F9) or debug session, the terminal went back to sending signals for
   Ctrl-\, Ctrl-Z and Ctrl-C and to stopping its output on Ctrl-S: Ctrl-\
