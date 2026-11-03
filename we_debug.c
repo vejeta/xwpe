@@ -10779,6 +10779,9 @@ typedef struct {
  int returned;                  /* the answer was a "--Return--" */
  int finish_up;                 /* Finish: "up" follows the "--Return--" */
  int internal_steps;            /* stops in Python's own code stepped past */
+ int pause_seen;                /* Pause: the script's line is known: */
+ char pause_file[E_D_STOP_PATH_MAX];   /* its file */
+ int pause_line;                       /* and line */
 } E_D_PDB_RUN;
 
 static E_D_PDB_RUN e_d_pdb_run;
@@ -10804,6 +10807,7 @@ static void e_d_pdb_begin(void)
  e_d_pdb_answer_reset();
  e_d_pdb_run.finish_up = 0;
  e_d_pdb_run.internal_steps = 0;
+ e_d_pdb_run.pause_seen = 0;
 }
 
 /**
@@ -10943,6 +10947,37 @@ static void e_d_pdb_note_return(E_D_PDB_RUN *r)
 }
 
 static int e_d_pdb_mark_interrupted_frame(FENSTER *f);   /* (frames, below) */
+#define E_D_PDB_PAUSE_NOT_SEEN 0   /* no handler in the stack: ordinary stop */
+#define E_D_PDB_PAUSE_MARKED   1   /* the script's line is marked */
+#define E_D_PDB_PAUSE_GOING    2   /* "return" sent: pdb still runs */
+#define E_D_PDB_PAUSE_LOST     3   /* bound reached: nothing marked, said */
+
+/**
+ * e_d_pdb_pause_stop - Deal with the stop a Pause brought.
+ * @f: the window on top.
+ *
+ * The user sees the script's line marked, or nothing yet while pdb is made
+ * to leave its own code.
+ * Return: 1 when the stop is dealt with (marked, or the run goes on).
+ */
+static int e_d_pdb_pause_stop(FENSTER *f)
+{
+ int how;
+
+ if (e_d_run.pause != E_D_PAUSE_TAKEN)
+  return(0);
+ how = e_d_pdb_mark_interrupted_frame(f);
+ if (how == E_D_PDB_PAUSE_GOING)
+  return(1);
+ e_d_pdb_run.pause_seen = 0;
+ if (how == E_D_PDB_PAUSE_MARKED || how == E_D_PDB_PAUSE_LOST)
+ {
+  e_d_pdb_run.finish_up = 0;
+  e_d_switch_out(0);
+  return(1);
+ }
+ return(0);
+}
 
 /**
  * e_d_pdb_stopped - What pdb does when its prompt comes: keep the program's
@@ -10965,12 +11000,8 @@ static void e_d_pdb_stopped(FENSTER *f)
                         r->spill.open_is_pdb);
  if (e_d_pdb_say_end(f, r->reply.buf))
   return;
- if (e_d_run.pause == E_D_PAUSE_TAKEN && e_d_pdb_mark_interrupted_frame(f))
- {
-  r->finish_up = 0;
-  e_d_switch_out(0);
+ if (e_d_pdb_pause_stop(f))
   return;
- }
  if (e_d_pdb_stop_is_internal(r->reply.buf, &r->spill))
  {
   e_d_pdb_step_out_of_internal(f);
@@ -11712,7 +11743,8 @@ static int e_d_a68g_do_step(FENSTER *f, int sw)
 #define E_D_FRAME_DOWN_FMT   "down %d\n" /* pdb and jdb: N frames inwards     */
 #define E_D_PDB_WHERE        "where\n"
 #define E_D_PDB_FRAME_LEAD   2        /* "> " (selected) or "  " per frame   */
-#define E_D_PDB_OWN_FILE     '<'      /* "<string>": pdb running the script  */
+#define E_D_PDB_OWN_FILE     "<string>" /* pdb's exec of the script: the last
+                                           frame of pdb's own machinery  */
 #define E_D_JDB_WHERE        "where\n"
 #define E_D_JDB_FINISH       "step up\n"
 #define E_D_A68G_CALLS_FMT   "calls %d\n"
@@ -12012,14 +12044,14 @@ static int e_d_pdb_frame_parse(const char *row, e_d_frame *fr)
 }
 
 /**
- * e_d_pdb_frames - Read pdb's stack.
+ * e_d_pdb_read_frames - Read pdb's whole stack, its SIGINT handler included.
  *
- * pdb lists outermost first and starts with its own frames (bdb.py, then
- * "<string>", the exec of the script); those are dropped and the rest is
- * turned innermost first.
+ * pdb lists outermost first and starts with its own frames (Python's
+ * runpy, pdb.py, bdb.py, then "<string>", the exec of the script); those
+ * are dropped, and the rest is turned innermost first.
  * Return: 0, or -1 when pdb's output ended.
  */
-static int e_d_pdb_frames(void)
+static int e_d_pdb_read_frames(void)
 {
  char row[E_D_FRAME_ROW_MAX];
  const char *p = e_d_frames_reply;
@@ -12032,7 +12064,7 @@ static int e_d_pdb_frames(void)
  {
   if (!e_d_pdb_frame_parse(e_d_frames_skip_prompt(row), &fr))
    continue;
-  if (own < 0 && fr.file[0] == E_D_PDB_OWN_FILE)
+  if (own < 0 && !strcmp(fr.file, E_D_PDB_OWN_FILE))
    own = e_d_nframes;
   e_d_frame_add(fr.func, fr.file, fr.line, 1);
  }
@@ -12045,18 +12077,242 @@ static int e_d_pdb_frames(void)
 /* The function of pdb's own SIGINT handler: the frame under the script's. */
 #define E_D_PDB_SIGINT_HANDLER "sigint_handler"
 
+/* pdb's own sources: a stop in either is never a place the user has text of */
+#define E_D_PDB_OWN_SOURCES_N  2
+static const char *const e_d_pdb_own_sources[E_D_PDB_OWN_SOURCES_N] =
+{
+ "pdb.py", "bdb.py"
+};
+#define E_D_PDB_PAUSE_LOST_LINE \
+ " pdb stayed in its own code: Pause could not reach the script's line"
+
+/**
+ * e_d_pdb_in_own_source - Say whether a stack frame lies in pdb.py or
+ * bdb.py.
+ * @file: the frame's file, with or without its directory.
+ *
+ * The user benefits because the Pause stop is only shown when it is in
+ * the script, never in the debugger's own code.
+ */
+static int e_d_pdb_in_own_source(const char *file)
+{
+ const char *base = strrchr(file, '/');
+ int i;
+
+ if (base)
+  base++;
+ else
+  base = file;
+ for (i = 0; i < E_D_PDB_OWN_SOURCES_N; i++)
+  if (!strcmp(base, e_d_pdb_own_sources[i]))
+   return(1);
+ return(0);
+}
+
+/**
+ * e_d_pdb_at_handler_return - Say whether pdb is stopped at the end of its
+ * SIGINT handler, the point where one continue resumes the script.
+ * @handler: the index of the handler in the stack read, innermost first.
+ *
+ * A script that sleeps or waits never stops again by itself once the
+ * handler returns into it, so this is the stop the user is shown; "return"
+ * is not sent from here, or the script would run on and the Pause be lost.
+ */
+static int e_d_pdb_at_handler_return(int handler)
+{
+ return(handler == 0 && e_d_pdb_run.returned);
+}
+
+/**
+ * e_d_pdb_pause_note_script - Remember the script's line at the Pause stop.
+ * @fr: the frame under pdb's SIGINT handler.
+ *
+ * Python 3.13 lists, after the handler has returned, only pdb's own frames:
+ * the line the user paused on is then known only from the first stop.
+ */
+static void e_d_pdb_pause_note_script(const e_d_frame *fr)
+{
+ snprintf(e_d_pdb_run.pause_file, sizeof e_d_pdb_run.pause_file, "%s",
+          fr->file);
+ e_d_pdb_run.pause_line = fr->line;
+ e_d_pdb_run.pause_seen = 1;
+}
+
+/**
+ * e_d_pdb_mark_saved_script - Mark the line remembered at the Pause stop
+ * when pdb's stack no longer shows the script.
+ * @f: the window on top.
+ *
+ * The user sees the line the script was paused on and one Continue runs
+ * it on.
+ * Return: E_D_PDB_PAUSE_MARKED, or E_D_PDB_PAUSE_NOT_SEEN when no line was
+ * remembered (an ordinary stop).
+ */
+static int e_d_pdb_mark_saved_script(FENSTER *f)
+{
+ if (!e_d_pdb_run.pause_seen)
+  return(E_D_PDB_PAUSE_NOT_SEEN);
+ e_d_swtch = 3;
+ e_d_pdb_mark_stop(f, e_d_pdb_run.pause_file, e_d_pdb_run.pause_line);
+ return(E_D_PDB_PAUSE_MARKED);
+}
+
+/**
+ * e_d_pdb_up_to_script - Make the script's frame, the one under pdb's SIGINT
+ * handler, pdb's current frame.
+ * @handler: the index of the SIGINT handler in the stack read.
+ *
+ * The Stack window does not list the handler or what is inside it, so row 0
+ * is the script's frame; pdb's "up" and "down" are relative to its current
+ * frame, and that frame must be row 0 for Enter on a row to show that
+ * frame's variables in the Watch window.  Nothing is done when the handler
+ * is not in the stack, since then no frame is dropped.
+ */
+static void e_d_pdb_up_to_script(int handler)
+{
+ char up[E_D_PDB_UP_MAX];
+
+ if (handler + 1 >= e_d_nframes)
+  return;
+ snprintf(up, sizeof up, E_D_PDB_UP_FMT, handler + 1);
+ if (e_d_frames_ask(up) == -1)
+  return;
+ e_d_nstack = 0;
+}
+
+/**
+ * e_d_pdb_pause_return - Pause stopped in pdb's own code: send "return" to
+ * leave it, up to a bound.
+ * @f: the window on top.
+ *
+ * pdb's SIGINT handler arms a step, and with a breakpoint set that step
+ * first stops inside bdb.py, where a continue only finishes the step and
+ * the script stays stopped.  Each "return" runs out of one of pdb's frames
+ * without letting the script advance, so a single continue then resumes it
+ * (Ctrl-G R after Ctrl-G I).  The stop outside pdb's files is shown as the
+ * Pause.  When the bound is reached the run stops where it is and the
+ * status row says so, and pdb is moved up to the script's frame so that
+ * the rows of the Stack window, which start there, still select the frame
+ * they show.
+ * @handler: the index of the SIGINT handler in the stack read.
+ * Return: E_D_PDB_PAUSE_GOING when "return" was sent, else
+ * E_D_PDB_PAUSE_LOST (nothing marked, the bound was reached).
+ */
+static int e_d_pdb_pause_return(FENSTER *f, int handler)
+{
+ if (++e_d_pdb_run.internal_steps > E_D_PDB_INTERNAL_STEPS_MAX)
+ {
+  e_d_pdb_up_to_script(handler);
+  e_d_run.pause = E_D_PAUSE_NONE;
+  e_status_say_until_key(f, E_D_PDB_PAUSE_LOST_LINE);
+  return(E_D_PDB_PAUSE_LOST);
+ }
+ e_d_pdb_send_on(E_D_PDB_FINISH);
+ return(E_D_PDB_PAUSE_GOING);
+}
+
+/**
+ * e_d_pdb_is_handler_frame - Say whether a frame is pdb's own SIGINT
+ * handler.
+ * @fr: a frame of pdb's stack.
+ *
+ * A script may have a function of the same name; only the one in pdb's own
+ * files is taken for the handler, so the user's frames of that name, and
+ * the frames inside them, stay in the Stack window and can be selected.
+ */
+static int e_d_pdb_is_handler_frame(const e_d_frame *fr)
+{
+ if (strcmp(fr->func, E_D_PDB_SIGINT_HANDLER))
+  return(0);
+ return(e_d_pdb_in_own_source(fr->file));
+}
+
+/**
+ * e_d_pdb_handler_index - Find pdb's SIGINT handler in the frames read.
+ *
+ * Everything inside it is pdb's own machinery; knowing where it sits lets
+ * the Stack window start at the user's code after a Pause.
+ *
+ * Return: its index, innermost first, or e_d_nframes when it is not there.
+ */
+static int e_d_pdb_handler_index(void)
+{
+ int i;
+
+ for (i = 0; i < e_d_nframes; i++)
+  if (e_d_pdb_is_handler_frame(&e_d_frames[i]))
+   break;
+ return(i);
+}
+
+/**
+ * e_d_frames_drop_inner - Forget the @count innermost frames.
+ * @count: how many to drop.
+ *
+ * What a Pause leaves inside the script's frame is pdb's own machinery; the
+ * Stack window then starts at the user's code.  Rows are numbered from the
+ * first one kept, and pdb's "up" and "down" are relative to the selected
+ * row, so the hidden frames need no offset when a frame is selected.
+ */
+static void e_d_frames_drop_inner(int count)
+{
+ if (count <= 0 || count > e_d_nframes)
+  return;
+ memmove(e_d_frames, e_d_frames + count,
+         (e_d_nframes - count) * sizeof e_d_frames[0]);
+ e_d_nframes -= count;
+}
+
+/**
+ * e_d_pdb_frames - Read pdb's stack for the Stack window.
+ *
+ * After a Pause pdb's SIGINT handler, and the bdb.py frames inside it, sit
+ * on top of the script's frame; they are dropped so the window lists only
+ * the script's frames.
+ * Return: 0, or -1 when pdb's output ended.
+ */
+static int e_d_pdb_frames(void)
+{
+ if (e_d_pdb_read_frames() == -1)
+  return(-1);
+ e_d_frames_drop_inner(e_d_pdb_handler_index() + 1);
+ return(0);
+}
+
+/**
+ * e_d_pdb_pause_needs_return - Say whether a Pause stop is still in pdb's
+ * own code, so that "return" must be sent.
+ * @handler: the index of the SIGINT handler in the stack read.
+ *
+ * The user benefits because the Pause is then shown at the script's line
+ * and never inside pdb.py or bdb.py.
+ */
+static int e_d_pdb_pause_needs_return(int handler)
+{
+ if (handler >= e_d_nframes && !e_d_pdb_run.pause_seen)
+  return(0);
+ if (e_d_pdb_at_handler_return(handler) || e_d_nframes <= 0)
+  return(0);
+ return(e_d_pdb_in_own_source(e_d_frames[0].file));
+}
+
 /**
  * e_d_pdb_mark_interrupted_frame - After Pause, mark the script's line and
  * make that frame pdb's current one.
  * @f: the window on top.
  *
  * pdb stops inside its own SIGINT handler, in bdb.py, a few frames inside
- * the line the script was running.  The user wants the script's line: the
- * frame under the handler is found in pdb's stack, pdb is told to go up to
- * it (so the Stack window and the next step start there), and its line is
- * marked.
- * Return: 1 when the script's frame was marked, 0 when the stack does not
- * show the handler (the stop is then marked as any other).
+ * the line the script was running.  When the stop is still in pdb's own
+ * files, pdb is told to return until it is out of them.  The user wants the
+ * script's line: the frame under the handler is found in pdb's stack, pdb
+ * is told to go up to it (so the Stack window and the next step start
+ * there), and its line is marked.  The handler and what is inside it are
+ * not listed afterwards, so the script's frame is row 0 of the Stack window.
+ * Return: E_D_PDB_PAUSE_MARKED when the script's frame was marked,
+ * E_D_PDB_PAUSE_GOING when pdb is still on its way out of its own code,
+ * E_D_PDB_PAUSE_LOST when the bound was reached and nothing was marked,
+ * E_D_PDB_PAUSE_NOT_SEEN when the stack does not show the handler (the stop
+ * is then marked as any other).
  */
 static int e_d_pdb_mark_interrupted_frame(FENSTER *f)
 {
@@ -12065,22 +12321,24 @@ static int e_d_pdb_mark_interrupted_frame(FENSTER *f)
  int i;
 
  e_d_nframes = 0;
- if (e_d_pdb_frames() == -1)
-  return(0);
- for (i = 0; i < e_d_nframes; i++)
-  if (!strcmp(e_d_frames[i].func, E_D_PDB_SIGINT_HANDLER))
-   break;
+ if (e_d_pdb_read_frames() == -1)
+  return(E_D_PDB_PAUSE_NOT_SEEN);
+ i = e_d_pdb_handler_index();
+ if (i + 1 < e_d_nframes && !e_d_pdb_run.pause_seen)
+  e_d_pdb_pause_note_script(&e_d_frames[i + 1]);
+ if (e_d_pdb_pause_needs_return(i))
+  return(e_d_pdb_pause_return(f, i));
  if (i + 1 >= e_d_nframes)
-  return(0);
+  return(e_d_pdb_mark_saved_script(f));
  i++;
  fr = &e_d_frames[i];
  snprintf(up, sizeof up, E_D_PDB_UP_FMT, i);
  if (e_d_frames_ask(up) == -1)
-  return(0);
- e_d_nstack = i;
+  return(E_D_PDB_PAUSE_NOT_SEEN);
+ e_d_nstack = 0;
  e_d_swtch = 3;
  e_d_pdb_mark_stop(f, fr->file, fr->line);
- return(1);
+ return(E_D_PDB_PAUSE_MARKED);
 }
 
 /**

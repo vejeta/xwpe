@@ -256,6 +256,10 @@ Changes
   "signal SIGSTOP", and when it stops inside the language's runtime the bar
   goes to the first frame of your own code.
 
+* Under pdb, Continue after Pause runs the script again when a breakpoint
+  is set (it used to stop once more, or lose the Pause, in Python 3.13 and
+  3.14), and the Stack window no longer lists pdb's own frames.
+
 * Debug > Quit in a Scala session gives scala-cli's launcher up to a second
   to close its connection, instead of killing it after a fifth of a second;
   the program ends as before and the shared Bloop server is left running.

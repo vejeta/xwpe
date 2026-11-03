@@ -135,10 +135,14 @@ That frame is gdb's selected one, so watches on its locals show their
 values, and the next F8 or F7 finishes the interrupted call and stops on
 the next line of your code.
 pdb stops inside its own signal handler, so the bar goes to the frame
-below it, which is made pdb's current frame.  a68g prints the line and
-asks whether to terminate; xwpe answers no, and the bar goes to that
-line.  A program that handles SIGINT itself is not stopped by it: the
-status row says so at its next stop.
+below it, which is made pdb's current frame.  When a breakpoint is set,
+pdb first stops in its own files (@file{bdb.py}, @file{pdb.py}); xwpe
+sends @code{return} until pdb is out of them, so the Stack window lists
+only your frames and one Continue runs the program on.  If pdb is still
+in its own code after 100 of these, the status row says so.  a68g
+prints the line and asks whether to terminate; xwpe answers no, and the
+bar goes to that line.  A program that handles SIGINT itself is not
+stopped by it: the status row says so at its next stop.
 jdb is not sent a signal: it is told @code{suspend}, which stops every
 thread of the Java VM and leaves jdb with no current thread.  xwpe lists
 the threads, makes current the first one that runs your code, and puts
@@ -172,7 +176,9 @@ frames innermost first, each with its function, file and line:
 and the Watches window shows the variables of that frame.  gdb lists
 its own @code{bt}.  pdb's @code{where}, jdb's @code{where}, a68g's
 @code{calls} and the debug adapters' @code{stackTrace} are read into
-the list above.  pdb's own frames before your script are left out.  A
+the list above.  pdb's own frames before your script are left out, and
+after a Pause so is pdb's interrupt handler, so the first row is the
+line the program was on.  A
 debug adapter also lists the language's runtime (@code{runtime.main}
 for Go, the standard library for Rust) and a frame without source says
 @samp{in} its file instead of @samp{at} a line.  a68g names the

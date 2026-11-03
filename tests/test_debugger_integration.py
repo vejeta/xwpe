@@ -6132,9 +6132,6 @@ def _ticks(path):
 
 
 # @scenario SC-debug-45
-@incoherence("Python 3.14's pdb, with a breakpoint set, answers the first "
-             "continue after its SIGINT stop with a stop on the same line "
-             "(a second continue runs): the editor sends one continue")
 def test_continue_after_pause_resumes_under_pdb(tmp_path):
     """Ctrl-G I stops the looping script; Ctrl-G R then runs it again, which
     only the loop's own file writes can show."""
@@ -6154,6 +6151,147 @@ def test_continue_after_pause_resumes_under_pdb(tmp_path):
                          PAUSE_TIMEOUT_S), \
             "Ctrl-G R should run the script on (%d ticks at the pause, %d " \
             "now):\n%s" % (paused_at, _ticks(ticks), _screen(w))
+
+
+PY_TICK_FIRST_LINE = 3            # while True:
+PY_TICK_LAST_LINE = 6             # time.sleep(0.2)
+PDB_OWN_FILES = ("pdb.py", "bdb.py")
+
+
+# @scenario SC-debug-45
+def test_pause_under_pdb_with_a_breakpoint_shows_the_scripts_line_not_pdbs(
+        tmp_path):
+    """With a breakpoint set, pdb's interrupt first stops inside its own
+    files; the Pause shows a line of the loop, and the Stack window lists
+    only the script's frames: no sigint_handler, no row of another file."""
+    _need("python3")
+    ticks = str(tmp_path / "ticks")
+    with WpeSession(str(tmp_path), PY_TICK_PROG % ticks, filename="p.py",
+                    wait=1.5, cols=STACK_COLS) as w:
+        _stop_then_run_on(w, PY_TICK_BREAK_LINE, START_TIMEOUT_S,
+                          in_messages=False)
+        w.key(*CTRL_G_I, delay=0.5)
+        assert _wait_for(w, lambda: PAUSED_LINE in _bottom_row(w),
+                         PAUSE_TIMEOUT_S), \
+            "Ctrl-G I should stop the script:\n%s" % _screen(w)
+        mark = _mark_line(w)
+        assert mark is not None and \
+            PY_TICK_FIRST_LINE <= mark <= PY_TICK_LAST_LINE, \
+            "the pause should mark a line of the loop (mark on %s):\n%s" \
+            % (mark, _screen(w))
+        _assert_debugger_takes_commands(w)
+        for name in PDB_OWN_FILES:
+            assert name not in _screen(w), \
+                "the Stack window should show no frame of %s:\n%s" \
+                % (name, _screen(w))
+        frames = _stack_frames(w)
+        assert frames, "the Stack window should list frames:\n%s" % _screen(w)
+        assert not any(PDB_HANDLER in row for row in frames), \
+            "the Stack window should not list pdb's handler:\n%s" % _screen(w)
+        assert all(PY_SCRIPT_FILE in row for row in frames), \
+            "every row should be a frame of the script:\n%s" % _screen(w)
+
+
+# A script with a frame under the loop's, holding a local the loop's frame
+# has not: a watch on it reads only in the frame the Stack window selected.
+PY_NESTED_PROG = (
+    "import time\n"
+    "print('ready', flush=True)\n"
+    "def tick(path):\n"
+    "    while True:\n"
+    "        with open(path, 'a') as f:\n"
+    "            f.write('x')\n"
+    "        time.sleep(0.2)\n"
+    "def outer(path):\n"
+    "    marker = 77\n"
+    "    tick(path)\n"
+    "outer(%r)\n"
+)
+PY_NESTED_MARKER = "77"
+PY_NESTED_CALLER_ROW = 1          # "#1  outer", under the loop's "#0  tick"
+PDB_HANDLER = "sigint_handler"
+PY_SCRIPT_FILE = "p.py"
+
+
+# @scenario SC-debug-45
+def test_pause_under_pdb_selects_the_right_frame_in_the_stack_window(tmp_path):
+    """After a Pause with a breakpoint the Stack window starts at the script's
+    loop; Enter on the row below it makes that frame the one the Watches read
+    (marker is 77 there, undefined in the loop's frame), and Continue runs
+    the script on."""
+    _need("python3")
+    ticks = str(tmp_path / "ticks")
+    with WpeSession(str(tmp_path), PY_NESTED_PROG % ticks, filename="p.py",
+                    wait=1.5, cols=STACK_COLS) as w:
+        _stop_then_run_on(w, PY_TICK_BREAK_LINE, START_TIMEOUT_S,
+                          in_messages=False)
+        w.key(*CTRL_G_I, delay=0.5)
+        assert _wait_for(w, lambda: PAUSED_LINE in _bottom_row(w),
+                         PAUSE_TIMEOUT_S), \
+            "Ctrl-G I should stop the script:\n%s" % _screen(w)
+        _add_watch(w, "marker")
+        w.key(CTRL_G, "k", delay=0.8)
+        assert _wait_for(w, lambda: len(_stack_frames(w)) > \
+                         PY_NESTED_CALLER_ROW, STEP_TIMEOUT_S), \
+            "Ctrl-G K should list the script's frames:\n%s" % _screen(w)
+        frames = _stack_frames(w)
+        assert "tick" in frames[0] and "outer" in frames[1], \
+            "the rows should be tick over outer:\n%s" % _screen(w)
+        for _ in range(PY_NESTED_CALLER_ROW):
+            w.key(DOWN, delay=0.3)
+        w.key("\r", delay=0.8)
+        _watches_on_top(w)
+        assert _wait_for(w, lambda: PY_NESTED_MARKER in
+                         (_watch_row(w, "marker") or ""), STEP_TIMEOUT_S), \
+            "marker should read 77 in the selected frame (row %r):\n%s" \
+            % (_watch_row(w, "marker"), _screen(w))
+        paused_at = _ticks(ticks)
+        _source_window_on_top(w)
+        w.key(CTRL_G, "r", delay=0.5)
+        assert _wait_for(w, lambda: _ticks(ticks) >= paused_at + PY_TICK_MORE,
+                         PAUSE_TIMEOUT_S), \
+            "Ctrl-G R should run the script on (%d ticks at the pause, %d " \
+            "now):\n%s" % (paused_at, _ticks(ticks), _screen(w))
+
+
+# A script with a function of the same name as pdb's SIGINT handler: only
+# pdb's own handler is left out of the Stack window, never the script's.
+PY_OWN_HANDLER_NAME_PROG = (
+    "def leaf():\n"
+    "    return 1\n"
+    "def sigint_handler():\n"
+    "    return leaf()\n"
+    "sigint_handler()\n"
+)
+PY_OWN_HANDLER_NAME_LINE = 2      # return 1, in leaf
+PY_OWN_HANDLER_NAME_ROWS = ("leaf", PDB_HANDLER, "<module>")
+
+
+# @scenario SC-debug-45
+def test_a_script_function_named_like_pdbs_handler_stays_in_the_stack_window(
+        tmp_path):
+    """A breakpoint in a function the script's own sigint_handler calls: the
+    Stack window lists leaf, sigint_handler and the module, all of p.py."""
+    _need("python3")
+    with WpeSession(str(tmp_path), PY_OWN_HANDLER_NAME_PROG, filename="p.py",
+                    wait=1.5, cols=STACK_COLS) as w:
+        _go_to_line(w, PY_OWN_HANDLER_NAME_LINE)
+        w.key(CTRL_G, "b", delay=0.4)
+        w.key(CTRL_G, "r", delay=1.0)
+        assert _wait_for(w, lambda: _mark_line(w) == PY_OWN_HANDLER_NAME_LINE,
+                         START_TIMEOUT_S), \
+            "the session should stop on line %d:\n%s" \
+            % (PY_OWN_HANDLER_NAME_LINE, _screen(w))
+        w.key(CTRL_G, "k", delay=0.8)
+        rows = len(PY_OWN_HANDLER_NAME_ROWS)
+        assert _wait_for(w, lambda: len(_stack_frames(w)) >= rows,
+                         STEP_TIMEOUT_S), \
+            "the Stack window should list %d frames:\n%s" % (rows, _screen(w))
+        frames = _stack_frames(w)
+        for row, func in zip(frames, PY_OWN_HANDLER_NAME_ROWS):
+            assert func in row and PY_SCRIPT_FILE in row, \
+                "the rows should be %r:\n%s" \
+                % (PY_OWN_HANDLER_NAME_ROWS, _screen(w))
 
 
 # A script that handles SIGINT itself: the interrupt reaches its handler, not
