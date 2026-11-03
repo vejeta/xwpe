@@ -8245,6 +8245,276 @@ def test_a_breakpoint_set_while_running_stops_the_program_there_under_scala(
             os.kill(pid, signal.SIGKILL)
 
 
+# ---- watches changed while the program runs ----
+#
+# The debugger reads no command while the program runs, so a watch added,
+# edited or deleted then is listed at once and read at the next stop; the
+# stop the editor makes to apply a breakpoint is not such a stop.
+
+WATCH_LATER_WORDS = "(at the next stop)"
+WATCH_EDITED_EXPR = "n+1"
+WATCH_LIVE_SHOWN_S = 5            # the list changes at once, not at a stop
+WATCH_EDIT_KEYS = (CTRL_G, "e")
+WATCH_DELETE_KEYS = (CTRL_G, "d")
+WATCH_REMOVE_ALL_KEYS = (CTRL_G, "a")
+WATCH_ADAPTER_CASE = "lldb-dap"
+# Edit and Delete on a line debugger and two adapters of different makers;
+# Remove All on gdb, pdb (its own interrupt) and an adapter.
+WATCH_EDIT_CASES = ("gdb", WATCH_ADAPTER_CASE, "dlv")
+WATCH_REMOVE_ALL_CASES = ("gdb", "pdb", WATCH_ADAPTER_CASE)
+
+
+def _watch_waits_for_the_stop(w, expr):
+    """The Watches window lists @expr with the words for a value to come."""
+    return _wait_for(w, lambda: _watch_is_waiting(w, expr),
+                     WATCH_LIVE_SHOWN_S)
+
+
+def _watch_is_waiting(w, expr):
+    """A row of the screen lists @expr with the words for a value to come."""
+    words = "%s: %s" % (expr, WATCH_LATER_WORDS)
+    return any(words in row for row in w.display(drain=0))
+
+
+def _watch_has_a_value(w, expr):
+    """The Watches window (the rows below its title) shows @expr with a
+    value, that is with any text but the words for a value to come."""
+    pat = re.compile(r"^%s: (\S.*)$" % re.escape(expr))
+    below = False
+    for row in w.display(drain=0):
+        if " Watches " in row:
+            below = True
+            continue
+        m = pat.match(row[1:].rstrip(" x^av"))
+        if below and m:
+            return m.group(1) != WATCH_LATER_WORDS
+    return False
+
+
+def _pause_and_see_the_watch_filled(w, expr):
+    """Pause the program; the stop reads @expr."""
+    w.key(*CTRL_G_I, delay=0.5)
+    assert _wait_for(w, lambda: _mark_line(w) is not None, PAUSE_TIMEOUT_S), \
+        "Ctrl-G I should stop the program:\n%s" % _screen(w)
+    _watches_on_top(w)
+    assert _wait_for(w, lambda: _watch_has_a_value(w, expr),
+                     STEP_TIMEOUT_S), \
+        "the stop should fill the watch on %s:\n%s" % (expr, _screen(w))
+
+
+# @scenario SC-debug-10
+@pytest.mark.parametrize("debugger", sorted(BRK_LIVE_CASES))
+def test_a_watch_added_while_running_shows_at_the_next_stop(tmp_path,
+                                                            debugger):
+    """A watch made while the program runs is not refused: it is listed at
+    once, saying its value comes at the next stop, and a Pause then fills
+    it."""
+    case = BRK_LIVE_CASES[debugger]
+    with _live_session(tmp_path, case) as w:
+        _run_into_the_program(w, case["break"], case["start_s"])
+        _add_watch(w, "n")
+        assert RUNNING_REFUSAL not in _screen(w), \
+            "a watch is no debugger command to refuse:\n%s" % _screen(w)
+        assert _watch_waits_for_the_stop(w, "n"), \
+            "the watch should wait for the next stop (row %r):\n%s" \
+            % (_watch_row(w, "n"), _screen(w))
+        _pause_and_see_the_watch_filled(w, "n")
+        _quit_and_see_the_session_gone(w)
+
+
+# @scenario SC-debug-10
+@pytest.mark.parametrize("debugger", WATCH_EDIT_CASES)
+def test_a_watch_edited_and_deleted_while_running(tmp_path, debugger):
+    """The entry of a running program's watch is edited (its new text shows
+    the words for a value to come) and deleted (it leaves the list), with the
+    program still running."""
+    case = BRK_LIVE_CASES[debugger]
+    with _live_session(tmp_path, case) as w:
+        _run_into_the_program(w, case["break"], case["start_s"])
+        _add_watch(w, "n")
+        assert _watch_waits_for_the_stop(w, "n"), _screen(w)
+        w.key(*WATCH_EDIT_KEYS, delay=0.8)
+        w.key(WATCH_EDITED_EXPR, delay=0.2)
+        w.key("\r", delay=0.5)
+        assert RUNNING_REFUSAL not in _screen(w), _screen(w)
+        assert _watch_waits_for_the_stop(w, WATCH_EDITED_EXPR), \
+            "the edited watch should wait for the next stop:\n%s" \
+            % _screen(w)
+        w.key(*WATCH_DELETE_KEYS, delay=0.5)
+        assert RUNNING_REFUSAL not in _screen(w), _screen(w)
+        assert _wait_for(w, lambda: not _watch_is_waiting(w, WATCH_EDITED_EXPR),
+                         WATCH_LIVE_SHOWN_S), \
+            "the deleted watch should leave the list:\n%s" % _screen(w)
+        _quit_and_see_the_session_gone(w)
+
+
+# @scenario SC-debug-10
+@pytest.mark.parametrize("debugger", WATCH_REMOVE_ALL_CASES)
+def test_all_watches_removed_while_running(tmp_path, debugger):
+    """Remove All watches closes the Watches window of a running program,
+    and the next stop opens none."""
+    case = BRK_LIVE_CASES[debugger]
+    with _live_session(tmp_path, case) as w:
+        _run_into_the_program(w, case["break"], case["start_s"])
+        _add_watch(w, "n")
+        assert _watch_waits_for_the_stop(w, "n"), _screen(w)
+        w.key(*WATCH_REMOVE_ALL_KEYS, delay=0.6)
+        assert RUNNING_REFUSAL not in _screen(w), _screen(w)
+        assert _wait_for(w, lambda: " Watches " not in _screen(w),
+                         WATCH_LIVE_SHOWN_S), \
+            "Remove All should close the Watches window:\n%s" % _screen(w)
+        w.key(*CTRL_G_I, delay=0.5)
+        assert _wait_for(w, lambda: _mark_line(w) is not None,
+                         PAUSE_TIMEOUT_S), _screen(w)
+        assert " Watches " not in _screen(w), \
+            "no Watches window should come back:\n%s" % _screen(w)
+        _quit_and_see_the_session_gone(w)
+
+
+# gdb answers the watch's "p n" with a value, or, stopped where n is not in
+# scope (the hidden stop lands inside sleep), with "No symbol"; both count.
+GDB_WATCH_ANSWER = re.compile(
+    r'\(gdb\) (?:\$\d+ = |[^\n]*No symbol "n" in current context)')
+
+
+def _gdb_watch_answers(tmp_path):
+    """How many times gdb has answered the watch's "p n" so far."""
+    log = tmp_path / GDB_LOG_NAME
+    if not log.exists():
+        return 0
+    return len(GDB_WATCH_ANSWER.findall(log.read_text(errors="replace")))
+
+
+# @scenario SC-debug-10
+def test_a_sync_stop_evaluates_no_watch(tmp_path):
+    """The stop the editor makes to tell gdb a breakpoint set while the
+    program runs is hidden: it reads no watch, and the window shows nothing
+    new until the program stops for the user."""
+    _need("gcc", "gdb")
+    (tmp_path / ".gdbinit").write_text(
+        GDB_LOG_INIT % (tmp_path / GDB_LOG_NAME))
+    case = BRK_LIVE_CASES["gdb"]
+    with WpeSession(str(tmp_path), GDB_LIVE_PROG, filename="p.c",
+                    wait=1.5) as w:
+        _go_to_line(w, case["break"])
+        w.key(CTRL_G, "b", delay=0.4)
+        w.key(CTRL_G, "r", delay=1.0)
+        assert _wait_for(w, lambda: _mark_line(w) == case["break"],
+                         case["start_s"]), _screen(w)
+        _add_watch(w, "n")
+        _source_window_on_top(w)
+        w.key(CTRL_G, "r", delay=0.5)
+        _wait_for_the_pause_bar(w)
+        w._drain(PAUSE_SETTLE_S)
+        before = _gdb_watch_answers(tmp_path)
+        assert before >= 1, "the watch should have been read once"
+        _go_to_line(w, GDB_TWO_TOGGLE_LINES[0])
+        w.key(CTRL_G, "b", delay=0.6)
+        assert _wait_for(w, lambda: _mark_line(w) in GDB_TWO_TOGGLE_LINES,
+                         LIVE_STOP_TIMEOUT_S), _screen(w)
+        assert _gdb_sigint_reports(tmp_path) == 1, \
+            "the breakpoint should have cost one interrupt:\n%s" % _screen(w)
+        w._drain(PAUSE_SETTLE_S)
+        assert _gdb_watch_answers(tmp_path) == before + 1, \
+            "the user's stop reads the watch once, the sync stop never " \
+            "(gdb answered %d times, %d before):\n%s" \
+            % (_gdb_watch_answers(tmp_path), before, _screen(w))
+        _quit_and_see_the_session_gone(w)
+
+
+# Programs that end 8 s after their first stop, so a watch added
+# while they run is still waiting when they end.
+GDB_ENDING_PROG = (
+    "#include <stdio.h>\n"
+    "#include <unistd.h>\n"
+    "int main(void)\n"
+    "{\n"
+    "  long n = 0;\n"
+    "  printf(\"READY\\n\");\n"
+    "  fflush(stdout);\n"
+    "  for (n = 0; n < 8; n++)\n"
+    "    sleep(1);\n"
+    "  return 0;\n"
+    "}\n"
+)
+RUST_ENDING_PROG = (
+    "fn main() {\n"
+    "    let n: u64 = 7;\n"
+    "    println!(\"ready\");\n"
+    "    std::thread::sleep(std::time::Duration::from_secs(8));\n"
+    "    println!(\"{}\", n);\n"
+    "}\n"
+)
+WATCH_END_CASES = {
+    "gdb": dict(BRK_LIVE_CASES["gdb"], prog=GDB_ENDING_PROG),
+    WATCH_ADAPTER_CASE: dict(BRK_LIVE_CASES[WATCH_ADAPTER_CASE],
+                             prog=RUST_ENDING_PROG),
+}
+PROGRAM_END_S = 20                # the program's 8 s, the debugger's end
+WATCH_NO_SESSION_WORDS = "No symbol in current context"   # any watch, no session
+
+
+def _watch_window_value(w, expr):
+    """The text after "@expr: " in the Watches window (below its title, so
+    not a source line that reads the same), or None."""
+    pat = re.compile(r"^%s: (\S.*)$" % re.escape(expr))
+    below = False
+    for row in w.display(drain=0):
+        if " Watches " in row:
+            below = True
+            continue
+        m = pat.match(row[1:].rstrip(" x^av"))
+        if below and m:
+            return m.group(1)
+    return None
+
+
+# @scenario SC-debug-10
+@pytest.mark.parametrize("debugger", sorted(WATCH_END_CASES))
+def test_a_waiting_watch_says_no_next_stop_when_the_program_ends(tmp_path,
+                                                                debugger):
+    """A watch added while the program runs, which then ends, does not keep
+    promising a value "at the next stop": there is none.  It shows what a
+    watch shows without a session."""
+    case = WATCH_END_CASES[debugger]
+    with _live_session(tmp_path, case) as w:
+        _run_into_the_program(w, case["break"], case["start_s"])
+        _add_watch(w, "n")
+        assert _watch_waits_for_the_stop(w, "n"), _screen(w)
+        _source_window_on_top(w)
+        assert _wait_for(w, lambda: "^Brk Pause" not in _bottom_bar(w),
+                         PROGRAM_END_S), \
+            "the program should have ended:\n%s" % _screen(w)
+        w._drain(PAUSE_SETTLE_S)
+        _watches_on_top(w)
+        assert not _watch_is_waiting(w, "n"), \
+            "the program ended; the watch must not wait for a stop " \
+            "(row %r):\n%s" % (_watch_window_value(w, "n"), _screen(w))
+        assert _watch_window_value(w, "n") == WATCH_NO_SESSION_WORDS, \
+            "the watch should read %r without a session:\n%s" \
+            % (WATCH_NO_SESSION_WORDS, _screen(w))
+
+
+# @scenario SC-debug-10
+def test_a_watch_added_while_running_shows_at_the_next_stop_under_scala(
+        tmp_path):
+    """The same under the Scala adapter."""
+    _need("scala-cli")
+    workdir = str(tmp_path)
+    try:
+        with WpeSession(workdir, SCALA_PAUSE_PROG, filename="p.scala",
+                        wait=2.0) as w:
+            _run_into_the_program(w, SCALA_PAUSE_LINES[0],
+                                  SCALA_START_TIMEOUT_S)
+            _add_watch(w, "n")
+            assert _watch_waits_for_the_stop(w, "n"), _screen(w)
+            _pause_and_see_the_watch_filled(w, "n")
+            _quit_ends_the_scala_program(w, workdir)
+    finally:
+        for pid in procinfo.processes_in(workdir, JVM_COMM):
+            os.kill(pid, signal.SIGKILL)
+
+
 # @scenario SC-debug-07
 def test_the_colours_dialog_samples_the_unconfirmed_breakpoint(tmp_path):
     """Options > Adjust Colors > Editor Colors shows a sample line for the

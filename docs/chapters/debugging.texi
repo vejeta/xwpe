@@ -38,7 +38,8 @@ function calls.  The cursor follows execution in the source code.
 
 @item
 Press @kbd{Ctrl-G W}, type a variable name, press @key{Return}.
-The Watch Window shows its value, updated after each step.  Watches
+The Watch Window shows its value, updated after each step, or at the
+next stop when the program is running.  Watches
 work with every debugger: gdb and pdb print them with @code{p}, jdb and
 dbx with @code{print}, a68g with @code{evaluate}, a DAP adapter with
 its @code{evaluate} request.  A debugger with no such command shows
@@ -244,6 +245,19 @@ and later changes in that session wait for a stop too.  Under pdb a
 script inside a long call such as @code{time.sleep(6)} gets the change
 at once, and the call then runs to its end.
 
+@cindex watches, while the program runs
+
+A watch can be made, edited, deleted, or all removed, while the program
+runs.  The list changes at once and the Watches window shows
+@samp{(at the next stop)} in place of the values, because the debugger
+reads no command until the program stops.  The next stop that is yours
+(a breakpoint, the end of a step, @kbd{Ctrl-G I}, an exception) reads every
+watch as usual.  The hidden stop that applies a breakpoint set meanwhile
+reads no watch and draws nothing.  If the program ends, or you quit the
+session, before it stops, there is no next stop: the watches then say
+what a watch says without a session (@samp{No symbol in current
+context}).  With no session nothing waits.
+
 Until the debugger has confirmed a breakpoint its line is drawn
 @dfn{hollow}: the breakpoint's red as the text colour on the editor's own
 background, instead of the solid red bar (underlined on a display without
@@ -287,8 +301,8 @@ F1 Help F7 Trace F8 Step F4 Go to cursor ^F7 Make Watch ^F2 Quit  Alt-X Quit
 
 @noindent
 While the program runs, the bar names only the keys that work then.
-F7, F8, F4 and the watch keys are refused until the program stops; the
-breakpoint key is not, its change waits for the stop:
+F7, F8 and F4 are refused until the program stops; the breakpoint and
+watch keys are not, their changes wait for the stop:
 
 @example
 F1 Help  ^Brk Pause  ^F2 Quit
@@ -494,9 +508,11 @@ runs goes into the file you edit, and the status row offers only
 @samp{Debug @result{} Quit}.  So does a68g, which shares its input with
 the program in the same way.  A
 program that is running cannot be stepped, continued or asked about, so
-Step, Trace, Run, Goto cursor, Finish,
-Show stack and the watch commands say ``The program is
-running'' on the status row and do nothing until it stops.  Setting or
+Step, Trace, Run, Goto cursor, Finish
+and Show stack say ``The program is
+running'' on the status row and do nothing until it stops.  Making,
+editing, deleting or removing all watches is not refused: the list
+changes at once and the values come at the next stop.  Setting or
 removing a breakpoint is not refused: the debugger is told at once, or
 at the next stop under sdb, dbx and xdb, the line hollow until it
 confirms.  Under gdb,

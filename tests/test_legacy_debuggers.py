@@ -922,6 +922,50 @@ def test_a_breakpoint_set_while_running_is_hollow_then_solid_at_the_next_stop(
         w.key(ALT_X, delay=0.5)
 
 
+WATCH_LATER_WORDS = "x: (at the next stop)"
+WATCH_FILLED_WORDS = "x: 3"        # what the stub answers for x
+
+
+def _watch_text_shown(w, words):
+    """True when a row of the screen holds @words."""
+    return any(words in row for row in w.display(drain=0))
+
+
+# @scenario SC-debug-10
+@pytest.mark.parametrize("backend", BACKENDS)
+def test_a_watch_added_while_running_shows_at_the_next_stop(tmp_path,
+                                                            backend):
+    """A watch made while the program runs under sdb, dbx or xdb is not
+    refused and not sent to the busy debugger: it is listed at once, saying
+    its value comes at the next stop (Pause here), where it is read.
+
+    Limit: the stub proves xwpe's half of the protocol, not a real debugger.
+    """
+    with _session(tmp_path, backend, continue_runs_on=True,
+                  interrupt_at=C_CURSOR_LINE) as w:
+        _start_session(w, tmp_path, backend)
+        w.key(CTRL_G, "r", delay=0.5)
+        assert _wait_for(w, lambda: _stub_running(w, backend)
+                         and CONTINUE_COMMAND[backend]
+                         in _sent(tmp_path, backend), STEP_TIMEOUT_S), \
+            "%s should be running the program:\n%s" % (backend, _screen(w))
+        before = len(_commands(tmp_path, backend))
+        w.key(CTRL_G, "w", delay=0.8)
+        w.key("x", delay=0.1)
+        w.key("\r", delay=0.6)
+        assert _wait_for(w, lambda: _watch_text_shown(w, WATCH_LATER_WORDS),
+                         STEP_TIMEOUT_S), \
+            "the watch should wait for the next stop:\n%s" % _screen(w)
+        assert _sent(tmp_path, backend)[before:] == [], \
+            "nothing should be sent to the busy %s; it got %r" \
+            % (backend, _sent(tmp_path, backend)[before:])
+        w.key(CTRL_G, "i", delay=0.5)
+        assert _wait_for(w, lambda: _watch_text_shown(w, WATCH_FILLED_WORDS),
+                         STEP_TIMEOUT_S), \
+            "the stop should read the watch:\n%s" % _screen(w)
+        w.key(ALT_X, delay=0.5)
+
+
 NOT_INTERRUPTED_S = 4      # longer than an interrupt and its stop take
 
 

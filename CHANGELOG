@@ -264,6 +264,16 @@ Changes
   to close its connection, instead of killing it after a fifth of a second;
   the program ends as before and the shared Bloop server is left running.
 
+* A watch can be added, edited, deleted or all removed while the program
+  runs (Ctrl-G W, E, D, A).  They used to answer "The program is running";
+  now the list changes at once, every watch shows "(at the next stop)" in
+  place of its value (not the values of the last stop), and the next stop
+  (a breakpoint, the end of a step, Pause) reads every watch.  The stop
+  xwpe makes to tell the debugger a breakpoint set meanwhile reads no
+  watch and shows nothing.  If the program ends first, the watches say
+  "No symbol in current context" instead of waiting for a stop that never
+  comes.  Under every debugger.
+
 * A breakpoint can be set or removed while the program runs.  Ctrl-G B
   used to answer "The program is running"; now the margin changes at once
   and the program stops on a line you mark the next time it gets there,

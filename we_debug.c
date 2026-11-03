@@ -986,6 +986,7 @@ static void e_d_brk_state_reserve(int n);         /* their state (below) */
 static void e_d_brk_forget_session(void);
 static int  e_d_brk_sync_at_stop(ECNT *cn);       /* applied at a stop */
 static int  e_d_brk_changed_while_running(void);  /* anything to apply? */
+static void e_d_watches_after_session(ECNT *cn);  /* watches (below) */
 static int  e_d_jdb_sync_live(ECNT *cn);          /* applied at once (below) */
 static int  e_d_dap_sync_live(ECNT *cn);
 static void e_d_brk_words(char *out, size_t size, const char *line);
@@ -4306,6 +4307,7 @@ int e_d_quit(FENSTER *f)
   e_d_say_session_end(died, f);
  WpeMouseChangeShape(WpeEditingShape);
  e_d_delbreak(f);
+ e_d_watches_after_session(cn);
  /* Switch back to the source file, not Messages.
     The user expects to continue editing after quitting the debugger. */
  for (i = cn->mxedt; i > 0; i--)
@@ -4367,8 +4369,7 @@ int e_delete_watches(FENSTER *f)
  int n;
 
  f = cn->f[cn->mxedt];
- if (e_d_nwtchs < 1 || strcmp(f->datnam, "Watches") ||
-   e_d_refuse_while_running(f))
+ if (e_d_nwtchs < 1 || strcmp(f->datnam, "Watches"))
   return(0);
  for (n = 0; n < e_d_nwtchs && e_d_nrwtchs[n] <= b->b.y; n++)
   ;
@@ -4387,7 +4388,7 @@ int e_make_watches(FENSTER *f)
  char str[128];
  int i, y;
 
- if (e_d_refuse_while_running(f) || e_d_watch_refused(f))
+ if (e_d_watch_refused(f))
   return(0);
  if ((f->ed->mxedt > 0) && (strcmp(f->datnam, "Watches") == 0))
  { /* sets y=number of watch we're inserting */
@@ -4441,7 +4442,7 @@ int e_edit_watches(FENSTER *f)
  char str[128];
  int l;
 
- if (strcmp(f->datnam, "Watches") || e_d_refuse_while_running(f))
+ if (strcmp(f->datnam, "Watches"))
   return(0);
  for (l = 0; l < e_d_nwtchs && e_d_nrwtchs[l] <= b->b.y; l++)
   ;
@@ -4532,6 +4533,79 @@ static int e_d_watch_refused(FENSTER *f)
  return(1);
 }
 
+#define E_D_WATCH_LATER " (at the next stop)"
+
+/* The Watches window was last drawn with the words above, not with values. */
+static int e_d_watches_shown_waiting = 0;
+
+/**
+ * e_d_watches_wait - Must the Watches window wait for the next stop?
+ *
+ * While the program runs the debugger reads no command, so a watch the user
+ * adds, edits or deletes is listed at once and its value is read when the
+ * program next stops.  Without a session nothing waits.
+ * Return: 1 while the program runs under a session, else 0.
+ */
+static int e_d_watches_wait(void)
+{
+ return(e_d_swtch && e_d_async_pending);
+}
+
+/**
+ * e_d_watch_put_waiting - Add the line of watch @l to the Watches buffer,
+ * saying its value comes at the next stop.
+ * @b: the Watches buffer; @l: the watch's number.
+ *
+ * The user sees a watch typed while the program runs in the list at once,
+ * and sees why it has no value yet.
+ */
+static void e_d_watch_put_waiting(BUFFER *b, int l)
+{
+ char *line = WpeMalloc(strlen(e_d_swtchs[l]) + sizeof(E_D_WATCH_LATER) + 2);
+
+ sprintf(line, "%s:%s", e_d_swtchs[l], E_D_WATCH_LATER);
+ e_d_nrwtchs[l] = b->mxlines;
+ print_to_end_of_buffer(b, line, b->mx.x);
+ WpeFree(line);
+ e_d_watches_shown_waiting = 1;
+}
+
+/**
+ * e_d_watches_window_open - Is a Watches window open?
+ * @cn: the editor.
+ * Return: 1 when one is open, else 0.
+ */
+static int e_d_watches_window_open(ECNT *cn)
+{
+ int i;
+
+ for (i = cn->mxedt; i > 0; i--)
+  if (!strcmp(cn->f[i]->datnam, "Watches"))
+   return(1);
+ return(0);
+}
+
+/**
+ * e_d_watches_after_session - The session has ended: redraw the watches
+ * that were waiting for a stop.
+ * @cn: the editor.
+ *
+ * A program that ends, or a session the user quits, while watches wait for
+ * the next stop has no next stop.  The user then reads, for each watch, the
+ * words the debugger's watches show without a session, not a promise of a
+ * value that never comes.  Watches that show the last stop's values keep
+ * them, as they always did.
+ */
+static void e_d_watches_after_session(ECNT *cn)
+{
+ if (!e_d_watches_shown_waiting)
+  return;
+ e_d_watches_shown_waiting = 0;
+ if (e_d_nwtchs < 1 || !e_d_watches_window_open(cn))
+  return;
+ e_d_p_watches(cn->f[cn->mxedt], 0);
+}
+
 /* Among other things, e_d_p_watches() must recompute e_d_nrwtchs when
    called from e_edit_watches(),
    but has code paths that don't do this ==> possible BUG
@@ -4554,7 +4628,7 @@ int e_d_p_watches(FENSTER *f, int sw)
  if (e_d_watch_refused(f))
   return(0);
  e_d_switch_out(0);
- if ((e_d_swtch > 2) && (e_d_p_stack(f, 0) == -1))
+ if (!e_d_watches_wait() && (e_d_swtch > 2) && (e_d_p_stack(f, 0) == -1))
   return(-1);
  /* Find the watch window */
  for (iw = cn->mxedt; iw > 0 && strcmp(cn->f[iw]->datnam, "Watches"); iw--);
@@ -4582,9 +4656,15 @@ int e_d_p_watches(FENSTER *f, int sw)
  e_p_red_buffer(b);
  FREE(b->bf[0].s);
  b->mxlines=0;
+ e_d_watches_shown_waiting = 0;
 
  for (i = 0, l = 0; l < e_d_nwtchs; l++)
  {
+  if (e_d_watches_wait())
+  {
+   e_d_watch_put_waiting(b, l);
+   continue;
+  }
   str = str1;
   k = 0;   /* each answer is read from its own start (pdb and a68g set no k) */
 
@@ -8086,7 +8166,7 @@ static int e_d_dap_watches(FENSTER *f, int sw)
  char *val, *line;
 
  e_d_switch_out(0);
- if ((e_d_swtch > 2) && (e_d_p_stack(f, 0) == -1))
+ if (!e_d_watches_wait() && (e_d_swtch > 2) && (e_d_p_stack(f, 0) == -1))
   return(-1);
  for (iw = cn->mxedt; iw > 0 && strcmp(cn->f[iw]->datnam, "Watches"); iw--)
   ;
@@ -8106,8 +8186,14 @@ static int e_d_dap_watches(FENSTER *f, int sw)
  e_p_red_buffer(b);
  FREE(b->bf[0].s);
  b->mxlines = 0;
+ e_d_watches_shown_waiting = 0;
  for (l = 0; l < e_d_nwtchs; l++)
  {
+  if (e_d_watches_wait())
+  {
+   e_d_watch_put_waiting(b, l);
+   continue;
+  }
   val = g_dap ? e_dap_evaluate(g_dap, e_d_swtchs[l]) : NULL;
   line = WpeMalloc(strlen(e_d_swtchs[l]) + (val ? strlen(val) : 13) + 4);
   if (val)
