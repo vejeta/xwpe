@@ -845,3 +845,78 @@ def test_pause_marks_where_the_program_is_under_xdb(tmp_path):
     Limit: the stub proves xwpe's half of the protocol, not a real xdb, whose
     wording for the interrupt is not known; the stub's names SIGINT."""
     _pause_marks_where_the_program_is(tmp_path, "xdb")
+
+
+# What each backend is sent to set a breakpoint on line 9 (the line after the
+# one the session stopped on), and the line the stub's program is on when
+# Pause interrupts it.
+C_LATER_LINE = 9
+ARM_LATER_COMMAND = {
+    "sdb": ["e p.c", "9 b"],
+    "dbx": ['stop at "p.c":9'],
+    "xdb": ["b p.c:9"],
+}
+HOLLOW_WAIT_S = 6
+
+
+def _sent_in_a_row(sent, commands):
+    """True when @commands were sent one right after the other somewhere in
+    @sent: the stop's own commands (Pause's stack trace) may come before."""
+    size = len(commands)
+    return any(sent[i:i + size] == commands
+               for i in range(len(sent) - size + 1))
+
+
+def _breakpoint_drawn(w, line, hollow):
+    """Wait until @line is drawn as the outline of the red bar (@hollow) or as
+    the solid bar, and return whether it is."""
+    def drawn():
+        outline = line in w.unconfirmed_breakpoint_lines()
+        solid = line in w.breakpoint_lines()
+        if hollow:
+            return outline and not solid
+        return solid and not outline
+    return _wait_for(w, drawn, HOLLOW_WAIT_S)
+
+
+# @scenario SC-debug-07
+@pytest.mark.parametrize("backend", BACKENDS)
+def test_a_breakpoint_set_while_running_is_hollow_then_solid_at_the_next_stop(
+        tmp_path, backend):
+    """A line marked while the program runs under sdb, dbx or xdb is not
+    refused and not sent while the debugger is busy: its line is drawn hollow,
+    and at the next stop (Pause here) it is sent and drawn as the solid bar.
+
+    Limit: the stub proves xwpe's half of the protocol, not a real debugger.
+    """
+    with _session(tmp_path, backend, continue_runs_on=True,
+                  interrupt_at=C_CURSOR_LINE) as w:
+        _start_session(w, tmp_path, backend)
+        w.key(CTRL_G, "r", delay=0.5)
+        assert _wait_for(w, lambda: _stub_running(w, backend)
+                         and CONTINUE_COMMAND[backend]
+                         in _sent(tmp_path, backend), STEP_TIMEOUT_S), \
+            "%s should be running the program:\n%s" % (backend, _screen(w))
+        before = len(_commands(tmp_path, backend))
+        _move_down(w, C_LATER_LINE - C_BREAK_LINE)
+        w.key(CTRL_G, "b", delay=0.6)
+        assert _sent(tmp_path, backend)[before:] == [], \
+            "nothing should be sent to the busy %s; it got %r" \
+            % (backend, _sent(tmp_path, backend)[before:])
+        assert _breakpoint_drawn(w, C_LATER_LINE, hollow=True), \
+            "line %d should be drawn hollow while the program runs:\n%s" \
+            % (C_LATER_LINE, _screen(w))
+        w.key(CTRL_G, "i", delay=0.5)
+        assert _wait_for(w, lambda: _mark_line(w) == C_CURSOR_LINE,
+                         STEP_TIMEOUT_S), \
+            "Ctrl-G I should mark line %d (mark on %s):\n%s" \
+            % (C_CURSOR_LINE, _mark_line(w), _screen(w))
+        assert _breakpoint_drawn(w, C_LATER_LINE, hollow=False), \
+            "line %d should be solid after the stop; %s was sent %r:\n%s" \
+            % (C_LATER_LINE, backend, _sent(tmp_path, backend)[before:],
+               _screen(w))
+        sent = _sent(tmp_path, backend)[before:]
+        assert _sent_in_a_row(sent, ARM_LATER_COMMAND[backend]), \
+            "the stop should send %r; %s got %r" \
+            % (ARM_LATER_COMMAND[backend], backend, sent)
+        w.key(ALT_X, delay=0.5)

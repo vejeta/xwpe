@@ -158,6 +158,10 @@ typedef struct frb {
  COLOR aim;  /* AI pane: machinery ("[agent] ...", "[AI edit] ...", status) */
  COLOR aia;  /* AI pane: attention (">> ...", a key is awaited) */
  COLOR aie;  /* AI pane: errors */
+ /* A breakpoint the debugger has not confirmed: drawn as the outline of the
+    breakpoint bar.  After the AI entries for the same reason: the colour
+    dialog's indexes into this struct must not move. */
+ COLOR du;   /* breakpoint not confirmed */
  char dc;    /* desktop fill character */
  char ws;
 } FARBE;
@@ -169,6 +173,10 @@ typedef struct frb {
 #define COLOR_AI_FIRST_ENTRY   37
 #define COLOR_AI_FIRST_NAME    36
 #define COLOR_AI_ENTRIES       4
+
+/* The Editor Colors example shows the unconfirmed breakpoint under the
+   confirmed one and the stop line. */
+#define OPT_UNCONFIRMED_BRK_LINE       16
 
 /* The AI pane example in Options > Colors: the colour example box is drawn
    from screen row OPT_EXAMPLE_TOP_ROW, one line per role at these offsets;
@@ -933,6 +941,7 @@ int e_make_line_num2(char *str, char *file);
 int e_d_goto_break(char *file, int line, FENSTER *f);
 int e_d_is_watch(int c, FENSTER *f);
 int e_d_session_runs(void);
+int e_d_brk_drawn_hollow(const char *file, int line);
 int e_bar_offers_goto_cursor(FENSTER *f);
 int e_debug_switch(FENSTER *f, int c);
 int e_d_putchar(int c);

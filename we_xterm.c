@@ -595,6 +595,7 @@ int e_X_sw_color()
  fb->aim = e_n_clr(A_Normal);
  fb->aia = e_n_clr(A_Reverse);
  fb->aie = e_n_clr(A_Bold);
+ fb->du = e_n_clr(A_Underline);
  fb->df = e_s_x_clr(7, 4);
  fb->dc = 0xB1;
 #ifdef DEBUGGER

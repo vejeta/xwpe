@@ -72,6 +72,10 @@ four entries (@samp{User}, @samp{Machinery}, @samp{Attention}, @samp{Error})
 colour the AI pane's lines by who wrote them (@pxref{AI assistant}).  In
 @file{xwperc} the pane's entries are the keys @code{aiu}, @code{aim},
 @code{aia} and @code{aie} of the colour section, beside the editor's own.
+The sample of the editor colours also shows the breakpoint the debugger has
+not confirmed (@samp{An unconfirmed Breakpoint}), the key @code{du} of
+@file{xwperc}: the breakpoint's red as text colour on the editor's
+background, underlined without colour (@pxref{Debugging}).
 @end table
 
 @anchor{Editor options dialog}

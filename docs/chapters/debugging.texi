@@ -200,6 +200,38 @@ program then runs to its end.  Your breakpoints outlive the session:
 after @kbd{Ctrl-G Q}, or a program that ran to its end, the next
 @kbd{Ctrl-G R} stops on them again.
 
+@cindex breakpoints, while the program runs
+@cindex breakpoints, hollow
+@cindex breakpoints, refused
+A breakpoint can be set or removed while the program runs, not only at a
+stop.  The margin and the breakpoint list change at once, but the debugger
+reads no command while the program runs, so it is told at the next stop,
+whatever the reason for it: a breakpoint, @kbd{Ctrl-G I}, the end of a
+step.  Until the debugger has confirmed a breakpoint its line is drawn
+@dfn{hollow}: the breakpoint's red as the text colour on the editor's own
+background, instead of the solid red bar (underlined on a display without
+colour).  It turns solid once the debugger has the breakpoint, which is
+at once when you set it at a stop.  A line you unmark while the program
+runs stops the program no more after the next stop.
+
+A breakpoint the debugger refuses stays in the margin, hollow, and the
+status row gives the debugger's own words, as @samp{Breakpoint at line 2
+not set: No source file named q.c.} (gdb, for a file the program does not
+contain) or @samp{cannot set breakpoint in that line.} (a68g, for a line
+with no unit); no box opens.  When the program is stopped with Pause at
+the same time, these words stay on the status row in place of
+@samp{Paused}: the marked line already shows the pause.  It is still your
+mark, and the next start tries it again.  A breakpoint the debugger keeps
+for later, as jdb does for a class it has not loaded, stays hollow too,
+with the debugger's words after @samp{not confirmed}.  The debug adapters
+confirm a breakpoint with their own answer, which for gdb's adapter may
+come later.  With no session
+every breakpoint is the solid bar.  The hollow colour is the key @code{du}
+of the colour section of @file{xwperc}, written as the other keys are
+(@code{du : @var{foreground} @var{background}}); a file without that key
+keeps the default.  @samp{Options}, @samp{Adjust Colors}, @samp{Editor
+Colors} shows it as the sample line @samp{An unconfirmed Breakpoint}.
+
 @cindex breakpoints, in a project
 With a project open, the breakpoints are saved in the project file
 (@code{BREAKPOINTS=}) when the project closes or the editor quits.
@@ -218,8 +250,8 @@ F1 Help F7 Trace F8 Step F4 Go to cursor ^F7 Make Watch ^F2 Quit  Alt-X Quit
 
 @noindent
 While the program runs, the bar names only the keys that work then.
-F7, F8, F4 and the breakpoint and watch keys are refused until the
-program stops:
+F7, F8, F4 and the watch keys are refused until the program stops; the
+breakpoint key is not, its change waits for the stop:
 
 @example
 F1 Help  ^Brk Pause  ^F2 Quit
@@ -426,8 +458,10 @@ runs goes into the file you edit, and the status row offers only
 the program in the same way.  A
 program that is running cannot be stepped, continued or asked about, so
 Step, Trace, Run, Goto cursor, Finish,
-Show stack and the breakpoint and watch commands say ``The program is
-running'' on the status row and do nothing until it stops.  Under gdb,
+Show stack and the watch commands say ``The program is
+running'' on the status row and do nothing until it stops.  Setting or
+removing a breakpoint is not refused: it waits for the stop, its line
+hollow meanwhile.  Under gdb,
 jdb, sdb, dbx and xdb, @key{Enter} is text for the program from any
 window, the Stack window included; under pdb and a68g it is text for the file
 like the other keys.  If the
@@ -625,7 +659,8 @@ there to mark.
 
 @item
 @strong{Breakpoints are deferred}: jdb sets breakpoints after the
-class is loaded.
+class is loaded.  A breakpoint in a class that is not loaded yet stays
+hollow, and the status row gives jdb's @samp{Deferring breakpoint} line.
 
 @item
 @strong{Program output and input}: the JVM runs on the editor's pty, as

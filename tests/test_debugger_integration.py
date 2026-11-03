@@ -24,7 +24,8 @@ import pytest
 
 import procinfo
 from wpe_driver import (WpeSession, ALT, WAIT_SCALE, tool_usable,
-                        CURRENT_LINE_BG, BREAKPOINT_BG)
+                        CURRENT_LINE_BG, BREAKPOINT_BG,
+                        UNCONFIRMED_BREAKPOINT_FG, incoherence)
 
 CTRL_G = "\x07"         # debugger command prefix
 DOWN = "\033OB"
@@ -6108,6 +6109,53 @@ def test_pause_marks_where_the_program_is_under_pdb(tmp_path):
         _assert_debugger_takes_commands(w)
 
 
+# A script that adds a byte to a file every tick, so the file's size tells
+# whether the loop runs (pdb shows the script's own text only at a stop).
+PY_TICK_BREAK_LINE = 2            # print('ready')
+PY_TICK_PROG = (
+    "import time\n"
+    "print('ready', flush=True)\n"
+    "while True:\n"
+    "    with open(%r, 'a') as f:\n"
+    "        f.write('x')\n"
+    "    time.sleep(0.2)\n"
+)
+PY_TICK_MORE = 5                  # ticks that prove the loop runs again
+
+
+def _ticks(path):
+    """How many ticks the script has written so far."""
+    try:
+        return os.path.getsize(path)
+    except OSError:
+        return 0
+
+
+# @scenario SC-debug-45
+@incoherence("Python 3.14's pdb, with a breakpoint set, answers the first "
+             "continue after its SIGINT stop with a stop on the same line "
+             "(a second continue runs): the editor sends one continue")
+def test_continue_after_pause_resumes_under_pdb(tmp_path):
+    """Ctrl-G I stops the looping script; Ctrl-G R then runs it again, which
+    only the loop's own file writes can show."""
+    _need("python3")
+    ticks = str(tmp_path / "ticks")
+    with WpeSession(str(tmp_path), PY_TICK_PROG % ticks, filename="p.py",
+                    wait=1.5) as w:
+        _stop_then_run_on(w, PY_TICK_BREAK_LINE, START_TIMEOUT_S,
+                          in_messages=False)
+        w.key(*CTRL_G_I, delay=0.5)
+        assert _wait_for(w, lambda: PAUSED_LINE in _bottom_row(w),
+                         PAUSE_TIMEOUT_S), \
+            "Ctrl-G I should stop the script:\n%s" % _screen(w)
+        paused_at = _ticks(ticks)
+        w.key(CTRL_G, "r", delay=0.5)
+        assert _wait_for(w, lambda: _ticks(ticks) >= paused_at + PY_TICK_MORE,
+                         PAUSE_TIMEOUT_S), \
+            "Ctrl-G R should run the script on (%d ticks at the pause, %d " \
+            "now):\n%s" % (paused_at, _ticks(ticks), _screen(w))
+
+
 # A script that handles SIGINT itself: the interrupt reaches its handler, not
 # pdb, so the script goes on and the pause is only its next stop.  pdb puts
 # its own handler in while it continues and takes it out at the stop, so the
@@ -6738,3 +6786,495 @@ def test_ctrl_c_while_an_adapter_starts_leaves_it_running(tmp_path,
         w.key(ESC, delay=0.5)
         assert _wait_for(w, lambda: _process_gone(pid), STEP_TIMEOUT_S), \
             "Esc should end the silent adapter (pid %d)" % pid
+
+
+# ---- breakpoints set while the program runs, and what the debugger said ----
+#
+# A breakpoint the user sets or removes while the program runs is kept by the
+# editor and told to the debugger at the next stop.  Until the debugger has
+# confirmed it, the line is drawn as the outline of the red bar: the bar's red
+# as the text colour, on the editor's own background.
+
+BRK_STATE_SETTLE_S = 6            # the stop's sync and repaint have run
+HOLLOW_WAIT_S = 6
+
+# One case per backend: the program (it keeps running until Pause), the line
+# of its first breakpoint, and a line past the loop the user marks while it
+# runs.  "need" lists the tools; "env" the adapter choice.
+BRK_RUN_CASES = {
+    "gdb": {"file": "p.c", "prog": GDB_SLEEP_PROG, "break": 5, "tail": 8,
+            "need": ("gcc", "gdb"), "start_s": START_TIMEOUT_S, "env": {},
+            "child": "gdb", "wait": 1.5, "gomod": False},
+    "pdb": {"file": "p.py", "prog": SLEEPING_PROGS["pdb"]["prog"],
+            "break": 2, "tail": 4, "need": ("python3",),
+            "start_s": START_TIMEOUT_S, "env": {}, "child": "python3",
+            "wait": 1.5, "gomod": False},
+    "a68g": {"file": "p.a68", "prog": A68_PAUSE_PROG, "break": 2, "tail": 4,
+             "need": ("a68g",), "start_s": START_TIMEOUT_S, "env": {},
+             "child": "a68g", "wait": 2.0, "gomod": False},
+    "jdb": {"file": "P.java", "prog": SLEEPING_PROGS["jdb"]["prog"],
+            "break": 3, "tail": 5, "need": ("jdb", "javac"),
+            "start_s": JDB_START_TIMEOUT_S, "env": {}, "child": "jdb",
+            "wait": 1.5, "gomod": False},
+    "dlv": {"file": "main.go", "prog": SLEEPING_PROGS["dlv"]["prog"],
+            "break": 9, "tail": 11, "need": ("dlv", "go"),
+            "start_s": GOTO_TIMEOUT_S, "env": {}, "child": "dlv",
+            "wait": 2.0, "gomod": True},
+    "lldb-dap": {"file": "main.rs", "prog": SLEEPING_PROGS["lldb-dap"]["prog"],
+                 "break": 2, "tail": 4, "need": ("rustc", "lldb-dap"),
+                 "start_s": RUST_START_TIMEOUT_S,
+                 "env": {"XWPE_DAP_ADAPTER": "lldb"}, "child": "lldb-dap",
+                 "wait": 2.0, "gomod": False},
+    "gdb-dap": {"file": "main.rs", "prog": SLEEPING_PROGS["gdb-dap"]["prog"],
+                "break": 2, "tail": 4, "need": ("rustc", "gdb"),
+                "start_s": RUST_START_TIMEOUT_S,
+                "env": {"XWPE_DAP_ADAPTER": "gdb"}, "child": "gdb",
+                "wait": 2.0, "gomod": False},
+}
+
+
+def _run_into_the_program(w, break_line, start_s):
+    """A breakpoint on @break_line, Ctrl-G R to the stop, Ctrl-G R to run on;
+    return once the program runs (the bar names Pause) and has settled."""
+    _go_to_line(w, break_line)
+    w.key(CTRL_G, "b", delay=0.4)
+    w.key(CTRL_G, "r", delay=1.0)
+    assert _wait_for(w, lambda: _mark_line(w) == break_line, start_s), \
+        "the session should stop on line %d (mark on %s):\n%s" \
+        % (break_line, _mark_line(w), _screen(w))
+    w.key(CTRL_G, "r", delay=0.5)
+    _wait_for_the_pause_bar(w)
+    w._drain(PAUSE_SETTLE_S)
+
+
+def _unconfirmed_lines(w, fg=UNCONFIRMED_BREAKPOINT_FG):
+    return w.unconfirmed_breakpoint_lines(fg=fg)
+
+
+def _assert_hollow(w, line, what, fg=UNCONFIRMED_BREAKPOINT_FG):
+    """@line is drawn as an unconfirmed breakpoint, not as the solid bar."""
+    assert _wait_for(w, lambda: line in _unconfirmed_lines(w, fg),
+                     HOLLOW_WAIT_S), \
+        "%s: line %d should be drawn hollow (hollow %s, solid %s):\n%s" \
+        % (what, line, _unconfirmed_lines(w, fg), _breakpoint_lines(w),
+           _screen(w))
+    assert line not in _breakpoint_lines(w), \
+        "%s: line %d must not be the solid bar too:\n%s" \
+        % (what, line, _screen(w))
+
+
+def _assert_solid(w, line, what):
+    """@line is drawn as the solid breakpoint bar, not hollow."""
+    assert _wait_for(w, lambda: line in _breakpoint_lines(w), HOLLOW_WAIT_S), \
+        "%s: line %d should be drawn solid (hollow %s, solid %s):\n%s" \
+        % (what, line, _unconfirmed_lines(w), _breakpoint_lines(w),
+           _screen(w))
+    assert line not in _unconfirmed_lines(w), \
+        "%s: line %d must not be hollow too:\n%s" % (what, line, _screen(w))
+
+
+def _quit_and_see_the_session_gone(w):
+    """Debug > Quit leaves none of the session's processes behind."""
+    tree = procinfo.descendants(w.proc.pid)
+    w.menu(ALT.DEBUG, "q", delay=0.5)
+    assert _wait_for(w, lambda: procinfo.all_ended(tree), STEP_TIMEOUT_S), \
+        "no process of the session should be left after Quit:\n%s" \
+        % _screen(w)
+
+
+# @scenario SC-debug-07
+@pytest.mark.parametrize("debugger", sorted(BRK_RUN_CASES))
+def test_a_breakpoint_set_while_running_is_hollow_then_solid_at_the_next_stop(
+        tmp_path, debugger):
+    """A breakpoint set while the program runs is not refused: its line is
+    drawn hollow, and once the program stops (Pause here) the debugger has
+    been told and the line turns into the solid bar."""
+    case = BRK_RUN_CASES[debugger]
+    _need(*case["need"])
+    if case["gomod"]:
+        (tmp_path / "go.mod").write_text("module dapdemo\n\ngo 1.21\n")
+    with WpeSession(str(tmp_path), case["prog"], filename=case["file"],
+                    wait=case["wait"], env_extra=case["env"] or None) as w:
+        _run_into_the_program(w, case["break"], case["start_s"])
+        _assert_solid(w, case["break"], "the breakpoint set at the start")
+        _go_to_line(w, case["tail"])
+        w.key(CTRL_G, "b", delay=0.6)
+        assert RUNNING_REFUSAL not in _screen(w), \
+            "a breakpoint is no debugger command to refuse:\n%s" % _screen(w)
+        _assert_hollow(w, case["tail"], "while the program runs")
+        w.key(*CTRL_G_I, delay=0.5)
+        assert _wait_for(w, lambda: PAUSED_LINE in _bottom_row(w),
+                         PAUSE_TIMEOUT_S), \
+            "Ctrl-G I should stop the program:\n%s" % _screen(w)
+        _assert_solid(w, case["tail"], "after the stop")
+        _quit_and_see_the_session_gone(w)
+
+
+# A loop that passes its breakpoint line once every LOOP_SLEEP_S seconds, so
+# a line unmarked just after a stop there is reached again only if the
+# debugger still has the breakpoint.
+LOOP_SLEEP_S = 5
+GDB_LOOP_PROG = (
+    "#include <stdio.h>\n"
+    "#include <unistd.h>\n"
+    "int main(void)\n"
+    "{\n"
+    "  int n = 0;\n"
+    "  for (;;) {\n"
+    "    sleep(%d);\n"
+    "    n++;\n"
+    "    printf(\"N %%d\\n\", n);\n"
+    "    fflush(stdout);\n"
+    "  }\n"
+    "}\n" % LOOP_SLEEP_S
+)
+GDB_LOOP_BREAK_LINE = 8           # n++, right after the sleep
+GDB_LOOP_PASSES = 2               # loop passes watched for a wrong stop
+
+
+def _never_marked_at(w, line, seconds):
+    """True when the current-line mark stays off @line for @seconds."""
+    deadline = time.time() + seconds * WAIT_SCALE
+    while time.time() < deadline:
+        w._drain(POLL_S)
+        if _mark_line(w) == line:
+            return False
+    return True
+
+
+# @scenario SC-debug-07
+def test_a_breakpoint_removed_while_running_is_gone_at_the_next_stop(tmp_path):
+    """A line unmarked while the program runs goes from the margin at once
+    and from the debugger at the next stop: the loop then passes the line
+    again and again without stopping there."""
+    _need("gcc", "gdb")
+    with WpeSession(str(tmp_path), GDB_LOOP_PROG, filename="p.c",
+                    wait=1.5) as w:
+        _stop_on_a_breakpoint_at(w, GDB_LOOP_BREAK_LINE, START_TIMEOUT_S)
+        w.key(CTRL_G, "r", delay=0.5)    # into the sleep; the cursor stays
+        w.key(CTRL_G, "b", delay=0.6)    # on the breakpoint's line
+        assert RUNNING_REFUSAL not in _screen(w), \
+            "removing a breakpoint is no debugger command to refuse:\n%s" \
+            % _screen(w)
+        assert GDB_LOOP_BREAK_LINE not in \
+            _breakpoint_lines(w) + _unconfirmed_lines(w), \
+            "the line should be unmarked at once:\n%s" % _screen(w)
+        w.key(*CTRL_G_I, delay=0.5)
+        assert _wait_for(w, lambda: PAUSED_LINE in _bottom_row(w),
+                         PAUSE_TIMEOUT_S), \
+            "Ctrl-G I should stop the program:\n%s" % _screen(w)
+        w.key(CTRL_G, "r", delay=0.5)    # run on from the pause
+        assert _never_marked_at(w, GDB_LOOP_BREAK_LINE,
+                                GDB_LOOP_PASSES * LOOP_SLEEP_S), \
+            "the program must not stop on the removed line %d:\n%s" \
+            % (GDB_LOOP_BREAK_LINE, _screen(w))
+        _quit_and_see_the_session_gone(w)
+
+
+NOT_IN_THE_PROGRAM_C = "/* a file the program does not contain */\nint q;\n"
+NOT_IN_THE_PROGRAM_JAVA = "public class Q {\n    int q = 1;\n}\n"
+# A line with only a comment has no unit: a68g sets no breakpoint on it.  (A
+# blank line has none either, but draws nothing a hollow mark could show.)
+A68_NO_UNIT_TEXT = "# only a comment #"
+A68_BLANK_PROG = ("print ((\"hi\", new line));\n" + A68_NO_UNIT_TEXT +
+                  "\nINT x := 3;\nprint ((x, new line))\n")
+A68_NO_UNIT_LINE = 2
+A68_BLANK_STOP_LINE = 3
+
+
+def _open_a_second_file(w, name):
+    """F3, the file's name, Enter: the file is open on top."""
+    w.key(F3, delay=0.5)
+    w.key(name, delay=0.6)
+    w.key("\r", delay=1.2)
+
+
+def _stop_on_a_breakpoint_at(w, line, start_s):
+    """A breakpoint on @line, Ctrl-G R, and wait for the stop there."""
+    _go_to_line(w, line)
+    w.key(CTRL_G, "b", delay=0.4)
+    w.key(CTRL_G, "r", delay=1.0)
+    assert _wait_for(w, lambda: _mark_line(w) == line, start_s), \
+        "the session should stop on line %d (mark on %s):\n%s" \
+        % (line, _mark_line(w), _screen(w))
+
+
+def _hollow_texts(w):
+    """The text of each source row drawn as an unconfirmed breakpoint.  A
+    second file opens in a window of its own, so the rows, not the line
+    numbers of the first window, say which line it is."""
+    rows = w.display(drain=0)
+    return [rows[line + 1] for line in _unconfirmed_lines(w)]
+
+
+def _assert_says_why_it_is_hollow(w, text, words):
+    """The row holding @text is hollow and the status row holds the
+    debugger's @words."""
+    assert _wait_for(w, lambda: any(text in t for t in _hollow_texts(w)),
+                     HOLLOW_WAIT_S), \
+        "the row with %r should be drawn hollow (hollow rows %s):\n%s" \
+        % (text, _hollow_texts(w), _screen(w))
+    assert _wait_for(w, lambda: words in _bottom_row(w), HOLLOW_WAIT_S), \
+        "the status row should say %r:\n%s" % (words, _screen(w))
+
+
+# @scenario SC-debug-07
+def test_a_refused_breakpoint_stays_hollow_and_says_why(tmp_path):
+    """gdb knows no source file q.c: the breakpoint the user sets there is
+    refused, the line stays drawn hollow, and the status row gives gdb's
+    words, not a box."""
+    _need("gcc", "gdb")
+    (tmp_path / "q.c").write_text(NOT_IN_THE_PROGRAM_C)
+    with WpeSession(str(tmp_path), GDB_SLEEP_PROG, filename="p.c",
+                    wait=1.5) as w:
+        _stop_on_a_breakpoint_at(w, GDB_SLEEP_BREAK_LINE, START_TIMEOUT_S)
+        _open_a_second_file(w, "q.c")
+        _go_to_line(w, 2)
+        w.key(CTRL_G, "b", delay=1.0)
+        _assert_says_why_it_is_hollow(w, "int q;", "No source file named q.c")
+        assert "not set" in _bottom_row(w), \
+            "the row should say the breakpoint is not set:\n%s" % _screen(w)
+
+
+# @scenario SC-debug-07
+def test_a_refused_breakpoint_stays_hollow_and_says_why_under_a68g(tmp_path):
+    """a68g sets no breakpoint on a line with no unit (a blank line): the
+    line stays hollow and the status row gives a68g's own words."""
+    _need("a68g")
+    with WpeSession(str(tmp_path), A68_BLANK_PROG, filename="p.a68",
+                    wait=2.0) as w:
+        _stop_on_a_breakpoint_at(w, A68_BLANK_STOP_LINE, START_TIMEOUT_S)
+        _go_to_line(w, A68_NO_UNIT_LINE)
+        w.key(CTRL_G, "b", delay=1.0)
+        _assert_says_why_it_is_hollow(w, A68_NO_UNIT_TEXT,
+                                      "cannot set breakpoint in that line")
+
+
+PDB_COMMENT_TEXT = "# only a comment"
+PDB_COMMENT_PROG = "x = 1\n" + PDB_COMMENT_TEXT + "\ny = 2\nprint(x + y)\n"
+PDB_COMMENT_LINE = 2
+PDB_COMMENT_STOP_LINE = 3
+
+
+# @scenario SC-debug-07
+def test_a_refused_breakpoint_stays_hollow_and_says_why_under_pdb(tmp_path):
+    """pdb sets no breakpoint on a comment line: the line stays hollow and
+    the status row gives pdb's own words."""
+    _need("python3")
+    with WpeSession(str(tmp_path), PDB_COMMENT_PROG, filename="p.py",
+                    wait=1.5) as w:
+        _stop_on_a_breakpoint_at(w, PDB_COMMENT_STOP_LINE, START_TIMEOUT_S)
+        _go_to_line(w, PDB_COMMENT_LINE)
+        w.key(CTRL_G, "b", delay=1.0)
+        _assert_says_why_it_is_hollow(w, PDB_COMMENT_TEXT, "Blank or comment")
+
+
+A68_RUNNING_REFUSED_PROG = (
+    "print ((\"ready\", new line));\n" + A68_NO_UNIT_TEXT +
+    "\nINT n := 0;\nWHILE n < 2000000000 DO n +:= 1 OD;\n"
+    "print ((n, new line))\n"
+)
+A68_RUNNING_REFUSED_STOP_LINE = 3
+
+
+def _set_the_refused_breakpoint_while_running(w, debugger):
+    """With the program running, put on the line the debugger will refuse
+    a breakpoint; return that line's text and the debugger's words.  The
+    text is empty when the stop raises the program's window over the one
+    holding the line, so there is no hollow row to look at."""
+    if debugger == "gdb":
+        _open_a_second_file(w, "q.c")
+        _go_to_line(w, 2)
+        w.key(CTRL_G, "b", delay=0.6)
+        return "", "No source file named q.c"
+    _go_to_line(w, A68_NO_UNIT_LINE)
+    w.key(CTRL_G, "b", delay=0.6)
+    return A68_NO_UNIT_TEXT, "cannot set breakpoint in that line"
+
+
+# @scenario SC-debug-07
+@pytest.mark.parametrize("debugger", ["gdb", "a68g"])
+def test_a_breakpoint_refused_while_running_says_why_at_a_pause(
+        tmp_path, debugger):
+    """A breakpoint set while the program runs is sent at the next stop
+    and the debugger refuses it: when that stop is Pause, the status row
+    holds the debugger's words, not only Paused."""
+    if debugger == "gdb":
+        _need("gcc", "gdb")
+        (tmp_path / "q.c").write_text(NOT_IN_THE_PROGRAM_C)
+        prog, name = GDB_SLEEP_PROG, "p.c"
+        stop_line, start_s = GDB_SLEEP_BREAK_LINE, START_TIMEOUT_S
+    else:
+        _need("a68g")
+        prog, name = A68_RUNNING_REFUSED_PROG, "p.a68"
+        stop_line, start_s = A68_RUNNING_REFUSED_STOP_LINE, START_TIMEOUT_S
+    with WpeSession(str(tmp_path), prog, filename=name, wait=2.0) as w:
+        _stop_then_run_on(w, stop_line, start_s)
+        text, words = _set_the_refused_breakpoint_while_running(w, debugger)
+        w.key(*CTRL_G_I, delay=1.0)
+        if text:
+            _assert_says_why_it_is_hollow(w, text, words)
+        assert _wait_for(w, lambda: words in _bottom_row(w), HOLLOW_WAIT_S), \
+            "the status row should say %r:\n%s" % (words, _screen(w))
+        assert "not set" in _bottom_row(w), \
+            "the row should say the breakpoint is not set:\n%s" % _screen(w)
+
+
+# @scenario SC-debug-07
+def test_a_deferred_breakpoint_stays_hollow_and_says_why_under_jdb(tmp_path):
+    """jdb keeps a breakpoint of a class that is not loaded for when it
+    loads: the line stays hollow, with jdb's word for it on the status
+    row."""
+    _need("jdb", "javac")
+    (tmp_path / "Q.java").write_text(NOT_IN_THE_PROGRAM_JAVA)
+    case = BRK_RUN_CASES["jdb"]
+    with WpeSession(str(tmp_path), case["prog"], filename="P.java",
+                    wait=1.5) as w:
+        _stop_on_a_breakpoint_at(w, case["break"], JDB_START_TIMEOUT_S)
+        _open_a_second_file(w, "Q.java")
+        _go_to_line(w, 2)
+        w.key(CTRL_G, "b", delay=1.0)
+        _assert_says_why_it_is_hollow(w, "int q = 1;", "Deferring")
+
+
+# @scenario SC-debug-07
+def test_no_hollow_breakpoint_without_a_session(tmp_path):
+    """With no debugger session every breakpoint is the plain red bar, as it
+    always was; during one the confirmed breakpoint is the bar too, and when
+    the session ends the marks are the bar again."""
+    _need("gcc", "gdb")
+    with WpeSession(str(tmp_path), C_PROG, filename="p.c", wait=1.5) as w:
+        _go_to_line(w, C_NEXT_LINE)
+        w.key(CTRL_G, "b", delay=0.5)
+        _assert_solid(w, C_NEXT_LINE, "no session")
+        assert _unconfirmed_lines(w) == [], \
+            "no line is hollow without a session:\n%s" % _screen(w)
+        _go_to_line(w, C_BREAK_LINE)
+        w.key(CTRL_G, "b", delay=0.5)
+        w.key(CTRL_G, "r", delay=1.0)
+        assert _wait_for(w, lambda: _mark_line(w) == C_BREAK_LINE,
+                         START_TIMEOUT_S), \
+            "the session should stop on line %d:\n%s" \
+            % (C_BREAK_LINE, _screen(w))
+        _assert_solid(w, C_NEXT_LINE, "in a session, at a stop")
+        w.menu(ALT.DEBUG, "q", delay=0.8)
+        _assert_solid(w, C_NEXT_LINE, "after the session")
+        assert _unconfirmed_lines(w) == [], \
+            "no line is hollow after the session:\n%s" % _screen(w)
+
+
+XWPERC_DEFAULT_SCHEME = "[Color/Term]\net : 11 4\ndb : 0 1\n"
+XWPERC_WITH_DU = "[Color/Term]\net : 11 4\ndb : 0 1\ndu : 13 4\n"
+HOLLOW_DEFAULT = ("red", False, "blue")     # du = 1 on 4
+HOLLOW_SEEDED = ("magenta", True, "blue")   # du = 13 on 4
+
+
+def _write_xwperc(home, text):
+    d = os.path.join(home, ".config", "xwpe")
+    os.makedirs(d, exist_ok=True)
+    with open(os.path.join(d, "xwperc"), "w") as fh:
+        fh.write(text)
+
+
+def _hollow_cell(w, line):
+    """(fg, bold, bg) of the first text cell of the hollow @line."""
+    row = w.screen.buffer[line + 1]
+    for x in range(1, w.screen.columns - 1):
+        if row[x].data.strip():
+            return (row[x].fg, row[x].bold, row[x].bg)
+    return None
+
+
+def _hollow_line_of_a_running_gdb(w, fg=UNCONFIRMED_BREAKPOINT_FG):
+    """Run gdb's program, set a breakpoint on its tail line while it runs,
+    and return that line (hollow, in the text colour @fg)."""
+    case = BRK_RUN_CASES["gdb"]
+    _run_into_the_program(w, case["break"], case["start_s"])
+    _go_to_line(w, case["tail"])
+    w.key(CTRL_G, "b", delay=0.6)
+    _assert_hollow(w, case["tail"], "while the program runs", fg)
+    return case["tail"]
+
+
+# @scenario SC-debug-07
+def test_an_xwperc_without_du_keeps_the_default_hollow_colour(tmp_path):
+    """A colour file that never heard of the unconfirmed-breakpoint entry
+    leaves its default: the bar's red as the text colour on the editor's
+    blue."""
+    _need("gcc", "gdb")
+    _write_xwperc(str(tmp_path), XWPERC_DEFAULT_SCHEME)
+    with WpeSession(str(tmp_path), GDB_SLEEP_PROG, filename="p.c",
+                    wait=1.5) as w:
+        line = _hollow_line_of_a_running_gdb(w)
+        assert _hollow_cell(w, line) == HOLLOW_DEFAULT, \
+            "the hollow line should be red on blue, got %r:\n%s" \
+            % (_hollow_cell(w, line), _screen(w))
+        _quit_and_see_the_session_gone(w)
+
+
+# @scenario SC-debug-07
+def test_du_in_xwperc_recolours_the_hollow_breakpoint(tmp_path):
+    """The du entry of a colour file sets the unconfirmed breakpoint's
+    colours."""
+    _need("gcc", "gdb")
+    _write_xwperc(str(tmp_path), XWPERC_WITH_DU)
+    with WpeSession(str(tmp_path), GDB_SLEEP_PROG, filename="p.c",
+                    wait=1.5) as w:
+        line = _hollow_line_of_a_running_gdb(w, HOLLOW_SEEDED[0])
+        assert _hollow_cell(w, line) == HOLLOW_SEEDED, \
+            "the hollow line should follow du, got %r:\n%s" \
+            % (_hollow_cell(w, line), _screen(w))
+        _quit_and_see_the_session_gone(w)
+
+
+# @scenario SC-debug-07
+def test_a_breakpoint_set_while_running_is_hollow_then_solid_under_scala(
+        tmp_path):
+    """The same under the Scala adapter."""
+    _need("scala-cli")
+    workdir = str(tmp_path)
+    try:
+        with WpeSession(workdir, SCALA_PAUSE_PROG, filename="p.scala",
+                        wait=2.0) as w:
+            _run_into_the_program(w, SCALA_PAUSE_LINES[0],
+                                  SCALA_START_TIMEOUT_S)
+            _go_to_line(w, SCALA_TAIL_LINE)
+            w.key(CTRL_G, "b", delay=0.6)
+            _assert_hollow(w, SCALA_TAIL_LINE, "while the program runs")
+            w.key(*CTRL_G_I, delay=0.5)
+            assert _wait_for(w, lambda: PAUSED_LINE in _bottom_row(w),
+                             PAUSE_TIMEOUT_S), \
+                "Ctrl-G I should stop the program:\n%s" % _screen(w)
+            _assert_solid(w, SCALA_TAIL_LINE, "after the stop")
+            _quit_ends_the_scala_program(w, workdir)
+    finally:
+        for pid in procinfo.processes_in(workdir, JVM_COMM):
+            os.kill(pid, signal.SIGKILL)
+
+
+SCALA_TAIL_LINE = 7        # println(n), past the loop
+
+
+# @scenario SC-debug-07
+def test_the_colours_dialog_samples_the_unconfirmed_breakpoint(tmp_path):
+    """Options > Adjust Colors > Editor Colors shows a sample line for the
+    unconfirmed breakpoint below the confirmed one's: red text on the
+    editor's blue, where the confirmed sample is the solid red bar."""
+    with WpeSession(str(tmp_path), C_PROG, filename="p.c", wait=1.5) as w:
+        w.menu(ALT.OPTIONS, "a", delay=0.8)
+        w.key("\r", delay=0.8)
+        disp = w.display()
+        rows = {name: y for y, line in enumerate(disp)
+                for name in ("This is a Breakpoint", "An unconfirmed")
+                if name in line}
+        assert len(rows) == 2, \
+            "the dialog should show both samples:\n%s" % "\n".join(disp)
+        solid = w.screen.buffer[rows["This is a Breakpoint"]][
+            disp[rows["This is a Breakpoint"]].index("This")]
+        hollow = w.screen.buffer[rows["An unconfirmed"]][
+            disp[rows["An unconfirmed"]].index("An unconfirmed")]
+        assert solid.bg == "red", \
+            "the confirmed sample should be the red bar, got %r" % solid.bg
+        assert (hollow.fg, hollow.bg) == ("red", "blue"), \
+            "the unconfirmed sample should be red on blue, got %r on %r" \
+            % (hollow.fg, hollow.bg)

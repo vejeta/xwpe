@@ -1773,6 +1773,7 @@ void e_pr_line(int y, FENSTER *f)
  int text_frb = s->fb->et.fb;
 #ifdef DEBUGGER
  int fsw = 0;
+ int hollow = 0;   /* the breakpoint on this line is not confirmed yet */
  /* Inline LSP decorations in the plain (syntax-off) painter, mirroring
     e_pr_c_line: recolor cells inside a problem's range (errors red, warnings
     amber) or a document-highlight span.  e_lsp_decor_active_for gates per line;
@@ -1808,10 +1809,13 @@ void e_pr_line(int y, FENSTER *f)
 #ifdef DEBUGGER
  for (j = 1; j <= s->brp[0]; j++)
   if (s->brp[j] == y) {  fsw = 1;  break;  }
+ if (fsw)
+  hollow = e_d_brk_drawn_hollow(f->datnam, y + 1);
  for (j = NUM_COLS_OFF_SCREEN_LEFT; i < b->bf[y].len && j < COL_NUM_ON_SCREEN_RIGHT; i++, j++)
  {
   if (y == s->da.y && i >= s->da.x && i < s->de.x )
    frb = s->fb->dy.fb;
+  else if (fsw && hollow) frb = s->fb->du.fb;
   else if (fsw) frb = s->fb->db.fb;
 /*	else if( (i == s->pt[0].x && y == s->pt[0].y) || (i == s->pt[1].x && y == s->pt[1].y)  */
   else if (y == s->fa.y && i >= s->fa.x && i < s->fe.x )

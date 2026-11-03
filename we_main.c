@@ -1224,6 +1224,10 @@ void FARBE_Init(FARBE *fb)
  fb->aim = e_s_x_clr( 7, 4); /*  AI pane: machinery, light grey      */
  fb->aia = e_s_x_clr(15, 2); /*  AI pane: attention, white on green  */
  fb->aie = e_s_x_clr( 9, 4); /*  AI pane: error, light red           */
+ /* A breakpoint the debugger has not confirmed: the breakpoint's red as the
+    text colour on the editor's own background, so it reads as the outline of
+    the solid red bar. */
+ fb->du = e_s_x_clr( 1, 4); /*  Breakpoint not confirmed: red on blue */
  fb->dc = ' ';
  fb->ws = 7;
 }
@@ -1290,6 +1294,7 @@ FARBE *e_ini_farbe()
    u_fb->aim = e_n_t_clr(A_DIM);
    u_fb->aia = e_n_t_clr(A_REVERSE);
    u_fb->aie = e_n_t_clr(A_BOLD);
+   u_fb->du = e_n_t_clr(A_UNDERLINE);   /* not confirmed: underlined */
    u_fb->dc = 0x20;
    u_fb->ws = 0;
   }

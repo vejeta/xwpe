@@ -79,6 +79,18 @@ int e_d_swtch = 0, rfildes[2], ofildes, e_d_pid = 0;
 int e_d_async_pending = 0;
 int e_d_nbrpts = 0, e_d_zwtchs = 0, *e_d_ybrpts, *e_d_nrbrpts;
 
+/* What the debugger said of entry i of the breakpoint list, kept beside the
+   list: e_d_brk_state[i] is one of these, e_d_brk_msg[i] the debugger's own
+   words when it refused the breakpoint or has it only as deferred. */
+#define E_D_BRK_PENDING   0   /* not told to the debugger, or not confirmed */
+#define E_D_BRK_VERIFIED  1   /* the debugger has it */
+#define E_D_BRK_REFUSED   2   /* the debugger said no */
+#define E_D_BRK_MSG_MAX   256
+#define E_D_BRK_SAY_EXTRA 96    /* room for the words around the message */
+#define E_D_FIRST_NON_ASCII 0x80  /* the symbols a debugger puts before words */
+int *e_d_brk_state;
+char (*e_d_brk_msg)[E_D_BRK_MSG_MAX];
+
 /* number of watch expressions in Watches window */
 int e_d_nwtchs = 0; 
 
@@ -932,6 +944,14 @@ static int  e_d_dap_start_finish(FENSTER *f);
 static void e_d_dap_start_close_messages(ECNT *cn);
 static void e_scala_pin_jdk(FENSTER *f, const char *who);  /* pin Scala JVM (below) */
 static void e_d_brk_forget_start_entries(void);   /* breakpoints (below) */
+static void e_d_brk_state_reserve(int n);         /* their state (below) */
+static void e_d_brk_forget_session(void);
+static int  e_d_brk_sync_at_stop(ECNT *cn);       /* applied at a stop */
+static int  e_d_brk_changed_while_running(void);  /* anything to apply? */
+static void e_d_dap_on_breakpoints(const char *file, const int *line,
+                                   const int *verified,
+                                   const char *const *message, int n,
+                                   void *ud);      /* the adapter's word */
 static void e_d_cursor_brk_clear(void);           /* Go to cursor's (below) */
 static int  e_d_gdb_run_to_line(FENSTER *f, int line);   /* gdb's (below) */
 static int  e_d_goto_cursor_line(FENSTER *f, int line);  /* Go to cursor's */
@@ -1039,8 +1059,10 @@ typedef struct
     user's.  Returns 0 when the interrupt was sent.  NULL for a backend
     that cannot pause yet (e_d_pause says so). */
  int  (*interrupt)(void);
- /* Not used yet, NULL in every table: telling the debugger of breakpoints
-    changed while it runs or once it stops.  The controller calls neither. */
+ /* Telling the debugger of breakpoints changed while the program runs.
+    sync_live (send them at once) is NULL in every table, for a later pass;
+    sync_at_stop sends them once the program has stopped, and every backend
+    plugs the same list-driven function in. */
  int  (*sync_live)(ECNT *cn);
  int  (*sync_at_stop)(ECNT *cn);
  /* Let the program run on to a source line, handing the run to the
@@ -1565,7 +1587,7 @@ static const E_D_RUN_OPS e_d_gdb_run_ops =
  e_d_line_stopped,
  e_d_interrupt_debugger,
  NULL,
- NULL,
+ e_d_brk_sync_at_stop,
  e_d_gdb_run_to_line,
  NULL
 };
@@ -1580,7 +1602,7 @@ static const E_D_RUN_OPS e_d_legacy_run_ops =
  e_d_line_stopped,
  e_d_interrupt_debugger,
  NULL,
- NULL,
+ e_d_brk_sync_at_stop,
  NULL,
  NULL
 };
@@ -1708,12 +1730,35 @@ static void e_d_run_drop_start_brk_at_stop(int sw)
 }
 
 /**
+ * e_d_run_sync_breakpoints - Tell the debugger the breakpoints the user set
+ * and removed while the program ran, now that it reads commands again.
+ * @f: the window on top.
+ *
+ * The marks the user made while it ran turn solid on the debugger's word, or
+ * stay hollow with its reason on the status row, and a removed line no
+ * longer stops the next run.  The windows are painted again so the margin
+ * shows it.
+ */
+static void e_d_run_sync_breakpoints(FENSTER *f)
+{
+ const E_D_RUN_OPS *ops = e_d_run.ops;
+
+ if (!ops || !ops->sync_at_stop || !e_d_brk_changed_while_running())
+  return;
+ ops->sync_at_stop(f->ed);
+ e_rep_win_tree(f->ed);
+ e_refresh();
+}
+
+/**
  * e_d_run_stop_chores - Take out the breakpoints the editor set for this run
  * only, now that the debugger reads commands again.
  * @f: the window the run was started from.
  *
  * Go to cursor's breakpoint and the start breakpoint stop the program once;
  * a later run goes past their lines.  A session that ended took them along.
+ * The breakpoints the user changed while the program ran are told to the
+ * debugger first.
  */
 static void e_d_run_stop_chores(FENSTER *f)
 {
@@ -1722,6 +1767,7 @@ static void e_d_run_stop_chores(FENSTER *f)
  e_d_run.start_brk = 0;
  if (e_d_swtch < 3)
   return;
+ e_d_run_sync_breakpoints(f);
  e_d_cursor_brk_clear();
  if (start_brk)
   e_mk_brk_main(f, start_brk);
@@ -1862,6 +1908,10 @@ static char *e_d_pause_signal_line(char *line)
  return(e_d_pause_no_report);
 }
 
+/* Set when the debugger's refusal of a breakpoint went to the status row
+ * during the stop being handled, so the Pause report does not wipe it. */
+static int e_d_refusal_said;
+
 /**
  * e_d_pause_report - Say on the status row how Pause ended, once the
  * program has stopped.
@@ -1870,7 +1920,9 @@ static char *e_d_pause_signal_line(char *line)
  * The user reads "Paused" when the interrupt stopped the program, and that
  * the interrupt missed when the stop was another one (the program handles
  * SIGINT itself, or a breakpoint came first).  A session the stop ended
- * says nothing.
+ * says nothing.  When the debugger refused a breakpoint at this same stop its
+ * words stay on the row: the pause shows in the marked line, the refusal
+ * shows nowhere else.
  */
 static void e_d_pause_report(ECNT *cn)
 {
@@ -1878,6 +1930,8 @@ static void e_d_pause_report(ECNT *cn)
 
  e_d_run.pause = E_D_PAUSE_NONE;
  if (pause == E_D_PAUSE_NONE || !e_d_session_runs())
+  return;
+ if (e_d_refusal_said)
   return;
  if (pause == E_D_PAUSE_TAKEN)
   e_status_say_until_key(e_d_run_window(cn), E_D_PAUSED_LINE);
@@ -1899,6 +1953,7 @@ static void e_d_run_on_stop(void)
  ECNT *cn = e_d_run.cn;
 
  e_d_run_unwatch();
+ e_d_refusal_said = 0;
  ops->stopped(e_d_run_window(cn));
  if (e_d_run_going())
   return;
@@ -4497,7 +4552,8 @@ int e_d_reinit_brks(FENSTER * f,char * prj)
    e_d_sbrpts = MALLOC(sizeof(char *) * r);
    e_d_ybrpts = MALLOC(sizeof(int) * r);
    e_d_nrbrpts = MALLOC(sizeof(int) * r);
-   
+   e_d_brk_state_reserve(r);
+
    name=prj2;
    for(q=0;q<r;q++)
    {
@@ -4515,6 +4571,9 @@ int e_d_reinit_brks(FENSTER * f,char * prj)
 	   e_d_ybrpts[e_d_nbrpts]=line;
 	   e_d_sbrpts[e_d_nbrpts]=MALLOC(sizeof(char)*(strlen(name)+1));
 	   strcpy(e_d_sbrpts[e_d_nbrpts],name);
+	   e_d_nrbrpts[e_d_nbrpts] = 0;
+	   e_d_brk_state[e_d_nbrpts] = E_D_BRK_PENDING;
+	   e_d_brk_msg[e_d_nbrpts][0] = '\0';
 	   e_d_nbrpts++;
 	   
 /**** needed to keep schirm in sync ****/
@@ -4617,7 +4676,19 @@ static void e_d_breakpoints_changed(ECNT *cn)
 /* No line to add to a debug adapter's list. */
 #define E_D_BRK_NO_LINE     0
 
+/* The debugger's reply to one breakpoint command: what it made of it, and its
+   words for the user when it refused or deferred it. */
+typedef struct
+{
+ int state;                    /* E_D_BRK_PENDING, _VERIFIED or _REFUSED */
+ char msg[E_D_BRK_MSG_MAX];    /* its words, or "" */
+} E_D_BRK_ANSWER;
+/* A debug adapter's verdict comes later, through on_breakpoints. */
+#define E_D_BRK_ASKED     3
+
 static int e_d_a68g_reset_breakpoints(void);
+static void e_d_brk_path_of(ECNT *cn, const char *file, char *out, size_t size);
+static void e_d_brk_jdb_class(const char *file, char *out, size_t size);
 static int e_d_brk_arm(ECNT *cn, int i);
 static int e_d_brk_disarm(ECNT *cn, const char *file, int line, int id);
 static void e_d_brk_disarm_all(ECNT *cn);
@@ -4646,6 +4717,55 @@ static int e_d_brk_is_start_entry(int i)
 }
 
 /**
+ * e_d_brk_state_reserve - Give the state and the message of the breakpoint
+ * list room for @n entries.
+ * @n: the entries the list will hold.
+ *
+ * The state lives beside the list, so every place that makes the list room
+ * makes it here too; the new entries are not told to the debugger yet.
+ */
+static void e_d_brk_state_reserve(int n)
+{
+ int old = e_d_nbrpts;
+ int i;
+
+ if (e_d_brk_state)
+  FREE(e_d_brk_state);
+ if (e_d_brk_msg)
+  FREE(e_d_brk_msg);
+ e_d_brk_state = MALLOC(sizeof(int) * n);
+ e_d_brk_msg = MALLOC(sizeof(*e_d_brk_msg) * n);
+ for (i = old; i < n; i++)
+ {
+  e_d_brk_state[i] = E_D_BRK_PENDING;
+  e_d_brk_msg[i][0] = '\0';
+ }
+}
+
+/**
+ * e_d_brk_state_grow - Make room in the state for the list's next entry,
+ * keeping what the debugger said of the entries it has.
+ * @n: the entries the list will hold.
+ */
+static void e_d_brk_state_grow(int n)
+{
+ int *state = e_d_brk_state;
+ char (*msg)[E_D_BRK_MSG_MAX] = e_d_brk_msg;
+
+ e_d_brk_state = MALLOC(sizeof(int) * n);
+ e_d_brk_msg = MALLOC(sizeof(*e_d_brk_msg) * n);
+ if (state)
+ {
+  memcpy(e_d_brk_state, state, sizeof(int) * (n - 1));
+  memcpy(e_d_brk_msg, msg, sizeof(*e_d_brk_msg) * (n - 1));
+  FREE(state);
+  FREE(msg);
+ }
+ e_d_brk_state[n - 1] = E_D_BRK_PENDING;
+ e_d_brk_msg[n - 1][0] = '\0';
+}
+
+/**
  * e_d_brk_list_free - Empty the breakpoint list.
  *
  * The margin marks are left as they are; the caller says whether they go.
@@ -4657,6 +4777,16 @@ static void e_d_brk_list_free(void)
  for (i = 0; i < e_d_nbrpts; i++)
   FREE(e_d_sbrpts[i]);
  e_d_nbrpts = 0;
+ if (e_d_brk_state)
+ {
+  FREE(e_d_brk_state);
+  e_d_brk_state = NULL;
+ }
+ if (e_d_brk_msg)
+ {
+  FREE(e_d_brk_msg);
+  e_d_brk_msg = NULL;
+ }
  if (e_d_sbrpts)
  {
   FREE(e_d_sbrpts);
@@ -4688,6 +4818,8 @@ static void e_d_brk_list_drop(int i)
   e_d_sbrpts[i] = e_d_sbrpts[i+1];
   e_d_ybrpts[i] = e_d_ybrpts[i+1];
   e_d_nrbrpts[i] = e_d_nrbrpts[i+1];
+  e_d_brk_state[i] = e_d_brk_state[i+1];
+  memcpy(e_d_brk_msg[i], e_d_brk_msg[i+1], E_D_BRK_MSG_MAX);
  }
  e_d_nbrpts--;
  if (e_d_nbrpts == 0)
@@ -4714,6 +4846,7 @@ static void e_d_brk_forget_start_entries(void)
   else
    i++;
  }
+ e_d_brk_forget_session();
 }
 
 /**
@@ -4728,6 +4861,295 @@ static int e_d_brk_index_of(const char *file, int line)
   if (e_d_ybrpts[i] == line && !strcmp(e_d_sbrpts[i], file))
    return(i);
  return(-1);
+}
+
+/**
+ * e_d_brk_drawn_hollow - Is the breakpoint on @line of @file drawn as the
+ * outline of the red bar, because the debugger has not confirmed it?
+ * @file: the window's file name; @line: 1-based.
+ *
+ * Asked by the line painter, so the user sees at a glance which marks the
+ * debugger really has and which wait for the next stop or were refused.
+ * Without a session every breakpoint is the user's plain mark and is drawn
+ * solid, as it always was.
+ * Return: 1 for a hollow one.
+ */
+int e_d_brk_drawn_hollow(const char *file, int line)
+{
+ int i;
+
+ if (!e_d_session_runs())
+  return(0);
+ i = e_d_brk_index_of(file, line);
+ if (i < 0)
+  return(0);
+ return(e_d_brk_state[i] != E_D_BRK_VERIFIED);
+}
+
+/**
+ * e_d_brk_set_state - Record what the debugger said of list entry @i.
+ * @state: E_D_BRK_*; @msg: its words, or NULL for none.
+ */
+static void e_d_brk_set_state(int i, int state, const char *msg)
+{
+ e_d_brk_state[i] = state;
+ if (msg)
+  snprintf(e_d_brk_msg[i], E_D_BRK_MSG_MAX, "%s", msg);
+ else
+  e_d_brk_msg[i][0] = '\0';
+}
+
+/**
+ * e_d_brk_take_answer - Record a debugger's reply on list entry @i.
+ * @ans: the reply read; E_D_BRK_ASKED leaves the entry as it is, for an
+ * adapter whose word comes later.
+ */
+static void e_d_brk_take_answer(int i, const E_D_BRK_ANSWER *ans)
+{
+ if (ans->state == E_D_BRK_ASKED)
+  return;
+ e_d_brk_set_state(i, ans->state, ans->msg);
+}
+
+/* Breakpoints the user removed while the program ran: the debugger still has
+   them until the next stop, when it is told. */
+typedef struct
+{
+ char *file;                   /* the breakpoint's file name */
+ int line;                     /* 1-based */
+ int id;                       /* the number the debugger gave it */
+ int state;                    /* what the debugger had said of it */
+ char msg[E_D_BRK_MSG_MAX];
+} E_D_BRK_GONE;
+
+static E_D_BRK_GONE *e_d_brk_gone;
+static int e_d_brk_ngone;
+
+/**
+ * e_d_brk_must_wait - Does a breakpoint change have to wait for the next
+ * stop, because the program runs and the debugger reads no command?
+ * Return: 1 while the program runs.
+ */
+static int e_d_brk_must_wait(void)
+{
+ return(e_d_async_pending);
+}
+
+/**
+ * e_d_brk_gone_add - Remember that the debugger still has the breakpoint
+ * list entry @i, which the user has just removed while the program runs.
+ *
+ * Without the record the debugger would keep stopping on a line the margin
+ * no longer marks.  An entry the debugger never heard of needs none.
+ */
+static void e_d_brk_gone_add(int i)
+{
+ E_D_BRK_GONE *rec;
+
+ if (e_d_nrbrpts[i] == 0)
+  return;
+ e_d_brk_gone = REALLOC(e_d_brk_gone,
+                        sizeof(E_D_BRK_GONE) * (e_d_brk_ngone + 1));
+ rec = &e_d_brk_gone[e_d_brk_ngone++];
+ rec->file = MALLOC(strlen(e_d_sbrpts[i]) + 1);
+ strcpy(rec->file, e_d_sbrpts[i]);
+ rec->line = e_d_ybrpts[i];
+ rec->id = e_d_nrbrpts[i];
+ rec->state = e_d_brk_state[i];
+ snprintf(rec->msg, E_D_BRK_MSG_MAX, "%s", e_d_brk_msg[i]);
+}
+
+/**
+ * e_d_brk_gone_free - Forget the removals the debugger was told of, or that
+ * a session's end made pointless.
+ */
+static void e_d_brk_gone_free(void)
+{
+ int i;
+
+ for (i = 0; i < e_d_brk_ngone; i++)
+  FREE(e_d_brk_gone[i].file);
+ if (e_d_brk_gone)
+  FREE(e_d_brk_gone);
+ e_d_brk_gone = NULL;
+ e_d_brk_ngone = 0;
+}
+
+/**
+ * e_d_brk_gone_revive - The user set again, while the program runs, a
+ * breakpoint he had just removed: the debugger still has it, so the new
+ * entry takes over what it was and nothing is sent at the stop.
+ * @i: the new list entry.
+ *
+ * Sending the removal and then the new mark would clear the new one on the
+ * debuggers that name a breakpoint by its line.
+ */
+static void e_d_brk_gone_revive(int i)
+{
+ int n;
+
+ for (n = 0; n < e_d_brk_ngone; n++)
+  if (e_d_brk_gone[n].line == e_d_ybrpts[i] &&
+      !strcmp(e_d_brk_gone[n].file, e_d_sbrpts[i]))
+   break;
+ if (n == e_d_brk_ngone)
+  return;
+ e_d_nrbrpts[i] = e_d_brk_gone[n].id;
+ e_d_brk_set_state(i, e_d_brk_gone[n].state, e_d_brk_gone[n].msg);
+ FREE(e_d_brk_gone[n].file);
+ for (; n < e_d_brk_ngone - 1; n++)
+  e_d_brk_gone[n] = e_d_brk_gone[n + 1];
+ e_d_brk_ngone--;
+}
+
+/**
+ * e_d_brk_say_refusal - Tell the user, on the status row, that the debugger
+ * refused list entry @i and why.
+ * @f: the window on top.
+ *
+ * The mark stays, hollow: it is still the user's, and it is tried again at
+ * the next start.  A breakpoint the debugger keeps for later (jdb, for a
+ * class not loaded yet) is said too, as not confirmed.  The row holds until a
+ * key is pressed, since the stop or the repaint that follows would otherwise
+ * wipe it.
+ */
+static void e_d_brk_say_refusal(FENSTER *f, int i)
+{
+ char line[E_D_BRK_MSG_MAX + E_D_BRK_SAY_EXTRA];
+
+ if (e_d_brk_state[i] == E_D_BRK_REFUSED)
+  snprintf(line, sizeof(line), " Breakpoint at line %d not set: %s",
+           e_d_ybrpts[i], e_d_brk_msg[i]);
+ else if (e_d_brk_state[i] == E_D_BRK_PENDING && e_d_brk_msg[i][0])
+  snprintf(line, sizeof(line), " Breakpoint at line %d not confirmed: %s",
+           e_d_ybrpts[i], e_d_brk_msg[i]);
+ else
+  return;
+ e_d_refusal_said = 1;
+ e_status_say_until_key(f, line);
+}
+
+/**
+ * e_d_brk_say_if_refused - Tell the user the debugger refused list entry
+ * @i, and only that.
+ * @f: the window on top.
+ *
+ * For the breakpoints set when a session starts: jdb keeps every one of
+ * them for when its class loads, which is no news worth the status row.
+ */
+static void e_d_brk_say_if_refused(FENSTER *f, int i)
+{
+ if (e_d_brk_state[i] == E_D_BRK_REFUSED)
+  e_d_brk_say_refusal(f, i);
+}
+
+/**
+ * e_d_brk_unsent - Is list entry @i one the debugger has not been told of
+ * yet?
+ * Return: 1 for a breakpoint set while the program ran.
+ */
+static int e_d_brk_unsent(int i)
+{
+ return(!e_d_brk_is_start_entry(i) && e_d_brk_state[i] == E_D_BRK_PENDING &&
+        e_d_nrbrpts[i] == 0);
+}
+
+/**
+ * e_d_brk_changed_while_running - Did the user set or remove a breakpoint
+ * that the debugger has not been told of?
+ *
+ * A stop with nothing to tell leaves the screen and the status row exactly
+ * as the stop made them.
+ * Return: 1 when a change is waiting.
+ */
+static int e_d_brk_changed_while_running(void)
+{
+ int i;
+
+ if (e_d_brk_ngone > 0)
+  return(1);
+ for (i = 0; i < e_d_nbrpts; i++)
+  if (e_d_brk_unsent(i))
+   return(1);
+ return(0);
+}
+
+/**
+ * e_d_brk_apply_removals - Tell the debugger of the breakpoints the user
+ * removed while the program ran.
+ * @cn: the editor.
+ * Return: 0, or -1 when the debugger stopped answering.
+ */
+static int e_d_brk_apply_removals(ECNT *cn)
+{
+ int i;
+
+ for (i = 0; i < e_d_brk_ngone; i++)
+  if (e_d_brk_disarm(cn, e_d_brk_gone[i].file, e_d_brk_gone[i].line,
+                     e_d_brk_gone[i].id) == -1)
+   return(-1);
+ e_d_brk_gone_free();
+ return(0);
+}
+
+/**
+ * e_d_brk_apply_additions - Tell the debugger of the breakpoints the user
+ * set while the program ran.
+ * @cn: the editor.
+ *
+ * Each turns solid on the debugger's word, or stays hollow with its words on
+ * the status row.  An entry the debugger has already answered for is left.
+ * Return: 0, or -1 when the debugger stopped answering.
+ */
+static int e_d_brk_apply_additions(ECNT *cn)
+{
+ int i;
+
+ for (i = 0; i < e_d_nbrpts; i++)
+ {
+  if (!e_d_brk_unsent(i))
+   continue;
+  if (e_d_brk_arm(cn, i) == -1)
+   return(-1);
+  e_d_brk_say_refusal(cn->f[cn->mxedt], i);
+ }
+ return(0);
+}
+
+/**
+ * e_d_brk_sync_at_stop - The program stopped: tell the debugger the
+ * breakpoints the user set and removed while it ran.
+ * @cn: the editor.
+ *
+ * The floor that works with every debugger: a change made while the program
+ * runs is kept by the editor and applied at the next stop of any kind, so
+ * the marks in the margin and the debugger agree again.
+ * Return: 0, or -1 when the debugger stopped answering.
+ */
+static int e_d_brk_sync_at_stop(ECNT *cn)
+{
+ if (e_d_brk_apply_removals(cn) == -1)
+  return(-1);
+ return(e_d_brk_apply_additions(cn));
+}
+
+/**
+ * e_d_brk_forget_session - At the end of a session, make the list ready for
+ * the next one.
+ *
+ * The debugger that knew the breakpoints is gone: removals it was never told
+ * of are moot, and every entry waits to be told to the next debugger.
+ */
+static void e_d_brk_forget_session(void)
+{
+ int i;
+
+ e_d_brk_gone_free();
+ for (i = 0; i < e_d_nbrpts; i++)
+ {
+  e_d_nrbrpts[i] = 0;
+  e_d_brk_set_state(i, E_D_BRK_PENDING, NULL);
+ }
 }
 
 /*  Breakpoints   */
@@ -4810,6 +5232,7 @@ static void e_d_brk_grow(void)
   e_d_ybrpts = REALLOC(e_d_ybrpts, e_d_nbrpts * sizeof(int));
   e_d_nrbrpts = REALLOC(e_d_nrbrpts, e_d_nbrpts * sizeof(int));
  }
+ e_d_brk_state_grow(e_d_nbrpts);
 }
 
 /**
@@ -4954,7 +5377,8 @@ int e_mk_brk_main(FENSTER *f, int sw)
  * debugger.
  *
  * The next run then goes past that line with every debugger, and nothing is
- * waited for that was not asked.
+ * waited for that was not asked.  While the program runs the debugger reads
+ * no command, so the removal is kept and told at the next stop.
  * Return: 0, or -1 when the debugger could not be told.
  */
 static int e_d_brk_toggle_off(FENSTER *f, int line)
@@ -4964,9 +5388,11 @@ static int e_d_brk_toggle_off(FENSTER *f, int line)
 
  if (i < 0)
   return(0);                   /* only the margin had it */
+ if (e_d_swtch && e_d_brk_must_wait())
+  e_d_brk_gone_add(i);
  id = e_d_nrbrpts[i];
  e_d_brk_list_drop(i);
- if (!e_d_swtch)
+ if (!e_d_swtch || e_d_brk_must_wait())
   return(0);
  return(e_d_brk_disarm(f->ed, f->datnam, line, id));
 }
@@ -4976,7 +5402,8 @@ static int e_d_brk_toggle_off(FENSTER *f, int line)
  * file: add it to the list and, while a session runs, to the debugger.
  *
  * The next run stops there with every debugger, the one already running
- * included.
+ * included.  While the program runs the entry waits, drawn hollow, and is
+ * told to the debugger at the next stop.
  * Return: 0, or -1 when the debugger could not be told.
  */
 static int e_d_brk_toggle_on(FENSTER *f, int line)
@@ -4988,7 +5415,15 @@ static int e_d_brk_toggle_on(FENSTER *f, int line)
  e_d_nrbrpts[e_d_nbrpts - 1] = 0;
  if (!e_d_swtch)
   return(0);
- return(e_d_brk_arm(f->ed, e_d_nbrpts - 1));
+ if (e_d_brk_must_wait())
+ {
+  e_d_brk_gone_revive(e_d_nbrpts - 1);
+  return(0);
+ }
+ if (e_d_brk_arm(f->ed, e_d_nbrpts - 1) == -1)
+  return(-1);
+ e_d_brk_say_refusal(f, e_d_nbrpts - 1);
+ return(0);
 }
 
 /**
@@ -4996,7 +5431,9 @@ static int e_d_brk_toggle_on(FENSTER *f, int line)
  * has just started.
  * @cn: the editor.
  *
- * A session started after the margin was marked stops on each mark.
+ * A session started after the margin was marked stops on each mark.  One
+ * the debugger refuses stays in the list, hollow, with its words on the
+ * status row, and is tried again at the next start.
  * Return: 0, or -1 when the debugger stopped answering.
  */
 static int e_d_brk_arm_all(ECNT *cn)
@@ -5004,8 +5441,13 @@ static int e_d_brk_arm_all(ECNT *cn)
  int i;
 
  for (i = 0; i < e_d_nbrpts; i++)
-  if (!e_d_brk_is_start_entry(i) && e_d_brk_arm(cn, i) == -1)
+ {
+  if (e_d_brk_is_start_entry(i))
+   continue;
+  if (e_d_brk_arm(cn, i) == -1)
    return(-1);
+  e_d_brk_say_if_refused(cn->f[cn->mxedt], i);
+ }
  return(0);
 }
 
@@ -5016,7 +5458,7 @@ int e_make_breakpoint(FENSTER *f, int sw)
  BUFFER *b = cn->f[cn->mxedt]->b;
  int i;
 
- if (e_d_start_refused(f) || e_d_refuse_while_running(f))
+ if (e_d_start_refused(f))
   return(0);
  if (!sw)
  {
@@ -6390,6 +6832,7 @@ static int e_d_dap_start(FENSTER *f)
  }
  g_dap_host.on_stopped = e_d_dap_on_stopped;
  g_dap_host.on_output = e_d_dap_on_output;
+ g_dap_host.on_breakpoints = e_d_dap_on_breakpoints;
  /* The end is not said from inside the adapter's event: the run or step
     that reached it ends the session through e_d_dap_end_session. */
  g_dap_host.on_terminated = NULL;
@@ -6834,7 +7277,7 @@ static const E_D_RUN_OPS e_d_dap_ops =
  e_d_dap_stopped,
  e_d_dap_interrupt,
  NULL,
- NULL,
+ e_d_brk_sync_at_stop,
  NULL,
  e_d_dap_begin,
  e_d_dap_on_program_output,
@@ -9831,6 +10274,61 @@ static int e_d_jdb_answer_fd(void)
  return(wfildes[0]);
 }
 
+/* jdb's word that a breakpoint kept for a class has been set, once the class
+   loaded: "Set deferred breakpoint P:4". */
+#define E_D_JDB_SET_DEFERRED "Set deferred breakpoint "
+
+/**
+ * e_d_jdb_confirm_deferred - jdb has set the deferred breakpoint @spec names:
+ * the user's mark on that line is the debugger's now.
+ * @spec: "P:4", up to the end of the line.
+ *
+ * The line turns solid at the stop that follows.
+ */
+static void e_d_jdb_confirm_deferred(const char *spec)
+{
+ char cls[PATH_MAX], entry[PATH_MAX];
+ const char *colon = strchr(spec, ':');
+ size_t len;
+ int line, i;
+
+ if (!colon)
+  return;
+ len = (size_t)(colon - spec);
+ if (len >= sizeof(cls) || memchr(spec, '\n', len))
+  return;
+ memcpy(cls, spec, len);
+ cls[len] = '\0';
+ line = atoi(colon + 1);
+ for (i = 0; i < e_d_nbrpts; i++)
+ {
+  if (e_d_brk_is_start_entry(i) || e_d_ybrpts[i] != line)
+   continue;
+  e_d_brk_jdb_class(e_d_sbrpts[i], entry, sizeof(entry));
+  if (!strcmp(entry, cls))
+   e_d_brk_set_state(i, E_D_BRK_VERIFIED, NULL);
+ }
+}
+
+/**
+ * e_d_jdb_note_deferred_sets - Read jdb's words for the breakpoints it has
+ * just set because their class loaded.
+ * @text: what jdb has said in this run so far.
+ *
+ * A breakpoint set before its class loads is hollow ("Deferring ..."); this
+ * is how the editor learns jdb has it, so the line is solid at the stop.
+ */
+static void e_d_jdb_note_deferred_sets(const char *text)
+{
+ const char *p = text;
+
+ while ((p = strstr(p, E_D_JDB_SET_DEFERRED)) != NULL)
+ {
+  p += strlen(E_D_JDB_SET_DEFERRED);
+  e_d_jdb_confirm_deferred(p);
+ }
+}
+
 /**
  * e_d_jdb_feed - Read what jdb has said so far.
  * @f: the window the run was started from (unused).
@@ -9862,6 +10360,7 @@ static int e_d_jdb_feed(FENSTER *f)
   }
   jdb_trace("e_d_jdb_feed: read %d bytes total=%d: [%s]\n",
             n, e_d_jdb_reply.len, e_d_jdb_reply.buf);
+  e_d_jdb_note_deferred_sets(e_d_jdb_reply.buf);
   if (e_d_jdb_says_end(e_d_jdb_reply.buf) ||
       e_d_jdb_reply_is_stop(e_d_jdb_reply.buf))
    fed = E_D_FEED_STOPPED;
@@ -10087,7 +10586,7 @@ static const E_D_RUN_OPS e_d_jdb_ops =
  e_d_jdb_stopped,
  e_d_jdb_interrupt,
  NULL,
- NULL,
+ e_d_brk_sync_at_stop,
  e_d_run_to_cursor_line,
  e_d_jdb_begin
 };
@@ -10497,7 +10996,7 @@ static const E_D_RUN_OPS e_d_pdb_ops =
  e_d_pdb_stopped,
  e_d_interrupt_debugger,
  NULL,
- NULL,
+ e_d_brk_sync_at_stop,
  NULL,
  e_d_pdb_begin
 };
@@ -11155,7 +11654,7 @@ static const E_D_RUN_OPS e_d_a68g_ops =
  e_d_a68g_stopped,
  e_d_interrupt_debugger,
  NULL,
- NULL,
+ e_d_brk_sync_at_stop,
  NULL,
  e_d_a68g_begin
 };
@@ -12428,6 +12927,124 @@ static int e_d_brk_line_cmd(int set, const char *file, const char *path,
  return(1);
 }
 
+/* What a68g, pdb and jdb say of a breakpoint they take no more than that. */
+#define E_D_A68G_MONITOR_ERROR  "monitor error:"
+#define E_D_PDB_ERROR_MARK      "***"
+#define E_D_PDB_PAST_END        "End of file"   /* a line past the last */
+#define E_D_JDB_NOT_SET         "Unable to set"
+#define E_D_JDB_DEFERRED        "Deferring"
+
+/**
+ * e_d_brk_words - Copy a debugger's reply for the status row, without the
+ * marks it puts before its words and without its line end.
+ * @out, @size: where the words go; @line: the reply.
+ *
+ * gdb leads an error with a symbol, pdb with "***": the user reads the words.
+ */
+static void e_d_brk_words(char *out, size_t size, const char *line)
+{
+ size_t len;
+
+ while (*line && ((unsigned char)*line >= E_D_FIRST_NON_ASCII ||
+                  *line == '*' || *line == ' ' || *line == '\t'))
+  line++;
+ snprintf(out, size, "%s", line);
+ len = strlen(out);
+ while (len > 0 && (out[len - 1] == '\n' || out[len - 1] == '\r' ||
+                    out[len - 1] == ' '))
+  out[--len] = '\0';
+}
+
+/**
+ * e_d_brk_line_refuses - Is this line of the selected debugger's reply its
+ * refusal of a breakpoint?
+ * @line: a line of the debugger's output.
+ *
+ * pdb, a68g and jdb say it on their output, with no number to look for; the
+ * numbered debuggers say it on their error stream, which the reader sees
+ * apart.
+ * Return: 1 for a refusal.
+ */
+static int e_d_brk_line_refuses(const char *line)
+{
+ if (e_deb_type == DEB_PDB)
+  return(!strncmp(line, E_D_PDB_ERROR_MARK, strlen(E_D_PDB_ERROR_MARK)) ||
+         !strncmp(line, E_D_PDB_PAST_END, strlen(E_D_PDB_PAST_END)));
+ if (e_deb_type == DEB_A68G)
+  return(strstr(line, E_D_A68G_MONITOR_ERROR) != NULL);
+ if (e_deb_type == DEB_JDB)
+  return(strstr(line, E_D_JDB_NOT_SET) != NULL);
+ return(0);
+}
+
+/**
+ * e_d_brk_line_defers - Does this line say the debugger keeps the breakpoint
+ * for later, not yet set?
+ * @line: a line of the debugger's output.
+ *
+ * jdb sets a breakpoint of a class that is not loaded when the class loads;
+ * until then the mark stays hollow.
+ * Return: 1 for a deferral.
+ */
+static int e_d_brk_line_defers(const char *line)
+{
+ return(e_deb_type == DEB_JDB && strstr(line, E_D_JDB_DEFERRED) != NULL);
+}
+
+/**
+ * e_d_brk_judge_line - Let one line of a debugger's reply decide what it
+ * made of the breakpoint.
+ * @ans: the reply so far; @line: the line; @from_errors: it came on the
+ * error stream.
+ *
+ * The first refusal stands; a deferral turns a plain acceptance into
+ * "not confirmed yet".
+ */
+static void e_d_brk_judge_line(E_D_BRK_ANSWER *ans, const char *line,
+                               int from_errors)
+{
+ if (ans->state == E_D_BRK_REFUSED)
+  return;
+ if (from_errors || e_d_brk_line_refuses(line))
+ {
+  ans->state = E_D_BRK_REFUSED;
+  e_d_brk_words(ans->msg, sizeof(ans->msg), line);
+  return;
+ }
+ if (ans->state == E_D_BRK_VERIFIED && e_d_brk_line_defers(line))
+ {
+  ans->state = E_D_BRK_PENDING;
+  e_d_brk_words(ans->msg, sizeof(ans->msg), line);
+ }
+}
+
+/**
+ * e_d_brk_read_reply - Read the debugger's reply to a breakpoint command up
+ * to its prompt, and say what it made of it.
+ * @ans: receives the verdict; NULL to read and drop the reply, showing an
+ * error line in a box as every other command's reply does.
+ *
+ * What the user sees of a refusal is then the debugger's own words on the
+ * status row, with the mark left hollow, not a box in the way of the next key.
+ * Return: e_d_dum_read's answer, -1 when the debugger stopped answering.
+ */
+static int e_d_brk_read_reply(E_D_BRK_ANSWER *ans)
+{
+ char str[E_D_BRK_ANSWER_MAX];
+ int ret;
+
+ if (!ans)
+  return(e_d_dum_read());
+ ans->state = E_D_BRK_VERIFIED;
+ ans->msg[0] = '\0';
+ while ((ret = e_d_line_read(wfildes[0], str, sizeof(str), 0, 1)) == 0 ||
+        ret == 2)
+  e_d_brk_judge_line(ans, str, ret == 2);
+ if (ret == 1 && e_e_line_read(efildes[0], str, sizeof(str)) == 2)
+  e_d_brk_judge_line(ans, str, 1);     /* written just after the prompt */
+ return(ret);
+}
+
 /**
  * e_d_dap_send_file_breakpoints - Give the adapter @file's breakpoints as
  * the user's list has them, with @extra_line too when it is not 0.
@@ -12453,6 +13070,55 @@ static int e_d_dap_send_file_breakpoints(const char *file, const char *path,
  ret = e_dap_set_file_breakpoints(g_dap, path, brk_lines, n);
  FREE(brk_lines);
  return(ret);
+}
+
+/**
+ * e_d_brk_same_file - Do a list entry's file name and an adapter's absolute
+ * path name the same file?
+ * @cn: the editor; @name: the entry's file name; @abs: the adapter's path.
+ */
+static int e_d_brk_same_file(ECNT *cn, const char *name, const char *abs)
+{
+ char path[PATH_MAX], a[PATH_MAX], b[PATH_MAX];
+
+ e_d_brk_path_of(cn, name, path, sizeof(path));
+ if (!strcmp(path, abs))
+  return(1);
+ if (!realpath(path, a) || !realpath(abs, b))
+  return(0);
+ return(!strcmp(a, b));
+}
+
+/**
+ * e_d_dap_on_breakpoints - A debug adapter has said which of the breakpoints
+ * it was given it set.
+ * @file: the source's absolute path; @line, @verified, @message: per entry
+ * of @n, the line asked for, whether the adapter set it, and its words;
+ * @ud: unused.
+ *
+ * A verified one is drawn solid.  One the adapter has not set yet (gdb's
+ * pending ones, until it says so with a later event) stays hollow, with its
+ * reason kept.
+ */
+static void e_d_dap_on_breakpoints(const char *file, const int *line,
+                                   const int *verified,
+                                   const char *const *message, int n,
+                                   void *ud)
+{
+ ECNT *cn = WpeEditor;
+ int k, i;
+
+ for (k = 0; k < n; k++)
+  for (i = 0; i < e_d_nbrpts; i++)
+  {
+   if (e_d_ybrpts[i] != line[k] || e_d_brk_is_start_entry(i) ||
+       !e_d_brk_same_file(cn, e_d_sbrpts[i], file))
+    continue;
+   if (verified[k])
+    e_d_brk_set_state(i, E_D_BRK_VERIFIED, NULL);
+   else
+    e_d_brk_set_state(i, E_D_BRK_PENDING, message[k]);
+  }
 }
 
 /**
@@ -12491,14 +13157,20 @@ static int e_d_a68g_reset_breakpoints(void)
  * cursor's own breakpoint all come through here, so the next run stops
  * where the margin says whichever debugger runs it.  A debug adapter, and
  * a68g when a breakpoint goes, are given the user's list again, so the list
- * must already say what the user wants.
+ * must already say what the user wants.  @ans, when given, receives the
+ * debugger's verdict (a debug adapter's comes later, through on_breakpoints).
  * Return: 0, or -1 when the debugger could not be told.
  */
 static int e_d_brk_line_send(int set, const char *file, const char *path,
-                             int line)
+                             int line, E_D_BRK_ANSWER *ans)
 {
  char cmd[E_D_BRK_CMD_MAX];
 
+ if (ans)
+ {
+  ans->state = E_D_BRK_ASKED;
+  ans->msg[0] = '\0';
+ }
  if (e_deb_type == DEB_DAP && !e_d_dap_active())
   return(0);
  if (e_deb_type == DEB_DAP && set)
@@ -12510,7 +13182,7 @@ static int e_d_brk_line_send(int set, const char *file, const char *path,
  if (!e_d_brk_line_cmd(set, file, path, line, cmd, sizeof(cmd)))
   return(-1);
  e_d_send_cmd(cmd);
- if (e_d_dum_read() == -1)
+ if (e_d_brk_read_reply(ans) == -1)
   return(-1);
  return(0);
 }
@@ -12534,64 +13206,108 @@ static void e_d_brk_path_of(ECNT *cn, const char *file, char *out, size_t size)
 /**
  * e_d_brk_read_number_line - Read gdb's, dbx's or xdb's answer to a
  * breakpoint just set, up to the line that carries its number.
- * @str: the line read, E_D_BRK_ANSWER_MAX bytes.
+ * @str: the line read, E_D_BRK_ANSWER_MAX bytes; @errors: 1 to take the
+ * debugger's error stream into account, so a refusal ("No source file named
+ * x.c.", which the debugger writes there) comes back as code 2 with its
+ * words in @str; 0 to drop what it writes there, as every other reply does.
  * Return: e_d_line_read's code for that line.
  */
-static int e_d_brk_read_number_line(char *str)
+static int e_d_brk_read_number_line(char *str, int errors)
 {
  int ret;
 
  if (e_deb_type == DEB_GDB)
  {
-  while ((ret = e_d_line_read(wfildes[0], str, E_D_BRK_ANSWER_MAX, 0, 0)) == 0
-    && strncmp(str, E_D_GDB_BRK_ANSWER, strlen(E_D_GDB_BRK_ANSWER)))
+  while ((ret = e_d_line_read(wfildes[0], str, E_D_BRK_ANSWER_MAX, 0, errors))
+    == 0 && strncmp(str, E_D_GDB_BRK_ANSWER, strlen(E_D_GDB_BRK_ANSWER)))
    ;
   return(ret);
  }
  if (e_deb_type == DEB_DBX)
  {
-  while ((ret = e_d_line_read(wfildes[0], str, E_D_BRK_ANSWER_MAX, 0, 0)) == 0
-    && str[0] != '(')
+  while ((ret = e_d_line_read(wfildes[0], str, E_D_BRK_ANSWER_MAX, 0, errors))
+    == 0 && str[0] != '(')
    ;
   return(ret);
  }
  /* xdb says "Added:" and gives the number on the line after it */
- while ((ret = e_d_line_read(wfildes[0], str, E_D_BRK_ANSWER_MAX, 0, 0)) == 0
-   && strncmp(str, "Added:", 6))
+ while ((ret = e_d_line_read(wfildes[0], str, E_D_BRK_ANSWER_MAX, 0, errors))
+   == 0 && strncmp(str, "Added:", 6))
   ;
- return(e_d_line_read(wfildes[0], str, E_D_BRK_ANSWER_MAX, 0, 0));
+ if (ret != 0 && errors)
+  return(ret);
+ return(e_d_line_read(wfildes[0], str, E_D_BRK_ANSWER_MAX, 0, errors));
+}
+
+/* What the reader has to say when a debugger gave no breakpoint number. */
+#define E_D_BRK_NO_NUMBER "the debugger gave no breakpoint number"
+
+/**
+ * e_d_brk_numbered_verdict - Say what gdb, dbx or xdb made of a breakpoint
+ * from the line that carries its number.
+ * @ans: receives the verdict; @ret: e_d_line_read's code for @str;
+ * @str: that line, or the error line.
+ *
+ * A line of the error stream is the debugger's refusal ("No source file
+ * named x.c."), and its words are kept for the user.
+ */
+static void e_d_brk_numbered_verdict(E_D_BRK_ANSWER *ans, int ret,
+                                     const char *str)
+{
+ ans->state = E_D_BRK_VERIFIED;
+ ans->msg[0] = '\0';
+ if (ret == 2)
+ {
+  ans->state = E_D_BRK_REFUSED;
+  e_d_brk_words(ans->msg, sizeof(ans->msg), str);
+ }
+ else if (ret == 1)
+ {
+  ans->state = E_D_BRK_REFUSED;
+  snprintf(ans->msg, sizeof(ans->msg), "%s", E_D_BRK_NO_NUMBER);
+ }
 }
 
 /**
  * e_d_brk_arm_numbered_at - Set a breakpoint on @line of @file in a debugger
  * that numbers its breakpoints, and say which number it gave.
- * @file: the breakpoint's file name; @line: 1-based; @id: receives the number.
+ * @file: the breakpoint's file name; @line: 1-based; @id: receives the number
+ * (0 when the debugger refused it); @ans: receives the verdict, or NULL to
+ * show a refusal in a box.
  *
  * gdb, dbx and xdb name a breakpoint only by the number they gave it, so
  * anything that has to take one out again, including the one Go to cursor
  * sets for itself, has to keep that number.
  * Return: 0, or -1 when the debugger stopped answering.
  */
-static int e_d_brk_arm_numbered_at(const char *file, int line, int *id)
+static int e_d_brk_arm_numbered_at(const char *file, int line, int *id,
+                                   E_D_BRK_ANSWER *ans)
 {
  char cmd[E_D_BRK_CMD_MAX], str[E_D_BRK_ANSWER_MAX];
- int ret;
+ int ret, at_prompt;
 
  if (e_deb_type == DEB_DBX)
   snprintf(cmd, sizeof(cmd), "stop at \"%s\":%d\n", file, line);
  else
   snprintf(cmd, sizeof(cmd), "b %s:%d\n", file, line);
  e_d_send_cmd(cmd);
- ret = e_d_brk_read_number_line(str);
+ ret = e_d_brk_read_number_line(str, ans != NULL);
  if (ret == -1)
   return(-1);
- if (ret == 2)
+ at_prompt = (ret == 1);
+ if (ans && at_prompt && e_e_line_read(efildes[0], str, sizeof(str)) == 2)
+  ret = 2;                  /* the refusal came just before the prompt */
+ if (ret == 2 && !ans)
   e_d_error(str);
- if (e_deb_type == DEB_GDB)
+ if (ret == 2 || ret == 1)
+  *id = 0;
+ else if (e_deb_type == DEB_GDB)
   *id = atoi(str + strlen(E_D_GDB_BRK_ANSWER));
  else
   *id = atoi(str + 1);
- if (ret != 1 && e_d_dum_read() == -1)
+ if (ans)
+  e_d_brk_numbered_verdict(ans, ret, str);
+ if (!at_prompt && e_d_dum_read() == -1)
   return(-1);
  return(0);
 }
@@ -12600,21 +13316,29 @@ static int e_d_brk_arm_numbered_at(const char *file, int line, int *id)
  * e_d_brk_arm_numbered - Set list entry @i in gdb, dbx or xdb.
  *
  * Keeps the number the debugger gives the breakpoint: removing it while the
- * session runs names it by that number.
+ * session runs names it by that number.  What the debugger said of it is
+ * kept with the entry.
  * Return: 0, or -1 when the debugger stopped answering.
  */
 static int e_d_brk_arm_numbered(int i)
 {
- return(e_d_brk_arm_numbered_at(e_d_sbrpts[i], e_d_ybrpts[i],
-                                &e_d_nrbrpts[i]));
+ E_D_BRK_ANSWER ans;
+
+ if (e_d_brk_arm_numbered_at(e_d_sbrpts[i], e_d_ybrpts[i], &e_d_nrbrpts[i],
+                             &ans) == -1)
+  return(-1);
+ e_d_brk_take_answer(i, &ans);
+ return(0);
 }
 
 /**
  * e_d_brk_sdb_line - Send sdb a command on @line of @file: sdb takes the
- * file first, then the line with @verb ("b" sets, "d" deletes).
+ * file first, then the line with @verb ("b" sets, "d" deletes).  @ans, when
+ * given, receives sdb's verdict on the command.
  * Return: 0, or -1 when sdb stopped answering.
  */
-static int e_d_brk_sdb_line(const char *file, int line, const char *verb)
+static int e_d_brk_sdb_line(const char *file, int line, const char *verb,
+                            E_D_BRK_ANSWER *ans)
 {
  char cmd[E_D_BRK_CMD_MAX];
 
@@ -12624,7 +13348,7 @@ static int e_d_brk_sdb_line(const char *file, int line, const char *verb)
   return(-1);
  snprintf(cmd, sizeof(cmd), "%d %s\n", line, verb);
  e_d_send_cmd(cmd);
- if (e_d_dum_read() == -1)
+ if (e_d_brk_read_reply(ans) == -1)
   return(-1);
  return(0);
 }
@@ -12635,20 +13359,30 @@ static int e_d_brk_sdb_line(const char *file, int line, const char *verb)
  *
  * Used for a breakpoint the user sets while a session runs and for every
  * breakpoint when a session starts, so the program stops on each line the
- * margin marks, whichever debugger runs it.
+ * margin marks, whichever debugger runs it.  What the debugger says of the
+ * breakpoint is kept with the entry: it is drawn solid once confirmed.
  * Return: 0, or -1 when the debugger could not be told.
  */
 static int e_d_brk_arm(ECNT *cn, int i)
 {
  char path[PATH_MAX];
+ E_D_BRK_ANSWER ans;
 
  if (e_deb_type == DEB_GDB || e_deb_type == DEB_DBX || e_deb_type == DEB_XDB)
   return(e_d_brk_arm_numbered(i));
- if (e_deb_type == DEB_SDB)
-  return(e_d_brk_sdb_line(e_d_sbrpts[i], e_d_ybrpts[i], "b"));
  e_d_nrbrpts[i] = i + 1;
+ if (e_deb_type == DEB_SDB)
+ {
+  if (e_d_brk_sdb_line(e_d_sbrpts[i], e_d_ybrpts[i], "b", &ans) == -1)
+   return(-1);
+  e_d_brk_take_answer(i, &ans);
+  return(0);
+ }
  e_d_brk_path_of(cn, e_d_sbrpts[i], path, sizeof(path));
- return(e_d_brk_line_send(1, e_d_sbrpts[i], path, e_d_ybrpts[i]));
+ if (e_d_brk_line_send(1, e_d_sbrpts[i], path, e_d_ybrpts[i], &ans) == -1)
+  return(-1);
+ e_d_brk_take_answer(i, &ans);
+ return(0);
 }
 
 /**
@@ -12662,7 +13396,7 @@ static int e_d_brk_disarm_line(ECNT *cn, const char *file, int line)
  char path[PATH_MAX];
 
  e_d_brk_path_of(cn, file, path, sizeof(path));
- return(e_d_brk_line_send(0, file, path, line));
+ return(e_d_brk_line_send(0, file, path, line, NULL));
 }
 
 /**
@@ -12706,7 +13440,7 @@ static int e_d_brk_disarm(ECNT *cn, const char *file, int line, int id)
  if (e_deb_type == DEB_GDB || e_deb_type == DEB_DBX || e_deb_type == DEB_XDB)
   return(e_d_brk_disarm_by_id(id));
  if (e_deb_type == DEB_SDB)
-  return(e_d_brk_sdb_line(file, line, "d"));
+  return(e_d_brk_sdb_line(file, line, "d", NULL));
  return(e_d_brk_disarm_line(cn, file, line));
 }
 
@@ -12793,18 +13527,20 @@ static int e_d_cursor_brk_send(int set)
  if (e_deb_type == DEB_SDB)
  {
   if (set)
-   return(e_d_brk_sdb_line(e_d_cursor_brk.file, e_d_cursor_brk.line, "b"));
-  return(e_d_brk_sdb_line(e_d_cursor_brk.file, e_d_cursor_brk.line, "d"));
+   return(e_d_brk_sdb_line(e_d_cursor_brk.file, e_d_cursor_brk.line, "b",
+                           NULL));
+  return(e_d_brk_sdb_line(e_d_cursor_brk.file, e_d_cursor_brk.line, "d",
+                          NULL));
  }
  if (e_deb_type == DEB_DBX || e_deb_type == DEB_XDB)
  {
   if (set)
    return(e_d_brk_arm_numbered_at(e_d_cursor_brk.file, e_d_cursor_brk.line,
-                                  &e_d_cursor_brk.id));
+                                  &e_d_cursor_brk.id, NULL));
   return(e_d_brk_disarm_by_id(e_d_cursor_brk.id));
  }
  return(e_d_brk_line_send(set, e_d_cursor_brk.file, e_d_cursor_brk.path,
-                          e_d_cursor_brk.line));
+                          e_d_cursor_brk.line, NULL));
 }
 
 /**

@@ -260,6 +260,20 @@ Changes
   to close its connection, instead of killing it after a fifth of a second;
   the program ends as before and the shared Bloop server is left running.
 
+* A breakpoint can be set or removed while the program runs.  Ctrl-G B
+  used to answer "The program is running"; now the margin changes at once
+  and the debugger is told at the next stop, with every debugger (gdb, sdb,
+  dbx, xdb, pdb, jdb, a68g and the debug adapters).  Until the debugger has
+  confirmed a breakpoint its line is drawn hollow, in the breakpoint's red
+  as text colour on the editor's background (underlined without colour),
+  and turns solid when the debugger has it.  A breakpoint the debugger
+  refuses stays hollow and the status row gives its words ("No source file
+  named q.c.", "cannot set breakpoint in that line.") instead of a box, also
+  when the program was stopped with Pause (the words then replace "Paused");
+  it is tried again at the next start.  The new colour entry is "du" in the
+  colour section of xwperc (a file without it keeps the default) and has a
+  sample line in Options > Adjust Colors > Editor Colors.
+
 * wpe keeps its keys after a tool has run.  After one compile (F9), run
   (Ctrl-F9) or debug session, the terminal went back to sending signals for
   Ctrl-\, Ctrl-Z and Ctrl-C and to stopping its output on Ctrl-S: Ctrl-\

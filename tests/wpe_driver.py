@@ -314,6 +314,9 @@ FRAME_BOTTOM_LEFT = "m"
 # where the debugger never stopped.
 CURRENT_LINE_BG = "brightgreen"
 BREAKPOINT_BG = "red"
+# A breakpoint the debugger has not confirmed is drawn as the outline of the
+# red bar: the bar's red as the text colour, on the editor's own background.
+UNCONFIRMED_BREAKPOINT_FG = "red"
 
 PANE_NAME = "AI"
 # ai_pane_width() wraps one column short of the interior (e.x - a.x - 2: the
@@ -723,6 +726,32 @@ class WpeSession:
             if any(row[x].bg == bg for x in range(1, self.screen.columns - 1)):
                 rows.append(y)
         return rows
+
+    def rows_with_fg(self, fg, drain=0.0):
+        """Screen rows of the source window carrying text of foreground colour
+        `fg`, as rows_with_bg does for a background.
+
+        The border columns are skipped: they hold the box drawing, not text."""
+        rows = []
+        for y in self.source_rows(drain=drain):
+            row = self.screen.buffer[y]
+            if any(row[x].fg == fg and row[x].data.strip()
+                   for x in range(1, self.screen.columns - 1)):
+                rows.append(y)
+        return rows
+
+    def unconfirmed_breakpoint_lines(self, fg=UNCONFIRMED_BREAKPOINT_FG,
+                                     drain=0.0):
+        """The source lines drawn as an unconfirmed breakpoint: the bar's red
+        (or `fg`, when the colour file sets another) as the text colour, on
+        the editor's background rather than on red."""
+        lines = []
+        for y in self.rows_with_fg(fg, drain=drain):
+            row = self.screen.buffer[y]
+            if not any(row[x].bg == BREAKPOINT_BG
+                       for x in range(1, self.screen.columns - 1)):
+                lines.append(y - 1)
+        return lines
 
     def mark_line(self, drain=0.0):
         """The source line carrying the debugger's current-line mark, or None.

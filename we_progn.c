@@ -518,6 +518,7 @@ void e_pr_c_line(int y, FENSTER *f)
  int n_bg = -1, n_nd = strlen(f->c_st->end_comment)-1;
 #ifdef DEBUGGER
  int fsw = 0;
+ int hollow = 0;   /* the breakpoint on this line is not confirmed yet */
  /* Inline LSP decorations: recolor cells inside a problem's range (errors red,
     warnings amber) or a document-highlight span (found-word colour).  The
     per-line gate keeps the per-character query (e_lsp_decor_attr_at) free of any
@@ -555,11 +556,15 @@ void e_pr_c_line(int y, FENSTER *f)
    fsw = 1;
    break;
   }
+ if (fsw)
+  hollow = e_d_brk_drawn_hollow(f->datnam, y + 1);
  for (j = s->c.x; i < b->bf[y].len && j < NUM_COLS_ON_SCREEN_SAFE + s->c.x - 1; i++, j++)
  {
   e_mk_col(b->bf[y].s, b->bf[y].len, i, frb, f->c_st, n_nd, n_bg);
   if ( y == s->da.y && i >= s->da.x && i < s->de.x )
    frb = s->fb->dy.fb;
+  else if (fsw && hollow)
+   frb = s->fb->du.fb;
   else if (fsw)
    frb = s->fb->db.fb;
   else if ( y == s->fa.y && i >= s->fa.x && i < s->fe.x )

@@ -684,6 +684,8 @@ void e_pr_ed_beispiel(int xa, int ya, FENSTER *f, int sw, int md)
    e_pr_str(xa+4, ya+11, "Help Button", fb->hb.fb, 0, 0, 0, 0);
    e_pr_str(xa+4, ya+14, "This is a Breakpoint", fb->db.fb, 0, 0, 0, 0);
    e_pr_str(xa+4, ya+15, "Stop at Breakpoint", fb->dy.fb, 0, 0, 0, 0);
+   e_pr_str(xa+4, ya+OPT_UNCONFIRMED_BRK_LINE,
+     "An unconfirmed Breakpoint", fb->du.fb, 0, 0, 0, 0);
   }
  }
  frb[sw] = e_s_clr(frb[sw].f, frb[sw].b);
@@ -909,6 +911,8 @@ int WpeReadColor(ECNT *cn, char *section, char *option, char *value)
   c = &fb->aia;
  else if (WpeStrccmp("aie", option) == 0)
   c = &fb->aie;
+ else if (WpeStrccmp("du", option) == 0)
+  c = &fb->du;
  else if (WpeStrccmp("dc", option) == 0)
   fb->dc = atoi(value);
  else if (WpeStrccmp("ws", option) == 0)
@@ -997,6 +1001,7 @@ int WpeWriteColor(ECNT *cn, char *section, FILE *opt_file)
  fprintf(opt_file, "aim : %d %d\n", fb->aim.f, fb->aim.b);
  fprintf(opt_file, "aia : %d %d\n", fb->aia.f, fb->aia.b);
  fprintf(opt_file, "aie : %d %d\n", fb->aie.f, fb->aie.b);
+ fprintf(opt_file, "du : %d %d\n", fb->du.f, fb->du.b);
  fprintf(opt_file, "dc : %d\n", fb->dc);
  fprintf(opt_file, "ws : %d\n", fb->ws);
  return 0;
