@@ -8538,3 +8538,351 @@ def test_the_colours_dialog_samples_the_unconfirmed_breakpoint(tmp_path):
         assert (hollow.fg, hollow.bg) == ("red", "blue"), \
             "the unconfirmed sample should be red on blue, got %r on %r" \
             % (hollow.fg, hollow.bg)
+
+
+# A Java program that spins on one line and prints a tick now and then: a
+# breakpoint on JDB_HOT_BODY_LINE is reached again within microseconds, and
+# the ticks growing in Messages show the program was never held.
+JDB_HOT_BREAK_LINE = 4            # System.out.println("ready");
+JDB_HOT_BODY_LINE = 6             # n++;
+JDB_HOT_TICK_EVERY = 20000000
+JDB_HOT_PROG = (
+    "public class P {\n"
+    "    public static void main(String[] a) throws Exception {\n"
+    "        long n = 0;\n"
+    "        System.out.println(\"ready\");\n"
+    "        while (true) {\n"
+    "            n++;\n"
+    "            if (n %% %dL == 0) {\n"
+    "                System.out.println(\"tick \" + n);\n"
+    "            }\n"
+    "        }\n"
+    "    }\n"
+    "}\n" % JDB_HOT_TICK_EVERY
+)
+JDB_HOT_CASE = dict(BRK_LIVE_CASES["jdb"], prog=JDB_HOT_PROG,
+                    break_at=JDB_HOT_BREAK_LINE, body=JDB_HOT_BODY_LINE)
+JDB_TICK_RE = re.compile(r"^tick (\d+)$")
+JDB_GATE_INPUT_LOG = "jdb-input.log"
+JDB_GATE_BIN_DIR = "gatejdb"
+JDB_BATCH_WATCH_S = 4             # a stop on the line would have come by now
+JDB_TICKS_WATCH_S = 3             # ticks must have grown over this time
+JDB_REAL_ROUNDS = 8               # on and off again, with the real jdb
+JDB_REAL_GAP_S = 0.0              # between the two writes of a round
+
+# A jdb that runs the real one and records every line the editor sends it.
+# With HOLD set it also acts the way a busy VM does: once a "stop at" for
+# the hot line has gone in, jdb's report of the hit is kept back until the
+# editor's "clear" has been read, so the hit always comes before the clear
+# is taken.
+FAKE_JDB_GATE = r'''#!%(python)s -I
+import os, subprocess, sys, threading
+REAL = %(real)r
+LOG = %(log)r
+HOLD = %(hold)r
+GATE_LINE = ":%(line)d"
+HIT = b"Breakpoint hit"
+GATE_WAIT_S = 30
+child = subprocess.Popen([REAL] + sys.argv[1:], stdin=subprocess.PIPE,
+                         stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                         bufsize=0)
+lock = threading.Lock()
+held = []
+state = {"armed": False, "holding": False}
+
+
+def emit(data):
+    os.write(1, data)
+
+
+def release():
+    with lock:
+        state["holding"] = False
+        state["armed"] = False
+        data = b"".join(held)
+        del held[:]
+    if data:
+        emit(data)
+
+
+def pump():
+    while True:
+        data = os.read(child.stdout.fileno(), 4096)
+        if not data:
+            break
+        with lock:
+            if state["holding"]:
+                held.append(data)
+                continue
+            at = data.find(HIT)
+            if HOLD and state["armed"] and at >= 0:
+                state["holding"] = True
+                if at:
+                    emit(data[:at])
+                held.append(data[at:])
+                threading.Timer(GATE_WAIT_S, release).start()
+                continue
+        emit(data)
+    os._exit(child.wait())
+
+
+threading.Thread(target=pump, daemon=True).start()
+while True:
+    raw = sys.stdin.buffer.readline()
+    if not raw:
+        break
+    text = raw.decode(errors="replace")
+    with open(LOG, "a") as log:
+        log.write(text)
+    if text.startswith("stop at ") and text.rstrip().endswith(GATE_LINE):
+        state["armed"] = True
+    child.stdin.write(raw)
+    if text.startswith("clear "):
+        release()
+child.stdin.close()
+os._exit(child.wait())
+'''
+
+
+def _gate_jdb_env(tmp_path, hold):
+    """The environment of a session whose jdb is FAKE_JDB_GATE, logging
+    what the editor sends to JDB_GATE_INPUT_LOG, and keeping back a hit
+    until its clear when @hold."""
+    bindir = tmp_path / JDB_GATE_BIN_DIR
+    bindir.mkdir()
+    _write_script(bindir / "jdb", FAKE_JDB_GATE % {
+        "python": sys.executable, "real": shutil.which("jdb"),
+        "log": str(tmp_path / JDB_GATE_INPUT_LOG), "hold": hold,
+        "line": JDB_HOT_BODY_LINE})
+    return {"PATH": "%s:%s" % (bindir, os.environ.get("PATH", ""))}
+
+
+def _gate_jdb_session(tmp_path, hold):
+    """The editor on JDB_HOT_PROG with the gate in front of jdb."""
+    _need("jdb", "javac")
+    return WpeSession(str(tmp_path), JDB_HOT_PROG, filename="P.java",
+                      wait=1.5, env_extra=_gate_jdb_env(tmp_path, hold))
+
+
+def _jdb_inputs(tmp_path):
+    """The lines the editor has sent jdb so far."""
+    log = tmp_path / JDB_GATE_INPUT_LOG
+    if not log.exists():
+        return []
+    return log.read_text(errors="replace").splitlines()
+
+
+def _last_tick(w):
+    """The highest tick the program has printed that Messages shows."""
+    ticks = [int(m.group(1)) for m in
+             (JDB_TICK_RE.match(line) for line in _messages_lines(w)) if m]
+    return max(ticks) if ticks else 0
+
+
+def _assert_the_program_runs_on(w, what):
+    """No stop was shown and the program's ticks keep growing."""
+    before = _last_tick(w)
+    assert _never_marked_at(w, JDB_HOT_BODY_LINE, JDB_TICKS_WATCH_S), \
+        "%s: the program must not stop on line %d:\n%s" \
+        % (what, JDB_HOT_BODY_LINE, _screen(w))
+    assert PAUSED_LINE not in _bottom_row(w), \
+        "%s: nothing should be shown as paused:\n%s" % (what, _screen(w))
+    assert "^Brk Pause" in _bottom_bar(w), \
+        "%s: the program should still run:\n%s" % (what, _screen(w))
+    assert _last_tick(w) > before, \
+        "%s: the program's ticks stopped at %d:\n%s" \
+        % (what, before, _screen(w))
+
+
+# @scenario SC-debug-07
+def test_a_jdb_mark_set_and_removed_in_one_batch_sends_nothing(tmp_path):
+    """Two toggles of one line typed together while the program runs reach
+    jdb as their net change, which is none: it is sent no "stop at" for the
+    line, so a loop passing it a million times a second cannot stop there
+    before the removal follows."""
+    case = JDB_HOT_CASE
+    with _gate_jdb_session(tmp_path, hold=False) as w:
+        _run_into_the_program(w, case["break_at"], case["start_s"])
+        _go_to_line(w, case["body"])
+        w.key(CTRL_G + "b" + CTRL_G + "b", delay=0.6)
+        assert case["body"] not in \
+            _breakpoint_lines(w) + _unconfirmed_lines(w), \
+            "toggled twice, the line should be unmarked:\n%s" % _screen(w)
+        w._drain(JDB_BATCH_WATCH_S)
+        assert not [c for c in _jdb_inputs(tmp_path)
+                    if c.startswith("stop at ") and
+                    c.endswith(":%d" % case["body"])], \
+            "jdb must not be sent the line's stop at:\n%s" \
+            % "\n".join(_jdb_inputs(tmp_path))
+        _assert_the_program_runs_on(w, "a mark set and removed in a batch")
+        _quit_and_see_the_session_gone(w)
+
+
+# @scenario SC-debug-07
+@pytest.mark.parametrize("debugger", ["gdb", "dlv"])
+def test_a_mark_set_and_removed_in_one_batch_arms_nothing_under(tmp_path,
+                                                                debugger):
+    """The same two toggles in one batch under gdb and an adapter: the
+    program keeps running and never stops on the line."""
+    case = BRK_LIVE_CASES[debugger]
+    with _live_session(tmp_path, case) as w:
+        _run_into_the_program(w, case["break"], case["start_s"])
+        _go_to_line(w, case["body"])
+        w.key(CTRL_G + "b" + CTRL_G + "b", delay=0.6)
+        assert case["body"] not in \
+            _breakpoint_lines(w) + _unconfirmed_lines(w), \
+            "toggled twice, the line should be unmarked:\n%s" % _screen(w)
+        assert _never_marked_at(w, case["body"], JDB_BATCH_WATCH_S), \
+            "the program must not stop on line %d:\n%s" \
+            % (case["body"], _screen(w))
+        assert "^Brk Pause" in _bottom_bar(w), _screen(w)
+        _quit_and_see_the_session_gone(w)
+
+
+# @scenario SC-debug-07
+def test_a_gdb_mark_set_and_removed_in_one_batch_costs_no_interrupt(tmp_path):
+    """gdb is interrupted to be told of a breakpoint; two toggles that
+    cancel in one batch need no interrupt, so it reports no SIGINT stop."""
+    _need("gcc", "gdb")
+    (tmp_path / ".gdbinit").write_text(
+        GDB_LOG_INIT % (tmp_path / GDB_LOG_NAME))
+    case = BRK_LIVE_CASES["gdb"]
+    with WpeSession(str(tmp_path), GDB_LIVE_PROG, filename="p.c",
+                    wait=1.5) as w:
+        _run_into_the_program(w, case["break"], case["start_s"])
+        _go_to_line(w, case["body"])
+        w.key(CTRL_G + "b" + CTRL_G + "b", delay=0.6)
+        w._drain(PAUSE_SETTLE_S)
+        assert _gdb_sigint_reports(tmp_path) == 0, \
+            "the toggles cancel: gdb should not be interrupted:\n%s" \
+            % _screen(w)
+        _quit_and_see_the_session_gone(w)
+
+
+# @scenario SC-debug-07
+def test_a_jdb_stale_breakpoint_hit_is_not_shown(tmp_path):
+    """A mark set, and removed in a later batch, while the program spins on
+    its line: jdb reports the hit before it has taken the clear, and the
+    hit is not shown.  No mark, no Paused, and the program goes on."""
+    case = JDB_HOT_CASE
+    with _gate_jdb_session(tmp_path, hold=True) as w:
+        _run_into_the_program(w, case["break_at"], case["start_s"])
+        _go_to_line(w, case["body"])
+        w.key(CTRL_G + "b", CTRL_G + "b", delay=0.3)
+        assert case["body"] not in \
+            _breakpoint_lines(w) + _unconfirmed_lines(w), \
+            "toggled twice, the line should be unmarked:\n%s" % _screen(w)
+        assert [c for c in _jdb_inputs(tmp_path)
+                if c.startswith("stop at ") and
+                c.endswith(":%d" % case["body"])], \
+            "the two batches should each have gone to jdb:\n%s" \
+            % "\n".join(_jdb_inputs(tmp_path))
+        _assert_the_program_runs_on(w, "a stale hit")
+        _quit_and_see_the_session_gone(w)
+
+
+# @scenario SC-debug-07
+def test_a_jdb_stale_hit_is_not_shown_with_the_real_jdb(tmp_path):
+    """The two toggles written back to back, JDB_REAL_ROUNDS times, with
+    the real jdb and nothing held back: the user is never shown a stop on
+    the line.  Written this close they reach the editor as one burst and
+    jdb is sent nothing for the line; the hit jdb reports before it takes
+    a clear is the gate row's case above.  With a pause between the two,
+    jdb can stop on the line while it is still marked, and that stop is
+    rightly the user's."""
+    case = JDB_HOT_CASE
+    _need("jdb", "javac")
+    with WpeSession(str(tmp_path), JDB_HOT_PROG, filename="P.java",
+                    wait=1.5) as w:
+        _run_into_the_program(w, case["break_at"], case["start_s"])
+        _go_to_line(w, case["body"])
+        for round_no in range(JDB_REAL_ROUNDS):
+            w.key(CTRL_G + "b", delay=JDB_REAL_GAP_S)
+            w.key(CTRL_G + "b", delay=0.3)
+            assert _mark_line(w) != case["body"], \
+                "round %d: a stop was shown on the removed line:\n%s" \
+                % (round_no, _screen(w))
+        _assert_the_program_runs_on(w, "on and off again")
+        _quit_and_see_the_session_gone(w)
+
+
+# jdb can write its answer to a "stop at" sent while the program runs into
+# the middle of its report of the hit, with a prompt before the place:
+#     Breakpoint hit: Set breakpoint P:6
+#     main[1] "thread=main", P.main(), line=6 bci=18
+# A jdb that runs the real one and always answers that way, with a pause
+# after the first prompt so the editor reads the two parts apart.
+JDB_INTERLEAVE_BIN_DIR = "interleavejdb"
+JDB_INTERLEAVE_GAP_S = 0.5
+FAKE_JDB_INTERLEAVE = r'''#!%(python)s -I
+import os, subprocess, sys, threading, time
+REAL = %(real)r
+SET_LINE = ":%(line)d"
+GAP_S = %(gap)r
+HIT = b"Breakpoint hit: "
+PLACE = b'"thread='
+PROMPT = b"main[1] "
+child = subprocess.Popen([REAL] + sys.argv[1:], stdin=subprocess.PIPE,
+                         stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                         bufsize=0)
+state = {"armed": False, "spec": b""}
+
+
+def pump():
+    kept = b""
+    while True:
+        data = os.read(child.stdout.fileno(), 4096)
+        if not data:
+            break
+        if not state["armed"] and not kept:
+            os.write(1, data)
+            continue
+        kept += data
+        place = kept.find(PLACE)
+        if kept.find(HIT) < 0 or place < 0 or not kept.endswith(PROMPT):
+            continue
+        state["armed"] = False
+        os.write(1, b"\n" + HIT + b"Set breakpoint " + state["spec"] +
+                 b"\n" + PROMPT)
+        time.sleep(GAP_S)
+        os.write(1, kept[place:])
+        kept = b""
+    os._exit(child.wait())
+
+
+threading.Thread(target=pump, daemon=True).start()
+while True:
+    raw = sys.stdin.buffer.readline()
+    if not raw:
+        break
+    text = raw.decode(errors="replace").rstrip()
+    if text.startswith("stop at ") and text.endswith(SET_LINE):
+        state["spec"] = text[len("stop at "):].encode()
+        state["armed"] = True
+    child.stdin.write(raw)
+child.stdin.close()
+os._exit(child.wait())
+'''
+
+
+# @scenario SC-debug-07
+def test_a_jdb_hit_with_the_set_answer_inside_is_marked(tmp_path):
+    """A breakpoint set while the program runs, whose hit jdb reports with
+    the answer to the "stop at" and a prompt written inside it: the stop is
+    read to its place and its line is marked, not taken as a stop on no
+    line that leaves the program held with nothing shown."""
+    case = BRK_LIVE_CASES["jdb"]
+    _need(*case["need"])
+    bindir = tmp_path / JDB_INTERLEAVE_BIN_DIR
+    bindir.mkdir()
+    _write_script(bindir / "jdb", FAKE_JDB_INTERLEAVE % {
+        "python": sys.executable, "real": shutil.which("jdb"),
+        "line": case["body"], "gap": JDB_INTERLEAVE_GAP_S})
+    env = {"PATH": "%s:%s" % (bindir, os.environ.get("PATH", ""))}
+    with WpeSession(str(tmp_path), case["prog"], filename=case["file"],
+                    wait=case["wait"], env_extra=env) as w:
+        _run_into_the_program(w, case["break"], case["start_s"])
+        _go_to_line(w, case["body"])
+        w.key(CTRL_G, "b", delay=0.6)
+        _assert_stops_on(w, case["body"], "a hit with the answer inside")
+        _quit_and_see_the_session_gone(w)

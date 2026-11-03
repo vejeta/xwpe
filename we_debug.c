@@ -996,6 +996,9 @@ static int  e_d_brk_live_changed;
 /* The offset in jdb's run answer up to which its words on breakpoints sent
    while the program runs are read, so each is acted on once. */
 static int  e_d_jdb_live_scanned;
+/* How many breakpoints jdb was sent "clear" for in this run (the record is
+   e_d_jdb_cleared, below). */
+static int  e_d_jdb_ncleared;
 static void e_d_dap_on_breakpoints(const char *file, const int *line,
                                    const int *verified,
                                    const char *const *message, int n,
@@ -1160,6 +1163,10 @@ typedef struct
     the interrupt for itself with a SIGINT handler of its own (pdb); gdb's
     and a68g's programs never see it. */
  int program_takes_sigint;
+ /* At a stop the debugger made: is it a breakpoint the user has removed
+    since, whose removal the debugger has not yet taken?  Such a stop is
+    not shown; the run goes on.  Reads nothing.  NULL: never. */
+ int  (*stale_stop)(void);
 } E_D_RUN_OPS;
 
 static const E_D_RUN_OPS *e_d_pdb_run_ops(void);   /* pdb's table (below) */
@@ -1169,6 +1176,7 @@ static const E_D_RUN_OPS *e_d_dap_run_ops(void);   /* the adapters' (below) */
 static int e_d_run_to_cursor_line(FENSTER *f, int line);   /* Go to cursor */
 static int e_d_cursor_brk_pending(void);
 static int e_d_jdb_run_started(FENSTER *f, int start_brk);
+static int e_d_jdb_run_continued(FENSTER *f, int start_brk);
 static const char *e_d_jdb_continue_command(void);   /* cont or resume */
 
 /* The run in progress. */
@@ -1201,6 +1209,9 @@ typedef struct
                                interrupt's stop, for a Run or a Continue;
                                NULL for a step, Finish or Go to cursor */
  char again[E_D_RUN_AGAIN_MAX];   /* the command this run was sent */
+ int sync_pending;          /* breakpoints changed since the last key wait:
+                               told to the debugger when the keys run out
+                               (e_d_run_flush_live_sync) */
 } E_D_RUN;
 
 static E_D_RUN e_d_run;
@@ -1278,6 +1289,7 @@ static void e_d_flush_inferior_stdout(void)
    "cont" (which needs a breakpoint event), lets all of them go again. */
 #define E_D_JDB_SUSPEND     "suspend\n"
 #define E_D_JDB_RESUME      "resume\n"
+#define E_D_JDB_CONT        "cont\n"
 #define E_D_JDB_THREADS     "threads\n"
 #define E_D_JDB_THREAD_FMT  "thread %s\n"
 #define E_D_JDB_SUSPENDED   "All threads suspended."
@@ -2153,18 +2165,16 @@ static int e_d_run_may_interrupt_for_sync(void)
 }
 
 /**
- * e_d_run_breakpoints_changed - The user set or removed a breakpoint while
- * the program runs: get it to the debugger as soon as it can take it.
+ * e_d_run_apply_breakpoint_changes - Get the breakpoints the user changed
+ * to the debugger now.
  * @cn: the editor.
  *
  * jdb and the debug adapters are told at once.  gdb, pdb and a68g are
  * interrupted, told, and let run on, with nothing of that stop shown.
  * sdb, dbx and xdb, a step in progress, and a program that handles SIGINT
- * itself keep the change for the next stop.  The user sees the mark turn
- * solid while the program runs, and the program stops on it the next time
- * it gets there.  A stop already read but held behind a box applies it.
+ * itself keep the change for the next stop.
  */
-static void e_d_run_breakpoints_changed(ECNT *cn)
+static void e_d_run_apply_breakpoint_changes(ECNT *cn)
 {
  if (!e_d_run_going() || e_d_run.stop_held)
   return;
@@ -2178,6 +2188,47 @@ static void e_d_run_breakpoints_changed(ECNT *cn)
  if (!e_d_run_may_interrupt_for_sync())
   return;
  e_d_run_interrupt(E_D_INT_SYNC);
+}
+
+/**
+ * e_d_run_breakpoints_changed - The user set or removed a breakpoint while
+ * the program runs: get it to the debugger as soon as the keys already
+ * typed have been read.
+ * @cn: the editor (unused: the run keeps its own).
+ *
+ * The change is told to the debugger when the editor next waits for a key
+ * (e_d_run_flush_live_sync), so the toggles of one burst of keys reach it
+ * as their net change.  A mark set and taken off again in one burst never
+ * reaches it, and a loop that passes the line a million times a second
+ * cannot stop on a line the user no longer marks.  The user sees the mark
+ * turn solid while the program runs, and the program stops on it the next
+ * time it gets there.  A stop already read but held behind a box applies
+ * it.
+ */
+static void e_d_run_breakpoints_changed(ECNT *cn)
+{
+ (void)cn;
+ if (!e_d_run_going() || e_d_run.stop_held)
+  return;
+ e_d_run.sync_pending = 1;
+}
+
+/**
+ * e_d_run_flush_live_sync - Tell the debugger of the breakpoints changed
+ * since the editor last waited for a key.
+ *
+ * Called by the key loops of every display just before they sleep for a
+ * key, once the keys already typed have all been handled.  Nothing is sent
+ * for a burst whose changes cancel out.
+ */
+void e_d_run_flush_live_sync(void)
+{
+ if (!e_d_run.sync_pending)
+  return;
+ e_d_run.sync_pending = 0;
+ if (!e_d_run.cn)
+  return;
+ e_d_run_apply_breakpoint_changes(e_d_run.cn);
 }
 
 /**
@@ -2334,10 +2385,34 @@ static void e_d_run_check_own_sigint(void)
 }
 
 /**
+ * e_d_run_stop_is_stale - Is the stop just read a breakpoint the user took
+ * off before the program got there?
+ *
+ * Only a Run or a Continue is let go on, and only when no Pause or other
+ * interrupt is in flight, whose own stop this might be taken for.  The
+ * backend says whether the stop is on a line the list no longer marks and
+ * whose removal the debugger had not yet taken.  The user then sees no
+ * stop on an unmarked line.
+ * Return: 1 for a stop to hide and run on from.
+ */
+static int e_d_run_stop_is_stale(void)
+{
+ const E_D_RUN_OPS *ops = e_d_run.ops;
+
+ if (!ops->stale_stop || !e_d_run.cont)
+  return(0);
+ if (e_d_run.interrupt_for != E_D_INT_NONE || e_d_run.pause != E_D_PAUSE_NONE)
+  return(0);
+ return(ops->stale_stop());
+}
+
+/**
  * e_d_run_interrupt_handled - Deal with a stop an interrupt may have made,
  * before the backend shows it.
  * @cn: the editor.
  *
+ * A stop on a breakpoint the user has just removed is hidden too, and the
+ * program runs on.
  * The stop of an interrupt sent for a breakpoint change is never shown:
  * the change is applied and the program runs on.  A stop of the program's
  * own that comes while that interrupt is on its way (a breakpoint, the
@@ -2349,8 +2424,11 @@ static void e_d_run_check_own_sigint(void)
  */
 static int e_d_run_interrupt_handled(ECNT *cn)
 {
- int intr = e_d_run_stop_was_interrupt();
+ int intr;
 
+ if (e_d_run_stop_is_stale())
+  return(e_d_run_sync_and_go_on(cn));
+ intr = e_d_run_stop_was_interrupt();
  if (intr && e_d_run.interrupt_for == E_D_INT_SYNC)
   return(e_d_run_sync_and_go_on(cn));
  if (intr && e_d_run.interrupt_for == E_D_INT_NONE)
@@ -10830,7 +10908,7 @@ int e_deb_run(FENSTER *f)
  jdb_trace("e_deb_run: sending '%s' (prsw=%d)\n", eing, prsw);
  e_d_send_cmd(eing);
  if (e_deb_type == DEB_JDB)
-  return(e_d_jdb_run_started(f, main_brk));
+  return(e_d_jdb_run_continued(f, main_brk));
  if (e_deb_type == DEB_GDB || ((e_deb_type == DEB_DBX  || e_deb_type == DEB_XDB) && !prsw))
  {
   if (e_d_run_answer_read(prsw) < 0)
@@ -10985,14 +11063,23 @@ static int e_d_jdb_asks_command(const char *text)
  * @text: the answer.
  *
  * A stop is a line of jdb's that names it (a breakpoint, a step or an
- * uncaught exception) and jdb's prompt as the last thing it said.
+ * uncaught exception), the place it stopped at ("line=") after it, and
+ * jdb's prompt as the last thing it said.  jdb can write its answer to a
+ * breakpoint set while the program runs, and a prompt, between the stop's
+ * words and its place; the stop is read on to its place, so the user sees
+ * its line marked instead of a program held with nothing shown.
  * Return: 1 when it does.
  */
 static int e_d_jdb_reply_is_stop(const char *text)
 {
+ const char *stop;
+
  if (!e_d_jdb_asks_command(text))
   return(0);
- return(e_d_jdb_stop_line_in(text) != NULL);
+ stop = e_d_jdb_stop_line_in(text);
+ if (!stop)
+  return(0);
+ return(strstr(stop, E_D_JDB_LINE_MARK) != NULL);
 }
 
 /**
@@ -11044,7 +11131,7 @@ static void e_d_jdb_pause_forget(void)
 static const char *e_d_jdb_continue_command(void)
 {
  if (!e_d_jdb_suspended)
-  return("cont\n");
+  return(E_D_JDB_CONT);
  e_d_jdb_suspended = 0;
  return(E_D_JDB_RESUME);
 }
@@ -11082,6 +11169,7 @@ static void e_d_jdb_begin(void)
 {
  e_d_step_reply_init(&e_d_jdb_reply);
  e_d_jdb_live_scanned = 0;
+ e_d_jdb_ncleared = 0;
 }
 
 /**
@@ -11487,6 +11575,7 @@ static void e_d_jdb_stopped(FENSTER *f)
 {
  const char *stop;
 
+ e_d_jdb_ncleared = 0;       /* the stop is the user's: jdb has the rest */
  e_d_drain_pty_to_messages();
  if (e_d_jdb_says_end(e_d_jdb_reply.buf))
  {
@@ -11510,6 +11599,159 @@ static void e_d_jdb_stopped(FENSTER *f)
  e_d_jdb_say_exception(f, stop);
 }
 
+/* The breakpoints the user removed while the program ran, which jdb has
+   been sent "clear" for in this run.  jdb may report a hit on one of them
+   before it takes the clear, and that stop is not the user's. */
+#define E_D_JDB_CLEARED_MAX 32
+typedef struct
+{
+ char cls[E_D_JDB_SPEC_MAX];   /* the class, as "clear" names it */
+ int line;                     /* 1-based */
+} E_D_JDB_CLEARED;
+
+static E_D_JDB_CLEARED e_d_jdb_cleared[E_D_JDB_CLEARED_MAX];
+
+/**
+ * e_d_jdb_cleared_find - Which "clear" sent in this run names @cls and
+ * @line?
+ * Return: its place in the record, or -1.
+ */
+static int e_d_jdb_cleared_find(const char *cls, int line)
+{
+ int i;
+
+ for (i = 0; i < e_d_jdb_ncleared; i++)
+  if (e_d_jdb_cleared[i].line == line && !strcmp(e_d_jdb_cleared[i].cls, cls))
+   return(i);
+ return(-1);
+}
+
+/**
+ * e_d_jdb_cleared_drop - Take entry @at out of the record of cleared
+ * breakpoints.
+ */
+static void e_d_jdb_cleared_drop(int at)
+{
+ for (; at < e_d_jdb_ncleared - 1; at++)
+  e_d_jdb_cleared[at] = e_d_jdb_cleared[at + 1];
+ e_d_jdb_ncleared--;
+}
+
+/**
+ * e_d_jdb_note_cleared - Remember that jdb is sent "clear" for @line of
+ * @file.
+ *
+ * The user then never sees jdb's stop on a line he has just unmarked, which
+ * a program passing it often can reach before the clear is taken.  When the
+ * record is full the oldest entry goes.
+ */
+static void e_d_jdb_note_cleared(const char *file, int line)
+{
+ char cls[E_D_JDB_SPEC_MAX];
+
+ e_d_brk_jdb_class(file, cls, sizeof(cls));
+ if (e_d_jdb_cleared_find(cls, line) >= 0)
+  return;
+ if (e_d_jdb_ncleared == E_D_JDB_CLEARED_MAX)
+  e_d_jdb_cleared_drop(0);
+ snprintf(e_d_jdb_cleared[e_d_jdb_ncleared].cls, E_D_JDB_SPEC_MAX, "%s", cls);
+ e_d_jdb_cleared[e_d_jdb_ncleared].line = line;
+ e_d_jdb_ncleared++;
+}
+
+/**
+ * e_d_jdb_forget_cleared - jdb is sent "stop at" for @line of @file again:
+ * a stop there is the user's.
+ */
+static void e_d_jdb_forget_cleared(const char *file, int line)
+{
+ char cls[E_D_JDB_SPEC_MAX];
+ int at;
+
+ e_d_brk_jdb_class(file, cls, sizeof(cls));
+ at = e_d_jdb_cleared_find(cls, line);
+ if (at >= 0)
+  e_d_jdb_cleared_drop(at);
+}
+
+/**
+ * e_d_jdb_marked - Does the breakpoint list have @line of class @cls?
+ * Return: 1 when the user has a mark there.
+ */
+static int e_d_jdb_marked(const char *cls, int line)
+{
+ char entry[E_D_JDB_SPEC_MAX];
+ int i;
+
+ for (i = 0; i < e_d_nbrpts; i++)
+ {
+  if (e_d_ybrpts[i] != line)
+   continue;
+  e_d_brk_jdb_class(e_d_sbrpts[i], entry, sizeof(entry));
+  if (!strcmp(entry, cls))
+   return(1);
+ }
+ return(0);
+}
+
+/**
+ * e_d_jdb_removal_waits - Is the removal of @line of class @cls still
+ * waiting to be sent to jdb?
+ * Return: 1 when it is.
+ */
+static int e_d_jdb_removal_waits(const char *cls, int line)
+{
+ char entry[E_D_JDB_SPEC_MAX];
+ int i;
+
+ for (i = 0; i < e_d_brk_ngone; i++)
+ {
+  if (e_d_brk_gone[i].line != line)
+   continue;
+  e_d_brk_jdb_class(e_d_brk_gone[i].file, entry, sizeof(entry));
+  if (!strcmp(entry, cls))
+   return(1);
+ }
+ return(0);
+}
+
+/**
+ * e_d_jdb_stale_stop - Is jdb's stop a breakpoint hit on a line the user
+ * has since unmarked?
+ *
+ * Told from the line jdb names: a "Breakpoint hit:" (a step's end or an
+ * exception is always the user's) on a line the list does not mark, for
+ * which jdb was sent a "clear" or is about to be.  The user then sees no
+ * stop on a line that no longer has a mark.
+ * Return: 1 for such a stop.
+ */
+static int e_d_jdb_stale_stop(void)
+{
+ const char *stop = e_d_jdb_stop_line_in(e_d_jdb_reply.buf);
+ char cls[E_D_JDB_SPEC_MAX];
+ int line;
+
+ if (!stop || strncmp(stop, E_D_JDB_STOP_MARK, strlen(E_D_JDB_STOP_MARK)))
+  return(0);
+ line = e_d_jdb_stop_line(stop);
+ if (line <= 0 || !e_d_jdb_stop_class(stop, cls, sizeof(cls)))
+  return(0);
+ if (e_d_jdb_marked(cls, line))
+  return(0);
+ return(e_d_jdb_cleared_find(cls, line) >= 0 ||
+        e_d_jdb_removal_waits(cls, line));
+}
+
+/**
+ * e_d_jdb_answer_reset - Read a new answer of jdb's, for a command sent
+ * from a stop the user is not shown.
+ */
+static void e_d_jdb_answer_reset(void)
+{
+ e_d_step_reply_init(&e_d_jdb_reply);
+ e_d_jdb_live_scanned = 0;
+}
+
 /* jdb: its answers on its pipe, the program's output on the pty, a prompt
    at each stop.  jdb takes breakpoint commands while the program runs. */
 static const E_D_RUN_OPS e_d_jdb_ops =
@@ -11523,7 +11765,15 @@ static const E_D_RUN_OPS e_d_jdb_ops =
  e_d_jdb_sync_live,
  e_d_brk_sync_at_stop,
  e_d_run_to_cursor_line,
- e_d_jdb_begin
+ e_d_jdb_begin,
+ NULL,
+ 0,
+ NULL,
+ NULL,
+ NULL,
+ e_d_jdb_answer_reset,
+ 0,
+ e_d_jdb_stale_stop
 };
 
 /**
@@ -11549,6 +11799,25 @@ static int e_d_jdb_run_started(FENSTER *f, int start_brk)
 {
  e_d_swtch = 3;
  return(e_d_run_hand_over(f, e_d_jdb_run_ops(), start_brk));
+}
+
+/**
+ * e_d_jdb_run_continued - jdb was sent the command of a Run or a Continue:
+ * let it run under the controller, with "cont" as the command that lets the
+ * program on from a stop the user is not shown.
+ * @f: the source window;
+ * @start_brk: the editor's start breakpoint to take out at the stop, or 0.
+ *
+ * A stop on a breakpoint the user has just removed is then passed over
+ * without a word, and the program runs on.
+ * Return: as e_d_jdb_run_started.
+ */
+static int e_d_jdb_run_continued(FENSTER *f, int start_brk)
+{
+ int ret = e_d_jdb_run_started(f, start_brk);
+
+ e_d_run_continues_with(E_D_JDB_CONT);
+ return(ret);
 }
 
 /**
@@ -14807,8 +15076,13 @@ static void e_d_jdb_send_live(ECNT *cn, int set, const char *file, int line)
  char path[PATH_MAX], cmd[E_D_BRK_CMD_MAX];
 
  e_d_brk_path_of(cn, file, path, sizeof(path));
- if (e_d_brk_line_cmd(set, file, path, line, cmd, sizeof(cmd)))
-  e_d_send_cmd(cmd);
+ if (!e_d_brk_line_cmd(set, file, path, line, cmd, sizeof(cmd)))
+  return;
+ if (set)
+  e_d_jdb_forget_cleared(file, line);
+ else
+  e_d_jdb_note_cleared(file, line);
+ e_d_send_cmd(cmd);
 }
 
 /**

@@ -420,9 +420,16 @@ int e_fd_watch(int fd, int events, wpe_fd_callback cb, void *data, const char *w
  * With the keyboard watched the editor sleeps until something happens; when
  * it could not be watched, the sleep is cut short so a key is still read
  * within a moment and the editor never stops answering the user.
+ *
+ * Every display calls this only when no key is waiting, so the breakpoints
+ * the user changed in the keys just handled are told to a running debugger
+ * here, as one net change, before the editor sleeps.
  */
 void e_fd_key_wait(int keyboard_watched)
 {
+#ifdef DEBUGGER
+ e_d_run_flush_live_sync();
+#endif
  if (keyboard_watched)
   wpe_fd_poll(-1);
  else

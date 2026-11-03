@@ -279,8 +279,11 @@ Changes
   and the program stops on a line you mark the next time it gets there,
   without a Pause first.  gdb, pdb and a68g are interrupted for a moment,
   told and let run on, with nothing of that stop shown, and several quick
-  changes share one interrupt; jdb and the debug adapters are told
-  straight away; sdb, dbx and xdb are told at the program's next stop, as
+  changes share one interrupt; jdb and the debug adapters are told as
+  soon as the keys already typed are read, so a mark set and removed in
+  one burst of keys is never sent, and a jdb hit on a line you removed
+  meanwhile is not shown, the program running on; sdb, dbx and xdb are
+  told at the program's next stop, as
   is a change made during a step (its mark stays hollow until the step
   ends or you press Pause).  If the program stops on its own while
   the interrupt is on its way, that stop is yours and nothing runs on.  A

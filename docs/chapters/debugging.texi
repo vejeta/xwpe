@@ -225,11 +225,21 @@ succession share one interrupt, and only the margin mark that changed is
 drawn again, not the screen.
 @item
 jdb and the debug adapters (dlv, lldb-dap, gdb's adapter, Scala) take
-the change while the program runs, and xwpe sends it straight away.
+the change while the program runs, and xwpe sends it as soon as the keys
+you have already typed are read.
 @item
 sdb, dbx and xdb keep the change for the program's next stop, whatever
 the reason for it: a breakpoint, @kbd{Ctrl-G I}, the end of a step.
 @end itemize
+Changes typed together reach the debugger as their net change, under
+every debugger: a mark set and taken off again in one burst of keys is
+never sent, so a loop that passes the line a million times a second
+cannot stop on a line you no longer mark.  A mark set and removed with a
+pause between the two is sent twice; if jdb then reports a hit on the
+line before it has taken the removal, xwpe does not show that stop
+either, and the program runs on.  A stop on a line that still has a
+mark, a step's end, an exception, or a breakpoint you never removed, is
+always shown.
 A change made during a step, Finish or Go to cursor waits for that
 command's own stop: interrupting it would turn the step into a Continue.
 Its mark stays hollow until the step ends or you press Pause, which
