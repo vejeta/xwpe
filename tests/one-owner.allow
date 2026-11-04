@@ -1,0 +1,40 @@
+# Offenders of tests/check-one-owner.sh that still stand.
+#
+#   object symbol count pass [reason]
+#
+# "count" is the number of places the source uses the name; it may only
+# fall (the script fails when it is wrong in either direction, and when a
+# line matches nothing any more).  "pass" is the pass that removes the
+# line.  "keep" is a permanent exception and stays in --strict mode too.
+# Each pass deletes the lines it clears; the last pass deletes the file.
+
+# the assistant's waits for a model's reply
+we_ai_http.o poll 1 P9l
+we_ai.o poll 3 P9l
+we_ai.o usleep 1 P9l the mock backend's delay, to become a loop timer
+we_ai.o STDIN_FILENO 2 P9l watches fd 0 for Esc during the modal wait
+we_ai_ui.o STDIN_FILENO 1 P9l the model listing watches fd 0 for Esc
+we_ai_ui.o e_u_kbhit 1 P9l the model listing reads Esc through the display table
+
+# the build server and the language server
+we_bsp.o poll 2 P9k
+we_lsp.o poll 2 P9k the handshake and the message reads
+we_lsp.o nanosleep 1 P9i server end moves to the child watch
+
+# the debug adapters
+we_dap.o poll 3 P9g the answer waits and the Quit waits
+
+# the debugger
+we_debug.o poll 2 P9f the pty drain and the frames wait
+we_debug.o usleep 1 P9o the external xterm settle
+we_debug.o XFlush 3 P9f
+we_debug.o XNextEvent 1 P9f the key reader that the loop replaces
+we_debug.o XPending 1 P9f
+we_debug.o XPutBackEvent 1 P9f the bridge that gave keys back
+we_debug.o STDIN_FILENO 1 keep ttyname_r names the editor's own terminal; no read
+
+# console mouse, clipboard, display
+we_gpm.o poll 1 P9o the gpm handshake
+we_gpm.o STDIN_FILENO 2 keep isatty asks whether the terminal is the console; no read
+we_wayland.o poll 1 P9o the clipboard pipe
+we_xterm.o poll 1 P9o the paste wait for SelectionNotify

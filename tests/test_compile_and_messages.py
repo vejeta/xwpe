@@ -16,7 +16,10 @@ import time
 
 import pytest
 
-from wpe_driver import WAIT_SCALE, WpeSession, tool_usable, wait_screen
+from wpe_driver import (WAIT_SCALE, WpeSession, tool_usable, wait_screen,
+                        late_reader_c_program, paste_text, end_paste_until,
+                        PASTE_LINES,
+                        PASTE_BYTES_PER_LINE)
 
 F9 = "\033[20~"            # Make: compile and link
 CTRL_F9 = "\033[20;5~"     # Run
@@ -152,6 +155,32 @@ def test_ctrl_f9_runs_the_program_and_messages_shows_its_output(tmp_path):
     assert "Return-Code: 3" in screen, screen
     assert "--- End output" in screen, screen
     assert (tmp_path / "t.c").read_text() == src
+
+
+LATE_READER_COUNT_RE = re.compile(r"COUNT:(\d+)")
+PASTE_TIMEOUT = 90                 # the Run loop forwards a paste key by key
+
+
+# @scenario SC-compile-03
+def test_text_pasted_before_the_run_program_reads_reaches_it_whole(tmp_path):
+    """Ctrl-F9 runs a program that does not read yet; a paste larger than
+    the pty holds is typed for it.  Once it reads, every byte arrives.
+    With the pty master non-blocking the Run loop's write met a full pty
+    and the rest of the paste was lost."""
+    need("gcc")
+    go = tmp_path / "go"
+    with session(tmp_path, late_reader_c_program(str(go)), "p.c") as w:
+        w.key(CTRL_F9, delay=BUILD_WAIT)
+        assert wait_screen(w, "READY", tmo=FIND_TIMEOUT), screen_text(w)
+        w.paste(paste_text(), go.touch)
+        assert end_paste_until(
+            w, lambda: LATE_READER_COUNT_RE.search(screen_text(w)),
+            PASTE_TIMEOUT), \
+            "the program should print its count:\n" + screen_text(w)
+        found = LATE_READER_COUNT_RE.search(screen_text(w))
+    assert int(found.group(1)) == PASTE_LINES * PASTE_BYTES_PER_LINE, \
+        "the program read %s of the %d bytes pasted for it" \
+        % (found.group(1), PASTE_LINES * PASTE_BYTES_PER_LINE)
 
 
 # @scenario SC-compile-04

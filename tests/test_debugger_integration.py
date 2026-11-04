@@ -25,7 +25,10 @@ import pytest
 import procinfo
 from wpe_driver import (WpeSession, ALT, WAIT_SCALE, tool_usable,
                         CURRENT_LINE_BG, BREAKPOINT_BG,
-                        UNCONFIRMED_BREAKPOINT_FG, incoherence)
+                        UNCONFIRMED_BREAKPOINT_FG, incoherence,
+                        late_reader_c_program, paste_text, end_paste_until,
+                        PASTE_LINES,
+                        PASTE_BYTES_PER_LINE)
 
 CTRL_G = "\x07"         # debugger command prefix
 DOWN = "\033OB"
@@ -1674,6 +1677,37 @@ def test_text_typed_while_the_program_runs_reaches_the_program(tmp_path):
         assert _wait_for(w, lambda: "GOT:hiğ" in _screen(w),
                          STEP_TIMEOUT_S), \
             "the program should read what was typed:\n%s" % _screen(w)
+
+
+LATE_READER_RETURN_LINE = 17      # return 0;  after the count is printed
+LATE_READER_COUNT_RE = re.compile(r"COUNT:(\d+)")
+PASTE_TIMEOUT_S = 90              # the editor forwards a paste key by key
+
+
+# @scenario SC-debug-35
+def test_text_pasted_before_the_program_reads_reaches_it_whole(tmp_path):
+    """A paste larger than the pty holds, typed while the program under
+    gdb is not yet reading: every byte reaches the program once it reads.
+    With the pty master non-blocking the editor's write met a full pty and
+    the rest of the paste was lost."""
+    _need("gcc", "gdb")
+    go = tmp_path / "go"
+    with WpeSession(str(tmp_path), late_reader_c_program(str(go)),
+                    filename="p.c", wait=1.5) as w:
+        _move_down(w, LATE_READER_RETURN_LINE - 1)
+        w.key(CTRL_G, "b", delay=0.4)
+        w.key(CTRL_G, "r", delay=0.2)
+        assert _wait_for(w, lambda: "READY" in _screen(w), START_TIMEOUT_S), \
+            "the program should be running and print READY:\n%s" % _screen(w)
+        w.paste(paste_text(), go.touch)
+        assert end_paste_until(
+            w, lambda: LATE_READER_COUNT_RE.search(_screen(w)),
+            PASTE_TIMEOUT_S), \
+            "the program should count what was pasted:\n%s" % _screen(w)
+        got = int(LATE_READER_COUNT_RE.search(_screen(w)).group(1))
+        assert got == PASTE_LINES * PASTE_BYTES_PER_LINE, \
+            "the program read %d of the %d bytes pasted for it" \
+            % (got, PASTE_LINES * PASTE_BYTES_PER_LINE)
 
 
 RUNNING_REFUSAL = "The program is running"

@@ -394,6 +394,22 @@ X11 GUI tests (xwpe under Xvfb, `tests/x11/`):
 
 C-source tests built by `make check`:
 - `test_checkheader.c`, `test_syntax_def.c`
+- `test_fdloop.c` -- the fd loop, its timers, `wpe_fd_readable_now` and
+  `wpe_fd_wait_for`.
+- `check-one-owner.sh` (a `TESTS` script, not a C program) -- the editor has
+  one owner of input and of waiting.  It reads the undefined symbols of the
+  editor's own objects with `$(NM)` (found by `configure`) and fails when code
+  outside `we_fdloop.o` calls `poll`, `select`, `usleep` or the like, outside
+  `we_term.o` calls `getch`, outside `we_xterm.o` reads X events, outside
+  `we_wayland.o` dispatches Wayland events; a source scan adds fd 0 and the
+  display's `e_u_kbhit` table.  The offenders still to go are in
+  `tests/one-owner.allow` (`object symbol count pass`; the count may only
+  fall and a line that matches nothing fails).  `tests/check-one-owner.sh
+  --strict` ignores that file except its `keep` lines (the two permanent
+  exceptions, neither of which reads) and is expected to fail until the last pass;
+  `--list` prints what it finds.  It fails, rather than passes, when it
+  cannot see `poll` in `we_fdloop.o` or `wgetch` in `we_term.o` (LTO objects,
+  a wrong `nm`).
 
 ## What the tests verify
 

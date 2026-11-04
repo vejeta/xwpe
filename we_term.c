@@ -1229,6 +1229,143 @@ int e_t_kbhit()
  return (ret == 1 ? c : 0);
 }
 
+/**
+ * e_t_wait_for_enter_on_raw_terminal - Hold the screen until the user has
+ * read it and pressed a key.
+ *
+ * Used where the editor has handed the terminal to a shell command or shows
+ * a box that says "Hit CR": the one blocking read of the keyboard outside
+ * the main loop, kept here with the other readers of the terminal so that
+ * nothing else in the editor reads fd 0.  The user sees the command's
+ * output stay until they choose to go on.  It is a terminal-only wait: the
+ * X11 and Wayland callers do not reach it for a shell command, and the box
+ * that does reach it there has always met the same read.
+ */
+void e_t_wait_for_enter_on_raw_terminal(void)
+{
+ fk_getch();
+}
+
+/* The lead bytes of a multi-byte UTF-8 character, and how long the Run
+   loop waits for each of its continuation bytes. */
+#define E_T_RUN_UTF8_LEAD_FIRST 0xC0
+#define E_T_RUN_UTF8_LEAD_LAST  0xF7
+#define E_T_RUN_UTF8_CONT_MS    50
+
+#ifdef NCURSES
+/**
+ * e_t_run_key_from_curses - The key typed on the terminal for a program the
+ * Run menu started, or 0 when none is waiting.
+ *
+ * A multi-byte UTF-8 character arrives as one code point, so a user typing
+ * an accented letter for their program sends that letter, not its bytes.
+ */
+static int e_t_run_key_from_curses(void)
+{
+ int c, cp, i, expect, cont;
+
+ timeout(0);
+ c = getch();
+ timeout(-1);
+ if (c == ERR)
+  return 0;
+ if ((unsigned int)c < E_T_RUN_UTF8_LEAD_FIRST ||
+     (unsigned int)c > E_T_RUN_UTF8_LEAD_LAST)
+  return c;
+ if ((c & 0xE0) == 0xC0) { cp = c & 0x1F; expect = 1; }
+ else if ((c & 0xF0) == 0xE0) { cp = c & 0x0F; expect = 2; }
+ else { cp = c & 0x07; expect = 3; }
+ for (i = 0; i < expect; i++)
+ {
+  timeout(E_T_RUN_UTF8_CONT_MS);
+  cont = getch();
+  timeout(-1);
+  if (cont == ERR || (cont & 0xC0) != 0x80)
+   return c;
+  cp = (cp << 6) | (cont & 0x3F);
+ }
+ return cp;
+}
+#endif
+
+/**
+ * e_t_key_now - The key the user typed for a program the Run menu started,
+ * or 0 when none is waiting.
+ *
+ * Never waits: the Run loop asks between reads of the program's output, so
+ * the user's typing reaches the program while its output keeps scrolling.
+ * The terminal's key comes from ncurses here, with the other readers of the
+ * terminal; a graphical display's comes through its own key table.
+ * Special keys and Ctrl-C stay with the caller.
+ */
+int e_t_key_now(void)
+{
+ int c = 0;
+
+#ifdef NCURSES
+ if (!WpeIsXwin())
+  c = e_t_run_key_from_curses();
+#endif
+#ifndef NO_XWINDOWS
+ if (WpeIsXwin())
+  c = (*e_u_kbhit)();
+#endif
+ return c;
+}
+
+#ifndef NO_XWINDOWS
+/* Where a message box's Cancel button sits: its row above the bottom
+   border, and its span either side of the box's middle. */
+#define E_T_BOX_BUTTON_ROW_UP     2
+#define E_T_BOX_CANCEL_LEFT_OFF  10
+#define E_T_BOX_CANCEL_RIGHT_OFF  6
+
+/**
+ * e_t_box_click_is_cancel - Did the user click the Cancel half of a box's
+ * bottom row?
+ * @xa: the box's left column; @xe: its right column; @ye: its bottom row.
+ */
+static int e_t_box_click_is_cancel(int xa, int xe, int ye)
+{
+ extern struct mouse e_mouse;
+
+ return e_mouse.y == ye - E_T_BOX_BUTTON_ROW_UP &&
+        e_mouse.x > (xe + xa - E_T_BOX_CANCEL_LEFT_OFF) / 2 &&
+        e_mouse.x < (xe + xa + E_T_BOX_CANCEL_RIGHT_OFF) / 2;
+}
+#endif
+
+/**
+ * e_t_drain_keys_after_box - Take the keys typed while a message box was up.
+ * @xa: the box's left column; @xe: its right column; @ye: its bottom row.
+ *
+ * Keys the user typed ahead do not leak into the editor after the box; a
+ * Ctrl-C, or on a graphical display a click on the box's Cancel half, says
+ * the user cancelled.
+ * Return: CtrlC when the user cancelled, else 0.
+ */
+int e_t_drain_keys_after_box(int xa, int xe, int ye)
+{
+ int i;
+
+#ifndef NO_XWINDOWS
+ if (WpeIsXwin())
+ {
+  while ((i = (*e_u_kbhit)()))
+  {
+   if (i == -1 && e_t_box_click_is_cancel(xa, xe, ye))
+    i = CtrlC;
+   if (i == CtrlC)
+    break;
+  }
+  return i;
+ }
+#endif
+ while ((i = (*e_u_kbhit)()) && i != CtrlC)
+  ;
+ return i;
+}
+
 #ifdef NCURSES
 static int e_t_utf8_assemble(int first)
 {
@@ -1302,16 +1439,13 @@ void e_t_flush_input(void)
  */
 static int e_t_input_is_gone(void)
 {
- struct pollfd p;
  int pending = 0;
+ int ready = wpe_fd_readable_now(STDIN_FILENO);
 
- p.fd = STDIN_FILENO;
- p.events = POLLIN;
- p.revents = 0;
- if (poll(&p, 1, 0) <= 0)
+ if (ready == WPE_FD_NOT_READABLE)
   return(0);                    /* nothing to read yet: the user is idle */
- if (p.revents & POLLNVAL)
-  return(1);
+ if (ready == WPE_FD_INVALID)
+  return(1);                    /* the descriptor is dead */
  if (ioctl(STDIN_FILENO, FIONREAD, &pending) == 0 && pending > 0)
   return(0);                    /* a key arrived since the read: not gone */
  return(1);                     /* readable with nothing in it: end of input */

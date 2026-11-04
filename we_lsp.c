@@ -16,6 +16,7 @@
 #include "we_lsp.h"
 #include "we_childsig.h"
 #include "we_dap_proto.h"        /* e_dap_reader: shared Content-Length framing */
+#include "we_fdloop.h"           /* wpe_fd_readable_now */
 
 #define LSP_TMO_INIT  120000     /* server start + initialize                */
 #define LSP_TMO_BUILD 240000     /* import build + first compile (cold cache) */
@@ -932,7 +933,6 @@ static void lsp_capture_semantic_legend(e_lsp_session *s, struct json_object *m)
 
 int e_lsp_poll(e_lsp_session *s)
 {
- struct pollfd p;
  int handled = 0, guard = 0;
 
  if (!s || s->out_fd < 0 || s->dead)
@@ -942,9 +942,7 @@ int e_lsp_poll(e_lsp_session *s)
  {
   char buf[8192];
   ssize_t n;
-  p.fd = s->out_fd;
-  p.events = POLLIN;
-  if (poll(&p, 1, 0) <= 0)
+  if (wpe_fd_readable_now(s->out_fd) != WPE_FD_READABLE)
    break;
   n = read(s->out_fd, buf, sizeof(buf));
   if (n == 0)                  /* EOF: the server closed its stdout -- it died */

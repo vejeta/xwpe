@@ -42,6 +42,21 @@ void wpe_fd_refusal(const char *what, int fd, char *line, size_t sz);
 int  wpe_timer_add(long interval_ms, int repeat, wpe_timer_callback cb, void *data);
 void wpe_timer_del(int id);
 
+/* What wpe_fd_readable_now says about a descriptor. */
+#define WPE_FD_NOT_READABLE 0
+#define WPE_FD_READABLE     1
+#define WPE_FD_INVALID      (-1)
+int  wpe_fd_readable_now(int fd);
+
+/* wpe_fd_wait_for: no deadline; and how it ended. */
+#define WPE_WAIT_FOREVER (-1L)
+#define WPE_WAIT_TIMEOUT 0
+#define WPE_WAIT_DONE    1
+#define WPE_WAIT_INPUT   2   /* a key or display event for the caller's reader */
+typedef int (*wpe_wait_pred)(void);
+int  wpe_fd_wait_for(wpe_wait_pred pred, long deadline_ms, const char *what);
+const char *wpe_fd_waiting_for(void);
+
 /* The editor's side (we_hfkt.c): watch an fd and say so on the bottom row
    when the loop cannot; wait for a key whether or not the keyboard is
    watched.  Every callback consumes what made its fd ready, or stops

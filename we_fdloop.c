@@ -4,6 +4,7 @@
 /* modify it under the terms of the                        */
 /* GNU General Public License, see the file COPYING.       */
 
+#include <errno.h>
 #include <limits.h>
 #include <poll.h>
 #include <stdint.h>
@@ -59,6 +60,10 @@ typedef struct {
 
 static wpe_fd_entry fd_table[WPE_FD_MAX];
 static int fd_count = 0;
+
+/* Callbacks and timers the loop has run, ever: a wait compares it before and
+   after a poll to tell work done from a wake that only a display reads. */
+static unsigned long wpe_loop_work = 0;
 
 static wpe_fd_entry *wpe_fd_find(int fd)
 {
@@ -185,6 +190,7 @@ static void wpe_fd_run_callback(wpe_fd_entry *e)
 {
  e->pending = 0;
  e->busy = 1;
+ wpe_loop_work++;
  e->callback(e->fd, e->data);
  /* The slot may hold another registration now; it is not running (its
     callback could only have run inside this one, and has returned). */
@@ -395,6 +401,7 @@ static void wpe_timer_fire(wpe_timer_entry *t, int64_t now)
   wpe_timer_rearm(t, now);
  else
   t->id = WPE_TIMER_NONE;
+ wpe_loop_work++;
  cb(data);
 }
 
@@ -580,4 +587,164 @@ int wpe_fd_poll(int timeout_ms)
  if (ready > 0)
   wpe_fd_run_ready(map, n);
  return ready + wpe_timer_run_due();
+}
+
+/**
+ * wpe_fd_readable_now - Can a read on this descriptor answer at once?
+ * @fd: a descriptor, registered with the loop or not.
+ *
+ * Asked without waiting, so a code path that needs to know whether the
+ * debugger or the terminal has already written something (a race check, an
+ * end-of-input test) never stalls the editor and never reads what the loop
+ * is about to serve.  A hang-up or an error counts as readable: the read
+ * that follows reports the end.
+ * A signal that interrupts the probe (a child ending) asks again, so the
+ * answer is never "invalid" for a descriptor that is merely idle.
+ * Return: WPE_FD_READABLE (1), WPE_FD_NOT_READABLE (0), or WPE_FD_INVALID
+ * (-1) when the descriptor is closed or poll() failed.
+ */
+int wpe_fd_readable_now(int fd)
+{
+ struct pollfd pfd;
+ int n;
+
+ pfd.fd = fd;
+ pfd.events = POLLIN;
+ do
+ {
+  pfd.revents = 0;
+  n = poll(&pfd, 1, 0);
+ } while (n < 0 && errno == EINTR);
+ if (n < 0)
+  return WPE_FD_INVALID;
+ if (pfd.revents & POLLNVAL)
+  return WPE_FD_INVALID;
+ if (pfd.revents & (POLLIN | POLLPRI | POLLHUP | POLLERR))
+  return WPE_FD_READABLE;
+ return WPE_FD_NOT_READABLE;
+}
+
+/* What the innermost wpe_fd_wait_for is waiting for, for a status line. */
+static const char *wpe_wait_what = NULL;
+
+/**
+ * wpe_fd_waiting_for - Name the wait the editor is inside, if any.
+ *
+ * Return: the @what of the innermost wpe_fd_wait_for still running, or NULL
+ * when none is.  A waiting line or a diagnostic can then say "waiting for
+ * the clipboard" instead of leaving the user with a silent editor.
+ */
+const char *wpe_fd_waiting_for(void)
+{
+ return wpe_wait_what;
+}
+
+/* What wpe_wait_bound says once the deadline has come. */
+#define WPE_WAIT_EXPIRED 0
+
+/**
+ * wpe_loop_has_sources - Could the loop run anything at all?
+ *
+ * A wait whose loop watches no descriptor and holds no timer could only
+ * sleep: nothing could make its condition hold, so it ends at once and the
+ * user is not kept waiting until a deadline for an answer that cannot come.
+ */
+static int wpe_loop_has_sources(void)
+{
+ int i;
+
+ if (wpe_timer_pending())
+  return 1;
+ for (i = 0; i < WPE_FD_MAX; i++)
+ {
+  if (wpe_fd_watched(&fd_table[i]))
+   return 1;
+ }
+ return 0;
+}
+
+/**
+ * wpe_wait_bound - How long the loop may sleep inside a wait.
+ * @start: when the wait began; @deadline_ms: its deadline, or
+ * WPE_WAIT_FOREVER.
+ *
+ * The loop sleeps until something wakes it or the deadline comes, never in
+ * slices, so a wait costs nothing while the user's editor is idle.
+ * Return: WPE_POLL_FOREVER without a deadline, WPE_WAIT_EXPIRED once it has
+ * come, else the milliseconds left.
+ */
+static int wpe_wait_bound(int64_t start, long deadline_ms)
+{
+ int64_t left;
+
+ if (deadline_ms == WPE_WAIT_FOREVER)
+  return WPE_POLL_FOREVER;
+ left = deadline_ms - (wpe_clock_ms() - start);
+ if (left <= WPE_WAIT_EXPIRED)
+  return WPE_WAIT_EXPIRED;
+ if (left > INT_MAX)
+  return INT_MAX;
+ return (int)left;
+}
+
+/**
+ * wpe_wait_run - The body of wpe_fd_wait_for, without the naming.
+ * @pred: the condition; @start: when the wait began; @deadline_ms: as there.
+ *
+ * The condition is asked again only after the loop has run a callback or a
+ * timer, the only things that can change it.  A wake that ran nothing is a
+ * key or a display event waiting on a descriptor no callback reads: the wait
+ * hands it back so the caller's display can take it, instead of waking on
+ * it again and again until the deadline.
+ */
+static int wpe_wait_run(wpe_wait_pred pred, int64_t start, long deadline_ms)
+{
+ unsigned long work_before;
+ int bound, ready;
+
+ for (;;)
+ {
+  if (pred())
+   return WPE_WAIT_DONE;
+  if (!wpe_loop_has_sources())
+   return WPE_WAIT_TIMEOUT;
+  bound = wpe_wait_bound(start, deadline_ms);
+  if (bound == WPE_WAIT_EXPIRED)
+   return WPE_WAIT_TIMEOUT;
+  work_before = wpe_loop_work;
+  ready = wpe_fd_poll(bound);
+  if (ready > 0 && wpe_loop_work == work_before)
+   return WPE_WAIT_INPUT;
+ }
+}
+
+/**
+ * wpe_fd_wait_for - Wait for a condition while the editor keeps serving
+ * everything else.
+ * @pred: non-zero ends the wait; it can only turn true from a callback or a
+ * timer the loop runs, so it is asked once at the start and after each.
+ * @deadline_ms: the longest wait, or WPE_WAIT_FOREVER.
+ * @what: names the wait for wpe_fd_waiting_for().
+ *
+ * The one place code that must wait for something outside the loop (the
+ * clipboard owner's answer, a handshake) does so: the wait sleeps in the
+ * loop, so the build's output, the debugger and the timers are served
+ * meanwhile, and nothing here reads a descriptor itself.  The user keeps an
+ * editor that answers, a deadline always ends the wait, and a key typed
+ * meanwhile comes back to the caller rather than being lost or spun on.
+ * Return: WPE_WAIT_DONE when @pred held; WPE_WAIT_TIMEOUT when the deadline
+ * came first, or at once when the loop has nothing that could make @pred
+ * hold; WPE_WAIT_INPUT when a key or a display event waits for the caller's
+ * own reader.
+ */
+int wpe_fd_wait_for(wpe_wait_pred pred, long deadline_ms, const char *what)
+{
+ const char *outer = wpe_wait_what;
+ int64_t start = wpe_clock_ms();
+ int result;
+
+ wpe_wait_what = what;
+ result = wpe_wait_run(pred, start, deadline_ms);
+ wpe_wait_what = outer;
+ return result;
 }

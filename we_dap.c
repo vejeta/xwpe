@@ -34,6 +34,7 @@
 #include "we_childsig.h"
 #include "we_dap.h"
 #include "we_dap_proto.h"
+#include "we_fdloop.h"
 
 #define DAP_MAX_BP   64
 #define DAP_ACCEPT_MS 10000
@@ -483,16 +484,9 @@ static int dap_transport_readable_now(e_dap_session *s)
  */
 static int dap_fd_readable_now(int fd)
 {
- struct pollfd p;
-
  if (fd < 0)
   return 0;
- p.fd = fd;
- p.events = POLLIN;
- p.revents = 0;
- if (poll(&p, 1, 0) <= 0)
-  return 0;
- return (p.revents & (POLLIN | POLLHUP | POLLERR | POLLNVAL)) != 0;
+ return wpe_fd_readable_now(fd) != WPE_FD_NOT_READABLE;
 }
 
 /**

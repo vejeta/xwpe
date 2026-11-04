@@ -715,6 +715,211 @@ static int test_timer_ids_stay_unique_across_the_wrap(void)
  return rc;
 }
 
+/* --- wpe_fd_readable_now: the probe asks without waiting and without reading. */
+
+/* An empty pipe is not readable, a pipe with a byte is, and the byte is
+ * still there afterwards (the probe consumed nothing). */
+static int test_readable_now_tracks_data(void)
+{
+ int p[2];
+ char c = 'x', got = 0;
+
+ if (pipe(p) != 0) return 1;
+ if (wpe_fd_readable_now(p[0]) != WPE_FD_NOT_READABLE)
+ { printf("FAIL: empty pipe reported readable\n"); return 1; }
+ if (write(p[1], &c, 1) != 1) return 1;
+ if (wpe_fd_readable_now(p[0]) != WPE_FD_READABLE)
+ { printf("FAIL: pipe with a byte not readable\n"); return 1; }
+ if (read(p[0], &got, 1) != 1 || got != 'x')
+ { printf("FAIL: the probe consumed the byte\n"); return 1; }
+ if (wpe_fd_readable_now(p[0]) != WPE_FD_NOT_READABLE)
+ { printf("FAIL: drained pipe still readable\n"); return 1; }
+ close(p[0]); close(p[1]);
+ return 0;
+}
+
+/* A hung-up pipe is readable (the read reports the end); a closed descriptor
+ * is invalid, not "just idle". */
+static int test_readable_now_hangup_and_closed(void)
+{
+ int fd = eof_pipe();
+
+ if (fd < 0) return 1;
+ if (wpe_fd_readable_now(fd) != WPE_FD_READABLE)
+ { printf("FAIL: hung-up pipe not readable\n"); return 1; }
+ close(fd);
+ if (wpe_fd_readable_now(fd) != WPE_FD_INVALID)
+ { printf("FAIL: closed descriptor not invalid\n"); return 1; }
+ return 0;
+}
+
+/* --- wpe_fd_wait_for: waits on the loop, with a deadline, without spinning. */
+
+#define WAIT_DEADLINE_MS   120
+#define WAIT_EARLY_MS      (WAIT_DEADLINE_MS - 20)
+#define WAIT_LATE_MS       (WAIT_DEADLINE_MS + 150)
+#define WAIT_FIRE_MS       40
+#define WAIT_LABEL         "the test's answer"
+
+static int wait_flag = 0;
+static const char *wait_label_seen = NULL;
+
+static int pred_flag(void) { return wait_flag; }
+static int pred_never(void) { return 0; }
+static void set_flag(void *data) { (void)data; wait_flag = 1; }
+
+static int pred_records_label(void)
+{
+ wait_label_seen = wpe_fd_waiting_for();
+ return wait_flag;
+}
+
+/* A predicate already true ends the wait before any waiting. */
+static int test_wait_for_true_predicate_returns_at_once(void)
+{
+ long t0 = now_ms();
+
+ wait_flag = 1;
+ if (wpe_fd_wait_for(pred_flag, WPE_WAIT_FOREVER, WAIT_LABEL) != WPE_WAIT_DONE)
+ { printf("FAIL: true predicate did not end the wait\n"); return 1; }
+ if (now_ms() - t0 > WAIT_FIRE_MS)
+ { printf("FAIL: true predicate waited\n"); return 1; }
+ return 0;
+}
+
+/* A deadline ends a wait on a descriptor that stays silent, on time: the
+ * loop slept on it rather than returning early. */
+static int test_wait_for_deadline_on_a_silent_descriptor(void)
+{
+ int p[2], r;
+ long t0, took;
+
+ if (pipe(p) != 0) return 1;
+ wpe_fd_add(p[0], POLLIN, NULL, NULL);
+ t0 = now_ms();
+ r = wpe_fd_wait_for(pred_never, WAIT_DEADLINE_MS, WAIT_LABEL);
+ took = now_ms() - t0;
+ wpe_fd_del(p[0]);
+ close(p[0]); close(p[1]);
+ if (r != WPE_WAIT_TIMEOUT)
+ { printf("FAIL: deadline gave %d\n", r); return 1; }
+ if (took < WAIT_EARLY_MS || took > WAIT_LATE_MS)
+ { printf("FAIL: deadline took %ld ms\n", took); return 1; }
+ return 0;
+}
+
+/* With nothing registered nothing can answer the wait: it ends at once,
+ * long before a deadline it could only have slept through. */
+#define WAIT_IDLE_DEADLINE_MS (NEVER_MS * 30)
+
+static int test_wait_for_nothing_registered_ends_at_once(void)
+{
+ long t0 = now_ms(), took;
+ int r;
+
+ r = wpe_fd_wait_for(pred_never, WAIT_IDLE_DEADLINE_MS, WAIT_LABEL);
+ took = now_ms() - t0;
+ if (r != WPE_WAIT_TIMEOUT)
+ { printf("FAIL: idle wait gave %d\n", r); return 1; }
+ if (took > NEVER_MS)
+ { printf("FAIL: idle wait slept %ld ms with nothing to wake it\n", took); return 1; }
+ r = wpe_fd_wait_for(pred_never, WPE_WAIT_FOREVER, WAIT_LABEL);
+ if (r != WPE_WAIT_TIMEOUT)
+ { printf("FAIL: idle wait with no deadline gave %d\n", r); return 1; }
+ return 0;
+}
+
+/* A deadline of zero asks once and answers. */
+static int test_wait_for_zero_deadline_asks_once(void)
+{
+ wait_flag = 0;
+ if (wpe_fd_wait_for(pred_flag, 0, WAIT_LABEL) != WPE_WAIT_TIMEOUT)
+ { printf("FAIL: zero deadline did not time out\n"); return 1; }
+ return 0;
+}
+
+/* The loop runs while waiting: a timer that sets the flag ends the wait,
+ * long before its deadline, and the wait named itself meanwhile. */
+static int test_wait_for_serves_timers_and_names_the_wait(void)
+{
+ long t0 = now_ms();
+ int r;
+
+ wait_flag = 0;
+ wait_label_seen = NULL;
+ wpe_timer_add(WAIT_FIRE_MS, 0, set_flag, NULL);
+ r = wpe_fd_wait_for(pred_records_label, NEVER_MS, WAIT_LABEL);
+ if (r != WPE_WAIT_DONE)
+ { printf("FAIL: timer did not end the wait (%d)\n", r); return 1; }
+ if (now_ms() - t0 > WAIT_LATE_MS)
+ { printf("FAIL: the wait ran to its deadline\n"); return 1; }
+ if (wait_label_seen == NULL || strcmp(wait_label_seen, WAIT_LABEL) != 0)
+ { printf("FAIL: the wait did not name itself\n"); return 1; }
+ if (wpe_fd_waiting_for() != NULL)
+ { printf("FAIL: the name outlived the wait\n"); return 1; }
+ return 0;
+}
+
+/* A registered fd's callback runs during the wait and answers it. */
+static void on_data_sets_flag(int fd, void *data)
+{
+ char buf[16];
+
+ (void)data;
+ if (read(fd, buf, sizeof buf) > 0)
+  wait_flag = 1;
+}
+
+static int test_wait_for_serves_fd_callbacks(void)
+{
+ int p[2], r;
+
+ if (pipe(p) != 0) return 1;
+ wait_flag = 0;
+ wpe_fd_add(p[0], POLLIN, on_data_sets_flag, NULL);
+ if (write(p[1], "x", 1) != 1) return 1;
+ r = wpe_fd_wait_for(pred_flag, NEVER_MS, WAIT_LABEL);
+ wpe_fd_del(p[0]);
+ close(p[0]); close(p[1]);
+ if (r != WPE_WAIT_DONE)
+ { printf("FAIL: fd callback did not answer the wait (%d)\n", r); return 1; }
+ return 0;
+}
+
+/* How often a wait may ask its predicate when nothing it could change ran:
+ * once before waiting, once after the loop came back. */
+#define WAIT_ASKS_WITHOUT_WORK 2
+
+static int wait_asks = 0;
+
+static int pred_counts_asks(void)
+{
+ wait_asks++;
+ return 0;
+}
+
+/* A key waiting on a wake-only descriptor (the keyboard, a display
+ * connection) is read by the display's getter, not by a callback, so the
+ * loop can do nothing with it: the wait hands it back instead of asking
+ * its predicate again and again until the deadline. */
+static int test_wait_for_hands_back_unread_wake_only_input(void)
+{
+ int p[2], r;
+
+ if (pipe(p) != 0) return 1;
+ wait_asks = 0;
+ wpe_fd_add(p[0], POLLIN, NULL, NULL);
+ if (write(p[1], "k", 1) != 1) return 1;
+ r = wpe_fd_wait_for(pred_counts_asks, WAIT_DEADLINE_MS, WAIT_LABEL);
+ wpe_fd_del(p[0]);
+ close(p[0]); close(p[1]);
+ if (wait_asks > WAIT_ASKS_WITHOUT_WORK)
+ { printf("FAIL: the wait asked %d times over a key it cannot read\n", wait_asks); return 1; }
+ if (r != WPE_WAIT_INPUT)
+ { printf("FAIL: the unread key was not handed back (%d)\n", r); return 1; }
+ return 0;
+}
+
 int main(void)
 {
  int rc = 0;
@@ -740,6 +945,15 @@ int main(void)
  rc |= test_dispatch_does_not_reenter_the_running_fd();
  rc |= test_fd_refusal_says_why();
  rc |= test_timer_ids_stay_unique_across_the_wrap();
+ rc |= test_readable_now_tracks_data();
+ rc |= test_readable_now_hangup_and_closed();
+ rc |= test_wait_for_true_predicate_returns_at_once();
+ rc |= test_wait_for_deadline_on_a_silent_descriptor();
+ rc |= test_wait_for_nothing_registered_ends_at_once();
+ rc |= test_wait_for_zero_deadline_asks_once();
+ rc |= test_wait_for_serves_timers_and_names_the_wait();
+ rc |= test_wait_for_serves_fd_callbacks();
+ rc |= test_wait_for_hands_back_unread_wake_only_input();
  if (rc == 0) printf("test_fdloop: OK\n");
  return rc;
 }

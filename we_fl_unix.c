@@ -1253,7 +1253,7 @@ int WpeHandleFileManager(ECNT * cn)
             printf("%s", e_msg[ERR_HITCR]);
             fflush(stderr);
             fflush(stdout);
-            fk_getch();
+            e_t_wait_for_enter_on_raw_terminal();
           }
           if(!WpeIsXwin())
           {

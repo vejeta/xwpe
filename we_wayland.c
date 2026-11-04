@@ -1742,15 +1742,10 @@ static int e_w_change(PIC *pic) { (void)pic; return 0; }
    (never blocking on the wl fd when the poll woke for another descriptor). */
 static void wl_pump_once(int block)
 {
- struct pollfd p;
-
  wl_display_flush(WpeWl.display);
  if (block)
   e_fd_key_wait(g_wl_keyboard_watched);
- p.fd = wl_display_get_fd(WpeWl.display);
- p.events = POLLIN;
- p.revents = 0;
- if (poll(&p, 1, 0) > 0 && (p.revents & POLLIN))
+ if (wpe_fd_readable_now(wl_display_get_fd(WpeWl.display)) == WPE_FD_READABLE)
   wl_display_dispatch(WpeWl.display);
  else
   wl_display_dispatch_pending(WpeWl.display);

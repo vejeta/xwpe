@@ -2114,12 +2114,7 @@ static int e_d_run_counts_interrupts(void)
  */
 static int e_d_run_answer_waiting(void)
 {
- struct pollfd pfd;
-
- pfd.fd = e_d_run.ops->answer_fd();
- pfd.events = POLLIN;
- pfd.revents = 0;
- return(poll(&pfd, 1, 0) > 0);
+ return(wpe_fd_readable_now(e_d_run.ops->answer_fd()) == WPE_FD_READABLE);
 }
 
 /**
@@ -3719,11 +3714,7 @@ static int e_d_line_room(E_D_LINE *ln, int len)
  */
 static int e_d_line_output_pending(int n)
 {
- struct pollfd pfd;
-
- pfd.fd = n;
- pfd.events = POLLIN;
- return(poll(&pfd, 1, 0) > 0);
+ return(wpe_fd_readable_now(n) == WPE_FD_READABLE);
 }
 
 /**
@@ -13255,10 +13246,10 @@ static void e_d_frames_tail_update(char *tail, const char *chunk, int n)
  */
 static void e_d_frames_discard_pending(void)
 {
- struct pollfd pfd = { .fd = wfildes[0], .events = POLLIN };
  char chunk[E_D_FRAMES_CHUNK];
 
- while (poll(&pfd, 1, 0) > 0 && read(wfildes[0], chunk, sizeof chunk) > 0)
+ while (wpe_fd_readable_now(wfildes[0]) == WPE_FD_READABLE &&
+        read(wfildes[0], chunk, sizeof chunk) > 0)
   ;
 }
 

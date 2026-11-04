@@ -9,6 +9,9 @@ AM_INIT_AUTOMAKE([foreign subdir-objects -Wall])
 # Compiler
 AC_PROG_CC
 AC_PROG_LN_S
+# nm of the toolchain that built the objects (a cross or LTO build's own),
+# for tests/check-one-owner.sh.
+AC_CHECK_TOOL([NM], [nm], [:])
 
 # Pick a C standard flag that keeps K&R unprototyped '()' semantics (so the
 # 1993 code still compiles) and that the compiler actually supports. Modern

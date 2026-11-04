@@ -661,48 +661,6 @@ int e_user_screen(FENSTER *f)
 #endif
 }
 
-/* Read one key the user typed while their program runs under the pty.  On the
-   console it pulls a byte from ncurses and assembles a multi-byte UTF-8
-   sequence into a single codepoint; under X11 it pulls the key from
-   e_x_kbhit().  Returns the key, or 0 if none is pending.  (Special-key
-   translation and Ctrl-C handling stay in the caller's loop.) */
-static int e_run_read_user_key(void)
-{
- int c = 0;
-#ifdef NCURSES
- if (!WpeIsXwin())
- {
-  timeout(0);
-  c = getch();
-  timeout(-1);
-  if (c == ERR) c = 0;
-  else if ((unsigned int)c >= 0xC0 && (unsigned int)c <= 0xF7)
-  {
-   int cp, i, expect, cont;
-   if ((c & 0xE0) == 0xC0) { cp = c & 0x1F; expect = 1; }
-   else if ((c & 0xF0) == 0xE0) { cp = c & 0x0F; expect = 2; }
-   else { cp = c & 0x07; expect = 3; }
-   for (i = 0; i < expect; i++)
-   {
-    timeout(50);
-    cont = getch();
-    timeout(-1);
-    if (cont == ERR || (cont & 0xC0) != 0x80) { cp = c; break; }
-    cp = (cp << 6) | (cont & 0x3F);
-   }
-   c = cp;
-  }
- }
-#endif
-#ifndef NO_XWINDOWS
- if (WpeIsXwin())
- { extern int e_x_kbhit(void);
-   c = e_x_kbhit();
- }
-#endif
- return c;
-}
-
 /* Set by the editor's SIGINT handler while a program runs: with the terminal
    in cbreak mode Ctrl-C arrives as the signal, not as the key. */
 static volatile sig_atomic_t e_run_interrupted;
@@ -842,7 +800,7 @@ static int e_run_with_pty(char *cmd, BUFFER *b, FENSTER *mf)
   e_run_drain_pty(pty_master, b, mf);
   wpe_fd_poll(WPE_FD_POLL_MS);
   {
-   int c = e_run_read_user_key();
+   int c = e_t_key_now();
    if (c == CtrlC || e_run_interrupted)
    {
     e_run_interrupted = 0;
@@ -4492,7 +4450,7 @@ int e_system(char *estr, ECNT *cn)
  {
   printf("%s",e_msg[ERR_HITCR]);
   fflush(stdout);
-  fk_getch();
+  e_t_wait_for_enter_on_raw_terminal();
  }
  (*e_u_s_sys_end)();
  e_close_view(outp, 1);

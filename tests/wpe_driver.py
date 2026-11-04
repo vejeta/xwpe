@@ -91,6 +91,86 @@ SETTLE_S = float(os.environ.get("XWPE_TEST_SETTLE_MS", "0") or 0) / 1000.0
 DRAIN_POLL_S = 0.1
 COLS, ROWS = 80, 30
 
+# Pasting more than a pty holds.  The text goes in chunks, each written only
+# when the editor's terminal takes it, so a blocked editor blocks the paste
+# instead of the test.  The paste is "stalled" once the editor has taken
+# nothing for PASTE_STALL_S: the editor is waiting on something (a program
+# that is not reading); the caller is told, once, so it can unblock it.
+PASTE_CHUNK = 256
+PASTE_STALL_S = 2.0
+PASTE_TIMEOUT_S = 120
+PASTE_POLL_S = 0.05
+# Lines of a paste, and their length with the Enter that ends each.  Twice
+# what a pty buffers on Linux and the BSDs (about 20 KB), so a key the
+# editor drops instead of waiting for the program cannot hide.
+PASTE_LINES = 800
+PASTE_LINE_TEXT = "a" * 59
+PASTE_BYTES_PER_LINE = len(PASTE_LINE_TEXT) + 1
+PASTE_END_LINE = "END"
+
+
+def paste_text():
+    """The text a paste row types: PASTE_LINES lines then PASTE_END_LINE,
+    each ended by Enter as a terminal sends it."""
+    return (PASTE_LINE_TEXT + "\r") * PASTE_LINES + PASTE_END_LINE + "\r"
+
+
+def paste_end_text():
+    """The line that ends the count, typed once more after the paste.
+    When the editor dropped keys it may have dropped the first one, or the
+    Enter before it, so this one starts with its own Enter; the program
+    then prints what it got instead of waiting for ever.  When nothing was
+    dropped the program has ended and these keys go to the editor,
+    changing no count."""
+    return "\r" + PASTE_END_LINE + "\r"
+
+
+# How often the end line is typed again while the count has not appeared.
+PASTE_END_RETRY_S = 5
+
+
+def end_paste_until(session, counted, timeout):
+    """Type paste_end_text() until ``counted()`` holds or ``timeout``
+    seconds (scaled) run out; return ``counted()``.  An editor that drops
+    keys may drop each end line too, while the program is still busy with
+    what came before it; one that drops nothing is done after the first.
+    Extra end lines follow the first in the program's input, so they never
+    change its count."""
+    deadline = time.time() + timeout * WAIT_SCALE
+    while time.time() < deadline:
+        if counted():
+            return True
+        session.paste(paste_end_text(), lambda: None)
+        session._drain(PASTE_END_RETRY_S)
+    return counted()
+
+
+def late_reader_c_program(go_path):
+    """A C program that prints READY, reads nothing until ``go_path``
+    exists, then counts the bytes of every line up to PASTE_END_LINE and
+    prints COUNT:<n>.  Keys typed for it before it reads must wait in the
+    pty (or in the editor), never be dropped.  The marker is printed with
+    a format so the source the editor shows never contains it."""
+    return (
+        "#include <stdio.h>\n"
+        "#include <string.h>\n"
+        "#include <unistd.h>\n"
+        "int main(void)\n"
+        "{\n"
+        "  char line[256];\n"
+        "  long count = 0;\n"
+        "  printf(\"RE%%sDY\\n\", \"A\");\n"
+        "  fflush(stdout);\n"
+        "  while (access(\"%s\", F_OK) != 0)\n"
+        "    usleep(50000);\n"
+        "  while (fgets(line, sizeof line, stdin)) {\n"
+        "    if (strcmp(line, \"%s\\n\") == 0) break;\n"
+        "    count += (long)strlen(line);\n"
+        "  }\n"
+        "  printf(\"CO%%sNT:%%ld\\n\", \"U\", count);\n"
+        "  return 0;\n"
+        "}\n" % (go_path, PASTE_END_LINE))
+
 # How the editor learns its screen size, and why the harness must not get in
 # the way:
 #
@@ -649,6 +729,38 @@ class WpeSession:
                 os.write(self.master_fd, stroke.encode())
                 self._drain(delay)
         return self
+
+    def paste(self, text, when_stalled):
+        """Type ``text`` as fast as the editor takes it, draining its
+        output meanwhile.  ``when_stalled()`` is called once, when the
+        editor has taken nothing for PASTE_STALL_S or the whole text is
+        written, whichever comes first.  Returns the bytes written."""
+        data = text.encode()
+        done = 0
+        told = False
+        last_progress = time.time()
+        deadline = time.time() + PASTE_TIMEOUT_S * WAIT_SCALE
+        os.set_blocking(self.master_fd, False)
+        try:
+            while done < len(data) and time.time() < deadline:
+                _, writable, _ = select.select([], [self.master_fd], [],
+                                               PASTE_POLL_S)
+                if writable:
+                    try:
+                        done += os.write(self.master_fd,
+                                         data[done:done + PASTE_CHUNK])
+                        last_progress = time.time()
+                    except BlockingIOError:
+                        pass
+                if not told and time.time() - last_progress > PASTE_STALL_S:
+                    when_stalled()
+                    told = True
+                self._drain(PASTE_POLL_S)
+        finally:
+            os.set_blocking(self.master_fd, True)
+        if not told:
+            when_stalled()
+        return done
 
     def resize(self, cols, rows, delay=0.6):
         """Resize the terminal: set the pty window size (the kernel sends

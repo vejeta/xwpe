@@ -348,59 +348,59 @@ test_syntax_def_LDFLAGS =
 # LSP buffer-serialization unit test: the pure e_lsp_join_lines invariant (one
 # '\n' per editor line, WPE_WR not doubled).  Links we_lsp.c only; no server,
 # always runs (no skip).
-test_lsp_buffer_SOURCES = tests/test_lsp_buffer.c we_lsp.c we_dap_proto.c
+test_lsp_buffer_SOURCES = tests/test_lsp_buffer.c we_lsp.c we_dap_proto.c we_fdloop.c
 test_lsp_buffer_CFLAGS = $(XWPE_STDFLAG) $(JSONC_CFLAGS)
 test_lsp_buffer_LDADD = $(JSONC_LIBS)
 
 # LSP Doctor dedup unit test: the pure e_lsp_doc_is_new gate (re-pushed Doctor
 # rendered only when changed; reset per session shows it again).  we_lsp.c only.
-test_lsp_doctor_SOURCES = tests/test_lsp_doctor.c we_lsp.c we_dap_proto.c
+test_lsp_doctor_SOURCES = tests/test_lsp_doctor.c we_lsp.c we_dap_proto.c we_fdloop.c
 test_lsp_doctor_CFLAGS = $(XWPE_STDFLAG) $(JSONC_CFLAGS)
 test_lsp_doctor_LDADD = $(JSONC_LIBS)
 
 # LSP semantic-tokens decode unit test: the pure delta-decode (we_lsp.c).
-test_lsp_semantic_SOURCES = tests/test_lsp_semantic.c we_lsp.c we_dap_proto.c
+test_lsp_semantic_SOURCES = tests/test_lsp_semantic.c we_lsp.c we_dap_proto.c we_fdloop.c
 test_lsp_semantic_CFLAGS = $(XWPE_STDFLAG) $(JSONC_CFLAGS)
 test_lsp_semantic_LDADD = $(JSONC_LIBS)
 
 # Semantic-token truecolor palette unit test: pure token->RGB-slot lookup.
-test_lsp_truecolor_SOURCES = tests/test_lsp_truecolor.c we_lsp.c we_dap_proto.c
+test_lsp_truecolor_SOURCES = tests/test_lsp_truecolor.c we_lsp.c we_dap_proto.c we_fdloop.c
 test_lsp_truecolor_CFLAGS = $(XWPE_STDFLAG) $(JSONC_CFLAGS)
 test_lsp_truecolor_LDADD = $(JSONC_LIBS)
 
 # DAP transport and start-machine unit test: the engine + json-c, no xwpe,
 # no adapter (the test plays one on a loopback socket).
-test_dap_SOURCES = tests/test_dap.c we_dap.c we_dap_proto.c
+test_dap_SOURCES = tests/test_dap.c we_dap.c we_dap_proto.c we_fdloop.c
 test_dap_CFLAGS = $(XWPE_STDFLAG) $(JSONC_CFLAGS)
 test_dap_LDADD = $(JSONC_LIBS) $(UTIL_LIBS)
 
 # The same test with the engine built as on a system without pidfd (the
 # BSDs, macOS), so the wait for an adapter that closed every descriptor is
 # tested on Linux too.
-test_dap_nopidfd_SOURCES = tests/test_dap.c we_dap.c we_dap_proto.c
+test_dap_nopidfd_SOURCES = tests/test_dap.c we_dap.c we_dap_proto.c we_fdloop.c
 test_dap_nopidfd_CFLAGS = $(XWPE_STDFLAG) $(JSONC_CFLAGS) -DDAP_NO_PIDFD
 test_dap_nopidfd_LDADD = $(JSONC_LIBS) $(UTIL_LIBS)
 
 # DAP engine integration test: drives a real `dlv dap` (SKIPs without dlv+go).
-test_dap_dlv_SOURCES = tests/test_dap_dlv.c we_dap.c we_dap_proto.c
+test_dap_dlv_SOURCES = tests/test_dap_dlv.c we_dap.c we_dap_proto.c we_fdloop.c
 test_dap_dlv_CFLAGS = $(XWPE_STDFLAG) $(JSONC_CFLAGS)
 test_dap_dlv_LDADD = $(JSONC_LIBS) $(UTIL_LIBS)
 
 # DAP stdio transport integration test: drives a real `gdb --interpreter=dap`
 # on a rustc-built binary (the Rust slice).  SKIPs without gdb+rustc.
-test_dap_gdb_SOURCES = tests/test_dap_gdb.c we_dap.c we_dap_proto.c
+test_dap_gdb_SOURCES = tests/test_dap_gdb.c we_dap.c we_dap_proto.c we_fdloop.c
 test_dap_gdb_CFLAGS = $(XWPE_STDFLAG) $(JSONC_CFLAGS)
 test_dap_gdb_LDADD = $(JSONC_LIBS) $(UTIL_LIBS)
 
 # Same stdio transport against `lldb-dap` (the LLVM adapter; native on macOS).
 # SKIPs without lldb-dap+rustc.
-test_dap_lldb_SOURCES = tests/test_dap_lldb.c we_dap.c we_dap_proto.c
+test_dap_lldb_SOURCES = tests/test_dap_lldb.c we_dap.c we_dap_proto.c we_fdloop.c
 test_dap_lldb_CFLAGS = $(XWPE_STDFLAG) $(JSONC_CFLAGS)
 test_dap_lldb_LDADD = $(JSONC_LIBS) $(UTIL_LIBS)
 
 # JVM/Scala path: BSP bootstrap (we_bsp.c) + DAP TCP-client transport against a
 # real scala-cli/Bloop.  SKIPs without scala-cli; slow on a cold coursier cache.
-test_dap_scala_SOURCES = tests/test_dap_scala.c we_bsp.c we_dap.c we_dap_proto.c
+test_dap_scala_SOURCES = tests/test_dap_scala.c we_bsp.c we_dap.c we_dap_proto.c we_fdloop.c
 test_dap_scala_CFLAGS = $(XWPE_STDFLAG) $(JSONC_CFLAGS)
 test_dap_scala_LDADD = $(JSONC_LIBS) $(UTIL_LIBS)
 
@@ -416,38 +416,46 @@ test_bsp_close_nopidfd_LDADD = $(JSONC_LIBS)
 
 # LSP engine: drives a real Metals language server on a single Scala file
 # (hover/definition/completion/diagnostics).  SKIPs without metals + scala-cli.
-test_lsp_scala_SOURCES = tests/test_lsp_scala.c we_lsp.c we_dap_proto.c
+test_lsp_scala_SOURCES = tests/test_lsp_scala.c we_lsp.c we_dap_proto.c we_fdloop.c
 test_lsp_scala_CFLAGS = $(XWPE_STDFLAG) $(JSONC_CFLAGS)
 test_lsp_scala_LDADD = $(JSONC_LIBS)
 
 # LSP engine, breadth: drives a real clangd on a single C file with the SAME
 # engine (only language id + spawned command differ).  Fast (no JVM/build
 # server).  SKIPs without clangd.
-test_lsp_clangd_SOURCES = tests/test_lsp_clangd.c we_lsp.c we_dap_proto.c
+test_lsp_clangd_SOURCES = tests/test_lsp_clangd.c we_lsp.c we_dap_proto.c we_fdloop.c
 test_lsp_clangd_CFLAGS = $(XWPE_STDFLAG) $(JSONC_CFLAGS)
 test_lsp_clangd_LDADD = $(JSONC_LIBS)
 
 # LSP engine, breadth: drives a real Python server (pyright or pylsp) on a single
 # .py file -- whichever is installed -- with the SAME engine.  SKIPs without one.
-test_lsp_python_SOURCES = tests/test_lsp_python.c we_lsp.c we_dap_proto.c
+test_lsp_python_SOURCES = tests/test_lsp_python.c we_lsp.c we_dap_proto.c we_fdloop.c
 test_lsp_python_CFLAGS = $(XWPE_STDFLAG) $(JSONC_CFLAGS)
 test_lsp_python_LDADD = $(JSONC_LIBS)
 
 # LSP engine, breadth: drives a real gopls on a single .go file in a tiny module.
 # SKIPs without gopls + go.
-test_lsp_gopls_SOURCES = tests/test_lsp_gopls.c we_lsp.c we_dap_proto.c
+test_lsp_gopls_SOURCES = tests/test_lsp_gopls.c we_lsp.c we_dap_proto.c we_fdloop.c
 test_lsp_gopls_CFLAGS = $(XWPE_STDFLAG) $(JSONC_CFLAGS)
 test_lsp_gopls_LDADD = $(JSONC_LIBS)
 
 # LSP engine, breadth: drives a real rust-analyzer on a single .rs file in a tiny
 # crate.  Slowest (indexes std on cold start).  SKIPs without rust-analyzer + cargo.
-test_lsp_rust_SOURCES = tests/test_lsp_rust.c we_lsp.c we_dap_proto.c
+test_lsp_rust_SOURCES = tests/test_lsp_rust.c we_lsp.c we_dap_proto.c we_fdloop.c
 test_lsp_rust_CFLAGS = $(XWPE_STDFLAG) $(JSONC_CFLAGS)
 test_lsp_rust_LDADD = $(JSONC_LIBS)
 
 TESTS = test_checkheader test_fl_sel_len test_syntax_def test_fdloop test_clipboard test_lsp_buffer test_lsp_doctor test_lsp_semantic test_lsp_truecolor test_dap test_dap_nopidfd test_dap_dlv \
   test_dap_gdb test_dap_lldb test_dap_scala test_bsp_close \
   test_bsp_close_nopidfd test_lsp_scala test_lsp_clangd test_lsp_python test_lsp_gopls test_lsp_rust test_debprompt test_debpath test_menurows test_mousedrain
+
+# One owner of input and of waiting: tests/check-one-owner.sh reads the
+# undefined symbols of the editor's own objects (the list below) with $(NM)
+# and fails when code outside the loop and the displays waits or reads on
+# its own.  Offenders still to go are in tests/one-owner.allow.
+TESTS += tests/check-one-owner.sh
+AM_TESTS_ENVIRONMENT = NM='$(NM)'; export NM; \
+  ONE_OWNER_OBJECTS='$(we_OBJECTS)'; export ONE_OWNER_OBJECTS;
 
 # --- AI assistant unit tests (only when --enable-ai) ---
 # WPE_AI comes from config.h (the build is configured --enable-ai here).  The
@@ -504,6 +512,8 @@ EXTRA_DIST = \
   old/xwpe.1_gr \
   tests/README.md \
   tests/run-tests.sh \
+  tests/check-one-owner.sh \
+  tests/one-owner.allow \
   tests/test_checkheader.c \
   tests/test_fl_sel_len.c \
   tests/test_syntax_def.c \

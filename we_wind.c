@@ -2235,10 +2235,6 @@ int e_schr_nchar_wsv(char *str, int x, int y, int n, int max, int col,
 int e_mess_win(char *header, char *str, PIC **pic, FENSTER *f)
 {
  ECNT *cn = f->ed;
- extern int (*e_u_kbhit)(void);
-#if MOUSE
- extern struct mouse e_mouse;
-#endif
  int xa, ya, xe, ye, num, anz = 0, mxlen = 0, i, j;
  char **s;
 
@@ -2286,22 +2282,8 @@ int e_mess_win(char *header, char *str, PIC **pic, FENSTER *f)
   FREE(s[i]);
  FREE(s);
  e_refresh();
- fk_getch();
-#ifndef NO_XWINDOWS
- if (WpeIsXwin())
- {
-  while ((i = (*e_u_kbhit)()))
-  {
-   if (i == -1 && e_mouse.y == ye-2 && e_mouse.x > (xe + xa - 10)/2 &&
-     e_mouse.x < (xe + xa + 6)/2 )
-    i = CtrlC;
-   if (i == CtrlC) break;
-  }
- }
- else
-#endif
-  while ((i = (*e_u_kbhit)()) && i != CtrlC)
-   ;
+ e_t_wait_for_enter_on_raw_terminal();
+ i = e_t_drain_keys_after_box(xa, xe, ye);
  e_mouse_flush();
  return(i == CtrlC ? 1 : 0);
 }
