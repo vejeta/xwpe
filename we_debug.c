@@ -66,6 +66,15 @@ int e_d_delbreak(FENSTER *f);
 int e_d_error(char *s);
 int print_to_end_of_buffer(BUFFER * b,char * str,int wrap_limit);
 
+/* The blocking readers.  gdb's answers no longer go through them (they are
+   read on the fd loop, e_d_ga below); sdb, dbx, xdb, pdb, jdb and a68g still
+   do, until their own answers move to the loop. */
+static int e_d_line_read(int n, signed char *s, int max, int sw, int esw);
+static int e_e_line_read(int n, signed char *s, int max);
+static int e_d_dum_read(void);
+static int e_d_getchar(void);
+static int e_read_output(FENSTER *f);
+
 
 #define MAXOUT  2 * MAXSCOL * MAXSLNS
 
@@ -195,6 +204,37 @@ static void e_d_note_reaped(int status);         /* its exit status, once reaped
 static void e_d_jdb_missing_forget(void);        /* classes without source */
 static void e_d_jdb_pause_forget(void);          /* a Pause still held */
 static void e_d_end_forget(void);               /* how the last debugger ended */
+/* gdb's answers at a stop, read on the fd loop (e_d_ga, below). */
+static int  e_d_ga_sync_runs(void);          /* a change is told while it runs */
+static int  e_d_ga_refused(FENSTER *f);      /* a command waits for an answer */
+static void e_d_ga_forget(void);             /* the session ends */
+static void e_d_ga_run_begins(void);         /* the program runs again */
+static int  e_d_ga_pause_takes_sync(FENSTER *f);
+static void e_d_ga_owe_settle(int owed);     /* interrupts gdb may answer */
+static int  e_d_ga_at_stop(void);            /* gdb stopped, nothing asked */
+static int  e_d_ga_brk_sync(ECNT *cn);       /* tell gdb the list's changes */
+static int  e_d_ga_ask_plain(ECNT *cn, const char *cmd);
+static int  e_d_ga_watches_ask(ECNT *cn, int sw);
+static int  e_d_ga_stack_ask(ECNT *cn, int sw);
+static int  e_d_ga_follow_frame(ECNT *cn, int frame, const char *file,
+                                int line);
+static int  e_d_ga_finish_from_frame(ECNT *cn, int below, int sw);
+static int  e_d_ga_leave_unknown_source(ECNT *cn);
+static int  e_d_gdb_finish_out_of_pause(FENSTER *f, int sw);
+static int  e_d_gb_removal_told(int id);     /* gdb is removing it now */
+/* The number of the breakpoint whose "d N" gdb is answering, or 0.  While
+   the program runs the user may set the line again meanwhile; that removal
+   is then not taken back (e_d_brk_gone_revive), since gdb carries it out. */
+static int  e_d_gb_removing_id;
+/* gdb's command that clears every breakpoint. */
+#define E_D_GDB_DELETE_ALL "delete"
+/* The debugger keys typed while gdb answers, kept to run in order. */
+#define E_D_ACT_STEP    1   /* F7, Trace into */
+#define E_D_ACT_NEXT    2   /* F8, Step over */
+#define E_D_ACT_RUN     3   /* Ctrl-G R, Run or Continue */
+#define E_D_ACT_FINISH  4   /* Ctrl-G F, Finish function */
+#define E_D_ACT_GOTO    5   /* Ctrl-G U or F4, Go to cursor */
+static int  e_d_act_deferred(int kind, FENSTER *f, int line);
 /* Room for one status line and for one watch's print command. */
 #define E_D_WATCH_CMD_MAX 256
 #define E_D_WATCH_REFUSED_FMT "watches are not available with %s"
@@ -1171,6 +1211,12 @@ typedef struct
     since, whose removal the debugger has not yet taken?  Such a stop is
     not shown; the run goes on.  Reads nothing.  NULL: never. */
  int  (*stale_stop)(void);
+ /* At the stop an interrupt made for a breakpoint change: tell the
+    debugger of the changes through requests on the fd loop, and run on when
+    they are answered, so the editor keeps its keys meanwhile.  Return: 1,
+    the stop is dealt with.  NULL: the changes are told at once, and
+    answered before the editor reads its next key. */
+ int  (*sync_on_loop)(ECNT *cn);
 } E_D_RUN_OPS;
 
 static const E_D_RUN_OPS *e_d_pdb_run_ops(void);   /* pdb's table (below) */
@@ -1216,6 +1262,9 @@ typedef struct
  int sync_pending;          /* breakpoints changed since the last key wait:
                                told to the debugger when the keys run out
                                (e_d_run_flush_live_sync) */
+ int stop_on_loop;          /* the backend's @stopped asks the debugger on
+                               the fd loop; the stop is finished when its
+                               answers have come (e_d_run_stop_tail) */
 } E_D_RUN;
 
 static E_D_RUN e_d_run;
@@ -1224,31 +1273,17 @@ static E_D_RUN e_d_run;
    just below the marked one, or E_D_NO_FRAME; and the step command that
    follows the "finish" out of that call (see e_d_gdb_step_from_pause). */
 #define E_D_NO_FRAME (-1)
-/* gdb's commands for it, and the room "frame N" needs. */
-#define E_D_GDB_FRAME_FMT    "frame %d\n"
+/* gdb's commands for it. */
 #define E_D_GDB_FINISH       "finish\n"
 #define E_D_GDB_NEXT         "n\n"
 #define E_D_GDB_STEP         "s\n"
 #define E_D_GDB_ADDRESS_LEAD "0x"   /* a frame gdb prints in mid-line */
-#define E_D_FRAME_CMD_MAX    24
 static int e_d_pause_below = E_D_NO_FRAME;
 static const char *e_d_pause_follow = NULL;
 static int e_d_run_resume(void);   /* keep the run going (below) */
 static void e_d_run_new_command(void);         /* (below) */
 static int e_d_run_interrupt(int why);         /* (below) */
-static void e_d_gdb_select_frame(int frame);   /* gdb's "frame N" (below) */
 extern char *e_d_msg[];                        /* the debugger's words */
-
-static void e_d_flush_inferior_stdout(void)
-{
- char resp[256];
-
- if (e_deb_type != DEB_GDB || e_d_pty_master < 0)
-  return;
- e_d_send_cmd("call (void)fflush(0)\n");
- while (e_d_line_read(wfildes[0], resp, 256, 0, 0) == 0)
-  ;
-}
 
 /* What gdb prints when the program ends: "[Inferior 1 (process N) exited
    normally]" or "... exited with code NN]", where NN is octal. */
@@ -1471,20 +1506,17 @@ static int e_d_gdb_follow_up_after_finish(void)
 }
 
 /**
- * e_d_line_stopped - What gdb, sdb, dbx and xdb do when the program stops.
+ * e_d_line_stopped - What sdb, dbx and xdb do when the program stops.
  * @f: the window the run was started from.
  *
  * The user sees the program's last output in Messages, then either the
  * stop marked on its source line or one line saying the program ended,
- * after which the session closes.
+ * after which the session closes.  gdb's stop is e_d_gdb_stopped.
  */
 static void e_d_line_stopped(FENSTER *f)
 {
  int i;
 
- if (e_d_gdb_follow_up_after_finish())
-  return;
- e_d_flush_inferior_stdout();
  e_d_drain_pty_to_messages();
  e_d_out_show();
  for (i = 0; i < SVLINES; i++)
@@ -1682,17 +1714,21 @@ static int e_d_interrupt_debugger(void)
 }
 
 static int e_d_gdb_interrupt_stop(int taken);              /* (below) */
-static int e_d_gdb_settle(ECNT *cn, int owed, int why);     /* (below) */
+static int e_d_gdb_settle_later(ECNT *cn, int owed, int why);  /* (below) */
+static void e_d_gdb_stopped(FENSTER *f);                   /* (below) */
+static int e_d_gdb_sync_on_loop(ECNT *cn);                 /* (below) */
 
 /* gdb: a line protocol answered on one pipe, a prompt at each stop.  A
-   breakpoint changed while the program runs is applied by interrupting it. */
+   breakpoint changed while the program runs is applied by interrupting it.
+   What gdb answers at a stop is read on the fd loop, through its request
+   engine (e_d_ga), so the editor keeps its keys while gdb answers. */
 static const E_D_RUN_OPS e_d_gdb_run_ops =
 {
  "gdb",
  e_d_line_answer_fd,
  e_d_line_output_fd,
  e_d_gdb_feed,
- e_d_line_stopped,
+ e_d_gdb_stopped,
  e_d_interrupt_debugger,
  NULL,
  e_d_brk_sync_at_stop,
@@ -1702,8 +1738,11 @@ static const E_D_RUN_OPS e_d_gdb_run_ops =
  0,
  e_d_gdb_interrupt_stop,
  NULL,
- e_d_gdb_settle,
- NULL
+ e_d_gdb_settle_later,
+ NULL,
+ 0,
+ NULL,
+ e_d_gdb_sync_on_loop
 };
 
 /* sdb, dbx and xdb: gdb's line protocol, with their own stop wording. */
@@ -1725,13 +1764,12 @@ static const E_D_RUN_OPS e_d_legacy_run_ops =
  * e_d_run_ops_of_backend - The run controller's table for the selected
  * debugger, or NULL when its run is still read by its own reader.
  *
- * gdb goes through the controller when it gave the program a pty, as it
- * always has; sdb, dbx, xdb, pdb, jdb, a68g and the debug adapters always
- * do.
+ * Every backend goes through the controller.  gdb without a pty for its
+ * program has no output to watch; its answers are read the same way.
  */
 static const E_D_RUN_OPS *e_d_run_ops_of_backend(void)
 {
- if (e_deb_type == DEB_GDB && e_d_pty_master >= 0)
+ if (e_deb_type == DEB_GDB)
   return(&e_d_gdb_run_ops);
  if (e_deb_type == DEB_DAP)
   return(e_d_dap_run_ops());
@@ -1771,7 +1809,7 @@ static int e_d_run_going(void)
  */
 int e_d_run_takes_typed_text(void)
 {
- if (!e_d_run_going())
+ if (!e_d_run_going() && !e_d_ga_sync_runs())
   return(0);
  if (e_d_run.ops->no_input)
   return(0);
@@ -2325,6 +2363,8 @@ static int e_d_run_sync_and_go_on(ECNT *cn)
  e_d_run.interrupt_for = E_D_INT_NONE;
  e_d_run.int_taken = 0;
  e_d_run_settle(cn);
+ if (ops->sync_on_loop)
+  return(ops->sync_on_loop(cn));
  e_d_run_sync_breakpoints(e_d_run_window(cn));
  e_d_run_go_on(e_d_run.cont);
  return(1);
@@ -2449,12 +2489,32 @@ static void e_d_run_say_own_sigint(ECNT *cn)
 }
 
 /**
+ * e_d_run_stop_tail - The last of a stop: go on to the cursor if Go to
+ * cursor asked, then say how a Pause ended.
+ * @cn: the editor; @ops: the table of the run that stopped.
+ *
+ * Called once the stop is marked and its chores are done, at once for a
+ * backend that answers its stop before the editor reads a key, and when the
+ * last answer has come for one that answers on the fd loop (gdb).
+ */
+static void e_d_run_stop_tail(ECNT *cn, const E_D_RUN_OPS *ops)
+{
+ e_d_run_goto_after_start(cn, ops);
+ if (e_d_run_going())
+  return;
+ e_d_run_say_own_sigint(cn);
+ e_d_pause_report(cn);
+}
+
+/**
  * e_d_run_on_stop - The debugger stopped the program: mark where, then
  * tidy up after the run, and go on to the cursor if Go to cursor asked.
  *
  * A backend whose stop is not the user's yet (pdb stopped in Python's own
  * code) sends its next command and keeps the run going from @stopped: the
- * tidying then waits for the stop the user is shown.
+ * tidying then waits for the stop the user is shown.  A backend that asks
+ * its stop's questions on the fd loop (gdb) does the tidying in its own
+ * requests and ends with e_d_run_stop_tail once they are answered.
  */
 static void e_d_run_on_stop(void)
 {
@@ -2463,17 +2523,14 @@ static void e_d_run_on_stop(void)
 
  e_d_run_unwatch();
  e_d_refusal_said = 0;
+ e_d_run.stop_on_loop = 0;
  if (e_d_run_interrupt_handled(cn))
   return;
  ops->stopped(e_d_run_window(cn));
- if (e_d_run_going())
+ if (e_d_run_going() || e_d_run.stop_on_loop)
   return;
  e_d_run_stop_chores(e_d_run_window(cn));
- e_d_run_goto_after_start(cn, ops);
- if (e_d_run_going())
-  return;
- e_d_run_say_own_sigint(cn);
- e_d_pause_report(cn);
+ e_d_run_stop_tail(cn, ops);
 }
 
 /**
@@ -2596,6 +2653,7 @@ static void e_d_run_mark_going(const E_D_RUN_OPS *ops)
  */
 static int e_d_run_watch(const E_D_RUN_OPS *ops)
 {
+ e_d_ga_run_begins();
  if (e_fd_watch(ops->answer_fd(), POLLIN, e_d_run_on_answer, NULL,
                 "the debugger's answer") < 0)
   return(-1);
@@ -3210,7 +3268,7 @@ static int e_d_err_skip_rest(int n)
 }
 
 /*  Input Routines   */
-int e_e_line_read(int n, signed char *s, int max)
+static int e_e_line_read(int n, signed char *s, int max)
 {
  int i, ret = 0;
 
@@ -3656,7 +3714,7 @@ static int e_d_line_fill(int n, signed char *s, int from, int max, int sw,
  * Return: -1 when the debugger is gone (or the break key was hit), 0 for a
  * line, 1 for the prompt, 2 for a line of the error stream.
  */
-int e_d_line_read(int n, signed char *s, int max, int sw, int esw)
+static int e_d_line_read(int n, signed char *s, int max, int sw, int esw)
 {
  int end, ret = e_d_line_fill(n, s, 0, max, sw, esw, &end);
 
@@ -3803,7 +3861,7 @@ static void e_d_line_free(E_D_LINE *ln)
  ln->size = 0;
 }
 
-int e_d_dum_read()
+static int e_d_dum_read(void)
 {
  char str[256];
  int ret;
@@ -3870,51 +3928,6 @@ static int e_d_prompts_in(const char *text, size_t len)
 }
 
 /**
- * e_d_gdb_settle_answers - Read gdb's answers up to the echo of
- * E_D_GDB_SETTLE_MARK and its prompt, counting the prompts before it.
- * Return: those prompts, or -1 when gdb stopped answering.
- */
-static int e_d_gdb_settle_answers(void)
-{
- char str[E_D_LINE_MAX];
- const char *mark;
- int ret, extra = 0, seen = 0;
-
- for (;;)
- {
-  ret = e_d_line_read(wfildes[0], str, sizeof str, 0, 0);
-  if (ret == -1)
-   return(-1);
-  if (ret == 1 && seen)
-   return(extra);
-  if (ret == 1)
-   extra++;
-  else if (ret == 0 && (mark = strstr(str, E_D_GDB_SETTLE_MARK)) != NULL)
-  {
-   seen = 1;
-   extra += e_d_prompts_in(str, (size_t)(mark - str));
-  }
- }
-}
-
-/**
- * e_d_gdb_drop_quit_lines - Read away what gdb wrote on its error stream
- * when it answered an interrupt at its prompt ("Quit").
- *
- * Left there, it would be read as gdb's refusal of the next breakpoint the
- * editor sets.
- */
-static void e_d_gdb_drop_quit_lines(void)
-{
- char str[E_D_LINE_MAX];
- int drained = 0;
-
- while (drained++ < E_D_DRAIN_MAX &&
-        e_e_line_read(efildes[0], (signed char *)str, sizeof str) >= 0)
-  ;
-}
-
-/**
  * e_d_gdb_prompts_with_the_stop - How many prompts beyond its own came in
  * the line that ended the stop just read.
  *
@@ -3938,21 +3951,25 @@ static int e_d_gdb_prompts_with_the_stop(void)
 }
 
 /**
- * e_d_gdb_settle - Take back gdb's answers to interrupts that reached it
- * after the program had stopped by itself.
+ * e_d_gdb_settle_later - Take back the answers gdb already wrote to
+ * interrupts that reached it after the program had stopped by itself, and
+ * leave the rest to the first step of the stop's requests.
  * @cn: unused; @owed: the interrupts sent whose stop never came; @why:
  * unused.
  *
  * Such an interrupt is answered with "Quit" and one more prompt.  Left
  * unread, that prompt would be taken for the answer to the next command and
  * every answer after it would come one command late: the watches, the Stack
- * window and the next stop would all be wrong.  gdb takes a signal before it
- * reads the next command, so the prompts that come before the echo's line
- * are those answers.  An interrupt with no such answer reached the program
- * instead, which gdb reports as a SIGINT stop at its next resume.
- * Return: the interrupts still pending in the program.
+ * window and the next stop would all be wrong.  The prompts already read
+ * with the stop are counted here; the ones still on their way are counted
+ * by the settle step (e_d_gs_settle_cmd), which makes gdb echo a marker and
+ * counts the prompts before it, on the fd loop, so the user keeps the keys.
+ * An interrupt with no such answer reached the program instead, which gdb
+ * reports as a SIGINT stop at its next resume.
+ * Return: the interrupts that may still be owed, until the step has read
+ * the rest.
  */
-static int e_d_gdb_settle(ECNT *cn, int owed, int why)
+static int e_d_gdb_settle_later(ECNT *cn, int owed, int why)
 {
  int extra;
 
@@ -3960,15 +3977,10 @@ static int e_d_gdb_settle(ECNT *cn, int owed, int why)
  (void)why;
  extra = e_d_nb_prompts_held() + e_d_gdb_prompts_with_the_stop();
  e_d_nb_forget();
- e_d_send_cmd(E_D_GDB_SETTLE_CMD);
- owed -= extra;
- extra = e_d_gdb_settle_answers();
- e_d_gdb_drop_quit_lines();
- if (extra < 0)
-  return(0);
  owed -= extra;
  if (owed < 0)
-  return(0);
+  owed = 0;
+ e_d_ga_owe_settle(owed);
  return(owed);
 }
 
@@ -4064,7 +4076,7 @@ static int e_d_x_key_is_for_editor(int c, unsigned int state)
  * letter is not typed into the file.
  * Return: the key that was taken, or 0 when none was.
  */
-int e_d_getchar()
+static int e_d_getchar(void)
 {
  int i = 1, fd, left_for_editor = 0;
  char c = 0, kbdflgs = 0;
@@ -4191,6 +4203,7 @@ int e_d_quit_basic(FENSTER *f)
  e_d_end_forget();
  e_d_jdb_missing_forget();
  e_d_jdb_pause_forget();
+ e_d_ga_forget();
  e_d_run_forget();
  e_d_session_forget();
  if (!e_d_swtch)
@@ -4488,6 +4501,7 @@ int e_remove_all_watches(FENSTER *f)
  ECNT *cn = f->ed;
  int i, n;
 
+ if (e_d_ga_refused(f)) return(0);
  if (e_d_nwtchs < 1) return(0);
  for (n = 0; n < e_d_nwtchs;n++) FREE(e_d_swtchs[n]);
  FREE(e_d_swtchs);
@@ -4514,6 +4528,8 @@ int e_delete_watches(FENSTER *f)
  int n;
 
  f = cn->f[cn->mxedt];
+ if (e_d_ga_refused(f))
+  return(0);
  if (e_d_nwtchs < 1 || strcmp(f->datnam, "Watches"))
   return(0);
  for (n = 0; n < e_d_nwtchs && e_d_nrwtchs[n] <= b->b.y; n++)
@@ -4533,7 +4549,7 @@ int e_make_watches(FENSTER *f)
  char str[128];
  int i, y;
 
- if (e_d_watch_refused(f))
+ if (e_d_ga_refused(f) || e_d_watch_refused(f))
   return(0);
  if ((f->ed->mxedt > 0) && (strcmp(f->datnam, "Watches") == 0))
  { /* sets y=number of watch we're inserting */
@@ -4587,7 +4603,7 @@ int e_edit_watches(FENSTER *f)
  char str[128];
  int l;
 
- if (strcmp(f->datnam, "Watches"))
+ if (e_d_ga_refused(f) || strcmp(f->datnam, "Watches"))
   return(0);
  for (l = 0; l < e_d_nwtchs && e_d_nrwtchs[l] <= b->b.y; l++)
   ;
@@ -4780,6 +4796,100 @@ static void e_d_watches_after_session(ECNT *cn)
  e_d_p_watches(cn->f[cn->mxedt], 0);
 }
 
+/**
+ * e_d_watches_window_take - The Watches window the values are written to,
+ * opened when there are watches and it is not.
+ * @cn: the editor.
+ *
+ * With no watch and no window the screen is only drawn again, as it always
+ * was, and nothing is opened for nothing.
+ * Return: its index, 0 when there is nothing to write, -1 when it could not
+ * be opened.
+ */
+static int e_d_watches_window_take(ECNT *cn)
+{
+ int iw;
+
+ for (iw = cn->mxedt; iw > 0 && strcmp(cn->f[iw]->datnam, "Watches"); iw--)
+  ;
+ if (iw == 0 && !e_d_nwtchs)
+ {
+  e_rep_win_tree(cn);
+  return(0);
+ }
+ if (iw > 0)
+  return(iw);
+ if (e_edit(cn, "Watches"))
+  return(-1);
+ return(cn->mxedt);
+}
+
+/**
+ * e_d_watches_buffer_clear - Empty the Watches buffer before its lines are
+ * written again.
+ * @b: the Watches buffer.
+ */
+static void e_d_watches_buffer_clear(BUFFER *b)
+{
+ e_p_red_buffer(b);
+ FREE(b->bf[0].s);
+ b->mxlines = 0;
+ e_d_watches_shown_waiting = 0;
+}
+
+/**
+ * e_d_watches_show_end - Close the Watches buffer and draw it.
+ * @cn: the editor; @iw: the Watches window; @b: its buffer; @sw: 1 to bring
+ * the window to the top, as Add watch does.
+ */
+static void e_d_watches_show_end(ECNT *cn, int iw, BUFFER *b, int sw)
+{
+ e_new_line(b->mxlines, b);
+ fk_cursor(1);
+ if (sw && iw != cn->mxedt)
+  e_switch_window(cn->edt[iw], cn->f[cn->mxedt]);
+ else
+  e_rep_win_tree(cn);
+}
+
+/**
+ * e_d_watch_answer_at - The answer kept for watch @l, or NULL when none was
+ * (the list could not be made, or the debugger gave none).
+ * @values: the answers, or NULL.
+ */
+static const char *e_d_watch_answer_at(char **values, int l)
+{
+ if (!values)
+  return(NULL);
+ return(values[l]);
+}
+
+/**
+ * e_d_watches_show_values - Write every watch with the value the debugger
+ * answered for it.
+ * @cn: the editor; @values: the answers, one per watch, any of them NULL
+ * for none; @sw: 1 to bring the window to the top.
+ *
+ * The answers were read on the fd loop while the user kept the keys; they
+ * are written in one go, so the window never shows half old and half new
+ * values.
+ * Return: 0, or -1 when the window could not be opened.
+ */
+static int e_d_watches_show_values(ECNT *cn, char **values, int sw)
+{
+ BUFFER *b;
+ int iw = e_d_watches_window_take(cn), l;
+
+ if (iw <= 0)
+  return(iw);
+ b = cn->f[iw]->b;
+ e_d_watches_buffer_clear(b);
+ for (l = 0; l < e_d_nwtchs; l++)
+  e_d_watch_put_value(b, l, e_d_watch_answer_at(values, l));
+ e_d_watches_show_end(cn, iw, b, sw);
+ return(0);
+}
+
 /* Among other things, e_d_p_watches() must recompute e_d_nrwtchs when
    called from e_edit_watches(),
    but has code paths that don't do this ==> possible BUG
@@ -4801,35 +4911,17 @@ int e_d_p_watches(FENSTER *f, int sw)
  if (e_d_watch_refused(f))
   return(0);
  e_d_switch_out(0);
+ if (e_d_ga_at_stop())
+  return(e_d_ga_watches_ask(cn, sw));
  if (!e_d_watches_wait() && (e_d_swtch > 2) && (e_d_p_stack(f, 0) == -1))
   return(-1);
- /* Find the watch window */
- for (iw = cn->mxedt; iw > 0 && strcmp(cn->f[iw]->datnam, "Watches"); iw--);
- if (iw == 0 && !e_d_nwtchs)
- { /* if no watches and the mysterious iw!=0 then just repaint window tree */
-  e_rep_win_tree(cn);
-  return(0);
- }
- else if (iw == 0)
- {
-  if(e_edit(cn, "Watches"))
-  {
-   return(-1);
-  }
-  else
-  {
-   iw = cn->mxedt;
-  }
- }
+ iw = e_d_watches_window_take(cn);
+ if (iw <= 0)
+  return(iw);
  f = cn->f[iw];
  b = cn->f[iw]->b;
  s = cn->f[iw]->s;
- 
- /* free all lines of BUFFER b */
- e_p_red_buffer(b);
- FREE(b->bf[0].s);
- b->mxlines=0;
- e_d_watches_shown_waiting = 0;
+ e_d_watches_buffer_clear(b);
 
  for (i = 0, l = 0; l < e_d_nwtchs; l++)
  {
@@ -4872,13 +4964,7 @@ int e_d_p_watches(FENSTER *f, int sw)
    FREE(str);
  }
  e_d_line_free(&value);
-
- e_new_line(b->mxlines, b);
- fk_cursor(1);
-/* if (b->b.y > i || sw) b->b.y = i;*/
- if (sw && iw != cn->mxedt) e_switch_window(cn->edt[iw], cn->f[cn->mxedt]);
- else e_rep_win_tree(cn);
-/* e_d_switch_out(0);   */
+ e_d_watches_show_end(cn, iw, b, sw);
  return(0);
 }
 
@@ -5062,13 +5148,100 @@ static int e_d_stack_done(E_D_LINE *row, int ret)
  return(ret);
 }
 
+/**
+ * e_d_stack_put_row - Lay one row of a stack listing out in the Stack
+ * window's buffer, wrapped where it is wider than the window.
+ * @f: the Stack window, whose width wraps the row; @str: the row as the
+ * debugger printed it, its line end included; @pi, @pj: the buffer line
+ * and column the next row starts at, carried from one row to the next.
+ *
+ * A frame of a function with a very long name or arguments is shown to its
+ * end, wrapped with a backslash, and kept whole so following it finds its
+ * file and line.
+ */
+static void e_d_stack_put_row(FENSTER *f, char *str, int *pi, int *pj)
+{
+ BUFFER *b = f->b;
+ int i = *pi, j = *pj, k = 0, l;
+
+ e_d_stack_rows_keep(str, i);
+ do
+ {
+  if (i >= b->mxlines)
+   e_new_line(i, b);
+  if ((i > 0 && j == 0 && *(b->bf[i-1].s+b->bf[i-1].len-1) == '\\') ||
+    (e_deb_type == DEB_GDB && j == 0 && (k > 0 || str[k] != '#')))
+  {
+   for(j = 0; j < 3; j++)
+    b->bf[i].s[j] = ' ';
+  }
+  for(; isspace(str[k]); k++)
+   ;
+  for(; j < NUM_COLS_ON_SCREEN_SAFE - 2 && str[k] != '\n' && str[k] != '\0';
+    j++, k++)
+   *(b->bf[i].s+j) = str[k];
+  if (str[k] != '\0')
+  {
+   if (str[k] != '\n')
+   {
+    for(l = j-1; l > 2 && !isspace(b->bf[i].s[l]) && b->bf[i].s[l] != '=';
+      l--)
+     ;
+    if (l > 2)
+    {
+     k -= (j - l - 1);
+     for (l++; l < j; l++)
+      b->bf[i].s[l] = ' ';
+    }
+    *(b->bf[i].s+j) = '\\';
+    *(b->bf[i].s+j+1) = '\n';
+    *(b->bf[i].s+j+2) = '\0';
+    j++;
+   }
+   else
+   {
+    *(b->bf[i].s+j) = '\n';
+    *(b->bf[i].s+j+1) = '\0';
+   }
+  }
+  b->bf[i].len = j;
+  b->bf[i].nrc = j + 1;
+  if (j != 0 && str[k] != '\0')
+  {
+   i++;
+   j = 0;
+  }
+  else
+   j--;
+ }
+ while (str[k] != '\n' && str[k] != '\0');
+ *pi = i;
+ *pj = j;
+}
+
+/**
+ * e_d_stack_show_end - Drop the Stack window's lines past the listing and
+ * draw it.
+ * @cn: the editor; @is: the Stack window; @rows: the lines the listing
+ * filled; @sw: 1 to bring the window to the top.
+ */
+static void e_d_stack_show_end(ECNT *cn, int is, int rows, int sw)
+{
+ BUFFER *b = cn->f[is]->b;
+ SCHIRM *s = cn->f[is]->s;
+ int i;
+
+ for (i = rows; i < b->mxlines; i++)
+  e_del_line(i, b, s);
+ if (sw && is != cn->mxedt)
+  e_switch_window(cn->edt[is], cn->f[cn->mxedt]);
+ e_rep_win_tree(cn);
+}
+
 int e_d_p_stack(FENSTER *f, int sw)
 {
  ECNT *cn = f->ed;
- BUFFER *b;
- SCHIRM *s;
- int is, i, j, k, l, ret;
- char *str;
+ int is, i, j, ret;
  E_D_LINE row = {  NULL, 0  };   /* one row of the listing, however long */
 
  if (e_d_swtch < 3)
@@ -5086,15 +5259,13 @@ int e_d_p_stack(FENSTER *f, int sw)
    is = cn->mxedt;
  }
  f = cn->f[is];
- b = cn->f[is]->b;
- s = cn->f[is]->s;
  if (!e_d_swtch)
   return(0);
  if (e_d_frames_backend())
   return(e_d_p_frames(cn, is, sw));
- if (e_deb_type == DEB_GDB)
-  e_d_send_cmd("bt\n");
- else if (e_deb_type == DEB_SDB || e_deb_type == DEB_XDB)
+ if (e_d_ga_at_stop())
+  return(e_d_ga_stack_ask(cn, sw));
+ if (e_deb_type == DEB_SDB || e_deb_type == DEB_XDB)
   e_d_send_cmd("t\n");
  else if (e_deb_type == DEB_DBX)
   e_d_send_cmd("where\n");
@@ -5112,68 +5283,81 @@ int e_d_p_stack(FENSTER *f, int sw)
  }
  while(ret != 1)
  {
-  str = (char *)row.s;
-  e_d_stack_rows_keep(str, i);
-  k = 0;
-  do
-  {
-   if (i >= b->mxlines)
-    e_new_line(i, b);
-   if ((i > 0 && j == 0 && *(b->bf[i-1].s+b->bf[i-1].len-1) == '\\') ||
-     (e_deb_type == DEB_GDB && j == 0 && (k > 0 || str[k] != '#')))
-   {
-    for(j = 0; j < 3; j++)
-     b->bf[i].s[j] = ' ';
-   }
-   for(; isspace(str[k]); k++)
-    ;
-   for(; j < NUM_COLS_ON_SCREEN_SAFE - 2 && str[k] != '\n' && str[k] != '\0';
-     j++, k++)
-    *(b->bf[i].s+j) = str[k];
-   if (str[k] != '\0')
-   {
-    if (str[k] != '\n')
-    {
-     for(l = j-1; l > 2 && !isspace(b->bf[i].s[l]) && b->bf[i].s[l] != '=';
-       l--)
-      ;
-     if (l > 2)
-     {
-      k -= (j - l - 1);
-      for (l++; l < j; l++)
-       b->bf[i].s[l] = ' ';
-     }
-     *(b->bf[i].s+j) = '\\';
-     *(b->bf[i].s+j+1) = '\n';
-     *(b->bf[i].s+j+2) = '\0';
-     j++;
-    }
-    else
-    {
-     *(b->bf[i].s+j) = '\n';
-     *(b->bf[i].s+j+1) = '\0';
-    }
-   }
-   b->bf[i].len = j;
-   b->bf[i].nrc = j + 1;
-   if (j != 0 && str[k] != '\0')
-   {
-    i++;
-    j = 0;
-   }
-   else
-    j--;
-  }
-  while (str[k] != '\n' && str[k] != '\0');
+  e_d_stack_put_row(f, (char *)row.s, &i, &j);
   if ((ret = e_d_stack_row_read(&row)) == -1)
    return(e_d_stack_done(&row, -1));
  }
  e_d_line_free(&row);
- for (; i < b->mxlines; i++)
-  e_del_line(i, b, s);
- if (sw && is != cn->mxedt)
-  e_switch_window(cn->edt[is], cn->f[cn->mxedt]);
- e_rep_win_tree(cn);
+ e_d_stack_show_end(cn, is, i, sw);
+ return(0);
+}
+
+/**
+ * e_d_text_take_row - Copy the next row of a debugger's answer, its line end
+ * included, and move past it.
+ * @p: where the row starts; set to where the next one does.
+ *
+ * Rows of any length are taken whole: a frame's "at file:line" comes after
+ * a function name and arguments of any length.
+ * Return: the row, to be freed with FREE, or NULL when memory ran out.
+ */
+static char *e_d_text_take_row(const char **p)
+{
+ const char *start = *p, *end = strchr(start, '\n');
+ size_t len = end ? (size_t)(end - start) + 1 : strlen(start);
+ char *row = MALLOC(len + 1);
+
+ if (!row)
+  return(NULL);
+ memcpy(row, start, len);
+ row[len] = '\0';
+ *p = start + len;
+ return(row);
+}
+
+/**
+ * e_d_stack_open - The Stack window, opened when it is not.
+ * @cn: the editor.
+ * Return: its index, or 0 when it could not be opened.
+ */
+static int e_d_stack_open(ECNT *cn)
+{
+ int is;
+
+ for (is = cn->mxedt; is > 0 && strcmp(cn->f[is]->datnam, "Stack"); is--)
+  ;
+ if (is > 0)
+  return(is);
+ if (e_edit(cn, "Stack"))
+  return(0);
+ return(cn->mxedt);
+}
+
+/**
+ * e_d_stack_show_text - Fill the Stack window with gdb's "bt" answer.
+ * @cn: the editor; @text: the answer's rows, joined, or NULL; @sw: 1 to
+ * bring the window to the top, as Ctrl-G K does.
+ *
+ * The answer was read on the fd loop while the user kept the keys; its rows
+ * are laid out exactly as the rows of the other debuggers' listings.
+ * Return: 0, or -1 when gdb listed no frame at all: the program is gone.
+ */
+static int e_d_stack_show_text(ECNT *cn, const char *text, int sw)
+{
+ int is = e_d_stack_open(cn), i = 0, j = 0;
+ char *row;
+
+ if (is <= 0)
+  return(0);
+ if (!text || !text[0])
+  return(-1);
+ e_d_stack_rows_clear();
+ while (*text && (row = e_d_text_take_row(&text)) != NULL)
+ {
+  e_d_stack_put_row(cn->f[is], row, &i, &j);
+  FREE(row);
+ }
+ e_d_stack_show_end(cn, is, i, sw);
  return(0);
 }
 
@@ -5318,6 +5502,8 @@ int e_make_stack(FENSTER *f)
 	 return(e_make_stack_done(tmpstr,
 				  e_error(e_d_msg[ERR_NOSOURCE], 0, f->fb)));
       FREE(tmpstr);           /* the file and line are read out of it */
+      if(e_d_ga_at_stop())
+	 return(e_d_ga_follow_frame(f->ed, dif, file, line));
       if(dif > e_d_nstack)
 	 sprintf(str, "%s %d\n",
 	 e_deb_type != DEB_XDB ? "up" : "down", dif - e_d_nstack);
@@ -5845,7 +6031,8 @@ static void e_d_brk_gone_free(void)
  * @i: the new list entry.
  *
  * Sending the removal and then the new mark would clear the new one on the
- * debuggers that name a breakpoint by its line.
+ * debuggers that name a breakpoint by its line.  A removal gdb is already
+ * answering cannot be taken back: the new entry is then set afresh.
  */
 static void e_d_brk_gone_revive(int i)
 {
@@ -5853,7 +6040,8 @@ static void e_d_brk_gone_revive(int i)
 
  for (n = 0; n < e_d_brk_ngone; n++)
   if (e_d_brk_gone[n].line == e_d_ybrpts[i] &&
-      !strcmp(e_d_brk_gone[n].file, e_d_sbrpts[i]))
+      !strcmp(e_d_brk_gone[n].file, e_d_sbrpts[i]) &&
+      !e_d_gb_removal_told(e_d_brk_gone[n].id))
    break;
  if (n == e_d_brk_ngone)
   return;
@@ -6261,11 +6449,12 @@ int e_mk_brk_main(FENSTER *f, int sw)
 static int e_d_brk_toggle_off(FENSTER *f, int line)
 {
  int i = e_d_brk_index_of(f->datnam, line);
+ int on_loop = e_d_ga_at_stop();
  int id;
 
  if (i < 0)
   return(0);                   /* only the margin had it */
- if (e_d_swtch && e_d_brk_must_wait())
+ if (e_d_swtch && (e_d_brk_must_wait() || on_loop))
   e_d_brk_gone_add(i);
  id = e_d_nrbrpts[i];
  e_d_brk_list_drop(i);
@@ -6276,6 +6465,8 @@ static int e_d_brk_toggle_off(FENSTER *f, int line)
   e_d_run_breakpoints_changed(f->ed);
   return(0);
  }
+ if (on_loop)
+  return(e_d_ga_brk_sync(f->ed));
  return(e_d_brk_disarm(f->ed, f->datnam, line, id));
 }
 
@@ -6304,6 +6495,8 @@ static int e_d_brk_toggle_on(FENSTER *f, int line)
   e_d_run_breakpoints_changed(f->ed);
   return(0);
  }
+ if (e_d_ga_at_stop())
+  return(e_d_ga_brk_sync(f->ed));
  if (e_d_brk_arm(f->ed, e_d_nbrpts - 1) == -1)
   return(-1);
  e_d_brk_say_refusal(f, e_d_nbrpts - 1);
@@ -6343,6 +6536,8 @@ int e_make_breakpoint(FENSTER *f, int sw)
  int i;
 
  if (e_d_start_refused(f))
+  return(0);
+ if (!e_d_ga_sync_runs() && e_d_ga_refused(f))
   return(0);
  if (!sw)
  {
@@ -8525,11 +8720,15 @@ static const char *e_d_running_line(void)
  * debugger reads the command only at the next stop, so it would be answered
  * out of turn and the session would lose its place.  The status row says
  * what to do instead:
- * type the program's input, or end the session with Debug > Quit.
+ * type the program's input, or end the session with Debug > Quit.  While
+ * gdb answers at a stop the command is refused the same way, with the
+ * waiting line (e_d_ga_refused).
  * Return: 1 when the command must not run.
  */
 static int e_d_refuse_while_running(FENSTER *f)
 {
+ if (e_d_ga_refused(f))
+  return(1);
  if (!e_d_async_pending)
   return(0);
  e_status_say(f, e_d_running_line());
@@ -8586,7 +8785,9 @@ static void e_d_pause_takes_over_sync(void)
  */
 int e_d_pause(FENSTER *f)
 {
- if (e_d_start_refused(f) || e_d_pause_refused(f))
+ if (e_d_start_refused(f) || e_d_ga_pause_takes_sync(f))
+  return(0);
+ if (e_d_pause_refused(f))
   return(0);
  if (e_d_run.pause == E_D_PAUSE_ASKED)
  {
@@ -10558,6 +10759,7 @@ static int e_d_run_answer_read(int prsw)
 {
  int ret;
 
+ e_d_ga_run_begins();      /* its reader takes gdb's error stream from here */
  while ((ret = e_d_line_read_whole(wfildes[0], &e_d_run_answer, 0, 0)) == 2 ||
         (ret >= 0 && e_d_run_answer_awaited((char *)e_d_run_answer.s, prsw)))
  {
@@ -10612,6 +10814,8 @@ int e_deb_run(FENSTER *f)
  int ret, prsw = 0, main_brk = 0;
  const E_D_RUN_OPS *run_ops;
 
+ if (e_d_act_deferred(E_D_ACT_RUN, f, 0))
+  return(0);
  if (e_d_refuse_while_running(f))
   return(0);
  jdb_trace("e_deb_run: entry, e_d_swtch=%d, e_deb_type=%d\n",
@@ -13831,15 +14035,26 @@ static int e_d_finish_to_caller(FENSTER *f)
  */
 static int e_d_gdb_step_from_pause(FENSTER *f, int sw)
 {
- int below = e_d_pause_below;
+ return(e_d_ga_finish_from_frame(f->ed, e_d_pause_below, sw));
+}
+
+/**
+ * e_d_gdb_finish_out_of_pause - The frame below the marked one is selected:
+ * run out of the library call, and step once that stops.
+ * @f: the window on top; @sw: 1 for Step Over, 0 for Step Into.
+ * Return: 0, or the end of the session.
+ */
+static int e_d_gdb_finish_out_of_pause(FENSTER *f, int sw)
+{
  int ret;
 
- e_d_gdb_select_frame(below);
  e_d_send_cmd(E_D_GDB_FINISH);
  e_d_nstack = 0;
  ret = e_d_run_hand_over(f, e_d_run_ops_of_backend(), 0);
- if (e_d_run_going())
-  e_d_pause_follow = sw ? E_D_GDB_NEXT : E_D_GDB_STEP;
+ if (e_d_run_going() && sw)
+  e_d_pause_follow = E_D_GDB_NEXT;
+ else if (e_d_run_going())
+  e_d_pause_follow = E_D_GDB_STEP;
  return(ret);
 }
 
@@ -13848,6 +14063,10 @@ int e_d_step_next(FENSTER *f, int sw)
  int ret, main_brk = 0;
  const E_D_RUN_OPS *run_ops;
 
+ if (sw && e_d_act_deferred(E_D_ACT_NEXT, f, 0))
+  return(0);
+ if (!sw && e_d_act_deferred(E_D_ACT_STEP, f, 0))
+  return(0);
  if (e_d_refuse_while_running(f))
   return(0);
  jdb_trace("e_d_step_next: entry, sw=%d, e_d_swtch=%d, e_deb_type=%d, "
@@ -14733,7 +14952,9 @@ static void e_d_brk_disarm_each_line(ECNT *cn)
  */
 static void e_d_brk_disarm_all(ECNT *cn)
 {
- if (e_deb_type == DEB_GDB)
+ if (e_d_ga_at_stop())
+  e_d_ga_ask_plain(cn, E_D_GDB_DELETE_ALL);
+ else if (e_deb_type == DEB_GDB)
   e_d_send_and_read("delete\n");
  else if (e_deb_type == DEB_A68G)
   e_d_send_and_read("breakpoint clear breakpoints\n");
@@ -15017,6 +15238,11 @@ int e_d_goto_func(FENSTER *f, int flag)
  ECNT *cn = f->ed;
  FENSTER *top = cn->f[cn->mxedt];
 
+ if (flag == E_D_GOTO_CURSOR &&
+     e_d_act_deferred(E_D_ACT_GOTO, top, top->b->b.y + 1))
+  return(0);
+ if (flag == E_D_GOTO_FINISH && e_d_act_deferred(E_D_ACT_FINISH, top, 0))
+  return(0);
  if (flag == E_D_GOTO_CURSOR)
   e_d_goto_take_target(top);
  return(e_d_goto_run(f, flag, top->b->b.y + 1));
@@ -15072,11 +15298,6 @@ int e_d_fst_check(FENSTER *f)
    e_d_quit(f);
    return(i);
   }
-  else if (e_deb_type == DEB_GDB && !strncmp(e_d_sp[i], e_d_msg[ERR_PROGSIGNAL], 23))
-  {
-   e_d_pr_sig(e_d_pause_signal_line(e_d_sp[i]), f);
-   return(i);
-  }
   else if (e_deb_type == DEB_XDB && e_d_pause_asked_for(e_d_sp[i]))
   {
    e_d_pr_sig(e_d_pause_signal_line(e_d_sp[i]), f);
@@ -15106,29 +15327,8 @@ int e_d_fst_check(FENSTER *f)
   else if (!strncmp(e_d_sp[i], e_d_msg[ERR_BREAKPOINT], 10) ||
     (e_deb_type == DEB_SDB && !strncmp(e_d_sp[i], e_d_msg[ERR_BREAKPOINT2], 10)))
   {
-   if (e_deb_type == DEB_GDB)
-   {
-    for (j = SVLINES - 2; j > i; j--)      /*  Breakpoint   */
-    {
-     if ((ret = atoi(e_d_sp[j])) > 0)
-      for(k = 0; e_d_sp[j][k] && isdigit(e_d_sp[j][k]); k++)
-       ;
-     if (e_d_sp[j][k] == '\t')
-      break;
-    }
-    if (j > i)
-    {
-     for (k = strlen(e_d_sp[j-1]); k >= 0 && e_d_sp[j-1][k] != ':'; k--)
-      ;
-     if (k >= 0 && atoi(e_d_sp[j-1]+k+1) == ret)
-      e_d_stop_file_line(e_d_sp[j-1]);
-     if (e_d_p_watches(f, 0) == -1)
-      return(-1);
-     e_d_goto_break(e_d_file, ret, f);
-     return(i > 0 ? i-1 : 0);
-    }
-   }
-   else if (e_deb_type == DEB_SDB)	      /*  Breakpoint   */
+   /* gdb's breakpoint report is read by e_d_gdb_stop_place */
+   if (e_deb_type == DEB_SDB)	      /*  Breakpoint   */
    {
     if(!strncmp(e_d_sp[i]+10, " at", 3) &&
       (ret = e_d_stop_file_line(e_d_sp[i+1])) >= 0)
@@ -15177,57 +15377,10 @@ int e_d_snd_check(FENSTER *f)
  int i, j, k, ret;
 
  e_d_switch_out(0);
+ /* gdb's source row after a step is read by e_d_gdb_place_of_step */
  for (i = SVLINES - 2; i >= 0; i--)
  {
-  if (e_deb_type == DEB_GDB && (ret = atoi(e_d_sp[i])) > 0)
-  {
-   for (k = 0; e_d_sp[i][k] && isdigit(e_d_sp[i][k]); k++)
-    ;
-   if (e_d_sp[i][k] != '\t')
-    continue;
-   if (i > 0)
-   {
-    for (k = strlen(e_d_sp[i-1]); k >= 0 && e_d_sp[i-1][k] != ':'; k--)
-     ;
-    if (k >= 0 && atoi(e_d_sp[i-1]+k+1) == ret)
-    {
-     i--;
-     e_d_stop_file_line(e_d_sp[i]);
-     do
-     {
-      for (; k >= 0 && e_d_sp[i][k] != ')'; k--)
-       ;
-      if (k < 0)
-      {  i--;  k = strlen(e_d_sp[i]);  }
-      else
-       break;
-     }  while (i >= 0);
-     do
-     {
-      for (j = 1, k--; k >= 0 && j > 0; k--)
-      {
-       if (e_d_sp[i][k] == ')')
-        j++;
-       else if (e_d_sp[i][k] == '(')
-        j--;
-      }
-      if (k < 0)
-      {  i--;  k = strlen(e_d_sp[i]);  }
-     } while (i >= 0 && j > 0);
-     if (k == 0 && i > 0)
-     {  i--;  k = strlen(e_d_sp[i]);  }
-     for (k--; k >= 0 && isspace(e_d_sp[i][k]); k--)
-      ;
-     if (k < 0 && i > 0)
-      i--;
-    }
-   }
-   if (e_d_p_watches(f, 0) == -1)
-    return(-1);
-   e_d_goto_break(e_d_file, ret, f);
-   return(i);
-  }
-  else if (e_deb_type == DEB_SDB && (ret = atoi(e_d_sp[i])) > 0)
+  if (e_deb_type == DEB_SDB && (ret = atoi(e_d_sp[i])) > 0)
   {
    for (; i > 0; i--)
    {
@@ -15303,7 +15456,7 @@ static int e_d_out_read_newest(void)
  return(ret);
 }
 
-int e_read_output(FENSTER *f)
+static int e_read_output(FENSTER *f)
 {
  int i, ret;
 
@@ -15426,45 +15579,6 @@ static int e_d_where_row_read(char **row)
 static int e_d_where_frame;   /* number of the last "#N" row of the walk */
 
 /**
- * e_d_gdb_select_frame - Make a frame gdb's selected one, and read its
- * answer.
- * @frame: its number in "where" (0 is the innermost).
- *
- * Watches on locals are evaluated in the selected frame.  Used at a stop,
- * where gdb answers at once.
- */
-static void e_d_gdb_select_frame(int frame)
-{
- char cmd[E_D_FRAME_CMD_MAX], row[E_D_LINE_MAX];
- int ret;
-
- snprintf(cmd, sizeof cmd, E_D_GDB_FRAME_FMT, frame);
- e_d_send_cmd(cmd);
- do
- {
-  ret = e_d_line_read(wfildes[0], row, sizeof row, 0, 0);
- } while (ret == 0 || ret == 2);
-}
-
-/**
- * e_d_select_paused_frame - After Pause, make the marked frame gdb's
- * selected one, and remember how to get out to it.
- * @frame: its number in "where" (0 is the innermost).
- *
- * gdb stops in the innermost frame, often library code, while the bar is
- * on the user's frame a few levels out.  The watches then read the user's
- * locals, and the next F8 or F7 first runs out of the library call (see
- * e_d_gdb_step_from_pause), since gdb's own next and step would walk
- * through the library's lines.
- */
-static void e_d_select_paused_frame(int frame)
-{
- e_d_gdb_select_frame(frame);
- e_d_nstack = frame;
- e_d_pause_below = frame - 1;
-}
-
-/**
  * e_d_where_row_line - The source line a row of the stack listing names,
  * for the frame to mark.
  * @row: one row of "where"; @file: E_D_LINE_MAX bytes for the file's name.
@@ -15553,9 +15667,6 @@ int e_d_pr_sig(char *str, FENSTER *f)
  if (line >= 0)
  {
   strcpy(e_d_file, file);
-  if (e_d_run.pause != E_D_PAUSE_NONE && e_deb_type == DEB_GDB &&
-      e_d_where_frame > 0)
-   e_d_select_paused_frame(e_d_where_frame);
   /* Refresh the Watches window here too: a plain Step lands in this "find
      where we stopped via 'where'" path (e_d_trd_check -> e_d_pr_sig), not in
      the breakpoint branches, so without this the watch values would stay
@@ -15659,12 +15770,7 @@ int e_d_goto_break(char *file, int line, FENSTER *f)
       Set a temporary breakpoint at the next user function (main)
       and continue, skipping all libc frames. */
    if (e_deb_type == DEB_GDB)
-   {
-    e_d_send_cmd("tbreak main\n");
-    if (e_d_dum_read() == -1) { e_d_quit(f); return(-1); }
-    e_d_send_cmd("c\n");
-    return(e_read_output(f));
-   }
+    return(e_d_ga_leave_unknown_source(cn));
    snprintf(str, sizeof(str), e_d_msg[ERR_CANTFILE], file);
    return(e_error(str, 0, f->fb));
   }
@@ -15687,6 +15793,2085 @@ int e_d_goto_break(char *file, int line, FENSTER *f)
  if (WpeIsXwin())
   e_x_reclaim_focus();
 #endif
+ return(0);
+}
+
+/* ==== gdb's answers at a stop, on the fd loop ====
+
+   Everything gdb answers once the program has stopped (the stop's frame,
+   the watches, the stack, breakpoint answers) is asked through the request
+   engine of we_debreq.c and read by the editor's fd loop, between the
+   user's keys.  Nothing here reads the keyboard or waits on gdb's pipe: a
+   key typed while gdb answers reaches the editor, a key that needs gdb is
+   refused with the waiting line or, for a step, kept and run in order once
+   gdb is done, and Esc, Ctrl-C or the deadline give up on an answer that
+   does not come.  Each sequence of commands is a table of steps (E_D_STEP),
+   one named function per command and per answer. */
+
+/* What runs on gdb's request engine. */
+#define E_D_GA_NONE   0   /* nothing */
+#define E_D_GA_STOP   1   /* the answers of a stop the user is shown */
+#define E_D_GA_SYNC   2   /* a stop made to tell gdb of breakpoint changes:
+                             for the user the program runs */
+#define E_D_GA_ASK    3   /* a command of the user's at a stop */
+
+#define E_D_GDB_NAME        "gdb"   /* as the waiting line names it */
+#define E_D_GA_READ_MAX     4096    /* bytes read from gdb per wake */
+#define E_D_GA_LINE_MAX     (E_D_REQ_CMD_MAX + 128)   /* a status line */
+#define E_D_GA_NO_TIMER     (-1)
+#define E_D_GA_WAIT_FMT \
+ " waiting for %s to answer `%s` ... %lds  (Esc cancels)"
+#define E_D_GDB_PROMPT      "(gdb) "
+#define E_D_GDB_SETTLE_ECHO "echo " E_D_GDB_SETTLE_MARK "\\n"
+#define E_D_GDB_FRAME_SELECT_FMT "frame %d"
+#define E_D_GDB_FLUSH       "call (void)fflush(0)"
+#define E_D_GDB_WHERE       "where"
+#define E_D_GDB_BT          "bt"
+#define E_D_GDB_BREAK_FMT   "b %s:%d"
+#define E_D_GDB_DELETE_FMT  "d %d"
+#define E_D_GDB_TBREAK_MAIN "tbreak main"
+#define E_D_GDB_CONTINUE    "c\n"
+#define E_D_GDB_UP_FMT      "up %d"
+#define E_D_GDB_DOWN_FMT    "down %d"
+#define E_D_GA_ACT_MAX      8      /* debugger keys kept while gdb answers */
+/* How many characters of gdb's report words are compared, as e_d_fst_check
+   has always compared them. */
+#define E_D_GDB_EXIT_LEAD     14
+#define E_D_GDB_TERM_LEAD     18
+#define E_D_GDB_SIGNAL_LEAD   23
+#define E_D_GDB_BREAK_LEAD    10
+#define E_D_GDB_NOSTACK_LEAD  9
+
+/* A debugger key kept while gdb answers: its kind, and for Go to cursor
+   the file and line it was pressed on. */
+typedef struct
+{
+ int kind;
+ int line;
+ char file[PATH_MAX];
+ char dirct[PATH_MAX];
+} E_D_ACT;
+
+/* gdb's request engine, its world and what runs on it. */
+static struct
+{
+ E_D_REQ_QUEUE rq;
+ E_D_REQ_IO io;
+ E_D_REQ_LINK link;
+ E_D_REQUESTER via;
+ int made;                   /* rq was initialised once: free before again */
+ int live;                   /* this session's engine is ready */
+ int timer[E_D_TIMERS];      /* the loop's timer ids, E_D_GA_NO_TIMER */
+ int answer_watched;         /* the fd loop reads gdb's output for it */
+ int errors_watched;         /* ... and gdb's error stream */
+ int chain;                  /* E_D_GA_*: what runs */
+ int marker_wanted;          /* the request out is the settle echo */
+ int owed;                   /* interrupts the settle step takes back */
+ int pause_asked;            /* Pause pressed during a sync */
+ int running_said;           /* a key was refused as while the program runs:
+                                the waiting line leaves that line alone */
+ int waiting_painted;        /* the waiting line is on the status row */
+ ECNT *cn;
+ E_D_ACT act[E_D_GA_ACT_MAX];
+ int nact;
+ int act_timer;
+} e_d_ga;
+
+/**
+ * e_d_ga_window - The window on top, where status lines are said.
+ */
+static FENSTER *e_d_ga_window(void)
+{
+ ECNT *cn = e_d_ga.cn ? e_d_ga.cn : WpeEditor;
+
+ return(cn->f[cn->mxedt]);
+}
+
+/* ---- the engine's world ---- */
+
+/**
+ * e_d_ga_send - Write one command to gdb, with its line end.
+ * @cmd: the command; @io: unused.
+ * Return: 0, or -1 when gdb's input is closed.
+ */
+static int e_d_ga_send(const char *cmd, void *io)
+{
+ char line[E_D_REQ_CMD_MAX + 2];
+
+ (void)io;
+ if (rfildes[1] < 0)
+  return(-1);
+ snprintf(line, sizeof line, "%s\n", cmd);
+ e_d_nb_forget();
+ e_d_send_cmd(line);
+ return(0);
+}
+
+/**
+ * e_d_ga_ends_in_prompt - Does gdb's answer end with its prompt?
+ * @ans: the answer so far; @prompt_len: set to the prompt's bytes when it
+ * does.
+ */
+static int e_d_ga_ends_in_prompt(const E_D_ANSWER *ans, size_t *prompt_len)
+{
+ size_t n = strlen(E_D_GDB_PROMPT);
+
+ if (!ans->text || ans->len < n)
+  return(0);
+ if (memcmp(ans->text + ans->len - n, E_D_GDB_PROMPT, n))
+  return(0);
+ *prompt_len = n;
+ return(1);
+}
+
+/**
+ * e_d_ga_answer_ended - Is gdb's answer whole?
+ * @ans, @prompt_len, @io: as E_D_REQ_IO's answer_ended.
+ *
+ * An answer ends with gdb's prompt.  The settle echo's answer ends only with
+ * the prompt after the marker: the prompts before it answer interrupts.
+ */
+static int e_d_ga_answer_ended(const E_D_ANSWER *ans, size_t *prompt_len,
+                               void *io)
+{
+ (void)io;
+ if (!e_d_ga_ends_in_prompt(ans, prompt_len))
+  return(0);
+ if (!e_d_ga.marker_wanted)
+  return(1);
+ return(strstr(ans->text, E_D_GDB_SETTLE_MARK) != NULL);
+}
+
+/**
+ * e_d_ga_now_ms - The monotonic clock in milliseconds, for the engine's
+ * waiting line and deadline.
+ */
+static long e_d_ga_now_ms(void *io)
+{
+ struct timespec ts;
+
+ (void)io;
+ clock_gettime(CLOCK_MONOTONIC, &ts);
+ return((long)ts.tv_sec * WPE_TIMER_MS_PER_S +
+        (long)(ts.tv_nsec / WPE_TIMER_NS_PER_MS));
+}
+
+static void e_d_ga_after_engine(void);   /* (below) */
+
+/**
+ * e_d_ga_on_timer - A timer the engine asked for has gone off.
+ * @data: which one (E_D_TIMER_*).
+ */
+static void e_d_ga_on_timer(void *data)
+{
+ int which = (int)(intptr_t)data;
+
+ e_d_ga.timer[which] = E_D_GA_NO_TIMER;
+ if (!e_d_ga.live)
+  return;
+ e_d_req_timer(&e_d_ga.rq, &e_d_ga.io, which);
+ e_d_ga_after_engine();
+}
+
+/**
+ * e_d_ga_disarm - Stop the engine's timer @which, if it runs.
+ */
+static void e_d_ga_disarm(int which)
+{
+ if (e_d_ga.timer[which] == E_D_GA_NO_TIMER)
+  return;
+ wpe_timer_del(e_d_ga.timer[which]);
+ e_d_ga.timer[which] = E_D_GA_NO_TIMER;
+}
+
+/**
+ * e_d_ga_arm_timer - Ask the loop to call the engine back in @ms.
+ * @which: E_D_TIMER_*; @ms: the delay, or E_D_TIMER_OFF; @io: unused.
+ */
+static void e_d_ga_arm_timer(int which, long ms, void *io)
+{
+ (void)io;
+ e_d_ga_disarm(which);
+ if (ms == E_D_TIMER_OFF)
+  return;
+ e_d_ga.timer[which] = wpe_timer_add(ms, 0, e_d_ga_on_timer,
+                                     (void *)(intptr_t)which);
+ if (e_d_ga.timer[which] <= 0)
+  e_d_ga.timer[which] = E_D_GA_NO_TIMER;
+}
+
+/**
+ * e_d_ga_waiting_line - "waiting for gdb to answer `where` ... 3s (Esc
+ * cancels)": what the editor waits for, for how long, and how to stop it.
+ * @line, @n: where it goes; @cmd: the command; @secs: the seconds so far.
+ */
+static void e_d_ga_waiting_line(char *line, size_t n, const char *cmd,
+                                long secs)
+{
+ snprintf(line, n, E_D_GA_WAIT_FMT, e_d_ga.io.name, cmd, secs);
+}
+
+/**
+ * e_d_ga_waiting - Show the waiting line on the status row.
+ * @cmd, @secs: what is waited for and since when; @io: unused.
+ */
+static void e_d_ga_waiting(const char *cmd, long secs, void *io)
+{
+ char line[E_D_GA_LINE_MAX];
+
+ (void)io;
+ if (e_d_ga.running_said)
+  return;
+ e_d_ga_waiting_line(line, sizeof line, cmd, secs);
+ e_status_say(e_d_ga_window(), line);
+ e_d_ga.waiting_painted = 1;
+}
+
+/**
+ * e_d_ga_waiting_clear - gdb has answered: take the waiting line off the
+ * status row, so it does not go on saying the editor waits.  A line kept
+ * until the next key (why an answer was given up on, a breakpoint gdb
+ * refused) stays.
+ */
+static void e_d_ga_waiting_clear(void)
+{
+ FENSTER *f;
+
+ if (!e_d_ga.waiting_painted)
+  return;
+ e_d_ga.waiting_painted = 0;
+ f = e_d_ga_window();
+ if (!f || !f->fb)
+  return;
+ e_pr_uul(f->fb);
+ e_refresh();
+}
+
+/**
+ * e_d_ga_notice - Say why an answer was given up on, until the next key.
+ * @msg: the sentence; @io: unused.
+ */
+static void e_d_ga_notice(const char *msg, void *io)
+{
+ char line[E_D_GA_LINE_MAX + E_D_REQ_MSG_MAX];
+
+ (void)io;
+ snprintf(line, sizeof line, " %s", msg);
+ e_status_say_until_key(e_d_ga_window(), line);
+}
+
+/* ---- watching gdb's descriptors ---- */
+
+static void e_d_ga_on_answer(int fd, void *data);   /* (below) */
+static void e_d_ga_on_errors(int fd, void *data);   /* (below) */
+
+/**
+ * e_d_ga_watch - Have the fd loop read gdb's output and error stream for
+ * the engine while a request is out.
+ */
+static void e_d_ga_watch(void)
+{
+ if (!e_d_ga.answer_watched &&
+     e_fd_watch(wfildes[0], POLLIN, e_d_ga_on_answer, NULL,
+                "the debugger's answer") == 0)
+  e_d_ga.answer_watched = 1;
+ if (!e_d_ga.errors_watched && efildes[0] >= 0 &&
+     e_fd_watch(efildes[0], POLLIN, e_d_ga_on_errors, NULL,
+                "the debugger's error stream") == 0)
+  e_d_ga.errors_watched = 1;
+}
+
+/**
+ * e_d_ga_unwatch_answer - Stop reading gdb's output for the engine.
+ *
+ * A run that has taken the descriptor over keeps it.
+ */
+static void e_d_ga_unwatch_answer(void)
+{
+ if (!e_d_ga.answer_watched)
+  return;
+ e_d_ga.answer_watched = 0;
+ if (!e_d_run_going())
+  wpe_fd_del(wfildes[0]);
+}
+
+/**
+ * e_d_ga_unwatch_errors - Stop reading gdb's error stream for the engine.
+ */
+static void e_d_ga_unwatch_errors(void)
+{
+ if (!e_d_ga.errors_watched)
+  return;
+ e_d_ga.errors_watched = 0;
+ if (efildes[0] >= 0)
+  wpe_fd_del(efildes[0]);
+}
+
+/**
+ * e_d_ga_after_engine - The engine has done what it could with what came:
+ * stop reading for it when it waits for nothing.
+ *
+ * The error stream stays watched while a breakpoint's late refusal may
+ * still come (the last request's late_error hook), until the program runs.
+ */
+static void e_d_ga_after_engine(void)
+{
+ if (!e_d_ga.live)
+  return;
+ if (e_d_req_pending(&e_d_ga.rq))
+  return;
+ e_d_ga_unwatch_answer();
+ if (!e_d_ga.rq.late_fn)
+  e_d_ga_unwatch_errors();
+}
+
+/**
+ * e_d_ga_debugger_gone - gdb's output ended while the editor waited for an
+ * answer: the session ends, and the user reads why.
+ */
+static void e_d_ga_debugger_gone(void)
+{
+ e_d_note_output_closed();
+ e_d_ga_unwatch_answer();
+ e_d_ga_unwatch_errors();
+ e_d_quit(e_d_ga_window());
+}
+
+/**
+ * e_d_ga_on_answer - gdb wrote on its output while the engine waits.
+ * @fd: gdb's output; @data: unused.
+ *
+ * Runs on the fd loop, between the user's keys.  Bytes that come when
+ * nothing is asked are gdb's own and are dropped.
+ */
+static void e_d_ga_on_answer(int fd, void *data)
+{
+ char buf[E_D_GA_READ_MAX];
+ ssize_t n;
+
+ (void)data;
+ n = read(fd, buf, sizeof buf);
+ if (n < 0 && (errno == EAGAIN || errno == EINTR))
+  return;
+ if (n <= 0)
+ {
+  e_d_ga_debugger_gone();
+  return;
+ }
+ e_d_req_feed(&e_d_ga.rq, &e_d_ga.io, buf, (size_t)n);
+ e_d_ga_after_engine();
+}
+
+/**
+ * e_d_ga_on_errors - gdb wrote on its error stream while the engine waits.
+ * @fd: gdb's error stream; @data: unused.
+ *
+ * Its words join the answer they belong to, or a breakpoint's refusal that
+ * comes just after its prompt.
+ */
+static void e_d_ga_on_errors(int fd, void *data)
+{
+ char buf[E_D_GA_READ_MAX];
+ ssize_t n;
+
+ (void)data;
+ n = read(fd, buf, sizeof buf);
+ if (n < 0 && (errno == EAGAIN || errno == EINTR))
+  return;
+ if (n <= 0)
+ {
+  e_d_ga_unwatch_errors();
+  return;
+ }
+ e_d_req_feed_errors(&e_d_ga.rq, &e_d_ga.io, buf, (size_t)n);
+ e_d_ga_after_engine();
+}
+
+/* ---- the engine's life ---- */
+
+/**
+ * e_d_ga_world - Fill in what the engine needs from the editor.
+ */
+static void e_d_ga_world(void)
+{
+ memset(&e_d_ga.io, 0, sizeof e_d_ga.io);
+ e_d_ga.io.send = e_d_ga_send;
+ e_d_ga.io.answer_ended = e_d_ga_answer_ended;
+ e_d_ga.io.now_ms = e_d_ga_now_ms;
+ e_d_ga.io.arm_timer = e_d_ga_arm_timer;
+ e_d_ga.io.waiting = e_d_ga_waiting;
+ e_d_ga.io.notice = e_d_ga_notice;
+ e_d_ga.io.name = E_D_GDB_NAME;
+ e_d_ga.io.settle_cmd = E_D_GDB_SETTLE_ECHO;
+ e_d_ga.io.settle_marker = E_D_GDB_SETTLE_MARK;
+ e_d_ga.link.rq = &e_d_ga.rq;
+ e_d_ga.link.io = &e_d_ga.io;
+ e_d_ga.via.request = e_d_req_request;
+ e_d_ga.via.engine = &e_d_ga.link;
+}
+
+/**
+ * e_d_ga_begin - Make gdb's engine ready for this session, once.
+ * @cn: the editor.
+ *
+ * The deadline is E_D_REQ_TIMEOUT_S, or the user's XWPE_DEBUG_ANSWER_TIMEOUT
+ * for a program whose answers take long.
+ */
+static void e_d_ga_begin(ECNT *cn)
+{
+ int i;
+
+ e_d_ga.cn = cn;
+ if (e_d_ga.live)
+  return;
+ if (e_d_ga.made)
+  e_d_req_free(&e_d_ga.rq);
+ e_d_req_init(&e_d_ga.rq, getenv(E_D_REQ_TIMEOUT_ENV));
+ e_d_ga.made = 1;
+ e_d_ga_world();
+ for (i = 0; i < E_D_TIMERS; i++)
+  e_d_ga.timer[i] = E_D_GA_NO_TIMER;
+ e_d_ga.act_timer = E_D_GA_NO_TIMER;
+ e_d_ga.chain = E_D_GA_NONE;
+ e_d_ga.nact = 0;
+ e_d_ga.owed = 0;
+ e_d_ga.marker_wanted = 0;
+ e_d_ga.pause_asked = 0;
+ e_d_ga.running_said = 0;
+ e_d_ga.waiting_painted = 0;
+ e_d_ga.live = 1;
+}
+
+/**
+ * e_d_ga_actions_drop - Forget the debugger keys kept while gdb answered.
+ *
+ * After a cancel or at the end of the session they have nothing left to
+ * act on.
+ */
+static void e_d_ga_actions_drop(void)
+{
+ e_d_ga.nact = 0;
+ if (e_d_ga.act_timer == E_D_GA_NO_TIMER)
+  return;
+ wpe_timer_del(e_d_ga.act_timer);
+ e_d_ga.act_timer = E_D_GA_NO_TIMER;
+}
+
+/**
+ * e_d_ga_forget - The session ends: every request still out is told so,
+ * nothing more is read or sent, and no step paints anything.
+ *
+ * The engine's memory is kept until the next session begins, since this
+ * may be called from inside one of its own callbacks.
+ */
+static void e_d_ga_forget(void)
+{
+ int i;
+
+ if (!e_d_ga.live)
+  return;
+ e_d_ga.live = 0;
+ e_d_ga_actions_drop();
+ e_d_req_cancel(&e_d_ga.rq, &e_d_ga.io, E_D_REQ_GONE);
+ e_d_ga_unwatch_answer();
+ e_d_ga_unwatch_errors();
+ for (i = 0; i < E_D_TIMERS; i++)
+  e_d_ga_disarm(i);
+ e_d_ga.chain = E_D_GA_NONE;
+ e_d_ga.marker_wanted = 0;
+ e_d_ga.owed = 0;
+ e_d_ga.pause_asked = 0;
+}
+
+/**
+ * e_d_ga_run_begins - The program runs again: the run reads gdb's output,
+ * and an error line from now on is no breakpoint's late refusal.
+ */
+static void e_d_ga_run_begins(void)
+{
+ if (!e_d_ga.live)
+  return;
+ e_d_ga.answer_watched = 0;     /* the run's watch replaces the engine's */
+ e_d_req_set_late_error(&e_d_ga.rq, NULL, NULL);
+ e_d_ga_unwatch_errors();
+}
+
+/**
+ * e_d_ga_owe_settle - Note the interrupts gdb may still answer, for the
+ * settle step of the next sequence of requests.
+ * @owed: how many.
+ */
+static void e_d_ga_owe_settle(int owed)
+{
+ e_d_ga.owed = owed;
+}
+
+/* ---- what the user sees while gdb answers ---- */
+
+/**
+ * e_d_ga_answering - Is the editor waiting for gdb, or working through a
+ * sequence of its answers?
+ */
+static int e_d_ga_answering(void)
+{
+ if (!e_d_ga.live)
+  return(0);
+ return(e_d_req_pending(&e_d_ga.rq) || e_d_ga.chain != E_D_GA_NONE);
+}
+
+/**
+ * e_d_ga_sync_runs - Is gdb being told of breakpoint changes at a stop the
+ * user is not shown?  For the user the program runs meanwhile.
+ */
+static int e_d_ga_sync_runs(void)
+{
+ return(e_d_ga_answering() && e_d_ga.chain == E_D_GA_SYNC);
+}
+
+/**
+ * e_d_ga_at_stop - Is gdb stopped and asked nothing, so a command of the
+ * user's goes to it through the engine?
+ */
+static int e_d_ga_at_stop(void)
+{
+ if (e_deb_type != DEB_GDB || e_d_swtch < 3)
+  return(0);
+ if (e_d_run_going() || e_d_ga_answering())
+  return(0);
+ return(1);
+}
+
+/**
+ * e_d_ga_refusal_line - What a key that needs gdb is told while gdb
+ * answers: the waiting line, or, while an old answer is still dropped, that
+ * gdb is still answering it.
+ * @line, @n: where it goes.
+ */
+static void e_d_ga_refusal_line(char *line, size_t n)
+{
+ E_D_REQ_QUEUE *rq = &e_d_ga.rq;
+ long secs;
+
+ if (rq->resync || rq->n == 0)
+ {
+  line[0] = ' ';
+  e_d_req_busy_message(rq, &e_d_ga.io, line + 1, n - 1);
+  return;
+ }
+ secs = (e_d_ga_now_ms(NULL) - rq->sent_ms) / WPE_TIMER_MS_PER_S;
+ e_d_ga_waiting_line(line, n, rq->q[rq->head].cmd, secs);
+}
+
+/**
+ * e_d_ga_refused - Refuse a debugger command while gdb answers.
+ * @f: the window the key was pressed in.
+ *
+ * A command sent now would be answered out of turn.  While the user is
+ * shown a stop the status row shows the waiting line, so the user sees why
+ * and that Esc ends the wait; while gdb is told of a breakpoint change the
+ * program runs for the user, and the key is refused as while it runs.
+ * Return: 1 when the command must not run.
+ */
+static int e_d_ga_refused(FENSTER *f)
+{
+ char line[E_D_GA_LINE_MAX + E_D_REQ_MSG_MAX];
+
+ if (!e_d_ga_answering())
+  return(0);
+ if (e_d_ga.chain == E_D_GA_SYNC)
+ {
+  e_d_ga.running_said = 1;
+  e_status_say(f, e_d_running_line());
+  return(1);
+ }
+ e_d_ga_refusal_line(line, sizeof line);
+ if (!line[1])
+  e_d_ga_waiting_line(line, sizeof line, E_D_GDB_WHERE, 0);
+ e_status_say(f, line);
+ e_d_ga.waiting_painted = 1;
+ return(1);
+}
+
+/**
+ * e_d_ga_pause_takes_sync - Pause pressed while gdb is told of a breakpoint
+ * change: the program is already stopped, so the stop becomes the user's.
+ * @f: the window the key was pressed in.
+ *
+ * When gdb has answered, the program is not let run on: its stop is marked
+ * and the status row says "Paused".
+ * Return: 1 when Pause was taken here.
+ */
+static int e_d_ga_pause_takes_sync(FENSTER *f)
+{
+ if (!e_d_ga_sync_runs())
+  return(0);
+ e_d_ga.pause_asked = 1;
+ e_status_say(f, E_D_PAUSING_LINE);
+ return(1);
+}
+
+/**
+ * e_d_answer_busy - Does the editor wait for gdb's answer?
+ *
+ * The editor's key loop asks this so Esc and Ctrl-C end the wait, as the
+ * waiting line says.
+ * Return: 1 while it waits.
+ */
+int e_d_answer_busy(void)
+{
+ return(e_d_ga.live && e_d_req_pending(&e_d_ga.rq));
+}
+
+/**
+ * e_d_answer_cancel - Give up on the answer gdb owes, and on every command
+ * that waited behind it.
+ *
+ * The user gets the editor back at once, with a line naming the command gdb
+ * did not answer.  The keys kept for after the answer are dropped with it;
+ * gdb's late answer is dropped too, so it is never taken for another
+ * command's.  Debug > Quit still ends the session.
+ */
+void e_d_answer_cancel(void)
+{
+ if (!e_d_ga.live)
+  return;
+ e_d_ga_actions_drop();
+ e_d_req_cancel(&e_d_ga.rq, &e_d_ga.io, E_D_REQ_CANCELLED);
+ e_d_ga_after_engine();
+}
+
+/**
+ * e_d_ga_chain_start - Run a table of steps on gdb's engine.
+ * @cn: the editor; @steps: the table; @ctx: handed to every step;
+ * @finished: told once at the end; @kind: E_D_GA_STOP, _SYNC or _ASK.
+ * Return: 1 while it runs or when it ended well at once, 0 when it failed.
+ */
+static int e_d_ga_chain_start(ECNT *cn, const E_D_STEP *steps, void *ctx,
+                              e_d_chain_done_fn finished, int kind)
+{
+ int ret;
+
+ e_d_ga_begin(cn);
+ e_d_ga.chain = kind;
+ e_d_ga_watch();
+ ret = e_d_chain_run(&e_d_ga.via, steps, ctx, finished);
+ e_d_ga_after_engine();
+ return(ret);
+}
+
+/**
+ * e_d_ga_chain_ended - A table of steps is over: nothing runs on the engine
+ * any more.
+ * Return: 1 when the session goes on, 0 when it ended meanwhile.
+ */
+static int e_d_ga_chain_ended(void)
+{
+ e_d_ga.chain = E_D_GA_NONE;
+ e_d_ga.marker_wanted = 0;
+ e_d_ga.running_said = 0;
+ e_d_gb_removing_id = 0;
+ if (!e_d_ga.live)
+  return(0);
+ e_d_ga_waiting_clear();
+ return(1);
+}
+
+/* ---- the debugger keys typed while gdb answers ---- */
+
+static void e_d_act_on_timer(void *data);   /* (below) */
+
+/**
+ * e_d_act_schedule - Run the next kept key once gdb is done, from the
+ * editor's loop rather than from inside an answer.
+ */
+static void e_d_act_schedule(void)
+{
+ if (e_d_ga.nact == 0 || e_d_ga.act_timer != E_D_GA_NO_TIMER)
+  return;
+ e_d_ga.act_timer = wpe_timer_add(0, 0, e_d_act_on_timer, NULL);
+ if (e_d_ga.act_timer <= 0)
+  e_d_ga.act_timer = E_D_GA_NO_TIMER;
+}
+
+/**
+ * e_d_act_push - Keep a debugger key typed while gdb answers.
+ * @kind: E_D_ACT_*; @f: the window it was pressed in; @line: Go to cursor's
+ * line there.
+ */
+static void e_d_act_push(int kind, FENSTER *f, int line)
+{
+ E_D_ACT *a = &e_d_ga.act[e_d_ga.nact++];
+
+ a->kind = kind;
+ a->line = line;
+ snprintf(a->file, sizeof a->file, "%s", f->datnam ? f->datnam : "");
+ snprintf(a->dirct, sizeof a->dirct, "%s", f->dirct ? f->dirct : "");
+}
+
+/**
+ * e_d_act_pop - Take the oldest kept key off the list.
+ * @a: receives it.
+ */
+static void e_d_act_pop(E_D_ACT *a)
+{
+ int i;
+
+ *a = e_d_ga.act[0];
+ for (i = 1; i < e_d_ga.nact; i++)
+  e_d_ga.act[i - 1] = e_d_ga.act[i];
+ e_d_ga.nact--;
+}
+
+/**
+ * e_d_act_deferred - Keep a step, a run, Finish or Go to cursor typed while
+ * gdb answers at a stop, to run once it is done.
+ * @kind: E_D_ACT_*; @f: the window the key was pressed in; @line: Go to
+ * cursor's line.
+ *
+ * F8 F8 typed while the watches of a stop are read steps twice, in order,
+ * as the user meant.  While gdb is told of a breakpoint change the program
+ * runs for the user, and the key is refused as while it runs, never kept.
+ * A ninth key, or one typed while gdb still answers a command given up on,
+ * is refused with the line that says so.
+ * Return: 1 when the key was kept or refused here.
+ */
+static int e_d_act_deferred(int kind, FENSTER *f, int line)
+{
+ if (!e_d_ga_answering())
+  return(0);
+ if (e_d_ga.chain == E_D_GA_SYNC || e_d_ga.rq.resync ||
+     e_d_ga.nact >= E_D_GA_ACT_MAX)
+  return(e_d_ga_refused(f));
+ e_d_act_push(kind, f, line);
+ return(1);
+}
+
+/**
+ * e_d_act_goto - Go to cursor, kept while gdb answered, on its own line.
+ * @f: the window on top; @a: the kept key.
+ */
+static int e_d_act_goto(FENSTER *f, const E_D_ACT *a)
+{
+ snprintf(e_d_goto_target.file, sizeof e_d_goto_target.file, "%s", a->file);
+ snprintf(e_d_goto_target.dirct, sizeof e_d_goto_target.dirct, "%s",
+          a->dirct);
+ return(e_d_goto_run(f, E_D_GOTO_CURSOR, a->line));
+}
+
+/**
+ * e_d_act_run - Do what a kept key asks, now that gdb is done.
+ * @a: the kept key.
+ */
+static void e_d_act_run(const E_D_ACT *a)
+{
+ FENSTER *f = e_d_ga_window();
+
+ switch (a->kind)
+ {
+  case E_D_ACT_STEP:
+   e_d_step_next(f, 0);
+   break;
+  case E_D_ACT_NEXT:
+   e_d_step_next(f, 1);
+   break;
+  case E_D_ACT_RUN:
+   e_deb_run(f);
+   break;
+  case E_D_ACT_FINISH:
+   e_d_goto_run(f, E_D_GOTO_FINISH, 0);
+   break;
+  case E_D_ACT_GOTO:
+   e_d_act_goto(f, a);
+   break;
+ }
+}
+
+/**
+ * e_d_act_on_timer - The loop is free: run the oldest kept key.
+ * @data: unused.
+ *
+ * Only once gdb is done and the program is stopped; a key that started a
+ * run leaves the next one for after that run's stop.
+ */
+static void e_d_act_on_timer(void *data)
+{
+ E_D_ACT a;
+
+ (void)data;
+ e_d_ga.act_timer = E_D_GA_NO_TIMER;
+ if (!e_d_ga.live || !e_d_session_runs())
+ {
+  e_d_ga.nact = 0;
+  return;
+ }
+ if (e_d_ga.nact == 0 || e_d_ga_answering() || e_d_run_going())
+  return;
+ e_d_act_pop(&a);
+ e_d_act_run(&a);
+ if (!e_d_run_going() && !e_d_ga_answering())
+  e_d_act_schedule();
+}
+
+/* ---- the answers of a stop ---- */
+
+/* What a stop's steps learn, read by its end. */
+typedef struct
+{
+ ECNT *cn;
+ int need_where;             /* the stop's own lines named no place */
+ int line;                   /* the line to mark, or -1 */
+ char file[E_D_LINE_MAX];
+ int where_rows;             /* rows `where` answered */
+ int no_stack;               /* `where` said the program has no stack */
+ int pause_frame;            /* after Pause, the frame to select, or 0 */
+ int stack_wanted;           /* the Stack window is open: ask `bt` */
+ char *stack;                /* `bt`'s answer */
+ int stack_sw;               /* bring the Stack window to the top */
+ int watch;                  /* the next watch to ask */
+ char **values;              /* the watches' answers */
+ int nvalues;
+ int watches_sw;             /* bring the Watches window to the top */
+ int start_brk;              /* the start breakpoint (entry + 1) to delete */
+ int frame;                  /* the frame to move to (Stack window) */
+ int moved;                  /* that move was asked */
+ int below;                  /* the frame to finish out of after Pause */
+ int step_over;              /* the step after that finish: 1 for F8 */
+} E_D_GDB_STOP;
+
+static E_D_GDB_STOP e_d_gs;
+
+/**
+ * e_d_gs_free - Give back what a stop's steps kept.
+ * @st: the context.
+ */
+static void e_d_gs_free(E_D_GDB_STOP *st)
+{
+ int i;
+
+ for (i = 0; i < st->nvalues; i++)
+  if (st->values[i])
+   FREE(st->values[i]);
+ if (st->values)
+  FREE(st->values);
+ if (st->stack)
+  FREE(st->stack);
+ memset(st, 0, sizeof *st);
+}
+
+/**
+ * e_d_gs_reset - Start a new context: one sequence of requests at a time.
+ * @st: the context; @cn: the editor.
+ */
+static void e_d_gs_reset(E_D_GDB_STOP *st, ECNT *cn)
+{
+ e_d_gs_free(st);
+ st->cn = cn;
+ st->line = -1;
+ if (e_d_nwtchs > 0)
+  st->values = calloc((size_t)e_d_nwtchs, sizeof(char *));
+ if (st->values)
+  st->nvalues = e_d_nwtchs;
+}
+
+/**
+ * e_d_gs_copy - Keep a copy of an answer's text, or NULL when it has none.
+ */
+static char *e_d_gs_copy(const E_D_ANSWER *ans)
+{
+ if (!ans->text)
+  return(NULL);
+ return(WpeStrdup(ans->text));
+}
+
+/* step: take back the answers to interrupts that met gdb at its prompt */
+
+static int e_d_gs_settle_cmd(char *cmd, size_t n, void *ctx)
+{
+ (void)ctx;
+ if (e_d_ga.owed <= 0)
+  return(0);
+ e_d_ga.marker_wanted = 1;
+ snprintf(cmd, n, "%s", E_D_GDB_SETTLE_ECHO);
+ return(1);
+}
+
+/**
+ * e_d_gs_settle_answered - Count the prompts that came before the echo:
+ * each answered an interrupt.  The rest reached the program and come back
+ * as a SIGINT stop at its next resume.
+ */
+static int e_d_gs_settle_answered(E_D_REQ_END how, E_D_ANSWER *ans, void *ctx)
+{
+ const char *mark = strstr(ans->text ? ans->text : "", E_D_GDB_SETTLE_MARK);
+ int owed = e_d_ga.owed;
+
+ (void)how;
+ (void)ctx;
+ e_d_ga.marker_wanted = 0;
+ if (mark)
+  owed -= e_d_prompts_in(ans->text, (size_t)(mark - ans->text));
+ if (owed < 0)
+  owed = 0;
+ e_d_run.int_owed = owed;
+ e_d_ga.owed = 0;
+ return(E_D_STEP_NEXT);
+}
+
+/* step: the program's buffered output, which a pty holds until a line end */
+
+static int e_d_gs_flush_cmd(char *cmd, size_t n, void *ctx)
+{
+ (void)ctx;
+ if (e_d_pty_master < 0)
+  return(0);
+ snprintf(cmd, n, "%s", E_D_GDB_FLUSH);
+ return(1);
+}
+
+static int e_d_gs_ignore_answer(E_D_REQ_END how, E_D_ANSWER *ans, void *ctx)
+{
+ (void)how;
+ (void)ans;
+ (void)ctx;
+ return(E_D_STEP_NEXT);
+}
+
+/* step: where the program stopped, when its stop lines did not say */
+
+static int e_d_gs_where_cmd(char *cmd, size_t n, void *ctx)
+{
+ E_D_GDB_STOP *st = ctx;
+
+ if (!st->need_where)
+  return(0);
+ snprintf(cmd, n, "%s", E_D_GDB_WHERE);
+ return(1);
+}
+
+/**
+ * e_d_gs_where_row - Read one row of `where`.
+ * @st: the context; @row: the row.
+ * Return: 1 when the reading is over (the place is found, or there is no
+ * stack), 0 to read the next row.
+ */
+static int e_d_gs_where_row(E_D_GDB_STOP *st, char *row)
+{
+ char file[E_D_LINE_MAX];
+ int line;
+
+ st->where_rows++;
+ if (!strncmp(row, e_d_msg[ERR_NOSTACK], E_D_GDB_NOSTACK_LEAD))
+ {
+  st->no_stack = 1;
+  return(1);
+ }
+ if ((line = e_d_where_row_line(row, file)) < 0)
+  return(0);
+ st->line = line;
+ snprintf(st->file, sizeof st->file, "%s", file);
+ return(1);
+}
+
+/**
+ * e_d_gs_where_answered - Find the frame to mark in `where`'s rows: the
+ * innermost one with a line, or after Pause the innermost one whose source
+ * is here, whose frame is then selected so the watches read its locals.
+ */
+static int e_d_gs_where_answered(E_D_REQ_END how, E_D_ANSWER *ans, void *ctx)
+{
+ E_D_GDB_STOP *st = ctx;
+ const char *p = ans->text ? ans->text : "";
+ char *row;
+ int over = 0;
+
+ (void)how;
+ e_d_where_frame = 0;
+ e_ds_begin_stack(&e_d_session);
+ while (!over && *p && (row = e_d_text_take_row(&p)) != NULL)
+ {
+  over = e_d_gs_where_row(st, row);
+  FREE(row);
+ }
+ if (st->no_stack)
+  return(E_D_STEP_STOP);
+ if (st->line >= 0 && e_d_run.pause != E_D_PAUSE_NONE && e_d_where_frame > 0)
+  st->pause_frame = e_d_where_frame;
+ return(E_D_STEP_NEXT);
+}
+
+/* step: after Pause, the user's frame becomes gdb's selected one.  gdb
+   stops in the innermost frame, often library code, while the mark is on
+   the user's frame further out: the watches then read the user's locals,
+   and the next F8 or F7 first finishes out of the library call
+   (e_d_gdb_step_from_pause). */
+
+static int e_d_gs_frame_cmd(char *cmd, size_t n, void *ctx)
+{
+ E_D_GDB_STOP *st = ctx;
+
+ if (st->pause_frame <= 0)
+  return(0);
+ snprintf(cmd, n, E_D_GDB_FRAME_SELECT_FMT, st->pause_frame);
+ return(1);
+}
+
+static int e_d_gs_frame_answered(E_D_REQ_END how, E_D_ANSWER *ans, void *ctx)
+{
+ E_D_GDB_STOP *st = ctx;
+
+ (void)how;
+ (void)ans;
+ e_d_nstack = st->pause_frame;
+ e_d_pause_below = st->pause_frame - 1;
+ return(E_D_STEP_NEXT);
+}
+
+/* step: the Stack window's rows, when it is open */
+
+static int e_d_gs_stack_cmd(char *cmd, size_t n, void *ctx)
+{
+ E_D_GDB_STOP *st = ctx;
+
+ if (!st->stack_wanted)
+  return(0);
+ snprintf(cmd, n, "%s", E_D_GDB_BT);
+ return(1);
+}
+
+static int e_d_gs_stack_answered(E_D_REQ_END how, E_D_ANSWER *ans, void *ctx)
+{
+ E_D_GDB_STOP *st = ctx;
+
+ (void)how;
+ st->stack = e_d_gs_copy(ans);
+ return(E_D_STEP_NEXT);
+}
+
+/* step: one watch; again until every watch has its answer */
+
+static int e_d_gs_watch_cmd(char *cmd, size_t n, void *ctx)
+{
+ E_D_GDB_STOP *st = ctx;
+ char line[E_D_WATCH_CMD_MAX];
+ size_t len;
+
+ if (st->watch >= st->nvalues)
+  return(0);
+ if (!e_d_watch_command(line, sizeof line, e_d_swtchs[st->watch]))
+  return(0);
+ len = strlen(line);
+ if (len > 0 && line[len - 1] == '\n')
+  line[len - 1] = '\0';
+ snprintf(cmd, n, "%s", line);
+ return(1);
+}
+
+/**
+ * e_d_gs_watch_value - The value an answer gives a watch: its lines joined
+ * by blanks, as they were always shown; none when gdb answered on its error
+ * stream ("No symbol ..."), whose words the watch replaces with its own.
+ * Return: the value, to be freed, or NULL.
+ */
+static char *e_d_gs_watch_value(const E_D_ANSWER *ans)
+{
+ char *value;
+ size_t i, len;
+
+ if (ans->error || !ans->text)
+  return(NULL);
+ value = WpeStrdup(ans->text);
+ if (!value)
+  return(NULL);
+ len = strlen(value);
+ for (i = 0; i + 1 < len; i++)
+  if (value[i] == '\n')
+   value[i] = ' ';
+ return(value);
+}
+
+static int e_d_gs_watch_answered(E_D_REQ_END how, E_D_ANSWER *ans, void *ctx)
+{
+ E_D_GDB_STOP *st = ctx;
+
+ (void)how;
+ st->values[st->watch++] = e_d_gs_watch_value(ans);
+ return(E_D_STEP_AGAIN);
+}
+
+/* ---- breakpoint answers ---- */
+
+/* The breakpoint whose refusal may still come on gdb's error stream after
+   its prompt (the engine's late_error hook): heard until the next request
+   goes out. */
+static struct
+{
+ char file[PATH_MAX];
+ int line;
+} e_d_gb_late;
+
+/**
+ * e_d_gb_number_line - The line of gdb's answer to "b file:line" that
+ * gives the breakpoint's number, copied into @out.
+ * Return: the number, or 0 when no line gives one.
+ */
+static int e_d_gb_number_line(const char *text, char *out, size_t n)
+{
+ const char *p = text ? text : "";
+ char *row;
+ int id = 0;
+
+ out[0] = '\0';
+ while (!id && *p && (row = e_d_text_take_row(&p)) != NULL)
+ {
+  if (e_ds_brk_is_number_line(E_DS_GDB, row))
+  {
+   id = e_ds_brk_number(E_DS_GDB, row);
+   snprintf(out, n, "%s", row);
+  }
+  FREE(row);
+ }
+ return(id);
+}
+
+/**
+ * e_d_gb_first_words - The first line of an answer that says something,
+ * for the status row when gdb refused.
+ */
+static void e_d_gb_first_words(const char *text, char *out, size_t n)
+{
+ const char *p = text ? text : "";
+ char *row;
+
+ out[0] = '\0';
+ while (!out[0] && *p && (row = e_d_text_take_row(&p)) != NULL)
+ {
+  if (row[0] && row[0] != '\n')
+   snprintf(out, n, "%s", row);
+  FREE(row);
+ }
+}
+
+/**
+ * e_d_gb_take_verdict - Keep what gdb said of list entry @i.
+ * @i: the entry; @id: the number gdb gave it, or 0; @ret: the reader's code
+ * for @str as the session reads it (0 a line, 1 the prompt, 2 an error
+ * line); @str: the words.
+ */
+static void e_d_gb_take_verdict(int i, int id, int ret, const char *str)
+{
+ E_D_BRK_ANSWER v;
+
+ e_d_nrbrpts[i] = id;
+ e_d_brk_numbered_verdict(&v, ret, str);
+ e_d_brk_take_answer(i, &v);
+ e_d_brk_session_answer(e_d_sbrpts[i], e_d_ybrpts[i], ret, str);
+}
+
+/**
+ * e_d_gb_on_late_error - gdb refused the breakpoint just set on its error
+ * stream, after its prompt: the mark turns hollow with gdb's words.
+ * @err: the words; @ctx: unused (the entry is e_d_gb_late).
+ */
+static void e_d_gb_on_late_error(const E_D_ANSWER *err, void *ctx)
+{
+ char words[E_D_BRK_ANSWER_MAX];
+ int i = e_d_brk_index_of(e_d_gb_late.file, e_d_gb_late.line);
+
+ (void)ctx;
+ if (i < 0 || e_d_nrbrpts[i] != 0)
+  return;
+ e_d_gb_first_words(err->text, words, sizeof words);
+ e_d_gb_take_verdict(i, 0, E_D_READ_ERROR, words);
+ e_d_brk_say_refusal(e_d_ga_window(), i);
+ e_d_run_repaint_margin(e_d_ga.cn);
+}
+
+/* step: one breakpoint the user removed; again until none is left */
+
+/**
+ * e_d_gb_removal_told - Is gdb answering the removal of breakpoint @id?
+ */
+static int e_d_gb_removal_told(int id)
+{
+ return(id != 0 && id == e_d_gb_removing_id);
+}
+
+static int e_d_gb_remove_cmd(char *cmd, size_t n, void *ctx)
+{
+ (void)ctx;
+ if (e_d_brk_ngone <= 0)
+  return(0);
+ e_d_gb_removing_id = e_d_brk_gone[0].id;
+ snprintf(cmd, n, E_D_GDB_DELETE_FMT, e_d_gb_removing_id);
+ return(1);
+}
+
+/**
+ * e_d_gb_gone_drop_id - gdb took the removal of breakpoint @id: forget it,
+ * so the removals the user makes meanwhile are still told.
+ */
+static void e_d_gb_gone_drop_id(int id)
+{
+ int i;
+
+ for (i = 0; i < e_d_brk_ngone && e_d_brk_gone[i].id != id; i++)
+  ;
+ if (i == e_d_brk_ngone)
+  return;
+ FREE(e_d_brk_gone[i].file);
+ for (i++; i < e_d_brk_ngone; i++)
+  e_d_brk_gone[i - 1] = e_d_brk_gone[i];
+ e_d_brk_ngone--;
+ if (e_d_brk_ngone == 0)
+  e_d_brk_gone_free();
+}
+
+static int e_d_gb_remove_answered(E_D_REQ_END how, E_D_ANSWER *ans, void *ctx)
+{
+ (void)how;
+ (void)ans;
+ (void)ctx;
+ e_d_gb_gone_drop_id(e_d_gb_removing_id);
+ e_d_gb_removing_id = 0;
+ return(E_D_STEP_AGAIN);
+}
+
+/**
+ * e_d_gb_gone_keep - gdb set a breakpoint the user took off again while
+ * gdb answered: keep it as a removal, so gdb is told at the next chance, as
+ * for any breakpoint taken off while the program runs, and does not go on
+ * stopping on a line the margin no longer marks.
+ * @file, @line: where gdb set it; @id: the number gdb gave it.
+ */
+static void e_d_gb_gone_keep(const char *file, int line, int id)
+{
+ E_D_BRK_GONE *rec;
+ E_D_BRK_GONE *grown = REALLOC(e_d_brk_gone,
+                               sizeof(E_D_BRK_GONE) * (e_d_brk_ngone + 1));
+
+ if (!grown)
+  return;
+ e_d_brk_gone = grown;
+ rec = &e_d_brk_gone[e_d_brk_ngone];
+ rec->file = WpeStrdup(file);
+ if (!rec->file)
+  return;
+ e_d_brk_ngone++;
+ rec->line = line;
+ rec->id = id;
+ rec->state = E_D_BRK_VERIFIED;
+ rec->msg[0] = '\0';
+}
+
+/* step: one breakpoint the user set; again until none is left unsent */
+
+/**
+ * e_d_gb_next_unsent - The first list entry gdb has not been told of.
+ * Return: its index, or -1.
+ */
+static int e_d_gb_next_unsent(void)
+{
+ int i;
+
+ for (i = 0; i < e_d_nbrpts; i++)
+  if (e_d_brk_unsent(i))
+   return(i);
+ return(-1);
+}
+
+static int e_d_gb_add_cmd(char *cmd, size_t n, void *ctx)
+{
+ int i = e_d_gb_next_unsent();
+
+ (void)ctx;
+ if (i < 0)
+  return(0);
+ snprintf(e_d_gb_late.file, sizeof e_d_gb_late.file, "%s", e_d_sbrpts[i]);
+ e_d_gb_late.line = e_d_ybrpts[i];
+ snprintf(cmd, n, E_D_GDB_BREAK_FMT, e_d_sbrpts[i], e_d_ybrpts[i]);
+ return(1);
+}
+
+/**
+ * e_d_gb_add_answered - gdb answered "b file:line": the mark turns solid
+ * with the number gdb gave, or stays hollow with gdb's words on the status
+ * row.  A refusal gdb writes just after its prompt is heard too.
+ */
+static int e_d_gb_add_answered(E_D_REQ_END how, E_D_ANSWER *ans, void *ctx)
+{
+ char str[E_D_BRK_ANSWER_MAX];
+ int i = e_d_brk_index_of(e_d_gb_late.file, e_d_gb_late.line);
+ int id = e_d_gb_number_line(ans->text, str, sizeof str);
+
+ (void)how;
+ (void)ctx;
+ if (i < 0 && id > 0)
+  e_d_gb_gone_keep(e_d_gb_late.file, e_d_gb_late.line, id);
+ if (i < 0)
+  return(E_D_STEP_AGAIN);
+ if (id > 0)
+  e_d_gb_take_verdict(i, id, 0, str);
+ else if (ans->error)
+ {
+  e_d_gb_first_words(ans->text, str, sizeof str);
+  e_d_gb_take_verdict(i, 0, E_D_READ_ERROR, str);
+ }
+ else
+  e_d_gb_take_verdict(i, 0, E_D_READ_PROMPT, "");
+ e_d_brk_say_refusal(e_d_ga_window(), i);
+ e_d_req_set_late_error(&e_d_ga.rq, e_d_gb_on_late_error, NULL);
+ return(E_D_STEP_AGAIN);
+}
+
+/* step: the breakpoint the editor set to stop at the program's start */
+
+static int e_d_gb_start_cmd(char *cmd, size_t n, void *ctx)
+{
+ E_D_GDB_STOP *st = ctx;
+ int sw = st->start_brk;
+
+ if (sw <= 0 || sw > e_d_nbrpts || !e_d_brk_is_start_entry(sw - 1))
+  return(0);
+ snprintf(cmd, n, E_D_GDB_DELETE_FMT, e_d_nrbrpts[sw - 1]);
+ return(1);
+}
+
+static int e_d_gb_start_answered(E_D_REQ_END how, E_D_ANSWER *ans, void *ctx)
+{
+ E_D_GDB_STOP *st = ctx;
+
+ (void)how;
+ (void)ans;
+ e_d_brk_list_drop(st->start_brk - 1);
+ st->start_brk = 0;
+ return(E_D_STEP_NEXT);
+}
+
+/* The answers of a stop the user is shown, in the order they were always
+   read; then the breakpoints changed while the program ran, and the start
+   breakpoint, which the next run must not stop on again. */
+static const E_D_STEP e_d_gdb_stop_steps[] =
+{
+ { e_d_gs_settle_cmd, e_d_gs_settle_answered },
+ { e_d_gs_flush_cmd,  e_d_gs_ignore_answer },
+ { e_d_gs_where_cmd,  e_d_gs_where_answered },
+ { e_d_gs_frame_cmd,  e_d_gs_frame_answered },
+ { e_d_gs_stack_cmd,  e_d_gs_stack_answered },
+ { e_d_gs_watch_cmd,  e_d_gs_watch_answered },
+ { e_d_gb_remove_cmd, e_d_gb_remove_answered },
+ { e_d_gb_add_cmd,    e_d_gb_add_answered },
+ { e_d_gb_start_cmd,  e_d_gb_start_answered },
+ { NULL, NULL }
+};
+
+/* A stop made to tell gdb of breakpoint changes while the program runs. */
+static const E_D_STEP e_d_gdb_sync_steps[] =
+{
+ { e_d_gs_settle_cmd, e_d_gs_settle_answered },
+ { e_d_gb_remove_cmd, e_d_gb_remove_answered },
+ { e_d_gb_add_cmd,    e_d_gb_add_answered },
+ { NULL, NULL }
+};
+
+/* A breakpoint set or taken off at a stop. */
+static const E_D_STEP e_d_gdb_brk_steps[] =
+{
+ { e_d_gb_remove_cmd, e_d_gb_remove_answered },
+ { e_d_gb_add_cmd,    e_d_gb_add_answered },
+ { NULL, NULL }
+};
+
+/* Add, edit or delete a watch at a stop; Ctrl-G K. */
+static const E_D_STEP e_d_gdb_watches_steps[] =
+{
+ { e_d_gs_stack_cmd,  e_d_gs_stack_answered },
+ { e_d_gs_watch_cmd,  e_d_gs_watch_answered },
+ { NULL, NULL }
+};
+
+/* ---- classifying the stop gdb reported ---- */
+
+/**
+ * e_d_gdb_source_row - Is @row gdb's "N<TAB>source" row?
+ * Return: N, or 0.
+ */
+static int e_d_gdb_source_row(const char *row)
+{
+ int num = atoi(row), k;
+
+ if (num <= 0)
+  return(0);
+ for (k = 0; row[k] && isdigit((unsigned char)row[k]); k++)
+  ;
+ if (row[k] != '\t')
+  return(0);
+ return(num);
+}
+
+/**
+ * e_d_gdb_row_names_line - Does @row end in ":@line", the "at file:line" of
+ * the source row that follows it?
+ */
+static int e_d_gdb_row_names_line(const char *row, int line)
+{
+ const char *colon = strrchr(row, ':');
+
+ return(colon && atoi(colon + 1) == line);
+}
+
+/**
+ * e_d_gdb_place_after - The line of the source row after report line @i,
+ * gdb's "N<TAB>..." under its "Breakpoint 1, main () at p.c:N"; the
+ * stop's file is taken from the report when it names that line.
+ * Return: the line, or 0 when no such row follows.
+ */
+static int e_d_gdb_place_after(int i)
+{
+ int j, num = 0;
+
+ for (j = SVLINES - 2; j > i; j--)
+  if ((num = e_d_gdb_source_row(e_d_sp[j])) > 0)
+   break;
+ if (j <= i)
+  return(0);
+ if (e_d_gdb_row_names_line(e_d_sp[j - 1], num))
+  e_d_stop_file_line(e_d_sp[j - 1]);
+ return(num);
+}
+
+/**
+ * e_d_gdb_place_of_step - The line of the newest source row gdb printed
+ * for a step or a finish, its file from the row before when it names it.
+ * Return: the line, or 0.
+ */
+static int e_d_gdb_place_of_step(void)
+{
+ int i, num;
+
+ for (i = SVLINES - 2; i >= 0; i--)
+ {
+  if ((num = e_d_gdb_source_row(e_d_sp[i])) <= 0)
+   continue;
+  if (i > 0 && e_d_gdb_row_names_line(e_d_sp[i - 1], num))
+   e_d_stop_file_line(e_d_sp[i - 1]);
+  return(num);
+ }
+ return(0);
+}
+
+/**
+ * e_d_gdb_stop_ended - Did gdb's report say the program ended?  Then say
+ * so in Messages and end the session.
+ * @f: the window on top.
+ * Return: 1 when the session ended.
+ */
+static int e_d_gdb_stop_ended(FENSTER *f)
+{
+ int i;
+
+ for (i = 0; i < SVLINES; i++)
+  if (e_d_line_says_program_exited(e_d_sp[i]))
+  {
+   e_d_say_program_exited(e_d_sp[i], f);
+   e_d_quit(f);
+   return(1);
+  }
+ for (i = 0; i < SVLINES - 1; i++)
+ {
+  if (!strncmp(e_d_sp[i], e_d_msg[ERR_PROGEXIT], E_D_GDB_EXIT_LEAD))
+  {
+   e_d_error(e_d_sp[i]);
+   e_d_quit(f);
+   return(1);
+  }
+  if (!strncmp(e_d_sp[i], e_d_msg[ERR_PROGTERM], E_D_GDB_TERM_LEAD))
+  {
+   e_error(e_d_msg[ERR_PROGTERM], 0, f->fb);
+   e_d_quit(f);
+   return(1);
+  }
+ }
+ return(0);
+}
+
+/**
+ * e_d_gdb_stop_place - Read the stop's place from gdb's report, as the
+ * report has always been read: a signal is shown, then its place is asked
+ * with `where`; a breakpoint or a step names its source row.
+ * @st: receives the line, or need_where.
+ */
+static void e_d_gdb_stop_place(E_D_GDB_STOP *st)
+{
+ int i;
+
+ for (i = 0; i < SVLINES - 1; i++)
+ {
+  if (!strncmp(e_d_sp[i], e_d_msg[ERR_PROGSIGNAL], E_D_GDB_SIGNAL_LEAD))
+  {
+   char *said = e_d_pause_signal_line(e_d_sp[i]);
+
+   if (said[0])
+    e_d_error(said);
+   st->need_where = 1;
+   return;
+  }
+  if (!strncmp(e_d_sp[i], e_d_msg[ERR_BREAKPOINT], E_D_GDB_BREAK_LEAD) &&
+      (st->line = e_d_gdb_place_after(i)) > 0)
+   break;
+ }
+ if (st->line <= 0)
+  st->line = e_d_gdb_place_of_step();
+ if (st->line <= 0)
+ {
+  st->line = -1;
+  st->need_where = 1;
+  return;
+ }
+ snprintf(st->file, sizeof st->file, "%s", e_d_file);
+}
+
+/**
+ * e_d_gs_stack_window_open - Is the Stack window open, so its rows are
+ * asked for at every stop?
+ */
+static int e_d_gs_stack_window_open(ECNT *cn)
+{
+ int is;
+
+ for (is = cn->mxedt; is > 0 && strcmp(cn->f[is]->datnam, "Stack"); is--)
+  ;
+ return(is > 0);
+}
+
+/* ---- the end of a stop ---- */
+
+/**
+ * e_d_gs_show_windows - Fill the Stack and Watches windows with what gdb
+ * answered.
+ * @st: the context.
+ * Return: 0, or -1 when gdb listed no frame: the program is gone.
+ */
+static int e_d_gs_show_windows(E_D_GDB_STOP *st)
+{
+ if (st->stack_wanted && e_d_stack_show_text(st->cn, st->stack, st->stack_sw) < 0)
+  return(-1);
+ e_d_watches_show_values(st->cn, st->values, st->watches_sw);
+ return(0);
+}
+
+/**
+ * e_d_gs_say_no_stack - gdb has no stack: the program is gone.  Say so and
+ * end the session, as the reader of `where` always did.
+ * @st: the context.
+ */
+static void e_d_gs_say_no_stack(E_D_GDB_STOP *st)
+{
+ FENSTER *f = e_d_ga_window();
+
+ if (st->no_stack)
+  e_error(e_d_msg[ERR_PROGEXIT], 0, f->fb);
+ else
+  e_d_error(e_d_msg[ERR_PROGEXIT]);
+ e_d_quit(f);
+}
+
+/**
+ * e_d_gs_mark - Mark the stop on its source line, or say gdb named none.
+ * @file, @line: the stop's place; @line is -1 when gdb named none.
+ *
+ * Called with the stop's context already given back: a stop in code with
+ * no source here asks gdb once more, through a context of its own.
+ * Return: 1 when the program runs on (its source is not here, so it was
+ * sent on to main), else 0.
+ */
+static int e_d_gs_mark(char *file, int line)
+{
+ FENSTER *f = e_d_ga_window();
+
+ if (line < 0)
+ {
+  e_d_error(e_d_msg[ERR_NOSOURCE]);
+  return(0);
+ }
+ snprintf(e_d_file, sizeof e_d_file, "%s", file);
+ e_d_goto_break(file, line, f);
+ return(e_d_run_going() || e_d_ga_answering());
+}
+
+/**
+ * e_d_gs_stop_finished - gdb has answered everything the stop asks: the
+ * user sees the stop marked, the windows filled, the breakpoints' words,
+ * and how a Pause ended; then the next kept key runs.
+ * @ok: 0 when an answer was given up on (the status row already says
+ * which): nothing is drawn, and the kept keys are dropped.
+ * @ctx: the context.
+ */
+static void e_d_gs_stop_finished(int ok, void *ctx)
+{
+ E_D_GDB_STOP *st = ctx;
+ ECNT *cn = st->cn;
+ char file[E_D_LINE_MAX];
+ int line = st->line;
+
+ if (!e_d_ga_chain_ended() || !ok)
+ {
+  e_d_ga_actions_drop();
+  e_d_gs_free(st);
+  return;
+ }
+ if (st->no_stack || (st->need_where && st->where_rows == 0) ||
+     e_d_gs_show_windows(st) < 0)
+ {
+  e_d_gs_say_no_stack(st);
+  e_d_gs_free(st);
+  return;
+ }
+ snprintf(file, sizeof file, "%s", st->file);
+ e_d_gs_free(st);
+ if (e_d_gs_mark(file, line))
+  return;
+ _messages_activated = 0;
+ e_refresh();
+ e_d_run_stop_tail(cn, e_d_run.ops);
+ e_d_act_schedule();
+}
+
+/**
+ * e_d_gdb_stopped - gdb stopped the program: ask it, on the fd loop, what
+ * the stop needs, and show the stop once it has answered.
+ * @f: the window on top.
+ *
+ * The user sees the program's last output at once; the mark, the watches
+ * and the stack come when gdb answers, the keys reaching the editor
+ * meanwhile.
+ */
+static void e_d_gdb_stopped(FENSTER *f)
+{
+ E_D_GDB_STOP *st = &e_d_gs;
+
+ if (e_d_gdb_follow_up_after_finish())
+  return;
+ e_d_drain_pty_to_messages();
+ e_d_out_show();
+ e_d_switch_out(0);
+ if (e_d_gdb_stop_ended(f))
+  return;
+ e_d_gs_reset(st, f->ed);
+ st->start_brk = e_d_run.start_brk;
+ e_d_run.start_brk = 0;
+ st->stack_wanted = e_d_gs_stack_window_open(f->ed);
+ e_d_gdb_stop_place(st);
+ e_d_run.stop_on_loop = 1;
+ e_d_ga_chain_start(f->ed, e_d_gdb_stop_steps, st, e_d_gs_stop_finished,
+                    E_D_GA_STOP);
+}
+
+/* ---- a stop made to tell gdb of breakpoint changes ---- */
+
+/**
+ * e_d_gs_sync_finished - gdb has the breakpoint changes: the marks show
+ * its word, and the program runs on.  A Pause pressed meanwhile keeps the
+ * program stopped and shows the stop instead.
+ * @ok: 0 when an answer was given up on: the program stays stopped and the
+ * status row says which answer did not come; @ctx: the context.
+ */
+static void e_d_gs_sync_finished(int ok, void *ctx)
+{
+ E_D_GDB_STOP *st = ctx;
+ ECNT *cn = st->cn;
+
+ e_d_async_pending = 0;
+ e_d_gs_free(st);
+ if (!e_d_ga_chain_ended())
+  return;
+ if (!ok)
+ {
+  e_refresh_editor_bars(cn);        /* stopped: the stepping keys again */
+  return;
+ }
+ e_d_run_repaint_margin(cn);
+ if (e_d_ga.pause_asked)
+ {
+  e_d_ga.pause_asked = 0;
+  e_d_run.pause = E_D_PAUSE_ASKED;
+  e_d_gdb_stopped(e_d_run_window(cn));
+  return;
+ }
+ e_d_run_go_on(e_d_run.cont);
+ if (e_d_brk_changed_while_running())
+  e_d_run.sync_pending = 1;
+}
+
+/**
+ * e_d_gdb_sync_on_loop - The interrupt for a breakpoint change stopped the
+ * program: tell gdb on the fd loop, then let it run on.
+ * @cn: the editor.
+ *
+ * For the user the program never stopped: the bottom row still names
+ * Pause, keys that need gdb are refused as while it runs, and typed text
+ * still goes to the program.
+ * Return: 1, the stop is dealt with.
+ */
+static int e_d_gdb_sync_on_loop(ECNT *cn)
+{
+ E_D_GDB_STOP *st = &e_d_gs;
+
+ e_d_gs_reset(st, cn);
+ e_d_ga.pause_asked = 0;
+ e_d_async_pending = 1;
+ e_d_ga_chain_start(cn, e_d_gdb_sync_steps, st, e_d_gs_sync_finished,
+                    E_D_GA_SYNC);
+ return(1);
+}
+
+/* ---- commands of the user's at a stop ---- */
+
+/**
+ * e_d_gs_ask_finished - A breakpoint, a Remove all or a frame move has been
+ * answered: show the marks, then run the next kept key.
+ * @ok: 0 when the answer was given up on; @ctx: the context.
+ */
+static void e_d_gs_ask_finished(int ok, void *ctx)
+{
+ E_D_GDB_STOP *st = ctx;
+ ECNT *cn = st->cn;
+
+ e_d_gs_free(st);
+ if (!e_d_ga_chain_ended())
+  return;
+ if (!ok)
+ {
+  e_d_ga_actions_drop();
+  return;
+ }
+ e_d_run_repaint_margin(cn);
+ e_d_act_schedule();
+}
+
+/**
+ * e_d_ga_brk_sync - Tell gdb of the breakpoint the user set or took off at
+ * a stop.
+ * @cn: the editor.
+ *
+ * The mark is drawn hollow at once and turns solid when gdb answers, or
+ * stays hollow with gdb's words.
+ * Return: 0.
+ */
+static int e_d_ga_brk_sync(ECNT *cn)
+{
+ e_d_gs_reset(&e_d_gs, cn);
+ e_d_ga_chain_start(cn, e_d_gdb_brk_steps, &e_d_gs, e_d_gs_ask_finished,
+                    E_D_GA_ASK);
+ return(0);
+}
+
+/* step: one plain command whose answer says nothing the editor keeps */
+
+static char e_d_ga_plain[E_D_REQ_CMD_MAX];
+
+static int e_d_gs_plain_cmd(char *cmd, size_t n, void *ctx)
+{
+ (void)ctx;
+ if (!e_d_ga_plain[0])
+  return(0);
+ snprintf(cmd, n, "%s", e_d_ga_plain);
+ e_d_ga_plain[0] = '\0';
+ return(1);
+}
+
+static const E_D_STEP e_d_gdb_plain_steps[] =
+{
+ { e_d_gs_plain_cmd, e_d_gs_ignore_answer },
+ { NULL, NULL }
+};
+
+/**
+ * e_d_ga_ask_plain - Send gdb one command at a stop and drop its answer.
+ * @cn: the editor; @cmd: the command (Remove all breakpoints' "delete").
+ * Return: 0.
+ */
+static int e_d_ga_ask_plain(ECNT *cn, const char *cmd)
+{
+ snprintf(e_d_ga_plain, sizeof e_d_ga_plain, "%s", cmd);
+ e_d_gs_reset(&e_d_gs, cn);
+ e_d_ga_chain_start(cn, e_d_gdb_plain_steps, &e_d_gs, e_d_gs_ask_finished,
+                    E_D_GA_ASK);
+ return(0);
+}
+
+/**
+ * e_d_gs_windows_finished - The watches, and the stack when it is open,
+ * have been answered: fill their windows.
+ * @ok: 0 when an answer was given up on; @ctx: the context.
+ */
+static void e_d_gs_windows_finished(int ok, void *ctx)
+{
+ E_D_GDB_STOP *st = ctx;
+
+ if (!e_d_ga_chain_ended() || !ok)
+ {
+  e_d_ga_actions_drop();
+  e_d_gs_free(st);
+  return;
+ }
+ if (e_d_gs_show_windows(st) < 0)
+ {
+  e_d_gs_say_no_stack(st);
+  e_d_gs_free(st);
+  return;
+ }
+ e_d_gs_free(st);
+ e_d_act_schedule();
+}
+
+/**
+ * e_d_ga_watches_ask - Read every watch again at a stop, after the user
+ * added, edited or deleted one, and the stack with them when its window is
+ * open.
+ * @cn: the editor; @sw: 1 to bring the Watches window to the top.
+ * Return: 0.
+ */
+static int e_d_ga_watches_ask(ECNT *cn, int sw)
+{
+ E_D_GDB_STOP *st = &e_d_gs;
+
+ e_d_gs_reset(st, cn);
+ st->stack_wanted = e_d_gs_stack_window_open(cn);
+ st->watches_sw = sw;
+ e_d_ga_chain_start(cn, e_d_gdb_watches_steps, st, e_d_gs_windows_finished,
+                    E_D_GA_ASK);
+ return(0);
+}
+
+/* The stack alone (Ctrl-G K). */
+static const E_D_STEP e_d_gdb_stack_steps[] =
+{
+ { e_d_gs_stack_cmd, e_d_gs_stack_answered },
+ { NULL, NULL }
+};
+
+/**
+ * e_d_gs_stack_finished - Ctrl-G K's "bt" has been answered: fill the Stack
+ * window.
+ * @ok: 0 when the answer was given up on; @ctx: the context.
+ */
+static void e_d_gs_stack_finished(int ok, void *ctx)
+{
+ E_D_GDB_STOP *st = ctx;
+ int ret;
+
+ if (!e_d_ga_chain_ended() || !ok)
+ {
+  e_d_ga_actions_drop();
+  e_d_gs_free(st);
+  return;
+ }
+ ret = e_d_stack_show_text(st->cn, st->stack, st->stack_sw);
+ if (ret < 0)
+  e_d_gs_say_no_stack(st);
+ e_d_gs_free(st);
+ if (ret == 0)
+  e_d_act_schedule();
+}
+
+/**
+ * e_d_ga_stack_ask - Ctrl-G K under gdb: ask "bt" on the fd loop.
+ * @cn: the editor; @sw: 1 to bring the Stack window to the top.
+ * Return: 0.
+ */
+static int e_d_ga_stack_ask(ECNT *cn, int sw)
+{
+ E_D_GDB_STOP *st = &e_d_gs;
+
+ e_d_gs_reset(st, cn);
+ st->stack_wanted = 1;
+ st->stack_sw = sw;
+ e_d_ga_chain_start(cn, e_d_gdb_stack_steps, st, e_d_gs_stack_finished,
+                    E_D_GA_ASK);
+ return(0);
+}
+
+/* step: move gdb's selected frame to the row followed in the Stack window */
+
+static int e_d_gs_move_cmd(char *cmd, size_t n, void *ctx)
+{
+ E_D_GDB_STOP *st = ctx;
+
+ if (st->frame > e_d_nstack)
+  snprintf(cmd, n, E_D_GDB_UP_FMT, st->frame - e_d_nstack);
+ else if (st->frame < e_d_nstack)
+  snprintf(cmd, n, E_D_GDB_DOWN_FMT, e_d_nstack - st->frame);
+ else
+  return(0);
+ return(1);
+}
+
+static int e_d_gs_move_answered(E_D_REQ_END how, E_D_ANSWER *ans, void *ctx)
+{
+ E_D_GDB_STOP *st = ctx;
+
+ (void)how;
+ (void)ans;
+ e_d_nstack = st->frame;
+ return(E_D_STEP_NEXT);
+}
+
+static const E_D_STEP e_d_gdb_follow_steps[] =
+{
+ { e_d_gs_move_cmd,   e_d_gs_move_answered },
+ { e_d_gs_stack_cmd,  e_d_gs_stack_answered },
+ { e_d_gs_watch_cmd,  e_d_gs_watch_answered },
+ { NULL, NULL }
+};
+
+/**
+ * e_d_gs_follow_finished - The frame followed is gdb's selected one: the
+ * watches read its locals, and its line is shown.
+ * @ok: 0 when an answer was given up on; @ctx: the context.
+ */
+static void e_d_gs_follow_finished(int ok, void *ctx)
+{
+ E_D_GDB_STOP *st = ctx;
+ char file[E_D_LINE_MAX];
+ int line = st->line;
+
+ if (!e_d_ga_chain_ended() || !ok)
+ {
+  e_d_ga_actions_drop();
+  e_d_gs_free(st);
+  return;
+ }
+ if (e_d_gs_show_windows(st) < 0)
+ {
+  e_d_gs_say_no_stack(st);
+  e_d_gs_free(st);
+  return;
+ }
+ snprintf(file, sizeof file, "%s", st->file);
+ e_d_gs_free(st);
+ if (!e_d_gs_mark(file, line))
+  e_d_act_schedule();
+}
+
+/**
+ * e_d_ga_follow_frame - Enter on a row of the Stack window under gdb: make
+ * its frame gdb's selected one and show its line.
+ * @cn: the editor; @frame: the row's frame number; @file, @line: its place.
+ * Return: 0.
+ */
+static int e_d_ga_follow_frame(ECNT *cn, int frame, const char *file, int line)
+{
+ E_D_GDB_STOP *st = &e_d_gs;
+
+ e_d_gs_reset(st, cn);
+ st->frame = frame;
+ st->line = line;
+ snprintf(st->file, sizeof st->file, "%s", file);
+ st->stack_wanted = e_d_gs_stack_window_open(cn);
+ e_d_ga_chain_start(cn, e_d_gdb_follow_steps, st, e_d_gs_follow_finished,
+                    E_D_GA_ASK);
+ return(0);
+}
+
+/* step: select the frame below the one marked after Pause */
+
+static int e_d_gs_below_cmd(char *cmd, size_t n, void *ctx)
+{
+ E_D_GDB_STOP *st = ctx;
+
+ snprintf(cmd, n, E_D_GDB_FRAME_SELECT_FMT, st->below);
+ return(1);
+}
+
+static const E_D_STEP e_d_gdb_below_steps[] =
+{
+ { e_d_gs_below_cmd, e_d_gs_ignore_answer },
+ { NULL, NULL }
+};
+
+/**
+ * e_d_gs_below_finished - The frame below the marked one is selected: run
+ * out of the library call Pause stopped in, then step.
+ * @ok: 0 when the answer was given up on; @ctx: the context.
+ */
+static void e_d_gs_below_finished(int ok, void *ctx)
+{
+ E_D_GDB_STOP *st = ctx;
+ int step_over = st->step_over;
+
+ e_d_gs_free(st);
+ if (!e_d_ga_chain_ended() || !ok)
+ {
+  e_d_ga_actions_drop();
+  return;
+ }
+ e_d_gdb_finish_out_of_pause(e_d_ga_window(), step_over);
+}
+
+/**
+ * e_d_ga_finish_from_frame - F8 or F7 after a Pause in library code: select
+ * the frame below the marked one on the fd loop, then finish out of it.
+ * @cn: the editor; @below: that frame; @sw: 1 for Step Over.
+ * Return: 0.
+ */
+static int e_d_ga_finish_from_frame(ECNT *cn, int below, int sw)
+{
+ E_D_GDB_STOP *st = &e_d_gs;
+
+ e_d_gs_reset(st, cn);
+ st->below = below;
+ st->step_over = sw;
+ e_d_ga_chain_start(cn, e_d_gdb_below_steps, st, e_d_gs_below_finished,
+                    E_D_GA_ASK);
+ return(0);
+}
+
+/* step: a temporary breakpoint on main, out of code with no source here */
+
+static int e_d_gs_tbreak_cmd(char *cmd, size_t n, void *ctx)
+{
+ (void)ctx;
+ snprintf(cmd, n, "%s", E_D_GDB_TBREAK_MAIN);
+ return(1);
+}
+
+static const E_D_STEP e_d_gdb_leave_steps[] =
+{
+ { e_d_gs_tbreak_cmd, e_d_gs_ignore_answer },
+ { NULL, NULL }
+};
+
+/**
+ * e_d_gs_leave_finished - The temporary breakpoint is set: let the program
+ * run on to it, as a run of its own.
+ * @ok: 0 when the answer was given up on; @ctx: the context.
+ */
+static void e_d_gs_leave_finished(int ok, void *ctx)
+{
+ E_D_GDB_STOP *st = ctx;
+
+ e_d_gs_free(st);
+ if (!e_d_ga_chain_ended() || !ok)
+ {
+  e_d_ga_actions_drop();
+  return;
+ }
+ e_d_send_cmd(E_D_GDB_CONTINUE);
+ e_d_run_resume();
+}
+
+/**
+ * e_d_ga_leave_unknown_source - The stop is in code whose source is not
+ * here (a library): stop next at main instead, without the user waiting
+ * in front of a frozen editor.
+ * @cn: the editor.
+ * Return: 0.
+ */
+static int e_d_ga_leave_unknown_source(ECNT *cn)
+{
+ e_d_gs_reset(&e_d_gs, cn);
+ e_d_ga_chain_start(cn, e_d_gdb_leave_steps, &e_d_gs, e_d_gs_leave_finished,
+                    E_D_GA_ASK);
  return(0);
 }
 

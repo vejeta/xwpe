@@ -902,11 +902,8 @@ int e_make_xrect_abs(int xa, int ya, int xe, int ye, int sw);
 
 #ifdef DEBUGGER
 int e_deb_inp(FENSTER *f);
-int e_e_line_read(int n, signed char *s, int max);
-int e_d_dum_read(void);
-int e_d_p_exec(FENSTER *f);
-int e_d_getchar(void);
-/* we_term.c: a key read too early goes back to the editor (see e_d_getchar) */
+/* we_term.c: a key read too early goes back to the editor (we_debug.c's
+   key reader, which only the older debuggers' blocking readers still use) */
 void e_t_hand_key_back(int c);
 int e_t_key_is_handed_back(void);
 int e_d_quit_basic(FENSTER *f);
@@ -928,6 +925,8 @@ int e_start_debug(FENSTER *f);
 int e_run_debug(FENSTER *f);
 int e_d_start_busy(void);
 void e_d_start_cancel(void);
+int e_d_answer_busy(void);
+void e_d_answer_cancel(void);
 void e_d_start_deliver_held(void);
 void e_d_run_deliver_held_stop(void);
 void e_d_run_flush_live_sync(void);
@@ -941,7 +940,6 @@ int e_d_pause(FENSTER *f);
 int e_d_program_runs(void);
 int e_deb_options(FENSTER *f);
 int e_d_step_next(FENSTER *f, int sw);
-int e_read_output(FENSTER *f);
 int e_d_pr_sig(char *str, FENSTER *f);
 int e_make_line_num(char *str, char *file);
 int e_make_line_num2(char *str, char *file);

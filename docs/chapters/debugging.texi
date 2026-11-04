@@ -375,6 +375,38 @@ the session ends.  Rust is compiled before the adapter starts, and the
 Scala build server is started before it; those two steps still hold the
 editor.
 
+@section While gdb answers at a stop
+
+@cindex debugger, waiting for an answer
+@cindex XWPE_DEBUG_ANSWER_TIMEOUT
+When the program stops under gdb, xwpe asks gdb where it stopped, the
+value of each watch and, when the Stack window is open, the stack.  The
+editor does not wait for these answers: you keep typing, moving and using
+the menus while they come, and the stop is marked when gdb has answered.
+If gdb is silent for a second, the status row says what it waits for:
+
+@example
+waiting for gdb to answer `where` ... 3s  (Esc cancels)
+@end example
+
+@noindent
+A debugger command that needs gdb, such as @kbd{Ctrl-G K}, does nothing
+meanwhile and shows this line.  @kbd{F7}, @kbd{F8}, Run, Go to cursor and
+Finish function are kept instead, up to eight of them, and run in the
+order you typed them once gdb has answered: @kbd{F8 F8} typed while the
+watches are read steps twice.  While xwpe tells gdb of a breakpoint you
+set as the program runs, the program is running for you, and these keys
+are refused as while it runs.
+
+Press @key{Esc} or @kbd{Ctrl-C} to stop waiting.  The status row then
+says @samp{gdb did not answer `where`: Debug > Quit ends the session},
+the stop is not marked, and the keys kept for after the answer are
+dropped.  An answer that has not come within 30 seconds ends the same
+way, with the seconds in the line.  To give gdb more time, set the
+environment variable @env{XWPE_DEBUG_ANSWER_TIMEOUT} to a number of
+seconds before you start xwpe.  Debug > Quit ends the session at any
+moment.
+
 @section How a session ends
 
 @cindex debugger, end of session

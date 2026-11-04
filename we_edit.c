@@ -62,6 +62,22 @@ static int e_key_is_program_text(int c)
  return (c < E_KEY_TEXT_LIMIT || e_input_was_char);
 }
 
+/** e_key_cancels_answer - Does this key give up on the debugger's answer?
+ *
+ * While the editor waits for the debugger to answer at a stop, Esc and
+ * Ctrl-C end the wait, as the waiting line says; at any other time they are
+ * the editor's keys as always.
+ *
+ * @c: key as returned by the backend reader.
+ * Return: non-zero to cancel the wait.
+ */
+static int e_key_cancels_answer(int c)
+{
+ if (c != WPE_ESC && c != CtrlC)
+  return 0;
+ return e_d_answer_busy();
+}
+
 static int e_debug_console_input(int c, FENSTER *f)
 {
  extern int e_d_pty_master;
@@ -663,6 +679,9 @@ int e_eingabe(ECNT *e)
   /* A debugger is starting and has not answered: Esc ends it, as the waiting
      line in Messages says. */
   if (c == WPE_ESC && e_d_start_busy()) { e_d_start_cancel(); c = 0; continue; }
+  /* The editor waits for the debugger's answer at a stop: Esc or Ctrl-C
+     gives up on it, as the waiting line on the status row says. */
+  if (e_key_cancels_answer(c)) { e_d_answer_cancel(); c = 0; continue; }
 #endif
 #ifdef WPE_AI
   /* A background AI task is running: Esc cancels it (what the spinner promises)

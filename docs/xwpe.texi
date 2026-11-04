@@ -59,6 +59,7 @@ xwpe was written by Fred Kruse in 1993, maintained by Dennis Payne from
 * AI assistant::          Ollama/Claude in the bottom pane: chat, edit, multi-file plan, agent.
 * Tutorials::             Step-by-step walkthroughs.
 * Bugs and limits::       Known issues and workarounds.
+* Compatibility::         What xwpe does differently from the original.
 * History::               From Fred Kruse (1993) to today.
 * Reference::             Command-line options, menu tree, key cheatsheet.
 * Index::
@@ -76,6 +77,7 @@ xwpe was written by Fred Kruse in 1993, maintained by Dennis Payne from
 @include chapters/ai.texi
 @include chapters/tutorials.texi
 @include chapters/bugs-and-limits.texi
+@include chapters/compatibility.texi
 @include chapters/history.texi
 @include chapters/reference.texi
 

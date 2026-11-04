@@ -15,7 +15,8 @@ xwpe_TEXINFOS = \
   chapters/reference.texi \
   chapters/tutorials.texi \
   chapters/history.texi \
-  chapters/bugs-and-limits.texi
+  chapters/bugs-and-limits.texi \
+  chapters/compatibility.texi
 
 html-local: xwpe.texi $(xwpe_TEXINFOS)
 	$(MAKEINFO) --html -o xwpe.html $(srcdir)/xwpe.texi

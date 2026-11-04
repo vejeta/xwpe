@@ -1,0 +1,33 @@
+@node Compatibility
+@chapter Compatibility with the original xwpe
+
+@cindex compatibility
+@cindex differences from xwpe 1.4
+
+This chapter lists what xwpe now does differently from the xwpe of the
+1990s, where a user of the original would notice it.  Each entry says
+what the original did, what xwpe does now, and why.
+
+@section While gdb answers at a stop
+
+@table @asis
+@item Ctrl-C while the debugger answers
+@cindex Ctrl-C, while gdb answers
+The original asked, in a box, whether to quit the debugger when
+@kbd{Ctrl-C} was typed while it read the debugger's answer.  Under gdb,
+@kbd{Ctrl-C} now stops waiting for the answer, as @key{Esc} does, and the
+status row says which command gdb did not answer; Debug > Quit ends the
+session.  At a stop the editor no longer waits for the answer at all, so
+there is no moment there where only a box could get you out.  While gdb
+starts and while it starts a run, the box is still the way out.
+
+@item Keys typed while the debugger answers
+@cindex keys, while gdb answers
+The original passed every key typed while it read the debugger's answer
+on to the debugger.  Under gdb, keys typed then are the editor's: text
+goes into the file, menus open, and a debugger command waits for the
+answer or is refused with the waiting line.  A key that edits acts at
+once, so it may act before the step typed just before it has stopped.
+Keys that reached the debugger behind the editor's back were how an
+answer could be lost or a letter typed into the source.
+@end table

@@ -534,6 +534,7 @@ EXTRA_DIST = \
   tests/run-tests.sh \
   tests/check-one-owner.sh \
   tests/one-owner.allow \
+  tests/stubs/gdb \
   tests/transcripts/gdb-where-library.txt \
   tests/transcripts/gdb-where.txt \
   tests/transcripts/gdb-watch-value.txt \

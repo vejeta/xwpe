@@ -233,6 +233,18 @@ Changes
 
 1.7.0 (AI assistant -- experimental, opt-in)
 
+* Under gdb the editor keeps its keys while gdb answers at a stop (where
+  the program stopped, the watches, the stack, a breakpoint you set).  A
+  letter typed then goes into the file, never to gdb.  A debugger command
+  that needs gdb shows "waiting for gdb to answer `where` ... 3s (Esc
+  cancels)" instead of acting out of turn; F7, F8, Run, Go to cursor and
+  Finish are kept and run in order once gdb has answered, so F8 F8 typed
+  during the watches steps twice.  Esc or Ctrl-C stops waiting, with the
+  line "gdb did not answer `where`: Debug > Quit ends the session"; so does
+  a 30 second deadline (XWPE_DEBUG_ANSWER_TIMEOUT changes it).  A gdb that
+  never answered used to freeze the editor until it was killed, and Ctrl-C
+  then could not reach it.
+
 * A watch the debugger answers without a value (under dbx, xdb, or a gdb
   or jdb answer with no "=" in it) reads "No symbol in current context".
   It used to read "o symbol in current context", its first letter lost.

@@ -8948,3 +8948,299 @@ def test_a_jdb_hit_with_the_set_answer_inside_is_marked(tmp_path):
         w.key(CTRL_G, "b", delay=0.6)
         _assert_stops_on(w, case["body"], "a hit with the answer inside")
         _quit_and_see_the_session_gone(w)
+
+
+# ---- gdb's answers at a stop, read while the editor keeps its keys ----
+#
+# tests/stubs/gdb stands in front of the real gdb and holds back one command
+# (XWPE_STUB_STALL) until the editor sends another or the test writes to its
+# release pipe.  It never waits on a clock, so these rows hold the debugger
+# exactly as long as they need to, and the log says when the hold began.
+
+STUBS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "stubs")
+GDB_STUB_LOG = "gdb-stub.log"
+GDB_STUB_RELEASE = "gdb-stub.release"
+GDB_ANSWER_TIMEOUT_S = 2          # the deadline row's XWPE_DEBUG_ANSWER_TIMEOUT
+WAITING_FOR_GDB = "waiting for gdb"
+WAITING_FOR_WHERE = "waiting for gdb to answer `where`"
+GDB_DID_NOT_ANSWER = "gdb did not answer `where`"
+GDB_STALL_WAIT_S = 20
+NOTHING_MORE_S = 3                # a deferred key would have acted by then
+
+# A global, so a watch on it has one value whichever frame gdb is in when a
+# `where` is given up on.
+GDB_GLOBAL_PROG = (
+    "#include <stdio.h>\n"
+    "int g = 42;\n"
+    "int main(void)\n"
+    "{\n"
+    "  printf(\"READY\\n\");\n"
+    "  return g;\n"
+    "}\n"
+)
+GDB_GLOBAL_BREAK_LINE = 5         # printf("READY\n")
+
+# Four steps in a row, so two typed-ahead F8s have lines to land on.
+GDB_STEPS_PROG = (
+    "int main(void)\n"
+    "{\n"
+    "  int x = 1;\n"
+    "  x = x + 1;\n"
+    "  x = x + 1;\n"
+    "  x = x + 1;\n"
+    "  return x;\n"
+    "}\n"
+)
+GDB_STEPS_BREAK_LINE = 3
+GDB_STEPS_AFTER_TWO = 6           # two more F8s from line 4
+
+
+def _gdb_stub_env(stall, nth=1, extra=None):
+    """PATH with the holding gdb first, holding the @nth command that starts
+    with @stall."""
+    env = {"PATH": STUBS_DIR + ":" + os.environ.get("PATH", ""),
+           "XWPE_STUB_REAL_GDB": shutil.which("gdb") or "",
+           "XWPE_STUB_STALL": stall,
+           "XWPE_STUB_STALL_NTH": str(nth)}
+    if extra:
+        env.update(extra)
+    return env
+
+
+def _gdb_stub_log(tmp_path):
+    try:
+        with open(str(tmp_path / GDB_STUB_LOG)) as fh:
+            return fh.read()
+    except OSError:
+        return ""
+
+
+def _gdb_stub_holds(w, tmp_path, stall):
+    """Wait until the stub says it holds the command that starts with
+    @stall: the editor is then waiting for gdb's answer."""
+    assert _wait_for(w, lambda: ("STALL " + stall) in _gdb_stub_log(tmp_path),
+                     GDB_STALL_WAIT_S), \
+        "the editor should have sent %r (stub log:\n%s):\n%s" \
+        % (stall, _gdb_stub_log(tmp_path), _screen(w))
+
+
+def _gdb_stub_release(tmp_path):
+    """Let the held command go to gdb."""
+    with open(str(tmp_path / GDB_STUB_RELEASE), "w") as fh:
+        fh.write("go\n")
+
+
+def _where_held_at_the_first_stop(w, tmp_path):
+    """Breakpoint and Ctrl-G R: at the stop gdb is asked `where` for the
+    frame to mark, and the stub holds it."""
+    _go_to_line(w, GDB_GLOBAL_BREAK_LINE)
+    w.key(CTRL_G, "b", delay=0.4)
+    w.key(CTRL_G, "r", delay=1.0)
+    _gdb_stub_holds(w, tmp_path, "where")
+
+
+# @scenario SC-debug-49
+def test_gdb_keys_reach_the_editor_while_it_answers(tmp_path):
+    """While gdb has not answered `where` at a stop, Ctrl-G K reaches the
+    editor and is refused with the waiting line, which names what gdb is
+    answering; no Stack window opens and its letter is not typed into the
+    file.  Once gdb answers, the stop is marked as usual."""
+    _need("gcc", "gdb")
+    with WpeSession(str(tmp_path), GDB_GLOBAL_PROG, filename="p.c",
+                    wait=1.5, env_extra=_gdb_stub_env("where")) as w:
+        _where_held_at_the_first_stop(w, tmp_path)
+        w.key(CTRL_G, "k", delay=0.5)
+        assert _status_row_says(w, WAITING_FOR_WHERE, STEP_TIMEOUT_S), \
+            "Ctrl-G K should be refused with the waiting line:\n%s" \
+            % _screen(w)
+        assert " Stack " not in _screen(w), \
+            "Ctrl-G K must wait for gdb's answer, not ask it:\n%s" \
+            % _screen(w)
+        w.save()
+        assert w.text() == GDB_GLOBAL_PROG, \
+            "a key typed while gdb answered landed in the file:\n%s" \
+            % _screen(w)
+        _gdb_stub_release(tmp_path)
+        assert _wait_for(w, lambda: _mark_line(w) == GDB_GLOBAL_BREAK_LINE,
+                         STEP_TIMEOUT_S), \
+            "once gdb answers the stop should be marked (mark on %s):\n%s" \
+            % (_mark_line(w), _screen(w))
+
+
+ANSWER_ENDS = {
+    "esc": {"key": ESC, "env": None, "says": GDB_DID_NOT_ANSWER},
+    "ctrl_c": {"key": CTRL_C, "env": None, "says": GDB_DID_NOT_ANSWER},
+    "deadline": {"key": None,
+                 "env": {"XWPE_DEBUG_ANSWER_TIMEOUT":
+                         str(GDB_ANSWER_TIMEOUT_S)},
+                 "says": GDB_DID_NOT_ANSWER + " within"},
+}
+
+
+# @scenario SC-debug-50
+@pytest.mark.parametrize("how", sorted(ANSWER_ENDS))
+def test_gdb_stalled_answer_ends_with_a_message_and_quit_works(tmp_path, how):
+    """A gdb that does not answer `where` at a stop: the waiting line comes,
+    Esc, Ctrl-C or the deadline ends the wait with a line naming the
+    command, and Debug > Quit then ends the session with nothing left."""
+    case = ANSWER_ENDS[how]
+    _need("gcc", "gdb")
+    env = _gdb_stub_env("where", extra=case["env"])
+    with WpeSession(str(tmp_path), GDB_GLOBAL_PROG, filename="p.c",
+                    wait=1.5, env_extra=env) as w:
+        _where_held_at_the_first_stop(w, tmp_path)
+        assert _status_row_says(w, WAITING_FOR_GDB, STEP_TIMEOUT_S), \
+            "the waiting line should come:\n%s" % _screen(w)
+        if case["key"]:
+            w.key(case["key"], delay=0.5)
+        assert _status_row_says(w, case["says"], STEP_TIMEOUT_S), \
+            "the wait should end with %r:\n%s" % (case["says"], _screen(w))
+        _quit_and_see_the_session_gone(w)
+
+
+# @scenario SC-debug-50
+def test_gdb_answer_after_a_cancel_is_not_taken_for_the_next(tmp_path):
+    """gdb answers `where` only after the user gave up on it: that late
+    answer is dropped, and the next command, a watch on a global, shows its
+    own value, not a row of the stack."""
+    _need("gcc", "gdb")
+    with WpeSession(str(tmp_path), GDB_GLOBAL_PROG, filename="p.c",
+                    wait=1.5, env_extra=_gdb_stub_env("where")) as w:
+        _where_held_at_the_first_stop(w, tmp_path)
+        assert _status_row_says(w, WAITING_FOR_GDB, STEP_TIMEOUT_S), \
+            "the waiting line should come:\n%s" % _screen(w)
+        w.key(ESC, delay=0.5)
+        assert _status_row_says(w, GDB_DID_NOT_ANSWER, STEP_TIMEOUT_S), \
+            "Esc should end the wait:\n%s" % _screen(w)
+        _add_watch(w, "g")
+        assert _wait_for(w, lambda: _watch_row(w, "g") is not None,
+                         STEP_TIMEOUT_S), \
+            "the watch should get an answer:\n%s" % _screen(w)
+        assert _watch_row(w, "g").startswith("42"), \
+            "the watch took another command's answer (%r):\n%s" \
+            % (_watch_row(w, "g"), _screen(w))
+
+
+# @scenario SC-debug-49
+def test_gdb_f8_f8_typed_during_the_watches_steps_twice(tmp_path):
+    """Two F8s typed while gdb has not answered a watch at a stop are kept,
+    in order: once the answer comes the program steps twice, and nothing
+    lands in the file."""
+    _need("gcc", "gdb")
+    with WpeSession(str(tmp_path), GDB_STEPS_PROG, filename="p.c", wait=1.5,
+                    env_extra=_gdb_stub_env("p x", nth=2)) as w:
+        _go_to_line(w, GDB_STEPS_BREAK_LINE)
+        w.key(CTRL_G, "b", delay=0.4)
+        w.key(CTRL_G, "r", delay=1.0)
+        assert _wait_for(w, lambda: _mark_line(w) == GDB_STEPS_BREAK_LINE,
+                         START_TIMEOUT_S), _screen(w)
+        _add_watch(w, "x")
+        assert _wait_for(w, lambda: _watch_row(w, "x") is not None,
+                         STEP_TIMEOUT_S), _screen(w)
+        w.key(F8, delay=0.3)
+        _gdb_stub_holds(w, tmp_path, "p x")
+        w.key(F8, delay=0.2)
+        w.key(F8, delay=0.2)
+        _gdb_stub_release(tmp_path)
+        assert _wait_for(w, lambda: _mark_line(w) == GDB_STEPS_AFTER_TWO,
+                         STEP_TIMEOUT_S), \
+            "the two F8s typed during the watch should step twice (mark " \
+            "on %s):\n%s" % (_mark_line(w), _screen(w))
+        w._drain(NOTHING_MORE_S)
+        assert _mark_line(w) == GDB_STEPS_AFTER_TWO, \
+            "only the two F8s typed should step (mark on %s):\n%s" \
+            % (_mark_line(w), _screen(w))
+        w.save()
+        assert w.text() == GDB_STEPS_PROG, \
+            "a key typed while gdb answered landed in the file:\n%s" \
+            % _screen(w)
+
+
+GDB_LOOP_SLEEP_LINE = 9           # sleep(3), in GDB_LOOP_PROG's loop
+GDB_LOOP_BREAK_LINE = 6           # printf("READY\n")
+
+
+# @scenario SC-debug-49
+def test_gdb_f8_during_a_sync_interrupt_is_refused_as_running(tmp_path):
+    """A breakpoint set while the program runs stops it for a moment to tell
+    gdb.  F8 pressed while gdb has not answered is refused as while the
+    program runs, and not kept: after the program reaches the breakpoint
+    the mark stays on it."""
+    _need("gcc", "gdb")
+    stall = "b p.c:%d" % GDB_LOOP_SLEEP_LINE
+    with WpeSession(str(tmp_path), GDB_LOOP_PROG, filename="p.c", wait=1.5,
+                    env_extra=_gdb_stub_env(stall)) as w:
+        _stop_then_run_on(w, GDB_LOOP_BREAK_LINE, START_TIMEOUT_S)
+        _go_to_line(w, GDB_LOOP_SLEEP_LINE)
+        w.key(CTRL_G, "b", delay=0.4)
+        _gdb_stub_holds(w, tmp_path, stall)
+        w.key(F8, delay=0.3)
+        assert _status_row_says(w, RUNNING_REFUSAL, STEP_TIMEOUT_S), \
+            "F8 should be refused as while the program runs:\n%s" % _screen(w)
+        _gdb_stub_release(tmp_path)
+        assert _wait_for(w, lambda: _mark_line(w) == GDB_LOOP_SLEEP_LINE,
+                         PAUSE_TIMEOUT_S), \
+            "the program should stop on the new breakpoint (mark on %s):\n%s" \
+            % (_mark_line(w), _screen(w))
+        w._drain(NOTHING_MORE_S)
+        assert _mark_line(w) == GDB_LOOP_SLEEP_LINE, \
+            "the refused F8 must not step later (mark on %s):\n%s" \
+            % (_mark_line(w), _screen(w))
+
+
+GDB_LOOP_PASSES_S = 7             # two turns of GDB_LOOP_PROG's sleep(3)
+GDB_LOOP_SECOND_ID = 2            # gdb's number for the second breakpoint
+
+
+# @scenario SC-debug-49
+def test_gdb_breakpoint_set_again_while_gdb_removes_it_stays(tmp_path):
+    """A breakpoint taken off while the program runs, and set again on the
+    same line before gdb has answered its removal: the editor goes on, the
+    line is drawn solid, and the session ends cleanly."""
+    _need("gcc", "gdb")
+    remove = "d 1"
+    with WpeSession(str(tmp_path), GDB_LOOP_PROG, filename="p.c", wait=1.5,
+                    env_extra=_gdb_stub_env(remove)) as w:
+        _stop_then_run_on(w, GDB_LOOP_BREAK_LINE, START_TIMEOUT_S)
+        _go_to_line(w, GDB_LOOP_BREAK_LINE)
+        w.key(CTRL_G, "b", delay=0.4)
+        _gdb_stub_holds(w, tmp_path, remove)
+        w.key(CTRL_G, "b", delay=0.4)
+        _gdb_stub_release(tmp_path)
+        _assert_solid(w, GDB_LOOP_BREAK_LINE, "set again during its removal")
+        w._drain(NOTHING_MORE_S)
+        assert w.proc.poll() is None, \
+            "the editor should go on after gdb answered the removal:\n%s" \
+            % _screen(w)
+        _quit_and_see_the_session_gone(w)
+
+
+# @scenario SC-debug-49
+def test_gdb_breakpoint_taken_off_while_gdb_sets_it_does_not_stop(tmp_path):
+    """A breakpoint set while the program runs, and taken off again before
+    gdb has answered it: gdb is told to remove the one it made.  The program
+    may reach the line once before gdb hears of it, as with any breakpoint
+    taken off while the program runs; after that it never stops there."""
+    _need("gcc", "gdb")
+    add = "b p.c:%d" % GDB_LOOP_SLEEP_LINE
+    remove = "CMD d %d" % GDB_LOOP_SECOND_ID
+    with WpeSession(str(tmp_path), GDB_LOOP_PROG, filename="p.c", wait=1.5,
+                    env_extra=_gdb_stub_env(add)) as w:
+        _stop_then_run_on(w, GDB_LOOP_BREAK_LINE, START_TIMEOUT_S)
+        _go_to_line(w, GDB_LOOP_SLEEP_LINE)
+        w.key(CTRL_G, "b", delay=0.4)
+        _gdb_stub_holds(w, tmp_path, add)
+        w.key(CTRL_G, "b", delay=0.4)
+        _gdb_stub_release(tmp_path)
+        assert _wait_for(w, lambda: remove in _gdb_stub_log(tmp_path),
+                         GDB_LOOP_PASSES_S), \
+            "gdb should be told to remove the breakpoint it set (stub " \
+            "log:\n%s):\n%s" % (_gdb_stub_log(tmp_path), _screen(w))
+        if _mark_line(w) == GDB_LOOP_SLEEP_LINE:
+            w.key(CTRL_G, "r", delay=0.5)
+        w._drain(GDB_LOOP_PASSES_S)
+        assert _mark_line(w) != GDB_LOOP_SLEEP_LINE, \
+            "the program stopped again on a line the margin no longer " \
+            "marks (stub log:\n%s):\n%s" % (_gdb_stub_log(tmp_path),
+                                            _screen(w))
+        _quit_and_see_the_session_gone(w)

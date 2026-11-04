@@ -1,0 +1,146 @@
+#!/usr/bin/env python3
+"""A gdb that holds back one command until it is told to go on.
+
+It stands in front of the real gdb: every command the editor sends is passed
+on, and gdb's output and error stream go straight to the editor, so what the
+editor reads is what gdb writes.  One command, named by XWPE_STUB_STALL (a
+prefix of the command line), is held instead.  gdb never sees it, so it
+never answers, until one of two things happens:
+
+  - the editor sends another command (after a cancel the editor makes gdb
+    echo a marker): the held command goes to gdb first, then the new one, so
+    gdb answers the old command late, exactly as a slow gdb would;
+  - the test writes a line to the release pipe, $HOME/gdb-stub.release.
+
+Nothing here waits on a clock: the held command waits on input only.  Only
+the first command that matches is held, or the XWPE_STUB_STALL_NTH-th.
+
+Every command is logged to $HOME/gdb-stub.log ("CMD <line>"), and the hold
+as "STALL <line>" and "RELEASE <how>", so a test knows the editor is waiting
+before it types.  SIGINT, which the editor sends to pause the program, is
+passed to gdb.
+"""
+import os
+import select
+import shutil
+import signal
+import subprocess
+import sys
+
+HOME = os.environ.get("HOME", ".")
+LOG = os.path.join(HOME, "gdb-stub.log")
+RELEASE = os.path.join(HOME, "gdb-stub.release")
+STALL = os.environ.get("XWPE_STUB_STALL", "")
+STALL_NTH = int(os.environ.get("XWPE_STUB_STALL_NTH", "1") or "1")
+HERE = os.path.dirname(os.path.abspath(__file__))
+
+
+def note(text):
+    with open(LOG, "a") as fh:
+        fh.write(text + "\n")
+
+
+def real_gdb():
+    """The gdb this one stands in front of: the next one on PATH."""
+    given = os.environ.get("XWPE_STUB_REAL_GDB", "")
+    if given:
+        return given
+    dirs = [d for d in os.environ.get("PATH", "").split(os.pathsep)
+            if d and os.path.abspath(d) != HERE]
+    found = shutil.which("gdb", path=os.pathsep.join(dirs))
+    if not found:
+        sys.stderr.write("gdb stub: no real gdb on PATH\n")
+        sys.exit(1)
+    return found
+
+
+def make_release_pipe():
+    if os.path.exists(RELEASE):
+        os.unlink(RELEASE)
+    os.mkfifo(RELEASE)
+    # Open for reading and writing, so the open never waits for a writer and
+    # a writer that closes does not leave the pipe at end of file.
+    return os.open(RELEASE, os.O_RDWR | os.O_NONBLOCK)
+
+
+class Lines:
+    """The editor's commands, a line at a time, read without a buffer that
+    select() cannot see."""
+
+    def __init__(self, fd):
+        self.fd = fd
+        self.buf = b""
+
+    def held(self):
+        return b"\n" in self.buf
+
+    def readline(self):
+        while b"\n" not in self.buf:
+            chunk = os.read(self.fd, 4096)
+            if not chunk:
+                rest, self.buf = self.buf, b""
+                return rest
+            self.buf += chunk
+        line, self.buf = self.buf.split(b"\n", 1)
+        return line + b"\n"
+
+
+def pass_on(child, line):
+    child.stdin.write(line)
+    child.stdin.flush()
+
+
+def wait_for_go(child, held, release_fd, lines):
+    """Hold @held until the editor sends more or the test releases it."""
+    note("STALL " + held.decode("utf-8", "replace").rstrip("\n"))
+    stdin_fd = lines.fd
+    while True:
+        if lines.held():
+            ready = [stdin_fd]
+        else:
+            ready, _, _ = select.select([stdin_fd, release_fd], [], [])
+        if release_fd in ready:
+            os.read(release_fd, 4096)
+            note("RELEASE by the test")
+            pass_on(child, held)
+            return None
+        if stdin_fd in ready:
+            nxt = lines.readline()
+            note("RELEASE by the next command")
+            pass_on(child, held)
+            return nxt
+
+
+def main():
+    child = subprocess.Popen([real_gdb()] + sys.argv[1:],
+                             stdin=subprocess.PIPE)
+    signal.signal(signal.SIGINT,
+                  lambda signum, frame: child.send_signal(signal.SIGINT))
+    signal.signal(signal.SIGTERM,
+                  lambda signum, frame: child.kill() or sys.exit(0))
+    release_fd = make_release_pipe()
+    lines = Lines(sys.stdin.fileno())
+    seen = 0
+    pending = None
+    while True:
+        line = pending if pending is not None else lines.readline()
+        pending = None
+        if not line:
+            break
+        text = line.decode("utf-8", "replace").rstrip("\n")
+        note("CMD " + text)
+        if STALL and text.startswith(STALL):
+            seen += 1
+            if seen == STALL_NTH:
+                pending = wait_for_go(child, line, release_fd, lines)
+                continue
+        pass_on(child, line)
+    child.stdin.close()
+    child.wait()
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except BrokenPipeError:
+        pass
