@@ -1,0 +1,4 @@
+#0  __GI___nanosleep (req=req@entry=0x7fffffffd300, rem=rem@entry=0x0) at ../sysdeps/unix/sysv/linux/nanosleep.c:25
+#1  0x00007ffff7eaab33 in usleep (useconds=<optimized out>) at ../sysdeps/posix/usleep.c:31
+#2  0x000055555555514e in tick (n=0) at s.c:4
+#3  0x0000555555555164 in main () at s.c:9

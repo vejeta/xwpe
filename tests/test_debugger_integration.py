@@ -8535,6 +8535,28 @@ def test_a_waiting_watch_says_no_next_stop_when_the_program_ends(tmp_path,
             % (WATCH_NO_SESSION_WORDS, _screen(w))
 
 
+WATCH_UNDEFINED_NAME = "nosuchname"   # no variable of C_PROG is called this
+
+
+# @scenario SC-debug-10
+def test_a_watch_on_an_undefined_name_under_gdb_says_no_symbol(tmp_path):
+    """gdb answers a print of a name the program does not have without an
+    "=": the watch reads the editor's whole "No symbol in current context",
+    its first letter included."""
+    _need("gcc", "gdb")
+    with _c_session(tmp_path) as w:
+        _start_c_session(w)
+        _add_watch(w, WATCH_UNDEFINED_NAME)
+        assert _wait_for(
+            w, lambda: _watch_window_value(w, WATCH_UNDEFINED_NAME)
+            is not None, STEP_TIMEOUT_S), \
+            "the Watches window should list the watch:\n%s" % _screen(w)
+        assert _watch_window_value(w, WATCH_UNDEFINED_NAME) == \
+            WATCH_NO_SESSION_WORDS, \
+            "the watch should read %r:\n%s" \
+            % (WATCH_NO_SESSION_WORDS, _screen(w))
+
+
 # @scenario SC-debug-10
 def test_a_watch_added_while_running_shows_at_the_next_stop_under_scala(
         tmp_path):

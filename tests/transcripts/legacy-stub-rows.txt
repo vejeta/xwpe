@@ -1,0 +1,4 @@
+x: 3
+>  main [p.c:7]
+main(), line 7 in "p.c"
+"nosuchname" is not defined

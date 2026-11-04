@@ -14,6 +14,7 @@
 #include "we_lsp.h"
 #include "we_debprompt.h"
 #include "we_debpath.h"
+#include "we_debsess.h"
 #include "we_childsig.h"
 
 #ifndef NO_XWINDOWS
@@ -81,13 +82,10 @@ int e_d_nbrpts = 0, e_d_zwtchs = 0, *e_d_ybrpts, *e_d_nrbrpts;
 
 /* What the debugger said of entry i of the breakpoint list, kept beside the
    list: e_d_brk_state[i] is one of these, e_d_brk_msg[i] the debugger's own
-   words when it refused the breakpoint or has it only as deferred. */
-#define E_D_BRK_PENDING   0   /* not told to the debugger, or not confirmed */
-#define E_D_BRK_VERIFIED  1   /* the debugger has it */
-#define E_D_BRK_REFUSED   2   /* the debugger said no */
-#define E_D_BRK_MSG_MAX   256
+   words when it refused the breakpoint or has it only as deferred.  The
+   states (E_D_BRK_PENDING, _VERIFIED, _REFUSED) are the session's, in
+   we_debsess.h. */
 #define E_D_BRK_SAY_EXTRA 96    /* room for the words around the message */
-#define E_D_FIRST_NON_ASCII 0x80  /* the symbols a debugger puts before words */
 int *e_d_brk_state;
 char (*e_d_brk_msg)[E_D_BRK_MSG_MAX];
 
@@ -134,17 +132,24 @@ int e_d_nstack;
 char e_d_file[E_D_LINE_MAX], **e_d_sbrpts;
 char *e_d_out = NULL;
 /* Which debugger backend e_deb_type selects (see e_run_debug's dispatch).
-   The numeric values are persisted in the options file, so keep them stable. */
+   The numeric values are persisted in the options file, so keep them stable.
+   They are the session's backend numbers too, so e_deb_type is handed to
+   the readers of we_debsess.c as it is. */
 enum {
- DEB_GDB = 0,   /* GNU gdb (default)        prompt "(gdb)" */
- DEB_SDB = 1,   /* classic sdb              prompt "*"     */
- DEB_DBX = 2,   /* dbx -i                   prompt "(dbx)" */
- DEB_XDB = 3,   /* HP xdb -L                prompt ">"     */
- DEB_JDB = 4,   /* Java jdb                                */
- DEB_PDB = 5,   /* Python python3 -m pdb    prompt "(Pdb)" */
- DEB_A68G = 6,  /* Algol 68 Genie a68g --monitor  prompt "(a68g)" */
- DEB_DAP = 7    /* Debug Adapter Protocol client (Go/dlv, Rust/lldb-dap, ...) */
+ DEB_GDB = E_DS_GDB,   /* GNU gdb (default)        prompt "(gdb)" */
+ DEB_SDB = E_DS_SDB,   /* classic sdb              prompt "*"     */
+ DEB_DBX = E_DS_DBX,   /* dbx -i                   prompt "(dbx)" */
+ DEB_XDB = E_DS_XDB,   /* HP xdb -L                prompt ">"     */
+ DEB_JDB = E_DS_JDB,   /* Java jdb                                */
+ DEB_PDB = E_DS_PDB,   /* Python python3 -m pdb    prompt "(Pdb)" */
+ DEB_A68G = E_DS_A68G, /* Algol 68 Genie a68g --monitor  prompt "(a68g)" */
+ DEB_DAP = E_DS_DAP    /* Debug Adapter Protocol client (Go/dlv, Rust/lldb-dap, ...) */
 };
+
+/* What the session knows: stops, frames, watch values, breakpoint answers.
+   Filled as the debuggers answer; the windows are still drawn from the
+   readers' results directly. */
+static E_D_SESSION e_d_session;
 
 int e_deb_type = 0, e_deb_mode = 0;
 /* Which DAP adapter to prefer for languages that offer a choice (Rust: gdb vs
@@ -989,7 +994,6 @@ static int  e_d_brk_changed_while_running(void);  /* anything to apply? */
 static void e_d_watches_after_session(ECNT *cn);  /* watches (below) */
 static int  e_d_jdb_sync_live(ECNT *cn);          /* applied at once (below) */
 static int  e_d_dap_sync_live(ECNT *cn);
-static void e_d_brk_words(char *out, size_t size, const char *line);
 /* Set when the debugger's word on a breakpoint arrived while the program
    runs (jdb, the adapters), so the windows are drawn again with its mark. */
 static int  e_d_brk_live_changed;
@@ -1269,31 +1273,20 @@ static void e_d_flush_inferior_stdout(void)
    of Messages (pdb hands it to Ctrl-G P only). */
 #define E_D_EXIT_OUTPUT_HINT " Program output: Ctrl-G P"
 #define E_D_EXIT_LINE_MAX   96
-/* What jdb prints when the program it ran reaches its end.  Its wording has
-   no "exited" in it, so the shorter word every other backend says misses it. */
-#define E_D_JDB_EXIT        "The application exited"
-/* What jdb prints to name a stop.  Its prompt alone is not one: jdb echoes
-   the prompt before the program's output, so reading the prompt as a stop
-   lands the mark on whatever line the editor was already on. */
-#define E_D_JDB_STOP_MARK   "Breakpoint hit:"
-#define E_D_JDB_STEP_MARK   "Step completed:"
-/* jdb stops on an uncaught exception and names the line that threw. */
-#define E_D_JDB_EXCEPTION_MARK "Exception occurred:"
-/* The end of jdb's prompt when it waits for a command: "main[1] " or
-   "Thread-0[1] ".  The bare "> " it echoes before a command's answer is
-   not one. */
-#define E_D_JDB_PROMPT_TAIL "] "
+/* jdb's words for its end ("The application exited", which has no "exited"
+   the shorter word of every other backend would match), for a stop (its
+   prompt alone is not one: jdb echoes the prompt before the program's
+   output), for an uncaught exception, and the "] " that ends its prompt
+   when it waits for a command, are E_D_JDB_* of we_debsess.h. */
 /* Pause under jdb: "suspend" stops every thread of the VM and answers with
-   the line below and a bare "> " prompt, with no current thread.  "threads"
-   lists them and "thread ID" picks the one to look at.  "resume", not
-   "cont" (which needs a breakpoint event), lets all of them go again. */
+   E_D_JDB_SUSPENDED and a bare "> " prompt, with no current thread.
+   "threads" lists them and "thread ID" picks the one to look at.  "resume",
+   not "cont" (which needs a breakpoint event), lets all of them go again. */
 #define E_D_JDB_SUSPEND     "suspend\n"
 #define E_D_JDB_RESUME      "resume\n"
 #define E_D_JDB_CONT        "cont\n"
 #define E_D_JDB_THREADS     "threads\n"
 #define E_D_JDB_THREAD_FMT  "thread %s\n"
-#define E_D_JDB_SUSPENDED   "All threads suspended."
-#define E_D_JDB_BARE_PROMPT "> "
 #define E_D_JDB_THREAD_ID_MAX 32
 #define E_D_JDB_THREAD_CMD_MAX (E_D_JDB_THREAD_ID_MAX + 16)
 /* Said on the status row when the file's language picks another debugger. */
@@ -2923,7 +2916,7 @@ char *e_d_msg[] = {  "Ctrl C pressed\nQuit Debugger ?",
 			"Quit Debugger ?",
 			"End of Debugging",
 			"Program is not running",
-			"No symbol in current context\n",
+			E_DS_NO_SYMBOL,         /* the session's words */
 			"No Source-Code",       /*  Number 5  */
 			"Start Debugger",
 			"Can\'t start Debugger",
@@ -4182,6 +4175,7 @@ int e_d_is_watch(int c, FENSTER *f)
 }
 
 static void e_d_jdb_vm_end(void);   /* the Java program's VM (below) */
+static void e_d_session_forget(void);   /* (below, with the stop readers) */
 
 int e_d_quit_basic(FENSTER *f)
 {
@@ -4198,6 +4192,7 @@ int e_d_quit_basic(FENSTER *f)
  e_d_jdb_missing_forget();
  e_d_jdb_pause_forget();
  e_d_run_forget();
+ e_d_session_forget();
  if (!e_d_swtch)
   return 0;
  /* A debugger that never answered is not spoken to: it is ended below. */
@@ -4718,6 +4713,35 @@ static void e_d_watch_put_waiting(BUFFER *b, int l)
  print_to_end_of_buffer(b, line, b->mx.x);
  WpeFree(line);
  e_d_watches_shown_waiting = 1;
+ e_ds_set_watch(&e_d_session, l, e_d_swtchs[l]);
+}
+
+/**
+ * e_d_watch_put_value - Add the line of watch @l to the Watches buffer with
+ * the value the debugger answered, and keep it in the session.
+ * @b: the Watches buffer; @l: the watch's number; @answer: the answer, its
+ * lines joined, or NULL when the debugger gave none.
+ *
+ * The user reads "expr: value", or the debugger's reason for having none
+ * (a variable out of scope under a68g reads "<not in scope>").  The answer
+ * is read from the debugger's output only: its error stream is not part of
+ * it.
+ */
+static void e_d_watch_put_value(BUFFER *b, int l, const char *answer)
+{
+ E_D_ANSWER a;
+ const char *text;
+ char *line;
+
+ e_ds_watch_value(e_deb_type, answer, &text);
+ line = WpeMalloc(strlen(e_d_swtchs[l]) + strlen(text) + 4);
+ sprintf(line, "%s: %s", e_d_swtchs[l], text);
+ e_d_nrwtchs[l] = b->mxlines;
+ print_to_end_of_buffer(b, line, b->mx.x);
+ WpeFree(line);
+ e_ds_answer_borrow(&a, answer, 0);
+ e_ds_set_watch(&e_d_session, l, e_d_swtchs[l]);
+ e_ds_take_watch_answer(&e_d_session, e_deb_type, l, &a);
 }
 
 /**
@@ -4765,10 +4789,9 @@ int e_d_p_watches(FENSTER *f, int sw)
  ECNT *cn = f->ed;
  BUFFER *b;
  SCHIRM *s;
- int iw, i, k = 0, l, ret;
+ int iw, i, l, ret;
  size_t len;
- char str1[E_D_LINE_MAX], *str;   /* the command, or a short note */
- char *str2;
+ char str1[E_D_LINE_MAX], *str;   /* the command; the answer, joined */
  E_D_LINE value = {  NULL, 0  };  /* the debugger's answer, however long */
 
  if (e_d_start_refused(f))
@@ -4815,9 +4838,6 @@ int e_d_p_watches(FENSTER *f, int sw)
    e_d_watch_put_waiting(b, l);
    continue;
   }
-  str = str1;
-  k = 0;   /* each answer is read from its own start (pdb and a68g set no k) */
-
   /* Create appropriate command for the debugger (e_d_watch_refused above
      has already turned away a debugger that has none) */
   e_d_watch_command(str1, sizeof str1, e_d_swtchs[l]);
@@ -4828,13 +4848,9 @@ int e_d_p_watches(FENSTER *f, int sw)
    e_d_send_cmd(str1);
   }
 
-  /* If no debugger or no response, give message of no symbol in context */
-  if (!e_d_swtch || (ret = e_d_line_read_whole(wfildes[0], &value, 0, 0)) == 1)
-  {
-   strcpy(str1, e_d_msg[ERR_NOSYMBOL]);
-   k = 0;
-  }
-  else /* Debugger successfully returned a value */
+  /* No debugger or no response: the watch says it has no value */
+  str = NULL;
+  if (e_d_swtch && (ret = e_d_line_read_whole(wfildes[0], &value, 0, 0)) != 1)
   {
    if (ret == -1)
    {
@@ -4850,63 +4866,10 @@ int e_d_p_watches(FENSTER *f, int sw)
     if (len > 0 && str[len-1] == '\n') str[len-1] = ' ';
     strcat(str, (char *)value.s);
    }
-
-   /* Find the beginning of the information (depends on debugger output
-     format) */
-   if (e_deb_type == DEB_GDB || e_deb_type == DEB_DBX || e_deb_type == DEB_XDB ||
-       e_deb_type == DEB_JDB)    /* jdb answers " x = 3", as gdb "$1 = 3" */
-   {
-    if (e_deb_type == DEB_XDB && str[0] == '0')
-    {
-     for(k = 1; str[k] != '\0' && !isspace(str[k]); k++);
-    }
-    else
-     for(k = 0; str[k] != '\0' && str[k] != '='; k++);
-    if (str[k] == '\0')
-    {
-     if (str != str1) FREE(str);
-     str = str1;
-     strcpy(str, e_d_msg[ERR_NOSYMBOL]);
-     k = 0;
-    }
-    for(k++; str[k] != '\0' && isspace(str[k]); k++);
-   }
-   else if(e_deb_type == DEB_SDB)
-   {
-    for (k = 0; str[k] != '\0' && str[k] != ':'; k++);
-    if (str[k] == '\0') k = 0;
-    else k++;
-   }
   }
-
-  /* Print variable name */
-  for ( ; str[k] != '\0' && isspace(str[k]); k++);
-  /* a68g reports an out-of-scope variable with a verbose monitor error
-     ("a68g: monitor error: cannot find identifier (n)").  This is normal once
-     execution leaves the procedure where the variable lives (e.g. after the
-     recursion unwinds); show a short, friendly note instead. */
-  if (e_deb_type == DEB_A68G &&
-      (strstr(str + k, "cannot find identifier") ||
-       strstr(str + k, "monitor error")))
-  {
-   str2 = WpeMalloc(strlen(e_d_swtchs[l]) + 20);
-   sprintf(str2, "%s: <not in scope>", e_d_swtchs[l]);
-  }
-  else
-  {
-   str2 = WpeMalloc(strlen(e_d_swtchs[l]) + strlen(str + k) + 4);
-   sprintf(str2, "%s: %s", e_d_swtchs[l], str + k);
-  }
-
-  e_d_nrwtchs[l] = b->mxlines;
-  print_to_end_of_buffer(b, str2, b->mx.x);
-
-  /* Free any allocated string */
-  WpeFree(str2);
-  if(str != str1)
-  {
+  e_d_watch_put_value(b, l, str);
+  if (str)
    FREE(str);
-  }
  }
  e_d_line_free(&value);
 
@@ -5555,8 +5518,6 @@ static void e_d_breakpoints_changed(ECNT *cn)
 /* Room for a breakpoint command that names a file, and for its answer. */
 #define E_D_BRK_CMD_MAX     (PATH_MAX + 64)
 #define E_D_BRK_ANSWER_MAX  E_D_LINE_MAX
-/* gdb's answer to a breakpoint set: "Breakpoint 2 at ...", its number next. */
-#define E_D_GDB_BRK_ANSWER  "Breakpoint "
 /* No line to add to a debug adapter's list. */
 #define E_D_BRK_NO_LINE     0
 
@@ -6151,6 +6112,38 @@ static int e_d_start_brk_has_command(void)
         e_deb_type == DEB_SDB);
 }
 
+static int e_d_brk_read_number_line(char *str, int errors);   /* (below) */
+/* e_d_line_read's codes for what it read, besides 0 for a line. */
+#define E_D_READ_PROMPT  1   /* the prompt came: no (more) answer */
+#define E_D_READ_ERROR   2   /* a line of the debugger's error stream */
+
+/**
+ * e_d_brk_arm_start_symbol - Send @cmd, which sets gdb's, dbx's or xdb's
+ * breakpoint on the program's start symbol, and keep the number it gives.
+ * @cmd: the debugger's command.
+ *
+ * The number is read by the same reader as every other breakpoint answer,
+ * so the breakpoint the editor sets for itself at the start can be taken
+ * out again like the user's.
+ * Return: 0, or -1 when the debugger stopped answering.
+ */
+static int e_d_brk_arm_start_symbol(char *cmd)
+{
+ char str[E_D_BRK_ANSWER_MAX];
+ int ret;
+
+ e_d_send_cmd(cmd);
+ ret = e_d_brk_read_number_line(str, 0);
+ if (ret == -1)
+  return(-1);
+ if (ret == E_D_READ_ERROR)
+  e_d_error(str);
+ e_d_nrbrpts[e_d_nbrpts - 1] = e_ds_brk_number(e_deb_type, str);
+ if (ret != E_D_READ_PROMPT && e_d_dum_read() == -1)
+  return(-1);
+ return(0);
+}
+
 int e_mk_brk_main(FENSTER *f, int sw)
 {
  int i, ret;
@@ -6203,39 +6196,20 @@ int e_mk_brk_main(FENSTER *f, int sw)
    if (e_deb_type == DEB_GDB)
    {
     e_d_gdb_start_break(eing, sizeof eing);
-    e_d_send_cmd(eing);
-    while ((ret = e_d_line_read(wfildes[0], str, sizeof str, 0, 0)) == 0 &&
-      strncmp(str, "Breakpoint", 10))
-     ;
-    if (ret == -1) return(ret);
-    if (ret == 2) e_d_error(str);
-    e_d_nrbrpts[e_d_nbrpts - 1] = atoi(str+11);
-    if (ret != 1 && e_d_dum_read() == -1) return(-1);
+    if (e_d_brk_arm_start_symbol(eing) == -1)
+     return(-1);
    }
    else if (e_deb_type == DEB_DBX)
    {
     sprintf(eing, "stop in %s\n", e_get_start_symbol());
-    e_d_send_cmd(eing);
-    while ((ret = e_d_line_read(wfildes[0], str, sizeof str, 0, 0)) == 0 &&
-      str[0] != '(')
-     ;
-    if (ret == -1) return(ret);
-    if (ret == 2) e_d_error(str);
-    e_d_nrbrpts[e_d_nbrpts - 1] = atoi(str+1);
-    if (ret != 1 && e_d_dum_read() == -1) return(-1);
+    if (e_d_brk_arm_start_symbol(eing) == -1)
+     return(-1);
    }
    else if (e_deb_type == DEB_XDB)
    {
     sprintf(eing, "b %s\n", e_get_start_symbol());
-    e_d_send_cmd(eing);
-    while ((ret = e_d_line_read(wfildes[0], str, sizeof str, 0, 0)) == 0 &&
-      strncmp(str, "Added:", 6))
-     ;
-    ret = e_d_line_read(wfildes[0], str, sizeof str, 0, 0);
-    if (ret == -1) return(ret);
-    if (ret == 2) e_d_error(str);
-    e_d_nrbrpts[e_d_nbrpts - 1] = atoi(str+1);
-    if (ret != 1 && e_d_dum_read() == -1) return(-1);
+    if (e_d_brk_arm_start_symbol(eing) == -1)
+     return(-1);
    }
    else if (e_deb_type == DEB_JDB)
    {
@@ -10065,11 +10039,10 @@ int e_run_debug(FENSTER *f)
 
 /* jdb reports a stop as  Breakpoint hit: "thread=main", P.main(), line=6 bci=0
    or  Step completed: "thread=main", P.sq(), line=3 bci=0 : the class and
-   method come before the line, and the class names the source file. */
-#define E_D_JDB_LINE_MARK   "line="
+   method come before the line, and the class names the source file.  The
+   readers of it (E_D_JDB_LINE_MARK, E_D_JDB_NESTED_SEP) are in we_debsess.c. */
 #define E_D_JDB_SOURCE_EXT  ".java"
-#define E_D_JDB_NESTED_SEP  '$'      /* P$Inner lives in P.java */
-#define E_D_STOP_PATH_MAX   PATH_MAX
+#define E_D_STOP_PATH_MAX   E_DS_PATH_MAX
 
 /**
  * e_d_refresh_watches_at_stop - Re-read every watch at a new stop.
@@ -10111,71 +10084,9 @@ static int e_d_window_path_of(ECNT *cn, const char *name, char *out, size_t n)
  return(0);
 }
 
-/* jdb groups the digits of a line number past 999: "line=1,004". */
-#define E_D_JDB_DIGIT_GROUP ','
-#define E_D_JDB_LINE_BASE   10
-
-/**
- * e_d_jdb_stop_line - The source line of a jdb stop, or 0.
- * @stop: what jdb printed for the stop.
- *
- * A stop past line 999 is marked on its line, not on line 1: the group
- * separator between digits is skipped.
- */
-static int e_d_jdb_stop_line(const char *stop)
-{
- const char *lp = strstr(stop, E_D_JDB_LINE_MARK), *p;
- int line = 0;
-
- if (!lp)
-  return(0);
- for (p = lp + strlen(E_D_JDB_LINE_MARK); *p; p++)
- {
-  if (*p == E_D_JDB_DIGIT_GROUP && isdigit((unsigned char)p[1]) &&
-      p > lp + strlen(E_D_JDB_LINE_MARK))
-   continue;
-  if (!isdigit((unsigned char)*p))
-   break;
-  line = line * E_D_JDB_LINE_BASE + (*p - '0');
- }
- return(line);
-}
-
-/**
- * e_d_jdb_stop_class - The class a jdb stop names, with its package.
- * @stop: what jdb printed; @out, @n: receives "com.x.P".
- *
- * "com.x.P.main()" before "line=" gives com.x.P; a nested class P$Inner is
- * written in P's file, so it gives P.
- * Return: 1 when the stop names a class, else 0.
- */
-static int e_d_jdb_stop_class(const char *stop, char *out, size_t n)
-{
- const char *lp = strstr(stop, E_D_JDB_LINE_MARK);
- const char *paren, *start, *method_dot;
- char *nested;
- size_t len;
-
- if (!lp)
-  return(0);
- for (paren = lp; paren > stop && *paren != '('; paren--)
-  ;
- for (start = paren; start > stop && !isspace((unsigned char)start[-1]); start--)
-  ;
- for (method_dot = paren; method_dot > start && *method_dot != '.'; method_dot--)
-  ;
- if (*paren != '(' || method_dot == start)
-  return(0);
- len = method_dot - start;
- if (len >= n)
-  return(0);
- memcpy(out, start, len);
- out[len] = '\0';
- nested = strchr(out, E_D_JDB_NESTED_SEP);
- if (nested)
-  *nested = '\0';
- return(1);
-}
+/* The line and the class a jdb stop names are read by e_ds_jdb_stop_line
+   and e_ds_jdb_stop_class (we_debsess.c): a stop past line 999 keeps its
+   digit groups, a nested class P$Inner gives P. */
 
 /**
  * e_d_jdb_class_file - The source file name of a class: com.x.P -> P.java.
@@ -10342,11 +10253,12 @@ static void e_d_jdb_say_no_source(FENSTER *f, const char *cls)
 static int e_d_jdb_mark_stop(FENSTER *f, const char *stop)
 {
  char cls[E_D_STOP_PATH_MAX], path[E_D_STOP_PATH_MAX];
- int line = e_d_jdb_stop_line(stop);
+ int line = e_ds_jdb_stop_line(stop);
 
  if (line <= 0)
   return(0);
- if (!e_d_jdb_stop_class(stop, cls, sizeof cls))
+ e_ds_take_cli_stop_line(&e_d_session, DEB_JDB, stop);
+ if (!e_ds_jdb_stop_class(stop, cls, sizeof cls))
  {
   snprintf(cls, sizeof cls, "%s", e_d_file);
   WpeStringCutChar(cls, '.');
@@ -10361,222 +10273,60 @@ static int e_d_jdb_mark_stop(FENSTER *f, const char *stop)
 }
 
 /**
- * e_d_pdb_line_end - Say whether a character ends a line of pdb's answer.
- */
-static int e_d_pdb_line_end(char c)
-{
- return(c == '\0' || c == '\n' || c == '\r');
-}
-
-/**
- * e_d_pdb_stop_number - Find the next "(digits)" of a stop line, one of
- * which follows its file name as "(LINENO)".
- * @from: where to look from.
- * Return: its "(", or NULL when the line has no more.
- */
-static const char *e_d_pdb_stop_number(const char *from)
-{
- const char *q, *d;
-
- for (q = from; !e_d_pdb_line_end(*q); q++)
- {
-  if (*q != '(' || !isdigit((unsigned char)q[1]))
-   continue;
-  for (d = q + 1; isdigit((unsigned char)*d); d++)
-   ;
-  if (*d == ')')
-   return(q);
- }
- return(NULL);
-}
-
-/**
- * e_d_pdb_stop_tail - Say whether a stop line goes on, after its function
- * name, as pdb ends one: "()", then the line's end or "->" and a value.
- */
-static int e_d_pdb_stop_tail(const char *after)
-{
- if (strncmp(after, "()", 2))
-  return(0);
- after += 2;
- return(e_d_pdb_line_end(*after) || !strncmp(after, "->", 2));
-}
-
-static int e_d_pdb_is_file(const char *file);
-
-/**
- * e_d_pdb_stop_at_number - Read a stop line taking the "(digits)" at @open
- * for its "(LINENO)": what follows must be FUNCNAME "()" and then the
- * line's end or "->REPR".
- * @name: where the file name starts; @open: a "(digits)" after it; @file,
- * @n: receives the file; @line: the line, which may be 0 (pdb 3.14 names
- * exec()'d code "<string>(0)").
- * Return: 1 when the line reads that way, else 0.
- */
-static int e_d_pdb_stop_at_number(const char *name, const char *open,
-                                  char *file, size_t n, int *line)
-{
- const char *func = strchr(open, ')') + 1, *after;
- size_t len = open - name;
-
- for (after = func; !e_d_pdb_line_end(*after) && *after != '(' &&
-      *after != ' '; after++)
-  ;
- if (after == func)
-  return(0);
- /* A part that ends inside the function name is the head of a stop line
-    whose rest comes in the next part (a name longer than the buffer). */
- if (*after != '\0' && !e_d_pdb_stop_tail(after))
-  return(0);
- *line = atoi(open + 1);
- if (len == 0 || len >= n || *line < 0)
-  return(0);
- memcpy(file, name, len);
- file[len] = '\0';
- return(1);
-}
-
-/**
- * e_d_pdb_stop_parse - Read a stop line in pdb's grammar at @p:
- * "> FILENAME(LINENO)FUNCNAME()", then the line's end or "->REPR".
- * @p: a "> " in pdb's answer; @file, @n: receives the file; @line: the line.
- *
- * Only what pdb prints as a stop line passes, so a "> name(3)" in a value
- * or in the program's output is not taken for one.  A file name may hold
- * "(1)" itself ("a b(1)/p.py"): each "(digits)" is tried as the line
- * number, and one naming an existing file is preferred.
- * Return: 1 when @p begins such a line, else 0.
- */
-static int e_d_pdb_stop_parse(const char *p, char *file, size_t n, int *line)
-{
- const char *name = p + 2, *open;
- char first_file[E_D_STOP_PATH_MAX];
- int first_line = -1;
-
- if (strncmp(p, "> ", 2))
-  return(0);
- for (open = e_d_pdb_stop_number(name); open;
-      open = e_d_pdb_stop_number(open + 1))
- {
-  if (!e_d_pdb_stop_at_number(name, open, file, n, line))
-   continue;
-  if (e_d_pdb_is_file(file))
-   return(1);
-  if (first_line < 0)
-  {
-   snprintf(first_file, sizeof first_file, "%s", file);
-   first_line = *line;
-  }
- }
- if (first_line < 0)
-  return(0);
- snprintf(file, n, "%s", first_file);
- *line = first_line;
- return(1);
-}
-
-/**
- * e_d_pdb_is_file - Say whether a file pdb named exists as a regular file.
+ * e_d_pdb_is_file - Say whether a file pdb named exists as a regular file:
+ * the file probe the stop readers of we_debsess.c ask.
+ * @file: the name; @ctx: unused.
  *
  * pdb names the program's files by their real path, so a stop that names
- * one is pdb's own, whatever else on the line looks like a stop.
+ * one is pdb's own, whatever else on the line looks like a stop ("> name(3)"
+ * in a value or in the program's output, a directory "a b(1)/").
  */
-static int e_d_pdb_is_file(const char *file)
+static int e_d_pdb_is_file(const char *file, void *ctx)
 {
  struct stat st;
 
+ (void)ctx;
  return(stat(file, &st) == 0 && S_ISREG(st.st_mode));
 }
 
 /**
- * e_d_pdb_best_stop - The stop line that starts between @from and @to in
- * pdb's answer @text, or NULL.
+ * e_d_session_forget - The debugging session ended: the session state
+ * starts over, asking the file system as it is.
  *
- * The first one that names an existing file wins; then the first one, which
- * a value pdb prints after the stop ("->'x > g(5)'") can never come before.
- * A "> " of pdb's "-> source" line is not a stop.
+ * Nothing of the last session (a stop, a frame, a value, an answer) is
+ * then taken for the next one's.
  */
-static const char *e_d_pdb_best_stop(const char *text, const char *from,
-                                     const char *to)
+static void e_d_session_forget(void)
 {
- char file[E_D_STOP_PATH_MAX];
- const char *p = from, *first = NULL;
- int line;
-
- while ((p = strstr(p, "> ")) != NULL && p < to)
- {
-  if ((p == text || p[-1] != '-') &&
-      e_d_pdb_stop_parse(p, file, sizeof file, &line))
-  {
-   if (e_d_pdb_is_file(file))
-    return(p);
-   if (!first)
-    first = p;
-  }
-  p += 2;
- }
- return(first);
+ e_ds_reset(&e_d_session);
+ e_ds_set_file_probe(&e_d_session, e_d_pdb_is_file, NULL);
 }
 
 /**
- * e_d_pdb_source_line - Where pdb's "-> source" line starts in a part of its
- * answer: the line it prints right after the stop line.
- * Return: its start, or NULL when the part holds none.
+ * e_d_pdb_stop_parse - Read a stop line in pdb's grammar at @p, with the
+ * file system as it is: see e_ds_pdb_stop_parse.
  */
-static const char *e_d_pdb_source_line(const char *text)
+static int e_d_pdb_stop_parse(const char *p, char *file, size_t n, int *line)
 {
- const char *p = text, *found = NULL;
-
- if (!strncmp(text, "-> ", 3))
-  found = text;
- while ((p = strstr(p, "\n-> ")) != NULL)
- {
-  found = p + 1;
-  p += 1;
- }
- return(found);
+ return(e_ds_pdb_stop_parse(p, file, n, line, e_d_pdb_is_file, NULL));
 }
 
 /**
- * e_d_pdb_find_stop - Find the line pdb names its stop with in a part of its
- * answer.
- * @text: the part.
- *
- * The stop line is the one before pdb's "-> source" line, where a stop glued
- * to the program's output without a line end is also found; without a
- * source line, anywhere before it.  The source line ("-> if x > f(1):") is
- * never looked at.
- * Return: where its "> " is, or NULL when the part names no stop.
+ * e_d_pdb_find_stop - Where pdb names its stop in a part of its answer,
+ * with the file system as it is: see e_ds_pdb_find_stop.
  */
 static const char *e_d_pdb_find_stop(const char *text)
 {
- const char *source = e_d_pdb_source_line(text);
- const char *limit = source ? source : text + strlen(text);
- const char *before, *found;
-
- if (source && source > text)
- {
-  for (before = source - 1; before > text && before[-1] != '\n'; before--)
-   ;
-  if ((found = e_d_pdb_best_stop(text, before, source)) != NULL)
-   return(found);
- }
- return(e_d_pdb_best_stop(text, text, limit));
+ return(e_ds_pdb_find_stop(text, e_d_pdb_is_file, NULL));
 }
 
 /**
- * e_d_pdb_stop_place - Read where pdb stopped from its "> file(line)func()"
- * line.
- * @text: pdb's answer; @file, @n: receives the file; @line: the line.
- * Return: 1 when the answer names a place, else 0.
+ * e_d_pdb_stop_place - Read where pdb stopped, with the file system as it
+ * is: see e_ds_pdb_stop_place.
  */
 static int e_d_pdb_stop_place(const char *text, char *file, size_t n, int *line)
 {
- const char *stop = e_d_pdb_find_stop(text);
-
- if (!stop)
-  return(0);
- return(e_d_pdb_stop_parse(stop, file, n, line));
+ return(e_ds_pdb_stop_place(text, file, n, line, e_d_pdb_is_file, NULL));
 }
 
 /**
@@ -10612,6 +10362,8 @@ static void e_d_pdb_mark_step(FENSTER *f, const char *stop)
 
  if (!e_d_pdb_stop_parse(stop, file, sizeof file, &line))
   return;
+ e_ds_set_file_probe(&e_d_session, e_d_pdb_is_file, NULL);
+ e_ds_take_cli_stop_line(&e_d_session, DEB_PDB, stop);
  e_d_swtch = 3;
  e_d_pdb_mark_stop(f, file, line);
 }
@@ -11017,10 +10769,8 @@ int e_deb_next(FENSTER *f)
 }
 
 /* What jdb says when the program reached its end, and when its VM went
-   away (killed, or crashed); jdb closes its pipe after either. */
-#define E_D_JDB_DISCONNECTED "The application has been disconnected"
-/* What jdb echoes before a command's answer, at the start of a line. */
-#define E_D_JDB_ECHO        "> "
+   away (killed, or crashed), jdb closing its pipe after either, and the
+   "> " it echoes before a command's answer, are read in we_debsess.c. */
 
 /* jdb's answer to the command that runs, continues or steps the program.
    Only jdb writes to its pipe: the program has the pty. */
@@ -11028,131 +10778,13 @@ static E_D_STEP_REPLY e_d_jdb_reply;
 /* jdb's answer while it starts: its listen line, then its first prompt. */
 static E_D_STEP_REPLY e_d_jdb_start_reply;
 
-/**
- * e_d_jdb_line_starts_with_mark - Does the line at @line start with @mark?
- * @line: the start of a line of jdb's answer; @mark: a stop or end mark.
- *
- * jdb puts the "> " it echoes for the command in front of the first line
- * of its answer; the mark comes after it.  Nothing else writes to jdb's
- * pipe, so the program's own text, whatever it says, is never read here.
- * Return: where the mark starts, or NULL.
- */
-static const char *e_d_jdb_line_starts_with_mark(const char *line,
-                                                 const char *mark)
-{
- while (strncmp(line, E_D_JDB_ECHO, strlen(E_D_JDB_ECHO)) == 0)
-  line += strlen(E_D_JDB_ECHO);
- if (strncmp(line, mark, strlen(mark)) == 0)
-  return(line);
- return(NULL);
-}
-
-/**
- * e_d_jdb_line_names_stop - The stop mark the line at @line starts with.
- * @line: the start of a line of jdb's answer.
- * Return: where the mark starts (a breakpoint, a step or an uncaught
- * exception), or NULL.
- */
-static const char *e_d_jdb_line_names_stop(const char *line)
-{
- const char *at = e_d_jdb_line_starts_with_mark(line, E_D_JDB_STOP_MARK);
-
- if (!at)
-  at = e_d_jdb_line_starts_with_mark(line, E_D_JDB_STEP_MARK);
- if (!at)
-  at = e_d_jdb_line_starts_with_mark(line, E_D_JDB_EXCEPTION_MARK);
- return(at);
-}
-
-/**
- * e_d_jdb_stop_line_in - The line in jdb's answer that names its stop, or
- * NULL.
- * @text: the answer.
- *
- * The last one counts: the editor marks the source line it names.
- */
-static const char *e_d_jdb_stop_line_in(const char *text)
-{
- const char *line = text, *found = NULL, *at;
-
- while (line)
- {
-  at = e_d_jdb_line_names_stop(line);
-  if (at)
-   found = at;
-  line = strchr(line, '\n');
-  if (line)
-   line++;
- }
- return(found);
-}
-
-/**
- * e_d_jdb_says - Does a line of jdb's answer start with @mark?
- * @text: the answer; @mark: the words to look for at the start of a line.
- * Return: 1 when one does.
- */
-static int e_d_jdb_says(const char *text, const char *mark)
-{
- const char *line = text;
-
- while (line)
- {
-  if (e_d_jdb_line_starts_with_mark(line, mark))
-   return(1);
-  line = strchr(line, '\n');
-  if (line)
-   line++;
- }
- return(0);
-}
-
-/**
- * e_d_jdb_says_end - Does a line of jdb's answer say the program is gone?
- * @text: the answer.
- * Return: 1 when a line starts with "The application exited" or "The
- * application has been disconnected".
- */
-static int e_d_jdb_says_end(const char *text)
-{
- return(e_d_jdb_says(text, E_D_JDB_EXIT) ||
-        e_d_jdb_says(text, E_D_JDB_DISCONNECTED));
-}
-
-/**
- * e_d_jdb_asks_command - Does jdb's answer end with its prompt?
- * @text: the answer.
- */
-static int e_d_jdb_asks_command(const char *text)
-{
- size_t len = strlen(text), tail = strlen(E_D_JDB_PROMPT_TAIL);
-
- return(len >= tail && strcmp(text + len - tail, E_D_JDB_PROMPT_TAIL) == 0);
-}
-
-/**
- * e_d_jdb_reply_is_stop - Does jdb's answer so far say the program stopped?
- * @text: the answer.
- *
- * A stop is a line of jdb's that names it (a breakpoint, a step or an
- * uncaught exception), the place it stopped at ("line=") after it, and
- * jdb's prompt as the last thing it said.  jdb can write its answer to a
- * breakpoint set while the program runs, and a prompt, between the stop's
- * words and its place; the stop is read on to its place, so the user sees
- * its line marked instead of a program held with nothing shown.
- * Return: 1 when it does.
- */
-static int e_d_jdb_reply_is_stop(const char *text)
-{
- const char *stop;
-
- if (!e_d_jdb_asks_command(text))
-  return(0);
- stop = e_d_jdb_stop_line_in(text);
- if (!stop)
-  return(0);
- return(strstr(stop, E_D_JDB_LINE_MARK) != NULL);
-}
+/* Whether jdb's answer names a stop (a line that names it, its "line="
+   after it, the prompt last: jdb can write its answer to a breakpoint set
+   while the program runs, and a prompt, between the stop's words and its
+   place), says the program is gone, or ends with its prompt, is read by
+   e_ds_jdb_reply_is_stop, e_ds_jdb_says_end and e_ds_jdb_asks_command
+   (we_debsess.c).  Only jdb writes to its pipe, so the program's own text,
+   whatever it says, is never read there. */
 
 /**
  * e_d_jdb_says_suspended - Does jdb's answer say Pause's "suspend" took
@@ -11166,13 +10798,9 @@ static int e_d_jdb_reply_is_stop(const char *text)
  */
 static int e_d_jdb_says_suspended(const char *text)
 {
- size_t len = strlen(text), tail = strlen(E_D_JDB_BARE_PROMPT);
-
  if (e_d_run.pause == E_D_PAUSE_NONE)
   return(0);
- if (len < tail || strcmp(text + len - tail, E_D_JDB_BARE_PROMPT) != 0)
-  return(0);
- return(e_d_jdb_says(text, E_D_JDB_SUSPENDED));
+ return(e_ds_jdb_says_suspended_text(text));
 }
 
 /* Set when jdb's stop was Pause's: the VM is suspended as a whole, and
@@ -11290,29 +10918,10 @@ static void e_d_jdb_confirm_deferred(const char *spec)
  }
 }
 
-/* jdb's answers to a breakpoint command sent while the program runs: they
-   come in the run's output, in any order with the program's events. */
-#define E_D_JDB_SET_NOW   "Set breakpoint "
-#define E_D_JDB_DEFERS    "Deferring breakpoint "
-#define E_D_JDB_UNABLE    "Unable to set breakpoint "
+/* jdb's answers to a breakpoint command sent while the program runs come
+   in the run's output, in any order with the program's events; each line
+   is read by e_ds_jdb_live_word (we_debsess.c). */
 #define E_D_JDB_SPEC_MAX  PATH_MAX
-
-/**
- * e_d_jdb_spec_of - Cut "P:7" out of jdb's answer after one of its words.
- * @after: the text that follows the words; @spec, @n: receives it, without
- * the full stop jdb ends "Deferring breakpoint P:7." with.
- */
-static void e_d_jdb_spec_of(const char *after, char *spec, size_t n)
-{
- size_t len = strcspn(after, " \t\r\n");
-
- if (len >= n)
-  len = n - 1;
- memcpy(spec, after, len);
- spec[len] = '\0';
- if (len > 0 && spec[len - 1] == '.')
-  spec[len - 1] = '\0';
-}
 
 /**
  * e_d_jdb_take_live_word - jdb answered a breakpoint command sent while the
@@ -11328,6 +10937,7 @@ static void e_d_jdb_take_live_word(const char *spec, int state,
  char cls[E_D_JDB_SPEC_MAX], entry[E_D_JDB_SPEC_MAX], words[E_D_BRK_MSG_MAX];
  const char *colon = strchr(spec, ':');
  ECNT *cn = WpeEditor;
+ E_D_ANSWER a;
  int i, num;
 
  if (!colon || (size_t)(colon - spec) >= sizeof(cls))
@@ -11335,7 +10945,8 @@ static void e_d_jdb_take_live_word(const char *spec, int state,
  memcpy(cls, spec, colon - spec);
  cls[colon - spec] = '\0';
  num = atoi(colon + 1);
- e_d_brk_words(words, sizeof(words), line);
+ e_ds_brk_words(words, sizeof(words), line);
+ e_ds_answer_borrow(&a, line, 0);
  for (i = 0; i < e_d_nbrpts; i++)
  {
   if (e_d_brk_is_start_entry(i) || e_d_ybrpts[i] != num)
@@ -11343,6 +10954,7 @@ static void e_d_jdb_take_live_word(const char *spec, int state,
   e_d_brk_jdb_class(e_d_sbrpts[i], entry, sizeof(entry));
   if (strcmp(entry, cls))
    continue;
+  e_ds_take_brk_answer(&e_d_session, DEB_JDB, i, &a);
   if (state == E_D_BRK_VERIFIED)
    e_d_brk_set_state(i, state, NULL);
   else
@@ -11360,23 +10972,11 @@ static void e_d_jdb_take_live_word(const char *spec, int state,
 static void e_d_jdb_live_word_in(const char *line)
 {
  char spec[E_D_JDB_SPEC_MAX];
- const char *at;
+ const char *at = NULL;
+ int state = e_ds_jdb_live_word(line, spec, sizeof(spec), &at);
 
- if ((at = strstr(line, E_D_JDB_SET_NOW)) != NULL)
- {
-  e_d_jdb_spec_of(at + strlen(E_D_JDB_SET_NOW), spec, sizeof(spec));
-  e_d_jdb_take_live_word(spec, E_D_BRK_VERIFIED, at);
- }
- else if ((at = strstr(line, E_D_JDB_DEFERS)) != NULL)
- {
-  e_d_jdb_spec_of(at + strlen(E_D_JDB_DEFERS), spec, sizeof(spec));
-  e_d_jdb_take_live_word(spec, E_D_BRK_PENDING, at);
- }
- else if ((at = strstr(line, E_D_JDB_UNABLE)) != NULL)
- {
-  e_d_jdb_spec_of(at + strlen(E_D_JDB_UNABLE), spec, sizeof(spec));
-  e_d_jdb_take_live_word(spec, E_D_BRK_REFUSED, at);
- }
+ if (state != E_DS_NOT_FOUND)
+  e_d_jdb_take_live_word(spec, state, at);
 }
 
 /**
@@ -11456,8 +11056,8 @@ static int e_d_jdb_feed(FENSTER *f)
             n, e_d_jdb_reply.len, e_d_jdb_reply.buf);
   e_d_jdb_note_live_answers(e_d_jdb_reply.buf);
   e_d_jdb_note_deferred_sets(e_d_jdb_reply.buf);
-  if (e_d_jdb_says_end(e_d_jdb_reply.buf) ||
-      e_d_jdb_reply_is_stop(e_d_jdb_reply.buf))
+  if (e_ds_jdb_says_end(e_d_jdb_reply.buf) ||
+      e_ds_jdb_reply_is_stop(e_d_jdb_reply.buf))
    fed = E_D_FEED_STOPPED;
   else if (e_d_jdb_says_suspended(e_d_jdb_reply.buf))
    fed = e_d_jdb_pause_stop();
@@ -11649,12 +11249,12 @@ static void e_d_jdb_stopped(FENSTER *f)
 
  e_d_jdb_ncleared = 0;       /* the stop is the user's: jdb has the rest */
  e_d_drain_pty_to_messages();
- if (e_d_jdb_says_end(e_d_jdb_reply.buf))
+ if (e_ds_jdb_says_end(e_d_jdb_reply.buf))
  {
   e_d_jdb_end_session(f);
   return;
  }
- stop = e_d_jdb_stop_line_in(e_d_jdb_reply.buf);
+ stop = e_ds_jdb_stop_line_in(e_d_jdb_reply.buf);
  if (!stop && e_d_jdb_suspended)
  {
   e_d_jdb_mark_paused_thread(f);
@@ -11799,14 +11399,14 @@ static int e_d_jdb_removal_waits(const char *cls, int line)
  */
 static int e_d_jdb_stale_stop(void)
 {
- const char *stop = e_d_jdb_stop_line_in(e_d_jdb_reply.buf);
+ const char *stop = e_ds_jdb_stop_line_in(e_d_jdb_reply.buf);
  char cls[E_D_JDB_SPEC_MAX];
  int line;
 
  if (!stop || strncmp(stop, E_D_JDB_STOP_MARK, strlen(E_D_JDB_STOP_MARK)))
   return(0);
- line = e_d_jdb_stop_line(stop);
- if (line <= 0 || !e_d_jdb_stop_class(stop, cls, sizeof(cls)))
+ line = e_ds_jdb_stop_line(stop);
+ if (line <= 0 || !e_ds_jdb_stop_class(stop, cls, sizeof(cls)))
   return(0);
  if (e_d_jdb_marked(cls, line))
   return(0);
@@ -12329,22 +11929,9 @@ static const E_D_RUN_OPS *e_d_pdb_run_ops(void)
  return(&e_d_pdb_ops);
 }
 
-/* Return the source line a68g reports for the current stop, or -1.
-   a68g prints the active line as "<lineno><whitespace><source text>"
-   (e.g. "5           f := f * i").  A bare number with no following source
-   text (or a ':'-terminated number) is not a position. */
-static int e_d_a68g_parse_line(const char *s)
-{
- int n = 0, k;
-
- if (!isdigit((unsigned char)s[0]))
-  return(-1);
- for (k = 0; isdigit((unsigned char)s[k]); k++)
-  n = n * 10 + (s[k] - '0');
- if (s[k] != ' ' && s[k] != '\t')
-  return(-1);
- return(n > 0 ? n : -1);
-}
+/* The source line a68g reports for the current stop ("5           f := f
+   * i"; a bare number, or one ended by ':', is no position) is read by
+   e_ds_a68g_parse_line (we_debsess.c). */
 
 /* Return 1 if an a68g monitor line is protocol chatter that must not be shown
    as program output: the prompt, the "Breakpoint"/"Continuing" banners, the
@@ -12408,9 +11995,12 @@ static int e_d_a68g_scan(FENSTER *f, const char *buf, int mid_line)
   _li = e_d_text_next_line(buf, &_bi, _ln, sizeof _ln);
   _pl = -1;
   if (!_piece)
-   _pl = e_d_a68g_parse_line(_ln);
+   _pl = e_ds_a68g_parse_line(_ln);
   if (_pl > 0)
+  {
    _line = _pl;                          /* last numbered line wins */
+   e_ds_take_cli_stop_line(&e_d_session, DEB_A68G, _ln);
+  }
   else if (!e_d_a68g_is_metadata(_ln))
   {
    e_d_a68g_show_in_messages(_ln, f);    /* Messages window (Ctrl-G P) */
@@ -12508,21 +12098,13 @@ static void e_d_a68g_spill(void *ctx, char *text, int mid_line)
 /* At every stop, a breakpoint, a step, a Finish and an error alike, a68g
    writes three lines before that prompt: the numbered source line, a line
    that marks the column under it, and which thread stopped.  A program's
-   own "(a68g) " has none of them before it. */
-#define E_D_A68G_MAIN_THREAD  "This is the main thread"
-#define E_D_A68G_OTHER_THREAD "This is not the main thread"
-#define E_D_A68G_MARK_CHAR    '-'   /* what points at the column */
-/* The kinds of line a stop is made of, and how many come before the prompt. */
-#define E_D_A68G_LINE_OTHER   0
-#define E_D_A68G_LINE_SOURCE  1
-#define E_D_A68G_LINE_MARKER  2
-#define E_D_A68G_LINE_THREAD  3
-#define E_D_A68G_LINE_QUESTION 4   /* not part of a stop: see below */
-#define E_D_A68G_STOP_LINES   3
+   own "(a68g) " has none of them before it.  Which kind of line each is
+   (E_D_A68G_LINE_*, how many: E_D_A68G_STOP_LINES) is read by
+   e_ds_a68g_line_kind (we_debsess.c). */
 /* When SIGINT interrupts the program, a68g writes the stop's source line and
-   column marker, then asks this with no line end.  Answered "no" it goes on
-   to the thread line and its prompt, so the stop reads as any other. */
-#define E_D_A68G_TERMINATE    "Terminate a68g (yes|no):"
+   column marker, then asks E_D_A68G_TERMINATE (we_debsess.h) with no line
+   end.  Answered "no" it goes on to the thread line and its prompt, so the
+   stop reads as any other. */
 #define E_D_A68G_KEEP         "no\n"
 #define E_D_A68G_NEXT "next\n"
 #define E_D_A68G_STEP "step\n"
@@ -12607,76 +12189,6 @@ static int e_d_a68g_no_output_fd(void)
 }
 
 /**
- * e_d_a68g_is_thread_line - Is this the line a68g writes just before its
- * prompt at a stop?
- * @s: the line; @len: its length, without the line end.
- */
-static int e_d_a68g_is_thread_line(const char *s, int len)
-{
- if (len == (int)sizeof E_D_A68G_MAIN_THREAD - 1 &&
-     !strncmp(s, E_D_A68G_MAIN_THREAD, len))
-  return(1);
- if (len == (int)sizeof E_D_A68G_OTHER_THREAD - 1 &&
-     !strncmp(s, E_D_A68G_OTHER_THREAD, len))
-  return(1);
- return(0);
-}
-
-/**
- * e_d_a68g_is_column_marker - Is this the line a68g writes under a source
- * line to point at the column it stopped in?
- * @s: the line; @len: its length, without the line end.
- */
-static int e_d_a68g_is_column_marker(const char *s, int len)
-{
- int i, marks = 0;
-
- for (i = 0; i < len; i++)
- {
-  if (s[i] == E_D_A68G_MARK_CHAR)
-   marks++;
-  else if (s[i] != ' ')
-   return(0);
- }
- return(marks > 0);
-}
-
-/**
- * e_d_a68g_is_source_line - Is this a numbered source line, as a68g shows
- * the line it stopped on?
- * @s: the line; @len: its length, without the line end.
- */
-static int e_d_a68g_is_source_line(const char *s, int len)
-{
- char line[E_D_LINE_MAX];
-
- if (len >= (int)sizeof line)
-  len = sizeof line - 1;
- memcpy(line, s, len);
- line[len] = '\0';
- return(e_d_a68g_parse_line(line) > 0);
-}
-
-/**
- * e_d_a68g_line_kind - Which part of a stop a line of a68g's answer is.
- * @s: the line; @len: its length, without the line end.
- * Return: E_D_A68G_LINE_SOURCE, _MARKER, _THREAD, _QUESTION or _OTHER.
- */
-static int e_d_a68g_line_kind(const char *s, int len)
-{
- if (len >= (int)sizeof E_D_A68G_TERMINATE - 1 &&
-     !strncmp(s, E_D_A68G_TERMINATE, sizeof E_D_A68G_TERMINATE - 1))
-  return(E_D_A68G_LINE_QUESTION);
- if (e_d_a68g_is_thread_line(s, len))
-  return(E_D_A68G_LINE_THREAD);
- if (e_d_a68g_is_column_marker(s, len))
-  return(E_D_A68G_LINE_MARKER);
- if (e_d_a68g_is_source_line(s, len))
-  return(E_D_A68G_LINE_SOURCE);
- return(E_D_A68G_LINE_OTHER);
-}
-
-/**
  * e_d_a68g_recent_kinds - The kinds of the last E_D_A68G_STOP_LINES whole
  * lines before @upto, newest first.
  * @r: the run; @upto: where the whole lines end in the answer (just past a
@@ -12702,25 +12214,13 @@ static void e_d_a68g_recent_kinds(const E_D_A68G_RUN *r, int upto, int *kinds)
    kinds[n++] = E_D_A68G_LINE_OTHER;
    break;
   }
-  kind = e_d_a68g_line_kind(rep->buf + start, end - 1 - start);
+  kind = e_ds_a68g_line_kind(rep->buf + start, end - 1 - start);
   end = start;
   if (kind != E_D_A68G_LINE_QUESTION)   /* the question is not in a stop */
    kinds[n++] = kind;
  }
  for (i = n; i < E_D_A68G_STOP_LINES; i++)
   kinds[i] = r->shown[i - n];
-}
-
-/**
- * e_d_a68g_lines_make_a_stop - Are these, newest first, the lines a68g
- * writes before its prompt at a stop?
- * @kinds: E_D_A68G_STOP_LINES kinds, as e_d_a68g_recent_kinds gives them.
- */
-static int e_d_a68g_lines_make_a_stop(const int *kinds)
-{
- return(kinds[0] == E_D_A68G_LINE_THREAD &&
-        kinds[1] == E_D_A68G_LINE_MARKER &&
-        kinds[2] == E_D_A68G_LINE_SOURCE);
 }
 
 /**
@@ -12750,7 +12250,7 @@ static int e_d_a68g_prompt_ends_answer(const E_D_A68G_RUN *r)
  if (tail == 0 && rep->mid_line)
   return(0);
  e_d_a68g_recent_kinds(r, tail, kinds);
- return(e_d_a68g_lines_make_a_stop(kinds));
+ return(e_ds_a68g_lines_make_a_stop(kinds));
 }
 
 /**
@@ -13089,7 +12589,6 @@ static int e_d_a68g_do_step(FENSTER *f, int sw)
 #define E_D_FRAME_UP_FMT     "up %d\n"   /* pdb and jdb: N frames outwards    */
 #define E_D_FRAME_DOWN_FMT   "down %d\n" /* pdb and jdb: N frames inwards     */
 #define E_D_PDB_WHERE        "where\n"
-#define E_D_PDB_FRAME_LEAD   2        /* "> " (selected) or "  " per frame   */
 #define E_D_PDB_OWN_FILE     "<string>" /* pdb's exec of the script: the last
                                            frame of pdb's own machinery  */
 #define E_D_JDB_WHERE        "where\n"
@@ -13097,8 +12596,6 @@ static int e_d_a68g_do_step(FENSTER *f, int sw)
 #define E_D_A68G_CALLS_FMT   "calls %d\n"
 #define E_D_A68G_CALLS_MAX   (sizeof E_D_A68G_CALLS_FMT + 8)
 #define E_D_A68G_FINISH      "finish\n"
-#define E_D_A68G_PROC_WORD   "PROC "
-#define E_D_A68G_MAIN_FRAME  "(main program)"
 #define E_D_FINISH_OUTERMOST "Finish function: not meaningful in the outermost frame."
 
 typedef struct
@@ -13354,41 +12851,9 @@ static const char *e_d_frames_skip_prompt(const char *row)
  return(row);
 }
 
-/**
- * e_d_pdb_frame_parse - Read one frame of pdb's "where".
- * @row: "> /dir/p.py(2)sq()->9" (the selected frame) or "  /dir/p.py(6)
- * <module>()"; the "-> source" lines under each frame are no frames.
- * @fr: receives the function, file and line.
- * Return: 1 when @row is a frame.
- */
-static int e_d_pdb_frame_parse(const char *row, e_d_frame *fr)
-{
- const char *text, *open, *close, *call;
- size_t len;
-
- if (strlen(row) <= E_D_PDB_FRAME_LEAD ||
-     (strncmp(row, "> ", E_D_PDB_FRAME_LEAD) &&
-      strncmp(row, "  ", E_D_PDB_FRAME_LEAD)))
-  return(0);
- text = row + E_D_PDB_FRAME_LEAD;
- open = strchr(text, '(');
- close = open ? strchr(open, ')') : NULL;
- if (!close || open == text || atoi(open + 1) <= 0)
-  return(0);
- len = open - text;
- if (len >= sizeof fr->file)
-  return(0);
- memcpy(fr->file, text, len);
- fr->file[len] = '\0';
- fr->line = atoi(open + 1);
- call = strchr(close + 1, '(');
- len = call ? (size_t)(call - (close + 1)) : strlen(close + 1);
- if (len >= sizeof fr->func)
-  len = sizeof fr->func - 1;
- memcpy(fr->func, close + 1, len);
- fr->func[len] = '\0';
- return(1);
-}
+/* One frame of pdb's "where" ("> /dir/p.py(2)sq()->9", the selected one,
+   or "  /dir/p.py(6)<module>()"; the "-> source" lines under each are no
+   frames) is read by e_ds_pdb_frame_parse (we_debsess.c). */
 
 /**
  * e_d_pdb_read_frames - Read pdb's whole stack, its SIGINT handler included.
@@ -13402,14 +12867,14 @@ static int e_d_pdb_read_frames(void)
 {
  char row[E_D_FRAME_ROW_MAX];
  const char *p = e_d_frames_reply;
- e_d_frame fr;
+ E_DS_FRAME fr;
  int own = -1;
 
  if (e_d_frames_ask(E_D_PDB_WHERE) == -1)
   return(-1);
  while (e_d_frames_next_row(&p, row, sizeof row))
  {
-  if (!e_d_pdb_frame_parse(e_d_frames_skip_prompt(row), &fr))
+  if (!e_ds_pdb_frame_parse(e_d_frames_skip_prompt(row), &fr))
    continue;
   if (own < 0 && !strcmp(fr.file, E_D_PDB_OWN_FILE))
    own = e_d_nframes;
@@ -13773,78 +13238,26 @@ static int e_d_pdb_sync_stop(FENSTER *f)
  return(E_D_SYNC_READY);
 }
 
-/**
- * e_d_jdb_frame_line - A line number as jdb writes it, "1,620" included.
- * @s: the digits.
- * Return: the number.
- */
-static int e_d_jdb_frame_line(const char *s)
-{
- int n = 0;
-
- for (; isdigit((unsigned char)*s) || *s == ','; s++)
-  if (*s != ',')
-   n = n * 10 + (*s - '0');
- return(n);
-}
-
-/**
- * e_d_jdb_frame_parse - Read one frame of jdb's "where".
- * @row: "  [1] P.sq (P.java:3)", possibly after a prompt "main[1] ", or
- * "  [3] java.lang.Thread.run (native method)".
- * @fr: receives the method (class and name), the file name and the line;
- * a frame without a file line gets E_D_FRAME_NO_LINE and file "".
- * Return: 1 when @row is a frame.
- */
-static int e_d_jdb_frame_parse(const char *row, e_d_frame *fr)
-{
- const char *p, *open, *close, *colon;
- size_t len;
-
- for (p = strchr(row, '['); p; p = strchr(p + 1, '['))
-  if ((p == row || isspace((unsigned char)p[-1])) && isdigit((unsigned char)p[1]))
-   break;
- if (!p || !(p = strstr(p, "] ")))
-  return(0);
- p += 2;
- open = strstr(p, " (");
- close = open ? strchr(open, ')') : NULL;
- if (!close)
-  return(0);
- len = open - p;
- if (len == 0 || len >= sizeof fr->func)
-  return(0);
- memcpy(fr->func, p, len);
- fr->func[len] = '\0';
- colon = strchr(open, ':');
- fr->file[0] = '\0';
- fr->line = E_D_FRAME_NO_LINE;
- if (!colon || colon > close)
-  return(1);
- len = colon - (open + 2);
- if (len < sizeof fr->file)
- {
-  memcpy(fr->file, open + 2, len);
-  fr->file[len] = '\0';
- }
- fr->line = e_d_jdb_frame_line(colon + 1);
- return(1);
-}
+/* One frame of jdb's "where" ("  [1] P.sq (P.java:3)", possibly after a
+   prompt "main[1] ", or "  [3] java.lang.Thread.run (native method)", which
+   gets no line and no file; "1,620" is line 1620) is read by
+   e_ds_jdb_frame_parse (we_debsess.c). */
 
 /**
  * e_d_jdb_frame_source - Find the source of a jdb frame's class.
- * @cn: the editor; @fr: the frame, its func "com.x.P.sq"; @out, @n: the path.
+ * @cn: the editor; @func: the frame's method, "com.x.P.sq"; @out, @n: the
+ * path.
  *
  * Found the way a stop's source is found, so the frames of the user's
  * classes open in the window the stop marker uses.
  * Return: 1 when found.
  */
-static int e_d_jdb_frame_source(ECNT *cn, const e_d_frame *fr, char *out, size_t n)
+static int e_d_jdb_frame_source(ECNT *cn, const char *func, char *out, size_t n)
 {
  char cls[E_D_FRAME_NAME_MAX];
  char *method_dot, *nested;
 
- snprintf(cls, sizeof cls, "%s", fr->func);
+ snprintf(cls, sizeof cls, "%s", func);
  method_dot = strrchr(cls, '.');
  if (!method_dot)
   return(0);
@@ -13870,7 +13283,7 @@ static int e_d_jdb_frames(ECNT *cn)
 {
  char row[E_D_FRAME_ROW_MAX], path[E_D_STOP_PATH_MAX];
  const char *p = e_d_frames_reply;
- e_d_frame fr;
+ E_DS_FRAME fr;
  int user;
 
  if (e_d_nstack > 0 && e_d_nframes > 0)
@@ -13880,9 +13293,9 @@ static int e_d_jdb_frames(ECNT *cn)
   return(-1);
  while (e_d_frames_next_row(&p, row, sizeof row))
  {
-  if (!e_d_jdb_frame_parse(row, &fr))
+  if (!e_ds_jdb_frame_parse(row, &fr))
    continue;
-  user = e_d_jdb_frame_source(cn, &fr, path, sizeof path);
+  user = e_d_jdb_frame_source(cn, fr.func, path, sizeof path);
   if (user)
    e_d_frame_add(fr.func, path, fr.line, user);
   else
@@ -13891,27 +13304,9 @@ static int e_d_jdb_frames(ECNT *cn)
  return(0);
 }
 
-/**
- * e_d_a68g_proc_name - The name of the procedure a68g's "calls" shows.
- * @text: the declaration a68g prints, "PROC sq = (INT v) INT:";
- * @out, @n: receives "sq", or the text itself when it is no PROC.
- */
-static void e_d_a68g_proc_name(const char *text, char *out, size_t n)
-{
- size_t len;
-
- while (isspace((unsigned char)*text))
-  text++;
- if (!strncmp(text, E_D_A68G_PROC_WORD, strlen(E_D_A68G_PROC_WORD)))
-  text += strlen(E_D_A68G_PROC_WORD);
- for (len = 0; text[len] && !isspace((unsigned char)text[len]) &&
-      text[len] != '=' && text[len] != '('; len++)
-  ;
- if (len >= n)
-  len = n - 1;
- memcpy(out, text, len);
- out[len] = '\0';
-}
+/* The procedure a68g's "calls" shows ("PROC sq = (INT v) INT:" gives "sq",
+   a text that is no PROC is shown as it is) is read by e_ds_a68g_proc_name
+   (we_debsess.c). */
 
 /**
  * e_d_a68g_frames - Read a68g's stack.
@@ -13940,12 +13335,12 @@ static int e_d_a68g_frames(ECNT *cn)
  while (e_d_frames_next_row(&p, row, sizeof row))
  {
   text = e_d_frames_skip_prompt(row);
-  line = e_d_a68g_parse_line(text);
+  line = e_ds_a68g_parse_line(text);
   if (line <= 0)
    continue;
   while (isdigit((unsigned char)*text))
    text++;
-  e_d_a68g_proc_name(text, name, sizeof name);
+  e_ds_a68g_proc_name(text, name, sizeof name);
   if (e_d_nframes == 0)
    line = e_d_a68g_cur_line;
   e_d_frame_add(name, path, line, 1);
@@ -14624,26 +14019,9 @@ static int e_d_brk_line_cmd(int set, const char *file, const char *path,
 #define E_D_JDB_NOT_SET         "Unable to set"
 #define E_D_JDB_DEFERRED        "Deferring"
 
-/**
- * e_d_brk_words - Copy a debugger's reply for the status row, without the
- * marks it puts before its words and without its line end.
- * @out, @size: where the words go; @line: the reply.
- *
- * gdb leads an error with a symbol, pdb with "***": the user reads the words.
- */
-static void e_d_brk_words(char *out, size_t size, const char *line)
-{
- size_t len;
-
- while (*line && ((unsigned char)*line >= E_D_FIRST_NON_ASCII ||
-                  *line == '*' || *line == ' ' || *line == '\t'))
-  line++;
- snprintf(out, size, "%s", line);
- len = strlen(out);
- while (len > 0 && (out[len - 1] == '\n' || out[len - 1] == '\r' ||
-                    out[len - 1] == ' '))
-  out[--len] = '\0';
-}
+/* A debugger's reply is copied for the status row by e_ds_brk_words
+   (we_debsess.c): gdb leads an error with a symbol, pdb with "***", and the
+   user reads the words. */
 
 /**
  * e_d_brk_line_refuses - Is this line of the selected debugger's reply its
@@ -14698,13 +14076,13 @@ static void e_d_brk_judge_line(E_D_BRK_ANSWER *ans, const char *line,
  if (from_errors || e_d_brk_line_refuses(line))
  {
   ans->state = E_D_BRK_REFUSED;
-  e_d_brk_words(ans->msg, sizeof(ans->msg), line);
+  e_ds_brk_words(ans->msg, sizeof(ans->msg), line);
   return;
  }
  if (ans->state == E_D_BRK_VERIFIED && e_d_brk_line_defers(line))
  {
   ans->state = E_D_BRK_PENDING;
-  e_d_brk_words(ans->msg, sizeof(ans->msg), line);
+  e_ds_brk_words(ans->msg, sizeof(ans->msg), line);
  }
 }
 
@@ -14907,31 +14285,19 @@ static int e_d_brk_read_number_line(char *str, int errors)
 {
  int ret;
 
- if (e_deb_type == DEB_GDB)
- {
-  while ((ret = e_d_line_read(wfildes[0], str, E_D_BRK_ANSWER_MAX, 0, errors))
-    == 0 && strncmp(str, E_D_GDB_BRK_ANSWER, strlen(E_D_GDB_BRK_ANSWER)))
-   ;
-  return(ret);
- }
- if (e_deb_type == DEB_DBX)
- {
-  while ((ret = e_d_line_read(wfildes[0], str, E_D_BRK_ANSWER_MAX, 0, errors))
-    == 0 && str[0] != '(')
-   ;
-  return(ret);
- }
- /* xdb says "Added:" and gives the number on the line after it */
  while ((ret = e_d_line_read(wfildes[0], str, E_D_BRK_ANSWER_MAX, 0, errors))
-   == 0 && strncmp(str, "Added:", 6))
+   == 0 && !e_ds_brk_is_number_line(e_deb_type, str))
   ;
+ if (e_deb_type == DEB_GDB || e_deb_type == DEB_DBX)
+  return(ret);
+ /* xdb says "Added:" and gives the number on the line after it */
  if (ret != 0 && errors)
   return(ret);
  return(e_d_line_read(wfildes[0], str, E_D_BRK_ANSWER_MAX, 0, errors));
 }
 
-/* What the reader has to say when a debugger gave no breakpoint number. */
-#define E_D_BRK_NO_NUMBER "the debugger gave no breakpoint number"
+/* What the reader has to say when a debugger gave no breakpoint number is
+   the session's E_D_BRK_NO_NUMBER. */
 
 /**
  * e_d_brk_numbered_verdict - Say what gdb, dbx or xdb made of a breakpoint
@@ -14950,12 +14316,51 @@ static void e_d_brk_numbered_verdict(E_D_BRK_ANSWER *ans, int ret,
  if (ret == 2)
  {
   ans->state = E_D_BRK_REFUSED;
-  e_d_brk_words(ans->msg, sizeof(ans->msg), str);
+  e_ds_brk_words(ans->msg, sizeof(ans->msg), str);
  }
  else if (ret == 1)
  {
   ans->state = E_D_BRK_REFUSED;
   snprintf(ans->msg, sizeof(ans->msg), "%s", E_D_BRK_NO_NUMBER);
+ }
+}
+
+/**
+ * e_d_brk_answer_of - The session's view of e_d_line_read's result @ret for
+ * @str: the line, the error line with its flag, or no text at the prompt.
+ */
+static void e_d_brk_answer_of(E_D_ANSWER *a, int ret, const char *str)
+{
+ if (ret == E_D_READ_PROMPT)
+  e_ds_answer_borrow(a, NULL, 0);
+ else if (ret == E_D_READ_ERROR)
+  e_ds_answer_borrow(a, str, 1);
+ else
+  e_ds_answer_borrow(a, str, 0);
+}
+
+/**
+ * e_d_brk_session_answer - Keep in the session what gdb, dbx or xdb made of
+ * the breakpoint on @line of @file.
+ * @ret: e_d_line_read's code for @str; @str: the line.
+ *
+ * The session then holds the number and the verdict the breakpoint list
+ * shows, for the view that will draw from it.
+ */
+static void e_d_brk_session_answer(const char *file, int line, int ret,
+                                   const char *str)
+{
+ E_D_ANSWER a;
+ int i;
+
+ for (i = 0; i < e_d_nbrpts; i++)
+ {
+  if (e_d_ybrpts[i] != line || strcmp(e_d_sbrpts[i], file))
+   continue;
+  e_d_brk_answer_of(&a, ret, str);
+  e_ds_set_brk(&e_d_session, i, file, line);
+  e_ds_take_brk_answer(&e_d_session, e_deb_type, i, &a);
+  return;
  }
 }
 
@@ -14992,12 +14397,11 @@ static int e_d_brk_arm_numbered_at(const char *file, int line, int *id,
   e_d_error(str);
  if (ret == 2 || ret == 1)
   *id = 0;
- else if (e_deb_type == DEB_GDB)
-  *id = atoi(str + strlen(E_D_GDB_BRK_ANSWER));
  else
-  *id = atoi(str + 1);
+  *id = e_ds_brk_number(e_deb_type, str);
  if (ans)
   e_d_brk_numbered_verdict(ans, ret, str);
+ e_d_brk_session_answer(file, line, ret, str);
  if (!at_prompt && e_d_dum_read() == -1)
   return(-1);
  return(0);
@@ -16075,9 +15479,11 @@ static void e_d_select_paused_frame(int frame)
 static int e_d_where_row_line(char *row, char *file)
 {
  int line = e_make_line_num(row, file);
+ int frame = e_ds_where_row_frame(row);
 
- if (row[0] == '#' && isdigit((unsigned char)row[1]))
-  e_d_where_frame = atoi(row + 1);       /* the frame this row belongs to */
+ e_ds_take_where_row(&e_d_session, e_deb_type, row);
+ if (frame != E_DS_NOT_FOUND)
+  e_d_where_frame = frame;               /* the frame this row belongs to */
  if (line < 0 || e_d_run.pause == E_D_PAUSE_NONE)
   return(line);
  if (access(file, R_OK) != 0)
@@ -16095,6 +15501,7 @@ int e_d_pr_sig(char *str, FENSTER *f)
  e_d_out_clear();
  str = e_d_out_none;
  e_d_where_frame = 0;
+ e_ds_begin_stack(&e_d_session);
  if (e_deb_type != DEB_SDB && e_deb_type != DEB_XDB)
  {
   e_d_send_cmd("where\n");
@@ -16163,120 +15570,39 @@ int e_d_pr_sig(char *str, FENSTER *f)
 }
 
 /**
- * e_make_line_num_copy - Copy a file name out of a debugger line, up to a
- * stop character.
- * @from: where the name starts; @stop: the character that ends it (the end
- * of the line ends it too); @file: E_D_LINE_MAX bytes.
+ * e_make_line_num - The line number and, into @file (E_D_LINE_MAX bytes),
+ * the file a debugger line names, as e_ds_line_num reads them.
+ * @str: the line; @file: receives the file.
  *
- * The line may be of any length, since frames are read whole; a "name"
- * longer than any path is no file, and is refused rather than copied.
- * Return: the name's length, or -1 when it does not end before @stop.
+ * sdb names only the line; its file is asked for with "e" and read from
+ * the answer here, since the reader of the text does no I/O.
+ * Return: the line, or -1.
  */
-static int e_make_line_num_copy(const char *from, char stop, char *file)
-{
- int i;
-
- for (i = 0; from[i] != '\0' && from[i] != stop; i++)
- {
-  if (i >= E_D_LINE_MAX - 1)
-  {
-   file[i] = '\0';
-   return(-1);
-  }
-  file[i] = from[i];
- }
- file[i] = '\0';
- if (from[i] != stop)
-  return(-1);
- return(i);
-}
-
-/* Reads the line number and, into @file (E_D_LINE_MAX bytes), the file out
-   of a debugger line that names a source position. */
 int e_make_line_num(char *str, char *file)
 {
- char *sp;
  char answer[E_D_LINE_MAX];
- int i, n, num;
+ int i, num = e_ds_line_num(e_deb_type, str, file, E_D_LINE_MAX);
 
- if (e_deb_type == DEB_GDB)
- {
-  for (n = strlen(str); n >= 0 && str[n] != ':'; n--)
-   ;
-  if (n < 0)
-   return(-1);
-  for (i = n-1; i >= 0 && !isspace(str[i]); i--)
-   ;
-  if ((n = e_make_line_num_copy(str + i + 1, ':', file)) < 0)
-   return(-1);
-  return(atoi(str + i + 1 + n + 1));
- }
- else if (e_deb_type == DEB_DBX)
- {
-  if (!(sp = strstr(str, " line ")))
-   return(-1);
-  if (!(num = atoi(sp+6)))
-   return(-1);
-  for (i = 6;  sp[i] != '\"'; i++)
-   ;
-  sp += (i+1);
-  if (e_make_line_num_copy(sp, '\"', file) < 0)
-   return(-1);
+ if (e_deb_type != DEB_SDB || num < 0)
   return(num);
- }
- else if (e_deb_type == DEB_XDB)
- {
-  sp = str;
-  if ((i = e_make_line_num_copy(sp, ':', file)) < 0)
-   return(-1);
-  for (i++; sp[i] && sp[i] != ':'; i++)
-   ;
-  if (!sp[i])
-   return(-1);
-  for (i++; sp[i] && isspace(sp[i]); i++)
-   ;
-  if (!isdigit(sp[i]))
-   return(-1);
-  sp += i;
-  return(atoi(sp));
- }
- else
- {
-  for (i = 0; str[i] != '\0' && str[i] != ':'; i++)
-   ;
-  if ((!str[i]) || (num = atoi(str+i+1)) < 0)
-   return(-1);
-  e_d_send_cmd("e\n");
-  while ((i = e_d_line_read(wfildes[0], answer, sizeof answer, 0, 0)) ==  2)
-   e_d_error(answer);
-  if (i < 0)
-   return(-1);
-  for (i = 0; answer[i] != '\0' && answer[i] != '\"'; i++)
-   ;
-  /* sdb's answer has always been taken up to its closing quote or its end */
-  if (answer[i] == '\"')
-   e_make_line_num_copy(answer + i + 1, '\"', file);
-  else
-   file[0] = '\0';
-  if (e_d_dum_read() == -1)
-   return(-1);
-  return(num);
- }
+ e_d_send_cmd("e\n");
+ while ((i = e_d_line_read(wfildes[0], answer, sizeof answer, 0, 0)) ==  2)
+  e_d_error(answer);
+ if (i < 0)
+  return(-1);
+ e_ds_sdb_file_of(answer, file, E_D_LINE_MAX);
+ if (e_d_dum_read() == -1)
+  return(-1);
+ return(num);
 }
 
+/**
+ * e_make_line_num2 - The line and, into @file (E_D_LINE_MAX bytes), the
+ * file of an sdb or xdb "t" row: see e_ds_line_num2.
+ */
 int e_make_line_num2(char *str, char *file)
 {
- char *sp;
- int i;
-
- for (i = 0; str[i] != '[' && str[i] != '\0'; i++)
-  ;
- if (!str[i]) return(-1);
- sp = str + i + 1;
- if ((i = e_make_line_num_copy(sp, ':', file)) < 0) return(-1);
- for (i++; isspace(sp[i]); i++)
-  ;
- return(atoi(sp+i));
+ return(e_ds_line_num2(str, file, E_D_LINE_MAX));
 }
 
 /**

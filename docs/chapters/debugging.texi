@@ -44,7 +44,8 @@ work with every debugger: gdb and pdb print them with @code{p}, jdb and
 dbx with @code{print}, a68g with @code{evaluate}, a DAP adapter with
 its @code{evaluate} request.  A debugger with no such command shows
 ``watches are not available with @var{debugger}'' on the status line
-instead.
+instead.  A watch the debugger gives no value for (a name the program
+does not have) reads @samp{No symbol in current context}.
 
 @item
 Press @kbd{Ctrl-G K} to see the call stack.

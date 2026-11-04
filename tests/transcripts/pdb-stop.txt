@@ -1,0 +1,2 @@
+> /work/p.py(2)sq()
+-> return v * v

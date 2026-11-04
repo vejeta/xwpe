@@ -70,6 +70,7 @@ we_SOURCES = \
   we_debug.c \
   we_debprompt.c \
   we_debpath.c \
+  we_debsess.c \
   WeString.c \
   WeSyntax.c \
   WeExpArr.c \
@@ -183,6 +184,8 @@ noinst_HEADERS = \
   WeExpArr.h \
   we_debprompt.h \
   we_debpath.h \
+  we_debsess.h \
+  we_debreq.h \
   we_menurows.h \
   we_mousedrain.h \
   we_render.h \
@@ -293,7 +296,7 @@ metainfodir = $(datadir)/metainfo
 metainfo_DATA = io.codeberg.mendezr.xwpe.metainfo.xml
 
 # --- Unit tests ---
-check_PROGRAMS = test_checkheader test_fl_sel_len test_syntax_def test_fdloop test_clipboard test_lsp_buffer test_lsp_doctor test_lsp_semantic test_lsp_truecolor test_dap test_dap_nopidfd test_dap_dlv test_dap_gdb test_dap_lldb test_dap_scala test_bsp_close test_bsp_close_nopidfd test_lsp_scala test_lsp_clangd test_lsp_python test_lsp_gopls test_lsp_rust test_debprompt test_debpath test_menurows test_mousedrain
+check_PROGRAMS = test_checkheader test_fl_sel_len test_syntax_def test_fdloop test_clipboard test_lsp_buffer test_lsp_doctor test_lsp_semantic test_lsp_truecolor test_dap test_dap_nopidfd test_dap_dlv test_dap_gdb test_dap_lldb test_dap_scala test_bsp_close test_bsp_close_nopidfd test_lsp_scala test_lsp_clangd test_lsp_python test_lsp_gopls test_lsp_rust test_debprompt test_debpath test_debsess test_menurows test_mousedrain
 
 # The test includes we_fdloop.c itself (the id counter is private to it), so
 # the file is not listed here again: it would be defined twice.
@@ -314,6 +317,14 @@ test_debprompt_CFLAGS = $(XWPE_STDFLAG)
 # here at the exact buffer edge.
 test_debpath_SOURCES = tests/test_debpath.c we_debpath.c
 test_debpath_CFLAGS = $(XWPE_STDFLAG)
+
+# Debugger session state unit test: we_debsess.c only, no editor, no
+# debugger, always runs.  What gdb, pdb, jdb and a68g print (transcripts in
+# tests/transcripts/) is read into the session as the editor reads it: watch
+# values and errors, the frame a stop marks, pdb's and a68g's stop lines,
+# and jdb's set answer written into the middle of a breakpoint hit.
+test_debsess_SOURCES = tests/test_debsess.c we_debsess.c
+test_debsess_CFLAGS = $(XWPE_STDFLAG)
 
 # Dropdown highlight unit test: we_menurows.c only, no editor, always runs.
 # Wrap at both ends, step over dividers, the open/Home/End rows, the edge
@@ -447,7 +458,7 @@ test_lsp_rust_LDADD = $(JSONC_LIBS)
 
 TESTS = test_checkheader test_fl_sel_len test_syntax_def test_fdloop test_clipboard test_lsp_buffer test_lsp_doctor test_lsp_semantic test_lsp_truecolor test_dap test_dap_nopidfd test_dap_dlv \
   test_dap_gdb test_dap_lldb test_dap_scala test_bsp_close \
-  test_bsp_close_nopidfd test_lsp_scala test_lsp_clangd test_lsp_python test_lsp_gopls test_lsp_rust test_debprompt test_debpath test_menurows test_mousedrain
+  test_bsp_close_nopidfd test_lsp_scala test_lsp_clangd test_lsp_python test_lsp_gopls test_lsp_rust test_debprompt test_debpath test_debsess test_menurows test_mousedrain
 
 # One owner of input and of waiting: tests/check-one-owner.sh reads the
 # undefined symbols of the editor's own objects (the list below) with $(NM)
@@ -514,6 +525,20 @@ EXTRA_DIST = \
   tests/run-tests.sh \
   tests/check-one-owner.sh \
   tests/one-owner.allow \
+  tests/transcripts/gdb-where-library.txt \
+  tests/transcripts/gdb-where.txt \
+  tests/transcripts/gdb-watch-value.txt \
+  tests/transcripts/gdb-watch-error.txt \
+  tests/transcripts/pdb-stop.txt \
+  tests/transcripts/pdb-watch-value.txt \
+  tests/transcripts/pdb-watch-error.txt \
+  tests/transcripts/jdb-stop.txt \
+  tests/transcripts/jdb-watch-value.txt \
+  tests/transcripts/jdb-interleave-8213954.txt \
+  tests/transcripts/a68g-stop.txt \
+  tests/transcripts/a68g-watch-value.txt \
+  tests/transcripts/a68g-watch-error.txt \
+  tests/transcripts/legacy-stub-rows.txt \
   tests/test_checkheader.c \
   tests/test_fl_sel_len.c \
   tests/test_syntax_def.c \

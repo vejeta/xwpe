@@ -1,0 +1,5 @@
+VM Started: Set deferred breakpoint P:3
+
+Breakpoint hit: "thread=main", P.sq(), line=3 bci=0
+3            return v * v;
+

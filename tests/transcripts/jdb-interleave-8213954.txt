@@ -1,0 +1,5 @@
+
+Breakpoint hit: Set breakpoint P:6
+main[1] "thread=main", P.main(), line=6 bci=18
+6            int q = 1;
+

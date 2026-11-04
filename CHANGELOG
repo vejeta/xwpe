@@ -233,6 +233,10 @@ Changes
 
 1.7.0 (AI assistant -- experimental, opt-in)
 
+* A watch the debugger answers without a value (under dbx, xdb, or a gdb
+  or jdb answer with no "=" in it) reads "No symbol in current context".
+  It used to read "o symbol in current context", its first letter lost.
+
 * Claude keys that belong to an organization, not to one workspace, now
   work.  Every request used to be refused with "This API key is not scoped
   to a workspace".  Put the workspace ID in ANTHROPIC_WORKSPACE_ID (or in

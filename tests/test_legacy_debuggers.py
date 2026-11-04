@@ -124,6 +124,9 @@ HALF_LINE = "the debugger died half way through"
 # The line the running program is on when SIGINT interrupts it; 0 keeps the
 # line of the last stop.
 INTERRUPT_AT = int(os.environ.get("XWPE_STUB_INTERRUPT_AT", "0"))
+# A name the program does not have: dbx's print of it answers a line with no
+# "=", the shape of an answer that carries no value.
+UNDEFINED_NAME = "nosuchname"
 
 
 class Interrupted(Exception):
@@ -312,6 +315,9 @@ def answer_dbx(cmd):
         return
     if cmd == "where":
         line('main(), line %d in "%s"' % (current[0], SOURCE))
+        return
+    if cmd.startswith("print ") and cmd.split(None, 1)[1] == UNDEFINED_NAME:
+        line('"%s" is not defined' % UNDEFINED_NAME)
         return
     if cmd.startswith("print "):
         line("%s = 3" % cmd.split(None, 1)[1])
@@ -964,6 +970,36 @@ def test_a_watch_added_while_running_shows_at_the_next_stop(tmp_path,
                          STEP_TIMEOUT_S), \
             "the stop should read the watch:\n%s" % _screen(w)
         w.key(ALT_X, delay=0.5)
+
+
+WATCH_UNDEFINED_NAME = "nosuchname"    # the stub's UNDEFINED_NAME
+WATCH_NO_VALUE_WORDS = WATCH_UNDEFINED_NAME + ": No symbol in current context"
+
+
+# @scenario SC-debug-10
+def test_a_watch_answered_without_a_value_says_no_symbol_whole(tmp_path):
+    """dbx answers the print of a name the program does not have with a line
+    that has no "=": the watch reads the editor's whole "No symbol in current
+    context", not the words with their first letter cut off.
+
+    Limit: the stub proves xwpe's half of the protocol, not a real debugger.
+    """
+    with _session(tmp_path, "dbx") as w:
+        _start_session(w, tmp_path, "dbx")
+        _add_watch_keys(w, WATCH_UNDEFINED_NAME)
+        assert _wait_for(w, lambda: _watch_text_shown(w, WATCH_NO_VALUE_WORDS),
+                         STEP_TIMEOUT_S), \
+            "the watch should read %r; dbx was sent %r:\n%s" \
+            % (WATCH_NO_VALUE_WORDS, _sent(tmp_path, "dbx"), _screen(w))
+        w.key(ALT_X, delay=0.5)
+
+
+def _add_watch_keys(w, expr):
+    """Ctrl-G W, @expr, Enter: the watch is made as the user makes it."""
+    w.key(CTRL_G, "w", delay=0.8)
+    for ch in expr:
+        w.key(ch, delay=0.05)
+    w.key("\r", delay=0.6)
 
 
 NOT_INTERRUPTED_S = 4      # longer than an interrupt and its stop take
