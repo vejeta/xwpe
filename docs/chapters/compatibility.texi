@@ -17,9 +17,9 @@ The original asked, in a box, whether to quit the debugger when
 @kbd{Ctrl-C} was typed while it read the debugger's answer.  Under gdb,
 @kbd{Ctrl-C} now stops waiting for the answer, as @key{Esc} does, and the
 status row says which command gdb did not answer; Debug > Quit ends the
-session.  At a stop the editor no longer waits for the answer at all, so
-there is no moment there where only a box could get you out.  While gdb
-starts and while it starts a run, the box is still the way out.
+session.  At a stop, while gdb starts and when a run or a step goes out,
+the editor no longer waits for the answer at all, so there is no moment
+where only a box could get you out.
 
 @item Keys typed while the debugger answers
 @cindex keys, while gdb answers

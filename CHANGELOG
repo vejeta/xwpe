@@ -245,6 +245,15 @@ Changes
   never answered used to freeze the editor until it was killed, and Ctrl-C
   then could not reach it.
 
+* The same now holds while gdb starts and at every Run, Continue, step,
+  Finish and Go to cursor: gdb's settings, your breakpoints and the run
+  command are asked while you keep typing.  F8 typed while gdb starts
+  steps once the start has stopped.  Esc or Ctrl-C during the start says
+  "gdb did not answer `set confirm off`: Debug > Quit ends the session"
+  instead of the "quit the debugger?" box; the next debugger key sets gdb
+  up again.  A Continue or step right after an interrupt that met a stop
+  no longer takes gdb's late answer to that interrupt for its own stop.
+
 * A watch the debugger answers without a value (under dbx, xdb, or a gdb
   or jdb answer with no "=" in it) reads "No symbol in current context".
   It used to read "o symbol in current context", its first letter lost.

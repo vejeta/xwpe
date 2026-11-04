@@ -1,4 +1,4 @@
-"""The keys reach the editor while gdb answers at a stop (X11).
+"""The keys reach the editor while gdb answers at a stop or starts (X11).
 
 tests/stubs/gdb stands in front of the real gdb and holds back its `where`
 until the test writes to its release pipe, so the editor waits for gdb's
@@ -114,3 +114,50 @@ def test_gdb_keys_reach_the_editor_while_it_answers(xwpe):
     assert _wait(lambda: _count(xwpe.screenshot(), STOP_GREEN) >= MIN_BAR_PIXELS,
                  STOP_TIMEOUT_S), \
         "once gdb answers, the stop should be drawn as the green bar"
+
+
+# Four steps in a row: F8 kept during the start has a line to land on.
+STEPS_PROG = (
+    "int main(void)\n"
+    "{\n"
+    "  int x = 1;\n"
+    "  x = x + 1;\n"
+    "  return x;\n"
+    "}\n"
+)
+STEPS_BREAK_LINE = 3
+SET_UP_FIRST = "set confirm off"     # the first command after gdb's banner
+STEP_SENT = "CMD n\n"
+STACK_ASKED = "CMD bt\n"
+START_STUB_ENV = dict(STUB_ENV, XWPE_STUB_STALL=SET_UP_FIRST,
+                      XWPE_TEST_SOURCE=STEPS_PROG)
+
+
+# @scenario SC-debug-49
+@pytest.mark.skipif(not shutil.which("gdb") or not shutil.which("gcc"),
+                    reason="no gdb or gcc")
+@pytest.mark.parametrize("xwpe", [START_STUB_ENV], indirect=True)
+def test_gdb_keys_typed_during_the_start_are_kept_or_refused(xwpe):
+    """gdb holds back its answer to the first command of the start.  F8
+    typed meanwhile reaches the editor and is kept: once the start has
+    stopped on the breakpoint it steps.  Ctrl-G K is refused, never asked
+    of gdb."""
+    if not getattr(xwpe, "can_debug", True):
+        pytest.skip("no debug session under the headless compositor harness")
+    home = os.path.dirname(xwpe.srcfile)
+    _go_to_line(xwpe, STEPS_BREAK_LINE)
+    xwpe.key("ctrl+g", "b", delay=0.6)
+    xwpe.key("ctrl+g", "r", delay=1.0)
+    assert _wait(lambda: ("STALL " + SET_UP_FIRST) in _stub_log(home),
+                 HOLD_TIMEOUT_S), \
+        "the start should ask gdb %r:\n%s" % (SET_UP_FIRST, _stub_log(home))
+    xwpe.key("F8", delay=0.6)
+    xwpe.key("ctrl+g", "k", delay=0.6)
+    with open(os.path.join(home, STUB_RELEASE), "w") as fh:
+        fh.write("go\n")
+    assert _wait(lambda: STEP_SENT in _stub_log(home), STOP_TIMEOUT_S), \
+        "the F8 typed during the start should step after the first stop:\n%s" \
+        % _stub_log(home)
+    assert STACK_ASKED not in _stub_log(home), \
+        "Ctrl-G K during the start should be refused, not asked:\n%s" \
+        % _stub_log(home)

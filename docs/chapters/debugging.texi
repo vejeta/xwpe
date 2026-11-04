@@ -407,6 +407,24 @@ environment variable @env{XWPE_DEBUG_ANSWER_TIMEOUT} to a number of
 seconds before you start xwpe.  Debug > Quit ends the session at any
 moment.
 
+@cindex debugger, waiting while gdb starts
+The same holds while gdb starts.  Once gdb has printed its banner, xwpe
+gives it its settings and your breakpoints, and only then runs the
+command you pressed; if gdb is slow to answer, the status row shows the
+same line, for example:
+
+@example
+waiting for gdb to answer `set confirm off` ... 2s  (Esc cancels)
+@end example
+
+@noindent
+@kbd{F8} typed then is kept and steps once the program has stopped at
+its first breakpoint.  @key{Esc} or @kbd{Ctrl-C} gives up on gdb's
+answer; the next debugger key sets gdb up again, and Debug > Quit ends
+the session.  Every Run, Continue, step, Finish and Go to cursor works
+the same way when gdb still owes an answer before the command can go
+out, such as the answer to a Pause that met a stop.
+
 @section How a session ends
 
 @cindex debugger, end of session

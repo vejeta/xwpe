@@ -7816,6 +7816,9 @@ QUIT = "\u274c\ufe0f Quit\n".encode()
 RESUME = re.compile(r"^(c|n|s|finish|advance .*)$")
 CONTINUE = "c"
 SEPARATE_S = 0.2           # the extra prompt comes in a read of its own
+# The resume whose stop is held: the first one, or the first that starts
+# with this text.
+HOLD = os.environ.get("XWPE_STAND_IN_HOLD", "")
 
 wake_r, wake_w = os.pipe()
 
@@ -7833,14 +7836,28 @@ def on_end(signum, frame):
     os.write(wake_w, b"t")
 
 
+def on_late_quit(signum, frame):
+    os.write(wake_w, b"u")
+
+
 signal.signal(signal.SIGINT, on_interrupt)
 signal.signal(signal.SIGTERM, on_end)
 signal.signal(signal.SIGHUP, on_end)
+signal.signal(signal.SIGUSR1, on_late_quit)
 gdb = subprocess.Popen([REAL] + sys.argv[1:], stdin=subprocess.PIPE,
                        stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 g_in, g_out, g_err = (gdb.stdin.fileno(), gdb.stdout.fileno(),
                       gdb.stderr.fileno())
-state = {"resumes": 0, "holding": False, "held": b"", "late": False}
+state = {"resumes": 0, "holding": False, "held": b"", "late": False,
+         "quit_owed": False, "held_said": False}
+note("PID %d" % os.getpid())
+
+
+def write_quit():
+    """gdb's answer to an interrupt that found it at its prompt."""
+    state["quit_owed"] = False
+    os.write(2, QUIT)
+    os.write(1, PROMPT)
 
 
 def answer_of(cmd):
@@ -7883,24 +7900,52 @@ def took_sigint():
         time.sleep(SEPARATE_S)
         os.write(2, QUIT)
         os.write(1, PROMPT)
+    elif MODE in ("quit-on-signal", "quit-before-next"):
+        os.write(1, held)
+        state["quit_owed"] = True
     else:
         os.write(1, held)
         state["late"] = True
     note("stop won: " + MODE)
 
 
+def quit_on_signal():
+    """The test says when gdb's answer to the interrupt comes: after the
+    stop has been read and answered, before the next command."""
+    if MODE == "quit-on-signal" and state["quit_owed"]:
+        write_quit()
+        note("late quit written")
+
+
+def is_held_resume(cmd):
+    if not RESUME.match(cmd):
+        return False
+    if HOLD:
+        return cmd.startswith(HOLD)
+    return True
+
+
 def from_editor(line):
     cmd = line.decode("utf-8", "replace").rstrip("\n")
     note("CMD " + cmd)
+    if MODE == "quit-before-next" and state["quit_owed"]:
+        write_quit()
+        note("quit written before " + cmd)
     if RESUME.match(cmd) and state["late"]:
         state["late"] = False
         note("SIGINT reported at the resume")
         os.write(1, sigint_at_resume(cmd))
         return
-    if RESUME.match(cmd):
+    if is_held_resume(cmd):
         state["resumes"] += 1
         state["holding"] = state["resumes"] == 1
     os.write(g_in, line)
+
+
+def note_held_at_prompt():
+    if state["held"].endswith(PROMPT) and not state["held_said"]:
+        state["held_said"] = True
+        note("held at its prompt")
 
 
 def from_gdb(data):
@@ -7908,8 +7953,10 @@ def from_gdb(data):
         head, tail = data.split(b"Continuing.\n", 1)
         os.write(1, head + b"Continuing.\n")
         state["held"] = tail
+        note_held_at_prompt()
     elif state["holding"]:
         state["held"] += data
+        note_held_at_prompt()
     else:
         os.write(1, data)
 
@@ -7925,6 +7972,8 @@ while True:
         for c in os.read(wake_r, 64):
             if c == ord("i"):
                 took_sigint()
+            elif c == ord("u"):
+                quit_on_signal()
             else:
                 gdb.kill()
                 sys.exit(0)
@@ -9243,4 +9292,261 @@ def test_gdb_breakpoint_taken_off_while_gdb_sets_it_does_not_stop(tmp_path):
             "the program stopped again on a line the margin no longer " \
             "marks (stub log:\n%s):\n%s" % (_gdb_stub_log(tmp_path),
                                             _screen(w))
+        _quit_and_see_the_session_gone(w)
+
+
+# ---- gdb's start and resume, read while the editor keeps its keys ----
+#
+# The settings gdb is given after its banner, the breakpoints and the run
+# command are asked on the fd loop too, so the stub can hold the first of
+# them while the user types.
+
+GDB_SET_UP_FIRST = "set confirm off"     # the first command after the banner
+WAITING_FOR_SET_UP = "waiting for gdb to answer `set confirm off`"
+GDB_DID_NOT_ANSWER_SET_UP = "gdb did not answer `set confirm off`"
+GDB_STEPS_NEXT_LINE = GDB_STEPS_BREAK_LINE + 1
+
+
+def _start_held_at_its_first_command(w, tmp_path, line):
+    """Breakpoint on @line and Ctrl-G R: gdb starts and answers its banner,
+    and the stub holds the first command the start sends it."""
+    _go_to_line(w, line)
+    w.key(CTRL_G, "b", delay=0.4)
+    w.key(CTRL_G, "r", delay=1.0)
+    _gdb_stub_holds(w, tmp_path, GDB_SET_UP_FIRST)
+
+
+# @scenario SC-debug-49
+def test_gdb_keys_typed_during_the_start_are_kept_or_refused(tmp_path):
+    """While gdb has not answered the first command of the start, F8 is kept
+    and steps once the start has stopped on the breakpoint, and Ctrl-G K is
+    refused with the waiting line, its letter not typed into the file."""
+    _need("gcc", "gdb")
+    with WpeSession(str(tmp_path), GDB_STEPS_PROG, filename="p.c", wait=1.5,
+                    env_extra=_gdb_stub_env(GDB_SET_UP_FIRST)) as w:
+        _start_held_at_its_first_command(w, tmp_path, GDB_STEPS_BREAK_LINE)
+        w.key(F8, delay=0.3)
+        w.key(CTRL_G, "k", delay=0.5)
+        assert _status_row_says(w, WAITING_FOR_SET_UP, STEP_TIMEOUT_S), \
+            "Ctrl-G K should be refused with the waiting line:\n%s" \
+            % _screen(w)
+        assert " Stack " not in _screen(w), \
+            "Ctrl-G K must wait for gdb's answer, not ask it:\n%s" \
+            % _screen(w)
+        _gdb_stub_release(tmp_path)
+        assert _wait_for(w, lambda: _mark_line(w) == GDB_STEPS_NEXT_LINE,
+                         START_TIMEOUT_S), \
+            "the F8 typed during the start should step once the start " \
+            "stopped (mark on %s):\n%s" % (_mark_line(w), _screen(w))
+        w._drain(NOTHING_MORE_S)
+        assert _mark_line(w) == GDB_STEPS_NEXT_LINE, \
+            "only the F8 typed should step (mark on %s):\n%s" \
+            % (_mark_line(w), _screen(w))
+        w.save()
+        assert w.text() == GDB_STEPS_PROG, \
+            "a key typed while gdb started landed in the file:\n%s" \
+            % _screen(w)
+
+
+START_CANCELS = {"esc": ESC, "ctrl_c": CTRL_C}
+
+
+# @scenario SC-debug-50
+@pytest.mark.parametrize("how", sorted(START_CANCELS))
+def test_gdb_ctrl_c_during_the_start_cancels_and_quit_works(tmp_path, how):
+    """A gdb that does not answer the first command of the start: Esc or
+    Ctrl-C ends the wait with a line naming the command, never a box, and
+    Debug > Quit then ends the session with nothing left."""
+    _need("gcc", "gdb")
+    with WpeSession(str(tmp_path), GDB_GLOBAL_PROG, filename="p.c",
+                    wait=1.5, env_extra=_gdb_stub_env(GDB_SET_UP_FIRST)) as w:
+        _start_held_at_its_first_command(w, tmp_path, GDB_GLOBAL_BREAK_LINE)
+        assert _status_row_says(w, WAITING_FOR_SET_UP, STEP_TIMEOUT_S), \
+            "the waiting line should come:\n%s" % _screen(w)
+        w.key(START_CANCELS[how], delay=0.5)
+        assert _status_row_says(w, GDB_DID_NOT_ANSWER_SET_UP,
+                                STEP_TIMEOUT_S), \
+            "the wait should end with %r:\n%s" \
+            % (GDB_DID_NOT_ANSWER_SET_UP, _screen(w))
+        _quit_and_see_the_session_gone(w)
+
+
+# The editor's command that makes gdb echo a marker after every answer it
+# owes, as the stand-in logs it.
+SETTLE_SENT = "CMD echo xwpe-interrupts-settled"
+
+
+def _stand_in_pid(tmp_path):
+    """The stand-in gdb's process, as it logged it."""
+    m = re.search(r"^PID (\d+)$", _stand_in_log(tmp_path), re.M)
+    assert m, "the stand-in should log its PID:\n%s" % _stand_in_log(tmp_path)
+    return int(m.group(1))
+
+
+def _stand_in_owes_its_quit(w, tmp_path):
+    """Tell the stand-in to write the answer it owes to the interrupt that
+    met the stop: "Quit" and one more prompt, read by nobody yet."""
+    os.kill(_stand_in_pid(tmp_path), signal.SIGUSR1)
+    assert _wait_for(w, lambda: "late quit written" in
+                     _stand_in_log(tmp_path), STEP_TIMEOUT_S), \
+        _stand_in_log(tmp_path)
+
+
+# @scenario SC-debug-07
+def test_gdb_continue_after_an_owed_interrupt_does_not_stop_falsely(tmp_path):
+    """The interrupt a toggle sent met gdb at its prompt, and gdb's answer
+    to it came only after the stop had been read and answered.  Continue
+    takes that prompt back first: the program runs on to the next
+    breakpoint, and the extra prompt is never taken for a stop.  (Read as
+    the stop, it was hidden only because the stop's own `where` put the mark
+    right again, so the order of the commands is what this row checks.)"""
+    _need("gcc", "gdb")
+    with WpeSession(str(tmp_path), GDB_HELD_RACE_PROG, filename="p.c",
+                    wait=1.5,
+                    env_extra=_gdb_stand_in(tmp_path, "quit-on-signal")) as w:
+        n = _the_stop_wins_the_race(w, tmp_path)
+        _stand_in_owes_its_quit(w, tmp_path)
+        _resumes_once_from(w, tmp_path, (CTRL_G, "r"), HELD_SET_LINE, n + 3)
+        log = _stand_in_log(tmp_path).split("late quit written")[1]
+        assert log.count("CMD c\n") == 1, \
+            "Continue should go out once:\n%s" % log
+        assert SETTLE_SENT in log and \
+            log.index(SETTLE_SENT) < log.index("CMD c\n"), \
+            "Continue must go out only once gdb's extra prompt was taken " \
+            "back; sent first, that prompt is read as its stop:\n%s" % log
+
+
+# A program held in a library call, open() on a FIFO, until the test opens
+# the other end: Pause stops it there without any timing.
+GDB_FIFO_NAME = "go.fifo"
+GDB_FIFO_PROG = (
+    "#include <fcntl.h>\n"
+    "#include <unistd.h>\n"
+    "int main(void)\n"
+    "{\n"
+    "  char c = 0;\n"
+    "  int fd = open(\"%s\", O_RDONLY);\n"
+    "  read(fd, &c, 1);\n"
+    "  return c;\n"
+    "}\n"
+)
+GDB_FIFO_OPEN_LINE = 6
+GDB_FIFO_READ_LINE = 7
+GDB_FIFO_OPEN_WAIT_S = 5
+# The stand-in's log line when gdb's answer to the interrupt went out just
+# before the editor's settle echo, the command that takes it back.
+QUIT_BEFORE_THE_SETTLE = "quit written before echo"
+
+
+def _fifo_let_open_return(w, path):
+    """Open the FIFO's writing end, so the program's open() returns."""
+    fds = []
+
+    def opened():
+        try:
+            fds.append(os.open(path, os.O_WRONLY | os.O_NONBLOCK))
+        except OSError:
+            return False
+        return True
+    assert _wait_for(w, opened, GDB_FIFO_OPEN_WAIT_S), \
+        "the program should be in open() on %s:\n%s" % (path, _screen(w))
+    os.write(fds[0], b"x")
+    os.close(fds[0])
+
+
+# @scenario SC-debug-45
+def test_gdb_finish_after_pause_with_an_owed_interrupt_steps_once(tmp_path):
+    """F8 after a Pause in a library call runs out of it with finish, then
+    steps.  A second Pause meets the finish's stop, and gdb answers that
+    interrupt with one more prompt before the next command it reads: the
+    prompt is taken back before the step goes out, and the step stops on
+    the next line of the user's code.  (Sent first, the step had that
+    prompt read as its stop, and only the stop's own `where` put the mark
+    right again.)"""
+    _need("gcc", "gdb")
+    fifo = str(tmp_path / GDB_FIFO_NAME)
+    os.mkfifo(fifo)
+    env = _gdb_stand_in(tmp_path, "quit-before-next")
+    env["XWPE_STAND_IN_HOLD"] = "finish"
+    with WpeSession(str(tmp_path), GDB_FIFO_PROG % fifo, filename="p.c",
+                    wait=1.5, env_extra=env) as w:
+        _stop_on_a_breakpoint_at(w, GDB_FIFO_OPEN_LINE, START_TIMEOUT_S)
+        w.key(CTRL_G, "r", delay=0.5)
+        assert _wait_for(w, lambda: "^Brk Pause" in _bottom_bar(w),
+                         STEP_TIMEOUT_S), _screen(w)
+        w.key(*CTRL_G_I, delay=0.5)
+        _assert_paused_at(w, GDB_FIFO_OPEN_LINE, "Ctrl-G I in open()")
+        w.key(F8, delay=0.5)
+        assert _wait_for(w, lambda: "CMD finish" in _stand_in_log(tmp_path),
+                         STEP_TIMEOUT_S), _stand_in_log(tmp_path)
+        _fifo_let_open_return(w, fifo)
+        assert _wait_for(w, lambda: "held at its prompt" in
+                         _stand_in_log(tmp_path), STEP_TIMEOUT_S), \
+            _stand_in_log(tmp_path)
+        w.key(*CTRL_G_I, delay=0.5)
+        assert _wait_for(w, lambda: _mark_line(w) == GDB_FIFO_READ_LINE,
+                         STEP_TIMEOUT_S), \
+            "the step after finish should stop on line %d (mark on %s):" \
+            "\n%s\n%s" % (GDB_FIFO_READ_LINE, _mark_line(w), _screen(w),
+                          _stand_in_log(tmp_path))
+        log = _stand_in_log(tmp_path).split("stop won")[1]
+        assert log.count("CMD n\n") == 1, \
+            "the step should go out once:\n%s" % log
+        assert QUIT_BEFORE_THE_SETTLE in log and \
+            log.index(QUIT_BEFORE_THE_SETTLE) < log.index("CMD n\n"), \
+            "the step must go out only once gdb's answer to the interrupt " \
+            "was taken back; sent first, that answer's prompt is read as " \
+            "the step's stop:\n%s" % log
+
+
+# A line passed three times, so a breakpoint gdb still has there after its
+# mark is taken off stops the program again.
+GDB_PASSES_PROG = (
+    "#include <stdio.h>\n"
+    "int main(void)\n"
+    "{\n"
+    "  int i, s = 0;\n"
+    "  for (i = 0; i < 3; i++) {\n"
+    "    s += i;\n"
+    "  }\n"
+    "  printf(\"S %d\\n\", s);\n"
+    "  return 0;\n"
+    "}\n"
+)
+GDB_PASSES_LINE = 6
+GDB_PASSES_SET = "b p.c:%d" % GDB_PASSES_LINE
+GDB_DID_NOT_ANSWER_SET = "not answer `%s`" % GDB_PASSES_SET
+
+
+# @scenario SC-debug-50
+def test_gdb_breakpoint_given_up_at_the_start_is_not_set_twice(tmp_path):
+    """gdb's answer to a breakpoint of the start is given up on, so the
+    editor never reads the number gdb gave it.  The next Ctrl-G R sets gdb
+    up again and the program stops there; once the mark is taken off, the
+    program runs to its end and never stops on that line again."""
+    _need("gcc", "gdb")
+    with WpeSession(str(tmp_path), GDB_PASSES_PROG, filename="p.c",
+                    wait=1.5, env_extra=_gdb_stub_env(GDB_PASSES_SET)) as w:
+        _go_to_line(w, GDB_PASSES_LINE)
+        w.key(CTRL_G, "b", delay=0.4)
+        w.key(CTRL_G, "r", delay=1.0)
+        _gdb_stub_holds(w, tmp_path, GDB_PASSES_SET)
+        w.key(ESC, delay=0.5)
+        assert _status_row_says(w, GDB_DID_NOT_ANSWER_SET, STEP_TIMEOUT_S), \
+            "the wait should end with %r:\n%s" \
+            % (GDB_DID_NOT_ANSWER_SET, _screen(w))
+        w.key(CTRL_G, "r", delay=1.0)
+        assert _wait_for(w, lambda: _mark_line(w) == GDB_PASSES_LINE,
+                         START_TIMEOUT_S), \
+            "the start set up again should stop on line %d:\n%s\n%s" \
+            % (GDB_PASSES_LINE, _screen(w), _gdb_stub_log(tmp_path))
+        _go_to_line(w, GDB_PASSES_LINE)
+        w.key(CTRL_G, "b", delay=0.6)
+        w.key(CTRL_G, "r", delay=1.0)
+        _wait_for(w, lambda: "^Brk Pause" not in _bottom_bar(w),
+                  STEP_TIMEOUT_S)
+        w._drain(NOTHING_MORE_S)
+        assert _mark_line(w) != GDB_PASSES_LINE, \
+            "with its mark off, the line must not stop the program again " \
+            "(stub log:\n%s):\n%s" % (_gdb_stub_log(tmp_path), _screen(w))
         _quit_and_see_the_session_gone(w)
