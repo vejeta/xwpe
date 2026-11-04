@@ -2956,13 +2956,26 @@ char *e_d_msg[] = {  "Ctrl C pressed\nQuit Debugger ?",
 
 extern char *e_p_msg[];
 
+/**
+ * e_deb_inp - Ctrl-G: read the debugger command's letter and run it.
+ * @f: the window the prefix was pressed in.
+ *
+ * The letter is always taken here, never left for the editor to type: a
+ * letter whose command no longer applies (the session ended while the user
+ * reached for the second key) says so on the status row or in a box and
+ * leaves the text alone.  The window is looked up again after the key is
+ * read, because the end of a session closes the Watches and Stack windows
+ * and switches to the source, and the answer belongs on the window the user
+ * now sees.
+ * Return: 0 when the letter was a command, else the key that was not one.
+ */
 int e_deb_inp(FENSTER *f)
 {
  ECNT *cn = f->ed;
  int c = 0;
 
- f = cn->f[cn->mxedt];
  c = e_getch();
+ f = cn->f[cn->mxedt];
  switch(c)
  {
   case 'p':
@@ -4017,13 +4030,64 @@ int e_d_p_exec(FENSTER *f)
  return(ret);
 }
 
-/*    Help Routines   */
+#define E_D_FIRST_PRINTABLE 32   /* the first byte that is not a control byte */
+
+/**
+ * e_d_key_is_for_editor - Is this typed byte part of an editor command?
+ * @c: the byte read while the debugger is being waited for
+ *
+ * A control byte other than Enter, Backspace and Tab, such as the Ctrl-G
+ * of a debugger command or the Escape that starts an Alt key, is never text
+ * for the program being debugged.  Taking it here would lose the first key
+ * of a command typed just as the program ends, and its letter would then be
+ * typed into the source.
+ * Return: 1 when the editor must read the byte, else 0.
+ */
+static int e_d_key_is_for_editor(int c)
+{
+ if (c < 0 || c >= E_D_FIRST_PRINTABLE || c == CTRLC)
+  return(0);
+ if (c == '\r' || c == '\n' || c == '\b' || c == '\t')
+  return(0);
+ return(1);
+}
+
+#ifndef NO_XWINDOWS
+/**
+ * e_d_x_key_is_for_editor - Is this graphical key press an editor command?
+ * @c: the character the key press produced
+ * @state: the modifier state of the key press
+ *
+ * Alt with a letter produces the plain letter, so the modifier decides:
+ * the Alt prefixes of the language server and the assistant are never text
+ * for the program being debugged.
+ * Return: 1 when the editor must read the key press, else 0.
+ */
+static int e_d_x_key_is_for_editor(int c, unsigned int state)
+{
+ if (state & Mod1Mask)
+  return(1);
+ return(e_d_key_is_for_editor(c));
+}
+#endif
+
+/**
+ * e_d_getchar - Look for a typed key while the debugger is being waited for.
+ *
+ * Ctrl-C asks to quit the debugger, and text typed for the program being
+ * debugged is passed on to it.  A key that belongs to the editor is left
+ * unread, so a command typed as the program ends arrives whole and its
+ * letter is not typed into the file.
+ * Return: the key that was taken, or 0 when none was.
+ */
 int e_d_getchar()
 {
- int i = 1, fd;
+ int i = 1, fd, left_for_editor = 0;
  char c = 0, kbdflgs = 0;
  static FILE *_gc_dbg = NULL;
 
+ if (!WpeIsXwin() && e_t_key_is_handed_back())
+  return(0);
  if (WpeIsXwin()) fd = rfildes[0];
  else fd = 0;
 
@@ -4047,6 +4111,12 @@ int e_d_getchar()
    {
     if (XLookupString(&_ev.xkey, _buf, sizeof(_buf), &_ks, NULL) == 1)
     {
+     if (e_d_x_key_is_for_editor(_buf[0], _ev.xkey.state))
+     {
+      XPutBackEvent(WpeXInfo.display, &_ev);
+      left_for_editor = 1;
+      break;
+     }
      c = _buf[0];
      break;
     }
@@ -4066,8 +4136,19 @@ int e_d_getchar()
   }
  }
 #endif
+ if (left_for_editor)
+ {
+  fcntl(fd, F_SETFL, kbdflgs & ~O_NONBLOCK);
+  return(0);
+ }
  if (c || (i = read(fd, &c, 1)) == 1)
  {
+  if (!WpeIsXwin() && e_d_key_is_for_editor(c))
+  {
+   e_t_hand_key_back((unsigned char)c);
+   fcntl(fd, F_SETFL, kbdflgs & ~O_NONBLOCK);
+   return(0);
+  }
   if (c == CTRLC)
   {
 /*	 if (WpeIsXwin() || e_deb_mode)    */

@@ -160,7 +160,11 @@ Continue goes on as after any stop.  xwpe starts the debugger, and the
 programs under it, with SIGINT and SIGPIPE as a shell gives them,
 not ignored.  In wpe the debugger and the debug adapters run apart from
 the editor's terminal, so a Ctrl-C typed during a session reaches
-neither them nor the program; use Pause to stop it.
+neither them nor the program; use Pause to stop it.  Language servers,
+the assistant's commands, shell scripts run from the Run menu and the
+commands of an install rule start the same way.  Language servers and
+the Scala build server also run apart from the terminal, so the Ctrl-C
+that stops a script leaves them running.
 
 @cindex Show stack
 @cindex Stack window

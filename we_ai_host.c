@@ -13,6 +13,7 @@
 #include "we_ai.h"
 #include "we_ai_http.h"
 #include "we_ai_host.h"
+#include "we_childsig.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -161,6 +162,7 @@ wpe_host *wpe_host_start(const char *model, const char *resume, int policy,
   char *argv[24];
   int a = 0, dn;
   wpe_ai_child_new_session();           /* no controlling terminal to paint on */
+  wpe_child_default_signals();          /* the CLI and a host command are ordinary programs */
   dup2(in[0], 0);
   dup2(out[1], 1);
   dn = open("/dev/null", O_WRONLY);

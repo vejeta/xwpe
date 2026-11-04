@@ -2254,13 +2254,19 @@ def _run_on_towards_done(run, w):
 
 def _kill_program_if_left(run):
     """After a failed row: end the program the adapter left behind, by the
-    PID it wrote itself."""
+    PID it wrote itself.  The adapter may end the program between the look
+    and the kill, as it does once the editor has closed; a program already
+    gone is the state this wants."""
     try:
         pid = run.pid()
     except (OSError, ValueError):
         return
-    if not _process_gone(pid):
+    if _process_gone(pid):
+        return
+    try:
         os.kill(pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
 
 
 # @scenario SC-debug-47

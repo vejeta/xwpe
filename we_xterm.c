@@ -10,6 +10,7 @@
 #include "edit.h"
 #include "we_render.h"
 #include "we_fdloop.h"
+#include "we_childsig.h"
 #include "we_clip.h"
 #include <X11/Xatom.h>
 #include <poll.h>
@@ -2078,7 +2079,7 @@ int e_x_system(const char *exe)
  else
   sprintf(string, "%s -geometry 80x25-0-0 +sb -e %s %s ./%s", XTERM_CMD,
     user_shell, file, exe);
- ret = system(string);
+ ret = wpe_system(string);
  remove(file);
  FREE(string);
  return(ret);

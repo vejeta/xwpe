@@ -30,6 +30,7 @@
 
 #include "we_ai.h"
 #include "we_ai_http.h"
+#include "we_childsig.h"
 
 static char *ai_strdup(const char *s);            /* defined below; used early */
 static char *ai_read_first_line(const char *path); /* defined below; used early */
@@ -348,12 +349,13 @@ static void ai_capture_child_no_input(void)
  * reaps the command (see ai_capture_hold_sigchld); the child inherits that
  * mask across exec and a shell with SIGCHLD blocked may never notice its own
  * children ending.  Clearing the mask here gives the command a normal start.
+ * The editor also ignores SIGINT and SIGPIPE, which would pass through the
+ * shell to the command: `yes | head -1` would then print a broken-pipe error
+ * instead of ending quietly, so every signal goes back to its default.
  */
 static void ai_capture_child_signals(void)
 {
- sigset_t none;
- sigemptyset(&none);
- sigprocmask(SIG_SETMASK, &none, NULL);
+ wpe_child_default_signals();
 }
 
 static void ai_capture_child(const char *cmd, int *pfd)
@@ -1913,6 +1915,7 @@ static int ai_claudecli_open(struct wpe_ai_stream *st, const wpe_ai_req *req)
   char *argv[24];
   int a = 0, dn, web_on;
   wpe_ai_child_new_session();         /* no controlling terminal to paint on */
+  wpe_child_default_signals();        /* the CLI is an ordinary program */
   dup2(in[0], 0);
   dup2(out[1], 1);
   dn = open("/dev/null", O_WRONLY);

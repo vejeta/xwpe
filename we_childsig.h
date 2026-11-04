@@ -9,8 +9,11 @@
 #ifndef WE_CHILDSIG_H
 #define WE_CHILDSIG_H
 
+#include <errno.h>
 #include <signal.h>
 #include <unistd.h>
+#include <sys/types.h>
+#include <sys/wait.h>
 #ifdef HAVE_SYS_PRCTL_H
 # include <sys/prctl.h>
 #endif
@@ -71,6 +74,83 @@ static inline void wpe_child_default_signals(void)
   signal(sigs[i], SIG_DFL);
  sigemptyset(&none);
  sigprocmask(SIG_SETMASK, &none, NULL);
+}
+
+/**
+ * wpe_child_apart_from_terminal - In a forked child, before exec: leave the
+ * editor's terminal, for a server that works for the editor in the
+ * background.
+ *
+ * With its signals at their defaults, a server still in the editor's
+ * process group would be ended by the Ctrl-C (or stopped by the Ctrl-Z)
+ * the user types to stop a script run from the editor, and completion and
+ * diagnostics would be gone without a word.  In a session of its own, as
+ * the debuggers are, no key typed in the terminal reaches it; it still ends
+ * when the editor closes its pipe or stops it.
+ */
+static inline void wpe_child_apart_from_terminal(void)
+{
+ (void)setsid();
+}
+
+/**
+ * wpe_system_child - In the forked child of wpe_system: start the shell.
+ * @cmd: the command line.
+ *
+ * Does not return.  The command gets the signal state a shell started it
+ * from a terminal would have.
+ */
+static inline void wpe_system_child(const char *cmd)
+{
+ wpe_child_default_signals();
+ execl("/bin/sh", "sh", "-c", cmd, (char *)NULL);
+ _exit(127);
+}
+
+/**
+ * wpe_system - Run a shell command and wait for it, like system(), but with
+ * the command's signals at their defaults.
+ * @cmd: the command line.
+ *
+ * system() hands the command the editor's ignored SIGINT and SIGPIPE, which
+ * a shell can never undo.  A script or program run from the editor then
+ * cannot be stopped with Ctrl-C and keeps writing into a closed pipe.  The
+ * wait is done here with SIGCHLD held back, as system() does, so the
+ * editor's own child reaper cannot take the status first.
+ * Return: the wait status, or -1 when the shell could not be started.
+ */
+static inline int wpe_system(const char *cmd)
+{
+ sigset_t chld, saved;
+ struct sigaction ign, old_int, old_quit;
+ pid_t child, got;
+ int status = -1;
+
+ sigemptyset(&chld);
+ sigaddset(&chld, SIGCHLD);
+ sigprocmask(SIG_BLOCK, &chld, &saved);
+ child = fork();
+ if (child == 0)
+  wpe_system_child(cmd);
+ if (child < 0)
+ {
+  sigprocmask(SIG_SETMASK, &saved, NULL);
+  return -1;
+ }
+ ign.sa_handler = SIG_IGN;
+ sigemptyset(&ign.sa_mask);
+ ign.sa_flags = 0;
+ sigaction(SIGINT, &ign, &old_int);
+ sigaction(SIGQUIT, &ign, &old_quit);
+ do
+  got = waitpid(child, &status, 0);
+ while (got < 0 && errno == EINTR);
+ sigaction(SIGINT, &old_int, NULL);
+ sigaction(SIGQUIT, &old_quit, NULL);
+ sigprocmask(SIG_SETMASK, &saved, NULL);
+ if (got < 0)
+  return -1;
+ return status;
 }
 
 #endif /* WE_CHILDSIG_H */

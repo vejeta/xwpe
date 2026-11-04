@@ -903,6 +903,9 @@ int e_e_line_read(int n, signed char *s, int max);
 int e_d_dum_read(void);
 int e_d_p_exec(FENSTER *f);
 int e_d_getchar(void);
+/* we_term.c: a key read too early goes back to the editor (see e_d_getchar) */
+void e_t_hand_key_back(int c);
+int e_t_key_is_handed_back(void);
 int e_d_quit_basic(FENSTER *f);
 int e_d_quit(FENSTER *f);
 int e_d_add_watch(char *str, FENSTER *f);

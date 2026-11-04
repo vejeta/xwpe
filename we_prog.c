@@ -4487,7 +4487,7 @@ int e_system(char *estr, ECNT *cn)
  fk_locate(0,0);
  fk_cursor(1);
  (*e_u_s_sys_ini)();
- ret = system(estr);
+ ret = wpe_system(estr);
  if (!WpeIsXwin())
  {
   printf("%s",e_msg[ERR_HITCR]);
@@ -5208,7 +5208,7 @@ static int e_install_run(FENSTER *f)
   string = e_expand_var(string, f);
   if (p_v_n) p_v_n--;
   e_d_p_message(string, f, 1);
-  system(string);
+  wpe_system(string);
   FREE(string);
  }
  fclose(fp);

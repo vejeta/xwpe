@@ -14,6 +14,7 @@
 #include <sys/wait.h>
 
 #include "we_lsp.h"
+#include "we_childsig.h"
 #include "we_dap_proto.h"        /* e_dap_reader: shared Content-Length framing */
 
 #define LSP_TMO_INIT  120000     /* server start + initialize                */
@@ -606,6 +607,8 @@ static pid_t lsp_spawn(char *const argv[], const char *cwd, int *in_fd, int *out
  if (pid == 0)
  {
   int devnull;
+  wpe_child_default_signals();   /* a server that writes to a closed pipe ends */
+  wpe_child_apart_from_terminal();   /* a Ctrl-C for a script spares it */
   if (cwd && chdir(cwd) != 0)
    _exit(127);
   dup2(to_child[0], 0);

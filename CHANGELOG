@@ -325,6 +325,24 @@ Changes
   adapters run apart from the editor's terminal, so a Ctrl-C typed during
   a session leaves it as it was; Pause is the key that stops the program.
 
+* The other programs the editor starts no longer inherit SIGINT and SIGPIPE
+  ignored either: language servers (Alt-Q), the build server of a Scala
+  project, the assistant's command tool and its command-line engines, a
+  shell script run from the Run menu, a program run in an xterm, and the
+  commands of a project's install rule.  A server that wrote to a pipe the
+  editor had closed used to print broken-pipe errors instead of ending, and
+  a script run from the editor ignored Ctrl-C.  Language servers and the
+  Scala build server now run apart from the terminal, as the debuggers do,
+  so the Ctrl-C that stops a script leaves them running.  Short helpers
+  (printing, man, gunzip, version probes) are unchanged.
+
+* A command typed while a program under the debugger ends no longer loses
+  its first key.  After Ctrl-G R, a Ctrl-G I, Ctrl-G K, Alt-Q or Alt-G
+  typed at once could have its Ctrl-G or Escape taken by the editor's wait
+  for the debugger, and the letter was then typed into your source file.
+  The key is now left for the editor, so the command runs or is refused
+  (no session to pause) and the file is not changed.
+
 * Ctrl-C now stops the program Run (Ctrl-F9) started, as its first line
   says.  The key was lost (the editor ignored the signal the terminal made
   of it) and the program ignored it.

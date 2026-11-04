@@ -23,6 +23,7 @@
 #endif
 
 #include "we_bsp.h"
+#include "we_childsig.h"
 #include "we_dap_proto.h"        /* e_dap_reader: shared Content-Length framing */
 
 /* Per-request ceilings.  The first compile may pull the Scala toolchain via
@@ -262,6 +263,8 @@ static pid_t bsp_spawn(char **argv, const char *workdir, int *in_fd, int *out_fd
  pid = fork();
  if (pid == 0)
  {
+  wpe_child_default_signals();   /* a server that writes to a closed pipe ends */
+  wpe_child_apart_from_terminal();   /* a Ctrl-C for a script spares it */
   if (chdir(workdir) != 0)
    _exit(127);
   dup2(to_child[0], 0);
