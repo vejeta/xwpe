@@ -71,6 +71,7 @@ we_SOURCES = \
   we_debprompt.c \
   we_debpath.c \
   we_debsess.c \
+  we_debreq.c \
   WeString.c \
   WeSyntax.c \
   WeExpArr.c \
@@ -296,7 +297,7 @@ metainfodir = $(datadir)/metainfo
 metainfo_DATA = io.codeberg.mendezr.xwpe.metainfo.xml
 
 # --- Unit tests ---
-check_PROGRAMS = test_checkheader test_fl_sel_len test_syntax_def test_fdloop test_clipboard test_lsp_buffer test_lsp_doctor test_lsp_semantic test_lsp_truecolor test_dap test_dap_nopidfd test_dap_dlv test_dap_gdb test_dap_lldb test_dap_scala test_bsp_close test_bsp_close_nopidfd test_lsp_scala test_lsp_clangd test_lsp_python test_lsp_gopls test_lsp_rust test_debprompt test_debpath test_debsess test_menurows test_mousedrain
+check_PROGRAMS = test_checkheader test_fl_sel_len test_syntax_def test_fdloop test_clipboard test_lsp_buffer test_lsp_doctor test_lsp_semantic test_lsp_truecolor test_dap test_dap_nopidfd test_dap_dlv test_dap_gdb test_dap_lldb test_dap_scala test_bsp_close test_bsp_close_nopidfd test_lsp_scala test_lsp_clangd test_lsp_python test_lsp_gopls test_lsp_rust test_debprompt test_debpath test_debsess test_debreq test_menurows test_mousedrain
 
 # The test includes we_fdloop.c itself (the id counter is private to it), so
 # the file is not listed here again: it would be defined twice.
@@ -325,6 +326,14 @@ test_debpath_CFLAGS = $(XWPE_STDFLAG)
 # and jdb's set answer written into the middle of a breakpoint hit.
 test_debsess_SOURCES = tests/test_debsess.c we_debsess.c
 test_debsess_CFLAGS = $(XWPE_STDFLAG)
+
+# Debugger request engine unit test: we_debreq.c only, no editor, no
+# debugger, always runs.  A fake clock and a transcript stand for the world:
+# the deadline and the waiting line, requests going out one at a time with
+# the queue's bound, cancel ending every request, and a stop line that comes
+# in the middle of an answer going to the editor instead of the request.
+test_debreq_SOURCES = tests/test_debreq.c we_debreq.c
+test_debreq_CFLAGS = $(XWPE_STDFLAG)
 
 # Dropdown highlight unit test: we_menurows.c only, no editor, always runs.
 # Wrap at both ends, step over dividers, the open/Home/End rows, the edge
@@ -458,7 +467,7 @@ test_lsp_rust_LDADD = $(JSONC_LIBS)
 
 TESTS = test_checkheader test_fl_sel_len test_syntax_def test_fdloop test_clipboard test_lsp_buffer test_lsp_doctor test_lsp_semantic test_lsp_truecolor test_dap test_dap_nopidfd test_dap_dlv \
   test_dap_gdb test_dap_lldb test_dap_scala test_bsp_close \
-  test_bsp_close_nopidfd test_lsp_scala test_lsp_clangd test_lsp_python test_lsp_gopls test_lsp_rust test_debprompt test_debpath test_debsess test_menurows test_mousedrain
+  test_bsp_close_nopidfd test_lsp_scala test_lsp_clangd test_lsp_python test_lsp_gopls test_lsp_rust test_debprompt test_debpath test_debsess test_debreq test_menurows test_mousedrain
 
 # One owner of input and of waiting: tests/check-one-owner.sh reads the
 # undefined symbols of the editor's own objects (the list below) with $(NM)
