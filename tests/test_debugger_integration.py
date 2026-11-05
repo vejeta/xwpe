@@ -282,6 +282,52 @@ def test_program_output_goes_to_messages_and_the_user_screen(tmp_path):
         assert "Debug" in w.display(drain=0)[0], "a key should return to the editor"
 
 
+# A program that prints a line every few hundredths of a second for ever.
+C_PRINTER_PROG = (
+    "#include <stdio.h>\n"
+    "#include <unistd.h>\n"
+    "int main(void)\n"
+    "{\n"
+    "  int i = 0;\n"
+    "  setvbuf(stdout, NULL, _IONBF, 0);\n"
+    "  for (;;) { printf(\"PRINTER%06d\\n\", i++); usleep(20000); }\n"
+    "  return 0;\n"
+    "}\n"
+)
+C_PRINTER_BREAK_LINE = 5
+C_PRINTER_OUTPUT = re.compile(r"PRINTER\d{6}")   # never in the source
+USER_SCREEN_PROMPT = "press any key to return"
+USER_SCREEN_OPEN_S = 3
+
+
+# @scenario SC-debug-11
+def test_user_screen_opens_while_the_program_prints_all_the_time(tmp_path):
+    """Alt-F5 while the program prints without a pause shows what it has
+    printed so far, and a key returns to the editor.  The User Screen does
+    not wait for the program to go quiet, which this one never does."""
+    _need("gcc", "gdb")
+    with WpeSession(str(tmp_path), C_PRINTER_PROG, filename="p.c",
+                    wait=1.5) as w:
+        _move_down(w, C_PRINTER_BREAK_LINE - 1)
+        w.key(CTRL_G, "b", delay=0.4)
+        w.key(CTRL_G, "r", delay=1.0)
+        assert _wait_for(w, lambda: _mark_line(w) == C_PRINTER_BREAK_LINE,
+                         START_TIMEOUT_S), _screen(w)
+        w.key(CTRL_G, "r", delay=1.0)
+        w.key(ALT_F5, delay=0.2)
+        assert _wait_for(w, lambda: USER_SCREEN_PROMPT in _screen(w),
+                         USER_SCREEN_OPEN_S), \
+            "Alt-F5 should open the User Screen while the program " \
+            "prints:\n%s" % _screen(w)
+        assert C_PRINTER_OUTPUT.search(_screen(w)), \
+            "the User Screen should show what the program printed:\n%s" \
+            % _screen(w)
+        w.key("\r", delay=0.2)
+        assert _wait_for(w, lambda: USER_SCREEN_PROMPT not in _screen(w),
+                         USER_SCREEN_OPEN_S), \
+            "a key should return to the editor:\n%s" % _screen(w)
+
+
 # @scenario SC-debug-13
 def test_continue_to_the_end_stops_the_debugger_and_frees_the_editor(tmp_path):
     """Ctrl-G R from a stop runs to the end: Messages says the program exited,

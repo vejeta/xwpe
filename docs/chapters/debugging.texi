@@ -588,7 +588,9 @@ the last part reaches Messages.
 A line-oriented panel cannot show a program that @emph{paints} (ANSI
 colour, cursor positioning, a TUI, a progress bar).  For that, the
 Borland @dfn{User Screen} on @kbd{Alt-F5} replays the program's own
-full screen verbatim, then returns to the editor on any key.  This works
+full screen verbatim, then returns to the editor on any key.  Pressed
+while the program runs, it shows what the program has printed so far,
+without waiting for it to stop printing.  This works
 in the console (@command{wpe}) today; in @command{xwpe} (X11) it arrives
 with the integrated terminal in a later release (until then @kbd{Alt-F5}
 focuses the Messages panel).

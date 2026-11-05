@@ -30,7 +30,11 @@ HOLD_TIMEOUT_S = 40
 STOP_TIMEOUT_S = 20
 POLL_S = 0.3
 STOP_GREEN = (0, 255, 0)        # the stop line's bar
-MIN_BAR_PIXELS = 60             # a bar is a dozen cells wide
+# A stop bar fills its line's cells, some 2000 pixels at the fixture's font.
+# The same green is also the colour of "#include" text and of letters on the
+# window's status row, about 75 pixels with no stop at all, so the bar is
+# counted only well above that.
+MIN_BAR_PIXELS = 400
 TYPED = "MARK"
 BREAK_LINE = 5
 # The first column of BREAK_LINE in the source window, at the fixture's

@@ -902,10 +902,6 @@ int e_make_xrect_abs(int xa, int ya, int xe, int ye, int sw);
 
 #ifdef DEBUGGER
 int e_deb_inp(FENSTER *f);
-/* we_term.c: a key read too early goes back to the editor (we_debug.c's
-   key reader, which only the older debuggers' blocking readers still use) */
-void e_t_hand_key_back(int c);
-int e_t_key_is_handed_back(void);
 int e_d_quit_basic(FENSTER *f);
 int e_d_quit(FENSTER *f);
 int e_d_add_watch(char *str, FENSTER *f);
@@ -940,7 +936,6 @@ int e_d_pause(FENSTER *f);
 int e_d_program_runs(void);
 int e_deb_options(FENSTER *f);
 int e_d_step_next(FENSTER *f, int sw);
-int e_d_pr_sig(char *str, FENSTER *f);
 int e_make_line_num(char *str, char *file);
 int e_make_line_num2(char *str, char *file);
 int e_d_goto_break(char *file, int line, FENSTER *f);

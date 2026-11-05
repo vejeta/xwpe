@@ -1180,42 +1180,6 @@ int e_t_sys_end()
  return(0);
 }
 
-/* Set while a key that a waiting loop took off the terminal has been handed
-   back to the editor and not yet read again. */
-static int s_t_key_handed_back = 0;
-
-/**
- * e_t_hand_key_back - Give a key that was read too early back to the editor.
- * @c: the byte that was read from the terminal
- *
- * A loop that waits for the debugger reads the terminal behind the editor's
- * back.  A key that is not for the program being debugged, such as the
- * Ctrl-G or Alt prefix of a command, is queued in front of the next key the
- * editor reads, so the command still arrives whole and its letter is never
- * typed into the file.
- */
-void e_t_hand_key_back(int c)
-{
-#ifdef NCURSES
- ungetch(c);
-#else
- ungetc(c, stdin);
-#endif
- s_t_key_handed_back = 1;
-}
-
-/**
- * e_t_key_is_handed_back - Is a key waiting to be read by the editor?
- *
- * While one is, a waiting loop must not read the terminal again: the keys
- * typed after it would overtake it and reach the program being debugged.
- * Return: 1 while a handed-back key has not been read yet, else 0.
- */
-int e_t_key_is_handed_back(void)
-{
- return(s_t_key_handed_back);
-}
-
 int e_t_kbhit()
 {
  int ret;
@@ -1688,7 +1652,6 @@ int e_t_getch()
  extern int g_mouse_buttons;
 
  e_refresh();
- s_t_key_handed_back = 0;
  c = e_t_getch_poll();
  if (c > KEY_CODE_YES && !e_input_was_char)
  {
@@ -1902,7 +1865,6 @@ int e_t_getch()
 
  pshift = 0;
  e_refresh();
- s_t_key_handed_back = 0;
  if ((c = fk_getch()) != WPE_ESC)
  {
   if (key_f[20] && c == *key_f[20])

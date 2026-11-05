@@ -25,12 +25,8 @@ we_lsp.o nanosleep 1 P9i server end moves to the child watch
 we_dap.o poll 3 P9g the answer waits and the Quit waits
 
 # the debugger
-we_debug.o poll 1 P9f the pty drain
 we_debug.o usleep 1 P9o the external xterm settle
-we_debug.o XFlush 3 P9f
-we_debug.o XNextEvent 1 P9f the key reader that the loop replaces
-we_debug.o XPending 1 P9f
-we_debug.o XPutBackEvent 1 P9f the bridge that gave keys back
+we_debug.o XFlush 2 P9o the focus taken back after the start and the external xterm settle; no read
 we_debug.o STDIN_FILENO 1 keep ttyname_r names the editor's own terminal; no read
 
 # console mouse, clipboard, display

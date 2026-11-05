@@ -308,6 +308,11 @@ Changes
   up on is cleared before it is set again, so the debugger never holds
   the line twice.
 
+* Alt-F5 while a program under the debugger prints without a pause no
+  longer freezes the editor: the User Screen opens with what the program
+  has printed so far.  It used to wait for the program to go quiet, which
+  such a program never does.
+
 * A watch the debugger answers without a value (under dbx, xdb, or a gdb
   or jdb answer with no "=" in it) reads "No symbol in current context".
   It used to read "o symbol in current context", its first letter lost.

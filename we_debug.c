@@ -58,23 +58,15 @@
 #include <term.h>
 #endif
 
-#define D_CBREAK -2
-#define CTRLC CtrlC
 #define SVLINES 12
 
 int e_d_delbreak(FENSTER *f);
 int e_d_error(char *s);
 int print_to_end_of_buffer(BUFFER * b,char * str,int wrap_limit);
 
-/* The blocking readers.  No debugger's answers go through them any more:
-   gdb's, pdb's, jdb's, a68g's, sdb's, dbx's and xdb's are read on the fd
-   loop (e_d_ga below); what still calls them is never reached by a session
-   and goes with them. */
-static int e_d_line_read(int n, signed char *s, int max, int sw, int esw);
+/* The error stream's line reader: the descriptor is non-blocking from the
+   start (e_d_set_nonblock), so it takes what has come and never waits. */
 static int e_e_line_read(int n, signed char *s, int max);
-static int e_d_dum_read(void);
-static int e_d_getchar(void);
-static int e_read_output(FENSTER *f);
 
 
 #define MAXOUT  2 * MAXSCOL * MAXSLNS
@@ -112,13 +104,13 @@ char **e_d_swtchs; /* e_d_swtchs[i] is the i-th watch expression (a char*) */
    answer names a source file, and a file may sit under any path up to
    PATH_MAX; the margin is for what the debugger prints around it (the
    function and its arguments, "at ", ":line").  A longer line is cut at this
-   size and the rest dropped (see e_d_line_skip_rest), never read as a
-   second line.  Lines whose end matters -- a stop line, a frame, a value --
-   are read whole instead (E_D_LINE): their "at file:line" comes after a
-   function name and arguments of any length. */
+   size and the rest dropped, never read as a second line.  Lines whose end
+   matters -- a stop line, a frame, a value -- are read whole instead
+   (E_D_LINE): their "at file:line" comes after a function name and
+   arguments of any length. */
 #define E_D_LINE_MARGIN  512
 #define E_D_LINE_MAX     (PATH_MAX + E_D_LINE_MARGIN)
-/* A debugger line of any length, read by e_d_line_read_whole. */
+/* A debugger line of any length, read by e_d_line_read_nb_whole. */
 typedef struct
 {
  signed char *s;          /* the line, NUL-terminated; NULL before a read */
@@ -132,7 +124,6 @@ typedef struct
 /* The most an E_D_LINE ever holds: a whole line, one more read, the mark. */
 #define E_D_LINE_ROOM_MAX   (E_D_LINE_WHOLE_MAX + 2 * E_D_LINE_MAX)
 static int e_d_line_room(E_D_LINE *ln, int len);
-static void e_d_line_free(E_D_LINE *ln);
 static int e_d_line_drain_errors(signed char *s, int max);
 /* How many of the last bytes dropped from a cut line are kept to recognise a
    prompt that the debugger printed right after it, split or not: the longest
@@ -201,7 +192,6 @@ static int  e_d_watch_refused(FENSTER *f);   /* a debugger without watches */
 static const char *e_d_start_label(void);
 static void e_d_show_stop_position(FENSTER *f);  /* line:column after a stop */
 static void e_d_note_output_closed(void);        /* the debugger's pipe ended */
-static void e_d_note_reaped(int status);         /* its exit status, once reaped */
 static void e_d_jdb_missing_forget(void);        /* classes without source */
 static void e_d_jdb_pause_forget(void);          /* a Pause still held */
 static void e_d_end_forget(void);               /* how the last debugger ended */
@@ -313,17 +303,11 @@ int tputs();
 
 char *npipe[5] = {  NULL, NULL, NULL, NULL, NULL  };
 
-/* Grace window (ms) e_d_pty_drain waits for more program output after the last
-   byte before concluding the program has stopped writing.  This replaces a
-   blind 100ms usleep: output already in the pty is drained immediately, and we
-   only ever wait this long when the pty has briefly gone quiet. */
-#define DEB_PTY_DRAIN_MS 100
-
 /* Per-step read of jdb, pdb and a68g output: scratch buffer size (the run of
    pdb, jdb and a68g waits as long as the program takes). */
 #define DEB_STEP_BUF     (PATH_MAX + 4096)
 
-/* Safety bound on the stderr-drain loop at the top of e_d_line_read: a debugger
+/* Safety bound on the stderr-drain loop (e_d_line_drain_errors): a debugger
    that floods its error stream (e.g. a68g's abend->io_write_string recursion
    when its output pipe breaks) must never hold xwpe in an unbounded read.  A
    normal debug step emits at most a handful of stderr lines; anything past this
@@ -335,36 +319,27 @@ char *npipe[5] = {  NULL, NULL, NULL, NULL, NULL  };
    the input focus -- see the comment at its use in e_exec_deb. */
 #define DEB_XTERM_SETTLE_MS 200
 
-/* Drain any available data from the pty master into e_d_prog_output.
-   Polls so it never blocks the editor, and keeps draining until the program
-   stops writing for DEB_PTY_DRAIN_MS or closes its end of the pty (POLLHUP). */
+/**
+ * e_d_pty_drain - Take what the program has written to its terminal and not
+ * yet been read into e_d_prog_output, without waiting.
+ *
+ * The User Screen (Alt-F5) and the end of a session call this so the user
+ * sees the program's last output.  Nothing is waited for: while the program
+ * runs, the fd loop reads its terminal as the output comes
+ * (e_d_on_pty_readable), and a program that is stopped or has ended writes
+ * nothing more, so what it wrote is already in the terminal's buffer.
+ */
 void e_d_pty_drain(void)
 {
  char buf[4096];
  int n, flags;
- struct pollfd pfd;
 
  if (e_d_pty_master < 0)
   return;
  flags = fcntl(e_d_pty_master, F_GETFL, 0);
  fcntl(e_d_pty_master, F_SETFL, flags | O_NONBLOCK);
- for (;;)
- {
-  pfd.fd = e_d_pty_master;
-  pfd.events = POLLIN;
-  if (poll(&pfd, 1, DEB_PTY_DRAIN_MS) <= 0)
-   break;                        /* idle for the grace window, or poll error */
-  if (pfd.revents & POLLIN)
-  {
-   n = read(e_d_pty_master, buf, sizeof(buf));
-   if (n > 0)
-   {
-    e_d_prog_output_append(buf, n);
-    continue;
-   }
-  }
-  break;                         /* POLLHUP/POLLERR, or EOF with no data left */
- }
+ while ((n = read(e_d_pty_master, buf, sizeof(buf))) > 0)
+  e_d_prog_output_append(buf, n);
  fcntl(e_d_pty_master, F_SETFL, flags & ~O_NONBLOCK);
 }
 
@@ -374,12 +349,13 @@ void e_d_pty_drain(void)
    delete-all sent write(..., "db *\n", 2), i.e. just "db").  Using strlen here
    removes that whole class of miscount, and the loop tolerates short writes
    and EINTR. */
-/* Runaway guard: how many debugger-output lines e_d_line_read has returned
-   since the last command we sent.  A single command's reply is bounded (a
-   stack, a value, a stopped-at line); a debugger that streams far more than any
-   real reply -- e.g. a68g stuck in its abend->io_write_string recursion -- is a
-   runaway, and the read loops would otherwise spin on it forever.  Reset on
-   every e_d_send_cmd (a fresh reply is expected) and checked in e_d_line_read. */
+/* Runaway guard: how many debugger-output lines have been read since the
+   last command we sent.  A single command's reply is bounded (a stack, a
+   value, a stopped-at line); a debugger that streams far more than any real
+   reply -- e.g. a68g stuck in its abend->io_write_string recursion -- is a
+   runaway, and the readers would otherwise spin on it forever.  Reset on
+   every e_d_send_cmd (a fresh reply is expected) and checked by the readers
+   (e_d_nb_fill, e_d_line_drain_errors). */
 static long e_d_read_runaway = 0;
 #define E_D_RUNAWAY_MAX  100000L
 
@@ -447,16 +423,11 @@ static void e_d_async_reset(void)
  e_d_async.pty_owns_last_line = 0;
 }
 
-/* The blocking readers' side of a cut line.  e_d_line_read and e_e_line_read
-   keep the start of a line longer than their caller's buffer and drop the
-   rest; the dropping goes on in the next read, so no read ever waits for the
-   end of a line the debugger may not finish before it asks for a command. */
+/* A cut line on the error stream.  e_e_line_read keeps the start of a line
+   longer than its caller's buffer and drops the rest; the dropping goes on
+   in the next read, so no read ever waits for the end of a line. */
 static struct {
- int out_discarding;      /* e_d_line_read: the rest of a cut line is pending */
- int out_at_prompt;       /* the bytes dropped so far end in a word prompt */
- signed char out_tail[E_D_PROMPT_TAIL]; /* their last bytes */
- int out_tail_len;
- int err_discarding;      /* e_e_line_read: the same, on the error stream */
+ int err_discarding;      /* the rest of a cut error line is pending */
 } e_d_cut;
 
 /**
@@ -468,21 +439,6 @@ static struct {
 static void e_d_cut_reset(void)
 {
  memset(&e_d_cut, 0, sizeof e_d_cut);
-}
-
-/**
- * e_d_cut_forget_output - Forget a cut output line when another reader
- * takes over the debugger's output.
- *
- * The fd-loop reader and the step readers of jdb, pdb and a68g read the
- * rest of that line themselves; left pending, the next blocking read would
- * drop the first line of its own answer instead (the first row of "where").
- */
-static void e_d_cut_forget_output(void)
-{
- e_d_cut.out_discarding = 0;
- e_d_cut.out_at_prompt = 0;
- e_d_cut.out_tail_len = 0;
 }
 
 static int e_d_check_prompt(signed char *s, int i)
@@ -690,7 +646,7 @@ static int e_d_nb_still_dropping(void)
  * @n: gdb's output.
  *
  * Each read takes at most E_D_LINE_MAX bytes and counts as one line toward
- * the runaway bound, as the blocking reader counts a long line, and a line
+ * the runaway bound, as a debugger streaming without end is counted, and a line
  * is never held past E_D_LINE_WHOLE_MAX, so memory stays bounded.
  * Return: what read() answered, or E_D_NB_FILL_FAILED for a runaway or
  * memory run out.
@@ -1028,20 +984,6 @@ static void e_d_messages_redraw(FENSTER *mf)
  e_schirm(mf, 1);
  e_cursor(mf, 1);
  e_refresh();
-}
-
-/* The caller reads the debugger again after every wait, and the wait is
-   bounded by WPE_FD_POLL_MS, so an fd the loop cannot watch only makes its
-   answer come at the end of that wait instead of at once. */
-static void e_d_wait_for_input(int gdb_fd)
-{
- e_fd_watch(gdb_fd, POLLIN, NULL, NULL, "the debugger's answer");
- if (e_d_pty_master >= 0 && !e_d_pty_hung)
-  e_fd_watch(e_d_pty_master, POLLIN, NULL, NULL, "the program's output");
- wpe_fd_poll(WPE_FD_POLL_MS);
- wpe_fd_del(gdb_fd);
- if (e_d_pty_master >= 0)
-  wpe_fd_del(e_d_pty_master);
 }
 
 static void e_d_on_pty_readable(int fd, void *data);
@@ -1555,7 +1497,7 @@ static int e_d_line_feed_stop(int prompt)
  * Every whole line is kept as an answer line for the stop's checks, so a
  * stop line of any length is marked; the prompt says the program stopped.
  * The checks of sdb, dbx and xdb look at every answer line but the newest,
- * which their blocking reader always filled with the prompt: kept here too,
+ * which their old reader always filled with the prompt: kept here too,
  * their stop and end lines are read where they always were.
  * @own: takes a line that says the run began, which is then no answer line
  * for the stop's checks; NULL for a debugger that has none.
@@ -2337,7 +2279,6 @@ static void e_d_run_go_on_now(const char *cmd)
 {
  if (e_d_run.ops->answer_reset)
   e_d_run.ops->answer_reset();
- e_d_cut_forget_output();
  e_d_out_clear();
  e_d_nb_forget();
  e_d_send_cmd(cmd);
@@ -2792,7 +2733,6 @@ static void e_d_run_new_command(void)
  */
 static int e_d_run_begin(FENSTER *f, const E_D_RUN_OPS *ops, int start_brk)
 {
- e_d_cut_forget_output();
  e_d_out_clear();
  if (ops->begin)
   ops->begin();
@@ -2925,20 +2865,6 @@ static void e_d_on_pty_readable(int fd, void *data)
  }
 }
 
-static void e_d_pty_drain_nonblock(void)
-{
- char buf[256];
- int n, flags;
-
- if (e_d_pty_master < 0)
-  return;
- flags = fcntl(e_d_pty_master, F_GETFL, 0);
- fcntl(e_d_pty_master, F_SETFL, flags | O_NONBLOCK);
- while ((n = read(e_d_pty_master, buf, sizeof(buf))) > 0)
-  e_d_prog_output_append(buf, n);
- fcntl(e_d_pty_master, F_SETFL, flags & ~O_NONBLOCK);
-}
-
 static void e_d_pty_flush_line(FENSTER *f, int force)
 {
  if (e_d_async.pty_line_len == 0)
@@ -3014,6 +2940,8 @@ void e_d_pty_close(void)
     reflecting it (cap >= len) -- otherwise the invariant breaks. */
 }
 
+/* Entry 0 (ERR_CTRLCPRESS) is no longer shown: Ctrl-C now ends a wait for
+   the debugger as Esc does.  It stays so the numbers of the others hold. */
 char *e_d_msg[] = {  "Ctrl C pressed\nQuit Debugger ?",
 			"Quit Debugger ?",
 			"End of Debugging",
@@ -3229,52 +3157,9 @@ int e_debug_switch(FENSTER *f, int c)
  return(0);
 }
 
-/* Has the debugger child terminated?  Non-blocking, reaps it if so (and clears
-   e_d_pid so e_d_quit_basic does not double-reap).  The debugger read loops use
-   this so a debugger that died -- but whose pipe never reaches EOF because the
-   X11 launch path leaks xwpe's own write ends -- cannot hold xwpe forever
-   waiting for output that will never come. */
-static int e_d_debugger_gone(void)
-{
- int st, r;
-
- if (e_d_pid <= 0)
-  return 1;
- r = waitpid(e_d_pid, &st, WNOHANG);
- if (r == e_d_pid)
- {
-  e_d_pid = 0;
-  e_d_note_reaped(st);
-  e_d_note_output_closed();
-  return 1;
- }
- /* The editor's SIGCHLD handler reaps every child and keeps the status. */
- if (r < 0 && errno == ECHILD)
- {
-  if (WpeReapedStatus(e_d_pid, &st))
-   e_d_note_reaped(st);
-  e_d_pid = 0;
-  e_d_note_output_closed();
-  return 1;
- }
- return 0;
-}
-
 /**
- * e_d_is_line_end - Say whether a byte ends a line of the debugger's output
- * for the blocking reader.
- *
- * One definition for reading a line and for dropping the rest of a cut one,
- * so the dropping never runs past the end the reader would have stopped at.
- */
-static int e_d_is_line_end(signed char c)
-{
- return(c == '\n' || c == WPE_CR || c == '\0' || c == EOF);
-}
-
-/**
- * e_d_err_is_line_end - The same for the debugger's error stream, whose
- * reader has never ended a line at a carriage return.
+ * e_d_err_is_line_end - Say whether a byte ends a line of the debugger's
+ * error stream, whose reader has never ended a line at a carriage return.
  */
 static int e_d_err_is_line_end(signed char c)
 {
@@ -3367,221 +3252,6 @@ static const char *e_d_prompt_text(void)
 }
 
 /**
- * e_d_prompt_check - Feed one read to the prompt window and say whether the
- * debugger has just finished asking for a command.
- * @s: the bytes this read produced.
- * @i: how many of them; may be 0.
- *
- * Called on every read, complete line or not, because the window carries a
- * prompt that arrives split across reads: feeding only the incomplete ones
- * would leave it holding bytes from before a finished line, and a later fragment
- * could then complete a prompt that was never sent.
- * Return: 1 when this backend's prompt has just been completed, else 0.
- */
-static int e_d_prompt_check(const signed char *s, int i)
-{
- const char *prompt = e_d_prompt_text();
-
- if (!prompt)
-  return(0);
- return(e_deb_prompt_feed(prompt, (const char *)s, i));
-}
-
-/**
- * e_d_char_prompt - Say whether text ends in the prompt of a debugger known
- * by its last characters: sdb's "*", xdb's ">", jdb's "] " or "> ".
- * @s: the text; @i: how many bytes of it there are.
- *
- * The word prompts ("(gdb) " and the like) go through e_d_prompt_check.
- * Return: 1 when the text ends in such a prompt, else 0.
- */
-static int e_d_char_prompt(const signed char *s, int i)
-{
- if (e_deb_type == DEB_SDB && i > 0 && s[i-1] == '*')
-  return(1);
- if (e_deb_type == DEB_XDB && i > 0 && s[i-1] == '>')
-  return(1);
- if (e_deb_type == DEB_JDB && i > 1 && s[i-1] == ' ' &&
-     (s[i-2] == ']' || s[i-2] == '>'))
-  return(1);
- return(0);
-}
-
-/* How the dropping of a cut line ended (e_d_line_skip_rest). */
-enum
-{
- E_D_SKIP_LINE_END,       /* at the line's end: the next line can be read */
- E_D_SKIP_PROMPT,         /* at the debugger's prompt, right after the line */
- E_D_SKIP_GIVE_UP         /* end of output, break key, or a runaway debugger */
-};
-
-/**
- * e_d_cut_note - Remember the last bytes dropped from a cut line, so a prompt
- * printed right after the line is recognised however it was split.
- * @bytes, @len: what was just dropped; @len is at least 1.
- */
-static void e_d_cut_note(const signed char *bytes, int len)
-{
- int k;
-
- e_d_cut.out_at_prompt = e_d_prompt_check(bytes, len);
- for (k = 0; k < len; k++)
- {
-  if (e_d_cut.out_tail_len == E_D_PROMPT_TAIL)
-  {
-   memmove(e_d_cut.out_tail, e_d_cut.out_tail + 1, E_D_PROMPT_TAIL - 1);
-   e_d_cut.out_tail_len--;
-  }
-  e_d_cut.out_tail[e_d_cut.out_tail_len++] = bytes[k];
- }
-}
-
-/**
- * e_d_cut_ends_in_prompt - Say whether the bytes dropped so far end in the
- * debugger's prompt.
- */
-static int e_d_cut_ends_in_prompt(void)
-{
- return(e_d_cut.out_at_prompt ||
-        e_d_char_prompt(e_d_cut.out_tail, e_d_cut.out_tail_len));
-}
-
-/**
- * e_d_cut_take_prompt - Hand the caller the prompt that ended a cut line, as
- * the reader hands out any prompt: the last bytes the debugger sent.
- * @s, @max: the caller's buffer.
- */
-static void e_d_cut_take_prompt(signed char *s, int max)
-{
- int len = e_d_cut.out_tail_len, from = 0;
-
- if (len > max - 1)
- {
-  from = len - (max - 1);
-  len = max - 1;
- }
- memcpy(s, e_d_cut.out_tail + from, len);
- s[len] = '\0';
- e_deb_prompt_reset();   /* the same bytes cannot complete a prompt twice */
-}
-
-/**
- * e_d_line_cut - Hand out the start of a line that filled the caller's
- * buffer, and leave the rest of it to be dropped by the next read.
- * @s: the buffer, full; @len: the bytes in it.
- *
- * Without this the tail of a long "stopped at /very/long/path" line would
- * come back as a line of its own, and the stop parsers would read half a path
- * as a new answer.  Nothing is waited for here: the debugger may not end the
- * line before it asks for a command, and the next read knows to stop at that.
- * Return: 0 (a line).
- */
-static int e_d_line_cut(signed char *s, int len)
-{
- s[len] = '\0';
- e_d_cut.out_discarding = 1;
- e_d_cut.out_tail_len = 0;
- e_d_cut_note(s, len);
- return(0);
-}
-
-/**
- * e_d_line_wait_or_give_up - Wait for more of a cut line while nothing has
- * arrived, as the line reader waits for a line.
- * @n: the debugger's output, non-blocking.
- *
- * The break key gives up, and so does a debugger that is gone, so a debugger
- * that never ends the line cannot hold the editor.
- * Return: 1 when the dropping must give up, else 0.
- */
-static int e_d_line_wait_or_give_up(int n)
-{
- if (e_d_debugger_gone())
-  return(1);
- e_d_wait_for_input(n);
- return(e_d_getchar() == D_CBREAK);
-}
-
-/**
- * e_d_line_skip_byte - Drop one more byte of a cut line.
- * @c: the byte; @dropped: how many were dropped so far in this read.
- *
- * Every E_D_LINE_MAX bytes count as one line toward the runaway bound, as the
- * lines a debugger streams without end do, so a line that never ends is given
- * up on like a flood of lines.
- * Return: E_D_SKIP_LINE_END at the line's end, E_D_SKIP_GIVE_UP for a
- * runaway, else -1 (keep dropping).
- */
-static int e_d_line_skip_byte(signed char c, long dropped)
-{
- if (e_d_is_line_end(c))
-  return(E_D_SKIP_LINE_END);
- e_d_cut_note(&c, 1);
- if (dropped % E_D_LINE_MAX == 0 && ++e_d_read_runaway > E_D_RUNAWAY_MAX)
- {
-  e_d_read_runaway = 0;
-  return(E_D_SKIP_GIVE_UP);
- }
- return(-1);
-}
-
-/**
- * e_d_line_skip_rest - Drop the rest of a line e_d_line_read cut, up to the
- * line's end or up to the prompt the debugger printed right after it.
- * @n: the debugger's output; @s, @max: the caller's buffer, which gets the
- * prompt when the dropping ends at one.
- *
- * A program that prints a long line without a newline just before the
- * debugger asks for its next command leaves no line end to wait for: the
- * prompt ends the dropping, so the editor goes on instead of waiting until the
- * debugger exits.  Only a prompt that is the last thing sent counts, as in
- * the line reader.
- * Return: E_D_SKIP_LINE_END, E_D_SKIP_PROMPT or E_D_SKIP_GIVE_UP.
- */
-static int e_d_line_skip_rest(int n, signed char *s, int max)
-{
- signed char c;
- long dropped = 0;
- int r, result = -1, flags = fcntl(n, F_GETFL, 0);
-
- fcntl(n, F_SETFL, flags | O_NONBLOCK);
- while (result < 0)
- {
-  r = read(n, &c, 1);
-  if (r == 1)
-   result = e_d_line_skip_byte(c, ++dropped);
-  else if (r < 0 && errno == EINTR)
-   continue;
-  else if (r < 0 && errno == EAGAIN && e_d_cut_ends_in_prompt())
-   result = E_D_SKIP_PROMPT;
-  else if (r == 0)
-  {
-   e_d_note_output_closed();
-   result = E_D_SKIP_GIVE_UP;
-  }
-  else if (errno != EAGAIN || e_d_line_wait_or_give_up(n))
-   result = E_D_SKIP_GIVE_UP;
- }
- fcntl(n, F_SETFL, flags);
- if (result == E_D_SKIP_PROMPT)
-  e_d_cut_take_prompt(s, max);
- if (result == E_D_SKIP_GIVE_UP)
-  s[0] = '\0';
- else
-  e_d_cut.out_discarding = 0;
- return(result);
-}
-
-/* What one fill of the blocking reader ended with, besides the codes
-   e_d_line_read hands its callers (-1 gone, 0 a line, 1 the prompt, 2 an
-   error-stream line).  Neither leaves e_d_line_fill's two entry points. */
-enum
-{
- E_D_FILL_FULL = 3,       /* the room filled before the line ended */
- E_D_FILL_PAUSE           /* the output paused in a line that is no prompt */
-};
-
-/**
  * e_d_line_drain_errors - Drain what the debugger has written to its error
  * stream before its output is read, without spinning on a flood of it.
  * @s, @max: scratch room for one error line.
@@ -3613,163 +3283,6 @@ static int e_d_line_drain_errors(signed char *s, int max)
 }
 
 /**
- * e_d_line_fill - Read the debugger's output into @s from @from on, up to a
- * line end, the debugger's prompt, the end of the room or a pause.
- * @n: the debugger's output; @s, @from, @max: the room, @s[@from] on, of
- * which @max - 1 bytes in all may be used; @sw, @esw: as e_d_line_read;
- * @end: set to where the bytes read end, when a line or a pause is read.
- *
- * The one place that waits for output, honours the break key, notices a
- * debugger that is gone, keeps the runaway bound and recognises the prompt,
- * for both e_d_line_read, which keeps the head of a long line, and
- * e_d_line_read_whole, which keeps all of it: a stop line and a watch value
- * are read the same way, so the prompt that ends either is seen the same.
- * Only the first byte is waited for; a word prompt is looked for in the bytes
- * read here, a prompt known by its last characters in all of @s.
- * Return: e_d_line_read's codes, E_D_FILL_FULL or E_D_FILL_PAUSE.
- */
-static int e_d_line_fill(int n, signed char *s, int from, int max, int sw,
-                         int esw, int *end)
-{
- static char wt = 0, esc_sv = 0;
- int i, ret = 0, kbdflgs, skip;
-
- /* Runaway debugger: far more output than any real command reply means the
-    debugger is streaming uncontrollably (e.g. a68g's abend recursion).  Give
-    up instead of spinning; the caller treats -1 as end-of-output and quits. */
- if (++e_d_read_runaway > E_D_RUNAWAY_MAX)
- {
-  e_d_read_runaway = 0;
-  s[from] = '\0';
-  return(-1);
- }
- if (esw)
- {  if((ret = e_e_line_read(efildes[0], s + from, max - from)) >= 0) return(ret);  }
- else if (e_d_line_drain_errors(s + from, max - from) < 0)
-  return(-1);
- if (e_d_cut.out_discarding &&
-     (skip = e_d_line_skip_rest(n, s + from, max - from)) != E_D_SKIP_LINE_END)
- {
-  wt = 0;
-  if (skip == E_D_SKIP_PROMPT)
-   return(1);
-  return(-1);
- }
- for(i = from; i < max - 1; i++)
- {
-  if (esc_sv)  {  s[i] = WPE_ESC;  esc_sv = 0;  continue;  }
-  kbdflgs = fcntl(n, F_GETFL, 0 );
-  fcntl( n, F_SETFL, kbdflgs | O_NONBLOCK);
-  while ((ret = read(n, s + i, 1)) <= 0 && i == from && wt >= sw)
-  {
-   if (ret == 0)
-   {
-    jdb_trace("e_d_line_read: EOF on pipe (debugger exited)\n");
-    fcntl(n, F_SETFL, kbdflgs & ~O_NONBLOCK);
-    e_d_note_output_closed();
-    return(-1);
-   }
-   /* read() returned EAGAIN: if the debugger process has died but its pipe
-      never reached EOF (the X11 launch path leaks xwpe's own write ends),
-      stop waiting for output that will never arrive instead of looping. */
-   if (e_d_debugger_gone())
-   {
-    fcntl(n, F_SETFL, kbdflgs & ~O_NONBLOCK);
-    return(-1);
-   }
-   e_d_wait_for_input(n);
-   if (e_d_getchar() == D_CBREAK) return(-1);
-  }
-  fcntl( n, F_SETFL, kbdflgs & ~O_NONBLOCK);
-  if (ret == -1) break;
-  else if (ret != 1 ||  s[i] == EOF || s[i] == '\0') break;
-  else if(s[i] == '\n' || s[i] == WPE_CR)  break;
-  else if(s[i] == WPE_ESC)
-  {  s[i] = '\0';  esc_sv = 1;  break;  }
- }
- if (ret == 1 && i == max - 1)
- {
-  /* The line filled the room; the entry point decides what to do with the
-     rest of it. */
-  s[i] = '\0';
-  *end = i;
-  wt = 0;
-  return(E_D_FILL_FULL);
- }
- if (ret != 1)
- {
-  s[i] = '\0';
-  jdb_trace("e_d_line_read: ret!=1 path, i=%d s='%s' (hex:", i, (char*)s);
-  { int _k; for (_k = 0; _k < i; _k++)
-    jdb_trace(" %02x", (unsigned char)s[_k]);
-  }
-  jdb_trace(")\n");
-  if (e_d_char_prompt(s, i))
-  {  jdb_trace("e_d_line_read: prompt DETECTED by its last characters\n");
-     e_deb_prompt_reset();  wt = 0;   return(1);  }
-  else if(e_deb_type == DEB_JDB)
-  {  jdb_trace("e_d_line_read: jdb prompt NOT detected (i=%d, s[i-1]=%02x s[i-2]=%02x)\n",
-               i, i>0?(unsigned char)s[i-1]:0, i>1?(unsigned char)s[i-2]:0);
-  }
-  /* One recognition path for every backend with a word prompt.  The window
-     holds the last plen bytes seen across reads, so a prompt arriving split is
-     recognisable at all -- the four per-backend copies this replaces never
-     managed that, and the a68g one wrote two bytes past a 12-byte scratch
-     while trying (F95). */
-  if (e_d_prompt_check(s + from, i - from))
-  {
-   jdb_trace("e_d_line_read: prompt DETECTED (i=%d)\n", i);
-   wt = 0;
-   return(1);
-  }
-  if (i > from)
-  {
-   *end = i;
-   wt = 0;
-   return(E_D_FILL_PAUSE);
-  }
- }
- else
- {
-  s[i+1] = '\0';
-  jdb_trace("e_d_line_read: normal line, i=%d s='%s'\n", i, (char*)s);
-  /* Fed here as well, so the window never carries bytes from before a finished
-     line into the next fragment and completes a prompt that was never sent.
-     The result is deliberately unused: a complete line is output, not the
-     debugger waiting, and these four backends never terminate a prompt with a
-     newline -- which is why the incomplete-line branch above exists. */
-  e_d_prompt_check(s + from, i - from);
- }
- if (i != 0) wt = 0;
- else wt++;
- return(0);
-}
-
-/**
- * e_d_line_read - Read one line of the debugger's output, keeping its head.
- * @n: the debugger's output; @s, @max: the caller's buffer; @sw: how many
- * empty reads to allow before waiting; @esw: read the error stream first.
- *
- * For the parsers that only need a line's start: a stop line, a breakpoint
- * answer, a frame's "at file:line", all within E_D_LINE_MAX.  A longer line
- * is cut at @max and its rest dropped by the next read, so its tail never
- * comes back as a line of its own.  A value shown to the user is read with
- * e_d_line_read_whole instead.
- * Return: -1 when the debugger is gone (or the break key was hit), 0 for a
- * line, 1 for the prompt, 2 for a line of the error stream.
- */
-static int e_d_line_read(int n, signed char *s, int max, int sw, int esw)
-{
- int end, ret = e_d_line_fill(n, s, 0, max, sw, esw, &end);
-
- if (ret == E_D_FILL_FULL)
-  return(e_d_line_cut(s, end));
- if (ret == E_D_FILL_PAUSE)
-  return(0);
- return(ret);
-}
-
-/**
  * e_d_line_room - Make room in a whole line for one more fill.
  * @ln: the line; @len: the bytes it holds so far.
  *
@@ -3798,127 +3311,6 @@ static int e_d_line_room(E_D_LINE *ln, int len)
  ln->s = grown;
  ln->size = (int)size;
  return(0);
-}
-
-/**
- * e_d_line_output_pending - Say whether more debugger output is ready now.
- * @n: the debugger's output.
- *
- * A prompt only ends a line when it is the last thing the debugger sent, as
- * in the dropping of a cut line, so text that merely contains one goes on.
- */
-static int e_d_line_output_pending(int n)
-{
- return(wpe_fd_readable_now(n) == WPE_FD_READABLE);
-}
-
-/**
- * e_d_line_full_at_prompt - Say whether a fill that filled its room ended
- * with the debugger's prompt, so the whole line is complete.
- * @n: the debugger's output; @ln, @from, @len: the line, where the fill
- * started and where it ended.
- *
- * Without this a long line that ends in the prompt exactly where the room
- * runs out would wait for output the debugger is not going to send.
- */
-static int e_d_line_full_at_prompt(int n, E_D_LINE *ln, int from, int len)
-{
- int at_prompt = e_d_prompt_check(ln->s + from, len - from);
-
- if (!at_prompt)
-  at_prompt = e_d_char_prompt(ln->s, len);
- if (!at_prompt || e_d_line_output_pending(n))
-  return(0);
- e_deb_prompt_reset();   /* the same bytes cannot complete a prompt twice */
- return(1);
-}
-
-/**
- * e_d_line_keep_cut - Keep a line that passed E_D_LINE_WHOLE_MAX cut, end it
- * in E_D_LINE_CUT_MARK, and leave its rest to be dropped by the next read.
- * @ln: the line; @len: the bytes it holds.
- *
- * Only a runaway debugger prints such a line; the mark tells the user that
- * what is shown is not all of it, and memory stays bounded.
- * Return: 0 (a line), or -1 when memory ran out.
- */
-static int e_d_line_keep_cut(E_D_LINE *ln, int len)
-{
- int tail = (len < E_D_PROMPT_TAIL) ? len : E_D_PROMPT_TAIL;
-
- if (e_d_line_room(ln, len) < 0)
-  return(-1);
- e_d_line_cut(ln->s + len - tail, tail);
- strcpy((char *)ln->s + len, E_D_LINE_CUT_MARK);
- return(0);
-}
-
-/**
- * e_d_line_read_whole - Read one line of the debugger's output however long
- * it is.
- * @n: the debugger's output; @ln: the line, grown as needed (start with
- * {NULL, 0} and give it back with e_d_line_free); @sw, @esw: as
- * e_d_line_read, the error stream being looked at before the line only.
- *
- * For what is shown to the user as the debugger printed it, and for what is
- * parsed from a line's end: a watch value or a Stack row may be a huge struct
- * or a frame with a long name, and a stop line or a "where" row names its
- * file and line after such a frame.  Cutting it would leave the user a value
- * without its end, or a stop that is not marked, and nothing saying so.  It
- * waits, breaks, gives up on a runaway debugger and recognises the prompt as
- * e_d_line_read does, and every E_D_LINE_MAX bytes count as one line toward
- * the runaway bound.  A pause inside a line that is not the prompt is waited
- * through, so a line the debugger writes in pieces is still one line.  A
- * line longer than E_D_LINE_WHOLE_MAX is kept cut and marked as such.
- * Return: as e_d_line_read, with the line in @ln->s; -1 also when memory ran
- * out.
- */
-static int e_d_line_read_whole(int n, E_D_LINE *ln, int sw, int esw)
-{
- int len = 0, from, ret;
-
- do
- {
-  if (len >= E_D_LINE_WHOLE_MAX)
-   return(e_d_line_keep_cut(ln, len));
-  if (e_d_line_room(ln, len) < 0)
-   return(-1);
-  from = len;
-  ret = e_d_line_fill(n, ln->s, from, from + E_D_LINE_MAX, sw, esw, &len);
-  esw = 0;                /* the error stream is looked at before a line only */
-  if (ret == E_D_FILL_FULL && e_d_line_full_at_prompt(n, ln, from, len))
-   ret = 1;
- }
- while (ret == E_D_FILL_FULL || ret == E_D_FILL_PAUSE);
- return(ret);
-}
-
-/**
- * e_d_line_free - Give back the memory of a whole line.
- * @ln: the line; it can be filled again afterwards.
- */
-static void e_d_line_free(E_D_LINE *ln)
-{
- if (ln->s)
-  FREE(ln->s);
- ln->s = NULL;
- ln->size = 0;
-}
-
-static int e_d_dum_read(void)
-{
- char str[256];
- int ret;
-
- jdb_trace("e_d_dum_read: entry\n");
- while ((ret = e_d_line_read(wfildes[0], str, sizeof str, 0, 0)) == 0 || ret == 2)
- {
-  jdb_trace("e_d_dum_read: line_read ret=%d str='%s'\n", ret, str);
-  if (ret == 2)
-   e_d_error(str);
- }
- jdb_trace("e_d_dum_read: exit ret=%d str='%s'\n", ret, str);
- return(ret);
 }
 
 /* The line gdb is asked to echo after interrupts it may have answered at
@@ -4026,196 +3418,6 @@ static int e_d_gdb_settle_later(ECNT *cn, int owed, int why)
   owed = 0;
  e_d_ga_owe_settle(owed);
  return(owed);
-}
-
-/* Output Routines */
-int e_d_p_exec(FENSTER *f)
-{
- ECNT *cn = f->ed;
- BUFFER *b;
- SCHIRM *s;
- int ret, i, is, j;
- char str[512];
-
- for (i = cn->mxedt; i > 0 && strcmp(cn->f[i]->datnam, "Messages"); i--)
-  ;
- if (i <= 0)
- {  e_edit(cn, "Messages");  i = cn->mxedt;  }
- f = cn->f[i];
- b = cn->f[i]->b;
- s = cn->f[i]->s;
- if (b->bf[b->mxlines-1].len != 0)
-  e_new_line(b->mxlines, b);
- for (j = 0, i = is = b->mxlines-1;
-   (ret = e_d_line_read(wfildes[0], str, 512, 0, 0)) == 0; )
- {
-  if (ret == -1)
-   return(ret);
-  print_to_end_of_buffer(b, str, b->mx.x);
- }
- if (ret == 1)
- {
-  e_new_line(i, b);
-  for (j = 0; j < NUM_COLS_ON_SCREEN_SAFE - 2 && str[j] != '\n' &&
-    str[j] != '\0'; j++)
-   *(b->bf[i].s+j) = str[j];
-  b->b.y = i;
-  b->b.x = b->bf[i].len = j;
-  b->bf[i].nrc = j;
- }
- b->b.y = b->mxlines-1;
- b->b.x = 0;
-
- e_rep_win_tree(cn);
- return(ret);
-}
-
-#define E_D_FIRST_PRINTABLE 32   /* the first byte that is not a control byte */
-
-/**
- * e_d_key_is_for_editor - Is this typed byte part of an editor command?
- * @c: the byte read while the debugger is being waited for
- *
- * A control byte other than Enter, Backspace and Tab, such as the Ctrl-G
- * of a debugger command or the Escape that starts an Alt key, is never text
- * for the program being debugged.  Taking it here would lose the first key
- * of a command typed just as the program ends, and its letter would then be
- * typed into the source.
- * Return: 1 when the editor must read the byte, else 0.
- */
-static int e_d_key_is_for_editor(int c)
-{
- if (c < 0 || c >= E_D_FIRST_PRINTABLE || c == CTRLC)
-  return(0);
- if (c == '\r' || c == '\n' || c == '\b' || c == '\t')
-  return(0);
- return(1);
-}
-
-#ifndef NO_XWINDOWS
-/**
- * e_d_x_key_is_for_editor - Is this graphical key press an editor command?
- * @c: the character the key press produced
- * @state: the modifier state of the key press
- *
- * Alt with a letter produces the plain letter, so the modifier decides:
- * the Alt prefixes of the language server and the assistant are never text
- * for the program being debugged.
- * Return: 1 when the editor must read the key press, else 0.
- */
-static int e_d_x_key_is_for_editor(int c, unsigned int state)
-{
- if (state & Mod1Mask)
-  return(1);
- return(e_d_key_is_for_editor(c));
-}
-#endif
-
-/**
- * e_d_getchar - Look for a typed key while the debugger is being waited for.
- *
- * Ctrl-C asks to quit the debugger, and text typed for the program being
- * debugged is passed on to it.  A key that belongs to the editor is left
- * unread, so a command typed as the program ends arrives whole and its
- * letter is not typed into the file.
- * Return: the key that was taken, or 0 when none was.
- */
-static int e_d_getchar(void)
-{
- int i = 1, fd, left_for_editor = 0;
- char c = 0, kbdflgs = 0;
- static FILE *_gc_dbg = NULL;
-
- if (!WpeIsXwin() && e_t_key_is_handed_back())
-  return(0);
- if (WpeIsXwin()) fd = rfildes[0];
- else fd = 0;
-
-/*   if(WpeIsXwin() || e_deb_mode)    */
- {
-  kbdflgs = fcntl(fd, F_GETFL, 0 );
-  fcntl( fd, F_SETFL, kbdflgs | O_NONBLOCK);
- }
-#ifndef NO_XWINDOWS
- if (WpeIsXwin())
- {
-  XEvent _ev;
-  KeySym _ks;
-  char _buf[8];
-
-  XFlush(WpeXInfo.display);
-  while (XPending(WpeXInfo.display))
-  {
-   XNextEvent(WpeXInfo.display, &_ev);
-   if (_ev.type == KeyPress)
-   {
-    if (XLookupString(&_ev.xkey, _buf, sizeof(_buf), &_ks, NULL) == 1)
-    {
-     if (e_d_x_key_is_for_editor(_buf[0], _ev.xkey.state))
-     {
-      XPutBackEvent(WpeXInfo.display, &_ev);
-      left_for_editor = 1;
-      break;
-     }
-     c = _buf[0];
-     break;
-    }
-   }
-#ifdef HAVE_XFT
-   else if (_ev.type == Expose)
-   {
-    /* Repaint the exposed area from the Xft/Cairo double buffer.  backbuf only
-       exists in the HAVE_XFT build; without it the window is drawn directly, so
-       there is nothing to copy here and the event is simply consumed. */
-    XCopyArea(WpeXInfo.display, WpeXInfo.backbuf, WpeXInfo.window,
-      WpeXInfo.gc, _ev.xexpose.x, _ev.xexpose.y,
-      _ev.xexpose.width, _ev.xexpose.height,
-      _ev.xexpose.x, _ev.xexpose.y);
-   }
-#endif
-  }
- }
-#endif
- if (left_for_editor)
- {
-  fcntl(fd, F_SETFL, kbdflgs & ~O_NONBLOCK);
-  return(0);
- }
- if (c || (i = read(fd, &c, 1)) == 1)
- {
-  if (!WpeIsXwin() && e_d_key_is_for_editor(c))
-  {
-   e_t_hand_key_back((unsigned char)c);
-   fcntl(fd, F_SETFL, kbdflgs & ~O_NONBLOCK);
-   return(0);
-  }
-  if (c == CTRLC)
-  {
-/*	 if (WpeIsXwin() || e_deb_mode)    */
-   fcntl(fd, F_SETFL, kbdflgs & ~O_NONBLOCK);
-   e_d_switch_out(0);
-   i = e_message(1, e_d_msg[ERR_CTRLCPRESS], WpeEditor->f[WpeEditor->mxedt]);
-   if (i == 'Y')
-   {
-    e_d_quit(WpeEditor->f[WpeEditor->mxedt]);
-    return(D_CBREAK);
-   }
-   else
-    return(c);
-  }
-  else if (e_d_pty_master >= 0 && ((c >= 32 && c < 127) || c == '\r' || c == '\n' || c == '\b'))
-  {
-   char _ch = (c == '\r') ? '\n' : c;
-   write(e_d_pty_master, &_ch, 1);
-   /* No explicit echo: the pty's line discipline echoes the byte back, and
-      e_d_pty_read_to_messages picks it up.  Echoing here would double it. */
-  }
-  else
-   write(rfildes[1], &c, 1);
- }
-/*   if (WpeIsXwin() || e_deb_mode)   */
- fcntl(fd, F_SETFL, kbdflgs & ~O_NONBLOCK);
- return(i == 1 ? c : 0);
 }
 
 int e_d_is_watch(int c, FENSTER *f)
@@ -4338,11 +3540,9 @@ int e_d_quit_basic(FENSTER *f)
 #define E_D_SIGNAL_STATUS_BASE 128
 #define E_D_DIED_LINE_MAX    128
 
-/* The debugger's output pipe reached its end, and its exit status if it was
-   collected on the way.  Reset when the session ends. */
+/* The debugger's output pipe reached its end.  Reset when the session
+   ends. */
 static int e_d_output_closed = 0;
-static int e_d_reaped_known = 0;
-static int e_d_reaped_status = 0;
 
 /**
  * e_d_note_output_closed - Record that the debugger's output ended.
@@ -4357,23 +3557,11 @@ static void e_d_note_output_closed(void)
 }
 
 /**
- * e_d_note_reaped - Keep the exit status of a debugger a reader reaped.
- * @status: the wait status.
- */
-static void e_d_note_reaped(int status)
-{
- e_d_reaped_known = 1;
- e_d_reaped_status = status;
-}
-
-/**
  * e_d_end_forget - Forget how the last debugger ended, for the next session.
  */
 static void e_d_end_forget(void)
 {
  e_d_output_closed = 0;
- e_d_reaped_known = 0;
- e_d_reaped_status = 0;
 }
 
 /**
@@ -4403,11 +3591,6 @@ static int e_d_collect_end_status(int *status)
 {
  int pid = e_d_pid, r;
 
- if (e_d_reaped_known)
- {
-  *status = e_d_reaped_status;
-  return(1);
- }
  if (pid <= 0)
   return(0);
  e_d_pid = 0;
@@ -4943,11 +4126,7 @@ int e_d_p_watches(FENSTER *f, int sw)
 {
  ECNT *cn = f->ed;
  BUFFER *b;
- SCHIRM *s;
- int iw, i, l, ret;
- size_t len;
- char str1[E_D_LINE_MAX], *str;   /* the command; the answer, joined */
- E_D_LINE value = {  NULL, 0  };  /* the debugger's answer, however long */
+ int iw, l;
 
  if (e_d_start_refused(f))
   return(0);
@@ -4963,52 +4142,19 @@ int e_d_p_watches(FENSTER *f, int sw)
  iw = e_d_watches_window_take(cn);
  if (iw <= 0)
   return(iw);
- f = cn->f[iw];
  b = cn->f[iw]->b;
- s = cn->f[iw]->s;
  e_d_watches_buffer_clear(b);
 
- for (i = 0, l = 0; l < e_d_nwtchs; l++)
+ /* The debugger is asked only at a stop (above).  With a session that runs
+    or answers, a watch's value comes at the next stop; with none, the
+    watch says it has no value. */
+ for (l = 0; l < e_d_nwtchs; l++)
  {
-  if (e_d_watches_wait())
-  {
+  if (e_d_swtch)
    e_d_watch_put_waiting(b, l);
-   continue;
-  }
-  /* Create appropriate command for the debugger (e_d_watch_refused above
-     has already turned away a debugger that has none) */
-  e_d_watch_command(str1, sizeof str1, e_d_swtchs[l]);
-
-  /* Send command to debugger */
-  if(e_d_swtch)
-  {
-   e_d_send_cmd(str1);
-  }
-
-  /* No debugger or no response: the watch says it has no value */
-  str = NULL;
-  if (e_d_swtch && (ret = e_d_line_read_whole(wfildes[0], &value, 0, 0)) != 1)
-  {
-   if (ret == -1)
-   {
-    e_d_line_free(&value);
-    return(ret); /* BUG? e_d_nrwtchs not initialized if this return is taken */
-   }
-   str = MALLOC(strlen((char *)value.s) + 1);
-   strcpy(str, (char *)value.s);
-   while ((ret = e_d_line_read_whole(wfildes[0], &value, 0, 0)) == 0 || ret == 2)
-   {
-    if (ret == 2) e_d_error((char *)value.s);
-    str = REALLOC(str, (len = strlen(str)) + strlen((char *)value.s) + 1);
-    if (len > 0 && str[len-1] == '\n') str[len-1] = ' ';
-    strcat(str, (char *)value.s);
-   }
-  }
-  e_d_watch_put_value(b, l, str);
-  if (str)
-   FREE(str);
+  else
+   e_d_watch_put_value(b, l, NULL);
  }
- e_d_line_free(&value);
  e_d_watches_show_end(cn, iw, b, sw);
  return(0);
 }
@@ -5082,24 +4228,6 @@ int e_deb_stack(FENSTER *f)
   return(0);
  e_d_switch_out(0);
  return(e_d_p_stack(f, 1));
-}
-
-/**
- * e_d_stack_row_read - Read the next row of gdb's, sdb's, xdb's or dbx's
- * stack listing, whole, and report the error lines met on the way.
- * @row: the row read.
- *
- * A frame of a function with a very long name or arguments is shown in the
- * Stack window to its end, wrapped, instead of losing its "at file:line".
- * Return: e_d_line_read_whole's code for the row.
- */
-static int e_d_stack_row_read(E_D_LINE *row)
-{
- int ret;
-
- while ((ret = e_d_line_read_whole(wfildes[0], row, 0, 0)) == 2)
-  e_d_error((char *)row->s);
- return(ret);
 }
 
 /* The rows of the last stack listing, whole, each with the Stack window line
@@ -5179,18 +4307,6 @@ static const char *e_d_stack_rows_find(int first)
   if (e_d_stack_rows.first[i] == first)
    return(e_d_stack_rows.text[i]);
  return(NULL);
-}
-
-/**
- * e_d_stack_done - Give back the row buffer of the Stack window's listing
- * and pass the result on.
- * @row: the row buffer; @ret: what e_d_p_stack answers.
- * Return: @ret.
- */
-static int e_d_stack_done(E_D_LINE *row, int ret)
-{
- e_d_line_free(row);
- return(ret);
 }
 
 /**
@@ -5286,8 +4402,7 @@ static void e_d_stack_show_end(ECNT *cn, int is, int rows, int sw)
 int e_d_p_stack(FENSTER *f, int sw)
 {
  ECNT *cn = f->ed;
- int is, i, j, ret;
- E_D_LINE row = {  NULL, 0  };   /* one row of the listing, however long */
+ int is;
 
  if (e_d_swtch < 3)
   return(e_error(e_d_msg[ERR_NOTRUNNING], 0, f->fb));
@@ -5310,30 +4425,8 @@ int e_d_p_stack(FENSTER *f, int sw)
   return(e_d_ga_stack_ask(cn, sw));
  if (e_d_frames_backend())
   return(e_d_p_frames(cn, is, sw));
- if (e_deb_type == DEB_SDB || e_deb_type == DEB_XDB)
-  e_d_send_cmd("t\n");
- else if (e_deb_type == DEB_DBX)
-  e_d_send_cmd("where\n");
- else
-  return(0);   /* no stack command here: never wait for an answer to nothing */
- e_d_stack_rows_clear();
- if ((ret = e_d_stack_row_read(&row)) == -1)
-  return(e_d_stack_done(&row, -1));
- i = j = 0;
- if (ret == 1)
- {
-  e_d_line_free(&row);
-  e_d_error(e_d_msg[ERR_PROGEXIT]);
-  return(e_d_quit(f));
- }
- while(ret != 1)
- {
-  e_d_stack_put_row(f, (char *)row.s, &i, &j);
-  if ((ret = e_d_stack_row_read(&row)) == -1)
-   return(e_d_stack_done(&row, -1));
- }
- e_d_line_free(&row);
- e_d_stack_show_end(cn, is, i, sw);
+ /* A line debugger that runs or answers is never asked: the Stack window
+    is refused then (e_deb_stack), and filled at the next stop. */
  return(0);
 }
 
@@ -5509,8 +4602,8 @@ static char *e_make_stack_row(BUFFER *b, int i, char *row)
 
 int e_make_stack(FENSTER *f)
 {
-   char file[E_D_LINE_MAX], str[E_D_LINE_MAX], *tmpstr;
-   int i, ret, line = 0, dif;
+   char file[E_D_LINE_MAX], *tmpstr;
+   int i, line = 0, dif;
    BUFFER *b = f->ed->f[f->ed->mxedt]->b;
    if (e_d_refuse_while_running(f))
       return(0);
@@ -5549,19 +4642,10 @@ int e_make_stack(FENSTER *f)
       FREE(tmpstr);           /* the file and line are read out of it */
       if(e_d_ga_at_stop())
 	 return(e_d_ga_follow_frame(f->ed, dif, file, line));
-      if(dif > e_d_nstack)
-	 sprintf(str, "%s %d\n",
-	 e_deb_type != DEB_XDB ? "up" : "down", dif - e_d_nstack);
-      else if(dif < e_d_nstack)
-	 sprintf(str, "%s %d\n",
-	 e_deb_type != DEB_XDB ? "down" : "up", e_d_nstack - dif);
-      if(dif != e_d_nstack)
-      {  e_d_send_cmd(str);
-	 while((ret = e_d_line_read(wfildes[0], str, sizeof str, 0, 0)) == 0 || ret == 2)
-	    if( ret == 2) e_d_error(str);
-	 if(ret == -1) return(ret);
-	 e_d_nstack = dif;
-      }
+      /* No frame move can be sent: while the debugger starts the start's
+	 line says why; with no session the row's line is only shown. */
+      if(e_d_start_refused(f))
+	 return(0);
    }
    else if(e_deb_type == DEB_SDB)
    {  FREE(tmpstr);           /* sdb's rows are read in place */
@@ -5767,17 +4851,6 @@ static void e_d_brk_jdb_class(const char *file, char *out, size_t size);
 static int e_d_brk_arm(ECNT *cn, int i);
 static int e_d_brk_disarm(ECNT *cn, const char *file, int line, int id);
 static void e_d_brk_disarm_all(ECNT *cn);
-
-/**
- * e_d_send_and_read - Send the debugger @cmd and read its answer up to the
- * prompt, so the next command's answer is not mistaken for this one's.
- * Return: e_d_dum_read's answer, -1 when the debugger stopped answering.
- */
-static int e_d_send_and_read(const char *cmd)
-{
- e_d_send_cmd(cmd);
- return(e_d_dum_read());
-}
 
 /**
  * e_d_brk_is_start_entry - Is list entry @i the breakpoint the editor sets
@@ -6331,57 +5404,13 @@ static void e_d_brk_grow(void)
  e_d_brk_state_grow(e_d_nbrpts);
 }
 
-/**
- * e_d_start_brk_has_command - Does the selected debugger set the editor's
- * start breakpoint with a command, so that removing it needs one too?
- *
- * pdb, a68g and the debug adapters stop at the start by themselves and are
- * sent nothing, so nothing is sent, nor waited for, when it goes.
- */
-static int e_d_start_brk_has_command(void)
-{
- return(e_deb_type == DEB_GDB || e_deb_type == DEB_DBX ||
-        e_deb_type == DEB_XDB || e_deb_type == DEB_JDB ||
-        e_deb_type == DEB_SDB);
-}
-
-static int e_d_brk_read_number_line(char *str, int errors);   /* (below) */
-/* e_d_line_read's codes for what it read, besides 0 for a line. */
+/* What a breakpoint answer held, besides 0 for a line of the debugger's
+   output: the kinds the verdicts (e_d_brk_numbered_verdict) tell apart. */
 #define E_D_READ_PROMPT  1   /* the prompt came: no (more) answer */
 #define E_D_READ_ERROR   2   /* a line of the debugger's error stream */
 
-/**
- * e_d_brk_arm_start_symbol - Send @cmd, which sets dbx's or xdb's
- * breakpoint on the program's start symbol, and keep the number it gives.
- * @cmd: the debugger's command.
- *
- * The number is read by the same reader as every other breakpoint answer,
- * so the breakpoint the editor sets for itself at the start can be taken
- * out again like the user's.
- * Return: 0, or -1 when the debugger stopped answering.
- */
-static int e_d_brk_arm_start_symbol(char *cmd)
-{
- char str[E_D_BRK_ANSWER_MAX];
- int ret;
-
- e_d_send_cmd(cmd);
- ret = e_d_brk_read_number_line(str, 0);
- if (ret == -1)
-  return(-1);
- if (ret == E_D_READ_ERROR)
-  e_d_error(str);
- e_d_nrbrpts[e_d_nbrpts - 1] = e_ds_brk_number(e_deb_type, str);
- if (ret != E_D_READ_PROMPT && e_d_dum_read() == -1)
-  return(-1);
- return(0);
-}
-
 int e_mk_brk_main(FENSTER *f, int sw)
 {
- int i, ret;
- char eing[E_D_LINE_MAX + 128], str[E_D_LINE_MAX];
-
  if (sw)
  {
   /* Remove all may already have taken the entry out of the list. */
@@ -6399,24 +5428,7 @@ int e_mk_brk_main(FENSTER *f, int sw)
    e_d_ga_drop_start_entry(sw-1);
    return(0);
   }
-  if (e_d_swtch && e_d_start_brk_has_command())
-  {
-   if (e_deb_type == DEB_DBX)
-    sprintf(eing, "delete %d\n", e_d_nrbrpts[sw-1]);
-   else if (e_deb_type == DEB_XDB)
-    sprintf(eing, "db %d\n", e_d_nrbrpts[sw-1]);
-   else if (e_deb_type == DEB_SDB)
-   {
-    sprintf(eing, "e %s\n", e_get_start_symbol());
-    e_d_send_cmd(eing);
-    if (e_d_dum_read() == -1) return(-1);
-    sprintf(eing, "%d d\n", e_d_ybrpts[sw-1]);
-   }
-   jdb_trace("e_mk_brk_main(del): sending '%s'\n", eing);
-   e_d_send_cmd(eing);
-   if (e_d_dum_read() == -1) return(-1);
-  }
-  e_d_brk_list_drop(sw-1);
+  e_d_brk_list_drop(sw-1);   /* an adapter stops at the start by itself */
  }
  else
  {
@@ -6425,42 +5437,8 @@ int e_mk_brk_main(FENSTER *f, int sw)
   e_d_sbrpts[e_d_nbrpts - 1][0] = '\0';   /* no file: the start symbol */
   e_d_ybrpts[e_d_nbrpts - 1] = 0;         /* no line until sdb names one */
   e_d_nrbrpts[e_d_nbrpts - 1] = 0;        /* not set in the debugger yet */
-  /* gdb and jdb are told by the run that follows, on the fd loop
-     (e_d_ga_go); pdb needs no command for it. */
-  if (e_d_swtch && !e_d_ga_backend_of(e_deb_type))
-  {
-   if (e_deb_type == DEB_DBX)
-   {
-    sprintf(eing, "stop in %s\n", e_get_start_symbol());
-    if (e_d_brk_arm_start_symbol(eing) == -1)
-     return(-1);
-   }
-   else if (e_deb_type == DEB_XDB)
-   {
-    sprintf(eing, "b %s\n", e_get_start_symbol());
-    if (e_d_brk_arm_start_symbol(eing) == -1)
-     return(-1);
-   }
-   else if (e_deb_type == DEB_SDB)
-   {
-    sprintf(eing, "e %s\n", e_get_start_symbol());
-    e_d_send_cmd(eing);
-    if (e_d_dum_read() == -1) return(-1);
-    sprintf(eing, "b\n");
-    e_d_send_cmd(eing);
-    if ((ret = e_d_line_read(wfildes[0], str, sizeof str, 0, 0)) == -1)
-     return(ret);
-    if (ret == 2) e_d_error(str);
-    if (ret != 1)
-    {
-     for (i = 0; str[i] && str[i] != ':'; i++)
-      ;
-     if (str[i])
-      e_d_ybrpts[e_d_nbrpts - 1] = atoi(str+i+1);
-     if (e_d_dum_read() == -1) return(-1);
-    }
-   }
-  }
+  /* Every pipe debugger is told by the run that follows, on the fd loop
+     (e_d_ga_go); pdb, a68g and the adapters need no command for it. */
  }
  return(sw ? 0 : e_d_nbrpts);
 }
@@ -6533,31 +5511,6 @@ static int e_d_brk_toggle_on(FENSTER *f, int line)
  return(0);
 }
 
-/**
- * e_d_brk_arm_all - Set every breakpoint of the user's in a debugger that
- * has just started.
- * @cn: the editor.
- *
- * A session started after the margin was marked stops on each mark.  One
- * the debugger refuses stays in the list, hollow, with its words on the
- * status row, and is tried again at the next start.
- * Return: 0, or -1 when the debugger stopped answering.
- */
-static int e_d_brk_arm_all(ECNT *cn)
-{
- int i;
-
- for (i = 0; i < e_d_nbrpts; i++)
- {
-  if (e_d_brk_is_start_entry(i))
-   continue;
-  if (e_d_brk_arm(cn, i) == -1)
-   return(-1);
-  e_d_brk_say_if_refused(cn->f[cn->mxedt], i);
- }
- return(0);
-}
-
 int e_make_breakpoint(FENSTER *f, int sw)
 {
  ECNT *cn = f->ed;
@@ -6592,8 +5545,6 @@ int e_make_breakpoint(FENSTER *f, int sw)
    s->brp[s->brp[0]] = b->b.y;
   }
  }
- else if (e_d_brk_arm_all(cn) == -1)
-  return(-1);
  e_schirm(f, 1);
  return(1);
 }
@@ -7420,7 +6371,7 @@ int e_exec_deb(FENSTER *f, char *prog)
       - efildes[1] is the child's stderr write-end (parent uses efildes[0])
       Without closing these, read() on wfildes[0]/efildes[0] never returns
       EOF when the child exits, because the parent's copy of the write-end
-      keeps the pipe open.  This caused infinite loops in e_d_line_read.
+      keeps the pipe open, and a reader then waits forever.
       Note: only for non-X11.  In X11 mode, these fds are overwritten
       with tty/named-pipe fds above and the originals are leaked. */
    { int _ret_fd = wfildes[1];
@@ -7718,8 +6669,9 @@ static void e_d_dap_on_stopped(const char *file, int line, const char *reason,
  }
 }
 
-/* Move the editor to the recorded stop and refresh the Watches window.  Order
-   matches e_d_pr_sig: evaluate watches first, then jump to the source line. */
+/* Move the editor to the recorded stop and refresh the Watches window:
+   evaluate watches first, then jump to the source line, as every debugger's
+   stop does. */
 static void e_d_dap_paint_stop(FENSTER *f)
 {
  if (!f || g_dap_stop_line < 0 || !g_dap_stop_file[0])
@@ -8741,8 +7693,7 @@ static struct {
 static e_d_resume_fn e_d_start_cmd = NULL;
 static int e_d_start_arg = 0;
 
-static int e_d_start_after_banner(FENSTER *f);
-static void e_d_jdb_start_begin(void);                    /* jdb's start */
+static void e_d_jdb_start_begin(void);                   /* jdb's start */
 static void e_d_jdb_start_on_output(int fd, void *data);  /* (below) */
 static int e_d_start_watch_fd(int fd, wpe_fd_callback cb);
 
@@ -9325,29 +8276,21 @@ static void e_d_start_run_pressed(e_d_resume_fn cmd, FENSTER *f, int arg)
 }
 
 /**
- * e_d_start_after_answer - Set the session up now that the debugger has
- * answered.
+ * e_d_start_after_answer - Set a debug adapter's session up now that the
+ * adapter has answered.
  * @f: the window on top.
  *
- * A pipe debugger gets its settings and breakpoints; a debug adapter, whose
- * handshake already carried the breakpoints, runs to the first stop.
+ * The adapter's handshake already carried the breakpoints, so the program
+ * runs to its first stop.  Every pipe debugger is set up on the fd loop
+ * instead (e_d_start_sets_up_later), so only an adapter comes here.
  * Return: 0, or -1 when the session ended instead (and said why).
  */
 static int e_d_start_after_answer(FENSTER *f)
 {
  ECNT *cn = f->ed;
 
- if (e_d_start.dap)
- {
-  e_d_dap_start_close_messages(cn);
-  return(e_d_dap_start_finish(cn->f[cn->mxedt]));
- }
- e_deb_prompt_reset();
- if (e_d_start_after_banner(f) == 0)
-  return(0);
- e_d_quit(f);
- e_show_error(0, cn->f[cn->mxedt]);
- return(-1);
+ e_d_dap_start_close_messages(cn);
+ return(e_d_dap_start_finish(cn->f[cn->mxedt]));
 }
 
 /**
@@ -9366,7 +8309,7 @@ static void e_d_start_session_ready(ECNT *cn, e_d_resume_fn cmd, int arg)
 }
 
 /**
- * e_d_start_sets_up_later - gdb, pdb, jdb or a68g answered its banner: set it up
+ * e_d_start_sets_up_later - A pipe debugger answered its banner: set it up
  * through the request engine, and run the command the user pressed once it
  * has answered.
  * @cn: the editor; @cmd, @arg: the command that started the session.
@@ -9374,8 +8317,7 @@ static void e_d_start_session_ready(ECNT *cn, e_d_resume_fn cmd, int arg)
  * The user keeps the editor while the debugger takes its settings and
  * breakpoints; a debugger key typed meanwhile is kept for after the first
  * stop.
- * Return: 1 when the set-up goes on later (gdb, pdb, jdb, a68g), 0 for the other
- * debuggers.
+ * Return: 1 when the set-up goes on later (every pipe debugger), else 0.
  */
 static int e_d_start_sets_up_later(ECNT *cn, e_d_resume_fn cmd, int arg)
 {
@@ -10292,32 +9234,6 @@ static void e_d_start_take_focus(void)
 }
 
 /**
- * e_d_start_after_banner - Set the debugger up once it has answered.
- * @f: the window on top.
- *
- * Sends the breakpoints; from here the session is running.  gdb is set up
- * on the fd loop instead (e_d_ga_set_up).
- * Return: 0, or -1 when the debugger stopped answering.
- */
-static int e_d_start_after_banner(FENSTER *f)
-{
- ECNT *cn = f->ed;
-
- jdb_trace("e_run_debug: banner read OK\n");
- if (e_deb_type == DEB_XDB)
- {
-  e_d_send_cmd("sm\n");
-  if (e_d_dum_read() == -1) return(-1);
- }
- jdb_trace("e_run_debug: setting breakpoints (nbrpts=%d)...\n", e_d_nbrpts);
- if (e_make_breakpoint(cn->f[cn->mxedt], 1) == -1) return(-1);
- jdb_trace("e_run_debug: breakpoints set OK, e_d_swtch -> 2\n");
- e_d_swtch = 2;
- e_d_start_take_focus();
- return(0);
-}
-
-/**
  * e_run_debug - Make sure a debugger session is running.
  * @f: the window the debugger command was pressed in.
  *
@@ -10671,7 +9587,6 @@ typedef void (*E_D_STEP_SPILL)(void *ctx, char *text, int mid_line);
  */
 static void e_d_step_reply_init(E_D_STEP_REPLY *r)
 {
- e_d_cut_forget_output();
  r->len = 0;
  r->mid_line = 0;
  r->buf[0] = '\0';
@@ -10793,49 +9708,6 @@ static int e_d_text_next_line(const char *text, int *pos, char *line, int size)
 }
 
 /*  Run  */
-/* dbx's or xdb's answer to run, whole: it is shown in Messages.  gdb's is
-   read by the run itself (e_d_gdb_run_line_own). */
-static E_D_LINE e_d_run_answer;
-
-/**
- * e_d_run_answer_awaited - Say whether a line of the answer to run is not
- * yet the one that says the program runs.
- * @line: the line; @prsw: the program was already running (continue).
- */
-static int e_d_run_answer_awaited(const char *line, int prsw)
-{
- (void)prsw;
- if (!line[0])
-  return(1);
- if (e_d_swtch < 3 && e_deb_type == DEB_DBX && strncmp("Running:", line, 8))
-  return(1);
- return(0);
-}
-
-/**
- * e_d_run_answer_read - Read dbx's or xdb's answer to run up to the line
- * that says the program runs, whole, into e_d_run_answer.
- * @prsw: the program was already running (continue).
- *
- * The line is shown in Messages as the debugger printed it, a long argument
- * list included.
- * Return: 0, or -1 when the debugger is gone.
- */
-static int e_d_run_answer_read(int prsw)
-{
- int ret;
-
- e_d_ga_run_begins();      /* its reader takes gdb's error stream from here */
- while ((ret = e_d_line_read_whole(wfildes[0], &e_d_run_answer, 0, 0)) == 2 ||
-        (ret >= 0 && e_d_run_answer_awaited((char *)e_d_run_answer.s, prsw)))
- {
-  if (ret == 2)
-   e_d_error((char *)e_d_run_answer.s);
- }
- if (ret < 0)
-  return(-1);
- return(0);
-}
 
 /**
  * e_d_run_continue_command - The command that lets the program run on after
@@ -10880,9 +9752,7 @@ int e_deb_run(FENSTER *f)
 {
  ECNT *cn = f->ed;
  char eing[E_D_LINE_MAX + 128];
- char *said = eing;     /* the line Messages shows: the answer, or the command */
  int ret, prsw = 0, main_brk = 0;
- const E_D_RUN_OPS *run_ops;
 
  if (e_d_act_deferred(E_D_ACT_RUN, f, 0))
   return(0);
@@ -11003,34 +9873,11 @@ int e_deb_run(FENSTER *f)
  e_d_nstack = 0;
  e_d_delbreak(f);
  e_d_switch_out(1);
- if (e_d_ga_backend_of(e_deb_type) && prsw)
+ /* Every pipe debugger runs on the request engine (e_d_ga_backend_of), so
+    the run goes out on the fd loop and the editor keeps its keys. */
+ if (prsw)
   return(e_d_ga_go(f, E_D_GO_CONTINUE, eing, main_brk));
- if (e_d_ga_backend_of(e_deb_type))
-  return(e_d_ga_go(f, E_D_GO_START, eing, main_brk));
- jdb_trace("e_deb_run: sending '%s' (prsw=%d)\n", eing, prsw);
- e_d_send_cmd(eing);
- if ((e_deb_type == DEB_DBX  || e_deb_type == DEB_XDB) && !prsw)
- {
-  if (e_d_run_answer_read(prsw) < 0)
-   return(e_d_quit(f));
-  said = (char *)e_d_run_answer.s;
- }
- if (!prsw)
-  e_d_p_message(said, f, 0);
- if (e_d_swtch < 3 && e_deb_type == DEB_DBX && strncmp("Running:",said, 8))
- {
-  e_d_quit(f);
-  return(e_error(e_d_msg[ERR_CANTPROG], 0, f->fb));
- }
- e_d_swtch = 3;
- run_ops = e_d_run_ops_of_backend();
- if (run_ops)
-  return(e_d_run_hand_over_continue(f, run_ops, main_brk));
- { int _ro = e_read_output(f);
-   if (main_brk)
-    e_mk_brk_main(f, main_brk);
-   return(_ro);
- }
+ return(e_d_ga_go(f, E_D_GO_START, eing, main_brk));
 }
 
 int e_deb_trace(FENSTER *f)
@@ -14305,33 +13152,6 @@ static void e_d_brk_judge_line(E_D_BRK_ANSWER *ans, const char *line,
 }
 
 /**
- * e_d_brk_read_reply - Read the debugger's reply to a breakpoint command up
- * to its prompt, and say what it made of it.
- * @ans: receives the verdict; NULL to read and drop the reply, showing an
- * error line in a box as every other command's reply does.
- *
- * What the user sees of a refusal is then the debugger's own words on the
- * status row, with the mark left hollow, not a box in the way of the next key.
- * Return: e_d_dum_read's answer, -1 when the debugger stopped answering.
- */
-static int e_d_brk_read_reply(E_D_BRK_ANSWER *ans)
-{
- char str[E_D_BRK_ANSWER_MAX];
- int ret;
-
- if (!ans)
-  return(e_d_dum_read());
- ans->state = E_D_BRK_VERIFIED;
- ans->msg[0] = '\0';
- while ((ret = e_d_line_read(wfildes[0], str, sizeof(str), 0, 1)) == 0 ||
-        ret == 2)
-  e_d_brk_judge_line(ans, str, ret == 2);
- if (ret == 1 && e_e_line_read(efildes[0], str, sizeof(str)) == 2)
-  e_d_brk_judge_line(ans, str, 1);     /* written just after the prompt */
- return(ret);
-}
-
-/**
  * e_d_dap_send_file_breakpoints - Give the adapter @file's breakpoints as
  * the user's list has them, with @extra_line too when it is not 0.
  * @path: the file's full path.
@@ -14410,39 +13230,30 @@ static void e_d_dap_on_breakpoints(const char *file, const int *line,
 
 /**
  * e_d_brk_line_send - Arm (@set 1) or disarm (@set 0) the breakpoint on
- * @line of @file in pdb, jdb or a debug adapter.
+ * @line of @file in a debug adapter.
  * @path: the file's full path.
  *
- * A breakpoint set or removed while a session runs, Remove all, and Go to
- * cursor's own breakpoint all come through here, so the next run stops
- * where the margin says whichever debugger runs it.  A debug adapter is
- * given the user's list again, so the list must already say what the user
- * wants.  @ans, when given, receives the
- * debugger's verdict (a debug adapter's comes later, through on_breakpoints).
- * Return: 0, or -1 when the debugger could not be told.
+ * A breakpoint set or removed at a stop, and Go to cursor's own breakpoint,
+ * come through here, so the next run stops where the margin says.  The
+ * adapter is given the user's list again, so the list must already say
+ * what the user wants.  @ans, when given, is marked asked: the adapter's
+ * verdict comes later, through on_breakpoints.  The line debuggers are
+ * told on the fd loop (e_d_ga_brk_sync) and never come here.
+ * Return: 0, or -1 when the adapter could not be told.
  */
 static int e_d_brk_line_send(int set, const char *file, const char *path,
                              int line, E_D_BRK_ANSWER *ans)
 {
- char cmd[E_D_BRK_CMD_MAX];
-
  if (ans)
  {
   ans->state = E_D_BRK_ASKED;
   ans->msg[0] = '\0';
  }
- if (e_deb_type == DEB_DAP && !e_d_dap_active())
+ if (e_deb_type != DEB_DAP || !e_d_dap_active())
   return(0);
- if (e_deb_type == DEB_DAP && set)
+ if (set)
   return(e_d_dap_send_file_breakpoints(file, path, line));
- if (e_deb_type == DEB_DAP)
-  return(e_d_dap_send_file_breakpoints(file, path, E_D_BRK_NO_LINE));
- if (!e_d_brk_line_cmd(set, file, path, line, cmd, sizeof(cmd)))
-  return(-1);
- e_d_send_cmd(cmd);
- if (e_d_brk_read_reply(ans) == -1)
-  return(-1);
- return(0);
+ return(e_d_dap_send_file_breakpoints(file, path, E_D_BRK_NO_LINE));
 }
 
 /**
@@ -14461,38 +13272,14 @@ static void e_d_brk_path_of(ECNT *cn, const char *file, char *out, size_t size)
   snprintf(out, size, "%s", file);
 }
 
-/**
- * e_d_brk_read_number_line - Read gdb's, dbx's or xdb's answer to a
- * breakpoint just set, up to the line that carries its number.
- * @str: the line read, E_D_BRK_ANSWER_MAX bytes; @errors: 1 to take the
- * debugger's error stream into account, so a refusal ("No source file named
- * x.c.", which the debugger writes there) comes back as code 2 with its
- * words in @str; 0 to drop what it writes there, as every other reply does.
- * Return: e_d_line_read's code for that line.
- */
-static int e_d_brk_read_number_line(char *str, int errors)
-{
- int ret;
-
- while ((ret = e_d_line_read(wfildes[0], str, E_D_BRK_ANSWER_MAX, 0, errors))
-   == 0 && !e_ds_brk_is_number_line(e_deb_type, str))
-  ;
- if (e_deb_type == DEB_GDB || e_deb_type == DEB_DBX)
-  return(ret);
- /* xdb says "Added:" and gives the number on the line after it */
- if (ret != 0 && errors)
-  return(ret);
- return(e_d_line_read(wfildes[0], str, E_D_BRK_ANSWER_MAX, 0, errors));
-}
-
 /* What the reader has to say when a debugger gave no breakpoint number is
    the session's E_D_BRK_NO_NUMBER. */
 
 /**
  * e_d_brk_numbered_verdict - Say what gdb, dbx or xdb made of a breakpoint
  * from the line that carries its number.
- * @ans: receives the verdict; @ret: e_d_line_read's code for @str;
- * @str: that line, or the error line.
+ * @ans: receives the verdict; @ret: 0 for a line, E_D_READ_PROMPT or
+ * E_D_READ_ERROR; @str: that line, or the error line.
  *
  * A line of the error stream is the debugger's refusal ("No source file
  * named x.c."), and its words are kept for the user.
@@ -14515,7 +13302,7 @@ static void e_d_brk_numbered_verdict(E_D_BRK_ANSWER *ans, int ret,
 }
 
 /**
- * e_d_brk_answer_of - The session's view of e_d_line_read's result @ret for
+ * e_d_brk_answer_of - The session's view of an answer's kind @ret for
  * @str: the line, the error line with its flag, or no text at the prompt.
  */
 static void e_d_brk_answer_of(E_D_ANSWER *a, int ret, const char *str)
@@ -14531,7 +13318,7 @@ static void e_d_brk_answer_of(E_D_ANSWER *a, int ret, const char *str)
 /**
  * e_d_brk_session_answer - Keep in the session what gdb, dbx or xdb made of
  * the breakpoint on @line of @file.
- * @ret: e_d_line_read's code for @str; @str: the line.
+ * @ret: the answer's kind, as for e_d_brk_numbered_verdict; @str: the line.
  *
  * The session then holds the number and the verdict the breakpoint list
  * shows, for the view that will draw from it.
@@ -14554,115 +13341,21 @@ static void e_d_brk_session_answer(const char *file, int line, int ret,
 }
 
 /**
- * e_d_brk_arm_numbered_at - Set a breakpoint on @line of @file in a debugger
- * that numbers its breakpoints, and say which number it gave.
- * @file: the breakpoint's file name; @line: 1-based; @id: receives the number
- * (0 when the debugger refused it); @ans: receives the verdict, or NULL to
- * show a refusal in a box.
- *
- * gdb, dbx and xdb name a breakpoint only by the number they gave it, so
- * anything that has to take one out again, including the one Go to cursor
- * sets for itself, has to keep that number.
- * Return: 0, or -1 when the debugger stopped answering.
- */
-static int e_d_brk_arm_numbered_at(const char *file, int line, int *id,
-                                   E_D_BRK_ANSWER *ans)
-{
- char cmd[E_D_BRK_CMD_MAX], str[E_D_BRK_ANSWER_MAX];
- int ret, at_prompt;
-
- if (e_deb_type == DEB_DBX)
-  snprintf(cmd, sizeof(cmd), "stop at \"%s\":%d\n", file, line);
- else
-  snprintf(cmd, sizeof(cmd), "b %s:%d\n", file, line);
- e_d_send_cmd(cmd);
- ret = e_d_brk_read_number_line(str, ans != NULL);
- if (ret == -1)
-  return(-1);
- at_prompt = (ret == 1);
- if (ans && at_prompt && e_e_line_read(efildes[0], str, sizeof(str)) == 2)
-  ret = 2;                  /* the refusal came just before the prompt */
- if (ret == 2 && !ans)
-  e_d_error(str);
- if (ret == 2 || ret == 1)
-  *id = 0;
- else
-  *id = e_ds_brk_number(e_deb_type, str);
- if (ans)
-  e_d_brk_numbered_verdict(ans, ret, str);
- e_d_brk_session_answer(file, line, ret, str);
- if (!at_prompt && e_d_dum_read() == -1)
-  return(-1);
- return(0);
-}
-
-/**
- * e_d_brk_arm_numbered - Set list entry @i in dbx or xdb (gdb is told on
- * the fd loop, e_d_gb_add_cmd).
- *
- * Keeps the number the debugger gives the breakpoint: removing it while the
- * session runs names it by that number.  What the debugger said of it is
- * kept with the entry.
- * Return: 0, or -1 when the debugger stopped answering.
- */
-static int e_d_brk_arm_numbered(int i)
-{
- E_D_BRK_ANSWER ans;
-
- if (e_d_brk_arm_numbered_at(e_d_sbrpts[i], e_d_ybrpts[i], &e_d_nrbrpts[i],
-                             &ans) == -1)
-  return(-1);
- e_d_brk_take_answer(i, &ans);
- return(0);
-}
-
-/**
- * e_d_brk_sdb_line - Send sdb a command on @line of @file: sdb takes the
- * file first, then the line with @verb ("b" sets, "d" deletes).  @ans, when
- * given, receives sdb's verdict on the command.
- * Return: 0, or -1 when sdb stopped answering.
- */
-static int e_d_brk_sdb_line(const char *file, int line, const char *verb,
-                            E_D_BRK_ANSWER *ans)
-{
- char cmd[E_D_BRK_CMD_MAX];
-
- snprintf(cmd, sizeof(cmd), "e %s\n", file);
- e_d_send_cmd(cmd);
- if (e_d_dum_read() == -1)
-  return(-1);
- snprintf(cmd, sizeof(cmd), "%d %s\n", line, verb);
- e_d_send_cmd(cmd);
- if (e_d_brk_read_reply(ans) == -1)
-  return(-1);
- return(0);
-}
-
-/**
- * e_d_brk_arm - Set list entry @i in the running debugger.
+ * e_d_brk_arm - Set list entry @i in the debug adapter.
  * @cn: the editor.
  *
- * Used for a breakpoint the user sets while a session runs and for every
- * breakpoint when a session starts, so the program stops on each line the
- * margin marks, whichever debugger runs it.  What the debugger says of the
- * breakpoint is kept with the entry: it is drawn solid once confirmed.
- * Return: 0, or -1 when the debugger could not be told.
+ * Used for a breakpoint the user sets at a stop and for the ones set while
+ * the program ran, so the program stops on each line the margin marks.  The
+ * entry is drawn solid once the adapter confirms it.  The line debuggers
+ * are told on the fd loop (e_d_ga_brk_sync).
+ * Return: 0, or -1 when the adapter could not be told.
  */
 static int e_d_brk_arm(ECNT *cn, int i)
 {
  char path[PATH_MAX];
  E_D_BRK_ANSWER ans;
 
- if (e_deb_type == DEB_DBX || e_deb_type == DEB_XDB)
-  return(e_d_brk_arm_numbered(i));
  e_d_nrbrpts[i] = i + 1;
- if (e_deb_type == DEB_SDB)
- {
-  if (e_d_brk_sdb_line(e_d_sbrpts[i], e_d_ybrpts[i], "b", &ans) == -1)
-   return(-1);
-  e_d_brk_take_answer(i, &ans);
-  return(0);
- }
  e_d_brk_path_of(cn, e_d_sbrpts[i], path, sizeof(path));
  if (e_d_brk_line_send(1, e_d_sbrpts[i], path, e_d_ybrpts[i], &ans) == -1)
   return(-1);
@@ -14671,62 +13364,22 @@ static int e_d_brk_arm(ECNT *cn, int i)
 }
 
 /**
- * e_d_brk_disarm_line - Take the breakpoint on @line of @file out of pdb,
- * jdb, a68g or a debug adapter.
- * @cn: the editor.
- * Return: 0, or -1 when the debugger could not be told.
- */
-static int e_d_brk_disarm_line(ECNT *cn, const char *file, int line)
-{
- char path[PATH_MAX];
-
- e_d_brk_path_of(cn, file, path, sizeof(path));
- return(e_d_brk_line_send(0, file, path, line, NULL));
-}
-
-/**
- * e_d_brk_disarm_by_id - Take the breakpoint dbx or xdb numbered @id out of
- * the running debugger.
- *
- * These two name a breakpoint only by the number they gave it, so this is
- * the one way a breakpoint of the user's, or the one Go to cursor set for
- * itself, stops the program again.  gdb is told on the fd loop
- * (e_d_gb_remove_cmd).
- * Return: 0, or -1 when the debugger could not be told.
- */
-static int e_d_brk_disarm_by_id(int id)
-{
- char cmd[E_D_BRK_CMD_MAX];
-
- if (e_deb_type == DEB_DBX)
-  snprintf(cmd, sizeof(cmd), "delete %d\n", id);
- else if (e_deb_type == DEB_XDB)
-  snprintf(cmd, sizeof(cmd), "db %d\n", id);
- else
-  return(-1);
- e_d_send_cmd(cmd);
- if (e_d_dum_read() == -1)
-  return(-1);
- return(0);
-}
-
-/**
- * e_d_brk_disarm - Take a breakpoint the user removed out of the running
- * debugger.
+ * e_d_brk_disarm - Take a breakpoint the user removed out of the debug
+ * adapter.
  * @cn: the editor; @file, @line: the breakpoint, already gone from the
- * list; @id: the number dbx or xdb gave it.
+ * list; @id: unused: an adapter is given a file's list as a whole.
  *
- * The next run goes past that line, whichever debugger runs it; gdb is told
- * on the fd loop (e_d_gb_remove_cmd).
- * Return: 0, or -1 when the debugger could not be told.
+ * The next run goes past that line.  The line debuggers are told on the fd
+ * loop (e_d_gb_remove_cmd and its kin).
+ * Return: 0, or -1 when the adapter could not be told.
  */
 static int e_d_brk_disarm(ECNT *cn, const char *file, int line, int id)
 {
- if (e_deb_type == DEB_DBX || e_deb_type == DEB_XDB)
-  return(e_d_brk_disarm_by_id(id));
- if (e_deb_type == DEB_SDB)
-  return(e_d_brk_sdb_line(file, line, "d", NULL));
- return(e_d_brk_disarm_line(cn, file, line));
+ char path[PATH_MAX];
+
+ (void)id;
+ e_d_brk_path_of(cn, file, path, sizeof(path));
+ return(e_d_brk_line_send(0, file, path, line, NULL));
 }
 
 /**
@@ -14899,74 +13552,36 @@ static void e_d_dap_clear_every_file(ECNT *cn)
 }
 
 /**
- * e_d_brk_disarm_each_line - Take the user's breakpoints out of pdb or jdb
- * one by one, these having no command that clears them all at once.
- * @cn: the editor.
- */
-static void e_d_brk_disarm_each_line(ECNT *cn)
-{
- int i;
-
- for (i = 0; i < e_d_nbrpts; i++)
-  if (!e_d_brk_is_start_entry(i))
-   e_d_brk_disarm_line(cn, e_d_sbrpts[i], e_d_ybrpts[i]);
-}
-
-/**
  * e_d_brk_disarm_all - Take every breakpoint of the list out of the running
  * debugger, before the list is emptied.
  * @cn: the editor.
  *
  * After Remove all breakpoints the next run goes to the end of the program
- * whichever debugger runs it.  gdb, a68g, sdb, dbx and xdb clear them with
- * the one command they have, and its answer is read so the next command does
- * not mistake it for its own; pdb and jdb are told breakpoint by breakpoint,
- * and a debug adapter is given an empty list for each file.  gdb's, pdb's,
- * jdb's and a68g's answers are read on the fd loop.
+ * whichever debugger runs it.  The line debuggers are told at a stop on the
+ * fd loop, in the way each takes it (e_d_ga_remove_all); Remove all is
+ * refused while they run or answer.  A debug adapter is given an empty
+ * list for each file.
  */
 static void e_d_brk_disarm_all(ECNT *cn)
 {
  if (e_d_ga_at_stop())
   e_d_ga_remove_all(cn);
- else if (e_deb_type == DEB_SDB)
-  e_d_send_and_read("D\n");
- else if (e_deb_type == DEB_DBX)
-  e_d_send_and_read("delete all\n");
- else if (e_deb_type == DEB_XDB)
-  e_d_send_and_read("db *\n");
  else if (e_deb_type == DEB_DAP)
   e_d_dap_clear_every_file(cn);
- else
-  e_d_brk_disarm_each_line(cn);
 }
 
 /**
- * e_d_cursor_brk_send - Set or clear the cursor's breakpoint in the debugger.
+ * e_d_cursor_brk_send - Set or clear the cursor's breakpoint in the debug
+ * adapter.
  * @set: 1 to set it, 0 to clear it.
  *
- * Go to cursor has to reach every backend, so each is spoken to in its own
- * terms: sdb names a breakpoint by its line, dbx and xdb by a number they
- * hand back, and the rest by file and line.  A backend left out here is one
- * where Go to cursor silently does nothing at all.
- * Return: 0, or -1 when the debugger could not be told.
+ * Go to cursor under an adapter stops on the cursor's line and nowhere
+ * else afterwards.  The line debuggers set and clear theirs on the request
+ * engine (e_d_ga_run_to_cursor), and gdb runs there with "advance".
+ * Return: 0, or -1 when the adapter could not be told.
  */
 static int e_d_cursor_brk_send(int set)
 {
- if (e_deb_type == DEB_SDB)
- {
-  if (set)
-   return(e_d_brk_sdb_line(e_d_cursor_brk.file, e_d_cursor_brk.line, "b",
-                           NULL));
-  return(e_d_brk_sdb_line(e_d_cursor_brk.file, e_d_cursor_brk.line, "d",
-                          NULL));
- }
- if (e_deb_type == DEB_DBX || e_deb_type == DEB_XDB)
- {
-  if (set)
-   return(e_d_brk_arm_numbered_at(e_d_cursor_brk.file, e_d_cursor_brk.line,
-                                  &e_d_cursor_brk.id, NULL));
-  return(e_d_brk_disarm_by_id(e_d_cursor_brk.id));
- }
  return(e_d_brk_line_send(set, e_d_cursor_brk.file, e_d_cursor_brk.path,
                           e_d_cursor_brk.line, NULL));
 }
@@ -15295,263 +13910,6 @@ static int e_d_stop_file_line(char *line)
  return(num);
 }
 
-int e_d_fst_check(FENSTER *f)
-{
- int i, j, k = 0, l, ret = 0;
-
- e_d_switch_out(0);
- for (i = 0; i < SVLINES - 1; i++)
- {
-  if ((e_deb_type != DEB_DBX && !strncmp(e_d_sp[i], e_d_msg[ERR_PROGEXIT], 14)) ||
-    ((e_deb_type == DEB_DBX && !strncmp(e_d_sp[i], e_d_msg[ERR_PROGEXIT2], 14)) ||
-    (e_deb_type == DEB_XDB && !strncmp(e_d_sp[i], e_d_msg[ERR_NORMALTERM], strlen(e_d_msg[ERR_NORMALTERM])))))
-  {
-   e_d_error(e_d_sp[i]);		/*  Program exited   */
-   e_d_quit(f);
-   return(i);
-  }
-  else if ((e_deb_type == DEB_GDB || e_deb_type == DEB_SDB) && !strncmp(e_d_sp[i], e_d_msg[ERR_PROGTERM], 18))
-  {
-   e_error(e_d_msg[ERR_PROGTERM], 0, f->fb);
-   e_d_quit(f);
-   return(i);
-  }
-  else if (e_deb_type == DEB_XDB && e_d_pause_asked_for(e_d_sp[i]))
-  {
-   e_d_pr_sig(e_d_pause_signal_line(e_d_sp[i]), f);
-   return(i);
-  }
-  else if (e_deb_type == DEB_XDB && !strncmp(e_d_sp[i], e_d_msg[ERR_SOFTTERM], strlen(e_d_msg[ERR_SOFTTERM])))
-  {
-   e_d_pr_sig(e_d_sp[i], f);
-   return(i);
-  }
-  else if (e_deb_type == DEB_DBX && (!strncmp(e_d_sp[i], e_d_msg[ERR_SIGNAL], 6) ||
-    !strncmp(e_d_sp[i], e_d_msg[ERR_INTERRUPT], 9)))
-  {
-   e_d_pr_sig(e_d_pause_signal_line(e_d_sp[i]), f);
-   return(i);
-  }
-  else if (e_deb_type == DEB_SDB && strstr(e_d_sp[i], e_d_msg[ERR_SIGNAL]))
-  {
-   e_d_pr_sig(e_d_pause_signal_line(e_d_sp[i]), f);
-   return(i);
-  }
-  else if (e_deb_type == DEB_XDB && i == SVLINES-2 && strstr(e_d_sp[i], ": "))
-  {
-   e_d_pr_sig(e_d_sp[i-1], f);
-   return(i-1);
-  }
-  else if (!strncmp(e_d_sp[i], e_d_msg[ERR_BREAKPOINT], 10) ||
-    (e_deb_type == DEB_SDB && !strncmp(e_d_sp[i], e_d_msg[ERR_BREAKPOINT2], 10)))
-  {
-   /* gdb's breakpoint report is read by e_d_gdb_stop_place */
-   if (e_deb_type == DEB_SDB)	      /*  Breakpoint   */
-   {
-    if(!strncmp(e_d_sp[i]+10, " at", 3) &&
-      (ret = e_d_stop_file_line(e_d_sp[i+1])) >= 0)
-    {
-     if (e_d_p_watches(f, 0) == -1)
-      return(-1);
-     e_d_goto_break(e_d_file, ret, f);
-     return(i);
-    }
-   }
-  }
-  else if (e_deb_type == DEB_DBX && !strncmp(e_d_sp[i], e_d_msg[ERR_STOPPEDIN], 10))
-  {
-   for (j = i + 1; j < SVLINES - 1; j++)		      /*  Breakpoint   */
-   {
-    for (k = 0; e_d_sp[j][k] == ' ' && e_d_sp[j][k] != '\0'; k++)
-     ;
-    if ((ret = atoi(e_d_sp[j]+k)) > 0)
-    {
-     if (!strstr(e_d_sp[j-1], " line "))
-      break;
-     for (k = strlen(e_d_sp[j-1]); k >= 0 && e_d_sp[j-1][k] != '\"'; k--)
-      ;
-     for(k--; k >= 0 && e_d_sp[j-1][k] != '\"'; k--)
-      ;
-     if (k >= 0)
-     {
-      for(k++, l = 0; e_d_sp[j-1][k] != '\0' && e_d_sp[j-1][k] != '\"' &&
-        l < (int)sizeof e_d_file - 1; k++, l++)
-       e_d_file[l] = e_d_sp[j-1][k];
-      e_d_file[l] = '\0';
-     }
-     if (e_d_p_watches(f, 0) == -1)
-      return(-1);
-     e_d_goto_break(e_d_file, ret, f);
-     return(i);
-    }
-   }
-  }
- }
- return(-2);
-}
-
-int e_d_snd_check(FENSTER *f)
-{
- int i, j, k, ret;
-
- e_d_switch_out(0);
- /* gdb's source row after a step is read by e_d_gdb_place_of_step */
- for (i = SVLINES - 2; i >= 0; i--)
- {
-  if (e_deb_type == DEB_SDB && (ret = atoi(e_d_sp[i])) > 0)
-  {
-   for (; i > 0; i--)
-   {
-    for (j = strlen(e_d_sp[i-1])-1; j >= 0 && isspace(e_d_sp[i-1][j]); j--)
-     ;
-    if (j < 0)
-    {  i--;  continue;  }
-    for (j--; j >= 0 && !isspace(e_d_sp[i-1][j]); j--)
-     ;
-    if (j < 0)
-     i--;
-    for (j--; j >= 0 && isspace(e_d_sp[i-1][j]); j--)
-     ;
-    if (j < 0)
-     i--;
-    for (j--; j >= 0 && !isspace(e_d_sp[i-1][j]); j--)
-     ;
-    if (!strncmp(e_d_sp[i-1]+j+1, "in ", 3))
-    {
-     snprintf(e_d_file, sizeof e_d_file, "%s", e_d_sp[i-1]+j+4);
-     for (k = strlen(e_d_file)-1; k >= 0 && isspace(e_d_file[k]); k--)
-      ;
-     e_d_file[k+1] = '\0';
-     if (e_d_p_watches(f, 0) == -1)
-      return(-1);
-     e_d_goto_break(e_d_file, ret, f);
-     return(i);
-    }
-   }
-   return(-2);
-  }
-  else if (e_deb_type == DEB_XDB && i == SVLINES-2 &&
-    (ret = e_d_stop_file_line(e_d_sp[i])) >= 0)
-  {
-   if (e_d_p_watches(f, 0) == -1)
-    return(-1);
-   e_d_goto_break(e_d_file, ret, f);
-   return(i);
-  }
- }
- return(-2);
-}
-
-int e_d_trd_check(FENSTER *f)
-{
- int ret;
- char str[E_D_LINE_MAX];
-
- str[0] = '\0';
- e_d_switch_out(0);
- if ((ret = e_d_pr_sig(str, f)) == -1) return(-1);
- else if (ret == -2) e_d_error(e_d_msg[ERR_NOSOURCE]);
- return(0);
-}
-
-/**
- * e_d_out_read_newest - Read the next line of the debugger's answer to a run
- * or a step, whole, into the newest answer line.
- *
- * A stop line names its file and line at its end, after a frame of any
- * length, so it is read to that end and the stop is marked.  Error-stream
- * lines met on the way are shown, as they always were.
- * Return: e_d_line_read_whole's code for the line.
- */
-static int e_d_out_read_newest(void)
-{
- E_D_LINE *newest = &e_d_out_ln[SVLINES-1];
- int ret;
-
- while ((ret = e_d_line_read_whole(wfildes[0], newest, 0, 0)) == 2)
-  e_d_error((char *)newest->s);
- e_d_out_show();
- return(ret);
-}
-
-static int e_read_output(FENSTER *f)
-{
- int i, ret;
-
- jdb_trace("e_read_output: CALLED, e_deb_type=%d\n", e_deb_type);
- e_d_out_clear();
- if ((ret = e_d_out_read_newest()) < 0) return(-1);
- e_d_switch_out(0);
- while(ret != 1)
- {
-  e_d_out_rotate();
-  do
-  {
-   if ((ret = e_d_out_read_newest()) < 0) return(-1);
-  } while(!ret && !*e_d_sp[SVLINES-1]);
- }
- for (i = 0; i < SVLINES; i++)
- {
-  if (e_d_line_says_program_exited(e_d_sp[i]))
-  {
-   e_d_pty_flush_to_messages(f);
-   e_d_say_program_exited(e_d_sp[i], f);
-   e_d_quit(f);
-   return(0);
-  }
- }
- /* Flush the inferior's stdout (which is fully buffered because it
-    goes to a pty, not a real terminal) and drain any output.
-    This is the technique used by gdbgui and Eclipse CDT. */
- if (e_deb_type == DEB_GDB && e_d_pty_master >= 0)
- {
-  char _flush_resp[256];
-  e_d_send_cmd("call (void)fflush(0)\n");
-  while (e_d_line_read(wfildes[0], _flush_resp, 256, 0, 0) == 0)
-   ;
-  e_d_pty_flush_to_messages(f);
- }
- /* pdb never comes here: its stops are read by its run controller table
-    (e_d_pdb_ops) and answered on the fd loop. */
- if ((i = e_d_fst_check(f)) == -1) return(-1);
- if (i < 0 && (i = e_d_snd_check(f)) == -1) return(-1);
- if (i < 0 && (i = e_d_trd_check(f)) == -1) return(-1);
- if (i < 0)
- {
-  /* Could not determine where the debugger stopped.  This typically
-     happens when the program exited or gdb entered system code.
-     Quit the debugger cleanly instead of showing multiple popups. */
-  e_d_switch_out(0);
-  e_d_say_program_exited(NULL, f);
-  return(e_d_quit(f));
- }
- return(0);
-}
-
-/* A row of the "where" or "t" listing e_d_pr_sig finds the stop in. */
-static E_D_LINE e_d_where_row;
-
-/**
- * e_d_where_row_read - Read the next row of the stack listing that says
- * where the program stopped, whole, error-stream lines first.
- * @row: set to the row's text.
- *
- * The innermost frame of a function with a long name or long arguments ends
- * in the "at file:line" the stop is marked from, so the row is read to its
- * end.
- * Return: e_d_line_read_whole's code for the row.
- */
-static int e_d_where_row_read(char **row)
-{
- int ret = e_d_line_read_whole(wfildes[0], &e_d_where_row, 0, 1);
-
- if (e_d_where_row.s)
-  *row = (char *)e_d_where_row.s;
- else
-  *row = e_d_out_none;
- return(ret);
-}
-
 static int e_d_where_frame;   /* number of the last "#N" row of the walk */
 
 /**
@@ -15581,106 +13939,20 @@ static int e_d_where_row_line(char *row, char *file)
  return(line);
 }
 
-int e_d_pr_sig(char *str, FENSTER *f)
-{
- int i, line = -1, ret = 0;
- char file[E_D_LINE_MAX], str2[E_D_LINE_MAX];
-
- if (str && str[0])
-  e_d_error(str);
- e_d_out_clear();
- str = e_d_out_none;
- e_d_where_frame = 0;
- e_ds_begin_stack(&e_d_session);
- if (e_deb_type != DEB_SDB && e_deb_type != DEB_XDB)
- {
-  e_d_send_cmd("where\n");
-  for (i = 0; ((ret = e_d_where_row_read(&str)) == 0 &&
-    (line = e_d_where_row_line(str, file)) < 0) || ret == 2; i++)
-  {
-   if (!strncmp(str, e_d_msg[ERR_NOSTACK], 9))
-   {
-    e_error(e_d_msg[ERR_PROGEXIT], 0, f->fb);
-    while (ret == 0 || ret == 2)
-     if ((ret = e_d_line_read(wfildes[0], str2, sizeof str2, 0, 0)) == 2)
-      e_d_error(str2);
-    e_d_quit(f);
-    return(0);
-   }
-   else if (ret == 2)
-    e_d_error(str);
-  }
- }
- else
- {
-  e_d_send_cmd("t\n");
-  for (i = 0; ((ret = e_d_where_row_read(&str)) == 0 &&
-    (line = e_make_line_num2(str, file)) < 0) || ret == 2; i++)
-  {
-   if (!strncmp(str, e_d_msg[ERR_NOPROCESS], 10))
-   {
-    e_error(e_d_msg[ERR_PROGEXIT], 0, f->fb);
-    while (ret == 0 || ret == 2)
-     if ((ret = e_d_line_read(wfildes[0], str2, sizeof str2, 0, 0)) == 2)
-      e_d_error(str2);
-    e_d_quit(f);
-    return(0);
-   }
-   else if (ret == 2)
-    e_d_error(str);
-  }
- }
- if (ret == 1 && i == 0)
- {
-  e_d_error(e_d_msg[ERR_PROGEXIT]);
-  return(e_d_quit(f));
- }
- while (ret == 0 || ret == 2)
-  if ((ret = e_d_line_read(wfildes[0], str2, sizeof str2, 0, 0)) == 2)
-   e_d_error(str2);
- if (ret == -1)
-  return(ret);
- if (line >= 0)
- {
-  strcpy(e_d_file, file);
-  /* Refresh the Watches window here too: a plain Step lands in this "find
-     where we stopped via 'where'" path (e_d_trd_check -> e_d_pr_sig), not in
-     the breakpoint branches, so without this the watch values would stay
-     frozen at the value they had when the watch was first added. */
-  if (e_d_p_watches(f, 0) == -1)
-   return(-1);
-  e_d_goto_break(file, line, f);
-  return(0);
- }
- else
-  return(-2);
-}
-
 /**
  * e_make_line_num - The line number and, into @file (E_D_LINE_MAX bytes),
  * the file a debugger line names, as e_ds_line_num reads them.
  * @str: the line; @file: receives the file.
  *
- * sdb names only the line; its file is asked for with "e" and read from
- * the answer here, since the reader of the text does no I/O.
+ * Following a gdb, dbx or xdb frame in the Stack window, or a gdb stop,
+ * marks the right line in the right file.  sdb names only the line; its
+ * file is asked on the fd loop by the stop's own step
+ * (e_d_gsdb_which_file_cmd), so it never comes here.
  * Return: the line, or -1.
  */
 int e_make_line_num(char *str, char *file)
 {
- char answer[E_D_LINE_MAX];
- int i, num = e_ds_line_num(e_deb_type, str, file, E_D_LINE_MAX);
-
- if (e_deb_type != DEB_SDB || num < 0)
-  return(num);
- e_d_send_cmd("e\n");
- while ((i = e_d_line_read(wfildes[0], answer, sizeof answer, 0, 0)) ==  2)
-  e_d_error(answer);
- if (i < 0)
-  return(-1);
- e_ds_sdb_file_of(answer, file, E_D_LINE_MAX);
- if (e_d_dum_read() == -1)
-  return(-1);
- return(num);
+ return(e_ds_line_num(e_deb_type, str, file, E_D_LINE_MAX));
 }
 
 /**
@@ -15906,8 +14178,8 @@ static int e_d_gdb_run_never_started(FENSTER *f)
 #define E_D_GDB_UP_FMT      "up %d"
 #define E_D_GDB_DOWN_FMT    "down %d"
 #define E_D_GA_ACT_MAX      8      /* debugger keys kept while gdb answers */
-/* How many characters of gdb's report words are compared, as e_d_fst_check
-   has always compared them. */
+/* How many characters of gdb's report words are compared, as the stop
+   checks have always compared them. */
 #define E_D_GDB_EXIT_LEAD     14
 #define E_D_GDB_TERM_LEAD     18
 #define E_D_GDB_SIGNAL_LEAD   23
