@@ -286,6 +286,17 @@ Changes
   Pause that met a breakpoint, Continue and the steps let the program
   run again; it used to stay held while the editor said it was running.
 
+* Algol 68 debugging under a68g works the same way: the watches, the
+  Stack window, the breakpoints you set at a stop or while the program
+  ran, Remove all, Go to cursor, Finish, a68g's start and every step and
+  Continue are asked while you keep typing.  The status row says "waiting
+  for a68g to answer `evaluate x` ... 3s (Esc cancels)" while a68g is
+  slow, Esc or Ctrl-C stops waiting with "a68g did not answer `evaluate
+  x`: Debug > Quit ends the session", and keys like F8 are kept and run
+  in order.  A breakpoint whose answer was given up on is cleared before
+  it is set again.  Enter on a row of the Stack window while a68g answers
+  is refused with the waiting line, as under pdb and jdb.
+
 * A watch the debugger answers without a value (under dbx, xdb, or a gdb
   or jdb answer with no "=" in it) reads "No symbol in current context".
   It used to read "o symbol in current context", its first letter lost.

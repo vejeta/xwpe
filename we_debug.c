@@ -66,9 +66,9 @@ int e_d_delbreak(FENSTER *f);
 int e_d_error(char *s);
 int print_to_end_of_buffer(BUFFER * b,char * str,int wrap_limit);
 
-/* The blocking readers.  gdb's answers no longer go through them (they are
-   read on the fd loop, e_d_ga below); sdb, dbx, xdb, pdb, jdb and a68g still
-   do, until their own answers move to the loop. */
+/* The blocking readers.  gdb's, pdb's, jdb's and a68g's answers no longer go
+   through them (they are read on the fd loop, e_d_ga below); sdb, dbx and
+   xdb still do, until their own answers move to the loop. */
 static int e_d_line_read(int n, signed char *s, int max, int sw, int esw);
 static int e_e_line_read(int n, signed char *s, int max);
 static int e_d_dum_read(void);
@@ -235,7 +235,8 @@ static int  e_d_ga_go_keeps_start_brk(int sw);
 static int  e_d_ga_go_keeps_goto_line(int line);
 static void e_d_ga_drop_start_entry(int i);
 static int  e_d_ga_set_up_again(FENSTER *f);
-/* What the request engine is told of gdb, pdb and jdb (e_d_ga, below). */
+/* What the request engine is told of gdb, pdb, jdb and a68g (e_d_ga,
+   below). */
 typedef struct e_d_ga_backend E_D_GA_BACKEND;
 static const E_D_GA_BACKEND *e_d_ga_backend_of(int type);
 static const E_D_GA_BACKEND *e_d_ga_this(void);
@@ -312,12 +313,9 @@ char *npipe[5] = {  NULL, NULL, NULL, NULL, NULL  };
    only ever wait this long when the pty has briefly gone quiet. */
 #define DEB_PTY_DRAIN_MS 100
 
-/* Per-step read of jdb, pdb and a68g output: scratch buffer size, and how long
-   the stack listing waits for the next chunk before deciding it has finished
-   printing (the run of pdb, jdb and a68g waits as long as the program
-   takes). */
+/* Per-step read of jdb, pdb and a68g output: scratch buffer size (the run of
+   pdb, jdb and a68g waits as long as the program takes). */
 #define DEB_STEP_BUF     (PATH_MAX + 4096)
-#define DEB_STEP_POLL_MS 5000
 
 /* Safety bound on the stderr-drain loop at the top of e_d_line_read: a debugger
    that floods its error stream (e.g. a68g's abend->io_write_string recursion
@@ -2390,7 +2388,7 @@ static void e_d_run_go_on_now(const char *cmd)
  * @cmd: the command, ending in a newline.
  *
  * The program runs on as if it had not stopped; the editor keeps its keys.
- * gdb, pdb and jdb may first have answers to take back (e_d_ga_go_on).
+ * gdb, pdb, jdb and a68g may first have answers to take back (e_d_ga_go_on).
  */
 static void e_d_run_go_on(const char *cmd)
 {
@@ -5802,7 +5800,6 @@ typedef struct
 /* A debug adapter's verdict comes later, through on_breakpoints. */
 #define E_D_BRK_ASKED     3
 
-static int e_d_a68g_reset_breakpoints(void);
 static void e_d_brk_path_of(ECNT *cn, const char *file, char *out, size_t size);
 static void e_d_brk_jdb_class(const char *file, char *out, size_t size);
 static int e_d_brk_arm(ECNT *cn, int i);
@@ -9406,7 +9403,7 @@ static void e_d_start_session_ready(ECNT *cn, e_d_resume_fn cmd, int arg)
 }
 
 /**
- * e_d_start_sets_up_later - gdb, pdb or jdb answered its banner: set it up
+ * e_d_start_sets_up_later - gdb, pdb, jdb or a68g answered its banner: set it up
  * through the request engine, and run the command the user pressed once it
  * has answered.
  * @cn: the editor; @cmd, @arg: the command that started the session.
@@ -9414,7 +9411,7 @@ static void e_d_start_session_ready(ECNT *cn, e_d_resume_fn cmd, int arg)
  * The user keeps the editor while the debugger takes its settings and
  * breakpoints; a debugger key typed meanwhile is kept for after the first
  * stop.
- * Return: 1 when the set-up goes on later (gdb, pdb, jdb), 0 for the other
+ * Return: 1 when the set-up goes on later (gdb, pdb, jdb, a68g), 0 for the other
  * debuggers.
  */
 static int e_d_start_sets_up_later(ECNT *cn, e_d_resume_fn cmd, int arg)
@@ -12694,13 +12691,29 @@ static void e_d_a68g_answer_reset(void)
 }
 
 /**
- * e_d_a68g_begin - Forget everything of the run before when a run starts.
+ * e_d_a68g_run_steps_over - Is the run just handed over a Step Over, the
+ * "next" a68g was last sent?
+ *
+ * Step Over goes out once a68g has answered what it still owes, so it is
+ * known for what it is by the command that went out, not by the key.
+ */
+static int e_d_a68g_run_steps_over(void)
+{
+ return(!strcmp(e_d_last_cmd, E_D_A68G_NEXT));
+}
+
+/**
+ * e_d_a68g_begin - Forget everything of the run before when a run starts,
+ * and note whether it is a Step Over from the line the program stands on.
+ *
+ * F8 then moves the mark to the next line, however many units a68g has to
+ * step through on this one (see e_d_a68g_steps_on).
  */
 static void e_d_a68g_begin(void)
 {
  e_d_a68g_answer_reset();
- e_d_a68g_run.step_over = 0;
- e_d_a68g_run.from_line = 0;
+ e_d_a68g_run.step_over = e_d_a68g_run_steps_over();
+ e_d_a68g_run.from_line = e_d_a68g_cur_line;
  e_d_a68g_run.same_line_steps = 0;
 }
 
@@ -12914,22 +12927,7 @@ static void e_d_a68g_say_end(FENSTER *f)
  e_d_quit(f);
 }
 
-/**
- * e_d_a68g_mark - Show where a68g stopped.
- * @f: the window on top; @line: the line a68g reported, or 0.
- *
- * The user sees the green bar on the line, and the Watches window shows the
- * values there: a68g is idle at its prompt and can evaluate them now.
- */
-static void e_d_a68g_mark(FENSTER *f, int line)
-{
- if (line > 0)
-  e_d_a68g_goto(f, line);
- else
-  e_d_switch_out(0);
- if (e_d_nwtchs > 0)
-  e_d_p_watches(f, 0);
-}
+static void e_d_ga68_stop_ask(ECNT *cn, int line);   /* (below) */
 
 /**
  * e_d_a68g_steps_on - Does Step Over go on from this stop?
@@ -12971,6 +12969,9 @@ static void e_d_a68g_step_again(void)
  *
  * The user sees the program's output in Messages (Ctrl-G P) and the green
  * bar on the line a68g stopped on, or one line saying the program ended.
+ * What the stop asks a68g (the watches, the Stack window, the breakpoints
+ * changed while it ran) is asked on the fd loop (e_d_ga68_stop_ask), the
+ * keys reaching the editor meanwhile.
  */
 static void e_d_a68g_stopped(FENSTER *f)
 {
@@ -12992,7 +12993,7 @@ static void e_d_a68g_stopped(FENSTER *f)
   e_d_a68g_step_again();
   return;
  }
- e_d_a68g_mark(f, line);
+ e_d_ga68_stop_ask(f->ed, line);
 }
 
 /**
@@ -13023,8 +13024,10 @@ static int e_d_a68g_interrupt_stop(int taken)
 static int e_d_a68g_sync_stop(FENSTER *f)
 {
  E_D_A68G_RUN *r = &e_d_a68g_run;
+ int line = e_d_a68g_scan(f, r->reply.buf, r->reply.mid_line);
 
- e_d_a68g_scan(f, r->reply.buf, r->reply.mid_line);
+ if (line > 0)
+  e_d_a68g_cur_line = line;    /* where a Pause pressed meanwhile marks */
  return(E_D_SYNC_READY);
 }
 
@@ -13033,8 +13036,12 @@ static int e_d_a68g_sync_stop(FENSTER *f)
  * stopped by itself.
  * @cn: unused; @owed: the interrupts not accounted for; @why: unused.
  *
- * a68g keeps such an interrupt and asks whether to terminate at the next
- * continue or step, before the program moves; the run's reader answers
+ * Unlike gdb and pdb, a68g writes nothing when an interrupt meets it at its
+ * prompt (measured on a68g 3.1.2): no line and no second prompt, so there
+ * is nothing for a settle command to take back before the stop's requests,
+ * and a68g's tables have no settle step.  It keeps the interrupt and stops
+ * the program on it at the next continue or step, before the program moves,
+ * asking whether to terminate after a continue; the run's reader answers
  * "no" and the controller sends the command again.
  * Return: @owed, all still pending.
  */
@@ -13045,10 +13052,15 @@ static int e_d_a68g_settle(ECNT *cn, int owed, int why)
  return(owed);
 }
 
+static int e_d_a68g_sync_on_loop(ECNT *cn);   /* (below) */
+
 /* a68g: one pipe for the monitor and the program, a prompt at each stop.
    No run_to_line: a68g has no stop at the start of main to run on from, so
    Go to cursor as the first command is a case of its own.  A breakpoint
-   changed while the program runs is applied by interrupting it. */
+   changed while the program runs is applied by interrupting it.  What a
+   stop asks a68g is asked on the fd loop, through the request engine
+   (e_d_ga), so a68g has no sync_at_stop: the stop's own requests tell it
+   the breakpoints changed during the run. */
 static const E_D_RUN_OPS e_d_a68g_ops =
 {
  "a68g",
@@ -13058,7 +13070,7 @@ static const E_D_RUN_OPS e_d_a68g_ops =
  e_d_a68g_stopped,
  e_d_interrupt_debugger,
  NULL,
- e_d_brk_sync_at_stop,
+ NULL,
  NULL,
  e_d_a68g_begin,
  NULL,
@@ -13067,7 +13079,9 @@ static const E_D_RUN_OPS e_d_a68g_ops =
  e_d_a68g_sync_stop,
  e_d_a68g_settle,
  e_d_a68g_answer_reset,
- 0
+ 0,
+ NULL,
+ e_d_a68g_sync_on_loop
 };
 
 /**
@@ -13079,29 +13093,21 @@ static const E_D_RUN_OPS *e_d_a68g_run_ops(void)
 }
 
 /**
- * e_d_a68g_do_step - Step Over (@sw 1) or Step Into (@sw 0) under a68g.
+ * e_d_a68g_step_go - Step Over (@sw 1) or Step Into (@sw 0) under a68g,
+ * once a68g has answered what it still owes.
  * @f: the source window.
  *
- * The program runs under the run controller: the editor keeps its keys until
- * the stop.  Step Over is line by line (see e_d_a68g_steps_on).
+ * The user keeps the editor while a68g answers; the step goes out after,
+ * and a key typed meanwhile waits for its stop.  Step Over is line by line
+ * (see e_d_a68g_steps_on).
  * Return: 0, or the end of the session.
  */
-static int e_d_a68g_do_step(FENSTER *f, int sw)
+static int e_d_a68g_step_go(FENSTER *f, int sw)
 {
- int from = e_d_a68g_cur_line, ret;
-
- if (sw)
-  e_d_send_cmd(E_D_A68G_NEXT);
- else
-  e_d_send_cmd(E_D_A68G_STEP);
  e_d_nstack = 0;
- ret = e_d_run_hand_over(f, e_d_a68g_run_ops(), 0);
- if (sw && e_d_run_going())
- {
-  e_d_a68g_run.step_over = 1;
-  e_d_a68g_run.from_line = from;
- }
- return(ret);
+ if (sw)
+  return(e_d_ga_go_step(f, E_D_A68G_NEXT, NULL));
+ return(e_d_ga_go_step(f, E_D_A68G_STEP, NULL));
 }
 
 /* The call stack under pdb, jdb, a68g and the debug adapters.  Each prints
@@ -13114,18 +13120,10 @@ static int e_d_a68g_do_step(FENSTER *f, int sw)
 #define E_D_FRAME_ROW_MAX    (E_D_FRAME_NAME_MAX + E_D_STOP_PATH_MAX + 32)
 #define E_D_FRAME_NO_LINE    0
 #define E_D_FRAME_ROW_MARK   '#'      /* every frame row starts "#N  "        */
-#define E_D_FRAMES_REPLY_MAX 65536    /* one stack answer; the rest is read
-                                         to the prompt but not kept          */
-#define E_D_FRAMES_CHUNK     1024
-#define E_D_FRAMES_TAIL      16       /* longer than any prompt              */
-#define E_D_FRAME_SELECT_MAX 32       /* "down 63\n"                         */
-#define E_D_FRAME_UP_FMT     "up %d\n"   /* pdb and jdb: N frames outwards    */
-#define E_D_FRAME_DOWN_FMT   "down %d\n" /* pdb and jdb: N frames inwards     */
 #define E_D_PDB_OWN_FILE     "<string>" /* pdb's exec of the script: the last
                                            frame of pdb's own machinery  */
 #define E_D_JDB_FINISH       "step up\n"
-#define E_D_A68G_CALLS_FMT   "calls %d\n"
-#define E_D_A68G_CALLS_MAX   (sizeof E_D_A68G_CALLS_FMT + 8)
+#define E_D_A68G_CALLS_FMT   "calls %d"  /* a68g's stack, innermost first    */
 #define E_D_A68G_FINISH      "finish\n"
 #define E_D_FINISH_OUTERMOST "Finish function: not meaningful in the outermost frame."
 
@@ -13141,7 +13139,6 @@ typedef struct
 
 static e_d_frame e_d_frames[E_D_FRAMES_MAX];
 static int e_d_nframes = 0;
-static char e_d_frames_reply[E_D_FRAMES_REPLY_MAX];
 
 /**
  * e_d_frames_backend - Is the stack of the running debugger read into frames?
@@ -13210,126 +13207,6 @@ static void e_d_frames_reverse(void)
   e_d_frames[i] = e_d_frames[j];
   e_d_frames[j] = tmp;
  }
-}
-
-/**
- * e_d_frames_reply_done - Has the debugger finished answering?
- * @tail: the last bytes it sent.
- *
- * a68g ends an answer with its word prompt (pdb's and jdb's frames are
- * asked on the fd loop).
- * Return: 1 when @tail ends with the prompt.
- */
-static int e_d_frames_reply_done(const char *tail)
-{
- const char *prompt = e_d_prompt_text();
- size_t len = strlen(tail), plen;
-
- if (!prompt)
-  return(0);
- plen = strlen(prompt);
- return(len >= plen && !strcmp(tail + len - plen, prompt));
-}
-
-/**
- * e_d_frames_tail_update - Keep the last bytes the debugger sent.
- * @tail: E_D_FRAMES_TAIL bytes holding the previous end of the answer;
- * @chunk, @n: what the last read brought.
- *
- * The prompt is still seen when an answer outgrows the kept reply, so the
- * rest of a very deep stack is read off the pipe and never mistaken for the
- * answer to the next command.
- */
-static void e_d_frames_tail_update(char *tail, const char *chunk, int n)
-{
- char both[E_D_FRAMES_TAIL + E_D_FRAMES_CHUNK];
- size_t len;
-
- len = strlen(tail);
- memcpy(both, tail, len);
- memcpy(both + len, chunk, n);
- len += n;
- if (len >= E_D_FRAMES_TAIL)
- {
-  memcpy(tail, both + len - (E_D_FRAMES_TAIL - 1), E_D_FRAMES_TAIL - 1);
-  tail[E_D_FRAMES_TAIL - 1] = '\0';
- }
- else
- {
-  memcpy(tail, both, len);
-  tail[len] = '\0';
- }
-}
-
-/**
- * e_d_frames_discard_pending - Read off what the debugger already sent.
- *
- * Some debuggers print their prompt twice at a stop (a68g after a temporary
- * breakpoint, jdb after the program's output), and the stop readers take
- * the first; the left-over prompt would end the next answer before it came.
- * The program is stopped, so nothing of its output can be lost here.
- */
-static void e_d_frames_discard_pending(void)
-{
- char chunk[E_D_FRAMES_CHUNK];
-
- while (wpe_fd_readable_now(wfildes[0]) == WPE_FD_READABLE &&
-        read(wfildes[0], chunk, sizeof chunk) > 0)
-  ;
-}
-
-/**
- * e_d_read_may_retry - Was the failed read() only interrupted or early?
- *
- * A signal or a pipe with nothing yet is worth another try; any other error
- * will fail again at once, and retrying it would leave the editor spinning.
- * Return: 1 for EINTR, EAGAIN and EWOULDBLOCK.
- */
-static int e_d_read_may_retry(void)
-{
- return(errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK);
-}
-
-/**
- * e_d_frames_ask - Send the debugger @cmd and read its answer to the prompt.
- * @cmd: a stack or frame command.
- *
- * Waits with poll(), never spinning, and gives up after DEB_STEP_POLL_MS of
- * silence, so a debugger that does not answer leaves the editor usable.
- * Return: 0 with the answer in e_d_frames_reply, -1 when the debugger's
- * output ended or cannot be read.
- */
-static int e_d_frames_ask(const char *cmd)
-{
- struct pollfd pfd = { .fd = wfildes[0], .events = POLLIN };
- char chunk[E_D_FRAMES_CHUNK], tail[E_D_FRAMES_TAIL];
- int len = 0, n, keep;
-
- tail[0] = '\0';
- e_d_frames_reply[0] = '\0';
- e_d_frames_discard_pending();
- e_d_send_cmd((char *)cmd);
- while (!e_d_frames_reply_done(tail))
- {
-  if (poll(&pfd, 1, DEB_STEP_POLL_MS) <= 0)
-   break;
-  n = read(wfildes[0], chunk, sizeof chunk);
-  if (n < 0 && e_d_read_may_retry())
-   continue;
-  if (n <= 0)
-  {
-   e_d_note_output_closed();
-   return(-1);
-  }
-  keep = (int)sizeof e_d_frames_reply - 1 - len;
-  if (keep > n)
-   keep = n;
-  memcpy(e_d_frames_reply + len, chunk, keep);
-  len += keep;
-  e_d_frames_reply[len] = '\0';
-  e_d_frames_tail_update(tail, chunk, n);
- }
- return(0);
 }
 
 /**
@@ -13689,29 +13566,25 @@ static void e_d_jdb_take_frames(ECNT *cn, const char *reply)
    (we_debsess.c). */
 
 /**
- * e_d_a68g_frames - Read a68g's stack.
- * @cn: the editor.
+ * e_d_a68g_take_frames - Read a68g's stack out of its answer to "calls".
+ * @cn: the editor; @reply: the answer.
  *
  * a68g's "calls" lists the procedures being run, innermost first, each by
  * the line of its declaration; it names no call sites.  So the innermost
  * frame gets the line the program is stopped on, an outer procedure its
  * declaration line, and the main program, which calls them all, ends the
  * list without a line.  Stopped in the main program, it is the only frame.
- * Return: 0, or -1 when a68g's output ended.
  */
-static int e_d_a68g_frames(ECNT *cn)
+static void e_d_a68g_take_frames(ECNT *cn, const char *reply)
 {
  char row[E_D_FRAME_ROW_MAX], name[E_D_FRAME_NAME_MAX], path[E_D_STOP_PATH_MAX];
- char cmd[E_D_A68G_CALLS_MAX];
- const char *p = e_d_frames_reply, *text;
+ const char *p = reply ? reply : "", *text;
  int iw = e_d_a68g_window(cn), line;
 
+ e_d_nframes = 0;
  path[0] = '\0';
  if (iw > 0)
   e_d_window_path_of(cn, cn->f[iw]->datnam, path, sizeof path);
- snprintf(cmd, sizeof cmd, E_D_A68G_CALLS_FMT, E_D_FRAMES_MAX);
- if (e_d_frames_ask(cmd) == -1)
-  return(-1);
  while (e_d_frames_next_row(&p, row, sizeof row))
  {
   text = e_d_frames_skip_prompt(row);
@@ -13729,7 +13602,6 @@ static int e_d_a68g_frames(ECNT *cn)
   e_d_frame_add(E_D_A68G_MAIN_FRAME, path, e_d_a68g_cur_line, 1);
  else
   e_d_frame_add(E_D_A68G_MAIN_FRAME, path, E_D_FRAME_NO_LINE, 1);
- return(0);
 }
 
 /**
@@ -13768,13 +13640,14 @@ static int e_d_dap_frames(void)
  */
 static int e_d_collect_frames(ECNT *cn)
 {
+ (void)cn;
  if (e_deb_type == DEB_JDB)
   return(0);       /* jdb's frames are asked on the fd loop (e_d_gj_frames_*) */
+ if (e_deb_type == DEB_A68G)
+  return(0);       /* a68g's are asked on the fd loop (e_d_ga68_frames_*) */
  e_d_nframes = 0;
  if (e_deb_type == DEB_PDB)
   return(0);       /* pdb's frames are asked on the fd loop (e_d_gp_frames_*) */
- if (e_deb_type == DEB_A68G)
-  return(e_d_a68g_frames(cn));
  return(e_d_dap_frames());
 }
 
@@ -13872,41 +13745,36 @@ static int e_d_stack_row_frame(BUFFER *b)
 }
 
 /**
- * e_d_frame_move - Make frame @index the debugger's selected one (pdb, jdb).
+ * e_d_dap_frame_select - Select frame @index of a debug adapter's stack for
+ * the watches.
  * @index: the frame, 0 innermost.
  *
  * Its variables are then the ones the Watches window shows, as after gdb's
- * "up" and "down".
- * Return: 0, or -1 when the debugger's output ended.
+ * "up" and "down".  pdb, jdb and a68g move their frame through their own
+ * requests on the fd loop (e_d_ga_follow_frame).
  */
-static int e_d_frame_move(int index)
+static void e_d_dap_frame_select(int index)
 {
- char cmd[E_D_FRAME_SELECT_MAX];
-
- if (index > e_d_nstack)
-  snprintf(cmd, sizeof cmd, E_D_FRAME_UP_FMT, index - e_d_nstack);
- else
-  snprintf(cmd, sizeof cmd, E_D_FRAME_DOWN_FMT, e_d_nstack - index);
- return(e_d_frames_ask(cmd));
+ if (index == e_d_nstack)
+  return;
+ e_dap_select_frame(g_dap, e_d_frames[index].dap_id);
+ e_d_nstack = index;
 }
 
 /**
- * e_d_frame_select - Select frame @index for the watches.
- * @index: the frame, 0 innermost.
+ * e_d_frame_follow_refused - Enter on a row of the Stack window under gdb,
+ * pdb, jdb or a68g when the debugger cannot be asked now: while it answers,
+ * the waiting line says which answer the editor waits for, as for every
+ * other debugger key; while a session starts, the start's line.
+ * @f: the Stack window.
  *
- * a68g's monitor selects no frame of its own, so there only the line is
- * shown and the watches stay those of the stop.
- * Return: 0, or -1 when the debugger's output ended.
+ * Nothing is sent: a frame move sent now would be answered out of turn.
+ * Return: 0.
  */
-static int e_d_frame_select(int index)
+static int e_d_frame_follow_refused(FENSTER *f)
 {
- if (index == e_d_nstack || e_deb_type == DEB_A68G)
-  return(0);
- if (e_deb_type == DEB_DAP)
-  e_dap_select_frame(g_dap, e_d_frames[index].dap_id);
- else if (e_d_frame_move(index) == -1)
-  return(-1);
- e_d_nstack = index;
+ if (!e_d_ga_refused(f))
+  e_d_start_refused(f);
  return(0);
 }
 
@@ -14002,8 +13870,9 @@ static int e_d_frame_show(FENSTER *f)
  fr = e_d_frames[index];
  if (e_d_ga_at_stop())
   return(e_d_ga_follow_frame(f->ed, index, fr.file, e_d_frame_line(&fr)));
- if (e_d_frame_select(index) == -1)
-  return(-1);
+ if (e_d_ga_backend_of(e_deb_type))
+  return(e_d_frame_follow_refused(f));
+ e_d_dap_frame_select(index);
  if (e_d_p_watches(f, 0) == -1)
   return(-1);
  return(e_d_frame_goto(f, &fr));
@@ -14281,7 +14150,7 @@ int e_d_step_next(FENSTER *f, int sw)
  if (e_deb_type == DEB_DAP)
   return e_d_dap_step(f, sw);        /* sw -> "next" (over), else "stepIn" */
  if (e_deb_type == DEB_A68G)
-  return e_d_a68g_do_step(f, sw);   /* line-granular Step Over */
+  return(e_d_a68g_step_go(f, sw));   /* line-granular Step Over */
  if (e_deb_type == DEB_GDB && e_d_pause_below != E_D_NO_FRAME)
   return(e_d_gdb_step_from_pause(f, sw));
  if (sw && e_deb_type == DEB_GDB)
@@ -14381,11 +14250,8 @@ static void e_d_brk_jdb_class(const char *file, char *out, size_t size)
 /**
  * e_d_brk_line_cmd - Write the command that sets (@set 1) or clears (@set 0)
  * the breakpoint on @line of @file, for a debugger that names a breakpoint
- * by its line: pdb, jdb and a68g.
+ * by its line: pdb and jdb (a68g is told on the fd loop, e_d_ga68_*).
  * @path: the file's full path, which pdb is given; @out, @size: the command.
- *
- * a68g's clear of one line does not clear (see e_d_a68g_reset_breakpoints),
- * so only its set is written here.
  * Return: 1 when the selected debugger has such a command.
  */
 static int e_d_brk_line_cmd(int set, const char *file, const char *path,
@@ -14405,8 +14271,6 @@ static int e_d_brk_line_cmd(int set, const char *file, const char *path,
   else
    snprintf(out, size, "clear %s:%d\n", cls, line);
  }
- else if (e_deb_type == DEB_A68G && set)
-  snprintf(out, size, "breakpoint %d\n", line);
  else
   return(0);
  return(1);
@@ -14591,42 +14455,15 @@ static void e_d_dap_on_breakpoints(const char *file, const int *line,
 }
 
 /**
- * e_d_a68g_reset_breakpoints - Make a68g's breakpoints the user's list.
- *
- * a68g's monitor accepts "breakpoint N clear" but keeps stopping on line N,
- * while "breakpoint clear breakpoints" works: so every breakpoint goes and
- * the ones in the list are set again.  A breakpoint the user toggled off,
- * or the one Go to cursor set, then stops the program no more.
- * Return: 0, or -1 when a68g could not be told.
- */
-static int e_d_a68g_reset_breakpoints(void)
-{
- char cmd[E_D_BRK_CMD_MAX];
- int i;
-
- e_d_send_cmd("breakpoint clear breakpoints\n");
- if (e_d_dum_read() == -1)
-  return(-1);
- for (i = 0; i < e_d_nbrpts; i++)
- {
-  snprintf(cmd, sizeof(cmd), "breakpoint %d\n", e_d_ybrpts[i]);
-  e_d_send_cmd(cmd);
-  if (e_d_dum_read() == -1)
-   return(-1);
- }
- return(0);
-}
-
-/**
  * e_d_brk_line_send - Arm (@set 1) or disarm (@set 0) the breakpoint on
- * @line of @file in pdb, jdb, a68g or a debug adapter.
+ * @line of @file in pdb, jdb or a debug adapter.
  * @path: the file's full path.
  *
  * A breakpoint set or removed while a session runs, Remove all, and Go to
  * cursor's own breakpoint all come through here, so the next run stops
- * where the margin says whichever debugger runs it.  A debug adapter, and
- * a68g when a breakpoint goes, are given the user's list again, so the list
- * must already say what the user wants.  @ans, when given, receives the
+ * where the margin says whichever debugger runs it.  A debug adapter is
+ * given the user's list again, so the list must already say what the user
+ * wants.  @ans, when given, receives the
  * debugger's verdict (a debug adapter's comes later, through on_breakpoints).
  * Return: 0, or -1 when the debugger could not be told.
  */
@@ -14646,8 +14483,6 @@ static int e_d_brk_line_send(int set, const char *file, const char *path,
   return(e_d_dap_send_file_breakpoints(file, path, line));
  if (e_deb_type == DEB_DAP)
   return(e_d_dap_send_file_breakpoints(file, path, E_D_BRK_NO_LINE));
- if (e_deb_type == DEB_A68G && !set)
-  return(e_d_a68g_reset_breakpoints());
  if (!e_d_brk_line_cmd(set, file, path, line, cmd, sizeof(cmd)))
   return(-1);
  e_d_send_cmd(cmd);
@@ -15132,15 +14967,13 @@ static void e_d_brk_disarm_each_line(ECNT *cn)
  * whichever debugger runs it.  gdb, a68g, sdb, dbx and xdb clear them with
  * the one command they have, and its answer is read so the next command does
  * not mistake it for its own; pdb and jdb are told breakpoint by breakpoint,
- * and a debug adapter is given an empty list for each file.  gdb's and
- * pdb's answers are read on the fd loop.
+ * and a debug adapter is given an empty list for each file.  gdb's, pdb's,
+ * jdb's and a68g's answers are read on the fd loop.
  */
 static void e_d_brk_disarm_all(ECNT *cn)
 {
  if (e_d_ga_at_stop())
   e_d_ga_remove_all(cn);
- else if (e_deb_type == DEB_A68G)
-  e_d_send_and_read("breakpoint clear breakpoints\n");
  else if (e_deb_type == DEB_SDB)
   e_d_send_and_read("D\n");
  else if (e_deb_type == DEB_DBX)
@@ -15279,8 +15112,8 @@ static int e_d_ga_run_to_cursor(FENSTER *f, int line)
  * @f: the source window; @line: the cursor's 1-based line, in the file
  * e_d_goto_take_target took.
  *
- * Borland's Go to cursor, on a68g and every debug adapter, and on pdb and
- * jdb through the request engine (e_d_ga_run_to_cursor).  pdb's "until"
+ * Borland's Go to cursor, on every debug adapter, and on pdb, jdb and a68g
+ * through the request engine (e_d_ga_run_to_cursor).  pdb's "until"
  * would stop when the current function returns and never reach a line in
  * another one, which is why pdb takes this way too.
  * Return: what the continue returned.
@@ -16082,13 +15915,13 @@ static int e_d_gdb_run_never_started(FENSTER *f)
    does not come.  Each sequence of commands is a table of steps (E_D_STEP),
    one named function per command and per answer.
 
-   pdb and jdb run on the same engine (their own steps are further down,
-   "pdb's answers, start and resumes" and "jdb's answers, start and
-   resumes").  What differs between them is in their backend tables
-   (E_D_GA_BACKEND): the words and prompt, how a breakpoint is set and taken
-   out, the events jdb writes in the middle of its answers, and the tables
-   of steps a stop, the Stack window and a start ask; everything else here
-   is one code for all three. */
+   pdb, jdb and a68g run on the same engine (their own steps are further
+   down, "pdb's answers, start and resumes", "jdb's answers, start and
+   resumes" and "a68g's answers, start and resumes").  What differs between
+   them is in their backend tables (E_D_GA_BACKEND): the words and prompt,
+   how a breakpoint is set and taken out, the events jdb writes in the
+   middle of its answers, and the tables of steps a stop, the Stack window
+   and a start ask; everything else here is one code for all four. */
 
 /* What runs on the request engine. */
 #define E_D_GA_NONE   0   /* nothing */
@@ -16141,7 +15974,7 @@ typedef struct e_d_ga_ctx E_D_GA_CTX;     /* what a chain's steps learn */
 typedef struct e_d_ga_go E_D_GA_GO;       /* what a start or resume does */
 
 /* What the engine is told of the debugger it talks to: everything in which
-   gdb, pdb and jdb differ.  The waiting line, the keys kept and refused,
+   gdb, pdb, jdb and a68g differ.  The waiting line, the keys kept and refused,
    the cancel and every step they share then stay one code. */
 struct e_d_ga_backend
 {
@@ -16782,7 +16615,7 @@ static int e_d_ga_sync_runs(void)
 }
 
 /**
- * e_d_ga_at_stop - Is the debugger (gdb, pdb, jdb) at its prompt and asked
+ * e_d_ga_at_stop - Is the debugger (gdb, pdb, jdb, a68g) at its prompt and asked
  * nothing, so a command of the user's goes to it through the engine?
  *
  * True at a stop, and also before the program first runs once the debugger
@@ -17084,7 +16917,8 @@ static void e_d_act_on_timer(void *data)
 /* ---- the answers of a stop ---- */
 
 /* What a chain's steps learn, read by its end: a stop's, a sync's or a
-   command's at a stop, under gdb, pdb or jdb (one chain runs at a time). */
+   command's at a stop, under gdb, pdb, jdb or a68g (one chain runs at a
+   time). */
 struct e_d_ga_ctx
 {
  ECNT *cn;
@@ -17778,7 +17612,8 @@ static const E_D_STEP e_d_gdb_sync_steps[] =
  { NULL, NULL }
 };
 
-/* A breakpoint set or taken off at a stop, under gdb, pdb and jdb alike. */
+/* A breakpoint set or taken off at a stop, under gdb, pdb and jdb alike
+   (a68g, which clears every breakpoint at once, has its own). */
 static const E_D_STEP e_d_ga_brk_steps[] =
 {
  { e_d_gb_remove_cmd, e_d_gb_remove_answered },
@@ -18126,7 +17961,7 @@ static void e_d_gs_sync_finished(int ok, void *ctx)
  e_d_run_repaint_margin(cn);
  if (e_d_ga.pause_asked)
  {
-  e_d_gs_pause_instead(cn);
+  e_d_ga.be->pause_instead(cn);
   return;
  }
  e_d_run_go_on(e_d_run.cont);
@@ -18135,25 +17970,36 @@ static void e_d_gs_sync_finished(int ok, void *ctx)
 }
 
 /**
- * e_d_gdb_sync_on_loop - The interrupt for a breakpoint change stopped the
- * program: tell gdb on the fd loop, then let it run on.
+ * e_d_ga_sync_with - The interrupt for a breakpoint change stopped the
+ * program: tell the debugger with the table of steps @steps on the fd
+ * loop, then let it run on (gdb, a68g).
  * @cn: the editor.
  *
  * For the user the program never stopped: the bottom row still names
- * Pause, keys that need gdb are refused as while it runs, and typed text
- * still goes to the program.
+ * Pause, keys that need the debugger are refused as while it runs, and
+ * typed text still goes to a program that has a terminal of its own.
  * Return: 1, the stop is dealt with.
  */
-static int e_d_gdb_sync_on_loop(ECNT *cn)
+static int e_d_ga_sync_with(ECNT *cn, const E_D_STEP *steps)
 {
  E_D_GA_CTX *st = &e_d_gs;
 
  e_d_gs_reset(st, cn);
  e_d_ga.pause_asked = 0;
  e_d_async_pending = 1;
- e_d_ga_chain_start(cn, e_d_gdb_sync_steps, st, e_d_gs_sync_finished,
-                    E_D_GA_SYNC);
+ e_d_ga_chain_start(cn, steps, st, e_d_gs_sync_finished, E_D_GA_SYNC);
  return(1);
+}
+
+/**
+ * e_d_gdb_sync_on_loop - The interrupt for a breakpoint change stopped the
+ * program: tell gdb on the fd loop, then let it run on.
+ * @cn: the editor.
+ * Return: 1, the stop is dealt with.
+ */
+static int e_d_gdb_sync_on_loop(ECNT *cn)
+{
+ return(e_d_ga_sync_with(cn, e_d_gdb_sync_steps));
 }
 
 /* ---- commands of the user's at a stop ---- */
@@ -19135,9 +18981,10 @@ static void e_d_pdb_brk_remove_cmd(const E_D_BRK_GONE *g, char *cmd, size_t n)
 
 /**
  * e_d_place_brk_judge - What a debugger that names a breakpoint by its
- * place (pdb, jdb) made of one, from its answer's rows: set, kept for later
- * (jdb's "Deferring breakpoint", until the class loads), or refused with
- * its words ("*** Blank or comment", "Unable to set breakpoint").
+ * place (pdb, jdb, a68g) made of one, from its answer's rows: set, kept for
+ * later (jdb's "Deferring breakpoint", until the class loads), or refused
+ * with its words ("*** Blank or comment", "Unable to set breakpoint",
+ * a68g's "monitor error: cannot set breakpoint in that line.").
  * @ans: the answer; @v: receives the verdict.
  */
 static void e_d_place_brk_judge(const E_D_ANSWER *ans, E_D_BRK_ANSWER *v)
@@ -19159,8 +19006,8 @@ static void e_d_place_brk_judge(const E_D_ANSWER *ans, E_D_BRK_ANSWER *v)
 }
 
 /**
- * e_d_place_brk_set_id - Did pdb or jdb take the breakpoint its answer is
- * for (set it, or kept it for when its class loads)?
+ * e_d_place_brk_set_id - Did pdb, jdb or a68g take the breakpoint its
+ * answer is for (set it, or kept it for when its class loads)?
  * Return: E_D_GP_ID_SET when it did, 0 when it refused.
  */
 static int e_d_place_brk_set_id(const E_D_ANSWER *ans)
@@ -19174,9 +19021,9 @@ static int e_d_place_brk_set_id(const E_D_ANSWER *ans)
 }
 
 /**
- * e_d_place_brk_verdict - Keep with list entry @i what pdb or jdb answered:
- * the mark turns solid, or stays hollow with the debugger's words.
- * @id: unused (neither gives a breakpoint a number the editor names it by);
+ * e_d_place_brk_verdict - Keep with list entry @i what pdb, jdb or a68g
+ * answered: the mark turns solid, or stays hollow with the debugger's words.
+ * @id: unused (none gives a breakpoint a number the editor names it by);
  * @ans: the answer.
  */
 static void e_d_place_brk_verdict(int i, int id, const E_D_ANSWER *ans)
@@ -19871,7 +19718,7 @@ static int e_d_ga_finish_ask(FENSTER *f)
 
 /**
  * e_d_ga_finishes_on_loop - Is Finish function asked on the request engine
- * (pdb, jdb), its frames read there before the command goes?
+ * (pdb, jdb, a68g), its frames read there before the command goes?
  */
 static int e_d_ga_finishes_on_loop(void)
 {
@@ -19882,7 +19729,7 @@ static int e_d_ga_finishes_on_loop(void)
 
 /**
  * e_d_ga_sets_cursor_brk - Does Go to cursor set its own breakpoint on the
- * request engine (pdb, jdb), rather than run with gdb's "advance" or send
+ * request engine (pdb, jdb, a68g), rather than run with gdb's "advance" or send
  * it at once (the other debuggers)?
  */
 static int e_d_ga_sets_cursor_brk(void)
@@ -21063,6 +20910,392 @@ static const E_D_STEP e_d_jdb_go_steps[] =
  { NULL, NULL }
 };
 
+/* ==== a68g's answers, start and resumes, on the fd loop ====
+
+   a68g runs on the same engine as gdb, pdb and jdb: what a stop asks it
+   (the watches, the Stack window, the breakpoints changed while it ran, Go
+   to cursor's own breakpoint), a breakpoint toggled at a stop, Remove all,
+   the set-up after its first prompt and what each resume asks first.  The
+   stop itself is read by a68g's run controller table (e_d_a68g_feed), whose
+   answer names the line, so no stop asks where it is.  Where a68g differs:
+   it names a breakpoint by its line only and takes its breakpoints off only
+   all at once, so a removal clears every one and the user's are set again;
+   it has no command that only echoes, so its settle marker is a string it
+   evaluates; its stack is "calls"; it selects no frame of its own; and it
+   writes nothing behind its prompt, nor when an interrupt meets it there
+   (e_d_a68g_settle), so its tables have no settle step and no event hook. */
+
+#define E_D_A68G_NAME        "a68g"   /* as the waiting line names it */
+#define E_D_A68G_SETTLE_MARK "xwpe-interrupts-settled"
+#define E_D_A68G_SETTLE_CMD  "evaluate \"" E_D_A68G_SETTLE_MARK "\""
+#define E_D_A68G_BREAK_FMT   "breakpoint %d"
+/* a68g's monitor takes "breakpoint N clear" but keeps stopping on line N;
+   this one works, for every breakpoint at once. */
+#define E_D_A68G_CLEAR_ALL   "breakpoint clear breakpoints"
+
+/* ---- a breakpoint, as a68g is told it ---- */
+
+/**
+ * e_d_a68g_brk_add_cmd - a68g's "breakpoint N" for list entry @i: a68g
+ * debugs one source, so the line is all it is told.
+ * @cmd, @n: the command.
+ */
+static void e_d_a68g_brk_add_cmd(int i, char *cmd, size_t n)
+{
+ snprintf(cmd, n, E_D_A68G_BREAK_FMT, e_d_ybrpts[i]);
+}
+
+/**
+ * e_d_a68g_brk_remove_cmd - a68g's command that takes out a breakpoint the
+ * list no longer has: every breakpoint goes, the only removal that stops
+ * the program there no more; the user's are set again after it
+ * (e_d_ga68_tell_again).
+ * @g: the removal (unused); @cmd, @n: the command.
+ */
+static void e_d_a68g_brk_remove_cmd(const E_D_BRK_GONE *g, char *cmd, size_t n)
+{
+ (void)g;
+ snprintf(cmd, n, "%s", E_D_A68G_CLEAR_ALL);
+}
+
+/**
+ * e_d_a68g_cursor_brk_cmd - a68g's command that sets (@set 1) Go to
+ * cursor's own breakpoint, or clears it with every other one.
+ * @cmd, @n: the command.
+ */
+static void e_d_a68g_cursor_brk_cmd(int set, char *cmd, size_t n)
+{
+ if (set)
+  snprintf(cmd, n, E_D_A68G_BREAK_FMT, e_d_cursor_brk.line);
+ else
+  snprintf(cmd, n, "%s", E_D_A68G_CLEAR_ALL);
+}
+
+/**
+ * e_d_ga68_had - Had a68g set list entry @i for the user?
+ * Return: 1 for a breakpoint it took (one it refused it never had).
+ */
+static int e_d_ga68_had(int i)
+{
+ return(!e_d_brk_is_start_entry(i) && e_d_nrbrpts[i] != 0 &&
+        e_d_brk_state[i] != E_D_BRK_REFUSED);
+}
+
+/**
+ * e_d_ga68_tell_again - a68g has cleared every breakpoint: the removals it
+ * was owed are done, and each breakpoint of the user's it had is set again
+ * by the add step that follows, so the program goes on stopping on every
+ * line the margin marks and on none other.
+ */
+static void e_d_ga68_tell_again(void)
+{
+ int i;
+
+ e_d_brk_gone_free();
+ for (i = 0; i < e_d_nbrpts; i++)
+  if (e_d_ga68_had(i))
+  {
+   e_d_nrbrpts[i] = 0;
+   e_d_brk_set_state(i, E_D_BRK_PENDING, NULL);
+  }
+}
+
+/**
+ * e_d_ga68_cursor_brk_again - The clear took Go to cursor's own breakpoint
+ * too while its run is under way (a breakpoint removed during it): it is
+ * set again before the program runs on, so the run still stops on the
+ * cursor's line.
+ */
+static void e_d_ga68_cursor_brk_again(void)
+{
+ if (!e_d_cursor_brk.set)
+  return;
+ e_d_cursor_brk.set = 0;
+ e_d_cursor_brk.wanted = 1;
+}
+
+/**
+ * e_d_ga68_cursor_brk_goes - At a stop the user is shown, Go to cursor's
+ * own breakpoint goes for good: it becomes a removal like the user's, kept
+ * until a68g has answered the clear, so a clear given up on is asked again
+ * and the line never stops a later run.
+ */
+static void e_d_ga68_cursor_brk_goes(void)
+{
+ e_d_cursor_brk.wanted = 0;
+ if (!e_d_cursor_brk.set)
+  return;
+ e_d_cursor_brk.set = 0;
+ e_d_gb_gone_keep(e_d_cursor_brk.file, e_d_cursor_brk.line,
+                  E_D_GB_ID_UNKNOWN);
+}
+
+/* step: the breakpoints the user removed: a68g clears every one, and the
+   user's are set again by the add step after it */
+
+static int e_d_ga68_reset_cmd(char *cmd, size_t n, void *ctx)
+{
+ (void)ctx;
+ if (e_d_brk_ngone <= 0)
+  return(0);
+ e_d_ga.be->brk_remove_cmd(&e_d_brk_gone[0], cmd, n);
+ return(1);
+}
+
+static int e_d_ga68_reset_answered(E_D_REQ_END how, E_D_ANSWER *ans,
+                                   void *ctx)
+{
+ (void)how;
+ (void)ans;
+ (void)ctx;
+ e_d_ga68_tell_again();
+ e_d_ga68_cursor_brk_again();
+ return(E_D_STEP_NEXT);
+}
+
+/* step: at a stop the user is shown, the removals and Go to cursor's own */
+
+static int e_d_ga68_stop_reset_cmd(char *cmd, size_t n, void *ctx)
+{
+ e_d_ga68_cursor_brk_goes();
+ return(e_d_ga68_reset_cmd(cmd, n, ctx));
+}
+
+/* step: Remove all, one clear for every breakpoint */
+
+static int e_d_ga68_clear_all_cmd(char *cmd, size_t n, void *ctx)
+{
+ (void)ctx;
+ snprintf(cmd, n, "%s", E_D_A68G_CLEAR_ALL);
+ return(1);
+}
+
+static const E_D_STEP e_d_a68g_remove_all_steps[] =
+{
+ { e_d_ga68_clear_all_cmd, e_d_ga68_reset_answered },
+ { NULL, NULL }
+};
+
+/**
+ * e_d_a68g_remove_all - Remove all breakpoints at a stop under a68g: its one
+ * command for it, answered on the fd loop.
+ * @cn: the editor.
+ */
+static void e_d_a68g_remove_all(ECNT *cn)
+{
+ e_d_gs_reset(&e_d_gs, cn);
+ e_d_ga_chain_start(cn, e_d_a68g_remove_all_steps, &e_d_gs,
+                    e_d_gs_ask_finished, E_D_GA_ASK);
+}
+
+/* ---- the Stack window ---- */
+
+/* step: a68g's stack, when the Stack window is open */
+
+static int e_d_ga68_frames_cmd(char *cmd, size_t n, void *ctx)
+{
+ E_D_GA_CTX *st = ctx;
+
+ if (!st->stack_wanted)
+  return(0);
+ snprintf(cmd, n, E_D_A68G_CALLS_FMT, E_D_FRAMES_MAX);
+ return(1);
+}
+
+static int e_d_ga68_frames_answered(E_D_REQ_END how, E_D_ANSWER *ans,
+                                    void *ctx)
+{
+ (void)how;
+ (void)ctx;
+ e_d_a68g_take_frames(e_d_ga_editor(), ans->text);
+ return(E_D_STEP_NEXT);
+}
+
+/* ---- a stop the user is shown ---- */
+
+/* The Stack window and the watches, then the breakpoints changed while the
+   program ran and Go to cursor's own. */
+static const E_D_STEP e_d_a68g_stop_steps[] =
+{
+ { e_d_ga68_frames_cmd,     e_d_ga68_frames_answered },
+ { e_d_gs_watch_cmd,        e_d_gs_watch_answered },
+ { e_d_ga68_stop_reset_cmd, e_d_ga68_reset_answered },
+ { e_d_gb_add_cmd,          e_d_gb_add_answered },
+ { NULL, NULL }
+};
+
+/**
+ * e_d_ga68_show_stop - a68g has answered everything the stop asks: the
+ * user sees the green bar on the line a68g stopped on, then the Watches
+ * and Stack windows with their values.
+ * @st: the context.
+ */
+static void e_d_ga68_show_stop(E_D_GA_CTX *st)
+{
+ FENSTER *f = e_d_ga_window();
+
+ if (st->start_brk)
+  e_mk_brk_main(f, st->start_brk);
+ if (st->line > 0)
+  e_d_a68g_goto(f, st->line);
+ else
+  e_d_switch_out(0);
+ e_d_gs_show_windows(st);
+}
+
+/**
+ * e_d_ga68_stop_finished - The answers of an a68g stop have come: show it,
+ * say how a Pause ended, then run the next kept key.
+ * @ok: 0 when an answer was given up on (the status row already says
+ * which): nothing is drawn, the kept keys are dropped, and Go to cursor's
+ * own breakpoint, if the stop did not get to clear it, is kept as a
+ * removal, so the next request clears it and a later run passes its line.
+ * @ctx: the context.
+ */
+static void e_d_ga68_stop_finished(int ok, void *ctx)
+{
+ E_D_GA_CTX *st = ctx;
+ ECNT *cn = st->cn;
+
+ if (!e_d_ga_chain_ended())
+ {
+  e_d_ga_actions_drop();
+  e_d_gs_free(st);
+  return;
+ }
+ if (!ok)
+ {
+  e_d_ga68_cursor_brk_goes();
+  e_d_ga_actions_drop();
+  e_d_gs_free(st);
+  return;
+ }
+ e_d_ga68_show_stop(st);
+ e_d_gs_free(st);
+ _messages_activated = 0;
+ e_refresh();
+ e_d_run_stop_tail(cn, e_d_run.ops);
+ e_d_act_schedule();
+}
+
+/**
+ * e_d_ga68_stop_ask - a68g stopped at a line the user is shown: ask it, on
+ * the fd loop, what the stop needs, and show the stop once it has answered.
+ * @cn: the editor; @line: the line a68g reported, or 0.
+ *
+ * The keys reach the editor while a68g answers; F7, F8 and Run typed
+ * meanwhile are kept and run in order after the stop is shown.
+ */
+static void e_d_ga68_stop_ask(ECNT *cn, int line)
+{
+ E_D_GA_CTX *st = &e_d_gs;
+
+ e_d_gs_reset(st, cn);
+ st->line = line;
+ st->start_brk = e_d_run.start_brk;
+ e_d_run.start_brk = 0;
+ st->stack_wanted = e_d_gs_stack_window_open(cn);
+ e_d_run.stop_on_loop = 1;
+ e_d_ga_chain_start(cn, e_d_a68g_stop_steps, st, e_d_ga68_stop_finished,
+                    E_D_GA_STOP);
+}
+
+/**
+ * e_d_a68g_pause_instead - Pause was pressed while a68g answered at a stop
+ * the user was not shown: the program is not let run on, and the stop is
+ * shown as the Pause's, on the line a68g stopped on.
+ * @cn: the editor.
+ */
+static void e_d_a68g_pause_instead(ECNT *cn)
+{
+ e_d_async_pending = 0;
+ e_d_ga.pause_asked = 0;
+ e_d_run.pause = E_D_PAUSE_TAKEN;
+ e_d_ga68_stop_ask(cn, e_d_a68g_cur_line);
+}
+
+/* ---- a stop made to tell a68g of breakpoint changes ---- */
+
+/* The removals (a clear of every breakpoint, Go to cursor's own set again
+   after it while its run is under way), then the additions. */
+static const E_D_STEP e_d_a68g_sync_steps[] =
+{
+ { e_d_ga68_reset_cmd,    e_d_ga68_reset_answered },
+ { e_d_gb_add_cmd,        e_d_gb_add_answered },
+ { e_d_ga_cursor_set_cmd, e_d_gs_ignore_answer },
+ { NULL, NULL }
+};
+
+/**
+ * e_d_a68g_sync_on_loop - The interrupt for a breakpoint change stopped the
+ * program: tell a68g on the fd loop, then let it run on.
+ * @cn: the editor.
+ * Return: 1, the stop is dealt with.
+ */
+static int e_d_a68g_sync_on_loop(ECNT *cn)
+{
+ return(e_d_ga_sync_with(cn, e_d_a68g_sync_steps));
+}
+
+/* ---- commands of the user's at a stop, the set-up and the resumes ---- */
+
+/* Every breakpoint of the user's; a set-up given up on and asked again
+   first clears a line a68g may have set unanswered. */
+static const E_D_STEP e_d_a68g_set_up_steps[] =
+{
+ { e_d_ga68_reset_cmd, e_d_ga68_reset_answered },
+ { e_d_gb_add_cmd,     e_d_gu_add_answered },
+ { NULL, NULL }
+};
+
+/* A breakpoint set or taken off at a stop. */
+static const E_D_STEP e_d_a68g_brk_steps[] =
+{
+ { e_d_ga68_reset_cmd, e_d_ga68_reset_answered },
+ { e_d_gb_add_cmd,     e_d_gb_add_answered },
+ { NULL, NULL }
+};
+
+/* Add, edit or delete a watch at a stop; Enter on a row of the Stack
+   window too: a68g selects no frame of its own, so following one moves
+   nothing in a68g and reads the stack and the watches again. */
+static const E_D_STEP e_d_a68g_watches_steps[] =
+{
+ { e_d_ga68_frames_cmd, e_d_ga68_frames_answered },
+ { e_d_gs_watch_cmd,    e_d_gs_watch_answered },
+ { NULL, NULL }
+};
+
+/* Ctrl-G K. */
+static const E_D_STEP e_d_a68g_stack_steps[] =
+{
+ { e_d_ga68_frames_cmd, e_d_ga68_frames_answered },
+ { NULL, NULL }
+};
+
+/* step: Finish needs the frames, to know the procedure has a caller */
+
+static int e_d_ga68_finish_frames_cmd(char *cmd, size_t n, void *ctx)
+{
+ E_D_GA_GO *go = ctx;
+
+ if (go->how != E_D_GO_FINISH)
+  return(0);
+ snprintf(cmd, n, E_D_A68G_CALLS_FMT, E_D_FRAMES_MAX);
+ return(1);
+}
+
+/* What a resume asks a68g first: the breakpoint changes it has not been
+   told of, Go to cursor's own breakpoint, and for Finish the frames. */
+static const E_D_STEP e_d_a68g_go_steps[] =
+{
+ { e_d_ga68_reset_cmd,         e_d_ga68_reset_answered },
+ { e_d_gb_add_cmd,             e_d_gb_add_answered },
+ { e_d_ga_cursor_set_cmd,      e_d_gs_ignore_answer },
+ { e_d_ga68_finish_frames_cmd, e_d_ga68_frames_answered },
+ { NULL, NULL }
+};
+
 /* ---- the backends ---- */
 
 static const E_D_GA_BACKEND e_d_ga_gdb_backend =
@@ -21170,10 +21403,47 @@ static const E_D_GA_BACKEND e_d_ga_jdb_backend =
  e_d_jdb_go_steps
 };
 
+/* a68g's word prompt ends each answer; its refusals of a breakpoint are on
+   its output ("monitor error"), and its first run is a "continue" that the
+   run's reader takes.  It reports no event in the middle of an answer. */
+static const E_D_GA_BACKEND e_d_ga_a68g_backend =
+{
+ E_D_A68G_NAME,
+ E_D_A68G_PROMPT,
+ E_D_A68G_SETTLE_CMD,
+ E_D_A68G_SETTLE_MARK,
+ 0,
+ 0,
+ e_d_a68g_brk_add_cmd,
+ e_d_a68g_brk_remove_cmd,
+ e_d_place_brk_set_id,
+ e_d_place_brk_verdict,
+ e_d_a68g_remove_all,
+ e_d_ga_frames_show_stack,
+ e_d_a68g_pause_instead,
+ e_d_ga_finish_now,
+ e_d_ga_ends_in_prompt,
+ NULL,
+ e_d_a68g_cursor_brk_cmd,
+ NULL,
+ NULL,
+ NULL,
+ NULL,
+ NULL,
+ NULL,
+ NULL,
+ e_d_a68g_set_up_steps,
+ e_d_a68g_brk_steps,
+ e_d_a68g_watches_steps,
+ e_d_a68g_stack_steps,
+ e_d_a68g_watches_steps,
+ e_d_a68g_go_steps
+};
+
 /**
  * e_d_ga_backend_of - The request engine's table for debugger @type.
- * Return: gdb's, pdb's or jdb's, or NULL for a debugger whose answers are
- * still read otherwise.
+ * Return: gdb's, pdb's, jdb's or a68g's, or NULL for a debugger whose
+ * answers are still read otherwise.
  */
 static const E_D_GA_BACKEND *e_d_ga_backend_of(int type)
 {
@@ -21183,12 +21453,15 @@ static const E_D_GA_BACKEND *e_d_ga_backend_of(int type)
   return(&e_d_ga_pdb_backend);
  if (type == DEB_JDB)
   return(&e_d_ga_jdb_backend);
+ if (type == DEB_A68G)
+  return(&e_d_ga_a68g_backend);
  return(NULL);
 }
 
 /**
- * e_d_ga_remove_all - Remove all breakpoints at a stop of gdb's, pdb's or
- * jdb's, in the way the debugger that runs takes it, on the fd loop.
+ * e_d_ga_remove_all - Remove all breakpoints at a stop of gdb's, pdb's,
+ * jdb's or a68g's, in the way the debugger that runs takes it, on the fd
+ * loop.
  * @cn: the editor.
  */
 static void e_d_ga_remove_all(ECNT *cn)

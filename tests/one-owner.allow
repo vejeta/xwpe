@@ -25,7 +25,7 @@ we_lsp.o nanosleep 1 P9i server end moves to the child watch
 we_dap.o poll 3 P9g the answer waits and the Quit waits
 
 # the debugger
-we_debug.o poll 2 P9f the pty drain and the frames wait
+we_debug.o poll 1 P9f the pty drain
 we_debug.o usleep 1 P9o the external xterm settle
 we_debug.o XFlush 3 P9f
 we_debug.o XNextEvent 1 P9f the key reader that the loop replaces

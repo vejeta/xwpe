@@ -10557,3 +10557,403 @@ def test_jdb_continue_after_a_pause_that_met_a_stop_runs_on(tmp_path):
                          in _screen(w), LIVE_STOP_TIMEOUT_S), \
             "Continue should let the program run to its end (stub log:\n" \
             "%s):\n%s" % (_jdb_stub_log(tmp_path), _screen(w))
+
+
+# ---- a68g's answers, start and resumes, read while the editor keeps its keys
+#
+# tests/stubs/a68g/a68g stands in front of the real a68g and holds back one
+# monitor command (XWPE_STUB_STALL) until the editor sends another line or
+# the test writes to its release pipe, as the gdb, pdb and jdb stubs do.
+
+A68G_STUB_DIR = os.path.join(STUBS_DIR, "a68g")
+A68G_STUB_LOG = "a68g-stub.log"
+A68G_STUB_RELEASE = "a68g-stub.release"
+A68G_ANSWER_TIMEOUT_S = 2         # the deadline row's XWPE_DEBUG_ANSWER_TIMEOUT
+A68G_WATCH = "x"
+A68G_WATCH_ASKED = "evaluate x"   # a68g's command for that watch
+WAITING_FOR_A68G_WATCH = "waiting for a68g to answer `evaluate x`"
+A68G_DID_NOT_ANSWER_WATCH = "a68g did not answer `evaluate x`"
+A68G_BREAK_ASKED = "breakpoint "  # a68g's command that sets a breakpoint
+WAITING_FOR_A68G_START_BREAK = "waiting for a68g to answer `breakpoint %d`"
+A68G_DID_NOT_ANSWER_BREAK = "a68g did not answer `breakpoint %d`"
+A68G_CLEAR_ALL = "breakpoint clear breakpoints"
+A68G_LATE_WATCH = "x * 2"         # its value is not x's
+A68G_LATE_VALUE = 4
+# a68g writes a value as "(INT) +2", after "(REF INT) refers to frame(N)"
+# for a variable.
+A68G_INT_VALUE = re.compile(r"\(INT\)\s*([+-]?\d+)")
+
+# Four assignments in a row to x, so a watch has a value at each stop and
+# two typed-ahead F8s have lines to land on.
+A68G_STEPS_PROG = (
+    "INT x := 1;\n"
+    "x := x + 1;\n"
+    "x := x + 1;\n"
+    "x := x + 1;\n"
+    "x := x + 1;\n"
+    "print ((x, new line))\n"
+)
+A68G_STEPS_BREAK_LINE = 2         # x is 1
+A68G_STEPS_NEXT_LINE = 3          # x is 2
+A68G_STEPS_AFTER_TWO = 5          # two more F8s from line 3
+A68G_STEPS_X_AT_BREAK = 1
+
+
+def _a68g_stub_env(stall, nth=1, extra=None):
+    """PATH with the holding a68g first, holding the @nth command that
+    starts with @stall."""
+    env = {"PATH": A68G_STUB_DIR + ":" + os.environ.get("PATH", ""),
+           "XWPE_STUB_REAL_A68G": shutil.which("a68g") or "",
+           "XWPE_STUB_STALL": stall,
+           "XWPE_STUB_STALL_NTH": str(nth)}
+    if extra:
+        env.update(extra)
+    return env
+
+
+def _a68g_stub_log(tmp_path):
+    try:
+        with open(str(tmp_path / A68G_STUB_LOG)) as fh:
+            return fh.read()
+    except OSError:
+        return ""
+
+
+def _a68g_stub_holds(w, tmp_path, stall):
+    """Wait until the stub says it holds the command that starts with
+    @stall: the editor is then waiting for a68g's answer."""
+    assert _wait_for(w, lambda: ("STALL " + stall) in _a68g_stub_log(tmp_path),
+                     START_TIMEOUT_S), \
+        "the editor should have sent %r (stub log:\n%s):\n%s" \
+        % (stall, _a68g_stub_log(tmp_path), _screen(w))
+
+
+def _a68g_stub_release(tmp_path):
+    """Let the held command go to a68g."""
+    with open(str(tmp_path / A68G_STUB_RELEASE), "w") as fh:
+        fh.write("go\n")
+
+
+def _a68g_watch_value(w, name):
+    """The number a68g gave watch @name, or None while it shows none."""
+    row = _watch_row(w, name)
+    if row is None:
+        return None
+    found = A68G_INT_VALUE.findall(row)
+    if not found:
+        return None
+    return int(found[-1])
+
+
+def _a68g_watch_held_at_a_step(w, tmp_path):
+    """Stop on the breakpoint, watch x, then F8: at the step's stop a68g is
+    asked `evaluate x` again, and the stub holds that second one."""
+    _stop_in_the_function(w, A68G_STEPS_BREAK_LINE, START_TIMEOUT_S)
+    _add_watch(w, A68G_WATCH)
+    assert _wait_for(w, lambda: _a68g_watch_value(w, A68G_WATCH) ==
+                     A68G_STEPS_X_AT_BREAK, STEP_TIMEOUT_S), _screen(w)
+    w.key(F8, delay=0.3)
+    _a68g_stub_holds(w, tmp_path, A68G_WATCH_ASKED)
+
+
+# @scenario SC-debug-49
+def test_a68g_keys_reach_the_editor_while_it_answers(tmp_path):
+    """While a68g has not answered a watch at a step's stop, Ctrl-G K
+    reaches the editor and is refused with the waiting line, which names
+    the command; no Stack window opens and its letter is not typed into the
+    file.  Once a68g answers, the stop is marked."""
+    _need("a68g")
+    with WpeSession(str(tmp_path), A68G_STEPS_PROG, filename="p.a68",
+                    wait=1.5,
+                    env_extra=_a68g_stub_env(A68G_WATCH_ASKED, nth=2)) as w:
+        _a68g_watch_held_at_a_step(w, tmp_path)
+        w.key(CTRL_G, "k", delay=0.5)
+        assert _status_row_says(w, WAITING_FOR_A68G_WATCH, STEP_TIMEOUT_S), \
+            "Ctrl-G K should be refused with the waiting line:\n%s" \
+            % _screen(w)
+        assert " Stack " not in _screen(w), \
+            "Ctrl-G K must wait for a68g's answer, not ask it:\n%s" \
+            % _screen(w)
+        w.save()
+        assert w.text() == A68G_STEPS_PROG, \
+            "a key typed while a68g answered landed in the file:\n%s" \
+            % _screen(w)
+        _a68g_stub_release(tmp_path)
+        assert _wait_for(w, lambda: _mark_line(w) == A68G_STEPS_NEXT_LINE,
+                         STEP_TIMEOUT_S), \
+            "once a68g answers the stop should be marked (mark on %s):\n%s" \
+            % (_mark_line(w), _screen(w))
+
+
+A68G_ANSWER_ENDS = {
+    "esc": {"key": ESC, "env": None, "says": A68G_DID_NOT_ANSWER_WATCH},
+    "ctrl_c": {"key": CTRL_C, "env": None, "says": A68G_DID_NOT_ANSWER_WATCH},
+    "deadline": {"key": None,
+                 "env": {"XWPE_DEBUG_ANSWER_TIMEOUT":
+                         str(A68G_ANSWER_TIMEOUT_S)},
+                 "says": A68G_DID_NOT_ANSWER_WATCH + " within"},
+}
+
+
+# @scenario SC-debug-50
+@pytest.mark.parametrize("how", sorted(A68G_ANSWER_ENDS))
+def test_a68g_stalled_answer_ends_with_a_message_and_quit_works(tmp_path, how):
+    """An a68g that does not answer a watch at a stop: the waiting line
+    comes, Esc, Ctrl-C or the deadline ends the wait with a line naming the
+    command, and Debug > Quit then ends the session with nothing left."""
+    case = A68G_ANSWER_ENDS[how]
+    _need("a68g")
+    env = _a68g_stub_env(A68G_WATCH_ASKED, nth=2, extra=case["env"])
+    with WpeSession(str(tmp_path), A68G_STEPS_PROG, filename="p.a68",
+                    wait=1.5, env_extra=env) as w:
+        _a68g_watch_held_at_a_step(w, tmp_path)
+        assert _status_row_says(w, WAITING_FOR_A68G_WATCH, STEP_TIMEOUT_S), \
+            "the waiting line should come:\n%s" % _screen(w)
+        if case["key"]:
+            w.key(case["key"], delay=0.5)
+        assert _status_row_says(w, case["says"], STEP_TIMEOUT_S), \
+            "the wait should end with %r:\n%s" % (case["says"], _screen(w))
+        _quit_and_see_the_session_gone(w)
+
+
+# @scenario SC-debug-50
+def test_a68g_answer_after_a_cancel_is_not_taken_for_the_next(tmp_path):
+    """a68g answers the watch only after the user gave up on it: that late
+    answer is dropped, and the next command, a watch on x * 2, shows its
+    own value, not x's."""
+    _need("a68g")
+    with WpeSession(str(tmp_path), A68G_STEPS_PROG, filename="p.a68",
+                    wait=1.5,
+                    env_extra=_a68g_stub_env(A68G_WATCH_ASKED, nth=2)) as w:
+        _a68g_watch_held_at_a_step(w, tmp_path)
+        assert _status_row_says(w, WAITING_FOR_A68G_WATCH, STEP_TIMEOUT_S), \
+            "the waiting line should come:\n%s" % _screen(w)
+        w.key(ESC, delay=0.5)
+        assert _status_row_says(w, A68G_DID_NOT_ANSWER_WATCH,
+                                STEP_TIMEOUT_S), \
+            "Esc should end the wait:\n%s" % _screen(w)
+        _add_watch(w, A68G_LATE_WATCH)
+        assert _wait_for(w, lambda: _a68g_watch_value(w, A68G_LATE_WATCH)
+                         is not None, STEP_TIMEOUT_S), \
+            "the watch should get an answer:\n%s" % _screen(w)
+        assert _a68g_watch_value(w, A68G_LATE_WATCH) == A68G_LATE_VALUE, \
+            "the watch took another command's answer (%r):\n%s" \
+            % (_watch_row(w, A68G_LATE_WATCH), _screen(w))
+
+
+# @scenario SC-debug-49
+def test_a68g_f8_f8_typed_during_the_watches_steps_twice(tmp_path):
+    """Two F8s typed while a68g has not answered a watch at a stop are
+    kept, in order: once the answer comes the program steps twice, and
+    nothing lands in the file."""
+    _need("a68g")
+    with WpeSession(str(tmp_path), A68G_STEPS_PROG, filename="p.a68",
+                    wait=1.5,
+                    env_extra=_a68g_stub_env(A68G_WATCH_ASKED, nth=2)) as w:
+        _a68g_watch_held_at_a_step(w, tmp_path)
+        w.key(F8, delay=0.2)
+        w.key(F8, delay=0.2)
+        _a68g_stub_release(tmp_path)
+        assert _wait_for(w, lambda: _mark_line(w) == A68G_STEPS_AFTER_TWO,
+                         STEP_TIMEOUT_S), \
+            "the two F8s typed during the watch should step twice (mark " \
+            "on %s):\n%s" % (_mark_line(w), _screen(w))
+        w._drain(NOTHING_MORE_S)
+        assert _mark_line(w) == A68G_STEPS_AFTER_TWO, \
+            "only the two F8s typed should step (mark on %s):\n%s" \
+            % (_mark_line(w), _screen(w))
+        w.save()
+        assert w.text() == A68G_STEPS_PROG, \
+            "a key typed while a68g answered landed in the file:\n%s" \
+            % _screen(w)
+
+
+# @scenario SC-debug-49
+def test_a68g_keys_typed_during_the_start_are_kept_or_refused(tmp_path):
+    """While a68g has not answered the first breakpoint of the start, F8 is
+    kept and steps once the start has stopped on the breakpoint, and Ctrl-G
+    K is refused with the waiting line, its letter not typed into the
+    file."""
+    _need("a68g")
+    with WpeSession(str(tmp_path), A68G_STEPS_PROG, filename="p.a68",
+                    wait=1.5, env_extra=_a68g_stub_env(A68G_BREAK_ASKED)) as w:
+        _go_to_line(w, A68G_STEPS_BREAK_LINE)
+        w.key(CTRL_G, "b", delay=0.4)
+        w.key(CTRL_G, "r", delay=1.0)
+        _a68g_stub_holds(w, tmp_path, A68G_BREAK_ASKED)
+        w.key(F8, delay=0.3)
+        w.key(CTRL_G, "k", delay=0.5)
+        waiting = WAITING_FOR_A68G_START_BREAK % A68G_STEPS_BREAK_LINE
+        assert _status_row_says(w, waiting, STEP_TIMEOUT_S), \
+            "Ctrl-G K should be refused with the waiting line:\n%s" \
+            % _screen(w)
+        assert " Stack " not in _screen(w), \
+            "Ctrl-G K must wait for a68g's answer, not ask it:\n%s" \
+            % _screen(w)
+        _a68g_stub_release(tmp_path)
+        assert _wait_for(w, lambda: _mark_line(w) == A68G_STEPS_NEXT_LINE,
+                         START_TIMEOUT_S), \
+            "the F8 typed during the start should step once the start " \
+            "stopped (mark on %s):\n%s" % (_mark_line(w), _screen(w))
+        w._drain(NOTHING_MORE_S)
+        assert _mark_line(w) == A68G_STEPS_NEXT_LINE, \
+            "only the F8 typed should step (mark on %s):\n%s" \
+            % (_mark_line(w), _screen(w))
+        w.save()
+        assert w.text() == A68G_STEPS_PROG, \
+            "a key typed while a68g started landed in the file:\n%s" \
+            % _screen(w)
+
+
+# A line passed three times, so a breakpoint a68g still has there after its
+# mark is taken off stops the program again.  a68g takes off its
+# breakpoints only all at once ("breakpoint clear breakpoints").
+A68G_PASSES_PROG = (
+    "INT s := 0;\n"
+    "FOR i TO 3 DO\n"
+    "   s +:= i\n"
+    "OD;\n"
+    "print ((s, new line))\n"
+)
+A68G_PASSES_LINE = 3
+
+
+# @scenario SC-debug-50
+def test_a68g_breakpoint_given_up_is_not_set_twice(tmp_path):
+    """a68g's answer to a breakpoint of the start is given up on, though
+    a68g sets it.  The next Ctrl-G R sets a68g up again and clears its
+    breakpoints before setting the line once more; once the mark is taken
+    off, the program runs to its end without stopping there again."""
+    _need("a68g")
+    with WpeSession(str(tmp_path), A68G_PASSES_PROG, filename="p.a68",
+                    wait=1.5, env_extra=_a68g_stub_env(A68G_BREAK_ASKED)) as w:
+        _go_to_line(w, A68G_PASSES_LINE)
+        w.key(CTRL_G, "b", delay=0.4)
+        w.key(CTRL_G, "r", delay=1.0)
+        _a68g_stub_holds(w, tmp_path, A68G_BREAK_ASKED)
+        w.key(ESC, delay=0.5)
+        given_up = A68G_DID_NOT_ANSWER_BREAK % A68G_PASSES_LINE
+        assert _status_row_says(w, given_up, STEP_TIMEOUT_S), \
+            "the wait should end with %r:\n%s" % (given_up, _screen(w))
+        clear = "CMD %s\n" % A68G_CLEAR_ALL
+        again = "CMD breakpoint %d\n" % A68G_PASSES_LINE
+        w.key(CTRL_G, "r", delay=1.0)
+        assert _wait_for(w, lambda: _mark_line(w) == A68G_PASSES_LINE,
+                         START_TIMEOUT_S), \
+            "the start set up again should stop on line %d:\n%s\n%s" \
+            % (A68G_PASSES_LINE, _screen(w), _a68g_stub_log(tmp_path))
+        log = _a68g_stub_log(tmp_path).split("RELEASE", 1)[1]
+        assert clear in log and again in log and \
+            log.index(clear) < log.index(again), \
+            "a68g's breakpoints should be cleared before the line is set " \
+            "again:\n%s" % log
+        _go_to_line(w, A68G_PASSES_LINE)
+        w.key(CTRL_G, "b", delay=0.6)
+        w.key(CTRL_G, "r", delay=1.0)
+        w._drain(NOTHING_MORE_S)
+        assert _mark_line(w) != A68G_PASSES_LINE, \
+            "with its mark off, the line must not stop the program again " \
+            "(stub log:\n%s):\n%s" % (_a68g_stub_log(tmp_path), _screen(w))
+        _quit_and_see_the_session_gone(w)
+
+
+A68G_CALLS_ASKED = "calls"        # a68g's command for its stack
+WAITING_FOR_A68G_CALLS = "waiting for a68g to answer `calls "
+A68G_SQ_LINE = 3                  # INT r = v * v;  inside sq
+
+
+# @scenario SC-debug-49
+def test_a68g_stack_enter_while_it_answers_is_refused(tmp_path):
+    """Stopped in sq with the Stack window listing its frames, Ctrl-G K asks
+    a68g's stack again and a68g does not answer.  Enter on a row of the
+    Stack window is refused with the waiting line and asks a68g nothing,
+    and the mark stays on the stop.  Once a68g answers, the Stack window
+    lists the frames again and Debug > Quit ends the session."""
+    _need("a68g")
+    with WpeSession(str(tmp_path), GOTO_A68, filename="p.a68", wait=1.5,
+                    cols=STACK_COLS,
+                    env_extra=_a68g_stub_env(A68G_CALLS_ASKED, nth=2)) as w:
+        _stop_in_the_function(w, A68G_SQ_LINE, START_TIMEOUT_S)
+        w.key(CTRL_G, "k", delay=0.5)
+        assert _wait_for(w, lambda: len(_stack_frames(w)) >= 2,
+                         STEP_TIMEOUT_S), \
+            "Ctrl-G K should list two frames:\n%s" % _screen(w)
+        w.key(CTRL_G, "k", delay=0.5)
+        _a68g_stub_holds(w, tmp_path, A68G_CALLS_ASKED)
+        asked = _a68g_stub_log(tmp_path)
+        w.key(DOWN, delay=0.3)
+        w.key("\r", delay=0.5)
+        assert _status_row_says(w, WAITING_FOR_A68G_CALLS, STEP_TIMEOUT_S), \
+            "Enter in the Stack window should be refused with the waiting " \
+            "line:\n%s" % _screen(w)
+        assert _a68g_stub_log(tmp_path) == asked, \
+            "Enter while a68g answers must ask it nothing:\n%s" \
+            % _a68g_stub_log(tmp_path)
+        assert _mark_line(w) == A68G_SQ_LINE, \
+            "the mark should stay on the stop (mark on %s):\n%s" \
+            % (_mark_line(w), _screen(w))
+        _a68g_stub_release(tmp_path)
+        assert _wait_for(w, lambda: len(_stack_frames(w)) >= 2,
+                         STEP_TIMEOUT_S), \
+            "once a68g answers the Stack window should list the frames:\n%s" \
+            % _screen(w)
+        _quit_and_see_the_session_gone(w)
+
+
+# A loop that passes the user's breakpoint and then the cursor's line three
+# times, so a Go to cursor breakpoint a68g still has stops a later pass.
+A68G_CURSOR_LOOP_PROG = (
+    "INT x := 0;\n"
+    "FOR i TO 3 DO\n"
+    "   x +:= i;\n"
+    "   x +:= 1;\n"
+    "   x +:= 2\n"
+    "OD;\n"
+    "print ((x, new line))\n"
+)
+A68G_CURSOR_LOOP_BREAK = 3        # the user's breakpoint, taken off later
+A68G_CURSOR_LOOP_TARGET = 5       # the cursor's line for Go to cursor
+A68G_EDITING_KEYS = "F4 Search"   # the source's bar once the session ended
+
+
+def _a68g_session_over(w):
+    """The session ended: the source window's bar names the editing keys
+    again (Messages, which says so too, may be under the Watches window)."""
+    return A68G_EDITING_KEYS in _bottom_bar(w)
+
+
+# @scenario SC-debug-50
+def test_a68g_go_to_cursor_breakpoint_of_a_given_up_stop_is_cleared(tmp_path):
+    """Go to cursor stops on its line, but a68g does not answer the watch
+    there and the user gives up on it.  Go to cursor's own breakpoint must
+    not outlive that stop: with the user's breakpoint taken off, Ctrl-G R
+    runs the loop to its end and never stops on the cursor's line again."""
+    _need("a68g")
+    with WpeSession(str(tmp_path), A68G_CURSOR_LOOP_PROG, filename="p.a68",
+                    wait=1.5,
+                    env_extra=_a68g_stub_env(A68G_WATCH_ASKED, nth=2)) as w:
+        _stop_in_the_function(w, A68G_CURSOR_LOOP_BREAK, START_TIMEOUT_S)
+        _add_watch(w, A68G_WATCH)
+        assert _wait_for(w, lambda: _a68g_watch_value(w, A68G_WATCH)
+                         is not None, STEP_TIMEOUT_S), _screen(w)
+        _source_window_on_top(w)
+        _go_to_line(w, A68G_CURSOR_LOOP_TARGET)
+        w.key(F4, delay=0.5)
+        _a68g_stub_holds(w, tmp_path, A68G_WATCH_ASKED)
+        w.key(ESC, delay=0.5)
+        assert _status_row_says(w, A68G_DID_NOT_ANSWER_WATCH,
+                                STEP_TIMEOUT_S), \
+            "Esc should end the wait:\n%s" % _screen(w)
+        w._drain(NOTHING_MORE_S)
+        _source_window_on_top(w)
+        _go_to_line(w, A68G_CURSOR_LOOP_BREAK)
+        w.key(CTRL_G, "b", delay=0.5)
+        assert _breakpoint_lines(w) == [], \
+            "the user's breakpoint should be off:\n%s" % _screen(w)
+        w.key(CTRL_G, "r", delay=0.5)
+        assert _runs_to_the_end_past(w, A68G_CURSOR_LOOP_TARGET,
+                                     lambda: _a68g_session_over(w),
+                                     START_TIMEOUT_S), \
+            "Go to cursor's breakpoint outlived the stop given up on (mark " \
+            "on %s, stub log:\n%s):\n%s" \
+            % (_mark_line(w), _a68g_stub_log(tmp_path), _screen(w))

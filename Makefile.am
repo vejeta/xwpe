@@ -534,6 +534,7 @@ EXTRA_DIST = \
   tests/run-tests.sh \
   tests/check-one-owner.sh \
   tests/one-owner.allow \
+  tests/stubs/a68g/a68g \
   tests/stubs/gdb \
   tests/stubs/jdb/jdb \
   tests/stubs/pdb/python3 \

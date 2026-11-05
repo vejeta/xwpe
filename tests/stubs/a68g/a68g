@@ -1,0 +1,167 @@
+#!/usr/bin/env python3
+"""An a68g that holds back one monitor command until it is told to go on.
+
+It stands in front of the real a68g: every line the editor sends is passed
+on, and a68g's output goes back to the editor as a68g writes it, so what the
+editor reads is what a68g writes.  One command, named by XWPE_STUB_STALL (a
+prefix of the command line), is held instead.  a68g never sees it, so it
+never answers, until one of two things happens:
+
+  - the editor sends another line (after a cancel the editor makes a68g
+    echo a marker): the held command goes to a68g first, then the new one,
+    so a68g answers the old command late, exactly as a slow a68g would;
+  - the test writes a line to the release pipe, $HOME/a68g-stub.release.
+
+Only the XWPE_STUB_STALL_NTH-th command that matches is held (the first by
+default).  SIGINT, which the editor sends to pause the program, is passed
+on to a68g at once.
+
+Nothing here waits on a clock: the held command waits on input only.  Every
+line is logged to $HOME/a68g-stub.log ("CMD <line>"), the hold as "STALL
+<line>" and "RELEASE <how>", so a test knows the editor is waiting before it
+types.
+"""
+import os
+import select
+import shutil
+import signal
+import subprocess
+import sys
+
+HOME = os.environ.get("HOME", ".")
+LOG = os.path.join(HOME, "a68g-stub.log")
+RELEASE = os.path.join(HOME, "a68g-stub.release")
+STALL = os.environ.get("XWPE_STUB_STALL", "")
+STALL_NTH = int(os.environ.get("XWPE_STUB_STALL_NTH", "1") or "1")
+HERE = os.path.dirname(os.path.abspath(__file__))
+READ_MAX = 65536
+PR_SET_PDEATHSIG = 1
+
+
+def note(text):
+    with open(LOG, "a") as fh:
+        fh.write(text + "\n")
+
+
+def real_a68g():
+    """The a68g this one stands in front of: the next one on PATH."""
+    given = os.environ.get("XWPE_STUB_REAL_A68G", "")
+    if given:
+        return given
+    dirs = [d for d in os.environ.get("PATH", "").split(os.pathsep)
+            if d and os.path.abspath(d) != HERE]
+    found = shutil.which("a68g", path=os.pathsep.join(dirs))
+    if not found:
+        sys.stderr.write("a68g stub: no real a68g on PATH\n")
+        sys.exit(1)
+    return found
+
+
+def die_with_parent():
+    """The real a68g ends with this one, which the editor may kill outright."""
+    try:
+        import ctypes
+        ctypes.CDLL(None).prctl(PR_SET_PDEATHSIG, signal.SIGKILL)
+    except (OSError, AttributeError):
+        pass
+
+
+def make_release_pipe():
+    if os.path.exists(RELEASE):
+        os.unlink(RELEASE)
+    os.mkfifo(RELEASE)
+    # Open for reading and writing, so the open never waits for a writer and
+    # a writer that closes does not leave the pipe at end of file.
+    return os.open(RELEASE, os.O_RDWR | os.O_NONBLOCK)
+
+
+def write_out(data):
+    while data:
+        n = os.write(sys.stdout.fileno(), data)
+        data = data[n:]
+
+
+class Commands:
+    """The editor's lines, one at a time, and what to do with each."""
+
+    def __init__(self, child):
+        self.child = child
+        self.buf = b""
+        self.held = None
+        self.stalls = 0
+
+    def pass_on(self, line):
+        self.child.stdin.write(line)
+        self.child.stdin.flush()
+
+    def release(self, how):
+        if self.held is None:
+            return
+        note("RELEASE " + how)
+        line, self.held = self.held, None
+        self.pass_on(line)
+
+    def stalls_here(self, text):
+        if not STALL or not text.startswith(STALL):
+            return False
+        self.stalls += 1
+        return self.stalls == STALL_NTH
+
+    def one(self, line):
+        text = line.decode("utf-8", "replace").rstrip("\n")
+        note("CMD " + text)
+        self.release("by the next command")
+        if self.stalls_here(text):
+            self.held = line
+            note("STALL " + text)
+            return
+        self.pass_on(line)
+
+    def came(self, data):
+        self.buf += data
+        while b"\n" in self.buf:
+            line, self.buf = self.buf.split(b"\n", 1)
+            self.one(line + b"\n")
+
+
+def main():
+    child = subprocess.Popen([real_a68g()] + sys.argv[1:],
+                             stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                             preexec_fn=die_with_parent)
+    signal.signal(signal.SIGINT,
+                  lambda signum, frame: child.send_signal(signal.SIGINT))
+    signal.signal(signal.SIGTERM,
+                  lambda signum, frame: child.kill() or sys.exit(0))
+    release_fd = make_release_pipe()
+    commands = Commands(child)
+    out_fd = child.stdout.fileno()
+    in_fd = sys.stdin.fileno()
+    watched = [out_fd, in_fd, release_fd]
+    while out_fd in watched:
+        try:
+            ready, _, _ = select.select(watched, [], [])
+        except InterruptedError:
+            continue
+        if out_fd in ready:
+            data = os.read(out_fd, READ_MAX)
+            if not data:
+                break
+            write_out(data)
+        if in_fd in ready:
+            data = os.read(in_fd, READ_MAX)
+            if not data:
+                watched.remove(in_fd)
+                child.stdin.close()
+            else:
+                commands.came(data)
+        if release_fd in ready:
+            os.read(release_fd, READ_MAX)
+            commands.release("by the test")
+    child.wait()
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except BrokenPipeError:
+        pass
