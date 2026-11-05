@@ -26,6 +26,13 @@ $HOME/<name>-stub.release.  The hold is logged as "STALL <line>" and its end
 as "RELEASE <how>".  After every breakpoint command the lines still armed
 are logged as "ARMED <lines>".  Nothing here waits on a clock, except the
 running program a test asks for (XWPE_STUB_CONTINUE_DELAY_S).
+
+XWPE_STUB_REFUSE_LINE names a line no breakpoint can be set on: a
+breakpoint command for it is refused on the error stream, just before the
+prompt, as gdb refuses one.  The editor is kept stopped (SIGSTOP) while the
+refusal and the prompt are written and let go on (SIGCONT) after, so both
+wait for it at once, as for an editor busy drawing when they come.  Logged
+as "REFUSE <line>".
 """
 import os
 import select
@@ -71,6 +78,9 @@ UNDEFINED_NAME = "nosuchname"
 WATCH_VALUE = {"x": 3}
 OTHER_VALUE = 7
 READ_MAX = 65536
+# The line a breakpoint is refused on, 0 for none, and the words that say so.
+REFUSE_LINE = int(os.environ.get("XWPE_STUB_REFUSE_LINE", "0") or "0")
+REFUSAL = "no code at line %d"
 
 
 class Interrupted(Exception):
@@ -381,8 +391,43 @@ def answer_xdb(cmd):
 ANSWER = {"sdb": answer_sdb, "dbx": answer_dbx, "xdb": answer_xdb}[BACKEND]
 
 
+def breakpoint_line(cmd):
+    """The line a breakpoint command sets, or None for any other command:
+    sdb's "N b", dbx's stop at "file":N, xdb's b file:N."""
+    parts = cmd.split()
+    if BACKEND == "sdb" and len(parts) == 2 and parts[1] == "b" \
+            and parts[0].isdigit():
+        return int(parts[0])
+    if BACKEND == "dbx" and cmd.startswith("stop at "):
+        return int(cmd.rsplit(":", 1)[1])
+    if BACKEND == "xdb" and cmd.startswith("b ") and ":" in cmd:
+        return int(cmd.rsplit(":", 1)[1])
+    return None
+
+
+def refuses(cmd):
+    return REFUSE_LINE != 0 and breakpoint_line(cmd) == REFUSE_LINE
+
+
+def refuse_with_the_editor_busy(cmd):
+    """Write the refusal on the error stream, then the prompt, while the
+    editor is stopped: when it runs again both are waiting."""
+    editor = os.getppid()
+    note("REFUSE " + cmd)
+    os.kill(editor, signal.SIGSTOP)
+    try:
+        sys.stderr.write(REFUSAL % REFUSE_LINE + "\n")
+        sys.stderr.flush()
+        prompt()
+    finally:
+        os.kill(editor, signal.SIGCONT)
+
+
 def answer(cmd):
     """Answer one command, then give the prompt."""
+    if refuses(cmd):
+        refuse_with_the_editor_busy(cmd)
+        return
     ANSWER(cmd)
     prompt()
 

@@ -14697,6 +14697,30 @@ static void e_d_ga_on_errors(int fd, void *data)
  e_d_ga_after_engine();
 }
 
+/**
+ * e_d_ga_errors_waiting - Hand the engine what the debugger has already
+ * written on its error stream, without waiting.
+ * @buf, @n: where it goes; @io: unused.
+ *
+ * Asked when the prompt that ends an answer has been read.  The debugger
+ * wrote its refusal before that prompt, so it is waiting now: the status
+ * row gets "No source file named q.c." with the breakpoint it refuses, even
+ * when a busy editor read the prompt before the error stream.
+ * Return: the bytes, 0 when none are waiting.
+ */
+static size_t e_d_ga_errors_waiting(char *buf, size_t n, void *io)
+{
+ ssize_t got;
+
+ (void)io;
+ if (wpe_fd_readable_now(efildes[0]) != WPE_FD_READABLE)
+  return(0);
+ got = read(efildes[0], buf, n);
+ if (got <= 0)
+  return(0);
+ return((size_t)got);
+}
+
 /* ---- the engine's life ---- */
 
 /**
@@ -14713,6 +14737,8 @@ static void e_d_ga_world(void)
  e_d_ga.io.arm_timer = e_d_ga_arm_timer;
  e_d_ga.io.waiting = e_d_ga_waiting;
  e_d_ga.io.notice = e_d_ga_notice;
+ if (e_d_ga.be->reads_errors)
+  e_d_ga.io.errors_waiting = e_d_ga_errors_waiting;
  e_d_ga.io.name = e_d_ga.be->name;
  e_d_ga.io.settle_cmd = e_d_ga.be->settle_cmd;
  e_d_ga.io.settle_marker = e_d_ga.be->settle_marker;

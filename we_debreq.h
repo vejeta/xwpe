@@ -94,7 +94,12 @@ typedef void (*e_d_late_error_fn)(const E_D_ANSWER *err, void *ctx);
    @now_ms reads the clock; @arm_timer asks the loop to call e_d_req_timer
    for @which in @ms ms, replacing any earlier timer of that @which,
    E_D_TIMER_OFF in @ms asking for no call; @waiting shows the waiting line;
-   @notice shows a sentence on the status row.  @settle_cmd (no line end)
+   @notice shows a sentence on the status row.  @errors_waiting copies into
+   @buf up to @n bytes the debugger has already written on its error stream,
+   without waiting, and returns how many (0 when none): the engine asks it
+   when a prompt ends an answer, since a debugger that refuses on its error
+   stream writes the refusal before that prompt (NULL for a debugger whose
+   refusals are on its output).  @settle_cmd (no line end)
    and @settle_marker are the command that makes the debugger echo
    @settle_marker after every answer it owes (NULL for a debugger that
    matches by token).  Only @send, @answer_ended and @now_ms are required. */
@@ -108,6 +113,7 @@ typedef struct
  void (*arm_timer)(int which, long ms, void *io);
  void (*waiting)(const char *cmd, long secs, void *io);
  void (*notice)(const char *msg, void *io);
+ size_t (*errors_waiting)(char *buf, size_t n, void *io);
  const char *name;           /* "gdb", for the notices */
  const char *settle_cmd;
  const char *settle_marker;
@@ -207,7 +213,10 @@ size_t e_d_req_feed(E_D_REQ_QUEUE *rq, const E_D_REQ_IO *io, const char *bytes,
  * @rq, @io: the engine and its world; @bytes, @n: what was read.
  *
  * The user is told why the debugger refused, in the answer it belongs to,
- * even when the words arrive after the prompt.
+ * even when the words arrive after the prompt.  Words written before the
+ * prompt that the editor had not read yet when it read the prompt are taken
+ * with the answer through @io's errors_waiting, so they never reach here
+ * for the next request.
  */
 void e_d_req_feed_errors(E_D_REQ_QUEUE *rq, const E_D_REQ_IO *io,
                          const char *bytes, size_t n);

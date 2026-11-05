@@ -65,7 +65,32 @@ typedef struct
 	int nnotice;
 	char async[LOG_MAX][TEXT_ROOM];
 	int nasync;
+	char errors[TEXT_ROOM];               /* written on the error stream, unread */
+	size_t nerrors;
 } FAKE;
+
+/* The error stream: what the debugger wrote there and nobody read yet. */
+static size_t fake_errors_waiting(char *buf, size_t n, void *io)
+{
+	FAKE *f = io;
+	size_t take = f->nerrors < n ? f->nerrors : n;
+
+	memcpy(buf, f->errors, take);
+	memmove(f->errors, f->errors + take, f->nerrors - take);
+	f->nerrors -= take;
+	return take;
+}
+
+/* The debugger writes @s on its error stream; the editor has not read it. */
+static void fake_write_error(FAKE *f, const char *s)
+{
+	size_t n = strlen(s);
+
+	if (f->nerrors + n > sizeof f->errors)
+		n = sizeof f->errors - f->nerrors;
+	memcpy(f->errors + f->nerrors, s, n);
+	f->nerrors += n;
+}
 
 static int fake_send(const char *cmd, void *io)
 {
@@ -787,6 +812,84 @@ static void test_request_engine_edges(void)
 	e_d_req_free(&rq);
 }
 
+/* ---- the error stream and the prompt read together ---- */
+
+#define REFUSAL "No source file named q.c.\n"
+
+static void test_error_line_before_the_prompt_stays_with_its_answer(void)
+{
+	FAKE f;
+	E_D_REQ_IO io;
+	E_D_REQ_QUEUE rq;
+	CALL c, d;
+
+	/* the refusal was written before the prompt, the prompt is read first:
+	   the refusal is still the answer's, and the next request's answer is
+	   its own */
+	world_init(&f, &io, 0);
+	io.errors_waiting = fake_errors_waiting;
+	e_d_req_init(&rq, NULL);
+	call_init(&c, 1);
+	call_init(&d, 2);
+	e_d_req_send(&rq, &io, "b q.c:2", on_answered, &c);
+	e_d_req_send(&rq, &io, "p g", on_answered, &d);
+	fake_write_error(&f, REFUSAL);
+	feed(&rq, &io, PROMPT);
+	chk_int("stderr first: answered", c.calls, 1);
+	chk_int("stderr first: answer is an error", c.error, 1);
+	chk_str("stderr first: the refusal is in it", c.text, REFUSAL);
+	chk_int("stderr first: nothing left waiting", (long)f.nerrors, 0);
+	feed(&rq, &io, "$1 = 42\n" PROMPT);
+	chk_int("stderr first: next answered", d.calls, 1);
+	chk_int("stderr first: next is no error", d.error, 0);
+	chk_str("stderr first: next has its own answer", d.text, "$1 = 42\n");
+	e_d_req_free(&rq);
+
+	/* an answer with words on its output keeps them first */
+	world_init(&f, &io, 0);
+	io.errors_waiting = fake_errors_waiting;
+	e_d_req_init(&rq, NULL);
+	call_init(&c, 1);
+	e_d_req_send(&rq, &io, "frame 9", on_answered, &c);
+	fake_write_error(&f, "No frame at level 9.\n");
+	feed(&rq, &io, "#0 main\n" PROMPT);
+	chk_str("both streams: output then error", c.text,
+	        "#0 main\nNo frame at level 9.\n");
+	chk_int("both streams: an error", c.error, 1);
+	e_d_req_free(&rq);
+
+	/* a debugger without the hook is answered as before */
+	world_init(&f, &io, 0);
+	e_d_req_init(&rq, NULL);
+	call_init(&c, 1);
+	e_d_req_send(&rq, &io, "b 2", on_answered, &c);
+	fake_write_error(&f, REFUSAL);
+	feed(&rq, &io, PROMPT);
+	chk_int("no hook: not an error", c.error, 0);
+	chk_int("no hook: the stream is left alone", (long)f.nerrors,
+	        (long)strlen(REFUSAL));
+	e_d_req_free(&rq);
+
+	/* the refusal of a command given up on ends with the resync: it never
+	   joins the next answer */
+	world_init(&f, &io, 1);
+	io.errors_waiting = fake_errors_waiting;
+	e_d_req_init(&rq, NULL);
+	call_init(&c, 1);
+	call_init(&d, 2);
+	e_d_req_send(&rq, &io, "b q.c:2", on_answered, &c);
+	e_d_req_cancel(&rq, &io, E_D_REQ_CANCELLED);
+	fake_write_error(&f, REFUSAL);
+	feed(&rq, &io, PROMPT SETTLE_MARKER "\n" PROMPT);
+	chk_int("resync: over", e_d_req_pending(&rq), 0);
+	chk_int("resync: the old refusal is dropped", (long)f.nerrors, 0);
+	e_d_req_send(&rq, &io, "p g", on_answered, &d);
+	feed(&rq, &io, "$1 = 42\n" PROMPT);
+	chk_int("resync: next is no error", d.error, 0);
+	chk_str("resync: next has its own answer", d.text, "$1 = 42\n");
+	e_d_req_free(&rq);
+}
+
 int main(void)
 {
 	test_request_deadline_fires_without_an_answer();
@@ -795,6 +898,7 @@ int main(void)
 	test_async_line_during_a_request_goes_to_the_session();
 	test_chain_runs_steps_in_order_and_ends_on_cancel();
 	test_request_engine_edges();
+	test_error_line_before_the_prompt_stays_with_its_answer();
 	if (fails) {
 		printf("test_debreq: %d check(s) failed\n", fails);
 		return 1;

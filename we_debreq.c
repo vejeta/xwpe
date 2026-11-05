@@ -18,6 +18,7 @@
 #include "we_debreq.h"
 
 #define GROW_MIN        256       /* first size of a text buffer */
+#define ERRORS_READ_MAX 4096      /* error-stream bytes taken per ask */
 #define NO_ELAPSED      0L
 #define MS_PER_S        1000L
 #define DIGIT_BASE      10
@@ -259,6 +260,49 @@ void e_d_req_busy_message(const E_D_REQ_QUEUE *rq, const E_D_REQ_IO *io,
 	snprintf(out, n, BUSY_FMT, world_name(io), cmd);
 }
 
+/* ---- the error stream at a prompt ---- */
+
+/**
+ * answer_join_waiting_errors - Add to an answer what the debugger had
+ * already written on its error stream when its prompt was read.
+ * @a: the answer, its prompt already cut; @io: the world.
+ *
+ * gdb, sdb, dbx and xdb write a refusal on their error stream and only
+ * then their prompt on their output, from one thread, so once the prompt
+ * has been read every byte of the refusal is already waiting: taking it
+ * now, without waiting, keeps "No source file named q.c." with the
+ * breakpoint it refuses, however the editor's loop ordered the two wakes
+ * (a busy editor finds both ready at once and may read the prompt first).
+ */
+static void answer_join_waiting_errors(E_D_ANSWER *a, const E_D_REQ_IO *io)
+{
+	char buf[ERRORS_READ_MAX];
+	size_t n, taken = 0;
+
+	if (!io->errors_waiting)
+		return;
+	while (taken < E_D_REQ_ANSWER_MAX &&
+	       (n = io->errors_waiting(buf, sizeof buf, io->io)) > 0) {
+		answer_append(a, buf, n);
+		a->error = 1;
+		taken += n;
+	}
+}
+
+/**
+ * resync_drop_waiting_errors - The old answer is over: what the debugger
+ * wrote on its error stream for it is dropped with it, so the user never
+ * reads a refusal of a command given up on as the next command's.
+ * @io: the world.
+ */
+static void resync_drop_waiting_errors(const E_D_REQ_IO *io)
+{
+	E_D_ANSWER old = { NULL, 0, 0, 0 };
+
+	answer_join_waiting_errors(&old, io);
+	answer_clear(&old);
+}
+
 /* ---- sending ---- */
 
 /**
@@ -306,6 +350,8 @@ static void request_end_head(E_D_REQ_QUEUE *rq, const E_D_REQ_IO *io,
 	rq->late_ctx = req.late_ctx;
 	world_disarm_all(io);
 	answer_drop_prompt(&ans, prompt_len);
+	if (how == E_D_REQ_DONE)
+		answer_join_waiting_errors(&ans, io);
 	if (req.answered)
 		req.answered(how, &ans, req.ctx);
 	answer_clear(&ans);
@@ -449,12 +495,13 @@ static void resync_drop_old_lines(E_D_REQ_QUEUE *rq, const E_D_REQ_IO *io)
 }
 
 /** resync_finish - The debugger is back in step: the next command may go. */
-static void resync_finish(E_D_REQ_QUEUE *rq)
+static void resync_finish(E_D_REQ_QUEUE *rq, const E_D_REQ_IO *io)
 {
 	rq->resync = 0;
 	rq->owed_cmd[0] = '\0';
 	answer_clear(&rq->ans);
 	tail_clear(rq);
+	resync_drop_waiting_errors(io);
 }
 
 /**
@@ -491,7 +538,7 @@ static int take_line_end(E_D_REQ_QUEUE *rq, const E_D_REQ_IO *io)
 			resync_drop_old_lines(rq, io);
 			return 0;
 		}
-		resync_finish(rq);
+		resync_finish(rq, io);
 		return 1;
 	}
 	if (!answer_is_whole(rq, io, &prompt_len))
@@ -513,7 +560,7 @@ static void take_unfinished(E_D_REQ_QUEUE *rq, const E_D_REQ_IO *io)
 		return;
 	if (rq->resync) {
 		if (resync_is_over(rq, io))
-			resync_finish(rq);
+			resync_finish(rq, io);
 		return;
 	}
 	if (!answer_is_whole(rq, io, &prompt_len))

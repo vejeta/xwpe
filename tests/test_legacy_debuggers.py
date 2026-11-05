@@ -675,6 +675,32 @@ def test_a_breakpoint_set_while_running_is_hollow_then_solid_at_the_next_stop(
         w.key(ALT_X, delay=0.5)
 
 
+REFUSED_WORDS = "no code at line %d" % C_CURSOR_LINE   # the stub's refusal
+
+
+# @scenario SC-debug-07
+@pytest.mark.parametrize("backend", BACKENDS)
+def test_a_refusal_read_with_its_prompt_keeps_the_line_hollow(tmp_path,
+                                                             backend):
+    """A breakpoint set at a stop that sdb, dbx or xdb refuses on its error
+    stream, just before its prompt, with both waiting for the editor at once:
+    the line stays hollow and the status row holds the debugger's words.
+
+    Limit: the stub proves xwpe's half of the protocol, not a real debugger.
+    """
+    with _session(tmp_path, backend,
+                  extra={"XWPE_STUB_REFUSE_LINE": str(C_CURSOR_LINE)}) as w:
+        _start_session(w, tmp_path, backend)
+        _move_down(w, C_CURSOR_LINE - C_BREAK_LINE)
+        w.key(CTRL_G, "b", delay=0.6)
+        assert _status_row_says(w, REFUSED_WORDS, HOLLOW_WAIT_S), \
+            "the status row should say %r; %s was sent %r:\n%s" \
+            % (REFUSED_WORDS, backend, _sent(tmp_path, backend), _screen(w))
+        assert _breakpoint_drawn(w, C_CURSOR_LINE, hollow=True), \
+            "line %d should stay hollow:\n%s" % (C_CURSOR_LINE, _screen(w))
+        w.key(ALT_X, delay=0.5)
+
+
 WATCH_LATER_WORDS = "x: (at the next stop)"
 WATCH_FILLED_WORDS = "x: 3"        # what the stub answers for x
 

@@ -9598,6 +9598,85 @@ def test_gdb_breakpoint_given_up_at_the_start_is_not_set_twice(tmp_path):
         _quit_and_see_the_session_gone(w)
 
 
+# ---- gdb's error stream and its prompt, waiting for the editor together
+#
+# gdb writes a refusal on its error stream and only then its prompt on its
+# output.  An editor busy drawing when both come reads them in the same
+# wake, the prompt possibly first.  The stub keeps the editor stopped while
+# gdb answers (XWPE_STUB_BUSY_EDITOR), so these rows see exactly that, on
+# every run and without a clock.
+
+GDB_BUSY_LOG = "BUSY "
+
+
+def _gdb_busy_env(prefix):
+    """PATH with the gdb stub first, keeping the editor stopped while gdb
+    answers every command that starts with @prefix."""
+    return _gdb_stub_env("", extra={"XWPE_STUB_BUSY_EDITOR": prefix})
+
+
+def _gdb_stub_kept_the_editor_busy(tmp_path, prefix):
+    return (GDB_BUSY_LOG + prefix) in _gdb_stub_log(tmp_path)
+
+
+# @scenario SC-debug-07
+def test_gdb_refusal_read_with_its_prompt_says_why_while_running(tmp_path):
+    """A breakpoint set while the program runs, in a file the program does
+    not contain: gdb's refusal and its prompt reach the editor together.
+    The status row holds gdb's words, not "gave no breakpoint number", and
+    the program goes on running."""
+    _need("gcc", "gdb")
+    (tmp_path / "q.c").write_text(NOT_IN_THE_PROGRAM_C)
+    with WpeSession(str(tmp_path), GDB_SLEEP_PROG, filename="p.c", wait=2.0,
+                    env_extra=_gdb_busy_env("b q.c")) as w:
+        _stop_then_run_on(w, GDB_SLEEP_BREAK_LINE, START_TIMEOUT_S)
+        _text, words = _set_the_refused_breakpoint_while_running(w, "gdb")
+        assert _wait_for(w, lambda: words in _bottom_row(w), HOLLOW_WAIT_S), \
+            "the status row should say %r (stub log:\n%s):\n%s" \
+            % (words, _gdb_stub_log(tmp_path), _screen(w))
+        assert _gdb_stub_kept_the_editor_busy(tmp_path, "b q.c"), \
+            "the stub should have answered with the editor busy:\n%s" \
+            % _gdb_stub_log(tmp_path)
+        assert "not set" in _bottom_row(w), \
+            "the row should say the breakpoint is not set:\n%s" % _screen(w)
+        assert _mark_line(w) is None, \
+            "the program should still run, unmarked:\n%s" % _screen(w)
+
+
+# @scenario SC-debug-10
+def test_gdb_watch_after_an_unknown_name_shows_its_own_value(tmp_path):
+    """Two watches, the first on a name the program does not have: gdb
+    refuses it on its error stream just before its prompt.  The refusal
+    stays with the first watch, which reads "No symbol in current context",
+    and the second shows its own value."""
+    _need("gcc", "gdb")
+    unknown = "p " + WATCH_UNDEFINED_NAME
+    with WpeSession(str(tmp_path), GDB_GLOBAL_PROG, filename="p.c",
+                    wait=1.5, env_extra=_gdb_busy_env(unknown)) as w:
+        _go_to_line(w, GDB_GLOBAL_BREAK_LINE)
+        w.key(CTRL_G, "b", delay=0.4)
+        w.key(CTRL_G, "r", delay=1.0)
+        assert _wait_for(w, lambda: _mark_line(w) == GDB_GLOBAL_BREAK_LINE,
+                         START_TIMEOUT_S), _screen(w)
+        _add_watch(w, WATCH_UNDEFINED_NAME)
+        assert _wait_for(
+            w, lambda: _watch_window_value(w, WATCH_UNDEFINED_NAME)
+            is not None, STEP_TIMEOUT_S), _screen(w)
+        _add_watch(w, "g")
+        assert _wait_for(w, lambda: _watch_row(w, "g") is not None,
+                         STEP_TIMEOUT_S), \
+            "the watch on g should get an answer:\n%s" % _screen(w)
+        assert _gdb_stub_kept_the_editor_busy(tmp_path, unknown), \
+            "the stub should have answered with the editor busy:\n%s" \
+            % _gdb_stub_log(tmp_path)
+        assert _watch_row(w, "g").startswith("42"), \
+            "g took the refusal of the watch before it (%r):\n%s" \
+            % (_watch_row(w, "g"), _screen(w))
+        assert (_watch_row(w, WATCH_UNDEFINED_NAME) or "").startswith(
+            WATCH_NO_SESSION_WORDS), \
+            "the unknown name should keep its refusal:\n%s" % _screen(w)
+
+
 # ---- pdb's answers, start and resumes, read while the editor keeps its keys
 #
 # tests/stubs/pdb/python3 stands in front of the real python3 when it runs

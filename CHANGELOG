@@ -313,6 +313,13 @@ Changes
   has printed so far.  It used to wait for the program to go quiet, which
   such a program never does.
 
+* When gdb, sdb, dbx or xdb refuses something, the editor now always shows
+  the debugger's own reason.  On a busy machine, a breakpoint gdb refused
+  could say "Breakpoint at line 2 not set: the debugger gave no breakpoint
+  number" instead of "No source file named q.c."; sdb could even show a
+  refused breakpoint as set; and a watch on an unknown name could make the
+  next watch read "No symbol in current context" instead of its value.
+
 * A watch the debugger answers without a value (under dbx, xdb, or a gdb
   or jdb answer with no "=" in it) reads "No symbol in current context".
   It used to read "o symbol in current context", its first letter lost.

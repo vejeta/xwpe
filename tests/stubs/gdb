@@ -19,6 +19,15 @@ Every command is logged to $HOME/gdb-stub.log ("CMD <line>"), and the hold
 as "STALL <line>" and "RELEASE <how>", so a test knows the editor is waiting
 before it types.  SIGINT, which the editor sends to pause the program, is
 passed to gdb.
+
+XWPE_STUB_BUSY_EDITOR (a prefix of the command line) plays a loaded machine
+for every command that starts with it: the editor is stopped (SIGSTOP)
+before gdb is given the command and let go on (SIGCONT) once gdb's prompt
+has been passed to it.  gdb writes a refusal on its error stream before it
+writes that prompt, so when the editor runs again both are waiting for it
+at once, which is what an editor busy drawing sees.  For this gdb's output
+goes through the stub, so it can see the prompt; its error stream still
+goes straight to the editor.  Logged as "BUSY <line>".
 """
 import os
 import select
@@ -26,12 +35,16 @@ import shutil
 import signal
 import subprocess
 import sys
+import threading
 
 HOME = os.environ.get("HOME", ".")
 LOG = os.path.join(HOME, "gdb-stub.log")
 RELEASE = os.path.join(HOME, "gdb-stub.release")
 STALL = os.environ.get("XWPE_STUB_STALL", "")
 STALL_NTH = int(os.environ.get("XWPE_STUB_STALL_NTH", "1") or "1")
+BUSY = os.environ.get("XWPE_STUB_BUSY_EDITOR", "")
+GDB_PROMPT = b"(gdb) "
+READ_MAX = 65536
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 
@@ -111,9 +124,75 @@ def wait_for_go(child, held, release_fd, lines):
             return nxt
 
 
+def write_all(fd, data):
+    while data:
+        data = data[os.write(fd, data):]
+
+
+class BusyEditor:
+    """Keeps the editor stopped while gdb answers one command, so gdb's
+    error stream and its prompt wait for the editor together."""
+
+    def __init__(self, child):
+        self.child = child
+        self.editor = os.getppid()
+        self.lock = threading.Lock()
+        self.stopped = False
+        self.seen = b""
+
+    def stop(self, line):
+        note("BUSY " + line.decode("utf-8", "replace").rstrip("\n"))
+        with self.lock:
+            self.stopped = True
+            self.seen = b""
+        os.kill(self.editor, signal.SIGSTOP)
+
+    def let_go(self):
+        with self.lock:
+            if not self.stopped:
+                return
+            self.stopped = False
+        os.kill(self.editor, signal.SIGCONT)
+
+    def passed(self, chunk):
+        """@chunk of gdb's output has reached the editor: once it ends the
+        answer with the prompt, the editor may run again."""
+        with self.lock:
+            if not self.stopped:
+                return
+            self.seen = (self.seen + chunk)[-len(GDB_PROMPT):]
+            whole = self.seen.endswith(GDB_PROMPT)
+        if whole:
+            self.let_go()
+
+    def relay(self):
+        """Pass gdb's output on to the editor as it comes."""
+        out = self.child.stdout.fileno()
+        try:
+            while True:
+                chunk = os.read(out, READ_MAX)
+                if not chunk:
+                    break
+                write_all(sys.stdout.fileno(), chunk)
+                self.passed(chunk)
+        finally:
+            self.let_go()
+
+
+def start_gdb():
+    """The real gdb, its output relayed when the editor is to be kept busy."""
+    argv = [real_gdb()] + sys.argv[1:]
+    if not BUSY:
+        return subprocess.Popen(argv, stdin=subprocess.PIPE), None
+    child = subprocess.Popen(argv, stdin=subprocess.PIPE,
+                             stdout=subprocess.PIPE)
+    busy = BusyEditor(child)
+    threading.Thread(target=busy.relay, daemon=True).start()
+    return child, busy
+
+
 def main():
-    child = subprocess.Popen([real_gdb()] + sys.argv[1:],
-                             stdin=subprocess.PIPE)
+    child, busy = start_gdb()
     signal.signal(signal.SIGINT,
                   lambda signum, frame: child.send_signal(signal.SIGINT))
     signal.signal(signal.SIGTERM,
@@ -134,9 +213,13 @@ def main():
             if seen == STALL_NTH:
                 pending = wait_for_go(child, line, release_fd, lines)
                 continue
+        if busy and text.startswith(BUSY):
+            busy.stop(line)
         pass_on(child, line)
     child.stdin.close()
     child.wait()
+    if busy:
+        busy.let_go()
 
 
 if __name__ == "__main__":
