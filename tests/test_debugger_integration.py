@@ -9550,3 +9550,480 @@ def test_gdb_breakpoint_given_up_at_the_start_is_not_set_twice(tmp_path):
             "with its mark off, the line must not stop the program again " \
             "(stub log:\n%s):\n%s" % (_gdb_stub_log(tmp_path), _screen(w))
         _quit_and_see_the_session_gone(w)
+
+
+# ---- pdb's answers, start and resumes, read while the editor keeps its keys
+#
+# tests/stubs/pdb/python3 stands in front of the real python3 when it runs
+# pdb, and holds back one command (XWPE_STUB_STALL) until the editor sends
+# another or the test writes to its release pipe, as the gdb stub does.
+
+PDB_STUB_DIR = os.path.join(STUBS_DIR, "pdb")
+PDB_STUB_LOG = "pdb-stub.log"
+PDB_STUB_RELEASE = "pdb-stub.release"
+PDB_ANSWER_TIMEOUT_S = 2          # the deadline row's XWPE_DEBUG_ANSWER_TIMEOUT
+WAITING_FOR_PDB = "waiting for pdb"
+PDB_WATCH = "g"
+PDB_WATCH_ASKED = "p g"           # pdb's command for that watch
+WAITING_FOR_PDB_WATCH = "waiting for pdb to answer `p g`"
+PDB_DID_NOT_ANSWER_WATCH = "pdb did not answer `p g`"
+PDB_BREAK_ASKED = "b "            # pdb's command that sets a breakpoint
+# pdb is given a breakpoint by its full path, so on 80 columns the status
+# row keeps only the end of these lines: the file, the line, and the rest.
+WAITING_FOR_PDB_BREAK = "p.py:%d` ... "
+PDB_DID_NOT_ANSWER_BREAK = "p.py:%d`: Debug > Quit ends the session"
+PDB_LATE_WATCH = "g * 2"          # its value is not g's
+PDB_LATE_VALUE = "84"
+
+# A global for the watch, and four steps in a row, so two typed-ahead F8s
+# have lines to land on.
+PDB_STEPS_PROG = (
+    "g = 42\n"
+    "x = 1\n"
+    "x = x + 1\n"
+    "x = x + 1\n"
+    "x = x + 1\n"
+    "print(x, g)\n"
+)
+PDB_STEPS_BREAK_LINE = 2
+PDB_STEPS_NEXT_LINE = 3
+PDB_STEPS_AFTER_TWO = 5           # two more F8s from line 3
+PDB_TOGGLE_LINE = 4               # set at the stop, its answer held
+
+
+def _pdb_stub_env(stall, nth=1, extra=None):
+    """PATH with the holding python3 first, holding the @nth command pdb is
+    sent that starts with @stall."""
+    env = {"PATH": PDB_STUB_DIR + ":" + os.environ.get("PATH", ""),
+           "XWPE_STUB_REAL_PYTHON": shutil.which("python3") or "",
+           "XWPE_STUB_STALL": stall,
+           "XWPE_STUB_STALL_NTH": str(nth)}
+    if extra:
+        env.update(extra)
+    return env
+
+
+def _pdb_stub_log(tmp_path):
+    try:
+        with open(str(tmp_path / PDB_STUB_LOG)) as fh:
+            return fh.read()
+    except OSError:
+        return ""
+
+
+def _pdb_stub_holds(w, tmp_path, stall):
+    """Wait until the stub says it holds the command that starts with
+    @stall: the editor is then waiting for pdb's answer."""
+    assert _wait_for(w, lambda: ("STALL " + stall) in _pdb_stub_log(tmp_path),
+                     GDB_STALL_WAIT_S), \
+        "the editor should have sent %r (stub log:\n%s):\n%s" \
+        % (stall, _pdb_stub_log(tmp_path), _screen(w))
+
+
+def _pdb_stub_release(tmp_path):
+    """Let the held command go to pdb."""
+    with open(str(tmp_path / PDB_STUB_RELEASE), "w") as fh:
+        fh.write("go\n")
+
+
+def _pdb_watch_held_at_a_step(w, tmp_path):
+    """Stop on the breakpoint, watch g, then F8: at the step's stop pdb is
+    asked `p g` again, and the stub holds that second one."""
+    _stop_on(w, PDB_STEPS_BREAK_LINE)
+    _add_watch(w, PDB_WATCH)
+    assert _wait_for(w, lambda: _watch_value(w, PDB_WATCH) == 42,
+                     STEP_TIMEOUT_S), _screen(w)
+    w.key(F8, delay=0.3)
+    _pdb_stub_holds(w, tmp_path, PDB_WATCH_ASKED)
+
+
+# @scenario SC-debug-49
+def test_pdb_keys_reach_the_editor_while_it_answers(tmp_path):
+    """While pdb has not answered a breakpoint set at a stop, Ctrl-G K
+    reaches the editor and is refused with the waiting line, which names the
+    command; no Stack window opens and its letter is not typed into the
+    file.  Once pdb answers, the new breakpoint is drawn solid."""
+    _need("python3")
+    with WpeSession(str(tmp_path), PDB_STEPS_PROG, filename="p.py",
+                    wait=1.5, env_extra=_pdb_stub_env(PDB_BREAK_ASKED,
+                                                      nth=2)) as w:
+        _stop_on(w, PDB_STEPS_BREAK_LINE)
+        _go_to_line(w, PDB_TOGGLE_LINE)
+        w.key(CTRL_G, "b", delay=0.4)
+        _pdb_stub_holds(w, tmp_path, PDB_BREAK_ASKED)
+        w.key(CTRL_G, "k", delay=0.5)
+        assert _status_row_says(w, WAITING_FOR_PDB_BREAK % PDB_TOGGLE_LINE,
+                                STEP_TIMEOUT_S), \
+            "Ctrl-G K should be refused with the waiting line:\n%s" \
+            % _screen(w)
+        assert " Stack " not in _screen(w), \
+            "Ctrl-G K must wait for pdb's answer, not ask it:\n%s" \
+            % _screen(w)
+        w.save()
+        assert w.text() == PDB_STEPS_PROG, \
+            "a key typed while pdb answered landed in the file:\n%s" \
+            % _screen(w)
+        _pdb_stub_release(tmp_path)
+        _assert_solid(w, PDB_TOGGLE_LINE, "set while pdb was held")
+
+
+PDB_ANSWER_ENDS = {
+    "esc": {"key": ESC, "env": None, "says": PDB_DID_NOT_ANSWER_WATCH},
+    "ctrl_c": {"key": CTRL_C, "env": None, "says": PDB_DID_NOT_ANSWER_WATCH},
+    "deadline": {"key": None,
+                 "env": {"XWPE_DEBUG_ANSWER_TIMEOUT":
+                         str(PDB_ANSWER_TIMEOUT_S)},
+                 "says": PDB_DID_NOT_ANSWER_WATCH + " within"},
+}
+
+
+# @scenario SC-debug-50
+@pytest.mark.parametrize("how", sorted(PDB_ANSWER_ENDS))
+def test_pdb_stalled_answer_ends_with_a_message_and_quit_works(tmp_path, how):
+    """A pdb that does not answer a watch at a stop: the waiting line comes,
+    Esc, Ctrl-C or the deadline ends the wait with a line naming the
+    command, and Debug > Quit then ends the session with nothing left."""
+    case = PDB_ANSWER_ENDS[how]
+    _need("python3")
+    env = _pdb_stub_env(PDB_WATCH_ASKED, nth=2, extra=case["env"])
+    with WpeSession(str(tmp_path), PDB_STEPS_PROG, filename="p.py",
+                    wait=1.5, env_extra=env) as w:
+        _pdb_watch_held_at_a_step(w, tmp_path)
+        assert _status_row_says(w, WAITING_FOR_PDB, STEP_TIMEOUT_S), \
+            "the waiting line should come:\n%s" % _screen(w)
+        if case["key"]:
+            w.key(case["key"], delay=0.5)
+        assert _status_row_says(w, case["says"], STEP_TIMEOUT_S), \
+            "the wait should end with %r:\n%s" % (case["says"], _screen(w))
+        _quit_and_see_the_session_gone(w)
+
+
+# @scenario SC-debug-50
+def test_pdb_answer_after_a_cancel_is_not_taken_for_the_next(tmp_path):
+    """pdb answers the watch only after the user gave up on it: that late
+    answer is dropped, and the next command, a watch on g * 2, shows its
+    own value, not g's."""
+    _need("python3")
+    with WpeSession(str(tmp_path), PDB_STEPS_PROG, filename="p.py",
+                    wait=1.5,
+                    env_extra=_pdb_stub_env(PDB_WATCH_ASKED, nth=2)) as w:
+        _pdb_watch_held_at_a_step(w, tmp_path)
+        assert _status_row_says(w, WAITING_FOR_PDB, STEP_TIMEOUT_S), \
+            "the waiting line should come:\n%s" % _screen(w)
+        w.key(ESC, delay=0.5)
+        assert _status_row_says(w, PDB_DID_NOT_ANSWER_WATCH, STEP_TIMEOUT_S), \
+            "Esc should end the wait:\n%s" % _screen(w)
+        _add_watch(w, PDB_LATE_WATCH)
+        assert _wait_for(w, lambda: _watch_row(w, PDB_LATE_WATCH) is not None,
+                         STEP_TIMEOUT_S), \
+            "the watch should get an answer:\n%s" % _screen(w)
+        assert _watch_row(w, PDB_LATE_WATCH).startswith(PDB_LATE_VALUE), \
+            "the watch took another command's answer (%r):\n%s" \
+            % (_watch_row(w, PDB_LATE_WATCH), _screen(w))
+
+
+# @scenario SC-debug-49
+def test_pdb_f8_f8_typed_during_the_watches_steps_twice(tmp_path):
+    """Two F8s typed while pdb has not answered a watch at a stop are kept,
+    in order: once the answer comes the program steps twice, and nothing
+    lands in the file."""
+    _need("python3")
+    with WpeSession(str(tmp_path), PDB_STEPS_PROG, filename="p.py",
+                    wait=1.5,
+                    env_extra=_pdb_stub_env(PDB_WATCH_ASKED, nth=2)) as w:
+        _pdb_watch_held_at_a_step(w, tmp_path)
+        w.key(F8, delay=0.2)
+        w.key(F8, delay=0.2)
+        _pdb_stub_release(tmp_path)
+        assert _wait_for(w, lambda: _mark_line(w) == PDB_STEPS_AFTER_TWO,
+                         STEP_TIMEOUT_S), \
+            "the two F8s typed during the watch should step twice (mark " \
+            "on %s):\n%s" % (_mark_line(w), _screen(w))
+        w._drain(NOTHING_MORE_S)
+        assert _mark_line(w) == PDB_STEPS_AFTER_TWO, \
+            "only the two F8s typed should step (mark on %s):\n%s" \
+            % (_mark_line(w), _screen(w))
+        w.save()
+        assert w.text() == PDB_STEPS_PROG, \
+            "a key typed while pdb answered landed in the file:\n%s" \
+            % _screen(w)
+
+
+# @scenario SC-debug-49
+def test_pdb_keys_typed_during_the_start_are_kept_or_refused(tmp_path):
+    """While pdb has not answered the first breakpoint of the start, F8 is
+    kept and steps once the start has stopped on the breakpoint, and Ctrl-G
+    K is refused with the waiting line, its letter not typed into the
+    file."""
+    _need("python3")
+    with WpeSession(str(tmp_path), PDB_STEPS_PROG, filename="p.py",
+                    wait=1.5, env_extra=_pdb_stub_env(PDB_BREAK_ASKED)) as w:
+        _move_down(w, PDB_STEPS_BREAK_LINE - 1)
+        w.key(CTRL_G, "b", delay=0.4)
+        w.key(CTRL_G, "r", delay=1.0)
+        _pdb_stub_holds(w, tmp_path, PDB_BREAK_ASKED)
+        w.key(F8, delay=0.3)
+        w.key(CTRL_G, "k", delay=0.5)
+        assert _status_row_says(w,
+                                WAITING_FOR_PDB_BREAK % PDB_STEPS_BREAK_LINE,
+                                STEP_TIMEOUT_S), \
+            "Ctrl-G K should be refused with the waiting line:\n%s" \
+            % _screen(w)
+        assert " Stack " not in _screen(w), \
+            "Ctrl-G K must wait for pdb's answer, not ask it:\n%s" \
+            % _screen(w)
+        _pdb_stub_release(tmp_path)
+        assert _wait_for(w, lambda: _mark_line(w) == PDB_STEPS_NEXT_LINE,
+                         START_TIMEOUT_S), \
+            "the F8 typed during the start should step once the start " \
+            "stopped (mark on %s):\n%s" % (_mark_line(w), _screen(w))
+        w._drain(NOTHING_MORE_S)
+        assert _mark_line(w) == PDB_STEPS_NEXT_LINE, \
+            "only the F8 typed should step (mark on %s):\n%s" \
+            % (_mark_line(w), _screen(w))
+        w.save()
+        assert w.text() == PDB_STEPS_PROG, \
+            "a key typed while pdb started landed in the file:\n%s" \
+            % _screen(w)
+
+
+# A line passed three times, so a breakpoint pdb still has there after its
+# mark is taken off stops the program again.
+PDB_PASSES_PROG = (
+    "s = 0\n"
+    "for i in range(3):\n"
+    "    s += i\n"
+    "print('S', s)\n"
+)
+PDB_PASSES_LINE = 3
+
+
+def _pdb_held_break(tmp_path):
+    """The breakpoint command the stub held, as the editor sent it."""
+    m = re.search(r"^STALL (b .*)$", _pdb_stub_log(tmp_path), re.M)
+    assert m, "the stub should have held a breakpoint:\n%s" \
+        % _pdb_stub_log(tmp_path)
+    return m.group(1)
+
+
+# @scenario SC-debug-50
+def test_pdb_breakpoint_given_up_is_not_set_twice(tmp_path):
+    """pdb's answer to a breakpoint of the start is given up on, though pdb
+    sets it.  The next Ctrl-G R sets pdb up again and clears that line
+    before setting it once more, so pdb never holds the line twice; once
+    the mark is taken off, the program runs to its end without stopping
+    there again."""
+    _need("python3")
+    with WpeSession(str(tmp_path), PDB_PASSES_PROG, filename="p.py",
+                    wait=1.5, env_extra=_pdb_stub_env(PDB_BREAK_ASKED)) as w:
+        _move_down(w, PDB_PASSES_LINE - 1)
+        w.key(CTRL_G, "b", delay=0.4)
+        w.key(CTRL_G, "r", delay=1.0)
+        _pdb_stub_holds(w, tmp_path, PDB_BREAK_ASKED)
+        w.key(ESC, delay=0.5)
+        given_up = PDB_DID_NOT_ANSWER_BREAK % PDB_PASSES_LINE
+        assert _status_row_says(w, given_up, STEP_TIMEOUT_S), \
+            "the wait should end with %r:\n%s" % (given_up, _screen(w))
+        held = _pdb_held_break(tmp_path)
+        clear = "CMD clear " + held[len(PDB_BREAK_ASKED):] + "\n"
+        again = "CMD " + held + "\n"
+        w.key(CTRL_G, "r", delay=1.0)
+        assert _wait_for(w, lambda: _mark_line(w) == PDB_PASSES_LINE,
+                         START_TIMEOUT_S), \
+            "the start set up again should stop on line %d:\n%s\n%s" \
+            % (PDB_PASSES_LINE, _screen(w), _pdb_stub_log(tmp_path))
+        log = _pdb_stub_log(tmp_path).split("RELEASE", 1)[1]
+        assert clear in log and again in log and \
+            log.index(clear) < log.index(again), \
+            "the line pdb set unanswered should be cleared before it is " \
+            "set again:\n%s" % log
+        _go_to_line(w, PDB_PASSES_LINE)
+        w.key(CTRL_G, "b", delay=0.6)
+        w.key(CTRL_G, "r", delay=1.0)
+        w._drain(NOTHING_MORE_S)
+        assert _mark_line(w) != PDB_PASSES_LINE, \
+            "with its mark off, the line must not stop the program again " \
+            "(stub log:\n%s):\n%s" % (_pdb_stub_log(tmp_path), _screen(w))
+        _quit_and_see_the_session_gone(w)
+
+
+# A script held in open() on a FIFO until the test opens the other end.  A
+# breakpoint toggled meanwhile sends pdb an interrupt, which the stand-in
+# holds until the script has stopped on a breakpoint by itself: the
+# interrupt then meets pdb at its prompt, as when that stop wins the race.
+PDB_FIFO_PROG = (
+    "g = 42\n"
+    "fd = open('%s')\n"
+    "fd.close()\n"
+    "x = g * 3\n"
+    "print('END', x)\n" % GDB_FIFO_NAME
+)
+PDB_FIFO_OPEN_LINE = 2
+PDB_FIFO_STOP_LINE = 4            # the script's own stop, after the open
+PDB_FIFO_TOGGLE_LINE = 5          # set while the script waits in open()
+PDB_FIFO_WATCH_VALUE = 42
+PDB_INTERRUPT_HELD = "SIGINT held"
+
+
+# @scenario SC-debug-07
+def test_pdb_interrupt_that_meets_its_prompt_is_taken_back(tmp_path):
+    """The interrupt a breakpoint change sent reaches pdb only after the
+    script stopped by itself, and pdb answers it with one more prompt.  That
+    prompt is taken back before the stop's own commands: a watch shows its
+    own value, the change is applied, and the status row does not claim the
+    script handles Ctrl-C itself, which would hold every later change until
+    a stop."""
+    _need("python3")
+    fifo = str(tmp_path / GDB_FIFO_NAME)
+    os.mkfifo(fifo)
+    env = _pdb_stub_env("", extra={"XWPE_STUB_HOLD_SIGINT": "1"})
+    with WpeSession(str(tmp_path), PDB_FIFO_PROG, filename="p.py",
+                    wait=1.5, env_extra=env) as w:
+        _go_to_line(w, PDB_FIFO_STOP_LINE)
+        w.key(CTRL_G, "b", delay=0.4)
+        _stop_on_a_breakpoint_at(w, PDB_FIFO_OPEN_LINE, START_TIMEOUT_S)
+        w.key(CTRL_G, "r", delay=0.5)
+        _go_to_line(w, PDB_FIFO_TOGGLE_LINE)
+        w.key(CTRL_G, "b", delay=0.4)
+        assert _wait_for(w, lambda: PDB_INTERRUPT_HELD in
+                         _pdb_stub_log(tmp_path), STEP_TIMEOUT_S), \
+            "the change should interrupt pdb (stub log:\n%s):\n%s" \
+            % (_pdb_stub_log(tmp_path), _screen(w))
+        _fifo_let_open_return(w, fifo)
+        assert _wait_for(w, lambda: _mark_line(w) == PDB_FIFO_STOP_LINE,
+                         LIVE_STOP_TIMEOUT_S), \
+            "the script should stop on line %d (mark on %s):\n%s" \
+            % (PDB_FIFO_STOP_LINE, _mark_line(w), _screen(w))
+        w._drain(NOTHING_MORE_S)
+        assert OWN_SIGINT_WORDS not in _bottom_row(w), \
+            "an interrupt pdb answered at its prompt is not the script's " \
+            "own handler (stub log:\n%s):\n%s" \
+            % (_pdb_stub_log(tmp_path), _screen(w))
+        _add_watch(w, PDB_WATCH)
+        assert _wait_for(w, lambda: _watch_value(w, PDB_WATCH) ==
+                         PDB_FIFO_WATCH_VALUE, STEP_TIMEOUT_S), \
+            "the watch should show its own answer, not one a command " \
+            "late:\n%s" % _screen(w)
+        w.key(CTRL_G, "r", delay=0.5)
+        assert _wait_for(w, lambda: _mark_line(w) == PDB_FIFO_TOGGLE_LINE,
+                         STEP_TIMEOUT_S), \
+            "the breakpoint set while the script waited should stop it " \
+            "(mark on %s):\n%s" % (_mark_line(w), _screen(w))
+
+
+# pdb's "clear file:line" takes every breakpoint off the line, so Go to
+# cursor's own breakpoint and one of the user's on the same line must not
+# take each other away.  The script sleeps on its way to the cursor's line,
+# with room to toggle the user's breakpoint while it runs.
+PY_CURSOR_SLEEP_S = 6
+PY_CURSOR_LOOP_PROG = (
+    "import time\n"
+    "n = 0\n"
+    "while n < 3:\n"
+    "    time.sleep(%d)\n"
+    "    n += 1\n"
+    "print('END', n)\n" % PY_CURSOR_SLEEP_S
+)
+PY_CURSOR_START_LINE = 2
+PY_CURSOR_LINE = 5
+
+
+# @scenario SC-debug-06
+def test_pdb_go_to_cursor_leaves_the_users_breakpoint_on_its_line(tmp_path):
+    """Go to cursor runs to a line on which the user sets a breakpoint of
+    his own while the program runs.  At the stop Go to cursor's breakpoint
+    goes, the user's stays: the next pass stops on that line again."""
+    _need("python3")
+    with WpeSession(str(tmp_path), PY_CURSOR_LOOP_PROG, filename="p.py",
+                    wait=1.5) as w:
+        _stop_on_a_breakpoint_at(w, PY_CURSOR_START_LINE, START_TIMEOUT_S)
+        _go_to_line(w, PY_CURSOR_LINE)
+        w.key(F4, delay=0.8)
+        w.key(CTRL_G, "b", delay=0.8)
+        assert PY_CURSOR_LINE in _breakpoint_lines(w), _screen(w)
+        assert _wait_for(w, lambda: _mark_line(w) == PY_CURSOR_LINE,
+                         LIVE_STOP_TIMEOUT_S), \
+            "Go to cursor should stop on line %d (mark on %s):\n%s" \
+            % (PY_CURSOR_LINE, _mark_line(w), _screen(w))
+        w.key(CTRL_G, "r", delay=0.5)
+        assert _wait_for(w, lambda: _mark_line(w) is None, STEP_TIMEOUT_S), \
+            "Ctrl-G R should run on:\n%s" % _screen(w)
+        assert _wait_for(w, lambda: _mark_line(w) == PY_CURSOR_LINE,
+                         LIVE_STOP_TIMEOUT_S), \
+            "the user's breakpoint on line %d should stop the next pass " \
+            "(mark on %s):\n%s" % (PY_CURSOR_LINE, _mark_line(w), _screen(w))
+
+
+# @scenario SC-debug-06
+def test_pdb_users_breakpoint_off_keeps_go_to_cursors_on_its_line(tmp_path):
+    """While Go to cursor runs, the user sets a breakpoint on the cursor's
+    line and takes it off again: Go to cursor still stops there."""
+    _need("python3")
+    with WpeSession(str(tmp_path), PY_CURSOR_LOOP_PROG, filename="p.py",
+                    wait=1.5) as w:
+        _stop_on_a_breakpoint_at(w, PY_CURSOR_START_LINE, START_TIMEOUT_S)
+        _go_to_line(w, PY_CURSOR_LINE)
+        w.key(F4, delay=0.8)
+        w.key(CTRL_G, "b", delay=0.8)
+        w.key(CTRL_G, "b", delay=0.8)
+        assert PY_CURSOR_LINE not in _breakpoint_lines(w), _screen(w)
+        assert _wait_for(w, lambda: _mark_line(w) == PY_CURSOR_LINE,
+                         LIVE_STOP_TIMEOUT_S), \
+            "Go to cursor should still stop on line %d (mark on %s):\n%s" \
+            % (PY_CURSOR_LINE, _mark_line(w), _screen(w))
+
+
+PDB_SYNC_TOGGLE_LINE = 4          # x = 1, after PY_SLEEP_PROG's sleep
+PDB_FRAMES_ASKED = "where"        # pdb's command for its stack
+PDB_FINISH_BODY_LINE = 2          # r = v * v, in GOTO_PY's sq
+PDB_FINISH_THEN_F8_LINE = 7       # the caller's line 6, then one F8
+
+
+# @scenario SC-debug-49
+def test_pdb_pause_during_a_sync_shows_the_pause(tmp_path):
+    """A breakpoint set while the script sleeps stops it for a moment to
+    tell pdb; Pause pressed while pdb has not answered keeps the script
+    stopped and shows it paused on its own line."""
+    _need("python3")
+    with WpeSession(str(tmp_path), PY_SLEEP_PROG, filename="p.py",
+                    wait=1.5,
+                    env_extra=_pdb_stub_env(PDB_BREAK_ASKED, nth=2)) as w:
+        _stop_then_run_on(w, PY_SLEEP_BREAK_LINE, START_TIMEOUT_S,
+                          in_messages=False)
+        _go_to_line(w, PDB_SYNC_TOGGLE_LINE)
+        w.key(CTRL_G, "b", delay=0.4)
+        _pdb_stub_holds(w, tmp_path, PDB_BREAK_ASKED)
+        w.key(*CTRL_G_I, delay=0.5)
+        _pdb_stub_release(tmp_path)
+        _assert_paused_at(w, PY_SLEEP_LINE, "Ctrl-G I while pdb answered")
+
+
+# @scenario SC-debug-49
+def test_pdb_finish_while_pdb_answers_keeps_the_keys(tmp_path):
+    """While pdb has not listed its stack for Finish, F8 is kept and Ctrl-G
+    K is refused with the waiting line: Finish marks the caller, the kept
+    F8 then steps once, and nothing lands in the file."""
+    _need("python3")
+    with WpeSession(str(tmp_path), GOTO_PY, filename="p.py", wait=1.5,
+                    env_extra=_pdb_stub_env(PDB_FRAMES_ASKED)) as w:
+        _stop_in_the_function(w, PDB_FINISH_BODY_LINE, START_TIMEOUT_S)
+        w.key(CTRL_G, "f", delay=0.5)
+        _pdb_stub_holds(w, tmp_path, PDB_FRAMES_ASKED)
+        w.key(F8, delay=0.3)
+        w.key(CTRL_G, "k", delay=0.5)
+        assert _status_row_says(w, WAITING_FOR_PDB, STEP_TIMEOUT_S), \
+            "Ctrl-G K should be refused with the waiting line:\n%s" \
+            % _screen(w)
+        _pdb_stub_release(tmp_path)
+        assert _wait_for(w, lambda: _mark_line(w) == PDB_FINISH_THEN_F8_LINE,
+                         GOTO_TIMEOUT_S), \
+            "Finish and then the kept F8 should mark line %d (mark on " \
+            "%s):\n%s" % (PDB_FINISH_THEN_F8_LINE, _mark_line(w), _screen(w))
+        w._drain(NOTHING_MORE_S)
+        assert _mark_line(w) == PDB_FINISH_THEN_F8_LINE, \
+            "only the F8 typed should step (mark on %s):\n%s" \
+            % (_mark_line(w), _screen(w))
+        w.save()
+        assert w.text() == GOTO_PY, \
+            "a key typed while pdb answered landed in the file:\n%s" \
+            % _screen(w)

@@ -254,6 +254,22 @@ Changes
   up again.  A Continue or step right after an interrupt that met a stop
   no longer takes gdb's late answer to that interrupt for its own stop.
 
+* Python debugging works the same way under pdb: the watches, the Stack
+  window, a Pause's line, the breakpoints you set at a stop or while the
+  program ran, Remove all, Go to cursor, Finish, pdb's start and every
+  step and Continue are asked while you keep typing.  The status row says
+  "waiting for pdb to answer `p x` ... 3s (Esc cancels)" while pdb is
+  slow, Esc or Ctrl-C stops waiting with "pdb did not answer `p x`: Debug
+  > Quit ends the session", and keys like F8 are kept and run in order.
+  A breakpoint whose answer was given up on is cleared before it is set
+  again, so pdb never holds the line twice.  pdb's answer to a Pause or a
+  breakpoint change that met it at its prompt ("--KeyboardInterrupt--")
+  is no longer taken for the answer to the next command, and no longer
+  makes the status row claim "The program handles Ctrl-C itself".  Under
+  pdb, a breakpoint of your own set while Go to cursor runs, on the
+  cursor's line, stays when Go to cursor's own goes at the stop, and
+  taking it off again does not stop Go to cursor from stopping there.
+
 * A watch the debugger answers without a value (under dbx, xdb, or a gdb
   or jdb answer with no "=" in it) reads "No symbol in current context".
   It used to read "o symbol in current context", its first letter lost.

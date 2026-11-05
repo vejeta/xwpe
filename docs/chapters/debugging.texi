@@ -375,7 +375,7 @@ the session ends.  Rust is compiled before the adapter starts, and the
 Scala build server is started before it; those two steps still hold the
 editor.
 
-@section While gdb answers at a stop
+@section While gdb or pdb answers at a stop
 
 @cindex debugger, waiting for an answer
 @cindex XWPE_DEBUG_ANSWER_TIMEOUT
@@ -387,6 +387,16 @@ If gdb is silent for a second, the status row says what it waits for:
 
 @example
 waiting for gdb to answer `where` ... 3s  (Esc cancels)
+@end example
+
+@noindent
+pdb works the same way: at a stop it is asked the watches, the stack and,
+after a Pause, where the script was, and a breakpoint you set at a stop
+is told to it while you keep typing.  Its line names pdb and its own
+command, for example:
+
+@example
+waiting for pdb to answer `p x` ... 3s  (Esc cancels)
 @end example
 
 @noindent
@@ -423,7 +433,11 @@ its first breakpoint.  @key{Esc} or @kbd{Ctrl-C} gives up on gdb's
 answer; the next debugger key sets gdb up again, and Debug > Quit ends
 the session.  Every Run, Continue, step, Finish and Go to cursor works
 the same way when gdb still owes an answer before the command can go
-out, such as the answer to a Pause that met a stop.
+out, such as the answer to a Pause that met a stop.  Under pdb the start
+sets your breakpoints the same way, and Go to cursor's own breakpoint and
+the frames Finish needs are asked before the command goes out.  A
+breakpoint whose answer you gave up on is cleared first the next time,
+so the line is never in the debugger twice.
 
 @section How a session ends
 
@@ -872,6 +886,13 @@ stop whenever it comes.  The editor keeps its keys meanwhile, and
 @samp{Debug @result{} Quit} ends the session.  A step that lands in
 Python's own code, such as the string of an @code{exec()}, goes on by
 itself, at most 100 times, to the next line of your script.
+
+@item
+@strong{While pdb answers}: the watches, the stack and the breakpoints
+are asked while you keep typing, as under gdb (@pxref{Debugging, While
+gdb or pdb answers at a stop}): a slow pdb shows @samp{waiting for pdb to
+answer `p x`} on the status row, and @key{Esc} or @kbd{Ctrl-C} stops
+waiting.
 
 @item
 @strong{The end of the program}: a script that runs off its end says

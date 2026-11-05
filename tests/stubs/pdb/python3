@@ -1,0 +1,174 @@
+#!/bin/sh
+''''[ "${XWPE_STUB_REAL_PYTHON:?the python3 to run}" -ef "$0" ] && exit 2 # '''
+''''exec "$XWPE_STUB_REAL_PYTHON" "$0" "$@" # '''
+"""A python3 whose pdb holds back one command until it is told to go on.
+
+The editor runs pdb as `python3 -m pdb script.py`.  With this directory
+first on PATH, that command comes here: the real python3, named by
+XWPE_STUB_REAL_PYTHON, runs pdb behind this one, every command the editor
+sends is passed on, and pdb's output goes straight to the editor, so what
+the editor reads is what pdb writes.  One command, named by XWPE_STUB_STALL
+(a prefix of the command line), is held instead.  pdb never sees it, so it
+never answers, until one of two things happens:
+
+  - the editor sends another command (after a cancel the editor makes pdb
+    print a marker): the held command goes to pdb first, then the new one,
+    so pdb answers the old command late, exactly as a slow pdb would;
+  - the test writes a line to the release pipe, $HOME/pdb-stub.release.
+
+Nothing here waits on a clock: the held command waits on input only.  Only
+the XWPE_STUB_STALL_NTH-th command that matches is held (the first by
+default).  Any other use of python3 runs the real one unchanged.
+
+Every command is logged to $HOME/pdb-stub.log ("CMD <line>"), and the hold
+as "STALL <line>" and "RELEASE <how>", so a test knows the editor is waiting
+before it types.  SIGINT, which the editor sends to pause the program, is
+passed to pdb.  With XWPE_STUB_HOLD_SIGINT=1 it is held instead ("SIGINT
+held") and passed to pdb just before the next command ("SIGINT passed on"):
+a test can then let the program stop by itself first, so the interrupt
+meets pdb at its prompt, as when a stop wins the race against it.
+
+The lines above the text let one file be both a shell script and a Python
+one: the shell runs it with the real python3, which reads them as strings,
+so the PATH entry that names this file never runs it again (a real python3
+that is this file is refused).
+"""
+import os
+import select
+import signal
+import subprocess
+import sys
+
+HOME = os.environ.get("HOME", ".")
+LOG = os.path.join(HOME, "pdb-stub.log")
+RELEASE = os.path.join(HOME, "pdb-stub.release")
+STALL = os.environ.get("XWPE_STUB_STALL", "")
+STALL_NTH = int(os.environ.get("XWPE_STUB_STALL_NTH", "1") or "1")
+HOLD_SIGINT = os.environ.get("XWPE_STUB_HOLD_SIGINT", "") == "1"
+REAL = os.environ["XWPE_STUB_REAL_PYTHON"]
+
+
+def note(text):
+    with open(LOG, "a") as fh:
+        fh.write(text + "\n")
+
+
+def runs_pdb(args):
+    return args[:2] == ["-m", "pdb"]
+
+
+def make_release_pipe():
+    if os.path.exists(RELEASE):
+        os.unlink(RELEASE)
+    os.mkfifo(RELEASE)
+    # Open for reading and writing, so the open never waits for a writer and
+    # a writer that closes does not leave the pipe at end of file.
+    return os.open(RELEASE, os.O_RDWR | os.O_NONBLOCK)
+
+
+class Lines:
+    """The editor's commands, a line at a time, read without a buffer that
+    select() cannot see."""
+
+    def __init__(self, fd):
+        self.fd = fd
+        self.buf = b""
+
+    def held(self):
+        return b"\n" in self.buf
+
+    def readline(self):
+        while b"\n" not in self.buf:
+            chunk = os.read(self.fd, 4096)
+            if not chunk:
+                rest, self.buf = self.buf, b""
+                return rest
+            self.buf += chunk
+        line, self.buf = self.buf.split(b"\n", 1)
+        return line + b"\n"
+
+
+class Interrupts:
+    """The editor's SIGINTs: passed to pdb at once, or held until the next
+    command when XWPE_STUB_HOLD_SIGINT asks for it."""
+
+    def __init__(self, child):
+        self.child = child
+        self.held = 0
+
+    def arrived(self, signum, frame):
+        if not HOLD_SIGINT:
+            self.child.send_signal(signal.SIGINT)
+            return
+        self.held += 1
+        note("SIGINT held")
+
+    def pass_held(self):
+        while self.held > 0:
+            self.held -= 1
+            self.child.send_signal(signal.SIGINT)
+            note("SIGINT passed on")
+
+
+def pass_on(interrupts, line):
+    """Give pdb one command, after any SIGINT held for it."""
+    interrupts.pass_held()
+    interrupts.child.stdin.write(line)
+    interrupts.child.stdin.flush()
+
+
+def wait_for_go(interrupts, held, release_fd, lines):
+    """Hold @held until the editor sends more or the test releases it."""
+    note("STALL " + held.decode("utf-8", "replace").rstrip("\n"))
+    stdin_fd = lines.fd
+    while True:
+        if lines.held():
+            ready = [stdin_fd]
+        else:
+            ready, _, _ = select.select([stdin_fd, release_fd], [], [])
+        if release_fd in ready:
+            os.read(release_fd, 4096)
+            note("RELEASE by the test")
+            pass_on(interrupts, held)
+            return None
+        if stdin_fd in ready:
+            nxt = lines.readline()
+            note("RELEASE by the next command")
+            pass_on(interrupts, held)
+            return nxt
+
+
+def main():
+    child = subprocess.Popen([REAL] + sys.argv[1:], stdin=subprocess.PIPE)
+    interrupts = Interrupts(child)
+    signal.signal(signal.SIGINT, interrupts.arrived)
+    signal.signal(signal.SIGTERM,
+                  lambda signum, frame: child.kill() or sys.exit(0))
+    release_fd = make_release_pipe()
+    lines = Lines(sys.stdin.fileno())
+    seen = 0
+    pending = None
+    while True:
+        line = pending if pending is not None else lines.readline()
+        pending = None
+        if not line:
+            break
+        text = line.decode("utf-8", "replace").rstrip("\n")
+        note("CMD " + text)
+        if STALL and text.startswith(STALL):
+            seen += 1
+            if seen == STALL_NTH:
+                pending = wait_for_go(interrupts, line, release_fd, lines)
+                continue
+        pass_on(interrupts, line)
+    child.stdin.close()
+    child.wait()
+
+
+if __name__ == "__main__":
+    if not runs_pdb(sys.argv[1:]):
+        os.execv(REAL, [REAL] + sys.argv[1:])
+    try:
+        main()
+    except BrokenPipeError:
+        pass

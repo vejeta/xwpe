@@ -1,4 +1,4 @@
-"""The keys reach the editor while gdb answers at a stop or starts (X11).
+"""The keys reach the editor while gdb or pdb answers at a stop (X11).
 
 tests/stubs/gdb stands in front of the real gdb and holds back its `where`
 until the test writes to its release pipe, so the editor waits for gdb's
@@ -161,3 +161,85 @@ def test_gdb_keys_typed_during_the_start_are_kept_or_refused(xwpe):
     assert STACK_ASKED not in _stub_log(home), \
         "Ctrl-G K during the start should be refused, not asked:\n%s" \
         % _stub_log(home)
+
+
+# pdb: tests/stubs/pdb/python3 stands in front of the real python3 when it
+# runs pdb, holding one command as the gdb stub does.  The held command is
+# the answer to a breakpoint set at a stop, so the source window, where the
+# stop put the cursor, is the one the keys go to.
+PDB_STUB_LOG = "pdb-stub.log"
+PDB_STUB_RELEASE = "pdb-stub.release"
+PDB_PROG = (
+    "g = 42\n"
+    "x = 1\n"
+    "x = x + 1\n"
+    "x = x + 1\n"
+    "print(x, g)\n"
+)
+PDB_BREAK_LINE = 2
+PDB_TOGGLE_LINE = 4
+PDB_BREAK_ASKED = "b "                  # pdb's command that sets a breakpoint
+PDB_STEP_SENT = "CMD n\n"
+PDB_STACK_ASKED = "CMD where\n"
+PDB_PROG_WITH_TYPED = "".join(
+    TYPED + row if n == PDB_TOGGLE_LINE else row
+    for n, row in enumerate(PDB_PROG.splitlines(True), 1))
+PDB_STUB_ENV = {
+    "PATH": os.path.abspath(os.path.join(STUBS_DIR, "pdb")) + ":"
+            + os.environ.get("PATH", ""),
+    "XWPE_STUB_REAL_PYTHON": shutil.which("python3") or "",
+    "XWPE_STUB_STALL": PDB_BREAK_ASKED,
+    "XWPE_STUB_STALL_NTH": "2",          # the first is the start's
+    "XWPE_TEST_SOURCE": PDB_PROG,
+    "XWPE_TEST_FILE": "p.py",
+}
+
+
+def _pdb_stub_log(home):
+    try:
+        with open(os.path.join(home, PDB_STUB_LOG)) as fh:
+            return fh.read()
+    except OSError:
+        return ""
+
+
+# @scenario SC-debug-49
+@pytest.mark.skipif(not shutil.which("python3"), reason="no python3")
+@pytest.mark.parametrize("xwpe", [PDB_STUB_ENV], indirect=True)
+def test_pdb_keys_reach_the_editor_while_it_answers(xwpe):
+    """pdb holds back its answer to a breakpoint set at a stop.  Ctrl-G K,
+    text and File > Save typed meanwhile all reach the editor: the file on
+    disk gets the text and no "k", before pdb answers, and pdb is never
+    asked for the stack.  Once it answers, F8 steps.  (gdb's row holds
+    the stop's own question; pdb's stop needs none for its mark, so the
+    held answer is the one to a breakpoint set at the stop.)"""
+    if not getattr(xwpe, "can_debug", True):
+        pytest.skip("no debug session under the headless compositor harness")
+    home = os.path.dirname(xwpe.srcfile)
+    _go_to_line(xwpe, PDB_BREAK_LINE)
+    xwpe.key("ctrl+g", "b", delay=0.6)
+    xwpe.key("ctrl+g", "r", delay=1.0)
+    assert _wait(lambda: _count(xwpe.screenshot(), STOP_GREEN) >= MIN_BAR_PIXELS,
+                 HOLD_TIMEOUT_S), \
+        "Ctrl-G R should stop on the breakpoint:\n%s" % _pdb_stub_log(home)
+    _go_to_line(xwpe, PDB_TOGGLE_LINE)
+    xwpe.key("ctrl+g", "b", delay=0.6)
+    assert _wait(lambda: ("STALL " + PDB_BREAK_ASKED) in _pdb_stub_log(home),
+                 HOLD_TIMEOUT_S), \
+        "the editor should ask pdb to set the breakpoint:\n%s" \
+        % _pdb_stub_log(home)
+    xwpe.key("ctrl+g", "k", delay=0.6)
+    xwpe.type(TYPED, delay=0.4)
+    xwpe.save()
+    assert _wait(lambda: xwpe.saved_text() == PDB_PROG_WITH_TYPED,
+                 STOP_TIMEOUT_S), \
+        "keys typed while pdb answers should reach the editor, and Ctrl-G K " \
+        "should type nothing (file on disk:\n%r)" % xwpe.saved_text()
+    assert PDB_STACK_ASKED not in _pdb_stub_log(home), \
+        "Ctrl-G K while pdb answers should be refused, not asked:\n%s" \
+        % _pdb_stub_log(home)
+    with open(os.path.join(home, PDB_STUB_RELEASE), "w") as fh:
+        fh.write("go\n")
+    xwpe.key("F8", delay=0.6)
+    assert _wait(lambda: PDB_STEP_SENT in _pdb_stub_log(home), STOP_TIMEOUT_S), \
+        "once pdb answers, F8 should step:\n%s" % _pdb_stub_log(home)
