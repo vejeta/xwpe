@@ -297,6 +297,17 @@ Changes
   it is set again.  Enter on a row of the Stack window while a68g answers
   is refused with the waiting line, as under pdb and jdb.
 
+* The UNIX debuggers sdb, dbx and xdb work the same way: what a stop asks
+  them (where it is, the watches, the Stack window, the breakpoints you
+  set at a stop or while the program ran), Remove all, Go to cursor, their
+  start and every step and Continue are asked while you keep typing.  The
+  status row says "waiting for dbx to answer `print x` ... 3s (Esc
+  cancels)" while the debugger is slow, Esc or Ctrl-C stops waiting with
+  "dbx did not answer `print x`: Debug > Quit ends the session", and keys
+  like F8 are kept and run in order.  A breakpoint whose answer was given
+  up on is cleared before it is set again, so the debugger never holds
+  the line twice.
+
 * A watch the debugger answers without a value (under dbx, xdb, or a gdb
   or jdb answer with no "=" in it) reads "No symbol in current context".
   It used to read "o symbol in current context", its first letter lost.

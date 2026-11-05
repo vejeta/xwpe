@@ -66,9 +66,10 @@ int e_d_delbreak(FENSTER *f);
 int e_d_error(char *s);
 int print_to_end_of_buffer(BUFFER * b,char * str,int wrap_limit);
 
-/* The blocking readers.  gdb's, pdb's, jdb's and a68g's answers no longer go
-   through them (they are read on the fd loop, e_d_ga below); sdb, dbx and
-   xdb still do, until their own answers move to the loop. */
+/* The blocking readers.  No debugger's answers go through them any more:
+   gdb's, pdb's, jdb's, a68g's, sdb's, dbx's and xdb's are read on the fd
+   loop (e_d_ga below); what still calls them is never reached by a session
+   and goes with them. */
 static int e_d_line_read(int n, signed char *s, int max, int sw, int esw);
 static int e_e_line_read(int n, signed char *s, int max);
 static int e_d_dum_read(void);
@@ -235,8 +236,8 @@ static int  e_d_ga_go_keeps_start_brk(int sw);
 static int  e_d_ga_go_keeps_goto_line(int line);
 static void e_d_ga_drop_start_entry(int i);
 static int  e_d_ga_set_up_again(FENSTER *f);
-/* What the request engine is told of gdb, pdb, jdb and a68g (e_d_ga,
-   below). */
+/* What the request engine is told of gdb, pdb, jdb, a68g, sdb, dbx and xdb
+   (e_d_ga, below). */
 typedef struct e_d_ga_backend E_D_GA_BACKEND;
 static const E_D_GA_BACKEND *e_d_ga_backend_of(int type);
 static const E_D_GA_BACKEND *e_d_ga_this(void);
@@ -248,6 +249,11 @@ static int  e_d_pdb_sync_on_loop(ECNT *cn);
 static int  e_d_ga_finish_ask(FENSTER *f);   /* pdb and jdb */
 static int  e_d_ga_finishes_on_loop(void);
 static int  e_d_ga_sets_cursor_brk(void);
+/* sdb's, dbx's and xdb's stops, steps and run lines, the same way. */
+static void e_d_cli_stopped(FENSTER *f);
+static int  e_d_cli_step_go(FENSTER *f, int sw);
+static int  e_d_cli_run_line_own(const char *line);
+static void e_d_cli_awaits_forget(void);
 /* jdb's stops and Pause, asked on the fd loop too. */
 static void e_d_gj_stop_ask(ECNT *cn, const char *stop);
 static void e_d_gj_pause_ask(ECNT *cn);
@@ -1483,25 +1489,6 @@ static int e_d_line_says_program_exited(const char *line)
 }
 
 /**
- * e_d_line_says_where_it_stopped - Mark the stop the debugger described, by
- * the checks of gdb, sdb, dbx and xdb.
- * @f: the source window.
- *
- * Return: 0 when the stop was found and marked; below 0 when no check
- * recognised it, which after a run means the program is no longer there.
- */
-static int e_d_line_says_where_it_stopped(FENSTER *f)
-{
- int found = e_d_fst_check(f);
-
- if (found < 0)
-  found = e_d_snd_check(f);
- if (found < 0)
-  found = e_d_trd_check(f);
- return(found);
-}
-
-/**
  * e_d_gdb_follow_up_after_finish - A step pressed after Pause first ran out
  * of the library call; now send the step itself.
  *
@@ -1539,40 +1526,6 @@ static int e_d_gdb_follow_up_after_finish(void)
   return(0);
  e_d_ga_go_on(cmd);
  return(1);
-}
-
-/**
- * e_d_line_stopped - What sdb, dbx and xdb do when the program stops.
- * @f: the window the run was started from.
- *
- * The user sees the program's last output in Messages, then either the
- * stop marked on its source line or one line saying the program ended,
- * after which the session closes.  gdb's stop is e_d_gdb_stopped.
- */
-static void e_d_line_stopped(FENSTER *f)
-{
- int i;
-
- e_d_drain_pty_to_messages();
- e_d_out_show();
- for (i = 0; i < SVLINES; i++)
- {
-  if (e_d_line_says_program_exited(e_d_sp[i]))
-  {
-   e_d_say_program_exited(e_d_sp[i], f);
-   e_d_quit(f);
-   return;
-  }
- }
- if (e_d_line_says_where_it_stopped(f) < 0)
- {
-  e_d_switch_out(0);
-  e_d_say_program_exited(NULL, f);
-  e_d_quit(f);
-  return;
- }
- _messages_activated = 0;
- e_refresh();
 }
 
 /* Whether the prompt that ends a run is kept as the newest answer line. */
@@ -1645,11 +1598,14 @@ static int e_d_gdb_feed(FENSTER *f)
  * e_d_legacy_feed - Read what sdb, dbx or xdb has answered to a run or a
  * step so far.
  * @f: the window the run was started from (unused).
+ *
+ * The line dbx or xdb answers a first run with ("Running: ...") is shown in
+ * Messages as it comes and is no part of the stop.
  * Return: as e_d_line_feed_answer.
  */
 static int e_d_legacy_feed(FENSTER *f)
 {
- return(e_d_line_feed_answer(E_D_PROMPT_KEPT, NULL));
+ return(e_d_line_feed_answer(E_D_PROMPT_KEPT, e_d_cli_run_line_own));
 }
 
 /**
@@ -1790,17 +1746,23 @@ static const E_D_RUN_OPS e_d_gdb_run_ops =
  e_d_gdb_sync_on_loop
 };
 
-/* sdb, dbx and xdb: gdb's line protocol, with their own stop wording. */
+/* sdb, dbx and xdb: gdb's line protocol, with their own stop wording.  What
+   they answer at a stop is read on the fd loop through the request engine
+   (e_d_ga), so the editor keeps its keys meanwhile; the breakpoints changed
+   while the program ran are told by the stop's own requests, so they have
+   no sync_at_stop.  They are never interrupted for a breakpoint change (how
+   each takes one at that moment was never recorded): it waits for the next
+   stop. */
 static const E_D_RUN_OPS e_d_legacy_run_ops =
 {
  "sdb, dbx or xdb",
  e_d_line_answer_fd,
  e_d_line_output_fd,
  e_d_legacy_feed,
- e_d_line_stopped,
+ e_d_cli_stopped,
  e_d_interrupt_debugger,
  NULL,
- e_d_brk_sync_at_stop,
+ NULL,
  NULL,
  NULL
 };
@@ -6461,6 +6423,7 @@ int e_mk_brk_main(FENSTER *f, int sw)
   e_d_brk_grow();
   e_d_sbrpts[e_d_nbrpts - 1] = MALLOC(1);
   e_d_sbrpts[e_d_nbrpts - 1][0] = '\0';   /* no file: the start symbol */
+  e_d_ybrpts[e_d_nbrpts - 1] = 0;         /* no line until sdb names one */
   e_d_nrbrpts[e_d_nbrpts - 1] = 0;        /* not set in the debugger yet */
   /* gdb and jdb are told by the run that follows, on the fd loop
      (e_d_ga_go); pdb needs no command for it. */
@@ -14103,7 +14066,6 @@ static int e_d_jdb_step_go(FENSTER *f, int sw)
 int e_d_step_next(FENSTER *f, int sw)
 {
  int ret, main_brk = 0;
- const E_D_RUN_OPS *run_ops;
 
  if (sw && e_d_act_deferred(E_D_ACT_NEXT, f, 0))
   return(0);
@@ -14161,15 +14123,7 @@ int e_d_step_next(FENSTER *f, int sw)
   return(e_d_pdb_step_go(f, sw));
  if (e_deb_type == DEB_JDB)
   return(e_d_jdb_step_go(f, sw));
- if (sw && (e_deb_type == DEB_SDB || e_deb_type == DEB_XDB)) e_d_send_cmd("S\n");
- else if (sw && e_deb_type == DEB_DBX) e_d_send_cmd("next\n");
- else if (e_deb_type == DEB_DBX) e_d_send_cmd("step\n");
- else e_d_send_cmd("s\n");
- e_d_nstack = 0;
- run_ops = e_d_run_ops_of_backend();
- if (run_ops)
-  return(e_d_run_hand_over(f, run_ops, 0));
- return(e_read_output(f));
+ return(e_d_cli_step_go(f, sw));       /* sdb, dbx, xdb */
 }
 
 /* The debugger commands Go to cursor and Finish function pass on. */
@@ -16037,6 +15991,11 @@ struct e_d_ga_backend
  const E_D_STEP *stack_steps;           /* Ctrl-G K */
  const E_D_STEP *follow_steps;          /* Enter on a row of the Stack */
  const E_D_STEP *go_steps;              /* what a resume asks first */
+ /* A run or a Continue has just gone out: note what the debugger answers
+    it with before the program runs, for the run's reader to take (dbx's
+    and xdb's "Running:"), or show what the user is told of it (sdb's
+    command).  NULL: says_run_lines decides (gdb, pdb, jdb, a68g). */
+ void (*run_went)(const E_D_GA_GO *go);
 };
 
 /* The request engine, its world and what runs on it. */
@@ -16567,6 +16526,7 @@ static void e_d_ga_forget(void)
  e_d_ga.pause_asked = 0;
  e_d_ga.set_up_owed = 0;
  e_d_gdb_awaits_forget();
+ e_d_cli_awaits_forget();
 }
 
 /**
@@ -16923,6 +16883,7 @@ struct e_d_ga_ctx
 {
  ECNT *cn;
  int need_where;             /* the stop's own lines named no place */
+ int need_file;              /* they named a line but not its file (sdb) */
  int line;                   /* the line to mark, or -1 (gdb: say none) */
  char file[E_D_LINE_MAX];
  int where_rows;             /* rows `where` answered */
@@ -18600,12 +18561,20 @@ static int e_d_gg_asks_first(const E_D_GA_GO *go)
 /**
  * e_d_gg_awaits_its_line - Note the line gdb answers a run with, which the
  * run's reader takes ("Starting program" after "r", "Continuing." after
- * "c").  pdb answers a Continue with nothing but the stop.
+ * "c").  pdb answers a Continue with nothing but the stop.  sdb, dbx and xdb
+ * say it in their own way (the backend's run_went).
  * @go: the context.
  */
 static void e_d_gg_awaits_its_line(const E_D_GA_GO *go)
 {
- if (!e_d_ga_this()->says_run_lines)
+ const E_D_GA_BACKEND *be = e_d_ga_this();
+
+ if (be->run_went)
+ {
+  be->run_went(go);
+  return;
+ }
+ if (!be->says_run_lines)
   return;
  if (go->how == E_D_GO_START)
   e_d_gdb_awaits.start = 1;
@@ -18689,12 +18658,14 @@ static int e_d_gg_hand_over(E_D_GA_GO *go)
 /**
  * e_d_ga_drop_start_entry - Take the editor's start breakpoint, list entry
  * @i, out of the list without waiting for gdb; gdb is told to remove it
- * at the next chance.
+ * at the next chance.  The removal keeps the line the debugger gave it, for
+ * sdb, which names a breakpoint by its line (the start entry has no file:
+ * the start symbol is its place).
  */
 static void e_d_ga_drop_start_entry(int i)
 {
  if (e_d_swtch && e_d_nrbrpts[i] != 0)
-  e_d_gb_gone_keep("", 0, e_d_nrbrpts[i]);
+  e_d_gb_gone_keep(e_d_sbrpts[i], e_d_ybrpts[i], e_d_nrbrpts[i]);
  e_d_brk_list_drop(i);
 }
 
@@ -21296,6 +21267,1353 @@ static const E_D_STEP e_d_a68g_go_steps[] =
  { NULL, NULL }
 };
 
+/* ==== sdb's, dbx's and xdb's answers, start and resumes, on the fd loop ====
+
+   sdb, dbx and xdb run on the same engine as gdb: what a stop asks them
+   (the file or the place of the stop when their report did not say it, the
+   Stack window, the watches, the breakpoints changed while the program ran,
+   Go to cursor's and the start's own breakpoints), a breakpoint toggled at
+   a stop, Remove all, the set-up after the banner and what each resume asks
+   first.  The stop itself is read by their run controller table
+   (e_d_legacy_feed), and its report is parsed as it always was
+   (e_d_gc_stop_place).  None of the three is installable here, so what the
+   editor's source never recorded is assumed and said where it is used.
+   Where they differ:
+
+   - sdb names a breakpoint by its line in the file it was last told with
+     "e file", so every command that names a line is sent after an "e" of
+     its own (e_d_gsdb_file_first), and its stop report names the line
+     without the file, which a bare "e" then answers;
+   - dbx and xdb name a breakpoint by the number they gave it.  dbx also
+     takes one off by its place ("clear"); xdb only by its number or all at
+     once, so one whose number was never read goes with "db *" and the
+     user's are set again (as a68g's are);
+   - sdb's and xdb's stack listing is "t", whose rows name [file:line];
+     dbx's is "where"; xdb counts frames the other way, so moving up its
+     stack is "down";
+   - an interrupt that meets them at their prompt is taken to write nothing
+     (the editor never counted one as owed for them), so their tables have
+     no settle step; the settle command, a string they print, serves only
+     the resync after an answer given up on. */
+
+#define E_D_SDB_NAME          "sdb"   /* as the waiting line names them */
+#define E_D_DBX_NAME          "dbx"
+#define E_D_XDB_NAME          "xdb"
+#define E_D_SDB_PROMPT        "*"
+#define E_D_DBX_PROMPT        "(dbx) "
+#define E_D_XDB_PROMPT        ">"
+#define E_D_CLI_SETTLE_MARK   "xwpe-interrupts-settled"
+/* A string each prints when asked: sdb's own command for it, dbx's and
+   xdb's print of a string. */
+#define E_D_SDB_SETTLE_CMD    "\"" E_D_CLI_SETTLE_MARK "\""
+#define E_D_DBX_SETTLE_CMD    "print \"" E_D_CLI_SETTLE_MARK "\""
+#define E_D_XDB_SETTLE_CMD    "p \"" E_D_CLI_SETTLE_MARK "\""
+#define E_D_SDB_FILE_FMT      "e %s"        /* make a file sdb's current one */
+#define E_D_SDB_WHICH_FILE    "e"           /* which file is current */
+#define E_D_SDB_BREAK_FMT     "%d b"
+#define E_D_SDB_DELETE_FMT    "%d d"
+#define E_D_SDB_START_BRK     "b"           /* at the current function's start */
+#define E_D_SDB_START_LINE    ':'           /* "breakpoint 1 at main:7" */
+#define E_D_DBX_BREAK_FMT     "stop at \"%s\":%d"
+#define E_D_DBX_START_FMT     "stop in %s"
+#define E_D_DBX_DELETE_FMT    "delete %d"
+#define E_D_DBX_CLEAR_FMT     "clear \"%s\":%d"   /* every breakpoint on a line */
+#define E_D_XDB_BREAK_FMT     "b %s:%d"
+#define E_D_XDB_START_FMT     "b %s"
+#define E_D_XDB_DELETE_FMT    "db %d"
+#define E_D_XDB_DELETE_ALL    "db *"
+#define E_D_XDB_SET_UP        "sm"          /* xdb's own setting at the start */
+#define E_D_DBX_RUNNING       "Running:"    /* dbx's answer to a first run */
+#define E_D_CLI_EXIT_LEAD     14   /* characters of the end words compared */
+#define E_D_CLI_TERM_LEAD     18
+#define E_D_CLI_SIGNAL_LEAD   6
+#define E_D_CLI_INTR_LEAD     9
+#define E_D_CLI_BREAK_LEAD    10
+#define E_D_CLI_AT            " at"   /* after sdb's "BREAKPOINT" */
+#define E_D_CLI_AT_LEN        3
+#define E_D_CLI_STOPPED_LEAD  10
+#define E_D_CLI_NOPROC_LEAD   10
+#define E_D_CLI_LINE_WORD     " line "   /* dbx's "stopped in f at line N" */
+#define E_D_CLI_IN_WORD       "in "      /* sdb's "f() in file" */
+#define E_D_CLI_IN_LEN        3
+
+/* What a line of a stop's report said (e_d_gc_report_line). */
+#define E_D_GC_NOT_YET  0   /* nothing yet: read the next line */
+#define E_D_GC_PLACED   1   /* the place, or how to ask for it, is known */
+#define E_D_GC_ENDED    2   /* the program ended: the session is over */
+
+/* What a debugger answers a first run with, before the program runs. */
+#define E_D_CLI_RUN_SAYS_NOTHING  0   /* sdb: Messages shows the command */
+#define E_D_CLI_RUN_SAYS_RUNNING  1   /* dbx: "Running: ...", or it never ran */
+#define E_D_CLI_RUN_SAYS_A_LINE   2   /* xdb: its first line */
+
+/* The words in which sdb, dbx and xdb differ beyond their engine tables. */
+typedef struct
+{
+ const char *stack_cmd;         /* the stack listing: "where" or "t" */
+ const char *step_cmd;          /* F7 */
+ const char *next_cmd;          /* F8 */
+ const char *remove_all_cmd;    /* Remove all */
+ int number_on_next_row;        /* a breakpoint's number comes on the row
+                                   after the one that announces it (xdb) */
+ int run_answer;                /* E_D_CLI_RUN_* */
+ const E_D_STEP *stop_steps;    /* a stop the user is shown */
+} E_D_CLI;
+
+/* What a first run still owes the run's reader (e_d_cli_run_line_own). */
+static struct
+{
+ int running;                /* dbx's "Running:" line */
+ int a_line;                 /* xdb's first line */
+} e_d_cli_awaits;
+
+/**
+ * e_d_cli_awaits_forget - Expect no such line: the run stopped, or the
+ * session ended.
+ */
+static void e_d_cli_awaits_forget(void)
+{
+ e_d_cli_awaits.running = 0;
+ e_d_cli_awaits.a_line = 0;
+}
+
+static const E_D_CLI *e_d_cli_of(int type);   /* (below) */
+
+/**
+ * e_d_cli_this - The words of the debugger that runs now (sdb, dbx or xdb).
+ */
+static const E_D_CLI *e_d_cli_this(void)
+{
+ return(e_d_cli_of(e_deb_type));
+}
+
+/**
+ * e_d_cli_window - The window on top, where Messages lines are said.
+ */
+static FENSTER *e_d_cli_window(void)
+{
+ ECNT *cn = e_d_run.cn ? e_d_run.cn : WpeEditor;
+
+ return(cn->f[cn->mxedt]);
+}
+
+/* ---- a first run, and the line that says it began ---- */
+
+/**
+ * e_d_gc_run_went - A run or a Continue went out to sdb, dbx or xdb: for a
+ * first run, note the line the debugger answers it with, or, for sdb, which
+ * answers with nothing of its own, show the command in Messages, as the
+ * user was always shown.
+ * @go: the resume.
+ */
+static void e_d_gc_run_went(const E_D_GA_GO *go)
+{
+ int says = e_d_cli_this()->run_answer;
+
+ if (go->how != E_D_GO_START)
+  return;
+ if (says == E_D_CLI_RUN_SAYS_RUNNING)
+  e_d_cli_awaits.running = 1;
+ else if (says == E_D_CLI_RUN_SAYS_A_LINE)
+  e_d_cli_awaits.a_line = 1;
+ else
+  e_d_p_message((char *)go->cmd, e_d_cli_window(), 0);
+}
+
+/**
+ * e_d_cli_run_line_own - The run's reader found @line: is it the line that
+ * says a first run began, or one before it?
+ *
+ * The user reads dbx's "Running: ..." or xdb's first line in Messages as
+ * soon as the debugger says it, as before; dbx's lines before "Running:"
+ * are dropped, as its reader always dropped them, and none of these is
+ * taken for part of the stop.
+ * Return: 1 when the line was taken here.
+ */
+static int e_d_cli_run_line_own(const char *line)
+{
+ if (e_d_cli_awaits.a_line && line[0])
+ {
+  e_d_cli_awaits.a_line = 0;
+  e_d_p_message((char *)line, e_d_cli_window(), 0);
+  return(1);
+ }
+ if (!e_d_cli_awaits.running)
+  return(0);
+ if (!strncmp(line, E_D_DBX_RUNNING, sizeof E_D_DBX_RUNNING - 1))
+ {
+  e_d_cli_awaits.running = 0;
+  e_d_p_message((char *)line, e_d_cli_window(), 0);
+ }
+ return(1);
+}
+
+/**
+ * e_d_cli_run_never_started - dbx came back to its prompt after "run"
+ * without saying "Running:": the program could not be started.
+ * @f: the window on top.
+ *
+ * The user is told so and the session ends, instead of being shown a stop
+ * of a program that never ran.
+ * Return: 1 when the session ended.
+ */
+static int e_d_cli_run_never_started(FENSTER *f)
+{
+ int never = e_d_cli_awaits.running;
+
+ e_d_cli_awaits_forget();
+ if (!never)
+  return(0);
+ e_d_quit(f);
+ e_error(e_d_msg[ERR_CANTPROG], 0, f->fb);
+ return(1);
+}
+
+/* ---- the file sdb is told before a command that names a line ---- */
+
+/* The file last told to sdb with "e file", and whether sdb has answered it:
+   the command that names a line in it goes next. */
+static struct
+{
+ char file[PATH_MAX];
+ int asked;                  /* "e file" went out and is not answered */
+ int told;                   /* sdb answered it: the line's command is next */
+} e_d_gsdb;
+
+/**
+ * e_d_gsdb_file_first - Before sdb is sent a command on a line of @file:
+ * the "e file" that makes it the current file, unless sdb has just answered
+ * that one, whose turn is then over.
+ * @cmd, @n: the command, when one is to go first.
+ * Return: 1 when @cmd holds the "e file" to send now, 0 when the command
+ * on the line goes now.
+ */
+static int e_d_gsdb_file_first(const char *file, char *cmd, size_t n)
+{
+ if (e_d_gsdb.told && !strcmp(e_d_gsdb.file, file))
+ {
+  e_d_gsdb.told = 0;
+  return(0);
+ }
+ snprintf(e_d_gsdb.file, sizeof e_d_gsdb.file, "%s", file);
+ e_d_gsdb.asked = 1;
+ e_d_gsdb.told = 0;
+ snprintf(cmd, n, E_D_SDB_FILE_FMT, file);
+ return(1);
+}
+
+/**
+ * e_d_gsdb_file_answered - Was the answer just come sdb's answer to the
+ * "e file" e_d_gsdb_file_first sent?  Then the command on the line follows.
+ * Return: 1 when it was.
+ */
+static int e_d_gsdb_file_answered(void)
+{
+ if (!e_d_gsdb.asked)
+  return(0);
+ e_d_gsdb.asked = 0;
+ e_d_gsdb.told = 1;
+ return(1);
+}
+
+/**
+ * e_d_gsdb_gone_file - The file a removal names: the start breakpoint has
+ * none, and sdb is told the start symbol for it, as it was when it was set.
+ */
+static const char *e_d_gsdb_gone_file(const E_D_BRK_GONE *g)
+{
+ if (g->file[0])
+  return(g->file);
+ return(e_get_start_symbol());
+}
+
+/* ---- a breakpoint, as each of the three is told it ---- */
+
+/**
+ * e_d_sdb_brk_add_cmd - sdb's "N b" for list entry @i, once sdb has been
+ * told its file.
+ * @cmd, @n: the command.
+ */
+static void e_d_sdb_brk_add_cmd(int i, char *cmd, size_t n)
+{
+ snprintf(cmd, n, E_D_SDB_BREAK_FMT, e_d_ybrpts[i]);
+}
+
+/**
+ * e_d_sdb_brk_remove_cmd - sdb's "N d" for a breakpoint the list no longer
+ * has, once sdb has been told its file: sdb takes it off by its line.
+ * @g: the removal; @cmd, @n: the command.
+ */
+static void e_d_sdb_brk_remove_cmd(const E_D_BRK_GONE *g, char *cmd, size_t n)
+{
+ snprintf(cmd, n, E_D_SDB_DELETE_FMT, g->line);
+}
+
+/**
+ * e_d_sdb_cursor_brk_cmd - sdb's command that sets (@set 1) or clears Go to
+ * cursor's own breakpoint, once sdb has been told its file.
+ * @cmd, @n: the command.
+ */
+static void e_d_sdb_cursor_brk_cmd(int set, char *cmd, size_t n)
+{
+ if (set)
+  snprintf(cmd, n, E_D_SDB_BREAK_FMT, e_d_cursor_brk.line);
+ else
+  snprintf(cmd, n, E_D_SDB_DELETE_FMT, e_d_cursor_brk.line);
+}
+
+/**
+ * e_d_dbx_brk_add_cmd - dbx's stop at "file":line for list entry @i.
+ * @cmd, @n: the command.
+ */
+static void e_d_dbx_brk_add_cmd(int i, char *cmd, size_t n)
+{
+ snprintf(cmd, n, E_D_DBX_BREAK_FMT, e_d_sbrpts[i], e_d_ybrpts[i]);
+}
+
+/**
+ * e_d_dbx_brk_remove_cmd - dbx's command that takes out a breakpoint the
+ * list no longer has: "delete N" by the number dbx gave it, or clear
+ * "file":line for one whose number was never read.
+ * @g: the removal; @cmd, @n: the command.
+ */
+static void e_d_dbx_brk_remove_cmd(const E_D_BRK_GONE *g, char *cmd, size_t n)
+{
+ if (g->id == E_D_GB_ID_UNKNOWN)
+  snprintf(cmd, n, E_D_DBX_CLEAR_FMT, g->file, g->line);
+ else
+  snprintf(cmd, n, E_D_DBX_DELETE_FMT, g->id);
+}
+
+/**
+ * e_d_dbx_start_brk_cmd - dbx's breakpoint on the program's start symbol,
+ * for a first run when the user has none of his own.
+ * @cmd, @n: the command.
+ */
+static void e_d_dbx_start_brk_cmd(char *cmd, size_t n)
+{
+ snprintf(cmd, n, E_D_DBX_START_FMT, e_get_start_symbol());
+}
+
+/**
+ * e_d_dbx_cursor_brk_cmd - dbx's command that sets (@set 1) or clears Go to
+ * cursor's own breakpoint.
+ * @cmd, @n: the command.
+ */
+static void e_d_dbx_cursor_brk_cmd(int set, char *cmd, size_t n)
+{
+ if (set)
+  snprintf(cmd, n, E_D_DBX_BREAK_FMT, e_d_cursor_brk.file,
+           e_d_cursor_brk.line);
+ else
+  snprintf(cmd, n, E_D_DBX_DELETE_FMT, e_d_cursor_brk.id);
+}
+
+/**
+ * e_d_xdb_brk_add_cmd - xdb's "b file:line" for list entry @i.
+ * @cmd, @n: the command.
+ */
+static void e_d_xdb_brk_add_cmd(int i, char *cmd, size_t n)
+{
+ snprintf(cmd, n, E_D_XDB_BREAK_FMT, e_d_sbrpts[i], e_d_ybrpts[i]);
+}
+
+/**
+ * e_d_xdb_brk_remove_cmd - xdb's command that takes out a breakpoint the
+ * list no longer has: "db N" by the number xdb gave it.  xdb takes one off
+ * only by its number, so one whose number was never read goes with all the
+ * others ("db *"), and the user's are set again (e_d_gx_remove_answered).
+ * @g: the removal; @cmd, @n: the command.
+ */
+static void e_d_xdb_brk_remove_cmd(const E_D_BRK_GONE *g, char *cmd, size_t n)
+{
+ if (g->id == E_D_GB_ID_UNKNOWN)
+  snprintf(cmd, n, "%s", E_D_XDB_DELETE_ALL);
+ else
+  snprintf(cmd, n, E_D_XDB_DELETE_FMT, g->id);
+}
+
+/**
+ * e_d_xdb_start_brk_cmd - xdb's breakpoint on the program's start symbol.
+ * @cmd, @n: the command.
+ */
+static void e_d_xdb_start_brk_cmd(char *cmd, size_t n)
+{
+ snprintf(cmd, n, E_D_XDB_START_FMT, e_get_start_symbol());
+}
+
+/**
+ * e_d_xdb_cursor_brk_cmd - xdb's command that sets (@set 1) or clears Go to
+ * cursor's own breakpoint.
+ * @cmd, @n: the command.
+ */
+static void e_d_xdb_cursor_brk_cmd(int set, char *cmd, size_t n)
+{
+ if (set)
+  snprintf(cmd, n, E_D_XDB_BREAK_FMT, e_d_cursor_brk.file,
+           e_d_cursor_brk.line);
+ else
+  snprintf(cmd, n, E_D_XDB_DELETE_FMT, e_d_cursor_brk.id);
+}
+
+/**
+ * e_d_gc_number_line - The row of dbx's or xdb's answer to a breakpoint set
+ * that gives the breakpoint's number, copied into @out: dbx's "(N) stop
+ * at ...", the row after xdb's "Added:".
+ * Return: the number, or 0 when no row gives one.
+ */
+static int e_d_gc_number_line(const char *text, char *out, size_t n)
+{
+ const char *p = text ? text : "";
+ int next = e_d_cli_this()->number_on_next_row;
+ int announced = 0, id = 0;
+ char *row;
+
+ out[0] = '\0';
+ while (!id && *p && (row = e_d_text_take_row(&p)) != NULL)
+ {
+  if (announced || (!next && e_ds_brk_is_number_line(e_deb_type, row)))
+  {
+   id = e_ds_brk_number(e_deb_type, row);
+   snprintf(out, n, "%s", row);
+  }
+  else if (e_ds_brk_is_number_line(e_deb_type, row))
+   announced = 1;
+  FREE(row);
+ }
+ return(id);
+}
+
+/**
+ * e_d_gc_brk_set_id - The number dbx or xdb gave the breakpoint its answer
+ * names, or 0 when it gave none (it refused).
+ */
+static int e_d_gc_brk_set_id(const E_D_ANSWER *ans)
+{
+ char str[E_D_BRK_ANSWER_MAX];
+
+ return(e_d_gc_number_line(ans->text, str, sizeof str));
+}
+
+/**
+ * e_d_gc_brk_verdict - Keep with list entry @i what dbx or xdb answered:
+ * the number @id it gave, or its words when it refused.
+ * @ans: the answer.
+ */
+static void e_d_gc_brk_verdict(int i, int id, const E_D_ANSWER *ans)
+{
+ char str[E_D_BRK_ANSWER_MAX];
+
+ if (id > 0)
+ {
+  e_d_gc_number_line(ans->text, str, sizeof str);
+  e_d_gb_take_verdict(i, id, 0, str);
+ }
+ else if (ans->error)
+ {
+  e_d_gb_first_words(ans->text, str, sizeof str);
+  e_d_gb_take_verdict(i, 0, E_D_READ_ERROR, str);
+ }
+ else
+  e_d_gb_take_verdict(i, 0, E_D_READ_PROMPT, "");
+}
+
+/**
+ * e_d_gsdb_brk_set_id - Did sdb take the breakpoint its answer is for?
+ * Its refusals come on its error stream, or in words its answer says.
+ * Return: E_D_GP_ID_SET when it did, 0 when it refused.
+ */
+static int e_d_gsdb_brk_set_id(const E_D_ANSWER *ans)
+{
+ if (ans->error)
+  return(0);
+ return(e_d_place_brk_set_id(ans));
+}
+
+/**
+ * e_d_gsdb_brk_verdict - Keep with list entry @i what sdb answered: the
+ * mark turns solid, or stays hollow with sdb's words.
+ * @id: as e_d_place_brk_verdict; @ans: the answer.
+ */
+static void e_d_gsdb_brk_verdict(int i, int id, const E_D_ANSWER *ans)
+{
+ char str[E_D_BRK_ANSWER_MAX];
+
+ if (!ans->error)
+ {
+  e_d_place_brk_verdict(i, id, ans);
+  return;
+ }
+ e_d_gb_first_words(ans->text, str, sizeof str);
+ e_d_gb_take_verdict(i, 0, E_D_READ_ERROR, str);
+}
+
+/* step: one breakpoint the user set, sdb told its file first */
+
+static int e_d_gsdb_add_cmd(char *cmd, size_t n, void *ctx)
+{
+ int i = e_d_gb_next_unsent();
+
+ if (i < 0)
+  return(0);
+ if (e_d_gsdb_file_first(e_d_sbrpts[i], cmd, n))
+  return(1);
+ return(e_d_gb_add_cmd(cmd, n, ctx));
+}
+
+static int e_d_gsdb_add_answered(E_D_REQ_END how, E_D_ANSWER *ans, void *ctx)
+{
+ if (e_d_gsdb_file_answered())
+  return(E_D_STEP_AGAIN);
+ return(e_d_gb_add_answered(how, ans, ctx));
+}
+
+/* ... as the session starts: only a refusal is news */
+
+static int e_d_gsdb_set_up_add_answered(E_D_REQ_END how, E_D_ANSWER *ans,
+                                        void *ctx)
+{
+ if (e_d_gsdb_file_answered())
+  return(E_D_STEP_AGAIN);
+ return(e_d_gu_add_answered(how, ans, ctx));
+}
+
+/* step: one breakpoint the user removed, sdb told its file first */
+
+static int e_d_gsdb_remove_cmd(char *cmd, size_t n, void *ctx)
+{
+ if (e_d_brk_ngone <= 0)
+  return(0);
+ if (e_d_gsdb_file_first(e_d_gsdb_gone_file(&e_d_brk_gone[0]), cmd, n))
+  return(1);
+ return(e_d_gb_remove_cmd(cmd, n, ctx));
+}
+
+static int e_d_gsdb_remove_answered(E_D_REQ_END how, E_D_ANSWER *ans,
+                                    void *ctx)
+{
+ if (e_d_gsdb_file_answered())
+  return(E_D_STEP_AGAIN);
+ return(e_d_gb_remove_answered(how, ans, ctx));
+}
+
+/* step: sdb's breakpoint at the start of the start symbol, before a first
+   run when the user has none of his own: "e main", then "b", which names
+   the line it set it on */
+
+static int e_d_gsdb_start_cmd(char *cmd, size_t n, void *ctx)
+{
+ E_D_GA_GO *go = ctx;
+
+ if (go->how != E_D_GO_START || e_d_gg_start_entry() < 0)
+  return(0);
+ if (e_d_gsdb_file_first(e_get_start_symbol(), cmd, n))
+  return(1);
+ snprintf(cmd, n, "%s", E_D_SDB_START_BRK);
+ return(1);
+}
+
+/**
+ * e_d_gsdb_start_line - The line sdb's answer to "b" names, after its colon.
+ * Return: the line, or 0 when the answer names none (sdb refused).
+ */
+static int e_d_gsdb_start_line(const E_D_ANSWER *ans)
+{
+ const char *colon;
+
+ if (ans->error || !ans->text)
+  return(0);
+ colon = strchr(ans->text, E_D_SDB_START_LINE);
+ if (!colon)
+  return(0);
+ return(atoi(colon + 1));
+}
+
+static int e_d_gsdb_start_answered(E_D_REQ_END how, E_D_ANSWER *ans,
+                                   void *ctx)
+{
+ char str[E_D_BRK_ANSWER_MAX];
+ int i, line;
+
+ (void)how;
+ (void)ctx;
+ if (e_d_gsdb_file_answered())
+  return(E_D_STEP_AGAIN);
+ i = e_d_gg_start_entry();
+ line = e_d_gsdb_start_line(ans);
+ if (i >= 0 && line > 0)
+ {
+  e_d_ybrpts[i] = line;
+  e_d_nrbrpts[i] = E_D_GP_ID_SET;
+ }
+ if (line <= 0 && ans->error)
+ {
+  e_d_gb_first_words(ans->text, str, sizeof str);
+  e_d_error(str);
+ }
+ return(E_D_STEP_NEXT);
+}
+
+/* step: Go to cursor's own breakpoint, just before the Continue; dbx and
+   xdb give it a number, which is kept so it is taken out again by it */
+
+static int e_d_gc_cursor_set_answered(E_D_REQ_END how, E_D_ANSWER *ans,
+                                      void *ctx)
+{
+ (void)how;
+ (void)ctx;
+ e_d_cursor_brk.id = e_d_ga.be->brk_set_id(ans);
+ return(E_D_STEP_NEXT);
+}
+
+/* ... sdb's, told its file first */
+
+static int e_d_gsdb_cursor_set_cmd(char *cmd, size_t n, void *ctx)
+{
+ if (!e_d_cursor_brk.wanted)
+  return(0);
+ if (e_d_gsdb_file_first(e_d_cursor_brk.file, cmd, n))
+  return(1);
+ return(e_d_ga_cursor_set_cmd(cmd, n, ctx));
+}
+
+static int e_d_gsdb_cursor_set_answered(E_D_REQ_END how, E_D_ANSWER *ans,
+                                        void *ctx)
+{
+ (void)how;
+ (void)ans;
+ (void)ctx;
+ if (e_d_gsdb_file_answered())
+  return(E_D_STEP_AGAIN);
+ return(E_D_STEP_NEXT);
+}
+
+/* step: xdb's removal; one whose number was never read takes every
+   breakpoint off, and the user's are set again by the add step after it */
+
+static int e_d_gx_clearing_all;   /* the removal out is xdb's "db *" */
+
+static int e_d_gx_remove_cmd(char *cmd, size_t n, void *ctx)
+{
+ e_d_gx_clearing_all = 0;
+ if (e_d_brk_ngone <= 0)
+  return(0);
+ if (e_d_brk_gone[0].id != E_D_GB_ID_UNKNOWN)
+  return(e_d_gb_remove_cmd(cmd, n, ctx));
+ e_d_gx_clearing_all = 1;
+ e_d_ga.be->brk_remove_cmd(&e_d_brk_gone[0], cmd, n);
+ return(1);
+}
+
+static int e_d_gx_remove_answered(E_D_REQ_END how, E_D_ANSWER *ans, void *ctx)
+{
+ if (!e_d_gx_clearing_all)
+  return(e_d_gb_remove_answered(how, ans, ctx));
+ e_d_gx_clearing_all = 0;
+ e_d_ga68_tell_again();
+ e_d_ga68_cursor_brk_again();
+ return(E_D_STEP_NEXT);
+}
+
+/* step: xdb's own setting, sent once its banner is answered */
+
+static int e_d_gx_set_up_cmd(char *cmd, size_t n, void *ctx)
+{
+ (void)ctx;
+ snprintf(cmd, n, "%s", E_D_XDB_SET_UP);
+ return(1);
+}
+
+/**
+ * e_d_gc_remove_all - Remove all breakpoints at a stop under sdb, dbx or
+ * xdb: the one command each has for it, answered on the fd loop.
+ * @cn: the editor.
+ */
+static void e_d_gc_remove_all(ECNT *cn)
+{
+ e_d_ga_ask_plain(cn, e_d_cli_this()->remove_all_cmd);
+}
+
+/* ---- the Stack window, and moving in it ---- */
+
+/* step: the stack listing, when the Stack window is open */
+
+static int e_d_gc_stack_cmd(char *cmd, size_t n, void *ctx)
+{
+ E_D_GA_CTX *st = ctx;
+
+ if (!st->stack_wanted)
+  return(0);
+ snprintf(cmd, n, "%s", e_d_cli_this()->stack_cmd);
+ return(1);
+}
+
+/* step: move xdb's selected frame to the row followed in the Stack window:
+   xdb counts its frames the other way, so up the stack is "down" */
+
+static int e_d_gx_move_cmd(char *cmd, size_t n, void *ctx)
+{
+ E_D_GA_CTX *st = ctx;
+
+ if (st->frame > e_d_nstack)
+  snprintf(cmd, n, E_D_GDB_DOWN_FMT, st->frame - e_d_nstack);
+ else if (st->frame < e_d_nstack)
+  snprintf(cmd, n, E_D_GDB_UP_FMT, e_d_nstack - st->frame);
+ else
+  return(0);
+ return(1);
+}
+
+/* ---- where a stop is ---- */
+
+/* step: the file of a stop whose report gave sdb's line alone */
+
+static int e_d_gsdb_which_file_cmd(char *cmd, size_t n, void *ctx)
+{
+ E_D_GA_CTX *st = ctx;
+
+ if (!st->need_file)
+  return(0);
+ snprintf(cmd, n, "%s", E_D_SDB_WHICH_FILE);
+ return(1);
+}
+
+static int e_d_gsdb_which_file_answered(E_D_REQ_END how, E_D_ANSWER *ans,
+                                        void *ctx)
+{
+ E_D_GA_CTX *st = ctx;
+
+ (void)how;
+ e_ds_sdb_file_of(ans->text ? ans->text : "", st->file, sizeof st->file);
+ return(E_D_STEP_NEXT);
+}
+
+/* step: where the program stopped, from sdb's or xdb's "t" listing, when
+   the stop's own lines did not say */
+
+static int e_d_gc_t_cmd(char *cmd, size_t n, void *ctx)
+{
+ E_D_GA_CTX *st = ctx;
+
+ if (!st->need_where)
+  return(0);
+ snprintf(cmd, n, "%s", e_d_cli_this()->stack_cmd);
+ return(1);
+}
+
+/**
+ * e_d_gc_t_row - Read one row of the "t" listing.
+ * @st: the context; @row: the row.
+ * Return: 1 when the reading is over (the place is found, or there is no
+ * process), 0 to read the next row.
+ */
+static int e_d_gc_t_row(E_D_GA_CTX *st, char *row)
+{
+ char file[E_D_LINE_MAX];
+ int line;
+
+ st->where_rows++;
+ if (!strncmp(row, e_d_msg[ERR_NOPROCESS], E_D_CLI_NOPROC_LEAD))
+ {
+  st->no_stack = 1;
+  return(1);
+ }
+ if ((line = e_make_line_num2(row, file)) < 0)
+  return(0);
+ st->line = line;
+ snprintf(st->file, sizeof st->file, "%s", file);
+ return(1);
+}
+
+static int e_d_gc_t_answered(E_D_REQ_END how, E_D_ANSWER *ans, void *ctx)
+{
+ E_D_GA_CTX *st = ctx;
+ const char *p = ans->text ? ans->text : "";
+ char *row;
+ int over = 0;
+
+ (void)how;
+ while (!over && *p && (row = e_d_text_take_row(&p)) != NULL)
+ {
+  over = e_d_gc_t_row(st, row);
+  FREE(row);
+ }
+ if (st->no_stack)
+  return(E_D_STEP_STOP);
+ return(E_D_STEP_NEXT);
+}
+
+/**
+ * e_d_gc_ask_where - The stop's report named no place: show what it said
+ * (a signal), then ask the debugger's stack listing where it is.
+ * @st: the context; @said: the report's words, or "" for none.
+ * Return: E_D_GC_PLACED.
+ */
+static int e_d_gc_ask_where(E_D_GA_CTX *st, char *said)
+{
+ if (said && said[0])
+  e_d_error(said);
+ st->need_where = 1;
+ return(E_D_GC_PLACED);
+}
+
+/**
+ * e_d_gc_said_exit - Does report line @i say the program ended, in the
+ * words sdb, dbx or xdb use for it?
+ */
+static int e_d_gc_said_exit(int i)
+{
+ if (e_deb_type != DEB_DBX &&
+     !strncmp(e_d_sp[i], e_d_msg[ERR_PROGEXIT], E_D_CLI_EXIT_LEAD))
+  return(1);
+ if (e_deb_type == DEB_DBX &&
+     !strncmp(e_d_sp[i], e_d_msg[ERR_PROGEXIT2], E_D_CLI_EXIT_LEAD))
+  return(1);
+ return(e_deb_type == DEB_XDB &&
+        !strncmp(e_d_sp[i], e_d_msg[ERR_NORMALTERM],
+                 strlen(e_d_msg[ERR_NORMALTERM])));
+}
+
+/**
+ * e_d_gc_signal_words - Does report line @i say a signal stopped the
+ * program, sdb's, dbx's or xdb's way?
+ * Return: the words to show (empty for Pause's own interrupt), or NULL.
+ */
+static char *e_d_gc_signal_words(int i)
+{
+ if (e_deb_type == DEB_XDB && e_d_pause_asked_for(e_d_sp[i]))
+  return(e_d_pause_signal_line(e_d_sp[i]));
+ if (e_deb_type == DEB_XDB &&
+     !strncmp(e_d_sp[i], e_d_msg[ERR_SOFTTERM],
+              strlen(e_d_msg[ERR_SOFTTERM])))
+  return(e_d_sp[i]);
+ if (e_deb_type == DEB_DBX &&
+     (!strncmp(e_d_sp[i], e_d_msg[ERR_SIGNAL], E_D_CLI_SIGNAL_LEAD) ||
+      !strncmp(e_d_sp[i], e_d_msg[ERR_INTERRUPT], E_D_CLI_INTR_LEAD)))
+  return(e_d_pause_signal_line(e_d_sp[i]));
+ if (e_deb_type == DEB_SDB && strstr(e_d_sp[i], e_d_msg[ERR_SIGNAL]))
+  return(e_d_pause_signal_line(e_d_sp[i]));
+ if (e_deb_type == DEB_XDB && i == SVLINES - 2 && i > 0 &&
+     strstr(e_d_sp[i], ": "))
+  return(e_d_sp[i - 1]);
+ return(NULL);
+}
+
+/**
+ * e_d_gc_said_breakpoint - Does report line @i start with a breakpoint's
+ * word?  Its place, under sdb, is on the next line.
+ */
+static int e_d_gc_said_breakpoint(int i)
+{
+ if (!strncmp(e_d_sp[i], e_d_msg[ERR_BREAKPOINT], E_D_CLI_BREAK_LEAD))
+  return(1);
+ return(e_deb_type == DEB_SDB &&
+        !strncmp(e_d_sp[i], e_d_msg[ERR_BREAKPOINT2], E_D_CLI_BREAK_LEAD));
+}
+
+/**
+ * e_d_gc_sdb_breakpoint - sdb's "BREAKPOINT at ..." on report line @i, with
+ * the line on the next one; its file is asked with "e" (need_file).
+ * @st: receives the line.
+ * Return: E_D_GC_PLACED, or E_D_GC_NOT_YET when it is not that.
+ */
+static int e_d_gc_sdb_breakpoint(E_D_GA_CTX *st, int i)
+{
+ char file[E_D_LINE_MAX];
+ int line;
+
+ if (e_deb_type != DEB_SDB ||
+     strncmp(e_d_sp[i] + E_D_CLI_BREAK_LEAD, E_D_CLI_AT, E_D_CLI_AT_LEN))
+  return(E_D_GC_NOT_YET);
+ line = e_ds_line_num(E_DS_SDB, e_d_sp[i + 1], file, sizeof file);
+ if (line < 0)
+  return(E_D_GC_NOT_YET);
+ st->line = line;
+ st->need_file = 1;
+ return(E_D_GC_PLACED);
+}
+
+/**
+ * e_d_gc_dbx_file_of - The file between the last two quotes of dbx's
+ * "... line N in file \"p.c\"", into @file; left as it is when there are
+ * none.
+ */
+static void e_d_gc_dbx_file_of(const char *row, char *file, size_t n)
+{
+ int k, l;
+
+ for (k = strlen(row); k >= 0 && row[k] != '\"'; k--)
+  ;
+ for (k--; k >= 0 && row[k] != '\"'; k--)
+  ;
+ if (k < 0)
+  return;
+ for (k++, l = 0; row[k] != '\0' && row[k] != '\"' && l < (int)n - 1;
+      k++, l++)
+  file[l] = row[k];
+ file[l] = '\0';
+}
+
+/**
+ * e_d_gc_dbx_stopped_in - dbx's "stopped in f at line N in file ..." on
+ * report line @i: the line is the number the next rows start with, the
+ * file is in the row before that one.
+ * @st: receives the place.
+ * Return: E_D_GC_PLACED, or E_D_GC_NOT_YET when no row names it.
+ */
+static int e_d_gc_dbx_stopped_in(E_D_GA_CTX *st, int i)
+{
+ int j, k, line;
+
+ for (j = i + 1; j < SVLINES - 1; j++)
+ {
+  for (k = 0; e_d_sp[j][k] == ' '; k++)
+   ;
+  if ((line = atoi(e_d_sp[j] + k)) <= 0)
+   continue;
+  if (!strstr(e_d_sp[j - 1], E_D_CLI_LINE_WORD))
+   return(E_D_GC_NOT_YET);
+  e_d_gc_dbx_file_of(e_d_sp[j - 1], st->file, sizeof st->file);
+  st->line = line;
+  return(E_D_GC_PLACED);
+ }
+ return(E_D_GC_NOT_YET);
+}
+
+/**
+ * e_d_gc_report_line - Read report line @i of a stop, in the order the
+ * checks of sdb, dbx and xdb have always run.
+ * @st: receives the place, or need_where; @f: the window on top.
+ * Return: E_D_GC_NOT_YET, E_D_GC_PLACED or E_D_GC_ENDED.
+ */
+static int e_d_gc_report_line(E_D_GA_CTX *st, FENSTER *f, int i)
+{
+ char *said;
+
+ if (e_d_gc_said_exit(i))
+ {
+  e_d_error(e_d_sp[i]);
+  e_d_quit(f);
+  return(E_D_GC_ENDED);
+ }
+ if (e_deb_type == DEB_SDB &&
+     !strncmp(e_d_sp[i], e_d_msg[ERR_PROGTERM], E_D_CLI_TERM_LEAD))
+ {
+  e_error(e_d_msg[ERR_PROGTERM], 0, f->fb);
+  e_d_quit(f);
+  return(E_D_GC_ENDED);
+ }
+ if ((said = e_d_gc_signal_words(i)) != NULL)
+  return(e_d_gc_ask_where(st, said));
+ if (e_d_gc_said_breakpoint(i))
+  return(e_d_gc_sdb_breakpoint(st, i));
+ if (e_deb_type == DEB_DBX &&
+     !strncmp(e_d_sp[i], e_d_msg[ERR_STOPPEDIN], E_D_CLI_STOPPED_LEAD))
+  return(e_d_gc_dbx_stopped_in(st, i));
+ return(E_D_GC_NOT_YET);
+}
+
+/**
+ * e_d_gc_sdb_in_file - The file of sdb's "f() in file" row @row, trimmed,
+ * when the row has that shape.
+ * @file, @n: receives it.
+ * Return: 1 when it does.
+ */
+static int e_d_gc_sdb_in_file(const char *row, char *file, size_t n)
+{
+ int j, k;
+
+ for (j = strlen(row) - 1; j >= 0 && isspace((unsigned char)row[j]); j--)
+  ;
+ if (j < 0)
+  return(0);
+ for (j--; j >= 0 && !isspace((unsigned char)row[j]); j--)
+  ;
+ if (j < 0)
+  return(0);                   /* one word: no "in file" */
+ for (j--; j >= 0 && isspace((unsigned char)row[j]); j--)
+  ;
+ if (j < 0)
+  return(0);                   /* one word after blanks: no "in file" */
+ for (j--; j >= 0 && !isspace((unsigned char)row[j]); j--)
+  ;
+ if (strncmp(row + j + 1, E_D_CLI_IN_WORD, E_D_CLI_IN_LEN))
+  return(0);
+ snprintf(file, n, "%s", row + j + 1 + E_D_CLI_IN_LEN);
+ for (k = strlen(file) - 1; k >= 0 && isspace((unsigned char)file[k]); k--)
+  ;
+ file[k + 1] = '\0';
+ return(1);
+}
+
+/**
+ * e_d_gc_sdb_step_place - sdb's source row after a step, "N: ..." on report
+ * line @i: its file is in the nearest row above that reads "f() in file".
+ * @st: receives the place.
+ * Return: 1 when it was found.
+ */
+static int e_d_gc_sdb_step_place(E_D_GA_CTX *st, int i)
+{
+ int line = atoi(e_d_sp[i]);
+
+ for (; i > 0; i--)
+  if (e_d_gc_sdb_in_file(e_d_sp[i - 1], st->file, sizeof st->file))
+  {
+   st->line = line;
+   return(1);
+  }
+ return(0);
+}
+
+/**
+ * e_d_gc_step_place - The place a step's report names in its source row:
+ * sdb's "N: ..." under its "f() in file", xdb's "file:f:N" last.
+ * @st: receives the place.
+ * Return: 1 when one was found.
+ */
+static int e_d_gc_step_place(E_D_GA_CTX *st)
+{
+ char file[E_D_LINE_MAX];
+ int i, line;
+
+ for (i = SVLINES - 2; i >= 0; i--)
+ {
+  if (e_deb_type == DEB_SDB && atoi(e_d_sp[i]) > 0)
+   return(e_d_gc_sdb_step_place(st, i));
+  if (e_deb_type == DEB_XDB && i == SVLINES - 2 &&
+      (line = e_ds_line_num(E_DS_XDB, e_d_sp[i], file, sizeof file)) >= 0)
+  {
+   st->line = line;
+   snprintf(st->file, sizeof st->file, "%s", file);
+   return(1);
+  }
+ }
+ return(0);
+}
+
+/**
+ * e_d_gc_stop_place - Read the stop's place from sdb's, dbx's or xdb's
+ * report, as it has always been read: an end ends the session, a signal is
+ * shown and its place is asked of the stack listing, a breakpoint or a step
+ * names its line; a report that names nothing asks the listing too.
+ * @st: receives the place, need_file or need_where; @f: the window on top.
+ * Return: 1 when the session ended.
+ */
+static int e_d_gc_stop_place(E_D_GA_CTX *st, FENSTER *f)
+{
+ int i, said;
+
+ snprintf(st->file, sizeof st->file, "%s", e_d_file);
+ for (i = 0; i < SVLINES - 1; i++)
+ {
+  said = e_d_gc_report_line(st, f, i);
+  if (said == E_D_GC_ENDED)
+   return(1);
+  if (said == E_D_GC_PLACED)
+   return(0);
+ }
+ if (!e_d_gc_step_place(st))
+  st->need_where = 1;
+ return(0);
+}
+
+/**
+ * e_d_gc_stop_ended - Did a line of the report say the program ended?
+ * Then say so in Messages and end the session.
+ * @f: the window on top.
+ * Return: 1 when the session ended.
+ */
+static int e_d_gc_stop_ended(FENSTER *f)
+{
+ int i;
+
+ for (i = 0; i < SVLINES; i++)
+  if (e_d_line_says_program_exited(e_d_sp[i]))
+  {
+   e_d_say_program_exited(e_d_sp[i], f);
+   e_d_quit(f);
+   return(1);
+  }
+ return(0);
+}
+
+/* ---- a stop the user is shown ---- */
+
+/**
+ * e_d_gc_start_brk_goes - The stop is the first run's: the editor's start
+ * breakpoint goes from the list, and is kept as a removal the stop's own
+ * requests tell the debugger, so a later run does not stop there again.
+ */
+static void e_d_gc_start_brk_goes(void)
+{
+ int sw = e_d_run.start_brk;
+
+ e_d_run.start_brk = 0;
+ if (sw <= 0 || sw > e_d_nbrpts || !e_d_brk_is_start_entry(sw - 1))
+  return;
+ e_d_ga_drop_start_entry(sw - 1);
+}
+
+/**
+ * e_d_gc_cursor_brk_goes - At a stop, Go to cursor's own breakpoint goes:
+ * it becomes a removal like the user's, by the number dbx or xdb gave it,
+ * or by its place when none was read (sdb's always).  A removal by place
+ * would take the user's own breakpoint on that line too, so it is left
+ * there when the user has one: his keeps stopping the program.
+ */
+static void e_d_gc_cursor_brk_goes(void)
+{
+ int id = e_d_cursor_brk.id;
+
+ e_d_cursor_brk.wanted = 0;
+ if (!e_d_cursor_brk.set)
+  return;
+ e_d_cursor_brk.set = 0;
+ if (id == E_D_GB_ID_UNKNOWN &&
+     e_d_user_brk_on(e_d_cursor_brk.file, e_d_cursor_brk.line))
+  return;
+ e_d_gb_gone_keep(e_d_cursor_brk.file, e_d_cursor_brk.line, id);
+}
+
+/**
+ * e_d_cli_stopped - sdb, dbx or xdb stopped the program: ask it, on the fd
+ * loop, what the stop needs, and show the stop once it has answered.
+ * @f: the window on top.
+ *
+ * The user sees the program's last output at once; the mark, the watches
+ * and the stack come when the debugger answers, the keys reaching the
+ * editor meanwhile.  The breakpoints the editor set for this run alone go
+ * with the stop's own requests.
+ */
+static void e_d_cli_stopped(FENSTER *f)
+{
+ E_D_GA_CTX *st = &e_d_gs;
+
+ if (e_d_cli_run_never_started(f))
+  return;
+ e_d_drain_pty_to_messages();
+ e_d_out_show();
+ e_d_switch_out(0);
+ if (e_d_gc_stop_ended(f))
+  return;
+ e_d_gs_reset(st, f->ed);
+ e_d_gc_start_brk_goes();
+ e_d_gc_cursor_brk_goes();
+ st->stack_wanted = e_d_gs_stack_window_open(f->ed);
+ if (e_d_gc_stop_place(st, f))
+  return;
+ e_d_run.stop_on_loop = 1;
+ e_d_ga_chain_start(f->ed, e_d_cli_this()->stop_steps, st,
+                    e_d_gs_stop_finished, E_D_GA_STOP);
+}
+
+/**
+ * e_d_gc_pause_instead - Pause was pressed while the debugger answered at a
+ * stop the user was not shown: the stop is shown as the Pause's.  sdb, dbx
+ * and xdb are never stopped for a breakpoint change, so this comes only
+ * from the engine's shared resume.
+ * @cn: the editor.
+ */
+static void e_d_gc_pause_instead(ECNT *cn)
+{
+ e_d_async_pending = 0;
+ e_d_ga.pause_asked = 0;
+ e_d_run.pause = E_D_PAUSE_ASKED;
+ e_d_cli_stopped(e_d_run_window(cn));
+}
+
+/**
+ * e_d_cli_step_go - F7 or F8 under sdb, dbx or xdb, once the debugger has
+ * answered what it still owes (the breakpoints changed since the stop).
+ * @f: the source window; @sw: 1 for Step Over, 0 for Step Into.
+ *
+ * The user keeps the editor while the debugger answers; the step goes out
+ * after, and a key typed meanwhile waits for its stop.
+ * Return: 0, or the end of the session.
+ */
+static int e_d_cli_step_go(FENSTER *f, int sw)
+{
+ const E_D_CLI *w = e_d_cli_this();
+
+ e_d_nstack = 0;
+ if (sw)
+  return(e_d_ga_go_step(f, w->next_cmd, NULL));
+ return(e_d_ga_go_step(f, w->step_cmd, NULL));
+}
+
+/* ---- the tables ---- */
+
+/* The file or the place when the report did not name them, the Stack
+   window, the watches, then the breakpoints changed while the program ran
+   and those the editor set for this run alone (the start's, Go to
+   cursor's), now removals. */
+static const E_D_STEP e_d_sdb_stop_steps[] =
+{
+ { e_d_gsdb_which_file_cmd, e_d_gsdb_which_file_answered },
+ { e_d_gc_t_cmd,            e_d_gc_t_answered },
+ { e_d_gc_stack_cmd,        e_d_gs_stack_answered },
+ { e_d_gs_watch_cmd,        e_d_gs_watch_answered },
+ { e_d_gsdb_remove_cmd,     e_d_gsdb_remove_answered },
+ { e_d_gsdb_add_cmd,        e_d_gsdb_add_answered },
+ { NULL, NULL }
+};
+
+static const E_D_STEP e_d_dbx_stop_steps[] =
+{
+ { e_d_gs_where_cmd,  e_d_gs_where_answered },
+ { e_d_gc_stack_cmd,  e_d_gs_stack_answered },
+ { e_d_gs_watch_cmd,  e_d_gs_watch_answered },
+ { e_d_gb_remove_cmd, e_d_gb_remove_answered },
+ { e_d_gb_add_cmd,    e_d_gb_add_answered },
+ { NULL, NULL }
+};
+
+static const E_D_STEP e_d_xdb_stop_steps[] =
+{
+ { e_d_gc_t_cmd,      e_d_gc_t_answered },
+ { e_d_gc_stack_cmd,  e_d_gs_stack_answered },
+ { e_d_gs_watch_cmd,  e_d_gs_watch_answered },
+ { e_d_gx_remove_cmd, e_d_gx_remove_answered },
+ { e_d_gb_add_cmd,    e_d_gb_add_answered },
+ { NULL, NULL }
+};
+
+/* Every breakpoint of the user's after the banner (xdb's setting first); a
+   set-up given up on and asked again first clears a line the debugger may
+   have set unanswered. */
+static const E_D_STEP e_d_sdb_set_up_steps[] =
+{
+ { e_d_gsdb_remove_cmd, e_d_gsdb_remove_answered },
+ { e_d_gsdb_add_cmd,    e_d_gsdb_set_up_add_answered },
+ { NULL, NULL }
+};
+
+static const E_D_STEP e_d_dbx_set_up_steps[] =
+{
+ { e_d_gb_remove_cmd, e_d_gb_remove_answered },
+ { e_d_gb_add_cmd,    e_d_gu_add_answered },
+ { NULL, NULL }
+};
+
+static const E_D_STEP e_d_xdb_set_up_steps[] =
+{
+ { e_d_gx_set_up_cmd, e_d_gs_ignore_answer },
+ { e_d_gx_remove_cmd, e_d_gx_remove_answered },
+ { e_d_gb_add_cmd,    e_d_gu_add_answered },
+ { NULL, NULL }
+};
+
+/* A breakpoint set or taken off at a stop (dbx's are gdb's,
+   e_d_ga_brk_steps). */
+static const E_D_STEP e_d_sdb_brk_steps[] =
+{
+ { e_d_gsdb_remove_cmd, e_d_gsdb_remove_answered },
+ { e_d_gsdb_add_cmd,    e_d_gsdb_add_answered },
+ { NULL, NULL }
+};
+
+static const E_D_STEP e_d_xdb_brk_steps[] =
+{
+ { e_d_gx_remove_cmd, e_d_gx_remove_answered },
+ { e_d_gb_add_cmd,    e_d_gb_add_answered },
+ { NULL, NULL }
+};
+
+/* Add, edit or delete a watch at a stop, the stack with them when its
+   window is open; for sdb also Enter on a Stack row, which moves nothing in
+   sdb. */
+static const E_D_STEP e_d_gc_watches_steps[] =
+{
+ { e_d_gc_stack_cmd, e_d_gs_stack_answered },
+ { e_d_gs_watch_cmd, e_d_gs_watch_answered },
+ { NULL, NULL }
+};
+
+/* Ctrl-G K. */
+static const E_D_STEP e_d_gc_stack_steps[] =
+{
+ { e_d_gc_stack_cmd, e_d_gs_stack_answered },
+ { NULL, NULL }
+};
+
+/* Enter on a row of the Stack window: the frame moved to, then the stack
+   and the watches it shows. */
+static const E_D_STEP e_d_dbx_follow_steps[] =
+{
+ { e_d_gs_move_cmd,  e_d_gs_move_answered },
+ { e_d_gc_stack_cmd, e_d_gs_stack_answered },
+ { e_d_gs_watch_cmd, e_d_gs_watch_answered },
+ { NULL, NULL }
+};
+
+static const E_D_STEP e_d_xdb_follow_steps[] =
+{
+ { e_d_gx_move_cmd,  e_d_gs_move_answered },
+ { e_d_gc_stack_cmd, e_d_gs_stack_answered },
+ { e_d_gs_watch_cmd, e_d_gs_watch_answered },
+ { NULL, NULL }
+};
+
+/* What a resume asks first: the breakpoint changes the debugger has not
+   been told of, the start breakpoint before a first run, Go to cursor's
+   own breakpoint. */
+static const E_D_STEP e_d_sdb_go_steps[] =
+{
+ { e_d_gsdb_remove_cmd,     e_d_gsdb_remove_answered },
+ { e_d_gsdb_add_cmd,        e_d_gsdb_add_answered },
+ { e_d_gsdb_start_cmd,      e_d_gsdb_start_answered },
+ { e_d_gsdb_cursor_set_cmd, e_d_gsdb_cursor_set_answered },
+ { NULL, NULL }
+};
+
+static const E_D_STEP e_d_dbx_go_steps[] =
+{
+ { e_d_gb_remove_cmd,     e_d_gb_remove_answered },
+ { e_d_gb_add_cmd,        e_d_gb_add_answered },
+ { e_d_gg_start_cmd,      e_d_gg_start_answered },
+ { e_d_ga_cursor_set_cmd, e_d_gc_cursor_set_answered },
+ { NULL, NULL }
+};
+
+static const E_D_STEP e_d_xdb_go_steps[] =
+{
+ { e_d_gx_remove_cmd,     e_d_gx_remove_answered },
+ { e_d_gb_add_cmd,        e_d_gb_add_answered },
+ { e_d_gg_start_cmd,      e_d_gg_start_answered },
+ { e_d_ga_cursor_set_cmd, e_d_gc_cursor_set_answered },
+ { NULL, NULL }
+};
+
+static const E_D_CLI e_d_cli_sdb =
+{
+ "t", "s\n", "S\n", "D", 0, E_D_CLI_RUN_SAYS_NOTHING, e_d_sdb_stop_steps
+};
+
+static const E_D_CLI e_d_cli_dbx =
+{
+ "where", "step\n", "next\n", "delete all", 0, E_D_CLI_RUN_SAYS_RUNNING,
+ e_d_dbx_stop_steps
+};
+
+static const E_D_CLI e_d_cli_xdb =
+{
+ "t", "s\n", "S\n", E_D_XDB_DELETE_ALL, 1, E_D_CLI_RUN_SAYS_A_LINE,
+ e_d_xdb_stop_steps
+};
+
+/**
+ * e_d_cli_of - The words of sdb, dbx or xdb, for debugger @type; sdb's for
+ * any other, which never asks (only these three's engine tables point here).
+ */
+static const E_D_CLI *e_d_cli_of(int type)
+{
+ if (type == DEB_DBX)
+  return(&e_d_cli_dbx);
+ if (type == DEB_XDB)
+  return(&e_d_cli_xdb);
+ return(&e_d_cli_sdb);
+}
+
 /* ---- the backends ---- */
 
 static const E_D_GA_BACKEND e_d_ga_gdb_backend =
@@ -21329,7 +22647,8 @@ static const E_D_GA_BACKEND e_d_ga_gdb_backend =
  e_d_gdb_watches_steps,
  e_d_gdb_stack_steps,
  e_d_gdb_follow_steps,
- e_d_gdb_go_steps
+ e_d_gdb_go_steps,
+ NULL
 };
 
 static const E_D_GA_BACKEND e_d_ga_pdb_backend =
@@ -21363,7 +22682,8 @@ static const E_D_GA_BACKEND e_d_ga_pdb_backend =
  e_d_pdb_watches_steps,
  e_d_pdb_stack_steps,
  e_d_pdb_follow_steps,
- e_d_pdb_go_steps
+ e_d_pdb_go_steps,
+ NULL
 };
 
 /* jdb's prompt is no fixed string (e_d_jdb_ends_in_prompt); E_D_JDB_BARE_PROMPT
@@ -21400,7 +22720,8 @@ static const E_D_GA_BACKEND e_d_ga_jdb_backend =
  e_d_jdb_watches_steps,
  e_d_jdb_stack_steps,
  e_d_jdb_follow_steps,
- e_d_jdb_go_steps
+ e_d_jdb_go_steps,
+ NULL
 };
 
 /* a68g's word prompt ends each answer; its refusals of a breakpoint are on
@@ -21437,13 +22758,124 @@ static const E_D_GA_BACKEND e_d_ga_a68g_backend =
  e_d_a68g_watches_steps,
  e_d_a68g_stack_steps,
  e_d_a68g_watches_steps,
- e_d_a68g_go_steps
+ e_d_a68g_go_steps,
+ NULL
+};
+
+/* sdb, dbx and xdb answer on their output and refuse on their error stream,
+   as gdb does.  dbx and xdb name a breakpoint by the number they give it;
+   sdb by its line, in the file it was last told with "e" (its own steps
+   tell it before every such command).  None reports an event in the middle
+   of an answer, and none has Finish. */
+static const E_D_GA_BACKEND e_d_ga_sdb_backend =
+{
+ E_D_SDB_NAME,
+ E_D_SDB_PROMPT,
+ E_D_SDB_SETTLE_CMD,
+ E_D_CLI_SETTLE_MARK,
+ 1,
+ 0,
+ e_d_sdb_brk_add_cmd,
+ e_d_sdb_brk_remove_cmd,
+ e_d_gsdb_brk_set_id,
+ e_d_gsdb_brk_verdict,
+ e_d_gc_remove_all,
+ e_d_gdb_show_stack,
+ e_d_gc_pause_instead,
+ NULL,
+ e_d_ga_ends_in_prompt,
+ NULL,
+ e_d_sdb_cursor_brk_cmd,
+ NULL,
+ NULL,
+ NULL,
+ NULL,
+ NULL,
+ NULL,
+ NULL,
+ e_d_sdb_set_up_steps,
+ e_d_sdb_brk_steps,
+ e_d_gc_watches_steps,
+ e_d_gc_stack_steps,
+ e_d_gc_watches_steps,
+ e_d_sdb_go_steps,
+ e_d_gc_run_went
+};
+
+static const E_D_GA_BACKEND e_d_ga_dbx_backend =
+{
+ E_D_DBX_NAME,
+ E_D_DBX_PROMPT,
+ E_D_DBX_SETTLE_CMD,
+ E_D_CLI_SETTLE_MARK,
+ 1,
+ 0,
+ e_d_dbx_brk_add_cmd,
+ e_d_dbx_brk_remove_cmd,
+ e_d_gc_brk_set_id,
+ e_d_gc_brk_verdict,
+ e_d_gc_remove_all,
+ e_d_gdb_show_stack,
+ e_d_gc_pause_instead,
+ NULL,
+ e_d_ga_ends_in_prompt,
+ e_d_dbx_start_brk_cmd,
+ e_d_dbx_cursor_brk_cmd,
+ NULL,
+ NULL,
+ NULL,
+ NULL,
+ NULL,
+ NULL,
+ NULL,
+ e_d_dbx_set_up_steps,
+ e_d_ga_brk_steps,
+ e_d_gc_watches_steps,
+ e_d_gc_stack_steps,
+ e_d_dbx_follow_steps,
+ e_d_dbx_go_steps,
+ e_d_gc_run_went
+};
+
+static const E_D_GA_BACKEND e_d_ga_xdb_backend =
+{
+ E_D_XDB_NAME,
+ E_D_XDB_PROMPT,
+ E_D_XDB_SETTLE_CMD,
+ E_D_CLI_SETTLE_MARK,
+ 1,
+ 0,
+ e_d_xdb_brk_add_cmd,
+ e_d_xdb_brk_remove_cmd,
+ e_d_gc_brk_set_id,
+ e_d_gc_brk_verdict,
+ e_d_gc_remove_all,
+ e_d_gdb_show_stack,
+ e_d_gc_pause_instead,
+ NULL,
+ e_d_ga_ends_in_prompt,
+ e_d_xdb_start_brk_cmd,
+ e_d_xdb_cursor_brk_cmd,
+ NULL,
+ NULL,
+ NULL,
+ NULL,
+ NULL,
+ NULL,
+ NULL,
+ e_d_xdb_set_up_steps,
+ e_d_xdb_brk_steps,
+ e_d_gc_watches_steps,
+ e_d_gc_stack_steps,
+ e_d_xdb_follow_steps,
+ e_d_xdb_go_steps,
+ e_d_gc_run_went
 };
 
 /**
  * e_d_ga_backend_of - The request engine's table for debugger @type.
- * Return: gdb's, pdb's, jdb's or a68g's, or NULL for a debugger whose
- * answers are still read otherwise.
+ * Return: gdb's, pdb's, jdb's, a68g's, sdb's, dbx's or xdb's, or NULL for a
+ * debugger whose answers are read otherwise (the debug adapters').
  */
 static const E_D_GA_BACKEND *e_d_ga_backend_of(int type)
 {
@@ -21455,6 +22887,12 @@ static const E_D_GA_BACKEND *e_d_ga_backend_of(int type)
   return(&e_d_ga_jdb_backend);
  if (type == DEB_A68G)
   return(&e_d_ga_a68g_backend);
+ if (type == DEB_SDB)
+  return(&e_d_ga_sdb_backend);
+ if (type == DEB_DBX)
+  return(&e_d_ga_dbx_backend);
+ if (type == DEB_XDB)
+  return(&e_d_ga_xdb_backend);
  return(NULL);
 }
 

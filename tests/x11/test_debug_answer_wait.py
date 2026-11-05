@@ -1,5 +1,5 @@
-"""The keys reach the editor while gdb, pdb, jdb or a68g answers at a stop
-(X11).
+"""The keys reach the editor while gdb, pdb, jdb, a68g or dbx answers at a
+stop (X11).
 
 tests/stubs/gdb stands in front of the real gdb and holds back its `where`
 until the test writes to its release pipe, so the editor waits for gdb's
@@ -15,6 +15,7 @@ headless compositor harness cannot start one).
 """
 import os
 import shutil
+import sys
 import time
 
 import pytest
@@ -410,3 +411,106 @@ def test_a68g_keys_reach_the_editor_while_it_answers(xwpe):
     assert _wait(lambda: A68G_STEP_SENT in _a68g_stub_log(home),
                  STOP_TIMEOUT_S), \
         "once a68g answers, F8 should step:\n%s" % _a68g_stub_log(home)
+
+
+# dbx: tests/stubs/legacy/legacy-debugger stands in for it (dbx is a
+# debugger of commercial UNIX, absent here), copied under the name dbx and
+# chosen through the options file.  As for pdb, jdb and a68g, the held
+# command is the answer to a breakpoint set at a stop.
+DBX_STUB = os.path.join(STUBS_DIR, "legacy", "legacy-debugger")
+DBX_STUB_LOG = "dbx-stub.log"
+DBX_STUB_RELEASE = "dbx-stub.release"
+DBX_DEBUGGER_TYPE = 2                   # the options file's number for dbx
+DBX_PROG = (
+    "#include <stdio.h>\n"
+    "int main(void)\n"
+    "{\n"
+    "  int x = 3;\n"
+    "  int y = x * x;\n"
+    "  printf(\"%d\\n\", y);\n"
+    "  return 0;\n"
+    "}\n"
+)
+DBX_BREAK_LINE = 4
+DBX_TOGGLE_LINE = 6
+DBX_BREAK_ASKED = "stop at "            # dbx's command that sets a breakpoint
+DBX_STEP_SENT = "CMD next\n"
+DBX_STACK_ASKED = "CMD where\n"
+DBX_PROG_WITH_TYPED = "".join(
+    TYPED + row if n == DBX_TOGGLE_LINE else row
+    for n, row in enumerate(DBX_PROG.splitlines(True), 1))
+DBX_STUB_ENV = {
+    "XWPE_STUB_STALL": DBX_BREAK_ASKED,
+    "XWPE_STUB_STALL_NTH": "2",          # the first is the start's
+    "XWPE_STUB_SOURCE": "p.c",
+    "XWPE_TEST_SOURCE": DBX_PROG,
+    "XWPE_TEST_FILE": "p.c",
+}
+
+
+@pytest.fixture
+def dbx_stub(tmp_path, monkeypatch):
+    """The stand-in dbx on PATH and dbx chosen in the options file, both in
+    the home the editor is started with (asked for before the editor)."""
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    with open(DBX_STUB) as fh:
+        body = fh.read().split("\n", 1)[1]
+    stub = bindir / "dbx"
+    stub.write_text("#!%s\n%s" % (sys.executable, body))
+    stub.chmod(0o755)
+    cfg = tmp_path / ".config" / "xwpe"
+    cfg.mkdir(parents=True)
+    (cfg / "xwperc").write_text(
+        "[Programming]\nDebugger : %d\n" % DBX_DEBUGGER_TYPE)
+    monkeypatch.setenv("PATH", str(bindir) + ":" + os.environ.get("PATH", ""))
+    return bindir
+
+
+def _dbx_stub_log(home):
+    try:
+        with open(os.path.join(home, DBX_STUB_LOG)) as fh:
+            return fh.read()
+    except OSError:
+        return ""
+
+
+# @scenario SC-debug-49
+@pytest.mark.skipif(not shutil.which("gcc"), reason="no gcc")
+@pytest.mark.parametrize("xwpe", [DBX_STUB_ENV], indirect=True)
+def test_dbx_keys_reach_the_editor_while_it_answers(dbx_stub, xwpe):
+    """dbx holds back its answer to a breakpoint set at a stop.  Ctrl-G K,
+    text and File > Save typed meanwhile all reach the editor: the file on
+    disk gets the text and no "k", before dbx answers, and dbx is never
+    asked for the stack.  Once it answers, F8 steps."""
+    if not getattr(xwpe, "can_debug", True):
+        pytest.skip("no debug session under the headless compositor harness")
+    home = os.path.dirname(xwpe.srcfile)
+    _go_to_line(xwpe, DBX_BREAK_LINE)
+    xwpe.key("ctrl+g", "b", delay=0.6)
+    xwpe.key("ctrl+g", "r", delay=1.0)
+    assert _wait(lambda: _count(xwpe.screenshot(), STOP_GREEN) >= MIN_BAR_PIXELS,
+                 HOLD_TIMEOUT_S), \
+        "Ctrl-G R should stop on the breakpoint:\n%s" % _dbx_stub_log(home)
+    _go_to_line(xwpe, DBX_TOGGLE_LINE)
+    xwpe.key("ctrl+g", "b", delay=0.6)
+    assert _wait(lambda: ("STALL " + DBX_BREAK_ASKED) in _dbx_stub_log(home),
+                 HOLD_TIMEOUT_S), \
+        "the editor should ask dbx to set the breakpoint:\n%s" \
+        % _dbx_stub_log(home)
+    xwpe.key("ctrl+g", "k", delay=0.6)
+    xwpe.type(TYPED, delay=0.4)
+    xwpe.save()
+    assert _wait(lambda: xwpe.saved_text() == DBX_PROG_WITH_TYPED,
+                 STOP_TIMEOUT_S), \
+        "keys typed while dbx answers should reach the editor, and Ctrl-G K " \
+        "should type nothing (file on disk:\n%r)" % xwpe.saved_text()
+    assert DBX_STACK_ASKED not in _dbx_stub_log(home), \
+        "Ctrl-G K while dbx answers should be refused, not asked:\n%s" \
+        % _dbx_stub_log(home)
+    with open(os.path.join(home, DBX_STUB_RELEASE), "w") as fh:
+        fh.write("go\n")
+    xwpe.key("F8", delay=0.6)
+    assert _wait(lambda: DBX_STEP_SENT in _dbx_stub_log(home),
+                 STOP_TIMEOUT_S), \
+        "once dbx answers, F8 should step:\n%s" % _dbx_stub_log(home)

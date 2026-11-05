@@ -1,0 +1,459 @@
+#!/usr/bin/env python3
+"""A stand-in for sdb, dbx and xdb, chosen by the name it is run under.
+
+sdb, dbx and xdb are proprietary debuggers of commercial UNIX: none has a
+free implementation and none would run here.  This one answers only the
+commands xwpe's source says it sends, in the wording xwpe's own parsers look
+for, and logs every command it is given ("CMD <line>") to XWPE_STUB_LOG, or
+to $HOME/<name>-stub.log when that is not set.  A test copies it under the
+name sdb, dbx or xdb.
+
+What the editor's source does not say, and nothing here can measure, is
+assumed from what the editor has always done with these three:
+
+  - an interrupt (SIGINT) that reaches the debugger at its prompt writes
+    nothing and is dropped: the editor never counted one as owed for them;
+  - each prints a string it is asked to: sdb's "string" command, dbx's
+    print "string" and xdb's p "string", which the editor uses as the
+    marker after an answer it gave up on.
+
+One command, named by XWPE_STUB_STALL (a prefix of the command line), is
+held instead of answered: the XWPE_STUB_STALL_NTH-th command that matches
+(the first by default).  It is answered, late, when the editor sends
+another line (the held command first, then the new one), or when the test
+writes a line to the release pipe, XWPE_STUB_RELEASE or
+$HOME/<name>-stub.release.  The hold is logged as "STALL <line>" and its end
+as "RELEASE <how>".  After every breakpoint command the lines still armed
+are logged as "ARMED <lines>".  Nothing here waits on a clock, except the
+running program a test asks for (XWPE_STUB_CONTINUE_DELAY_S).
+"""
+import os
+import select
+import signal
+import sys
+import time
+
+BACKEND = os.path.basename(sys.argv[0])
+PROMPT = {"sdb": "*", "dbx": "(dbx) ", "xdb": ">"}[BACKEND]
+HOME = os.environ.get("HOME", ".")
+LOG = os.environ.get("XWPE_STUB_LOG",
+                     os.path.join(HOME, BACKEND + "-stub.log"))
+RELEASE = os.environ.get("XWPE_STUB_RELEASE",
+                         os.path.join(HOME, BACKEND + "-stub.release"))
+SOURCE = os.environ.get("XWPE_STUB_SOURCE", "p.c")
+STALL = os.environ.get("XWPE_STUB_STALL", "")
+STALL_NTH = int(os.environ.get("XWPE_STUB_STALL_NTH", "1") or "1")
+# Set to model a program that runs on after a continue: the debugger answers
+# nothing and asks for no command, as a real one does until the program stops.
+CONTINUE_RUNS_ON = os.environ.get("XWPE_STUB_CONTINUE_RUNS_ON", "") == "1"
+RUNNING_NAP_S = 3600
+# Seconds a continue runs before it answers, to model a program that takes
+# a while to reach its next stop; 0 answers at once.
+CONTINUE_DELAY_S = float(os.environ.get("XWPE_STUB_CONTINUE_DELAY_S", "0"))
+# Set to model a debugger that dies after a continue, half way through a
+# line of its answer: no line end, no prompt, then its end of file.
+CONTINUE_DIES = os.environ.get("XWPE_STUB_CONTINUE_DIES", "") == "1"
+HALF_LINE = "the debugger died half way through"
+# The line the running program is on when SIGINT interrupts it; 0 keeps the
+# line of the last stop.
+INTERRUPT_AT = int(os.environ.get("XWPE_STUB_INTERRUPT_AT", "0"))
+# Set to make sdb report a step as a function row, "main() in p.c", and a
+# source row, "9: ...", with a one-word row between them, instead of as a
+# breakpoint: the editor then finds the file in the rows above the source
+# row, stepping over the ones of another shape.
+SDB_STEP_ROWS = os.environ.get("XWPE_STUB_SDB_STEP_ROWS", "") == "1"
+ONE_WORD_ROW = "stepped"
+# A name the program does not have: dbx's print of it answers a line with no
+# "=", the shape of an answer that carries no value.
+UNDEFINED_NAME = "nosuchname"
+# What a watch is worth: x has the value the tests look for, any other name
+# another one, so an answer taken for the wrong watch shows.
+WATCH_VALUE = {"x": 3}
+OTHER_VALUE = 7
+READ_MAX = 65536
+
+
+class Interrupted(Exception):
+    """SIGINT reached the debugger while the program ran."""
+
+
+def on_sigint_running(signum, frame):
+    raise Interrupted()
+
+
+def on_sigint_at_prompt(signum, frame):
+    """An interrupt that meets the prompt is dropped without a word."""
+
+
+armed = []          # breakpoint lines, in the order they were armed
+numbers = []        # the number each armed line was given, in that order
+next_number = [1]   # the number the next breakpoint gets
+current = [0]       # line the program stands at; 0 before the first run
+
+
+def note(text):
+    if LOG:
+        with open(LOG, "a") as fh:
+            fh.write(text + "\n")
+
+
+def note_armed():
+    note("ARMED " + " ".join(str(each) for each in armed))
+
+
+def say(text):
+    sys.stdout.write(text)
+    sys.stdout.flush()
+
+
+def line(text):
+    say(text + "\n")
+
+
+def prompt():
+    say(PROMPT)
+
+
+def arm(at):
+    """Arm line @at and return its number.  dbx and xdb never give a number
+    twice in a session, so one taken off is not reused by the next."""
+    numbers.append(next_number[0])
+    next_number[0] += 1
+    armed.append(at)
+    return numbers[-1]
+
+
+def disarm_index(i):
+    del armed[i]
+    del numbers[i]
+
+
+def disarm_line(at):
+    for i, each in enumerate(armed):
+        if each == at:
+            disarm_index(i)
+            return
+
+
+def disarm_number(num):
+    """Take off breakpoint @num; a number already gone takes off nothing."""
+    if num in numbers:
+        disarm_index(numbers.index(num))
+
+
+def disarm_all():
+    del armed[:]
+    del numbers[:]
+
+
+def quoted(text):
+    """The text between the first and the last double quote, or None."""
+    first, last = text.find('"'), text.rfind('"')
+    if first < 0 or last <= first:
+        return None
+    return text[first + 1:last]
+
+
+def watch_value(expr):
+    return WATCH_VALUE.get(expr, OTHER_VALUE)
+
+
+def stop_at():
+    """Print the stop where this backend's parser looks for it."""
+    n = current[0]
+    if BACKEND == "sdb":
+        line("BREAKPOINT at %d in main" % n)
+        line("%s:%d" % (SOURCE, n))
+    elif BACKEND == "dbx":
+        line('stopped in main at line %d in file "%s"' % (n, SOURCE))
+        line("%d       int x = 3;" % n)
+    else:
+        line("%s:main:%d" % (SOURCE, n))
+
+
+def next_stop():
+    """The lowest armed line ahead of where the program stands, or None.
+
+    A real debugger goes on past its current position, so a breakpoint behind
+    it does not stop this run; Go to cursor needs that to reach a line further
+    down while an earlier breakpoint is still armed."""
+    ahead = [each for each in armed if each > current[0]]
+    if not ahead:
+        return None
+    return min(ahead)
+
+
+def interrupt_report():
+    """What each backend prints when SIGINT stops the running program."""
+    if INTERRUPT_AT:
+        current[0] = INTERRUPT_AT
+    n = current[0]
+    if BACKEND == "sdb":
+        line("stopped (sig 2) in main")
+    elif BACKEND == "dbx":
+        line('interrupt in main at line %d in file "%s"' % (n, SOURCE))
+    else:
+        line("Interrupt (SIGINT) in main")
+
+
+def run_on():
+    """The program runs and never stops, unless SIGINT interrupts it:
+    nothing is printed, no prompt, until then."""
+    signal.signal(signal.SIGINT, on_sigint_running)
+    try:
+        while True:
+            time.sleep(RUNNING_NAP_S)
+    except Interrupted:
+        interrupt_report()
+    finally:
+        signal.signal(signal.SIGINT, on_sigint_at_prompt)
+
+
+def run(first):
+    """Answer a run or a continue: the next stop, or the program's end."""
+    if not first and CONTINUE_RUNS_ON:
+        run_on()
+        return
+    if not first and CONTINUE_DIES:
+        say(HALF_LINE)
+        os._exit(0)
+    if not first:
+        time.sleep(CONTINUE_DELAY_S)
+    if first and BACKEND in ("dbx", "xdb"):
+        line("Running: p.e")
+    stop = next_stop()
+    if stop is not None:
+        current[0] = stop
+        stop_at()
+        return
+    if BACKEND == "sdb":
+        line("Program exited")
+    elif BACKEND == "dbx":
+        line("program exited")
+    else:
+        line("Child process terminated normally")
+
+
+def step():
+    current[0] = current[0] + 1
+    if BACKEND == "sdb" and SDB_STEP_ROWS:
+        line("main() in %s" % SOURCE)
+        line(ONE_WORD_ROW)
+        line("%d:  int y = sq(x);" % current[0])
+        return
+    stop_at()
+
+
+def answer_sdb(cmd):
+    if cmd == "e":                      # the file the stop was in
+        line('"%s"' % SOURCE)
+        return
+    if cmd.startswith("e "):            # take the file the next command names
+        return
+    if cmd.startswith('"'):             # print a string
+        line(quoted(cmd) or "")
+        return
+    parts = cmd.split()
+    if len(parts) == 2 and parts[0].isdigit() and parts[1] == "b":
+        arm(int(parts[0]))
+        note_armed()
+        return
+    if len(parts) == 2 and parts[0].isdigit() and parts[1] == "d":
+        disarm_line(int(parts[0]))
+        note_armed()
+        return
+    if cmd == "D":
+        disarm_all()
+        note_armed()
+        return
+    if cmd == "b":                      # the editor's own start breakpoint
+        line("breakpoint 1 at main:%d" % current[0])
+        return
+    if cmd == "t":
+        line(">  main [%s:%d]" % (SOURCE, current[0]))
+        return
+    if cmd.split()[0] == "r":
+        run(True)
+        return
+    if cmd == "c":
+        run(False)
+        return
+    if cmd in ("S", "s"):
+        step()
+        return
+    if cmd.endswith("/"):               # a watch
+        line("%s: %d" % (cmd[:-1], watch_value(cmd[:-1])))
+        return
+    if cmd == "q":
+        sys.exit(0)
+
+
+def answer_dbx(cmd):
+    if cmd.startswith("stop at ") or cmd.startswith("stop in "):
+        num = arm(int(cmd.rsplit(":", 1)[1]))
+        line("(%d) %s" % (num, cmd))    # dbx answers with the number first
+        note_armed()
+        return
+    if cmd.startswith("clear "):        # every breakpoint on a line
+        disarm_line(int(cmd.rsplit(":", 1)[1]))
+        note_armed()
+        return
+    if cmd == "delete all":
+        disarm_all()
+        note_armed()
+        return
+    if cmd.startswith("delete "):
+        disarm_number(int(cmd.split()[1]))
+        note_armed()
+        return
+    if cmd.startswith("run"):
+        run(True)
+        return
+    if cmd == "cont":
+        run(False)
+        return
+    if cmd in ("next", "step"):
+        step()
+        return
+    if cmd == "where":
+        line('main(), line %d in "%s"' % (current[0], SOURCE))
+        return
+    if cmd.startswith('print "'):
+        line(quoted(cmd) or "")
+        return
+    if cmd.startswith("print ") and cmd.split(None, 1)[1] == UNDEFINED_NAME:
+        line('"%s" is not defined' % UNDEFINED_NAME)
+        return
+    if cmd.startswith("print "):
+        expr = cmd.split(None, 1)[1]
+        line("%s = %d" % (expr, watch_value(expr)))
+        return
+    if cmd == "quit":
+        sys.exit(0)
+
+
+def answer_xdb(cmd):
+    if cmd == "sm":                     # xdb's own setting, sent at the start
+        return
+    if cmd.startswith("b "):
+        if ":" in cmd:
+            num = arm(int(cmd.rsplit(":", 1)[1]))
+        else:
+            num = arm(current[0])
+        line("Added:")                  # xdb gives the number on the next line
+        line("b%d  break at %s" % (num, cmd[2:]))
+        note_armed()
+        return
+    if cmd == "db *":
+        disarm_all()
+        note_armed()
+        return
+    if cmd.startswith("db "):
+        disarm_number(int(cmd.split()[1]))
+        note_armed()
+        return
+    if cmd.split()[0] == "r":
+        run(True)
+        return
+    if cmd == "c":
+        run(False)
+        return
+    if cmd in ("S", "s"):
+        step()
+        return
+    if cmd == "t":
+        line(">  main [%s:%d]" % (SOURCE, current[0]))
+        return
+    if cmd.startswith('p "'):
+        line(quoted(cmd) or "")
+        return
+    if cmd.startswith("p "):
+        expr = cmd.split(None, 1)[1]
+        line("%s = %d" % (expr, watch_value(expr)))
+        return
+    if cmd == "y":                      # the "really quit?" answer
+        sys.exit(0)
+    if cmd == "q":
+        line("Really quit?")
+        return
+
+
+ANSWER = {"sdb": answer_sdb, "dbx": answer_dbx, "xdb": answer_xdb}[BACKEND]
+
+
+def answer(cmd):
+    """Answer one command, then give the prompt."""
+    ANSWER(cmd)
+    prompt()
+
+
+class Commands:
+    """The editor's lines, one at a time, and the one held back."""
+
+    def __init__(self):
+        self.held = None
+        self.stalls = 0
+
+    def release(self, how):
+        if self.held is None:
+            return
+        note("RELEASE " + how)
+        cmd, self.held = self.held, None
+        answer(cmd)
+
+    def stalls_here(self, cmd):
+        if not STALL or not cmd.startswith(STALL):
+            return False
+        self.stalls += 1
+        return self.stalls == STALL_NTH
+
+    def one(self, cmd):
+        note("CMD " + cmd)
+        self.release("by the next command")
+        if self.stalls_here(cmd):
+            self.held = cmd
+            note("STALL " + cmd)
+            return
+        answer(cmd)
+
+
+def make_release_pipe():
+    """The pipe a test writes to, to let the held command be answered, or
+    None when no command is to be held."""
+    if not STALL:
+        return None
+    if os.path.exists(RELEASE):
+        os.unlink(RELEASE)
+    os.mkfifo(RELEASE)
+    # Open for reading and writing, so the open never waits for a writer and
+    # a writer that closes does not leave the pipe at end of file.
+    return os.open(RELEASE, os.O_RDWR | os.O_NONBLOCK)
+
+
+def main():
+    signal.signal(signal.SIGINT, on_sigint_at_prompt)
+    release_fd = make_release_pipe()
+    commands = Commands()
+    in_fd = sys.stdin.fileno()
+    watched = [in_fd]
+    if release_fd is not None:
+        watched.append(release_fd)
+    buf = b""
+    prompt()
+    while True:
+        ready, _, _ = select.select(watched, [], [])
+        if release_fd is not None and release_fd in ready:
+            os.read(release_fd, READ_MAX)
+            commands.release("by the release pipe")
+        if in_fd not in ready:
+            continue
+        data = os.read(in_fd, READ_MAX)
+        if not data:
+            break
+        buf += data
+        while b"\n" in buf:
+            raw, buf = buf.split(b"\n", 1)
+            commands.one(raw.decode("utf-8", "replace").rstrip("\r"))
+
+
+main()

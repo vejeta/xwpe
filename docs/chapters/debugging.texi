@@ -378,7 +378,7 @@ the session ends.  Rust is compiled before the adapter starts, and the
 Scala build server is started before it; those two steps still hold the
 editor.
 
-@section While gdb, pdb, jdb or a68g answers at a stop
+@section While the debugger answers at a stop
 
 @cindex debugger, waiting for an answer
 @cindex XWPE_DEBUG_ANSWER_TIMEOUT
@@ -426,6 +426,16 @@ typing:
 waiting for a68g to answer `evaluate x` ... 3s  (Esc cancels)
 @end example
 
+@noindent
+sdb, dbx and xdb work the same way: at a stop each is asked the file or
+the place of the stop when its own words did not say them, the watches
+and the stack, and a breakpoint you set at a stop is told to it while you
+keep typing.  The line names the debugger and its own command:
+
+@example
+waiting for dbx to answer `print x` ... 3s  (Esc cancels)
+@end example
+
 A debugger command that needs gdb, such as @kbd{Ctrl-G K} or @key{Enter}
 on a row of the Stack window, does nothing meanwhile and shows this line.  @kbd{F7}, @kbd{F8}, Run, Go to cursor and
 Finish function are kept instead, up to eight of them, and run in the
@@ -459,10 +469,11 @@ its first breakpoint.  @key{Esc} or @kbd{Ctrl-C} gives up on gdb's
 answer; the next debugger key sets gdb up again, and Debug > Quit ends
 the session.  Every Run, Continue, step, Finish and Go to cursor works
 the same way when gdb still owes an answer before the command can go
-out, such as the answer to a Pause that met a stop.  Under pdb, jdb and
-a68g the start sets your breakpoints the same way, and Go to cursor's own
-breakpoint and the frames Finish needs are asked before the command goes
-out; under jdb so is the breakpoint on @code{main} when you have none.
+out, such as the answer to a Pause that met a stop.  Under pdb, jdb,
+a68g, sdb, dbx and xdb the start sets your breakpoints the same way, and
+Go to cursor's own breakpoint and the frames Finish needs are asked before
+the command goes out; under jdb, sdb, dbx and xdb so is the breakpoint on
+@code{main} when you have none.
 A breakpoint whose answer you gave up on is cleared first the next time,
 so the line is never in the debugger twice.
 
@@ -814,7 +825,7 @@ once, also at a stop.
 @item
 @strong{While jdb answers}: the watches, the stack, the thread a Pause
 stopped in and the breakpoints are asked while you keep typing, as under
-gdb (@pxref{Debugging, While gdb@comma{} pdb@comma{} jdb or a68g answers at a stop}):
+gdb (@pxref{Debugging, While the debugger answers at a stop}):
 a slow jdb shows @samp{waiting for jdb to answer `print x`} on the
 status row, and @key{Esc} or @kbd{Ctrl-C} stops waiting.
 
@@ -924,7 +935,7 @@ itself, at most 100 times, to the next line of your script.
 @item
 @strong{While pdb answers}: the watches, the stack and the breakpoints
 are asked while you keep typing, as under gdb (@pxref{Debugging, While
-gdb@comma{} pdb@comma{} jdb or a68g answers at a stop}): a slow pdb shows @samp{waiting for pdb to
+the debugger answers at a stop}): a slow pdb shows @samp{waiting for pdb to
 answer `p x`} on the status row, and @key{Esc} or @kbd{Ctrl-C} stops
 waiting.
 
@@ -1015,7 +1026,7 @@ stop whenever it comes.  The editor keeps its keys meanwhile, and
 @item
 @strong{While a68g answers}: the watches, the stack and the breakpoints
 are asked while you keep typing, as under gdb (@pxref{Debugging, While
-gdb@comma{} pdb@comma{} jdb or a68g answers at a stop}): a slow a68g shows
+the debugger answers at a stop}): a slow a68g shows
 @samp{waiting for a68g to answer `evaluate x`} on the status row, and
 @key{Esc} or @kbd{Ctrl-C} stops waiting.
 

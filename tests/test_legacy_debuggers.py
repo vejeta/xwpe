@@ -5,7 +5,11 @@ Debian, none has a free implementation and none would run on Linux.  xwpe's
 own enum names them (classic sdb with prompt "*", "dbx -i" with "(dbx)", HP
 "xdb -L" with ">"), so each is stood in here by a stub that answers only the
 commands xwpe's source says it sends, in the wording xwpe's own parsers look
-for, and that logs every command it is given.
+for, and that logs every command it is given.  The stub is
+tests/stubs/legacy/legacy-debugger, copied under each debugger's name; its
+docstring says what it assumes where xwpe's source is silent (an interrupt
+at the prompt writes nothing; each prints a string it is asked to), and how
+it holds back one command for the rows that need a debugger slow to answer.
 
 What that proves, and what it does not, is the point of the file: the stub
 shows that xwpe sends the documented command and reads the answer it expects,
@@ -100,283 +104,10 @@ END_LINE = {
     "xdb": "Child process terminated normally",
 }
 
-STUB_SOURCE = r'''
-import os
-import signal
-import sys
-import time
-
-BACKEND = os.path.basename(sys.argv[0])
-PROMPT = {"sdb": "*", "dbx": "(dbx) ", "xdb": ">"}[BACKEND]
-LOG = os.environ.get("XWPE_STUB_LOG", "")
-SOURCE = os.environ.get("XWPE_STUB_SOURCE", "p.c")
-# Set to model a program that runs on after a continue: the debugger answers
-# nothing and asks for no command, as a real one does until the program stops.
-CONTINUE_RUNS_ON = os.environ.get("XWPE_STUB_CONTINUE_RUNS_ON", "") == "1"
-RUNNING_NAP_S = 3600
-# Seconds a continue runs before it answers, to model a program that takes
-# a while to reach its next stop; 0 answers at once.
-CONTINUE_DELAY_S = float(os.environ.get("XWPE_STUB_CONTINUE_DELAY_S", "0"))
-# Set to model a debugger that dies after a continue, half way through a
-# line of its answer: no line end, no prompt, then its end of file.
-CONTINUE_DIES = os.environ.get("XWPE_STUB_CONTINUE_DIES", "") == "1"
-HALF_LINE = "the debugger died half way through"
-# The line the running program is on when SIGINT interrupts it; 0 keeps the
-# line of the last stop.
-INTERRUPT_AT = int(os.environ.get("XWPE_STUB_INTERRUPT_AT", "0"))
-# A name the program does not have: dbx's print of it answers a line with no
-# "=", the shape of an answer that carries no value.
-UNDEFINED_NAME = "nosuchname"
-
-
-class Interrupted(Exception):
-    """SIGINT reached the debugger while the program ran."""
-
-
-def on_sigint(signum, frame):
-    raise Interrupted()
-
-armed = []          # breakpoint lines, in the order they were armed
-current = [0]       # line the program stands at; 0 before the first run
-
-
-def note(text):
-    if LOG:
-        with open(LOG, "a") as fh:
-            fh.write(text + "\n")
-
-
-def say(text):
-    sys.stdout.write(text)
-    sys.stdout.flush()
-
-
-def line(text):
-    say(text + "\n")
-
-
-def prompt():
-    say(PROMPT)
-
-
-def arm(at):
-    armed.append(at)
-    return len(armed)
-
-
-def disarm_line(at):
-    for i, each in enumerate(armed):
-        if each == at:
-            del armed[i]
-            return
-
-
-def disarm_number(num):
-    if 1 <= num <= len(armed):
-        del armed[num - 1]
-
-
-def stop_at():
-    """Print the stop where this backend's parser looks for it."""
-    n = current[0]
-    if BACKEND == "sdb":
-        line("BREAKPOINT at %d in main" % n)
-        line("%s:%d" % (SOURCE, n))
-    elif BACKEND == "dbx":
-        line('stopped in main at line %d in file "%s"' % (n, SOURCE))
-        line("%d       int x = 3;" % n)
-    else:
-        line("%s:main:%d" % (SOURCE, n))
-
-
-def next_stop():
-    """The lowest armed line ahead of where the program stands, or None.
-
-    A real debugger goes on past its current position, so a breakpoint behind
-    it does not stop this run; Go to cursor needs that to reach a line further
-    down while an earlier breakpoint is still armed."""
-    ahead = [each for each in armed if each > current[0]]
-    if not ahead:
-        return None
-    return min(ahead)
-
-
-def interrupt_report():
-    """What each backend prints when SIGINT stops the running program."""
-    if INTERRUPT_AT:
-        current[0] = INTERRUPT_AT
-    n = current[0]
-    if BACKEND == "sdb":
-        line("stopped (sig 2) in main")
-    elif BACKEND == "dbx":
-        line('interrupt in main at line %d in file "%s"' % (n, SOURCE))
-    else:
-        line("Interrupt (SIGINT) in main")
-
-
-def run_on():
-    """The program runs and never stops, unless SIGINT interrupts it:
-    nothing is printed, no prompt, until then."""
-    signal.signal(signal.SIGINT, on_sigint)
-    try:
-        while True:
-            time.sleep(RUNNING_NAP_S)
-    except Interrupted:
-        interrupt_report()
-
-
-def run(first):
-    """Answer a run or a continue: the next stop, or the program's end."""
-    if not first and CONTINUE_RUNS_ON:
-        run_on()
-        return
-    if not first and CONTINUE_DIES:
-        say(HALF_LINE)
-        os._exit(0)
-    if not first:
-        time.sleep(CONTINUE_DELAY_S)
-    if first and BACKEND in ("dbx", "xdb"):
-        line("Running: p.e")
-    stop = next_stop()
-    if stop is not None:
-        current[0] = stop
-        stop_at()
-        return
-    if BACKEND == "sdb":
-        line("Program exited")
-    elif BACKEND == "dbx":
-        line("program exited")
-    else:
-        line("Child process terminated normally")
-
-
-def step():
-    current[0] = current[0] + 1
-    stop_at()
-
-
-def answer_sdb(cmd):
-    if cmd == "e":                      # the file the stop was in
-        line('"%s"' % SOURCE)
-        return
-    if cmd.startswith("e "):            # take the file the next command names
-        return
-    parts = cmd.split()
-    if len(parts) == 2 and parts[0].isdigit() and parts[1] == "b":
-        arm(int(parts[0]))
-        return
-    if len(parts) == 2 and parts[0].isdigit() and parts[1] == "d":
-        disarm_line(int(parts[0]))
-        return
-    if cmd == "D":
-        del armed[:]
-        return
-    if cmd == "b":                      # the editor's own start breakpoint
-        line("breakpoint 1 at main:%d" % current[0])
-        return
-    if cmd == "t":
-        line(">  main [%s:%d]" % (SOURCE, current[0]))
-        return
-    if cmd.split()[0] == "r":
-        run(True)
-        return
-    if cmd == "c":
-        run(False)
-        return
-    if cmd in ("S", "s"):
-        step()
-        return
-    if cmd.endswith("/"):               # a watch
-        line("%s: 3" % cmd[:-1])
-        return
-    if cmd == "q":
-        sys.exit(0)
-
-
-def answer_dbx(cmd):
-    if cmd.startswith("stop at ") or cmd.startswith("stop in "):
-        num = arm(int(cmd.rsplit(":", 1)[1]))
-        line("(%d) %s" % (num, cmd))    # dbx answers with the number first
-        return
-    if cmd == "delete all":
-        del armed[:]
-        return
-    if cmd.startswith("delete "):
-        disarm_number(int(cmd.split()[1]))
-        return
-    if cmd.startswith("run"):
-        run(True)
-        return
-    if cmd == "cont":
-        run(False)
-        return
-    if cmd in ("next", "step"):
-        step()
-        return
-    if cmd == "where":
-        line('main(), line %d in "%s"' % (current[0], SOURCE))
-        return
-    if cmd.startswith("print ") and cmd.split(None, 1)[1] == UNDEFINED_NAME:
-        line('"%s" is not defined' % UNDEFINED_NAME)
-        return
-    if cmd.startswith("print "):
-        line("%s = 3" % cmd.split(None, 1)[1])
-        return
-    if cmd == "quit":
-        sys.exit(0)
-
-
-def answer_xdb(cmd):
-    if cmd == "sm":                     # xdb's own setting, sent at the start
-        return
-    if cmd.startswith("b "):
-        if ":" in cmd:
-            num = arm(int(cmd.rsplit(":", 1)[1]))
-        else:
-            num = arm(current[0])
-        line("Added:")                  # xdb gives the number on the next line
-        line("b%d  break at %s" % (num, cmd[2:]))
-        return
-    if cmd == "db *":
-        del armed[:]
-        return
-    if cmd.startswith("db "):
-        disarm_number(int(cmd.split()[1]))
-        return
-    if cmd.split()[0] == "r":
-        run(True)
-        return
-    if cmd == "c":
-        run(False)
-        return
-    if cmd in ("S", "s"):
-        step()
-        return
-    if cmd == "t":
-        line(">  main [%s:%d]" % (SOURCE, current[0]))
-        return
-    if cmd.startswith("p "):
-        line("%s = 3" % cmd.split(None, 1)[1])
-        return
-    if cmd == "y":                      # the "really quit?" answer
-        sys.exit(0)
-    if cmd == "q":
-        line("Really quit?")
-        return
-
-
-ANSWER = {"sdb": answer_sdb, "dbx": answer_dbx, "xdb": answer_xdb}[BACKEND]
-
-prompt()
-while True:
-    raw = sys.stdin.buffer.readline()
-    if not raw:
-        break
-    cmd = raw.decode("utf-8", "replace").rstrip("\r\n")
-    note("CMD " + cmd)
-    ANSWER(cmd)
-    prompt()
-'''.lstrip()
+# The stand-in for all three, run under the debugger's own name
+# (tests/stubs/legacy/legacy-debugger tells what it answers and how).
+STUB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                         "stubs", "legacy", "legacy-debugger")
 
 
 def _need(*tools):
@@ -386,25 +117,36 @@ def _need(*tools):
             pytest.skip("no %s" % tool)
 
 
+def _stub_body():
+    """The stand-in's source without its "#!" line."""
+    with open(STUB_PATH) as fh:
+        text = fh.read()
+    return text.split("\n", 1)[1]
+
+
 def _stub_env(tmp_path, backend, continue_runs_on=False, continue_delay_s=0,
-              continue_dies=False, interrupt_at=0):
+              continue_dies=False, interrupt_at=0, stall="", stall_nth=1):
     """Write the stub for @backend and return the environment that runs it.
 
     The stub is one script under the debugger's own name, so the backend is
-    the name xwpe exec's, exactly as the real one would be.  With
+    the name xwpe exec's, exactly as the real one would be; its "#!" line is
+    this Python itself, so the process runs under that name too.  With
     @continue_runs_on, a continue after the first stop never comes back: the
     program runs on and the debugger says nothing.  With @continue_delay_s,
     a continue answers only after that many seconds.  With @continue_dies,
     a continue writes half a line and the debugger exits.  With
-    @interrupt_at, a program that runs on is stopped by SIGINT on that line."""
+    @interrupt_at, a program that runs on is stopped by SIGINT on that line.
+    With @stall, the @stall_nth command that starts with it is held until the
+    editor sends another line or the test releases it (_release)."""
     bindir = tmp_path / "bin"
     bindir.mkdir(exist_ok=True)
     stub = bindir / backend
-    stub.write_text("#!%s\n%s" % (sys.executable, STUB_SOURCE))
+    stub.write_text("#!%s\n%s" % (sys.executable, _stub_body()))
     stub.chmod(0o755)
     env = {
         "PATH": str(bindir) + ":" + os.environ.get("PATH", ""),
         "XWPE_STUB_LOG": str(tmp_path / (backend + ".log")),
+        "XWPE_STUB_RELEASE": str(tmp_path / (backend + ".release")),
         "XWPE_STUB_SOURCE": C_SOURCE,
     }
     if continue_runs_on:
@@ -415,25 +157,30 @@ def _stub_env(tmp_path, backend, continue_runs_on=False, continue_delay_s=0,
         env["XWPE_STUB_CONTINUE_DIES"] = "1"
     if interrupt_at:
         env["XWPE_STUB_INTERRUPT_AT"] = str(interrupt_at)
+    if stall:
+        env["XWPE_STUB_STALL"] = stall
+        env["XWPE_STUB_STALL_NTH"] = str(stall_nth)
     return env
 
 
 def _session(tmp_path, backend, continue_runs_on=False, continue_delay_s=0,
-             continue_dies=False, interrupt_at=0):
+             continue_dies=False, interrupt_at=0, stall="", stall_nth=1,
+             extra=None):
     """A session on p.c with @backend forced through the options file.
 
     The options file is how a user picks a backend the dialog of this build
-    does not offer, so the test does not depend on the dialog's rows."""
+    does not offer, so the test does not depend on the dialog's rows.
+    @extra: more of the editor's environment."""
     cfg = tmp_path / ".config" / "xwpe"
     cfg.mkdir(parents=True, exist_ok=True)
     (cfg / "xwperc").write_text(
         "[Programming]\nDebugger : %d\n" % DEBUGGER_TYPE[backend])
+    env = _stub_env(tmp_path, backend, continue_runs_on, continue_delay_s,
+                    continue_dies, interrupt_at, stall, stall_nth)
+    if extra:
+        env.update(extra)
     return WpeSession(str(tmp_path), C_PROG, filename=C_SOURCE, wait=1.5,
-                      env_extra=_stub_env(tmp_path, backend,
-                                          continue_runs_on,
-                                          continue_delay_s,
-                                          continue_dies,
-                                          interrupt_at))
+                      env_extra=env)
 
 
 def _commands(tmp_path, backend):
@@ -1048,3 +795,389 @@ def test_a_breakpoint_set_while_running_stops_the_program_there(tmp_path,
             "line %d should stay hollow until the next stop:\n%s" \
             % (C_LATER_LINE, _screen(w))
         w.key(ALT_X, delay=0.5)
+
+
+# ---- the answers of sdb, dbx and xdb, read while the editor keeps its keys
+#
+# The stub holds back one command (XWPE_STUB_STALL) until the editor sends
+# another line or the test writes to its release pipe, so the editor waits
+# for the answer exactly as long as the test needs.
+
+ESC = "\033"
+CTRL_C = "\x03"           # the terminal's interrupt character
+F8 = "\033[19~"           # Step (step over)
+NOTHING_MORE_S = 3        # a kept key would have acted by then
+ANSWER_TIMEOUT_S = 2      # the deadline row's XWPE_DEBUG_ANSWER_TIMEOUT
+
+# What each backend is asked for watch x, and for the breakpoint on line 8.
+WATCH_NAME = "x"
+WATCH_ASKED = {"sdb": "x/", "dbx": "print x", "xdb": "p x"}
+BREAK_ASKED = {"sdb": "8 b", "dbx": 'stop at "p.c":8', "xdb": "b p.c:8"}
+# What each backend is sent to take a breakpoint off line 8 whose number it
+# never gave: by its line where it can (sdb, dbx), all at once where it
+# cannot (xdb, whose other breakpoints are then set again).
+CLEAR_BY_PLACE = {"sdb": "8 d", "dbx": 'clear "p.c":8', "xdb": "db *"}
+WAITING_FMT = "waiting for %s to answer `%s`"
+NOT_ANSWERED_FMT = "%s did not answer `%s`"
+LATE_WATCH = "y"          # the stub's value for it is not x's
+LATE_VALUE_WORDS = "y: 7"
+EARLY_VALUE_WORDS = "y: 3"
+STACK_ASKED = {"sdb": "t", "dbx": "where", "xdb": "t"}
+
+
+def _stub_log(tmp_path, backend):
+    """Everything the stub logged: its commands, holds and armed lines."""
+    log = tmp_path / (backend + ".log")
+    if not log.exists():
+        return ""
+    return log.read_text()
+
+
+def _stub_holds(w, tmp_path, backend, command):
+    """Wait until the stub says it holds @command: the editor is then waiting
+    for the answer."""
+    assert _wait_for(w, lambda: ("STALL " + command)
+                     in _stub_log(tmp_path, backend), START_TIMEOUT_S), \
+        "the editor should have sent %r (stub log:\n%s):\n%s" \
+        % (command, _stub_log(tmp_path, backend), _screen(w))
+
+
+def _release(tmp_path, backend):
+    """Let the held command be answered."""
+    with open(str(tmp_path / (backend + ".release")), "w") as fh:
+        fh.write("go\n")
+
+
+def _status_row_says(w, text, timeout):
+    """Wait until the bottom row carries @text."""
+    return _wait_for(w, lambda: text in _bottom_row(w), timeout)
+
+
+def _quit_and_see_the_stub_gone(w, backend):
+    """Debug > Quit ends the debugger the session ran."""
+    w.menu(ALT.DEBUG, "q", delay=0.5)
+    assert _wait_for(w, lambda: not _stub_running(w, backend),
+                     STEP_TIMEOUT_S), \
+        "Debug > Quit should end %s:\n%s" % (backend, _screen(w))
+
+
+def _armed_at_last(tmp_path, backend):
+    """The lines the stub had armed after its last breakpoint command."""
+    rows = [row[len("ARMED"):].split() for row
+            in _stub_log(tmp_path, backend).splitlines()
+            if row.startswith("ARMED")]
+    if not rows:
+        return None
+    return [int(each) for each in rows[-1]]
+
+
+def _watch_held_at_a_step(w, tmp_path, backend):
+    """Stop on line 8, watch x, then F8: at the step's stop the backend is
+    asked for x again, and the stub holds that second question."""
+    _start_session(w, tmp_path, backend)
+    _add_watch_keys(w, WATCH_NAME)
+    assert _wait_for(w, lambda: _watch_text_shown(w, WATCH_FILLED_WORDS),
+                     STEP_TIMEOUT_S), \
+        "the watch should read %r:\n%s" % (WATCH_FILLED_WORDS, _screen(w))
+    w.key(F8, delay=0.3)
+    _stub_holds(w, tmp_path, backend, WATCH_ASKED[backend])
+
+
+def _keys_reach_the_editor_while_it_answers(tmp_path, backend):
+    with _session(tmp_path, backend, stall=WATCH_ASKED[backend],
+                  stall_nth=2) as w:
+        _watch_held_at_a_step(w, tmp_path, backend)
+        w.key(CTRL_G, "k", delay=0.5)
+        waiting = WAITING_FMT % (backend, WATCH_ASKED[backend])
+        assert _status_row_says(w, waiting, STEP_TIMEOUT_S), \
+            "Ctrl-G K should be refused with the waiting line:\n%s" \
+            % _screen(w)
+        assert " Stack " not in _screen(w), \
+            "Ctrl-G K must wait for %s's answer, not ask it:\n%s" \
+            % (backend, _screen(w))
+        assert STACK_ASKED[backend] not in _sent(tmp_path, backend), \
+            "%s must not be asked for the stack while it answers: %r" \
+            % (backend, _sent(tmp_path, backend))
+        w.save()
+        assert w.text() == C_PROG, \
+            "a key typed while %s answered landed in the file:\n%s" \
+            % (backend, _screen(w))
+        _release(tmp_path, backend)
+        assert _wait_for(w, lambda: _mark_line(w) == C_LATER_LINE,
+                         STEP_TIMEOUT_S), \
+            "once %s answers the stop should be marked (mark on %s):\n%s" \
+            % (backend, _mark_line(w), _screen(w))
+
+
+# @scenario SC-debug-49
+def test_sdb_keys_reach_the_editor_while_it_answers(tmp_path):
+    """While sdb has not answered a watch at a step's stop, Ctrl-G K reaches
+    the editor and is refused with the waiting line, which names the
+    command; no Stack window opens and its letter is not typed into the
+    file.  Once sdb answers, the stop is marked.
+
+    Limit: the stub proves xwpe's half of the protocol, not a real sdb."""
+    _keys_reach_the_editor_while_it_answers(tmp_path, "sdb")
+
+
+# @scenario SC-debug-49
+def test_dbx_keys_reach_the_editor_while_it_answers(tmp_path):
+    """As under sdb, while dbx has not answered a watch at a step's stop.
+
+    Limit: the stub proves xwpe's half of the protocol, not a real dbx."""
+    _keys_reach_the_editor_while_it_answers(tmp_path, "dbx")
+
+
+# @scenario SC-debug-49
+def test_xdb_keys_reach_the_editor_while_it_answers(tmp_path):
+    """As under sdb, while xdb has not answered a watch at a step's stop.
+
+    Limit: the stub proves xwpe's half of the protocol, not a real xdb."""
+    _keys_reach_the_editor_while_it_answers(tmp_path, "xdb")
+
+
+ANSWER_ENDS = {
+    "esc": {"key": ESC, "env": None, "within": False},
+    "ctrl_c": {"key": CTRL_C, "env": None, "within": False},
+    "deadline": {"key": None,
+                 "env": {"XWPE_DEBUG_ANSWER_TIMEOUT": str(ANSWER_TIMEOUT_S)},
+                 "within": True},
+}
+
+
+def _stalled_answer_ends(tmp_path, backend, how):
+    case = ANSWER_ENDS[how]
+    says = NOT_ANSWERED_FMT % (backend, WATCH_ASKED[backend])
+    if case["within"]:
+        says += " within"
+    with _session(tmp_path, backend, stall=WATCH_ASKED[backend], stall_nth=2,
+                  extra=case["env"]) as w:
+        _watch_held_at_a_step(w, tmp_path, backend)
+        waiting = WAITING_FMT % (backend, WATCH_ASKED[backend])
+        assert _status_row_says(w, waiting, STEP_TIMEOUT_S), \
+            "the waiting line should come:\n%s" % _screen(w)
+        if case["key"]:
+            w.key(case["key"], delay=0.5)
+        assert _status_row_says(w, says, STEP_TIMEOUT_S), \
+            "the wait should end with %r:\n%s" % (says, _screen(w))
+        _quit_and_see_the_stub_gone(w, backend)
+
+
+# @scenario SC-debug-50
+@pytest.mark.parametrize("how", sorted(ANSWER_ENDS))
+def test_sdb_stalled_answer_ends_with_a_message_and_quit_works(tmp_path, how):
+    """An sdb that does not answer a watch at a stop: the waiting line comes,
+    Esc, Ctrl-C or the deadline ends the wait with a line naming the
+    command, and Debug > Quit then ends the session.
+
+    Limit: the stub proves xwpe's half of the protocol, not a real sdb."""
+    _stalled_answer_ends(tmp_path, "sdb", how)
+
+
+# @scenario SC-debug-50
+@pytest.mark.parametrize("how", sorted(ANSWER_ENDS))
+def test_dbx_stalled_answer_ends_with_a_message_and_quit_works(tmp_path, how):
+    """As under sdb, for a dbx that does not answer a watch at a stop.
+
+    Limit: the stub proves xwpe's half of the protocol, not a real dbx."""
+    _stalled_answer_ends(tmp_path, "dbx", how)
+
+
+# @scenario SC-debug-50
+@pytest.mark.parametrize("how", sorted(ANSWER_ENDS))
+def test_xdb_stalled_answer_ends_with_a_message_and_quit_works(tmp_path, how):
+    """As under sdb, for an xdb that does not answer a watch at a stop.
+
+    Limit: the stub proves xwpe's half of the protocol, not a real xdb."""
+    _stalled_answer_ends(tmp_path, "xdb", how)
+
+
+def _answer_after_a_cancel(tmp_path, backend):
+    with _session(tmp_path, backend, stall=WATCH_ASKED[backend],
+                  stall_nth=2) as w:
+        _watch_held_at_a_step(w, tmp_path, backend)
+        waiting = WAITING_FMT % (backend, WATCH_ASKED[backend])
+        assert _status_row_says(w, waiting, STEP_TIMEOUT_S), \
+            "the waiting line should come:\n%s" % _screen(w)
+        w.key(ESC, delay=0.5)
+        says = NOT_ANSWERED_FMT % (backend, WATCH_ASKED[backend])
+        assert _status_row_says(w, says, STEP_TIMEOUT_S), \
+            "Esc should end the wait:\n%s" % _screen(w)
+        _add_watch_keys(w, LATE_WATCH)
+        assert _wait_for(w, lambda: _watch_text_shown(w, LATE_VALUE_WORDS)
+                         or _watch_text_shown(w, EARLY_VALUE_WORDS),
+                         STEP_TIMEOUT_S), \
+            "the watch should get an answer; %s was sent %r:\n%s" \
+            % (backend, _sent(tmp_path, backend), _screen(w))
+        assert _watch_text_shown(w, LATE_VALUE_WORDS), \
+            "the watch took another command's answer; %s was sent %r:\n%s" \
+            % (backend, _sent(tmp_path, backend), _screen(w))
+
+
+# @scenario SC-debug-50
+def test_sdb_answer_after_a_cancel_is_not_taken_for_the_next(tmp_path):
+    """sdb answers the watch only after the user gave up on it: that late
+    answer is dropped, and the next command, a watch on y, shows its own
+    value, not x's.
+
+    Limit: the stub proves xwpe's half of the protocol, not a real sdb."""
+    _answer_after_a_cancel(tmp_path, "sdb")
+
+
+# @scenario SC-debug-50
+def test_dbx_answer_after_a_cancel_is_not_taken_for_the_next(tmp_path):
+    """As under sdb, for dbx's late answer to a watch given up on.
+
+    Limit: the stub proves xwpe's half of the protocol, not a real dbx."""
+    _answer_after_a_cancel(tmp_path, "dbx")
+
+
+# @scenario SC-debug-50
+def test_xdb_answer_after_a_cancel_is_not_taken_for_the_next(tmp_path):
+    """As under sdb, for xdb's late answer to a watch given up on.
+
+    Limit: the stub proves xwpe's half of the protocol, not a real xdb."""
+    _answer_after_a_cancel(tmp_path, "xdb")
+
+
+def _breakpoint_given_up(tmp_path, backend):
+    _need("gcc")
+    with _session(tmp_path, backend, stall=BREAK_ASKED[backend]) as w:
+        _move_down(w, C_BREAK_LINE - 1)
+        w.key(CTRL_G, "b", delay=0.4)
+        w.key(CTRL_G, "r", delay=1.0)
+        _stub_holds(w, tmp_path, backend, BREAK_ASKED[backend])
+        w.key(ESC, delay=0.5)
+        says = NOT_ANSWERED_FMT % (backend, BREAK_ASKED[backend])
+        assert _status_row_says(w, says, STEP_TIMEOUT_S), \
+            "the wait should end with %r:\n%s" % (says, _screen(w))
+        w.key(CTRL_G, "r", delay=1.0)
+        assert _wait_for(w, lambda: _mark_line(w) == C_BREAK_LINE,
+                         START_TIMEOUT_S), \
+            "the start set up again should stop on line %d; %s was sent " \
+            "%r:\n%s" % (C_BREAK_LINE, backend, _sent(tmp_path, backend),
+                         _screen(w))
+        log = _stub_log(tmp_path, backend).split("RELEASE", 1)[1]
+        clear = "CMD %s\n" % CLEAR_BY_PLACE[backend]
+        again = "CMD %s\n" % BREAK_ASKED[backend]
+        assert clear in log and again in log and \
+            log.index(clear) < log.index(again), \
+            "the line %s may have set should be cleared before it is set " \
+            "again:\n%s" % (backend, log)
+        w.key(CTRL_G, "b", delay=0.6)
+        assert _wait_for(w, lambda: _armed_at_last(tmp_path, backend) == [],
+                         STEP_TIMEOUT_S), \
+            "with its mark off, %s must have no breakpoint left on the line " \
+            "(stub log:\n%s):\n%s" \
+            % (backend, _stub_log(tmp_path, backend), _screen(w))
+        _quit_and_see_the_stub_gone(w, backend)
+
+
+# @scenario SC-debug-50
+def test_sdb_breakpoint_given_up_is_not_set_twice(tmp_path):
+    """sdb's answer to the breakpoint of the start is given up on, though
+    sdb sets it.  The next Ctrl-G R sets sdb up again, taking the line off
+    before setting it once more; once the mark is taken off, sdb has no
+    breakpoint left there.
+
+    Limit: the stub proves xwpe's half of the protocol, not a real sdb."""
+    _breakpoint_given_up(tmp_path, "sdb")
+
+
+# @scenario SC-debug-50
+def test_dbx_breakpoint_given_up_is_not_set_twice(tmp_path):
+    """As under sdb: dbx's number for the breakpoint given up on was never
+    read, so the line is cleared by its place before it is set again.
+
+    Limit: the stub proves xwpe's half of the protocol, not a real dbx."""
+    _breakpoint_given_up(tmp_path, "dbx")
+
+
+# @scenario SC-debug-50
+def test_xdb_breakpoint_given_up_is_not_set_twice(tmp_path):
+    """As under sdb: xdb takes a breakpoint off only by the number it gave,
+    which was never read, so all are taken off and the user's set again.
+
+    Limit: the stub proves xwpe's half of the protocol, not a real xdb."""
+    _breakpoint_given_up(tmp_path, "xdb")
+
+
+def _keys_typed_during_the_start(tmp_path, backend):
+    _need("gcc")
+    with _session(tmp_path, backend, stall=BREAK_ASKED[backend]) as w:
+        _move_down(w, C_BREAK_LINE - 1)
+        w.key(CTRL_G, "b", delay=0.4)
+        w.key(CTRL_G, "r", delay=1.0)
+        _stub_holds(w, tmp_path, backend, BREAK_ASKED[backend])
+        w.key(F8, delay=0.3)
+        w.key(CTRL_G, "k", delay=0.5)
+        waiting = WAITING_FMT % (backend, BREAK_ASKED[backend])
+        assert _status_row_says(w, waiting, STEP_TIMEOUT_S), \
+            "Ctrl-G K should be refused with the waiting line:\n%s" \
+            % _screen(w)
+        assert " Stack " not in _screen(w), \
+            "Ctrl-G K must wait for %s's answer, not ask it:\n%s" \
+            % (backend, _screen(w))
+        _release(tmp_path, backend)
+        assert _wait_for(w, lambda: _mark_line(w) == C_LATER_LINE,
+                         START_TIMEOUT_S), \
+            "the F8 typed during the start should step once the start " \
+            "stopped (mark on %s); %s was sent %r:\n%s" \
+            % (_mark_line(w), backend, _sent(tmp_path, backend), _screen(w))
+        w._drain(NOTHING_MORE_S)
+        assert _mark_line(w) == C_LATER_LINE, \
+            "only the F8 typed should step (mark on %s):\n%s" \
+            % (_mark_line(w), _screen(w))
+        w.save()
+        assert w.text() == C_PROG, \
+            "a key typed while %s started landed in the file:\n%s" \
+            % (backend, _screen(w))
+
+
+# @scenario SC-debug-49
+def test_sdb_keys_typed_during_the_start_are_kept_or_refused(tmp_path):
+    """While sdb has not answered the breakpoint of the start, F8 is kept
+    and steps once the start has stopped on the breakpoint, and Ctrl-G K is
+    refused with the waiting line, its letter not typed into the file.
+
+    Limit: the stub proves xwpe's half of the protocol, not a real sdb."""
+    _keys_typed_during_the_start(tmp_path, "sdb")
+
+
+# @scenario SC-debug-49
+def test_dbx_keys_typed_during_the_start_are_kept_or_refused(tmp_path):
+    """As under sdb, while dbx has not answered the breakpoint of the start.
+
+    Limit: the stub proves xwpe's half of the protocol, not a real dbx."""
+    _keys_typed_during_the_start(tmp_path, "dbx")
+
+
+# @scenario SC-debug-49
+def test_xdb_keys_typed_during_the_start_are_kept_or_refused(tmp_path):
+    """As under sdb, while xdb has not answered the breakpoint of the start.
+
+    Limit: the stub proves xwpe's half of the protocol, not a real xdb."""
+    _keys_typed_during_the_start(tmp_path, "xdb")
+
+
+SDB_STEP_ROWS_ENV = {"XWPE_STUB_SDB_STEP_ROWS": "1"}
+
+
+# @scenario SC-debug-03
+def test_sdb_step_reported_by_its_source_row_is_marked(tmp_path):
+    """sdb reports a step by its source row ("9: ...") under the row that
+    names the function and its file ("main() in p.c"), here with a one-word
+    row between them: F8 marks line 9 of p.c.  Reading a one-word row as a
+    possible "f() in file" row must stay inside that row (the sanitizer
+    build shows a read before its start otherwise).
+
+    Limit: the stub proves xwpe's half of the protocol, not a real sdb."""
+    with _session(tmp_path, "sdb", extra=SDB_STEP_ROWS_ENV) as w:
+        _start_session(w, tmp_path, "sdb")
+        w.key(F8, delay=0.5)
+        assert _wait_for(w, lambda: _mark_line(w) == C_LATER_LINE,
+                         STEP_TIMEOUT_S), \
+            "F8 should mark line %d (mark on %s); sdb was sent %r:\n%s" \
+            % (C_LATER_LINE, _mark_line(w), _sent(tmp_path, "sdb"),
+               _screen(w))
+        assert w.alive(), "the editor should survive sdb's step report"
