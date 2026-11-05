@@ -1,0 +1,238 @@
+#!/usr/bin/env python3
+"""A jdb that holds back one command until it is told to go on.
+
+It stands in front of the real jdb: every command the editor sends is passed
+on, and jdb's output goes back to the editor as jdb writes it, so what the
+editor reads is what jdb writes.  One command, named by XWPE_STUB_STALL (a
+prefix of the command line), is held instead.  jdb never sees it, so it
+never answers, until one of two things happens:
+
+  - the editor sends another command (after a cancel the editor makes jdb
+    echo a marker): the held command goes to jdb first, then the new one, so
+    jdb answers the old command late, exactly as a slow jdb would;
+  - the test writes a line to the release pipe, $HOME/jdb-stub.release.
+
+Only the XWPE_STUB_STALL_NTH-th command that matches is held (the first by
+default).  jdb's interrupt, Pause's "suspend", is a command like any other,
+so it is held the same way.
+
+A stop jdb reports while the editor waits for another answer (a breakpoint
+the program reached while a Pause was on its way) is played back on demand:
+the first stop jdb reports ("Breakpoint hit: ..." up to its prompt) is kept,
+and when the editor sends the XWPE_STUB_EVENT_NTH-th command that starts
+with XWPE_STUB_EVENT_ON it is written again, either before that command
+reaches jdb, so it arrives while the editor waits for the answer
+(XWPE_STUB_EVENT_HOW=during), or right behind the prompt that ends jdb's
+answer, in the same write (XWPE_STUB_EVENT_HOW=behind).
+
+Nothing here waits on a clock: the held command waits on input only.  Every
+command is logged to $HOME/jdb-stub.log ("CMD <line>"), the hold as "STALL
+<line>" and "RELEASE <how>", and a stop played back as "EVENT <how>", so a
+test knows the editor is waiting before it types.  With
+XWPE_STUB_LOG_OUTPUT=1 what jdb writes is logged too ("OUT <bytes>").
+"""
+import os
+import re
+import select
+import shutil
+import signal
+import subprocess
+import sys
+
+HOME = os.environ.get("HOME", ".")
+LOG = os.path.join(HOME, "jdb-stub.log")
+RELEASE = os.path.join(HOME, "jdb-stub.release")
+STALL = os.environ.get("XWPE_STUB_STALL", "")
+STALL_NTH = int(os.environ.get("XWPE_STUB_STALL_NTH", "1") or "1")
+EVENT_ON = os.environ.get("XWPE_STUB_EVENT_ON", "")
+EVENT_NTH = int(os.environ.get("XWPE_STUB_EVENT_NTH", "1") or "1")
+EVENT_HOW = os.environ.get("XWPE_STUB_EVENT_HOW", "during")
+LOG_OUTPUT = os.environ.get("XWPE_STUB_LOG_OUTPUT", "") == "1"
+HERE = os.path.dirname(os.path.abspath(__file__))
+READ_MAX = 65536
+PR_SET_PDEATHSIG = 1
+
+# jdb's prompt: "> " with no current thread, "main[1] " at a stop.
+PROMPT_AT_END = re.compile(rb"(?:> |\S[^\n]*\[\d+\] )$")
+# The first stop jdb reports: its line, the source line, a blank line and
+# the prompt that follows.
+STOP_BLOCK = re.compile(
+    rb"\n(Breakpoint hit: [^\n]*\n[^\n]*\n\n)(\S[^\n]*?\[\d+\] )")
+
+
+def note(text):
+    with open(LOG, "a") as fh:
+        fh.write(text + "\n")
+
+
+def real_jdb():
+    """The jdb this one stands in front of: the next one on PATH."""
+    given = os.environ.get("XWPE_STUB_REAL_JDB", "")
+    if given:
+        return given
+    dirs = [d for d in os.environ.get("PATH", "").split(os.pathsep)
+            if d and os.path.abspath(d) != HERE]
+    found = shutil.which("jdb", path=os.pathsep.join(dirs))
+    if not found:
+        sys.stderr.write("jdb stub: no real jdb on PATH\n")
+        sys.exit(1)
+    return found
+
+
+def die_with_parent():
+    """The real jdb ends with this one, which the editor may kill outright."""
+    try:
+        import ctypes
+        ctypes.CDLL(None).prctl(PR_SET_PDEATHSIG, signal.SIGKILL)
+    except (OSError, AttributeError):
+        pass
+
+
+def make_release_pipe():
+    if os.path.exists(RELEASE):
+        os.unlink(RELEASE)
+    os.mkfifo(RELEASE)
+    # Open for reading and writing, so the open never waits for a writer and
+    # a writer that closes does not leave the pipe at end of file.
+    return os.open(RELEASE, os.O_RDWR | os.O_NONBLOCK)
+
+
+def write_out(data):
+    while data:
+        n = os.write(sys.stdout.fileno(), data)
+        data = data[n:]
+
+
+class Output:
+    """jdb's output on its way to the editor: the first stop it reports is
+    kept, and a stop played back behind a prompt waits for that prompt."""
+
+    def __init__(self):
+        self.seen = b""
+        self.block = None
+        self.behind = False
+        self.held = b""
+
+    def keep_first_stop(self, data):
+        if self.block is not None:
+            return
+        self.seen += data
+        found = STOP_BLOCK.search(self.seen)
+        if found:
+            self.block = b"\n" + found.group(1) + found.group(2)
+            self.seen = b""
+
+    def came(self, data):
+        if LOG_OUTPUT:
+            note("OUT " + repr(data))
+        self.keep_first_stop(data)
+        if not self.behind:
+            write_out(data)
+            return
+        self.held += data
+        if PROMPT_AT_END.search(self.held):
+            write_out(self.held + self.block)
+            self.held = b""
+            self.behind = False
+
+    def play_back(self, how):
+        if self.block is None:
+            note("EVENT none kept")
+            return
+        note("EVENT " + how)
+        if how == "behind":
+            self.behind = True
+        else:
+            write_out(self.block)
+
+
+class Commands:
+    """The editor's commands, a line at a time, and what to do with each."""
+
+    def __init__(self, child, output):
+        self.child = child
+        self.output = output
+        self.buf = b""
+        self.held = None
+        self.stalls = 0
+        self.events = 0
+
+    def pass_on(self, line):
+        self.child.stdin.write(line)
+        self.child.stdin.flush()
+
+    def release(self, how):
+        if self.held is None:
+            return
+        note("RELEASE " + how)
+        line, self.held = self.held, None
+        self.pass_on(line)
+
+    def stalls_here(self, text):
+        if not STALL or not text.startswith(STALL):
+            return False
+        self.stalls += 1
+        return self.stalls == STALL_NTH
+
+    def plays_back_here(self, text):
+        if not EVENT_ON or not text.startswith(EVENT_ON):
+            return False
+        self.events += 1
+        return self.events == EVENT_NTH
+
+    def one(self, line):
+        text = line.decode("utf-8", "replace").rstrip("\n")
+        note("CMD " + text)
+        self.release("by the next command")
+        if self.stalls_here(text):
+            self.held = line
+            note("STALL " + text)
+            return
+        if self.plays_back_here(text):
+            self.output.play_back(EVENT_HOW)
+        self.pass_on(line)
+
+    def came(self, data):
+        self.buf += data
+        while b"\n" in self.buf:
+            line, self.buf = self.buf.split(b"\n", 1)
+            self.one(line + b"\n")
+
+
+def main():
+    child = subprocess.Popen([real_jdb()] + sys.argv[1:],
+                             stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                             preexec_fn=die_with_parent)
+    signal.signal(signal.SIGTERM,
+                  lambda signum, frame: child.kill() or sys.exit(0))
+    release_fd = make_release_pipe()
+    output = Output()
+    commands = Commands(child, output)
+    out_fd = child.stdout.fileno()
+    in_fd = sys.stdin.fileno()
+    watched = [out_fd, in_fd, release_fd]
+    while out_fd in watched:
+        ready, _, _ = select.select(watched, [], [])
+        if out_fd in ready:
+            data = os.read(out_fd, READ_MAX)
+            if not data:
+                break
+            output.came(data)
+        if in_fd in ready:
+            data = os.read(in_fd, READ_MAX)
+            if not data:
+                watched.remove(in_fd)
+                child.stdin.close()
+            else:
+                commands.came(data)
+        if release_fd in ready:
+            os.read(release_fd, READ_MAX)
+            commands.release("by the test")
+    child.wait()
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except BrokenPipeError:
+        pass

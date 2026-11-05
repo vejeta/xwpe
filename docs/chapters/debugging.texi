@@ -151,7 +151,10 @@ the threads, makes current the first one that runs your code, and puts
 the bar on that thread's innermost frame of your code (the loop, or the
 call to @code{sleep} it is in), with that frame selected for the
 Watches.  Continue then sends @code{resume}, not @code{cont}, so every
-thread runs again.  The debug adapters are sent the protocol's
+thread runs again.  When the program reached a breakpoint just as Pause
+went out, the bar shows the breakpoint, and the next Continue or step
+also sends the @code{resume} that the @code{suspend} needs, so the
+program does not stay held.  The debug adapters are sent the protocol's
 @code{pause} request, and the stop that follows it is the Pause
 whatever reason the adapter gives it (lldb-dap says
 @samp{signal SIGSTOP}, dlv may stop inside Go's runtime): the status
@@ -375,7 +378,7 @@ the session ends.  Rust is compiled before the adapter starts, and the
 Scala build server is started before it; those two steps still hold the
 editor.
 
-@section While gdb or pdb answers at a stop
+@section While gdb, pdb or jdb answers at a stop
 
 @cindex debugger, waiting for an answer
 @cindex XWPE_DEBUG_ANSWER_TIMEOUT
@@ -400,6 +403,21 @@ waiting for pdb to answer `p x` ... 3s  (Esc cancels)
 @end example
 
 @noindent
+jdb works the same way too: at a stop it is asked the watches and the
+stack, after a Pause the thread that runs your code, and a breakpoint you
+set at a stop is told to it while you keep typing:
+
+@example
+waiting for jdb to answer `print x` ... 3s  (Esc cancels)
+@end example
+
+@noindent
+jdb reports a breakpoint or a step's end whenever the program reaches
+it, also while it answers something else (a Pause that the program's own
+stop beat, for one).  xwpe never takes those words for the answer: the
+watch keeps its own value, and the stop jdb reported is marked once the
+answers are in.
+
 A debugger command that needs gdb, such as @kbd{Ctrl-G K}, does nothing
 meanwhile and shows this line.  @kbd{F7}, @kbd{F8}, Run, Go to cursor and
 Finish function are kept instead, up to eight of them, and run in the
@@ -433,10 +451,11 @@ its first breakpoint.  @key{Esc} or @kbd{Ctrl-C} gives up on gdb's
 answer; the next debugger key sets gdb up again, and Debug > Quit ends
 the session.  Every Run, Continue, step, Finish and Go to cursor works
 the same way when gdb still owes an answer before the command can go
-out, such as the answer to a Pause that met a stop.  Under pdb the start
-sets your breakpoints the same way, and Go to cursor's own breakpoint and
-the frames Finish needs are asked before the command goes out.  A
-breakpoint whose answer you gave up on is cleared first the next time,
+out, such as the answer to a Pause that met a stop.  Under pdb and jdb
+the start sets your breakpoints the same way, and Go to cursor's own
+breakpoint and the frames Finish needs are asked before the command goes
+out; under jdb so is the breakpoint on @code{main} when you have none.
+A breakpoint whose answer you gave up on is cleared first the next time,
 so the line is never in the debugger twice.
 
 @section How a session ends
@@ -785,6 +804,13 @@ stop whenever it comes.  The editor keeps its keys meanwhile, and
 once, also at a stop.
 
 @item
+@strong{While jdb answers}: the watches, the stack, the thread a Pause
+stopped in and the breakpoints are asked while you keep typing, as under
+gdb (@pxref{Debugging, While gdb@comma{} pdb or jdb answers at a stop}):
+a slow jdb shows @samp{waiting for jdb to answer `print x`} on the
+status row, and @key{Esc} or @kbd{Ctrl-C} stops waiting.
+
+@item
 @strong{Uncaught exceptions}: jdb stops on the line that threw, and
 xwpe marks it as it marks a breakpoint.  The status row names the
 exception, also when it was thrown in a library whose source is not
@@ -890,7 +916,7 @@ itself, at most 100 times, to the next line of your script.
 @item
 @strong{While pdb answers}: the watches, the stack and the breakpoints
 are asked while you keep typing, as under gdb (@pxref{Debugging, While
-gdb or pdb answers at a stop}): a slow pdb shows @samp{waiting for pdb to
+gdb@comma{} pdb or jdb answers at a stop}): a slow pdb shows @samp{waiting for pdb to
 answer `p x`} on the status row, and @key{Esc} or @kbd{Ctrl-C} stops
 waiting.
 

@@ -10027,3 +10027,533 @@ def test_pdb_finish_while_pdb_answers_keeps_the_keys(tmp_path):
         assert w.text() == GOTO_PY, \
             "a key typed while pdb answered landed in the file:\n%s" \
             % _screen(w)
+
+
+# ---- jdb's answers, start and resumes, read while the editor keeps its keys
+#
+# tests/stubs/jdb/jdb stands in front of the real jdb and holds back one
+# command (XWPE_STUB_STALL) until the editor sends another or the test
+# writes to its release pipe, as the gdb and pdb stubs do.  It can also play
+# back the first stop jdb reported while the editor waits for another
+# answer, the order jdb writes in when the program reaches a breakpoint as
+# a Pause or a command is on its way.
+
+JDB_STUB_DIR = os.path.join(STUBS_DIR, "jdb")
+JDB_STUB_LOG = "jdb-stub.log"
+JDB_STUB_RELEASE = "jdb-stub.release"
+JDB_ANSWER_TIMEOUT_S = 2          # the deadline row's XWPE_DEBUG_ANSWER_TIMEOUT
+JDB_WATCH = "x"
+JDB_WATCH_ASKED = "print x"       # jdb's command for that watch
+WAITING_FOR_JDB_WATCH = "waiting for jdb to answer `print x`"
+JDB_DID_NOT_ANSWER_WATCH = "jdb did not answer `print x`"
+JDB_BREAK_ASKED = "stop at "      # jdb's command that sets a breakpoint
+WAITING_FOR_JDB_START_BREAK = "waiting for jdb to answer `stop at P:%d`"
+JDB_DID_NOT_ANSWER_BREAK = "jdb did not answer `stop at P:%d`"
+JDB_LATE_WATCH = "x * 2"          # its value is not x's
+JDB_LATE_VALUE = "4"
+
+# Four statements in a row on a local, so a watch has a value at each stop
+# and two typed-ahead F8s have lines to land on.
+JDB_STEPS_PROG = (
+    "public class P {\n"
+    "    public static void main(String[] a) {\n"
+    "        int x = 1;\n"
+    "        x = x + 1;\n"
+    "        x = x + 1;\n"
+    "        x = x + 1;\n"
+    "        System.out.println(\"X \" + x);\n"
+    "    }\n"
+    "}\n"
+)
+JDB_STEPS_BREAK_LINE = 4          # x = x + 1;  x is 1
+JDB_STEPS_NEXT_LINE = 5           # x is 2
+JDB_STEPS_AFTER_TWO = 7           # two more F8s from line 5
+JDB_STEPS_X_AT_NEXT = 2
+
+
+def _jdb_stub_env(stall, nth=1, extra=None):
+    """PATH with the holding jdb first, holding the @nth command that starts
+    with @stall."""
+    env = {"PATH": JDB_STUB_DIR + ":" + os.environ.get("PATH", ""),
+           "XWPE_STUB_REAL_JDB": shutil.which("jdb") or "",
+           "XWPE_STUB_STALL": stall,
+           "XWPE_STUB_STALL_NTH": str(nth)}
+    if extra:
+        env.update(extra)
+    return env
+
+
+def _jdb_stub_log(tmp_path):
+    try:
+        with open(str(tmp_path / JDB_STUB_LOG)) as fh:
+            return fh.read()
+    except OSError:
+        return ""
+
+
+def _jdb_stub_holds(w, tmp_path, stall):
+    """Wait until the stub says it holds the command that starts with
+    @stall: the editor is then waiting for jdb's answer."""
+    assert _wait_for(w, lambda: ("STALL " + stall) in _jdb_stub_log(tmp_path),
+                     JDB_START_TIMEOUT_S), \
+        "the editor should have sent %r (stub log:\n%s):\n%s" \
+        % (stall, _jdb_stub_log(tmp_path), _screen(w))
+
+
+def _jdb_stub_release(tmp_path):
+    """Let the held command go to jdb."""
+    with open(str(tmp_path / JDB_STUB_RELEASE), "w") as fh:
+        fh.write("go\n")
+
+
+def _stop_java_on(w, line):
+    """Breakpoint on @line of P.java, Ctrl-G R, and wait for the marked stop
+    there (javac and the VM's start included)."""
+    _move_down(w, line - 1)
+    w.key(CTRL_G, "b", delay=0.4)
+    w.key(CTRL_G, "r", delay=1.0)
+    assert _wait_for(w, lambda: _mark_line(w) == line, JDB_START_TIMEOUT_S), \
+        "Ctrl-G R should stop, marked, on line %d (mark on %s):\n%s" \
+        % (line, _mark_line(w), _screen(w))
+
+
+def _jdb_watch_held_at_a_step(w, tmp_path):
+    """Stop on the breakpoint, watch x, then F8: at the step's stop jdb is
+    asked `print x` again, and the stub holds that second one."""
+    _stop_java_on(w, JDB_STEPS_BREAK_LINE)
+    _add_watch(w, JDB_WATCH)
+    assert _wait_for(w, lambda: _watch_value(w, JDB_WATCH) == 1,
+                     STEP_TIMEOUT_S), _screen(w)
+    w.key(F8, delay=0.3)
+    _jdb_stub_holds(w, tmp_path, JDB_WATCH_ASKED)
+
+
+# @scenario SC-debug-49
+def test_jdb_keys_reach_the_editor_while_it_answers(tmp_path):
+    """While jdb has not answered a watch at a step's stop, Ctrl-G K
+    reaches the editor and is refused with the waiting line, which names
+    the command; no Stack window opens and its letter is not typed into the
+    file.  Once jdb answers, the stop is marked."""
+    _need("jdb", "javac")
+    with WpeSession(str(tmp_path), JDB_STEPS_PROG, filename="P.java",
+                    wait=1.5,
+                    env_extra=_jdb_stub_env(JDB_WATCH_ASKED, nth=2)) as w:
+        _jdb_watch_held_at_a_step(w, tmp_path)
+        w.key(CTRL_G, "k", delay=0.5)
+        assert _status_row_says(w, WAITING_FOR_JDB_WATCH, STEP_TIMEOUT_S), \
+            "Ctrl-G K should be refused with the waiting line:\n%s" \
+            % _screen(w)
+        assert " Stack " not in _screen(w), \
+            "Ctrl-G K must wait for jdb's answer, not ask it:\n%s" \
+            % _screen(w)
+        w.save()
+        assert w.text() == JDB_STEPS_PROG, \
+            "a key typed while jdb answered landed in the file:\n%s" \
+            % _screen(w)
+        _jdb_stub_release(tmp_path)
+        assert _wait_for(w, lambda: _mark_line(w) == JDB_STEPS_NEXT_LINE,
+                         STEP_TIMEOUT_S), \
+            "once jdb answers the stop should be marked (mark on %s):\n%s" \
+            % (_mark_line(w), _screen(w))
+
+
+JDB_ANSWER_ENDS = {
+    "esc": {"key": ESC, "env": None, "says": JDB_DID_NOT_ANSWER_WATCH},
+    "ctrl_c": {"key": CTRL_C, "env": None, "says": JDB_DID_NOT_ANSWER_WATCH},
+    "deadline": {"key": None,
+                 "env": {"XWPE_DEBUG_ANSWER_TIMEOUT":
+                         str(JDB_ANSWER_TIMEOUT_S)},
+                 "says": JDB_DID_NOT_ANSWER_WATCH + " within"},
+}
+
+
+# @scenario SC-debug-50
+@pytest.mark.parametrize("how", sorted(JDB_ANSWER_ENDS))
+def test_jdb_stalled_answer_ends_with_a_message_and_quit_works(tmp_path, how):
+    """A jdb that does not answer a watch at a stop: the waiting line comes,
+    Esc, Ctrl-C or the deadline ends the wait with a line naming the
+    command, and Debug > Quit then ends the session with nothing left."""
+    case = JDB_ANSWER_ENDS[how]
+    _need("jdb", "javac")
+    env = _jdb_stub_env(JDB_WATCH_ASKED, nth=2, extra=case["env"])
+    with WpeSession(str(tmp_path), JDB_STEPS_PROG, filename="P.java",
+                    wait=1.5, env_extra=env) as w:
+        _jdb_watch_held_at_a_step(w, tmp_path)
+        assert _status_row_says(w, WAITING_FOR_JDB_WATCH, STEP_TIMEOUT_S), \
+            "the waiting line should come:\n%s" % _screen(w)
+        if case["key"]:
+            w.key(case["key"], delay=0.5)
+        assert _status_row_says(w, case["says"], STEP_TIMEOUT_S), \
+            "the wait should end with %r:\n%s" % (case["says"], _screen(w))
+        _quit_and_see_the_session_gone(w)
+
+
+# @scenario SC-debug-50
+def test_jdb_answer_after_a_cancel_is_not_taken_for_the_next(tmp_path):
+    """jdb answers the watch only after the user gave up on it: that late
+    answer is dropped, and the next command, a watch on x * 2, shows its
+    own value, not x's."""
+    _need("jdb", "javac")
+    with WpeSession(str(tmp_path), JDB_STEPS_PROG, filename="P.java",
+                    wait=1.5,
+                    env_extra=_jdb_stub_env(JDB_WATCH_ASKED, nth=2)) as w:
+        _jdb_watch_held_at_a_step(w, tmp_path)
+        assert _status_row_says(w, WAITING_FOR_JDB_WATCH, STEP_TIMEOUT_S), \
+            "the waiting line should come:\n%s" % _screen(w)
+        w.key(ESC, delay=0.5)
+        assert _status_row_says(w, JDB_DID_NOT_ANSWER_WATCH, STEP_TIMEOUT_S), \
+            "Esc should end the wait:\n%s" % _screen(w)
+        _add_watch(w, JDB_LATE_WATCH)
+        assert _wait_for(w, lambda: _watch_row(w, JDB_LATE_WATCH) is not None,
+                         STEP_TIMEOUT_S), \
+            "the watch should get an answer:\n%s" % _screen(w)
+        assert _watch_row(w, JDB_LATE_WATCH).startswith(JDB_LATE_VALUE), \
+            "the watch took another command's answer (%r):\n%s" \
+            % (_watch_row(w, JDB_LATE_WATCH), _screen(w))
+
+
+# @scenario SC-debug-49
+def test_jdb_f8_f8_typed_during_the_watches_steps_twice(tmp_path):
+    """Two F8s typed while jdb has not answered a watch at a stop are kept,
+    in order: once the answer comes the program steps twice, and nothing
+    lands in the file."""
+    _need("jdb", "javac")
+    with WpeSession(str(tmp_path), JDB_STEPS_PROG, filename="P.java",
+                    wait=1.5,
+                    env_extra=_jdb_stub_env(JDB_WATCH_ASKED, nth=2)) as w:
+        _jdb_watch_held_at_a_step(w, tmp_path)
+        w.key(F8, delay=0.2)
+        w.key(F8, delay=0.2)
+        _jdb_stub_release(tmp_path)
+        assert _wait_for(w, lambda: _mark_line(w) == JDB_STEPS_AFTER_TWO,
+                         STEP_TIMEOUT_S), \
+            "the two F8s typed during the watch should step twice (mark " \
+            "on %s):\n%s" % (_mark_line(w), _screen(w))
+        w._drain(NOTHING_MORE_S)
+        assert _mark_line(w) == JDB_STEPS_AFTER_TWO, \
+            "only the two F8s typed should step (mark on %s):\n%s" \
+            % (_mark_line(w), _screen(w))
+        w.save()
+        assert w.text() == JDB_STEPS_PROG, \
+            "a key typed while jdb answered landed in the file:\n%s" \
+            % _screen(w)
+
+
+# @scenario SC-debug-49
+def test_jdb_keys_typed_during_the_start_are_kept_or_refused(tmp_path):
+    """While jdb has not answered the first breakpoint of the start, F8 is
+    kept and steps once the start has stopped on the breakpoint, and Ctrl-G
+    K is refused with the waiting line, its letter not typed into the
+    file."""
+    _need("jdb", "javac")
+    with WpeSession(str(tmp_path), JDB_STEPS_PROG, filename="P.java",
+                    wait=1.5, env_extra=_jdb_stub_env(JDB_BREAK_ASKED)) as w:
+        _move_down(w, JDB_STEPS_BREAK_LINE - 1)
+        w.key(CTRL_G, "b", delay=0.4)
+        w.key(CTRL_G, "r", delay=1.0)
+        _jdb_stub_holds(w, tmp_path, JDB_BREAK_ASKED)
+        w.key(F8, delay=0.3)
+        w.key(CTRL_G, "k", delay=0.5)
+        waiting = WAITING_FOR_JDB_START_BREAK % JDB_STEPS_BREAK_LINE
+        assert _status_row_says(w, waiting, STEP_TIMEOUT_S), \
+            "Ctrl-G K should be refused with the waiting line:\n%s" \
+            % _screen(w)
+        assert " Stack " not in _screen(w), \
+            "Ctrl-G K must wait for jdb's answer, not ask it:\n%s" \
+            % _screen(w)
+        _jdb_stub_release(tmp_path)
+        assert _wait_for(w, lambda: _mark_line(w) == JDB_STEPS_NEXT_LINE,
+                         JDB_START_TIMEOUT_S), \
+            "the F8 typed during the start should step once the start " \
+            "stopped (mark on %s):\n%s" % (_mark_line(w), _screen(w))
+        w._drain(NOTHING_MORE_S)
+        assert _mark_line(w) == JDB_STEPS_NEXT_LINE, \
+            "only the F8 typed should step (mark on %s):\n%s" \
+            % (_mark_line(w), _screen(w))
+        w.save()
+        assert w.text() == JDB_STEPS_PROG, \
+            "a key typed while jdb started landed in the file:\n%s" \
+            % _screen(w)
+
+
+# A line passed three times, so a breakpoint jdb still has there after its
+# mark is taken off stops the program again.  jdb takes "stop at" for a line
+# it already has as a second breakpoint, and "clear" takes out one of them.
+JDB_PASSES_PROG = (
+    "public class P {\n"
+    "    public static void main(String[] a) {\n"
+    "        int s = 0;\n"
+    "        for (int i = 0; i < 3; i++) {\n"
+    "            s += i;\n"
+    "        }\n"
+    "        System.out.println(\"S \" + s);\n"
+    "    }\n"
+    "}\n"
+)
+JDB_PASSES_LINE = 5
+
+
+# @scenario SC-debug-50
+def test_jdb_breakpoint_given_up_is_not_set_twice(tmp_path):
+    """jdb's answer to a breakpoint of the start is given up on, though jdb
+    sets it.  The next Ctrl-G R sets jdb up again and clears that line
+    before setting it once more, so jdb never holds the line twice; once
+    the mark is taken off, the program runs to its end without stopping
+    there again."""
+    _need("jdb", "javac")
+    with WpeSession(str(tmp_path), JDB_PASSES_PROG, filename="P.java",
+                    wait=1.5, env_extra=_jdb_stub_env(JDB_BREAK_ASKED)) as w:
+        _move_down(w, JDB_PASSES_LINE - 1)
+        w.key(CTRL_G, "b", delay=0.4)
+        w.key(CTRL_G, "r", delay=1.0)
+        _jdb_stub_holds(w, tmp_path, JDB_BREAK_ASKED)
+        w.key(ESC, delay=0.5)
+        given_up = JDB_DID_NOT_ANSWER_BREAK % JDB_PASSES_LINE
+        assert _status_row_says(w, given_up, STEP_TIMEOUT_S), \
+            "the wait should end with %r:\n%s" % (given_up, _screen(w))
+        clear = "CMD clear P:%d\n" % JDB_PASSES_LINE
+        again = "CMD stop at P:%d\n" % JDB_PASSES_LINE
+        w.key(CTRL_G, "r", delay=1.0)
+        assert _wait_for(w, lambda: _mark_line(w) == JDB_PASSES_LINE,
+                         JDB_START_TIMEOUT_S), \
+            "the start set up again should stop on line %d:\n%s\n%s" \
+            % (JDB_PASSES_LINE, _screen(w), _jdb_stub_log(tmp_path))
+        log = _jdb_stub_log(tmp_path).split("RELEASE", 1)[1]
+        assert clear in log and again in log and \
+            log.index(clear) < log.index(again), \
+            "the line jdb set unanswered should be cleared before it is " \
+            "set again:\n%s" % log
+        _go_to_line(w, JDB_PASSES_LINE)
+        w.key(CTRL_G, "b", delay=0.6)
+        w.key(CTRL_G, "r", delay=1.0)
+        w._drain(NOTHING_MORE_S)
+        assert _mark_line(w) != JDB_PASSES_LINE, \
+            "with its mark off, the line must not stop the program again " \
+            "(stub log:\n%s):\n%s" % (_jdb_stub_log(tmp_path), _screen(w))
+        _quit_and_see_the_session_gone(w)
+
+
+# A program that sleeps on its way to a breakpoint: Pause pressed meanwhile
+# sends jdb "suspend", which the stand-in holds until the program has
+# stopped on the breakpoint by itself, so the suspend meets jdb at that
+# stop, as when the breakpoint wins the race against a Pause.
+JDB_PAUSE_RACE_SLEEP_MS = 3000
+JDB_PAUSE_RACE_PROG = (
+    "public class P {\n"
+    "    public static void main(String[] a) throws Exception {\n"
+    "        int x = 7;\n"
+    "        Thread.sleep(%d);\n"
+    "        x = x + 1;\n"
+    "        System.out.println(\"X \" + x);\n"
+    "    }\n"
+    "}\n" % JDB_PAUSE_RACE_SLEEP_MS
+)
+JDB_PAUSE_RACE_FIRST_LINE = 4     # Thread.sleep(...);  x is 7
+JDB_PAUSE_RACE_STOP_LINE = 5      # x = x + 1;  reached after the sleep
+JDB_PAUSE_RACE_X = 7
+JDB_SUSPEND_ASKED = "suspend"     # jdb's command for Pause
+
+
+# @scenario SC-debug-07
+def test_jdb_pause_that_meets_a_stop_is_taken_back(tmp_path):
+    """Pause's "suspend" reaches jdb only after the program stopped on a
+    breakpoint by itself, and jdb answers it at that stop with a line and
+    one more prompt.  That answer is taken back before the stop's own
+    commands: the watch shows its own value, not jdb's words on the
+    suspend."""
+    _need("jdb", "javac")
+    with WpeSession(str(tmp_path), JDB_PAUSE_RACE_PROG, filename="P.java",
+                    wait=1.5,
+                    env_extra=_jdb_stub_env(JDB_SUSPEND_ASKED)) as w:
+        _stop_java_on(w, JDB_PAUSE_RACE_FIRST_LINE)
+        _add_watch(w, JDB_WATCH)
+        assert _wait_for(w, lambda: _watch_value(w, JDB_WATCH) ==
+                         JDB_PAUSE_RACE_X, STEP_TIMEOUT_S), _screen(w)
+        _source_window_on_top(w)
+        _go_to_line(w, JDB_PAUSE_RACE_STOP_LINE)
+        w.key(CTRL_G, "b", delay=0.4)
+        w.key(CTRL_G, "r", delay=0.5)
+        w.key(*CTRL_G_I, delay=0.3)
+        _jdb_stub_holds(w, tmp_path, JDB_SUSPEND_ASKED)
+        assert _wait_for(w, lambda: _mark_line(w) == JDB_PAUSE_RACE_STOP_LINE,
+                         LIVE_STOP_TIMEOUT_S), \
+            "the program should stop on line %d (mark on %s):\n%s" \
+            % (JDB_PAUSE_RACE_STOP_LINE, _mark_line(w), _screen(w))
+        assert _wait_for(w, lambda: _watch_value(w, JDB_WATCH) ==
+                         JDB_PAUSE_RACE_X, STEP_TIMEOUT_S), \
+            "the watch should show its own answer, not jdb's answer to the " \
+            "suspend (%r):\n%s" % (_watch_row(w, JDB_WATCH), _screen(w))
+
+
+# How the stop jdb reports while a watch is answered arrives: before the
+# answer, or right behind its prompt in the same read.
+JDB_EVENT_HOWS = ["behind", "during"]
+
+
+# @scenario SC-debug-49
+@pytest.mark.parametrize("how", JDB_EVENT_HOWS)
+def test_jdb_breakpoint_hit_during_an_answer_is_marked(tmp_path, how):
+    """While jdb answers a watch at a step's stop it reports a breakpoint
+    hit (here the stand-in plays back the first one, on line 4).  The watch
+    shows its own value, not jdb's words on the stop, and the hit is kept
+    and shown as the stop it is: the mark ends on its line."""
+    _need("jdb", "javac")
+    env = _jdb_stub_env("", extra={"XWPE_STUB_EVENT_ON": JDB_WATCH_ASKED,
+                                   "XWPE_STUB_EVENT_NTH": "2",
+                                   "XWPE_STUB_EVENT_HOW": how})
+    with WpeSession(str(tmp_path), JDB_STEPS_PROG, filename="P.java",
+                    wait=1.5, env_extra=env) as w:
+        _stop_java_on(w, JDB_STEPS_BREAK_LINE)
+        _add_watch(w, JDB_WATCH)
+        assert _wait_for(w, lambda: _watch_value(w, JDB_WATCH) == 1,
+                         STEP_TIMEOUT_S), _screen(w)
+        w.key(F8, delay=0.3)
+        assert _wait_for(w, lambda: ("EVENT " + how) in
+                         _jdb_stub_log(tmp_path), STEP_TIMEOUT_S), \
+            "the stand-in should play the stop back (stub log:\n%s):\n%s" \
+            % (_jdb_stub_log(tmp_path), _screen(w))
+        assert _wait_for(w, lambda: _mark_line(w) == JDB_STEPS_BREAK_LINE,
+                         STEP_TIMEOUT_S), \
+            "the breakpoint hit jdb reported during the answer should be " \
+            "marked on line %d (mark on %s):\n%s" \
+            % (JDB_STEPS_BREAK_LINE, _mark_line(w), _screen(w))
+        assert _watch_value(w, JDB_WATCH) == JDB_STEPS_X_AT_NEXT, \
+            "the watch took jdb's words on the stop for its value (%r):\n%s" \
+            % (_watch_row(w, JDB_WATCH), _screen(w))
+
+
+# A String whose lines start the way jdb's prompts do.  jdb's print writes
+# a String as it is, line ends included, so those lines come in the middle
+# of the answer.
+JDB_PROMPT_TEXT_PROG = (
+    "public class P {\n"
+    "    public static void main(String[] a) {\n"
+    "        String s = \"one\\n> two\\nmain[1] three\";\n"
+    "        int x = 3;\n"
+    "        x = x + 1;\n"
+    "        x = x + 1;\n"
+    "        System.out.println(s + x);\n"
+    "    }\n"
+    "}\n"
+)
+JDB_PROMPT_TEXT_WATCH = "s"
+JDB_PROMPT_TEXT_BREAK_LINE = 5    # x = x + 1;  x is 3
+JDB_PROMPT_TEXT_NEXT_LINE = 6     # x is 4
+JDB_PROMPT_TEXT_X = 3
+
+
+# @scenario SC-debug-07
+def test_jdb_string_watch_with_prompt_like_lines_keeps_the_next_watch(
+        tmp_path):
+    """A watch on a String whose lines start like jdb's prompt ("> two",
+    "main[1] three") ends where jdb's answer ends: the watch on x after it
+    shows x's value, at this stop and at the next."""
+    _need("jdb", "javac")
+    with WpeSession(str(tmp_path), JDB_PROMPT_TEXT_PROG, filename="P.java",
+                    wait=1.5) as w:
+        _stop_java_on(w, JDB_PROMPT_TEXT_BREAK_LINE)
+        _add_watch(w, JDB_PROMPT_TEXT_WATCH)
+        assert _wait_for(w, lambda: _watch_row(w, JDB_PROMPT_TEXT_WATCH)
+                         is not None, STEP_TIMEOUT_S), _screen(w)
+        _add_watch(w, JDB_WATCH)
+        assert _wait_for(w, lambda: _watch_value(w, JDB_WATCH) ==
+                         JDB_PROMPT_TEXT_X, STEP_TIMEOUT_S), \
+            "the watch on x took part of the String's answer (%r):\n%s" \
+            % (_watch_row(w, JDB_WATCH), _screen(w))
+        _source_window_on_top(w)
+        w.key(F8, delay=0.5)
+        assert _wait_for(w, lambda: _mark_line(w) == JDB_PROMPT_TEXT_NEXT_LINE
+                         and _watch_value(w, JDB_WATCH) ==
+                         JDB_PROMPT_TEXT_X + 1, STEP_TIMEOUT_S), \
+            "at the next stop x should be %d (mark on %s, x %r):\n%s" \
+            % (JDB_PROMPT_TEXT_X + 1, _mark_line(w),
+               _watch_row(w, JDB_WATCH), _screen(w))
+
+
+# A second thread passes line 8 every tenth of a second.  A watch that
+# calls a method lets every thread run while jdb runs the method, so that
+# thread reaches its breakpoint while jdb answers the watch, and jdb then
+# never finishes the call: the real race of an event during an answer.
+JDB_SECOND_THREAD_PROG = (
+    "public class P {\n"
+    "    static int tick = 0;\n"
+    "    static int slow() throws Exception {\n"
+    "        Thread.sleep(1500); return 42; }\n"
+    "    public static void main(String[] a) throws Exception {\n"
+    "        Thread t = new Thread(() -> {\n"
+    "            while (true) {\n"
+    "                tick++;\n"
+    "                try { Thread.sleep(100); } catch (Exception e) { }\n"
+    "            }\n"
+    "        });\n"
+    "        t.setDaemon(true);\n"
+    "        t.start();\n"
+    "        int x = 3;\n"
+    "        Thread.sleep(300);\n"
+    "        System.out.println(\"X \" + x);\n"
+    "    }\n"
+    "}\n"
+)
+JDB_SECOND_THREAD_STOP_LINE = 15   # main stops here first
+JDB_SECOND_THREAD_LINE = 8         # the other thread's breakpoint
+JDB_SLOW_WATCH = "P.slow()"
+WAITING_FOR_JDB_SLOW = "waiting for jdb to answer `print P.slow()`"
+JDB_STILL_ANSWERING = "jdb is still answering"
+
+
+# @scenario SC-debug-50
+def test_jdb_breakpoint_hit_while_a_watch_hangs_is_shown_after_esc(tmp_path):
+    """With the real jdb: another thread reaches a breakpoint while jdb runs
+    a watch's method call, and jdb never finishes the call.  Esc gives up on
+    the watch; the stop jdb reported is then marked, and a debugger key is
+    taken, not refused as "still answering"."""
+    _need("jdb", "javac")
+    with WpeSession(str(tmp_path), JDB_SECOND_THREAD_PROG,
+                    filename="P.java", wait=1.5) as w:
+        _stop_java_on(w, JDB_SECOND_THREAD_STOP_LINE)
+        _source_window_on_top(w)
+        _go_to_line(w, JDB_SECOND_THREAD_LINE)
+        w.key(CTRL_G, "b", delay=1.0)
+        _add_watch(w, JDB_SLOW_WATCH)
+        if _status_row_says(w, WAITING_FOR_JDB_SLOW, STEP_TIMEOUT_S):
+            w.key(ESC, delay=1.0)
+        assert _wait_for(w, lambda: _mark_line(w) == JDB_SECOND_THREAD_LINE,
+                         STEP_TIMEOUT_S), \
+            "the breakpoint the other thread reached should be marked " \
+            "(mark on %s):\n%s" % (_mark_line(w), _screen(w))
+        w._drain(NOTHING_MORE_S)
+        _source_window_on_top(w)
+        w.key(CTRL_G, "k", delay=1.0)
+        assert JDB_STILL_ANSWERING not in _bottom_bar(w), \
+            "after the stop is shown a debugger key should be taken:\n%s" \
+            % _screen(w)
+        _quit_and_see_the_session_gone(w)
+
+
+# @scenario SC-debug-07
+def test_jdb_continue_after_a_pause_that_met_a_stop_runs_on(tmp_path):
+    """Pause's "suspend" reaches jdb after the program stopped on a
+    breakpoint by itself, so it holds the program a second time.  Continue
+    then lets the program run to its end, instead of leaving it held while
+    the editor says it runs."""
+    _need("jdb", "javac")
+    with WpeSession(str(tmp_path), JDB_PAUSE_RACE_PROG, filename="P.java",
+                    wait=1.5,
+                    env_extra=_jdb_stub_env(JDB_SUSPEND_ASKED)) as w:
+        _stop_java_on(w, JDB_PAUSE_RACE_FIRST_LINE)
+        _source_window_on_top(w)
+        _go_to_line(w, JDB_PAUSE_RACE_STOP_LINE)
+        w.key(CTRL_G, "b", delay=0.4)
+        w.key(CTRL_G, "r", delay=0.5)
+        w.key(*CTRL_G_I, delay=0.3)
+        _jdb_stub_holds(w, tmp_path, JDB_SUSPEND_ASKED)
+        assert _wait_for(w, lambda: _mark_line(w) == JDB_PAUSE_RACE_STOP_LINE,
+                         LIVE_STOP_TIMEOUT_S), \
+            "the program should stop on line %d (mark on %s):\n%s" \
+            % (JDB_PAUSE_RACE_STOP_LINE, _mark_line(w), _screen(w))
+        w._drain(NOTHING_MORE_S)
+        w.key(CTRL_G, "r", delay=0.5)
+        assert _wait_for(w, lambda: "X %d" % (JDB_PAUSE_RACE_X + 1)
+                         in _screen(w), LIVE_STOP_TIMEOUT_S), \
+            "Continue should let the program run to its end (stub log:\n" \
+            "%s):\n%s" % (_jdb_stub_log(tmp_path), _screen(w))

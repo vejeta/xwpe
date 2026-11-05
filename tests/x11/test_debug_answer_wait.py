@@ -1,4 +1,4 @@
-"""The keys reach the editor while gdb or pdb answers at a stop (X11).
+"""The keys reach the editor while gdb, pdb or jdb answers at a stop (X11).
 
 tests/stubs/gdb stands in front of the real gdb and holds back its `where`
 until the test writes to its release pipe, so the editor waits for gdb's
@@ -243,3 +243,88 @@ def test_pdb_keys_reach_the_editor_while_it_answers(xwpe):
     xwpe.key("F8", delay=0.6)
     assert _wait(lambda: PDB_STEP_SENT in _pdb_stub_log(home), STOP_TIMEOUT_S), \
         "once pdb answers, F8 should step:\n%s" % _pdb_stub_log(home)
+
+
+# jdb: tests/stubs/jdb/jdb stands in front of the real jdb, holding one
+# command as the gdb and pdb stubs do.  As for pdb, the held command is the
+# answer to a breakpoint set at a stop, so the source window is the one the
+# keys go to.
+JDB_STUB_LOG = "jdb-stub.log"
+JDB_STUB_RELEASE = "jdb-stub.release"
+JDB_START_TIMEOUT_S = 45                # javac and the VM's start
+JDB_PROG = (
+    "public class P {\n"
+    "    public static void main(String[] a) {\n"
+    "        int x = 1;\n"
+    "        x = x + 1;\n"
+    "        x = x + 1;\n"
+    "        System.out.println(\"X \" + x);\n"
+    "    }\n"
+    "}\n"
+)
+JDB_BREAK_LINE = 4
+JDB_TOGGLE_LINE = 5
+JDB_BREAK_ASKED = "stop at "            # jdb's command that sets a breakpoint
+JDB_STEP_SENT = "CMD next\n"
+JDB_STACK_ASKED = "CMD where\n"
+JDB_PROG_WITH_TYPED = "".join(
+    TYPED + row if n == JDB_TOGGLE_LINE else row
+    for n, row in enumerate(JDB_PROG.splitlines(True), 1))
+JDB_STUB_ENV = {
+    "PATH": os.path.abspath(os.path.join(STUBS_DIR, "jdb")) + ":"
+            + os.environ.get("PATH", ""),
+    "XWPE_STUB_REAL_JDB": shutil.which("jdb") or "",
+    "XWPE_STUB_STALL": JDB_BREAK_ASKED,
+    "XWPE_STUB_STALL_NTH": "2",          # the first is the start's
+    "XWPE_TEST_SOURCE": JDB_PROG,
+    "XWPE_TEST_FILE": "P.java",
+}
+
+
+def _jdb_stub_log(home):
+    try:
+        with open(os.path.join(home, JDB_STUB_LOG)) as fh:
+            return fh.read()
+    except OSError:
+        return ""
+
+
+# @scenario SC-debug-49
+@pytest.mark.skipif(not shutil.which("jdb") or not shutil.which("javac"),
+                    reason="no jdb or javac")
+@pytest.mark.parametrize("xwpe", [JDB_STUB_ENV], indirect=True)
+def test_jdb_keys_reach_the_editor_while_it_answers(xwpe):
+    """jdb holds back its answer to a breakpoint set at a stop.  Ctrl-G K,
+    text and File > Save typed meanwhile all reach the editor: the file on
+    disk gets the text and no "k", before jdb answers, and jdb is never
+    asked for the stack.  Once it answers, F8 steps."""
+    if not getattr(xwpe, "can_debug", True):
+        pytest.skip("no debug session under the headless compositor harness")
+    home = os.path.dirname(xwpe.srcfile)
+    _go_to_line(xwpe, JDB_BREAK_LINE)
+    xwpe.key("ctrl+g", "b", delay=0.6)
+    xwpe.key("ctrl+g", "r", delay=1.0)
+    assert _wait(lambda: _count(xwpe.screenshot(), STOP_GREEN) >= MIN_BAR_PIXELS,
+                 JDB_START_TIMEOUT_S), \
+        "Ctrl-G R should stop on the breakpoint:\n%s" % _jdb_stub_log(home)
+    _go_to_line(xwpe, JDB_TOGGLE_LINE)
+    xwpe.key("ctrl+g", "b", delay=0.6)
+    assert _wait(lambda: ("STALL " + JDB_BREAK_ASKED) in _jdb_stub_log(home),
+                 HOLD_TIMEOUT_S), \
+        "the editor should ask jdb to set the breakpoint:\n%s" \
+        % _jdb_stub_log(home)
+    xwpe.key("ctrl+g", "k", delay=0.6)
+    xwpe.type(TYPED, delay=0.4)
+    xwpe.save()
+    assert _wait(lambda: xwpe.saved_text() == JDB_PROG_WITH_TYPED,
+                 STOP_TIMEOUT_S), \
+        "keys typed while jdb answers should reach the editor, and Ctrl-G K " \
+        "should type nothing (file on disk:\n%r)" % xwpe.saved_text()
+    assert JDB_STACK_ASKED not in _jdb_stub_log(home), \
+        "Ctrl-G K while jdb answers should be refused, not asked:\n%s" \
+        % _jdb_stub_log(home)
+    with open(os.path.join(home, JDB_STUB_RELEASE), "w") as fh:
+        fh.write("go\n")
+    xwpe.key("F8", delay=0.6)
+    assert _wait(lambda: JDB_STEP_SENT in _jdb_stub_log(home), STOP_TIMEOUT_S), \
+        "once jdb answers, F8 should step:\n%s" % _jdb_stub_log(home)

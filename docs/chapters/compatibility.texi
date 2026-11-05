@@ -8,14 +8,14 @@ This chapter lists what xwpe now does differently from the xwpe of the
 1990s, where a user of the original would notice it.  Each entry says
 what the original did, what xwpe does now, and why.
 
-@section While gdb or pdb answers at a stop
+@section While gdb, pdb or jdb answers at a stop
 
 @table @asis
 @item Ctrl-C while the debugger answers
 @cindex Ctrl-C, while gdb answers
 The original asked, in a box, whether to quit the debugger when
-@kbd{Ctrl-C} was typed while it read the debugger's answer.  Under gdb
-and pdb, @kbd{Ctrl-C} now stops waiting for the answer, as @key{Esc}
+@kbd{Ctrl-C} was typed while it read the debugger's answer.  Under gdb,
+pdb and jdb, @kbd{Ctrl-C} now stops waiting for the answer, as @key{Esc}
 does, and the status row says which command the debugger did not answer;
 Debug > Quit ends the session.  At a stop, while the debugger starts and
 when a run or a step goes out, the editor no longer waits for the answer
@@ -24,7 +24,7 @@ at all, so there is no moment where only a box could get you out.
 @item Keys typed while the debugger answers
 @cindex keys, while gdb answers
 The original passed every key typed while it read the debugger's answer
-on to the debugger.  Under gdb and pdb, keys typed then are the editor's: text
+on to the debugger.  Under gdb, pdb and jdb, keys typed then are the editor's: text
 goes into the file, menus open, and a debugger command waits for the
 answer or is refused with the waiting line.  A key that edits acts at
 once, so it may act before the step typed just before it has stopped.

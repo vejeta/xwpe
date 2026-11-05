@@ -235,7 +235,7 @@ static int  e_d_ga_go_keeps_start_brk(int sw);
 static int  e_d_ga_go_keeps_goto_line(int line);
 static void e_d_ga_drop_start_entry(int i);
 static int  e_d_ga_set_up_again(FENSTER *f);
-/* What the request engine is told of gdb and of pdb (e_d_ga, below). */
+/* What the request engine is told of gdb, pdb and jdb (e_d_ga, below). */
 typedef struct e_d_ga_backend E_D_GA_BACKEND;
 static const E_D_GA_BACKEND *e_d_ga_backend_of(int type);
 static const E_D_GA_BACKEND *e_d_ga_this(void);
@@ -244,7 +244,14 @@ static void e_d_ga_remove_all(ECNT *cn);     /* Remove all at a stop */
 static void e_d_gp_stop_ask(ECNT *cn, const char *file, int line);
 static void e_d_gp_pause_ask(ECNT *cn);
 static int  e_d_pdb_sync_on_loop(ECNT *cn);
-static int  e_d_pdb_finish_ask(FENSTER *f);
+static int  e_d_ga_finish_ask(FENSTER *f);   /* pdb and jdb */
+static int  e_d_ga_finishes_on_loop(void);
+static int  e_d_ga_sets_cursor_brk(void);
+/* jdb's stops and Pause, asked on the fd loop too. */
+static void e_d_gj_stop_ask(ECNT *cn, const char *stop);
+static void e_d_gj_pause_ask(ECNT *cn);
+static void e_d_gj_forget_events(void);   /* jdb's events between answers */
+static void e_d_jdb_owe_at_stop(void);
 static void e_d_frames_put_in_window(ECNT *cn, int is, int sw);
 static int  e_d_gdb_run_line_own(const char *line);
 static int  e_d_gb_removal_told(int id);     /* gdb is removing it now */
@@ -1255,9 +1262,9 @@ static const E_D_RUN_OPS *e_d_jdb_run_ops(void);   /* jdb's table (below) */
 static const E_D_RUN_OPS *e_d_a68g_run_ops(void);  /* a68g's table (below) */
 static const E_D_RUN_OPS *e_d_dap_run_ops(void);   /* the adapters' (below) */
 static int e_d_run_to_cursor_line(FENSTER *f, int line);   /* Go to cursor */
+static int e_d_ga_run_to_cursor(FENSTER *f, int line);     /* pdb's, jdb's */
 static int e_d_cursor_brk_pending(void);
 static int e_d_jdb_run_started(FENSTER *f, int start_brk);
-static int e_d_jdb_run_continued(FENSTER *f, int start_brk);
 static const char *e_d_jdb_continue_command(void);   /* cont or resume */
 
 /* The run in progress. */
@@ -1345,16 +1352,15 @@ extern char *e_d_msg[];                        /* the debugger's words */
    output), for an uncaught exception, and the "] " that ends its prompt
    when it waits for a command, are E_D_JDB_* of we_debsess.h. */
 /* Pause under jdb: "suspend" stops every thread of the VM and answers with
-   E_D_JDB_SUSPENDED and a bare "> " prompt, with no current thread.
-   "threads" lists them and "thread ID" picks the one to look at.  "resume",
-   not "cont" (which needs a breakpoint event), lets all of them go again. */
+   E_D_JDB_SUSPENDED and a bare "> " prompt, with no current thread (at a
+   stop it answers the same line and the thread's prompt).  "threads" lists
+   them, "where ID" reads one's stack and "thread ID" picks the one to look
+   at (e_d_gj_pause_ask).  "resume", not "cont" (which needs a breakpoint
+   event), lets all of them go again. */
 #define E_D_JDB_SUSPEND     "suspend\n"
 #define E_D_JDB_RESUME      "resume\n"
 #define E_D_JDB_CONT        "cont\n"
-#define E_D_JDB_THREADS     "threads\n"
-#define E_D_JDB_THREAD_FMT  "thread %s\n"
 #define E_D_JDB_THREAD_ID_MAX 32
-#define E_D_JDB_THREAD_CMD_MAX (E_D_JDB_THREAD_ID_MAX + 16)
 /* Said on the status row when the file's language picks another debugger. */
 #define E_D_SWITCH_JDB_LINE "Java file: switching to jdb debugger."
 #define E_D_SWITCH_PDB_LINE "Python file: switching to pdb debugger."
@@ -2384,7 +2390,7 @@ static void e_d_run_go_on_now(const char *cmd)
  * @cmd: the command, ending in a newline.
  *
  * The program runs on as if it had not stopped; the editor keeps its keys.
- * gdb and pdb may first have prompts to take back (e_d_ga_go_on).
+ * gdb, pdb and jdb may first have answers to take back (e_d_ga_go_on).
  */
 static void e_d_run_go_on(const char *cmd)
 {
@@ -4282,6 +4288,7 @@ int e_d_quit_basic(FENSTER *f)
  e_d_jdb_missing_forget();
  e_d_jdb_pause_forget();
  e_d_ga_forget();
+ e_d_gj_forget_events();
  e_d_run_forget();
  e_d_session_forget();
  if (!e_d_swtch)
@@ -6428,7 +6435,7 @@ int e_mk_brk_main(FENSTER *f, int sw)
   }
   if (e_d_ga_go_keeps_start_brk(sw))
    return(0);
-  if (e_deb_type == DEB_GDB)
+  if (e_d_ga_backend_of(e_deb_type))
   {
    e_d_ga_drop_start_entry(sw-1);
    return(0);
@@ -6439,13 +6446,6 @@ int e_mk_brk_main(FENSTER *f, int sw)
     sprintf(eing, "delete %d\n", e_d_nrbrpts[sw-1]);
    else if (e_deb_type == DEB_XDB)
     sprintf(eing, "db %d\n", e_d_nrbrpts[sw-1]);
-   else if (e_deb_type == DEB_JDB)
-   {
-    char cls[E_D_LINE_MAX];
-    snprintf(cls, sizeof cls, "%s", e_d_file);
-    WpeStringCutChar(cls, '.');
-    sprintf(eing, "clear %s.%s\n", cls, e_get_start_symbol());
-   }
    else if (e_deb_type == DEB_SDB)
    {
     sprintf(eing, "e %s\n", e_get_start_symbol());
@@ -6465,8 +6465,9 @@ int e_mk_brk_main(FENSTER *f, int sw)
   e_d_sbrpts[e_d_nbrpts - 1] = MALLOC(1);
   e_d_sbrpts[e_d_nbrpts - 1][0] = '\0';   /* no file: the start symbol */
   e_d_nrbrpts[e_d_nbrpts - 1] = 0;        /* not set in the debugger yet */
-  /* gdb is told by the run that follows, on the fd loop (e_d_ga_go). */
-  if (e_d_swtch && e_deb_type != DEB_GDB)
+  /* gdb and jdb are told by the run that follows, on the fd loop
+     (e_d_ga_go); pdb needs no command for it. */
+  if (e_d_swtch && !e_d_ga_backend_of(e_deb_type))
   {
    if (e_deb_type == DEB_DBX)
    {
@@ -6479,18 +6480,6 @@ int e_mk_brk_main(FENSTER *f, int sw)
     sprintf(eing, "b %s\n", e_get_start_symbol());
     if (e_d_brk_arm_start_symbol(eing) == -1)
      return(-1);
-   }
-   else if (e_deb_type == DEB_JDB)
-   {
-    { char cls[E_D_LINE_MAX];
-      snprintf(cls, sizeof cls, "%s", e_d_file);
-      WpeStringCutChar(cls, '.');
-      sprintf(eing, "stop in %s.%s\n", cls, e_get_start_symbol());
-    }
-    jdb_trace("e_mk_brk_main: sending '%s'\n", eing);
-    e_d_send_cmd(eing);
-    if (e_d_dum_read() == -1) return(-1);
-    e_d_nrbrpts[e_d_nbrpts - 1] = e_d_nbrpts;
    }
    else if (e_deb_type == DEB_SDB)
    {
@@ -9417,7 +9406,7 @@ static void e_d_start_session_ready(ECNT *cn, e_d_resume_fn cmd, int arg)
 }
 
 /**
- * e_d_start_sets_up_later - gdb or pdb answered its banner: set it up
+ * e_d_start_sets_up_later - gdb, pdb or jdb answered its banner: set it up
  * through the request engine, and run the command the user pressed once it
  * has answered.
  * @cn: the editor; @cmd, @arg: the command that started the session.
@@ -9425,7 +9414,7 @@ static void e_d_start_session_ready(ECNT *cn, e_d_resume_fn cmd, int arg)
  * The user keeps the editor while the debugger takes its settings and
  * breakpoints; a debugger key typed meanwhile is kept for after the first
  * stop.
- * Return: 1 when the set-up goes on later (gdb, pdb), 0 for the other
+ * Return: 1 when the set-up goes on later (gdb, pdb, jdb), 0 for the other
  * debuggers.
  */
 static int e_d_start_sets_up_later(ECNT *cn, e_d_resume_fn cmd, int arg)
@@ -10412,19 +10401,6 @@ int e_run_debug(FENSTER *f)
 #define E_D_STOP_PATH_MAX   E_DS_PATH_MAX
 
 /**
- * e_d_refresh_watches_at_stop - Re-read every watch at a new stop.
- * @f: the window the stop came from.
- *
- * The user sees each watch's current value as soon as the program stops,
- * whichever debugger runs it.  Called before the stop is marked, in the
- * order gdb's stop handlers use, so the source window ends on top.
- */
-static void e_d_refresh_watches_at_stop(FENSTER *f)
-{
- e_d_p_watches(f, 0);
-}
-
-/**
  * e_d_window_path_of - The full path of the open window that shows @name.
  * @cn: the editor; @name: a file name without directory;
  * @out, @n: receives the directory and the name.
@@ -10613,7 +10589,8 @@ static void e_d_jdb_say_no_source(FENSTER *f, const char *cls)
  * the gdb stop finds its file, never in whichever window is on top
  * (Messages after the build, Watches after a watch was added).  jdb names a
  * class where gdb names a file: that is the one difference, resolved here.
- * A class in a package is opened from its package's directory.
+ * A class in a package is opened from its package's directory.  The
+ * watches of the stop were read before, on the fd loop (e_d_gj_stop_ask).
  * Return: e_d_goto_break's answer, or 0 when the stop names no line or its
  * source is not found.
  */
@@ -10630,7 +10607,6 @@ static int e_d_jdb_mark_stop(FENSTER *f, const char *stop)
   snprintf(cls, sizeof cls, "%s", e_d_file);
   WpeStringCutChar(cls, '.');
  }
- e_d_refresh_watches_at_stop(f);
  if (!e_d_jdb_find_source(f->ed, cls, path, sizeof path))
  {
   e_d_jdb_say_no_source(f, cls);
@@ -10906,8 +10882,10 @@ static int e_d_run_answer_read(int prsw)
  * a stop the editor made to apply a breakpoint change.
  *
  * gdb, pdb and a68g are the debuggers interrupted for one; the first run
- * of a session goes on with it too, never with "run" again.
- * Return: the command, or NULL for a debugger never interrupted for it.
+ * of a session goes on with it too, never with "run" again.  jdb is never
+ * interrupted for one, but a stop on a breakpoint the user has just
+ * removed goes on with its "cont" (e_d_jdb_stale_stop).
+ * Return: the command, or NULL for a debugger that has none for it.
  */
 static const char *e_d_run_continue_command(void)
 {
@@ -10915,6 +10893,8 @@ static const char *e_d_run_continue_command(void)
   return("c\n");
  if (e_deb_type == DEB_A68G)
   return("continue\n");
+ if (e_deb_type == DEB_JDB)
+  return(E_D_JDB_CONT);
  return(NULL);
 }
 
@@ -11065,12 +11045,10 @@ int e_deb_run(FENSTER *f)
  e_d_switch_out(1);
  if (e_d_ga_backend_of(e_deb_type) && prsw)
   return(e_d_ga_go(f, E_D_GO_CONTINUE, eing, main_brk));
- if (e_deb_type == DEB_GDB)
+ if (e_d_ga_backend_of(e_deb_type))
   return(e_d_ga_go(f, E_D_GO_START, eing, main_brk));
  jdb_trace("e_deb_run: sending '%s' (prsw=%d)\n", eing, prsw);
  e_d_send_cmd(eing);
- if (e_deb_type == DEB_JDB)
-  return(e_d_jdb_run_continued(f, main_brk));
  if ((e_deb_type == DEB_DBX  || e_deb_type == DEB_XDB) && !prsw)
  {
   if (e_d_run_answer_read(prsw) < 0)
@@ -11123,6 +11101,138 @@ static E_D_STEP_REPLY e_d_jdb_start_reply;
    (we_debsess.c).  Only jdb writes to its pipe, so the program's own text,
    whatever it says, is never read there. */
 
+/* jdb's prompt, which ends each of its answers with no line end: the bare
+   E_D_JDB_BARE_PROMPT while it has no current thread (before the program
+   first runs, while it runs, after Pause's "suspend"), and the thread and
+   frame, "main[1] ", at a stop.  The thread's name may hold blanks
+   ("Signal Dispatcher[1] ") but never starts with one, unlike a row of
+   "where" ("  [1] P.sq (P.java:3)"). */
+#define E_D_JDB_PROMPT_OPEN  '['
+#define E_D_JDB_PROMPT_CLOSE "] "
+
+/**
+ * e_d_jdb_prompt_len - The length of the jdb prompt that starts at @p.
+ * @p: a place in jdb's answer.
+ *
+ * The editor tells where one of jdb's answers ends, and steps over a prompt
+ * jdb wrote in front of a line, by the prompt's own shape.
+ * Return: its bytes, or 0 when no prompt starts there.
+ */
+static size_t e_d_jdb_prompt_len(const char *p)
+{
+ size_t bare = strlen(E_D_JDB_BARE_PROMPT);
+ const char *open, *q;
+
+ if (!strncmp(p, E_D_JDB_BARE_PROMPT, bare))
+  return(bare);
+ if (!*p || isspace((unsigned char)*p))
+  return(0);
+ open = strchr(p, E_D_JDB_PROMPT_OPEN);
+ if (!open || memchr(p, '\n', (size_t)(open - p)))
+  return(0);
+ for (q = open + 1; isdigit((unsigned char)*q); q++)
+  ;
+ if (q == open + 1 ||
+     strncmp(q, E_D_JDB_PROMPT_CLOSE, strlen(E_D_JDB_PROMPT_CLOSE)))
+  return(0);
+ return((size_t)(q - p) + strlen(E_D_JDB_PROMPT_CLOSE));
+}
+
+/**
+ * e_d_jdb_skip_prompts - Where a line of jdb's answer starts once the
+ * prompts jdb wrote in front of it are stepped over.
+ * @line: the line.
+ *
+ * jdb writes its prompt with no line end, so the next thing it writes (an
+ * answer, an event) goes on the prompt's line.
+ */
+static const char *e_d_jdb_skip_prompts(const char *line)
+{
+ size_t len;
+
+ while ((len = e_d_jdb_prompt_len(line)) > 0)
+  line += len;
+ return(line);
+}
+
+/**
+ * e_d_jdb_prompts_only - How many prompts make up the whole of @len bytes
+ * at @line, and nothing else.
+ * Return: their number, or 0 when the bytes hold anything else.
+ */
+static int e_d_jdb_prompts_only(const char *line, size_t len)
+{
+ size_t at = 0, one;
+ int k = 0;
+
+ while (at < len && (one = e_d_jdb_prompt_len(line + at)) > 0 &&
+        at + one <= len)
+ {
+  at += one;
+  k++;
+ }
+ if (at != len)
+  return(0);
+ return(k);
+}
+
+/* jdb's answers still owed to commands sent while the program ran: Pause's
+   "suspend", and a breakpoint set or cleared (e_d_jdb_sync_live).  Each is
+   one line and one prompt.  One that has not come when the stop is read
+   would end the answer to the stop's first command, so the stop takes them
+   back by order first (the settle step, e_d_gj_settle_answered). */
+static int e_d_jdb_owed;
+/* The first words of jdb's answers to those commands. */
+#define E_D_JDB_REMOVED     "Removed: breakpoint "
+#define E_D_JDB_NOT_FOUND   "Not found: breakpoint "
+#define E_D_JDB_RESUMED     "All threads resumed."
+
+/**
+ * e_d_jdb_owe_one - A command went to jdb while the program runs: its
+ * answer is owed.
+ */
+static void e_d_jdb_owe_one(void)
+{
+ e_d_jdb_owed++;
+}
+
+/**
+ * e_d_jdb_owed_line - Is this line of jdb's run answer the answer to a
+ * command sent while the program ran?  Then it is owed no more.
+ * @line: a whole line.
+ */
+static void e_d_jdb_owed_line(const char *line)
+{
+ char spec[PATH_MAX];
+ const char *at;
+
+ if (e_d_jdb_owed <= 0)
+  return;
+ if (e_ds_jdb_live_word(line, spec, sizeof spec, &at) != E_DS_NOT_FOUND ||
+     strstr(line, E_D_JDB_REMOVED) || strstr(line, E_D_JDB_NOT_FOUND) ||
+     strstr(line, E_D_JDB_SUSPENDED) || strstr(line, E_D_JDB_RESUMED))
+  e_d_jdb_owed--;
+}
+
+/**
+ * e_d_jdb_owe_at_stop - jdb stopped the program while answers are still
+ * owed: the run's controller counts them as the answers its stop takes
+ * back first (e_d_run_settle), as for the interrupts gdb and pdb answer.
+ */
+static void e_d_jdb_owe_at_stop(void)
+{
+ e_d_run.int_owed = e_d_jdb_owed;
+}
+
+/**
+ * e_d_jdb_owed_forget - Nothing is owed any more: the settle step took the
+ * answers back, or the session ended.
+ */
+static void e_d_jdb_owed_forget(void)
+{
+ e_d_jdb_owed = 0;
+}
+
 /**
  * e_d_jdb_says_suspended - Does jdb's answer say Pause's "suspend" took
  * hold and ask for the next command?
@@ -11143,6 +11253,42 @@ static int e_d_jdb_says_suspended(const char *text)
 /* Set when jdb's stop was Pause's: the VM is suspended as a whole, and
    Continue has to resume it (see e_d_jdb_continue_command). */
 static int e_d_jdb_suspended;
+/* Pause's "suspend" went to jdb in this run. */
+static int e_d_jdb_suspend_sent;
+/* The program stopped on its own while that "suspend" was on its way: the
+   VM is then held twice, once by its stop and once by the suspend, and
+   every resume ("cont", "next", "resume") lifts it only once. */
+static int e_d_jdb_suspended_twice;
+
+/**
+ * e_d_jdb_note_suspend_at_stop - jdb's stop has come: when it is one of the
+ * program's own (a breakpoint, a step's end) and Pause's "suspend" went to
+ * jdb in this run, the VM is held twice.
+ */
+static void e_d_jdb_note_suspend_at_stop(void)
+{
+ if (e_d_jdb_suspend_sent && e_ds_jdb_stop_line_in(e_d_jdb_reply.buf))
+  e_d_jdb_suspended_twice = 1;
+}
+
+/**
+ * e_d_jdb_release_second_suspend - A run starts from a stop that a Pause's
+ * "suspend" met: the command just sent lifts the VM once, and one more
+ * "resume" lifts the suspend's hold.
+ *
+ * The user's Continue, step or Finish after such a stop then lets the
+ * program run, instead of leaving it held with the editor saying it runs.
+ * jdb's answer to the extra "resume" is owed like any command sent while
+ * the program runs (e_d_jdb_owed).
+ */
+static void e_d_jdb_release_second_suspend(void)
+{
+ if (!e_d_jdb_suspended_twice)
+  return;
+ e_d_jdb_suspended_twice = 0;
+ e_d_send_cmd(E_D_JDB_RESUME);
+ e_d_jdb_owe_one();
+}
 
 /**
  * e_d_jdb_pause_forget - Forget a Pause when the debug session ends.
@@ -11150,11 +11296,14 @@ static int e_d_jdb_suspended;
  * A session quit while paused leaves no VM to resume.  The next
  * session's first Continue then answers its own stop with "cont", as
  * every Continue after a breakpoint does, not with a "resume" meant for
- * the old program.
+ * the old program, and no answer of the old jdb's is waited for.
  */
 static void e_d_jdb_pause_forget(void)
 {
  e_d_jdb_suspended = 0;
+ e_d_jdb_suspend_sent = 0;
+ e_d_jdb_suspended_twice = 0;
+ e_d_jdb_owed_forget();
 }
 
 /**
@@ -11177,12 +11326,15 @@ static const char *e_d_jdb_continue_command(void)
  * e_d_jdb_interrupt - Pause the Java program: suspend its VM.
  *
  * jdb takes commands while the program runs.  Its answer is read by the
- * run's reader, which shows it as a stop (e_d_jdb_feed).
+ * run's reader, which shows it as a stop (e_d_jdb_feed); when a stop of
+ * the program's own comes first, the answer is owed to that stop.
  * Return: 0, the command is sent.
  */
 static int e_d_jdb_interrupt(void)
 {
  e_d_send_cmd(E_D_JDB_SUSPEND);
+ e_d_jdb_owe_one();
+ e_d_jdb_suspend_sent = 1;
  return(0);
 }
 
@@ -11200,13 +11352,19 @@ static int e_d_jdb_pause_stop(void)
 }
 
 /**
- * e_d_jdb_begin - Forget the answer of the run before when a run starts.
+ * e_d_jdb_begin - Forget the answer of the run before when a run starts,
+ * and any event jdb wrote between the answers of the stop before: the
+ * run's reader reads what jdb writes from here.  The command that starts
+ * the run has gone; a stop held twice gets its second "resume" now.
  */
 static void e_d_jdb_begin(void)
 {
  e_d_step_reply_init(&e_d_jdb_reply);
  e_d_jdb_live_scanned = 0;
  e_d_jdb_ncleared = 0;
+ e_d_jdb_suspend_sent = 0;
+ e_d_gj_forget_events();
+ e_d_jdb_release_second_suspend();
 }
 
 /**
@@ -11323,7 +11481,8 @@ static void e_d_jdb_live_word_in(const char *line)
  * @text: what jdb has said in this run so far.
  *
  * The user sees each mark turn solid as soon as jdb has it, while the
- * program goes on, or the reason it stays hollow.
+ * program goes on, or the reason it stays hollow.  Each answer read is one
+ * the stop no longer has to take back (e_d_jdb_owed_line).
  */
 static void e_d_jdb_note_live_answers(const char *text)
 {
@@ -11337,6 +11496,7 @@ static void e_d_jdb_note_live_answers(const char *text)
  {
   e_d_text_next_line(text, &pos, line, sizeof line);
   e_d_jdb_live_word_in(line);
+  e_d_jdb_owed_line(line);
  }
  e_d_jdb_live_scanned = pos;
 }
@@ -11400,6 +11560,11 @@ static int e_d_jdb_feed(FENSTER *f)
    fed = e_d_jdb_pause_stop();
  }
  fcntl(wfildes[0], F_SETFL, flags);
+ if (fed == E_D_FEED_STOPPED)
+ {
+  e_d_jdb_owe_at_stop();
+  e_d_jdb_note_suspend_at_stop();
+ }
  return(fed);
 }
 
@@ -11516,8 +11681,6 @@ static void e_d_jdb_start_on_output(int fd, void *data)
  e_d_jdb_start_read(e_d_jdb_start_reply.buf);
 }
 
-static void e_d_jdb_mark_paused_thread(FENSTER *f);   /* (frames, below) */
-
 /* Said on the status row at a stop on an uncaught exception. */
 #define E_D_JDB_EXCEPTION_FMT "Uncaught exception: %s"
 #define E_D_JDB_EXCEPTION_NAME_MAX 160
@@ -11572,18 +11735,19 @@ static void e_d_jdb_say_exception(FENSTER *f, const char *stop)
 
 /**
  * e_d_jdb_stopped - What jdb does when its stop comes: show the program's
- * last output, then mark the line it stopped on, or say the end.
+ * last output, then ask jdb on the fd loop what the stop needs, or say the
+ * end.
  * @f: the window on top.
  *
  * The user sees what the program printed up to the stop in Messages (a
- * line it has not ended yet included), then the green bar on the line jdb
- * stopped on, in the Java file it names, or one line in Messages saying
- * the program ended.  The same order as under gdb.
+ * line it has not ended yet included) at once; the green bar on the line
+ * jdb stopped on, in the Java file it names, and the watches come when jdb
+ * has answered, the keys reaching the editor meanwhile.  After Pause the
+ * thread that runs the user's code is looked for first.  The end is one
+ * line in Messages saying the program ended.  The same order as under gdb.
  */
 static void e_d_jdb_stopped(FENSTER *f)
 {
- const char *stop;
-
  e_d_jdb_ncleared = 0;       /* the stop is the user's: jdb has the rest */
  e_d_drain_pty_to_messages();
  if (e_ds_jdb_says_end(e_d_jdb_reply.buf))
@@ -11591,21 +11755,12 @@ static void e_d_jdb_stopped(FENSTER *f)
   e_d_jdb_end_session(f);
   return;
  }
- stop = e_ds_jdb_stop_line_in(e_d_jdb_reply.buf);
- if (!stop && e_d_jdb_suspended)
- {
-  e_d_jdb_mark_paused_thread(f);
-  e_d_switch_out(0);
-  return;
- }
- if (!stop)
- {
-  e_d_switch_out(0);   /* no stop line of jdb's left to mark */
-  return;
- }
- e_d_jdb_mark_stop(f, stop);
  e_d_switch_out(0);
- e_d_jdb_say_exception(f, stop);
+ e_d_run.stop_on_loop = 1;
+ if (!e_ds_jdb_stop_line_in(e_d_jdb_reply.buf) && e_d_jdb_suspended)
+  e_d_gj_pause_ask(f->ed);
+ else
+  e_d_gj_stop_ask(f->ed, e_ds_jdb_stop_line_in(e_d_jdb_reply.buf));
 }
 
 /* The breakpoints the user removed while the program ran, which jdb has
@@ -11761,8 +11916,31 @@ static void e_d_jdb_answer_reset(void)
  e_d_jdb_live_scanned = 0;
 }
 
+/**
+ * e_d_jdb_settle_later - Leave the answers jdb still owes to commands sent
+ * while the program ran to the first step of the requests that follow.
+ * @cn: unused; @owed: how many; @why: unused.
+ *
+ * jdb answers every such command, Pause's "suspend" included, with one
+ * line and one prompt, whatever the program did meanwhile: none is left
+ * in the program to come back at a later resume, as gdb's interrupts can.
+ * Return: the answers still owed.
+ */
+static int e_d_jdb_settle_later(ECNT *cn, int owed, int why)
+{
+ (void)cn;
+ (void)why;
+ e_d_ga_owe_settle(owed);
+ return(owed);
+}
+
 /* jdb: its answers on its pipe, the program's output on the pty, a prompt
-   at each stop.  jdb takes breakpoint commands while the program runs. */
+   at each stop.  jdb takes breakpoint commands while the program runs, so
+   it is never interrupted for one.  What a stop asks jdb (its watches, its
+   stack, the thread a Pause stopped in, the breakpoints changed meanwhile)
+   is asked on the fd loop, through the request engine (e_d_ga), so jdb has
+   no sync_at_stop; its settle leaves the answers still owed to commands
+   sent while the program ran to the first step of those requests. */
 static const E_D_RUN_OPS e_d_jdb_ops =
 {
  "jdb",
@@ -11772,17 +11950,18 @@ static const E_D_RUN_OPS e_d_jdb_ops =
  e_d_jdb_stopped,
  e_d_jdb_interrupt,
  e_d_jdb_sync_live,
- e_d_brk_sync_at_stop,
- e_d_run_to_cursor_line,
+ NULL,
+ e_d_ga_run_to_cursor,
  e_d_jdb_begin,
  NULL,
  0,
  NULL,
  NULL,
- NULL,
+ e_d_jdb_settle_later,
  e_d_jdb_answer_reset,
  0,
- e_d_jdb_stale_stop
+ e_d_jdb_stale_stop,
+ NULL
 };
 
 /**
@@ -11808,25 +11987,6 @@ static int e_d_jdb_run_started(FENSTER *f, int start_brk)
 {
  e_d_swtch = 3;
  return(e_d_run_hand_over(f, e_d_jdb_run_ops(), start_brk));
-}
-
-/**
- * e_d_jdb_run_continued - jdb was sent the command of a Run or a Continue:
- * let it run under the controller, with "cont" as the command that lets the
- * program on from a stop the user is not shown.
- * @f: the source window;
- * @start_brk: the editor's start breakpoint to take out at the stop, or 0.
- *
- * A stop on a breakpoint the user has just removed is then passed over
- * without a word, and the program runs on.
- * Return: as e_d_jdb_run_started.
- */
-static int e_d_jdb_run_continued(FENSTER *f, int start_brk)
-{
- int ret = e_d_jdb_run_started(f, start_brk);
-
- e_d_run_continues_with(E_D_JDB_CONT);
- return(ret);
 }
 
 /**
@@ -12963,7 +13123,6 @@ static int e_d_a68g_do_step(FENSTER *f, int sw)
 #define E_D_FRAME_DOWN_FMT   "down %d\n" /* pdb and jdb: N frames inwards     */
 #define E_D_PDB_OWN_FILE     "<string>" /* pdb's exec of the script: the last
                                            frame of pdb's own machinery  */
-#define E_D_JDB_WHERE        "where\n"
 #define E_D_JDB_FINISH       "step up\n"
 #define E_D_A68G_CALLS_FMT   "calls %d\n"
 #define E_D_A68G_CALLS_MAX   (sizeof E_D_A68G_CALLS_FMT + 8)
@@ -13057,8 +13216,8 @@ static void e_d_frames_reverse(void)
  * e_d_frames_reply_done - Has the debugger finished answering?
  * @tail: the last bytes it sent.
  *
- * pdb and a68g end an answer with their word prompt; jdb with
- * "thread[frame] " or "> ", the ends e_d_line_read recognises it by.
+ * a68g ends an answer with its word prompt (pdb's and jdb's frames are
+ * asked on the fd loop).
  * Return: 1 when @tail ends with the prompt.
  */
 static int e_d_frames_reply_done(const char *tail)
@@ -13066,9 +13225,6 @@ static int e_d_frames_reply_done(const char *tail)
  const char *prompt = e_d_prompt_text();
  size_t len = strlen(tail), plen;
 
- if (e_deb_type == DEB_JDB)
-  return(len >= 2 && tail[len - 1] == ' ' &&
-         (tail[len - 2] == ']' || tail[len - 2] == '>'));
  if (!prompt)
   return(0);
  plen = strlen(prompt);
@@ -13487,28 +13643,35 @@ static int e_d_jdb_frame_source(ECNT *cn, const char *func, char *out, size_t n)
 }
 
 /**
- * e_d_jdb_frames - Read jdb's stack.
- * @cn: the editor.
+ * e_d_jdb_frames_kept - Is the stack read at this stop still the one to
+ * show, so jdb is not asked "where" again?
  *
  * jdb's "where" starts at the selected frame, so with an outer frame
  * selected it would miss the inner ones.  The stack does not change while
  * the program stays stopped, and every stop selects the innermost frame
  * again, so the list read at the stop is kept while a frame is selected.
- * A frame counts as the user's when its class's source is found.
- * Return: 0, or -1 when jdb's output ended.
  */
-static int e_d_jdb_frames(ECNT *cn)
+static int e_d_jdb_frames_kept(void)
+{
+ return(e_d_nstack > 0 && e_d_nframes > 0);
+}
+
+/**
+ * e_d_jdb_take_frames - Read jdb's stack out of its answer to "where".
+ * @cn: the editor; @reply: the answer.
+ *
+ * A frame counts as the user's when its class's source is found; it then
+ * opens in the window the stop marker uses.  A prompt jdb wrote in front
+ * of a row (one that ended an event) is stepped over by the row parser.
+ */
+static void e_d_jdb_take_frames(ECNT *cn, const char *reply)
 {
  char row[E_D_FRAME_ROW_MAX], path[E_D_STOP_PATH_MAX];
- const char *p = e_d_frames_reply;
+ const char *p = reply ? reply : "";
  E_DS_FRAME fr;
  int user;
 
- if (e_d_nstack > 0 && e_d_nframes > 0)
-  return(0);
  e_d_nframes = 0;
- if (e_d_frames_ask(E_D_JDB_WHERE) == -1)
-  return(-1);
  while (e_d_frames_next_row(&p, row, sizeof row))
  {
   if (!e_ds_jdb_frame_parse(row, &fr))
@@ -13519,7 +13682,6 @@ static int e_d_jdb_frames(ECNT *cn)
   else
    e_d_frame_add(fr.func, fr.file, fr.line, user);
  }
- return(0);
 }
 
 /* The procedure a68g's "calls" shows ("PROC sq = (INT v) INT:" gives "sq",
@@ -13607,7 +13769,7 @@ static int e_d_dap_frames(void)
 static int e_d_collect_frames(ECNT *cn)
 {
  if (e_deb_type == DEB_JDB)
-  return(e_d_jdb_frames(cn));
+  return(0);       /* jdb's frames are asked on the fd loop (e_d_gj_frames_*) */
  e_d_nframes = 0;
  if (e_deb_type == DEB_PDB)
   return(0);       /* pdb's frames are asked on the fd loop (e_d_gp_frames_*) */
@@ -13750,13 +13912,14 @@ static int e_d_frame_select(int index)
 
 /**
  * e_d_jdb_thread_id - The id of the thread a row of jdb's "threads" names.
- * @row: "  (java.lang.Thread)0x1 main   running", or a "Group main:" row;
+ * @row: "  (java.lang.Thread)0x1 main   running", or a "Group main:" row,
+ * possibly after a prompt jdb wrote at the end of an event;
  * @id, @n: receives "0x1".
  * Return: 1 when @row names a thread.
  */
 static int e_d_jdb_thread_id(const char *row, char *id, size_t n)
 {
- const char *p = row;
+ const char *p = e_d_jdb_skip_prompts(row);
  size_t len;
 
  while (*p == ' ')
@@ -13786,81 +13949,6 @@ static int e_d_jdb_user_frame(void)
   if (e_d_frames[i].user && e_d_frames[i].line != E_D_FRAME_NO_LINE)
    return(i);
  return(-1);
-}
-
-/**
- * e_d_jdb_thread_user_frame - Look at one thread of the paused VM.
- * @cn: the editor; @id: the thread's id.
- *
- * The thread becomes jdb's current one and its stack is read.
- * Return: the index of its innermost frame of the user's code, or -1 when
- * it has none (a VM service thread) or jdb's output ended.
- */
-static int e_d_jdb_thread_user_frame(ECNT *cn, const char *id)
-{
- char cmd[E_D_JDB_THREAD_CMD_MAX];
-
- snprintf(cmd, sizeof cmd, E_D_JDB_THREAD_FMT, id);
- e_d_nstack = 0;
- e_d_nframes = 0;
- if (e_d_frames_ask(cmd) == -1 || e_d_jdb_frames(cn) == -1)
-  return(-1);
- return(e_d_jdb_user_frame());
-}
-
-/**
- * e_d_jdb_show_user_frame - Mark a frame of the paused thread, with its
- * watches.
- * @f: the window on top; @index: the frame, which has source and a line.
- *
- * The frame becomes the selected one, so the Stack window and the watches
- * start from the user's code and not from a library call it is in.
- */
-static void e_d_jdb_show_user_frame(FENSTER *f, int index)
-{
- char file[E_D_STOP_PATH_MAX];
- int line = e_d_frames[index].line;
-
- snprintf(file, sizeof file, "%s", e_d_frames[index].file);
- e_d_frame_select(index);
- e_d_refresh_watches_at_stop(f);
- e_d_goto_break(file, line, f);
-}
-
-/**
- * e_d_jdb_mark_paused_thread - After Pause, mark where the user's code is.
- * @f: the window on top.
- *
- * "suspend" leaves jdb with no current thread, so "where" says "No thread
- * specified".  Each thread is tried in the order "threads" lists them until
- * one has a frame of the user's code: that thread is made current and its
- * innermost user frame is marked (the loop, or the call to sleep that
- * the program is in).  The user sees the line the program was on and the
- * Watches of that frame.  When no thread runs the user's code nothing is
- * marked, and "Paused" is all there is to say.
- */
-static void e_d_jdb_mark_paused_thread(FENSTER *f)
-{
- static char threads[E_D_FRAMES_REPLY_MAX];
- char row[E_D_FRAME_ROW_MAX], id[E_D_JDB_THREAD_ID_MAX];
- const char *p = threads;
- int index;
-
- e_d_nframes = 0;
- if (e_d_frames_ask(E_D_JDB_THREADS) == -1)
-  return;
- snprintf(threads, sizeof threads, "%s", e_d_frames_reply);
- while (e_d_frames_next_row(&p, row, sizeof row))
- {
-  if (!e_d_jdb_thread_id(row, id, sizeof id))
-   continue;
-  index = e_d_jdb_thread_user_frame(f->ed, id);
-  if (index < 0)
-   continue;
-  e_d_jdb_show_user_frame(f, index);
-  return;
- }
- e_d_nframes = 0;
 }
 
 /**
@@ -14122,6 +14210,27 @@ static int e_d_pdb_step_go(FENSTER *f, int sw)
  return(e_d_ga_go_step(f, E_D_PDB_STEP, NULL));
 }
 
+/* jdb's step commands. */
+#define E_D_JDB_NEXT "next\n"
+#define E_D_JDB_STEP "step\n"
+
+/**
+ * e_d_jdb_step_go - F7 or F8 under jdb, once jdb has answered what it still
+ * owes (the breakpoints changed since the stop, Go to cursor's own).
+ * @f: the source window; @sw: 1 for Step Over, 0 for Step Into.
+ *
+ * The user keeps the editor while jdb answers; the step goes out after, and
+ * a key typed meanwhile waits for its stop.
+ * Return: 0, or the end of the session.
+ */
+static int e_d_jdb_step_go(FENSTER *f, int sw)
+{
+ e_d_nstack = 0;
+ if (sw)
+  return(e_d_ga_go_step(f, E_D_JDB_NEXT, NULL));
+ return(e_d_ga_go_step(f, E_D_JDB_STEP, NULL));
+}
+
 int e_d_step_next(FENSTER *f, int sw)
 {
  int ret, main_brk = 0;
@@ -14181,9 +14290,11 @@ int e_d_step_next(FENSTER *f, int sw)
   return(e_d_gdb_step_go(f, E_D_GDB_STEP));
  if (e_deb_type == DEB_PDB)
   return(e_d_pdb_step_go(f, sw));
+ if (e_deb_type == DEB_JDB)
+  return(e_d_jdb_step_go(f, sw));
  if (sw && (e_deb_type == DEB_SDB || e_deb_type == DEB_XDB)) e_d_send_cmd("S\n");
- else if (sw && (e_deb_type == DEB_DBX || e_deb_type == DEB_JDB)) e_d_send_cmd("next\n");
- else if (e_deb_type == DEB_DBX || e_deb_type == DEB_JDB) e_d_send_cmd("step\n");
+ else if (sw && e_deb_type == DEB_DBX) e_d_send_cmd("next\n");
+ else if (e_deb_type == DEB_DBX) e_d_send_cmd("step\n");
  else e_d_send_cmd("s\n");
  e_d_nstack = 0;
  run_ops = e_d_run_ops_of_backend();
@@ -14835,7 +14946,8 @@ static int e_d_brk_disarm(ECNT *cn, const char *file, int line, int id)
  * @cn: the editor; @set: 1 for "stop at", 0 for "clear".
  *
  * jdb's answer comes in the run's output and is read there
- * (e_d_jdb_note_live_answers).
+ * (e_d_jdb_note_live_answers); one that has not come by the next stop is
+ * taken back by that stop's first request (e_d_jdb_owed).
  */
 static void e_d_jdb_send_live(ECNT *cn, int set, const char *file, int line)
 {
@@ -14849,6 +14961,7 @@ static void e_d_jdb_send_live(ECNT *cn, int set, const char *file, int line)
  else
   e_d_jdb_note_cleared(file, line);
  e_d_send_cmd(cmd);
+ e_d_jdb_owe_one();
 }
 
 /**
@@ -15140,15 +15253,16 @@ static void e_d_cursor_brk_aim(int line)
 }
 
 /**
- * e_d_pdb_run_to_cursor - Go to cursor under pdb: its own breakpoint on
- * the line, set on the request engine just before the Continue goes out,
- * and cleared by the stop's own requests.
+ * e_d_ga_run_to_cursor - Go to cursor under pdb or jdb: its own breakpoint
+ * on the line, set on the request engine just before the Continue goes
+ * out, and cleared by the stop's own requests.
  * @f: the source window; @line: the cursor's 1-based line.
  *
- * The user keeps the editor while pdb sets it, as for any other resume.
+ * The user keeps the editor while the debugger sets it, as for any other
+ * resume.
  * Return: what the Continue returned.
  */
-static int e_d_pdb_run_to_cursor(FENSTER *f, int line)
+static int e_d_ga_run_to_cursor(FENSTER *f, int line)
 {
  if (!e_d_user_brk_on(e_d_goto_target.file, line))
  {
@@ -15165,10 +15279,10 @@ static int e_d_pdb_run_to_cursor(FENSTER *f, int line)
  * @f: the source window; @line: the cursor's 1-based line, in the file
  * e_d_goto_take_target took.
  *
- * Borland's Go to cursor, on jdb, a68g and every debug adapter, and on pdb
- * through the request engine (e_d_pdb_run_to_cursor).  pdb's "until" would
- * stop when the current function returns and never reach a line in another
- * one, which is why pdb takes this way too.
+ * Borland's Go to cursor, on a68g and every debug adapter, and on pdb and
+ * jdb through the request engine (e_d_ga_run_to_cursor).  pdb's "until"
+ * would stop when the current function returns and never reach a line in
+ * another one, which is why pdb takes this way too.
  * Return: what the continue returned.
  */
 static int e_d_run_to_cursor_line(FENSTER *f, int line)
@@ -15314,10 +15428,10 @@ static int e_d_goto_run(FENSTER *f, int flag, int line)
  }
  if (e_d_swtch < 3)
   return(e_d_goto_first_command(f, flag, line));
- if (flag == E_D_GOTO_CURSOR && e_deb_type == DEB_PDB)
-  return(e_d_pdb_run_to_cursor(cn->f[cn->mxedt], line));
- if (flag == E_D_GOTO_FINISH && e_deb_type == DEB_PDB)
-  return(e_d_pdb_finish_ask(cn->f[cn->mxedt]));
+ if (flag == E_D_GOTO_CURSOR && e_d_ga_sets_cursor_brk())
+  return(e_d_ga_run_to_cursor(cn->f[cn->mxedt], line));
+ if (flag == E_D_GOTO_FINISH && e_d_ga_finishes_on_loop())
+  return(e_d_ga_finish_ask(cn->f[cn->mxedt]));
  if (flag == E_D_GOTO_CURSOR && e_deb_type != DEB_GDB)
   return(e_d_run_to_cursor_line(cn->f[cn->mxedt], line));
  if (flag == E_D_GOTO_FINISH && e_deb_type != DEB_GDB)
@@ -15968,11 +16082,13 @@ static int e_d_gdb_run_never_started(FENSTER *f)
    does not come.  Each sequence of commands is a table of steps (E_D_STEP),
    one named function per command and per answer.
 
-   pdb runs on the same engine (its own steps are further down, "pdb's
-   answers, start and resumes").  What differs between the two is in their
-   backend tables (E_D_GA_BACKEND): the words and prompt, how a breakpoint
-   is set and taken out, and the tables of steps a stop, the Stack window
-   and a start ask; everything else here is one code for both. */
+   pdb and jdb run on the same engine (their own steps are further down,
+   "pdb's answers, start and resumes" and "jdb's answers, start and
+   resumes").  What differs between them is in their backend tables
+   (E_D_GA_BACKEND): the words and prompt, how a breakpoint is set and taken
+   out, the events jdb writes in the middle of its answers, and the tables
+   of steps a stop, the Stack window and a start ask; everything else here
+   is one code for all three. */
 
 /* What runs on the request engine. */
 #define E_D_GA_NONE   0   /* nothing */
@@ -16025,8 +16141,8 @@ typedef struct e_d_ga_ctx E_D_GA_CTX;     /* what a chain's steps learn */
 typedef struct e_d_ga_go E_D_GA_GO;       /* what a start or resume does */
 
 /* What the engine is told of the debugger it talks to: everything in which
-   gdb and pdb differ.  The waiting line, the keys kept and refused, the
-   cancel and every step the two share then stay one code. */
+   gdb, pdb and jdb differ.  The waiting line, the keys kept and refused,
+   the cancel and every step they share then stay one code. */
 struct e_d_ga_backend
 {
  const char *name;              /* as the waiting line names it */
@@ -16052,6 +16168,36 @@ struct e_d_ga_backend
  int  (*show_stack)(E_D_GA_CTX *st);   /* the Stack window from its answer */
  void (*pause_instead)(ECNT *cn);       /* Pause during a sync: show it */
  int  (*finish_now)(E_D_GA_GO *go);     /* Finish once its frames are read */
+ /* Does the answer so far end with the debugger's prompt?  @prompt_len
+    receives the bytes of prompt that end it. */
+ int  (*ends_in_prompt)(const E_D_ANSWER *ans, size_t *prompt_len);
+ /* The command that sets the editor's start breakpoint (no line end), for
+    a debugger told of it before the first run; NULL for none. */
+ void (*start_brk_cmd)(char *cmd, size_t n);
+ /* The command that sets (@set 1) or clears Go to cursor's own breakpoint,
+    for a debugger without "advance"; NULL for gdb, which has it. */
+ void (*cursor_brk_cmd)(int set, char *cmd, size_t n);
+ /* A debugger that reports events in the middle of answers (jdb): which
+    lines are no answer's, what they say, what came when nothing was
+    asked, whether it is still writing an event with nothing asked (its
+    output is then read on), and a sequence of answers over, after which
+    an event kept meanwhile is shown.  NULL for gdb and pdb, which report
+    none. */
+ int  (*line_is_async)(const char *line, void *io);
+ void (*deliver_async)(const char *line, void *io);
+ void (*unsolicited)(const char *bytes, size_t n);
+ int  (*reads_on)(void);
+ void (*chain_over)(void);
+ /* The answer to @cmd was given up on and the debugger still owes it.
+    NULL for a debugger that answers in the order it is asked, whose late
+    answer the settle marker's resync drops (gdb, pdb). */
+ void (*given_up)(const char *cmd);
+ /* Copy @n bytes the debugger wrote from @in to @out (room for 2 * @n),
+    giving each prompt that more text follows on its line a line of its
+    own, so the answer it ends is seen to end there (jdb writes its prompt
+    with no line end, and an event or a late answer then goes on its line).
+    Return: the bytes in @out.  NULL for gdb and pdb. */
+ size_t (*separate_prompts)(const char *in, size_t n, char *out);
  const E_D_STEP *set_up_steps;          /* after the banner */
  const E_D_STEP *brk_steps;             /* a breakpoint toggled at a stop */
  const E_D_STEP *watches_steps;         /* a watch added, edited, deleted */
@@ -16096,6 +16242,17 @@ static struct
 static const E_D_GA_BACKEND *e_d_ga_this(void)
 {
  return(e_d_ga_backend_of(e_deb_type));
+}
+
+/**
+ * e_d_ga_editor - The editor the engine's session belongs to, so a step
+ * that has no context of its own opens a frame's file in the right place.
+ */
+static ECNT *e_d_ga_editor(void)
+{
+ if (e_d_ga.cn)
+  return(e_d_ga.cn);
+ return(WpeEditor);
 }
 
 /**
@@ -16147,22 +16304,33 @@ static int e_d_ga_ends_in_prompt(const E_D_ANSWER *ans, size_t *prompt_len)
 }
 
 /**
+ * e_d_ga_marker_missing - Is the settle command's answer still without its
+ * marker?  The prompts before the marker answer interrupts, not it.
+ * @ans: the answer so far.
+ */
+static int e_d_ga_marker_missing(const E_D_ANSWER *ans)
+{
+ if (!e_d_ga.marker_wanted)
+  return(0);
+ return(!ans->text || !strstr(ans->text, e_d_ga.be->settle_marker));
+}
+
+/**
  * e_d_ga_answer_ended - Is the debugger's answer whole?
  * @ans, @prompt_len, @io: as E_D_REQ_IO's answer_ended.
  *
  * An answer ends with the debugger's prompt.  The settle command's answer
  * ends only with the prompt after the marker: the prompts before it answer
- * interrupts.
+ * interrupts.  The marker is looked for first, so the backend's prompt test
+ * is asked only for an answer that is whole once its prompt is there.
  */
 static int e_d_ga_answer_ended(const E_D_ANSWER *ans, size_t *prompt_len,
                                void *io)
 {
  (void)io;
- if (!e_d_ga_ends_in_prompt(ans, prompt_len))
+ if (e_d_ga_marker_missing(ans))
   return(0);
- if (!e_d_ga.marker_wanted)
-  return(1);
- return(strstr(ans->text, e_d_ga.be->settle_marker) != NULL);
+ return(e_d_ga.be->ends_in_prompt(ans, prompt_len));
 }
 
 /**
@@ -16182,17 +16350,33 @@ static long e_d_ga_now_ms(void *io)
 static void e_d_ga_after_engine(void);   /* (below) */
 
 /**
+ * e_d_ga_note_given_up - An answer was just given up on (Esc, Ctrl-C, the
+ * deadline) and the debugger still owes it: tell the backend which
+ * command's, for a debugger whose late answer may come after the settle
+ * marker's (jdb's print).
+ */
+static void e_d_ga_note_given_up(void)
+{
+ if (!e_d_ga.rq.resync || !e_d_ga.be->given_up)
+  return;
+ e_d_ga.be->given_up(e_d_ga.rq.owed_cmd);
+}
+
+/**
  * e_d_ga_on_timer - A timer the engine asked for has gone off.
  * @data: which one (E_D_TIMER_*).
  */
 static void e_d_ga_on_timer(void *data)
 {
  int which = (int)(intptr_t)data;
+ int was_resync = e_d_ga.rq.resync;
 
  e_d_ga.timer[which] = E_D_GA_NO_TIMER;
  if (!e_d_ga.live)
   return;
  e_d_req_timer(&e_d_ga.rq, &e_d_ga.io, which);
+ if (!was_resync)
+  e_d_ga_note_given_up();
  e_d_ga_after_engine();
 }
 
@@ -16338,12 +16522,20 @@ static void e_d_ga_unwatch_errors(void)
  *
  * The error stream stays watched while a breakpoint's late refusal may
  * still come (the last request's late_error hook), until the program runs.
+ * The output stays watched while jdb is in the middle of writing an event
+ * nobody asked for, so the event is read whole and shown.  A stop jdb
+ * reported meanwhile is shown once nothing is asked any more, also when
+ * the last thing asked was the settle command after an answer given up on.
  */
 static void e_d_ga_after_engine(void)
 {
  if (!e_d_ga.live)
   return;
  if (e_d_req_pending(&e_d_ga.rq))
+  return;
+ if (e_d_ga.be->chain_over)
+  e_d_ga.be->chain_over();
+ if (e_d_ga.be->reads_on && e_d_ga.be->reads_on())
   return;
  e_d_ga_unwatch_answer();
  if (!e_d_ga.rq.late_fn)
@@ -16363,11 +16555,37 @@ static void e_d_ga_debugger_gone(void)
 }
 
 /**
+ * e_d_ga_feed - Hand the engine what the debugger wrote; what it does not
+ * take, written when nothing is asked, goes to the backend (jdb's events).
+ * @bytes, @n: what was read.
+ */
+static void e_d_ga_feed(const char *bytes, size_t n)
+{
+ size_t taken = e_d_req_feed(&e_d_ga.rq, &e_d_ga.io, bytes, n);
+
+ if (taken < n && e_d_ga.live && e_d_ga.be->unsolicited)
+  e_d_ga.be->unsolicited(bytes + taken, n - taken);
+}
+
+/**
+ * e_d_ga_feed_separated - As e_d_ga_feed, for a debugger whose prompts are
+ * first given lines of their own (separate_prompts).
+ * @bytes, @n: what was read.
+ */
+static void e_d_ga_feed_separated(const char *bytes, size_t n)
+{
+ char split[2 * E_D_GA_READ_MAX];
+
+ e_d_ga_feed(split, e_d_ga.be->separate_prompts(bytes, n, split));
+}
+
+/**
  * e_d_ga_on_answer - gdb wrote on its output while the engine waits.
  * @fd: gdb's output; @data: unused.
  *
  * Runs on the fd loop, between the user's keys.  Bytes that come when
- * nothing is asked are gdb's own and are dropped.
+ * nothing is asked are gdb's and pdb's own and are dropped; jdb's are read
+ * for an event it wrote behind the answer's prompt (unsolicited).
  */
 static void e_d_ga_on_answer(int fd, void *data)
 {
@@ -16383,7 +16601,10 @@ static void e_d_ga_on_answer(int fd, void *data)
   e_d_ga_debugger_gone();
   return;
  }
- e_d_req_feed(&e_d_ga.rq, &e_d_ga.io, buf, (size_t)n);
+ if (e_d_ga.be->separate_prompts)
+  e_d_ga_feed_separated(buf, (size_t)n);
+ else
+  e_d_ga_feed(buf, (size_t)n);
  e_d_ga_after_engine();
 }
 
@@ -16422,6 +16643,8 @@ static void e_d_ga_world(void)
  memset(&e_d_ga.io, 0, sizeof e_d_ga.io);
  e_d_ga.io.send = e_d_ga_send;
  e_d_ga.io.answer_ended = e_d_ga_answer_ended;
+ e_d_ga.io.line_is_async = e_d_ga.be->line_is_async;
+ e_d_ga.io.deliver_async = e_d_ga.be->deliver_async;
  e_d_ga.io.now_ms = e_d_ga_now_ms;
  e_d_ga.io.arm_timer = e_d_ga_arm_timer;
  e_d_ga.io.waiting = e_d_ga_waiting;
@@ -16559,7 +16782,7 @@ static int e_d_ga_sync_runs(void)
 }
 
 /**
- * e_d_ga_at_stop - Is the debugger (gdb, pdb) at its prompt and asked
+ * e_d_ga_at_stop - Is the debugger (gdb, pdb, jdb) at its prompt and asked
  * nothing, so a command of the user's goes to it through the engine?
  *
  * True at a stop, and also before the program first runs once the debugger
@@ -16667,10 +16890,14 @@ int e_d_answer_busy(void)
  */
 void e_d_answer_cancel(void)
 {
+ int was_resync = e_d_ga.rq.resync;
+
  if (!e_d_ga.live)
   return;
  e_d_ga_actions_drop();
  e_d_req_cancel(&e_d_ga.rq, &e_d_ga.io, E_D_REQ_CANCELLED);
+ if (!was_resync)
+  e_d_ga_note_given_up();
  e_d_ga_after_engine();
 }
 
@@ -16713,6 +16940,8 @@ static int e_d_ga_chain_ended(void)
  if (!e_d_ga.live)
   return(0);
  e_d_ga_waiting_clear();
+ if (e_d_ga.be->chain_over)
+  e_d_ga.be->chain_over();
  return(1);
 }
 
@@ -16855,7 +17084,7 @@ static void e_d_act_on_timer(void *data)
 /* ---- the answers of a stop ---- */
 
 /* What a chain's steps learn, read by its end: a stop's, a sync's or a
-   command's at a stop, under gdb or pdb (one chain runs at a time). */
+   command's at a stop, under gdb, pdb or jdb (one chain runs at a time). */
 struct e_d_ga_ctx
 {
  ECNT *cn;
@@ -16880,6 +17109,12 @@ struct e_d_ga_ctx
  int pause_how;              /* pdb's Pause: E_D_PDB_PAUSE_* */
  int up;                     /* pdb: frames up to the script's, or 0 */
  int leave;                  /* pdb's sync: "return" out of its own code */
+ char *stop;                 /* jdb: the stop line it reported, or NULL */
+ char *threads;              /* jdb's Pause: its "threads" answer */
+ size_t thread_pos;          /* ... read up to here */
+ char thread[E_D_JDB_THREAD_ID_MAX];   /* ... the thread looked at */
+ int user_frame;             /* ... its innermost frame of the user's code,
+                                or -1 while none is found */
 };
 
 static E_D_GA_CTX e_d_gs;
@@ -16899,6 +17134,10 @@ static void e_d_gs_free(E_D_GA_CTX *st)
   FREE(st->values);
  if (st->stack)
   FREE(st->stack);
+ if (st->stop)
+  FREE(st->stop);
+ if (st->threads)
+  FREE(st->threads);
  memset(st, 0, sizeof *st);
 }
 
@@ -17478,14 +17717,27 @@ static int e_d_gu_add_answered(E_D_REQ_END how, E_D_ANSWER *ans, void *ctx)
 
 /* step: the breakpoint the editor set to stop at the program's start */
 
-static int e_d_gb_start_cmd(char *cmd, size_t n, void *ctx)
+/**
+ * e_d_gb_start_entry_of - The start breakpoint a stop is to take out.
+ * @st: the context.
+ * Return: its list index, or -1 when there is none (any more).
+ */
+static int e_d_gb_start_entry_of(const E_D_GA_CTX *st)
 {
- E_D_GA_CTX *st = ctx;
  int sw = st->start_brk;
 
  if (sw <= 0 || sw > e_d_nbrpts || !e_d_brk_is_start_entry(sw - 1))
+  return(-1);
+ return(sw - 1);
+}
+
+static int e_d_gb_start_cmd(char *cmd, size_t n, void *ctx)
+{
+ int i = e_d_gb_start_entry_of(ctx);
+
+ if (i < 0)
   return(0);
- snprintf(cmd, n, E_D_GDB_DELETE_FMT, e_d_nrbrpts[sw - 1]);
+ snprintf(cmd, n, E_D_GDB_DELETE_FMT, e_d_nrbrpts[i]);
  return(1);
 }
 
@@ -17526,7 +17778,7 @@ static const E_D_STEP e_d_gdb_sync_steps[] =
  { NULL, NULL }
 };
 
-/* A breakpoint set or taken off at a stop, under gdb and pdb alike. */
+/* A breakpoint set or taken off at a stop, under gdb, pdb and jdb alike. */
 static const E_D_STEP e_d_ga_brk_steps[] =
 {
  { e_d_gb_remove_cmd, e_d_gb_remove_answered },
@@ -18422,29 +18674,42 @@ static int e_d_gg_start_entry(void)
 static int e_d_gg_start_cmd(char *cmd, size_t n, void *ctx)
 {
  E_D_GA_GO *go = ctx;
- char line[E_D_GO_CMD_MAX];
- size_t len;
 
  if (go->how != E_D_GO_START || e_d_gg_start_entry() < 0)
   return(0);
+ if (!e_d_ga.be->start_brk_cmd)
+  return(0);
+ e_d_ga.be->start_brk_cmd(cmd, n);
+ return(1);
+}
+
+/**
+ * e_d_gdb_start_brk_cmd - gdb's command that stops the first run at the
+ * program's start (e_d_gdb_start_break, without its line end).
+ * @cmd, @n: the command.
+ */
+static void e_d_gdb_start_brk_cmd(char *cmd, size_t n)
+{
+ char line[E_D_GO_CMD_MAX];
+ size_t len;
+
  e_d_gdb_start_break(line, sizeof line);
  len = strlen(line);
  if (len > 0 && line[len - 1] == '\n')
   line[len - 1] = '\0';
  snprintf(cmd, n, "%s", line);
- return(1);
 }
 
 /**
- * e_d_gg_start_answered - gdb answered the start breakpoint: keep its
- * number, so it is taken out again at the stop; say gdb's words when it
- * refused (no start symbol in the program).
+ * e_d_gg_start_answered - The debugger answered the start breakpoint: keep
+ * what it gave it (gdb's number), so it is taken out again at the stop; say
+ * gdb's words when it refused (no start symbol in the program).
  */
 static int e_d_gg_start_answered(E_D_REQ_END how, E_D_ANSWER *ans, void *ctx)
 {
  char str[E_D_BRK_ANSWER_MAX];
  int i = e_d_gg_start_entry();
- int id = e_d_gb_number_line(ans->text, str, sizeof str);
+ int id = e_d_ga.be->brk_set_id(ans);
 
  (void)how;
  (void)ctx;
@@ -18869,11 +19134,13 @@ static void e_d_pdb_brk_remove_cmd(const E_D_BRK_GONE *g, char *cmd, size_t n)
 }
 
 /**
- * e_d_gp_brk_judge - What pdb made of a breakpoint, from its answer's rows:
- * set, or refused with its words ("*** Blank or comment").
+ * e_d_place_brk_judge - What a debugger that names a breakpoint by its
+ * place (pdb, jdb) made of one, from its answer's rows: set, kept for later
+ * (jdb's "Deferring breakpoint", until the class loads), or refused with
+ * its words ("*** Blank or comment", "Unable to set breakpoint").
  * @ans: the answer; @v: receives the verdict.
  */
-static void e_d_gp_brk_judge(const E_D_ANSWER *ans, E_D_BRK_ANSWER *v)
+static void e_d_place_brk_judge(const E_D_ANSWER *ans, E_D_BRK_ANSWER *v)
 {
  const char *p = ans->text ? ans->text : "";
  char *row;
@@ -18892,49 +19159,52 @@ static void e_d_gp_brk_judge(const E_D_ANSWER *ans, E_D_BRK_ANSWER *v)
 }
 
 /**
- * e_d_pdb_brk_set_id - Did pdb set the breakpoint its answer is for?
+ * e_d_place_brk_set_id - Did pdb or jdb take the breakpoint its answer is
+ * for (set it, or kept it for when its class loads)?
  * Return: E_D_GP_ID_SET when it did, 0 when it refused.
  */
-static int e_d_pdb_brk_set_id(const E_D_ANSWER *ans)
+static int e_d_place_brk_set_id(const E_D_ANSWER *ans)
 {
  E_D_BRK_ANSWER v;
 
- e_d_gp_brk_judge(ans, &v);
+ e_d_place_brk_judge(ans, &v);
  if (v.state == E_D_BRK_REFUSED)
   return(0);
  return(E_D_GP_ID_SET);
 }
 
 /**
- * e_d_pdb_brk_verdict - Keep with list entry @i what pdb answered: the mark
- * turns solid, or stays hollow with pdb's words.
- * @id: unused (pdb gives a breakpoint no number the editor names it by);
+ * e_d_place_brk_verdict - Keep with list entry @i what pdb or jdb answered:
+ * the mark turns solid, or stays hollow with the debugger's words.
+ * @id: unused (neither gives a breakpoint a number the editor names it by);
  * @ans: the answer.
  */
-static void e_d_pdb_brk_verdict(int i, int id, const E_D_ANSWER *ans)
+static void e_d_place_brk_verdict(int i, int id, const E_D_ANSWER *ans)
 {
  E_D_BRK_ANSWER v;
 
  (void)id;
- e_d_gp_brk_judge(ans, &v);
+ e_d_place_brk_judge(ans, &v);
  e_d_nrbrpts[i] = i + 1;          /* told: its answer decides its state */
  e_d_brk_take_answer(i, &v);
 }
 
-/* A Remove all at a stop: every breakpoint pdb was given is cleared. */
-static const E_D_STEP e_d_pdb_remove_all_steps[] =
+/* A Remove all at a stop: every breakpoint the debugger was given is
+   cleared. */
+static const E_D_STEP e_d_ga_remove_each_steps[] =
 {
  { e_d_gb_remove_cmd, e_d_gb_remove_answered },
  { NULL, NULL }
 };
 
 /**
- * e_d_pdb_remove_all - Remove all breakpoints at a stop under pdb, which
- * has no command for it that does not ask "Clear all breaks?": each line
- * it was given is cleared, one request after the other.
+ * e_d_ga_remove_each_line - Remove all breakpoints at a stop under pdb or
+ * jdb, which have no command for it (pdb's asks "Clear all breaks?", jdb
+ * has none): each line it was given is cleared, one request after the
+ * other, and the next run goes past every one of them.
  * @cn: the editor.
  */
-static void e_d_pdb_remove_all(ECNT *cn)
+static void e_d_ga_remove_each_line(ECNT *cn)
 {
  int i;
 
@@ -18942,7 +19212,7 @@ static void e_d_pdb_remove_all(ECNT *cn)
   if (!e_d_brk_is_start_entry(i))
    e_d_brk_gone_add(i);
  e_d_gs_reset(&e_d_gs, cn);
- e_d_ga_chain_start(cn, e_d_pdb_remove_all_steps, &e_d_gs,
+ e_d_ga_chain_start(cn, e_d_ga_remove_each_steps, &e_d_gs,
                     e_d_gs_ask_finished, E_D_GA_ASK);
 }
 
@@ -18969,11 +19239,12 @@ static int e_d_gp_frames_answered(E_D_REQ_END how, E_D_ANSWER *ans, void *ctx)
 }
 
 /**
- * e_d_pdb_show_stack - Fill the Stack window with the frames pdb listed.
+ * e_d_ga_frames_show_stack - Fill the Stack window with the frames pdb or
+ * jdb listed, which the editor keeps as frames (e_d_frames), not as text.
  * @st: the context.
  * Return: 0.
  */
-static int e_d_pdb_show_stack(E_D_GA_CTX *st)
+static int e_d_ga_frames_show_stack(E_D_GA_CTX *st)
 {
  int is = e_d_stack_open(st->cn);
 
@@ -18996,6 +19267,22 @@ static int e_d_gp_stop_watch_cmd(char *cmd, size_t n, void *ctx)
  return(e_d_gs_watch_cmd(cmd, n, ctx));
 }
 
+/**
+ * e_d_pdb_cursor_brk_cmd - pdb's command that sets (@set 1) or clears Go to
+ * cursor's own breakpoint, by the path pdb is given.
+ * @cmd, @n: the command.
+ */
+static void e_d_pdb_cursor_brk_cmd(int set, char *cmd, size_t n)
+{
+ char place[PATH_MAX];
+
+ e_d_gp_short_path(e_d_cursor_brk.path, place, sizeof place);
+ if (set)
+  snprintf(cmd, n, E_D_GP_BREAK_FMT, place, e_d_cursor_brk.line);
+ else
+  snprintf(cmd, n, E_D_GP_CLEAR_FMT, place, e_d_cursor_brk.line);
+}
+
 /* step: Go to cursor's own breakpoint goes at the first stop after it.
    pdb's "clear" takes every breakpoint off the line, so when the user has
    one of his own there (set while the program ran) the line is left as it
@@ -19004,8 +19291,6 @@ static int e_d_gp_stop_watch_cmd(char *cmd, size_t n, void *ctx)
 
 static int e_d_gp_cursor_clear_cmd(char *cmd, size_t n, void *ctx)
 {
- char place[PATH_MAX];
-
  (void)ctx;
  e_d_cursor_brk.wanted = 0;
  if (!e_d_cursor_brk.set)
@@ -19013,8 +19298,7 @@ static int e_d_gp_cursor_clear_cmd(char *cmd, size_t n, void *ctx)
  e_d_cursor_brk.set = 0;
  if (e_d_user_brk_on(e_d_cursor_brk.file, e_d_cursor_brk.line))
   return(0);
- e_d_gp_short_path(e_d_cursor_brk.path, place, sizeof place);
- snprintf(cmd, n, E_D_GP_CLEAR_FMT, place, e_d_cursor_brk.line);
+ e_d_pdb_cursor_brk_cmd(0, cmd, n);
  return(1);
 }
 
@@ -19377,7 +19661,7 @@ static int e_d_gp_sync_remove_cmd(char *cmd, size_t n, void *ctx)
  return(e_d_gb_remove_cmd(cmd, n, ctx));
 }
 
-static int e_d_gp_cursor_set_cmd(char *cmd, size_t n, void *ctx);  /* below */
+static int e_d_ga_cursor_set_cmd(char *cmd, size_t n, void *ctx);  /* below */
 
 /* Once the stop is the script's, the changes are sent with the files' full
    paths (a bare line number would name bdb.py there). */
@@ -19387,7 +19671,7 @@ static const E_D_STEP e_d_pdb_sync_steps[] =
  { e_d_gp_where_cmd,       e_d_gp_sync_where_answered },
  { e_d_gp_sync_remove_cmd, e_d_gb_remove_answered },
  { e_d_gb_add_cmd,         e_d_gb_add_answered },
- { e_d_gp_cursor_set_cmd,  e_d_gs_ignore_answer },
+ { e_d_ga_cursor_set_cmd,  e_d_gs_ignore_answer },
  { NULL, NULL }
 };
 
@@ -19504,19 +19788,17 @@ static const E_D_STEP e_d_pdb_follow_steps[] =
  { NULL, NULL }
 };
 
-/* step: Go to cursor's own breakpoint, just before the Continue */
+/* step: Go to cursor's own breakpoint, just before the Continue, in the
+   words of the debugger that runs (pdb's, jdb's) */
 
-static int e_d_gp_cursor_set_cmd(char *cmd, size_t n, void *ctx)
+static int e_d_ga_cursor_set_cmd(char *cmd, size_t n, void *ctx)
 {
- char place[PATH_MAX];
-
  (void)ctx;
  if (!e_d_cursor_brk.wanted)
   return(0);
  e_d_cursor_brk.wanted = 0;
  e_d_cursor_brk.set = 1;      /* cleared at the stop, answered or not */
- e_d_gp_short_path(e_d_cursor_brk.path, place, sizeof place);
- snprintf(cmd, n, E_D_GP_BREAK_FMT, place, e_d_cursor_brk.line);
+ e_d_ga.be->cursor_brk_cmd(1, cmd, n);
  return(1);
 }
 
@@ -19540,18 +19822,19 @@ static const E_D_STEP e_d_pdb_go_steps[] =
  { e_d_gs_settle_cmd,        e_d_gs_settle_answered },
  { e_d_gb_remove_cmd,        e_d_gb_remove_answered },
  { e_d_gb_add_cmd,           e_d_gb_add_answered },
- { e_d_gp_cursor_set_cmd,    e_d_gs_ignore_answer },
+ { e_d_ga_cursor_set_cmd,    e_d_gs_ignore_answer },
  { e_d_gp_finish_frames_cmd, e_d_gp_frames_answered },
  { NULL, NULL }
 };
 
 /**
- * e_d_pdb_finish_now - pdb listed its frames: run to the end of the
- * function, or say Finish has nowhere to go in the outermost frame.
+ * e_d_ga_finish_now - pdb or jdb listed its frames: run to the end of the
+ * function with the debugger's own command (e_d_finish_send), or say
+ * Finish has nowhere to go in the outermost frame.
  * @go: the context.
  * Return: 0, or the end of the session.
  */
-static int e_d_pdb_finish_now(E_D_GA_GO *go)
+static int e_d_ga_finish_now(E_D_GA_GO *go)
 {
  FENSTER *f = go->cn->f[go->cn->mxedt];
 
@@ -19564,27 +19847,1221 @@ static int e_d_pdb_finish_now(E_D_GA_GO *go)
  e_d_delbreak(f);
  e_d_switch_out(1);
  e_d_nstack = 0;
- return(e_d_pdb_finish(f));
+ return(e_d_finish_send(f));
 }
 
 /**
- * e_d_pdb_finish_ask - Finish function under pdb: read its frames on the fd
- * loop, then send "return".
+ * e_d_ga_finish_ask - Finish function under pdb or jdb: read the frames on
+ * the fd loop, then send the debugger's own command for it (the backend's
+ * finish_now: pdb's "return", jdb's "step up").
  * @f: the source window.
  *
- * The user keeps the editor while pdb lists its stack; in the outermost
- * frame there is no caller and one line says so.
+ * The user keeps the editor while the debugger lists its stack; in the
+ * outermost frame there is no caller and one line says so.
  * Return: 0, or the end of the session.
  */
-static int e_d_pdb_finish_ask(FENSTER *f)
+static int e_d_ga_finish_ask(FENSTER *f)
 {
  E_D_GA_GO *go = &e_d_gg;
 
  e_d_gg_reset(go, f->ed);
  go->how = E_D_GO_FINISH;
- snprintf(go->cmd, sizeof go->cmd, "%s", E_D_PDB_FINISH);
  return(e_d_gg_launch(go));
 }
+
+/**
+ * e_d_ga_finishes_on_loop - Is Finish function asked on the request engine
+ * (pdb, jdb), its frames read there before the command goes?
+ */
+static int e_d_ga_finishes_on_loop(void)
+{
+ const E_D_GA_BACKEND *be = e_d_ga_backend_of(e_deb_type);
+
+ return(be && be->finish_now);
+}
+
+/**
+ * e_d_ga_sets_cursor_brk - Does Go to cursor set its own breakpoint on the
+ * request engine (pdb, jdb), rather than run with gdb's "advance" or send
+ * it at once (the other debuggers)?
+ */
+static int e_d_ga_sets_cursor_brk(void)
+{
+ const E_D_GA_BACKEND *be = e_d_ga_backend_of(e_deb_type);
+
+ return(be && be->cursor_brk_cmd);
+}
+
+/* ==== jdb's answers, start and resumes, on the fd loop ====
+
+   jdb runs on the same engine as gdb and pdb: what a stop asks it (the
+   watches, the Stack window, the breakpoints changed while it ran, Go to
+   cursor's and the start's own breakpoints), the thread and frame a Pause
+   stopped in, a breakpoint toggled at a stop, Remove all, the set-up after
+   its first prompt and what each resume asks first.  The stop itself is
+   read by jdb's run controller table (e_d_jdb_feed), whose answer names
+   the place.  Where jdb differs from gdb and pdb:
+
+   - its prompt is "> " with no current thread and "main[1] " at a stop
+     (e_d_jdb_prompt_len), never one fixed string;
+   - it reports events (a breakpoint hit, a step's end, the program's end)
+     on the same output as its answers, whenever they happen.  An event
+     that comes while an answer is read is no part of it: its lines are
+     claimed (e_d_gj_line_is_async), the prompt that ends it is not taken
+     for the answer's, and the stop it names is kept and shown once the
+     answers are in (e_d_gj_show_kept_stop).  An answer whose prompt is
+     followed by an event in the same read ends at that prompt;
+   - it names a thread in its commands, and Pause leaves it with none, so
+     the thread that runs the user's code is looked for first;
+   - it has no command that only echoes: its settle command is one it does
+     not know, whose name it repeats in its refusal;
+   - "stop at" twice puts two breakpoints on a line and "clear" takes out
+     one, so Go to cursor's own breakpoint is always cleared, a user's on
+     the same line staying. */
+
+#define E_D_JDB_NAME          "jdb"   /* as the waiting line names it */
+#define E_D_JDB_SETTLE_MARK   "xwpe-interrupts-settled"
+#define E_D_JDB_SETTLE_CMD    E_D_JDB_SETTLE_MARK
+#define E_D_GJ_WHERE          "where"
+#define E_D_GJ_WHERE_FMT      "where %s"
+#define E_D_GJ_THREADS        "threads"
+#define E_D_GJ_THREAD_FMT     "thread %s"
+#define E_D_GJ_UP_FMT         "up %d"
+#define E_D_GJ_STOP_AT_FMT    "stop at %s:%d"
+#define E_D_GJ_CLEAR_AT_FMT   "clear %s:%d"
+#define E_D_GJ_STOP_IN_FMT    "stop in %s.%s"
+#define E_D_GJ_CLEAR_IN_FMT   "clear %s.%s"
+/* jdb's print: its answer ends with " EXPR = value", after the lines of
+   its expression parser's complaint ("com.sun.tools.example.debug.expr.
+   ParseException: Name unknown: x") when it has one. */
+#define E_D_GJ_PRINT          "print "
+#define E_D_GJ_PRINT_SAYS_FMT " %s = "
+#define E_D_GJ_PARSER_WORDS   "com.sun.tools.example.debug.expr."
+/* The lines of an event after the one that names it: the source line and
+   the blank line before its prompt. */
+#define E_D_GJ_EVENT_LINES    2
+/* A stop of jdb's not shown yet, and a line of jdb's output read with
+   nothing asked that has no end yet. */
+#define E_D_GJ_LOOSE_MAX      E_D_LINE_MAX
+/* The start of a line kept to tell whether it is prompts alone: longer
+   than a few prompts, a line is jdb's words. */
+#define E_D_GJ_HEAD_MAX       160
+
+/* What jdb wrote in the middle of the engine's answers. */
+static struct
+{
+ int ev_lines;                  /* lines of the event's block still to come */
+ int ev_prompts;                /* prompts that end events, not seen yet */
+ char *stop;                    /* the stop it reported, kept to be shown */
+ int timer;                     /* the loop's timer that shows it, or
+                                   E_D_GA_NO_TIMER */
+ char loose[E_D_GJ_LOOSE_MAX];  /* the start of a line read with nothing
+                                   asked */
+ size_t loose_len;
+ char *owed_print;              /* the expression of a "print" given up on,
+                                   whose answer jdb still owes */
+ char head[E_D_GJ_HEAD_MAX];    /* the start of the line being read, while
+                                   it may be prompts alone */
+ size_t head_len;
+ int head_long;                 /* that line is longer than any prompt */
+} e_d_gj = { 0, 0, NULL, E_D_GA_NO_TIMER, "", 0, NULL, "", 0, 0 };
+
+/* ---- a breakpoint's place, as jdb is told it ---- */
+
+/**
+ * e_d_jdb_start_class - The class of the program jdb runs, whose method
+ * the editor's start breakpoint names.
+ * @out, @n: receives it ("P" for P.java).
+ */
+static void e_d_jdb_start_class(char *out, size_t n)
+{
+ snprintf(out, n, "%s", e_d_file);
+ WpeStringCutChar(out, '.');
+}
+
+/**
+ * e_d_jdb_brk_add_cmd - jdb's "stop at Class:line" for list entry @i.
+ * @cmd, @n: the command.
+ */
+static void e_d_jdb_brk_add_cmd(int i, char *cmd, size_t n)
+{
+ char cls[PATH_MAX];
+
+ e_d_brk_jdb_class(e_d_sbrpts[i], cls, sizeof cls);
+ snprintf(cmd, n, E_D_GJ_STOP_AT_FMT, cls, e_d_ybrpts[i]);
+}
+
+/**
+ * e_d_jdb_brk_remove_cmd - jdb's "clear" for a breakpoint the list no
+ * longer has: "clear Class:line" by its place, which also takes out one
+ * whose answer was given up on, or "clear Class.main" for the editor's
+ * start breakpoint, which has no file.
+ * @g: the removal; @cmd, @n: the command.
+ */
+static void e_d_jdb_brk_remove_cmd(const E_D_BRK_GONE *g, char *cmd, size_t n)
+{
+ char cls[PATH_MAX];
+
+ if (!g->file[0])
+ {
+  e_d_jdb_start_class(cls, sizeof cls);
+  snprintf(cmd, n, E_D_GJ_CLEAR_IN_FMT, cls, e_get_start_symbol());
+  return;
+ }
+ e_d_brk_jdb_class(g->file, cls, sizeof cls);
+ snprintf(cmd, n, E_D_GJ_CLEAR_AT_FMT, cls, g->line);
+}
+
+/**
+ * e_d_jdb_start_brk_cmd - jdb's "stop in Class.main", the editor's start
+ * breakpoint when the user has none of his own.
+ * @cmd, @n: the command.
+ */
+static void e_d_jdb_start_brk_cmd(char *cmd, size_t n)
+{
+ char cls[PATH_MAX];
+
+ e_d_jdb_start_class(cls, sizeof cls);
+ snprintf(cmd, n, E_D_GJ_STOP_IN_FMT, cls, e_get_start_symbol());
+}
+
+/**
+ * e_d_jdb_cursor_brk_cmd - jdb's command that sets (@set 1) or clears Go
+ * to cursor's own breakpoint, by the class of the file it was pressed in.
+ * @cmd, @n: the command.
+ */
+static void e_d_jdb_cursor_brk_cmd(int set, char *cmd, size_t n)
+{
+ char cls[PATH_MAX];
+
+ e_d_brk_jdb_class(e_d_cursor_brk.file, cls, sizeof cls);
+ if (set)
+  snprintf(cmd, n, E_D_GJ_STOP_AT_FMT, cls, e_d_cursor_brk.line);
+ else
+  snprintf(cmd, n, E_D_GJ_CLEAR_AT_FMT, cls, e_d_cursor_brk.line);
+}
+
+/* ---- where an answer ends, and the events in the middle of it ---- */
+
+/**
+ * e_d_gj_last_line - The last line of the answer so far: the one with no
+ * end yet, or, when the text ends with a line end, the line it ends.
+ * @ans: the answer; @len: receives the line's bytes, without its end.
+ * Return: where it starts.
+ */
+static const char *e_d_gj_last_line(const E_D_ANSWER *ans, size_t *len)
+{
+ const char *text = ans->text;
+ size_t end = ans->len;
+ const char *start;
+
+ if (end > 0 && text[end - 1] == '\n')
+  end--;
+ start = text + end;
+ while (start > text && start[-1] != '\n')
+  start--;
+ *len = (size_t)(text + end - start);
+ return(start);
+}
+
+/* jdb's print shows a String as " EXPR = \"text\"", the text as it is, its
+   line ends included. */
+#define E_D_GJ_STRING_OPENS   " = \""
+#define E_D_GJ_STRING_QUOTE   '"'
+
+/**
+ * e_d_gj_find_in_line - Where @word first occurs in the @len bytes of
+ * @line, which need not end with a NUL.
+ * Return: its place, or NULL.
+ */
+static const char *e_d_gj_find_in_line(const char *line, size_t len,
+                                       const char *word)
+{
+ size_t wlen = strlen(word), i;
+
+ for (i = 0; i + wlen <= len; i++)
+  if (!memcmp(line + i, word, wlen))
+   return(line + i);
+ return(NULL);
+}
+
+/**
+ * e_d_gj_string_open_after - Is jdb still in the middle of a String value
+ * once @line has ended?
+ * @open: whether it was before the line; @line, @len: the line, without
+ * its end.
+ *
+ * A String the program holds may have lines that start like jdb's prompt
+ * ("> quoted", "main[1] text"); while jdb writes such a value, a line of
+ * it is never taken for the prompt that ends the answer.  The value opens
+ * on a line " EXPR = \"" of print's answer and closes on a line that ends
+ * with a quote.
+ */
+static int e_d_gj_string_open_after(int open, const char *line, size_t len)
+{
+ const char *opens;
+ size_t quote;
+
+ if (open)
+  return(len == 0 || line[len - 1] != E_D_GJ_STRING_QUOTE);
+ if (len == 0 || line[0] != ' ')
+  return(0);
+ opens = e_d_gj_find_in_line(line, len, E_D_GJ_STRING_OPENS);
+ if (!opens)
+  return(0);
+ quote = (size_t)(opens - line) + strlen(E_D_GJ_STRING_OPENS) - 1;
+ return(len == quote + 1 || line[len - 1] != E_D_GJ_STRING_QUOTE);
+}
+
+/**
+ * e_d_gj_answer_in_string - Is the answer, up to @upto, in the middle of a
+ * String value jdb has not finished writing?
+ * @ans: the answer so far; @upto: the start of one of its lines.
+ */
+static int e_d_gj_answer_in_string(const E_D_ANSWER *ans, const char *upto)
+{
+ const char *p = ans->text, *eol;
+ int open = 0;
+
+ while (p < upto && (eol = memchr(p, '\n', (size_t)(upto - p))) != NULL)
+ {
+  open = e_d_gj_string_open_after(open, p, (size_t)(eol - p));
+  p = eol + 1;
+ }
+ return(open);
+}
+
+/**
+ * e_d_jdb_ends_in_prompt - Does jdb's answer end with its prompt?
+ * @ans: the answer so far; @prompt_len: set to the bytes that end it.
+ *
+ * The answer's last line must be nothing but prompts.  A prompt there that
+ * ends an event jdb wrote meanwhile is not the answer's: the answer ends
+ * only with one more.  A line of prompts ended by a line end is the case
+ * where jdb wrote an event right behind the answer's prompt: the answer
+ * ends at that prompt, and the event is read apart.  A line inside a
+ * String value is the value's, whatever it looks like.
+ * Return: 1 when the answer is whole.
+ */
+static int e_d_jdb_ends_in_prompt(const E_D_ANSWER *ans, size_t *prompt_len)
+{
+ const char *last;
+ size_t len;
+ int k;
+
+ if (!ans->text || ans->len == 0)
+  return(0);
+ last = e_d_gj_last_line(ans, &len);
+ k = e_d_jdb_prompts_only(last, len);
+ if (k <= e_d_gj.ev_prompts)
+  return(0);
+ if (e_d_gj_answer_in_string(ans, last))
+  return(0);
+ e_d_gj.ev_prompts -= k - 1;           /* the others ended events */
+ if (e_d_gj.ev_prompts < 0)
+  e_d_gj.ev_prompts = 0;
+ *prompt_len = ans->len - (size_t)(last - ans->text);
+ return(1);
+}
+
+/**
+ * e_d_gj_names_stop - Does the line, past its prompts, name a stop of
+ * jdb's (a breakpoint hit, a step's end, an uncaught exception)?
+ */
+static int e_d_gj_names_stop(const char *line)
+{
+ const char *text = e_d_jdb_skip_prompts(line);
+
+ return(!strncmp(text, E_D_JDB_STOP_MARK, strlen(E_D_JDB_STOP_MARK)) ||
+        !strncmp(text, E_D_JDB_STEP_MARK, strlen(E_D_JDB_STEP_MARK)) ||
+        !strncmp(text, E_D_JDB_EXCEPTION_MARK,
+                 strlen(E_D_JDB_EXCEPTION_MARK)));
+}
+
+/**
+ * e_d_gj_names_other_event - Does the line, past its prompts, say a
+ * deferred breakpoint was set or that the program is gone?  Neither has a
+ * prompt of its own.
+ */
+static int e_d_gj_names_other_event(const char *line)
+{
+ const char *text = e_d_jdb_skip_prompts(line);
+
+ return(!strncmp(text, E_D_JDB_SET_DEFERRED, strlen(E_D_JDB_SET_DEFERRED)) ||
+        !strncmp(text, E_D_JDB_EXIT, strlen(E_D_JDB_EXIT)) ||
+        !strncmp(text, E_D_JDB_DISCONNECTED, strlen(E_D_JDB_DISCONNECTED)));
+}
+
+/**
+ * e_d_gj_take_event_prompts - Step over the prompts at the start of @line
+ * that end events jdb wrote before, which are owed no more.
+ * @took: set to 1 when one was stepped over.
+ * Return: the rest of the line.
+ */
+static const char *e_d_gj_take_event_prompts(const char *line, int *took)
+{
+ size_t len;
+
+ *took = 0;
+ while (e_d_gj.ev_prompts > 0 && (len = e_d_jdb_prompt_len(line)) > 0)
+ {
+  line += len;
+  e_d_gj.ev_prompts--;
+  *took = 1;
+ }
+ return(line);
+}
+
+/**
+ * e_d_gj_head_is_prompts - Is the line read so far nothing but jdb's
+ * prompts?
+ */
+static int e_d_gj_head_is_prompts(void)
+{
+ if (e_d_gj.head_long || e_d_gj.head_len == 0)
+  return(0);
+ return(e_d_jdb_prompts_only(e_d_gj.head, e_d_gj.head_len) > 0);
+}
+
+/**
+ * e_d_gj_head_add - Keep a byte of the line being read, while it may still
+ * be prompts alone.
+ * @c: the byte; a line end starts a new line.
+ */
+static void e_d_gj_head_add(char c)
+{
+ if (c == '\n')
+ {
+  e_d_gj.head_len = 0;
+  e_d_gj.head_long = 0;
+  return;
+ }
+ if (e_d_gj.head_len + 1 >= sizeof e_d_gj.head)
+ {
+  e_d_gj.head_long = 1;
+  return;
+ }
+ e_d_gj.head[e_d_gj.head_len++] = c;
+ e_d_gj.head[e_d_gj.head_len] = '\0';
+}
+
+/**
+ * e_d_jdb_separate_prompts - Give each prompt jdb wrote in front of more
+ * text a line of its own.
+ * @in, @n: what jdb wrote; @out: room for 2 * @n bytes.
+ *
+ * jdb ends every answer with a prompt and no line end, and writes the next
+ * thing (an event, or the late answer to a "print", which it runs in a
+ * thread of its own) on the prompt's line.  With the prompt on its own
+ * line the answer it ends is seen to end there, and the event or the late
+ * answer is a line of its own the editor can tell apart.  The line read so
+ * far is kept across reads, since a prompt may end one read and the text
+ * start the next.
+ * Return: the bytes in @out.
+ */
+static size_t e_d_jdb_separate_prompts(const char *in, size_t n, char *out)
+{
+ size_t i, k = 0;
+
+ for (i = 0; i < n; i++)
+ {
+  if (in[i] != '\n' && e_d_gj_head_is_prompts())
+  {
+   out[k++] = '\n';
+   e_d_gj_head_add('\n');
+  }
+  out[k++] = in[i];
+  e_d_gj_head_add(in[i]);
+ }
+ return(k);
+}
+
+/**
+ * e_d_gj_event_dropped - The lines and the prompt still owed to an event
+ * jdb wrote in the middle of an answer are no longer waited for: the
+ * answer was given up on, and what is left of both is dropped up to the
+ * settle command's answer.
+ *
+ * Without it the event's prompt, gone with the answer, would be waited
+ * for after the settle command's, and every debugger key would be refused
+ * as "still answering" until the user quits.  The stop the event named
+ * stays kept, and is shown once the settle command is answered.
+ */
+static void e_d_gj_event_dropped(void)
+{
+ e_d_gj.ev_lines = 0;
+ e_d_gj.ev_prompts = 0;
+}
+
+/**
+ * e_d_gj_given_up - The answer to @cmd was given up on and jdb still owes
+ * it.  jdb runs "print" in a thread of its own, so its answer can come
+ * after the settle command's and land in the middle of the next answer; it
+ * names its expression, so it is told apart by that (e_d_gj_late_print).
+ * jdb answers every other command the editor sends in order.  The rest of
+ * an event jdb wrote during the answer given up on (its prompt above all)
+ * is dropped with that answer, up to the settle command's.
+ * @cmd: the command.
+ */
+static void e_d_gj_given_up(const char *cmd)
+{
+ size_t lead = strlen(E_D_GJ_PRINT);
+
+ e_d_gj_event_dropped();
+ if (strncmp(cmd, E_D_GJ_PRINT, lead))
+  return;
+ if (e_d_gj.owed_print)
+  FREE(e_d_gj.owed_print);
+ e_d_gj.owed_print = WpeStrdup(cmd + lead);
+}
+
+/**
+ * e_d_gj_late_print - Is the line part of jdb's late answer to a "print"
+ * given up on?
+ * @line: the line.
+ *
+ * Its last line, " EXPR = value", closes it, and the prompt that follows
+ * it is owed to it, not to the answer the editor waits for.
+ * Return: 1 for such a line.
+ */
+static int e_d_gj_late_print(const char *line)
+{
+ char says[E_D_REQ_CMD_MAX + sizeof E_D_GJ_PRINT_SAYS_FMT];
+
+ if (!e_d_gj.owed_print)
+  return(0);
+ if (strstr(line, E_D_GJ_PARSER_WORDS))
+  return(1);
+ snprintf(says, sizeof says, E_D_GJ_PRINT_SAYS_FMT, e_d_gj.owed_print);
+ if (strncmp(line, says, strlen(says)))
+  return(0);
+ FREE(e_d_gj.owed_print);
+ e_d_gj.owed_print = NULL;
+ e_d_gj.ev_prompts++;
+ return(1);
+}
+
+/**
+ * e_d_gj_event_body - Is the line one of the lines that follow an event's
+ * first (its source line, the blank line before its prompt)?
+ */
+static int e_d_gj_event_body(const char *line)
+{
+ if (e_d_gj.ev_lines <= 0)
+  return(0);
+ e_d_gj.ev_lines--;
+ if (!line[0])
+  e_d_gj.ev_lines = 0;               /* the blank line closes the block */
+ return(1);
+}
+
+/**
+ * e_d_gj_line_is_async - Is this whole line of jdb's output no part of the
+ * answer the engine waits for, but an event jdb wrote meanwhile?
+ * @line: the line, without its end; @io: unused.
+ *
+ * The user never sees jdb's words on a stop taken for a watch's value or
+ * a frame of the stack, and the prompt that ends the event never ends the
+ * answer that is still to come.
+ * Return: 1 for an event's line (deliver_async takes it).
+ */
+static int e_d_gj_line_is_async(const char *line, void *io)
+{
+ const char *rest;
+ int took;
+
+ (void)io;
+ if (e_d_gj_event_body(line))
+  return(1);
+ rest = e_d_gj_take_event_prompts(line, &took);
+ if (e_d_gj_names_stop(rest))
+ {
+  e_d_gj.ev_lines = E_D_GJ_EVENT_LINES;
+  e_d_gj.ev_prompts++;
+  return(1);
+ }
+ if (e_d_gj_names_other_event(rest))
+  return(1);
+ if (e_d_gj_late_print(rest))
+  return(1);
+ return(took && !rest[0]);              /* only an event's prompt */
+}
+
+static void e_d_gj_show_soon(void);   /* (below) */
+
+/**
+ * e_d_gj_keep_stop - Keep the stop jdb reported in the middle of other
+ * answers, to show it once they are in.
+ * @line: its line, from its mark on.
+ */
+static void e_d_gj_keep_stop(const char *line)
+{
+ if (e_d_gj.stop)
+  FREE(e_d_gj.stop);
+ e_d_gj.stop = WpeStrdup(line);
+ e_d_gj_show_soon();
+}
+
+/**
+ * e_d_gj_deliver_async - Act on a line of jdb's that was no answer's.
+ * @line: the line, without its end; @io: unused.
+ *
+ * A stop is kept and shown as the stop it is; a deferred breakpoint set
+ * turns its mark solid.  The other lines of an event say nothing more.
+ */
+static void e_d_gj_deliver_async(const char *line, void *io)
+{
+ const char *text = e_d_jdb_skip_prompts(line);
+
+ (void)io;
+ if (e_d_gj_names_stop(text))
+  e_d_gj_keep_stop(text);
+ else if (!strncmp(text, E_D_JDB_SET_DEFERRED, strlen(E_D_JDB_SET_DEFERRED)))
+  e_d_jdb_confirm_deferred(text + strlen(E_D_JDB_SET_DEFERRED));
+}
+
+/**
+ * e_d_gj_loose_line - One whole line jdb wrote with nothing asked: claim
+ * and act on it as on one written in the middle of an answer.
+ */
+static void e_d_gj_loose_line(const char *line)
+{
+ if (e_d_gj_line_is_async(line, NULL))
+  e_d_gj_deliver_async(line, NULL);
+}
+
+/**
+ * e_d_gj_loose_tail - What jdb wrote with nothing asked ends without a line
+ * end: an event's prompt there is seen, and anything else waits for the
+ * rest of its line.
+ */
+static void e_d_gj_loose_tail(void)
+{
+ int took;
+ const char *rest;
+
+ e_d_gj.loose[e_d_gj.loose_len] = '\0';
+ rest = e_d_gj_take_event_prompts(e_d_gj.loose, &took);
+ if (!rest[0])
+  e_d_gj.loose_len = 0;
+}
+
+/**
+ * e_d_gj_unsolicited - jdb wrote with no request out: an event it wrote
+ * behind the last answer's prompt, or one that came while the editor
+ * waited for nothing.
+ * @bytes, @n: what it wrote.
+ *
+ * The output is read on until the event is whole (e_d_gj_reads_on); the
+ * stop it names is then shown.
+ */
+static void e_d_gj_unsolicited(const char *bytes, size_t n)
+{
+ size_t i;
+
+ for (i = 0; i < n; i++)
+ {
+  if (bytes[i] != '\n')
+  {
+   if (e_d_gj.loose_len + 1 < sizeof e_d_gj.loose)
+    e_d_gj.loose[e_d_gj.loose_len++] = bytes[i];
+   continue;
+  }
+  e_d_gj.loose[e_d_gj.loose_len] = '\0';
+  e_d_gj_loose_line(e_d_gj.loose);
+  e_d_gj.loose_len = 0;
+ }
+ e_d_gj_loose_tail();
+ e_d_gj_show_soon();
+}
+
+/**
+ * e_d_gj_event_unfinished - Is jdb in the middle of writing an event: a
+ * line without its end, the lines after its first, or its prompt?
+ */
+static int e_d_gj_event_unfinished(void)
+{
+ return(e_d_gj.loose_len > 0 || e_d_gj.ev_lines > 0 || e_d_gj.ev_prompts > 0);
+}
+
+/**
+ * e_d_gj_reads_on - Must jdb's output be read on with nothing asked, so
+ * the event it is writing, or the late answer it owes to a "print" given
+ * up on, is read whole and the stop shown?
+ */
+static int e_d_gj_reads_on(void)
+{
+ return(e_d_gj_event_unfinished() || e_d_gj.owed_print != NULL);
+}
+
+/**
+ * e_d_gj_forget_events - Forget what jdb wrote in the middle of answers,
+ * and what it still owed: the program runs again, or the session ends.
+ */
+static void e_d_gj_forget_events(void)
+{
+ e_d_gj.ev_lines = 0;
+ e_d_gj.ev_prompts = 0;
+ e_d_gj.loose_len = 0;
+ e_d_gj.head_len = 0;
+ e_d_gj.head_long = 0;
+ if (e_d_gj.owed_print)
+  FREE(e_d_gj.owed_print);
+ e_d_gj.owed_print = NULL;
+ if (e_d_gj.stop)
+  FREE(e_d_gj.stop);
+ e_d_gj.stop = NULL;
+ if (e_d_gj.timer == E_D_GA_NO_TIMER)
+  return;
+ wpe_timer_del(e_d_gj.timer);
+ e_d_gj.timer = E_D_GA_NO_TIMER;
+}
+
+/* ---- a stop the user is shown ---- */
+
+/* step: take back jdb's answers to commands sent while the program ran
+   (Pause's "suspend", a breakpoint set or cleared), which came after its
+   stop.  Each is one line and a prompt before the marker; the breakpoints'
+   words among them still turn their marks solid. */
+
+/**
+ * e_d_gj_take_owed_words - Read jdb's words on breakpoints in the answers
+ * that came before the settle marker.
+ * @text: the settle command's answer; @mark: where the marker is in it.
+ */
+static void e_d_gj_take_owed_words(const char *text, const char *mark)
+{
+ char line[E_D_LINE_MAX];
+ int pos = 0, end = (int)(mark - text);
+
+ while (pos < end)
+ {
+  e_d_text_next_line(text, &pos, line, sizeof line);
+  e_d_jdb_live_word_in(line);
+ }
+}
+
+static int e_d_gj_settle_answered(E_D_REQ_END how, E_D_ANSWER *ans, void *ctx)
+{
+ const char *mark = NULL;
+
+ (void)how;
+ (void)ctx;
+ e_d_ga.marker_wanted = 0;
+ if (ans->text)
+  mark = strstr(ans->text, e_d_ga.be->settle_marker);
+ if (mark)
+  e_d_gj_take_owed_words(ans->text, mark);
+ e_d_ga.owed = 0;
+ e_d_run.int_owed = 0;        /* jdb answered every one: none comes later */
+ e_d_jdb_owed_forget();
+ return(E_D_STEP_NEXT);
+}
+
+/* step: jdb's stack, when the Stack window is open and the frames read at
+   this stop are not kept (e_d_jdb_frames_kept) */
+
+static int e_d_gj_frames_cmd(char *cmd, size_t n, void *ctx)
+{
+ E_D_GA_CTX *st = ctx;
+
+ if (!st->stack_wanted || e_d_jdb_frames_kept())
+  return(0);
+ snprintf(cmd, n, "%s", E_D_GJ_WHERE);
+ return(1);
+}
+
+static int e_d_gj_frames_answered(E_D_REQ_END how, E_D_ANSWER *ans, void *ctx)
+{
+ (void)how;
+ (void)ctx;
+ e_d_jdb_take_frames(e_d_ga_editor(), ans->text);
+ return(E_D_STEP_NEXT);
+}
+
+/* step: the watches, when the stop names a line (a stop that names none
+   shows none, as it never did) */
+
+static int e_d_gj_stop_watch_cmd(char *cmd, size_t n, void *ctx)
+{
+ E_D_GA_CTX *st = ctx;
+
+ if (st->line <= 0)
+  return(0);
+ return(e_d_gs_watch_cmd(cmd, n, ctx));
+}
+
+/* step: Go to cursor's own breakpoint goes at the first stop after it.
+   jdb holds one breakpoint per "stop at", two on a line when the user set
+   his own there too, and "clear" takes out one: Go to cursor's is always
+   cleared, and the user's stays. */
+
+static int e_d_gj_cursor_clear_cmd(char *cmd, size_t n, void *ctx)
+{
+ (void)ctx;
+ e_d_cursor_brk.wanted = 0;
+ if (!e_d_cursor_brk.set)
+  return(0);
+ e_d_cursor_brk.set = 0;
+ e_d_jdb_cursor_brk_cmd(0, cmd, n);
+ return(1);
+}
+
+/* step: the editor's start breakpoint goes at the first stop, by the
+   method it names */
+
+static int e_d_gj_start_clear_cmd(char *cmd, size_t n, void *ctx)
+{
+ E_D_BRK_GONE start;
+
+ if (e_d_gb_start_entry_of(ctx) < 0)
+  return(0);
+ memset(&start, 0, sizeof start);
+ start.file = "";
+ e_d_jdb_brk_remove_cmd(&start, cmd, n);
+ return(1);
+}
+
+/* The answers of a stop the user is shown: the owed answers first, then
+   the Stack window and the watches, then the breakpoints changed while the
+   program ran and the editor's own two. */
+static const E_D_STEP e_d_jdb_stop_steps[] =
+{
+ { e_d_gs_settle_cmd,       e_d_gj_settle_answered },
+ { e_d_gj_frames_cmd,       e_d_gj_frames_answered },
+ { e_d_gj_stop_watch_cmd,   e_d_gs_watch_answered },
+ { e_d_gb_remove_cmd,       e_d_gb_remove_answered },
+ { e_d_gb_add_cmd,          e_d_gb_add_answered },
+ { e_d_gj_cursor_clear_cmd, e_d_gs_ignore_answer },
+ { e_d_gj_start_clear_cmd,  e_d_gb_start_answered },
+ { NULL, NULL }
+};
+
+/**
+ * e_d_gj_show_stop - jdb has answered everything the stop asks: the user
+ * sees the stop marked in the Java file it names (or why it is not), the
+ * exception it stopped on, and how a Pause ended; then the next kept key
+ * runs.
+ * @cn: the editor; @stop: jdb's stop line, or NULL when it named none.
+ */
+static void e_d_gj_show_stop(ECNT *cn, const char *stop)
+{
+ FENSTER *f = e_d_ga_window();
+
+ if (stop)
+ {
+  e_d_jdb_mark_stop(f, stop);
+  e_d_switch_out(0);
+  e_d_jdb_say_exception(e_d_ga_window(), stop);
+ }
+ else
+  e_d_run_repaint_margin(cn);
+ _messages_activated = 0;
+ e_refresh();
+ e_d_run_stop_tail(cn, e_d_run.ops);
+ e_d_act_schedule();
+}
+
+/**
+ * e_d_gj_stop_finished - The answers of a jdb stop have come: show it.
+ * @ok: 0 when an answer was given up on (the status row already says
+ * which): nothing is drawn, and the kept keys are dropped.
+ * @ctx: the context.
+ */
+static void e_d_gj_stop_finished(int ok, void *ctx)
+{
+ E_D_GA_CTX *st = ctx;
+ ECNT *cn = st->cn;
+ char *stop = st->stop;
+
+ st->stop = NULL;
+ if (!e_d_ga_chain_ended() || !ok)
+ {
+  e_d_ga_actions_drop();
+  e_d_gs_free(st);
+  if (stop)
+   FREE(stop);
+  return;
+ }
+ if (st->line > 0)
+  e_d_gs_show_windows(st);
+ e_d_gs_free(st);
+ e_d_gj_show_stop(cn, stop);
+ if (stop)
+  FREE(stop);
+}
+
+/**
+ * e_d_gj_stop_ask - jdb stopped the program: ask it, on the fd loop, what
+ * the stop needs, and show the stop once it has answered.
+ * @cn: the editor; @stop: jdb's stop line, or NULL when it named none.
+ *
+ * The keys reach the editor while jdb answers; F7, F8 and Run typed
+ * meanwhile are kept and run in order after the stop is shown.
+ */
+static void e_d_gj_stop_ask(ECNT *cn, const char *stop)
+{
+ E_D_GA_CTX *st = &e_d_gs;
+
+ e_d_gs_reset(st, cn);
+ if (stop)
+ {
+  st->stop = WpeStrdup(stop);
+  st->line = e_ds_jdb_stop_line(stop);
+ }
+ st->start_brk = e_d_run.start_brk;
+ e_d_run.start_brk = 0;
+ st->stack_wanted = st->line > 0 && e_d_gs_stack_window_open(cn);
+ e_d_run.stop_on_loop = 1;
+ e_d_ga_chain_start(cn, e_d_jdb_stop_steps, st, e_d_gj_stop_finished,
+                    E_D_GA_STOP);
+}
+
+/* ---- a stop jdb reported in the middle of other answers ---- */
+
+/**
+ * e_d_gj_show_kept_stop - Show the stop jdb reported while the editor
+ * read other answers (a breakpoint the program reached as a Pause or a
+ * command was on its way), as the stop it is: marked, with its watches.
+ *
+ * Asked once those answers are in, from the loop, so the user sees the
+ * last place the program stopped, never a frame or a value taken from
+ * jdb's words on it.
+ */
+static void e_d_gj_show_kept_stop(void)
+{
+ char *stop = e_d_gj.stop;
+ ECNT *cn = e_d_ga_editor();
+
+ e_d_gj.stop = NULL;
+ e_d_nstack = 0;
+ e_d_nframes = 0;
+ e_d_gj_stop_ask(cn, stop);
+ FREE(stop);
+}
+
+/**
+ * e_d_gj_on_show_timer - The loop is free: show the stop jdb reported in
+ * the middle of other answers, once nothing is asked and the event is
+ * whole.
+ * @data: unused.
+ *
+ * A program let run on meanwhile (a kept key ran first) has moved away
+ * from it, and its next stop is the one shown.
+ */
+static void e_d_gj_on_show_timer(void *data)
+{
+ (void)data;
+ e_d_gj.timer = E_D_GA_NO_TIMER;
+ if (!e_d_gj.stop)
+  return;
+ if (!e_d_ga.live || !e_d_session_runs() || e_d_run_going())
+ {
+  e_d_gj_forget_events();
+  return;
+ }
+ if (e_d_ga_answering() || e_d_gj_event_unfinished())
+  return;                 /* the chain's end or the event's prompt asks again */
+ e_d_gj_show_kept_stop();
+}
+
+/**
+ * e_d_gj_show_soon - Show a stop jdb reported in the middle of other
+ * answers from the editor's loop, not from inside one of them.
+ */
+static void e_d_gj_show_soon(void)
+{
+ if (!e_d_gj.stop || e_d_gj.timer != E_D_GA_NO_TIMER)
+  return;
+ e_d_gj.timer = wpe_timer_add(0, 0, e_d_gj_on_show_timer, NULL);
+ if (e_d_gj.timer <= 0)
+  e_d_gj.timer = E_D_GA_NO_TIMER;
+}
+
+/**
+ * e_d_gj_chain_over - A sequence of jdb's answers is over: a stop it
+ * reported meanwhile is shown now.
+ */
+static void e_d_gj_chain_over(void)
+{
+ e_d_gj_show_soon();
+}
+
+/* ---- a Pause's stop ---- */
+
+/* step: the threads of the paused VM; "suspend" leaves jdb with no current
+   thread, so "where" alone would say "No thread specified" */
+
+static int e_d_gj_threads_cmd(char *cmd, size_t n, void *ctx)
+{
+ (void)ctx;
+ snprintf(cmd, n, "%s", E_D_GJ_THREADS);
+ return(1);
+}
+
+static int e_d_gj_threads_answered(E_D_REQ_END how, E_D_ANSWER *ans, void *ctx)
+{
+ E_D_GA_CTX *st = ctx;
+
+ (void)how;
+ st->threads = e_d_gs_copy(ans);
+ st->thread_pos = 0;
+ return(E_D_STEP_NEXT);
+}
+
+/**
+ * e_d_gj_next_thread - The next thread of the "threads" answer to look at.
+ * @st: the context; its thread receives the id.
+ * Return: 1 while there is one.
+ */
+static int e_d_gj_next_thread(E_D_GA_CTX *st)
+{
+ char row[E_D_FRAME_ROW_MAX];
+ const char *p;
+
+ if (!st->threads)
+  return(0);
+ p = st->threads + st->thread_pos;
+ while (e_d_frames_next_row(&p, row, sizeof row))
+ {
+  st->thread_pos = (size_t)(p - st->threads);
+  if (e_d_jdb_thread_id(row, st->thread, sizeof st->thread))
+   return(1);
+ }
+ st->thread_pos = (size_t)(p - st->threads);
+ return(0);
+}
+
+/* step: one thread's stack, again until one runs the user's code; each
+   thread is tried in the order "threads" lists them */
+
+static int e_d_gj_thread_where_cmd(char *cmd, size_t n, void *ctx)
+{
+ E_D_GA_CTX *st = ctx;
+
+ if (!e_d_gj_next_thread(st))
+  return(0);
+ snprintf(cmd, n, E_D_GJ_WHERE_FMT, st->thread);
+ return(1);
+}
+
+static int e_d_gj_thread_where_answered(E_D_REQ_END how, E_D_ANSWER *ans,
+                                        void *ctx)
+{
+ E_D_GA_CTX *st = ctx;
+
+ (void)how;
+ e_d_jdb_take_frames(st->cn, ans->text);
+ st->user_frame = e_d_jdb_user_frame();
+ if (st->user_frame < 0)
+  return(E_D_STEP_AGAIN);
+ return(E_D_STEP_NEXT);
+}
+
+/* step: that thread becomes jdb's current one */
+
+static int e_d_gj_thread_pick_cmd(char *cmd, size_t n, void *ctx)
+{
+ E_D_GA_CTX *st = ctx;
+
+ if (st->user_frame < 0)
+  return(0);
+ snprintf(cmd, n, E_D_GJ_THREAD_FMT, st->thread);
+ return(1);
+}
+
+/* step: up to its innermost frame of the user's code, so the Stack window
+   and the watches start there and not in a library call it is in */
+
+static int e_d_gj_up_cmd(char *cmd, size_t n, void *ctx)
+{
+ E_D_GA_CTX *st = ctx;
+
+ if (st->user_frame <= 0)
+  return(0);
+ snprintf(cmd, n, E_D_GJ_UP_FMT, st->user_frame);
+ return(1);
+}
+
+static int e_d_gj_up_answered(E_D_REQ_END how, E_D_ANSWER *ans, void *ctx)
+{
+ E_D_GA_CTX *st = ctx;
+
+ (void)how;
+ (void)ans;
+ e_d_nstack = st->user_frame;
+ return(E_D_STEP_NEXT);
+}
+
+/* step: the watches of that frame */
+
+static int e_d_gj_pause_watch_cmd(char *cmd, size_t n, void *ctx)
+{
+ E_D_GA_CTX *st = ctx;
+
+ if (st->user_frame < 0)
+  return(0);
+ return(e_d_gs_watch_cmd(cmd, n, ctx));
+}
+
+static const E_D_STEP e_d_jdb_pause_steps[] =
+{
+ { e_d_gs_settle_cmd,           e_d_gj_settle_answered },
+ { e_d_gj_threads_cmd,          e_d_gj_threads_answered },
+ { e_d_gj_thread_where_cmd,     e_d_gj_thread_where_answered },
+ { e_d_gj_thread_pick_cmd,      e_d_gs_ignore_answer },
+ { e_d_gj_up_cmd,               e_d_gj_up_answered },
+ { e_d_gj_pause_watch_cmd,      e_d_gs_watch_answered },
+ { e_d_gb_remove_cmd,           e_d_gb_remove_answered },
+ { e_d_gb_add_cmd,              e_d_gb_add_answered },
+ { e_d_gj_cursor_clear_cmd,     e_d_gs_ignore_answer },
+ { e_d_gj_start_clear_cmd,      e_d_gb_start_answered },
+ { NULL, NULL }
+};
+
+/**
+ * e_d_gj_pause_shown - The thread a Pause stopped in is read: mark its
+ * innermost line of the user's code, with the watches of that frame, or
+ * nothing when no thread runs the user's code ("Paused" is all there is to
+ * say then); then the next kept key runs.
+ * @cn: the editor; @st: the context.
+ */
+static void e_d_gj_pause_shown(ECNT *cn, E_D_GA_CTX *st)
+{
+ char file[E_D_STOP_PATH_MAX];
+ int line;
+
+ if (st->user_frame < 0)
+ {
+  e_d_nframes = 0;
+  e_d_gs_free(st);
+  e_d_gj_show_stop(cn, NULL);
+  return;
+ }
+ snprintf(file, sizeof file, "%s", e_d_frames[st->user_frame].file);
+ line = e_d_frames[st->user_frame].line;
+ e_d_gs_show_windows(st);
+ e_d_gs_free(st);
+ e_d_goto_break(file, line, e_d_ga_window());
+ _messages_activated = 0;
+ e_refresh();
+ e_d_run_stop_tail(cn, e_d_run.ops);
+ e_d_act_schedule();
+}
+
+/**
+ * e_d_gj_pause_finished - The answers of a Pause's stop have come.
+ * @ok: 0 when an answer was given up on: nothing is drawn; @ctx: the
+ * context.
+ */
+static void e_d_gj_pause_finished(int ok, void *ctx)
+{
+ E_D_GA_CTX *st = ctx;
+ ECNT *cn = st->cn;
+
+ if (!e_d_ga_chain_ended() || !ok)
+ {
+  e_d_ga_actions_drop();
+  e_d_gs_free(st);
+  return;
+ }
+ e_d_gj_pause_shown(cn, st);
+}
+
+/**
+ * e_d_gj_pause_ask - Pause stopped jdb's VM: look, on the fd loop, for the
+ * thread that runs the user's code, and show its line.
+ * @cn: the editor.
+ */
+static void e_d_gj_pause_ask(ECNT *cn)
+{
+ E_D_GA_CTX *st = &e_d_gs;
+
+ e_d_gs_reset(st, cn);
+ st->user_frame = -1;
+ st->start_brk = e_d_run.start_brk;
+ e_d_run.start_brk = 0;
+ e_d_nstack = 0;
+ e_d_nframes = 0;
+ e_d_run.stop_on_loop = 1;
+ e_d_ga_chain_start(cn, e_d_jdb_pause_steps, st, e_d_gj_pause_finished,
+                    E_D_GA_STOP);
+}
+
+/**
+ * e_d_gj_pause_instead - Pause was pressed while jdb answered at a stop the
+ * user was not shown (a breakpoint he had just removed): the program is
+ * not let run on, and the stop is shown as the Pause's.
+ * @cn: the editor.
+ */
+static void e_d_gj_pause_instead(ECNT *cn)
+{
+ e_d_async_pending = 0;
+ e_d_ga.pause_asked = 0;
+ e_d_run.pause = E_D_PAUSE_TAKEN;
+ e_d_gj_stop_ask(cn, e_ds_jdb_stop_line_in(e_d_jdb_reply.buf));
+}
+
+/* ---- commands of the user's at a stop, the set-up and the resumes ---- */
+
+/* Every breakpoint of the user's; a set-up given up on and asked again
+   first clears a line jdb may have set unanswered. */
+static const E_D_STEP e_d_jdb_set_up_steps[] =
+{
+ { e_d_gb_remove_cmd, e_d_gb_remove_answered },
+ { e_d_gb_add_cmd,    e_d_gu_add_answered },
+ { NULL, NULL }
+};
+
+/* Add, edit or delete a watch at a stop. */
+static const E_D_STEP e_d_jdb_watches_steps[] =
+{
+ { e_d_gj_frames_cmd, e_d_gj_frames_answered },
+ { e_d_gs_watch_cmd,  e_d_gs_watch_answered },
+ { NULL, NULL }
+};
+
+/* Ctrl-G K. */
+static const E_D_STEP e_d_jdb_stack_steps[] =
+{
+ { e_d_gj_frames_cmd, e_d_gj_frames_answered },
+ { NULL, NULL }
+};
+
+/* Enter on a row of the Stack window: jdb's "up" and "down" are gdb's. */
+static const E_D_STEP e_d_jdb_follow_steps[] =
+{
+ { e_d_gs_move_cmd,   e_d_gs_move_answered },
+ { e_d_gj_frames_cmd, e_d_gj_frames_answered },
+ { e_d_gs_watch_cmd,  e_d_gs_watch_answered },
+ { NULL, NULL }
+};
+
+/* step: Finish needs the frames, to know the function has a caller */
+
+static int e_d_gj_finish_frames_cmd(char *cmd, size_t n, void *ctx)
+{
+ E_D_GA_GO *go = ctx;
+
+ if (go->how != E_D_GO_FINISH || e_d_jdb_frames_kept())
+  return(0);
+ snprintf(cmd, n, "%s", E_D_GJ_WHERE);
+ return(1);
+}
+
+/* What a resume asks jdb first: the owed answers, the breakpoint changes it
+   has not been told of, Go to cursor's own breakpoint, the start breakpoint
+   before the first run, and for Finish the frames. */
+static const E_D_STEP e_d_jdb_go_steps[] =
+{
+ { e_d_gs_settle_cmd,        e_d_gj_settle_answered },
+ { e_d_gb_remove_cmd,        e_d_gb_remove_answered },
+ { e_d_gb_add_cmd,           e_d_gb_add_answered },
+ { e_d_ga_cursor_set_cmd,    e_d_gs_ignore_answer },
+ { e_d_gg_start_cmd,         e_d_gg_start_answered },
+ { e_d_gj_finish_frames_cmd, e_d_gj_frames_answered },
+ { NULL, NULL }
+};
 
 /* ---- the backends ---- */
 
@@ -19604,6 +21081,16 @@ static const E_D_GA_BACKEND e_d_ga_gdb_backend =
  e_d_gdb_show_stack,
  e_d_gs_pause_instead,
  NULL,
+ e_d_ga_ends_in_prompt,
+ e_d_gdb_start_brk_cmd,
+ NULL,
+ NULL,
+ NULL,
+ NULL,
+ NULL,
+ NULL,
+ NULL,
+ NULL,
  e_d_gdb_set_up_steps,
  e_d_ga_brk_steps,
  e_d_gdb_watches_steps,
@@ -19622,12 +21109,22 @@ static const E_D_GA_BACKEND e_d_ga_pdb_backend =
  0,
  e_d_pdb_brk_add_cmd,
  e_d_pdb_brk_remove_cmd,
- e_d_pdb_brk_set_id,
- e_d_pdb_brk_verdict,
- e_d_pdb_remove_all,
- e_d_pdb_show_stack,
+ e_d_place_brk_set_id,
+ e_d_place_brk_verdict,
+ e_d_ga_remove_each_line,
+ e_d_ga_frames_show_stack,
  e_d_gp_pause_instead,
- e_d_pdb_finish_now,
+ e_d_ga_finish_now,
+ e_d_ga_ends_in_prompt,
+ NULL,
+ e_d_pdb_cursor_brk_cmd,
+ NULL,
+ NULL,
+ NULL,
+ NULL,
+ NULL,
+ NULL,
+ NULL,
  e_d_pdb_set_up_steps,
  e_d_ga_brk_steps,
  e_d_pdb_watches_steps,
@@ -19636,10 +21133,47 @@ static const E_D_GA_BACKEND e_d_ga_pdb_backend =
  e_d_pdb_go_steps
 };
 
+/* jdb's prompt is no fixed string (e_d_jdb_ends_in_prompt); E_D_JDB_BARE_PROMPT
+   stands for it.  Its refusals of a breakpoint are on its output, and its
+   first run is a "cont" that says nothing of its own. */
+static const E_D_GA_BACKEND e_d_ga_jdb_backend =
+{
+ E_D_JDB_NAME,
+ E_D_JDB_BARE_PROMPT,
+ E_D_JDB_SETTLE_CMD,
+ E_D_JDB_SETTLE_MARK,
+ 0,
+ 0,
+ e_d_jdb_brk_add_cmd,
+ e_d_jdb_brk_remove_cmd,
+ e_d_place_brk_set_id,
+ e_d_place_brk_verdict,
+ e_d_ga_remove_each_line,
+ e_d_ga_frames_show_stack,
+ e_d_gj_pause_instead,
+ e_d_ga_finish_now,
+ e_d_jdb_ends_in_prompt,
+ e_d_jdb_start_brk_cmd,
+ e_d_jdb_cursor_brk_cmd,
+ e_d_gj_line_is_async,
+ e_d_gj_deliver_async,
+ e_d_gj_unsolicited,
+ e_d_gj_reads_on,
+ e_d_gj_chain_over,
+ e_d_gj_given_up,
+ e_d_jdb_separate_prompts,
+ e_d_jdb_set_up_steps,
+ e_d_ga_brk_steps,
+ e_d_jdb_watches_steps,
+ e_d_jdb_stack_steps,
+ e_d_jdb_follow_steps,
+ e_d_jdb_go_steps
+};
+
 /**
  * e_d_ga_backend_of - The request engine's table for debugger @type.
- * Return: gdb's or pdb's, or NULL for a debugger whose answers are still
- * read otherwise.
+ * Return: gdb's, pdb's or jdb's, or NULL for a debugger whose answers are
+ * still read otherwise.
  */
 static const E_D_GA_BACKEND *e_d_ga_backend_of(int type)
 {
@@ -19647,12 +21181,14 @@ static const E_D_GA_BACKEND *e_d_ga_backend_of(int type)
   return(&e_d_ga_gdb_backend);
  if (type == DEB_PDB)
   return(&e_d_ga_pdb_backend);
+ if (type == DEB_JDB)
+  return(&e_d_ga_jdb_backend);
  return(NULL);
 }
 
 /**
- * e_d_ga_remove_all - Remove all breakpoints at a stop of gdb's or pdb's,
- * in the way the debugger that runs takes it, on the fd loop.
+ * e_d_ga_remove_all - Remove all breakpoints at a stop of gdb's, pdb's or
+ * jdb's, in the way the debugger that runs takes it, on the fd loop.
  * @cn: the editor.
  */
 static void e_d_ga_remove_all(ECNT *cn)

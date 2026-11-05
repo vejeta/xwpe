@@ -535,6 +535,7 @@ EXTRA_DIST = \
   tests/check-one-owner.sh \
   tests/one-owner.allow \
   tests/stubs/gdb \
+  tests/stubs/jdb/jdb \
   tests/stubs/pdb/python3 \
   tests/transcripts/gdb-where-library.txt \
   tests/transcripts/gdb-where.txt \
