@@ -1,0 +1,10 @@
+# GNU gdb (Debian 18.1-3) 18.1, gdb --interpreter=mi2 -nx -q, commands 12-exec-continue and 13-gdb-exit; the program returns 3
+12^running
+*running,thread-id="all"
+(gdb)
+~"[Inferior 1 (process 1177485) exited with code 03]\n"
+=thread-exited,id="1",group-id="i1"
+=thread-group-exited,id="i1",exit-code="03"
+*stopped,reason="exited",exit-code="03"
+(gdb)
+13^exit

@@ -1,0 +1,3 @@
+# GNU gdb (Debian 18.1-3) 18.1, gdb --interpreter=mi2 -nx -q, command 5-break-insert p.c:6 (fullname shortened to /work)
+5^done,bkpt={number="1",type="breakpoint",disp="keep",enabled="y",addr="0x0000000000001140",func="sq",file="p.c",fullname="/work/p.c",line="7",thread-groups=["i1"],times="0",original-location="p.c:6"}
+(gdb)

@@ -1,0 +1,10 @@
+# GNU gdb (Debian 18.1-3) 18.1, gdb --interpreter=mi2 -nx -q, command 4-exec-run; the program returns 10 and gdb writes the code in octal
+4^running
+*running,thread-id="all"
+(gdb)
+~"[Inferior 1 (process 1182433) exited with code 012]\n"
+=thread-exited,id="1",group-id="i1"
+=thread-group-exited,id="i1",exit-code="012"
+*stopped,reason="exited",exit-code="012"
+(gdb)
+5^exit

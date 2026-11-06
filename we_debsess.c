@@ -39,6 +39,40 @@
 #define E_DS_DAP_STEP          "step"
 #define E_DS_DAP_PAUSE         "pause"
 #define E_DS_DAP_EXCEPTION     "exception"
+/* gdb's MI: the classes of its records, the "reason" of a stop, the signal
+   the editor sends to interrupt, and the exit code's base (gdb writes
+   exit-code="012" for 10). */
+#define E_DS_MI_CLASS_RUNNING  "running"
+#define E_DS_MI_CLASS_STOPPED  "stopped"
+#define E_DS_MI_CLASS_ERROR    "error"
+#define E_DS_MI_CLASS_EXIT     "exit"
+#define E_DS_MI_CLASS_DONE     "done"
+#define E_DS_MI_SIGINT         "SIGINT"
+#define E_DS_MI_EXIT_BASE      8
+#define E_DS_MI_DECIMAL        10
+/* What shows on the status row when gdb holds a breakpoint pending, and when
+   it refuses one without saying why. */
+#define E_DS_MI_PENDING_WORDS  "gdb holds it pending: "
+#define E_DS_MI_REFUSED_WORDS  "gdb refused the breakpoint"
+/* A terminal's styling: ESC [ ... a final byte from @ to ~. */
+#define E_DS_ESC               '\033'
+#define E_DS_CSI               '['
+#define E_DS_CSI_FINAL_FIRST   '@'
+#define E_DS_CSI_FINAL_LAST    '~'
+/* The parameter and intermediate bytes a styling sequence holds before its
+   final byte. */
+#define E_DS_CSI_INNER_FIRST   ' '
+#define E_DS_CSI_INNER_LAST    '?'
+/* UTF-8: a continuation byte is 10xxxxxx; a lead byte from 0xc0 opens a
+   character of two bytes, from 0xe0 of three, from 0xf0 of four. */
+#define E_DS_UTF8_TOP_BITS     0xc0u
+#define E_DS_UTF8_CONT         0x80u
+#define E_DS_UTF8_LEAD2        0xc0u
+#define E_DS_UTF8_LEAD3        0xe0u
+#define E_DS_UTF8_LEAD4        0xf0u
+#define E_DS_UTF8_BYTES2       2
+#define E_DS_UTF8_BYTES3       3
+#define E_DS_UTF8_BYTES4       4
 
 /* ================================================================== */
 /* The readers                                                         */
@@ -1298,4 +1332,439 @@ int e_ds_frame_to_mark(const E_D_SESSION *s,
    return(k);
  }
  return(E_DS_NOT_FOUND);
+}
+
+/* ================================================================== */
+/* gdb over MI                                                         */
+/* ================================================================== */
+
+void e_ds_set_interrupt(E_D_SESSION *s, int why)
+{
+ s->interrupt_for = why;
+}
+
+void e_ds_console_clear(E_D_SESSION *s)
+{
+ s->console[0] = '\0';
+ s->console_len = 0;
+ s->console_lost = 0;
+}
+
+/**
+ * e_ds_skip_style - Step over a terminal styling sequence (ESC [ ... final)
+ * that starts at @in.  A byte that cannot be inside such a sequence ends
+ * it unread, so a broken sequence never swallows the words after it.
+ * Return: where the text goes on.
+ */
+static const char *e_ds_skip_style(const char *in)
+{
+ unsigned char c;
+
+ in++;
+ if (*in != E_DS_CSI)
+  return(in);
+ in++;
+ for (;;)
+ {
+  c = (unsigned char)*in;
+  if (c >= E_DS_CSI_FINAL_FIRST && c <= E_DS_CSI_FINAL_LAST)
+   return(in + 1);
+  if (c < E_DS_CSI_INNER_FIRST || c > E_DS_CSI_INNER_LAST)
+   return(in);
+  in++;
+ }
+}
+
+/**
+ * e_ds_utf8_cut - Where to cut @len bytes of @s so no character is split.
+ * Return: @len, or less when the last character would be cut short.
+ *
+ * Messages and the status row then never show half a character when gdb's
+ * words are longer than the room for them.
+ */
+static size_t e_ds_utf8_cut(const char *s, size_t len)
+{
+ size_t start = len, need;
+ unsigned char lead;
+
+ while (start > 0 && ((unsigned char)s[start - 1] & E_DS_UTF8_TOP_BITS)
+                     == E_DS_UTF8_CONT)
+  start--;
+ if (start == 0)
+  return(len);
+ lead = (unsigned char)s[start - 1];
+ if (lead < E_DS_UTF8_LEAD2)
+  return(len);
+ if (lead >= E_DS_UTF8_LEAD4)
+  need = E_DS_UTF8_BYTES4;
+ else if (lead >= E_DS_UTF8_LEAD3)
+  need = E_DS_UTF8_BYTES3;
+ else
+  need = E_DS_UTF8_BYTES2;
+ if (len - (start - 1) < need)
+  return(start - 1);
+ return(len);
+}
+
+/**
+ * e_ds_strip_style - Copy @in to @out without terminal styling.
+ * @out, @n: where it goes, cut to fit at a character's end; @in: gdb's words.
+ *
+ * gdb 18 styles the file name in an error message even when it writes to a
+ * pipe.  The status row and Messages show the words, not the colour codes.
+ * Return: the length the whole text has once stripped, as snprintf does.
+ */
+static size_t e_ds_strip_style(char *out, size_t n, const char *in)
+{
+ size_t total = 0;
+
+ while (*in)
+ {
+  if (*in == E_DS_ESC)
+  {
+   in = e_ds_skip_style(in);
+   continue;
+  }
+  if (total + 1 < n)
+   out[total] = *in;
+  total++;
+  in++;
+ }
+ if (n == 0)
+  return(total);
+ if (total < n)
+  out[total] = '\0';
+ else
+  out[e_ds_utf8_cut(out, n - 1)] = '\0';
+ return(total);
+}
+
+/**
+ * e_ds_console_add - Keep gdb's words until Messages shows them.
+ * @s: the session; @text: a console, target or log record's text.
+ *
+ * Records come in pieces ("\nProgram", " received signal SIGINT"), so the
+ * text is joined as it arrives.  What does not fit is counted, not kept.
+ */
+static void e_ds_console_add(E_D_SESSION *s, const char *text)
+{
+ size_t room = E_DS_CONSOLE_MAX - (size_t)s->console_len;
+ size_t total, kept;
+
+ total = e_ds_strip_style(s->console + s->console_len, room, text);
+ kept = strlen(s->console + s->console_len);
+ s->console_len += (int)kept;
+ s->console_lost += (int)(total - kept);
+ if (total > 0)
+  s->changed |= E_DS_CHANGED_CONSOLE;
+}
+
+/**
+ * e_ds_mi_frame - Read a frame tuple of a stop or of a stack listing.
+ * @fn: the tuple; @fr: receives the frame.
+ *
+ * The file is the full path when gdb gives one, so the user's bar finds the
+ * window whatever the directory the editor runs in.
+ */
+static void e_ds_mi_frame(const E_GDBMI_RECORD *r, const E_GDBMI_NODE *fn,
+                          E_DS_FRAME *fr)
+{
+ const char *text;
+
+ memset(fr, 0, sizeof *fr);
+ text = e_gdbmi_get_in(r, fn, "fullname");
+ if (!text || !text[0])
+  text = e_gdbmi_get_in(r, fn, "file");
+ if (text)
+  snprintf(fr->file, sizeof fr->file, "%s", text);
+ text = e_gdbmi_get_in(r, fn, "func");
+ if (text)
+  snprintf(fr->func, sizeof fr->func, "%s", text);
+ fr->line = e_gdbmi_number(e_gdbmi_get_in(r, fn, "line"), E_DS_MI_DECIMAL,
+                           E_DS_NO_LINE);
+ if (fr->line < E_DS_NO_LINE)
+  fr->line = E_DS_NO_LINE;
+ fr->level = e_gdbmi_number(e_gdbmi_get_in(r, fn, "level"), E_DS_MI_DECIMAL,
+                            0);
+}
+
+/**
+ * e_ds_mi_put_stop - The program stopped, where the record's frame says.
+ * @reason: E_DS_STOP_*.
+ */
+static void e_ds_mi_put_stop(E_D_SESSION *s, int reason,
+                             const E_GDBMI_RECORD *r)
+{
+ const E_GDBMI_NODE *fn = e_gdbmi_find(r, "frame");
+ E_DS_FRAME fr;
+
+ if (!fn)
+ {
+  s->phase = E_DS_STOPPED;
+  s->stop_reason = reason;
+  s->changed |= E_DS_CHANGED_STATUS;
+  return;
+ }
+ e_ds_mi_frame(r, fn, &fr);
+ e_ds_put_stop(s, reason, fr.file, fr.line, fr.func);
+}
+
+/**
+ * e_ds_mi_reason - E_DS_STOP_* for a stop's "reason".
+ */
+static int e_ds_mi_reason(const char *reason)
+{
+ static const struct
+ {
+  const char *name;
+  int stop;
+ } known[] = {
+  { "breakpoint-hit", E_DS_STOP_BREAKPOINT },
+  { "watchpoint-trigger", E_DS_STOP_BREAKPOINT },
+  { "read-watchpoint-trigger", E_DS_STOP_BREAKPOINT },
+  { "access-watchpoint-trigger", E_DS_STOP_BREAKPOINT },
+  { "end-stepping-range", E_DS_STOP_STEP },
+  { "function-finished", E_DS_STOP_STEP },
+  { "location-reached", E_DS_STOP_STEP },
+  { "signal-received", E_DS_STOP_SIGNAL },
+ };
+ size_t k;
+
+ for (k = 0; k < sizeof known / sizeof known[0]; k++)
+  if (!strcmp(reason, known[k].name))
+   return(known[k].stop);
+ return(E_DS_STOP_UNKNOWN);
+}
+
+/**
+ * e_ds_mi_is_exit_reason - Does this "reason" say the program is gone?
+ */
+static int e_ds_mi_is_exit_reason(const char *reason)
+{
+ return(!strcmp(reason, "exited") || !strcmp(reason, "exited-normally")
+        || !strcmp(reason, "exited-signalled"));
+}
+
+/**
+ * e_ds_mi_exited - The program ended: its exit code, or the signal that
+ * killed it, for the status row.
+ */
+static int e_ds_mi_exited(E_D_SESSION *s, const E_GDBMI_RECORD *r,
+                          const char *reason)
+{
+ const char *sig = e_gdbmi_get(r, "signal-name");
+
+ s->phase = E_DS_ENDED;
+ s->stop_reason = E_DS_STOP_EXITED;
+ s->exit_code = e_gdbmi_number(e_gdbmi_get(r, "exit-code"), E_DS_MI_EXIT_BASE,
+                               0);
+ if (sig && !strcmp(reason, "exited-signalled"))
+  snprintf(s->signal, sizeof s->signal, "%s", sig);
+ s->changed |= E_DS_CHANGED_ENDED | E_DS_CHANGED_STATUS;
+ return(1);
+}
+
+/**
+ * e_ds_mi_own_stop - The stop is the editor's own interrupt: the program is
+ * stopped, and nothing of it is for the user to see.
+ */
+static int e_ds_mi_own_stop(E_D_SESSION *s)
+{
+ s->phase = E_DS_STOPPED;
+ s->stop_reason = E_DS_STOP_PAUSE;
+ s->own_stop = 1;
+ return(1);
+}
+
+/**
+ * e_ds_mi_signal_stop - The program got a signal.  When it is the SIGINT
+ * the editor sent, it is the user's Pause (shown) or the editor's own stop
+ * to apply a breakpoint change (not shown), as e_ds_set_interrupt said;
+ * any other SIGINT is the program's.
+ */
+static int e_ds_mi_signal_stop(E_D_SESSION *s, const E_GDBMI_RECORD *r)
+{
+ const char *name = e_gdbmi_get(r, "signal-name");
+ int why = E_DS_INT_NONE;
+
+ if (name)
+  snprintf(s->signal, sizeof s->signal, "%s", name);
+ if (name && !strcmp(name, E_DS_MI_SIGINT))
+  why = s->interrupt_for;
+ if (why == E_DS_INT_NONE)
+ {
+  e_ds_mi_put_stop(s, E_DS_STOP_SIGNAL, r);
+  return(1);
+ }
+ s->interrupt_for = E_DS_INT_NONE;
+ s->signal[0] = '\0';
+ if (why == E_DS_INT_SYNC)
+  return(e_ds_mi_own_stop(s));
+ e_ds_mi_put_stop(s, E_DS_STOP_PAUSE, r);
+ return(1);
+}
+
+/**
+ * e_ds_mi_stopped - Take *stopped.
+ */
+static int e_ds_mi_stopped(E_D_SESSION *s, const E_GDBMI_RECORD *r)
+{
+ const char *reason = e_gdbmi_get(r, "reason");
+
+ if (!reason)
+  reason = "";
+ s->own_stop = 0;
+ s->signal[0] = '\0';
+ if (e_ds_mi_is_exit_reason(reason))
+  return(e_ds_mi_exited(s, r, reason));
+ if (!strcmp(reason, "signal-received"))
+  return(e_ds_mi_signal_stop(s, r));
+ e_ds_mi_put_stop(s, e_ds_mi_reason(reason), r);
+ return(1);
+}
+
+/**
+ * e_ds_mi_running - gdb says the program runs.
+ */
+static int e_ds_mi_running(E_D_SESSION *s)
+{
+ s->phase = E_DS_RUNNING;
+ s->changed |= E_DS_CHANGED_STATUS;
+ return(1);
+}
+
+/**
+ * e_ds_mi_stack - Take the frames of -stack-list-frames' answer.
+ * Return: 1 when the record holds a stack.
+ */
+static int e_ds_mi_stack(E_D_SESSION *s, const E_GDBMI_RECORD *r)
+{
+ const E_GDBMI_NODE *list = e_gdbmi_find(r, "stack");
+ const E_GDBMI_NODE *item;
+ E_DS_FRAME fr;
+
+ if (!list)
+  return(0);
+ e_ds_begin_stack(s);
+ for (item = e_gdbmi_first_item(r, list); item;
+      item = e_gdbmi_next_item(r, item))
+ {
+  e_ds_mi_frame(r, item, &fr);
+  if (!e_ds_add_frame(s, &fr))
+   break;
+ }
+ /* gdb names a library's frames by its build tree ("./nptl/..."), so only
+    a frame whose file is here takes the mark. */
+ s->marked_frame = e_ds_frame_to_mark(s, s->is_file, s->is_file_ctx);
+ return(1);
+}
+
+/**
+ * e_ds_mi_result - Take a result record no request owns: an error for the
+ * status row, the end of gdb, the start of a run, a stack.
+ */
+static int e_ds_mi_result(E_D_SESSION *s, const E_GDBMI_RECORD *r)
+{
+ const char *msg;
+
+ if (!strcmp(r->klass, E_DS_MI_CLASS_ERROR))
+ {
+  msg = e_gdbmi_get(r, "msg");
+  e_ds_strip_style(s->last_error, sizeof s->last_error, msg ? msg : "");
+  s->changed |= E_DS_CHANGED_STATUS;
+  return(1);
+ }
+ if (!strcmp(r->klass, E_DS_MI_CLASS_EXIT))
+ {
+  s->phase = E_DS_ENDED;
+  s->changed |= E_DS_CHANGED_ENDED | E_DS_CHANGED_STATUS;
+  return(1);
+ }
+ if (!strcmp(r->klass, E_DS_MI_CLASS_RUNNING))
+  return(e_ds_mi_running(s));
+ if (!strcmp(r->klass, E_DS_MI_CLASS_DONE))
+  return(e_ds_mi_stack(s, r));
+ return(0);
+}
+
+int e_ds_take_mi_record(E_D_SESSION *s, const E_GDBMI_RECORD *r)
+{
+ switch (r->kind)
+ {
+  case E_GDBMI_K_EXEC:
+   if (!strcmp(r->klass, E_DS_MI_CLASS_STOPPED))
+    return(e_ds_mi_stopped(s, r));
+   if (!strcmp(r->klass, E_DS_MI_CLASS_RUNNING))
+    return(e_ds_mi_running(s));
+   return(0);
+  case E_GDBMI_K_RESULT:
+   return(e_ds_mi_result(s, r));
+  case E_GDBMI_K_CONSOLE:
+  case E_GDBMI_K_TARGET:
+  case E_GDBMI_K_LOG:
+   e_ds_console_add(s, e_gdbmi_stream_text(r));
+   return(1);
+  default:
+   return(0);
+ }
+}
+
+/**
+ * e_ds_mi_brk_pending_words - The status row's words for a breakpoint gdb
+ * holds pending: what it waits for.
+ */
+static void e_ds_mi_brk_pending_words(char *out, size_t n,
+                                      const char *spec)
+{
+ snprintf(out, n, "%s%s", E_DS_MI_PENDING_WORDS, spec);
+}
+
+/**
+ * e_ds_mi_brk_refused - gdb's error answer to a breakpoint set.
+ */
+static void e_ds_mi_brk_refused(E_D_SESSION *s, int i, const E_GDBMI_RECORD *r)
+{
+ char words[E_D_BRK_MSG_MAX];
+ const char *msg = e_gdbmi_get(r, "msg");
+
+ if (!msg || !msg[0])
+  msg = E_DS_MI_REFUSED_WORDS;
+ e_ds_strip_style(words, sizeof words, msg);
+ e_ds_brk_put(s, i, E_D_BRK_REFUSED, 0, words);
+}
+
+/**
+ * e_ds_mi_brk_accepted - gdb's answer to a breakpoint set: its number, held
+ * pending when the place is not known yet.
+ */
+static void e_ds_mi_brk_accepted(E_D_SESSION *s, int i, const E_GDBMI_RECORD *r)
+{
+ char words[E_D_BRK_MSG_MAX];
+ const char *pending = e_gdbmi_get(r, "bkpt.pending");
+ int id = e_gdbmi_number(e_gdbmi_get(r, "bkpt.number"), E_DS_MI_DECIMAL, 0);
+
+ if (!pending)
+ {
+  e_ds_brk_put(s, i, E_D_BRK_VERIFIED, id, NULL);
+  return;
+ }
+ e_ds_mi_brk_pending_words(words, sizeof words, pending);
+ e_ds_brk_put(s, i, E_D_BRK_PENDING, id, words);
+}
+
+int e_ds_take_mi_brk_result(E_D_SESSION *s, int i, const E_GDBMI_RECORD *r)
+{
+ if (i < 0 || i >= E_DS_BRKS_MAX || r->kind != E_GDBMI_K_RESULT)
+  return(0);
+ if (!strcmp(r->klass, E_DS_MI_CLASS_ERROR))
+ {
+  e_ds_mi_brk_refused(s, i, r);
+  return(1);
+ }
+ if (!strcmp(r->klass, E_DS_MI_CLASS_DONE) && e_gdbmi_find(r, "bkpt"))
+ {
+  e_ds_mi_brk_accepted(s, i, r);
+  return(1);
+ }
+ return(0);
 }

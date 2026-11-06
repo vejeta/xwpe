@@ -15,6 +15,7 @@
 #include <stddef.h>
 #include <limits.h>
 #include "we_debreq.h"
+#include "we_gdbmi.h"
 
 #ifndef PATH_MAX
 #define PATH_MAX 4096
@@ -42,6 +43,7 @@
 #define E_DS_VALUE_MAX    512        /* a watch value, cut past this */
 #define E_DS_NO_LINE      0          /* a frame without a source line */
 #define E_DS_NOT_FOUND    (-1)       /* no frame, no line, no number */
+#define E_DS_CONSOLE_MAX  8192       /* gdb's words kept for Messages until shown */
 
 /* What the debugger said of a breakpoint: the hollow, solid and refused
    marks the user sees in the margin. */
@@ -120,6 +122,14 @@
 #define E_DS_CHANGED_BRKS    0x08u
 #define E_DS_CHANGED_STATUS  0x10u
 #define E_DS_CHANGED_ENDED   0x20u
+#define E_DS_CHANGED_CONSOLE 0x40u
+
+/* Why the editor interrupted the program, if it did: the controller's
+   E_D_INT_* values.  A SIGINT stop is the user's Pause, or the editor's own
+   stop to apply a breakpoint change, or the program's own. */
+#define E_DS_INT_NONE   0
+#define E_DS_INT_PAUSE  1
+#define E_DS_INT_SYNC   2
 
 typedef struct
 {
@@ -163,6 +173,11 @@ typedef struct
  unsigned changed;           /* E_DS_CHANGED_* */
  E_DS_FILE_PROBE is_file;    /* NULL: every named file counts as there */
  void *is_file_ctx;
+ int interrupt_for;          /* E_DS_INT_*: the interrupt in flight */
+ int own_stop;               /* 1: the last stop was the editor's own interrupt */
+ char console[E_DS_CONSOLE_MAX]; /* gdb's words not yet shown in Messages */
+ int console_len;
+ int console_lost;           /* bytes that did not fit and were dropped */
 } E_D_SESSION;
 
 /* ---- the session ---- */
@@ -272,6 +287,49 @@ void e_ds_take_brk_answer(E_D_SESSION *s, int backend, int i,
  */
 void e_ds_take_dap_stopped(E_D_SESSION *s, const char *reason,
                            const E_DS_FRAME *fr, int n);
+
+/**
+ * e_ds_set_interrupt - Say why the editor is about to interrupt the program.
+ * @s: the session; @why: E_DS_INT_*, or E_DS_INT_NONE to take it back.
+ *
+ * The stop that answers the interrupt is then told from one the program
+ * brought on itself: the user's Pause is shown, the editor's own stop to
+ * apply a breakpoint change is not.
+ */
+void e_ds_set_interrupt(E_D_SESSION *s, int why);
+
+/**
+ * e_ds_take_mi_record - Take one record of gdb's MI output.
+ * @s: the session; @r: the record.
+ *
+ * A stop gives the user's bar its file, line and function and the Stack
+ * window its frame; the exit gives the status row the program's exit code;
+ * a SIGINT stop is the user's Pause or the editor's own interrupt by what
+ * e_ds_set_interrupt said; an error answer gives the status row gdb's own
+ * message; gdb's console, target and log words wait for Messages in
+ * s->console.  Answers that belong to one request (a breakpoint's, a
+ * watch's) are taken by the calls below, which know which entry asked.
+ * Return: 1 when the record changed the session, else 0.
+ */
+int e_ds_take_mi_record(E_D_SESSION *s, const E_GDBMI_RECORD *r);
+
+/**
+ * e_ds_take_mi_brk_result - Take gdb's answer to setting breakpoint @i.
+ * @s: the session; @i: the breakpoint; @r: the result record of the
+ * -break-insert that asked (the caller matched it by its token).
+ *
+ * The user's mark turns solid when gdb has the breakpoint, stays hollow
+ * when gdb holds it pending (the file is not loaded yet), and stays hollow
+ * with gdb's own message when gdb refuses it.
+ * Return: 1 when @r answers a breakpoint set, else 0.
+ */
+int e_ds_take_mi_brk_result(E_D_SESSION *s, int i, const E_GDBMI_RECORD *r);
+
+/**
+ * e_ds_console_clear - Forget the words Messages has shown.
+ * @s: the session.
+ */
+void e_ds_console_clear(E_D_SESSION *s);
 
 /**
  * e_ds_frame_to_mark - The frame whose line the user's bar goes to.

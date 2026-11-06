@@ -1,0 +1,4 @@
+# GNU gdb (Debian 18.1-3) 18.1, gdb --interpreter=mi2 -nx -q, command 1-break-insert twice on a C++ template with two instances (fullname shortened to /work)
+# gdb puts the places after the breakpoint as {...} items with no name.
+1^done,bkpt={number="1",type="breakpoint",disp="keep",enabled="y",addr="<MULTIPLE>",times="0",original-location="twice"},{number="1.1",enabled="y",addr="0x000000000000116f",func="twice<int>(int)",file="t.cc",fullname="/work/t.cc",line="3",thread-groups=["i1"]},{number="1.2",enabled="y",addr="0x000000000000117f",func="twice<double>(double)",file="t.cc",fullname="/work/t.cc",line="3",thread-groups=["i1"]}
+(gdb)

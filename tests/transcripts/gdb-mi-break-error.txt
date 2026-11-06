@@ -1,0 +1,4 @@
+# GNU gdb (Debian 18.1-3) 18.1, gdb --interpreter=mi2 -nx -q, command 4-break-insert nosuch.c:5
+# The \e sequences are gdb's own: it styles the file name inside msg= even though stdout is a pipe.
+4^error,msg="No source file named \e[32;49;22;23;24;27mnosuch.c\e[m."
+(gdb)

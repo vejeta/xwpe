@@ -1,0 +1,9 @@
+# GNU gdb (Debian 18.1-3) 18.1, gdb --interpreter=mi2 -nx -q, commands 10-exec-next and 11-interpreter-exec console "print v" (fullname shortened to /work)
+10^running
+*running,thread-id="all"
+(gdb)
+*stopped,reason="end-stepping-range",frame={addr="0x0000555555555149",func="sq",args=[{name="v",value="3"}],file="p.c",fullname="/work/p.c",line="8",arch="i386:x86-64"},thread-id="1",stopped-threads="all",core="19"
+(gdb)
+~"$1 = 3\n"
+11^done
+(gdb)

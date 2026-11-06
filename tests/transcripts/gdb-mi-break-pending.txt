@@ -1,0 +1,5 @@
+# GNU gdb (Debian 18.1-3) 18.1, gdb --interpreter=mi2 -nx -q, command 3-break-insert -f nosuch.c:5
+# The first record is a log record: the emoji are UTF-8 bytes written as octal escapes.
+&"\342\235\214\357\270\217 No source file named nosuch.c.\n"
+3^done,bkpt={number="1",type="breakpoint",disp="keep",enabled="y",addr="<PENDING>",pending="nosuch.c:5",times="0",original-location="nosuch.c:5"}
+(gdb)

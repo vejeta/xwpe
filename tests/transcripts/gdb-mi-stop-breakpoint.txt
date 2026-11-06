@@ -1,0 +1,17 @@
+# GNU gdb (Debian 18.1-3) 18.1, gdb --interpreter=mi2 -nx -q, command 6-exec-run up to the first stop (fullname shortened to /work)
+=thread-group-started,id="i1",pid="1177485"
+=thread-created,id="1",group-id="i1"
+=breakpoint-modified,bkpt={number="1",type="breakpoint",disp="keep",enabled="y",addr="0x0000555555555140",func="sq",file="p.c",fullname="/work/p.c",line="7",thread-groups=["i1"],times="0",original-location="p.c:6"}
+=library-loaded,id="/lib64/ld-linux-x86-64.so.2",target-name="/lib64/ld-linux-x86-64.so.2",host-name="/lib64/ld-linux-x86-64.so.2",symbols-loaded="0",thread-group="i1",ranges=[{from="0x00007ffff7fc6000",to="0x00007ffff7fff000"}]
+6^running
+*running,thread-id="all"
+(gdb)
+=library-loaded,id="/usr/lib/x86_64-linux-gnu/libc.so.6",target-name="/usr/lib/x86_64-linux-gnu/libc.so.6",host-name="/usr/lib/x86_64-linux-gnu/libc.so.6",symbols-loaded="0",thread-group="i1",ranges=[{from="0x00007ffff7d98000",to="0x00007ffff7f8e000"}]
+~"[Thread debugging using libthread_db enabled]\n"
+~"Using host libthread_db library \"/usr/lib/x86_64-linux-gnu/libthread_db.so.1\".\n"
+=breakpoint-modified,bkpt={number="1",type="breakpoint",disp="keep",enabled="y",addr="0x0000555555555140",func="sq",file="p.c",fullname="/work/p.c",line="7",thread-groups=["i1"],times="1",original-location="p.c:6"}
+~"\n"
+~"Breakpoint 1, sq (v=3) at p.c:7\n"
+~"7\t\tint r = v * v;\n"
+*stopped,reason="breakpoint-hit",disp="keep",bkptno="1",frame={addr="0x0000555555555140",func="sq",args=[{name="v",value="3"}],file="p.c",fullname="/work/p.c",line="7",arch="i386:x86-64"},thread-id="1",stopped-threads="all",core="19"
+(gdb)

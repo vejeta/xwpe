@@ -1,0 +1,14 @@
+# GNU gdb (Debian 18.1-3) 18.1, gdb --interpreter=mi2 -nx -q, 5-exec-run of a program that sleeps, SIGINT sent to gdb's pid, then 6-stack-list-frames 0 0 (the 7-gdb-exit answer is left out)
+5^running
+*running,thread-id="all"
+(gdb)
+~"[Thread debugging using libthread_db enabled]\n"
+~"Using host libthread_db library \"/usr/lib/x86_64-linux-gnu/libthread_db.so.1\".\n"
+~"\nProgram"
+~" received signal SIGINT, Interrupt.\n"
+~"__internal_syscall_cancel (a1=a1@entry=0, a2=a2@entry=0, a3=a3@entry=140737488344224, a4=a4@entry=140737488344224, a5=a5@entry=0, a6=a6@entry=0, nr=230) at ./nptl/cancellation.c:44\n"
+&"\342\232\240\357\270\217 warning: 44\t./nptl/cancellation.c: No such file or directory\n"
+*stopped,reason="signal-received",signal-name="SIGINT",signal-meaning="Interrupt",frame={addr="0x00007ffff7e29a02",func="__internal_syscall_cancel",args=[{name="a1",value="0"},{name="a1@entry",value="0"},{name="a2",value="0"},{name="a2@entry",value="0"},{name="a3",value="140737488344224"},{name="a3@entry",value="140737488344224"},{name="a4",value="140737488344224"},{name="a4@entry",value="140737488344224"},{name="a5",value="0"},{name="a5@entry",value="0"},{name="a6",value="0"},{name="a6@entry",value="0"},{name="nr",value="230"}],file="./nptl/cancellation.c",fullname="./nptl/./nptl/cancellation.c",line="44",arch="i386:x86-64"},thread-id="1",stopped-threads="all",core="2"
+(gdb)
+6^done,stack=[frame={level="0",addr="0x00007ffff7e29a02",func="__internal_syscall_cancel",file="./nptl/cancellation.c",fullname="./nptl/./nptl/cancellation.c",line="44",arch="i386:x86-64"}]
+(gdb)

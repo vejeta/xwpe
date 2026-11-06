@@ -367,6 +367,7 @@
   {"id": "SC-debug-49", "requirement": "One owner of input, of children, of writes and of keys", "layer": "ncurses", "test": "tests/test_legacy_debuggers.py::test_sdb_keys_typed_during_the_start_are_kept_or_refused", "status": "new", "needs": ["gcc"]},
   {"id": "SC-debug-49", "requirement": "One owner of input, of children, of writes and of keys", "layer": "ncurses", "test": "tests/test_legacy_debuggers.py::test_dbx_keys_typed_during_the_start_are_kept_or_refused", "status": "new", "needs": ["gcc"]},
   {"id": "SC-debug-49", "requirement": "One owner of input, of children, of writes and of keys", "layer": "ncurses", "test": "tests/test_legacy_debuggers.py::test_xdb_keys_typed_during_the_start_are_kept_or_refused", "status": "new", "needs": ["gcc"]},
-  {"id": "SC-debug-03", "requirement": "Stepping and the mark", "layer": "ncurses", "test": "tests/test_legacy_debuggers.py::test_sdb_step_reported_by_its_source_row_is_marked", "status": "new", "needs": ["gcc"]}
+  {"id": "SC-debug-03", "requirement": "Stepping and the mark", "layer": "ncurses", "test": "tests/test_legacy_debuggers.py::test_sdb_step_reported_by_its_source_row_is_marked", "status": "new", "needs": ["gcc"]},
+  {"id": "SC-debug-63", "requirement": "Starting and ending a session", "layer": "ncurses", "test": "tests/test_gdbmi_probe.py::test_gdb_speaks_the_mi_the_editor_will_drive", "status": "new", "needs": ["gdb"]}
  ]
 }

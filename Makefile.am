@@ -72,6 +72,7 @@ we_SOURCES = \
   we_debpath.c \
   we_debsess.c \
   we_debreq.c \
+  we_gdbmi.c \
   WeString.c \
   WeSyntax.c \
   WeExpArr.c \
@@ -187,6 +188,7 @@ noinst_HEADERS = \
   we_debpath.h \
   we_debsess.h \
   we_debreq.h \
+  we_gdbmi.h \
   we_menurows.h \
   we_mousedrain.h \
   we_render.h \
@@ -297,7 +299,7 @@ metainfodir = $(datadir)/metainfo
 metainfo_DATA = io.codeberg.mendezr.xwpe.metainfo.xml
 
 # --- Unit tests ---
-check_PROGRAMS = test_checkheader test_fl_sel_len test_syntax_def test_fdloop test_clipboard test_lsp_buffer test_lsp_doctor test_lsp_semantic test_lsp_truecolor test_dap test_dap_nopidfd test_dap_dlv test_dap_gdb test_dap_lldb test_dap_scala test_bsp_close test_bsp_close_nopidfd test_lsp_scala test_lsp_clangd test_lsp_python test_lsp_gopls test_lsp_rust test_debprompt test_debpath test_debsess test_debreq test_menurows test_mousedrain
+check_PROGRAMS = test_checkheader test_fl_sel_len test_syntax_def test_fdloop test_clipboard test_lsp_buffer test_lsp_doctor test_lsp_semantic test_lsp_truecolor test_dap test_dap_nopidfd test_dap_dlv test_dap_gdb test_dap_lldb test_dap_scala test_bsp_close test_bsp_close_nopidfd test_lsp_scala test_lsp_clangd test_lsp_python test_lsp_gopls test_lsp_rust test_debprompt test_debpath test_debsess test_debreq test_gdbmi test_menurows test_mousedrain
 
 # The test includes we_fdloop.c itself (the id counter is private to it), so
 # the file is not listed here again: it would be defined twice.
@@ -324,8 +326,17 @@ test_debpath_CFLAGS = $(XWPE_STDFLAG)
 # tests/transcripts/) is read into the session as the editor reads it: watch
 # values and errors, the frame a stop marks, pdb's and a68g's stop lines,
 # and jdb's set answer written into the middle of a breakpoint hit.
-test_debsess_SOURCES = tests/test_debsess.c we_debsess.c
+test_debsess_SOURCES = tests/test_debsess.c we_debsess.c we_gdbmi.c
 test_debsess_CFLAGS = $(XWPE_STDFLAG)
+
+# gdb/MI parser unit test: we_gdbmi.c and we_debsess.c only, no editor, no
+# debugger, always runs.  What gdb 18.1 printed in MI mode (transcripts in
+# tests/transcripts/gdb-mi-*.txt) is parsed into records, cut into lines
+# at every byte position, and taken into the session: the stop's file and
+# line, a breakpoint answered or refused with gdb's words, a SIGINT stop
+# told from the user's, the exit code, and the console words for Messages.
+test_gdbmi_SOURCES = tests/test_gdbmi.c we_gdbmi.c we_debsess.c
+test_gdbmi_CFLAGS = $(XWPE_STDFLAG)
 
 # Debugger request engine unit test: we_debreq.c only, no editor, no
 # debugger, always runs.  A fake clock and a transcript stand for the world:
@@ -467,7 +478,7 @@ test_lsp_rust_LDADD = $(JSONC_LIBS)
 
 TESTS = test_checkheader test_fl_sel_len test_syntax_def test_fdloop test_clipboard test_lsp_buffer test_lsp_doctor test_lsp_semantic test_lsp_truecolor test_dap test_dap_nopidfd test_dap_dlv \
   test_dap_gdb test_dap_lldb test_dap_scala test_bsp_close \
-  test_bsp_close_nopidfd test_lsp_scala test_lsp_clangd test_lsp_python test_lsp_gopls test_lsp_rust test_debprompt test_debpath test_debsess test_debreq test_menurows test_mousedrain
+  test_bsp_close_nopidfd test_lsp_scala test_lsp_clangd test_lsp_python test_lsp_gopls test_lsp_rust test_debprompt test_debpath test_debsess test_debreq test_gdbmi test_menurows test_mousedrain
 
 # One owner of input and of waiting: tests/check-one-owner.sh reads the
 # undefined symbols of the editor's own objects (the list below) with $(NM)
@@ -553,6 +564,16 @@ EXTRA_DIST = \
   tests/transcripts/a68g-watch-value.txt \
   tests/transcripts/a68g-watch-error.txt \
   tests/transcripts/legacy-stub-rows.txt \
+  tests/transcripts/gdb-mi-break-error.txt \
+  tests/transcripts/gdb-mi-break-insert.txt \
+  tests/transcripts/gdb-mi-break-multiple.txt \
+  tests/transcripts/gdb-mi-break-pending.txt \
+  tests/transcripts/gdb-mi-exit.txt \
+  tests/transcripts/gdb-mi-exit-octal.txt \
+  tests/transcripts/gdb-mi-sigint.txt \
+  tests/transcripts/gdb-mi-stack-eval.txt \
+  tests/transcripts/gdb-mi-step-console.txt \
+  tests/transcripts/gdb-mi-stop-breakpoint.txt \
   tests/test_checkheader.c \
   tests/test_fl_sel_len.c \
   tests/test_syntax_def.c \
