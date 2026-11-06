@@ -366,6 +366,14 @@ not answer within 30 s}.  To give a slow debugger more time, set the
 environment variable @env{XWPE_DEBUG_START_TIMEOUT} to a number of
 seconds before you start xwpe.
 
+@cindex XWPE_GDB_INTERFACE
+gdb is driven over its line interface.  Set @env{XWPE_GDB_INTERFACE}
+to @samp{mi} to drive it over its machine interface instead: the editor
+then reads stops, exit codes, breakpoints and watch values from gdb's
+named fields rather than its sentences, and you see the same session.
+A gdb older than 7.6 keeps the line interface, and the status row says
+why.
+
 Go, Rust and Scala sessions start through a debug adapter (dlv, gdb or
 lldb-dap, or the Scala build server) and start the same way.  The line
 names the adapter, @samp{starting dlv ... 3s  (Esc cancels)}, and the 30

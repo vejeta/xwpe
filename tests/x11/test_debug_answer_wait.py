@@ -54,7 +54,11 @@ PROG = (
 )
 PROG_WITH_TYPED = PROG.replace("  printf", TYPED + "  printf", 1)
 
+# The stand-in holds back gdb's line-interface commands (`where`, `set
+# confirm off`), so its rows drive gdb over the line interface whatever
+# XWPE_GDB_INTERFACE the run was given.
 STUB_ENV = {
+    "XWPE_GDB_INTERFACE": "cli",
     "PATH": os.path.abspath(STUBS_DIR) + ":" + os.environ.get("PATH", ""),
     "XWPE_STUB_REAL_GDB": shutil.which("gdb") or "",
     "XWPE_STUB_STALL": "where",

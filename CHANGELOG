@@ -233,6 +233,15 @@ Changes
 
 1.7.0 (AI assistant -- experimental, opt-in)
 
+* gdb can be driven over its machine interface (MI): set
+  XWPE_GDB_INTERFACE=mi.  The default stays gdb's line interface; any value
+  other than "mi" or "cli" keeps it and the status row says so.  Under MI
+  the editor reads stops, exit codes, breakpoints, watches and the stack
+  from gdb's named fields instead of its sentences, so a translated or
+  reworded gdb is read the same.  You see the same editor either way.  A
+  gdb older than 7.6 keeps the line interface, with a status line saying
+  why.
+
 * Under gdb the editor keeps its keys while gdb answers at a stop (where
   the program stopped, the watches, the stack, a breakpoint you set).  A
   letter typed then goes into the file, never to gdb.  A debugger command

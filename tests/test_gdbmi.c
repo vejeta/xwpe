@@ -1056,8 +1056,193 @@ static void test_splitter_reports_an_overlong_line_and_goes_on(void)
 	chk_int("a line at the limit is whole", overlong, 0);
 }
 
+/* ---- one command's answer, as the editor's request engine reads it ---- */
+
+/* The answer to 5-data-evaluate-expression with an interrupt's answer in
+   front of it and program output that looks like a prompt. */
+#define ANSWER_TOKEN 5
+#define ANSWER_HEAD  "&\"Quit\\n\"\n(gdb) \n"
+#define ANSWER_LATE  "4^done,value=\"1\"\n(gdb) \n"
+#define ANSWER_OWN   "5^done,value=\"3\"\n(gdb) \n"
+
+static void test_answer_ends_at_the_prompt_after_its_own_result(void)
+{
+	const char *head = ANSWER_HEAD;
+	const char *late = ANSWER_HEAD ANSWER_LATE;
+	const char *whole = ANSWER_HEAD ANSWER_LATE ANSWER_OWN;
+	const char *no_end = ANSWER_HEAD "5^done,value=\"3\"\n";
+	size_t plen = 0;
+
+	chk_int("answer: an interrupt's prompt ends nothing",
+		e_gdbmi_answer_ended(head, strlen(head), ANSWER_TOKEN, &plen), 0);
+	chk_int("answer: another command's answer ends nothing",
+		e_gdbmi_answer_ended(late, strlen(late), ANSWER_TOKEN, &plen), 0);
+	chk_int("answer: no (gdb) after the result yet",
+		e_gdbmi_answer_ended(no_end, strlen(no_end), ANSWER_TOKEN,
+				     &plen), 0);
+	chk_int("answer: its own result, then (gdb)",
+		e_gdbmi_answer_ended(whole, strlen(whole), ANSWER_TOKEN, &plen),
+		1);
+	chk_int("answer: the prompt line is cut", (long)plen,
+		(long)strlen("(gdb) \n"));
+	chk_int("answer: a prompt without its line end at a read's edge",
+		e_gdbmi_answer_ended("5^done\n(gdb) ", strlen("5^done\n(gdb) "),
+				     ANSWER_TOKEN, &plen), 1);
+	chk_int("answer: a console record naming (gdb) is no prompt",
+		e_gdbmi_is_prompt("~\"(gdb)\"", strlen("~\"(gdb)\"")), 0);
+	chk_int("answer: program text after (gdb) is no prompt",
+		e_gdbmi_is_prompt("(gdb) x", strlen("(gdb) x")), 0);
+}
+
+static void test_lines_of_no_request_are_told_apart(void)
+{
+	chk_int("async: a stop", e_gdbmi_line_is_async(
+		"*stopped,reason=\"exited\"", ANSWER_TOKEN), 1);
+	chk_int("async: a notice", e_gdbmi_line_is_async(
+		"=breakpoint-modified,bkpt={number=\"1\"}", ANSWER_TOKEN), 1);
+	chk_int("async: a command given up on", e_gdbmi_line_is_async(
+		"4^done,value=\"1\"", ANSWER_TOKEN), 1);
+	chk_int("async: the command in flight", e_gdbmi_line_is_async(
+		"5^done,value=\"3\"", ANSWER_TOKEN), 0);
+	chk_int("async: gdb's words belong to the answer",
+		e_gdbmi_line_is_async("~\"$1 = 3\\n\"", ANSWER_TOKEN), 0);
+	chk_int("async: the prompt belongs to the answer",
+		e_gdbmi_line_is_async("(gdb) ", ANSWER_TOKEN), 0);
+	chk_int("async: a token too long to be one is not taken for one",
+		e_gdbmi_line_is_async("99999999999^done", ANSWER_TOKEN), 0);
+}
+
+static void test_result_of_its_own_command_is_read(void)
+{
+	const char *text = ANSWER_HEAD ANSWER_LATE ANSWER_OWN;
+
+	chk_int("result: found",
+		e_gdbmi_parse_result(text, ANSWER_TOKEN, &rec), E_GDBMI_OK);
+	chk_str("result: its value", e_gdbmi_get(&rec, "value"), "3");
+	chk_int("result: none for an unknown command",
+		e_gdbmi_parse_result(text, ANSWER_TOKEN + 1, &rec) == E_GDBMI_OK,
+		0);
+	chk_int("result: none is of no kind", rec.kind, E_GDBMI_K_NONE);
+}
+
+#define VERSION_ANSWER \
+	"~\"GNU gdb (Debian 18.1-3) 18.1\\n\"\n" \
+	"~\"Copyright (C) 2026 Free Software Foundation, Inc.\\n\"\n" \
+	"1^done\n(gdb) \n"
+#define BANNER_ROOM 256
+
+static void test_version_banner_names_gdbs_own_version(void)
+{
+	char banner[BANNER_ROOM];
+	int major = 0, minor = 0;
+
+	e_gdbmi_console_join(VERSION_ANSWER, banner, sizeof banner);
+	chk_has("version: console words joined", banner,
+		"GNU gdb (Debian 18.1-3) 18.1\nCopyright");
+	chk_int("version: found",
+		e_gdbmi_version_of(banner, &major, &minor), 1);
+	chk_int("version: major", major, 18);
+	chk_int("version: minor", minor, 1);
+	chk_int("version: three parts give two",
+		e_gdbmi_version_of("GNU gdb (GDB) 7.12.1", &major, &minor), 1);
+	chk_int("version: 7.12 major", major, 7);
+	chk_int("version: 7.12 minor", minor, 12);
+	chk_int("version: an old one",
+		e_gdbmi_version_of("GNU gdb 6.3\nmore 99.9", &major, &minor),
+		1);
+	chk_int("version: only the first line counts", major, 6);
+	chk_int("version: none",
+		e_gdbmi_version_of("GNU gdb\n7.6", &major, &minor), 0);
+}
+
+static void test_features_list_is_searched_by_name(void)
+{
+	chk_int("features: parses", e_gdbmi_parse_line(
+		"2^done,features=[\"frozen-varobjs\",\"pending-breakpoints\","
+		"\"breakpoint-notifications\"]", &rec), E_GDBMI_OK);
+	chk_int("features: pending", e_gdbmi_list_has(&rec, "features",
+		"pending-breakpoints"), 1);
+	chk_int("features: notices", e_gdbmi_list_has(&rec, "features",
+		"breakpoint-notifications"), 1);
+	chk_int("features: not a prefix", e_gdbmi_list_has(&rec, "features",
+		"pending"), 0);
+	chk_int("features: no such list", e_gdbmi_list_has(&rec, "nosuch",
+		"pending-breakpoints"), 0);
+}
+
+#define WATCH_ROOM 64
+#define ROWS_ROOM  1024
+#define ARGS_LINE \
+	"10^done,stack-args=[frame={level=\"0\",args=[{name=\"v\"," \
+	"value=\"3\"}]},frame={level=\"1\",args=[]}]"
+
+static void test_watch_and_stack_read_as_under_the_line_interface(void)
+{
+	static E_GDBMI_RECORD args;
+	char text[WATCH_ROOM], rows[ROWS_ROOM];
+
+	chk_int("watch: value", e_gdbmi_parse_line("8^done,value=\"3\"", &rec),
+		E_GDBMI_OK);
+	chk_int("watch: has one", e_ds_mi_watch_text(&rec, text, sizeof text),
+		1);
+	chk_str("watch: as the line interface gives it", text, "= 3");
+	chk_int("watch: error", e_gdbmi_parse_line(
+		"9^error,msg=\"No symbol \\\"nosuch\\\" in current context.\"",
+		&rec), E_GDBMI_OK);
+	chk_int("watch: none for an error",
+		e_ds_mi_watch_text(&rec, text, sizeof text), 0);
+
+	chk_int("stack: args parse", e_gdbmi_parse_line(ARGS_LINE, &args),
+		E_GDBMI_OK);
+	if (!record_of("gdb-mi-stack-eval.txt", E_GDBMI_K_RESULT, "done"))
+		return;
+	chk_int("stack: two rows", e_ds_mi_where_rows(&rec, &args, rows,
+		sizeof rows), 2);
+	chk_str("stack: rows as bt prints them", rows,
+		"#0  sq (v=3) at p.c:7\n"
+		"#1  0x000055555555516e in main () at p.c:14\n");
+	chk_int("stack: only whole rows fit",
+		e_ds_mi_where_rows(&rec, &args, rows, 30), 1);
+	chk_str("stack: the first row alone", rows, "#0  sq (v=3) at p.c:7\n");
+	chk_int("stack: a frame without source parses", e_gdbmi_parse_line(
+		"10^done,stack=[frame={level=\"0\",addr=\"0x00007ffff7e29a02\","
+		"func=\"clock_nanosleep\",from=\"/lib/libc.so.6\"}]", &rec),
+		E_GDBMI_OK);
+	chk_int("stack: one row without source",
+		e_ds_mi_where_rows(&rec, NULL, rows, sizeof rows), 1);
+	chk_str("stack: a frame without source names its library", rows,
+		"#0  0x00007ffff7e29a02 in clock_nanosleep () from /lib/libc.so.6\n");
+}
+
+/* A result record with no number answers no command the editor sent. */
+static void test_a_result_without_a_number_ends_no_answer(void)
+{
+	const char *text = "^done\n(gdb) \n";
+	size_t plen = 0;
+
+	chk_int("no number: belongs to no request",
+		e_gdbmi_line_is_async("^done", ANSWER_TOKEN), 1);
+	chk_int("no number: ends no answer",
+		e_gdbmi_answer_ended(text, strlen(text), ANSWER_TOKEN, &plen), 0);
+	chk_int("no number: is no command's result",
+		e_gdbmi_parse_result(text, ANSWER_TOKEN, &rec) == E_GDBMI_OK, 0);
+	chk_int("the highest number: read whole",
+		e_gdbmi_line_is_async("999999999^done", 999999999), 0);
+	chk_int("the highest number: ends its answer",
+		e_gdbmi_answer_ended("999999999^done\n(gdb) \n",
+				     strlen("999999999^done\n(gdb) \n"),
+				     999999999, &plen), 1);
+}
+
 int main(void)
 {
+	test_answer_ends_at_the_prompt_after_its_own_result();
+	test_lines_of_no_request_are_told_apart();
+	test_result_of_its_own_command_is_read();
+	test_version_banner_names_gdbs_own_version();
+	test_features_list_is_searched_by_name();
+	test_watch_and_stack_read_as_under_the_line_interface();
+	test_a_result_without_a_number_ends_no_answer();
 	test_mi_stop_record_names_file_and_line();
 	test_mi_stop_record_split_across_two_reads();
 	test_mi_break_insert_answer_verifies_the_entry();

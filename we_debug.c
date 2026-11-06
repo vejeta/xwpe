@@ -368,6 +368,205 @@ static long e_d_read_runaway = 0;
    command of the run it is handed. */
 static char e_d_last_cmd[E_D_RUN_AGAIN_MAX];
 
+/* ==== which interface gdb speaks, and how a command goes out over MI ====
+
+   gdb is driven over its line interface (CLI) or over its machine interface
+   (MI), as XWPE_GDB_INTERFACE says; unset means the line interface.  Under
+   MI every command carries a number, so gdb's answer is matched to the
+   command that asked it, and the editor reads named fields instead of
+   gdb's sentences.  The editor's own commands are written once, in gdb's
+   line syntax: the resumes become MI's -exec-* commands here, and any other
+   command goes through -interpreter-exec console, which runs it as typed. */
+
+#define E_D_GDBMI_ENV          "XWPE_GDB_INTERFACE"
+#define E_D_GDBMI_WORD_MI      "mi"
+#define E_D_GDBMI_WORD_CLI     "cli"
+#define E_D_GDBMI_SWITCH       "--interpreter=mi2"
+#define E_D_GDBMI_UNKNOWN_FMT \
+ " XWPE_GDB_INTERFACE=%.40s is neither mi nor cli: gdb uses its line interface"
+#define E_D_GDBMI_SAY_MAX      192
+#define E_D_GDBMI_CONSOLE_HEAD "-interpreter-exec console \""
+#define E_D_GDBMI_CONSOLE_TAIL "\""
+#define E_D_GDBMI_MI_LEAD      '-'
+/* A command line once numbered and, for the console, quoted: every byte
+   may need its escape. */
+#define E_D_GDBMI_LINE_MAX     (2 * E_D_RUN_AGAIN_MAX + 64)
+/* The highest number a command is given; the next one is 1 again.  It has
+   as many digits as gdb's answer is read with (E_GDBMI_TOKEN_DIGITS_MAX in
+   we_gdbmi.c), so every answer still names its command; a number comes
+   back only after a billion commands, long after any answer to it. */
+#define E_D_GDBMI_TOKEN_LAST   999999999
+
+/* The session's interface. */
+static struct
+{
+ int on;                     /* this session's gdb speaks MI */
+ int force_cli;              /* the next gdb start keeps the line interface:
+                                the gdb of this session is too old for MI */
+ int token;                  /* the number the last command was given */
+ int pending;                /* the number of the engine's command in flight */
+ char say[E_D_GDBMI_SAY_MAX];   /* what the start says on the status row */
+} e_d_mi;
+
+/**
+ * e_d_gdbmi_on - Does this session's gdb speak MI?
+ *
+ * Every MI path asks this; under the line interface none of them runs, so
+ * the line interface behaves exactly as it did before MI existed.
+ */
+static int e_d_gdbmi_on(void)
+{
+ return(e_d_mi.on && e_deb_type == DEB_GDB);
+}
+
+/* The editor's resumes and its quit, in gdb's line syntax and as MI says
+   them; NULL drops the line (the answer to a question MI never asks). */
+static const struct
+{
+ const char *cli;
+ const char *mi;
+} e_d_gdbmi_words[] =
+{
+ { "c",      "-exec-continue" },
+ { "n",      "-exec-next" },
+ { "s",      "-exec-step" },
+ { "finish", "-exec-finish" },
+ { "q",      "-gdb-exit" },
+ { "y",      NULL }
+};
+
+/**
+ * e_d_gdbmi_word_of - The MI command for one line of the editor's own.
+ * @line: the line, without its line end; @mi: set to the MI command, NULL
+ * to drop the line.
+ * Return: 1 when the line is one of e_d_gdbmi_words, else 0.
+ */
+static int e_d_gdbmi_word_of(const char *line, const char **mi)
+{
+ size_t k;
+
+ for (k = 0; k < sizeof e_d_gdbmi_words / sizeof e_d_gdbmi_words[0]; k++)
+  if (!strcmp(line, e_d_gdbmi_words[k].cli))
+  {
+   *mi = e_d_gdbmi_words[k].mi;
+   return(1);
+  }
+ return(0);
+}
+
+/**
+ * e_d_gdbmi_quote - Copy @in into @out as the inside of an MI string:
+ * quotes and backslashes escaped.
+ * @out, @n: where it goes, cut to fit.
+ */
+static void e_d_gdbmi_quote(char *out, size_t n, const char *in)
+{
+ size_t w = 0;
+
+ for (; *in && w + 2 < n; in++)
+ {
+  if (*in == '"' || *in == '\\')
+   out[w++] = '\\';
+  out[w++] = *in;
+ }
+ out[w] = '\0';
+}
+
+/**
+ * e_d_gdbmi_line_of - One line of the editor's command, numbered, as MI
+ * takes it.
+ * @line: the line, no line end; @token: its number; @out, @n: the MI line,
+ * with its line end.
+ * Return: 1, or 0 when the line is to be dropped.
+ */
+static int e_d_gdbmi_line_of(const char *line, int token, char *out, size_t n)
+{
+ char quoted[E_D_GDBMI_LINE_MAX];
+ const char *mi;
+
+ if (e_d_gdbmi_word_of(line, &mi))
+ {
+  if (!mi)
+   return(0);
+  snprintf(out, n, "%d%s\n", token, mi);
+  return(1);
+ }
+ if (line[0] == E_D_GDBMI_MI_LEAD)
+ {
+  snprintf(out, n, "%d%s\n", token, line);
+  return(1);
+ }
+ e_d_gdbmi_quote(quoted, sizeof quoted, line);
+ snprintf(out, n, "%d%s%s%s\n", token, E_D_GDBMI_CONSOLE_HEAD, quoted,
+          E_D_GDBMI_CONSOLE_TAIL);
+ return(1);
+}
+
+/**
+ * e_d_pipe_write - Write @len bytes of @s to the debugger's input, through
+ * short writes and signals; a broken pipe means the debugger is gone.
+ */
+static void e_d_pipe_write(const char *s, size_t len)
+{
+ size_t off = 0;
+
+ while (off < len)
+ {
+  ssize_t w = write(rfildes[1], s + off, len - off);
+  if (w < 0)
+  {
+   if (errno == EINTR)
+    continue;
+   break;
+  }
+  off += (size_t)w;
+ }
+}
+
+/**
+ * e_d_gdbmi_next_token - The number the next command gets: one more than
+ * the last, and 1 after E_D_GDBMI_TOKEN_LAST, so a long session never sends
+ * a number gdb's answer could not be matched by.
+ */
+static int e_d_gdbmi_next_token(void)
+{
+ if (e_d_mi.token >= E_D_GDBMI_TOKEN_LAST)
+  return(1);
+ return(e_d_mi.token + 1);
+}
+
+/**
+ * e_d_gdbmi_send_lines - Send the editor's command @cmd to a gdb that
+ * speaks MI, each of its lines numbered.
+ *
+ * The number of the last line is kept, so the request engine knows which
+ * answer is the one it waits for.
+ */
+static void e_d_gdbmi_send_lines(const char *cmd)
+{
+ char line[E_D_RUN_AGAIN_MAX];
+ char out[E_D_GDBMI_LINE_MAX];
+ const char *p = cmd, *nl;
+ size_t len;
+
+ while (*p)
+ {
+  nl = strchr(p, '\n');
+  len = nl ? (size_t)(nl - p) : strlen(p);
+  if (len >= sizeof line)
+   len = sizeof line - 1;
+  memcpy(line, p, len);
+  line[len] = '\0';
+  p = nl ? nl + 1 : p + strlen(p);
+  if (!line[0])
+   continue;
+  if (!e_d_gdbmi_line_of(line, e_d_gdbmi_next_token(), out, sizeof out))
+   continue;
+  e_d_mi.token = e_d_gdbmi_next_token();
+  e_d_pipe_write(out, strlen(out));
+ }
+}
+
 static void e_d_send_cmd(const char *cmd)
 {
  size_t len = strlen(cmd);
@@ -375,6 +574,11 @@ static void e_d_send_cmd(const char *cmd)
 
  e_d_read_runaway = 0;
  snprintf(e_d_last_cmd, sizeof e_d_last_cmd, "%s", cmd);
+ if (e_d_gdbmi_on())
+ {
+  e_d_gdbmi_send_lines(cmd);
+  return;
+ }
  while (off < len)
  {
   ssize_t w = write(rfildes[1], cmd + off, len - off);
@@ -441,8 +645,24 @@ static void e_d_cut_reset(void)
  memset(&e_d_cut, 0, sizeof e_d_cut);
 }
 
+/**
+ * e_d_gdbmi_prompt_at - Under MI, does the line that byte @i of @s ends
+ * hold nothing but gdb's "(gdb)"?  Read only while gdb starts: its banner
+ * ends at the first such line.
+ */
+static int e_d_gdbmi_prompt_at(signed char *s, int i)
+{
+ int start = i;
+
+ while (start > 0 && s[start - 1] != '\n')
+  start--;
+ return(e_gdbmi_is_prompt((const char *)s + start, (size_t)(i + 1 - start)));
+}
+
 static int e_d_check_prompt(signed char *s, int i)
 {
+ if (e_d_gdbmi_on())
+  return(e_d_gdbmi_prompt_at(s, i));
  if (e_deb_type == DEB_GDB && i > 4 && s[i] == ' ' && !strncmp((char*)s+i-5, "(gdb)", 5))
   return 1;
  if (e_deb_type == DEB_DBX && i > 4 && s[i] == ' ' && !strncmp((char*)s+i-5, "(dbx)", 5))
@@ -1207,6 +1427,7 @@ static const E_D_RUN_OPS *e_d_pdb_run_ops(void);   /* pdb's table (below) */
 static const E_D_RUN_OPS *e_d_jdb_run_ops(void);   /* jdb's table (below) */
 static const E_D_RUN_OPS *e_d_a68g_run_ops(void);  /* a68g's table (below) */
 static const E_D_RUN_OPS *e_d_dap_run_ops(void);   /* the adapters' (below) */
+static const E_D_RUN_OPS *e_d_gdbmi_run_ops(void); /* gdb over MI (below) */
 static int e_d_run_to_cursor_line(FENSTER *f, int line);   /* Go to cursor */
 static int e_d_ga_run_to_cursor(FENSTER *f, int line);     /* pdb's, jdb's */
 static int e_d_cursor_brk_pending(void);
@@ -1727,6 +1948,8 @@ static const E_D_RUN_OPS e_d_legacy_run_ops =
  */
 static const E_D_RUN_OPS *e_d_run_ops_of_backend(void)
 {
+ if (e_deb_type == DEB_GDB && e_d_gdbmi_on())
+  return(e_d_gdbmi_run_ops());
  if (e_deb_type == DEB_GDB)
   return(&e_d_gdb_run_ops);
  if (e_deb_type == DEB_DAP)
@@ -2119,8 +2342,14 @@ static int e_d_run_answer_waiting(void)
 static int e_d_run_interrupt(int why)
 {
  e_d_run.int_quiet = !e_d_run_answer_waiting();
+ /* Said to the session before the signal goes out, so a stop record that
+    answers it, read at any time after, is known for the editor's own. */
+ e_ds_set_interrupt(&e_d_session, why);
  if (e_d_run.ops->interrupt() < 0)
+ {
+  e_ds_set_interrupt(&e_d_session, E_DS_INT_NONE);
   return(-1);
+ }
  e_d_run.interrupt_for = why;
  e_d_run.int_taken = 0;
  if (e_d_run_counts_interrupts())
@@ -9063,6 +9292,47 @@ static void e_d_say_pending_status(FENSTER *f)
  e_d_pending_status = NULL;
 }
 
+/**
+ * e_d_gdbmi_pick - Choose the interface this session's gdb speaks, from
+ * XWPE_GDB_INTERFACE, and the switch gdb is started with for it.
+ *
+ * Unset or "cli" keeps the line interface; "mi" asks for MI; anything else
+ * keeps the line interface and the status row says why, so a typo does not
+ * pass unnoticed.  A gdb found too old for MI at the start of this session
+ * keeps the line interface for the session started again in its place
+ * (e_d_gdbmi_fall_back), with its own status line.
+ * Return: the switch, or NULL for the line interface.
+ */
+static char *e_d_gdbmi_pick(void)
+{
+ const char *want = getenv(E_D_GDBMI_ENV);
+
+ e_d_mi.on = 0;
+ e_d_mi.token = 0;
+ e_d_mi.pending = 0;
+ if (e_d_mi.force_cli)
+ {
+  e_d_mi.force_cli = 0;
+  e_d_pending_status = e_d_mi.say;
+  return(NULL);
+ }
+ if (!want || !want[0] || !strcmp(want, E_D_GDBMI_WORD_CLI))
+  return(NULL);
+ if (strcmp(want, E_D_GDBMI_WORD_MI))
+ {
+  snprintf(e_d_mi.say, sizeof e_d_mi.say, E_D_GDBMI_UNKNOWN_FMT, want);
+  e_d_pending_status = e_d_mi.say;
+  return(NULL);
+ }
+ /* The mark goes to the innermost frame whose file is here, asked of the
+    file system through the session's probe: set it now, since the first
+    session of the editor starts before any session has ended, and with no
+    probe a Pause in a library would mark the library's frame. */
+ e_d_session_forget();
+ e_d_mi.on = 1;
+ return(E_D_GDBMI_SWITCH);
+}
+
 /** Message shown when the source's path is too long to hand to a debugger. */
 #define E_D_PATH_TOO_LONG_LINE "Debugger not started: the file path is too long"
 
@@ -9218,7 +9488,7 @@ int e_start_debug(FENSTER *f)
  else if (e_deb_type == DEB_JDB) {  e_debugger = "jdb";  e_deb_swtch = NULL;  }
  else if (e_deb_type == DEB_PDB) {  e_debugger = "python3";  e_deb_swtch = NULL;  }
  else if (e_deb_type == DEB_A68G) {  e_debugger = "a68g";  e_deb_swtch = "--monitor";  }
- else {  e_debugger = "gdb";  e_deb_swtch = NULL;  }
+ else {  e_debugger = "gdb";  e_deb_swtch = e_d_gdbmi_pick();  }
  e_d_pid = 0;
  if (e_test_command(e_debugger))
  {
@@ -14338,6 +14608,14 @@ struct e_d_ga_backend
     on gdb 18.1) or is not interrupted at a stop. */
  const char *int_answer;
  void (*settle_cmd_for)(const char *marker, char *cmd, size_t n);
+ /* For a debugger that numbers its commands (gdb over MI): how a command
+    of the engine's goes out, so the number of the one in flight is known.
+    NULL sends it as it is (e_d_ga_send). */
+ int  (*send)(const char *cmd, void *io);
+ /* Does @ans refuse what was asked?  Then @words receives the debugger's
+    reason.  NULL: the error flag says so and the first line is the reason,
+    as the line debuggers refuse. */
+ int  (*refused_words)(const E_D_ANSWER *ans, char *words, size_t n);
 };
 
 /* The request engine, its world and what runs on it. */
@@ -14872,6 +15150,8 @@ static void e_d_ga_world(void)
 {
  memset(&e_d_ga.io, 0, sizeof e_d_ga.io);
  e_d_ga.io.send = e_d_ga_send;
+ if (e_d_ga.be->send)
+  e_d_ga.io.send = e_d_ga.be->send;
  e_d_ga.io.answer_ended = e_d_ga_answer_ended;
  e_d_ga.io.line_is_async = e_d_ga.be->line_is_async;
  e_d_ga.io.deliver_async = e_d_ga.be->deliver_async;
@@ -15352,6 +15632,8 @@ struct e_d_ga_ctx
  char thread[E_D_JDB_THREAD_ID_MAX];   /* ... the thread looked at */
  int user_frame;             /* ... its innermost frame of the user's code,
                                 or -1 while none is found */
+ int mi_frames;              /* gdb over MI: the Stack window's frames are
+                                read, its arguments come next */
 };
 
 static E_D_GA_CTX e_d_gs;
@@ -16927,6 +17209,8 @@ static const E_D_STEP e_d_gdb_set_up_steps[] =
  { NULL, NULL }
 };
 
+static int e_d_gm_fell_back(E_D_GA_GO *go);   /* gdb too old for MI (below) */
+
 /**
  * e_d_gu_set_up_finished - gdb is set up: the command the user pressed to
  * start the session runs now.
@@ -16949,6 +17233,8 @@ static void e_d_gu_set_up_finished(int ok, void *ctx)
   e_d_ga.set_up_owed = 1;
   return;
  }
+ if (e_d_gm_fell_back(go))
+  return;
  e_d_ga.set_up_owed = 0;
  jdb_trace("e_d_gu_set_up_finished: gdb set up, e_d_swtch -> 2\n");
  e_d_swtch = 2;
@@ -17043,6 +17329,25 @@ static void e_d_gdb_start_brk_cmd(char *cmd, size_t n)
 }
 
 /**
+ * e_d_ga_refused_words - Did the debugger refuse what @ans answers?  Its
+ * reason goes into @words, for the status row.
+ * @ans: the answer; @words, @n: the reason.
+ *
+ * The line debuggers refuse on their error stream; gdb over MI in an error
+ * record of the answer (the backend's refused_words).
+ * Return: 1 when it refused.
+ */
+static int e_d_ga_refused_words(const E_D_ANSWER *ans, char *words, size_t n)
+{
+ if (e_d_ga.be->refused_words)
+  return(e_d_ga.be->refused_words(ans, words, n));
+ if (!ans->error)
+  return(0);
+ e_d_gb_first_words(ans->text, words, n);
+ return(1);
+}
+
+/**
  * e_d_gg_start_answered - The debugger answered the start breakpoint: keep
  * what it gave it (gdb's number), so it is taken out again at the stop; say
  * gdb's words when it refused (no start symbol in the program).
@@ -17057,11 +17362,8 @@ static int e_d_gg_start_answered(E_D_REQ_END how, E_D_ANSWER *ans, void *ctx)
  (void)ctx;
  if (i >= 0)
   e_d_nrbrpts[i] = id;
- if (id == 0 && ans->error)
- {
-  e_d_gb_first_words(ans->text, str, sizeof str);
+ if (id == 0 && e_d_ga_refused_words(ans, str, sizeof str))
   e_d_error(str);
- }
  return(E_D_STEP_NEXT);
 }
 
@@ -21160,7 +21462,1056 @@ static const E_D_CLI *e_d_cli_of(int type)
  return(&e_d_cli_sdb);
 }
 
+/* ==== gdb over MI ====
+
+   The same editor as under gdb's line interface, with gdb's answers read
+   from named fields: the run's stop from a *stopped record (its reason
+   says whether it is the editor's own interrupt and gives the exit code),
+   the mark from -stack-list-frames, the watches from
+   -data-evaluate-expression, the breakpoints from -break-insert's bkpt
+   tuple or its error record.  Every command is numbered and its answer is
+   the result record with that number, so errors are part of the answer
+   and the error stream is never asked; the program's output stays on its
+   own terminal (-inferior-tty-set), where nothing it prints can be taken
+   for one of gdb's records.  gdb's sentences are shown, never matched. */
+
+/* The oldest gdb driven over MI, and what its -list-features must name. */
+#define E_D_GDBMI_FLOOR_MAJOR     7
+#define E_D_GDBMI_FLOOR_MINOR     6
+#define E_D_GDBMI_FEATURE_PENDING "pending-breakpoints"
+#define E_D_GDBMI_FEATURE_NOTIFY  "breakpoint-notifications"
+#define E_D_GDBMI_FEATURES        "features"
+#define E_D_GDBMI_BANNER_MAX      512
+#define E_D_GDBMI_OLD_FMT \
+ " gdb %d.%d is older than %d.%d: this session uses its line interface"
+#define E_D_GDBMI_NO_VERSION_LINE \
+ " gdb named no version: this session uses its line interface"
+#define E_D_GDBMI_NO_FEATURE_FMT \
+ " gdb lacks %s: this session uses its line interface"
+/* The commands. */
+#define E_D_GDBMI_VERSION     "-gdb-version"
+#define E_D_GDBMI_LIST        "-list-features"
+#define E_D_GDBMI_CONFIRM_OFF "-gdb-set confirm off"
+#define E_D_GDBMI_ASYNC_OFF   "-gdb-set mi-async off"
+#define E_D_GDBMI_TTY_FMT     "-inferior-tty-set %s"
+#define E_D_GDBMI_BREAK_FMT   "-break-insert \"%s:%d\""
+#define E_D_GDBMI_BREAK_AT    "-break-insert \"%s\""
+#define E_D_GDBMI_DELETE_FMT  "-break-delete %d"
+/* The innermost frames only, as many as the session keeps: a deep
+   recursion's whole stack is one line too long for the record reader, and
+   the stop would then go unmarked. */
+#define E_D_GDBMI_FRAMES_FMT  "-stack-list-frames 0 %d"
+#define E_D_GDBMI_ARGS_FMT    "-stack-list-arguments 1 0 %d"
+#define E_D_GDBMI_FRAMES_LAST (E_DS_FRAMES_MAX - 1)
+#define E_D_GDBMI_EVAL_FMT    "-data-evaluate-expression \"%s\""
+/* The reason of the stop at the end of a finish. */
+#define E_D_GDBMI_FINISHED    "function-finished"
+#define E_D_GDBMI_REASON      "reason"
+#define E_D_GDBMI_MEANING     "signal-meaning"
+#define E_D_GDBMI_CLASS_DONE  "done"
+#define E_D_GDBMI_CLASS_ERROR "error"
+#define E_D_GDBMI_CLASS_RUN   "running"
+#define E_D_GDBMI_CLASS_STOP  "stopped"
+/* What the user reads for a signal that stopped the program, built from
+   the stop's fields as gdb's line interface words it. */
+#define E_D_GDBMI_SIGNAL_FMT  "Program received signal %s, %s."
+/* Reading the run's answer. */
+#define E_D_GDBMI_DECIMAL        10      /* gdb's numbers, but the exit code */
+#define E_D_GDBMI_READ_MAX       16384
+#define E_D_GDBMI_READS_PER_WAKE 16
+#define E_D_GDBMI_ROWS_MAX       65536   /* the Stack window's text */
+
+/* One record at a time is read; the Stack window's frames wait in the
+   second while their arguments are asked. */
+static E_GDBMI_RECORD e_d_gdbmi_rec;
+static E_GDBMI_RECORD e_d_gdbmi_frames_rec;
+
+/* What the run's reader has seen since the run went out. */
+static struct
+{
+ E_GDBMI_SPLIT split;
+ int stop_seen;              /* a *stopped came: its (gdb) ends the run */
+ int run_failed;             /* the resume was refused (an error record) */
+ int finished;               /* the stop ends a finish */
+ int too_old;                /* the set-up found gdb too old for MI */
+ char meaning[E_DS_NAME_MAX];   /* the stop's signal, in gdb's words */
+} e_d_gm;
+
+/* ---- the engine's world under MI ---- */
+
+/**
+ * e_d_gm_send - Send a command of the engine's, numbered, and remember its
+ * number: the answer that carries it is the one the engine waits for.
+ * @cmd: the command, no line end; @io: unused.
+ */
+static int e_d_gm_send(const char *cmd, void *io)
+{
+ int ret = e_d_ga_send(cmd, io);
+
+ e_d_mi.pending = e_d_mi.token;
+ return(ret);
+}
+
+/**
+ * e_d_gm_ends_in_prompt - Is the answer whole: the result record of the
+ * command in flight, then (gdb)?
+ */
+static int e_d_gm_ends_in_prompt(const E_D_ANSWER *ans, size_t *prompt_len)
+{
+ return(e_gdbmi_answer_ended(ans->text, ans->len, e_d_mi.pending,
+                             prompt_len));
+}
+
+/**
+ * e_d_gm_line_is_async - Is the line no part of the answer in flight: a
+ * stop, a notice, the late answer of a command given up on?
+ */
+static int e_d_gm_line_is_async(const char *line, void *io)
+{
+ (void)io;
+ return(e_gdbmi_line_is_async(line, e_d_mi.pending));
+}
+
+/**
+ * e_d_gm_deliver_async - Take such a line into the session, so a stop or a
+ * late error read meanwhile is known to it.
+ */
+static void e_d_gm_deliver_async(const char *line, void *io)
+{
+ (void)io;
+ if (e_gdbmi_parse_line(line, &e_d_gdbmi_rec) == E_GDBMI_OK)
+  e_ds_take_mi_record(&e_d_session, &e_d_gdbmi_rec);
+}
+
+/**
+ * e_d_gm_result - The result record of the command an answer is for.
+ * @ans: the answer; @r: receives it.
+ * Return: 1 when the answer holds it.
+ */
+static int e_d_gm_result(const E_D_ANSWER *ans, E_GDBMI_RECORD *r)
+{
+ return(e_gdbmi_parse_result(ans->text, e_d_mi.pending, r) == E_GDBMI_OK);
+}
+
+/**
+ * e_d_gm_is_done - Is @r the result record of a command gdb carried out?
+ */
+static int e_d_gm_is_done(const E_GDBMI_RECORD *r)
+{
+ return(r->kind == E_GDBMI_K_RESULT && !strcmp(r->klass, E_D_GDBMI_CLASS_DONE));
+}
+
+/**
+ * e_d_gm_refused_words - Did gdb refuse the command @ans answers?  Its
+ * message, without its styling, goes into @words.
+ */
+static int e_d_gm_refused_words(const E_D_ANSWER *ans, char *words, size_t n)
+{
+ if (!e_d_gm_result(ans, &e_d_gdbmi_rec)
+     || strcmp(e_d_gdbmi_rec.klass, E_D_GDBMI_CLASS_ERROR))
+  return(0);
+ e_ds_take_mi_record(&e_d_session, &e_d_gdbmi_rec);
+ snprintf(words, n, "%s", e_d_session.last_error);
+ return(1);
+}
+
+/* ---- breakpoints under MI ---- */
+
+/**
+ * e_d_gm_brk_add_cmd - -break-insert for list entry @i.  Without -f: a
+ * place gdb cannot find is refused with gdb's reason, as under the line
+ * interface, and not kept pending in silence.
+ */
+static void e_d_gm_brk_add_cmd(int i, char *cmd, size_t n)
+{
+ char file[PATH_MAX];
+
+ e_d_gdbmi_quote(file, sizeof file, e_d_sbrpts[i]);
+ snprintf(cmd, n, E_D_GDBMI_BREAK_FMT, file, e_d_ybrpts[i]);
+}
+
+/**
+ * e_d_gm_brk_remove_cmd - -break-delete by the number gdb gave it, or the
+ * console's clear by place for one whose number was never read.
+ */
+static void e_d_gm_brk_remove_cmd(const E_D_BRK_GONE *g, char *cmd, size_t n)
+{
+ if (g->id == E_D_GB_ID_UNKNOWN)
+  snprintf(cmd, n, E_D_GDB_CLEAR_FMT, g->file, g->line);
+ else
+  snprintf(cmd, n, E_D_GDBMI_DELETE_FMT, g->id);
+}
+
+/**
+ * e_d_gm_brk_set_id - The number gdb's bkpt tuple gives the breakpoint, 0
+ * when gdb refused it.
+ */
+static int e_d_gm_brk_set_id(const E_D_ANSWER *ans)
+{
+ if (!e_d_gm_result(ans, &e_d_gdbmi_rec) || !e_d_gm_is_done(&e_d_gdbmi_rec))
+  return(0);
+ return(e_gdbmi_number(e_gdbmi_get(&e_d_gdbmi_rec, "bkpt.number"),
+                       E_D_GDBMI_DECIMAL, 0));
+}
+
+/**
+ * e_d_gm_brk_verdict - Keep with list entry @i what gdb answered, as the
+ * session reads the answer: solid with its number, hollow and pending, or
+ * hollow with gdb's message.
+ */
+static void e_d_gm_brk_verdict(int i, int id, const E_D_ANSWER *ans)
+{
+ E_DS_BRK *b;
+
+ e_ds_set_brk(&e_d_session, i, e_d_sbrpts[i], e_d_ybrpts[i]);
+ if (i >= E_DS_BRKS_MAX || !e_d_gm_result(ans, &e_d_gdbmi_rec)
+     || !e_ds_take_mi_brk_result(&e_d_session, i, &e_d_gdbmi_rec))
+ {
+  e_d_nrbrpts[i] = 0;
+  e_d_brk_set_state(i, E_D_BRK_REFUSED, E_D_BRK_NO_NUMBER);
+  return;
+ }
+ b = &e_d_session.brks[i];
+ e_d_nrbrpts[i] = id;
+ e_d_brk_set_state(i, b->state, b->msg);
+}
+
+/**
+ * e_d_gm_start_brk_cmd - The breakpoint that stops the first run at the
+ * program's start, as e_d_gdb_start_break places it.
+ */
+static void e_d_gm_start_brk_cmd(char *cmd, size_t n)
+{
+ const char *sym = e_get_start_symbol();
+ char where[PATH_MAX];
+ char quoted[PATH_MAX];
+
+ if (sym && !strcmp(sym, GA68_ENTRY_SYMBOL) && e_d_file[0])
+  snprintf(where, sizeof where, "%s:1", e_d_file);
+ else
+  snprintf(where, sizeof where, "%s", sym ? sym : "");
+ e_d_gdbmi_quote(quoted, sizeof quoted, where);
+ snprintf(cmd, n, E_D_GDBMI_BREAK_AT, quoted);
+}
+
+/* ---- the set-up after the banner ---- */
+
+/**
+ * e_d_gm_say_too_old - Note why this gdb keeps its line interface, for the
+ * status row of the session started again in its place.
+ */
+static void e_d_gm_say_too_old(const char *line)
+{
+ snprintf(e_d_mi.say, sizeof e_d_mi.say, "%s", line);
+ e_d_gm.too_old = 1;
+}
+
+static int e_d_gm_version_cmd(char *cmd, size_t n, void *ctx)
+{
+ (void)ctx;
+ e_d_gm.too_old = 0;
+ snprintf(cmd, n, "%s", E_D_GDBMI_VERSION);
+ return(1);
+}
+
+/**
+ * e_d_gm_version_answered - gdb named its version: below the floor the
+ * session goes on with the line interface instead.
+ */
+static int e_d_gm_version_answered(E_D_REQ_END how, E_D_ANSWER *ans, void *ctx)
+{
+ char banner[E_D_GDBMI_BANNER_MAX];
+ char line[E_D_GDBMI_SAY_MAX];
+ int major, minor;
+
+ (void)how;
+ (void)ctx;
+ e_gdbmi_console_join(ans->text, banner, sizeof banner);
+ if (!e_gdbmi_version_of(banner, &major, &minor))
+ {
+  e_d_gm_say_too_old(E_D_GDBMI_NO_VERSION_LINE);
+  return(E_D_STEP_STOP);
+ }
+ if (major > E_D_GDBMI_FLOOR_MAJOR ||
+     (major == E_D_GDBMI_FLOOR_MAJOR && minor >= E_D_GDBMI_FLOOR_MINOR))
+  return(E_D_STEP_NEXT);
+ snprintf(line, sizeof line, E_D_GDBMI_OLD_FMT, major, minor,
+          E_D_GDBMI_FLOOR_MAJOR, E_D_GDBMI_FLOOR_MINOR);
+ e_d_gm_say_too_old(line);
+ return(E_D_STEP_STOP);
+}
+
+static int e_d_gm_features_cmd(char *cmd, size_t n, void *ctx)
+{
+ (void)ctx;
+ snprintf(cmd, n, "%s", E_D_GDBMI_LIST);
+ return(1);
+}
+
+/**
+ * e_d_gm_feature_missing - Note that -list-features lacks @name.
+ * Return: E_D_STEP_STOP.
+ */
+static int e_d_gm_feature_missing(const char *name)
+{
+ char line[E_D_GDBMI_SAY_MAX];
+
+ snprintf(line, sizeof line, E_D_GDBMI_NO_FEATURE_FMT, name);
+ e_d_gm_say_too_old(line);
+ return(E_D_STEP_STOP);
+}
+
+/**
+ * e_d_gm_features_answered - gdb listed its MI features: without pending
+ * breakpoints and breakpoint notices the session keeps the line interface.
+ */
+static int e_d_gm_features_answered(E_D_REQ_END how, E_D_ANSWER *ans,
+                                    void *ctx)
+{
+ (void)how;
+ (void)ctx;
+ if (!e_d_gm_result(ans, &e_d_gdbmi_rec) || !e_d_gm_is_done(&e_d_gdbmi_rec))
+  return(e_d_gm_feature_missing(E_D_GDBMI_FEATURES));
+ if (!e_gdbmi_list_has(&e_d_gdbmi_rec, E_D_GDBMI_FEATURES,
+                       E_D_GDBMI_FEATURE_PENDING))
+  return(e_d_gm_feature_missing(E_D_GDBMI_FEATURE_PENDING));
+ if (!e_gdbmi_list_has(&e_d_gdbmi_rec, E_D_GDBMI_FEATURES,
+                       E_D_GDBMI_FEATURE_NOTIFY))
+  return(e_d_gm_feature_missing(E_D_GDBMI_FEATURE_NOTIFY));
+ return(E_D_STEP_NEXT);
+}
+
+static int e_d_gm_confirm_cmd(char *cmd, size_t n, void *ctx)
+{
+ (void)ctx;
+ snprintf(cmd, n, "%s", E_D_GDBMI_CONFIRM_OFF);
+ return(1);
+}
+
+static int e_d_gm_async_cmd(char *cmd, size_t n, void *ctx)
+{
+ (void)ctx;
+ snprintf(cmd, n, "%s", E_D_GDBMI_ASYNC_OFF);
+ return(1);
+}
+
+/**
+ * e_d_gm_tty_cmd - The program's terminal: its output and input go there,
+ * never onto gdb's own output, where it could pass for a record.
+ */
+static int e_d_gm_tty_cmd(char *cmd, size_t n, void *ctx)
+{
+ (void)ctx;
+ if (e_d_pty_master < 0)
+  return(0);
+ snprintf(cmd, n, E_D_GDBMI_TTY_FMT, e_d_pty_slave_name);
+ return(1);
+}
+
+/* The version and features first: a gdb too old for MI is started again
+   with its line interface before anything else is asked. */
+static const E_D_STEP e_d_gdbmi_set_up_steps[] =
+{
+ { e_d_gm_version_cmd,  e_d_gm_version_answered },
+ { e_d_gm_features_cmd, e_d_gm_features_answered },
+ { e_d_gm_confirm_cmd,  e_d_gs_ignore_answer },
+ { e_d_gm_async_cmd,    e_d_gs_ignore_answer },
+ { e_d_gm_tty_cmd,      e_d_gs_ignore_answer },
+ { e_d_gb_remove_cmd,   e_d_gb_remove_answered },
+ { e_d_gb_add_cmd,      e_d_gu_add_answered },
+ { NULL, NULL }
+};
+
+/* The session to start again with gdb's line interface. */
+static struct
+{
+ ECNT *cn;
+ e_d_resume_fn pressed;
+ int arg;
+} e_d_gm_restart;
+
+/**
+ * e_d_gm_restart_on_timer - End the gdb found too old for MI and start
+ * gdb again with its line interface, with the command the user pressed.
+ * @data: unused.
+ */
+static void e_d_gm_restart_on_timer(void *data)
+{
+ ECNT *cn = e_d_gm_restart.cn ? e_d_gm_restart.cn : WpeEditor;
+ FENSTER *f = cn->f[cn->mxedt];
+
+ (void)data;
+ e_d_quit_basic(f);
+ e_d_mi.force_cli = 1;
+ e_d_build_done = 1;
+ e_d_start_cmd = e_d_gm_restart.pressed;
+ e_d_start_arg = e_d_gm_restart.arg;
+ e_run_debug(f);
+}
+
+/**
+ * e_d_gm_fell_back - The set-up found this gdb too old for MI: end it and
+ * start gdb again with its line interface, then run the command the user
+ * pressed.
+ * @go: the set-up's context.
+ *
+ * The user's command is not lost and nothing is built again; the status
+ * row names the reason once.
+ * Return: 1 when the session was started again.
+ */
+static int e_d_gm_fell_back(E_D_GA_GO *go)
+{
+ if (!e_d_gdbmi_on() || !e_d_gm.too_old)
+  return(0);
+ e_d_gm.too_old = 0;
+ e_d_gm_restart.cn = go->cn;
+ e_d_gm_restart.pressed = go->pressed;
+ e_d_gm_restart.arg = go->pressed_arg;
+ /* Out of the answer's callback first, the way a kept key is run
+    (e_d_act_schedule): this gdb's descriptors are closed and the new gdb's
+    watched from the editor's loop, never from inside the loop's call for
+    the old ones.  A due timer runs in the same turn of the loop, before any
+    key is read, so no key is handled between the two gdbs; keys typed
+    during the new start are kept or refused as at any start. */
+ if (wpe_timer_add(0, 0, e_d_gm_restart_on_timer, NULL) <= 0)
+  e_d_gm_restart_on_timer(NULL);
+ return(1);
+}
+
+/* ---- a stop under MI ---- */
+
+static int e_d_gm_flush_cmd(char *cmd, size_t n, void *ctx)
+{
+ return(e_d_gs_flush_cmd(cmd, n, ctx));
+}
+
+/**
+ * e_d_gm_window_file - The name the editor's own window gives the file a
+ * frame names by its full path, so the stop is marked in the window the
+ * user has open and not in a second one; the full path when no window
+ * shows it.
+ * @cn: the editor; @full: gdb's fullname; @out, @n: the name to mark.
+ */
+static void e_d_gm_window_file(ECNT *cn, const char *full, char *out, size_t n)
+{
+ char path[PATH_MAX], real_win[PATH_MAX], real_full[PATH_MAX];
+ const char *slash = strrchr(full, DIRC);
+ const char *name = slash ? slash + 1 : full;
+
+ snprintf(out, n, "%s", full);
+ if (!realpath(full, real_full))
+  return;
+ if (!e_d_window_path_of(cn, name, path, sizeof path))
+  return;
+ if (realpath(path, real_win) && !strcmp(real_win, real_full))
+  snprintf(out, n, "%s", path);
+}
+
+static int e_d_gm_frames_cmd(char *cmd, size_t n, void *ctx)
+{
+ (void)ctx;
+ snprintf(cmd, n, E_D_GDBMI_FRAMES_FMT, E_D_GDBMI_FRAMES_LAST);
+ return(1);
+}
+
+/**
+ * e_d_gm_frames_answered - The frames of the stop: the mark goes to the
+ * innermost one whose source is here, and after Pause that frame becomes
+ * gdb's selected one, so the watches read the user's locals.
+ */
+static int e_d_gm_frames_answered(E_D_REQ_END how, E_D_ANSWER *ans, void *ctx)
+{
+ E_D_GA_CTX *st = ctx;
+ const E_DS_FRAME *fr;
+ int m;
+
+ (void)how;
+ if (!e_d_gm_result(ans, &e_d_gdbmi_rec) || !e_d_gm_is_done(&e_d_gdbmi_rec))
+ {
+  st->no_stack = 1;
+  return(E_D_STEP_STOP);
+ }
+ e_ds_take_mi_record(&e_d_session, &e_d_gdbmi_rec);
+ st->where_rows = e_d_session.nframes;
+ e_d_where_frame = 0;
+ m = e_d_session.marked_frame;
+ if (m < 0 || m >= e_d_session.nframes)
+ {
+  st->line = -1;
+  return(E_D_STEP_NEXT);
+ }
+ fr = &e_d_session.frames[m];
+ st->line = fr->line;
+ e_d_gm_window_file(st->cn, fr->file, st->file, sizeof st->file);
+ e_d_where_frame = m;
+ if (m > 0 && e_d_run.pause != E_D_PAUSE_NONE)
+  st->pause_frame = m;
+ return(E_D_STEP_NEXT);
+}
+
+static int e_d_gm_stack_cmd(char *cmd, size_t n, void *ctx)
+{
+ E_D_GA_CTX *st = ctx;
+
+ if (!st->stack_wanted)
+  return(0);
+ if (!st->mi_frames)
+  snprintf(cmd, n, E_D_GDBMI_FRAMES_FMT, E_D_GDBMI_FRAMES_LAST);
+ else
+  snprintf(cmd, n, E_D_GDBMI_ARGS_FMT, E_D_GDBMI_FRAMES_LAST);
+ return(1);
+}
+
+/**
+ * e_d_gm_stack_rows - Write the Stack window's rows from the frames read
+ * and their arguments @args (NULL when gdb gave none).
+ * @st: the context; its stack text is replaced.
+ */
+static void e_d_gm_stack_rows(E_D_GA_CTX *st, const E_GDBMI_RECORD *args)
+{
+ char *rows = MALLOC(E_D_GDBMI_ROWS_MAX);
+
+ if (!rows)
+  return;
+ if (e_ds_mi_where_rows(&e_d_gdbmi_frames_rec, args, rows,
+                        E_D_GDBMI_ROWS_MAX) == 0)
+ {
+  FREE(rows);
+  return;
+ }
+ if (st->stack)
+  FREE(st->stack);
+ st->stack = rows;
+}
+
+/**
+ * e_d_gm_stack_answered - The Stack window's frames, then their arguments:
+ * the rows read as gdb's "bt" prints them.
+ */
+static int e_d_gm_stack_answered(E_D_REQ_END how, E_D_ANSWER *ans, void *ctx)
+{
+ E_D_GA_CTX *st = ctx;
+
+ (void)how;
+ if (!st->mi_frames)
+ {
+  if (!e_d_gm_result(ans, &e_d_gdbmi_frames_rec)
+      || !e_d_gm_is_done(&e_d_gdbmi_frames_rec))
+   return(E_D_STEP_NEXT);
+  st->mi_frames = 1;
+  return(E_D_STEP_AGAIN);
+ }
+ st->mi_frames = 0;
+ if (e_d_gm_result(ans, &e_d_gdbmi_rec) && e_d_gm_is_done(&e_d_gdbmi_rec))
+  e_d_gm_stack_rows(st, &e_d_gdbmi_rec);
+ else
+  e_d_gm_stack_rows(st, NULL);
+ return(E_D_STEP_NEXT);
+}
+
+static int e_d_gm_watch_cmd(char *cmd, size_t n, void *ctx)
+{
+ E_D_GA_CTX *st = ctx;
+ char quoted[E_D_REQ_CMD_MAX];
+
+ if (st->watch >= st->nvalues)
+  return(0);
+ e_d_gdbmi_quote(quoted, sizeof quoted, e_d_swtchs[st->watch]);
+ snprintf(cmd, n, E_D_GDBMI_EVAL_FMT, quoted);
+ return(1);
+}
+
+/**
+ * e_d_gm_watch_value - What the Watches window shows for an answer: the
+ * value as the line interface gives it, or NULL when gdb has none.
+ * Return: the text, to be freed, or NULL.
+ */
+static char *e_d_gm_watch_value(const E_D_ANSWER *ans)
+{
+ const char *value;
+ char *text;
+ size_t n;
+
+ if (!e_d_gm_result(ans, &e_d_gdbmi_rec))
+  return(NULL);
+ value = e_gdbmi_get(&e_d_gdbmi_rec, "value");
+ if (!value)
+  return(NULL);
+ n = strlen(value) + E_D_GDBMI_SAY_MAX;
+ text = MALLOC(n);
+ if (!text)
+  return(NULL);
+ if (!e_ds_mi_watch_text(&e_d_gdbmi_rec, text, n))
+ {
+  FREE(text);
+  return(NULL);
+ }
+ return(text);
+}
+
+static int e_d_gm_watch_answered(E_D_REQ_END how, E_D_ANSWER *ans, void *ctx)
+{
+ E_D_GA_CTX *st = ctx;
+
+ (void)how;
+ st->values[st->watch++] = e_d_gm_watch_value(ans);
+ return(E_D_STEP_AGAIN);
+}
+
+/* The answers of a stop the user is shown: the program's buffered output,
+   the frames and the mark, after Pause the user's frame selected, the Stack
+   window, the watches, then the breakpoints changed while it ran and the
+   start breakpoint.  No settle step: an interrupt that met gdb at its
+   prompt is answered without a number, which no request waits for. */
+static const E_D_STEP e_d_gdbmi_stop_steps[] =
+{
+ { e_d_gm_flush_cmd,  e_d_gs_ignore_answer },
+ { e_d_gm_frames_cmd, e_d_gm_frames_answered },
+ { e_d_gs_frame_cmd,  e_d_gs_frame_answered },
+ { e_d_gm_stack_cmd,  e_d_gm_stack_answered },
+ { e_d_gm_watch_cmd,  e_d_gm_watch_answered },
+ { e_d_gb_remove_cmd, e_d_gb_remove_answered },
+ { e_d_gb_add_cmd,    e_d_gb_add_answered },
+ { e_d_gb_start_cmd,  e_d_gb_start_answered },
+ { NULL, NULL }
+};
+
+/* A stop made to tell gdb of breakpoint changes while the program runs. */
+static const E_D_STEP e_d_gdbmi_sync_steps[] =
+{
+ { e_d_gb_remove_cmd, e_d_gb_remove_answered },
+ { e_d_gb_add_cmd,    e_d_gb_add_answered },
+ { NULL, NULL }
+};
+
+/* Add, edit or delete a watch at a stop. */
+static const E_D_STEP e_d_gdbmi_watches_steps[] =
+{
+ { e_d_gm_stack_cmd, e_d_gm_stack_answered },
+ { e_d_gm_watch_cmd, e_d_gm_watch_answered },
+ { NULL, NULL }
+};
+
+/* Ctrl-G K. */
+static const E_D_STEP e_d_gdbmi_stack_steps[] =
+{
+ { e_d_gm_stack_cmd, e_d_gm_stack_answered },
+ { NULL, NULL }
+};
+
+/* Enter on a row of the Stack window. */
+static const E_D_STEP e_d_gdbmi_follow_steps[] =
+{
+ { e_d_gs_move_cmd,  e_d_gs_move_answered },
+ { e_d_gm_stack_cmd, e_d_gm_stack_answered },
+ { e_d_gm_watch_cmd, e_d_gm_watch_answered },
+ { NULL, NULL }
+};
+
+/* What a resume asks first: the breakpoint changes gdb has not been told
+   of, and the start breakpoint before the first run. */
+static const E_D_STEP e_d_gdbmi_go_steps[] =
+{
+ { e_d_gb_remove_cmd, e_d_gb_remove_answered },
+ { e_d_gb_add_cmd,    e_d_gb_add_answered },
+ { e_d_gg_start_cmd,  e_d_gg_start_answered },
+ { NULL, NULL }
+};
+
+/* ---- the run's answer under MI ---- */
+
+/**
+ * e_d_gm_begin - A run, a step or a Continue went out: nothing of the one
+ * before is read as its answer.
+ */
+static void e_d_gm_begin(void)
+{
+ e_gdbmi_split_init(&e_d_gm.split);
+ e_d_gm.stop_seen = 0;
+ e_d_gm.run_failed = 0;
+ e_d_gm.finished = 0;
+ e_d_gm.meaning[0] = '\0';
+}
+
+/**
+ * e_d_gm_say_start_words - Show in Messages what gdb said of the program's
+ * start ("Starting program: ..."), one line at a time.
+ * @text: a console record's words.
+ */
+static void e_d_gm_say_start_words(const char *text)
+{
+ ECNT *cn = e_d_run.cn ? e_d_run.cn : WpeEditor;
+ char line[E_D_LINE_MAX];
+ const char *p = text, *nl;
+ size_t len;
+
+ while (*p)
+ {
+  nl = strchr(p, '\n');
+  len = nl ? (size_t)(nl - p) : strlen(p);
+  if (len >= sizeof line)
+   len = sizeof line - 1;
+  memcpy(line, p, len);
+  line[len] = '\0';
+  p = nl ? nl + 1 : p + strlen(p);
+  if (line[0])
+   e_d_p_message(line, cn->f[cn->mxedt], 0);
+ }
+}
+
+/**
+ * e_d_gm_take_stop - A *stopped record: the session learns where and why,
+ * the editor's interrupt in flight told it first, so its own SIGINT is
+ * known by the record's reason and not by gdb's words.
+ */
+static void e_d_gm_take_stop(const E_GDBMI_RECORD *r)
+{
+ const char *reason = e_gdbmi_get(r, E_D_GDBMI_REASON);
+ const char *meaning = e_gdbmi_get(r, E_D_GDBMI_MEANING);
+
+ e_ds_set_interrupt(&e_d_session, e_d_run.interrupt_for);
+ e_ds_take_mi_record(&e_d_session, r);
+ e_d_gm.stop_seen = 1;
+ e_d_gm.finished = reason && !strcmp(reason, E_D_GDBMI_FINISHED);
+ snprintf(e_d_gm.meaning, sizeof e_d_gm.meaning, "%s", meaning ? meaning : "");
+}
+
+/**
+ * e_d_gm_take_result - A result record during a run: the run began
+ * (running), or gdb refused it.
+ */
+static void e_d_gm_take_result(const E_GDBMI_RECORD *r)
+{
+ if (!strcmp(r->klass, E_D_GDBMI_CLASS_RUN))
+ {
+  e_d_gdb_awaits_forget();
+  return;
+ }
+ if (!strcmp(r->klass, E_D_GDBMI_CLASS_ERROR))
+ {
+  e_ds_take_mi_record(&e_d_session, r);
+  e_d_gm.run_failed = 1;
+ }
+}
+
+/**
+ * e_d_gm_take_line - One whole line of gdb's answer to a run.
+ * Return: 1 when it ends the run: the (gdb) after a stop or a refusal.
+ */
+static int e_d_gm_take_line(const char *line)
+{
+ E_GDBMI_RECORD *r = &e_d_gdbmi_rec;
+
+ if (e_gdbmi_is_prompt(line, strlen(line)))
+  return(e_d_gm.stop_seen || e_d_gm.run_failed);
+ if (e_gdbmi_parse_line(line, r) != E_GDBMI_OK)
+  return(0);
+ if (r->kind == E_GDBMI_K_EXEC && !strcmp(r->klass, E_D_GDBMI_CLASS_STOP))
+  e_d_gm_take_stop(r);
+ else if (r->kind == E_GDBMI_K_RESULT)
+  e_d_gm_take_result(r);
+ else if (r->kind == E_GDBMI_K_TARGET ||
+          (r->kind == E_GDBMI_K_CONSOLE && e_d_gdb_awaits.start))
+  e_d_gm_say_start_words(e_gdbmi_stream_text(r));
+ return(0);
+}
+
+/**
+ * e_d_gm_take_bytes - Read the lines of what one read brought.
+ * Return: 1 when the run ended in them.  A line too long for the reader is
+ * dropped whole: its head is never read as a record.
+ */
+static int e_d_gm_take_bytes(const char *buf, size_t n)
+{
+ const char *line;
+ size_t used = 0;
+ int got, ended = 0;
+
+ while ((got = e_gdbmi_split_next(&e_d_gm.split, buf, n, &used, &line))
+        != E_GDBMI_SPLIT_NEED_MORE)
+  if (got == E_GDBMI_SPLIT_LINE && !ended && e_d_gm_take_line(line))
+   ended = 1;
+ return(ended);
+}
+
+/**
+ * e_d_gm_read_now - Read what gdb has written, without waiting: the
+ * descriptor is made non-blocking for this read only, as the line readers
+ * do, and left as it was.
+ * Return: what read() answered.
+ */
+static ssize_t e_d_gm_read_now(char *buf, size_t n)
+{
+ int flags = fcntl(wfildes[0], F_GETFL, 0);
+ ssize_t got;
+ int err;
+
+ fcntl(wfildes[0], F_SETFL, flags | O_NONBLOCK);
+ got = read(wfildes[0], buf, n);
+ err = errno;
+ fcntl(wfildes[0], F_SETFL, flags);
+ errno = err;
+ return(got);
+}
+
+/**
+ * e_d_gdbmi_feed - Read what gdb has answered to a run or a step so far.
+ * @f: the window the run was started from (unused).
+ *
+ * The run ends at the (gdb) after a *stopped record, never at a prompt
+ * gdb writes for the run's own ^running.
+ * Return: E_D_FEED_GOING, E_D_FEED_STOPPED or E_D_FEED_GONE.
+ */
+static int e_d_gdbmi_feed(FENSTER *f)
+{
+ char buf[E_D_GDBMI_READ_MAX];
+ signed char err[E_D_LINE_MAX];
+ ssize_t n;
+ int reads;
+
+ (void)f;
+ e_d_line_drain_errors(err, sizeof err);
+ for (reads = 0; reads < E_D_GDBMI_READS_PER_WAKE; reads++)
+ {
+  n = e_d_gm_read_now(buf, sizeof buf);
+  if (n < 0 && (errno == EAGAIN || errno == EINTR))
+   return(E_D_FEED_GOING);
+  if (n <= 0)
+  {
+   e_d_note_output_closed();
+   return(E_D_FEED_GONE);
+  }
+  if (e_d_gm_take_bytes(buf, (size_t)n))
+   return(E_D_FEED_STOPPED);
+ }
+ return(E_D_FEED_GOING);
+}
+
+/**
+ * e_d_gdbmi_interrupt_stop - Is the stop just read the one an interrupt
+ * made?  Its record says SIGINT; whose it is the session knew from
+ * e_ds_set_interrupt.
+ * @taken: unused: gdb's stop is whole at once.
+ */
+static int e_d_gdbmi_interrupt_stop(int taken)
+{
+ (void)taken;
+ if (!e_d_gm.stop_seen)
+  return(0);
+ if (e_d_session.own_stop || e_d_session.stop_reason == E_DS_STOP_PAUSE)
+  return(1);
+ return(e_d_session.stop_reason == E_DS_STOP_SIGNAL &&
+        !strcmp(e_d_session.signal, E_D_SIGINT_NAME));
+}
+
+/**
+ * e_d_gdbmi_settle - Interrupts that may still be owed at a stop of the
+ * program's own.  An interrupt that met gdb at its prompt is answered
+ * without a number, which no request waits for, so nothing is taken back;
+ * one that reached the program comes back as a SIGINT stop at its next
+ * resume, which is then run on from unseen.
+ * Return: @owed.
+ */
+static int e_d_gdbmi_settle(ECNT *cn, int owed, int why)
+{
+ (void)cn;
+ (void)why;
+ return(owed);
+}
+
+/**
+ * e_d_gm_stop_ended - Did the stop say the program ended?  Then say how in
+ * Messages ("Program exited with code 3"), or in a box for a program a
+ * signal killed, and end the session.
+ * @f: the window on top.
+ * Return: 1 when the session ended.
+ */
+static int e_d_gm_stop_ended(FENSTER *f)
+{
+ char msg[E_D_EXIT_LINE_MAX];
+
+ if (!e_d_gm.stop_seen || e_d_session.stop_reason != E_DS_STOP_EXITED)
+  return(0);
+ if (e_d_session.signal[0])
+ {
+  e_error(e_d_msg[ERR_PROGTERM], 0, f->fb);
+  e_d_quit(f);
+  return(1);
+ }
+ snprintf(msg, sizeof msg, E_D_EXIT_CODE_FMT, (long)e_d_session.exit_code);
+ e_d_p_message(msg, f, 0);
+ e_d_quit(f);
+ return(1);
+}
+
+/**
+ * e_d_gm_say_signal - A signal stopped the program: say which, or note
+ * that the user's Pause took hold.
+ */
+static void e_d_gm_say_signal(void)
+{
+ char line[E_D_GA_LINE_MAX];
+
+ if (!e_d_gm.stop_seen)
+  return;
+ if (e_d_session.stop_reason == E_DS_STOP_PAUSE)
+ {
+  if (e_d_run.pause == E_D_PAUSE_ASKED)
+   e_d_pause_taken();
+  return;
+ }
+ if (e_d_session.stop_reason != E_DS_STOP_SIGNAL)
+  return;
+ snprintf(line, sizeof line, E_D_GDBMI_SIGNAL_FMT, e_d_session.signal,
+          e_d_gm.meaning);
+ e_d_error(line);
+}
+
+/**
+ * e_d_gm_follow_up_after_finish - A step pressed after Pause first ran out
+ * of the library call; the finish ended there: send the step itself.
+ * Return: 1 when the step goes out and the run goes on.
+ */
+static int e_d_gm_follow_up_after_finish(void)
+{
+ const char *cmd = e_d_pause_follow;
+
+ if (!cmd)
+  return(0);
+ e_d_pause_follow = NULL;
+ if (!e_d_gm.finished)
+  return(0);
+ e_d_ga_go_on(cmd);
+ return(1);
+}
+
+/**
+ * e_d_gdbmi_stopped - gdb over MI stopped the program: ask it, on the fd
+ * loop, what the stop needs, and show the stop once it has answered.
+ * @f: the window on top.
+ */
+static void e_d_gdbmi_stopped(FENSTER *f)
+{
+ E_D_GA_CTX *st = &e_d_gs;
+
+ if (e_d_gdb_run_never_started(f))
+  return;
+ if (e_d_gm_follow_up_after_finish())
+ {
+  e_d_run.stop_on_loop = 1;        /* the stop the user sees comes later */
+  return;
+ }
+ e_d_drain_pty_to_messages();
+ e_d_out_show();
+ e_d_switch_out(0);
+ if (e_d_gm_stop_ended(f))
+  return;
+ e_d_gm_say_signal();
+ e_d_gs_reset(st, f->ed);
+ st->start_brk = e_d_run.start_brk;
+ e_d_run.start_brk = 0;
+ st->stack_wanted = e_d_gs_stack_window_open(f->ed);
+ e_d_run.stop_on_loop = 1;
+ e_d_ga_chain_start(f->ed, e_d_gdbmi_stop_steps, st, e_d_gs_stop_finished,
+                    E_D_GA_STOP);
+}
+
+/**
+ * e_d_gm_pause_instead - Pause was pressed while gdb answered at a stop the
+ * user was not shown: the stop is marked and the status row says "Paused".
+ * @cn: the editor.
+ */
+static void e_d_gm_pause_instead(ECNT *cn)
+{
+ e_d_async_pending = 0;
+ e_d_ga.pause_asked = 0;
+ e_d_run.pause = E_D_PAUSE_ASKED;
+ e_d_pause_taken();
+ e_d_gdbmi_stopped(e_d_run_window(cn));
+}
+
+/**
+ * e_d_gdbmi_sync_on_loop - The interrupt for a breakpoint change stopped
+ * the program: tell gdb on the fd loop, then let it run on.
+ */
+static int e_d_gdbmi_sync_on_loop(ECNT *cn)
+{
+ return(e_d_ga_sync_with(cn, e_d_gdbmi_sync_steps));
+}
+
+/* gdb over MI: the run reads records; a stop is a *stopped record; an
+   interrupt's stop is known by its reason. */
+static const E_D_RUN_OPS e_d_gdbmi_ops =
+{
+ "gdb",
+ e_d_line_answer_fd,
+ e_d_line_output_fd,
+ e_d_gdbmi_feed,
+ e_d_gdbmi_stopped,
+ e_d_interrupt_debugger,
+ NULL,
+ NULL,
+ e_d_gdb_run_to_line,
+ e_d_gm_begin,
+ NULL,
+ 0,
+ e_d_gdbmi_interrupt_stop,
+ NULL,
+ e_d_gdbmi_settle,
+ e_d_gm_begin,
+ 0,
+ NULL,
+ e_d_gdbmi_sync_on_loop
+};
+
+/**
+ * e_d_gdbmi_run_ops - The run controller's table for gdb over MI.
+ */
+static const E_D_RUN_OPS *e_d_gdbmi_run_ops(void)
+{
+ return(&e_d_gdbmi_ops);
+}
+
 /* ---- the backends ---- */
+
+static const E_D_GA_BACKEND e_d_ga_gdbmi_backend =
+{
+ E_D_GDB_NAME,
+ E_D_GDB_PROMPT,
+ NULL,
+ NULL,
+ 0,
+ 1,
+ e_d_gm_brk_add_cmd,
+ e_d_gm_brk_remove_cmd,
+ e_d_gm_brk_set_id,
+ e_d_gm_brk_verdict,
+ e_d_gdb_remove_all,
+ e_d_gdb_show_stack,
+ e_d_gm_pause_instead,
+ NULL,
+ e_d_gm_ends_in_prompt,
+ e_d_gm_start_brk_cmd,
+ NULL,
+ e_d_gm_line_is_async,
+ e_d_gm_deliver_async,
+ NULL,
+ NULL,
+ NULL,
+ NULL,
+ NULL,
+ e_d_gdbmi_set_up_steps,
+ e_d_ga_brk_steps,
+ e_d_gdbmi_watches_steps,
+ e_d_gdbmi_stack_steps,
+ e_d_gdbmi_follow_steps,
+ e_d_gdbmi_go_steps,
+ NULL,
+ NULL,
+ NULL,
+ e_d_gm_send,
+ e_d_gm_refused_words
+};
 
 static const E_D_GA_BACKEND e_d_ga_gdb_backend =
 {
@@ -21439,6 +22790,8 @@ static const E_D_GA_BACKEND e_d_ga_xdb_backend =
  */
 static const E_D_GA_BACKEND *e_d_ga_backend_of(int type)
 {
+ if (type == DEB_GDB && e_d_gdbmi_on())
+  return(&e_d_ga_gdbmi_backend);
  if (type == DEB_GDB)
   return(&e_d_ga_gdb_backend);
  if (type == DEB_PDB)

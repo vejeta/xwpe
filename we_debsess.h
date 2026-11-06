@@ -326,6 +326,33 @@ int e_ds_take_mi_record(E_D_SESSION *s, const E_GDBMI_RECORD *r);
 int e_ds_take_mi_brk_result(E_D_SESSION *s, int i, const E_GDBMI_RECORD *r);
 
 /**
+ * e_ds_mi_watch_text - A watch's answer under MI, in the shape the Watches
+ * window reads under gdb's line interface ("= 3").
+ * @r: the result record of -data-evaluate-expression; @out, @n: the text.
+ *
+ * The Watches window then shows the same line whichever interface gdb
+ * speaks.
+ * Return: 1 with the value in @out, 0 when gdb has none (an error answer):
+ * the watch then shows its own words for that.
+ */
+int e_ds_mi_watch_text(const E_GDBMI_RECORD *r, char *out, size_t n);
+
+/**
+ * e_ds_mi_where_rows - The Stack window's rows from -stack-list-frames
+ * and -stack-list-arguments 1, in the form gdb's "bt" prints them:
+ * "#1  0x0000555555555166 in main (argc=1) at p.c:14".
+ * @frames: the frames' result record; @args: the arguments' result record,
+ * or NULL; @out, @n: the rows, each ending in a line end, cut at a whole
+ * row.
+ *
+ * Enter on a row reads its "at file:line" as it does under the line
+ * interface, so following a frame works the same.
+ * Return: the number of rows, 0 when the record holds no stack.
+ */
+int e_ds_mi_where_rows(const E_GDBMI_RECORD *frames,
+                       const E_GDBMI_RECORD *args, char *out, size_t n);
+
+/**
  * e_ds_console_clear - Forget the words Messages has shown.
  * @s: the session.
  */

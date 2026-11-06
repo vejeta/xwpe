@@ -368,6 +368,11 @@
   {"id": "SC-debug-49", "requirement": "One owner of input, of children, of writes and of keys", "layer": "ncurses", "test": "tests/test_legacy_debuggers.py::test_dbx_keys_typed_during_the_start_are_kept_or_refused", "status": "new", "needs": ["gcc"]},
   {"id": "SC-debug-49", "requirement": "One owner of input, of children, of writes and of keys", "layer": "ncurses", "test": "tests/test_legacy_debuggers.py::test_xdb_keys_typed_during_the_start_are_kept_or_refused", "status": "new", "needs": ["gcc"]},
   {"id": "SC-debug-03", "requirement": "Stepping and the mark", "layer": "ncurses", "test": "tests/test_legacy_debuggers.py::test_sdb_step_reported_by_its_source_row_is_marked", "status": "new", "needs": ["gcc"]},
-  {"id": "SC-debug-63", "requirement": "Starting and ending a session", "layer": "ncurses", "test": "tests/test_gdbmi_probe.py::test_gdb_speaks_the_mi_the_editor_will_drive", "status": "new", "needs": ["gdb"]}
+  {"id": "SC-debug-63", "requirement": "Starting and ending a session", "layer": "ncurses", "test": "tests/test_gdbmi_probe.py::test_gdb_speaks_the_mi_the_editor_will_drive", "status": "new", "needs": ["gdb"]},
+  {"id": "SC-debug-64", "requirement": "Pausing and breakpoints while the program runs", "layer": "ncurses", "test": "tests/test_debugger_integration.py::test_gdb_own_sigint_stop_is_not_reported", "status": "new", "needs": ["gcc", "gdb"]},
+  {"id": "SC-debug-65", "requirement": "Starting and ending a session", "layer": "ncurses", "test": "tests/test_debugger_integration.py::test_program_locale_is_the_users_under_gdb", "status": "new", "needs": ["gcc", "gdb"]},
+  {"id": "SC-debug-66", "requirement": "One owner of input, of children, of writes and of keys", "layer": "ncurses", "test": "tests/test_debugger_integration.py::test_gdb_program_output_like_a_record_does_not_end_an_answer", "status": "new", "needs": ["gcc", "gdb"]},
+  {"id": "SC-debug-67", "requirement": "Starting and ending a session", "layer": "ncurses", "test": "tests/test_debugger_integration.py::test_mi_selector_falls_back_to_the_line_interface_for_an_old_gdb", "status": "new", "needs": ["gcc", "gdb"]},
+  {"id": "SC-debug-68", "requirement": "Stepping and the mark", "layer": "ncurses", "test": "tests/test_debugger_integration.py::test_gdb_stop_deep_in_a_recursion_is_marked", "status": "new", "needs": ["gcc", "gdb"]}
  ]
 }

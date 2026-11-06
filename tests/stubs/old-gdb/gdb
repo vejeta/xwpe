@@ -1,0 +1,65 @@
+#!/usr/bin/env python3
+"""A gdb that names itself older than it is.
+
+It stands in front of the real gdb (XWPE_STUB_REAL_GDB): the editor's
+commands go to gdb unchanged and gdb's error stream goes straight to the
+editor.  On gdb's output the version banner's first line, written as a
+machine-interface console record ('~"GNU gdb (...) 18.1\\n"'), is replaced
+with XWPE_STUB_GDB_BANNER, so the editor reads an old version where it asks
+for one (-gdb-version) and nothing else changes.  Under gdb's line
+interface the banner is plain text and passes untouched.
+
+SIGINT, which the editor sends to pause the program, is passed to gdb.
+"""
+import os
+import signal
+import subprocess
+import sys
+
+REAL = os.environ.get("XWPE_STUB_REAL_GDB") or "/usr/bin/gdb"
+BANNER = os.environ.get("XWPE_STUB_GDB_BANNER", "GNU gdb 7.5")
+BANNER_LEAD = b'~"GNU gdb '
+
+gdb = subprocess.Popen([REAL] + sys.argv[1:], stdout=subprocess.PIPE)
+
+
+def pass_sigint(signum, frame):
+    gdb.send_signal(signal.SIGINT)
+
+
+signal.signal(signal.SIGINT, pass_sigint)
+
+
+def rewrite(line):
+    """The banner's first line in the stub's words; any other line as it is."""
+    if line.startswith(BANNER_LEAD):
+        return b'~"' + BANNER.encode() + b'\\n"\n'
+    return line
+
+
+def may_become_banner(tail):
+    """Could a line that starts with @tail still turn out to be the
+    banner?  Anything else is passed on at once: gdb's line interface ends
+    its prompt with no line end, and the editor waits for it."""
+    n = min(len(tail), len(BANNER_LEAD))
+    return tail[:n] == BANNER_LEAD[:n]
+
+
+out = os.fdopen(1, "wb", buffering=0)
+held = b""
+while True:
+    try:
+        data = os.read(gdb.stdout.fileno(), 65536)
+    except InterruptedError:
+        continue
+    if not data:
+        break
+    held += data
+    while b"\n" in held:
+        line, held = held.split(b"\n", 1)
+        out.write(rewrite(line + b"\n"))
+    if held and not may_become_banner(held):
+        out.write(held)
+        held = b""
+out.write(held)
+sys.exit(gdb.wait())

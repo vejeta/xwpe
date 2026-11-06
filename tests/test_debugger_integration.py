@@ -11,6 +11,7 @@ the current-line mark (a bright green bar), the breakpoint mark (a red bar),
 the Watches window's text, Messages, the process table and the file on disk.
 A test whose debugger or compiler is missing skips and names the binary.
 """
+import inspect
 import os
 import re
 import shutil
@@ -39,6 +40,139 @@ ALT_F5 = "\033[15;3~"   # User Screen
 ESC = "\033"
 F3 = "\033OR"             # the File Manager
 F6 = "\033[17~"           # next window
+
+# ---- the interface gdb speaks ----
+# Every row that drives the real gdb runs twice: over gdb's line interface
+# and over its machine interface (XWPE_GDB_INTERFACE=cli and =mi), and its
+# id says which ([gdb-cli] or [gdb-mi]).  The user must see the same editor
+# either way.  A row run under several debuggers runs its gdb case twice
+# and every other case once, under the id it always had.  Rows that put
+# tests/stubs/gdb or a stand-in in front of gdb speak the line interface
+# only: those stand-ins hold back and rewrite gdb's line answers, so they
+# run once, as [gdb-cli].
+GDB_INTERFACE_ENV = "XWPE_GDB_INTERFACE"
+GDB_INTERFACES = ("cli", "mi")
+GDB_LINE_ONLY = "cli"
+GDB_STAND_IN_ROWS = frozenset((
+    "test_an_interrupt_answered_at_gdbs_prompt_is_taken_back",
+    "test_an_interrupt_gdb_reports_at_the_next_resume_is_not_shown",
+    "test_gdb_answer_after_a_cancel_is_not_taken_for_the_next",
+    "test_gdb_breakpoint_given_up_at_the_start_is_not_set_twice",
+    "test_gdb_breakpoint_set_again_while_gdb_removes_it_stays",
+    "test_gdb_breakpoint_taken_off_while_gdb_sets_it_does_not_stop",
+    "test_gdb_continue_after_an_owed_interrupt_does_not_stop_falsely",
+    "test_gdb_ctrl_c_during_the_start_cancels_and_quit_works",
+    "test_gdb_f8_during_a_sync_interrupt_is_refused_as_running",
+    "test_gdb_f8_f8_typed_during_the_watches_steps_twice",
+    "test_gdb_finish_after_pause_with_an_owed_interrupt_steps_once",
+    "test_gdb_keys_reach_the_editor_while_it_answers",
+    "test_gdb_keys_typed_during_the_start_are_kept_or_refused",
+    "test_gdb_refusal_read_with_its_prompt_says_why_while_running",
+    "test_gdb_stalled_answer_ends_with_a_message_and_quit_works",
+    "test_gdb_watch_after_an_unknown_name_shows_its_own_value",
+    "test_a_refused_step_stays_said_while_the_program_prints",
+    "test_a_step_while_the_program_runs_is_refused_and_the_session_keeps_its_place",
+))
+# Rows that choose the interface themselves (the fall-back to the line
+# interface for an old gdb asks for MI and gets the line interface).
+GDB_OWN_INTERFACE_ROWS = frozenset((
+    "test_mi_selector_falls_back_to_the_line_interface_for_an_old_gdb",
+))
+# Rows named for gdb that drive gdb's debug adapter, not gdb itself.
+GDB_ADAPTER_WORDS = ("gdb_dap", "rust", "adapter")
+GDB_PARAM = "gdb"
+GDB_INTERFACE_FIXTURE = "gdb_interface"
+# A row that needs the gdb binary says so: _need("gcc", "gdb").
+GDB_NEED_RE = re.compile(r'_need\([^)]*"gdb"')
+
+
+def _gdb_interface_id(interface):
+    """The id of a run over @interface: "gdb-cli" or "gdb-mi", so -k gdb
+    selects every run that drives gdb and the id says which interface."""
+    return "%s-%s" % (GDB_PARAM, interface)
+
+
+def _drives_gdb_itself(function):
+    """Does a row drive gdb itself (not gdb's adapter): its name says gdb,
+    or it needs the gdb binary?"""
+    name = function.__name__
+    if any(w in name for w in GDB_ADAPTER_WORDS):
+        return False
+    if GDB_PARAM in name:
+        return True
+    try:
+        source = inspect.getsource(function)
+    except (OSError, TypeError):
+        return False
+    return GDB_NEED_RE.search(source) is not None
+
+
+def _gdb_value_mark(definition):
+    """The parametrize mark of a row run under several debuggers, gdb among
+    them: one argument whose values are the debuggers' names."""
+    for mark in definition.iter_markers("parametrize"):
+        names = mark.args[0]
+        values = mark.args[1] if len(mark.args) > 1 else ()
+        if isinstance(names, str) and "," not in names and GDB_PARAM in values:
+            return mark
+    return None
+
+
+def _interfaces_of(name):
+    """The interfaces a gdb row runs over: the stand-ins speak the line
+    interface only."""
+    if name in GDB_STAND_IN_ROWS:
+        return (GDB_LINE_ONLY,)
+    return GDB_INTERFACES
+
+
+def _parametrize_the_gdb_value(metafunc, mark, interfaces):
+    """Run the "gdb" value of @mark once per interface and every other
+    debugger once, with the id it always had.  The mark is taken over here,
+    so pytest does not parametrize the same argument a second time."""
+    argname = mark.args[0]
+    values, ids = [], []
+    for v in mark.args[1]:
+        if v == GDB_PARAM:
+            for interface in interfaces:
+                values.append((v, interface))
+                ids.append(_gdb_interface_id(interface))
+        else:
+            values.append((v, None))
+            ids.append(str(v))
+    metafunc.definition.own_markers.remove(mark)
+    metafunc.parametrize((argname, GDB_INTERFACE_FIXTURE), values, ids=ids,
+                         indirect=[GDB_INTERFACE_FIXTURE])
+
+
+def pytest_generate_tests(metafunc):
+    """Give every run that drives the real gdb the interface it speaks."""
+    name = metafunc.function.__name__
+    if name in GDB_OWN_INTERFACE_ROWS:
+        return
+    mark = _gdb_value_mark(metafunc.definition)
+    if mark is None and not _drives_gdb_itself(metafunc.function):
+        return
+    if GDB_INTERFACE_FIXTURE not in metafunc.fixturenames:
+        metafunc.fixturenames.append(GDB_INTERFACE_FIXTURE)
+    interfaces = _interfaces_of(name)
+    if mark is not None:
+        _parametrize_the_gdb_value(metafunc, mark, interfaces)
+        return
+    metafunc.parametrize(GDB_INTERFACE_FIXTURE, interfaces,
+                         ids=[_gdb_interface_id(i) for i in interfaces],
+                         indirect=True)
+
+
+@pytest.fixture
+def gdb_interface(request, monkeypatch):
+    """The interface this run drives gdb over, set in the editor's
+    environment; None for a run under another debugger."""
+    interface = getattr(request, "param", None)
+    if interface is not None:
+        monkeypatch.setenv(GDB_INTERFACE_ENV, interface)
+    return interface
+
 
 POLL_S = 0.2
 START_TIMEOUT_S = 20    # build + debugger start, before scaling
@@ -11328,3 +11462,186 @@ def test_a68g_go_to_cursor_breakpoint_of_a_given_up_stop_is_cleared(tmp_path):
             "Go to cursor's breakpoint outlived the stop given up on (mark " \
             "on %s, stub log:\n%s):\n%s" \
             % (_mark_line(w), _a68g_stub_log(tmp_path), _screen(w))
+
+
+# ---- gdb over its machine interface ----
+
+# What gdb says of the SIGINT that stopped a program, in any of its words.
+SIGINT_WORDS = "SIGINT"
+
+
+# @scenario SC-debug-64
+def test_gdb_own_sigint_stop_is_not_reported(tmp_path, gdb_interface):
+    """A breakpoint set while the program runs makes the editor stop it with
+    SIGINT, tell gdb, and let it run on.  That stop is the editor's own: no
+    signal is reported, nothing is marked, and the program runs on until it
+    reaches the new breakpoint.  Under MI the stop is told apart by the
+    record's reason and signal name, never by gdb's words."""
+    case = BRK_LIVE_CASES["gdb"]
+    with _live_session(tmp_path, case) as w:
+        _run_into_the_program(w, case["break"], case["start_s"])
+        _go_to_line(w, case["body"])
+        w.key(CTRL_G, "b", delay=0.6)
+        _assert_stops_on(w, case["body"], "a breakpoint set while running")
+        assert SIGINT_WORDS not in _screen(w), \
+            "the editor's own interrupt must not be reported:\n%s" \
+            % _screen(w)
+        _quit_and_see_the_session_gone(w)
+
+
+# Prints the locale words its environment gives it.
+LOCALE_C_PROG = (
+    "#include <stdio.h>\n"
+    "#include <stdlib.h>\n"
+    "int main(void)\n"
+    "{\n"
+    "  const char *m = getenv(\"LC_MESSAGES\");\n"
+    "  const char *a = getenv(\"LC_ALL\");\n"
+    "  printf(\"LCM=%s LCA=%s\\n\", m ? m : \"-\", a ? a : \"-\");\n"
+    "  return 0;\n"
+    "}\n"
+)
+LOCALE_USERS_MESSAGES = "fr_FR.UTF-8"
+LOCALE_USERS_ALL = "en_US.UTF-8"   # what the test editor runs under anyway
+LOCALE_SEEN = "LCM=%s LCA=%s" % (LOCALE_USERS_MESSAGES, LOCALE_USERS_ALL)
+
+
+# @scenario SC-debug-65
+def test_program_locale_is_the_users_under_gdb(tmp_path, gdb_interface):
+    """The program run under gdb sees the user's locale, as in a shell: the
+    editor never sets LC_MESSAGES or LC_ALL for gdb, which would hand them
+    on to the program.  A guard: no code sets them today, so this row has
+    never been seen red; it fails the day something does."""
+    _need("gcc", "gdb")
+    env = {"LC_MESSAGES": LOCALE_USERS_MESSAGES, "LC_ALL": LOCALE_USERS_ALL}
+    with WpeSession(str(tmp_path), LOCALE_C_PROG, filename="p.c", wait=1.5,
+                    env_extra=env) as w:
+        w.key(CTRL_G, "r", delay=1.0)       # stops at the program's start
+        assert _wait_for(w, lambda: _mark_line(w) is not None,
+                         START_TIMEOUT_S), \
+            "the session should stop at the start:\n%s" % _screen(w)
+        w.key(CTRL_G, "r", delay=1.0)       # runs to the end
+        assert _wait_for(w, lambda: _messages_hold(w, LOCALE_SEEN),
+                         START_TIMEOUT_S), \
+            "the program should print the user's locale, %r:\n%s" \
+            % (LOCALE_SEEN, _screen(w))
+
+
+# A program whose output looks like gdb's records and prompt, printed
+# before it reaches a breakpoint.
+RECORD_LOOKALIKE_PROG = (
+    "#include <stdio.h>\n"
+    "int main(void)\n"
+    "{\n"
+    "  int x = 7;\n"
+    "  printf(\"(gdb)\\n*stopped,reason=\\\"exited\\\",exit-code=\\\"01\\\"\\n\");\n"
+    "  printf(\"1^done,value=\\\"99\\\"\\n(gdb)\\n\");\n"
+    "  fflush(stdout);\n"
+    "  x = x + 1;\n"
+    "  return x;\n"
+    "}\n"
+)
+RECORD_LOOKALIKE_BREAK = 8        # x = x + 1;
+RECORD_LOOKALIKE_WATCH = "x"
+RECORD_LOOKALIKE_VALUE = "x: 7"
+
+
+# @scenario SC-debug-66
+def test_gdb_program_output_like_a_record_does_not_end_an_answer(
+        tmp_path, gdb_interface):
+    """The program prints lines that read as gdb's prompt, a stop record and
+    a watch's answer.  They are the program's output: they reach Messages,
+    the run stops on the breakpoint, and the watch shows the program's own
+    value, not the printed one.  Under MI the program writes to its own
+    terminal, never onto gdb's output."""
+    _need("gcc", "gdb")
+    with WpeSession(str(tmp_path), RECORD_LOOKALIKE_PROG, filename="p.c",
+                    wait=1.5) as w:
+        _go_to_line(w, RECORD_LOOKALIKE_BREAK)
+        w.key(CTRL_G, "b", delay=0.4)
+        w.key(CTRL_G, "r", delay=1.0)
+        assert _wait_for(w, lambda: _mark_line(w) == RECORD_LOOKALIKE_BREAK,
+                         START_TIMEOUT_S), \
+            "the run should stop, marked, on line %d (mark on %s):\n%s" \
+            % (RECORD_LOOKALIKE_BREAK, _mark_line(w), _screen(w))
+        assert _messages_hold(w, "*stopped,reason"), \
+            "the program's look-alike lines belong in Messages:\n%s" \
+            % _screen(w)
+        _add_watch(w, RECORD_LOOKALIKE_WATCH)
+        assert _wait_for(w, lambda: RECORD_LOOKALIKE_VALUE in _screen(w),
+                         STEP_TIMEOUT_S), \
+            "the watch should show the program's own value %r:\n%s" \
+            % (RECORD_LOOKALIKE_VALUE, _screen(w))
+
+
+OLD_GDB_STUB_DIR = os.path.join(STUBS_DIR, "old-gdb")
+OLD_GDB_BANNER = "GNU gdb 7.5"
+OLD_GDB_SAYS = "older than 7.6"
+
+
+# @scenario SC-debug-67
+def test_mi_selector_falls_back_to_the_line_interface_for_an_old_gdb(
+        tmp_path):
+    """XWPE_GDB_INTERFACE=mi with a gdb older than the MI floor: the status
+    row says the session uses gdb's line interface and why, and the session
+    the user started goes on with it, stopped on the breakpoint."""
+    _need("gcc", "gdb")
+    env = {"PATH": OLD_GDB_STUB_DIR + ":" + os.environ.get("PATH", ""),
+           "XWPE_STUB_REAL_GDB": shutil.which("gdb") or "",
+           "XWPE_STUB_GDB_BANNER": OLD_GDB_BANNER,
+           GDB_INTERFACE_ENV: "mi"}
+    with WpeSession(str(tmp_path), C_PROG, filename="p.c", wait=1.5,
+                    env_extra=env) as w:
+        _go_to_line(w, C_BREAK_LINE)
+        w.key(CTRL_G, "b", delay=0.4)
+        w.key(CTRL_G, "r", delay=1.0)
+        assert _wait_for(w, lambda: _mark_line(w) == C_BREAK_LINE,
+                         START_TIMEOUT_S), \
+            "the session should go on and stop on line %d (mark on %s):\n%s" \
+            % (C_BREAK_LINE, _mark_line(w), _screen(w))
+        assert OLD_GDB_SAYS in _bottom_row(w), \
+            "the status row should say why gdb keeps its line interface:\n%s" \
+            % _screen(w)
+
+
+# A recursion 300 calls deep, stopped at its bottom: far more frames than
+# one record of gdb's machine interface is read with.
+DEEP_STACK_CALLS = 300
+DEEP_STACK_PROG = (
+    "#include <stdio.h>\n"
+    "int down(int k, int depth)\n"
+    "{\n"
+    "  if (k >= depth)\n"
+    "    return k;\n"
+    "  return down(k + 1, depth) + 0;\n"
+    "}\n"
+    "int main(void)\n"
+    "{\n"
+    "  printf(\"%%d\\n\", down(0, %d));\n"
+    "  return 0;\n"
+    "}\n" % DEEP_STACK_CALLS
+)
+DEEP_STACK_BREAK = 5              # return k;
+DEEP_STACK_CALLER_ROW = "#1  0x"  # a caller's row names its address, as bt
+
+
+# @scenario SC-debug-68
+def test_gdb_stop_deep_in_a_recursion_is_marked(tmp_path, gdb_interface):
+    """The program stops 300 calls deep: the stop is marked on its line, and
+    the Stack window lists the innermost calls in the form gdb's "bt"
+    prints them, a caller's row with its address."""
+    _need("gcc", "gdb")
+    with WpeSession(str(tmp_path), DEEP_STACK_PROG, filename="p.c",
+                    cols=STACK_COLS, wait=1.5) as w:
+        _go_to_line(w, DEEP_STACK_BREAK)
+        w.key(CTRL_G, "b", delay=0.4)
+        w.key(CTRL_G, "r", delay=1.0)
+        assert _wait_for(w, lambda: _mark_line(w) == DEEP_STACK_BREAK,
+                         START_TIMEOUT_S), \
+            "the stop should be marked on line %d (mark on %s):\n%s" \
+            % (DEEP_STACK_BREAK, _mark_line(w), _screen(w))
+        w.key(CTRL_G, "k", delay=0.8)
+        assert _wait_for(w, lambda: DEEP_STACK_CALLER_ROW in _screen(w),
+                         STEP_TIMEOUT_S), \
+            "the Stack window should list the callers as bt does:\n%s" \
+            % _screen(w)

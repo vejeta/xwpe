@@ -549,6 +549,7 @@ EXTRA_DIST = \
   tests/stubs/gdb \
   tests/stubs/jdb/jdb \
   tests/stubs/legacy/legacy-debugger \
+  tests/stubs/old-gdb/gdb \
   tests/stubs/pdb/python3 \
   tests/transcripts/gdb-where-library.txt \
   tests/transcripts/gdb-where.txt \

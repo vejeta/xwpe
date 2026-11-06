@@ -811,3 +811,268 @@ int e_gdbmi_split_next(E_GDBMI_SPLIT *sp, const char *data, size_t n,
  }
  return(E_GDBMI_SPLIT_NEED_MORE);
 }
+
+/* ---- one command's answer ---- */
+
+/* The most digits a token is read with: more could not fit an int. */
+#define E_GDBMI_TOKEN_DIGITS_MAX 9
+/* The number pair a version banner is read for: "18.1". */
+#define E_GDBMI_VERSION_SEP '.'
+
+/**
+ * e_gdbmi_line_token - The number a line starts with, and where its record
+ * opens.
+ * @line, @len: the line; @open: set to the offset of the record's first
+ * character after the number.
+ * Return: the number, or E_GDBMI_NONE when the line starts with none (or
+ * with one too long to be a token).
+ */
+static int e_gdbmi_line_token(const char *line, size_t len, size_t *open)
+{
+ size_t i = 0;
+ int value = 0;
+
+ while (i < len && e_gdbmi_is_digit((unsigned char)line[i]))
+ {
+  if (i >= E_GDBMI_TOKEN_DIGITS_MAX)
+  {
+   *open = 0;
+   return(E_GDBMI_NONE);
+  }
+  value = value * E_GDBMI_DECIMAL_BASE + (line[i] - '0');
+  i++;
+ }
+ *open = i;
+ if (i == 0)
+  return(E_GDBMI_NONE);
+ return(value);
+}
+
+/**
+ * e_gdbmi_line_is_result_of - Is @line the result record of @token?
+ */
+static int e_gdbmi_line_is_result_of(const char *line, size_t len, int token)
+{
+ size_t open;
+ int t = e_gdbmi_line_token(line, len, &open);
+
+ return(t != E_GDBMI_NONE && t == token && open < len
+        && line[open] == E_GDBMI_C_RESULT);
+}
+
+int e_gdbmi_is_prompt(const char *line, size_t len)
+{
+ size_t i;
+
+ while (len > 0 && (line[len - 1] == '\n' || line[len - 1] == '\r'))
+  len--;
+ if (len < E_GDBMI_PROMPT_LEN
+     || strncmp(line, E_GDBMI_PROMPT, E_GDBMI_PROMPT_LEN) != 0)
+  return(0);
+ for (i = E_GDBMI_PROMPT_LEN; i < len; i++)
+  if (line[i] != ' ')
+   return(0);
+ return(1);
+}
+
+/**
+ * e_gdbmi_last_line - Where the last line of @text starts, a line end that
+ * closes the text not counted as a line of its own.
+ */
+static size_t e_gdbmi_last_line(const char *text, size_t len)
+{
+ size_t end = len;
+
+ if (end > 0 && text[end - 1] == '\n')
+  end--;
+ while (end > 0 && text[end - 1] != '\n')
+  end--;
+ return(end);
+}
+
+/**
+ * e_gdbmi_text_has_result_of - Does a line of @text before @upto hold the
+ * result record of @token?
+ */
+static int e_gdbmi_text_has_result_of(const char *text, size_t upto, int token)
+{
+ size_t start = 0, end;
+
+ while (start < upto)
+ {
+  for (end = start; end < upto && text[end] != '\n'; end++)
+   ;
+  if (e_gdbmi_line_is_result_of(text + start, end - start, token))
+   return(1);
+  start = end + 1;
+ }
+ return(0);
+}
+
+int e_gdbmi_answer_ended(const char *text, size_t len, int token,
+                         size_t *prompt_len)
+{
+ size_t last;
+
+ if (!text || len == 0)
+  return(0);
+ last = e_gdbmi_last_line(text, len);
+ if (!e_gdbmi_is_prompt(text + last, len - last))
+  return(0);
+ if (!e_gdbmi_text_has_result_of(text, last, token))
+  return(0);
+ *prompt_len = len - last;
+ return(1);
+}
+
+int e_gdbmi_line_is_async(const char *line, int token)
+{
+ size_t len = strlen(line), open;
+ int t = e_gdbmi_line_token(line, len, &open);
+ char c;
+
+ if (open >= len)
+  return(0);
+ c = line[open];
+ if (c == E_GDBMI_C_EXEC || c == E_GDBMI_C_NOTIFY || c == E_GDBMI_C_STATUS)
+  return(1);
+ if (c != E_GDBMI_C_RESULT)
+  return(0);
+ return(t != token);
+}
+
+int e_gdbmi_parse_result(const char *text, int token, E_GDBMI_RECORD *r)
+{
+ char line[E_GDBMI_LINE_MAX];
+ size_t start = 0, end, len = text ? strlen(text) : 0;
+
+ e_gdbmi_clear(r);
+ while (start < len)
+ {
+  for (end = start; end < len && text[end] != '\n'; end++)
+   ;
+  if (e_gdbmi_line_is_result_of(text + start, end - start, token))
+  {
+   if (end - start >= sizeof line)
+    return(E_GDBMI_ERR_LONG);
+   memcpy(line, text + start, end - start);
+   line[end - start] = '\0';
+   return(e_gdbmi_parse_line(line, r));
+  }
+  start = end + 1;
+ }
+ return(E_GDBMI_ERR_SYNTAX);
+}
+
+/**
+ * e_gdbmi_join_one - Add the words of one console line to @out.
+ * @line, @len: the line; @out, @n: the words so far, cut to fit; @r: room
+ * for the record.
+ */
+static void e_gdbmi_join_one(const char *line, size_t len, char *out,
+                             size_t n, E_GDBMI_RECORD *r)
+{
+ char copy[E_GDBMI_LINE_MAX];
+ const char *words;
+ size_t have = strlen(out);
+
+ if (len == 0 || line[0] != E_GDBMI_C_CONSOLE || len >= sizeof copy)
+  return;
+ memcpy(copy, line, len);
+ copy[len] = '\0';
+ if (e_gdbmi_parse_line(copy, r) != E_GDBMI_OK)
+  return;
+ words = e_gdbmi_stream_text(r);
+ if (words && have + 1 < n)
+  strncat(out, words, n - have - 1);
+}
+
+void e_gdbmi_console_join(const char *text, char *out, size_t n)
+{
+ static E_GDBMI_RECORD r;
+ size_t start = 0, end, len = text ? strlen(text) : 0;
+
+ if (n == 0)
+  return;
+ out[0] = '\0';
+ while (start < len)
+ {
+  for (end = start; end < len && text[end] != '\n'; end++)
+   ;
+  e_gdbmi_join_one(text + start, end - start, out, n, &r);
+  start = end + 1;
+ }
+}
+
+/**
+ * e_gdbmi_number_pair - Read "N.M" at @p.
+ * Return: 1 with @major and @minor set when @p starts such a pair.
+ */
+static int e_gdbmi_number_pair(const char *p, const char *end, int *major,
+                               int *minor)
+{
+ const char *q = p;
+ int a = 0, b = 0, digits = 0;
+
+ while (q < end && e_gdbmi_is_digit((unsigned char)*q)
+        && digits < E_GDBMI_TOKEN_DIGITS_MAX)
+ {
+  a = a * E_GDBMI_DECIMAL_BASE + (*q++ - '0');
+  digits++;
+ }
+ if (digits == 0 || q >= end || *q != E_GDBMI_VERSION_SEP)
+  return(0);
+ q++;
+ digits = 0;
+ while (q < end && e_gdbmi_is_digit((unsigned char)*q)
+        && digits < E_GDBMI_TOKEN_DIGITS_MAX)
+ {
+  b = b * E_GDBMI_DECIMAL_BASE + (*q++ - '0');
+  digits++;
+ }
+ if (digits == 0)
+  return(0);
+ *major = a;
+ *minor = b;
+ return(1);
+}
+
+int e_gdbmi_version_of(const char *banner, int *major, int *minor)
+{
+ const char *end, *p;
+ int found = 0;
+
+ if (!banner)
+  return(0);
+ end = strchr(banner, '\n');
+ if (!end)
+  end = banner + strlen(banner);
+ for (p = banner; p < end; p++)
+ {
+  if (!e_gdbmi_is_digit((unsigned char)*p))
+   continue;
+  /* Inside a number, or the third part of "7.12.1": not a pair's start. */
+  if (p > banner && (e_gdbmi_is_digit((unsigned char)p[-1])
+                     || p[-1] == E_GDBMI_VERSION_SEP))
+   continue;
+  if (e_gdbmi_number_pair(p, end, major, minor))
+   found = 1;
+ }
+ return(found);
+}
+
+int e_gdbmi_list_has(const E_GDBMI_RECORD *r, const char *path,
+                     const char *word)
+{
+ const E_GDBMI_NODE *item;
+ const char *text;
+
+ for (item = e_gdbmi_first_item(r, e_gdbmi_find(r, path)); item;
+      item = e_gdbmi_next_item(r, item))
+ {
+  text = e_gdbmi_text_of(r, item);
+  if (text && !strcmp(text, word))
+   return(1);
+ }
+ return(0);
+}

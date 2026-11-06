@@ -200,4 +200,85 @@ void e_gdbmi_split_init(E_GDBMI_SPLIT *sp);
 int e_gdbmi_split_next(E_GDBMI_SPLIT *sp, const char *data, size_t n,
                        size_t *used, const char **line);
 
+/* ---- one command's answer ----
+   The editor numbers each command it sends ("7-stack-list-frames"); gdb
+   answers it with the result record that carries the number ("7^done,...")
+   and then a (gdb) line.  Everything else gdb writes meanwhile (a stop, a
+   notice, the answer to a command given up on) belongs to no request. */
+
+/**
+ * e_gdbmi_is_prompt - Is the line gdb's "(gdb)" that closes an answer?
+ * @line: the line, without or with its line end; @len: its bytes.
+ *
+ * Only "(gdb)" and blanks: a console record that holds the same words
+ * starts with '~' and never passes, and neither does program output on
+ * gdb's own stdout unless it is exactly a prompt line.
+ */
+int e_gdbmi_is_prompt(const char *line, size_t len);
+
+/**
+ * e_gdbmi_answer_ended - Is the text so far the whole answer to command
+ * @token: its result record, then a (gdb) line last?
+ * @text, @len: the answer so far; @prompt_len: set to the bytes of that
+ * last line, which the answer does not keep.
+ *
+ * A (gdb) line before the result record (an interrupt that met gdb at its
+ * prompt is answered with a log record and a (gdb) of its own) never ends
+ * the answer, so the user's watch reads its own value.
+ * Return: 1 when the answer is whole.
+ */
+int e_gdbmi_answer_ended(const char *text, size_t len, int token,
+                         size_t *prompt_len);
+
+/**
+ * e_gdbmi_line_is_async - Does @line belong to no request: a stop, a
+ * notice, a progress record, or the result of a command whose number is
+ * not @token (one given up on)?
+ * @line: one whole line, without its line end; @token: the command in
+ * flight.
+ */
+int e_gdbmi_line_is_async(const char *line, int token);
+
+/**
+ * e_gdbmi_parse_result - Read the result record of command @token out of
+ * an answer's text.
+ * @text: the answer, its lines joined; @token: the command; @r: receives
+ * the record.
+ *
+ * A breakpoint's number, a watch's value, the frames of a stack come from
+ * fields of this one record, whatever gdb said around it.
+ * Return: E_GDBMI_OK, or why there is no such record (then @r is of kind
+ * E_GDBMI_K_NONE).
+ */
+int e_gdbmi_parse_result(const char *text, int token, E_GDBMI_RECORD *r);
+
+/**
+ * e_gdbmi_console_join - The words of every console record in an answer,
+ * joined in the order they came.
+ * @text: the answer; @out, @n: where they go, cut to fit.
+ *
+ * The version banner -gdb-version answers with comes as console records.
+ */
+void e_gdbmi_console_join(const char *text, char *out, size_t n);
+
+/**
+ * e_gdbmi_version_of - The version a gdb banner names.
+ * @banner: "GNU gdb (Debian 18.1-3) 18.1\n...": the last number pair of its
+ * first line is gdb's own version, whatever a vendor wrote in parentheses.
+ * The banner is gdb's name and number, which gdb does not translate.
+ * @major, @minor: receive it.
+ * Return: 1 when the first line names one.
+ */
+int e_gdbmi_version_of(const char *banner, int *major, int *minor);
+
+/**
+ * e_gdbmi_list_has - Does the list a path names hold the string @word?
+ * @r: a record; @path: "features"; @word: "pending-breakpoints".
+ *
+ * What -list-features names tells the editor whether this gdb supports
+ * what the session relies on.
+ */
+int e_gdbmi_list_has(const E_GDBMI_RECORD *r, const char *path,
+                     const char *word);
+
 #endif /* WPE_GDBMI_H */

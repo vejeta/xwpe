@@ -54,6 +54,16 @@
    it refuses one without saying why. */
 #define E_DS_MI_PENDING_WORDS  "gdb holds it pending: "
 #define E_DS_MI_REFUSED_WORDS  "gdb refused the breakpoint"
+/* A watch's value and the Stack window's rows, written the way gdb's line
+   interface prints them, so both interfaces show the same lines. */
+#define E_DS_MI_WATCH_LEAD     "= "
+#define E_DS_MI_ARG_SEP        ", "
+#define E_DS_MI_NO_FUNC        "??"
+#define E_DS_MI_ROW_AT_FMT     "#%d  %s%s (%s) at %s:%s\n"
+#define E_DS_MI_ROW_FROM_FMT   "#%d  %s%s (%s) from %s\n"
+#define E_DS_MI_ROW_FMT        "#%d  %s%s (%s)\n"
+#define E_DS_MI_ADDR_FMT       "%s in "
+#define E_DS_MI_ADDR_MAX       64
 /* A terminal's styling: ESC [ ... a final byte from @ to ~. */
 #define E_DS_ESC               '\033'
 #define E_DS_CSI               '['
@@ -1750,6 +1760,129 @@ static void e_ds_mi_brk_accepted(E_D_SESSION *s, int i, const E_GDBMI_RECORD *r)
  }
  e_ds_mi_brk_pending_words(words, sizeof words, pending);
  e_ds_brk_put(s, i, E_D_BRK_PENDING, id, words);
+}
+
+int e_ds_mi_watch_text(const E_GDBMI_RECORD *r, char *out, size_t n)
+{
+ const char *value;
+
+ if (n > 0)
+  out[0] = '\0';
+ if (r->kind != E_GDBMI_K_RESULT || strcmp(r->klass, E_DS_MI_CLASS_DONE))
+  return(0);
+ value = e_gdbmi_get(r, "value");
+ if (!value)
+  return(0);
+ snprintf(out, n, "%s%s", E_DS_MI_WATCH_LEAD, value);
+ return(1);
+}
+
+/**
+ * e_ds_mi_args_of - The arguments of frame @level, as "v=3, w=4", from
+ * -stack-list-arguments 1's record.
+ * @args: that record, or NULL; @out, @n: the words, "" when none.
+ */
+static void e_ds_mi_args_of(const E_GDBMI_RECORD *args, int level, char *out,
+                            size_t n)
+{
+ const E_GDBMI_NODE *fr, *arg;
+ const char *name, *value;
+ size_t have;
+
+ out[0] = '\0';
+ if (!args)
+  return;
+ for (fr = e_gdbmi_first_item(args, e_gdbmi_find(args, "stack-args")); fr;
+      fr = e_gdbmi_next_item(args, fr))
+ {
+  if (e_gdbmi_number(e_gdbmi_get_in(args, fr, "level"), E_DS_MI_DECIMAL,
+                     E_DS_NOT_FOUND) != level)
+   continue;
+  for (arg = e_gdbmi_first_item(args, e_gdbmi_find_in(args, fr, "args"));
+       arg; arg = e_gdbmi_next_item(args, arg))
+  {
+   name = e_gdbmi_get_in(args, arg, "name");
+   value = e_gdbmi_get_in(args, arg, "value");
+   have = strlen(out);
+   if (!name || have + 1 >= n)
+    continue;
+   snprintf(out + have, n - have, "%s%s=%s", have ? E_DS_MI_ARG_SEP : "",
+            name, value ? value : "");
+  }
+  return;
+ }
+}
+
+/**
+ * e_ds_mi_addr_of - The "0x... in " a row of gdb's "bt" starts with: for a
+ * caller's frame, whose place is never the start of a line, and for a
+ * frame with no source; "" for the innermost frame of the user's code.
+ * @out, @n: the words.
+ */
+static void e_ds_mi_addr_of(const E_GDBMI_RECORD *frames,
+                            const E_GDBMI_NODE *fn, int level, int has_line,
+                            char *out, size_t n)
+{
+ const char *addr = e_gdbmi_get_in(frames, fn, "addr");
+
+ out[0] = '\0';
+ if (addr && (level > 0 || !has_line))
+  snprintf(out, n, E_DS_MI_ADDR_FMT, addr);
+}
+
+/**
+ * e_ds_mi_row_of - One row of the Stack window for frame tuple @fn.
+ * @out, @n: the row with its line end.
+ * Return: the bytes the row takes, as snprintf counts them.
+ */
+static int e_ds_mi_row_of(const E_GDBMI_RECORD *frames,
+                          const E_GDBMI_NODE *fn, const E_GDBMI_RECORD *args,
+                          char *out, size_t n)
+{
+ char argtext[E_DS_LINE_MAX];
+ char addr[E_DS_MI_ADDR_MAX];
+ const char *func = e_gdbmi_get_in(frames, fn, "func");
+ const char *file = e_gdbmi_get_in(frames, fn, "file");
+ const char *line = e_gdbmi_get_in(frames, fn, "line");
+ const char *from = e_gdbmi_get_in(frames, fn, "from");
+ int level = e_gdbmi_number(e_gdbmi_get_in(frames, fn, "level"),
+                            E_DS_MI_DECIMAL, 0);
+
+ e_ds_mi_args_of(args, level, argtext, sizeof argtext);
+ e_ds_mi_addr_of(frames, fn, level, file && line, addr, sizeof addr);
+ if (!func)
+  func = E_DS_MI_NO_FUNC;
+ if (file && line)
+  return(snprintf(out, n, E_DS_MI_ROW_AT_FMT, level, addr, func, argtext,
+                  file, line));
+ if (from)
+  return(snprintf(out, n, E_DS_MI_ROW_FROM_FMT, level, addr, func, argtext,
+                  from));
+ return(snprintf(out, n, E_DS_MI_ROW_FMT, level, addr, func, argtext));
+}
+
+int e_ds_mi_where_rows(const E_GDBMI_RECORD *frames,
+                       const E_GDBMI_RECORD *args, char *out, size_t n)
+{
+ const E_GDBMI_NODE *fn;
+ size_t have = 0;
+ int rows = 0, len;
+
+ if (n > 0)
+  out[0] = '\0';
+ for (fn = e_gdbmi_first_item(frames, e_gdbmi_find(frames, "stack")); fn;
+      fn = e_gdbmi_next_item(frames, fn))
+ {
+  len = e_ds_mi_row_of(frames, fn, args, out + have, n - have);
+  if (len < 0 || have + (size_t)len >= n)
+  {
+   out[have] = '\0';      /* only whole rows are kept */
+   break;
+  }
+  have += (size_t)len;
+  rows++;
+ }
+ return(rows);
 }
 
 int e_ds_take_mi_brk_result(E_D_SESSION *s, int i, const E_GDBMI_RECORD *r)
