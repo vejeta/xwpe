@@ -47,6 +47,12 @@ typedef struct
 #define E_D_REQ_MARKER_MAX   64       /* a settle marker with its number */
 #define E_D_REQ_TIMEOUT_ENV  "XWPE_DEBUG_ANSWER_TIMEOUT"
 
+/* What the status row says when an answer is given up on: the debugger,
+   the command and, at the deadline, how long it was waited for.  Every
+   engine that asks a debugger says it in these words. */
+#define E_D_REQ_CANCEL_FMT   "%s did not answer `%s`: Debug > Quit ends the session"
+#define E_D_REQ_TIMEOUT_FMT  "%s did not answer `%s` within %d s: Debug > Quit ends the session"
+
 /* How a request ended. */
 typedef enum
 {

@@ -400,38 +400,40 @@ test_lsp_truecolor_CFLAGS = $(XWPE_STDFLAG) $(JSONC_CFLAGS)
 test_lsp_truecolor_LDADD = $(JSONC_LIBS)
 
 # DAP transport and start-machine unit test: the engine + json-c, no xwpe,
-# no adapter (the test plays one on a loopback socket).
-test_dap_SOURCES = tests/test_dap.c we_dap.c we_dap_proto.c we_fdloop.c
+# no adapter (the test plays one on a loopback socket).  we_dap_sync.c, the
+# engine's calls that wait, is linked into these tests only: the editor
+# follows the engine from its loop and never waits on an adapter.
+test_dap_SOURCES = tests/test_dap.c we_dap.c we_dap_sync.c we_debreq.c we_dap_proto.c we_fdloop.c
 test_dap_CFLAGS = $(XWPE_STDFLAG) $(JSONC_CFLAGS)
 test_dap_LDADD = $(JSONC_LIBS) $(UTIL_LIBS)
 
 # The same test with the engine built as on a system without pidfd (the
 # BSDs, macOS), so the wait for an adapter that closed every descriptor is
 # tested on Linux too.
-test_dap_nopidfd_SOURCES = tests/test_dap.c we_dap.c we_dap_proto.c we_fdloop.c
+test_dap_nopidfd_SOURCES = tests/test_dap.c we_dap.c we_dap_sync.c we_debreq.c we_dap_proto.c we_fdloop.c
 test_dap_nopidfd_CFLAGS = $(XWPE_STDFLAG) $(JSONC_CFLAGS) -DDAP_NO_PIDFD
 test_dap_nopidfd_LDADD = $(JSONC_LIBS) $(UTIL_LIBS)
 
 # DAP engine integration test: drives a real `dlv dap` (SKIPs without dlv+go).
-test_dap_dlv_SOURCES = tests/test_dap_dlv.c we_dap.c we_dap_proto.c we_fdloop.c
+test_dap_dlv_SOURCES = tests/test_dap_dlv.c we_dap.c we_dap_sync.c we_debreq.c we_dap_proto.c we_fdloop.c
 test_dap_dlv_CFLAGS = $(XWPE_STDFLAG) $(JSONC_CFLAGS)
 test_dap_dlv_LDADD = $(JSONC_LIBS) $(UTIL_LIBS)
 
 # DAP stdio transport integration test: drives a real `gdb --interpreter=dap`
 # on a rustc-built binary (the Rust slice).  SKIPs without gdb+rustc.
-test_dap_gdb_SOURCES = tests/test_dap_gdb.c we_dap.c we_dap_proto.c we_fdloop.c
+test_dap_gdb_SOURCES = tests/test_dap_gdb.c we_dap.c we_dap_sync.c we_debreq.c we_dap_proto.c we_fdloop.c
 test_dap_gdb_CFLAGS = $(XWPE_STDFLAG) $(JSONC_CFLAGS)
 test_dap_gdb_LDADD = $(JSONC_LIBS) $(UTIL_LIBS)
 
 # Same stdio transport against `lldb-dap` (the LLVM adapter; native on macOS).
 # SKIPs without lldb-dap+rustc.
-test_dap_lldb_SOURCES = tests/test_dap_lldb.c we_dap.c we_dap_proto.c we_fdloop.c
+test_dap_lldb_SOURCES = tests/test_dap_lldb.c we_dap.c we_dap_sync.c we_debreq.c we_dap_proto.c we_fdloop.c
 test_dap_lldb_CFLAGS = $(XWPE_STDFLAG) $(JSONC_CFLAGS)
 test_dap_lldb_LDADD = $(JSONC_LIBS) $(UTIL_LIBS)
 
 # JVM/Scala path: BSP bootstrap (we_bsp.c) + DAP TCP-client transport against a
 # real scala-cli/Bloop.  SKIPs without scala-cli; slow on a cold coursier cache.
-test_dap_scala_SOURCES = tests/test_dap_scala.c we_bsp.c we_dap.c we_dap_proto.c we_fdloop.c
+test_dap_scala_SOURCES = tests/test_dap_scala.c we_bsp.c we_dap.c we_dap_sync.c we_debreq.c we_dap_proto.c we_fdloop.c
 test_dap_scala_CFLAGS = $(XWPE_STDFLAG) $(JSONC_CFLAGS)
 test_dap_scala_LDADD = $(JSONC_LIBS) $(UTIL_LIBS)
 

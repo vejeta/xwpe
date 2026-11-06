@@ -23,8 +23,8 @@
 #define NO_ELAPSED      0L
 #define MS_PER_S        1000L
 #define DIGIT_BASE      10
-#define CANCEL_FMT      "%s did not answer `%s`: Debug > Quit ends the session"
-#define TIMEOUT_FMT     "%s did not answer `%s` within %d s: Debug > Quit ends the session"
+#define CANCEL_FMT      E_D_REQ_CANCEL_FMT
+#define TIMEOUT_FMT     E_D_REQ_TIMEOUT_FMT
 #define BUSY_FMT        "%s is still answering `%s`: Debug > Quit ends the session"
 #define DEFAULT_NAME    "debugger"
 

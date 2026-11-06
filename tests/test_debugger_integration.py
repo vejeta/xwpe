@@ -2647,6 +2647,203 @@ def test_keys_reach_the_editor_while_the_program_runs_under_every_adapter(
         _kill_program_if_left(run)
 
 
+# A watch asked at a stop while the adapter is held with SIGSTOP: any
+# expression does, the adapter cannot answer until it is let go.
+DAP_HELD_WATCH = "1+1"
+DAP_WAITING_FOR_EVALUATE = "to answer `evaluate`"
+DAP_QUIT_LATE = "did not answer `disconnect`"
+DAP_RUN_SETTLE_S = 2          # the program has gone on into its sleep
+
+
+def _dap_adapter_pid(w, run):
+    """The adapter's PID: the editor's own child of the adapter's name."""
+    pids = _children(w, run.case["child"])
+    assert pids, "the adapter should be a child of the editor:\n%s" \
+        % _screen(w)
+    return pids[0]
+
+
+def _dap_let_go(pid):
+    """Let an adapter held with SIGSTOP go on; nothing once it is gone."""
+    if pid is None:
+        return
+    try:
+        os.kill(pid, signal.SIGCONT)
+    except ProcessLookupError:
+        pass
+
+
+def _keys_reach_the_editor_while_the_watch_is_owed(w):
+    """The adapter owes a watch's value: Ctrl-G K is refused with the
+    waiting line that names `evaluate`, no Stack window opens, and the
+    letters typed in the source window go into the file."""
+    w.key(CTRL_G, "k", delay=0.5)
+    assert _status_row_says(w, DAP_WAITING_FOR_EVALUATE, STEP_TIMEOUT_S), \
+        "Ctrl-G K should be refused with the waiting line:\n%s" % _screen(w)
+    assert " Stack " not in _screen(w), \
+        "Ctrl-G K must wait for the adapter's answer:\n%s" % _screen(w)
+    w.key(ALT_1, delay=0.4)
+    w.key(*TYPED_WHILE_RUNNING, delay=0.15)
+    w.save()
+    assert TYPED_WHILE_RUNNING in w.text(), \
+        "a key typed while the adapter answered did not reach the editor:\n%s" \
+        % _screen(w)
+
+
+# @scenario SC-debug-69
+@pytest.mark.parametrize("adapter", DAP_ADAPTERS)
+def test_keys_reach_the_editor_while_it_answers_under_an_adapter(tmp_path,
+                                                                 adapter):
+    """At a stop a watch is added while the adapter is held with SIGSTOP, so
+    its value is owed: the editor keeps its keys (Ctrl-G K is refused with
+    the waiting line, letters go into the file), and once the adapter is let
+    go the watch is shown."""
+    run = DapRun(tmp_path, adapter, sleep_s=DAP_LONG_SLEEP_S)
+    pid = None
+    try:
+        with run.session as w:
+            run.stop_on_ready(w)
+            pid = _dap_adapter_pid(w, run)
+            os.kill(pid, signal.SIGSTOP)
+            _add_watch(w, DAP_HELD_WATCH)
+            _keys_reach_the_editor_while_the_watch_is_owed(w)
+            _dap_let_go(pid)
+            assert _wait_for(w, lambda: (DAP_HELD_WATCH + ":") in _screen(w),
+                             STEP_TIMEOUT_S), \
+                "once the adapter answers the watch should be shown:\n%s" \
+                % _screen(w)
+    finally:
+        _dap_let_go(pid)
+        _kill_program_if_left(run)
+
+
+# The Scala adapter lives in the build server, which other sessions may
+# share, so it is not held: its watch takes its time in the program instead.
+SCALA_SLOW_WATCH_PROG = (
+    "object P:\n"
+    "  def slow(): Int =\n"
+    "    Thread.sleep(8000)\n"
+    "    7\n"
+    "  def main(args: Array[String]): Unit =\n"
+    "    val x = 3\n"
+    "    println(x)\n"
+)
+SCALA_SLOW_WATCH_LINE = 7
+SCALA_SLOW_WATCH = "slow()"
+SCALA_SLOW_WATCH_S = 90       # the expression is compiled, then sleeps
+
+
+# @scenario SC-debug-69
+def test_scala_keys_reach_the_editor_while_it_answers(tmp_path):
+    """At a stop a watch whose value takes seconds to compute is added: the
+    editor keeps its keys while the Scala adapter answers (Ctrl-G K is
+    refused with the waiting line, letters go into the file), and the
+    watch is shown when the answer comes."""
+    _need("scala-cli")
+    with WpeSession(str(tmp_path), SCALA_SLOW_WATCH_PROG, filename="p.scala",
+                    wait=2.0) as w:
+        _go_to_line(w, SCALA_SLOW_WATCH_LINE)
+        w.key(CTRL_G, "b", delay=0.5)
+        w.key(CTRL_G, "r", delay=1.0)
+        assert _wait_for(w, lambda: _mark_line(w) == SCALA_SLOW_WATCH_LINE,
+                         SCALA_START_TIMEOUT_S), \
+            "the Scala adapter should stop on line %d:\n%s" \
+            % (SCALA_SLOW_WATCH_LINE, _screen(w))
+        _add_watch(w, SCALA_SLOW_WATCH)
+        _keys_reach_the_editor_while_the_watch_is_owed(w)
+        assert _wait_for(w, lambda: (SCALA_SLOW_WATCH + ":") in _screen(w),
+                         SCALA_SLOW_WATCH_S), \
+            "the watch should be shown when the adapter answers:\n%s" \
+            % _screen(w)
+
+
+# @scenario SC-debug-70
+@pytest.mark.parametrize("adapter", DAP_ADAPTERS)
+def test_quit_while_running_takes_keys_during_disconnect_under_an_adapter(
+        tmp_path, adapter):
+    """Debug > Quit while the program runs and the adapter is held, so it
+    never answers `disconnect`: the editor takes keys at once, while the
+    adapter is still there; at Quit's deadline the status row says so and
+    the adapter is ended and reaped."""
+    run = DapRun(tmp_path, adapter, sleep_s=DAP_LONG_SLEEP_S)
+    pid = None
+    try:
+        with run.session as w:
+            run.stop_on_ready(w)
+            w.key(CTRL_G, "r", delay=0.5)
+            w._drain(DAP_RUN_SETTLE_S)
+            pid = _dap_adapter_pid(w, run)
+            os.kill(pid, signal.SIGSTOP)
+            w.menu(ALT.DEBUG, "q", delay=0.3)
+            w.key(ALT_1, delay=0.3)
+            w.key(*TYPED_WHILE_RUNNING, delay=0.1)
+            w.save()
+            assert TYPED_WHILE_RUNNING in w.text(), \
+                "keys typed while Quit waits for the adapter should edit " \
+                "the source:\n%s" % _screen(w)
+            assert not _process_gone(pid), \
+                "the keys should be taken while the adapter still owes its " \
+                "answer to Quit"
+            assert _status_row_says(w, DAP_QUIT_LATE, STEP_TIMEOUT_S), \
+                "the status row should say the adapter did not answer:\n%s" \
+                % _screen(w)
+            assert _wait_for(w, lambda: _process_gone(pid), STEP_TIMEOUT_S), \
+                "the adapter should be ended and reaped:\n%s" % _screen(w)
+    finally:
+        _dap_let_go(pid)
+        _kill_program_if_left(run)
+
+
+DAP_END_KEY_EVERY_S = 0.05    # a key typed this often during the end
+DAP_END_BOUND_S = 12          # the save, then at most 6 s for the adapter
+DAP_END_WAITED_S = 2.5        # `disconnect` unanswered 2 s, SIGTERM held 1 s
+
+
+def _type_until_the_editor_ends(w):
+    """Type a key every DAP_END_KEY_EVERY_S until the editor has ended;
+    returns the seconds it took and the clock ticks it used meanwhile."""
+    editor = w.proc.pid
+    first = last = _cpu_ticks(editor)
+    start = time.time()
+    while w.proc.poll() is None and time.time() - start < DAP_END_BOUND_S:
+        try:
+            os.write(w.master_fd, b"x")
+        except OSError:
+            pass
+        w._drain(DAP_END_KEY_EVERY_S)
+        now = _cpu_ticks(editor)
+        if now is not None:
+            last = now
+    return time.time() - start, last - first
+
+
+# @scenario SC-debug-70
+def test_keys_during_the_editors_end_neither_cut_its_wait_nor_spin(tmp_path):
+    """SIGTERM at a dlv stop with dlv held, so it never answers
+    `disconnect`: after the save the editor keeps its loop running until
+    the adapter is ended, and keys typed all the while neither end that
+    wait early (which would leave the adapter behind) nor keep the editor
+    busy."""
+    run = DapRun(tmp_path, "dlv", sleep_s=DAP_LONG_SLEEP_S)
+    pid = None
+    try:
+        with run.session as w:
+            run.stop_on_ready(w)
+            pid = _dap_adapter_pid(w, run)
+            os.kill(pid, signal.SIGSTOP)
+            os.kill(w.proc.pid, signal.SIGTERM)
+            took, used = _type_until_the_editor_ends(w)
+            assert w.proc.poll() is not None, "the editor did not end"
+            assert took >= DAP_END_WAITED_S, \
+                "a key ended the wait for the adapter early (%.2f s)" % took
+            assert used < IDLE_CPU_TICKS * took * WAIT_SCALE, \
+                "the editor was busy while it ended (%d ticks)" % used
+        assert _process_gone(pid), "the editor left the adapter behind"
+    finally:
+        _dap_let_go(pid)
+        _kill_program_if_left(run)
+
+
 # @scenario SC-debug-18
 @pytest.mark.parametrize("adapter", DAP_ADAPTERS)
 def test_a_stop_while_the_file_manager_is_open_waits_for_it_under_an_adapter(

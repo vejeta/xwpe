@@ -1252,6 +1252,21 @@ static void e_d_dap_on_breakpoints(const char *file, const int *line,
                                    const char *const *message, int n,
                                    void *ud);      /* the adapter's word */
 static void e_d_cursor_brk_clear(void);           /* Go to cursor's (below) */
+/* The debug adapters' answers on the fd loop (below, after the line
+   debuggers' engine, whose waiting line and kept keys they share). */
+static void e_d_dr_begin(void);
+static void e_d_dr_forget(void);
+static void e_d_dr_run_begins(void);
+static void e_d_dr_watch(void);
+static int  e_d_dr_answering(void);
+static int  e_d_dr_busy(void);
+static void e_d_dr_cancel(void);
+static void e_d_dr_refusal_line(char *line, size_t n);
+static void e_d_dap_stop_ask(FENSTER *f, int pause);
+static int  e_d_dap_watches_ask(ECNT *cn, int sw);
+static void e_d_dap_close_begin(e_dap_session *s, e_bsp_session *bsp);
+static void e_d_dap_adapter_ended(int pid, int status, void *data);
+static void e_d_act_schedule(void);               /* the kept keys (below) */
 static int  e_d_gdb_run_to_line(FENSTER *f, int line);   /* gdb's (below) */
 static int  e_d_goto_cursor_line(FENSTER *f, int line);  /* Go to cursor's */
 
@@ -2880,6 +2895,7 @@ static void e_d_run_mark_going(const E_D_RUN_OPS *ops)
 static int e_d_run_watch(const E_D_RUN_OPS *ops)
 {
  e_d_ga_run_begins();
+ e_d_dr_run_begins();
  if (e_fd_watch(ops->answer_fd(), POLLIN, e_d_run_on_answer, NULL,
                 "the debugger's answer") < 0)
   return(-1);
@@ -6900,10 +6916,10 @@ static const e_d_dap_lang *e_d_dap_lang_for(FENSTER *f)
 }
 
 /* on_stopped: just RECORD where the program halted.  The actual cursor jump +
-   Watches refresh is deferred to e_d_dap_paint_stop, called once by the step/run
-   functions after they settle -- so intermediate stops (e.g. a "step over" that
-   momentarily lands in the language runtime before we run on) never flash on
-   screen. */
+   Watches refresh is deferred to the stop's requests (e_d_dap_stop_ask), made
+   once the step/run functions have settled -- so intermediate stops (e.g. a
+   "step over" that momentarily lands in the language runtime before we run
+   on) never flash on screen. */
 static void e_d_dap_on_stopped(const char *file, int line, const char *reason,
                                void *ud)
 {
@@ -6920,17 +6936,35 @@ static void e_d_dap_on_stopped(const char *file, int line, const char *reason,
  }
 }
 
-/* Move the editor to the recorded stop and refresh the Watches window:
-   evaluate watches first, then jump to the source line, as every debugger's
-   stop does. */
-static void e_d_dap_paint_stop(FENSTER *f)
+static int e_d_dap_watches_fill(FENSTER *f, char **values, int nvalues,
+                                int sw);
+
+/**
+ * e_d_dap_stop_has_place - Does the recorded stop name a source line?
+ *
+ * A stop in code without source (the runtime, before Pause moved it) is
+ * neither marked nor given watch values, as it never was.
+ */
+static int e_d_dap_stop_has_place(void)
 {
- if (!f || g_dap_stop_line < 0 || !g_dap_stop_file[0])
+ return(g_dap_stop_line >= 0 && g_dap_stop_file[0]);
+}
+
+/**
+ * e_d_dap_show_stop - Show the stop the adapter's answers describe: the
+ * Watches and Stack windows filled, then the mark on the source line, as
+ * every debugger's stop does.
+ * @f: the window on top; @values, @nvalues: each watch's value, or NULL
+ * and 0 for none.
+ */
+static void e_d_dap_show_stop(FENSTER *f, char **values, int nvalues)
+{
+ if (!f || !e_d_dap_stop_has_place())
   return;
  e_d_nstack = 0;                      /* a stop selects the top frame again */
  strncpy(e_d_file, e_d_dap_basename(g_dap_stop_file), sizeof(e_d_file) - 1);
  e_d_file[sizeof(e_d_file) - 1] = '\0';
- e_d_p_watches(f, 0);                 /* -> e_d_dap_watches (evaluate) */
+ e_d_dap_watches_fill(f, values, nvalues, 0);
  e_d_goto_break(g_dap_stop_file, g_dap_stop_line, f);
 }
 
@@ -7081,26 +7115,28 @@ static void e_d_dap_say_ending(FENSTER *f)
  * @f: the window on top, or NULL.
  *
  * Called from e_d_quit before the common cleanup, on any start or run
- * failure, and when the editor ends.  Nothing watches the adapter once
- * this begins, a program that runs is ended with it, and the bottom row
- * says Quit is waiting: the engine disconnects, waits for the adapter's
- * answer and exit within its bounds (which hold when the editor is ending,
- * so no program is left behind) and reaps it.
+ * failure, and when the editor ends.  Nothing watches the session for the
+ * user once this begins: the answers it still owes are given up, and the
+ * adapter is ended in the background on the fd loop (e_d_dap_close_begin),
+ * so the user has the editor back at once while the adapter answers
+ * `disconnect`, ends a program that runs and exits.
  */
 static void e_d_dap_quit(FENSTER *f)
 {
  e_d_run_forget();
  g_dap_closing = 1;
+ e_d_dr_forget();
  if (g_dap)
  {
   e_d_dap_say_ending(f);
-  e_dap_close(g_dap);
+  /* The build server that hosts the adapter is closed after it: killing
+     it earlier would drop the DAP connection in the middle of Quit. */
+  e_d_dap_close_begin(g_dap, g_bsp);
   g_dap = NULL;
+  g_bsp = NULL;
  }
  if (g_bsp)
  {
-  /* close the DAP socket first (done above), THEN the build server that hosts
-     the adapter -- killing it earlier would drop the DAP connection mid-quit. */
   e_bsp_close(g_bsp);
   g_bsp = NULL;
  }
@@ -7117,7 +7153,9 @@ static void e_d_dap_quit(FENSTER *f)
  * Called by the editor's end after the user's work is saved, so a logout
  * or a "kill PID" during a debug session leaves no adapter and no program
  * behind (lldb-dap ends a running program only when it is told to).  The
- * adapter's output is no longer shown: the windows are going.
+ * adapter's output is no longer shown: the windows are going.  The editor's
+ * end then keeps its loop running until e_d_dap_all_closed says every
+ * adapter is gone, within E_DAP_CLOSE_MAX_MS.
  */
 void e_d_dap_end_at_exit(void)
 {
@@ -7171,6 +7209,35 @@ static int e_d_dap_compile(FENSTER *f, char *binary, size_t binsz)
  }
  unlink(errf);
  return(0);
+}
+
+/**
+ * e_d_dap_spawn - Start the adapter process of a language whose adapter is
+ * the editor's own child (dlv, gdb, lldb-dap), with its end watched.
+ * @adapter: its command line; @lang: the language; @program, @dir: what it
+ * debugs and where.
+ *
+ * Quit ends the adapter in the background and learns of its exit from the
+ * editor's child watch, the moment it happens, instead of waiting for it.
+ * SIGCHLD is held across the fork so the end cannot be missed.
+ * Return: the session, or NULL when the adapter could not be started.
+ */
+static e_dap_session *e_d_dap_spawn(char *const *adapter,
+                                    const e_d_dap_lang *lang,
+                                    const char *program, const char *dir)
+{
+ e_dap_session *s;
+ sigset_t saved;
+
+ WpeChildSignalBlock(&saved);
+ if (lang->stdio)
+  s = e_dap_start_stdio(adapter, program, lang->entry_func, dir, &g_dap_host);
+ else
+  s = e_dap_start(adapter, program, lang->entry_func, dir, &g_dap_host);
+ if (s && e_dap_adapter_pid(s) > 0)
+  WpeChildWatch(e_dap_adapter_pid(s), e_d_dap_adapter_ended, NULL);
+ WpeChildSignalRestore(&saved);
+ return(s);
 }
 
 /* Open the adapter for f's language, install the user's pre-set breakpoints, and
@@ -7247,10 +7314,8 @@ static int e_d_dap_start(FENSTER *f)
   }
   g_dap = e_dap_start_tcp(bhost, bport, program, lang->entry_func, &g_dap_host);
  }
- else if (lang->stdio)
-  g_dap = e_dap_start_stdio(adapter, program, lang->entry_func, dir, &g_dap_host);
  else
-  g_dap = e_dap_start(adapter, program, lang->entry_func, dir, &g_dap_host);
+  g_dap = e_d_dap_spawn(adapter, lang, program, dir);
  if (!g_dap)
  {
   e_error(E_D_DAP_START_FAILED_LINE, 0, f->fb);
@@ -7272,6 +7337,7 @@ static int e_d_dap_start(FENSTER *f)
  }
  e_deb_type = DEB_DAP;
  snprintf(g_dap_adapter_name, sizeof(g_dap_adapter_name), "%s", adapter[0]);
+ e_d_dr_begin();
  return(e_d_dap_start_watch(f));      /* the handshake runs on the fd loop */
 }
 
@@ -7503,8 +7569,6 @@ static int e_d_dap_runs_out_of_runtime(void)
 /* The reason the engine gives the stop that follows Pause, whatever the
    adapter called it (lldb-dap says "exception" for SIGSTOP). */
 #define E_D_DAP_REASON_PAUSE "pause"
-/* How deep into the stack Pause looks for the user's code. */
-#define E_D_DAP_PAUSE_FRAMES_MAX 64
 
 /**
  * e_d_dap_interrupt - Pause the program an adapter runs: send DAP "pause".
@@ -7530,67 +7594,19 @@ static int e_d_dap_stop_is_pause(void)
 }
 
 /**
- * e_d_dap_frame_is_users - Is a frame of the stack the user's own code, in
- * a file the editor can open?
- * @fr: the frame.
- * Return: 1 when it is.
- */
-static int e_d_dap_frame_is_users(const e_dap_frame *fr)
-{
- if (!fr->path[0] || fr->line <= 0)
-  return(0);
- if (!e_d_dap_path_in_user_code(fr->path))
-  return(0);
- return(access(fr->path, R_OK) == 0);
-}
-
-/**
- * e_d_dap_pick_user_frame - After Pause, move the stop to the user's code.
- *
- * The adapter stops the program wherever it is, often inside the language
- * runtime (dlv in Go's scheduler, a sleep in a library).  The first frame
- * of the stack that is in the user's program becomes the stop to mark and
- * the frame the watches are read in, so the user sees the line the program
- * is working on.  A stop already in the user's code is left alone.
- * Return: the index of the frame chosen, 0 when the stop stays as it is.
- */
-static int e_d_dap_pick_user_frame(void)
-{
- static e_dap_frame got[E_D_DAP_PAUSE_FRAMES_MAX];
- int i, n;
-
- if (e_d_dap_in_user_code() && g_dap_stop_file[0])
-  return(0);
- n = e_dap_stack_trace(g_dap, got, E_D_DAP_PAUSE_FRAMES_MAX);
- for (i = 0; i < n; i++)
- {
-  if (!e_d_dap_frame_is_users(&got[i]))
-   continue;
-  snprintf(g_dap_stop_file, sizeof g_dap_stop_file, "%s", got[i].path);
-  g_dap_stop_line = got[i].line;
-  e_dap_select_frame(g_dap, got[i].id);
-  return(i);
- }
- return(0);
-}
-
-/**
  * e_d_dap_stopped_by_pause - The program stopped because the user paused
  * it: mark where their code is.
  * @f: the window on top.
  *
  * The status row says "Paused" at the end of the stop (e_d_pause_report),
  * not the adapter's own word for the stop, and the stop is never run on
- * from as a start's or a runtime's stop is.
+ * from as a start's or a runtime's stop is.  The stop's stack moves the
+ * mark into the user's code (e_d_dap_pause_pick).
  */
 static void e_d_dap_stopped_by_pause(FENSTER *f)
 {
- int frame;
-
  e_d_pause_taken();
- frame = e_d_dap_pick_user_frame();
- e_d_dap_paint_stop(f);
- e_d_nstack = frame;
+ e_d_dap_stop_ask(f, 1);
 }
 
 /**
@@ -7628,7 +7644,7 @@ static void e_d_dap_stopped(FENSTER *f)
   e_d_dap_run_on(f, "continue");
   return;
  }
- e_d_dap_paint_stop(f);
+ e_d_dap_stop_ask(f, 0);
 }
 
 /* A debug adapter: its messages on one descriptor, the program's output on
@@ -7761,15 +7777,89 @@ static int e_d_dap_finish(FENSTER *f)
  return(e_d_dap_resume_run(f, "stepOut", E_D_DAP_ON_STOP_OUT));
 }
 
-/* Rebuild the Watches window with current values via evaluate(context=watch).
-   Mirrors e_d_p_watches's window handling but sources each value from the
-   adapter instead of a debugger pipe. */
+/* A watch line under an adapter: "name: value", or the words below when
+   the adapter gave no value. */
+#define E_D_DAP_NO_VALUE "<no value>"
+#define E_D_DAP_WATCH_SEP ": "
+
+/**
+ * e_d_dap_watch_put - Add the line of watch @l to the Watches buffer with
+ * the value the adapter gave it.
+ * @b: the Watches buffer; @l: the watch; @val: its value, or NULL when the
+ * adapter gave none (the user reads "<no value>").
+ */
+static void e_d_dap_watch_put(BUFFER *b, int l, const char *val)
+{
+ char *line;
+
+ if (!val)
+  val = E_D_DAP_NO_VALUE;
+ line = WpeMalloc(strlen(e_d_swtchs[l]) + strlen(E_D_DAP_WATCH_SEP) +
+                  strlen(val) + 1);
+ sprintf(line, "%s" E_D_DAP_WATCH_SEP "%s", e_d_swtchs[l], val);
+ e_d_nrwtchs[l] = b->mxlines;
+ print_to_end_of_buffer(b, line, b->mx.x);
+ WpeFree(line);
+}
+
+/**
+ * e_d_dap_value_at - The value kept for watch @l, or NULL when there is
+ * none (no list, a watch added since it was asked, or the adapter gave
+ * none).
+ * @values, @n: the values, one per watch asked, or NULL and 0.
+ */
+static const char *e_d_dap_value_at(char **values, int n, int l)
+{
+ if (!values || l >= n)
+  return(NULL);
+ return(values[l]);
+}
+
+/**
+ * e_d_dap_at_stop - Is the adapter's program stopped, so its watches can be
+ * asked?
+ */
+static int e_d_dap_at_stop(void)
+{
+ return(g_dap && !e_dap_running(g_dap) && !e_dap_ended(g_dap));
+}
+
+/**
+ * e_d_dap_watches - Show the watches under a debug adapter (Ctrl-G W, an
+ * edit or a removal, a frame picked in the Stack window).
+ * @f: the window the key was pressed in; @sw: 1 to bring the window up.
+ *
+ * At a stop the values are asked of the adapter on the fd loop and written
+ * when it has answered, the user keeping the editor meanwhile; while the
+ * program runs each watch says its value comes at the next stop, and with
+ * no session each says it has no value.
+ * Return: 0, or -1 when the Watches window could not be opened.
+ */
 static int e_d_dap_watches(FENSTER *f, int sw)
+{
+ if (e_d_dr_answering())
+  return(0);              /* the answer that is out fills the window */
+ if (e_d_nwtchs > 0 && !e_d_watches_wait() && e_d_dap_at_stop())
+  return(e_d_dap_watches_ask(f->ed, sw));
+ return(e_d_dap_watches_fill(f, NULL, 0, sw));
+}
+
+/**
+ * e_d_dap_watches_fill - Rebuild the Watches window with the values the
+ * adapter gave, and the Stack window from the stop's frames when it is
+ * open.
+ * @f: a window of the editor; @values, @nvalues: each watch's value, or
+ * NULL and 0 for none; @sw: 1 to bring the Watches window to the top.
+ *
+ * Mirrors e_d_p_watches's window handling with the values already read.
+ * Return: 0, or -1 when a window could not be opened.
+ */
+static int e_d_dap_watches_fill(FENSTER *f, char **values, int nvalues,
+                                int sw)
 {
  ECNT *cn = f->ed;
  BUFFER *b;
  int iw, l;
- char *val, *line;
 
  e_d_switch_out(0);
  if (!e_d_watches_wait() && (e_d_swtch > 2) && (e_d_p_stack(f, 0) == -1))
@@ -7796,21 +7886,9 @@ static int e_d_dap_watches(FENSTER *f, int sw)
  for (l = 0; l < e_d_nwtchs; l++)
  {
   if (e_d_watches_wait())
-  {
    e_d_watch_put_waiting(b, l);
-   continue;
-  }
-  val = g_dap ? e_dap_evaluate(g_dap, e_d_swtchs[l]) : NULL;
-  line = WpeMalloc(strlen(e_d_swtchs[l]) + (val ? strlen(val) : 13) + 4);
-  if (val)
-   sprintf(line, "%s: %s", e_d_swtchs[l], val);
   else
-   sprintf(line, "%s: <no value>", e_d_swtchs[l]);
-  e_d_nrwtchs[l] = b->mxlines;
-  print_to_end_of_buffer(b, line, b->mx.x);
-  WpeFree(line);
-  if (val)
-   free(val);
+   e_d_dap_watch_put(b, l, e_d_dap_value_at(values, nvalues, l));
  }
  e_new_line(b->mxlines, b);
  fk_cursor(1);
@@ -12741,24 +12819,22 @@ static void e_d_a68g_take_frames(ECNT *cn, const char *reply)
 }
 
 /**
- * e_d_dap_frames - Read a debug adapter's stack (DAP stackTrace).
+ * e_d_dap_take_frames - Keep a debug adapter's stack, from its answer to
+ * the stop's stackTrace.
+ * @ans: the answer.
  *
  * The adapter lists innermost first and goes on into the language runtime
  * (Go's runtime.main, Rust's std, a C start routine without source); those
  * frames are listed too, but are not the user's, so Finish function never
  * returns into them.
- * Return: 0, or -1 when there is no session to ask.
  */
-static int e_d_dap_frames(void)
+static void e_d_dap_take_frames(const E_D_ANSWER *ans)
 {
  static e_dap_frame got[E_D_FRAMES_MAX];
  int i, n, k, user;
 
- if (!g_dap)
-  return(-1);
- n = e_dap_stack_trace(g_dap, got, E_D_FRAMES_MAX);
- if (n < 0)
-  return(-1);
+ e_d_nframes = 0;
+ n = e_dap_answer_frames(ans, got, E_D_FRAMES_MAX);
  for (i = 0; i < n; i++)
  {
   user = got[i].path[0] && e_d_dap_path_in_user_code(got[i].path);
@@ -12766,13 +12842,13 @@ static int e_d_dap_frames(void)
   if (k >= 0)
    e_d_frames[k].dap_id = got[i].id;
  }
- return(0);
 }
 
 /**
  * e_d_collect_frames - Read the running debugger's stack into the list.
  * @cn: the editor.
- * Return: 0, or -1 when the debugger cannot be asked any more.
+ *
+ * Return: 0.
  */
 static int e_d_collect_frames(ECNT *cn)
 {
@@ -12781,10 +12857,10 @@ static int e_d_collect_frames(ECNT *cn)
   return(0);       /* jdb's frames are asked on the fd loop (e_d_gj_frames_*) */
  if (e_deb_type == DEB_A68G)
   return(0);       /* a68g's are asked on the fd loop (e_d_ga68_frames_*) */
+ if (e_deb_type == DEB_DAP)
+  return(0);       /* an adapter's are asked at each stop (e_d_dap_stop_steps) */
  e_d_nframes = 0;
- if (e_deb_type == DEB_PDB)
-  return(0);       /* pdb's frames are asked on the fd loop (e_d_gp_frames_*) */
- return(e_d_dap_frames());
+ return(0);        /* pdb's frames are asked on the fd loop (e_d_gp_frames_*) */
 }
 
 /**
@@ -13006,7 +13082,7 @@ static int e_d_frame_show(FENSTER *f)
  fr = e_d_frames[index];
  if (e_d_ga_at_stop())
   return(e_d_ga_follow_frame(f->ed, index, fr.file, e_d_frame_line(&fr)));
- if (e_d_ga_backend_of(e_deb_type))
+ if (e_d_ga_backend_of(e_deb_type) || e_d_dr_answering())
   return(e_d_frame_follow_refused(f));
  e_d_dap_frame_select(index);
  if (e_d_p_watches(f, 0) == -1)
@@ -13485,8 +13561,11 @@ static void e_d_brk_judge_line(E_D_BRK_ANSWER *ans, const char *line,
  * DAP's setBreakpoints replaces every breakpoint of a source, so a line set
  * or removed while the program is stopped reaches the adapter as the whole
  * list again: the next run then stops exactly where the margin says.  Go to
- * cursor passes its own line as @extra_line.
- * Return: 0, or -1 when the adapter did not answer.
+ * cursor passes its own line as @extra_line.  Nothing waits for the answer:
+ * it is read on the fd loop and turns the mark solid or hollow
+ * (e_d_dap_on_breakpoints), and the adapter takes the run that may follow
+ * only after the list.
+ * Return: 0, or -1 when the adapter cannot be told.
  */
 static int e_d_dap_send_file_breakpoints(const char *file, const char *path,
                                          int extra_line)
@@ -13499,9 +13578,26 @@ static int e_d_dap_send_file_breakpoints(const char *file, const char *path,
    brk_lines[n++] = e_d_ybrpts[i];
  if (extra_line > 0 && !e_d_user_brk_on(file, extra_line))
   brk_lines[n++] = extra_line;
- ret = e_dap_set_file_breakpoints(g_dap, path, brk_lines, n);
+ ret = e_dap_set_file_breakpoints_async(g_dap, path, brk_lines, n);
  FREE(brk_lines);
+ e_d_dr_watch();                      /* its answer is read on the fd loop */
  return(ret);
+}
+
+/**
+ * e_d_dap_say_answer_at_stop - The adapter's word on list entry @i came at
+ * a stop: say on the status row why it is not set, when it is not.
+ *
+ * A breakpoint set at a stop is answered on the fd loop, a moment after the
+ * key; the user then reads the adapter's reason as when the answer was
+ * waited for.  The start's answers and those that come while the program
+ * runs are not said, as before.
+ */
+static void e_d_dap_say_answer_at_stop(int i)
+{
+ if (e_d_swtch < 3 || e_d_start.active || e_d_run_going() || g_dap_first)
+  return;
+ e_d_brk_say_refusal(WpeEditor->f[WpeEditor->mxedt], i);
 }
 
 /**
@@ -13530,7 +13626,7 @@ static int e_d_brk_same_file(ECNT *cn, const char *name, const char *abs)
  *
  * A verified one is drawn solid.  One the adapter has not set yet (gdb's
  * pending ones, until it says so with a later event) stays hollow, with its
- * reason kept.
+ * reason kept, and at a stop the status row says why, as when it is set.
  */
 static void e_d_dap_on_breakpoints(const char *file, const int *line,
                                    const int *verified,
@@ -13551,6 +13647,7 @@ static void e_d_dap_on_breakpoints(const char *file, const int *line,
    else
     e_d_brk_set_state(i, E_D_BRK_PENDING, message[k]);
    e_d_brk_live_changed = 1;
+   e_d_dap_say_answer_at_stop(i);
   }
 }
 
@@ -13873,8 +13970,9 @@ static void e_d_dap_clear_every_file(ECNT *cn)
   if (!e_d_brk_is_start_entry(i))
   {
    e_d_brk_path_of(cn, e_d_sbrpts[i], path, sizeof(path));
-   e_dap_set_file_breakpoints(g_dap, path, NULL, 0);
+   e_dap_set_file_breakpoints_async(g_dap, path, NULL, 0);
   }
+ e_d_dr_watch();
 }
 
 /**
@@ -15277,11 +15375,14 @@ static void e_d_ga_owe_settle(int owed)
 /* ---- what the user sees while gdb answers ---- */
 
 /**
- * e_d_ga_answering - Is the editor waiting for gdb, or working through a
- * sequence of its answers?
+ * e_d_ga_answering - Is the editor waiting for the debugger, or working
+ * through a sequence of its answers?  A debug adapter's answers count as
+ * a line debugger's do, so its keys are kept and refused the same way.
  */
 static int e_d_ga_answering(void)
 {
+ if (e_d_dr_answering())
+  return(1);
  if (!e_d_ga.live)
   return(0);
  return(e_d_req_pending(&e_d_ga.rq) || e_d_ga.chain != E_D_GA_NONE);
@@ -15324,6 +15425,11 @@ static void e_d_ga_refusal_line(char *line, size_t n)
  E_D_REQ_QUEUE *rq = &e_d_ga.rq;
  long secs;
 
+ if (e_d_dr_answering())
+ {
+  e_d_dr_refusal_line(line, n);
+  return;
+ }
  if (rq->resync || rq->n == 0)
  {
   line[0] = ' ';
@@ -15391,6 +15497,8 @@ static int e_d_ga_pause_takes_sync(FENSTER *f)
  */
 int e_d_answer_busy(void)
 {
+ if (e_d_dr_busy())
+  return(1);
  return(e_d_ga.live && e_d_req_pending(&e_d_ga.rq));
 }
 
@@ -15407,6 +15515,11 @@ void e_d_answer_cancel(void)
 {
  int was_resync = e_d_ga.rq.resync;
 
+ if (e_d_dr_busy())
+ {
+  e_d_dr_cancel();
+  return;
+ }
  if (!e_d_ga.live)
   return;
  e_d_ga_actions_drop();
@@ -15457,6 +15570,1003 @@ static int e_d_ga_chain_ended(void)
  e_d_ga_waiting_clear();
  if (e_d_ga.be->chain_over)
   e_d_ga.be->chain_over();
+ return(1);
+}
+
+/* ---- the debug adapters' answers on the fd loop ----
+ *
+ * What the editor asks an adapter at a stop (the stack, the watches) runs
+ * as the same tables of steps the line debuggers' stops run, through the
+ * adapter's own engine (e_dap_req_request over its seq table) instead of
+ * the line engine.  The user keeps the editor meanwhile: a letter goes into
+ * the file, a debugger key is kept or refused with the line debuggers'
+ * words (e_d_act_deferred, e_d_ga_refused), the waiting line and the
+ * deadline are the line debuggers', and Esc gives the answer up.
+ */
+
+#define E_D_DR_NO_FD      (-1)
+#define E_D_DR_FALLBACK_CMD "stackTrace"   /* named while a step is between
+                                              two requests */
+
+static struct
+{
+ E_D_REQ_IO io;              /* the clock, the timers, the waiting line */
+ E_D_REQUESTER via;          /* the adapter's seq table */
+ int timer[E_D_TIMERS];      /* the loop's timer ids, E_D_GA_NO_TIMER */
+ int chain;                  /* E_D_GA_*: what runs, or E_D_GA_NONE */
+ int forgetting;             /* the session ends: no step paints anything */
+ int watched;                /* the fd loop reads the adapter for its answers */
+ int fd;                     /* the descriptor it reads */
+} e_d_dr;
+
+/**
+ * e_d_dr_waiting_line - "waiting for dlv to answer `evaluate` ... 3s (Esc
+ * cancels)", in the line debuggers' words.
+ * @line, @n: where it goes; @cmd: the request; @secs: the seconds so far.
+ */
+static void e_d_dr_waiting_line(char *line, size_t n, const char *cmd,
+                                long secs)
+{
+ snprintf(line, n, E_D_GA_WAIT_FMT, g_dap_adapter_name, cmd, secs);
+}
+
+/**
+ * e_d_dr_waiting - Show the waiting line on the status row.
+ * @cmd, @secs: what is waited for and since when; @io: unused.
+ */
+static void e_d_dr_waiting(const char *cmd, long secs, void *io)
+{
+ char line[E_D_GA_LINE_MAX];
+
+ (void)io;
+ e_d_dr_waiting_line(line, sizeof line, cmd, secs);
+ e_status_say(e_d_ga_window(), line);
+ e_d_ga.waiting_painted = 1;
+}
+
+static void e_d_dr_after_engine(void);
+
+/**
+ * e_d_dr_on_timer - A timer the adapter's requests asked for has gone off.
+ * @data: which one (E_D_TIMER_*).
+ */
+static void e_d_dr_on_timer(void *data)
+{
+ int which = (int)(intptr_t)data;
+
+ e_d_dr.timer[which] = E_D_GA_NO_TIMER;
+ if (!g_dap)
+  return;
+ e_dap_request_timer(g_dap, which);
+ e_d_dr_after_engine();
+}
+
+/**
+ * e_d_dr_disarm - Stop timer @which, if it runs.
+ */
+static void e_d_dr_disarm(int which)
+{
+ if (e_d_dr.timer[which] == E_D_GA_NO_TIMER)
+  return;
+ wpe_timer_del(e_d_dr.timer[which]);
+ e_d_dr.timer[which] = E_D_GA_NO_TIMER;
+}
+
+/**
+ * e_d_dr_arm_timer - Ask the loop to call the adapter's requests back.
+ * @which: E_D_TIMER_*; @ms: the delay, or E_D_TIMER_OFF; @io: unused.
+ */
+static void e_d_dr_arm_timer(int which, long ms, void *io)
+{
+ (void)io;
+ e_d_dr_disarm(which);
+ if (ms == E_D_TIMER_OFF)
+  return;
+ e_d_dr.timer[which] = wpe_timer_add(ms, 0, e_d_dr_on_timer,
+                                     (void *)(intptr_t)which);
+ if (e_d_dr.timer[which] <= 0)
+  e_d_dr.timer[which] = E_D_GA_NO_TIMER;
+}
+
+/**
+ * e_d_dr_begin - A debug adapter session starts: give its engine the
+ * editor's clock, timers and status row.
+ *
+ * The deadline is E_D_REQ_TIMEOUT_S, or the user's XWPE_DEBUG_ANSWER_TIMEOUT
+ * for a program whose watches take long to compute, as for the line
+ * debuggers.
+ */
+static void e_d_dr_begin(void)
+{
+ int i;
+
+ memset(&e_d_dr.io, 0, sizeof e_d_dr.io);
+ e_d_dr.io.now_ms = e_d_ga_now_ms;
+ e_d_dr.io.arm_timer = e_d_dr_arm_timer;
+ e_d_dr.io.waiting = e_d_dr_waiting;
+ e_d_dr.io.notice = e_d_ga_notice;
+ e_d_dr.io.name = g_dap_adapter_name;
+ e_d_dr.via.request = e_dap_req_request;
+ e_d_dr.via.engine = g_dap;
+ for (i = 0; i < E_D_TIMERS; i++)
+  e_d_dr.timer[i] = E_D_GA_NO_TIMER;
+ e_d_dr.chain = E_D_GA_NONE;
+ e_d_dr.forgetting = 0;
+ e_d_dr.watched = 0;
+ e_d_dr.fd = E_D_DR_NO_FD;
+ e_dap_requests_init(g_dap, &e_d_dr.io, getenv(E_D_REQ_TIMEOUT_ENV));
+}
+
+static void e_d_dr_on_answer(int fd, void *data);
+
+/**
+ * e_d_dr_watch - Have the fd loop read the adapter while it owes answers
+ * and the program is stopped.
+ *
+ * While the program runs the run's own reader takes them.  A loop with no
+ * room leaves them unread, and the deadline ends the wait with its line.
+ */
+static void e_d_dr_watch(void)
+{
+ int fd;
+
+ if (!g_dap || e_d_dr.watched || e_d_run_going())
+  return;
+ if (!e_dap_answers_owed(g_dap))
+  return;
+ fd = e_dap_fd(g_dap);
+ if (fd < 0)
+  return;
+ if (e_fd_watch(fd, POLLIN, e_d_dr_on_answer, NULL,
+                "the debug adapter's answer") != 0)
+  return;
+ e_d_dr.watched = 1;
+ e_d_dr.fd = fd;
+}
+
+/**
+ * e_d_dr_unwatch - Stop reading the adapter for its answers.
+ *
+ * A run that has taken the descriptor over keeps it.
+ */
+static void e_d_dr_unwatch(void)
+{
+ if (!e_d_dr.watched)
+  return;
+ e_d_dr.watched = 0;
+ if (!e_d_run_going())
+  wpe_fd_del(e_d_dr.fd);
+ e_d_dr.fd = E_D_DR_NO_FD;
+}
+
+/**
+ * e_d_dr_run_begins - The program runs again: the run's reader takes the
+ * adapter's descriptor, answers included.
+ */
+static void e_d_dr_run_begins(void)
+{
+ e_d_dr.watched = 0;
+ e_d_dr.fd = E_D_DR_NO_FD;
+}
+
+/**
+ * e_d_dr_show_breakpoint_answers - Draw the margin again once the adapter's
+ * word on a breakpoint set at a stop has come.
+ *
+ * The user sees the hollow mark turn solid.  With a box or a non-text
+ * window in front, or while the stop's own answers still come (they draw
+ * the windows at their end), the drawing waits.
+ */
+static void e_d_dr_show_breakpoint_answers(void)
+{
+ if (!e_d_brk_live_changed || e_d_run_going() || e_d_dr.chain != E_D_GA_NONE)
+  return;
+ if (!e_build_ui_idle(WpeEditor))
+  return;
+ e_d_brk_live_changed = 0;
+ e_d_run_repaint_margin(WpeEditor);
+}
+
+/**
+ * e_d_dr_after_engine - The adapter's engine has done what it could with
+ * what came: draw what changed, and stop reading when nothing is owed.
+ */
+static void e_d_dr_after_engine(void)
+{
+ if (!g_dap)
+ {
+  e_d_dr_unwatch();
+  return;
+ }
+ e_d_dr_show_breakpoint_answers();
+ if (!e_dap_answers_owed(g_dap))
+  e_d_dr_unwatch();
+}
+
+/**
+ * e_d_dr_on_answer - The adapter wrote while the program is stopped.
+ * @fd: its descriptor; @data: unused.
+ *
+ * Runs on the fd loop, between the user's keys.  An adapter that hung up
+ * ends the session, and the user reads why.
+ */
+static void e_d_dr_on_answer(int fd, void *data)
+{
+ (void)data;
+ if (!g_dap)
+ {
+  wpe_fd_del(fd);
+  e_d_dr.watched = 0;
+  return;
+ }
+ if (e_dap_read_now(g_dap))
+ {
+  e_d_dr_after_engine();
+  return;
+ }
+ e_d_dr_unwatch();
+ e_d_quit(e_d_ga_window());
+}
+
+/**
+ * e_d_dr_answering - Does the editor wait for an adapter's answer, or work
+ * through a table of its answers?
+ */
+static int e_d_dr_answering(void)
+{
+ if (!g_dap)
+  return(0);
+ return(e_d_dr.chain != E_D_GA_NONE || e_dap_requests_pending(g_dap));
+}
+
+/**
+ * e_d_dr_busy - Is an adapter's answer waited for, so Esc and Ctrl-C give
+ * it up?
+ */
+static int e_d_dr_busy(void)
+{
+ return(g_dap && e_dap_requests_pending(g_dap));
+}
+
+/**
+ * e_d_dr_refusal_line - What a key that needs the adapter is told while it
+ * answers: the waiting line, naming the request.
+ * @line, @n: where it goes.
+ */
+static void e_d_dr_refusal_line(char *line, size_t n)
+{
+ long secs = 0;
+ const char *cmd = e_dap_request_waited(g_dap, &secs);
+
+ if (!cmd)
+  cmd = E_D_DR_FALLBACK_CMD;
+ e_d_dr_waiting_line(line, n, cmd, secs);
+}
+
+/**
+ * e_d_dr_cancel - Esc or Ctrl-C: give up on the answer the adapter owes,
+ * and on what the stop still had to ask.
+ *
+ * The user gets the editor back at once, with the line debuggers' line
+ * naming the request; the keys kept for after the answer are dropped, and
+ * the adapter's late answer is dropped when it comes.  Debug > Quit still
+ * ends the session.
+ */
+static void e_d_dr_cancel(void)
+{
+ char msg[E_D_REQ_MSG_MAX];
+ const char *cmd = e_dap_request_waited(g_dap, NULL);
+
+ e_d_ga_actions_drop();
+ if (cmd)
+ {
+  snprintf(msg, sizeof msg, E_D_REQ_CANCEL_FMT, g_dap_adapter_name, cmd);
+  e_d_ga_notice(msg, NULL);
+ }
+ e_dap_requests_cancel(g_dap, E_D_REQ_CANCELLED);
+ e_d_dr_after_engine();
+}
+
+/**
+ * e_d_dr_forget - The adapter session ends: every answer still owed is
+ * given up, nothing more is read for it, and no step paints anything.
+ */
+static void e_d_dr_forget(void)
+{
+ int i;
+
+ e_d_dr.forgetting = 1;
+ e_d_ga_actions_drop();
+ if (g_dap)
+  e_dap_requests_cancel(g_dap, E_D_REQ_GONE);
+ e_d_dr_unwatch();
+ for (i = 0; i < E_D_TIMERS; i++)
+  e_d_dr_disarm(i);
+ e_d_dr.chain = E_D_GA_NONE;
+ e_d_dr.forgetting = 0;
+}
+
+/**
+ * e_d_dr_chain_start - Run a table of steps on the adapter's engine.
+ * @cn: the editor; @steps: the table; @ctx: handed to every step;
+ * @finished: told once at the end; @kind: E_D_GA_STOP or E_D_GA_ASK.
+ * Return: 1 while it runs or when it ended well at once, 0 when it failed.
+ */
+static int e_d_dr_chain_start(ECNT *cn, const E_D_STEP *steps, void *ctx,
+                              e_d_chain_done_fn finished, int kind)
+{
+ int ret;
+
+ if (!g_dap)
+ {
+  finished(0, ctx);
+  return(0);
+ }
+ e_d_ga.cn = cn;
+ e_d_dr.chain = kind;
+ ret = e_d_chain_run(&e_d_dr.via, steps, ctx, finished);
+ e_d_dr_watch();
+ e_d_dr_after_engine();
+ return(ret);
+}
+
+/**
+ * e_d_dr_chain_ended - A table of steps is over on the adapter's engine.
+ * Return: 1 when the session goes on, 0 when it ended meanwhile.
+ */
+static int e_d_dr_chain_ended(void)
+{
+ e_d_dr.chain = E_D_GA_NONE;
+ e_d_ga.running_said = 0;
+ if (!g_dap || e_d_dr.forgetting)
+  return(0);
+ e_d_ga_waiting_clear();
+ return(1);
+}
+
+/* ---- an adapter's stop and watches, asked on the fd loop ---- */
+
+/* What the steps of an adapter's stop or watches learn. */
+typedef struct
+{
+ ECNT *cn;
+ int stop;                   /* the answers are a stop's: mark it */
+ int pause;                  /* the stop is the user's Pause */
+ int pause_frame;            /* the frame Pause marks, 0 innermost */
+ int watch;                  /* the next watch to ask */
+ char **values;              /* each watch's value, or NULL */
+ int nvalues;
+ int watches_sw;             /* bring the Watches window to the top */
+} E_D_DAP_CTX;
+
+static E_D_DAP_CTX e_d_dc;
+
+/**
+ * e_d_dc_free - Give back the values a table of steps kept.
+ * @st: the context.
+ */
+static void e_d_dc_free(E_D_DAP_CTX *st)
+{
+ int i;
+
+ for (i = 0; i < st->nvalues; i++)
+  free(st->values[i]);
+ free(st->values);
+ st->values = NULL;
+ st->nvalues = 0;
+}
+
+/**
+ * e_d_dc_reset - Make the context ready for a new table of steps, with
+ * room for a value for every watch.
+ * @st: the context; @cn: the editor.
+ */
+static void e_d_dc_reset(E_D_DAP_CTX *st, ECNT *cn)
+{
+ e_d_dc_free(st);
+ memset(st, 0, sizeof(*st));
+ st->cn = cn;
+ if (e_d_nwtchs <= 0)
+  return;
+ st->values = calloc((size_t)e_d_nwtchs, sizeof(char *));
+ if (st->values)
+  st->nvalues = e_d_nwtchs;
+}
+
+/**
+ * e_d_dap_frame_is_users - Is a frame of the stack the user's own code, in
+ * a file the editor can open?
+ * @fr: the frame.
+ * Return: 1 when it is.
+ */
+static int e_d_dap_frame_is_users(const e_d_frame *fr)
+{
+ if (!fr->file[0] || fr->line <= 0 || !fr->user)
+  return(0);
+ return(access(fr->file, R_OK) == 0);
+}
+
+/**
+ * e_d_dap_pause_pick - After Pause, move the stop to the user's code.
+ *
+ * The adapter stops the program wherever it is, often inside the language
+ * runtime (dlv in Go's scheduler, a sleep in a library).  The first frame
+ * of the stack that is in the user's program becomes the stop to mark and
+ * the frame the watches are read in, so the user sees the line the program
+ * is working on.  A stop already in the user's code is left alone.
+ * Return: the index of the frame chosen, 0 when the stop stays as it is.
+ */
+static int e_d_dap_pause_pick(void)
+{
+ int i;
+
+ if (e_d_dap_in_user_code() && g_dap_stop_file[0])
+  return(0);
+ for (i = 0; i < e_d_nframes; i++)
+ {
+  if (!e_d_dap_frame_is_users(&e_d_frames[i]))
+   continue;
+  snprintf(g_dap_stop_file, sizeof g_dap_stop_file, "%s", e_d_frames[i].file);
+  g_dap_stop_line = e_d_frames[i].line;
+  e_dap_select_frame(g_dap, e_d_frames[i].dap_id);
+  return(i);
+ }
+ return(0);
+}
+
+/* step: the stack of the stop (Stack window, Finish function, Pause) */
+
+static int e_d_dc_frames_cmd(char *cmd, size_t n, void *ctx)
+{
+ (void)ctx;
+ return(e_dap_stage_stack_trace(g_dap, E_D_FRAMES_MAX, cmd, n));
+}
+
+static int e_d_dc_frames_answered(E_D_REQ_END how, E_D_ANSWER *ans, void *ctx)
+{
+ E_D_DAP_CTX *st = ctx;
+
+ (void)how;
+ e_d_dap_take_frames(ans);
+ if (st->pause)
+  st->pause_frame = e_d_dap_pause_pick();
+ return(E_D_STEP_NEXT);
+}
+
+/* step: one watch's value; AGAIN until every watch has been asked */
+
+static int e_d_dc_watch_cmd(char *cmd, size_t n, void *ctx)
+{
+ E_D_DAP_CTX *st = ctx;
+
+ if (st->stop && !e_d_dap_stop_has_place())
+  return(0);
+ if (st->watch >= st->nvalues || st->watch >= e_d_nwtchs)
+  return(0);           /* a project reload took watches away meanwhile */
+ return(e_dap_stage_evaluate(g_dap, e_d_swtchs[st->watch], cmd, n));
+}
+
+static int e_d_dc_watch_answered(E_D_REQ_END how, E_D_ANSWER *ans, void *ctx)
+{
+ E_D_DAP_CTX *st = ctx;
+
+ (void)how;
+ st->values[st->watch] = e_dap_answer_result(ans);
+ st->watch++;
+ if (st->watch < st->nvalues)
+  return(E_D_STEP_AGAIN);
+ return(E_D_STEP_NEXT);
+}
+
+static const E_D_STEP e_d_dap_stop_steps[] =
+{
+ { e_d_dc_frames_cmd, e_d_dc_frames_answered },
+ { e_d_dc_watch_cmd,  e_d_dc_watch_answered },
+ { NULL, NULL }
+};
+
+static const E_D_STEP e_d_dap_watch_steps[] =
+{
+ { e_d_dc_watch_cmd,  e_d_dc_watch_answered },
+ { NULL, NULL }
+};
+
+/**
+ * e_d_dap_stop_tail - The stop is dealt with: take out the breakpoints the
+ * editor set for this run, tell the adapter of the user's changes, and, when
+ * the stop was shown, say how a Pause ended and run the next kept key.
+ * @cn: the editor; @shown: 0 when the stop's answers were given up on.
+ */
+static void e_d_dap_stop_tail(ECNT *cn, int shown)
+{
+ e_d_run_stop_chores(cn->f[cn->mxedt]);
+ if (!shown)
+  return;
+ e_d_run_stop_tail(cn, e_d_run.ops);
+ e_d_act_schedule();
+}
+
+/**
+ * e_d_dc_stop_finished - The adapter has answered everything the stop
+ * asks: the user sees the stop marked and the windows filled.
+ * @ok: 0 when an answer was given up on (the status row already says
+ * which): nothing is drawn and the kept keys are dropped; @ctx: the context.
+ */
+static void e_d_dc_stop_finished(int ok, void *ctx)
+{
+ E_D_DAP_CTX *st = ctx;
+ ECNT *cn = st->cn;
+
+ if (!e_d_dr_chain_ended())
+ {
+  e_d_dc_free(st);
+  return;
+ }
+ if (!ok)
+ {
+  e_d_ga_actions_drop();
+  e_d_dc_free(st);
+  e_d_dap_stop_tail(cn, 0);
+  return;
+ }
+ e_d_dap_show_stop(cn->f[cn->mxedt], st->values, st->nvalues);
+ if (st->pause)
+  e_d_nstack = st->pause_frame;
+ e_d_dc_free(st);
+ e_d_dap_stop_tail(cn, 1);
+}
+
+/**
+ * e_d_dap_stop_ask - The program stopped where the user is to see it: ask
+ * the adapter, on the fd loop, for the stack and the watches, and show the
+ * stop once it has answered.
+ * @f: the window on top; @pause: 1 for the stop Pause asked for.
+ *
+ * The user sees the program's output at once; the mark, the watches and
+ * the stack come when the adapter answers, the keys reaching the editor
+ * meanwhile.
+ */
+static void e_d_dap_stop_ask(FENSTER *f, int pause)
+{
+ E_D_DAP_CTX *st = &e_d_dc;
+
+ e_d_dc_reset(st, f->ed);
+ st->stop = 1;
+ st->pause = pause;
+ e_d_nframes = 0;
+ e_d_run.stop_on_loop = 1;
+ e_d_dr_chain_start(f->ed, e_d_dap_stop_steps, st, e_d_dc_stop_finished,
+                    E_D_GA_STOP);
+}
+
+/**
+ * e_d_dc_watches_finished - The watches have been answered: fill their
+ * window, then run the next kept key.
+ * @ok: 0 when an answer was given up on; @ctx: the context.
+ */
+static void e_d_dc_watches_finished(int ok, void *ctx)
+{
+ E_D_DAP_CTX *st = ctx;
+ ECNT *cn = st->cn;
+
+ if (!e_d_dr_chain_ended() || !ok)
+ {
+  e_d_ga_actions_drop();
+  e_d_dc_free(st);
+  return;
+ }
+ e_d_dap_watches_fill(cn->f[cn->mxedt], st->values, st->nvalues,
+                      st->watches_sw);
+ e_d_dc_free(st);
+ e_d_act_schedule();
+}
+
+/**
+ * e_d_dap_watches_ask - Ask every watch again at a stop, after the user
+ * added, edited or deleted one, or picked a frame.
+ * @cn: the editor; @sw: 1 to bring the Watches window to the top.
+ * Return: 0.
+ */
+static int e_d_dap_watches_ask(ECNT *cn, int sw)
+{
+ E_D_DAP_CTX *st = &e_d_dc;
+
+ e_d_dc_reset(st, cn);
+ st->watches_sw = sw;
+ e_d_dr_chain_start(cn, e_d_dap_watch_steps, st, e_d_dc_watches_finished,
+                    E_D_GA_ASK);
+ return(0);
+}
+
+/* ---- Quit: an adapter ended in the background ----
+ *
+ * Quit gives the user the editor back at once.  The adapter is asked to
+ * end its program (`disconnect`) on the fd loop, given a moment to exit by
+ * itself, then SIGTERM, then SIGKILL, each wait a loop timer, and its exit
+ * is learned from the editor's child watch the moment it happens.  The
+ * build server that hosts the Scala adapter is closed after it.
+ */
+
+#define E_D_DAP_CLOSE_SLOTS  4   /* adapters being ended at once */
+#define E_D_DAP_CLOSE_FREE   0
+#define E_D_DAP_CLOSE_ANSWER 1   /* disconnect sent; waits for its answer */
+#define E_D_DAP_CLOSE_EXIT   2   /* answered; waits for it to exit by itself */
+#define E_D_DAP_CLOSE_TERM   3   /* SIGTERM sent; waits for its exit */
+#define E_D_DAP_CLOSE_KILL   4   /* SIGKILL sent; waits for it to be reaped */
+#define E_D_DAP_CLOSE_LATE_FMT \
+ " %s did not answer `disconnect` within %d s: ended it"
+#define E_D_DAP_CLOSE_LINE_MAX 160
+#define E_D_DAP_MS_PER_S       1000
+
+typedef struct
+{
+ int phase;                  /* E_D_DAP_CLOSE_* */
+ e_dap_session *s;
+ e_bsp_session *bsp;         /* the build server that hosts it, or NULL */
+ pid_t pid;                  /* the adapter, the editor's child, or 0 */
+ int timer;                  /* the phase's deadline, or WPE_TIMER_NONE */
+ int fd;                     /* its transport, while watched, or -1 */
+ int pty;                    /* dlv's pty, while watched, or -1 */
+ char name[sizeof g_dap_adapter_name];
+} E_D_DAP_CLOSING;
+
+static E_D_DAP_CLOSING e_d_dap_closing[E_D_DAP_CLOSE_SLOTS];
+
+/**
+ * e_d_dap_close_unwatch - Stop reading what a closing adapter writes.
+ * @c: the closing adapter.
+ */
+static void e_d_dap_close_unwatch(E_D_DAP_CLOSING *c)
+{
+ if (c->fd >= 0)
+  wpe_fd_del(c->fd);
+ if (c->pty >= 0)
+  wpe_fd_del(c->pty);
+ c->fd = c->pty = E_D_DR_NO_FD;
+}
+
+/**
+ * e_d_dap_close_disarm - Stop the closing adapter's deadline.
+ * @c: the closing adapter.
+ */
+static void e_d_dap_close_disarm(E_D_DAP_CLOSING *c)
+{
+ if (c->timer == WPE_TIMER_NONE)
+  return;
+ wpe_timer_del(c->timer);
+ c->timer = WPE_TIMER_NONE;
+}
+
+static void e_d_dap_close_on_timer(void *data);
+
+/**
+ * e_d_dap_close_arm - Give the closing adapter's phase its deadline.
+ * @c: the closing adapter; @ms: the deadline.
+ */
+static void e_d_dap_close_arm(E_D_DAP_CLOSING *c, long ms)
+{
+ e_d_dap_close_disarm(c);
+ c->timer = wpe_timer_add(ms, 0, e_d_dap_close_on_timer, c);
+ if (c->timer <= 0)
+  c->timer = WPE_TIMER_NONE;
+}
+
+/**
+ * e_d_dap_close_done - The adapter is gone: free its session, then close
+ * the build server that hosted it.
+ * @c: the closing adapter.
+ */
+static void e_d_dap_close_done(E_D_DAP_CLOSING *c)
+{
+ e_dap_session *s = c->s;
+ e_bsp_session *bsp = c->bsp;
+
+ e_d_dap_close_unwatch(c);
+ e_d_dap_close_disarm(c);
+ if (c->pid > 0)
+  WpeChildUnwatch(c->pid);
+ memset(c, 0, sizeof(*c));
+ c->phase = E_D_DAP_CLOSE_FREE;
+ e_dap_free(s);
+ if (bsp)
+  e_bsp_close(bsp);
+}
+
+/**
+ * e_d_dap_close_gone - Has the closing adapter exited (and been reaped)?
+ * @c: the closing adapter.
+ *
+ * One the editor did not spawn (Scala's, hosted by the build server) has
+ * nothing to exit.
+ */
+static int e_d_dap_close_gone(E_D_DAP_CLOSING *c)
+{
+ if (c->pid <= 0)
+  return(1);
+ return(e_dap_adapter_gone(c->s));
+}
+
+/**
+ * e_d_dap_close_term - Ask the adapter to end with SIGTERM, so it can still
+ * end the program it runs (a SIGKILLed lldb-dap or dlv leaves it behind).
+ * @c: the closing adapter.
+ */
+static void e_d_dap_close_term(E_D_DAP_CLOSING *c)
+{
+ if (e_d_dap_close_gone(c))
+ {
+  e_d_dap_close_done(c);
+  return;
+ }
+ e_dap_hang_up(c->s);
+ e_dap_signal(c->s, SIGTERM);
+ c->phase = E_D_DAP_CLOSE_TERM;
+ e_d_dap_close_arm(c, E_DAP_TERM_MS);
+}
+
+/**
+ * e_d_dap_close_kill - The adapter outlived SIGTERM: SIGKILL, so the editor
+ * never keeps one that does not quit.
+ * @c: the closing adapter.
+ */
+static void e_d_dap_close_kill(E_D_DAP_CLOSING *c)
+{
+ if (e_d_dap_close_gone(c))
+ {
+  e_d_dap_close_done(c);
+  return;
+ }
+ e_dap_signal(c->s, SIGKILL);
+ c->phase = E_D_DAP_CLOSE_KILL;
+ e_d_dap_close_arm(c, E_DAP_TERM_MS);
+}
+
+/**
+ * e_d_dap_close_say_late - Tell the user the adapter did not answer Quit
+ * in time and is being ended by signal.
+ * @c: the closing adapter.
+ */
+static void e_d_dap_close_say_late(E_D_DAP_CLOSING *c)
+{
+ char line[E_D_DAP_CLOSE_LINE_MAX];
+ ECNT *cn = WpeEditor;
+
+ if (!cn || cn->mxedt < 0)
+  return;
+ snprintf(line, sizeof line, E_D_DAP_CLOSE_LATE_FMT, c->name,
+          E_DAP_DISCONNECT_MS / E_D_DAP_MS_PER_S);
+ e_status_say_until_key(cn->f[cn->mxedt], line);
+}
+
+static void e_d_dap_close_on_discard(int fd, void *data);
+
+/**
+ * e_d_dap_close_answered - The adapter answered `disconnect` (or its
+ * transport ended): the program is ended; give it a moment to exit.
+ * @c: the closing adapter.
+ *
+ * What it still writes is read and dropped, so it never blocks on a full
+ * pipe while it exits.
+ */
+static void e_d_dap_close_answered(E_D_DAP_CLOSING *c)
+{
+ e_dap_hang_up(c->s);
+ if (c->fd >= 0 && e_dap_fd(c->s) < 0)
+ {
+  wpe_fd_del(c->fd);
+  c->fd = E_D_DR_NO_FD;
+ }
+ if (c->fd >= 0)
+  e_fd_watch(c->fd, POLLIN, e_d_dap_close_on_discard, c,
+             "the debug adapter's last words");
+ if (e_d_dap_close_gone(c))
+ {
+  e_d_dap_close_done(c);
+  return;
+ }
+ c->phase = E_D_DAP_CLOSE_EXIT;
+ e_d_dap_close_arm(c, E_DAP_EXIT_MS);
+}
+
+/**
+ * e_d_dap_close_on_answer - A closing adapter wrote: look for its answer
+ * to `disconnect`.
+ * @fd: its transport; @data: the closing adapter.
+ */
+static void e_d_dap_close_on_answer(int fd, void *data)
+{
+ E_D_DAP_CLOSING *c = data;
+
+ (void)fd;
+ if (e_dap_run_pump(c->s) == E_DAP_RUN_ENDED)
+  e_d_dap_close_answered(c);
+}
+
+/**
+ * e_d_dap_close_on_discard - A closing adapter that answered wrote more:
+ * drop it.
+ * @fd: its transport; @data: the closing adapter.
+ */
+static void e_d_dap_close_on_discard(int fd, void *data)
+{
+ E_D_DAP_CLOSING *c = data;
+
+ e_dap_discard_input(c->s);
+ if (e_dap_fd(c->s) >= 0)
+  return;
+ wpe_fd_del(fd);
+ c->fd = E_D_DR_NO_FD;
+}
+
+/**
+ * e_d_dap_close_on_output - dlv's pty has output while dlv ends: drop it,
+ * so neither dlv nor its program stalls on a full pty.
+ * @fd: the pty; @data: the closing adapter.
+ */
+static void e_d_dap_close_on_output(int fd, void *data)
+{
+ E_D_DAP_CLOSING *c = data;
+
+ e_dap_drain_output(c->s);
+ if (e_dap_output_fd(c->s) == fd)
+  return;
+ wpe_fd_del(fd);
+ c->pty = E_D_DR_NO_FD;
+}
+
+/**
+ * e_d_dap_close_on_timer - A closing adapter's phase ran out: the next
+ * phase.
+ * @data: the closing adapter.
+ *
+ * No answer to `disconnect`: said on the status row, then SIGTERM; no exit
+ * after the answer: SIGTERM; no exit after SIGTERM: SIGKILL; after SIGKILL
+ * the session is freed whatever the child watch says.
+ */
+static void e_d_dap_close_on_timer(void *data)
+{
+ E_D_DAP_CLOSING *c = data;
+
+ c->timer = WPE_TIMER_NONE;
+ switch (c->phase)
+ {
+  case E_D_DAP_CLOSE_ANSWER:
+   e_d_dap_close_say_late(c);
+   e_d_dap_close_term(c);
+   break;
+  case E_D_DAP_CLOSE_EXIT:
+   e_d_dap_close_term(c);
+   break;
+  case E_D_DAP_CLOSE_TERM:
+   e_d_dap_close_kill(c);
+   break;
+  case E_D_DAP_CLOSE_KILL:
+   e_d_dap_close_done(c);
+   break;
+ }
+}
+
+/**
+ * e_d_dap_adapter_ended - The editor's child watch: an adapter exited.
+ * @pid: it; @status: how; @data: unused.
+ *
+ * One that Quit is ending is done.  One that ends during its session
+ * (it crashed, or it ended with its program) is ended by the end of its
+ * transport instead, which the session's reader sees.
+ */
+static void e_d_dap_adapter_ended(int pid, int status, void *data)
+{
+ int i;
+
+ (void)status;
+ (void)data;
+ for (i = 0; i < E_D_DAP_CLOSE_SLOTS; i++)
+ {
+  E_D_DAP_CLOSING *c = &e_d_dap_closing[i];
+
+  if (c->phase == E_D_DAP_CLOSE_FREE || c->pid != pid)
+   continue;
+  e_dap_adapter_gone(c->s);
+  c->pid = 0;
+  e_d_dap_close_done(c);
+  return;
+ }
+}
+
+/**
+ * e_d_dap_close_slot - A free place for an adapter Quit is ending, or NULL.
+ */
+static E_D_DAP_CLOSING *e_d_dap_close_slot(void)
+{
+ int i;
+
+ for (i = 0; i < E_D_DAP_CLOSE_SLOTS; i++)
+  if (e_d_dap_closing[i].phase == E_D_DAP_CLOSE_FREE)
+   return(&e_d_dap_closing[i]);
+ return(NULL);
+}
+
+/**
+ * e_d_dap_close_await_answer - `disconnect` went out: read the adapter for
+ * its answer, within E_DAP_DISCONNECT_MS.
+ * @c: the closing adapter.
+ */
+static void e_d_dap_close_await_answer(E_D_DAP_CLOSING *c)
+{
+ int fd = e_dap_fd(c->s), pty = e_dap_output_fd(c->s);
+
+ c->phase = E_D_DAP_CLOSE_ANSWER;
+ if (fd >= 0 && e_fd_watch(fd, POLLIN, e_d_dap_close_on_answer, c,
+                           "the debug adapter's answer to Quit") == 0)
+  c->fd = fd;
+ if (pty >= 0 && e_fd_watch(pty, POLLIN, e_d_dap_close_on_output, c,
+                            "the program's output") == 0)
+  c->pty = pty;
+ e_d_dap_close_arm(c, E_DAP_DISCONNECT_MS);
+}
+
+/**
+ * e_d_dap_close_now - No place to end the adapter in the background (four
+ * are being ended already): end it by SIGKILL and free the session.  The
+ * SIGCHLD handler reaps it.
+ * @s: the session; @bsp: its build server, or NULL.
+ */
+static void e_d_dap_close_now(e_dap_session *s, e_bsp_session *bsp)
+{
+ e_dap_signal(s, SIGKILL);
+ e_dap_free(s);
+ if (bsp)
+  e_bsp_close(bsp);
+}
+
+/**
+ * e_d_dap_close_begin - Quit: end the adapter and its program without
+ * holding the editor.
+ * @s: the session, given up by the editor; @bsp: the build server that
+ * hosts the adapter, or NULL.
+ *
+ * Nothing the adapter says reaches the windows any more.  An adapter that
+ * never answered initialize is not spoken to: it is ended by signal.
+ */
+static void e_d_dap_close_begin(e_dap_session *s, e_bsp_session *bsp)
+{
+ E_D_DAP_CLOSING *c = e_d_dap_close_slot();
+
+ e_dap_host_forget(s);
+ if (!c)
+ {
+  e_d_dap_close_now(s, bsp);
+  return;
+ }
+ memset(c, 0, sizeof(*c));
+ c->s = s;
+ c->bsp = bsp;
+ c->pid = e_dap_adapter_pid(s);
+ c->timer = WPE_TIMER_NONE;
+ c->fd = c->pty = E_D_DR_NO_FD;
+ snprintf(c->name, sizeof c->name, "%s", g_dap_adapter_name);
+ if (e_dap_disconnect(s) == 0)
+ {
+  e_d_dap_close_await_answer(c);
+  return;
+ }
+ c->phase = E_D_DAP_CLOSE_EXIT;
+ e_d_dap_close_term(c);
+}
+
+/**
+ * e_d_dap_all_closed - Has every adapter Quit ended in the background gone?
+ *
+ * The editor's end keeps its loop running until it has, so a logout during
+ * a debug session leaves no adapter and no program behind.
+ */
+int e_d_dap_all_closed(void)
+{
+ int i;
+
+ for (i = 0; i < E_D_DAP_CLOSE_SLOTS; i++)
+  if (e_d_dap_closing[i].phase != E_D_DAP_CLOSE_FREE)
+   return(0);
  return(1);
 }
 
@@ -15583,7 +16693,7 @@ static void e_d_act_on_timer(void *data)
 
  (void)data;
  e_d_ga.act_timer = E_D_GA_NO_TIMER;
- if (!e_d_ga.live || !e_d_session_runs())
+ if ((!e_d_ga.live && !e_d_dap_active()) || !e_d_session_runs())
  {
   e_d_ga.nact = 0;
   return;

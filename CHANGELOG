@@ -254,6 +254,17 @@ Changes
   never answered used to freeze the editor until it was killed, and Ctrl-C
   then could not reach it.
 
+* Under the debug adapters (Go's dlv, gdb and lldb-dap for Rust, Scala)
+  the editor keeps its keys while the adapter answers at a stop: the stack,
+  the watches, a frame you pick, a breakpoint you set.  A letter typed then
+  goes into the file.  A debugger key shows "waiting for dlv to answer
+  `evaluate` ... 3s (Esc cancels)" or is kept and run once the adapter has
+  answered, as under gdb; Esc, Ctrl-C and the 30 second deadline end the
+  wait.  A watch whose value never came used to freeze the editor.  Debug >
+  Quit gives the editor back at once: the adapter ends its program and
+  exits in the background, and one that does not answer within 2 seconds
+  is ended by signal, with a line on the status row.
+
 * The same now holds while gdb starts and at every Run, Continue, step,
   Finish and Go to cursor: gdb's settings, your breakpoints and the run
   command are asked while you keep typing.  F8 typed while gdb starts

@@ -748,3 +748,45 @@ int wpe_fd_wait_for(wpe_wait_pred pred, long deadline_ms, const char *what)
  wpe_wait_what = outer;
  return result;
 }
+
+/**
+ * wpe_fd_forget_unread - Stop watching every descriptor no callback reads
+ * (the keyboard, a display connection).
+ *
+ * At the editor's end nothing will read them again; left on the loop, a key
+ * typed then would wake every wait at once without end.
+ */
+static void wpe_fd_forget_unread(void)
+{
+ int i;
+
+ for (i = 0; i < fd_count; i++)
+ {
+  if (fd_table[i].active && !fd_table[i].callback)
+   wpe_fd_del(fd_table[i].fd);
+ }
+}
+
+/**
+ * wpe_fd_end_wait - At the editor's end, keep the loop running until the
+ * children it must not leave behind are gone.
+ * @pred: non-zero once they are; @deadline_ms: the longest wait.
+ *
+ * A debug adapter told to end its program answers, exits and is reaped on
+ * the loop's descriptors, timers and child watch, so a logout during a debug
+ * session leaves no program behind.  The keyboard and the displays are no
+ * longer read: the editor is ending, and the wait ends only on @pred or the
+ * deadline, however many keys are typed meanwhile.  It is the editor's one
+ * nested wait, for its end only (e_exit_teardown): a signal, an error box
+ * or a closed window ends the editor from inside any dialog, and the end
+ * never returns to the main loop.
+ * Return: WPE_WAIT_DONE when @pred held, else WPE_WAIT_TIMEOUT.
+ */
+int wpe_fd_end_wait(wpe_wait_pred pred, long deadline_ms)
+{
+ wpe_fd_forget_unread();
+ if (wpe_fd_wait_for(pred, deadline_ms, "the editor's children to end") ==
+     WPE_WAIT_DONE)
+  return WPE_WAIT_DONE;
+ return WPE_WAIT_TIMEOUT;
+}

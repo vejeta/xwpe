@@ -3,9 +3,11 @@
  * Layer above we_dap_proto.c (the wire format).  It spawns a debug adapter
  * (Delve `dlv dap`, lldb-dap, Metals, ...), connects, and runs a source-level
  * debug session.  Every message read goes through one dispatcher that hands
- * each response to the owner of its request, so the host can either wait
- * (the synchronous calls) or follow the run from its event loop (the run
- * pump below), and an answer never reaches the wrong wait or none.  The host
+ * each response to the owner of its request, so the host follows the run
+ * and the answers from its event loop (the run pump and e_dap_request
+ * below), and an answer never reaches the wrong owner or none.  The engine
+ * itself never waits; we_dap_sync.c, linked into the C tests only, gives a
+ * caller without a loop the same engine as calls that wait.  The host
  * (xwpe, or a test) supplies callbacks
  * for the UI side-effects, so the engine itself stays free of editor globals
  * and can be integration-tested against a real adapter.
@@ -18,6 +20,18 @@
 #define WE_DAP_H
 
 #include <sys/types.h>
+
+#include "we_debreq.h"
+
+struct json_object;
+
+/* How long Quit waits for the adapter to answer `disconnect` before it is
+   ended by signal (the adapters measured answer within milliseconds); after
+   its answer, how long it gets to exit by itself (lldb-dap takes about a
+   second); after SIGTERM, how long before SIGKILL. */
+#define E_DAP_DISCONNECT_MS 2000
+#define E_DAP_EXIT_MS       2000
+#define E_DAP_TERM_MS       1000
 
 /* Side-effects the session asks the host to perform.  The callbacks only
  * record what they are told: they are called from inside the engine's reads,
@@ -44,6 +58,13 @@ typedef struct {
 } e_dap_host;
 
 typedef struct e_dap_session e_dap_session;
+
+/* ---- calls that wait (we_dap_sync.c, for callers with no event loop) ----
+ * e_dap_open*, e_dap_run, e_dap_run_to_first_stop, e_dap_step,
+ * e_dap_evaluate, e_dap_stack_trace, e_dap_set_file_breakpoints,
+ * e_dap_close and e_dap_set_end_watch wait with poll() until the adapter
+ * has answered.  The editor never calls them: it follows the same engine
+ * from its loop (e_dap_start*, the run pump, e_dap_request). */
 
 /* Spawn the adapter (argv NULL-terminated, e.g. {"dlv","dap","--client-addr=...",0}
  * -- but the engine appends --client-addr itself, so pass just {"dlv","dap",0}),
@@ -111,6 +132,22 @@ int  e_dap_run_to_first_stop(e_dap_session *s);
 int  e_dap_start_answered(const e_dap_session *s);
 const char *e_dap_start_waits_for(const e_dap_session *s);
 const char *e_dap_start_error(const e_dap_session *s);
+/* For a caller that drives the start itself (we_dap_sync.c):
+ * e_dap_start_state() takes what was already read and says where the start
+ * stands (E_DAP_START_*); e_dap_start_dialling() is true while a
+ * reverse-TCP adapter has not dialled in; e_dap_start_give_up() ends a
+ * start whose adapter never answered (E_DAP_START_FAILED);
+ * e_dap_start_hold_after_initialize() makes the start stop once initialize
+ * is answered, so breakpoints can be added before the launch, and
+ * e_dap_start_go_on() sends the launch then and returns the state. */
+int  e_dap_start_state(e_dap_session *s);
+int  e_dap_start_dialling(const e_dap_session *s);
+int  e_dap_start_give_up(e_dap_session *s);
+void e_dap_start_hold_after_initialize(e_dap_session *s);
+int  e_dap_start_go_on(e_dap_session *s);
+/* Forward the program's output to on_output from now on, also before any
+ * stop (a program that ends before its first stop). */
+void e_dap_forward_output(e_dap_session *s);
 /* The adapter's PID when it is this process's child, else 0 (Scala: the
  * build server hosts it). */
 pid_t e_dap_adapter_pid(const e_dap_session *s);
@@ -222,10 +259,98 @@ int  e_dap_set_file_breakpoints_async(e_dap_session *s, const char *file,
  * own status line meanwhile, then calls e_dap_close().  Returns 0, or -1
  * when there is no adapter to speak to (close at once). */
 int  e_dap_disconnect(e_dap_session *s);
+/* Quit has ended the session for the user: nothing the adapter still says
+ * (output, a stop, a breakpoint) is told to the host any more, and the
+ * host's clock and timers, which the next session's requests use, are not
+ * touched again. */
+void e_dap_host_forget(e_dap_session *s);
+/* The longest an adapter Quit ended in the background may take to go: no
+ * answer to `disconnect`, SIGTERM ignored, SIGKILL and its reaping. */
+#define E_DAP_CLOSE_MAX_MS \
+ (E_DAP_DISCONNECT_MS + E_DAP_EXIT_MS + 2 * E_DAP_TERM_MS)
+/* Has Quit's `disconnect` gone out, and has the adapter answered it? */
+int  e_dap_disconnect_sent(const e_dap_session *s);
+int  e_dap_disconnect_answered(const e_dap_session *s);
+/* Tell the adapter nothing more will be asked (its input closes, or the
+ * socket's sending side): some adapters exit on that. */
+void e_dap_hang_up(e_dap_session *s);
+/* Read once what the adapter has sent and drop it, without waiting: while
+ * Quit waits for its exit, an adapter that writes never blocks on a full
+ * pipe, and what it writes does not grow the editor's memory. */
+void e_dap_discard_input(e_dap_session *s);
+/* Free the session without waiting for anything: its descriptors are
+ * closed and every request still out is told E_D_REQ_GONE.  The host ends
+ * and reaps the adapter itself first (e_dap_disconnect, e_dap_signal,
+ * e_dap_adapter_gone); a host without a loop uses e_dap_close. */
+void e_dap_free(e_dap_session *s);
 
-/* Disconnect and reap the adapter; frees the session.  It WAITS, outside
- * any event loop and with nothing on the screen, each wait a poll bounded
- * by its own deadline:
+/* ---- requests answered by callback --------------------------------------
+ *
+ * What the editor asks the adapter at a stop (a watch's value, the stack,
+ * a breakpoint list) goes out at once and is answered later, through the
+ * same reads the run pump and e_dap_read_now() do, so the editor keeps its
+ * keys meanwhile.  Events read meanwhile (output, stopped, breakpoint,
+ * terminated, exited) go where they always go and are never taken for the
+ * answer: a response is matched to its request by request_seq.
+ *
+ * e_dap_requests_init() gives the session the host's clock and one-shot
+ * timers (the line engine's E_D_REQ_IO: now_ms, arm_timer, waiting,
+ * notice, name, io; the rest is unused) and the user's deadline override
+ * (XWPE_DEBUG_ANSWER_TIMEOUT's text, or NULL).  The oldest request out
+ * then gets the waiting line after E_D_REQ_QUIET_MS and is given up at the
+ * deadline with the line debuggers' sentence; the host calls
+ * e_dap_request_timer() when a timer it was asked for goes off.  Without
+ * it there is no waiting line and no deadline (the C tests).
+ *
+ * e_dap_request() sends @command with @args (taken over, may be NULL) and
+ * calls @fn exactly once: E_D_REQ_DONE with the response as the answer's
+ * text (its error flag set for "success": false), E_D_REQ_TIMED_OUT at the
+ * deadline, E_D_REQ_CANCELLED or E_D_REQ_GONE from e_dap_requests_cancel()
+ * or the end of the transport.  Returns E_D_SEND_OK, or why it was not sent
+ * (then @fn is never called).  A response to a request given up on is
+ * dropped; a setBreakpoints given up on still tells on_breakpoints.  @fn
+ * may send the next request; it must not free the session.
+ *
+ * e_dap_req_request() is the same engine as an E_D_REQUESTER (its engine is
+ * the session), so a table of E_D_STEP runs over it with e_d_chain_run
+ * exactly as over the line debuggers' engine.  A step builds its request
+ * with an e_dap_stage_*() function, which keeps the arguments in the
+ * session (so a long expression or a long breakpoint list goes out whole)
+ * and writes the command's name as the step's command.  The answer readers
+ * take a DONE answer: e_dap_answer_result() an evaluate's value (malloc'd,
+ * or NULL), e_dap_answer_frames() a stackTrace's frames (how many, or -1
+ * when the answer holds no response). */
+void e_dap_requests_init(e_dap_session *s, const E_D_REQ_IO *io,
+                         const char *timeout_text);
+int  e_dap_request(e_dap_session *s, const char *command,
+                   struct json_object *args, e_d_answered_fn fn, void *ctx);
+void e_dap_request_timer(e_dap_session *s, int which);
+void e_dap_requests_cancel(e_dap_session *s, E_D_REQ_END why);
+/* Is a request answered by callback out?  Is any answer owed (one of
+ * those, or a breakpoint list sent with e_dap_set_file_breakpoints_async)? */
+int  e_dap_requests_pending(const e_dap_session *s);
+int  e_dap_answers_owed(const e_dap_session *s);
+/* The command of the oldest request out, and the seconds it has waited,
+ * for a refusal that names it; NULL when none is out. */
+const char *e_dap_request_waited(const e_dap_session *s, long *secs);
+/* Read what has come, without waiting and without taking the run's
+ * answer; returns 0 once the transport has ended. */
+int  e_dap_read_now(e_dap_session *s);
+int  e_dap_req_request(void *engine, const char *cmd,
+                       e_d_answered_fn answered, void *ctx);
+int  e_dap_stage_evaluate(e_dap_session *s, const char *expr, char *cmd,
+                          size_t n);
+int  e_dap_stage_stack_trace(e_dap_session *s, int levels, char *cmd,
+                             size_t n);
+int  e_dap_stage_breakpoints(e_dap_session *s, const char *file,
+                             const int *lines, int count, char *cmd,
+                             size_t n);
+char *e_dap_answer_result(const E_D_ANSWER *ans);
+int  e_dap_answer_frames(const E_D_ANSWER *ans, e_dap_frame *frames, int max);
+
+/* Disconnect and reap the adapter; frees the session (we_dap_sync.c).  It
+ * WAITS, outside any event loop and with nothing on the screen, each wait a
+ * poll bounded by its own deadline:
  *   - when no disconnect was sent yet: for its answer, up to 2 s;
  *   - after an answer: for the adapter to exit by itself, up to 2 s
  *     (lldb-dap takes about a second);

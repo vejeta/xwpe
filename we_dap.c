@@ -4,21 +4,13 @@
 #include <string.h>
 #include <stdio.h>
 #include <unistd.h>
-#include <time.h>
 #include <errno.h>
 #include <signal.h>
 #include <fcntl.h>
 #include <limits.h>
-#include <poll.h>
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <sys/wait.h>
-#if defined(__linux__)
-# include <sys/syscall.h>
-#endif
-#if defined(HAVE_KQUEUE) && defined(HAVE_SYS_EVENT_H)
-# include <sys/event.h>
-#endif
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #if defined(HAVE_PTY_H)
@@ -37,21 +29,9 @@
 #include "we_fdloop.h"
 
 #define DAP_MAX_BP   64
-#define DAP_ACCEPT_MS 10000
 #define DAP_READ_CHUNK 4096
 #define DAP_NO_FD    (-1)
 #define DAP_NO_SEQ   (-1)
-#define DAP_POLL_FOREVER (-1)
-#define DAP_NO_DEADLINE  (-1L)
-#define DAP_MS_PER_SEC   1000L
-#define DAP_NS_PER_MS    1000000L
-/* How long Quit waits for the adapter to answer `disconnect` and exit
-   before it is killed.  The adapters measured answer within milliseconds. */
-#define DAP_DISCONNECT_MS 2000
-/* After its answer, how long the adapter gets to exit by itself (lldb-dap
-   takes about a second), and after SIGTERM, how long before SIGKILL. */
-#define DAP_EXIT_MS      2000
-#define DAP_TERM_MS      1000
 #define DAP_REASON_MAX   32
 #define DAP_PENDING_MAX  64     /* requests whose answer has an owner      */
 #define DAP_BP_IDS_MAX   256    /* adapter breakpoint ids remembered       */
@@ -61,21 +41,20 @@
 #define DAP_REASON_REFUSED "refused"
 #define DAP_REASON_PAUSE   "pause"
 
-/* What a wait found (dap_wait_readable). */
-#define DAP_WAIT_READY     0    /* the descriptor is readable           */
-#define DAP_WAIT_TIMED_OUT 1    /* the deadline passed                  */
-#define DAP_WAIT_GAVE_UP   2    /* poll failed or the editor is ending  */
-
 /* Who owns the answer to a request: the dispatcher hands each response to
    the owner its seq was registered with.  A response whose seq has no
-   owner (gdb's late launch answer, a resume's plain success) is dropped. */
+   owner (gdb's late launch answer, a resume's plain success, a request
+   given up on) is dropped. */
 #define DAP_REQ_FREE        0   /* table slot unused                       */
-#define DAP_REQ_WAITED      1   /* a synchronous call waits for it         */
 #define DAP_REQ_BREAKPOINTS 2   /* setBreakpoints: told to on_breakpoints  */
 #define DAP_REQ_LOCATE      3   /* stackTrace after a stop: on_stopped     */
 #define DAP_REQ_RESUME      4   /* continue/next/...: a refusal is a stop  */
 #define DAP_REQ_PAUSE       5   /* pause: a refusal forgets the pause      */
 #define DAP_REQ_DISCONNECT  6   /* disconnect: the adapter is going        */
+#define DAP_REQ_CALL        7   /* e_dap_request: its callback is told     */
+
+/* A DAP command name, as a request's owner keeps it for the waiting line. */
+#define DAP_CMD_MAX      48
 
 /* Where the program stands, as the run pump sees it. */
 #define DAP_RUN_STARTING      0 /* the start is not done; a stop waits     */
@@ -102,10 +81,13 @@
 typedef struct {
  int   kind;                  /* DAP_REQ_*                                   */
  int   seq;                   /* the request's seq                           */
- struct json_object *answer;  /* DAP_REQ_WAITED: the response, once it came  */
- char *file;                  /* DAP_REQ_BREAKPOINTS: the file and the lines */
+ char *file;                /* DAP_REQ_BREAKPOINTS: the file and the lines */
  int  *lines;                 /*   asked for, to name them in the answer     */
  int   n;
+ e_d_answered_fn fn;          /* DAP_REQ_CALL: told how the request ended    */
+ void *ctx;
+ char  cmd[DAP_CMD_MAX];      /*   its command, for the waiting line         */
+ long  sent_ms;               /*   when it went out                          */
 } dap_pending;
 
 /* An adapter breakpoint id and the line the host asked for, so a later
@@ -166,12 +148,24 @@ struct e_dap_session {
  int           stop_reported; /* on_stopped fired; the pump says STOPPED     */
  int           pause_pending; /* pause sent: the next stop is the pause      */
  int           disconnect_done;/* disconnect answered, nothing left to wait */
- int           quitting;      /* e_dap_close's bounded waits run: the end
-                                 request does not cut them short           */
  char          stop_reason[DAP_REASON_MAX];
  dap_pending   pending[DAP_PENDING_MAX];
  dap_bp_id     bp_ids[DAP_BP_IDS_MAX];
  int           bp_ids_n;
+ /* Requests whose answer goes to a callback (e_dap_request): the host's
+    clock and timers, and which of them the waiting line and the deadline
+    are counted for. */
+ const E_D_REQ_IO *rio;       /* NULL: no waiting line and no deadline     */
+ int           deadline_s;
+ int           head_seq;      /* the oldest call out, or DAP_NO_SEQ        */
+ int           waiting_shown; /* the waiting line names it               */
+ /* The arguments a chain's step built for the request it is about to make
+    (e_dap_stage_*), taken by e_dap_req_request. */
+ char          staged_cmd[DAP_CMD_MAX];
+ struct json_object *staged_args;
+ char         *staged_file;
+ int          *staged_lines;
+ int           staged_n;
 };
 
 /* The fd to write requests to / read messages from, abstracting the transport. */
@@ -242,197 +236,6 @@ void e_dap_drain_output(e_dap_session *s)
  s->pty_master = -1;
 }
 
-/* The editor's end request (see e_dap_set_end_watch): a descriptor that
-   becomes readable when it comes, the question whether it came, and the
-   save of the user's work, run once if it comes while Quit waits. */
-static int dap_end_fd = DAP_NO_FD;
-static int (*dap_end_requested)(void) = NULL;
-static void (*dap_end_save)(void) = NULL;
-static int dap_end_handled = 0;   /* Quit's waits saw it and saved */
-
-void e_dap_set_end_watch(int fd, int (*requested)(void), void (*save)(void))
-{
- dap_end_fd = fd;
- dap_end_requested = requested;
- dap_end_save = save;
- dap_end_handled = 0;
-}
-
-/**
- * dap_end_watch_add - Put the end request's descriptor in a wait's poll set.
- * @p: the set; @np: how many entries it has, raised by one when added.
- *
- * With it in the set, a SIGTERM or SIGHUP that lands just before the wait
- * starts still wakes it, so the user is never left with an editor that
- * waits for a program that runs for ever.
- * Return: its index in @p, or -1 when there is no end request to watch.
- */
-static int dap_end_watch_add(struct pollfd *p, int *np)
-{
- if (dap_end_fd == DAP_NO_FD)
-  return -1;
- p[*np].fd = dap_end_fd;
- p[*np].events = POLLIN;
- p[*np].revents = 0;
- return (*np)++;
-}
-
-/**
- * dap_end_pending - Must a wait give up because the editor is ending?
- * Return: 1 when the end was asked for, else 0.
- */
-static int dap_end_pending(void)
-{
- if (!dap_end_requested)
-  return 0;
- return dap_end_requested() != 0;
-}
-
-/**
- * dap_poll_fired - Did entry @i of a poll set wake the poll?
- * @p: the set; @i: the entry, or -1 when it was not in the set; @pret:
- * what poll() returned.
- */
-static int dap_poll_fired(const struct pollfd *p, int i, int pret)
-{
- if (i < 0 || pret <= 0)
-  return 0;
- return p[i].revents != 0;
-}
-
-/**
- * dap_quit_end_watch_add - Watch the end request during Quit's waits,
- * until it has been handled.
- * @p, @np: the poll set, as for dap_end_watch_add.
- *
- * Once handled the descriptor stays readable (the editor's loop drains
- * it), so it is left out of the later polls, which would otherwise return
- * at once until their deadline.
- * Return: its index in @p, or -1 when it is not watched.
- */
-static int dap_quit_end_watch_add(struct pollfd *p, int *np)
-{
- if (dap_end_handled)
-  return -1;
- return dap_end_watch_add(p, np);
-}
-
-/**
- * dap_quit_end_check - The end request came while Quit waits: save the
- * user's work now, then let Quit go on.
- * @fired: the end descriptor woke the poll.
- *
- * Quit's waits are bounded but can last seconds (an adapter that never
- * answers), and a second signal ends the editor at once without a save.
- * Saving first means the work is on disk whatever comes next, while the
- * adapter is still ended properly, so no program is left behind.  The save
- * runs once; the editor's own end later finds it done.
- */
-static void dap_quit_end_check(int fired)
-{
- if (dap_end_handled)
-  return;
- if (!fired && !dap_end_pending())
-  return;
- dap_end_handled = 1;
- if (dap_end_pending() && dap_end_save)
-  dap_end_save();
-}
-
-/* Poll set size of a session wait: the transport, the pty, the end request. */
-#define DAP_WAIT_FDS 3
-/* Of the wait for the adapter's exit: its exit descriptor (pidfd or
-   kqueue), the pty, the transport and the end request. */
-#define DAP_EXIT_FDS 4
-
-/**
- * dap_now_ms - The monotonic clock, in milliseconds.
- *
- * Deadlines count from it, so a clock change during Quit neither cuts the
- * adapter's time short nor stretches it.
- */
-static long dap_now_ms(void)
-{
- struct timespec ts;
-
- clock_gettime(CLOCK_MONOTONIC, &ts);
- return (long)ts.tv_sec * DAP_MS_PER_SEC + ts.tv_nsec / DAP_NS_PER_MS;
-}
-
-/**
- * dap_ms_left - What remains of @deadline, as a poll() timeout.
- * @deadline: a dap_now_ms() instant, or DAP_NO_DEADLINE.
- * Return: the milliseconds left (0 once passed), or DAP_POLL_FOREVER.
- */
-static int dap_ms_left(long deadline)
-{
- long left;
-
- if (deadline == DAP_NO_DEADLINE)
-  return DAP_POLL_FOREVER;
- left = deadline - dap_now_ms();
- if (left < 0)
-  return 0;
- return (int)left;
-}
-
-/**
- * dap_wait_readable - Wait until @fd is readable, passing on the program's
- * output meanwhile.
- * @s: the session; @fd: the descriptor waited on (the transport, or the
- * listening socket while dlv has not dialled in); @deadline: a dap_now_ms()
- * instant, or DAP_NO_DEADLINE.
- *
- * Used only where the caller has nothing else to do (a test, the
- * synchronous API, Quit).  dlv's pty is drained here, so a program that
- * prints a lot never stalls on a full pty while the editor waits; the end
- * request is watched, so a SIGTERM or SIGHUP ends the wait at once.  Quit's
- * own waits (s->quitting) are the exception: they are bounded, and cutting
- * them short sends lldb-dap SIGTERM before it has acted on `disconnect`,
- * which leaves its running program behind (measured: 5 of 5 times with the
- * end request already raised; SIGTERM or SIGKILL alone never ends it).
- * Return: DAP_WAIT_READY, DAP_WAIT_TIMED_OUT or DAP_WAIT_GAVE_UP.
- */
-static int dap_wait_readable(e_dap_session *s, int fd, long deadline)
-{
- for (;;)
- {
-  struct pollfd p[DAP_WAIT_FDS];
-  int np = 0, pty_i = -1, end_i, pret;
-
-  if (fd < 0)
-   return DAP_WAIT_GAVE_UP;
-  if (deadline != DAP_NO_DEADLINE && dap_ms_left(deadline) == 0)
-   return DAP_WAIT_TIMED_OUT;
-  p[np].fd = fd; p[np].events = POLLIN; p[np].revents = 0; np++;
-  if (s->pty_master >= 0)
-  {
-   pty_i = np;
-   p[np].fd = s->pty_master; p[np].events = POLLIN; p[np].revents = 0;
-   np++;
-  }
-  if (s->quitting)
-   end_i = dap_quit_end_watch_add(p, &np);
-  else
-   end_i = dap_end_watch_add(p, &np);
-  pret = poll(p, np, dap_ms_left(deadline));
-  if (!s->quitting && dap_end_pending())
-   return DAP_WAIT_GAVE_UP;
-  if (s->quitting)
-   dap_quit_end_check(dap_poll_fired(p, end_i, pret));
-  if (pret < 0 && errno == EINTR)
-   continue;
-  if (pret < 0)
-   return DAP_WAIT_GAVE_UP;
-  if (pret == 0)
-   return DAP_WAIT_TIMED_OUT;
-  if (pty_i >= 0 && (p[pty_i].revents & (POLLIN | POLLHUP | POLLERR)))
-   e_dap_drain_output(s);
-  if (p[0].revents & (POLLIN | POLLHUP | POLLERR | POLLNVAL))
-   return DAP_WAIT_READY;
- }
-}
-
 /**
  * dap_read_once - Read what the adapter sent, once, into the reader.
  * @s: the session, its transport readable.
@@ -442,6 +245,8 @@ static int dap_wait_readable(e_dap_session *s, int fd, long deadline)
  * wait for the rest.
  * Return: 1 while the transport is open, 0 once it reached its end.
  */
+static void dap_transport_ended(e_dap_session *s);
+
 static int dap_read_once(e_dap_session *s)
 {
  char buf[DAP_READ_CHUNK];
@@ -457,8 +262,7 @@ static int dap_read_once(e_dap_session *s)
  }
  if (n < 0 && (errno == EINTR || errno == EAGAIN))
   return 1;
- s->eof = 1;
- s->ended = 1;
+ dap_transport_ended(s);
  return 0;
 }
 
@@ -490,23 +294,25 @@ static int dap_fd_readable_now(int fd)
 }
 
 /**
- * dap_discard_once - Read what the adapter sent, once, and drop it.
- * @s: the session, its transport readable, its answers no longer wanted
- * (Quit waits for the adapter's exit).
+ * e_dap_discard_input - Read what the adapter sent, once, and drop it.
+ * @s: the session, its answers no longer wanted (Quit waits for the
+ * adapter's exit).
  *
  * Keeps an adapter that writes while it exits from blocking on a full
  * pipe, without keeping what it wrote: one that writes without end cannot
- * grow the editor's memory while Quit waits.
+ * grow the editor's memory while Quit waits.  Reads only what is there.
  */
-static void dap_discard_once(e_dap_session *s)
+void e_dap_discard_input(e_dap_session *s)
 {
  char buf[DAP_READ_CHUNK];
- ssize_t n = read(dap_rfd(s), buf, sizeof(buf));
+ ssize_t n;
 
+ if (!s || !dap_transport_readable_now(s))
+  return;
+ n = read(dap_rfd(s), buf, sizeof(buf));
  if (n > 0 || (n < 0 && (errno == EINTR || errno == EAGAIN)))
   return;
- s->eof = 1;
- s->ended = 1;
+ dap_transport_ended(s);
 }
 
 /**
@@ -617,12 +423,12 @@ static const char *dap_refusal_text(struct json_object *m)
 /* ---- the dispatcher: every answer reaches its owner ----------------------
  *
  * Each request whose answer matters is registered with its seq and what
- * the answer is for.  Every read, the run pump's or a synchronous wait's,
- * hands each message to dap_dispatch: a response goes to the owner of its
- * seq, an event to dap_handle_event.  So a setBreakpoints answer that comes
- * while the editor waits for a stackTrace or an evaluate at a stop reaches
- * on_breakpoints, and a stop that comes before the answer to the continue
- * that caused it (dlv's pause) is the stop.
+ * the answer is for.  Every read hands each message to dap_dispatch: a
+ * response goes to the owner of its seq, an event to dap_handle_event.  So
+ * a setBreakpoints answer that comes while a stackTrace or an evaluate at
+ * a stop is out reaches on_breakpoints, an event that comes then is never
+ * taken for the answer, and a stop that comes before the answer to the
+ * continue that caused it (dlv's pause) is the stop.
  */
 
 /**
@@ -647,8 +453,6 @@ static dap_pending *dap_pending_find(e_dap_session *s, int seq)
  */
 static void dap_pending_release(dap_pending *p)
 {
- if (p->answer)
-  json_object_put(p->answer);
  free(p->file);
  free(p->lines);
  memset(p, 0, sizeof(*p));
@@ -664,15 +468,26 @@ static void dap_pending_release(dap_pending *p)
  * knows at once instead of waiting for an answer that would be dropped.
  * Return: the request's seq, or DAP_NO_SEQ when it was not sent.
  */
+/**
+ * dap_pending_free_slot - A table slot no request owns, or NULL when every
+ * one waits for an answer.
+ * @s: the session.
+ */
+static dap_pending *dap_pending_free_slot(e_dap_session *s)
+{
+ int i;
+
+ for (i = 0; i < DAP_PENDING_MAX; i++)
+  if (s->pending[i].kind == DAP_REQ_FREE)
+   return &s->pending[i];
+ return NULL;
+}
+
 static int dap_send_owned(e_dap_session *s, const char *command,
                           struct json_object *args, int kind)
 {
- dap_pending *p = NULL;
- int i;
+ dap_pending *p = dap_pending_free_slot(s);
 
- for (i = 0; !p && i < DAP_PENDING_MAX; i++)
-  if (s->pending[i].kind == DAP_REQ_FREE)
-   p = &s->pending[i];
  if (!p || s->eof)
  {
   if (args)
@@ -695,6 +510,10 @@ static void dap_pending_free_all(e_dap_session *s)
  for (i = 0; i < DAP_PENDING_MAX; i++)
   dap_pending_release(&s->pending[i]);
 }
+
+static void dap_breakpoints_answered(e_dap_session *s, const char *file,
+                                     const int *lines, int n,
+                                     struct json_object *m);
 
 /* ---- breakpoint ids: the line the host asked for, by the adapter's id --- */
 
@@ -1129,9 +948,12 @@ static void dap_answer_routed(e_dap_session *s, int kind, struct json_object *m)
  * dap_dispatch_response - Hand a response to the owner of its seq.
  * @s: the session; @m: the response (not freed here).
  *
- * A synchronous wait finds its answer kept in its slot; every other owner
- * is called now and its slot freed.  A response nobody owns is dropped.
+ * Its owner is called now and its slot freed.  A response nobody owns (a
+ * request given up on) is dropped.
  */
+static void dap_call_answered(e_dap_session *s, dap_pending *p,
+                              struct json_object *m);
+
 static void dap_dispatch_response(e_dap_session *s, struct json_object *m)
 {
  dap_pending *p = dap_pending_find(s, obj_int(m, "request_seq", DAP_NO_SEQ));
@@ -1140,9 +962,9 @@ static void dap_dispatch_response(e_dap_session *s, struct json_object *m)
  if (!p)
   return;
  kind = p->kind;
- if (kind == DAP_REQ_WAITED)
+ if (kind == DAP_REQ_CALL)
  {
-  p->answer = json_object_get(m);
+  dap_call_answered(s, p, m);
   return;
  }
  if (kind == DAP_REQ_BREAKPOINTS)
@@ -1211,7 +1033,7 @@ static void dap_handle_event(e_dap_session *s, struct json_object *m)
  }
 }
 
-/* ---- reading: one shared path for the pump and the synchronous waits ---- */
+/* ---- reading: one shared path for the pump and the requests ------------ */
 
 /**
  * dap_dispatch_one - Take the next message already read, if there is one.
@@ -1247,52 +1069,588 @@ static void dap_drain_queue(e_dap_session *s)
 }
 
 /**
- * dap_feed_one - One step of a synchronous wait: take a message already
- * read, or wait for the adapter and read once.
- * @s: the session; @deadline: a dap_now_ms() instant, or DAP_NO_DEADLINE.
- * Return: 1 to go on, 0 when the adapter is gone, the deadline passed or
- * the editor is ending.
+ * e_dap_read_now - Read what the adapter has sent, if anything, and hand
+ * every message to its owner, without taking the run's answer.
+ * @s: the session.
+ *
+ * What the host calls when the transport is readable while the program is
+ * stopped: the answers of requests sent at the stop (a watch's value, the
+ * stack, a breakpoint's verdict) reach their callbacks, and a stop read
+ * here is still the run pump's to answer.  It never blocks.
+ * Return: 1 while the transport is open, 0 once it reached its end.
  */
-static int dap_feed_one(e_dap_session *s, long deadline)
+int e_dap_read_now(e_dap_session *s)
 {
- /* Checked first, so a bounded wait never dispatches past its deadline;
-    the wait's own check before each poll is the one that ends it. */
- if (deadline != DAP_NO_DEADLINE && dap_ms_left(deadline) == 0)
+ if (!s)
   return 0;
- if (dap_dispatch_one(s))
-  return 1;
- if (s->eof)
+ if (dap_transport_readable_now(s))
+  dap_read_once(s);
+ dap_drain_queue(s);
+ return !s->eof;
+}
+
+/* ---- requests answered by callback: e_dap_request -----------------------
+ *
+ * The editor asks the adapter at a stop (a watch, the stack) without
+ * waiting: the request is registered with its seq and a callback, its
+ * answer is handed to the callback by the dispatcher whenever it is read,
+ * and events read meanwhile go where they always go.  The host's clock and
+ * one-shot timers (an E_D_REQ_IO, the same world the line debuggers'
+ * engine is given) count the waiting line and the deadline of the oldest
+ * request out; a request given up on frees its slot, so an answer that
+ * comes after it is dropped.
+ */
+
+/**
+ * dap_now - The host's clock, or 0 when the host gave none.
+ * @s: the session.
+ */
+static long dap_now(const e_dap_session *s)
+{
+ if (!s->rio || !s->rio->now_ms)
   return 0;
- if (dap_wait_readable(s, dap_rfd(s), deadline) != DAP_WAIT_READY)
-  return 0;
- return dap_read_once(s);
+ return s->rio->now_ms(s->rio->io);
 }
 
 /**
- * dap_wait_answer - Wait for the answer to request @seq, sent as
- * DAP_REQ_WAITED.
- * @s: the session; @seq: the request's seq, or DAP_NO_SEQ when it was not
- * sent.
- *
- * Every other message that comes meanwhile goes to its owner: output to
- * Messages, a setBreakpoints answer to on_breakpoints, a stop to the run.
- * Return: the response (the caller frees it), or NULL when the adapter
- * ended first or the editor is ending.
+ * dap_arm - Ask the host for timer @which in @ms, or for none.
+ * @s: the session; @which: E_D_TIMER_*; @ms: the delay, or E_D_TIMER_OFF.
  */
-static struct json_object *dap_wait_answer(e_dap_session *s, int seq)
+static void dap_arm(const e_dap_session *s, int which, long ms)
 {
- dap_pending *p = dap_pending_find(s, seq);
- struct json_object *m;
+ if (!s->rio || !s->rio->arm_timer)
+  return;
+ s->rio->arm_timer(which, ms, s->rio->io);
+}
+
+/**
+ * dap_disarm_all - Take back every timer the requests asked for.
+ * @s: the session.
+ */
+static void dap_disarm_all(e_dap_session *s)
+{
+ int which;
+
+ for (which = 0; which < E_D_TIMERS; which++)
+  dap_arm(s, which, E_D_TIMER_OFF);
+}
+
+/**
+ * dap_oldest_call - The request answered by callback that went out first,
+ * or NULL when none is out.
+ * @s: the session.
+ */
+static dap_pending *dap_oldest_call(e_dap_session *s)
+{
+ dap_pending *oldest = NULL;
+ int i;
+
+ for (i = 0; i < DAP_PENDING_MAX; i++)
+ {
+  dap_pending *p = &s->pending[i];
+
+  if (p->kind != DAP_REQ_CALL)
+   continue;
+  if (!oldest || p->seq < oldest->seq)
+   oldest = p;
+ }
+ return oldest;
+}
+
+/**
+ * dap_ms_after - What is left of @ms counted from @since, never below 0.
+ * @s: the session; @since: a dap_now() instant; @ms: the span.
+ */
+static long dap_ms_after(const e_dap_session *s, long since, long ms)
+{
+ long left = since + ms - dap_now(s);
+
+ if (left < 0)
+  return 0;
+ return left;
+}
+
+/**
+ * dap_calls_time - Count the waiting line and the deadline for the oldest
+ * request out, once it changed.
+ * @s: the session.
+ *
+ * The user is told what the editor waits for after a quiet second, and the
+ * request is given up at the deadline, counted from when it went out, as
+ * for the line debuggers.  With no request out every timer is taken back.
+ */
+static void dap_calls_time(e_dap_session *s)
+{
+ dap_pending *p = dap_oldest_call(s);
 
  if (!p)
-  return NULL;
- while (!p->answer && dap_feed_one(s, DAP_NO_DEADLINE))
-  ;
- m = p->answer;
- p->answer = NULL;
+ {
+  s->head_seq = DAP_NO_SEQ;
+  s->waiting_shown = 0;
+  dap_disarm_all(s);
+  return;
+ }
+ if (p->seq == s->head_seq)
+  return;
+ s->head_seq = p->seq;
+ s->waiting_shown = 0;
+ dap_arm(s, E_D_TIMER_SECOND, E_D_TIMER_OFF);
+ dap_arm(s, E_D_TIMER_QUIET, dap_ms_after(s, p->sent_ms, E_D_REQ_QUIET_MS));
+ dap_arm(s, E_D_TIMER_DEADLINE,
+         dap_ms_after(s, p->sent_ms,
+                      (long)s->deadline_s * E_D_REQ_SECOND_MS));
+}
+
+/**
+ * dap_answer_of - The answer an owner is handed for response @m.
+ * @ans: receives it; its text is the response as the adapter sent it (the
+ * caller frees it), and its error flag is set for a refusal.
+ */
+static void dap_answer_of(E_D_ANSWER *ans, struct json_object *m)
+{
+ const char *text = json_object_to_json_string_ext(m, JSON_C_TO_STRING_PLAIN);
+
+ memset(ans, 0, sizeof(*ans));
+ ans->text = text ? strdup(text) : NULL;
+ ans->len = ans->text ? strlen(ans->text) : 0;
+ ans->error = dap_response_refused(m);
+}
+
+/**
+ * dap_call_answered - A request answered by callback has its answer.
+ * @s: the session; @p: its slot; @m: the response.
+ *
+ * A setBreakpoints made this way is told to on_breakpoints first, as every
+ * breakpoint answer is.  The slot is free before the owner is called, so
+ * the owner may send its next request at once.
+ */
+static void dap_call_answered(e_dap_session *s, dap_pending *p,
+                              struct json_object *m)
+{
+ e_d_answered_fn fn = p->fn;
+ void *ctx = p->ctx;
+ E_D_ANSWER ans;
+
+ if (p->file)
+  dap_breakpoints_answered(s, p->file, p->lines, p->n, m);
+ dap_answer_of(&ans, m);
  dap_pending_release(p);
- dap_drain_queue(s);
- return m;
+ dap_calls_time(s);
+ if (fn)
+  fn(E_D_REQ_DONE, &ans, ctx);
+ free(ans.text);
+}
+
+/**
+ * dap_call_given_up - Forget a request answered by callback that will
+ * never be answered to its owner.
+ * @p: its slot.
+ *
+ * A setBreakpoints keeps its slot as an ordinary breakpoint request, so its
+ * late answer still turns the user's marks solid or hollow; any other
+ * answer that comes later is dropped.
+ */
+static void dap_call_given_up(dap_pending *p)
+{
+ if (p->file)
+ {
+  p->kind = DAP_REQ_BREAKPOINTS;
+  p->fn = NULL;
+  p->ctx = NULL;
+  return;
+ }
+ dap_pending_release(p);
+}
+
+/* The owners a cancel tells, oldest first. */
+typedef struct {
+ int seq;
+ e_d_answered_fn fn;
+ void *ctx;
+} dap_told;
+
+/**
+ * dap_told_sort - Order the owners a cancel tells by their requests' seq.
+ * @t, @n: the owners.
+ */
+static void dap_told_sort(dap_told *t, int n)
+{
+ int i, j;
+
+ for (i = 1; i < n; i++)
+  for (j = i; j > 0 && t[j - 1].seq > t[j].seq; j--)
+  {
+   dap_told x = t[j];
+
+   t[j] = t[j - 1];
+   t[j - 1] = x;
+  }
+}
+
+void e_dap_requests_cancel(e_dap_session *s, E_D_REQ_END why)
+{
+ dap_told told[DAP_PENDING_MAX];
+ E_D_ANSWER empty;
+ int i, n = 0;
+
+ if (!s)
+  return;
+ for (i = 0; i < DAP_PENDING_MAX; i++)
+ {
+  dap_pending *p = &s->pending[i];
+
+  if (p->kind != DAP_REQ_CALL)
+   continue;
+  told[n].seq = p->seq;
+  told[n].fn = p->fn;
+  told[n].ctx = p->ctx;
+  n++;
+  dap_call_given_up(p);
+ }
+ dap_calls_time(s);
+ dap_told_sort(told, n);
+ memset(&empty, 0, sizeof(empty));
+ for (i = 0; i < n; i++)
+  if (told[i].fn)
+   told[i].fn(why, &empty, told[i].ctx);
+}
+
+/**
+ * dap_transport_ended - The adapter's transport reached its end.
+ * @s: the session.
+ *
+ * Nothing more will come: every request out is told the adapter is gone,
+ * so no owner waits for an answer, and the session counts as ended.
+ */
+static void dap_transport_ended(e_dap_session *s)
+{
+ s->eof = 1;
+ s->ended = 1;
+ e_dap_requests_cancel(s, E_D_REQ_GONE);
+}
+
+void e_dap_requests_init(e_dap_session *s, const E_D_REQ_IO *io,
+                         const char *timeout_text)
+{
+ if (!s)
+  return;
+ s->rio = io;
+ s->deadline_s = e_d_req_timeout_from_text(timeout_text);
+}
+
+/**
+ * dap_call_say_given_up - The sentence the deadline leaves on the status
+ * row: which request was not answered, within how long, and how to leave.
+ * @s: the session; @p: the request.
+ */
+static void dap_call_say_given_up(const e_dap_session *s, const dap_pending *p)
+{
+ char msg[E_D_REQ_MSG_MAX];
+ const char *name = s->rio->name ? s->rio->name : "the debug adapter";
+
+ if (!s->rio->notice)
+  return;
+ snprintf(msg, sizeof msg, E_D_REQ_TIMEOUT_FMT, name, p->cmd, s->deadline_s);
+ s->rio->notice(msg, s->rio->io);
+}
+
+/**
+ * dap_call_say_waiting - Show the waiting line for the oldest request out.
+ * @s: the session; @p: the request.
+ */
+static void dap_call_say_waiting(e_dap_session *s, const dap_pending *p)
+{
+ long secs = (dap_now(s) - p->sent_ms) / E_D_REQ_SECOND_MS;
+
+ s->waiting_shown = 1;
+ if (s->rio->waiting)
+  s->rio->waiting(p->cmd, secs, s->rio->io);
+ dap_arm(s, E_D_TIMER_SECOND, E_D_REQ_SECOND_MS);
+}
+
+void e_dap_request_timer(e_dap_session *s, int which)
+{
+ dap_pending *p;
+
+ if (!s || !s->rio)
+  return;
+ p = dap_pending_find(s, s->head_seq);
+ if (!p || p->kind != DAP_REQ_CALL)
+  return;                       /* a timer of a request that has ended */
+ if (which == E_D_TIMER_QUIET)
+  dap_call_say_waiting(s, p);
+ else if (which == E_D_TIMER_SECOND && s->waiting_shown)
+  dap_call_say_waiting(s, p);
+ else if (which == E_D_TIMER_DEADLINE)
+ {
+  dap_call_say_given_up(s, p);
+  e_dap_requests_cancel(s, E_D_REQ_TIMED_OUT);
+ }
+}
+
+int e_dap_requests_pending(const e_dap_session *s)
+{
+ int i;
+
+ if (!s)
+  return 0;
+ for (i = 0; i < DAP_PENDING_MAX; i++)
+  if (s->pending[i].kind == DAP_REQ_CALL)
+   return 1;
+ return 0;
+}
+
+int e_dap_answers_owed(const e_dap_session *s)
+{
+ int i;
+
+ if (!s)
+  return 0;
+ for (i = 0; i < DAP_PENDING_MAX; i++)
+  if (s->pending[i].kind == DAP_REQ_CALL ||
+      s->pending[i].kind == DAP_REQ_BREAKPOINTS)
+   return 1;
+ return 0;
+}
+
+const char *e_dap_request_waited(const e_dap_session *s, long *secs)
+{
+ dap_pending *p;
+
+ if (!s)
+  return NULL;
+ p = dap_oldest_call((e_dap_session *)s);
+ if (!p)
+  return NULL;
+ if (secs)
+  *secs = (dap_now(s) - p->sent_ms) / E_D_REQ_SECOND_MS;
+ return p->cmd;
+}
+
+/**
+ * dap_call_send - Send a request whose answer goes to @fn, in slot @p.
+ * @s: the session; @p: a free slot; @command, @args: the request (@args is
+ * taken over); @file, @lines, @n: for a setBreakpoints, what it asks for
+ * (taken over), else NULL, NULL, 0.
+ * Return: E_D_SEND_OK.
+ */
+static int dap_call_send(e_dap_session *s, dap_pending *p, const char *command,
+                         struct json_object *args, char *file, int *lines,
+                         int n, e_d_answered_fn fn, void *ctx)
+{
+ p->kind = DAP_REQ_CALL;
+ p->fn = fn;
+ p->ctx = ctx;
+ p->file = file;
+ p->lines = lines;
+ p->n = n;
+ snprintf(p->cmd, sizeof p->cmd, "%s", command);
+ p->sent_ms = dap_now(s);
+ p->seq = dap_send(s, command, args);
+ dap_calls_time(s);
+ return E_D_SEND_OK;
+}
+
+/**
+ * dap_call_refused - Why a request cannot go out now, or E_D_SEND_OK.
+ * @s: the session; @command: the request.
+ */
+static int dap_call_refused(const e_dap_session *s, const char *command)
+{
+ if (!s || s->eof || s->ended || dap_wfd((e_dap_session *)s) < 0)
+  return E_D_SEND_GONE;
+ if (s->run == DAP_RUN_DISCONNECTING)
+  return E_D_SEND_GONE;
+ if (!command || strlen(command) >= DAP_CMD_MAX)
+  return E_D_SEND_TOO_LONG;
+ return E_D_SEND_OK;
+}
+
+int e_dap_request(e_dap_session *s, const char *command,
+                  struct json_object *args, e_d_answered_fn fn, void *ctx)
+{
+ int why = dap_call_refused(s, command);
+ dap_pending *p;
+
+ if (why == E_D_SEND_OK)
+ {
+  p = dap_pending_free_slot(s);
+  if (p)
+   return dap_call_send(s, p, command, args, NULL, NULL, 0, fn, ctx);
+  why = E_D_SEND_FULL;
+ }
+ if (args)
+  json_object_put(args);
+ return why;
+}
+
+/* ---- the requester: chains of steps over the seq table ----------------- */
+
+/**
+ * dap_stage_clear - Forget what a step built and did not send.
+ * @s: the session.
+ */
+static void dap_stage_clear(e_dap_session *s)
+{
+ if (s->staged_args)
+  json_object_put(s->staged_args);
+ free(s->staged_file);
+ free(s->staged_lines);
+ s->staged_args = NULL;
+ s->staged_file = NULL;
+ s->staged_lines = NULL;
+ s->staged_n = 0;
+ s->staged_cmd[0] = '\0';
+}
+
+/**
+ * dap_stage - Keep @args for the request named @command a step is about
+ * to make, and write its name as the step's command.
+ * @s: the session; @command: the DAP command; @args: its arguments (taken
+ * over); @cmd, @n: the step's command buffer.
+ *
+ * The arguments live in the session, not in the step's buffer, so a long
+ * watch expression or a file with many breakpoints goes out whole.
+ * Return: 1 (the step sends), or 0 when nothing can be sent.
+ */
+static int dap_stage(e_dap_session *s, const char *command,
+                     struct json_object *args, char *cmd, size_t n)
+{
+ dap_stage_clear(s);
+ if (!args)
+  return 0;
+ snprintf(s->staged_cmd, sizeof s->staged_cmd, "%s", command);
+ s->staged_args = args;
+ snprintf(cmd, n, "%s", command);
+ return 1;
+}
+
+int e_dap_stage_evaluate(e_dap_session *s, const char *expr, char *cmd,
+                         size_t n)
+{
+ struct json_object *args;
+
+ if (!s || !expr)
+  return 0;
+ args = json_object_new_object();
+ json_object_object_add(args, "expression", json_object_new_string(expr));
+ json_object_object_add(args, "frameId", json_object_new_int(s->frame_id));
+ json_object_object_add(args, "context", json_object_new_string("watch"));
+ return dap_stage(s, "evaluate", args, cmd, n);
+}
+
+int e_dap_stage_stack_trace(e_dap_session *s, int levels, char *cmd, size_t n)
+{
+ struct json_object *args;
+
+ if (!s || levels <= 0)
+  return 0;
+ args = json_object_new_object();
+ json_object_object_add(args, "threadId", json_object_new_int(s->thread_id));
+ json_object_object_add(args, "startFrame", json_object_new_int(0));
+ json_object_object_add(args, "levels", json_object_new_int(levels));
+ return dap_stage(s, "stackTrace", args, cmd, n);
+}
+
+static struct json_object *dap_breakpoints_args(const char *path,
+                                                const int *lines, int n);
+static void dap_absolute_path(const char *file, char *out);
+
+/**
+ * dap_stage_keep_lines - Keep the file and lines of a staged setBreakpoints,
+ * to name them when its answer comes.
+ * @s: the session; @path, @lines, @n: what is asked for.
+ * Return: 0, or -1 without memory for them.
+ */
+static int dap_stage_keep_lines(e_dap_session *s, const char *path,
+                                const int *lines, int n)
+{
+ s->staged_file = strdup(path);
+ s->staged_lines = malloc(sizeof(int) * (size_t)(n + 1));
+ if (!s->staged_file || !s->staged_lines)
+  return -1;
+ if (n > 0)
+  memcpy(s->staged_lines, lines, sizeof(int) * (size_t)n);
+ s->staged_n = n;
+ return 0;
+}
+
+int e_dap_stage_breakpoints(e_dap_session *s, const char *file,
+                            const int *lines, int count, char *cmd, size_t n)
+{
+ char abspath[PATH_MAX];
+
+ if (!s || !file || count < 0 || count > DAP_MAX_BP)
+  return 0;
+ dap_absolute_path(file, abspath);
+ if (!dap_stage(s, "setBreakpoints", dap_breakpoints_args(abspath, lines, count),
+                cmd, n))
+  return 0;
+ if (dap_stage_keep_lines(s, abspath, lines, count) == 0)
+  return 1;
+ dap_stage_clear(s);
+ return 0;
+}
+
+int e_dap_req_request(void *engine, const char *cmd, e_d_answered_fn answered,
+                      void *ctx)
+{
+ e_dap_session *s = engine;
+ struct json_object *args = NULL;
+ char *file = NULL;
+ int *lines = NULL, n = 0, why;
+ dap_pending *p;
+
+ if (!s)
+  return E_D_SEND_GONE;
+ if (s->staged_cmd[0] && cmd && !strcmp(s->staged_cmd, cmd))
+ {
+  args = s->staged_args;
+  file = s->staged_file;
+  lines = s->staged_lines;
+  n = s->staged_n;
+  s->staged_args = NULL;
+  s->staged_file = NULL;
+  s->staged_lines = NULL;
+ }
+ dap_stage_clear(s);
+ why = dap_call_refused(s, cmd);
+ p = why == E_D_SEND_OK ? dap_pending_free_slot(s) : NULL;
+ if (p)
+  return dap_call_send(s, p, cmd, args, file, lines, n, answered, ctx);
+ if (why == E_D_SEND_OK)
+  why = E_D_SEND_FULL;
+ if (args)
+  json_object_put(args);
+ free(file);
+ free(lines);
+ return why;
+}
+
+/* ---- reading the answers ------------------------------------------------ */
+
+/**
+ * dap_answer_json - The response an answer holds, parsed, or NULL.
+ * @ans: an answer handed to a callback (its text is the response).
+ */
+static struct json_object *dap_answer_json(const E_D_ANSWER *ans)
+{
+ if (!ans || !ans->text)
+  return NULL;
+ return json_tokener_parse(ans->text);
+}
+
+char *e_dap_answer_result(const E_D_ANSWER *ans)
+{
+ struct json_object *m = dap_answer_json(ans);
+ const char *r = obj_str(obj_obj(m, "body"), "result");
+ char *out = NULL;
+
+ if (r)
+  out = strdup(r);
+ if (m)
+  json_object_put(m);
+ return out;
 }
 
 /**
@@ -1343,21 +1701,6 @@ static int dap_run_consume(e_dap_session *s)
 }
 
 /**
- * dap_run_wait - Wait for the run to stop or end, for callers with nothing
- * else to do (the synchronous API, Quit).
- * @s: the session; @deadline: a dap_now_ms() instant, or DAP_NO_DEADLINE.
- * Return: E_DAP_RUN_STOPPED, E_DAP_RUN_ENDED, or E_DAP_RUN_GOING when the
- * wait gave up (deadline, end request).
- */
-static int dap_run_wait(e_dap_session *s, long deadline)
-{
- while (dap_run_state(s) == E_DAP_RUN_GOING && dap_feed_one(s, deadline))
-  ;
- dap_drain_queue(s);
- return dap_run_take(s);
-}
-
-/**
  * dap_frame_from_json - Copy one stackTrace frame into @out.
  * @fr: the frame as the adapter sent it; @out: receives it.
  *
@@ -1376,23 +1719,14 @@ static void dap_frame_from_json(struct json_object *fr, e_dap_frame *out)
  snprintf(out->path, sizeof(out->path), "%s", path ? path : "");
 }
 
-int e_dap_stack_trace(e_dap_session *s, e_dap_frame *frames, int max)
+int e_dap_answer_frames(const E_D_ANSWER *ans, e_dap_frame *frames, int max)
 {
- struct json_object *args, *resp, *body, *list;
- int seq, i, n = 0;
+ struct json_object *m = dap_answer_json(ans);
+ struct json_object *list = obj_obj(obj_obj(m, "body"), "stackFrames");
+ int i, n = 0;
 
- if (!s || s->ended || max <= 0)
+ if (!m)
   return -1;
- args = json_object_new_object();
- json_object_object_add(args, "threadId", json_object_new_int(s->thread_id));
- json_object_object_add(args, "startFrame", json_object_new_int(0));
- json_object_object_add(args, "levels", json_object_new_int(max));
- seq = dap_send_owned(s, "stackTrace", args, DAP_REQ_WAITED);
- resp = dap_wait_answer(s, seq);
- if (!resp)
-  return -1;
- body = obj_obj(resp, "body");
- list = body ? obj_obj(body, "stackFrames") : NULL;
  if (list && json_object_is_type(list, json_type_array))
  {
   n = (int)json_object_array_length(list);
@@ -1401,7 +1735,7 @@ int e_dap_stack_trace(e_dap_session *s, e_dap_frame *frames, int max)
   for (i = 0; i < n; i++)
    dap_frame_from_json(json_object_array_get_idx(list, i), &frames[i]);
  }
- json_object_put(resp);
+ json_object_put(m);
  return n;
 }
 
@@ -1557,10 +1891,10 @@ static pid_t dap_spawn_stdio(char *const argv[], const char *cwd,
 /* ---- the start: the handshake, one answer at a time ------------------- *
  *
  * Each step sends one request and waits for its answer; the answer sends the
- * next request.  The same steps run in both shapes the engine offers: driven
- * here with poll() until done (e_dap_open*, e_dap_run), or fed by the host's
- * event loop one readable descriptor at a time (e_dap_start*), so an editor
- * never waits on an adapter that does not answer.
+ * next request.  The host's event loop feeds them one readable descriptor
+ * at a time (e_dap_start*), so an editor never waits on an adapter that
+ * does not answer; we_dap_sync.c drives the same steps with poll() for a
+ * caller that has no loop (the C tests).
  */
 
 static void dap_send_configuration(e_dap_session *s);
@@ -1897,43 +2231,39 @@ static int dap_start_accept(e_dap_session *s)
  return dap_start_status(s);
 }
 
-/**
- * dap_start_wait - Wait, with poll(), until the start's descriptor is
- * readable, passing on the program's output meanwhile.
- * @s: the session.
- *
- * Used where the caller has nothing else to do (a test, the synchronous
- * API).  The adapter gets DAP_ACCEPT_MS to dial in, as before.
- * Return: 0 when readable, -1 when the adapter did not dial in, poll failed
- * or the editor's end was asked for.
- */
-static int dap_start_wait(e_dap_session *s)
+int e_dap_start_state(e_dap_session *s)
 {
- long deadline = DAP_NO_DEADLINE;
-
- if (s->step == DAP_STEP_ACCEPT)
-  deadline = dap_now_ms() + DAP_ACCEPT_MS;
- if (dap_wait_readable(s, e_dap_start_fd(s), deadline) != DAP_WAIT_READY)
-  return -1;
- return 0;
+ if (!s)
+  return E_DAP_START_FAILED;
+ return dap_start_consume(s);
 }
 
-/**
- * dap_start_drive - Run the start to its goal, waiting with poll().
- * @s: the session.
- * Return: E_DAP_START_READY or E_DAP_START_FAILED.
- */
-static int dap_start_drive(e_dap_session *s)
+int e_dap_start_give_up(e_dap_session *s)
 {
- int st = dap_start_consume(s);
+ if (!s)
+  return E_DAP_START_FAILED;
+ return dap_start_fail(s);
+}
 
- while (st == E_DAP_START_WAITING)
- {
-  if (dap_start_wait(s) < 0)
-   return dap_start_fail(s);
-  st = e_dap_start_pump(s);
- }
- return st;
+int e_dap_start_dialling(const e_dap_session *s)
+{
+ return s && s->step == DAP_STEP_ACCEPT;
+}
+
+void e_dap_start_hold_after_initialize(e_dap_session *s)
+{
+ if (s)
+  s->goal = DAP_STEP_OPENED;
+}
+
+int e_dap_start_go_on(e_dap_session *s)
+{
+ if (!s)
+  return E_DAP_START_FAILED;
+ s->goal = DAP_STEP_READY;
+ if (s->step == DAP_STEP_OPENED)
+  dap_send_launch(s);
+ return dap_start_consume(s);
 }
 
 /**
@@ -2107,25 +2437,6 @@ static e_dap_session *dap_session_new(const char *program, const char *entry_fun
  return s;
 }
 
-/**
- * dap_open_finish - Drive a session the synchronous API opened to the
- * initialize answer.
- * @s: the session, its start begun (or NULL).
- * Return: the session, or NULL (and closed) when the adapter did not answer.
- */
-static e_dap_session *dap_open_finish(e_dap_session *s)
-{
- if (!s)
-  return NULL;
- s->goal = DAP_STEP_OPENED;
- if (dap_start_drive(s) != E_DAP_START_READY)
- {
-  e_dap_close(s);
-  return NULL;
- }
- return s;
-}
-
 /* ---- public API -------------------------------------------------------- */
 
 /**
@@ -2153,7 +2464,7 @@ e_dap_session *e_dap_start(char *const argv[], const char *program,
  s->listen_fd = dap_listen_ephemeral(&port);
  if (s->listen_fd < 0)
  {
-  e_dap_close(s);
+  e_dap_free(s);
   return NULL;
  }
  /* Create the adapter's controlling pty here in the parent: the child takes the
@@ -2182,18 +2493,11 @@ e_dap_session *e_dap_start(char *const argv[], const char *program,
  }
  if (s->pid <= 0)
  {
-  e_dap_close(s);
+  e_dap_free(s);
   return NULL;
  }
  s->spawned = 1;
  return s;
-}
-
-e_dap_session *e_dap_open(char *const argv[], const char *program,
-                          const char *entry_func, const char *cwd,
-                          const e_dap_host *host)
-{
- return dap_open_finish(e_dap_start(argv, program, entry_func, cwd, host));
 }
 
 /**
@@ -2215,21 +2519,12 @@ e_dap_session *e_dap_start_stdio(char *const argv[], const char *program,
  s->pid = dap_spawn_stdio(argv, cwd, &s->in_fd, &s->out_fd);
  if (s->pid <= 0)
  {
-  e_dap_close(s);
+  e_dap_free(s);
   return NULL;
  }
  s->spawned = 1;
  dap_send_initialize(s);
  return s;
-}
-
-/* Stdio transport: spawn `argv` (e.g. {"gdb","--interpreter=dap"}), talk DAP
-   over its pipes, run the initialize handshake. */
-e_dap_session *e_dap_open_stdio(char *const argv[], const char *program,
-                                const char *entry_func, const char *cwd,
-                                const e_dap_host *host)
-{
- return dap_open_finish(e_dap_start_stdio(argv, program, entry_func, cwd, host));
 }
 
 /**
@@ -2258,25 +2553,17 @@ e_dap_session *e_dap_start_tcp(const char *host, int port, const char *program,
 
  fd = socket(AF_INET, SOCK_STREAM, 0);
  if (fd < 0)
- {  e_dap_close(s);  return NULL;  }
+ {  e_dap_free(s);  return NULL;  }
  memset(&a, 0, sizeof(a));
  a.sin_family = AF_INET;
  a.sin_port = htons((unsigned short)port);
  if (inet_pton(AF_INET, host, &a.sin_addr) != 1)
   a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
  if (connect(fd, (struct sockaddr *)&a, sizeof(a)) < 0)
- {  close(fd);  e_dap_close(s);  return NULL;  }
+ {  close(fd);  e_dap_free(s);  return NULL;  }
  s->sock = fd;
  dap_send_initialize(s);
  return s;
-}
-
-/* Forward TCP client to an already-running DAP server (Bloop's scala-debug-
-   adapter, address from BSP debugSession/start), initialize answered. */
-e_dap_session *e_dap_open_tcp(const char *host, int port, const char *program,
-                              const char *entry_func, const e_dap_host *host_cb)
-{
- return dap_open_finish(e_dap_start_tcp(host, port, program, entry_func, host_cb));
 }
 
 int e_dap_add_breakpoint(e_dap_session *s, const char *file, int line)
@@ -2360,46 +2647,18 @@ static void dap_pending_keep_lines(dap_pending *p, const char *path,
 }
 
 /**
- * e_dap_set_file_breakpoints - Replace one file's breakpoints while the
- * program is stopped.
- * @s: the session; @file: the source file; @lines: its breakpoint lines;
- * @n: how many.
- *
- * DAP has no run-to-cursor request, so Go to cursor adds the cursor's line
- * to the file's breakpoints, continues, and sends the list again without it
- * at the next stop.  setBreakpoints replaces every breakpoint of the file,
- * which is why the whole list is sent each time.  The answer is also told
- * to on_breakpoints.
- * Return: 0 when the adapter answered, -1 otherwise.
- */
-int e_dap_set_file_breakpoints(e_dap_session *s, const char *file,
-                               const int *lines, int n)
-{
- struct json_object *resp;
- char abspath[PATH_MAX];
- int seq;
-
- if (!s || s->ended || n < 0 || n > DAP_MAX_BP)
-  return -1;
- dap_absolute_path(file, abspath);
- seq = dap_send_owned(s, "setBreakpoints",
-                      dap_breakpoints_args(abspath, lines, n), DAP_REQ_WAITED);
- resp = dap_wait_answer(s, seq);
- if (!resp)
-  return -1;
- dap_breakpoints_answered(s, abspath, lines, n, resp);
- json_object_put(resp);
- return 0;
-}
-
-/**
  * e_dap_set_file_breakpoints_async - Replace one file's breakpoints without
  * waiting for the adapter.
  * @s: the session; @file: the source file; @lines, @n: all its breakpoints.
  *
- * A breakpoint the user toggles while the program runs reaches the adapter
- * at once (gdb-dap, lldb-dap and dlv all take it while running), and the
- * answer, verified or pending, comes later through on_breakpoints.
+ * A breakpoint the user toggles reaches the adapter at once, running or
+ * stopped (gdb-dap, lldb-dap and dlv all take it while running), and the
+ * answer, verified or pending, comes later through on_breakpoints.  DAP has
+ * no run-to-cursor request, so Go to cursor adds the cursor's line to the
+ * file's breakpoints this way, continues, and sends the list again without
+ * it at the next stop; setBreakpoints replaces every breakpoint of the
+ * file, which is why the whole list is sent each time.  The adapter takes
+ * requests in order, so a resume sent after it runs with the new list.
  * Return: 0 when sent, -1 otherwise.
  */
 int e_dap_set_file_breakpoints_async(e_dap_session *s, const char *file,
@@ -2422,48 +2681,10 @@ int e_dap_set_file_breakpoints_async(e_dap_session *s, const char *file,
  return 0;
 }
 
-int e_dap_run(e_dap_session *s)
+void e_dap_forward_output(e_dap_session *s)
 {
- if (!s)
-  return -1;
- s->goal = DAP_STEP_READY;
- if (s->step == DAP_STEP_OPENED)
-  dap_send_launch(s);
- if (dap_start_drive(s) != E_DAP_START_READY)
- {
+ if (s)
   s->forward_output = 1;
-  return s->ended ? 0 : -1;
- }
- return e_dap_run_to_first_stop(s);
-}
-
-/**
- * e_dap_run_to_first_stop - The handshake is done: wait for the program's
- * first stop and report it.
- * @s: the session, its start at E_DAP_START_READY.
- *
- * Fires host->on_stopped with the source line, or on_terminated when the
- * program ended first.
- * Return: 0, or -1 when the adapter hung up without either.
- */
-int e_dap_run_to_first_stop(e_dap_session *s)
-{
- int st;
-
- if (!s)
-  return -1;
- if (s->ended)
- {
-  s->forward_output = 1;
-  return 0;
- }
- st = dap_run_wait(s, DAP_NO_DEADLINE);
- /* Program output is forwarded from here on even without a stop (the
-    program ended first); dap_tell_stopped did it for a stop. */
- s->forward_output = 1;
- if (st == E_DAP_RUN_STOPPED)
-  return 0;
- return s->ended ? 0 : -1;
 }
 
 /**
@@ -2487,14 +2708,6 @@ int e_dap_resume(e_dap_session *s, const char *verb)
  s->run = DAP_RUN_GOING;
  s->stop_reported = 0;
  return 0;
-}
-
-int e_dap_step(e_dap_session *s, const char *verb)
-{
- if (e_dap_resume(s, verb) != 0)
-  return -1;
- dap_run_wait(s, DAP_NO_DEADLINE);
- return 0;       /* ended is normal for `continue` past the last breakpoint */
 }
 
 /**
@@ -2533,11 +2746,26 @@ static int dap_run_pump_start(e_dap_session *s)
  * again.  Called before the start is done, it goes on with the start.
  * Return: E_DAP_RUN_GOING, E_DAP_RUN_STOPPED or E_DAP_RUN_ENDED.
  */
+/**
+ * dap_start_goes_on - Is the start still to be taken on by the pump?
+ * @s: the session.
+ *
+ * Not once Quit has sent `disconnect`: an adapter that is going is asked
+ * nothing more, and the answers the start waited for are only read, so the
+ * answer to `disconnect` ends Quit's wait even before the start was done.
+ */
+static int dap_start_goes_on(const e_dap_session *s)
+{
+ if (s->run == DAP_RUN_DISCONNECTING)
+  return 0;
+ return dap_start_status(s) == E_DAP_START_WAITING;
+}
+
 int e_dap_run_pump(e_dap_session *s)
 {
  if (!s)
   return E_DAP_RUN_ENDED;
- if (dap_start_status(s) == E_DAP_START_WAITING)
+ if (dap_start_goes_on(s))
   return dap_run_pump_start(s);
  if (dap_start_status(s) == E_DAP_START_FAILED)
   return E_DAP_RUN_ENDED;
@@ -2599,32 +2827,6 @@ int e_dap_pause(e_dap_session *s)
  return 0;
 }
 
-char *e_dap_evaluate(e_dap_session *s, const char *expr)
-{
- struct json_object *args, *resp, *body;
- char *out = NULL;
- int seq;
-
- if (!s || s->ended)
-  return NULL;
- args = json_object_new_object();
- json_object_object_add(args, "expression", json_object_new_string(expr));
- json_object_object_add(args, "frameId", json_object_new_int(s->frame_id));
- json_object_object_add(args, "context", json_object_new_string("watch"));
- seq = dap_send_owned(s, "evaluate", args, DAP_REQ_WAITED);
- resp = dap_wait_answer(s, seq);
- body = obj_obj(resp, "body");
- if (body)
- {
-  const char *r = obj_str(body, "result");
-  if (r)
-   out = strdup(r);
- }
- if (resp)
-  json_object_put(resp);
- return out;
-}
-
 int e_dap_ended(const e_dap_session *s)
 {
  return s ? s->ended : 1;
@@ -2675,27 +2877,28 @@ int e_dap_disconnect(e_dap_session *s)
  return 0;
 }
 
-/**
- * dap_quit_and_wait - Quit the adapter and wait, briefly, for it to go.
- * @s: the session.
- *
- * Used when the host closes a session it did not disconnect itself: the
- * editor's quit while stopped, a test, the editor's own end.  The wait
- * ends at the adapter's answer or the end of its transport, or at
- * DAP_DISCONNECT_MS.  The editor's end request does not cut it short:
- * lldb-dap ends a running program only on `disconnect`, and giving up here
- * sends it SIGTERM before it has acted on it, so the program stays behind
- * (measured on a running lldb-dap program, 5 of 5).  The adapter's exit is
- * waited for by dap_reap_adapter.
- */
-static void dap_quit_and_wait(e_dap_session *s)
+void e_dap_host_forget(e_dap_session *s)
 {
- if (s->run == DAP_RUN_DISCONNECTING)
-  return;                        /* the host disconnected and waited */
- if (e_dap_disconnect(s) != 0)
+ if (!s)
   return;
- s->quitting = 1;
- dap_run_wait(s, dap_now_ms() + DAP_DISCONNECT_MS);
+ memset(&s->host, 0, sizeof(s->host));
+ s->rio = NULL;
+}
+
+int e_dap_disconnect_sent(const e_dap_session *s)
+{
+ return s && s->run == DAP_RUN_DISCONNECTING;
+}
+
+int e_dap_disconnect_answered(const e_dap_session *s)
+{
+ return s && s->disconnect_done;
+}
+
+void e_dap_hang_up(e_dap_session *s)
+{
+ if (s)
+  dap_close_write_side(s);
 }
 
 /**
@@ -2717,205 +2920,15 @@ static void dap_close_fds(e_dap_session *s)
  s->listen_fd = s->sock = s->in_fd = s->out_fd = s->pty_master = DAP_NO_FD;
 }
 
-#if defined(DAP_NO_PIDFD)
-/* The test build of a system with neither pidfd nor kqueue. */
-#elif defined(__linux__) && defined(SYS_pidfd_open)
-# define DAP_EXIT_BY_PIDFD 1
-#elif defined(HAVE_KQUEUE) && defined(HAVE_SYS_EVENT_H)
-# define DAP_EXIT_BY_KQUEUE 1
-#endif
-
-#if defined(DAP_EXIT_BY_KQUEUE)
-/**
- * dap_kqueue_exit_open - The BSD and macOS form of a pidfd: a kqueue that
- * becomes readable when @pid exits (EVFILT_PROC, NOTE_EXIT).
- * @pid: the adapter, the editor's own child.
- * Return: the descriptor, or -1 (the adapter already exited, or no room).
- */
-static int dap_kqueue_exit_open(pid_t pid)
-{
- struct kevent ev;
- int kq = kqueue();
-
- if (kq < 0)
-  return DAP_NO_FD;
- EV_SET(&ev, pid, EVFILT_PROC, EV_ADD | EV_ONESHOT, NOTE_EXIT, 0, NULL);
- if (kevent(kq, &ev, 1, NULL, 0, NULL) < 0)
- {
-  close(kq);
-  return DAP_NO_FD;
- }
- return kq;
-}
-#endif
-
-/**
- * dap_exit_fd_open - A descriptor that becomes readable when @pid exits:
- * a pidfd on Linux, a kqueue on the BSDs and macOS, or -1 where the system
- * has neither (then the end of the adapter's output is waited for).
- * @pid: the adapter, the editor's own child.
- *
- * With it, Quit reaps an adapter the moment it exits, never later.
- */
-static int dap_exit_fd_open(pid_t pid)
-{
-#if defined(DAP_EXIT_BY_PIDFD)
- return (int)syscall(SYS_pidfd_open, pid, 0);
-#elif defined(DAP_EXIT_BY_KQUEUE)
- return dap_kqueue_exit_open(pid);
-#else
- (void)pid;
- return DAP_NO_FD;
-#endif
-}
-
-/**
- * dap_exit_grace_wait - With no exit descriptor, the adapter has closed
- * every descriptor it held: it may be exiting, or still cleaning up after
- * SIGTERM.  Give it what is left of @deadline, then look once.
- * @s: the session; @deadline: a dap_now_ms() instant.
- *
- * The engine has no other wake for a child's exit here: the editor's
- * SIGCHLD wake (WpeChildWatch) delivers through the editor's loop, which
- * is not running while e_dap_close waits.  So the rest of the bound is
- * waited out on the end request alone (the user's work is saved if it
- * comes), and a single waitpid decides.  Only systems with neither pidfd
- * nor kqueue reach this, and only after the adapter closed all its
- * descriptors: there a Quit can take the whole bound.
- * Return: 1 once the adapter is gone (and reaped), else 0.
- */
-static int dap_exit_grace_wait(e_dap_session *s, long deadline)
-{
- for (;;)
- {
-  struct pollfd p[1];
-  int np = 0, end_i, r;
-
-  if (e_dap_adapter_gone(s))
-   return 1;
-  end_i = dap_quit_end_watch_add(p, &np);
-  r = poll(p, np, dap_ms_left(deadline));
-  if (r < 0 && errno == EINTR)
-   continue;
-  dap_quit_end_check(dap_poll_fired(p, end_i, r));
-  if (r <= 0)
-   return e_dap_adapter_gone(s);
- }
-}
-
-/**
- * dap_exit_watch - Wait until the adapter has exited, or @deadline.
- * @s: the session; @exit_fd: from dap_exit_fd_open, or -1; @deadline: a
- * dap_now_ms() instant.
- *
- * What the adapter still writes meanwhile is read and dropped, so it never
- * blocks on a full pipe while it exits; an adapter that writes without end
- * still cannot hold the wait past @deadline.  Without an exit descriptor,
- * the end of every descriptor the adapter holds stands for "may have
- * exited", and the rest of the bound is given by dap_exit_grace_wait.  The
- * end request does not cut this wait short (it is bounded, and it is what
- * keeps a program from being left behind when the editor ends), but when
- * it comes the user's work is saved at once.
- * Return: 1 once the adapter is gone (and reaped), 0 at the deadline.
- */
-static int dap_exit_watch(e_dap_session *s, int exit_fd, long deadline)
-{
- for (;;)
- {
-  struct pollfd p[DAP_EXIT_FDS];
-  int np = 0, pty_i = -1, rd_i = -1, end_i, r;
-
-  if (e_dap_adapter_gone(s))
-   return 1;
-  if (dap_ms_left(deadline) == 0)
-   return 0;
-  if (exit_fd >= 0)
-  {
-   p[np].fd = exit_fd; p[np].events = POLLIN; p[np].revents = 0; np++;
-  }
-  if (s->pty_master >= 0)
-  {
-   pty_i = np;
-   p[np].fd = s->pty_master; p[np].events = POLLIN; p[np].revents = 0;
-   np++;
-  }
-  if (!s->eof && dap_rfd(s) >= 0)
-  {
-   rd_i = np;
-   p[np].fd = dap_rfd(s); p[np].events = POLLIN; p[np].revents = 0; np++;
-  }
-  if (np == 0)
-   return dap_exit_grace_wait(s, deadline);
-  end_i = dap_quit_end_watch_add(p, &np);
-  r = poll(p, np, dap_ms_left(deadline));
-  if (r < 0 && errno == EINTR)
-   continue;
-  dap_quit_end_check(dap_poll_fired(p, end_i, r));
-  if (r <= 0)
-   return e_dap_adapter_gone(s);
-  if (pty_i >= 0 && p[pty_i].revents)
-   e_dap_drain_output(s);
-  if (rd_i >= 0 && p[rd_i].revents)
-   dap_discard_once(s);
- }
-}
-
-/**
- * dap_wait_adapter_exit - Give the adapter up to @ms to exit by itself.
- * @s: the session; @ms: the bound.
- * Return: 1 once it is gone and reaped, else 0.
- */
-static int dap_wait_adapter_exit(e_dap_session *s, int ms)
-{
- int exit_fd = dap_exit_fd_open(s->pid);
- int gone = dap_exit_watch(s, exit_fd, dap_now_ms() + ms);
-
- if (exit_fd >= 0)
-  close(exit_fd);
- return gone;
-}
-
-/**
- * dap_reap_adapter - Make sure the adapter is gone, and reap it.
- * @s: the session.
- *
- * An adapter that answered Quit is given DAP_EXIT_MS to exit by itself
- * and is then only reaped: dlv closes its socket before it is done, so the
- * end of the transport is not taken for its exit.  One still there gets
- * SIGTERM and DAP_TERM_MS, so it can end the program it runs (a SIGKILLed
- * lldb-dap or dlv leaves its program behind), and SIGKILL after that, so
- * the user is never left with an editor that does not quit.  Every wait is
- * a poll on the adapter's exit, bounded, never a sleep.
- */
-static void dap_reap_adapter(e_dap_session *s)
-{
- int st;
-
- if (!s->spawned || s->pid <= 0)
-  return;
- dap_close_write_side(s);
- if (s->disconnect_done && dap_wait_adapter_exit(s, DAP_EXIT_MS))
-  return;
- if (e_dap_adapter_gone(s))
-  return;
- kill(s->pid, SIGTERM);
- if (dap_wait_adapter_exit(s, DAP_TERM_MS))
-  return;
- kill(s->pid, SIGKILL);
- while (waitpid(s->pid, &st, 0) < 0 && errno == EINTR)
-  ;
- s->pid = 0;
-}
-
-void e_dap_close(e_dap_session *s)
+void e_dap_free(e_dap_session *s)
 {
  if (!s)
   return;
- dap_quit_and_wait(s);
- dap_reap_adapter(s);
+ e_dap_requests_cancel(s, E_D_REQ_GONE);
  dap_close_fds(s);
  dap_pending_free_all(s);
  dap_bp_ids_free(s);
+ dap_stage_clear(s);
  e_dap_reader_free(&s->rd);
  free(s->start_error);
  free(s->program);

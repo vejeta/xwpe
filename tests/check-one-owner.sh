@@ -82,6 +82,7 @@ e_t_kbhit we_term.c
 e_x_kbhit we_xterm.c
 e_w_kbhit we_wayland.c
 wpe_fd_wait_for we_xterm.c we_wayland.c we_gpm.c we_fdloop.c
+wpe_fd_end_wait we_fdloop.c
 EOF
 
 # normalise: the name as the source spells it.  One leading "_" (Mach-O),
@@ -199,7 +200,7 @@ for obj in $OBJECTS; do
     case $word in
       'read(0') n=$(count_uses "read[ \t]*[(][ \t]*0[ \t]*," "$file") ;;
       'fileno(stdin)') n=$(count_uses "fileno[ \t]*[(][ \t]*stdin" "$file") ;;
-      wpe_fd_wait_for) n=$(count_uses "wpe_fd_wait_for" "$file") ;;
+      wpe_fd_wait_for|wpe_fd_end_wait) n=$(count_uses "$word" "$file") ;;
       *) n=$(count_words "$word" "$file") ;;
     esac
     [ "$n" -gt 0 ] && echo "$base $word $n" >> "$WORK/found"

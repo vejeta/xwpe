@@ -21,13 +21,16 @@ we_bsp.o poll 2 P9k
 we_lsp.o poll 2 P9k the handshake and the message reads
 we_lsp.o nanosleep 1 P9i server end moves to the child watch
 
-# the debug adapters
-we_dap.o poll 3 P9g the answer waits and the Quit waits
-
 # the debugger
 we_debug.o usleep 1 P9o the external xterm settle
 we_debug.o XFlush 2 P9o the focus taken back after the start and the external xterm settle; no read
 we_debug.o STDIN_FILENO 1 keep ttyname_r names the editor's own terminal; no read
+
+# the editor's end: after the save it runs the loop, bounded, until a
+# closing debug adapter has ended its program; a signal, an error box or a
+# closed window ends the editor from inside any dialog, so the end cannot
+# return to the main loop
+we_unix.o wpe_fd_end_wait 1 keep e_exit_teardown, the one nested wait
 
 # console mouse, clipboard, display
 we_gpm.o poll 1 P9o the gpm handshake

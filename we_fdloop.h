@@ -56,6 +56,9 @@ int  wpe_fd_readable_now(int fd);
 typedef int (*wpe_wait_pred)(void);
 int  wpe_fd_wait_for(wpe_wait_pred pred, long deadline_ms, const char *what);
 const char *wpe_fd_waiting_for(void);
+/* At the editor's end only: run the loop, the keyboard and displays no
+   longer read, until @pred or the deadline. */
+int  wpe_fd_end_wait(wpe_wait_pred pred, long deadline_ms);
 
 /* The editor's side (we_hfkt.c): watch an fd and say so on the bottom row
    when the loop cannot; wait for a key whether or not the keyboard is

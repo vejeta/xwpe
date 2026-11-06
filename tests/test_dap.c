@@ -1613,6 +1613,528 @@ static void test_close_kills_an_adapter_that_never_answers(void)
  fake_gone_or_killed(pid);
 }
 
+/* ---- requests answered by callback (e_dap_request) ---------------------- */
+
+#define CALL_CMD_MAX      64
+#define CALL_DEADLINE_S   7
+#define CALL_DEADLINE_TXT "7"
+#define CALL_NOTICE_MAX   256
+
+/* What a callback was told. */
+struct told {
+ int  calls;
+ E_D_REQ_END how;
+ char text[ADAPTER_BUF];
+ int  error;
+};
+
+static int told_answered(E_D_REQ_END how, E_D_ANSWER *ans, void *ctx)
+{
+ struct told *t = ctx;
+
+ t->calls++;
+ t->how = how;
+ t->error = ans ? ans->error : 0;
+ snprintf(t->text, sizeof t->text, "%s", ans && ans->text ? ans->text : "");
+ return E_D_STEP_STOP;
+}
+
+/* Read what the adapter wrote, as the editor's loop does at a stop: once
+   the transport is readable, without taking the run's answer. */
+static void read_when_readable(e_dap_session *s)
+{
+ struct pollfd p;
+
+ p.fd = e_dap_fd(s);
+ p.events = POLLIN;
+ p.revents = 0;
+ if (p.fd >= 0)
+  poll(&p, 1, PUMP_WAIT_MS);
+ e_dap_read_now(s);
+}
+
+/* The host's world for the deadline: a clock the test moves and the
+   timers the engine asks for. */
+static long fake_clock_ms = 0;
+static long fake_timer_ms[E_D_TIMERS];
+static char fake_notice[CALL_NOTICE_MAX];
+static char fake_waiting[CALL_NOTICE_MAX];
+
+static long fake_now(void *io)
+{
+ (void)io;
+ return fake_clock_ms;
+}
+
+static void fake_arm(int which, long ms, void *io)
+{
+ (void)io;
+ fake_timer_ms[which] = ms;
+}
+
+static void fake_say(const char *msg, void *io)
+{
+ (void)io;
+ snprintf(fake_notice, sizeof fake_notice, "%s", msg);
+}
+
+static void fake_wait_line(const char *cmd, long secs, void *io)
+{
+ (void)io;
+ snprintf(fake_waiting, sizeof fake_waiting, "%s %ld", cmd, secs);
+}
+
+static void fake_world(E_D_REQ_IO *io)
+{
+ int i;
+
+ memset(io, 0, sizeof(*io));
+ io->now_ms = fake_now;
+ io->arm_timer = fake_arm;
+ io->notice = fake_say;
+ io->waiting = fake_wait_line;
+ io->name = "dlv";
+ fake_clock_ms = 0;
+ fake_notice[0] = fake_waiting[0] = '\0';
+ for (i = 0; i < E_D_TIMERS; i++)
+  fake_timer_ms[i] = E_D_TIMER_OFF;
+}
+
+/* Send a watch's evaluate through the requester; returns its seq. */
+static int evaluate_by_callback(e_dap_session *s, int conn, e_dap_reader *rd,
+                                const char *expr, struct told *t)
+{
+ char cmd[CALL_CMD_MAX];
+
+ memset(t, 0, sizeof(*t));
+ CHECK(e_dap_stage_evaluate(s, expr, cmd, sizeof cmd) == 1,
+       "evaluate could not be built");
+ CHECK(e_dap_req_request(s, cmd, told_answered, t) == E_D_SEND_OK,
+       "evaluate was not sent");
+ return expect_request(conn, rd, "evaluate");
+}
+
+/* @scenario SC-debug-69 */
+static void test_evaluate_answered_by_callback_while_events_come(void)
+{
+ static const int lines[] = { 6, 9 };
+ char buf[ADAPTER_BUF], ev[ADAPTER_BUF / 4];
+ e_dap_reader rd;
+ e_dap_host host;
+ struct seen r;
+ struct told t;
+ E_D_ANSWER a;
+ e_dap_session *s;
+ char *val;
+ int conn = -1, lfd = -1, bseq, eseq;
+ size_t n;
+
+ e_dap_reader_init(&rd);
+ seen_host(&host, &r);
+ s = stopped_session(&host, &conn, &lfd, &rd);
+ if (!s)
+  return;
+ CHECK(e_dap_set_file_breakpoints_async(s, TEST_FILE, lines, 2) == 0,
+       "async setBreakpoints refused at a stop");
+ bseq = expect_request(conn, &rd, "setBreakpoints");
+ eseq = evaluate_by_callback(s, conn, &rd, "x", &t);
+ CHECK(e_dap_requests_pending(s), "the evaluate is not counted as out");
+ CHECK(t.calls == 0, "the callback came before any answer");
+ /* The breakpoint list's answer, output, a breakpoint event and only then
+    the evaluate's answer, in one read. */
+ answer_breakpoints_pending(ev, sizeof ev, bseq);
+ n = frame(buf, ev);
+ n += frame(buf + n, "{\"seq\":3,\"type\":\"event\",\"event\":\"output\","
+                     "\"body\":{\"category\":\"stdout\",\"output\":\"during\"}}");
+ n += frame(buf + n, "{\"seq\":4,\"type\":\"event\",\"event\":\"breakpoint\","
+                     "\"body\":{\"reason\":\"changed\",\"breakpoint\":"
+                     "{\"id\":1,\"verified\":true}}}");
+ CHECK(t.calls == 0, "an event was taken for the evaluate's answer");
+ answer_body(ev, sizeof ev, eseq, "evaluate", "{\"result\":\"42\"}");
+ n += frame(buf + n, ev);
+ put(conn, buf, n);
+ read_when_readable(s);
+ CHECK(t.calls == 1 && t.how == E_D_REQ_DONE,
+       "the evaluate's answer did not reach its callback once");
+ a.text = t.text;
+ a.len = strlen(t.text);
+ a.size = 0;
+ a.error = t.error;
+ val = e_dap_answer_result(&a);
+ CHECK(val && !strcmp(val, "42"), "the callback did not get the value");
+ free(val);
+ CHECK(r.bp_calls == 2, "the breakpoint answer and event were not told");
+ CHECK(r.bp_n == 1 && r.bp_line[0] == 6 && r.bp_verified[0],
+       "the breakpoint event did not turn line 6 verified");
+ CHECK(strstr(r.out, "during") != NULL, "output during the answer was lost");
+ CHECK(!e_dap_requests_pending(s), "the answered evaluate is still out");
+ CHECK(e_dap_run_pump(s) != E_DAP_RUN_STOPPED,
+       "an answer at a stop was taken for a stop");
+ end_session(s, conn, lfd, &rd);
+}
+
+/* @scenario SC-debug-69 */
+static void test_answer_for_a_request_given_up_is_dropped(void)
+{
+ char buf[ADAPTER_BUF];
+ e_dap_reader rd;
+ e_dap_host host;
+ struct seen r;
+ struct told t, t2;
+ e_dap_session *s;
+ int conn = -1, lfd = -1, seq, seq2;
+
+ e_dap_reader_init(&rd);
+ seen_host(&host, &r);
+ s = stopped_session(&host, &conn, &lfd, &rd);
+ if (!s)
+  return;
+ seq = evaluate_by_callback(s, conn, &rd, "x", &t);
+ e_dap_requests_cancel(s, E_D_REQ_CANCELLED);
+ CHECK(t.calls == 1 && t.how == E_D_REQ_CANCELLED,
+       "the cancel was not told to the request");
+ CHECK(!e_dap_requests_pending(s), "a cancelled request is still out");
+ seq2 = evaluate_by_callback(s, conn, &rd, "y", &t2);
+ /* The late answer to the first comes, then the second's own. */
+ answer_body(buf, sizeof buf, seq, "evaluate", "{\"result\":\"late\"}");
+ put_msg(conn, buf);
+ answer_body(buf, sizeof buf, seq2, "evaluate", "{\"result\":\"own\"}");
+ put_msg(conn, buf);
+ read_when_readable(s);
+ if (t2.calls == 0)
+  read_when_readable(s);
+ CHECK(t.calls == 1, "the given-up request was called again");
+ CHECK(t2.calls == 1 && t2.how == E_D_REQ_DONE,
+       "the next request lost its answer");
+ CHECK(strstr(t2.text, "own") && !strstr(t2.text, "late"),
+       "the late answer was taken for the next request's");
+ end_session(s, conn, lfd, &rd);
+}
+
+/* @scenario SC-debug-69 */
+static void test_deadline_ends_a_request(void)
+{
+ E_D_REQ_IO io;
+ e_dap_reader rd;
+ e_dap_host host;
+ struct seen r;
+ struct told t;
+ e_dap_session *s;
+ int conn = -1, lfd = -1;
+
+ e_dap_reader_init(&rd);
+ seen_host(&host, &r);
+ s = stopped_session(&host, &conn, &lfd, &rd);
+ if (!s)
+  return;
+ fake_world(&io);
+ e_dap_requests_init(s, &io, CALL_DEADLINE_TXT);
+ evaluate_by_callback(s, conn, &rd, "x", &t);
+ CHECK(fake_timer_ms[E_D_TIMER_QUIET] == E_D_REQ_QUIET_MS,
+       "no waiting line was asked for after a quiet second");
+ CHECK(fake_timer_ms[E_D_TIMER_DEADLINE] ==
+       (long)CALL_DEADLINE_S * E_D_REQ_SECOND_MS,
+       "the deadline was not the user's");
+ fake_clock_ms = E_D_REQ_QUIET_MS;
+ e_dap_request_timer(s, E_D_TIMER_QUIET);
+ CHECK(!strcmp(fake_waiting, "evaluate 1"),
+       "the waiting line did not name the request and its second");
+ fake_clock_ms = (long)CALL_DEADLINE_S * E_D_REQ_SECOND_MS;
+ e_dap_request_timer(s, E_D_TIMER_DEADLINE);
+ CHECK(t.calls == 1 && t.how == E_D_REQ_TIMED_OUT,
+       "the deadline did not end the request");
+ CHECK(strstr(fake_notice, "dlv did not answer `evaluate` within 7 s") != NULL,
+       "the deadline's line did not say what was given up");
+ CHECK(fake_timer_ms[E_D_TIMER_QUIET] == E_D_TIMER_OFF &&
+       fake_timer_ms[E_D_TIMER_DEADLINE] == E_D_TIMER_OFF &&
+       fake_timer_ms[E_D_TIMER_SECOND] == E_D_TIMER_OFF,
+       "timers were left armed with nothing out");
+ e_dap_request_timer(s, E_D_TIMER_DEADLINE);
+ CHECK(t.calls == 1, "a stale deadline called the request again");
+ e_dap_requests_init(s, NULL, NULL);
+ end_session(s, conn, lfd, &rd);
+}
+
+#define CALL_SECOND_SENT_MS  3000   /* the second request goes out later */
+#define CALL_FIRST_DONE_MS   4000   /* the first is answered after that */
+
+/* @scenario SC-debug-69 */
+static void test_next_deadline_counts_from_its_own_send(void)
+{
+ char buf[ADAPTER_BUF];
+ E_D_REQ_IO io;
+ e_dap_reader rd;
+ e_dap_host host;
+ struct seen r;
+ struct told t, t2;
+ e_dap_session *s;
+ int conn = -1, lfd = -1, seq;
+
+ e_dap_reader_init(&rd);
+ seen_host(&host, &r);
+ s = stopped_session(&host, &conn, &lfd, &rd);
+ if (!s)
+  return;
+ fake_world(&io);
+ e_dap_requests_init(s, &io, CALL_DEADLINE_TXT);
+ seq = evaluate_by_callback(s, conn, &rd, "x", &t);
+ fake_clock_ms = CALL_SECOND_SENT_MS;
+ evaluate_by_callback(s, conn, &rd, "y", &t2);
+ CHECK(fake_timer_ms[E_D_TIMER_DEADLINE] ==
+       (long)CALL_DEADLINE_S * E_D_REQ_SECOND_MS,
+       "the second request moved the first one's deadline");
+ fake_clock_ms = CALL_FIRST_DONE_MS;
+ answer_body(buf, sizeof buf, seq, "evaluate", "{\"result\":\"1\"}");
+ put_msg(conn, buf);
+ read_when_readable(s);
+ CHECK(t.calls == 1 && t.how == E_D_REQ_DONE, "the first was not answered");
+ CHECK(fake_timer_ms[E_D_TIMER_DEADLINE] ==
+       CALL_SECOND_SENT_MS + (long)CALL_DEADLINE_S * E_D_REQ_SECOND_MS -
+       CALL_FIRST_DONE_MS,
+       "the next request's deadline is not counted from its own send");
+ e_dap_requests_cancel(s, E_D_REQ_GONE);
+ CHECK(t2.calls == 1 && t2.how == E_D_REQ_GONE, "the second was not ended");
+ e_dap_requests_init(s, NULL, NULL);
+ end_session(s, conn, lfd, &rd);
+}
+
+#define CALL_NEXT_SESSION_MS 12345  /* a timer the next session armed */
+
+/* Quit hands the session to the background and the user starts the next
+   one: what the old session's end does must not touch the editor's timers,
+   which belong to the new session's requests by then.
+   @scenario SC-debug-70 */
+static void test_forgotten_session_leaves_the_hosts_timers_alone(void)
+{
+ E_D_REQ_IO io;
+ e_dap_reader rd;
+ e_dap_host host;
+ struct seen r;
+ struct told t;
+ e_dap_session *s;
+ int conn = -1, lfd = -1, i, kept = 1;
+
+ e_dap_reader_init(&rd);
+ seen_host(&host, &r);
+ s = stopped_session(&host, &conn, &lfd, &rd);
+ if (!s)
+  return;
+ fake_world(&io);
+ e_dap_requests_init(s, &io, CALL_DEADLINE_TXT);
+ evaluate_by_callback(s, conn, &rd, "x", &t);
+ e_dap_requests_cancel(s, E_D_REQ_GONE);
+ e_dap_host_forget(s);
+ for (i = 0; i < E_D_TIMERS; i++)
+  fake_timer_ms[i] = CALL_NEXT_SESSION_MS;
+ end_session(s, conn, lfd, &rd);
+ for (i = 0; i < E_D_TIMERS; i++)
+  if (fake_timer_ms[i] != CALL_NEXT_SESSION_MS)
+   kept = 0;
+ CHECK(kept, "a session given up by Quit took back the editor's timers");
+}
+
+/* Quit during the start, before the adapter answered launch: the answer
+   that comes with the one to `disconnect` does not take the start on, so
+   nothing more is asked of an adapter that is going, and the answer to
+   `disconnect` ends the wait.
+   @scenario SC-debug-70 */
+static void test_quit_during_the_start_asks_nothing_more(void)
+{
+ char buf[ADAPTER_BUF], la[ADAPTER_BUF / 4], da[ADAPTER_BUF / 4];
+ e_dap_reader rd;
+ e_dap_host host;
+ struct seen r;
+ struct json_object *m, *more;
+ e_dap_session *s;
+ int port = 0, conn = -1, lfd, seq;
+ size_t n;
+
+ e_dap_reader_init(&rd);
+ seen_host(&host, &r);
+ lfd = listen_local(&port);
+ CHECK(lfd >= 0, "cannot listen on 127.0.0.1");
+ if (lfd < 0)
+  return;
+ s = e_dap_start_tcp("127.0.0.1", port, "/tmp/p", NULL, &host);
+ conn = accept(lfd, NULL, NULL);
+ CHECK(s != NULL && conn >= 0, "loopback session not connected");
+ if (!s || conn < 0)
+  return;
+ seq = expect_request(conn, &rd, "initialize");
+ put(conn, buf, response(buf, seq, "initialize", 1, ""));
+ e_dap_start_pump(s);
+ seq = expect_request(conn, &rd, "launch");
+ CHECK(e_dap_disconnect(s) == 0, "disconnect not sent during the start");
+ m = take_request(conn, &rd, "disconnect");
+ answer_plain(la, sizeof la, seq, "launch", 1);
+ answer_plain(da, sizeof da, req_seq(m), "disconnect", 1);
+ if (m)
+  json_object_put(m);
+ n = frame(buf, la);
+ n += frame(buf + n, INITIALIZED_EVENT);
+ n += frame(buf + n, da);
+ put(conn, buf, n);
+ CHECK(pump_when_readable(s) == E_DAP_RUN_ENDED,
+       "the answered disconnect did not end Quit during the start");
+ more = next_request(conn, &rd);
+ CHECK(more == NULL, "the start went on asking after disconnect");
+ if (more)
+  json_object_put(more);
+ e_dap_free(s);
+ close(conn);
+ close(lfd);
+ e_dap_reader_free(&rd);
+}
+
+/* A two-step chain: the stack, then a watch in the frame it names. */
+struct chain_seen {
+ int frames;
+ int frame_id;
+ char value[TEXT_MAX];
+ int finished;
+ int ok;
+};
+
+static int chain_stack_cmd(char *cmd, size_t n, void *ctx)
+{
+ (void)cmd;
+ (void)n;
+ (void)ctx;
+ return 0;
+}
+
+static e_dap_session *chain_session;
+
+static int chain_frames_cmd(char *cmd, size_t n, void *ctx)
+{
+ (void)ctx;
+ return e_dap_stage_stack_trace(chain_session, BP_SEEN_MAX, cmd, n);
+}
+
+static int chain_frames_answered(E_D_REQ_END how, E_D_ANSWER *ans, void *ctx)
+{
+ struct chain_seen *c = ctx;
+ e_dap_frame frames[BP_SEEN_MAX];
+
+ (void)how;
+ c->frames = e_dap_answer_frames(ans, frames, BP_SEEN_MAX);
+ if (c->frames > 1)
+  e_dap_select_frame(chain_session, frames[1].id);
+ return E_D_STEP_NEXT;
+}
+
+static int chain_watch_cmd(char *cmd, size_t n, void *ctx)
+{
+ (void)ctx;
+ return e_dap_stage_evaluate(chain_session, "x", cmd, n);
+}
+
+static int chain_watch_answered(E_D_REQ_END how, E_D_ANSWER *ans, void *ctx)
+{
+ struct chain_seen *c = ctx;
+ char *v = e_dap_answer_result(ans);
+
+ (void)how;
+ snprintf(c->value, sizeof c->value, "%s", v ? v : "");
+ free(v);
+ return E_D_STEP_NEXT;
+}
+
+static void chain_finished(int ok, void *ctx)
+{
+ struct chain_seen *c = ctx;
+
+ c->finished++;
+ c->ok = ok;
+}
+
+static const E_D_STEP chain_steps[] = {
+ { chain_stack_cmd, NULL },          /* nothing to send: skipped */
+ { chain_frames_cmd, chain_frames_answered },
+ { chain_watch_cmd, chain_watch_answered },
+ { NULL, NULL }
+};
+
+/* @scenario SC-debug-69 */
+static void test_requester_runs_a_two_step_chain(void)
+{
+ char buf[ADAPTER_BUF];
+ e_dap_reader rd;
+ e_dap_host host;
+ struct seen r;
+ struct chain_seen c;
+ struct json_object *m;
+ E_D_REQUESTER via;
+ e_dap_session *s;
+ int conn = -1, lfd = -1, seq;
+
+ e_dap_reader_init(&rd);
+ seen_host(&host, &r);
+ s = stopped_session(&host, &conn, &lfd, &rd);
+ if (!s)
+  return;
+ memset(&c, 0, sizeof c);
+ chain_session = s;
+ via.request = e_dap_req_request;
+ via.engine = s;
+ CHECK(e_d_chain_run(&via, chain_steps, &c, chain_finished) == 1,
+       "the chain did not start");
+ seq = expect_request(conn, &rd, "stackTrace");
+ CHECK(c.finished == 0, "the chain ended before its first answer");
+ answer_stack(buf, sizeof buf, seq, 6);
+ put_msg(conn, buf);
+ read_when_readable(s);
+ CHECK(c.frames == 2, "the first step did not read the stack");
+ m = take_request(conn, &rd, "evaluate");
+ CHECK(arg_int(m, "frameId") == 8,
+       "the second step did not ask in the frame the first chose");
+ seq = req_seq(m);
+ if (m)
+  json_object_put(m);
+ answer_body(buf, sizeof buf, seq, "evaluate", "{\"result\":\"7\"}");
+ put_msg(conn, buf);
+ read_when_readable(s);
+ CHECK(c.finished == 1 && c.ok == 1, "the chain did not end well once");
+ CHECK(!strcmp(c.value, "7"), "the second step did not read its answer");
+ end_session(s, conn, lfd, &rd);
+}
+
+/* @scenario SC-debug-69 */
+static void test_long_watch_expression_goes_out_whole(void)
+{
+ char expr[ADAPTER_BUF / 2], cmd[CALL_CMD_MAX];
+ e_dap_reader rd;
+ e_dap_host host;
+ struct seen r;
+ struct told t;
+ struct json_object *m, *a = NULL, *v = NULL;
+ e_dap_session *s;
+ int conn = -1, lfd = -1;
+
+ e_dap_reader_init(&rd);
+ seen_host(&host, &r);
+ s = stopped_session(&host, &conn, &lfd, &rd);
+ if (!s)
+  return;
+ memset(expr, 'a', sizeof expr - 1);
+ expr[sizeof expr - 1] = '\0';
+ memset(&t, 0, sizeof t);
+ CHECK(e_dap_stage_evaluate(s, expr, cmd, sizeof cmd) == 1,
+       "a long expression could not be built");
+ CHECK(e_dap_req_request(s, cmd, told_answered, &t) == E_D_SEND_OK,
+       "a long expression was not sent");
+ m = take_request(conn, &rd, "evaluate");
+ if (m && json_object_object_get_ex(m, "arguments", &a))
+  json_object_object_get_ex(a, "expression", &v);
+ CHECK(v && strlen(json_object_get_string(v)) == strlen(expr),
+       "the expression was cut");
+ if (m)
+  json_object_put(m);
+ e_dap_requests_cancel(s, E_D_REQ_GONE);
+ CHECK(t.calls == 1 && t.how == E_D_REQ_GONE, "the end was not told");
+ end_session(s, conn, lfd, &rd);
+}
+
 int main(int argc, char **argv)
 {
  if (argc >= 4 && !strcmp(argv[1], FAKE_FLAG))
@@ -1645,6 +2167,14 @@ int main(int argc, char **argv)
  test_close_kills_an_adapter_that_never_answers();
  test_close_terms_before_it_kills();
  test_close_ends_under_an_adapter_that_floods();
+ test_evaluate_answered_by_callback_while_events_come();
+ test_answer_for_a_request_given_up_is_dropped();
+ test_deadline_ends_a_request();
+ test_next_deadline_counts_from_its_own_send();
+ test_forgotten_session_leaves_the_hosts_timers_alone();
+ test_quit_during_the_start_asks_nothing_more();
+ test_requester_runs_a_two_step_chain();
+ test_long_watch_expression_goes_out_whole();
  if (failures)
  {
   printf("test_dap: %d FAILURE(S)\n", failures);
@@ -1656,7 +2186,10 @@ int main(int argc, char **argv)
         "events during waits, stop before its resume answer, pause, stops "
         "read with the start's last answer, an answer read with evaluate's, "
         "refused continue, evaluate's frame, no block before ready, end in "
-        "mid-message) and quit (answered, silent, SIGTERM before SIGKILL, "
-        "a late stop location, an adapter that floods)\n");
+        "mid-message), quit (answered, silent, SIGTERM before SIGKILL, "
+        "a late stop location, an adapter that floods, during the start, "
+        "a forgotten session's timers) and requests by callback (an answer "
+        "among events, a late answer dropped, the deadline, the next one's "
+        "deadline, a two-step chain, a long expression whole)\n");
  return 0;
 }

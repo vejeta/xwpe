@@ -1086,10 +1086,9 @@ static void wpe_end_now(int sig)
    the read end from start-up to exit; the key read of all three displays, a
    dialog, the debugger's answer and a running program or build all wait in
    that loop, so the editor wakes at once there and ends with the emergency
-   save.  The DAP session's own blocking waits watch the same read end
-   (e_dap_set_end_watch) and give up when it fires, so the next fd-loop wait
-   ends the editor; its Quit waits are bounded and go on so the adapter
-   still ends its program, but they save the work at once when it fires;
+   save.  A debug adapter's answers and its Quit are read on the loop too,
+   so the save comes first, and the editor's end then keeps the loop
+   running, bounded, until the adapter has ended its program;
    the assistant's synchronous wait asks wpe_end_requested
    on every slice.  The other waits outside the loop are bounded by a
    deadline (language server and build-server replies, web fetches, tool
@@ -1127,7 +1126,6 @@ static void wpe_end_request_open(void)
  }
  wpe_end_wake_rd = fds[0];
  wpe_end_wake_wr = fds[1];
- e_dap_set_end_watch(wpe_end_wake_rd, wpe_end_requested, e_err_save);
 }
 
 /**
@@ -1350,10 +1348,13 @@ static void e_exit_teardown(void)
  extern int e_d_pid;
  extern void e_lsp_ui_shutdown(void);
  extern void e_d_dap_end_at_exit(void);
+ extern int e_d_dap_all_closed(void);
 
  /* A debug adapter is told to end its program and given a bounded time
-    to go; the work was saved before this. */
+    to go, on the loop; the work was saved before this. */
  e_d_dap_end_at_exit();
+ if (!e_d_dap_all_closed())
+  wpe_fd_end_wait(e_d_dap_all_closed, E_DAP_CLOSE_MAX_MS);
  if (e_d_pid)
   kill(e_d_pid, 7);
  /* Tear down the language server (Metals etc.) so its JVM does not linger
