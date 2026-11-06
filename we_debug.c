@@ -1283,6 +1283,15 @@ extern char *e_d_msg[];                        /* the debugger's words */
 #define E_D_PDB_RETURN      "--Return--"
 /* What pdb prints when SIGINT interrupts the running script. */
 #define E_D_PDB_INTERRUPTED "Program interrupted"
+/* What pdb's answer to a SIGINT that meets it at its prompt holds:
+   "--KeyboardInterrupt--", or "*** KeyboardInterrupt" when the signal cut
+   short the command it was running. */
+#define E_D_PDB_INT_ANSWER  "KeyboardInterrupt"
+/* The first of those, whole: the only one a stop's text can hold.  That
+   text also holds what the script printed, which may name
+   KeyboardInterrupt itself (its own Ctrl-C handler), so a stop is searched
+   for pdb's exact line only. */
+#define E_D_PDB_INT_AT_PROMPT "--KeyboardInterrupt--"
 #define E_D_EXIT_PLAIN      "Program exited."
 #define E_D_EXIT_CODE_FMT   "Program exited with code %ld"
 /* A program killed by a signal, in gdb's words. */
@@ -3341,26 +3350,36 @@ static int e_d_gdb_interrupt_stop(int taken)
 }
 
 /**
+ * e_d_words_in - How many times @words stand in the first @len bytes of
+ * @text, so the editor can tell how many of the debugger's answers of one
+ * kind (its prompts, its answers to interrupts) came in what it read.
+ * @words: what is counted; NULL or empty counts nothing.
+ */
+static int e_d_words_in(const char *text, size_t len, const char *words)
+{
+ const char *end = text + len, *at;
+ size_t wlen;
+ int n = 0;
+
+ if (!words || !*words)
+  return(0);
+ wlen = strlen(words);
+ while (text + wlen <= end && (at = strstr(text, words)) != NULL &&
+        at + wlen <= end)
+ {
+  n++;
+  text = at + wlen;
+ }
+ return(n);
+}
+
+/**
  * e_d_prompts_in - How many of the debugger's prompts @text holds.
  * @text: what the debugger wrote; @len: its length.
  */
 static int e_d_prompts_in(const char *text, size_t len)
 {
- const char *prompt = e_d_prompt_text();
- const char *end = text + len, *at;
- size_t plen;
- int n = 0;
-
- if (!prompt)
-  return(0);
- plen = strlen(prompt);
- while (text + plen <= end && (at = strstr(text, prompt)) != NULL &&
-        at + plen <= end)
- {
-  n++;
-  text = at + plen;
- }
- return(n);
+ return(e_d_words_in(text, len, e_d_prompt_text()));
 }
 
 /**
@@ -11206,15 +11225,21 @@ static void e_d_pdb_stopped(FENSTER *f)
  * pdb answers an interrupt that finds it at its prompt with
  * "--KeyboardInterrupt--" and one more prompt.  Left unread, that prompt
  * would end the answer to the next command, and every answer after it
- * would come one command late.  The prompts read with the stop are
- * counted here; the ones still on their way by the settle step
- * (e_d_gs_settle_cmd), on the fd loop.
+ * would come one command late.  The answers read with the stop are
+ * counted here by pdb's own line for them, not by their prompts: an
+ * interrupt that meets pdb while it prints the stop cuts that print short
+ * and leaves one prompt for both.  Nor by the bare word: the script's own
+ * Ctrl-C handler may print it, and the user would then not be told that
+ * the script handles Ctrl-C itself.  The ones still on their way are
+ * counted by the settle
+ * step (e_d_gs_settle_cmd), on the fd loop.
  * Return: the interrupts that may still be owed.
  */
 static int e_d_pdb_settle_later(ECNT *cn, int owed, int why)
 {
- int extra = e_d_prompts_in(e_d_pdb_run.reply.buf,
-                            strlen(e_d_pdb_run.reply.buf)) - 1;
+ int extra = e_d_words_in(e_d_pdb_run.reply.buf,
+                          strlen(e_d_pdb_run.reply.buf),
+                          E_D_PDB_INT_AT_PROMPT);
 
  (void)cn;
  (void)why;
@@ -14178,6 +14203,8 @@ static int e_d_gdb_run_never_started(FENSTER *f)
 #define E_D_GDB_UP_FMT      "up %d"
 #define E_D_GDB_DOWN_FMT    "down %d"
 #define E_D_GA_ACT_MAX      8      /* debugger keys kept while gdb answers */
+#define E_D_GA_MARKER_MAX   64     /* a settle marker with its number */
+#define E_D_GA_MARKER_FMT   "%s-%d"   /* the marker, numbered */
 /* How many characters of gdb's report words are compared, as the stop
    checks have always compared them. */
 #define E_D_GDB_EXIT_LEAD     14
@@ -14268,6 +14295,18 @@ struct e_d_ga_backend
     and xdb's "Running:"), or show what the user is told of it (sdb's
     command).  NULL: says_run_lines decides (gdb, pdb, jdb, a68g). */
  void (*run_went)(const E_D_GA_GO *go);
+ /* For a debugger whose interrupt may take away the command it has just
+    read (pdb, in its own process: the signal is taken on the way back
+    from the read, so the command never runs): the words its answer to an
+    interrupt holds, and the settle command that makes it echo @marker.
+    The settle step counts interrupts by those words and, after an answer
+    that is one and not the marker, asks again with a new marker.  Since
+    the signal is taken by the debugger's own process, none is owed once
+    the last marker has come back.  NULL for a debugger that keeps a
+    command an interrupt meets (gdb answers it after its "Quit", measured
+    on gdb 18.1) or is not interrupted at a stop. */
+ const char *int_answer;
+ void (*settle_cmd_for)(const char *marker, char *cmd, size_t n);
 };
 
 /* The request engine, its world and what runs on it. */
@@ -14285,6 +14324,9 @@ static struct
  int errors_watched;         /* ... and gdb's error stream */
  int chain;                  /* E_D_GA_*: what runs */
  int marker_wanted;          /* the request out is the settle echo */
+ char marker[E_D_GA_MARKER_MAX];   /* the marker that request waits for */
+ int settle_seq;             /* settle commands sent in this settle */
+ int settle_again;           /* an interrupt took the last one: ask again */
  int owed;                   /* interrupts the settle step takes back */
  int pause_asked;            /* Pause pressed during a sync */
  int running_said;           /* a key was refused as while the program runs:
@@ -14368,6 +14410,28 @@ static int e_d_ga_ends_in_prompt(const E_D_ANSWER *ans, size_t *prompt_len)
 }
 
 /**
+ * e_d_ga_marker_in - Where the marker of the settle command out stands in
+ * @text, or NULL.  A numbered marker is not taken for one whose number
+ * only starts with its own, so an earlier settle command's echo never
+ * ends a later one's answer.
+ */
+static const char *e_d_ga_marker_in(const char *text)
+{
+ size_t n = strlen(e_d_ga.marker);
+ const char *at = text;
+
+ if (!text || !n)
+  return(NULL);
+ while ((at = strstr(at, e_d_ga.marker)) != NULL)
+ {
+  if (!isdigit((unsigned char)at[n]))
+   return(at);
+  at += n;
+ }
+ return(NULL);
+}
+
+/**
  * e_d_ga_marker_missing - Is the settle command's answer still without its
  * marker?  The prompts before the marker answer interrupts, not it.
  * @ans: the answer so far.
@@ -14376,7 +14440,28 @@ static int e_d_ga_marker_missing(const E_D_ANSWER *ans)
 {
  if (!e_d_ga.marker_wanted)
   return(0);
- return(!ans->text || !strstr(ans->text, e_d_ga.be->settle_marker));
+ return(e_d_ga_marker_in(ans->text) == NULL);
+}
+
+/**
+ * e_d_ga_ends_on_interrupt_answer - Is the settle command's answer, still
+ * without its marker, whole with the debugger's answer to an interrupt?
+ * @ans, @prompt_len: as E_D_REQ_IO's answer_ended.
+ *
+ * For a debugger whose interrupt may take away the command it has just
+ * read (the backend's int_answer), that answer and its prompt may be all
+ * that comes for the settle command: the step then asks again rather than
+ * wait for an echo that will never come, and the user is not left with a
+ * waiting line until Debug > Quit.
+ */
+static int e_d_ga_ends_on_interrupt_answer(const E_D_ANSWER *ans,
+                                           size_t *prompt_len)
+{
+ const char *words = e_d_ga.be->int_answer;
+
+ if (!words || !ans->text || !strstr(ans->text, words))
+  return(0);
+ return(e_d_ga.be->ends_in_prompt(ans, prompt_len));
 }
 
 /**
@@ -14385,15 +14470,18 @@ static int e_d_ga_marker_missing(const E_D_ANSWER *ans)
  *
  * An answer ends with the debugger's prompt.  The settle command's answer
  * ends only with the prompt after the marker: the prompts before it answer
- * interrupts.  The marker is looked for first, so the backend's prompt test
- * is asked only for an answer that is whole once its prompt is there.
+ * interrupts.  For a debugger whose interrupt may take the settle command
+ * away, it also ends with the prompt after an answer to an interrupt, and
+ * the settle step asks again.  The marker is looked for first, so the
+ * backend's prompt test is asked only for an answer that is whole once its
+ * prompt is there.
  */
 static int e_d_ga_answer_ended(const E_D_ANSWER *ans, size_t *prompt_len,
                                void *io)
 {
  (void)io;
  if (e_d_ga_marker_missing(ans))
-  return(0);
+  return(e_d_ga_ends_on_interrupt_answer(ans, prompt_len));
  return(e_d_ga.be->ends_in_prompt(ans, prompt_len));
 }
 
@@ -14412,6 +14500,7 @@ static long e_d_ga_now_ms(void *io)
 }
 
 static void e_d_ga_after_engine(void);   /* (below) */
+static void e_d_gs_settle_forget(void);  /* (below, the settle step) */
 
 /**
  * e_d_ga_note_given_up - An answer was just given up on (Esc, Ctrl-C, the
@@ -14775,7 +14864,7 @@ static void e_d_ga_begin(ECNT *cn)
  e_d_ga.chain = E_D_GA_NONE;
  e_d_ga.nact = 0;
  e_d_ga.owed = 0;
- e_d_ga.marker_wanted = 0;
+ e_d_gs_settle_forget();
  e_d_ga.pause_asked = 0;
  e_d_ga.running_said = 0;
  e_d_ga.waiting_painted = 0;
@@ -14819,7 +14908,7 @@ static void e_d_ga_forget(void)
  for (i = 0; i < E_D_TIMERS; i++)
   e_d_ga_disarm(i);
  e_d_ga.chain = E_D_GA_NONE;
- e_d_ga.marker_wanted = 0;
+ e_d_gs_settle_forget();
  e_d_ga.owed = 0;
  e_d_ga.pause_asked = 0;
  e_d_ga.set_up_owed = 0;
@@ -15024,7 +15113,7 @@ static int e_d_ga_chain_start(ECNT *cn, const E_D_STEP *steps, void *ctx,
 static int e_d_ga_chain_ended(void)
 {
  e_d_ga.chain = E_D_GA_NONE;
- e_d_ga.marker_wanted = 0;
+ e_d_gs_settle_forget();
  e_d_ga.running_said = 0;
  e_d_gb_removing_id = 0;
  e_d_gb_add_given_up();
@@ -15263,40 +15352,135 @@ static char *e_d_gs_copy(const E_D_ANSWER *ans)
    prompt (gdb's "Quit", pdb's "--KeyboardInterrupt--", each with one more
    prompt) */
 
+/**
+ * e_d_gs_settle_next_marker - Choose the marker the settle command about to
+ * go out makes the debugger echo.
+ *
+ * A debugger whose interrupt may take the settle command away is asked
+ * again after such an interrupt; each command then has a marker of its own,
+ * numbered, so the echo of one that was only late is not taken for the
+ * echo of the last, whose answer would then be left to the next command.
+ * Any other debugger is asked once, with its plain marker.
+ */
+static void e_d_gs_settle_next_marker(void)
+{
+ const E_D_GA_BACKEND *be = e_d_ga.be;
+
+ if (!be->settle_cmd_for)
+ {
+  snprintf(e_d_ga.marker, sizeof e_d_ga.marker, "%s", be->settle_marker);
+  return;
+ }
+ e_d_ga.settle_seq++;
+ snprintf(e_d_ga.marker, sizeof e_d_ga.marker, E_D_GA_MARKER_FMT,
+          be->settle_marker, e_d_ga.settle_seq);
+}
+
+/**
+ * e_d_gs_settle_forget - The settle is over, or the session's engine starts
+ * afresh: the next settle starts with its first command.
+ */
+static void e_d_gs_settle_forget(void)
+{
+ e_d_ga.marker_wanted = 0;
+ e_d_ga.settle_seq = 0;
+ e_d_ga.settle_again = 0;
+}
+
 static int e_d_gs_settle_cmd(char *cmd, size_t n, void *ctx)
 {
  (void)ctx;
- if (e_d_ga.owed <= 0)
+ if (e_d_ga.owed <= 0 && !e_d_ga.settle_again)
   return(0);
+ e_d_ga.settle_again = 0;
+ e_d_gs_settle_next_marker();
  e_d_ga.marker_wanted = 1;
- snprintf(cmd, n, "%s", e_d_ga.be->settle_cmd);
+ if (e_d_ga.be->settle_cmd_for)
+  e_d_ga.be->settle_cmd_for(e_d_ga.marker, cmd, n);
+ else
+  snprintf(cmd, n, "%s", e_d_ga.be->settle_cmd);
  return(1);
 }
 
 /**
- * e_d_gs_settle_answered - Count the prompts that came before the marker:
- * each answered an interrupt.  The rest reached the program and come back
- * as a stop of their own at its next resume.
+ * e_d_gs_interrupts_answered - How many interrupts the settle command's
+ * answer shows the debugger answered at its prompt.
+ * @ans: the answer.
+ *
+ * Counted by the backend's words for such an answer when it has them (an
+ * echo of an earlier settle command that was only late also ends in a
+ * prompt, and is no interrupt's), else by the prompts before the marker.
+ */
+static int e_d_gs_interrupts_answered(const E_D_ANSWER *ans)
+{
+ const char *mark;
+
+ if (!ans->text)
+  return(0);
+ if (e_d_ga.be->int_answer)
+  return(e_d_words_in(ans->text, ans->len, e_d_ga.be->int_answer));
+ mark = e_d_ga_marker_in(ans->text);
+ if (!mark)
+  return(0);
+ return(e_d_prompts_in(ans->text, (size_t)(mark - ans->text)));
+}
+
+/**
+ * e_d_gs_still_owed - The interrupts still owed after a settle command's
+ * answer, so the next resume settles only for interrupts that can still
+ * come back.
+ * @owed: those owed before it, less the ones it answered; @marker_back:
+ * the answer holds its marker.
+ *
+ * Once the marker is back, the rest of the interrupts reached the program
+ * and come back as a stop of their own at its next resume (gdb's inferior);
+ * for a debugger that takes the signal in its own process (pdb), none is
+ * left.
+ */
+static int e_d_gs_still_owed(int owed, int marker_back)
+{
+ if (owed < 0)
+  return(0);
+ if (marker_back && e_d_ga.be->int_answer)
+  return(0);
+ return(owed);
+}
+
+/**
+ * e_d_gs_settle_ask_again - An interrupt took the settle command away: run
+ * the settle step once more, with a new marker, whatever is still owed.
+ * @owed: the interrupts still owed.
+ * Return: E_D_STEP_AGAIN.
+ */
+static int e_d_gs_settle_ask_again(int owed)
+{
+ e_d_ga.owed = owed;
+ e_d_ga.settle_again = 1;
+ return(E_D_STEP_AGAIN);
+}
+
+/**
+ * e_d_gs_settle_answered - Count the interrupts the debugger answered at
+ * its prompt, and ask again when one of them took the settle command away,
+ * so the stop is shown and its watches read their own answers instead of
+ * the editor waiting for an echo that never comes.
  */
 static int e_d_gs_settle_answered(E_D_REQ_END how, E_D_ANSWER *ans, void *ctx)
 {
- const char *mark = strstr(ans->text ? ans->text : "",
-                           e_d_ga.be->settle_marker);
- int owed = e_d_ga.owed;
- int answered = 0;
+ int answered = e_d_gs_interrupts_answered(ans);
+ int marker_back = e_d_ga_marker_in(ans->text) != NULL;
+ int owed = e_d_gs_still_owed(e_d_ga.owed - answered, marker_back);
 
  (void)how;
  (void)ctx;
  e_d_ga.marker_wanted = 0;
- if (mark)
-  answered = e_d_prompts_in(ans->text, (size_t)(mark - ans->text));
  if (answered > 0)
   e_d_run_own_sigint_disproved();
- owed -= answered;
- if (owed < 0)
-  owed = 0;
  e_d_run.int_owed = owed;
+ if (!marker_back)
+  return(e_d_gs_settle_ask_again(owed));
  e_d_ga.owed = 0;
+ e_d_gs_settle_forget();
  return(E_D_STEP_NEXT);
 }
 
@@ -17170,6 +17354,7 @@ static void e_d_gdb_remove_all(ECNT *cn)
 #define E_D_PDB_NAME         "pdb"   /* as the waiting line names it */
 #define E_D_PDB_SETTLE_MARK  "xwpe-interrupts-settled"
 #define E_D_PDB_SETTLE_CMD   "p '" E_D_PDB_SETTLE_MARK "'"
+#define E_D_PDB_SETTLE_FMT   "p '%s'"   /* the same, for a numbered marker */
 #define E_D_GP_WHERE         "where"
 #define E_D_GP_UP_FMT        "up %d"
 #define E_D_GP_BREAK_FMT     "b %s:%d"
@@ -17381,6 +17566,16 @@ static int e_d_gp_stop_watch_cmd(char *cmd, size_t n, void *ctx)
  if (st->line <= 0)
   return(0);
  return(e_d_gs_watch_cmd(cmd, n, ctx));
+}
+
+/**
+ * e_d_pdb_settle_cmd_for - pdb's command that prints @marker, so the editor
+ * knows every answer pdb owed came before it.
+ * @cmd, @n: the command.
+ */
+static void e_d_pdb_settle_cmd_for(const char *marker, char *cmd, size_t n)
+{
+ snprintf(cmd, n, E_D_PDB_SETTLE_FMT, marker);
 }
 
 /**
@@ -20946,6 +21141,8 @@ static const E_D_GA_BACKEND e_d_ga_gdb_backend =
  e_d_gdb_stack_steps,
  e_d_gdb_follow_steps,
  e_d_gdb_go_steps,
+ NULL,
+ NULL,
  NULL
 };
 
@@ -20981,7 +21178,9 @@ static const E_D_GA_BACKEND e_d_ga_pdb_backend =
  e_d_pdb_stack_steps,
  e_d_pdb_follow_steps,
  e_d_pdb_go_steps,
- NULL
+ NULL,
+ E_D_PDB_INT_ANSWER,
+ e_d_pdb_settle_cmd_for
 };
 
 /* jdb's prompt is no fixed string (e_d_jdb_ends_in_prompt); E_D_JDB_BARE_PROMPT
@@ -21019,6 +21218,8 @@ static const E_D_GA_BACKEND e_d_ga_jdb_backend =
  e_d_jdb_stack_steps,
  e_d_jdb_follow_steps,
  e_d_jdb_go_steps,
+ NULL,
+ NULL,
  NULL
 };
 
@@ -21057,6 +21258,8 @@ static const E_D_GA_BACKEND e_d_ga_a68g_backend =
  e_d_a68g_stack_steps,
  e_d_a68g_watches_steps,
  e_d_a68g_go_steps,
+ NULL,
+ NULL,
  NULL
 };
 
@@ -21097,7 +21300,9 @@ static const E_D_GA_BACKEND e_d_ga_sdb_backend =
  e_d_gc_stack_steps,
  e_d_gc_watches_steps,
  e_d_sdb_go_steps,
- e_d_gc_run_went
+ e_d_gc_run_went,
+ NULL,
+ NULL
 };
 
 static const E_D_GA_BACKEND e_d_ga_dbx_backend =
@@ -21132,7 +21337,9 @@ static const E_D_GA_BACKEND e_d_ga_dbx_backend =
  e_d_gc_stack_steps,
  e_d_dbx_follow_steps,
  e_d_dbx_go_steps,
- e_d_gc_run_went
+ e_d_gc_run_went,
+ NULL,
+ NULL
 };
 
 static const E_D_GA_BACKEND e_d_ga_xdb_backend =
@@ -21167,7 +21374,9 @@ static const E_D_GA_BACKEND e_d_ga_xdb_backend =
  e_d_gc_stack_steps,
  e_d_xdb_follow_steps,
  e_d_xdb_go_steps,
- e_d_gc_run_went
+ e_d_gc_run_went,
+ NULL,
+ NULL
 };
 
 /**

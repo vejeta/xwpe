@@ -3886,6 +3886,27 @@ def test_breakpoints_survive_an_editor_restart_through_the_project(tmp_path):
 # and a later Ctrl-G R must run to the end without stopping there again.
 GOTO_TIMEOUT_S = 25         # a JVM, a build or an adapter, before scaling
 SCALA_START_TIMEOUT_S = 150 # a build server, cold, before scaling
+# What the status row says while dlv builds and launches the package, and
+# how long that may take before the toolchain counts as stuck.  A row's
+# HOME is new, so its Go build cache is cold: that build took 3.3 s at
+# load 30 (0.4 s warm), so this bounds a broken toolchain, not a slow one.
+DLV_BUILDING = "dlv building"
+GO_BUILD_CEILING_S = 120
+
+
+def _dlv_stops_on(w, line):
+    """Wait for dlv's stop on @line.  While the status row says dlv is
+    building, the time is the Go toolchain's and dlv's: the editor shows
+    it with its seconds and lets it run until Esc, so GOTO_TIMEOUT_S, the
+    budget for the editor, counts only before and after it."""
+    stopped = lambda: _mark_line(w) == line
+    building = lambda: DLV_BUILDING in _screen(w)
+    if not _wait_for(w, lambda: stopped() or building(), GOTO_TIMEOUT_S):
+        return False
+    if building():
+        assert _wait_for(w, lambda: not building(), GO_BUILD_CEILING_S), \
+            "dlv should end its build:\n%s" % _screen(w)
+    return _wait_for(w, stopped, GOTO_TIMEOUT_S)
 
 GOTO_PY = (
     "def sq(v):\n"
@@ -4189,8 +4210,7 @@ def test_a_debug_adapter_session_shows_the_debugger_bar(tmp_path):
         _go_to_line(w, 11)
         w.key(CTRL_G, "b", delay=0.5)
         w.key(CTRL_G, "r", delay=1.0)
-        assert _wait_for(w, lambda: _mark_line(w) == 11, GOTO_TIMEOUT_S), \
-            _screen(w)
+        assert _dlv_stops_on(w, 11), _screen(w)
         _source_window_on_top(w)
         assert _wait_for(w, lambda: "F7 Trace" in _bottom_bar(w),
                          STEP_TIMEOUT_S), \
@@ -8204,17 +8224,23 @@ def test_an_interrupt_gdb_reports_at_the_next_resume_is_not_shown(tmp_path,
 PY_OWN_SIGINT_SLEEP_S = 6        # room to move the cursor and toggle
 # pdb puts its own SIGINT handler back at every continue, so the script sets
 # its handler while it runs, as a program that installs one late does.
-PY_OWN_SIGINT_PROG = (
+PY_OWN_SIGINT_PROG_FMT = (
     "import signal, time\n"
     "def own(sig, frame):\n"
-    "    print('own handler', flush=True)\n"
+    "    print('%s', flush=True)\n"
     "n = 0\n"
     "while True:\n"
     "    signal.signal(signal.SIGINT, own)\n"
     "    time.sleep(%d)\n"
     "    n += 1\n"
-    "    m = n\n" % PY_OWN_SIGINT_SLEEP_S
+    "    m = n\n"
 )
+PY_OWN_SIGINT_PROG = PY_OWN_SIGINT_PROG_FMT % ("own handler",
+                                               PY_OWN_SIGINT_SLEEP_S)
+# The same script, whose handler names the exception pdb's own answer to an
+# interrupt names.
+PY_OWN_SIGINT_WORDS_PROG = PY_OWN_SIGINT_PROG_FMT % (
+    "own handler: KeyboardInterrupt ignored", PY_OWN_SIGINT_SLEEP_S)
 PY_OWN_SIGINT_START_LINE = 4      # n = 0
 PY_OWN_SIGINT_TOGGLE_LINE = 8     # n += 1, marked while it sleeps
 PY_OWN_SIGINT_STOP_LINE = 9       # m = n, armed: the next stop
@@ -8227,8 +8253,25 @@ def test_pdb_falls_back_to_the_next_stop_when_the_program_handles_sigint(
     """A script with its own SIGINT handler is not stopped by the interrupt:
     the breakpoint set while it runs is applied at its next stop, and the
     status row says why it did not take effect at once."""
+    _pdb_own_sigint_falls_back(tmp_path, PY_OWN_SIGINT_PROG)
+
+
+# @scenario SC-debug-07
+def test_pdb_own_handler_that_names_keyboardinterrupt_is_still_told(
+        tmp_path):
+    """The script's own SIGINT handler prints "KeyboardInterrupt", the word
+    pdb's answer to an interrupt at its prompt holds.  What the script
+    printed is not pdb's answer: the status row still says the script
+    handles Ctrl-C itself, and the change still waits for its next stop."""
+    _pdb_own_sigint_falls_back(tmp_path, PY_OWN_SIGINT_WORDS_PROG)
+
+
+def _pdb_own_sigint_falls_back(tmp_path, prog):
+    """Run @prog, whose own SIGINT handler takes the interrupt a breakpoint
+    change sends while it sleeps: the change is applied at its next stop and
+    the status row says why."""
     _need("python3")
-    with WpeSession(str(tmp_path), PY_OWN_SIGINT_PROG, filename="p.py",
+    with WpeSession(str(tmp_path), prog, filename="p.py",
                     wait=1.5) as w:
         _go_to_line(w, PY_OWN_SIGINT_STOP_LINE)
         w.key(CTRL_G, "b", delay=0.4)
@@ -9496,7 +9539,12 @@ def _fifo_let_open_return(w, path):
         return True
     assert _wait_for(w, opened, GDB_FIFO_OPEN_WAIT_S), \
         "the program should be in open() on %s:\n%s" % (path, _screen(w))
-    os.write(fds[0], b"x")
+    try:
+        os.write(fds[0], b"x")
+    except BrokenPipeError:
+        # A script that closes the FIFO without reading it (PDB_FIFO_PROG)
+        # may have done so already: its open() returned all the same.
+        pass
     os.close(fds[0])
 
 
@@ -10020,6 +10068,57 @@ def test_pdb_interrupt_that_meets_its_prompt_is_taken_back(tmp_path):
             "the script should stop on line %d (mark on %s):\n%s" \
             % (PDB_FIFO_STOP_LINE, _mark_line(w), _screen(w))
         w._drain(NOTHING_MORE_S)
+        assert OWN_SIGINT_WORDS not in _bottom_row(w), \
+            "an interrupt pdb answered at its prompt is not the script's " \
+            "own handler (stub log:\n%s):\n%s" \
+            % (_pdb_stub_log(tmp_path), _screen(w))
+        _add_watch(w, PDB_WATCH)
+        assert _wait_for(w, lambda: _watch_value(w, PDB_WATCH) ==
+                         PDB_FIFO_WATCH_VALUE, STEP_TIMEOUT_S), \
+            "the watch should show its own answer, not one a command " \
+            "late:\n%s" % _screen(w)
+        w.key(CTRL_G, "r", delay=0.5)
+        assert _wait_for(w, lambda: _mark_line(w) == PDB_FIFO_TOGGLE_LINE,
+                         STEP_TIMEOUT_S), \
+            "the breakpoint set while the script waited should stop it " \
+            "(mark on %s):\n%s" % (_mark_line(w), _screen(w))
+
+
+# @scenario SC-debug-07
+def test_pdb_interrupt_that_takes_the_settle_command_is_taken_back(tmp_path):
+    """The interrupt a breakpoint change sent reaches pdb only once it has
+    read the editor's first command after the script stopped by itself, so
+    pdb drops that command and answers "--KeyboardInterrupt--" with one
+    prompt instead, as a pdb scheduled late on a loaded machine does.  The
+    editor does not wait for the lost answer: the stop is finished, the
+    status row does not claim the script handles Ctrl-C itself, a watch
+    shows its own value and the change is applied."""
+    _need("python3")
+    fifo = str(tmp_path / GDB_FIFO_NAME)
+    os.mkfifo(fifo)
+    env = _pdb_stub_env("", extra={"XWPE_STUB_HOLD_SIGINT": "1",
+                                   "XWPE_STUB_SIGINT_TAKES_CMD": "1"})
+    with WpeSession(str(tmp_path), PDB_FIFO_PROG, filename="p.py",
+                    wait=1.5, env_extra=env) as w:
+        _go_to_line(w, PDB_FIFO_STOP_LINE)
+        w.key(CTRL_G, "b", delay=0.4)
+        _stop_on_a_breakpoint_at(w, PDB_FIFO_OPEN_LINE, START_TIMEOUT_S)
+        w.key(CTRL_G, "r", delay=0.5)
+        _go_to_line(w, PDB_FIFO_TOGGLE_LINE)
+        w.key(CTRL_G, "b", delay=0.4)
+        assert _wait_for(w, lambda: PDB_INTERRUPT_HELD in
+                         _pdb_stub_log(tmp_path), STEP_TIMEOUT_S), \
+            "the change should interrupt pdb (stub log:\n%s):\n%s" \
+            % (_pdb_stub_log(tmp_path), _screen(w))
+        _fifo_let_open_return(w, fifo)
+        assert _wait_for(w, lambda: _mark_line(w) == PDB_FIFO_STOP_LINE,
+                         LIVE_STOP_TIMEOUT_S), \
+            "the script should stop on line %d (mark on %s):\n%s" \
+            % (PDB_FIFO_STOP_LINE, _mark_line(w), _screen(w))
+        w._drain(NOTHING_MORE_S)
+        assert WAITING_FOR_PDB not in _bottom_row(w), \
+            "the editor should not wait for the command pdb dropped " \
+            "(stub log:\n%s):\n%s" % (_pdb_stub_log(tmp_path), _screen(w))
         assert OWN_SIGINT_WORDS not in _bottom_row(w), \
             "an interrupt pdb answered at its prompt is not the script's " \
             "own handler (stub log:\n%s):\n%s" \

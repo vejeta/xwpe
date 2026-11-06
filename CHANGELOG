@@ -320,6 +320,12 @@ Changes
   refused breakpoint as set; and a watch on an unknown name could make the
   next watch read "No symbol in current context" instead of its value.
 
+* Under pdb, a breakpoint set while the script runs no longer leaves the
+  editor waiting for pdb to answer `p 'xwpe-interrupts-settled'` when the
+  script stops by itself at the same moment.  On a busy machine the
+  interrupt for the breakpoint could make pdb drop that command, and the
+  stop was never shown until Debug > Quit.
+
 * A watch the debugger answers without a value (under dbx, xdb, or a gdb
   or jdb answer with no "=" in it) reads "No symbol in current context".
   It used to read "o symbol in current context", its first letter lost.

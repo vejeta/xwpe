@@ -28,6 +28,16 @@ held") and passed to pdb just before the next command ("SIGINT passed on"):
 a test can then let the program stop by itself first, so the interrupt
 meets pdb at its prompt, as when a stop wins the race against it.
 
+With XWPE_STUB_SIGINT_TAKES_CMD=1 as well, that interrupt takes away the
+command it is passed on with: pdb reads the command, then the interrupt
+raises KeyboardInterrupt before the command runs, so pdb writes
+"--KeyboardInterrupt--" and a prompt and never answers the command.  That
+is what a real pdb does when the interrupt and the command are both
+waiting for it as it is next scheduled (a loaded machine): the read returns
+the command, and the signal is taken on the way back from it.  Here it
+happens every time, because pdb keeps the signal until it has read a
+command instead of being woken by it.
+
 The lines above the text let one file be both a shell script and a Python
 one: the shell runs it with the real python3, which reads them as strings,
 so the PATH entry that names this file never runs it again (a real python3
@@ -45,7 +55,38 @@ RELEASE = os.path.join(HOME, "pdb-stub.release")
 STALL = os.environ.get("XWPE_STUB_STALL", "")
 STALL_NTH = int(os.environ.get("XWPE_STUB_STALL_NTH", "1") or "1")
 HOLD_SIGINT = os.environ.get("XWPE_STUB_HOLD_SIGINT", "") == "1"
+SIGINT_TAKES_CMD = os.environ.get("XWPE_STUB_SIGINT_TAKES_CMD", "") == "1"
 REAL = os.environ["XWPE_STUB_REAL_PYTHON"]
+
+# Run as `python3 -c PDB_KEEPING_SIGINT script.py`: the real pdb, whose
+# SIGINT at its prompt is kept until the next command has been read and is
+# raised there, as KeyboardInterrupt, before that command runs.  pdb's own
+# handler still takes a SIGINT while the script runs.  Everything lives in
+# a closure, since pdb empties __main__'s names before it runs the script.
+PDB_KEEPING_SIGINT = r'''
+def pdb_keeping_sigint():
+    import pdb
+    import signal
+
+    kept = []
+    plain_precmd = pdb.Pdb.precmd
+
+    def keep(signum, frame):
+        kept.append(signum)
+
+    def precmd(self, line):
+        if kept and not line.startswith("_pdbcmd"):
+            del kept[:]
+            raise KeyboardInterrupt
+        return plain_precmd(self, line)
+
+    pdb.Pdb.precmd = precmd
+    signal.signal(signal.SIGINT, keep)
+    return pdb.main
+
+
+pdb_keeping_sigint()()
+'''
 
 
 def note(text):
@@ -138,8 +179,16 @@ def wait_for_go(interrupts, held, release_fd, lines):
             return nxt
 
 
+def pdb_command_line(args):
+    """The real python3 running pdb on @args (`-m pdb script ...`)."""
+    if SIGINT_TAKES_CMD:
+        return [REAL, "-c", PDB_KEEPING_SIGINT] + args[2:]
+    return [REAL] + args
+
+
 def main():
-    child = subprocess.Popen([REAL] + sys.argv[1:], stdin=subprocess.PIPE)
+    child = subprocess.Popen(pdb_command_line(sys.argv[1:]),
+                             stdin=subprocess.PIPE)
     interrupts = Interrupts(child)
     signal.signal(signal.SIGINT, interrupts.arrived)
     signal.signal(signal.SIGTERM,
