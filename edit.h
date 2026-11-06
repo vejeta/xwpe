@@ -665,6 +665,7 @@ int e_pr_uul(FARBE *fb);
 void e_status_paint(FARBE *fb, const char *text);
 void e_status_hold(const char *text);
 int e_status_drop_held(void);
+int e_status_drop_held_line(const char *text);
 void e_status_key_pressed(FENSTER *f);
 
 /*   we_menue.c   */

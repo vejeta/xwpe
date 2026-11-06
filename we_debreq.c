@@ -11,6 +11,7 @@
  * the loop's descriptor callback, time arrives in e_d_req_timer from the
  * loop's timers, and every request ends in exactly one call of its owner.
  */
+#include <ctype.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
@@ -440,21 +441,66 @@ static int answer_is_whole(E_D_REQ_QUEUE *rq, const E_D_REQ_IO *io,
 	return 0;
 }
 
-/**
- * text_after_last - What follows the last @marker in the answer and the
- * unfinished line, as an answer to hand to the reader; the text is a copy
- * the caller frees through the returned answer.
- * Return: 1 when the marker is there.
- */
-static int text_after_last(E_D_REQ_QUEUE *rq, const char *marker, E_D_ANSWER *out)
+const char *e_d_req_marker_in(const char *text, const char *marker)
 {
-	size_t mlen = strlen(marker);
+	size_t n;
+	const char *at = text;
+
+	if (!text || !marker || !*marker)
+		return NULL;
+	n = strlen(marker);
+	while ((at = strstr(at, marker)) != NULL) {
+		if (!isdigit((unsigned char)at[n]))
+			return at;
+		at += n;
+	}
+	return NULL;
+}
+
+/**
+ * resync_marker - The echo the resync waits for: its own numbered marker,
+ * or the debugger's plain settle marker.
+ */
+static const char *resync_marker(const E_D_REQ_QUEUE *rq,
+                                 const E_D_REQ_IO *io)
+{
+	if (rq->resync_numbered)
+		return rq->resync_marker;
+	return io->settle_marker;
+}
+
+/**
+ * resync_marker_at - Where the resync's echo first stands in @text, or NULL.
+ *
+ * A numbered echo counts only with its whole number, so the echo of a
+ * settle command the user gave up on, which holds the same words with an
+ * earlier number, never ends the resync before the debugger is in step.
+ */
+static const char *resync_marker_at(const E_D_REQ_QUEUE *rq,
+                                    const E_D_REQ_IO *io, const char *text)
+{
+	if (rq->resync_numbered)
+		return e_d_req_marker_in(text, rq->resync_marker);
+	return strstr(text, io->settle_marker);
+}
+
+/**
+ * text_after_last - What follows the resync's last echo in the answer and
+ * the unfinished line, as an answer to hand to the reader; the text is a
+ * copy the caller frees through the returned answer.
+ * Return: 1 when the echo is there.
+ */
+static int text_after_last(E_D_REQ_QUEUE *rq, const E_D_REQ_IO *io,
+                           E_D_ANSWER *out)
+{
+	size_t mlen = strlen(resync_marker(rq, io));
 	size_t keep = rq->ans.len;
 	const char *p, *last = NULL;
 
 	answer_append_unfinished(&rq->ans, rq->tail, rq->tail_len);
 	if (rq->ans.text) {
-		for (p = strstr(rq->ans.text, marker); p; p = strstr(p + 1, marker))
+		for (p = resync_marker_at(rq, io, rq->ans.text); p;
+		     p = resync_marker_at(rq, io, p + 1))
 			last = p;
 	}
 	memset(out, 0, sizeof *out);
@@ -476,7 +522,7 @@ static int resync_is_over(E_D_REQ_QUEUE *rq, const E_D_REQ_IO *io)
 	size_t prompt_len = 0;
 	int over = 0;
 
-	if (text_after_last(rq, io->settle_marker, &after))
+	if (text_after_last(rq, io, &after))
 		over = io->answer_ended(&after, &prompt_len, io->io);
 	answer_clear(&after);
 	return over;
@@ -490,7 +536,7 @@ static int resync_is_over(E_D_REQ_QUEUE *rq, const E_D_REQ_IO *io)
  */
 static void resync_drop_old_lines(E_D_REQ_QUEUE *rq, const E_D_REQ_IO *io)
 {
-	if (!rq->ans.text || !strstr(rq->ans.text, io->settle_marker))
+	if (!rq->ans.text || !resync_marker_at(rq, io, rq->ans.text))
 		answer_clear(&rq->ans);
 }
 
@@ -669,13 +715,41 @@ static void cancel_say(const E_D_REQ_QUEUE *rq, const E_D_REQ_IO *io,
 }
 
 /**
+ * resync_settle_command - The settle command a resync sends, and the echo
+ * it then waits for.
+ * @rq, @io: the engine and its world; @cmd, @n: room for a numbered one.
+ *
+ * A debugger whose settle commands are numbered may still owe the echo of
+ * one the user gave up on, in the same words as the plain marker: the
+ * resync then asks for an echo of its own, numbered past those, so the
+ * user's next command is answered in step and not by a settle echo.
+ * Return: the command to send.
+ */
+static const char *resync_settle_command(E_D_REQ_QUEUE *rq,
+                                         const E_D_REQ_IO *io,
+                                         char *cmd, size_t n)
+{
+	if (!io->resync_settle) {
+		rq->resync_numbered = 0;
+		return io->settle_cmd;
+	}
+	io->resync_settle(cmd, n, rq->resync_marker, sizeof rq->resync_marker,
+	                  io->io);
+	rq->resync_numbered = 1;
+	return cmd;
+}
+
+/**
  * resync_begin - A debugger still owes the answer to a command given up:
  * make it echo the settle marker, and drop everything up to it.
  * A transport that cannot even take the settle command ends the session.
  */
 static void resync_begin(E_D_REQ_QUEUE *rq, const E_D_REQ_IO *io)
 {
-	if (io->send(io->settle_cmd, io->io) != 0) {
+	char cmd[E_D_REQ_CMD_MAX];
+	const char *settle = resync_settle_command(rq, io, cmd, sizeof cmd);
+
+	if (io->send(settle, io->io) != 0) {
 		rq->gone = 1;
 		return;
 	}

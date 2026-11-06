@@ -890,6 +890,63 @@ static void test_error_line_before_the_prompt_stays_with_its_answer(void)
 	e_d_req_free(&rq);
 }
 
+/* ---- a resync for numbered settle commands ---- */
+
+#define NUMBERED_SETTLE_FMT "echo " SETTLE_MARKER "-%d"
+#define NUMBERED_MARKER_FMT SETTLE_MARKER "-%d"
+#define OWED_ROUND          2     /* the settle round the user gave up on */
+
+/* The world's next numbered settle command: one past the round owed. */
+static void fake_resync_settle(char *cmd, size_t cmd_n, char *marker,
+                               size_t marker_n, void *io)
+{
+	(void)io;
+	snprintf(marker, marker_n, NUMBERED_MARKER_FMT, OWED_ROUND + 1);
+	snprintf(cmd, cmd_n, NUMBERED_SETTLE_FMT, OWED_ROUND + 1);
+}
+
+static void test_resync_waits_for_its_own_numbered_echo(void)
+{
+	FAKE f;
+	E_D_REQ_IO io;
+	E_D_REQ_QUEUE rq;
+	CALL c, d;
+	char owed[E_D_REQ_CMD_MAX];
+	const char *text = "SETTLED-12\nSETTLED-1\n";
+
+	chk_int("marker: a longer number is not it",
+	        e_d_req_marker_in("SETTLED-12\n", "SETTLED-1") == NULL, 1);
+	chk_int("marker: its own number is found after a longer one",
+	        (long)(e_d_req_marker_in(text, "SETTLED-1") - text),
+	        (long)strlen("SETTLED-12\n"));
+	chk_int("marker: an empty marker is never found",
+	        e_d_req_marker_in(text, "") == NULL, 1);
+
+	world_init(&f, &io, 1);
+	io.resync_settle = fake_resync_settle;
+	e_d_req_init(&rq, NULL);
+	call_init(&c, 1);
+	call_init(&d, 2);
+	snprintf(owed, sizeof owed, NUMBERED_SETTLE_FMT, OWED_ROUND);
+	e_d_req_send(&rq, &io, owed, on_answered, &c);
+	e_d_req_cancel(&rq, &io, E_D_REQ_CANCELLED);
+	chk_str("numbered: the resync asks for its own echo", f.sent[1],
+	        "echo SETTLED-3");
+	feed(&rq, &io, "SETTLED-2\n" PROMPT);
+	chk_int("numbered: the owed echo does not end the resync",
+	        e_d_req_pending(&rq), 1);
+	feed(&rq, &io, "SETTLED-31\n" PROMPT);
+	chk_int("numbered: nor one whose number only starts with its own",
+	        e_d_req_pending(&rq), 1);
+	feed(&rq, &io, "SETTLED-3\n" PROMPT);
+	chk_int("numbered: its own echo ends it", e_d_req_pending(&rq), 0);
+	e_d_req_send(&rq, &io, "p g", on_answered, &d);
+	feed(&rq, &io, "$1 = 42\n" PROMPT);
+	chk_str("numbered: the next command has its own answer", d.text,
+	        "$1 = 42\n");
+	e_d_req_free(&rq);
+}
+
 int main(void)
 {
 	test_request_deadline_fires_without_an_answer();
@@ -899,6 +956,7 @@ int main(void)
 	test_chain_runs_steps_in_order_and_ends_on_cancel();
 	test_request_engine_edges();
 	test_error_line_before_the_prompt_stays_with_its_answer();
+	test_resync_waits_for_its_own_numbered_echo();
 	if (fails) {
 		printf("test_debreq: %d check(s) failed\n", fails);
 		return 1;

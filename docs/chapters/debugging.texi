@@ -629,7 +629,8 @@ the program in the same way.  A
 program that is running cannot be stepped, continued or asked about, so
 Step, Trace, Run, Goto cursor, Finish
 and Show stack say ``The program is
-running'' on the status row and do nothing until it stops.  Making,
+running'' on the status row and do nothing until it stops.  The line
+stays while the program prints, until your next key or the stop.  Making,
 editing, deleting or removing all watches is not refused: the list
 changes at once and the values come at the next stop.  Setting or
 removing a breakpoint is not refused: the debugger is told at once, or

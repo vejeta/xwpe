@@ -44,6 +44,7 @@ typedef struct
 #define E_D_REQ_LINE_MAX     65536    /* a line without an end is cut here */
 #define E_D_REQ_MSG_MAX      512      /* a notice for the status row */
 #define E_D_REQ_NAME_MAX     32       /* a debugger's name in a notice */
+#define E_D_REQ_MARKER_MAX   64       /* a settle marker with its number */
 #define E_D_REQ_TIMEOUT_ENV  "XWPE_DEBUG_ANSWER_TIMEOUT"
 
 /* How a request ended. */
@@ -102,7 +103,14 @@ typedef void (*e_d_late_error_fn)(const E_D_ANSWER *err, void *ctx);
    refusals are on its output).  @settle_cmd (no line end)
    and @settle_marker are the command that makes the debugger echo
    @settle_marker after every answer it owes (NULL for a debugger that
-   matches by token).  Only @send, @answer_ended and @now_ms are required. */
+   matches by token).  @resync_settle, for a debugger whose settle commands
+   carry numbered markers (pdb), writes the settle command a resync sends
+   into @cmd (room @cmd_n) and the marker that command makes the debugger
+   echo into @marker (room @marker_n), numbered past every settle command
+   still owed, so the resync ends at its own echo and not inside an owed
+   one that holds the same words; NULL: the resync sends @settle_cmd and
+   waits for @settle_marker.  Only @send, @answer_ended and @now_ms are
+   required. */
 typedef struct
 {
  int  (*send)(const char *cmd, void *io);
@@ -117,6 +125,8 @@ typedef struct
  const char *name;           /* "gdb", for the notices */
  const char *settle_cmd;
  const char *settle_marker;
+ void (*resync_settle)(char *cmd, size_t cmd_n, char *marker,
+                       size_t marker_n, void *io);
  void *io;
 } E_D_REQ_IO;
 
@@ -135,6 +145,8 @@ typedef struct
  int head, n;
  int inflight;                   /* q[head] has been sent */
  int resync;                     /* an old answer is still being dropped */
+ int resync_numbered;            /* the resync waits for resync_marker */
+ char resync_marker[E_D_REQ_MARKER_MAX];   /* its own numbered echo */
  int closing;                    /* the queue is being ended */
  int gone;                       /* the session is over */
  int waiting_shown;
@@ -247,6 +259,17 @@ void e_d_req_cancel(E_D_REQ_QUEUE *rq, const E_D_REQ_IO *io, E_D_REQ_END why);
  * being dropped; else 0.
  */
 int e_d_req_pending(const E_D_REQ_QUEUE *rq);
+
+/**
+ * e_d_req_marker_in - Where a numbered settle marker stands in an answer.
+ * @text: the answer, or NULL; @marker: the marker with its number.
+ *
+ * A marker is not taken for one whose number only starts with its own
+ * ("-1" inside "-12"), so the echo of an earlier settle command never ends
+ * a later one's answer and the user's next command reads its own answer.
+ * Return: the first place it stands, or NULL (also for an empty @marker).
+ */
+const char *e_d_req_marker_in(const char *text, const char *marker);
 
 /**
  * e_d_req_busy_message - What the user is told when a command is refused.

@@ -1785,6 +1785,8 @@ static void e_d_run_release_hold(void)
  e_d_run.stop_held = 0;
 }
 
+static void e_d_running_refusal_forget(void);   /* (below, the refusals) */
+
 /**
  * e_d_run_unwatch - Stop watching the debugger and the program, and give
  * the debugger keys back to the editor.
@@ -1805,6 +1807,7 @@ static void e_d_run_unwatch(void)
   wpe_fd_del(out);
  e_d_run.state = E_D_RUN_IDLE;
  e_d_async_pending = 0;
+ e_d_running_refusal_forget();
  e_pick_editor_bars(WpeEditor);   /* drawn at the end of the stop */
 }
 
@@ -7767,6 +7770,34 @@ static const char *e_d_running_line(void)
 }
 
 /**
+ * e_d_running_refusal_say - Tell the user a key was refused because the
+ * program runs, and keep the line until the next key.
+ * @f: the window the key was pressed in.
+ *
+ * A program that prints repaints Messages with every line, and each repaint
+ * put the key hints back at once: the user saw the key do nothing.  The
+ * line stays until the user presses a key or the program stops.
+ */
+static void e_d_running_refusal_say(FENSTER *f)
+{
+ e_status_say_until_key(f, e_d_running_line());
+}
+
+/**
+ * e_d_running_refusal_forget - The program no longer runs: a refusal still
+ * on the status row would say it does.
+ *
+ * At a stop, or when the session ends, the bottom row names the stepping
+ * keys again without waiting for a key; a newer line said meanwhile stays.
+ */
+static void e_d_running_refusal_forget(void)
+{
+ if (e_status_drop_held_line(E_D_RUNNING_LINE))
+  return;
+ e_status_drop_held_line(E_D_RUNNING_NO_INPUT_LINE);
+}
+
+/**
  * e_d_refuse_while_running - Refuse a debugger command while the program
  * runs under the run controller (gdb, sdb, dbx, xdb, pdb, jdb, a68g).
  * @f: the window the key was pressed in.
@@ -7786,7 +7817,7 @@ static int e_d_refuse_while_running(FENSTER *f)
   return(1);
  if (!e_d_async_pending)
   return(0);
- e_status_say(f, e_d_running_line());
+ e_d_running_refusal_say(f);
  return(1);
 }
 
@@ -14203,7 +14234,7 @@ static int e_d_gdb_run_never_started(FENSTER *f)
 #define E_D_GDB_UP_FMT      "up %d"
 #define E_D_GDB_DOWN_FMT    "down %d"
 #define E_D_GA_ACT_MAX      8      /* debugger keys kept while gdb answers */
-#define E_D_GA_MARKER_MAX   64     /* a settle marker with its number */
+#define E_D_GA_MARKER_MAX   E_D_REQ_MARKER_MAX   /* a marker with its number */
 #define E_D_GA_MARKER_FMT   "%s-%d"   /* the marker, numbered */
 /* How many characters of gdb's report words are compared, as the stop
    checks have always compared them. */
@@ -14417,18 +14448,7 @@ static int e_d_ga_ends_in_prompt(const E_D_ANSWER *ans, size_t *prompt_len)
  */
 static const char *e_d_ga_marker_in(const char *text)
 {
- size_t n = strlen(e_d_ga.marker);
- const char *at = text;
-
- if (!text || !n)
-  return(NULL);
- while ((at = strstr(at, e_d_ga.marker)) != NULL)
- {
-  if (!isdigit((unsigned char)at[n]))
-   return(at);
-  at += n;
- }
- return(NULL);
+ return(e_d_req_marker_in(text, e_d_ga.marker));
 }
 
 /**
@@ -14810,6 +14830,39 @@ static size_t e_d_ga_errors_waiting(char *buf, size_t n, void *io)
  return((size_t)got);
 }
 
+/**
+ * e_d_gs_numbered_marker - The next numbered settle marker of this settle.
+ * @out, @n: where it goes.
+ *
+ * Each settle command of a debugger whose interrupt may take one away
+ * carries a number of its own, so an echo that was only late is never
+ * taken for a later command's.
+ */
+static void e_d_gs_numbered_marker(char *out, size_t n)
+{
+ e_d_ga.settle_seq++;
+ snprintf(out, n, E_D_GA_MARKER_FMT, e_d_ga.be->settle_marker,
+          e_d_ga.settle_seq);
+}
+
+/**
+ * e_d_ga_resync_settle - The settle command the engine sends after the user
+ * gave up on an answer, for a debugger whose settle commands are numbered.
+ * @cmd, @cmd_n: the command; @marker, @marker_n: the echo it makes the
+ * debugger write; @io: unused.
+ *
+ * Esc during a second settle round leaves the echoes of both rounds owed,
+ * in the plain marker's words: the resync asks for a number past them, so
+ * it ends at its own echo and the user's next command reads its own answer.
+ */
+static void e_d_ga_resync_settle(char *cmd, size_t cmd_n, char *marker,
+                                 size_t marker_n, void *io)
+{
+ (void)io;
+ e_d_gs_numbered_marker(marker, marker_n);
+ e_d_ga.be->settle_cmd_for(marker, cmd, cmd_n);
+}
+
 /* ---- the engine's life ---- */
 
 /**
@@ -14831,6 +14884,8 @@ static void e_d_ga_world(void)
  e_d_ga.io.name = e_d_ga.be->name;
  e_d_ga.io.settle_cmd = e_d_ga.be->settle_cmd;
  e_d_ga.io.settle_marker = e_d_ga.be->settle_marker;
+ if (e_d_ga.be->settle_cmd_for)
+  e_d_ga.io.resync_settle = e_d_ga_resync_settle;
  e_d_ga.link.rq = &e_d_ga.rq;
  e_d_ga.link.io = &e_d_ga.io;
  e_d_ga.via.request = e_d_req_request;
@@ -15018,7 +15073,7 @@ static int e_d_ga_refused(FENSTER *f)
  if (e_d_ga.chain == E_D_GA_SYNC)
  {
   e_d_ga.running_said = 1;
-  e_status_say(f, e_d_running_line());
+  e_d_running_refusal_say(f);
   return(1);
  }
  e_d_ga_refusal_line(line, sizeof line);
@@ -15371,9 +15426,7 @@ static void e_d_gs_settle_next_marker(void)
   snprintf(e_d_ga.marker, sizeof e_d_ga.marker, "%s", be->settle_marker);
   return;
  }
- e_d_ga.settle_seq++;
- snprintf(e_d_ga.marker, sizeof e_d_ga.marker, E_D_GA_MARKER_FMT,
-          be->settle_marker, e_d_ga.settle_seq);
+ e_d_gs_numbered_marker(e_d_ga.marker, sizeof e_d_ga.marker);
 }
 
 /**

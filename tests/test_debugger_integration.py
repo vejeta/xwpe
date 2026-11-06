@@ -1408,7 +1408,8 @@ def _says_the_program_is_running(w):
     """Ctrl-G K while the program runs is refused with a line on the status
     row and opens no Stack window: the key belongs to the editor."""
     w.key(CTRL_G, "k", delay=0.8)
-    assert RUNNING_REFUSAL in _screen(w), \
+    assert _wait_for(w, lambda: RUNNING_REFUSAL in _screen(w),
+                     STEP_TIMEOUT_S), \
         "Ctrl-G K should be refused with a line on the status row:\n%s" \
         % _screen(w)
     assert " Stack " not in _screen(w), \
@@ -1758,6 +1759,26 @@ def test_text_pasted_before_the_program_reads_reaches_it_whole(tmp_path):
 
 RUNNING_REFUSAL = "The program is running"
 BLOCKED_AFTER_LINE = 9            # }  the line after BLOCKED_BREAK_LINE
+EDITOR_BUSY_KEY_S = 0.5           # the key waits this long for the editor
+GDB_STEP_COMMANDS = ("CMD n", "CMD s")   # the gdb stub's log of F8 and F7
+
+
+def _key_to_a_busy_editor(w, key):
+    """Type @key while the editor's own process is stopped, as on a loaded
+    machine, and let it go on: the key is read, and its answer drawn, only
+    after a screen read the same moment would already have been made."""
+    os.kill(w.proc.pid, signal.SIGSTOP)
+    try:
+        os.write(w.master_fd, key.encode())
+        w._drain(EDITOR_BUSY_KEY_S)
+    finally:
+        os.kill(w.proc.pid, signal.SIGCONT)
+
+
+def _gdb_stub_steps(tmp_path):
+    """How many steps the gdb stub passed on to gdb."""
+    return sum(1 for line in _gdb_stub_log(tmp_path).splitlines()
+               if line in GDB_STEP_COMMANDS)
 
 
 def _answer_the_blocked_program(w):
@@ -1776,19 +1797,28 @@ def test_a_step_while_the_program_runs_is_refused_and_the_session_keeps_its_plac
     """F8 while the program waits for input says so on the status row and
     sends gdb nothing: after the program is answered and stops, the next F8
     marks the following line (the step used to go to gdb mid-run, and the
-    next F8 then ended the session)."""
+    next F8 then ended the session).  The F8 reaches an editor that is
+    busy, so the refusal is waited for, not read once."""
     _need("gcc", "gdb")
     with WpeSession(str(tmp_path), BLOCKED_C_PROG, filename="p.c",
-                    wait=1.5) as w:
+                    wait=1.5, env_extra=_gdb_stub_env("")) as w:
         _start_blocked_run(w)
-        w.key(F8, delay=0.5)
-        assert RUNNING_REFUSAL in _screen(w), \
+        _key_to_a_busy_editor(w, F8)
+        assert _wait_for(w, lambda: RUNNING_REFUSAL in _screen(w),
+                         STEP_TIMEOUT_S), \
             "F8 should be refused with a line on the status row:\n%s" \
             % _screen(w)
+        assert _gdb_stub_steps(tmp_path) == 0, \
+            "gdb should be sent no step while the program runs:\n%s" \
+            % _gdb_stub_log(tmp_path)
         _answer_the_blocked_program(w)
         assert _step(w, F8, BLOCKED_AFTER_LINE), \
             "the next F8 should mark line %d (mark on %s):\n%s" \
             % (BLOCKED_AFTER_LINE, _mark_line(w), _screen(w))
+        assert _gdb_stub_steps(tmp_path) == 1, \
+            "gdb should be sent the second F8's step alone, the refused " \
+            "one neither at once nor at the stop:\n%s" \
+            % _gdb_stub_log(tmp_path)
 
 
 # @scenario SC-debug-36
@@ -1800,12 +1830,72 @@ def test_show_stack_while_the_program_runs_is_refused(tmp_path):
                     wait=1.5) as w:
         _start_blocked_run(w)
         w.key(CTRL_G, "k", delay=0.8)
-        assert RUNNING_REFUSAL in _screen(w), \
+        assert _wait_for(w, lambda: RUNNING_REFUSAL in _screen(w),
+                         STEP_TIMEOUT_S), \
             "Ctrl-G K should be refused with a line on the status row:\n%s" \
             % _screen(w)
         assert " Stack " not in _screen(w), \
             "no Stack window should open:\n%s" % _screen(w)
         _answer_the_blocked_program(w)
+
+
+# A program that prints a line every few milliseconds until the test
+# creates CHATTY_STOP_FILE, so it stops without a key from the user.
+CHATTY_STOP_FILE = "stop-printing"
+CHATTY_C_PROG = (
+    "#include <stdio.h>\n"
+    "#include <unistd.h>\n"
+    "int main(void)\n"
+    "{\n"
+    "  int i = 0;\n"
+    "  while (access(\"" + CHATTY_STOP_FILE + "\", F_OK) != 0) {\n"
+    "    printf(\"tick %d\\n\", i++);\n"
+    "    fflush(stdout);\n"
+    "    usleep(2000);\n"
+    "  }\n"
+    "  return 0;\n"
+    "}\n"
+)
+CHATTY_BREAK_LINE = 11            # return 0;  once the file is there
+CHATTY_OUTPUT_PAINTS_S = 1.5      # the program's lines repaint Messages
+
+
+# @scenario SC-debug-36
+def test_a_refused_step_stays_said_while_the_program_prints(tmp_path):
+    """F8 while the program prints line after line is refused, and the
+    status row keeps saying so while Messages fills; the program's stop
+    puts the stepping keys back on its own.  The refusal used to be
+    painted and wiped by the next line the program printed, so the user
+    saw F8 do nothing."""
+    _need("gcc", "gdb")
+    with WpeSession(str(tmp_path), CHATTY_C_PROG, filename="p.c",
+                    wait=1.5, env_extra=_gdb_stub_env("")) as w:
+        _move_down(w, CHATTY_BREAK_LINE - 1)
+        w.key(CTRL_G, "b", delay=0.4)
+        w.key(CTRL_G, "r", delay=0.2)
+        assert _wait_for(w, lambda: "tick " in _screen(w), START_TIMEOUT_S), \
+            "the program should be running and printing:\n%s" % _screen(w)
+        w.key(F8, delay=0.2)
+        assert _wait_for(w, lambda: RUNNING_REFUSAL in _screen(w),
+                         STEP_TIMEOUT_S), \
+            "F8 should be refused with a line on the status row:\n%s" \
+            % _screen(w)
+        w._drain(CHATTY_OUTPUT_PAINTS_S)
+        assert RUNNING_REFUSAL in _screen(w), \
+            "the refusal should stay while the program prints:\n%s" \
+            % _screen(w)
+        assert _gdb_stub_steps(tmp_path) == 0, \
+            "gdb should be sent no step while the program runs:\n%s" \
+            % _gdb_stub_log(tmp_path)
+        (tmp_path / CHATTY_STOP_FILE).write_text("")
+        assert _wait_for(w, lambda: _mark_line(w) == CHATTY_BREAK_LINE,
+                         STEP_TIMEOUT_S), \
+            "the run should stop on line %d (mark on %s):\n%s" \
+            % (CHATTY_BREAK_LINE, _mark_line(w), _screen(w))
+        assert _wait_for(w, lambda: RUNNING_REFUSAL not in _screen(w),
+                         STEP_TIMEOUT_S), \
+            "the stop should take the refusal off the status row:\n%s" \
+            % _screen(w)
 
 
 # The build keys of the Run menu. Each one asks whether to end the debug
@@ -3084,7 +3174,8 @@ def test_keys_are_refused_during_a_long_finish_under_gdb(tmp_path):
         w.key(CTRL_G, "f", delay=0.5)
         w._drain(RUNNING_SETTLE_S)
         w.key(F8, delay=0.5)
-        assert "The program is running" in _screen(w), \
+        assert _wait_for(w, lambda: RUNNING_REFUSAL in _screen(w),
+                         STEP_TIMEOUT_S), \
             "F8 should say the program is running:\n%s" % _screen(w)
         assert _children(w, "gdb"), "gdb should still run the session"
 
@@ -10133,6 +10224,62 @@ def test_pdb_interrupt_that_takes_the_settle_command_is_taken_back(tmp_path):
                          STEP_TIMEOUT_S), \
             "the breakpoint set while the script waited should stop it " \
             "(mark on %s):\n%s" % (_mark_line(w), _screen(w))
+
+
+# The settle command's second round, the first having been taken by the
+# interrupt: the stand-in holds it, so its echo is still owed when the user
+# gives up on it.
+PDB_SECOND_SETTLE = "p 'xwpe-interrupts-settled-2'"
+PDB_SECOND_SETTLE_GIVEN_UP = "not answer `%s`" % PDB_SECOND_SETTLE
+PDB_HELD_LET_GO = "RELEASE by the next command"
+
+
+# @scenario SC-debug-50
+def test_pdb_esc_during_a_second_settle_round_keeps_answers_in_step(
+        tmp_path):
+    """The interrupt a breakpoint change sent takes pdb's first settle
+    command, and the user gives up on the second while its echo is still
+    owed.  The editor's own resync then waits for the echo it asked for,
+    not the owed one, which holds the same words: the next command, a watch
+    on g * 2, shows its own value, not the resync echo's."""
+    _need("python3")
+    fifo = str(tmp_path / GDB_FIFO_NAME)
+    os.mkfifo(fifo)
+    env = _pdb_stub_env(PDB_SECOND_SETTLE,
+                        extra={"XWPE_STUB_HOLD_SIGINT": "1",
+                               "XWPE_STUB_SIGINT_TAKES_CMD": "1"})
+    with WpeSession(str(tmp_path), PDB_FIFO_PROG, filename="p.py",
+                    wait=1.5, env_extra=env) as w:
+        _go_to_line(w, PDB_FIFO_STOP_LINE)
+        w.key(CTRL_G, "b", delay=0.4)
+        _stop_on_a_breakpoint_at(w, PDB_FIFO_OPEN_LINE, START_TIMEOUT_S)
+        w.key(CTRL_G, "r", delay=0.5)
+        _go_to_line(w, PDB_FIFO_TOGGLE_LINE)
+        w.key(CTRL_G, "b", delay=0.4)
+        assert _wait_for(w, lambda: PDB_INTERRUPT_HELD in
+                         _pdb_stub_log(tmp_path), STEP_TIMEOUT_S), \
+            "the change should interrupt pdb (stub log:\n%s):\n%s" \
+            % (_pdb_stub_log(tmp_path), _screen(w))
+        _fifo_let_open_return(w, fifo)
+        _pdb_stub_holds(w, tmp_path, PDB_SECOND_SETTLE)
+        w.key(ESC, delay=0.5)
+        assert _status_row_says(w, PDB_SECOND_SETTLE_GIVEN_UP,
+                                STEP_TIMEOUT_S), \
+            "Esc should end the wait for the second settle command:\n%s" \
+            % _screen(w)
+        assert _wait_for(w, lambda: PDB_HELD_LET_GO in
+                         _pdb_stub_log(tmp_path), STEP_TIMEOUT_S), \
+            "the resync should reach pdb behind the held command (stub " \
+            "log:\n%s):\n%s" % (_pdb_stub_log(tmp_path), _screen(w))
+        _add_watch(w, PDB_LATE_WATCH)
+        assert _wait_for(w, lambda: _watch_row(w, PDB_LATE_WATCH) is not None,
+                         STEP_TIMEOUT_S), \
+            "the watch should get an answer (stub log:\n%s):\n%s" \
+            % (_pdb_stub_log(tmp_path), _screen(w))
+        assert _watch_row(w, PDB_LATE_WATCH).startswith(PDB_LATE_VALUE), \
+            "the watch took another command's answer (%r, stub log:\n%s):" \
+            "\n%s" % (_watch_row(w, PDB_LATE_WATCH),
+                      _pdb_stub_log(tmp_path), _screen(w))
 
 
 # pdb's "clear file:line" takes every breakpoint off the line, so Go to

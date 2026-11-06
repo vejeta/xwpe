@@ -341,6 +341,22 @@ int e_status_drop_held(void)
 }
 
 /**
+ * e_status_drop_held_line - Forget the kept status line if it is @text.
+ * @text: the line that is no longer true.
+ *
+ * For a line that stops being true without a key (the debugger's "the
+ * program is running" once the program stops): the next repaint of the
+ * bar shows the key hints again, while a newer line said meanwhile stays.
+ * Return: 1 when the line was being kept.
+ */
+int e_status_drop_held_line(const char *text)
+{
+ if (!e_status_held_line || !text || strcmp(e_status_held_line, text))
+  return(0);
+ return(e_status_drop_held());
+}
+
+/**
  * e_status_key_pressed - The user pressed a key: put the key hints back.
  * @f: the window on top.
  *

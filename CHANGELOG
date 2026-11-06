@@ -326,6 +326,16 @@ Changes
   interrupt for the breakpoint could make pdb drop that command, and the
   stop was never shown until Debug > Quit.
 
+* Under pdb, Esc pressed while the editor waits for pdb to answer `p
+  'xwpe-interrupts-settled-2'` no longer leaves later answers one command
+  late: a watch added next shows its own value, not
+  'xwpe-interrupts-settled'.
+
+* F8, F7 or another debugger key pressed while the program prints line
+  after line now shows "The program is running" on the status row until
+  the next key or the program's stop.  The program's next line used to
+  wipe it at once, so the key seemed to do nothing.
+
 * A watch the debugger answers without a value (under dbx, xdb, or a gdb
   or jdb answer with no "=" in it) reads "No symbol in current context".
   It used to read "o symbol in current context", its first letter lost.
