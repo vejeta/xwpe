@@ -151,6 +151,7 @@ int e_lsp_started(e_lsp_session *s);
 /* 1 if the server has closed its stdout (it exited/crashed) -- the caller must
  * stop polling its fd and tear the session down.  Also 1 for a NULL session. */
 int e_lsp_dead(e_lsp_session *s);
+int e_lsp_input_lost(e_lsp_session *s);
 
 /* textDocument/didOpen: hand the server the buffer text so it compiles/indexes.
  * `path` is a filesystem path (turned into a file:// URI internally). */

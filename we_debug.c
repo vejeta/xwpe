@@ -332,23 +332,20 @@ char *npipe[5] = {  NULL, NULL, NULL, NULL, NULL  };
 void e_d_pty_drain(void)
 {
  char buf[4096];
- int n, flags;
+ int n;
 
  if (e_d_pty_master < 0)
   return;
- flags = fcntl(e_d_pty_master, F_GETFL, 0);
- fcntl(e_d_pty_master, F_SETFL, flags | O_NONBLOCK);
+ /* The master is non-blocking from its creation: the read ends when the
+    program has written nothing more. */
  while ((n = read(e_d_pty_master, buf, sizeof(buf))) > 0)
   e_d_prog_output_append(buf, n);
- fcntl(e_d_pty_master, F_SETFL, flags & ~O_NONBLOCK);
 }
 
-/* Send a NUL-terminated command to the debugger's stdin pipe (rfildes[1]).
-   Centralises what used to be open-coded write(rfildes[1], s, strlen(s)) calls
-   -- and, worse, hand-counted lengths that could be wrong (the old jdb
-   delete-all sent write(..., "db *\n", 2), i.e. just "db").  Using strlen here
-   removes that whole class of miscount, and the loop tolerates short writes
-   and EINTR. */
+/* Commands for the debugger go through e_d_send_cmd (below), which takes a
+   NUL-terminated command and measures it itself: the hand-counted lengths of
+   the old open-coded writes could be wrong (the old jdb delete-all sent "db"
+   for "db *\n").  It hands the whole command to the loop's writer. */
 /* Runaway guard: how many debugger-output lines have been read since the
    last command we sent.  A single command's reply is bounded (a stack, a
    value, a stopped-at line); a debugger that streams far more than any real
@@ -502,25 +499,79 @@ static int e_d_gdbmi_line_of(const char *line, int token, char *out, size_t n)
  return(1);
 }
 
-/**
- * e_d_pipe_write - Write @len bytes of @s to the debugger's input, through
- * short writes and signals; a broken pipe means the debugger is gone.
- */
-static void e_d_pipe_write(const char *s, size_t len)
-{
- size_t off = 0;
+/* What the line that says the debugger stopped reading its input adds. */
+#define E_D_INPUT_ENDS "Debug > Quit ends it"
+static const char *e_d_input_name(void);   /* with the request engine, below */
 
- while (off < len)
+/**
+ * e_d_pipe_write - Hand @len bytes of @s to the debugger's input, whole.
+ *
+ * Never waits for the debugger: what it does not read now is written by the
+ * loop when it reads again, so the editor keeps its keys while gdb is
+ * stopped or busy, and the status row names it once it has read nothing for
+ * a while.  A broken pipe means the debugger is gone; its end of output
+ * says so.
+ * Return: WPE_FD_WRITE_SENT, _QUEUED, _REFUSED (nothing went out) or
+ * _CLOSED.
+ */
+static int e_d_pipe_write(const char *s, size_t len)
+{
+ return wpe_fd_write(rfildes[1], s, len, e_d_input_name(), E_D_INPUT_ENDS);
+}
+
+/* The debugged program, as the stall line names it. */
+#define E_D_PROGRAM_WHAT "the program"
+
+/**
+ * e_d_pty_type - Type @key into the debugged program's terminal while it
+ * runs: Backspace as the terminal's own erase byte, Enter as a line end,
+ * text as UTF-8.
+ * @key: a key e_key_is_program_text took for the program.
+ *
+ * Never waits for the program: what its terminal does not take now (a
+ * program that stopped reading with a full line typed ahead) is queued on
+ * the loop, so Debug > Quit and the editor's other keys keep working.
+ * Return: 0 when the key is on its way, -1 when there is no terminal or it
+ * would not take it.
+ */
+int e_d_pty_type(int key)
+{
+ unsigned char buf[E_PTY_KEY_BYTES_MAX];
+ int len, r;
+
+ if (e_d_pty_master < 0)
+  return(-1);
+ if (key == WPE_DC)
  {
-  ssize_t w = write(rfildes[1], s + off, len - off);
-  if (w < 0)
-  {
-   if (errno == EINTR)
-    continue;
-   break;
-  }
-  off += (size_t)w;
+  buf[0] = (unsigned char)e_d_pty_verase();
+  len = 1;
  }
+ else
+  len = e_pty_key_bytes(key, buf);
+ if (len <= 0)
+  return(0);
+ r = wpe_fd_write(e_d_pty_master, buf, (size_t)len, E_D_PROGRAM_WHAT,
+                  E_D_INPUT_ENDS);
+ if (r == WPE_FD_WRITE_SENT || r == WPE_FD_WRITE_QUEUED)
+  return(0);
+ return(-1);
+}
+
+/**
+ * e_d_close_fd - Close one of the session's descriptors (the debugger's
+ * input among them).
+ * @fd: the descriptor, set to -1; already -1 is left alone.
+ *
+ * Bytes still queued for it are dropped with it: the debugger is being
+ * ended, and a descriptor opened later on the same number must not get
+ * them.
+ */
+static void e_d_close_fd(int *fd)
+{
+ if (*fd < 0)
+  return;
+ wpe_fd_close(*fd);
+ *fd = -1;
 }
 
 /**
@@ -536,19 +587,40 @@ static int e_d_gdbmi_next_token(void)
 }
 
 /**
+ * e_d_gdbmi_lines_max - How many lines @cmd holds, the last one without its
+ * line end counted too.
+ */
+static size_t e_d_gdbmi_lines_max(const char *cmd)
+{
+ size_t n = 1;
+
+ for (; *cmd; cmd++)
+  if (*cmd == '\n')
+   n++;
+ return(n);
+}
+
+/**
  * e_d_gdbmi_send_lines - Send the editor's command @cmd to a gdb that
  * speaks MI, each of its lines numbered.
  *
+ * Every line goes out in one write, so a command of several lines (Quit's
+ * "q" and "y") is never left half sent behind a gdb that stopped reading.
  * The number of the last line is kept, so the request engine knows which
  * answer is the one it waits for.
+ * Return: as e_d_pipe_write.
  */
-static void e_d_gdbmi_send_lines(const char *cmd)
+static int e_d_gdbmi_send_lines(const char *cmd)
 {
  char line[E_D_RUN_AGAIN_MAX];
  char out[E_D_GDBMI_LINE_MAX];
  const char *p = cmd, *nl;
- size_t len;
+ size_t len, used = 0, room = e_d_gdbmi_lines_max(cmd) * E_D_GDBMI_LINE_MAX;
+ char *all = malloc(room);
+ int r;
 
+ if (!all)
+  return(WPE_FD_WRITE_REFUSED);
  while (*p)
  {
   nl = strchr(p, '\n');
@@ -563,33 +635,40 @@ static void e_d_gdbmi_send_lines(const char *cmd)
   if (!e_d_gdbmi_line_of(line, e_d_gdbmi_next_token(), out, sizeof out))
    continue;
   e_d_mi.token = e_d_gdbmi_next_token();
-  e_d_pipe_write(out, strlen(out));
+  len = strlen(out);
+  memcpy(all + used, out, len);
+  used += len;
  }
+ r = e_d_pipe_write(all, used);
+ free(all);
+ return(r);
 }
 
-static void e_d_send_cmd(const char *cmd)
+/**
+ * e_d_send_cmd - Send the debugger @cmd, its line ends included.
+ *
+ * The command goes out whole, behind what the debugger has not read yet,
+ * without the editor waiting for it to read.
+ * Return: WPE_FD_WRITE_SENT or _QUEUED when it is on its way;
+ * WPE_FD_WRITE_REFUSED when nothing went out; WPE_FD_WRITE_CLOSED when the
+ * debugger closed its input (its end is reported by its output's end).
+ */
+static int e_d_send_cmd(const char *cmd)
 {
- size_t len = strlen(cmd);
- size_t off = 0;
-
  e_d_read_runaway = 0;
  snprintf(e_d_last_cmd, sizeof e_d_last_cmd, "%s", cmd);
  if (e_d_gdbmi_on())
- {
-  e_d_gdbmi_send_lines(cmd);
-  return;
- }
- while (off < len)
- {
-  ssize_t w = write(rfildes[1], cmd + off, len - off);
-  if (w < 0)
-  {
-   if (errno == EINTR)
-    continue;
-   break;   /* pipe broken: the debugger is gone, nothing to do here */
-  }
-  off += (size_t)w;
- }
+  return(e_d_gdbmi_send_lines(cmd));
+ return(e_d_pipe_write(cmd, strlen(cmd)));
+}
+
+/**
+ * e_d_send_went - Is a command handed to e_d_send_cmd on its way?
+ * @r: what e_d_send_cmd returned.
+ */
+static int e_d_send_went(int r)
+{
+ return(r == WPE_FD_WRITE_SENT || r == WPE_FD_WRITE_QUEUED);
 }
 
 static void e_d_pty_strip_cr(char *s, int len)
@@ -1176,12 +1255,10 @@ static void e_d_pty_append_to_messages(FENSTER *mf, const char *buf, int n)
 static int e_d_pty_read_to_messages(FENSTER *mf, int max_reads)
 {
  char buf[256];
- int n = 1, total = 0, flags, err, reads = 0;
+ int n = 1, total = 0, err, reads = 0;
 
  if (e_d_pty_master < 0)
   return 0;
- flags = fcntl(e_d_pty_master, F_GETFL, 0);
- fcntl(e_d_pty_master, F_SETFL, flags | O_NONBLOCK);
  while ((max_reads == E_D_PTY_READS_ALL || reads++ < max_reads) &&
         (n = read(e_d_pty_master, buf, sizeof(buf))) > 0)
  {
@@ -1193,7 +1270,6 @@ static int e_d_pty_read_to_messages(FENSTER *mf, int max_reads)
  err = errno;
  if (e_d_pty_hung_up(n, err))
   e_d_pty_hung = 1;
- fcntl(e_d_pty_master, F_SETFL, flags & ~O_NONBLOCK);
  return total;
 }
 
@@ -3145,12 +3221,10 @@ static void e_d_pty_flush_line(FENSTER *f, int force)
 void e_d_pty_flush_to_messages(FENSTER *f)
 {
  char buf[256];
- int n, flags;
+ int n;
 
  if (e_d_pty_master < 0)
   return;
- flags = fcntl(e_d_pty_master, F_GETFL, 0);
- fcntl(e_d_pty_master, F_SETFL, flags | O_NONBLOCK);
  while ((n = read(e_d_pty_master, buf, sizeof(buf))) > 0)
  {
   int space = sizeof(e_d_async.pty_line_buf) - e_d_async.pty_line_len - 1;
@@ -3160,7 +3234,6 @@ void e_d_pty_flush_to_messages(FENSTER *f)
   e_d_async.pty_line_len += n;
   e_d_pty_flush_line(f, 0);
  }
- fcntl(e_d_pty_master, F_SETFL, flags & ~O_NONBLOCK);
 }
 
 static void e_d_drain_pty_to_messages(void)
@@ -3188,8 +3261,7 @@ void e_d_pty_close(void)
  if (e_d_pty_master >= 0)
  {
   e_d_pty_drain();  /* capture any remaining output before closing */
-  close(e_d_pty_master);
-  e_d_pty_master = -1;
+  e_d_close_fd(&e_d_pty_master);   /* keys typed and not read go with it */
  }
  if (e_d_pty_slave >= 0)
  {
@@ -3712,9 +3784,6 @@ static void e_d_session_forget(void);   /* (below, with the stop readers) */
 int e_d_quit_basic(FENSTER *f)
 {
  int i, kbdflgs;
- /* Ignore SIGPIPE before writing to pipes -- the debugger may have
-    already exited and closed its end, causing write() to SIGPIPE. */
- signal(SIGPIPE, SIG_IGN);
 
  /* The Java program goes first, by its PID: jdb's own "quit" would let a
     VM stopped at a breakpoint run on, and jdb never started it. */
@@ -3762,16 +3831,11 @@ int e_d_quit_basic(FENSTER *f)
    FREE(e_d_out);
   e_d_out = NULL;
  }
- if (rfildes[1] >= 0)
- {  close(rfildes[1]);  rfildes[1] = -1;  }
- if (wfildes[0] >= 0)
- {  close(wfildes[0]);  wfildes[0] = -1;  }
- if (efildes[0] >= 0)
- {  close(efildes[0]);  efildes[0] = -1;  }
- if (rfildes[0] >= 0)
- {  close(rfildes[0]);  rfildes[0] = -1;  }
- if (wfildes[1] >= 0)
- {  close(wfildes[1]);  wfildes[1] = -1;  }
+ e_d_close_fd(&rfildes[1]);
+ e_d_close_fd(&wfildes[0]);
+ e_d_close_fd(&efildes[0]);
+ e_d_close_fd(&rfildes[0]);
+ e_d_close_fd(&wfildes[1]);
  e_d_pty_close();
  e_d_async_reset();
  e_d_cut_reset();
@@ -5826,17 +5890,6 @@ int e_make_breakpoint(FENSTER *f, int sw)
 }
 
 /*   start Debugger   */
-/* Close an fd if it is open and mark it closed, so a rollback can run twice
-   without double-closing (and never touches a stale descriptor). */
-static void e_d_close_fd(int *fd)
-{
- if (*fd >= 0)
- {
-  close(*fd);
-  *fd = -1;
- }
-}
-
 /* Roll back a debugger launch that failed partway through e_exec_deb():
    close every pipe/pty fd opened so far and clear e_d_swtch so the user can
    try again.  Before this, an error mid-setup leaked those fds AND left
@@ -6548,6 +6601,9 @@ int e_exec_deb(FENSTER *f, char *prog)
    e_d_exec_fail();
    return(0);
   }
+  /* The editor's end of the debugger's input never blocks: a debugger that
+     stops reading gets its commands queued on the loop instead. */
+  e_d_fd_nonblocking(rfildes[1]);
   if (pipe(wfildes))
   {
    e_error(e_p_msg[ERR_PIPEOPEN], 0, f->fb);
@@ -6572,6 +6628,11 @@ int e_exec_deb(FENSTER *f, char *prog)
   e_d_pty_slave = -1;
   e_d_pty_slave_name[0] = '\0';
  }
+ else
+  /* Non-blocking for good: a read ends when the program has printed
+     nothing more, and keys typed for a program that stopped reading wait
+     on the loop instead of in a write. */
+  e_d_fd_nonblocking(e_d_pty_master);
  e_d_pty_hung = 0;
 
  e_d_debugger_pid_forget();
@@ -6609,6 +6670,10 @@ int e_exec_deb(FENSTER *f, char *prog)
     e_d_exec_fail();
     return(0);
    }
+   /* The debugger's input and its terminal never block the editor: what
+      they do not take now is queued on the loop. */
+   e_d_fd_nonblocking(rfildes[1]);
+   e_d_fd_nonblocking(wfildes[1]);
    if (e_deb_mode)
    {
     tcgetattr(rfildes[0], &ntermio);
@@ -15049,6 +15114,22 @@ static const E_D_GA_BACKEND *e_d_ga_this(void)
  return(e_d_ga_backend_of(e_deb_type));
 }
 
+/* What the stall line calls a debugger the engine has no name for. */
+#define E_D_INPUT_WHAT "the debugger"
+
+/**
+ * e_d_input_name - The debugger's name as the status row says it ("gdb"),
+ * when it stops reading its input.
+ */
+static const char *e_d_input_name(void)
+{
+ const E_D_GA_BACKEND *be = e_d_ga_this();
+
+ if (be && be->name)
+  return(be->name);
+ return(E_D_INPUT_WHAT);
+}
+
 /**
  * e_d_ga_editor - The editor the engine's session belongs to, so a step
  * that has no context of its own opens a frame's file in the right place.
@@ -15075,7 +15156,10 @@ static FENSTER *e_d_ga_window(void)
 /**
  * e_d_ga_send - Write one command to gdb, with its line end.
  * @cmd: the command; @io: unused.
- * Return: 0, or -1 when gdb's input is closed.
+ * Return: 0 when it is on its way (written, or queued behind what gdb has
+ * not read yet), -1 when gdb's input is closed or would not take it: the
+ * request then ends at once instead of waiting for an answer to a command
+ * gdb never got.
  */
 static int e_d_ga_send(const char *cmd, void *io)
 {
@@ -15086,7 +15170,8 @@ static int e_d_ga_send(const char *cmd, void *io)
   return(-1);
  snprintf(line, sizeof line, "%s\n", cmd);
  e_d_nb_forget();
- e_d_send_cmd(line);
+ if (!e_d_send_went(e_d_send_cmd(line)))
+  return(-1);
  return(0);
 }
 
@@ -18797,6 +18882,26 @@ static void e_d_gg_awaits_its_line(const E_D_GA_GO *go)
   e_d_gdb_awaits.cont = 1;
 }
 
+/* The status line when a run's command could not be handed to the debugger. */
+#define E_D_RUN_NOT_SENT_FMT "%s would not take the command: the program was not run"
+
+/**
+ * e_d_gg_run_not_sent - The debugger's input would not take a run's
+ * command (closed, or full far past any command): the program does not
+ * run, and the user is told why instead of waiting for a stop that cannot
+ * come.
+ * @f: the window on top.
+ * Return: 0, the session stays as it was.
+ */
+static int e_d_gg_run_not_sent(FENSTER *f)
+{
+ char line[E_D_GA_LINE_MAX];
+
+ snprintf(line, sizeof line, E_D_RUN_NOT_SENT_FMT, e_d_input_name());
+ e_status_say(f, line);
+ return(0);
+}
+
 /**
  * e_d_gg_run_now - Send "r" or "c" and hand the run to the controller,
  * which reads the line that says the run began.
@@ -18810,7 +18915,8 @@ static int e_d_gg_run_now(E_D_GA_GO *go)
 
  jdb_trace("e_d_gg_run_now: sending '%s'\n", go->cmd);
  e_d_gdb_awaits_forget();
- e_d_send_cmd(go->cmd);
+ if (e_d_send_cmd(go->cmd) == WPE_FD_WRITE_REFUSED)
+  return(e_d_gg_run_not_sent(f));
  e_d_swtch = 3;            /* pdb's first run is a Continue: it says nothing */
  e_d_gg_awaits_its_line(go);
  ret = e_d_run_hand_over_continue(f, e_d_run_ops_of_backend(), go->start_brk);
@@ -18830,7 +18936,8 @@ static int e_d_gg_step_now(E_D_GA_GO *go)
  FENSTER *f = go->cn->f[go->cn->mxedt];
  int ret;
 
- e_d_send_cmd(go->cmd);
+ if (e_d_send_cmd(go->cmd) == WPE_FD_WRITE_REFUSED)
+  return(e_d_gg_run_not_sent(f));
  ret = e_d_run_hand_over(f, e_d_run_ops_of_backend(), 0);
  if (go->follow && e_d_run_going())
   e_d_pause_follow = go->follow;
@@ -24221,14 +24328,26 @@ int e_d_error(char *s)
  return(e_error(s, 0, WpeEditor->fb));
 }
 
+/* The graphical editor's debugger terminal, as the stall line names it. */
+#define E_D_TERMINAL_WHAT "the debugger's terminal"
+
+/**
+ * e_d_putchar - Show one character of the debugger's session: on the
+ * editor's screen, or in the graphical editor on the terminal the debugger
+ * runs in, never waiting for that terminal to take it.
+ * @c: the character.
+ * Return: @c, or -1 when the terminal is closed.
+ */
 int e_d_putchar(int c)
 {
- if (!WpeIsXwin()) c = fk_putchar(c);
- else
- {
-  char cc = c;
-  c = write(wfildes[1], &cc, 1);
- }
+ char cc = c;
+ int r;
+
+ if (!WpeIsXwin())
+  return(fk_putchar(c));
+ r = wpe_fd_write(wfildes[1], &cc, 1, E_D_TERMINAL_WHAT, E_D_INPUT_ENDS);
+ if (!e_d_send_went(r))
+  return(-1);
  return(c);
 }
 
@@ -25341,14 +25460,25 @@ void e_lsp_ui_shutdown(void);                 /* fwd: full session teardown */
    polling its fd (otherwise the dead fd reports "readable" forever and spins the
    input loop at 100% CPU), close it, drop the overlays, and tell the user.  A
    later Alt-Q (or opening the file again) starts a fresh one. */
+#define E_LSP_EXITED_LINE "Language server stopped (it exited). Alt-Q restarts it."
+#define E_LSP_INPUT_LOST_LINE \
+ "Language server stopped reading its input; it was ended. Alt-Q restarts it."
+
 static void e_lsp_reap_if_dead(FENSTER *f)
 {
+ int input_lost;
+
  if (!g_lsp || !e_lsp_dead(g_lsp))
   return;
+ input_lost = e_lsp_input_lost(g_lsp);
  e_lsp_ui_shutdown();                     /* unregister fd + close + clear state */
  g_lsp_file[0] = '\0';                    /* so the next Alt-Q starts a new session */
- if (f)
-  e_d_p_message("Language server stopped (it exited). Alt-Q restarts it.", f, 0);
+ if (!f)
+  return;
+ if (input_lost)
+  e_d_p_message(E_LSP_INPUT_LOST_LINE, f, 0);
+ else
+  e_d_p_message(E_LSP_EXITED_LINE, f, 0);
 }
 
 /* fd-loop callback: drain the server, finish the handshake, hand it the
@@ -26921,6 +27051,8 @@ void e_lsp_on_edit(FENSTER *f, int c)
  {  e_lsp_reap_if_dead(f);  return;  }
  if (c == WPE_CR)                   /* a line was completed -> recompile */
   e_lsp_sync(f);
+ if (e_lsp_dead(g_lsp))             /* the server could not be given the change */
+ {  e_lsp_reap_if_dead(f);  return;  }
  e_lsp_inlay_refresh_pending(f);    /* re-query inlays if the server flagged them */
  e_lsp_sem_refresh_pending(f);      /* re-query semantic tokens if flagged */
 }

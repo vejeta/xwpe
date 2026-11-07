@@ -1,0 +1,142 @@
+#!/usr/bin/env python3
+"""A debug adapter that stops reading its input with the pipe full.
+
+It stands in front of the real adapter of the same name (the next one on
+PATH, or XWPE_STUB_REAL_ADAPTER): every byte the editor sends is passed on,
+and the adapter's output and error stream go straight to the editor.
+
+It writes its PID to $HOME/dap-stub.pid.  On SIGUSR1 it fills its own input
+pipe to the brim with NUL bytes (through /proc/self/fd/0, Linux) and reads
+nothing more until the test writes to the release pipe,
+$HOME/dap-stub.release.  The editor's next request then finds the pipe
+full, as it would behind an adapter that is wedged.  After the release the
+NULs are dropped as they are read (no DAP message holds one), so every
+request behind them reaches the adapter as the editor sent it.
+
+Logged to $HOME/dap-stub.log: "FULL <bytes>", "RELEASE by the test", and
+"REQ <command>" for each request passed on, in order.  Nothing here waits
+on a clock.
+"""
+import os
+import re
+import select
+import shutil
+import signal
+import subprocess
+import sys
+
+HOME = os.environ.get("HOME", ".")
+LOG = os.path.join(HOME, "dap-stub.log")
+RELEASE = os.path.join(HOME, "dap-stub.release")
+PIDFILE = os.path.join(HOME, "dap-stub.pid")
+HERE = os.path.dirname(os.path.abspath(__file__))
+NAME = os.path.basename(sys.argv[0])
+FILL_BYTE = b"\0"
+FILL_CHUNK = 4096
+OWN_INPUT = "/proc/self/fd/0"
+READ_MAX = 65536
+COMMAND_RE = re.compile(rb'"command"\s*:\s*"([^"]+)"')
+
+
+def note(text):
+    with open(LOG, "a") as fh:
+        fh.write(text + "\n")
+
+
+def real_adapter():
+    given = os.environ.get("XWPE_STUB_REAL_ADAPTER", "")
+    if given:
+        return given
+    dirs = [d for d in os.environ.get("PATH", "").split(os.pathsep)
+            if d and os.path.abspath(d) != HERE]
+    found = shutil.which(NAME, path=os.pathsep.join(dirs))
+    if not found:
+        sys.stderr.write("dap stub: no real %s on PATH\n" % NAME)
+        sys.exit(1)
+    return found
+
+
+def make_release_pipe():
+    if os.path.exists(RELEASE):
+        os.unlink(RELEASE)
+    os.mkfifo(RELEASE)
+    # Read and write, so the open never waits for a writer.
+    return os.open(RELEASE, os.O_RDWR | os.O_NONBLOCK)
+
+
+def fill_own_input():
+    """Fill the stub's input pipe until it takes no more byte.
+    Return: the bytes written."""
+    fd = os.open(OWN_INPUT, os.O_WRONLY | os.O_NONBLOCK)
+    total = 0
+    for size in (FILL_CHUNK, 1):
+        try:
+            while True:
+                total += os.write(fd, FILL_BYTE * size)
+        except BlockingIOError:
+            pass
+    os.close(fd)
+    return total
+
+
+class Hold(Exception):
+    """SIGUSR1 came: the pipe is full, and the stub stops reading."""
+
+    def __init__(self, filled):
+        Exception.__init__(self)
+        self.filled = filled
+
+
+def on_fill_signal(signum, frame):
+    raise Hold(fill_own_input())
+
+
+def hold_until_release(filled, release_fd):
+    note("FULL %d" % filled)
+    select.select([release_fd], [], [])
+    os.read(release_fd, 4096)
+    note("RELEASE by the test")
+
+
+def note_requests(chunk):
+    for name in COMMAND_RE.findall(chunk):
+        note("REQ " + name.decode("utf-8", "replace"))
+
+
+def main():
+    child = subprocess.Popen([real_adapter()] + sys.argv[1:],
+                             stdin=subprocess.PIPE)
+    signal.signal(signal.SIGTERM,
+                  lambda signum, frame: child.kill() or sys.exit(0))
+    release_fd = make_release_pipe()
+    signal.signal(signal.SIGUSR1, on_fill_signal)
+    with open(PIDFILE, "w") as fh:
+        fh.write(str(os.getpid()))
+    fill_left = 0
+    while True:
+        try:
+            chunk = os.read(0, READ_MAX)
+        except Hold as hold:
+            hold_until_release(hold.filled, release_fd)
+            fill_left = hold.filled
+            continue
+        if not chunk:
+            break
+        if fill_left:
+            kept = chunk.replace(FILL_BYTE, b"")
+            fill_left = max(0, fill_left - (len(chunk) - len(kept)))
+            chunk = kept
+        if not chunk:
+            continue
+        note_requests(chunk)
+        child.stdin.write(chunk)
+        child.stdin.flush()
+    child.stdin.close()
+    child.wait()
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except BrokenPipeError:
+        pass

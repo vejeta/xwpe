@@ -561,6 +561,7 @@ EXTRA_DIST = \
   tests/one-owner.allow \
   tests/stubs/a68g/a68g \
   tests/stubs/gdb \
+  tests/stubs/full-pipe/lldb-dap \
   tests/stubs/jdb/jdb \
   tests/stubs/legacy/legacy-debugger \
   tests/stubs/old-gdb/gdb \

@@ -60,6 +60,36 @@ const char *wpe_fd_waiting_for(void);
    longer read, until @pred or the deadline. */
 int  wpe_fd_end_wait(wpe_wait_pred pred, long deadline_ms);
 
+/* Bytes for a child: queued per descriptor and written by the loop when the
+   descriptor is writable, in order and whole, so a child that stops reading
+   never freezes the editor.  A message is taken whole or refused whole.
+   With nothing waiting one message of any size is taken (the language
+   server is sent the whole file on every completed line: 1 MB for the
+   largest source here), so a server that lags by one message is never
+   ended; behind it the queue takes no more than WPE_FD_WRITE_QUEUE_MAX.
+   Memory: one descriptor holds at most the larger of 4 MiB and its largest
+   single message, which its sender has just built in memory itself, so the
+   copy at most doubles that peak.  Only the language server, the build
+   server and an adapter send messages that size: a debugger's commands
+   are under a kilobyte and typed keys a few bytes each, so the editor
+   holds about 12 MiB at worst (32 x 4 MiB = 128 MiB is the bound no
+   session reaches).  65536 would end a language server on a 100 KB file
+   as soon as one line's update waited behind another. */
+#define WPE_FD_WRITE_QUEUE_MAX   (4L * 1024L * 1024L)
+#define WPE_FD_WRITE_STALL_MS    5000L   /* no byte taken for this long: the user is told */
+#define WPE_FD_WRITE_SENT        0
+#define WPE_FD_WRITE_QUEUED      1       /* some or all bytes wait for the child to read */
+#define WPE_FD_WRITE_REFUSED    (-1)     /* queue full, the descriptor closed, or it blocks */
+#define WPE_FD_WRITE_CLOSED     (-2)     /* EPIPE: the child's end is gone */
+
+int  wpe_fd_write(int fd, const void *buf, size_t n, const char *what,
+                  const char *ends);
+int  wpe_fd_write_flush(int fd);
+long wpe_fd_write_pending(int fd);
+int  wpe_fd_close(int fd);   /* the one way a child's input is closed */
+int  wpe_fd_write_stalled(int fd);
+void wpe_fd_write_say_set(void (*say)(const char *line));
+
 /* The editor's side (we_hfkt.c): watch an fd and say so on the bottom row
    when the loop cannot; wait for a key whether or not the keyboard is
    watched.  Every callback consumes what made its fd ready, or stops

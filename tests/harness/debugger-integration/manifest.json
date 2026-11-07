@@ -393,6 +393,14 @@
   {"id": "SC-debug-75", "requirement": "One owner of input, of children, of writes and of keys", "layer": "ncurses", "test": "tests/test_child_ends.py::test_the_build_server_metals_started_outlives_metals_and_the_editor", "status": "new"},
   {"id": "SC-debug-75", "requirement": "One owner of input, of children, of writes and of keys", "layer": "c-unit", "test": "test_bsp_close", "status": "new"},
   {"id": "SC-debug-76", "requirement": "One owner of input, of children, of writes and of keys", "layer": "ncurses", "test": "tests/test_child_ends.py::test_keys_reach_the_editor_while_scala_cli_setup_ide_runs", "status": "new"},
-  {"id": "SC-debug-76", "requirement": "One owner of input, of children, of writes and of keys", "layer": "ncurses", "test": "tests/test_child_ends.py::test_esc_cancels_scala_cli_setup_ide_and_nothing_starts_after", "status": "new"}
+  {"id": "SC-debug-76", "requirement": "One owner of input, of children, of writes and of keys", "layer": "ncurses", "test": "tests/test_child_ends.py::test_esc_cancels_scala_cli_setup_ide_and_nothing_starts_after", "status": "new"},
+  {"id": "SC-debug-59", "requirement": "One owner of input, of children, of writes and of keys", "layer": "ncurses", "test": "tests/test_debugger_integration.py::test_a_command_typed_while_the_pipe_is_full_is_sent_whole_when_the_child_reads_again", "status": "new", "needs": ["gcc", "gdb", "linux"]},
+  {"id": "SC-debug-59", "requirement": "One owner of input, of children, of writes and of keys", "layer": "c-unit", "test": "test_fdloop", "status": "new"},
+  {"id": "SC-debug-77", "requirement": "One owner of input, of children, of writes and of keys", "layer": "ncurses", "test": "tests/test_child_writes.py::test_typing_goes_on_when_the_language_server_stops_reading", "status": "new"},
+  {"id": "SC-debug-77", "requirement": "One owner of input, of children, of writes and of keys", "layer": "ncurses", "test": "tests/test_debugger_integration.py::test_typing_goes_on_when_gdb_stops_reading", "status": "new", "needs": ["gcc", "gdb", "linux"]},
+  {"id": "SC-debug-77", "requirement": "One owner of input, of children, of writes and of keys", "layer": "ncurses", "test": "tests/test_debugger_integration.py::test_typing_goes_on_when_the_debug_adapter_stops_reading", "status": "new", "needs": ["rustc", "lldb-dap", "linux"]},
+  {"id": "SC-debug-78", "requirement": "One owner of input, of children, of writes and of keys", "layer": "ncurses", "test": "tests/test_child_writes.py::test_a_language_server_that_closes_its_input_is_reported_and_ended", "status": "new"},
+  {"id": "SC-debug-78", "requirement": "One owner of input, of children, of writes and of keys", "layer": "c-unit", "test": "test_fdloop", "status": "new"},
+  {"id": "SC-debug-78", "requirement": "One owner of input, of children, of writes and of keys", "layer": "c-unit", "test": "test_dap", "status": "new"}
  ]
 }

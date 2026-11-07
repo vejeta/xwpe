@@ -289,6 +289,17 @@ Changes
   with "<adapter> ended unexpectedly (exit status N)", as a line debugger
   does, instead of "End of Debugging".
 
+* Typing goes on when a child stops reading its input.  A command for gdb
+  or a line debugger, a request for a debug adapter, a message for a
+  language server or the Scala build server, and the text you type for the
+  program being debugged are queued when the child does not take them, and
+  sent whole and in order once it reads again; the editor used to freeze
+  inside the write until then.  A child that has read nothing for 5 seconds
+  is named on the status row: "gdb is not reading its input (3 bytes
+  waiting): Debug > Quit ends it".  A language server whose queue fills up,
+  or that closes its input, is ended, with "Language server stopped reading
+  its input; it was ended. Alt-Q restarts it." in Messages.
+
 * The same now holds while gdb starts and at every Run, Continue, step,
   Finish and Go to cursor: gdb's settings, your breakpoints and the run
   command are asked while you keep typing.  F8 typed while gdb starts

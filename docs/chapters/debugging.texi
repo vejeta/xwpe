@@ -485,6 +485,21 @@ the command goes out; under jdb, sdb, dbx and xdb so is the breakpoint on
 A breakpoint whose answer you gave up on is cleared first the next time,
 so the line is never in the debugger twice.
 
+@cindex debugger, not reading its input
+A debugger that stops reading its input (gdb stopped from outside, an
+adapter that is wedged) never stops you typing either.  A command it
+does not take waits in xwpe and goes out whole, in the order you gave
+it, once the debugger reads again; so does text you type for a program
+that is not reading its terminal.  After 5 seconds with nothing taken
+the status row says so, for example:
+
+@example
+gdb is not reading its input (3 bytes waiting): Debug > Quit ends it
+@end example
+
+@noindent
+and Debug > Quit ends the session as at any other moment.
+
 @section How a session ends
 
 @cindex debugger, end of session

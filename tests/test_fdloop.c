@@ -20,6 +20,9 @@
 #include <poll.h>
 #include <fcntl.h>
 #include <limits.h>
+#include <signal.h>
+#include <stdlib.h>
+#include <sys/socket.h>
 /* The loop's source is compiled into this test, not linked, so the id wrap
  * test can put the private id counter next to INT_MAX instead of making two
  * billion calls to reach it.  Its tables are static: so is its table size. */
@@ -920,6 +923,343 @@ static int test_wait_for_hands_back_unread_wake_only_input(void)
  return 0;
 }
 
+/* ---- bytes for a child: wpe_fd_write ------------------------------------
+ *
+ * A pipe whose reader does not read stands for a child that stopped reading
+ * its input (a busy language server, a stopped gdb); a socketpair whose peer
+ * closes stands for a child that ended.  The pipe is filled first, so every
+ * byte the test writes after it has to wait in the loop's queue. */
+
+#define WRITE_WHAT      "the test's child"
+#define WRITE_ENDS      "the test ends it"
+#define WRITE_FILL_CHUNK 4096
+#define WRITE_SAID_MAX   8
+#define WRITE_SAID_LINE  256
+#define WRITE_BOUND_SLACK 10
+#define WRITE_OVER_BOUND  20
+
+static char write_said[WRITE_SAID_MAX][WRITE_SAID_LINE];
+static int write_said_n = 0;
+
+static void on_write_say(const char *line)
+{
+ if (write_said_n < WRITE_SAID_MAX)
+  snprintf(write_said[write_said_n], WRITE_SAID_LINE, "%s", line);
+ write_said_n++;
+}
+
+static void set_nonblocking(int fd)
+{
+ fcntl(fd, F_SETFL, fcntl(fd, F_GETFL, 0) | O_NONBLOCK);
+}
+
+/* Fill @fd (non-blocking) until it takes no more.  Return: bytes written. */
+static long fill_until_full(int fd)
+{
+ char chunk[WRITE_FILL_CHUNK];
+ long total = 0;
+ ssize_t w;
+
+ memset(chunk, 'f', sizeof chunk);
+ while ((w = write(fd, chunk, sizeof chunk)) > 0)
+  total += w;
+ return total;
+}
+
+/* A pipe with both ends non-blocking and its pipe full.  Return: the fill. */
+static long full_pipe(int p[2])
+{
+ if (pipe(p) != 0)
+  return -1;
+ set_nonblocking(p[0]);
+ set_nonblocking(p[1]);
+ return fill_until_full(p[1]);
+}
+
+/* Read and throw away @n bytes of @fd: the child reads again. */
+static int drain_bytes(int fd, long n)
+{
+ char buf[WRITE_FILL_CHUNK];
+
+ while (n > 0)
+ {
+  size_t want = n < (long)sizeof buf ? (size_t)n : sizeof buf;
+  ssize_t r = read(fd, buf, want);
+  if (r <= 0)
+   return -1;
+  n -= r;
+ }
+ return 0;
+}
+
+/* Read what is in @fd now, up to @sz - 1 bytes, as a string. */
+static ssize_t read_now(int fd, char *out, size_t sz)
+{
+ ssize_t r = read(fd, out, sz - 1);
+
+ out[r > 0 ? r : 0] = '\0';
+ return r;
+}
+
+static int test_write_queues_when_the_pipe_is_full_and_flushes_on_pollout(void)
+{
+ int p[2], blocking[2], r;
+ long fill = full_pipe(p);
+ char got[64];
+
+ if (fill <= 0) return 1;
+ r = wpe_fd_write(p[1], "cmd\n", 4, WRITE_WHAT, WRITE_ENDS);
+ if (r != WPE_FD_WRITE_QUEUED)
+ { printf("FAIL: a write to a full pipe was not queued (%d)\n", r); return 1; }
+ if (wpe_fd_write_pending(p[1]) != 4)
+ { printf("FAIL: queued %ld bytes, not 4\n", wpe_fd_write_pending(p[1])); return 1; }
+ wpe_fd_poll(0);
+ if (wpe_fd_write_pending(p[1]) != 4)
+ { printf("FAIL: the queue moved while the child read nothing\n"); return 1; }
+ if (drain_bytes(p[0], fill) != 0) return 1;
+ wpe_fd_poll(0);
+ if (wpe_fd_write_pending(p[1]) != 0)
+ { printf("FAIL: POLLOUT did not flush the queue (%ld left)\n", wpe_fd_write_pending(p[1])); return 1; }
+ read_now(p[0], got, sizeof got);
+ if (strcmp(got, "cmd\n"))
+ { printf("FAIL: the child read \"%s\", not the command\n", got); return 1; }
+ if (wpe_fd_poll(0) != 0)
+ { printf("FAIL: an idle writable pipe still wakes the loop\n"); return 1; }
+ close(p[0]); close(p[1]);
+ /* A descriptor that would block cannot be queued on: refused, not written. */
+ if (pipe(blocking) != 0) return 1;
+ r = wpe_fd_write(blocking[1], "x", 1, WRITE_WHAT, WRITE_ENDS);
+ close(blocking[0]); close(blocking[1]);
+ if (r != WPE_FD_WRITE_REFUSED)
+ { printf("FAIL: a blocking descriptor was written (%d)\n", r); return 1; }
+ return 0;
+}
+
+static int test_two_writes_arrive_whole_and_in_order(void)
+{
+ int p[2];
+ long fill = full_pipe(p);
+ char got[64];
+
+ if (fill <= 0) return 1;
+ if (wpe_fd_write(p[1], "first\n", 6, WRITE_WHAT, WRITE_ENDS) != WPE_FD_WRITE_QUEUED)
+ { printf("FAIL: the first command was not queued\n"); return 1; }
+ /* Room for a whole command now (a pipe frees its room a page at a time):
+    the second command must still wait behind the first, never slip in
+    ahead of it or in its middle. */
+ if (drain_bytes(p[0], WRITE_FILL_CHUNK) != 0) return 1;
+ if (wpe_fd_write(p[1], "second\n", 7, WRITE_WHAT, WRITE_ENDS) != WPE_FD_WRITE_QUEUED)
+ { printf("FAIL: the second command was not queued behind the first\n"); return 1; }
+ if (drain_bytes(p[0], fill - WRITE_FILL_CHUNK) != 0)
+ { printf("FAIL: the second command was written ahead of the queue\n"); return 1; }
+ wpe_fd_poll(0);
+ read_now(p[0], got, sizeof got);
+ close(p[0]); close(p[1]);
+ if (strcmp(got, "first\nsecond\n"))
+ { printf("FAIL: the child read \"%s\"\n", got); return 1; }
+ return 0;
+}
+
+static int test_a_write_past_the_queue_bound_is_refused_whole(void)
+{
+ int p[2], r;
+ long fill = full_pipe(p);
+ size_t big = (size_t)WPE_FD_WRITE_QUEUE_MAX - WRITE_BOUND_SLACK;
+ char *buf = malloc((size_t)WPE_FD_WRITE_QUEUE_MAX + 1);
+ char over[WRITE_OVER_BOUND];
+
+ if (fill <= 0 || !buf) return 1;
+ memset(buf, 'b', (size_t)WPE_FD_WRITE_QUEUE_MAX + 1);
+ memset(over, 'o', sizeof over);
+ if (wpe_fd_write(p[1], "head\n", 5, WRITE_WHAT, WRITE_ENDS) != WPE_FD_WRITE_QUEUED)
+ { printf("FAIL: the first command was not queued\n"); free(buf); return 1; }
+ r = wpe_fd_write(p[1], buf, big, WRITE_WHAT, WRITE_ENDS);
+ if (r != WPE_FD_WRITE_QUEUED)
+ { printf("FAIL: a write inside the bound was refused (%d)\n", r); free(buf); return 1; }
+ r = wpe_fd_write(p[1], over, sizeof over, WRITE_WHAT, WRITE_ENDS);
+ if (r != WPE_FD_WRITE_REFUSED)
+ { printf("FAIL: a write past the bound was taken (%d)\n", r); free(buf); return 1; }
+ if (wpe_fd_write_pending(p[1]) != (long)(5 + big))
+ { printf("FAIL: a refused write left %ld bytes queued\n", wpe_fd_write_pending(p[1])); free(buf); return 1; }
+ wpe_fd_writer_forget(p[1]);
+ /* Nothing waiting: one message larger than the bound is taken whole (a
+    language server is sent a whole file), and the next one waits for it. */
+ r = wpe_fd_write(p[1], buf, (size_t)WPE_FD_WRITE_QUEUE_MAX + 1, WRITE_WHAT, WRITE_ENDS);
+ if (r != WPE_FD_WRITE_QUEUED)
+ { printf("FAIL: one message past the bound with nothing waiting was refused (%d)\n", r); free(buf); return 1; }
+ r = wpe_fd_write(p[1], over, sizeof over, WRITE_WHAT, WRITE_ENDS);
+ free(buf);
+ close(p[0]); wpe_fd_close(p[1]);
+ if (r != WPE_FD_WRITE_REFUSED)
+ { printf("FAIL: a write behind an oversized message was taken (%d)\n", r); return 1; }
+ return 0;
+}
+
+/* Bring the queue's stall due now, as if WPE_FD_WRITE_STALL_MS had gone by:
+ * the loop's next poll then says it, without the test sleeping. */
+static void stall_due_now(int fd)
+{
+ wpe_fd_writer *w = wpe_fd_writer_find(fd);
+
+ if (w)
+  w->stall_due_ms = wpe_clock_ms();
+}
+
+static int test_the_stall_line_comes_once_after_the_bound_and_clears_on_progress(void)
+{
+ int p[2];
+ long fill = full_pipe(p);
+
+ if (fill <= 0) return 1;
+ write_said_n = 0;
+ wpe_fd_write_say_set(on_write_say);
+ if (wpe_fd_write(p[1], "cmd\n", 4, WRITE_WHAT, WRITE_ENDS) != WPE_FD_WRITE_QUEUED)
+ { printf("FAIL: not queued\n"); return 1; }
+ wpe_fd_poll(0);
+ if (write_said_n != 0 || wpe_fd_write_stalled(p[1]))
+ { printf("FAIL: the stall line came before the bound\n"); return 1; }
+ stall_due_now(p[1]);
+ wpe_fd_poll(NEVER_MS);
+ if (write_said_n != 1 || !wpe_fd_write_stalled(p[1]))
+ { printf("FAIL: the stall line came %d times at the bound\n", write_said_n); return 1; }
+ if (!strstr(write_said[0], WRITE_WHAT " is not reading its input (4 bytes waiting): " WRITE_ENDS))
+ { printf("FAIL: the stall line says \"%s\"\n", write_said[0]); return 1; }
+ stall_due_now(p[1]);
+ wpe_fd_poll(0);
+ if (write_said_n != 1)
+ { printf("FAIL: the stall line was said again (%d)\n", write_said_n); return 1; }
+ if (drain_bytes(p[0], fill) != 0) return 1;
+ wpe_fd_poll(0);
+ wpe_fd_write_say_set(NULL);
+ close(p[0]); close(p[1]);
+ if (wpe_fd_write_stalled(p[1]))
+ { printf("FAIL: still stalled after the child read\n"); return 1; }
+ if (write_said_n != 2 || !strstr(write_said[1], "reading its input again"))
+ { printf("FAIL: progress was not said (%d lines)\n", write_said_n); return 1; }
+ if (wpe_fd_writers_ms_to_stall() != WPE_POLL_FOREVER)
+ { printf("FAIL: the loop still wakes for a stall the queue cannot have\n"); return 1; }
+ return 0;
+}
+
+/* Never called: it only holds a timer slot. */
+static void on_timer_held(void *data)
+{
+ (void)data;
+}
+
+/* The stall line is the one thing that tells the user why a command does
+ * nothing; it must come even when waiting lines and children's ends hold
+ * every timer the loop has. */
+static int test_the_stall_line_comes_when_every_timer_is_taken(void)
+{
+ int p[2], ids[WPE_TIMER_MAX], held = 0, i;
+ long fill = full_pipe(p);
+
+ if (fill <= 0) return 1;
+ while (held < WPE_TIMER_MAX &&
+        (ids[held] = wpe_timer_add(NEVER_MS * 30, 0, on_timer_held, NULL)) > 0)
+  held++;
+ if (wpe_timer_add(NEVER_MS, 0, on_timer_held, NULL) > 0)
+ { printf("FAIL: the timer table was not full\n"); return 1; }
+ write_said_n = 0;
+ wpe_fd_write_say_set(on_write_say);
+ if (wpe_fd_write(p[1], "cmd\n", 4, WRITE_WHAT, WRITE_ENDS) != WPE_FD_WRITE_QUEUED)
+ { printf("FAIL: not queued\n"); return 1; }
+ stall_due_now(p[1]);
+ wpe_fd_poll(NEVER_MS);
+ wpe_fd_write_say_set(NULL);
+ for (i = 0; i < held; i++)
+  wpe_timer_del(ids[i]);
+ close(p[0]); wpe_fd_close(p[1]);
+ if (write_said_n != 1)
+ { printf("FAIL: with every timer taken the stall line came %d times\n", write_said_n); return 1; }
+ return 0;
+}
+
+static int test_epipe_drops_the_queue_and_reports_closed(void)
+{
+ int s[2], r;
+ long fill;
+
+ signal(SIGPIPE, SIG_IGN);
+ if (socketpair(AF_UNIX, SOCK_STREAM, 0, s) != 0) return 1;
+ set_nonblocking(s[0]);
+ fill = fill_until_full(s[0]);
+ if (fill <= 0) return 1;
+ if (wpe_fd_write(s[0], "cmd\n", 4, WRITE_WHAT, WRITE_ENDS) != WPE_FD_WRITE_QUEUED)
+ { printf("FAIL: not queued\n"); return 1; }
+ close(s[1]);                       /* the child ends */
+ r = wpe_fd_write_flush(s[0]);
+ if (r != WPE_FD_WRITE_CLOSED)
+ { printf("FAIL: a write to an ended child said %d, not CLOSED\n", r); return 1; }
+ if (wpe_fd_write_pending(s[0]) != 0)
+ { printf("FAIL: the queue outlived the child\n"); return 1; }
+ r = wpe_fd_write(s[0], "more\n", 5, WRITE_WHAT, WRITE_ENDS);
+ close(s[0]);
+ if (r != WPE_FD_WRITE_CLOSED)
+ { printf("FAIL: a new write to an ended child said %d\n", r); return 1; }
+ return 0;
+}
+
+/* No callback: the test only watches the socket, as a run watches an
+ * adapter's transport. */
+static void on_socket_watched(int fd, void *data)
+{
+ (void)fd;
+ (void)data;
+}
+
+static int test_del_keeps_the_queue_and_close_forgets_it(void)
+{
+ int p[2], q[2], s[2], number;
+ long fill = full_pipe(p), sfill;
+ char got[64];
+
+ if (fill <= 0) return 1;
+ /* An adapter's socket unwatched between the run and the stop's requests
+    keeps what is queued for it. */
+ if (socketpair(AF_UNIX, SOCK_STREAM, 0, s) != 0) return 1;
+ set_nonblocking(s[0]);
+ set_nonblocking(s[1]);
+ sfill = fill_until_full(s[0]);
+ wpe_fd_add(s[0], POLLIN, on_socket_watched, NULL);
+ if (wpe_fd_write(s[0], "req\n", 4, WRITE_WHAT, WRITE_ENDS) != WPE_FD_WRITE_QUEUED)
+ { printf("FAIL: not queued on the socket\n"); return 1; }
+ wpe_fd_del(s[0]);
+ if (wpe_fd_write_pending(s[0]) != 4)
+ { printf("FAIL: unwatching the socket lost its queue\n"); return 1; }
+ if (drain_bytes(s[1], sfill) != 0) return 1;
+ wpe_fd_poll(0);
+ read_now(s[1], got, sizeof got);
+ close(s[0]); close(s[1]);
+ if (strcmp(got, "req\n"))
+ { printf("FAIL: the unwatched socket's request read \"%s\"\n", got); return 1; }
+ /* A child's input closed by the loop: nothing is left for it, and it is
+    no longer watched. */
+ if (wpe_fd_write(p[1], "old\n", 4, WRITE_WHAT, WRITE_ENDS) != WPE_FD_WRITE_QUEUED)
+ { printf("FAIL: not queued\n"); return 1; }
+ number = p[1];
+ wpe_fd_add(number, POLLIN, on_socket_watched, NULL);
+ wpe_fd_close(p[1]);
+ close(p[0]);
+ if (wpe_fd_write_pending(number) != 0)
+ { printf("FAIL: the queue outlived wpe_fd_close\n"); return 1; }
+ if (wpe_fd_find(number))
+ { printf("FAIL: a closed descriptor is still watched\n"); return 1; }
+ /* A new child's input on the same number gets nothing of the old one's. */
+ if (pipe(q) != 0) return 1;
+ if (q[1] != number && dup2(q[1], number) == number)
+ {  close(q[1]);  q[1] = number;  }
+ set_nonblocking(q[0]);
+ set_nonblocking(q[1]);
+ wpe_fd_poll(0);
+ read_now(q[0], got, sizeof got);
+ close(q[0]); close(q[1]);
+ if (got[0])
+ { printf("FAIL: the new descriptor was written \"%s\"\n", got); return 1; }
+ return 0;
+}
+
 int main(void)
 {
  int rc = 0;
@@ -954,6 +1294,13 @@ int main(void)
  rc |= test_wait_for_serves_timers_and_names_the_wait();
  rc |= test_wait_for_serves_fd_callbacks();
  rc |= test_wait_for_hands_back_unread_wake_only_input();
+ rc |= test_write_queues_when_the_pipe_is_full_and_flushes_on_pollout();
+ rc |= test_two_writes_arrive_whole_and_in_order();
+ rc |= test_a_write_past_the_queue_bound_is_refused_whole();
+ rc |= test_the_stall_line_comes_once_after_the_bound_and_clears_on_progress();
+ rc |= test_the_stall_line_comes_when_every_timer_is_taken();
+ rc |= test_epipe_drops_the_queue_and_reports_closed();
+ rc |= test_del_keeps_the_queue_and_close_forgets_it();
  if (rc == 0) printf("test_fdloop: OK\n");
  return rc;
 }

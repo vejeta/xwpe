@@ -72,10 +72,14 @@ EOF
 
 # The source scan: "word-regex  source files allowed to contain it".
 # fd 0 and the display's key getters belong to the displays; the loop's own
-# wait helper belongs to the code that waits on a display or the mouse.  A
-# child's stdin left blocking (blocking_input), for a writer that sends
-# whole messages with plain writes, is counted so it goes once the writes
-# are queued on the loop.
+# wait helper belongs to the code that waits on a display or the mouse.
+# Bytes for a child go through wpe_fd_write (we_fdloop.c): a plain write(
+# is allowed only where it writes no child's input -- the signal handlers'
+# wake pipes and the crash log, which must stay async-signal-safe (we_unix.c,
+# we_child.c), and OSC 52 to the terminal (we_clip.c).  fdopen( on a child's
+# descriptor would be the way round that rule with stdio, so it is allowed
+# nowhere.  `write` and `fdopen` are call forms: counted where the source
+# calls them, so lsp_write_all( or fwrite( is not one.
 cat > "$WORK/srcrules" <<'EOF'
 read(0 we_term.c
 STDIN_FILENO we_term.c
@@ -88,7 +92,8 @@ e_w_kbhit we_wayland.c
 wpe_fd_wait_for we_xterm.c we_wayland.c we_gpm.c we_fdloop.c
 wpe_fd_end_wait we_fdloop.c
 SYS_pidfd_open
-blocking_input we_child.c
+write we_fdloop.c we_unix.c we_child.c we_clip.c
+fdopen
 EOF
 
 # normalise: the name as the source spells it.  One leading "_" (Mach-O),
@@ -200,6 +205,29 @@ grep -qx "we_child.o fork" "$WORK/imports" ||
 grep -qx "we_unix.o waitpid" "$WORK/imports" ||
   problem "canary: waitpid not seen in we_unix.o (LTO objects, wrong nm, or an empty object list)"
 
+# Every child talker must send through the loop's writer: one that does not
+# import wpe_fd_write is talking to its child some other way.  And it must
+# close its child's input through wpe_fd_close, which forgets the queue:
+# a plain close() leaves queued bytes for whatever next gets that number.
+for talker in we_debug.o we_lsp.o we_dap.o we_bsp.o; do
+  for obj in $OBJECTS; do
+    [ "$(basename "$obj")" = "$talker" ] || continue
+    [ -f "$obj" ] || continue
+    "$NMTOOL" -u "$obj" 2>/dev/null | normalise > "$WORK/talker"
+    grep -qx wpe_fd_write "$WORK/talker" ||
+      problem "canary: $talker does not import wpe_fd_write (a child is written some other way)"
+    grep -qx wpe_fd_close "$WORK/talker" ||
+      problem "canary: $talker does not import wpe_fd_close (a child's input is closed with its bytes still queued)"
+  done
+done
+# The call-form branch of the source scan must see the writer's own write(.
+if fdloop=$(stripped_source we_fdloop.o); then
+  [ "$(count_uses write "$fdloop")" -gt 0 ] ||
+    problem "canary: the source scan sees no write( in we_fdloop.c (the call-form branch is blind)"
+else
+  problem "canary: we_fdloop.c not found under $SRCDIR"
+fi
+
 # --- 2. the source scan
 for obj in $OBJECTS; do
   base=$(basename "$obj")
@@ -210,7 +238,7 @@ for obj in $OBJECTS; do
     case $word in
       'read(0') n=$(count_uses "read[ \t]*[(][ \t]*0[ \t]*," "$file") ;;
       'fileno(stdin)') n=$(count_uses "fileno[ \t]*[(][ \t]*stdin" "$file") ;;
-      wpe_fd_wait_for|wpe_fd_end_wait) n=$(count_uses "$word" "$file") ;;
+      wpe_fd_wait_for|wpe_fd_end_wait|write|fdopen) n=$(count_uses "$word" "$file") ;;
       *) n=$(count_words "$word" "$file") ;;
     esac
     [ "$n" -gt 0 ] && echo "$base $word $n" >> "$WORK/found"

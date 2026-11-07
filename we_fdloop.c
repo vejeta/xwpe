@@ -5,12 +5,15 @@
 /* GNU General Public License, see the file COPYING.       */
 
 #include <errno.h>
+#include <fcntl.h>
 #include <limits.h>
 #include <poll.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <time.h>
+#include <unistd.h>
 #include "we_fdloop.h"
 
 /* Descriptors watched at once.  Counted for the most the editor holds at
@@ -65,8 +68,31 @@ typedef struct {
 static wpe_fd_entry fd_table[WPE_FD_MAX];
 static int fd_count = 0;
 
-/* Callbacks and timers the loop has run, ever: a wait compares it before and
-   after a poll to tell work done from a wake that only a display reads. */
+/* Descriptors with bytes waiting for their child to read them: at most one
+   per watched descriptor, and a child's input is one of those. */
+#define WPE_FD_WRITERS_MAX WPE_FD_MAX
+/* The longest line the stall says: a child's name, the bytes and the way
+   out. */
+#define WPE_FD_WRITE_LINE_MAX 256
+
+/* The bytes queued for one descriptor: buf[off..len) waits, in order. */
+typedef struct {
+ int used;
+ int fd;
+ char *buf;
+ size_t off, len, cap;
+ const char *what;       /* "gdb": names the child in the stall line          */
+ const char *ends;       /* what ends it, or NULL                             */
+ int64_t stall_due_ms;   /* no byte taken by then: the stall line             */
+ int stalled;            /* the stall line was said, no byte taken since      */
+} wpe_fd_writer;
+
+static wpe_fd_writer writer_table[WPE_FD_WRITERS_MAX];
+static void (*wpe_fd_write_say_hook)(const char *line);
+
+/* Callbacks, timers and stall lines the loop has run, ever: a wait compares
+   it before and after a poll to tell work done from a wake that only a
+   display reads. */
 static unsigned long wpe_loop_work = 0;
 
 static wpe_fd_entry *wpe_fd_find(int fd)
@@ -141,6 +167,16 @@ int wpe_fd_add(int fd, int events, wpe_fd_callback cb, void *data)
  return 0;
 }
 
+/**
+ * wpe_fd_del - Stop watching @fd for input.
+ * @fd: the descriptor.
+ *
+ * Bytes queued for it stay queued: a debug adapter's socket is read by the
+ * run and then by the stop's requests, unwatched and watched again between
+ * them, and a request queued meanwhile must still reach the adapter (a
+ * program's pty is read and typed into the same way).  Closing is what
+ * forgets the queue: wpe_fd_close.
+ */
 void wpe_fd_del(int fd)
 {
  int i;
@@ -330,6 +366,508 @@ void wpe_timer_del(int id)
   t->id = WPE_TIMER_NONE;
 }
 
+/* ==== bytes for a child: one queue per descriptor ====
+
+   A child that stops reading (a language server busy indexing, gdb stopped,
+   an adapter wedged) fills its pipe; a plain write would then wait inside
+   the editor until it reads again, and every key with it.  Here a write
+   takes what the descriptor takes now and queues the rest, the loop writes
+   the queue when poll() says the descriptor is writable, and a child that
+   takes nothing for WPE_FD_WRITE_STALL_MS is named on the status row. */
+
+/**
+ * wpe_fd_writer_find - The queue of @fd, if it has one.
+ * Return: its slot, or NULL.
+ */
+static wpe_fd_writer *wpe_fd_writer_find(int fd)
+{
+ int i;
+
+ for (i = 0; i < WPE_FD_WRITERS_MAX; i++)
+  if (writer_table[i].used && writer_table[i].fd == fd)
+   return &writer_table[i];
+ return NULL;
+}
+
+/**
+ * wpe_fd_writer_take - The queue of @fd, made when it has none.
+ * Return: its slot, or NULL when every slot holds another descriptor's bytes.
+ */
+static wpe_fd_writer *wpe_fd_writer_take(int fd)
+{
+ wpe_fd_writer *w = wpe_fd_writer_find(fd);
+ int i;
+
+ if (w)
+  return w;
+ for (i = 0; i < WPE_FD_WRITERS_MAX; i++)
+ {
+  if (writer_table[i].used)
+   continue;
+  memset(&writer_table[i], 0, sizeof writer_table[i]);
+  writer_table[i].used = 1;
+  writer_table[i].fd = fd;
+  return &writer_table[i];
+ }
+ return NULL;
+}
+
+/**
+ * wpe_fd_writer_waiting - The bytes @w still has to write.
+ */
+static size_t wpe_fd_writer_waiting(const wpe_fd_writer *w)
+{
+ return w->len - w->off;
+}
+
+/**
+ * wpe_fd_writer_free - Give @w's slot and memory back.
+ */
+static void wpe_fd_writer_free(wpe_fd_writer *w)
+{
+ free(w->buf);
+ memset(w, 0, sizeof *w);
+}
+
+/**
+ * wpe_fd_writer_room - Make room in @w for @n more bytes.
+ *
+ * Asked before anything is written, so a message that could not be queued
+ * is refused whole rather than cut in the middle.
+ * Return: 0, or -1 when the memory is not there.
+ */
+static int wpe_fd_writer_room(wpe_fd_writer *w, size_t n)
+{
+ size_t waiting = wpe_fd_writer_waiting(w);
+ char *grown;
+
+ if (w->off > 0)
+ {
+  memmove(w->buf, w->buf + w->off, waiting);
+  w->off = 0;
+  w->len = waiting;
+ }
+ if (w->cap >= waiting + n)
+  return 0;
+ grown = realloc(w->buf, waiting + n);
+ if (!grown)
+  return -1;
+ w->buf = grown;
+ w->cap = waiting + n;
+ return 0;
+}
+
+/**
+ * wpe_fd_write_say_set - Where the stall line goes (the status row).
+ * @say: the editor's status line, or NULL (the C tests).
+ */
+void wpe_fd_write_say_set(void (*say)(const char *line))
+{
+ wpe_fd_write_say_hook = say;
+}
+
+/**
+ * wpe_fd_writer_say_stalled - Tell the user which child stopped reading,
+ * how much waits for it, and what ends it.
+ */
+static void wpe_fd_writer_say_stalled(const wpe_fd_writer *w)
+{
+ char line[WPE_FD_WRITE_LINE_MAX];
+
+ if (!wpe_fd_write_say_hook)
+  return;
+ if (w->ends)
+  snprintf(line, sizeof line, "%s is not reading its input (%lu bytes waiting): %s",
+           w->what, (unsigned long)wpe_fd_writer_waiting(w), w->ends);
+ else
+  snprintf(line, sizeof line, "%s is not reading its input (%lu bytes waiting)",
+           w->what, (unsigned long)wpe_fd_writer_waiting(w));
+ wpe_fd_write_say_hook(line);
+}
+
+/**
+ * wpe_fd_writer_say_reading - Tell the user a child named as stalled reads
+ * again, so the stall line does not stand for a child that recovered.
+ */
+static void wpe_fd_writer_say_reading(const wpe_fd_writer *w)
+{
+ char line[WPE_FD_WRITE_LINE_MAX];
+
+ if (!wpe_fd_write_say_hook)
+  return;
+ snprintf(line, sizeof line, "%s is reading its input again", w->what);
+ wpe_fd_write_say_hook(line);
+}
+
+/**
+ * wpe_fd_writer_may_stall - Could @w's child still be named as stalled?
+ * Bytes wait for it and the line has not been said since its last byte.
+ */
+static int wpe_fd_writer_may_stall(const wpe_fd_writer *w)
+{
+ return w->used && !w->stalled && wpe_fd_writer_waiting(w) > 0;
+}
+
+/**
+ * wpe_fd_writers_ms_to_stall - How long until a child with bytes waiting
+ * has taken none for WPE_FD_WRITE_STALL_MS.
+ *
+ * The loop bounds its sleep by it as it does by its timers, but it takes
+ * no timer: the line that tells the user why nothing happens must come
+ * even when every timer is held by waiting lines and children's ends.
+ * Return: 0 when one is due, WPE_POLL_FOREVER when none can stall.
+ */
+static int wpe_fd_writers_ms_to_stall(void)
+{
+ int64_t now = wpe_clock_ms(), due = 0;
+ int i, any = 0;
+
+ for (i = 0; i < WPE_FD_WRITERS_MAX; i++)
+ {
+  const wpe_fd_writer *w = &writer_table[i];
+
+  if (!wpe_fd_writer_may_stall(w))
+   continue;
+  if (!any || w->stall_due_ms < due)
+   due = w->stall_due_ms;
+  any = 1;
+ }
+ if (!any)
+  return WPE_POLL_FOREVER;
+ if (due <= now)
+  return 0;
+ if (due - now > INT_MAX)
+  return INT_MAX;
+ return (int)(due - now);
+}
+
+/**
+ * wpe_fd_writers_say_due - Name each child that has taken no byte for
+ * WPE_FD_WRITE_STALL_MS, once, after each poll.
+ * Return: the lines said (each counts as the loop's work).
+ */
+static int wpe_fd_writers_say_due(void)
+{
+ int64_t now = wpe_clock_ms();
+ int i, said = 0;
+
+ for (i = 0; i < WPE_FD_WRITERS_MAX; i++)
+ {
+  wpe_fd_writer *w = &writer_table[i];
+
+  if (!wpe_fd_writer_may_stall(w) || w->stall_due_ms > now)
+   continue;
+  w->stalled = 1;
+  wpe_loop_work++;
+  wpe_fd_writer_say_stalled(w);
+  said++;
+ }
+ return said;
+}
+
+/**
+ * wpe_fd_writer_progress - The child took bytes: its stall clock starts
+ * again, and a stall line said for it is taken back.
+ */
+static void wpe_fd_writer_progress(wpe_fd_writer *w)
+{
+ w->stall_due_ms = wpe_clock_ms() + WPE_FD_WRITE_STALL_MS;
+ if (!w->stalled)
+  return;
+ w->stalled = 0;
+ wpe_fd_writer_say_reading(w);
+}
+
+/**
+ * wpe_fd_is_nonblocking - Does a write on @fd return at once?
+ *
+ * The queue cannot keep the editor going on a descriptor that blocks: the
+ * one write it makes would wait for the child.  A descriptor that is not
+ * open answers no as well.
+ */
+static int wpe_fd_is_nonblocking(int fd)
+{
+ int fl = fcntl(fd, F_GETFL, 0);
+
+ return fl >= 0 && (fl & O_NONBLOCK);
+}
+
+/**
+ * wpe_fd_write_once - One write(2) of what @fd takes now.
+ * @taken: set to the bytes written (0 when the child's pipe is full).
+ * Return: WPE_FD_WRITE_SENT (whatever was taken), WPE_FD_WRITE_CLOSED when
+ * the child's end is gone, WPE_FD_WRITE_REFUSED on any other error.
+ */
+static int wpe_fd_write_once(int fd, const char *buf, size_t n, size_t *taken)
+{
+ ssize_t r;
+
+ *taken = 0;
+ do
+  r = write(fd, buf, n);
+ while (r < 0 && errno == EINTR);
+ if (r >= 0)
+ {
+  *taken = (size_t)r;
+  return WPE_FD_WRITE_SENT;
+ }
+ if (errno == EAGAIN || errno == EWOULDBLOCK)
+  return WPE_FD_WRITE_SENT;
+ if (errno == EPIPE)
+  return WPE_FD_WRITE_CLOSED;
+ return WPE_FD_WRITE_REFUSED;
+}
+
+/**
+ * wpe_fd_writer_flush - Write what @w's descriptor takes now.
+ * Return: WPE_FD_WRITE_SENT once nothing waits (@w is then free),
+ * WPE_FD_WRITE_QUEUED while bytes wait, or WPE_FD_WRITE_CLOSED /
+ * WPE_FD_WRITE_REFUSED when the descriptor failed (the queue is dropped).
+ */
+static int wpe_fd_writer_flush(wpe_fd_writer *w)
+{
+ size_t taken;
+ int r = wpe_fd_write_once(w->fd, w->buf + w->off, wpe_fd_writer_waiting(w),
+                           &taken);
+
+ if (r != WPE_FD_WRITE_SENT)
+ {
+  wpe_fd_writer_free(w);
+  return r;
+ }
+ if (taken > 0)
+ {
+  w->off += taken;
+  wpe_fd_writer_progress(w);
+ }
+ if (wpe_fd_writer_waiting(w))
+  return WPE_FD_WRITE_QUEUED;
+ wpe_fd_writer_free(w);
+ return WPE_FD_WRITE_SENT;
+}
+
+/**
+ * wpe_fd_writer_queue_rest - Write @buf now as far as @w's descriptor takes
+ * it, and keep the rest, room for it made before the write.
+ * Return: as wpe_fd_write.
+ */
+static int wpe_fd_writer_queue_rest(wpe_fd_writer *w, const char *buf, size_t n)
+{
+ size_t taken;
+ int r;
+
+ if (wpe_fd_writer_room(w, n) != 0)
+  return WPE_FD_WRITE_REFUSED;
+ r = wpe_fd_write_once(w->fd, buf, n, &taken);
+ if (r != WPE_FD_WRITE_SENT)
+  return r;
+ if (taken == n)
+  return WPE_FD_WRITE_SENT;
+ memcpy(w->buf + w->len, buf + taken, n - taken);
+ w->len += n - taken;
+ w->stall_due_ms = wpe_clock_ms() + WPE_FD_WRITE_STALL_MS;
+ return WPE_FD_WRITE_QUEUED;
+}
+
+/**
+ * wpe_fd_writer_append - Put @buf behind the bytes @w already holds.
+ *
+ * Nothing is written now: what waits goes first, so a command is never
+ * mixed into the one before it.  The queue is bounded: bytes that would take
+ * it past WPE_FD_WRITE_QUEUE_MAX are refused whole.
+ * Return: WPE_FD_WRITE_QUEUED or WPE_FD_WRITE_REFUSED.
+ */
+static int wpe_fd_writer_append(wpe_fd_writer *w, const char *buf, size_t n)
+{
+ if (n > (size_t)WPE_FD_WRITE_QUEUE_MAX ||
+     wpe_fd_writer_waiting(w) > (size_t)WPE_FD_WRITE_QUEUE_MAX - n)
+  return WPE_FD_WRITE_REFUSED;
+ if (wpe_fd_writer_room(w, n) != 0)
+  return WPE_FD_WRITE_REFUSED;
+ memcpy(w->buf + w->len, buf, n);
+ w->len += n;
+ return WPE_FD_WRITE_QUEUED;
+}
+
+/**
+ * wpe_fd_write - Send @n bytes of @buf to a child, never waiting for it.
+ * @fd: the child's input, non-blocking; @what: names the child in the stall
+ * line ("gdb", "the language server"); @ends: what ends it, said after the
+ * stall line ("Debug > Quit ends the session"), or NULL.
+ *
+ * The bytes go out whole and in the order given, behind what is queued for
+ * @fd already; what the child does not take now is written by the loop when
+ * it can take more, so the user keeps typing while a child is busy.  If the
+ * child takes nothing for WPE_FD_WRITE_STALL_MS, the status row says which
+ * child stopped reading and how to end it, once.
+ * Return: WPE_FD_WRITE_SENT when every byte went out; WPE_FD_WRITE_QUEUED
+ * when some wait; WPE_FD_WRITE_REFUSED, nothing written, when the queue is
+ * full, @fd is closed or would block, or no queue is free;
+ * WPE_FD_WRITE_CLOSED when the child closed its input (its queue is gone).
+ */
+int wpe_fd_write(int fd, const void *buf, size_t n, const char *what,
+                 const char *ends)
+{
+ wpe_fd_writer *w;
+ int r;
+
+ if (fd < 0 || !wpe_fd_is_nonblocking(fd))
+  return WPE_FD_WRITE_REFUSED;
+ if (n == 0)
+  return WPE_FD_WRITE_SENT;
+ w = wpe_fd_writer_take(fd);
+ if (!w)
+  return WPE_FD_WRITE_REFUSED;
+ w->what = what;
+ w->ends = ends;
+ if (wpe_fd_writer_waiting(w))
+  return wpe_fd_writer_append(w, (const char *)buf, n);
+ r = wpe_fd_writer_queue_rest(w, (const char *)buf, n);
+ if (r != WPE_FD_WRITE_QUEUED)
+  wpe_fd_writer_free(w);
+ return r;
+}
+
+/**
+ * wpe_fd_write_flush - Write now what @fd's child takes of its queue.
+ *
+ * For a wait that polls a child itself until its answer comes (the language
+ * server's handshake), so the request it waits on leaves the queue.
+ * Return: as wpe_fd_writer_flush; WPE_FD_WRITE_SENT when nothing waits.
+ */
+int wpe_fd_write_flush(int fd)
+{
+ wpe_fd_writer *w = wpe_fd_writer_find(fd);
+
+ if (!w)
+  return WPE_FD_WRITE_SENT;
+ return wpe_fd_writer_flush(w);
+}
+
+/**
+ * wpe_fd_write_pending - The bytes still queued for @fd.
+ */
+long wpe_fd_write_pending(int fd)
+{
+ const wpe_fd_writer *w = wpe_fd_writer_find(fd);
+
+ if (!w)
+  return 0;
+ return (long)wpe_fd_writer_waiting(w);
+}
+
+/**
+ * wpe_fd_writer_forget - Drop @fd's queue, if any.
+ */
+static void wpe_fd_writer_forget(int fd)
+{
+ wpe_fd_writer *w = wpe_fd_writer_find(fd);
+
+ if (!w)
+  return;
+ wpe_fd_writer_free(w);
+}
+
+/**
+ * wpe_fd_close - Close a descriptor the loop may know: its queued bytes are
+ * forgotten, it is no longer watched, then it is closed.
+ * @fd: the descriptor; a negative one is left alone.
+ *
+ * The one way a child's input is closed.  A child being ended will not
+ * read what waits for it, and the number is free again the moment close()
+ * returns: the next pipe, socket or file the editor opens may get it, and
+ * must never be written the old child's bytes or be served its old reader.
+ * Return: what close() returned, or 0 for a negative @fd.
+ */
+int wpe_fd_close(int fd)
+{
+ if (fd < 0)
+  return 0;
+ wpe_fd_writer_forget(fd);
+ wpe_fd_del(fd);
+ return close(fd);
+}
+
+/**
+ * wpe_fd_write_stalled - Has the user been told @fd's child stopped reading?
+ * Return: 1 from the stall line until the child takes a byte, else 0.
+ */
+int wpe_fd_write_stalled(int fd)
+{
+ const wpe_fd_writer *w = wpe_fd_writer_find(fd);
+
+ return w && w->stalled;
+}
+
+/**
+ * wpe_fd_writers_waiting - Does any child have bytes waiting?
+ */
+static int wpe_fd_writers_waiting(void)
+{
+ int i;
+
+ for (i = 0; i < WPE_FD_WRITERS_MAX; i++)
+  if (writer_table[i].used && wpe_fd_writer_waiting(&writer_table[i]))
+   return 1;
+ return 0;
+}
+
+/**
+ * wpe_fd_collect_writers - Add each descriptor with bytes waiting to the
+ * poll() set, for POLLOUT.
+ * @pfd: the set, @n entries filled already; @wmap: for each entry added,
+ * its writer slot.
+ * Return: the entries added.
+ *
+ * A writable descriptor with nothing to write is never in the set, so an
+ * idle child's pipe does not wake the loop.
+ */
+static int wpe_fd_collect_writers(struct pollfd *pfd, int n, int *wmap)
+{
+ int i, added = 0;
+
+ for (i = 0; i < WPE_FD_WRITERS_MAX; i++)
+ {
+  if (!writer_table[i].used || !wpe_fd_writer_waiting(&writer_table[i]))
+   continue;
+  pfd[n + added].fd = writer_table[i].fd;
+  pfd[n + added].events = POLLOUT;
+  pfd[n + added].revents = 0;
+  wmap[added] = i;
+  added++;
+ }
+ return added;
+}
+
+/**
+ * wpe_fd_flush_ready - Write the queues poll() found writable.
+ * @pfd: the writers' part of the set; @wmap: their slots; @n: how many.
+ *
+ * A hang-up or an error is written to as well: the write says EPIPE and the
+ * queue goes, while the child's read side reports its end as it always has.
+ * Each flush counts as the loop's work, so a wait that a flush woke asks its
+ * condition again instead of taking it for a key.
+ */
+static void wpe_fd_flush_ready(const struct pollfd *pfd, const int *wmap, int n)
+{
+ int i;
+
+ for (i = 0; i < n; i++)
+ {
+  wpe_fd_writer *w = &writer_table[wmap[i]];
+
+  if (!pfd[i].revents || !w->used || w->fd != pfd[i].fd)
+   continue;
+  wpe_loop_work++;
+  if (pfd[i].revents & POLLNVAL)   /* closed without wpe_fd_close */
+  {
+   wpe_fd_writer_forget(w->fd);
+   continue;
+  }
+  wpe_fd_writer_flush(w);
+ }
+}
+
 /**
  * wpe_timer_ms_to_nearest - How long until the next timer is due.
  * Return: 0 when one is overdue, WPE_POLL_FOREVER when there is none.
@@ -371,6 +909,26 @@ static int wpe_timer_bound_wait(int timeout_ms)
  if (timeout_ms == WPE_POLL_FOREVER || until < timeout_ms)
   return until;
  return timeout_ms;
+}
+
+/**
+ * wpe_fd_poll_bound - The poll() timeout once the timers and the children
+ * that may stall are counted.
+ * @timeout_ms: the caller's bound, or WPE_POLL_FOREVER.
+ *
+ * An editor sleeping until a key still wakes in time to say which child
+ * stopped reading its input.
+ */
+static int wpe_fd_poll_bound(int timeout_ms)
+{
+ int bound = wpe_timer_bound_wait(timeout_ms);
+ int stall = wpe_fd_writers_ms_to_stall();
+
+ if (stall == WPE_POLL_FOREVER)
+  return bound;
+ if (bound == WPE_POLL_FOREVER || stall < bound)
+  return stall;
+ return bound;
 }
 
 /**
@@ -572,25 +1130,35 @@ static void wpe_fd_run_ready(const int *map, int n)
  * The fds that woke run first, then every due timer.  With nothing
  * registered at all it returns at once; with only a timer it sleeps until
  * that timer, so a wait never spins.
- * Return: the number of ready fds plus the timers that ran, 0 when the wait
- * ended with nothing to do, -1 when poll() failed (a signal: call again).
+ * Bytes queued for a child are written first, when its descriptor can take
+ * them, so a callback that answers the child sends behind them; a child
+ * that has taken none of them for WPE_FD_WRITE_STALL_MS is named last.
+ * Return: the number of ready fds plus the timers that ran and the stall
+ * lines said, 0 when the wait ended with nothing to do, -1 when poll()
+ * failed (a signal: call again).
  */
 int wpe_fd_poll(int timeout_ms)
 {
- struct pollfd pfd[WPE_FD_MAX];
+ struct pollfd pfd[WPE_FD_MAX + WPE_FD_WRITERS_MAX];
  int map[WPE_FD_MAX];
- int n, ready;
+ int wmap[WPE_FD_WRITERS_MAX];
+ int n, nw, ready;
 
  n = wpe_fd_collect(pfd, map);
- if (n == 0 && !wpe_timer_pending())
+ nw = wpe_fd_collect_writers(pfd, n, wmap);
+ if (n + nw == 0 && !wpe_timer_pending())
   return 0;
- ready = poll(pfd, n, wpe_timer_bound_wait(timeout_ms));
+ ready = poll(pfd, n + nw, wpe_fd_poll_bound(timeout_ms));
  if (ready < 0)
   return ready;
  wpe_fd_note_ready(pfd, map, n);
  if (ready > 0)
+ {
+  wpe_fd_flush_ready(pfd + n, wmap, nw);
   wpe_fd_run_ready(map, n);
- return ready + wpe_timer_run_due();
+ }
+ ready += wpe_timer_run_due();
+ return ready + wpe_fd_writers_say_due();
 }
 
 /**
@@ -657,7 +1225,7 @@ static int wpe_loop_has_sources(void)
 {
  int i;
 
- if (wpe_timer_pending())
+ if (wpe_timer_pending() || wpe_fd_writers_waiting())
   return 1;
  for (i = 0; i < WPE_FD_MAX; i++)
  {

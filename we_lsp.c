@@ -32,7 +32,10 @@ struct e_lsp_session {
  int          init_id;           /* id of the initialize request           */
  int          started;           /* 0 = awaiting initialize response,      */
                                   /* 1 = handshake done (server is ready)   */
- int          dead;              /* 1 = the server closed its stdout (EOF)  */
+ int          dead;              /* 1 = the server closed its stdout (EOF),
+                                    or its input was lost (input_lost)    */
+ int          input_lost;        /* a message could not be handed to it:
+                                    it stopped reading, or closed its input */
  e_lsp_host   host;
  int          doc_version;       /* textDocument version (didOpen = 1)    */
  char         root_uri[PATH_MAX + 8];
@@ -71,21 +74,32 @@ struct e_lsp_session {
 
 /* ---- transport --------------------------------------------------------- */
 
-static int lsp_write_all(int fd, const char *buf, size_t n)
+/**
+ * lsp_write_all - Hand one whole message (header and body) to the server.
+ * @s: the session; @buf, @n: the framed message.
+ *
+ * The message is written now as far as the server reads, and the rest is
+ * written by the loop, behind any message still waiting, so the editor never
+ * waits for a server that is busy indexing and the user keeps typing; the
+ * status row names the server once it has read nothing for a while.  A
+ * message the server can no longer be given (its queue is full, or it
+ * closed its input) would leave it with a view of the files the editor does
+ * not share, so the session is given up as a server that ended: the user is
+ * told, and Alt-Q starts a fresh one.
+ * Return: 0 when the message is on its way, -1 when the session was lost.
+ */
+static int lsp_write_all(e_lsp_session *s, const char *buf, size_t n)
 {
- size_t off = 0;
- while (off < n)
- {
-  ssize_t w = write(fd, buf + off, n - off);
-  if (w < 0)
-  {
-   if (errno == EINTR)
-    continue;
-   return -1;
-  }
-  off += (size_t)w;
- }
- return 0;
+ int r;
+
+ if (s->input_lost)
+  return -1;
+ r = wpe_fd_write(s->in_fd, buf, n, LSP_SERVER_WHAT, NULL);
+ if (r == WPE_FD_WRITE_SENT || r == WPE_FD_WRITE_QUEUED)
+  return 0;
+ s->input_lost = 1;
+ s->dead = 1;
+ return -1;
 }
 
 /* Apply a WorkspaceEdit to one file's text (defined far below, with the rest of
@@ -125,10 +139,10 @@ static int lsp_send(e_lsp_session *s, int id, const char *method,
  if (!frame)
  {  json_object_put(msg);  return -1;  }
  rc = snprintf(frame, flen, "Content-Length: %zu\r\n\r\n%s", blen, body);
- lsp_write_all(s->in_fd, frame, (size_t)rc);
+ rc = lsp_write_all(s, frame, (size_t)rc);
  free(frame);
  json_object_put(msg);
- return 0;
+ return rc;
 }
 
 static void lsp_notify(e_lsp_session *s, const char *method, struct json_object *p)
@@ -154,7 +168,7 @@ static void lsp_reply(e_lsp_session *s, struct json_object *id_field,
  if (frame)
  {
   rc = snprintf(frame, flen, "Content-Length: %zu\r\n\r\n%s", blen, body);
-  lsp_write_all(s->in_fd, frame, (size_t)rc);
+  lsp_write_all(s, frame, (size_t)rc);
   free(frame);
  }
  json_object_put(msg);
@@ -167,26 +181,73 @@ static long lsp_now_ms(void)
  return (long)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
 }
 
+/* The two descriptors a message wait watches: the server's output, and its
+   input while messages for it are still queued. */
+#define LSP_WAIT_OUT 0
+#define LSP_WAIT_IN  1
+
+/**
+ * lsp_wait_set - Fill the poll() set of a message wait.
+ * @s: the session; @p: room for two entries.
+ * Return: the entries used.
+ *
+ * The request being waited on may still be queued behind a server that
+ * read slowly; the wait writes it on as the server takes it, so its answer
+ * can come.
+ */
+static int lsp_wait_set(e_lsp_session *s, struct pollfd *p)
+{
+ p[LSP_WAIT_OUT].fd = s->out_fd;
+ p[LSP_WAIT_OUT].events = POLLIN;
+ p[LSP_WAIT_OUT].revents = 0;
+ if (wpe_fd_write_pending(s->in_fd) <= 0)
+  return 1;
+ p[LSP_WAIT_IN].fd = s->in_fd;
+ p[LSP_WAIT_IN].events = POLLOUT;
+ p[LSP_WAIT_IN].revents = 0;
+ return 2;
+}
+
+/**
+ * lsp_wait_flush - Write on what the server took of its queue; a server
+ * that closed its input loses the session.
+ */
+static void lsp_wait_flush(e_lsp_session *s)
+{
+ int r = wpe_fd_write_flush(s->in_fd);
+
+ if (r == WPE_FD_WRITE_CLOSED || r == WPE_FD_WRITE_REFUSED)
+ {
+  s->input_lost = 1;
+  s->dead = 1;
+ }
+}
+
 static struct json_object *lsp_read_message(e_lsp_session *s, int timeout_ms)
 {
  long deadline = lsp_now_ms() + timeout_ms;
  for (;;)
  {
-  struct pollfd p;
+  struct pollfd p[2];
   char buf[8192];
   ssize_t n;
-  int err = 0, left;
+  int err = 0, left, np;
   struct json_object *m = e_dap_reader_pop(&s->rd, &err);
 
   if (m)
    return m;
+  if (s->dead)
+   return NULL;
   left = (int)(deadline - lsp_now_ms());
   if (left <= 0)
    return NULL;
-  p.fd = s->out_fd;
-  p.events = POLLIN;
-  if (poll(&p, 1, left) <= 0)
+  np = lsp_wait_set(s, p);
+  if (poll(p, np, left) <= 0)
    return NULL;
+  if (np > LSP_WAIT_IN && p[LSP_WAIT_IN].revents)
+   lsp_wait_flush(s);
+  if (!p[LSP_WAIT_OUT].revents)
+   continue;
   n = read(s->out_fd, buf, sizeof(buf));
   if (n <= 0)
   {
@@ -619,7 +680,6 @@ static int lsp_spawn(e_lsp_session *s, char *const argv[], const char *cwd)
  spec.io = WPE_CHILD_IO_PIPES;
  spec.group = WPE_CHILD_OWN_SESSION;
  spec.stderr_to_null = 1;
- spec.blocking_input = 1;
  spec.signal_leader_only = s->host.server_shares_daemon;
  spec.what = LSP_SERVER_WHAT;
  if (wpe_child_start(&spec, &s->server, NULL, NULL) != 0)
@@ -797,6 +857,16 @@ e_lsp_session *e_lsp_open_async(char *const argv[], const char *root_dir,
 int e_lsp_fd(e_lsp_session *s)      {  return s ? s->out_fd : -1;  }
 int e_lsp_started(e_lsp_session *s) {  return s ? s->started : 0;  }
 int e_lsp_dead(e_lsp_session *s) {  return s ? s->dead : 1;  }
+
+/**
+ * e_lsp_input_lost - Did the session end because the server could no
+ * longer be sent a message (it stopped reading, or closed its input), and
+ * not because it exited?  The line the user reads says which.
+ */
+int e_lsp_input_lost(e_lsp_session *s)
+{
+ return s && s->input_lost;
+}
 
 /* Synchronous open: start async, then BLOCK draining until the handshake
    completes (or LSP_TMO_INIT elapses).  Kept for the engine tests and any
@@ -2455,7 +2525,9 @@ void e_lsp_close(e_lsp_session *s)
 {
  if (!s)
   return;
- if (s->in_fd >= 0)
+ /* A server that lost its input is not asked to shut down: it would not
+    read the request, and the end below takes it. */
+ if (s->in_fd >= 0 && !s->input_lost)
  {
   int id = ++s->id;
   struct json_object *r;
@@ -2466,7 +2538,7 @@ void e_lsp_close(e_lsp_session *s)
   lsp_notify(s, "exit", NULL);
  }
  if (s->in_fd >= 0)
-  close(s->in_fd);
+  wpe_fd_close(s->in_fd);          /* what still waits for it goes too */
  if (s->out_fd >= 0)
   close(s->out_fd);
  /* After `exit`, SIGTERM; the owner gives it the grace and then SIGKILL,

@@ -65,10 +65,6 @@ typedef struct {
                                     group: the build server's launcher, whose
                                     group may hold a build server other editors
                                     share */
- int blocking_input;             /* the editor's end of stdin stays blocking:
-                                    its writers send a whole message with
-                                    plain writes (language server, build
-                                    server, stdio adapter) */
  int echo_argv;                  /* the command line first on stdout (the build's Messages) */
  const char *exec_failed;        /* written before argv when exec fails, or NULL */
  const char *what;               /* "the build": every line the user reads names it */

@@ -138,6 +138,8 @@ struct e_dap_session {
  int           bp_lines[DAP_MAX_BP];
  int           bp_n;
  int           eof;           /* the transport reached its end              */
+ int           input_lost;    /* a request could not be handed to the adapter:
+                                 it stopped reading, or closed its input   */
  int           run;           /* DAP_RUN_*                                  */
  int           stop_pending;  /* a stop came while the start was not done   */
  int           stop_reported; /* on_stopped fired; the pump says STOPPED     */
@@ -169,36 +171,87 @@ static int dap_rfd(e_dap_session *s) { return s->sock >= 0 ? s->sock : s->out_fd
 
 /* ---- low-level I/O ----------------------------------------------------- */
 
-static int write_all(int fd, const char *buf, size_t n)
+/* What the line that says the adapter stopped reading its input adds. */
+#define DAP_INPUT_ENDS "Debug > Quit ends it"
+
+/**
+ * dap_input_name - The adapter as the status row names it when it stops
+ * reading: its own name ("lldb-dap") once the host gave it, so the line
+ * fits the row.
+ */
+static const char *dap_input_name(const e_dap_session *s)
 {
- size_t off = 0;
- while (off < n)
- {
-  ssize_t w = write(fd, buf + off, n - off);
-  if (w < 0)
-  {
-   if (errno == EINTR)
-    continue;
-   return -1;
-  }
-  off += (size_t)w;
- }
- return 0;
+ if (s->rio && s->rio->name && s->rio->name[0])
+  return s->rio->name;
+ return E_DAP_ADAPTER_WHAT;
 }
 
-/* Send a request; takes ownership of `args` (may be NULL).  Returns its seq. */
+/**
+ * dap_socket_nonblocking - Make the adapter's socket return at once on a
+ * read or a write: a request it does not take now is queued on the loop,
+ * and the editor never waits inside a write to a wedged adapter.
+ * @fd: the connected socket.
+ */
+static void dap_socket_nonblocking(int fd)
+{
+ int fl = fcntl(fd, F_GETFL, 0);
+
+ if (fl >= 0)
+  fcntl(fd, F_SETFL, fl | O_NONBLOCK);
+}
+
+static int dap_start_fail(e_dap_session *s);
+static int dap_start_status(const e_dap_session *s);
+
+/**
+ * dap_write_all - Hand one whole request (header and body) to the adapter.
+ * @s: the session; @buf, @n: the framed request.
+ *
+ * Written now as far as the adapter reads, the rest by the loop behind any
+ * request still waiting, so the editor keeps its keys while an adapter is
+ * wedged, and the status row names it once it has read nothing for a
+ * while.  A request it can no longer be given (its queue is full, or it
+ * closed its input) loses the adapter's input for good: a start in progress
+ * fails, and every later request ends at once as gone, never waiting for
+ * an answer that cannot come.
+ * Return: 0 when the request is on its way, -1 when the input is lost.
+ */
+static int dap_write_all(e_dap_session *s, const char *buf, size_t n)
+{
+ int r;
+
+ if (s->input_lost)
+  return -1;
+ r = wpe_fd_write(dap_wfd(s), buf, n, dap_input_name(s), DAP_INPUT_ENDS);
+ if (r == WPE_FD_WRITE_SENT || r == WPE_FD_WRITE_QUEUED)
+  return 0;
+ s->input_lost = 1;
+ if (dap_start_status(s) == E_DAP_START_WAITING)
+  dap_start_fail(s);
+ return -1;
+}
+
+/**
+ * dap_send - Send a request; takes ownership of @args (may be NULL).
+ * Return: its seq, or DAP_NO_SEQ when it could not be handed to the
+ * adapter (dap_write_all).
+ */
 static int dap_send(e_dap_session *s, const char *command, struct json_object *args)
 {
  int seq = ++s->seq;
  size_t len = 0;
  char *frame = e_dap_build_request(seq, command, args, &len);
+ int r = -1;
+
  if (args)
   json_object_put(args);
  if (frame)
  {
-  write_all(dap_wfd(s), frame, len);
+  r = dap_write_all(s, frame, len);
   free(frame);
  }
+ if (r != 0)
+  return DAP_NO_SEQ;
  return seq;
 }
 
@@ -491,7 +544,10 @@ static int dap_send_owned(e_dap_session *s, const char *command,
  }
  p->kind = kind;
  p->seq = dap_send(s, command, args);
- return p->seq;
+ if (p->seq != DAP_NO_SEQ)
+  return p->seq;
+ dap_pending_release(p);           /* clears the slot, its seq with it */
+ return DAP_NO_SEQ;
 }
 
 /**
@@ -884,17 +940,21 @@ static void dap_resume_refused(e_dap_session *s)
  * @s: the session.
  *
  * The reading side stays open, so the adapter's exit is seen as the end of
- * its output.
+ * its output.  While requests still wait for the adapter to read them (the
+ * `disconnect` among them) the side stays open too, so they are not cut
+ * off; the session's close takes it then.
  */
 static void dap_close_write_side(e_dap_session *s)
 {
+ if (wpe_fd_write_pending(dap_wfd(s)) > 0)
+  return;
  if (s->sock >= 0)
  {
   shutdown(s->sock, SHUT_WR);
   return;
  }
  if (s->in_fd >= 0)
-  close(s->in_fd);
+  wpe_fd_close(s->in_fd);
  s->in_fd = DAP_NO_FD;
 }
 
@@ -1428,7 +1488,9 @@ const char *e_dap_request_waited(const e_dap_session *s, long *secs)
  * @s: the session; @p: a free slot; @command, @args: the request (@args is
  * taken over); @file, @lines, @n: for a setBreakpoints, what it asks for
  * (taken over), else NULL, NULL, 0.
- * Return: E_D_SEND_OK.
+ * Return: E_D_SEND_OK, or E_D_SEND_GONE when the adapter could not be
+ * given the request: the slot is freed and @fn is never called, so the
+ * caller ends the request at once instead of waiting for its deadline.
  */
 static int dap_call_send(e_dap_session *s, dap_pending *p, const char *command,
                          struct json_object *args, char *file, int *lines,
@@ -1443,6 +1505,11 @@ static int dap_call_send(e_dap_session *s, dap_pending *p, const char *command,
  snprintf(p->cmd, sizeof p->cmd, "%s", command);
  p->sent_ms = dap_now(s);
  p->seq = dap_send(s, command, args);
+ if (p->seq == DAP_NO_SEQ)
+ {
+  dap_pending_release(p);
+  return E_D_SEND_GONE;
+ }
  dap_calls_time(s);
  return E_D_SEND_OK;
 }
@@ -1454,6 +1521,8 @@ static int dap_call_send(e_dap_session *s, dap_pending *p, const char *command,
 static int dap_call_refused(const e_dap_session *s, const char *command)
 {
  if (!s || s->eof || s->ended || dap_wfd((e_dap_session *)s) < 0)
+  return E_D_SEND_GONE;
+ if (s->input_lost)
   return E_D_SEND_GONE;
  if (s->run == DAP_RUN_DISCONNECTING)
   return E_D_SEND_GONE;
@@ -1875,7 +1944,6 @@ static int dap_spawn_stdio(e_dap_session *s, char *const argv[],
  dap_adapter_spec(&spec, argv, cwd);
  spec.io = WPE_CHILD_IO_PIPES;
  spec.stderr_inherit = 1;
- spec.blocking_input = 1;
  if (wpe_child_start(&spec, &s->adapter, dap_adapter_ended, s) != 0)
   return -1;
  s->in_fd = s->adapter.in_fd;
@@ -2222,6 +2290,7 @@ static int dap_start_accept(e_dap_session *s)
  s->listen_fd = DAP_NO_FD;
  if (s->sock < 0)
   return dap_start_fail(s);
+ dap_socket_nonblocking(s->sock);
  dap_send_initialize(s);
  return dap_start_status(s);
 }
@@ -2593,6 +2662,7 @@ e_dap_session *e_dap_start_tcp(const char *host, int port, const char *program,
  if (connect(fd, (struct sockaddr *)&a, sizeof(a)) < 0)
  {  close(fd);  e_dap_free(s);  return NULL;  }
  s->sock = fd;
+ dap_socket_nonblocking(fd);
  dap_send_initialize(s);
  return s;
 }
@@ -2908,16 +2978,19 @@ int e_dap_disconnect(e_dap_session *s)
   return -1;
  if (s->run == DAP_RUN_DISCONNECTING)
   return 0;
- if (s->eof || s->step < DAP_STEP_OPENED || dap_wfd(s) < 0)
+ if (s->eof || s->step < DAP_STEP_OPENED || dap_wfd(s) < 0 || s->input_lost)
   return -1;
  s->run = DAP_RUN_DISCONNECTING;
  s->pause_pending = 0;
  if (dap_send_owned(s, "disconnect", dap_disconnect_args(),
                     DAP_REQ_DISCONNECT) != DAP_NO_SEQ)
   return 0;
+ if (s->input_lost)
+  return -1;
  /* No slot for its answer: sent all the same, and the adapter's exit (the
     end of its output) ends the wait instead. */
- dap_send(s, "disconnect", dap_disconnect_args());
+ if (dap_send(s, "disconnect", dap_disconnect_args()) == DAP_NO_SEQ)
+  return -1;
  dap_close_write_side(s);
  return 0;
 }
@@ -2947,7 +3020,8 @@ void e_dap_hang_up(e_dap_session *s)
 }
 
 /**
- * dap_close_fds - Close every descriptor the session holds.
+ * dap_close_fds - Close every descriptor the session holds; requests still
+ * queued for the adapter go with its socket or its input.
  * @s: the session.
  */
 static void dap_close_fds(e_dap_session *s)
@@ -2955,9 +3029,9 @@ static void dap_close_fds(e_dap_session *s)
  if (s->listen_fd >= 0)
   close(s->listen_fd);
  if (s->sock >= 0)
-  close(s->sock);
+  wpe_fd_close(s->sock);
  if (s->in_fd >= 0)
-  close(s->in_fd);
+  wpe_fd_close(s->in_fd);
  if (s->out_fd >= 0)
   close(s->out_fd);
  if (s->pty_master >= 0)

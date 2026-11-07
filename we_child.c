@@ -878,24 +878,6 @@ static void wpe_child_take_ends(WpeChild *c, int (*p)[2])
 }
 
 /**
- * wpe_child_input_blocking - The editor's end of the child's stdin goes
- * back to blocking, for a writer that sends each message whole with plain
- * writes: a message longer than the pipe holds then waits for the child to
- * read, instead of being cut off.
- * @c: the child.
- */
-static void wpe_child_input_blocking(WpeChild *c)
-{
- int fl;
-
- if (c->in_fd == WPE_CHILD_NO_FD)
-  return;
- fl = fcntl(c->in_fd, F_GETFL, 0);
- if (fl >= 0)
-  fcntl(c->in_fd, F_SETFL, fl & ~O_NONBLOCK);
-}
-
-/**
  * wpe_child_take_pty - In the parent: the editor's end of the pty.
  * @c: the child; @t: the pty, its slave closed afterwards.
  */
@@ -1031,8 +1013,6 @@ int wpe_child_start(const WpeChildSpec *spec, WpeChild *c,
   setpgid(pid, pid);   /* both sides: the group exists before any signal */
  wpe_child_take_ends(c, p);
  wpe_child_take_pty(c, &t);
- if (spec->blocking_input)
-  wpe_child_input_blocking(c);
  w = wpe_child_slot_take(pid);
  if (!w)
  {

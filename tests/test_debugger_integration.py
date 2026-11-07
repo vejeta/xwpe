@@ -72,6 +72,8 @@ GDB_STAND_IN_ROWS = frozenset((
     "test_gdb_watch_after_an_unknown_name_shows_its_own_value",
     "test_a_refused_step_stays_said_while_the_program_prints",
     "test_a_step_while_the_program_runs_is_refused_and_the_session_keeps_its_place",
+    "test_typing_goes_on_when_gdb_stops_reading",
+    "test_a_command_typed_while_the_pipe_is_full_is_sent_whole_when_the_child_reads_again",
 ))
 # Rows that choose the interface themselves (the fall-back to the line
 # interface for an old gdb asks for MI and gets the line interface).
@@ -9714,6 +9716,219 @@ def test_gdb_keys_reach_the_editor_while_it_answers(tmp_path):
                          STEP_TIMEOUT_S), \
             "once gdb answers the stop should be marked (mark on %s):\n%s" \
             % (_mark_line(w), _screen(w))
+
+
+# ---- a debugger that stops reading its input: the editor keeps its keys ----
+#
+# tests/stubs/gdb (XWPE_STUB_FILL_ON_SIGNAL=1) and tests/stubs/full-pipe's
+# lldb-dap fill their own input pipe on SIGUSR1 and read nothing more until
+# their release pipe is written.  The row fills the pipe at a stop, so the
+# next command the user gives finds it full, as behind a debugger stopped by
+# the user or an adapter that is wedged.
+
+GDB_STUB_PID = "gdb-stub.pid"
+FULL_PIPE_STUBS_DIR = os.path.join(STUBS_DIR, "full-pipe")
+DAP_STUB_LOG = "dap-stub.log"
+DAP_STUB_RELEASE = "dap-stub.release"
+DAP_STUB_PID = "dap-stub.pid"
+NOT_READING = "is not reading its input"
+STALL_SAYS_QUIT = "Debug > Quit ends it"
+DEBUG_MENU_ITEM = "Run/Continue"
+MENU_OPENS_S = 5
+STALL_SAID_S = 15                 # the writer's 5 s bound plus the loop's slack
+FULL_WAIT_S = 10
+RELEASE_LINE = b"go\n"
+
+
+def _stub_pid(tmp_path, name):
+    try:
+        with open(str(tmp_path / name)) as fh:
+            return int(fh.read().strip() or 0)
+    except (OSError, ValueError):
+        return 0
+
+
+def _stub_log(tmp_path, name):
+    try:
+        with open(str(tmp_path / name)) as fh:
+            return fh.read()
+    except OSError:
+        return ""
+
+
+def _fill_the_stubs_pipe(w, tmp_path, pid_name, log_name):
+    """Have the stub fill its input pipe and stop reading; wait until it
+    says so."""
+    pid = _stub_pid(tmp_path, pid_name)
+    assert pid > 0, "the stub did not write its pid"
+    os.kill(pid, signal.SIGUSR1)
+    assert _wait_for(w, lambda: "FULL " in _stub_log(tmp_path, log_name),
+                     FULL_WAIT_S), \
+        "the stub should have filled its pipe:\n%s" \
+        % _stub_log(tmp_path, log_name)
+
+
+def _release_the_stub(tmp_path, release_name):
+    """Let the stub read again; nothing when it is gone (a fifo nobody
+    reads would block the open)."""
+    try:
+        fd = os.open(str(tmp_path / release_name),
+                     os.O_WRONLY | os.O_NONBLOCK)
+    except OSError:
+        return
+    try:
+        os.write(fd, RELEASE_LINE)
+    finally:
+        os.close(fd)
+
+
+def _need_a_pipe_the_stub_can_fill():
+    """The stubs fill their own input by opening /proc/self/fd/0 for
+    writing, which only Linux allows on a pipe's read end."""
+    if not sys.platform.startswith("linux"):
+        pytest.skip("the full-pipe stubs reopen their stdin through "
+                    "/proc/self/fd/0, Linux only")
+
+
+def _gdb_full_pipe_env():
+    return _gdb_stub_env("", extra={"XWPE_STUB_FILL_ON_SIGNAL": "1"})
+
+
+def _gdb_full_pipe_at_a_stop(w, tmp_path):
+    """Stop at the breakpoint, then have gdb stop reading with its pipe
+    full."""
+    _go_to_line(w, GDB_STEPS_BREAK_LINE)
+    w.key(CTRL_G, "b", delay=0.5)
+    w.key(CTRL_G, "r", delay=1.0)
+    assert _wait_for(w, lambda: _mark_line(w) == GDB_STEPS_BREAK_LINE,
+                     START_TIMEOUT_S), \
+        "the stop should be marked (mark on %s):\n%s" \
+        % (_mark_line(w), _screen(w))
+    _fill_the_stubs_pipe(w, tmp_path, GDB_STUB_PID, GDB_STUB_LOG)
+
+
+def _the_debug_menu_opens(w):
+    """Alt-D opens the Debug menu and Esc closes it: the editor is taking
+    keys, not sitting inside a write to the debugger."""
+    w.key(ALT.DEBUG, delay=0.6)
+    opened = _wait_for(w, lambda: DEBUG_MENU_ITEM in _screen(w), MENU_OPENS_S)
+    w.key(ESC, delay=0.5)
+    return opened
+
+
+def _commands_after_the_release(tmp_path):
+    """The commands the stub passed on to gdb once it read again."""
+    log = _gdb_stub_log(tmp_path)
+    after = log.split("RELEASE by the test", 1)
+    if len(after) < 2:
+        return []
+    return [line[len("CMD "):] for line in after[1].splitlines()
+            if line.startswith("CMD ")]
+
+
+# @scenario SC-debug-77
+def test_typing_goes_on_when_gdb_stops_reading(tmp_path):
+    """gdb stops reading with its input pipe full, and the user presses F8:
+    the editor does not wait inside the write.  The status row says gdb is
+    not reading its input and that Debug > Quit ends the session, and Quit
+    does end it, with nothing of the session left."""
+    _need("gcc", "gdb")
+    _need_a_pipe_the_stub_can_fill()
+    try:
+        with WpeSession(str(tmp_path), GDB_STEPS_PROG, filename="p.c",
+                        wait=1.5, env_extra=_gdb_full_pipe_env()) as w:
+            _gdb_full_pipe_at_a_stop(w, tmp_path)
+            w.key(F8, delay=0.3)
+            assert _the_debug_menu_opens(w), \
+                "the editor should take keys while gdb does not read:\n%s" \
+                % _screen(w)
+            assert _status_row_says(w, "gdb " + NOT_READING, STALL_SAID_S), \
+                "the status row should say gdb is not reading:\n%s" \
+                % _screen(w)
+            assert STALL_SAYS_QUIT in _bottom_bar(w), _screen(w)
+            _quit_and_see_the_session_gone(w)
+    finally:
+        _release_the_stub(tmp_path, GDB_STUB_RELEASE)
+
+
+# @scenario SC-debug-59
+def test_a_command_typed_while_the_pipe_is_full_is_sent_whole_when_the_child_reads_again(
+        tmp_path):
+    """F8 while gdb's input pipe is full waits on the editor's queue; once
+    gdb reads again the step reaches it whole and in order, the next line
+    is marked, and the status row takes the stall line back."""
+    _need("gcc", "gdb")
+    _need_a_pipe_the_stub_can_fill()
+    try:
+        with WpeSession(str(tmp_path), GDB_STEPS_PROG, filename="p.c",
+                        wait=1.5, env_extra=_gdb_full_pipe_env()) as w:
+            _gdb_full_pipe_at_a_stop(w, tmp_path)
+            w.key(F8, delay=0.3)
+            assert _status_row_says(w, "gdb " + NOT_READING, STALL_SAID_S), \
+                "the status row should say gdb is not reading:\n%s" \
+                % _screen(w)
+            _release_the_stub(tmp_path, GDB_STUB_RELEASE)
+            assert _wait_for(w, lambda: _mark_line(w) == GDB_STEPS_BREAK_LINE + 1,
+                             STEP_TIMEOUT_S), \
+                "the step should land once gdb reads (mark on %s, stub " \
+                "log:\n%s):\n%s" % (_mark_line(w), _gdb_stub_log(tmp_path),
+                                    _screen(w))
+            sent = _commands_after_the_release(tmp_path)
+            assert sent[:1] == ["n"], \
+                "gdb should read the step first and whole: %r" % sent
+            assert NOT_READING not in _bottom_bar(w), \
+                "the stall line should be gone once gdb reads:\n%s" \
+                % _screen(w)
+    finally:
+        _release_the_stub(tmp_path, GDB_STUB_RELEASE)
+
+
+def _dap_full_pipe_env():
+    return {"PATH": FULL_PIPE_STUBS_DIR + ":" + os.environ.get("PATH", ""),
+            "XWPE_STUB_REAL_ADAPTER": shutil.which("lldb-dap") or "",
+            "XWPE_DAP_ADAPTER": "lldb"}
+
+
+# @scenario SC-debug-77
+def test_typing_goes_on_when_the_debug_adapter_stops_reading(tmp_path):
+    """lldb-dap stops reading with its input pipe full, and the user
+    presses F8: the editor goes on, the status row names the adapter as not
+    reading its input, and once it reads again the `next` reaches it whole
+    and the step lands on the next line."""
+    if not tool_usable("rustc"):
+        pytest.skip("no rustc")
+    _need("lldb-dap")
+    _need_a_pipe_the_stub_can_fill()
+    try:
+        with WpeSession(str(tmp_path), RUST_PROG, filename="main.rs",
+                        wait=2.0, env_extra=_dap_full_pipe_env()) as w:
+            _move_down(w, RUST_ONCE_LINE - 1)
+            w.key(CTRL_G, "b", delay=0.8)
+            w.key(CTRL_G, "r", delay=1.0)
+            assert _wait_for(w, lambda: _mark_line(w) == RUST_ONCE_LINE,
+                             RUST_START_TIMEOUT_S), _screen(w)
+            _fill_the_stubs_pipe(w, tmp_path, DAP_STUB_PID, DAP_STUB_LOG)
+            w.key(F8, delay=0.3)
+            assert _the_debug_menu_opens(w), \
+                "the editor should take keys while the adapter does not " \
+                "read:\n%s" % _screen(w)
+            assert _status_row_says(w, "lldb-dap " + NOT_READING,
+                                    STALL_SAID_S), \
+                "the status row should say the adapter is not reading:\n%s" \
+                % _screen(w)
+            _release_the_stub(tmp_path, DAP_STUB_RELEASE)
+            assert _wait_for(w, lambda: _mark_line(w) == RUST_ONCE_LINE + 1,
+                             RUST_START_TIMEOUT_S), \
+                "the step should land once the adapter reads (mark on %s, " \
+                "stub log:\n%s):\n%s" % (_mark_line(w),
+                                         _stub_log(tmp_path, DAP_STUB_LOG),
+                                         _screen(w))
+            after = _stub_log(tmp_path, DAP_STUB_LOG).split(
+                "RELEASE by the test", 1)[-1]
+            assert "REQ next" in after.splitlines()[:3], \
+                "the adapter should read the step first: %r" % after
+    finally:
+        _release_the_stub(tmp_path, DAP_STUB_RELEASE)
 
 
 ANSWER_ENDS = {

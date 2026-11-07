@@ -10,6 +10,7 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <limits.h>
 #include <poll.h>
 #include <signal.h>
@@ -1146,6 +1147,45 @@ static void test_refused_continue_is_a_stop_where_it_was(void)
  end_session(s, conn, lfd, &rd);
 }
 
+/**
+ * transport_would_block - Make the session's transport blocking, so the
+ * loop's writer refuses every request for it, as it does for an adapter
+ * whose queue is full.
+ */
+static void transport_would_block(e_dap_session *s)
+{
+ int fd = e_dap_fd(s);
+
+ fcntl(fd, F_SETFL, fcntl(fd, F_GETFL, 0) & ~O_NONBLOCK);
+}
+
+/* A request the adapter could not be given is never taken for one it got:
+   the run does not start, the breakpoints are not waited for, nothing is
+   left in the table.  @scenario SC-debug-78 */
+static void test_a_request_the_adapter_cannot_take_is_not_sent(void)
+{
+ static const int lines[] = { 6 };
+ e_dap_reader rd;
+ e_dap_host host;
+ struct seen r;
+ e_dap_session *s;
+ int conn = -1, lfd = -1;
+
+ e_dap_reader_init(&rd);
+ seen_host(&host, &r);
+ s = stopped_session(&host, &conn, &lfd, &rd);
+ if (!s)
+  return;
+ transport_would_block(s);
+ CHECK(e_dap_resume(s, "continue") == -1,
+       "a continue the adapter could not take was reported sent");
+ CHECK(!e_dap_running(s), "the program counts as running on an unsent continue");
+ CHECK(e_dap_set_file_breakpoints_async(s, TEST_FILE, lines, 1) == -1,
+       "breakpoints the adapter could not take were reported sent");
+ CHECK(e_dap_pause(s) == -1, "a pause was sent to a stopped program");
+ end_session(s, conn, lfd, &rd);
+}
+
 /* A watch is evaluated in the frame the stop was located in, not frame 0.
    @scenario SC-debug-10 */
 static void test_evaluate_names_the_stopped_frame(void)
@@ -2213,6 +2253,7 @@ int main(int argc, char **argv)
  test_stop_read_with_the_starts_last_answer();
  test_answer_read_with_an_evaluate_answer();
  test_refused_continue_is_a_stop_where_it_was();
+ test_a_request_the_adapter_cannot_take_is_not_sent();
  test_evaluate_names_the_stopped_frame();
  test_pump_before_the_start_is_ready_never_blocks();
  test_eof_in_the_middle_of_a_message_ends_the_pump();

@@ -286,9 +286,10 @@ static void wpe_library_threads_start(void)
 #endif
 
 /**
- * wpe_child_say_on_status_row - Where the children's owner speaks: the
- * status row of the window on top, so the user reads why a program did not
- * start, or that one did not end.
+ * wpe_child_say_on_status_row - Where the children's owner and the loop's
+ * writer speak: the status row of the window on top, so the user reads why
+ * a program did not start, that one did not end, or that one stopped
+ * reading its input.
  * @line: the line.
  */
 static void wpe_child_say_on_status_row(const char *line)
@@ -451,17 +452,17 @@ int e_ini_unix(int *argc, char **argv)
  act.sa_handler = SIG_IGN;
  sigaction(SIGINT, &act, NULL);
  /* Ignore SIGPIPE process-wide: writes to a child that has exited (a crashed
-    or fake LSP server, a debugger that quit) return -1 with errno=EPIPE and
-    are recovered by the caller (lsp_write_all returns -1, the fd loop reaps
-    the dead session).  Without this xwpe gets SIGPIPE-killed -- on macOS the
-    default action is termination, which made test_dead_server_does_not_spin
-    show up as the editor itself dying instead of cleanly tearing the session
-    down.  e_d_quit_basic kept its local SIG_IGN for the same reason on the
-    debugger path; this hoists it to the whole process. */
+    or fake LSP server, a debugger that quit) return -1 with errno=EPIPE,
+    which the loop's writer reports as the child's input closed (the fd loop
+    reaps the dead session).  Without this xwpe gets SIGPIPE-killed -- on
+    macOS the default action is termination, which made
+    test_dead_server_does_not_spin show up as the editor itself dying
+    instead of cleanly tearing the session down. */
  sigaction(SIGPIPE, &act, NULL);
  /* Catch SIGCHLD; its wake pipe exists before the handler can write to it. */
  WpeChildWakeOpen();
  wpe_child_say_set(wpe_child_say_on_status_row);
+ wpe_fd_write_say_set(wpe_child_say_on_status_row);
  act.sa_handler = WpeSignalChild;
  act.sa_flags = SA_NOCLDSTOP;
  sigaction(SIGCHLD, &act, NULL);

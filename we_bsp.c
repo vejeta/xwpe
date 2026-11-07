@@ -18,6 +18,7 @@
 #include "we_bsp.h"
 #include "we_child.h"
 #include "we_dap_proto.h"        /* e_dap_reader: shared Content-Length framing */
+#include "we_fdloop.h"           /* wpe_fd_write: the server's input, queued */
 
 /* Per-request ceilings.  The first compile may pull the Scala toolchain via
    coursier, so allow it to be slow; the wait is on poll() (event-driven), not a
@@ -32,25 +33,33 @@ struct e_bsp_session {
  int          out_fd;         /* read responses from the server's stdout   */
  e_dap_reader rd;             /* incoming frame reassembly (reused from DAP)*/
  int          id;             /* JSON-RPC id counter                       */
+ int          input_lost;     /* a message could not be handed to it       */
 };
 
 /* ---- transport --------------------------------------------------------- */
 
-static int bsp_write_all(int fd, const char *buf, size_t n)
+/**
+ * bsp_write_all - Hand one whole message to the build server.
+ * @b: the session; @buf, @n: the framed message.
+ *
+ * Written now as far as the server reads; the rest waits on the loop's queue
+ * and the message wait writes it on, so the editor never sits inside a write
+ * to a server that stopped reading.  A message it can no longer be given
+ * ends the handshake with "BSP send failed" instead of an answer that cannot
+ * come.
+ * Return: 0 when the message is on its way, else -1.
+ */
+static int bsp_write_all(e_bsp_session *b, const char *buf, size_t n)
 {
- size_t off = 0;
- while (off < n)
- {
-  ssize_t w = write(fd, buf + off, n - off);
-  if (w < 0)
-  {
-   if (errno == EINTR)
-    continue;
-   return -1;
-  }
-  off += (size_t)w;
- }
- return 0;
+ int r;
+
+ if (b->input_lost)
+  return -1;
+ r = wpe_fd_write(b->in_fd, buf, n, BSP_LAUNCHER_WHAT, NULL);
+ if (r == WPE_FD_WRITE_SENT || r == WPE_FD_WRITE_QUEUED)
+  return 0;
+ b->input_lost = 1;
+ return -1;
 }
 
 /* Send a JSON-RPC message: id < 0 means a notification (no id field).  Takes
@@ -78,10 +87,10 @@ static int bsp_send(e_bsp_session *b, int id, const char *method,
  if (!frame)
  {  json_object_put(msg);  return -1;  }
  rc = snprintf(frame, flen, "Content-Length: %zu\r\n\r\n%s", blen, body);
- bsp_write_all(b->in_fd, frame, (size_t)rc);
+ rc = bsp_write_all(b, frame, (size_t)rc);
  free(frame);
  json_object_put(msg);
- return 0;
+ return rc;
 }
 
 static long bsp_now_ms(void)
@@ -91,27 +100,71 @@ static long bsp_now_ms(void)
  return (long)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
 }
 
+/* The two descriptors a message wait watches: the server's output, and its
+   input while messages for it are still queued. */
+#define BSP_WAIT_OUT 0
+#define BSP_WAIT_IN  1
+
+/**
+ * bsp_wait_set - Fill the poll() set of a message wait.
+ * @b: the session; @p: room for two entries.
+ * Return: the entries used.
+ *
+ * The request waited on may still be queued behind a server that read
+ * slowly; the wait writes it on as the server takes it, so its answer can
+ * come.
+ */
+static int bsp_wait_set(e_bsp_session *b, struct pollfd *p)
+{
+ p[BSP_WAIT_OUT].fd = b->out_fd;
+ p[BSP_WAIT_OUT].events = POLLIN;
+ p[BSP_WAIT_OUT].revents = 0;
+ if (wpe_fd_write_pending(b->in_fd) <= 0)
+  return 1;
+ p[BSP_WAIT_IN].fd = b->in_fd;
+ p[BSP_WAIT_IN].events = POLLOUT;
+ p[BSP_WAIT_IN].revents = 0;
+ return 2;
+}
+
+/**
+ * bsp_wait_flush - Write on what the server took of its queue; a server
+ * that closed its input ends the wait.
+ */
+static void bsp_wait_flush(e_bsp_session *b)
+{
+ int r = wpe_fd_write_flush(b->in_fd);
+
+ if (r == WPE_FD_WRITE_CLOSED || r == WPE_FD_WRITE_REFUSED)
+  b->input_lost = 1;
+}
+
 /* Block (on poll) until one complete message arrives or the timeout elapses. */
 static struct json_object *bsp_read_message(e_bsp_session *b, int timeout_ms)
 {
  long deadline = bsp_now_ms() + timeout_ms;
  for (;;)
  {
-  struct pollfd p;
+  struct pollfd p[2];
   char buf[4096];
   ssize_t n;
-  int err = 0, left;
+  int err = 0, left, np;
   struct json_object *m = e_dap_reader_pop(&b->rd, &err);
 
   if (m)
    return m;
+  if (b->input_lost)
+   return NULL;
   left = (int)(deadline - bsp_now_ms());
   if (left <= 0)
    return NULL;
-  p.fd = b->out_fd;
-  p.events = POLLIN;
-  if (poll(&p, 1, left) <= 0)
+  np = bsp_wait_set(b, p);
+  if (poll(p, np, left) <= 0)
    return NULL;
+  if (np > BSP_WAIT_IN && p[BSP_WAIT_IN].revents)
+   bsp_wait_flush(b);
+  if (!p[BSP_WAIT_OUT].revents)
+   continue;
   n = read(b->out_fd, buf, sizeof(buf));
   if (n <= 0)
   {
@@ -252,7 +305,6 @@ static int bsp_spawn(e_bsp_session *b, char **argv, const char *workdir)
  spec.io = WPE_CHILD_IO_PIPES;
  spec.group = WPE_CHILD_OWN_SESSION;
  spec.stderr_to_null = 1;
- spec.blocking_input = 1;
  spec.signal_leader_only = 1;
  spec.what = BSP_LAUNCHER_WHAT;
  if (wpe_child_start(&spec, &b->launcher, NULL, NULL) != 0)
@@ -557,7 +609,7 @@ void e_bsp_close(e_bsp_session *b)
  if (!b)
   return;
  if (b->in_fd >= 0)
-  close(b->in_fd);
+  wpe_fd_close(b->in_fd);          /* what still waits for it goes too */
  if (b->out_fd >= 0)
   close(b->out_fd);
  wpe_child_end_detached(&b->launcher, SIGTERM);

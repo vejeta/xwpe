@@ -582,3 +582,12 @@ Because the server is an external program, the heavy machinery (for Scala: a JVM
 the build server) lives outside xwpe -- the editor binary itself gains only a few
 kilobytes of protocol code.  See @file{HACKING-LSP.md} in the source tree for the
 architecture.
+
+@cindex language server, not reading its input
+A server busy indexing may stop reading what xwpe sends it.  You keep
+typing: the message waits in xwpe and goes out whole once the server reads
+again.  After 5 seconds with nothing taken the status row says
+@samp{the language server is not reading its input (N bytes waiting)}.  A
+server that closes its input, or lets several megabytes pile up behind it,
+is ended, and Messages says @samp{Language server stopped reading its
+input; it was ended. Alt-Q restarts it.}

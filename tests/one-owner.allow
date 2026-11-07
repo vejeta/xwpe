@@ -39,9 +39,6 @@ we_xterm.o poll 1 P9o the paste wait for SelectionNotify
 
 # children: started, signalled and reaped only by we_child.c.
 we_unix.o waitpid 1 keep the SIGCHLD handler reaps, and hands each child to we_child.c
-we_lsp.o blocking_input 1 P9j whole-message writes on the server's stdin, until queued on the loop
-we_bsp.o blocking_input 1 P9j the same on the build server's launcher
-we_dap.o blocking_input 1 P9j the same on a stdio adapter
 we_unix.o kill 2 P9q the crash/term handlers' build group and the debugger at exit
 we_prog.o fork 1 P9r Run with a pty (the build moved to we_child.c)
 we_prog.o openpty 1 P9r
@@ -80,3 +77,12 @@ we_render_cairo.o popen 1 P9n
 we_render_cairo.o pclose 2 P9n
 we_fl_fkt.o system 2 P9n
 we_fl_unix.o system 2 P9n
+
+# writers: bytes for a child go through wpe_fd_write (we_fdloop.c).
+we_debug.o write 1 keep the forked VM's own error line before exec, where the editor's loop does not run
+we_edit.o write 1 P9r Run's typed keys, until Run's terminal is non-blocking and queued on the loop
+we_ai_host.o write 4 P9s the hosted engine's turn, permission answers and interrupt
+we_ai.o write 3 P9s the prompt to the command-line backend moves; the forked child's reply and the temporary file stay
+we_ai_http.o write 1 P9l a server's socket, not a child: its own POLLOUT wait moves under wpe_fd_wait_for
+we_wayland.o write 1 P9o the clipboard pipe
+we_ai.o fdopen 1 keep the API key file, not a child

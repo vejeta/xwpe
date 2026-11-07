@@ -14,22 +14,49 @@
 
 int e_undo_sw = 0, e_redo_sw = 0;
 
-void e_pty_write_utf8(int fd, int cp)
+int e_codepoint_to_utf8(int cp, unsigned char *out);
+
+/* The byte a terminal reads for Backspace when nobody said otherwise. */
+#define E_PTY_DEL_BYTE 127
+
+/**
+ * e_pty_key_bytes - What a program reading its terminal gets for a key
+ * typed for it: a line end for Enter, the erase byte for Backspace, the
+ * character in UTF-8 for text, nothing for any other key.
+ * @key: the key; @buf: room for E_PTY_KEY_BYTES_MAX bytes.
+ * Return: the bytes put in @buf.
+ *
+ * One encoding for Run's terminal and the debugged program's, so a program
+ * reads the same keys whichever way it was started.
+ */
+int e_pty_key_bytes(int key, unsigned char *buf)
 {
- unsigned char buf[4];
- int len = e_codepoint_to_utf8(cp, buf);
- write(fd, buf, len);
+ if (key == WPE_CR)
+ {
+  buf[0] = '\n';
+  return 1;
+ }
+ if (key == WPE_DC)
+ {
+  buf[0] = E_PTY_DEL_BYTE;
+  return 1;
+ }
+ if (key >= E_PTY_FIRST_TEXT_KEY)
+  return e_codepoint_to_utf8(key, buf);
+ return 0;
 }
 
+/**
+ * e_pty_send_key - Type @key into Run's terminal.
+ * @fd: the terminal's master.
+ */
 void e_pty_send_key(int fd, int key)
 {
- char ch;
- if (key == WPE_CR)
- { ch = '\n'; write(fd, &ch, 1); }
- else if (key == WPE_DC)
- { ch = 127; write(fd, &ch, 1); }
- else if (key >= 32)
-  e_pty_write_utf8(fd, key);
+ unsigned char buf[E_PTY_KEY_BYTES_MAX];
+ int len = e_pty_key_bytes(key, buf);
+
+ if (len > 0)
+  write(fd, buf, len);
 }
 
 /* Key codes below this are always text; from here up a key is text only when
@@ -80,20 +107,11 @@ static int e_key_cancels_answer(int c)
 
 static int e_debug_console_input(int c, FENSTER *f)
 {
- extern int e_d_pty_master;
-
  if (!e_d_run_takes_typed_text())
   return 0;
  if (e_key_is_program_text(c))
  {
-  if (c == WPE_DC)
-  {
-   extern int e_d_pty_verase(void);
-   char ch = e_d_pty_verase();
-   write(e_d_pty_master, &ch, 1);
-  }
-  else
-   e_pty_send_key(e_d_pty_master, c);
+  e_d_pty_type(c);
   return 1;
  }
  return 0;

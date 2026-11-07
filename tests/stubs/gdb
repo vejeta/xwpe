@@ -28,6 +28,16 @@ writes that prompt, so when the editor runs again both are waiting for it
 at once, which is what an editor busy drawing sees.  For this gdb's output
 goes through the stub, so it can see the prompt; its error stream still
 goes straight to the editor.  Logged as "BUSY <line>".
+
+XWPE_STUB_FILL_ON_SIGNAL=1 plays a gdb that stops reading its input with
+the pipe full: the stub writes its PID to $HOME/gdb-stub.pid, and on
+SIGUSR1 it fills its own input pipe to the brim with NUL bytes (through
+/proc/self/fd/0, Linux) and reads nothing more until the test writes to the
+release pipe.  The editor's next command then finds the pipe full, as it
+would behind a gdb stopped by the user.  After the release the NULs are
+dropped as they are read (no command holds one), so every command behind
+them reaches gdb as the editor sent it.  Logged as "FULL <bytes>" and
+"RELEASE by the test"; the "CMD" lines follow.
 """
 import os
 import select
@@ -43,6 +53,11 @@ RELEASE = os.path.join(HOME, "gdb-stub.release")
 STALL = os.environ.get("XWPE_STUB_STALL", "")
 STALL_NTH = int(os.environ.get("XWPE_STUB_STALL_NTH", "1") or "1")
 BUSY = os.environ.get("XWPE_STUB_BUSY_EDITOR", "")
+FILL = os.environ.get("XWPE_STUB_FILL_ON_SIGNAL", "") == "1"
+PIDFILE = os.path.join(HOME, "gdb-stub.pid")
+FILL_BYTE = b"\0"
+FILL_CHUNK = 4096
+OWN_INPUT = "/proc/self/fd/0"
 GDB_PROMPT = b"(gdb) "
 READ_MAX = 65536
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -83,9 +98,18 @@ class Lines:
     def __init__(self, fd):
         self.fd = fd
         self.buf = b""
+        self.fill_left = 0
 
     def held(self):
         return b"\n" in self.buf
+
+    def drop_fill(self, chunk):
+        """The NULs the stub filled its pipe with are not the editor's."""
+        if not self.fill_left:
+            return chunk
+        kept = chunk.replace(FILL_BYTE, b"")
+        self.fill_left = max(0, self.fill_left - (len(chunk) - len(kept)))
+        return kept
 
     def readline(self):
         while b"\n" not in self.buf:
@@ -93,7 +117,7 @@ class Lines:
             if not chunk:
                 rest, self.buf = self.buf, b""
                 return rest
-            self.buf += chunk
+            self.buf += self.drop_fill(chunk)
         line, self.buf = self.buf.split(b"\n", 1)
         return line + b"\n"
 
@@ -127,6 +151,48 @@ def wait_for_go(child, held, release_fd, lines):
 def write_all(fd, data):
     while data:
         data = data[os.write(fd, data):]
+
+
+def fill_own_input():
+    """Fill the stub's input pipe until it takes no more byte.
+    Return: the bytes written."""
+    fd = os.open(OWN_INPUT, os.O_WRONLY | os.O_NONBLOCK)
+    total = 0
+    for size in (FILL_CHUNK, 1):
+        try:
+            while True:
+                total += os.write(fd, FILL_BYTE * size)
+        except BlockingIOError:
+            pass
+    os.close(fd)
+    return total
+
+
+class Hold(Exception):
+    """SIGUSR1 came: the pipe is full, and the stub stops reading."""
+
+    def __init__(self, filled):
+        Exception.__init__(self)
+        self.filled = filled
+
+
+def on_fill_signal(signum, frame):
+    raise Hold(fill_own_input())
+
+
+def hold_until_release(filled, release_fd, lines):
+    """Read nothing until the test lets the stub read again; then drop the
+    @filled NULs as they come."""
+    note("FULL %d" % filled)
+    select.select([release_fd], [], [])
+    os.read(release_fd, 4096)
+    note("RELEASE by the test")
+    lines.fill_left = filled
+
+
+def note_pid():
+    with open(PIDFILE, "w") as fh:
+        fh.write(str(os.getpid()))
 
 
 class BusyEditor:
@@ -199,10 +265,17 @@ def main():
                   lambda signum, frame: child.kill() or sys.exit(0))
     release_fd = make_release_pipe()
     lines = Lines(sys.stdin.fileno())
+    if FILL:
+        signal.signal(signal.SIGUSR1, on_fill_signal)
+        note_pid()
     seen = 0
     pending = None
     while True:
-        line = pending if pending is not None else lines.readline()
+        try:
+            line = pending if pending is not None else lines.readline()
+        except Hold as hold:
+            hold_until_release(hold.filled, release_fd, lines)
+            continue
         pending = None
         if not line:
             break

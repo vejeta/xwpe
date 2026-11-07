@@ -720,8 +720,13 @@ int e_clear_desk(FENSTER *f);
 void e_mouse_tracking_enable(void);
 void e_mouse_tracking_disable(void);
 void e_mouse_flush(void);
-void e_pty_write_utf8(int fd, int cp);
+/* The most bytes one key typed for a program becomes (UTF-8's longest). */
+#define E_PTY_KEY_BYTES_MAX 4
+/* Keys below this are control keys, not text for the program. */
+#define E_PTY_FIRST_TEXT_KEY 32
+int e_pty_key_bytes(int key, unsigned char *buf);
 void e_pty_send_key(int fd, int key);
+int e_d_pty_type(int key);
 void e_free_all_pics(ECNT *cn);
 void e_repaint_desk_nopic(FENSTER *f);
 void e_relayout_windows(ECNT *cn, int old_scol, int old_slns);
