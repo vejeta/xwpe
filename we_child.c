@@ -1,0 +1,1167 @@
+/* we_child.c -- the editor's children: started, watched and ended in one place.
+ *
+ * See we_child.h.  The SIGCHLD handler (WpeSignalChild, we_unix.c) reaps
+ * every child with waitpid(-1, WNOHANG) and hands each one to
+ * wpe_child_note_ended: a watched child's wait status goes to its own slot
+ * and wakes the fd loop through a pipe; any other child's goes to a small
+ * ring for the callers that still read it (WpeReapedStatus).  The loop then
+ * calls each ended child's owner back, between the user's keys.
+ *
+ * pid, ended and status of a slot are written by the handler or with
+ * SIGCHLD held; the rest only from the main loop.  The handler does this
+ * work only on the editor's own thread (a library thread hands the signal
+ * over), so it interrupts the very thread that reads these fields: the reads
+ * see its stores in program order, on any CPU, with no fence.
+ */
+#include <errno.h>
+#include <fcntl.h>
+#include <poll.h>
+#include <pthread.h>
+#include <signal.h>
+#include <stdio.h>
+#include <string.h>
+#include <time.h>
+#include <unistd.h>
+#include <sys/types.h>
+#include <sys/wait.h>
+
+#include "we_child.h"
+#include "we_childsig.h"
+#include "we_fdloop.h"
+
+/* The exit statuses of children nobody watches, for the callers that still
+   read one (the line debuggers): a ring written in the handler. */
+#define WPE_REAPED_RING 8
+static volatile sig_atomic_t wpe_reaped_pid[WPE_REAPED_RING];
+static volatile sig_atomic_t wpe_reaped_status[WPE_REAPED_RING];
+static volatile sig_atomic_t wpe_reaped_next;
+
+#define WPE_CHILD_EXEC_FAILED 1          /* a command that could not run */
+#define WPE_CHILD_LINE_MAX    128        /* a line for the status row */
+#define WPE_CHILD_NOT_STARTED_FMT "%s not started: too many programs running"
+#define WPE_CHILD_DID_NOT_END_FMT "%s did not end"
+#define WPE_CHILD_UNNAMED         "a program"   /* a spec that named nothing */
+#define WPE_CHILD_PIPE_RD 0
+#define WPE_CHILD_PIPE_WR 1
+/* The child's own descriptor 0, set up between fork and exec; the editor's
+   keyboard is never read here. */
+#define WPE_CHILD_FD_IN   0
+
+typedef struct {
+ volatile sig_atomic_t pid;      /* the child, or 0 while the slot is free */
+ volatile sig_atomic_t ended;    /* the handler reaped it */
+ volatile sig_atomic_t status;   /* its wait status, once ended */
+ WpeChildEndCallback callback;   /* a pid-based watch (WpeChildWatch) */
+ void *data;
+ WpeChild *child;                /* or a child of wpe_child_start */
+ WpeChildEndedFn child_ended;
+ void *child_data;
+ const char *what;
+} WpeChildSlot;
+
+static WpeChildSlot wpe_child_table[WPE_CHILD_MAX];
+
+/* A group whose leader ended while the ladder waited out its grace: the
+   members that ignored the polite signal still get SIGKILL when the grace
+   is over.  The number cannot name another group meanwhile: a PID is not
+   given out again while a group of that number has members. */
+typedef struct {
+ int pgid;                       /* 0 while the record is free */
+ long due_ms;                    /* when its grace is over */
+} WpeChildLinger;
+
+static WpeChildLinger wpe_child_lingers[WPE_CHILD_MAX];
+
+/* The self-pipe: the handler writes one byte when a watched child ends; the
+   fd loop watches the read end while any slot is taken. */
+#define WPE_CHILD_WAKE_DRAIN 64
+static int wpe_child_wake_rd = WPE_CHILD_NO_FD;
+static int wpe_child_wake_wr = WPE_CHILD_NO_FD;
+
+static void (*wpe_child_say_hook)(const char *line);
+
+/**
+ * wpe_child_say_set - Where the owner's lines go (the status row).
+ * @say: the editor's status line, or NULL (the C tests).
+ */
+void wpe_child_say_set(void (*say)(const char *line))
+{
+ wpe_child_say_hook = say;
+}
+
+/**
+ * wpe_child_say - Tell the user something about a child, naming it.
+ * @fmt: a format with one %s for what the child is; @what: that.
+ */
+static void wpe_child_say(const char *fmt, const char *what)
+{
+ char line[WPE_CHILD_LINE_MAX];
+
+ if (!wpe_child_say_hook)
+  return;
+ if (!what)
+  what = WPE_CHILD_UNNAMED;
+ snprintf(line, sizeof line, fmt, what);
+ wpe_child_say_hook(line);
+}
+
+/**
+ * wpe_child_fd_private - Make a descriptor of the editor's non-blocking and
+ * closed on exec.
+ * @fd: the descriptor.
+ *
+ * No program the editor starts inherits it, and no read of it ever blocks
+ * the editor.
+ * Return: 0, or -1 when fcntl refused.
+ */
+int wpe_child_fd_private(int fd)
+{
+ int fl = fcntl(fd, F_GETFL, 0);
+
+ if (fl < 0 || fcntl(fd, F_SETFL, fl | O_NONBLOCK) < 0)
+  return(-1);
+ if (fcntl(fd, F_SETFD, FD_CLOEXEC) < 0)
+  return(-1);
+ return(0);
+}
+
+/**
+ * WpeChildWakeOpen - Make the pipe that wakes the editor when a watched
+ * child ends.
+ *
+ * Called once at start-up, before the SIGCHLD handler is installed.  When
+ * no pipe can be made, every watch is refused and its callers do without,
+ * so the editor still starts.
+ */
+void WpeChildWakeOpen(void)
+{
+ int fds[2];
+
+ if (wpe_child_wake_rd != WPE_CHILD_NO_FD || pipe(fds) < 0)
+  return;
+ if (wpe_child_fd_private(fds[0]) < 0 || wpe_child_fd_private(fds[1]) < 0)
+ {
+  close(fds[0]);
+  close(fds[1]);
+  return;
+ }
+ wpe_child_wake_rd = fds[0];
+ wpe_child_wake_wr = fds[1];
+}
+
+/**
+ * wpe_child_wake - In the handler: wake the fd loop, a watched child ended.
+ *
+ * One write() to a non-blocking pipe; when it fails the pipe is full, so a
+ * wake-up is waiting in it already.
+ */
+static void wpe_child_wake(void)
+{
+ static const char wake = 1;
+
+ if (wpe_child_wake_wr == WPE_CHILD_NO_FD)
+  return;
+ if (write(wpe_child_wake_wr, &wake, 1) < 0)
+  return;
+}
+
+/**
+ * wpe_child_watch_note - In the handler: keep a watched child's status.
+ * @pid: a child just reaped; @status: its wait status.
+ * Return: 1 when @pid was watched.
+ */
+static int wpe_child_watch_note(pid_t pid, int status)
+{
+ int i;
+
+ for (i = 0; i < WPE_CHILD_MAX; i++)
+ {
+  if (wpe_child_table[i].pid != pid || wpe_child_table[i].ended)
+   continue;
+  wpe_child_table[i].status = status;
+  wpe_child_table[i].ended = 1;
+  wpe_child_wake();
+  return(1);
+ }
+ return(0);
+}
+
+/**
+ * wpe_reaped_ring_note - In the handler: keep an unwatched child's status.
+ * @pid: the child; @status: its wait status.
+ */
+static void wpe_reaped_ring_note(pid_t pid, int status)
+{
+ int slot = wpe_reaped_next;
+
+ wpe_reaped_pid[slot] = pid;
+ wpe_reaped_status[slot] = status;
+ wpe_reaped_next = (slot + 1) % WPE_REAPED_RING;
+}
+
+/**
+ * wpe_child_note_ended - The SIGCHLD handler reaped @pid.
+ * @pid: the child; @status: its wait status.
+ *
+ * Async-signal-safe: stores into sig_atomic_t fields and one write().
+ */
+void wpe_child_note_ended(pid_t pid, int status)
+{
+ if (!wpe_child_watch_note(pid, status))
+  wpe_reaped_ring_note(pid, status);
+}
+
+/**
+ * WpeReapedStatus - The exit status the handler kept for an unwatched @pid.
+ * @pid: a child the caller started; @status: receives its wait status.
+ *
+ * Read by the line debuggers, whose processes are not yet watched.  The
+ * entry is cleared once read.
+ * Return: 1 with *status set when the handler reaped that child, else 0.
+ */
+int WpeReapedStatus(int pid, int *status)
+{
+ int i;
+
+ for (i = 0; i < WPE_REAPED_RING; i++)
+  if (wpe_reaped_pid[i] == pid)
+  {
+   *status = wpe_reaped_status[i];
+   wpe_reaped_pid[i] = 0;
+   return(1);
+  }
+ return(0);
+}
+
+/**
+ * WpeChildSignalBlock - Hold SIGCHLD back until WpeChildSignalRestore.
+ * @saved: receives the mask to restore.
+ *
+ * Wrapped around a fork and the watch of its child, so the child cannot be
+ * reaped before it is watched: an end that comes first waits in the kernel
+ * and reaches the child's slot when the mask is restored.  The mask is the
+ * calling thread's: a library thread that takes the signal meanwhile hands
+ * it to this thread, where it waits for WpeChildSignalRestore.
+ */
+void WpeChildSignalBlock(sigset_t *saved)
+{
+ sigset_t chld;
+
+ sigemptyset(&chld);
+ sigaddset(&chld, SIGCHLD);
+ pthread_sigmask(SIG_BLOCK, &chld, saved);
+}
+
+/**
+ * WpeChildSignalRestore - Let SIGCHLD through again.
+ * @saved: what WpeChildSignalBlock kept.
+ */
+void WpeChildSignalRestore(const sigset_t *saved)
+{
+ pthread_sigmask(SIG_SETMASK, saved, NULL);
+}
+
+/**
+ * wpe_child_signal_was_held - Did the caller already hold SIGCHLD?
+ * @saved: the mask WpeChildSignalBlock kept, i.e. the caller's.
+ *
+ * A child forked while SIGCHLD was held cannot have been reaped yet, so its
+ * end is sure to be seen; one forked without it may have been reaped
+ * already, and nothing could tell its end from an earlier process's.
+ */
+static int wpe_child_signal_was_held(const sigset_t *saved)
+{
+ return(sigismember(saved, SIGCHLD) == 1);
+}
+
+/**
+ * wpe_reaped_ring_forget - Drop what the ring kept for an earlier process
+ * that had the PID of a child just forked (PIDs are reused).
+ * @pid: the new child, forked with SIGCHLD held.
+ */
+static void wpe_reaped_ring_forget(int pid)
+{
+ int i;
+
+ for (i = 0; i < WPE_REAPED_RING; i++)
+  if (wpe_reaped_pid[i] == pid)
+   wpe_reaped_pid[i] = 0;
+}
+
+/** wpe_child_find - The slot of @pid, or NULL. */
+static WpeChildSlot *wpe_child_find(int pid)
+{
+ int i;
+
+ if (pid <= 0)
+  return(NULL);
+ for (i = 0; i < WPE_CHILD_MAX; i++)
+  if (wpe_child_table[i].pid == pid)
+   return(&wpe_child_table[i]);
+ return(NULL);
+}
+
+/** wpe_child_free_slot - A slot no child uses, or NULL. */
+static WpeChildSlot *wpe_child_free_slot(void)
+{
+ int i;
+
+ for (i = 0; i < WPE_CHILD_MAX; i++)
+  if (!wpe_child_table[i].pid)
+   return(&wpe_child_table[i]);
+ return(NULL);
+}
+
+/** wpe_child_any - Does any slot still follow a child? */
+static int wpe_child_any(void)
+{
+ int i;
+
+ for (i = 0; i < WPE_CHILD_MAX; i++)
+  if (wpe_child_table[i].pid)
+   return(1);
+ return(0);
+}
+
+/**
+ * wpe_child_slot_free - Empty a slot.  pid goes last: the handler matches
+ * on it alone, so a slot is either someone's with its fields set, or free.
+ */
+static void wpe_child_slot_free(WpeChildSlot *w)
+{
+ w->callback = NULL;
+ w->data = NULL;
+ w->child = NULL;
+ w->child_ended = NULL;
+ w->child_data = NULL;
+ w->what = NULL;
+ w->pid = 0;
+}
+
+/**
+ * wpe_child_wake_off_when_idle - Take the wake pipe off the loop once no
+ * child is watched, so an idle editor sleeps until a key.  SIGCHLD held.
+ */
+static void wpe_child_wake_off_when_idle(void)
+{
+ if (!wpe_child_any())
+  wpe_fd_del(wpe_child_wake_rd);
+}
+
+/** wpe_child_wake_drain - Empty the wake pipe: one pass serves every end. */
+static void wpe_child_wake_drain(void)
+{
+ char buf[WPE_CHILD_WAKE_DRAIN];
+
+ while (read(wpe_child_wake_rd, buf, sizeof buf) > 0)
+  ;
+}
+
+/* The ladder's one timer, for every child being ended and every group whose
+   leader went first: set for the earliest step due, so any number of ends
+   at once take one entry of the loop's timer table. */
+static int wpe_child_ladder_timer = WPE_TIMER_NONE;
+
+static void wpe_child_ladder_rearm(void);
+
+/**
+ * wpe_child_stop_ladder - A child that has gone, or is forgotten, needs no
+ * further step of its end.
+ * @c: the child.
+ */
+static void wpe_child_stop_ladder(WpeChild *c)
+{
+ c->end_stage = WPE_CHILD_END_NONE;
+ wpe_child_ladder_rearm();
+}
+
+/** wpe_child_now_ms - The monotonic clock, in milliseconds. */
+static long wpe_child_now_ms(void)
+{
+ struct timespec ts;
+
+ clock_gettime(CLOCK_MONOTONIC, &ts);
+ return((long)ts.tv_sec * WPE_TIMER_MS_PER_S + ts.tv_nsec / WPE_TIMER_NS_PER_MS);
+}
+
+/**
+ * wpe_child_linger_kill - The grace of a group whose leader went first is
+ * over: SIGKILL to what is left of it.
+ * @l: the record, free afterwards.
+ */
+static void wpe_child_linger_kill(WpeChildLinger *l)
+{
+ kill(-l->pgid, SIGKILL);
+ l->pgid = 0;
+}
+
+/**
+ * wpe_child_group_has_members - Is anyone left in the group @pgid?
+ *
+ * Its leader is reaped, so only members can answer; the null signal sends
+ * nothing.
+ */
+static int wpe_child_group_has_members(int pgid)
+{
+ return(kill(-pgid, 0) == 0);
+}
+
+/** wpe_child_linger_free - A free record, or NULL. */
+static WpeChildLinger *wpe_child_linger_free(void)
+{
+ int i;
+
+ for (i = 0; i < WPE_CHILD_MAX; i++)
+  if (!wpe_child_lingers[i].pgid)
+   return(&wpe_child_lingers[i]);
+ return(NULL);
+}
+
+/**
+ * wpe_child_linger - The leader of @c ended while its ladder waited out the
+ * grace: keep the SIGKILL for the rest of its group.
+ * @c: the child, its pid still set.
+ *
+ * Esc on a build whose make ends at SIGTERM while a compiler it started
+ * ignores it: the compiler, which holds the build's output open, is ended at
+ * the grace, as when make itself had ignored it, and the build ends.  A
+ * group with nobody left needs nothing; with no record left, or the grace
+ * already over, the rest of the group is killed now.
+ */
+static void wpe_child_linger(const WpeChild *c)
+{
+ WpeChildLinger *l;
+
+ if (!wpe_child_group_has_members(c->pid))
+  return;
+ l = wpe_child_linger_free();
+ if (!l || c->end_due_ms <= wpe_child_now_ms())
+ {
+  kill(-c->pid, SIGKILL);
+  return;
+ }
+ l->pgid = c->pid;
+ l->due_ms = c->end_due_ms;
+}
+
+/**
+ * wpe_child_ladder_outlives_leader - Does @c's group still owe a SIGKILL?
+ * @c: a child just reported ended.
+ * Return: 1 while the polite step's grace was running.
+ */
+static int wpe_child_ladder_outlives_leader(const WpeChild *c)
+{
+ return(c->leads_group && c->end_stage == WPE_CHILD_END_POLITE);
+}
+
+/**
+ * wpe_child_deliver - Call back the owner of an ended child.
+ * @w: a slot whose child the handler reaped.
+ *
+ * The slot is freed before the callback runs, so the callback may start
+ * another child, or open a dialog whose own loop polls again, and find the
+ * table consistent.
+ */
+static void wpe_child_deliver(WpeChildSlot *w)
+{
+ WpeChildEndCallback cb = w->callback;
+ void *data = w->data;
+ WpeChild *c = w->child;
+ WpeChildEndedFn ended = w->child_ended;
+ void *child_data = w->child_data;
+ int pid = w->pid, status = w->status;
+
+ wpe_child_slot_free(w);
+ if (c)
+ {
+  if (wpe_child_ladder_outlives_leader(c))
+   wpe_child_linger(c);
+  wpe_child_stop_ladder(c);
+  c->pid = 0;
+  if (ended)
+   ended(c, status, WPE_CHILD_ENDED, child_data);
+  return;
+ }
+ if (cb)
+  cb(pid, status, data);
+}
+
+/**
+ * wpe_child_on_wake - The fd loop's callback for the wake pipe.
+ *
+ * Runs between the user's keys: each watched child that ended is reported
+ * to its owner, which can then tell the user how the program ended.
+ */
+static void wpe_child_on_wake(int fd, void *data)
+{
+ sigset_t saved;
+ int i;
+
+ (void)fd;
+ (void)data;
+ wpe_child_wake_drain();
+ for (i = 0; i < WPE_CHILD_MAX; i++)
+ {
+  if (!wpe_child_table[i].pid || !wpe_child_table[i].ended)
+   continue;
+  wpe_child_deliver(&wpe_child_table[i]);
+ }
+ WpeChildSignalBlock(&saved);
+ wpe_child_wake_off_when_idle();
+ WpeChildSignalRestore(&saved);
+}
+
+/**
+ * wpe_child_slot_take - Give a free slot to the child @pid.  SIGCHLD held
+ * since its fork.
+ * Return: the slot, or NULL when the table is full or the loop cannot watch
+ * the wake pipe.
+ */
+static WpeChildSlot *wpe_child_slot_take(int pid)
+{
+ WpeChildSlot *w = wpe_child_find(pid);
+
+ if (!w)
+  w = wpe_child_free_slot();
+ if (!w || wpe_child_wake_rd == WPE_CHILD_NO_FD)
+  return(NULL);
+ if (wpe_fd_add(wpe_child_wake_rd, POLLIN, wpe_child_on_wake, NULL) != 0)
+  return(NULL);
+ wpe_reaped_ring_forget(pid);
+ w->ended = 0;
+ w->status = 0;
+ w->callback = NULL;
+ w->data = NULL;
+ w->child = NULL;
+ w->child_ended = NULL;
+ w->child_data = NULL;
+ w->what = NULL;
+ return(w);
+}
+
+/**
+ * WpeChildWatch - Call @cb from the editor's loop when the child @pid ends.
+ * @pid: a child of the editor; @cb: gets its PID and wait status;
+ * @data: handed to @cb.
+ *
+ * For the children not started through wpe_child_start yet.  Must be called
+ * between WpeChildSignalBlock and WpeChildSignalRestore around the fork.
+ * Return: 0, or -1 when SIGCHLD was not held since the fork, no wake pipe
+ * exists, every slot is taken or the fd loop is full.
+ */
+int WpeChildWatch(int pid, WpeChildEndCallback cb, void *data)
+{
+ WpeChildSlot *w;
+ sigset_t saved;
+ int ret = -1;
+
+ if (pid <= 0)
+  return(-1);
+ WpeChildSignalBlock(&saved);
+ if (wpe_child_signal_was_held(&saved))
+ {
+  w = wpe_child_slot_take(pid);
+  if (w)
+  {
+   w->callback = cb;
+   w->data = data;
+   w->pid = pid;
+   ret = 0;
+  }
+ }
+ WpeChildSignalRestore(&saved);
+ return(ret);
+}
+
+/**
+ * WpeChildUnwatch - Stop waiting for the child @pid; its callback never
+ * comes.  A child that ends later is reaped by the handler all the same.
+ * @pid: a watched child; anything else is ignored.
+ */
+void WpeChildUnwatch(int pid)
+{
+ WpeChildSlot *w;
+ sigset_t saved;
+
+ WpeChildSignalBlock(&saved);
+ w = wpe_child_find(pid);
+ if (w)
+ {
+  wpe_child_slot_free(w);
+  wpe_child_wake_off_when_idle();
+ }
+ WpeChildSignalRestore(&saved);
+}
+
+/**
+ * WpeChildEnded - Has the child @pid ended, and how?  Never waits.
+ * @pid: a child of the editor; @status: receives its wait status.
+ *
+ * A watched child is answered from its slot, and its callback still comes;
+ * any other child is asked with WNOHANG and then looked up in the ring.
+ * Return: WPE_CHILD_RUNS, WPE_CHILD_ENDED with *status set, or
+ * WPE_CHILD_ENDED_UNKNOWN when it is gone and its status was lost.
+ */
+int WpeChildEnded(int pid, int *status)
+{
+ WpeChildSlot *w = wpe_child_find(pid);
+ int r;
+
+ if (w && !w->ended)
+  return(WPE_CHILD_RUNS);
+ if (w)
+ {
+  *status = w->status;
+  return(WPE_CHILD_ENDED);
+ }
+ r = waitpid(pid, status, WNOHANG);
+ if (r == pid)
+  return(WPE_CHILD_ENDED);
+ if (r == 0 || errno != ECHILD)
+  return(WPE_CHILD_RUNS);
+ if (WpeReapedStatus(pid, status))
+  return(WPE_CHILD_ENDED);
+ return(WPE_CHILD_ENDED_UNKNOWN);
+}
+
+/* ---- starting a child ---------------------------------------------------- */
+
+/** wpe_child_pipes_close - Close every end of a set of pipes still open. */
+static void wpe_child_pipes_close(int (*p)[2], int n)
+{
+ int i, j;
+
+ for (i = 0; i < n; i++)
+  for (j = 0; j < 2; j++)
+   if (p[i][j] >= 0)
+   {
+    close(p[i][j]);
+    p[i][j] = WPE_CHILD_NO_FD;
+   }
+}
+
+#define WPE_CHILD_P_IN  0
+#define WPE_CHILD_P_OUT 1
+#define WPE_CHILD_P_ERR 2
+#define WPE_CHILD_P_N   3
+
+/** wpe_child_spec_wants_err_pipe - Does stderr get a pipe of its own? */
+static int wpe_child_spec_wants_err_pipe(const WpeChildSpec *spec)
+{
+ return(!spec->stderr_to_stdout && !spec->stderr_to_null);
+}
+
+/**
+ * wpe_child_pipes_open - The pipes the spec asks for.
+ * @spec: the child; @p: receives them, -1 where none is wanted.
+ * Return: 0, or -1 (and nothing open) when a pipe could not be made.
+ */
+static int wpe_child_pipes_open(const WpeChildSpec *spec, int (*p)[2])
+{
+ int i;
+
+ for (i = 0; i < WPE_CHILD_P_N; i++)
+  p[i][0] = p[i][1] = WPE_CHILD_NO_FD;
+ if (pipe(p[WPE_CHILD_P_OUT]) < 0)
+  return(-1);
+ if (!spec->stdin_null && pipe(p[WPE_CHILD_P_IN]) < 0)
+ {
+  wpe_child_pipes_close(p, WPE_CHILD_P_N);
+  return(-1);
+ }
+ if (wpe_child_spec_wants_err_pipe(spec) && pipe(p[WPE_CHILD_P_ERR]) < 0)
+ {
+  wpe_child_pipes_close(p, WPE_CHILD_P_N);
+  return(-1);
+ }
+ return(0);
+}
+
+/** wpe_child_print_argv - In the child: one line of @prefix and the words. */
+static void wpe_child_print_argv(FILE *fp, const char *prefix,
+                                 char *const *argv)
+{
+ int i;
+
+ if (prefix && prefix[0])
+  fprintf(fp, "%s ", prefix);
+ for (i = 0; argv[i]; i++)
+  fprintf(fp, "%s ", argv[i]);
+ fprintf(fp, "\n");
+ fflush(fp);
+}
+
+/** wpe_child_dup_null - In the child: /dev/null on @fd, opened @flags. */
+static void wpe_child_dup_null(int fd, int flags)
+{
+ int nul = open("/dev/null", flags);
+
+ if (nul < 0)
+  return;
+ dup2(nul, fd);
+ if (nul > STDERR_FILENO)
+  close(nul);
+}
+
+/**
+ * wpe_child_exec - In the child: set it up as @spec says and run it.
+ * @spec: the child; @p: the pipes.
+ *
+ * Does not return.  The program gets the signal state a shell would give
+ * it, its own group or session, and only the descriptors 0, 1 and 2.
+ */
+static void wpe_child_exec(const WpeChildSpec *spec, int (*p)[2])
+{
+ wpe_child_default_signals();
+ if (spec->group == WPE_CHILD_OWN_GROUP)
+  setpgid(0, 0);
+ else
+  wpe_child_apart_from_terminal();
+ if (spec->cwd && chdir(spec->cwd) != 0)
+  _exit(WPE_CHILD_EXEC_FAILED);
+ if (spec->stdin_null)
+  wpe_child_dup_null(WPE_CHILD_FD_IN, O_RDONLY);
+ else
+  dup2(p[WPE_CHILD_P_IN][WPE_CHILD_PIPE_RD], WPE_CHILD_FD_IN);
+ dup2(p[WPE_CHILD_P_OUT][WPE_CHILD_PIPE_WR], STDOUT_FILENO);
+ if (spec->stderr_to_stdout)
+  dup2(STDOUT_FILENO, STDERR_FILENO);
+ else if (spec->stderr_to_null)
+  wpe_child_dup_null(STDERR_FILENO, O_WRONLY);
+ else
+  dup2(p[WPE_CHILD_P_ERR][WPE_CHILD_PIPE_WR], STDERR_FILENO);
+ wpe_child_pipes_close(p, WPE_CHILD_P_N);
+ if (spec->echo_argv)
+  wpe_child_print_argv(stderr, "", spec->argv);
+ execvp(spec->argv[0], spec->argv);
+ if (spec->exec_failed)
+  wpe_child_print_argv(stderr, spec->exec_failed, spec->argv);
+ _exit(WPE_CHILD_EXEC_FAILED);
+}
+
+/**
+ * wpe_child_keep_end - In the parent: keep one end of a pipe for the
+ * editor, non-blocking and closed on exec, and close the child's end.
+ * @mine: the editor's end; @theirs: the child's.
+ * Return: @mine, or WPE_CHILD_NO_FD when there is no such pipe.
+ */
+static int wpe_child_keep_end(int mine, int theirs)
+{
+ if (theirs >= 0)
+  close(theirs);
+ if (mine < 0)
+  return(WPE_CHILD_NO_FD);
+ wpe_child_fd_private(mine);
+ return(mine);
+}
+
+/**
+ * wpe_child_take_ends - In the parent: the editor's ends of the pipes.
+ * @c: the child; @p: the pipes, all closed or handed over afterwards.
+ */
+static void wpe_child_take_ends(WpeChild *c, int (*p)[2])
+{
+ c->in_fd = wpe_child_keep_end(p[WPE_CHILD_P_IN][WPE_CHILD_PIPE_WR],
+                               p[WPE_CHILD_P_IN][WPE_CHILD_PIPE_RD]);
+ c->out_fd = wpe_child_keep_end(p[WPE_CHILD_P_OUT][WPE_CHILD_PIPE_RD],
+                                p[WPE_CHILD_P_OUT][WPE_CHILD_PIPE_WR]);
+ c->err_fd = wpe_child_keep_end(p[WPE_CHILD_P_ERR][WPE_CHILD_PIPE_RD],
+                                p[WPE_CHILD_P_ERR][WPE_CHILD_PIPE_WR]);
+}
+
+/** wpe_child_reset - A WpeChild with no process and no descriptors. */
+static void wpe_child_reset(WpeChild *c)
+{
+ memset(c, 0, sizeof *c);
+ c->in_fd = c->out_fd = c->err_fd = WPE_CHILD_NO_FD;
+ c->end_stage = WPE_CHILD_END_NONE;
+}
+
+/** wpe_child_close_fd - Close one of the editor's ends, if open. */
+static void wpe_child_close_fd(int fd)
+{
+ if (fd != WPE_CHILD_NO_FD)
+  close(fd);
+}
+
+/**
+ * wpe_child_drop_ends - A start that failed after the fork: the editor's
+ * ends are closed and @c holds no process, so the caller is left with
+ * nothing to clean up.
+ * @c: the child that was not started.
+ */
+static void wpe_child_drop_ends(WpeChild *c)
+{
+ wpe_child_close_fd(c->in_fd);
+ wpe_child_close_fd(c->out_fd);
+ wpe_child_close_fd(c->err_fd);
+ wpe_child_reset(c);
+}
+
+/**
+ * wpe_child_room - Is there room to follow one more child?  SIGCHLD held.
+ *
+ * A free slot, and the wake pipe on the loop: both are taken before the
+ * fork, so a start the editor could not follow is refused before anything
+ * runs, and the user reads why.
+ * Return: 1 when there is room.
+ */
+static int wpe_child_room(void)
+{
+ if (!wpe_child_free_slot() || wpe_child_wake_rd == WPE_CHILD_NO_FD)
+  return(0);
+ return(wpe_fd_add(wpe_child_wake_rd, POLLIN, wpe_child_on_wake, NULL) == 0);
+}
+
+/**
+ * wpe_child_refuse - A start that found no room: nothing runs, the status
+ * row says so.  SIGCHLD held by the caller, given back here.
+ * @spec: the child; @saved: the mask to restore.
+ * Return: -1.
+ */
+static int wpe_child_refuse(const WpeChildSpec *spec, const sigset_t *saved)
+{
+ wpe_child_wake_off_when_idle();
+ WpeChildSignalRestore(saved);
+ wpe_child_say(WPE_CHILD_NOT_STARTED_FMT, spec->what);
+ errno = EAGAIN;
+ return(-1);
+}
+
+/**
+ * wpe_child_start_failed - The pipes or the fork failed: nothing runs.
+ * SIGCHLD held by the caller, given back here.
+ * @saved: the mask to restore.
+ * Return: -1, errno as the failed call left it.
+ */
+static int wpe_child_start_failed(const sigset_t *saved)
+{
+ int err = errno;
+
+ wpe_child_wake_off_when_idle();
+ WpeChildSignalRestore(saved);
+ errno = err;
+ return(-1);
+}
+
+/**
+ * wpe_child_start - Start a program for the editor, its end watched.
+ * @spec: what to run and how; @c: receives the process and its descriptors
+ * (the caller's, valid until the end is reported); @ended: called once,
+ * from the loop, when it has ended; @data: handed to @ended.
+ *
+ * SIGCHLD is held from before the fork until the child has its slot, so its
+ * end, however soon it comes, is reported with its own status, however many
+ * other children end at the same moment.  When no slot is free, or the loop
+ * has no room for the wake pipe, nothing is started and the status row says
+ * so.
+ * Return: 0, or -1 with nothing left running.
+ */
+int wpe_child_start(const WpeChildSpec *spec, WpeChild *c,
+                    WpeChildEndedFn ended, void *data)
+{
+ int p[WPE_CHILD_P_N][2];
+ WpeChildSlot *w;
+ sigset_t saved;
+ pid_t pid;
+
+ wpe_child_reset(c);
+ WpeChildSignalBlock(&saved);
+ if (!wpe_child_room())
+  return(wpe_child_refuse(spec, &saved));
+ if (wpe_child_pipes_open(spec, p) < 0)
+  return(wpe_child_start_failed(&saved));
+ pid = fork();
+ if (pid == 0)
+  wpe_child_exec(spec, p);
+ if (pid < 0)
+ {
+  wpe_child_pipes_close(p, WPE_CHILD_P_N);
+  return(wpe_child_start_failed(&saved));
+ }
+ if (spec->group == WPE_CHILD_OWN_GROUP)
+  setpgid(pid, pid);   /* both sides: the group exists before any signal */
+ wpe_child_take_ends(c, p);
+ w = wpe_child_slot_take(pid);
+ if (!w)
+ {
+  /* Not reached: wpe_child_room took the slot's room before the fork. */
+  kill(-pid, SIGKILL);
+  kill(pid, SIGKILL);
+  wpe_child_drop_ends(c);
+  return(wpe_child_refuse(spec, &saved));
+ }
+ c->pid = pid;
+ c->leads_group = 1;
+ w->child = c;
+ w->child_ended = ended;
+ w->child_data = data;
+ w->what = spec->what;
+ w->pid = pid;
+ WpeChildSignalRestore(&saved);
+ return(0);
+}
+
+/* ---- signalling and ending ----------------------------------------------- */
+
+/**
+ * wpe_child_running_slot - The slot of a child that has not been reaped.
+ * @c: the child.  SIGCHLD held.
+ * Return: the slot, or NULL once the child is gone (its number may then be
+ * another process's).
+ */
+static WpeChildSlot *wpe_child_running_slot(const WpeChild *c)
+{
+ WpeChildSlot *w = wpe_child_find(c->pid);
+
+ if (!w || w->ended || w->child != c)
+  return(NULL);
+ return(w);
+}
+
+/**
+ * wpe_child_signal - Send @sig to the child and the group it leads.
+ * @c: the child; @sig: the signal.
+ *
+ * Nothing is sent once it has been reaped, so a number the system gave to
+ * another process is never signalled.
+ * Return: 0, or -1 once it has ended.
+ */
+int wpe_child_signal(WpeChild *c, int sig)
+{
+ sigset_t saved;
+ int ret = -1;
+
+ WpeChildSignalBlock(&saved);
+ if (c->pid > 0 && wpe_child_running_slot(c))
+ {
+  ret = 0;
+  if (!c->leads_group || kill(-c->pid, sig) < 0)
+   kill(c->pid, sig);
+ }
+ WpeChildSignalRestore(&saved);
+ return(ret);
+}
+
+/**
+ * wpe_child_signal_pid - Send @sig to the child alone, not its group.
+ * @c: the child; @sig: the signal.
+ * Return: 0, or -1 once it has ended.
+ */
+int wpe_child_signal_pid(WpeChild *c, int sig)
+{
+ sigset_t saved;
+ int ret = -1;
+
+ WpeChildSignalBlock(&saved);
+ if (c->pid > 0 && wpe_child_running_slot(c))
+ {
+  ret = 0;
+  kill(c->pid, sig);
+ }
+ WpeChildSignalRestore(&saved);
+ return(ret);
+}
+
+/**
+ * wpe_child_give_up - The ladder's last step: the child did not end even
+ * after SIGKILL (it is stuck in the kernel).  The user reads so, its slot is
+ * let go (the handler reaps it whenever it ends), and its owner is told.
+ * @c: the child.
+ */
+static void wpe_child_give_up(WpeChild *c)
+{
+ WpeChildEndedFn ended = NULL;
+ void *data = NULL;
+ const char *what = NULL;
+ WpeChildSlot *w;
+ sigset_t saved;
+
+ WpeChildSignalBlock(&saved);
+ w = wpe_child_running_slot(c);
+ if (w)
+ {
+  ended = w->child_ended;
+  data = w->child_data;
+  what = w->what;
+  wpe_child_slot_free(w);
+  wpe_child_wake_off_when_idle();
+ }
+ WpeChildSignalRestore(&saved);
+ if (!w)
+  return;
+ c->end_stage = WPE_CHILD_END_GIVEN_UP;
+ c->pid = 0;
+ wpe_child_say(WPE_CHILD_DID_NOT_END_FMT, what);
+ if (ended)
+  ended(c, 0, WPE_CHILD_ENDED_UNKNOWN, data);
+}
+
+/**
+ * wpe_child_end_step - The ladder's next step: SIGKILL after the grace,
+ * give up after the kill grace.
+ * @c: a child being ended.
+ */
+static void wpe_child_end_step(WpeChild *c)
+{
+ if (c->pid <= 0)
+  return;
+ if (c->end_stage == WPE_CHILD_END_KILL)
+ {
+  wpe_child_give_up(c);
+  return;
+ }
+ c->end_stage = WPE_CHILD_END_KILL;
+ wpe_child_signal(c, SIGKILL);
+ c->end_due_ms = wpe_child_now_ms() + WPE_CHILD_END_KILL_MS;
+}
+
+/**
+ * wpe_child_in_ladder - The child of slot @w, when it is being ended and
+ * not reaped yet (a reaped one is reported first, which ends its ladder).
+ * Return: the child, or NULL.
+ */
+static WpeChild *wpe_child_in_ladder(const WpeChildSlot *w)
+{
+ WpeChild *c = w->child;
+
+ if (!w->pid || w->ended || !c)
+  return(NULL);
+ if (c->end_stage != WPE_CHILD_END_POLITE && c->end_stage != WPE_CHILD_END_KILL)
+  return(NULL);
+ return(c);
+}
+
+/**
+ * wpe_child_ladder_due - When the earliest step of any ladder is due.
+ * Return: that time on wpe_child_now_ms's clock, or 0 when none is.
+ */
+static long wpe_child_ladder_due(void)
+{
+ long due = 0;
+ WpeChild *c;
+ int i;
+
+ for (i = 0; i < WPE_CHILD_MAX; i++)
+ {
+  c = wpe_child_in_ladder(&wpe_child_table[i]);
+  if (c && (!due || c->end_due_ms < due))
+   due = c->end_due_ms;
+  if (wpe_child_lingers[i].pgid && (!due || wpe_child_lingers[i].due_ms < due))
+   due = wpe_child_lingers[i].due_ms;
+ }
+ return(due);
+}
+
+/**
+ * wpe_child_ladder_run - Take the steps that are due.
+ * @force: take every ladder's next step now, due or not (the loop had no
+ * room for the ladder's timer).
+ *
+ * A step's callback may start or end other children; each slot is looked at
+ * again as it is reached.
+ */
+static void wpe_child_ladder_run(int force)
+{
+ long now = wpe_child_now_ms();
+ WpeChild *c;
+ int i;
+
+ for (i = 0; i < WPE_CHILD_MAX; i++)
+ {
+  c = wpe_child_in_ladder(&wpe_child_table[i]);
+  if (c && (force || c->end_due_ms <= now))
+   wpe_child_end_step(c);
+  if (wpe_child_lingers[i].pgid && (force || wpe_child_lingers[i].due_ms <= now))
+   wpe_child_linger_kill(&wpe_child_lingers[i]);
+ }
+}
+
+/** wpe_child_ladder_tick - The ladder's timer: its steps, then the next. */
+static void wpe_child_ladder_tick(void *data)
+{
+ (void)data;
+ wpe_child_ladder_timer = WPE_TIMER_NONE;
+ wpe_child_ladder_run(0);
+ wpe_child_ladder_rearm();
+}
+
+/**
+ * wpe_child_ladder_rearm - Set the ladder's timer for the earliest step due.
+ *
+ * Called whenever a ladder begins, moves or ends.  A loop with no room for
+ * the timer has every ladder take its next step now, so a child is never
+ * left half-ended; each call moves a ladder one step on, so this ends.
+ */
+static void wpe_child_ladder_rearm(void)
+{
+ long due = wpe_child_ladder_due(), ms;
+
+ if (wpe_child_ladder_timer != WPE_TIMER_NONE)
+  wpe_timer_del(wpe_child_ladder_timer);
+ wpe_child_ladder_timer = WPE_TIMER_NONE;
+ if (!due)
+  return;
+ ms = due - wpe_child_now_ms();
+ if (ms < 0)
+  ms = 0;
+ wpe_child_ladder_timer = wpe_timer_add(ms, 0, wpe_child_ladder_tick, NULL);
+ if (wpe_child_ladder_timer > WPE_TIMER_NONE)
+  return;
+ wpe_child_ladder_timer = WPE_TIMER_NONE;
+ wpe_child_ladder_run(1);
+ wpe_child_ladder_rearm();
+}
+
+/**
+ * wpe_child_end - End a child, without waiting for it.
+ * @c: the child; @polite_sig: SIGTERM (or another signal that asks it to
+ * end), or WPE_CHILD_NO_SIGNAL when the caller already asked on its pipe.
+ *
+ * Returns at once.  The child gets WPE_CHILD_END_GRACE_MS to end, then
+ * SIGKILL to its group, then WPE_CHILD_END_KILL_MS more before the owner is
+ * told it did not end.  Its end is reported as usual, by the callback.  A
+ * second call while the ladder runs takes its next step now.
+ */
+void wpe_child_end(WpeChild *c, int polite_sig)
+{
+ if (c->pid <= 0)
+  return;
+ if (c->end_stage != WPE_CHILD_END_NONE)
+ {
+  wpe_child_end_step(c);
+  wpe_child_ladder_rearm();
+  return;
+ }
+ c->end_stage = WPE_CHILD_END_POLITE;
+ if (polite_sig != WPE_CHILD_NO_SIGNAL)
+  wpe_child_signal(c, polite_sig);
+ c->end_due_ms = wpe_child_now_ms() + WPE_CHILD_END_GRACE_MS;
+ wpe_child_ladder_rearm();
+}
+
+/**
+ * wpe_child_forget - Stop following a child: its callback never comes.
+ * @c: the child.  It is reaped by the handler whenever it ends.
+ */
+void wpe_child_forget(WpeChild *c)
+{
+ if (c->pid <= 0)
+  return;
+ wpe_child_stop_ladder(c);
+ WpeChildUnwatch(c->pid);
+ c->pid = 0;
+}
+
+/**
+ * wpe_child_ended - Has the child ended?  Never waits.
+ * @c: the child; @status: receives its wait status when known.
+ * Return: WPE_CHILD_RUNS, WPE_CHILD_ENDED, or WPE_CHILD_ENDED_UNKNOWN once
+ * its end has been reported (pid is 0).
+ */
+int wpe_child_ended(const WpeChild *c, int *status)
+{
+ if (c->pid <= 0)
+  return(WPE_CHILD_ENDED_UNKNOWN);
+ return(WpeChildEnded(c->pid, status));
+}

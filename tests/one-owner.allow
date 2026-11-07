@@ -37,3 +37,63 @@ we_gpm.o poll 1 P9o the gpm handshake
 we_gpm.o STDIN_FILENO 2 keep isatty asks whether the terminal is the console; no read
 we_wayland.o poll 1 P9o the clipboard pipe
 we_xterm.o poll 1 P9o the paste wait for SelectionNotify
+
+# children: started, signalled and reaped only by we_child.c.  P9i2 is the
+# second half of P9i (the language server, the build server, the adapters).
+we_unix.o waitpid 1 keep the SIGCHLD handler reaps, and hands each child to we_child.c
+we_unix.o kill 2 P9q the crash/term handlers' build group and the debugger at exit
+we_prog.o fork 1 P9r Run with a pty (the build moved to we_child.c)
+we_prog.o openpty 1 P9r
+we_prog.o killpg 1 P9r
+we_prog.o setsid 1 P9r
+we_prog.o waitpid 1 P9r
+we_prog.o execl 1 P9r through wpe_system, inline
+we_prog.o popen 1 P9n
+we_prog.o pclose 1 P9n
+we_xterm.o fork 1 P9r through wpe_system, inline
+we_xterm.o waitpid 1 P9r
+we_xterm.o execl 1 P9r
+we_term.o system 1 P9r the display table's run of a shell command
+we_dap.o fork 2 P9i2
+we_dap.o openpty 1 P9i2
+we_dap.o kill 1 P9i2
+we_dap.o waitpid 1 P9i2
+we_dap.o setsid 2 P9i2
+we_dap.o execvp 2 P9i2
+we_lsp.o fork 1 P9i2
+we_lsp.o kill 2 P9i2
+we_lsp.o waitpid 3 P9i2
+we_lsp.o setsid 1 P9i2 through wpe_child_apart_from_terminal, inline
+we_lsp.o execvp 1 P9i2
+we_bsp.o fork 1 P9i2
+we_bsp.o kill 2 P9i2
+we_bsp.o waitpid 2 P9i2
+we_bsp.o setsid 1 P9i2 through wpe_child_apart_from_terminal, inline
+we_bsp.o execvp 1 P9i2
+we_bsp.o system 1 P9i2 scala-cli setup-ide, to become an async start
+we_bsp.o SYS_pidfd_open 2 P9i2 the launcher's exit descriptor, deleted with the ladder
+we_debug.o fork 2 P9q
+we_debug.o openpty 1 P9q
+we_debug.o kill 6 P9q
+we_debug.o waitpid 4 P9q
+we_debug.o setsid 2 P9q
+we_debug.o execvp 2 P9q
+we_debug.o execl 1 P9q the legacy external-xterm start
+we_debug.o execlp 1 P9q the same
+we_debug.o system 2 P9q compile for debug (P9q) and scala-cli setup-ide (P9i2)
+we_debug.o popen 1 P9n
+we_debug.o pclose 1 P9n
+we_ai.o fork 3 P9s one is the mock delay (P9l)
+we_ai.o kill 2 P9s
+we_ai.o waitpid 2 P9s
+we_ai.o setsid 1 P9s
+we_ai.o execv 1 P9s
+we_ai.o execvp 1 P9s
+we_ai_host.o fork 1 P9s
+we_ai_host.o kill 3 P9s
+we_ai_host.o waitpid 3 P9s
+we_ai_host.o execvp 2 P9s
+we_render_cairo.o popen 1 P9n
+we_render_cairo.o pclose 2 P9n
+we_fl_fkt.o system 2 P9n
+we_fl_unix.o system 2 P9n

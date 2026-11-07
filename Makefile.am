@@ -54,6 +54,7 @@ we_SOURCES = \
   we_block.c \
   we_clip.c \
   we_unix.c \
+  we_child.c \
   we_e_aus.c \
   we_edit.c \
   we_fl_fkt.c \
@@ -194,6 +195,7 @@ noinst_HEADERS = \
   we_render.h \
   we_render_glyphs.h \
   we_childsig.h \
+  we_child.h \
   we_wayland.h \
   we_fdloop.h \
   we_trace.h \
@@ -299,7 +301,17 @@ metainfodir = $(datadir)/metainfo
 metainfo_DATA = io.codeberg.mendezr.xwpe.metainfo.xml
 
 # --- Unit tests ---
-check_PROGRAMS = test_checkheader test_fl_sel_len test_syntax_def test_fdloop test_clipboard test_lsp_buffer test_lsp_doctor test_lsp_semantic test_lsp_truecolor test_dap test_dap_nopidfd test_dap_dlv test_dap_gdb test_dap_lldb test_dap_scala test_bsp_close test_bsp_close_nopidfd test_lsp_scala test_lsp_clangd test_lsp_python test_lsp_gopls test_lsp_rust test_debprompt test_debpath test_debsess test_debreq test_gdbmi test_menurows test_mousedrain
+check_PROGRAMS = test_checkheader test_fl_sel_len test_syntax_def test_fdloop test_clipboard test_lsp_buffer test_lsp_doctor test_lsp_semantic test_lsp_truecolor test_dap test_dap_nopidfd test_dap_dlv test_dap_gdb test_dap_lldb test_dap_scala test_bsp_close test_bsp_close_nopidfd test_lsp_scala test_lsp_clangd test_lsp_python test_lsp_gopls test_lsp_rust test_debprompt test_debpath test_debsess test_debreq test_gdbmi test_menurows test_mousedrain test_child
+
+# The children's owner: we_child.c with the fd loop only (the status line is a
+# hook, stubbed).  Real children: twenty ending at once each report their own
+# status, one that ignores SIGTERM is killed after the grace, the end returns
+# at once, an end before the watch cannot be lost, a signal after the end
+# (or between the reap and the report) reaches nobody, a forgotten child
+# leaves no callback, timer or slot, a full table or a full loop starts
+# nothing, and the whole group is ended.
+test_child_SOURCES = tests/test_child.c we_child.c we_fdloop.c
+test_child_CFLAGS = $(XWPE_STDFLAG)
 
 # The test includes we_fdloop.c itself (the id counter is private to it), so
 # the file is not listed here again: it would be defined twice.
@@ -480,7 +492,8 @@ test_lsp_rust_LDADD = $(JSONC_LIBS)
 
 TESTS = test_checkheader test_fl_sel_len test_syntax_def test_fdloop test_clipboard test_lsp_buffer test_lsp_doctor test_lsp_semantic test_lsp_truecolor test_dap test_dap_nopidfd test_dap_dlv \
   test_dap_gdb test_dap_lldb test_dap_scala test_bsp_close \
-  test_bsp_close_nopidfd test_lsp_scala test_lsp_clangd test_lsp_python test_lsp_gopls test_lsp_rust test_debprompt test_debpath test_debsess test_debreq test_gdbmi test_menurows test_mousedrain
+  test_bsp_close_nopidfd test_lsp_scala test_lsp_clangd test_lsp_python test_lsp_gopls test_lsp_rust test_debprompt test_debpath test_debsess test_debreq test_gdbmi test_menurows test_mousedrain \
+  test_child
 
 # One owner of input and of waiting: tests/check-one-owner.sh reads the
 # undefined symbols of the editor's own objects (the list below) with $(NM)

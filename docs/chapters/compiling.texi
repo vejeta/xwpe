@@ -78,7 +78,9 @@ another window, scroll, or read the output as it grows.
 @kbd{Esc} cancels the build.  The compiler and everything it started
 are stopped, Messages ends with @samp{build cancelled}, and no later
 step runs: a cancelled @kbd{F9} links nothing, and a cancelled
-@kbd{Ctrl-F9} runs nothing.  A second build key pressed while one runs
+@kbd{Ctrl-F9} runs nothing.  A build that ignores the request to stop
+is killed 2 seconds later; one still there a second after that is named
+on the status row (@samp{the build did not end}).  A second build key pressed while one runs
 is refused with a line on the status row that says @kbd{Esc} cancels the
 running build.
 

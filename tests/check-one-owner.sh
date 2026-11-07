@@ -67,6 +67,7 @@ getch|wgetch|get_wch|wget_wch|ungetch we_term.o
 XNextEvent|XPeekEvent|XWindowEvent|XMaskEvent|XIfEvent|XCheckMaskEvent|XCheckTypedEvent|XCheckTypedWindowEvent|XPutBackEvent we_xterm.o
 XPending|XEventsQueued|XCheckWindowEvent|XCheckIfEvent|XFlush we_xterm.o WeXterm.o
 wl_display_dispatch|wl_display_dispatch_queue|wl_display_roundtrip|wl_display_dispatch_pending|wl_display_prepare_read|wl_display_read_events we_wayland.o
+fork|vfork|forkpty|openpty|posix_spawn|posix_spawnp|popen|pclose|system|execv|execvp|execve|execl|execlp|execle|setsid|setpgid|setpgrp|waitpid|wait|wait3|wait4|pidfd_open|killpg|kill we_child.o
 EOF
 
 # The source scan: "word-regex  source files allowed to contain it".
@@ -83,6 +84,7 @@ e_x_kbhit we_xterm.c
 e_w_kbhit we_wayland.c
 wpe_fd_wait_for we_xterm.c we_wayland.c we_gpm.c we_fdloop.c
 wpe_fd_end_wait we_fdloop.c
+SYS_pidfd_open
 EOF
 
 # normalise: the name as the source spells it.  One leading "_" (Mach-O),
@@ -189,6 +191,10 @@ grep -qx "we_fdloop.o poll" "$WORK/imports" ||
   problem "canary: poll not seen in we_fdloop.o (LTO objects, wrong nm, or an empty object list)"
 grep -qx "we_term.o wgetch" "$WORK/imports" ||
   problem "canary: wgetch not seen in we_term.o (LTO objects, wrong nm, or an empty object list)"
+grep -qx "we_child.o fork" "$WORK/imports" ||
+  problem "canary: fork not seen in we_child.o (LTO objects, wrong nm, or an empty object list)"
+grep -qx "we_unix.o waitpid" "$WORK/imports" ||
+  problem "canary: waitpid not seen in we_unix.o (LTO objects, wrong nm, or an empty object list)"
 
 # --- 2. the source scan
 for obj in $OBJECTS; do

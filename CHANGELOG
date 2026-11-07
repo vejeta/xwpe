@@ -265,6 +265,15 @@ Changes
   exits in the background, and one that does not answer within 2 seconds
   is ended by signal, with a line on the status row.
 
+* A build never makes the editor wait for its commands to end, and its
+  own exit status is always the one reported ("the build failed (exit
+  status 3)"), however many processes end at the same time.  A build
+  cancelled with Esc that is still there 2 seconds after SIGTERM is
+  killed, with every process it started, even when the build's own
+  command ended first; one that is still there a second after that says
+  "the build did not end" on the status row instead of leaving the
+  waiting line turning.
+
 * The same now holds while gdb starts and at every Run, Continue, step,
   Finish and Go to cursor: gdb's settings, your breakpoints and the run
   command are asked while you keep typing.  F8 typed while gdb starts

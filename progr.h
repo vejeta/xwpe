@@ -59,20 +59,9 @@ FENSTER *e_build_messages(ECNT *cn);
 int e_build_ui_idle(ECNT *cn);
 void e_build_drop_last_row(BUFFER *b);
 void e_messages_show_tail(ECNT *cn);
-/* we_unix.c: the exit status the SIGCHLD handler kept for a child. */
-int WpeReapedStatus(int pid, int *status);
-/* we_unix.c: be called back from the editor's fd loop when a child ends,
-   with its wait status, instead of waiting for it. */
-typedef void (*WpeChildEndCallback)(int pid, int status, void *data);
-#define WPE_CHILD_RUNS          0   /* WpeChildEnded: still running */
-#define WPE_CHILD_ENDED         1   /* ended, status known */
-#define WPE_CHILD_ENDED_UNKNOWN 2   /* ended, status lost */
-void WpeChildWakeOpen(void);
-void WpeChildSignalBlock(sigset_t *saved);
-void WpeChildSignalRestore(const sigset_t *saved);
-int  WpeChildWatch(int pid, WpeChildEndCallback cb, void *data);
-void WpeChildUnwatch(int pid);
-int  WpeChildEnded(int pid, int *status);
+/* we_child.c: the editor's children, started, watched and ended in one
+   place; their ends come back from the fd loop, nobody waits for them. */
+#include "we_child.h"
 /* we_unix.c: the running build's process group, for the signal handlers. */
 void WpeBuildGroupSet(int pgid);
 int e_c_project(FENSTER *f, e_build_cont done, void *data);

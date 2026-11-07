@@ -381,6 +381,9 @@
   {"id": "SC-debug-69", "requirement": "One owner of input, of children, of writes and of keys", "layer": "wayland", "test": "tests/wayland/test_dap_answer_wait.py::test_dlv_keys_reach_the_editor_while_it_answers", "status": "new", "needs": ["weston", "a debug session (skips under the headless compositor)"]},
   {"id": "SC-debug-70", "requirement": "One owner of input, of children, of writes and of keys", "layer": "ncurses", "test": "tests/test_debugger_integration.py::test_quit_while_running_takes_keys_during_disconnect_under_an_adapter", "status": "new", "needs": ["dlv", "go", "rustc", "lldb-dap", "gdb"]},
   {"id": "SC-debug-70", "requirement": "One owner of input, of children, of writes and of keys", "layer": "ncurses", "test": "tests/test_debugger_integration.py::test_keys_during_the_editors_end_neither_cut_its_wait_nor_spin", "status": "new", "needs": ["dlv", "go"]},
-  {"id": "SC-debug-70", "requirement": "One owner of input, of children, of writes and of keys", "layer": "c-unit", "test": "test_dap", "status": "new"}
+  {"id": "SC-debug-70", "requirement": "One owner of input, of children, of writes and of keys", "layer": "c-unit", "test": "test_dap", "status": "new"},
+  {"id": "SC-debug-72", "requirement": "One owner of input, of children, of writes and of keys", "layer": "ncurses", "test": "tests/test_child_ends.py::test_build_end_is_reported_when_many_children_end_at_once", "status": "new"},
+  {"id": "SC-debug-72", "requirement": "One owner of input, of children, of writes and of keys", "layer": "ncurses", "test": "tests/test_child_ends.py::test_esc_ends_a_build_whose_compiler_child_ignores_sigterm", "status": "new"},
+  {"id": "SC-debug-72", "requirement": "One owner of input, of children, of writes and of keys", "layer": "c-unit", "test": "test_child", "status": "new"}
  ]
 }

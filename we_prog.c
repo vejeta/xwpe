@@ -1279,68 +1279,83 @@ int e_comp(FENSTER *f, e_build_cont done, void *data)
  return(0);
 }
 
+/* How the build's child ended, as its watch reported it.  Kept apart from
+   the step's state, which is reset when the step begins: the end may be
+   reported between the fork and that point. */
+typedef struct {
+ int pid;        /* the child whose end this is, or 0 */
+ int ended;      /* its end was reported */
+ int status;     /* its wait status, once ended */
+} e_build_child_end_t;
+
+static e_build_child_end_t e_build_child_end;
+static WpeChild e_build_child;     /* the step's process, while it runs */
+
+#define E_BUILD_WHAT "the build"
+
+static void e_build_child_ended(WpeChild *c, int status, int how, void *data);
+
+/**
+ * e_build_spec - How the children's owner runs one command of a build.
+ * @spec: filled in; @argv: the command.
+ *
+ * Its own process group, so Esc ends make together with the compiler it
+ * started; stdin from /dev/null, so the command can never take the terminal
+ * from the editor; stdout and stderr in one pipe, so the lines reach
+ * Messages in the order the build wrote them (a make's echoed command before
+ * the compiler's errors), the command line first.
+ */
+static void e_build_spec(WpeChildSpec *spec, char **argv)
+{
+ memset(spec, 0, sizeof *spec);
+ spec->argv = argv;
+ spec->io = WPE_CHILD_IO_PIPES;
+ spec->group = WPE_CHILD_OWN_GROUP;
+ spec->stdin_null = 1;
+ spec->stderr_to_stdout = 1;
+ spec->echo_argv = 1;
+ spec->exec_failed = e_p_msg[ERR_IN_COMMAND];
+ spec->what = E_BUILD_WHAT;
+}
+
+/**
+ * e_build_forget_previous - A step's process whose end was never reported
+ * (a step given up on) is let go before the next one starts, so the new
+ * step's end is never taken for the old one's.
+ */
+static void e_build_forget_previous(void)
+{
+ if (e_build_child.pid > 0)
+  wpe_child_forget(&e_build_child);
+}
+
 int e_exec_inf(FENSTER *f, char **argv, int n)
 {
- int pid, nul;
+ WpeChildSpec spec;
+
+ (void)n;
 #ifdef DEBUGGER
  if (e_d_swtch > 0)
   e_d_quit(f);
 #endif
  fflush(stdout);
- /* One pipe for the child's stdout and stderr together: the lines reach
-    Messages in the order the build wrote them (a make's echoed command
-    before the compiler's errors).  Two pipes kept the two streams apart and
-    the loop could read the later one first.  efildes carries the pipe;
-    wfildes stays unused and closed, as the callers expect. */
- if (pipe(efildes) < 0)
+ /* efildes carries the one output pipe; wfildes stays unused, as the
+    callers expect. */
+ efildes[0] = efildes[1] = wfildes[0] = wfildes[1] = -1;
+ e_build_forget_previous();
+ e_build_spec(&spec, argv);
+ if (wpe_child_start(&spec, &e_build_child, e_build_child_ended, NULL) < 0)
  {
-  e_error(e_p_msg[ERR_PIPEOPEN], 0, f->fb);
-  return(0);
- }
- wfildes[0] = wfildes[1] = -1;
-
- if ((e_save_pid = pid = fork()) > 0)
- {
-  /* The build leads its own process group, so Esc can end make together
-     with the compiler it started.  Set on both sides of the fork: whichever
-     runs first, the group exists before the parent may signal it. */
-  setpgid(pid, pid);
-  /* Parent: keep the read ends; close the write ends so read() sees EOF when
-     the child exits, and CLOEXEC so a later child does not inherit them. */
-  close(efildes[1]);
-  efildes[1] = -1;
-  fcntl(efildes[0], F_SETFD, FD_CLOEXEC);
-  return(1);
- }
- if (pid < 0)
- {
+  e_save_pid = 0;
   e_error(e_p_msg[ERR_PROCESS], 0, f->fb);
-  close(efildes[0]); close(efildes[1]);
-  efildes[0] = efildes[1] = -1;
   return(0);
  }
-
- /* Child: stdout and stderr -> the pipe's write end, and stdin -> /dev/null
-    so the command can never grab the controlling tty and corrupt the
-    parent's curses screen.  Then close every pipe fd (the dup2'd copies on
-    0/1/2 survive). */
- setpgid(0, 0);
- wpe_child_default_signals();    /* so Esc and Ctrl-C reach the compiler */
- dup2(efildes[1], 2);
- dup2(efildes[1], 1);
- if ((nul = open("/dev/null", O_RDONLY)) >= 0)
- {
-  dup2(nul, 0);
-  if (nul > 2)
-   close(nul);
- }
- close(efildes[0]); close(efildes[1]);
- e_print_arg(stderr, "", argv, n);
- execvp(argv[0], argv);
- e_print_arg(stderr, e_p_msg[ERR_IN_COMMAND], argv, n);
- _exit(1);
- /* Can never get here */
- return 0;
+ e_save_pid = e_build_child.pid;
+ e_build_child_end.pid = e_build_child.pid;
+ e_build_child_end.ended = 0;
+ e_build_child_end.status = 0;
+ efildes[0] = e_build_child.out_fd;
+ return(1);
 }
 
 int e_print_arg(FILE *fp, char *s, char **argv, int n)
@@ -1469,9 +1484,6 @@ static int e_p_pump_fd(int fd, char **acc, int *acclen, BUFFER *b)
 
 /* The waiting line turns this often: the assistant's heartbeat cadence. */
 #define E_BUILD_TICK_NS 120000000L
-/* After Esc sends SIGTERM, this many ticks (about two seconds) pass before
-   SIGKILL: a build that traps or ignores SIGTERM still ends. */
-#define E_BUILD_KILL_TICKS 17
 /* A child that prints more than this in one step is malfunctioning (a68g's
    abend recursion pinned the editor at 100% CPU draining it); it is killed
    at the source. */
@@ -1498,7 +1510,6 @@ typedef struct {
  unsigned long drained; /* bytes read in this step (the runaway cap)       */
  int runaway;
  int cancelled;         /* Esc was pressed                                 */
- int term_ticks;        /* heartbeat ticks since SIGTERM                   */
  int reaped;            /* the child has been waited for                   */
  int status;            /* its wait status                                 */
  int held;              /* it ended while a box was up                     */
@@ -1728,23 +1739,17 @@ static void e_build_paint(void)
 
 /**
  * e_build_signal - Send @sig to the build and every process it started.
- * @sig: SIGTERM on Esc, SIGKILL when that was not enough or on a runaway.
+ * @sig: SIGKILL, on a runaway or when the editor ends.
  *
  * make runs the compiler as its own child; ending make alone would leave
  * the compiler writing into the pipe, so the whole process group is hit.
+ * Nothing is sent once the build has ended.
  */
 static void e_build_signal(int sig)
 {
- if (g_build.pid <= 0)
-  return;
- if (kill(-g_build.pid, sig) < 0)
-  kill(g_build.pid, sig);
+ wpe_child_signal(&e_build_child, sig);
 }
 
-/**
- * e_build_try_reap - Collect the child's exit status if it has exited.
- * Return: 1 once it is reaped.
- */
 /**
  * e_build_mark_reaped - The build's child has been waited for.
  *
@@ -1757,10 +1762,14 @@ static void e_build_mark_reaped(void)
  WpeBuildGroupSet(0);
 }
 
+/**
+ * e_build_try_reap - Has the step's child ended?  Take its status if so.
+ *
+ * Read from what the child's watch reported; nothing here asks waitpid.
+ * Return: 1 once the child is gone.
+ */
 static int e_build_try_reap(void)
 {
- int r;
-
  if (g_build.reaped)
   return(1);
  if (g_build.pid <= 0)
@@ -1768,12 +1777,11 @@ static int e_build_try_reap(void)
   e_build_mark_reaped();
   return(1);
  }
- r = waitpid(g_build.pid, &g_build.status, WNOHANG);
- if (r == g_build.pid || (r < 0 && errno == ECHILD))
-  e_build_mark_reaped();
- if (r < 0 && !WpeReapedStatus(g_build.pid, &g_build.status))
-  g_build.status = 0;      /* reaped and not kept: judge by the parsed rows */
- return(g_build.reaped);
+ if (e_build_child_end.pid != g_build.pid || !e_build_child_end.ended)
+  return(0);
+ g_build.status = e_build_child_end.status;
+ e_build_mark_reaped();
+ return(1);
 }
 
 /**
@@ -1817,23 +1825,42 @@ static void e_build_finish_or_hold(void)
 }
 
 /**
- * e_build_after_streams_closed - Both pipes are at EOF: reap the child.
+ * e_build_after_streams_closed - Both pipes are at EOF: end the step once
+ * the child has ended too.
  *
- * A child closes its pipes just before it exits, so it is normally reaped
- * at once; otherwise the heartbeat looks again on its next tick.  When the
- * timer table had no room for the heartbeat, the wait is the short one
- * between the close and the exit.
+ * A child closes its pipes just before it exits; when its end was not
+ * reported yet, e_build_child_ended ends the step the moment it is.
  */
 static void e_build_after_streams_closed(void)
 {
- if (!e_build_try_reap() && g_build.hb_timer == WPE_TIMER_NONE)
- {
-  while (waitpid(g_build.pid, &g_build.status, 0) < 0 && errno == EINTR)
-   ;
-  e_build_mark_reaped();
- }
- if (g_build.reaped)
+ if (e_build_try_reap())
   e_build_finish_or_hold();
+}
+
+/**
+ * e_build_child_ended - The build's child ended (the children's owner, from
+ * the loop).
+ * @c: the child; @status: its wait status; @how: WPE_CHILD_ENDED, or
+ * WPE_CHILD_ENDED_UNKNOWN for one that did not end even after SIGKILL;
+ * @data: unused.
+ *
+ * The status is kept for the step's verdict, so the user reads the build's
+ * own exit code even when many processes ended at the same moment.  When
+ * the output already ended, the step ends now.
+ */
+static void e_build_child_ended(WpeChild *c, int status, int how, void *data)
+{
+ int pid = e_build_child_end.pid;
+
+ (void)c;
+ (void)how;
+ (void)data;
+ e_build_child_end.ended = 1;
+ e_build_child_end.status = status;
+ if (!g_build.active || g_build.held || g_build.pid != pid)
+  return;
+ if (!e_build_streams_open())
+  e_build_after_streams_closed();
 }
 
 /**
@@ -1894,21 +1921,7 @@ static void e_build_on_output(int fd, void *data)
 }
 
 /**
- * e_build_escalate - A cancelled build that is still alive after the grace
- * ticks is killed outright.
- */
-static void e_build_escalate(void)
-{
- if (!g_build.cancelled || g_build.reaped)
-  return;
- g_build.term_ticks++;
- if (g_build.term_ticks == E_BUILD_KILL_TICKS)
-  e_build_signal(SIGKILL);
-}
-
-/**
- * e_build_on_tick - The heartbeat: turn the waiting line, finish a child
- * that has closed its pipes, and escalate a cancel.
+ * e_build_on_tick - The heartbeat: turn the waiting line.
  * @data: unused.
  *
  * It runs while the build is silent too, so the seconds on the waiting line
@@ -1919,7 +1932,6 @@ static void e_build_on_tick(void *data)
  (void)data;
  if (!g_build.active || g_build.held)
   return;
- e_build_escalate();
  if (!e_build_streams_open())
  {
   if (e_build_try_reap())
@@ -1958,9 +1970,10 @@ static void e_build_heartbeat_stop(void)
  * e_build_cancel - Esc while a build runs: end it.
  *
  * The child and everything it started get SIGTERM; if they are still there
- * about two seconds later, SIGKILL.  The step then ends with "build
- * cancelled" in Messages and no later step runs, so no program is linked or
- * started from a build the user stopped.
+ * WPE_CHILD_END_GRACE_MS later, SIGKILL (the children's owner's ladder, on
+ * the loop).  The step then ends with "build cancelled" in Messages and no
+ * later step runs, so no program is linked or started from a build the
+ * user stopped.
  */
 void e_build_cancel(void)
 {
@@ -1972,10 +1985,7 @@ void e_build_cancel(void)
  if (!g_build.active || g_build.cancelled)
   return;
  g_build.cancelled = 1;
- g_build.term_ticks = 0;
- e_build_signal(SIGTERM);
- if (g_build.hb_timer == WPE_TIMER_NONE)
-  e_build_signal(SIGKILL);       /* no timer to wait on: end it now */
+ wpe_child_end(&e_build_child, SIGTERM);
 }
 
 /**
@@ -2044,8 +2054,8 @@ static int e_build_watch_stream(int fd)
 static void e_build_give_up_unwatched(void)
 {
  e_build_cancel();
- if (!e_build_streams_open() && g_build.hb_timer == WPE_TIMER_NONE)
-  e_build_after_streams_closed();   /* nothing else would reap the child */
+ if (!e_build_streams_open())
+  e_build_after_streams_closed();   /* no output callback will come */
 }
 
 /**
@@ -2092,9 +2102,9 @@ static void e_build_flush_fragments(BUFFER *b)
 /**
  * e_build_exit_code - The child's exit code, 0 when it cannot be known.
  *
- * The editor's SIGCHLD handler may reap the child first; it keeps the status
- * for us (WpeReapedStatus).  Only a status lost to a full ring leaves the
- * parsed rows to decide success or failure, as they always did.
+ * The child's watch reports its status (e_build_child_ended), so a build
+ * that failed is reported as failed even when its last command printed
+ * nothing the error parser knows.
  */
 static int e_build_exit_code(void)
 {
