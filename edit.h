@@ -922,6 +922,8 @@ int e_start_debug(FENSTER *f);
 int e_run_debug(FENSTER *f);
 int e_d_start_busy(void);
 void e_d_start_cancel(void);
+int e_scala_setup_busy_any(void);
+void e_scala_setup_cancel(void);
 int e_d_answer_busy(void);
 void e_d_answer_cancel(void);
 void e_d_start_deliver_held(void);

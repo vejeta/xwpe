@@ -22,8 +22,17 @@
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
+#include <termios.h>
+#include <sys/ioctl.h>
 #include <sys/types.h>
 #include <sys/wait.h>
+#if defined(HAVE_PTY_H)
+# include <pty.h>          /* glibc: openpty */
+#elif defined(HAVE_UTIL_H)
+# include <util.h>         /* macOS, *BSD */
+#elif defined(HAVE_LIBUTIL_H)
+# include <libutil.h>      /* some BSDs */
+#endif
 
 #include "we_child.h"
 #include "we_childsig.h"
@@ -71,6 +80,12 @@ typedef struct {
 } WpeChildLinger;
 
 static WpeChildLinger wpe_child_lingers[WPE_CHILD_MAX];
+
+/* Children whose owner has gone (a language server's session, freed when the
+   user switched files): the owner keeps them here while their end runs, so
+   the slot's pointer never outlives what it points to.  A record is free
+   while its pid is 0. */
+static WpeChild wpe_child_detached[WPE_CHILD_MAX];
 
 /* The self-pipe: the handler writes one byte when a watched child ends; the
    fd loop watches the read end while any slot is taken. */
@@ -648,12 +663,61 @@ static void wpe_child_pipes_close(int (*p)[2], int n)
 /** wpe_child_spec_wants_err_pipe - Does stderr get a pipe of its own? */
 static int wpe_child_spec_wants_err_pipe(const WpeChildSpec *spec)
 {
- return(!spec->stderr_to_stdout && !spec->stderr_to_null);
+ return(!spec->stderr_to_stdout && !spec->stderr_to_null &&
+        !spec->stderr_inherit);
+}
+
+/* The two ends of a child's pty, WPE_CHILD_NO_FD where it has none. */
+typedef struct {
+ int master;                     /* the editor's: what the program writes */
+ int slave;                      /* the child's terminal */
+} WpeChildPty;
+
+/** wpe_child_pty_close - Close what is still open of a pty. */
+static void wpe_child_pty_close(WpeChildPty *t)
+{
+ if (t->master != WPE_CHILD_NO_FD)
+  close(t->master);
+ if (t->slave != WPE_CHILD_NO_FD)
+  close(t->slave);
+ t->master = t->slave = WPE_CHILD_NO_FD;
+}
+
+/**
+ * wpe_child_pty_open - The pty the spec asks for.
+ * @spec: the child; @t: receives it, both ends WPE_CHILD_NO_FD when none
+ * is wanted.
+ *
+ * With pty_raw the terminal does no output processing, so what the program
+ * prints reaches the editor as it wrote it, with no carriage return added
+ * to each line end.
+ * Return: 0, or -1 (and nothing open) when no pty could be had.
+ */
+static int wpe_child_pty_open(const WpeChildSpec *spec, WpeChildPty *t)
+{
+ struct termios tio;
+
+ t->master = t->slave = WPE_CHILD_NO_FD;
+ if (spec->io != WPE_CHILD_IO_PTY)
+  return(0);
+ if (openpty(&t->master, &t->slave, NULL, NULL, NULL) != 0)
+ {
+  t->master = t->slave = WPE_CHILD_NO_FD;
+  return(-1);
+ }
+ if (spec->pty_raw && tcgetattr(t->master, &tio) == 0)
+ {
+  cfmakeraw(&tio);
+  tcsetattr(t->master, TCSANOW, &tio);
+ }
+ return(0);
 }
 
 /**
  * wpe_child_pipes_open - The pipes the spec asks for.
  * @spec: the child; @p: receives them, -1 where none is wanted.
+ *
+ * A child on a pty has its terminal for 0, 1 and 2, and no pipe.
  * Return: 0, or -1 (and nothing open) when a pipe could not be made.
  */
 static int wpe_child_pipes_open(const WpeChildSpec *spec, int (*p)[2])
@@ -662,7 +726,9 @@ static int wpe_child_pipes_open(const WpeChildSpec *spec, int (*p)[2])
 
  for (i = 0; i < WPE_CHILD_P_N; i++)
   p[i][0] = p[i][1] = WPE_CHILD_NO_FD;
- if (pipe(p[WPE_CHILD_P_OUT]) < 0)
+ if (spec->io == WPE_CHILD_IO_PTY)
+  return(0);
+ if (!spec->stdout_to_null && pipe(p[WPE_CHILD_P_OUT]) < 0)
   return(-1);
  if (!spec->stdin_null && pipe(p[WPE_CHILD_P_IN]) < 0)
  {
@@ -704,32 +770,74 @@ static void wpe_child_dup_null(int fd, int flags)
 }
 
 /**
- * wpe_child_exec - In the child: set it up as @spec says and run it.
+ * wpe_child_io_pipes - In the child: the pipes on 0, 1 and 2 as @spec says.
  * @spec: the child; @p: the pipes.
+ */
+static void wpe_child_io_pipes(const WpeChildSpec *spec, int (*p)[2])
+{
+ if (spec->stdin_null)
+  wpe_child_dup_null(WPE_CHILD_FD_IN, O_RDONLY);
+ else
+  dup2(p[WPE_CHILD_P_IN][WPE_CHILD_PIPE_RD], WPE_CHILD_FD_IN);
+ if (spec->stdout_to_null)
+  wpe_child_dup_null(STDOUT_FILENO, O_WRONLY);
+ else
+  dup2(p[WPE_CHILD_P_OUT][WPE_CHILD_PIPE_WR], STDOUT_FILENO);
+ if (spec->stderr_to_stdout)
+  dup2(STDOUT_FILENO, STDERR_FILENO);
+ else if (spec->stderr_to_null)
+  wpe_child_dup_null(STDERR_FILENO, O_WRONLY);
+ else if (!spec->stderr_inherit)
+  dup2(p[WPE_CHILD_P_ERR][WPE_CHILD_PIPE_WR], STDERR_FILENO);
+}
+
+/**
+ * wpe_child_io_pty - In the child, in a session of its own: the pty
+ * becomes its controlling terminal and its 0, 1 and 2.
+ * @t: the pty; the slave is closed here once on 0, 1 and 2.
+ *
+ * dlv runs its program in the foreground of that terminal, which a pipe
+ * cannot be, and the program's output then reaches the editor's master.
+ */
+static void wpe_child_io_pty(WpeChildPty *t)
+{
+ ioctl(t->slave, TIOCSCTTY, 0);
+ dup2(t->slave, WPE_CHILD_FD_IN);
+ dup2(t->slave, STDOUT_FILENO);
+ dup2(t->slave, STDERR_FILENO);
+ if (t->slave > STDERR_FILENO)
+  close(t->slave);
+ t->slave = WPE_CHILD_NO_FD;
+}
+
+/**
+ * wpe_child_exec - In the child: set it up as @spec says and run it.
+ * @spec: the child; @p: the pipes; @t: the pty; @editor: the editor's
+ * process ID, read before the fork.
  *
  * Does not return.  The program gets the signal state a shell would give
- * it, its own group or session, and only the descriptors 0, 1 and 2.
+ * it, its own group or session, and only the descriptors 0, 1 and 2.  It
+ * never holds the master of its own pty: the hangup that ends it when the
+ * editor dies comes only once every master is closed.
  */
-static void wpe_child_exec(const WpeChildSpec *spec, int (*p)[2])
+static void wpe_child_exec(const WpeChildSpec *spec, int (*p)[2],
+                           WpeChildPty *t, pid_t editor)
 {
  wpe_child_default_signals();
  if (spec->group == WPE_CHILD_OWN_GROUP)
   setpgid(0, 0);
  else
   wpe_child_apart_from_terminal();
+ if (spec->die_with_editor && wpe_child_die_with_editor(editor) != 0)
+  _exit(WPE_CHILD_EXEC_FAILED);
  if (spec->cwd && chdir(spec->cwd) != 0)
   _exit(WPE_CHILD_EXEC_FAILED);
- if (spec->stdin_null)
-  wpe_child_dup_null(WPE_CHILD_FD_IN, O_RDONLY);
+ if (t->master != WPE_CHILD_NO_FD)
+  close(t->master);
+ if (spec->io == WPE_CHILD_IO_PTY)
+  wpe_child_io_pty(t);
  else
-  dup2(p[WPE_CHILD_P_IN][WPE_CHILD_PIPE_RD], WPE_CHILD_FD_IN);
- dup2(p[WPE_CHILD_P_OUT][WPE_CHILD_PIPE_WR], STDOUT_FILENO);
- if (spec->stderr_to_stdout)
-  dup2(STDOUT_FILENO, STDERR_FILENO);
- else if (spec->stderr_to_null)
-  wpe_child_dup_null(STDERR_FILENO, O_WRONLY);
- else
-  dup2(p[WPE_CHILD_P_ERR][WPE_CHILD_PIPE_WR], STDERR_FILENO);
+  wpe_child_io_pipes(spec, p);
  wpe_child_pipes_close(p, WPE_CHILD_P_N);
  if (spec->echo_argv)
   wpe_child_print_argv(stderr, "", spec->argv);
@@ -769,11 +877,39 @@ static void wpe_child_take_ends(WpeChild *c, int (*p)[2])
                                 p[WPE_CHILD_P_ERR][WPE_CHILD_PIPE_WR]);
 }
 
+/**
+ * wpe_child_input_blocking - The editor's end of the child's stdin goes
+ * back to blocking, for a writer that sends each message whole with plain
+ * writes: a message longer than the pipe holds then waits for the child to
+ * read, instead of being cut off.
+ * @c: the child.
+ */
+static void wpe_child_input_blocking(WpeChild *c)
+{
+ int fl;
+
+ if (c->in_fd == WPE_CHILD_NO_FD)
+  return;
+ fl = fcntl(c->in_fd, F_GETFL, 0);
+ if (fl >= 0)
+  fcntl(c->in_fd, F_SETFL, fl & ~O_NONBLOCK);
+}
+
+/**
+ * wpe_child_take_pty - In the parent: the editor's end of the pty.
+ * @c: the child; @t: the pty, its slave closed afterwards.
+ */
+static void wpe_child_take_pty(WpeChild *c, WpeChildPty *t)
+{
+ c->pty_fd = wpe_child_keep_end(t->master, t->slave);
+ t->master = t->slave = WPE_CHILD_NO_FD;
+}
+
 /** wpe_child_reset - A WpeChild with no process and no descriptors. */
 static void wpe_child_reset(WpeChild *c)
 {
  memset(c, 0, sizeof *c);
- c->in_fd = c->out_fd = c->err_fd = WPE_CHILD_NO_FD;
+ c->in_fd = c->out_fd = c->err_fd = c->pty_fd = WPE_CHILD_NO_FD;
  c->end_stage = WPE_CHILD_END_NONE;
 }
 
@@ -795,6 +931,7 @@ static void wpe_child_drop_ends(WpeChild *c)
  wpe_child_close_fd(c->in_fd);
  wpe_child_close_fd(c->out_fd);
  wpe_child_close_fd(c->err_fd);
+ wpe_child_close_fd(c->pty_fd);
  wpe_child_reset(c);
 }
 
@@ -803,11 +940,14 @@ static void wpe_child_drop_ends(WpeChild *c)
  *
  * A free slot, and the wake pipe on the loop: both are taken before the
  * fork, so a start the editor could not follow is refused before anything
- * runs, and the user reads why.
+ * runs, and the user reads why.  The wake pipe is made here if start-up
+ * did not make it (a protocol test that starts a server without the
+ * editor around it).
  * Return: 1 when there is room.
  */
 static int wpe_child_room(void)
 {
+ WpeChildWakeOpen();
  if (!wpe_child_free_slot() || wpe_child_wake_rd == WPE_CHILD_NO_FD)
   return(0);
  return(wpe_fd_add(wpe_child_wake_rd, POLLIN, wpe_child_on_wake, NULL) == 0);
@@ -861,27 +1001,38 @@ int wpe_child_start(const WpeChildSpec *spec, WpeChild *c,
                     WpeChildEndedFn ended, void *data)
 {
  int p[WPE_CHILD_P_N][2];
+ WpeChildPty t;
  WpeChildSlot *w;
  sigset_t saved;
+ const pid_t editor = getpid();
  pid_t pid;
 
  wpe_child_reset(c);
  WpeChildSignalBlock(&saved);
  if (!wpe_child_room())
   return(wpe_child_refuse(spec, &saved));
- if (wpe_child_pipes_open(spec, p) < 0)
+ if (wpe_child_pty_open(spec, &t) < 0)
   return(wpe_child_start_failed(&saved));
+ if (wpe_child_pipes_open(spec, p) < 0)
+ {
+  wpe_child_pty_close(&t);
+  return(wpe_child_start_failed(&saved));
+ }
  pid = fork();
  if (pid == 0)
-  wpe_child_exec(spec, p);
+  wpe_child_exec(spec, p, &t, editor);
  if (pid < 0)
  {
   wpe_child_pipes_close(p, WPE_CHILD_P_N);
+  wpe_child_pty_close(&t);
   return(wpe_child_start_failed(&saved));
  }
  if (spec->group == WPE_CHILD_OWN_GROUP)
   setpgid(pid, pid);   /* both sides: the group exists before any signal */
  wpe_child_take_ends(c, p);
+ wpe_child_take_pty(c, &t);
+ if (spec->blocking_input)
+  wpe_child_input_blocking(c);
  w = wpe_child_slot_take(pid);
  if (!w)
  {
@@ -892,7 +1043,7 @@ int wpe_child_start(const WpeChildSpec *spec, WpeChild *c,
   return(wpe_child_refuse(spec, &saved));
  }
  c->pid = pid;
- c->leads_group = 1;
+ c->leads_group = !spec->signal_leader_only;
  w->child = c;
  w->child_ended = ended;
  w->child_data = data;
@@ -1121,11 +1272,15 @@ static void wpe_child_ladder_rearm(void)
  * Returns at once.  The child gets WPE_CHILD_END_GRACE_MS to end, then
  * SIGKILL to its group, then WPE_CHILD_END_KILL_MS more before the owner is
  * told it did not end.  Its end is reported as usual, by the callback.  A
- * second call while the ladder runs takes its next step now.
+ * second call during the grace sends SIGKILL now; once SIGKILL is out, a
+ * call changes nothing, so a key pressed again and again never gives up on a
+ * child the kernel is still ending.
  */
 void wpe_child_end(WpeChild *c, int polite_sig)
 {
  if (c->pid <= 0)
+  return;
+ if (c->end_stage == WPE_CHILD_END_KILL)
   return;
  if (c->end_stage != WPE_CHILD_END_NONE)
  {
@@ -1138,6 +1293,111 @@ void wpe_child_end(WpeChild *c, int polite_sig)
   wpe_child_signal(c, polite_sig);
  c->end_due_ms = wpe_child_now_ms() + WPE_CHILD_END_GRACE_MS;
  wpe_child_ladder_rearm();
+}
+
+/**
+ * wpe_child_detached_ended - The callback of a child whose owner has gone:
+ * nobody is told, and its record is free again (its pid is 0 already).
+ */
+static void wpe_child_detached_ended(WpeChild *c, int status, int how,
+                                     void *data)
+{
+ (void)c;
+ (void)status;
+ (void)how;
+ (void)data;
+}
+
+/** wpe_child_detached_record - A free record for a child, or NULL. */
+static WpeChild *wpe_child_detached_record(void)
+{
+ int i;
+
+ for (i = 0; i < WPE_CHILD_MAX; i++)
+  if (wpe_child_detached[i].pid <= 0)
+   return(&wpe_child_detached[i]);
+ return(NULL);
+}
+
+/**
+ * wpe_child_detach - Move a child into one of the owner's own records.
+ * @c: the child, its slot's.  SIGCHLD held.
+ * Return: the record now followed in its place, or NULL when @c is not
+ * followed (or, never in practice, no record is free).
+ */
+static WpeChild *wpe_child_detach(WpeChild *c)
+{
+ WpeChildSlot *w = wpe_child_find(c->pid);
+ WpeChild *d;
+
+ if (!w || w->child != c)
+  return(NULL);
+ d = wpe_child_detached_record();
+ if (!d)
+  return(NULL);
+ *d = *c;
+ w->child = d;
+ w->child_ended = wpe_child_detached_ended;
+ w->child_data = NULL;
+ return(d);
+}
+
+/**
+ * wpe_child_end_detached - End a child whose owner is going away, without
+ * waiting for it.
+ * @c: the child; @polite_sig: as for wpe_child_end.
+ *
+ * The owner frees @c at once (a language server's session when the user
+ * opens another file, the build server's at the end of a Scala debug
+ * session): the end goes on in a record of the owner's, on the same ladder,
+ * and nobody is called back; "<what> did not end" is still said.  @c holds
+ * no process afterwards; its descriptors are the caller's to close.
+ */
+void wpe_child_end_detached(WpeChild *c, int polite_sig)
+{
+ WpeChild *d;
+ sigset_t saved;
+
+ if (c->pid <= 0)
+  return;
+ WpeChildSignalBlock(&saved);
+ d = wpe_child_detach(c);
+ WpeChildSignalRestore(&saved);
+ if (!d)
+ {
+  wpe_child_signal(c, SIGKILL);
+  wpe_child_forget(c);
+  return;
+ }
+ c->pid = 0;
+ c->end_stage = WPE_CHILD_END_NONE;
+ if (d->end_stage == WPE_CHILD_END_NONE)
+  wpe_child_end(d, polite_sig);
+ else
+  wpe_child_ladder_rearm();
+}
+
+/**
+ * wpe_child_ending - How many children are being ended and not gone yet.
+ *
+ * The editor's own end waits, within its bound, until this is 0, so a
+ * language server or a build server that ignores SIGTERM does not outlive
+ * the editor.
+ * Return: the number of ladders still running, groups whose rest is still
+ * to be killed included.
+ */
+int wpe_child_ending(void)
+{
+ int i, n = 0;
+
+ for (i = 0; i < WPE_CHILD_MAX; i++)
+ {
+  if (wpe_child_in_ladder(&wpe_child_table[i]))
+   n++;
+  if (wpe_child_lingers[i].pgid)
+   n++;
+ }
+ return(n);
 }
 
 /**

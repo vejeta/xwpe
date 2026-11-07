@@ -347,7 +347,10 @@ cs install metals
 @item @strong{@command{scala-cli}} -- the build tool Metals drives
 (@code{cs install scala-cli}).  xwpe runs @code{scala-cli setup-ide} for you, so
 Metals connects to the build server automatically; it is the same tooling the
-Scala debugger uses (@pxref{Debugging}).
+Scala debugger uses (@pxref{Debugging}).  It runs while you keep typing:
+Messages says @samp{Preparing the Scala build (scala-cli setup-ide); Esc
+cancels it...}, and Metals starts once it has ended; @kbd{Esc} ends it and
+starts nothing.
 
 @item @strong{A JDK the Scala@tie{}3 compiler supports -- and Metals must run on
 it.}  This is the subtle one; see the next subsection.

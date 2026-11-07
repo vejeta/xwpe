@@ -274,6 +274,21 @@ Changes
   "the build did not end" on the status row instead of leaving the
   waiting line turning.
 
+* A language server that does not end no longer holds the editor: when
+  you open another file, or leave the editor, it gets SIGTERM and 2
+  seconds, and then it is killed with the helpers it started, while you
+  keep typing; the editor's own end waits for it, within its bound, so no
+  server is left behind.  Metals alone is ended without its helpers, so
+  the Scala build server (Bloop) it may have started keeps running for
+  other editors and the debugger.  The Scala debugger's build server
+  launcher is ended the same way, on Quit.  `scala-cli setup-ide`, which
+  the language server and the first Scala debug session run first, no
+  longer freezes the editor: Messages says it runs, the server or the
+  session starts once it has ended, and Esc cancels it.  A debug adapter
+  (dlv, lldb-dap, gdb) killed from outside during a session now ends it
+  with "<adapter> ended unexpectedly (exit status N)", as a line debugger
+  does, instead of "End of Debugging".
+
 * The same now holds while gdb starts and at every Run, Continue, step,
   Finish and Go to cursor: gdb's settings, your breakpoints and the run
   command are asked while you keep typing.  F8 typed while gdb starts

@@ -52,6 +52,12 @@ typedef struct {
     (set a flag, refetch at a safe point).  May be NULL. */
  void (*on_semantic_refresh)(void *ud);
  void *ud;
+ /* 1 when the server may start a build server other editors share (Metals
+    and Bloop, which stays in the session of whoever started it): ending the
+    server then signals the server alone, never its group, so the shared
+    build server goes on.  0 for the others: the server and every helper it
+    started are ended together. */
+ int server_shares_daemon;
 } e_lsp_host;
 
 typedef struct e_lsp_session e_lsp_session;

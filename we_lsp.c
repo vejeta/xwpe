@@ -11,19 +11,19 @@
 #include <time.h>
 #include <limits.h>
 #include <sys/types.h>
-#include <sys/wait.h>
 
 #include "we_lsp.h"
-#include "we_childsig.h"
+#include "we_child.h"
 #include "we_dap_proto.h"        /* e_dap_reader: shared Content-Length framing */
 #include "we_fdloop.h"           /* wpe_fd_readable_now */
 
 #define LSP_TMO_INIT  120000     /* server start + initialize                */
 #define LSP_TMO_BUILD 240000     /* import build + first compile (cold cache) */
 #define LSP_TMO_REQ    30000     /* an interactive request once warm          */
+#define LSP_SERVER_WHAT "the language server"   /* in the owner's lines */
 
 struct e_lsp_session {
- pid_t        pid;
+ WpeChild     server;            /* the server's process, the owner's to end */
  int          in_fd;             /* write requests to the server's stdin  */
  int          out_fd;            /* read messages from the server's stdout */
  e_dap_reader rd;
@@ -595,40 +595,38 @@ static struct json_object *lsp_pump(e_lsp_session *s, int want_id,
 
 /* ---- spawn + handshake ------------------------------------------------- */
 
-static pid_t lsp_spawn(char *const argv[], const char *cwd, int *in_fd, int *out_fd)
+/**
+ * lsp_spawn - Start the language server for a session.
+ * @s: the session; @argv: the server's command line; @cwd: the project.
+ *
+ * In a session of its own, so a Ctrl-C typed for a script run from the
+ * editor spares it; its stderr goes nowhere, since servers are chatty there
+ * and the editor's screen would show it; a server that writes to a closed
+ * pipe ends, as from a shell.  The editor follows its end, so closing the
+ * session later never signals a number another process has by then.  Its
+ * end reaches its whole group (an indexer it started goes with it), except
+ * for a server whose group may hold a shared build server
+ * (e_lsp_host.server_shares_daemon), which is signalled alone.
+ * Return: 0, or -1 when it could not be started.
+ */
+static int lsp_spawn(e_lsp_session *s, char *const argv[], const char *cwd)
 {
- int to_child[2], from_child[2];
- pid_t pid;
+ WpeChildSpec spec;
 
- if (pipe(to_child) != 0)
+ memset(&spec, 0, sizeof spec);
+ spec.argv = argv;
+ spec.cwd = cwd;
+ spec.io = WPE_CHILD_IO_PIPES;
+ spec.group = WPE_CHILD_OWN_SESSION;
+ spec.stderr_to_null = 1;
+ spec.blocking_input = 1;
+ spec.signal_leader_only = s->host.server_shares_daemon;
+ spec.what = LSP_SERVER_WHAT;
+ if (wpe_child_start(&spec, &s->server, NULL, NULL) != 0)
   return -1;
- if (pipe(from_child) != 0)
- {  close(to_child[0]); close(to_child[1]); return -1;  }
- pid = fork();
- if (pid == 0)
- {
-  int devnull;
-  wpe_child_default_signals();   /* a server that writes to a closed pipe ends */
-  wpe_child_apart_from_terminal();   /* a Ctrl-C for a script spares it */
-  if (cwd && chdir(cwd) != 0)
-   _exit(127);
-  dup2(to_child[0], 0);
-  dup2(from_child[1], 1);
-  devnull = open("/dev/null", O_WRONLY);  /* servers are chatty on stderr */
-  if (devnull >= 0)
-  {  dup2(devnull, 2);  if (devnull > 2) close(devnull);  }
-  close(to_child[0]); close(to_child[1]);
-  close(from_child[0]); close(from_child[1]);
-  execvp(argv[0], argv);
-  _exit(127);
- }
- close(to_child[0]);
- close(from_child[1]);
- if (pid < 0)
- {  close(to_child[1]); close(from_child[0]); return -1;  }
- *in_fd = to_child[1];
- *out_fd = from_child[0];
- return pid;
+ s->in_fd = s->server.in_fd;
+ s->out_fd = s->server.out_fd;
+ return 0;
 }
 
 /* The headless InitializationOptions (no UI providers to implement up front),
@@ -783,8 +781,7 @@ e_lsp_session *e_lsp_open_async(char *const argv[], const char *root_dir,
  s->started = 0;
  snprintf(s->root_uri, sizeof(s->root_uri), "file://%s", rootdir);
 
- s->pid = lsp_spawn(argv, rootdir, &s->in_fd, &s->out_fd);
- if (s->pid <= 0)
+ if (lsp_spawn(s, argv, rootdir) != 0)
  {  e_lsp_close(s);  return NULL;  }
 
  args = json_object_new_object();
@@ -2472,21 +2469,9 @@ void e_lsp_close(e_lsp_session *s)
   close(s->in_fd);
  if (s->out_fd >= 0)
   close(s->out_fd);
- if (s->pid > 0)
- {
-  int st;
-  kill(s->pid, SIGTERM);
-  if (waitpid(s->pid, &st, WNOHANG) == 0)
-  {
-   struct timespec ts = { 0, 300 * 1000 * 1000 };  /* JVM may be slow */
-   nanosleep(&ts, NULL);
-   if (waitpid(s->pid, &st, WNOHANG) == 0)
-   {
-    kill(s->pid, SIGKILL);
-    waitpid(s->pid, &st, 0);
-   }
-  }
- }
+ /* After `exit`, SIGTERM; the owner gives it the grace and then SIGKILL,
+    on the loop, so the user never waits for a server that does not end. */
+ wpe_child_end_detached(&s->server, SIGTERM);
  lsp_free_items(s);
  lsp_free_locs(s);
  lsp_free_syms(s);

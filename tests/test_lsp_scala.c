@@ -91,6 +91,7 @@ int main(void)
 
  host.on_diagnostic = on_diag;
  host.ud = NULL;
+ host.server_shares_daemon = 1;   /* as the editor starts Metals: Bloop stays */
  s = e_lsp_open(argv, dir, "scala", &host);
  if (!s) { rc = fail("e_lsp_open (metals initialize handshake)"); goto out; }
 

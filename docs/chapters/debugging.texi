@@ -521,7 +521,9 @@ them ran a session, so none ends one.
 
 A debugger that ends without being asked (it crashed, or was killed)
 is named in Messages and on the status row, with its exit status; a
-signal counts as 128 plus its number, as in the shell:
+signal counts as 128 plus its number, as in the shell.  A Go or Rust
+debug adapter (dlv, lldb-dap, gdb) that goes away before the program
+ends is named the same way:
 
 @example
 gdb ended unexpectedly (exit status 137)
@@ -716,8 +718,8 @@ xwpe repoints @env{JAVA_HOME} at it for Bloop before starting the build server
 @samp{Debug @result{} Quit} ends the program Bloop runs for the session,
 and so does the editor's own end on @code{SIGTERM} or a hangup; Bloop itself
 is shared (Metals uses it too) and is left running.  The editor then gives
-@command{scala-cli}'s launcher up to a second to close its connection
-before ending it.  An editor killed outright (@code{SIGKILL}, a crash)
+@command{scala-cli}'s launcher up to two seconds to close its connection
+before ending it, while you keep typing.  An editor killed outright (@code{SIGKILL}, a crash)
 cannot tell Bloop to end the program, and Bloop does not end it by itself:
 look for a @command{java} process in the source's directory then.
 @end itemize

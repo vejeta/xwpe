@@ -679,6 +679,9 @@ int e_eingabe(ECNT *e)
   /* A debugger is starting and has not answered: Esc ends it, as the waiting
      line in Messages says. */
   if (c == WPE_ESC && e_d_start_busy()) { e_d_start_cancel(); c = 0; continue; }
+  /* `scala-cli setup-ide` runs before Metals or a Scala debug session: Esc
+     cancels it, as its waiting line says. */
+  if (c == WPE_ESC && e_scala_setup_busy_any()) { e_scala_setup_cancel(); c = 0; continue; }
   /* The editor waits for the debugger's answer at a stop: Esc or Ctrl-C
      gives up on it, as the waiting line on the status row says. */
   if (e_key_cancels_answer(c)) { e_d_answer_cancel(); c = 0; continue; }

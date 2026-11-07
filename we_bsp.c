@@ -14,16 +14,9 @@
 #include <limits.h>
 #include <sys/types.h>
 #include <sys/stat.h>
-#include <sys/wait.h>
-#if defined(__linux__)
-# include <sys/syscall.h>
-#endif
-#if defined(HAVE_KQUEUE) && defined(HAVE_SYS_EVENT_H)
-# include <sys/event.h>
-#endif
 
 #include "we_bsp.h"
-#include "we_childsig.h"
+#include "we_child.h"
 #include "we_dap_proto.h"        /* e_dap_reader: shared Content-Length framing */
 
 /* Per-request ceilings.  The first compile may pull the Scala toolchain via
@@ -31,22 +24,10 @@
    spin, and mirrors the synchronous start of the gdb/dlv backends. */
 #define BSP_TMO_QUICK   30000
 #define BSP_TMO_BUILD  240000
-
-/* After SIGTERM, how long the build server's launcher gets to exit before
-   SIGKILL.  scala-cli's launcher was measured to exit within 50 ms. */
-#define BSP_TERM_MS     1000
-#define BSP_NO_FD       (-1)
-
-#if defined(BSP_NO_PIDFD)
-/* The test build of a system with neither pidfd nor kqueue. */
-#elif defined(__linux__) && defined(SYS_pidfd_open)
-# define BSP_EXIT_BY_PIDFD 1
-#elif defined(HAVE_KQUEUE) && defined(HAVE_SYS_EVENT_H)
-# define BSP_EXIT_BY_KQUEUE 1
-#endif
+#define BSP_LAUNCHER_WHAT "the build server"   /* in the owner's lines */
 
 struct e_bsp_session {
- pid_t        pid;            /* the BSP server (scala-cli bsp)            */
+ WpeChild     launcher;       /* the BSP server's launcher (scala-cli bsp)  */
  int          in_fd;          /* write requests to the server's stdin      */
  int          out_fd;         /* read responses from the server's stdout   */
  e_dap_reader rd;             /* incoming frame reassembly (reused from DAP)*/
@@ -249,47 +230,36 @@ static void bsp_free_argv(char **av)
  free(av);
 }
 
-/* Fork+exec the BSP server (argv from the connection file) on two pipes, cwd =
-   workdir.  *in_fd <- child stdin write end; *out_fd <- child stdout read end. */
-static pid_t bsp_spawn(char **argv, const char *workdir, int *in_fd, int *out_fd)
+/**
+ * bsp_spawn - Start the BSP server's launcher (argv from the connection
+ * file) on two pipes, in the project's directory.
+ * @b: the session; @argv: the command line; @workdir: the project.
+ *
+ * Its stderr goes nowhere: scala-cli and Bloop are chatty there ("Starting
+ * compilation server", compile progress), which would bleed onto the
+ * terminal screen.  Signals reach the launcher alone, never its group: the
+ * shared build server (Bloop) may be its child, and other editors and the
+ * language server go on using it.
+ * Return: 0, or -1 when it could not be started.
+ */
+static int bsp_spawn(e_bsp_session *b, char **argv, const char *workdir)
 {
- int to_child[2], from_child[2];
- pid_t pid;
+ WpeChildSpec spec;
 
- if (pipe(to_child) != 0)
+ memset(&spec, 0, sizeof spec);
+ spec.argv = argv;
+ spec.cwd = workdir;
+ spec.io = WPE_CHILD_IO_PIPES;
+ spec.group = WPE_CHILD_OWN_SESSION;
+ spec.stderr_to_null = 1;
+ spec.blocking_input = 1;
+ spec.signal_leader_only = 1;
+ spec.what = BSP_LAUNCHER_WHAT;
+ if (wpe_child_start(&spec, &b->launcher, NULL, NULL) != 0)
   return -1;
- if (pipe(from_child) != 0)
- {  close(to_child[0]); close(to_child[1]); return -1;  }
- pid = fork();
- if (pid == 0)
- {
-  wpe_child_default_signals();   /* a server that writes to a closed pipe ends */
-  wpe_child_apart_from_terminal();   /* a Ctrl-C for a script spares it */
-  if (chdir(workdir) != 0)
-   _exit(127);
-  dup2(to_child[0], 0);
-  dup2(from_child[1], 1);
-  /* Redirect stderr to /dev/null: unlike gdb/dlv, scala-cli/Bloop is chatty on
-     stderr ("Starting compilation server", compile progress) -- inheriting
-     xwpe's terminal would bleed that raw onto the ncurses screen, corrupting
-     the Messages window until the next repaint. */
-  {
-   int devnull = open("/dev/null", O_WRONLY);
-   if (devnull >= 0)
-   {  dup2(devnull, 2);  if (devnull > 2) close(devnull);  }
-  }
-  close(to_child[0]); close(to_child[1]);
-  close(from_child[0]); close(from_child[1]);
-  execvp(argv[0], argv);
-  _exit(127);
- }
- close(to_child[0]);
- close(from_child[1]);
- if (pid < 0)
- {  close(to_child[1]); close(from_child[0]); return -1;  }
- *in_fd = to_child[1];
- *out_fd = from_child[0];
- return pid;
+ b->in_fd = b->launcher.in_fd;
+ b->out_fd = b->launcher.out_fd;
+ return 0;
 }
 
 /* ---- handshake helpers ------------------------------------------------- */
@@ -377,26 +347,39 @@ static int bsp_parse_uri(const char *uri, char *host, size_t hsz, int *port)
 
 /* ---- handshake stages (each owns one BSP exchange) --------------------- */
 
-/* Resolve the BSP connection file's argv, generating it with `scala-cli
-   setup-ide` if the project has none yet.  Returns a malloc'd argv or NULL. */
+/* Resolve the BSP connection file's argv.  The caller has had `scala-cli
+   setup-ide` write it (e_bsp_needs_setup) without waiting for it here.
+   Returns a malloc'd argv or NULL. */
 static char **bsp_connection_argv(const char *rootdir, char *errbuf, size_t errsz)
 {
- char cmd[PATH_MAX + 64];
  char **argv = bsp_read_connection_argv(rootdir);
 
- if (!argv)
- {
-  snprintf(cmd, sizeof(cmd), "scala-cli setup-ide '%s' >/dev/null 2>&1", rootdir);
-  if (system(cmd) != 0)
-  {
-   if (errbuf) snprintf(errbuf, errsz, "scala-cli setup-ide failed (is scala-cli installed?)");
-   return NULL;
-  }
-  argv = bsp_read_connection_argv(rootdir);
- }
  if (!argv && errbuf)
   snprintf(errbuf, errsz, "no .bsp connection file in %s", rootdir);
  return argv;
+}
+
+/**
+ * e_bsp_needs_setup - Does the project still lack its BSP connection file?
+ * @workdir: the project's directory.
+ *
+ * The first Scala debug session in a project needs `scala-cli setup-ide` to
+ * write it; the editor runs that command as a child of its own, keeping its
+ * keys, and starts the build server once it has ended.
+ * Return: 1 when the file is missing.
+ */
+int e_bsp_needs_setup(const char *workdir)
+{
+ char rootdir[PATH_MAX];
+ char **argv;
+
+ if (!realpath(workdir, rootdir))
+  snprintf(rootdir, sizeof(rootdir), "%s", workdir);
+ argv = bsp_read_connection_argv(rootdir);
+ if (!argv)
+  return 1;
+ bsp_free_argv(argv);
+ return 0;
 }
 
 /* build/initialize (advertising scala+java) followed by the build/initialized
@@ -509,14 +492,14 @@ static e_bsp_session *bsp_session_spawn(const char *rootdir, char *errbuf, size_
  {  bsp_free_argv(argv);  return NULL;  }
  e_dap_reader_init(&b->rd);
  b->in_fd = b->out_fd = -1;
- b->pid = bsp_spawn(argv, rootdir, &b->in_fd, &b->out_fd);
- bsp_free_argv(argv);
- if (b->pid <= 0)
+ if (bsp_spawn(b, argv, rootdir) != 0)
  {
+  bsp_free_argv(argv);
   if (errbuf) snprintf(errbuf, errsz, "could not start the BSP server");
   e_bsp_close(b);
   return NULL;
  }
+ bsp_free_argv(argv);
  return b;
 }
 
@@ -557,156 +540,18 @@ e_bsp_session *e_bsp_start(const char *workdir, const char *srcfile,
 
 /* ---- the end of the build server --------------------------------------- */
 
-#if defined(BSP_EXIT_BY_KQUEUE)
 /**
- * bsp_kqueue_exit_open - The BSD and macOS form of a pidfd: a kqueue that
- * becomes readable when @pid exits (EVFILT_PROC, NOTE_EXIT).
- * @pid: the build server's launcher, the editor's own child.
- *
- * Lets Quit go on the moment the launcher ends on those systems too.
- * Return: the descriptor, or -1 (the launcher already exited, or no room).
- */
-static int bsp_kqueue_exit_open(pid_t pid)
-{
- struct kevent ev;
- int kq = kqueue();
-
- if (kq < 0)
-  return BSP_NO_FD;
- EV_SET(&ev, pid, EVFILT_PROC, EV_ADD | EV_ONESHOT, NOTE_EXIT, 0, NULL);
- if (kevent(kq, &ev, 1, NULL, 0, NULL) < 0)
- {
-  close(kq);
-  return BSP_NO_FD;
- }
- return kq;
-}
-#endif
-
-/**
- * bsp_exit_fd_open - A descriptor that becomes readable when @pid exits:
- * a pidfd on Linux, a kqueue on the BSDs and macOS, or -1 where the system
- * has neither.
- * @pid: the build server's launcher, the editor's own child.
- *
- * With it, Quit goes on the moment the launcher has ended, never later.
- */
-static int bsp_exit_fd_open(pid_t pid)
-{
-#if defined(BSP_EXIT_BY_PIDFD)
- return (int)syscall(SYS_pidfd_open, pid, 0);
-#elif defined(BSP_EXIT_BY_KQUEUE)
- return bsp_kqueue_exit_open(pid);
-#else
- (void)pid;
- return BSP_NO_FD;
-#endif
-}
-
-/**
- * bsp_launcher_gone - Has the launcher exited?  Reap it if so.
+ * e_bsp_close - End the build server's launcher and free the session,
+ * without waiting.
  * @b: the session.
  *
- * The editor's own child watch may have reaped it already; that counts as
- * gone too, so Quit never waits for a process that no longer exists.
- * Return: 1 once it is gone (and reaped), else 0.
+ * Quit returns at once: the launcher gets SIGTERM, so it can close its
+ * connection to the build server cleanly, and the owner of the editor's
+ * children gives it the grace and then SIGKILL, on the loop.  Only the
+ * launcher is signalled, never its group (see bsp_spawn).  The program being
+ * debugged is not the launcher's: the adapter ends it on Quit's
+ * `disconnect`, before this.
  */
-static int bsp_launcher_gone(e_bsp_session *b)
-{
- int st;
- pid_t r;
-
- if (b->pid <= 0)
-  return 1;
- r = waitpid(b->pid, &st, WNOHANG);
- if (r == b->pid || (r < 0 && errno == ECHILD))
- {
-  b->pid = 0;
-  return 1;
- }
- return 0;
-}
-
-/**
- * bsp_ms_left - What remains of @deadline, as a poll() timeout.
- * @deadline: a bsp_now_ms() instant.
- */
-static int bsp_ms_left(long deadline)
-{
- long left = deadline - bsp_now_ms();
-
- if (left <= 0)
-  return 0;
- return (int)left;
-}
-
-/**
- * bsp_wait_launcher_exit - Give the launcher up to @ms to exit.
- * @b: the session; @ms: the bound.
- *
- * The wait is a poll on the launcher's exit descriptor, so a launcher
- * that ends at once costs the user nothing, and one that takes a moment to
- * close its connection to the build server gets that moment instead of
- * being killed mid-way.  Where the system has no exit descriptor, nothing
- * signals the exit while the editor waits here, so the bound is waited out
- * and the launcher looked at once.
- * Return: 1 once it is gone and reaped, else 0.
- */
-static int bsp_wait_launcher_exit(e_bsp_session *b, int ms)
-{
- int exit_fd = bsp_exit_fd_open(b->pid);
- long deadline = bsp_now_ms() + ms;
- struct pollfd p;
- int gone = 0, r;
-
- for (;;)
- {
-  gone = bsp_launcher_gone(b);
-  if (gone || bsp_ms_left(deadline) == 0)
-   break;
-  p.fd = exit_fd;
-  p.events = POLLIN;
-  p.revents = 0;
-  r = poll(&p, 1, bsp_ms_left(deadline));
-  if (r < 0 && errno == EINTR)
-   continue;
-  if (r <= 0)
-  {
-   gone = bsp_launcher_gone(b);
-   break;
-  }
- }
- if (exit_fd >= 0)
-  close(exit_fd);
- return gone;
-}
-
-/**
- * bsp_end_launcher - End the build server's launcher, and reap it.
- * @b: the session.
- *
- * Only the launcher is signalled, never its process group: the shared
- * build server (Bloop) may be its child, and other editors and the
- * language server go on using it.  SIGTERM and BSP_TERM_MS let it close
- * its connection cleanly; SIGKILL after that, so the user is never left
- * with an editor that does not quit.  The program being debugged is not
- * the launcher's: the adapter ends it on Quit's `disconnect`, before this.
- */
-static void bsp_end_launcher(e_bsp_session *b)
-{
- int st;
-
- if (bsp_launcher_gone(b))
-  return;
- kill(b->pid, SIGTERM);
- if (bsp_wait_launcher_exit(b, BSP_TERM_MS))
-  return;
- kill(b->pid, SIGKILL);
- while (waitpid(b->pid, &st, 0) < 0 && errno == EINTR)
-  ;
- b->pid = 0;
-}
-
 void e_bsp_close(e_bsp_session *b)
 {
  if (!b)
@@ -715,7 +560,7 @@ void e_bsp_close(e_bsp_session *b)
   close(b->in_fd);
  if (b->out_fd >= 0)
   close(b->out_fd);
- bsp_end_launcher(b);
+ wpe_child_end_detached(&b->launcher, SIGTERM);
  e_dap_reader_free(&b->rd);
  free(b);
 }

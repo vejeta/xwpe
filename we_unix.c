@@ -906,6 +906,29 @@ static void e_err_save_report(void)
  }
 }
 
+#ifdef DEBUGGER
+/* The longest the editor's end waits for the children it is ending.  An
+   adapter's way out is the longest (no answer to `disconnect`, the grace,
+   SIGKILL and its kill grace); a language server's, the build server's and
+   a setup command's are the owner's ladder alone, shorter, and all of them
+   run at once. */
+#define E_EXIT_CHILDREN_MAX_MS E_DAP_CLOSE_MAX_MS
+
+/**
+ * e_exit_children_gone - Have the children the editor's end is ending gone?
+ *
+ * Every debug adapter Quit ended, and every child whose end the owner's
+ * ladder still runs (a language server, the build server, a setup command).
+ * Return: 1 once none is left.
+ */
+static int e_exit_children_gone(void)
+{
+ extern int e_d_dap_all_closed(void);
+
+ return(e_d_dap_all_closed() && wpe_child_ending() == 0);
+}
+#endif
+
 /**
  * e_exit_teardown - Stop what the editor started and give the terminal back.
  *
@@ -919,19 +942,19 @@ static void e_exit_teardown(void)
  extern int e_d_pid;
  extern void e_lsp_ui_shutdown(void);
  extern void e_d_dap_end_at_exit(void);
- extern int e_d_dap_all_closed(void);
 
- /* A debug adapter is told to end its program and given a bounded time
-    to go, on the loop; the work was saved before this. */
+ /* A debug adapter is told to end its program, and the language server
+    (Metals etc.) is told to shut down and then ended, so its JVM does not
+    linger after xwpe quits; the work was saved before this.  Both then get
+    one bounded time to go, on the loop: a server that ignores SIGTERM is
+    killed after the grace of the editor's children's owner, well within
+    it, so none of them outlives the editor. */
  e_d_dap_end_at_exit();
- if (!e_d_dap_all_closed())
-  wpe_fd_end_wait(e_d_dap_all_closed, E_DAP_CLOSE_MAX_MS);
+ e_lsp_ui_shutdown();
+ if (!e_exit_children_gone())
+  wpe_fd_end_wait(e_exit_children_gone, E_EXIT_CHILDREN_MAX_MS);
  if (e_d_pid)
   kill(e_d_pid, 7);
- /* Tear down the language server (Metals etc.) so its JVM does not linger
-    after xwpe quits: shutdown request -> exit notification -> SIGTERM, then
-    SIGKILL if it ignores us.  Without this the server is orphaned on exit. */
- e_lsp_ui_shutdown();
 #endif
 #ifdef PROG
  /* A build in its own process group would outlive the editor. */

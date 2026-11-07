@@ -49,6 +49,10 @@
 #define DEAF_TO_TERM       "trap '' TERM; echo $$; sleep 30"
 /* A shell that ends at SIGTERM, and a member of its group that does not. */
 #define MEMBER_DEAF_TO_TERM "(trap '' TERM; exec sleep 30) & echo $!; wait"
+/* A child on a pty: says "tty" when 0, 1 and 2 all are its terminal. */
+#define PTY_PROBE          "test -t 0 && test -t 1 && test -t 2 && echo tty"
+#define PTY_PROBE_SAYS     "tty\n"
+#define DETACHED_GARBAGE   0xA5  /* what a freed owner's memory may hold */
 
 static int fails;
 static pid_t read_pid(int fd);
@@ -548,6 +552,116 @@ static void test_a_member_deaf_to_sigterm_is_killed_after_its_leader_ended(void)
 	close_ends(&r);
 }
 
+/* A third end asked for at once (a key pressed again and again) changes
+ * nothing once SIGKILL is out: the kernel is given its kill grace, the end is
+ * reported with SIGKILL's status, and nobody reads "did not end". */
+static void test_a_third_end_gives_the_kernel_its_kill_grace(void)
+{
+	static Run r;
+
+	chk("start", start_sh(&r, DEAF_TO_TERM), 0);
+	chk_true("it said it is deaf to SIGTERM", read_pid(r.c.out_fd) > 0);
+	said[0] = '\0';
+	wpe_child_end(&r.c, SIGTERM);
+	wpe_child_end(&r.c, SIGTERM);
+	wpe_child_end(&r.c, SIGTERM);
+	loop_until_ended(&r, 1, WPE_CHILD_END_KILL_MS + SLACK_MS);
+	chk("called back once", r.calls, 1);
+	chk("ended, status known", r.how, WPE_CHILD_ENDED);
+	chk_true("killed by SIGKILL",
+	         WIFSIGNALED(r.status) && WTERMSIG(r.status) == SIGKILL);
+	chk_true("no \"did not end\"", strstr(said, DID_NOT_END) == NULL);
+	close_ends(&r);
+}
+
+/* A child whose owner went away (its WpeChild freed, here overwritten) is
+ * still ended on the ladder: nobody is called back, and it is counted as
+ * ending until it is gone. */
+static void test_a_detached_child_is_ended_with_nobody_called_back(void)
+{
+	static Run r;
+	pid_t pid;
+	long deadline;
+
+	chk("start", start_sh(&r, DEAF_TO_TERM), 0);
+	pid = read_pid(r.c.out_fd);
+	chk_true("it said it is deaf to SIGTERM", pid > 0);
+	close_ends(&r);
+	said[0] = '\0';
+	wpe_child_end_detached(&r.c, SIGTERM);
+	chk("the owner's record holds no process", r.c.pid, 0);
+	memset(&r.c, DETACHED_GARBAGE, sizeof r.c);
+	chk("it is being ended", wpe_child_ending(), 1);
+	deadline = now_ms() + WPE_CHILD_END_GRACE_MS + SLACK_MS;
+	while (wpe_child_ending() && now_ms() < deadline)
+		wpe_fd_poll(LOOP_SLICE_MS);
+	loop_for(LOOP_SLICE_MS);
+	chk("nothing is being ended any more", wpe_child_ending(), 0);
+	chk_true("it is gone", pid > 0 && kill(pid, 0) < 0);
+	chk("nobody was called back", r.calls, 0);
+	chk_true("no \"did not end\"", strstr(said, DID_NOT_END) == NULL);
+}
+
+/* A child on a pty has it as its terminal on 0, 1 and 2; raw, so its line
+ * end reaches the editor's master as it wrote it. */
+static void test_a_child_on_a_pty_has_it_as_its_terminal(void)
+{
+	static Run r;
+	WpeChildSpec spec;
+	char *argv[4], buf[READ_PID_MAX];
+	long deadline;
+	ssize_t n = 0, got;
+
+	memset(&r, 0, sizeof r);
+	spec_sh(&spec, argv, PTY_PROBE);
+	spec.io = WPE_CHILD_IO_PTY;
+	spec.pty_raw = 1;
+	chk("start", wpe_child_start(&spec, &r.c, on_ended, &r), 0);
+	chk_true("the master is the editor's", r.c.pty_fd >= 0);
+	chk("no pipe", r.c.out_fd, WPE_CHILD_NO_FD);
+	deadline = now_ms() + SLACK_MS;
+	while (now_ms() < deadline && (n == 0 || buf[n - 1] != '\n')) {
+		got = read(r.c.pty_fd, buf + n, sizeof buf - 1 - n);
+		if (got > 0)
+			n += got;
+		else
+			wpe_fd_poll(LOOP_SLICE_MS);
+	}
+	buf[n] = '\0';
+	chk_true("0, 1 and 2 are its terminal, no \\r added",
+	         strcmp(buf, PTY_PROBE_SAYS) == 0);
+	loop_until_ended(&r, 1, SLACK_MS);
+	chk("called back", r.calls, 1);
+	close(r.c.pty_fd);
+}
+
+/* A child started with signal_leader_only: its end reaches the leader only,
+ * never what it started (the build server's launcher and the shared build
+ * server it may have started). */
+static void test_signals_reach_only_the_leader_when_asked(void)
+{
+	static Run r;
+	WpeChildSpec spec;
+	char *argv[4];
+	pid_t bg;
+
+	memset(&r, 0, sizeof r);
+	spec_sh(&spec, argv, "sleep 30 & echo $!; wait");
+	spec.signal_leader_only = 1;
+	chk("start", wpe_child_start(&spec, &r.c, on_ended, &r), 0);
+	bg = read_pid(r.c.out_fd);
+	chk_true("the background child's pid", bg > 0);
+	wpe_child_end(&r.c, SIGTERM);
+	loop_until_ended(&r, 1, SLACK_MS);
+	chk("the leader ended at SIGTERM", r.calls, 1);
+	loop_for(WPE_CHILD_END_GRACE_MS + SLACK_MS);
+	chk_true("what it started was never signalled",
+	         bg > 0 && kill(bg, 0) == 0);
+	if (bg > 0)
+		kill(bg, SIGKILL);
+	close_ends(&r);
+}
+
 /* @scenario SC-debug-72 */
 int main(void)
 {
@@ -574,6 +688,10 @@ int main(void)
 	test_a_full_loop_fails_the_start_with_nothing_left_open();
 	test_the_group_not_only_the_shell_is_ended();
 	test_a_member_deaf_to_sigterm_is_killed_after_its_leader_ended();
+	test_a_third_end_gives_the_kernel_its_kill_grace();
+	test_a_detached_child_is_ended_with_nobody_called_back();
+	test_a_child_on_a_pty_has_it_as_its_terminal();
+	test_signals_reach_only_the_leader_when_asked();
 
 	if (fails) {
 		printf("%d failure(s)\n", fails);

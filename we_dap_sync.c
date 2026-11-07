@@ -511,6 +511,33 @@ static void sync_quit_and_wait(e_dap_session *s)
  sync_run_wait(s, sync_now_ms() + E_DAP_DISCONNECT_MS, 1);
 }
 
+/* The waits below mirror the editor's ladder (we_child.h): after the answer
+   the owner's grace to exit, after SIGTERM its kill grace. */
+#define SYNC_EXIT_MS WPE_CHILD_END_GRACE_MS
+#define SYNC_TERM_MS WPE_CHILD_END_KILL_MS
+
+/**
+ * sync_adapter_gone - Has the adapter exited?  Reap it if so.
+ * @s: the session.
+ *
+ * A caller of these waits has no SIGCHLD handler of the editor's, so the
+ * adapter is reaped here, and the children's owner then stops following it.
+ * Return: 1 once it is gone (and reaped), else 0.
+ */
+static int sync_adapter_gone(e_dap_session *s)
+{
+ pid_t pid = e_dap_adapter_pid(s), r;
+ int st;
+
+ if (pid <= 0)
+  return 1;
+ r = waitpid(pid, &st, WNOHANG);
+ if (r != pid && !(r < 0 && errno == ECHILD))
+  return 0;
+ e_dap_adapter_reaped(s);
+ return 1;
+}
+
 #if defined(DAP_NO_PIDFD)
 /* The test build of a system with neither pidfd nor kqueue. */
 #elif defined(__linux__) && defined(SYS_pidfd_open)
@@ -578,7 +605,7 @@ static int sync_exit_grace_wait(e_dap_session *s, long deadline)
   struct pollfd p[1];
   int np = 0, end_i, r;
 
-  if (e_dap_adapter_gone(s))
+  if (sync_adapter_gone(s))
    return 1;
   end_i = sync_quit_end_watch_add(p, &np);
   r = poll(p, np, sync_ms_left(deadline));
@@ -586,7 +613,7 @@ static int sync_exit_grace_wait(e_dap_session *s, long deadline)
    continue;
   sync_quit_end_check(sync_poll_fired(p, end_i, r));
   if (r <= 0)
-   return e_dap_adapter_gone(s);
+   return sync_adapter_gone(s);
  }
 }
 
@@ -610,7 +637,7 @@ static int sync_exit_watch(e_dap_session *s, int exit_fd, long deadline)
   int np = 0, pty_i = -1, rd_i = -1, end_i, r;
   int pty = e_dap_output_fd(s), rd = e_dap_fd(s);
 
-  if (e_dap_adapter_gone(s))
+  if (sync_adapter_gone(s))
    return 1;
   if (sync_ms_left(deadline) == 0)
    return 0;
@@ -637,7 +664,7 @@ static int sync_exit_watch(e_dap_session *s, int exit_fd, long deadline)
    continue;
   sync_quit_end_check(sync_poll_fired(p, end_i, r));
   if (r <= 0)
-   return e_dap_adapter_gone(s);
+   return sync_adapter_gone(s);
   if (pty_i >= 0 && p[pty_i].revents)
    e_dap_drain_output(s);
   if (rd_i >= 0 && p[rd_i].revents)
@@ -664,11 +691,11 @@ static int sync_wait_adapter_exit(e_dap_session *s, int ms)
  * sync_reap_adapter - Make sure the adapter is gone, and reap it.
  * @s: the session.
  *
- * An adapter that answered Quit is given E_DAP_EXIT_MS to exit by itself
+ * An adapter that answered Quit is given SYNC_EXIT_MS to exit by itself
  * and is then only reaped: dlv closes its socket before it is done, so the
  * end of the transport is not taken for its exit.  One still there gets
- * SIGTERM and E_DAP_TERM_MS, so it can end the program it runs (a SIGKILLed
- * lldb-dap or dlv leaves its program behind), and SIGKILL after that.
+ * SIGTERM and SYNC_TERM_MS, a chance to end by itself, and SIGKILL after
+ * that.
  * Every wait is a poll on the adapter's exit, bounded, never a sleep.
  */
 static void sync_reap_adapter(e_dap_session *s)
@@ -680,17 +707,17 @@ static void sync_reap_adapter(e_dap_session *s)
   return;
  e_dap_hang_up(s);
  if (e_dap_disconnect_answered(s) &&
-     sync_wait_adapter_exit(s, E_DAP_EXIT_MS))
+     sync_wait_adapter_exit(s, SYNC_EXIT_MS))
   return;
- if (e_dap_adapter_gone(s))
+ if (sync_adapter_gone(s))
   return;
  e_dap_signal(s, SIGTERM);
- if (sync_wait_adapter_exit(s, E_DAP_TERM_MS))
+ if (sync_wait_adapter_exit(s, SYNC_TERM_MS))
   return;
  e_dap_signal(s, SIGKILL);
  while (waitpid(pid, &st, 0) < 0 && errno == EINTR)
   ;
- e_dap_adapter_gone(s);
+ e_dap_adapter_reaped(s);
 }
 
 void e_dap_close(e_dap_session *s)

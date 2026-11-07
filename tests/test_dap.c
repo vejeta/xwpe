@@ -1613,6 +1613,61 @@ static void test_close_kills_an_adapter_that_never_answers(void)
  fake_gone_or_killed(pid);
 }
 
+/* The SIGCHLD handler the editor installs (WpeSignalChild), in its
+   essentials: it reaps, and the owner of the children keeps the status. */
+static void reap_as_the_editor(int sig)
+{
+ int saved = errno, st;
+ pid_t pid;
+
+ (void)sig;
+ while ((pid = waitpid(-1, &st, WNOHANG)) > 0)
+  wpe_child_note_ended(pid, st);
+ errno = saved;
+}
+
+/* An adapter killed from outside, reaped by the editor's handler, its end
+   not reported yet (the loop has not run): the session already knows it is
+   gone and how it ended, so a Quit read in that moment still says the
+   adapter died, with its exit status, before it lets the adapter go.
+   @scenario SC-debug-74 */
+static void test_an_adapter_reaped_but_not_reported_is_known_gone_with_its_status(void)
+{
+ struct sigaction act, old;
+ sigset_t chld, saved;
+ siginfo_t info;
+ e_dap_session *s;
+ pid_t pid;
+ int st = 0;
+
+ s = fake_session(FAKE_SILENT, "/nonexistent");
+ CHECK(s != NULL, "the fake adapter did not answer initialize");
+ if (!s)
+  return;
+ pid = e_dap_adapter_pid(s);
+ memset(&act, 0, sizeof act);
+ act.sa_handler = reap_as_the_editor;
+ sigemptyset(&act.sa_mask);
+ act.sa_flags = SA_RESTART;
+ sigaction(SIGCHLD, &act, &old);
+ sigemptyset(&chld);
+ sigaddset(&chld, SIGCHLD);
+ sigprocmask(SIG_BLOCK, &chld, &saved);
+ kill(pid, SIGKILL);
+ while (waitid(P_PID, (id_t)pid, &info, WEXITED | WNOWAIT) < 0 &&
+        errno == EINTR)
+  ;
+ CHECK(!e_dap_adapter_gone(s), "gone before the handler reaped it");
+ sigprocmask(SIG_SETMASK, &saved, NULL);   /* the handler reaps it here */
+ CHECK(kill(pid, 0) != 0 && errno == ESRCH, "the handler did not reap it");
+ CHECK(e_dap_adapter_gone(s), "not known gone before its end is reported");
+ CHECK(e_dap_adapter_end_status(s, &st) == 1 && WIFSIGNALED(st) &&
+       WTERMSIG(st) == SIGKILL,
+       "its exit status is not known before its end is reported");
+ e_dap_free(s);
+ sigaction(SIGCHLD, &old, NULL);
+}
+
 /* ---- requests answered by callback (e_dap_request) ---------------------- */
 
 #define CALL_CMD_MAX      64
@@ -2167,6 +2222,7 @@ int main(int argc, char **argv)
  test_close_kills_an_adapter_that_never_answers();
  test_close_terms_before_it_kills();
  test_close_ends_under_an_adapter_that_floods();
+ test_an_adapter_reaped_but_not_reported_is_known_gone_with_its_status();
  test_evaluate_answered_by_callback_while_events_come();
  test_answer_for_a_request_given_up_is_dropped();
  test_deadline_ends_a_request();

@@ -1216,6 +1216,13 @@ static void e_d_on_pty_readable(int fd, void *data);
    Forward-declared here because e_d_quit and e_d_p_watches (defined above) hook
    into them. */
 static int  e_d_dap_active(void);
+static int  e_d_dap_died_line(char *out, size_t n);  /* the adapter died */
+static int  e_d_scala_setup_first(FENSTER *f, const char *dir); /* setup-ide */
+/* e_start_debug's answer while the build it needs (or the Scala build's
+   setup) is running: the command that asked returns quietly and is run again
+   when it has ended. */
+#define E_D_BUILDING (-3)
+static void e_scala_setup_end_at_exit(void);    /* setup-ide at the end */
 static int  e_d_dap_source_ext(const char *datnam);
 static int  e_d_dap_start(FENSTER *f);
 static int  e_d_dap_run(FENSTER *f);
@@ -1265,7 +1272,7 @@ static void e_d_dr_refusal_line(char *line, size_t n);
 static void e_d_dap_stop_ask(FENSTER *f, int pause);
 static int  e_d_dap_watches_ask(ECNT *cn, int sw);
 static void e_d_dap_close_begin(e_dap_session *s, e_bsp_session *bsp);
-static void e_d_dap_adapter_ended(int pid, int status, void *data);
+static void e_d_dap_adapter_ended(e_dap_session *s, void *data);
 static void e_d_act_schedule(void);               /* the kept keys (below) */
 static int  e_d_gdb_run_to_line(FENSTER *f, int line);   /* gdb's (below) */
 static int  e_d_goto_cursor_line(FENSTER *f, int line);  /* Go to cursor's */
@@ -3893,6 +3900,8 @@ static int e_d_died_line(char *out, size_t n)
 {
  int status;
 
+ if (e_d_dap_active())
+  return(e_d_dap_died_line(out, n));
  if (!e_d_output_closed)
   return(0);
  if (e_d_collect_end_status(&status))
@@ -6805,6 +6814,50 @@ static int e_d_dap_active(void)
  return(g_dap != NULL);
 }
 
+/* e_d_swtch once an adapter's handshake is done (e_d_dap_start_finish). */
+#define E_D_DAP_SESSION_OPEN 3
+
+/**
+ * e_d_dap_adapter_died - Did the session's adapter go away without the
+ * program ending?
+ *
+ * Its transport ended, or its process ended, and it never said the program
+ * ended: it crashed, or was killed from outside.  Only a session that had
+ * opened (e_d_swtch 3) counts; a start that failed says why in its own box.
+ * Return: 1 when the session ends because the adapter died.
+ */
+static int e_d_dap_adapter_died(void)
+{
+ if (e_d_swtch != E_D_DAP_SESSION_OPEN || e_dap_program_said_ended(g_dap))
+  return(0);
+ return(e_dap_ended(g_dap) || e_dap_adapter_gone(g_dap));
+}
+
+/**
+ * e_d_dap_died_line - The line that says the debug adapter ended without
+ * being asked, as for a line debugger that died.
+ * @out, @n: receives it.
+ *
+ * The status is read from what the SIGCHLD handler kept, before Quit hands
+ * the adapter on: an adapter that was reaped and not reported yet still has
+ * its exit status said.  The user knows to look at the adapter, not at the
+ * program, instead of reading "End of Debugging".
+ * Return: 1 when the adapter died, 0 when the session ends normally.
+ */
+static int e_d_dap_died_line(char *out, size_t n)
+{
+ int status = 0;
+
+ if (!e_d_dap_adapter_died())
+  return(0);
+ if (e_dap_adapter_end_status(g_dap, &status))
+  snprintf(out, n, E_D_DIED_FMT, g_dap_adapter_name,
+           e_d_exit_status_number(status));
+ else
+  snprintf(out, n, E_D_DIED_NO_STATUS, g_dap_adapter_name);
+ return(1);
+}
+
 /* Tail of a path: "/tmp/p/main.go" -> "main.go". */
 static const char *e_d_dap_basename(const char *path)
 {
@@ -7159,6 +7212,7 @@ static void e_d_dap_quit(FENSTER *f)
  */
 void e_d_dap_end_at_exit(void)
 {
+ e_scala_setup_end_at_exit();
  e_d_dap_quit(NULL);
 }
 
@@ -7211,15 +7265,181 @@ static int e_d_dap_compile(FENSTER *f, char *binary, size_t binsz)
  return(0);
 }
 
+/* ---- scala-cli setup-ide, without holding the editor ----
+ *
+ * `scala-cli setup-ide` writes the files Metals and the Scala debugger need
+ * to reach the build server; on a cold cache it takes tens of seconds.  It
+ * runs as a child of the editor's: the editor keeps its keys, Messages says
+ * it runs, and what was asked for (the language server, the debug session)
+ * goes on when it has ended, outside any dialog.
+ */
+
+#define E_SCALA_SETUP_PROGRAM "scala-cli"
+#define E_SCALA_SETUP_VERB    "setup-ide"
+#define E_SCALA_SETUP_WHAT    "scala-cli setup-ide"
+#define E_SCALA_SETUP_DIR_MAX 1024
+#define E_SCALA_SETUP_ARGC    3
+/* The waiting line, for the language server and the debugger alike. */
+#define E_SCALA_SETUP_LINE \
+ "Preparing the Scala build (scala-cli setup-ide); Esc cancels it..."
+#define E_SCALA_SETUP_CANCELLED_LINE "scala-cli setup-ide cancelled"
+
+/* What a setup that has ended goes on with: @ok when it succeeded; @dir the
+   project it ran in. */
+typedef void (*e_scala_setup_done_fn)(int ok, const char *dir);
+
+typedef struct
+{
+ WpeChild child;
+ int running;                       /* started, its end not reported yet */
+ int held;                          /* ended behind a dialog: not told yet */
+ int ok;                            /* how it ended, while held */
+ char dir[E_SCALA_SETUP_DIR_MAX];   /* the project, also its argument */
+ e_scala_setup_done_fn done;
+} E_SCALA_SETUP;
+
+/* One for the language server, one for the debugger: either may run while
+   the other is asked for. */
+static E_SCALA_SETUP e_scala_setup_lsp, e_scala_setup_dap;
+
+/**
+ * e_scala_setup_succeeded - Did the setup command end with exit status 0?
+ * @status: its wait status; @how: how the owner reported its end.
+ */
+static int e_scala_setup_succeeded(int status, int how)
+{
+ return(how == WPE_CHILD_ENDED && WIFEXITED(status) &&
+        WEXITSTATUS(status) == 0);
+}
+
+/**
+ * e_scala_setup_tell - Go on with what the setup was run for.
+ * @su: the setup, ended.
+ */
+static void e_scala_setup_tell(E_SCALA_SETUP *su)
+{
+ char dir[E_SCALA_SETUP_DIR_MAX];
+
+ su->held = 0;
+ snprintf(dir, sizeof dir, "%s", su->dir);
+ su->done(su->ok, dir);
+}
+
+/**
+ * e_scala_setup_on_ended - The setup command ended: go on now, or once the
+ * dialog that is open closes.
+ * @c: its process; @status: its wait status; @how: WPE_CHILD_ENDED or
+ * WPE_CHILD_ENDED_UNKNOWN; @data: the setup.
+ */
+static void e_scala_setup_on_ended(WpeChild *c, int status, int how,
+                                   void *data)
+{
+ E_SCALA_SETUP *su = data;
+
+ (void)c;
+ su->running = 0;
+ su->ok = e_scala_setup_succeeded(status, how);
+ su->held = 1;
+ if (e_build_ui_idle(WpeEditor))
+  e_scala_setup_tell(su);
+}
+
+/**
+ * e_scala_setup_deliver_held - Go on with a setup that ended behind a
+ * dialog.  The key loop calls this outside every dialog.
+ */
+static void e_scala_setup_deliver_held(void)
+{
+ if (!e_build_ui_idle(WpeEditor))
+  return;
+ if (e_scala_setup_lsp.held)
+  e_scala_setup_tell(&e_scala_setup_lsp);
+ if (e_scala_setup_dap.held)
+  e_scala_setup_tell(&e_scala_setup_dap);
+}
+
+/**
+ * e_scala_setup_begin - Run `scala-cli setup-ide @dir` without waiting.
+ * @su: the setup; @dir: the project; @done: what goes on once it has ended.
+ *
+ * It reads nothing and its output goes nowhere, as before: only the files
+ * it writes count.
+ * Return: 0, or -1 when it could not be started (the owner's line says why
+ * when no slot was free).
+ */
+static int e_scala_setup_begin(E_SCALA_SETUP *su, const char *dir,
+                               e_scala_setup_done_fn done)
+{
+ char *argv[E_SCALA_SETUP_ARGC + 1];
+ WpeChildSpec spec;
+
+ snprintf(su->dir, sizeof su->dir, "%s", dir);
+ argv[0] = E_SCALA_SETUP_PROGRAM;
+ argv[1] = E_SCALA_SETUP_VERB;
+ argv[2] = su->dir;
+ argv[3] = NULL;
+ memset(&spec, 0, sizeof spec);
+ spec.argv = argv;
+ spec.io = WPE_CHILD_IO_PIPES;
+ spec.group = WPE_CHILD_OWN_SESSION;
+ spec.stdin_null = 1;
+ spec.stdout_to_null = 1;
+ spec.stderr_to_null = 1;
+ spec.what = E_SCALA_SETUP_WHAT;
+ su->done = done;
+ su->held = 0;
+ if (wpe_child_start(&spec, &su->child, e_scala_setup_on_ended, su) != 0)
+  return(-1);
+ su->running = 1;
+ return(0);
+}
+
+/**
+ * e_scala_setup_busy - Is the setup still running, for @dir when given?
+ * @su: the setup; @dir: a project, or NULL for any.
+ */
+static int e_scala_setup_busy(const E_SCALA_SETUP *su, const char *dir)
+{
+ if (!su->running)
+  return(0);
+ return(!dir || !strcmp(su->dir, dir));
+}
+
+/**
+ * e_scala_setup_drop - The setup is no longer wanted (another file, the
+ * editor's end): it is ended in the background and nothing goes on after.
+ * @su: the setup.
+ */
+static void e_scala_setup_drop(E_SCALA_SETUP *su)
+{
+ su->held = 0;
+ if (!su->running)
+  return;
+ su->running = 0;
+ wpe_child_end_detached(&su->child, SIGTERM);
+}
+
+/**
+ * e_scala_setup_end_at_exit - The editor is ending: a setup still running
+ * is ended on the owner's ladder, which the editor's end waits for, so none
+ * outlives the editor.
+ */
+static void e_scala_setup_end_at_exit(void)
+{
+ e_scala_setup_drop(&e_scala_setup_lsp);
+ e_scala_setup_drop(&e_scala_setup_dap);
+}
+
 /**
  * e_d_dap_spawn - Start the adapter process of a language whose adapter is
  * the editor's own child (dlv, gdb, lldb-dap), with its end watched.
  * @adapter: its command line; @lang: the language; @program, @dir: what it
  * debugs and where.
  *
- * Quit ends the adapter in the background and learns of its exit from the
- * editor's child watch, the moment it happens, instead of waiting for it.
- * SIGCHLD is held across the fork so the end cannot be missed.
+ * The adapter is started by the owner of the editor's children, which
+ * follows its end from before the fork: Quit ends it in the background and
+ * learns of its exit the moment it happens, instead of waiting for it, and
+ * an adapter killed from outside is told as such when its session ends.
  * Return: the session, or NULL when the adapter could not be started.
  */
 static e_dap_session *e_d_dap_spawn(char *const *adapter,
@@ -7227,16 +7447,12 @@ static e_dap_session *e_d_dap_spawn(char *const *adapter,
                                     const char *program, const char *dir)
 {
  e_dap_session *s;
- sigset_t saved;
 
- WpeChildSignalBlock(&saved);
  if (lang->stdio)
   s = e_dap_start_stdio(adapter, program, lang->entry_func, dir, &g_dap_host);
  else
   s = e_dap_start(adapter, program, lang->entry_func, dir, &g_dap_host);
- if (s && e_dap_adapter_pid(s) > 0)
-  WpeChildWatch(e_dap_adapter_pid(s), e_d_dap_adapter_ended, NULL);
- WpeChildSignalRestore(&saved);
+ e_dap_on_adapter_end(s, e_d_dap_adapter_ended, NULL);
  return(s);
 }
 
@@ -7304,6 +7520,8 @@ static int e_d_dap_start(FENSTER *f)
   /* scala-cli launches Bloop from JAVA_HOME/PATH to COMPILE the debuggee, so the
      too-new-JDK crash hits debug too -- pin it here, before the BSP spawns. */
   e_scala_pin_jdk(f, "Scala debug");
+  if (e_d_scala_setup_first(f, dir))
+   return(E_D_BUILDING);
   e_d_p_message("Starting Scala build server (BSP)...", f, 1);
   g_bsp = e_bsp_start(dir, f->datnam, bhost, sizeof(bhost), &bport,
                       mainclass, sizeof(mainclass), berr, sizeof(berr));
@@ -7355,7 +7573,7 @@ static int e_d_dap_start(FENSTER *f)
 static int e_d_dap_start_finish(FENSTER *f)
 {
  (void)f;
- e_d_swtch = 3;
+ e_d_swtch = E_D_DAP_SESSION_OPEN;
  g_dap_first = 1;
  g_dap_run_fd = e_dap_fd(g_dap);
  return(0);
@@ -7907,9 +8125,6 @@ static void e_d_ga_set_up(ECNT *cn, e_d_resume_fn pressed, int arg);
 static e_d_resume_fn e_d_resume_cmd = NULL;
 static int e_d_resume_arg = 0;
 static int e_d_build_done = 0;     /* the build for this start has succeeded */
-/* e_start_debug's answer while the build it needs is running: the command
-   that asked returns quietly and is run again when the build has ended. */
-#define E_D_BUILDING (-3)
 
 int e_d_goto_func(FENSTER *f, int flag);
 
@@ -7953,6 +8168,65 @@ static int e_d_build_first(FENSTER *f)
 {
  e_p_make_then(f, e_d_after_build, NULL);
  return(E_D_BUILDING);
+}
+
+#define E_D_SCALA_SETUP_FAILED_LINE \
+ "scala-cli setup-ide failed (is scala-cli installed?)"
+
+/**
+ * e_d_scala_setup_done - The debugger's setup ended: start the session the
+ * user asked for, as if the key were pressed again now.
+ * @ok: it succeeded; @dir: the project.
+ *
+ * A debug session the user started meanwhile, in another file, is left
+ * alone: the Scala one is not started on top of it, and no command meant
+ * for it is run in that session.
+ */
+static void e_d_scala_setup_done(int ok, const char *dir)
+{
+ FENSTER *top = WpeEditor->f[WpeEditor->mxedt];
+
+ (void)dir;
+ if (e_d_swtch || e_d_start_busy())
+ {
+  e_d_resume_cmd = NULL;
+  return;
+ }
+ if (ok)
+ {
+  e_d_after_build(top, 0, NULL);
+  return;
+ }
+ e_d_resume_cmd = NULL;
+ e_d_p_message(E_D_SCALA_SETUP_FAILED_LINE, top, 1);
+ e_status_say(top, E_D_SCALA_SETUP_FAILED_LINE);
+}
+
+/**
+ * e_d_scala_setup_first - The first Scala debug session in a project: run
+ * `scala-cli setup-ide` first, without holding the editor, like the build
+ * a C program is debugged after.
+ * @f: the source window; @dir: the project.
+ * Return: 1 when the session starts once it has ended (or it could not be
+ * started, said in a box), 0 when the project needs none.
+ */
+static int e_d_scala_setup_first(FENSTER *f, const char *dir)
+{
+ if (!e_bsp_needs_setup(dir))
+  return(0);
+ if (e_scala_setup_busy(&e_scala_setup_dap, NULL))
+ {
+  e_status_say(f, E_SCALA_SETUP_LINE);
+  return(1);
+ }
+ if (e_scala_setup_begin(&e_scala_setup_dap, dir, e_d_scala_setup_done) != 0)
+ {
+  e_d_resume_cmd = NULL;
+  e_error(E_D_SCALA_SETUP_FAILED_LINE, 0, f->fb);
+  return(1);
+ }
+ e_d_p_message(E_SCALA_SETUP_LINE, f, 1);
+ return(1);
 }
 
 /* ---- Starting a pipe debugger (gdb, jdb, pdb, a68g) ---------------------
@@ -8319,17 +8593,31 @@ static void e_d_start_wait_line_turn(void)
 }
 
 /**
+ * e_d_start_dap_signal - End the starting debug adapter.
+ * @sig: SIGTERM, which hands it to the owner's ladder (SIGKILL after the
+ * grace comes from there), or SIGKILL when the start ends at once.
+ */
+static void e_d_start_dap_signal(int sig)
+{
+ if (sig == SIGTERM)
+  e_dap_end_adapter(g_dap, SIGTERM);
+ else
+  e_dap_signal(g_dap, sig);
+}
+
+/**
  * e_d_start_signal - Send @sig to the starting debugger.
  * @sig: SIGTERM first, SIGKILL when that was not enough.
  *
- * The debugger, or the debug adapter, is the editor's own child, addressed by
- * its exact PID; it has started no program yet.
+ * The debugger is the editor's own child, addressed by its exact PID; it has
+ * started no program yet.  A debug adapter is ended by the owner of the
+ * editor's children.
  */
 static void e_d_start_signal(int sig)
 {
  if (e_d_start.dap)
  {
-  e_dap_signal(g_dap, sig);
+  e_d_start_dap_signal(sig);
   return;
  }
  if (e_d_pid > 0)
@@ -8605,10 +8893,13 @@ static void e_d_start_check_deadline(void)
 }
 
 /**
- * e_d_start_escalate - A debugger that outlives SIGTERM gets SIGKILL.
+ * e_d_start_escalate - A debugger that outlives SIGTERM gets SIGKILL.  An
+ * adapter's SIGKILL is the owner's ladder's.
  */
 static void e_d_start_escalate(void)
 {
+ if (e_d_start.dap)
+  return;
  e_d_start.term_ticks++;
  if (e_d_start.term_ticks == E_D_START_KILL_TICKS)
   e_d_start_signal(SIGKILL);
@@ -8736,6 +9027,7 @@ static void e_d_start_answered(void)
  */
 void e_d_start_deliver_held(void)
 {
+ e_scala_setup_deliver_held();
  if (!e_d_start.active || !e_d_start.held)
   return;
  if (!e_build_ui_idle(e_d_start.cn))
@@ -16181,30 +16473,37 @@ static int e_d_dap_watches_ask(ECNT *cn, int sw)
 /* ---- Quit: an adapter ended in the background ----
  *
  * Quit gives the user the editor back at once.  The adapter is asked to
- * end its program (`disconnect`) on the fd loop, given a moment to exit by
- * itself, then SIGTERM, then SIGKILL, each wait a loop timer, and its exit
- * is learned from the editor's child watch the moment it happens.  The
- * build server that hosts the Scala adapter is closed after it.
+ * end its program (`disconnect`) on the fd loop, within E_DAP_DISCONNECT_MS;
+ * then the owner of the editor's children ends it on its one ladder (the
+ * grace to exit by itself, SIGKILL, the kill grace) and reports its end, the
+ * moment it happens.  The build server that hosts the Scala adapter is
+ * closed after it.
  */
 
 #define E_D_DAP_CLOSE_SLOTS  4   /* adapters being ended at once */
 #define E_D_DAP_CLOSE_FREE   0
 #define E_D_DAP_CLOSE_ANSWER 1   /* disconnect sent; waits for its answer */
-#define E_D_DAP_CLOSE_EXIT   2   /* answered; waits for it to exit by itself */
-#define E_D_DAP_CLOSE_TERM   3   /* SIGTERM sent; waits for its exit */
-#define E_D_DAP_CLOSE_KILL   4   /* SIGKILL sent; waits for it to be reaped */
+#define E_D_DAP_CLOSE_ENDING 2   /* the owner's ladder ends it; waits for its end */
 #define E_D_DAP_CLOSE_LATE_FMT \
  " %s did not answer `disconnect` within %d s: ended it"
 #define E_D_DAP_CLOSE_LINE_MAX 160
 #define E_D_DAP_MS_PER_S       1000
+/* How the owner's ladder begins for a closing adapter.  One asked to go on
+   its pipe (`disconnect` sent, answered or not) gets no signal, only the
+   grace to exit by itself; one never asked (it had not answered
+   initialize) gets SIGTERM.  No signal makes a program outlive its adapter
+   less: measured, dlv's program ends with dlv's pty whatever ends dlv,
+   lldb-dap's survives SIGTERM and SIGKILL alike, and gdb ignores SIGTERM
+   while its program ends at gdb's SIGKILL. */
+#define E_D_DAP_END_ASKED      WPE_CHILD_NO_SIGNAL
+#define E_D_DAP_END_NOT_ASKED  SIGTERM
 
 typedef struct
 {
  int phase;                  /* E_D_DAP_CLOSE_* */
  e_dap_session *s;
  e_bsp_session *bsp;         /* the build server that hosts it, or NULL */
- pid_t pid;                  /* the adapter, the editor's child, or 0 */
- int timer;                  /* the phase's deadline, or WPE_TIMER_NONE */
+ int timer;                  /* the answer's deadline, or WPE_TIMER_NONE */
  int fd;                     /* its transport, while watched, or -1 */
  int pty;                    /* dlv's pty, while watched, or -1 */
  char name[sizeof g_dap_adapter_name];
@@ -16263,8 +16562,6 @@ static void e_d_dap_close_done(E_D_DAP_CLOSING *c)
 
  e_d_dap_close_unwatch(c);
  e_d_dap_close_disarm(c);
- if (c->pid > 0)
-  WpeChildUnwatch(c->pid);
  memset(c, 0, sizeof(*c));
  c->phase = E_D_DAP_CLOSE_FREE;
  e_dap_free(s);
@@ -16276,49 +16573,34 @@ static void e_d_dap_close_done(E_D_DAP_CLOSING *c)
  * e_d_dap_close_gone - Has the closing adapter exited (and been reaped)?
  * @c: the closing adapter.
  *
- * One the editor did not spawn (Scala's, hosted by the build server) has
- * nothing to exit.
+ * Read from what the SIGCHLD handler kept, so it is right the moment the
+ * adapter is reaped.  One the editor did not spawn (Scala's, hosted by the
+ * build server) has nothing to exit.
  */
 static int e_d_dap_close_gone(E_D_DAP_CLOSING *c)
 {
- if (c->pid <= 0)
+ if (e_dap_adapter_pid(c->s) <= 0)
   return(1);
  return(e_dap_adapter_gone(c->s));
 }
 
 /**
- * e_d_dap_close_term - Ask the adapter to end with SIGTERM, so it can still
- * end the program it runs (a SIGKILLed lldb-dap or dlv leaves it behind).
- * @c: the closing adapter.
+ * e_d_dap_close_end - Hand the adapter to the owner's ladder: it ends
+ * without the editor waiting, and Quit is done when its end is reported.
+ * @c: the closing adapter; @polite_sig: E_D_DAP_END_ASKED once
+ * `disconnect` went out, E_D_DAP_END_NOT_ASKED when it could not.
  */
-static void e_d_dap_close_term(E_D_DAP_CLOSING *c)
+static void e_d_dap_close_end(E_D_DAP_CLOSING *c, int polite_sig)
 {
+ e_d_dap_close_disarm(c);
  if (e_d_dap_close_gone(c))
  {
   e_d_dap_close_done(c);
   return;
  }
  e_dap_hang_up(c->s);
- e_dap_signal(c->s, SIGTERM);
- c->phase = E_D_DAP_CLOSE_TERM;
- e_d_dap_close_arm(c, E_DAP_TERM_MS);
-}
-
-/**
- * e_d_dap_close_kill - The adapter outlived SIGTERM: SIGKILL, so the editor
- * never keeps one that does not quit.
- * @c: the closing adapter.
- */
-static void e_d_dap_close_kill(E_D_DAP_CLOSING *c)
-{
- if (e_d_dap_close_gone(c))
- {
-  e_d_dap_close_done(c);
-  return;
- }
- e_dap_signal(c->s, SIGKILL);
- c->phase = E_D_DAP_CLOSE_KILL;
- e_d_dap_close_arm(c, E_DAP_TERM_MS);
+ c->phase = E_D_DAP_CLOSE_ENDING;
+ e_dap_end_adapter(c->s, polite_sig);
 }
 
 /**
@@ -16342,7 +16624,8 @@ static void e_d_dap_close_on_discard(int fd, void *data);
 
 /**
  * e_d_dap_close_answered - The adapter answered `disconnect` (or its
- * transport ended): the program is ended; give it a moment to exit.
+ * transport ended): the program is ended; the owner gives the adapter its
+ * grace to exit by itself before SIGKILL.
  * @c: the closing adapter.
  *
  * What it still writes is read and dropped, so it never blocks on a full
@@ -16359,13 +16642,7 @@ static void e_d_dap_close_answered(E_D_DAP_CLOSING *c)
  if (c->fd >= 0)
   e_fd_watch(c->fd, POLLIN, e_d_dap_close_on_discard, c,
              "the debug adapter's last words");
- if (e_d_dap_close_gone(c))
- {
-  e_d_dap_close_done(c);
-  return;
- }
- c->phase = E_D_DAP_CLOSE_EXIT;
- e_d_dap_close_arm(c, E_DAP_EXIT_MS);
+ e_d_dap_close_end(c, E_D_DAP_END_ASKED);
 }
 
 /**
@@ -16415,62 +16692,55 @@ static void e_d_dap_close_on_output(int fd, void *data)
 }
 
 /**
- * e_d_dap_close_on_timer - A closing adapter's phase ran out: the next
- * phase.
+ * e_d_dap_close_on_timer - The adapter did not answer `disconnect` in time:
+ * said on the status row, then the owner's ladder ends it (it was asked
+ * already: the grace, then SIGKILL).
  * @data: the closing adapter.
- *
- * No answer to `disconnect`: said on the status row, then SIGTERM; no exit
- * after the answer: SIGTERM; no exit after SIGTERM: SIGKILL; after SIGKILL
- * the session is freed whatever the child watch says.
  */
 static void e_d_dap_close_on_timer(void *data)
 {
  E_D_DAP_CLOSING *c = data;
 
  c->timer = WPE_TIMER_NONE;
- switch (c->phase)
- {
-  case E_D_DAP_CLOSE_ANSWER:
-   e_d_dap_close_say_late(c);
-   e_d_dap_close_term(c);
-   break;
-  case E_D_DAP_CLOSE_EXIT:
-   e_d_dap_close_term(c);
-   break;
-  case E_D_DAP_CLOSE_TERM:
-   e_d_dap_close_kill(c);
-   break;
-  case E_D_DAP_CLOSE_KILL:
-   e_d_dap_close_done(c);
-   break;
- }
+ if (c->phase != E_D_DAP_CLOSE_ANSWER)
+  return;
+ e_d_dap_close_say_late(c);
+ e_d_dap_close_end(c, E_D_DAP_END_ASKED);
 }
 
 /**
- * e_d_dap_adapter_ended - The editor's child watch: an adapter exited.
- * @pid: it; @status: how; @data: unused.
- *
- * One that Quit is ending is done.  One that ends during its session
- * (it crashed, or it ended with its program) is ended by the end of its
- * transport instead, which the session's reader sees.
+ * e_d_dap_closing_of - The place Quit ends @s from, or NULL.
+ * @s: a session.
  */
-static void e_d_dap_adapter_ended(int pid, int status, void *data)
+static E_D_DAP_CLOSING *e_d_dap_closing_of(const e_dap_session *s)
 {
  int i;
 
- (void)status;
- (void)data;
  for (i = 0; i < E_D_DAP_CLOSE_SLOTS; i++)
- {
-  E_D_DAP_CLOSING *c = &e_d_dap_closing[i];
+  if (e_d_dap_closing[i].phase != E_D_DAP_CLOSE_FREE &&
+      e_d_dap_closing[i].s == s)
+   return(&e_d_dap_closing[i]);
+ return(NULL);
+}
 
-  if (c->phase == E_D_DAP_CLOSE_FREE || c->pid != pid)
-   continue;
-  e_dap_adapter_gone(c->s);
-  c->pid = 0;
+/**
+ * e_d_dap_adapter_ended - The owner of the editor's children reported that
+ * an adapter ended (or that it did not end even after SIGKILL).
+ * @s: its session; @data: unused.
+ *
+ * One that Quit is ending is done.  One that ends during its session (it
+ * crashed, it was killed, or it ended with its program) keeps how it ended
+ * in its session (e_dap_adapter_end_status) for the line that ends the
+ * session, which the end of its transport brings; a start still waiting
+ * for it sees it gone on its next tick.
+ */
+static void e_d_dap_adapter_ended(e_dap_session *s, void *data)
+{
+ E_D_DAP_CLOSING *c = e_d_dap_closing_of(s);
+
+ (void)data;
+ if (c)
   e_d_dap_close_done(c);
-  return;
- }
 }
 
 /**
@@ -16514,7 +16784,7 @@ static void e_d_dap_close_await_answer(E_D_DAP_CLOSING *c)
 static void e_d_dap_close_now(e_dap_session *s, e_bsp_session *bsp)
 {
  e_dap_signal(s, SIGKILL);
- e_dap_free(s);
+ e_dap_free(s);   /* the owner stops following it; the handler reaps it */
  if (bsp)
   e_bsp_close(bsp);
 }
@@ -16541,7 +16811,6 @@ static void e_d_dap_close_begin(e_dap_session *s, e_bsp_session *bsp)
  memset(c, 0, sizeof(*c));
  c->s = s;
  c->bsp = bsp;
- c->pid = e_dap_adapter_pid(s);
  c->timer = WPE_TIMER_NONE;
  c->fd = c->pty = E_D_DR_NO_FD;
  snprintf(c->name, sizeof c->name, "%s", g_dap_adapter_name);
@@ -16550,8 +16819,7 @@ static void e_d_dap_close_begin(e_dap_session *s, e_bsp_session *bsp)
   e_d_dap_close_await_answer(c);
   return;
  }
- c->phase = E_D_DAP_CLOSE_EXIT;
- e_d_dap_close_term(c);
+ e_d_dap_close_end(c, E_D_DAP_END_NOT_ASKED);
 }
 
 /**
@@ -24566,7 +24834,13 @@ typedef struct {
  char *const *argv;      /* NULL-terminated spawn command; argv[0] is the PATH check */
  const char *label;      /* short name for the status bar ("Metals", "clangd", ...) */
  const char *missing;    /* shown when the binary is not installed */
+ int shares_daemon;      /* E_LSP_SHARES_DAEMON: it may start the build server
+                            other editors share (e_lsp_host.server_shares_daemon) */
 } e_lsp_server;
+
+/* Metals may start Bloop, which other editors and the Scala debugger use:
+   ending Metals must leave it running. */
+#define E_LSP_SHARES_DAEMON 1
 
 static char *const E_LSP_ARGV_METALS[]  = { "metals", NULL };
 static char *const E_LSP_ARGV_CLANGD[]  = { "clangd", NULL };
@@ -24579,7 +24853,8 @@ static char *const E_LSP_ARGV_RUSTA[]   = { "rust-analyzer", NULL };
  "No Python language server in PATH (pip install pyright, or apt install python3-pylsp)."
 
 static const e_lsp_server e_lsp_servers[] = {
- { "scala",  E_LSP_ARGV_METALS,  "Metals", "Metals not in PATH (cs install metals)." },
+ { "scala",  E_LSP_ARGV_METALS,  "Metals", "Metals not in PATH (cs install metals).",
+   E_LSP_SHARES_DAEMON },
  { "c",      E_LSP_ARGV_CLANGD,  "clangd", "clangd not in PATH (apt install clangd)." },
  { "cpp",    E_LSP_ARGV_CLANGD,  "clangd", "clangd not in PATH (apt install clangd)." },
  { "python", E_LSP_ARGV_PYRIGHT, "pyright", E_LSP_PY_MISSING },   /* preferred */
@@ -25220,20 +25495,157 @@ static int e_lsp_is_dep_source(FENSTER *f)
  return (f && f->dirct && strstr(f->dirct, "/.metals/readonly/") != NULL);
 }
 
-/* e_lsp_setup_scala_build - Metals-only pre-launch setup for a Scala file.
-   Pins JAVA_HOME so Metals' presentation compiler does not run on a too-new JDK,
-   and runs `scala-cli setup-ide` in the project dir so Metals auto-connects to
-   the build server.  Called only for lang=="scala"; other servers (clangd, ...)
-   need none of this.  Both steps are best-effort -- the editor proceeds either
-   way (the user sees diagnostics if the build is misconfigured). */
-static void e_lsp_setup_scala_build(FENSTER *f, const char *dir)
+#define E_LSP_PATH_MAX 1200
+
+/* The file whose `scala-cli setup-ide` has ended, so its next start goes
+   straight to the server; and the file the running setup is for. */
+static char g_lsp_setup_done[E_LSP_PATH_MAX];
+static char g_lsp_setup_for[E_LSP_PATH_MAX];
+
+static int e_lsp_ensure(FENSTER *f);
+
+/**
+ * e_lsp_window_of - The window showing @path, or NULL once it was closed.
+ * @path: directory and name, as e_lsp_ensure builds it.
+ */
+static FENSTER *e_lsp_window_of(const char *path)
 {
- char cmd[1400];
+ ECNT *cn = WpeEditor;
+ char p[E_LSP_PATH_MAX];
+ int i;
+
+ for (i = 1; cn && i <= cn->mxedt; i++)
+ {
+  FENSTER *w = cn->f[i];
+
+  if (!w || !w->datnam)
+   continue;
+  snprintf(p, sizeof p, "%s%s", w->dirct ? w->dirct : "./", w->datnam);
+  if (!strcmp(p, path))
+   return(w);
+ }
+ return(NULL);
+}
+
+/**
+ * e_lsp_scala_setup_done - `scala-cli setup-ide` ended: start Metals for the
+ * file it was run for, if that file is still open.
+ * @ok: unused (Metals imports the build itself when the setup failed);
+ * @dir: the project.
+ *
+ * Runs outside any dialog (e_scala_setup_deliver_held), so the "Starting
+ * language server" line is never drawn under a box.
+ */
+static void e_lsp_scala_setup_done(int ok, const char *dir)
+{
+ FENSTER *w = e_lsp_window_of(g_lsp_setup_for);
+
+ (void)ok;
+ (void)dir;
+ snprintf(g_lsp_setup_done, sizeof g_lsp_setup_done, "%s", g_lsp_setup_for);
+ g_lsp_setup_for[0] = '\0';
+ if (w)
+  e_lsp_ensure(w);
+}
+
+/**
+ * e_lsp_setup_scala_build - Metals-only pre-launch setup for a Scala file:
+ * JAVA_HOME pinned so Metals' presentation compiler does not run on a
+ * too-new JDK, then `scala-cli setup-ide` in the project so Metals
+ * auto-connects to the build server.
+ * @f: the file's window; @dir: the project; @path: the file.
+ *
+ * The setup runs without holding the editor, and Metals starts when it has
+ * ended.  Both steps are best-effort: the server starts either way (the
+ * user sees diagnostics if the build is misconfigured).
+ * Return: -1, the "still starting" answer of e_lsp_ensure.
+ */
+static int e_lsp_setup_scala_build(FENSTER *f, const char *dir,
+                                   const char *path)
+{
+ if (e_scala_setup_busy(&e_scala_setup_lsp, NULL))
+ {
+  e_d_p_message(E_SCALA_SETUP_LINE, f, 0);
+  return(-1);
+ }
  e_scala_pin_jdk(f, "Metals");  /* keep Metals' Scala PC off a too-new JDK */
- /* </dev/null: never let the child share xwpe's interactive terminal stdin. */
- snprintf(cmd, sizeof(cmd), "scala-cli setup-ide '%s' </dev/null >/dev/null 2>&1", dir);
- if (system(cmd) != 0)
-  { /* non-fatal: Metals can still import the build */ }
+ snprintf(g_lsp_setup_for, sizeof g_lsp_setup_for, "%s", path);
+ if (e_scala_setup_begin(&e_scala_setup_lsp, dir, e_lsp_scala_setup_done) != 0)
+ {
+  e_lsp_scala_setup_done(0, dir);   /* non-fatal: Metals imports the build */
+  return(-1);
+ }
+ e_d_p_message(E_SCALA_SETUP_LINE, f, 1);
+ e_lsp_raise_source(f);
+ return(-1);
+}
+
+/**
+ * e_lsp_scala_setup_drop_other - The user asked for the server of another
+ * file: a setup still running for an earlier Scala file is no longer
+ * wanted, so Metals does not start for that file later and replace the
+ * server the user asked for now.
+ * @path: the file the server is now for.
+ */
+static void e_lsp_scala_setup_drop_other(const char *path)
+{
+ if (!e_scala_setup_busy(&e_scala_setup_lsp, NULL) ||
+     !strcmp(g_lsp_setup_for, path))
+  return;
+ e_scala_setup_drop(&e_scala_setup_lsp);
+ g_lsp_setup_for[0] = '\0';
+}
+
+/**
+ * e_scala_setup_busy_any - Is `scala-cli setup-ide` running for the
+ * language server or the debugger?  The key loop asks, so Esc cancels it,
+ * as the waiting line says.
+ * Return: 1 while one runs.
+ */
+int e_scala_setup_busy_any(void)
+{
+ if (e_scala_setup_busy(&e_scala_setup_lsp, NULL))
+  return(1);
+ return(e_scala_setup_busy(&e_scala_setup_dap, NULL));
+}
+
+/**
+ * e_scala_setup_cancel - Esc while `scala-cli setup-ide` runs: end it, and
+ * start neither the language server nor the debug session it was run for.
+ *
+ * As with Esc on a build, the user changed their mind: nothing starts
+ * behind their back later, and Messages and the status row say so.
+ */
+void e_scala_setup_cancel(void)
+{
+ FENSTER *top = WpeEditor->f[WpeEditor->mxedt];
+
+ if (e_scala_setup_busy(&e_scala_setup_dap, NULL))
+  e_d_resume_cmd = NULL;
+ e_scala_setup_drop(&e_scala_setup_lsp);
+ e_scala_setup_drop(&e_scala_setup_dap);
+ g_lsp_setup_for[0] = '\0';
+ e_d_p_message(E_SCALA_SETUP_CANCELLED_LINE, top, 0);
+ e_status_say(top, E_SCALA_SETUP_CANCELLED_LINE);
+}
+
+/**
+ * e_lsp_scala_setup_needed - Must `scala-cli setup-ide` run before Metals
+ * starts for @path?  Once it has ended for that file, the next start of
+ * the server goes straight on (and the one after that runs it again, as
+ * every new session did).
+ * @lang: the file's language; @path: the file.
+ */
+static int e_lsp_scala_setup_needed(const char *lang, const char *path)
+{
+ if (strcmp(lang, "scala"))
+  return(0);
+ if (!strcmp(g_lsp_setup_done, path))
+ {
+  g_lsp_setup_done[0] = '\0';
+  return(0);
+ }
+ return(1);
 }
 
 static int e_lsp_ensure(FENSTER *f)
@@ -25258,6 +25670,7 @@ static int e_lsp_ensure(FENSTER *f)
                 f, 0);
   return(-1);                                   /* still starting -> action waits */
  }
+ e_lsp_scala_setup_drop_other(path);
  if (g_lsp)
  {  e_lsp_fd_unregister();  e_lsp_close(g_lsp);  g_lsp = NULL;  e_lsp_diag_clear();
     e_lsp_inlay_clear();  g_inlay_on = 0;
@@ -25273,8 +25686,8 @@ static int e_lsp_ensure(FENSTER *f)
  strncpy(g_lsp_file, path, sizeof(g_lsp_file) - 1);
  g_lsp_file[sizeof(g_lsp_file) - 1] = '\0';
 
- if (!strcmp(lang, "scala"))
-  e_lsp_setup_scala_build(f, dir);   /* JDK pin + scala-cli setup-ide (Metals only) */
+ if (e_lsp_scala_setup_needed(lang, path))
+  return(e_lsp_setup_scala_build(f, dir, path));   /* Metals starts after it */
 
  host.on_diagnostic = e_lsp_on_diag;
  host.on_diagnostics_summary = e_lsp_on_diag_summary;
@@ -25283,6 +25696,7 @@ static int e_lsp_ensure(FENSTER *f)
  host.on_inlay_refresh = e_lsp_on_inlay_refresh;
  host.on_semantic_refresh = e_lsp_on_semantic_refresh;
  host.ud = NULL;
+ host.server_shares_daemon = srv->shares_daemon;
  g_inlay_stale = 0;
  if (e_lsp_is_worksheet(f))               /* worksheet: show eval results without Alt-Q Y */
   g_inlay_on = 1;

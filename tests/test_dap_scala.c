@@ -91,6 +91,15 @@ int main(void)
  hostcb.on_terminated = on_terminated;
  hostcb.ud = &rec;
 
+ /* The connection file first: the editor runs this as a child of its own on
+    its loop; the test has no loop and simply waits for it. */
+ if (e_bsp_needs_setup(dir))
+ {
+  snprintf(cmd, sizeof(cmd), "scala-cli setup-ide '%s' >/dev/null 2>&1", dir);
+  if (system(cmd) != 0)
+  { rc = fail("scala-cli setup-ide"); goto out; }
+ }
+
  /* BSP bootstrap -> DAP endpoint (this is the slow step on a cold cache). */
  bsp = e_bsp_start(dir, "factorial.scala", host, sizeof(host), &port,
                    mainclass, sizeof(mainclass), err, sizeof(err));

@@ -6,11 +6,13 @@
  * Bloop daemon, which the real launcher may start as its child), and then
  * either takes a moment to end after SIGTERM or ignores it.
  *
- * What is checked: a launcher that needs a moment after SIGTERM gets it and
- * ends by itself (it is not SIGKILLed at a fixed instant); Quit goes on as
- * soon as it has ended; a launcher that ignores SIGTERM is still ended within
- * the bound; and the launcher's own child is never signalled, because only
- * the launcher's PID is, never its process group.
+ * What is checked: e_bsp_close returns at once, whatever the launcher does,
+ * and the editor's children's owner (we_child.c) ends it on the fd loop; a
+ * launcher that needs a moment after SIGTERM gets it and ends by itself (it
+ * is not SIGKILLed at a fixed instant); a launcher that ignores SIGTERM is
+ * killed after the owner's grace; and the launcher's own child is never
+ * signalled, because only the launcher's PID is, never its process group.
+ * The test reaps as the editor's SIGCHLD handler does.
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -26,7 +28,9 @@
 #include <sys/wait.h>
 
 #include "../we_bsp.h"
+#include "../we_child.h"
 #include "../we_dap_proto.h"
+#include "../we_fdloop.h"
 
 #define FAKE_FLAG        "--fake-bsp"
 #define FAKE_SLOW_TERM   "slow-term"  /* ends FAKE_TERM_CLEANUP_MS after TERM */
@@ -35,20 +39,17 @@
 #define FAKE_LIFETIME_S  30           /* a stand-in left over ends by itself  */
 #define FAKE_READ_CHUNK  4096
 #define FAKE_FRAME_MAX   1024
-#define BSP_TERM_MS      1000         /* the engine's wait after SIGTERM      */
 #define CLOSE_SLACK_MS   400
+#define CLOSE_RETURNS_MS 100          /* e_bsp_close must not wait            */
+#define LOOP_SLICE_MS    20
+#define GONE_WAIT_MS     (WPE_CHILD_END_GRACE_MS + WPE_CHILD_END_KILL_MS + \
+                          2 * CLOSE_SLACK_MS)
 #define PATH_TEXT_MAX    (PATH_MAX + 64)
 #define FAKE_DAP_URI     "tcp://127.0.0.1:5005"
 #define MS_PER_SEC       1000L
 #define NS_PER_MS        1000000L
-/* With an exit descriptor (pidfd, kqueue) the launcher is reaped as it
-   exits.  Without one (the BSP_NO_PIDFD build) its exit is seen only at the
-   bound, so the documented bound is the whole wait after SIGTERM. */
-#if defined(BSP_NO_PIDFD)
-# define SLOW_TERM_BOUND_MS (BSP_TERM_MS + CLOSE_SLACK_MS)
-#else
-# define SLOW_TERM_BOUND_MS (FAKE_TERM_CLEANUP_MS + CLOSE_SLACK_MS)
-#endif
+/* A launcher that ends at SIGTERM is reaped as it exits. */
+#define SLOW_TERM_BOUND_MS (FAKE_TERM_CLEANUP_MS + CLOSE_SLACK_MS)
 
 static char self_path[PATH_MAX];
 static int failures = 0;
@@ -307,14 +308,53 @@ static void remove_dir(const char *dir)
 }
 
 struct closed {
- long  ms;          /* how long e_bsp_close took   */
+ long  ms;          /* how long e_bsp_close took                      */
+ long  gone_ms;     /* from the close until the launcher was reaped   */
  pid_t launcher;
  pid_t daemon;
 };
 
+/* The handler the editor installs (WpeSignalChild), in its essentials. */
+static void on_child(int sig)
+{
+ int saved = errno, st;
+ pid_t pid;
+
+ (void)sig;
+ while ((pid = waitpid(-1, &st, WNOHANG)) > 0)
+  wpe_child_note_ended(pid, st);
+ errno = saved;
+}
+
+/** install_reaper - Reap children as the editor does, so the owner sees ends. */
+static void install_reaper(void)
+{
+ struct sigaction act;
+
+ memset(&act, 0, sizeof act);
+ act.sa_handler = on_child;
+ sigemptyset(&act.sa_mask);
+ act.sa_flags = SA_RESTART;
+ sigaction(SIGCHLD, &act, NULL);
+}
+
+/**
+ * loop_until_gone - Run the editor's loop until @pid is reaped, or @ms.
+ * Return: how long it took, from @t0 on.
+ */
+static long loop_until_gone(pid_t pid, long t0, long ms)
+{
+ long deadline = now_ms() + ms;
+
+ while (process_alive(pid) && now_ms() < deadline)
+  wpe_fd_poll(LOOP_SLICE_MS);
+ return now_ms() - t0;
+}
+
 /**
  * start_and_close - Start a session on the fake in @mode, close it, and
- * report how long the close took and which processes the fake had.
+ * report how long the close took, how long until the launcher was gone,
+ * and which processes the fake had.
  * Return: 0, or -1 when the session did not start.
  */
 static int start_and_close(const char *dir, const char *mode,
@@ -339,6 +379,7 @@ static int start_and_close(const char *dir, const char *mode,
  t0 = now_ms();
  e_bsp_close(b);
  out->ms = now_ms() - t0;
+ out->gone_ms = loop_until_gone(out->launcher, t0, GONE_WAIT_MS);
  return 0;
 }
 
@@ -369,11 +410,13 @@ static void test_close_lets_the_launcher_end_after_sigterm(void)
   remove_dir(dir);
   return;
  }
- printf("  close took %ld ms\n", c.ms);
+ printf("  close took %ld ms, the launcher was gone after %ld ms\n",
+        c.ms, c.gone_ms);
+ check(c.ms < CLOSE_RETURNS_MS, "Quit goes on at once");
  check(exists(dir, "ended-cleanly"),
        "a launcher that needs a moment after SIGTERM ends by itself");
- check(c.ms < SLOW_TERM_BOUND_MS,
-       "Quit goes on as soon as the launcher has ended");
+ check(c.gone_ms < SLOW_TERM_BOUND_MS,
+       "it is reaped as soon as it has ended");
  check(c.launcher > 0 && !process_alive(c.launcher),
        "the launcher is gone and reaped");
  check(c.daemon > 0 && process_alive(c.daemon),
@@ -402,11 +445,13 @@ static void test_close_ends_a_launcher_that_ignores_sigterm(void)
   remove_dir(dir);
   return;
  }
- printf("  close took %ld ms\n", c.ms);
- check(c.ms >= BSP_TERM_MS - CLOSE_SLACK_MS,
-       "a launcher that ignores SIGTERM gets the whole wait first");
- check(c.ms < BSP_TERM_MS + CLOSE_SLACK_MS,
-       "and is then ended: Quit stays bounded");
+ printf("  close took %ld ms, the launcher was gone after %ld ms\n",
+        c.ms, c.gone_ms);
+ check(c.ms < CLOSE_RETURNS_MS, "Quit goes on at once");
+ check(c.gone_ms >= WPE_CHILD_END_GRACE_MS - CLOSE_SLACK_MS,
+       "a launcher that ignores SIGTERM gets the whole grace first");
+ check(c.gone_ms < WPE_CHILD_END_GRACE_MS + CLOSE_SLACK_MS,
+       "and is then killed: its end stays bounded");
  check(c.launcher > 0 && !process_alive(c.launcher),
        "the launcher is gone and reaped");
  check(c.daemon > 0 && process_alive(c.daemon),
@@ -415,6 +460,7 @@ static void test_close_ends_a_launcher_that_ignores_sigterm(void)
  remove_dir(dir);
 }
 
+/* @scenario SC-debug-75 */
 int main(int argc, char **argv)
 {
  if (argc >= 4 && !strcmp(argv[1], FAKE_FLAG))
@@ -422,6 +468,7 @@ int main(int argc, char **argv)
  if (!realpath(argv[0], self_path))
   snprintf(self_path, sizeof self_path, "%s", argv[0]);
  signal(SIGPIPE, SIG_IGN);
+ install_reaper();
  test_close_lets_the_launcher_end_after_sigterm();
  test_close_ends_a_launcher_that_ignores_sigterm();
  if (failures == 0)

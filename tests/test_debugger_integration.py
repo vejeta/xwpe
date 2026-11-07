@@ -2164,6 +2164,15 @@ SLEEPING_PROGS = {
                         "    let x = 3;\n    println!(\"{}\", x);\n}\n"},
 }
 RUNNING_SETTLE_S = 10   # the program is asleep, past any start-up output
+# Quit's longest way to end an adapter (we_dap.h, we_child.h): 2 s for the
+# answer to `disconnect`, the 2 s grace, SIGKILL and its 1 s kill grace.
+QUIT_DISCONNECT_S = 2.0
+QUIT_END_GRACE_S = 2.0
+QUIT_KILL_GRACE_S = 1.0
+QUIT_LADDER_S = QUIT_DISCONNECT_S + QUIT_END_GRACE_S + QUIT_KILL_GRACE_S
+# The editor's own slack under a sanitizer on a loaded machine: the keys of
+# Debug > Quit read late, the loop's timers fired late.
+QUIT_MARGIN_S = 5.0
 
 
 # @scenario SC-debug-18
@@ -2446,7 +2455,7 @@ def test_debug_quit_while_the_program_runs_under_every_debugger(
         w._drain(RUNNING_SETTLE_S)   # asleep for ten minutes (drain scales)
         w.menu(ALT.DEBUG, "q", delay=0.5)
         assert _wait_for(w, lambda: not _children(w, spec["child"]),
-                         STEP_TIMEOUT_S), \
+                         QUIT_LADDER_S + QUIT_MARGIN_S), \
             "Debug > Quit should end %s while the program runs:\n%s" \
             % (spec["child"], _screen(w))
 
@@ -2842,6 +2851,86 @@ def test_keys_during_the_editors_end_neither_cut_its_wait_nor_spin(tmp_path):
     finally:
         _dap_let_go(pid)
         _kill_program_if_left(run)
+
+
+ADAPTER_DIED_FMT = "%s ended unexpectedly (exit status %d)"
+SIGNAL_STATUS_BASE = 128      # a status the shell's way: 128 + the signal
+
+
+def _adapter_died_line(run):
+    """The line a session ends with when its adapter was SIGKILLed."""
+    return ADAPTER_DIED_FMT % (run.case["child"],
+                               SIGNAL_STATUS_BASE + signal.SIGKILL)
+
+
+# @scenario SC-debug-73
+@pytest.mark.parametrize("adapter", DAP_ADAPTERS)
+def test_adapter_end_is_an_event(tmp_path, adapter):
+    """The adapter is killed (SIGKILL) at a stop, then F8: the session ends
+    with the line that names the adapter and its exit status, as for a line
+    debugger that died, never "End of Debugging"; the status is the one the
+    owner of the editor's children reported, and the adapter is reaped."""
+    run = DapRun(tmp_path, adapter, sleep_s=DAP_LONG_SLEEP_S)
+    try:
+        with run.session as w:
+            run.stop_on_ready(w)
+            pid = _dap_adapter_pid(w, run)
+            os.kill(pid, signal.SIGKILL)
+            w.key(F8, delay=0.5)
+            expected = _adapter_died_line(run)
+            assert _wait_for(w, lambda: expected in _screen(w),
+                             STEP_TIMEOUT_S), \
+                "the end should say the adapter (pid %d) died:\n%s" \
+                % (pid, _screen(w))
+            assert "End of Debugging" not in _screen(w), _screen(w)
+            assert _mark_line(w) is None, _screen(w)
+            assert _wait_for(w, lambda: _process_gone(pid), STEP_TIMEOUT_S), \
+                "the killed adapter should be reaped"
+    finally:
+        _kill_program_if_left(run)
+
+
+# @scenario SC-debug-74
+@pytest.mark.parametrize("adapter", DAP_ADAPTERS)
+def test_quit_right_after_the_adapter_died_still_says_how(tmp_path, adapter):
+    """The adapter is killed at a stop and Debug > Quit is typed the moment
+    the editor has reaped it, before the editor has read the end of its
+    transport and, often, before the end was reported: the session still
+    ends with the line that the adapter died and its exit status.  (Which
+    of the two the Quit meets is not under the row's control; the order
+    itself, the reaped adapter's status read before Quit lets it go, is
+    pinned by test_dap's
+    test_an_adapter_reaped_but_not_reported_is_known_gone_with_its_status.)"""
+    run = DapRun(tmp_path, adapter, sleep_s=DAP_LONG_SLEEP_S)
+    try:
+        with run.session as w:
+            run.stop_on_ready(w)
+            pid = _dap_adapter_pid(w, run)
+            os.kill(pid, signal.SIGKILL)
+            assert _wait_for_state(pid, procinfo.GONE, STEP_TIMEOUT_S), \
+                "the editor should reap the killed adapter (state %s)" \
+                % procinfo.run_state(pid)
+            os.write(w.master_fd, (ALT.DEBUG + "q").encode())
+            expected = _adapter_died_line(run)
+            assert _wait_for(w, lambda: expected in _screen(w),
+                             STEP_TIMEOUT_S), \
+                "Quit should still say the adapter (pid %d) died:\n%s" \
+                % (pid, _screen(w))
+            assert "End of Debugging" not in _screen(w), _screen(w)
+            assert _wait_for(w, lambda: _process_gone(pid), STEP_TIMEOUT_S), \
+                "the killed adapter should be reaped"
+    finally:
+        _kill_program_if_left(run)
+
+
+def _wait_for_state(pid, state, timeout):
+    """Wait, without reading the editor, until @pid is in run state @state."""
+    deadline = time.time() + timeout * WAIT_SCALE
+    while time.time() < deadline:
+        if procinfo.run_state(pid) == state:
+            return True
+        time.sleep(POLL_S)
+    return procinfo.run_state(pid) == state
 
 
 # @scenario SC-debug-18

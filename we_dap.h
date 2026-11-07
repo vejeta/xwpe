@@ -21,17 +21,19 @@
 
 #include <sys/types.h>
 
+#include "we_child.h"
 #include "we_debreq.h"
 
 struct json_object;
 
 /* How long Quit waits for the adapter to answer `disconnect` before it is
-   ended by signal (the adapters measured answer within milliseconds); after
-   its answer, how long it gets to exit by itself (lldb-dap takes about a
-   second); after SIGTERM, how long before SIGKILL. */
+   ended by signal (the adapters measured answer within milliseconds).  What
+   comes after is the ladder of the editor's children's owner: the grace to
+   exit by itself (WPE_CHILD_END_GRACE_MS; lldb-dap takes about a second),
+   SIGKILL, and WPE_CHILD_END_KILL_MS for the kernel to end it. */
 #define E_DAP_DISCONNECT_MS 2000
-#define E_DAP_EXIT_MS       2000
-#define E_DAP_TERM_MS       1000
+/* The owner's lines name an adapter this way. */
+#define E_DAP_ADAPTER_WHAT  "the debug adapter"
 
 /* Side-effects the session asks the host to perform.  The callbacks only
  * record what they are told: they are called from inside the engine's reads,
@@ -106,8 +108,8 @@ e_dap_session *e_dap_open_tcp(const char *host, int port, const char *program,
  * e_dap_fd() (a caller with no event loop may still use
  * e_dap_run_to_first_stop()).  The start descriptor
  * changes once, when a reverse-TCP adapter dials in: re-read it after each
- * pump.  An adapter that never answers is ended with e_dap_signal() and
- * reaped with e_dap_adapter_gone(); e_dap_close() then frees the session. */
+ * pump.  An adapter that never answers is ended with e_dap_end_adapter();
+ * e_dap_adapter_gone() says once it has gone. */
 #define E_DAP_START_WAITING 0
 #define E_DAP_START_READY   1
 #define E_DAP_START_FAILED  (-1)
@@ -153,6 +155,18 @@ void e_dap_forward_output(e_dap_session *s);
 pid_t e_dap_adapter_pid(const e_dap_session *s);
 void e_dap_signal(e_dap_session *s, int sig);
 int  e_dap_adapter_gone(e_dap_session *s);
+/* The adapter is the editor's child through we_child.c: ended without
+ * waiting (SIGTERM or WPE_CHILD_NO_SIGNAL, then the owner's ladder), its end
+ * told once, from the loop, to @fn (kept across e_dap_host_forget), and how
+ * it ended known as soon as it is reaped. */
+typedef void (*e_dap_adapter_end_fn)(e_dap_session *s, void *data);
+void e_dap_end_adapter(e_dap_session *s, int polite_sig);
+void e_dap_on_adapter_end(e_dap_session *s, e_dap_adapter_end_fn fn, void *data);
+int  e_dap_adapter_end_status(const e_dap_session *s, int *status);
+void e_dap_adapter_reaped(e_dap_session *s);
+/* Did the adapter say the program ended (`terminated` or `exited`), as
+ * opposed to a transport that just ended? */
+int  e_dap_program_said_ended(const e_dap_session *s);
 
 /* Record a source breakpoint to install on Run (DAP sets breakpoints per file
  * just before the program starts). */
@@ -265,9 +279,10 @@ int  e_dap_disconnect(e_dap_session *s);
  * touched again. */
 void e_dap_host_forget(e_dap_session *s);
 /* The longest an adapter Quit ended in the background may take to go: no
- * answer to `disconnect`, SIGTERM ignored, SIGKILL and its reaping. */
+ * answer to `disconnect`, SIGTERM ignored for the owner's grace, SIGKILL and
+ * its kill grace (we_child.h). */
 #define E_DAP_CLOSE_MAX_MS \
- (E_DAP_DISCONNECT_MS + E_DAP_EXIT_MS + 2 * E_DAP_TERM_MS)
+ (E_DAP_DISCONNECT_MS + WPE_CHILD_END_GRACE_MS + WPE_CHILD_END_KILL_MS)
 /* Has Quit's `disconnect` gone out, and has the adapter answered it? */
 int  e_dap_disconnect_sent(const e_dap_session *s);
 int  e_dap_disconnect_answered(const e_dap_session *s);
@@ -279,9 +294,10 @@ void e_dap_hang_up(e_dap_session *s);
  * pipe, and what it writes does not grow the editor's memory. */
 void e_dap_discard_input(e_dap_session *s);
 /* Free the session without waiting for anything: its descriptors are
- * closed and every request still out is told E_D_REQ_GONE.  The host ends
- * and reaps the adapter itself first (e_dap_disconnect, e_dap_signal,
- * e_dap_adapter_gone); a host without a loop uses e_dap_close. */
+ * closed, every request still out is told E_D_REQ_GONE, and the adapter's
+ * end is told to nobody any more.  The host ends the adapter first
+ * (e_dap_disconnect, then e_dap_end_adapter); a host without a loop uses
+ * e_dap_close. */
 void e_dap_free(e_dap_session *s);
 
 /* ---- requests answered by callback --------------------------------------

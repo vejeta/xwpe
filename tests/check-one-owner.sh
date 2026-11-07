@@ -72,7 +72,10 @@ EOF
 
 # The source scan: "word-regex  source files allowed to contain it".
 # fd 0 and the display's key getters belong to the displays; the loop's own
-# wait helper belongs to the code that waits on a display or the mouse.
+# wait helper belongs to the code that waits on a display or the mouse.  A
+# child's stdin left blocking (blocking_input), for a writer that sends
+# whole messages with plain writes, is counted so it goes once the writes
+# are queued on the loop.
 cat > "$WORK/srcrules" <<'EOF'
 read(0 we_term.c
 STDIN_FILENO we_term.c
@@ -85,6 +88,7 @@ e_w_kbhit we_wayland.c
 wpe_fd_wait_for we_xterm.c we_wayland.c we_gpm.c we_fdloop.c
 wpe_fd_end_wait we_fdloop.c
 SYS_pidfd_open
+blocking_input we_child.c
 EOF
 
 # normalise: the name as the source spells it.  One leading "_" (Mach-O),

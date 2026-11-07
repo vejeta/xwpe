@@ -17,9 +17,8 @@ we_ai_ui.o STDIN_FILENO 1 P9l the model listing watches fd 0 for Esc
 we_ai_ui.o e_u_kbhit 1 P9l the model listing reads Esc through the display table
 
 # the build server and the language server
-we_bsp.o poll 2 P9k
+we_bsp.o poll 1 P9k the handshake's message reads
 we_lsp.o poll 2 P9k the handshake and the message reads
-we_lsp.o nanosleep 1 P9i server end moves to the child watch
 
 # the debugger
 we_debug.o usleep 1 P9o the external xterm settle
@@ -38,9 +37,11 @@ we_gpm.o STDIN_FILENO 2 keep isatty asks whether the terminal is the console; no
 we_wayland.o poll 1 P9o the clipboard pipe
 we_xterm.o poll 1 P9o the paste wait for SelectionNotify
 
-# children: started, signalled and reaped only by we_child.c.  P9i2 is the
-# second half of P9i (the language server, the build server, the adapters).
+# children: started, signalled and reaped only by we_child.c.
 we_unix.o waitpid 1 keep the SIGCHLD handler reaps, and hands each child to we_child.c
+we_lsp.o blocking_input 1 P9j whole-message writes on the server's stdin, until queued on the loop
+we_bsp.o blocking_input 1 P9j the same on the build server's launcher
+we_dap.o blocking_input 1 P9j the same on a stdio adapter
 we_unix.o kill 2 P9q the crash/term handlers' build group and the debugger at exit
 we_prog.o fork 1 P9r Run with a pty (the build moved to we_child.c)
 we_prog.o openpty 1 P9r
@@ -54,24 +55,6 @@ we_xterm.o fork 1 P9r through wpe_system, inline
 we_xterm.o waitpid 1 P9r
 we_xterm.o execl 1 P9r
 we_term.o system 1 P9r the display table's run of a shell command
-we_dap.o fork 2 P9i2
-we_dap.o openpty 1 P9i2
-we_dap.o kill 1 P9i2
-we_dap.o waitpid 1 P9i2
-we_dap.o setsid 2 P9i2
-we_dap.o execvp 2 P9i2
-we_lsp.o fork 1 P9i2
-we_lsp.o kill 2 P9i2
-we_lsp.o waitpid 3 P9i2
-we_lsp.o setsid 1 P9i2 through wpe_child_apart_from_terminal, inline
-we_lsp.o execvp 1 P9i2
-we_bsp.o fork 1 P9i2
-we_bsp.o kill 2 P9i2
-we_bsp.o waitpid 2 P9i2
-we_bsp.o setsid 1 P9i2 through wpe_child_apart_from_terminal, inline
-we_bsp.o execvp 1 P9i2
-we_bsp.o system 1 P9i2 scala-cli setup-ide, to become an async start
-we_bsp.o SYS_pidfd_open 2 P9i2 the launcher's exit descriptor, deleted with the ladder
 we_debug.o fork 2 P9q
 we_debug.o openpty 1 P9q
 we_debug.o kill 6 P9q
@@ -80,7 +63,7 @@ we_debug.o setsid 2 P9q
 we_debug.o execvp 2 P9q
 we_debug.o execl 1 P9q the legacy external-xterm start
 we_debug.o execlp 1 P9q the same
-we_debug.o system 2 P9q compile for debug (P9q) and scala-cli setup-ide (P9i2)
+we_debug.o system 1 P9q compile for debug
 we_debug.o popen 1 P9n
 we_debug.o pclose 1 P9n
 we_ai.o fork 3 P9s one is the mock delay (P9l)

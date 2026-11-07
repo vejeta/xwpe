@@ -384,6 +384,15 @@
   {"id": "SC-debug-70", "requirement": "One owner of input, of children, of writes and of keys", "layer": "c-unit", "test": "test_dap", "status": "new"},
   {"id": "SC-debug-72", "requirement": "One owner of input, of children, of writes and of keys", "layer": "ncurses", "test": "tests/test_child_ends.py::test_build_end_is_reported_when_many_children_end_at_once", "status": "new"},
   {"id": "SC-debug-72", "requirement": "One owner of input, of children, of writes and of keys", "layer": "ncurses", "test": "tests/test_child_ends.py::test_esc_ends_a_build_whose_compiler_child_ignores_sigterm", "status": "new"},
-  {"id": "SC-debug-72", "requirement": "One owner of input, of children, of writes and of keys", "layer": "c-unit", "test": "test_child", "status": "new"}
+  {"id": "SC-debug-72", "requirement": "One owner of input, of children, of writes and of keys", "layer": "c-unit", "test": "test_child", "status": "new"},
+  {"id": "SC-debug-73", "requirement": "One owner of input, of children, of writes and of keys", "layer": "ncurses", "test": "tests/test_debugger_integration.py::test_adapter_end_is_an_event", "status": "new", "needs": ["dlv", "go", "rustc", "lldb-dap", "gdb"]},
+  {"id": "SC-debug-74", "requirement": "One owner of input, of children, of writes and of keys", "layer": "ncurses", "test": "tests/test_debugger_integration.py::test_quit_right_after_the_adapter_died_still_says_how", "status": "new", "needs": ["dlv", "go", "rustc", "lldb-dap", "gdb"]},
+  {"id": "SC-debug-74", "requirement": "One owner of input, of children, of writes and of keys", "layer": "c-unit", "test": "test_dap", "status": "new"},
+  {"id": "SC-debug-75", "requirement": "One owner of input, of children, of writes and of keys", "layer": "ncurses", "test": "tests/test_child_ends.py::test_a_language_server_that_ignores_sigterm_is_gone_after_the_grace_and_quit_took_no_time", "status": "new"},
+  {"id": "SC-debug-75", "requirement": "One owner of input, of children, of writes and of keys", "layer": "ncurses", "test": "tests/test_child_ends.py::test_a_language_server_that_ignores_sigterm_does_not_outlive_the_editor", "status": "new"},
+  {"id": "SC-debug-75", "requirement": "One owner of input, of children, of writes and of keys", "layer": "ncurses", "test": "tests/test_child_ends.py::test_the_build_server_metals_started_outlives_metals_and_the_editor", "status": "new"},
+  {"id": "SC-debug-75", "requirement": "One owner of input, of children, of writes and of keys", "layer": "c-unit", "test": "test_bsp_close", "status": "new"},
+  {"id": "SC-debug-76", "requirement": "One owner of input, of children, of writes and of keys", "layer": "ncurses", "test": "tests/test_child_ends.py::test_keys_reach_the_editor_while_scala_cli_setup_ide_runs", "status": "new"},
+  {"id": "SC-debug-76", "requirement": "One owner of input, of children, of writes and of keys", "layer": "ncurses", "test": "tests/test_child_ends.py::test_esc_cancels_scala_cli_setup_ide_and_nothing_starts_after", "status": "new"}
  ]
 }

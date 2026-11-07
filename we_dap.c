@@ -10,20 +10,10 @@
 #include <limits.h>
 #include <sys/types.h>
 #include <sys/socket.h>
-#include <sys/wait.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
-#if defined(HAVE_PTY_H)
-# include <pty.h>          /* glibc: openpty/forkpty */
-#elif defined(HAVE_UTIL_H)
-# include <util.h>         /* macOS, *BSD */
-#elif defined(HAVE_LIBUTIL_H)
-# include <libutil.h>      /* some BSDs */
-#endif
-#include <termios.h>
-#include <sys/ioctl.h>
 
-#include "we_childsig.h"
+#include "we_child.h"
 #include "we_dap.h"
 #include "we_dap_proto.h"
 #include "we_fdloop.h"
@@ -128,7 +118,11 @@ struct e_dap_session {
                                  refused a request                              */
  char         *start_error;   /* why the adapter refused, or NULL                */
  int           spawned;       /* the adapter is this process's own child         */
- pid_t         pid;           /* adapter process                    */
+ WpeChild      adapter;       /* its process, the owner's (we_child.c) to end    */
+ int           adapter_end;   /* WPE_CHILD_RUNS until its end is reported        */
+ int           adapter_status;/* its wait status, once reported ENDED            */
+ e_dap_adapter_end_fn end_fn; /* the host's: told when the adapter ended         */
+ void         *end_data;
  int           seq;           /* request sequence counter           */
  e_dap_reader  rd;            /* incoming frame reassembly          */
  e_dap_host    host;
@@ -137,6 +131,7 @@ struct e_dap_session {
  int           thread_id;     /* current stopped thread             */
  int           frame_id;      /* current top frame (for evaluate)   */
  int           ended;
+ int           program_ended; /* `terminated` or `exited` said so    */
  int           exit_known;    /* the `exited` event named a code      */
  int           exit_code;     /* that code                           */
  char          bp_file[512];
@@ -230,7 +225,7 @@ void e_dap_drain_output(e_dap_session *s)
    s->host.on_output(buf, s->host.ud);
   return;
  }
- if (n < 0 && errno == EINTR)
+ if (n < 0 && (errno == EINTR || errno == EAGAIN))
   return;
  close(s->pty_master);                /* slave gone (EIO/EOF) */
  s->pty_master = -1;
@@ -1028,6 +1023,7 @@ static void dap_handle_event(e_dap_session *s, struct json_object *m)
   if (!strcmp(ev, "exited"))
    dap_note_exit_code(s, body);
   s->ended = 1;
+  s->program_ended = 1;
   if (s->host.on_terminated)
    s->host.on_terminated(s->host.ud);
  }
@@ -1765,6 +1761,7 @@ static int dap_listen_ephemeral(int *port)
 
  if (fd < 0)
   return -1;
+ fcntl(fd, F_SETFD, FD_CLOEXEC);  /* the adapter dials in; it never listens */
  setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
  memset(&a, 0, sizeof(a));
  a.sin_family = AF_INET;
@@ -1781,111 +1778,109 @@ static int dap_listen_ephemeral(int *port)
  return fd;
 }
 
-/* Fork+exec the adapter with --client-addr=127.0.0.1:port appended.  `slave_fd`
-   is the slave side of a pty created by the caller; the child makes it its
-   controlling terminal and stdio.  DAP traffic flows over the reverse-TCP
-   socket, so the adapter's stdio is free to be a pty -- and it MUST be: dlv runs
-   the debuggee in foreground mode and calls tcsetpgrp() on its own stdin, which
-   fails ("inappropriate ioctl for device") on a plain pipe.  The debuggee then
-   inherits that pty, so its stdout/stderr land on the master the caller reads
-   (xwpe's Messages window), exactly like the gdb backend's inferior pty. */
-static pid_t dap_spawn(char *const argv[], int port, const char *cwd,
-                       int listen_fd, int master_fd, int slave_fd)
+/**
+ * dap_adapter_ended - The owner reported the adapter's end, from the loop.
+ * @c: the adapter; @status: its wait status; @how: WPE_CHILD_ENDED, or
+ * WPE_CHILD_ENDED_UNKNOWN when it did not end even after SIGKILL;
+ * @data: the session.
+ *
+ * Kept for the line that tells the user how it ended, then told to the
+ * host, which may free the session from there.
+ */
+static void dap_adapter_ended(WpeChild *c, int status, int how, void *data)
 {
- int argc = 0;
+ e_dap_session *s = data;
+
+ (void)c;
+ s->adapter_end = how;
+ s->adapter_status = status;
+ if (s->end_fn)
+  s->end_fn(s, s->end_data);
+}
+
+/**
+ * dap_adapter_spec - What every adapter the editor starts has in common.
+ * @spec: filled in; @argv, @cwd: the command and its directory.
+ *
+ * A session of its own, so a Ctrl-C typed in the editor never ends an
+ * adapter that does not catch it, and the system ends it if the editor is
+ * killed outright.
+ */
+static void dap_adapter_spec(WpeChildSpec *spec, char *const argv[],
+                             const char *cwd)
+{
+ memset(spec, 0, sizeof *spec);
+ spec->argv = argv;
+ spec->cwd = cwd;
+ spec->group = WPE_CHILD_OWN_SESSION;
+ spec->die_with_editor = 1;
+ spec->what = E_DAP_ADAPTER_WHAT;
+}
+
+/**
+ * dap_spawn - Start a reverse-TCP adapter (dlv) on a pty of its own, with
+ * --client-addr=127.0.0.1:@port appended.
+ * @s: the session; @argv, @cwd: the command and its directory; @port: the
+ * port the editor listens on.
+ *
+ * DAP traffic flows over the socket the adapter dials, so its stdio is free
+ * to be a pty, and it must be: dlv runs its program in the foreground and
+ * calls tcsetpgrp() on its own stdin, which fails on a pipe.  The program
+ * inherits the pty, so what it prints reaches the master the editor reads
+ * (the Messages window), raw, with no carriage return added to each line.
+ * Return: 0, or -1 when it could not be started.
+ */
+static int dap_spawn(e_dap_session *s, char *const argv[], int port,
+                     const char *cwd)
+{
+ WpeChildSpec spec;
+ int argc = 0, i, rc;
  char addr[64];
  char **av;
- pid_t pid;
- const pid_t editor = getpid();
 
  while (argv[argc])
   argc++;
  av = calloc(argc + 2, sizeof(char *));
  if (!av)
   return -1;
- for (int i = 0; i < argc; i++)
+ for (i = 0; i < argc; i++)
   av[i] = argv[i];
  snprintf(addr, sizeof(addr), "--client-addr=127.0.0.1:%d", port);
  av[argc] = addr;
  av[argc + 1] = NULL;
-
- pid = fork();
- if (pid == 0)
- {
-  if (cwd)
-   if (chdir(cwd) != 0)
-    _exit(127);
-  close(listen_fd);
-  /* The adapter must not hold the master of its own terminal: the hangup
-     that ends it when the editor dies comes only when every master is
-     closed. */
-  if (master_fd >= 0)
-   close(master_fd);
-  wpe_child_default_signals();
-  setsid();                       /* drop xwpe's controlling terminal */
-  /* Not left running if the editor is killed outright. */
-  if (wpe_child_die_with_editor(editor) != 0)
-   _exit(127);
-  if (slave_fd >= 0)
-  {
-   ioctl(slave_fd, TIOCSCTTY, 0); /* the pty becomes our controlling tty */
-   dup2(slave_fd, 0);
-   dup2(slave_fd, 1);
-   dup2(slave_fd, 2);
-   if (slave_fd > 2)
-    close(slave_fd);
-  }
-  execvp(av[0], av);
-  _exit(127);
- }
+ dap_adapter_spec(&spec, av, cwd);
+ spec.io = WPE_CHILD_IO_PTY;
+ spec.pty_raw = 1;
+ rc = wpe_child_start(&spec, &s->adapter, dap_adapter_ended, s);
  free(av);
- return pid;
+ if (rc != 0)
+  return -1;
+ s->pty_master = s->adapter.pty_fd;
+ return 0;
 }
 
-/* Fork+exec a stdio adapter (gdb/lldb --interpreter=dap): DAP flows over the
-   adapter's own stdin/stdout, which we wire to two pipes.  *in_fd receives the
-   write end of the child's stdin; *out_fd the read end of the child's stdout.
-   stderr is left inheriting xwpe's (adapter diagnostics, rarely used). */
-static pid_t dap_spawn_stdio(char *const argv[], const char *cwd,
-                             int *in_fd, int *out_fd)
+/**
+ * dap_spawn_stdio - Start a stdio adapter (gdb or lldb-dap speaking DAP):
+ * DAP flows over its own stdin and stdout.
+ * @s: the session; @argv, @cwd: the command and its directory.
+ *
+ * Its stderr is the editor's own (adapter diagnostics, rarely used).
+ * Return: 0, or -1 when it could not be started.
+ */
+static int dap_spawn_stdio(e_dap_session *s, char *const argv[],
+                           const char *cwd)
 {
- int to_child[2], from_child[2];
- pid_t pid;
- const pid_t editor = getpid();
+ WpeChildSpec spec;
 
- if (pipe(to_child) != 0)
+ dap_adapter_spec(&spec, argv, cwd);
+ spec.io = WPE_CHILD_IO_PIPES;
+ spec.stderr_inherit = 1;
+ spec.blocking_input = 1;
+ if (wpe_child_start(&spec, &s->adapter, dap_adapter_ended, s) != 0)
   return -1;
- if (pipe(from_child) != 0)
- {  close(to_child[0]); close(to_child[1]); return -1;  }
-
- pid = fork();
- if (pid == 0)
- {
-  if (cwd)
-   if (chdir(cwd) != 0)
-    _exit(127);
-  dup2(to_child[0], 0);            /* child stdin  <- to_child read end  */
-  dup2(from_child[1], 1);          /* child stdout -> from_child write end */
-  close(to_child[0]); close(to_child[1]);
-  close(from_child[0]); close(from_child[1]);
-  wpe_child_default_signals();
-  /* Out of the terminal editor's foreground process group, as the
-     reverse-TCP adapter above: with SIGINT at its default, a Ctrl-C typed
-     in the editor would otherwise end an adapter that does not catch it. */
-  setsid();
-  /* Not left running if the editor is killed outright. */
-  if (wpe_child_die_with_editor(editor) != 0)
-   _exit(127);
-  execvp(argv[0], argv);
-  _exit(127);
- }
- close(to_child[0]);              /* parent writes to to_child[1]   */
- close(from_child[1]);            /* parent reads from from_child[0] */
- if (pid < 0)
- {  close(to_child[1]); close(from_child[0]); return -1;  }
- *in_fd = to_child[1];
- *out_fd = from_child[0];
- return pid;
+ s->in_fd = s->adapter.in_fd;
+ s->out_fd = s->adapter.out_fd;
+ return 0;
 }
 
 /* ---- the start: the handshake, one answer at a time ------------------- *
@@ -2370,46 +2365,104 @@ pid_t e_dap_adapter_pid(const e_dap_session *s)
 {
  if (!s || !s->spawned)
   return 0;
- return s->pid;
+ return (pid_t)s->adapter.pid;
 }
 
 /**
- * e_dap_signal - Send @sig to the adapter, by its exact PID.
- * @s: the session; @sig: SIGTERM, then SIGKILL.
+ * e_dap_signal - Send @sig to the adapter and the group it leads.
+ * @s: the session; @sig: the signal.
  *
  * Nothing is sent once the adapter has been reaped, so a PID the system gave
  * to another process is never signalled.
  */
 void e_dap_signal(e_dap_session *s, int sig)
 {
- if (e_dap_adapter_pid(s) > 0)
-  kill(s->pid, sig);
+ if (s && s->spawned)
+  wpe_child_signal(&s->adapter, sig);
 }
 
 /**
- * e_dap_adapter_gone - Has the adapter exited?
+ * e_dap_end_adapter - End the adapter without waiting for it.
+ * @s: the session; @polite_sig: SIGTERM, or WPE_CHILD_NO_SIGNAL when it was
+ * already asked to go (`disconnect` went out).
+ *
+ * The owner of the editor's children gives it WPE_CHILD_END_GRACE_MS, then
+ * SIGKILL, on the loop; the host learns of the end from the function given
+ * to e_dap_on_adapter_end.
+ */
+void e_dap_end_adapter(e_dap_session *s, int polite_sig)
+{
+ if (s && s->spawned)
+  wpe_child_end(&s->adapter, polite_sig);
+}
+
+/**
+ * e_dap_on_adapter_end - Who is told when the adapter has ended.
+ * @s: the session; @fn: called once, from the loop, or NULL; @data: for it.
+ *
+ * Unlike the host's callbacks, it is not cleared by e_dap_host_forget: Quit
+ * learns of the end of an adapter it is ending this way.
+ */
+void e_dap_on_adapter_end(e_dap_session *s, e_dap_adapter_end_fn fn, void *data)
+{
+ if (!s)
+  return;
+ s->end_fn = fn;
+ s->end_data = data;
+}
+
+/**
+ * e_dap_adapter_gone - Has the adapter exited?  Never waits.
  * @s: the session.
  *
- * Reaps it without waiting; a host whose SIGCHLD handler reaped it first
- * sees ECHILD, which also means gone.  Its PID is then forgotten.  An adapter
- * that is not this process's child is never "gone" here.
+ * Read from what the editor's SIGCHLD handler kept, so it is right the
+ * moment the adapter is reaped, before its end is reported.  An adapter that
+ * is not this process's child is never "gone" here.
  * Return: 1 once the adapter is gone.
  */
 int e_dap_adapter_gone(e_dap_session *s)
 {
- int st, r;
+ int st = 0;
 
  if (!s || !s->spawned)
   return 0;
- if (s->pid <= 0)
-  return 1;
- r = waitpid(s->pid, &st, WNOHANG);
- if (r == s->pid || (r < 0 && errno == ECHILD))
+ return(e_dap_adapter_end_status(s, &st) || s->adapter.pid <= 0 ||
+        wpe_child_ended(&s->adapter, &st) != WPE_CHILD_RUNS);
+}
+
+/**
+ * e_dap_adapter_end_status - How the adapter ended, when that is known.
+ * @s: the session; @status: receives its wait status.
+ *
+ * Known once its end was reported, and already when the SIGCHLD handler has
+ * reaped it but the report is still to come: a Quit that comes in between
+ * still tells the user that the adapter died, and how.
+ * Return: 1 with *status set, else 0.
+ */
+int e_dap_adapter_end_status(const e_dap_session *s, int *status)
+{
+ if (!s || !s->spawned)
+  return 0;
+ if (s->adapter_end == WPE_CHILD_ENDED)
  {
-  s->pid = 0;
+  *status = s->adapter_status;
   return 1;
  }
- return 0;
+ if (s->adapter_end != WPE_CHILD_RUNS || s->adapter.pid <= 0)
+  return 0;
+ return wpe_child_ended(&s->adapter, status) == WPE_CHILD_ENDED;
+}
+
+/**
+ * e_dap_adapter_reaped - A caller with no SIGCHLD handler of its own (the
+ * protocol tests' waits, we_dap_sync.c) reaped the adapter itself: the owner
+ * stops following it.
+ * @s: the session.
+ */
+void e_dap_adapter_reaped(e_dap_session *s)
+{
+ if (s && s->spawned)
+  wpe_child_forget(&s->adapter);
 }
 
 /* Allocate a session and set the transport-neutral defaults. */
@@ -2467,31 +2520,10 @@ e_dap_session *e_dap_start(char *const argv[], const char *program,
   e_dap_free(s);
   return NULL;
  }
- /* Create the adapter's controlling pty here in the parent: the child takes the
-    slave as its stdio/ctty, and we keep the master to read the debuggee's
-    output from (forwarded to the host's Messages window). */
- {
-  int slave = -1;
-  if (openpty(&s->pty_master, &slave, NULL, NULL, NULL) != 0)
-   s->pty_master = slave = -1;
-  else
-  {
-   /* Raw mode: no OPOST/ONLCR, so the debuggee's "\n" is not cooked into
-      "\r\n" -- otherwise every program line would show a trailing ^M in the
-      Messages window. */
-   struct termios tio;
-   if (tcgetattr(s->pty_master, &tio) == 0)
-   {
-    cfmakeraw(&tio);
-    tcsetattr(s->pty_master, TCSANOW, &tio);
-   }
-  }
-  s->pid = dap_spawn(argv, port, cwd, s->listen_fd, s->pty_master,
-                   slave);
-  if (slave >= 0)
-   close(slave);                /* the child holds its own copy */
- }
- if (s->pid <= 0)
+ /* The adapter's controlling pty is the owner's to make: we keep its master
+    to read the debuggee's output from (forwarded to the host's Messages
+    window). */
+ if (dap_spawn(s, argv, port, cwd) != 0)
  {
   e_dap_free(s);
   return NULL;
@@ -2516,8 +2548,7 @@ e_dap_session *e_dap_start_stdio(char *const argv[], const char *program,
   return NULL;
  s->launch_mode_debug = 0;        /* program is a prebuilt binary, not a package */
  s->adapter_id = "gdb";
- s->pid = dap_spawn_stdio(argv, cwd, &s->in_fd, &s->out_fd);
- if (s->pid <= 0)
+ if (dap_spawn_stdio(s, argv, cwd) != 0)
  {
   e_dap_free(s);
   return NULL;
@@ -2833,6 +2864,20 @@ int e_dap_ended(const e_dap_session *s)
 }
 
 /**
+ * e_dap_program_said_ended - Did the adapter say the program ended?
+ * @s: the session.
+ *
+ * A `terminated` or `exited` event, as opposed to a transport that just
+ * ended: the editor tells the user that an adapter that went away on its
+ * own ended unexpectedly, and how.
+ * Return: 1 or 0.
+ */
+int e_dap_program_said_ended(const e_dap_session *s)
+{
+ return s ? s->program_ended : 0;
+}
+
+/**
  * dap_disconnect_args - The arguments of Quit's `disconnect`: end the
  * program too, so none is left behind.
  */
@@ -2926,6 +2971,11 @@ void e_dap_free(e_dap_session *s)
   return;
  e_dap_requests_cancel(s, E_D_REQ_GONE);
  dap_close_fds(s);
+ /* The owner keeps a pointer to the adapter's record, which goes with the
+    session: no end is reported to it after this.  The host ends the
+    adapter first (Quit's ladder); the SIGCHLD handler reaps it anyway. */
+ if (s->spawned)
+  wpe_child_forget(&s->adapter);
  dap_pending_free_all(s);
  dap_bp_ids_free(s);
  dap_stage_clear(s);
