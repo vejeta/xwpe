@@ -7944,6 +7944,359 @@ static e_dap_session *e_d_dap_spawn(char *const *adapter,
  return(s);
 }
 
+/* ---- the Scala build server's start, on the loop ----
+ *
+ * A Scala session's adapter lives in the build server, reached through five
+ * requests (initialize, the targets, a compile, the main classes, the debug
+ * session).  On a cold project the compile takes tens of seconds; the editor
+ * keeps its keys meanwhile, as it does while a program is compiled for its
+ * debug session: the requests run on the loop, the status row says which
+ * one is waited for after a quiet second, Esc ends the build server and
+ * starts nothing, and the command that asked for the session (Run, Step, Go
+ * to cursor) runs again once the endpoint is known.
+ */
+
+#define E_D_BSP_LINE           "Starting Scala build server (BSP)..."
+#define E_D_BSP_CANCELLED_LINE "Scala build server start cancelled."
+#define E_D_BSP_FAILED_LINE    "Could not start the Scala debug server."
+#define E_D_BSP_NAME           "the build server"
+#define E_D_BSP_WAIT_FMT \
+ " waiting for %s to answer `%s` ... %lds  (Esc cancels)"
+#define E_D_BSP_NO_TIMER       (-1)
+#define E_D_BSP_NO_FD          (-1)
+#define E_D_BSP_ERR_MAX        256
+
+static long e_d_ga_now_ms(void *io);   /* the editor's clock (below) */
+
+static struct
+{
+ e_bsp_session *b;           /* the start, until the session takes it    */
+ E_D_REQ_IO io;              /* the clock, the timers, the waiting line  */
+ int timer[E_D_TIMERS];      /* the loop's timer ids, E_D_BSP_NO_TIMER   */
+ int fd;                     /* the descriptor the loop reads            */
+ int held;                   /* it ended; the owner is not told yet      */
+ int ok;                     /* ... with the endpoint                    */
+ int ready;                  /* the endpoint waits for the command again */
+ int waiting_painted;        /* the waiting line is on the status row    */
+} e_d_bsp = { NULL, { 0 }, { E_D_BSP_NO_TIMER, E_D_BSP_NO_TIMER,
+                             E_D_BSP_NO_TIMER }, E_D_BSP_NO_FD, 0, 0, 0, 0 };
+
+/** e_d_bsp_window - The window the status row is drawn for. */
+static FENSTER *e_d_bsp_window(void)
+{
+ return(WpeEditor->f[WpeEditor->mxedt]);
+}
+
+/**
+ * e_d_bsp_waiting - "waiting for the build server to answer
+ * `buildTarget/compile` ... 12s (Esc cancels)" on the status row.
+ * @cmd, @secs: what is waited for and since when; @io: unused.
+ */
+static void e_d_bsp_waiting(const char *cmd, long secs, void *io)
+{
+ char line[E_D_BSP_ERR_MAX + E_D_REQ_CMD_MAX];
+
+ (void)io;
+ if (wpe_fd_waiting_for())
+  return;                  /* a command has the terminal: not drawn over it */
+ snprintf(line, sizeof line, E_D_BSP_WAIT_FMT, E_D_BSP_NAME, cmd, secs);
+ e_status_say(e_d_bsp_window(), line);
+ e_d_bsp.waiting_painted = 1;
+}
+
+/** e_d_bsp_waiting_clear - The wait is over: the key hints come back. */
+static void e_d_bsp_waiting_clear(void)
+{
+ FENSTER *f = e_d_bsp_window();
+
+ if (!e_d_bsp.waiting_painted)
+  return;
+ e_d_bsp.waiting_painted = 0;
+ if (!f || !f->fb || wpe_fd_waiting_for())
+  return;
+ e_pr_uul(f->fb);
+ e_refresh();
+}
+
+/** e_d_bsp_notice - Why a request was given up, until the next key. */
+static void e_d_bsp_notice(const char *msg, void *io)
+{
+ char line[E_D_BSP_ERR_MAX + E_D_REQ_MSG_MAX];
+
+ (void)io;
+ e_d_bsp.waiting_painted = 0;
+ snprintf(line, sizeof line, " %s", msg);
+ if (wpe_fd_waiting_for())
+  e_status_hold(line);     /* shown by the next repaint of the bar */
+ else
+  e_status_say_until_key(e_d_bsp_window(), line);
+}
+
+/** e_d_bsp_disarm - Stop timer @which, if it runs. */
+static void e_d_bsp_disarm(int which)
+{
+ if (e_d_bsp.timer[which] == E_D_BSP_NO_TIMER)
+  return;
+ wpe_timer_del(e_d_bsp.timer[which]);
+ e_d_bsp.timer[which] = E_D_BSP_NO_TIMER;
+}
+
+static void e_d_bsp_after(void);   /* (below) */
+
+/**
+ * e_d_bsp_on_timer - A timer the start asked for has gone off.
+ * @data: which one (E_D_TIMER_*).
+ */
+static void e_d_bsp_on_timer(void *data)
+{
+ int which = (int)(intptr_t)data;
+
+ e_d_bsp.timer[which] = E_D_BSP_NO_TIMER;
+ if (!e_d_bsp.b)
+  return;
+ e_bsp_request_timer(e_d_bsp.b, which);
+ e_d_bsp_after();
+}
+
+/**
+ * e_d_bsp_arm_timer - Ask the loop to call the start back.
+ * @which: E_D_TIMER_*; @ms: the delay, or E_D_TIMER_OFF; @io: unused.
+ */
+static void e_d_bsp_arm_timer(int which, long ms, void *io)
+{
+ (void)io;
+ e_d_bsp_disarm(which);
+ if (ms == E_D_TIMER_OFF)
+  return;
+ e_d_bsp.timer[which] = wpe_timer_add(ms, 0, e_d_bsp_on_timer,
+                                      (void *)(intptr_t)which);
+ if (e_d_bsp.timer[which] <= 0)
+  e_d_bsp.timer[which] = E_D_BSP_NO_TIMER;
+}
+
+/**
+ * e_d_bsp_on_readable - The build server wrote: its answer sends the next
+ * request, or ends the start.
+ */
+static void e_d_bsp_on_readable(int fd, void *data)
+{
+ (void)fd;
+ (void)data;
+ if (!e_d_bsp.b)
+  return;
+ e_bsp_read_now(e_d_bsp.b);
+ e_d_bsp_after();
+}
+
+/**
+ * e_d_bsp_unwatch - The loop no longer reads the build server for the
+ * start: it ended, or the session has taken it.
+ */
+static void e_d_bsp_unwatch(void)
+{
+ int i;
+
+ if (e_d_bsp.fd != E_D_BSP_NO_FD)
+  wpe_fd_del(e_d_bsp.fd);
+ e_d_bsp.fd = E_D_BSP_NO_FD;
+ for (i = 0; i < E_D_TIMERS; i++)
+  e_d_bsp_disarm(i);
+}
+
+/**
+ * e_d_bsp_drop - End a start no longer wanted (cancelled, failed, or left
+ * over): the launcher is ended through the owner, without waiting.
+ */
+static void e_d_bsp_drop(void)
+{
+ e_bsp_session *b = e_d_bsp.b;
+
+ e_d_bsp_unwatch();
+ e_d_bsp.b = NULL;
+ e_d_bsp.held = 0;
+ e_d_bsp.ready = 0;
+ e_d_bsp_waiting_clear();
+ if (b)
+  e_bsp_close(b);
+}
+
+/**
+ * e_d_bsp_done - The start ended (called from inside the start's own read
+ * or timer): only kept, and told once the read has returned.
+ * @ok: the endpoint is known; @ctx: unused.
+ */
+static void e_d_bsp_done(int ok, void *ctx)
+{
+ (void)ctx;
+ e_d_bsp.held = 1;
+ e_d_bsp.ok = ok;
+}
+
+/**
+ * e_d_bsp_fail - The start failed: the box says why, and nothing runs.
+ */
+static void e_d_bsp_fail(void)
+{
+ char err[E_D_BSP_ERR_MAX];
+ const char *why = e_bsp_error(e_d_bsp.b);
+
+ snprintf(err, sizeof err, "%s", (why && *why) ? why : E_D_BSP_FAILED_LINE);
+ e_d_bsp_drop();
+ e_d_resume_drop();
+ e_error(err, 0, e_d_bsp_window()->fb);
+}
+
+/**
+ * e_d_bsp_tell - The start ended: on success the command that asked for the
+ * session runs again and takes the endpoint; a failure says why.
+ *
+ * A debug session the user started meanwhile, in another file, is left
+ * alone, as when setup-ide ends.
+ */
+static void e_d_bsp_tell(void)
+{
+ e_d_bsp.held = 0;
+ e_d_bsp_unwatch();
+ e_d_bsp_waiting_clear();
+ if (!e_d_bsp.ok)
+ {
+  e_d_bsp_fail();
+  return;
+ }
+ if (e_d_swtch || e_d_start_busy())
+ {
+  e_d_bsp_drop();
+  e_d_resume_drop();
+  return;
+ }
+ e_d_bsp.ready = 1;
+ e_d_after_build(e_d_bsp_window(), 0, NULL);
+ if (e_d_bsp.ready)
+  e_d_bsp_drop();          /* no command took it: nothing to debug */
+}
+
+/**
+ * e_d_bsp_after - After the start's read or timer: tell its end, now or
+ * once the dialog that is open closes.
+ *
+ * Once the start has ended nothing more is read for it, so the loop stops
+ * watching the build server at once: a launcher that died would otherwise
+ * stay readable at its end of file and keep the editor spinning for as long
+ * as the dialog stays open.
+ */
+static void e_d_bsp_after(void)
+{
+ if (!e_d_bsp.held)
+  return;
+ e_d_bsp_unwatch();
+ if (e_build_ui_idle(WpeEditor) && !wpe_fd_waiting_for())
+  e_d_bsp_tell();
+}
+
+/**
+ * e_d_bsp_deliver_held - Tell a start that ended behind a dialog.  The key
+ * loop calls this outside every dialog.
+ */
+static void e_d_bsp_deliver_held(void)
+{
+ e_d_bsp_after();
+}
+
+/**
+ * e_d_bsp_begin - Start the build server, without waiting for its answers.
+ * @f: the source window; @dir: the project.
+ * Return: E_D_BUILDING (the command runs again once the endpoint is
+ * known), or -1 (said in a box).
+ */
+static int e_d_bsp_begin(FENSTER *f, const char *dir)
+{
+ char err[E_D_BSP_ERR_MAX];
+ int i, fd;
+
+ memset(&e_d_bsp.io, 0, sizeof e_d_bsp.io);
+ e_d_bsp.io.now_ms = e_d_ga_now_ms;
+ e_d_bsp.io.arm_timer = e_d_bsp_arm_timer;
+ e_d_bsp.io.waiting = e_d_bsp_waiting;
+ e_d_bsp.io.notice = e_d_bsp_notice;
+ e_d_bsp.io.name = E_D_BSP_NAME;
+ for (i = 0; i < E_D_TIMERS; i++)
+  e_d_bsp.timer[i] = E_D_BSP_NO_TIMER;
+ e_d_bsp.held = e_d_bsp.ready = e_d_bsp.ok = 0;
+ e_d_bsp.b = e_bsp_start_async(dir, &e_d_bsp.io, e_d_bsp_done, NULL,
+                               err, sizeof err);
+ if (!e_d_bsp.b)
+ {
+  e_d_resume_drop();
+  e_error(err[0] ? err : E_D_BSP_FAILED_LINE, 0, f->fb);
+  return(-1);
+ }
+ fd = e_bsp_fd(e_d_bsp.b);
+ if (e_fd_watch(fd, POLLIN, e_d_bsp_on_readable, NULL,
+                "the build server's answers") != 0)
+ {
+  e_d_bsp_drop();
+  e_d_resume_drop();
+  return(-1);
+ }
+ e_d_bsp.fd = fd;
+ e_d_p_message(E_D_BSP_LINE, f, 1);
+ return(E_D_BUILDING);
+}
+
+/**
+ * e_d_bsp_first - The DAP endpoint a Scala session connects to: known now,
+ * asked of the build server in the background, or being asked.
+ * @f: the source window; @dir: the project; @host, @hostsz, @port: receive
+ * the endpoint once it is known.
+ * Return: 0 with the endpoint set and g_bsp holding the build server,
+ * E_D_BUILDING while it is asked, or -1 (said in a box).
+ */
+static int e_d_bsp_first(FENSTER *f, const char *dir, char *host,
+                         size_t hostsz, int *port)
+{
+ const char *h;
+
+ if (e_d_bsp.ready && e_d_bsp.b)
+ {
+  h = e_bsp_endpoint(e_d_bsp.b, port);
+  snprintf(host, hostsz, "%s", h ? h : "");
+  g_bsp = e_d_bsp.b;          /* the session keeps it open from now on */
+  e_d_bsp.b = NULL;
+  e_d_bsp.ready = 0;
+  return(0);
+ }
+ if (e_d_bsp.b)
+ {
+  e_status_say(f, E_D_BSP_LINE);
+  return(E_D_BUILDING);
+ }
+ return(e_d_bsp_begin(f, dir));
+}
+
+/**
+ * e_d_bsp_busy - Is the build server answering the start's requests?  The
+ * key loop asks, so Esc cancels it, as its waiting line says.
+ */
+int e_d_bsp_busy(void)
+{
+ return(e_d_bsp.b && e_bsp_starting(e_d_bsp.b));
+}
+
+/**
+ * e_d_bsp_cancel - Esc while the build server answers the start: it is
+ * ended, no session starts behind the user's back later, and Messages and
+ * the status row say so.
+ */
+void e_d_bsp_cancel(void)
+{
+ FENSTER *top = e_d_bsp_window();
+
+ e_d_bsp_drop();
+ e_d_resume_drop();
+ e_d_p_message(E_D_BSP_CANCELLED_LINE, top, 0);
+ e_status_say(top, E_D_BSP_CANCELLED_LINE);
+}
+
 /* Open the adapter for f's language, install the user's pre-set breakpoints, and
    run to the first stop.  Leaves e_d_swtch=3 and e_deb_type=DEB_DAP so the other
    hooks route here.  Returns 0 on success, -1 on failure (popup already shown). */
@@ -8004,21 +8357,16 @@ static int e_d_dap_start(FENSTER *f)
  {
   /* JVM/Scala: drive the BSP bootstrap (Bloop via scala-cli) to get a DAP
      endpoint, keep the build server alive in g_bsp, then connect the engine. */
-  char bhost[64], mainclass[256], berr[256];
-  int bport = 0;
+  char bhost[64];
+  int bport = 0, started;
   /* scala-cli launches Bloop from JAVA_HOME/PATH to COMPILE the debuggee, so the
      too-new-JDK crash hits debug too -- pin it here, before the BSP spawns. */
   e_scala_pin_jdk(f, "Scala debug");
   if (e_d_scala_setup_first(f, dir))
    return(E_D_BUILDING);
-  e_d_p_message("Starting Scala build server (BSP)...", f, 1);
-  g_bsp = e_bsp_start(dir, f->datnam, bhost, sizeof(bhost), &bport,
-                      mainclass, sizeof(mainclass), berr, sizeof(berr));
-  if (!g_bsp)
-  {
-   e_error(berr[0] ? berr : "Could not start the Scala debug server.", 0, f->fb);
-   return(-1);
-  }
+  started = e_d_bsp_first(f, dir, bhost, sizeof(bhost), &bport);
+  if (started != 0)
+   return(started);          /* asked in the background, or said in a box */
   g_dap = e_dap_start_tcp(bhost, bport, program, lang->entry_func, &g_dap_host);
  }
  else
@@ -9518,6 +9866,7 @@ void e_d_start_deliver_held(void)
 {
  e_scala_setup_deliver_held();
  e_d_compile_deliver_held();
+ e_d_bsp_deliver_held();
  e_d_debugger_deliver_held();
  if (!e_d_start.active || !e_d_start.held)
   return;
@@ -9634,6 +9983,7 @@ void e_d_end_at_exit(void)
 {
  e_d_jdb_vm_end();
  e_d_compile_end_at_exit();
+ e_d_bsp_drop();             /* a build server still starting is ended too */
  if (!e_d_dbg.live)
   return;
  e_d_dbg.say_later = 0;
@@ -25995,6 +26345,8 @@ static int e_lsp_ensure(FENSTER *f);          /* fwd */
 static void e_lsp_fd_unregister(void);        /* fwd */
 static void e_lsp_focus_worksheet(FENSTER *f);/* fwd */
 void e_lsp_ui_shutdown(void);                 /* fwd: full session teardown */
+static void e_lsp_rq_start_over(void);        /* fwd: the answers on the loop */
+static void e_lsp_ask_deliver(void);          /* fwd */
 
 /* If the server has died (closed its stdout), tear the session down: stop
    polling its fd (otherwise the dead fd reports "readable" forever and spins the
@@ -26049,6 +26401,7 @@ static void e_lsp_on_fd_readable(int fd, void *data)
   /* handshake just completed: open the CURRENT buffer (captures any edits the
      user made while the server was booting) so the server compiles it. */
   FENSTER *home = g_lsp_fenster;
+  e_lsp_rq_start_over();                  /* the start's waiting line goes */
   if (home)
   {
    char *text = e_lsp_buffer_text(home);
@@ -26077,6 +26430,8 @@ static void e_lsp_on_fd_readable(int fd, void *data)
    ;                             /* an overlay is live: keep polling so a later server
                                     push (inlayHint/semanticTokens refresh, once indexed)
                                     reaches us and repaints -- it stays quiet when idle */
+  else if (e_lsp_requests_pending(g_lsp))
+   ;                             /* an answer is owed: it is read here */
   else
    e_lsp_fd_unregister();        /* stop polling so an idle server never delays a key */
  }
@@ -26099,6 +26454,7 @@ static void e_lsp_on_fd_readable(int fd, void *data)
   e_lsp_inlay_refresh_pending(g_lsp_fenster);
  if (g_sem_on && !g_lsp_ui_suspended)     /* same deal for semantic colours */
   e_lsp_sem_refresh_pending(g_lsp_fenster);
+ e_lsp_ask_deliver();                     /* an Alt-Q answer read just now */
 }
 
 /**
@@ -26195,6 +26551,569 @@ static FENSTER *e_lsp_window_of(const char *path)
    return(w);
  }
  return(NULL);
+}
+
+/* ---- the language server's answers on the loop ----
+ *
+ * An Alt-Q request goes out at once and the editor goes on taking keys: the
+ * answer is read by the loop (e_lsp_on_fd_readable, or the key hook's poll)
+ * and handed to a continuation that only keeps it.  It is shown when the
+ * editor is idle, on the window it was asked from, and only while that
+ * window's text (and, for the popups at the cursor, the cursor) is as it was
+ * sent: the server's positions are for that text.  After a quiet second the
+ * status row says what the editor waits for; Esc gives the answer up, and a
+ * late answer is dropped by its id.  One request at a time: another Alt-Q
+ * action meanwhile is refused with a line that names the one out.
+ */
+
+#define E_LSP_ASK_NONE     0
+#define E_LSP_ASK_HOVER    1
+#define E_LSP_ASK_JUMP     2
+#define E_LSP_ASK_COMPLETE 3
+#define E_LSP_ASK_FORMAT   4
+#define E_LSP_ASK_ITEMS_MAX 64     /* candidates the completion list shows */
+#define E_LSP_NAME_MAX     32
+#define E_LSP_WHAT_MAX     32
+#define E_LSP_START_METHOD "initialize"
+#define E_LSP_WAIT_FMT \
+ " waiting for %s to answer `%s` ... %lds  (Esc cancels)"
+#define E_LSP_START_WAIT_FMT \
+ " waiting for %s to start ... %lds  (Esc cancels)"
+#define E_LSP_BUSY_FMT \
+ "%s is still answering `%s` (Esc cancels it)"
+#define E_LSP_CANCELLED_FMT \
+ "Gave up waiting for %s to answer `%s`."
+#define E_LSP_STALE_LINE \
+ "The language server's answer came after the file changed; ask again."
+#define E_LSP_START_CANCELLED_LINE "Language server start cancelled."
+#define E_LSP_ASK_FAILED_LINE "Could not ask the language server."
+
+/* The one request out, and its answer once it came. */
+static struct
+{
+ int   kind;                     /* E_LSP_ASK_*                            */
+ char  path[E_LSP_PATH_MAX];     /* the file asked about                   */
+ char *base;                     /* its text when asked                    */
+ int   y, x;                     /* the cursor when asked                  */
+ char  what[E_LSP_WHAT_MAX];     /* a jump: "definition", ...              */
+ int   has_sel;                  /* a format: of the marked block          */
+ int   ready;                    /* the continuation has been told         */
+ E_D_REQ_END how;                /* how the request ended                  */
+ char *text;                     /* hover or formatted text, or NULL       */
+ int   found;                    /* a jump: a location came                */
+ char  target[E_LSP_PATH_MAX];   /* ... its file                           */
+ int   line;                     /* ... its line, 0-based                  */
+ int   n;                        /* completion: candidates, -1 none        */
+ e_lsp_completion_item items[E_LSP_ASK_ITEMS_MAX];
+} e_lsp_ask;
+
+/* The requests' world: the editor's clock, timers and status row. */
+static struct
+{
+ E_D_REQ_IO io;
+ int  timer[E_D_TIMERS];         /* the loop's timer ids, E_D_GA_NO_TIMER  */
+ int  waiting_painted;           /* the waiting line is on the status row  */
+ int  start_asked;               /* the user waits for the start           */
+ char name[E_LSP_NAME_MAX];      /* the server, in the lines               */
+} e_lsp_rq;
+
+/**
+ * e_lsp_screen_ours - Is the screen the editor's to draw on?  Not while a
+ * command run from the editor has the terminal (a script, a shell): a
+ * repaint then would take the terminal back from it, and its Ctrl-C would
+ * no longer reach it.
+ */
+static int e_lsp_screen_ours(void)
+{
+ return(wpe_fd_waiting_for() == NULL);
+}
+
+/**
+ * e_lsp_rq_window - The window the status row is drawn for: the one on top.
+ */
+static FENSTER *e_lsp_rq_window(void)
+{
+ if (!WpeEditor || WpeEditor->mxedt < 0)
+  return(NULL);
+ return(WpeEditor->f[WpeEditor->mxedt]);
+}
+
+/**
+ * e_lsp_rq_waiting - Show the waiting line: what the server is asked, or
+ * that it is starting, and that Esc gives it up.
+ * @cmd: the request's method; @secs: since when; @io: unused.
+ *
+ * A start the user did not ask for (the eager start on opening a file)
+ * says nothing: the user waits for nothing.
+ */
+static void e_lsp_rq_waiting(const char *cmd, long secs, void *io)
+{
+ char line[E_D_GA_LINE_MAX];
+ int starting = !strcmp(cmd, E_LSP_START_METHOD);
+
+ (void)io;
+ if (starting && !e_lsp_rq.start_asked)
+  return;
+ if (!e_lsp_screen_ours())
+  return;                        /* the next second's line says it */
+ if (starting)
+  snprintf(line, sizeof line, E_LSP_START_WAIT_FMT, e_lsp_rq.name, secs);
+ else
+  snprintf(line, sizeof line, E_LSP_WAIT_FMT, e_lsp_rq.name, cmd, secs);
+ e_status_say(e_lsp_rq_window(), line);
+ e_lsp_rq.waiting_painted = 1;
+}
+
+/**
+ * e_lsp_rq_waiting_clear - The wait is over: put the key hints back, unless
+ * a line kept until the next key (a deadline's notice) holds the row.
+ */
+static void e_lsp_rq_waiting_clear(void)
+{
+ FENSTER *f;
+
+ if (!e_lsp_rq.waiting_painted)
+  return;
+ e_lsp_rq.waiting_painted = 0;
+ f = e_lsp_rq_window();
+ if (!f || !f->fb || !e_lsp_screen_ours())
+  return;
+ e_pr_uul(f->fb);
+ e_refresh();
+}
+
+/**
+ * e_lsp_rq_notice - Say why an answer was given up on, until the next key.
+ * @msg: the sentence; @io: unused.
+ */
+static void e_lsp_rq_notice(const char *msg, void *io)
+{
+ char line[E_D_GA_LINE_MAX + E_D_REQ_MSG_MAX];
+
+ (void)io;
+ e_lsp_rq.waiting_painted = 0;
+ snprintf(line, sizeof line, " %s", msg);
+ if (e_lsp_screen_ours())
+  e_status_say_until_key(e_lsp_rq_window(), line);
+ else
+  e_status_hold(line);          /* shown by the next repaint of the bar */
+}
+
+/**
+ * e_lsp_rq_start_over - The server answered `initialize`: the start's
+ * waiting line leaves the status row, and Esc no longer ends the server.
+ */
+static void e_lsp_rq_start_over(void)
+{
+ e_lsp_rq.start_asked = 0;
+ e_lsp_rq_waiting_clear();
+}
+
+/**
+ * e_lsp_rq_on_timer - A timer the requests asked for has gone off.
+ * @data: which one (E_D_TIMER_*).
+ */
+static void e_lsp_rq_on_timer(void *data)
+{
+ int which = (int)(intptr_t)data;
+
+ e_lsp_rq.timer[which] = E_D_GA_NO_TIMER;
+ if (!g_lsp)
+  return;
+ e_lsp_request_timer(g_lsp, which);
+ e_lsp_ask_deliver();
+}
+
+/** e_lsp_rq_disarm - Stop timer @which, if it runs. */
+static void e_lsp_rq_disarm(int which)
+{
+ if (e_lsp_rq.timer[which] == E_D_GA_NO_TIMER)
+  return;
+ wpe_timer_del(e_lsp_rq.timer[which]);
+ e_lsp_rq.timer[which] = E_D_GA_NO_TIMER;
+}
+
+/**
+ * e_lsp_rq_arm_timer - Ask the loop to call the requests back.
+ * @which: E_D_TIMER_*; @ms: the delay, or E_D_TIMER_OFF; @io: unused.
+ */
+static void e_lsp_rq_arm_timer(int which, long ms, void *io)
+{
+ (void)io;
+ e_lsp_rq_disarm(which);
+ if (ms == E_D_TIMER_OFF)
+  return;
+ e_lsp_rq.timer[which] = wpe_timer_add(ms, 0, e_lsp_rq_on_timer,
+                                       (void *)(intptr_t)which);
+ if (e_lsp_rq.timer[which] <= 0)
+  e_lsp_rq.timer[which] = E_D_GA_NO_TIMER;
+}
+
+/**
+ * e_lsp_rq_begin - A session starts: give its requests the editor's clock,
+ * timers and status row.
+ * @label: the server's name in the lines ("clangd", "Metals").
+ *
+ * The deadline is E_D_REQ_TIMEOUT_S, or the user's
+ * XWPE_DEBUG_ANSWER_TIMEOUT, as for a debugger's answers.
+ */
+static void e_lsp_rq_begin(const char *label)
+{
+ int i;
+
+ memset(&e_lsp_rq.io, 0, sizeof e_lsp_rq.io);
+ snprintf(e_lsp_rq.name, sizeof e_lsp_rq.name, "%s", label);
+ e_lsp_rq.io.now_ms = e_d_ga_now_ms;
+ e_lsp_rq.io.arm_timer = e_lsp_rq_arm_timer;
+ e_lsp_rq.io.waiting = e_lsp_rq_waiting;
+ e_lsp_rq.io.notice = e_lsp_rq_notice;
+ e_lsp_rq.io.name = e_lsp_rq.name;
+ for (i = 0; i < E_D_TIMERS; i++)
+  e_lsp_rq.timer[i] = E_D_GA_NO_TIMER;
+ e_lsp_rq.waiting_painted = 0;
+ e_lsp_requests_init(g_lsp, &e_lsp_rq.io, getenv(E_D_REQ_TIMEOUT_ENV));
+}
+
+/**
+ * e_lsp_rq_end - The session is gone: no timer of its runs on, and its
+ * waiting line leaves the status row.
+ */
+static void e_lsp_rq_end(void)
+{
+ int i;
+
+ for (i = 0; i < E_D_TIMERS; i++)
+  e_lsp_rq_disarm(i);
+ e_lsp_rq.start_asked = 0;
+ e_lsp_rq_waiting_clear();
+}
+
+/* The start under way was begun by opening a file, not by an Alt-Q action. */
+static int g_lsp_eager_start = 0;
+
+/**
+ * e_lsp_start_waited_for - The user asked for something the starting
+ * server must answer: from now on the status row counts the start and Esc
+ * ends it.
+ */
+static void e_lsp_start_waited_for(void)
+{
+ e_lsp_rq.start_asked = 1;
+}
+
+/**
+ * e_lsp_ask_clear - Forget the request out and its answer.
+ */
+static void e_lsp_ask_clear(void)
+{
+ free(e_lsp_ask.base);
+ free(e_lsp_ask.text);
+ memset(&e_lsp_ask, 0, sizeof e_lsp_ask);
+ e_lsp_ask.kind = E_LSP_ASK_NONE;
+}
+
+/**
+ * e_lsp_session_drop - End the session without waiting: whoever waits for
+ * an answer is told it is gone, the answer kept is forgotten, and the
+ * timers and the waiting line go with it.
+ */
+static void e_lsp_session_drop(void)
+{
+ if (g_lsp)
+  e_lsp_close(g_lsp);
+ g_lsp = NULL;
+ e_lsp_ask_clear();
+ e_lsp_rq_end();
+}
+
+/**
+ * e_lsp_ask_begin - Note what is asked, from where, on which text, before
+ * the request goes out.
+ * @f: the window; @kind: E_LSP_ASK_*.
+ * Return: 0, or -1 without memory for the text.
+ */
+static int e_lsp_ask_begin(FENSTER *f, int kind)
+{
+ e_lsp_ask_clear();
+ e_lsp_ask.base = e_lsp_buffer_text(f);
+ if (!e_lsp_ask.base)
+  return(-1);
+ e_lsp_ask.kind = kind;
+ snprintf(e_lsp_ask.path, sizeof e_lsp_ask.path, "%s", g_lsp_file);
+ e_lsp_ask.y = f->b->b.y;
+ e_lsp_ask.x = f->b->b.x;
+ e_lsp_ask.n = -1;
+ return(0);
+}
+
+/**
+ * e_lsp_ask_sent - The request was handed to the engine: watch the server
+ * for its answer, or say it could not go out.
+ * @f: the window; @rc: what the engine said (E_D_SEND_*).
+ * Return: 0.
+ */
+static int e_lsp_ask_sent(FENSTER *f, int rc)
+{
+ if (rc != E_D_SEND_OK)
+ {
+  e_lsp_ask_clear();
+  e_error(E_LSP_ASK_FAILED_LINE, 0, f->fb);
+  return(0);
+ }
+ e_lsp_fd_register();
+ return(0);
+}
+
+/**
+ * e_lsp_ask_busy - Is a request out, its answer not come yet?
+ */
+static int e_lsp_ask_busy(void)
+{
+ return(e_lsp_ask.kind != E_LSP_ASK_NONE && !e_lsp_ask.ready);
+}
+
+/**
+ * e_lsp_ask_refused - Another Alt-Q action while a request is out: refused
+ * with a line that names the one out and how to give it up.
+ * @f: the window.
+ * Return: 1 when refused.
+ */
+static int e_lsp_ask_refused(FENSTER *f)
+{
+ char line[E_D_GA_LINE_MAX];
+ const char *method;
+
+ if (!g_lsp || !e_lsp_ask_busy())
+  return(0);
+ method = e_lsp_request_waited(g_lsp, NULL);
+ snprintf(line, sizeof line, E_LSP_BUSY_FMT, e_lsp_rq.name,
+          method ? method : "?");
+ e_status_say(f, line);
+ return(1);
+}
+
+/**
+ * e_lsp_ask_told - The engine has told the request's end: keep it until
+ * the editor can show it (never painted from inside the engine's read).
+ * @how: how it ended.
+ */
+static void e_lsp_ask_told(E_D_REQ_END how)
+{
+ e_lsp_ask.how = how;
+ e_lsp_ask.ready = 1;
+}
+
+/** e_lsp_hover_told - A hover's answer: its text, or NULL. */
+static void e_lsp_hover_told(E_D_REQ_END how, char *text, void *ctx)
+{
+ (void)ctx;
+ e_lsp_ask.text = text;
+ e_lsp_ask_told(how);
+}
+
+/** e_lsp_jump_told - A jump's answer: the location, if one came. */
+static void e_lsp_jump_told(E_D_REQ_END how, int found, const char *path,
+                            int line, int character, void *ctx)
+{
+ (void)character;
+ (void)ctx;
+ e_lsp_ask.found = found;
+ if (found)
+ {
+  snprintf(e_lsp_ask.target, sizeof e_lsp_ask.target, "%s", path);
+  e_lsp_ask.line = line;
+ }
+ e_lsp_ask_told(how);
+}
+
+/** e_lsp_complete_told - A completion's answer: its candidates. */
+static void e_lsp_complete_told(E_D_REQ_END how,
+                                const e_lsp_completion_item *items, int n,
+                                void *ctx)
+{
+ int i;
+
+ (void)ctx;
+ if (n > E_LSP_ASK_ITEMS_MAX)
+  n = E_LSP_ASK_ITEMS_MAX;
+ for (i = 0; i < n; i++)
+  e_lsp_ask.items[i] = items[i];
+ e_lsp_ask.n = n;
+ e_lsp_ask_told(how);
+}
+
+/** e_lsp_format_told - A format's answer: the formatted text, or NULL. */
+static void e_lsp_format_told(E_D_REQ_END how, char *newtext, void *ctx)
+{
+ (void)ctx;
+ e_lsp_ask.text = newtext;
+ e_lsp_ask_told(how);
+}
+
+/**
+ * e_lsp_ask_window - The window the request was asked from, if it is still
+ * the one on top; NULL when it was closed or another is on top.
+ */
+static FENSTER *e_lsp_ask_window(void)
+{
+ FENSTER *w = e_lsp_window_of(e_lsp_ask.path);
+
+ if (!w || w != e_lsp_rq_window())
+  return(NULL);
+ return(w);
+}
+
+/**
+ * e_lsp_ask_still_true - Are the answer's positions still those of the
+ * window's text?  The server answered for the text sent; once the user
+ * typed, they point elsewhere.
+ * @w: the window; @cursor_too: the cursor must not have moved either
+ * (a popup or a list drawn at it).
+ */
+static int e_lsp_ask_still_true(FENSTER *w, int cursor_too)
+{
+ char *now = e_lsp_buffer_text(w);
+ int same = now && e_lsp_ask.base && !strcmp(now, e_lsp_ask.base);
+
+ free(now);
+ if (!same)
+  return(0);
+ if (!cursor_too)
+  return(1);
+ return(w->b->b.y == e_lsp_ask.y && w->b->b.x == e_lsp_ask.x);
+}
+
+/**
+ * e_lsp_ask_idle - May an answer be shown now?  Not under a dialog, a
+ * menu or a picker, nor while a non-text window is on top.
+ */
+static int e_lsp_ask_idle(void)
+{
+ return(g_lsp_modal_depth == 0 && e_build_ui_idle(WpeEditor) &&
+        e_lsp_screen_ours());
+}
+
+static int  e_lsp_hover_show(FENSTER *f, char *hov);        /* (below) */
+static void e_lsp_jump_show(FENSTER *f);                    /* (below) */
+static void e_lsp_complete_show(FENSTER *f);                /* (below) */
+static void e_lsp_format_show(FENSTER *f);                  /* (below) */
+
+/**
+ * e_lsp_ask_show - Show an answer that came, on the window it was asked
+ * from; an answer whose positions no longer hold is dropped with a line.
+ */
+static void e_lsp_ask_show(void)
+{
+ FENSTER *w = e_lsp_ask_window();
+ int cursor_too = (e_lsp_ask.kind == E_LSP_ASK_HOVER ||
+                   e_lsp_ask.kind == E_LSP_ASK_COMPLETE);
+ int kind = e_lsp_ask.kind;
+ char *text;
+
+ if (!w || !e_lsp_ask_still_true(w, cursor_too))
+ {
+  e_lsp_ask_clear();
+  e_status_say(e_lsp_rq_window(), E_LSP_STALE_LINE);
+  return;
+ }
+ if (kind == E_LSP_ASK_HOVER)
+ {
+  /* The popup may chain into the next Alt-Q action, which asks anew: this
+     answer is forgotten first, so the new one is not. */
+  text = e_lsp_ask.text;
+  e_lsp_ask.text = NULL;
+  e_lsp_ask_clear();
+  e_lsp_hover_show(w, text);
+  return;
+ }
+ if (kind == E_LSP_ASK_JUMP)
+  e_lsp_jump_show(w);
+ else if (kind == E_LSP_ASK_COMPLETE)
+  e_lsp_complete_show(w);
+ else if (kind == E_LSP_ASK_FORMAT)
+  e_lsp_format_show(w);
+ e_lsp_ask_clear();
+}
+
+/**
+ * e_lsp_ask_deliver - Hand over the answer kept by the continuation, once
+ * the editor can show it.  The key loop calls this outside every dialog, as
+ * do the readers that may have read it.
+ */
+static void e_lsp_ask_deliver(void)
+{
+ if (e_lsp_ask.kind == E_LSP_ASK_NONE || !e_lsp_ask.ready)
+  return;
+ if (!e_lsp_ask_idle())
+  return;
+ e_lsp_rq_waiting_clear();
+ if (e_lsp_ask.how == E_D_REQ_DONE)
+  e_lsp_ask_show();
+ else
+  e_lsp_ask_clear();     /* given up: the cancel or the deadline said so */
+}
+
+/**
+ * e_lsp_deliver_held - The key loop's turn: an answer that came behind a
+ * dialog is shown now that the editor is idle.
+ */
+void e_lsp_deliver_held(void)
+{
+ e_lsp_ask_deliver();
+}
+
+/**
+ * e_lsp_answer_busy - Does Esc have something of the language server's to
+ * give up: an answer out, or a start the user waits for?
+ */
+int e_lsp_answer_busy(void)
+{
+ if (!g_lsp)
+  return(0);
+ if (e_lsp_ask_busy())
+  return(1);
+ return(e_lsp_rq.start_asked && !e_lsp_started(g_lsp));
+}
+
+/**
+ * e_lsp_start_cancel - Esc while the server the user asked for starts: it
+ * is ended through the owner of the editor's children, and nothing is
+ * asked of it later.
+ */
+static void e_lsp_start_cancel(void)
+{
+ FENSTER *top = e_lsp_rq_window();
+
+ e_lsp_ui_shutdown();
+ if (!top)
+  return;
+ e_d_p_message(E_LSP_START_CANCELLED_LINE, top, 0);
+ e_status_say(top, E_LSP_START_CANCELLED_LINE);
+}
+
+/**
+ * e_lsp_answer_cancel - Esc while the editor waits for the language
+ * server: the answer, or the start, is given up, and the status row says so.
+ */
+void e_lsp_answer_cancel(void)
+{
+ char line[E_D_GA_LINE_MAX];
+ const char *method;
+
+ if (!g_lsp)
+  return;
+ if (!e_lsp_ask_busy())
+ {
+  e_lsp_start_cancel();
+  return;
+ }
+ method = e_lsp_request_waited(g_lsp, NULL);
+ snprintf(line, sizeof line, E_LSP_CANCELLED_FMT, e_lsp_rq.name,
+          method ? method : "?");
+ e_lsp_requests_cancel(g_lsp, E_D_REQ_CANCELLED);
+ e_lsp_rq.waiting_painted = 0;
+ e_lsp_ask_clear();
+ e_status_say(e_lsp_rq_window(), line);
 }
 
 /**
@@ -26332,17 +27251,20 @@ static int e_lsp_ensure(FENSTER *f)
  {  e_error("Read-only library source -- language-server actions run from the "
             "project window, not here.", 0, f->fb);  return(-1);  }
  snprintf(path, sizeof(path), "%s%s", f->dirct ? f->dirct : "./", f->datnam);
+ if (e_lsp_ask_refused(f))
+  return(-1);                                   /* one request at a time */
  if (g_lsp && !strcmp(g_lsp_file, path))
  {
   if (e_lsp_started(g_lsp))
    return(0);                                  /* ready -> the action proceeds */
+  e_lsp_start_waited_for();
   e_d_p_message("Language server still starting -- try the action again shortly.",
                 f, 0);
   return(-1);                                   /* still starting -> action waits */
  }
  e_lsp_scala_setup_drop_other(path);
  if (g_lsp)
- {  e_lsp_fd_unregister();  e_lsp_close(g_lsp);  g_lsp = NULL;  e_lsp_diag_clear();
+ {  e_lsp_fd_unregister();  e_lsp_session_drop();  e_lsp_diag_clear();
     e_lsp_inlay_clear();  g_inlay_on = 0;
     g_sem_on = 0;  g_sem_nactive = 0;  }  /* switched files: drop overlays */
  if (e_test_command((char *)srv->argv[0]))
@@ -26387,6 +27309,9 @@ static int e_lsp_ensure(FENSTER *f)
   g_lsp_file[0] = '\0';
   return(-1);
  }
+ e_lsp_rq_begin(srv->label);
+ if (!g_lsp_eager_start)
+  e_lsp_start_waited_for();
  e_lsp_synced_set(NULL);                   /* not opened yet; on-ready will didOpen */
  if (e_lsp_fd_register() < 0)
   return(e_lsp_give_up_unwatched());
@@ -26411,52 +27336,60 @@ static int e_lsp_ui_dispatch(FENSTER *f, int c);   /* run the Alt-Q action `c` *
 void e_lsp_after_bulk_edit(FENSTER *f);            /* re-sync after a whole-buffer edit */
 
 /* The three "jump to a location" actions (definition / implementation / type
-   definition) differ only in the engine call and the not-found wording, so they
-   share this driver.  `locate` is one of the e_lsp_* locators; `what` names the
-   target for the error message. */
-typedef int (*e_lsp_locate_fn)(e_lsp_session *, const char *, int, int,
-                               char *, size_t, int *, int *);
-
-static int e_lsp_ui_jump(FENSTER *f, e_lsp_locate_fn locate, const char *what)
+   definition) differ only in the request and the not-found wording, so they
+   share this driver.  `which` is an E_LSP_LOCATE_* request; `what` names the
+   target for the error message.  The jump happens when the answer comes. */
+static int e_lsp_ui_jump(FENSTER *f, int which, const char *what)
 {
  BUFFER *b = f->b;
- char outpath[1024], msg[64];
- int oline = -1, ochar = -1;
 
  if (e_lsp_ensure(f) < 0)
   return(-1);
  e_lsp_sync(f);
- { int rc0 = locate(g_lsp, g_lsp_file, b->b.y, e_lsp_symbol_col(f),
-                    outpath, sizeof(outpath), &oline, &ochar);
-   if (rc0 != 0)
-   {
-    snprintf(msg, sizeof(msg), "No %s found.", what);
-    e_error(msg, 0, f->fb);
-    return(0);
-   }
+ if (e_lsp_ask_begin(f, E_LSP_ASK_JUMP) < 0)
+  return(-1);
+ snprintf(e_lsp_ask.what, sizeof e_lsp_ask.what, "%s", what);
+ return(e_lsp_ask_sent(f, e_lsp_locate_async(g_lsp, which, g_lsp_file, b->b.y,
+                                             e_lsp_symbol_col(f),
+                                             e_lsp_jump_told, NULL)));
+}
+
+/**
+ * e_lsp_jump_show - The location came: the cursor goes there, in the file
+ * that holds it; with none, the box says what was not found.
+ * @f: the window it was asked from.
+ */
+static void e_lsp_jump_show(FENSTER *f)
+{
+ char msg[E_LSP_WHAT_MAX + 32];
+
+ if (!e_lsp_ask.found)
+ {
+  snprintf(msg, sizeof(msg), "No %s found.", e_lsp_ask.what);
+  e_error(msg, 0, f->fb);
+  return;
  }
- e_d_goto_break(outpath, oline + 1, f);        /* engine 0-based -> 1-based */
- return(0);
+ e_d_goto_break(e_lsp_ask.target, e_lsp_ask.line + 1, f);  /* 0-based -> 1-based */
 }
 
 /* AltQ D -- jump to the definition of the symbol under the cursor. */
 static int e_lsp_ui_definition(FENSTER *f)
 {
- return(e_lsp_ui_jump(f, e_lsp_definition, "definition"));
+ return(e_lsp_ui_jump(f, E_LSP_LOCATE_DEFINITION, "definition"));
 }
 
 /* AltQ I -- jump to the implementation of the symbol (concrete override of an
    abstract def / trait member). */
 static int e_lsp_ui_implementation(FENSTER *f)
 {
- return(e_lsp_ui_jump(f, e_lsp_implementation, "implementation"));
+ return(e_lsp_ui_jump(f, E_LSP_LOCATE_IMPLEMENTATION, "implementation"));
 }
 
 /* AltQ T -- jump to the TYPE of the symbol (the class/trait of a val's type,
    not the val's own definition). */
 static int e_lsp_ui_type_definition(FENSTER *f)
 {
- return(e_lsp_ui_jump(f, e_lsp_type_definition, "type definition"));
+ return(e_lsp_ui_jump(f, E_LSP_LOCATE_TYPE_DEFINITION, "type definition"));
 }
 
 /* e_lsp_ui_trace - append a printf-style diagnostic line to the file named by
@@ -26629,7 +27562,6 @@ static int e_lsp_cursor_popup(FENSTER *f, const char *title, const char *text,
 static int e_lsp_ui_hover(FENSTER *f)
 {
  BUFFER *b = f->b;
- char *hov;
 
  { const char *tp = getenv("XWPE_UI_TRACE");
    if (tp) { FILE *tf = fopen(tp, "a");
@@ -26637,7 +27569,21 @@ static int e_lsp_ui_hover(FENSTER *f)
  if (e_lsp_ensure(f) < 0)
   return(-1);
  e_lsp_sync(f);
- hov = e_lsp_hover(g_lsp, g_lsp_file, b->b.y, e_lsp_symbol_col(f));
+ if (e_lsp_ask_begin(f, E_LSP_ASK_HOVER) < 0)
+  return(-1);
+ return(e_lsp_ask_sent(f, e_lsp_hover_async(g_lsp, g_lsp_file, b->b.y,
+                                            e_lsp_symbol_col(f),
+                                            e_lsp_hover_told, NULL)));
+}
+
+/**
+ * e_lsp_hover_show - The hover's answer came: its text in a popup at the
+ * cursor, or a line saying there is none.
+ * @f: the window it was asked from; @hov: the text (freed here), or NULL.
+ * Return: 0, or what the Alt-Q action chained from the popup returns.
+ */
+static int e_lsp_hover_show(FENSTER *f, char *hov)
+{
  if (!hov || !*hov)
  {
   if (hov)
@@ -26832,19 +27778,35 @@ static int e_lsp_cursor_screen_y(FENSTER *f)
 static int e_lsp_ui_complete(FENSTER *f)
 {
  BUFFER *b = f->b;
- SCHIRM *s = f->s;
- e_lsp_completion_item items[64];
- const char *labels[64];
- char *line, insbuf[256];
- const char *ins;
- int n, i, sel, prefix = 0, inslen;
 
  if (e_lsp_ensure(f) < 0)
   return(-1);
  e_lsp_sync(f);
- n = e_lsp_completion(g_lsp, g_lsp_file, b->b.y, b->b.x, items, 64);
+ if (e_lsp_ask_begin(f, E_LSP_ASK_COMPLETE) < 0)
+  return(-1);
+ return(e_lsp_ask_sent(f, e_lsp_completion_async(g_lsp, g_lsp_file, b->b.y,
+                                                 b->b.x, E_LSP_ASK_ITEMS_MAX,
+                                                 e_lsp_complete_told, NULL)));
+}
+
+/**
+ * e_lsp_complete_show - The candidates came: the list drops down at the
+ * cursor and the chosen one replaces the word typed so far; with none, a
+ * box says so.
+ * @f: the window it was asked from.
+ */
+static void e_lsp_complete_show(FENSTER *f)
+{
+ BUFFER *b = f->b;
+ SCHIRM *s = f->s;
+ const e_lsp_completion_item *items = e_lsp_ask.items;
+ const char *labels[E_LSP_ASK_ITEMS_MAX];
+ char *line, insbuf[256];
+ const char *ins;
+ int n = e_lsp_ask.n, i, sel, prefix = 0, inslen;
+
  if (n <= 0)
- {  e_error("No completions.", 0, f->fb);  return(0);  }
+ {  e_error("No completions.", 0, f->fb);  return;  }
 
  /* the identifier already typed before the cursor (to be replaced) */
  line = b->bf[b->b.y].s;
@@ -26858,7 +27820,7 @@ static int e_lsp_ui_complete(FENSTER *f)
  sel = e_lsp_pick_at(f, "Complete", labels, n,
                      e_lsp_cursor_screen_x(f), e_lsp_cursor_screen_y(f));
  if (sel < 0)
-  return(0);
+  return;
 
  /* what to insert: the LSP insertText, else the label up to '(' / ':' / ' ' */
  ins = items[sel].insert;
@@ -26881,7 +27843,6 @@ static int e_lsp_ui_complete(FENSTER *f)
  e_ins_nchar(b, s, (char *)ins, b->b.x, b->b.y, inslen);
  b->b.x += inslen;
  e_schirm(f, 1);
- return(0);
 }
 
 /* AltQ S -- show the signature of the call the cursor is inside. */
@@ -27506,31 +28467,49 @@ static void e_lsp_word_at_cursor(FENSTER *f, char *out, size_t osz)
 static int e_lsp_ui_format(FENSTER *f)
 {
  SCHIRM *s = f->s;
- char *text, *formatted;
- int has_sel, sl, sc, el, ec;
+ e_lsp_range r;
+ int rc;
 
  if (e_lsp_ensure(f) < 0)
   return(-1);
  e_lsp_sync(f);
- text = e_lsp_buffer_text(f);
- if (!text)
+ if (e_lsp_ask_begin(f, E_LSP_ASK_FORMAT) < 0)
   return(-1);
- sl = s->mark_begin.y;  sc = s->mark_begin.x;
- el = s->mark_end.y;    ec = s->mark_end.x;
- has_sel = (sl != el || sc != ec);
- if (has_sel)
-  formatted = e_lsp_format_range(g_lsp, g_lsp_file, text, sl, sc, el, ec);
+ r.start_line = s->mark_begin.y;  r.start_char = s->mark_begin.x;
+ r.end_line = s->mark_end.y;      r.end_char = s->mark_end.x;
+ e_lsp_ask.has_sel = (r.start_line != r.end_line || r.start_char != r.end_char);
+ if (e_lsp_ask.has_sel)
+  rc = e_lsp_format_async(g_lsp, g_lsp_file, e_lsp_ask.base, &r,
+                          e_lsp_format_told, NULL);
  else
-  formatted = e_lsp_format(g_lsp, g_lsp_file, text);
+  rc = e_lsp_format_async(g_lsp, g_lsp_file, e_lsp_ask.base, NULL,
+                          e_lsp_format_told, NULL);
+ return(e_lsp_ask_sent(f, rc));
+}
+
+/**
+ * e_lsp_format_show - The formatted text came: the buffer takes it as one
+ * undoable change, or a line says it was already formatted.
+ * @f: the window it was asked from (its text is still the text sent).
+ */
+static void e_lsp_format_show(FENSTER *f)
+{
+ const char *formatted = e_lsp_ask.text;
+
  if (!formatted)
- {  free(text);  e_error("Nothing to format (or no formatter).", 0, f->fb);  return(0);  }
- if (strcmp(formatted, text) == 0)
-  e_d_p_message(has_sel ? "Block already formatted." : "Already formatted.", f, 1);
- else
+ {
+  e_error("Nothing to format (or no formatter).", 0, f->fb);
+  return;
+ }
+ if (strcmp(formatted, e_lsp_ask.base) != 0)
+ {
   e_lsp_replace_buffer(f, formatted);
- free(text);
- free(formatted);
- return(0);
+  return;
+ }
+ if (e_lsp_ask.has_sel)
+  e_d_p_message("Block already formatted.", f, 1);
+ else
+  e_d_p_message("Already formatted.", f, 1);
 }
 
 /* AltQ N -- rename the symbol under the cursor across the workspace. */
@@ -27595,6 +28574,9 @@ void e_lsp_on_edit(FENSTER *f, int c)
  {  e_lsp_reap_if_dead(f);  return;  }
  e_lsp_inlay_refresh_pending(f);    /* re-query inlays if the server flagged them */
  e_lsp_sem_refresh_pending(f);      /* re-query semantic tokens if flagged */
+ /* An Alt-Q answer this poll read is shown at the key loop's top, once this
+    key has been handled, so its positions are checked against the text the
+    key made. */
 }
 
 /* A whole-buffer edit (undo / redo) landed from outside the per-keystroke path.
@@ -27613,8 +28595,7 @@ void e_lsp_after_bulk_edit(FENSTER *f)
 void e_lsp_ui_shutdown(void)
 {
  e_lsp_fd_unregister();              /* remove the fd before freeing the session */
- if (g_lsp)
- {  e_lsp_close(g_lsp);  g_lsp = NULL;  }
+ e_lsp_session_drop();               /* ended through the owner, no wait */
  e_lsp_diag_clear();
  e_lsp_inlay_clear();
  g_inlay_on = 0;
@@ -27765,7 +28746,9 @@ void e_lsp_open_eager(FENSTER *f)
  }
  if (e_test_command((char *)srv->argv[0]))  /* server not installed -> stay light */
   return;
+ g_lsp_eager_start = 1;                   /* nobody waits for it: no waiting line */
  e_lsp_ensure(f);                         /* async: spawns + returns, ready later */
+ g_lsp_eager_start = 0;
 }
 
 /* One row of the discoverable LSP action menu: the label shown in the popup

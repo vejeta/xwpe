@@ -20,8 +20,42 @@
 #define WE_BSP_H
 
 #include <stddef.h>
+#include "we_debreq.h"   /* E_D_REQ_IO: the start's clock, timers and lines */
 
 typedef struct e_bsp_session e_bsp_session;
+
+/* ---- the start on the loop ---------------------------------------------
+ *
+ * e_bsp_start_async() launches the build server and sends the first request
+ * of the handshake above, then returns: each answer, read by
+ * e_bsp_read_now() whenever the loop finds e_bsp_fd() readable, sends the
+ * next request, so the editor keeps its keys while Bloop compiles.  @io
+ * (the line engine's E_D_REQ_IO: now_ms, arm_timer, waiting, notice, name;
+ * may be NULL) gives the request out its waiting line after
+ * E_D_REQ_QUIET_MS and a deadline of its own (a first compile may fetch the
+ * Scala toolchain); the host calls e_bsp_request_timer() when a timer it
+ * asked for goes off.  @done is told once, from inside e_bsp_read_now() or
+ * e_bsp_request_timer(), with @ok 1 when the endpoint is known
+ * (e_bsp_endpoint, e_bsp_main_class), else 0 with the reason in
+ * e_bsp_error().  e_bsp_close() during the start gives it up and tells
+ * nobody.  Returns NULL (reason in @errbuf) when the server could not be
+ * started. */
+typedef void (*e_bsp_started_fn)(int ok, void *ctx);
+
+e_bsp_session *e_bsp_start_async(const char *workdir, const E_D_REQ_IO *io,
+                                 e_bsp_started_fn done, void *ctx,
+                                 char *errbuf, size_t errsz);
+int  e_bsp_fd(const e_bsp_session *b);
+/* Read what the build server has sent, without waiting; returns 0 once its
+ * output has ended. */
+int  e_bsp_read_now(e_bsp_session *b);
+void e_bsp_request_timer(e_bsp_session *b, int which);
+/* Is the start still running?  The request it waits for, and since when. */
+int  e_bsp_starting(const e_bsp_session *b);
+const char *e_bsp_request_waited(const e_bsp_session *b, long *secs);
+const char *e_bsp_endpoint(const e_bsp_session *b, int *port);
+const char *e_bsp_main_class(const e_bsp_session *b);
+const char *e_bsp_error(const e_bsp_session *b);
 
 /* Does the project lack its `.bsp` connection file?  Then `scala-cli setup-ide
  * <workdir>` must write it before e_bsp_start; the editor runs that command as
@@ -34,7 +68,8 @@ int e_bsp_needs_setup(const char *workdir);
  * the handshake above.  On success returns a live session
  * (KEEP IT OPEN until debugging ends) and fills *host/*port with the tcp:// DAP
  * endpoint and *mainclass with the discovered main class.  On failure returns
- * NULL and writes a short reason into errbuf (for the Messages window). */
+ * NULL and writes a short reason into errbuf (for the Messages window).
+ * Waits for every answer: we_bsp_sync.c, the C tests only. */
 e_bsp_session *e_bsp_start(const char *workdir, const char *srcfile,
                            char *host, size_t hostsz, int *port,
                            char *mainclass, size_t mcsz,

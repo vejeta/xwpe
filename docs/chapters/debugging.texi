@@ -754,6 +754,14 @@ default @code{java} on @env{PATH} is too new and an LTS JDK (17/21) is installed
 xwpe repoints @env{JAVA_HOME} at it for Bloop before starting the build server
 (and likewise for Metals), so debugging works out of the box without a
 @code{//> using jvm} pin.  Set @env{JAVA_HOME} yourself to override.
+The handshake (initialize, the build targets, a compile, the main classes,
+the debug session) runs while you keep typing: after a quiet second the
+status row names the request it waits for (@samp{@dots{} build server to
+answer `buildTarget/compile' @dots{} 12s (Esc cancels)}), the command you
+pressed runs once the endpoint is known, and @kbd{Esc} ends the build
+server's launcher and starts nothing (@samp{Scala build server start
+cancelled.}).  Each request is given up after four minutes, which a first
+compile that fetches the toolchain needs.
 @samp{Debug @result{} Quit} ends the program Bloop runs for the session,
 and so does the editor's own end on @code{SIGTERM} or a hangup; Bloop itself
 is shared (Metals uses it too) and is left running.  The editor then gives

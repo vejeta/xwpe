@@ -19,6 +19,9 @@
 #define WE_LSP_H
 
 #include <stddef.h>
+#include "we_debreq.h"   /* E_D_REQ_IO, E_D_REQ_END, E_D_SEND_*: the requests' world */
+
+struct json_object;
 
 /* Severity as in LSP: 1 error, 2 warning, 3 information, 4 hint.
  * (line,character) is the diagnostic's range START and (end_line,end_character)
@@ -130,15 +133,19 @@ typedef struct {
 /* Spawn the language server (argv NULL-terminated, e.g. {"metals",0}), run the
  * initialize/initialized handshake with headless InitializationOptions, cwd =
  * root_dir.  `lang` is the LSP languageId ("scala", "c", …) used on didOpen.
- * Returns a session or NULL. */
+ * Returns a session or NULL.  Waits for the handshake: we_lsp_sync.c, the C
+ * tests only. */
 e_lsp_session *e_lsp_open(char *const argv[], const char *root_dir,
                           const char *lang, const e_lsp_host *host);
 
 /* Like e_lsp_open but ASYNCHRONOUS: spawns the server and sends `initialize`,
  * then returns immediately with the session "starting" (the slow JVM boot does
  * NOT block the caller).  Drive e_lsp_poll() from an fd-loop on e_lsp_fd(s)
- * until e_lsp_started(s) is true; e_lsp_poll finishes the handshake.  Then the
- * caller sends didOpen.  Returns NULL only on spawn failure. */
+ * until e_lsp_started(s) is true; e_lsp_poll finishes the handshake.  Then
+ * the caller sends didOpen.  `initialize` is a
+ * request like the others: it gets the waiting line once e_lsp_requests_init
+ * gave the session a clock, and e_lsp_close ends a start the user gave up.
+ * Returns NULL only on spawn failure. */
 e_lsp_session *e_lsp_open_async(char *const argv[], const char *root_dir,
                                 const char *lang, const e_lsp_host *host);
 
@@ -171,7 +178,8 @@ int e_lsp_did_change(e_lsp_session *s, const char *path, const char *text);
 
 /* Pump until the server publishes diagnostics for `path` (== it has compiled),
  * delivering every diagnostic through host->on_diagnostic.  Returns 1 if the
- * file's diagnostics arrived, 0 on timeout/EOF. */
+ * file's diagnostics arrived, 0 on timeout/EOF.  Waits: we_lsp_sync.c, the C
+ * tests only. */
 int e_lsp_wait_diagnostics(e_lsp_session *s, const char *path, int timeout_ms);
 
 /* Non-blocking: dispatch any messages already waiting from the server
@@ -179,6 +187,89 @@ int e_lsp_wait_diagnostics(e_lsp_session *s, const char *path, int timeout_ms);
  * Call it on each keystroke so live diagnostics surface without blocking
  * typing.  Returns the number of messages handled. */
 int e_lsp_poll(e_lsp_session *s);
+
+/* ---- requests answered on the loop -------------------------------------
+ *
+ * A request goes out at once and its answer is handed to a continuation
+ * later, from e_lsp_poll(), so the editor keeps its keys while a server
+ * indexes.  A response is matched to its request by id; diagnostics,
+ * status and the server's own requests (workspace/applyEdit, ...) read
+ * meanwhile are handled as they come.
+ *
+ * e_lsp_requests_init() gives the session the host's clock and one-shot
+ * timers (the line engine's E_D_REQ_IO: now_ms, arm_timer, waiting,
+ * notice, name, io; the rest is unused) and the user's deadline override
+ * (XWPE_DEBUG_ANSWER_TIMEOUT's text, or NULL).  The oldest request out then
+ * gets the waiting line after E_D_REQ_QUIET_MS, and is given up at the
+ * deadline with the notice; `initialize` gets the waiting line and no
+ * deadline (a server may import a build for minutes; the user ends it).
+ * The host calls e_lsp_request_timer() when a timer it asked for goes off.
+ * Without it there is no waiting line and no deadline (the C tests).
+ *
+ * e_lsp_request() sends @method with @params (taken over, may be NULL) and
+ * calls @fn exactly once: E_D_REQ_DONE with the response message (borrowed
+ * for the call), or E_D_REQ_TIMED_OUT, E_D_REQ_CANCELLED or E_D_REQ_GONE
+ * with NULL.  Returns E_D_SEND_OK, or why it was not sent (then @fn is
+ * never called).  A response to a request given up on is dropped.  @fn may
+ * send the next request; it must not close the session.
+ *
+ * The typed requests below run the same parsers the synchronous calls did,
+ * in the continuation, and hand the caller the parsed value. */
+typedef void (*e_lsp_answered_fn)(E_D_REQ_END how, struct json_object *resp,
+                                  void *ctx);
+/* A text answer (hover): @text is malloc'd and the callee's to free, or
+   NULL when there is none or the request ended without an answer. */
+typedef void (*e_lsp_text_fn)(E_D_REQ_END how, char *text, void *ctx);
+/* A location answer: @found is 1 with @path (borrowed), @line, @character
+   (0-based) set, else 0. */
+typedef void (*e_lsp_location_fn)(E_D_REQ_END how, int found, const char *path,
+                                  int line, int character, void *ctx);
+/* A completion answer: @items (engine-owned, valid until the next completion
+   or the close), @n of them, or n = -1 when the request ended unanswered. */
+typedef void (*e_lsp_items_fn)(E_D_REQ_END how,
+                               const e_lsp_completion_item *items, int n,
+                               void *ctx);
+/* An edit answer (format): @newtext is the text sent with the request with
+   the server's edits applied (malloc'd, the callee's), or NULL for none. */
+typedef void (*e_lsp_edit_fn)(E_D_REQ_END how, char *newtext, void *ctx);
+
+/* The three "jump to a location" requests. */
+#define E_LSP_LOCATE_DEFINITION       0
+#define E_LSP_LOCATE_IMPLEMENTATION   1
+#define E_LSP_LOCATE_TYPE_DEFINITION  2
+
+void e_lsp_requests_init(e_lsp_session *s, const E_D_REQ_IO *io,
+                         const char *timeout_text);
+int  e_lsp_request(e_lsp_session *s, const char *method,
+                   struct json_object *params, e_lsp_answered_fn fn, void *ctx);
+void e_lsp_request_timer(e_lsp_session *s, int which);
+void e_lsp_requests_cancel(e_lsp_session *s, E_D_REQ_END why);
+/* Is a request (or the start) waiting for its answer? */
+int  e_lsp_requests_pending(const e_lsp_session *s);
+/* The method of the oldest request out and the seconds it has waited, for a
+   refusal that names it; NULL when none is out. */
+const char *e_lsp_request_waited(const e_lsp_session *s, long *secs);
+
+int e_lsp_hover_async(e_lsp_session *s, const char *path, int line,
+                      int character, e_lsp_text_fn fn, void *ctx);
+int e_lsp_locate_async(e_lsp_session *s, int which, const char *path,
+                       int line, int character, e_lsp_location_fn fn,
+                       void *ctx);
+int e_lsp_completion_async(e_lsp_session *s, const char *path, int line,
+                           int character, int max, e_lsp_items_fn fn,
+                           void *ctx);
+/* Whole file when @range is NULL; else the inclusive range it holds. */
+int e_lsp_format_async(e_lsp_session *s, const char *path,
+                       const char *current_text, const e_lsp_range *range,
+                       e_lsp_edit_fn fn, void *ctx);
+
+/* Count the diagnostics batches published for @path from now on (the C
+   tests' "has it compiled?"): e_lsp_diagnostics_seen() says how many. */
+void e_lsp_diagnostics_watch(e_lsp_session *s, const char *path);
+int  e_lsp_diagnostics_seen(const e_lsp_session *s);
+
+/* ---- the synchronous calls (we_lsp_sync.c, linked into the C tests only;
+ * each waits for its answer, so the editor never calls them) ------------- */
 
 /* textDocument/hover at (line,character): returns a malloc'd plain-text string
  * (markdown fences stripped) the caller frees, or NULL. */
@@ -307,7 +398,10 @@ char *e_lsp_rename(e_lsp_session *s, const char *path, int line, int character,
                    const char *new_name, const char *current_text,
                    int *other_files);
 
-/* shutdown/exit the server and reap it; frees the session. */
+/* Ask the server to end (`shutdown`, `exit`) and free the session at once,
+ * without waiting: every request still out is told E_D_REQ_GONE, and the
+ * owner of the editor's children ends the server on its ladder (a grace,
+ * then SIGKILL; SIGTERM first when it was never asked on its pipe). */
 void e_lsp_close(e_lsp_session *s);
 
 /* Join editor lines into the document body for the server, emitting exactly one

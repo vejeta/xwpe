@@ -274,10 +274,25 @@ Changes
   "the build did not end" on the status row instead of leaving the
   waiting line turning.
 
+* A language server that is slow to answer no longer holds the editor.
+  Hover, go to definition, implementation and type definition, completion
+  and format go out at once and you keep typing; after a second the status
+  row says "waiting for clangd to answer `textDocument/hover` ... 3s (Esc
+  cancels)", and the popup, the jump, the list or the new text comes when
+  the server answers.  Esc gives the answer up.  An answer for a file you
+  changed meanwhile is not applied at the old positions; the status row
+  says so.  A server you asked for that is still starting shows "waiting
+  for Metals to start" and Esc ends it.  The Scala debugger's build server
+  is asked the same way: Run on a Scala file keeps the editor while Bloop
+  compiles, the status row names the request it waits for, and Esc ends
+  the build server and starts nothing.  The other Alt-Q actions still wait
+  for their answer.
+
 * A language server that does not end no longer holds the editor: when
-  you open another file, or leave the editor, it gets SIGTERM and 2
-  seconds, and then it is killed with the helpers it started, while you
-  keep typing; the editor's own end waits for it, within its bound, so no
+  you open another file, or leave the editor, it is asked to end
+  (`shutdown`, `exit`) and gets 2 seconds (SIGTERM first if it never
+  finished starting), and then it is killed with the helpers it started,
+  while you keep typing; the editor's own end waits for it, within its bound, so no
   server is left behind.  Metals alone is ended without its helpers, so
   the Scala build server (Bloop) it may have started keeps running for
   other editors and the debugger.  The Scala debugger's build server

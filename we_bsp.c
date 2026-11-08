@@ -8,7 +8,6 @@
 #include <errno.h>
 #include <signal.h>
 #include <fcntl.h>
-#include <poll.h>
 #include <time.h>
 #include <dirent.h>
 #include <limits.h>
@@ -20,12 +19,19 @@
 #include "we_dap_proto.h"        /* e_dap_reader: shared Content-Length framing */
 #include "we_fdloop.h"           /* wpe_fd_write: the server's input, queued */
 
-/* Per-request ceilings.  The first compile may pull the Scala toolchain via
-   coursier, so allow it to be slow; the wait is on poll() (event-driven), not a
-   spin, and mirrors the synchronous start of the gdb/dlv backends. */
-#define BSP_TMO_QUICK   30000
+/* Each request's deadline.  The first compile may pull the Scala toolchain
+   via coursier, so it is allowed to be slow; the user keeps the editor
+   meanwhile and Esc gives the start up. */
 #define BSP_TMO_BUILD  240000
 #define BSP_LAUNCHER_WHAT "the build server"   /* in the owner's lines */
+#define BSP_NO_ID      (-1)
+#define BSP_METHOD_MAX  64       /* "buildTarget/scalaMainClasses" fits */
+#define BSP_ERR_MAX    256
+#define BSP_HOST_MAX    64
+#define BSP_CLASS_MAX  256
+#define BSP_READ_CHUNK 4096
+#define BSP_READS_MAX    64      /* reads per call, so a flood cannot hold the loop */
+#define BSP_TIMEOUT_FMT "%s did not answer `%s` within %ld s"
 
 struct e_bsp_session {
  WpeChild     launcher;       /* the BSP server's launcher (scala-cli bsp)  */
@@ -34,6 +40,30 @@ struct e_bsp_session {
  e_dap_reader rd;             /* incoming frame reassembly (reused from DAP)*/
  int          id;             /* JSON-RPC id counter                       */
  int          input_lost;     /* a message could not be handed to it       */
+ int          eof;            /* its output has ended                      */
+ /* The one request out, for the start's chain. */
+ const E_D_REQ_IO *rio;       /* the host's clock, timers and lines, or NULL */
+ int          out_id;         /* its id, or BSP_NO_ID                      */
+ char         out_method[BSP_METHOD_MAX];
+ long         sent_ms;
+ int          waiting_shown;
+ e_d_answered_fn out_fn;
+ void        *out_ctx;
+ /* What the next step sends, kept here so a long argument goes out whole. */
+ char         staged_cmd[BSP_METHOD_MAX];
+ struct json_object *staged_args;
+ /* What the start learns. */
+ char         rootdir[PATH_MAX];
+ struct json_object *target;  /* the main build target's id               */
+ char         mainclass[BSP_CLASS_MAX];
+ char         host[BSP_HOST_MAX];
+ int          port;
+ char         err[BSP_ERR_MAX];
+ int          failed;         /* a step found what it needed missing       */
+ int          starting;       /* the chain runs                            */
+ int          closing;        /* e_bsp_close gives the start up            */
+ e_bsp_started_fn done;
+ void        *done_ctx;
 };
 
 /* ---- transport --------------------------------------------------------- */
@@ -42,11 +72,10 @@ struct e_bsp_session {
  * bsp_write_all - Hand one whole message to the build server.
  * @b: the session; @buf, @n: the framed message.
  *
- * Written now as far as the server reads; the rest waits on the loop's queue
- * and the message wait writes it on, so the editor never sits inside a write
- * to a server that stopped reading.  A message it can no longer be given
- * ends the handshake with "BSP send failed" instead of an answer that cannot
- * come.
+ * Written now as far as the server reads; the rest waits on the loop's queue,
+ * so the editor never sits inside a write to a server that stopped reading.
+ * A message it can no longer be given ends the start with "BSP send failed"
+ * instead of an answer that cannot come.
  * Return: 0 when the message is on its way, else -1.
  */
 static int bsp_write_all(e_bsp_session *b, const char *buf, size_t n)
@@ -93,138 +122,279 @@ static int bsp_send(e_bsp_session *b, int id, const char *method,
  return rc;
 }
 
-static long bsp_now_ms(void)
-{
- struct timespec ts;
- clock_gettime(CLOCK_MONOTONIC, &ts);
- return (long)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
-}
-
-/* The two descriptors a message wait watches: the server's output, and its
-   input while messages for it are still queued. */
-#define BSP_WAIT_OUT 0
-#define BSP_WAIT_IN  1
-
-/**
- * bsp_wait_set - Fill the poll() set of a message wait.
- * @b: the session; @p: room for two entries.
- * Return: the entries used.
- *
- * The request waited on may still be queued behind a server that read
- * slowly; the wait writes it on as the server takes it, so its answer can
- * come.
- */
-static int bsp_wait_set(e_bsp_session *b, struct pollfd *p)
-{
- p[BSP_WAIT_OUT].fd = b->out_fd;
- p[BSP_WAIT_OUT].events = POLLIN;
- p[BSP_WAIT_OUT].revents = 0;
- if (wpe_fd_write_pending(b->in_fd) <= 0)
-  return 1;
- p[BSP_WAIT_IN].fd = b->in_fd;
- p[BSP_WAIT_IN].events = POLLOUT;
- p[BSP_WAIT_IN].revents = 0;
- return 2;
-}
-
-/**
- * bsp_wait_flush - Write on what the server took of its queue; a server
- * that closed its input ends the wait.
- */
-static void bsp_wait_flush(e_bsp_session *b)
-{
- int r = wpe_fd_write_flush(b->in_fd);
-
- if (r == WPE_FD_WRITE_CLOSED || r == WPE_FD_WRITE_REFUSED)
-  b->input_lost = 1;
-}
-
-/* Block (on poll) until one complete message arrives or the timeout elapses. */
-static struct json_object *bsp_read_message(e_bsp_session *b, int timeout_ms)
-{
- long deadline = bsp_now_ms() + timeout_ms;
- for (;;)
- {
-  struct pollfd p[2];
-  char buf[4096];
-  ssize_t n;
-  int err = 0, left, np;
-  struct json_object *m = e_dap_reader_pop(&b->rd, &err);
-
-  if (m)
-   return m;
-  if (b->input_lost)
-   return NULL;
-  left = (int)(deadline - bsp_now_ms());
-  if (left <= 0)
-   return NULL;
-  np = bsp_wait_set(b, p);
-  if (poll(p, np, left) <= 0)
-   return NULL;
-  if (np > BSP_WAIT_IN && p[BSP_WAIT_IN].revents)
-   bsp_wait_flush(b);
-  if (!p[BSP_WAIT_OUT].revents)
-   continue;
-  n = read(b->out_fd, buf, sizeof(buf));
-  if (n <= 0)
-  {
-   if (n < 0 && errno == EINTR)
-    continue;
-   return NULL;
-  }
-  e_dap_reader_push(&b->rd, buf, (size_t)n);
- }
-}
-
-/* Send a request and pump until its response, dispatching (ignoring) the
-   server's notifications (build/logMessage, build/taskProgress, ...).  Returns
-   the "result" object (a NEW reference the caller must json_object_put), or NULL
-   on error/timeout -- copying any server error message into errbuf. */
-static struct json_object *bsp_request(e_bsp_session *b, const char *method,
-                                       struct json_object *params, int timeout_ms,
-                                       char *errbuf, size_t errsz)
-{
- int id = ++b->id;
- if (bsp_send(b, id, method, params) != 0)
- {
-  if (errbuf) snprintf(errbuf, errsz, "BSP send failed: %s", method);
-  return NULL;
- }
- for (;;)
- {
-  struct json_object *m = bsp_read_message(b, timeout_ms);
-  struct json_object *jid = NULL, *res = NULL, *jerr = NULL;
-  if (!m)
-  {
-   if (errbuf) snprintf(errbuf, errsz, "BSP timeout/EOF on %s", method);
-   return NULL;
-  }
-  if (json_object_object_get_ex(m, "id", &jid) &&
-      json_object_get_int(jid) == id)
-  {
-   if (json_object_object_get_ex(m, "error", &jerr))
-   {
-    struct json_object *jmsg = NULL;
-    json_object_object_get_ex(jerr, "message", &jmsg);
-    if (errbuf)
-     snprintf(errbuf, errsz, "BSP error on %s: %s", method,
-              jmsg ? json_object_get_string(jmsg) : "?");
-    json_object_put(m);
-    return NULL;
-   }
-   if (json_object_object_get_ex(m, "result", &res))
-    json_object_get(res);          /* keep across the put below */
-   json_object_put(m);
-   return res;                      /* may be NULL for an empty result */
-  }
-  json_object_put(m);               /* a notification or another id */
- }
-}
-
 static void bsp_notify(e_bsp_session *b, const char *method,
                        struct json_object *params)
 {
  bsp_send(b, -1, method, params);
+}
+
+/* ---- the one request out ------------------------------------------------ *
+ *
+ * The start asks one thing at a time (each answer decides the next
+ * request), so one slot holds the request out.  Its answer is read on the
+ * loop; the host's timers show the waiting line and give it up at its
+ * deadline; an answer to a request given up on is dropped by its id.
+ */
+
+/** bsp_now - The host's clock, or 0 when the host gave none. */
+static long bsp_now(const e_bsp_session *b)
+{
+ if (!b->rio || !b->rio->now_ms)
+  return 0;
+ return b->rio->now_ms(b->rio->io);
+}
+
+/** bsp_arm - Ask the host for timer @which in @ms, or for none. */
+static void bsp_arm(const e_bsp_session *b, int which, long ms)
+{
+ if (!b->rio || !b->rio->arm_timer)
+  return;
+ b->rio->arm_timer(which, ms, b->rio->io);
+}
+
+/** bsp_disarm_all - Take back every timer the request asked for. */
+static void bsp_disarm_all(e_bsp_session *b)
+{
+ int which;
+
+ for (which = 0; which < E_D_TIMERS; which++)
+  bsp_arm(b, which, E_D_TIMER_OFF);
+}
+
+/** bsp_stage_clear - Forget what a step built and did not send. */
+static void bsp_stage_clear(e_bsp_session *b)
+{
+ if (b->staged_args)
+  json_object_put(b->staged_args);
+ b->staged_args = NULL;
+ b->staged_cmd[0] = '\0';
+}
+
+/**
+ * bsp_stage - Keep @args for the request @method a step is about to make,
+ * and write its name as the step's command.
+ * @b: the session; @method: the BSP method; @args: its arguments (taken
+ * over, may be NULL); @cmd, @n: the step's command buffer.
+ * Return: 1 (the step sends).
+ */
+static int bsp_stage(e_bsp_session *b, const char *method,
+                     struct json_object *args, char *cmd, size_t n)
+{
+ bsp_stage_clear(b);
+ snprintf(b->staged_cmd, sizeof b->staged_cmd, "%s", method);
+ b->staged_args = args;
+ snprintf(cmd, n, "%s", method);
+ return 1;
+}
+
+/**
+ * bsp_out_take - Free the slot of the request out and hand back who is
+ * told; an answer that still comes for it is dropped.
+ */
+static void bsp_out_take(e_bsp_session *b, e_d_answered_fn *fn, void **ctx)
+{
+ *fn = b->out_fn;
+ *ctx = b->out_ctx;
+ b->out_id = BSP_NO_ID;
+ b->out_fn = NULL;
+ b->out_ctx = NULL;
+ b->waiting_shown = 0;
+ bsp_disarm_all(b);
+}
+
+/**
+ * bsp_out_end - End the request out without an answer: @why tells how, and
+ * the reason the start says is kept.
+ */
+static void bsp_out_end(e_bsp_session *b, E_D_REQ_END why)
+{
+ e_d_answered_fn fn;
+ void *ctx;
+ E_D_ANSWER empty;
+
+ if (b->out_id == BSP_NO_ID)
+  return;
+ if (!b->err[0])
+  snprintf(b->err, sizeof b->err, "BSP timeout/EOF on %s", b->out_method);
+ bsp_out_take(b, &fn, &ctx);
+ memset(&empty, 0, sizeof empty);
+ if (fn)
+  fn(why, &empty, ctx);
+}
+
+/**
+ * bsp_req_request - The chain's requester: send the staged request @cmd.
+ * @engine: the session; @cmd: the method; @answered, @ctx: who is told.
+ * Return: E_D_SEND_OK, or why it was not sent (then nobody is told).
+ */
+static int bsp_req_request(void *engine, const char *cmd,
+                           e_d_answered_fn answered, void *ctx)
+{
+ e_bsp_session *b = engine;
+ struct json_object *args = NULL;
+
+ if (b->staged_cmd[0] && !strcmp(b->staged_cmd, cmd))
+ {
+  args = b->staged_args;
+  b->staged_args = NULL;
+ }
+ bsp_stage_clear(b);
+ if (b->eof || b->input_lost || b->out_id != BSP_NO_ID)
+ {
+  if (args)
+   json_object_put(args);
+  return E_D_SEND_GONE;
+ }
+ b->out_id = ++b->id;
+ if (bsp_send(b, b->out_id, cmd, args) != 0)
+ {
+  b->out_id = BSP_NO_ID;
+  snprintf(b->err, sizeof b->err, "BSP send failed: %s", cmd);
+  return E_D_SEND_GONE;
+ }
+ snprintf(b->out_method, sizeof b->out_method, "%s", cmd);
+ b->out_fn = answered;
+ b->out_ctx = ctx;
+ b->sent_ms = bsp_now(b);
+ b->waiting_shown = 0;
+ bsp_arm(b, E_D_TIMER_QUIET, E_D_REQ_QUIET_MS);
+ bsp_arm(b, E_D_TIMER_DEADLINE, BSP_TMO_BUILD);
+ return E_D_SEND_OK;
+}
+
+/**
+ * bsp_error_of - Keep the reason a refused request gives.
+ * @b: the session; @m: the response holding "error".
+ */
+static void bsp_error_of(e_bsp_session *b, struct json_object *m)
+{
+ struct json_object *jerr = NULL, *jmsg = NULL;
+
+ if (!json_object_object_get_ex(m, "error", &jerr))
+  return;
+ json_object_object_get_ex(jerr, "message", &jmsg);
+ snprintf(b->err, sizeof b->err, "BSP error on %s: %s", b->out_method,
+          jmsg ? json_object_get_string(jmsg) : "?");
+}
+
+/**
+ * bsp_answered - The response @m to the request out has come: hand its
+ * text (the whole response) to who asked, with the error flag set for a
+ * refusal.
+ */
+static void bsp_answered(e_bsp_session *b, struct json_object *m)
+{
+ const char *text = json_object_to_json_string_ext(m, JSON_C_TO_STRING_PLAIN);
+ e_d_answered_fn fn;
+ void *ctx;
+ E_D_ANSWER ans;
+
+ memset(&ans, 0, sizeof ans);
+ ans.text = text ? strdup(text) : NULL;
+ ans.len = ans.text ? strlen(ans.text) : 0;
+ ans.error = json_object_object_get_ex(m, "error", NULL);
+ if (ans.error)
+  bsp_error_of(b, m);
+ bsp_out_take(b, &fn, &ctx);
+ if (fn)
+  fn(E_D_REQ_DONE, &ans, ctx);
+ free(ans.text);
+}
+
+/**
+ * bsp_dispatch - One message from the build server: the answer to the
+ * request out, or something nobody waits for (build/logMessage,
+ * build/taskProgress, a late answer), dropped.
+ */
+static void bsp_dispatch(e_bsp_session *b, struct json_object *m)
+{
+ struct json_object *jid = NULL;
+
+ if (json_object_object_get_ex(m, "method", NULL))
+  return;
+ if (!json_object_object_get_ex(m, "id", &jid))
+  return;
+ if (b->out_id != BSP_NO_ID && json_object_get_int(jid) == b->out_id)
+  bsp_answered(b, m);
+}
+
+int e_bsp_read_now(e_bsp_session *b)
+{
+ int reads = 0;
+
+ if (!b || b->out_fd < 0)
+  return 0;
+ while (!b->eof && reads++ < BSP_READS_MAX)
+ {
+  char buf[BSP_READ_CHUNK];
+  ssize_t n;
+
+  if (wpe_fd_readable_now(b->out_fd) != WPE_FD_READABLE)
+   break;
+  n = read(b->out_fd, buf, sizeof buf);
+  if (n == 0)
+   b->eof = 1;
+  if (n <= 0)
+   break;
+  e_dap_reader_push(&b->rd, buf, (size_t)n);
+ }
+ for (;;)
+ {
+  int err = 0;
+  struct json_object *m = e_dap_reader_pop(&b->rd, &err);
+
+  if (!m)
+   break;
+  bsp_dispatch(b, m);
+  json_object_put(m);
+ }
+ if (b->eof)
+  bsp_out_end(b, E_D_REQ_GONE);
+ return !b->eof;
+}
+
+/**
+ * bsp_say_waiting - The waiting line for the request out.
+ */
+static void bsp_say_waiting(e_bsp_session *b)
+{
+ long secs = (bsp_now(b) - b->sent_ms) / E_D_REQ_SECOND_MS;
+
+ b->waiting_shown = 1;
+ if (b->rio->waiting)
+  b->rio->waiting(b->out_method, secs, b->rio->io);
+ bsp_arm(b, E_D_TIMER_SECOND, E_D_REQ_SECOND_MS);
+}
+
+/**
+ * bsp_say_given_up - The deadline's sentence on the status row.
+ */
+static void bsp_say_given_up(e_bsp_session *b)
+{
+ char msg[E_D_REQ_MSG_MAX];
+ const char *name = b->rio->name ? b->rio->name : BSP_LAUNCHER_WHAT;
+
+ snprintf(b->err, sizeof b->err, BSP_TIMEOUT_FMT, name, b->out_method,
+          (long)(BSP_TMO_BUILD / E_D_REQ_SECOND_MS));
+ if (!b->rio->notice)
+  return;
+ snprintf(msg, sizeof msg, "%s", b->err);
+ b->rio->notice(msg, b->rio->io);
+}
+
+void e_bsp_request_timer(e_bsp_session *b, int which)
+{
+ if (!b || !b->rio || b->out_id == BSP_NO_ID)
+  return;                       /* a timer of a request that has ended */
+ if (which == E_D_TIMER_QUIET)
+  bsp_say_waiting(b);
+ else if (which == E_D_TIMER_SECOND && b->waiting_shown)
+  bsp_say_waiting(b);
+ else if (which == E_D_TIMER_DEADLINE)
+ {
+  bsp_say_given_up(b);
+  bsp_out_end(b, E_D_REQ_TIMED_OUT);
+ }
 }
 
 /* ---- BSP connection descriptor (.bsp/<name>.json) ---------------------- */
@@ -397,20 +567,6 @@ static int bsp_parse_uri(const char *uri, char *host, size_t hsz, int *port)
  return (*port > 0) ? 0 : -1;
 }
 
-/* ---- handshake stages (each owns one BSP exchange) --------------------- */
-
-/* Resolve the BSP connection file's argv.  The caller has had `scala-cli
-   setup-ide` write it (e_bsp_needs_setup) without waiting for it here.
-   Returns a malloc'd argv or NULL. */
-static char **bsp_connection_argv(const char *rootdir, char *errbuf, size_t errsz)
-{
- char **argv = bsp_read_connection_argv(rootdir);
-
- if (!argv && errbuf)
-  snprintf(errbuf, errsz, "no .bsp connection file in %s", rootdir);
- return argv;
-}
-
 /**
  * e_bsp_needs_setup - Does the project still lack its BSP connection file?
  * @workdir: the project's directory.
@@ -434,19 +590,53 @@ int e_bsp_needs_setup(const char *workdir)
  return 0;
 }
 
-/* build/initialize (advertising scala+java) followed by the build/initialized
-   notification.  Returns 0 on success. */
-static int bsp_handshake_init(e_bsp_session *b, const char *rootdir,
-                              char *errbuf, size_t errsz)
+/* ---- the start's chain: one step per request ---------------------------- */
+
+/**
+ * bsp_answer_result - The "result" of a step's answer, as a new reference
+ * the caller puts, or NULL for none.
+ * @ans: the answer (the whole response's text).
+ */
+static struct json_object *bsp_answer_result(const E_D_ANSWER *ans)
 {
- struct json_object *args, *caps, *langs, *res;
+ struct json_object *m, *res = NULL;
+
+ if (!ans || !ans->text)
+  return NULL;
+ m = json_tokener_parse(ans->text);
+ if (!m)
+  return NULL;
+ if (json_object_object_get_ex(m, "result", &res))
+  json_object_get(res);
+ json_object_put(m);
+ return res;
+}
+
+/**
+ * bsp_step_fails - A step found what it needed missing: the start ends
+ * with @reason (unless the server's own refusal already said why).
+ * Return: E_D_STEP_STOP.
+ */
+static int bsp_step_fails(e_bsp_session *b, const char *reason)
+{
+ b->failed = 1;
+ if (!b->err[0])
+  snprintf(b->err, sizeof b->err, "%s", reason);
+ return E_D_STEP_STOP;
+}
+
+/** bsp_init_cmd - build/initialize, advertising scala and java. */
+static int bsp_init_cmd(char *cmd, size_t n, void *ctx)
+{
+ e_bsp_session *b = ctx;
+ struct json_object *args, *caps, *langs;
  char rooturi[PATH_MAX + 8];
 
  args = json_object_new_object();
  json_object_object_add(args, "displayName", json_object_new_string("xwpe"));
  json_object_object_add(args, "version", json_object_new_string("1.0"));
  json_object_object_add(args, "bspVersion", json_object_new_string("2.1.1"));
- snprintf(rooturi, sizeof(rooturi), "file://%s", rootdir);
+ snprintf(rooturi, sizeof(rooturi), "file://%s", b->rootdir);
  json_object_object_add(args, "rootUri", json_object_new_string(rooturi));
  caps = json_object_new_object();
  langs = json_object_new_array();
@@ -454,96 +644,168 @@ static int bsp_handshake_init(e_bsp_session *b, const char *rootdir,
  json_object_array_add(langs, json_object_new_string("java"));
  json_object_object_add(caps, "languageIds", langs);
  json_object_object_add(args, "capabilities", caps);
- res = bsp_request(b, "build/initialize", args, BSP_TMO_BUILD, errbuf, errsz);
- if (!res)
-  return -1;
- json_object_put(res);
- bsp_notify(b, "build/initialized", NULL);
- return 0;
+ return bsp_stage(b, "build/initialize", args, cmd, n);
 }
 
-/* workspace/buildTargets -> buildTarget/compile -> buildTarget/scalaMainClasses.
-   Returns the main target id (caller json_object_put's it) and fills `mainclass`
-   with the class to launch, or NULL on failure. */
-static struct json_object *bsp_resolve_main_target(e_bsp_session *b,
-                                                   char *mainclass, size_t mcsz,
-                                                   char *errbuf, size_t errsz)
+/** bsp_init_answered - Initialized: the build/initialized notification. */
+static int bsp_init_answered(E_D_REQ_END how, E_D_ANSWER *ans, void *ctx)
 {
- struct json_object *res, *id;
+ e_bsp_session *b = ctx;
 
- res = bsp_request(b, "workspace/buildTargets", NULL, BSP_TMO_BUILD, errbuf, errsz);
- if (!res)
-  return NULL;
- id = bsp_pick_main_target(res);
- json_object_put(res);
- if (!id)
- {
-  if (errbuf) snprintf(errbuf, errsz, "no buildable target found");
-  return NULL;
- }
+ (void)how;
+ if (ans->error)
+  return bsp_step_fails(b, "BSP error on build/initialize");
+ bsp_notify(b, "build/initialized", NULL);
+ return E_D_STEP_NEXT;
+}
 
- res = bsp_request(b, "buildTarget/compile", bsp_targets_arg(id),
-                   BSP_TMO_BUILD, errbuf, errsz);
+/** bsp_targets_cmd - workspace/buildTargets. */
+static int bsp_targets_cmd(char *cmd, size_t n, void *ctx)
+{
+ return bsp_stage(ctx, "workspace/buildTargets", NULL, cmd, n);
+}
+
+/** bsp_targets_answered - Keep the first target that is not a test's. */
+static int bsp_targets_answered(E_D_REQ_END how, E_D_ANSWER *ans, void *ctx)
+{
+ e_bsp_session *b = ctx;
+ struct json_object *res = bsp_answer_result(ans);
+
+ (void)how;
+ b->target = bsp_pick_main_target(res);
  if (res)
   json_object_put(res);
-
- res = bsp_request(b, "buildTarget/scalaMainClasses", bsp_targets_arg(id),
-                   BSP_TMO_BUILD, errbuf, errsz);
- if (!res || bsp_first_main_class(res, mainclass, mcsz) != 0)
- {
-  if (res) json_object_put(res);
-  if (errbuf && !errbuf[0]) snprintf(errbuf, errsz, "no main class found");
-  json_object_put(id);
-  return NULL;
- }
- json_object_put(res);
- return id;
+ if (!b->target)
+  return bsp_step_fails(b, "no buildable target found");
+ return E_D_STEP_NEXT;
 }
 
-/* debugSession/start {dataKind:"scala-main-class"} -> parse the tcp:// endpoint
-   into host/port.  Returns 0 on success.  Consumes (puts) `id`. */
-static int bsp_start_debug_session(e_bsp_session *b, struct json_object *id,
-                                   const char *mainclass, char *host,
-                                   size_t hostsz, int *port,
-                                   char *errbuf, size_t errsz)
+/** bsp_compile_cmd - buildTarget/compile of the main target. */
+static int bsp_compile_cmd(char *cmd, size_t n, void *ctx)
 {
- struct json_object *args, *data, *res, *uri;
- int rc = -1;
+ e_bsp_session *b = ctx;
 
- args = bsp_targets_arg(id);
- json_object_put(id);
+ return bsp_stage(b, "buildTarget/compile", bsp_targets_arg(b->target), cmd, n);
+}
+
+/**
+ * bsp_compile_answered - The compile ended: the main classes are asked
+ * whatever it said (a failed compile shows as no main class, with the
+ * compiler's refusal as the reason).
+ */
+static int bsp_compile_answered(E_D_REQ_END how, E_D_ANSWER *ans, void *ctx)
+{
+ (void)how;
+ (void)ans;
+ (void)ctx;
+ return E_D_STEP_NEXT;
+}
+
+/** bsp_mains_cmd - buildTarget/scalaMainClasses of the main target. */
+static int bsp_mains_cmd(char *cmd, size_t n, void *ctx)
+{
+ e_bsp_session *b = ctx;
+
+ return bsp_stage(b, "buildTarget/scalaMainClasses", bsp_targets_arg(b->target),
+                  cmd, n);
+}
+
+/** bsp_mains_answered - Keep the first main class. */
+static int bsp_mains_answered(E_D_REQ_END how, E_D_ANSWER *ans, void *ctx)
+{
+ e_bsp_session *b = ctx;
+ struct json_object *res = bsp_answer_result(ans);
+ int found;
+
+ (void)how;
+ found = (bsp_first_main_class(res, b->mainclass, sizeof b->mainclass) == 0);
+ if (res)
+  json_object_put(res);
+ if (!found)
+  return bsp_step_fails(b, "no main class found");
+ return E_D_STEP_NEXT;
+}
+
+/** bsp_debug_cmd - debugSession/start for the main class. */
+static int bsp_debug_cmd(char *cmd, size_t n, void *ctx)
+{
+ e_bsp_session *b = ctx;
+ struct json_object *args = bsp_targets_arg(b->target), *data;
+
  json_object_object_add(args, "dataKind", json_object_new_string("scala-main-class"));
  data = json_object_new_object();
- json_object_object_add(data, "class", json_object_new_string(mainclass));
+ json_object_object_add(data, "class", json_object_new_string(b->mainclass));
  json_object_object_add(data, "arguments", json_object_new_array());
  json_object_object_add(data, "jvmOptions", json_object_new_array());
  json_object_object_add(data, "environmentVariables", json_object_new_array());
  json_object_object_add(args, "data", data);
+ return bsp_stage(b, "debugSession/start", args, cmd, n);
+}
 
- res = bsp_request(b, "debugSession/start", args, BSP_TMO_BUILD, errbuf, errsz);
- if (res && json_object_object_get_ex(res, "uri", &uri) &&
-     bsp_parse_uri(json_object_get_string(uri), host, hostsz, port) == 0)
-  rc = 0;
- else if (errbuf && !errbuf[0])
-  snprintf(errbuf, errsz, "no DAP endpoint from debugSession/start");
+/** bsp_debug_answered - Keep the DAP endpoint the debug session listens on. */
+static int bsp_debug_answered(E_D_REQ_END how, E_D_ANSWER *ans, void *ctx)
+{
+ e_bsp_session *b = ctx;
+ struct json_object *res = bsp_answer_result(ans), *uri = NULL;
+ int ok;
+
+ (void)how;
+ ok = res && json_object_object_get_ex(res, "uri", &uri) &&
+      bsp_parse_uri(json_object_get_string(uri), b->host, sizeof b->host,
+                    &b->port) == 0;
  if (res)
   json_object_put(res);
- return rc;
+ if (!ok)
+  return bsp_step_fails(b, "no DAP endpoint from debugSession/start");
+ return E_D_STEP_STOP;
+}
+
+/* The start: each answer decides the next request. */
+static const E_D_STEP bsp_start_steps[] = {
+ { bsp_init_cmd,    bsp_init_answered },
+ { bsp_targets_cmd, bsp_targets_answered },
+ { bsp_compile_cmd, bsp_compile_answered },
+ { bsp_mains_cmd,   bsp_mains_answered },
+ { bsp_debug_cmd,   bsp_debug_answered },
+ { NULL, NULL }
+};
+
+/**
+ * bsp_start_finished - The chain ended: tell the owner, unless the start
+ * was given up by e_bsp_close (then nobody waits for it any more).
+ */
+static void bsp_start_finished(int ok, void *ctx)
+{
+ e_bsp_session *b = ctx;
+ int good = ok && !b->failed;
+
+ b->starting = 0;
+ if (!good && !b->err[0])
+  snprintf(b->err, sizeof b->err, "the build server did not start");
+ if (b->closing || !b->done)
+  return;
+ b->done(good, b->done_ctx);
 }
 
 /* Spawn the BSP server from its connection-file argv, cwd = rootdir. */
 static e_bsp_session *bsp_session_spawn(const char *rootdir, char *errbuf, size_t errsz)
 {
  e_bsp_session *b;
- char **argv = bsp_connection_argv(rootdir, errbuf, errsz);
+ char **argv = bsp_read_connection_argv(rootdir);
 
  if (!argv)
+ {
+  if (errbuf)
+   snprintf(errbuf, errsz, "no .bsp connection file in %s", rootdir);
   return NULL;
+ }
  b = calloc(1, sizeof(*b));
  if (!b)
  {  bsp_free_argv(argv);  return NULL;  }
  e_dap_reader_init(&b->rd);
  b->in_fd = b->out_fd = -1;
+ b->out_id = BSP_NO_ID;
+ snprintf(b->rootdir, sizeof b->rootdir, "%s", rootdir);
  if (bsp_spawn(b, argv, rootdir) != 0)
  {
   bsp_free_argv(argv);
@@ -557,37 +819,76 @@ static e_bsp_session *bsp_session_spawn(const char *rootdir, char *errbuf, size_
 
 /* ---- public API -------------------------------------------------------- */
 
-e_bsp_session *e_bsp_start(const char *workdir, const char *srcfile,
-                           char *host, size_t hostsz, int *port,
-                           char *mainclass, size_t mcsz,
-                           char *errbuf, size_t errsz)
+e_bsp_session *e_bsp_start_async(const char *workdir, const E_D_REQ_IO *io,
+                                 e_bsp_started_fn done, void *ctx,
+                                 char *errbuf, size_t errsz)
 {
  e_bsp_session *b;
- struct json_object *id;
- char rootdir[PATH_MAX], dbgclass[256];
+ E_D_REQUESTER via;
+ char rootdir[PATH_MAX];
 
- (void)srcfile;
  if (errbuf && errsz)
   errbuf[0] = '\0';
  if (!realpath(workdir, rootdir))
   snprintf(rootdir, sizeof(rootdir), "%s", workdir);
-
  b = bsp_session_spawn(rootdir, errbuf, errsz);
  if (!b)
   return NULL;
- if (bsp_handshake_init(b, rootdir, errbuf, errsz) != 0)
- {  e_bsp_close(b);  return NULL;  }
-
- id = bsp_resolve_main_target(b, dbgclass, sizeof(dbgclass), errbuf, errsz);
- if (!id)
- {  e_bsp_close(b);  return NULL;  }
- if (mainclass && mcsz)
-  snprintf(mainclass, mcsz, "%s", dbgclass);
-
- if (bsp_start_debug_session(b, id, dbgclass, host, hostsz, port,
-                             errbuf, errsz) != 0)
- {  e_bsp_close(b);  return NULL;  }
+ b->rio = io;
+ b->starting = 1;
+ via.request = bsp_req_request;
+ via.engine = b;
+ e_d_chain_run(&via, bsp_start_steps, b, bsp_start_finished);
+ if (!b->starting)
+ {
+  /* The first request could not even go out: the caller hears it here,
+     not through a callback from inside this call. */
+  if (errbuf)
+   snprintf(errbuf, errsz, "%s", b->err);
+  e_bsp_close(b);
+  return NULL;
+ }
+ b->done = done;
+ b->done_ctx = ctx;
  return b;
+}
+
+int e_bsp_fd(const e_bsp_session *b)
+{
+ return b ? b->out_fd : -1;
+}
+
+int e_bsp_starting(const e_bsp_session *b)
+{
+ return b && b->starting;
+}
+
+const char *e_bsp_request_waited(const e_bsp_session *b, long *secs)
+{
+ if (!b || b->out_id == BSP_NO_ID)
+  return NULL;
+ if (secs)
+  *secs = (bsp_now(b) - b->sent_ms) / E_D_REQ_SECOND_MS;
+ return b->out_method;
+}
+
+const char *e_bsp_endpoint(const e_bsp_session *b, int *port)
+{
+ if (!b || !b->host[0])
+  return NULL;
+ if (port)
+  *port = b->port;
+ return b->host;
+}
+
+const char *e_bsp_main_class(const e_bsp_session *b)
+{
+ return b ? b->mainclass : NULL;
+}
+
+const char *e_bsp_error(const e_bsp_session *b)
+{
+ return b ? b->err : NULL;
 }
 
 /* ---- the end of the build server --------------------------------------- */
@@ -602,12 +903,19 @@ e_bsp_session *e_bsp_start(const char *workdir, const char *srcfile,
  * children gives it the grace and then SIGKILL, on the loop.  Only the
  * launcher is signalled, never its group (see bsp_spawn).  The program being
  * debugged is not the launcher's: the adapter ends it on Quit's
- * `disconnect`, before this.
+ * `disconnect`, before this.  A start still running is given up, and its
+ * owner is not told.
  */
 void e_bsp_close(e_bsp_session *b)
 {
  if (!b)
   return;
+ b->closing = 1;
+ bsp_out_end(b, E_D_REQ_CANCELLED);
+ bsp_stage_clear(b);
+ bsp_disarm_all(b);
+ if (b->target)
+  json_object_put(b->target);
  if (b->in_fd >= 0)
   wpe_fd_close(b->in_fd);          /* what still waits for it goes too */
  if (b->out_fd >= 0)

@@ -301,7 +301,7 @@ metainfodir = $(datadir)/metainfo
 metainfo_DATA = io.codeberg.mendezr.xwpe.metainfo.xml
 
 # --- Unit tests ---
-check_PROGRAMS = test_checkheader test_fl_sel_len test_syntax_def test_fdloop test_clipboard test_lsp_buffer test_lsp_doctor test_lsp_semantic test_lsp_truecolor test_dap test_dap_nopidfd test_dap_dlv test_dap_gdb test_dap_lldb test_dap_scala test_bsp_close test_lsp_scala test_lsp_clangd test_lsp_python test_lsp_gopls test_lsp_rust test_debprompt test_debpath test_debsess test_debreq test_gdbmi test_menurows test_mousedrain test_child
+check_PROGRAMS = test_checkheader test_fl_sel_len test_syntax_def test_fdloop test_clipboard test_lsp_buffer test_lsp_doctor test_lsp_semantic test_lsp_truecolor test_dap test_dap_nopidfd test_dap_dlv test_dap_gdb test_dap_lldb test_dap_scala test_bsp_close test_lsp_requests test_lsp_scala test_lsp_clangd test_lsp_python test_lsp_gopls test_lsp_rust test_debprompt test_debpath test_debsess test_debreq test_gdbmi test_menurows test_mousedrain test_child
 
 # The children's owner: we_child.c with the fd loop only (the status line is a
 # hook, stubbed).  Real children: twenty ending at once each report their own
@@ -392,23 +392,30 @@ test_syntax_def_LDFLAGS =
 # LSP buffer-serialization unit test: the pure e_lsp_join_lines invariant (one
 # '\n' per editor line, WPE_WR not doubled).  Links we_lsp.c only; no server,
 # always runs (no skip).
-test_lsp_buffer_SOURCES = tests/test_lsp_buffer.c we_lsp.c we_child.c we_dap_proto.c we_fdloop.c
+test_lsp_buffer_SOURCES = tests/test_lsp_buffer.c we_lsp.c we_lsp_sync.c we_child.c we_debreq.c we_dap_proto.c we_fdloop.c
 test_lsp_buffer_CFLAGS = $(XWPE_STDFLAG) $(JSONC_CFLAGS)
 test_lsp_buffer_LDADD = $(JSONC_LIBS) $(UTIL_LIBS)
 
 # LSP Doctor dedup unit test: the pure e_lsp_doc_is_new gate (re-pushed Doctor
 # rendered only when changed; reset per session shows it again).  we_lsp.c only.
-test_lsp_doctor_SOURCES = tests/test_lsp_doctor.c we_lsp.c we_child.c we_dap_proto.c we_fdloop.c
+test_lsp_doctor_SOURCES = tests/test_lsp_doctor.c we_lsp.c we_lsp_sync.c we_child.c we_debreq.c we_dap_proto.c we_fdloop.c
 test_lsp_doctor_CFLAGS = $(XWPE_STDFLAG) $(JSONC_CFLAGS)
 test_lsp_doctor_LDADD = $(JSONC_LIBS) $(UTIL_LIBS)
 
 # LSP semantic-tokens decode unit test: the pure delta-decode (we_lsp.c).
-test_lsp_semantic_SOURCES = tests/test_lsp_semantic.c we_lsp.c we_child.c we_dap_proto.c we_fdloop.c
+test_lsp_semantic_SOURCES = tests/test_lsp_semantic.c we_lsp.c we_lsp_sync.c we_child.c we_debreq.c we_dap_proto.c we_fdloop.c
 test_lsp_semantic_CFLAGS = $(XWPE_STDFLAG) $(JSONC_CFLAGS)
 test_lsp_semantic_LDADD = $(JSONC_LIBS) $(UTIL_LIBS)
 
+# LSP requests answered on the loop: each answer reaches its own request,
+# the server's own requests are answered meanwhile, Esc, the deadline, the
+# server's end and the close.  The test plays the server itself.
+test_lsp_requests_SOURCES = tests/test_lsp_requests.c we_lsp.c we_lsp_sync.c we_child.c we_debreq.c we_dap_proto.c we_fdloop.c
+test_lsp_requests_CFLAGS = $(XWPE_STDFLAG) $(JSONC_CFLAGS)
+test_lsp_requests_LDADD = $(JSONC_LIBS) $(UTIL_LIBS)
+
 # Semantic-token truecolor palette unit test: pure token->RGB-slot lookup.
-test_lsp_truecolor_SOURCES = tests/test_lsp_truecolor.c we_lsp.c we_child.c we_dap_proto.c we_fdloop.c
+test_lsp_truecolor_SOURCES = tests/test_lsp_truecolor.c we_lsp.c we_lsp_sync.c we_child.c we_debreq.c we_dap_proto.c we_fdloop.c
 test_lsp_truecolor_CFLAGS = $(XWPE_STDFLAG) $(JSONC_CFLAGS)
 test_lsp_truecolor_LDADD = $(JSONC_LIBS) $(UTIL_LIBS)
 
@@ -446,7 +453,7 @@ test_dap_lldb_LDADD = $(JSONC_LIBS) $(UTIL_LIBS)
 
 # JVM/Scala path: BSP bootstrap (we_bsp.c) + DAP TCP-client transport against a
 # real scala-cli/Bloop.  SKIPs without scala-cli; slow on a cold coursier cache.
-test_dap_scala_SOURCES = tests/test_dap_scala.c we_bsp.c we_dap.c we_dap_sync.c we_child.c we_debreq.c we_dap_proto.c we_fdloop.c
+test_dap_scala_SOURCES = tests/test_dap_scala.c we_bsp.c we_bsp_sync.c we_dap.c we_dap_sync.c we_child.c we_debreq.c we_dap_proto.c we_fdloop.c
 test_dap_scala_CFLAGS = $(XWPE_STDFLAG) $(JSONC_CFLAGS)
 test_dap_scala_LDADD = $(JSONC_LIBS) $(UTIL_LIBS)
 
@@ -454,43 +461,43 @@ test_dap_scala_LDADD = $(JSONC_LIBS) $(UTIL_LIBS)
 # program itself); no scala-cli needed.  The close returns at once and the
 # children's owner (we_child.c) ends the launcher on the fd loop, with no
 # exit descriptor, the same on every system.
-test_bsp_close_SOURCES = tests/test_bsp_close.c we_bsp.c we_child.c we_dap_proto.c we_fdloop.c
+test_bsp_close_SOURCES = tests/test_bsp_close.c we_bsp.c we_bsp_sync.c we_child.c we_debreq.c we_dap_proto.c we_fdloop.c
 test_bsp_close_CFLAGS = $(XWPE_STDFLAG) $(JSONC_CFLAGS)
 test_bsp_close_LDADD = $(JSONC_LIBS) $(UTIL_LIBS)
 
 # LSP engine: drives a real Metals language server on a single Scala file
 # (hover/definition/completion/diagnostics).  SKIPs without metals + scala-cli.
-test_lsp_scala_SOURCES = tests/test_lsp_scala.c we_lsp.c we_child.c we_dap_proto.c we_fdloop.c
+test_lsp_scala_SOURCES = tests/test_lsp_scala.c we_lsp.c we_lsp_sync.c we_child.c we_debreq.c we_dap_proto.c we_fdloop.c
 test_lsp_scala_CFLAGS = $(XWPE_STDFLAG) $(JSONC_CFLAGS)
 test_lsp_scala_LDADD = $(JSONC_LIBS) $(UTIL_LIBS)
 
 # LSP engine, breadth: drives a real clangd on a single C file with the SAME
 # engine (only language id + spawned command differ).  Fast (no JVM/build
 # server).  SKIPs without clangd.
-test_lsp_clangd_SOURCES = tests/test_lsp_clangd.c we_lsp.c we_child.c we_dap_proto.c we_fdloop.c
+test_lsp_clangd_SOURCES = tests/test_lsp_clangd.c we_lsp.c we_lsp_sync.c we_child.c we_debreq.c we_dap_proto.c we_fdloop.c
 test_lsp_clangd_CFLAGS = $(XWPE_STDFLAG) $(JSONC_CFLAGS)
 test_lsp_clangd_LDADD = $(JSONC_LIBS) $(UTIL_LIBS)
 
 # LSP engine, breadth: drives a real Python server (pyright or pylsp) on a single
 # .py file -- whichever is installed -- with the SAME engine.  SKIPs without one.
-test_lsp_python_SOURCES = tests/test_lsp_python.c we_lsp.c we_child.c we_dap_proto.c we_fdloop.c
+test_lsp_python_SOURCES = tests/test_lsp_python.c we_lsp.c we_lsp_sync.c we_child.c we_debreq.c we_dap_proto.c we_fdloop.c
 test_lsp_python_CFLAGS = $(XWPE_STDFLAG) $(JSONC_CFLAGS)
 test_lsp_python_LDADD = $(JSONC_LIBS) $(UTIL_LIBS)
 
 # LSP engine, breadth: drives a real gopls on a single .go file in a tiny module.
 # SKIPs without gopls + go.
-test_lsp_gopls_SOURCES = tests/test_lsp_gopls.c we_lsp.c we_child.c we_dap_proto.c we_fdloop.c
+test_lsp_gopls_SOURCES = tests/test_lsp_gopls.c we_lsp.c we_lsp_sync.c we_child.c we_debreq.c we_dap_proto.c we_fdloop.c
 test_lsp_gopls_CFLAGS = $(XWPE_STDFLAG) $(JSONC_CFLAGS)
 test_lsp_gopls_LDADD = $(JSONC_LIBS) $(UTIL_LIBS)
 
 # LSP engine, breadth: drives a real rust-analyzer on a single .rs file in a tiny
 # crate.  Slowest (indexes std on cold start).  SKIPs without rust-analyzer + cargo.
-test_lsp_rust_SOURCES = tests/test_lsp_rust.c we_lsp.c we_child.c we_dap_proto.c we_fdloop.c
+test_lsp_rust_SOURCES = tests/test_lsp_rust.c we_lsp.c we_lsp_sync.c we_child.c we_debreq.c we_dap_proto.c we_fdloop.c
 test_lsp_rust_CFLAGS = $(XWPE_STDFLAG) $(JSONC_CFLAGS)
 test_lsp_rust_LDADD = $(JSONC_LIBS) $(UTIL_LIBS)
 
 TESTS = test_checkheader test_fl_sel_len test_syntax_def test_fdloop test_clipboard test_lsp_buffer test_lsp_doctor test_lsp_semantic test_lsp_truecolor test_dap test_dap_nopidfd test_dap_dlv \
-  test_dap_gdb test_dap_lldb test_dap_scala test_bsp_close \
+  test_dap_gdb test_dap_lldb test_dap_scala test_bsp_close test_lsp_requests \
   test_lsp_scala test_lsp_clangd test_lsp_python test_lsp_gopls test_lsp_rust test_debprompt test_debpath test_debsess test_debreq test_gdbmi test_menurows test_mousedrain \
   test_child
 

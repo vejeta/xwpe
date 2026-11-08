@@ -650,6 +650,7 @@ int e_eingabe(ECNT *e)
 #ifdef DEBUGGER
    e_d_start_deliver_held();      /* a debugger that answered behind a dialog: go on */
    e_d_run_deliver_held_stop();   /* a stop held behind a box: show it */
+   e_lsp_deliver_held();          /* a language server's answer: show it */
 #endif
    if (f->save > f->ed->maxchg) e_autosave(f);
    c = e_getch();
@@ -709,6 +710,12 @@ int e_eingabe(ECNT *e)
   /* `scala-cli setup-ide` runs before Metals or a Scala debug session: Esc
      cancels it, as its waiting line says. */
   if (c == WPE_ESC && e_scala_setup_busy_any()) { e_scala_setup_cancel(); c = 0; continue; }
+  /* The Scala build server answers the debug start's requests: Esc gives
+     the start up, as its waiting line says. */
+  if (c == WPE_ESC && e_d_bsp_busy()) { e_d_bsp_cancel(); c = 0; continue; }
+  /* A language server owes an Alt-Q answer, or starts for one: Esc gives it
+     up, as the waiting line on the status row says. */
+  if (c == WPE_ESC && e_lsp_answer_busy()) { e_lsp_answer_cancel(); c = 0; continue; }
   /* A Rust program compiles for its debug session: Esc cancels it, as its
      waiting line says. */
   if (c == WPE_ESC && e_d_compile_busy()) { e_d_compile_cancel(); c = 0; continue; }

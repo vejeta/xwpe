@@ -17,10 +17,30 @@
 #include "we_dap_proto.h"        /* e_dap_reader: shared Content-Length framing */
 #include "we_fdloop.h"           /* wpe_fd_readable_now */
 
-#define LSP_TMO_INIT  120000     /* server start + initialize                */
-#define LSP_TMO_BUILD 240000     /* import build + first compile (cold cache) */
-#define LSP_TMO_REQ    30000     /* an interactive request once warm          */
+#define LSP_TMO_REQ    30000     /* a request still waited for in lsp_pump */
 #define LSP_SERVER_WHAT "the language server"   /* in the owner's lines */
+
+/* Requests answered on the loop. */
+#define LSP_PENDING_MAX   16     /* requests out at once, the start included */
+#define LSP_METHOD_MAX    64     /* "textDocument/semanticTokens/full" fits   */
+#define LSP_NO_ID         (-1)
+#define LSP_PEND_FREE     0      /* the slot is free                          */
+#define LSP_PEND_CALL     1      /* a request: waiting line and deadline      */
+#define LSP_PEND_START    2      /* `initialize`: waiting line, no deadline   */
+#define LSP_PEND_QUIET    3      /* `shutdown`: nobody waits, no line         */
+/* What the deadline leaves on the status row. */
+#define LSP_TIMEOUT_FMT   "%s did not answer `%s` within %d s: Alt-Q asks again"
+#define LSP_DEFAULT_NAME  "the language server"
+
+/* One request out: its id, what it asked, since when, and who is told. */
+typedef struct {
+ int               kind;          /* LSP_PEND_*                               */
+ int               id;            /* the JSON-RPC id its answer carries        */
+ char              method[LSP_METHOD_MAX];
+ long              sent_ms;       /* the host's clock when it went out         */
+ e_lsp_answered_fn fn;            /* told exactly once, or NULL                */
+ void             *ctx;
+} lsp_pending;
 
 struct e_lsp_session {
  WpeChild     server;            /* the server's process, the owner's to end */
@@ -29,7 +49,6 @@ struct e_lsp_session {
  e_dap_reader rd;
  char         lang_id[16];       /* LSP languageId for didOpen ("scala", "c", "cpp") */
  int          id;                /* JSON-RPC id counter                   */
- int          init_id;           /* id of the initialize request           */
  int          started;           /* 0 = awaiting initialize response,      */
                                   /* 1 = handshake done (server is ready)   */
  int          dead;              /* 1 = the server closed its stdout (EOF),
@@ -70,6 +89,16 @@ struct e_lsp_session {
  int          ninlays;
  char        *sem_legend[128];      /* semantic-token type names (from init)  */
  int          sem_nlegend;
+ /* Requests answered on the loop, by id. */
+ lsp_pending  pending[LSP_PENDING_MAX];
+ const E_D_REQ_IO *rio;             /* the host's clock, timers and lines, or NULL */
+ int          deadline_s;           /* a request is given up after this      */
+ int          head_id;              /* the request the timers count for      */
+ int          waiting_shown;        /* its waiting line is on the status row */
+ int          ending;               /* e_lsp_close runs: tell nobody twice    */
+ /* The C tests' "has this file compiled?": batches published for one path. */
+ char         diag_watch[PATH_MAX + 8];
+ int          diag_watch_hits;
 };
 
 /* ---- transport --------------------------------------------------------- */
@@ -385,6 +414,25 @@ static void lsp_dispatch_diagnostics(e_lsp_session *s, struct json_object *param
  }
  if (s->host.on_diagnostics_summary)
   s->host.on_diagnostics_summary(uri_to_path(uri), errors, warnings, s->host.ud);
+ if (s->diag_watch[0] && !strcmp(uri_to_path(uri), s->diag_watch))
+  s->diag_watch_hits++;
+}
+
+void e_lsp_diagnostics_watch(e_lsp_session *s, const char *path)
+{
+ char abspath[PATH_MAX];
+
+ if (!s)
+  return;
+ if (!realpath(path, abspath))
+  snprintf(abspath, sizeof(abspath), "%s", path);
+ snprintf(s->diag_watch, sizeof(s->diag_watch), "%s", abspath);
+ s->diag_watch_hits = 0;
+}
+
+int e_lsp_diagnostics_seen(const e_lsp_session *s)
+{
+ return s ? s->diag_watch_hits : 0;
 }
 
 /* Answer a server->client request so the server never blocks.  We advertise no
@@ -587,69 +635,483 @@ static void lsp_dispatch_status(e_lsp_session *s, struct json_object *m)
                    s->host.ud);
 }
 
-/* Handle one server notification message.  Returns 1 when the diagnostics for
-   @want_diag_path have just arrived (the pump caller is blocking on them), so
-   the caller can stop waiting; 0 in every other case. */
-static int lsp_dispatch_notification(e_lsp_session *s, struct json_object *m,
-                                     const char *want_diag_path)
+/* Handle one server notification message: diagnostics, status, the Doctor. */
+static void lsp_dispatch_notification(e_lsp_session *s, struct json_object *m)
 {
  const char *meth = json_object_get_string(obj_obj(m, "method"));
 
  if (!meth)
-  return 0;
+  return;
  if (!strcmp(meth, "textDocument/publishDiagnostics"))
- {
-  struct json_object *params = obj_obj(m, "params");
-  lsp_dispatch_diagnostics(s, params);
-  if (want_diag_path)
-  {
-   const char *u = obj_str(params, "uri");
-   if (u && !strcmp(uri_to_path(u), want_diag_path))
-    return 1;
-  }
- }
+  lsp_dispatch_diagnostics(s, obj_obj(m, "params"));
  else if (!strcmp(meth, "metals/executeClientCommand"))
   lsp_dispatch_client_command(s, m);
  else if (!strcmp(meth, "metals/status"))
   lsp_dispatch_status(s, m);
+}
+
+/* ---- requests answered on the loop ------------------------------------- *
+ *
+ * A request is registered with its id and a continuation, and its answer is
+ * handed over whenever it is read -- by the loop's read (e_lsp_poll) or by
+ * the synchronous pump the requests not moved yet still use -- while
+ * diagnostics, status and the server's own requests read meanwhile go where
+ * they always go.  The host's clock and one-shot timers count the waiting
+ * line and the deadline of the oldest request out; a request given up on
+ * frees its slot, so an answer that comes after it is dropped.
+ */
+
+/**
+ * lsp_now - The host's clock, or 0 when the host gave none.
+ * @s: the session.
+ */
+static long lsp_now(const e_lsp_session *s)
+{
+ if (!s->rio || !s->rio->now_ms)
+  return 0;
+ return s->rio->now_ms(s->rio->io);
+}
+
+/**
+ * lsp_arm - Ask the host for timer @which in @ms, or for none.
+ * @s: the session; @which: E_D_TIMER_*; @ms: the delay, or E_D_TIMER_OFF.
+ */
+static void lsp_arm(const e_lsp_session *s, int which, long ms)
+{
+ if (!s->rio || !s->rio->arm_timer)
+  return;
+ s->rio->arm_timer(which, ms, s->rio->io);
+}
+
+/**
+ * lsp_disarm_all - Take back every timer the requests asked for.
+ * @s: the session.
+ */
+static void lsp_disarm_all(e_lsp_session *s)
+{
+ int which;
+
+ for (which = 0; which < E_D_TIMERS; which++)
+  lsp_arm(s, which, E_D_TIMER_OFF);
+}
+
+/**
+ * lsp_is_waited - Does the user wait for the request in slot @p?  The
+ * start and every request do; a `shutdown` nobody reads does not.
+ */
+static int lsp_is_waited(const lsp_pending *p)
+{
+ return p->kind == LSP_PEND_CALL || p->kind == LSP_PEND_START;
+}
+
+/**
+ * lsp_oldest - The request out that went first, or NULL when none is out.
+ * @s: the session.
+ */
+static lsp_pending *lsp_oldest(e_lsp_session *s)
+{
+ lsp_pending *oldest = NULL;
+ int i;
+
+ for (i = 0; i < LSP_PENDING_MAX; i++)
+ {
+  lsp_pending *p = &s->pending[i];
+
+  if (!lsp_is_waited(p))
+   continue;
+  if (!oldest || p->id < oldest->id)
+   oldest = p;
+ }
+ return oldest;
+}
+
+/**
+ * lsp_find - The slot of the request whose answer carries @id, or NULL.
+ * @s: the session; @id: the response's id.
+ */
+static lsp_pending *lsp_find(e_lsp_session *s, int id)
+{
+ int i;
+
+ for (i = 0; i < LSP_PENDING_MAX; i++)
+  if (s->pending[i].kind != LSP_PEND_FREE && s->pending[i].id == id)
+   return &s->pending[i];
+ return NULL;
+}
+
+/**
+ * lsp_free_slot - A slot no request uses, or NULL when all are taken.
+ * @s: the session.
+ */
+static lsp_pending *lsp_free_slot(e_lsp_session *s)
+{
+ int i;
+
+ for (i = 0; i < LSP_PENDING_MAX; i++)
+  if (s->pending[i].kind == LSP_PEND_FREE)
+   return &s->pending[i];
+ return NULL;
+}
+
+/**
+ * lsp_release - Free slot @p; an answer that still comes for it is dropped.
+ */
+static void lsp_release(lsp_pending *p)
+{
+ memset(p, 0, sizeof(*p));
+ p->kind = LSP_PEND_FREE;
+ p->id = LSP_NO_ID;
+}
+
+/**
+ * lsp_ms_after - What is left of @ms counted from @since, never below 0.
+ */
+static long lsp_ms_after(const e_lsp_session *s, long since, long ms)
+{
+ long left = since + ms - lsp_now(s);
+
+ if (left < 0)
+  return 0;
+ return left;
+}
+
+/**
+ * lsp_calls_time - Count the waiting line and the deadline for the oldest
+ * request out, once it changed.
+ * @s: the session.
+ *
+ * The user is told what the editor waits for after a quiet second, and a
+ * request is given up at its deadline, counted from when it went out, as a
+ * debugger's answer is.  The start has no deadline: a server may import a
+ * build for minutes, and the user ends it with Esc.  With nothing out every
+ * timer is taken back.
+ */
+static void lsp_calls_time(e_lsp_session *s)
+{
+ lsp_pending *p = lsp_oldest(s);
+
+ if (!p)
+ {
+  s->head_id = LSP_NO_ID;
+  s->waiting_shown = 0;
+  lsp_disarm_all(s);
+  return;
+ }
+ if (p->id == s->head_id)
+  return;
+ s->head_id = p->id;
+ s->waiting_shown = 0;
+ lsp_arm(s, E_D_TIMER_SECOND, E_D_TIMER_OFF);
+ lsp_arm(s, E_D_TIMER_QUIET, lsp_ms_after(s, p->sent_ms, E_D_REQ_QUIET_MS));
+ if (p->kind == LSP_PEND_CALL)
+  lsp_arm(s, E_D_TIMER_DEADLINE,
+          lsp_ms_after(s, p->sent_ms, (long)s->deadline_s * E_D_REQ_SECOND_MS));
+ else
+  lsp_arm(s, E_D_TIMER_DEADLINE, E_D_TIMER_OFF);
+}
+
+/**
+ * lsp_answered - The response @m to the request in slot @p has come.
+ * @s: the session; @p: its slot; @m: the response.
+ *
+ * The slot is free before the owner is told, so the owner may send its
+ * next request at once.
+ */
+static void lsp_answered(e_lsp_session *s, lsp_pending *p, struct json_object *m)
+{
+ e_lsp_answered_fn fn = p->fn;
+ void *ctx = p->ctx;
+
+ lsp_trace_response(p->id, m);
+ lsp_release(p);
+ lsp_calls_time(s);
+ if (fn)
+  fn(E_D_REQ_DONE, m, ctx);
+}
+
+/* The owners an end tells, oldest first. */
+typedef struct {
+ int id;
+ e_lsp_answered_fn fn;
+ void *ctx;
+} lsp_told;
+
+/**
+ * lsp_told_sort - Order the owners an end tells by their requests' ids.
+ */
+static void lsp_told_sort(lsp_told *t, int n)
+{
+ int i, j;
+
+ for (i = 1; i < n; i++)
+  for (j = i; j > 0 && t[j - 1].id > t[j].id; j--)
+  {
+   lsp_told x = t[j];
+
+   t[j] = t[j - 1];
+   t[j - 1] = x;
+  }
+}
+
+void e_lsp_requests_cancel(e_lsp_session *s, E_D_REQ_END why)
+{
+ lsp_told told[LSP_PENDING_MAX];
+ int i, n = 0;
+
+ if (!s)
+  return;
+ for (i = 0; i < LSP_PENDING_MAX; i++)
+ {
+  lsp_pending *p = &s->pending[i];
+
+  if (p->kind == LSP_PEND_FREE)
+   continue;
+  told[n].id = p->id;
+  told[n].fn = p->fn;
+  told[n].ctx = p->ctx;
+  n++;
+  lsp_release(p);
+ }
+ lsp_calls_time(s);
+ lsp_told_sort(told, n);
+ for (i = 0; i < n; i++)
+  if (told[i].fn)
+   told[i].fn(why, NULL, told[i].ctx);
+}
+
+void e_lsp_requests_init(e_lsp_session *s, const E_D_REQ_IO *io,
+                         const char *timeout_text)
+{
+ int i;
+
+ if (!s)
+  return;
+ s->rio = io;
+ s->deadline_s = e_d_req_timeout_from_text(timeout_text);
+ s->head_id = LSP_NO_ID;
+ /* What went out before there was a clock (`initialize`, sent as the server
+    was spawned) is counted from now. */
+ for (i = 0; i < LSP_PENDING_MAX; i++)
+  if (s->pending[i].kind != LSP_PEND_FREE)
+   s->pending[i].sent_ms = lsp_now(s);
+ lsp_calls_time(s);
+}
+
+/**
+ * lsp_say_given_up - The sentence the deadline leaves on the status row:
+ * which request was not answered, within how long, and what to do.
+ */
+static void lsp_say_given_up(const e_lsp_session *s, const lsp_pending *p)
+{
+ char msg[E_D_REQ_MSG_MAX];
+ const char *name = s->rio->name ? s->rio->name : LSP_DEFAULT_NAME;
+
+ if (!s->rio->notice)
+  return;
+ snprintf(msg, sizeof msg, LSP_TIMEOUT_FMT, name, p->method, s->deadline_s);
+ s->rio->notice(msg, s->rio->io);
+}
+
+/**
+ * lsp_say_waiting - Show the waiting line for the oldest request out.
+ */
+static void lsp_say_waiting(e_lsp_session *s, const lsp_pending *p)
+{
+ long secs = (lsp_now(s) - p->sent_ms) / E_D_REQ_SECOND_MS;
+
+ s->waiting_shown = 1;
+ if (s->rio->waiting)
+  s->rio->waiting(p->method, secs, s->rio->io);
+ lsp_arm(s, E_D_TIMER_SECOND, E_D_REQ_SECOND_MS);
+}
+
+void e_lsp_request_timer(e_lsp_session *s, int which)
+{
+ lsp_pending *p;
+
+ if (!s || !s->rio)
+  return;
+ p = lsp_find(s, s->head_id);
+ if (!p || !lsp_is_waited(p))
+  return;                       /* a timer of a request that has ended */
+ if (which == E_D_TIMER_QUIET)
+  lsp_say_waiting(s, p);
+ else if (which == E_D_TIMER_SECOND && s->waiting_shown)
+  lsp_say_waiting(s, p);
+ else if (which == E_D_TIMER_DEADLINE && p->kind == LSP_PEND_CALL)
+ {
+  lsp_say_given_up(s, p);
+  e_lsp_requests_cancel(s, E_D_REQ_TIMED_OUT);
+ }
+}
+
+int e_lsp_requests_pending(const e_lsp_session *s)
+{
+ int i;
+
+ if (!s)
+  return 0;
+ for (i = 0; i < LSP_PENDING_MAX; i++)
+  if (lsp_is_waited(&s->pending[i]))
+   return 1;
  return 0;
 }
 
+const char *e_lsp_request_waited(const e_lsp_session *s, long *secs)
+{
+ lsp_pending *p;
+
+ if (!s)
+  return NULL;
+ p = lsp_oldest((e_lsp_session *)s);
+ if (!p)
+  return NULL;
+ if (secs)
+  *secs = (lsp_now(s) - p->sent_ms) / E_D_REQ_SECOND_MS;
+ return p->method;
+}
+
+/**
+ * lsp_request_kind - Send @method with @params as a request of @kind whose
+ * answer goes to @fn.
+ * @s: the session; @kind: LSP_PEND_*; @method, @params: the request
+ * (@params taken over, may be NULL); @fn, @ctx: the continuation.
+ * Return: E_D_SEND_OK, or why it was not sent (@fn is then never called).
+ */
+static int lsp_request_kind(e_lsp_session *s, int kind, const char *method,
+                            struct json_object *params, e_lsp_answered_fn fn,
+                            void *ctx)
+{
+ lsp_pending *p;
+
+ if (!s || s->dead || s->input_lost || s->ending)
+ {
+  if (params)
+   json_object_put(params);
+  return E_D_SEND_GONE;
+ }
+ if (!method || strlen(method) >= LSP_METHOD_MAX)
+ {
+  if (params)
+   json_object_put(params);
+  return E_D_SEND_TOO_LONG;
+ }
+ p = lsp_free_slot(s);
+ if (!p)
+ {
+  if (params)
+   json_object_put(params);
+  return E_D_SEND_FULL;
+ }
+ p->kind = kind;
+ p->id = ++s->id;
+ p->fn = fn;
+ p->ctx = ctx;
+ p->sent_ms = lsp_now(s);
+ snprintf(p->method, sizeof p->method, "%s", method);
+ if (lsp_send(s, p->id, method, params) != 0)
+ {
+  lsp_release(p);
+  return E_D_SEND_GONE;
+ }
+ lsp_calls_time(s);
+ return E_D_SEND_OK;
+}
+
+int e_lsp_request(e_lsp_session *s, const char *method,
+                  struct json_object *params, e_lsp_answered_fn fn, void *ctx)
+{
+ return lsp_request_kind(s, LSP_PEND_CALL, method, params, fn, ctx);
+}
+
+/**
+ * lsp_dispatch_response - A response came: hand it to the request that
+ * asked, or drop it when that request was given up on.
+ */
+static void lsp_dispatch_response(e_lsp_session *s, struct json_object *m,
+                                  struct json_object *id)
+{
+ lsp_pending *p = lsp_find(s, json_object_get_int(id));
+
+ if (p)
+  lsp_answered(s, p, m);
+}
+
+/**
+ * lsp_dispatch - Take one message from the server, whatever is out.
+ * @s: the session; @m: the message (the caller still owns it).
+ *
+ * A server request is answered at once, so the server never waits on the
+ * editor; a notification reaches the host; a response reaches the request
+ * that asked.
+ */
+static void lsp_dispatch(e_lsp_session *s, struct json_object *m)
+{
+ struct json_object *id = obj_obj(m, "id");
+ struct json_object *method = obj_obj(m, "method");
+
+ lsp_trace_message(LSP_NO_ID, id, method);
+ if (id && method)
+  lsp_answer_request(s, m);
+ else if (method)
+  lsp_dispatch_notification(s, m);
+ else if (id)
+  lsp_dispatch_response(s, m, id);
+}
+
+/**
+ * lsp_dispatch_buffered - Hand on every whole message already read.
+ * @s: the session.
+ *
+ * A waited request returns as soon as its own answer is found, while the
+ * same read may also hold a loop request's answer.  The server then has
+ * nothing more to write, so the loop would not read again and that answer
+ * would sit unhandled until its deadline; it is handed to its owner now.
+ */
+static void lsp_dispatch_buffered(e_lsp_session *s)
+{
+ for (;;)
+ {
+  int err = 0;
+  struct json_object *m = e_dap_reader_pop(&s->rd, &err);
+
+  if (!m)
+   return;
+  lsp_dispatch(s, m);
+  json_object_put(m);
+ }
+}
+
+/**
+ * lsp_pump - Wait for the response to @want_id, serving everything else.
+ * @s: the session; @want_id: the request waited on; @timeout_ms: how long.
+ *
+ * The requests not yet moved onto the loop wait here; a loop request's
+ * answer read meanwhile still reaches its continuation, also one read
+ * together with the response waited for.
+ * Return: the response (the caller frees it), or NULL on a timeout or EOF.
+ */
 static struct json_object *lsp_pump(e_lsp_session *s, int want_id,
-                                    const char *want_diag_path, int timeout_ms)
+                                    int timeout_ms)
 {
  long deadline = lsp_now_ms() + timeout_ms;
  for (;;)
  {
   int left = (int)(deadline - lsp_now_ms());
-  struct json_object *m, *id, *method;
+  struct json_object *m, *id;
   if (left <= 0)
    return NULL;
   m = lsp_read_message(s, left);
   if (!m)
    return NULL;
   id = obj_obj(m, "id");
-  method = obj_obj(m, "method");
-  lsp_trace_message(want_id, id, method);
-  if (id && method)                       /* server -> client REQUEST */
+  if (id && !obj_obj(m, "method") && json_object_get_int(id) == want_id)
   {
-   lsp_answer_request(s, m);
-   json_object_put(m);
-   continue;
+   lsp_trace_response(want_id, m);
+   lsp_dispatch_buffered(s);
+   return m;
   }
-  if (method)                             /* notification */
-  {
-   int diag_arrived = lsp_dispatch_notification(s, m, want_diag_path);
-   json_object_put(m);
-   if (diag_arrived)
-    return json_object_new_boolean(1);
-   continue;
-  }
-  if (id)                                 /* response to our request */
-  {
-   if (want_id >= 0 && json_object_get_int(id) == want_id)
-   {  lsp_trace_response(want_id, m);  return m;  }
-  }
+  lsp_dispatch(s, m);
   json_object_put(m);
  }
 }
@@ -814,12 +1276,60 @@ static struct json_object *lsp_client_caps(void)
  return caps;
 }
 
+static void lsp_capture_semantic_legend(e_lsp_session *s, struct json_object *m);
+
+/**
+ * lsp_initialize_answered - The server answered `initialize`: the handshake
+ * ends here, on the loop, and the host sees e_lsp_started() turn true.
+ * @how: how the request ended; @m: the response; @ctx: the session.
+ *
+ * A start given up on (Esc, the server gone) never reaches started, and the
+ * session is closed by whoever gave it up.
+ */
+static void lsp_initialize_answered(E_D_REQ_END how, struct json_object *m,
+                                    void *ctx)
+{
+ e_lsp_session *s = ctx;
+
+ if (how != E_D_REQ_DONE)
+  return;
+ lsp_capture_semantic_legend(s, m);
+ lsp_notify(s, "initialized", json_object_new_object());
+ s->started = 1;
+}
+
+/**
+ * lsp_session_new - A session with nothing out and no server yet.
+ * @rootdir: the project; @lang: the languageId; @host: the callbacks.
+ */
+static e_lsp_session *lsp_session_new(const char *rootdir, const char *lang,
+                                      const e_lsp_host *host)
+{
+ e_lsp_session *s = calloc(1, sizeof(*s));
+ int i;
+
+ if (!s)
+  return NULL;
+ e_dap_reader_init(&s->rd);
+ snprintf(s->lang_id, sizeof(s->lang_id), "%s", lang ? lang : "scala");
+ if (host)
+  s->host = *host;
+ s->in_fd = s->out_fd = -1;
+ s->started = 0;
+ s->head_id = LSP_NO_ID;
+ s->deadline_s = E_D_REQ_TIMEOUT_S;
+ for (i = 0; i < LSP_PENDING_MAX; i++)
+  lsp_release(&s->pending[i]);
+ snprintf(s->root_uri, sizeof(s->root_uri), "file://%s", rootdir);
+ return s;
+}
+
 /* Spawn the server and SEND `initialize`, but do NOT wait for the response:
    return immediately with the session in the "starting" state (s->started == 0).
-   The caller pumps e_lsp_poll() (e.g. from an fd-loop callback) until the
-   response arrives, at which point e_lsp_poll sends `initialized` and flips
-   s->started to 1.  This keeps the slow JVM cold-start OFF the editor's input
-   loop.  Returns NULL only on spawn failure (the handshake itself is async). */
+   The answer is a request's like any other: e_lsp_poll() reads it on the loop,
+   sends `initialized` and flips s->started to 1.  This
+   keeps the slow JVM cold-start OFF the editor's input loop.  Returns NULL only
+   on spawn failure (the handshake itself is async). */
 e_lsp_session *e_lsp_open_async(char *const argv[], const char *root_dir,
                                 const char *lang, const e_lsp_host *host)
 {
@@ -830,17 +1340,9 @@ e_lsp_session *e_lsp_open_async(char *const argv[], const char *root_dir,
  if (!realpath(root_dir, rootdir))
   snprintf(rootdir, sizeof(rootdir), "%s", root_dir);
 
- s = calloc(1, sizeof(*s));
+ s = lsp_session_new(rootdir, lang, host);
  if (!s)
   return NULL;
- e_dap_reader_init(&s->rd);
- snprintf(s->lang_id, sizeof(s->lang_id), "%s", lang ? lang : "scala");
- if (host)
-  s->host = *host;
- s->in_fd = s->out_fd = -1;
- s->started = 0;
- snprintf(s->root_uri, sizeof(s->root_uri), "file://%s", rootdir);
-
  if (lsp_spawn(s, argv, rootdir) != 0)
  {  e_lsp_close(s);  return NULL;  }
 
@@ -849,8 +1351,8 @@ e_lsp_session *e_lsp_open_async(char *const argv[], const char *root_dir,
  json_object_object_add(args, "rootUri", json_object_new_string(s->root_uri));
  json_object_object_add(args, "capabilities", lsp_client_caps());
  json_object_object_add(args, "initializationOptions", lsp_init_options());
- s->init_id = ++s->id;
- lsp_send(s, s->init_id, "initialize", args);
+ lsp_request_kind(s, LSP_PEND_START, "initialize", args,
+                  lsp_initialize_answered, s);
  return s;
 }
 
@@ -866,32 +1368,6 @@ int e_lsp_dead(e_lsp_session *s) {  return s ? s->dead : 1;  }
 int e_lsp_input_lost(e_lsp_session *s)
 {
  return s && s->input_lost;
-}
-
-/* Synchronous open: start async, then BLOCK draining until the handshake
-   completes (or LSP_TMO_INIT elapses).  Kept for the engine tests and any
-   caller that wants a ready session in hand; the editor uses the async path. */
-e_lsp_session *e_lsp_open(char *const argv[], const char *root_dir,
-                          const char *lang, const e_lsp_host *host)
-{
- e_lsp_session *s = e_lsp_open_async(argv, root_dir, lang, host);
- long deadline;
-
- if (!s)
-  return NULL;
- deadline = lsp_now_ms() + LSP_TMO_INIT;
- while (!s->started && lsp_now_ms() < deadline)
- {
-  struct pollfd p;
-  p.fd = s->out_fd;
-  p.events = POLLIN;
-  if (poll(&p, 1, 200) < 0)
-   break;
-  e_lsp_poll(s);                         /* drains + advances the handshake */
- }
- if (!s->started)
- {  e_lsp_close(s);  return NULL;  }
- return s;
 }
 
 /* ---- requests ---------------------------------------------------------- */
@@ -981,29 +1457,29 @@ int e_lsp_did_change(e_lsp_session *s, const char *path, const char *text)
  return 0;
 }
 
-int e_lsp_wait_diagnostics(e_lsp_session *s, const char *path, int timeout_ms)
+/**
+ * lsp_ended - The server's output closed or its input was lost: nothing
+ * more will be answered, so every request out is told the server is gone
+ * and no owner waits for it.
+ */
+static void lsp_ended(e_lsp_session *s)
 {
- char abspath[PATH_MAX];
- struct json_object *r;
-
- if (!s)
-  return 0;
- if (!realpath(path, abspath))
-  snprintf(abspath, sizeof(abspath), "%s", path);
- r = lsp_pump(s, -1, abspath, timeout_ms);
- if (r)
- {  json_object_put(r);  return 1;  }
- return 0;
+ if (s->ending)
+  return;
+ e_lsp_requests_cancel(s, E_D_REQ_GONE);
 }
-
-static void lsp_capture_semantic_legend(e_lsp_session *s, struct json_object *m);
 
 int e_lsp_poll(e_lsp_session *s)
 {
  int handled = 0, guard = 0;
 
- if (!s || s->out_fd < 0 || s->dead)
+ if (!s || s->out_fd < 0)
   return -1;
+ if (s->dead)
+ {
+  lsp_ended(s);
+  return -1;
+ }
  /* read whatever is immediately available, without blocking */
  while (guard++ < 64)
  {
@@ -1023,26 +1499,14 @@ int e_lsp_poll(e_lsp_session *s)
  {
   int err = 0;
   struct json_object *m = e_dap_reader_pop(&s->rd, &err);
-  struct json_object *id, *method;
   if (!m)
    break;
   handled++;
-  id = obj_obj(m, "id");
-  method = obj_obj(m, "method");
-  if (id && method)
-   lsp_answer_request(s, m);             /* server -> client request */
-  else if (method)
-   lsp_dispatch_notification(s, m, NULL); /* diagnostics / status / doctor / ... */
-  else if (id && !s->started && json_object_get_int(id) == s->init_id)
-  {
-   /* the initialize response (the slow cold-start reply): grab the semantic
-      legend, finish the handshake here, off the input loop, and mark ready. */
-   lsp_capture_semantic_legend(s, m);
-   lsp_notify(s, "initialized", json_object_new_object());
-   s->started = 1;
-  }
+  lsp_dispatch(s, m);   /* answers, server requests, diagnostics, the handshake */
   json_object_put(m);
  }
+ if (s->dead)
+  lsp_ended(s);
  return handled;
 }
 
@@ -1086,43 +1550,129 @@ static char *lsp_markdown_to_text(const char *md)
  return out;
 }
 
-char *e_lsp_hover(e_lsp_session *s, const char *path, int line, int character)
+/**
+ * lsp_hover_text - The plain text of a hover answer (markdown fences
+ * stripped), malloc'd, or NULL when it says nothing.
+ * @resp: the response.
+ */
+static char *lsp_hover_text(struct json_object *resp)
+{
+ struct json_object *result = obj_obj(resp, "result");
+ struct json_object *contents = result ? obj_obj(result, "contents") : NULL;
+ const char *v = NULL;
+
+ if (!contents)
+  return NULL;
+ if (json_object_is_type(contents, json_type_string))
+  v = json_object_get_string(contents);
+ else if (json_object_is_type(contents, json_type_object))
+  v = obj_str(contents, "value");
+ else if (json_object_is_type(contents, json_type_array) &&
+          json_object_array_length(contents) > 0)
+ {
+  struct json_object *e0 = json_object_array_get_idx(contents, 0);
+  v = json_object_is_type(e0, json_type_string) ? json_object_get_string(e0)
+                                                 : obj_str(e0, "value");
+ }
+ if (!v)
+  return NULL;
+ return lsp_markdown_to_text(v);
+}
+
+/**
+ * lsp_abspath - The request's file as the server knows it: the real path,
+ * or @path as given when it cannot be resolved.
+ */
+static void lsp_abspath(const char *path, char *out)
+{
+ if (!realpath(path, out))
+  snprintf(out, PATH_MAX, "%s", path);
+}
+
+/* What a typed request keeps until its answer: the caller's continuation, and
+   what the parser needs besides the response. */
+typedef struct {
+ e_lsp_session *s;
+ void          *ctx;           /* the caller's                              */
+ e_lsp_text_fn     text_fn;
+ e_lsp_location_fn loc_fn;
+ e_lsp_items_fn    items_fn;
+ e_lsp_edit_fn     edit_fn;
+ int            max;           /* completion: the most items wanted         */
+ char          *base;          /* format: the text sent, edits apply to it  */
+} lsp_typed;
+
+/**
+ * lsp_typed_new - Room for a typed request's continuation, or NULL.
+ * @s: the session; @ctx: the caller's context.
+ */
+static lsp_typed *lsp_typed_new(e_lsp_session *s, void *ctx)
+{
+ lsp_typed *t = calloc(1, sizeof(*t));
+
+ if (!t)
+  return NULL;
+ t->s = s;
+ t->ctx = ctx;
+ return t;
+}
+
+/**
+ * lsp_typed_free - Forget a typed request once its caller was told.
+ */
+static void lsp_typed_free(lsp_typed *t)
+{
+ free(t->base);
+ free(t);
+}
+
+/**
+ * lsp_typed_send - Send a typed request; when it cannot go out, nobody is
+ * told and its context is freed.
+ * Return: what e_lsp_request returns.
+ */
+static int lsp_typed_send(e_lsp_session *s, const char *method,
+                          struct json_object *params, e_lsp_answered_fn fn,
+                          lsp_typed *t)
+{
+ int rc = e_lsp_request(s, method, params, fn, t);
+
+ if (rc != E_D_SEND_OK)
+  lsp_typed_free(t);
+ return rc;
+}
+
+/**
+ * lsp_hover_answered - Hand the caller the hover's text, or NULL.
+ */
+static void lsp_hover_answered(E_D_REQ_END how, struct json_object *resp,
+                               void *ctx)
+{
+ lsp_typed *t = ctx;
+ char *text = NULL;
+
+ if (how == E_D_REQ_DONE)
+  text = lsp_hover_text(resp);
+ t->text_fn(how, text, t->ctx);
+ lsp_typed_free(t);
+}
+
+int e_lsp_hover_async(e_lsp_session *s, const char *path, int line,
+                      int character, e_lsp_text_fn fn, void *ctx)
 {
  char abspath[PATH_MAX];
- struct json_object *resp, *result, *contents;
- char *out = NULL;
- int id;
+ lsp_typed *t;
 
- if (!s)
-  return NULL;
- if (!realpath(path, abspath))
-  snprintf(abspath, sizeof(abspath), "%s", path);
- id = ++s->id;
- lsp_send(s, id, "textDocument/hover", lsp_text_pos(s, abspath, line, character));
- resp = lsp_pump(s, id, NULL, LSP_TMO_REQ);
- if (!resp)
-  return NULL;
- result = obj_obj(resp, "result");
- contents = result ? obj_obj(result, "contents") : NULL;
- if (contents)
- {
-  const char *v = NULL;
-  if (json_object_is_type(contents, json_type_string))
-   v = json_object_get_string(contents);
-  else if (json_object_is_type(contents, json_type_object))
-   v = obj_str(contents, "value");
-  else if (json_object_is_type(contents, json_type_array) &&
-           json_object_array_length(contents) > 0)
-  {
-   struct json_object *e0 = json_object_array_get_idx(contents, 0);
-   v = json_object_is_type(e0, json_type_string) ? json_object_get_string(e0)
-                                                  : obj_str(e0, "value");
-  }
-  if (v)
-   out = lsp_markdown_to_text(v);
- }
- json_object_put(resp);
- return out;
+ if (!s || !fn)
+  return E_D_SEND_GONE;
+ t = lsp_typed_new(s, ctx);
+ if (!t)
+  return E_D_SEND_FAILED;
+ t->text_fn = fn;
+ lsp_abspath(path, abspath);
+ return lsp_typed_send(s, "textDocument/hover",
+                       lsp_text_pos(s, abspath, line, character),
+                       lsp_hover_answered, t);
 }
 
 char *e_lsp_signature_help(e_lsp_session *s, const char *path,
@@ -1140,7 +1690,7 @@ char *e_lsp_signature_help(e_lsp_session *s, const char *path,
  id = ++s->id;
  lsp_send(s, id, "textDocument/signatureHelp",
           lsp_text_pos(s, abspath, line, character));
- resp = lsp_pump(s, id, NULL, LSP_TMO_REQ);
+ resp = lsp_pump(s, id, LSP_TMO_REQ);
  if (!resp)
   return NULL;
  result = obj_obj(resp, "result");
@@ -1160,26 +1710,15 @@ char *e_lsp_signature_help(e_lsp_session *s, const char *path,
  return out;
 }
 
-/* Shared driver for the three "jump to a location" requests, which differ only
- * in the method name and all answer with Location | Location[] | LocationLink[].
- * Fills out_* with the first location; returns 0 on success, -1 otherwise. */
-static int lsp_locate(e_lsp_session *s, const char *method, const char *path,
-                      int line, int character, char *out_path, size_t out_sz,
-                      int *out_line, int *out_char)
+/* The answer of the three "jump to a location" requests, which differ only in
+ * the method name and all answer with Location | Location[] | LocationLink[]:
+ * fills out_* with the first location; returns 0 on success, -1 otherwise. */
+static int lsp_location_of(struct json_object *resp, char *out_path,
+                           size_t out_sz, int *out_line, int *out_char)
 {
- char abspath[PATH_MAX];
- struct json_object *resp, *result, *loc = NULL, *rng, *st;
- int id, rc = -1;
+ struct json_object *result, *loc = NULL, *rng, *st;
+ int rc = -1;
 
- if (!s)
-  return -1;
- if (!realpath(path, abspath))
-  snprintf(abspath, sizeof(abspath), "%s", path);
- id = ++s->id;
- lsp_send(s, id, method, lsp_text_pos(s, abspath, line, character));
- resp = lsp_pump(s, id, NULL, LSP_TMO_REQ);
- if (!resp)
-  return -1;
  result = obj_obj(resp, "result");
  if (result && json_object_is_type(result, json_type_array) &&
      json_object_array_length(result) > 0)
@@ -1204,29 +1743,54 @@ static int lsp_locate(e_lsp_session *s, const char *method, const char *path,
    rc = 0;
   }
  }
- json_object_put(resp);
  return rc;
 }
 
-int e_lsp_definition(e_lsp_session *s, const char *path, int line, int character,
-                     char *out_path, size_t out_sz, int *out_line, int *out_char)
+/* The method of each E_LSP_LOCATE_* request. */
+static const char *const lsp_locate_methods[] = {
+ "textDocument/definition",
+ "textDocument/implementation",
+ "textDocument/typeDefinition"
+};
+#define LSP_LOCATE_KINDS \
+ ((int)(sizeof(lsp_locate_methods) / sizeof(lsp_locate_methods[0])))
+
+/**
+ * lsp_locate_answered - Hand the caller the first location of the answer.
+ */
+static void lsp_locate_answered(E_D_REQ_END how, struct json_object *resp,
+                                void *ctx)
 {
- return lsp_locate(s, "textDocument/definition", path, line, character,
-                   out_path, out_sz, out_line, out_char);
+ lsp_typed *t = ctx;
+ char where[PATH_MAX];
+ int line = 0, character = 0, found = 0;
+
+ where[0] = '\0';
+ if (how == E_D_REQ_DONE)
+  found = (lsp_location_of(resp, where, sizeof where, &line, &character) == 0);
+ t->loc_fn(how, found, where, line, character, t->ctx);
+ lsp_typed_free(t);
 }
 
-int e_lsp_implementation(e_lsp_session *s, const char *path, int line, int character,
-                         char *out_path, size_t out_sz, int *out_line, int *out_char)
+int e_lsp_locate_async(e_lsp_session *s, int which, const char *path,
+                       int line, int character, e_lsp_location_fn fn,
+                       void *ctx)
 {
- return lsp_locate(s, "textDocument/implementation", path, line, character,
-                   out_path, out_sz, out_line, out_char);
-}
+ char abspath[PATH_MAX];
+ lsp_typed *t;
 
-int e_lsp_type_definition(e_lsp_session *s, const char *path, int line, int character,
-                          char *out_path, size_t out_sz, int *out_line, int *out_char)
-{
- return lsp_locate(s, "textDocument/typeDefinition", path, line, character,
-                   out_path, out_sz, out_line, out_char);
+ if (!s || !fn)
+  return E_D_SEND_GONE;
+ if (which < 0 || which >= LSP_LOCATE_KINDS)
+  return E_D_SEND_FAILED;
+ t = lsp_typed_new(s, ctx);
+ if (!t)
+  return E_D_SEND_FAILED;
+ t->loc_fn = fn;
+ lsp_abspath(path, abspath);
+ return lsp_typed_send(s, lsp_locate_methods[which],
+                       lsp_text_pos(s, abspath, line, character),
+                       lsp_locate_answered, t);
 }
 
 static void lsp_free_items(e_lsp_session *s)
@@ -1240,23 +1804,19 @@ static void lsp_free_items(e_lsp_session *s)
  s->nitems = 0;
 }
 
-int e_lsp_completion(e_lsp_session *s, const char *path, int line, int character,
-                     e_lsp_completion_item *items, int max)
+/**
+ * lsp_completion_fill - Keep the candidates of a completion answer in the
+ * session (the previous ones are freed).
+ * @s: the session; @resp: the response; @max: the most wanted.
+ * Return: how many were kept.
+ */
+static int lsp_completion_fill(e_lsp_session *s, struct json_object *resp,
+                               int max)
 {
- char abspath[PATH_MAX];
- struct json_object *resp, *result, *list = NULL;
- int id, i, n, out = 0;
+ struct json_object *result, *list = NULL;
+ int i, n, out = 0;
 
- if (!s)
-  return -1;
  lsp_free_items(s);
- if (!realpath(path, abspath))
-  snprintf(abspath, sizeof(abspath), "%s", path);
- id = ++s->id;
- lsp_send(s, id, "textDocument/completion", lsp_text_pos(s, abspath, line, character));
- resp = lsp_pump(s, id, NULL, LSP_TMO_REQ);
- if (!resp)
-  return -1;
  result = obj_obj(resp, "result");
  if (result && json_object_is_type(result, json_type_array))
   list = result;                                  /* CompletionItem[] */
@@ -1285,12 +1845,46 @@ int e_lsp_completion(e_lsp_session *s, const char *path, int line, int character
   s->items[s->nitems].label = lbl;
   s->items[s->nitems].insert = insert ? strdup(insert) : NULL;
   s->items[s->nitems].kind = obj_int(c, "kind", 0);
-  items[out] = s->items[s->nitems];
   s->nitems++;
   out++;
  }
- json_object_put(resp);
  return out;
+}
+
+/**
+ * lsp_completion_answered - Hand the caller the candidates, or n = -1 when
+ * the request ended unanswered.
+ */
+static void lsp_completion_answered(E_D_REQ_END how, struct json_object *resp,
+                                    void *ctx)
+{
+ lsp_typed *t = ctx;
+ int n = -1;
+
+ if (how == E_D_REQ_DONE)
+  n = lsp_completion_fill(t->s, resp, t->max);
+ t->items_fn(how, t->s->items, n, t->ctx);
+ lsp_typed_free(t);
+}
+
+int e_lsp_completion_async(e_lsp_session *s, const char *path, int line,
+                           int character, int max, e_lsp_items_fn fn,
+                           void *ctx)
+{
+ char abspath[PATH_MAX];
+ lsp_typed *t;
+
+ if (!s || !fn)
+  return E_D_SEND_GONE;
+ t = lsp_typed_new(s, ctx);
+ if (!t)
+  return E_D_SEND_FAILED;
+ t->items_fn = fn;
+ t->max = max;
+ lsp_abspath(path, abspath);
+ return lsp_typed_send(s, "textDocument/completion",
+                       lsp_text_pos(s, abspath, line, character),
+                       lsp_completion_answered, t);
 }
 
 static void lsp_free_locs(e_lsp_session *s)
@@ -1330,7 +1924,7 @@ int e_lsp_references(e_lsp_session *s, const char *path, int line, int character
  json_object_object_add(args, "context", ctx);
  id = ++s->id;
  lsp_send(s, id, "textDocument/references", args);
- resp = lsp_pump(s, id, NULL, LSP_TMO_REQ);
+ resp = lsp_pump(s, id, LSP_TMO_REQ);
  if (!resp)
   return -1;
  result = obj_obj(resp, "result");
@@ -1371,7 +1965,7 @@ int e_lsp_document_highlight(e_lsp_session *s, const char *path, int line,
  id = ++s->id;
  lsp_send(s, id, "textDocument/documentHighlight",
           lsp_text_pos(s, abspath, line, character));
- resp = lsp_pump(s, id, NULL, LSP_TMO_REQ);
+ resp = lsp_pump(s, id, LSP_TMO_REQ);
  if (!resp)
   return -1;
  /* DocumentHighlight[]: each is { range, kind } in THIS document -- no uri, so
@@ -1433,7 +2027,7 @@ int e_lsp_code_lenses(e_lsp_session *s, const char *path,
  json_object_object_add(args, "textDocument", doc);
  id = ++s->id;
  lsp_send(s, id, "textDocument/codeLens", args);
- resp = lsp_pump(s, id, NULL, LSP_TMO_REQ);
+ resp = lsp_pump(s, id, LSP_TMO_REQ);
  if (!resp)
   return -1;
  result = obj_obj(resp, "result");
@@ -1454,7 +2048,7 @@ int e_lsp_code_lenses(e_lsp_session *s, const char *path,
   {
    int rid = ++s->id;
    lsp_send(s, rid, "codeLens/resolve", json_object_get(lens));
-   rresp = lsp_pump(s, rid, NULL, LSP_TMO_REQ);
+   rresp = lsp_pump(s, rid, LSP_TMO_REQ);
    if (rresp)
     cmd = obj_obj(obj_obj(rresp, "result"), "command");
   }
@@ -1560,7 +2154,7 @@ int e_lsp_inlay_hints(e_lsp_session *s, const char *path,
  json_object_object_add(args, "range", rng);
  id = ++s->id;
  lsp_send(s, id, "textDocument/inlayHint", args);
- resp = lsp_pump(s, id, NULL, LSP_TMO_REQ);
+ resp = lsp_pump(s, id, LSP_TMO_REQ);
  if (!resp)
   return -1;
  result = obj_obj(resp, "result");
@@ -1654,7 +2248,7 @@ int e_lsp_document_symbols(e_lsp_session *s, const char *path,
  json_object_object_add(args, "textDocument", doc);
  id = ++s->id;
  lsp_send(s, id, "textDocument/documentSymbol", args);
- resp = lsp_pump(s, id, NULL, LSP_TMO_REQ);
+ resp = lsp_pump(s, id, LSP_TMO_REQ);
  if (!resp)
   return -1;
  result = obj_obj(resp, "result");
@@ -1678,7 +2272,7 @@ int e_lsp_workspace_symbols(e_lsp_session *s, const char *query,
                         json_object_new_string(query ? query : ""));
  id = ++s->id;
  lsp_send(s, id, "workspace/symbol", args);
- resp = lsp_pump(s, id, NULL, LSP_TMO_REQ);
+ resp = lsp_pump(s, id, LSP_TMO_REQ);
  if (!resp)
   return -1;
  /* SymbolInformation[]: each carries a name + location {uri,range}, which
@@ -1741,7 +2335,7 @@ static struct json_object *lsp_call_hierarchy_prepare(e_lsp_session *s,
  json_object_object_add(args, "position", pos);
  id = ++s->id;
  lsp_send(s, id, "textDocument/prepareCallHierarchy", args);
- resp = lsp_pump(s, id, NULL, LSP_TMO_REQ);
+ resp = lsp_pump(s, id, LSP_TMO_REQ);
  if (!resp)
   return NULL;
  result = obj_obj(resp, "result");
@@ -1767,7 +2361,7 @@ static int lsp_call_hierarchy_collect(e_lsp_session *s, struct json_object *item
  id = ++s->id;
  lsp_send(s, id, outgoing ? "callHierarchy/outgoingCalls"
                           : "callHierarchy/incomingCalls", args);
- resp = lsp_pump(s, id, NULL, LSP_TMO_REQ);
+ resp = lsp_pump(s, id, LSP_TMO_REQ);
  if (!resp)
   return -1;
  result = obj_obj(resp, "result");
@@ -1822,7 +2416,7 @@ static struct json_object *lsp_type_hierarchy_prepare(e_lsp_session *s,
  json_object_object_add(args, "position", pos);
  id = ++s->id;
  lsp_send(s, id, "textDocument/prepareTypeHierarchy", args);
- resp = lsp_pump(s, id, NULL, LSP_TMO_REQ);
+ resp = lsp_pump(s, id, LSP_TMO_REQ);
  if (!resp)
   return NULL;
  result = obj_obj(resp, "result");
@@ -1848,7 +2442,7 @@ static int lsp_type_hierarchy_collect(e_lsp_session *s, struct json_object *item
  id = ++s->id;
  lsp_send(s, id, subtypes ? "typeHierarchy/subtypes"
                           : "typeHierarchy/supertypes", args);
- resp = lsp_pump(s, id, NULL, LSP_TMO_REQ);
+ resp = lsp_pump(s, id, LSP_TMO_REQ);
  if (!resp)
   return -1;
  result = obj_obj(resp, "result");
@@ -1918,7 +2512,7 @@ int e_lsp_selection_range(e_lsp_session *s, const char *path, int line,
  json_object_object_add(args, "positions", positions);
  id = ++s->id;
  lsp_send(s, id, "textDocument/selectionRange", args);
- resp = lsp_pump(s, id, NULL, LSP_TMO_REQ);
+ resp = lsp_pump(s, id, LSP_TMO_REQ);
  if (!resp)
   return -1;
  /* result is SelectionRange[] (one per requested position); follow the .parent
@@ -2054,7 +2648,7 @@ int e_lsp_semantic_tokens(e_lsp_session *s, const char *path,
  json_object_object_add(args, "textDocument", doc);
  id = ++s->id;
  lsp_send(s, id, "textDocument/semanticTokens/full", args);
- resp = lsp_pump(s, id, NULL, LSP_TMO_REQ);
+ resp = lsp_pump(s, id, LSP_TMO_REQ);
  if (!resp)
   return -1;
  result = obj_obj(resp, "result");
@@ -2195,85 +2789,106 @@ static char *lsp_apply_workspace_edit(struct json_object *wedit, const char *myu
  return strdup(current_text);          /* nothing in this file */
 }
 
-char *e_lsp_format(e_lsp_session *s, const char *path, const char *current_text)
-{
- char abspath[PATH_MAX];
- struct json_object *args, *doc, *opts, *resp, *result;
- char *out = NULL;
- int id;
+/* The layout every format request asks the server for. */
+#define LSP_FORMAT_TAB_SIZE 2
 
- if (!s)
-  return NULL;
- if (!realpath(path, abspath))
-  snprintf(abspath, sizeof(abspath), "%s", path);
- args = json_object_new_object();
- doc = json_object_new_object();
- { char uri[PATH_MAX + 8];
-   snprintf(uri, sizeof(uri), "file://%s", abspath);
-   json_object_object_add(doc, "uri", json_object_new_string(uri)); }
- json_object_object_add(args, "textDocument", doc);
- opts = json_object_new_object();
- json_object_object_add(opts, "tabSize", json_object_new_int(2));
- json_object_object_add(opts, "insertSpaces", json_object_new_boolean(1));
- json_object_object_add(args, "options", opts);
- id = ++s->id;
- lsp_send(s, id, "textDocument/formatting", args);
- resp = lsp_pump(s, id, NULL, LSP_TMO_REQ);
- if (!resp)
-  return NULL;
- result = obj_obj(resp, "result");
- if (result && json_object_is_type(result, json_type_array) &&
-     json_object_array_length(result) > 0)
-  out = lsp_apply_edits(current_text, result);
- json_object_put(resp);
- return out;
+/**
+ * lsp_position - A new {line, character} object.
+ */
+static struct json_object *lsp_position(int line, int character)
+{
+ struct json_object *pos = json_object_new_object();
+
+ json_object_object_add(pos, "line", json_object_new_int(line));
+ json_object_object_add(pos, "character", json_object_new_int(character));
+ return pos;
 }
 
-char *e_lsp_format_range(e_lsp_session *s, const char *path,
-                         const char *current_text,
-                         int start_line, int start_char,
-                         int end_line, int end_char)
+/**
+ * lsp_format_params - The arguments of a whole-file or a range format.
+ * @abspath: the file; @range: the range, or NULL for the whole file.
+ */
+static struct json_object *lsp_format_params(const char *abspath,
+                                             const e_lsp_range *range)
 {
- char abspath[PATH_MAX];
- struct json_object *args, *doc, *opts, *range, *st, *en, *resp, *result;
- char *out = NULL;
- int id;
+ struct json_object *args = json_object_new_object();
+ struct json_object *doc = json_object_new_object();
+ struct json_object *opts = json_object_new_object();
+ char uri[PATH_MAX + 8];
 
- if (!s)
-  return NULL;
- if (!realpath(path, abspath))
-  snprintf(abspath, sizeof(abspath), "%s", path);
- args = json_object_new_object();
- doc = json_object_new_object();
- { char uri[PATH_MAX + 8];
-   snprintf(uri, sizeof(uri), "file://%s", abspath);
-   json_object_object_add(doc, "uri", json_object_new_string(uri)); }
+ snprintf(uri, sizeof(uri), "file://%s", abspath);
+ json_object_object_add(doc, "uri", json_object_new_string(uri));
  json_object_object_add(args, "textDocument", doc);
- st = json_object_new_object();
- json_object_object_add(st, "line", json_object_new_int(start_line));
- json_object_object_add(st, "character", json_object_new_int(start_char));
- en = json_object_new_object();
- json_object_object_add(en, "line", json_object_new_int(end_line));
- json_object_object_add(en, "character", json_object_new_int(end_char));
- range = json_object_new_object();
- json_object_object_add(range, "start", st);
- json_object_object_add(range, "end", en);
- json_object_object_add(args, "range", range);
- opts = json_object_new_object();
- json_object_object_add(opts, "tabSize", json_object_new_int(2));
+ if (range)
+ {
+  struct json_object *r = json_object_new_object();
+
+  json_object_object_add(r, "start",
+                         lsp_position(range->start_line, range->start_char));
+  json_object_object_add(r, "end",
+                         lsp_position(range->end_line, range->end_char));
+  json_object_object_add(args, "range", r);
+ }
+ json_object_object_add(opts, "tabSize", json_object_new_int(LSP_FORMAT_TAB_SIZE));
  json_object_object_add(opts, "insertSpaces", json_object_new_boolean(1));
  json_object_object_add(args, "options", opts);
- id = ++s->id;
- lsp_send(s, id, "textDocument/rangeFormatting", args);
- resp = lsp_pump(s, id, NULL, LSP_TMO_REQ);
- if (!resp)
+ return args;
+}
+
+/**
+ * lsp_format_text - The text sent with a format request, with the edits of
+ * its answer applied (malloc'd), or NULL when the server changes nothing.
+ */
+static char *lsp_format_text(struct json_object *resp, const char *base)
+{
+ struct json_object *result = obj_obj(resp, "result");
+
+ if (!result || !json_object_is_type(result, json_type_array) ||
+     json_object_array_length(result) == 0)
   return NULL;
- result = obj_obj(resp, "result");
- if (result && json_object_is_type(result, json_type_array) &&
-     json_object_array_length(result) > 0)
-  out = lsp_apply_edits(current_text, result);
- json_object_put(resp);
- return out;
+ return lsp_apply_edits(base, result);
+}
+
+/**
+ * lsp_format_answered - Hand the caller the formatted text, or NULL.
+ */
+static void lsp_format_answered(E_D_REQ_END how, struct json_object *resp,
+                                void *ctx)
+{
+ lsp_typed *t = ctx;
+ char *out = NULL;
+
+ if (how == E_D_REQ_DONE)
+  out = lsp_format_text(resp, t->base);
+ t->edit_fn(how, out, t->ctx);
+ lsp_typed_free(t);
+}
+
+int e_lsp_format_async(e_lsp_session *s, const char *path,
+                       const char *current_text, const e_lsp_range *range,
+                       e_lsp_edit_fn fn, void *ctx)
+{
+ char abspath[PATH_MAX];
+ const char *method = "textDocument/formatting";
+ lsp_typed *t;
+
+ if (!s || !fn || !current_text)
+  return E_D_SEND_GONE;
+ t = lsp_typed_new(s, ctx);
+ if (!t)
+  return E_D_SEND_FAILED;
+ t->edit_fn = fn;
+ t->base = strdup(current_text);
+ if (!t->base)
+ {
+  lsp_typed_free(t);
+  return E_D_SEND_FAILED;
+ }
+ if (range)
+  method = "textDocument/rangeFormatting";
+ lsp_abspath(path, abspath);
+ return lsp_typed_send(s, method, lsp_format_params(abspath, range),
+                       lsp_format_answered, t);
 }
 
 char *e_lsp_rename(e_lsp_session *s, const char *path, int line, int character,
@@ -2296,7 +2911,7 @@ char *e_lsp_rename(e_lsp_session *s, const char *path, int line, int character,
  json_object_object_add(args, "newName", json_object_new_string(new_name));
  id = ++s->id;
  lsp_send(s, id, "textDocument/rename", args);
- resp = lsp_pump(s, id, NULL, LSP_TMO_REQ);
+ resp = lsp_pump(s, id, LSP_TMO_REQ);
  if (!resp)
   return NULL;
  result = obj_obj(resp, "result");
@@ -2386,7 +3001,7 @@ int e_lsp_code_actions(e_lsp_session *s, const char *path, int line, int charact
  json_object_object_add(args, "context", ctx);
  id = ++s->id;
  lsp_send(s, id, "textDocument/codeAction", args);
- resp = lsp_pump(s, id, NULL, LSP_TMO_REQ);
+ resp = lsp_pump(s, id, LSP_TMO_REQ);
  if (!resp)
   return -1;
  result = obj_obj(resp, "result");
@@ -2424,7 +3039,7 @@ static struct json_object *lsp_resolve_code_action(e_lsp_session *s,
  int id = ++s->id;
 
  lsp_send(s, id, "codeAction/resolve", json_object_get(action));
- resp = lsp_pump(s, id, NULL, LSP_TMO_REQ);
+ resp = lsp_pump(s, id, LSP_TMO_REQ);
  if (!resp)
   return NULL;
  result = obj_obj(resp, "result");
@@ -2460,7 +3075,7 @@ static char *lsp_execute_command_collect(e_lsp_session *s, const char *command,
   json_object_object_add(args, "arguments", json_object_get(arguments));
  id = ++s->id;
  lsp_send(s, id, "workspace/executeCommand", args);
- resp = lsp_pump(s, id, NULL, LSP_TMO_REQ);   /* applyEdit handled while pumping */
+ resp = lsp_pump(s, id, LSP_TMO_REQ);   /* applyEdit handled while pumping */
  if (resp)
   json_object_put(resp);
 
@@ -2521,29 +3136,145 @@ char *e_lsp_apply_code_action(e_lsp_session *s, int index, const char *path,
  return out;
 }
 
+/**
+ * lsp_ask_to_end - Ask a server that has answered `initialize` to end, on
+ * its own pipe: `shutdown`, whose answer nobody waits for, then `exit`.
+ * @s: the session.
+ * Return: 1 when it was asked, 0 when it cannot be (it lost its input, or
+ * never finished its start and would not take the request).
+ */
+static int lsp_ask_to_end(e_lsp_session *s)
+{
+ if (s->in_fd < 0 || s->input_lost || s->dead || !s->started)
+  return 0;
+ if (lsp_request_kind(s, LSP_PEND_QUIET, "shutdown", NULL, NULL, NULL)
+     != E_D_SEND_OK)
+  return 0;
+ lsp_notify(s, "exit", NULL);
+ return !s->input_lost;
+}
+
+/* How long a closed session's output is read at most: the owner's whole
+   ladder (the grace, SIGKILL, the kill grace) and a second of slack.  By
+   then the server has ended; a process it left behind that still holds its
+   output is not read for ever. */
+#define LSP_DRAIN_MAX_MS \
+ (WPE_CHILD_END_GRACE_MS + WPE_CHILD_END_KILL_MS + E_D_REQ_SECOND_MS)
+
+/* A closed session's output, read until its end of file or the bound. */
+typedef struct {
+ int fd;
+ int timer;
+} lsp_drain;
+
+/**
+ * lsp_drain_stop - Stop reading a closed session's output and close it.
+ * @d: the drain (freed here).
+ */
+static void lsp_drain_stop(lsp_drain *d)
+{
+ if (d->timer > WPE_TIMER_NONE)
+  wpe_timer_del(d->timer);
+ wpe_fd_del(d->fd);
+ close(d->fd);
+ free(d);
+}
+
+/**
+ * lsp_discard_on_readable - What a server that is being ended still writes
+ * (its answer to `shutdown`, a last notification) is read and dropped; at
+ * its end of file the descriptor goes.
+ * @fd: the server's output; @data: the drain.
+ */
+static void lsp_discard_on_readable(int fd, void *data)
+{
+ char buf[8192];
+ ssize_t n;
+
+ for (;;)
+ {
+  n = read(fd, buf, sizeof buf);
+  if (n > 0)
+   continue;
+  if (n < 0 && errno == EINTR)
+   continue;
+  if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK))
+   return;
+  break;
+ }
+ lsp_drain_stop(data);
+}
+
+/**
+ * lsp_drain_bound - The bound has passed: the output is closed even if
+ * something still holds it open, so a descriptor of the loop is never held
+ * by a server long gone.
+ * @data: the drain.
+ */
+static void lsp_drain_bound(void *data)
+{
+ lsp_drain *d = data;
+
+ d->timer = WPE_TIMER_NONE;      /* a one-shot timer is gone once it fired */
+ lsp_drain_stop(d);
+}
+
+/**
+ * lsp_output_drain_until_end - Keep reading a closed session's server until
+ * it ends.
+ * @fd: the server's output.
+ *
+ * Closing the pipe at once would make the server's answer to `shutdown`
+ * fail with SIGPIPE: the server would die there, before the owner reaches
+ * its group, and a helper it started (an indexer, a JVM) would be left
+ * behind.  Read on, the server ends as asked or on the owner's ladder, with
+ * its group, and the pipe closes at its end of file or at LSP_DRAIN_MAX_MS,
+ * whichever comes first.  When the loop has no room, the pipe is closed.
+ */
+static void lsp_output_drain_until_end(int fd)
+{
+ lsp_drain *d = calloc(1, sizeof(*d));
+
+ if (!d)
+ {
+  close(fd);
+  return;
+ }
+ d->fd = fd;
+ if (wpe_fd_add(fd, POLLIN, lsp_discard_on_readable, d) != 0)
+ {
+  close(fd);
+  free(d);
+  return;
+ }
+ d->timer = wpe_timer_add(LSP_DRAIN_MAX_MS, 0, lsp_drain_bound, d);
+}
+
 void e_lsp_close(e_lsp_session *s)
 {
+ int asked;
+
  if (!s)
   return;
- /* A server that lost its input is not asked to shut down: it would not
-    read the request, and the end below takes it. */
- if (s->in_fd >= 0 && !s->input_lost)
- {
-  int id = ++s->id;
-  struct json_object *r;
-  lsp_send(s, id, "shutdown", NULL);
-  r = lsp_pump(s, id, NULL, 3000);   /* best-effort */
-  if (r)
-   json_object_put(r);
-  lsp_notify(s, "exit", NULL);
- }
+ /* Whoever waits for an answer is told now, so nothing waits for a server
+    that is going away. */
+ e_lsp_requests_cancel(s, E_D_REQ_GONE);
+ asked = lsp_ask_to_end(s);
+ s->ending = 1;
+ lsp_disarm_all(s);
  if (s->in_fd >= 0)
   wpe_fd_close(s->in_fd);          /* what still waits for it goes too */
- if (s->out_fd >= 0)
+ if (s->out_fd >= 0 && asked)
+  lsp_output_drain_until_end(s->out_fd);
+ else if (s->out_fd >= 0)
   close(s->out_fd);
- /* After `exit`, SIGTERM; the owner gives it the grace and then SIGKILL,
-    on the loop, so the user never waits for a server that does not end. */
- wpe_child_end_detached(&s->server, SIGTERM);
+ /* Asked on its pipe, the server gets the owner's grace to end by itself,
+    then SIGKILL; one that was never asked gets SIGTERM first.  Either way on
+    the loop, so the user never waits for a server that does not end. */
+ if (asked)
+  wpe_child_end_detached(&s->server, WPE_CHILD_NO_SIGNAL);
+ else
+  wpe_child_end_detached(&s->server, SIGTERM);
  lsp_free_items(s);
  lsp_free_locs(s);
  lsp_free_syms(s);

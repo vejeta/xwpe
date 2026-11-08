@@ -419,6 +419,16 @@
   {"id": "SC-debug-86", "requirement": "One owner of input, of children, of writes and of keys", "layer": "x11", "test": "tests/x11/test_run_in_xterm.py::test_x11_run_in_an_xterm_keeps_the_window_repainting", "status": "new", "needs": ["xterm"]},
   {"id": "SC-debug-87", "requirement": "One owner of input, of children, of writes and of keys", "layer": "c-unit", "test": "test_fdloop", "status": "new"},
   {"id": "SC-debug-88", "requirement": "One owner of input, of children, of writes and of keys", "layer": "ncurses", "test": "tests/test_debugger_ends.py::test_a_debugger_that_closes_its_output_is_not_said_to_have_died", "status": "new", "needs": ["gcc"]},
-  {"id": "SC-debug-88", "requirement": "One owner of input, of children, of writes and of keys", "layer": "ncurses", "test": "tests/test_debugger_ends.py::test_a_debugger_let_go_while_it_runs_is_not_said_to_have_ended", "status": "new", "needs": ["gcc"]}
+  {"id": "SC-debug-88", "requirement": "One owner of input, of children, of writes and of keys", "layer": "ncurses", "test": "tests/test_debugger_ends.py::test_a_debugger_let_go_while_it_runs_is_not_said_to_have_ended", "status": "new", "needs": ["gcc"]},
+  {"id": "SC-debug-89", "requirement": "One owner of input, of children, of writes and of keys", "layer": "ncurses", "test": "tests/test_lsp_on_the_loop.py::test_lsp_start_takes_keys_while_the_server_boots", "status": "new", "needs": []},
+  {"id": "SC-debug-90", "requirement": "One owner of input, of children, of writes and of keys", "layer": "ncurses", "test": "tests/test_lsp_on_the_loop.py::test_hover_waits_on_the_loop_and_shows_when_answered", "status": "new", "needs": []},
+  {"id": "SC-debug-90", "requirement": "One owner of input, of children, of writes and of keys", "layer": "ncurses", "test": "tests/test_lsp_on_the_loop.py::test_esc_gives_up_a_hover_and_its_late_answer_is_dropped", "status": "new", "needs": []},
+  {"id": "SC-debug-90", "requirement": "One owner of input, of children, of writes and of keys", "layer": "ncurses", "test": "tests/test_lsp_on_the_loop.py::test_definition_jumps_when_answered", "status": "new", "needs": []},
+  {"id": "SC-debug-90", "requirement": "One owner of input, of children, of writes and of keys", "layer": "ncurses", "test": "tests/test_lsp_on_the_loop.py::test_completion_list_shows_when_answered", "status": "new", "needs": []},
+  {"id": "SC-debug-90", "requirement": "One owner of input, of children, of writes and of keys", "layer": "ncurses", "test": "tests/test_lsp_on_the_loop.py::test_format_applies_when_answered", "status": "new", "needs": []},
+  {"id": "SC-debug-91", "requirement": "One owner of input, of children, of writes and of keys", "layer": "ncurses", "test": "tests/test_lsp_on_the_loop.py::test_a_late_format_after_typing_is_not_applied", "status": "new", "needs": []},
+  {"id": "SC-debug-92", "requirement": "One owner of input, of children, of writes and of keys", "layer": "ncurses", "test": "tests/test_lsp_on_the_loop.py::test_a_server_request_is_served_while_a_request_is_out", "status": "new", "needs": []},
+  {"id": "SC-debug-93", "requirement": "One owner of input, of children, of writes and of keys", "layer": "ncurses", "test": "tests/test_bsp_start.py::test_scala_debug_start_keeps_keys_while_the_build_server_answers", "status": "new", "needs": []},
+  {"id": "SC-debug-94", "requirement": "One owner of input, of children, of writes and of keys", "layer": "c-unit", "test": "test_lsp_requests", "status": "new"}
  ]
 }

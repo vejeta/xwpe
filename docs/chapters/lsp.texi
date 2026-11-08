@@ -266,6 +266,32 @@ auto-starting a server on open (a slow machine, say), set the environment
 variable @env{XWPE_LSP_NO_EAGER=1}; the first @kbd{Alt-Q} action then starts it
 on demand instead.
 
+@cindex waiting line, language server
+@cindex Esc, language server
+@vindex XWPE_DEBUG_ANSWER_TIMEOUT
+A server that is slow to answer never holds the editor.  Hover, the three
+jumps (@kbd{D}, @kbd{I}, @kbd{T}), completion and format go out at once and
+you keep typing; after a quiet second the status row says what xwpe waits
+for, as in @samp{waiting for clangd to answer `textDocument/hover' @dots{} 3s
+(Esc cancels)}.  The answer is shown when it comes: the popup, the jump,
+the list or the new text.  @kbd{Esc} gives it up (@samp{Gave up waiting for
+clangd to answer @dots{}}), and an answer that arrives later is dropped.  If
+you changed the file meanwhile (or, for hover and completion, moved the
+cursor), the server's positions are for the old text, so the answer is not
+applied and the status row says it @samp{came after the file changed}; ask
+again.  An answer that comes while a dialog or menu is open waits for it to
+close.  One request at a time: another @kbd{Alt-Q} action meanwhile says
+@samp{clangd is still answering @dots{}}.  A request not answered within 30
+seconds (or @env{XWPE_DEBUG_ANSWER_TIMEOUT}) is given up with a line that
+names it.  The start is the same once you asked for something: the status
+row says @samp{waiting for Metals to start @dots{} (Esc cancels)}, and
+@kbd{Esc} ends the server (@samp{Language server start cancelled.}); the
+start itself has no deadline, since importing a build can take minutes.  A
+start begun by opening a file says nothing and @kbd{Esc} leaves it alone.
+The other @kbd{Alt-Q} actions (references, hierarchies, outline, symbols,
+code actions, rename, signature help, lenses, inlay hints, semantic colours)
+still wait for their answer for now.
+
 @cindex server status
 @cindex indexing
 The server's own progress is surfaced too: while Metals imports the build and
