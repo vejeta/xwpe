@@ -36,6 +36,9 @@ typedef void (*wpe_timer_callback)(void *data);
 
 int  wpe_fd_add(int fd, int events, wpe_fd_callback cb, void *data);
 void wpe_fd_del(int fd);
+int  wpe_fd_mute(int fd);
+void wpe_fd_unmute(int fd, int events);
+void wpe_fd_release(int fd);
 void wpe_fd_dispatch(int fd);
 int  wpe_fd_poll(int timeout_ms);
 void wpe_fd_refusal(const char *what, int fd, char *line, size_t sz);
@@ -56,6 +59,8 @@ int  wpe_fd_readable_now(int fd);
 typedef int (*wpe_wait_pred)(void);
 int  wpe_fd_wait_for(wpe_wait_pred pred, long deadline_ms, const char *what);
 const char *wpe_fd_waiting_for(void);
+int  wpe_fd_wait_serving(wpe_wait_pred pred, const char *what, int quiet_fd,
+                         void (*serve)(void));
 /* At the editor's end only: run the loop, the keyboard and displays no
    longer read, until @pred or the deadline. */
 int  wpe_fd_end_wait(wpe_wait_pred pred, long deadline_ms);

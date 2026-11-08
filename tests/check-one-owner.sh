@@ -80,6 +80,10 @@ EOF
 # descriptor would be the way round that rule with stdio, so it is allowed
 # nowhere.  `write` and `fdopen` are call forms: counted where the source
 # calls them, so lsp_write_all( or fwrite( is not one.
+# wpe_fd_wait_serving is the wait of a command that has the editor's
+# terminal or window until it ends; e_shell_run is its one entry, so every
+# place that hands the user's terminal or window to a command is a counted
+# line of the allow file, with its reason.
 cat > "$WORK/srcrules" <<'EOF'
 read(0 we_term.c
 STDIN_FILENO we_term.c
@@ -91,6 +95,8 @@ e_x_kbhit we_xterm.c
 e_w_kbhit we_wayland.c
 wpe_fd_wait_for we_xterm.c we_wayland.c we_gpm.c we_fdloop.c
 wpe_fd_end_wait we_fdloop.c
+wpe_fd_wait_serving we_fdloop.c
+e_shell_run
 SYS_pidfd_open
 write we_fdloop.c we_unix.c we_child.c we_clip.c
 fdopen
@@ -238,7 +244,7 @@ for obj in $OBJECTS; do
     case $word in
       'read(0') n=$(count_uses "read[ \t]*[(][ \t]*0[ \t]*," "$file") ;;
       'fileno(stdin)') n=$(count_uses "fileno[ \t]*[(][ \t]*stdin" "$file") ;;
-      wpe_fd_wait_for|wpe_fd_end_wait|write|fdopen) n=$(count_uses "$word" "$file") ;;
+      wpe_fd_wait_for|wpe_fd_end_wait|wpe_fd_wait_serving|e_shell_run|write|fdopen) n=$(count_uses "$word" "$file") ;;
       *) n=$(count_words "$word" "$file") ;;
     esac
     [ "$n" -gt 0 ] && echo "$base $word $n" >> "$WORK/found"

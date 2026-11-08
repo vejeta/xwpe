@@ -485,15 +485,19 @@ static void wpe_child_deliver(WpeChildSlot *w)
  *
  * Runs between the user's keys: each watched child that ended is reported
  * to its owner, which can then tell the user how the program ended.
+ * The pipe is emptied first and each slot is freed before its report, so
+ * a report that waits on the loop for another child's end (Run after its
+ * build, a box the user answers) gets that end: the loop watches the pipe
+ * again meanwhile, and a second pass over the table finds it consistent.
  */
 static void wpe_child_on_wake(int fd, void *data)
 {
  sigset_t saved;
  int i;
 
- (void)fd;
  (void)data;
  wpe_child_wake_drain();
+ wpe_fd_release(fd);
  for (i = 0; i < WPE_CHILD_MAX; i++)
  {
   if (!wpe_child_table[i].pid || !wpe_child_table[i].ended)

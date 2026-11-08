@@ -259,7 +259,7 @@ int WpeDllInit(int *argc, char **argv)
  e_u_getch = e_t_getch;
  e_u_sys_ini = e_t_sys_ini;
  e_u_sys_end = e_t_sys_end;
- e_u_system = system;
+ e_u_system = e_t_system;
  fk_u_putchar = fk_t_putchar;
  e_clip_os_set = e_clip_t_os_set;   /* ^C / ^Ins -> OS clipboard via OSC 52 */
 #ifdef HAVE_LIBGPM
@@ -2355,6 +2355,31 @@ void e_exitm(char *s, int n)
 int e_s_sys_ini()
 {
  return(e_sys_ini());
+}
+
+/**
+ * e_t_keyboard_fd - The descriptor the console's keys arrive on.
+ *
+ * Asked by a wait that gives the keyboard to a command the user is
+ * watching, so the editor does not wake for keys that are the command's.
+ */
+int e_t_keyboard_fd(void)
+{
+ return(STDIN_FILENO);
+}
+
+/**
+ * e_t_system - Run a shell command on the terminal the editor stepped aside
+ * from (File > Shell, Execute a file, a script run with Ctrl-F9).
+ * @exe: the command line.
+ *
+ * The command has the keyboard until it ends, and the editor keeps serving
+ * its other work meanwhile instead of waiting inside the system.
+ * Return: the command's wait status, or -1 when it could not be started.
+ */
+int e_t_system(const char *exe)
+{
+ return(e_shell_run(exe));
 }
 
 /**

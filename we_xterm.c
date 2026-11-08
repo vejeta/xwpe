@@ -43,6 +43,7 @@ int e_x_paste_X_buffer(FENSTER *f);
 static void e_clip_x_set(const char *utf8, int len);
 static char *e_clip_x_get(int *len);
 int e_x_change(PIC *pic);
+static void e_x_serve_display(void);
 int e_x_repaint_desk(FENSTER *f);
 void e_setlastpic(PIC *pic);
 int e_make_xr_rahmen(int xa, int ya, int xe, int ye, int sw);
@@ -160,6 +161,7 @@ int WpeDllInit(int *argc, char **argv)
  e_clip_os_get = e_clip_x_get;   /* ^V <- the OS selection when another app owns it */
  e_u_kbhit = e_x_kbhit;
  e_u_change = e_x_change;
+ e_u_serve_display = e_x_serve_display;
  e_u_ini_size = e_ini_size;
  e_u_setlastpic = e_setlastpic;
  WpeMouseChangeShape = (void (*)(WpeMouseShape))WpeNullFunction;
@@ -1227,58 +1229,98 @@ static void e_x_copy_backbuf_clamped(int x, int y, int w, int h)
 }
 #endif
 
+/**
+ * e_x_answer_expose - Repaint the part of the window an Expose event names.
+ * @report: the event, which may be replaced by a later one of the same
+ * window that this answer reads ahead.
+ *
+ * Whoever covered the window and moved away gets the editor's picture back
+ * from the backing store, or from the screen buffer without Xft.
+ */
+static void e_x_answer_expose(XEvent *report)
+{
+ XExposeEvent *expose_report = (XExposeEvent *)report;
+
+#ifdef HAVE_XFT
+ if (WpeXInfo.xftfont)
+ {
+  if (XCheckTypedWindowEvent(WpeXInfo.display, WpeXInfo.window,
+      ConfigureNotify, report))
+  {
+   XPutBackEvent(WpeXInfo.display, report);
+   return;
+  }
+  do {
+   e_x_copy_backbuf_clamped(expose_report->x, expose_report->y,
+     expose_report->width, expose_report->height);
+  } while (XCheckTypedWindowEvent(WpeXInfo.display, WpeXInfo.window,
+           Expose, report));
+  return;
+ }
+#endif
+ e_refresh_area(expose_report->x/WpeXInfo.font_width,
+                        expose_report->y/WpeXInfo.font_height,
+                        expose_report->width/WpeXInfo.font_width+2,
+                        expose_report->height/WpeXInfo.font_height+2);
+ e_refresh();
+}
+
+/**
+ * e_x_answer_configure - Lay the editor out again for the window's new size.
+ * @report: the ConfigureNotify event.
+ */
+static void e_x_answer_configure(XEvent *report)
+{
+ int pw, ph, old_scol, old_slns;
+
+ if (!e_x_apply_configure(report, &pw, &ph, &old_scol, &old_slns))
+  return;
+ XCopyArea(WpeXInfo.display, WpeXInfo.backbuf, WpeXInfo.window,
+   WpeXInfo.gc, 0, 0, pw, ph, 0, 0);
+ e_relayout_windows(WpeEditor, old_scol, old_slns);
+ e_x_repaint_desk(WpeEditor->f[WpeEditor->mxedt]);
+}
+
+/**
+ * e_x_serve_display - Answer the window's repaint and resize events while
+ * the editor waits for something else (a command run in a window of its
+ * own).
+ *
+ * Keys and clicks stay queued for the editor's own reader.
+ */
+static void e_x_serve_display(void)
+{
+ XEvent report;
+
+ while (XCheckMaskEvent(WpeXInfo.display, ExposureMask | StructureNotifyMask,
+                        &report) == True)
+ {
+  if (report.type == Expose)
+   e_x_answer_expose(&report);
+  else if (report.type == ConfigureNotify)
+   e_x_answer_configure(&report);
+ }
+}
+
 int e_x_change(PIC *pic)
 {
  XEvent report;
- XExposeEvent *expose_report;
  KeySym keysym;
  unsigned char buffer[BUFSIZE];
  int charcount;
  unsigned int key_b;
  XSizeHints size_hints;
 
- expose_report = (XExposeEvent *)&report;
  while (XCheckMaskEvent(WpeXInfo.display, KeyPressMask | ButtonPressMask |
 		ExposureMask | StructureNotifyMask, &report) == True)
  {
   switch(report.type)
   {
    case Expose:
-#ifdef HAVE_XFT
-    if (WpeXInfo.xftfont)
-    {
-     if (XCheckTypedWindowEvent(WpeXInfo.display, WpeXInfo.window,
-         ConfigureNotify, &report))
-     {
-      XPutBackEvent(WpeXInfo.display, &report);
-      break;
-     }
-     do {
-      e_x_copy_backbuf_clamped(expose_report->x, expose_report->y,
-        expose_report->width, expose_report->height);
-     } while (XCheckTypedWindowEvent(WpeXInfo.display, WpeXInfo.window,
-              Expose, &report));
-    }
-    else
-#endif
-    {
-     e_refresh_area(expose_report->x/WpeXInfo.font_width,
-                            expose_report->y/WpeXInfo.font_height,
-                            expose_report->width/WpeXInfo.font_width+2,
-                            expose_report->height/WpeXInfo.font_height+2);
-     e_refresh();
-    }
+    e_x_answer_expose(&report);
     break;
    case ConfigureNotify:
-    { int _pw, _ph, _old_scol, _old_slns;
-      if (e_x_apply_configure(&report, &_pw, &_ph, &_old_scol, &_old_slns))
-      {
-       XCopyArea(WpeXInfo.display, WpeXInfo.backbuf, WpeXInfo.window,
-         WpeXInfo.gc, 0, 0, _pw, _ph, 0, 0);
-       e_relayout_windows(WpeEditor, _old_scol, _old_slns);
-       e_x_repaint_desk(WpeEditor->f[WpeEditor->mxedt]);
-      }
-    }
+    e_x_answer_configure(&report);
     break;
    case KeyPress:
     charcount = e_XLookupString(&report.xkey, buffer, BUFSIZE, &keysym, NULL);
@@ -2079,7 +2121,7 @@ int e_x_system(const char *exe)
  else
   sprintf(string, "%s -geometry 80x25-0-0 +sb -e %s %s ./%s", XTERM_CMD,
     user_shell, file, exe);
- ret = wpe_system(string);
+ ret = e_shell_run(string);
  remove(file);
  FREE(string);
  return(ret);

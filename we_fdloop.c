@@ -195,6 +195,41 @@ void wpe_fd_del(int fd)
 }
 
 /**
+ * wpe_fd_mute - Stop waking for @fd, without forgetting it.
+ * @fd: a descriptor the loop watches.
+ *
+ * For the length of a command that has the keyboard's terminal: the keys the
+ * user types are the command's, and a loop that woke for them again and
+ * again, with no one in the editor to read them, would spin.
+ * Return: the events @fd was watched for, to give back to wpe_fd_unmute, or
+ * -1 when it is not watched.
+ */
+int wpe_fd_mute(int fd)
+{
+ wpe_fd_entry *e = wpe_fd_find(fd);
+ int events;
+
+ if (!e)
+  return -1;
+ events = e->events;
+ e->events = 0;
+ e->pending = 0;
+ return events;
+}
+
+/**
+ * wpe_fd_unmute - Watch @fd for what it was watched for before wpe_fd_mute.
+ * @fd: the descriptor; @events: what wpe_fd_mute returned (-1 is left alone).
+ */
+void wpe_fd_unmute(int fd, int events)
+{
+ wpe_fd_entry *e = wpe_fd_find(fd);
+
+ if (e && events >= 0)
+  e->events = events;
+}
+
+/**
  * wpe_fd_refusal - The line that says a stream cannot be watched.
  * @what: what the user would have seen ("the AI reply", "the build output");
  * @fd: the descriptor wpe_fd_add refused; @line, @sz: where to write it.
@@ -235,6 +270,25 @@ static void wpe_fd_run_callback(wpe_fd_entry *e)
  /* The slot may hold another registration now; it is not running (its
     callback could only have run inside this one, and has returned). */
  e->busy = 0;
+}
+
+/**
+ * wpe_fd_release - From inside @fd's own callback: let a wait that callback
+ * starts watch @fd again.
+ * @fd: the descriptor whose callback is running.
+ *
+ * For a callback that has already taken everything that woke it and can be
+ * entered again safely.  The children's wake pipe is the one: its callback
+ * empties the pipe first, then reports each ended child, and a report (Run
+ * after a build, a dialog) may wait for another child's end, which only a
+ * later byte on that same pipe can bring.
+ */
+void wpe_fd_release(int fd)
+{
+ wpe_fd_entry *e = wpe_fd_find(fd);
+
+ if (e)
+  e->busy = 0;
 }
 
 /**
@@ -1318,6 +1372,39 @@ int wpe_fd_wait_for(wpe_wait_pred pred, long deadline_ms, const char *what)
  wpe_wait_what = what;
  result = wpe_wait_run(pred, start, deadline_ms);
  wpe_wait_what = outer;
+ return result;
+}
+
+/**
+ * wpe_fd_wait_serving - Wait on the loop, for as long as it takes, for a
+ * command that has the editor's terminal or window.
+ * @pred: non-zero ends the wait; @what: names it for wpe_fd_waiting_for();
+ * @quiet_fd: a descriptor the loop does not wake for meanwhile (the
+ * console's keyboard, whose keys are the command's), or -1 for none;
+ * @serve: called now and whenever the display has an event for the editor
+ * (a repaint after another window covered it), or NULL.
+ *
+ * The editor serves everything else the loop serves while it waits, and the
+ * display's events are answered, so a window that was covered and uncovered
+ * is drawn again at once.
+ * Return: WPE_WAIT_DONE when @pred held; WPE_WAIT_TIMEOUT when the loop has
+ * nothing left that could make it hold.
+ */
+int wpe_fd_wait_serving(wpe_wait_pred pred, const char *what, int quiet_fd,
+                        void (*serve)(void))
+{
+ int events = wpe_fd_mute(quiet_fd);
+ int result;
+
+ if (serve)
+  serve();
+ do
+ {
+  result = wpe_fd_wait_for(pred, WPE_WAIT_FOREVER, what);
+  if (result == WPE_WAIT_INPUT && serve)
+   serve();
+ } while (result == WPE_WAIT_INPUT);
+ wpe_fd_unmute(quiet_fd, events);
  return result;
 }
 

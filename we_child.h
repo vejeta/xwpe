@@ -45,8 +45,12 @@ typedef enum {
                                     which names the pty to its program */
  WPE_CHILD_IO_INHERIT_AND_PTY,   /* the editor's own 0/1/2, and the same pty:
                                     the graphical editors' debugger script */
- WPE_CHILD_IO_TTY_PATH           /* a terminal the editor has, on 0/1/2: jdb's
+ WPE_CHILD_IO_TTY_PATH,          /* a terminal the editor has, on 0/1/2: jdb's
                                     program, on the session's pty */
+ WPE_CHILD_IO_INHERIT            /* the editor's own 0/1/2, no pipe and no pty:
+                                    a command the user watches on the terminal
+                                    the editor handed over, or in a window of
+                                    its own */
 } WpeChildIo;
 
 typedef enum {

@@ -313,6 +313,17 @@ Changes
   or that closes its input, is ended, with "Language server stopped reading
   its input; it was ended. Alt-Q restarts it." in Messages.
 
+* Run (Ctrl-F9) and the commands you start from the editor no longer hold
+  it still.  A program run from the editor reports its own exit code in
+  Messages however many other processes ended in the same moments, Ctrl-C
+  stops every process it started, and text typed for a program that has
+  stopped reading its terminal is queued ("the program is not reading its
+  input (N bytes waiting): Ctrl-C ends it") instead of freezing the editor.
+  A shell script run in a terminal window, a command of a project's install
+  step and File > Shell wait on the editor's loop: the window is drawn again
+  as soon as another window stops covering it, and the build's output and
+  the servers are served meanwhile.
+
 * The same now holds while gdb starts and at every Run, Continue, step,
   Finish and Go to cursor: gdb's settings, your breakpoints and the run
   command are asked while you keep typing.  F8 typed while gdb starts

@@ -1737,6 +1737,19 @@ static int e_w_ini_size(void)
    model (the X11 backend uses a pixmap; we repaint from the window stack). */
 static int e_w_change(PIC *pic) { (void)pic; return 0; }
 
+/**
+ * e_w_serve_display - Read and dispatch the compositor's events while the
+ * editor waits for something else (a command run in a window of its own),
+ * so the compositor does not find the editor's window unresponsive.
+ *
+ * Keys and clicks stay queued for the editor's own reader.
+ */
+static void e_w_serve_display(void)
+{
+ if (WpeWl.display)
+  wl_pump_once(0);
+}
+
 /* Pump Wayland events once: block in the shared poll loop first when `block`,
    then read-and-dispatch if the wl fd has data, else dispatch what is buffered
    (never blocking on the wl fd when the poll woke for another descriptor). */
@@ -1989,6 +2002,7 @@ int WpeWaylandInit(int *argc, char **argv)
  fk_u_drag_next    = fk_w_drag_next;
  e_u_kbhit         = e_w_kbhit;
  e_u_change        = e_w_change;
+ e_u_serve_display = e_w_serve_display;
  e_u_ini_size      = e_w_ini_size;
  e_u_setlastpic    = e_setlastpic;
  WpeMouseChangeShape  = (void (*)(WpeMouseShape))WpeNullFunction;

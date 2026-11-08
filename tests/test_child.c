@@ -8,7 +8,8 @@
  * while the loop keeps serving its timers; a signal after the end, or
  * between the reap and the report, reaches nobody; a forgotten child leaves
  * no callback, timer or slot; a full table or a full loop starts nothing;
- * the whole group is ended, not only the shell.  The waits are the loop's own, bounded; the alarm turns a hang
+ * the whole group is ended, not only the shell; a wait started inside one
+ * child's report gets the next child's end.  The waits are the loop's own, bounded; the alarm turns a hang
  * into a failure.
  */
 #include <stdio.h>
@@ -66,6 +67,11 @@
 #define SAID_FAILED_EXIT   127   /* the child named why it could not run */
 /* A shell that starts a sleeper in its group, says its pid, and waits. */
 #define BACKGROUND_SLEEPER "sleep 30 & echo $!; wait"
+/* A child that ends after the first one's report has begun to wait. */
+#define LATER_SCRIPT       "sleep 0.3; exit 4"
+#define LATER_EXIT         4
+#define LATER_WHAT         "the later child"
+#define NESTED_WAIT_MS     5000
 
 static int fails;
 static pid_t read_pid(int fd);
@@ -834,6 +840,51 @@ static void test_a_named_process_is_signalled_only_while_its_child_runs(void)
 	close_ends(&r);
 }
 
+/* The child a report waits for, inside another child's report. */
+static Run later_child;
+static int later_wait;
+
+static int later_child_ended(void)
+{
+	return later_child.calls > 0;
+}
+
+/* The first child's report waits on the loop for the second's end, as Run
+ * does when it starts from the report of its build's end. */
+static void on_ended_wait_for_the_later(WpeChild *c, int status, int how,
+					void *data)
+{
+	on_ended(c, status, how, data);
+	later_wait = wpe_fd_wait_for(later_child_ended, NESTED_WAIT_MS,
+				     LATER_WHAT);
+}
+
+/* 21: a wait for a child's end, from inside the report of another child's
+ * end, gets that end. */
+static void test_a_wait_inside_an_end_report_gets_the_next_end(void)
+{
+	static Run first;
+	WpeChildSpec spec;
+	char *argv[4];
+
+	chk("start the later", start_sh(&later_child, LATER_SCRIPT), 0);
+	memset(&first, 0, sizeof first);
+	spec_sh(&spec, argv, "exit 0");
+	chk("start the first",
+	    wpe_child_start(&spec, &first.c, on_ended_wait_for_the_later,
+			    &first), 0);
+	later_wait = 0;
+	loop_until_ended(&first, 1, SLACK_MS);
+	chk("the first reported", first.calls, 1);
+	chk("the wait inside its report got the later end", later_wait,
+	    WPE_WAIT_DONE);
+	chk("the later reported once", later_child.calls, 1);
+	chk("with its own exit code", exit_code(later_child.status),
+	    LATER_EXIT);
+	close_ends(&first);
+	close_ends(&later_child);
+}
+
 /* @scenario SC-debug-72 */
 /* @scenario SC-debug-82 */
 int main(void)
@@ -870,6 +921,7 @@ int main(void)
 	test_the_handlers_end_every_child_and_its_group();
 	test_a_child_in_the_editors_group_is_signalled_alone();
 	test_a_named_process_is_signalled_only_while_its_child_runs();
+	test_a_wait_inside_an_end_report_gets_the_next_end();
 
 	if (fails) {
 		printf("%d failure(s)\n", fails);

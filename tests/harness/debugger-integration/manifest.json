@@ -412,6 +412,11 @@
   {"id": "SC-debug-81", "requirement": "One owner of input, of children, of writes and of keys", "layer": "ncurses", "test": "tests/test_debugger_ends.py::test_esc_cancels_compile_for_debug", "status": "new"},
   {"id": "SC-debug-81", "requirement": "One owner of input, of children, of writes and of keys", "layer": "ncurses", "test": "tests/test_debugger_ends.py::test_quit_cancels_compile_for_debug", "status": "new"},
   {"id": "SC-debug-81", "requirement": "One owner of input, of children, of writes and of keys", "layer": "ncurses", "test": "tests/test_debugger_ends.py::test_a_file_opened_while_it_compiles_is_never_debugged_with_its_binary", "status": "new"},
-  {"id": "SC-debug-82", "requirement": "One owner of input, of children, of writes and of keys", "layer": "c-unit", "test": "test_child", "status": "new"}
+  {"id": "SC-debug-82", "requirement": "One owner of input, of children, of writes and of keys", "layer": "c-unit", "test": "test_child", "status": "new"},
+  {"id": "SC-debug-83", "requirement": "One owner of input, of children, of writes and of keys", "layer": "ncurses", "test": "tests/test_run_ends.py::test_run_with_a_pty_reports_the_exit_status_when_the_reaper_got_there_first", "status": "new", "needs": ["gcc"]},
+  {"id": "SC-debug-84", "requirement": "One owner of input, of children, of writes and of keys", "layer": "ncurses", "test": "tests/test_run_ends.py::test_ctrl_c_during_run_ends_the_whole_pipeline", "status": "new", "needs": ["gcc"]},
+  {"id": "SC-debug-85", "requirement": "One owner of input, of children, of writes and of keys", "layer": "ncurses", "test": "tests/test_run_ends.py::test_typing_goes_on_when_the_running_program_stops_reading", "status": "new", "needs": ["gcc"]},
+  {"id": "SC-debug-86", "requirement": "One owner of input, of children, of writes and of keys", "layer": "x11", "test": "tests/x11/test_run_in_xterm.py::test_x11_run_in_an_xterm_keeps_the_window_repainting", "status": "new", "needs": ["xterm"]},
+  {"id": "SC-debug-87", "requirement": "One owner of input, of children, of writes and of keys", "layer": "c-unit", "test": "test_fdloop", "status": "new"}
  ]
 }

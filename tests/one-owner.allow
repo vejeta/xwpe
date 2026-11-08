@@ -31,6 +31,20 @@ we_debug.o STDIN_FILENO 1 keep ttyname_r names the editor's own terminal; no rea
 # return to the main loop
 we_unix.o wpe_fd_end_wait 1 keep e_exit_teardown, the one nested wait
 
+# a command that has the editor's terminal or window until it ends: the
+# user waits for it, as a shell run from a terminal is waited for, while
+# the loop serves the rest (the window repaints, the build reads on).
+# e_shell_wait is the one wait; e_shell_run its one entry, counted with
+# its definition: e_system (a script run with Ctrl-F9 on the console, then
+# "Hit CR") and e_install_run (a project's install commands) in we_prog.c;
+# e_x_system (a script run in an external xterm, File > Shell and the file
+# manager's Execute under X11 and Wayland) in we_xterm.c; e_t_system
+# (File > Shell and the file manager's Execute on the console) in we_term.c
+we_prog.o wpe_fd_wait_serving 1 keep e_shell_wait, the wait of a command that has the terminal or window
+we_prog.o e_shell_run 3 keep the definition, e_system and e_install_run
+we_xterm.o e_shell_run 1 keep e_x_system
+we_term.o e_shell_run 1 keep e_t_system
+
 # console mouse, clipboard, display
 we_gpm.o poll 1 P9o the gpm handshake
 we_gpm.o STDIN_FILENO 2 keep isatty asks whether the terminal is the console; no read
@@ -39,18 +53,8 @@ we_xterm.o poll 1 P9o the paste wait for SelectionNotify
 
 # children: started, signalled and reaped only by we_child.c.
 we_unix.o waitpid 1 keep the SIGCHLD handler reaps, and hands each child to we_child.c
-we_prog.o fork 1 P9r Run with a pty (the build moved to we_child.c)
-we_prog.o openpty 1 P9r
-we_prog.o killpg 1 P9r
-we_prog.o setsid 1 P9r
-we_prog.o waitpid 1 P9r
-we_prog.o execl 1 P9r through wpe_system, inline
 we_prog.o popen 1 P9n
 we_prog.o pclose 1 P9n
-we_xterm.o fork 1 P9r through wpe_system, inline
-we_xterm.o waitpid 1 P9r
-we_xterm.o execl 1 P9r
-we_term.o system 1 P9r the display table's run of a shell command
 we_debug.o popen 1 P9n
 we_debug.o pclose 1 P9n
 we_ai.o fork 3 P9s one is the mock delay (P9l)
@@ -69,7 +73,6 @@ we_fl_fkt.o system 2 P9n
 we_fl_unix.o system 2 P9n
 
 # writers: bytes for a child go through wpe_fd_write (we_fdloop.c).
-we_edit.o write 1 P9r Run's typed keys, until Run's terminal is non-blocking and queued on the loop
 we_ai_host.o write 4 P9s the hosted engine's turn, permission answers and interrupt
 we_ai.o write 3 P9s the prompt to the command-line backend moves; the forked child's reply and the temporary file stay
 we_ai_http.o write 1 P9l a server's socket, not a child: its own POLLOUT wait moves under wpe_fd_wait_for

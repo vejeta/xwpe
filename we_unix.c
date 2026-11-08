@@ -136,6 +136,7 @@ int (*e_u_copy_X_buffer)(struct FNST *f);
 int (*e_u_paste_X_buffer)(struct FNST *f);
 int (*e_u_kbhit)(void);
 int (*e_u_change)(PIC *pic);
+void (*e_u_serve_display)(void);
 int (*e_u_ini_size)(void);
 int (*e_get_pic_urect)(int xa, int ya, int xe, int ye, struct PICSTR *pic);
 int (*e_u_s_sys_end)(void);

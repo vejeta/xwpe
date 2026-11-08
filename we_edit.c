@@ -8,6 +8,7 @@
 #include "messages.h"
 #include "edit.h"
 #include "makro.h"
+#include "we_fdloop.h"
 
 #include<sys/types.h> /*  included for digital station  */
 #include<sys/stat.h>
@@ -46,9 +47,17 @@ int e_pty_key_bytes(int key, unsigned char *buf)
  return 0;
 }
 
+/* What the stall line says about the program Run started, and what ends it. */
+#define E_PTY_RUN_WHAT "the program"
+#define E_PTY_RUN_ENDS "Ctrl-C ends it"
+
 /**
  * e_pty_send_key - Type @key into Run's terminal.
- * @fd: the terminal's master.
+ * @fd: the terminal's master, non-blocking.
+ *
+ * Never waits: a program that stopped reading its terminal leaves the keys
+ * queued on the loop, the editor keeps taking keys (Ctrl-C among them), and
+ * the status row says the program is not reading its input.
  */
 void e_pty_send_key(int fd, int key)
 {
@@ -56,7 +65,7 @@ void e_pty_send_key(int fd, int key)
  int len = e_pty_key_bytes(key, buf);
 
  if (len > 0)
-  write(fd, buf, len);
+  wpe_fd_write(fd, buf, (size_t)len, E_PTY_RUN_WHAT, E_PTY_RUN_ENDS);
 }
 
 /* Key codes below this are always text; from here up a key is text only when

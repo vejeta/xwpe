@@ -923,6 +923,46 @@ static int test_wait_for_hands_back_unread_wake_only_input(void)
  return 0;
 }
 
+/* A command that has the keyboard: the wait does not wake for the keys the
+ * user types for it, serves the display once at the start, and leaves the
+ * keys unread for the command. */
+#define SERVING_TIMER_MS 30
+static int serving_done, serving_served;
+
+static void serving_timer(void *data) { (void)data; serving_done = 1; }
+static int serving_pred(void) { return serving_done; }
+static void serving_serve(void) { serving_served++; }
+
+/* @scenario SC-debug-87 */
+static int test_wait_serving_does_not_wake_for_a_muted_keyboard(void)
+{
+ int p[2], r, id;
+ char c;
+
+ if (pipe(p) != 0) return 1;
+ serving_done = serving_served = 0;
+ wpe_fd_add(p[0], POLLIN, NULL, NULL);
+ if (write(p[1], "k", 1) != 1) return 1;
+ id = wpe_timer_add(SERVING_TIMER_MS, 0, serving_timer, NULL);
+ r = wpe_fd_wait_serving(serving_pred, WAIT_LABEL, p[0], serving_serve);
+ (void)id;
+ if (r != WPE_WAIT_DONE)
+ { printf("FAIL: the muted wait ended with %d\n", r); return 1; }
+ if (serving_served != 1)
+ { printf("FAIL: the display was served %d times, not once\n", serving_served); return 1; }
+ if (read(p[0], &c, 1) != 1 || c != 'k')
+ { printf("FAIL: the key was taken from the command\n"); return 1; }
+ /* Given back: the next key wakes a plain wait again. */
+ if (write(p[1], "k", 1) != 1) return 1;
+ serving_done = 0;
+ r = wpe_fd_wait_for(serving_pred, WAIT_DEADLINE_MS, WAIT_LABEL);
+ wpe_fd_del(p[0]);
+ close(p[0]); close(p[1]);
+ if (r != WPE_WAIT_INPUT)
+ { printf("FAIL: the keyboard was not given back (%d)\n", r); return 1; }
+ return 0;
+}
+
 /* ---- bytes for a child: wpe_fd_write ------------------------------------
  *
  * A pipe whose reader does not read stands for a child that stopped reading
@@ -1294,6 +1334,7 @@ int main(void)
  rc |= test_wait_for_serves_timers_and_names_the_wait();
  rc |= test_wait_for_serves_fd_callbacks();
  rc |= test_wait_for_hands_back_unread_wake_only_input();
+ rc |= test_wait_serving_does_not_wake_for_a_muted_keyboard();
  rc |= test_write_queues_when_the_pipe_is_full_and_flushes_on_pollout();
  rc |= test_two_writes_arrive_whole_and_in_order();
  rc |= test_a_write_past_the_queue_bound_is_refused_whole();

@@ -607,12 +607,16 @@ static void e_run_pty_apply_byte(BUFFER *b, unsigned char c)
  }
 }
 
+/**
+ * e_run_drain_pty - Take what the running program has written and show it.
+ * @pty_fd: the program's terminal, which is non-blocking: the read stops
+ * when nothing is waiting; @b, @mf: Messages.
+ */
 static void e_run_drain_pty(int pty_fd, BUFFER *b, FENSTER *mf)
 {
  char buf[512];
- int n, flags;
- flags = fcntl(pty_fd, F_GETFL, 0);
- fcntl(pty_fd, F_SETFL, flags | O_NONBLOCK);
+ int n;
+
  while ((n = read(pty_fd, buf, sizeof(buf))) > 0)
  {
   int k;
@@ -622,7 +626,6 @@ static void e_run_drain_pty(int pty_fd, BUFFER *b, FENSTER *mf)
   for (k = 0; k < n; k++)
    e_run_pty_apply_byte(b, (unsigned char)buf[k]);
  }
- fcntl(pty_fd, F_SETFL, flags & ~O_NONBLOCK);
  b->b.y = b->mxlines - 1;
  b->b.x = b->bf[b->b.y].len;
  e_cursor(mf, 1);
@@ -709,68 +712,185 @@ static void e_run_release_sigint(const struct sigaction *old)
  sigaction(SIGINT, old, NULL);
 }
 
+/* The program Run started: the owner's record of it, and how it ended.  One
+   program runs at a time (Run does not return until it has ended). */
+static struct {
+ WpeChild child;
+ int ended;
+ int status;
+} e_run_prog;
+
+/* What Run reports for an end whose status the owner could not give: the
+   shell's own code for a status it could not read. */
+#define E_RUN_LOST_CODE 255
+
+/**
+ * e_run_on_end - The owner of the editor's children reports that the program
+ * Run started has ended.
+ * @c: its record; @status: the wait status; @how: WPE_CHILD_ENDED, or
+ * WPE_CHILD_ENDED_UNKNOWN when the status is lost; @data: unused.
+ *
+ * Reported from the loop, once, with the program's own status however many
+ * other children ended at the same moment, so the Run loop learns of the end
+ * without asking the system.
+ */
+static void e_run_on_end(WpeChild *c, int status, int how, void *data)
+{
+ (void)c;
+ (void)data;
+ e_run_prog.status = status;
+ if (how != WPE_CHILD_ENDED)
+  e_run_prog.status = -1;
+ e_run_prog.ended = 1;
+}
+
 /**
  * e_run_interrupt_program - Ctrl-C while a program runs: stop it.
- * @child: the shell that runs it, which leads the program's session.
  *
- * The whole group is signalled, as the terminal's Ctrl-C would: the shell
- * may be waiting for the program, which a signal to the shell alone would
- * not reach.  The program, which got SIGINT as the shell gives it (see
- * wpe_child_default_signals), ends unless it handles the signal itself.
+ * The whole session is signalled, as the terminal's Ctrl-C would: the shell
+ * may be waiting for the program, or a pipeline of programs, which a signal
+ * to the shell alone would not reach.  The program, which got SIGINT as the
+ * shell gives it (see wpe_child_default_signals), ends unless it handles
+ * the signal itself.  Nothing is sent once the program has ended.
  */
-static void e_run_interrupt_program(pid_t child)
+static void e_run_interrupt_program(void)
 {
- killpg(child, SIGINT);
+ wpe_child_signal(&e_run_prog.child, SIGINT);
 }
 
 /**
  * e_run_status_code - The code Run reports for a program's end.
- * @ws: the status waitpid gave.
+ * @ws: the status waitpid gave, or -1 when it was lost.
  *
  * A program killed by a signal reports 128 plus the signal, as a shell
  * does; a negative code would make the caller run it again another way.
  */
 static int e_run_status_code(int ws)
 {
+ if (ws < 0)
+  return(E_RUN_LOST_CODE);
  if (WIFEXITED(ws))
   return(WEXITSTATUS(ws));
  return(128 + WTERMSIG(ws));
 }
 
+/**
+ * e_run_start - Start the user's program on a terminal of its own.
+ * @cmd: the command line, run by the shell.
+ *
+ * The program leads a session with the terminal as its controlling one, so
+ * it reads what the user types in Messages and Ctrl-C reaches all of it.
+ * Return: the editor's end of the terminal, non-blocking, or -1 when the
+ * program could not be started.
+ */
+static int e_run_start(char *cmd)
+{
+ char *argv[] = { "/bin/sh", "-c", NULL, NULL };
+ WpeChildSpec spec;
+
+ argv[2] = cmd;
+ memset(&spec, 0, sizeof spec);
+ spec.argv = argv;
+ spec.io = WPE_CHILD_IO_PTY;
+ spec.group = WPE_CHILD_OWN_SESSION;
+ spec.side_pty_slave = WPE_CHILD_NO_FD;
+ spec.tty_fd = WPE_CHILD_NO_FD;
+ spec.what = "the program";
+ e_run_prog.ended = 0;
+ e_run_prog.status = 0;
+ if (wpe_child_start(&spec, &e_run_prog.child, e_run_on_end, NULL) != 0)
+  return(-1);
+ return(e_run_prog.child.pty_fd);
+}
+
+/**
+ * e_run_program_key - What the program is sent for a key the user typed.
+ * @c: the key, as the display's reader gave it.
+ *
+ * The terminal's own Backspace and Enter become the codes the program's
+ * terminal reads, and its special keys (arrows, function keys) are not text
+ * and go nowhere.
+ * Return: the key to send, or 0 for none.
+ */
+static int e_run_program_key(int c)
+{
+#ifdef NCURSES
+ if (c == KEY_BACKSPACE || c == 127 || c == 8)
+  return(WPE_DC);
+ if (c == KEY_ENTER || c == '\n' || c == '\r')
+  return(WPE_CR);
+ if (c > KEY_CODE_YES)
+  return(0);
+#endif
+ return(c);
+}
+
+/**
+ * e_run_serve_key - Hand the user's typing to the running program, or stop
+ * it on Ctrl-C.
+ * @pty_master: the program's terminal.
+ *
+ * Never waits: what the program's terminal does not take now (a program
+ * that stopped reading) is queued on the loop and the editor's keys go on
+ * working.
+ */
+static void e_run_serve_key(int pty_master)
+{
+ int c = e_t_key_now();
+
+ if (c == CtrlC || e_run_interrupted)
+ {
+  e_run_interrupted = 0;
+  e_run_interrupt_program();
+  return;
+ }
+ c = e_run_program_key(c);
+ if (c > 0)
+  e_pty_send_key(pty_master, c);
+}
+
+/**
+ * e_run_loop - Show the program's output in Messages and pass it the user's
+ * typing until it ends.
+ * @pty_master: the program's terminal; @b, @mf: Messages.
+ *
+ * Each pass reads the terminal and waits at most WPE_FD_POLL_MS, so a
+ * program whose output cannot be watched still shows it, within that wait.
+ * The end is the owner's report, which comes from the loop; the output the
+ * program wrote before it ended is read before the loop returns.
+ * Return: the program's exit code (see e_run_status_code).
+ */
+static int e_run_loop(int pty_master, BUFFER *b, FENSTER *mf)
+{
+ for (;;)
+ {
+  e_run_drain_pty(pty_master, b, mf);
+  if (e_run_prog.ended)
+   return(e_run_status_code(e_run_prog.status));
+  wpe_fd_poll(WPE_FD_POLL_MS);
+  if (e_run_prog.ended)
+   continue;
+  e_run_serve_key(pty_master);
+ }
+}
+
+/**
+ * e_run_with_pty - Run the user's program with its output in Messages.
+ * @cmd: the command line; @b, @mf: Messages.
+ *
+ * Return: the program's exit code, or -1 when it could not be started on a
+ * terminal (the caller then runs it another way).
+ */
 static int e_run_with_pty(char *cmd, BUFFER *b, FENSTER *mf)
 {
- int pty_master, pty_slave, status, ret = -1;
- char slave_name[80];
- pid_t child;
+ int pty_master, ret;
  struct sigaction old_int;
-
- if (openpty(&pty_master, &pty_slave, slave_name, NULL, NULL) < 0)
-  return -1;
 
  /* Start a fresh capture so the Alt-F5 User Screen shows only this run. */
  e_d_prog_output_reset();
-
- child = fork();
- if (child < 0)
- {
-  close(pty_master);
-  close(pty_slave);
+ pty_master = e_run_start(cmd);
+ if (pty_master < 0)
   return -1;
- }
- if (child == 0)
- {
-  wpe_child_default_signals();   /* so Ctrl-C reaches the program */
-  close(pty_master);
-  setsid();
-  ioctl(pty_slave, TIOCSCTTY, 0);
-  dup2(pty_slave, 0);
-  dup2(pty_slave, 1);
-  dup2(pty_slave, 2);
-  if (pty_slave > 2) close(pty_slave);
-  execl("/bin/sh", "sh", "-c", cmd, (char *)NULL);
-  _exit(127);
- }
- close(pty_slave);
 
  print_to_end_of_buffer(b, "--- Run output (type in Messages, Ctrl-C to stop) ---", 0);
  e_new_line(b->mxlines, b);
@@ -782,47 +902,12 @@ static int e_run_with_pty(char *cmd, BUFFER *b, FENSTER *mf)
  e_schirm(mf, 1);
  e_refresh();
 
- /* Each pass reads the pty and waits at most WPE_FD_POLL_MS, so a program
-    whose output cannot be watched still shows it, within that wait. */
  e_fd_watch(pty_master, POLLIN, NULL, NULL, "the program's output");
 
  e_run_catch_sigint(&old_int);
- for (;;)
- {
-  int ws;
-  int wp = waitpid(child, &ws, WNOHANG);
-  if (wp > 0)
-  {
-   e_run_drain_pty(pty_master, b, mf);
-   ret = e_run_status_code(ws);
-   break;
-  }
-  e_run_drain_pty(pty_master, b, mf);
-  wpe_fd_poll(WPE_FD_POLL_MS);
-  {
-   int c = e_t_key_now();
-   if (c == CtrlC || e_run_interrupted)
-   {
-    e_run_interrupted = 0;
-    e_run_interrupt_program(child);
-    continue;
-   }
-#ifdef NCURSES
-    if (c == KEY_BACKSPACE || c == 127 || c == 8)
-     c = WPE_DC;
-    else if (c == KEY_ENTER || c == '\n' || c == '\r')
-     c = WPE_CR;
-    else if (c > KEY_CODE_YES)
-     c = 0;
-#endif
-    if (c > 0)
-     e_pty_send_key(pty_master, c);
-  }
- }
-
+ ret = e_run_loop(pty_master, b, mf);
  e_run_release_sigint(&old_int);
- wpe_fd_del(pty_master);
- close(pty_master);
+ wpe_fd_close(pty_master);
  if (!WpeIsXwin())
   e_mouse_tracking_enable();
  return ret;
@@ -845,6 +930,43 @@ static void e_strlcat(char *dst, const char *src, size_t cap)
 static char e_run_src_dirct[256], e_run_src_datnam[256];
 
 static int e_run_program(ECNT *cn);
+
+/**
+ * e_run_without_pty - Run the program when no terminal could be made for it:
+ * its output is read whole, with no input.
+ * @cmd: the command line, with room to be extended; @cap: its size;
+ * @b: Messages.
+ *
+ * The system's own wait reaps the program, so the editor's child reaper is
+ * held back until it has: it would otherwise take the status first.
+ * Return: the program's exit code, or -1 when it could not be started.
+ */
+static int e_run_without_pty(char *cmd, size_t cap, BUFFER *b)
+{
+ FILE *pp;
+ char line[1024];
+ int len, ret = -1;
+ sigset_t saved;
+
+ print_to_end_of_buffer(b, "--- Run output ---", 0);
+ e_strlcat(cmd, " </dev/null 2>&1", cap);
+ WpeChildSignalBlock(&saved);
+ pp = popen(cmd, "r");
+ if (pp)
+ {
+  while (fgets(line, sizeof(line), pp))
+  {
+   len = strlen(line);
+   if (len > 0 && line[len-1] == '\n') line[len-1] = '\0';
+   print_to_end_of_buffer(b, line, 0);
+  }
+  /* WEXITSTATUS must take an lvalue: macOS expands it to *(int*)&(x), so a
+     bare pclose(pp) rvalue does not compile.  Store the status first. */
+  { int status = pclose(pp);  ret = WEXITSTATUS(status);  }
+ }
+ WpeChildSignalRestore(&saved);
+ return ret;
+}
 
 /**
  * e_run_after_make - The build of Ctrl-F9 has ended: run the program if it
@@ -955,39 +1077,9 @@ static int e_run_program(ECNT *cn)
     directory as CWD so it finds/writes its data files there, not wherever wpe
     was launched from. */
  cwd_chg = e_build_pushd(f, cwd_saved, sizeof(cwd_saved));
- /* Restore the DEFAULT SIGCHLD disposition for the duration of the run so
-    e_run_with_pty's own waitpid()/pclose() reaps the child; xwpe's normal
-    SIGCHLD handler is put back afterwards.  (_dfl = SIG_DFL, not "ignore".) */
- { struct sigaction _old, _dfl;
-   _dfl.sa_handler = SIG_DFL;
-   sigemptyset(&_dfl.sa_mask);
-   _dfl.sa_flags = 0;
-   sigaction(SIGCHLD, &_dfl, &_old);
-   ret = e_run_with_pty(estr, b, mf);
-   if (ret < 0)
-   {
-    FILE *pp;
-    char line[1024];
-    print_to_end_of_buffer(b, "--- Run output ---", 0);
-    e_strlcat(estr, " </dev/null 2>&1", sizeof(estr));
-    pp = popen(estr, "r");
-    if (pp)
-    {
-     while (fgets(line, sizeof(line), pp))
-     {
-      len = strlen(line);
-      if (len > 0 && line[len-1] == '\n') line[len-1] = '\0';
-      print_to_end_of_buffer(b, line, 0);
-     }
-     /* WEXITSTATUS must take an lvalue: macOS expands it to *(int*)&(x), so a
-        bare pclose(pp) rvalue does not compile.  Store the status first. */
-     { int status = pclose(pp);  ret = WEXITSTATUS(status);  }
-    }
-    else
-     ret = -1;
-   }
-   sigaction(SIGCHLD, &_old, NULL);
- }
+ ret = e_run_with_pty(estr, b, mf);
+ if (ret < 0)
+  ret = e_run_without_pty(estr, sizeof(estr), b);
  if (cwd_chg)
   e_build_popd(cwd_saved);
 #ifdef NCURSES
@@ -4435,6 +4527,147 @@ int e_make_library(char *library, char *ofile, FENSTER *f,
  return(0);
 }
 
+/* The shell command e_shell_run is waiting for, and how it ended.  One at a
+   time: the wait takes no key, so no second command can be asked for. */
+static struct {
+ WpeChild child;
+ int ended;
+ int status;
+} e_shell;
+
+#define E_SHELL_PROGRAM "/bin/sh"
+#define E_SHELL_WHAT    "the command"
+/* What e_shell_run returns when the command could not be run. */
+#define E_SHELL_FAILED  (-1)
+
+/**
+ * e_shell_on_end - The owner of the editor's children reports that the
+ * command e_shell_run waits for has ended.
+ * @status: its wait status; @how: WPE_CHILD_ENDED, or
+ * WPE_CHILD_ENDED_UNKNOWN when the status is lost.
+ */
+static void e_shell_on_end(WpeChild *c, int status, int how, void *data)
+{
+ (void)c;
+ (void)data;
+ e_shell.status = status;
+ if (how != WPE_CHILD_ENDED)
+  e_shell.status = E_SHELL_FAILED;
+ e_shell.ended = 1;
+}
+
+/** e_shell_has_ended - The wait's condition: the command is over. */
+static int e_shell_has_ended(void)
+{
+ return(e_shell.ended);
+}
+
+/**
+ * e_shell_start - Start the shell on the command, in the editor's own
+ * terminal or window group, with the signals a shell run from a terminal
+ * has.
+ * @cmd: the command line.
+ * Return: 0, or -1 when it could not be started.
+ */
+static int e_shell_start(const char *cmd)
+{
+ char *argv[] = { E_SHELL_PROGRAM, "-c", NULL, NULL };
+ WpeChildSpec spec;
+
+ argv[2] = (char *)cmd;   /* exec does not change its arguments */
+ memset(&spec, 0, sizeof spec);
+ spec.argv = argv;
+ spec.io = WPE_CHILD_IO_INHERIT;
+ spec.group = WPE_CHILD_EDITORS_GROUP;
+ spec.side_pty_slave = WPE_CHILD_NO_FD;
+ spec.tty_fd = WPE_CHILD_NO_FD;
+ spec.what = E_SHELL_WHAT;
+ e_shell.ended = 0;
+ e_shell.status = 0;
+ return(wpe_child_start(&spec, &e_shell.child, e_shell_on_end, NULL));
+}
+
+/**
+ * e_shell_serve_display - Answer what the editor's own window was asked
+ * meanwhile (a repaint after another window covered it, a new size).
+ *
+ * A graphical editor whose window took no event until its command ended
+ * would show a blank or half-drawn window to anyone who moved another one
+ * over it.  The console has no such event.
+ */
+static void e_shell_serve_display(void)
+{
+ if (e_u_serve_display)
+  (*e_u_serve_display)();
+}
+
+/**
+ * e_shell_keyboard_fd - The descriptor the loop must not wake for while the
+ * command runs.
+ *
+ * On the console the command has the keyboard: the keys the user types are
+ * its, and a loop that woke for them with no one in the editor to read them
+ * would spin.  A graphical editor's keys arrive on its window's connection,
+ * which the editor goes on serving.
+ * Return: the console's keyboard, or -1.
+ */
+static int e_shell_keyboard_fd(void)
+{
+ if (WpeIsXwin())
+  return(-1);
+ return(e_t_keyboard_fd());
+}
+
+/**
+ * e_shell_wait - Wait on the loop until the command has ended.
+ *
+ * Everything else the editor does on the loop goes on meanwhile, and the
+ * window's events are answered.
+ */
+static void e_shell_wait(void)
+{
+ wpe_fd_wait_serving(e_shell_has_ended, E_SHELL_WHAT, e_shell_keyboard_fd(),
+                     e_shell_serve_display);
+}
+
+/**
+ * e_shell_run - Run a shell command and wait for it, like system(), but on
+ * the editor's loop and with the command's signals at their defaults.
+ * @cmd: the command line.
+ *
+ * system() hands the command the editor's ignored SIGINT and SIGPIPE, which
+ * a shell can never undo: a script or program run from the editor then could
+ * not be stopped with Ctrl-C and would keep writing into a closed pipe.  The
+ * wait is the loop's, not a call that blocks the editor: the build's output,
+ * the servers and the window's repaints are served meanwhile.  Ctrl-C and
+ * Ctrl-backslash typed for the command are the command's, not the editor's.
+ * Return: the wait status, or -1 when the shell could not be started.
+ */
+int e_shell_run(const char *cmd)
+{
+ struct sigaction ign, old_int, old_quit;
+ int started;
+
+ memset(&ign, 0, sizeof ign);
+ ign.sa_handler = SIG_IGN;
+ sigemptyset(&ign.sa_mask);
+ sigaction(SIGINT, &ign, &old_int);
+ sigaction(SIGQUIT, &ign, &old_quit);
+ started = e_shell_start(cmd);
+ if (started == 0)
+  e_shell_wait();
+ sigaction(SIGINT, &old_int, NULL);
+ sigaction(SIGQUIT, &old_quit, NULL);
+ if (started != 0)
+  return(E_SHELL_FAILED);
+ if (!e_shell.ended)
+ {
+  wpe_child_forget(&e_shell.child);
+  return(E_SHELL_FAILED);
+ }
+ return(e_shell.status);
+}
+
 int e_system(char *estr, ECNT *cn)
 {
 #if MOUSE
@@ -4453,7 +4686,7 @@ int e_system(char *estr, ECNT *cn)
  fk_locate(0,0);
  fk_cursor(1);
  (*e_u_s_sys_ini)();
- ret = wpe_system(estr);
+ ret = e_shell_run(estr);
  if (!WpeIsXwin())
  {
   printf("%s",e_msg[ERR_HITCR]);
@@ -5174,7 +5407,7 @@ static int e_install_run(FENSTER *f)
   string = e_expand_var(string, f);
   if (p_v_n) p_v_n--;
   e_d_p_message(string, f, 1);
-  wpe_system(string);
+  e_shell_run(string);
   FREE(string);
  }
  fclose(fp);
