@@ -109,6 +109,10 @@ typedef struct {
  int end_stage;                  /* WPE_CHILD_END_*: the ladder, on the owner's one timer */
  long end_due_ms;                /* when the ladder's next step is due */
  int leads_group;                /* signals go to -pid */
+ int killed_by_end;              /* wpe_child_end sent it SIGKILL: an end that
+                                    status 137 then reports is the editor's;
+                                    kept after the report, until the next
+                                    start */
 } WpeChild;
 
 /* The end of a child started with wpe_child_start: reported once, from the

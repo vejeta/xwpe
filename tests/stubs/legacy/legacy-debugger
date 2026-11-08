@@ -66,6 +66,10 @@ HALF_LINE = "the debugger died half way through"
 # debugger exits with that status.  The editor then sees no end of file:
 # only the debugger's own end says it is gone.
 CONTINUE_DIES_HOLDING = os.environ.get("XWPE_STUB_CONTINUE_DIES_HOLDING", "")
+# Set to model a debugger that closes its output after a continue and runs
+# on: the editor sees the end of its output, and only the editor ends it.
+CONTINUE_CLOSES_OUTPUT = \
+    os.environ.get("XWPE_STUB_CONTINUE_CLOSES_OUTPUT", "") == "1"
 HOLDER_PID = os.environ.get("XWPE_STUB_HOLDER_PID", "")
 HOLDER_NAP_S = 60
 # Set to log every signal that would end the debugger ("SIGNAL <name>"),
@@ -247,6 +251,14 @@ def die_holding_output():
     os._exit(int(CONTINUE_DIES_HOLDING))
 
 
+def close_output_and_run_on():
+    """Close the output stream and go on running, answering nothing."""
+    sys.stdout.flush()
+    os.close(1)
+    while True:
+        time.sleep(RUNNING_NAP_S)
+
+
 def on_ending_signal(signum, frame):
     note("SIGNAL " + signal.Signals(signum).name)
     os._exit(SIGNAL_EXIT_BASE + signum)
@@ -270,6 +282,8 @@ def run(first):
         return
     if not first and CONTINUE_DIES_HOLDING:
         die_holding_output()
+    if not first and CONTINUE_CLOSES_OUTPUT:
+        close_output_and_run_on()
     if not first and CONTINUE_DIES:
         say(HALF_LINE)
         os._exit(0)

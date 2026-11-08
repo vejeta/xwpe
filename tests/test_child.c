@@ -885,6 +885,33 @@ static void test_a_wait_inside_an_end_report_gets_the_next_end(void)
 	close_ends(&later_child);
 }
 
+#define RUNS_ON_SCRIPT "exec sleep 30"
+
+/* 22: an end begun with no signal tells its owner whether the owner's own
+ * SIGKILL ended the child: killed by someone else within the grace, it was
+ * not; still running when the grace was over, it was. */
+static void test_the_owner_says_when_its_own_kill_ended_the_child(void)
+{
+	static Run other, own;
+
+	chk("start", start_sh(&other, RUNS_ON_SCRIPT), 0);
+	wpe_child_end(&other.c, WPE_CHILD_NO_SIGNAL);
+	kill(other.c.pid, SIGKILL);
+	loop_until_ended(&other, 1, SLACK_MS);
+	chk_true("killed by SIGKILL",
+	         WIFSIGNALED(other.status) && WTERMSIG(other.status) == SIGKILL);
+	chk("not by the owner's", other.c.killed_by_end, 0);
+	close_ends(&other);
+
+	chk("start", start_sh(&own, RUNS_ON_SCRIPT), 0);
+	wpe_child_end(&own.c, WPE_CHILD_NO_SIGNAL);
+	loop_until_ended(&own, 1, WPE_CHILD_END_GRACE_MS + SLACK_MS);
+	chk_true("killed by SIGKILL",
+	         WIFSIGNALED(own.status) && WTERMSIG(own.status) == SIGKILL);
+	chk("by the owner's", own.c.killed_by_end, 1);
+	close_ends(&own);
+}
+
 /* @scenario SC-debug-72 */
 /* @scenario SC-debug-82 */
 int main(void)
@@ -922,6 +949,7 @@ int main(void)
 	test_a_child_in_the_editors_group_is_signalled_alone();
 	test_a_named_process_is_signalled_only_while_its_child_runs();
 	test_a_wait_inside_an_end_report_gets_the_next_end();
+	test_the_owner_says_when_its_own_kill_ended_the_child();
 
 	if (fails) {
 		printf("%d failure(s)\n", fails);

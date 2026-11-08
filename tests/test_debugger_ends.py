@@ -198,6 +198,68 @@ def test_a_debugger_that_dies_is_reported_once_with_its_status(tmp_path):
         _end_if_left(_read_pid(holder))
 
 
+OUTPUT_CLOSED_FMT = "%s stopped answering (its output closed)"
+
+
+# @scenario SC-debug-88
+def test_a_debugger_that_closes_its_output_is_not_said_to_have_died(tmp_path):
+    """sdb closes its output after a continue and runs on.  The session
+    ends, the editor ends sdb, and Messages says it stopped answering: never
+    "ended unexpectedly (exit status 137)", which named the editor's own
+    SIGKILL as the debugger's end."""
+    extra = {"XWPE_STUB_CONTINUE_CLOSES_OUTPUT": "1",
+             "XWPE_STUB_PID_FILE": str(tmp_path / STUB_PID_FILE)}
+    stopped = OUTPUT_CLOSED_FMT % "sdb"
+    pid = None
+    try:
+        with _session(tmp_path, "sdb", extra=extra) as w:
+            _start_session(w, tmp_path, "sdb")
+            pid = _read_pid(tmp_path / STUB_PID_FILE)
+            assert pid, "the stand-in wrote no PID"
+            w.key(CTRL_G, "r", delay=0.5)
+            assert _wait_for(w, lambda: stopped in _screen(w), GONE_S), \
+                "Messages should say %r:\n%s" % (stopped, _screen(w))
+            assert "ended unexpectedly" not in _screen(w), \
+                "the editor's own kill is not the debugger's end:\n%s" \
+                % _screen(w)
+            assert END_LINE not in _screen(w), _screen(w)
+            assert _mark_line(w) is None, _screen(w)
+            assert _wait_gone(pid), "sdb (pid %d) was left running" % pid
+    finally:
+        _end_if_left(pid)
+
+
+NEW_START_IN_GRACE_S = 0.4   # well inside the owner's 2 s grace
+
+
+# @scenario SC-debug-88
+def test_a_debugger_let_go_while_it_runs_is_not_said_to_have_ended(tmp_path):
+    """sdb closes its output after a continue and runs on; Ctrl-G R starts
+    a new session before the editor has ended it.  Messages says the old
+    one stopped answering, never that it "ended unexpectedly" while it was
+    still running."""
+    extra = {"XWPE_STUB_CONTINUE_CLOSES_OUTPUT": "1",
+             "XWPE_STUB_PID_FILE": str(tmp_path / STUB_PID_FILE)}
+    stopped = OUTPUT_CLOSED_FMT % "sdb"
+    pid = None
+    try:
+        with _session(tmp_path, "sdb", extra=extra) as w:
+            _start_session(w, tmp_path, "sdb")
+            pid = _read_pid(tmp_path / STUB_PID_FILE)
+            assert pid, "the stand-in wrote no PID"
+            w.key(CTRL_G, "r", delay=NEW_START_IN_GRACE_S)
+            assert not _gone(pid), "sdb should still run when the next " \
+                "session starts"
+            w.key(CTRL_G, "r", delay=0.5)
+            assert _wait_for(w, lambda: stopped in _screen(w), GONE_S), \
+                "Messages should say %r:\n%s" % (stopped, _screen(w))
+            assert "ended unexpectedly" not in _screen(w), \
+                "sdb was still running:\n%s" % _screen(w)
+            assert _wait_gone(pid), "sdb (pid %d) was left running" % pid
+    finally:
+        _end_if_left(pid)
+
+
 def _quit_and_time(w):
     """Debug > Quit; seconds until the end line is on screen, or None."""
     began = time.time()

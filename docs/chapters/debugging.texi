@@ -362,8 +362,10 @@ a key.  Nothing has to be dismissed.
 Press @key{Esc} to end a debugger that is slow to answer.  Messages
 then says @samp{gdb start cancelled}.  A debugger that is silent for
 30 seconds is ended in the same way, and Messages says @samp{gdb did
-not answer within 30 s}.  To give a slow debugger more time, set the
-environment variable @env{XWPE_DEBUG_START_TIMEOUT} to a number of
+not answer within 30 s}.  A debugger that closes its output while it
+starts, but goes on running, can never answer either: the start keeps
+waiting until you press @key{Esc} or the 30 seconds pass.  To give a
+slow debugger more time, set the environment variable @env{XWPE_DEBUG_START_TIMEOUT} to a number of
 seconds before you start xwpe.
 
 @cindex XWPE_GDB_INTERFACE
@@ -554,6 +556,12 @@ keys again.  The line is said once, when the system reports the
 debugger gone: also when a process the debugger started keeps its
 output open, which used to leave the session running with no debugger
 behind it.
+
+A debugger that closes its output during a session but goes on running
+can never answer again.  The session ends, the editor kills the
+debugger if it is still running two seconds later, and Messages says
+@samp{gdb stopped answering (its output closed)}.  The exit status the editor's own signal leaves is not
+reported as the debugger's.
 
 Debug > Quit, and the editor's own end during a session (@kbd{Alt-X}, a
 logout, @code{kill PID}), tell the debugger to quit, as you would at its

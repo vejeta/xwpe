@@ -417,6 +417,8 @@
   {"id": "SC-debug-84", "requirement": "One owner of input, of children, of writes and of keys", "layer": "ncurses", "test": "tests/test_run_ends.py::test_ctrl_c_during_run_ends_the_whole_pipeline", "status": "new", "needs": ["gcc"]},
   {"id": "SC-debug-85", "requirement": "One owner of input, of children, of writes and of keys", "layer": "ncurses", "test": "tests/test_run_ends.py::test_typing_goes_on_when_the_running_program_stops_reading", "status": "new", "needs": ["gcc"]},
   {"id": "SC-debug-86", "requirement": "One owner of input, of children, of writes and of keys", "layer": "x11", "test": "tests/x11/test_run_in_xterm.py::test_x11_run_in_an_xterm_keeps_the_window_repainting", "status": "new", "needs": ["xterm"]},
-  {"id": "SC-debug-87", "requirement": "One owner of input, of children, of writes and of keys", "layer": "c-unit", "test": "test_fdloop", "status": "new"}
+  {"id": "SC-debug-87", "requirement": "One owner of input, of children, of writes and of keys", "layer": "c-unit", "test": "test_fdloop", "status": "new"},
+  {"id": "SC-debug-88", "requirement": "One owner of input, of children, of writes and of keys", "layer": "ncurses", "test": "tests/test_debugger_ends.py::test_a_debugger_that_closes_its_output_is_not_said_to_have_died", "status": "new", "needs": ["gcc"]},
+  {"id": "SC-debug-88", "requirement": "One owner of input, of children, of writes and of keys", "layer": "ncurses", "test": "tests/test_debugger_ends.py::test_a_debugger_let_go_while_it_runs_is_not_said_to_have_ended", "status": "new", "needs": ["gcc"]}
  ]
 }

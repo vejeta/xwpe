@@ -70,7 +70,8 @@ int e_d_swtch = 0, rfildes[2], ofildes;
 static struct {
  WpeChild child;
  int live;           /* a session runs on it: its end ends the session */
- int asked_end;      /* the editor ended it (Quit, Esc, a deadline) */
+ int asked_end;      /* the editor ended it (Quit, Esc, a deadline, the end
+                        of its output, the editor's own end) */
  int end_expected;   /* it said the program ended, and goes with it */
  int ended;          /* its end was reported */
  int status;         /* its wait status, when status_known */
@@ -3824,7 +3825,10 @@ static int e_d_quit_can_be_asked(void)
  * Measured with each debugger started as the editor starts it, its program
  * a loop that never ends (gdb 18.1 line and MI, python3 -m pdb, a68g 3.1.2,
  * jdb of OpenJDK 26):
- *  - output ended: the debugger is broken or dying, SIGKILL at once;
+ *  - output ended: the debugger is broken or dying.  No signal: one that
+ *    is dying is reported within the grace with the status it died of,
+ *    which a signal sent now could not be told from; one that runs on gets
+ *    the owner's SIGKILL after the grace (e_d_debugger_end_was_the_editors);
  *  - told to quit at its prompt: no signal.  gdb kills its program and
  *    ends, pdb and a68g (the program is the debugger) end, within the grace;
  *  - program running, or never told: the quit is not read while the
@@ -3838,12 +3842,12 @@ static int e_d_quit_can_be_asked(void)
  * reads nothing: SIGTERM ends it, and the debugger reads its quit through
  * the pipe; under X11 gdb and its running program were gone within the
  * grace, at Quit and at the editor's end alike.
- * Return: SIGKILL, SIGTERM or WPE_CHILD_NO_SIGNAL.
+ * Return: SIGTERM or WPE_CHILD_NO_SIGNAL.
  */
 static int e_d_debugger_end_signal(int program_runs)
 {
  if (e_d_output_closed)
-  return(SIGKILL);
+  return(WPE_CHILD_NO_SIGNAL);
  if (WpeIsXwin() || program_runs || !e_d_quit_can_be_asked())
   return(SIGTERM);
  return(WPE_CHILD_NO_SIGNAL);
@@ -3856,6 +3860,22 @@ static int e_d_debugger_end_signal(int program_runs)
 static void e_d_debugger_close_input(void)
 {
  e_d_close_fd(&e_d_dbg.in_fd);
+}
+
+/**
+ * e_d_debugger_end_by_editor - Begin the end of the debugger, noting first
+ * that the editor ends it.
+ * @sig: the signal its end begins with, or WPE_CHILD_NO_SIGNAL.
+ *
+ * Every end the editor causes (Quit, Esc or the deadline while it starts,
+ * the end of its output, the editor's own end) goes through here, so the
+ * status it then ends with, the editor's own signal, is never reported to
+ * the user as a debugger that ended unexpectedly.
+ */
+static void e_d_debugger_end_by_editor(int sig)
+{
+ e_d_dbg.asked_end = 1;
+ wpe_child_end(&e_d_dbg.child, sig);
 }
 
 /**
@@ -3877,8 +3897,7 @@ static void e_d_debugger_end(int sig)
  e_d_debugger_close_input();
  e_d_dbg.in_fd = rfildes[1];
  rfildes[1] = -1;
- e_d_dbg.asked_end = 1;
- wpe_child_end(&e_d_dbg.child, sig);
+ e_d_debugger_end_by_editor(sig);
 }
 
 int e_d_quit_basic(FENSTER *f)
@@ -4008,13 +4027,60 @@ static int e_d_debugger_status(int *status)
 
 /**
  * e_d_debugger_died_unasked - Did the debugger end, or close its output,
- * without the editor ending it?
+ * before the editor began to end it?
+ *
+ * Once the editor has ended it (Quit, Esc or the deadline of a start, the
+ * end of its output, the editor's own end), or it said it goes with its
+ * program, its end is no surprise: the user reads why the session ended,
+ * never that the debugger ended unexpectedly with the editor's own signal.
  */
 static int e_d_debugger_died_unasked(void)
 {
- if (e_d_output_closed)
+ if (e_d_dbg.asked_end || e_d_dbg.end_expected)
+  return(0);
+ return(e_d_output_closed || e_d_dbg.ended);
+}
+
+/* The line for a debugger that closed its output and then had to be ended
+   by the editor: it stopped answering, it did not end by itself. */
+#define E_D_OUTPUT_CLOSED_FMT "%s stopped answering (its output closed)"
+
+/**
+ * e_d_debugger_end_was_the_editors - Was the debugger, whose output had
+ * closed, ended by the editor's own SIGKILL rather than by itself?
+ *
+ * A debugger whose output closed gets no signal at first: one that was
+ * dying is reported within the grace with the status it died of (its exit
+ * code, or the signal someone else killed it with), and only one that still
+ * runs after the grace gets the owner's SIGKILL.  Saying "ended
+ * unexpectedly (exit status 137)" for that one would blame it for the
+ * editor's kill.
+ * Return: 1 when it ended of the SIGKILL the owner sent it.
+ */
+static int e_d_debugger_end_was_the_editors(void)
+{
+ if (!e_d_dbg.asked_end || !e_d_dbg.status_known)
+  return(0);
+ if (!e_d_dbg.child.killed_by_end || !WIFSIGNALED(e_d_dbg.status))
+  return(0);
+ return(WTERMSIG(e_d_dbg.status) == SIGKILL);
+}
+
+/**
+ * e_d_debugger_stopped_answering - Is "stopped answering (its output
+ * closed)" the true line for the debugger of a session that ended at the
+ * end of its output?
+ *
+ * It is when the editor's own SIGKILL ended it, and also when a new session
+ * starts before the system reported it gone: it may still be running then,
+ * so the user must not read that it ended.
+ * Return: 1 for that line, 0 for the line that names how it ended.
+ */
+static int e_d_debugger_stopped_answering(void)
+{
+ if (!e_d_dbg.ended)
   return(1);
- return(e_d_dbg.ended && !e_d_dbg.asked_end && !e_d_dbg.end_expected);
+ return(e_d_debugger_end_was_the_editors());
 }
 
 /**
@@ -4085,7 +4151,10 @@ static int e_d_died_line(char *out, size_t n)
  * debugger of a session that is already over ended.
  *
  * The line goes where the session's end line would have gone: Messages and
- * the status row.  Said once.
+ * the status row.  Said once.  A debugger the editor had to kill because it
+ * closed its output but ran on is said to have stopped answering, not to
+ * have ended with the editor's signal; so is one a new session lets go of
+ * before its end was reported.
  */
 static void e_d_debugger_say_died(void)
 {
@@ -4093,8 +4162,11 @@ static void e_d_debugger_say_died(void)
  char line[E_D_DIED_LINE_MAX];
 
  e_d_dbg.say_later = 0;
- e_d_died_line_of(line, sizeof line, e_d_dbg.label, e_d_dbg.status_known,
-                  e_d_dbg.status);
+ if (e_d_debugger_stopped_answering())
+  snprintf(line, sizeof line, E_D_OUTPUT_CLOSED_FMT, e_d_dbg.label);
+ else
+  e_d_died_line_of(line, sizeof line, e_d_dbg.label, e_d_dbg.status_known,
+                   e_d_dbg.status);
  e_d_p_message(line, top, 1);
  e_status_say(top, line);
 }
@@ -9038,6 +9110,19 @@ static int e_d_start_adapter_gone(void)
 }
 
 /**
+ * e_d_start_unwatch_answers - Stop reading the starting debugger's output,
+ * once it has ended or the start is over; its program's output, when the
+ * start watches it, stays watched.
+ */
+static void e_d_start_unwatch_answers(void)
+{
+ if (e_d_start.out_fd == E_D_START_NO_FD)
+  return;
+ wpe_fd_del(e_d_start.out_fd);
+ e_d_start.out_fd = E_D_START_NO_FD;
+}
+
+/**
  * e_d_start_unwatch_output - Stop reading the debugger's output.
  */
 static void e_d_start_unwatch_output(void)
@@ -9047,10 +9132,7 @@ static void e_d_start_unwatch_output(void)
   wpe_fd_del(e_d_start.pty_fd);
   e_d_start.pty_fd = E_D_START_NO_FD;
  }
- if (e_d_start.out_fd == E_D_START_NO_FD)
-  return;
- wpe_fd_del(e_d_start.out_fd);
- e_d_start.out_fd = E_D_START_NO_FD;
+ e_d_start_unwatch_answers();
 }
 
 /**
@@ -9247,8 +9329,7 @@ static void e_d_start_stop(int why)
  e_d_start_unwatch_output();
  if (!e_d_start.dap && e_d_dbg.child.pid > 0)
  {
-  e_d_dbg.asked_end = 1;
-  wpe_child_end(&e_d_dbg.child, SIGTERM);
+  e_d_debugger_end_by_editor(SIGTERM);
   return;
  }
  if (e_d_start.dap && e_d_start.hb_timer != WPE_TIMER_NONE &&
@@ -9259,6 +9340,44 @@ static void e_d_start_stop(int why)
  }
  if (e_d_start.dap)
   e_d_start_dap_signal(SIGKILL);
+ e_d_start_end();
+}
+
+/**
+ * e_d_debugger_end_comes_reported - Will the owner of the editor's children
+ * report the starting debugger's end?
+ *
+ * Under the terminal editor the debugger is the editor's own child.  Under
+ * the graphical editors the child is the script around it, which outlives
+ * the debugger while it waits for a Return, so there the end of the
+ * debugger's output is the only sign that it went.
+ */
+static int e_d_debugger_end_comes_reported(void)
+{
+ if (WpeIsXwin())
+  return(0);
+ return(e_d_dbg.live && e_d_dbg.child.pid > 0);
+}
+
+/**
+ * e_d_start_on_output_end - The starting debugger's output ended before it
+ * answered.
+ *
+ * A debugger that is dying is reported gone a moment later, with its exit
+ * status, and the start ends then with the line that names it.  One that
+ * closed its output and runs on can never answer: the start goes on
+ * waiting, as for any debugger that does not answer, so the user still
+ * sees the waiting line and ends it with Esc, or the deadline does, and
+ * reads that line, not an end the editor's own signal caused.  Where the
+ * end is not reported (the graphical editors' script), the start ends here.
+ */
+static void e_d_start_on_output_end(void)
+{
+ if (e_d_debugger_end_comes_reported())
+ {
+  e_d_start_unwatch_answers();
+  return;
+ }
  e_d_start_end();
 }
 
@@ -9486,8 +9605,9 @@ static void e_d_on_debugger_ended(WpeChild *c, int status, int how,
 /**
  * e_d_debugger_let_go - A new session starts while the last one's debugger
  * is still ending: its end goes on, followed by the owner alone, and its
- * input is closed.  A line it still owed the user is said now, without the
- * exit status, which the new session cannot wait for.
+ * input is closed.  A line it still owed the user is said now: its output
+ * closed and it may still run, so it stopped answering; the exit status is
+ * not waited for.
  */
 static void e_d_debugger_let_go(void)
 {
@@ -9527,7 +9647,8 @@ void e_d_end_at_exit(void)
  * @fd: its output; @data: unused.
  *
  * The banner itself is not shown, as before.  End of file before the prompt
- * means the debugger ended by itself.  The deadline is the heartbeat's.
+ * means the debugger will never answer (e_d_start_on_output_end).  The
+ * deadline is the heartbeat's.
  */
 static void e_d_start_on_output(int fd, void *data)
 {
@@ -9544,7 +9665,7 @@ static void e_d_start_on_output(int fd, void *data)
    break;
   if (ret == -1)
   {
-   e_d_start_end();
+   e_d_start_on_output_end();
    return;
   }
   if (ret == 1)
@@ -11635,8 +11756,9 @@ static void e_d_jdb_start_begin(void)
  * on it.
  * @fd: jdb's output; @data: unused.
  *
- * End of file before jdb asked for a command means jdb ended by itself;
- * the deadline and the VM's own end are the heartbeat's.
+ * End of file before jdb asked for a command means jdb will never answer
+ * (e_d_start_on_output_end); the deadline and the VM's own end are the
+ * heartbeat's.
  */
 static void e_d_jdb_start_on_output(int fd, void *data)
 {
@@ -11651,7 +11773,7 @@ static void e_d_jdb_start_on_output(int fd, void *data)
   if (n == 0)
   {
    e_d_note_output_closed();   /* the end says how jdb ended */
-   e_d_start_end();
+   e_d_start_on_output_end();
    return;
   }
   if (n < 0)

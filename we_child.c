@@ -1282,6 +1282,21 @@ static void wpe_child_give_up(WpeChild *c)
 }
 
 /**
+ * wpe_child_end_signal - Send a signal of the ladder, noting a SIGKILL.
+ * @c: the child being ended; @sig: the signal.
+ *
+ * The owner of a child that ran on after its output closed learns from
+ * killed_by_end that its status 137 is the editor's kill, so the user is
+ * not told the program died by itself.
+ */
+static void wpe_child_end_signal(WpeChild *c, int sig)
+{
+ if (sig == SIGKILL)
+  c->killed_by_end = 1;
+ wpe_child_signal(c, sig);
+}
+
+/**
  * wpe_child_end_step - The ladder's next step: SIGKILL after the grace,
  * give up after the kill grace.
  * @c: a child being ended.
@@ -1296,7 +1311,7 @@ static void wpe_child_end_step(WpeChild *c)
   return;
  }
  c->end_stage = WPE_CHILD_END_KILL;
- wpe_child_signal(c, SIGKILL);
+ wpe_child_end_signal(c, SIGKILL);
  c->end_due_ms = wpe_child_now_ms() + WPE_CHILD_END_KILL_MS;
 }
 
@@ -1423,7 +1438,7 @@ void wpe_child_end(WpeChild *c, int polite_sig)
  }
  c->end_stage = WPE_CHILD_END_POLITE;
  if (polite_sig != WPE_CHILD_NO_SIGNAL)
-  wpe_child_signal(c, polite_sig);
+  wpe_child_end_signal(c, polite_sig);
  c->end_due_ms = wpe_child_now_ms() + WPE_CHILD_END_GRACE_MS;
  wpe_child_ladder_rearm();
 }

@@ -302,6 +302,13 @@ Changes
   "Compiling for debug... (Esc cancels)", the session starts once it has
   compiled, and Esc or Debug > Quit cancels it.
 
+* A debugger that closes its output but goes on running is no longer
+  reported as "gdb ended unexpectedly (exit status 137)", which was the
+  editor's own kill.  While it starts, the waiting line stays until Esc
+  or the deadline ends it, with "gdb start cancelled" or "gdb did not
+  answer within N s".  During a session, Messages says "gdb stopped
+  answering (its output closed)".
+
 * Typing goes on when a child stops reading its input.  A command for gdb
   or a line debugger, a request for a debug adapter, a message for a
   language server or the Scala build server, and the text you type for the
