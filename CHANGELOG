@@ -289,6 +289,19 @@ Changes
   with "<adapter> ended unexpectedly (exit status N)", as a line debugger
   does, instead of "End of Debugging".
 
+* No debugger or program is left behind when the editor ends during a
+  debug session (Alt-X, a logout, "kill PID"): gdb, pdb, jdb, a68g, sdb,
+  dbx and xdb are told to quit, so they end their program, and one still
+  there two seconds later is killed.  The editor used to send them signal
+  7, which on Linux is SIGBUS and left a core file.  A crash or a second
+  SIGTERM now ends every program the editor started, not only a build.
+  A debugger that dies is reported once, "gdb ended unexpectedly (exit
+  status N)", even when a process it started keeps its output open; the
+  session used to go on with no debugger.  Compiling a Rust program for
+  its debug session no longer freezes the editor: Messages says
+  "Compiling for debug... (Esc cancels)", the session starts once it has
+  compiled, and Esc or Debug > Quit cancels it.
+
 * Typing goes on when a child stops reading its input.  A command for gdb
   or a line debugger, a request for a debug adapter, a message for a
   language server or the Scala build server, and the text you type for the

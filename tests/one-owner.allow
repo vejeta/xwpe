@@ -39,7 +39,6 @@ we_xterm.o poll 1 P9o the paste wait for SelectionNotify
 
 # children: started, signalled and reaped only by we_child.c.
 we_unix.o waitpid 1 keep the SIGCHLD handler reaps, and hands each child to we_child.c
-we_unix.o kill 2 P9q the crash/term handlers' build group and the debugger at exit
 we_prog.o fork 1 P9r Run with a pty (the build moved to we_child.c)
 we_prog.o openpty 1 P9r
 we_prog.o killpg 1 P9r
@@ -52,15 +51,6 @@ we_xterm.o fork 1 P9r through wpe_system, inline
 we_xterm.o waitpid 1 P9r
 we_xterm.o execl 1 P9r
 we_term.o system 1 P9r the display table's run of a shell command
-we_debug.o fork 2 P9q
-we_debug.o openpty 1 P9q
-we_debug.o kill 6 P9q
-we_debug.o waitpid 4 P9q
-we_debug.o setsid 2 P9q
-we_debug.o execvp 2 P9q
-we_debug.o execl 1 P9q the legacy external-xterm start
-we_debug.o execlp 1 P9q the same
-we_debug.o system 1 P9q compile for debug
 we_debug.o popen 1 P9n
 we_debug.o pclose 1 P9n
 we_ai.o fork 3 P9s one is the mock delay (P9l)
@@ -79,7 +69,6 @@ we_fl_fkt.o system 2 P9n
 we_fl_unix.o system 2 P9n
 
 # writers: bytes for a child go through wpe_fd_write (we_fdloop.c).
-we_debug.o write 1 keep the forked VM's own error line before exec, where the editor's loop does not run
 we_edit.o write 1 P9r Run's typed keys, until Run's terminal is non-blocking and queued on the loop
 we_ai_host.o write 4 P9s the hosted engine's turn, permission answers and interrupt
 we_ai.o write 3 P9s the prompt to the command-line backend moves; the forked child's reply and the temporary file stay

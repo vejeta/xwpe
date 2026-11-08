@@ -382,9 +382,13 @@ adapter is known to be alive, so the limit no longer applies.  The line
 then says what the adapter is doing, for example @samp{dlv building
 ... 40s  (Esc cancels)} while dlv builds the package, and Esc still ends
 it.  If dlv cannot build the package, its error appears in Messages and
-the session ends.  Rust is compiled before the adapter starts, and the
-Scala build server is started before it; those two steps still hold the
-editor.
+the session ends.  Rust is compiled before the adapter starts, as a
+build is: Messages says @samp{Compiling for debug... (Esc cancels)},
+you keep your keys, and the session starts once the compiler has
+succeeded.  @key{Esc} or Debug > Quit ends the compiler, with the line
+@samp{compile for debug cancelled}, and no session starts after it; nor
+does one for a file closed meanwhile.  The Scala build
+server is started before its adapter; that step still holds the editor.
 
 @section While the debugger answers at a stop
 
@@ -546,7 +550,19 @@ gdb ended unexpectedly (exit status 137)
 
 @noindent
 The session is then over, as after Debug > Quit, and the editor takes
-keys again.
+keys again.  The line is said once, when the system reports the
+debugger gone: also when a process the debugger started keeps its
+output open, which used to leave the session running with no debugger
+behind it.
+
+Debug > Quit, and the editor's own end during a session (@kbd{Alt-X}, a
+logout, @code{kill PID}), tell the debugger to quit, as you would at its
+prompt, so it ends its program itself; while the program runs, the
+debugger cannot read that and is ended at once, its program with it.
+The editor does not wait for it, and one that has not ended two seconds
+later is killed.  No debugger and no
+program is left behind, and the debugger is never sent a signal that
+leaves a core file.
 
 A build during a session (Compile, Make, Run, Install or Execute Make)
 first asks @samp{Do You want to Quit Debugging ?}, as Turbo C asked to

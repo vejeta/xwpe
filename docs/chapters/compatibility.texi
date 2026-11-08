@@ -34,3 +34,16 @@ once, so it may act before the step typed just before it has stopped.
 Keys that reached the debugger behind the editor's back were how an
 answer could be lost or a letter typed into the source.
 @end table
+
+@section When the editor ends during a debug session
+
+@table @asis
+@item The debugger at the editor's end
+@cindex debugger, at the editor's end
+The original sent the debugger signal 7 when it ended during a session,
+which on Linux is SIGBUS: the debugger died with a core file and could
+leave its program running.  xwpe now ends it as Debug > Quit does: told
+to quit at its prompt, or sent SIGTERM while its program runs, and
+killed only if it is still there two seconds later, so the debugger ends
+its program and leaves no core file.
+@end table

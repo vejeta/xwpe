@@ -543,36 +543,28 @@ int e_tast_sim(int c)
  }
 }
 
-/* The process group of the build that runs, or 0.  A build leads a group of
-   its own, so a signal that ends the editor does not reach it; the signal
-   handlers below kill the group, which kill() can do from a handler. */
-static volatile sig_atomic_t wpe_build_pgid = 0;
+/* Every child the editor started leads a group or a session of its own, so a
+   signal that ends the editor does not reach it: the handlers below end
+   them all (wpe_child_end_from_handler), as a crash, a SIGTERM or a closed
+   terminal would otherwise leave a build, a debugger or a server running
+   unseen. */
 
 /**
- * WpeBuildGroupSet - Name the process group of the build that runs.
- * @pgid: the build child's PID, which leads its group, or 0 once reaped.
- *
- * Lets a SIGTERM, a SIGHUP (the terminal closed) or a crash end the build
- * with the editor, where it used to run on unseen.
+ * wpe_end_children_from_handler - From a handler: end the editor's
+ * children, unless this is a child forked from the editor that has not run
+ * its program yet (the table is the editor's, and its children are not this
+ * process's to end).  Async-signal-safe.
  */
-void WpeBuildGroupSet(int pgid)
+static void wpe_end_children_from_handler(void)
 {
- wpe_build_pgid = pgid;
-}
-
-/**
- * WpeKillBuildGroup - From a signal handler: end the build that runs.
- * Async-signal-safe: one kill(), no wait.
- */
-static void WpeKillBuildGroup(void)
-{
- if (wpe_build_pgid > 0)
-  kill(-wpe_build_pgid, SIGKILL);
+ if (wpe_main_pid != 0 && getpid() != wpe_main_pid)
+  return;
+ wpe_child_end_from_handler();
 }
 
 void WpeSignalUnknown(int sig)
 {
- WpeKillBuildGroup();
+ wpe_end_children_from_handler();
  int fd = open("/tmp/xwpe-crash.txt", O_WRONLY|O_CREAT|O_TRUNC, 0644);
  if (fd >= 0)
  {
@@ -635,7 +627,7 @@ void WpeSignalChild(int sig)
  * the editor was set up, in a forked child before it ran its program, or a
  * second time while the first one's save was still running (a save that
  * hangs must never leave the editor impossible to end).  Only
- * async-signal-safe work: the build is killed, the mouse tracking turned
+ * async-signal-safe work: every child is killed, the mouse tracking turned
  * off and the terminal modes restored, so the shell is usable again, and
  * the signal is raised again with its default action, so the parent sees
  * the usual "killed by SIGTERM".
@@ -645,7 +637,7 @@ static void wpe_end_now(int sig)
  const char *mouse_off = "\033[?1002l\033[?1006l\033[?1000l";
  ssize_t n;
 
- WpeKillBuildGroup();
+ wpe_end_children_from_handler();
  n = write(STDERR_FILENO, mouse_off, 24);
  (void)n;
  tcsetattr(0, TCSANOW, &otermio);
@@ -940,27 +932,29 @@ static int e_exit_children_gone(void)
 static void e_exit_teardown(void)
 {
 #ifdef DEBUGGER
- extern int e_d_pid;
  extern void e_lsp_ui_shutdown(void);
  extern void e_d_dap_end_at_exit(void);
+ extern void e_d_end_at_exit(void);
 
- /* A debug adapter is told to end its program, and the language server
-    (Metals etc.) is told to shut down and then ended, so its JVM does not
-    linger after xwpe quits; the work was saved before this.  Both then get
-    one bounded time to go, on the loop: a server that ignores SIGTERM is
-    killed after the grace of the editor's children's owner, well within
-    it, so none of them outlives the editor. */
+ /* A debug adapter is told to end its program, a line debugger to quit
+    (so it ends its program itself), and the language server (Metals etc.)
+    to shut down and then ended, so its JVM does not linger after xwpe
+    quits; the work was saved before this.  All of them then get one bounded
+    time to go, on the loop: one that ignores what it was told is killed
+    after the grace of the editor's children's owner, well within it. */
  e_d_dap_end_at_exit();
+ e_d_end_at_exit();
  e_lsp_ui_shutdown();
  if (!e_exit_children_gone())
   wpe_fd_end_wait(e_exit_children_gone, E_EXIT_CHILDREN_MAX_MS);
- if (e_d_pid)
-  kill(e_d_pid, 7);
 #endif
 #ifdef PROG
  /* A build in its own process group would outlive the editor. */
  e_build_end_at_exit();
 #endif
+ /* Whatever is left (a child that did not go in time, one nothing above
+    knows how to ask) is killed with its group, without a wait. */
+ wpe_child_end_from_handler();
  (*WpeDisplayEnd)();
  e_switch_screen(0);
  tcsetattr(0, TCSADRAIN, &otermio);

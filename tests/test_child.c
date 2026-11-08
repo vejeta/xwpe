@@ -53,6 +53,19 @@
 #define PTY_PROBE          "test -t 0 && test -t 1 && test -t 2 && echo tty"
 #define PTY_PROBE_SAYS     "tty\n"
 #define DETACHED_GARBAGE   0xA5  /* what a freed owner's memory may hold */
+/* Says whether descriptor %d (the program's side of a pty) is a terminal in
+ * this process, and whether %d (the editor's master) is open at all. */
+#define SIDE_PTY_PROBE \
+ "if test -t %d; then s=held; else s=not; fi; " \
+ "if { true >&%d; } 2>/dev/null; then m=master; else m=; fi; echo $s$m"
+#define SIDE_PTY_HELD      "held"
+#define SIDE_PTY_NOT_HELD  "not"
+#define SIDE_PTY_SCRIPT_MAX 256
+#define SIDE_PTY_NAME_MAX  64
+#define NO_SUCH_DIR        "/nonexistent/xwpe-test-no-such-dir"
+#define SAID_FAILED_EXIT   127   /* the child named why it could not run */
+/* A shell that starts a sleeper in its group, says its pid, and waits. */
+#define BACKGROUND_SLEEPER "sleep 30 & echo $!; wait"
 
 static int fails;
 static pid_t read_pid(int fd);
@@ -662,7 +675,167 @@ static void test_signals_reach_only_the_leader_when_asked(void)
 	close_ends(&r);
 }
 
+/* Read what a child wrote on @fd up to its first line end, into @buf. */
+static void read_line(int fd, char *buf, size_t n)
+{
+	long deadline = now_ms() + SLACK_MS;
+	ssize_t got;
+	size_t len = 0;
+
+	while (now_ms() < deadline && (len == 0 || buf[len - 1] != '\n')) {
+		got = read(fd, buf + len, n - 1 - len);
+		if (got > 0)
+			len += got;
+		else
+			wpe_fd_poll(LOOP_SLICE_MS);
+	}
+	buf[len] = '\0';
+}
+
+/* A debugger's pty: the program's side stays open in the debugger it is
+ * given to, and in no other child; the editor's master is in neither. */
+static void test_a_side_pty_is_the_debuggers_and_no_other_childs(void)
+{
+	static Run dbg, other;
+	WpeChildSpec spec;
+	char *argv[4], script[SIDE_PTY_SCRIPT_MAX], buf[READ_PID_MAX];
+	char name[SIDE_PTY_NAME_MAX];
+	int master, slave;
+
+	chk("a pty", wpe_child_pty_make(&master, &slave, name, sizeof name), 0);
+	chk_true("it has a name", name[0] == '/');
+	snprintf(script, sizeof script, SIDE_PTY_PROBE, slave, master);
+	memset(&dbg, 0, sizeof dbg);
+	spec_sh(&spec, argv, script);
+	spec.io = WPE_CHILD_IO_PIPES_AND_PTY;
+	spec.side_pty_slave = slave;
+	chk("start", wpe_child_start(&spec, &dbg.c, on_ended, &dbg), 0);
+	read_line(dbg.c.out_fd, buf, sizeof buf);
+	chk_true("the debugger holds the program's side, not the master",
+	         strcmp(buf, SIDE_PTY_HELD "\n") == 0);
+	memset(&other, 0, sizeof other);
+	spec_sh(&spec, argv, script);
+	chk("start another", wpe_child_start(&spec, &other.c, on_ended, &other), 0);
+	read_line(other.c.out_fd, buf, sizeof buf);
+	chk_true("another child holds neither",
+	         strcmp(buf, SIDE_PTY_NOT_HELD "\n") == 0);
+	loop_until_ended(&dbg, 1, SLACK_MS);
+	loop_until_ended(&other, 1, SLACK_MS);
+	close_ends(&dbg);
+	close_ends(&other);
+	close(master);
+	close(slave);
+}
+
+/* jdb's program: the pty slave the editor kept is its terminal on 0, 1 and
+ * 2; a directory it cannot enter is named there, and it ends as a shell
+ * ends a command it cannot run. */
+static void test_a_tty_path_child_has_the_editors_pty_and_says_why_it_failed(void)
+{
+	static Run ok, bad;
+	WpeChildSpec spec;
+	char *argv[4], buf[READ_PID_MAX * 4], name[SIDE_PTY_NAME_MAX];
+	int master, slave;
+
+	chk("a pty", wpe_child_pty_make(&master, &slave, name, sizeof name), 0);
+	memset(&ok, 0, sizeof ok);
+	spec_sh(&spec, argv, PTY_PROBE);
+	spec.io = WPE_CHILD_IO_TTY_PATH;
+	spec.tty_fd = slave;
+	spec.say_failed = 1;
+	chk("start", wpe_child_start(&spec, &ok.c, on_ended, &ok), 0);
+	read_line(master, buf, sizeof buf);
+	chk_true("0, 1 and 2 are the pty", strstr(buf, "tty") != NULL);
+	loop_until_ended(&ok, 1, SLACK_MS);
+	memset(&bad, 0, sizeof bad);
+	spec.cwd = NO_SUCH_DIR;
+	chk("start in no directory", wpe_child_start(&spec, &bad.c, on_ended, &bad), 0);
+	read_line(master, buf, sizeof buf);
+	chk_true("the directory is named on its terminal",
+	         strstr(buf, "cannot enter " NO_SUCH_DIR) != NULL);
+	loop_until_ended(&bad, 1, SLACK_MS);
+	chk("it ended as a command that cannot run", exit_code(bad.status),
+	    SAID_FAILED_EXIT);
+	close(master);
+	close(slave);
+}
+
+/* The crash and end handlers' call: every child the editor follows is
+ * killed with its group, without a wait, except the group of one whose
+ * signals reach it alone (a build server other editors share). */
+static void test_the_handlers_end_every_child_and_its_group(void)
+{
+	static Run grp, alone;
+	WpeChildSpec spec;
+	char *argv[4];
+	pid_t bg_grp, bg_alone;
+
+	chk("start", start_sh(&grp, BACKGROUND_SLEEPER), 0);
+	bg_grp = read_pid(grp.c.out_fd);
+	memset(&alone, 0, sizeof alone);
+	spec_sh(&spec, argv, BACKGROUND_SLEEPER);
+	spec.signal_leader_only = 1;
+	chk("start leader only", wpe_child_start(&spec, &alone.c, on_ended, &alone), 0);
+	bg_alone = read_pid(alone.c.out_fd);
+	wpe_child_end_from_handler();
+	loop_until_ended(&grp, 1, SLACK_MS);
+	loop_until_ended(&alone, 1, SLACK_MS);
+	chk_true("the child was killed", grp.calls == 1 &&
+	         WIFSIGNALED(grp.status) && WTERMSIG(grp.status) == SIGKILL);
+	chk_true("the leader-only child was killed", alone.calls == 1 &&
+	         WIFSIGNALED(alone.status) && WTERMSIG(alone.status) == SIGKILL);
+	loop_for(LOOP_SLICE_MS * 5);
+	chk_true("its group went with it", bg_grp > 0 && kill(bg_grp, 0) < 0);
+	chk_true("the shared group was left alone", bg_alone > 0 && kill(bg_alone, 0) == 0);
+	if (bg_alone > 0)
+		kill(bg_alone, SIGKILL);
+	close_ends(&grp);
+	close_ends(&alone);
+}
+
+/* The graphical editors' debugger script stays in the editor's group, and
+ * no signal of the owner's goes to that group: ending the script never
+ * reaches the editor. */
+static void test_a_child_in_the_editors_group_is_signalled_alone(void)
+{
+	static Run r;
+	WpeChildSpec spec;
+	char *argv[4];
+
+	memset(&r, 0, sizeof r);
+	spec_sh(&spec, argv, "echo $$; exec sleep 30");
+	spec.group = WPE_CHILD_EDITORS_GROUP;
+	chk("start", wpe_child_start(&spec, &r.c, on_ended, &r), 0);
+	read_pid(r.c.out_fd);
+	chk("it is in the editor's group", getpgid(r.c.pid), getpgrp());
+	chk("its signals are its own", r.c.leads_group, 0);
+	wpe_child_end(&r.c, SIGTERM);
+	loop_until_ended(&r, 1, SLACK_MS);
+	chk_true("it ended at SIGTERM", r.calls == 1 && WIFSIGNALED(r.status) &&
+	         WTERMSIG(r.status) == SIGTERM);
+	close_ends(&r);
+}
+
+/* Pause under the graphical editors reaches the debugger the script named,
+ * only while the script runs. */
+static void test_a_named_process_is_signalled_only_while_its_child_runs(void)
+{
+	static Run r;
+	pid_t named;
+
+	chk("start", start_sh(&r, BACKGROUND_SLEEPER), 0);
+	named = read_pid(r.c.out_fd);
+	chk("signalled while the child runs",
+	    wpe_child_signal_named(&r.c, named, 0), 0);
+	wpe_child_end(&r.c, SIGTERM);
+	loop_until_ended(&r, 1, SLACK_MS);
+	chk("nothing once it ended", wpe_child_signal_named(&r.c, named, 0), -1);
+	chk("nothing to no process", wpe_child_signal_named(&r.c, 0, 0), -1);
+	close_ends(&r);
+}
+
 /* @scenario SC-debug-72 */
+/* @scenario SC-debug-82 */
 int main(void)
 {
 	struct sigaction act;
@@ -692,6 +865,11 @@ int main(void)
 	test_a_detached_child_is_ended_with_nobody_called_back();
 	test_a_child_on_a_pty_has_it_as_its_terminal();
 	test_signals_reach_only_the_leader_when_asked();
+	test_a_side_pty_is_the_debuggers_and_no_other_childs();
+	test_a_tty_path_child_has_the_editors_pty_and_says_why_it_failed();
+	test_the_handlers_end_every_child_and_its_group();
+	test_a_child_in_the_editors_group_is_signalled_alone();
+	test_a_named_process_is_signalled_only_while_its_child_runs();
 
 	if (fails) {
 		printf("%d failure(s)\n", fails);

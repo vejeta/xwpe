@@ -61,6 +61,21 @@ CONTINUE_DELAY_S = float(os.environ.get("XWPE_STUB_CONTINUE_DELAY_S", "0"))
 # line of its answer: no line end, no prompt, then its end of file.
 CONTINUE_DIES = os.environ.get("XWPE_STUB_CONTINUE_DIES", "") == "1"
 HALF_LINE = "the debugger died half way through"
+# An exit status: a continue starts a process that keeps the debugger's
+# output and error streams open (its PID in XWPE_STUB_HOLDER_PID), and the
+# debugger exits with that status.  The editor then sees no end of file:
+# only the debugger's own end says it is gone.
+CONTINUE_DIES_HOLDING = os.environ.get("XWPE_STUB_CONTINUE_DIES_HOLDING", "")
+HOLDER_PID = os.environ.get("XWPE_STUB_HOLDER_PID", "")
+HOLDER_NAP_S = 60
+# Set to log every signal that would end the debugger ("SIGNAL <name>"),
+# which it then dies of as if by default but without a core file; and its
+# own PID, at start, in XWPE_STUB_PID_FILE.
+NOTE_SIGNALS = os.environ.get("XWPE_STUB_NOTE_SIGNALS", "") == "1"
+PID_FILE = os.environ.get("XWPE_STUB_PID_FILE", "")
+NOTED_SIGNALS = ("SIGBUS", "SIGSEGV", "SIGQUIT", "SIGABRT", "SIGILL",
+                 "SIGFPE", "SIGTERM", "SIGHUP", "SIGUSR1", "SIGUSR2")
+SIGNAL_EXIT_BASE = 128
 # The line the running program is on when SIGINT interrupts it; 0 keeps the
 # line of the last stop.
 INTERRUPT_AT = int(os.environ.get("XWPE_STUB_INTERRUPT_AT", "0"))
@@ -219,11 +234,42 @@ def run_on():
         signal.signal(signal.SIGINT, on_sigint_at_prompt)
 
 
+def die_holding_output():
+    """Leave a process behind that holds the output open, and exit."""
+    holder = os.fork()
+    if holder == 0:
+        os.close(0)
+        if HOLDER_PID:
+            with open(HOLDER_PID, "w") as fh:
+                fh.write(str(os.getpid()))
+        time.sleep(HOLDER_NAP_S)
+        os._exit(0)
+    os._exit(int(CONTINUE_DIES_HOLDING))
+
+
+def on_ending_signal(signum, frame):
+    note("SIGNAL " + signal.Signals(signum).name)
+    os._exit(SIGNAL_EXIT_BASE + signum)
+
+
+def note_signals():
+    """Log the signals that would end the debugger, and its PID."""
+    if PID_FILE:
+        with open(PID_FILE, "w") as fh:
+            fh.write(str(os.getpid()))
+    if not NOTE_SIGNALS:
+        return
+    for name in NOTED_SIGNALS:
+        signal.signal(getattr(signal, name), on_ending_signal)
+
+
 def run(first):
     """Answer a run or a continue: the next stop, or the program's end."""
     if not first and CONTINUE_RUNS_ON:
         run_on()
         return
+    if not first and CONTINUE_DIES_HOLDING:
+        die_holding_output()
     if not first and CONTINUE_DIES:
         say(HALF_LINE)
         os._exit(0)
@@ -477,6 +523,7 @@ def make_release_pipe():
 
 def main():
     signal.signal(signal.SIGINT, on_sigint_at_prompt)
+    note_signals()
     release_fd = make_release_pipe()
     commands = Commands()
     in_fd = sys.stdin.fileno()

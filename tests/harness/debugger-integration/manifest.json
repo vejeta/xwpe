@@ -401,6 +401,17 @@
   {"id": "SC-debug-77", "requirement": "One owner of input, of children, of writes and of keys", "layer": "ncurses", "test": "tests/test_debugger_integration.py::test_typing_goes_on_when_the_debug_adapter_stops_reading", "status": "new", "needs": ["rustc", "lldb-dap", "linux"]},
   {"id": "SC-debug-78", "requirement": "One owner of input, of children, of writes and of keys", "layer": "ncurses", "test": "tests/test_child_writes.py::test_a_language_server_that_closes_its_input_is_reported_and_ended", "status": "new"},
   {"id": "SC-debug-78", "requirement": "One owner of input, of children, of writes and of keys", "layer": "c-unit", "test": "test_fdloop", "status": "new"},
-  {"id": "SC-debug-78", "requirement": "One owner of input, of children, of writes and of keys", "layer": "c-unit", "test": "test_dap", "status": "new"}
+  {"id": "SC-debug-78", "requirement": "One owner of input, of children, of writes and of keys", "layer": "c-unit", "test": "test_dap", "status": "new"},
+  {"id": "SC-debug-57", "requirement": "One owner of input, of children, of writes and of keys", "layer": "ncurses", "test": "tests/test_debugger_ends.py::test_the_editors_exit_ends_the_debugger_and_its_program", "status": "new", "needs": ["gcc"]},
+  {"id": "SC-debug-57", "requirement": "One owner of input, of children, of writes and of keys", "layer": "ncurses", "test": "tests/test_debugger_ends.py::test_the_editors_exit_ends_gdb_and_its_program", "status": "new", "needs": ["gcc", "gdb"]},
+  {"id": "SC-debug-57", "requirement": "One owner of input, of children, of writes and of keys", "layer": "x11", "test": "tests/x11/test_debugger_ends.py::test_the_editors_exit_ends_the_debugger_and_its_program", "status": "new", "needs": ["Xvfb", "xdotool", "gcc"]},
+  {"id": "SC-debug-57", "requirement": "One owner of input, of children, of writes and of keys", "layer": "wayland", "test": "tests/wayland/test_debugger_ends.py::test_the_editors_exit_ends_the_debugger_and_its_program", "status": "new", "needs": ["weston", "a debug session (skips under the headless compositor)"]},
+  {"id": "SC-debug-79", "requirement": "One owner of input, of children, of writes and of keys", "layer": "ncurses", "test": "tests/test_debugger_ends.py::test_a_debugger_that_dies_is_reported_once_with_its_status", "status": "new", "needs": ["gcc"]},
+  {"id": "SC-debug-80", "requirement": "One owner of input, of children, of writes and of keys", "layer": "ncurses", "test": "tests/test_debugger_ends.py::test_quit_returns_at_once_and_the_end_line_comes_after", "status": "new", "needs": ["gcc", "gdb", "python3", "a68g", "jdb", "javac"]},
+  {"id": "SC-debug-81", "requirement": "One owner of input, of children, of writes and of keys", "layer": "ncurses", "test": "tests/test_debugger_ends.py::test_compile_for_debug_takes_keys", "status": "new"},
+  {"id": "SC-debug-81", "requirement": "One owner of input, of children, of writes and of keys", "layer": "ncurses", "test": "tests/test_debugger_ends.py::test_esc_cancels_compile_for_debug", "status": "new"},
+  {"id": "SC-debug-81", "requirement": "One owner of input, of children, of writes and of keys", "layer": "ncurses", "test": "tests/test_debugger_ends.py::test_quit_cancels_compile_for_debug", "status": "new"},
+  {"id": "SC-debug-81", "requirement": "One owner of input, of children, of writes and of keys", "layer": "ncurses", "test": "tests/test_debugger_ends.py::test_a_file_opened_while_it_compiles_is_never_debugged_with_its_binary", "status": "new"},
+  {"id": "SC-debug-82", "requirement": "One owner of input, of children, of writes and of keys", "layer": "c-unit", "test": "test_child", "status": "new"}
  ]
 }

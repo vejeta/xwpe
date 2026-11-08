@@ -38,13 +38,23 @@
 
 typedef enum {
  WPE_CHILD_IO_PIPES,             /* stdin/stdout pipes, stderr as the spec says */
- WPE_CHILD_IO_PTY                /* one pty on 0/1/2, its controlling terminal:
+ WPE_CHILD_IO_PTY,               /* one pty on 0/1/2, its controlling terminal:
                                     dlv, whose program runs on it */
+ WPE_CHILD_IO_PIPES_AND_PTY,     /* command pipes, and a pty beside them for the
+                                    program the child starts: a line debugger,
+                                    which names the pty to its program */
+ WPE_CHILD_IO_INHERIT_AND_PTY,   /* the editor's own 0/1/2, and the same pty:
+                                    the graphical editors' debugger script */
+ WPE_CHILD_IO_TTY_PATH           /* a terminal the editor has, on 0/1/2: jdb's
+                                    program, on the session's pty */
 } WpeChildIo;
 
 typedef enum {
  WPE_CHILD_OWN_SESSION,          /* setsid: a signal to -pid ends the pipeline */
- WPE_CHILD_OWN_GROUP             /* setpgid on both sides: the build */
+ WPE_CHILD_OWN_GROUP,            /* setpgid on both sides: the build */
+ WPE_CHILD_EDITORS_GROUP         /* stays in the editor's group and session: the
+                                    graphical editors' debugger script, which
+                                    reads the terminal the editor came from */
 } WpeChildGroup;
 
 typedef struct {
@@ -65,6 +75,24 @@ typedef struct {
                                     group: the build server's launcher, whose
                                     group may hold a build server other editors
                                     share */
+ int stderr_nonblocking;         /* the child's stderr pipe never makes it wait:
+                                    a debugger whose errors the editor reads
+                                    only between its answers */
+ int side_pty_slave;             /* _PIPES_AND_PTY, _INHERIT_AND_PTY (set by
+                                    their callers): the program's side of a pty
+                                    from wpe_child_pty_make, kept open across
+                                    exec for the program the child starts; or
+                                    WPE_CHILD_NO_FD (jdb, whose program the
+                                    editor starts itself) */
+ int tty_fd;                     /* _TTY_PATH (set by its callers): a pty
+                                    slave of the editor's, made the child's
+                                    controlling terminal; or WPE_CHILD_NO_FD,
+                                    and then tty_path */
+ const char *tty_path;           /* _TTY_PATH without tty_fd: a terminal opened
+                                    by name, not made the controlling one */
+ int say_failed;                 /* a terminal, directory or program that fails
+                                    is named on the child's stderr, "cannot run
+                                    java: ...", where the user reads its output */
  int echo_argv;                  /* the command line first on stdout (the build's Messages) */
  const char *exec_failed;        /* written before argv when exec fails, or NULL */
  const char *what;               /* "the build": every line the user reads names it */
@@ -86,8 +114,10 @@ typedef void (*WpeChildEndedFn)(WpeChild *c, int status, int how, void *data);
 
 int  wpe_child_start(const WpeChildSpec *spec, WpeChild *c,
                      WpeChildEndedFn ended, void *data);
+int  wpe_child_pty_make(int *master, int *slave, char *name, size_t n);
 int  wpe_child_signal(WpeChild *c, int sig);
 int  wpe_child_signal_pid(WpeChild *c, int sig);
+int  wpe_child_signal_named(WpeChild *c, int pid, int sig);
 void wpe_child_end(WpeChild *c, int polite_sig);
 void wpe_child_end_detached(WpeChild *c, int polite_sig);
 void wpe_child_forget(WpeChild *c);
@@ -95,12 +125,13 @@ int  wpe_child_ended(const WpeChild *c, int *status);
 int  wpe_child_ending(void);
 void wpe_child_say_set(void (*say)(const char *line));
 
-/* For the SIGCHLD handler (async-signal-safe), and the fd that wakes the loop. */
+/* For the SIGCHLD handler and the crash and end handlers (async-signal-safe),
+   and the fd that wakes the loop. */
 void wpe_child_note_ended(pid_t pid, int status);
+void wpe_child_end_from_handler(void);
 int  wpe_child_fd_private(int fd);
 
-/* The older, pid-based watch, for the children not yet started through
-   wpe_child_start (the line debuggers, jdb's VM). */
+/* The pid-based watch, which wpe_child_start is built on. */
 typedef void (*WpeChildEndCallback)(int pid, int status, void *data);
 void WpeChildWakeOpen(void);
 void WpeChildSignalBlock(sigset_t *saved);
@@ -108,6 +139,5 @@ void WpeChildSignalRestore(const sigset_t *saved);
 int  WpeChildWatch(int pid, WpeChildEndCallback cb, void *data);
 void WpeChildUnwatch(int pid);
 int  WpeChildEnded(int pid, int *status);
-int  WpeReapedStatus(int pid, int *status);
 
 #endif /* WE_CHILD_H */

@@ -62,8 +62,6 @@ void e_messages_show_tail(ECNT *cn);
 /* we_child.c: the editor's children, started, watched and ended in one
    place; their ends come back from the fd loop, nobody waits for them. */
 #include "we_child.h"
-/* we_unix.c: the running build's process group, for the signal handlers. */
-void WpeBuildGroupSet(int pgid);
 int e_c_project(FENSTER *f, e_build_cont done, void *data);
 int e_free_arg(char **arg, int argc);
 int e_rel_brkwtch(FENSTER *f);

@@ -3,9 +3,10 @@
  * See we_child.h.  The SIGCHLD handler (WpeSignalChild, we_unix.c) reaps
  * every child with waitpid(-1, WNOHANG) and hands each one to
  * wpe_child_note_ended: a watched child's wait status goes to its own slot
- * and wakes the fd loop through a pipe; any other child's goes to a small
- * ring for the callers that still read it (WpeReapedStatus).  The loop then
- * calls each ended child's owner back, between the user's keys.
+ * and wakes the fd loop through a pipe.  Every child the editor starts is
+ * watched from before its fork, so no status is ever kept anywhere else.
+ * The loop then calls each ended child's owner back, between the user's
+ * keys.
  *
  * pid, ended and status of a slot are written by the handler or with
  * SIGCHLD held; the rest only from the main loop.  The handler does this
@@ -15,6 +16,7 @@
  */
 #include <errno.h>
 #include <fcntl.h>
+#include <limits.h>
 #include <poll.h>
 #include <pthread.h>
 #include <signal.h>
@@ -38,14 +40,12 @@
 #include "we_childsig.h"
 #include "we_fdloop.h"
 
-/* The exit statuses of children nobody watches, for the callers that still
-   read one (the line debuggers): a ring written in the handler. */
-#define WPE_REAPED_RING 8
-static volatile sig_atomic_t wpe_reaped_pid[WPE_REAPED_RING];
-static volatile sig_atomic_t wpe_reaped_status[WPE_REAPED_RING];
-static volatile sig_atomic_t wpe_reaped_next;
-
 #define WPE_CHILD_EXEC_FAILED 1          /* a command that could not run */
+#define WPE_CHILD_SAID_FAILED 127        /* one that said why, as a shell's */
+#define WPE_CHILD_SAY_MAX     (PATH_MAX + 128)
+#define WPE_CHILD_TTY_FAILED_FMT  "cannot give %s a terminal: %s\r\n"
+#define WPE_CHILD_DIR_FAILED_FMT  "cannot enter %s: %s\r\n"
+#define WPE_CHILD_RUN_FAILED_FMT  "cannot run %s: %s\r\n"
 #define WPE_CHILD_LINE_MAX    128        /* a line for the status row */
 #define WPE_CHILD_NOT_STARTED_FMT "%s not started: too many programs running"
 #define WPE_CHILD_DID_NOT_END_FMT "%s did not end"
@@ -60,6 +60,7 @@ typedef struct {
  volatile sig_atomic_t pid;      /* the child, or 0 while the slot is free */
  volatile sig_atomic_t ended;    /* the handler reaped it */
  volatile sig_atomic_t status;   /* its wait status, once ended */
+ volatile sig_atomic_t group;    /* it leads a group the handlers may end */
  WpeChildEndCallback callback;   /* a pid-based watch (WpeChildWatch) */
  void *data;
  WpeChild *child;                /* or a child of wpe_child_start */
@@ -202,50 +203,41 @@ static int wpe_child_watch_note(pid_t pid, int status)
 }
 
 /**
- * wpe_reaped_ring_note - In the handler: keep an unwatched child's status.
- * @pid: the child; @status: its wait status.
- */
-static void wpe_reaped_ring_note(pid_t pid, int status)
-{
- int slot = wpe_reaped_next;
-
- wpe_reaped_pid[slot] = pid;
- wpe_reaped_status[slot] = status;
- wpe_reaped_next = (slot + 1) % WPE_REAPED_RING;
-}
-
-/**
  * wpe_child_note_ended - The SIGCHLD handler reaped @pid.
  * @pid: the child; @status: its wait status.
  *
- * Async-signal-safe: stores into sig_atomic_t fields and one write().
+ * Async-signal-safe: stores into sig_atomic_t fields and one write().  A
+ * process nobody watches (none the editor starts) needs nothing kept.
  */
 void wpe_child_note_ended(pid_t pid, int status)
 {
- if (!wpe_child_watch_note(pid, status))
-  wpe_reaped_ring_note(pid, status);
+ wpe_child_watch_note(pid, status);
 }
 
 /**
- * WpeReapedStatus - The exit status the handler kept for an unwatched @pid.
- * @pid: a child the caller started; @status: receives its wait status.
+ * wpe_child_end_from_handler - End every child the editor follows, at once.
  *
- * Read by the line debuggers, whose processes are not yet watched.  The
- * entry is cleared once read.
- * Return: 1 with *status set when the handler reaped that child, else 0.
+ * Called by a crash or end signal's handler, and by the editor's own end
+ * once the children that can say goodbye have had their time: SIGKILL to
+ * each one still running, and to the group it leads, so no build, debugger,
+ * server or program the editor started is left behind it.  A child whose
+ * signals reach it alone (the build server's launcher) keeps its group.
+ * Async-signal-safe: reads sig_atomic_t fields and calls kill() only.
  */
-int WpeReapedStatus(int pid, int *status)
+void wpe_child_end_from_handler(void)
 {
  int i;
 
- for (i = 0; i < WPE_REAPED_RING; i++)
-  if (wpe_reaped_pid[i] == pid)
-  {
-   *status = wpe_reaped_status[i];
-   wpe_reaped_pid[i] = 0;
-   return(1);
-  }
- return(0);
+ for (i = 0; i < WPE_CHILD_MAX; i++)
+ {
+  if (wpe_child_lingers[i].pgid > 0)
+   kill(-wpe_child_lingers[i].pgid, SIGKILL);
+  if (wpe_child_table[i].pid <= 0 || wpe_child_table[i].ended)
+   continue;
+  if (wpe_child_table[i].group)
+   kill(-wpe_child_table[i].pid, SIGKILL);
+  kill(wpe_child_table[i].pid, SIGKILL);
+ }
 }
 
 /**
@@ -287,20 +279,6 @@ void WpeChildSignalRestore(const sigset_t *saved)
 static int wpe_child_signal_was_held(const sigset_t *saved)
 {
  return(sigismember(saved, SIGCHLD) == 1);
-}
-
-/**
- * wpe_reaped_ring_forget - Drop what the ring kept for an earlier process
- * that had the PID of a child just forked (PIDs are reused).
- * @pid: the new child, forked with SIGCHLD held.
- */
-static void wpe_reaped_ring_forget(int pid)
-{
- int i;
-
- for (i = 0; i < WPE_REAPED_RING; i++)
-  if (wpe_reaped_pid[i] == pid)
-   wpe_reaped_pid[i] = 0;
 }
 
 /** wpe_child_find - The slot of @pid, or NULL. */
@@ -350,6 +328,7 @@ static void wpe_child_slot_free(WpeChildSlot *w)
  w->child_ended = NULL;
  w->child_data = NULL;
  w->what = NULL;
+ w->group = 0;
  w->pid = 0;
 }
 
@@ -542,9 +521,9 @@ static WpeChildSlot *wpe_child_slot_take(int pid)
   return(NULL);
  if (wpe_fd_add(wpe_child_wake_rd, POLLIN, wpe_child_on_wake, NULL) != 0)
   return(NULL);
- wpe_reaped_ring_forget(pid);
  w->ended = 0;
  w->status = 0;
+ w->group = 0;
  w->callback = NULL;
  w->data = NULL;
  w->child = NULL;
@@ -612,31 +591,21 @@ void WpeChildUnwatch(int pid)
  * WpeChildEnded - Has the child @pid ended, and how?  Never waits.
  * @pid: a child of the editor; @status: receives its wait status.
  *
- * A watched child is answered from its slot, and its callback still comes;
- * any other child is asked with WNOHANG and then looked up in the ring.
+ * A watched child is answered from its slot, and its callback still comes.
+ * Nothing is asked of the system: the SIGCHLD handler is the one reaper.
  * Return: WPE_CHILD_RUNS, WPE_CHILD_ENDED with *status set, or
- * WPE_CHILD_ENDED_UNKNOWN when it is gone and its status was lost.
+ * WPE_CHILD_ENDED_UNKNOWN when @pid is followed no more.
  */
 int WpeChildEnded(int pid, int *status)
 {
  WpeChildSlot *w = wpe_child_find(pid);
- int r;
 
- if (w && !w->ended)
+ if (!w)
+  return(WPE_CHILD_ENDED_UNKNOWN);
+ if (!w->ended)
   return(WPE_CHILD_RUNS);
- if (w)
- {
-  *status = w->status;
-  return(WPE_CHILD_ENDED);
- }
- r = waitpid(pid, status, WNOHANG);
- if (r == pid)
-  return(WPE_CHILD_ENDED);
- if (r == 0 || errno != ECHILD)
-  return(WPE_CHILD_RUNS);
- if (WpeReapedStatus(pid, status))
-  return(WPE_CHILD_ENDED);
- return(WPE_CHILD_ENDED_UNKNOWN);
+ *status = w->status;
+ return(WPE_CHILD_ENDED);
 }
 
 /* ---- starting a child ---------------------------------------------------- */
@@ -672,6 +641,21 @@ typedef struct {
  int master;                     /* the editor's: what the program writes */
  int slave;                      /* the child's terminal */
 } WpeChildPty;
+
+/**
+ * wpe_child_io_has_side_pty - Does the child get a pty beside its own
+ * input and output, for a program it starts and names it to?
+ */
+static int wpe_child_io_has_side_pty(WpeChildIo io)
+{
+ return(io == WPE_CHILD_IO_PIPES_AND_PTY || io == WPE_CHILD_IO_INHERIT_AND_PTY);
+}
+
+/** wpe_child_io_has_pipes - Does the child talk to the editor on pipes? */
+static int wpe_child_io_has_pipes(WpeChildIo io)
+{
+ return(io == WPE_CHILD_IO_PIPES || io == WPE_CHILD_IO_PIPES_AND_PTY);
+}
 
 /** wpe_child_pty_close - Close what is still open of a pty. */
 static void wpe_child_pty_close(WpeChildPty *t)
@@ -714,10 +698,38 @@ static int wpe_child_pty_open(const WpeChildSpec *spec, WpeChildPty *t)
 }
 
 /**
+ * wpe_child_pty_make - A pty for a program a child of the editor will start
+ * (a line debugger's program), or that the editor starts later itself (jdb's).
+ * @master: receives the editor's end, non-blocking; @slave: the program's
+ * side; @name, @n: receives the slave's name, which the debugger is told.
+ *
+ * Both ends are closed on exec, so no other child the editor starts holds
+ * the program's terminal by mistake: the child that is to have the slave
+ * gets it through its spec (side_pty_slave, or tty_fd), and the program's
+ * end then shows on the master as a hangup.
+ * Return: 0, or -1 with both set to WPE_CHILD_NO_FD.
+ */
+int wpe_child_pty_make(int *master, int *slave, char *name, size_t n)
+{
+ *master = *slave = WPE_CHILD_NO_FD;
+ if (openpty(master, slave, NULL, NULL, NULL) != 0)
+ {
+  *master = *slave = WPE_CHILD_NO_FD;
+  return(-1);
+ }
+ if (ttyname_r(*slave, name, n) != 0)
+  name[0] = '\0';
+ wpe_child_fd_private(*master);
+ fcntl(*slave, F_SETFD, FD_CLOEXEC);
+ return(0);
+}
+
+/**
  * wpe_child_pipes_open - The pipes the spec asks for.
  * @spec: the child; @p: receives them, -1 where none is wanted.
  *
- * A child on a pty has its terminal for 0, 1 and 2, and no pipe.
+ * A child on a pty or a terminal has it for 0, 1 and 2, and no pipe; the
+ * graphical editors' debugger script keeps the editor's own.
  * Return: 0, or -1 (and nothing open) when a pipe could not be made.
  */
 static int wpe_child_pipes_open(const WpeChildSpec *spec, int (*p)[2])
@@ -726,7 +738,7 @@ static int wpe_child_pipes_open(const WpeChildSpec *spec, int (*p)[2])
 
  for (i = 0; i < WPE_CHILD_P_N; i++)
   p[i][0] = p[i][1] = WPE_CHILD_NO_FD;
- if (spec->io == WPE_CHILD_IO_PTY)
+ if (!wpe_child_io_has_pipes(spec->io))
   return(0);
  if (!spec->stdout_to_null && pipe(p[WPE_CHILD_P_OUT]) < 0)
   return(-1);
@@ -789,6 +801,110 @@ static void wpe_child_io_pipes(const WpeChildSpec *spec, int (*p)[2])
   wpe_child_dup_null(STDERR_FILENO, O_WRONLY);
  else if (!spec->stderr_inherit)
   dup2(p[WPE_CHILD_P_ERR][WPE_CHILD_PIPE_WR], STDERR_FILENO);
+ if (spec->stderr_nonblocking)
+  fcntl(STDERR_FILENO, F_SETFL,
+        fcntl(STDERR_FILENO, F_GETFL, 0) | O_NONBLOCK);
+}
+
+/**
+ * wpe_child_say_failed - In the child: name what could not be done, and
+ * why, on its stderr, then end it as a shell ends a command it cannot run.
+ * @spec: the child (nothing is said unless say_failed); @fmt: the sentence,
+ * with the subject and the reason as its two %s; @subject: what failed.
+ *
+ * The user reads the line where the program's own output goes (Messages,
+ * for jdb's program), instead of a session that never starts unexplained.
+ */
+static void wpe_child_say_failed(const WpeChildSpec *spec, const char *fmt,
+                                 const char *subject)
+{
+ char line[WPE_CHILD_SAY_MAX];
+ int err = errno, len;
+
+ if (!spec->say_failed)
+  _exit(WPE_CHILD_EXEC_FAILED);
+ len = snprintf(line, sizeof line, fmt, subject, strerror(err));
+ if (len > 0 && write(STDERR_FILENO, line, strlen(line)) < 0)
+  _exit(WPE_CHILD_SAID_FAILED);
+ _exit(WPE_CHILD_SAID_FAILED);
+}
+
+static void wpe_child_io_pty(WpeChildPty *t);   /* (below) */
+
+/**
+ * wpe_child_io_tty - In the child: the terminal the spec names on 0, 1 and
+ * 2.  A pty slave of the editor's (tty_fd) becomes its controlling terminal,
+ * so the program reads what the user types and a hangup ends it; a terminal
+ * named by its path (the editor's own) is only written and read.
+ * @spec: the child.
+ */
+static void wpe_child_io_tty(const WpeChildSpec *spec)
+{
+ WpeChildPty t;
+ int fd;
+
+ if (spec->tty_fd != WPE_CHILD_NO_FD)
+ {
+  t.master = WPE_CHILD_NO_FD;
+  t.slave = spec->tty_fd;
+  if (ioctl(t.slave, TIOCSCTTY, 0) != 0)
+   wpe_child_say_failed(spec, WPE_CHILD_TTY_FAILED_FMT, spec->what);
+  wpe_child_io_pty(&t);
+  return;
+ }
+ fd = open(spec->tty_path, O_RDWR | O_NOCTTY);
+ if (fd < 0)
+  wpe_child_say_failed(spec, WPE_CHILD_TTY_FAILED_FMT, spec->what);
+ dup2(fd, WPE_CHILD_FD_IN);
+ dup2(fd, STDOUT_FILENO);
+ dup2(fd, STDERR_FILENO);
+ if (fd > STDERR_FILENO)
+  close(fd);
+}
+
+/**
+ * wpe_child_side_pty - In the child: keep the program's side of the pty
+ * beside its pipes open across exec, for the program it starts and names
+ * it to.  The master is never the child's: it is closed on exec.
+ * @spec: the child.
+ */
+static void wpe_child_side_pty(const WpeChildSpec *spec)
+{
+ if (spec->side_pty_slave != WPE_CHILD_NO_FD)
+  fcntl(spec->side_pty_slave, F_SETFD, 0);
+}
+
+/**
+ * wpe_child_io - In the child: 0, 1 and 2 as the spec says.
+ * @spec: the child; @p: the pipes; @t: the pty.
+ */
+static void wpe_child_io(const WpeChildSpec *spec, int (*p)[2], WpeChildPty *t)
+{
+ if (spec->io == WPE_CHILD_IO_PTY)
+ {
+  close(t->master);
+  wpe_child_io_pty(t);
+ }
+ else if (spec->io == WPE_CHILD_IO_TTY_PATH)
+  wpe_child_io_tty(spec);
+ else if (wpe_child_io_has_side_pty(spec->io))
+  wpe_child_side_pty(spec);
+ if (wpe_child_io_has_pipes(spec->io))
+  wpe_child_io_pipes(spec, p);
+ wpe_child_pipes_close(p, WPE_CHILD_P_N);
+}
+
+/**
+ * wpe_child_take_group - In the child: the group or session the spec asks
+ * for.  One in the editor's group keeps the editor's terminal, so a script
+ * that asks the user something there can still read the answer.
+ */
+static void wpe_child_take_group(const WpeChildSpec *spec)
+{
+ if (spec->group == WPE_CHILD_OWN_GROUP)
+  setpgid(0, 0);
+ else if (spec->group == WPE_CHILD_OWN_SESSION)
+  wpe_child_apart_from_terminal();
 }
 
 /**
@@ -818,33 +934,26 @@ static void wpe_child_io_pty(WpeChildPty *t)
  * Does not return.  The program gets the signal state a shell would give
  * it, its own group or session, and only the descriptors 0, 1 and 2.  It
  * never holds the master of its own pty: the hangup that ends it when the
- * editor dies comes only once every master is closed.
+ * editor dies comes only once every master is closed.  The directory is
+ * entered once 0, 1 and 2 are set, so a directory that is gone is named
+ * where the program's output goes.
  */
 static void wpe_child_exec(const WpeChildSpec *spec, int (*p)[2],
                            WpeChildPty *t, pid_t editor)
 {
  wpe_child_default_signals();
- if (spec->group == WPE_CHILD_OWN_GROUP)
-  setpgid(0, 0);
- else
-  wpe_child_apart_from_terminal();
+ wpe_child_take_group(spec);
  if (spec->die_with_editor && wpe_child_die_with_editor(editor) != 0)
   _exit(WPE_CHILD_EXEC_FAILED);
+ wpe_child_io(spec, p, t);
  if (spec->cwd && chdir(spec->cwd) != 0)
-  _exit(WPE_CHILD_EXEC_FAILED);
- if (t->master != WPE_CHILD_NO_FD)
-  close(t->master);
- if (spec->io == WPE_CHILD_IO_PTY)
-  wpe_child_io_pty(t);
- else
-  wpe_child_io_pipes(spec, p);
- wpe_child_pipes_close(p, WPE_CHILD_P_N);
+  wpe_child_say_failed(spec, WPE_CHILD_DIR_FAILED_FMT, spec->cwd);
  if (spec->echo_argv)
   wpe_child_print_argv(stderr, "", spec->argv);
  execvp(spec->argv[0], spec->argv);
  if (spec->exec_failed)
   wpe_child_print_argv(stderr, spec->exec_failed, spec->argv);
- _exit(WPE_CHILD_EXEC_FAILED);
+ wpe_child_say_failed(spec, WPE_CHILD_RUN_FAILED_FMT, spec->argv[0]);
 }
 
 /**
@@ -967,6 +1076,20 @@ static int wpe_child_start_failed(const sigset_t *saved)
 }
 
 /**
+ * wpe_child_spec_leads_group - Do the child's signals go to its group?
+ *
+ * Not for one whose group may hold what others share (the build server's
+ * launcher), and not for one left in the editor's own group, whose group
+ * signal would reach the editor.
+ */
+static int wpe_child_spec_leads_group(const WpeChildSpec *spec)
+{
+ if (spec->signal_leader_only)
+  return(0);
+ return(spec->group != WPE_CHILD_EDITORS_GROUP);
+}
+
+/**
  * wpe_child_start - Start a program for the editor, its end watched.
  * @spec: what to run and how; @c: receives the process and its descriptors
  * (the caller's, valid until the end is reported); @ended: called once,
@@ -1023,11 +1146,12 @@ int wpe_child_start(const WpeChildSpec *spec, WpeChild *c,
   return(wpe_child_refuse(spec, &saved));
  }
  c->pid = pid;
- c->leads_group = !spec->signal_leader_only;
+ c->leads_group = wpe_child_spec_leads_group(spec);
  w->child = c;
  w->child_ended = ended;
  w->child_data = data;
  w->what = spec->what;
+ w->group = c->leads_group;
  w->pid = pid;
  WpeChildSignalRestore(&saved);
  return(0);
@@ -1090,6 +1214,31 @@ int wpe_child_signal_pid(WpeChild *c, int sig)
   ret = 0;
   kill(c->pid, sig);
  }
+ WpeChildSignalRestore(&saved);
+ return(ret);
+}
+
+/**
+ * wpe_child_signal_named - Send @sig to a process the child started and
+ * named, while the child runs.
+ * @c: the child; @pid: the process it named (the graphical editors'
+ * debugger script writes down the debugger it runs); @sig: the signal.
+ *
+ * Pause reaches the debugger itself, not the script around it.  Nothing is
+ * sent once the child has ended: the number it wrote down may be another
+ * process's by then.
+ * Return: 0, or -1 when the child has ended or @pid names nothing.
+ */
+int wpe_child_signal_named(WpeChild *c, int pid, int sig)
+{
+ sigset_t saved;
+ int ret = -1;
+
+ if (pid <= 0)
+  return(-1);
+ WpeChildSignalBlock(&saved);
+ if (c->pid > 0 && wpe_child_running_slot(c))
+  ret = kill(pid, sig);
  WpeChildSignalRestore(&saved);
  return(ret);
 }

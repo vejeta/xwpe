@@ -1753,13 +1753,13 @@ static void e_build_signal(int sig)
 /**
  * e_build_mark_reaped - The build's child has been waited for.
  *
- * From here on a signal that ends the editor has no build group to kill,
- * so a later process that reuses the number is never hit.
+ * Its slot in the owner of the editor's children is free from then on, so
+ * a signal that ends the editor never reaches a later process that reused
+ * the number.
  */
 static void e_build_mark_reaped(void)
 {
  g_build.reaped = 1;
- WpeBuildGroupSet(0);
 }
 
 /**
@@ -2002,7 +2002,6 @@ void e_build_end_at_exit(void)
  if (!g_build.active || g_build.reaped || g_build.pid <= 0)
   return;
  e_build_signal(SIGKILL);
- WpeBuildGroupSet(0);
 }
 
 /**
@@ -2254,7 +2253,6 @@ static void e_build_step_begin(ECNT *cn, FENSTER *mf, PIC *pic,
  memset(&g_build, 0, sizeof g_build);
  g_build.active = 1;
  g_build.pid = e_save_pid;
- WpeBuildGroupSet(e_save_pid);   /* the child leads its own process group */
  g_build.efd = g_build.wfd = E_BUILD_NO_FD;
  g_build.hb_timer = WPE_TIMER_NONE;
  g_build.cn = cn;

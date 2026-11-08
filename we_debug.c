@@ -15,7 +15,6 @@
 #include "we_debprompt.h"
 #include "we_debpath.h"
 #include "we_debsess.h"
-#include "we_childsig.h"
 
 #ifndef NO_XWINDOWS
 #include "WeXterm.h"
@@ -30,16 +29,6 @@
 #include <sys/stat.h>
 #include <signal.h>
 #include <poll.h>
-#if defined(HAVE_PTY_H)
-# include <pty.h>          /* glibc: openpty/forkpty */
-#elif defined(HAVE_UTIL_H)
-# include <util.h>         /* macOS, *BSD */
-#elif defined(HAVE_LIBUTIL_H)
-# include <libutil.h>      /* some BSDs */
-#endif
-#ifdef HAVE_UTMP_H
-# include <utmp.h>         /* glibc: login_tty */
-#endif
 #include <errno.h>
 #include <stdarg.h>
 #include <sys/wait.h>
@@ -72,7 +61,27 @@ static int e_e_line_read(int n, signed char *s, int max);
 #define MAXOUT  2 * MAXSCOL * MAXSLNS
 
 char *e_debugger, *e_deb_swtch = NULL, *e_d_save_schirm;
-int e_d_swtch = 0, rfildes[2], ofildes, e_d_pid = 0;
+int e_d_swtch = 0, rfildes[2], ofildes;
+
+/* The line debugger's process, from its start until the owner of the
+   editor's children reports its end: the session's end line comes from
+   that report, never from asking the system. */
+#define E_D_DIED_LABEL_MAX 64
+static struct {
+ WpeChild child;
+ int live;           /* a session runs on it: its end ends the session */
+ int asked_end;      /* the editor ended it (Quit, Esc, a deadline) */
+ int end_expected;   /* it said the program ended, and goes with it */
+ int ended;          /* its end was reported */
+ int status;         /* its wait status, when status_known */
+ int status_known;
+ int say_later;      /* the session ended before the end was reported: the
+                        line that it died is said when it is */
+ int held;           /* it ended behind a dialog: the session ends after */
+ int in_fd;          /* its input, open until it ends, so the quit queued
+                        behind a debugger slow to read still reaches it */
+ char label[E_D_DIED_LABEL_MAX];   /* its name, for a line said later */
+} e_d_dbg = { { 0 }, 0, 0, 0, 0, 0, 0, 0, 0, -1, "" };
 
 /* Set while the program runs under the run controller (e_d_run_begin) and
    cleared at its stop or at the end of the session.  The key router, the
@@ -1299,6 +1308,11 @@ static int  e_d_scala_setup_first(FENSTER *f, const char *dir); /* setup-ide */
    when it has ended. */
 #define E_D_BUILDING (-3)
 static void e_scala_setup_end_at_exit(void);    /* setup-ide at the end */
+static void e_d_after_build(FENSTER *f, int result, void *data);  /* (below) */
+static void e_d_resume_drop(void);              /* nothing runs again */
+static void e_d_compile_deliver_held(void);     /* compile for debug */
+static void e_d_compile_end_at_exit(void);
+static void e_d_debugger_deliver_held(void);    /* the debugger's end */
 static int  e_d_dap_source_ext(const char *datnam);
 static int  e_d_dap_start(FENSTER *f);
 static int  e_d_dap_run(FENSTER *f);
@@ -1946,23 +1960,6 @@ static pid_t e_d_debugger_pid_read(void)
 }
 
 /**
- * e_d_debugger_pid - The process Pause signals: the debugger itself.
- *
- * In the terminal editor the debugger is the editor's own child.  In the
- * graphical editors the child is the helper script and the debugger is
- * what the script recorded, started by exec so that it is one process.
- * Return: the PID, or 0 when there is no debugger to signal.
- */
-static pid_t e_d_debugger_pid(void)
-{
- if (e_d_pid <= 0)
-  return(0);
- if (!WpeIsXwin())
-  return((pid_t)e_d_pid);
- return(e_d_debugger_pid_read());
-}
-
-/**
  * e_d_interrupt_debugger - Pause the running program by sending SIGINT to
  * the debugger, as Ctrl-C does in a shell.
  *
@@ -1970,16 +1967,19 @@ static pid_t e_d_debugger_pid(void)
  * reports "Program interrupted" at the line the program is on, a68g asks
  * whether to terminate (answered by e_d_a68g_keep_running_after_interrupt),
  * and sdb, dbx and xdb report the interrupt in their own words.  The user
- * gets the stop marked on the line the program was running.
+ * gets the stop marked on the line the program was running.  The signal
+ * goes to the debugger alone, never to its program's group.  In the
+ * terminal editor the debugger is the editor's own child; in the graphical
+ * editors the child is the helper script and the debugger is what the
+ * script recorded, started by exec so that it is one process.
  * Return: 0 when the signal was sent, -1 when there is no debugger.
  */
 static int e_d_interrupt_debugger(void)
 {
- pid_t pid = e_d_debugger_pid();
-
- if (pid <= 0)
-  return(-1);
- return(kill(pid, SIGINT));
+ if (!WpeIsXwin())
+  return(wpe_child_signal_pid(&e_d_dbg.child, SIGINT));
+ return(wpe_child_signal_named(&e_d_dbg.child, e_d_debugger_pid_read(),
+                               SIGINT));
 }
 
 static int e_d_gdb_interrupt_stop(int taken);              /* (below) */
@@ -2994,10 +2994,13 @@ static int e_d_run_watch(const E_D_RUN_OPS *ops)
  * process's).  The debugger's answer is no longer read; the program's
  * output still reaches Messages, the user keeps every key, debugger keys
  * say the program runs, and Debug > Quit ends it.  The backend calls
- * e_d_run_process_ended when the process ends.
+ * e_d_run_process_ended when the process ends.  The debugger's own end,
+ * which follows the program's, is then no surprise: it does not end the
+ * session, and its end line is the program's.
  */
 static void e_d_run_wait_for_process(void)
 {
+ e_d_dbg.end_expected = 1;
  e_d_run_mark_going(e_d_run.ops);
 }
 
@@ -3780,13 +3783,113 @@ int e_d_is_watch(int c, FENSTER *f)
 
 static void e_d_jdb_vm_end(void);   /* the Java program's VM (below) */
 static void e_d_session_forget(void);   /* (below, with the stop readers) */
+static int  e_d_output_closed;          /* (below) */
+
+/**
+ * e_d_quit_command - What the session's debugger is told to quit with: its
+ * own word, and the answer to the "really quit?" it asks with a program.
+ * Return: the command, or NULL for a debugger that is told nothing.
+ */
+static const char *e_d_quit_command(void)
+{
+ switch (e_deb_type)
+ {
+  case DEB_GDB:  return("q\ny\n");
+  case DEB_XDB:  return("q\ny\n");
+  case DEB_SDB:  return("q\n");
+  case DEB_DBX:  return("quit\n");
+  case DEB_JDB:  return("quit\n");
+  case DEB_PDB:  return("q\ny\n");          /* pdb: quit + confirm */
+  case DEB_A68G: return("quit\nyes\n");     /* a68g: "Terminate a68g (yes|no):" */
+  default:       return(NULL);
+ }
+}
+
+/**
+ * e_d_quit_can_be_asked - Is the debugger told to quit on its input?
+ *
+ * Only one that has answered: a debugger that never did is ended by signal.
+ */
+static int e_d_quit_can_be_asked(void)
+{
+ return(rfildes[1] >= 0 && e_d_swtch >= 2 && e_d_quit_command() != NULL);
+}
+
+/**
+ * e_d_debugger_end_signal - How the debugger is ended once its session is
+ * over: the signal its end begins with, before the owner's grace and
+ * SIGKILL.
+ * @program_runs: the program was running, so the debugger reads no command.
+ *
+ * Measured with each debugger started as the editor starts it, its program
+ * a loop that never ends (gdb 18.1 line and MI, python3 -m pdb, a68g 3.1.2,
+ * jdb of OpenJDK 26):
+ *  - output ended: the debugger is broken or dying, SIGKILL at once;
+ *  - told to quit at its prompt: no signal.  gdb kills its program and
+ *    ends, pdb and a68g (the program is the debugger) end, within the grace;
+ *  - program running, or never told: the quit is not read while the
+ *    program runs, so SIGTERM.  gdb, pdb and a68g end at once, and gdb's
+ *    program with it;
+ *  - SIGKILL after the grace ends any of them, and gdb's program with gdb;
+ *    without a signal the program also ends when the editor closes its
+ *    terminal.  jdb's program survives jdb's quit, SIGTERM and SIGKILL
+ *    alike, which is why the editor ends it first (e_d_jdb_vm_end).
+ * The graphical editors' child is the script around the debugger, which
+ * reads nothing: SIGTERM ends it, and the debugger reads its quit through
+ * the pipe; under X11 gdb and its running program were gone within the
+ * grace, at Quit and at the editor's end alike.
+ * Return: SIGKILL, SIGTERM or WPE_CHILD_NO_SIGNAL.
+ */
+static int e_d_debugger_end_signal(int program_runs)
+{
+ if (e_d_output_closed)
+  return(SIGKILL);
+ if (WpeIsXwin() || program_runs || !e_d_quit_can_be_asked())
+  return(SIGTERM);
+ return(WPE_CHILD_NO_SIGNAL);
+}
+
+/**
+ * e_d_debugger_close_input - Close the debugger's input that was kept open
+ * past its session for the quit queued in it.
+ */
+static void e_d_debugger_close_input(void)
+{
+ e_d_close_fd(&e_d_dbg.in_fd);
+}
+
+/**
+ * e_d_debugger_end - The session is over: end its debugger without waiting.
+ * @sig: what e_d_debugger_end_signal chose.
+ *
+ * Quit returns at once; the owner of the editor's children ends the
+ * debugger on its ladder, and its input stays open until it has ended, so
+ * the quit command it is reading its way to is never dropped.
+ */
+static void e_d_debugger_end(int sig)
+{
+ e_d_dbg.live = 0;
+ if (e_d_dbg.child.pid <= 0)
+ {
+  e_d_close_fd(&rfildes[1]);
+  return;
+ }
+ e_d_debugger_close_input();
+ e_d_dbg.in_fd = rfildes[1];
+ rfildes[1] = -1;
+ e_d_dbg.asked_end = 1;
+ wpe_child_end(&e_d_dbg.child, sig);
+}
 
 int e_d_quit_basic(FENSTER *f)
 {
- int i, kbdflgs;
+ int i, kbdflgs, end_sig;
 
- /* The Java program goes first, by its PID: jdb's own "quit" would let a
-    VM stopped at a breakpoint run on, and jdb never started it. */
+ /* How the debugger is ended is read before the session's memory of its
+    output and of the running program is dropped below. */
+ end_sig = e_d_debugger_end_signal(e_d_run_going());
+ /* The Java program goes first: jdb's own "quit" would let a VM stopped
+    at a breakpoint run on, and jdb never started it. */
  e_d_jdb_vm_end();
  e_d_start_forget();
  e_d_end_forget();
@@ -3799,31 +3902,13 @@ int e_d_quit_basic(FENSTER *f)
  if (!e_d_swtch)
   return 0;
  /* A debugger that never answered is not spoken to: it is ended below. */
- if (rfildes[1] >= 0 && e_d_swtch >= 2)
- {
-  if (e_deb_type == DEB_GDB || e_deb_type == DEB_XDB)
-   e_d_send_cmd("q\ny\n");
-  else if (e_deb_type == DEB_SDB)
-   e_d_send_cmd("q\n");
-  else if (e_deb_type == DEB_DBX)
-   e_d_send_cmd("quit\n");
-  else if (e_deb_type == DEB_JDB)
-   e_d_send_cmd("quit\n");
-  else if (e_deb_type == DEB_PDB)
-   e_d_send_cmd("q\ny\n");  /* pdb: quit + confirm */
-  else if (e_deb_type == DEB_A68G)
-   e_d_send_cmd("quit\nyes\n");  /* a68g: quit + "Terminate a68g (yes|no):" */
- }
+ if (e_d_quit_can_be_asked())
+  e_d_send_cmd(e_d_quit_command());
  jdb_trace("e_d_quit_basic: quitting debugger type=%d\n", e_deb_type);
  kbdflgs = fcntl(0, F_GETFL, 0 );
  fcntl(0, F_SETFL, kbdflgs & ~O_NONBLOCK);
  e_d_swtch = 0;
- if (e_d_pid)
- {
-  kill(e_d_pid, SIGKILL);
-  waitpid(e_d_pid, NULL, 0);  /* reap zombie */
-  e_d_pid = 0;
- }
+ e_d_debugger_end(end_sig);
  e_d_debugger_pid_forget();
  if (!WpeIsXwin())
  {
@@ -3831,7 +3916,6 @@ int e_d_quit_basic(FENSTER *f)
    FREE(e_d_out);
   e_d_out = NULL;
  }
- e_d_close_fd(&rfildes[1]);
  e_d_close_fd(&wfildes[0]);
  e_d_close_fd(&efildes[0]);
  e_d_close_fd(&rfildes[0]);
@@ -3903,44 +3987,34 @@ static void e_d_end_forget(void)
 }
 
 /**
- * e_d_wait_exact - Wait for the debugger child @pid to end, through signals.
- * @pid: the debugger's PID; @status: receives its wait status.
- * Return: waitpid's answer.
+ * e_d_debugger_status - How the debugger ended, as far as it is known now.
+ * @status: receives its wait status.
+ *
+ * From its reported end, or from its slot when the SIGCHLD handler has
+ * reaped it and the report is still on its way.  Nothing waits for it.
+ * Return: 1 when the status is known, else 0.
  */
-static int e_d_wait_exact(int pid, int *status)
+static int e_d_debugger_status(int *status)
 {
- int r;
-
- while ((r = waitpid(pid, status, 0)) < 0 && errno == EINTR)
-  ;
- return(r);
+ if (e_d_dbg.status_known)
+ {
+  *status = e_d_dbg.status;
+  return(1);
+ }
+ if (e_d_dbg.child.pid <= 0)
+  return(0);
+ return(wpe_child_ended(&e_d_dbg.child, status) == WPE_CHILD_ENDED);
 }
 
 /**
- * e_d_collect_end_status - The wait status of a debugger whose output ended.
- * @status: receives it.
- *
- * The editor's SIGCHLD handler usually reaps the debugger first and keeps
- * its status; otherwise it is reaped here.  A debugger that closed its
- * output but still runs is ended, as the session's end would end it.
- * Return: 1 when the status is known, else 0.
+ * e_d_debugger_died_unasked - Did the debugger end, or close its output,
+ * without the editor ending it?
  */
-static int e_d_collect_end_status(int *status)
+static int e_d_debugger_died_unasked(void)
 {
- int pid = e_d_pid, r;
-
- if (pid <= 0)
-  return(0);
- e_d_pid = 0;
- r = waitpid(pid, status, WNOHANG);
- if (r == 0)
- {
-  kill(pid, SIGKILL);
-  r = e_d_wait_exact(pid, status);
- }
- if (r == pid)
+ if (e_d_output_closed)
   return(1);
- return(WpeReapedStatus(pid, status));
+ return(e_d_dbg.ended && !e_d_dbg.asked_end && !e_d_dbg.end_expected);
 }
 
 /**
@@ -3955,10 +4029,34 @@ static int e_d_exit_status_number(int status)
  return(WEXITSTATUS(status));
 }
 
+/* How a session ends, for its end line. */
+#define E_D_END_NORMAL     0   /* "End of Debugging" */
+#define E_D_END_DIED       1   /* the debugger died: the line names it */
+#define E_D_END_DIED_LATER 2   /* it died, and how is known once it is reaped */
+
+/**
+ * e_d_died_line_of - The line for a debugger @label that ended unasked.
+ * @out, @n: receives it; @status_known: whether @status holds its wait
+ * status.
+ */
+static void e_d_died_line_of(char *out, size_t n, const char *label,
+                             int status_known, int status)
+{
+ if (status_known)
+  snprintf(out, n, E_D_DIED_FMT, label, e_d_exit_status_number(status));
+ else
+  snprintf(out, n, E_D_DIED_NO_STATUS, label);
+}
+
 /**
  * e_d_died_line - The line that says the debugger ended without being asked.
  * @out, @n: receives it.
- * Return: 1 when the debugger died, 0 when the session ends normally.
+ *
+ * Its output can end a moment before the system reports the process gone:
+ * the session then ends at once, and the line, with the exit status, is
+ * said when the report comes (e_d_on_debugger_ended), never waited for.
+ * Return: E_D_END_NORMAL, E_D_END_DIED with @out set, or
+ * E_D_END_DIED_LATER.
  */
 static int e_d_died_line(char *out, size_t n)
 {
@@ -3966,14 +4064,39 @@ static int e_d_died_line(char *out, size_t n)
 
  if (e_d_dap_active())
   return(e_d_dap_died_line(out, n));
- if (!e_d_output_closed)
-  return(0);
- if (e_d_collect_end_status(&status))
-  snprintf(out, n, E_D_DIED_FMT, e_d_start_label(),
-           e_d_exit_status_number(status));
- else
-  snprintf(out, n, E_D_DIED_NO_STATUS, e_d_start_label());
- return(1);
+ if (!e_d_debugger_died_unasked())
+  return(E_D_END_NORMAL);
+ snprintf(e_d_dbg.label, sizeof e_d_dbg.label, "%s", e_d_start_label());
+ if (e_d_debugger_status(&status))
+ {
+  e_d_died_line_of(out, n, e_d_dbg.label, 1, status);
+  return(E_D_END_DIED);
+ }
+ if (e_d_dbg.ended || e_d_dbg.child.pid <= 0)
+ {
+  e_d_died_line_of(out, n, e_d_dbg.label, 0, 0);
+  return(E_D_END_DIED);
+ }
+ return(E_D_END_DIED_LATER);
+}
+
+/**
+ * e_d_debugger_say_died - Say, now that the system reported it, how the
+ * debugger of a session that is already over ended.
+ *
+ * The line goes where the session's end line would have gone: Messages and
+ * the status row.  Said once.
+ */
+static void e_d_debugger_say_died(void)
+{
+ FENSTER *top = WpeEditor->f[WpeEditor->mxedt];
+ char line[E_D_DIED_LINE_MAX];
+
+ e_d_dbg.say_later = 0;
+ e_d_died_line_of(line, sizeof line, e_d_dbg.label, e_d_dbg.status_known,
+                  e_d_dbg.status);
+ e_d_p_message(line, top, 1);
+ e_status_say(top, line);
 }
 
 /* Set only while a start that never became a session is being torn down; see
@@ -4016,20 +4139,29 @@ static void e_d_say_session_end(const char *died, FENSTER *f)
 int e_d_quit(FENSTER *f)
 {
  ECNT *cn = f->ed;
- int i, ran = e_d_session_opened();
+ int i, ran = e_d_session_opened(), end;
  char died[E_D_DIED_LINE_MAX];
 
  jdb_trace("e_d_quit: CALLED, e_d_swtch=%d, e_deb_type=%d\n",
            e_d_swtch, e_deb_type);
- if (!e_d_died_line(died, sizeof died))
+ /* Quit while the program still compiles for its session: the compiler is
+    ended and no session starts behind the user's back once it would have
+    finished. */
+ if (e_d_compile_busy())
+  e_d_compile_cancel();
+ end = e_d_died_line(died, sizeof died);
+ if (end != E_D_END_DIED)
   died[0] = '\0';
  e_d_start_forget();  /* an adapter start stops being watched before it closes */
  if (e_d_dap_active())
   e_d_dap_quit(f);   /* disconnect the adapter; common cleanup runs below */
  e_d_quit_basic(f);
  /* A start that failed opened no session, so there is none to end: the user
-    reads only the reason it failed, not an end that never began. */
- if (ran)
+    reads only the reason it failed, not an end that never began.  A
+    debugger whose exit status is not known yet has it said when it is. */
+ if (ran && end == E_D_END_DIED_LATER)
+  e_d_dbg.say_later = 1;
+ else if (ran)
   e_d_say_session_end(died, f);
  WpeMouseChangeShape(WpeEditingShape);
  e_d_delbreak(f);
@@ -5930,31 +6062,6 @@ static void e_d_fd_nonblocking(int fd)
  fcntl(fd, F_SETFL, fcntl(fd, F_GETFL, 0) | O_NONBLOCK);
 }
 
-/**
- * e_d_child_leave_terminal - In the terminal editor's debugger child,
- * before exec: leave the editor's session and its terminal.
- * @editor: the editor's process ID, read before the fork.
- *
- * The debugger and its program take SIGINT as a shell gives it, so Pause
- * can stop them; left in the editor's foreground process group they would
- * also get the SIGINT the terminal sends for a Ctrl-C typed by habit, and
- * the session would end or hang.  In a session of its own the debugger
- * hears only what the editor sends it (Pause signals it by its PID), and
- * Ctrl-C stays a key of the editor's.  The debugger talks to the editor
- * through pipes and gives its program the pty or the terminal by name, so
- * it needs no controlling terminal.
- *
- * The hangup that ends a debugger when the editor's terminal closes no
- * longer reaches it either, so the system is asked to end it when the editor
- * dies by SIGKILL; otherwise a program stuck in a loop would go on running.
- */
-static void e_d_child_leave_terminal(pid_t editor)
-{
- setsid();
- if (wpe_child_die_with_editor(editor) != 0)
-  _exit(127);
-}
-
 /* Room for the longest command line a debugger is started with (jdb's five
    words) and the NULL that ends it. */
 #define E_D_ARGV_MAX 8
@@ -6061,6 +6168,26 @@ static void e_d_script_command(FILE *fp, char **argv)
   e_d_script_word(fp, argv[i]);
  }
 }
+
+/**
+ * e_d_script_forget_pid - Have the helper script remove the debugger's
+ * recorded PID the moment the debugger has ended.
+ * @fp: the script.
+ *
+ * The script then waits for a Return on the terminal the editor came from,
+ * and the session can outlive the debugger meanwhile; Pause must never
+ * signal the number by then, which the system may have given to another
+ * process.
+ */
+static void e_d_script_forget_pid(FILE *fp)
+{
+ char pidfile[PATH_MAX];
+
+ e_d_debugger_pid_path(pidfile);
+ fputs("rm -f ", fp);
+ e_d_script_word(fp, pidfile);
+ fputc('\n', fp);
+}
 #endif
 
 /**
@@ -6104,20 +6231,14 @@ static void e_d_pty_slave_close(void)
 #define E_D_JDB_AGENT_FMT \
  "-agentlib:jdwp=transport=dt_socket,server=n,suspend=y,address=127.0.0.1:%d"
 #define E_D_JDB_AGENT_MAX 128
-/* The VM's exit code when it could not be run at all, as a shell's. */
-#define E_D_JDB_VM_EXEC_FAILED 127
-#define E_D_JDB_VM_EXEC_FAILED_FMT "cannot run %s: %s\r\n"
-#define E_D_JDB_VM_DIR_FAILED_FMT "cannot enter %s: %s\r\n"
-#define E_D_JDB_VM_TTY_FAILED_FMT "cannot give %s a terminal: %s\r\n"
-#define E_D_JDB_VM_SAY_MAX (PATH_MAX + 128)
+#define E_D_JDB_VM_ARGC   3
 
 /* The VM of the session. */
 typedef struct {
- int pid;                    /* the VM, or 0 once it is gone */
+ WpeChild child;             /* the VM; its pid is 0 once it is gone */
  int launched;               /* a VM was started for this session */
  int status;                 /* its wait status, when status_known */
  int status_known;
- int watched;                /* its end wakes the editor (WpeChildWatch) */
  int awaiting_end;           /* jdb said the program ended; the session
                                 waits for the process the editor started */
  char main_class[PATH_MAX];  /* the class it runs */
@@ -6194,10 +6315,8 @@ static void e_d_jdb_vm_prepare(FENSTER *f, const char *main_class)
 {
  char *dir = e_build_dir(f);
 
- e_d_jdb_vm.pid = 0;
  e_d_jdb_vm.launched = 0;
  e_d_jdb_vm.status_known = 0;
- e_d_jdb_vm.watched = 0;
  e_d_jdb_vm.awaiting_end = 0;
  snprintf(e_d_jdb_vm.main_class, sizeof e_d_jdb_vm.main_class, "%s",
           main_class);
@@ -6210,15 +6329,12 @@ static void e_d_jdb_vm_prepare(FENSTER *f, const char *main_class)
 }
 
 /**
- * e_d_jdb_vm_forget - Forget the VM's PID and stop waiting for it, so
- * nothing is ever sent to a process that reused the number.
+ * e_d_jdb_vm_forget - Stop following the VM, so nothing is ever sent to a
+ * process that reused its number.  One reported ended needs nothing.
  */
 static void e_d_jdb_vm_forget(void)
 {
- if (e_d_jdb_vm.watched)
-  WpeChildUnwatch(e_d_jdb_vm.pid);
- e_d_jdb_vm.watched = 0;
- e_d_jdb_vm.pid = 0;
+ wpe_child_forget(&e_d_jdb_vm.child);
 }
 
 /**
@@ -6237,16 +6353,16 @@ static void e_d_jdb_vm_note_end(int status)
  * e_d_jdb_vm_gone - Has the session's VM ended?
  *
  * Asked without waiting: the editor's SIGCHLD handler reaps the VM and keeps
- * its status in the VM's own watch slot.
+ * its status in the VM's slot of the owner of the editor's children.
  * Return: 1 when there is no VM running.
  */
 static int e_d_jdb_vm_gone(void)
 {
  int st, ended;
 
- if (e_d_jdb_vm.pid <= 0)
+ if (e_d_jdb_vm.child.pid <= 0)
   return(1);
- ended = WpeChildEnded(e_d_jdb_vm.pid, &st);
+ ended = wpe_child_ended(&e_d_jdb_vm.child, &st);
  if (ended == WPE_CHILD_RUNS)
   return(0);
  if (ended == WPE_CHILD_ENDED)
@@ -6263,56 +6379,40 @@ static int e_d_jdb_vm_gone(void)
  * so no Java program outlives its session: jdb's own "quit" would let a VM
  * stopped at a breakpoint run on.  The VM leads a session of its own, so
  * what it started goes with it, a wrapper script around java included.
- * The editor does not wait for the killed process: the SIGCHLD handler
- * reaps it, so Quit returns at once whatever the process does.
+ * SIGKILL comes first, as the VM is the program and nothing asks it to
+ * end; the owner of the editor's children follows its end from there, so
+ * Quit returns at once whatever the process does, and the session the
+ * user starts next is not told of it.
  */
 static void e_d_jdb_vm_end(void)
 {
- int pid = e_d_jdb_vm.pid;
-
  e_d_jdb_vm.launched = 0;
  e_d_jdb_vm.awaiting_end = 0;
  if (e_d_jdb_vm_gone())
   return;
- kill(-pid, SIGKILL);
- kill(pid, SIGKILL);
- e_d_jdb_vm_forget();
+ wpe_child_end_detached(&e_d_jdb_vm.child, SIGKILL);
 }
 
 /**
- * e_d_jdb_vm_on_end - The editor's loop learned that the VM's process
- * ended.
- * @pid: the process; @status: its wait status; @data: unused.
+ * e_d_jdb_vm_on_end - The owner of the editor's children reported that
+ * the VM's process ended.
+ * @c: the VM; @status: its wait status; @how: WPE_CHILD_ENDED, or
+ * WPE_CHILD_ENDED_UNKNOWN; @data: unused.
  *
  * Its status is kept for the end line.  When jdb has already said the
  * program ended, the session was waiting for this, and the user now reads
  * how the program ended.
  */
-static void e_d_jdb_vm_on_end(int pid, int status, void *data)
+static void e_d_jdb_vm_on_end(WpeChild *c, int status, int how, void *data)
 {
+ (void)c;
  (void)data;
- if (pid != e_d_jdb_vm.pid)
-  return;
- e_d_jdb_vm.watched = 0;      /* the slot is free already */
- e_d_jdb_vm_note_end(status);
+ if (how == WPE_CHILD_ENDED)
+  e_d_jdb_vm_note_end(status);
  if (!e_d_jdb_vm.awaiting_end)
   return;
  e_d_jdb_vm.awaiting_end = 0;
  e_d_run_process_ended();
-}
-
-/**
- * e_d_jdb_vm_watch - Have the editor called back when the VM's process
- * ends.
- * @pid: the process just forked.
- *
- * Without the watch (no slot left) the end line says the plain "Program
- * exited." when the status is not known by the time jdb says the program
- * ended, rather than make the user wait for it.
- */
-static void e_d_jdb_vm_watch(int pid)
-{
- e_d_jdb_vm.watched = (WpeChildWatch(pid, e_d_jdb_vm_on_end, NULL) == 0);
 }
 
 /**
@@ -6330,7 +6430,7 @@ static void e_d_jdb_vm_watch(int pid)
  */
 static int e_d_jdb_vm_await_end(void)
 {
- if (e_d_jdb_vm_gone() || !e_d_jdb_vm.watched)
+ if (e_d_jdb_vm_gone())
   return(0);
  e_d_jdb_vm.awaiting_end = 1;
  e_d_run_wait_for_process();
@@ -6338,139 +6438,41 @@ static int e_d_jdb_vm_await_end(void)
 }
 
 /**
- * e_d_jdb_vm_child_close - Close, in the VM, the editor's ends of jdb's
- * pipes and the pty master, so jdb's end and the program's are seen.
- */
-static void e_d_jdb_vm_child_close(void)
-{
- int i;
-
- for (i = 0; i < 2; i++)
- {
-  if (rfildes[i] >= 0)
-   close(rfildes[i]);
-  if (wfildes[i] >= 0)
-   close(wfildes[i]);
-  if (efildes[i] >= 0)
-   close(efildes[i]);
- }
- if (e_d_pty_master >= 0)
-  close(e_d_pty_master);
-}
-
-/**
- * e_d_jdb_vm_child_own_tty - With no pty, give the VM the terminal the
- * debugger session runs on, as gdb's program gets it, without making it
- * the VM's controlling terminal.
- * Return: 0, or -1 when it cannot be opened.
- */
-static int e_d_jdb_vm_child_own_tty(void)
-{
- int fd;
-
- setsid();
- fd = open(e_d_tty, O_RDWR | O_NOCTTY);
- if (fd < 0)
-  return(-1);
- dup2(fd, 0);
- dup2(fd, 1);
- dup2(fd, 2);
- if (fd > 2)
-  close(fd);
- return(0);
-}
-
-/**
- * e_d_jdb_vm_child_terminal - Make the pty the VM's terminal: its input,
- * its output and its controlling terminal, in a session of its own.
- * Return: 0, or -1 when that failed.
- */
-static int e_d_jdb_vm_child_terminal(void)
-{
- if (e_d_pty_slave >= 0)
-  return(login_tty(e_d_pty_slave));
- return(e_d_jdb_vm_child_own_tty());
-}
-
-/**
- * e_d_jdb_vm_child_say_failed - Write why the VM could not be run where
- * its output goes, so the user reads it in Messages.
- * @fmt: the sentence, with the subject and the reason as its two %s;
- * @subject: what could not be done; @err: the errno of the failure.
- */
-static void e_d_jdb_vm_child_say_failed(const char *fmt, const char *subject,
-                                        int err)
-{
- char line[E_D_JDB_VM_SAY_MAX];
- int len;
-
- len = snprintf(line, sizeof line, fmt, subject, strerror(err));
- if (len > 0)
-  write(2, line, strlen(line));
-}
-
-/**
- * e_d_jdb_vm_child - In the forked child: become the Java program's VM.
- * @agent: the JDWP option that dials jdb's port.
- *
- * Never returns.
- */
-static void e_d_jdb_vm_child(char *agent)
-{
- char *argv[4];
-
- wpe_child_default_signals();
- e_d_jdb_vm_child_close();
- if (e_d_jdb_vm_child_terminal() < 0)
- {
-  /* Without the terminal this goes to the editor's own stderr. */
-  e_d_jdb_vm_child_say_failed(E_D_JDB_VM_TTY_FAILED_FMT,
-                              e_d_jdb_vm.main_class, errno);
-  _exit(E_D_JDB_VM_EXEC_FAILED);
- }
- /* After the terminal, so the reason is read where the VM's words go. */
- if (e_d_jdb_vm.dir[0] && chdir(e_d_jdb_vm.dir) != 0)
- {
-  e_d_jdb_vm_child_say_failed(E_D_JDB_VM_DIR_FAILED_FMT,
-                              e_d_jdb_vm.dir, errno);
-  _exit(E_D_JDB_VM_EXEC_FAILED);
- }
- argv[0] = e_d_jdb_vm.java;
- argv[1] = agent;
- argv[2] = e_d_jdb_vm.main_class;
- argv[3] = NULL;
- execvp(argv[0], argv);
- e_d_jdb_vm_child_say_failed(E_D_JDB_VM_EXEC_FAILED_FMT,
-                             e_d_jdb_vm.java, errno);
- _exit(E_D_JDB_VM_EXEC_FAILED);
-}
-
-/**
  * e_d_jdb_vm_fork - Start the Java program's VM, which connects to jdb.
  * @port: the loopback port jdb listens on.
  *
- * The editor's copy of the pty's slave goes once the VM has it, so the
- * VM's end shows on the master.
+ * The VM runs on the session's pty, in a session of its own with the pty
+ * as its controlling terminal, so it reads what the user types and its end
+ * shows on the master; without a pty it writes to the terminal the debugger
+ * session runs on, as gdb's program does.  It runs in the build's
+ * directory.  A terminal, a directory or a java that fails is named where
+ * the VM's words go, so the user reads it in Messages.  The editor's copy
+ * of the pty's slave goes once the VM has it.
  * Return: 0, or -1 when no process could be made.
  */
 static int e_d_jdb_vm_fork(int port)
 {
- char agent[E_D_JDB_AGENT_MAX];
- sigset_t saved;
- int pid;
+ char agent[E_D_JDB_AGENT_MAX], *argv[E_D_JDB_VM_ARGC + 1];
+ WpeChildSpec spec;
 
  snprintf(agent, sizeof agent, E_D_JDB_AGENT_FMT, port);
- /* Not reaped before it is watched: its status never meets the ring. */
- WpeChildSignalBlock(&saved);
- pid = fork();
- if (pid == 0)
-  e_d_jdb_vm_child(agent);    /* clears the mask before java runs */
- if (pid > 0)
-  e_d_jdb_vm_watch(pid);
- WpeChildSignalRestore(&saved);
- if (pid < 0)
+ argv[0] = e_d_jdb_vm.java;
+ argv[1] = agent;
+ argv[2] = e_d_jdb_vm.main_class;
+ argv[3] = NULL;
+ memset(&spec, 0, sizeof spec);
+ spec.argv = argv;
+ spec.io = WPE_CHILD_IO_TTY_PATH;
+ spec.group = WPE_CHILD_OWN_SESSION;
+ spec.tty_fd = e_d_pty_slave;
+ spec.tty_path = e_d_tty;
+ spec.say_failed = 1;
+ spec.side_pty_slave = WPE_CHILD_NO_FD;
+ spec.what = e_d_jdb_vm.main_class;
+ if (e_d_jdb_vm.dir[0])
+  spec.cwd = e_d_jdb_vm.dir;
+ if (wpe_child_start(&spec, &e_d_jdb_vm.child, e_d_jdb_vm_on_end, NULL) != 0)
   return(-1);
- e_d_jdb_vm.pid = pid;
  e_d_jdb_vm.launched = 1;
  e_d_pty_slave_close();
  return(0);
@@ -6553,11 +6555,281 @@ static void e_d_debugger_dir_note(FENSTER *f, const char *prog)
  FREE(dir);
 }
 
-int e_exec_deb(FENSTER *f, char *prog)
+/**
+ * e_d_debugger_spec - What every debugger start has in common.
+ * @spec: receives it; @argv: the command; @dir: where it runs.
+ *
+ * The debugger runs in the program's directory, as the language servers
+ * and adapters do: gdb finds a relatively named program ("prog.e") there and
+ * resolves source and breakpoint paths right.
+ */
+static void e_d_debugger_spec(WpeChildSpec *spec, char **argv, const char *dir)
+{
+ memset(spec, 0, sizeof *spec);
+ spec->argv = argv;
+ spec->cwd = dir;
+ spec->side_pty_slave = WPE_CHILD_NO_FD;
+ spec->tty_fd = WPE_CHILD_NO_FD;
+ spec->what = e_debugger;
+}
+
+/**
+ * e_d_debugger_side_pty - The program's side of the pty the debugger
+ * itself is to hold: gdb and the legacy debuggers start the program and
+ * name the pty to it.  Under jdb the editor keeps it for the program's VM.
+ */
+static int e_d_debugger_side_pty(void)
+{
+ if (!e_d_debugger_keeps_pty_slave())
+  return(WPE_CHILD_NO_FD);
+ return(e_d_pty_slave);
+}
+
+/**
+ * e_d_pty_open - The pty the debugged program's output is read from.
+ *
+ * Without one the program writes to the editor's terminal, as it always
+ * could, and the session starts all the same.  The master never blocks: a
+ * read ends when the program has printed nothing more, and keys typed for a
+ * program that stopped reading wait on the loop instead of in a write.
+ */
+static void e_d_pty_open(void)
+{
+ if (wpe_child_pty_make(&e_d_pty_master, &e_d_pty_slave, e_d_pty_slave_name,
+                        sizeof e_d_pty_slave_name) < 0)
+  e_d_pty_slave_name[0] = '\0';
+ e_d_pty_hung = 0;
+}
+
+static void e_d_on_debugger_ended(WpeChild *c, int status, int how,
+                                  void *data);   /* (below) */
+static void e_d_debugger_let_go(void);           /* (below) */
+
+/**
+ * e_d_debugger_start - Start the debugger of a new session, its end
+ * watched from before its fork.
+ * @spec: how.
+ * Return: 0, or -1 when it could not be started.
+ */
+static int e_d_debugger_start(const WpeChildSpec *spec)
+{
+ e_d_debugger_let_go();
+ if (wpe_child_start(spec, &e_d_dbg.child, e_d_on_debugger_ended, NULL) != 0)
+  return(-1);
+ e_d_dbg.live = 1;
+ e_d_dbg.asked_end = 0;
+ e_d_dbg.end_expected = 0;
+ e_d_dbg.ended = 0;
+ e_d_dbg.status_known = 0;
+ e_d_dbg.say_later = 0;
+ e_d_dbg.held = 0;
+ return(0);
+}
+
+/**
+ * e_d_start_on_pipes - Start the terminal editor's debugger: commands on
+ * pipes, the program on the pty beside them.
+ * @f: the source window; @argv: the debugger's command.
+ *
+ * The debugger and its program take SIGINT as a shell gives it, so Pause
+ * can stop them; left in the editor's foreground process group they would
+ * also get the SIGINT the terminal sends for a Ctrl-C typed by habit, and
+ * the session would end or hang.  In a session of its own the debugger
+ * hears only what the editor sends it, and Ctrl-C stays a key of the
+ * editor's.  The hangup that would end it when the editor's terminal closes
+ * no longer reaches it, so the system is asked to end it when the editor
+ * dies by SIGKILL; otherwise a program stuck in a loop would go on running.
+ * Return: 0, or -1 when it could not be started (said in a box).
+ */
+static int e_d_start_on_pipes(FENSTER *f, char **argv)
+{
+ WpeChildSpec spec;
+ char *dir = e_build_dir(f);
+ int ret;
+
+ e_d_debugger_spec(&spec, argv, dir);
+ spec.io = WPE_CHILD_IO_PIPES_AND_PTY;
+ spec.group = WPE_CHILD_OWN_SESSION;
+ spec.die_with_editor = 1;
+ spec.stderr_nonblocking = e_d_child_errors_nonblocking();
+ spec.side_pty_slave = e_d_debugger_side_pty();
+ spec.exec_failed = e_p_msg[ERR_IN_COMMAND];
+ ret = e_d_debugger_start(&spec);
+ if (dir)
+  FREE(dir);
+ if (ret != 0)
+ {
+  e_error(e_p_msg[ERR_PROCESS], 0, f->fb);
+  return(-1);
+ }
+ /* The editor's ends never block: a debugger that stops reading gets its
+    commands queued on the loop instead. */
+ rfildes[1] = e_d_dbg.child.in_fd;
+ wfildes[0] = e_d_dbg.child.out_fd;
+ efildes[0] = e_d_dbg.child.err_fd;
+ /* jdb's program gets the slave from the editor, later. */
+ if (e_d_debugger_keeps_pty_slave())
+  e_d_pty_slave_close();
+ e_d_own_tty_name();
+ return(0);
+}
+
+#ifndef NO_XWINDOWS
+/* The graphical editors' debugger runs in a helper script, on five named
+   pipes; without a pty the script runs in an xterm of its own, whose
+   command line has these words. */
+#define E_D_FIFO_N     5
+#define E_D_XTERM_ARGC 10
+
+/**
+ * e_d_fifos_make - The named pipes the helper script and the editor talk on.
+ * Return: 0, or -1 when one could not be made.
+ */
+static int e_d_fifos_make(void)
 {
  int i;
+
+ for (i = 0; i < E_D_FIFO_N; i++)
+ {
+  if (npipe[i])
+   FREE(npipe[i]);
+  npipe[i] = MALLOC(strlen(e_tmp_dir) + 16);
+  sprintf(npipe[i], "%s/we_pipe%d", e_tmp_dir, i);
+  remove(npipe[i]);
+ }
+ for (i = 0; i < E_D_FIFO_N; i++)
+  if (mkfifo(npipe[i], S_IRUSR | S_IWUSR) < 0)
+   return(-1);
+ return(0);
+}
+
+/**
+ * e_d_script_write - Write the helper script that runs the debugger on the
+ * named pipes.
+ * @file, @n: receives its path; @argv: the debugger's command.
+ *
+ * It names the program's terminal first (the pty's, or its own when there
+ * is no pty), so the editor reads the program's output there.
+ * Return: 0, or -1 when it could not be written.
+ */
+static int e_d_script_write(char *file, size_t n, char **argv)
+{
+ FILE *fp;
+
+ snprintf(file, n, "%s/we_sys", e_tmp_dir);
+ fp = fopen(file, "w+");
+ if (!fp)
+  return(-1);
+ fprintf(fp, "#!/bin/sh\n");
+ if (e_d_pty_master >= 0)
+  fprintf(fp, "echo '%s' > %s\n", e_d_pty_slave_name, npipe[1]);
+ else
+  fprintf(fp, "tty > %s\n", npipe[1]);
+ e_d_script_command(fp, argv);
+ fprintf(fp, " < %s > %s 2> %s\n", npipe[0], npipe[1], npipe[2]);
+ e_d_script_forget_pid(fp);
+ fprintf(fp,
+   "echo 'type <Return> to continue' > /dev/tty\nread i < /dev/tty\n");
+ fprintf(fp, "rm -f %s\n", file);
+ fclose(fp);
+ chmod(file, 0755);
+ return(0);
+}
+
+/**
+ * e_d_script_argv - How the helper script is run: by itself when the
+ * program has the pty, else in an xterm that is the program's terminal.
+ * @argv: room for E_D_XTERM_ARGC + 1 words; @file: the script.
+ */
+static void e_d_script_argv(char **argv, char *file)
+{
+ int i = 0;
+
+ if (e_d_pty_master >= 0)
+ {
+  argv[i++] = file;
+  argv[i] = NULL;
+  return;
+ }
+ argv[i++] = XTERM_CMD;
+ argv[i++] = "+sb";
+ argv[i++] = "-geometry";
+ argv[i++] = "80x25-0-0";
+ argv[i++] = "-T";
+ argv[i++] = "xwpe-output";
+ argv[i++] = "-e";
+ argv[i++] = user_shell;
+ argv[i++] = "-c";
+ argv[i++] = file;
+ argv[i] = NULL;
+}
+
+static int e_d_script_connect(FENSTER *f);   /* (below) */
+
+/**
+ * e_d_start_in_script - Start the graphical editors' debugger, in its
+ * helper script on the named pipes.
+ * @f: the source window; @argv: the debugger's command.
+ *
+ * The script stays in the editor's group: when the debugger ends, it asks
+ * on the terminal the editor came from for a Return, as it always did.
+ * Return: 0, or -1 when it could not be started (said in a box).
+ */
+static int e_d_start_in_script(FENSTER *f, char **argv)
+{
+ char file[PATH_MAX], *script[E_D_XTERM_ARGC + 1], *dir;
+ WpeChildSpec spec;
+ int ret;
+
+ if (e_d_fifos_make() < 0)
+ {
+  e_error(e_d_msg[ERR_CANTPIPE], 0, f->fb);
+  return(-1);
+ }
+ if (e_d_script_write(file, sizeof file, argv) < 0)
+ {
+  e_error(e_p_msg[ERR_PROCESS], 0, f->fb);
+  return(-1);
+ }
+ e_d_script_argv(script, file);
+ dir = e_build_dir(f);
+ e_d_debugger_spec(&spec, script, dir);
+ spec.io = WPE_CHILD_IO_INHERIT_AND_PTY;
+ spec.group = WPE_CHILD_EDITORS_GROUP;
+ spec.side_pty_slave = e_d_debugger_side_pty();
+ ret = e_d_debugger_start(&spec);
+ if (dir)
+  FREE(dir);
+ if (ret != 0)
+ {
+  remove(file);
+  e_error(e_p_msg[ERR_PROCESS], 0, f->fb);
+  return(-1);
+ }
+ if (e_d_debugger_keeps_pty_slave())
+  e_d_pty_slave_close();
+ return(e_d_script_connect(f));
+}
+#endif
+
+/**
+ * e_d_debugger_launch - Start the session's debugger, the way this
+ * display runs it.
+ * @f: the source window; @argv: its command.
+ * Return: 0, or -1 when it could not be started.
+ */
+static int e_d_debugger_launch(FENSTER *f, char **argv)
+{
+#ifndef NO_XWINDOWS
+ if (WpeIsXwin())
+  return(e_d_start_in_script(f, argv));
+#endif
+ return(e_d_start_on_pipes(f, argv));
+}
+
+int e_exec_deb(FENSTER *f, char *prog)
+{
  char *argv[E_D_ARGV_MAX];
- const pid_t editor = getpid();   /* the debugger child outlives no editor */
 
  if (e_d_swtch)
   return(1);
@@ -6572,263 +6844,98 @@ int e_exec_deb(FENSTER *f, char *prog)
  wfildes[0] = wfildes[1] = -1;
  efildes[0] = efildes[1] = -1;
  fflush(stdout);
- if (WpeIsXwin())
- {
-  for (i = 0; i < 5; i++)
-  {
-   if (npipe[i])
-    FREE(npipe[i]);
-   npipe[i] = MALLOC(strlen(e_tmp_dir) + 16);
-   sprintf(npipe[i], "%s/we_pipe%d", e_tmp_dir, i);
-   remove(npipe[i]);
-  }
-  if (mkfifo(npipe[0], S_IRUSR | S_IWUSR) < 0 ||
-    mkfifo(npipe[1], S_IRUSR | S_IWUSR) < 0 ||
-    mkfifo(npipe[2], S_IRUSR | S_IWUSR) < 0 ||
-    mkfifo(npipe[3], S_IRUSR | S_IWUSR) < 0 ||
-    mkfifo(npipe[4], S_IRUSR | S_IWUSR) < 0)
-  {
-   e_error(e_d_msg[ERR_CANTPIPE], 0, f->fb);
-   e_d_exec_fail();
-   return(0);
-  }
- }
- else
- {
-  if (pipe(rfildes))
-  {
-   e_error(e_p_msg[ERR_PIPEOPEN], 0, f->fb);
-   e_d_exec_fail();
-   return(0);
-  }
-  /* The editor's end of the debugger's input never blocks: a debugger that
-     stops reading gets its commands queued on the loop instead. */
-  e_d_fd_nonblocking(rfildes[1]);
-  if (pipe(wfildes))
-  {
-   e_error(e_p_msg[ERR_PIPEOPEN], 0, f->fb);
-   e_d_exec_fail();
-   return(0);
-  }
-  if (pipe(efildes))
-  {
-   e_error(e_p_msg[ERR_PIPEOPEN], 0, f->fb);
-   e_d_exec_fail();
-   return(0);
-  }
- }
-
  if (e_d_prog_output) { FREE(e_d_prog_output); e_d_prog_output = NULL; }
  e_d_prog_output_len = 0;
  e_d_prog_output_cap = 0;
- if (openpty(&e_d_pty_master, &e_d_pty_slave, e_d_pty_slave_name,
-             NULL, NULL) < 0)
- {
-  e_d_pty_master = -1;
-  e_d_pty_slave = -1;
-  e_d_pty_slave_name[0] = '\0';
- }
- else
-  /* Non-blocking for good: a read ends when the program has printed
-     nothing more, and keys typed for a program that stopped reading wait
-     on the loop instead of in a write. */
-  e_d_fd_nonblocking(e_d_pty_master);
- e_d_pty_hung = 0;
-
+ e_d_pty_open();
  e_d_debugger_pid_forget();
- if ((e_d_pid = fork()) > 0)
+ if (e_d_debugger_launch(f, argv) < 0)
  {
-  e_d_debugger_dir_note(f, prog);
-  if (WpeIsXwin())
-  {
-   if ((wfildes[0] = open(npipe[1], O_RDONLY)) < 0)
-   {
-    e_error(e_p_msg[ERR_PIPEOPEN], 0, f->fb);
-    e_d_exec_fail();
-    return(0);
-   }
-   for (i = 0;
-     i < 80 && read(wfildes[0], &e_d_tty[i], 1) == 1 && e_d_tty[i] != '\0' &&
-       e_d_tty[i] != '\n';
-     i++)
-    ;
-   if (e_d_tty[i] == '\n')
-    e_d_tty[i] = '\0';
-   close(wfildes[0]);
-   if ((rfildes[0] = open(e_d_tty, O_RDONLY)) < 0 ||
-     (wfildes[1] = open(e_d_tty, O_WRONLY)) < 0)
-   {
-    e_error(e_p_msg[ERR_PIPEOPEN], 0, f->fb);
-    e_d_exec_fail();
-    return(0);
-   }
-   if ((rfildes[1] = open(npipe[0], O_WRONLY)) < 0 ||
-     (wfildes[0] = open(npipe[1], O_RDONLY)) < 0 ||
-     (efildes[0] = open(npipe[2], O_RDONLY)) < 0)
-   {
-    e_error(e_p_msg[ERR_PIPEOPEN], 0, f->fb);
-    e_d_exec_fail();
-    return(0);
-   }
-   /* The debugger's input and its terminal never block the editor: what
-      they do not take now is queued on the loop. */
-   e_d_fd_nonblocking(rfildes[1]);
-   e_d_fd_nonblocking(wfildes[1]);
-   if (e_deb_mode)
-   {
-    tcgetattr(rfildes[0], &ntermio);
-/*   ioctl(rfildes[0], TCGETA, &ntermio);*/
-    ntermio.c_iflag = 0;
-    ntermio.c_oflag = 0;
-    ntermio.c_lflag = 0;
-    ntermio.c_cc[VMIN] = 1;
-    ntermio.c_cc[VTIME] = 0;
-#ifdef VSWTCH
-    ntermio.c_cc[VSWTCH] = 0;
-#endif
-/*   ioctl(rfildes[0], TCSETA, &ntermio);*/
-    tcsetattr(rfildes[0], TCSADRAIN, &ntermio);
-   }
-   /* Legacy external-xterm debugger path (e_deb_mode): the child just
-      exec'd an xterm to host the debugger.  Let that xterm map its window
-      and settle before we pull the input focus back to xwpe, or the
-      focus-set races the xterm and may not stick.  The fully event-driven
-      cure is to wait for the xterm's MapNotify via SubstructureNotify on the
-      root window; that is deferred to the X11-xterm verification pass since it
-      cannot be exercised in the headless test harness.  Until then this is a
-      single named, bounded settle, not an open-coded magic number. */
-   usleep(DEB_XTERM_SETTLE_MS * 1000);
-#ifndef NO_XWINDOWS
-   XSetInputFocus(WpeXInfo.display, WpeXInfo.window,
-     RevertToParent, CurrentTime);
-   XFlush(WpeXInfo.display);
-#endif
-  }
-  else
-  {
-   /* Close the pipe ends that belong to the child.
-      - rfildes[0] is the child's stdin read-end (parent uses rfildes[1])
-      - wfildes[1] is the child's stdout write-end (parent uses wfildes[0])
-      - efildes[1] is the child's stderr write-end (parent uses efildes[0])
-      Without closing these, read() on wfildes[0]/efildes[0] never returns
-      EOF when the child exits, because the parent's copy of the write-end
-      keeps the pipe open, and a reader then waits forever.
-      Note: only for non-X11.  In X11 mode, these fds are overwritten
-      with tty/named-pipe fds above and the originals are leaked. */
-   { int _ret_fd = wfildes[1];
-     close(rfildes[0]);  rfildes[0] = -1;
-     close(wfildes[1]);  wfildes[1] = -1;
-     close(efildes[1]);  efildes[1] = -1;
-     /* jdb's program gets the slave from the editor, later. */
-     if (e_d_debugger_keeps_pty_slave())
-      e_d_pty_slave_close();
-
-     e_d_own_tty_name();
-     return(_ret_fd);
-   }
-  }
-  return(wfildes[1]);
- }
- else if (e_d_pid < 0)
- {
-  e_error(e_p_msg[ERR_PROCESS], 0, f->fb);
   e_d_exec_fail();
   return(0);
  }
-
- /* CHILD (pid == 0): run the debugger in the program's directory, the same
-    chdir-in-child the LSP/DAP launchers use.  Without it gdb inherits wpe's
-    launch directory and, when that differs from the file's, fails to find a
-    relatively-named binary ("prog.e") and resolves source/breakpoint paths
-    wrong.  Covers both the X11 helper-script path and the console execlp path
-    below (the script and the FIFOs use absolute /tmp paths, so the chdir does
-    not disturb them).  pdb/a68g already pass an absolute program path, so this
-    is harmless there. */
- wpe_child_default_signals();   /* the program under it inherits these */
- { char *_dd = e_build_dir(f);
-   if (_dd) { if (chdir(_dd) != 0) _exit(127); FREE(_dd); } }
+ e_d_debugger_dir_note(f, prog);
+ return(1);
+}
 
 #ifndef NO_XWINDOWS
- if (WpeIsXwin())
- {
-  FILE *fp;
-  char file[PATH_MAX];
-
-  snprintf(file, sizeof file, "%s/we_sys", e_tmp_dir);
-  fp = fopen(file, "w+");
-  fprintf(fp, "#!/bin/sh\n");
-  if (e_d_pty_master >= 0)
-   fprintf(fp, "echo '%s' > %s\n", e_d_pty_slave_name, npipe[1]);
-  else
-   fprintf(fp, "tty > %s\n", npipe[1]);
-  e_d_script_command(fp, argv);
-  fprintf(fp,
-    " < %s > %s 2> %s\n"
-    "echo 'type <Return> to continue' > /dev/tty\nread i < /dev/tty\n",
-    npipe[0], npipe[1], npipe[2]);
-  fprintf(fp, "rm -f %s\n", file);
-  fclose(fp);
-  chmod(file, 0755);
-  if (!e_d_debugger_keeps_pty_slave())
-   e_d_pty_slave_close();
-
-  if (e_d_pty_master >= 0)
-  {
-   close(e_d_pty_master);
-   execl(file, file, NULL);
-  }
-  else
-  {
-   execlp(XTERM_CMD, XTERM_CMD, "+sb", "-geometry", "80x25-0-0",
-     "-T", "xwpe-output", "-e", user_shell, "-c", file, NULL);
-  }
-  remove(file);
- }
- else
+/**
+ * e_d_script_terminal_raw - The external xterm's terminal passes every
+ * byte as it comes, so the program in it reads keys one by one.
+ */
+static void e_d_script_terminal_raw(void)
+{
+ tcgetattr(rfildes[0], &ntermio);
+ ntermio.c_iflag = 0;
+ ntermio.c_oflag = 0;
+ ntermio.c_lflag = 0;
+ ntermio.c_cc[VMIN] = 1;
+ ntermio.c_cc[VTIME] = 0;
+#ifdef VSWTCH
+ ntermio.c_cc[VSWTCH] = 0;
 #endif
- {
-  /* Close pty master in child -- only the parent reads from it.
-     Keep the slave open: gdb needs it accessible for "run > /dev/pts/N".
-     jdb never uses it: its program's VM gets it from the editor. */
-  if (e_d_pty_master >= 0)
-   close(e_d_pty_master);
-  if (!e_d_debugger_keeps_pty_slave())
-   e_d_pty_slave_close();
-
-  /* Close the pipe ends not used by the child.
-     The child uses: rfildes[0] (stdin), wfildes[1] (stdout), efildes[1] (stderr).
-     Close the others to prevent the debugged program from inheriting them,
-     and to ensure proper EOF detection in the parent. */
-  close(rfildes[1]);
-  close(wfildes[0]);
-  close(efildes[0]);
-
-  close(0);
-  if (fcntl(rfildes[0], F_DUPFD, 0) != 0)
-  {
-   fprintf(stderr, e_p_msg[ERR_PIPEEXEC], rfildes[0]);
-   exit(1);
-  }
-  close(1);
-  if (fcntl(wfildes[1], F_DUPFD, 1) != 1)
-  {
-   fprintf(stderr, e_p_msg[ERR_PIPEEXEC], wfildes[1]);
-   exit(1);
-  }
-  close(2);
-  if (fcntl(efildes[1], F_DUPFD, 2) != 2)
-  {
-   fprintf(stderr, e_p_msg[ERR_PIPEEXEC], efildes[1]);
-   exit(1);
-  }
-  if (e_d_child_errors_nonblocking())
-   e_d_fd_nonblocking(2);
-  e_d_child_leave_terminal(editor);
-  execvp(argv[0], argv);
- }
- fprintf(stderr,"%s %s %s\n", e_p_msg[ERR_IN_COMMAND], e_debugger, prog);
- exit(1);
+ tcsetattr(rfildes[0], TCSADRAIN, &ntermio);
 }
+
+/**
+ * e_d_script_connect - Open the helper script's named pipes and the
+ * program's terminal it names, once the script runs.
+ * @f: the source window.
+ * Return: 0, or -1 when one could not be opened (said in a box).
+ */
+static int e_d_script_connect(FENSTER *f)
+{
+ int i;
+
+ /* Closed on exec, as every descriptor the editor keeps for a child: jdb's
+    program, started later, must not hold the debugger's pipes open. */
+ if ((wfildes[0] = open(npipe[1], O_RDONLY | O_CLOEXEC)) < 0)
+ {
+  e_error(e_p_msg[ERR_PIPEOPEN], 0, f->fb);
+  return(-1);
+ }
+ for (i = 0;
+   i < 80 && read(wfildes[0], &e_d_tty[i], 1) == 1 && e_d_tty[i] != '\0' &&
+     e_d_tty[i] != '\n';
+   i++)
+  ;
+ if (e_d_tty[i] == '\n')
+  e_d_tty[i] = '\0';
+ close(wfildes[0]);
+ if ((rfildes[0] = open(e_d_tty, O_RDONLY | O_CLOEXEC)) < 0 ||
+   (wfildes[1] = open(e_d_tty, O_WRONLY | O_CLOEXEC)) < 0)
+ {
+  e_error(e_p_msg[ERR_PIPEOPEN], 0, f->fb);
+  return(-1);
+ }
+ if ((rfildes[1] = open(npipe[0], O_WRONLY | O_CLOEXEC)) < 0 ||
+   (wfildes[0] = open(npipe[1], O_RDONLY | O_CLOEXEC)) < 0 ||
+   (efildes[0] = open(npipe[2], O_RDONLY | O_CLOEXEC)) < 0)
+ {
+  e_error(e_p_msg[ERR_PIPEOPEN], 0, f->fb);
+  return(-1);
+ }
+ /* The debugger's input and its terminal never block the editor: what
+    they do not take now is queued on the loop. */
+ e_d_fd_nonblocking(rfildes[1]);
+ e_d_fd_nonblocking(wfildes[1]);
+ if (e_deb_mode)
+  e_d_script_terminal_raw();
+ /* Legacy external-xterm debugger path (e_deb_mode): the child just
+    exec'd an xterm to host the debugger.  Let that xterm map its window
+    and settle before we pull the input focus back to xwpe, or the
+    focus-set races the xterm and may not stick.  The fully event-driven
+    cure is to wait for the xterm's MapNotify via SubstructureNotify on the
+    root window; that is deferred to the X11-xterm verification pass since it
+    cannot be exercised in the headless test harness.  Until then this is a
+    single named, bounded settle, not an open-coded magic number. */
+ usleep(DEB_XTERM_SETTLE_MS * 1000);
+ XSetInputFocus(WpeXInfo.display, WpeXInfo.window,
+   RevertToParent, CurrentTime);
+ XFlush(WpeXInfo.display);
+ return(0);
+}
+#endif
 
 /* ===================================================================== *
  *  DAP debug bridge -- editor glue for Debug Adapter Protocol backends.  *
@@ -7281,53 +7388,297 @@ void e_d_dap_end_at_exit(void)
  e_d_dap_quit(NULL);
 }
 
-/* Compile-first DAP language (Rust): build the source to a debuggable binary
-   with the configured compiler.  dlv builds Go itself; here xwpe drives the
-   one-shot compile (compiler + flags from the file's Options entry) so the
-   adapter (gdb) gets a ready binary.  On success *binary is the executable; on
-   failure the compiler diagnostics are shown in Messages and -1 returned. */
-static int e_d_dap_compile(FENSTER *f, char *binary, size_t binsz)
+/* ---- Compiling for debug (Rust), without holding the editor ----
+ *
+ * A compile-first language is built to a debuggable binary with the file's
+ * configured compiler before its adapter starts (dlv builds Go itself).
+ * The compiler runs as a child of the editor's, as a build does: the editor
+ * keeps its keys, Messages says it runs, Esc ends it, and the command that
+ * asked for the session runs again once it has succeeded.
+ */
+
+#define E_D_COMPILE_WHAT           "the compiler"
+#define E_D_COMPILE_SHELL          "/bin/sh"
+#define E_D_COMPILE_LINE           "Compiling for debug... (Esc cancels)"
+#define E_D_COMPILE_CANCELLED_LINE "compile for debug cancelled"
+#define E_D_COMPILE_FAILED_LINE    "Compilation failed -- see Messages."
+#define E_D_COMPILE_ARGC           3
+#define E_D_COMPILE_PATH_MAX       1024
+#define E_D_COMPILE_CMD_MAX        (4 * E_D_COMPILE_PATH_MAX)
+#define E_D_COMPILE_ERR_LINE_MAX   512
+#define E_D_COMPILE_DEFAULT_CC     "rustc"
+#define E_D_COMPILE_DEFAULT_FLAGS  "-g"
+
+/* The one compile for debug that may run. */
+static struct {
+ WpeChild child;
+ int running;                          /* started, its end not reported yet */
+ int held;                             /* ended behind a dialog */
+ int ok;                               /* it ended with exit status 0 */
+ int compiled;                         /* the next start of the session uses binary */
+ char cmd[E_D_COMPILE_CMD_MAX];
+ char src[E_D_COMPILE_PATH_MAX];       /* the file it compiles */
+ char binary[E_D_COMPILE_PATH_MAX];
+ char errf[E_D_COMPILE_PATH_MAX];      /* where the compiler's errors go */
+} e_d_compile;
+
+/**
+ * e_d_compile_command - Build the compiler's command line for @f.
+ * @f: the source window.
+ *
+ * The compiler and its flags come from the file's Options entry; the
+ * binary is written next to the source, the errors into a file read once
+ * the compiler has ended.
+ * Return: 0, or -1 when the compiler is not on PATH (said in a box).
+ */
+static int e_d_compile_command(FENSTER *f)
 {
- char src[700], stem[400], errf[600], cmd[2200], line[512];
- const char *cc, *flags;
- FILE *fp;
+ char stem[E_D_COMPILE_PATH_MAX], m[160];
+ const char *cc = E_D_COMPILE_DEFAULT_CC, *flags = E_D_COMPILE_DEFAULT_FLAGS;
 
  e_check_c_file_w(f);                 /* set e_s_prog to this file's compiler */
- cc = (e_s_prog.compiler && e_s_prog.compiler[0]) ? e_s_prog.compiler : "rustc";
- flags = (e_s_prog.comp_str && e_s_prog.comp_str[0]) ? e_s_prog.comp_str : "-g";
+ if (e_s_prog.compiler && e_s_prog.compiler[0])
+  cc = e_s_prog.compiler;
+ if (e_s_prog.comp_str && e_s_prog.comp_str[0])
+  flags = e_s_prog.comp_str;
  if (e_test_command(cc))
  {
-  char m[160];
-  sprintf(m, "Compiler '%s' not in PATH.", cc);
+  snprintf(m, sizeof m, "Compiler '%s' not in PATH.", cc);
   e_error(m, 0, f->fb);
   return(-1);
  }
- snprintf(stem, sizeof(stem), "%s", f->datnam);
+ snprintf(stem, sizeof stem, "%s", f->datnam);
  WpeStringCutChar(stem, '.');
- snprintf(binary, binsz, "%s%s.dbg", f->dirct, stem);
- snprintf(src, sizeof(src), "%s%s", f->dirct, f->datnam);
- snprintf(errf, sizeof(errf), "%s%s.dbgerr", f->dirct, stem);
- snprintf(cmd, sizeof(cmd), "%s %s -o '%s' '%s' 2>'%s'",
-          cc, flags, binary, src, errf);
- e_d_p_message("Compiling for debug...", f, 1);
- if (system(cmd) != 0)
+ snprintf(e_d_compile.binary, sizeof e_d_compile.binary, "%s%s.dbg",
+          f->dirct, stem);
+ snprintf(e_d_compile.src, sizeof e_d_compile.src, "%s%s", f->dirct,
+          f->datnam);
+ snprintf(e_d_compile.errf, sizeof e_d_compile.errf, "%s%s.dbgerr",
+          f->dirct, stem);
+ snprintf(e_d_compile.cmd, sizeof e_d_compile.cmd, "%s %s -o '%s' '%s' 2>'%s'",
+          cc, flags, e_d_compile.binary, e_d_compile.src, e_d_compile.errf);
+ return(0);
+}
+
+/**
+ * e_d_compile_is_for - Is @f the file the compile for debug ran for?
+ *
+ * The session starts on the source window it finds, which need not be the
+ * one compiled when the user opened another file meanwhile: that file is
+ * then compiled in its turn, never debugged with this file's binary.
+ */
+static int e_d_compile_is_for(FENSTER *f)
+{
+ char src[E_D_COMPILE_PATH_MAX];
+
+ if (!f || !f->dirct || !f->datnam)
+  return(0);
+ snprintf(src, sizeof src, "%s%s", f->dirct, f->datnam);
+ return(strcmp(src, e_d_compile.src) == 0);
+}
+
+/**
+ * e_d_compile_file_open - Is the file the compile ran for still open?
+ *
+ * One the user closed while it compiled gets no session after it.
+ */
+static int e_d_compile_file_open(void)
+{
+ int i;
+
+ for (i = WpeEditor->mxedt; i > 0; i--)
+  if (e_d_compile_is_for(WpeEditor->f[i]))
+   return(1);
+ return(0);
+}
+
+/**
+ * e_d_compile_show_errors - What the compiler said, one line in Messages
+ * each, where build errors always appear.
+ * @f: the window on top.
+ */
+static void e_d_compile_show_errors(FENSTER *f)
+{
+ char line[E_D_COMPILE_ERR_LINE_MAX];
+ size_t l;
+ FILE *fp = fopen(e_d_compile.errf, "r");
+
+ while (fp && fgets(line, sizeof line, fp))
  {
-  fp = fopen(errf, "r");
-  while (fp && fgets(line, sizeof(line), fp))
-  {
-   size_t l = strlen(line);
-   if (l && line[l - 1] == '\n')
-    line[l - 1] = '\0';
-   e_d_p_message(line, f, 1);
-  }
-  if (fp)
-   fclose(fp);
-  unlink(errf);
-  e_error("Compilation failed -- see Messages.", 0, f->fb);
+  l = strlen(line);
+  if (l && line[l - 1] == '\n')
+   line[l - 1] = '\0';
+  e_d_p_message(line, f, 1);
+ }
+ if (fp)
+  fclose(fp);
+}
+
+/**
+ * e_d_compile_tell - The compile has ended: start the session the user
+ * asked for, or show why it cannot start.
+ *
+ * A debug session the user started meanwhile is left alone, as after
+ * scala-cli setup-ide; and nothing starts for a file closed meanwhile.
+ */
+static void e_d_compile_tell(void)
+{
+ FENSTER *top = WpeEditor->f[WpeEditor->mxedt];
+
+ e_d_compile.held = 0;
+ if (!e_d_compile.ok)
+ {
+  e_d_resume_drop();
+  e_d_compile_show_errors(top);
+  unlink(e_d_compile.errf);
+  e_error(E_D_COMPILE_FAILED_LINE, 0, top->fb);
+  return;
+ }
+ unlink(e_d_compile.errf);
+ if (e_d_swtch || e_d_start_busy() || !e_d_compile_file_open())
+ {
+  e_d_resume_drop();
+  return;
+ }
+ e_d_compile.compiled = 1;
+ e_d_after_build(top, 0, NULL);
+ e_d_compile.compiled = 0;
+}
+
+/**
+ * e_d_compile_on_ended - The compiler ended: go on now, or once the dialog
+ * that is open closes.
+ * @c: its process; @status: its wait status; @how: WPE_CHILD_ENDED or
+ * WPE_CHILD_ENDED_UNKNOWN; @data: unused.
+ */
+static void e_d_compile_on_ended(WpeChild *c, int status, int how, void *data)
+{
+ (void)c;
+ (void)data;
+ e_d_compile.running = 0;
+ e_d_compile.ok = (how == WPE_CHILD_ENDED && WIFEXITED(status) &&
+                   WEXITSTATUS(status) == 0);
+ e_d_compile.held = 1;
+ if (e_build_ui_idle(WpeEditor))
+  e_d_compile_tell();
+}
+
+/**
+ * e_d_compile_deliver_held - Go on with a compile that ended behind a
+ * dialog.  The key loop calls this outside every dialog.
+ */
+static void e_d_compile_deliver_held(void)
+{
+ if (e_d_compile.held && e_build_ui_idle(WpeEditor))
+  e_d_compile_tell();
+}
+
+/**
+ * e_d_compile_begin - Start the compiler for @f without waiting for it.
+ * @f: the source window.
+ * Return: 0, or -1 when it could not be started (said in a box).
+ */
+static int e_d_compile_begin(FENSTER *f)
+{
+ char *argv[E_D_COMPILE_ARGC + 1];
+ WpeChildSpec spec;
+
+ if (e_d_compile_command(f) < 0)
+  return(-1);
+ argv[0] = E_D_COMPILE_SHELL;
+ argv[1] = "-c";
+ argv[2] = e_d_compile.cmd;
+ argv[3] = NULL;
+ memset(&spec, 0, sizeof spec);
+ spec.argv = argv;
+ spec.io = WPE_CHILD_IO_PIPES;
+ spec.group = WPE_CHILD_OWN_SESSION;
+ spec.stdin_null = 1;
+ spec.stdout_to_null = 1;
+ spec.stderr_to_null = 1;
+ spec.what = E_D_COMPILE_WHAT;
+ e_d_compile.held = 0;
+ if (wpe_child_start(&spec, &e_d_compile.child, e_d_compile_on_ended,
+                     NULL) != 0)
+ {
+  e_error(E_D_COMPILE_FAILED_LINE, 0, f->fb);
   return(-1);
  }
- unlink(errf);
+ e_d_compile.running = 1;
+ e_d_p_message(E_D_COMPILE_LINE, f, 1);
  return(0);
+}
+
+/**
+ * e_d_dap_compile_first - The binary a compile-first language's session
+ * debugs: compiled now, in the background, or just compiled.
+ * @f: the source window; @binary, @binsz: receives the binary once it is
+ * there.
+ * Return: 0 with @binary set, E_D_BUILDING while the compiler runs (the
+ * command runs again when it has succeeded), or -1 (said in a box).
+ */
+static int e_d_dap_compile_first(FENSTER *f, char *binary, size_t binsz)
+{
+ if (e_d_compile.compiled && e_d_compile_is_for(f))
+ {
+  snprintf(binary, binsz, "%s", e_d_compile.binary);
+  return(0);
+ }
+ if (e_d_compile.running)
+ {
+  e_status_say(f, E_D_COMPILE_LINE);
+  return(E_D_BUILDING);
+ }
+ if (e_d_compile_begin(f) < 0)
+  return(-1);
+ return(E_D_BUILDING);
+}
+
+/**
+ * e_d_compile_busy - Is the program being compiled for its debug session?
+ * The key loop asks, so Esc cancels it, as its waiting line says.
+ */
+int e_d_compile_busy(void)
+{
+ return(e_d_compile.running);
+}
+
+/**
+ * e_d_compile_drop - End a compile no longer wanted, in the background;
+ * nothing goes on after it.
+ */
+static void e_d_compile_drop(void)
+{
+ e_d_compile.held = 0;
+ if (!e_d_compile.running)
+  return;
+ e_d_compile.running = 0;
+ wpe_child_end_detached(&e_d_compile.child, SIGTERM);
+ unlink(e_d_compile.errf);
+}
+
+/**
+ * e_d_compile_cancel - Esc while the program compiles for its debug
+ * session: the compiler is ended, no session starts behind the user's
+ * back later, and Messages and the status row say so.
+ */
+void e_d_compile_cancel(void)
+{
+ FENSTER *top = WpeEditor->f[WpeEditor->mxedt];
+
+ e_d_resume_drop();
+ e_d_compile_drop();
+ e_d_p_message(E_D_COMPILE_CANCELLED_LINE, top, 0);
+ e_status_say(top, E_D_COMPILE_CANCELLED_LINE);
+}
+
+/**
+ * e_d_compile_end_at_exit - The editor is ending: a compiler still running
+ * is ended on the owner's ladder, which the editor's end waits for.
+ */
+static void e_d_compile_end_at_exit(void)
+{
+ e_d_compile_drop();
 }
 
 /* ---- scala-cli setup-ide, without holding the editor ----
@@ -7530,7 +7881,7 @@ static int e_d_dap_start(FENSTER *f)
  char dir[1024], binary[1024];
  char *const *adapter;
  const char *program;
- int i, dlen;
+ int i, dlen, compiled;
 
  if (g_dap)
   return(0);
@@ -7570,8 +7921,9 @@ static int e_d_dap_start(FENSTER *f)
     (Go): the directory itself is the "program" dlv compiles. */
  if (lang->compile)
  {
-  if (e_d_dap_compile(f, binary, sizeof(binary)) != 0)
-   return(-1);
+  compiled = e_d_dap_compile_first(f, binary, sizeof(binary));
+  if (compiled != 0)
+   return(compiled);
   program = binary;
  }
  else
@@ -8189,6 +8541,15 @@ typedef int (*e_d_resume_fn)(FENSTER *f, int arg);
 static void e_d_ga_set_up(ECNT *cn, e_d_resume_fn pressed, int arg);
 static e_d_resume_fn e_d_resume_cmd = NULL;
 static int e_d_resume_arg = 0;
+
+/**
+ * e_d_resume_drop - What the debugger was asked for will not run after
+ * all: the user cancelled what it waited for, or that failed.
+ */
+static void e_d_resume_drop(void)
+{
+ e_d_resume_cmd = NULL;
+}
 static int e_d_build_done = 0;     /* the build for this start has succeeded */
 
 int e_d_goto_func(FENSTER *f, int flag);
@@ -8310,8 +8671,6 @@ static int e_d_scala_setup_first(FENSTER *f, const char *dir)
 #define E_D_START_TIMEOUT_ENV "XWPE_DEBUG_START_TIMEOUT"
 /* The waiting line turns at the build's cadence. */
 #define E_D_START_TICK_NS 120000000L
-/* After SIGTERM, this many ticks (about two seconds) pass before SIGKILL. */
-#define E_D_START_KILL_TICKS 17
 #define E_D_START_WAIT_FMT "starting %s ... %lds  (Esc cancels)"
 #define E_D_START_PHASE_FMT "%s %s ... %lds  (Esc cancels)"
 #define E_D_START_CANCELLED_FMT "%s start cancelled"
@@ -8343,8 +8702,7 @@ static int e_d_scala_setup_first(FENSTER *f, const char *dir)
 static struct {
  int active;        /* a debugger was started and has not answered yet      */
  int ending;        /* E_D_START_WAITING, or why the debugger is being ended */
- int term_ticks;    /* heartbeat ticks since SIGTERM                        */
- int held;          /* it answered while a box was up                       */
+ int held;         /* it answered while a box was up                       */
  int wait_row;      /* the waiting line is Messages' last row               */
  int timeout;       /* the deadline, in seconds                             */
  time_t start;
@@ -8354,7 +8712,7 @@ static struct {
  int pty_fd;        /* an adapter's debuggee pty, while it is watched       */
  int opened_messages; /* Messages was opened for the waiting line alone      */
  ECNT *cn;
-} e_d_start = { 0, E_D_START_WAITING, 0, 0, 0, E_D_START_TIMEOUT, 0,
+} e_d_start = { 0, E_D_START_WAITING, 0, 0, E_D_START_TIMEOUT, 0,
                 WPE_TIMER_NONE, E_D_START_NO_FD, 0, E_D_START_NO_FD, 0, NULL };
 
 /* The command to run once the debugger has answered. */
@@ -8671,60 +9029,12 @@ static void e_d_start_dap_signal(int sig)
 }
 
 /**
- * e_d_start_signal - Send @sig to the starting debugger.
- * @sig: SIGTERM first, SIGKILL when that was not enough.
- *
- * The debugger is the editor's own child, addressed by its exact PID; it has
- * started no program yet.  A debug adapter is ended by the owner of the
- * editor's children.
+ * e_d_start_adapter_gone - Has the starting debug adapter exited?  A line
+ * debugger's end is reported to e_d_on_debugger_ended instead.
  */
-static void e_d_start_signal(int sig)
+static int e_d_start_adapter_gone(void)
 {
- if (e_d_start.dap)
- {
-  e_d_start_dap_signal(sig);
-  return;
- }
- if (e_d_pid > 0)
-  kill(e_d_pid, sig);
-}
-
-/**
- * e_d_start_has_child - Is there a process of the editor's own to end?
- *
- * The Scala adapter is hosted by the build server, not started by the
- * editor: a start of it that is cancelled ends at once, with the session.
- */
-static int e_d_start_has_child(void)
-{
- if (e_d_start.dap)
-  return(e_dap_adapter_pid(g_dap) > 0);
- return(e_d_pid > 0);
-}
-
-/**
- * e_d_start_reaped - Has the starting debugger exited?
- *
- * The editor's SIGCHLD handler may have collected it first, which is why
- * ECHILD also means gone.  Once gone its PID is forgotten, so nothing is
- * ever sent to a process that reused the number.
- * Return: 1 once the debugger is gone.
- */
-static int e_d_start_reaped(void)
-{
- int st, r;
-
- if (e_d_start.dap)
-  return(e_dap_adapter_gone(g_dap));
- if (e_d_pid <= 0)
-  return(1);
- r = waitpid(e_d_pid, &st, WNOHANG);
- if (r == e_d_pid || (r < 0 && errno == ECHILD))
- {
-  e_d_pid = 0;
-  return(1);
- }
- return(0);
+ return(e_d_start.dap && e_dap_adapter_gone(g_dap));
 }
 
 /**
@@ -8922,10 +9232,11 @@ static void e_d_start_end(void)
  * another reason the start cannot go on.
  *
  * A Java VM the editor started for jdb is ended first, at once.  The
- * debugger gets SIGTERM; the heartbeat sends SIGKILL if it is still
- * there about two seconds later, and ends the session once it is gone.
- * Without a child of the editor's own to wait for, or when the timer table
- * had no room for the heartbeat, the session ends at once.
+ * debugger gets SIGTERM, and SIGKILL after the grace of the owner of the
+ * editor's children; the session ends when the owner reports it gone.  A
+ * debug adapter is ended the same way, its end seen by the heartbeat;
+ * without a process of the editor's own to wait for, or when the timer
+ * table had no room for the heartbeat, the session ends at once.
  */
 static void e_d_start_stop(int why)
 {
@@ -8933,15 +9244,22 @@ static void e_d_start_stop(int why)
   return;
  e_d_jdb_vm_end();
  e_d_start.ending = why;
- e_d_start.term_ticks = 0;
  e_d_start_unwatch_output();
- if (e_d_start.hb_timer != WPE_TIMER_NONE && e_d_start_has_child())
+ if (!e_d_start.dap && e_d_dbg.child.pid > 0)
  {
-  e_d_start_signal(SIGTERM);
+  e_d_dbg.asked_end = 1;
+  wpe_child_end(&e_d_dbg.child, SIGTERM);
   return;
  }
- e_d_start_signal(SIGKILL);
- e_d_start_end();               /* the session's end reaps the killed child */
+ if (e_d_start.dap && e_d_start.hb_timer != WPE_TIMER_NONE &&
+     e_dap_adapter_pid(g_dap) > 0)
+ {
+  e_d_start_dap_signal(SIGTERM);
+  return;
+ }
+ if (e_d_start.dap)
+  e_d_start_dap_signal(SIGKILL);
+ e_d_start_end();
 }
 
 /**
@@ -8955,19 +9273,6 @@ static void e_d_start_check_deadline(void)
   return;
  if (time(NULL) - e_d_start.start >= e_d_start.timeout)
   e_d_start_stop(E_D_START_TIMED_OUT);
-}
-
-/**
- * e_d_start_escalate - A debugger that outlives SIGTERM gets SIGKILL.  An
- * adapter's SIGKILL is the owner's ladder's.
- */
-static void e_d_start_escalate(void)
-{
- if (e_d_start.dap)
-  return;
- e_d_start.term_ticks++;
- if (e_d_start.term_ticks == E_D_START_KILL_TICKS)
-  e_d_start_signal(SIGKILL);
 }
 
 /**
@@ -9093,11 +9398,128 @@ static void e_d_start_answered(void)
 void e_d_start_deliver_held(void)
 {
  e_scala_setup_deliver_held();
+ e_d_compile_deliver_held();
+ e_d_debugger_deliver_held();
  if (!e_d_start.active || !e_d_start.held)
   return;
  if (!e_build_ui_idle(e_d_start.cn))
   return;
  e_d_start_continue();
+}
+
+/* ---- The debugger's end, as the owner of the editor's children reports it */
+
+/**
+ * e_d_debugger_session_end - The debugger of a session that still ran has
+ * gone: end the session, now or once the dialog that is open has closed.
+ *
+ * A start still waiting for the debugger's answer ends with the line its
+ * end deserves; a session ends with the line that names the debugger and
+ * its exit status.
+ */
+static void e_d_debugger_session_end(void)
+{
+ if (e_d_start.active)
+ {
+  if (!e_d_start.held)
+   e_d_start_end();
+  return;
+ }
+ if (!e_build_ui_idle(WpeEditor))
+ {
+  e_d_dbg.held = 1;
+  return;
+ }
+ e_d_dbg.held = 0;
+ e_d_quit(WpeEditor->f[WpeEditor->mxedt]);
+}
+
+/**
+ * e_d_debugger_deliver_held - End a session whose debugger ended behind a
+ * dialog, or say how the debugger of an ended session went.  The key loop
+ * calls this outside every dialog.
+ */
+static void e_d_debugger_deliver_held(void)
+{
+ if (!e_build_ui_idle(WpeEditor))
+  return;
+ if (e_d_dbg.held && e_d_dbg.live)
+  e_d_debugger_session_end();
+ if (e_d_dbg.say_later && e_d_dbg.ended)
+  e_d_debugger_say_died();
+}
+
+/**
+ * e_d_on_debugger_ended - The owner of the editor's children reported that
+ * the session's debugger ended (or did not end even after SIGKILL).
+ * @c: its process; @status: its wait status; @how: WPE_CHILD_ENDED or
+ * WPE_CHILD_ENDED_UNKNOWN; @data: unused.
+ *
+ * The one place a line debugger's end is learned.  The input kept open for
+ * its quit is closed.  A session already over says now, once, how the
+ * debugger died, when its output ended before the report.  A session that
+ * still ran on it ends here, even when a process the debugger started keeps
+ * its output open, so no end of file would ever come.
+ */
+static void e_d_on_debugger_ended(WpeChild *c, int status, int how,
+                                  void *data)
+{
+ (void)c;
+ (void)data;
+ e_d_dbg.ended = 1;
+ e_d_dbg.status = status;
+ e_d_dbg.status_known = (how == WPE_CHILD_ENDED);
+ e_d_debugger_close_input();
+ if (e_d_dbg.say_later)
+ {
+  if (e_build_ui_idle(WpeEditor))
+   e_d_debugger_say_died();
+  return;
+ }
+ if (!e_d_dbg.live || e_d_dbg.end_expected)
+  return;
+ if (!e_d_dbg.asked_end)
+  e_d_note_output_closed();
+ e_d_debugger_session_end();
+}
+
+/**
+ * e_d_debugger_let_go - A new session starts while the last one's debugger
+ * is still ending: its end goes on, followed by the owner alone, and its
+ * input is closed.  A line it still owed the user is said now, without the
+ * exit status, which the new session cannot wait for.
+ */
+static void e_d_debugger_let_go(void)
+{
+ if (e_d_dbg.say_later)
+  e_d_debugger_say_died();
+ e_d_dbg.live = 0;
+ e_d_dbg.held = 0;
+ if (e_d_dbg.child.pid > 0)
+  wpe_child_end_detached(&e_d_dbg.child, SIGTERM);
+ e_d_debugger_close_input();
+}
+
+/**
+ * e_d_end_at_exit - The editor is ending: end the line debugger too.
+ *
+ * Called by the editor's end after the user's work is saved, so a logout
+ * or a "kill PID" during a debug session leaves no debugger and no program
+ * behind.  The debugger is told to quit, as Quit tells it, so it ends its
+ * program itself, and it never gets a signal that would dump core; the
+ * editor's end then runs its loop, bounded, until it has gone, and kills
+ * whatever is left.  Nothing is shown: the windows are going.
+ */
+void e_d_end_at_exit(void)
+{
+ e_d_jdb_vm_end();
+ e_d_compile_end_at_exit();
+ if (!e_d_dbg.live)
+  return;
+ e_d_dbg.say_later = 0;
+ if (e_d_quit_can_be_asked())
+  e_d_send_cmd(e_d_quit_command());
+ e_d_debugger_end(e_d_debugger_end_signal(e_d_run_going()));
 }
 
 /**
@@ -9131,10 +9553,11 @@ static void e_d_start_on_output(int fd, void *data)
    return;
   }
  }
- /* A debugger that is gone and no longer reported by the reader (its end
+ /* An adapter that is gone and no longer reported by the reader (its end
     already read) ends the start here, so the hang-up cannot wake this
-    callback again and again. */
- if (e_d_start_reaped())
+    callback again and again.  A line debugger's end is reported to
+    e_d_on_debugger_ended. */
+ if (e_d_start_adapter_gone())
   e_d_start_end();
 }
 
@@ -9352,16 +9775,13 @@ static void e_d_start_on_tick(void *data)
  (void)data;
  if (!e_d_start.active || e_d_start.held)
   return;
- if (e_d_start_reaped())
+ if (e_d_start_adapter_gone())
  {
   e_d_start_end();
   return;
  }
  if (e_d_start.ending != E_D_START_WAITING)
- {
-  e_d_start_escalate();
-  return;
- }
+  return;              /* the owner's ladder ends it, and reports it */
  if (e_d_jdb_start_vm_ended())
  {
   e_d_jdb_start_show_vm_words(E_D_PTY_READS_ALL);
@@ -9418,7 +9838,6 @@ static void e_d_start_begin(FENSTER *f, int dap)
  e_d_start.opened_messages = 0;
  e_d_start.ending = E_D_START_WAITING;
  e_d_start.held = 0;
- e_d_start.term_ticks = 0;
  e_d_start.wait_row = 0;
  e_d_start.timeout = e_d_start_timeout();
  e_d_start.start = time(NULL);
@@ -9924,7 +10343,6 @@ int e_start_debug(FENSTER *f)
  else if (e_deb_type == DEB_PDB) {  e_debugger = "python3";  e_deb_swtch = NULL;  }
  else if (e_deb_type == DEB_A68G) {  e_debugger = "a68g";  e_deb_swtch = "--monitor";  }
  else {  e_debugger = "gdb";  e_deb_swtch = e_d_gdbmi_pick();  }
- e_d_pid = 0;
  if (e_test_command(e_debugger))
  {
   snprintf(estr, sizeof(estr), "Debugger \'%s\' not in Path", e_debugger);
