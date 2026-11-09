@@ -32,6 +32,14 @@ typedef struct {
  int   line, character;
  e_lsp_completion_item *items;   /* completion: the caller's array            */
  int   max, n;
+ e_lsp_location   *locs;         /* references, highlight: the caller's array */
+ e_lsp_symbol     *syms;         /* symbols, hierarchies                      */
+ e_lsp_range      *ranges;       /* selection range                           */
+ e_lsp_code_lens  *lenses;       /* code lenses                               */
+ e_lsp_inlay_hint *inlays;       /* inlay hints                               */
+ e_lsp_sem_token  *tokens;       /* semantic tokens                           */
+ e_lsp_code_action *acts;        /* code actions                              */
+ int   others;                   /* rename, code action: other files touched  */
 } lsp_sync_wait;
 
 /**
@@ -257,6 +265,347 @@ int e_lsp_completion(e_lsp_session *s, const char *path, int line, int character
                                                      &w)))
   return -1;
  return w.n;
+}
+
+/**
+ * lsp_sync_wait_for - A wait collecting at most @max entries.
+ */
+static void lsp_sync_wait_for(lsp_sync_wait *w, int max)
+{
+ memset(w, 0, sizeof *w);
+ w->max = max;
+ w->n = -1;
+}
+
+/**
+ * lsp_sync_count - What a list request returns: the count, or -1 when it
+ * was not answered.
+ */
+static int lsp_sync_count(e_lsp_session *s, lsp_sync_wait *w, int sent)
+{
+ if (!lsp_sync_answer(s, w, sent))
+  return -1;
+ return w->n;
+}
+
+/**
+ * lsp_sync_took - Note a list answer's count, at most the caller's room.
+ * Return: how many entries to copy.
+ */
+static int lsp_sync_took(lsp_sync_wait *w, int n)
+{
+ w->done = 1;
+ w->n = n;
+ if (w->n > w->max)
+  w->n = w->max;
+ return w->n;
+}
+
+/** lsp_sync_locs_told - References or highlight answered. */
+static void lsp_sync_locs_told(E_D_REQ_END how, const e_lsp_location *locs,
+                               int n, void *ctx)
+{
+ lsp_sync_wait *w = ctx;
+ int i, k = lsp_sync_took(w, n);
+
+ (void)how;
+ for (i = 0; i < k; i++)
+  w->locs[i] = locs[i];
+}
+
+/** lsp_sync_syms_told - Symbols or a hierarchy answered. */
+static void lsp_sync_syms_told(E_D_REQ_END how, const e_lsp_symbol *syms,
+                               int n, void *ctx)
+{
+ lsp_sync_wait *w = ctx;
+ int i, k = lsp_sync_took(w, n);
+
+ (void)how;
+ for (i = 0; i < k; i++)
+  w->syms[i] = syms[i];
+}
+
+/** lsp_sync_ranges_told - Selection range answered. */
+static void lsp_sync_ranges_told(E_D_REQ_END how, const e_lsp_range *ranges,
+                                 int n, void *ctx)
+{
+ lsp_sync_wait *w = ctx;
+ int i, k = lsp_sync_took(w, n);
+
+ (void)how;
+ for (i = 0; i < k; i++)
+  w->ranges[i] = ranges[i];
+}
+
+/** lsp_sync_lenses_told - Code lenses answered. */
+static void lsp_sync_lenses_told(E_D_REQ_END how, const e_lsp_code_lens *lenses,
+                                 int n, void *ctx)
+{
+ lsp_sync_wait *w = ctx;
+ int i, k = lsp_sync_took(w, n);
+
+ (void)how;
+ for (i = 0; i < k; i++)
+  w->lenses[i] = lenses[i];
+}
+
+/** lsp_sync_inlays_told - Inlay hints answered. */
+static void lsp_sync_inlays_told(E_D_REQ_END how, const e_lsp_inlay_hint *hints,
+                                 int n, void *ctx)
+{
+ lsp_sync_wait *w = ctx;
+ int i, k = lsp_sync_took(w, n);
+
+ (void)how;
+ for (i = 0; i < k; i++)
+  w->inlays[i] = hints[i];
+}
+
+/** lsp_sync_tokens_told - Semantic tokens answered. */
+static void lsp_sync_tokens_told(E_D_REQ_END how, const e_lsp_sem_token *tokens,
+                                 int n, void *ctx)
+{
+ lsp_sync_wait *w = ctx;
+ int i, k = lsp_sync_took(w, n);
+
+ (void)how;
+ for (i = 0; i < k; i++)
+  w->tokens[i] = tokens[i];
+}
+
+/** lsp_sync_acts_told - Code actions answered. */
+static void lsp_sync_acts_told(E_D_REQ_END how, const e_lsp_code_action *acts,
+                               int n, void *ctx)
+{
+ lsp_sync_wait *w = ctx;
+ int i, k = lsp_sync_took(w, n);
+
+ (void)how;
+ for (i = 0; i < k; i++)
+  w->acts[i] = acts[i];
+}
+
+/** lsp_sync_applied_told - A rename or a code action answered. */
+static void lsp_sync_applied_told(E_D_REQ_END how, char *newtext, int others,
+                                  void *ctx)
+{
+ lsp_sync_wait *w = ctx;
+
+ (void)how;
+ w->done = 1;
+ w->text = newtext;
+ w->others = others;
+}
+
+char *e_lsp_signature_help(e_lsp_session *s, const char *path,
+                           int line, int character)
+{
+ lsp_sync_wait w;
+
+ memset(&w, 0, sizeof w);
+ if (!s)
+  return NULL;
+ lsp_sync_answer(s, &w, e_lsp_signature_help_async(s, path, line, character,
+                                                   lsp_sync_text_told, &w));
+ return w.text;
+}
+
+int e_lsp_references(e_lsp_session *s, const char *path, int line, int character,
+                     e_lsp_location *locs, int max)
+{
+ lsp_sync_wait w;
+
+ if (!s)
+  return -1;
+ lsp_sync_wait_for(&w, max);
+ w.locs = locs;
+ return lsp_sync_count(s, &w, e_lsp_references_async(s, path, line, character,
+                                                     max, lsp_sync_locs_told,
+                                                     &w));
+}
+
+int e_lsp_document_highlight(e_lsp_session *s, const char *path, int line,
+                             int character, e_lsp_location *locs, int max)
+{
+ lsp_sync_wait w;
+
+ if (!s)
+  return -1;
+ lsp_sync_wait_for(&w, max);
+ w.locs = locs;
+ return lsp_sync_count(s, &w,
+                       e_lsp_document_highlight_async(s, path, line, character,
+                                                      max, lsp_sync_locs_told,
+                                                      &w));
+}
+
+int e_lsp_call_hierarchy(e_lsp_session *s, const char *path, int line,
+                         int character, int outgoing,
+                         e_lsp_symbol *out, int max)
+{
+ lsp_sync_wait w;
+
+ if (!s)
+  return -1;
+ lsp_sync_wait_for(&w, max);
+ w.syms = out;
+ return lsp_sync_count(s, &w,
+                       e_lsp_call_hierarchy_async(s, path, line, character,
+                                                  outgoing, max,
+                                                  lsp_sync_syms_told, &w));
+}
+
+int e_lsp_type_hierarchy(e_lsp_session *s, const char *path, int line,
+                         int character, int subtypes,
+                         e_lsp_symbol *out, int max)
+{
+ lsp_sync_wait w;
+
+ if (!s)
+  return -1;
+ lsp_sync_wait_for(&w, max);
+ w.syms = out;
+ return lsp_sync_count(s, &w,
+                       e_lsp_type_hierarchy_async(s, path, line, character,
+                                                  subtypes, max,
+                                                  lsp_sync_syms_told, &w));
+}
+
+int e_lsp_selection_range(e_lsp_session *s, const char *path, int line,
+                          int character, e_lsp_range *out, int max)
+{
+ lsp_sync_wait w;
+
+ if (!s)
+  return -1;
+ lsp_sync_wait_for(&w, max);
+ w.ranges = out;
+ return lsp_sync_count(s, &w,
+                       e_lsp_selection_range_async(s, path, line, character,
+                                                   max, lsp_sync_ranges_told,
+                                                   &w));
+}
+
+int e_lsp_code_lenses(e_lsp_session *s, const char *path,
+                      e_lsp_code_lens *lenses, int max)
+{
+ lsp_sync_wait w;
+
+ if (!s)
+  return -1;
+ lsp_sync_wait_for(&w, max);
+ w.lenses = lenses;
+ return lsp_sync_count(s, &w, e_lsp_code_lenses_async(s, path, max,
+                                                      lsp_sync_lenses_told,
+                                                      &w));
+}
+
+int e_lsp_inlay_hints(e_lsp_session *s, const char *path,
+                      int start_line, int end_line,
+                      e_lsp_inlay_hint *out, int max)
+{
+ lsp_sync_wait w;
+
+ if (!s)
+  return -1;
+ lsp_sync_wait_for(&w, max);
+ w.inlays = out;
+ return lsp_sync_count(s, &w, e_lsp_inlay_hints_async(s, path, start_line,
+                                                      end_line, max,
+                                                      lsp_sync_inlays_told,
+                                                      &w));
+}
+
+int e_lsp_semantic_tokens(e_lsp_session *s, const char *path,
+                          e_lsp_sem_token *out, int max)
+{
+ lsp_sync_wait w;
+
+ if (!s)
+  return -1;
+ lsp_sync_wait_for(&w, max);
+ w.tokens = out;
+ return lsp_sync_count(s, &w, e_lsp_semantic_tokens_async(s, path, max,
+                                                          lsp_sync_tokens_told,
+                                                          &w));
+}
+
+int e_lsp_document_symbols(e_lsp_session *s, const char *path,
+                           e_lsp_symbol *syms, int max)
+{
+ lsp_sync_wait w;
+
+ if (!s)
+  return -1;
+ lsp_sync_wait_for(&w, max);
+ w.syms = syms;
+ return lsp_sync_count(s, &w, e_lsp_document_symbols_async(s, path, max,
+                                                           lsp_sync_syms_told,
+                                                           &w));
+}
+
+int e_lsp_workspace_symbols(e_lsp_session *s, const char *query,
+                            e_lsp_symbol *syms, int max)
+{
+ lsp_sync_wait w;
+
+ if (!s)
+  return -1;
+ lsp_sync_wait_for(&w, max);
+ w.syms = syms;
+ return lsp_sync_count(s, &w, e_lsp_workspace_symbols_async(s, query, max,
+                                                            lsp_sync_syms_told,
+                                                            &w));
+}
+
+int e_lsp_code_actions(e_lsp_session *s, const char *path, int line, int character,
+                       e_lsp_code_action *acts, int max)
+{
+ lsp_sync_wait w;
+
+ if (!s)
+  return -1;
+ lsp_sync_wait_for(&w, max);
+ w.acts = acts;
+ return lsp_sync_count(s, &w, e_lsp_code_actions_async(s, path, line, character,
+                                                       max, lsp_sync_acts_told,
+                                                       &w));
+}
+
+char *e_lsp_apply_code_action(e_lsp_session *s, int index, const char *path,
+                              const char *current_text, int *other_files)
+{
+ lsp_sync_wait w;
+
+ memset(&w, 0, sizeof w);
+ if (other_files)
+  *other_files = 0;
+ if (!s)
+  return NULL;
+ lsp_sync_answer(s, &w, e_lsp_code_action_run_async(s, index, path, current_text,
+                                                    lsp_sync_applied_told, &w));
+ if (other_files)
+  *other_files = w.others;
+ return w.text;
+}
+
+char *e_lsp_rename(e_lsp_session *s, const char *path, int line, int character,
+                   const char *new_name, const char *current_text,
+                   int *other_files)
+{
+ lsp_sync_wait w;
+
+ memset(&w, 0, sizeof w);
+ if (other_files)
+  *other_files = 0;
+ if (!s)
+  return NULL;
+ lsp_sync_answer(s, &w, e_lsp_rename_async(s, path, line, character, new_name,
+                                           current_text, lsp_sync_applied_told,
+                                           &w));
+ if (other_files)
+  *other_files = w.others;
+ return w.text;
 }
 
 char *e_lsp_format(e_lsp_session *s, const char *path, const char *current_text)

@@ -148,8 +148,9 @@ keeps screen column == buffer column (so the cursor, editing and scrolling stay
 exact), and the hint conveys the same type without disturbing that.  The set
 refreshes itself: when the server finishes indexing and the inferred types
 change -- e.g.@: a cross-file type that was unknown the instant you toggled on
--- it asks xwpe to re-query, and the overlay updates on your next keystroke, so
-a cold toggle fills in as the project settles (no need to re-toggle).
+-- it asks xwpe to re-query, and the overlay updates as soon as the answer
+comes, so a cold toggle fills in as the project settles (no need to
+re-toggle).
 @item Alt-Q M
 @dfn{Semantic colours} (toggle): server-driven syntax highlighting.  The plain
 syntax colouring is a regular-expression lexer -- it cannot tell a type from a
@@ -164,7 +165,7 @@ shade.  The win is the one the big IDEs sell: at a glance a @code{type} reads
 differently from a @code{keyword}, a @code{function} call, and a
 @code{parameter}, even where the regex colouring would paint them all the same.
 The set re-queries itself when the server reclassifies (e.g.@: a cross-file type
-resolves after indexing), updating on your next keystroke.  Press @kbd{Alt-Q M}
+resolves after indexing), updating as soon as the answer comes.  Press @kbd{Alt-Q M}
 again to turn it off and return to the regex colouring.  Off by default.
 
 The function/method @strong{orange} (@code{#FF8C00}) and the type/class
@@ -269,28 +270,45 @@ on demand instead.
 @cindex waiting line, language server
 @cindex Esc, language server
 @vindex XWPE_DEBUG_ANSWER_TIMEOUT
-A server that is slow to answer never holds the editor.  Hover, the three
-jumps (@kbd{D}, @kbd{I}, @kbd{T}), completion and format go out at once and
-you keep typing; after a quiet second the status row says what xwpe waits
-for, as in @samp{waiting for clangd to answer `textDocument/hover' @dots{} 3s
-(Esc cancels)}.  The answer is shown when it comes: the popup, the jump,
-the list or the new text.  @kbd{Esc} gives it up (@samp{Gave up waiting for
-clangd to answer @dots{}}), and an answer that arrives later is dropped.  If
-you changed the file meanwhile (or, for hover and completion, moved the
-cursor), the server's positions are for the old text, so the answer is not
-applied and the status row says it @samp{came after the file changed}; ask
-again.  An answer that comes while a dialog or menu is open waits for it to
-close.  One request at a time: another @kbd{Alt-Q} action meanwhile says
-@samp{clangd is still answering @dots{}}.  A request not answered within 30
-seconds (or @env{XWPE_DEBUG_ANSWER_TIMEOUT}) is given up with a line that
-names it.  The start is the same once you asked for something: the status
-row says @samp{waiting for Metals to start @dots{} (Esc cancels)}, and
-@kbd{Esc} ends the server (@samp{Language server start cancelled.}); the
-start itself has no deadline, since importing a build can take minutes.  A
-start begun by opening a file says nothing and @kbd{Esc} leaves it alone.
-The other @kbd{Alt-Q} actions (references, hierarchies, outline, symbols,
-code actions, rename, signature help, lenses, inlay hints, semantic colours)
-still wait for their answer for now.
+A server that is slow to answer never holds the editor.  Every @kbd{Alt-Q}
+action goes out at once and you keep typing; after a quiet second the status
+row says what xwpe waits for, as in @samp{waiting for clangd to answer
+`textDocument/hover' @dots{} 3s (Esc cancels)} (with a long request name the
+start of that line is cut on an 80-column screen).  The answer is shown when
+it comes: the popup (hover, signature help), the jump, the list in Messages
+(references, callers, callees, supertypes, subtypes), the picker (completion,
+outline, workspace symbols, code lenses, code actions), the highlight, the
+grown mark, or the new text (format, rename, a code action).  @kbd{Esc}
+gives up every answer out (@samp{Gave up waiting for clangd to answer
+@dots{}}), and an answer that arrives later is dropped.  If you changed the
+file meanwhile (or, for the answers drawn at the cursor, moved it), the
+server's positions are for the old text, so the answer is not applied and
+the status row says it @samp{came after the file changed}; ask again.  An
+answer that comes while a dialog or menu is open waits for it to close.  You
+may ask something else while an answer is out; each answer is shown as it
+comes, and answers that come together are shown in the order you asked.
+The same action again meanwhile says @samp{clangd is still answering
+@dots{}}.  An action for another file waits too, since that file's
+server would replace the one still answering.  A code action that runs a
+command on the server (@code{workspace/executeCommand}) takes the change the
+server sends back while the command runs, and applies it only to the text it
+was run on.  A request not answered within 30 seconds (or
+@env{XWPE_DEBUG_ANSWER_TIMEOUT}) is given up with a line that names it.  The
+start is the same once you asked for something: the status row says
+@samp{waiting for Metals to start @dots{} (Esc cancels)}, and @kbd{Esc} ends
+the server (@samp{Language server start cancelled.}); the start itself has no
+deadline, since importing a build can take minutes.  A start begun by opening
+a file says nothing and @kbd{Esc} leaves it alone.
+
+@cindex inlay hints, fetched in the background
+@cindex semantic colours, fetched in the background
+Inlay hints (@kbd{Alt-Q Y}) and semantic colours (@kbd{Alt-Q M}) are
+fetched in the background: no waiting line, and @kbd{Esc} does not touch
+them.  They are painted when the server answers, and fetched again when the
+server asks for it or publishes new diagnostics (its log lines and status
+do not count); a newer fetch replaces an older one still out, and
+hints or colours computed for text you have changed since are never
+painted.
 
 @cindex server status
 @cindex indexing

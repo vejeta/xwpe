@@ -25587,20 +25587,96 @@ static int e_lsp_sem_color_at(SCHIRM *s, int y, int x, int base)
  return(base);
 }
 
-/* (Re)fetch the whole file's semantic tokens into the overlay. */
+/* The server's copy of the document changes at every didOpen and didChange;
+   an overlay fetched for an older copy has its positions on other text. */
+static unsigned long g_lsp_doc_gen = 0;
+
+static int e_lsp_ui_safe(void);            /* (below) */
+
+/* What an overlay fetch was sent for: the file and the server's copy of it. */
+typedef struct
+{
+ unsigned long gen;
+ char path[1024];
+} e_lsp_fetch_ticket;
+
+/**
+ * e_lsp_fetch_ticket_new - Note the file and the server's copy a fetch is
+ * for, so its answer is painted only on that text.
+ * Return: the ticket (the fetch's continuation frees it), or NULL.
+ */
+static e_lsp_fetch_ticket *e_lsp_fetch_ticket_new(void)
+{
+ e_lsp_fetch_ticket *t = calloc(1, sizeof(*t));
+
+ if (!t)
+  return(NULL);
+ t->gen = g_lsp_doc_gen;
+ snprintf(t->path, sizeof t->path, "%s", g_lsp_file);
+ return(t);
+}
+
+/**
+ * e_lsp_fetch_ticket_current - Is the file still the server's, and its
+ * copy the one the fetch was sent for?
+ */
+static int e_lsp_fetch_ticket_current(unsigned long gen, const char *path)
+{
+ return(gen == g_lsp_doc_gen && !strcmp(path, g_lsp_file));
+}
+
+/* A semantic token answer kept until the editor may paint it. */
+static struct
+{
+ int ready;
+ unsigned long gen;
+ char path[1024];
+ int n;
+ e_lsp_sem_token tokens[LSP_MAX_SEM];
+} g_sem_held;
+
+/**
+ * e_lsp_sem_told - The tokens came: kept, painted later by
+ * e_lsp_overlay_deliver.  A fetch replaced by a newer one, or ended
+ * without an answer, leaves nothing.
+ */
+static void e_lsp_sem_told(E_D_REQ_END how, const e_lsp_sem_token *tokens,
+                           int n, void *ctx)
+{
+ e_lsp_fetch_ticket *t = ctx;
+
+ if (how == E_D_REQ_DONE && n >= 0)
+ {
+  if (n > LSP_MAX_SEM)
+   n = LSP_MAX_SEM;
+  memcpy(g_sem_held.tokens, tokens, (size_t)n * sizeof(*tokens));
+  g_sem_held.n = n;
+  g_sem_held.gen = t->gen;
+  snprintf(g_sem_held.path, sizeof g_sem_held.path, "%s", t->path);
+  g_sem_held.ready = 1;
+ }
+ free(t);
+}
+
+/* Ask for the whole file's semantic tokens; the overlay takes them when the
+   server answers.  The editor never waits: a newer fetch replaces this one. */
 static void e_lsp_sem_fetch(FENSTER *f)
 {
- g_sem_nactive = 0;
+ e_lsp_fetch_ticket *t;
+
  if (!g_lsp || !f)
   return;
- g_sem_nactive = e_lsp_semantic_tokens(g_lsp, g_lsp_file, g_sem_active, LSP_MAX_SEM);
- if (g_sem_nactive < 0)
-  g_sem_nactive = 0;
+ t = e_lsp_fetch_ticket_new();
+ if (!t)
+  return;
+ if (e_lsp_semantic_tokens_async(g_lsp, g_lsp_file, LSP_MAX_SEM,
+                                 e_lsp_sem_told, t) != E_D_SEND_OK)
+  free(t);
 }
 
 /* host callback (workspace/semanticTokens/refresh): the classification changed
-   (e.g. indexing resolved a cross-file type).  Fired inside the pump -- only
-   flag stale; e_lsp_sem_refresh_pending re-fetches at a safe point. */
+   (e.g. indexing resolved a cross-file type).  Fired inside the server's read
+   -- only flag stale; e_lsp_sem_refresh_pending re-fetches once it returned. */
 static void e_lsp_on_semantic_refresh(void *ud)
 {
  (void)ud;
@@ -25608,16 +25684,14 @@ static void e_lsp_on_semantic_refresh(void *ud)
   g_sem_stale = 1;
 }
 
-/* If the overlay is on and the server flagged it stale, re-fetch + repaint.
-   Called at safe points (after a poll, never inside one). */
+/* If the overlay is on and the server flagged it stale, fetch it again; it
+   is repainted when the answer comes.  Called after a poll, never inside. */
 static void e_lsp_sem_refresh_pending(FENSTER *f)
 {
  if (!g_sem_on || !g_sem_stale || !g_lsp)
   return;
  g_sem_stale = 0;
  e_lsp_sem_fetch(f);
- if (f && DTMD_ISTEXT(f->dtmd))
- {  e_schirm(f, 1);  e_cursor(f, 0);  }
 }
 
 /* Called once per line by the renderer: are there any LSP decorations (problem
@@ -25688,37 +25762,84 @@ static void e_lsp_inlay_clear(void)
  g_inlay_nactive = 0;
 }
 
-/* Snapshot the file's inferred-type hints into the renderer-owned overlay.  The
-   engine's labels live in its session cache (clobbered by the next request), so
-   copy them. */
+/* An inlay hint answer kept until the editor may paint it (its labels are
+   copies: the engine's are gone after the continuation). */
+static struct
+{
+ int ready;
+ unsigned long gen;
+ char path[1024];
+ int n;
+ e_lsp_inlay_hint hints[LSP_MAX_INLAY];
+} g_inlay_held;
+
+/**
+ * e_lsp_inlay_held_clear - Forget the hints kept for painting.
+ */
+static void e_lsp_inlay_held_clear(void)
+{
+ int i;
+
+ for (i = 0; i < g_inlay_held.n; i++)
+  free(g_inlay_held.hints[i].label);
+ g_inlay_held.n = 0;
+ g_inlay_held.ready = 0;
+}
+
+/**
+ * e_lsp_inlay_told - The hints came: copied and kept, painted later by
+ * e_lsp_overlay_deliver.  A fetch replaced by a newer one, or ended
+ * without an answer, leaves the kept ones as they were.
+ */
+static void e_lsp_inlay_told(E_D_REQ_END how, const e_lsp_inlay_hint *hints,
+                             int n, void *ctx)
+{
+ e_lsp_fetch_ticket *t = ctx;
+ int i;
+
+ if (how == E_D_REQ_DONE && n >= 0)
+ {
+  e_lsp_inlay_held_clear();
+  for (i = 0; i < n && g_inlay_held.n < LSP_MAX_INLAY; i++)
+  {
+   if (!hints[i].label || !hints[i].label[0])
+    continue;
+   g_inlay_held.hints[g_inlay_held.n] = hints[i];
+   g_inlay_held.hints[g_inlay_held.n].label = strdup(hints[i].label);
+   g_inlay_held.n++;
+  }
+  g_inlay_held.gen = t->gen;
+  snprintf(g_inlay_held.path, sizeof g_inlay_held.path, "%s", t->path);
+  g_inlay_held.ready = 1;
+ }
+ free(t);
+}
+
+/* Ask for the file's inferred-type hints; the overlay takes them when the
+   server answers.  The editor never waits: a newer fetch replaces this one. */
 static void e_lsp_inlay_fetch(FENSTER *f)
 {
- static e_lsp_inlay_hint tmp[LSP_MAX_INLAY];
- int n, i, last;
+ e_lsp_fetch_ticket *t;
+ int last;
 
- e_lsp_inlay_clear();
  if (!g_lsp || !f || !f->b)
   return;
  last = f->b->mxlines - 1;
  if (last < 0)
   last = 0;
- n = e_lsp_inlay_hints(g_lsp, g_lsp_file, 0, last, tmp, LSP_MAX_INLAY);
- for (i = 0; i < n && g_inlay_nactive < LSP_MAX_INLAY; i++)
- {
-  if (!tmp[i].label || !tmp[i].label[0])
-   continue;
-  g_inlay_active[g_inlay_nactive].label = strdup(tmp[i].label);
-  g_inlay_active[g_inlay_nactive].line = tmp[i].line;
-  g_inlay_active[g_inlay_nactive].character = tmp[i].character;
-  g_inlay_active[g_inlay_nactive].kind = tmp[i].kind;
-  g_inlay_nactive++;
- }
+ t = e_lsp_fetch_ticket_new();
+ if (!t)
+  return;
+ if (e_lsp_inlay_hints_async(g_lsp, g_lsp_file, 0, last, LSP_MAX_INLAY,
+                             e_lsp_inlay_told, t) != E_D_SEND_OK)
+  free(t);
 }
 
 /* host callback (workspace/inlayHint/refresh): the server re-queried -- the
    current hints may be a stale subset (cold toggles miss cross-file inferred
-   types until indexing settles).  Fired from inside the pump, so only mark the
-   overlay stale; e_lsp_inlay_refresh_pending re-fetches at a safe point. */
+   types until indexing settles).  Fired from inside the server's read, so only
+   mark the overlay stale; e_lsp_inlay_refresh_pending re-fetches once it
+   returned. */
 static void e_lsp_on_inlay_refresh(void *ud)
 {
  (void)ud;
@@ -25726,19 +25847,118 @@ static void e_lsp_on_inlay_refresh(void *ud)
   g_inlay_stale = 1;
 }
 
-/* If the overlay is on and the server flagged it stale, re-fetch the hints and
-   repaint.  Called at safe points (after a poll, never inside one).  Returns 1
-   if it refreshed (caller may want to redraw the cursor), else 0. */
+/* If the overlay is on and the server flagged it stale, fetch the hints
+   again; they are painted when the answer comes.  Called after a poll, never
+   inside one.  Returns 1 if a fetch went out, else 0. */
 static int e_lsp_inlay_refresh_pending(FENSTER *f)
 {
  if (!g_inlay_on || !g_inlay_stale || !g_lsp)
   return(0);
  g_inlay_stale = 0;
  e_lsp_inlay_fetch(f);
- if (f && DTMD_ISTEXT(f->dtmd))
- {  e_schirm(f, 1);  e_cursor(f, 0);  e_refresh();  }  /* flush: this may run from
-        the fd-loop (no keystroke after to flush), e.g. worksheet results */
  return(1);
+}
+
+/**
+ * e_lsp_overlay_repaint - Show an overlay just taken on the language
+ * server's window; flushed, since this may run from the loop with no key
+ * after it (worksheet results).
+ */
+static void e_lsp_overlay_repaint(void)
+{
+ FENSTER *f = g_lsp_fenster;
+
+ if (!f || !DTMD_ISTEXT(f->dtmd))
+  return;
+ e_schirm(f, 1);
+ e_cursor(f, 0);
+ e_refresh();
+}
+
+/**
+ * e_lsp_inlay_take - The kept hints become the overlay, when they are for
+ * the server's present copy of the file; older ones are dropped without a
+ * line and asked for again.
+ * Return: 1 when the overlay changed.
+ */
+static int e_lsp_inlay_take(void)
+{
+ int i;
+
+ if (!g_inlay_held.ready)
+  return(0);
+ if (!g_inlay_on)
+ {
+  e_lsp_inlay_held_clear();
+  return(0);
+ }
+ if (!e_lsp_fetch_ticket_current(g_inlay_held.gen, g_inlay_held.path))
+ {
+  e_lsp_inlay_held_clear();
+  g_inlay_stale = 1;
+  return(0);
+ }
+ e_lsp_inlay_clear();
+ for (i = 0; i < g_inlay_held.n; i++)
+  g_inlay_active[i] = g_inlay_held.hints[i];   /* the labels move over */
+ g_inlay_nactive = g_inlay_held.n;
+ g_inlay_held.n = 0;
+ g_inlay_held.ready = 0;
+ return(1);
+}
+
+/**
+ * e_lsp_sem_take - The kept tokens become the overlay, when they are for
+ * the server's present copy of the file; older ones are dropped without a
+ * line and asked for again.
+ * Return: 1 when the overlay changed.
+ */
+static int e_lsp_sem_take(void)
+{
+ if (!g_sem_held.ready)
+  return(0);
+ g_sem_held.ready = 0;
+ if (!g_sem_on)
+  return(0);
+ if (!e_lsp_fetch_ticket_current(g_sem_held.gen, g_sem_held.path))
+ {
+  g_sem_stale = 1;
+  return(0);
+ }
+ memcpy(g_sem_active, g_sem_held.tokens,
+        (size_t)g_sem_held.n * sizeof(g_sem_held.tokens[0]));
+ g_sem_nactive = g_sem_held.n;
+ return(1);
+}
+
+/**
+ * e_lsp_overlay_held_drop - Forget the overlay answers not painted yet
+ * (the session ends, or another file's server replaces it).
+ */
+static void e_lsp_overlay_held_drop(void)
+{
+ e_lsp_inlay_held_clear();
+ g_sem_held.ready = 0;
+}
+
+/**
+ * e_lsp_overlay_deliver - Paint the inlay hints and semantic colours the
+ * server answered with, once nothing is drawn over the editor (a dialog,
+ * a menu, a command that has the terminal); a stale answer is fetched
+ * again by the next refresh, never painted.
+ */
+static void e_lsp_overlay_deliver(void)
+{
+ int changed;
+
+ if (!g_inlay_held.ready && !g_sem_held.ready)
+  return;
+ if (!e_lsp_ui_safe() || wpe_fd_waiting_for() != NULL)
+  return;
+ changed = e_lsp_inlay_take();
+ changed |= e_lsp_sem_take();
+ if (changed)
+  e_lsp_overlay_repaint();
 }
 
 /* Per-line gate for the renderer: is the inlay overlay on for the file in f? */
@@ -26176,6 +26396,7 @@ static void e_lsp_synced_set(char *owned)   /* takes ownership of `owned` */
 {
  free(g_lsp_synced_text);
  g_lsp_synced_text = owned;
+ g_lsp_doc_gen++;                  /* an overlay fetched before is stale */
 }
 
 /* Push the current buffer to the server (textDocument/didChange) ONLY if it
@@ -26337,8 +26558,8 @@ static void e_scala_pin_jdk(FENSTER *f, const char *who)
    whole time, so the input loop's blocking poll keeps returning and stays
    responsive -- and is removed once the first diagnostics arrive (steady state:
    an idle server must never sit in the poll set and delay a keystroke).  After
-   that, diagnostics flow via e_lsp_on_edit's poll and each request's own pump,
-   exactly as before. */
+   that, diagnostics flow via e_lsp_on_edit's poll, and the fd is watched again
+   whenever a request (or an overlay fetch) is owed its answer. */
 static int g_lsp_fd_num = -1;                 /* fd in the poll set, or -1     */
 static int g_lsp_ready_done = 0;              /* announced "ready" this session? */
 static int e_lsp_ensure(FENSTER *f);          /* fwd */
@@ -26430,27 +26651,29 @@ static void e_lsp_on_fd_readable(int fd, void *data)
    ;                             /* an overlay is live: keep polling so a later server
                                     push (inlayHint/semanticTokens refresh, once indexed)
                                     reaches us and repaints -- it stays quiet when idle */
-  else if (e_lsp_requests_pending(g_lsp))
+  else if (e_lsp_requests_owed(g_lsp))
    ;                             /* an answer is owed: it is read here */
   else
    e_lsp_fd_unregister();        /* stop polling so an idle server never delays a key */
  }
  /* worksheet REPL: the fd stays registered, so as Metals compiles and EVALUATES
     (the results trickle in after the types -- a second, slower pass -- and Metals
-    does not always send inlayHint/refresh), any server activity for it means the
-    inlay set may have grown.  Re-pull on each batch of messages once ready; the
-    fetch is a cheap single request and the server falls silent when idle, so this
-    is event-driven, not polling. */
- /* While an overlay is explicitly ON, treat ANY batch of server messages as "the
-    set may have grown" and re-pull: the diagnostics Metals publishes once it
-    finishes indexing are the reliable signal, since not every server bothers to
-    send inlayHint/semanticTokens refresh for a plain file.  The server is silent
-    when idle, so this is event-driven, not polling. */
+    does not always send inlayHint/refresh), each diagnostics batch it publishes
+    means the inlay set may have grown.  Re-pull on it once ready; the fetch is a
+    cheap single request and the server falls silent when idle, so this is
+    event-driven, not polling. */
+ /* While an overlay is explicitly ON, a diagnostics batch (e_lsp_poll counts
+    nothing else) means "the set may have grown": the diagnostics a server
+    publishes once it finishes indexing are the reliable signal, since not every
+    server bothers to send inlayHint/semanticTokens refresh for a plain file.
+    Its log lines and status are not news: they also come with the overlay's
+    own answer, and re-pulling on them would never stop. */
  if (g_inlay_on && handled > 0 && g_lsp_ready_done)
   g_inlay_stale = 1;
  if (g_sem_on && handled > 0 && g_lsp_ready_done)
   g_sem_stale = 1;
- if (g_inlay_on && !g_lsp_ui_suspended)   /* modal up: keep the stale flag, defer paint */
+ e_lsp_overlay_deliver();                 /* an overlay answer read just now */
+ if (g_inlay_on && !g_lsp_ui_suspended)   /* modal up: keep the stale flag, ask later */
   e_lsp_inlay_refresh_pending(g_lsp_fenster);
  if (g_sem_on && !g_lsp_ui_suspended)     /* same deal for semantic colours */
   e_lsp_sem_refresh_pending(g_lsp_fenster);
@@ -26561,17 +26784,36 @@ static FENSTER *e_lsp_window_of(const char *path)
  * editor is idle, on the window it was asked from, and only while that
  * window's text (and, for the popups at the cursor, the cursor) is as it was
  * sent: the server's positions are for that text.  After a quiet second the
- * status row says what the editor waits for; Esc gives the answer up, and a
- * late answer is dropped by its id.  One request at a time: another Alt-Q
- * action meanwhile is refused with a line that names the one out.
+ * status row says what the editor waits for; Esc gives the answers up, and a
+ * late answer is dropped by its id.  One request of each kind at a time:
+ * the same action again meanwhile is refused with a line that names the
+ * request out, while an action of another kind goes out at once.  Each
+ * answer is shown as it comes; answers that came together are shown in the
+ * order they were asked.
  */
 
-#define E_LSP_ASK_NONE     0
-#define E_LSP_ASK_HOVER    1
-#define E_LSP_ASK_JUMP     2
-#define E_LSP_ASK_COMPLETE 3
-#define E_LSP_ASK_FORMAT   4
+#define E_LSP_ASK_NONE       0
+#define E_LSP_ASK_HOVER      1
+#define E_LSP_ASK_JUMP       2
+#define E_LSP_ASK_COMPLETE   3
+#define E_LSP_ASK_FORMAT     4
+#define E_LSP_ASK_SIGNATURE  5
+#define E_LSP_ASK_REFERENCES 6
+#define E_LSP_ASK_CALLS      7
+#define E_LSP_ASK_TYPES      8
+#define E_LSP_ASK_SELECTION  9
+#define E_LSP_ASK_HIGHLIGHT  10
+#define E_LSP_ASK_LENSES     11
+#define E_LSP_ASK_OUTLINE    12
+#define E_LSP_ASK_SYMBOLS    13
+#define E_LSP_ASK_ACTIONS    14
+#define E_LSP_ASK_ACTION_RUN 15
+#define E_LSP_ASK_RENAME     16
+#define E_LSP_ASK_KINDS      17
 #define E_LSP_ASK_ITEMS_MAX 64     /* candidates the completion list shows */
+#define E_LSP_ROWS_MAX     128     /* entries a list or a picker keeps      */
+#define E_LSP_HL_MAX       256     /* occurrences a highlight keeps         */
+#define E_LSP_RANGES_MAX    64     /* nested ranges an expand-selection reads */
 #define E_LSP_NAME_MAX     32
 #define E_LSP_WHAT_MAX     32
 #define E_LSP_START_METHOD "initialize"
@@ -26588,24 +26830,44 @@ static FENSTER *e_lsp_window_of(const char *path)
 #define E_LSP_START_CANCELLED_LINE "Language server start cancelled."
 #define E_LSP_ASK_FAILED_LINE "Could not ask the language server."
 
-/* The one request out, and its answer once it came. */
-static struct
+/* One entry of a list answer, copied out of the engine's arrays: a
+   location, a symbol, a lens, an action or a range. */
+typedef struct
 {
- int   kind;                     /* E_LSP_ASK_*                            */
+ char *name;                     /* symbol, lens title, action title, or NULL */
+ char *path;                     /* its file, or NULL for the file asked about */
+ int   line, character;          /* 0-based                                */
+ int   has_edit;                 /* an action: its edit is in hand         */
+ e_lsp_range range;              /* a selection range                      */
+} e_lsp_ask_row;
+
+/* A request out, of one kind, and its answer once it came. */
+typedef struct
+{
+ int   kind;                     /* E_LSP_ASK_*, NONE when the slot is free */
+ unsigned long seq;              /* the order asked: answers show in it    */
  char  path[E_LSP_PATH_MAX];     /* the file asked about                   */
  char *base;                     /* its text when asked                    */
  int   y, x;                     /* the cursor when asked                  */
  char  what[E_LSP_WHAT_MAX];     /* a jump: "definition", ...              */
  int   has_sel;                  /* a format: of the marked block          */
+ int   flag;                     /* calls: outgoing; types: subtypes       */
+ int   wlen;                     /* highlight: the identifier's length     */
  int   ready;                    /* the continuation has been told         */
  E_D_REQ_END how;                /* how the request ended                  */
- char *text;                     /* hover or formatted text, or NULL       */
+ char *text;                     /* hover, signature, new text, or NULL    */
+ int   others;                   /* rename, action: other files it changes */
  int   found;                    /* a jump: a location came                */
  char  target[E_LSP_PATH_MAX];   /* ... its file                           */
  int   line;                     /* ... its line, 0-based                  */
- int   n;                        /* completion: candidates, -1 none        */
+ int   n;                        /* candidates or rows, -1 none            */
  e_lsp_completion_item items[E_LSP_ASK_ITEMS_MAX];
-} e_lsp_ask;
+ e_lsp_ask_row *rows;            /* a list answer's entries (malloc'd)     */
+} e_lsp_ask_t;
+
+/* One slot per kind of request. */
+static e_lsp_ask_t e_lsp_asks[E_LSP_ASK_KINDS];
+static unsigned long e_lsp_ask_seq = 0;
 
 /* The requests' world: the editor's clock, timers and status row. */
 static struct
@@ -26802,19 +27064,51 @@ static void e_lsp_start_waited_for(void)
 }
 
 /**
- * e_lsp_ask_clear - Forget the request out and its answer.
+ * e_lsp_ask_rows_free - Forget a list answer's entries.
+ * @a: the slot.
+ */
+static void e_lsp_ask_rows_free(e_lsp_ask_t *a)
+{
+ int i;
+
+ if (!a->rows)
+  return;
+ for (i = 0; i < a->n; i++)
+ {
+  free(a->rows[i].name);
+  free(a->rows[i].path);
+ }
+ free(a->rows);
+ a->rows = NULL;
+}
+
+/**
+ * e_lsp_ask_free - Forget a request and its answer; the slot is free.
+ * @a: the slot.
+ */
+static void e_lsp_ask_free(e_lsp_ask_t *a)
+{
+ e_lsp_ask_rows_free(a);
+ free(a->base);
+ free(a->text);
+ memset(a, 0, sizeof *a);
+ a->kind = E_LSP_ASK_NONE;
+}
+
+/**
+ * e_lsp_ask_clear - Forget every request out and every answer kept.
  */
 static void e_lsp_ask_clear(void)
 {
- free(e_lsp_ask.base);
- free(e_lsp_ask.text);
- memset(&e_lsp_ask, 0, sizeof e_lsp_ask);
- e_lsp_ask.kind = E_LSP_ASK_NONE;
+ int k;
+
+ for (k = 0; k < E_LSP_ASK_KINDS; k++)
+  e_lsp_ask_free(&e_lsp_asks[k]);
 }
 
 /**
  * e_lsp_session_drop - End the session without waiting: whoever waits for
- * an answer is told it is gone, the answer kept is forgotten, and the
+ * an answer is told it is gone, the answers kept are forgotten, and the
  * timers and the waiting line go with it.
  */
 static void e_lsp_session_drop(void)
@@ -26827,36 +27121,99 @@ static void e_lsp_session_drop(void)
 }
 
 /**
- * e_lsp_ask_begin - Note what is asked, from where, on which text, before
- * the request goes out.
- * @f: the window; @kind: E_LSP_ASK_*.
- * Return: 0, or -1 without memory for the text.
+ * e_lsp_ask_busy_kind - Is a request of @kind out, its answer not come yet?
  */
-static int e_lsp_ask_begin(FENSTER *f, int kind)
+static int e_lsp_ask_busy_kind(int kind)
 {
- e_lsp_ask_clear();
- e_lsp_ask.base = e_lsp_buffer_text(f);
- if (!e_lsp_ask.base)
-  return(-1);
- e_lsp_ask.kind = kind;
- snprintf(e_lsp_ask.path, sizeof e_lsp_ask.path, "%s", g_lsp_file);
- e_lsp_ask.y = f->b->b.y;
- e_lsp_ask.x = f->b->b.x;
- e_lsp_ask.n = -1;
+ const e_lsp_ask_t *a = &e_lsp_asks[kind];
+
+ return(a->kind != E_LSP_ASK_NONE && !a->ready);
+}
+
+/**
+ * e_lsp_ask_busy - Is any request out, its answer not come yet?
+ */
+static int e_lsp_ask_busy(void)
+{
+ int k;
+
+ for (k = 0; k < E_LSP_ASK_KINDS; k++)
+  if (e_lsp_ask_busy_kind(k))
+   return(1);
  return(0);
+}
+
+/**
+ * e_lsp_ask_say_busy - The line that refuses an action: which request is
+ * still out and how to give it up.
+ * @f: the window.
+ */
+static void e_lsp_ask_say_busy(FENSTER *f)
+{
+ char line[E_D_GA_LINE_MAX];
+ const char *method = e_lsp_request_waited(g_lsp, NULL);
+
+ snprintf(line, sizeof line, E_LSP_BUSY_FMT, e_lsp_rq.name,
+          method ? method : "?");
+ e_status_say(f, line);
+}
+
+/**
+ * e_lsp_ask_refused_elsewhere - An Alt-Q action for another file while
+ * requests are out: refused, since that file's server would replace the
+ * one still answering and their answers would be lost.
+ * @f: the window; @path: its file.
+ * Return: 1 when refused.
+ */
+static int e_lsp_ask_refused_elsewhere(FENSTER *f, const char *path)
+{
+ if (!g_lsp || !e_lsp_ask_busy() || !strcmp(g_lsp_file, path))
+  return(0);
+ e_lsp_ask_say_busy(f);
+ return(1);
+}
+
+/**
+ * e_lsp_ask_begin - Note what is asked, from where, on which text, before
+ * the request goes out; the same action again while one is out is refused.
+ * @f: the window; @kind: E_LSP_ASK_*.
+ * Return: the slot, or NULL (refused with a line, or no memory).
+ */
+static e_lsp_ask_t *e_lsp_ask_begin(FENSTER *f, int kind)
+{
+ e_lsp_ask_t *a = &e_lsp_asks[kind];
+
+ if (e_lsp_ask_busy_kind(kind))
+ {
+  e_lsp_ui_trace("lsp ask kind=%d refused: one is out", kind);
+  e_lsp_ask_say_busy(f);
+  return(NULL);
+ }
+ e_lsp_ui_trace("lsp ask kind=%d", kind);
+ e_lsp_ask_free(a);
+ a->base = e_lsp_buffer_text(f);
+ if (!a->base)
+  return(NULL);
+ a->kind = kind;
+ a->seq = ++e_lsp_ask_seq;
+ snprintf(a->path, sizeof a->path, "%s", g_lsp_file);
+ a->y = f->b->b.y;
+ a->x = f->b->b.x;
+ a->n = -1;
+ return(a);
 }
 
 /**
  * e_lsp_ask_sent - The request was handed to the engine: watch the server
  * for its answer, or say it could not go out.
- * @f: the window; @rc: what the engine said (E_D_SEND_*).
+ * @f: the window; @a: its slot; @rc: what the engine said (E_D_SEND_*).
  * Return: 0.
  */
-static int e_lsp_ask_sent(FENSTER *f, int rc)
+static int e_lsp_ask_sent(FENSTER *f, e_lsp_ask_t *a, int rc)
 {
  if (rc != E_D_SEND_OK)
  {
-  e_lsp_ask_clear();
+  e_lsp_ask_free(a);
   e_error(E_LSP_ASK_FAILED_LINE, 0, f->fb);
   return(0);
  }
@@ -26865,65 +27222,39 @@ static int e_lsp_ask_sent(FENSTER *f, int rc)
 }
 
 /**
- * e_lsp_ask_busy - Is a request out, its answer not come yet?
- */
-static int e_lsp_ask_busy(void)
-{
- return(e_lsp_ask.kind != E_LSP_ASK_NONE && !e_lsp_ask.ready);
-}
-
-/**
- * e_lsp_ask_refused - Another Alt-Q action while a request is out: refused
- * with a line that names the one out and how to give it up.
- * @f: the window.
- * Return: 1 when refused.
- */
-static int e_lsp_ask_refused(FENSTER *f)
-{
- char line[E_D_GA_LINE_MAX];
- const char *method;
-
- if (!g_lsp || !e_lsp_ask_busy())
-  return(0);
- method = e_lsp_request_waited(g_lsp, NULL);
- snprintf(line, sizeof line, E_LSP_BUSY_FMT, e_lsp_rq.name,
-          method ? method : "?");
- e_status_say(f, line);
- return(1);
-}
-
-/**
  * e_lsp_ask_told - The engine has told the request's end: keep it until
  * the editor can show it (never painted from inside the engine's read).
- * @how: how it ended.
+ * @a: the slot; @how: how it ended.
  */
-static void e_lsp_ask_told(E_D_REQ_END how)
+static void e_lsp_ask_told(e_lsp_ask_t *a, E_D_REQ_END how)
 {
- e_lsp_ask.how = how;
- e_lsp_ask.ready = 1;
+ a->how = how;
+ a->ready = 1;
 }
 
-/** e_lsp_hover_told - A hover's answer: its text, or NULL. */
-static void e_lsp_hover_told(E_D_REQ_END how, char *text, void *ctx)
+/** e_lsp_text_told - A hover's or a signature's answer: its text, or NULL. */
+static void e_lsp_text_told(E_D_REQ_END how, char *text, void *ctx)
 {
- (void)ctx;
- e_lsp_ask.text = text;
- e_lsp_ask_told(how);
+ e_lsp_ask_t *a = ctx;
+
+ a->text = text;
+ e_lsp_ask_told(a, how);
 }
 
 /** e_lsp_jump_told - A jump's answer: the location, if one came. */
 static void e_lsp_jump_told(E_D_REQ_END how, int found, const char *path,
                             int line, int character, void *ctx)
 {
+ e_lsp_ask_t *a = ctx;
+
  (void)character;
- (void)ctx;
- e_lsp_ask.found = found;
+ a->found = found;
  if (found)
  {
-  snprintf(e_lsp_ask.target, sizeof e_lsp_ask.target, "%s", path);
-  e_lsp_ask.line = line;
+  snprintf(a->target, sizeof a->target, "%s", path);
+  a->line = line;
  }
- e_lsp_ask_told(how);
+ e_lsp_ask_told(a, how);
 }
 
 /** e_lsp_complete_told - A completion's answer: its candidates. */
@@ -26931,32 +27262,167 @@ static void e_lsp_complete_told(E_D_REQ_END how,
                                 const e_lsp_completion_item *items, int n,
                                 void *ctx)
 {
+ e_lsp_ask_t *a = ctx;
  int i;
 
- (void)ctx;
  if (n > E_LSP_ASK_ITEMS_MAX)
   n = E_LSP_ASK_ITEMS_MAX;
  for (i = 0; i < n; i++)
-  e_lsp_ask.items[i] = items[i];
- e_lsp_ask.n = n;
- e_lsp_ask_told(how);
+  a->items[i] = items[i];
+ a->n = n;
+ e_lsp_ask_told(a, how);
 }
 
 /** e_lsp_format_told - A format's answer: the formatted text, or NULL. */
 static void e_lsp_format_told(E_D_REQ_END how, char *newtext, void *ctx)
 {
- (void)ctx;
- e_lsp_ask.text = newtext;
- e_lsp_ask_told(how);
+ e_lsp_ask_t *a = ctx;
+
+ a->text = newtext;
+ e_lsp_ask_told(a, how);
+}
+
+/** e_lsp_applied_told - A rename's or an action's answer: the new text. */
+static void e_lsp_applied_told(E_D_REQ_END how, char *newtext, int others,
+                               void *ctx)
+{
+ e_lsp_ask_t *a = ctx;
+
+ a->text = newtext;
+ a->others = others;
+ e_lsp_ask_told(a, how);
+}
+
+/**
+ * e_lsp_ask_rows_new - Room for @n entries of a list answer; the slot's
+ * count says how many came (0 when there is no room).
+ * Return: the entries, or NULL.
+ */
+static e_lsp_ask_row *e_lsp_ask_rows_new(e_lsp_ask_t *a, int n)
+{
+ int cap = E_LSP_ROWS_MAX;
+
+ if (a->kind == E_LSP_ASK_HIGHLIGHT)
+  cap = E_LSP_HL_MAX;
+ if (n > cap)
+  n = cap;
+ a->n = 0;
+ if (n <= 0)
+  return(NULL);
+ a->rows = calloc((size_t)n, sizeof(*a->rows));
+ if (a->rows)
+  a->n = n;
+ return(a->rows);
+}
+
+/**
+ * e_lsp_ask_strdup - A copy of an engine string the answer keeps, or NULL.
+ */
+static char *e_lsp_ask_strdup(const char *s)
+{
+ if (!s)
+  return(NULL);
+ return(strdup(s));
+}
+
+/** e_lsp_locs_told - References or highlight: the locations, copied. */
+static void e_lsp_locs_told(E_D_REQ_END how, const e_lsp_location *locs, int n,
+                            void *ctx)
+{
+ e_lsp_ask_t *a = ctx;
+ e_lsp_ask_row *rows = e_lsp_ask_rows_new(a, n);
+ int i;
+
+ for (i = 0; rows && i < a->n; i++)
+ {
+  rows[i].path = e_lsp_ask_strdup(locs[i].path);
+  rows[i].line = locs[i].line;
+  rows[i].character = locs[i].character;
+ }
+ if (n < 0)
+  a->n = -1;
+ e_lsp_ask_told(a, how);
+}
+
+/** e_lsp_syms_told - Symbols or a hierarchy: the entries, copied. */
+static void e_lsp_syms_told(E_D_REQ_END how, const e_lsp_symbol *syms, int n,
+                            void *ctx)
+{
+ e_lsp_ask_t *a = ctx;
+ e_lsp_ask_row *rows = e_lsp_ask_rows_new(a, n);
+ int i;
+
+ for (i = 0; rows && i < a->n; i++)
+ {
+  rows[i].name = e_lsp_ask_strdup(syms[i].name);
+  rows[i].path = e_lsp_ask_strdup(syms[i].path);
+  rows[i].line = syms[i].line;
+  rows[i].character = syms[i].character;
+ }
+ if (n < 0)
+  a->n = -1;
+ e_lsp_ask_told(a, how);
+}
+
+/** e_lsp_ranges_told - Expand selection: the nested ranges, copied. */
+static void e_lsp_ranges_told(E_D_REQ_END how, const e_lsp_range *ranges, int n,
+                              void *ctx)
+{
+ e_lsp_ask_t *a = ctx;
+ e_lsp_ask_row *rows = e_lsp_ask_rows_new(a, n);
+ int i;
+
+ for (i = 0; rows && i < a->n; i++)
+  rows[i].range = ranges[i];
+ if (n < 0)
+  a->n = -1;
+ e_lsp_ask_told(a, how);
+}
+
+/** e_lsp_lenses_told - Code lenses: titles and lines, copied. */
+static void e_lsp_lenses_told(E_D_REQ_END how, const e_lsp_code_lens *lenses,
+                              int n, void *ctx)
+{
+ e_lsp_ask_t *a = ctx;
+ e_lsp_ask_row *rows = e_lsp_ask_rows_new(a, n);
+ int i;
+
+ for (i = 0; rows && i < a->n; i++)
+ {
+  rows[i].name = e_lsp_ask_strdup(lenses[i].title);
+  rows[i].line = lenses[i].line;
+ }
+ if (n < 0)
+  a->n = -1;
+ e_lsp_ask_told(a, how);
+}
+
+/** e_lsp_actions_told - Code actions: titles, and which carry their edit. */
+static void e_lsp_actions_told(E_D_REQ_END how, const e_lsp_code_action *acts,
+                               int n, void *ctx)
+{
+ e_lsp_ask_t *a = ctx;
+ e_lsp_ask_row *rows = e_lsp_ask_rows_new(a, n);
+ int i;
+
+ for (i = 0; rows && i < a->n; i++)
+ {
+  rows[i].name = e_lsp_ask_strdup(acts[i].title);
+  rows[i].has_edit = acts[i].has_edit;
+ }
+ if (n < 0)
+  a->n = -1;
+ e_lsp_ask_told(a, how);
 }
 
 /**
  * e_lsp_ask_window - The window the request was asked from, if it is still
  * the one on top; NULL when it was closed or another is on top.
+ * @a: the slot.
  */
-static FENSTER *e_lsp_ask_window(void)
+static FENSTER *e_lsp_ask_window(const e_lsp_ask_t *a)
 {
- FENSTER *w = e_lsp_window_of(e_lsp_ask.path);
+ FENSTER *w = e_lsp_window_of(a->path);
 
  if (!w || w != e_lsp_rq_window())
   return(NULL);
@@ -26967,20 +27433,32 @@ static FENSTER *e_lsp_ask_window(void)
  * e_lsp_ask_still_true - Are the answer's positions still those of the
  * window's text?  The server answered for the text sent; once the user
  * typed, they point elsewhere.
- * @w: the window; @cursor_too: the cursor must not have moved either
- * (a popup or a list drawn at it).
+ * @a: the slot; @w: the window; @cursor_too: the cursor must not have
+ * moved either (a popup or a list drawn at it).
  */
-static int e_lsp_ask_still_true(FENSTER *w, int cursor_too)
+static int e_lsp_ask_still_true(const e_lsp_ask_t *a, FENSTER *w,
+                                int cursor_too)
 {
  char *now = e_lsp_buffer_text(w);
- int same = now && e_lsp_ask.base && !strcmp(now, e_lsp_ask.base);
+ int same = now && a->base && !strcmp(now, a->base);
 
  free(now);
  if (!same)
   return(0);
  if (!cursor_too)
   return(1);
- return(w->b->b.y == e_lsp_ask.y && w->b->b.x == e_lsp_ask.x);
+ return(w->b->b.y == a->y && w->b->b.x == a->x);
+}
+
+/**
+ * e_lsp_ask_at_cursor - Is the answer drawn at the cursor, or does it
+ * depend on where the cursor was (so it holds only while it has not moved)?
+ */
+static int e_lsp_ask_at_cursor(int kind)
+{
+ return(kind == E_LSP_ASK_HOVER || kind == E_LSP_ASK_COMPLETE ||
+        kind == E_LSP_ASK_SIGNATURE || kind == E_LSP_ASK_SELECTION ||
+        kind == E_LSP_ASK_ACTIONS);
 }
 
 /**
@@ -26993,73 +27471,157 @@ static int e_lsp_ask_idle(void)
         e_lsp_screen_ours());
 }
 
-static int  e_lsp_hover_show(FENSTER *f, char *hov);        /* (below) */
-static void e_lsp_jump_show(FENSTER *f);                    /* (below) */
-static void e_lsp_complete_show(FENSTER *f);                /* (below) */
-static void e_lsp_format_show(FENSTER *f);                  /* (below) */
+static int  e_lsp_hover_show(FENSTER *f, char *hov);                /* (below) */
+static void e_lsp_jump_show(FENSTER *f, const e_lsp_ask_t *a);      /* (below) */
+static void e_lsp_complete_show(FENSTER *f, const e_lsp_ask_t *a);  /* (below) */
+static void e_lsp_format_show(FENSTER *f, const e_lsp_ask_t *a);    /* (below) */
+static int  e_lsp_signature_show(FENSTER *f, char *sig);            /* (below) */
+static void e_lsp_references_show(FENSTER *f, const e_lsp_ask_t *a);
+static void e_lsp_hierarchy_show(FENSTER *f, const e_lsp_ask_t *a);
+static void e_lsp_selection_show(FENSTER *f, const e_lsp_ask_t *a);
+static void e_lsp_highlight_show(FENSTER *f, const e_lsp_ask_t *a);
+static void e_lsp_lenses_show(FENSTER *f, const e_lsp_ask_t *a);
+static void e_lsp_outline_show(FENSTER *f, const e_lsp_ask_t *a);
+static void e_lsp_symbols_show(FENSTER *f, const e_lsp_ask_t *a);
+static void e_lsp_actions_show(FENSTER *f, const e_lsp_ask_t *a);
+static void e_lsp_edit_show(FENSTER *f, const e_lsp_ask_t *a);
+
+/**
+ * e_lsp_ask_show_kind - Show answer @a on window @w, as its kind does.
+ * The text answers (hover, signature) are handed over, since their popup
+ * may chain into the next Alt-Q action.
+ */
+static void e_lsp_ask_show_kind(FENSTER *w, e_lsp_ask_t *a)
+{
+ char *text = a->text;
+
+ if (a->kind == E_LSP_ASK_HOVER)
+ {
+  a->text = NULL;
+  e_lsp_hover_show(w, text);
+ }
+ else if (a->kind == E_LSP_ASK_SIGNATURE)
+ {
+  a->text = NULL;
+  e_lsp_signature_show(w, text);
+ }
+ else if (a->kind == E_LSP_ASK_JUMP)
+  e_lsp_jump_show(w, a);
+ else if (a->kind == E_LSP_ASK_COMPLETE)
+  e_lsp_complete_show(w, a);
+ else if (a->kind == E_LSP_ASK_FORMAT)
+  e_lsp_format_show(w, a);
+ else if (a->kind == E_LSP_ASK_REFERENCES)
+  e_lsp_references_show(w, a);
+ else if (a->kind == E_LSP_ASK_CALLS || a->kind == E_LSP_ASK_TYPES)
+  e_lsp_hierarchy_show(w, a);
+ else if (a->kind == E_LSP_ASK_SELECTION)
+  e_lsp_selection_show(w, a);
+ else if (a->kind == E_LSP_ASK_HIGHLIGHT)
+  e_lsp_highlight_show(w, a);
+ else if (a->kind == E_LSP_ASK_LENSES)
+  e_lsp_lenses_show(w, a);
+ else if (a->kind == E_LSP_ASK_OUTLINE)
+  e_lsp_outline_show(w, a);
+ else if (a->kind == E_LSP_ASK_SYMBOLS)
+  e_lsp_symbols_show(w, a);
+ else if (a->kind == E_LSP_ASK_ACTIONS)
+  e_lsp_actions_show(w, a);
+ else if (a->kind == E_LSP_ASK_ACTION_RUN || a->kind == E_LSP_ASK_RENAME)
+  e_lsp_edit_show(w, a);
+}
 
 /**
  * e_lsp_ask_show - Show an answer that came, on the window it was asked
  * from; an answer whose positions no longer hold is dropped with a line.
+ * @a: the slot, freed before anything is shown, so the answer may chain
+ * into the next request of its kind.
  */
-static void e_lsp_ask_show(void)
+static void e_lsp_ask_show(e_lsp_ask_t *a)
 {
- FENSTER *w = e_lsp_ask_window();
- int cursor_too = (e_lsp_ask.kind == E_LSP_ASK_HOVER ||
-                   e_lsp_ask.kind == E_LSP_ASK_COMPLETE);
- int kind = e_lsp_ask.kind;
- char *text;
+ e_lsp_ask_t shown = *a;
+ FENSTER *w = e_lsp_ask_window(&shown);
 
- if (!w || !e_lsp_ask_still_true(w, cursor_too))
+ memset(a, 0, sizeof *a);
+ a->kind = E_LSP_ASK_NONE;
+ if (!w || !e_lsp_ask_still_true(&shown, w, e_lsp_ask_at_cursor(shown.kind)))
  {
-  e_lsp_ask_clear();
+  e_lsp_ui_trace("lsp show kind=%d dropped: window=%d", shown.kind, w != NULL);
   e_status_say(e_lsp_rq_window(), E_LSP_STALE_LINE);
-  return;
  }
- if (kind == E_LSP_ASK_HOVER)
+ else
  {
-  /* The popup may chain into the next Alt-Q action, which asks anew: this
-     answer is forgotten first, so the new one is not. */
-  text = e_lsp_ask.text;
-  e_lsp_ask.text = NULL;
-  e_lsp_ask_clear();
-  e_lsp_hover_show(w, text);
-  return;
+  e_lsp_ui_trace("lsp show kind=%d n=%d", shown.kind, shown.n);
+  e_lsp_ask_show_kind(w, &shown);
  }
- if (kind == E_LSP_ASK_JUMP)
-  e_lsp_jump_show(w);
- else if (kind == E_LSP_ASK_COMPLETE)
-  e_lsp_complete_show(w);
- else if (kind == E_LSP_ASK_FORMAT)
-  e_lsp_format_show(w);
- e_lsp_ask_clear();
+ e_lsp_ask_free(&shown);
 }
 
 /**
- * e_lsp_ask_deliver - Hand over the answer kept by the continuation, once
- * the editor can show it.  The key loop calls this outside every dialog, as
- * do the readers that may have read it.
+ * e_lsp_ask_next_ready - The answer to show next: of those that came, the
+ * one asked first; NULL when none waits to be shown.
+ */
+static e_lsp_ask_t *e_lsp_ask_next_ready(void)
+{
+ e_lsp_ask_t *next = NULL;
+ int k;
+
+ for (k = 0; k < E_LSP_ASK_KINDS; k++)
+ {
+  e_lsp_ask_t *a = &e_lsp_asks[k];
+
+  if (a->kind == E_LSP_ASK_NONE || !a->ready)
+   continue;
+  if (!next || a->seq < next->seq)
+   next = a;
+ }
+ return(next);
+}
+
+/* An answer is being shown: one shown from inside another's picker waits. */
+static int e_lsp_ask_delivering = 0;
+
+/**
+ * e_lsp_ask_deliver - Hand over the answers kept by the continuations, in
+ * the order asked, once the editor can show them.  The key loop calls this
+ * outside every dialog, as do the readers that may have read them.
  */
 static void e_lsp_ask_deliver(void)
 {
- if (e_lsp_ask.kind == E_LSP_ASK_NONE || !e_lsp_ask.ready)
+ e_lsp_ask_t *a;
+ int shown = 0;
+
+ if (e_lsp_ask_delivering)
   return;
- if (!e_lsp_ask_idle())
-  return;
- e_lsp_rq_waiting_clear();
- if (e_lsp_ask.how == E_D_REQ_DONE)
-  e_lsp_ask_show();
- else
-  e_lsp_ask_clear();     /* given up: the cancel or the deadline said so */
+ e_lsp_ask_delivering = 1;
+ while ((a = e_lsp_ask_next_ready()) != NULL && e_lsp_ask_idle())
+ {
+  if (!e_lsp_ask_busy())
+   e_lsp_rq_waiting_clear();
+  if (a->how == E_D_REQ_DONE)
+  {
+   e_lsp_ask_show(a);
+   shown = 1;
+  }
+  else
+   e_lsp_ask_free(a);    /* given up: the cancel or the deadline said so */
+ }
+ e_lsp_ask_delivering = 0;
+ /* Shown from the loop, with no key after it to flush the screen: a
+    highlight, a grown mark or a jump would otherwise stay unseen. */
+ if (shown)
+  e_refresh();
 }
 
 /**
  * e_lsp_deliver_held - The key loop's turn: an answer that came behind a
- * dialog is shown now that the editor is idle.
+ * dialog is shown now that the editor is idle, and an overlay fetched
+ * meanwhile is painted.
  */
 void e_lsp_deliver_held(void)
 {
  e_lsp_ask_deliver();
+ e_lsp_overlay_deliver();
 }
 
 /**
@@ -27093,7 +27655,8 @@ static void e_lsp_start_cancel(void)
 
 /**
  * e_lsp_answer_cancel - Esc while the editor waits for the language
- * server: the answer, or the start, is given up, and the status row says so.
+ * server: every answer out, or the start, is given up, and the status row
+ * says so.  The overlay fetches the user did not ask for go on.
  */
 void e_lsp_answer_cancel(void)
 {
@@ -27110,7 +27673,7 @@ void e_lsp_answer_cancel(void)
  method = e_lsp_request_waited(g_lsp, NULL);
  snprintf(line, sizeof line, E_LSP_CANCELLED_FMT, e_lsp_rq.name,
           method ? method : "?");
- e_lsp_requests_cancel(g_lsp, E_D_REQ_CANCELLED);
+ e_lsp_requests_give_up(g_lsp, E_D_REQ_CANCELLED);
  e_lsp_rq.waiting_painted = 0;
  e_lsp_ask_clear();
  e_status_say(e_lsp_rq_window(), line);
@@ -27251,8 +27814,8 @@ static int e_lsp_ensure(FENSTER *f)
  {  e_error("Read-only library source -- language-server actions run from the "
             "project window, not here.", 0, f->fb);  return(-1);  }
  snprintf(path, sizeof(path), "%s%s", f->dirct ? f->dirct : "./", f->datnam);
- if (e_lsp_ask_refused(f))
-  return(-1);                                   /* one request at a time */
+ if (e_lsp_ask_refused_elsewhere(f, path))
+  return(-1);                                   /* its answers would be lost */
  if (g_lsp && !strcmp(g_lsp_file, path))
  {
   if (e_lsp_started(g_lsp))
@@ -27265,7 +27828,7 @@ static int e_lsp_ensure(FENSTER *f)
  e_lsp_scala_setup_drop_other(path);
  if (g_lsp)
  {  e_lsp_fd_unregister();  e_lsp_session_drop();  e_lsp_diag_clear();
-    e_lsp_inlay_clear();  g_inlay_on = 0;
+    e_lsp_inlay_clear();  e_lsp_overlay_held_drop();  g_inlay_on = 0;
     g_sem_on = 0;  g_sem_nactive = 0;  }  /* switched files: drop overlays */
  if (e_test_command((char *)srv->argv[0]))
  {  e_error((char *)srv->missing, 0, f->fb);  return(-1);  }
@@ -27342,34 +27905,36 @@ void e_lsp_after_bulk_edit(FENSTER *f);            /* re-sync after a whole-buff
 static int e_lsp_ui_jump(FENSTER *f, int which, const char *what)
 {
  BUFFER *b = f->b;
+ e_lsp_ask_t *a;
 
  if (e_lsp_ensure(f) < 0)
   return(-1);
  e_lsp_sync(f);
- if (e_lsp_ask_begin(f, E_LSP_ASK_JUMP) < 0)
+ a = e_lsp_ask_begin(f, E_LSP_ASK_JUMP);
+ if (!a)
   return(-1);
- snprintf(e_lsp_ask.what, sizeof e_lsp_ask.what, "%s", what);
- return(e_lsp_ask_sent(f, e_lsp_locate_async(g_lsp, which, g_lsp_file, b->b.y,
-                                             e_lsp_symbol_col(f),
-                                             e_lsp_jump_told, NULL)));
+ snprintf(a->what, sizeof a->what, "%s", what);
+ return(e_lsp_ask_sent(f, a, e_lsp_locate_async(g_lsp, which, g_lsp_file,
+                                                b->b.y, e_lsp_symbol_col(f),
+                                                e_lsp_jump_told, a)));
 }
 
 /**
  * e_lsp_jump_show - The location came: the cursor goes there, in the file
  * that holds it; with none, the box says what was not found.
- * @f: the window it was asked from.
+ * @f: the window it was asked from; @a: the answer.
  */
-static void e_lsp_jump_show(FENSTER *f)
+static void e_lsp_jump_show(FENSTER *f, const e_lsp_ask_t *a)
 {
  char msg[E_LSP_WHAT_MAX + 32];
 
- if (!e_lsp_ask.found)
+ if (!a->found)
  {
-  snprintf(msg, sizeof(msg), "No %s found.", e_lsp_ask.what);
+  snprintf(msg, sizeof(msg), "No %s found.", a->what);
   e_error(msg, 0, f->fb);
   return;
  }
- e_d_goto_break(e_lsp_ask.target, e_lsp_ask.line + 1, f);  /* 0-based -> 1-based */
+ e_d_goto_break((char *)a->target, a->line + 1, f);  /* 0-based -> 1-based */
 }
 
 /* AltQ D -- jump to the definition of the symbol under the cursor. */
@@ -27562,6 +28127,7 @@ static int e_lsp_cursor_popup(FENSTER *f, const char *title, const char *text,
 static int e_lsp_ui_hover(FENSTER *f)
 {
  BUFFER *b = f->b;
+ e_lsp_ask_t *a;
 
  { const char *tp = getenv("XWPE_UI_TRACE");
    if (tp) { FILE *tf = fopen(tp, "a");
@@ -27569,11 +28135,12 @@ static int e_lsp_ui_hover(FENSTER *f)
  if (e_lsp_ensure(f) < 0)
   return(-1);
  e_lsp_sync(f);
- if (e_lsp_ask_begin(f, E_LSP_ASK_HOVER) < 0)
+ a = e_lsp_ask_begin(f, E_LSP_ASK_HOVER);
+ if (!a)
   return(-1);
- return(e_lsp_ask_sent(f, e_lsp_hover_async(g_lsp, g_lsp_file, b->b.y,
-                                            e_lsp_symbol_col(f),
-                                            e_lsp_hover_told, NULL)));
+ return(e_lsp_ask_sent(f, a, e_lsp_hover_async(g_lsp, g_lsp_file, b->b.y,
+                                               e_lsp_symbol_col(f),
+                                               e_lsp_text_told, a)));
 }
 
 /**
@@ -27778,32 +28345,34 @@ static int e_lsp_cursor_screen_y(FENSTER *f)
 static int e_lsp_ui_complete(FENSTER *f)
 {
  BUFFER *b = f->b;
+ e_lsp_ask_t *a;
 
  if (e_lsp_ensure(f) < 0)
   return(-1);
  e_lsp_sync(f);
- if (e_lsp_ask_begin(f, E_LSP_ASK_COMPLETE) < 0)
+ a = e_lsp_ask_begin(f, E_LSP_ASK_COMPLETE);
+ if (!a)
   return(-1);
- return(e_lsp_ask_sent(f, e_lsp_completion_async(g_lsp, g_lsp_file, b->b.y,
-                                                 b->b.x, E_LSP_ASK_ITEMS_MAX,
-                                                 e_lsp_complete_told, NULL)));
+ return(e_lsp_ask_sent(f, a, e_lsp_completion_async(g_lsp, g_lsp_file, b->b.y,
+                                                    b->b.x, E_LSP_ASK_ITEMS_MAX,
+                                                    e_lsp_complete_told, a)));
 }
 
 /**
  * e_lsp_complete_show - The candidates came: the list drops down at the
  * cursor and the chosen one replaces the word typed so far; with none, a
  * box says so.
- * @f: the window it was asked from.
+ * @f: the window it was asked from; @a: the answer.
  */
-static void e_lsp_complete_show(FENSTER *f)
+static void e_lsp_complete_show(FENSTER *f, const e_lsp_ask_t *a)
 {
  BUFFER *b = f->b;
  SCHIRM *s = f->s;
- const e_lsp_completion_item *items = e_lsp_ask.items;
+ const e_lsp_completion_item *items = a->items;
  const char *labels[E_LSP_ASK_ITEMS_MAX];
  char *line, insbuf[256];
  const char *ins;
- int n = e_lsp_ask.n, i, sel, prefix = 0, inslen;
+ int n = a->n, i, sel, prefix = 0, inslen;
 
  if (n <= 0)
  {  e_error("No completions.", 0, f->fb);  return;  }
@@ -27845,23 +28414,44 @@ static void e_lsp_complete_show(FENSTER *f)
  e_schirm(f, 1);
 }
 
-/* AltQ S -- show the signature of the call the cursor is inside. */
+/* AltQ S -- show the signature of the call the cursor is inside.  The popup
+   comes when the server answers (e_lsp_signature_show). */
 static int e_lsp_ui_signature(FENSTER *f)
 {
  BUFFER *b = f->b;
- char *sig;
+ e_lsp_ask_t *a;
 
  if (e_lsp_ensure(f) < 0)
   return(-1);
  e_lsp_sync(f);
- sig = e_lsp_signature_help(g_lsp, g_lsp_file, b->b.y, b->b.x);
+ a = e_lsp_ask_begin(f, E_LSP_ASK_SIGNATURE);
+ if (!a)
+  return(-1);
+ return(e_lsp_ask_sent(f, a, e_lsp_signature_help_async(g_lsp, g_lsp_file,
+                                                        b->b.y, b->b.x,
+                                                        e_lsp_text_told, a)));
+}
+
+/**
+ * e_lsp_signature_show - The signature came: in a popup at the cursor, or
+ * a box saying there is none.  Alt-Q while it is up runs the next action.
+ * @f: the window it was asked from; @sig: the label (freed here), or NULL.
+ * Return: 0, or what the chained action returns.
+ */
+static int e_lsp_signature_show(FENSTER *f, char *sig)
+{
+ int k;
+
  if (!sig || !*sig)
- {  if (sig) free(sig);  e_error("No signature here.", 0, f->fb);  return(0);  }
- { int k = e_lsp_cursor_popup(f, "Signature", sig, "Press any key to close");
-   free(sig);
-   if (k == AltQ)                       /* chain into the next Alt-Q action */
-    return(e_lsp_ui_dispatch(f, e_getch()));
+ {
+  free(sig);
+  e_error("No signature here.", 0, f->fb);
+  return(0);
  }
+ k = e_lsp_cursor_popup(f, "Signature", sig, "Press any key to close");
+ free(sig);
+ if (k == AltQ)                         /* chain into the next Alt-Q action */
+  return(e_lsp_ui_dispatch(f, e_getch()));
  return(0);
 }
 
@@ -27961,63 +28551,108 @@ static int e_lsp_ui_prev_problem(FENSTER *f) { return(e_lsp_ui_jump_diag(f, -1))
 static int e_lsp_ui_references(FENSTER *f)
 {
  BUFFER *b = f->b;
- e_lsp_location locs[128];
- char line[700];
- int n, i;
+ e_lsp_ask_t *a;
 
  if (e_lsp_ensure(f) < 0)
   return(-1);
  e_lsp_sync(f);
- n = e_lsp_references(g_lsp, g_lsp_file, b->b.y, e_lsp_symbol_col(f), locs, 128);
- if (n <= 0)
- {  e_error("No references found.", 0, f->fb);  return(0);  }
- snprintf(line, sizeof(line), "%d reference(s):", n);
- e_d_p_message(line, f, 1);
- for (i = 0; i < n; i++)
+ a = e_lsp_ask_begin(f, E_LSP_ASK_REFERENCES);
+ if (!a)
+  return(-1);
+ return(e_lsp_ask_sent(f, a, e_lsp_references_async(g_lsp, g_lsp_file, b->b.y,
+                                                    e_lsp_symbol_col(f),
+                                                    E_LSP_ROWS_MAX,
+                                                    e_lsp_locs_told, a)));
+}
+
+/**
+ * e_lsp_references_show - The references came: listed in Messages as
+ * "file:line:col", or a box saying there are none.
+ * @f: the window it was asked from; @a: the answer.
+ */
+static void e_lsp_references_show(FENSTER *f, const e_lsp_ask_t *a)
+{
+ char line[700];
+ int i;
+
+ if (a->n <= 0)
  {
-  snprintf(line, sizeof(line), "%s:%d:%d", e_d_dap_basename(locs[i].path),
-           locs[i].line + 1, locs[i].character + 1);
+  e_error("No references found.", 0, f->fb);
+  return;
+ }
+ snprintf(line, sizeof(line), "%d reference(s):", a->n);
+ e_d_p_message(line, f, 1);
+ for (i = 0; i < a->n; i++)
+ {
+  snprintf(line, sizeof(line), "%s:%d:%d",
+           a->rows[i].path ? e_d_dap_basename(a->rows[i].path) : "?",
+           a->rows[i].line + 1, a->rows[i].character + 1);
   e_d_p_message(line, f, 1);
  }
- return(0);
+}
+
+/* The words of each hierarchy list: none found, and the heading, for each
+   of the two directions (callers/callees, supertypes/subtypes). */
+static const char *const e_lsp_hier_none[2][2] = {
+ { "No callers found.",    "No outgoing calls found." },
+ { "No supertypes found.", "No subtypes found." }
+};
+static const char *const e_lsp_hier_head[2][2] = {
+ { "%d caller(s):",    "%d outgoing call(s):" },
+ { "%d supertype(s):", "%d subtype(s):" }
+};
+
+/**
+ * e_lsp_hierarchy_show - The callers, callees, supertypes or subtypes
+ * came: listed in Messages as "name  file:line:col", or a box saying there
+ * are none.
+ * @f: the window it was asked from; @a: the answer.
+ */
+static void e_lsp_hierarchy_show(FENSTER *f, const e_lsp_ask_t *a)
+{
+ int types = (a->kind == E_LSP_ASK_TYPES), dir = a->flag ? 1 : 0;
+ char line[700];
+ int i;
+
+ if (a->n <= 0)
+ {
+  e_error((char *)e_lsp_hier_none[types][dir], 0, f->fb);
+  return;
+ }
+ snprintf(line, sizeof(line), e_lsp_hier_head[types][dir], a->n);
+ e_d_p_message(line, f, 1);
+ for (i = 0; i < a->n; i++)
+ {
+  snprintf(line, sizeof(line), "%s  %s:%d:%d",
+           a->rows[i].name ? a->rows[i].name : "?",
+           a->rows[i].path ? e_d_dap_basename(a->rows[i].path) : "?",
+           a->rows[i].line + 1, a->rows[i].character + 1);
+  e_d_p_message(line, f, 1);
+ }
 }
 
 /* Call hierarchy for the symbol under the cursor, listed in Messages as
-   "name  file:line:col": who calls it (outgoing == 0) or what it calls
-   (outgoing != 0).  Lets the user trace a call graph without leaving xwpe --
-   put the cursor on a def/method and ask "who reaches this?" or "what does this
-   reach?".  Shared body for the two menu actions below. */
+   "name  file:line:col" when the server answers: who calls it (outgoing ==
+   0) or what it calls (outgoing != 0).  Lets the user trace a call graph
+   without leaving xwpe.  Shared body for the two menu actions below. */
 static int e_lsp_ui_call_hierarchy(FENSTER *f, int outgoing)
 {
  BUFFER *b = f->b;
- e_lsp_symbol items[128];
- char line[700];
- int n, i;
+ e_lsp_ask_t *a;
 
  if (e_lsp_ensure(f) < 0)
   return(-1);
  e_lsp_sync(f);
- n = e_lsp_call_hierarchy(g_lsp, g_lsp_file, b->b.y, e_lsp_symbol_col(f),
-                          outgoing, items, 128);
- if (n <= 0)
- {
-  e_error(outgoing ? "No outgoing calls found." : "No callers found.", 0, f->fb);
-  return(0);
- }
- if (outgoing)
-  snprintf(line, sizeof(line), "%d outgoing call(s):", n);
- else
-  snprintf(line, sizeof(line), "%d caller(s):", n);
- e_d_p_message(line, f, 1);
- for (i = 0; i < n; i++)
- {
-  snprintf(line, sizeof(line), "%s  %s:%d:%d",
-           items[i].name ? items[i].name : "?",
-           items[i].path ? e_d_dap_basename(items[i].path) : "?",
-           items[i].line + 1, items[i].character + 1);
-  e_d_p_message(line, f, 1);
- }
- return(0);
+ a = e_lsp_ask_begin(f, E_LSP_ASK_CALLS);
+ if (!a)
+  return(-1);
+ a->flag = outgoing;
+ return(e_lsp_ask_sent(f, a, e_lsp_call_hierarchy_async(g_lsp, g_lsp_file,
+                                                        b->b.y,
+                                                        e_lsp_symbol_col(f),
+                                                        outgoing,
+                                                        E_LSP_ROWS_MAX,
+                                                        e_lsp_syms_told, a)));
 }
 
 /* AltQ B -- callers (incoming calls): who calls the symbol under the cursor. */
@@ -28026,41 +28661,27 @@ static int e_lsp_ui_callers(FENSTER *f)  {  return(e_lsp_ui_call_hierarchy(f, 0)
 static int e_lsp_ui_callees(FENSTER *f)  {  return(e_lsp_ui_call_hierarchy(f, 1));  }
 
 /* Type hierarchy for the type under the cursor, listed in Messages as
-   "name  file:line:col": its supertypes (subtypes == 0: what it
-   extends/implements) or its subtypes (subtypes != 0: what extends it).  Put
-   the cursor on a class/trait name and walk the inheritance graph up or down
-   without leaving xwpe.  Shared body for the two menu actions below. */
+   "name  file:line:col" when the server answers: its supertypes (subtypes
+   == 0: what it extends/implements) or its subtypes (subtypes != 0: what
+   extends it).  Shared body for the two menu actions below. */
 static int e_lsp_ui_type_hierarchy(FENSTER *f, int subtypes)
 {
  BUFFER *b = f->b;
- e_lsp_symbol items[128];
- char line[700];
- int n, i;
+ e_lsp_ask_t *a;
 
  if (e_lsp_ensure(f) < 0)
   return(-1);
  e_lsp_sync(f);
- n = e_lsp_type_hierarchy(g_lsp, g_lsp_file, b->b.y, e_lsp_symbol_col(f),
-                          subtypes, items, 128);
- if (n <= 0)
- {
-  e_error(subtypes ? "No subtypes found." : "No supertypes found.", 0, f->fb);
-  return(0);
- }
- if (subtypes)
-  snprintf(line, sizeof(line), "%d subtype(s):", n);
- else
-  snprintf(line, sizeof(line), "%d supertype(s):", n);
- e_d_p_message(line, f, 1);
- for (i = 0; i < n; i++)
- {
-  snprintf(line, sizeof(line), "%s  %s:%d:%d",
-           items[i].name ? items[i].name : "?",
-           items[i].path ? e_d_dap_basename(items[i].path) : "?",
-           items[i].line + 1, items[i].character + 1);
-  e_d_p_message(line, f, 1);
- }
- return(0);
+ a = e_lsp_ask_begin(f, E_LSP_ASK_TYPES);
+ if (!a)
+  return(-1);
+ a->flag = subtypes;
+ return(e_lsp_ask_sent(f, a, e_lsp_type_hierarchy_async(g_lsp, g_lsp_file,
+                                                        b->b.y,
+                                                        e_lsp_symbol_col(f),
+                                                        subtypes,
+                                                        E_LSP_ROWS_MAX,
+                                                        e_lsp_syms_told, a)));
 }
 
 /* AltQ K -- supertypes (vim K = up = parents): what this type extends. */
@@ -28090,49 +28711,91 @@ static int e_lsp_range_covers(const e_lsp_range *r, int sl, int sc, int el, int 
 static int e_lsp_ui_expand_selection(FENSTER *f)
 {
  BUFFER *b = f->b;
- SCHIRM *s = f->s;
- e_lsp_range chain[64];
- int n, i, sl, sc, el, ec, has_sel, chosen = -1;
+ e_lsp_ask_t *a;
 
  if (e_lsp_ensure(f) < 0)
   return(-1);
  e_lsp_sync(f);
- n = e_lsp_selection_range(g_lsp, g_lsp_file, b->b.y, b->b.x, chain, 64);
- if (n <= 0)
- {  e_error("No selection range at the cursor.", 0, f->fb);  return(0);  }
-
- sl = s->mark_begin.y;  sc = s->mark_begin.x;
- el = s->mark_end.y;    ec = s->mark_end.x;
- has_sel = (sl != el || sc != ec);
- if (!has_sel)
-  chosen = 0;                           /* nothing selected: tightest range */
- else
-  for (i = 0; i < n; i++)               /* first range strictly larger than sel */
-   if (e_lsp_range_covers(&chain[i], sl, sc, el, ec) &&
-       (chain[i].start_line != sl || chain[i].start_char != sc ||
-        chain[i].end_line != el || chain[i].end_char != ec))
-   {  chosen = i;  break;  }
- if (chosen < 0)
- {  e_error("Selection already at the outermost range.", 0, f->fb);  return(0);  }
-
- s->mark_begin.y = chain[chosen].start_line;
- s->mark_begin.x = chain[chosen].start_char;
- s->mark_end.y = chain[chosen].end_line;
- s->mark_end.x = chain[chosen].end_char;
- e_schirm(f, 1);
- e_cursor(f, 0);
- return(0);
+ a = e_lsp_ask_begin(f, E_LSP_ASK_SELECTION);
+ if (!a)
+  return(-1);
+ return(e_lsp_ask_sent(f, a, e_lsp_selection_range_async(g_lsp, g_lsp_file,
+                                                         b->b.y, b->b.x,
+                                                         E_LSP_RANGES_MAX,
+                                                         e_lsp_ranges_told,
+                                                         a)));
 }
 
-/* AltQ L -- highlight every occurrence of the symbol under the cursor in this
+/**
+ * e_lsp_range_is - Is range @r exactly the selection [sl,sc .. el,ec]?
+ */
+static int e_lsp_range_is(const e_lsp_range *r, int sl, int sc, int el, int ec)
+{
+ return(r->start_line == sl && r->start_char == sc &&
+        r->end_line == el && r->end_char == ec);
+}
+
+/**
+ * e_lsp_selection_pick - The range the mark grows to: with nothing marked
+ * the tightest; else the first that strictly encloses the mark.
+ * Return: its index in @a's rows, or -1 when the mark is already the
+ * outermost range.
+ */
+static int e_lsp_selection_pick(const e_lsp_ask_t *a, SCHIRM *s)
+{
+ int sl = s->mark_begin.y, sc = s->mark_begin.x;
+ int el = s->mark_end.y, ec = s->mark_end.x;
+ int i;
+
+ if (sl == el && sc == ec)
+  return(0);
+ for (i = 0; i < a->n; i++)
+  if (e_lsp_range_covers(&a->rows[i].range, sl, sc, el, ec) &&
+      !e_lsp_range_is(&a->rows[i].range, sl, sc, el, ec))
+   return(i);
+ return(-1);
+}
+
+/**
+ * e_lsp_selection_show - The nested ranges came: the mark grows to the
+ * next one out, as a mouse drag sets it, so Copy/Cut act on it.
+ * @f: the window it was asked from; @a: the answer.
+ */
+static void e_lsp_selection_show(FENSTER *f, const e_lsp_ask_t *a)
+{
+ SCHIRM *s = f->s;
+ const e_lsp_range *r;
+ int chosen;
+
+ if (a->n <= 0)
+ {
+  e_error("No selection range at the cursor.", 0, f->fb);
+  return;
+ }
+ chosen = e_lsp_selection_pick(a, s);
+ if (chosen < 0)
+ {
+  e_error("Selection already at the outermost range.", 0, f->fb);
+  return;
+ }
+ r = &a->rows[chosen].range;
+ s->mark_begin.y = r->start_line;
+ s->mark_begin.x = r->start_char;
+ s->mark_end.y = r->end_line;
+ s->mark_end.x = r->end_char;
+ e_schirm(f, 1);
+ e_cursor(f, 0);
+}
+
+/* AltQ U -- highlight every occurrence of the symbol under the cursor in this
    file (the found-word colour, like a search highlight that follows meaning,
-   not text).  Pressing it off any identifier clears the highlight. */
+   not text), painted when the server answers.  Pressing it off any
+   identifier clears the highlight. */
 static int e_lsp_ui_highlight(FENSTER *f)
 {
  BUFFER *b = f->b;
- e_lsp_location locs[256];
+ e_lsp_ask_t *a;
  char word[256];
- int n, i, wlen;
 
  e_lsp_word_at_cursor(f, word, sizeof(word));
  if (!word[0])                         /* not on an identifier: clear marks */
@@ -28145,23 +28808,43 @@ static int e_lsp_ui_highlight(FENSTER *f)
  if (e_lsp_ensure(f) < 0)
   return(-1);
  e_lsp_sync(f);
- n = e_lsp_document_highlight(g_lsp, g_lsp_file, b->b.y, e_lsp_symbol_col(f), locs, 256);
- if (n <= 0)
- {  e_error("No occurrences.", 0, f->fb);  return(0);  }
- /* every hit is the same symbol, so they share the identifier's length */
- wlen = strlen(word);
- g_hl_nactive = 0;
- for (i = 0; i < n && g_hl_nactive < LSP_MAX_DIAG; i++)
+ a = e_lsp_ask_begin(f, E_LSP_ASK_HIGHLIGHT);
+ if (!a)
+  return(-1);
+ a->wlen = strlen(word);   /* every hit is the same symbol: one length */
+ return(e_lsp_ask_sent(f, a, e_lsp_document_highlight_async(g_lsp, g_lsp_file,
+                                                            b->b.y,
+                                                            e_lsp_symbol_col(f),
+                                                            E_LSP_HL_MAX,
+                                                            e_lsp_locs_told,
+                                                            a)));
+}
+
+/**
+ * e_lsp_highlight_show - The occurrences came: each painted in the
+ * found-word colour, or a box saying there are none.
+ * @f: the window it was asked from; @a: the answer.
+ */
+static void e_lsp_highlight_show(FENSTER *f, const e_lsp_ask_t *a)
+{
+ int i;
+
+ if (a->n <= 0)
  {
-  g_hl_active[g_hl_nactive].line = locs[i].line;
-  g_hl_active[g_hl_nactive].c0 = locs[i].character;
-  g_hl_active[g_hl_nactive].c1 = locs[i].character + wlen;
+  e_error("No occurrences.", 0, f->fb);
+  return;
+ }
+ g_hl_nactive = 0;
+ for (i = 0; i < a->n && g_hl_nactive < LSP_MAX_DIAG; i++)
+ {
+  g_hl_active[g_hl_nactive].line = a->rows[i].line;
+  g_hl_active[g_hl_nactive].c0 = a->rows[i].character;
+  g_hl_active[g_hl_nactive].c1 = a->rows[i].character + a->wlen;
   g_hl_active[g_hl_nactive].sev = 0;
   g_hl_nactive++;
  }
  e_schirm(f, 1);
  e_cursor(f, 0);
- return(0);
 }
 
 /* AltQ Y -- toggle the end-of-line inlay-hint overlay (inferred types).  Turning
@@ -28169,45 +28852,28 @@ static int e_lsp_ui_highlight(FENSTER *f)
    If the server has nothing yet, it stays off and says so.  Off by default. */
 static int e_lsp_ui_inlay(FENSTER *f)
 {
- char msg[128];
-
  if (g_inlay_on)                        /* currently on -> turn off */
  {
   g_inlay_on = 0;
   e_lsp_inlay_clear();
+  e_lsp_inlay_held_clear();
   e_d_p_message("Inlay hints: OFF.", f, 1);   /* sw=1: repaints Messages + editor */
   e_cursor(f, 0);
   return(0);
  }
- if (e_lsp_ensure(f) < 0)               /* turning on: start + sync + snapshot */
+ if (e_lsp_ensure(f) < 0)               /* turning on: start + sync + fetch */
   return(-1);
  e_lsp_sync(f);
- e_lsp_inlay_fetch(f);                  /* one quick request; fills if server is ready */
- { const char *tp = getenv("XWPE_UI_TRACE");   /* XWPE_UI_TRACE: diag only */
-   if (tp) { FILE *tf = fopen(tp, "a");
-     if (tf) { fprintf(tf, "inlay toggle: fetched nactive=%d (e.g. line=%d [%s])\n",
-       g_inlay_nactive, g_inlay_nactive ? g_inlay_active[0].line : -1,
-       g_inlay_nactive ? g_inlay_active[0].label : "-"); fclose(tf); } } }
- g_inlay_on = 1;                        /* turn the overlay ON either way            */
- e_lsp_fd_register();                   /* keep polling: a server push (inlayHint/refresh
-                                           after indexing) repaints the overlay live    */
- if (g_inlay_nactive == 0)
- {
-  /* Nothing yet -- a cold start finishes the first compile before the workspace
-     is fully indexed.  Do NOT freeze the editor waiting (the old 8s synchronous
-     wait): mark the snapshot stale so the fd-loop refetches and paints the hints
-     the moment the server delivers them (workspace/inlayHint/refresh or the next
-     diagnostics publish) -- the same event-driven path worksheet results use. */
-  g_inlay_stale = 1;
-  e_d_p_message("Inlay hints: ON -- each shows as a grey pill when the server has "
-                "one for this line (none right now).", f, 1);
-  e_cursor(f, 0);
-  return(0);
- }
- snprintf(msg, sizeof(msg),
-          "Inlay hints: ON -- %d inferred type(s) shown as a grey pill at end of line. "
-          "Alt-Q Y to hide.", g_inlay_nactive);
- e_d_p_message(msg, f, 1);              /* sw=1: repaints Messages + editor (hints) */
+ g_inlay_on = 1;
+ /* The hints are painted when the server answers, and fetched again on its
+    later news (workspace/inlayHint/refresh, the diagnostics published once
+    it has indexed), so a cold server fills them in without the editor
+    waiting. */
+ e_lsp_inlay_fetch(f);
+ e_lsp_fd_register();
+ e_lsp_ui_trace("inlay toggle: fetch sent");
+ e_d_p_message("Inlay hints: ON -- each shows as a grey pill at the end of its "
+               "line when the server has one.  Alt-Q Y to hide.", f, 1);
  e_cursor(f, 0);
  return(0);
 }
@@ -28218,12 +28884,11 @@ static int e_lsp_ui_inlay(FENSTER *f)
    so the classic regex colours stay for anyone who prefers them. */
 static int e_lsp_ui_semantic(FENSTER *f)
 {
- char msg[128];
-
  if (g_sem_on)                          /* currently on -> turn off */
  {
   g_sem_on = 0;
   g_sem_nactive = 0;
+  g_sem_held.ready = 0;
   e_d_p_message("Semantic highlighting: OFF.", f, 1);
   e_cursor(f, 0);
   return(0);
@@ -28231,26 +28896,14 @@ static int e_lsp_ui_semantic(FENSTER *f)
  if (e_lsp_ensure(f) < 0)               /* turning on: start + sync + fetch */
   return(-1);
  e_lsp_sync(f);
- e_lsp_sem_fetch(f);                    /* one quick request; fills if server is ready */
- g_sem_on = 1;                          /* turn the overlay ON either way            */
- e_lsp_fd_register();                   /* keep polling: a server push (semanticTokens/refresh
-                                           after indexing) repaints the overlay live    */
- if (g_sem_nactive == 0)
- {
-  /* Nothing yet -- the classification is empty until the workspace is indexed.  Do
-     NOT freeze the editor waiting (the old 8s synchronous wait): mark it stale so the
-     fd-loop refetches and recolours the moment the server delivers (semanticTokens/
-     refresh or the next diagnostics publish). */
-  g_sem_stale = 1;
-  e_d_p_message("Semantic highlighting: ON -- recolours when the server has tokens "
-                "for this file (none right now).", f, 1);
-  e_cursor(f, 0);
-  return(0);
- }
- snprintf(msg, sizeof(msg),
-          "Semantic highlighting: ON -- %d token(s) coloured by meaning. "
-          "Alt-Q M to turn off.", g_sem_nactive);
- e_d_p_message(msg, f, 1);
+ g_sem_on = 1;
+ /* The file recolours when the server answers, and again on its later news
+    (semanticTokens/refresh, the diagnostics published once it has indexed),
+    so a cold server fills the colours in without the editor waiting. */
+ e_lsp_sem_fetch(f);
+ e_lsp_fd_register();
+ e_d_p_message("Semantic highlighting: ON -- the file recolours by meaning as the "
+               "server answers.  Alt-Q M to turn off.", f, 1);
  e_cursor(f, 0);
  return(0);
 }
@@ -28261,59 +28914,97 @@ static int e_lsp_ui_semantic(FENSTER *f)
    (Ctrl-G T) which drives the same BSP/DAP path Metals' "run" lens would. */
 static int e_lsp_ui_codelens(FENSTER *f)
 {
- static e_lsp_code_lens lenses[64];
- static char rows[64][160];
- const char *labels[64];
- int n, i, sel;
+ e_lsp_ask_t *a;
 
  if (e_lsp_ensure(f) < 0)
   return(-1);
  e_lsp_sync(f);
- n = e_lsp_code_lenses(g_lsp, g_lsp_file, lenses, 64);
- if (n <= 0)
- {  e_error("No code lenses here.", 0, f->fb);  return(0);  }
- for (i = 0; i < n; i++)
- {
-  snprintf(rows[i], sizeof(rows[i]), "%s  (line %d)",
-           lenses[i].title, lenses[i].line + 1);
-  labels[i] = rows[i];
- }
- sel = e_lsp_pick(f, "Code lenses - Enter to go", labels, n);
- if (sel < 0)
-  return(0);
- e_d_goto_break(g_lsp_file, lenses[sel].line + 1, f);
- return(0);
+ a = e_lsp_ask_begin(f, E_LSP_ASK_LENSES);
+ if (!a)
+  return(-1);
+ return(e_lsp_ask_sent(f, a, e_lsp_code_lenses_async(g_lsp, g_lsp_file,
+                                                     E_LSP_ROWS_MAX,
+                                                     e_lsp_lenses_told, a)));
 }
 
-/* AltQ O -- the file outline: pick a symbol from a popup and jump to it. */
+/* The longest row a lens or symbol picker builds. */
+#define E_LSP_PICK_ROW_MAX 160
+
+/**
+ * e_lsp_lenses_show - The lenses came: a picker of "<label>  (line N)";
+ * the chosen one's definition is jumped to.
+ * @f: the window it was asked from; @a: the answer.
+ */
+static void e_lsp_lenses_show(FENSTER *f, const e_lsp_ask_t *a)
+{
+ static char rows[E_LSP_ROWS_MAX][E_LSP_PICK_ROW_MAX];
+ const char *labels[E_LSP_ROWS_MAX];
+ int i, sel;
+
+ if (a->n <= 0)
+ {
+  e_error("No code lenses here.", 0, f->fb);
+  return;
+ }
+ for (i = 0; i < a->n; i++)
+ {
+  snprintf(rows[i], sizeof(rows[i]), "%s  (line %d)",
+           a->rows[i].name ? a->rows[i].name : "?", a->rows[i].line + 1);
+  labels[i] = rows[i];
+ }
+ sel = e_lsp_pick(f, "Code lenses - Enter to go", labels, a->n);
+ if (sel < 0)
+  return;
+ e_d_goto_break((char *)a->path, a->rows[sel].line + 1, f);
+}
+
+/* AltQ O -- the file outline: a picker of its symbols, when the server
+   answers; the chosen one is jumped to. */
 static int e_lsp_ui_outline(FENSTER *f)
 {
- e_lsp_symbol syms[128];
- const char *labels[128];
- int n, i, sel;
+ e_lsp_ask_t *a;
 
  if (e_lsp_ensure(f) < 0)
   return(-1);
  e_lsp_sync(f);
- n = e_lsp_document_symbols(g_lsp, g_lsp_file, syms, 128);
- if (n <= 0)
- {  e_error("No symbols.", 0, f->fb);  return(0);  }
- for (i = 0; i < n; i++)
-  labels[i] = syms[i].name;
- sel = e_lsp_pick(f, "File symbols - Enter to go", labels, n);
+ a = e_lsp_ask_begin(f, E_LSP_ASK_OUTLINE);
+ if (!a)
+  return(-1);
+ return(e_lsp_ask_sent(f, a, e_lsp_document_symbols_async(g_lsp, g_lsp_file,
+                                                          E_LSP_ROWS_MAX,
+                                                          e_lsp_syms_told,
+                                                          a)));
+}
+
+/**
+ * e_lsp_outline_show - The file's symbols came: picked from a popup and
+ * jumped to.
+ * @f: the window it was asked from; @a: the answer.
+ */
+static void e_lsp_outline_show(FENSTER *f, const e_lsp_ask_t *a)
+{
+ const char *labels[E_LSP_ROWS_MAX];
+ int i, sel;
+
+ if (a->n <= 0)
+ {
+  e_error("No symbols.", 0, f->fb);
+  return;
+ }
+ for (i = 0; i < a->n; i++)
+  labels[i] = a->rows[i].name ? a->rows[i].name : "?";
+ sel = e_lsp_pick(f, "File symbols - Enter to go", labels, a->n);
  if (sel < 0)
-  return(0);
- e_d_goto_break(g_lsp_file, syms[sel].line + 1, f);
- return(0);
+  return;
+ e_d_goto_break((char *)a->path, a->rows[sel].line + 1, f);
 }
 
 /* A workspace/symbol "result" Metals returns that is not a real code symbol but
    a help/command hint (e.g. "Add ';' to search library dependencies"), which it
    points at a documentation page like workspace-symbol.md.  Those must not show
    up as jump targets -- jumping would open a Markdown help file, not code. */
-static int e_lsp_symbol_is_help(const e_lsp_symbol *sym)
+static int e_lsp_symbol_is_help(const char *path)
 {
- const char *path = sym->path;
  size_t len;
 
  if (!path)
@@ -28325,18 +29016,13 @@ static int e_lsp_symbol_is_help(const e_lsp_symbol *sym)
 }
 
 /* AltQ W -- workspace symbol search: prompt for a query, list matching symbols
-   from across the whole project (each shown with its file), and jump to the one
-   chosen (opening its file if it is not the current one).  IntelliJ's "Go to
-   Symbol" / Search Everywhere. */
+   from across the whole project (each shown with its file) when the server
+   answers, and jump to the one chosen (opening its file if it is not the
+   current one).  IntelliJ's "Go to Symbol" / Search Everywhere. */
 static int e_lsp_ui_workspace_symbols(FENSTER *f)
 {
- static e_lsp_symbol syms[128];
- static char rows[128][160];
- const char *labels[128];
- int keep[128];
- char query[160];
- const char *jumpfile;
- int n, i, m, sel;
+ char query[E_LSP_PICK_ROW_MAX];
+ e_lsp_ask_t *a;
 
  if (e_lsp_ensure(f) < 0)
   return(-1);
@@ -28344,80 +29030,154 @@ static int e_lsp_ui_workspace_symbols(FENSTER *f)
  if (!e_add_arguments(query, "Search symbol", f, 0, AltS, NULL) || !query[0])
   return(0);                        /* cancelled or empty */
  e_lsp_sync(f);
- n = e_lsp_workspace_symbols(g_lsp, query, syms, 128);
- if (n <= 0)
- {  e_error("No matching symbols.", 0, f->fb);  return(0);  }
- for (i = 0, m = 0; i < n; i++)
+ a = e_lsp_ask_begin(f, E_LSP_ASK_SYMBOLS);
+ if (!a)
+  return(-1);
+ return(e_lsp_ask_sent(f, a, e_lsp_workspace_symbols_async(g_lsp, query,
+                                                           E_LSP_ROWS_MAX,
+                                                           e_lsp_syms_told,
+                                                           a)));
+}
+
+/**
+ * e_lsp_symbols_show - The matching symbols came: a picker of "name  -
+ * file:line", the server's help hints left out; the chosen one is jumped
+ * to, in its own file.
+ * @f: the window it was asked from; @a: the answer.
+ */
+static void e_lsp_symbols_show(FENSTER *f, const e_lsp_ask_t *a)
+{
+ static char rows[E_LSP_ROWS_MAX][E_LSP_PICK_ROW_MAX];
+ const char *labels[E_LSP_ROWS_MAX];
+ int keep[E_LSP_ROWS_MAX];
+ const char *jumpfile, *base;
+ int i, m = 0, sel;
+
+ for (i = 0; i < a->n; i++)
  {
-  const char *base;
-  if (e_lsp_symbol_is_help(&syms[i]))
+  const e_lsp_ask_row *r = &a->rows[i];
+
+  if (e_lsp_symbol_is_help(r->path))
    continue;                        /* skip Metals help/command hints */
-  base = syms[i].path ? e_d_dap_basename(syms[i].path) : "(this file)";
+  base = r->path ? e_d_dap_basename(r->path) : "(this file)";
   snprintf(rows[m], sizeof(rows[m]), "%s  -  %s:%d",
-           syms[i].name, base, syms[i].line + 1);
+           r->name ? r->name : "?", base, r->line + 1);
   labels[m] = rows[m];
   keep[m] = i;
   m++;
  }
  if (m <= 0)
- {  e_error("No matching symbols.", 0, f->fb);  return(0);  }
+ {
+  e_error("No matching symbols.", 0, f->fb);
+  return;
+ }
  sel = e_lsp_pick(f, "Workspace symbols - Enter to go", labels, m);
  if (sel < 0)
-  return(0);
+  return;
  sel = keep[sel];
- jumpfile = syms[sel].path ? syms[sel].path : g_lsp_file;
- e_d_goto_break((char *)jumpfile, syms[sel].line + 1, f);
- return(0);
+ jumpfile = a->rows[sel].path ? a->rows[sel].path : a->path;
+ e_d_goto_break((char *)jumpfile, a->rows[sel].line + 1, f);
 }
 
 /* AltQ A -- code actions / quick-fixes at the cursor (organize imports, import
-   missing symbol, ...).  Lists what the server offers; applying a direct-edit
-   action rewrites the buffer.  Command-based actions (which need executeCommand)
-   are listed but reported as not-yet-runnable.  IntelliJ's Alt-Enter. */
+   missing symbol, ...).  The list drops down when the server answers; the
+   chosen action rewrites the buffer.  IntelliJ's Alt-Enter. */
 static int e_lsp_ui_code_actions(FENSTER *f)
 {
- static e_lsp_code_action acts[64];
- const char *labels[64];
- char *text, *newtext;
- int n, i, sel, others = 0;
+ e_lsp_ask_t *a;
 
  if (e_lsp_ensure(f) < 0)
   return(-1);
  e_lsp_sync(f);
- n = e_lsp_code_actions(g_lsp, g_lsp_file, f->b->b.y, f->b->b.x, acts, 64);
- if (n <= 0)
- {  e_error("No code actions here.", 0, f->fb);  return(0);  }
- for (i = 0; i < n; i++)
-  labels[i] = acts[i].title;
- /* Quick-fixes apply to the symbol / diagnostic UNDER the cursor, so drop the
-    menu right there (like completion), not in the corner. */
- sel = e_lsp_pick_at(f, "Code actions - Enter to apply", labels, n,
+ a = e_lsp_ask_begin(f, E_LSP_ASK_ACTIONS);
+ if (!a)
+  return(-1);
+ return(e_lsp_ask_sent(f, a, e_lsp_code_actions_async(g_lsp, g_lsp_file,
+                                                      f->b->b.y, f->b->b.x,
+                                                      E_LSP_ROWS_MAX,
+                                                      e_lsp_actions_told, a)));
+}
+
+/**
+ * e_lsp_action_run - Run the chosen action on the window's text: an edit
+ * in hand is applied at once; a resolve or a command goes out, and its
+ * change is applied when it comes, only to the text it was run on.
+ * @f: the window; @index: the action; @has_edit: it carries its edit.
+ */
+static void e_lsp_action_run(FENSTER *f, int index, int has_edit)
+{
+ e_lsp_ask_t *a = e_lsp_ask_begin(f, E_LSP_ASK_ACTION_RUN);
+
+ if (!a)
+  return;
+ a->flag = has_edit;
+ e_lsp_ask_sent(f, a, e_lsp_code_action_run_async(g_lsp, index, g_lsp_file,
+                                                  a->base, e_lsp_applied_told,
+                                                  a));
+}
+
+/**
+ * e_lsp_actions_show - The actions came: the list drops down at the cursor
+ * (a quick-fix is about what is under it), and the chosen one runs.
+ * @f: the window it was asked from; @a: the answer.
+ */
+static void e_lsp_actions_show(FENSTER *f, const e_lsp_ask_t *a)
+{
+ const char *labels[E_LSP_ROWS_MAX];
+ int i, sel;
+
+ if (a->n <= 0)
+ {
+  e_error("No code actions here.", 0, f->fb);
+  return;
+ }
+ for (i = 0; i < a->n; i++)
+  labels[i] = a->rows[i].name ? a->rows[i].name : "?";
+ sel = e_lsp_pick_at(f, "Code actions - Enter to apply", labels, a->n,
                      e_lsp_cursor_screen_x(f), e_lsp_cursor_screen_y(f));
  if (sel < 0)
-  return(0);
- text = e_lsp_buffer_text(f);
- if (!text)
-  return(-1);
- /* Both encodings: an action with a precomputed edit is applied directly; a
-    command-based action is run via workspace/executeCommand and the server's
-    workspace/applyEdit result comes back as newtext.  A command that only has a
-    side effect (no buffer edit) returns NULL with has_edit==0 -- that is success,
-    not an error. */
- newtext = e_lsp_apply_code_action(g_lsp, sel, g_lsp_file, text, &others);
- if (!newtext && acts[sel].has_edit)
- {  free(text);  e_error("Could not apply that action.", 0, f->fb);  return(0);  }
- if (newtext && strcmp(newtext, text) != 0)
-  e_lsp_replace_buffer(f, newtext);
- if (others > 0)
+  return;
+ e_lsp_action_run(f, sel, a->rows[sel].has_edit);
+}
+
+/* The note when an edit also changes files the editor does not apply. */
+#define E_LSP_OTHERS_ACTION_FMT \
+ "Note: this action also changes %d other file(s) -- not applied here."
+#define E_LSP_OTHERS_RENAME_FMT \
+ "Note: rename also affects %d other file(s) -- not applied (open them and " \
+ "rename there)."
+
+/**
+ * e_lsp_edit_show - A rename's or a code action's change came, for the
+ * text it was asked on (still the window's): the buffer takes it as one
+ * undoable change, and a note says which other files it would touch.  A
+ * command that changes no file (it only runs something) is not an error.
+ * @f: the window it was asked from; @a: the answer.
+ */
+static void e_lsp_edit_show(FENSTER *f, const e_lsp_ask_t *a)
+{
+ int rename = (a->kind == E_LSP_ASK_RENAME);
+ char m[160];
+
+ if (!a->text && rename)
  {
-  char m[120];
-  snprintf(m, sizeof(m), "Note: this action also changes %d other file(s) -- "
-           "not applied here.", others);
-  e_error(m, -1, f->fb);
+  e_error("Rename failed (cannot rename here).", 0, f->fb);
+  return;
  }
- free(text);
- free(newtext);
- return(0);
+ if (!a->text && a->flag)
+ {
+  e_error("Could not apply that action.", 0, f->fb);
+  return;
+ }
+ if (a->text && strcmp(a->text, a->base) != 0)
+  e_lsp_replace_buffer(f, a->text);
+ if (a->others <= 0)
+  return;
+ if (rename)
+  snprintf(m, sizeof(m), E_LSP_OTHERS_RENAME_FMT, a->others);
+ else
+  snprintf(m, sizeof(m), E_LSP_OTHERS_ACTION_FMT, a->others);
+ e_error(m, -1, f->fb);
 }
 
 /* Replace the whole editor buffer with `newtext` (a server-side reformat / rename
@@ -28468,45 +29228,48 @@ static int e_lsp_ui_format(FENSTER *f)
 {
  SCHIRM *s = f->s;
  e_lsp_range r;
+ e_lsp_ask_t *a;
  int rc;
 
  if (e_lsp_ensure(f) < 0)
   return(-1);
  e_lsp_sync(f);
- if (e_lsp_ask_begin(f, E_LSP_ASK_FORMAT) < 0)
+ a = e_lsp_ask_begin(f, E_LSP_ASK_FORMAT);
+ if (!a)
   return(-1);
  r.start_line = s->mark_begin.y;  r.start_char = s->mark_begin.x;
  r.end_line = s->mark_end.y;      r.end_char = s->mark_end.x;
- e_lsp_ask.has_sel = (r.start_line != r.end_line || r.start_char != r.end_char);
- if (e_lsp_ask.has_sel)
-  rc = e_lsp_format_async(g_lsp, g_lsp_file, e_lsp_ask.base, &r,
-                          e_lsp_format_told, NULL);
+ a->has_sel = (r.start_line != r.end_line || r.start_char != r.end_char);
+ if (a->has_sel)
+  rc = e_lsp_format_async(g_lsp, g_lsp_file, a->base, &r,
+                          e_lsp_format_told, a);
  else
-  rc = e_lsp_format_async(g_lsp, g_lsp_file, e_lsp_ask.base, NULL,
-                          e_lsp_format_told, NULL);
- return(e_lsp_ask_sent(f, rc));
+  rc = e_lsp_format_async(g_lsp, g_lsp_file, a->base, NULL,
+                          e_lsp_format_told, a);
+ return(e_lsp_ask_sent(f, a, rc));
 }
 
 /**
  * e_lsp_format_show - The formatted text came: the buffer takes it as one
  * undoable change, or a line says it was already formatted.
- * @f: the window it was asked from (its text is still the text sent).
+ * @f: the window it was asked from (its text is still the text sent);
+ * @a: the answer.
  */
-static void e_lsp_format_show(FENSTER *f)
+static void e_lsp_format_show(FENSTER *f, const e_lsp_ask_t *a)
 {
- const char *formatted = e_lsp_ask.text;
+ const char *formatted = a->text;
 
  if (!formatted)
  {
   e_error("Nothing to format (or no formatter).", 0, f->fb);
   return;
  }
- if (strcmp(formatted, e_lsp_ask.base) != 0)
+ if (strcmp(formatted, a->base) != 0)
  {
   e_lsp_replace_buffer(f, formatted);
   return;
  }
- if (e_lsp_ask.has_sel)
+ if (a->has_sel)
   e_d_p_message("Block already formatted.", f, 1);
  else
   e_d_p_message("Already formatted.", f, 1);
@@ -28516,8 +29279,9 @@ static void e_lsp_format_show(FENSTER *f)
 static int e_lsp_ui_rename(FENSTER *f)
 {
  BUFFER *b = f->b;
- char newname[256], *text, *renamed;
- int others = 0, dret;
+ char newname[256];
+ e_lsp_ask_t *a;
+ int dret;
 
  e_lsp_word_at_cursor(f, newname, sizeof(newname));
  e_lsp_ui_trace("e_lsp_ui_rename ENTER word='%s'", newname);
@@ -28528,24 +29292,13 @@ static int e_lsp_ui_rename(FENSTER *f)
  if (e_lsp_ensure(f) < 0)
   return(-1);
  e_lsp_sync(f);
- text = e_lsp_buffer_text(f);
- if (!text)
+ a = e_lsp_ask_begin(f, E_LSP_ASK_RENAME);
+ if (!a)
   return(-1);
- renamed = e_lsp_rename(g_lsp, g_lsp_file, b->b.y, e_lsp_symbol_col(f), newname, text, &others);
- if (!renamed)
- {  free(text);  e_error("Rename failed (cannot rename here).", 0, f->fb);  return(0);  }
- if (strcmp(renamed, text) != 0)
-  e_lsp_replace_buffer(f, renamed);
- if (others > 0)
- {
-  char m[120];
-  snprintf(m, sizeof(m), "Note: rename also affects %d other file(s) -- not "
-           "applied (open them and rename there).", others);
-  e_error(m, -1, f->fb);
- }
- free(text);
- free(renamed);
- return(0);
+ return(e_lsp_ask_sent(f, a, e_lsp_rename_async(g_lsp, g_lsp_file, b->b.y,
+                                                e_lsp_symbol_col(f), newname,
+                                                a->base, e_lsp_applied_told,
+                                                a)));
 }
 
 /* Called from the editor loop after a keystroke.  Cheap: drains any diagnostics
@@ -28572,6 +29325,7 @@ void e_lsp_on_edit(FENSTER *f, int c)
   e_lsp_sync(f);
  if (e_lsp_dead(g_lsp))             /* the server could not be given the change */
  {  e_lsp_reap_if_dead(f);  return;  }
+ e_lsp_overlay_deliver();           /* an overlay answer this poll read */
  e_lsp_inlay_refresh_pending(f);    /* re-query inlays if the server flagged them */
  e_lsp_sem_refresh_pending(f);      /* re-query semantic tokens if flagged */
  /* An Alt-Q answer this poll read is shown at the key loop's top, once this
@@ -28598,6 +29352,7 @@ void e_lsp_ui_shutdown(void)
  e_lsp_session_drop();               /* ended through the owner, no wait */
  e_lsp_diag_clear();
  e_lsp_inlay_clear();
+ e_lsp_overlay_held_drop();
  g_inlay_on = 0;
  g_sem_on = 0;  g_sem_nactive = 0;  g_sem_stale = 0;
  g_lsp_ready_done = 0;

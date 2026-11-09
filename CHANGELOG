@@ -274,19 +274,26 @@ Changes
   "the build did not end" on the status row instead of leaving the
   waiting line turning.
 
-* A language server that is slow to answer no longer holds the editor.
-  Hover, go to definition, implementation and type definition, completion
-  and format go out at once and you keep typing; after a second the status
-  row says "waiting for clangd to answer `textDocument/hover` ... 3s (Esc
-  cancels)", and the popup, the jump, the list or the new text comes when
-  the server answers.  Esc gives the answer up.  An answer for a file you
-  changed meanwhile is not applied at the old positions; the status row
-  says so.  A server you asked for that is still starting shows "waiting
+* A language server that is slow to answer no longer holds the editor,
+  whatever you ask it.  Every Alt-Q action (hover, the jumps, completion,
+  format, signature help, references, callers and callees, supertypes and
+  subtypes, expand selection, highlight uses, code lenses, outline,
+  workspace symbols, code actions, rename) goes out at once and you keep
+  typing; after a second the status row says "waiting for clangd to answer
+  `textDocument/hover` ... 3s (Esc cancels)", and the popup, the jump, the
+  list, the picker or the new text comes when the server answers.  Esc
+  gives the answers up.  An answer for a file you changed meanwhile is not
+  applied at the old positions; the status row says so.  You can ask
+  something else while an answer is out; the same action again says the
+  server is still answering it.  A code action that runs a command on the
+  server applies the server's change only to the text it was run on.
+  Inlay hints and semantic colours are fetched without the editor ever
+  waiting, and hints or colours for text you have changed since are never
+  painted.  A server you asked for that is still starting shows "waiting
   for Metals to start" and Esc ends it.  The Scala debugger's build server
   is asked the same way: Run on a Scala file keeps the editor while Bloop
   compiles, the status row names the request it waits for, and Esc ends
-  the build server and starts nothing.  The other Alt-Q actions still wait
-  for their answer.
+  the build server and starts nothing.
 
 * A language server that does not end no longer holds the editor: when
   you open another file, or leave the editor, it is asked to end

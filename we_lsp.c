@@ -17,7 +17,6 @@
 #include "we_dap_proto.h"        /* e_dap_reader: shared Content-Length framing */
 #include "we_fdloop.h"           /* wpe_fd_readable_now */
 
-#define LSP_TMO_REQ    30000     /* a request still waited for in lsp_pump */
 #define LSP_SERVER_WHAT "the language server"   /* in the owner's lines */
 
 /* Requests answered on the loop. */
@@ -28,9 +27,20 @@
 #define LSP_PEND_CALL     1      /* a request: waiting line and deadline      */
 #define LSP_PEND_START    2      /* `initialize`: waiting line, no deadline   */
 #define LSP_PEND_QUIET    3      /* `shutdown`: nobody waits, no line         */
+#define LSP_PEND_BACKGROUND 4    /* an overlay fetch: told, but nobody waits  */
 /* What the deadline leaves on the status row. */
 #define LSP_TIMEOUT_FMT   "%s did not answer `%s` within %d s: Alt-Q asks again"
 #define LSP_DEFAULT_NAME  "the language server"
+
+/* The file a command-based code action edits: the server runs the command
+   and sends the change back as workspace/applyEdit, which is applied here,
+   to the text the request was sent with. */
+typedef struct {
+ char *text;                      /* the working copy, edited in place         */
+ char  uri[PATH_MAX + 8];         /* file:// of the file it is a copy of       */
+ int   others;                    /* edits aimed at other files                */
+ int   applied;                   /* at least one applyEdit came               */
+} lsp_work;
 
 /* One request out: its id, what it asked, since when, and who is told. */
 typedef struct {
@@ -40,6 +50,7 @@ typedef struct {
  long              sent_ms;       /* the host's clock when it went out         */
  e_lsp_answered_fn fn;            /* told exactly once, or NULL                */
  void             *ctx;
+ lsp_work         *work;          /* an executeCommand's file, or NULL         */
 } lsp_pending;
 
 struct e_lsp_session {
@@ -67,16 +78,6 @@ struct e_lsp_session {
  e_lsp_code_action acts[64];        /* engine-owned code-action result      */
  int          nacts;
  struct json_object *acts_raw;      /* last codeAction array, kept for apply */
- /* A command-based code action is run with workspace/executeCommand; the server
-    then applies the change by sending workspace/applyEdit BACK to us.  While that
-    one synchronous command is in flight these hold a working copy of the current
-    file's text that the applyEdit handler edits, so the result can be returned to
-    the host afterwards.  pend_text is NULL outside that window (an unsolicited
-    applyEdit is then declined with applied=false). */
- char        *pend_text;            /* working buffer the applyEdit handler edits */
- char         pend_uri[PATH_MAX + 8]; /* file:// uri of the buffer being edited   */
- int          pend_others;          /* edits applyEdit aimed at OTHER files       */
- int          pend_applied;         /* server sent at least one applyEdit          */
  /* The most recent publishDiagnostics array (and the file it belongs to), kept
     so a codeAction request can pass the diagnostics covering the cursor in
     context.diagnostics -- a server only offers the matching quick-fixes when it
@@ -136,6 +137,9 @@ static int lsp_write_all(e_lsp_session *s, const char *buf, size_t n)
    reach it. */
 static char *lsp_apply_workspace_edit(struct json_object *wedit, const char *myuri,
                                       const char *current_text, int *other_files);
+
+/* A {line, character} object (defined with the edit math). */
+static struct json_object *lsp_position(int line, int character);
 
 /* Wire trace (defined below): logged only when XWPE_LSP_TRACE names a file. */
 static void lsp_trace_request(int id, const char *method,
@@ -208,84 +212,6 @@ static long lsp_now_ms(void)
  struct timespec ts;
  clock_gettime(CLOCK_MONOTONIC, &ts);
  return (long)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
-}
-
-/* The two descriptors a message wait watches: the server's output, and its
-   input while messages for it are still queued. */
-#define LSP_WAIT_OUT 0
-#define LSP_WAIT_IN  1
-
-/**
- * lsp_wait_set - Fill the poll() set of a message wait.
- * @s: the session; @p: room for two entries.
- * Return: the entries used.
- *
- * The request being waited on may still be queued behind a server that
- * read slowly; the wait writes it on as the server takes it, so its answer
- * can come.
- */
-static int lsp_wait_set(e_lsp_session *s, struct pollfd *p)
-{
- p[LSP_WAIT_OUT].fd = s->out_fd;
- p[LSP_WAIT_OUT].events = POLLIN;
- p[LSP_WAIT_OUT].revents = 0;
- if (wpe_fd_write_pending(s->in_fd) <= 0)
-  return 1;
- p[LSP_WAIT_IN].fd = s->in_fd;
- p[LSP_WAIT_IN].events = POLLOUT;
- p[LSP_WAIT_IN].revents = 0;
- return 2;
-}
-
-/**
- * lsp_wait_flush - Write on what the server took of its queue; a server
- * that closed its input loses the session.
- */
-static void lsp_wait_flush(e_lsp_session *s)
-{
- int r = wpe_fd_write_flush(s->in_fd);
-
- if (r == WPE_FD_WRITE_CLOSED || r == WPE_FD_WRITE_REFUSED)
- {
-  s->input_lost = 1;
-  s->dead = 1;
- }
-}
-
-static struct json_object *lsp_read_message(e_lsp_session *s, int timeout_ms)
-{
- long deadline = lsp_now_ms() + timeout_ms;
- for (;;)
- {
-  struct pollfd p[2];
-  char buf[8192];
-  ssize_t n;
-  int err = 0, left, np;
-  struct json_object *m = e_dap_reader_pop(&s->rd, &err);
-
-  if (m)
-   return m;
-  if (s->dead)
-   return NULL;
-  left = (int)(deadline - lsp_now_ms());
-  if (left <= 0)
-   return NULL;
-  np = lsp_wait_set(s, p);
-  if (poll(p, np, left) <= 0)
-   return NULL;
-  if (np > LSP_WAIT_IN && p[LSP_WAIT_IN].revents)
-   lsp_wait_flush(s);
-  if (!p[LSP_WAIT_OUT].revents)
-   continue;
-  n = read(s->out_fd, buf, sizeof(buf));
-  if (n <= 0)
-  {
-   if (n < 0 && errno == EINTR)
-    continue;
-   return NULL;
-  }
-  e_dap_reader_push(&s->rd, buf, (size_t)n);
- }
 }
 
 /* ---- json helpers ------------------------------------------------------ */
@@ -456,6 +382,53 @@ static struct json_object *lsp_config_for_section(const char *section)
  return(cfg);
 }
 
+/**
+ * lsp_work_out - The working copy of the oldest command-based code action
+ * out, or NULL when none is: the only file a server's applyEdit may change.
+ * @s: the session.
+ */
+static lsp_work *lsp_work_out(e_lsp_session *s)
+{
+ lsp_pending *oldest = NULL;
+ int i;
+
+ for (i = 0; i < LSP_PENDING_MAX; i++)
+ {
+  lsp_pending *p = &s->pending[i];
+
+  if (p->kind == LSP_PEND_FREE || !p->work)
+   continue;
+  if (!oldest || p->id < oldest->id)
+   oldest = p;
+ }
+ if (!oldest)
+  return NULL;
+ return oldest->work;
+}
+
+/**
+ * lsp_work_apply - Apply a server's WorkspaceEdit to a code action's
+ * working copy, so the command's change reaches the buffer it was run on.
+ * @w: the working copy, or NULL; @edit: the WorkspaceEdit, or NULL.
+ * Return: 1 when applied, 0 when declined.
+ */
+static int lsp_work_apply(lsp_work *w, struct json_object *edit)
+{
+ char *nt;
+ int others = 0;
+
+ if (!w || !w->text || !edit)
+  return 0;
+ nt = lsp_apply_workspace_edit(edit, w->uri, w->text, &others);
+ if (!nt)
+  return 0;
+ free(w->text);
+ w->text = nt;
+ w->others += others;
+ w->applied = 1;
+ return 1;
+}
+
 static void lsp_answer_request(e_lsp_session *s, struct json_object *m)
 {
  const char *meth = obj_str(m, "method");
@@ -508,28 +481,14 @@ static void lsp_answer_request(e_lsp_session *s, struct json_object *m)
  }
  else if (meth && !strcmp(meth, "workspace/applyEdit"))
  {
-  /* The server (mid workspace/executeCommand for a command-based code action)
-     asks us to apply a WorkspaceEdit.  Apply it to the working buffer set up by
-     lsp_execute_command_collect and answer {applied:true}; if no command is in
-     flight (unsolicited edit) decline with {applied:false} -- we never rewrite a
-     file the user is not actively acting on. */
+  /* The server, running a command-based code action, asks for a
+     WorkspaceEdit: it is applied to that request's working copy and
+     answered {applied:true}.  With no such request out it is declined
+     {applied:false}: a file the user is not acting on is never rewritten. */
   struct json_object *edit = obj_obj(obj_obj(m, "params"), "edit");
   struct json_object *res = json_object_new_object();
-  int applied = 0;
+  int applied = lsp_work_apply(lsp_work_out(s), edit);
 
-  if (s->pend_text && edit)
-  {
-   int others = 0;
-   char *nt = lsp_apply_workspace_edit(edit, s->pend_uri, s->pend_text, &others);
-   if (nt)
-   {
-    free(s->pend_text);
-    s->pend_text = nt;
-    s->pend_others += others;
-    s->pend_applied = 1;
-    applied = 1;
-   }
-  }
   json_object_object_add(res, "applied", json_object_new_boolean(applied));
   lsp_reply(s, id, res);
  }
@@ -538,10 +497,6 @@ static void lsp_answer_request(e_lsp_session *s, struct json_object *m)
   lsp_reply(s, id, NULL);
 }
 
-/* Pump messages: answer server requests, deliver diagnostics, and return the
-   response whose id == want_id (caller owns it).  If want_diag_path != NULL,
-   return a sentinel (non-NULL, caller must json_object_put) as soon as that
-   file's diagnostics arrive.  NULL on timeout/EOF. */
 /* The wire-trace file (XWPE_LSP_TRACE=path), opened once, or NULL when unset. */
 static FILE *lsp_trace_file(void)
 {
@@ -557,8 +512,8 @@ static FILE *lsp_trace_file(void)
  return fp;
 }
 
-/* Log one pumped message (its id/method and the id we are waiting for) so a
-   stuck request can be diagnosed without attaching a debugger. */
+/* Log one message read (its id/method) so a stuck request can be diagnosed
+   without attaching a debugger. */
 static void lsp_trace_message(int want_id, struct json_object *id,
                               struct json_object *method)
 {
@@ -653,11 +608,10 @@ static void lsp_dispatch_notification(e_lsp_session *s, struct json_object *m)
 /* ---- requests answered on the loop ------------------------------------- *
  *
  * A request is registered with its id and a continuation, and its answer is
- * handed over whenever it is read -- by the loop's read (e_lsp_poll) or by
- * the synchronous pump the requests not moved yet still use -- while
- * diagnostics, status and the server's own requests read meanwhile go where
- * they always go.  The host's clock and one-shot timers count the waiting
- * line and the deadline of the oldest request out; a request given up on
+ * handed over when the loop reads it (e_lsp_poll), while diagnostics,
+ * status and the server's own requests read meanwhile go where they always
+ * go.  The host's clock and one-shot timers count the waiting line and the
+ * deadline of the oldest request the user waits for; a request given up on
  * frees its slot, so an answer that comes after it is dropped.
  */
 
@@ -853,7 +807,31 @@ static void lsp_told_sort(lsp_told *t, int n)
   }
 }
 
-void e_lsp_requests_cancel(e_lsp_session *s, E_D_REQ_END why)
+/* Which requests an end reaches. */
+#define LSP_END_ALL     0        /* every slot: the session is going          */
+#define LSP_END_WAITED  1        /* what the user waits for: Esc, a deadline  */
+
+/**
+ * lsp_end_reaches - Does an end of @scope reach the request in slot @p?
+ */
+static int lsp_end_reaches(const lsp_pending *p, int scope)
+{
+ if (p->kind == LSP_PEND_FREE)
+  return 0;
+ if (scope == LSP_END_ALL)
+  return 1;
+ return lsp_is_waited(p);
+}
+
+/**
+ * lsp_requests_end - Give up the requests @scope reaches and tell their
+ * owners @why, oldest first, once each.
+ * @s: the session; @why: E_D_REQ_*; @scope: LSP_END_*.
+ *
+ * Every slot is freed before anyone is told, so an owner may ask again and
+ * an answer that still comes is dropped by its id.
+ */
+static void lsp_requests_end(e_lsp_session *s, E_D_REQ_END why, int scope)
 {
  lsp_told told[LSP_PENDING_MAX];
  int i, n = 0;
@@ -864,7 +842,7 @@ void e_lsp_requests_cancel(e_lsp_session *s, E_D_REQ_END why)
  {
   lsp_pending *p = &s->pending[i];
 
-  if (p->kind == LSP_PEND_FREE)
+  if (!lsp_end_reaches(p, scope))
    continue;
   told[n].id = p->id;
   told[n].fn = p->fn;
@@ -877,6 +855,16 @@ void e_lsp_requests_cancel(e_lsp_session *s, E_D_REQ_END why)
  for (i = 0; i < n; i++)
   if (told[i].fn)
    told[i].fn(why, NULL, told[i].ctx);
+}
+
+void e_lsp_requests_cancel(e_lsp_session *s, E_D_REQ_END why)
+{
+ lsp_requests_end(s, why, LSP_END_ALL);
+}
+
+void e_lsp_requests_give_up(e_lsp_session *s, E_D_REQ_END why)
+{
+ lsp_requests_end(s, why, LSP_END_WAITED);
 }
 
 void e_lsp_requests_init(e_lsp_session *s, const E_D_REQ_IO *io,
@@ -941,7 +929,7 @@ void e_lsp_request_timer(e_lsp_session *s, int which)
  else if (which == E_D_TIMER_DEADLINE && p->kind == LSP_PEND_CALL)
  {
   lsp_say_given_up(s, p);
-  e_lsp_requests_cancel(s, E_D_REQ_TIMED_OUT);
+  e_lsp_requests_give_up(s, E_D_REQ_TIMED_OUT);
  }
 }
 
@@ -953,6 +941,18 @@ int e_lsp_requests_pending(const e_lsp_session *s)
   return 0;
  for (i = 0; i < LSP_PENDING_MAX; i++)
   if (lsp_is_waited(&s->pending[i]))
+   return 1;
+ return 0;
+}
+
+int e_lsp_requests_owed(const e_lsp_session *s)
+{
+ int i;
+
+ if (!s)
+  return 0;
+ for (i = 0; i < LSP_PENDING_MAX; i++)
+  if (s->pending[i].kind != LSP_PEND_FREE && s->pending[i].fn)
    return 1;
  return 0;
 }
@@ -972,15 +972,17 @@ const char *e_lsp_request_waited(const e_lsp_session *s, long *secs)
 }
 
 /**
- * lsp_request_kind - Send @method with @params as a request of @kind whose
- * answer goes to @fn.
+ * lsp_request_work - Send @method with @params as a request of @kind whose
+ * answer goes to @fn, with the working copy a server's applyEdit may
+ * change while it is out.
  * @s: the session; @kind: LSP_PEND_*; @method, @params: the request
- * (@params taken over, may be NULL); @fn, @ctx: the continuation.
+ * (@params taken over, may be NULL); @fn, @ctx: the continuation; @work:
+ * the working copy (borrowed), or NULL.
  * Return: E_D_SEND_OK, or why it was not sent (@fn is then never called).
  */
-static int lsp_request_kind(e_lsp_session *s, int kind, const char *method,
+static int lsp_request_work(e_lsp_session *s, int kind, const char *method,
                             struct json_object *params, e_lsp_answered_fn fn,
-                            void *ctx)
+                            void *ctx, lsp_work *work)
 {
  lsp_pending *p;
 
@@ -1007,6 +1009,7 @@ static int lsp_request_kind(e_lsp_session *s, int kind, const char *method,
  p->id = ++s->id;
  p->fn = fn;
  p->ctx = ctx;
+ p->work = work;
  p->sent_ms = lsp_now(s);
  snprintf(p->method, sizeof p->method, "%s", method);
  if (lsp_send(s, p->id, method, params) != 0)
@@ -1018,10 +1021,60 @@ static int lsp_request_kind(e_lsp_session *s, int kind, const char *method,
  return E_D_SEND_OK;
 }
 
+/**
+ * lsp_request_kind - lsp_request_work with no working copy.
+ */
+static int lsp_request_kind(e_lsp_session *s, int kind, const char *method,
+                            struct json_object *params, e_lsp_answered_fn fn,
+                            void *ctx)
+{
+ return lsp_request_work(s, kind, method, params, fn, ctx, NULL);
+}
+
 int e_lsp_request(e_lsp_session *s, const char *method,
                   struct json_object *params, e_lsp_answered_fn fn, void *ctx)
 {
  return lsp_request_kind(s, LSP_PEND_CALL, method, params, fn, ctx);
+}
+
+/**
+ * lsp_background_replace - A newer overlay fetch of @method replaces the
+ * one still out: the older is told E_D_REQ_CANCELLED and its slot freed,
+ * so its answer, already stale, is dropped by its id.
+ * @s: the session; @method: the fetch's method.
+ */
+static void lsp_background_replace(e_lsp_session *s, const char *method)
+{
+ int i;
+
+ for (i = 0; i < LSP_PENDING_MAX; i++)
+ {
+  lsp_pending *p = &s->pending[i];
+  e_lsp_answered_fn fn;
+  void *ctx;
+
+  if (p->kind != LSP_PEND_BACKGROUND || strcmp(p->method, method))
+   continue;
+  fn = p->fn;
+  ctx = p->ctx;
+  lsp_release(p);
+  if (fn)
+   fn(E_D_REQ_CANCELLED, NULL, ctx);
+ }
+}
+
+/**
+ * lsp_request_background - Send an overlay fetch: no waiting line, no
+ * deadline, and at most one of each method out, the newest.
+ * Return: what lsp_request_kind returns.
+ */
+static int lsp_request_background(e_lsp_session *s, const char *method,
+                                  struct json_object *params,
+                                  e_lsp_answered_fn fn, void *ctx)
+{
+ if (s && method)
+  lsp_background_replace(s, method);
+ return lsp_request_kind(s, LSP_PEND_BACKGROUND, method, params, fn, ctx);
 }
 
 /**
@@ -1057,63 +1110,6 @@ static void lsp_dispatch(e_lsp_session *s, struct json_object *m)
   lsp_dispatch_notification(s, m);
  else if (id)
   lsp_dispatch_response(s, m, id);
-}
-
-/**
- * lsp_dispatch_buffered - Hand on every whole message already read.
- * @s: the session.
- *
- * A waited request returns as soon as its own answer is found, while the
- * same read may also hold a loop request's answer.  The server then has
- * nothing more to write, so the loop would not read again and that answer
- * would sit unhandled until its deadline; it is handed to its owner now.
- */
-static void lsp_dispatch_buffered(e_lsp_session *s)
-{
- for (;;)
- {
-  int err = 0;
-  struct json_object *m = e_dap_reader_pop(&s->rd, &err);
-
-  if (!m)
-   return;
-  lsp_dispatch(s, m);
-  json_object_put(m);
- }
-}
-
-/**
- * lsp_pump - Wait for the response to @want_id, serving everything else.
- * @s: the session; @want_id: the request waited on; @timeout_ms: how long.
- *
- * The requests not yet moved onto the loop wait here; a loop request's
- * answer read meanwhile still reaches its continuation, also one read
- * together with the response waited for.
- * Return: the response (the caller frees it), or NULL on a timeout or EOF.
- */
-static struct json_object *lsp_pump(e_lsp_session *s, int want_id,
-                                    int timeout_ms)
-{
- long deadline = lsp_now_ms() + timeout_ms;
- for (;;)
- {
-  int left = (int)(deadline - lsp_now_ms());
-  struct json_object *m, *id;
-  if (left <= 0)
-   return NULL;
-  m = lsp_read_message(s, left);
-  if (!m)
-   return NULL;
-  id = obj_obj(m, "id");
-  if (id && !obj_obj(m, "method") && json_object_get_int(id) == want_id)
-  {
-   lsp_trace_response(want_id, m);
-   lsp_dispatch_buffered(s);
-   return m;
-  }
-  lsp_dispatch(s, m);
-  json_object_put(m);
- }
 }
 
 /* ---- spawn + handshake ------------------------------------------------- */
@@ -1469,6 +1465,31 @@ static void lsp_ended(e_lsp_session *s)
  e_lsp_requests_cancel(s, E_D_REQ_GONE);
 }
 
+/* The notification that says the server's view of a file has changed. */
+#define LSP_NEWS_METHOD "textDocument/publishDiagnostics"
+
+/**
+ * lsp_is_news - Does message @m say the server's view of a file may have
+ * changed, so an overlay shown for it may be out of date?
+ * @m: a message read from the server.
+ *
+ * Only a diagnostics batch does: the server publishes it once it has
+ * compiled or indexed.  The log lines, progress and status a server sends
+ * as it works come with the editor's own requests too, so counting them
+ * would have an overlay fetched again for every answer it gets, for as
+ * long as the server answers; the server's explicit refresh requests reach
+ * the host through their own hooks.
+ * Return: 1 when it is news.
+ */
+static int lsp_is_news(struct json_object *m)
+{
+ const char *meth = obj_str(m, "method");
+
+ if (!meth || obj_obj(m, "id"))
+  return 0;
+ return !strcmp(meth, LSP_NEWS_METHOD);
+}
+
 int e_lsp_poll(e_lsp_session *s)
 {
  int handled = 0, guard = 0;
@@ -1501,7 +1522,8 @@ int e_lsp_poll(e_lsp_session *s)
   struct json_object *m = e_dap_reader_pop(&s->rd, &err);
   if (!m)
    break;
-  handled++;
+  if (lsp_is_news(m))
+   handled++;
   lsp_dispatch(s, m);   /* answers, server requests, diagnostics, the handshake */
   json_object_put(m);
  }
@@ -1594,12 +1616,30 @@ static void lsp_abspath(const char *path, char *out)
 typedef struct {
  e_lsp_session *s;
  void          *ctx;           /* the caller's                              */
- e_lsp_text_fn     text_fn;
- e_lsp_location_fn loc_fn;
- e_lsp_items_fn    items_fn;
- e_lsp_edit_fn     edit_fn;
- int            max;           /* completion: the most items wanted         */
- char          *base;          /* format: the text sent, edits apply to it  */
+ e_lsp_text_fn      text_fn;
+ e_lsp_location_fn  loc_fn;
+ e_lsp_items_fn     items_fn;
+ e_lsp_edit_fn      edit_fn;
+ e_lsp_locations_fn locs_fn;
+ e_lsp_symbols_fn   syms_fn;
+ e_lsp_ranges_fn    ranges_fn;
+ e_lsp_lenses_fn    lenses_fn;
+ e_lsp_inlays_fn    inlays_fn;
+ e_lsp_tokens_fn    tokens_fn;
+ e_lsp_actions_fn   acts_fn;
+ e_lsp_applied_fn   applied_fn;
+ int            max;           /* the most items wanted                     */
+ int            flag;          /* hierarchies: outgoing calls, subtypes     */
+ char          *base;          /* format, rename, code action: the text sent */
+ char           path[PATH_MAX];       /* the file as the server knows it   */
+ char           uri[PATH_MAX + 8];    /* ... and its file:// form          */
+ const char    *next_method;   /* hierarchies: the step after the prepare   */
+ const char    *wrap;          /* ... the field each answer entry wraps the
+                                  item in ("from", "to"), or NULL           */
+ struct json_object *list;     /* code lenses: the list being resolved      */
+ int            next;          /* ... the lens to look at next              */
+ struct json_object *action;   /* a code action being run                   */
+ lsp_work      *work;          /* ... the file its command may change       */
 } lsp_typed;
 
 /**
@@ -1618,12 +1658,51 @@ static lsp_typed *lsp_typed_new(e_lsp_session *s, void *ctx)
 }
 
 /**
+ * lsp_work_free - Forget a code action's working copy.
+ */
+static void lsp_work_free(lsp_work *w)
+{
+ if (!w)
+  return;
+ free(w->text);
+ free(w);
+}
+
+/**
  * lsp_typed_free - Forget a typed request once its caller was told.
  */
 static void lsp_typed_free(lsp_typed *t)
 {
  free(t->base);
+ if (t->list)
+  json_object_put(t->list);
+ if (t->action)
+  json_object_put(t->action);
+ lsp_work_free(t->work);
  free(t);
+}
+
+/**
+ * lsp_typed_at - Note the file a typed request is about, as the server
+ * knows it (the real path) and as a file:// URI.
+ */
+static void lsp_typed_at(lsp_typed *t, const char *path)
+{
+ if (!realpath(path, t->path))
+  snprintf(t->path, sizeof t->path, "%s", path);
+ snprintf(t->uri, sizeof t->uri, "file://%s", t->path);
+}
+
+/**
+ * lsp_typed_step - Send the next step of a typed request from inside its
+ * continuation; the context stays with the request.
+ * Return: what e_lsp_request returns (the caller tells its owner when the
+ * step could not go out).
+ */
+static int lsp_typed_step(lsp_typed *t, const char *method,
+                          struct json_object *params, e_lsp_answered_fn fn)
+{
+ return e_lsp_request(t->s, method, params, fn, t);
 }
 
 /**
@@ -1675,39 +1754,60 @@ int e_lsp_hover_async(e_lsp_session *s, const char *path, int line,
                        lsp_hover_answered, t);
 }
 
-char *e_lsp_signature_help(e_lsp_session *s, const char *path,
-                           int line, int character)
+/**
+ * lsp_signature_text - The active signature's label of a signatureHelp
+ * answer (malloc'd), or NULL when there is none.
+ */
+static char *lsp_signature_text(struct json_object *resp)
 {
- char abspath[PATH_MAX];
- struct json_object *resp, *result, *sigs, *sig;
- char *out = NULL;
- int id, idx, n;
+ struct json_object *result = obj_obj(resp, "result");
+ struct json_object *sigs = result ? obj_obj(result, "signatures") : NULL;
+ struct json_object *sig;
+ int idx, n;
 
- if (!s)
-  return NULL;
- if (!realpath(path, abspath))
-  snprintf(abspath, sizeof(abspath), "%s", path);
- id = ++s->id;
- lsp_send(s, id, "textDocument/signatureHelp",
-          lsp_text_pos(s, abspath, line, character));
- resp = lsp_pump(s, id, LSP_TMO_REQ);
- if (!resp)
-  return NULL;
- result = obj_obj(resp, "result");
- sigs = result ? obj_obj(result, "signatures") : NULL;
  n = (sigs && json_object_is_type(sigs, json_type_array))
      ? json_object_array_length(sigs) : 0;
- if (n > 0)
- {
-  idx = obj_int(result, "activeSignature", 0);
-  if (idx < 0 || idx >= n)
-   idx = 0;
-  sig = json_object_array_get_idx(sigs, idx);
-  if (obj_str(sig, "label"))
-   out = strdup(obj_str(sig, "label"));
- }
- json_object_put(resp);
- return out;
+ if (n <= 0)
+  return NULL;
+ idx = obj_int(result, "activeSignature", 0);
+ if (idx < 0 || idx >= n)
+  idx = 0;
+ sig = json_object_array_get_idx(sigs, idx);
+ if (!obj_str(sig, "label"))
+  return NULL;
+ return strdup(obj_str(sig, "label"));
+}
+
+/**
+ * lsp_signature_answered - Hand the caller the signature's label, or NULL.
+ */
+static void lsp_signature_answered(E_D_REQ_END how, struct json_object *resp,
+                                   void *ctx)
+{
+ lsp_typed *t = ctx;
+ char *text = NULL;
+
+ if (how == E_D_REQ_DONE)
+  text = lsp_signature_text(resp);
+ t->text_fn(how, text, t->ctx);
+ lsp_typed_free(t);
+}
+
+int e_lsp_signature_help_async(e_lsp_session *s, const char *path, int line,
+                               int character, e_lsp_text_fn fn, void *ctx)
+{
+ lsp_typed *t;
+
+ if (!s || !fn)
+  return E_D_SEND_GONE;
+ t = lsp_typed_new(s, ctx);
+ if (!t)
+  return E_D_SEND_FAILED;
+ t->text_fn = fn;
+ lsp_typed_at(t, path);
+ return lsp_typed_send(s, "textDocument/signatureHelp",
+                       lsp_text_pos(s, t->path, line, character),
+                       lsp_signature_answered, t);
 }
 
 /* The answer of the three "jump to a location" requests, which differ only in
@@ -1906,90 +2006,138 @@ static void lsp_free_syms(e_lsp_session *s)
  s->nsyms = 0;
 }
 
-int e_lsp_references(e_lsp_session *s, const char *path, int line, int character,
-                     e_lsp_location *locs, int max)
-{
- char abspath[PATH_MAX];
- struct json_object *args, *ctx, *resp, *result;
- int id, i, n, out = 0;
+/* How many entries an engine-kept array holds. */
+#define LSP_KEPT(arr) ((int)(sizeof(arr) / sizeof((arr)[0])))
 
- if (!s)
-  return -1;
+/**
+ * lsp_result_array - The answer's result when it is an array, else NULL.
+ */
+static struct json_object *lsp_result_array(struct json_object *resp)
+{
+ struct json_object *result = obj_obj(resp, "result");
+
+ if (result && json_object_is_type(result, json_type_array))
+  return result;
+ return NULL;
+}
+
+/**
+ * lsp_locations_fill - Keep the locations of a references or highlight
+ * answer in the session (the previous ones are freed).
+ * @s: the session; @resp: the answer; @max: the most wanted; @here: the
+ * file a highlight answer is about (its entries carry no uri), or NULL for
+ * references, whose entries name their file.
+ * Return: how many were kept.
+ */
+static int lsp_locations_fill(e_lsp_session *s, struct json_object *resp,
+                              int max, const char *here)
+{
+ struct json_object *result = lsp_result_array(resp);
+ int i, n = result ? (int)json_object_array_length(result) : 0;
+
  lsp_free_locs(s);
- if (!realpath(path, abspath))
-  snprintf(abspath, sizeof(abspath), "%s", path);
- args = lsp_text_pos(s, abspath, line, character);
- ctx = json_object_new_object();
- json_object_object_add(ctx, "includeDeclaration", json_object_new_boolean(1));
- json_object_object_add(args, "context", ctx);
- id = ++s->id;
- lsp_send(s, id, "textDocument/references", args);
- resp = lsp_pump(s, id, LSP_TMO_REQ);
- if (!resp)
-  return -1;
- result = obj_obj(resp, "result");
- n = (result && json_object_is_type(result, json_type_array))
-     ? json_object_array_length(result) : 0;
- for (i = 0; i < n && out < max &&
-             out < (int)(sizeof(s->locs)/sizeof(s->locs[0])); i++)
+ for (i = 0; i < n && s->nlocs < max && s->nlocs < LSP_KEPT(s->locs); i++)
  {
   struct json_object *loc = json_object_array_get_idx(result, i);
   const char *uri = obj_str(loc, "uri");
   struct json_object *rng = obj_obj(loc, "range");
   struct json_object *st = rng ? obj_obj(rng, "start") : NULL;
-  if (!uri || !st)
+
+  if (!st || (!here && !uri))
    continue;
-  s->locs[s->nlocs].path = strdup(uri_to_path(uri));
+  if (here)
+   s->locs[s->nlocs].path = strdup(here);
+  else
+   s->locs[s->nlocs].path = strdup(uri_to_path(uri));
   s->locs[s->nlocs].line = obj_int(st, "line", 0);
   s->locs[s->nlocs].character = obj_int(st, "character", 0);
-  locs[out] = s->locs[s->nlocs];
   s->nlocs++;
-  out++;
  }
- json_object_put(resp);
- return out;
+ return s->nlocs;
 }
 
-int e_lsp_document_highlight(e_lsp_session *s, const char *path, int line,
-                             int character, e_lsp_location *locs, int max)
+/**
+ * lsp_references_answered - Hand the caller every use of the symbol.
+ */
+static void lsp_references_answered(E_D_REQ_END how, struct json_object *resp,
+                                    void *ctx)
 {
- char abspath[PATH_MAX];
- struct json_object *resp, *result;
- int id, i, n, out = 0;
+ lsp_typed *t = ctx;
+ int n = -1;
 
- if (!s)
-  return -1;
- lsp_free_locs(s);
- if (!realpath(path, abspath))
-  snprintf(abspath, sizeof(abspath), "%s", path);
- id = ++s->id;
- lsp_send(s, id, "textDocument/documentHighlight",
-          lsp_text_pos(s, abspath, line, character));
- resp = lsp_pump(s, id, LSP_TMO_REQ);
- if (!resp)
-  return -1;
- /* DocumentHighlight[]: each is { range, kind } in THIS document -- no uri, so
-    every hit shares abspath. */
- result = obj_obj(resp, "result");
- n = (result && json_object_is_type(result, json_type_array))
-     ? json_object_array_length(result) : 0;
- for (i = 0; i < n && out < max &&
-             out < (int)(sizeof(s->locs)/sizeof(s->locs[0])); i++)
- {
-  struct json_object *h = json_object_array_get_idx(result, i);
-  struct json_object *rng = obj_obj(h, "range");
-  struct json_object *st = rng ? obj_obj(rng, "start") : NULL;
-  if (!st)
-   continue;
-  s->locs[s->nlocs].path = strdup(abspath);
-  s->locs[s->nlocs].line = obj_int(st, "line", 0);
-  s->locs[s->nlocs].character = obj_int(st, "character", 0);
-  locs[out] = s->locs[s->nlocs];
-  s->nlocs++;
-  out++;
- }
- json_object_put(resp);
- return out;
+ if (how == E_D_REQ_DONE)
+  n = lsp_locations_fill(t->s, resp, t->max, NULL);
+ t->locs_fn(how, t->s->locs, n, t->ctx);
+ lsp_typed_free(t);
+}
+
+/**
+ * lsp_highlight_answered - Hand the caller every occurrence in the file.
+ */
+static void lsp_highlight_answered(E_D_REQ_END how, struct json_object *resp,
+                                   void *ctx)
+{
+ lsp_typed *t = ctx;
+ int n = -1;
+
+ if (how == E_D_REQ_DONE)
+  n = lsp_locations_fill(t->s, resp, t->max, t->path);
+ t->locs_fn(how, t->s->locs, n, t->ctx);
+ lsp_typed_free(t);
+}
+
+/**
+ * lsp_typed_locations - A typed request whose answer is locations.
+ * Return: the typed context, or NULL without memory.
+ */
+static lsp_typed *lsp_typed_locations(e_lsp_session *s, const char *path,
+                                      int max, e_lsp_locations_fn fn,
+                                      void *ctx)
+{
+ lsp_typed *t = lsp_typed_new(s, ctx);
+
+ if (!t)
+  return NULL;
+ t->locs_fn = fn;
+ t->max = max;
+ lsp_typed_at(t, path);
+ return t;
+}
+
+int e_lsp_references_async(e_lsp_session *s, const char *path, int line,
+                           int character, int max, e_lsp_locations_fn fn,
+                           void *ctx)
+{
+ struct json_object *args, *refctx;
+ lsp_typed *t;
+
+ if (!s || !fn)
+  return E_D_SEND_GONE;
+ t = lsp_typed_locations(s, path, max, fn, ctx);
+ if (!t)
+  return E_D_SEND_FAILED;
+ args = lsp_text_pos(s, t->path, line, character);
+ refctx = json_object_new_object();
+ json_object_object_add(refctx, "includeDeclaration", json_object_new_boolean(1));
+ json_object_object_add(args, "context", refctx);
+ return lsp_typed_send(s, "textDocument/references", args,
+                       lsp_references_answered, t);
+}
+
+int e_lsp_document_highlight_async(e_lsp_session *s, const char *path, int line,
+                                   int character, int max,
+                                   e_lsp_locations_fn fn, void *ctx)
+{
+ lsp_typed *t;
+
+ if (!s || !fn)
+  return E_D_SEND_GONE;
+ t = lsp_typed_locations(s, path, max, fn, ctx);
+ if (!t)
+  return E_D_SEND_FAILED;
+ return lsp_typed_send(s, "textDocument/documentHighlight",
+                       lsp_text_pos(s, t->path, line, character),
+                       lsp_highlight_answered, t);
 }
 
 static void lsp_free_lenses(e_lsp_session *s)
@@ -2008,64 +2156,164 @@ static void lsp_free_inlays(e_lsp_session *s)
  s->ninlays = 0;
 }
 
-int e_lsp_code_lenses(e_lsp_session *s, const char *path,
-                      e_lsp_code_lens *lenses, int max)
+/**
+ * lsp_doc_params - {textDocument: {uri}}, the arguments of a request about
+ * a whole file.
+ */
+static struct json_object *lsp_doc_params(const char *uri)
 {
- char abspath[PATH_MAX], uri[PATH_MAX + 8];
- struct json_object *args, *doc, *resp, *result;
- int id, i, n, out = 0;
+ struct json_object *args = json_object_new_object();
+ struct json_object *doc = json_object_new_object();
 
- if (!s)
-  return -1;
- lsp_free_lenses(s);
- if (!realpath(path, abspath))
-  snprintf(abspath, sizeof(abspath), "%s", path);
- snprintf(uri, sizeof(uri), "file://%s", abspath);
- args = json_object_new_object();
- doc = json_object_new_object();
  json_object_object_add(doc, "uri", json_object_new_string(uri));
  json_object_object_add(args, "textDocument", doc);
- id = ++s->id;
- lsp_send(s, id, "textDocument/codeLens", args);
- resp = lsp_pump(s, id, LSP_TMO_REQ);
- if (!resp)
-  return -1;
- result = obj_obj(resp, "result");
- n = (result && json_object_is_type(result, json_type_array))
-     ? json_object_array_length(result) : 0;
- for (i = 0; i < n && out < max &&
-             out < (int)(sizeof(s->lenses)/sizeof(s->lenses[0])); i++)
+ return args;
+}
+
+/**
+ * lsp_lens_needs_resolve - Is @lens one the server sent without its
+ * command (its title), to be filled by codeLens/resolve?
+ */
+static int lsp_lens_needs_resolve(struct json_object *lens)
+{
+ struct json_object *rng = obj_obj(lens, "range");
+
+ return rng && obj_obj(rng, "start") && !obj_obj(lens, "command");
+}
+
+/**
+ * lsp_lenses_fill - Keep the titled lenses of a resolved list in the
+ * session (the previous ones are freed).
+ * @s: the session; @list: the lenses, resolved where they needed it;
+ * @max: the most wanted.
+ * Return: how many were kept.
+ */
+static int lsp_lenses_fill(e_lsp_session *s, struct json_object *list, int max)
+{
+ int i, n = list ? (int)json_object_array_length(list) : 0;
+
+ lsp_free_lenses(s);
+ for (i = 0; i < n && s->nlenses < max && s->nlenses < LSP_KEPT(s->lenses); i++)
  {
-  struct json_object *lens = json_object_array_get_idx(result, i);
+  struct json_object *lens = json_object_array_get_idx(list, i);
   struct json_object *rng = obj_obj(lens, "range");
   struct json_object *st = rng ? obj_obj(rng, "start") : NULL;
   struct json_object *cmd = obj_obj(lens, "command");
-  struct json_object *rresp = NULL;
-  const char *title;
-  if (!st)
+  const char *title = cmd ? obj_str(cmd, "title") : NULL;
+
+  if (!st || !title || !*title)
    continue;
-  if (!cmd)                            /* unresolved: ask the server to fill it */
-  {
-   int rid = ++s->id;
-   lsp_send(s, rid, "codeLens/resolve", json_object_get(lens));
-   rresp = lsp_pump(s, rid, LSP_TMO_REQ);
-   if (rresp)
-    cmd = obj_obj(obj_obj(rresp, "result"), "command");
-  }
-  title = cmd ? obj_str(cmd, "title") : NULL;
-  if (title && *title)
-  {
-   s->lenses[s->nlenses].title = strdup(title);
-   s->lenses[s->nlenses].line = obj_int(st, "line", 0);
-   lenses[out] = s->lenses[s->nlenses];
-   s->nlenses++;
-   out++;
-  }
-  if (rresp)
-   json_object_put(rresp);
+  s->lenses[s->nlenses].title = strdup(title);
+  s->lenses[s->nlenses].line = obj_int(st, "line", 0);
+  s->nlenses++;
  }
- json_object_put(resp);
- return out;
+ return s->nlenses;
+}
+
+/**
+ * lsp_lenses_tell - The list is complete: hand the caller its lenses.
+ */
+static void lsp_lenses_tell(lsp_typed *t)
+{
+ int n = lsp_lenses_fill(t->s, t->list, t->max);
+
+ t->lenses_fn(E_D_REQ_DONE, t->s->lenses, n, t->ctx);
+ lsp_typed_free(t);
+}
+
+static void lsp_lens_resolved(E_D_REQ_END how, struct json_object *resp,
+                              void *ctx);
+
+/**
+ * lsp_lenses_walk - Resolve the next lens that needs it, or, when none is
+ * left, hand the caller the list.
+ * @t: the request, its list and the lens to look at next.
+ */
+static void lsp_lenses_walk(lsp_typed *t)
+{
+ int n = (int)json_object_array_length(t->list);
+
+ while (t->next < n &&
+        !lsp_lens_needs_resolve(json_object_array_get_idx(t->list, t->next)))
+  t->next++;
+ if (t->next >= n)
+ {
+  lsp_lenses_tell(t);
+  return;
+ }
+ if (lsp_typed_step(t, "codeLens/resolve",
+                    json_object_get(json_object_array_get_idx(t->list, t->next)),
+                    lsp_lens_resolved) != E_D_SEND_OK)
+ {
+  t->lenses_fn(E_D_REQ_GONE, t->s->lenses, -1, t->ctx);
+  lsp_typed_free(t);
+ }
+}
+
+/**
+ * lsp_lens_resolved - One lens came back resolved: it replaces the one in
+ * the list (a lens the server could not resolve stays untitled and is
+ * left out), and the walk goes on.
+ */
+static void lsp_lens_resolved(E_D_REQ_END how, struct json_object *resp,
+                              void *ctx)
+{
+ lsp_typed *t = ctx;
+ struct json_object *result;
+
+ if (how != E_D_REQ_DONE)
+ {
+  t->lenses_fn(how, t->s->lenses, -1, t->ctx);
+  lsp_typed_free(t);
+  return;
+ }
+ result = obj_obj(resp, "result");
+ if (result && json_object_is_type(result, json_type_object))
+  json_object_array_put_idx(t->list, (size_t)t->next, json_object_get(result));
+ t->next++;
+ lsp_lenses_walk(t);
+}
+
+/**
+ * lsp_lenses_answered - The file's lenses came: keep the list and resolve
+ * the ones that need it, one after another.
+ */
+static void lsp_lenses_answered(E_D_REQ_END how, struct json_object *resp,
+                                void *ctx)
+{
+ lsp_typed *t = ctx;
+ struct json_object *result;
+
+ if (how != E_D_REQ_DONE)
+ {
+  t->lenses_fn(how, t->s->lenses, -1, t->ctx);
+  lsp_typed_free(t);
+  return;
+ }
+ result = lsp_result_array(resp);
+ if (result)
+  t->list = json_object_get(result);
+ else
+  t->list = json_object_new_array();
+ t->next = 0;
+ lsp_lenses_walk(t);
+}
+
+int e_lsp_code_lenses_async(e_lsp_session *s, const char *path, int max,
+                            e_lsp_lenses_fn fn, void *ctx)
+{
+ lsp_typed *t;
+
+ if (!s || !fn)
+  return E_D_SEND_GONE;
+ t = lsp_typed_new(s, ctx);
+ if (!t)
+  return E_D_SEND_FAILED;
+ t->lenses_fn = fn;
+ t->max = max;
+ lsp_typed_at(t, path);
+ return lsp_typed_send(s, "textDocument/codeLens", lsp_doc_params(t->uri),
+                       lsp_lenses_answered, t);
 }
 
 /* InlayHint.label is `string | InlayHintLabelPart[]`; build one display string,
@@ -2120,52 +2368,26 @@ static char *lsp_inlay_label(struct json_object *hint)
  return(out);
 }
 
-int e_lsp_inlay_hints(e_lsp_session *s, const char *path,
-                      int start_line, int end_line,
-                      e_lsp_inlay_hint *out, int max)
-{
- char abspath[PATH_MAX], uri[PATH_MAX + 8];
- struct json_object *args, *doc, *rng, *st, *en, *resp, *result;
- int id, i, n, count = 0;
+/* The end column of an inlay request's range: past the end of any line. */
+#define LSP_LINE_END_CHAR 1000000
 
- if (!s)
-  return -1;
+/**
+ * lsp_inlays_fill - Keep the hints of an inlayHint answer in the session
+ * (the previous ones are freed); empty labels are left out.
+ * Return: how many were kept.
+ */
+static int lsp_inlays_fill(e_lsp_session *s, struct json_object *resp, int max)
+{
+ struct json_object *result = lsp_result_array(resp);
+ int i, n = result ? (int)json_object_array_length(result) : 0;
+
  lsp_free_inlays(s);
- if (!realpath(path, abspath))
-  snprintf(abspath, sizeof(abspath), "%s", path);
- snprintf(uri, sizeof(uri), "file://%s", abspath);
- if (start_line < 0)
-  start_line = 0;
- if (end_line < start_line)
-  end_line = start_line;
- args = json_object_new_object();
- doc = json_object_new_object();
- json_object_object_add(doc, "uri", json_object_new_string(uri));
- json_object_object_add(args, "textDocument", doc);
- rng = json_object_new_object();
- st = json_object_new_object();
- json_object_object_add(st, "line", json_object_new_int(start_line));
- json_object_object_add(st, "character", json_object_new_int(0));
- en = json_object_new_object();
- json_object_object_add(en, "line", json_object_new_int(end_line));
- json_object_object_add(en, "character", json_object_new_int(1000000));
- json_object_object_add(rng, "start", st);
- json_object_object_add(rng, "end", en);
- json_object_object_add(args, "range", rng);
- id = ++s->id;
- lsp_send(s, id, "textDocument/inlayHint", args);
- resp = lsp_pump(s, id, LSP_TMO_REQ);
- if (!resp)
-  return -1;
- result = obj_obj(resp, "result");
- n = (result && json_object_is_type(result, json_type_array))
-     ? json_object_array_length(result) : 0;
- for (i = 0; i < n && count < max &&
-             s->ninlays < (int)(sizeof(s->inlays)/sizeof(s->inlays[0])); i++)
+ for (i = 0; i < n && s->ninlays < max && s->ninlays < LSP_KEPT(s->inlays); i++)
  {
   struct json_object *hint = json_object_array_get_idx(result, i);
   struct json_object *pos = obj_obj(hint, "position");
   char *label;
+
   if (!pos)
    continue;
   label = lsp_inlay_label(hint);
@@ -2178,22 +2400,76 @@ int e_lsp_inlay_hints(e_lsp_session *s, const char *path,
   s->inlays[s->ninlays].line = obj_int(pos, "line", 0);
   s->inlays[s->ninlays].character = obj_int(pos, "character", 0);
   s->inlays[s->ninlays].kind = obj_int(hint, "kind", 0);
-  out[count] = s->inlays[s->ninlays];
   s->ninlays++;
-  count++;
  }
- json_object_put(resp);
- return count;
+ return s->ninlays;
 }
 
-/* Flatten a DocumentSymbol[]/SymbolInformation[] array depth-first into syms. */
+/**
+ * lsp_inlays_answered - Hand the caller the hints, or n = -1 when the
+ * fetch ended unanswered (a newer one replaced it, or the server went).
+ */
+static void lsp_inlays_answered(E_D_REQ_END how, struct json_object *resp,
+                                void *ctx)
+{
+ lsp_typed *t = ctx;
+ int n = -1;
+
+ if (how == E_D_REQ_DONE)
+  n = lsp_inlays_fill(t->s, resp, t->max);
+ t->inlays_fn(how, t->s->inlays, n, t->ctx);
+ lsp_typed_free(t);
+}
+
+/**
+ * lsp_line_range - {start: (start_line, 0), end: (end_line, line end)}.
+ */
+static struct json_object *lsp_line_range(int start_line, int end_line)
+{
+ struct json_object *rng = json_object_new_object();
+
+ json_object_object_add(rng, "start", lsp_position(start_line, 0));
+ json_object_object_add(rng, "end", lsp_position(end_line, LSP_LINE_END_CHAR));
+ return rng;
+}
+
+int e_lsp_inlay_hints_async(e_lsp_session *s, const char *path,
+                            int start_line, int end_line, int max,
+                            e_lsp_inlays_fn fn, void *ctx)
+{
+ struct json_object *args;
+ lsp_typed *t;
+ int rc;
+
+ if (!s || !fn)
+  return E_D_SEND_GONE;
+ t = lsp_typed_new(s, ctx);
+ if (!t)
+  return E_D_SEND_FAILED;
+ t->inlays_fn = fn;
+ t->max = max;
+ lsp_typed_at(t, path);
+ if (start_line < 0)
+  start_line = 0;
+ if (end_line < start_line)
+  end_line = start_line;
+ args = lsp_doc_params(t->uri);
+ json_object_object_add(args, "range", lsp_line_range(start_line, end_line));
+ rc = lsp_request_background(s, "textDocument/inlayHint", args,
+                             lsp_inlays_answered, t);
+ if (rc != E_D_SEND_OK)
+  lsp_typed_free(t);
+ return rc;
+}
+
+/* Flatten a DocumentSymbol[]/SymbolInformation[] array depth-first into the
+   session's symbols, at most @max. */
 static void lsp_collect_symbols(e_lsp_session *s, struct json_object *arr,
-                                e_lsp_symbol *syms, int max, int *out)
+                                int max)
 {
  int i, n = json_object_array_length(arr);
 
- for (i = 0; i < n && *out < max &&
-             *out < (int)(sizeof(s->syms)/sizeof(s->syms[0])); i++)
+ for (i = 0; i < n && s->nsyms < max && s->nsyms < LSP_KEPT(s->syms); i++)
  {
   struct json_object *sym = json_object_array_get_idx(arr, i);
   const char *name = obj_str(sym, "name");
@@ -2219,84 +2495,96 @@ static void lsp_collect_symbols(e_lsp_session *s, struct json_object *arr,
    s->syms[s->nsyms].line = obj_int(st, "line", 0);
    s->syms[s->nsyms].character = obj_int(st, "character", 0);
    s->syms[s->nsyms].kind = obj_int(sym, "kind", 0);
-   syms[*out] = s->syms[s->nsyms];
    s->nsyms++;
-   (*out)++;
   }
   children = obj_obj(sym, "children");
   if (children && json_object_is_type(children, json_type_array))
-   lsp_collect_symbols(s, children, syms, max, out);
+   lsp_collect_symbols(s, children, max);
  }
 }
 
-int e_lsp_document_symbols(e_lsp_session *s, const char *path,
-                           e_lsp_symbol *syms, int max)
+/**
+ * lsp_symbols_answered - Hand the caller the outline or the workspace
+ * symbols (SymbolInformation carries a location with its uri, which
+ * lsp_collect_symbols reads as the symbol's file).
+ */
+static void lsp_symbols_answered(E_D_REQ_END how, struct json_object *resp,
+                                 void *ctx)
 {
- char abspath[PATH_MAX], uri[PATH_MAX + 8];
- struct json_object *args, *doc, *resp, *result;
- int id, out = 0;
+ lsp_typed *t = ctx;
+ struct json_object *result;
+ int n = -1;
 
- if (!s)
-  return -1;
- lsp_free_syms(s);
- if (!realpath(path, abspath))
-  snprintf(abspath, sizeof(abspath), "%s", path);
- snprintf(uri, sizeof(uri), "file://%s", abspath);
- args = json_object_new_object();
- doc = json_object_new_object();
- json_object_object_add(doc, "uri", json_object_new_string(uri));
- json_object_object_add(args, "textDocument", doc);
- id = ++s->id;
- lsp_send(s, id, "textDocument/documentSymbol", args);
- resp = lsp_pump(s, id, LSP_TMO_REQ);
- if (!resp)
-  return -1;
- result = obj_obj(resp, "result");
- if (result && json_object_is_type(result, json_type_array))
-  lsp_collect_symbols(s, result, syms, max, &out);
- json_object_put(resp);
- return out;
+ if (how == E_D_REQ_DONE)
+ {
+  lsp_free_syms(t->s);
+  result = lsp_result_array(resp);
+  if (result)
+   lsp_collect_symbols(t->s, result, t->max);
+  n = t->s->nsyms;
+ }
+ t->syms_fn(how, t->s->syms, n, t->ctx);
+ lsp_typed_free(t);
 }
 
-int e_lsp_workspace_symbols(e_lsp_session *s, const char *query,
-                            e_lsp_symbol *syms, int max)
+/**
+ * lsp_typed_symbols - A typed request whose answer is symbols.
+ */
+static lsp_typed *lsp_typed_symbols(e_lsp_session *s, int max,
+                                    e_lsp_symbols_fn fn, void *ctx)
 {
- struct json_object *args, *resp, *result;
- int id, out = 0;
+ lsp_typed *t = lsp_typed_new(s, ctx);
 
- if (!s)
-  return -1;
- lsp_free_syms(s);
+ if (!t)
+  return NULL;
+ t->syms_fn = fn;
+ t->max = max;
+ return t;
+}
+
+int e_lsp_document_symbols_async(e_lsp_session *s, const char *path, int max,
+                                 e_lsp_symbols_fn fn, void *ctx)
+{
+ lsp_typed *t;
+
+ if (!s || !fn)
+  return E_D_SEND_GONE;
+ t = lsp_typed_symbols(s, max, fn, ctx);
+ if (!t)
+  return E_D_SEND_FAILED;
+ lsp_typed_at(t, path);
+ return lsp_typed_send(s, "textDocument/documentSymbol",
+                       lsp_doc_params(t->uri), lsp_symbols_answered, t);
+}
+
+int e_lsp_workspace_symbols_async(e_lsp_session *s, const char *query, int max,
+                                  e_lsp_symbols_fn fn, void *ctx)
+{
+ struct json_object *args;
+ lsp_typed *t;
+
+ if (!s || !fn)
+  return E_D_SEND_GONE;
+ t = lsp_typed_symbols(s, max, fn, ctx);
+ if (!t)
+  return E_D_SEND_FAILED;
  args = json_object_new_object();
  json_object_object_add(args, "query",
                         json_object_new_string(query ? query : ""));
- id = ++s->id;
- lsp_send(s, id, "workspace/symbol", args);
- resp = lsp_pump(s, id, LSP_TMO_REQ);
- if (!resp)
-  return -1;
- /* SymbolInformation[]: each carries a name + location {uri,range}, which
-    lsp_collect_symbols already understands (it fills path from the uri). */
- result = obj_obj(resp, "result");
- if (result && json_object_is_type(result, json_type_array))
-  lsp_collect_symbols(s, result, syms, max, &out);
- json_object_put(resp);
- return out;
+ return lsp_typed_send(s, "workspace/symbol", args, lsp_symbols_answered, t);
 }
 
-/* Store one Call/TypeHierarchyItem's name + location into the session cache and
-   the caller's array (both items share the same shape).  Uses
-   selectionRange.start (the identifier position, not the whole-definition
-   range) so a future jump lands on the name.  Returns 1 if stored, 0 if the
-   array or cache is full. */
+/* Store one Call/TypeHierarchyItem's name + location into the session cache
+   (both items share the same shape).  Uses selectionRange.start (the
+   identifier position, not the whole-definition range) so a future jump
+   lands on the name.  Returns 1 if stored, 0 if the cache is full. */
 static int lsp_store_hier_item(e_lsp_session *s, struct json_object *item,
-                             e_lsp_symbol *out, int max, int *n)
+                               int max)
 {
  struct json_object *sr, *st;
  const char *name, *uri;
 
- if (!item || *n >= max ||
-     s->nsyms >= (int)(sizeof(s->syms) / sizeof(s->syms[0])))
+ if (!item || s->nsyms >= max || s->nsyms >= LSP_KEPT(s->syms))
   return 0;
  name = obj_str(item, "name");
  uri = obj_str(item, "uri");
@@ -2309,170 +2597,135 @@ static int lsp_store_hier_item(e_lsp_session *s, struct json_object *item,
  s->syms[s->nsyms].line = st ? obj_int(st, "line", 0) : 0;
  s->syms[s->nsyms].character = st ? obj_int(st, "character", 0) : 0;
  s->syms[s->nsyms].kind = obj_int(item, "kind", 0);
- out[*n] = s->syms[s->nsyms];
  s->nsyms++;
- (*n)++;
  return 1;
 }
 
-/* prepareCallHierarchy: pin the symbol at (line,character) in @uri to a
-   CallHierarchyItem.  Returns the item -- incref'd, so the caller owns it and
-   must either json_object_put it or hand it to a request that takes ownership
-   -- or NULL when the cursor is not on a callable, or the request failed. */
-static struct json_object *lsp_call_hierarchy_prepare(e_lsp_session *s,
-                                  const char *uri, int line, int character)
+/**
+ * lsp_hier_collected - The hierarchy's second step answered: hand the
+ * caller each caller, callee, supertype or subtype (a call wraps its item
+ * in "from" or "to"; a type answer is the items themselves).
+ */
+static void lsp_hier_collected(E_D_REQ_END how, struct json_object *resp,
+                               void *ctx)
 {
- struct json_object *args, *doc, *pos, *resp, *result, *item;
- int id;
+ lsp_typed *t = ctx;
+ struct json_object *result;
+ int i, len, n = -1;
 
- args = json_object_new_object();
- doc = json_object_new_object();
- json_object_object_add(doc, "uri", json_object_new_string(uri));
- json_object_object_add(args, "textDocument", doc);
- pos = json_object_new_object();
- json_object_object_add(pos, "line", json_object_new_int(line));
- json_object_object_add(pos, "character", json_object_new_int(character));
- json_object_object_add(args, "position", pos);
- id = ++s->id;
- lsp_send(s, id, "textDocument/prepareCallHierarchy", args);
- resp = lsp_pump(s, id, LSP_TMO_REQ);
- if (!resp)
-  return NULL;
- result = obj_obj(resp, "result");
- item = (result && json_object_is_type(result, json_type_array) &&
-         json_object_array_length(result) > 0)
-        ? json_object_get(json_object_array_get_idx(result, 0)) : NULL;
- json_object_put(resp);
- return item;
-}
-
-/* callHierarchy/incomingCalls (outgoing == 0: who calls @item) or outgoingCalls
-   (outgoing != 0: what @item calls).  Ownership of @item is taken.  Fills out[]
-   from each call's caller ("from") or callee ("to").  Returns the count (>=0),
-   or -1 on a transport error. */
-static int lsp_call_hierarchy_collect(e_lsp_session *s, struct json_object *item,
-                                      int outgoing, e_lsp_symbol *out, int max)
-{
- struct json_object *args, *resp, *result;
- int id, n = 0, i, len;
-
- args = json_object_new_object();
- json_object_object_add(args, "item", item);   /* takes ownership of our ref */
- id = ++s->id;
- lsp_send(s, id, outgoing ? "callHierarchy/outgoingCalls"
-                          : "callHierarchy/incomingCalls", args);
- resp = lsp_pump(s, id, LSP_TMO_REQ);
- if (!resp)
-  return -1;
- result = obj_obj(resp, "result");
- if (result && json_object_is_type(result, json_type_array))
+ if (how == E_D_REQ_DONE)
  {
-  len = json_object_array_length(result);
-  for (i = 0; i < len && n < max; i++)
+  lsp_free_syms(t->s);
+  result = lsp_result_array(resp);
+  len = result ? (int)json_object_array_length(result) : 0;
+  for (i = 0; i < len; i++)
   {
-   struct json_object *call = json_object_array_get_idx(result, i);
-   lsp_store_hier_item(s, obj_obj(call, outgoing ? "to" : "from"), out, max, &n);
+   struct json_object *entry = json_object_array_get_idx(result, i);
+
+   if (t->wrap)
+    entry = obj_obj(entry, t->wrap);
+   lsp_store_hier_item(t->s, entry, t->max);
   }
+  n = t->s->nsyms;
  }
- json_object_put(resp);
- return n;
+ t->syms_fn(how, t->s->syms, n, t->ctx);
+ lsp_typed_free(t);
 }
 
-int e_lsp_call_hierarchy(e_lsp_session *s, const char *path, int line,
-                         int character, int outgoing,
-                         e_lsp_symbol *out, int max)
+/**
+ * lsp_hier_prepared - The prepare answered: the symbol under the cursor is
+ * pinned to an item, whose callers, callees or types are asked for next;
+ * with no item (the cursor is not on a callable or a type) the caller is
+ * told there are none.
+ */
+static void lsp_hier_prepared(E_D_REQ_END how, struct json_object *resp,
+                              void *ctx)
 {
- char abspath[PATH_MAX], uri[PATH_MAX + 8];
- struct json_object *item;
+ lsp_typed *t = ctx;
+ struct json_object *result, *args;
+ int rc;
 
- if (!s)
-  return -1;
- lsp_free_syms(s);
- if (!realpath(path, abspath))
-  snprintf(abspath, sizeof(abspath), "%s", path);
- snprintf(uri, sizeof(uri), "file://%s", abspath);
- item = lsp_call_hierarchy_prepare(s, uri, line, character);
- if (!item)
-  return 0;                              /* not on a callable */
- return lsp_call_hierarchy_collect(s, item, outgoing, out, max);
-}
-
-/* prepareTypeHierarchy: pin the type at (line,character) in @uri to a
-   TypeHierarchyItem.  Returns the item (incref'd; caller owns) or NULL when the
-   cursor is not on a type, or the request failed. */
-static struct json_object *lsp_type_hierarchy_prepare(e_lsp_session *s,
-                                  const char *uri, int line, int character)
-{
- struct json_object *args, *doc, *pos, *resp, *result, *item;
- int id;
-
- args = json_object_new_object();
- doc = json_object_new_object();
- json_object_object_add(doc, "uri", json_object_new_string(uri));
- json_object_object_add(args, "textDocument", doc);
- pos = json_object_new_object();
- json_object_object_add(pos, "line", json_object_new_int(line));
- json_object_object_add(pos, "character", json_object_new_int(character));
- json_object_object_add(args, "position", pos);
- id = ++s->id;
- lsp_send(s, id, "textDocument/prepareTypeHierarchy", args);
- resp = lsp_pump(s, id, LSP_TMO_REQ);
- if (!resp)
-  return NULL;
- result = obj_obj(resp, "result");
- item = (result && json_object_is_type(result, json_type_array) &&
-         json_object_array_length(result) > 0)
-        ? json_object_get(json_object_array_get_idx(result, 0)) : NULL;
- json_object_put(resp);
- return item;
-}
-
-/* typeHierarchy/supertypes (subtypes == 0: what @item extends) or subtypes
-   (subtypes != 0: what extends @item).  Ownership of @item is taken.  The
-   result is a flat TypeHierarchyItem[] (no from/to wrapper), each stored
-   directly.  Returns the count (>=0), or -1 on a transport error. */
-static int lsp_type_hierarchy_collect(e_lsp_session *s, struct json_object *item,
-                                      int subtypes, e_lsp_symbol *out, int max)
-{
- struct json_object *args, *resp, *result;
- int id, n = 0, i, len;
-
- args = json_object_new_object();
- json_object_object_add(args, "item", item);   /* takes ownership of our ref */
- id = ++s->id;
- lsp_send(s, id, subtypes ? "typeHierarchy/subtypes"
-                          : "typeHierarchy/supertypes", args);
- resp = lsp_pump(s, id, LSP_TMO_REQ);
- if (!resp)
-  return -1;
- result = obj_obj(resp, "result");
- if (result && json_object_is_type(result, json_type_array))
+ if (how != E_D_REQ_DONE)
  {
-  len = json_object_array_length(result);
-  for (i = 0; i < len && n < max; i++)
-   lsp_store_hier_item(s, json_object_array_get_idx(result, i), out, max, &n);
+  t->syms_fn(how, t->s->syms, -1, t->ctx);
+  lsp_typed_free(t);
+  return;
  }
- json_object_put(resp);
- return n;
+ result = lsp_result_array(resp);
+ if (!result || json_object_array_length(result) == 0)
+ {
+  lsp_free_syms(t->s);
+  t->syms_fn(how, t->s->syms, 0, t->ctx);
+  lsp_typed_free(t);
+  return;
+ }
+ args = json_object_new_object();
+ json_object_object_add(args, "item",
+                        json_object_get(json_object_array_get_idx(result, 0)));
+ rc = lsp_typed_step(t, t->next_method, args, lsp_hier_collected);
+ if (rc == E_D_SEND_OK)
+  return;
+ t->syms_fn(E_D_REQ_GONE, t->s->syms, -1, t->ctx);
+ lsp_typed_free(t);
 }
 
-int e_lsp_type_hierarchy(e_lsp_session *s, const char *path, int line,
-                         int character, int subtypes,
-                         e_lsp_symbol *out, int max)
-{
- char abspath[PATH_MAX], uri[PATH_MAX + 8];
- struct json_object *item;
+/* The two steps of each hierarchy: the prepare, then one of two
+   directions, whose answer entries wrap the item in a field or not. */
+typedef struct {
+ const char *prepare;
+ const char *method[2];
+ const char *wrap[2];
+} lsp_hier_kind;
 
- if (!s)
-  return -1;
- lsp_free_syms(s);
- if (!realpath(path, abspath))
-  snprintf(abspath, sizeof(abspath), "%s", path);
- snprintf(uri, sizeof(uri), "file://%s", abspath);
- item = lsp_type_hierarchy_prepare(s, uri, line, character);
- if (!item)
-  return 0;                              /* not on a type */
- return lsp_type_hierarchy_collect(s, item, subtypes, out, max);
+static const lsp_hier_kind lsp_hier_calls = {
+ "textDocument/prepareCallHierarchy",
+ { "callHierarchy/incomingCalls", "callHierarchy/outgoingCalls" },
+ { "from", "to" }
+};
+static const lsp_hier_kind lsp_hier_types = {
+ "textDocument/prepareTypeHierarchy",
+ { "typeHierarchy/supertypes", "typeHierarchy/subtypes" },
+ { NULL, NULL }
+};
+
+/**
+ * lsp_hier_async - Start a hierarchy: the prepare goes out, and its
+ * continuation asks for direction @second (0 or 1) of @kind.
+ */
+static int lsp_hier_async(e_lsp_session *s, const lsp_hier_kind *kind,
+                          const char *path, int line, int character,
+                          int second, int max, e_lsp_symbols_fn fn, void *ctx)
+{
+ lsp_typed *t;
+ int dir = second ? 1 : 0;
+
+ if (!s || !fn)
+  return E_D_SEND_GONE;
+ t = lsp_typed_symbols(s, max, fn, ctx);
+ if (!t)
+  return E_D_SEND_FAILED;
+ lsp_typed_at(t, path);
+ t->next_method = kind->method[dir];
+ t->wrap = kind->wrap[dir];
+ return lsp_typed_send(s, kind->prepare,
+                       lsp_text_pos(s, t->path, line, character),
+                       lsp_hier_prepared, t);
+}
+
+int e_lsp_call_hierarchy_async(e_lsp_session *s, const char *path, int line,
+                               int character, int outgoing, int max,
+                               e_lsp_symbols_fn fn, void *ctx)
+{
+ return lsp_hier_async(s, &lsp_hier_calls, path, line, character, outgoing,
+                       max, fn, ctx);
+}
+
+int e_lsp_type_hierarchy_async(e_lsp_session *s, const char *path, int line,
+                               int character, int subtypes, int max,
+                               e_lsp_symbols_fn fn, void *ctx)
+{
+ return lsp_hier_async(s, &lsp_hier_types, path, line, character, subtypes,
+                       max, fn, ctx);
 }
 
 /* Read a {start:{line,character}, end:{...}} range object into `r`. */
@@ -2487,48 +2740,60 @@ static void lsp_read_range(struct json_object *range, e_lsp_range *r)
  r->end_char = en ? obj_int(en, "character", 0) : 0;
 }
 
-int e_lsp_selection_range(e_lsp_session *s, const char *path, int line,
-                          int character, e_lsp_range *out, int max)
+/* The most ranges a selection range answer is followed for. */
+#define LSP_RANGES_MAX 64
+
+/**
+ * lsp_selection_answered - Hand the caller the nested ranges, innermost
+ * first: the answer is SelectionRange[] (one per position asked), and the
+ * first one's .parent chain is flattened.
+ */
+static void lsp_selection_answered(E_D_REQ_END how, struct json_object *resp,
+                                   void *ctx)
 {
- char abspath[PATH_MAX], uri[PATH_MAX + 8];
- struct json_object *args, *doc, *positions, *pos, *resp, *result, *node;
- int id, n = 0;
+ lsp_typed *t = ctx;
+ e_lsp_range ranges[LSP_RANGES_MAX];
+ struct json_object *result, *node = NULL;
+ int n = -1;
 
- if (!s)
-  return -1;
- if (!realpath(path, abspath))
-  snprintf(abspath, sizeof(abspath), "%s", path);
- snprintf(uri, sizeof(uri), "file://%s", abspath);
-
- args = json_object_new_object();
- doc = json_object_new_object();
- json_object_object_add(doc, "uri", json_object_new_string(uri));
- json_object_object_add(args, "textDocument", doc);
- pos = json_object_new_object();
- json_object_object_add(pos, "line", json_object_new_int(line));
- json_object_object_add(pos, "character", json_object_new_int(character));
- positions = json_object_new_array();
- json_object_array_add(positions, pos);
- json_object_object_add(args, "positions", positions);
- id = ++s->id;
- lsp_send(s, id, "textDocument/selectionRange", args);
- resp = lsp_pump(s, id, LSP_TMO_REQ);
- if (!resp)
-  return -1;
- /* result is SelectionRange[] (one per requested position); follow the .parent
-    chain of the first, flattening innermost -> outermost into out[]. */
- result = obj_obj(resp, "result");
- node = (result && json_object_is_type(result, json_type_array) &&
-         json_object_array_length(result) > 0)
-        ? json_object_array_get_idx(result, 0) : NULL;
- while (node && n < max)
+ if (how == E_D_REQ_DONE)
  {
-  lsp_read_range(obj_obj(node, "range"), &out[n]);
-  n++;
-  node = obj_obj(node, "parent");
+  n = 0;
+  result = lsp_result_array(resp);
+  if (result && json_object_array_length(result) > 0)
+   node = json_object_array_get_idx(result, 0);
+  while (node && n < t->max && n < LSP_RANGES_MAX)
+  {
+   lsp_read_range(obj_obj(node, "range"), &ranges[n]);
+   n++;
+   node = obj_obj(node, "parent");
+  }
  }
- json_object_put(resp);
- return n;
+ t->ranges_fn(how, ranges, n, t->ctx);
+ lsp_typed_free(t);
+}
+
+int e_lsp_selection_range_async(e_lsp_session *s, const char *path, int line,
+                                int character, int max, e_lsp_ranges_fn fn,
+                                void *ctx)
+{
+ struct json_object *args, *positions;
+ lsp_typed *t;
+
+ if (!s || !fn)
+  return E_D_SEND_GONE;
+ t = lsp_typed_new(s, ctx);
+ if (!t)
+  return E_D_SEND_FAILED;
+ t->ranges_fn = fn;
+ t->max = max;
+ lsp_typed_at(t, path);
+ args = lsp_doc_params(t->uri);
+ positions = json_object_new_array();
+ json_object_array_add(positions, lsp_position(line, character));
+ json_object_object_add(args, "positions", positions);
+ return lsp_typed_send(s, "textDocument/selectionRange", args,
+                       lsp_selection_answered, t);
 }
 
 /* ---- semantic tokens --------------------------------------------------- */
@@ -2629,45 +2894,72 @@ static void lsp_capture_semantic_legend(e_lsp_session *s, struct json_object *m)
  }
 }
 
-int e_lsp_semantic_tokens(e_lsp_session *s, const char *path,
-                          e_lsp_sem_token *out, int max)
+/**
+ * lsp_tokens_decode - Decode a semanticTokens answer into @out (at most
+ * @max tokens).
+ * Return: how many were decoded.
+ */
+static int lsp_tokens_decode(struct json_object *resp, e_lsp_sem_token *out,
+                             int max)
 {
- char abspath[PATH_MAX], uri[PATH_MAX + 8];
- struct json_object *args, *doc, *resp, *result, *data;
- int *ints = NULL;
- int id, n = 0, i, len, got = 0;
+ struct json_object *result = obj_obj(resp, "result");
+ struct json_object *data = result ? obj_obj(result, "data") : NULL;
+ int *ints;
+ int i, len, got;
 
- if (!s)
-  return -1;
- if (!realpath(path, abspath))
-  snprintf(abspath, sizeof(abspath), "%s", path);
- snprintf(uri, sizeof(uri), "file://%s", abspath);
- args = json_object_new_object();
- doc = json_object_new_object();
- json_object_object_add(doc, "uri", json_object_new_string(uri));
- json_object_object_add(args, "textDocument", doc);
- id = ++s->id;
- lsp_send(s, id, "textDocument/semanticTokens/full", args);
- resp = lsp_pump(s, id, LSP_TMO_REQ);
- if (!resp)
-  return -1;
- result = obj_obj(resp, "result");
- data = result ? obj_obj(result, "data") : NULL;
- if (data && json_object_is_type(data, json_type_array))
- {
-  len = json_object_array_length(data);
-  ints = malloc((size_t)(len > 0 ? len : 1) * sizeof(int));
-  if (ints)
-  {
-   for (i = 0; i < len; i++)
-    ints[i] = json_object_get_int(json_object_array_get_idx(data, i));
-   got = e_lsp_semantic_decode(ints, len, out, max);
-   free(ints);
-  }
- }
- (void)n;
- json_object_put(resp);
+ if (!data || !json_object_is_type(data, json_type_array))
+  return 0;
+ len = json_object_array_length(data);
+ ints = malloc((size_t)(len > 0 ? len : 1) * sizeof(int));
+ if (!ints)
+  return 0;
+ for (i = 0; i < len; i++)
+  ints[i] = json_object_get_int(json_object_array_get_idx(data, i));
+ got = e_lsp_semantic_decode(ints, len, out, max);
+ free(ints);
  return got;
+}
+
+/**
+ * lsp_tokens_answered - Hand the caller the decoded tokens, or n = -1 when
+ * the fetch ended unanswered (a newer one replaced it, or the server went).
+ */
+static void lsp_tokens_answered(E_D_REQ_END how, struct json_object *resp,
+                                void *ctx)
+{
+ lsp_typed *t = ctx;
+ e_lsp_sem_token *tokens = NULL;
+ int n = -1;
+
+ if (how == E_D_REQ_DONE)
+ {
+  tokens = malloc((size_t)(t->max > 0 ? t->max : 1) * sizeof(*tokens));
+  n = tokens ? lsp_tokens_decode(resp, tokens, t->max) : 0;
+ }
+ t->tokens_fn(how, tokens, n, t->ctx);
+ free(tokens);
+ lsp_typed_free(t);
+}
+
+int e_lsp_semantic_tokens_async(e_lsp_session *s, const char *path, int max,
+                                e_lsp_tokens_fn fn, void *ctx)
+{
+ lsp_typed *t;
+ int rc;
+
+ if (!s || !fn)
+  return E_D_SEND_GONE;
+ t = lsp_typed_new(s, ctx);
+ if (!t)
+  return E_D_SEND_FAILED;
+ t->tokens_fn = fn;
+ t->max = max;
+ lsp_typed_at(t, path);
+ rc = lsp_request_background(s, "textDocument/semanticTokens/full",
+                             lsp_doc_params(t->uri), lsp_tokens_answered, t);
+ if (rc != E_D_SEND_OK)
+  lsp_typed_free(t);
+ return rc;
 }
 
 /* Byte offset of LSP (line,character) within `text` (lines separated by '\n'). */
@@ -2891,35 +3183,63 @@ int e_lsp_format_async(e_lsp_session *s, const char *path,
                        lsp_format_answered, t);
 }
 
-char *e_lsp_rename(e_lsp_session *s, const char *path, int line, int character,
-                   const char *new_name, const char *current_text,
-                   int *other_files)
+/**
+ * lsp_rename_answered - Hand the caller the text sent with the rename's
+ * edits for this file applied, and how many other files it changes.
+ */
+static void lsp_rename_answered(E_D_REQ_END how, struct json_object *resp,
+                                void *ctx)
 {
- char abspath[PATH_MAX], myuri[PATH_MAX + 8];
- struct json_object *args, *resp, *result;
+ lsp_typed *t = ctx;
  char *out = NULL;
- int id, others = 0;
+ int others = 0;
 
- if (other_files)
-  *other_files = 0;
- if (!s)
+ if (how == E_D_REQ_DONE)
+  out = lsp_apply_workspace_edit(obj_obj(resp, "result"), t->uri, t->base,
+                                 &others);
+ t->applied_fn(how, out, others, t->ctx);
+ lsp_typed_free(t);
+}
+
+/**
+ * lsp_typed_on_text - A typed request whose answer edits @current_text.
+ * Return: the typed context, or NULL without memory.
+ */
+static lsp_typed *lsp_typed_on_text(e_lsp_session *s, const char *path,
+                                    const char *current_text,
+                                    e_lsp_applied_fn fn, void *ctx)
+{
+ lsp_typed *t = lsp_typed_new(s, ctx);
+
+ if (!t)
   return NULL;
- if (!realpath(path, abspath))
-  snprintf(abspath, sizeof(abspath), "%s", path);
- snprintf(myuri, sizeof(myuri), "file://%s", abspath);
- args = lsp_text_pos(s, abspath, line, character);
+ t->applied_fn = fn;
+ t->base = strdup(current_text);
+ if (!t->base)
+ {
+  lsp_typed_free(t);
+  return NULL;
+ }
+ lsp_typed_at(t, path);
+ return t;
+}
+
+int e_lsp_rename_async(e_lsp_session *s, const char *path, int line,
+                       int character, const char *new_name,
+                       const char *current_text, e_lsp_applied_fn fn,
+                       void *ctx)
+{
+ struct json_object *args;
+ lsp_typed *t;
+
+ if (!s || !fn || !current_text || !new_name)
+  return E_D_SEND_GONE;
+ t = lsp_typed_on_text(s, path, current_text, fn, ctx);
+ if (!t)
+  return E_D_SEND_FAILED;
+ args = lsp_text_pos(s, t->path, line, character);
  json_object_object_add(args, "newName", json_object_new_string(new_name));
- id = ++s->id;
- lsp_send(s, id, "textDocument/rename", args);
- resp = lsp_pump(s, id, LSP_TMO_REQ);
- if (!resp)
-  return NULL;
- result = obj_obj(resp, "result");
- out = lsp_apply_workspace_edit(result, myuri, current_text, &others);
- if (other_files)
-  *other_files = others;
- json_object_put(resp);
- return out;
+ return lsp_typed_send(s, "textDocument/rename", args, lsp_rename_answered, t);
 }
 
 static void lsp_free_acts(e_lsp_session *s)
@@ -2978,162 +3298,242 @@ static struct json_object *lsp_diags_covering(e_lsp_session *s, const char *uri,
  return out;
 }
 
-int e_lsp_code_actions(e_lsp_session *s, const char *path, int line, int character,
-                       e_lsp_code_action *acts, int max)
+/**
+ * lsp_actions_fill - Keep the actions of a codeAction answer in the session
+ * (the previous ones are freed), the whole array too, so the chosen one is
+ * run without asking again.
+ * Return: how many were kept.
+ */
+static int lsp_actions_fill(e_lsp_session *s, struct json_object *resp, int max)
 {
- char abspath[PATH_MAX], uri[PATH_MAX + 8];
- struct json_object *args, *doc, *ctx, *resp, *result;
- int id, i, n, out = 0;
+ struct json_object *result = lsp_result_array(resp);
+ int i, n = result ? (int)json_object_array_length(result) : 0;
 
- if (!s)
-  return -1;
  lsp_free_acts(s);
- if (!realpath(path, abspath))
-  snprintf(abspath, sizeof(abspath), "%s", path);
- snprintf(uri, sizeof(uri), "file://%s", abspath);
- args = json_object_new_object();
- doc = json_object_new_object();
- json_object_object_add(doc, "uri", json_object_new_string(uri));
- json_object_object_add(args, "textDocument", doc);
- json_object_object_add(args, "range", lsp_point_range(line, character));
- ctx = json_object_new_object();
- json_object_object_add(ctx, "diagnostics", lsp_diags_covering(s, uri, line));
- json_object_object_add(args, "context", ctx);
- id = ++s->id;
- lsp_send(s, id, "textDocument/codeAction", args);
- resp = lsp_pump(s, id, LSP_TMO_REQ);
- if (!resp)
-  return -1;
- result = obj_obj(resp, "result");
- n = (result && json_object_is_type(result, json_type_array))
-     ? json_object_array_length(result) : 0;
- /* Keep the whole array alive so e_lsp_apply_code_action can re-read the
-    chosen action's WorkspaceEdit without a second round-trip. */
- if (result && n > 0)
+ if (n > 0)
   s->acts_raw = json_object_get(result);
- for (i = 0; i < n && out < max &&
-             out < (int)(sizeof(s->acts)/sizeof(s->acts[0])); i++)
+ for (i = 0; i < n && s->nacts < max && s->nacts < LSP_KEPT(s->acts); i++)
  {
   struct json_object *a = json_object_array_get_idx(result, i);
   const char *title = obj_str(a, "title");        /* CodeAction or Command */
+
   if (!title)
    continue;
   s->acts[s->nacts].title = strdup(title);
   s->acts[s->nacts].has_edit = obj_obj(a, "edit") ? 1 : 0;
-  acts[out] = s->acts[s->nacts];
   s->nacts++;
-  out++;
  }
- json_object_put(resp);
- return out;
+ return s->nacts;
 }
 
-/* Resolve a CodeAction the server returned unresolved (only a `data` field, no
-   edit yet -- how Metals delivers its refactors): send codeAction/resolve with
-   the action and return the resolved copy (now carrying an `edit` and/or a
-   `command`).  Caller owns the result; NULL on timeout. */
-static struct json_object *lsp_resolve_code_action(e_lsp_session *s,
-                                                   struct json_object *action)
+/**
+ * lsp_actions_answered - Hand the caller the actions offered.
+ */
+static void lsp_actions_answered(E_D_REQ_END how, struct json_object *resp,
+                                 void *ctx)
 {
- struct json_object *resp, *result;
- int id = ++s->id;
+ lsp_typed *t = ctx;
+ int n = -1;
 
- lsp_send(s, id, "codeAction/resolve", json_object_get(action));
- resp = lsp_pump(s, id, LSP_TMO_REQ);
- if (!resp)
-  return NULL;
- result = obj_obj(resp, "result");
- result = result ? json_object_get(result) : NULL;   /* outlive the resp put */
- json_object_put(resp);
- return result;
+ if (how == E_D_REQ_DONE)
+  n = lsp_actions_fill(t->s, resp, t->max);
+ t->acts_fn(how, t->s->acts, n, t->ctx);
+ lsp_typed_free(t);
 }
 
-/* Run a command-based code action: send workspace/executeCommand and let the
-   server write the result back through workspace/applyEdit (handled inline by
-   lsp_answer_request, which edits s->pend_text).  Returns the new text for @myuri
-   -- the caller owns it -- with *other_files set to the count of OTHER files the
-   command touched; NULL when the command applied no edit to a tracked file (a
-   pure side-effect command, e.g. "run main": nothing to write into the buffer). */
-static char *lsp_execute_command_collect(e_lsp_session *s, const char *command,
-                                         struct json_object *arguments,
-                                         const char *myuri, const char *current_text,
-                                         int *other_files)
+int e_lsp_code_actions_async(e_lsp_session *s, const char *path, int line,
+                             int character, int max, e_lsp_actions_fn fn,
+                             void *ctx)
 {
- struct json_object *args, *resp;
- char *newtext;
- int id;
+ struct json_object *args, *actx;
+ lsp_typed *t;
 
- free(s->pend_text);                 /* arm the applyEdit working buffer */
- s->pend_text = strdup(current_text);
- snprintf(s->pend_uri, sizeof(s->pend_uri), "%s", myuri);
- s->pend_others = 0;
- s->pend_applied = 0;
-
- args = json_object_new_object();
- json_object_object_add(args, "command", json_object_new_string(command));
- if (arguments && json_object_is_type(arguments, json_type_array))
-  json_object_object_add(args, "arguments", json_object_get(arguments));
- id = ++s->id;
- lsp_send(s, id, "workspace/executeCommand", args);
- resp = lsp_pump(s, id, LSP_TMO_REQ);   /* applyEdit handled while pumping */
- if (resp)
-  json_object_put(resp);
-
- newtext = s->pend_text;             /* disarm, hand ownership to the caller */
- s->pend_text = NULL;
- s->pend_uri[0] = '\0';
- if (other_files)
-  *other_files = s->pend_others;
- if (!s->pend_applied)
- {  free(newtext);  return NULL;  }  /* command ran, no buffer edit to apply */
- return newtext;
+ if (!s || !fn)
+  return E_D_SEND_GONE;
+ t = lsp_typed_new(s, ctx);
+ if (!t)
+  return E_D_SEND_FAILED;
+ t->acts_fn = fn;
+ t->max = max;
+ lsp_typed_at(t, path);
+ args = lsp_doc_params(t->uri);
+ json_object_object_add(args, "range", lsp_point_range(line, character));
+ actx = json_object_new_object();
+ json_object_object_add(actx, "diagnostics",
+                        lsp_diags_covering(s, t->uri, line));
+ json_object_object_add(args, "context", actx);
+ return lsp_typed_send(s, "textDocument/codeAction", args,
+                       lsp_actions_answered, t);
 }
 
-char *e_lsp_apply_code_action(e_lsp_session *s, int index, const char *path,
-                              const char *current_text, int *other_files)
+/**
+ * lsp_action_tell - The chosen action has run: hand the caller the text,
+ * or NULL when the file is untouched, and forget the request.
+ */
+static void lsp_action_tell(lsp_typed *t, E_D_REQ_END how, char *newtext,
+                            int others)
 {
- char abspath[PATH_MAX], myuri[PATH_MAX + 8];
- struct json_object *a, *act, *resolved = NULL, *edit, *cmdobj;
- const char *command;
+ t->applied_fn(how, newtext, others, t->ctx);
+ lsp_typed_free(t);
+}
+
+/**
+ * lsp_action_executed - The command answered: whatever the server sent
+ * back with workspace/applyEdit meanwhile is the action's change; a
+ * command that changed no file (a "run main") hands back NULL.
+ */
+static void lsp_action_executed(E_D_REQ_END how, struct json_object *resp,
+                                void *ctx)
+{
+ lsp_typed *t = ctx;
+ lsp_work *w = t->work;
  char *out = NULL;
 
- if (other_files)
-  *other_files = 0;
- if (!s || !s->acts_raw || index < 0 ||
-     index >= json_object_array_length(s->acts_raw))
-  return NULL;
- a = json_object_array_get_idx(s->acts_raw, index);
- if (!realpath(path, abspath))
-  snprintf(abspath, sizeof(abspath), "%s", path);
- snprintf(myuri, sizeof(myuri), "file://%s", abspath);
- act = a;
- /* An unresolved action carries only a `data` field; resolve it first so its
-    edit/command is filled in (Metals' refactors arrive this way). */
- if (!obj_obj(a, "edit") && !obj_obj(a, "command") && obj_obj(a, "data"))
+ (void)resp;
+ if (how == E_D_REQ_DONE && w->applied)
  {
-  resolved = lsp_resolve_code_action(s, a);
-  if (resolved)
-   act = resolved;
+  out = w->text;
+  w->text = NULL;
  }
- edit = obj_obj(act, "edit");
- if (edit)                           /* a precomputed (or just-resolved) WorkspaceEdit */
-  out = lsp_apply_workspace_edit(edit, myuri, current_text, other_files);
- else
+ lsp_action_tell(t, how, out, w->others);
+}
+
+/**
+ * lsp_action_command - The command of an action: a CodeAction whose
+ * "command" is a Command object, or an entry that is itself a Command.
+ * @act: the action; @cmdobj: set to the object holding the arguments.
+ * Return: the command's id, or NULL when it has none.
+ */
+static const char *lsp_action_command(struct json_object *act,
+                                      struct json_object **cmdobj)
+{
+ struct json_object *c = obj_obj(act, "command");
+
+ if (c && json_object_is_type(c, json_type_object))
  {
-  /* Command-based: either a CodeAction whose "command" field is a Command
-     object, or the entry IS a Command (its "command" is the string id). */
-  cmdobj = obj_obj(act, "command");
-  if (cmdobj && json_object_is_type(cmdobj, json_type_object))
-   command = obj_str(cmdobj, "command");
-  else
-  {  cmdobj = act;  command = obj_str(act, "command");  }
-  if (command)
-   out = lsp_execute_command_collect(s, command, obj_obj(cmdobj, "arguments"),
-                                     myuri, current_text, other_files);
+  *cmdobj = c;
+  return obj_str(c, "command");
  }
- if (resolved)
-  json_object_put(resolved);
- return out;
+ *cmdobj = act;
+ return obj_str(act, "command");
+}
+
+/**
+ * lsp_action_execute - Run the action's command with
+ * workspace/executeCommand; the server's applyEdit while it is out edits
+ * a working copy of the text sent, held by this request alone.
+ */
+static void lsp_action_execute(lsp_typed *t, struct json_object *act)
+{
+ struct json_object *cmdobj, *args, *arguments;
+ const char *command = lsp_action_command(act, &cmdobj);
+ int rc;
+
+ if (!command)
+ {
+  lsp_action_tell(t, E_D_REQ_DONE, NULL, 0);
+  return;
+ }
+ t->work = calloc(1, sizeof(*t->work));
+ if (t->work)
+  t->work->text = strdup(t->base);
+ if (!t->work || !t->work->text)
+ {
+  lsp_action_tell(t, E_D_REQ_GONE, NULL, 0);
+  return;
+ }
+ snprintf(t->work->uri, sizeof t->work->uri, "%s", t->uri);
+ args = json_object_new_object();
+ json_object_object_add(args, "command", json_object_new_string(command));
+ arguments = obj_obj(cmdobj, "arguments");
+ if (arguments && json_object_is_type(arguments, json_type_array))
+  json_object_object_add(args, "arguments", json_object_get(arguments));
+ rc = lsp_request_work(t->s, LSP_PEND_CALL, "workspace/executeCommand", args,
+                       lsp_action_executed, t, t->work);
+ if (rc != E_D_SEND_OK)
+  lsp_action_tell(t, E_D_REQ_GONE, NULL, 0);
+}
+
+/**
+ * lsp_action_apply - Apply an action that is complete: its edit to the
+ * text sent, or else its command.
+ */
+static void lsp_action_apply(lsp_typed *t, struct json_object *act)
+{
+ struct json_object *edit = obj_obj(act, "edit");
+ int others = 0;
+ char *out;
+
+ if (!edit)
+ {
+  lsp_action_execute(t, act);
+  return;
+ }
+ out = lsp_apply_workspace_edit(edit, t->uri, t->base, &others);
+ lsp_action_tell(t, E_D_REQ_DONE, out, others);
+}
+
+/**
+ * lsp_action_resolved - The server filled in an action that carried only
+ * data (how Metals delivers its refactors); one it could not resolve is
+ * run as it was.
+ */
+static void lsp_action_resolved(E_D_REQ_END how, struct json_object *resp,
+                                void *ctx)
+{
+ lsp_typed *t = ctx;
+ struct json_object *result;
+
+ if (how != E_D_REQ_DONE)
+ {
+  lsp_action_tell(t, how, NULL, 0);
+  return;
+ }
+ result = obj_obj(resp, "result");
+ if (result && json_object_is_type(result, json_type_object))
+ {
+  json_object_put(t->action);
+  t->action = json_object_get(result);
+ }
+ lsp_action_apply(t, t->action);
+}
+
+/**
+ * lsp_action_needs_resolve - Does the action carry only data, its edit
+ * and command still to be asked for?
+ */
+static int lsp_action_needs_resolve(struct json_object *act)
+{
+ return !obj_obj(act, "edit") && !obj_obj(act, "command") &&
+        obj_obj(act, "data") != NULL;
+}
+
+int e_lsp_code_action_run_async(e_lsp_session *s, int index, const char *path,
+                                const char *current_text, e_lsp_applied_fn fn,
+                                void *ctx)
+{
+ lsp_typed *t;
+ int rc;
+
+ if (!s || !fn || !current_text)
+  return E_D_SEND_GONE;
+ if (!s->acts_raw || index < 0 ||
+     index >= (int)json_object_array_length(s->acts_raw))
+  return E_D_SEND_FAILED;
+ t = lsp_typed_on_text(s, path, current_text, fn, ctx);
+ if (!t)
+  return E_D_SEND_FAILED;
+ t->action = json_object_get(json_object_array_get_idx(s->acts_raw, index));
+ if (!lsp_action_needs_resolve(t->action))
+ {
+  lsp_action_apply(t, t->action);
+  return E_D_SEND_OK;
+ }
+ rc = lsp_typed_step(t, "codeAction/resolve", json_object_get(t->action),
+                     lsp_action_resolved);
+ if (rc != E_D_SEND_OK)
+  lsp_typed_free(t);
+ return rc;
 }
 
 /**
@@ -3281,7 +3681,6 @@ void e_lsp_close(e_lsp_session *s)
  lsp_free_acts(s);
  lsp_free_lenses(s);
  lsp_free_inlays(s);
- free(s->pend_text);
  if (s->diag_raw)
   json_object_put(s->diag_raw);
  {  int i;  for (i = 0; i < s->sem_nlegend; i++)  free(s->sem_legend[i]);  }

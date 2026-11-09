@@ -16,11 +16,6 @@ we_ai.o STDIN_FILENO 2 P9l watches fd 0 for Esc during the modal wait
 we_ai_ui.o STDIN_FILENO 1 P9l the model listing watches fd 0 for Esc
 we_ai_ui.o e_u_kbhit 1 P9l the model listing reads Esc through the display table
 
-# the language server: the requests not yet answered on the loop wait in
-# lsp_read_message (signature help, references, hierarchies, highlight,
-# lenses, inlay hints, semantic tokens, symbols, code actions, rename)
-we_lsp.o poll 1 P9k2 the requests still waited for
-
 # the debugger
 we_debug.o usleep 1 P9o the external xterm settle
 we_debug.o XFlush 2 P9o the focus taken back after the start and the external xterm settle; no read

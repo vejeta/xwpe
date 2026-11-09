@@ -46,8 +46,8 @@ typedef struct {
  /* The server asks the client to re-query inlay hints (workspace/inlayHint/
     refresh) -- Metals sends this when re-indexing changes the inferred types,
     so the overlay can update from a stale snapshot to the full set.  May be
-    NULL.  Fired from inside the message pump, so the handler must only set a
-    flag and refetch at a safe point, never issue a request synchronously. */
+    NULL.  Fired from inside e_lsp_poll(), so the handler only sets a flag,
+    and the fetch goes out once the read has returned. */
  void (*on_inlay_refresh)(void *ud);
  /* The server asks the client to re-query semantic tokens
     (workspace/semanticTokens/refresh) -- e.g. indexing resolved a cross-file
@@ -176,7 +176,7 @@ int e_lsp_did_focus(e_lsp_session *s, const char *path);
  * edits rather than the on-disk file. */
 int e_lsp_did_change(e_lsp_session *s, const char *path, const char *text);
 
-/* Pump until the server publishes diagnostics for `path` (== it has compiled),
+/* Run the loop until the server publishes diagnostics for `path` (== it has compiled),
  * delivering every diagnostic through host->on_diagnostic.  Returns 1 if the
  * file's diagnostics arrived, 0 on timeout/EOF.  Waits: we_lsp_sync.c, the C
  * tests only. */
@@ -185,7 +185,10 @@ int e_lsp_wait_diagnostics(e_lsp_session *s, const char *path, int timeout_ms);
 /* Non-blocking: dispatch any messages already waiting from the server
  * (diagnostics -> host, server requests answered) and return immediately.
  * Call it on each keystroke so live diagnostics surface without blocking
- * typing.  Returns the number of messages handled. */
+ * typing.  Returns how many diagnostics batches were read: the server's news
+ * that its view of a file changed.  Answers, log lines, progress and status
+ * are not counted (they come with the editor's own requests), so an overlay
+ * that refetches on news does not refetch on its own answer. */
 int e_lsp_poll(e_lsp_session *s);
 
 /* ---- requests answered on the loop -------------------------------------
@@ -206,6 +209,11 @@ int e_lsp_poll(e_lsp_session *s);
  * The host calls e_lsp_request_timer() when a timer it asked for goes off.
  * Without it there is no waiting line and no deadline (the C tests).
  *
+ * The inlay hint and semantic token fetches are background requests: no
+ * waiting line, no deadline, untouched by e_lsp_requests_give_up() (Esc),
+ * and a newer fetch of the same kind tells the older one E_D_REQ_CANCELLED
+ * and takes its place, so a stale overlay answer is never handed over.
+ *
  * e_lsp_request() sends @method with @params (taken over, may be NULL) and
  * calls @fn exactly once: E_D_REQ_DONE with the response message (borrowed
  * for the call), or E_D_REQ_TIMED_OUT, E_D_REQ_CANCELLED or E_D_REQ_GONE
@@ -214,7 +222,13 @@ int e_lsp_poll(e_lsp_session *s);
  * send the next request; it must not close the session.
  *
  * The typed requests below run the same parsers the synchronous calls did,
- * in the continuation, and hand the caller the parsed value. */
+ * in the continuation, and hand the caller the parsed value.  A request
+ * that needs more than one round trip (the hierarchies, code lenses and
+ * their resolve, a code action's resolve and command) runs its steps from
+ * its continuations and tells the caller once, at the end.  An array handed
+ * to a continuation is the engine's and valid for that call only: keep a
+ * copy of what is needed later.  n = -1 means the request ended without an
+ * answer (@how says why). */
 typedef void (*e_lsp_answered_fn)(E_D_REQ_END how, struct json_object *resp,
                                   void *ctx);
 /* A text answer (hover): @text is malloc'd and the callee's to free, or
@@ -232,6 +246,32 @@ typedef void (*e_lsp_items_fn)(E_D_REQ_END how,
 /* An edit answer (format): @newtext is the text sent with the request with
    the server's edits applied (malloc'd, the callee's), or NULL for none. */
 typedef void (*e_lsp_edit_fn)(E_D_REQ_END how, char *newtext, void *ctx);
+/* Locations (references, highlight): @n of them. */
+typedef void (*e_lsp_locations_fn)(E_D_REQ_END how, const e_lsp_location *locs,
+                                   int n, void *ctx);
+/* Symbols (outline, workspace search, call and type hierarchy). */
+typedef void (*e_lsp_symbols_fn)(E_D_REQ_END how, const e_lsp_symbol *syms,
+                                 int n, void *ctx);
+/* Ranges (selection range), innermost first. */
+typedef void (*e_lsp_ranges_fn)(E_D_REQ_END how, const e_lsp_range *ranges,
+                                int n, void *ctx);
+/* Code lenses, each resolved where the server needed it. */
+typedef void (*e_lsp_lenses_fn)(E_D_REQ_END how, const e_lsp_code_lens *lenses,
+                                int n, void *ctx);
+/* Inlay hints. */
+typedef void (*e_lsp_inlays_fn)(E_D_REQ_END how, const e_lsp_inlay_hint *hints,
+                                int n, void *ctx);
+/* Semantic tokens, decoded. */
+typedef void (*e_lsp_tokens_fn)(E_D_REQ_END how, const e_lsp_sem_token *tokens,
+                                int n, void *ctx);
+/* Code actions offered at a position. */
+typedef void (*e_lsp_actions_fn)(E_D_REQ_END how, const e_lsp_code_action *acts,
+                                 int n, void *ctx);
+/* A workspace edit applied to the text sent (rename, a code action):
+   @newtext malloc'd and the callee's, or NULL when the file is untouched
+   (or nothing came); @others counts the other files it would change. */
+typedef void (*e_lsp_applied_fn)(E_D_REQ_END how, char *newtext, int others,
+                                 void *ctx);
 
 /* The three "jump to a location" requests. */
 #define E_LSP_LOCATE_DEFINITION       0
@@ -243,9 +283,16 @@ void e_lsp_requests_init(e_lsp_session *s, const E_D_REQ_IO *io,
 int  e_lsp_request(e_lsp_session *s, const char *method,
                    struct json_object *params, e_lsp_answered_fn fn, void *ctx);
 void e_lsp_request_timer(e_lsp_session *s, int which);
+/* Every request out, background ones included, is told @why (the close,
+   a test's own deadline). */
 void e_lsp_requests_cancel(e_lsp_session *s, E_D_REQ_END why);
+/* Every request the user waits for is told @why (Esc); the background
+   fetches go on. */
+void e_lsp_requests_give_up(e_lsp_session *s, E_D_REQ_END why);
 /* Is a request (or the start) waiting for its answer? */
 int  e_lsp_requests_pending(const e_lsp_session *s);
+/* Is any answer owed, a background fetch's included? */
+int  e_lsp_requests_owed(const e_lsp_session *s);
 /* The method of the oldest request out and the seconds it has waited, for a
    refusal that names it; NULL when none is out. */
 const char *e_lsp_request_waited(const e_lsp_session *s, long *secs);
@@ -262,6 +309,67 @@ int e_lsp_completion_async(e_lsp_session *s, const char *path, int line,
 int e_lsp_format_async(e_lsp_session *s, const char *path,
                        const char *current_text, const e_lsp_range *range,
                        e_lsp_edit_fn fn, void *ctx);
+/* The active signature's label at a call (malloc'd text, or NULL). */
+int e_lsp_signature_help_async(e_lsp_session *s, const char *path, int line,
+                               int character, e_lsp_text_fn fn, void *ctx);
+/* Every use of the symbol, its declaration included; at most @max. */
+int e_lsp_references_async(e_lsp_session *s, const char *path, int line,
+                           int character, int max, e_lsp_locations_fn fn,
+                           void *ctx);
+/* Every occurrence of the symbol in this file; at most @max. */
+int e_lsp_document_highlight_async(e_lsp_session *s, const char *path, int line,
+                                   int character, int max,
+                                   e_lsp_locations_fn fn, void *ctx);
+/* Who calls the symbol (@outgoing 0) or what it calls (1); n = 0 when the
+   cursor is not on a callable. */
+int e_lsp_call_hierarchy_async(e_lsp_session *s, const char *path, int line,
+                               int character, int outgoing, int max,
+                               e_lsp_symbols_fn fn, void *ctx);
+/* What the type extends (@subtypes 0) or what extends it (1); n = 0 when
+   the cursor is not on a type. */
+int e_lsp_type_hierarchy_async(e_lsp_session *s, const char *path, int line,
+                               int character, int subtypes, int max,
+                               e_lsp_symbols_fn fn, void *ctx);
+/* The nested "smart selection" ranges around the position. */
+int e_lsp_selection_range_async(e_lsp_session *s, const char *path, int line,
+                                int character, int max, e_lsp_ranges_fn fn,
+                                void *ctx);
+/* The file's code lenses, each resolved where it needs it. */
+int e_lsp_code_lenses_async(e_lsp_session *s, const char *path, int max,
+                            e_lsp_lenses_fn fn, void *ctx);
+/* Background: the inlay hints for lines [start_line, end_line]. */
+int e_lsp_inlay_hints_async(e_lsp_session *s, const char *path,
+                            int start_line, int end_line, int max,
+                            e_lsp_inlays_fn fn, void *ctx);
+/* Background: the whole file's semantic tokens, decoded; at most @max. */
+int e_lsp_semantic_tokens_async(e_lsp_session *s, const char *path, int max,
+                                e_lsp_tokens_fn fn, void *ctx);
+/* The file's outline, flattened depth-first. */
+int e_lsp_document_symbols_async(e_lsp_session *s, const char *path, int max,
+                                 e_lsp_symbols_fn fn, void *ctx);
+/* Every symbol in the project matching @query. */
+int e_lsp_workspace_symbols_async(e_lsp_session *s, const char *query, int max,
+                                  e_lsp_symbols_fn fn, void *ctx);
+/* The quick-fixes and refactors offered at the position, with the
+   diagnostics covering it sent along.  The list is kept for
+   e_lsp_code_action_run_async until the next code action request. */
+int e_lsp_code_actions_async(e_lsp_session *s, const char *path, int line,
+                             int character, int max, e_lsp_actions_fn fn,
+                             void *ctx);
+/* Run code action @index of the last list on @current_text: an edit in
+   hand is applied at once (@fn told before this returns); an action that
+   carries only data is resolved first; a command runs as
+   workspace/executeCommand, and the edit the server sends back with
+   workspace/applyEdit is applied to the text sent. */
+int e_lsp_code_action_run_async(e_lsp_session *s, int index, const char *path,
+                                const char *current_text, e_lsp_applied_fn fn,
+                                void *ctx);
+/* Rename the symbol to @new_name: the edits for this file applied to
+   @current_text. */
+int e_lsp_rename_async(e_lsp_session *s, const char *path, int line,
+                       int character, const char *new_name,
+                       const char *current_text, e_lsp_applied_fn fn,
+                       void *ctx);
 
 /* Count the diagnostics batches published for @path from now on (the C
    tests' "has it compiled?"): e_lsp_diagnostics_seen() says how many. */
@@ -302,11 +410,10 @@ int e_lsp_workspace_symbols(e_lsp_session *s, const char *query,
 int e_lsp_code_actions(e_lsp_session *s, const char *path, int line, int character,
                        e_lsp_code_action *acts, int max);
 
-/* Apply the code action chosen by index from the LAST e_lsp_code_actions call:
- * if it carries a direct edit for THIS file, applies it to `current_text` and
- * returns the new full text (malloc'd); else returns NULL (e.g. a command-based
- * action, which xwpe does not run yet).  *other_files counts other files it
- * would touch. */
+/* Run the code action chosen by index from the LAST e_lsp_code_actions call
+ * on `current_text` (e_lsp_code_action_run_async, waited for) and return the
+ * new full text (malloc'd), or NULL when the file is untouched.
+ * *other_files counts other files it would touch. */
 char *e_lsp_apply_code_action(e_lsp_session *s, int index, const char *path,
                               const char *current_text, int *other_files);
 

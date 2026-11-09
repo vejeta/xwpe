@@ -13,7 +13,11 @@
  *   together holds the first two requests and answers the second, then the
  *            first, in one write;
  *   holder   as silent, and leaves a process of its own session holding
- *            its output open after it ends.
+ *            its output open after it ends;
+ *   command  answers a code action request with a command-based action,
+ *            and runs that command as a server does: it sends its edit
+ *            back with workspace/applyEdit, answers the command once the
+ *            editor replied, and then sends one more applyEdit.
  *
  * It notes what it reads in a log file next to the test, so every check is
  * on what the server saw.  What is checked, as the user would miss it: each
@@ -21,10 +25,13 @@
  * server's own request is answered while requests are out; Esc tells each
  * owner once and drops the late answer; the deadline gives the request up
  * with a line that names it, and the start has none; a server that ends
- * tells every request it is gone; an answer read by a request still waited
- * for synchronously reaches its own request; the output of a closed session
- * is let go even when something it left behind holds it open; and the close
- * asks on the pipe and returns at once.
+ * tells every request it is gone; two answers read together reach their
+ * own requests; a newer overlay fetch replaces the older one, whose answer
+ * is never handed over, and Esc leaves the overlay fetches alone; a
+ * command's edit is applied to the text it was run on while the command is
+ * out, and declined after; the output of a closed session is let go even
+ * when something it left behind holds it open; and the close asks on the
+ * pipe and returns at once.
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -52,6 +59,10 @@
 #define FAKE_DIE         "die"
 #define FAKE_TOGETHER    "together"
 #define FAKE_HOLDER      "holder"
+#define FAKE_COMMAND     "command"
+#define FAKE_LATE_APPLY_ID 902       /* the applyEdit after the command ended */
+#define FAKE_HINT        "HINT"      /* the label of the canned inlay hint     */
+#define FAKE_CMD_EDIT    "X"         /* what the command inserts at 0:0        */
 #define FAKE_HOLDER_LIFETIME_S 15
 /* The owner's whole ladder after the close, and slack: by then the closed
    session's output must no longer be read. */
@@ -127,6 +138,12 @@ static void fake_answer_body(int id, const char *method, char *body, size_t n)
            "\"character\":1}}}]", FAKE_DEF_PATH, FAKE_DEF_LINE, FAKE_DEF_LINE);
   result = loc;
  }
+ else if (!strcmp(method, "textDocument/inlayHint"))
+  result = "[{\"position\":{\"line\":0,\"character\":1},\"label\":\""
+           FAKE_HINT "\"}]";
+ else if (!strcmp(method, "textDocument/codeAction"))
+  result = "[{\"title\":\"Fix\",\"command\":{\"title\":\"Fix\","
+           "\"command\":\"stand-in.fix\",\"arguments\":[]}}]";
  snprintf(body, n, "{\"jsonrpc\":\"2.0\",\"id\":%d,\"result\":%s}", id, result);
 }
 
@@ -173,6 +190,63 @@ static void fake_side_traffic(void)
  fake_send(body);
 }
 
+/* The command mode's state: the file the code action was asked for, and
+   the command waiting for the editor's reply to its edit. */
+static char fake_cmd_uri[FAKE_FRAME_MAX / 4];
+static int fake_cmd_id = -1;
+
+/**
+ * fake_send_apply_edit - Ask the editor to insert FAKE_CMD_EDIT at the
+ * start of the code action's file, as request @id.
+ */
+static void fake_send_apply_edit(int id)
+{
+ char body[FAKE_FRAME_MAX / 2];
+
+ snprintf(body, sizeof body, "{\"jsonrpc\":\"2.0\",\"id\":%d,\"method\":"
+          "\"workspace/applyEdit\",\"params\":{\"edit\":{\"changes\":{\"%s\":"
+          "[{\"range\":{\"start\":{\"line\":0,\"character\":0},\"end\":"
+          "{\"line\":0,\"character\":0}},\"newText\":\"" FAKE_CMD_EDIT "\"}]}}}}",
+          id, fake_cmd_uri);
+ fake_send(body);
+}
+
+/**
+ * fake_command_replied - The editor replied to the command's edit: the
+ * command is answered, and one more edit is sent after it, which the
+ * editor must decline.
+ */
+static void fake_command_replied(void)
+{
+ if (fake_cmd_id < 0)
+  return;
+ fake_answer(fake_cmd_id, "workspace/executeCommand");
+ fake_cmd_id = -1;
+ fake_send_apply_edit(FAKE_LATE_APPLY_ID);
+}
+
+/**
+ * fake_command_take - The command mode's requests: the code action is
+ * answered and its file noted; the command sends its edit back first.
+ */
+static void fake_command_take(int id, const char *method, struct json_object *m)
+{
+ struct json_object *params = NULL, *doc = NULL, *uri = NULL;
+
+ if (!strcmp(method, "workspace/executeCommand"))
+ {
+  fake_cmd_id = id;
+  fake_send_apply_edit(FAKE_APPLY_ID);
+  return;
+ }
+ if (!strcmp(method, "textDocument/codeAction") &&
+     json_object_object_get_ex(m, "params", &params) &&
+     json_object_object_get_ex(params, "textDocument", &doc) &&
+     json_object_object_get_ex(doc, "uri", &uri))
+  snprintf(fake_cmd_uri, sizeof fake_cmd_uri, "%s", json_object_get_string(uri));
+ fake_answer(id, method);
+}
+
 /**
  * fake_take - One message read: note it, and answer, hold or drop it as
  * the mode says.
@@ -200,6 +274,8 @@ static int fake_take(const char *mode, struct json_object *m, fake_req *held,
   fake_note("REPLY", jres ? json_object_to_json_string_ext(jres,
                                                   JSON_C_TO_STRING_PLAIN)
                           : "null");
+  if (!strcmp(mode, FAKE_COMMAND))
+   fake_command_replied();
   return 1;
  }
  method = json_object_get_string(jm);
@@ -211,6 +287,11 @@ static int fake_take(const char *mode, struct json_object *m, fake_req *held,
  }
  if (!strcmp(mode, FAKE_DIE))
   return 0;
+ if (!strcmp(mode, FAKE_COMMAND))
+ {
+  fake_command_take(id, method, m);
+  return 1;
+ }
  if (!strcmp(mode, FAKE_SILENT) || !strcmp(mode, FAKE_HOLDER) ||
      !strcmp(method, "shutdown"))
   return 1;
@@ -656,10 +737,10 @@ static void test_a_server_that_ends_tells_every_request_it_is_gone(void)
 #define QUIET_LOOP_MS 500
 
 /*
- * A request still waited for synchronously (signature help) reads the
- * answer of a request on the loop (the hover) in the same read as its own:
- * the hover must still reach its continuation, not sit read and unhandled
- * until its deadline because the server has nothing more to write.
+ * Two answers in one read (signature help's and the hover's, written
+ * together): each reaches its own continuation, and neither sits read and
+ * unhandled until its deadline because the server has nothing more to
+ * write.
  */
 static void test_an_answer_read_by_a_waited_request_reaches_its_owner(void)
 {
@@ -679,11 +760,133 @@ static void test_an_answer_read_by_a_waited_request_reaches_its_owner(void)
  loop_until(s, &hover.n, 1, QUIET_LOOP_MS);
  check(hover.n == 1 && hover.how[0] == E_D_REQ_DONE &&
        !strcmp(hover.text, FAKE_HOVER_TEXT),
-       "the hover's answer, read while signature help was waited for, "
-       "reaches the hover");
+       "the hover's answer, read together with signature help's, reaches "
+       "the hover");
  check(!e_lsp_requests_pending(s), "nothing is waited for afterwards");
  e_lsp_close(s);
  /* Its last line lands in the log before the next case clears it. */
+ fake_log_wait_for("EOF", log, sizeof log);
+}
+
+/* What an overlay fetch's continuation was told. */
+typedef struct {
+ int n;                       /* how many times */
+ E_D_REQ_END how[TOLD_MAX];
+ int count;                   /* the hints handed over, -1 for none */
+ char label[64];              /* the first hint's label */
+} told_hints;
+
+/** told_inlays - An inlay hint fetch's continuation. */
+static void told_inlays(E_D_REQ_END how, const e_lsp_inlay_hint *hints, int n,
+                        void *ctx)
+{
+ told_hints *t = ctx;
+
+ if (t->n < TOLD_MAX)
+  t->how[t->n] = how;
+ t->n++;
+ t->count = n;
+ if (n > 0)
+  snprintf(t->label, sizeof t->label, "%s", hints[0].label);
+}
+
+/* The lines an inlay hint fetch asks for. */
+#define HINT_LINES 10
+#define HINTS_MAX  8
+
+/*
+ * The overlay fetches the editor sends while the user types: a newer one
+ * replaces the older, whose answer (for older text) is never handed over;
+ * nobody waits for them, so Esc leaves them alone.
+ */
+static void test_a_newer_overlay_fetch_replaces_the_older(void)
+{
+ e_lsp_session *s = open_fake(FAKE_LATE);
+ told_hints first, second;
+ told hover;
+
+ memset(&first, 0, sizeof first);
+ memset(&second, 0, sizeof second);
+ memset(&hover, 0, sizeof hover);
+ check(s != NULL, "the session starts on the stand-in");
+ if (!s)
+  return;
+ check(e_lsp_inlay_hints_async(s, ASKED_FILE, 0, HINT_LINES, HINTS_MAX,
+                               told_inlays, &first) == E_D_SEND_OK,
+       "the first fetch goes out");
+ check(e_lsp_requests_owed(s) && !e_lsp_requests_pending(s),
+       "a fetch is owed its answer, but nobody waits for it");
+ e_lsp_requests_give_up(s, E_D_REQ_CANCELLED);
+ check(first.n == 0, "Esc leaves the fetch alone");
+ check(e_lsp_inlay_hints_async(s, ASKED_FILE, 0, HINT_LINES, HINTS_MAX,
+                               told_inlays, &second) == E_D_SEND_OK,
+       "a newer fetch goes out");
+ check(first.n == 1 && first.how[0] == E_D_REQ_CANCELLED && first.count == -1,
+       "the older fetch is told at once that it was replaced");
+ /* The stand-in answers the older fetch now, and the newer one when the
+    next request comes. */
+ e_lsp_hover_async(s, ASKED_FILE, 1, 1, told_text, &hover);
+ loop_until(s, &second.n, 1, ANSWER_WAIT_MS);
+ check(first.n == 1 && first.how[0] == E_D_REQ_CANCELLED && first.count == -1,
+       "the older fetch's late answer is never handed over");
+ check(second.n == 1 && second.how[0] == E_D_REQ_DONE && second.count == 1 &&
+       !strcmp(second.label, FAKE_HINT),
+       "the newer fetch gets its own answer");
+ e_lsp_close(s);
+}
+
+/**
+ * loop_until_logged - Run the loop until the fake's log holds @what, so
+ * a message the server sends unasked is read and answered.
+ */
+static void loop_until_logged(e_lsp_session *s, const char *what, char *log,
+                              size_t n)
+{
+ int fd = e_lsp_fd(s);
+
+ if (wpe_fd_add(fd, POLLIN, on_readable, s) != 0)
+  return;
+ fake_log_wait_for(what, log, n);
+ wpe_fd_del(fd);
+}
+
+/* The text a code action is run on, and what the stand-in's edit makes of
+   it. */
+#define ACTION_TEXT  "abc\n"
+#define ACTION_AFTER FAKE_CMD_EDIT ACTION_TEXT
+#define ACTIONS_MAX  4
+
+/*
+ * A command-based code action: the server runs the command and sends its
+ * change back with workspace/applyEdit while the command is out; that
+ * change is applied to the text the action was run on and handed back
+ * when the command answers.  An applyEdit after the command ended is
+ * declined: no request holds a copy of a file for it.
+ */
+static void test_a_command_edit_reaches_the_text_it_was_run_on(void)
+{
+ e_lsp_session *s = open_fake(FAKE_COMMAND);
+ e_lsp_code_action acts[ACTIONS_MAX];
+ char log[4096];
+ char *text;
+ int n, others = -1;
+
+ check(s != NULL, "the session starts on the stand-in");
+ if (!s)
+  return;
+ n = e_lsp_code_actions(s, ASKED_FILE, 0, 0, acts, ACTIONS_MAX);
+ check(n == 1 && !acts[0].has_edit, "a command-based action is offered");
+ text = e_lsp_apply_code_action(s, 0, ASKED_FILE, ACTION_TEXT, &others);
+ check(text && !strcmp(text, ACTION_AFTER) && others == 0,
+       "the edit sent back while the command was out is applied to the text "
+       "the action was run on");
+ free(text);
+ loop_until_logged(s, "REPLY {\"applied\":false}", log, sizeof log);
+ check(strstr(log, "REPLY {\"applied\":true}") != NULL,
+       "the edit is accepted while the command is out");
+ check(strstr(log, "REPLY {\"applied\":false}") != NULL,
+       "an edit sent after the command ended is declined");
+ e_lsp_close(s);
  fake_log_wait_for("EOF", log, sizeof log);
 }
 
@@ -751,6 +954,7 @@ static void test_close_asks_on_the_pipe_and_returns_at_once(void)
 }
 
 /* @scenario SC-debug-94 */
+/* @scenario SC-debug-101 */
 int main(int argc, char **argv)
 {
  const char *tmp;
@@ -771,6 +975,8 @@ int main(int argc, char **argv)
  test_deadline_gives_the_request_up_and_the_start_has_none();
  test_a_server_that_ends_tells_every_request_it_is_gone();
  test_an_answer_read_by_a_waited_request_reaches_its_owner();
+ test_a_newer_overlay_fetch_replaces_the_older();
+ test_a_command_edit_reaches_the_text_it_was_run_on();
  test_a_closed_output_held_open_is_let_go();
  test_close_asks_on_the_pipe_and_returns_at_once();
  fake_log_clear();
